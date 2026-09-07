@@ -35,13 +35,17 @@
 //!
 //! # What was found: an INVALID BOUND, not lost significant integrals
 //!
-//! Both defects trace to one cause, and it is important to state that cause
+//! (This section is written in the past tense: the defect it describes is
+//! FIXED. It is kept because these tests exist to stop it returning, and the
+//! reasoning is what makes the current bars defensible rather than arbitrary.)
+//!
+//! Both defects traced to one cause, and it is important to state that cause
 //! precisely, because the obvious reading of it is wrong.
 //!
-//! `SchwarzBounds::compute` builds its Q table from libint2 engines at a
+//! `SchwarzBounds::compute` built its Q table from libint2 engines at a
 //! hardcoded 1e-14 precision — the SAME value later used as the screening
-//! threshold. libint2 therefore declines to compute shell pairs whose value
-//! sits below its stated precision, and ferric records Q = 0.0 for them.
+//! threshold. libint2 therefore declined to compute shell pairs whose value
+//! sat below its stated precision, and ferric recorded Q = 0.0 for them.
 //!
 //! **Most of those pairs are genuinely tiny — but not all of them.** The true
 //! `sqrt(max|(ij|ij)|)` per shell pair was measured in PySCF via
@@ -90,35 +94,62 @@
 //! threshold it will enforce, with a floor. PySCF builds `q_cond` at
 //! `direct_scf_tol**2` with a 1e-100 floor (verified in source); Molpro,
 //! NWChem, Q-Chem, ORCA and Psi4 all do the equivalent. ferric using one
-//! hardcoded 1e-14 for BOTH the table and the screen is the outlier. See
-//! `link_k_bound_validity_violated_alkane_8` for the fix sketch and its
-//! measured cost.
+//! hardcoded 1e-14 for BOTH the table and the screen was the outlier.
 //!
-//! The remedy was verified here by simulation (flooring every zero Q entry to
-//! 1e-100, then reverting): LinK's trivial-limit error collapses from 1.96e-3
-//! to **3.33e-15**, and the invalid-entry count from 1049 to **0**. The fix
-//! itself is deliberately a SEPARATE PR, so these anchors land RED first and
-//! can be watched turning green.
+//! # THE DEFECT IS FIXED — what this file now pins
 //!
-//! What this file pins:
+//! `crates/ferric-integrals/src/schwarz.rs` builds the table at
+//! `SCHWARZ_TABLE_PRECISION = 0.0` (libint2 prescreening off for the table
+//! build) and floors every entry at `SCHWARZ_Q_FLOOR = 1e-100`. Everything
+//! above is retained as the RECORD OF THE DEFECT, because these tests exist to
+//! stop it coming back, and a bare assertion with no history behind it invites
+//! exactly the "just widen the bar" response that created it.
 //!
-//! 1. `link_k_bound_validity_violated_alkane_8` — LinK fails its own
-//!    trivial-limit exactness anchor: at `thresh = 0` it still differs from
-//!    the dense build by 2e-3, because 1049 pairs are unreachable.
-//! 2. `known_defect_screening_shifts_coulomb_energy_with_size` — screening at
-//!    the default threshold shifts the Coulomb energy by 5e-9 Ha on alkane_4
-//!    but ~1.8e-4 Ha on alkane_8. Growth with system size is the expected
-//!    shape: Schwarz-truncation energy errors are EXTENSIVE, scaling linearly
-//!    with system size (Hollman, Schaefer & Valeev, Mol. Phys. 115, 2065-2076
-//!    (2017), DOI 10.1080/00268976.2017.1346312).
+//! Measured across the fix:
 //!
-//! Neither is visible on water or CH4, which have no underflowed pairs — which
-//! is precisely why the pre-existing tests passed while proving nothing.
+//! ```text
+//!                                            before      after
+//! LinK vs dense at thresh=0 (alkane_8)       1.9586e-3   3.1086e-15
+//! Q == 0.0 table entries (alkane_8)          1049/5253   0/5253
+//! Q == 0.0 table entries (alkane_16)         9977/19701  0/19701
+//! smallest nonzero stored Q (alkane_8)       4.632e-07   1.302e-60
+//! significant pairs at thresh=0 (alkane_8)   4153/5253   5202/5253
+//! energy shift from screening (alkane_4)     5.0e-9      0.0 (bit-identical)
+//! energy shift from screening (alkane_8)     1.8e-4      0.0 (bit-identical)
+//! E vs PySCF, screened (alkane_8)            1.46e-4     6.963e-9
+//! Schwarz table build time (alkane_8)        0.0262 s    0.0412 s
+//! Schwarz table build time (alkane_16)       0.0452 s    0.1328 s
+//! ```
+//!
+//! The pre-fix smallest nonzero Q of 4.632e-07 is `sqrt(~1e-13)` — the
+//! fingerprint of the engine's precision cliff rather than of any property of
+//! octane, which is the cleanest single piece of evidence that the cause was
+//! the table precision and not the molecule.
+//!
+//! The standing assertions are:
+//!
+//! 1. `link_k_matches_dense_in_the_trivial_limit` — at `thresh = 0` the screen
+//!    must do nothing, so LinK must reproduce the dense build to machine
+//!    precision, and no table entry may be exactly 0.0.
+//! 2. `screening_does_not_shift_the_energy_at_production_thresh` — at 1e-14 on
+//!    these systems the screened and unscreened energies are bit-identical.
+//!    This is NOT a claim that Schwarz screening is exact in general:
+//!    truncation errors are EXTENSIVE, scaling linearly with system size
+//!    (Hollman, Schaefer & Valeev, Mol. Phys. 115, 2065-2076 (2017),
+//!    DOI 10.1080/00268976.2017.1346312), so a large enough system at a loose
+//!    enough threshold will legitimately show a shift.
+//! 3. The invariant at its source lives in `schwarz.rs` itself
+//!    (`schwarz_table_never_stores_a_zero_alkane_8`).
+//!
+//! None of this is visible on water or CH4, which have no pairs under the
+//! precision cliff — which is precisely why the pre-existing tests passed
+//! while proving nothing.
 //!
 //! With screening OFF, ferric reproduces PySCF's J/K on the same density to
 //! 8.5e-11 and its energy functional to 4.8e-11 (alkane_4) / 7.0e-9
-//! (alkane_8). The integrals, the J/K builders, and the energy expression are
-//! all correct; the screen is what is wrong.
+//! (alkane_8). The integrals, the J/K builders, and the energy expression were
+//! always correct; the screen was the sole defect, and the screened numbers
+//! have now converged onto these unscreened ones.
 //!
 //! # Bound-type parameterization
 //!
@@ -313,23 +344,31 @@ const THRESH_SWEEP: [f64; 5] = [1e-6, 1e-8, 1e-10, 1e-12, 1e-14];
 
 /// Bar for LinK vs the dense build at the SAME threshold.
 ///
-/// A flat constant, not a multiple of `thresh`, because the measured error is
-/// essentially INDEPENDENT of the threshold — it is dominated by the shared
-/// invalid-bound floor (`link_k_bound_validity_violated_alkane_8`), not by
-/// the threshold. Measured on alkane_8/cc-pVDZ:
+/// A flat constant, not a multiple of `thresh`. Measured on alkane_8/cc-pVDZ,
+/// before and after the invalid-Schwarz-bound fix:
 ///
-/// | thresh | max\|K_LinK - K_dense(thresh)\| |
-/// |--------|--------------------------------|
-/// | 1e-6   | 4.83e-3                        |
-/// | 1e-8   | 2.54e-3                        |
-/// | 1e-10  | 1.92e-3                        |
-/// | 1e-12  | 1.94e-3                        |
-/// | 1e-14  | 1.94e-3                        |
+/// | thresh | max\|K_LinK - K_dense(thresh)\| | after fix |
+/// |--------|--------------------------------|-----------|
+/// | 1e-6   | 4.83e-3                        | 4.822e-3  |
+/// | 1e-8   | 2.54e-3                        | 2.593e-3  |
+/// | 1e-10  | 1.92e-3                        | 1.492e-3  |
+/// | 1e-12  | 1.94e-3                        | 1.317e-3  |
+/// | 1e-14  | 1.94e-3                        | 8.047e-4  |
+///
+/// Before the fix the error PLATEAUED at 1.94e-3 from 1e-10 down, because it
+/// was dominated by the shared invalid-bound floor rather than by the
+/// threshold. It now decreases monotonically all the way to the tight end, and
+/// what remains is LinK's OWN approximation — its density-weighted restriction
+/// of the ket loop, which is a real and intended part of the method, not a
+/// defect. Note this is LinK vs dense at the SAME threshold, so the shared
+/// Schwarz screen cancels between the two sides; the quantity that went to
+/// machine precision is the trivial limit at thresh = 0, asserted in
+/// `link_k_matches_dense_in_the_trivial_limit`.
 ///
 /// Tying the bar to `thresh` would make it unreachable by construction at the
-/// tight end, which is the failure mode this file exists to prevent. This
-/// constant pins the measured behaviour instead; it should drop by orders of
-/// magnitude once the underflow defect is fixed.
+/// tight end, which is the failure mode this file exists to prevent. The 1e-2
+/// constant still clears the largest measured value (4.8e-3 at the loose end,
+/// where LinK legitimately approximates most) with roughly 2x headroom.
 const LINK_VS_DENSE_BAR: f64 = 1e-2;
 
 /// The `integral_thresh` a production SCF run uses.
@@ -371,18 +410,20 @@ fn run_thresh_sweep(kind: BoundKind, stem: &str, basis_name: &str) {
     //
     // This measures what LinK's own approximation costs — its pair-list
     // restriction of the ket loop — with the Häser-Ahlrichs/Schwarz screen
-    // that BOTH builders share held constant between them. That shared screen
-    // is not exact (see `link_k_bound_validity_violated_alkane_8`), so
-    // subtracting it out is the only way to isolate the quantity this sweep is
-    // about.
+    // that BOTH builders share held constant between them, so the shared screen
+    // cancels and this sweep isolates LinK's contribution alone.
     //
-    // The alternative, a single fixed reference at thresh = 0, was MEASURED
-    // and does NOT work here: LinK's error against the exact K falls
-    // 4.83e-3 -> 2.54e-3 -> 1.93e-3 and then RISES to 1.959e-3 and plateaus,
-    // because LinK inherits the invalid-bound floor and simply cannot converge
-    // to the exact answer. Asserting monotonicity against that target would be
-    // asserting something false about a defect that lives elsewhere. The
-    // exactness failure itself is pinned separately, by name, below.
+    // HISTORICAL NOTE, kept because it explains the shape of this harness: the
+    // alternative of a single fixed reference at thresh = 0 was MEASURED and did
+    // NOT work while the invalid-bound defect stood. LinK's error against the
+    // exact K fell 4.83e-3 -> 2.54e-3 -> 1.93e-3 and then ROSE to 1.959e-3 and
+    // plateaued, because LinK inherited the bound's invalid floor and could not
+    // converge to the exact answer at all. That defect is fixed (the trivial
+    // limit is now exact to 3.1e-15, see
+    // `link_k_matches_dense_in_the_trivial_limit`) and the same-threshold
+    // reference is no longer forced on us — but it is still the RIGHT reference
+    // for this particular sweep, because the question here is what LinK's
+    // pair-list restriction costs, not what the shared screen costs.
     for &thresh in THRESH_SWEEP.iter() {
         let k_ref = dense_k(&prep, &d, thresh);
         let op = Operator::coulomb();
@@ -531,21 +572,9 @@ fn significant_pairs_actually_screens_alkane_8() {
     // Trivial-limit exactness anchor for the pair builder itself: a screen
     // that does nothing must retain everything.
     //
-    // The threshold must be NEGATIVE, not zero. `SignificantPairs::build`
-    // keeps a pair when `estimate(..) > threshold` — a STRICT comparison — and
-    // ferric's Schwarz table stores an exact 0.0 for well-separated shell
-    // pairs (libint2 declines to compute below its 1e-14 precision). At
-    // `threshold = 0.0` those entries fail the strict `>` and are dropped:
-    // 8306 of 10404 survive, not all 10404.
-    //
-    // That is NOT the screen working as designed — it is the invalid-bound
-    // defect pinned by `link_k_bound_validity_violated_alkane_8`: a Q of 0.0
-    // on a pair with a nonzero true integral underestimates, and a Schwarz
-    // bound must always overestimate (arXiv:2302.11307). It does mean `0.0`
-    // is not a usable vacuous limit for this assertion today. Any negative
-    // threshold is, since every stored bound is non-negative — and a negative
-    // threshold stays correct after the defect is fixed, so this anchor does
-    // not need revisiting then.
+    // A NEGATIVE threshold is the unconditionally vacuous screen, since every
+    // stored bound is non-negative and `SignificantPairs::build` keeps a pair
+    // when `estimate(..) > threshold`.
     let sp_all = SignificantPairs::build(bound.as_dyn(), nsh, -1.0);
     assert_eq!(
         sp_all.total_pairs(),
@@ -556,15 +585,30 @@ fn significant_pairs_actually_screens_alkane_8() {
         sp_all.total_pairs()
     );
 
-    // Documents the f64-underflow behaviour the anchor above had to route
-    // around, so a future reader does not "fix" the negative threshold back to
-    // zero: at thresh=0 the strict `>` already discards the pairs whose bound
-    // underflowed, which is a real (and desirable) screening effect.
+    // thresh = 0 must ALSO be vacuous, and that is the load-bearing half.
+    //
+    // `build` uses a STRICT `estimate(..) > threshold`, so any pair whose
+    // stored Q is exactly 0.0 fails even against 0.0 and becomes unreachable at
+    // every threshold — no setting of `thresh` would make the screen do
+    // nothing. That was the state of the world before the Schwarz table gained
+    // SCHWARZ_TABLE_PRECISION / SCHWARZ_Q_FLOOR: 8306 of 10404 ordered pairs
+    // survived here, and this assertion was inverted, requiring the shortfall.
+    //
+    // It now requires the opposite, which is the real invariant: with a bound
+    // that never stores a zero, threshold 0 retains everything. That makes this
+    // a genuine second witness to the same property
+    // `link_k_matches_dense_in_the_trivial_limit` checks through LinK's output,
+    // one level lower down at the pair list itself.
     let sp_zero = SignificantPairs::build(bound.as_dyn(), nsh, 0.0);
-    assert!(
-        sp_zero.total_pairs() < full_square,
-        "alkane_8/cc-pVDZ: expected some shell-pair Schwarz bounds to underflow to exactly 0.0 \
-         and be dropped by the strict `>` at thresh=0, but all {full_square} pairs survived"
+    assert_eq!(
+        sp_zero.total_pairs(),
+        full_square,
+        "alkane_8/cc-pVDZ: at thresh=0 only {} of {full_square} ordered shell pairs survive. \
+         Because the comparison is a strict `>`, a stored Q of exactly 0.0 makes its pair \
+         unreachable at EVERY threshold, so the screen has no off switch and the trivial limit \
+         does not exist. Check SCHWARZ_TABLE_PRECISION and SCHWARZ_Q_FLOOR in \
+         crates/ferric-integrals/src/schwarz.rs.",
+        sp_zero.total_pairs()
     );
 }
 
@@ -830,20 +874,30 @@ fn check_directjk_vs_pyscf(tag: &str, e_bar: f64, jk_bar: f64, unscreened: bool)
     }
 
     // --- PRODUCTION SCREENING: documents the accuracy actually shipped ----
-    // At the production `integral_thresh` the deviation is MUCH larger than
-    // the unscreened one. ferric builds its libint2 engines at precision 1e-14
-    // (hardcoded at every `EnginePool::new` call site). For 22 of alkane_4's
-    // 2916 shell pairs the true (ij|ij) is 1e-13..3e-17, and at precision
-    // 1e-14 libint2 declines to compute those quartets at all — correct,
-    // documented behaviour on its part. ferric then records Q = 0.0 for those
-    // pairs, which is an INVALID bound (it underestimates a nonzero integral),
-    // and `build_jk`'s `bound_product < thresh` screen discards every quartet
-    // built from such a pair (32439 of 1103355 on alkane_4). PySCF computes
-    // them. Their summed contribution is the gap. See
-    // `link_k_bound_validity_violated_alkane_8` for the invariant and the fix.
+    // The screened and unscreened deviations are now essentially IDENTICAL on
+    // alkane_4 — MEASURED 8.488e-11 (screened) vs 8.496e-11 (unscreened) for J,
+    // and 9.711e-11 for K either way. That is the post-fix state and it is the
+    // point: the Schwarz screen no longer contributes error of its own.
     //
-    // MEASURED (alkane_4, PySCF's converged density, unscreened build, Schwarz
-    // table rebuilt at the matching precision):
+    // It used to. The Schwarz TABLE was built from libint2 engines at a
+    // hardcoded 1e-14, and for 22 of alkane_4's 2916 shell pairs the true
+    // (ij|ij) is 1e-13..3e-17, so libint2 declined to compute them — correct,
+    // documented behaviour on its part — and ferric recorded Q = 0.0, an
+    // INVALID bound that UNDERestimates. `build_jk`'s `bound_product < thresh`
+    // screen then discarded every quartet built from such a pair (32439 of
+    // 1103355 on alkane_4) while PySCF computed them. See
+    // `link_k_matches_dense_in_the_trivial_limit` for the invariant and the fix
+    // (SCHWARZ_TABLE_PRECISION / SCHWARZ_Q_FLOOR in
+    // crates/ferric-integrals/src/schwarz.rs).
+    //
+    // The ~8.5e-11 that REMAINS is a different and deliberate thing, and the
+    // distinction matters for anyone reading this bar: it comes from the
+    // precision of the engines that compute the J/K quartets themselves
+    // (1e-14, hardcoded at every `EnginePool::new` call site), NOT from the
+    // screening table. That is why fixing the table left it unchanged.
+    //
+    // MEASURED (alkane_4, PySCF's converged density, unscreened build, with the
+    // QUARTET engine precision varied):
     //
     //     engine precision   max|dJ|     max|dK|
     //     1e-14 (production) 8.50e-11    9.70e-11
@@ -851,7 +905,7 @@ fn check_directjk_vs_pyscf(tag: &str, e_bar: f64, jk_bar: f64, unscreened: bool)
     //     1e-25              9.92e-13    1.10e-13
     //     1e-30              9.92e-13    1.10e-13
     //
-    // i.e. tightening the engine drives ferric onto PySCF and then saturates —
+    // i.e. tightening that engine drives ferric onto PySCF and then saturates —
     // the builders agree, and 1e-14 is a deliberate speed/accuracy choice.
     // This assertion therefore pins the SHIPPED behaviour at a bar the
     // production configuration can actually meet, so a genuine regression in
@@ -887,55 +941,57 @@ fn directjk_matches_pyscf_alkane_4() {
 /// all, and a measured attempt on alkane_8 ran past 69 minutes without
 /// finishing. alkane_4 carries the unscreened check in the default gate.
 ///
-/// # The energy bar here is 1e-3, and that is a KNOWN DEFECT, not slack
+/// # This bar was 1e-3 for a KNOWN DEFECT; it is now 1e-8
 ///
-/// ferric's screened alkane_8 RHF energy is -313.451984590 vs PySCF's
-/// -313.451838457 — ferric is 1.46e-4 Ha LOWER, which looks like a better
-/// variational solution but is not one. Measured decomposition on ferric's
-/// OWN converged density (so no SCF-basin question is involved):
+/// ferric's screened alkane_8 RHF energy used to be -313.451984590 vs PySCF's
+/// -313.451838457 — 1.46e-4 Ha LOWER, which looked like a better variational
+/// solution but was not one. It is now -313.451838450, a deviation of
+/// **6.963e-9 Ha**, so this test holds the same 1e-8 bar alkane_4 does.
 ///
-/// | quantity                                   | alkane_4   | alkane_8   |
-/// |--------------------------------------------|------------|------------|
-/// | E_tot, screening at 1e-14                   | -157.307058536411 | -313.451984590444 |
-/// | E_tot, screening OFF (thresh = 0)           | -157.307058531341 | -313.451806106075 |
-/// | screening-induced shift                     | -5.07e-9   | -1.78e-4   |
-/// | unscreened E vs PySCF on the SAME density   |  4.8e-11   |  7.0e-9    |
+/// Measured decomposition on ferric's OWN converged density (so no SCF-basin
+/// question is involved), before and after the fix:
 ///
-/// Read the last row first: with screening off, ferric reproduces PySCF's
-/// energy functional on the identical density to 4.8e-11 / 7.0e-9. The
-/// integrals, the J/K builders and the 0.5·Tr[D(H+F)] + Vnn expression are all
-/// correct. The entire discrepancy is the SCREEN, and it lands in EJ:
-/// 528.692031257 (screened) vs 528.692211350 (unscreened).
+/// | quantity                                  | alkane_4   | alkane_8   |
+/// |-------------------------------------------|------------|------------|
+/// | screening-induced shift, BEFORE           | -5.07e-9   | -1.78e-4   |
+/// | screening-induced shift, AFTER            |  0.0       |  0.0       |
+/// | E vs PySCF (screened), BEFORE             |  ~3e-11    |  1.46e-4   |
+/// | E vs PySCF (screened), AFTER              |  3.41e-11  |  6.96e-9   |
+/// | unscreened E vs PySCF on the SAME density |  4.8e-11   |  7.0e-9    |
 ///
-/// Cause: `SchwarzBounds::compute` builds its Q table from libint2 engines at
-/// the hardcoded 1e-14 precision — the same value later enforced as the
-/// screening threshold. libint2 declines to compute pairs below its stated
-/// precision (correct, documented behaviour), and ferric records Q = 0.0 for
-/// them. A zero bound on a nonzero integral UNDERestimates, breaking the
-/// always-overestimates invariant that makes a Schwarz bound a bound
-/// (arXiv:2302.11307); every quartet on such a pair then fails
-/// `bound_product < thresh` at ANY threshold, including 0. On alkane_4 that is
-/// 32439 of 1103355 quartets worth 5e-9 Ha — invisible. On alkane_8 the same
-/// mechanism is worth ~1.8e-4 Ha.
+/// Read the bottom two rows together: with screening off, ferric always
+/// reproduced PySCF's energy functional on the identical density to
+/// 4.8e-11 / 7.0e-9 — the integrals, the J/K builders and the
+/// 0.5·Tr[D(H+F)] + Vnn expression were never in question. The entire
+/// discrepancy was the SCREEN, and the screened result has now converged onto
+/// the unscreened one (6.96e-9 vs 7.0e-9), which is what a valid bound is
+/// supposed to deliver.
 ///
-/// The growth with size is the expected shape: Schwarz-truncation energy
+/// Cause of the old gap: `SchwarzBounds::compute` built its Q table from
+/// libint2 engines at the hardcoded 1e-14 precision — the same value later
+/// enforced as the screening threshold. libint2 declines to compute pairs
+/// below its stated precision (correct, documented behaviour), and ferric
+/// recorded Q = 0.0 for them. A zero bound on a nonzero integral
+/// UNDERestimates, breaking the always-overestimates invariant that makes a
+/// Schwarz bound a bound (arXiv:2302.11307); every quartet on such a pair then
+/// failed `bound_product < thresh` at ANY threshold, including 0. On alkane_4
+/// that was 32439 of 1103355 quartets worth 5e-9 Ha — invisible. On alkane_8
+/// the same mechanism was worth ~1.8e-4 Ha.
+///
+/// The growth with size was the expected shape: Schwarz-truncation energy
 /// errors are extensive, scaling linearly with system size (Hollman, Schaefer
-/// & Valeev, Mol. Phys. 115, 2065-2076 (2017)). So this bar cannot simply be
-/// widened for bigger systems.
+/// & Valeev, Mol. Phys. 115, 2065-2076 (2017)). That is also why the old 1e-3
+/// bar could not simply have been widened for bigger systems, and why fixing
+/// the bound rather than the bar was the only real option. The fix is in
+/// `crates/ferric-integrals/src/schwarz.rs` (`SCHWARZ_TABLE_PRECISION` and
+/// `SCHWARZ_Q_FLOOR`); see `link_k_matches_dense_in_the_trivial_limit`.
 ///
-/// On both systems measured the shift happened to be negative, which is why
-/// ferric's alkane_8 total lands below PySCF's and superficially looks like a
-/// better solution. That sign is reported AS MEASURED HERE, not as a general
-/// property — see `known_defect_screening_shifts_coulomb_energy_with_size`.
-///
-/// This test therefore pins the CURRENT behaviour with an explicit bar and this
-/// explanation attached, so the defect is recorded rather than hidden. The fix
-/// is to build the screening table tighter than the threshold it enforces,
-/// with a floor, as PySCF/Molpro/NWChem/Q-Chem/ORCA all do; when that lands,
-/// tighten this to 1e-8 — the same bar alkane_4 already meets.
+/// The old note about the shift's sign being negative on both systems is moot
+/// now that the shift is zero, and was only ever reported as measured on two
+/// systems rather than as a general property.
 #[test]
 fn directjk_matches_pyscf_alkane_8() {
-    check_directjk_vs_pyscf("alkane_8", 1e-3, 1e-8, false);
+    check_directjk_vs_pyscf("alkane_8", 1e-8, 1e-8, false);
 }
 
 /// (c) alkane_8 WITH the unscreened builder check.
@@ -956,127 +1012,84 @@ fn directjk_matches_pyscf_alkane_8_unscreened() {
     check_directjk_vs_pyscf("alkane_8", 1e-8, 1e-8, true);
 }
 
-/// KNOWN DEFECT, pinned: the Schwarz bound is INVALID (it underestimates), so
-/// LinK cannot reproduce the dense K even in its own trivial limit.
+/// TRIVIAL-LIMIT ANCHOR: at `thresh = 0` the LinK screen must do NOTHING, so
+/// LinK's K must reproduce the dense build to machine precision.
 ///
-/// # The invariant that is broken
+/// This is the exactness anchor the repo protocol requires of every
+/// approximation ("every approximation has a trivial limit where it does
+/// nothing"), and for a long time ferric did not satisfy it. It replaces the
+/// RED anchor `link_k_bound_validity_violated_alkane_8`, which pinned the
+/// defect while it stood.
+///
+/// # The defect this test now guards against returning
 ///
 /// A Schwarz bound must ALWAYS OVERESTIMATE the true integral — that property
 /// is what makes it a bound at all, and what lets a screen discard a quartet
 /// without changing the answer beyond the threshold (PySCF screening paper,
-/// arXiv:2302.11307). ferric violates it: `SchwarzBounds::compute` builds its
-/// Q table from libint2 engines at a hardcoded 1e-14 precision, libint2
-/// declines to compute pairs below that precision, and ferric stores Q = 0.0
-/// for them. A zero bound on a pair with a nonzero true (ij|ij) is an
-/// UNDERestimate.
+/// arXiv:2302.11307). ferric used to violate it: `SchwarzBounds::compute` built
+/// its Q table from libint2 engines at a hardcoded 1e-14 precision, libint2
+/// declines to compute pairs below the precision it is given, and ferric stored
+/// `Q = 0.0` for them. A zero bound on a pair with a nonzero true `(ij|ij)` is
+/// an UNDERestimate.
 ///
-/// The consequence is not a slightly-too-aggressive screen; it is a screen
+/// The consequence was not a slightly-too-aggressive screen; it was a screen
 /// with no off switch. `SignificantPairs::build` keeps a pair only when
-/// `estimate(..) > threshold`, a STRICT comparison, so a Q of exactly 0.0
-/// fails even against `threshold = 0.0`. Those pairs are unreachable at EVERY
-/// threshold, and the repo protocol's required trivial limit — the setting at
-/// which an approximation does nothing — does not exist.
+/// `estimate(..) > threshold`, a STRICT comparison, so a Q of exactly 0.0 fails
+/// even against `threshold = 0.0`. Those pairs were unreachable at EVERY
+/// threshold, and this trivial limit did not exist.
 ///
-/// # How tiny are the zeroed pairs? (mostly, but not entirely, negligible)
+/// # What was measured, before and after
 ///
-/// True `sqrt(max|(ij|ij)|)` per shell pair, measured in PySCF via
+/// alkane_8/cc-pVDZ, ferric's converged density, dense reference at thresh = 0.
+/// True `sqrt(max|(ij|ij)|)` per shell pair came from PySCF via
 /// `mol.intor('int2e_sph', shls_slice=...)` on a Mole built from ferric's own
-/// basis JSON so the shell decomposition matches exactly (102 shells,
-/// 5253 pairs), then compared element-by-element against ferric's table:
+/// basis JSON so the 102-shell decomposition matches exactly:
 ///
 /// ```text
-/// ferric Q == 0.0                                     1049 / 5253
-/// true Q == 0.0 (genuinely zero)                       121 / 5253
-/// ferric Q < true Q  (bound invariant VIOLATED)       1794 / 5253
-///   ... of which ferric Q is exactly 0.0               928
-///
-/// Of the 1049 pairs ferric zeroes, their TRUE Q:
-///   < 1e-7  (= sqrt(1e-14), the screening scale)       763
-///   < 1e-10                                            342
-///   < 1e-14                                            139
-///   smallest nonzero                              3.50e-15
-///   LARGEST                                       6.51e-05   <-- not tiny
+///                                      before        after
+/// max|K_LinK - K_dense| at thresh=0    1.9586e-3  -> 3.1086e-15
+/// Q == 0.0 table entries               1049/5253  -> 0/5253
+/// significant pairs at thresh=0        4153/5253  -> 5202/5253
+/// smallest nonzero stored Q            4.632e-07  -> 1.302e-60
 /// ```
 ///
-/// An independent measurement on a 94-shell decomposition of the same molecule
-/// gave 1079 of 4465 below 1e-7, 417 exact zeros, smallest nonzero 2.200e-15 —
-/// the same picture at a different shell partitioning.
+/// Of the 1049 pairs ferric used to zero, 763 had a true Q below the 1e-7
+/// screening scale — but the LARGEST was 6.51e-05, ~600x above it, so this was
+/// never purely a sub-precision-tail issue. Only 121 of the 5253 pairs have a
+/// genuinely zero `(ij|ij)`, so at least 928 stored entries were invalid
+/// bounds. The pre-fix smallest nonzero Q of 4.632e-07 is `sqrt(~1e-13)`: the
+/// fingerprint of the engine's precision cliff, not of anything about octane.
 ///
-/// So libint2 is largely doing what it documents (763 of the 1049 are below
-/// the screening scale), and the defect is not "libint2 throws away big
-/// integrals". But the zeroing is not confined to negligible pairs either —
-/// the largest true Q among them is 6.51e-05, ~600x above the screening scale.
-/// Recording any of these as a hard 0.0 in a table whose contract is "never
-/// underestimate" is what turns correct engine behaviour into an invalid
-/// bound. Both facts belong on the record together.
+/// That the cause was the table precision and not merely a correlate was
+/// established by moving ONLY that knob and watching both columns move
+/// together: 1e-14 -> 1049 pairs / 1.96e-3; 1e-20 -> 529 / 5.44e-4;
+/// 1e-26 -> 226 / 2.11e-4; 1e-32 -> 133 / 9.03e-5.
 ///
-/// # Measured
+/// # The fix
 ///
-/// alkane_8/cc-pVDZ, ferric's converged density, dense reference at thresh = 0:
+/// `crates/ferric-integrals/src/schwarz.rs` now builds the screening table at
+/// `SCHWARZ_TABLE_PRECISION = 0.0` (libint2 prescreening disabled for the table
+/// build) and floors every stored entry at `SCHWARZ_Q_FLOOR = 1e-100`, so no
+/// entry is ever exactly zero. This is what every production code does: build
+/// the table TIGHTER than the threshold it enforces. PySCF builds `q_cond` at
+/// `direct_scf_tol**2` with a 1e-100 floor; Molpro, NWChem, Q-Chem, ORCA and
+/// Psi4 (via its own `eps * thresh`) do the equivalent. Using one hardcoded
+/// 1e-14 for both roles was the outlier. Measured one-time table-build cost:
+/// alkane_8 0.031 s -> 0.060 s, alkane_16 0.036 s -> 0.149 s.
 ///
-/// | thresh | max\|K_LinK - K_dense\| | significant pairs |
-/// |--------|------------------------|-------------------|
-/// | 1e-10  | 1.9298e-3              | 3987 / 5253       |
-/// | 1e-12  | 1.9586e-3              | 4145 / 5253       |
-/// | 1e-14  | 1.9586e-3              | 4153 / 5253       |
-/// | 1e-16  | 1.9586e-3              | 4153 / 5253       |
-/// | **0**  | **1.9586e-3**          | **4153 / 5253**   |
+/// # Why alkane_8
 ///
-/// The count plateaus at 4153 = 5253 - 1049 and never reaches 5253. Raising
-/// ONLY the Schwarz-table precision moves both columns together, which is what
-/// identifies it as the cause rather than a correlate:
+/// This is invisible on the molecules the pre-existing `link_k.rs` tests use:
+/// water and CH4 have NO pairs under the cliff, so LinK was exact there and
+/// those tests passed while proving nothing about this. The molecule has to be
+/// large enough for distant shell pairs to fall below the engine's precision.
 ///
-/// | Schwarz-table precision | Q == 0 pairs | LinK(thresh=0) max\|dK\| |
-/// |-------------------------|--------------|-------------------------|
-/// | 1e-14 (production)      | 1049 / 5253  | 1.96e-3                 |
-/// | 1e-20                   |  529 / 5253  | 5.44e-4                 |
-/// | 1e-26                   |  226 / 5253  | 2.11e-4                 |
-/// | 1e-32                   |  133 / 5253  | 9.03e-5                 |
-///
-/// # The fix (deliberately NOT in this PR)
-///
-/// Build the screening table TIGHTER than the threshold it enforces, with a
-/// floor — which is what every major code does. PySCF builds `q_cond` at
-/// `direct_scf_tol**2` with a 1e-100 floor (verified in source); Molpro,
-/// NWChem, Q-Chem, ORCA and Psi4 (via its own eps*thresh) do the equivalent.
-/// ferric using one hardcoded 1e-14 for both roles is the outlier.
-///
-/// Concretely: `Engine::new_2e(op, prep, 0.0)` plus a 1e-100 floor in
-/// `crates/ferric-integrals/src/schwarz.rs` (the construction at ~line 33 and
-/// the parallel path at ~line 69; the 2-centre paths deserve the same look).
-/// Measured one-time cost on alkane_16: 0.064 s -> 0.314 s.
-///
-/// The anchors land first, RED, so the fix can be seen to turn them GREEN.
-///
-/// THIS IS THE TEST THAT FLIPS, and the post-fix numbers are not a
-/// prediction — they were MEASURED here by simulating the fix (flooring every
-/// zero Q entry to 1e-100 in `SchwarzBounds::compute`, then reverting):
-///
-/// ```text
-///                                     before          after
-/// max|K_LinK - K_dense| at thresh=0   1.9586e-3   ->  3.3307e-15
-/// invalid (Q == 0.0) entries          1049        ->  0
-/// significant pairs at thresh=0       4153/5253   ->  5202/5253
-/// ```
-///
-/// i.e. the trivial limit becomes exact to machine precision. (5202 rather
-/// than 5253 is this test's conservative `total_pairs() / 2` floor for the
-/// unique-pair count, not a residual defect: all 10404 ordered pairs are
-/// retained.)
-///
-/// Both of this test's lower-bound assertions then fail BY DESIGN, telling the
-/// implementer to delete it and restore a real
-/// `link_k_matches_dense_in_the_trivial_limit` (err < 1e-10) in its place.
-///
-/// Note this is invisible on the molecules the pre-existing `link_k.rs` tests
-/// use: water and CH4 have NO underflowed pairs, so LinK is exact there and
-/// those tests pass while proving nothing about this.
-///
-/// See also `schwarz_table_stores_zero_for_nonzero_pairs_alkane_8`, which
-/// asserts the invariant violation directly rather than through its
-/// consequence for LinK.
+/// The 5202-of-5253 figure is this test's conservative `total_pairs() / 2`
+/// halving of the ORDERED pair count, not a residual defect: all 10404 ordered
+/// pairs are retained. It is asserted as a floor rather than an equality for
+/// that reason.
 #[test]
-fn link_k_bound_validity_violated_alkane_8() {
+fn link_k_matches_dense_in_the_trivial_limit() {
     let mol = load_mol("alkane_8");
     let bs = basis::bundled("cc-pvdz").expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("PreparedBasis");
@@ -1092,11 +1105,6 @@ fn link_k_bound_validity_violated_alkane_8() {
     let bound = make_bound(BoundKind::Schwarz, &mol, &bs, &prep, Operator::coulomb());
     let retained = SignificantPairs::build(bound.as_dyn(), nsh, 0.0).total_pairs() / 2;
 
-    // The invariant violation itself, counted directly rather than inferred
-    // from the pair count: how many table entries are exactly 0.0? Each one is
-    // a bound that UNDERestimates a nonzero integral (PySCF measured the
-    // smallest nonzero true Q on this system at 2.200e-15, so these are not
-    // pairs whose true value is identically zero).
     let schwarz = SchwarzBounds::compute(Operator::coulomb(), &prep).expect("Schwarz bounds");
     let zero_entries = (0..nsh)
         .flat_map(|i| (0..=i).map(move |j| (i, j)))
@@ -1105,162 +1113,94 @@ fn link_k_bound_validity_violated_alkane_8() {
 
     eprintln!(
         "alkane_8/cc-pVDZ trivial limit (thresh=0): max|K_link - K_dense| = {err:.4e}, \
-         significant pairs {retained} / {full_triangle}, invalid (Q == 0.0) table entries \
+         significant pairs {retained} / {full_triangle}, Q == 0.0 table entries \
          {zero_entries} / {full_triangle}"
     );
 
+    // The anchor itself. 1e-10 is far above the 3.1e-15 measured and far below
+    // the 1.96e-3 the defect produced, so it discriminates cleanly rather than
+    // being tuned to whatever the code currently emits.
     assert!(
-        zero_entries > 0,
-        "alkane_8: the Schwarz table now has NO exactly-zero entries, so the bound no longer \
-         underestimates and this defect appears FIXED. See the note above: delete this test and \
-         restore a real `link_k_matches_dense_in_the_trivial_limit` (err < 1e-10) in its place."
+        err < 1e-10,
+        "alkane_8: LinK at thresh=0 differs from the dense K by {err:.4e}, but at threshold 0 the \
+         screen must do NOTHING. Measured 3.1086e-15 when this anchor was written; the defect it \
+         replaced gave 1.9586e-3. Check that the Schwarz table is still built at \
+         SCHWARZ_TABLE_PRECISION with the SCHWARZ_Q_FLOOR applied \
+         (crates/ferric-integrals/src/schwarz.rs)."
     );
 
-    assert!(
-        err < 1e-2,
-        "alkane_8: LinK-vs-dense error at thresh=0 is {err:.4e}, worse than the ~1.96e-3 recorded \
-         when this test was written — the invalid-bound defect has regressed"
-    );
-    assert!(
-        err > 1e-4,
-        "alkane_8: LinK now reproduces the dense K at thresh=0 to {err:.4e}, down from the \
-         1.96e-3 recorded here. THIS IS THE EXPECTED OUTCOME OF THE FIX (build the Schwarz table \
-         tighter than the threshold it enforces, with a 1e-100 floor, as PySCF/Molpro/NWChem/\
-         Q-Chem/ORCA do). This test has done its job: delete it, restore a real \
-         `link_k_matches_dense_in_the_trivial_limit` assertion (err < 1e-10) in its place, and \
-         tighten LINK_VS_DENSE_BAR and the energy bars accordingly."
-    );
-    assert!(
-        retained < full_triangle,
-        "alkane_8: SignificantPairs now retains all {full_triangle} pairs at thresh=0 — every \
-         shell pair is reachable again, so the bound is valid and the trivial limit exists. See \
-         the message above for what to do."
-    );
-}
-
-/// KNOWN DEFECT, pinned at its source: the Schwarz table stores `Q = 0.0` for
-/// shell pairs whose true (ij|ij) is NOT zero.
-///
-/// This asserts the broken invariant directly, rather than through its
-/// downstream effect on LinK or on the energy. A Schwarz bound must always
-/// overestimate (arXiv:2302.11307); a stored zero on a nonzero pair
-/// underestimates, and — because `SignificantPairs::build` uses a strict
-/// `estimate(..) > threshold` — makes that pair unreachable at every
-/// threshold, including 0.
-///
-/// ferric's side is recomputed live. The true-Q side is a measured constant
-/// (PySCF, `int2e_sph` per shell-pair block, ferric's own basis JSON so the
-/// 102-shell decomposition matches): of alkane_8/cc-pVDZ's 5253 unique shell
-/// pairs, only **121** have a genuinely zero (ij|ij), while ferric stores
-/// **1049** zeros. The gap — at least 928 pairs — is the violation.
-///
-/// Recomputing the true Q here would mean an O(nsh^2) libint2 sweep at a
-/// precision ferric cannot currently request, which is the very thing under
-/// test; the constant is cheaper and the LinK/energy tests already cover the
-/// consequences dynamically.
-///
-/// FLIPS ON THE FIX, measured not predicted: flooring every zero entry to
-/// 1e-100 in `SchwarzBounds::compute` (the fix, simulated and then reverted)
-/// takes the stored-zero count 1049 -> 0, at which point `spurious == 0` and
-/// this test fails by design, prompting its removal.
-#[test]
-fn schwarz_table_stores_zero_for_nonzero_pairs_alkane_8() {
-    /// Shell pairs whose (ij|ij) is genuinely zero, measured in PySCF on the
-    /// matching 102-shell decomposition. A correct table may store 0.0 for
-    /// exactly these and no others.
-    const TRULY_ZERO_PAIRS: usize = 121;
-
-    let mol = load_mol("alkane_8");
-    let bs = basis::bundled("cc-pvdz").expect("basis");
-    let prep = PreparedBasis::new(&mol, &bs).expect("PreparedBasis");
-    let nsh = prep.nshells();
+    // The mechanism, asserted directly so a regression names its own cause
+    // rather than only showing up as a number that drifted.
     assert_eq!(
-        nsh, 102,
-        "alkane_8/cc-pVDZ should give 102 shells; the TRULY_ZERO_PAIRS constant was measured on \
-         that decomposition and is not transferable to another"
-    );
-    let full_triangle = nsh * (nsh + 1) / 2;
-
-    let schwarz = SchwarzBounds::compute(Operator::coulomb(), &prep).expect("Schwarz bounds");
-    let stored_zeros = (0..nsh)
-        .flat_map(|i| (0..=i).map(move |j| (i, j)))
-        .filter(|&(i, j)| schwarz.q[(i, j)] == 0.0)
-        .count();
-
-    let spurious = stored_zeros.saturating_sub(TRULY_ZERO_PAIRS);
-    eprintln!(
-        "alkane_8/cc-pVDZ Schwarz table: {stored_zeros} of {full_triangle} entries are exactly \
-         0.0; only {TRULY_ZERO_PAIRS} pairs are genuinely zero => >= {spurious} entries are \
-         INVALID bounds (they underestimate a nonzero integral)"
+        zero_entries, 0,
+        "alkane_8: {zero_entries} Schwarz table entries are exactly 0.0. Each is a bound that \
+         UNDERestimates a nonzero integral, and since SignificantPairs uses a strict \
+         `estimate(..) > threshold` it makes that pair unreachable at every threshold including \
+         0 — which is what breaks the trivial limit asserted above."
     );
 
     assert!(
-        stored_zeros <= 1049,
-        "alkane_8: the Schwarz table now stores {stored_zeros} zeros, more than the 1049 recorded \
-         when this test was written — the invalid-bound defect has regressed"
-    );
-    assert!(
-        spurious > 0,
-        "alkane_8: the Schwarz table stores {stored_zeros} zeros and {TRULY_ZERO_PAIRS} pairs are \
-         genuinely zero, so no entry underestimates any more. THE BOUND IS VALID AGAIN — this is \
-         the expected outcome of building the table tighter than the enforced threshold with a \
-         1e-100 floor (as PySCF/Molpro/NWChem/Q-Chem/ORCA do). Delete this test, and see \
-         `link_k_bound_validity_violated_alkane_8` for the rest of the cleanup."
+        retained >= 5202,
+        "alkane_8: only {retained} of {full_triangle} shell pairs survive at thresh=0, below the \
+         5202 measured. At threshold 0 every pair with a nonzero bound must be reachable."
     );
 }
 
-/// KNOWN DEFECT, pinned: screening at the default `integral_thresh` shifts the
-/// Coulomb energy by an amount that GROWS with system size.
+/// INVARIANT: screening at the production `integral_thresh` must not move the
+/// energy — and on these systems it now does not move it AT ALL.
 ///
-/// This is the finding that came out of building the anchors in this file, and
-/// it is recorded as an executable fact rather than a comment so that a fix
-/// (or a regression) is detected rather than argued about.
+/// This replaces the RED anchor `known_defect_screening_shifts_coulomb_energy_with_size`,
+/// which pinned a size-divergent screening error while the invalid-Schwarz-bound
+/// defect stood. That error is gone.
 ///
-/// What is measured, on ONE fixed density per molecule (PySCF's converged
-/// density, read from the reference file), contracted twice — once with the
-/// production screen and once with screening disabled:
+/// What is measured, on ONE fixed density per molecule, contracted twice —
+/// once with the production screen and once with screening disabled:
 ///
-///   alkane_4:  |E(1e-14) - E(0)| ~ 5.0e-9   (negligible)
-///   alkane_8:  |E(1e-14) - E(0)| ~ 1.8e-4   (35000x larger)
+/// ```text
+///                                       before fix   after fix
+/// alkane_4:  |E(1e-14) - E(0)|          5.0e-9       0.000e0  (bit-identical)
+/// alkane_8:  |E(1e-14) - E(0)|          1.8e-4       0.000e0  (bit-identical)
+/// ```
 ///
 /// (alkane_4 contracts PySCF's density, alkane_8 ferric's own — see the code.
-/// The choice is immaterial: each shift is a ferric-vs-ferric difference at
-/// two thresholds on ONE fixed density. On PySCF's density alkane_8 gives
-/// 1.14e-4 rather than 1.79e-4; same phenomenon, same order.)
+/// The choice is immaterial: each shift is a ferric-vs-ferric difference at two
+/// thresholds on ONE fixed density, so the density's provenance cancels.)
 ///
 /// Using one fixed density for both builds removes the SCF entirely from the
 /// comparison: any difference is the screen and nothing else.
 ///
-/// # Growth with system size is expected; the SIGN is only observed
+/// # Why the shift is now exactly zero, and what that does and does not mean
 ///
-/// Schwarz-truncation energy errors are EXTENSIVE — they scale linearly with
-/// system size (Hollman, Schaefer & Valeev, Mol. Phys. 115, 2065-2076 (2017),
+/// It does NOT mean Schwarz screening is exact in general. Schwarz-truncation
+/// energy errors are EXTENSIVE — they scale linearly with system size (Hollman,
+/// Schaefer & Valeev, Mol. Phys. 115, 2065-2076 (2017),
 /// DOI 10.1080/00268976.2017.1346312: "the absolute energy errors ... scale
-/// linearly with the size of the system"). That is the literature-supported
-/// part, and it is what makes a size-divergent shift the expected shape rather
-/// than a surprise.
+/// linearly with the size of the system") — so a large enough molecule at a
+/// loose enough threshold will show a nonzero shift, correctly.
 ///
-/// On BOTH systems measured here the shift happened to be negative — ferric's
-/// screened energy came out below its own unscreened energy, which is why
-/// ferric's alkane_8 total sits 1.46e-4 Ha under PySCF's and superficially
-/// resembles a better variational solution. That sign is REPORTED AS MEASURED
-/// ON THESE TWO SYSTEMS ONLY. No literature was found establishing that
-/// Schwarz truncation is one-signed, and an extensive error with random sign
-/// reproduces the same 5e-9 -> 1.8e-4 growth without any sign argument. Do not
-/// propagate the sign as a general expectation; the assertions below use
-/// `abs()` and make no sign claim.
+/// What it means here is narrower and is the actual point: at 1e-14 on systems
+/// of this size, everything the screen discards is genuinely below double
+/// precision, so the two builds agree bit-for-bit. Before the fix the screen
+/// was additionally discarding quartets it had no license to discard — pairs
+/// whose bound had been recorded as an invalid 0.0 — and THAT is what produced
+/// the 1.8e-4. The prior sign observation (both shifts negative, making ferric's
+/// alkane_8 total sit 1.46e-4 Ha under PySCF's and superficially resemble a
+/// better variational solution) is moot now that the magnitude is zero, and was
+/// only ever reported as measured on two systems, never as a general expectation.
 ///
-/// Mechanism (see `link_k_bound_validity_violated_alkane_8`): Q entries stored
-/// as exactly 0.0 are invalid bounds — they underestimate — and cause every
-/// quartet on that shell pair to be screened at any threshold, including 0.
+/// The assertion is therefore an equality-to-zero on the SHIFT, not a tolerance:
+/// a tolerance would quietly absorb a returning defect, whereas any nonzero
+/// shift at this threshold and size is now a real signal worth looking at.
+/// Should a future change make a genuinely-negligible nonzero shift appear here
+/// (a different basis, a looser production threshold), the right response is to
+/// re-derive what the screen is allowed to drop — not to widen the bar.
 ///
-/// The assertion is deliberately two-sided. The upper bound catches the defect
-/// getting WORSE. The lower bound FAILS ONCE THE DEFECT IS FIXED — that is
-/// intentional, so nobody fixes the screen and leaves this test quietly
-/// asserting a stale claim; the fix should delete this test (or invert it) and
-/// tighten `directjk_matches_pyscf_alkane_8`'s energy bar to 1e-8.
+/// Mechanism, for the defect this guards against returning (see
+/// `link_k_matches_dense_in_the_trivial_limit`): Q entries stored as exactly
+/// 0.0 are invalid bounds — they UNDERestimate — and caused every quartet on
+/// that shell pair to be screened at any threshold, including 0.
 #[test]
-fn known_defect_screening_shifts_coulomb_energy_with_size() {
+fn screening_does_not_shift_the_energy_at_production_thresh() {
     let mut shifts = Vec::new();
     for tag in ["alkane_4", "alkane_8"] {
         let rec = DirectJkRef::load(tag);
@@ -1322,27 +1262,23 @@ fn known_defect_screening_shifts_coulomb_energy_with_size() {
     let (_, s4) = shifts[0];
     let (_, s8) = shifts[1];
 
-    assert!(
-        s4 < 1e-7,
-        "alkane_4 screening shift {s4:.3e} Ha is larger than the ~5e-9 recorded when this test \
-         was written — the screening defect has gotten worse on SMALL systems too"
+    // Equality to zero, not a tolerance — see the note above on why widening
+    // this bar would be the wrong response to it firing. Both systems measured
+    // bit-identical (0.000e0) after the invalid-bound fix; before it they gave
+    // 5.0e-9 and 1.8e-4.
+    assert_eq!(
+        s4, 0.0,
+        "alkane_4: screening at the production threshold moved the energy by {s4:.3e} Ha; it was \
+         bit-identical (0.0) when this invariant was written. At 1e-14 on a system this size the \
+         screen should discard nothing that is above double precision."
     );
-    assert!(
-        s8 < 1e-3,
-        "alkane_8 screening shift {s8:.3e} Ha exceeds the ~1.8e-4 recorded when this test was \
-         written — the screening defect has gotten worse"
-    );
-    assert!(
-        s8 > 1e-5,
-        "alkane_8 screening shift is only {s8:.3e} Ha, far below the 1.8e-4 this test was written \
-         to pin. If the invalid-Schwarz-bound defect has been FIXED, that is good news and this \
-         test has done its job: delete it and tighten the energy bar in \
-         directjk_matches_pyscf_alkane_8 from 1e-3 to 1e-8."
-    );
-    assert!(
-        s8 > s4 * 100.0,
-        "the screening shift is no longer strongly size-divergent (alkane_4 {s4:.3e} vs alkane_8 \
-         {s8:.3e}); re-derive the mechanism before trusting either bar"
+    assert_eq!(
+        s8, 0.0,
+        "alkane_8: screening at the production threshold moved the energy by {s8:.3e} Ha; it was \
+         bit-identical (0.0) when this invariant was written. The predecessor defect \
+         (invalid Q == 0.0 bounds, see link_k_matches_dense_in_the_trivial_limit) produced \
+         1.8e-4 Ha here and grew with system size — check SCHWARZ_TABLE_PRECISION and \
+         SCHWARZ_Q_FLOOR in crates/ferric-integrals/src/schwarz.rs before widening this bar."
     );
 }
 
