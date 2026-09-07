@@ -1,0 +1,37 @@
+# KS-DFT with NWChem-style angular grid pruning on the main DFT grid.
+#
+# Pruning drops the Lebedev order on the inner-core and far-tail radial shells,
+# keeping the full order only where the density is chemically active. At the
+# default 75x110 grid that removes ~23% of the grid points. Since DFT grid work
+# scales with the number of ATOMS (not basis functions) and AO-on-grid
+# evaluation is the dominant per-iteration cost, that translates fairly directly
+# into per-iteration wall time.
+#
+# Accuracy: validated through a LIVE pruned SCF against the same PySCF
+# references the flat-grid suites gate on, at those suites' own tolerances --
+# see crates/ferric-dft/tests/grid_prune_live_scf.rs.
+#
+# Two restrictions, both enforced rather than documented-and-hoped:
+#   * energy only -- optimize/frequencies reject a pruned grid, because the XC
+#     gradient's grid-response term is built on the unpruned grid.
+#   * the VV10/NLC grid is never pruned (it is 50x50, where pruning has no
+#     valid table), so VV10 functionals such as wB97X-V still work.
+
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "ksdft"
+task = "energy"
+
+[dft]
+functional = "PBE"
+# "none" (default) = flat grid; "nwchem" = 5-region radial pruning.
+grid_prune = "nwchem"
+
+[scf]
+energy_conv = 1e-9
+density_conv = 1e-8

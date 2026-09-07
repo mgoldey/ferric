@@ -17,3 +17,8 @@ rayon = { workspace = true }
 
 [dev-dependencies]
 ferric-scf = { path = "../ferric-scf" }
+# Used by tests/grid_prune_live_scf.rs to read the same PySCF reference JSONs
+# the ferric-scf DFT reference suites gate on, so the pruned-SCF validation
+# reuses those tolerances verbatim rather than inventing its own.
+serde = { workspace = true }
+serde_json = { workspace = true }

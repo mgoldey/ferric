@@ -246,6 +246,30 @@ pub fn run(args: Vec<String>) {
         eprintln!("error: unsupported method.task = \"{task}\"; expected energy, optimize, or frequencies");
         std::process::exit(1);
     }
+    // [dft] grid_prune — main-DFT-grid angular pruning. Strict parse (unknown
+    // values are a hard error, never a silent default), then a task guard:
+    // the XC gradient's grid-response term is only built for the unpruned
+    // grid, so optimize/frequencies must refuse a pruned grid up front rather
+    // than returning a gradient that is not the gradient of the energy the
+    // SCF converged.
+    let grid_prune: Option<ferric_dft::prune::PruneScheme> = match cfg.dft.grid_prune.as_deref() {
+        None => None,
+        Some(s) => match ferric_dft::prune::PruneScheme::parse_config_str(s) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("error: [dft] grid_prune: {e}");
+                std::process::exit(1);
+            }
+        },
+    };
+    if grid_prune.is_some() && task != "energy" {
+        eprintln!(
+            "error: [dft] grid_prune is supported for method.task = \"energy\" only \
+             (got \"{task}\"). The XC gradient's grid-response term is built on the \
+             unpruned grid, so a pruned energy and its gradient would be inconsistent."
+        );
+        std::process::exit(1);
+    }
     let mut mol = Molecule::load_xyz_with_charge(&cfg.molecule.xyz, cfg.molecule.charge, cfg.molecule.multiplicity).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -355,7 +379,15 @@ pub fn run(args: Vec<String>) {
         df_j_aux: cfg.scf.df_j_aux.clone().or(df_j_default),
         df_k_aux: cfg.scf.df_k_aux.clone().or(df_k_default),
         xc,
-        dft_grid: None,
+        // `None` keeps `AtomicGridConfig::default()` (75x110, unpruned) —
+        // byte-identical to the historical path. Only a `[dft] grid_prune`
+        // setting materialises an explicit config, and it touches the MAIN
+        // grid only: `nlc_grid` stays `None` so the VV10/NLC grid keeps its
+        // 50x50 unpruned default, where pruning has no valid table.
+        dft_grid: grid_prune.map(|p| ferric_dft::grid::AtomicGridConfig {
+            prune: Some(p),
+            ..Default::default()
+        }),
         nlc_grid: None,
         level_shift: cfg.scf.level_shift.unwrap_or(0.0),
         newton_trigger: if cfg.scf.soscf { 1e-3 } else { 0.0 },
