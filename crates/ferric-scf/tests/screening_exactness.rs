@@ -154,10 +154,18 @@
 //! # Bound-type parameterization
 //!
 //! Every screening assertion runs through [`BoundKind`], which selects the
-//! `Bound` implementation at run time. Today only [`BoundKind::Schwarz`] is
-//! exercised in the default gate; the QQR arm is present and compiling so
-//! that a later PR can enable `BoundKind::Qqr` against the SAME harness and
-//! the SAME assertions, rather than forking a parallel copy of this file.
+//! `Bound` implementation at run time. BOTH arms are now exercised in the
+//! default gate: [`BoundKind::Schwarz`] and [`BoundKind::Qqr`] run the same
+//! threshold sweep and the same trivial-limit anchor, against the same bars,
+//! rather than a forked copy of this file.
+//!
+//! Note that QQR passing this harness establishes CORRECTNESS, not benefit.
+//! The cost measurement (`tests/qqr_link_cost.rs`) found QQR screens only
+//! 0.009% more quartets than Schwarz inside LinK — because both LinK pair-list
+//! builders screen on the diagonal quartet `(ij|ij)`, where QQR's distance
+//! envelope is identically 1 (`tests/qqr_diagonal_noop.rs`). QQR is therefore
+//! NOT wired into the production path; these arms keep it correct for the
+//! non-LinK callers and for any future use.
 //!
 //! # Running
 //!
@@ -201,7 +209,6 @@ use ndarray::Array2;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BoundKind {
     Schwarz,
-    #[allow(dead_code)] // exercised by the follow-up QQR PR; constructed in `qqr_bound_arm_is_wired`
     Qqr,
 }
 
@@ -506,6 +513,21 @@ fn run_thresh_sweep(kind: BoundKind, stem: &str, basis_name: &str) {
 #[test]
 fn link_k_thresh_sweep_alkane_8_schwarz() {
     run_thresh_sweep(BoundKind::Schwarz, "alkane_8", "cc-pvdz");
+}
+
+/// (a) The SAME sweep, same system, same assertions, driven by `QqrBounds`.
+///
+/// This is the arm the `BoundKind` parameterization was built for. QQR screens
+/// strictly MORE than Schwarz (it multiplies the Schwarz estimate by a decay
+/// factor <= 1), so it can only ever discard additional quartets — and this
+/// sweep is what proves those discards stay below the threshold's own error
+/// rather than removing anything that matters.
+///
+/// It shares `LINK_VS_DENSE_BAR` with the Schwarz arm deliberately: a QQR-
+/// specific, looser bar would let a genuine QQR over-screening regression pass.
+#[test]
+fn link_k_thresh_sweep_alkane_8_qqr() {
+    run_thresh_sweep(BoundKind::Qqr, "alkane_8", "cc-pvdz");
 }
 
 /// (a) The same sweep on alkane_12 (C12H26, 38 atoms, 298 cc-pVDZ functions).
@@ -1143,6 +1165,150 @@ fn link_k_matches_dense_in_the_trivial_limit() {
         retained >= 5202,
         "alkane_8: only {retained} of {full_triangle} shell pairs survive at thresh=0, below the \
          5202 measured. At threshold 0 every pair with a nonzero bound must be reachable."
+    );
+}
+
+/// TRIVIAL-LIMIT ANCHOR for QQR: at `thresh = 0`, LinK driven by `QqrBounds`
+/// must reproduce the dense K exactly, just as the Schwarz arm does.
+///
+/// This is the non-negotiable exactness anchor for the QQR bound, and it is
+/// strictly stronger than the Schwarz one. QQR multiplies the Schwarz estimate
+/// by a decay factor, so it has TWO ways to break the trivial limit where
+/// Schwarz has one:
+///
+/// * the inherited Schwarz floor (a stored `Q == 0` making a pair unreachable
+///   at every threshold — the defect PR #34 fixed), and
+/// * its own envelope driving a genuinely significant quartet's estimate to
+///   zero, or below the strict `> threshold` comparison, at long range.
+///
+/// At `thresh = 0` neither may fire: a decay factor is a positive multiplier of
+/// a positive Schwarz entry, so the product must stay strictly positive and the
+/// quartet must survive. If this ever fails with the Schwarz arm still passing,
+/// the cause is in the envelope (`SAFETY_FACTOR`, the `r_eff` edge-to-edge
+/// definition, or an underflow in `ext_sum / r_eff`), NOT in the Schwarz table.
+///
+/// # SCOPE LIMIT — measured, not assumed
+///
+/// This anchor is NOT sensitive to an over-aggressive envelope, and saying so
+/// is the point of this paragraph. MUTATION TESTED: an envelope mutated to
+/// hard-zero its far tail (`decay < 1e-3 => 0.0`) — an outright invalid bound —
+/// still PASSES this test. Two independent reasons, both structural:
+///
+/// * the pair lists screen on the diagonal `(ij|ij)`, where the envelope is
+///   identically 1, so they are unaffected by any change to it; and
+/// * LinK's inner test is `estimate * max_d < thresh`, which at `thresh = 0`
+///   is `x < 0.0` — false for every non-negative `x`. Nothing is skipped no
+///   matter how small the estimate gets.
+///
+/// So this test anchors the trivial limit (nothing is lost when screening is
+/// off) and nothing more. Envelope VALIDITY is a separate question, covered by
+/// `link_k_qqr_matches_schwarz_at_production_thresh` below, which runs at a
+/// live threshold where the inner test actually fires.
+#[test]
+fn link_k_qqr_matches_dense_in_the_trivial_limit() {
+    let mol = load_mol("alkane_8");
+    let bs = basis::bundled("cc-pvdz").expect("basis");
+    let prep = PreparedBasis::new(&mol, &bs).expect("PreparedBasis");
+    let nsh = prep.nshells();
+    let full_triangle = nsh * (nsh + 1) / 2;
+    let d = converged_density(&mol, &bs, &prep);
+
+    let k_dense = dense_k(&prep, &d, 0.0);
+    let k_link = link_k(BoundKind::Qqr, &mol, &bs, &prep, &d, 0.0);
+    let err = max_abs_diff(&k_link, &k_dense);
+
+    let bound = make_bound(BoundKind::Qqr, &mol, &bs, &prep, Operator::coulomb());
+    let retained = SignificantPairs::build(bound.as_dyn(), nsh, 0.0).total_pairs() / 2;
+
+    eprintln!(
+        "alkane_8/cc-pVDZ QQR trivial limit (thresh=0): max|K_link - K_dense| = {err:.4e}, \
+         significant pairs {retained} / {full_triangle}"
+    );
+
+    assert!(
+        err < 1e-10,
+        "alkane_8 [QQR]: LinK at thresh=0 differs from the dense K by {err:.4e}. At threshold 0 \
+         the screen must do NOTHING, and QQR's decay factor is a positive multiplier of a \
+         positive Schwarz entry, so no quartet may drop out. Compare against \
+         link_k_matches_dense_in_the_trivial_limit: if THAT still passes, the fault is in the \
+         QQR envelope (crates/ferric-scf/src/qqr.rs), not the Schwarz table."
+    );
+
+    // QQR must not shrink the pair list relative to Schwarz — it CANNOT, since
+    // both pair-list builders screen on the diagonal quartet (ij|ij) where the
+    // envelope is identically 1 (pinned by tests/qqr_diagonal_noop.rs). Asserted
+    // here so the equality is checked end-to-end through the real builder too.
+    assert!(
+        retained >= 5202,
+        "alkane_8 [QQR]: only {retained} of {full_triangle} shell pairs survive at thresh=0, \
+         below the 5202 the Schwarz arm retains. QQR is identical to Schwarz on the diagonal \
+         quartets the pair list screens on, so these counts must match exactly."
+    );
+}
+
+/// ENVELOPE VALIDITY: at a LIVE threshold, swapping Schwarz for QQR must not
+/// change K by more than the threshold's own truncation error.
+///
+/// This is the test with teeth. Unlike the trivial-limit anchor above, it runs
+/// where LinK's inner `estimate * max_d < thresh` test actually fires, so the
+/// QQR envelope is genuinely load-bearing: every quartet QQR discards and
+/// Schwarz keeps shows up as a difference in K.
+///
+/// QQR is a strictly tighter bound (Schwarz times a factor <= 1), so it can
+/// only ever discard MORE. Those discards are legitimate only if the envelope
+/// is a valid bound — an over-aggressive one throws away quartets that carry
+/// real weight, and this is where that shows up.
+///
+/// # Mutation testing — including one mutant this does NOT catch
+///
+/// Measured baseline: max|dK| = 3.0345e-9. That is the real cost of the extra
+/// 0.009% of quartets QQR screens on this system — small, but NOT zero.
+///
+/// ```text
+///   mutant                                    trivial limit   this test
+///   far tail zeroed (decay < 1e-3 => 0.0)     pass            PASS  3.0345e-9 (unchanged)
+///   envelope 100x too aggressive              pass            FAIL  5.3525e-7
+/// ```
+///
+/// The second mutant is caught with a 176x margin. The FIRST IS NOT, and that
+/// is recorded rather than hidden: on alkane_8 the `decay < 1e-3` regime is
+/// never reached by a quartet carrying measurable weight, so zeroing it changes
+/// the answer by nothing at all. This test therefore catches envelopes that are
+/// too aggressive in the ENGAGED intermediate zone, and is blind to the deep
+/// tail on this system. A system long enough to populate that tail would be
+/// needed to close the gap; alkane_8 does not.
+///
+/// The bar is 1e-7 — above the 3.0345e-9 baseline by ~33x (so ordinary
+/// floating-point and threshold-boundary jitter cannot trip it) and below the
+/// 5.3525e-7 mutant, so it discriminates rather than being fitted to whatever
+/// the code currently emits.
+#[test]
+fn link_k_qqr_matches_schwarz_at_production_thresh() {
+    let mol = load_mol("alkane_8");
+    let bs = basis::bundled("cc-pvdz").expect("basis");
+    let prep = PreparedBasis::new(&mol, &bs).expect("PreparedBasis");
+    let d = converged_density(&mol, &bs, &prep);
+
+    // A LIVE threshold: loose enough that the inner screen fires on a
+    // substantial quartet population, which is what makes the envelope
+    // load-bearing here and inert in the thresh=0 anchor.
+    let thresh = 1e-8;
+    let k_schwarz = link_k(BoundKind::Schwarz, &mol, &bs, &prep, &d, thresh);
+    let k_qqr = link_k(BoundKind::Qqr, &mol, &bs, &prep, &d, thresh);
+    let err = max_abs_diff(&k_schwarz, &k_qqr);
+
+    eprintln!(
+        "alkane_8/cc-pVDZ QQR vs Schwarz at thresh={thresh:.0e}: max|K_QQR - K_Schwarz| = {err:.4e}"
+    );
+
+    assert!(
+        err < 1e-7,
+        "alkane_8: LinK+QQR differs from LinK+Schwarz by max|dK| = {err:.4e} at thresh={thresh:.0e}. \
+         QQR screens strictly more than Schwarz, so any difference is truncation — and it must stay \
+         far below the threshold's own error. A failure here means the QQR envelope \
+         (crates/ferric-scf/src/qqr.rs) is discarding quartets that carry real weight, i.e. it is \
+         not a valid bound. Measured 3.0345e-9 when written; a 100x-too-aggressive envelope gave \
+         5.3525e-7."
     );
 }
 
