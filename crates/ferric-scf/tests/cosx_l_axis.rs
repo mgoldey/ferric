@@ -179,7 +179,7 @@ fn load_density(path: &str, nbf: usize, nocc: usize) -> (Array2<f64>, Array2<f64
     let n_d = nbf * nbf;
     let n_c = nbf * nocc;
     assert_eq!(bytes.len(), (n_d + n_c) * 8, "density file length does not match nbf={nbf}, nocc={nocc}");
-    let vals: Vec<f64> = bytes.chunks_exact(8).map(|c| f64::from_le_bytes(c.try_into().unwrap())).collect();
+    let vals: Vec<f64> = bytes.as_chunks::<8>().0.iter().map(|c| f64::from_le_bytes(*c)).collect();
     let d = Array2::from_shape_vec((nbf, nbf), vals[..n_d].to_vec()).expect("D shape");
     let c = Array2::from_shape_vec((nbf, nocc), vals[n_d..].to_vec()).expect("C_occ shape");
     (d, c)
