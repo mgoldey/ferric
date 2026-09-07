@@ -417,7 +417,7 @@ pub fn cart_components(l: usize) -> Vec<[u8; 3]> {
 /// `N(a, l) = (2a/π)^{3/4} (4a)^{l/2} / √((2l-1)!!)` — the primitive
 /// normalization that makes the `(l,0,0)` Cartesian component unit-normalized
 /// (identical to `ao_grid::radial`'s factor and to libint2's).
-fn prim_norm(a: f64, l: usize) -> f64 {
+pub(crate) fn prim_norm(a: f64, l: usize) -> f64 {
     const DFACT: [f64; MAX_L + 1] = [1.0, 1.0, 3.0, 15.0, 105.0];
     (2.0 * a / std::f64::consts::PI).powf(0.75) * (4.0 * a).powi(l as i32).sqrt() / DFACT[l].sqrt()
 }
@@ -930,7 +930,7 @@ impl Md3c1e {
         }
         match bounds {
             None => true,
-            Some(b) => pts.iter().any(|r| b.estimate(s1, s2, r) >= screen.threshold),
+            Some(b) => b.any_exceeds(s1, s2, pts, screen.threshold),
         }
     }
 
