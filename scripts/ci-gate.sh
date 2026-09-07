@@ -36,6 +36,7 @@
 #   CI_GATE_SKIP_TESTS=1   skip the test step (clippy-only gate).
 #   CI_GATE_SKIP_COMPLEXITY=1  skip the complexity-regression step.
 #   CI_GATE_SKIP_PYTEST=1  skip the (soft) Python-binding pytest step.
+#   CI_GATE_SKIP_DOCS=1    skip the rustdoc step.
 #   CI_GATE_FAST=1         defer the 4 slowest integration test binaries
 #                          (~160s of ~407s). Set by the pre-push hook so a
 #                          push is not blocked on the full suite; running
@@ -357,6 +358,30 @@ if [[ "${CI_GATE_SKIP_COMPLEXITY:-0}" != "1" ]]; then
     fi
 else
     echo "-- complexity regression: SKIPPED (CI_GATE_SKIP_COMPLEXITY=1) --"
+fi
+echo
+
+# ---- 3b. rustdoc (was a CI-ONLY gate until 2026-09-07) -------------------
+# CI runs `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+# --exclude ferric-python` and this gate did NOT, so doc-link breakage was
+# invisible locally and only surfaced after a push. That cost two red-main
+# incidents in one day: PR #30 (three unresolved module-doc links plus a
+# public->private link in drpa_amplitude.rs) and PR #36 (a public doc
+# linking the private quartet_scatter::build_d_max_shell_spin_sum). Both
+# were one-line fixes a local run would have caught before the push.
+#
+# --exclude ferric-python is REQUIRED, not cosmetic: that crate's lib target
+# is ALSO named `ferric`, so documenting it alongside crates/ferric collides
+# on target/doc/ferric/index.html and hard-errors ("output filename
+# collision"). CI excludes it for the same reason -- keep the two commands
+# identical or this step stops predicting CI.
+if [[ "${CI_GATE_SKIP_DOCS:-0}" != "1" ]]; then
+    if ! run_step "rustdoc" \
+        "RUSTDOCFLAGS='-D warnings' OPENBLAS_NUM_THREADS=1 cargo doc --workspace --no-deps --exclude ferric-python -j $JOBS"; then
+        FAILED=1
+    fi
+else
+    echo "-- rustdoc: SKIPPED (CI_GATE_SKIP_DOCS=1) --"
 fi
 echo
 

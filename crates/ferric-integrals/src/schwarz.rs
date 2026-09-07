@@ -213,7 +213,8 @@ const PAR_AUX_SHELL_THRESHOLD: usize = 64;
 /// which lets `eri3_tensor_screened` skip shell triples whose contribution
 /// is below threshold without computing them.
 ///
-/// Built at [`SCHWARZ_TABLE_PRECISION`] and floored at [`SCHWARZ_Q_FLOOR`] for
+/// Built at `SCHWARZ_TABLE_PRECISION` and floored at `SCHWARZ_Q_FLOOR` (both
+/// crate-private, hence code spans rather than doc links) for
 /// the same reason as the orbital-pair table above: this is a screening bound,
 /// so it must never underestimate. (Note `compute_eri2` returns an EMPTY slice
 /// rather than an `Option` when libint2 prescreens a block away, so that case
