@@ -201,7 +201,7 @@ static BOYS_TABLE: OnceLock<BoysTable> = OnceLock::new();
 fn boys_table() -> &'static BoysTable {
     BOYS_TABLE.get_or_init(|| {
         let mut vals = vec![0.0_f64; BOYS_NODES * BOYS_STRIDE];
-        for (k, row) in vals.chunks_exact_mut(BOYS_STRIDE).enumerate() {
+        for (k, row) in vals.as_chunks_mut::<BOYS_STRIDE>().0.iter_mut().enumerate() {
             boys_direct(BOYS_NMAX_TAB, k as f64 * BOYS_H, row);
         }
         BoysTable { vals }
