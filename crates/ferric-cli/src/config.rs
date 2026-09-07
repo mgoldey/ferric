@@ -884,6 +884,15 @@ pub struct ScfCfg {
     /// exact vs md3c1e to ~1e-15). Unknown values and setting this with
     /// `k_builder != "cosx"` are hard errors.
     pub cosx_backend: Option<String>,
+    /// COSX density-driven shell-pair screen threshold (md3c1e backend): a
+    /// shell pair is evaluated for a grid sub-batch iff
+    /// `bound(A^g) * max|F| >= cosx_screen_thresh`. Omitted =
+    /// `ferric_scf::cosx_k::COSX_DEFAULT_SCREEN_THRESH` (1e-7: the loosest
+    /// value whose K error stays < 1e-6 on water/cc-pVDZ and butane/def2-SVP,
+    /// i.e. >= 100x below the (50,110) grid error). `0.0` disables the screen
+    /// (bit-identical to unscreened). Negative values, and setting this with
+    /// `k_builder != "cosx"` or `cosx_backend = "cosx-a"`, are hard errors.
+    pub cosx_screen_thresh: Option<f64>,
     pub df_j_aux: Option<String>,
     pub df_k_aux: Option<String>,
     /// Optional virtual-virtual block level shift (Ha) for open-shell SCF
@@ -935,6 +944,7 @@ impl Default for ScfCfg {
             cosx_grid: None,
             cosx_overlap_fit: None,
             cosx_backend: None,
+            cosx_screen_thresh: None,
             df_j_aux: None,
             df_k_aux: None,
             level_shift: None,
@@ -964,10 +974,13 @@ impl ScfCfg {
     pub fn cosx_config(&self) -> Result<ferric_scf::cosx_k::CosxConfig, String> {
         use ferric_scf::cosx_k::{validate_grid, CosxBackend, CosxConfig};
         let is_cosx = self.k_builder.as_deref() == Some("cosx");
-        let any_cosx_knob = self.cosx_grid.is_some() || self.cosx_overlap_fit.is_some() || self.cosx_backend.is_some();
+        let any_cosx_knob = self.cosx_grid.is_some()
+            || self.cosx_overlap_fit.is_some()
+            || self.cosx_backend.is_some()
+            || self.cosx_screen_thresh.is_some();
         if !is_cosx && any_cosx_knob {
             return Err(format!(
-                "[scf] cosx_grid / cosx_overlap_fit / cosx_backend are set but k_builder = {:?}; they are only read with k_builder = \"cosx\"",
+                "[scf] cosx_grid / cosx_overlap_fit / cosx_backend / cosx_screen_thresh are set but k_builder = {:?}; they are only read with k_builder = \"cosx\"",
                 self.k_builder
             ));
         }
@@ -982,6 +995,18 @@ impl ScfCfg {
         }
         if let Some(b) = self.cosx_backend.as_deref() {
             cfg.backend = CosxBackend::parse_config_str(b).map_err(|e| format!("[scf] cosx_backend: {e}"))?;
+        }
+        match self.cosx_screen_thresh {
+            Some(t) if !(t >= 0.0) || !t.is_finite() => {
+                return Err(format!("[scf] cosx_screen_thresh = {t}: must be a finite value >= 0 (0 disables the screen)"));
+            }
+            Some(t) if t > 0.0 && cfg.backend == CosxBackend::CosxA => {
+                return Err("[scf] cosx_screen_thresh > 0 is implemented for cosx_backend = \"md3c1e\" only; the cosx-a backend runs unscreened".into());
+            }
+            Some(t) => cfg.screen_thresh = Some(t),
+            // The cross-check backend has no batched screen: unscreened, never a refusal from the default.
+            None if cfg.backend == CosxBackend::CosxA => cfg.screen_thresh = None,
+            None => {}
         }
         Ok(cfg)
     }
@@ -1186,11 +1211,26 @@ mod tests {
             ))
             .unwrap()
         };
-        // Defaults: (50,110), fit on, no screen.
+        // Defaults: (50,110), fit on, density-driven screen at the library default.
         let c = parse("k_builder = \"cosx\"\n").scf.cosx_config().unwrap();
         assert_eq!((c.grid.n_radial, c.grid.n_angular), (50, 110));
         assert!(c.overlap_fit);
+        assert_eq!(c.screen_thresh, Some(ferric_scf::cosx_k::COSX_DEFAULT_SCREEN_THRESH));
+        // Screen knob: explicit value honoured, 0 disables, negative/NaN refused,
+        // dead-knob refused, and > 0 refused with the unscreened cosx-a backend
+        // (which resolves to None by itself, never a refusal from the default).
+        let c = parse("k_builder = \"cosx\"\ncosx_screen_thresh = 1e-9\n").scf.cosx_config().unwrap();
+        assert_eq!(c.screen_thresh, Some(1e-9));
+        let c = parse("k_builder = \"cosx\"\ncosx_screen_thresh = 0.0\n").scf.cosx_config().unwrap();
+        assert_eq!(c.screen_thresh, Some(0.0));
+        assert!(parse("k_builder = \"cosx\"\ncosx_screen_thresh = -1e-7\n").scf.cosx_config().is_err());
+        assert!(parse("k_builder = \"cosx\"\ncosx_screen_thresh = nan\n").scf.cosx_config().is_err());
+        assert!(parse("k_builder = \"link\"\ncosx_screen_thresh = 1e-7\n").scf.cosx_config().is_err());
+        assert!(parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\ncosx_screen_thresh = 1e-7\n").scf.cosx_config().is_err());
+        let c = parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\n").scf.cosx_config().unwrap();
         assert!(c.screen_thresh.is_none());
+        let c = parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\ncosx_screen_thresh = 0.0\n").scf.cosx_config().unwrap();
+        assert_eq!(c.screen_thresh, Some(0.0));
         // Explicit knobs are honoured.
         let c = parse("k_builder = \"cosx\"\ncosx_grid = { radial = 75, angular = 302 }\ncosx_overlap_fit = false\n")
             .scf
