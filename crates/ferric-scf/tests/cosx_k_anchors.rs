@@ -205,66 +205,126 @@ fn cosx_screen_zero_threshold_matches_unscreened() {
     let ctx = ParallelContext::default();
     let g = grid(25, 50);
     let k_un = build_k(&s, &ctx, cosx_config(g.clone(), true, None), &s.d);
-    let k_z = build_k(&s, &ctx, cosx_config(g.clone(), true, Some(0.0)), &s.d);
+    let n = s.prep.nbasis();
+    let mut kb = CosxK::new(&ctx, &s.mol, &s.prep, cosx_config(g, true, Some(0.0)), usize::MAX).expect("t=0");
+    let mut k_z = Array2::zeros((n, n));
+    kb.build(&s.d, &mut k_z).expect("t=0 build");
     let dev = max_abs_diff(&k_un, &k_z);
     assert!(dev <= 1e-14, "screen at threshold 0 differs from unscreened by {dev:.3e}");
-    // A positive threshold is refused (see `CosxConfig::screen_thresh` and the
-    // tripwire below) — never a silently wrong K.
-    let err = CosxK::new(&ctx, &s.mol, &s.prep, cosx_config(g, false, Some(1e-7)), usize::MAX);
-    assert!(err.is_err(), "screen_thresh > 0 must be refused while the cosx_a screen is unsound");
+    // The counters must say the same thing (a silent floor on `t` that drops
+    // nothing on water — e.g. 1e-9 — is invisible to `dev`; one at 1e-7 is not,
+    // and the counters catch any dropped pair at all).
+    let t = *kb.last_timings();
+    assert_eq!(t.pairs_kept, t.pairs_total, "t = 0 dropped {} pairs", t.pairs_total - t.pairs_kept);
+    assert_eq!(t.pairs_kept_geom, t.pairs_total, "t = 0: geometry-only counter is not the total");
+    // Sharp detector for a silent floor on `t`: with D scaled by 1e-8, F is
+    // ~1e-8 and ANY positive threshold drops most pairs (water at 1e-7 or even
+    // 1e-9 drops nothing at full scale on this grid — measured, mutation M1).
+    // At true t = 0 the keep rule is `est * fmax >= 0`, always true.
+    let d_small = &s.d * 1e-8;
+    let k_un_small = build_k(&s, &ctx, cosx_config(grid(25, 50), true, None), &d_small);
+    let mut k_z_small = Array2::zeros((n, n));
+    kb.build(&d_small, &mut k_z_small).expect("t=0 build, scaled D");
+    let t = *kb.last_timings();
+    assert_eq!(t.pairs_kept, t.pairs_total, "t = 0 on 1e-8 D dropped {} pairs (a floor on t)", t.pairs_total - t.pairs_kept);
+    assert!(k_un_small == k_z_small, "t = 0 on 1e-8 D is not bitwise the unscreened K");
 }
 
-/// Tripwire pinning the DEFECT that motivates the `screen_thresh > 0` refusal:
-/// the cosx_a screen's magnitude bound is `sqrt(max|S_block|)`, which is
-/// exactly zero for same-centre shell pairs whose overlap vanishes by angular
-/// symmetry (s–p, px–py, …), so those pairs are dropped at ANY positive
-/// threshold although their `A^g` at an off-centre grid point is O(1).
-/// Measured before the guard went in: water/cc-pVDZ, (50,110), t = 1e-7 gave
-/// `max|K_scr - K_unscr| = 0.71` (grid error 4.8e-5).
+/// Positive screen anchor, replacing the `cosx_a_screen_is_unsound_tripwire`
+/// that pinned the OLD signed-overlap bound's defect (15/21 same-centre pairs
+/// dropped with `|A^g|` up to 0.233; `max|K_scr - K_unscr| = 0.71` on
+/// water/cc-pVDZ at t = 1e-7 against a grid error of ~5e-5). The tripwire was
+/// designed to FAIL once the bound was replaced; it did (2026-09-07: "0 of 21
+/// same-centre shell pairs are DROPPED"), and this is what took its place.
 ///
-/// This test FAILS when the screen is fixed (no zero-estimate same-centre
-/// pairs remain) — that is the signal to lift the refusal in `CosxK::new`.
+/// The screened K at the production threshold must sit far below the grid
+/// error of the unscreened K: `max|K_scr - K_unscr| < 1e-6` on the (50,110)
+/// operating grid with the fit on (the SCF path). Reachability: the screen
+/// must have dropped SOMETHING (kept < total), or the anchor is vacuous.
 #[test]
-fn cosx_a_screen_is_unsound_tripwire() {
-    use ferric_integrals::cosx_a::{a_matrix_at_point, CosxScreen, PairBounds};
+fn cosx_screened_k_matches_unscreened_below_grid_error() {
     let s = setup();
-    let bounds = PairBounds::build(&s.prep).expect("pair bounds");
-    let nsh = s.prep.nshells();
-    let dims = s.prep.shell_dims();
-    let offs = s.prep.shell_offsets();
-    let centres = s.prep.shell_centers();
-    // An off-centre probe (Bohr), ~0.7 Bohr from O: same-centre s-p pairs have
-    // an O(0.1..1) potential integral here while their overlap is ~0.
-    let probe = [0.37, -0.21, 0.55];
-    let a_full = a_matrix_at_point(&s.prep, &probe, None, CosxScreen::none()).expect("A").a;
-    let thresh = 1e-7; // the Stage 2 "production" screen
-    let mut unsound = 0usize;
-    let mut same_centre = 0usize;
-    let mut worst = 0.0_f64;
-    for s1 in 0..nsh {
-        for s2 in 0..s1 {
-            if centres[s1] != centres[s2] {
-                continue;
-            }
-            same_centre += 1;
-            let est = bounds.estimate(s1, s2, &probe);
-            let blk = a_full.slice(ndarray::s![offs[s1]..offs[s1] + dims[s1], offs[s2]..offs[s2] + dims[s2]]);
-            let a_max = blk.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-            if est < thresh && a_max > 1e-3 {
-                unsound += 1;
-                worst = worst.max(a_max);
-            }
-        }
-    }
+    let r = screened_vs_unscreened(&s, "water/cc-pVDZ");
+    assert!(r.kept < r.total, "screen dropped nothing — the anchor would pass vacuously");
+    assert!(r.dev < 1e-6, "screened K differs from unscreened by {:.3e} (grid error {:.3e})", r.dev, r.grid_err);
+    assert!(r.dev < 0.1 * r.grid_err, "screen error {:.3e} is not well below the grid error {:.3e}", r.dev, r.grid_err);
+}
+
+struct ScreenResult {
+    dev: f64,
+    grid_err: f64,
+    kept: usize,
+    kept_geom: usize,
+    total: usize,
+}
+
+/// Unscreened vs screened-at-default K on the (50,110)+fit operating grid.
+fn screened_vs_unscreened(s: &Setup, label: &str) -> ScreenResult {
+    let ctx = ParallelContext::default();
+    let n = s.prep.nbasis();
+    let g = grid(50, 110);
+    let thresh = CosxConfig::default().screen_thresh.expect("density-driven screen is on by default");
+    let k_un = build_k(s, &ctx, cosx_config(g.clone(), true, None), &s.d);
+    let mut kb = CosxK::new(&ctx, &s.mol, &s.prep, cosx_config(g, true, Some(thresh)), usize::MAX).expect("screened");
+    let mut k_sc = Array2::zeros((n, n));
+    kb.build(&s.d, &mut k_sc).expect("screened build");
+    let t = *kb.last_timings();
+    let dev = max_abs_diff(&k_un, &k_sc);
+    let grid_err = max_abs_diff(&k_un, &s.k_direct);
     println!(
-        "cosx_a screen tripwire: {unsound} of {same_centre} same-centre shell pairs are DROPPED at t={thresh:e} \
-         while their |A^g| block is > 1e-3 (largest dropped |A^g| = {worst:.3e})"
+        "screen anchor {label} (50,110)+fit t={thresh:e}: max|K_scr - K_unscr| = {dev:.3e} (grid error {grid_err:.3e}); \
+         pairs kept {}/{} ({:.4}), geometry-only would keep {:.4}",
+        t.pairs_kept,
+        t.pairs_total,
+        t.pairs_kept as f64 / t.pairs_total as f64,
+        t.pairs_kept_geom as f64 / t.pairs_total as f64
     );
-    assert!(
-        unsound > 0,
-        "the cosx_a screen no longer drops O(1) same-centre pairs — lift the screen_thresh > 0 refusal in \
-         CosxK::new and re-measure max|K_scr - K_unscr| before allowing a default"
-    );
+    ScreenResult { dev, grid_err, kept: t.pairs_kept, kept_geom: t.pairs_kept_geom, total: t.pairs_total }
+}
+
+/// Converged RHF on butane (testdata alkane_4) / def2-SVP + its direct K.
+fn setup_butane() -> Setup {
+    let path = format!("{}/../../testdata/molecules/alkane_4.xyz", env!("CARGO_MANIFEST_DIR"));
+    let mol = Molecule::load_xyz(&path).expect("alkane_4.xyz");
+    let bs = bundled("def2-svp").expect("def2-svp");
+    let prep = PreparedBasis::new(&mol, &bs).expect("prep");
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
+    let ctx = ParallelContext::default();
+    let cfg = RhfConfig { energy_conv: 1e-10, density_conv: 1e-8, integral_thresh: 1e-14, ..Default::default() };
+    let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).expect("rhf");
+    assert!(res.converged, "reference RHF did not converge");
+    let nocc = (mol.nelec() / 2) as usize;
+    let c_occ = res.mos_r().slice(ndarray::s![.., ..nocc]).to_owned();
+    let d = res.density_total.clone();
+    let n = prep.nbasis();
+    let mut j = Array2::zeros((n, n));
+    let mut k_direct = Array2::zeros((n, n));
+    build_jk(&ctx, &prep, &bounds, 1e-14, &d, &mut j, &mut k_direct).expect("direct jk");
+    Setup { mol, prep, d, c_occ, k_direct }
+}
+
+/// Anchor (b) on a molecule where the screen bites: butane/def2-SVP at the
+/// default threshold. Measured 2026-09-07 (threshold sweep): max|dK| 7.6e-7
+/// against a grid error of 2.9e-4; density-driven keeps 0.79 of the
+/// (pair, batch) work where a geometry-only bound keeps 0.95 — the `fmax`
+/// factor is what does the dropping. Reachability bars are set with margin
+/// on those numbers (kept < 0.85; geometry-only > 0.90).
+///
+/// Mutation proof (applied by hand to `BatchScreen::keep`, recorded in the
+/// commit message): using `fmax[s2]` alone instead of `max(fmax[s1], fmax[s2])`
+/// drops blocks whose MIRROR contribution `G_{s2} += A F_{s1}` is significant.
+#[test]
+fn cosx_density_driven_screen_butane_def2svp() {
+    let s = setup_butane();
+    let r = screened_vs_unscreened(&s, "butane/def2-SVP");
+    let kept = r.kept as f64 / r.total as f64;
+    let geom = r.kept_geom as f64 / r.total as f64;
+    assert!(r.dev < 1e-6, "screened K differs from unscreened by {:.3e} (grid error {:.3e})", r.dev, r.grid_err);
+    assert!(r.dev < 0.1 * r.grid_err, "screen error {:.3e} is not well below the grid error {:.3e}", r.dev, r.grid_err);
+    assert!(kept < 0.85, "density-driven screen kept {kept:.4} of the work — expected < 0.85 (measured 0.79)");
+    assert!(geom > 0.90, "geometry-only bound kept only {geom:.4} — expected > 0.90 (measured 0.95); the bound changed");
+    assert!(r.kept < r.kept_geom, "density-driven screen must drop strictly more than the geometry-only bound");
 }
 
 /// Anchor (c): `build_from_occ(C)` and `build(C C^T)` are the same K.

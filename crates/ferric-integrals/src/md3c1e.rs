@@ -947,9 +947,31 @@ impl Md3c1e {
         bounds: Option<&PairBounds>,
         screen: CosxScreen,
         scr: &mut Md3c1eScratch,
+        f: F,
+    ) -> Result<(usize, usize), FerricError>
+    where
+        F: FnMut(usize, usize, &[f64]),
+    {
+        self.for_each_pair_where(pts, |s1, s2| Self::keep_pair(s1, s2, pts, bounds, screen), scr, f)
+    }
+
+    /// [`Md3c1e::for_each_pair`] with a caller-supplied keep rule: pair
+    /// `(s1, s2)` (always `s1 >= s2`) is evaluated iff `keep(s1, s2)`. This is
+    /// the entry point for a DENSITY-DRIVEN screen, where the keep decision
+    /// needs the caller's half-transformed density for the batch and not just
+    /// geometry. The sweep order (and hence the accumulation order of any
+    /// caller-side fold) is the fixed `s1` outer / `s2` inner order regardless
+    /// of `keep`, so a keep rule that is always true reproduces the unscreened
+    /// sweep bit-for-bit. Returns `(pairs_kept, pairs_total)`.
+    pub fn for_each_pair_where<K, F>(
+        &self,
+        pts: &[[f64; 3]],
+        mut keep: K,
+        scr: &mut Md3c1eScratch,
         mut f: F,
     ) -> Result<(usize, usize), FerricError>
     where
+        K: FnMut(usize, usize) -> bool,
         F: FnMut(usize, usize, &[f64]),
     {
         let nsh = self.shells.len();
@@ -960,7 +982,7 @@ impl Md3c1e {
             for s1 in 0..nsh {
                 for s2 in 0..=s1 {
                     total += 1;
-                    if !Self::keep_pair(s1, s2, pts, bounds, screen) {
+                    if !keep(s1, s2) {
                         continue;
                     }
                     kept += 1;

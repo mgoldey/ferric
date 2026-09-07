@@ -154,21 +154,38 @@ pub struct CosxConfig {
     /// reaction-energy improvement at (50,110) (water-favourable in that
     /// audit); disable to get the plain symmetrized Ktilde.
     pub overlap_fit: bool,
-    /// Shell-pair screen threshold for the per-point A-build
-    /// (`ferric_integrals::cosx_a::CosxScreen`). `None` = unscreened (no pair
-    /// bounds built at all). `Some(t)` builds `PairBounds` and screens at `t`;
-    /// `Some(0.0)` is the screen's trivial limit and reproduces `None`
-    /// bit-for-bit (anchored). Default `None`.
+    /// DENSITY-DRIVEN shell-pair screen threshold for the A-build (md3c1e
+    /// backend). Per sub-batch of `COSX_SUB_BATCH_POINTS` points, with
+    /// `F = D X` already in hand, pair `(s1, s2)` is evaluated iff
     ///
-    /// **`t > 0` is REFUSED at construction (2026-09-07).** The cosx_a screen
-    /// bounds a pair by `sqrt(max|S_block|)/d`, which is exactly zero for
-    /// same-centre pairs whose overlap vanishes by angular symmetry (s–p,
-    /// px–py, …) while their `A^g` at an off-centre grid point is O(1); the
-    /// screen therefore drops real contributions at ANY positive threshold.
-    /// Measured: water/cc-pVDZ, (50,110), `t = 1e-7`: `max|K_scr - K_unscr|
-    /// = 0.71` against a grid error of 4.8e-5. The guard is pinned by
-    /// `cosx_a_screen_is_unsound_tripwire` in `tests/cosx_k_anchors.rs`; lift
-    /// it when that tripwire fails (i.e. when the screen is fixed).
+    /// ```text
+    ///     bound_A(s1, s2, batch) * max(fmax[s1], fmax[s2]) >= t,
+    ///     fmax[s] = max_{mu in s, g in batch} |F_{mu,g}|,
+    /// ```
+    ///
+    /// where `bound_A` is the Hölder pair bound of `ferric_integrals::cosx_screen`
+    /// (`PairBounds::coarse_estimate_sphere` over the batch's bounding sphere;
+    /// never underestimates `max|A^g_{mu,nu}|`, anchored there over all
+    /// `(la, lb)` to `(4, 4)`). The `max` over BOTH shells is required because
+    /// the block feeds `G_{s1} += A F_{s2}` AND the mirror `G_{s2} += A F_{s1}`;
+    /// a dropped block therefore perturbs every `G` element by `< t`. This is
+    /// the Neese (2009) S-junction / sn-LinK `eps^K` idea: an integral-only
+    /// screen keeps every significant pair at every point (kept fraction ~1 on
+    /// small molecules, ~N^1 per point on alkanes — the A-build stays O(N^2)),
+    /// while `F` is local to the point and is what makes the kept work O(N).
+    ///
+    /// `None` = unscreened (no pair bounds built at all). `Some(0.0)` is the
+    /// screen's trivial limit and reproduces `None` bit-for-bit (anchored: the
+    /// same blocks in the same order). The cosx_a backend has no batched
+    /// screen; `Some(t > 0)` with `CosxBackend::CosxA` is refused.
+    ///
+    /// History: the first screen (2026-09-06) bounded a pair by
+    /// `sqrt(max|S_block|)/d` from the SIGNED overlap, which is exactly zero
+    /// for same-centre pairs whose overlap vanishes by symmetry (s–p, px–py)
+    /// while their `A^g` is O(1) — water/cc-pVDZ at `t = 1e-7` gave
+    /// `max|K_scr - K_unscr| = 0.71`. `t > 0` was refused until the bound was
+    /// replaced (2026-09-07); `cosx_screened_k_matches_unscreened_below_grid_error`
+    /// in `tests/cosx_k_anchors.rs` now pins the positive result.
     pub screen_thresh: Option<f64>,
     /// Which 3c1e kernel builds the `A^g` blocks. Default `Md3c1e`; `CosxA`
     /// is the slower libint2 path, kept so the two stay cross-checkable
@@ -176,12 +193,25 @@ pub struct CosxConfig {
     pub backend: CosxBackend,
 }
 
+/// Default density-driven screen threshold (`CosxConfig::screen_thresh`).
+/// Measured 2026-09-07 (`tests/cosx_screen_sweep.rs`, (50,110)+fit, one
+/// thread, `max|K_scr - K_unscr|` vs the grid error against the direct K):
+///
+/// ```text
+///   water/cc-pVDZ   grid err 5.6e-5 | t=1e-6: 3.1e-8 | t=1e-7: 1.6e-10 | t=1e-8: 2.9e-12
+///   butane/def2-SVP grid err 2.9e-4 | t=1e-6: 1.3e-5 | t=1e-7: 7.6e-7  | t=1e-8: 7.4e-8
+/// ```
+///
+/// 1e-7 is the loosest value that keeps the screen error below 1e-6 on both
+/// (2.6e-3 of the butane grid error); 1e-6 breaks the bar on butane.
+pub const COSX_DEFAULT_SCREEN_THRESH: f64 = 1e-7;
+
 impl Default for CosxConfig {
     fn default() -> Self {
         Self {
             grid: AtomicGridConfig { n_radial: 50, n_angular: 110, ..Default::default() },
             overlap_fit: true,
-            screen_thresh: None,
+            screen_thresh: Some(COSX_DEFAULT_SCREEN_THRESH),
             backend: CosxBackend::Md3c1e,
         }
     }
@@ -208,6 +238,13 @@ pub struct CosxTimings {
     pub total_s: f64,
     /// Shell pairs evaluated after screening, summed over points.
     pub pairs_kept: usize,
+    /// Shell pairs that pass the GEOMETRY-ONLY part of the screen
+    /// (`bound_A >= t`, i.e. what an integral-magnitude screen would keep),
+    /// summed over points. Equals `pairs_total` when unscreened;
+    /// `pairs_kept <= pairs_kept_geom` always. Diagnostic only — it is what
+    /// lets the density-driven screen be compared against an integral-only
+    /// one without a second mode.
+    pub pairs_kept_geom: usize,
     /// Shell pairs considered, summed over points.
     pub pairs_total: usize,
 }
@@ -316,15 +353,15 @@ impl<'a> CosxK<'a> {
             CosxBackend::CosxA => None,
         };
 
+        if cfg.backend == CosxBackend::CosxA && matches!(cfg.screen_thresh, Some(t) if t > 0.0) {
+            return Err(FerricError::General(
+                "CosxK: screen_thresh > 0 is implemented for the md3c1e backend only (density-driven, per \
+                 sub-batch); the cosx-a cross-check backend runs unscreened. Use backend Md3c1e, or set \
+                 screen_thresh to None / Some(0.0) with CosxA (the CLI does this for cosx_backend = \"cosx-a\")"
+                    .into(),
+            ));
+        }
         let bounds = match cfg.screen_thresh {
-            Some(t) if t > 0.0 => {
-                return Err(FerricError::General(format!(
-                    "CosxK: screen_thresh = {t:e} refused — the cosx_a shell-pair screen is unsound at any \
-                     positive threshold (its overlap-magnitude bound is exactly zero for same-centre pairs \
-                     whose overlap vanishes by symmetry, e.g. s-p, while A^g for them is O(1); measured \
-                     max|dK| = 0.71 on water/cc-pVDZ at 1e-7). Use None (unscreened) or Some(0.0)."
-                )));
-            }
             Some(_) => Some(PairBounds::build(prep)?),
             None => None,
         };
@@ -386,7 +423,7 @@ impl<'a> CosxK<'a> {
     }
 
     /// Screen arguments for the A-build (`None` bounds + vacuous screen unless
-    /// `screen_thresh` is set — and `Some(t > 0)` never gets past `new`).
+    /// `screen_thresh` is set).
     fn screen_args(&self) -> (Option<&PairBounds>, CosxScreen) {
         match self.cfg.screen_thresh {
             None => (None, CosxScreen::none()),
@@ -446,10 +483,12 @@ impl<'a> CosxK<'a> {
     }
 
     /// md3c1e backend: parallel over fixed sub-batches of
-    /// `COSX_SUB_BATCH_POINTS` points; each sub-batch sweeps the shell pairs
-    /// once and accumulates its own columns of `G` (see `accumulate_pair`).
-    /// `pairs_kept/total` are scaled by the sub-batch size so they stay
-    /// "summed over points" like the cosx_a path.
+    /// `COSX_SUB_BATCH_POINTS` points; each sub-batch builds its density-driven
+    /// pair screen (`BatchScreen`, from its own columns of `F`), sweeps the
+    /// surviving shell pairs once and accumulates its own columns of `G` (see
+    /// `accumulate_pair`). `pairs_*` are scaled by the sub-batch size so they
+    /// stay "summed over points" like the cosx_a path. The screen setup time
+    /// is counted as A-build time.
     fn contract_block_md3c1e(
         &self,
         kern: &Md3c1e,
@@ -459,7 +498,6 @@ impl<'a> CosxK<'a> {
         acc: &BlockCounters,
     ) -> Result<Array2<f64>, FerricError> {
         let nbf = self.prep.nbasis();
-        let (bounds, screen) = self.screen_args();
         let f_std = f.as_standard_layout();
         let ys: Vec<Vec<f64>> = pts
             .par_chunks(COSX_SUB_BATCH_POINTS)
@@ -471,17 +509,25 @@ impl<'a> CosxK<'a> {
                 let mut y = vec![0.0_f64; nbf * n];
                 let mut c_ns = 0u64;
                 let t0 = Instant::now();
+                let mut screen = self.batch_screen(kern, sub, &fsub, n);
                 let (kept, total) = scratch.with(|scr| {
-                    kern.for_each_pair(sub, bounds, screen, scr, |s1, s2, blk| {
-                        let t = Instant::now();
-                        accumulate_pair(kern, s1, s2, n, blk, &fsub, &mut y);
-                        c_ns += t.elapsed().as_nanos() as u64;
-                    })
+                    kern.for_each_pair_where(
+                        sub,
+                        |s1, s2| screen.as_mut().is_none_or(|sc| sc.keep(s1, s2)),
+                        scr,
+                        |s1, s2, blk| {
+                            let t = Instant::now();
+                            accumulate_pair(kern, s1, s2, n, blk, &fsub, &mut y);
+                            c_ns += t.elapsed().as_nanos() as u64;
+                        },
+                    )
                 })?;
+                let geom = screen.as_ref().map_or(total, |sc| sc.geom_kept);
                 let all_ns = t0.elapsed().as_nanos() as u64;
                 acc.a_ns.fetch_add(all_ns.saturating_sub(c_ns), Ordering::Relaxed);
                 acc.c_ns.fetch_add(c_ns, Ordering::Relaxed);
                 acc.kept.fetch_add(kept * n, Ordering::Relaxed);
+                acc.kept_geom.fetch_add(geom * n, Ordering::Relaxed);
                 acc.total.fetch_add(total * n, Ordering::Relaxed);
                 Ok(y)
             })
@@ -498,6 +544,16 @@ impl<'a> CosxK<'a> {
             }
         }
         Ok(g)
+    }
+
+    /// The density-driven screen for one sub-batch (`None` when
+    /// `screen_thresh` is `None`): the batch's bounding sphere plus
+    /// `fmax[s] = max |F_{mu in s, g in batch}|`. See `CosxConfig::screen_thresh`.
+    fn batch_screen<'b>(&'b self, kern: &Md3c1e, pts: &[[f64; 3]], f: &[f64], n: usize) -> Option<BatchScreen<'b>> {
+        let thresh = self.cfg.screen_thresh?;
+        let bounds = self.bounds.as_ref()?;
+        let (centre, radius) = bounding_sphere(pts);
+        Some(BatchScreen { bounds, thresh, fmax: shell_fmax(kern, f, n), centre, radius, geom_kept: 0 })
     }
 
     /// Shared driver for `build` / `build_from_occ`: `half` maps `X_blk` to
@@ -556,6 +612,7 @@ impl<'a> CosxK<'a> {
         t.a_build_s = acc.a_ns.load(Ordering::Relaxed) as f64 * 1e-9;
         t.contract_s = acc.c_ns.load(Ordering::Relaxed) as f64 * 1e-9;
         t.pairs_kept = acc.kept.load(Ordering::Relaxed);
+        t.pairs_kept_geom = acc.kept_geom.load(Ordering::Relaxed);
         t.pairs_total = acc.total.load(Ordering::Relaxed);
         t.total_s = t_start.elapsed().as_secs_f64();
         self.last = t;
@@ -625,7 +682,66 @@ struct BlockCounters {
     a_ns: AtomicU64,
     c_ns: AtomicU64,
     kept: AtomicUsize,
+    kept_geom: AtomicUsize,
     total: AtomicUsize,
+}
+
+/// Density-driven pair screen for ONE sub-batch (see `CosxConfig::screen_thresh`).
+struct BatchScreen<'b> {
+    bounds: &'b PairBounds,
+    thresh: f64,
+    /// `fmax[s] = max_{mu in s, g in batch} |F_{mu,g}|`.
+    fmax: Vec<f64>,
+    centre: [f64; 3],
+    radius: f64,
+    /// Pairs whose geometry-only bound alone reached `thresh` (diagnostic).
+    geom_kept: usize,
+}
+
+impl BatchScreen<'_> {
+    /// Keep `(s1, s2)` iff `bound_A(s1, s2, sphere) * max(fmax[s1], fmax[s2]) >= thresh`.
+    /// For `thresh <= 0` this is always true (every factor is `>= 0`), which is
+    /// the trivial limit. The `max` covers both orderings of the mirror fold.
+    #[inline]
+    fn keep(&mut self, s1: usize, s2: usize) -> bool {
+        let est = self.bounds.coarse_estimate_sphere(s1, s2, &self.centre, self.radius);
+        if est >= self.thresh {
+            self.geom_kept += 1;
+        }
+        est * self.fmax[s1].max(self.fmax[s2]) >= self.thresh
+    }
+}
+
+/// Centroid and enclosing radius of a point batch (the batch's bounding
+/// sphere for `PairBounds::coarse_estimate_sphere`). Empty input gives
+/// `([0;3], 0)`, which is never reached (blocks are non-empty).
+fn bounding_sphere(pts: &[[f64; 3]]) -> ([f64; 3], f64) {
+    let n = pts.len().max(1) as f64;
+    let mut c = [0.0_f64; 3];
+    for p in pts {
+        for d in 0..3 {
+            c[d] += p[d];
+        }
+    }
+    for v in &mut c {
+        *v /= n;
+    }
+    let r2 = pts
+        .iter()
+        .map(|p| (0..3).map(|d| (p[d] - c[d]) * (p[d] - c[d])).sum::<f64>())
+        .fold(0.0_f64, f64::max);
+    (c, r2.sqrt())
+}
+
+/// `fmax[s] = max_{mu in shell s, g < n} |f[mu * n + g]|` for `f` in the
+/// `(nbf, n)` row-major sub-batch layout.
+fn shell_fmax(kern: &Md3c1e, f: &[f64], n: usize) -> Vec<f64> {
+    (0..kern.nshells())
+        .map(|s| {
+            let (o, nf) = (kern.shell_offset(s), kern.shell_dim(s));
+            f[o * n..(o + nf) * n].iter().fold(0.0_f64, |m, &v| m.max(v.abs()))
+        })
+        .collect()
 }
 
 /// Fail fast if one block's scratch does not fit the budget. The per-thread
@@ -730,8 +846,49 @@ mod tests {
         let c = CosxConfig::default();
         assert_eq!((c.grid.n_radial, c.grid.n_angular), (50, 110));
         assert!(c.overlap_fit);
-        assert!(c.screen_thresh.is_none());
+        assert_eq!(c.screen_thresh, Some(COSX_DEFAULT_SCREEN_THRESH));
+        assert_eq!(COSX_DEFAULT_SCREEN_THRESH, 1e-7);
         assert_eq!(c.backend, CosxBackend::Md3c1e);
+    }
+
+    #[test]
+    fn batch_screen_keep_covers_both_orderings_and_is_vacuous_at_zero() {
+        // Two-shell toy: bounds from a real (tiny) basis; fmax asymmetric.
+        let mol = ferric_core::mol::Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let bounds = PairBounds::build(&prep).unwrap();
+        let centre = [0.0, 0.0, 0.7];
+        let est = bounds.coarse_estimate_sphere(1, 0, &centre, 0.5);
+        assert!(est > 0.0);
+        let mk = |fmax: Vec<f64>, thresh: f64| BatchScreen { bounds: &bounds, thresh, fmax, centre, radius: 0.5, geom_kept: 0 };
+        // Only shell 1 has a large F: pair (1,0) must still be kept (mirror
+        // G_0 += A F_1), so the keep rule must use max(fmax[1], fmax[0]).
+        let t = 0.5 * est;
+        assert!(mk(vec![0.0, 1.0], t).keep(1, 0));
+        assert!(mk(vec![1.0, 0.0], t).keep(1, 0));
+        assert!(!mk(vec![0.0, 0.0], t).keep(1, 0), "zero F on both shells must drop the pair");
+        assert!(!mk(vec![1e-3, 1e-3], est).keep(1, 0), "est * 1e-3 < est must drop");
+        // Trivial limit: threshold 0 keeps everything, even with F == 0.
+        assert!(mk(vec![0.0, 0.0], 0.0).keep(1, 0));
+        // The geometry-only counter ignores F.
+        let mut sc = mk(vec![0.0, 0.0], t);
+        sc.keep(1, 0);
+        assert_eq!(sc.geom_kept, 1);
+    }
+
+    #[test]
+    fn shell_fmax_and_bounding_sphere_toy() {
+        let mol = ferric_core::mol::Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let bs = ferric_core::basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let kern = Md3c1e::new(&prep).unwrap();
+        // nbf = 2, n = 3: row 0 = [1, -4, 2], row 1 = [0.5, 0, -0.25]
+        let f = vec![1.0, -4.0, 2.0, 0.5, 0.0, -0.25];
+        assert_eq!(shell_fmax(&kern, &f, 3), vec![4.0, 0.5]);
+        let (c, r) = bounding_sphere(&[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, -1.0, 0.0]]);
+        assert_eq!(c, [1.0, 0.0, 0.0]);
+        assert!((r - 1.0).abs() < 1e-15);
     }
 
     #[test]

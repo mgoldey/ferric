@@ -19,8 +19,11 @@
 //!   COSX_FK_DENSITY_IN  load (D, C_occ) saved by an earlier process
 //!   COSX_FK_THREADS     rayon threads for timed segments (default 1)
 //!   COSX_FK_FIT         "0" disables the overlap fit (default on)
-//!   COSX_FK_LINK        "1" also times a warm LinK build and prints max|K_cosx - K_link|
+//!   COSX_FK_LINK        "1" also times LinK builds and prints max|K_cosx - K_link|
+//!   COSX_FK_LINK_BUILDS number of LinK builds (default 2: cold = pool + pairs + build, then warm)
 //!   COSX_FK_BUILDS      number of COSX builds (default 1; the first also factorizes S_num)
+//!   COSX_FK_SCREEN      density-driven screen threshold: a number, or "none" (unscreened);
+//!                       absent = the library default (`COSX_DEFAULT_SCREEN_THRESH`)
 
 use ferric_core::basis::bundled;
 use ferric_core::mol::Molecule;
@@ -163,10 +166,15 @@ fn cosx_full_k_cell() {
     };
 
     // ---------- full COSX K ----------
-    let cfg = CosxConfig { overlap_fit: fit, ..CosxConfig::default() };
+    let screen_thresh = match std::env::var("COSX_FK_SCREEN").ok().as_deref() {
+        None => CosxConfig::default().screen_thresh,
+        Some("none") => None,
+        Some(s) => Some(s.parse::<f64>().expect("COSX_FK_SCREEN: number or 'none'")),
+    };
+    let cfg = CosxConfig { overlap_fit: fit, screen_thresh, ..CosxConfig::default() };
     let mut cosx = CosxK::new(&ctx, &mol, &prep, cfg, budget_bytes).expect("CosxK::new");
     let npts = cosx.npts();
-    println!("COSX grid (50,110): {npts} points; overlap_fit={fit}");
+    println!("COSX grid (50,110): {npts} points; overlap_fit={fit}; screen_thresh={screen_thresh:?}");
     let mut k_cosx = Array2::<f64>::zeros((nbf, nbf));
     // COSX_FK_BUILDS=0: skip the COSX build (LinK-only process); K_cosx then
     // comes from COSX_FK_K_IN if given.
@@ -176,7 +184,7 @@ fn cosx_full_k_cell() {
         let t = *cosx.last_timings();
         let acc = t.ao_eval_s + t.a_build_s + t.contract_s + t.blas_s + t.fit_s;
         println!(
-            "COSX split (s): total {:.3} | ao_eval {:.3} | A-build {:.3} ({:.1}% of total) | per-point GEMV {:.3} | block GEMMs {:.3} | fit {:.3} | accounted {:.3} ({:.1}%) | pairs kept {}/{} | wall {wall:.3} cpu {cpu:.2}",
+            "COSX split (s): total {:.3} | ao_eval {:.3} | A-build {:.3} ({:.1}% of total) | per-point GEMV {:.3} | block GEMMs {:.3} | fit {:.3} | accounted {:.3} ({:.1}%) | pairs kept {}/{} (dd {:.4}, geom-only {:.4}) | wall {wall:.3} cpu {cpu:.2}",
             t.total_s,
             t.ao_eval_s,
             t.a_build_s,
@@ -187,7 +195,9 @@ fn cosx_full_k_cell() {
             acc,
             100.0 * acc / t.total_s,
             t.pairs_kept,
-            t.pairs_total
+            t.pairs_total,
+            t.pairs_kept as f64 / t.pairs_total as f64,
+            t.pairs_kept_geom as f64 / t.pairs_total as f64
         );
         println!(
             "COSX per-point A-build {:.4e} s/pt ({:.3e} s/pt/nbf^2); K/nbf^2 {:.3e} s",
@@ -215,15 +225,21 @@ fn cosx_full_k_cell() {
         let schwarz = SchwarzBounds::compute(op, &prep).expect("Schwarz bounds");
         let mut link = LinkK::new(&ctx, &prep, &schwarz, op, LINK_THRESH, budget_bytes);
         let mut k_link = Array2::<f64>::zeros((nbf, nbf));
-        let (wall, cpu, _) = timed("LinK K build (cold: pool + pairs + build)", threads, || {
-            link.update_density(&d);
-            link.build(&d, &mut k_link).expect("LinK build")
-        });
+        let link_builds: usize = env_num("COSX_FK_LINK_BUILDS", 2);
+        let mut wall = f64::NAN;
+        let mut cpu = f64::NAN;
+        for b in 0..link_builds.max(1) {
+            let label = if b == 0 { "LinK K build (cold: pool + pairs + build)" } else { "LinK K build (warm: update_density + build)" };
+            (wall, cpu, _) = timed(label, threads, || {
+                link.update_density(&d);
+                link.build(&d, &mut k_link).expect("LinK build")
+            });
+        }
         let dev = (&k_cosx - &k_link).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
         let kmax = k_link.mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
         let ratio = if cosx_total_s > 0.0 { format!("{:.3}", cosx_total_s / wall) } else { "n/a (COSX not built in this process)".into() };
         println!(
-            "LinK K: wall {wall:.3} s cpu {cpu:.2} s; COSX/LinK = {ratio}; max|K_cosx - K_link| = {dev:.3e} (||K||max {kmax:.3e})"
+            "LinK K (last build): wall {wall:.3} s cpu {cpu:.2} s; COSX/LinK = {ratio}; max|K_cosx - K_link| = {dev:.3e} (||K||max {kmax:.3e})"
         );
     }
 }
