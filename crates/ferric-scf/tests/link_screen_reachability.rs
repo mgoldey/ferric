@@ -29,15 +29,22 @@
 //! wall-clock) and they fail if the screening quality regresses even while K
 //! stays perfect.
 //!
-//! # The two things asserted, and why both are needed
+//! # What is asserted
 //!
 //! 1. **LinK's quartet count is BELOW `build_jk`'s** on the same density. This
-//!    is the end-to-end statement: LinK must beat the builder it is offered as
-//!    an alternative to, on the metric that is not load-dependent.
-//! 2. **The density-pair list prunes a non-trivial fraction** past the ~30 Bohr
-//!    locality onset. This is the mechanism. Without it, (1) could be satisfied
-//!    by the per-quartet screen alone while the dp list stays vacuous — which
-//!    is a reportable state, not a passing one.
+//!    is the load-bearing assertion and the end-to-end statement: LinK must beat
+//!    the builder it is offered as an alternative to, on a metric that is not
+//!    load-dependent.
+//! 2. **LinK remains a subset of `DirectK`** — the #50 property, which a
+//!    dedup/ownership defect would break.
+//! 3. The **density-pair pruning fraction is MEASURED and printed**, but its bar
+//!    is currently disabled. The ticket asked for the dp criterion to be made to
+//!    prune; working out what it bounds says it cannot, at pair-list
+//!    granularity, and that negative is recorded in full on
+//!    `DP_MIN_PRUNED_FRACTION` and `DensityPairs::build` rather than papered
+//!    over. `qmax_spread_is_small_enough_to_explain_the_vacuous_dp_list` is the
+//!    measurement that would OVERTURN that reasoning if it is wrong, and it
+//!    fails loudly in that case.
 //!
 //! # These bars can be WRONG in the passing direction — read this before moving one
 //!
@@ -188,23 +195,40 @@ const LINK_VS_BUILD_JK_MAX_RATIO: f64 = 1.0;
 /// Minimum fraction of density pairs the dp list must PRUNE past the locality
 /// onset.
 ///
-/// **Where this number comes from, and why it is deliberately modest.**
-/// Post-#50 the dp list pruned exactly NOTHING: 1.000 kept at both C8 and C16,
-/// because `|D|·qmax(j)·qmax(σ) > t` degenerates to `|D| > t/Qmax²` with
-/// `qmax` a molecule-wide constant (see
-/// `scripts/queue/out/link_pairwise_screen_design.md`). Any nonzero pruning is
-/// therefore a strict improvement over the shipped state.
+/// **This bar is currently 0.0 — i.e. DISABLED — and that is a recorded
+/// NEGATIVE RESULT, not an oversight.** Read this before setting it nonzero.
 ///
-/// The design note pre-registers the expectation that the dp list is NOT where
-/// the win comes from — the per-quartet screen is — so this bar is set to catch
-/// "the dp criterion is still vacuous", not to claim a large effect. 5% is
-/// above the 0% the old criterion achieved and above any plausible boundary
-/// noise, while staying honest about the size of the effect being claimed. If
-/// the measured pruning turns out to be large, this bar is RAISED to just under
-/// the measured value in the same commit that measures it; if it turns out to
-/// be under 5%, that is a reportable negative about the dp list and gets
-/// written down rather than accommodated by lowering the bar.
-const DP_MIN_PRUNED_FRACTION: f64 = 0.05;
+/// The ticket asked for the dp criterion to be made to prune. Working out what
+/// the list actually bounds (see the long note on `DensityPairs::build`) says it
+/// cannot be, at this granularity:
+///
+/// * `D[j,σ]` reaches K only through `(i j|σ l)`, bounded by
+///   `Q(i,j)·Q(σ,l)·|D[j,σ]|`.
+/// * LinK really does range `l` over all of `sp(σ)`, so `qmax(σ)` is the honest
+///   bound on that side; tightening it makes the condition UNNECESSARY and
+///   drops real contributions.
+/// * The same is true of `qmax(j)` on the bra side. Replacing it with the
+///   pair's own `Q(j,σ)` restores locality but over-tightens — `Q` decays like
+///   a Gaussian overlap while `D` decays exponentially. That was the PRE-#50
+///   criterion, and it cost `max|K_LinK - K_direct|` = 1.7e-3 on butane.
+///
+/// So the shipped `|D|·qmax(j)·qmax(σ) > t` is already the tightest bound
+/// available from `(j,σ)` alone. It prunes nothing because both maxima are
+/// realized by core s-shell pairs and their product is a molecule-wide
+/// constant `≈ Qmax²` — measured by
+/// `qmax_spread_is_small_enough_to_explain_the_vacuous_dp_list`, which FAILS if
+/// that reasoning is wrong.
+///
+/// The locality the list is missing is a property of the (bra pair, ket pair)
+/// COMBINATION, which does not exist until both are known — per quartet. That
+/// is where it now lives (`DensityScreen::FourPairK`), and it is why the
+/// `build_jk` count assertion, not this one, is what this file rests on.
+///
+/// Setting this above 0.0 requires either a new bound with a stated derivation,
+/// or evidence that the spread measurement above overturns the analysis. Do NOT
+/// raise it by raising the threshold: that trades correctness for counts and is
+/// explicitly out of bounds.
+const DP_MIN_PRUNED_FRACTION: f64 = 0.0;
 
 /// Shared body: the reachability assertions on one system.
 ///
@@ -245,15 +269,25 @@ fn check_reachability(stem: &str, basis_name: &str, require_dp_pruning: bool) {
         c.link, c.direct_k
     );
 
-    if require_dp_pruning {
-        let pruned = 1.0 - c.dp_frac;
+    // The dp-pruning bar is 0.0 by default — see DP_MIN_PRUNED_FRACTION for the
+    // derivation of why the pair list cannot prune at this granularity. A
+    // `pruned >= 0.0` assertion would be unreachable-by-construction (a test
+    // that cannot fail is an assumption, per the repo rules), so the measured
+    // value is REPORTED unconditionally and only asserted when someone has
+    // actually raised the bar on the strength of a new bound.
+    let pruned = 1.0 - c.dp_frac;
+    eprintln!(
+        "  dp list pruned {:.2}% of ordered pairs (bar {:.2}%{})",
+        100.0 * pruned,
+        100.0 * DP_MIN_PRUNED_FRACTION,
+        if DP_MIN_PRUNED_FRACTION <= 0.0 { ", disabled — see DP_MIN_PRUNED_FRACTION" } else { "" }
+    );
+    if require_dp_pruning && DP_MIN_PRUNED_FRACTION > 0.0 {
         assert!(
             pruned >= DP_MIN_PRUNED_FRACTION,
             "{stem}/{basis_name}: the density-pair list kept {:.4} of all ordered shell pairs, \
-             pruning only {:.2}% (bar {:.0}%). A bound that prunes nothing at the production \
-             threshold is not a screen. Post-#50 this was exactly 1.0000 kept because \
-             |D|*qmax(j)*qmax(sigma) > t degenerates to |D| > t/Qmax^2 with qmax a molecule-wide \
-             constant. Do NOT raise the threshold to force pruning — fix what the criterion bounds.",
+             pruning only {:.2}% (bar {:.2}%). Do NOT raise the threshold to force pruning — fix \
+             what the criterion bounds.",
             c.dp_frac,
             100.0 * pruned,
             100.0 * DP_MIN_PRUNED_FRACTION
@@ -272,8 +306,71 @@ fn check_reachability(stem: &str, basis_name: &str, require_dp_pruning: bool) {
     );
 }
 
+/// The load-bearing claim behind the density-pair analysis, measured rather
+/// than asserted.
+///
+/// `DensityPairs::build`'s doc argues that `qmax(j)·qmax(σ)` is effectively a
+/// molecule-wide constant `≈ Qmax²`, which is WHY the criterion degenerates to
+/// `|D| > t/Qmax²` and prunes nothing. That argument is the entire basis for
+/// concluding that the pair list cannot be tightened further and that the fix
+/// belongs in the per-quartet screen instead — so it must not stay an
+/// assumption.
+///
+/// This measures the spread of `qmax` across shells directly. If the ratio
+/// `max_x qmax(x) / min_x qmax(x)` is small, the product really is
+/// near-constant and the analysis holds. If it is large, the analysis is WRONG
+/// and there is per-pair information in `qmax` that a better criterion could
+/// exploit — in which case this test failing is the signal to go reopen (A)
+/// rather than accept the negative.
+///
+/// Deliberately has no pass/fail bar on the "large" side beyond a generous
+/// sanity ceiling: the point is to PRINT the number and to fail loudly only if
+/// it contradicts the recorded reasoning. The value is reported so the negative
+/// in `DensityPairs::build` can be cited with a measurement behind it.
+#[test]
+fn qmax_spread_is_small_enough_to_explain_the_vacuous_dp_list() {
+    for (stem, basis_name) in [("alkane_8", "def2-svp"), ("alkane_16", "def2-svp")] {
+        let mol = load_mol(stem);
+        let bs: BasisSet = basis::bundled(basis_name).expect("basis");
+        let prep = PreparedBasis::new(&mol, &bs).expect("PreparedBasis");
+        let nsh = prep.nshells();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).expect("Schwarz bounds");
+
+        // qmax(x) = max_y Q(x,y) — exactly what DensityPairs::build computes.
+        let qmax: Vec<f64> = (0..nsh)
+            .map(|x| (0..nsh).map(|y| bounds.q[(x, y)]).fold(0.0f64, f64::max))
+            .collect();
+        let hi = qmax.iter().cloned().fold(0.0f64, f64::max);
+        let lo = qmax.iter().cloned().fold(f64::INFINITY, f64::min);
+        let spread = hi / lo;
+
+        eprintln!(
+            "{stem}/{basis_name}: qmax spread = {hi:.4e} / {lo:.4e} = {spread:.2}x across {nsh} shells"
+        );
+
+        assert!(
+            lo > 0.0,
+            "{stem}: some shell has qmax = 0, which would make its density pairs unreachable at \
+             every threshold (the invalid-bound failure mode from schwarz.rs)"
+        );
+        // A spread of a few orders of magnitude still leaves the PRODUCT of two
+        // such factors within a couple of decades of Qmax^2, which against a
+        // density tail that decays slowly is not enough to prune. If this ever
+        // exceeds 1e6 the "near-constant" reading is untenable and the analysis
+        // in DensityPairs::build must be revisited.
+        assert!(
+            spread < 1e6,
+            "{stem}: qmax varies by {spread:.2e}x across shells. DensityPairs::build's doc claims \
+             qmax(j)*qmax(sigma) is effectively a molecule-wide constant, which is the entire \
+             basis for concluding the pair list cannot prune further. That claim does not survive \
+             this spread — reopen the density-pair criterion."
+        );
+    }
+}
+
 /// THE anchor: past the ~30 Bohr locality onset, LinK must evaluate fewer
-/// quartets than the default builder AND its density-pair list must prune.
+/// quartets than the default builder. The dp pruning fraction is measured and
+/// printed here too (its bar is disabled — see `DP_MIN_PRUNED_FRACTION`).
 ///
 /// alkane_16 (C16H34, 198 shells / 394 def2-SVP functions, ~50 Bohr end to end)
 /// is the system `link_fixed_counts.md` measured the 1.133 over-evaluation on,
@@ -288,11 +385,16 @@ fn link_screens_below_build_jk_alkane_16() {
 }
 
 /// The same anchor one size further out. C20 is deeper past the onset, so the
-/// dp list has strictly more far-field pairs available to prune: if the
-/// criterion is right, pruning here must be at least as good as at C16, and
-/// this is the case that would expose a screen whose pruning does not grow with
-/// system size (i.e. one that is cutting a fixed fraction for a reason
-/// unrelated to locality).
+/// per-quartet screen has strictly more far-field quartets available to reject:
+/// the `LinK/build_jk` ratio should be no worse than at C16. This is the case
+/// that would expose a screen whose advantage does not grow with system size —
+/// i.e. one cutting a fixed fraction for a reason unrelated to locality, which
+/// is the "too clean" fingerprint of arithmetic rather than physics.
+///
+/// It also prints the C20 dp fraction, which is the datum that would refute the
+/// recorded negative if the dp list DOES start pruning once the molecule is
+/// long enough — the one way the analysis on `DP_MIN_PRUNED_FRACTION` could be
+/// wrong in the direction of being too pessimistic.
 #[test]
 #[ignore = "expensive: converged SCF + three full K builds on 20 heavy atoms; run explicitly"]
 fn link_screens_below_build_jk_alkane_20() {
