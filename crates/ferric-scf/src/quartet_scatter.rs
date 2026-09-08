@@ -127,6 +127,33 @@ pub(crate) enum DensityScreen<'a> {
     /// `dmax = max(d12, d34, d13, d14, d23, d24)` from the shell-blocked
     /// `d_max_shell` table (build_jk / DirectJK).
     SixPair(&'a Array2<f64>),
+    /// `dmax = max(d13, d14, d23, d24)` from the same shell-blocked
+    /// `d_max_shell` table — the EXCHANGE-ONLY pairings (LinK).
+    ///
+    /// # Why a K-only builder needs its own variant
+    ///
+    /// A shell quartet `(s1 s2 | s3 s4)` contracts against D through different
+    /// blocks depending on what is being built. The J contraction reads
+    /// `D[s3,s4]` (and `D[s1,s2]` by 8-fold symmetry); the K contraction reads
+    /// `D[s1,s3]`, `D[s1,s4]`, `D[s2,s3]`, `D[s2,s4]` and their transposes.
+    /// [`SixPair`](DensityScreen::SixPair) takes the max over BOTH sets because
+    /// its callers build J and K from the same integral in one sweep, so a
+    /// single screen decision has to be conservative for both.
+    ///
+    /// A K-only builder never touches `d12` or `d34`. Including them would be
+    /// VALID — a max over a superset is an upper bound on a max over a subset,
+    /// so it can only ever admit more quartets — but strictly looser, and it
+    /// would pin LinK's quartet count to exactly `build_jk`'s instead of below
+    /// it. Since LinK exists to do LESS work than the default builder, the
+    /// four-pairing max is the screen that lets it.
+    ///
+    /// Validity: every density element the LinK scatter multiplies lies in one
+    /// of the four blocks, so this is an elementwise upper bound on all of
+    /// them. The transposed reads (`D[s3,s1]` etc., reached under `sym1234`)
+    /// are covered because `build_d_max_shell` is built from `|D|` and every
+    /// density LinK serves is symmetric, making the table symmetric too:
+    /// `t[(a,b)] == t[(b,a)]`.
+    FourPairK(&'a Array2<f64>),
     /// A single global `max |D_μν|` scalar (DirectJ / DirectK).
     Global(f64),
 }
@@ -134,8 +161,13 @@ pub(crate) enum DensityScreen<'a> {
 impl<'a> DensityScreen<'a> {
     /// `dmax` for a given (s1,s2,s3,s4) shell quartet, matching each caller's
     /// existing formula exactly.
+    ///
+    /// `pub(crate)` because LinK drives its own quartet loop (pair-list rather
+    /// than canonical) and so calls this directly instead of going through
+    /// [`scatter_bra_pair`] — sharing the ONE implementation of each density
+    /// key rather than growing a second copy in `link_k.rs`.
     #[inline(always)]
-    fn dmax(&self, s1: usize, s2: usize, s3: usize, s4: usize) -> f64 {
+    pub(crate) fn dmax(&self, s1: usize, s2: usize, s3: usize, s4: usize) -> f64 {
         match self {
             DensityScreen::SixPair(t) => {
                 let d12 = t[(s1, s2)];
@@ -145,6 +177,15 @@ impl<'a> DensityScreen<'a> {
                 let d23 = t[(s2, s3)];
                 let d24 = t[(s2, s4)];
                 d12.max(d34).max(d13).max(d14).max(d23).max(d24)
+            }
+            DensityScreen::FourPairK(t) => {
+                // The exchange pairings only — see the variant doc for why
+                // d12/d34 are deliberately absent.
+                let d13 = t[(s1, s3)];
+                let d14 = t[(s1, s4)];
+                let d23 = t[(s2, s3)];
+                let d24 = t[(s2, s4)];
+                d13.max(d14).max(d23).max(d24)
             }
             DensityScreen::Global(m) => *m,
         }
