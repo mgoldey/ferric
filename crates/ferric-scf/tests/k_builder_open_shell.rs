@@ -380,8 +380,10 @@ fn unknown_k_builder_errors_from_open_shell_entry_points() {
     let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "sto-3g", Operator::coulomb());
     let ctx = ParallelContext::default();
     let bad = cfg(Some("bogus"));
-    let eu = solve_uhf(&ctx, &mol, &prep, &bounds, &bad).err().expect("UHF must reject an unknown k_builder");
-    let er = solve_rohf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &bad).err().expect("ROHF must reject an unknown k_builder");
+    let eu = solve_uhf(&ctx, &mol, &prep, &bounds, &bad)
+        .map(|_| ()).expect_err("UHF must reject an unknown k_builder");
+    let er = solve_rohf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &bad)
+        .map(|_| ()).expect_err("ROHF must reject an unknown k_builder");
     for (label, e) in [("UHF", eu), ("ROHF", er)] {
         let msg = e.to_string();
         println!("{label}: {msg}");
@@ -397,8 +399,10 @@ fn cosx_refused_for_non_coulomb_operator_open_shell() {
     let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "sto-3g", Operator::erfc(0.3));
     let ctx = ParallelContext::default();
     let cosx = cfg(Some("cosx"));
-    let eu = solve_uhf(&ctx, &mol, &prep, &bounds, &cosx).err().expect("UHF must refuse cosx + erfc");
-    let er = solve_rohf(&ctx, &mol, &prep, Operator::erfc(0.3), &bounds, &cosx).err().expect("ROHF must refuse cosx + erfc");
+    let eu = solve_uhf(&ctx, &mol, &prep, &bounds, &cosx)
+        .map(|_| ()).expect_err("UHF must refuse cosx + erfc");
+    let er = solve_rohf(&ctx, &mol, &prep, Operator::erfc(0.3), &bounds, &cosx)
+        .map(|_| ()).expect_err("ROHF must refuse cosx + erfc");
     for (label, e) in [("UHF", eu), ("ROHF", er)] {
         let msg = e.to_string();
         println!("{label}: {msg}");

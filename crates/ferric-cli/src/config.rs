@@ -866,7 +866,9 @@ pub struct ScfCfg {
     #[serde(default = "default_integral_thresh")]
     pub integral_thresh: f64,
     /// Exchange builder: "direct" (default), "link", or "cosx" (seminumerical
-    /// COSX exchange). RHF only; ignored with a warning when DF-J/DF-K is active.
+    /// COSX exchange). Honoured by RHF, UHF and ROHF. Ignored with a warning
+    /// when DF-J/DF-K is active, when the functional uses no exact exchange, or
+    /// for a range-separated functional.
     pub k_builder: Option<String>,
     /// COSX exchange grid, `cosx_grid = { radial = 50, angular = 110 }`.
     /// Omitted = (50,110), the measured operating point (coarser grids fail the

@@ -68,10 +68,11 @@ Returned by PDEP-RPA calculations.
 ## 2. Solver Functions
 
 The optional `k_builder` argument accepted by the RHF-based solvers takes
-`"direct"` (default), `"link"` (LinK, exact, RHF only) or `"cosx"`
-(seminumerical exchange, RHF + Coulomb only; uses the CLI defaults for grid,
-overlap fit and kernel — those knobs are not exposed in Python yet). See the
-book's *Choosing how exchange is built* for when each pays.
+`"direct"` (default), `"link"` (LinK, exact) or `"cosx"` (seminumerical
+exchange, Coulomb operator only; uses the CLI defaults for grid, overlap fit
+and kernel — those knobs are not exposed in Python yet). All three are
+honoured by the RHF, UHF and ROHF solvers. See the book's *Choosing how
+exchange is built* for when each pays.
 
 * **`run_rhf(mol: Molecule, basis_set: BasisSet, max_iter: int = None, energy_conv: float = None, k_builder: str = None) -> RhfResult`**:
   Runs a Restricted Hartree-Fock calculation.

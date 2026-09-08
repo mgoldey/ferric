@@ -44,10 +44,15 @@ pub struct RhfConfig {
     pub smearing_sigma: Option<f64>,
     pub integral_thresh: f64,
     /// Choose K matrix builder: "direct" (default), "link", or "cosx"
-    /// (seminumerical exchange, see [`crate::cosx_k`]). Read by `solve_rhf`
-    /// ONLY — `solve_uhf` / `solve_rohf` ignore it (pre-existing; documented,
-    /// not fixed here). Ignored with a warning whenever density-fitted J/K is
-    /// active (`df_j_aux` / `df_k_aux` set, or auto-defaulted for a functional).
+    /// (seminumerical exchange, see [`crate::cosx_k`]). Honoured by
+    /// `solve_rhf`, `solve_uhf` AND `solve_rohf` (before 2026-09-08 only
+    /// `solve_rhf` read it, so it was a silent no-op for open-shell runs).
+    /// The open-shell solvers build K_α and K_β from ONE builder instance,
+    /// refreshing any density-dependent state per spin. Ignored WITH A WARNING
+    /// whenever density-fitted J/K is active (`df_j_aux` / `df_k_aux` set, or
+    /// auto-defaulted for a functional), the functional uses no exact exchange,
+    /// or the functional is range-separated (exchange then comes from the
+    /// SR/LR density-fitted fitters).
     pub k_builder: Option<String>,
     /// COSX knobs (grid, overlap fit, screen); only read when
     /// `k_builder == Some("cosx")`.

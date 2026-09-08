@@ -175,11 +175,11 @@ pub(crate) fn build_rsh_dfk_pair<'a>(
 /// then comes from DF-K or the direct 4-centre builder and a pluggable K would
 /// be built and thrown away, so it is skipped WITH A WARNING rather than
 /// silently no-op'ing. `df_k_present` only picks the wording.
-pub(crate) fn resolve_k_builder<'k>(
-    k_builder: Option<&'k str>,
+pub(crate) fn resolve_k_builder(
+    k_builder: Option<&str>,
     df_active: bool,
     df_k_present: bool,
-) -> Result<Option<&'k str>, FerricError> {
+) -> Result<Option<&str>, FerricError> {
     let Some(kb) = k_builder else {
         return Ok(None);
     };

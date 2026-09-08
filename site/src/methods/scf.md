@@ -79,9 +79,9 @@ code, not a rule of thumb. Butane, one thread; the QZ column is def2-QZVP
 | `[scf]` setting | what it is | exact? | K at TZ | K at QZ | scope |
 |---|---|---|---|---|---|
 | *(default)* | Schwarz-screened direct 4-centre J+K | yes | — | 400 s (J+K) | all SCF types |
-| `k_builder = "link"` | LinK — pair-list-screened direct K | yes | re-measuring (#50) | re-measuring (#50) | RHF only |
+| `k_builder = "link"` | LinK — pair-list-screened direct K | yes | re-measuring (#50) | re-measuring (#50) | RHF, UHF, ROHF |
 | `df_j_aux` / `df_k_aux` | density-fitted J and K (RI-JK) | ~1e-5 Ha | 0.05 s | 0.43 s | all SCF types |
-| `k_builder = "cosx"` | seminumerical (COSX) K on a grid | grid error, see below | 358 s* | 137 s | RHF, Coulomb only, no gradients |
+| `k_builder = "cosx"` | seminumerical (COSX) K on a grid | grid error, see below | 358 s* | 137 s | RHF/UHF/ROHF, Coulomb only, no gradients |
 
 \* full SCF at TZ was 358 s for COSX against 98 s direct — COSX is *slower*
 at TZ.
@@ -98,7 +98,14 @@ threshold as *K builders*. LinK's pair lists were fixed in #50 (three
 pair-list defects; butane/def2-SVP `link` == direct to 9e-12 Ha). Every LinK
 timing taken before that fix was against a kernel that skipped quartets, so
 none is repeated here; its cost against the corrected kernel is being
-re-measured. LinK is RHF-only — UHF and ROHF silently fall back to direct.
+re-measured. `k_builder` is honoured by UHF and ROHF as well as RHF (it was
+silently ignored for open-shell runs before 2026-09-08): the open-shell solvers
+build K_α and K_β from one builder instance, refreshing its density-dependent
+state per spin. Whether LinK is the faster choice for a given system is a
+separate question from whether it is honoured — see the cost note above, which
+is being re-measured. It is skipped with a warning, never silently, whenever
+density-fitted J/K is active, the functional uses no exact exchange, or the
+functional is range-separated (exchange then comes from the SR/LR fitters).
 
 **COSX is for large basis sets on systems too big for RI-JK.** Its cost per
 grid point barely moves with angular momentum while analytic exchange grows
