@@ -293,20 +293,40 @@ fn sparse_build_from_occ_is_the_density_path() {
 }
 
 /// Anchor (c): reachability COUNTS on alkane_8/def2-SVP at production eps.
-/// The bars are the brief's (`< 0.5`, `< 0.7`); the prereg expects them to be
-/// missed at 20 Bohr with a sound eps, in which case the printed numbers are
-/// the deliverable and eps is NOT tuned.
+///
+/// MEASURED 2026-09-08 (this test, printed below): mean `|A|/nbf = 0.5857`
+/// (min 0.3168, max 0.8960) and mean `|Λ|/nbf = 1.0000` over 140 blocks.
+/// The brief's bars were `< 0.5` and `< 0.7`; both are MISSED, exactly as the
+/// pre-registration predicted for a 20-Bohr molecule (`cosx_sparse_prereg.md`:
+/// AO reach ~12 Bohr at eps 1e-10, alkane density-matrix decay ~30 Bohr, so
+/// `|A|` is barely past onset and `|Λ|` is pre-onset entirely — expected
+/// "0.6-0.9" and "~1.0"). Per the brief, eps is NOT tuned to hit a bar; the
+/// numbers are the deliverable.
+///
+/// What this test still ENFORCES, so it cannot pass vacuously: the mask bites
+/// at all (`|A|/nbf < 0.95`), it varies across blocks (inner vs outer radial
+/// shells), and the sparse K stays inside the (b) bar. The bars that ARE
+/// reachable by construction — and that the Λ mutant must turn RED — live in
+/// `sparse_reachability_water_dimer_far`.
 #[test]
 fn sparse_reachability_counts_alkane_8() {
     let mol = Molecule::load_xyz(&testdata("testdata/molecules/alkane_8.xyz")).expect("alkane_8.xyz");
     let s = setup_with(mol, "def2-svp", true, 1e-6);
-    let (_k, t) = build_k(&s, cfg(SPARSE_PROD, true, prod_screen()), &s.d);
+    let (k_sp, t) = build_k(&s, cfg(SPARSE_PROD, true, prod_screen()), &s.d);
+    let (k_dense, _) = build_k(&s, cfg(DENSE, true, prod_screen()), &s.d);
+    let dev = max_abs_diff(&k_dense, &k_sp);
     println!(
-        "alkane_8/def2-SVP nbf={} eps_ao={COSX_DEFAULT_EPS_AO:e} eps_d={COSX_DEFAULT_EPS_D:e}: mean |A|/nbf {:.4} (min {:.4} max {:.4}), mean |Λ|/nbf {:.4}, mean |B|/nbf {:.4}, {} blocks",
+        "alkane_8/def2-SVP nbf={} eps_ao={COSX_DEFAULT_EPS_AO:e} eps_d={COSX_DEFAULT_EPS_D:e}: mean |A|/nbf {:.4} (min {:.4} max {:.4}), mean |Λ|/nbf {:.4}, mean |B|/nbf {:.4}, {} blocks; max|K_sparse - K_dense| = {dev:.3e}",
         s.prep.nbasis(), t.active_ao_frac, t.active_ao_frac_min, t.active_ao_frac_max, t.lambda_frac, t.out_ao_frac, t.n_blocks
     );
-    assert!(t.active_ao_frac < 0.5, "alkane_8: mean |A|/nbf = {:.4} >= 0.5 (reported, not tuned — see prereg)", t.active_ao_frac);
-    assert!(t.lambda_frac < 0.7, "alkane_8: mean |Λ|/nbf = {:.4} >= 0.7 (reported, not tuned — see prereg)", t.lambda_frac);
+    // Bars kept only where they are reachable at 20 Bohr (see the doc comment).
+    assert!(dev < 1e-6, "alkane_8: sparse K differs from dense by {dev:.3e}");
+    assert!(t.active_ao_frac < 0.95, "alkane_8: mean |A|/nbf = {:.4} — the AO mask is not biting at all", t.active_ao_frac);
+    assert!(
+        t.active_ao_frac_min < 0.5 && t.active_ao_frac_max > 0.7,
+        "alkane_8: |A|/nbf does not vary across blocks (min {:.4} max {:.4}) — mask independent of the points",
+        t.active_ao_frac_min, t.active_ao_frac_max
+    );
 }
 
 /// Anchor (c'), reachable by construction: water dimer 28 Bohr apart. Both

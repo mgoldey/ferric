@@ -81,8 +81,22 @@ fn grid(n_radial: usize, n_angular: usize) -> AtomicGridConfig {
     AtomicGridConfig { n_radial, n_angular, ..Default::default() }
 }
 
+/// `COSX_ANCHOR_HALF=dense` re-runs this whole suite on the DENSE half
+/// transform (`sparse`/absent = the default sparse path). The suite is the
+/// legacy anchor set: running it both ways is what shows the sparse path
+/// inherits every property the dense one was pinned on, and that the dense
+/// path itself still holds after the split.
+fn half_transform() -> ferric_scf::cosx_k::CosxHalfTransform {
+    use ferric_scf::cosx_k::CosxHalfTransform;
+    match std::env::var("COSX_ANCHOR_HALF").ok().as_deref() {
+        None | Some("sparse") => CosxHalfTransform::SPARSE_DEFAULT,
+        Some("dense") => CosxHalfTransform::Dense,
+        Some(other) => panic!("COSX_ANCHOR_HALF = {other:?}: expected \"sparse\" or \"dense\""),
+    }
+}
+
 fn cosx_config(g: AtomicGridConfig, overlap_fit: bool, screen_thresh: Option<f64>) -> CosxConfig {
-    CosxConfig { grid: g, overlap_fit, screen_thresh, ..CosxConfig::default() }
+    CosxConfig { grid: g, overlap_fit, screen_thresh, half_transform: half_transform(), ..CosxConfig::default() }
 }
 
 fn build_k(s: &Setup, ctx: &ParallelContext, cfg: CosxConfig, d: &Array2<f64>) -> Array2<f64> {
