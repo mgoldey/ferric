@@ -893,6 +893,13 @@ pub struct ScfCfg {
     /// (bit-identical to unscreened). Negative values, and setting this with
     /// `k_builder != "cosx"` or `cosx_backend = "cosx-a"`, are hard errors.
     pub cosx_screen_thresh: Option<f64>,
+    /// COSX block half transforms: `"sparse"` (default; per block only the
+    /// active AOs `A`, the D-significant rows `Λ` and the kernel-touched
+    /// shells `B` enter `F = D X` / `Ktilde += X G^T` / `S_num = X X^T`) or
+    /// `"dense"` (the full `nbf` GEMMs — the byte-identical cross-check path).
+    /// Unknown values and setting this with `k_builder != "cosx"` are hard
+    /// errors.
+    pub cosx_half_transform: Option<String>,
     pub df_j_aux: Option<String>,
     pub df_k_aux: Option<String>,
     /// Optional virtual-virtual block level shift (Ha) for open-shell SCF
@@ -945,6 +952,7 @@ impl Default for ScfCfg {
             cosx_overlap_fit: None,
             cosx_backend: None,
             cosx_screen_thresh: None,
+            cosx_half_transform: None,
             df_j_aux: None,
             df_k_aux: None,
             level_shift: None,
@@ -972,15 +980,16 @@ impl ScfCfg {
     /// Lebedev order is a hard error here rather than a panic inside the grid
     /// builder; an unknown backend name is a hard error, never a default.
     pub fn cosx_config(&self) -> Result<ferric_scf::cosx_k::CosxConfig, String> {
-        use ferric_scf::cosx_k::{validate_grid, CosxBackend, CosxConfig};
+        use ferric_scf::cosx_k::{validate_grid, CosxBackend, CosxConfig, CosxHalfTransform};
         let is_cosx = self.k_builder.as_deref() == Some("cosx");
         let any_cosx_knob = self.cosx_grid.is_some()
             || self.cosx_overlap_fit.is_some()
             || self.cosx_backend.is_some()
-            || self.cosx_screen_thresh.is_some();
+            || self.cosx_screen_thresh.is_some()
+            || self.cosx_half_transform.is_some();
         if !is_cosx && any_cosx_knob {
             return Err(format!(
-                "[scf] cosx_grid / cosx_overlap_fit / cosx_backend / cosx_screen_thresh are set but k_builder = {:?}; they are only read with k_builder = \"cosx\"",
+                "[scf] cosx_grid / cosx_overlap_fit / cosx_backend / cosx_screen_thresh / cosx_half_transform are set but k_builder = {:?}; they are only read with k_builder = \"cosx\"",
                 self.k_builder
             ));
         }
@@ -992,6 +1001,10 @@ impl ScfCfg {
         }
         if let Some(fit) = self.cosx_overlap_fit {
             cfg.overlap_fit = fit;
+        }
+        if let Some(h) = self.cosx_half_transform.as_deref() {
+            cfg.half_transform =
+                CosxHalfTransform::parse_config_str(h).map_err(|e| format!("[scf] cosx_half_transform: {e}"))?;
         }
         if let Some(b) = self.cosx_backend.as_deref() {
             cfg.backend = CosxBackend::parse_config_str(b).map_err(|e| format!("[scf] cosx_backend: {e}"))?;
@@ -1216,6 +1229,14 @@ mod tests {
         assert_eq!((c.grid.n_radial, c.grid.n_angular), (50, 110));
         assert!(c.overlap_fit);
         assert_eq!(c.screen_thresh, Some(ferric_scf::cosx_k::COSX_DEFAULT_SCREEN_THRESH));
+        assert_eq!(c.half_transform, ferric_scf::cosx_k::CosxHalfTransform::SPARSE_DEFAULT);
+        // Half transform: both spellings resolve, unknown values and dead knobs error.
+        let c = parse("k_builder = \"cosx\"\ncosx_half_transform = \"dense\"\n").scf.cosx_config().unwrap();
+        assert_eq!(c.half_transform, ferric_scf::cosx_k::CosxHalfTransform::Dense);
+        let c = parse("k_builder = \"cosx\"\ncosx_half_transform = \"sparse\"\n").scf.cosx_config().unwrap();
+        assert_eq!(c.half_transform, ferric_scf::cosx_k::CosxHalfTransform::SPARSE_DEFAULT);
+        assert!(parse("k_builder = \"cosx\"\ncosx_half_transform = \"Dense\"\n").scf.cosx_config().is_err());
+        assert!(parse("k_builder = \"link\"\ncosx_half_transform = \"dense\"\n").scf.cosx_config().is_err());
         // Screen knob: explicit value honoured, 0 disables, negative/NaN refused,
         // dead-knob refused, and > 0 refused with the unscreened cosx-a backend
         // (which resolves to None by itself, never a refusal from the default).

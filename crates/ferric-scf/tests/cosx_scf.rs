@@ -30,7 +30,19 @@ fn run(cfg: RhfConfig) -> ScfResult {
 }
 
 fn tight() -> RhfConfig {
-    RhfConfig { energy_conv: 1e-10, density_conv: 1e-8, ..Default::default() }
+    RhfConfig { energy_conv: 1e-10, density_conv: 1e-8, cosx: cosx_default(), ..Default::default() }
+}
+
+/// `COSX_ANCHOR_HALF=dense` runs this suite on the DENSE half transform
+/// (absent / "sparse" = the default sparse path); see `cosx_k_anchors.rs`.
+fn cosx_default() -> CosxConfig {
+    use ferric_scf::cosx_k::CosxHalfTransform;
+    let half = match std::env::var("COSX_ANCHOR_HALF").ok().as_deref() {
+        None | Some("sparse") => CosxHalfTransform::SPARSE_DEFAULT,
+        Some("dense") => CosxHalfTransform::Dense,
+        Some(other) => panic!("COSX_ANCHOR_HALF = {other:?}: expected \"sparse\" or \"dense\""),
+    };
+    CosxConfig { half_transform: half, ..CosxConfig::default() }
 }
 
 #[test]
@@ -39,7 +51,7 @@ fn cosx_rhf_water_ccpvdz_vs_direct() {
     let cosx = run(RhfConfig { k_builder: Some("cosx".into()), ..tight() });
     let cosx_nofit = run(RhfConfig {
         k_builder: Some("cosx".into()),
-        cosx: CosxConfig { overlap_fit: false, ..Default::default() },
+        cosx: CosxConfig { overlap_fit: false, ..cosx_default() },
         ..tight()
     });
     assert!(direct.converged && cosx.converged && cosx_nofit.converged);
@@ -66,7 +78,7 @@ fn cosx_rhf_energy_error_falls_with_grid() {
     let direct = run(tight());
     let mut errs = Vec::new();
     for (nr, na) in [(25usize, 50usize), (50, 110), (99, 302)] {
-        let mut cosx = CosxConfig::default();
+        let mut cosx = cosx_default();
         cosx.grid.n_radial = nr;
         cosx.grid.n_angular = na;
         let r = run(RhfConfig { k_builder: Some("cosx".into()), cosx, ..tight() });
@@ -110,7 +122,7 @@ fn cosx_config_errors_are_typed() {
     let ctx = ParallelContext::default();
     let bad = RhfConfig { k_builder: Some("cosxx".into()), ..Default::default() };
     assert!(solve_rhf(&ctx, &mol, &prep, op, &bounds, &bad).is_err());
-    let mut cosx = CosxConfig::default();
+    let mut cosx = cosx_default();
     cosx.grid.n_angular = 194;
     let bad_grid = RhfConfig { k_builder: Some("cosx".into()), cosx, ..Default::default() };
     assert!(solve_rhf(&ctx, &mol, &prep, op, &bounds, &bad_grid).is_err());
