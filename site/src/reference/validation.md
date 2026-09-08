@@ -45,7 +45,7 @@ than self-consistency:
 | G0W0@HF | matches MOLGW to ~5 meV |
 | Gradients | validated against finite differences |
 | RI-MP2 extensivity | 2e-12 Ha on a separated dimer |
-| COSX exchange (RHF) | water/cc-pVDZ dense-grid limit 3.3e-7 vs direct K; SCF dE 4.9e-6 Ha (water/cc-pVDZ), 1.7e-4 Ha (butane/def2-SVP), 1.2e-4 Ha (butane/def2-TZVP) at (50,110)+fit; butane/def2-QZVP K 0.54x LinK; density-driven screen t=1e-7 changes K by <= 2e-6 (water..octane); alkane_4..20/def2-SVP one-thread tail (C12-C20): A-build ~N^1.5, full K ~N^2.2 (dense half-transform GEMMs), 5.6-7.9x slower than LinK at SVP; RHF-only, Coulomb-only, no gradients |
+| COSX exchange (RHF) | water/cc-pVDZ dense-grid limit 3.3e-7 vs direct K; SCF dE 4.9e-6 Ha (water/cc-pVDZ), 1.7e-4 Ha (butane/def2-SVP), 1.2e-4 Ha (butane/def2-TZVP) at (50,110)+fit; butane/def2-QZVP K 137 s vs 400 s default direct J+K (one thread; LinK ratios withdrawn pending re-measurement after #50); density-driven screen t=1e-7 changes K by <= 2e-6 (water..octane); alkane_4..20/def2-SVP one-thread tail (C12-C20): A-build ~N^1.5, full K ~N^2.2 (dense half-transform GEMMs), slower than analytic exchange at SVP; RHF-only, Coulomb-only, no gradients |
 
 These are the figures stated in the repository itself. The wiki's
 `VALIDATION.md` carries the full per-capability grading, including benchmark
