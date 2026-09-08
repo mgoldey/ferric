@@ -134,9 +134,14 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
         // Enumerate all significant (ish, jsh) pairs as parallel work units.
         // This gives O(N) tasks with roughly equal work each (each handles ksh/lsh loops),
         // vs O(1) tasks per ish where work grows as O(N²) causing severe imbalance.
+        // Only ish >= jsh: the canonical-ownership test below (`cs1 == ish &&
+        // cs2 == jsh`, with cs1 >= cs2) rejects every quartet reached from a
+        // jsh > ish pair, so those units were pure dead iteration.
         // MPI rank striping (see `ParallelContext::stripe` doc).
         let all_pairs: Vec<(usize, usize)> = (0..nsh)
-            .flat_map(|ish| self.sp.partners(ish).iter().map(move |&jsh| (ish, jsh)))
+            .flat_map(|ish| {
+                self.sp.partners(ish).iter().filter(move |&&jsh| jsh <= ish).map(move |&jsh| (ish, jsh))
+            })
             .collect();
         let ij_pairs: Vec<(usize, usize)> = self.ctx.stripe(all_pairs);
 
@@ -178,16 +183,32 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
                     dirty.clear();
 
                     pool.with(|engine| {
-                    // Inline merge: sp.partners(ish) ∩ dp.partners(jsh) — no Vec allocation.
-                    let sp_ish = self.sp.partners(ish);
+                    // Ket shells driven by the density: the quartet (ij|kl)
+                    // feeds K through the four blocks D[i,k], D[i,l], D[j,k],
+                    // D[j,l] (see the 8-fold scatter below), so a ket shell
+                    // ksh is needed whenever D[ish,ksh] OR D[jsh,ksh] is
+                    // significant — the sorted-merge UNION dp(ish) ∪ dp(jsh),
+                    // no Vec allocation. The ket PAIR's own significance is
+                    // enforced by lsh ∈ sp(ksh). Both ket orderings are
+                    // visited (ksh may land as cs3 or cs4), which covers all
+                    // four blocks. The former `sp(ish) ∩ dp(jsh)` only ever
+                    // checked the D[jsh,·] blocks and additionally demanded a
+                    // Schwarz-significant BRA-KET pair (ish,ksh), which the
+                    // integral does not require: on butane/def2-SVP it lost
+                    // 8% of K at the SAD guess and drove the SCF non-variational
+                    // (tests/link_scf_anchor.rs).
+                    let dp_ish = dp.partners(ish);
                     let dp_jsh = dp.partners(jsh);
                     let mut ai = 0;
                     let mut bi = 0;
-                    while ai < sp_ish.len() && bi < dp_jsh.len() {
-                        let ksh = match sp_ish[ai].cmp(&dp_jsh[bi]) {
-                            std::cmp::Ordering::Equal => { ai += 1; bi += 1; sp_ish[ai - 1] }
-                            std::cmp::Ordering::Less => { ai += 1; continue; }
-                            std::cmp::Ordering::Greater => { bi += 1; continue; }
+                    while ai < dp_ish.len() || bi < dp_jsh.len() {
+                        let ksh = match (dp_ish.get(ai), dp_jsh.get(bi)) {
+                            (Some(&a), Some(&b)) if a == b => { ai += 1; bi += 1; a }
+                            (Some(&a), Some(&b)) if a < b => { ai += 1; a }
+                            (Some(_), Some(&b)) => { bi += 1; b }
+                            (Some(&a), None) => { ai += 1; a }
+                            (None, Some(&b)) => { bi += 1; b }
+                            (None, None) => unreachable!("loop guard"),
                         };
 
                         for &lsh in self.sp.partners(ksh) {
