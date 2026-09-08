@@ -49,8 +49,13 @@
 //!
 //! # Scope
 //!
-//! Closed-shell RHF only via `k_builder = "cosx"` (like LinK: `solve_uhf` /
-//! `solve_rohf` never read `k_builder`). Single MPI rank only — a multi-rank
+//! Reached via `k_builder = "cosx"` from `solve_rhf`, `solve_uhf` and
+//! `solve_rohf` alike (until 2026-09-08 the open-shell solvers never read
+//! `k_builder`). The open-shell path drives ONE instance for both spins: this
+//! builder holds no density-dependent state (`update_density` is a no-op) and
+//! its `S_num` overlap-fit factor is geometry-only, so K(D_α) is unaffected by
+//! an interleaved K(D_β) build — anchored in `tests/k_builder_open_shell.rs`.
+//! Single MPI rank only — a multi-rank
 //! `ParallelContext` is refused at construction rather than silently
 //! computing the full K on every rank. Weights enter as `sqrt(|w|)`, as in
 //! the prototype (Becke weights are non-negative in practice).

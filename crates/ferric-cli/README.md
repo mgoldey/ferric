@@ -45,7 +45,7 @@ Configures the Self-Consistent Field (SCF) iterations.
 | `density_conv` | Float | `1e-7` | Density matrix convergence threshold. |
 | `diis_size` | Integer | `8` | Subspace size for DIIS convergence acceleration. |
 | `integral_thresh`| Float | `1e-12` | Schwarz screening threshold for two-electron integrals. |
-| `k_builder` | String | *None* (= `"direct"`) | Exchange builder: `"direct"`, `"link"` (LinK, exact, RHF only) or `"cosx"` (seminumerical COSX, RHF + Coulomb only, no gradients). Ignored with a warning when `df_k_aux` is set. See the book's *Choosing how exchange is built*. |
+| `k_builder` | String | *None* (= `"direct"`) | Exchange builder: `"direct"`, `"link"` (LinK, exact) or `"cosx"` (seminumerical COSX, Coulomb operator only, no gradients). Honoured by RHF, UHF and ROHF. Ignored with a warning when `df_k_aux` is set, when the functional uses no exact exchange, or for a range-separated functional. See the book's *Choosing how exchange is built*. |
 | `cosx_grid` | Table | `{ radial = 50, angular = 110 }` | COSX grid. The default is the coarsest grid meeting a 0.1 kcal/mol reaction-energy bar; `angular` must be a tabulated Lebedev order. Only with `k_builder = "cosx"`. |
 | `cosx_overlap_fit` | Boolean | `true` | Izsák–Neese overlap correction for COSX. Helps at the default grid; net-negative on coarser grids. Only with `k_builder = "cosx"`. |
 | `cosx_backend` | String | `"md3c1e"` | COSX 3c1e integral kernel: `"md3c1e"` (batched McMurchie–Davidson) or `"cosx-a"` (per-point libint2, ~3× slower; the cross-check backend). Only with `k_builder = "cosx"`. |
