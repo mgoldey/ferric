@@ -100,6 +100,28 @@ fn link_scf_matches_direct_scf_butane() {
     check_scf_agreement("butane/def2-SVP", &direct, &link, 1e-6);
 }
 
+/// (d) The same SCF-level agreement one size up, on alkane_8/def2-SVP.
+///
+/// The butane case above is the one that CAUGHT the #50 defects; this one
+/// guards the screening change against a different failure. A per-quartet
+/// density screen is applied afresh at every SCF iteration, on densities that
+/// are far from converged early on (the SAD guess is atom-block-diagonal, so
+/// its far-field blocks are exactly zero and a density screen prunes them
+/// aggressively). A screen that is correct on a converged density can still
+/// destabilise the iteration by pruning differently as D evolves — which shows
+/// up as an iteration-count change or a non-variational trajectory, not as a
+/// K-matrix error on the final density.
+///
+/// Asserting the ENERGY and the ITERATION COUNT together is what makes this
+/// distinct from the single-build comparisons: the energy alone would pass for
+/// a screen that converges to the right answer along a worse path.
+#[test]
+fn link_scf_matches_direct_scf_alkane_8() {
+    let mol = load("alkane_8");
+    let (direct, link) = direct_and_link(&mol, "def2-svp");
+    check_scf_agreement("alkane_8/def2-SVP", &direct, &link, 1e-9);
+}
+
 /// Water/cc-pVDZ: every shell pair is significant, so LinK and the direct
 /// builder walk the same quartets. Kept so the fix cannot regress the case
 /// that always worked (agreement here was 1e-10 before the fix).
@@ -141,6 +163,60 @@ fn link_k_matches_direct_k_butane_at_production_thresh() {
     assert!(
         max_dk < LINK_VS_DIRECT_K_BAR,
         "LinK K differs from the direct K at the same 1e-12 threshold by {max_dk:.3e}"
+    );
+}
+
+/// (b) Production-threshold correctness at alkane_16 — the size where the
+/// density screen MUST bite.
+///
+/// # Why C16 and not another butane variant
+///
+/// Every pre-existing K-value comparison in this repo runs on a system at or
+/// below butane. Those systems sit BELOW the ~30 Bohr alkane density-matrix
+/// decay length (repo memory), so their density-pair lists are essentially
+/// complete and a density screen has nothing to remove. That makes them unable
+/// to catch the failure mode that matters for a screening change: a screen
+/// that is too TIGHT removes contributions only in the far field, which by
+/// construction does not exist on a small molecule.
+///
+/// alkane_16 (198 shells, 394 def2-SVP functions, ~50 Bohr end to end) is past
+/// the onset and is the system whose counts are tabulated in
+/// `scripts/queue/out/link_fixed_counts.md`. A pairwise density screen that
+/// drops genuinely contributing far-field blocks shows up HERE first and
+/// nowhere else in the suite.
+///
+/// Bar is the ticket's 1e-12. Post-#50 measured `max|K_link - K_directK|` at
+/// this threshold is 2.4e-14 on both C8 and C16, so 1e-12 clears the correct
+/// value by ~40x while sitting far below anything a broken bound produces (the
+/// three pre-#50 defects gave 1.7e-3 .. 2.8e-3).
+#[test]
+fn link_k_matches_direct_k_alkane_16_at_production_thresh() {
+    let mol = load("alkane_16");
+    let bs = basis::bundled("def2-svp").expect("basis");
+    let prep = PreparedBasis::new(&mol, &bs).expect("prep");
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
+    let ctx = ParallelContext::default();
+    let d = run(&mol, &bs, &RhfConfig::default()).density_total;
+    let thresh = 1e-12;
+    let n = prep.nbasis();
+
+    let mut j = Array2::zeros((n, n));
+    let mut k_direct = Array2::zeros((n, n));
+    build_jk(&ctx, &prep, &bounds, thresh, &d, &mut j, &mut k_direct).expect("direct jk");
+
+    let mut link = LinkK::new(&ctx, &prep, &bounds, op, thresh, usize::MAX);
+    link.update_density(&d);
+    let mut k_link = Array2::zeros((n, n));
+    link.build(&d, &mut k_link).expect("link");
+
+    let max_dk = (&k_link - &k_direct).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    println!("alkane_16/def2-SVP converged D, thresh=1e-12: max|K_link - K_direct| = {max_dk:.3e}");
+    assert!(
+        max_dk < LINK_VS_DIRECT_K_BAR,
+        "LinK K differs from the direct K at the same 1e-12 threshold by {max_dk:.3e} on \
+         alkane_16 — past the ~30 Bohr locality onset, this is where an over-tight density \
+         screen drops real far-field contributions."
     );
 }
 
