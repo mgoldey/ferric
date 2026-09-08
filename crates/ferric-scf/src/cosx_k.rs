@@ -47,6 +47,34 @@
 //! across thread counts (block and sub-batch partitions are pure functions of
 //! the point count).
 //!
+//! # Sparse half transforms
+//!
+//! Measured on main (`scripts/queue/out/cosx_scaling_results.md`, def2-SVP
+//! alkanes, one thread): with the density-driven screen the A-build is
+//! N^1.54 but the full K is N^2.16, because the two dense block GEMMs
+//! `F = D X` and `Ktilde += X G^T` (nbf x nbf x B each) are 32% of the build
+//! at C20. `CosxHalfTransform::Sparse` (default) makes them shell-sparse per
+//! block, the standard COSX/sn-LinK structure:
+//!
+//! ```text
+//!     A = { shells s : max_{mu in s, g in block} |X_{mu g}| >= eps_ao }   (X is local to the block)
+//!     Λ = { shells l : max_{s in A} max|D_{l s}| >= eps_d }               (D decays with distance)
+//!     F[Λ, blk] = D[Λ, A] X[A, blk],   F[not Λ] = 0 exactly
+//!     B = shells touched by the kernel's surviving pairs (G[not B] = 0 exactly)
+//!     Ktilde[A, B] += X[A, blk] G[B, blk]^T
+//!     S_num[A, A]  += X[A, blk] X[A, blk]^T
+//! ```
+//!
+//! Both GEMMs become `|A| x |B| x B` with `|A|, |B| -> O(1)` as the molecule
+//! outgrows the AO reach (~12 Bohr at 1e-10 for def2-SVP) and the density
+//! decay length (~30 Bohr for alkanes). Both thresholds compare with `>=`,
+//! so `eps = 0` is the vacuous mask and reproduces `Dense` bit-for-bit; the
+//! defaults come from an error model, not a sweep (`COSX_DEFAULT_EPS_AO`).
+//! `Dense` is the pre-sparse builder and the cross-check
+//! (`tests/cosx_sparse_anchors.rs`). ferric-dft's KS path has no AO-on-grid
+//! screening to share (its density loop is a dense `D chi`), so the mask
+//! machinery lives here.
+//!
 //! # Scope
 //!
 //! Closed-shell RHF only via `k_builder = "cosx"` (like LinK: `solve_uhf` /
@@ -124,6 +152,65 @@ impl CosxBackend {
     }
 }
 
+/// How the per-block half transforms `F = D X`, `Ktilde += X G^T` and the
+/// fit's `S_num += X X^T` are evaluated (see the module doc, "Sparse half
+/// transforms").
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CosxHalfTransform {
+    /// Dense `nbf x nbf x B` GEMMs on the full block planes — the pre-sparse
+    /// builder, byte-identical to it, kept as the cross-check path.
+    Dense,
+    /// Shell-sparse: per block, `A` = shells with `max |X| >= eps_ao`,
+    /// `Λ` = shells with `max_{s in A} max|D_{Λ s}| >= eps_d`, `B` = shells
+    /// touched by the kernel's surviving pairs; then `F[Λ] = D[Λ,A] X[A]`,
+    /// `Ktilde[A,B] += X[A] G[B]^T`, `S_num[A,A] += X[A] X[A]^T`. Both `eps`
+    /// compare with `>=`, so `0.0` keeps every shell (exact zeros included)
+    /// and reproduces `Dense` bit-for-bit (anchored).
+    Sparse {
+        /// Active-AO threshold on `|X| = sqrt(w) |chi|` over the block.
+        eps_ao: f64,
+        /// Output-row threshold on the shell-block maxima of `|D|`.
+        eps_d: f64,
+    },
+}
+
+/// Default active-AO threshold (`CosxHalfTransform::Sparse::eps_ao`), from
+/// the error model in `scripts/queue/out/cosx_sparse_prereg.md` (NOT tuned to
+/// a measurement): the worst-case `Ktilde` perturbation from dropping
+/// `|X| < eps_ao` rows is `~ sqrt(npts) ||A^g||_inf ||D||_inf eps_ao ~ 1e4 eps_ao`,
+/// so 1e-10 puts the 1e-6 accuracy bar 1e2 away at the bound; the AO reach
+/// only grows as `sqrt(ln(1/eps))`, so 1e-10 vs 1e-8 costs ~12% reach.
+pub const COSX_DEFAULT_EPS_AO: f64 = 1e-10;
+
+/// Default output-row threshold on `|D|` (`CosxHalfTransform::Sparse::eps_d`);
+/// same error model and the same value as `COSX_DEFAULT_EPS_AO`.
+pub const COSX_DEFAULT_EPS_D: f64 = 1e-10;
+
+impl CosxHalfTransform {
+    /// The sparse path at the pre-registered default thresholds.
+    pub const SPARSE_DEFAULT: Self = Self::Sparse { eps_ao: COSX_DEFAULT_EPS_AO, eps_d: COSX_DEFAULT_EPS_D };
+
+    /// Strict config-string parser: `"sparse"` (default thresholds) or
+    /// `"dense"`; anything else is an error, never a silent default.
+    pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
+        match s {
+            "sparse" => Ok(Self::SPARSE_DEFAULT),
+            "dense" => Ok(Self::Dense),
+            other => Err(FerricError::General(format!(
+                "unknown cosx_half_transform '{other}': valid options are 'sparse' (default) and 'dense'"
+            ))),
+        }
+    }
+
+    /// The config-string spelling (`"sparse"` for any thresholds).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Dense => "dense",
+            Self::Sparse { .. } => "sparse",
+        }
+    }
+}
+
 /// Lebedev orders ferric's quadrature tables provide. `ferric_quadrature::lebedev`
 /// PANICS on any other order, so a grid config is validated against this list
 /// up front and rejected with a typed error instead.
@@ -191,6 +278,10 @@ pub struct CosxConfig {
     /// is the slower libint2 path, kept so the two stay cross-checkable
     /// (`cosx_k_md3c1e_matches_cosx_a_backend` in `tests/cosx_k_anchors.rs`).
     pub backend: CosxBackend,
+    /// Dense or shell-sparse block half transforms. Default
+    /// `CosxHalfTransform::SPARSE_DEFAULT`; `Dense` is the byte-identical
+    /// pre-sparse builder (`tests/cosx_sparse_anchors.rs`).
+    pub half_transform: CosxHalfTransform,
 }
 
 /// Default density-driven screen threshold (`CosxConfig::screen_thresh`).
@@ -213,6 +304,7 @@ impl Default for CosxConfig {
             overlap_fit: true,
             screen_thresh: Some(COSX_DEFAULT_SCREEN_THRESH),
             backend: CosxBackend::Md3c1e,
+            half_transform: CosxHalfTransform::SPARSE_DEFAULT,
         }
     }
 }
@@ -230,8 +322,31 @@ pub struct CosxTimings {
     /// The `G = A^g F` contraction, summed over threads: per-point GEMVs
     /// (cosx_a) or the in-callback block accumulation (md3c1e).
     pub contract_s: f64,
-    /// Block GEMMs: `F = D X` (or `C (C^T X)`), `Ktilde += X G^T`, `S_num += X X^T`.
+    /// Block GEMMs: `F = D X` (or `C (C^T X)`), `Ktilde += X G^T`, `S_num += X X^T`
+    /// (`= half_s + ktilde_s + snum_s`; sparse: including their gathers/scatters).
     pub blas_s: f64,
+    /// The `F` half transform alone (sparse: `D[Λ,A]` gather + GEMM + row scatter).
+    pub half_s: f64,
+    /// `Ktilde += X G^T` alone (sparse: `G[B]` gather + GEMM + scatter-add).
+    pub ktilde_s: f64,
+    /// `S_num += X X^T` alone (first build with the fit only).
+    pub snum_s: f64,
+    /// Sparse only: mask construction (`A` from `X`, `Λ` from the shell-block
+    /// maxima of `D`) plus the `X[A]` gather. 0 on the dense path.
+    pub gather_s: f64,
+    /// Mean over blocks of `|A| / nbf` (active AOs; 1.0 on the dense path).
+    pub active_ao_frac: f64,
+    /// Smallest per-block `|A| / nbf`.
+    pub active_ao_frac_min: f64,
+    /// Largest per-block `|A| / nbf`.
+    pub active_ao_frac_max: f64,
+    /// Mean over blocks of `|Λ| / nbf` (rows of `F` computed; 1.0 dense).
+    pub lambda_frac: f64,
+    /// Mean over blocks of `|B| / nbf` (columns of `Ktilde` accumulated; 1.0
+    /// dense, and 1.0 for the cosx_a backend which reports no touched shells).
+    pub out_ao_frac: f64,
+    /// Blocks processed (the denominator of the three means).
+    pub n_blocks: usize,
     /// Overlap-fit finalization (Cholesky on first build + two triangular solves + `S Z`).
     pub fit_s: f64,
     /// Whole `build` call, wall.
@@ -305,6 +420,10 @@ pub struct CosxK<'a> {
     /// md3c1e kernel state (`Some` iff `cfg.backend == Md3c1e`); geometry-only.
     kernel: Option<Md3c1e>,
     workers: Option<Workers>,
+    /// AO offset of every shell (libint2 order; the sparse masks are shell-granular).
+    shell_off: Vec<usize>,
+    /// Functions per shell.
+    shell_dim: Vec<usize>,
     last: CosxTimings,
 }
 
@@ -343,7 +462,14 @@ impl<'a> CosxK<'a> {
         }
         let points: Vec<[f64; 3]> = grid.iter().map(|p| p.xyz).collect();
         let sqrt_w: Vec<f64> = grid.iter().map(|p| p.weight.abs().sqrt()).collect();
-        check_budget(prep.nbasis(), cfg.backend, mem_budget)?;
+        check_budget(prep.nbasis(), cfg.backend, cfg.half_transform, mem_budget)?;
+        if let CosxHalfTransform::Sparse { eps_ao, eps_d } = cfg.half_transform {
+            if !(eps_ao >= 0.0 && eps_ao.is_finite() && eps_d >= 0.0 && eps_d.is_finite()) {
+                return Err(FerricError::General(format!(
+                    "CosxK: sparse half-transform thresholds must be finite and >= 0 (eps_ao = {eps_ao}, eps_d = {eps_d}); 0 is the dense limit"
+                )));
+            }
+        }
         let kernel = match cfg.backend {
             CosxBackend::Md3c1e => Some(Md3c1e::new(prep).map_err(|e| {
                 FerricError::General(format!(
@@ -379,6 +505,8 @@ impl<'a> CosxK<'a> {
             snum: None,
             kernel,
             workers: None,
+            shell_off: prep.shell_offsets()[..prep.nshells()].to_vec(),
+            shell_dim: prep.shell_dims().to_vec(),
             last: CosxTimings::default(),
         })
     }
@@ -432,16 +560,20 @@ impl<'a> CosxK<'a> {
     }
 
     /// `G_{nu,g} = sum_lam A^g_{nu,lam} F_{lam,g}` for one block, `(nbf, B)`,
-    /// dispatched on the backend's worker state.
+    /// dispatched on the backend's worker state. The second value is the set
+    /// of shells whose rows of `G` were written (md3c1e: both shells of every
+    /// surviving pair, union over the block's sub-batches — rows outside it
+    /// are exactly zero); `None` from the cosx_a backend, which builds every
+    /// row (the sparse path then takes `B` = all shells).
     fn contract_block(
         &self,
         workers: &Workers,
         pts: &[[f64; 3]],
         f: &Array2<f64>,
         acc: &BlockCounters,
-    ) -> Result<Array2<f64>, FerricError> {
+    ) -> Result<(Array2<f64>, Option<Vec<bool>>), FerricError> {
         match workers {
-            Workers::CosxA(engines) => self.contract_block_cosx_a(engines, pts, f, acc),
+            Workers::CosxA(engines) => Ok((self.contract_block_cosx_a(engines, pts, f, acc)?, None)),
             Workers::Md3c1e(scratch) => {
                 let kern = self.kernel.as_ref().expect("md3c1e kernel built in new() for this backend");
                 self.contract_block_md3c1e(kern, scratch, pts, f, acc)
@@ -496,17 +628,19 @@ impl<'a> CosxK<'a> {
         pts: &[[f64; 3]],
         f: &Array2<f64>,
         acc: &BlockCounters,
-    ) -> Result<Array2<f64>, FerricError> {
+    ) -> Result<(Array2<f64>, Option<Vec<bool>>), FerricError> {
         let nbf = self.prep.nbasis();
+        let nsh = kern.nshells();
         let f_std = f.as_standard_layout();
-        let ys: Vec<Vec<f64>> = pts
+        let ys: Vec<(Vec<f64>, Vec<bool>)> = pts
             .par_chunks(COSX_SUB_BATCH_POINTS)
             .enumerate()
-            .map(|(c, sub)| -> Result<Vec<f64>, FerricError> {
+            .map(|(c, sub)| -> Result<(Vec<f64>, Vec<bool>), FerricError> {
                 let c0 = c * COSX_SUB_BATCH_POINTS;
                 let n = sub.len();
                 let fsub = copy_columns(&f_std.view(), c0, n);
                 let mut y = vec![0.0_f64; nbf * n];
+                let mut touched = vec![false; nsh];
                 let mut c_ns = 0u64;
                 let t0 = Instant::now();
                 let mut screen = self.batch_screen(kern, sub, &fsub, n);
@@ -518,6 +652,8 @@ impl<'a> CosxK<'a> {
                         |s1, s2, blk| {
                             let t = Instant::now();
                             accumulate_pair(kern, s1, s2, n, blk, &fsub, &mut y);
+                            touched[s1] = true;
+                            touched[s2] = true;
                             c_ns += t.elapsed().as_nanos() as u64;
                         },
                     )
@@ -529,11 +665,12 @@ impl<'a> CosxK<'a> {
                 acc.kept.fetch_add(kept * n, Ordering::Relaxed);
                 acc.kept_geom.fetch_add(geom * n, Ordering::Relaxed);
                 acc.total.fetch_add(total * n, Ordering::Relaxed);
-                Ok(y)
+                Ok((y, touched))
             })
             .collect::<Result<_, _>>()?;
         let mut g = Array2::<f64>::zeros((nbf, pts.len()));
-        for (c, y) in ys.iter().enumerate() {
+        let mut touched = vec![false; nsh];
+        for (c, (y, tch)) in ys.iter().enumerate() {
             let c0 = c * COSX_SUB_BATCH_POINTS;
             let n = y.len() / nbf;
             for (mu, row) in y.chunks_exact(n).enumerate() {
@@ -542,8 +679,11 @@ impl<'a> CosxK<'a> {
                     .expect("row segment of a standard-layout matrix is contiguous")
                     .copy_from_slice(row);
             }
+            for (t, &v) in touched.iter_mut().zip(tch) {
+                *t |= v;
+            }
         }
-        Ok(g)
+        Ok((g, Some(touched)))
     }
 
     /// The density-driven screen for one sub-batch (`None` when
@@ -556,13 +696,11 @@ impl<'a> CosxK<'a> {
         Some(BatchScreen { bounds, thresh, fmax: shell_fmax(kern, f, n), centre, radius, geom_kept: 0 })
     }
 
-    /// Shared driver for `build` / `build_from_occ`: `half` maps `X_blk` to
-    /// `F_blk` (`D X` or `C (C^T X)`).
-    fn build_with(
-        &mut self,
-        half: &dyn Fn(&Array2<f64>) -> Array2<f64>,
-        k: &mut Array2<f64>,
-    ) -> Result<usize, FerricError> {
+    /// Shared driver for `build` / `build_from_occ`. The dense path maps
+    /// `X_blk` to `F_blk` as `D X` or `C (C^T X)`; the sparse path always
+    /// works from `D` (forming `C C^T` once for `Occ` — canonical MOs are
+    /// delocalized, so only `D` carries the row sparsity `Λ` needs).
+    fn build_with(&mut self, src: HalfSource<'_>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
         let t_start = Instant::now();
         self.ctx.check_interrupted()?;
         if self.workers.is_none() {
@@ -576,25 +714,31 @@ impl<'a> CosxK<'a> {
         let mut t = CosxTimings::default();
 
         let workers = self.workers.as_ref().expect("workers initialized above");
-        for (pts, sw) in self.points.chunks(COSX_BLOCK_POINTS).zip(self.sqrt_w.chunks(COSX_BLOCK_POINTS)) {
-            self.ctx.check_interrupted()?;
-            let t0 = Instant::now();
-            let x = self.eval_x_block(pts, sw)?;
-            t.ao_eval_s += t0.elapsed().as_secs_f64();
-
-            let t0 = Instant::now();
-            if let Some(s) = snum.as_mut() {
-                *s += &x.dot(&x.t());
+        match self.cfg.half_transform {
+            CosxHalfTransform::Dense => {
+                let ct;
+                let half: Box<dyn Fn(&Array2<f64>) -> Array2<f64>> = match src {
+                    HalfSource::Density(d) => Box::new(move |x| d.dot(x)),
+                    HalfSource::Occ(c) => {
+                        ct = c.t().to_owned();
+                        Box::new(move |x| c.dot(&ct.dot(x)))
+                    }
+                };
+                self.blocks_dense(&half, workers, &acc, &mut t, &mut ktilde, snum.as_mut())?;
             }
-            let f = half(&x);
-            t.blas_s += t0.elapsed().as_secs_f64();
-
-            let g = self.contract_block(workers, pts, &f, &acc)?;
-
-            let t0 = Instant::now();
-            ktilde += &x.dot(&g.t());
-            t.blas_s += t0.elapsed().as_secs_f64();
+            CosxHalfTransform::Sparse { eps_ao, eps_d } => {
+                let d_occ;
+                let d = match src {
+                    HalfSource::Density(d) => d,
+                    HalfSource::Occ(c) => {
+                        d_occ = c.dot(&c.t());
+                        &d_occ
+                    }
+                };
+                self.blocks_sparse(d, eps_ao, eps_d, workers, &acc, &mut t, &mut ktilde, snum.as_mut())?;
+            }
         }
+        t.blas_s = t.half_s + t.ktilde_s + t.snum_s;
 
         let t0 = Instant::now();
         if self.cfg.overlap_fit {
@@ -621,6 +765,144 @@ impl<'a> CosxK<'a> {
         Ok(0)
     }
 
+    /// The DENSE block loop — the pre-sparse builder, operation for operation
+    /// (only the timers were split), so it stays byte-identical to it.
+    #[allow(clippy::too_many_arguments)]
+    fn blocks_dense(
+        &self,
+        half: &dyn Fn(&Array2<f64>) -> Array2<f64>,
+        workers: &Workers,
+        acc: &BlockCounters,
+        t: &mut CosxTimings,
+        ktilde: &mut Array2<f64>,
+        mut snum: Option<&mut Array2<f64>>,
+    ) -> Result<(), FerricError> {
+        for (pts, sw) in self.points.chunks(COSX_BLOCK_POINTS).zip(self.sqrt_w.chunks(COSX_BLOCK_POINTS)) {
+            self.ctx.check_interrupted()?;
+            let t0 = Instant::now();
+            let x = self.eval_x_block(pts, sw)?;
+            t.ao_eval_s += t0.elapsed().as_secs_f64();
+
+            let t0 = Instant::now();
+            if let Some(s) = snum.as_deref_mut() {
+                *s += &x.dot(&x.t());
+            }
+            t.snum_s += t0.elapsed().as_secs_f64();
+            let t0 = Instant::now();
+            let f = half(&x);
+            t.half_s += t0.elapsed().as_secs_f64();
+
+            let (g, _touched) = self.contract_block(workers, pts, &f, acc)?;
+
+            let t0 = Instant::now();
+            *ktilde += &x.dot(&g.t());
+            t.ktilde_s += t0.elapsed().as_secs_f64();
+            t.n_blocks += 1;
+        }
+        // Honest counters: the dense path uses every row and column.
+        t.active_ao_frac = 1.0;
+        t.active_ao_frac_min = 1.0;
+        t.active_ao_frac_max = 1.0;
+        t.lambda_frac = 1.0;
+        t.out_ao_frac = 1.0;
+        Ok(())
+    }
+
+    /// The SPARSE block loop (`CosxHalfTransform::Sparse`; module doc
+    /// "Sparse half transforms"). Per block: `A` from `X`, `Λ` from the
+    /// shell-block maxima of `D` (built once here), `F[Λ] = D[Λ,A] X[A]` with
+    /// the other rows exactly zero, the kernel's fold as before, `B` = the
+    /// shells it touched, `Ktilde[A,B] += X[A] G[B]^T`, `S_num[A,A] += X[A] X[A]^T`.
+    /// Gathers preserve each operand's memory orientation and the scatters
+    /// are one addition per element, so with every shell active this is the
+    /// dense loop's dgemm calls on equal inputs (bitwise, anchored).
+    #[allow(clippy::too_many_arguments)]
+    fn blocks_sparse(
+        &self,
+        d: &Array2<f64>,
+        eps_ao: f64,
+        eps_d: f64,
+        workers: &Workers,
+        acc: &BlockCounters,
+        t: &mut CosxTimings,
+        ktilde: &mut Array2<f64>,
+        mut snum: Option<&mut Array2<f64>>,
+    ) -> Result<(), FerricError> {
+        let nbf = self.prep.nbasis();
+        let t0 = Instant::now();
+        let dmax = shell_block_max(d, &self.shell_off, &self.shell_dim);
+        t.gather_s += t0.elapsed().as_secs_f64();
+        t.active_ao_frac_min = f64::INFINITY;
+        t.active_ao_frac_max = 0.0;
+        for (pts, sw) in self.points.chunks(COSX_BLOCK_POINTS).zip(self.sqrt_w.chunks(COSX_BLOCK_POINTS)) {
+            self.ctx.check_interrupted()?;
+            let t0 = Instant::now();
+            let x = self.eval_x_block(pts, sw)?;
+            t.ao_eval_s += t0.elapsed().as_secs_f64();
+
+            let t0 = Instant::now();
+            let a = active_shells(&x, eps_ao, &self.shell_off, &self.shell_dim);
+            let lam = lambda_shells(&dmax, &a.shells, eps_d, &self.shell_off, &self.shell_dim);
+            let x_a = gather_rows(&x, &a.aos);
+            t.gather_s += t0.elapsed().as_secs_f64();
+            let fa = a.aos.len() as f64 / nbf as f64;
+            t.n_blocks += 1;
+            t.active_ao_frac += fa;
+            t.active_ao_frac_min = t.active_ao_frac_min.min(fa);
+            t.active_ao_frac_max = t.active_ao_frac_max.max(fa);
+            t.lambda_frac += lam.aos.len() as f64 / nbf as f64;
+            if a.aos.is_empty() {
+                // Every |X| on this block is below eps_ao: it contributes
+                // nothing to Ktilde or S_num (never reached at eps_ao = 0).
+                continue;
+            }
+
+            if let Some(s) = snum.as_deref_mut() {
+                let t0 = Instant::now();
+                let s_aa = x_a.dot(&x_a.t());
+                scatter_add(s, &a.aos, &a.aos, &s_aa);
+                t.snum_s += t0.elapsed().as_secs_f64();
+            }
+            if lam.aos.is_empty() {
+                // F is exactly zero on this block: G and its Ktilde term vanish
+                // (never reached at eps_d = 0).
+                continue;
+            }
+
+            let t0 = Instant::now();
+            let d_la = gather_block(d, &lam.aos, &a.aos);
+            let f_la = d_la.dot(&x_a);
+            let mut f = Array2::<f64>::zeros((nbf, pts.len()));
+            for (i, &lambda) in lam.aos.iter().enumerate() {
+                f.row_mut(lambda).assign(&f_la.row(i));
+            }
+            t.half_s += t0.elapsed().as_secs_f64();
+
+            let (g, touched) = self.contract_block(workers, pts, &f, acc)?;
+
+            let t0 = Instant::now();
+            let b_aos: Vec<usize> = match touched {
+                None => (0..nbf).collect(),
+                Some(tch) => aos_of_shells(tch.iter().enumerate().filter(|(_, &v)| v).map(|(s, _)| s), &self.shell_off, &self.shell_dim),
+            };
+            t.out_ao_frac += b_aos.len() as f64 / nbf as f64;
+            if !b_aos.is_empty() {
+                let g_b = gather_rows_same_layout(&g, &b_aos);
+                let prod = x_a.dot(&g_b.t());
+                scatter_add(ktilde, &a.aos, &b_aos, &prod);
+            }
+            t.ktilde_s += t0.elapsed().as_secs_f64();
+        }
+        let nb = t.n_blocks.max(1) as f64;
+        t.active_ao_frac /= nb;
+        t.lambda_frac /= nb;
+        t.out_ao_frac /= nb;
+        if t.n_blocks == 0 {
+            t.active_ao_frac_min = 0.0;
+        }
+        Ok(())
+    }
+
     /// Per-worker state for the configured backend.
     fn make_workers(&self) -> Result<Workers, FerricError> {
         Ok(match self.cfg.backend {
@@ -632,6 +914,113 @@ impl<'a> CosxK<'a> {
                 Workers::Md3c1e(ThreadSlots::new(|| Ok(kern.scratch()))?)
             }
         })
+    }
+}
+
+/// What a `build_with` call transforms: the density itself, or the occupied
+/// coefficients it factorizes (`D = C C^T`).
+enum HalfSource<'h> {
+    Density(&'h Array2<f64>),
+    Occ(&'h Array2<f64>),
+}
+
+/// A shell-granular AO subset: the shells (ascending) and the AO indices
+/// they cover (ascending, concatenated shell ranges).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ShellMask {
+    shells: Vec<usize>,
+    aos: Vec<usize>,
+}
+
+/// AO indices covered by `shells` (each shell contributes its full range).
+fn aos_of_shells(shells: impl Iterator<Item = usize>, off: &[usize], dim: &[usize]) -> Vec<usize> {
+    shells.flat_map(|s| off[s]..off[s] + dim[s]).collect()
+}
+
+/// `A` for one block: shells with `max_{mu in s, g} |x[mu, g]| >= eps`
+/// (`>=`, so `eps = 0` keeps every shell — the vacuous mask).
+fn active_shells(x: &Array2<f64>, eps: f64, off: &[usize], dim: &[usize]) -> ShellMask {
+    let shells: Vec<usize> = (0..off.len())
+        .filter(|&s| {
+            let m = x.slice(ndarray::s![off[s]..off[s] + dim[s], ..]).iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+            m >= eps
+        })
+        .collect();
+    let aos = aos_of_shells(shells.iter().copied(), off, dim);
+    ShellMask { shells, aos }
+}
+
+/// `dmax[l * nsh + s] = max |d[mu, nu]|` over `mu in shell l, nu in shell s`.
+fn shell_block_max(d: &Array2<f64>, off: &[usize], dim: &[usize]) -> Vec<f64> {
+    let nsh = off.len();
+    let mut out = vec![0.0_f64; nsh * nsh];
+    for l in 0..nsh {
+        for s in 0..nsh {
+            out[l * nsh + s] = d
+                .slice(ndarray::s![off[l]..off[l] + dim[l], off[s]..off[s] + dim[s]])
+                .iter()
+                .fold(0.0_f64, |m, &v| m.max(v.abs()));
+        }
+    }
+    out
+}
+
+/// `Λ` for one block: shells `l` with `max_{s in A} dmax[l][s] >= eps`
+/// (`>=`: `eps = 0` keeps every shell whenever `A` is non-empty).
+fn lambda_shells(dmax: &[f64], a_shells: &[usize], eps: f64, off: &[usize], dim: &[usize]) -> ShellMask {
+    let nsh = off.len();
+    let shells: Vec<usize> =
+        (0..nsh).filter(|&l| a_shells.iter().any(|&s| dmax[l * nsh + s] >= eps)).collect();
+    let aos = aos_of_shells(shells.iter().copied(), off, dim);
+    ShellMask { shells, aos }
+}
+
+/// `m[rows, ..]` as a fresh standard-layout `(rows.len(), ncols)` matrix.
+fn gather_rows(m: &Array2<f64>, rows: &[usize]) -> Array2<f64> {
+    let mut out = Array2::<f64>::zeros((rows.len(), m.ncols()));
+    for (i, &r) in rows.iter().enumerate() {
+        out.row_mut(i).assign(&m.row(r));
+    }
+    out
+}
+
+/// `m[rows, ..]` in the SAME memory orientation as `m`: standard layout when
+/// `m` is standard; otherwise (a transposed view of standard memory, which is
+/// how the cosx_a backend hands `G` over) the transpose of a standard
+/// `(ncols, rows.len())` buffer. This keeps the stride pattern the block GEMM
+/// sees identical to the dense path's, so the vacuous mask is bitwise.
+fn gather_rows_same_layout(m: &Array2<f64>, rows: &[usize]) -> Array2<f64> {
+    if m.is_standard_layout() || !m.t().is_standard_layout() {
+        gather_rows(m, rows)
+    } else {
+        let mut out = Array2::<f64>::zeros((m.ncols(), rows.len()));
+        for (i, &r) in rows.iter().enumerate() {
+            out.column_mut(i).assign(&m.row(r));
+        }
+        out.reversed_axes()
+    }
+}
+
+/// `m[rows, cols]` as a fresh standard-layout matrix.
+fn gather_block(m: &Array2<f64>, rows: &[usize], cols: &[usize]) -> Array2<f64> {
+    let mut out = Array2::<f64>::zeros((rows.len(), cols.len()));
+    for (i, &r) in rows.iter().enumerate() {
+        let src = m.row(r);
+        for (j, &c) in cols.iter().enumerate() {
+            out[(i, j)] = src[c];
+        }
+    }
+    out
+}
+
+/// `k[rows[i], cols[j]] += v[i, j]` — one addition per element, exactly the
+/// elementwise `k += v` of the dense path when the maps are the identity.
+fn scatter_add(k: &mut Array2<f64>, rows: &[usize], cols: &[usize], v: &Array2<f64>) {
+    debug_assert_eq!(v.dim(), (rows.len(), cols.len()));
+    for (i, &r) in rows.iter().enumerate() {
+        for (j, &c) in cols.iter().enumerate() {
+            k[(r, c)] += v[(i, j)];
+        }
     }
 }
 
@@ -746,21 +1135,28 @@ fn shell_fmax(kern: &Md3c1e, f: &[f64], n: usize) -> Vec<f64> {
 
 /// Fail fast if one block's scratch does not fit the budget. The per-thread
 /// footprint is one dense `A^g` (nbf^2) for cosx_a, or `Y` + `F` sub-batch
-/// planes (2 nbf x `COSX_SUB_BATCH_POINTS`) for md3c1e.
-fn check_budget(nbf: usize, backend: CosxBackend, mem_budget: usize) -> Result<(), FerricError> {
+/// planes (2 nbf x `COSX_SUB_BATCH_POINTS`) for md3c1e. The sparse half
+/// transform adds, at its dense worst case, two more planes (`X[A]`, `G[B]`)
+/// and two squares (`D[Λ,A]`, `D_occ`); its gathered products are bounded by
+/// the planes already counted.
+fn check_budget(nbf: usize, backend: CosxBackend, half: CosxHalfTransform, mem_budget: usize) -> Result<(), FerricError> {
     let budget = if mem_budget == 0 { ferric_core::memory::resolve_budget_bytes(None) } else { mem_budget };
     let threads = rayon::current_num_threads().max(1) + 1;
-    let planes = 3usize.saturating_mul(COSX_BLOCK_POINTS).saturating_mul(nbf).saturating_mul(8);
+    let (n_planes, n_squares) = match half {
+        CosxHalfTransform::Dense => (3usize, 5usize),
+        CosxHalfTransform::Sparse { .. } => (5, 7),
+    };
+    let planes = n_planes.saturating_mul(COSX_BLOCK_POINTS).saturating_mul(nbf).saturating_mul(8);
     let per_thread = match backend {
         CosxBackend::CosxA => nbf.saturating_mul(nbf).saturating_mul(8),
         CosxBackend::Md3c1e => 2usize.saturating_mul(nbf).saturating_mul(COSX_SUB_BATCH_POINTS).saturating_mul(8),
     };
-    // Ktilde + S_num + S + L + L^T
-    let squares = 5usize.saturating_mul(nbf).saturating_mul(nbf).saturating_mul(8);
+    // Ktilde + S_num + S + L + L^T (+ D[Λ,A] + D_occ when sparse)
+    let squares = n_squares.saturating_mul(nbf).saturating_mul(nbf).saturating_mul(8);
     let needed = planes.saturating_add(squares).saturating_add(threads.saturating_mul(per_thread));
     if needed > budget {
         return Err(FerricError::General(format!(
-            "CosxK: one grid block needs {:.2} GB (nbf={nbf}, {COSX_BLOCK_POINTS} pts x 3 planes + {threads} per-thread {} buffers) \
+            "CosxK: one grid block needs {:.2} GB (nbf={nbf}, {COSX_BLOCK_POINTS} pts x {n_planes} planes + {threads} per-thread {} buffers) \
              but the memory budget is {:.2} GB — raise [memory] budget_gb / FERRIC_MEM_BUDGET_GB or use fewer threads",
             needed as f64 / 1e9,
             backend.as_str(),
@@ -817,16 +1213,16 @@ impl<'a> KBuilder for CosxK<'a> {
     /// K from a raw density — the mandatory path (iteration 1, Fermi smearing
     /// and fractional occupations supply no `C_occ`).
     fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
-        let half = |x: &Array2<f64>| d.dot(x);
-        self.build_with(&half, k)
+        self.build_with(HalfSource::Density(d), k)
     }
 
-    /// K for `D = C_occ C_occ^T` with the cheaper half transform
-    /// `F = C (C^T X)`; identical to `build(C C^T)` to round-off (anchored).
+    /// K for `D = C_occ C_occ^T`. Dense path: the cheaper half transform
+    /// `F = C (C^T X)`, identical to `build(C C^T)` to round-off (anchored).
+    /// Sparse path: forms `C C^T` once and takes the density path (bitwise
+    /// `build(C C^T)`, anchored) — the row mask needs the decaying `D`, not
+    /// the delocalized `C`.
     fn build_from_occ(&mut self, c_occ: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
-        let ct = c_occ.t().to_owned();
-        let half = |x: &Array2<f64>| c_occ.dot(&ct.dot(x));
-        self.build_with(&half, k)
+        self.build_with(HalfSource::Occ(c_occ), k)
     }
 
     /// No density-dependent state (no pair lists): nothing to update.
@@ -849,6 +1245,70 @@ mod tests {
         assert_eq!(c.screen_thresh, Some(COSX_DEFAULT_SCREEN_THRESH));
         assert_eq!(COSX_DEFAULT_SCREEN_THRESH, 1e-7);
         assert_eq!(c.backend, CosxBackend::Md3c1e);
+        assert_eq!(c.half_transform, CosxHalfTransform::Sparse { eps_ao: 1e-10, eps_d: 1e-10 });
+    }
+
+    #[test]
+    fn half_transform_parser_is_strict_and_round_trips() {
+        assert_eq!(CosxHalfTransform::parse_config_str("dense").unwrap(), CosxHalfTransform::Dense);
+        assert_eq!(CosxHalfTransform::parse_config_str("sparse").unwrap(), CosxHalfTransform::SPARSE_DEFAULT);
+        assert!(CosxHalfTransform::parse_config_str("Sparse").is_err());
+        assert!(CosxHalfTransform::parse_config_str("").is_err());
+        assert_eq!(CosxHalfTransform::Dense.as_str(), "dense");
+        assert_eq!(CosxHalfTransform::Sparse { eps_ao: 1.0, eps_d: 1.0 }.as_str(), "sparse");
+    }
+
+    /// Masks on a toy layout: three shells of dims 1, 3, 1 (AOs 0 | 1..4 | 4).
+    #[test]
+    fn masks_keep_everything_at_zero_and_are_shell_granular() {
+        let off = [0usize, 1, 4];
+        let dim = [1usize, 3, 1];
+        // x rows: shell 0 = 0.5; shell 1 = (0, 1e-12, 0); shell 2 = exactly 0.
+        let mut x = Array2::<f64>::zeros((5, 2));
+        x[(0, 1)] = 0.5;
+        x[(2, 0)] = 1e-12;
+        let all = active_shells(&x, 0.0, &off, &dim);
+        assert_eq!(all, ShellMask { shells: vec![0, 1, 2], aos: vec![0, 1, 2, 3, 4] }, "eps = 0 must keep exact zeros");
+        let a = active_shells(&x, 1e-10, &off, &dim);
+        assert_eq!(a, ShellMask { shells: vec![0], aos: vec![0] });
+        let a = active_shells(&x, 1e-12, &off, &dim);
+        assert_eq!(a.shells, vec![0, 1], ">= at the threshold keeps the shell (whole shell, not one AO)");
+        assert_eq!(a.aos, vec![0, 1, 2, 3]);
+
+        // D: shell block (2,0) large, (1,0) tiny, everything else 0.
+        let mut d = Array2::<f64>::zeros((5, 5));
+        d[(4, 0)] = 0.3;
+        d[(2, 0)] = 1e-11;
+        let dmax = shell_block_max(&d, &off, &dim);
+        assert_eq!(dmax[2 * 3], 0.3);
+        assert_eq!(dmax[3], 1e-11);
+        let lam = lambda_shells(&dmax, &[0], 1e-10, &off, &dim);
+        assert_eq!(lam.shells, vec![2]);
+        let lam = lambda_shells(&dmax, &[0], 0.0, &off, &dim);
+        assert_eq!(lam.shells, vec![0, 1, 2], "eps_d = 0 keeps every row");
+        let lam = lambda_shells(&dmax, &[], 0.0, &off, &dim);
+        assert!(lam.shells.is_empty(), "empty A gives empty Λ");
+    }
+
+    #[test]
+    fn gathers_preserve_orientation_and_scatter_is_one_add() {
+        let m = ndarray::arr2(&[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]);
+        let g = gather_rows(&m, &[2, 0]);
+        assert_eq!(g, ndarray::arr2(&[[7.0, 8.0, 9.0], [1.0, 2.0, 3.0]]));
+        assert!(g.is_standard_layout());
+        let gs = gather_rows_same_layout(&m, &[2, 0]);
+        assert_eq!(gs, g);
+        assert!(gs.is_standard_layout());
+        // A transposed view (the cosx_a G layout): the gather must come back transposed too.
+        let mt = m.clone().reversed_axes();
+        assert!(!mt.is_standard_layout());
+        let gt = gather_rows_same_layout(&mt, &[1, 2]);
+        assert_eq!(gt, ndarray::arr2(&[[2.0, 5.0, 8.0], [3.0, 6.0, 9.0]]));
+        assert!(!gt.is_standard_layout() && gt.t().is_standard_layout());
+        assert_eq!(gather_block(&m, &[0, 2], &[1]), ndarray::arr2(&[[2.0], [8.0]]));
+        let mut k = Array2::<f64>::ones((3, 3));
+        scatter_add(&mut k, &[2, 0], &[1], &ndarray::arr2(&[[10.0], [20.0]]));
+        assert_eq!(k, ndarray::arr2(&[[1.0, 21.0, 1.0], [1.0, 1.0, 1.0], [1.0, 11.0, 1.0]]));
     }
 
     #[test]
@@ -967,8 +1427,10 @@ mod tests {
     #[test]
     fn budget_check_errors_when_too_small_and_passes_when_ample() {
         for b in [CosxBackend::Md3c1e, CosxBackend::CosxA] {
-            assert!(check_budget(100, b, 1).is_err());
-            assert!(check_budget(100, b, usize::MAX).is_ok());
+            for h in [CosxHalfTransform::Dense, CosxHalfTransform::SPARSE_DEFAULT] {
+                assert!(check_budget(100, b, h, 1).is_err());
+                assert!(check_budget(100, b, h, usize::MAX).is_ok());
+            }
         }
     }
 }

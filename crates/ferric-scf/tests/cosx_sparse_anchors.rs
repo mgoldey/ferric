@@ -90,8 +90,10 @@ fn setup_with(mol: Molecule, basis: &str, df: bool, density_conv: f64) -> Setup 
     let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
     let ctx = ParallelContext::default();
     let aux = "def2-universal-jkfit";
+    // The DF-JK reference keeps the default energy_conv (a sanity bound, not a
+    // target — 1e-10 with a loose density_conv does not converge).
     let cfg = RhfConfig {
-        energy_conv: 1e-10,
+        energy_conv: if df { RhfConfig::default().energy_conv } else { 1e-10 },
         density_conv,
         integral_thresh: 1e-14,
         df_j_aux: df.then(|| aux.to_string()),
@@ -128,6 +130,13 @@ fn grid(n_radial: usize, n_angular: usize) -> AtomicGridConfig {
 
 fn cfg(half: CosxHalfTransform, fit: bool, screen: Option<f64>) -> CosxConfig {
     CosxConfig { grid: grid(50, 110), overlap_fit: fit, screen_thresh: screen, half_transform: half, ..CosxConfig::default() }
+}
+
+/// The production screen (the SCF path): `CosxConfig::default().screen_thresh`.
+fn prod_screen() -> Option<f64> {
+    let t = CosxConfig::default().screen_thresh;
+    assert!(matches!(t, Some(v) if v > 0.0), "the density-driven screen is expected ON by default");
+    t
 }
 
 const DENSE: CosxHalfTransform = CosxHalfTransform::Dense;
@@ -183,17 +192,22 @@ fn sparse_zero_eps_matches_dense_bitwise_water() {
 fn sparse_zero_eps_matches_dense_bitwise_butane() {
     let s = setup_butane();
     trivial_limit_on(&s, "butane/def2-SVP");
-    let (k_dense, _) = build_k(&s, cfg(DENSE, true, None), &s.d);
-    let (k_zero, t) = build_k(&s, cfg(SPARSE_ZERO, true, None), &s.d);
-    assert!(k_dense == k_zero, "butane, screen at default: eps = 0 not bitwise dense");
-    assert_all_active(&t, "butane screen default");
+    for screen in [None, prod_screen()] {
+        let (k_dense, td) = build_k(&s, cfg(DENSE, true, screen), &s.d);
+        let (k_zero, t) = build_k(&s, cfg(SPARSE_ZERO, true, screen), &s.d);
+        println!("trivial limit butane screen={screen:?}: max dev {:.3e}; B {:.4}; pairs kept {}/{} (dense {}/{})",
+            max_abs_diff(&k_dense, &k_zero), t.out_ao_frac, t.pairs_kept, t.pairs_total, td.pairs_kept, td.pairs_total);
+        assert!(k_dense == k_zero, "butane, screen {screen:?}: eps = 0 not bitwise dense");
+        assert_all_active(&t, &format!("butane screen {screen:?}"));
+        assert_eq!((t.pairs_kept, t.pairs_total), (td.pairs_kept, td.pairs_total), "eps = 0 changed the pair screen's decisions");
+    }
 }
 
 /// Anchor (b) on one system: production eps vs dense on the (50,110)+fit
 /// operating grid with the default screen.
 fn production_eps_on(s: &Setup, label: &str) -> CosxTimings {
-    let (k_dense, td) = build_k(s, cfg(DENSE, true, None), &s.d);
-    let (k_sp, t) = build_k(s, cfg(SPARSE_PROD, true, None), &s.d);
+    let (k_dense, td) = build_k(s, cfg(DENSE, true, prod_screen()), &s.d);
+    let (k_sp, t) = build_k(s, cfg(SPARSE_PROD, true, prod_screen()), &s.d);
     let dev = max_abs_diff(&k_dense, &k_sp);
     println!(
         "production eps {label}: max|K_sparse - K_dense| = {dev:.3e} (||K||max {:.3e}); A {:.4} Λ {:.4} B {:.4} over {} blocks; \
@@ -285,8 +299,8 @@ fn sparse_build_from_occ_is_the_density_path() {
 #[test]
 fn sparse_reachability_counts_alkane_8() {
     let mol = Molecule::load_xyz(&testdata("testdata/molecules/alkane_8.xyz")).expect("alkane_8.xyz");
-    let s = setup_with(mol, "def2-svp", true, 1e-5);
-    let (_k, t) = build_k(&s, cfg(SPARSE_PROD, true, None), &s.d);
+    let s = setup_with(mol, "def2-svp", true, 1e-6);
+    let (_k, t) = build_k(&s, cfg(SPARSE_PROD, true, prod_screen()), &s.d);
     println!(
         "alkane_8/def2-SVP nbf={} eps_ao={COSX_DEFAULT_EPS_AO:e} eps_d={COSX_DEFAULT_EPS_D:e}: mean |A|/nbf {:.4} (min {:.4} max {:.4}), mean |Λ|/nbf {:.4}, mean |B|/nbf {:.4}, {} blocks",
         s.prep.nbasis(), t.active_ao_frac, t.active_ao_frac_min, t.active_ao_frac_max, t.lambda_frac, t.out_ao_frac, t.n_blocks
@@ -304,8 +318,8 @@ fn sparse_reachability_counts_alkane_8() {
 fn sparse_reachability_water_dimer_far() {
     let mol = Molecule::parse_xyz(WATER_DIMER_FAR, 0, 1).expect("dimer");
     let s = setup_with(mol, "cc-pvdz", false, 1e-8);
-    let (k_dense, _) = build_k(&s, cfg(DENSE, true, None), &s.d);
-    let (k_sp, t) = build_k(&s, cfg(SPARSE_PROD, true, None), &s.d);
+    let (k_dense, _) = build_k(&s, cfg(DENSE, true, prod_screen()), &s.d);
+    let (k_sp, t) = build_k(&s, cfg(SPARSE_PROD, true, prod_screen()), &s.d);
     let dev = max_abs_diff(&k_dense, &k_sp);
     println!(
         "water dimer 28 Bohr / cc-pVDZ: max|K_sparse - K_dense| = {dev:.3e}; mean |A|/nbf {:.4} (min {:.4} max {:.4}), |Λ|/nbf {:.4}, |B|/nbf {:.4}, {} blocks",
@@ -314,6 +328,9 @@ fn sparse_reachability_water_dimer_far() {
     assert!(dev < 1e-6, "dimer: sparse K differs from dense by {dev:.3e}");
     assert!(t.active_ao_frac < 0.75, "dimer: mean |A|/nbf = {:.4} >= 0.75", t.active_ao_frac);
     assert!(t.lambda_frac < 0.75, "dimer: mean |Λ|/nbf = {:.4} >= 0.75 — the D-sparsity restriction is not biting", t.lambda_frac);
+    // With the production screen the kernel touches only shells with a
+    // significant F (one monomer for the inner blocks), so B must be sparse too.
+    assert!(t.out_ao_frac < 0.75, "dimer: mean |B|/nbf = {:.4} >= 0.75 — the touched-shell set is not biting", t.out_ao_frac);
     assert!(t.active_ao_frac_min <= 0.5 + 1e-12, "dimer: no block is confined to one monomer (min |A|/nbf {:.4})", t.active_ao_frac_min);
 }
 
