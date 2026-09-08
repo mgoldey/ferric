@@ -70,8 +70,9 @@ const PAR_DENSITY_PAIRS_THRESHOLD: usize = 64;
 /// Density-dependent pair lists rebuilt each SCF cycle.
 ///
 /// `pairs[j]` is a sorted list of shell indices `sigma` where the maximum
-/// absolute density element in the `(j, sigma)` shell block times the
-/// Schwarz-like bound Q(j, sigma) exceeds the threshold.
+/// absolute density element in the `(j, sigma)` shell block, times the
+/// largest Schwarz factor any bra pair containing `j` can have and the largest
+/// any ket pair containing `sigma` can have, exceeds the threshold.
 #[derive(Debug, Clone)]
 pub struct DensityPairs {
     pairs: Vec<Vec<usize>>,
@@ -80,9 +81,24 @@ pub struct DensityPairs {
 impl DensityPairs {
     /// Build density-dependent pair lists.
     ///
-    /// For each shell `j`, finds shells `sigma` where the maximum absolute density
-    /// matrix element in the (j, sigma) block times `bound.estimate(j, sigma, j, sigma).sqrt()`
-    /// exceeds `threshold`.
+    /// A density block `D[j,σ]` enters K only through quartets `(i j|σ l)` (up
+    /// to the 8-fold permutations), each bounded by `Q(i,j)·Q(σ,l)·|D[j,σ]|`.
+    /// The pair `(j, σ)` can therefore matter only if
+    ///
+    /// ```text
+    ///   max|D[j,σ]| · qmax(j) · qmax(σ) > threshold,   qmax(x) = max_y Q(x,y)
+    /// ```
+    ///
+    /// which is a NECESSARY condition — every quartet that survives the
+    /// per-quartet `Q·Q·|D|` screen in `LinkK::build` has its density pair
+    /// retained here. The former criterion used `Q(j, σ)` — the Schwarz factor
+    /// of the pair `(j,σ)` ITSELF, which appears in no such quartet and decays
+    /// like a Gaussian overlap while `D[j,σ]` decays only exponentially — so
+    /// it discarded genuinely contributing far density pairs at every
+    /// threshold (butane/def2-SVP, thresh 1e-12: `max|K_LinK - K_direct|` =
+    /// 1.7e-3 on the converged density; 2.3e-7 at the atom-block-diagonal SAD
+    /// guess where the far blocks are exactly zero). See
+    /// `tests/link_scf_anchor.rs`.
     ///
     /// Parallelized over the outer shell index `j` once `nsh` clears
     /// `PAR_DENSITY_PAIRS_THRESHOLD`. Each `j` reads only `d`/`bound`/`prep`
@@ -102,6 +118,12 @@ impl DensityPairs {
         let dims = prep.shell_dims();
         let offs = prep.shell_offsets();
 
+        // qmax[x] = max_y Q(x,y): the largest Schwarz factor of any shell pair
+        // containing x (O(nsh²) diagonal estimates, once per build).
+        let qmax: Vec<f64> = (0..nsh)
+            .map(|x| (0..nsh).map(|y| bound.estimate(x, y, x, y).sqrt()).fold(0.0f64, f64::max))
+            .collect();
+
         let row_for = |j: usize| -> Vec<usize> {
             let mut row = Vec::new();
             for sigma in 0..nsh {
@@ -112,9 +134,7 @@ impl DensityPairs {
                         dmax = dmax.max(d[(mu, nu)].abs());
                     }
                 }
-                // Q(j, sigma) from diagonal bound estimate.
-                let q_js = bound.estimate(j, sigma, j, sigma).sqrt();
-                if dmax * q_js > threshold {
+                if dmax * qmax[j] * qmax[sigma] > threshold {
                     row.push(sigma);
                 }
             }
@@ -300,6 +320,12 @@ mod tests {
         let nsh = prep.nshells();
         let dims = prep.shell_dims();
         let offs = prep.shell_offsets();
+        let mut qmax = vec![0.0f64; nsh];
+        for x in 0..nsh {
+            for y in 0..nsh {
+                qmax[x] = qmax[x].max(bound.estimate(x, y, x, y).sqrt());
+            }
+        }
         let mut pairs = Vec::with_capacity(nsh);
         for j in 0..nsh {
             let mut row = Vec::new();
@@ -310,8 +336,7 @@ mod tests {
                         dmax = dmax.max(d[(mu, nu)].abs());
                     }
                 }
-                let q_js = bound.estimate(j, sigma, j, sigma).sqrt();
-                if dmax * q_js > threshold {
+                if dmax * qmax[j] * qmax[sigma] > threshold {
                     row.push(sigma);
                 }
             }
