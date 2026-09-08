@@ -196,7 +196,13 @@ fn cosx_full_k_cell() {
         Some("none") => None,
         Some(s) => Some(s.parse::<f64>().expect("COSX_FK_SCREEN: number or 'none'")),
     };
-    let cfg = CosxConfig { overlap_fit: fit, screen_thresh, ..CosxConfig::default() };
+    // COSX_FK_HALF: "sparse" (default) or "dense" — the block half transforms.
+    let half = match std::env::var("COSX_FK_HALF").ok().as_deref() {
+        None | Some("sparse") => ferric_scf::cosx_k::CosxHalfTransform::SPARSE_DEFAULT,
+        Some("dense") => ferric_scf::cosx_k::CosxHalfTransform::Dense,
+        Some(other) => panic!("COSX_FK_HALF = {other:?}: expected \"sparse\" or \"dense\""),
+    };
+    let cfg = CosxConfig { overlap_fit: fit, screen_thresh, half_transform: half, ..CosxConfig::default() };
     let mut cosx = CosxK::new(&ctx, &mol, &prep, cfg, budget_bytes).expect("CosxK::new");
     let npts = cosx.npts();
     println!("COSX grid (50,110): {npts} points; overlap_fit={fit}; screen_thresh={screen_thresh:?}");
@@ -223,6 +229,11 @@ fn cosx_full_k_cell() {
             t.pairs_total,
             t.pairs_kept as f64 / t.pairs_total as f64,
             t.pairs_kept_geom as f64 / t.pairs_total as f64
+        );
+        println!(
+            "COSX sparse counters: half {:.3} s | ktilde {:.3} s | snum {:.3} s | gather {:.3} s | |A|/nbf {:.4} (min {:.4} max {:.4}) | |Λ|/nbf {:.4} | |B|/nbf {:.4} | blocks {}",
+            t.half_s, t.ktilde_s, t.snum_s, t.gather_s,
+            t.active_ao_frac, t.active_ao_frac_min, t.active_ao_frac_max, t.lambda_frac, t.out_ao_frac, t.n_blocks
         );
         println!(
             "COSX per-point A-build {:.4e} s/pt ({:.3e} s/pt/nbf^2); K/nbf^2 {:.3e} s",
