@@ -336,7 +336,9 @@ impl PyRhfResult {
 ///                   after this many DIIS iters. 0 = aufbau throughout. Fixes
 ///                   occupied-set flip-flop non-convergence.
 /// Fock builders:
-///   k_builder       "direct" (default) or "link" (linear-scaling exchange).
+///   k_builder       "direct" (default), "link" (LinK exchange, RHF only) or
+///                   "cosx" (seminumerical exchange, RHF + Coulomb only; CLI
+///                   defaults for grid/fit/kernel — not exposed here).
 ///   df_j_aux        auxiliary basis name for density-fitted Coulomb (RI-J).
 ///   df_k_aux        auxiliary basis name for density-fitted exchange (RI-K);
 ///                   should be a JK-fit basis, not an MP2-fit basis.
