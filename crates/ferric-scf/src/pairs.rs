@@ -135,6 +135,11 @@ impl DensityPairs {
     pub fn partners(&self, j: usize) -> &[usize] {
         &self.pairs[j]
     }
+
+    /// Total number of density-significant pairs (sum of all row lengths).
+    pub fn total_pairs(&self) -> usize {
+        self.pairs.iter().map(|v| v.len()).sum()
+    }
 }
 
 /// O(n) merge intersection of two sorted slices.
