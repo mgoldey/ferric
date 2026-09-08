@@ -28,6 +28,13 @@ fn h2o() -> Molecule {
 
 #[test]
 fn over_budget_batches_instead_of_failing_and_under_budget_uses_full_cache() {
+    // This test steers the budget through the legacy FERRIC_ERI3_BUDGET_GB.
+    // The unified FERRIC_MEM_BUDGET_GB takes precedence over it, and CI pins
+    // the unified var (so tests never auto-detect from the runner) -- which
+    // would silently turn the "1e-6 GB" below into 3 GB and make the VV10
+    // OverBudget assertion vacuous. Remove it for the duration and restore.
+    let saved_unified = std::env::var_os("FERRIC_MEM_BUDGET_GB");
+    std::env::remove_var("FERRIC_MEM_BUDGET_GB");
     let mol = h2o();
     let bs = basis::bundled("cc-pvdz").unwrap();
     let main = AtomicGridConfig::default();
@@ -67,6 +74,9 @@ fn over_budget_batches_instead_of_failing_and_under_budget_uses_full_cache() {
         .expect("KsXc::new must succeed under a 64 GB budget");
 
     std::env::remove_var("FERRIC_ERI3_BUDGET_GB");
+    if let Some(v) = saved_unified {
+        std::env::set_var("FERRIC_MEM_BUDGET_GB", v);
+    }
     KsXcUks::new(&mol, &bs, "B3LYP", &main, &nlc)
         .expect("KsXcUks::new must succeed with no budget set");
 }
