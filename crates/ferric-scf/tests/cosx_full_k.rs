@@ -139,29 +139,54 @@ fn cosx_full_k_cell() {
     let ctx = ParallelContext::default();
     let (d, _c_occ): (Array2<f64>, Array2<f64>) = if let Ok(path) = std::env::var("COSX_FK_DENSITY_IN") {
         let (d, c) = load_density(&path, nbf, nocc);
-        println!("density loaded from {path} (provenance: earlier DF-JK SCF process)");
+        println!("density loaded from {path} (provenance: an earlier SCF process of this harness; see its log for mode/convergence)");
         (d, c)
     } else {
         let schwarz = SchwarzBounds::compute(op, &prep).expect("Schwarz bounds");
-        let scf_cfg = RhfConfig {
-            df_j_aux: Some(JKFIT.to_string()),
-            df_k_aux: Some(JKFIT.to_string()),
-            ..RhfConfig::default()
+        // COSX_FK_SCF: "dfjk" (default; two budget-bounded 3-index tensors —
+        // at nbf >= ~400 they no longer fit a 3.6 GB cgroup and spill/thrash)
+        // or "link" (LinK-K + direct J, no 3-index tensors; density_conv from
+        // COSX_FK_SCF_DCONV, default 1e-5 — the SCF is not the timed quantity).
+        let scf_mode = std::env::var("COSX_FK_SCF").unwrap_or_else(|_| "dfjk".into());
+        let scf_cfg = match scf_mode.as_str() {
+            "dfjk" => RhfConfig { df_j_aux: Some(JKFIT.to_string()), df_k_aux: Some(JKFIT.to_string()), ..RhfConfig::default() },
+            // Window-chaining knobs (an SCF that does not fit one foreground
+            // window): COSX_FK_SCF_MAXITER caps the iterations, the density is
+            // saved UNCONVERGED (flagged) when COSX_FK_SCF_SAVE_UNCONVERGED=1,
+            // and COSX_FK_SCF_RESTART_IN seeds the next window from it.
+            // "direct": the plain direct J+K SCF (incremental Fock), no
+            // 3-index tensors — the exact, low-memory route for nbf >= ~400.
+            "link" | "cosx" | "direct" => RhfConfig {
+                k_builder: (scf_mode != "direct").then(|| scf_mode.clone()),
+                density_conv: env_num("COSX_FK_SCF_DCONV", 1e-5),
+                max_iter: env_num("COSX_FK_SCF_MAXITER", RhfConfig::default().max_iter),
+                verbose: true,
+                init_guess_density: std::env::var("COSX_FK_SCF_RESTART_IN").ok().map(|p| {
+                    let (d0, _) = load_density(&p, nbf, nocc);
+                    println!("SCF restart density loaded from {p}");
+                    d0
+                }),
+                ..RhfConfig::default()
+            },
+            other => panic!("COSX_FK_SCF = {other:?}: expected \"dfjk\", \"direct\", \"link\" or \"cosx\""),
         };
+        println!("SCF pool: {} rayon threads (not a timing)", rayon::current_num_threads());
         let t0 = Instant::now();
-        let res = solve_rhf(&ctx, &mol, &prep, op, &schwarz, &scf_cfg).expect("DF-JK RHF");
+        let res = solve_rhf(&ctx, &mol, &prep, op, &schwarz, &scf_cfg).expect("RHF");
         println!(
-            "DF-JK RHF: E={:.8} converged={} iters={} in {:.1} s (default pool, not a timing)",
+            "{scf_mode} RHF: E={:.8} converged={} iters={} in {:.1} s (default pool, not a timing)",
             res.energy, res.converged, res.iterations, t0.elapsed().as_secs_f64()
         );
-        assert!(res.converged, "refusing to time K builds on an unconverged density");
         let d = res.density_total.clone();
         let c_occ = res.mos_r().slice(ndarray::s![.., ..nocc]).to_owned();
         if let Ok(path) = std::env::var("COSX_FK_DENSITY_OUT") {
-            save_density(&path, &d, &c_occ);
-            println!("density saved to {path}; stopping (run again with COSX_FK_DENSITY_IN)");
-            return;
+            if res.converged || env_flag("COSX_FK_SCF_SAVE_UNCONVERGED") {
+                save_density(&path, &d, &c_occ);
+                println!("density saved to {path} (converged={}); stopping (run again with COSX_FK_DENSITY_IN)", res.converged);
+                return;
+            }
         }
+        assert!(res.converged, "refusing to time K builds on an unconverged density");
         (d, c_occ)
     };
 
