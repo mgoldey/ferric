@@ -12,7 +12,6 @@ use crate::guess::hcore_guess;
 use ferric_dft::cdft::Constraint;
 use crate::result::{ScfExit, ScfResult, Spin};
 
-use crate::link_k::LinkK;
 use crate::screening::SchwarzBounds;
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
@@ -549,11 +548,12 @@ pub fn solve_rhf(
     let mut mon = crate::driver::ScfMonitor::new();
     let mut total_quartets = 0;
 
-    if let Some(kb) = config.k_builder.as_deref() {
-        if kb != "direct" && kb != "link" && kb != "cosx" {
-            return Err(FerricError::General(format!("unknown k_builder '{kb}': valid options are 'direct', 'link', 'cosx'")));
-        }
-    }
+    // Validate `k_builder` BEFORE any expensive setup, so an unknown value is
+    // rejected even on a run whose DF-J/DF-K path would later override it
+    // (`df_active = false` here is only about which branch reports the error;
+    // the whitelist check is unconditional). The DF-vs-pluggable decision is
+    // re-resolved below once `build_df_jk` has said what is actually active.
+    crate::fock_assembly::resolve_k_builder(config.k_builder.as_deref(), false, false)?;
 
     // Meta-GGA default virtual-block level shift (see driver::effective_level_shift).
     let effective_level_shift = crate::driver::effective_level_shift(config);
@@ -595,38 +595,33 @@ pub fn solve_rhf(
     // DF-K is active it would be built and then silently ignored — a
     // pre-existing silent no-op for "link" — so warn and skip construction.
     let df_any = df_j.is_some() || df_k.is_some();
-    let pluggable_k = config.k_builder.as_deref().filter(|kb| matches!(*kb, "link" | "cosx"));
-    if df_any && pluggable_k.is_some() {
-        eprintln!(
-            "[ferric] warning: k_builder = \"{}\" is IGNORED because density-fitted J/K is active \
-             (df_j_aux/df_k_aux set, or auto-defaulted for a functional); exchange comes from {}",
-            pluggable_k.unwrap_or_default(),
-            if df_k.is_some() { "DF-K" } else { "the direct 4-centre builder" }
-        );
-    }
-    let pluggable_k = if df_any { None } else { pluggable_k };
-    // Build LinkK once — SignificantPairs is geometry-dependent and expensive per iteration.
-    // When using the "link" builder, compute a fresh SchwarzBounds to own the lifetime.
+    let pluggable_k = crate::fock_assembly::resolve_k_builder(
+        config.k_builder.as_deref(), df_any, df_k.is_some(),
+    )?;
+    // Build the pluggable builder once — LinK's SignificantPairs and COSX's
+    // grid/overlap-fit factor are geometry-only and expensive per iteration.
+    // When using "link", compute a fresh SchwarzBounds to own the lifetime.
     let link_schwarz_opt = if pluggable_k == Some("link") {
         Some(SchwarzBounds::compute(op, prep)?)
     } else {
         None
     };
-    let mut k_builder: Option<Box<dyn KBuilder>> = link_schwarz_opt.as_ref().map(|sb| {
-        let mut lk = LinkK::new(ctx, prep, sb, op, config.integral_thresh, ooc_budget);
-        lk.update_density(&d);
-        Box::new(lk) as Box<dyn KBuilder>
-    });
-    if pluggable_k == Some("cosx") {
-        // Seminumerical exchange: own grid + (geometry-only) overlap-fit factor;
-        // built here once, reused every iteration. Coulomb operator only.
-        if op != Operator::coulomb() {
-            return Err(FerricError::General(
-                "k_builder = \"cosx\" supports the Coulomb operator only".into(),
-            ));
-        }
-        let ck = crate::cosx_k::CosxK::new(ctx, mol, prep, config.cosx.clone(), ooc_budget)?;
-        k_builder = Some(Box::new(ck) as Box<dyn KBuilder>);
+    let mut k_builder: Option<Box<dyn KBuilder>> = crate::fock_assembly::build_pluggable_k(
+        pluggable_k,
+        ctx,
+        mol,
+        prep,
+        link_schwarz_opt.as_ref().unwrap_or(bounds),
+        op,
+        &config.cosx,
+        config.integral_thresh,
+        ooc_budget,
+    )?;
+    // LinK's density-pair list must exist before the first build; the loop
+    // refreshes it every iteration (`update_density` immediately before
+    // `build`). No-op for COSX.
+    if let Some(kb) = k_builder.as_mut() {
+        kb.update_density(&d);
     }
 
     // Canonical orthogonalizer X = U_kept · diag(1/sqrt(λ_kept)), shape (n × m),

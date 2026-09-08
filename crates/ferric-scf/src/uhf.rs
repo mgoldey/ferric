@@ -309,10 +309,47 @@ pub fn solve_uhf_fockmod(
     // `FERRIC_SCF_COMBINED_JK=0` (or `off`/`false`) restores the historical
     // three-pass open-shell build, so the combined path can be A/B'd for
     // correctness and timing without a rebuild.
+    // ── Pluggable exchange builder ("link" / "cosx") ────────────────────────
+    // Same semantics, warnings and hard errors as `solve_rhf` (shared helper —
+    // see `fock_assembly::resolve_k_builder`). Until 2026-09-08 `solve_uhf`
+    // never read `config.k_builder`, so both values were silently ignored for
+    // every open-shell run.
+    //
+    // ONE builder instance serves BOTH spins. LinK's density-pair list is
+    // density-dependent, so `build_open_shell_pluggable_k` calls
+    // `update_density(D_σ)` immediately before each `build(D_σ)` — per-spin
+    // lists, not one list from D_α + D_β (exactness over a cheap shortcut; see
+    // that helper's doc). COSX carries no density state at all.
+    //
+    // Only consumed on the non-DF, ω = 0, exact-exchange path — exactly where
+    // the combined `DirectJK` would otherwise run. J then comes from `DirectJ`
+    // (as it does in `solve_rhf`'s pluggable branch), since the combined pass
+    // is what supplied J for free.
+    let pluggable_k_kind = crate::fock_assembly::resolve_k_builder(
+        config.k_builder.as_deref(),
+        df_j.is_some() || df_k.is_some(),
+        df_k.is_some(),
+    )?;
+    let pluggable_k_kind = crate::fock_assembly::narrow_k_builder_to_supported(
+        pluggable_k_kind, need_k, k_mix.omega,
+    );
+    let mut pluggable_k: Option<Box<dyn KBuilder>> = crate::fock_assembly::build_pluggable_k(
+        pluggable_k_kind,
+        ctx,
+        mol,
+        prep,
+        bounds,
+        coulomb_op,
+        &config.cosx,
+        config.integral_thresh,
+        ooc_budget,
+    )?;
+
     let combined_direct_jk = df_j.is_none()
         && df_k.is_none()
         && need_k
         && k_mix.omega == 0.0
+        && pluggable_k.is_none()
         && crate::direct_jk::combined_open_shell_jk_enabled();
     let mut direct_jk: Option<crate::direct_jk::DirectJK> = if combined_direct_jk {
         Some(crate::direct_jk::DirectJK::new(
@@ -331,7 +368,9 @@ pub fn solve_uhf_fockmod(
         None
     };
     let mut direct_k: Option<DirectK> =
-        if need_k && k_mix.omega == 0.0 && df_k.is_none() && !combined_direct_jk {
+        if need_k && k_mix.omega == 0.0 && df_k.is_none() && !combined_direct_jk
+            && pluggable_k.is_none()
+        {
             Some(DirectK::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
         } else {
             None
@@ -350,6 +389,19 @@ pub fn solve_uhf_fockmod(
     // NOTE: opt-IN (default off), unlike the closed-shell path. See
     // `direct_jk::open_shell_incremental_enabled` for the measurements behind
     // that choice — the scheme is correct but measured ~1.00-1.05x here.
+    //
+    // INTERACTION WITH A PLUGGABLE K (`k_builder = "link"` / `"cosx"`):
+    // structurally impossible, not merely discouraged. `incremental_direct`
+    // requires `direct_jk.is_some()`, and `combined_direct_jk` is now gated on
+    // `pluggable_k.is_none()` — so when a pluggable builder is active there is
+    // no `DirectJK` and the ΔD path is off regardless of
+    // `FERRIC_SCF_UHF_INCREMENTAL`. A pluggable K is therefore never handed a
+    // ΔD it cannot interpret: LinK would build its density-pair list from a
+    // DIFFERENCE density (whose sparsity pattern and magnitudes are unrelated
+    // to the density being screened for), and COSX's overlap fit is defined
+    // against a true density. The user gets the full-rebuild pluggable path
+    // with no error and no silent wrong answer; the env knob keeps applying to
+    // the default (non-pluggable) open-shell path exactly as before.
     let incremental_direct =
         direct_jk.is_some() && crate::direct_jk::open_shell_incremental_enabled();
     // The (α, β) densities that produced the CURRENT contents of
@@ -427,6 +479,12 @@ pub fn solve_uhf_fockmod(
         } else if need_k {
             if direct_jk.is_some() {
                 // K_α/K_β already filled by the combined single-pass build above.
+            } else if let Some(kb) = pluggable_k.as_mut() {
+                // Per-spin `update_density(D_σ)` + `build(D_σ)` from one shared
+                // instance (see fock_assembly::build_open_shell_pluggable_k).
+                total_quartets += crate::fock_assembly::build_open_shell_pluggable_k(
+                    kb.as_mut(), &d_a, &d_b, &mut k_a_buf, &mut k_b_buf,
+                )?;
             } else if let Some(dfk) = df_k.as_mut() {
                 // C_occ half-transform per spin when available (D_σ = C_occ,σ·C_occ,σᵀ);
                 // the fractional-occupation ensemble path falls back to build(D_σ).

@@ -157,6 +157,160 @@ pub(crate) fn build_rsh_dfk_pair<'a>(
 /// K-sized scratch matrices are live (allocated here, dropped on return) —
 /// never a retained k_total clone.
 ///
+/// Validate `config.k_builder` and say which pluggable builder (if any) the
+/// caller should construct.
+///
+/// Shared by `solve_rhf`, `solve_uhf` and `solve_rohf` so the whitelist, the
+/// error text and the DF-J/DF-K precedence rule live in ONE place. Before this
+/// existed only `solve_rhf` read the field at all, so `k_builder = "link"` /
+/// `"cosx"` was silently ignored for every open-shell run.
+///
+/// * `Err` — the value is not one of `direct` / `link` / `cosx`.
+/// * `Ok(None)` — no pluggable builder: the field is unset, is `"direct"`, or
+///   is overridden by an active density-fitted J/K path (warned about, below).
+/// * `Ok(Some(kind))` — construct that builder.
+///
+/// `df_active` is `df_j.is_some() || df_k.is_some()` AFTER the solver's own
+/// auto-defaulting (a hybrid/RSH functional silently turns DF-K on). Exchange
+/// then comes from DF-K or the direct 4-centre builder and a pluggable K would
+/// be built and thrown away, so it is skipped WITH A WARNING rather than
+/// silently no-op'ing. `df_k_present` only picks the wording.
+pub(crate) fn resolve_k_builder<'k>(
+    k_builder: Option<&'k str>,
+    df_active: bool,
+    df_k_present: bool,
+) -> Result<Option<&'k str>, FerricError> {
+    let Some(kb) = k_builder else {
+        return Ok(None);
+    };
+    if kb != "direct" && kb != "link" && kb != "cosx" {
+        return Err(FerricError::General(format!(
+            "unknown k_builder '{kb}': valid options are 'direct', 'link', 'cosx'"
+        )));
+    }
+    let pluggable = matches!(kb, "link" | "cosx").then_some(kb);
+    if df_active {
+        if let Some(kind) = pluggable {
+            eprintln!(
+                "[ferric] warning: k_builder = \"{kind}\" is IGNORED because density-fitted J/K is active \
+                 (df_j_aux/df_k_aux set, or auto-defaulted for a functional); exchange comes from {}",
+                if df_k_present { "DF-K" } else { "the direct 4-centre builder" }
+            );
+        }
+        return Ok(None);
+    }
+    Ok(pluggable)
+}
+
+/// Construct the pluggable exchange builder named by [`resolve_k_builder`].
+///
+/// Returns `Ok(None)` for `kind == None` so a caller can pass the resolver's
+/// output straight through. The returned builder is built ONCE and reused for
+/// every iteration (and, in the open-shell solvers, for BOTH spins):
+///
+/// * **LinK** — its `SignificantPairs` list is geometry-only, but its
+///   `DensityPairs` list is DENSITY-DEPENDENT, so the caller MUST call
+///   [`KBuilder::update_density`] with the density it is about to contract
+///   before each `build`. For two spins that means a per-spin
+///   `update_density(D_σ)` + `build(D_σ)` pair: the α and β densities have
+///   different sparsity, and a list built from `D_α` (or from `D_α + D_β`)
+///   can drop pairs that are significant for `D_β`. Building the list from the
+///   total density would be a screening APPROXIMATION whose error is invisible
+///   in the energy until it is not; per-spin lists are exact to the same
+///   threshold the closed-shell path holds, at the cost of one extra (cheap)
+///   list build per iteration. Correctness first — see
+///   `tests/k_builder_open_shell.rs`.
+/// * **COSX** — has NO density-dependent state (`update_density` is a no-op)
+///   and its `S_num` overlap-fit factor is geometry-only, so ONE instance
+///   serves both spins with no leaked state between builds. This is anchored
+///   directly (`cosx_k_alpha_beta_independent_from_one_instance`).
+///
+/// The `link_bound` reference is the caller's own `SchwarzBounds`, kept alive
+/// by the caller for the builder's lifetime.
+pub(crate) fn build_pluggable_k<'a, B: crate::screening::Bound + Sync>(
+    kind: Option<&str>,
+    ctx: &'a ParallelContext,
+    mol: &'a Molecule,
+    prep: &'a PreparedBasis,
+    link_bound: &'a B,
+    op: Operator,
+    cosx_cfg: &crate::cosx_k::CosxConfig,
+    integral_thresh: f64,
+    ooc_budget: usize,
+) -> Result<Option<Box<dyn KBuilder + 'a>>, FerricError> {
+    match kind {
+        Some("link") => Ok(Some(Box::new(crate::link_k::LinkK::new(
+            ctx, prep, link_bound, op, integral_thresh, ooc_budget,
+        )) as Box<dyn KBuilder + 'a>)),
+        Some("cosx") => {
+            // Seminumerical exchange is defined against the 1/r kernel only;
+            // an attenuated (erf/erfc) or geminal operator has no COSX form
+            // here. Refused rather than silently computing Coulomb exchange.
+            if op != Operator::coulomb() {
+                return Err(FerricError::General(
+                    "k_builder = \"cosx\" supports the Coulomb operator only".into(),
+                ));
+            }
+            let ck = crate::cosx_k::CosxK::new(ctx, mol, prep, cosx_cfg.clone(), ooc_budget)?;
+            Ok(Some(Box::new(ck) as Box<dyn KBuilder + 'a>))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Narrow the resolved pluggable-K choice to the exchange shapes it can
+/// actually serve, warning when it cannot.
+///
+/// A pluggable builder supplies ONE plain Coulomb-kernel K(D). Two exchange
+/// shapes cannot consume that:
+///
+/// * **pure DFT** (`need_k == false`, k_mix all zero) — no exact exchange at
+///   all, so any K built would be multiplied by zero and discarded;
+/// * **RSH** (`omega > 0`) — exchange is `c_SR·K[erfc(ω)] + c_LR·K[erf(ω)]`,
+///   contracted from the dedicated SR/LR `DfK` fitter pair. Note the open-shell
+///   solvers reach this with `df_j`/`df_k` BOTH `None` (their `k_aux_eff` gate
+///   deliberately excludes ω > 0), so [`resolve_k_builder`]'s `df_active`
+///   warning does not fire for RSH the way it does in `solve_rhf`, where an RSH
+///   functional auto-defaults `df_k_aux_eff` and trips it. Without this second
+///   warning an RSH open-shell run would skip the builder SILENTLY — the exact
+///   class of no-op this wiring exists to remove.
+pub(crate) fn narrow_k_builder_to_supported(
+    kind: Option<&str>,
+    need_k: bool,
+    omega: f64,
+) -> Option<&str> {
+    let kind = kind?;
+    let reason = if !need_k {
+        "the functional uses no exact exchange"
+    } else if omega > 0.0 {
+        "exchange for a range-separated functional comes from the SR/LR density-fitted fitters"
+    } else {
+        return Some(kind);
+    };
+    eprintln!("[ferric] warning: k_builder = \"{kind}\" is IGNORED because {reason}");
+    None
+}
+
+/// Build K_α and K_β from ONE pluggable builder instance, refreshing any
+/// density-dependent state per spin.
+///
+/// The `update_density(D_σ)` immediately before `build(D_σ)` is what makes a
+/// shared LinK instance correct across two spins (see [`build_pluggable_k`]);
+/// it is a no-op for COSX. Returns the summed quartet count.
+pub(crate) fn build_open_shell_pluggable_k(
+    kb: &mut dyn KBuilder,
+    d_a: &Array2<f64>,
+    d_b: &Array2<f64>,
+    k_a: &mut Array2<f64>,
+    k_b: &mut Array2<f64>,
+) -> Result<usize, FerricError> {
+    kb.update_density(d_a);
+    let mut q = kb.build(d_a, k_a)?;
+    kb.update_density(d_b);
+    q += kb.build(d_b, k_b)?;
+    Ok(q)
+}
+
 /// `c_occ`: when `Some`, the BARE occupied MO coefficients with
 /// `D = occ_factor · c_occ·c_occᵀ`; both SR and LR exchange are then contracted
 /// via the O(naux·n²·nocc) DF-K half-transform ([`KBuilder::build_from_occ`])
