@@ -171,11 +171,47 @@ fn measure(stem: &str, basis_name: &str) -> Counts {
 
 /// Bar for `max|K_link - K_directK|` at the production threshold.
 ///
-/// Measured post-#50 at 2.4e-14 on both C8 and C16. 1e-12 is the ticket's
-/// stated correctness bar and ~40x above the measured value, so a screen that
-/// has become an invalid (non-)bound fails here rather than being rewarded by
-/// the count assertions below.
-const K_DEV_BAR: f64 = 1e-12;
+/// # This bar was 1e-12 and it was WRONG — the reasoning, because the
+/// # correction looks like a loosening and must not be mistaken for one
+///
+/// 1e-12 came from the post-#50 measurement of 2.4e-14 (C8 and C16). But that
+/// number was small for a reason that stopped being true: pre-fix, LinK and
+/// `DirectK` used the IDENTICAL per-quartet screen (both global `max|D|`), so
+/// they walked essentially the same quartets and their difference was near-zero
+/// by construction rather than by accuracy. It measured screen SAMENESS, not
+/// correctness.
+///
+/// Now that LinK screens on the pairwise exchange key and `DirectK` still
+/// screens on the global scalar, the two deliberately walk different quartet
+/// sets, and the difference moves to the threshold-scale residual that any two
+/// differently-screened builders show. The right calibration is therefore the
+/// deviation between two builders that were ALREADY accepted as correct and
+/// already screen differently from each other — `build_jk` (six-pairwise) vs
+/// `DirectK` (global scalar), which has nothing to do with LinK:
+///
+/// ```text
+///                                    C8          C16
+/// build_jk   vs DirectK  (baseline)  9.176e-12   9.399e-12
+/// LinK       vs DirectK  (this fix)  9.923e-12   1.288e-11
+/// ```
+///
+/// LinK has landed in the same company as the pre-existing pair, ~1.1-1.4x the
+/// baseline — not a new error mode. The independent confirmations that this is
+/// a screening residual and not a broken bound:
+///
+/// * `screening_exactness::link_k_matches_dense_in_the_trivial_limit` — at
+///   thresh -> 0 the screen does nothing and LinK reproduces the dense build to
+///   machine precision. An invalid bound cannot pass that at ANY threshold.
+/// * `link_scf_anchor` — SCF energies agree to 1.1e-11 (C8) with IDENTICAL
+///   iteration counts, and `max|K_link - K_direct|` = 5.764e-12 at C16, both
+///   far inside their own bars.
+///
+/// 1e-10 is ~8x above the largest measured value and an order of magnitude
+/// below the smallest deviation any of the pre-#50 defects produced (1.7e-3),
+/// so a genuine bound regression still fails here. Do NOT raise it further to
+/// accommodate a future measurement: if this bar starts failing, the screen has
+/// changed what it computes, and that is the thing this file exists to catch.
+const K_DEV_BAR: f64 = 1e-10;
 
 /// Maximum acceptable ratio of LinK quartets to `build_jk` quartets.
 ///
@@ -190,7 +226,35 @@ const K_DEV_BAR: f64 = 1e-12;
 /// `build_jk`'s six-pairwise one, so its count is necessarily >= `build_jk`'s.
 /// The assertion is therefore reachable in exactly one way — by making LinK's
 /// per-quartet screen at least as tight as the default builder's.
-const LINK_VS_BUILD_JK_MAX_RATIO: f64 = 1.0;
+///
+/// # Why 1.0 was too weak, and where 0.995 came from (MUTATION-DERIVED)
+///
+/// A bare `< 1.0` was measured to be nearly vacuous, by the M2 mutation
+/// (`FourPairK` -> `SixPair`, i.e. LinK screening on the SAME six-pairing key
+/// as `build_jk`). MEASURED at alkane_8:
+///
+/// ```text
+///                     LinK count   / build_jk (8,107,064)   margin
+/// M2  SixPair          8,106,960     0.999987               104 quartets
+/// fix FourPairK        8,023,337     0.989672            83,727 quartets
+/// ```
+///
+/// M2 PASSED a `< 1.0` bar — by 104 quartets out of 8.1 million (0.0013%),
+/// which is just pair-list bookkeeping, not screening. That is the "LinK merely
+/// TIES the builder it is supposed to beat" state the design note predicted and
+/// the bar existed to reject, and it slipped through on luck.
+///
+/// 0.995 sits between the two measured regimes: it rejects the tie (0.999987)
+/// and is cleared by the real fix at both sizes (0.9897 at C8, 0.9539 at C16).
+/// It demands a >=0.5% quartet reduction — an order of magnitude above the
+/// bookkeeping noise M2 exhibits, and comfortably below what the exchange-only
+/// key actually delivers.
+///
+/// Note this is the one bar in this file that was TIGHTENED after measurement
+/// rather than relaxed. Tightening onto a measured separation is legitimate;
+/// the direction that would not be is loosening a bar to admit a result that
+/// failed it.
+const LINK_VS_BUILD_JK_MAX_RATIO: f64 = 0.995;
 
 /// Minimum fraction of density pairs the dp list must PRUNE past the locality
 /// onset.
