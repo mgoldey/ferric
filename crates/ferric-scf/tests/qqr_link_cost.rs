@@ -258,6 +258,31 @@ fn qqr_vs_schwarz_cost_alkane_8() {
     report("alkane_8", "cc-pvdz");
 }
 
+/// SCOPE CONTROL: a 3-D system, and the same system in a DIFFUSE basis.
+///
+/// The alkane cases are 1-D and gapped — the friendliest possible case for
+/// LinK's density-pair screen, and therefore the case where QQR has the LEAST
+/// left to prune once LinK has run. Concluding anything general from them alone
+/// would be an assumption about molecular topology, not a measurement.
+///
+/// Benzene is compact and 3-D; aug-cc-pVDZ adds diffuse functions that widen
+/// BOTH LinK pair lists (`SignificantPairs` via larger Schwarz factors,
+/// `DensityPairs` via slower density decay). If QQR's marginal benefit is
+/// still ~0.01% here, the dilution is a property of the LinK composition and
+/// the alkane numbers generalize. If it jumps, the alkane result is
+/// topology-specific and must not be cited beyond chains.
+///
+/// The artifact hypothesis, stated before running (repo rule): if the dilution
+/// is real I expect benzene/aug-cc-pVDZ to stay well under ~0.5%; if the alkane
+/// result was an artifact of 1-D geometry I expect it to rise toward the
+/// full-population few-percent figure.
+#[test]
+#[ignore = "cost measurement, minutes-scale; run explicitly (see module docs)"]
+fn qqr_vs_schwarz_cost_benzene_3d() {
+    report("benzene", "cc-pvdz");
+    report("benzene", "aug-cc-pvdz");
+}
+
 #[test]
 #[ignore = "cost measurement, minutes-scale; run explicitly (see module docs)"]
 fn qqr_vs_schwarz_cost_alkane_16() {

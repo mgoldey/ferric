@@ -159,13 +159,20 @@
 //! threshold sweep and the same trivial-limit anchor, against the same bars,
 //! rather than a forked copy of this file.
 //!
-//! Note that QQR passing this harness establishes CORRECTNESS, not benefit.
-//! The cost measurement (`tests/qqr_link_cost.rs`) found QQR screens only
-//! 0.009% more quartets than Schwarz inside LinK — because both LinK pair-list
-//! builders screen on the diagonal quartet `(ij|ij)`, where QQR's distance
-//! envelope is identically 1 (`tests/qqr_diagonal_noop.rs`). QQR is therefore
-//! NOT wired into the production path; these arms keep it correct for the
-//! non-LinK callers and for any future use.
+//! Note that QQR passing this harness establishes CORRECTNESS, not benefit —
+//! and equally, the benefit measurement does not bear on correctness. On
+//! LINEAR ALKANES at cc-pVDZ the cost measurement (`tests/qqr_link_cost.rs`)
+//! found QQR screens only 0.009% more quartets than Schwarz inside LinK, since
+//! both LinK pair-list builders screen on the diagonal quartet `(ij|ij)` where
+//! QQR's envelope is identically 1 (`tests/qqr_diagonal_noop.rs`) and LinK's
+//! pair-list intersection has already pruned the far field.
+//!
+//! That measurement is alkane-specific and should not be read as a general
+//! verdict: a 1-D gapped chain is the best case for LinK's density screen and
+//! so the worst case for QQR's marginal value on top of it. 3-D systems,
+//! diffuse bases and small-gap cases are UNMEASURED. See the scope note on
+//! `ferric_scf::qqr::QqrBounds`. QQR is simply not wired into `solve_rhf`
+//! today; these arms keep it correct for its other callers.
 //!
 //! # Running
 //!
