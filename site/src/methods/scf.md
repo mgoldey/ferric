@@ -60,12 +60,12 @@ threshold is tunable via `FERRIC_LINDEP_THRESH`.
   underestimate (a zero-valued table entry once cost 1.5e-4 Ha; it is now
   floored)
 - **LinK** (Ochsenfeld, White & Head-Gordon 1998) — exchange via
-  significant-pair lists; measured ~N^1.4 on alkane chains at def2-SVP
+  significant-pair and density-pair lists; the lists were corrected in #50
+  and its scaling is being re-measured
 - **QQR** (Maurer, Lambrecht & Ochsenfeld 2012) is implemented and
-  validated as a bound but is *not* used in production: on LinK it screens
-  only 0.009% more quartets than Schwarz at alkane_16, because LinK's
-  pair-list intersection already removes the long-range population QQR
-  targets
+  validated as a bound but is *not* used in production: on LinK it screened
+  only 0.009% more quartets than Schwarz at alkane_16 (measured before the
+  #50 list fix)
 - **COSX** shell-pair screening uses a primitive-level Hölder bound that
   provably never underestimates; an earlier overlap-based bound did, and
   silently corrupted K
@@ -79,7 +79,7 @@ code, not a rule of thumb. Butane, one thread; the QZ column is def2-QZVP
 | `[scf]` setting | what it is | exact? | K at TZ | K at QZ | scope |
 |---|---|---|---|---|---|
 | *(default)* | Schwarz-screened direct 4-centre J+K | yes | — | 400 s (J+K) | all SCF types |
-| `k_builder = "link"` | LinK — pair-list-screened direct K | yes | 6.5 s | 256 s | RHF only |
+| `k_builder = "link"` | LinK — pair-list-screened direct K | yes | re-measuring (#50) | re-measuring (#50) | RHF only |
 | `df_j_aux` / `df_k_aux` | density-fitted J and K (RI-JK) | ~1e-5 Ha | 0.05 s | 0.43 s | all SCF types |
 | `k_builder = "cosx"` | seminumerical (COSX) K on a grid | grid error, see below | 358 s* | 137 s | RHF, Coulomb only, no gradients |
 
@@ -93,27 +93,26 @@ it spills to disk when it does not. Its error with a JK-fitting auxiliary basis
 is a few µHa. If your system fits, this is the answer and the rest of this
 section is about when it does not.
 
-**Need exact exchange?** LinK for anything beyond a few heavy atoms; its cost
-grows as roughly N^1.5 on alkane chains where plain direct grows faster. Both
-are exact to the screening threshold as *K builders*. LinK is RHF-only — UHF
-and ROHF silently fall back to direct. Known defect at the time of writing:
-the LinK *SCF* path was non-variational beyond water (its density-dependent
-pair lists were not refreshed after the first iteration — butane/def2-SVP
-converged to −162.76 Ha against −157.19); check the validation page for
-whether the fix has landed before using `k_builder = "link"` for an SCF.
+**Need exact exchange?** Direct or LinK; both are exact to the screening
+threshold as *K builders*. LinK's pair lists were fixed in #50 (three
+pair-list defects; butane/def2-SVP `link` == direct to 9e-12 Ha). Every LinK
+timing taken before that fix was against a kernel that skipped quartets, so
+none is repeated here; its cost against the corrected kernel is being
+re-measured. LinK is RHF-only — UHF and ROHF silently fall back to direct.
 
 **COSX is for large basis sets on systems too big for RI-JK.** Its cost per
 grid point barely moves with angular momentum while analytic exchange grows
-roughly tenfold from SVP to QZVP, so it crosses analytic K only at
-quadruple-zeta: 34× slower than LinK at def2-SVP, 12× at TZVP, **0.54×** at
-QZVP. Below QZ it is the wrong tool: on alkanes at def2-SVP it is 5.6–7.9×
-slower than LinK at every size from C4 to C20.
+roughly tenfold from SVP to QZVP, so it reaches analytic exchange only at
+quadruple-zeta: on butane/def2-QZVP a COSX K build is **137 s against 400 s**
+for the default direct J+K build (parity; J and K share that sweep), while at
+TZ the full COSX SCF is 3.7× slower than direct (358 s vs 98 s). Below QZ it
+is the wrong tool. Ratios against LinK are withheld until LinK is re-measured
+with the #50 lists.
 
-Its integral work scales with system size the way LinK's does — a density-
-driven pair screen (on the product of the integral bound and the local
-half-transformed density) gives an A-build tail exponent of N^1.5 on C12–C20,
-the same as LinK on the same series, with a K error below 2e-6 Ha at the
-default threshold. The half-transforms `D·X` and `X·Gᵀ` are still dense
+Its integral work is sub-quadratic in system size — a density-driven pair
+screen (on the product of the integral bound and the local half-transformed
+density) gives an A-build tail exponent of N^1.5 on C12–C20 alkanes at
+def2-SVP, with a K error below 2e-6 Ha at the default threshold. The half-transforms `D·X` and `X·Gᵀ` are still dense
 GEMMs, which grow faster and are a third of the build by C20; until they are
 made sparse (the standard next step), expect the full build to scale roughly
 N^2 past a dozen heavy atoms even though the integrals do not.
