@@ -5,6 +5,30 @@
 //! linear scaling for large systems with sparse density matrices.
 //!
 //! Reference: Ochsenfeld, White, Head-Gordon, JCP 109, 1663 (1998).
+//!
+//! # Two screens, doing different jobs
+//!
+//! LinK applies density information in two places, and conflating them is what
+//! made the post-#50 kernel slower than the builder it replaces:
+//!
+//! * the **pair lists** decide which `(ish, jsh, ksh)` are visited at all —
+//!   they bound the LOOP, and are rebuilt once per SCF iteration;
+//! * the **per-quartet screen** decides whether a visited quartet is worth an
+//!   integral — it bounds the WORK, and runs per quartet.
+//!
+//! Post-#50 the second was a single global `max|D|` scalar, i.e. a system-wide
+//! constant carrying no information about which shells a quartet couples. With
+//! correct pair lists that made LinK evaluate 8% (alkane_8) / 13% (alkane_16)
+//! MORE quartets than the default `build_jk`, while producing an identical K —
+//! correct, and slower than the thing it is an alternative to. The per-quartet
+//! screen now uses the same shell-blocked pairwise table the direct builders
+//! use, restricted to the four exchange pairings
+//! (`DensityScreen::FourPairK`), which is strictly tighter than the six-pairing
+//! key `build_jk` must use because it also builds J from the same integral.
+//!
+//! Counts are pinned by `tests/link_screen_reachability.rs`; the K value those
+//! counts must not change is pinned by `tests/link_scf_anchor.rs` and
+//! `tests/screening_exactness.rs`.
 
 use crate::fock::KBuilder;
 use crate::pairs::{DensityPairs, SignificantPairs};
@@ -128,8 +152,28 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
         let offs = self.prep.shell_offsets();
         let thresh = self.thresh;
 
-        // Find max |D| for screening.
-        let max_d = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+        // Per-quartet density key: the shell-blocked PAIRWISE table, screened
+        // on the four EXCHANGE pairings only (see
+        // `DensityScreen::FourPairK`). This replaces a single global `max|D|`
+        // scalar.
+        //
+        // Why the scalar was the wrong key. `max|D|` over the whole matrix is
+        // realized by a core-diagonal block and is therefore a system-wide
+        // constant: it carries no information about WHICH shells this quartet
+        // couples, so the screen reduced to the density-free Schwarz product
+        // scaled by a constant. Measured consequence (thresh 1e-12, def2-SVP,
+        // converged density — scripts/queue/out/link_fixed_counts.md): LinK
+        // evaluated 8,775,277 quartets on alkane_8 and 48,642,325 on alkane_16
+        // versus `build_jk`'s 8,107,064 / 42,916,434 — i.e. 8% / 13% MORE work
+        // than the default builder, while producing an identical K. The pair
+        // lists could not make up the difference because they gate which
+        // (ish,jsh,ksh) are visited, not how tightly each quartet is judged.
+        //
+        // The table is the SAME `build_d_max_shell` the direct builders use;
+        // only the pairing set differs (four, not six), which is what lets a
+        // K-only builder screen strictly tighter than the J+K sweep.
+        let d_max_shell = crate::quartet_scatter::build_d_max_shell(self.prep, d);
+        let screen = crate::quartet_scatter::DensityScreen::FourPairK(&d_max_shell);
 
         // Enumerate all significant (ish, jsh) pairs as parallel work units.
         // This gives O(N) tasks with roughly equal work each (each handles ksh/lsh loops),
@@ -232,7 +276,10 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
                             if seen[word] == 0 { dirty.push(word); }
                             seen[word] |= mask;
 
-                            if self.bound.estimate(cs1, cs2, cs3, cs4) * max_d < thresh {
+                            if self.bound.estimate(cs1, cs2, cs3, cs4)
+                                * screen.dmax(cs1, cs2, cs3, cs4)
+                                < thresh
+                            {
                                 continue;
                             }
 
