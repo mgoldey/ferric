@@ -329,10 +329,38 @@ pub fn solve_rohf_best_effort(
     // structurally the same three-matrix (J[D_total], K[D_α], K[D_β]) problem as
     // UHF — the ROHF-specific work is the Roothaan coupling applied to the
     // ASSEMBLED f_a/f_b further below, which this does not touch.
+    // Pluggable exchange builder ("link" / "cosx") — identical semantics,
+    // warnings, hard errors and per-spin `update_density` contract to
+    // `solve_uhf`; see the block comment there and
+    // `fock_assembly::resolve_k_builder` / `build_pluggable_k`. Until
+    // 2026-09-08 `solve_rohf` never read `config.k_builder`. The ROHF-specific
+    // work (Roothaan coupling of the ASSEMBLED f_a/f_b) is downstream of K and
+    // is untouched by this.
+    let pluggable_k_kind = crate::fock_assembly::resolve_k_builder(
+        config.k_builder.as_deref(),
+        df_j.is_some() || df_k.is_some(),
+        df_k.is_some(),
+    )?;
+    let pluggable_k_kind = crate::fock_assembly::narrow_k_builder_to_supported(
+        pluggable_k_kind, need_k, k_mix.omega,
+    );
+    let mut pluggable_k: Option<Box<dyn KBuilder>> = crate::fock_assembly::build_pluggable_k(
+        pluggable_k_kind,
+        ctx,
+        mol,
+        prep,
+        bounds,
+        coulomb_op,
+        &config.cosx,
+        config.integral_thresh,
+        ooc_budget,
+    )?;
+
     let combined_direct_jk = df_j.is_none()
         && df_k.is_none()
         && need_k
         && k_mix.omega == 0.0
+        && pluggable_k.is_none()
         && crate::direct_jk::combined_open_shell_jk_enabled();
     let mut direct_jk: Option<crate::direct_jk::DirectJK> = if combined_direct_jk {
         Some(crate::direct_jk::DirectJK::new(
@@ -351,7 +379,9 @@ pub fn solve_rohf_best_effort(
         None
     };
     let mut direct_k: Option<DirectK> =
-        if need_k && k_mix.omega == 0.0 && df_k.is_none() && !combined_direct_jk {
+        if need_k && k_mix.omega == 0.0 && df_k.is_none() && !combined_direct_jk
+            && pluggable_k.is_none()
+        {
             Some(DirectK::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
         } else {
             None
@@ -359,6 +389,9 @@ pub fn solve_rohf_best_effort(
     // NOTE: opt-IN (default off), unlike the closed-shell path. See
     // `direct_jk::open_shell_incremental_enabled` for the measurements behind
     // that choice — the scheme is correct but measured ~1.00-1.05x here.
+    // A pluggable K is never fed a ΔD: `combined_direct_jk` is gated on
+    // `pluggable_k.is_none()`, so `direct_jk` (and hence the incremental path)
+    // is off whenever one is active — see the fuller note in `solve_uhf`.
     let incremental_direct =
         direct_jk.is_some() && crate::direct_jk::open_shell_incremental_enabled();
     let mut d_last_fock: Option<(Array2<f64>, Array2<f64>)> = None;
@@ -441,6 +474,12 @@ pub fn solve_rohf_best_effort(
         } else if need_k {
             if direct_jk.is_some() {
                 // K_α/K_β already filled by the combined single-pass build above.
+            } else if let Some(kb) = pluggable_k.as_mut() {
+                // Per-spin `update_density(D_σ)` + `build(D_σ)` from one shared
+                // instance (see fock_assembly::build_open_shell_pluggable_k).
+                total_quartets += crate::fock_assembly::build_open_shell_pluggable_k(
+                    kb.as_mut(), &d_a, &d_b, &mut k_a_buf, &mut k_b_buf,
+                )?;
             } else if let Some(dfk) = df_k.as_mut() {
                 dfk.build(&d_a, &mut k_a_buf)?;
                 dfk.build(&d_b, &mut k_b_buf)?;
