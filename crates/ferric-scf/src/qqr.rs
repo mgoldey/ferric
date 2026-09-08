@@ -61,13 +61,41 @@ use ferric_integrals::operator::Operator;
 /// operators. (`ferric_integrals::qqr3` reached the identical conclusion
 /// independently, measuring worst ratio 1.7-5.3 for its own erfc factor.)
 ///
-/// # NOT wired into the production LinK path — measured 2026-09-07, NO-GO
+/// # Not currently wired into `solve_rhf` — one measurement, narrow scope
 ///
 /// `QqrBounds` is correct (see the anchors in
 /// `crates/ferric-scf/tests/screening_exactness.rs`, which run the full
-/// threshold sweep and the trivial limit against it) but it is deliberately
-/// NOT used by `solve_rhf`, which builds plain [`SchwarzBounds`]. Wiring it in
-/// was measured and rejected. Do not re-propose it without reading this.
+/// threshold sweep and the trivial limit against it). It is simply not used by
+/// `solve_rhf` today, which builds plain [`SchwarzBounds`].
+///
+/// ## SCOPE OF THE MEASUREMENT BELOW — read this before citing it
+///
+/// The 2026-09-07 measurement was taken on LINEAR ALKANES at cc-pVDZ, and that
+/// choice was not neutral: a 1-D gapped hydrocarbon chain is the FRIENDLIEST
+/// case for LinK's density-pair screen, and therefore the WORST case for
+/// showing QQR's marginal value on top of it. The systems were picked because
+/// they were the benchmark family already in hand, NOT because they represent
+/// the systems this code is used on.
+///
+/// So what follows is one data point about ONE composition (QQR layered under
+/// LinK) on ONE molecular topology and ONE basis family. It is not a verdict on
+/// QQR, and it is not evidence about:
+///
+/// * small-gap / slow-density-decay systems, where `dp.partners` stays widest
+///   and a geometric envelope would retain the most territory. UNMEASURED.
+///   (3-D extended topology and diffuse bases WERE subsequently measured — see
+///   the scope-control table below; the dilution holds there.)
+/// * any builder that is not LinK. The literature's QQR (Maurer, Lambrecht,
+///   Ochsenfeld, JCP 136, 144107 (2012)) is applied where no LinK-style
+///   pair-list prune precedes it, and in that regime the benefit REPRODUCES
+///   here — see the full-population column below (3.83%). Nothing in this note
+///   contradicts the published method.
+/// * [`ferric_integrals::qqr3::QqrBounds3`], which screens `(P|mn)` with no
+///   pair-list prune ahead of it. This finding does not transfer to it.
+///
+/// If you are here because you want QQR in the exchange path for a system that
+/// is not a linear alkane, the measurement below does NOT answer your question
+/// and should not be used to close it.
 ///
 /// ## The measurement
 ///
@@ -125,6 +153,51 @@ use ferric_integrals::operator::Operator;
 /// The 3-index sibling [`ferric_integrals::qqr3::QqrBounds3`] is a different
 /// case again: it screens `(P|mn)` where no LinK-style pair-list prune
 /// precedes it, so this finding does not transfer to it.
+///
+/// ## What would actually settle this
+///
+/// The dilution above is a statement about how much territory LinK's
+/// density-pair screen has ALREADY taken. That fraction is system-dependent, so
+/// the open question is not "does QQR work" but "where is `dp.partners` wide
+/// enough to leave QQR something to do". The axes to vary, none of them tested:
+///
+/// * topology: 3-D / globular (water clusters, benzene dimer) vs the 1-D chain
+///   measured here;
+/// * basis diffuseness: aug-cc-pVDZ and larger, where significant pairs reach
+///   much further and both LinK pair lists widen;
+/// * HOMO-LUMO gap: slow density-matrix decay keeps `dp.partners` wide, which
+///   is precisely the regime where a geometric envelope still has value.
+///
+/// ## Scope control — MEASURED, and the dilution holds off the alkane series
+///
+/// The above was written as an open question; it has since been measured, so
+/// the alkane caveat is narrowed rather than left standing. Quartet counts
+/// only (deterministic bound evaluations, unaffected by machine load):
+///
+/// ```text
+///   system / basis                    thresh   full popn   LinK popn   dilution
+///   alkane_16 / cc-pVDZ                1e-8      3.830%      0.273%       14x
+///   benzene_dimer_T / cc-pVDZ          1e-8      0.985%      0.059%       17x
+///   benzene_dimer_T / cc-pVDZ          1e-10     0.819%      0.015%       55x
+///   benzene_dimer_T / aug-cc-pVDZ      1e-8      0.387%      0.023%       17x
+/// ```
+///
+/// The T-shaped benzene dimer is 3-D, extended and non-chain, and aug-cc-pVDZ
+/// widens both LinK pair lists — the conditions under which LinK's density
+/// screen should be WEAKEST and QQR should retain the most territory. The
+/// dilution persists at 17-55x. So the redundancy is a property of the
+/// composition (a distance envelope layered under a pair-list prune that
+/// already cuts on distance), NOT of linear alkanes.
+///
+/// Also recorded, because it is a trap: BARE BENZENE IS NOT A VALID CONTROL
+/// here. It is compact enough (~9.4 Bohr) to have essentially no far field —
+/// QQR screens only 0.030% of even the FULL population at cc-pVDZ — so it
+/// cannot distinguish "LinK already screened the far field" from "there was no
+/// far field". A control system must HAVE long range before the question is
+/// meaningful.
+///
+/// Still unmeasured, and still not covered by any of this: small-gap /
+/// slow-density-decay systems, and any builder other than LinK.
 #[derive(Debug, Clone)]
 pub struct QqrBounds {
     schwarz: SchwarzBounds,

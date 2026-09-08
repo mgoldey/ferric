@@ -124,3 +124,46 @@ fn report(stem: &str, basis_name: &str) {
 fn population_gap_alkane_16() {
     report("alkane_16", "cc-pvdz");
 }
+
+/// SCOPE CONTROL for the alkane result: 3-D topology, and a diffuse basis.
+///
+/// The `full population` vs `LinK population` gap is the whole mechanism, and
+/// it is cheap to measure (no SCF, no K build — just bound evaluations), so
+/// there is no excuse for having checked it on one molecular shape. A 1-D
+/// gapped chain maximizes how much of the far field LinK's density screen has
+/// already taken; benzene is compact and 3-D, and aug-cc-pVDZ widens both pair
+/// lists. If the LinK-population column stays near zero here too, the dilution
+/// is a property of the composition rather than of alkanes.
+#[test]
+#[ignore = "measurement; run explicitly (see module docs)"]
+fn population_gap_benzene_3d() {
+    // Bare benzene FIRST, as a deliberate negative control on the control:
+    // it is compact (~9.4 Bohr) and turns out to have almost no far field at
+    // all — QQR screens only 0.030% of even the FULL population at cc-pVDZ.
+    // That makes it useless for the question being asked here, and recording
+    // it stops a future reader from mistaking "QQR does nothing on benzene"
+    // for evidence about the LinK composition. A system must HAVE a far field
+    // before "does LinK already screen the far field" is a meaningful test.
+    report("benzene", "cc-pvdz");
+    report("benzene", "aug-cc-pvdz");
+}
+
+/// The real 3-D scope control: an EXTENDED, non-linear system, in a plain and
+/// a diffuse basis.
+///
+/// Bare benzene (above) fails as a control because it is too compact to have a
+/// far field. The T-shaped benzene dimer keeps the 3-D, non-chain topology but
+/// adds genuine separation between the two monomers — so `dp.partners` has real
+/// long-range entries for LinK's screen and QQR's envelope to compete over.
+/// aug-cc-pVDZ then widens both pair lists via diffuse functions.
+///
+/// Artifact hypothesis, stated before running: if the alkane dilution reflects
+/// the LinK composition, the LinK-population column stays far below the
+/// full-population column here too. If instead it approaches the full-population
+/// figure, the alkane result was topology-specific and must not be generalized.
+#[test]
+#[ignore = "measurement; run explicitly (see module docs)"]
+fn population_gap_benzene_dimer_extended() {
+    report("s22/benzene_dimer_T", "cc-pvdz");
+    report("s22/benzene_dimer_T", "aug-cc-pvdz");
+}
