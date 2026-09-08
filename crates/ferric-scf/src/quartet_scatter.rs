@@ -83,6 +83,34 @@ impl<'d> JkMode<'d> {
         )
     }
 
+    /// Whether this mode accumulates a Coulomb matrix.
+    ///
+    /// Single source of truth for the `FourPairK` validity invariant (see the
+    /// `debug_assert!` at the top of [`scatter_bra_pair`]): a density screen
+    /// that omits the `d12`/`d34` pairings is only sound where this is false.
+    /// Deliberately mirrors the variant set matched by [`JkMode::add_j`] — if a
+    /// new J-bearing variant is added there it must be added here too, and the
+    /// exhaustive `match` (no wildcard arm) is what forces that.
+    #[inline(always)]
+    pub(crate) fn accumulates_j(&self) -> bool {
+        match self {
+            JkMode::JOnly(_) | JkMode::Both(..) | JkMode::Uhf(..) => true,
+            JkMode::KOnly(_) => false,
+        }
+    }
+
+    /// Short variant name for diagnostics — avoids `{:?}` on a mode, which
+    /// would print entire `nbf×nbf` matrices into a panic message.
+    #[inline(always)]
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            JkMode::JOnly(_) => "JOnly",
+            JkMode::KOnly(_) => "KOnly",
+            JkMode::Both(..) => "Both",
+            JkMode::Uhf(..) => "Uhf",
+        }
+    }
+
     /// `local_j[(row,col)] += d[(la,sg)] * v` — no-op when this mode has no J.
     #[inline(always)]
     fn add_j(&mut self, row: usize, col: usize, d: &Array2<f64>, la: usize, sg: usize, v: f64) {
@@ -129,6 +157,16 @@ pub(crate) enum DensityScreen<'a> {
     SixPair(&'a Array2<f64>),
     /// `dmax = max(d13, d14, d23, d24)` from the same shell-blocked
     /// `d_max_shell` table — the EXCHANGE-ONLY pairings (LinK).
+    ///
+    /// **K-only builders; using this where J is also accumulated under-screens
+    /// J.** The omitted `d12`/`d34` are exactly the pairings the J contraction
+    /// reads, so a fused J+K sweep driven by this key would discard quartets
+    /// carrying a significant `D[s1,s2]` or `D[s3,s4]` whenever the four
+    /// exchange blocks happen to be small — silently, and with an error that
+    /// grows with system size. Enforced by a `debug_assert!` in
+    /// [`scatter_bra_pair`]; LinK's own loop does not route through that
+    /// function, so its correctness rests on the same restriction being true
+    /// there by construction (it accumulates K only).
     ///
     /// # Why a K-only builder needs its own variant
     ///
@@ -308,6 +346,23 @@ pub(crate) fn scatter_bra_pair(
 ) -> usize {
     use std::sync::atomic::Ordering;
 
+    // INVARIANT: the exchange-only density key is valid only where J is not
+    // accumulated. `FourPairK` omits the d12/d34 pairings that bound the J
+    // contraction, so pairing it with any J-accumulating mode under-screens J
+    // — silently, and extensively (the error grows with system size, per
+    // Hollman/Schaefer/Valeev on Schwarz truncation). Debug-only: this is a
+    // static property of each call site, not data-dependent, so one debug run
+    // of the suite is enough to prove every site correct, and release builds
+    // pay nothing.
+    debug_assert!(
+        !(matches!(screen, DensityScreen::FourPairK(_)) && mode.accumulates_j()),
+        "DensityScreen::FourPairK used with a J-accumulating JkMode ({}). FourPairK takes the max \
+         over the four EXCHANGE pairings only and omits d12/d34, which are precisely the blocks \
+         the J contraction reads — so this combination under-screens J. Use SixPair for any mode \
+         that accumulates J.",
+        mode.label()
+    );
+
     let mut local_count = 0usize;
     let b12 = q_table[(s1, s2)];
     let (n1, n2) = (dims[s1], dims[s2]);
@@ -428,4 +483,139 @@ pub(crate) fn scatter_bra_pair(
         }
     }
     local_count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 4-shell density-max table with a deliberate asymmetry: the J pairings
+    /// (d12, d34) are LARGE while the four exchange pairings are small. This is
+    /// exactly the configuration on which `FourPairK` and `SixPair` must
+    /// disagree, and on which using `FourPairK` for a J build would lose a
+    /// significant Coulomb contribution.
+    fn j_heavy_table() -> Array2<f64> {
+        let mut t = Array2::<f64>::from_elem((4, 4), 1e-9);
+        // d12 / d34 (and their symmetric partners): large.
+        t[(0, 1)] = 1.0;
+        t[(1, 0)] = 1.0;
+        t[(2, 3)] = 1.0;
+        t[(3, 2)] = 1.0;
+        t
+    }
+
+    /// The substantive property: on a J-heavy table the exchange-only key is
+    /// orders of magnitude smaller than the six-pairing key.
+    ///
+    /// This is what makes `FourPairK` a real tightening rather than a relabel —
+    /// and simultaneously why it is unsound for J. If this ever returns equal
+    /// values the variant has stopped doing anything.
+    #[test]
+    fn four_pair_k_is_strictly_tighter_than_six_pair_on_a_j_heavy_quartet() {
+        let t = j_heavy_table();
+        let six = DensityScreen::SixPair(&t).dmax(0, 1, 2, 3);
+        let four = DensityScreen::FourPairK(&t).dmax(0, 1, 2, 3);
+        assert_eq!(six, 1.0, "SixPair must pick up the large d12/d34 J pairings");
+        assert_eq!(four, 1e-9, "FourPairK must see only the small exchange pairings");
+        assert!(four < six, "FourPairK ({four:e}) must be tighter than SixPair ({six:e})");
+    }
+
+    /// `FourPairK <= SixPair` for EVERY quartet of a random-ish table — the
+    /// validity direction. A max over a subset can never exceed a max over the
+    /// superset, so a violation here means the pairing indices are wrong.
+    #[test]
+    fn four_pair_k_never_exceeds_six_pair() {
+        let n = 5usize;
+        let mut t = Array2::<f64>::zeros((n, n));
+        let mut state: u64 = 0x9E3779B97F4A7C15;
+        for i in 0..n {
+            for j in 0..=i {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let v = (state >> 33) as f64 / u32::MAX as f64;
+                t[(i, j)] = v;
+                t[(j, i)] = v;
+            }
+        }
+        for s1 in 0..n {
+            for s2 in 0..n {
+                for s3 in 0..n {
+                    for s4 in 0..n {
+                        let six = DensityScreen::SixPair(&t).dmax(s1, s2, s3, s4);
+                        let four = DensityScreen::FourPairK(&t).dmax(s1, s2, s3, s4);
+                        assert!(
+                            four <= six,
+                            "FourPairK {four} > SixPair {six} at ({s1},{s2},{s3},{s4}) — the \
+                             exchange pairings are not a subset of the six, so the indices are wrong"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// `accumulates_j` must agree with what `add_j` actually writes.
+    ///
+    /// The `FourPairK` guard is only as good as this predicate: if a J-bearing
+    /// mode ever reports `false`, the `debug_assert!` in `scatter_bra_pair`
+    /// goes quiet and the under-screening it exists to catch ships silently.
+    /// So this checks the predicate against OBSERVED behaviour — it drives
+    /// `add_j` on each mode and asserts J moved exactly when the flag says it
+    /// should — rather than restating the same match arms a second time.
+    #[test]
+    fn accumulates_j_matches_what_add_j_actually_writes() {
+        let d = Array2::<f64>::from_elem((1, 1), 1.0);
+        let d_a = Array2::<f64>::zeros((1, 1));
+        let d_b = Array2::<f64>::zeros((1, 1));
+
+        for mut mode in [
+            JkMode::new_j(1),
+            JkMode::new_k(1),
+            JkMode::new_both(1),
+            JkMode::new_uhf(1, &d_a, &d_b),
+        ] {
+            let flag = mode.accumulates_j();
+            let label = mode.label();
+            mode.add_j(0, 0, &d, 0, 0, 1.0);
+            let wrote_j = match &mode {
+                JkMode::JOnly(j) | JkMode::Both(j, _) | JkMode::Uhf(j, ..) => j[(0, 0)] != 0.0,
+                JkMode::KOnly(_) => false,
+            };
+            assert_eq!(
+                flag, wrote_j,
+                "{label}: accumulates_j() = {flag} but add_j actually wrote J = {wrote_j}. The \
+                 FourPairK guard in scatter_bra_pair depends on this predicate being exact."
+            );
+        }
+    }
+
+    /// The guard must actually FIRE on the invalid combination.
+    ///
+    /// Repo rule: a test you have never seen fail is an assumption. This is the
+    /// mutation test for the `debug_assert!` itself, expressed as the predicate
+    /// the assert evaluates — proving the condition is REACHABLE rather than
+    /// vacuously true. (It checks the predicate rather than calling
+    /// `scatter_bra_pair`, which would need a live libint2 `Engine`; the assert
+    /// is that function's first statement, so the predicate is the whole of its
+    /// logic.)
+    #[test]
+    fn four_pair_k_with_a_j_mode_is_detected_as_invalid() {
+        let t = j_heavy_table();
+        let screen = DensityScreen::FourPairK(&t);
+        let d_a = Array2::<f64>::zeros((1, 1));
+        let d_b = Array2::<f64>::zeros((1, 1));
+
+        let invalid = |m: &JkMode<'_>| matches!(screen, DensityScreen::FourPairK(_)) && m.accumulates_j();
+
+        assert!(invalid(&JkMode::new_j(1)), "FourPairK + JOnly must be flagged invalid");
+        assert!(invalid(&JkMode::new_both(1)), "FourPairK + Both must be flagged invalid");
+        assert!(
+            invalid(&JkMode::new_uhf(1, &d_a, &d_b)),
+            "FourPairK + Uhf must be flagged invalid"
+        );
+        // ...and must NOT fire on the one legitimate combination.
+        assert!(
+            !invalid(&JkMode::new_k(1)),
+            "FourPairK + KOnly is the intended use and must not be flagged"
+        );
+    }
 }
