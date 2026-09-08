@@ -358,32 +358,37 @@ const THRESH_SWEEP: [f64; 5] = [1e-6, 1e-8, 1e-10, 1e-12, 1e-14];
 
 /// Bar for LinK vs the dense build at the SAME threshold.
 ///
-/// A flat constant, not a multiple of `thresh`. Measured on alkane_8/cc-pVDZ,
-/// before and after the invalid-Schwarz-bound fix:
+/// A flat constant, not a multiple of `thresh`. Measured on alkane_8/cc-pVDZ
+/// across three fixes:
 ///
-/// | thresh | max\|K_LinK - K_dense(thresh)\| | after fix |
-/// |--------|--------------------------------|-----------|
-/// | 1e-6   | 4.83e-3                        | 4.822e-3  |
-/// | 1e-8   | 2.54e-3                        | 2.593e-3  |
-/// | 1e-10  | 1.92e-3                        | 1.492e-3  |
-/// | 1e-12  | 1.94e-3                        | 1.317e-3  |
-/// | 1e-14  | 1.94e-3                        | 8.047e-4  |
+/// | thresh | invalid Q=0 bound | after Schwarz-table fix | after LinK pair-list fixes (2026-09-07) |
+/// |--------|-------------------|-------------------------|-----------------------------------------|
+/// | 1e-6   | 4.83e-3           | 4.822e-3                | 9.509e-6                                |
+/// | 1e-8   | 2.54e-3           | 2.593e-3                | 1.041e-7                                |
+/// | 1e-10  | 1.92e-3           | 1.492e-3                | 8.899e-10                               |
+/// | 1e-12  | 1.94e-3           | 1.317e-3                | 1.090e-11                               |
+/// | 1e-14  | 1.94e-3           | 8.047e-4                | 5.691e-14                               |
 ///
-/// Before the fix the error PLATEAUED at 1.94e-3 from 1e-10 down, because it
-/// was dominated by the shared invalid-bound floor rather than by the
-/// threshold. It now decreases monotonically all the way to the tight end, and
-/// what remains is LinK's OWN approximation — its density-weighted restriction
-/// of the ket loop, which is a real and intended part of the method, not a
-/// defect. Note this is LinK vs dense at the SAME threshold, so the shared
-/// Schwarz screen cancels between the two sides; the quantity that went to
-/// machine precision is the trivial limit at thresh = 0, asserted in
-/// `link_k_matches_dense_in_the_trivial_limit`.
+/// The middle column was once described here as "LinK's OWN approximation —
+/// a real and intended part of the method, not a defect". It was a defect: a
+/// K error of 8e-4 at a 1e-14 threshold cannot be a screening residual, and
+/// `tests/link_scf_anchor.rs` showed the same loops driving a butane/def2-SVP
+/// SCF to -162.76 Ha (direct: -157.186) without converging. Three pair-list
+/// inconsistencies in `link_k.rs`/`pairs.rs` were responsible (ket loop
+/// covered only two of the four density blocks and demanded a bra-ket
+/// Schwarz pair; the density-pair criterion used Q(j,σ) of a pair in no
+/// relevant quartet; the significant-pair criterion cut at Q > sqrt(thresh)).
+/// With all three fixed the error is ~10·thresh at every point — the
+/// threshold-scale residual a consistent screen is allowed — and the trivial
+/// limit (`link_k_matches_dense_in_the_trivial_limit`) is unchanged at
+/// machine precision.
 ///
 /// Tying the bar to `thresh` would make it unreachable by construction at the
-/// tight end, which is the failure mode this file exists to prevent. The 1e-2
-/// constant still clears the largest measured value (4.8e-3 at the loose end,
-/// where LinK legitimately approximates most) with roughly 2x headroom.
-const LINK_VS_DENSE_BAR: f64 = 1e-2;
+/// tight end, which is the failure mode this file exists to prevent. 1e-4
+/// clears the largest measured value (9.5e-6 at the loose end) by 10x and sits
+/// an order of magnitude BELOW the smallest value any of the old defects
+/// produced (8.0e-4), so a return of any of them fails this sweep.
+const LINK_VS_DENSE_BAR: f64 = 1e-4;
 
 /// The `integral_thresh` a production SCF run uses.
 const PRODUCTION_INTEGRAL_THRESH: f64 = 1e-14;
@@ -472,13 +477,11 @@ fn run_thresh_sweep(kind: BoundKind, stem: &str, basis_name: &str) {
     }
 
     // --- The sweep must still SHOW the error falling as the screen loosens --
-    // Not a full monotonicity claim: the tail is flat (1.92e-3 -> 1.94e-3 ->
-    // 1.94e-3) because it has hit the invalid-bound floor, and asserting
-    // monotonicity there would be asserting something false about a defect
-    // that lives elsewhere. What IS true, and what makes the sweep a
-    // measurement rather than five unrelated numbers, is that loosening the
-    // threshold measurably COSTS accuracy: the loosest point must be clearly
-    // worse than the tightest.
+    // Not a full monotonicity claim (historically the tail was flat at the
+    // invalid-bound floor; today it falls ~100x per decade of thresh, see
+    // LINK_VS_DENSE_BAR). What makes the sweep a measurement rather than five
+    // unrelated numbers is that loosening the threshold measurably COSTS
+    // accuracy: the loosest point must be clearly worse than the tightest.
     let (t_loose, e_loose) = errs[0];
     let (t_tight, e_tight) = *errs.last().expect("sweep is non-empty");
     assert!(
