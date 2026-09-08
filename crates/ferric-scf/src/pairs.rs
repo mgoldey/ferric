@@ -11,7 +11,8 @@ use ndarray::Array2;
 /// Significant shell pairs based on integral bounds.
 ///
 /// `pairs[i]` is a sorted list of shell indices `j` such that
-/// `bound.estimate(i, j, i, j) > threshold`. Built once per geometry from
+/// `Q(i,j) · Q_max > threshold`, with `Q(i,j) = sqrt(estimate(i,j,i,j))` and
+/// `Q_max` the largest `Q` over all shell pairs. Built once per geometry from
 /// any type implementing [`Bound`].
 #[derive(Debug, Clone)]
 pub struct SignificantPairs {
@@ -23,14 +24,30 @@ pub struct SignificantPairs {
 impl SignificantPairs {
     /// Build significant pairs from a bound and threshold.
     ///
-    /// For each shell `i`, collects all shells `j` where the diagonal bound
-    /// `estimate(i, j, i, j)` exceeds `threshold`, sorted ascending.
+    /// A quartet `(ij|kl)` survives the kernel's screen only if
+    /// `Q(i,j)·Q(k,l)·|D| ≥ threshold`, so a pair `(i,j)` can matter only if
+    /// `Q(i,j)·Q_max ≥ threshold` — the density-free necessary condition (the
+    /// same pair prescreen PySCF's `q_cond` applies against `direct_scf_tol`).
+    /// The former criterion compared `estimate(i,j,i,j) = Q(i,j)²` against
+    /// `threshold`, i.e. cut pairs at `Q > sqrt(threshold)`: at 1e-12 that
+    /// dropped every pair with `Q < 1e-6`, each of which can still carry
+    /// O(1e-6)-sized quartets, and LinK-vs-direct differed by
+    /// `0.37·sqrt(threshold)` (butane/def2-SVP: 3.7e-7 at 1e-12, 3.7e-9 at
+    /// 1e-16, 5.6e-11 at 1e-20) instead of at threshold scale.
+    ///
+    /// Non-positive thresholds keep every pair whose bound is positive
+    /// (thresh 0) or every pair outright (negative), as before.
     pub fn build(bound: &dyn Bound, nshells: usize, threshold: f64) -> Self {
+        let q = |i: usize, j: usize| bound.estimate(i, j, i, j).sqrt();
+        let q_max = (0..nshells)
+            .flat_map(|i| (0..nshells).map(move |j| (i, j)))
+            .map(|(i, j)| q(i, j))
+            .fold(0.0f64, f64::max);
         let mut pairs = Vec::with_capacity(nshells);
         for i in 0..nshells {
             let mut row = Vec::new();
             for j in 0..nshells {
-                if bound.estimate(i, j, i, j) > threshold {
+                if q(i, j) * q_max > threshold {
                     row.push(j);
                 }
             }

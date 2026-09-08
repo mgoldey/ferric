@@ -146,7 +146,16 @@ fn link_k_matches_direct_k_butane_at_production_thresh() {
 
 /// Bar for the standalone butane K comparison at thresh = 1e-12.
 ///
-/// Post-fix measurement goes here; the pre-fix value was 2.784e-3. The bar is
-/// set well below the pre-fix value so the test cannot pass on the old loop,
-/// and above the post-fix value with headroom (see the commit that set it).
-const LINK_VS_DIRECT_K_BAR: f64 = 1e-6;
+/// Measured, butane/def2-SVP, converged density, LinK vs the direct build at
+/// the same 1e-12 threshold, as the three pair-list defects were removed:
+///
+/// ```text
+/// unfixed                                            2.784e-3
+/// + ket loop over dp(ish) ∪ dp(jsh)                  1.716e-3
+/// + density-pair criterion |D|·qmax(j)·qmax(σ)       3.716e-7   (= 0.37·sqrt(thresh): the Q² pair cut)
+/// + significant-pair criterion Q·Qmax > thresh       4.563e-12  (== direct(1e-12) vs direct(0))
+/// ```
+///
+/// 1e-9 is ~200x above the measured value and ~400x below the least-wrong
+/// partial fix, so the absence of ANY one of the three fixes fails here.
+const LINK_VS_DIRECT_K_BAR: f64 = 1e-9;
