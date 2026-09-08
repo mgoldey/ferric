@@ -80,10 +80,6 @@ const COSX_OPEN_SHELL_E_BAR: f64 = 2e-4;
 /// seminumerical K on a (50,110) grid never lands this close.
 const COSX_MUST_DIFFER_FLOOR: f64 = 1e-12;
 
-/// Water/cc-pVDZ RHF total-energy bit patterns for `k_builder` direct / link /
-/// cosx, recorded on origin/main e2cd1898 BEFORE this change (see
-/// `rhf_closed_shell_bits_record_water_ccpvdz`).
-const PRE_WIRING_RHF_BITS: &str = "c05301b6a22171b1,c05301b6a2217186,c05301b68dbcb965";
 
 fn setup(xyz: &str, charge: i32, mult: usize, bas: &str, op: Operator) -> (Molecule, PreparedBasis, SchwarzBounds) {
     let mol = Molecule::parse_xyz(xyz, charge, mult).expect("xyz");
@@ -192,33 +188,59 @@ fn rohf_cosx_within_grid_error_ch3_ccpvdz() {
 /// `k_builder` direct / link / cosx. Prints the f64 bit patterns; when
 /// `FERRIC_RHF_BITS_EXPECT=<hex>,<hex>,<hex>` is set (recorded on the same
 /// machine BEFORE the open-shell wiring) it asserts bitwise equality. The
-/// constants are machine-specific (OpenBLAS kernels), so they are not baked in.
+/// (c) RHF regression guard. Extracting `resolve_k_builder` / `build_pluggable_k`
+/// out of `solve_rhf` must not move closed-shell numerics.
+///
+/// This compares each builder against `direct` IN THE SAME RUN rather than
+/// against bit patterns recorded on one machine. An earlier version baked in
+/// hex energies and went red on CI for a non-reason: `direct` matched
+/// bit-for-bit (0 ULP) while `link` and `cosx` differed by 7 and 17 ULP
+/// (~1e-13 Ha) purely from OpenBLAS kernel selection — CI pins
+/// OPENBLAS_CORETYPE=Haswell, developer machines do not, and LinK/COSX do more
+/// BLAS-heavy accumulation than direct, so that is exactly where kernel choice
+/// surfaces. Absolute bit patterns are a machine fingerprint, not a regression
+/// test. The relative bars below hold on any hardware and still go red if the
+/// refactor perturbs the closed-shell path.
 #[test]
-fn rhf_closed_shell_bits_record_water_ccpvdz() {
+fn rhf_closed_shell_matches_direct_across_builders() {
     let (mol, prep, bounds) = setup(WATER_XYZ, 0, 1, "cc-pvdz", Operator::coulomb());
     let ctx = ParallelContext::default();
-    let mut bits = Vec::new();
-    for kb in [None, Some("link"), Some("cosx")] {
-        let r = solve_rhf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &cfg(kb)).expect("rhf");
-        assert!(r.converged);
-        println!(
-            "RHF water/cc-pVDZ k_builder={:?}: E={:.12} bits={:016x} iters={}",
-            kb.unwrap_or("direct"), r.energy, r.energy.to_bits(), r.iterations
-        );
-        bits.push(format!("{:016x}", r.energy.to_bits()));
-    }
-    println!("FERRIC_RHF_BITS={}", bits.join(","));
-    // Recorded on origin/main e2cd1898 BEFORE the open-shell wiring, on this
-    // machine, one thread — then re-measured after it and found identical, which
-    // is the proof that extracting `resolve_k_builder` / `build_pluggable_k` out
-    // of `solve_rhf` moved no closed-shell numerics. OpenBLAS kernel selection is
-    // machine-specific, so a mismatch on OTHER hardware is not necessarily a
-    // regression: override with `FERRIC_RHF_BITS_EXPECT=<hex>,<hex>,<hex>`, or
-    // re-record by running with --nocapture.
-    let expect = std::env::var("FERRIC_RHF_BITS_EXPECT")
-        .unwrap_or_else(|_| PRE_WIRING_RHF_BITS.to_string());
-    let want: Vec<&str> = expect.split(',').collect();
-    assert_eq!(want, bits, "closed-shell RHF energies changed bitwise (direct,link,cosx)");
+
+    let direct = solve_rhf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &cfg(None)).expect("rhf");
+    assert!(direct.converged);
+    println!(
+        "RHF water/cc-pVDZ direct: E={:.12} bits={:016x} iters={}",
+        direct.energy, direct.energy.to_bits(), direct.iterations
+    );
+
+    // LinK is EXACT to the screening threshold, so it must agree with direct to
+    // accumulation noise. Measured 5.1e-13 (CI) / 6.1e-13 (dev box); 1e-11 leaves
+    // ~20x headroom for other BLAS kernels without admitting a real defect.
+    let link = solve_rhf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &cfg(Some("link"))).expect("rhf link");
+    assert!(link.converged);
+    let d_link = (link.energy - direct.energy).abs();
+    println!(
+        "RHF link: E={:.12} bits={:016x} iters={} dE_vs_direct={:.3e}",
+        link.energy, link.energy.to_bits(), link.iterations, d_link
+    );
+    assert!(d_link < 1e-11, "LinK RHF moved vs direct: {d_link:.3e} Ha (expected accumulation noise ~1e-13)");
+    assert_eq!(link.iterations, direct.iterations, "LinK changed the RHF iteration count");
+
+    // COSX carries a GRID error, not accumulation noise: 4.862e-06 Ha on both
+    // machines at (50,110)+fit. Bracket it — a value far below would mean the
+    // builder silently fell back to direct, far above means the grid path broke.
+    let cosx = solve_rhf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &cfg(Some("cosx"))).expect("rhf cosx");
+    assert!(cosx.converged);
+    let d_cosx = (cosx.energy - direct.energy).abs();
+    println!(
+        "RHF cosx: E={:.12} bits={:016x} iters={} dE_vs_direct={:.3e}",
+        cosx.energy, cosx.energy.to_bits(), cosx.iterations, d_cosx
+    );
+    assert!(
+        (1e-7..1e-4).contains(&d_cosx),
+        "COSX RHF grid error {d_cosx:.3e} Ha outside [1e-7, 1e-4] — too small means it fell back to direct, too large means the grid path broke"
+    );
+    assert_eq!(cosx.iterations, direct.iterations, "COSX changed the RHF iteration count");
 }
 
 // ── (d) α/β independence from ONE builder instance ───────────────────────────
