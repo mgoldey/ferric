@@ -820,6 +820,21 @@ pub fn solve_rhf(
             total_quartets += dj.build(&d, &mut j_buf)?;
             lk.update_density(&d);
             total_quartets += lk.build(&d, &mut k_buf)?;
+            if crate::link_k::link_debug() {
+                // Cross-check the pluggable K against the dense screened
+                // direct build on the SAME density (debug only: one extra
+                // O(N^4) build per iteration).
+                let mut k_ref = Array2::<f64>::zeros(k_buf.dim());
+                let mut dk = DirectK::new(ctx, prep, bounds, config.integral_thresh, ooc_budget);
+                <DirectK as KBuilder>::build(&mut dk, &d, &mut k_ref)?;
+                let max_dk = (&k_buf - &k_ref).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+                let max_k = k_ref.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+                let max_d = d.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+                eprintln!(
+                    "[link-debug] iter={iter} path=density max|D|={max_d:.3e} max|K_direct|={max_k:.3e} \
+                     max|K_link-K_direct|={max_dk:.3e}"
+                );
+            }
         } else {
             let djk = direct_jk.as_mut().expect("DirectJK built before loop");
             if direct_incremental {

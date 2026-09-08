@@ -50,6 +50,21 @@ impl<'a, B: Bound> std::fmt::Debug for LinkK<'a, B> {
     }
 }
 
+/// `FERRIC_LINK_DEBUG` descriptor: per-build LinK pair-list counts, plus a
+/// per-iteration `max|K_LinK - K_direct|` cross-check in the RHF loop (env-only
+/// debug toggle; the cross-check costs a full direct K build per iteration).
+static LINK_DEBUG: ferric_core::config::ConfigVar<bool> = ferric_core::config::ConfigVar {
+    env_name: "FERRIC_LINK_DEBUG",
+    default: false,
+    parse: ferric_core::config::parse_toggle,
+    validate: ferric_core::config::accept_any,
+};
+
+/// Whether the LinK debug trace is on (`FERRIC_LINK_DEBUG=1/true/on/yes`).
+pub(crate) fn link_debug() -> bool {
+    LINK_DEBUG.toggle()
+}
+
 impl<'a, B: Bound> LinkK<'a, B> {
     /// Create a new LinK exchange builder.
     ///
@@ -97,6 +112,16 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
             self.dp = Some(DensityPairs::build(d, self.bound, self.prep, self.thresh));
         }
         let dp = self.dp.as_ref().unwrap();
+
+        if link_debug() {
+            eprintln!(
+                "[link-debug] LinK::build sp_pairs={} dp_pairs={} (nsh={}, full square={})",
+                self.sp.total_pairs(),
+                dp.total_pairs(),
+                self.prep.nshells(),
+                self.prep.nshells() * self.prep.nshells()
+            );
+        }
 
         let nsh = self.prep.nshells();
         let dims = self.prep.shell_dims();
