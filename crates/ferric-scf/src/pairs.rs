@@ -86,10 +86,10 @@ const PAR_DENSITY_PAIRS_THRESHOLD: usize = 64;
 
 /// Density-dependent pair lists rebuilt each SCF cycle.
 ///
-/// `pairs[j]` is a sorted list of shell indices `sigma` where the maximum
-/// absolute density element in the `(j, sigma)` shell block, times the
-/// largest Schwarz factor any bra pair containing `j` can have and the largest
-/// any ket pair containing `sigma` can have, exceeds the threshold.
+/// `pairs[j]` is a sorted list of shell indices `sigma` such that the exchange
+/// contribution the density block `D[j, sigma]` can make through ANY quartet
+/// LinK will visit exceeds the threshold — see [`DensityPairs::build`] for what
+/// that bound is and why the obvious form of it is nearly vacuous.
 #[derive(Debug, Clone)]
 pub struct DensityPairs {
     pairs: Vec<Vec<usize>>,
@@ -100,22 +100,81 @@ impl DensityPairs {
     ///
     /// A density block `D[j,σ]` enters K only through quartets `(i j|σ l)` (up
     /// to the 8-fold permutations), each bounded by `Q(i,j)·Q(σ,l)·|D[j,σ]|`.
-    /// The pair `(j, σ)` can therefore matter only if
+    ///
+    /// # The bound, and the two maxima that made it vacuous
+    ///
+    /// The obvious necessary condition takes the worst case over both free
+    /// indices independently:
     ///
     /// ```text
     ///   max|D[j,σ]| · qmax(j) · qmax(σ) > threshold,   qmax(x) = max_y Q(x,y)
     /// ```
     ///
-    /// which is a NECESSARY condition — every quartet that survives the
-    /// per-quartet `Q·Q·|D|` screen in `LinkK::build` has its density pair
-    /// retained here. The former criterion used `Q(j, σ)` — the Schwarz factor
-    /// of the pair `(j,σ)` ITSELF, which appears in no such quartet and decays
-    /// like a Gaussian overlap while `D[j,σ]` decays only exponentially — so
-    /// it discarded genuinely contributing far density pairs at every
-    /// threshold (butane/def2-SVP, thresh 1e-12: `max|K_LinK - K_direct|` =
-    /// 1.7e-3 on the converged density; 2.3e-7 at the atom-block-diagonal SAD
-    /// guess where the far blocks are exactly zero). See
+    /// That IS valid, and it is what shipped. It is also nearly vacuous, for a
+    /// structural reason rather than a coding error. `qmax(x)` maximizes over
+    /// ALL partners `y` in the molecule, and for any given `x` that maximum is
+    /// realized by a tight core s-shell pair whose value barely depends on `x`.
+    /// So `qmax(j)·qmax(σ)` is not a per-pair quantity at all — it is a
+    /// molecule-wide constant `≈ Qmax²`, and the criterion degenerates to
+    ///
+    /// ```text
+    ///   max|D[j,σ]| > threshold / Qmax²
+    /// ```
+    ///
+    /// With `Qmax²` of order 1 and a 1e-12 threshold this asks only whether the
+    /// block exceeds ~1e-12. Across ~50 Bohr of alkane the density tail is still
+    /// above that (the alkane density-matrix decay length is ~30 Bohr), so the
+    /// answer is "yes" for EVERY pair. MEASURED at thresh 1e-12 / def2-SVP on a
+    /// converged density: 10404/10404 kept on alkane_8 and 39204/39204 on
+    /// alkane_16 — the list pruned exactly nothing at either size
+    /// (`scripts/queue/out/link_fixed_counts.md`).
+    ///
+    /// The defect is the two INDEPENDENT maxima: no single quartet realizes
+    /// both. Taking the global max over `i` and over `l` separately discards
+    /// the locality on both sides at once, which is precisely the information
+    /// the list exists to exploit.
+    ///
+    /// # What is used instead
+    ///
+    /// The `l` side keeps its maximum — LinK genuinely iterates `lsh` over all
+    /// of `sp(ksh)`, so `qmax(σ)` is the honest bound there and tightening it
+    /// would make the condition unnecessary (dropping real contributions).
+    ///
+    /// The `i` side does not: `D[j,σ]` is reached only from a bra pair
+    /// CONTAINING `j`, and the largest Schwarz factor such a pair can have is
+    /// `qmax(j)` — but that bound is only attained when `j`'s best partner is
+    /// also the molecule's best, which is the coincidence that flattened the
+    /// product into a constant. Replacing the free-floating global with the
+    /// pair's own coupling strength `Q(j,σ)` would restore locality, but
+    /// OVER-tightens: `Q(j,σ)` decays like a Gaussian OVERLAP while `D[j,σ]`
+    /// decays only exponentially, so it discards genuinely contributing far
+    /// pairs — that was the PRE-#50 criterion and it cost
+    /// `max|K_LinK - K_direct|` = 1.7e-3 on butane/def2-SVP at 1e-12
+    /// (2.3e-7 at the atom-block-diagonal SAD guess, where the far blocks are
+    /// exactly zero and the error therefore hides). See
     /// `tests/link_scf_anchor.rs`.
+    ///
+    /// So the correct quantity is neither of those. What bounds the exchange
+    /// contribution of `(j,σ)` is the best bra pair `j` can actually form
+    /// TOGETHER WITH the best ket pair `σ` can actually form, and both of those
+    /// are already exactly `qmax(·)`. **The shipped criterion is therefore the
+    /// tightest bound available at pair-list granularity**, and its weakness is
+    /// intrinsic to the granularity, not to the formula.
+    ///
+    /// The resolution is that the pair list is the wrong place to recover this.
+    /// Locality on the `i` side is a property of the (bra pair, ket pair)
+    /// COMBINATION, which only exists once both are known — i.e. per quartet.
+    /// That is where it now lives: `LinkK::build` screens each quartet on the
+    /// pairwise `max(d13,d14,d23,d24)` density key
+    /// (`DensityScreen::FourPairK`), which uses the density block belonging to
+    /// the specific shells in hand rather than any maximum. This list keeps its
+    /// job of bounding the ket LOOP; the per-quartet screen bounds the WORK.
+    ///
+    /// Threshold semantics: the SAME `threshold` the per-quartet screen
+    /// enforces, deliberately. The list is a necessary condition feeding that
+    /// screen, so a pair it drops must be one no surviving quartet could need;
+    /// equal thresholds are what make it a pure accelerator with no accuracy
+    /// cost. Raising it to force pruning would trade correctness for counts.
     ///
     /// Parallelized over the outer shell index `j` once `nsh` clears
     /// `PAR_DENSITY_PAIRS_THRESHOLD`. Each `j` reads only `d`/`bound`/`prep`
