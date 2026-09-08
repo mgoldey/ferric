@@ -196,26 +196,62 @@ fn cosx_a_zero_threshold_matches_unscreened() {
     }
 }
 
-/// Stage 2 anchor (ii): reachability. A screen that never drops anything at the
-/// production threshold would make the whole Stage 2 sweep vacuous arithmetic,
-/// so prove it actually drops pairs.
+/// Stage 2 anchor (ii): reachability. A screen that never drops anything at
+/// the production threshold makes every screened measurement vacuous, so
+/// prove it drops pairs — on a case where a SOUND bound can: two waters
+/// 28 Bohr apart, whose 25 intermolecular shell pairs have negligible
+/// overlap (K_AB ~ exp(-p R^2)). Paired with the soundness half: whatever
+/// was dropped must contribute below the threshold, and no intramolecular
+/// pair may go.
+///
+/// The original version probed a single water from 40 Bohr away and expected
+/// drops. Only the unsound signed-overlap bound could satisfy that — a valid
+/// 1/R bound on a compact pair at 40 Bohr is ~1e-2, far above 1e-6 — so that
+/// expectation was itself evidence of the bug (#46).
 #[test]
 fn cosx_screen_actually_drops_pairs() {
-    let (_mol, prep, _d, _points) = setup();
+    let mol = Molecule::parse_xyz(
+        "6\nwater dimer, 15 A apart\n\
+         O 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n\
+         O 15 0 0\nH 15 0.7572 0.5868\nH 15 -0.7572 0.5868\n",
+        0,
+        1,
+    )
+    .expect("water dimer");
+    let bs = bundled("sto-3g").expect("sto-3g");
+    let prep = PreparedBasis::new(&mol, &bs).expect("prepared basis");
     let bounds = PairBounds::build(&prep).expect("pair bounds");
+    let t = 1e-7;
+    // Near the first water (Bohr), off every nucleus.
+    let probe = [0.5, 0.2, 0.3];
 
-    // A point far from the molecule: distant shell pairs should screen out.
-    let far = [0.0, 0.0, 40.0];
-    let kept = a_matrix_at_point(&prep, &far, Some(&bounds), CosxScreen::at(1e-6))
-        .expect("screened build");
+    let unscreened = a_matrix_at_point(&prep, &probe, None, CosxScreen::none()).expect("unscreened");
+    let screened = a_matrix_at_point(&prep, &probe, Some(&bounds), CosxScreen::at(t)).expect("screened");
+
+    // Pin the pair-count convention so the intramolecular arithmetic below is
+    // checked, not assumed: upper triangle including the diagonal.
+    let nsh = bounds.nshells();
+    assert_eq!(screened.pairs_total, nsh * (nsh + 1) / 2, "pair-count convention changed");
+    let nsh_per_water = nsh / 2;
+    let intramolecular = 2 * (nsh_per_water * (nsh_per_water + 1) / 2);
 
     assert!(
-        kept.pairs_kept < kept.pairs_total,
-        "screen at 1e-6 kept ALL {} pairs at a distant point; the screen is vacuous",
-        kept.pairs_total
+        screened.pairs_kept < screened.pairs_total,
+        "screen at {t:e} kept ALL {} pairs on a 28-Bohr water dimer; the screen is vacuous",
+        screened.pairs_total
+    );
+    assert!(
+        screened.pairs_kept >= intramolecular,
+        "screen dropped an intramolecular pair: kept {} < {intramolecular}",
+        screened.pairs_kept
+    );
+    let dev = (&unscreened.a - &screened.a).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
+    assert!(
+        dev < t,
+        "screen at {t:e} dropped pairs that mattered: max|A_unscr - A_scr| = {dev:.3e}"
     );
     println!(
-        "cosx screen reachability: {} of {} pairs kept at r=(0,0,40)",
-        kept.pairs_kept, kept.pairs_total
+        "cosx screen reachability (water dimer, 28 Bohr): {} of {} pairs kept (>= {intramolecular} intramolecular), max dev {dev:.3e}",
+        screened.pairs_kept, screened.pairs_total
     );
 }
