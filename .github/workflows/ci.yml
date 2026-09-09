@@ -112,6 +112,16 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # The runner image ships third-party apt sources (google-chrome,
+          # microsoft) that ferric does not depend on. When one of them serves a
+          # stale index, `apt-get update` exits 100 and this step fails before
+          # any ferric code is compiled -- see run 34384861042, where
+          # dl.google.com/linux/chrome-stable returned a Hash Sum mismatch.
+          # Drop those sources so the step depends only on the Ubuntu archive.
+          # NOTE: deliberately no `|| true` on apt-get update -- a genuine
+          # failure to reach the Ubuntu archive must still fail the job.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/microsoft-prod.list
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
@@ -374,6 +384,9 @@ jobs:
 
       - name: Install system dependencies
         run: |
+          # Same third-party-apt-source guard as build-and-test above.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+                     /etc/apt/sources.list.d/microsoft-prod.list
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
