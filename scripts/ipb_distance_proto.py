@@ -761,7 +761,6 @@ def anchor_trivial_limit(bnd_ipb, mol, anchors, label):
     """A1 -- (*) must reduce EXACTLY to the batch-independent IPB at D = 0, and
     must never EXCEED it at any distance (the `min` guarantees both)."""
     worst_eq, worst_le = 0.0, -math.inf
-    ctr = np.array([mol.bas_coord(s) for s in range(mol.nbas)])
     for s1 in range(mol.nbas):
         for s2 in range(s1 + 1):
             f = bnd_ipb.flat(s1, s2)
