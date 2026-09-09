@@ -312,6 +312,29 @@ disk rows above were executed; per the pre-registration's binding safety rule,
 the sizes and the mechanism are the finding and filling the disk to prove it is
 not.
 
+## Reading against the pre-registration
+
+| pre-registered | outcome |
+|---|---|
+| P1: DF-K fails first, at the very first rung, by disk-spill with NO preflight refusal | **CONFIRMED.** DF-K's tensor is 4.33 GB at alkane_20/def2-SVP against a 2 GB budget, and `three_index_source.rs` has no refusal — it spills. Never executed, per the safety rule. |
+| P1: COSX runs furthest, with its ceiling set by WALL TIME not RSS | **CONFIRMED so far.** Peak RSS 645 MB / 724 MB at the two measured rungs, against a 6 GB cap; the closed-form block requirement is 2.08 GB even at alkane_48/def2-QZVP. |
+| P1: direct/LinK fail on TIME around nbf 1000-1400 | Partially tested: LinK is 192.7 s at nbf 778 and still far inside the window. Not yet falsified. |
+| P3: COSX/LinK 8-11x at alkane_32/def2-SVP | **REFUTED — measured 1.088**, and the ratio IMPROVED with size (1.587 -> 1.088) rather than worsening. See the miss analysis above. |
+| P3: kept_dd 0.08-0.12 at alkane_32/def2-SVP | **Near miss, measured 0.0657** — below the band, same direction as the trend. |
+| P3: COSX total wall 400-700 s at alkane_32/def2-SVP | **REFUTED — measured 209.7 s.** The prediction used the old total-wall exponent 2.16, which the sparse half transforms removed. |
+| R1 (COSX hits the same wall as DF-K — would refute the memory argument) | **NOT observed.** COSX ran at every rung attempted, at <1 GB peak RSS. |
+| R2 (COSX/LinK worsens with N — would confine the claim to the L axis) | **NOT observed; the opposite happened.** |
+| R3 (COSX peak RSS grows super-linearly toward the cap) | **NOT observed.** 645 MB -> 724 MB for a 1.6x nbf increase. |
+| R4 (DF-K's spill works, so the wall is performance not feasibility) | **PARTIALLY UPHELD, and reported as such.** DF-K spills rather than refusing, so below the disk wall the honest claim is "IO-bound" (quantified: whole-tensor re-read per SCF iteration), not "cannot run". Only from alkane_32/def2-QZVP upward does the tensor exceed the free disk and DF-K become genuinely impossible here. |
+
+Three of my own quantitative predictions were wrong and are recorded as wrong.
+The direction of the error is uniform: I under-estimated COSX, because both
+anchors I predicted from (the pre-fix LinK series and the pre-sparse-half-
+transform total-wall exponent) were stale. That is the same failure the
+"AN UNAPPLIED FIX INVALIDATES THE VERDICT" convention warns about, arrived at
+from the other side — the fixes HAD been applied, and the verdict I was
+extrapolating from had not been re-derived.
+
 ## Protocol decision: SAD guess densities are NOT usable in this lane
 
 Recorded because it constrains everything below and cost the lane its cheap
