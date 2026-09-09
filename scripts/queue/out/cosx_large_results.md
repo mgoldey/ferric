@@ -173,6 +173,23 @@ converged for this lane: direct J+K SCF, **E = -1249.34789834 Ha, converged,
 density is itself part of the ceiling: at one thread on this box, converging a
 density costs more than every K build being compared on it.
 
+### Prediction for the next rung, stated before it ran
+
+From the two-point tail exponents above (COSX 1.29, LinK 2.12 in atoms), at
+alkane_48/def2-SVP (146 atoms, nbf 1162):
+
+* COSX total **~345 s** (of which A-build ~280 s), LinK warm **~447 s**,
+  so **COSX/LinK ~ 0.77** — COSX crossing BELOW parity at double zeta.
+* `kept_dd` ~0.035, `|A|/nbf` ~0.13, peak RSS ~0.9 GB.
+
+Artifact hypothesis stated alongside: if instead COSX comes in far cheaper than
+345 s WITH a `kept_dd` that has collapsed by much more than the ~2x per rung
+seen so far, that is a screen that has begun discarding real contributions
+rather than a method that has begun to scale — and the tell would be
+`max|K_cosx - K_link|` departing from the 4.83e-4 it has held flat across two
+rungs. The accuracy column is therefore the control on the timing column, and a
+COSX win with a degraded accuracy column is NOT a win.
+
 ## The memory wall, in closed form from the two builders' own preflights
 
 This is the part of the ceiling map that does NOT need a timing, and it is the
