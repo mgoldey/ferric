@@ -124,4 +124,89 @@ magnitude, as it should be — an energy error and a max-element K error are not
 the same quantity, but a 3e-5 relative K error producing a ~1e-4 Ha energy
 error is coherent. The instrument is not producing a number from nowhere.
 
-<!-- QZVP numbers appended below as cells complete -->
+## THE MEASUREMENT: def2-QZVP K error (butane, nbf = 528)
+
+### How the converged QZVP density was obtained (and what did NOT work)
+
+The exact four-centre direct SCF at QZVP is **not a viable route**: it reached
+only iteration 2 in ~25 minutes of single-threaded wall time before being
+killed, consistent with the (528/184)^4 ~ 68x per-iteration cost over TZVP on
+the analytic quartet path.
+
+**DF-JK converged the same system in 26.3 s / 11 iterations**
+(`E = -157.36421074 Ha`, converged=true, def2-universal-jkfit). That density was
+saved ONCE (`dens_qzvp_butane.bin`) and every cell below contracts it, so no
+comparison is across differing densities (prereg artifact A3) and nothing was
+converged twice.
+
+The density's provenance is DF-JK rather than exact-direct. This is the right
+tradeoff and it does not bias the K comparison: **both** builders in each row
+contract the *same* D, so the reported deviation is a property of the COSX
+quadrature, not of the density. A different D would shift both K matrices
+together.
+
+### Results — one thread, PSI `full avg10` = 0.00 before AND after every cell, cpu ~ wall
+
+`max|K_direct| = 7.882133e0`, `‖K_direct‖_F = 6.480234e1`.
+
+| grid | points | fit | max abs dev | **relative** | ‖dK‖_F | rel ‖·‖_F | COSX build | direct build |
+|---|---|---|---|---|---|---|---|---|
+| (25,50)  |  17 500 | ON  | 3.140e-3 | 3.983e-4 | 5.319e-2 | 8.208e-4 | — | 423.7 s |
+| **(50,110)** | **77 000** | **ON** | **4.247e-4** | **5.389e-5** | **7.806e-3** | **1.205e-4** | **89.95 s** | **420.7 s** |
+| (75,302) | 317 100 | ON  | 1.815e-5 | 2.302e-6 | 2.583e-4 | 3.986e-6 | 337.69 s | 508.2 s |
+| (50,110) |  77 000 | OFF | 2.497e-3 | 3.168e-4 | 4.523e-2 | 6.980e-4 | — | 455.8 s |
+
+**The production-configuration answer (the number the whitepaper was missing):**
+at butane/def2-QZVP, COSX at (50,110) with the overlap fit deviates from the
+exact four-centre K by **max 4.247e-4 absolute, 5.39e-5 relative**
+(Frobenius 7.806e-3 absolute, 1.21e-4 relative).
+
+### Basis progression, same molecule, same instrument, production setting
+
+| basis | nbf | L_max | max abs dev | relative dev |
+|---|---|---|---|---|
+| def2-TZVP | 184 | 3 | 2.483e-4 | 3.172e-5 |
+| def2-QZVP | 528 | 4 | 4.247e-4 | 5.389e-5 |
+
+**Prereg P1 outcome: CORRECT but at the very bottom of the predicted range.**
+P1 predicted 1e-4..3e-3 "in the upper half". The measured 4.25e-4 is in the
+range but in the LOWER half. The error grows TZVP -> QZVP by only **1.71x in
+absolute** and **1.70x in relative** terms — a mild degradation, not the
+"fixed grid can't keep up with rising L" collapse the reasoning implied. The
+prediction's direction was right; its magnitude was pessimistic, and the honest
+reading is that the reasoning behind it was only weakly confirmed.
+
+### Grid sensitivity at QZVP (prereg P3)
+
+Refinement factor per step at QZVP: (25,50) -> (50,110) is **7.4x**,
+(50,110) -> (75,302) is a further **23.4x**. The ladder is monotone and steep,
+i.e. **(50,110) is NOT a converged grid at quadruple zeta** — there is 23x of
+accuracy still on the table.
+
+The same ladder at TZVP is 12.9x then 28.3x. So the grid's *marginal value*
+is comparable at TZ and QZ; QZVP is not qualitatively harder to integrate.
+
+### The overlap fit at QZVP (prereg P4)
+
+| basis | fit ON | fit OFF | fit benefit |
+|---|---|---|---|
+| def2-TZVP | 2.483e-4 | 1.268e-3 | **5.1x** |
+| def2-QZVP | 4.247e-4 | 2.497e-3 | **5.9x** |
+
+**Prereg P4 outcome: the prediction was right and the worry was WRONG.** P4
+predicted the fit still helps by ~2-10x, and flagged a real possibility that it
+would HURT on a hydrocarbon chain at high L (from the known 0.5-0.9x ethane
+behaviour). Measured: the fit helps by 5.9x at QZVP, slightly MORE than its
+5.1x at TZVP. The fit is not water-specific in this regime, and the
+`overlap_fit = true` default is **vindicated at quadruple zeta**.
+
+Note the fit costs essentially nothing: `fit 0.024 s` out of an 89.95 s build.
+
+### An incidental cost result (same density, same thread, exact same comparison)
+
+The COSX K build at the production grid is **89.95 s** against the exact direct
+K's **420.74 s** on the identical density and one thread — a **4.68x** speedup
+at a 5.4e-5 relative K error. At (75,302) COSX is 337.69 s vs 508.2 s, only
+1.50x, so the accuracy gained by refining the grid mostly spends the advantage.
+
+<!-- SCF energy arm below -->
