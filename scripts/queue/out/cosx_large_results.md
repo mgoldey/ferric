@@ -208,6 +208,15 @@ the SLC cache is exhausted, which a multi-GB streaming spill does immediately).
 | C32/QZVP | 415.36 GB | over | **EXCEEDS** (2.0x) | **impossible on this box** |
 | C48/QZVP | 1382.49 GB | over | **EXCEEDS** (6.7x) | **impossible on this box** |
 
+The spill is not a one-off setup cost. `DfK::build` (df_k.rs:268) drives
+`ThreeIndexSource::for_each_block`, which on the spill backend re-reads the
+tensor from disk on EVERY build — i.e. every SCF iteration, not once at setup.
+So the IO column above is per-iteration: at alkane_32/def2-TZVP, 55.3 GB read
+per iteration is ~6 minutes of pure IO per SCF step before a single FLOP, and a
+15-iteration SCF pays it fifteen times. That is what "IO-bound" means here
+concretely, and it is why the RAM wall, though not a hard impossibility below
+the disk wall, is not a merely academic one either.
+
 So the honest split is: DF-K is out of RAM at every rung from 62 atoms /
 double-zeta upward, and out of DISK — genuinely unable to produce a K by any
 route — from **alkane_32 / def2-QZVP** (98 atoms, nbf 3804) upward. Note also
