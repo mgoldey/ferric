@@ -38,8 +38,8 @@
 //! * (c) `grouped_screen_gain_is_negligible_against_a_superlinear_bound_cost`
 //!   — REACHABILITY / NON-INERTNESS, and the branch's VERDICT. As
 //!   pre-registered it asserted that the degenerate fraction and the kept work
-//!   must both FALL with group size. THEY DO NOT (butane: kept 0.791573 ->
-//!   0.790406 for 8.2x the bound evaluations), so per its own stated stop
+//!   must both FALL with group size. THEY DO NOT (butane: kept 0.791577 ->
+//!   0.790411 for 8.2x the bound evaluations), so per its own stated stop
 //!   condition it now pins the negative result and is written to fail if that
 //!   is ever overturned. Its doc carries the table.
 //! * `grouped_screen_never_drops_what_the_unsplit_screen_keeps` — the
@@ -223,11 +223,11 @@ fn grouped_screen_k_matches_unscreened_below_grid_error() {
 ///
 /// ```text
 ///   group | degenerate |     kept | kept pairs | bound evals
-///       0 |     0.6515 | 0.791573 | 90 512 912 |     446 985   (unsplit)
-///      64 |     0.6419 | 0.790568 | 90 397 968 |     756 377   (1.69x)
-///      32 |     0.6441 | 0.790597 | 90 401 296 |   1 168 970   (2.62x)
-///      16 |     0.6465 | 0.790599 | 90 401 552 |   1 994 693   (4.46x)
-///       8 |     0.6423 | 0.790406 | 90 379 536 |   3 651 199   (8.17x)
+///       0 |     0.6515 | 0.791577 | 90 512 912 |     446 985   (unsplit)
+///      64 |     0.6419 | 0.790572 | 90 397 968 |     756 377   (1.69x)
+///      32 |     0.6441 | 0.790601 | 90 401 296 |   1 168 970   (2.62x)
+///      16 |     0.6465 | 0.790603 | 90 401 552 |   1 994 693   (4.46x)
+///       8 |     0.6423 | 0.790411 | 90 379 536 |   3 651 199   (8.17x)
 /// ```
 ///
 /// Kept work falls by **0.12 percentage points** for **8.2x the bound
