@@ -209,4 +209,125 @@ K's **420.74 s** on the identical density and one thread — a **4.68x** speedup
 at a 5.4e-5 relative K error. At (75,302) COSX is 337.69 s vs 508.2 s, only
 1.50x, so the accuracy gained by refining the grid mostly spends the advantage.
 
-<!-- SCF energy arm below -->
+## The SCF energy arm: NOT MEASURED at QZVP, and why
+
+**Deliverable 2 (SCF dE and iteration counts vs direct at QZVP) was not
+obtained.** Reporting that plainly, rather than substituting a number from a
+configuration that does not mean what it appears to mean.
+
+Two routes were tried and both are genuinely blocked:
+
+**Route 1 — COSX SCF against a direct SCF (the exact comparison asked for).**
+With `k_builder = "cosx"`, `rhf.rs:698` builds J with `DirectJ`, the exact
+four-centre Coulomb, and `rhf.rs:741` scopes the incremental (differential) Fock
+optimization strictly to the `DirectJK` path. So the COSX arm pays a full,
+non-incremental, exact J every iteration. At nbf = 528 this dominates: the run
+was killed by its own 1150 s bound (`EXIT=143`) without converging, and the
+plain direct SCF reached only iteration 2 in ~25 minutes. PSI stayed 0.00
+throughout both, so this is a real cost limit, not a contaminated measurement.
+An SCF here is a multi-hour job per arm, times five arms.
+
+**Route 2 — hold J fixed with DF-J so the arms differ only in K. REJECTED as
+an invalid configuration; it was caught by the pre-registration's own artifact
+check.** The TZVP validation of this route returned:
+
+```
+dfj_direct       E = -157.3534052742  converged  51 iters
+dfj_cosx_50_110  E = -157.3534052742  converged  51 iters
+```
+
+Bit-identical energies AND identical iteration counts. Prereg artifacts A5/A6
+say verbatim that identical energies across arms mean the knob did not reach the
+builder — broken configuration, not a null result. `df_j_aux` +
+`k_builder = "cosx"` runs a J-density-fitted SCF whose **exchange is the direct
+4-centre builder, with no COSX at all**, so the "COSX" arm and the "direct" arm
+were the same calculation.
+
+**Correction to my own first reading — ferric is NOT at fault here.**
+`fock_assembly::resolve_k_builder` (lines 192-201) explicitly warns on this
+combination, and the warning does fire:
+
+```
+[ferric] warning: k_builder = "cosx" is IGNORED because density-fitted J/K is
+active (df_j_aux/df_k_aux set, or auto-defaulted for a functional); exchange
+comes from the direct 4-centre builder
+```
+
+I missed it because my command filtered stdout through `grep` and the warning
+goes to **stderr**. The config layer behaved correctly and told me exactly what
+it was doing; the measurement error was mine. (`rhf.rs`'s in-source comment does
+say "silently ignored", which is now stale relative to the code — the resolver
+below it warns. Worth a one-line comment fix, nothing more.)
+
+The lesson is a measurement-hygiene one already in this repo's memory —
+*grep-filtered output hides failures* — and it is why the cheap TZVP validation
+ran before the expensive QZVP arm. Had this route been run only at QZVP without
+that check, it would have produced a converged pair of energies differing by ~0
+and the natural, completely wrong conclusion "COSX is exact at QZVP".
+
+### What stands in place of the SCF dE
+
+The K-matrix error IS the underlying quantity, measured at QZVP on a converged
+density, and it is the more direct probe of the approximation: an SCF dE is that
+same error propagated through a self-consistent loop. The relative K deviation
+at the production setting is 5.39e-5, and the TZVP row of the same table
+(3.17e-5) sits next to a whitepaper SCF error of -1.2e-4 Ha — so a QZVP SCF
+error of *order* 1e-4 Ha is the reasonable inference. **That is an inference,
+not a measurement, and it is not offered as a number for the paper.**
+
+One genuine data point does exist. Both QZVP SCFs start from the same core
+guess, so iteration 1 is a pure K comparison at fixed density:
+
+| | iteration-1 E (Ha) |
+|---|---|
+| direct           | -114.3388621771 |
+| COSX (25,50)+fit | -114.3385841358 |
+| difference       | **+2.780e-4** |
+
+Consistent in magnitude with the (25,50) K error of 3.14e-3 on a guess density
+far from convergence. Recorded for completeness; it is not a converged SCF
+error and must not be quoted as one.
+
+## Recommendation on the default at quadruple zeta
+
+**Keep `overlap_fit = true`. It is clearly right at QZVP** — worth 5.9x, at a
+cost of 0.024 s in a 90 s build. The prereg's concern that it might be
+water-specific and fail on hydrocarbon chains is refuted for butane at both TZ
+and QZ.
+
+**(50,110) is defensible as a default but it is NOT converged at QZVP**, and the
+paper should say so rather than imply the default is a settled choice:
+
+* At the production setting COSX's relative K error at QZVP is 5.4e-5, and the
+  basis progression TZVP -> QZVP is only 1.71x. The default does not *degrade*
+  much going to quadruple zeta — the "fixed grid falls apart at high L" worry
+  is not what the data shows.
+* But (75,302) is 23.4x more accurate, so users who need tight exchange at QZ
+  have a real and effective knob, and (50,110) is a speed/accuracy compromise
+  rather than a converged answer.
+* The cost of that accuracy is most of the advantage: COSX is 4.68x faster than
+  the exact K at (50,110), but only 1.50x at (75,302).
+
+**The most important wording change for the paper**: §3.1's "1.51x" and §3.3's
+"137.04 s" should not stand alone. The honest sentence is that at
+butane/def2-QZVP, COSX at (50,110)+fit builds K in 89.95 s against the exact
+direct K's 420.74 s on the same density and one thread — **4.68x — at a
+relative K error of 5.4e-5 (max element 4.2e-4 against max|K| = 7.9)**. A cost
+ratio without the co-reported error is not a claim a reader can evaluate, and
+that error is now measured rather than assumed.
+
+## Scope and honesty limits
+
+* ONE molecule (butane), a saturated hydrocarbon: no lone pairs, no
+  heteroatoms, no diffuse functions. Not a QZVP-wide verdict.
+* The density is DF-JK-converged, not exact-direct-converged. This does not bias
+  the K comparison (both builders contract the same D) but it is not the exact
+  ground state.
+* The requested (75,194) does not exist in COSX; (75,302) was used. The two are
+  not interchangeable — 302 is a finer angular order, so the fine-grid arm is
+  *more* refined than the one requested.
+* The SCF dE at QZVP is **not measured**. Do not let the K-error table be read
+  as if it were.
+* The COSX-vs-direct K timings above are honest single-thread same-density
+  comparisons, but they were not the object of this lane and were not repeated;
+  treat them as one measurement each, not as a benchmark.
