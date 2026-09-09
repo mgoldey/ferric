@@ -312,6 +312,21 @@ disk rows above were executed; per the pre-registration's binding safety rule,
 the sizes and the mechanism are the finding and filling the disk to prove it is
 not.
 
+### Prediction for alkane_20 / def2-TZVP, stated before that rung ran
+
+This is the cell that tests COSX's actual claim — high angular momentum AT size
+— rather than size alone. nbf 872, L_max 3, same 62-atom molecule and same
+341 000 grid points as rung 1, so the grid is held fixed and only L moves.
+
+* COSX **232-465 s** (2-4x its SVP time: the A-build's 3c1e blocks grow with the
+  shell dimensions but not with the point count, which is unchanged).
+* LinK **366-1098 s** (5-15x: an analytic quartet's cost explodes with L, which
+  is the literature's whole case for seminumerical exchange).
+* Therefore **COSX/LinK roughly 0.3-0.7, i.e. clearly BELOW parity.**
+
+If instead COSX/LinK stays at or above 1 here, the L-axis case is not what the
+literature claims on this implementation, and the whitepaper cannot lean on it.
+
 ## The rung that was NOT reached, and why (alkane_48 / def2-SVP)
 
 Attempted and abandoned, recorded rather than omitted. alkane_48/def2-SVP
