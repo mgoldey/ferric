@@ -879,7 +879,8 @@ So the defensible claims from this lane are:
 2. **COSX's advantage is an ANGULAR-MOMENTUM advantage, not a system-size
    advantage.** That is a narrower claim than the campaign set out to make and
    it is the one the data supports: measured 0.673 at triple zeta, measured
-   1.088-1.587 (i.e. a loss) at double zeta across a 2.4x range in system size.
+   1.088-1.587 (i.e. a loss) at double zeta across a 4.7x range in system size
+   (62, 98 and 146 atoms; the 2.4x figure predates the C48 rung).
    The whitepaper should say "COSX wins at high L" and must NOT say "COSX wins
    at large N".
 3. **COSX's accuracy does not degrade with size on these systems**
