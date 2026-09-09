@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 from dataclasses import dataclass, field
 
@@ -515,8 +516,27 @@ SYSTEMS = {
 }
 
 
+def _atom_spec(name: str) -> str:
+    """Geometry for `name`: a key of SYSTEMS, or `alkane_N` from testdata."""
+    if name in SYSTEMS:
+        return SYSTEMS[name]
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "testdata", "molecules", f"{name}.xyz")
+    if not os.path.exists(path):
+        raise KeyError(f"unknown system {name!r} (not in SYSTEMS and no {path})")
+    lines = open(path).read().splitlines()[2:]      # skip the xyz count + comment
+    return "; ".join(ln.strip() for ln in lines if ln.strip())
+
+
+def molecular_diameter(mol: gto.Mole) -> float:
+    """Max internuclear distance, Bohr -- the size axis the whitepaper uses."""
+    c = mol.atom_coords()
+    d = np.linalg.norm(c[:, None, :] - c[None, :, :], axis=-1)
+    return float(d.max())
+
+
 def prepare_system(name: str, basis: str, atom_grid=(50, 110)):
-    mol = gto.M(atom=SYSTEMS[name], basis=basis, unit="Angstrom", verbose=0)
+    mol = gto.M(atom=_atom_spec(name), basis=basis, unit="Angstrom", verbose=0)
     mf = scf.RHF(mol)
     mf.conv_tol = 1e-10
     mf.kernel()
@@ -800,6 +820,147 @@ def diagnostics(system: str, basis: str, atom_grid):
     print(f"       a large spread means the two orderings genuinely differ (the §3 artifact check).")
 
 
+def size_sweep(systems, basis, atom_grid, thresholds=(1e-5, 1e-6, 1e-7, 1e-8)):
+    """Kept-work vs MOLECULAR DIAMETER -- the axis the locality question lives on.
+
+    Counts only (no K accumulation), so this reaches sizes the full anchor table
+    cannot.  For each system it reports, at each threshold, what ferric's screen
+    keeps, what the sn-LinK-style screen keeps, and -- the question that matters
+    for the whitepaper's §4.1 -- what the DENSITY-weighted branch keeps ON ITS
+    OWN versus what the density-free geometric branch keeps on its own.
+
+    If the density branch tracks the geometric one, the density is contributing
+    nothing that geometry has not already contributed, which is the fourth
+    independent sighting of the same effect (COSX's row mask, LinK's
+    density-pair list, the #52 threshold sweep being the first three).
+    """
+    print(f"\n{'='*118}")
+    print(f"SIZE SWEEP  basis={basis}  grid={atom_grid[0]}x{atom_grid[1]}  "
+          f"(counts only -- no K accumulation)")
+    print("=" * 118)
+    hdr = (f"{'system':>10} {'diam':>7} {'nbf':>5} {'pairxb':>8} {'thresh':>8} | "
+           f"{'FE kept%':>9} {'SN kept%':>9} {'SN-FE pp':>9} | "
+           f"{'geom-only%':>10} {'dens-only%':>10} {'dens adds':>9}")
+    print(hdr)
+    print("-" * 118)
+    rows = []
+    for name in systems:
+        mol, D, coords, weights, bnd, info = prepare_system(name, basis, atom_grid)
+        diam = molecular_diameter(mol)
+        dmax = shell_dmax(D, info)
+        fe, sE, sK, geom, wt = [], [], [], [], []
+        for b0 in range(0, len(weights), BATCH_POINTS):
+            b1 = min(b0 + BATCH_POINTS, len(weights))
+            pts = coords[b0:b1]
+            nb = b1 - b0
+            ao = mol.eval_gto("GTOval", pts)
+            X = (ao * np.sqrt(weights[b0:b1])[:, None]).T
+            F = D @ X
+            fmax = shell_max(F, info)
+            xmax = shell_max(X, info)
+            c, r = batch_sphere(pts)
+            for s1 in range(mol.nbas):
+                for s2 in range(s1 + 1):
+                    est = bnd.sphere(s1, s2, c, r)
+                    fe.append(est * max(fmax[s1], fmax[s2]))
+                    sE.append(est * max(xmax[s1], xmax[s2]))
+                    sK.append(est * max(float(np.max(dmax[:, s1] * xmax)),
+                                        float(np.max(dmax[:, s2] * xmax))))
+                    # The purely GEOMETRIC estimate: the integral bound alone,
+                    # with no density and no AO magnitude.  This is the control
+                    # that says whether the density factors contribute anything.
+                    geom.append(est)
+                    wt.append(info.ncart[s1] * info.ncart[s2] * nb)
+        fe, sE, sK, geom, wt = map(np.array, (fe, sE, sK, geom, wt))
+        for th in thresholds:
+            kfe = fe >= th
+            ksn = (sE >= th) | (sK >= th)
+            kg = geom >= th        # geometry alone
+            kd = sK >= th          # density-weighted branch alone
+            # Does the density branch drop anything the geometric bound keeps?
+            dens_adds = int(np.sum(kg & ~kd))
+            print(f"{name:>10} {diam:7.2f} {mol.nao:5d} {len(fe):8d} {th:8.0e} | "
+                  f"{100*kfe.mean():8.3f}% {100*ksn.mean():8.3f}% "
+                  f"{100*(ksn.mean()-kfe.mean()):+8.3f} | "
+                  f"{100*kg.mean():9.3f}% {100*kd.mean():9.3f}% {dens_adds:9d}")
+            rows.append((name, diam, mol.nao, th, kfe.mean(), ksn.mean(),
+                         kg.mean(), kd.mean(), dens_adds))
+        print("-" * 118)
+    print("\n  'geom-only%'  = kept by the integral bound ALONE (no density, no AO magnitude)")
+    print("  'dens-only%'  = kept by the density-weighted branch alone")
+    print("  'dens adds'   = pair-batches the GEOMETRIC bound keeps but the DENSITY branch drops")
+    print("                  -> this is the density's entire contribution. 0 means vacuous.")
+    return rows
+
+
+def density_decomposition(systems, basis, atom_grid, t=FERRIC_DEFAULT_T):
+    """How much of the pruning is GEOMETRY and how much is the DENSITY MATRIX?
+
+    This is the whitepaper §4.1 question asked at pair-batch granularity, and it
+    needs care because BOTH screens' "density" factors secretly contain the AO
+    values on the grid:
+
+        ferric:  fmax[s]  = max |(D X)[s]|          <- contains X
+        sn-LinK: dweight  = max_l dmax[l,s] xmax[l] <- contains X
+
+    So a screen that "uses the density" may in fact be riding on the Gaussian
+    decay of X away from the batch, which is pure geometry.  The decomposition
+    replaces D by a CONSTANT matrix of the same magnitude, leaving X untouched:
+
+        geom       = bound alone                     (no D, no X)
+        +AO(X)     = bound * xmax                    (X only)
+        flatD      = bound * dweight with D -> const (X only, dweight-shaped)
+        +realD     = bound * dweight with real D     (X and D)
+
+    `flatD -> +realD` is then the density's TRUE contribution, with the AO
+    factor held fixed, and `geom -> flatD` is what the AO magnitude contributes
+    through the same expression.
+    """
+    print(f"\n{'='*112}")
+    print(f"DENSITY vs GEOMETRY decomposition  basis={basis}  t={t:.0e}  "
+          f"grid={atom_grid[0]}x{atom_grid[1]}")
+    print("=" * 112)
+    print(f"{'system':>10} {'diam':>6} {'nbf':>5} | {'geom':>8} {'+AO(X)':>8} "
+          f"{'flatD':>8} {'+realD':>8} | {'X does':>7} {'D does':>7} {'D share':>8}")
+    print("-" * 112)
+    for name in systems:
+        mol, D, coords, weights, bnd, info = prepare_system(name, basis, atom_grid)
+        diam = molecular_diameter(mol)
+        dmax = shell_dmax(D, info)
+        dmax_flat = shell_dmax(np.ones_like(D) * float(np.max(np.abs(D))), info)
+        est_l, sK_l, sKf_l, xo_l = [], [], [], []
+        for b0 in range(0, len(weights), BATCH_POINTS):
+            b1 = min(b0 + BATCH_POINTS, len(weights))
+            pts = coords[b0:b1]
+            ao = mol.eval_gto("GTOval", pts)
+            X = (ao * np.sqrt(weights[b0:b1])[:, None]).T
+            xmax = shell_max(X, info)
+            c, r = batch_sphere(pts)
+            for s1 in range(mol.nbas):
+                for s2 in range(s1 + 1):
+                    est = bnd.sphere(s1, s2, c, r)
+                    est_l.append(est)
+                    xo_l.append(est * max(xmax[s1], xmax[s2]))
+                    sK_l.append(est * max(float(np.max(dmax[:, s1] * xmax)),
+                                          float(np.max(dmax[:, s2] * xmax))))
+                    sKf_l.append(est * max(float(np.max(dmax_flat[:, s1] * xmax)),
+                                           float(np.max(dmax_flat[:, s2] * xmax))))
+        est, sK, sKf, xo = map(np.array, (est_l, sK_l, sKf_l, xo_l))
+        g = 100 * (est >= t).mean()
+        ax = 100 * (xo >= t).mean()
+        f = 100 * (sKf >= t).mean()
+        rd = 100 * (sK >= t).mean()
+        xdoes, ddoes = f - g, rd - f
+        tot = abs(xdoes) + abs(ddoes)
+        print(f"{name:>10} {diam:6.1f} {mol.nao:5d} | {g:7.2f}% {ax:7.2f}% "
+              f"{f:7.2f}% {rd:7.2f}% | {xdoes:+7.2f} {ddoes:+7.2f} "
+              f"{100*abs(ddoes)/tot if tot else 0.0:7.1f}%")
+    print("-" * 112)
+    print("  'X does'  = pp pruned by the AO magnitude through dweight (geometry)")
+    print("  'D does'  = pp pruned by the DENSITY MATRIX with the AO factor held fixed")
+    print("  'D share' = |D does| / (|X does| + |D does|): the density's share of the pruning")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--systems", default="water,methane")
@@ -807,6 +968,12 @@ def main():
     ap.add_argument("--grid", default="50,110",
                     help="radial,angular atom grid (ferric's COSX default is 50,110)")
     ap.add_argument("--no-sweep", action="store_true")
+    ap.add_argument("--decompose", action="store_true",
+                    help="split the pruning into its geometry and density-matrix "
+                         "parts (the whitepaper 4.1 question at pair-batch granularity)")
+    ap.add_argument("--size-sweep", action="store_true",
+                    help="kept-work vs molecular diameter across the given systems "
+                         "(counts only; reaches sizes the anchor table cannot)")
     ap.add_argument("--diagnostics", action="store_true",
                     help="report the screening-product distribution instead of "
                          "the anchor table (explains WHY a screen does/does not bite)")
@@ -833,6 +1000,13 @@ def main():
                              bnd.sphere(s1, s2, c, r) * max(xmax[s1], xmax[s2]) > self.eps_e)
 
     atom_grid = tuple(int(x) for x in args.grid.split(","))
+    if args.decompose:
+        density_decomposition([x.strip() for x in args.systems.split(",")],
+                              args.basis, atom_grid)
+        return 0
+    if args.size_sweep:
+        size_sweep([x.strip() for x in args.systems.split(",")], args.basis, atom_grid)
+        return 0
     if args.diagnostics:
         for s_ in args.systems.split(","):
             diagnostics(s_.strip(), args.basis, atom_grid)
