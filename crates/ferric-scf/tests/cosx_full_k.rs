@@ -28,6 +28,15 @@
 //!   COSX_FK_BUILDS      number of COSX builds (default 1; the first also factorizes S_num)
 //!   COSX_FK_SCREEN      density-driven screen threshold: a number, or "none" (unscreened);
 //!                       absent = the library default (`COSX_DEFAULT_SCREEN_THRESH`)
+//!   COSX_FK_SIZE_ONLY   "1" print nbf/nsh/naux/DF-tensor size and STOP (no build, no SCF)
+//!   COSX_FK_DFK         "1" also build DF-K (def2-universal-jkfit) on the same density
+//!   COSX_FK_DFK_MAX_GB  refuse the DF-K build when the dressed 3-index tensor
+//!                       naux*nbf^2*8 exceeds this (default 2.0) — the SIZE is the finding,
+//!                       and letting `ThreeIndexSource` take its disk-spill branch on a
+//!                       95%-full partition is not (there is NO preflight refusal in the
+//!                       library: over-budget silently means spill-to-/tmp).
+//!
+//! Peak RSS (`VmHWM` from /proc/self/status) is printed at the end of every cell.
 
 use ferric_core::basis::bundled;
 use ferric_core::mol::Molecule;
@@ -97,6 +106,19 @@ where
     (secs, cpu, v)
 }
 
+/// Peak resident set size (`VmHWM`) in MB, from /proc/self/status.
+fn peak_rss_mb() -> f64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("VmHWM:"))
+                .and_then(|l| l.split_whitespace().nth(1).and_then(|v| v.parse::<f64>().ok()))
+        })
+        .map(|kb| kb / 1024.0)
+        .unwrap_or(f64::NAN)
+}
+
 fn save_density(path: &str, d: &Array2<f64>, c_occ: &Array2<f64>) {
     let mut bytes = Vec::with_capacity((d.len() + c_occ.len()) * 8);
     for v in d.iter().chain(c_occ.iter()) {
@@ -138,6 +160,24 @@ fn cosx_full_k_cell() {
         budget_bytes as f64 / 1e9,
         psi_full_avg10()
     );
+
+    // The DF-K comparison size, printed for EVERY cell whether or not DF-K runs:
+    // the dressed 3-index tensor `naux * nbf^2 * 8` is DF-K's resident cost.
+    // `bundled(JKFIT)` + `PreparedBasis` on the aux set is cheap relative to
+    // anything else here, so it is always computed.
+    let aux_bs = bundled(JKFIT).expect("jkfit basis");
+    let aux_prep = PreparedBasis::new(&mol, &aux_bs).expect("aux prep");
+    let naux = aux_prep.nbasis();
+    let dfk_tensor_gb = naux as f64 * (nbf * nbf) as f64 * 8.0 / 1e9;
+    println!(
+        "DF-K sizing: jkfit naux={naux}, dressed 3-index tensor = {dfk_tensor_gb:.3} GB (budget {:.2} GB)",
+        budget_bytes as f64 / 1e9
+    );
+
+    if env_flag("COSX_FK_SIZE_ONLY") {
+        println!("COSX_FK_SIZE_ONLY: sizing printed, no build. peak RSS {:.1} MB", peak_rss_mb());
+        return;
+    }
 
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
@@ -326,4 +366,35 @@ fn cosx_full_k_cell() {
             "LinK K (last build): wall {wall:.3} s cpu {cpu:.2} s; COSX/LinK = {ratio}; max|K_cosx - K_link| = {dev:.3e} (||K||max {kmax:.3e})"
         );
     }
+
+    // ---------- optional DF-K arm ----------
+    // Guarded by SIZE, not by an attempt. `ferric_integrals::three_index_source`
+    // has NO preflight refusal: when the tensor exceeds `budget_bytes` it takes
+    // the disk-spill branch and writes a temp file (tempfile::tempfile() -> /tmp).
+    // On a 95%-full root partition, letting a 4-1400 GB spill run is a machine
+    // outage, not a measurement, so the size is recorded and the build refused.
+    if env_flag("COSX_FK_DFK") {
+        let dfk_max_gb: f64 = env_num("COSX_FK_DFK_MAX_GB", 2.0);
+        if dfk_tensor_gb > dfk_max_gb {
+            println!(
+                "DF-K REFUSED: dressed 3-index tensor {dfk_tensor_gb:.3} GB exceeds the \
+                 {dfk_max_gb} GB cap (naux={naux}, nbf={nbf}). Library behaviour above budget \
+                 is disk-spill (no preflight error); the SIZE is the finding."
+            );
+        } else {
+            let (setup, _, mut dfk) = timed("DF-K setup (3-index build + V^-1/2 dressing)", threads, || {
+                ferric_scf::df_k::DfK::new(op, &prep, &aux_prep, budget_bytes).expect("DfK::new")
+            });
+            let mut k_dfk = Array2::<f64>::zeros((nbf, nbf));
+            let (t_dens, cpu_d, _) =
+                timed("DF-K density-path build", threads, || dfk.build(&d, &mut k_dfk).expect("dfk build"));
+            let dev = (&k_cosx - &k_dfk).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
+            println!(
+                "DF-K: setup {setup:.3} s; density-path build {t_dens:.3} s (cpu {cpu_d:.2}); \
+                 tensor {dfk_tensor_gb:.3} GB; max|K_cosx - K_dfk| = {dev:.3e}"
+            );
+        }
+    }
+
+    println!("CELL PEAK RSS: {:.1} MB  (VmHWM)  PSI full avg10 now={}", peak_rss_mb(), psi_full_avg10());
 }
