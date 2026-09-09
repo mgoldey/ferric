@@ -273,7 +273,70 @@ never because a 2 Bohr region reached it.
 This is asserted, not just printed: the test FAILS if the median extent ever
 grows more than 2x while the diameter grows 3.7x.
 
-### 4.5.4 Verdict on the size axis
+### 4.5.4 Kept-work counts on the size axis (`kept_work_vs_group_size_across_the_locality_onset`)
+
+The confirmatory half. `#[ignore]`d and run explicitly (converged RHF + 6 COSX
+builds per system). C4 reproduces §3.1 exactly, as it must — counts are
+deterministic.
+
+| system | diam | group | degenerate | kept frac | kept pairs | bound evals |
+|---|---|---|---|---|---|---|
+| alkane_4 | 10.5 | 0 | 0.6515 | 0.791577 | 90 512 912 | 446 985 (1.00x) |
+| | | 8 | 0.6423 | 0.790411 | 90 379 536 | 3 651 199 (8.17x) |
+| | | | | **-0.117 pp** | | |
+| alkane_8 | 19.9 | 0 | 0.5704 | 0.486154 | 365 188 736 | 2 936 427 (1.00x) |
+| | | 256 | 0.5704 | 0.486154 | 365 188 736 | 2 936 427 (1.00x) |
+| | | 64 | 0.5876 | 0.484711 | 364 104 832 | 7 603 526 (2.59x) |
+| | | 32 | 0.5947 | 0.484492 | 363 939 944 | 13 835 302 (4.71x) |
+| | | 16 | 0.5970 | 0.484153 | 363 685 536 | 26 323 603 (8.96x) |
+| | | 8 | 0.5896 | 0.483553 | 363 234 720 | 51 351 706 (**17.49x**) |
+| | | | | **-0.260 pp** at 17.5x | | |
+
+**Same picture at 19.9 Bohr as at 10.5 Bohr, and on the cost side much WORSE**:
+0.260 pp of kept work for **17.5x** the bound evaluations, against butane's
+0.117 pp for 8.17x. The degenerate fraction RISES with finer groups
+(0.5704 -> 0.5876 -> 0.5947 -> 0.5970) rather than falling.
+
+**A new size effect, and it runs against grouping.** The bound-evaluation
+multiplier is steeper at C8 than at C4 at every matched group size — 2.59x vs
+1.69x (G=64), 4.71x vs 2.62x (G=32), 8.96x vs 4.46x (G=16), 17.49x vs 8.17x
+(G=8) — consistently ~2x worse. The mechanism is the first-group early-out:
+`keep` stops scanning at the first group that keeps the pair, so a system that
+keeps LESS work exits early less often and scans more groups. C8 keeps 39% less
+than C4 (0.486 vs 0.792) and pays ~2x more per decision.
+
+So as systems grow, **the cost side of this trade degrades while the benefit
+side stays flat at ~0.1-0.2 pp**. That is the opposite of what reopening the
+lane would require, and it compounds the §4.5.2 finding rather than merely
+agreeing with it.
+
+Two incidental confirmations worth recording:
+
+* **Anchor (a)'s trivial limit reproduces at C8**, a size the anchor itself does
+  not test: G=0 and G=256 give byte-identical counts (365 188 736 kept,
+  2 936 427 evals).
+* **The screen itself bites much harder with size** — kept falls 0.792 (C4) to
+  0.486 (C8) at G=0. The existing screen is working well; it is the GROUPING on
+  top of it that adds nothing.
+
+**On the falling degenerate fraction with size (0.6515 C4 -> 0.5704 C8), read
+carefully.** This is NOT "the bound gets less blind so there is less to fix".
+The denominator is all O(nsh^2) shell pairs, and `nsh` grows linearly, so the
+population fills with DISTANT pairs that are cleanly screened rather than
+degenerate. The degeneracy that remains is concentrated on the pairs that
+matter, and §4.5.2 shows its `|AB|/2` component is the dominant one at every
+size. Do not read this row as headroom appearing.
+
+### 4.5.5 Coverage note
+
+C12 (29.3 Bohr) and C16 (38.7 Bohr) kept-work counts did not fit the 15-minute
+run window on a box shared with three other agents, and are NOT reported here.
+They are not needed for the verdict: §4.5.2 and §4.5.3 (the discriminating
+measurements, which need no SCF and DO reach C16) show the region term
+collapsing with size, so kept work cannot start falling harder at C16 than at
+C4. The `#[ignore]`d test carries its exact invocation for a quiet box.
+
+### 4.5.6 Verdict on the size axis
 
 **The negative is confirmed past the onset and the lane closes properly.**
 alkane_16 at 38.7 Bohr is past the ~30 Bohr scale, and grouping's addressable
