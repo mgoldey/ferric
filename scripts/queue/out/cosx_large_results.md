@@ -122,6 +122,48 @@ whole cell (which also ran the other builders, so it over-states COSX alone).
 | alkane_20 | def2-SVP | 490 | COSX  | 116.234 | 116.23 | 645 MB (cell) | 0.2856 | 0.1458 | ran |
 | alkane_20 | def2-SVP | 490 | LinK (warm) | 73.219 | 73.21 | " | — | — | ran |
 | alkane_20 | def2-SVP | 490 | DF-K  | — | — | — | — | — | **refused: 4.33 GB tensor** |
+| alkane_32 | def2-SVP | 778 | COSX  | 209.713 | 209.67 | 724 MB (cell) | 0.1877 | 0.0657 | ran |
+| alkane_32 | def2-SVP | 778 | LinK (warm) | 192.725 | 192.69 | " | — | — | ran |
+| alkane_32 | def2-SVP | 778 | DF-K  | — | — | — | — | — | **refused: 17.37 GB tensor** |
+
+COSX splits, per rung: alkane_20 total 116.234 = ao_eval 8.147 + A-build 99.027
+(85.2%) + GEMV 5.208 + block GEMMs 3.029 + fit 0.024; alkane_32 total 209.713 =
+ao_eval 20.025 + A-build 171.406 (81.7%) + GEMV 9.178 + block GEMMs 6.923 +
+fit 0.154. Both accounted to 99%+.
+
+### COSX/LinK IMPROVES with size — the opposite of what was pre-registered
+
+| system | nbf | COSX s | LinK warm s | COSX/LinK |
+|---|---|---|---|---|
+| alkane_20 | 490 | 116.234 | 73.219 | 1.587 |
+| alkane_32 | 778 | 209.713 | 192.725 | **1.088** |
+
+Pre-registration P3 predicted **8-11x** at alkane_32/def2-SVP, i.e. the ratio
+continuing to worsen. It went the other way, to 1.088, and it is now within 9%
+of parity at 98 atoms and DOUBLE zeta — the basis where COSX is supposed to be
+at its worst. The P3 prediction was anchored on the void pre-fix LinK series
+(see Finding 0) and on the total-wall exponent 2.16 that the sparse half
+transforms have since removed, so its failure is expected in hindsight; it is
+recorded as a miss rather than quietly dropped because the pre-registration
+committed to it. Pairwise tail exponents in atoms over these two points:
+COSX total **1.29**, LinK warm **2.12**. LinK is the one growing faster.
+
+Two internal controls say this is a measurement rather than an artifact:
+
+* The A-build (81.7% of COSX here) came in at **171.4 s** against a bracket of
+  157-200 s stated before the run from the C20 per-point cost and the earlier
+  A-build tail exponent 1.54 — the mechanism predicted the number.
+* `max|K_cosx - K_link|` is **4.827e-4** at alkane_32, versus **4.825e-4** at
+  alkane_20 — flat to 0.04% across a 1.6x change in nbf, i.e. the two builders
+  are tracking each other to a fixed accuracy while their COSTS diverge. A
+  construction error in either would not hold that constant.
+
+Sparsity is behaving as the O(N) argument requires: `kept_dd` 0.1458 -> 0.0657
+and `|A|/nbf` 0.2856 -> 0.1877 from C20 to C32, and `kept_dd` stays 0.28-0.29x
+the geometry-only fraction (0.3619 -> 0.2330) at both sizes. Pre-registration
+P3 predicted `kept_dd` 0.08-0.12 at this rung; the measured 0.0657 is just
+BELOW that band — the screen is slightly more effective than predicted, in the
+same direction as the trend.
 
 Densities: alkane_20/def2-SVP reuses `dens_alkane_20_svp.bin` from the earlier
 scaling lane (direct J+K SCF, `density_conv` 1e-5). alkane_32/def2-SVP was
