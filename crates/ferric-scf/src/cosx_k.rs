@@ -331,10 +331,28 @@ pub struct CosxConfig {
     /// is blind on most decisions because of the SHELL PAIRS, not because of
     /// the batch geometry — so a tighter enclosing volume is the wrong lever.
     ///
+    /// CONFIRMED PAST THE LOCALITY ONSET (2026-09-09, size axis C4 -> C16, the
+    /// last at 38.7 Bohr): the region term does not grow with molecular size,
+    /// it COLLAPSES (37.9% -> 15.9% of the degeneracy) while `|AB|/2` stays
+    /// dominant, because a Becke sub-batch is atom-local — its median extent is
+    /// 2.028 Bohr at EVERY size while the diameter grows 3.70x. Adding carbons
+    /// adds more sub-batches (301 -> 1075), not bigger ones. Butane was
+    /// grouping's most favourable case, not its least.
+    ///
     /// The knob is kept so the measurement stays reproducible, and its default
     /// is `0`. A non-zero value is NOT recommended. Pinned by
     /// `tests/cosx_group_screen_anchors.rs`, which is written to FAIL if this
     /// verdict is ever overturned.
+    ///
+    /// # If you make grouping pay, re-mutate anchor (b) FIRST
+    ///
+    /// `grouped_screen_k_matches_unscreened_below_grid_error` verifies that K
+    /// is CORRECT. It does NOT verify that each group's bound is applied to
+    /// that group's own points: two misalignment mutations were applied and
+    /// both left it green, because at G=8 the union drops only 0.12 pp more
+    /// work and a misassigned bound therefore cannot move K. Its green is not
+    /// coverage of alignment, and it must be re-mutated before being trusted as
+    /// such. See its doc comment and `scripts/queue/out/cosx_subbatch_bound_results.md` §5.1.
     pub screen_group: usize,
 }
 
