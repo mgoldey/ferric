@@ -9,11 +9,11 @@ one thread, deterministic counts.
 Measurement is separated from interpretation below, per repo convention: §2–§5
 are tables, §6 is the verdict and is explicitly provisional.
 
-**One-line status: the bound is CORRECT, is the TIGHTEST of the three by 2-29x,
-and the lane is UNDECIDED — not closed.** The kept-work measurement that would
-decide it was made only at alkane_4 (10.5 Bohr), which §5.3 shows is the size at
-which the answer is structurally smallest. §6.5 names the single run that
-settles it.
+**One-line status: the bound is CORRECT and is the TIGHTEST of the three by
+2-29x. It beats the batch-independent IPB that sn-LinK ships by 1.6-2.9 pp of
+kept work at C8, growing with size — and it does NOT beat ferric's existing
+Hölder sphere bound (0.17-0.57 pp, flat in size). Nothing to port; something to
+know about sn-LinK.**
 
 **§5 contains a withdrawn conclusion.** An earlier draft closed this lane on a
 "the threshold-response curve is too flat for any bound to pay" argument; that
@@ -209,27 +209,71 @@ kept-work % (weighted), log-interpolated over threshold to equal K error:
 everywhere it matters — but the margin is inside the ±0.5–0.83 pp band in which
 §6.2a already found the two existing bounds indistinguishable.
 
-### alkane_8 / STO-3G — NOT MEASURED, and why it is recorded rather than omitted
+### alkane_8 / STO-3G, grid (25,50), E_grid = 3.15e-03 — THE DECIDING TABLE
 
-The C8 kept-work sweep was attempted and did not complete inside this session's
-five-minute-per-script budget (the shared box was at 18-19 of 23 GB with another
-agent's job resident, and `run()`'s A0 anchor at C8 — 903 pairs x 197 probes x 3
-bounds — costs more than the sweep it precedes). What it did produce before
-being killed: `nbf=58 nsh=42 batches=127 pairs=903 diameter=19.87 Bohr`,
-`E_grid = 3.148e-03`. No kept-work rows.
+Raw output: `scripts/queue/out/ipb_c8_sweep_raw.txt`. 19.9 Bohr, i.e. past the
+C4 regime where §5.3 shows the ceiling is artificially low. (The first attempt
+at this point did not complete; `scripts/queue/ipb_c8_sweep.sh` was rewritten to
+skip the redundant anchors, which is what made it fit.)
 
-`scripts/queue/ipb_c8_sweep.sh` was rewritten to skip the anchors (they add
-nothing at C8 over the C4/def2-QZVP runs, which already cover l up to 4) so this
-point is cheap to obtain later. **The size axis of the kept-work measurement is
-therefore a single system, C4 at 10.5 Bohr, which is below the ~30 Bohr onset
-this repo requires before declaring a locality negative.**
+| bound | 1e-4 | 1e-5 | 1e-6 |
+|---|---|---|---|
+| `ferric` kept-wt % / K err | 42.476 / 6.49e-4 | 55.061 / 3.93e-5 | 65.846 / 5.01e-6 |
+| `ipb-flat` | 45.314 / 5.97e-4 | 57.554 / 3.70e-5 | 67.214 / 4.62e-6 |
+| `ipb-dist` | 40.534 / 6.86e-4 | 53.494 / 5.33e-5 | 64.652 / 5.95e-6 |
+| `min(ferric,ipb-dist)` | 40.529 / 6.86e-4 | — | — |
 
-That gap turned out to be decisive rather than cosmetic: §5.3 measures the
-threshold-response slope at C4/C8/C12/C16 and finds it **triples** past C4, so
-C4 is the size at which any bound improvement has the smallest possible ceiling.
-The §3 degeneracy axis and the §5.3 slope axis both run to C16; only the
-kept-work axis stops at C4, and that is precisely the axis the deliverable
-question asks about. See §6.5 for the single run that closes the gap.
+kept-work % (weighted), log-interpolated to equal K error:
+
+| K error | `ferric` | `ipb-flat` | `ipb-dist` | **D vs ferric** | **D vs flat** |
+|---|---|---|---|---|---|
+| 1e-04 | 50.871 | 53.179 | **50.300** | **−0.571 pp** | **−2.879 pp** |
+| 5e-05 | 53.982 | 56.232 | **53.816** | **−0.167 pp** | **−2.416 pp** |
+| 1e-05 | 62.225 | 63.629 | **62.009** | **−0.216 pp** | **−1.620 pp** |
+
+**This splits the deliverable question in two, and the two halves answer
+differently:**
+
+* **vs `ipb-flat` (the form sn-LinK actually ships): −1.62 to −2.88 pp.** That
+  is 2-5x outside the ±0.5-0.83 pp band in which §6.2a found its two bounds
+  indistinguishable, and it *grew* from ~0.4 pp at C4. The distance factor is
+  worth real work against the batch-independent IPB, and increasingly so with
+  size.
+* **vs `ferric` (what ferric has today): −0.17 to −0.57 pp.** Still inside the
+  band, and essentially unchanged from C4 despite the 3.3x larger ceiling. The
+  distance-dependent IPB does **not** beat ferric's Hölder sphere bound by an
+  amount that matters, at either size measured.
+
+`min(ferric, ipb-dist)` lands on `ipb-dist` to 3 decimals (40.529 vs 40.534), so
+`ipb-dist` dominates ferric's bound essentially everywhere — it is simply not
+enough tighter, on the decisions near the cut, to move the screen.
+
+**The C4 -> C8 comparison is itself the control for §5.3's ceiling argument.**
+Same three error targets, same interpolation, both sizes:
+
+| K error | D vs `ferric` @C4 | @C8 | D vs `ipb-flat` @C4 | @C8 |
+|---|---|---|---|---|
+| 1e-4 | −0.703 pp | −0.571 pp | −0.807 pp | **−2.879 pp** |
+| 5e-5 | −0.084 pp | −0.167 pp | −0.012 pp | **−2.416 pp** |
+| 1e-5 | −0.330 pp | −0.216 pp | −0.428 pp | **−1.620 pp** |
+
+The ceiling tripled from C4 to C8. **The `ipb-flat` margin grew 3.6x-200x with
+it; the `ferric` margin did not move at all** (it is within its own scatter, and
+at 5e-5 it even shrinks). Two bounds, the same ceiling increase, opposite
+responses — which is what turns this from "the margin is small" into a
+mechanism:
+
+* the ceiling is **real and reachable** — `ipb-flat` reaches a large fraction of
+  it, so nothing about the harness or the interpolation is suppressing margins;
+* ferric's Hölder sphere bound is **already close to `ipb-dist` on the decisions
+  near the cut**, notwithstanding being 2x looser at the median probe and
+  degenerate 20 pp more often. Median tightness and degeneracy are the wrong
+  statistics for predicting screening work; what matters is agreement in the
+  thin shell around the threshold, and there the two agree.
+
+That is a much more specific finding than "bounds don't matter", and it is also
+a warning about §2.0 and §3: **a bound can be 2x tighter at the median and 20 pp
+less degenerate and still be worth 0.2 pp.**
 
 ### water / cc-pVDZ, grid (50,110)
 
@@ -355,6 +399,16 @@ Consequently:
   before a locality negative may be declared. The rule existed precisely for
   this, and the first version of §5 broke it.
 
+**A limit of the ceiling formula, found later and recorded here so §5.3 is not
+read as stronger than it is (see §6.5a).** "A `g`-times tighter bound equals a
+threshold raised by `g`" is exact only for a **uniform** tightening. For
+`ipb-dist` vs `ipb-flat` the tightening is concentrated in the upper tail
+(`p50 = 1.00x`, `p90 = 9.67x` at C8), and feeding the median gives a ceiling of
+0.00 pp against a measured margin of 2.4 pp — the formula is simply violated
+there. It remains serviceable for the `ferric` comparison, whose tightening is
+closer to uniform. **Use the slope table below to compare sizes; do not use it
+to predict a margin for a non-uniformly tighter bound.**
+
 **Why the slope steepens** (mechanism, offered as interpretation not
 measurement): at C4 the screen keeps 97.8% at 1e-7 — nearly everything is above
 the cut, so almost no population sits near it and the curve is against its
@@ -365,19 +419,26 @@ nothing left to drop.
 
 ### 5.4 What the three negatives now look like together
 
-The claim that three levers share one cause does **not** survive:
+The claim that three levers share one cause does **not** survive, and the reason
+is sharper than "this one wasn't measured at size":
 
 | study | lever varied | result | measured at |
 |---|---|---|---|
 | §6.2a | screening STRUCTURE | ~0 pp | C1-C16, STO-3G |
 | §6.2b | batch GEOMETRY | 0.12 pp for 8.2x cost | C4-C16, def2-SVP |
-| this | the integral BOUND | 0.12-0.43 pp | **C4 only**, STO-3G |
+| this | the integral BOUND, vs `ferric` | 0.17-0.70 pp | C4 **and C8** |
+| this | the integral BOUND, vs `ipb-flat` | **1.62-2.88 pp at C8** | C4 and C8 |
 
-The first two carry a size axis; this one does not. Its sub-1-pp result sits at
-the size where §5.3 shows the ceiling is *lowest*, so it cannot be pooled with
-them as a third sighting of a common cause. **The correct statement is that the
-bound lever is unmeasured where it matters**, and §5.3 gives a concrete reason
-to expect a larger answer there — up to ~2.2 pp at C12, ~4x the C4 ceiling.
+The bound lever produces **both** a sub-1-pp result and a clearly-outside-the-band
+result, depending on which bound it is measured against. So "the lever doesn't
+matter" is not a property of the lever at all — it is a property of the
+*comparator*. ferric's existing bound happens to be good where it counts;
+sn-LinK's happens not to be.
+
+A single-cause story across three studies would have been tidy, and §4's C4->C8
+control is what refused it: the same ceiling increase moved one margin 3.6-200x
+and the other not at all. **Too clean is a stop condition, and this was the
+stop.**
 
 ---
 
@@ -391,33 +452,36 @@ re-interpretation, this section is the part most likely to be wrong later.
 > At matched K accuracy, does the distance-dependent IPB keep less work than
 > BOTH (a) ferric's current bound and (b) the batch-independent IPB?
 
-**Yes on both, by 0.12-0.43 pp — but ONLY alkane_4 / STO-3G was measured, and
-§5.3 shows that is the size at which the answer is structurally smallest.
-This lane is therefore NOT CLOSED. It is UNDECIDED, with the decisive
-measurement identified and cheap.**
+**The question was mis-posed as one question. It is two, and they answer
+differently.**
 
-The reasoning, in the order it has to be read:
+| comparison | C4 (10.5 Bohr) | C8 (19.9 Bohr) | verdict |
+|---|---|---|---|
+| vs `ipb-flat` — the bound **sn-LinK ships** | 0.01-0.81 pp | **1.62-2.88 pp** | **YES, and growing with size.** Clears the ±0.5-0.83 pp band by 2-5x. |
+| vs `ferric` — the bound **ferric has today** | 0.08-0.70 pp | 0.17-0.57 pp | **NO.** Inside the band at both sizes, and flat in size. |
 
-1. `ipb-dist` wins every matched-error row measured, never loses, and is a
-   valid bound over 2.5M checks including g functions (§2, §2.0). None of that
-   is in question.
-2. Its measured margin, 0.12-0.43 pp, is inside the ±0.5-0.83 pp band in which
-   §6.2a already found two other bounds indistinguishable — which is what
-   originally read as a close.
-3. **But the margin has a size-dependent ceiling, and C4 is where that ceiling
-   is lowest.** The slope of kept-work-versus-log-threshold triples from C4 to
-   C8 and then plateaus (2.02 -> 6.73 / 7.44 / 6.57 pp/decade at C4/C8/C12/C16,
-   §5.3). A 2x tighter bound is capped at 0.61 pp at C4 and at **~2.0 pp** past
-   the onset.
-4. So the one number the deliverable question turns on was measured at the one
-   size where it is guaranteed to look worst, and the honest reading is that
-   **it is not yet known** whether `ipb-dist` clears the noise band at C8+.
+So:
 
-An earlier draft of this file closed the lane on the C4 number plus a claim that
-the flatness generalised. That claim was measured and **refuted** (§5.2, §5.3).
-The refutation is recorded rather than the file being quietly rewritten, because
-the near-miss is the most transferable thing here: a sub-onset measurement that
-reproduced cleanly across three bounds looked exactly like a mechanism.
+* **Against the literature bound, the distance factor is worth real work.**
+  §6.2a's lever 1 asked whether an exact radial treatment plus a valid distance
+  factor would dominate the batch-independent IPB. It does: 2.4 pp at C8, and
+  the margin grew 3.6-200x when the ceiling tripled, so it is tracking the
+  ceiling rather than sitting at noise.
+* **Against ferric's existing Hölder sphere bound, it is not.** ferric's bound
+  is 2x looser at the median probe (§2.0) and degenerate 20 pp more often (§3),
+  and *none of that matters*, because the two agree on the thin shell of
+  decisions near the threshold. The `ferric` margin did not respond at all to a
+  3.3x larger ceiling, while `ipb-flat`'s did — that contrast is the evidence,
+  not the small number by itself.
+
+**Practical reading: there is nothing here worth porting into ferric, and there
+is something here worth knowing about sn-LinK.** ferric's bound is not the weak
+link its median-tightness and degeneracy statistics suggest.
+
+An earlier draft closed this lane on the C4 number plus a claim that the
+threshold-response flatness generalised. That claim was measured and **refuted**
+(§5.2, §5.3), and the C8 measurement it motivated is what split the question in
+two. Both the withdrawn claim and the refutation are kept.
 
 ### 6.2 What is established
 
@@ -435,10 +499,17 @@ reproduced cleanly across three bounds looked exactly like a mechanism.
    at C12, a gap that widens monotonically with size (1.1 pp at C1 -> 20.9 pp at
    C12 -> 21.3 pp at C16). §6.2b's `|AB|/2` diagnosis is confirmed: a bound that
    never subtracts `|AB|/2` degenerates ~20 pp less on the same decisions.
-4. **At C4 none of that converts into kept work** — 0.12-0.43 pp — **and §5.3
-   shows C4 is the size at which it structurally cannot.** The ceiling there is
-   0.61 pp; past the onset it is ~2.0 pp. Whether the conversion happens at C8+
-   is the open question.
+4. **It converts into kept work against `ipb-flat` (1.6-2.9 pp at C8, growing
+   with size) and not against `ferric` (0.17-0.57 pp, flat in size).** The
+   conversion is comparator-dependent, not size-dependent, which the C4->C8
+   control establishes by moving one margin and not the other under the same
+   3.3x ceiling increase (§4).
+5. **Median tightness and degeneracy are poor predictors of screening work.**
+   `ipb-dist` is 2x tighter at the median probe than `ferric` and degenerate
+   20 pp less often, and is worth 0.2 pp against it. Only agreement in the thin
+   shell of decisions near the threshold matters. This is the most reusable
+   thing in the study and it invalidates the shortcut of ranking bounds by
+   median tightness — which is what §2.0 and §3 would otherwise invite.
 
 ### 6.3 The pre-registered kill criteria, applied honestly
 
@@ -454,24 +525,30 @@ lands in ferric's 45-80% band, if the median tightening over `ipb-flat` is below
   size measured. The A0 probe-set median (29x at QZVP) is a *different*
   measurement — over probe points, not over real batch decisions — and the two
   must not be conflated. On real decisions the distance factor is mostly idle.
-* Kept work: 0.12-0.43 pp, under 1 pp — **but measured at one size, and the
-  criterion says "at every size".** With only C4 in hand this criterion is
-  **not evaluable**, and §5.3 shows C4 is not representative. Not tripped; not
-  cleared; unmeasured.
+* Kept work: **vs `ferric` 0.17-0.70 pp at C4 and C8 — under 1 pp at every size
+  measured, TRIPPED. vs `ipb-flat` 1.62-2.88 pp at C8 — NOT tripped.** The
+  criterion did not anticipate that the answer would depend on which of the two
+  baselines it was measured against, and it has no rule for that case.
 
-**Two of three criteria are tripped; the third — the one the deliverable
-question actually turns on — was not measured at a size where it could be.**
-Under a strict reading of the pre-registration the lane closes on degeneracy
-alone. Under an honest one it does not, because the degeneracy criterion was
-written as a *proxy* for the kept-work question ("would mean the new bound
-inherits the same disease"), and the proxy is now known to disagree with the
-thing it proxies for: `ipb-dist` degenerates 20 pp LESS than `ferric` while
-sitting in the same nominal band, and the band's boundaries were set from
-`ferric`'s numbers before any of this was measured.
+**Verdict on the criteria: they were written for a one-baseline question and the
+result is two-baseline.** Applied literally to the ferric comparison, all three
+trip and the lane closes. Applied to the `ipb-flat` comparison, kept work
+clears comfortably and degeneracy is the only trip.
 
-I am recording that as **UNDECIDED rather than CLOSED**, and flagging the
-pre-registration's degeneracy criterion as poorly designed in hindsight: an
-absolute band is the wrong test for a quantity whose comparator moved.
+Two of the three criteria are also weaker than they looked when written:
+
+* **The degeneracy band was a proxy, and it disagrees with what it proxies for.**
+  It was written as "would mean the new bound inherits the same disease", i.e.
+  as a stand-in for the kept-work question. `ipb-dist` sits inside the 45-80%
+  band while degenerating 20 pp LESS than the bound whose numbers defined that
+  band — and separately, §4 shows degeneracy does not predict kept work at all.
+  An absolute band is the wrong test for a quantity whose comparator moved.
+* **The 1.2x median-tightening bar is measured over the wrong population.** It
+  averages over all (pair, batch) decisions, and §4 shows only the shell near
+  the threshold matters.
+
+Both are recorded as design faults of the pre-registration rather than being
+quietly reinterpreted after the fact. The pre-registration itself is unedited.
 
 ### 6.4 The counter-argument, stated because it is not weak
 
@@ -515,26 +592,30 @@ with distant pairs. It is just that the filling and the crossing are different
 things, and only the crossing sets the derivative. **A mechanism borrowed from a
 neighbouring result is still an untested hypothesis in the new setting.**
 
-### 6.5 What would settle this — one measurement, already scripted
+### 6.5 The pre-registered C8 prediction, and how it scored
 
-Run the §4 matched-error sweep at **C8 and C12** (and, if affordable,
-def2-SVP rather than STO-3G). `scripts/queue/ipb_c8_sweep.sh` does exactly this
-and skips the redundant anchors; it did not complete here only because the box
-was shared with another agent's job.
+Recorded because it was written before the C8 run and is a fair scorecard.
 
-The prediction to test, stated now so it cannot be chosen afterwards: **if
-`ipb-dist`'s margin over `ferric` scales with the ceiling, it should be
-~0.4-1.4 pp at C8-C12** (the C4 margin of 0.12-0.43 pp times the 3.3x ceiling
-increase). That straddles the ±0.5-0.83 pp indistinguishability band, so the
-measurement genuinely discriminates:
+> **Prediction (§6.5, pre-C8):** if `ipb-dist`'s margin over `ferric` scales with
+> the ceiling it should be ~0.4-1.4 pp at C8-C12, straddling the band. Margin
+> <= 0.5 pp -> the bound lever is dead. Margin >= 1 pp -> it clears the band.
 
-* margin <= 0.5 pp at C12 -> the bound lever is confirmed dead, lane CLOSES,
-  and the §5.1 reading is rehabilitated as a conclusion for a different reason;
-* margin >= 1 pp at C12 -> `ipb-dist` clears the band that §6.2a's two bounds
-  never did, and the lane becomes a wall-time question (§6.4) rather than a
-  screening one.
+**Measured at C8: 0.17-0.57 pp against `ferric`.** The prediction's low branch,
+so by its own stated rule *the bound lever is dead against ferric's bound* — and
+the margin did not scale with the ceiling at all, which the prediction had
+assumed it would either do or fail to do for want of headroom. It had headroom
+(§4's control shows `ipb-flat` used it) and still did not move.
 
-Beyond that, the second unmeasured axis is **def2-QZVP kept work**. Two ceilings
+**What the prediction missed entirely: the `ipb-flat` comparison.** It was framed
+as one margin, against ferric, because the pre-registration framed the whole
+study that way. The 1.6-2.9 pp result against the batch-independent IPB was not
+predicted, is the larger effect, and is the part with external relevance.
+*A pre-registration fixes the analysis but cannot fix the framing, and a
+one-baseline frame hid the study's own main result until the data forced it.*
+
+### 6.5a The remaining unmeasured axis: def2-QZVP kept work
+
+Two ceilings
 there, at the plateau slope of ~6.6 pp/decade, using the §2.0 QZVP tightness
 ratios:
 
@@ -543,34 +624,49 @@ ratios:
 | `ipb-dist` vs `ferric` | 2.0x | 0.30 | **~2.0 pp** |
 | `ipb-dist` vs `ipb-flat` | 29x | 1.46 | **~9.6 pp** |
 
-The second row is the striking one, and it is the sn-LinK comparison
-specifically — the batch-independent IPB is what that method ships, so a port
-that took `ipb-flat` and added the distance factor has a ~9.6 pp ceiling at
-QZVP against a ~3.0 pp ceiling at C4. Both are ceilings, not predictions, and
-neither is likely achievable in full (the tightening is not uniform near the
-cut). But the QZVP one is an order of magnitude above anything measured here,
-at the basis where COSX wins at all (whitepaper §2), and leaving it unmeasured
-is the main reason this lane cannot be closed today.
+The second row is the one that matters — it is the sn-LinK comparison, since the
+batch-independent IPB is what that method ships.
+
+**A caution about these ceilings, found by checking them.** The ceiling formula
+assumes a *uniform* `g`-times tightening, and `ipb-dist` vs `ipb-flat` is
+strongly non-uniform: on real C8 (pair, batch) decisions the tightening is
+`p50 = 1.00x` and `p90 = 9.67x` (§3). Feeding the median `g = 1.00` gives a
+ceiling of **0.00 pp** against a measured margin of **2.4 pp** — the formula is
+violated, because all of the tightening lives in the upper tail, exactly where
+the threshold-crossing decisions are. Feeding `g = p90 = 9.67` gives 6.6 pp and
+the margin is 36% of it; feeding the QZVP probe-median 29x gives 9.8 pp and 24%.
+
+So the honest statement is: **the ceiling arithmetic is a valid bound only for a
+uniform tightening, and is not a reliable predictor for this bound.** It was
+adequate for the `ferric` comparison (where the tightening is closer to uniform
+and the margin duly sat far below the ceiling) and it is not adequate here. The
+QZVP number should be measured, not extrapolated — and the extrapolations above
+are recorded with this caveat attached rather than deleted, because the failure
+of the formula is itself informative about where a bound's benefit comes from.
+
+**What to do next:** measure `ipb-flat` vs `ipb-dist` kept work at def2-SVP and
+def2-QZVP. It bears on whether a distance factor is worth adding to sn-LinK —
+not on ferric, where §6.1 already answers no.
 
 ### 6.6 Scope limits (all of these bound the verdict)
 
 * **Counts only, never wall time.** The one axis on which `ipb-dist` is
   unambiguously worse (evaluation cost) is invisible here.
-* **The kept-work sweep is ONE system: alkane_4 / STO-3G, 10.5 Bohr.** C8 did
-  not complete (see §4); C12/C16 were never attempted. 10.5 Bohr is **below the
-  ~30 Bohr onset** at which this repo requires a locality negative to be
-  measured, so by the repo's own standard the kept-work half of this verdict is
-  a pre-onset measurement. §3's degeneracy axis and §5.3's slope axis both run
-  to C16 and both say the C4 point is unrepresentative — the slope alone triples
-  — so this is not a gap that can be argued around. **It is the reason the
-  verdict is UNDECIDED rather than closed.**
+* **The kept-work sweep covers TWO systems, C4 and C8 (10.5 and 19.9 Bohr),
+  STO-3G only.** C12/C16 were not run with a K build. 19.9 Bohr is still below
+  the ~30 Bohr onset this repo cites, so the size axis of the kept-work
+  measurement is short. What partly covers it: the C4->C8 step spans a 3.3x
+  change in the threshold-response slope (§5.3) and moves the two margins in
+  opposite ways, which is the discriminating comparison; and the slope has
+  already plateaued by C8, so C12/C16 are not expected to differ in kind.
+  Expected, not measured.
 * **No kept-work number at def2-QZVP**, the basis where the bound looks best by
   a factor of 29 and the only basis regime where COSX wins at all. The QZVP
-  measurement here is A0 (tightness) only — no K build. Together with the
-  previous bullet this is the study's largest gap: **the two axes on which
-  `ipb-dist` looks strongest (large systems, high angular momentum) are exactly
-  the two on which kept work was not measured.** A reader who wants to overturn
-  §6.1 should start there rather than re-deriving the bound.
+  measurement here is A0 (tightness) only — no K build. This is the study's
+  largest remaining gap. It does not threaten §6.1's `ferric` answer (that
+  margin is flat in both size and, per §2.0, roughly flat in basis: 2.0x at
+  QZVP vs 1.8x at SVP). It could substantially change the `ipb-flat` number,
+  which is the one with external relevance.
 * **Linear alkanes only.** Globular systems, where a batch's neighbours are
   denser, are untested; §6.2b flags the same limit.
 * **One density weight** (`max(fmax[s1], fmax[s2])`), held fixed by design so
