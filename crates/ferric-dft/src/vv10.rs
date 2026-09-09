@@ -1186,6 +1186,17 @@ mod cutoff_tests {
 
     #[test]
     fn cutoff_energy_bounded_water() {
+        // These tests build a `KsXc` through `solve_rhf`, which resolves its
+        // memory budget from the process-global env var — there is no config
+        // path to pass one explicitly. Sibling unit tests in THIS SAME binary
+        // set that var as low as 1e-6 GiB (~1 KB; see `ks::tests`, which checks
+        // a mid-flight budget change cannot break an already-batched run), and
+        // cargo runs unit tests multi-threaded. That raced on CI: this test
+        // failed with `OverBudget { budget_gb: 1.0737e-5 }` — exactly that
+        // 1e-6 GiB. Take the crate-wide lock (lib.rs) that every other
+        // budget-touching test module already uses; a module-local lock cannot
+        // stop a cross-module race on a process-global.
+        let _env = crate::TEST_BUDGET_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::parse_xyz(
             "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
             0,
@@ -1209,6 +1220,17 @@ mod cutoff_tests {
 
     #[test]
     fn cutoff_energy_bounded_alkane20() {
+        // These tests build a `KsXc` through `solve_rhf`, which resolves its
+        // memory budget from the process-global env var — there is no config
+        // path to pass one explicitly. Sibling unit tests in THIS SAME binary
+        // set that var as low as 1e-6 GiB (~1 KB; see `ks::tests`, which checks
+        // a mid-flight budget change cannot break an already-batched run), and
+        // cargo runs unit tests multi-threaded. That raced on CI: this test
+        // failed with `OverBudget { budget_gb: 1.0737e-5 }` — exactly that
+        // 1e-6 GiB. Take the crate-wide lock (lib.rs) that every other
+        // budget-touching test module already uses; a module-local lock cannot
+        // stop a cross-module race on a process-global.
+        let _env = crate::TEST_BUDGET_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // A synthetic 24-atom linear chain (bond length 2.9 Bohr, ≈1.53 Å,
         // matching a real C-C bond), NOT a bundled alkane geometry: the
         // longest bundled alkane (C20H42, 62 atoms) only spans ≈59 Bohr along
