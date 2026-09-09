@@ -1269,29 +1269,77 @@ fn link_k_qqr_matches_dense_in_the_trivial_limit() {
 /// is a valid bound — an over-aggressive one throws away quartets that carry
 /// real weight, and this is where that shows up.
 ///
-/// # Mutation testing — including one mutant this does NOT catch
+/// # Why the ORIGINAL baseline and bar are void (read before "restoring" them)
 ///
-/// Measured baseline: max|dK| = 3.0345e-9. That is the real cost of the extra
-/// 0.009% of quartets QQR screens on this system — small, but NOT zero.
+/// This test was first calibrated against a baseline of 3.0345e-9 under a
+/// 1e-7 bar. Both numbers are dead, and the reason matters more than the
+/// numbers: **they were artifacts of a screen that barely used the density.**
+///
+/// The old per-quartet screen multiplied the bound by a GLOBAL `max|D|` — a
+/// system-wide scalar — which made it effectively density-free. Both arms
+/// therefore walked almost exactly the same quartets, agreeing with the dense
+/// reference to 4-5 digits (1.0414e-7 vs 1.0414e-7 at thresh=1e-8). The small
+/// `max|K_QQR - K_Schwarz|` was evidence that **QQR was barely doing anything
+/// different**, not evidence that its envelope was trustworthy. A bar derived
+/// as ~33x above that baseline was measuring the screen's inertness.
+///
+/// The pairwise screen (`FourPairK`, `max(d13,d14,d23,d24)`) uses a LOCAL key
+/// that is far smaller than the global max for separated quartets. Both arms
+/// now drop substantially more, and QQR — the tighter bound on a smaller key —
+/// drops further into the tail. Their difference consequently grew to the same
+/// order as each arm's own truncation against dense, which is exactly where a
+/// screening residual belongs. Measured on this branch at thresh=1e-8:
+/// `max|K_QQR - K_Schwarz|` = 1.4889e-7 is indistinguishable from
+/// `max|K_QQR - K_dense|` = 1.4917e-7 (ratio 0.998) — QQR's disagreement with
+/// the Schwarz arm IS its disagreement with truth, so the whole difference is
+/// its own legitimate truncation. An invalid bound would make `|QQR - dense|`
+/// EXCEED `|QQR - Schwarz|`; it does not. Full evidence, including a four-point
+/// threshold sweep showing no error floor, is in the sibling test
+/// `qqr_schwarz_thresh_sweep.rs`.
+///
+/// # Mutation testing — re-measured on THIS screen, 2026-09-08
+///
+/// The old 5.3525e-7 mutant figure was measured against the old screen and does
+/// NOT transfer; it was re-measured rather than carried over.
 ///
 /// ```text
 ///   mutant                                    trivial limit   this test
-///   far tail zeroed (decay < 1e-3 => 0.0)     pass            PASS  3.0345e-9 (unchanged)
-///   envelope 100x too aggressive              pass            FAIL  5.3525e-7
+///   (none — current envelope)                 pass            pass  1.4889e-7
+///   far tail zeroed (decay < 1e-3 => 0.0)     pass            PASS  (unchanged)
+///   envelope 100x too aggressive              pass            FAIL  1.3581e-5
 /// ```
 ///
-/// The second mutant is caught with a 176x margin. The FIRST IS NOT, and that
-/// is recorded rather than hidden: on alkane_8 the `decay < 1e-3` regime is
-/// never reached by a quartet carrying measurable weight, so zeroing it changes
-/// the answer by nothing at all. This test therefore catches envelopes that are
-/// too aggressive in the ENGAGED intermediate zone, and is blind to the deep
-/// tail on this system. A system long enough to populate that tail would be
-/// needed to close the gap; alkane_8 does not.
+/// The far-tail mutant IS STILL NOT CAUGHT, and that is recorded rather than
+/// hidden: on alkane_8 the `decay < 1e-3` regime is never reached by a quartet
+/// carrying measurable weight, so zeroing it changes the answer by nothing at
+/// all. This test catches envelopes too aggressive in the ENGAGED intermediate
+/// zone and is blind to the deep tail on this system; a longer molecule would
+/// be needed to populate that tail.
 ///
-/// The bar is 1e-7 — above the 3.0345e-9 baseline by ~33x (so ordinary
-/// floating-point and threshold-boundary jitter cannot trip it) and below the
-/// 5.3525e-7 mutant, so it discriminates rather than being fitted to whatever
-/// the code currently emits.
+/// # The bar, derived FROM the two measurements above
+///
+/// Baseline 1.4889e-7, mutant 1.3581e-5 — a **91x** window. The bar is
+/// **2e-6**, placed near the geometric mean (1.42e-6) of that window:
+///
+/// * **13.4x above the baseline**, so ordinary floating-point and
+///   threshold-boundary jitter cannot trip it; and
+/// * **6.8x below the mutant**, so it still discriminates.
+///
+/// Note the audit that prompted this recalibration proposed 1e-5 (~1000x
+/// thresh). That was rejected BY THE MEASUREMENT: the re-measured mutant lands
+/// at 1.3581e-5, only 1.36x above 1e-5, which is not discrimination. The window
+/// is narrower than the old one (91x, vs the 176x claimed before), so the bar
+/// cannot sit as far above the baseline as the original ~33x; 13.4x is the
+/// balance the measured window actually permits.
+///
+/// This is a single-point magnitude check, which is the WEAK form of the
+/// question — but it is also the only one of the three guards that catches the
+/// 100x mutant. That mutant clears a falling-with-threshold check (it falls
+/// 95.6x per 100x of threshold) and clears the ratio invariant (0.9991), since
+/// a uniformly scaled envelope still tracks the threshold and still errs
+/// equally against both references. Those two complementary guards live in
+/// `qqr_schwarz_thresh_sweep.rs` and catch what this one cannot: an error floor
+/// and a direction error.
 #[test]
 fn link_k_qqr_matches_schwarz_at_production_thresh() {
     let mol = load_mol("alkane_8");
@@ -1312,13 +1360,17 @@ fn link_k_qqr_matches_schwarz_at_production_thresh() {
     );
 
     assert!(
-        err < 1e-7,
+        err < 2e-6,
         "alkane_8: LinK+QQR differs from LinK+Schwarz by max|dK| = {err:.4e} at thresh={thresh:.0e}. \
          QQR screens strictly more than Schwarz, so any difference is truncation — and it must stay \
          far below the threshold's own error. A failure here means the QQR envelope \
          (crates/ferric-scf/src/qqr.rs) is discarding quartets that carry real weight, i.e. it is \
-         not a valid bound. Measured 3.0345e-9 when written; a 100x-too-aggressive envelope gave \
-         5.3525e-7."
+         not a valid bound. Measured 1.4889e-7 under the pairwise FourPairK screen; a \
+         100x-too-aggressive envelope gave 1.3581e-5 (91x window, bar placed near its geometric \
+         mean). Do NOT restore the older 1e-7 bar / 3.0345e-9 baseline: those were measured under \
+         the global-max|D| screen, which was effectively density-free — see this test's doc \
+         comment, and qqr_schwarz_thresh_sweep.rs for the threshold sweep proving there is no \
+         error floor."
     );
 }
 
