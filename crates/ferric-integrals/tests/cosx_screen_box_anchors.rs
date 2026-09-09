@@ -136,7 +136,7 @@ fn cases() -> Vec<Case> {
 /// centred on each atom, at several radii and several arc lengths. These are
 /// exactly the point sets the sub-batched screen groups over.
 fn lebedev_regions(mol: &Molecule, arc: usize) -> Vec<Vec<[f64; 3]>> {
-    let (pts, _w) = lebedev(110).expect("lebedev 110");
+    let (pts, _w) = lebedev(110);
     let mut out = Vec::new();
     for atom in &mol.atoms {
         for &r in &[0.3_f64, 1.0, 3.0, 8.0, 20.0] {
@@ -211,42 +211,70 @@ fn box_bound_never_underestimates_inside_the_box() {
     }
 }
 
-/// The reason the box exists: over the SAME points it is never looser than
-/// the enclosing sphere the screen uses today.
+/// The provable comparison: the box bound is never looser than the sphere
+/// bound taken over a ball that CONTAINS the box (here the box's own
+/// circumscribing sphere). This is the like-for-like statement, and it is the
+/// one that is a theorem: a bound over a smaller region cannot be larger.
+///
+/// # The comparison that is NOT a theorem, and why
+///
+/// `cosx_k::bounding_sphere` uses the point CENTROID and the enclosing radius.
+/// That ball is not the box's circumscribing sphere and neither region
+/// contains the other: for a Lebedev arc the box's corners stick out of the
+/// centroid ball, and the ball's caps stick out of the box. So `box <=
+/// centroid-sphere` is FALSE in general and this test does not assert it —
+/// measured on water/cc-pVDZ, pair (6,6), box 7.194e-1 vs sphere 6.769e-1.
+/// The centroid-sphere comparison is REPORTED below as a distribution, because
+/// what matters operationally is which one is tighter more often and by how
+/// much, not which one dominates pointwise.
 #[test]
-fn box_bound_is_never_looser_than_the_enclosing_sphere() {
+fn box_bound_is_never_looser_than_a_ball_containing_the_box() {
     for c in cases() {
         let pb = PairBounds::build(&c.prep).expect("bounds");
         let nsh = pb.nshells();
-        let mut tighter = 0usize;
-        let mut total = 0usize;
+        let (mut tighter, mut total) = (0usize, 0usize);
         let mut best_ratio = 1.0_f64;
+        // Against the centroid sphere (the operational comparison, reported).
+        let (mut box_wins, mut sph_wins) = (0usize, 0usize);
         for region in lebedev_regions(&c.mol, 16) {
             let (lo, hi) = aabb(&region);
+            // The box's circumscribing sphere: centre = box centre, radius =
+            // half the diagonal. This ball provably CONTAINS the box.
+            let cc = [0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2])];
+            let rr = 0.5 * ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
             let (cen, rad) = bounding_sphere(&region);
             for s1 in 0..nsh {
                 for s2 in 0..=s1 {
                     let bx = pb.coarse_estimate_box(s1, s2, &lo, &hi);
-                    let sp = pb.coarse_estimate_sphere(s1, s2, &cen, rad);
+                    let circ = pb.coarse_estimate_sphere(s1, s2, &cc, rr);
                     assert!(
-                        bx <= sp * (1.0 + 1e-12),
-                        "{}: box bound {bx:.6e} EXCEEDS sphere bound {sp:.6e} for pair ({s1},{s2})",
+                        bx <= circ * (1.0 + 1e-12),
+                        "{}: box bound {bx:.6e} EXCEEDS its own circumscribing sphere's {circ:.6e} for pair ({s1},{s2})",
                         c.label
                     );
-                    if bx < sp * (1.0 - 1e-12) {
+                    if bx < circ * (1.0 - 1e-12) {
                         tighter += 1;
-                        best_ratio = best_ratio.min(bx / sp);
+                        best_ratio = best_ratio.min(bx / circ);
+                    }
+                    let sp = pb.coarse_estimate_sphere(s1, s2, &cen, rad);
+                    if bx < sp * (1.0 - 1e-12) {
+                        box_wins += 1;
+                    } else if sp < bx * (1.0 - 1e-12) {
+                        sph_wins += 1;
                     }
                     total += 1;
                 }
             }
         }
         println!(
-            "{}: box strictly tighter on {tighter}/{total} ({:.1}%) queries; best box/sphere = {best_ratio:.4e}",
+            "{}: box tighter than its circumscribing sphere on {tighter}/{total} ({:.1}%), best ratio {best_ratio:.4e}; \
+             vs the CENTROID sphere the screen uses today: box tighter {box_wins} ({:.1}%), sphere tighter {sph_wins} ({:.1}%)",
             c.label,
-            100.0 * tighter as f64 / total as f64
+            100.0 * tighter as f64 / total as f64,
+            100.0 * box_wins as f64 / total as f64,
+            100.0 * sph_wins as f64 / total as f64,
         );
-        assert!(tighter > 0, "{}: the box is never tighter than the sphere — the change is inert", c.label);
+        assert!(tighter > 0, "{}: the box is never tighter than its circumscribing sphere — inert", c.label);
     }
 }
 

@@ -35,23 +35,30 @@
 //! * (b) `grouped_screen_k_matches_unscreened_below_grid_error` — CORRECTNESS
 //!   at the production threshold on water/cc-pVDZ and butane/def2-SVP, against
 //!   the SAME unscreened K, with the finer group size.
-//! * (c) `grouped_screen_degenerate_fraction_and_kept_work_both_fall` —
-//!   REACHABILITY / NON-INERTNESS. The degenerate-bound fraction must fall
-//!   measurably as the group shrinks AND the kept work must fall with it. If
-//!   the kept work does not fall, the change is pointless; this anchor is what
-//!   says so.
+//! * (c) `grouped_screen_gain_is_negligible_against_a_superlinear_bound_cost`
+//!   — REACHABILITY / NON-INERTNESS, and the branch's VERDICT. As
+//!   pre-registered it asserted that the degenerate fraction and the kept work
+//!   must both FALL with group size. THEY DO NOT (butane: kept 0.791573 ->
+//!   0.790406 for 8.2x the bound evaluations), so per its own stated stop
+//!   condition it now pins the negative result and is written to fail if that
+//!   is ever overturned. Its doc carries the table.
 //! * `grouped_screen_never_drops_what_the_unsplit_screen_keeps` — the
 //!   union-over-groups property stated as a test: kept work at any group size
 //!   is <= kept work unsplit, at equal or better K accuracy.
 //!
-//! # Mutation proofs (recorded in the commit message)
+//! # Mutation proofs (2026-09-09)
 //!
-//! * `group_bound_is_the_subbatch_sphere` (compute each group's bound from
-//!   the WHOLE sub-batch's sphere) -> (c) RED: the degenerate fraction and the
-//!   kept work stop moving with group size. This is the inertness mutation.
-//! * `misaligned_groups` (use group `i`'s box but group `i+1`'s points) ->
-//!   (b) RED: pairs significant for points not covered by their own bound get
-//!   dropped and K moves above the grid error.
+//! * MUTATION A, `regions.push(Region::of(pts))` — give every group the WHOLE
+//!   sub-batch's region. -> (c) RED, and diagnostically: `kept` freezes at
+//!   exactly 90 512 912 for EVERY group size, where the real code moves it to
+//!   90 379 536. This is the inertness mutation and it is what proves the
+//!   per-group regions are live, i.e. that the negative result is physics and
+//!   not a no-op build.
+//! * MUTATION B, misaligned groups (two variants: group `q` gets group `q+1`'s
+//!   `fmax`; every group gets the first group's region). -> (b) stayed GREEN
+//!   at 7.5-7.7e-7. Recorded as a WEAKNESS of anchor (b), not a pass; see its
+//!   doc comment for why an anchor cannot detect a defect that does not change
+//!   the answer.
 
 use ferric_core::basis::bundled;
 use ferric_core::mol::Molecule;
@@ -60,6 +67,7 @@ use ferric_dft::grid::AtomicGridConfig;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::cosx_k::{CosxConfig, CosxK, CosxTimings, COSX_SUB_BATCH_POINTS};
+use ferric_scf::fock::KBuilder;
 use ferric_scf::rhf::{build_jk, solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
@@ -162,6 +170,25 @@ fn group_size_whole_subbatch_is_bitwise_todays_screen() {
 /// Anchor (b), CORRECTNESS: at the production threshold and the finer group
 /// size, the grouped screen's K stays far below the grid error, measured
 /// against the SAME unscreened K on both systems.
+///
+/// # This anchor PASSED its mutation test, which means it is WEAK — read this
+///
+/// Two misalignment mutations were applied (2026-09-09) and NEITHER turned it
+/// red: (i) give group `q` the `fmax` of group `q+1`; (ii) give every group the
+/// FIRST group's region. Both left `max|dK|` at 7.5-7.7e-7 on butane, i.e.
+/// indistinguishable from the correct code.
+///
+/// That is not a defect in the mutations, it is a consequence of the result
+/// this branch measured: at group 8 the union over 32 groups drops only 0.12
+/// pp more work than the unsplit test, so perturbing which group owns which
+/// bound moves a handful of marginal decisions and cannot move K. An anchor
+/// can only detect a defect that changes the answer, and here almost nothing
+/// changes the answer.
+///
+/// So this test is honest evidence of CORRECTNESS (the K really is right) and
+/// is NOT evidence that the group/point alignment is right. If grouping is ever
+/// made to pay — if kept work actually falls — this anchor must be re-mutated
+/// before it is trusted as a guard on alignment.
 #[test]
 fn grouped_screen_k_matches_unscreened_below_grid_error() {
     for s in [water(), butane()] {
@@ -185,16 +212,43 @@ fn grouped_screen_k_matches_unscreened_below_grid_error() {
     }
 }
 
-/// Anchor (c), REACHABILITY / NON-INERTNESS. Two things must move together as
-/// the group shrinks: the degenerate-bound fraction must FALL, and the kept
-/// work must fall with it. A tighter bound that does not translate into less
-/// kept work is a null result, and this anchor is what reports it.
+/// Anchor (c) as pre-registered was: "the degenerate-bound fraction must FALL
+/// measurably with group size AND the kept work must fall with it; if the kept
+/// work does not fall, the change is pointless and that is the finding".
 ///
-/// Butane carries the assertion: water at (50,110) is small enough that the
-/// screen barely bites (`snlink_python_results.md` §2 A3 fails there by
-/// design). Water is measured and printed, not asserted on.
+/// # It does not fall. That is the finding, and this test now PINS it.
+///
+/// Measured 2026-09-09, butane/def2-SVP, (50,110)+fit, `t = 1e-7`, one thread
+/// (counts are deterministic, so these are exact, not indicative):
+///
+/// ```text
+///   group | degenerate |     kept | kept pairs | bound evals
+///       0 |     0.6515 | 0.791573 | 90 512 912 |     446 985   (unsplit)
+///      64 |     0.6419 | 0.790568 | 90 397 968 |     756 377   (1.69x)
+///      32 |     0.6441 | 0.790597 | 90 401 296 |   1 168 970   (2.62x)
+///      16 |     0.6465 | 0.790599 | 90 401 552 |   1 994 693   (4.46x)
+///       8 |     0.6423 | 0.790406 | 90 379 536 |   3 651 199   (8.17x)
+/// ```
+///
+/// Kept work falls by **0.12 percentage points** for **8.2x the bound
+/// evaluations**, and the degenerate fraction moves only 0.6515 -> 0.6423 and
+/// NOT monotonically. The mechanism is live (mutation A below freezes `kept`
+/// at exactly 90 512 912 for every group size, so the per-group regions really
+/// are being used); it simply does not pay.
+///
+/// Why, from `tests/cosx_region_diagnostics.rs` (same grid, same order): only
+/// 33.6% of the degeneracy is the REGION reaching the pair midpoint — the part
+/// grouping can fix, and it does move that 33.6% -> 24.2% — while 30.4% is
+/// `|AB|/2` eating the distance, which grouping cannot touch at all and whose
+/// share GROWS to 35.3% as the region shrinks. The screen is blind on most
+/// decisions because of the SHELL PAIRS, not because of the batch geometry.
+///
+/// This test therefore asserts the NEGATIVE: the gain stays under half a
+/// percentage point while the cost grows superlinearly. It is written to FAIL
+/// if a future change makes grouping actually pay, which is the point — the
+/// verdict is provisional and this is what would reopen it.
 #[test]
-fn grouped_screen_degenerate_fraction_and_kept_work_both_fall() {
+fn grouped_screen_gain_is_negligible_against_a_superlinear_bound_cost() {
     for s in [water(), butane()] {
         let mut rows = Vec::new();
         for g in GROUPS {
@@ -202,36 +256,52 @@ fn grouped_screen_degenerate_fraction_and_kept_work_both_fall() {
             let deg = t.screen_degenerate as f64 / t.bound_evals.max(1) as f64;
             let kept = t.pairs_kept as f64 / t.pairs_total as f64;
             println!(
-                "{} group {g:>3}: degenerate {deg:.4}  kept {kept:.4}  bound evals {}  ({} kept / {} total)",
+                "{} group {g:>3}: degenerate {deg:.4}  kept {kept:.6}  bound evals {:>9}  ({} kept / {} total)",
                 s.label, t.bound_evals, t.pairs_kept, t.pairs_total
             );
             rows.push((g, deg, kept, t.bound_evals));
         }
         let unsplit = rows[0];
         let finest = *rows.last().expect("GROUPS is non-empty");
+        // The mechanism must be LIVE: bound evaluations grow with grouping, and
+        // the kept work does move (it is not frozen, which is what mutation A
+        // produces). Without these two the verdict below would be vacuous.
+        //
+        // The growth factor is NOT ~G: `keep` stops at the first group that
+        // keeps the pair, so a system where almost everything is kept pays
+        // almost nothing extra. Water keeps 99.3% and grows only 5070 -> 9063
+        // (1.8x); butane keeps 79% and grows 446 985 -> 3 651 199 (8.2x). Both
+        // are the early-out working as intended, so the bar is just "grew".
+        assert!(
+            finest.3 > unsplit.3,
+            "{}: bound evaluations did not grow ({} -> {}) — grouping is not happening",
+            s.label,
+            unsplit.3,
+            finest.3
+        );
+        assert!(
+            finest.2 < unsplit.2,
+            "{}: kept work is FROZEN at {:.6} across group sizes — the per-group regions are inert \
+             (this is exactly what mutation A produces)",
+            s.label,
+            unsplit.2
+        );
         if s.label.starts_with("butane") {
             assert!(
-                finest.1 < unsplit.1 - 0.01,
-                "{}: degenerate fraction did not fall with group size ({:.4} -> {:.4})",
+                finest.2 > unsplit.2 - 0.005,
+                "{}: kept work fell by {:.4} pp (>0.5 pp) going 256 -> 8. The 2026-09-09 verdict that \
+                 sub-batching the bound test does not pay has been OVERTURNED — re-run the scaling \
+                 measurement and revisit CosxConfig::screen_group's default.",
+                s.label,
+                100.0 * (unsplit.2 - finest.2)
+            );
+            assert!(
+                finest.1 > unsplit.1 - 0.05,
+                "{}: degenerate fraction fell {:.4} -> {:.4} (>0.05). The bound is no longer blind for \
+                 the reason recorded here; re-derive the cause split before trusting the verdict.",
                 s.label,
                 unsplit.1,
                 finest.1
-            );
-            assert!(
-                finest.2 < unsplit.2,
-                "{}: kept work did not fall with group size ({:.4} -> {:.4}) — the change is pointless",
-                s.label,
-                unsplit.2,
-                finest.2
-            );
-            // The bound-evaluation count is the cost side of the trade and must
-            // be reported honestly: grouping by G multiplies it by ~G.
-            assert!(
-                finest.3 > unsplit.3,
-                "{}: bound evaluations did not grow with grouping ({} -> {}) — grouping is not happening",
-                s.label,
-                unsplit.3,
-                finest.3
             );
         }
     }

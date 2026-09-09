@@ -287,6 +287,55 @@ pub struct CosxConfig {
     /// `CosxHalfTransform::SPARSE_DEFAULT`; `Dense` is the byte-identical
     /// pre-sparse builder (`tests/cosx_sparse_anchors.rs`).
     pub half_transform: CosxHalfTransform,
+    /// Points per group in the SCREENING decision (md3c1e backend). The
+    /// kernel's `COSX_SUB_BATCH_POINTS` blocking is NOT affected — this splits
+    /// only the bound test, and a pair kept by ANY group is evaluated for the
+    /// whole sub-batch, so correctness is preserved by construction.
+    ///
+    /// `0` (the default) means one group per sub-batch, i.e. the unsplit
+    /// screen, reproduced BITWISE (`tests/cosx_group_screen_anchors.rs`).
+    ///
+    /// # Why this knob exists, and why its default is `0`
+    ///
+    /// A 256-point Becke sub-batch is ~2.3 whole Lebedev spheres of one atom
+    /// (the grid is emitted atom-major / radial-major / angular-minor), so its
+    /// enclosing region is spatially large and `R_c` clamps to 0: the bound
+    /// degenerates to its distance-free value on 68-80% of (pair, batch)
+    /// decisions (`scripts/queue/out/snlink_python_results.md` §4.1). Splitting
+    /// the bound test into contiguous groups shrinks the region and was
+    /// expected to recover that.
+    ///
+    /// MEASURED (2026-09-09, butane/def2-SVP, (50,110)+fit, `t = 1e-7`, counts
+    /// so exact rather than indicative): it does not pay.
+    ///
+    /// ```text
+    ///   group | degenerate |     kept | bound evals
+    ///       0 |     0.6515 | 0.791573 |     446 985   (unsplit)
+    ///      64 |     0.6419 | 0.790568 |     756 377   (1.69x)
+    ///      32 |     0.6441 | 0.790597 |   1 168 970   (2.62x)
+    ///      16 |     0.6465 | 0.790599 |   1 994 693   (4.46x)
+    ///       8 |     0.6423 | 0.790406 |   3 651 199   (8.17x)
+    /// ```
+    ///
+    /// Kept work falls 0.12 PERCENTAGE POINTS for 8.2x the bound evaluations,
+    /// and the degenerate fraction barely moves and not monotonically. The
+    /// mechanism is live, not inert — forcing every group back to the whole
+    /// sub-batch's region freezes `kept` at exactly the unsplit 90 512 912,
+    /// where the real code reaches 90 379 536.
+    ///
+    /// `tests/cosx_region_diagnostics.rs` says why, and the reason is
+    /// structural: only 33.6% of the degeneracy is the REGION reaching the pair
+    /// midpoint (the part grouping can fix — it moves that 33.6% -> 24.2%),
+    /// while 30.4% is `|AB|/2` eating the distance, which grouping cannot touch
+    /// at all and whose share GROWS to 35.3% as the region shrinks. The screen
+    /// is blind on most decisions because of the SHELL PAIRS, not because of
+    /// the batch geometry — so a tighter enclosing volume is the wrong lever.
+    ///
+    /// The knob is kept so the measurement stays reproducible, and its default
+    /// is `0`. A non-zero value is NOT recommended. Pinned by
+    /// `tests/cosx_group_screen_anchors.rs`, which is written to FAIL if this
+    /// verdict is ever overturned.
+    pub screen_group: usize,
 }
 
 /// Default density-driven screen threshold (`CosxConfig::screen_thresh`).
@@ -310,6 +359,7 @@ impl Default for CosxConfig {
             screen_thresh: Some(COSX_DEFAULT_SCREEN_THRESH),
             backend: CosxBackend::Md3c1e,
             half_transform: CosxHalfTransform::SPARSE_DEFAULT,
+            screen_group: 0,
         }
     }
 }
@@ -367,6 +417,16 @@ pub struct CosxTimings {
     pub pairs_kept_geom: usize,
     /// Shell pairs considered, summed over points.
     pub pairs_total: usize,
+    /// Region-bound evaluations performed by the screen, summed over points.
+    /// The COST side of `CosxConfig::screen_group`: grouping by `G` multiplies
+    /// this by up to `G` (less, because the scan stops at the first group that
+    /// keeps the pair). 0 when unscreened.
+    pub bound_evals: usize,
+    /// Of `bound_evals`, how many returned the bound's distance-free `R = 0`
+    /// value — the screen running blind. This is the fraction the sub-batched
+    /// screen exists to move; see `CosxConfig::screen_group` for what it was
+    /// measured to do.
+    pub screen_degenerate: usize,
 }
 
 /// One `T` per rayon worker (plus a spare for non-pool threads) — same
@@ -664,12 +724,15 @@ impl<'a> CosxK<'a> {
                     )
                 })?;
                 let geom = screen.as_ref().map_or(total, |sc| sc.geom_kept);
+                let (bev, deg) = screen.as_ref().map_or((0, 0), |sc| (sc.bound_evals, sc.degenerate));
                 let all_ns = t0.elapsed().as_nanos() as u64;
                 acc.a_ns.fetch_add(all_ns.saturating_sub(c_ns), Ordering::Relaxed);
                 acc.c_ns.fetch_add(c_ns, Ordering::Relaxed);
                 acc.kept.fetch_add(kept * n, Ordering::Relaxed);
                 acc.kept_geom.fetch_add(geom * n, Ordering::Relaxed);
                 acc.total.fetch_add(total * n, Ordering::Relaxed);
+                acc.bound_evals.fetch_add(bev, Ordering::Relaxed);
+                acc.degenerate.fetch_add(deg, Ordering::Relaxed);
                 Ok((y, touched))
             })
             .collect::<Result<_, _>>()?;
@@ -692,13 +755,33 @@ impl<'a> CosxK<'a> {
     }
 
     /// The density-driven screen for one sub-batch (`None` when
-    /// `screen_thresh` is `None`): the batch's bounding sphere plus
-    /// `fmax[s] = max |F_{mu in s, g in batch}|`. See `CosxConfig::screen_thresh`.
+    /// `screen_thresh` is `None`): one [`Region`] and one `fmax` vector per
+    /// contiguous group of `CosxConfig::screen_group` points (`0` = one group
+    /// covering the whole sub-batch). See `CosxConfig::screen_thresh` and
+    /// `CosxConfig::screen_group`.
     fn batch_screen<'b>(&'b self, kern: &Md3c1e, pts: &[[f64; 3]], f: &[f64], n: usize) -> Option<BatchScreen<'b>> {
         let thresh = self.cfg.screen_thresh?;
         let bounds = self.bounds.as_ref()?;
-        let (centre, radius) = bounding_sphere(pts);
-        Some(BatchScreen { bounds, thresh, fmax: shell_fmax(kern, f, n), centre, radius, geom_kept: 0 })
+        let nsh = kern.nshells();
+        // `0` and anything >= the sub-batch size are the same single group.
+        let g = if self.cfg.screen_group == 0 { n } else { self.cfg.screen_group.min(n) }.max(1);
+        let mut regions = Vec::with_capacity(n.div_ceil(g));
+        let mut fmax = Vec::with_capacity(n.div_ceil(g) * nsh);
+        for (q, grp) in pts.chunks(g).enumerate() {
+            regions.push(Region::of(grp));
+            let g0 = q * g;
+            fmax.extend(shell_fmax_range(kern, f, n, g0, g0 + grp.len()));
+        }
+        Some(BatchScreen {
+            bounds,
+            thresh,
+            regions,
+            fmax,
+            nsh,
+            geom_kept: 0,
+            bound_evals: 0,
+            degenerate: 0,
+        })
     }
 
     /// Shared driver for `build` / `build_from_occ`. The dense path maps
@@ -763,6 +846,8 @@ impl<'a> CosxK<'a> {
         t.pairs_kept = acc.kept.load(Ordering::Relaxed);
         t.pairs_kept_geom = acc.kept_geom.load(Ordering::Relaxed);
         t.pairs_total = acc.total.load(Ordering::Relaxed);
+        t.bound_evals = acc.bound_evals.load(Ordering::Relaxed);
+        t.screen_degenerate = acc.degenerate.load(Ordering::Relaxed);
         t.total_s = t_start.elapsed().as_secs_f64();
         self.last = t;
         // No shell quartets are computed by this builder; the work counter the
@@ -1078,62 +1163,143 @@ struct BlockCounters {
     kept: AtomicUsize,
     kept_geom: AtomicUsize,
     total: AtomicUsize,
+    bound_evals: AtomicUsize,
+    degenerate: AtomicUsize,
+}
+
+/// One screening region: a contiguous group of the sub-batch's points,
+/// described by BOTH its centroid ball and its axis-aligned box.
+///
+/// Both enclose the group's points, so both bounds are valid and so is their
+/// `min` — which is what [`Region::bound`] returns. Neither dominates the
+/// other: for a Lebedev arc the box's corners stick out of the centroid ball
+/// and the ball's caps stick out of the box (measured, `cosx_screen_box_anchors.rs`:
+/// on butane/def2-SVP the box is tighter on 8.8% of queries and the sphere on
+/// 14.3%), so taking the `min` is strictly better than either alone at the
+/// cost of one extra clamped-difference evaluation.
+#[derive(Clone, Copy)]
+struct Region {
+    centre: [f64; 3],
+    radius: f64,
+    lo: [f64; 3],
+    hi: [f64; 3],
+}
+
+impl Region {
+    /// Centroid ball + AABB of `pts`. Empty input gives a degenerate region at
+    /// the origin, which is never reached (groups are non-empty).
+    fn of(pts: &[[f64; 3]]) -> Self {
+        let n = pts.len().max(1) as f64;
+        let mut c = [0.0_f64; 3];
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for p in pts {
+            for d in 0..3 {
+                c[d] += p[d];
+                lo[d] = lo[d].min(p[d]);
+                hi[d] = hi[d].max(p[d]);
+            }
+        }
+        for v in &mut c {
+            *v /= n;
+        }
+        if pts.is_empty() {
+            (lo, hi) = ([0.0; 3], [0.0; 3]);
+        }
+        let r2 = pts
+            .iter()
+            .map(|p| (0..3).map(|d| (p[d] - c[d]) * (p[d] - c[d])).sum::<f64>())
+            .fold(0.0_f64, f64::max);
+        Self { centre: c, radius: r2.sqrt(), lo, hi }
+    }
+
+    /// The tightest valid geometric bound for this region: the smaller of the
+    /// ball and the box bounds, both of which hold over every point in it.
+    #[inline]
+    fn bound(&self, bounds: &PairBounds, s1: usize, s2: usize) -> f64 {
+        let sph = bounds.coarse_estimate_sphere(s1, s2, &self.centre, self.radius);
+        let bx = bounds.coarse_estimate_box(s1, s2, &self.lo, &self.hi);
+        sph.min(bx)
+    }
 }
 
 /// Density-driven pair screen for ONE sub-batch (see `CosxConfig::screen_thresh`).
+///
+/// The sub-batch's points are partitioned into contiguous GROUPS
+/// (`CosxConfig::screen_group`) and each group carries its own [`Region`] and
+/// its own `fmax`. A pair is evaluated for the whole sub-batch iff SOME group
+/// keeps it, so the kernel's 256-point blocking is untouched and correctness
+/// is preserved by construction: every group's bound is applied only to points
+/// in that group, and the union is what survives.
 struct BatchScreen<'b> {
     bounds: &'b PairBounds,
     thresh: f64,
-    /// `fmax[s] = max_{mu in s, g in batch} |F_{mu,g}|`.
+    /// One region per group, in point order.
+    regions: Vec<Region>,
+    /// `fmax[grp][s] = max_{mu in s, g in group} |F_{mu,g}|`, flattened
+    /// `grp * nsh + s`.
     fmax: Vec<f64>,
-    centre: [f64; 3],
-    radius: f64,
-    /// Pairs whose geometry-only bound alone reached `thresh` (diagnostic).
+    nsh: usize,
+    /// Pairs some SCANNED group's geometry-only bound reached (diagnostic).
+    /// With more than one group the scan stops at the first group that keeps
+    /// the pair, so this is a LOWER bound on "some group's geometry-only bound
+    /// reached `thresh`" — exact at one group, which is the configuration the
+    /// existing anchors compare against.
     geom_kept: usize,
+    /// Region-bound evaluations performed (cost counter: grouping by `G`
+    /// multiplies this by up to `G`, early-outs aside).
+    bound_evals: usize,
+    /// Of those, how many returned the distance-free `R = 0` value — the
+    /// measurement the sub-batched screen exists to move.
+    degenerate: usize,
 }
 
 impl BatchScreen<'_> {
-    /// Keep `(s1, s2)` iff `bound_A(s1, s2, sphere) * max(fmax[s1], fmax[s2]) >= thresh`.
-    /// For `thresh <= 0` this is always true (every factor is `>= 0`), which is
-    /// the trivial limit. The `max` covers both orderings of the mirror fold.
+    /// Keep `(s1, s2)` iff SOME group `q` has
+    /// `min(ball, box)_q(s1, s2) * max(fmax_q[s1], fmax_q[s2]) >= thresh`.
+    ///
+    /// With one group covering the whole sub-batch this is exactly the old
+    /// single-region rule (bar the `min` with the box, which can only tighten
+    /// it), which is the trivial limit `screen_group = 0` reproduces bitwise.
+    /// For `thresh <= 0` the first group already keeps everything (every
+    /// factor is `>= 0`). The `max` over both shells covers both orderings of
+    /// the mirror fold.
     #[inline]
     fn keep(&mut self, s1: usize, s2: usize) -> bool {
-        let est = self.bounds.coarse_estimate_sphere(s1, s2, &self.centre, self.radius);
-        if est >= self.thresh {
+        let mut kept = false;
+        let mut geom = false;
+        for (q, reg) in self.regions.iter().enumerate() {
+            let f = self.fmax[q * self.nsh + s1].max(self.fmax[q * self.nsh + s2]);
+            let est = reg.bound(self.bounds, s1, s2);
+            self.bound_evals += 1;
+            if est >= self.bounds.max_estimate(s1, s2) {
+                self.degenerate += 1;
+            }
+            if est >= self.thresh {
+                geom = true;
+            }
+            if est * f >= self.thresh {
+                kept = true;
+                break;
+            }
+        }
+        if geom {
             self.geom_kept += 1;
         }
-        est * self.fmax[s1].max(self.fmax[s2]) >= self.thresh
+        kept
     }
 }
 
-/// Centroid and enclosing radius of a point batch (the batch's bounding
-/// sphere for `PairBounds::coarse_estimate_sphere`). Empty input gives
-/// `([0;3], 0)`, which is never reached (blocks are non-empty).
-fn bounding_sphere(pts: &[[f64; 3]]) -> ([f64; 3], f64) {
-    let n = pts.len().max(1) as f64;
-    let mut c = [0.0_f64; 3];
-    for p in pts {
-        for d in 0..3 {
-            c[d] += p[d];
-        }
-    }
-    for v in &mut c {
-        *v /= n;
-    }
-    let r2 = pts
-        .iter()
-        .map(|p| (0..3).map(|d| (p[d] - c[d]) * (p[d] - c[d])).sum::<f64>())
-        .fold(0.0_f64, f64::max);
-    (c, r2.sqrt())
-}
-
-/// `fmax[s] = max_{mu in shell s, g < n} |f[mu * n + g]|` for `f` in the
-/// `(nbf, n)` row-major sub-batch layout.
-fn shell_fmax(kern: &Md3c1e, f: &[f64], n: usize) -> Vec<f64> {
+/// `fmax[s] = max_{mu in shell s, g in [g0, g1)} |f[mu * n + g]|` for `f` in
+/// the `(nbf, n)` row-major sub-batch layout. `g0 = 0, g1 = n` is the whole
+/// sub-batch (the unsplit screen); a narrower range is one screening group.
+fn shell_fmax_range(kern: &Md3c1e, f: &[f64], n: usize, g0: usize, g1: usize) -> Vec<f64> {
     (0..kern.nshells())
         .map(|s| {
             let (o, nf) = (kern.shell_offset(s), kern.shell_dim(s));
-            f[o * n..(o + nf) * n].iter().fold(0.0_f64, |m, &v| m.max(v.abs()))
+            (o..o + nf)
+                .flat_map(|mu| f[mu * n + g0..mu * n + g1].iter())
+                .fold(0.0_f64, |m, &v| m.max(v.abs()))
         })
         .collect()
 }
@@ -1323,10 +1489,24 @@ mod tests {
         let bs = ferric_core::basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let bounds = PairBounds::build(&prep).unwrap();
-        let centre = [0.0, 0.0, 0.7];
-        let est = bounds.coarse_estimate_sphere(1, 0, &centre, 0.5);
+        // A single-group screen over a small ball, built from the points whose
+        // Region reproduces the old (centre, radius) pair exactly.
+        let pts = [[0.0, 0.0, 0.2], [0.0, 0.0, 1.2]];
+        let region = Region::of(&pts);
+        assert_eq!(region.centre, [0.0, 0.0, 0.7]);
+        assert!((region.radius - 0.5).abs() < 1e-15);
+        let est = region.bound(&bounds, 1, 0);
         assert!(est > 0.0);
-        let mk = |fmax: Vec<f64>, thresh: f64| BatchScreen { bounds: &bounds, thresh, fmax, centre, radius: 0.5, geom_kept: 0 };
+        let mk = |fmax: Vec<f64>, thresh: f64| BatchScreen {
+            bounds: &bounds,
+            thresh,
+            regions: vec![region],
+            fmax,
+            nsh: 2,
+            geom_kept: 0,
+            bound_evals: 0,
+            degenerate: 0,
+        };
         // Only shell 1 has a large F: pair (1,0) must still be kept (mirror
         // G_0 += A F_1), so the keep rule must use max(fmax[1], fmax[0]).
         let t = 0.5 * est;
@@ -1343,17 +1523,24 @@ mod tests {
     }
 
     #[test]
-    fn shell_fmax_and_bounding_sphere_toy() {
+    fn shell_fmax_range_and_region_toy() {
         let mol = ferric_core::mol::Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = ferric_core::basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let kern = Md3c1e::new(&prep).unwrap();
         // nbf = 2, n = 3: row 0 = [1, -4, 2], row 1 = [0.5, 0, -0.25]
         let f = vec![1.0, -4.0, 2.0, 0.5, 0.0, -0.25];
-        assert_eq!(shell_fmax(&kern, &f, 3), vec![4.0, 0.5]);
-        let (c, r) = bounding_sphere(&[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, -1.0, 0.0]]);
-        assert_eq!(c, [1.0, 0.0, 0.0]);
-        assert!((r - 1.0).abs() < 1e-15);
+        // Whole sub-batch (the unsplit screen).
+        assert_eq!(shell_fmax_range(&kern, &f, 3, 0, 3), vec![4.0, 0.5]);
+        // Groups: [0,2) sees the -4 and the 0.5; [2,3) sees the 2 and the -0.25.
+        assert_eq!(shell_fmax_range(&kern, &f, 3, 0, 2), vec![4.0, 0.5]);
+        assert_eq!(shell_fmax_range(&kern, &f, 3, 2, 3), vec![2.0, 0.25]);
+        // Region: centroid ball as before, plus the AABB of the same points.
+        let r = Region::of(&[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, -1.0, 0.0]]);
+        assert_eq!(r.centre, [1.0, 0.0, 0.0]);
+        assert!((r.radius - 1.0).abs() < 1e-15);
+        assert_eq!(r.lo, [0.0, -1.0, 0.0]);
+        assert_eq!(r.hi, [2.0, 1.0, 0.0]);
     }
 
     #[test]
