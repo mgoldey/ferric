@@ -110,6 +110,75 @@ to 2.6% of the total. Pre-registration P3 predicted 400-700 s at
 alkane_32/def2-SVP from the OLD total-wall exponent of 2.16; that exponent was
 inflated by the GEMM term and no longer describes this code.
 
+## The memory wall, in closed form from the two builders' own preflights
+
+This is the part of the ceiling map that does NOT need a timing, and it is the
+strongest thing this lane has to say. The two builders differ not only in how
+much memory they need but in whether they CHECK, and both facts are read from
+the source, not extrapolated.
+
+**COSX has a real preflight and errors cleanly.**
+`ferric_scf::cosx_k::check_budget` (cosx_k.rs:1341) computes, per grid block,
+`5 * COSX_BLOCK_POINTS * nbf * 8` (planes) + `7 * nbf^2 * 8` (squares:
+Ktilde, S_num, S, L, L^T, D[Λ,A], D_occ) + `(threads+1) * 2 * nbf *
+COSX_SUB_BATCH_POINTS * 8` (md3c1e per-thread), and returns a
+`FerricError::General` naming the requirement and the budget if it does not fit.
+Its dominant term is **O(nbf^2)** — it never forms anything of size
+`naux * nbf^2`.
+
+Verified live rather than read: with `FERRIC_MEM_BUDGET_GB=0.001`,
+`CosxK::new` on water/cc-pVDZ returns
+
+```
+CosxK: one grid block needs 0.00 GB (nbf=24, 1024 pts x 5 planes + 2 per-thread
+md3c1e buffers) but the memory budget is 0.00 GB — raise [memory] budget_gb /
+FERRIC_MEM_BUDGET_GB or use fewer threads
+```
+
+i.e. a typed error naming the requirement, before any allocation.
+
+**DF-K has NO preflight.** `ferric_integrals::three_index_source` is a bare
+`if needed <= budget_bytes { in-core } else { spill }` (three_index_source.rs:190).
+Above budget there is no error and no disk-space check: it calls
+`tempfile::tempfile()` and streams the tensor to `/tmp`, which on this box is
+the same 95%-full root partition with 207 GB free.
+
+| system | basis | nbf | naux | COSX block need | DF-K dressed tensor | DF-K / COSX |
+|---|---|---|---|---|---|---|
+| alkane_20 | def2-SVP  | 490  | 2256 | 0.038 GB | 4.33 GB | 116x |
+| alkane_20 | def2-TZVP | 872  | 2256 | 0.085 GB | 13.72 GB | 161x |
+| alkane_20 | def2-QZVP | 2400 | 2256 | 0.441 GB | 103.96 GB | 236x |
+| alkane_32 | def2-SVP  | 778  | 3588 | 0.072 GB | 17.37 GB | 241x |
+| alkane_32 | def2-TZVP | 1388 | 3588 | 0.176 GB | 55.30 GB | 314x |
+| alkane_32 | def2-QZVP | 3804 | 3588 | 0.997 GB | 415.36 GB | 417x |
+| alkane_48 | def2-SVP  | 1162 | 5364 | 0.133 GB | 57.94 GB | 437x |
+| alkane_48 | def2-TZVP | 2076 | 5364 | 0.343 GB | 184.94 GB | 539x |
+| alkane_48 | def2-QZVP | 5676 | 5364 | **2.083 GB** | **1382.49 GB** | **664x** |
+
+(COSX column evaluated at one rayon thread, the configuration everything in this
+lane runs at; more threads add `2*nbf*256*8` each, which is 23 MB per thread even
+at nbf=5676, so the column is essentially thread-independent.)
+
+Three things follow, and only the first two are about COSX being better:
+
+1. DF-K's requirement exceeds this box's RAM at **every rung of this lane**,
+   starting at the very first one (alkane_20/def2-SVP, 4.33 GB against ~5.2 GB
+   free and a 2 GB configured budget). The failure is not at some far frontier;
+   DF-K is already out at 62 atoms and a double-zeta basis.
+2. COSX's requirement stays under 2.1 GB through alkane_48/def2-QZVP — 146 atoms
+   at quadruple zeta, nbf 5676 — so on the memory axis COSX clears every rung
+   this lane can name, and the gap WIDENS with both size (116x -> 437x at SVP)
+   and angular momentum (116x -> 236x at C20), because DF-K's tensor carries the
+   `naux` factor and COSX's block scratch does not.
+3. But note carefully what item 1 does NOT say. DF-K's over-budget behaviour is
+   to SPILL, not to refuse, and a spilled DF-K may still produce a correct K,
+   slowly, from disk. At 4.33 GB (C20/SVP) that spill is feasible on this
+   partition; at 1382 GB it is not, and at 55-185 GB it would consume a quarter
+   to most of the free disk. So "DF-K cannot run" is precise only where the
+   tensor exceeds the DISK; between the RAM wall and the disk wall the honest
+   statement is "DF-K becomes IO-bound", which is pre-registration R4. The
+   deliverable therefore distinguishes the two, rather than collapsing them.
+
 ## Protocol decision: SAD guess densities are NOT usable in this lane
 
 Recorded because it constrains everything below and cost the lane its cheap
