@@ -1,0 +1,19 @@
+
+running 1 test
+
+=== COSX full-K cell: alkane_48 / def2-svp  natoms=146 nbf=1162 nocc=193 L_max=2  budget=2.15 GB  PSI now=0.14 ===
+DF-K sizing: jkfit naux=5364, dressed 3-index tensor = 57.942 GB (budget 2.15 GB)
+SCF restart density loaded from /tmp/restart_a48svp.bin
+SCF pool: 12 rayon threads (not a timing)
+test cosx_full_k_cell has been running for over 60 seconds
+SCF iter=   1  E=-1873.4398244201  dE=1.873e3  dp_rms=inf  err_max=1.345e-3
+SCF iter=   2  E=-1873.4402153578  dE=3.909e-4  dp_rms=6.396e-5  err_max=6.613e-4
+SCF iter=   3  E=-1873.4402738811  dE=5.852e-5  dp_rms=2.705e-5  err_max=4.467e-4
+SCF iter=   4  E=-1873.4402789509  dE=5.070e-6  dp_rms=7.123e-6  err_max=2.884e-5
+SCF iter=   5  E=-1873.4402790214  dE=7.052e-8  dp_rms=7.234e-7  err_max=1.352e-5
+link RHF: E=-1873.44027902 converged=true iters=5 in 717.6 s (default pool, not a timing)
+density saved to scripts/queue/out/dens_alkane_48_svp.bin (converged=true); stopping (run again with COSX_FK_DENSITY_IN)
+test cosx_full_k_cell ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 717.75s
+
