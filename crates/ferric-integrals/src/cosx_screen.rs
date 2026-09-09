@@ -377,21 +377,31 @@ impl PairBounds {
     /// `|P_ij - r| >= |M - r| - |AB|/2 >= d(M, box) - |AB|/2` for every `r` in
     /// the box, and every term of the bound is non-increasing in its `R`.
     ///
-    /// # Why a box rather than a sphere
+    /// # A box is NOT uniformly better than the centroid ball — measure, don't assume
     ///
     /// `d(M, box)` is exact for the box, whereas the sphere query's
-    /// `|M - centre| - radius` is exact only for the ball — and the ball
-    /// enclosing a point set is generally far larger than the set. The Becke
-    /// grid is emitted atom-major / radial-major / angular-minor, so a
-    /// contiguous run of grid points is an ARC of one Lebedev sphere: its
-    /// bounding box hugs the arc while its bounding sphere has the radius of
-    /// the whole shell. Over the same points this bound is therefore never
-    /// looser than [`PairBounds::coarse_estimate_sphere`] and usually much
-    /// tighter, at identical cost (three clamped differences, one `sqrt`).
+    /// `|M - centre| - radius` is exact only for the ball. It is tempting to
+    /// conclude the box therefore wins, and for the box's OWN circumscribing
+    /// sphere it provably does (that ball contains the box, so a bound over the
+    /// smaller region cannot be larger — 22.1% of queries on butane/def2-SVP,
+    /// best ratio 5.5e-2).
+    ///
+    /// But the ball the COSX screen actually uses is built from the point
+    /// CENTROID and the enclosing radius, and **neither region contains the
+    /// other**: for a Lebedev arc the box's corners stick out of the centroid
+    /// ball and the ball's caps stick out of the box. Measured on
+    /// butane/def2-SVP, the centroid ball is tighter on **14.3%** of queries
+    /// against the box's **8.8%**. So `box <= centroid-sphere` is FALSE in
+    /// general (counter-example: water/cc-pVDZ pair (6,6), box 7.194e-1 vs
+    /// sphere 6.769e-1).
+    ///
+    /// Both are valid, so a caller wanting the tightest available geometric
+    /// bound should take the `min` of the two. `ferric_scf::cosx_k::Region`
+    /// does exactly that.
     ///
     /// Anchored by `tests/cosx_screen_box_anchors.rs`: never underestimates
-    /// inside its box, never exceeds the enclosing sphere's value, degenerates
-    /// to `total` strictly less often, and reproduces
+    /// inside its box, never exceeds ITS OWN CIRCUMSCRIBING sphere's value,
+    /// degenerates to `total` less often than the centroid ball, and reproduces
     /// [`PairBounds::coarse_estimate`] bitwise when `lo == hi`.
     #[inline]
     pub fn coarse_estimate_box(&self, s1: usize, s2: usize, lo: &[f64; 3], hi: &[f64; 3]) -> f64 {
