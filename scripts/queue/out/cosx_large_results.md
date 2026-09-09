@@ -110,6 +110,27 @@ to 2.6% of the total. Pre-registration P3 predicted 400-700 s at
 alkane_32/def2-SVP from the OLD total-wall exponent of 2.16; that exponent was
 inflated by the GEMM term and no longer describes this code.
 
+## The rung table (measured)
+
+Every row: one thread, one process, one shared converged density per rung, PSI
+`full avg10` 0.00 before and after, cpu == wall. "COSX need" is the closed-form
+`check_budget` block requirement; "peak RSS" is the measured `VmHWM` for the
+whole cell (which also ran the other builders, so it over-states COSX alone).
+
+| system | basis | nbf | builder | wall s | cpu s | peak RSS | \|A\|/nbf | kept_dd | outcome |
+|---|---|---|---|---|---|---|---|---|---|
+| alkane_20 | def2-SVP | 490 | COSX  | 116.234 | 116.23 | 645 MB (cell) | 0.2856 | 0.1458 | ran |
+| alkane_20 | def2-SVP | 490 | LinK (warm) | 73.219 | 73.21 | " | — | — | ran |
+| alkane_20 | def2-SVP | 490 | DF-K  | — | — | — | — | — | **refused: 4.33 GB tensor** |
+
+Densities: alkane_20/def2-SVP reuses `dens_alkane_20_svp.bin` from the earlier
+scaling lane (direct J+K SCF, `density_conv` 1e-5). alkane_32/def2-SVP was
+converged for this lane: direct J+K SCF, **E = -1249.34789834 Ha, converged,
+9 iterations, 1677.4 s** at one thread (PSI 0.00 throughout) —
+`dens_alkane_32_svp.bin`. That 28-minute SCF for a single 98-atom double-zeta
+density is itself part of the ceiling: at one thread on this box, converging a
+density costs more than every K build being compared on it.
+
 ## The memory wall, in closed form from the two builders' own preflights
 
 This is the part of the ceiling map that does NOT need a timing, and it is the
