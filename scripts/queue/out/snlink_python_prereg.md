@@ -259,3 +259,32 @@ Pre-registered so the negative, if it comes, is not open-ended:
    make the bound a single injectable function for exactly that reason.
 3. The onset test (alkane_20/alkane_32, ~62-98 Bohr) is a Rust-side experiment,
    not a Python one; §6.2 of the whitepaper already briefs it.
+
+---
+
+## 6. POST-HOC ADDENDUM (2026-09-09) — deviations from this pre-registration
+
+Appended after the measurements, deliberately as an addendum rather than an edit:
+the body above is the historical record and is unchanged. Results:
+`snlink_python_results.md`.
+
+| pre-registered | what actually happened | why |
+|---|---|---|
+| systems: water, methane, ethane | **added alkane_1..alkane_16 (3.9–38.7 Bohr)** | the no-CPU constraint was lifted mid-study; the count-only modes need no K accumulation, so a real diameter axis became affordable. §4's density result is only visible past 10 Bohr and would have been missed entirely at the pre-registered sizes. |
+| A1: screened vs unscreened at threshold 0 | **split into A1a + A1b** | mutation testing showed A1 as written passes on a K wrong by 1.35: an accumulation defect (`drop_mirror`, `counter_only`) breaks both sides equally. A1a compares the unscreened K against the analytic K, which is what actually catches it. |
+| A4 control: `SN(eps_E=0, dweight→fmax)` | **`eps_E = inf`** | at `eps_E = 0` the E-branch fires unconditionally, so the control never reached the K-branch and passed vacuously. Caught by A4 FAILING on ethane, the first system where the kept sets differ. |
+| A2 bar: `E_scr ≤ 0.1 · E_grid` | **unchanged, but reported VACUOUS when nothing is dropped** | on water/methane `E_scr = 0` by construction, so a PASS would have been arithmetic rather than evidence. |
+| grid: PySCF `Grids(level=0)` | **(50,110) with `prune=None`** | PySCF's default `nwchem_prune` emits NEGATIVE weights, for which `X = sqrt(w) chi` is undefined; with `abs()` water integrates to 10.20 electrons and the K grid error goes the WRONG WAY under refinement. (50,110) is also ferric's own COSX default. |
+| A3 expectation: density branch vacuous at these sizes | **partially WRONG, and this is the study's main finding** | the pre-registration predicted, from whitepaper §4.1, that the density branch would not bite. At *pair-batch* granularity it does — 60–68% of the pruning from 10 Bohr up, share growing with diameter. §4.1's three sightings measured row and pair granularity; this is a different contraction of the same matrix, so the two coexist. Recorded as a boundary on §4.1, not a refutation of it. |
+
+The headline verdict is unaffected by any of the above: sn-LinK's screening
+structure is within ±0.83 pp of ferric's at every system and threshold measured,
+which is the question this pre-registration was written to answer.
+
+One artifact channel pre-registered in §3 fired usefully and is worth noting as a
+success of the design: the study's own first reading of the size sweep ("the
+density branch prunes 20 pp at C10") was WRONG, because both screens' density
+factors contain the AO values `X` and a screen can look density-driven while
+riding on geometry. The flat-density control that caught it is a direct
+descendant of §3's requirement to write the artifact hypothesis next to the
+physics one.
