@@ -165,6 +165,12 @@ P3 predicted `kept_dd` 0.08-0.12 at this rung; the measured 0.0657 is just
 BELOW that band — the screen is slightly more effective than predicted, in the
 same direction as the trend.
 
+Density policy, applied uniformly: every builder in a rung contracts the SAME D,
+so the density cancels from every ratio; what it must NOT be is structurally
+unrepresentative (which is why SAD is excluded — see below). Rows whose density
+is not fully converged carry the achieved `dp_rms` and are labelled, rather than
+being presented as converged.
+
 Densities: alkane_20/def2-SVP reuses `dens_alkane_20_svp.bin` from the earlier
 scaling lane (direct J+K SCF, `density_conv` 1e-5). alkane_32/def2-SVP was
 converged for this lane: direct J+K SCF, **E = -1249.34789834 Ha, converged,
