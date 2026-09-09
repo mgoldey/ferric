@@ -1,0 +1,16 @@
+
+running 1 test
+
+=== COSX full-K cell: alkane_48 / def2-svp  natoms=146 nbf=1162 nocc=193 L_max=2  budget=2.15 GB  PSI now=0.00 ===
+DF-K sizing: jkfit naux=5364, dressed 3-index tensor = 57.942 GB (budget 2.15 GB)
+density loaded from scripts/queue/out/dens_alkane_48_svp.bin (provenance: an earlier SCF process of this harness; see its log for mode/convergence)
+test cosx_full_k_cell has been running for over 60 seconds
+COSX grid (50,110): 803000 points; overlap_fit=true; screen_thresh=Some(1e-7)
+K_cosx loaded from scripts/queue/out/kcosx_alkane_48_svp.bin
+  [timed:direct build_jk (exact four-centre J+K)] wall 605.744 s  cpu 605.62 s  threads=1  PSI full avg10 before=0.00 after=0.00
+DIRECT K (exact): wall 605.744 s cpu 605.62 s; max|K_cosx - K_direct| = 4.827308e-4 (max|K_direct| 7.157169e0, relative 6.745e-5); ||dK||_F = 1.341942e-2 (||K||_F 8.767416e1, relative 1.531e-4)
+CELL PEAK RSS: 681.3 MB  (VmHWM)  PSI full avg10 now=0.00
+test cosx_full_k_cell ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 802.05s
+

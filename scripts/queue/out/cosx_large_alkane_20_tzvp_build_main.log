@@ -1,0 +1,22 @@
+
+running 1 test
+
+=== COSX full-K cell: alkane_20 / def2-tzvp  natoms=62 nbf=872 nocc=81 L_max=3  budget=2.15 GB  PSI now=0.00 ===
+DF-K sizing: jkfit naux=2256, dressed 3-index tensor = 13.723 GB (budget 2.15 GB)
+density loaded from scripts/queue/out/dens_alkane_20_tzvp.bin (provenance: an earlier SCF process of this harness; see its log for mode/convergence)
+COSX grid (50,110): 341000 points; overlap_fit=true; screen_thresh=Some(1e-7)
+test cosx_full_k_cell has been running for over 60 seconds
+  [timed:COSX K build #1 (engine pool + S_num factor + build)] wall 301.913 s  cpu 301.87 s  threads=1  PSI full avg10 before=0.00 after=0.00
+COSX split (s): total 301.913 | ao_eval 12.498 | A-build 256.934 (85.1% of total) | per-point GEMV 17.951 | block GEMMs 10.879 | fit 0.123 | accounted 298.385 (98.8%) | pairs kept 3713535784/25733906000 (dd 0.1443, geom-only 0.3546) | wall 301.913 cpu 301.87
+COSX sparse counters: half 5.734 s | ktilde 4.042 s | snum 1.104 s | gather 0.284 s | |A|/nbf 0.2850 (min 0.0183 max 0.4174) | |Λ|/nbf 1.0000 | |B|/nbf 0.9270 | blocks 334
+COSX per-point A-build 7.5347e-4 s/pt (9.909e-10 s/pt/nbf^2); K/nbf^2 3.971e-4 s
+K_cosx saved to scripts/queue/out/kcosx_alkane_20_tzvp.bin
+  [timed:LinK K build (cold: pool + pairs + build)] wall 462.263 s  cpu 462.16 s  threads=1  PSI full avg10 before=0.00 after=0.00
+  [timed:LinK K build (warm: update_density + build)] wall 448.822 s  cpu 448.74 s  threads=1  PSI full avg10 before=0.00 after=0.00
+LinK K (last build): wall 448.822 s cpu 448.74 s; COSX/LinK = 0.673; max|K_cosx - K_link| = 2.589e-4 (||K||max 7.828e0)
+DF-K REFUSED: dressed 3-index tensor 13.723 GB exceeds the 2 GB cap (naux=2256, nbf=872). Library behaviour above budget is disk-spill (no preflight error); the SIZE is the finding.
+CELL PEAK RSS: 709.3 MB  (VmHWM)  PSI full avg10 now=0.00
+test cosx_full_k_cell ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1228.41s
+

@@ -4,9 +4,18 @@ Pre-registration: `scripts/queue/out/cosx_large_prereg.md`, committed 8f7a0bf0
 on 2026-09-09 **before any number below**. Branch `meas/cosx-large-system`,
 worktree `.claude/worktrees/cosx`, off `origin/main` 433db737.
 
+**This file covers TWO sittings, both on 2026-09-09.** The first measured the two
+def2-SVP rungs and concluded the lane was blocked by SCF cost. The second
+unblocked it by converging the missing densities on all cores (a density is an
+input, not a timing) and measured the two rungs the first could not reach —
+alkane_20/def2-TZVP and alkane_48/def2-SVP — plus the direct exact-K reference.
+Where the second sitting contradicts the first, the first sitting's text is kept
+and marked rather than deleted, so the record shows what was believed when.
+
 ## Protocol as run
 
-One thread throughout (`OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=1`, plus an
+One thread throughout for **every timed K build**
+(`OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=1`, plus an
 explicit 1-thread rayon pool around every timed segment), `FERRIC_MEM_BUDGET_GB=2`,
 `scripts/ferric-limited --max=6G --high=5G` in the foreground under a bounded
 `timeout`. `/proc/pressure/memory` `full avg10` printed before and after every
@@ -15,6 +24,16 @@ kept row. Peak RSS is `VmHWM` for the whole process (SCF included where the cell
 ran one). COSX is production configuration at every rung and no knob is tuned
 per rung: md3c1e backend, sparse half transforms, density-driven screen 1e-7,
 grid (50,110), overlap fit ON.
+
+**The one deliberate exception, and the reason the lane finished:** DENSITY
+GENERATION is not a timed quantity, so it is not bound by the one-thread rule —
+that rule exists to make timings comparable to each other. Densities converged in
+the second sitting therefore used all 12 cores (`RAYON_NUM_THREADS=12`, OpenBLAS
+still pinned to 1). Every such wall time is labelled as not-a-timing wherever it
+appears, and no ratio in this file is computed from one. Every K build in every
+table is single-threaded, without exception. One row (alkane_20/def2-TZVP
+direct) is parenthesised because it printed a nonzero PSI reading; it is
+excluded from all ratios and the reason is given at that table.
 
 ## Sizing (measured before the pre-registration was written; no build, no SCF)
 
@@ -125,45 +144,158 @@ whole cell (which also ran the other builders, so it over-states COSX alone).
 | alkane_32 | def2-SVP | 778 | COSX  | 209.713 | 209.67 | 724 MB (cell) | 0.1877 | 0.0657 | ran |
 | alkane_32 | def2-SVP | 778 | LinK (warm) | 192.725 | 192.69 | " | — | — | ran |
 | alkane_32 | def2-SVP | 778 | DF-K  | — | — | — | — | — | **refused: 17.37 GB tensor** |
+| alkane_48 | def2-SVP | 1162 | COSX  | 354.835 | 354.78 | 786 MB (cell) | 0.1285 | 0.0315 | ran |
+| alkane_48 | def2-SVP | 1162 | LinK (warm) | 291.398 | 291.35 | " | — | — | ran |
+| alkane_48 | def2-SVP | 1162 | direct (exact J+K) | 605.744 | 605.62 | 681 MB (cell) | — | — | ran |
+| alkane_48 | def2-SVP | 1162 | DF-K  | — | — | — | — | — | **refused: 57.94 GB tensor** |
+| alkane_20 | def2-TZVP | 872 | COSX  | 301.913 | 301.87 | 709 MB (cell) | 0.2850 | 0.1443 | ran |
+| alkane_20 | def2-TZVP | 872 | LinK (warm) | 448.822 | 448.74 | " | — | — | ran |
+| alkane_20 | def2-TZVP | 872 | direct (exact J+K) | (672.028) | (671.90) | 628 MB (cell) | — | — | **FLAGGED, see below** |
+| alkane_20 | def2-TZVP | 872 | DF-K  | — | — | — | — | — | **refused: 13.72 GB tensor** |
 
-COSX splits, per rung: alkane_20 total 116.234 = ao_eval 8.147 + A-build 99.027
-(85.2%) + GEMV 5.208 + block GEMMs 3.029 + fit 0.024; alkane_32 total 209.713 =
-ao_eval 20.025 + A-build 171.406 (81.7%) + GEMV 9.178 + block GEMMs 6.923 +
-fit 0.154. Both accounted to 99%+.
+The last two rungs are new in this pass (2026-09-09, second sitting) and are the
+ones the first pass could not reach. What unblocked them is in
+"How the two missing densities were finally produced" below; nothing about the
+TIMING protocol changed — every row above is still one thread, cpu == wall, PSI
+`full avg10` 0.00 before and after.
 
-### COSX/LinK IMPROVES with size — the opposite of what was pre-registered
+COSX splits, per rung: alkane_20/SVP total 116.234 = ao_eval 8.147 + A-build
+99.027 (85.2%) + GEMV 5.208 + block GEMMs 3.029 + fit 0.024; alkane_32/SVP total
+209.713 = ao_eval 20.025 + A-build 171.406 (81.7%) + GEMV 9.178 + block GEMMs
+6.923 + fit 0.154; alkane_48/SVP total 354.835 = ao_eval 44.511 + A-build 277.212
+(78.1%) + GEMV 13.797 + block GEMMs 13.875 + fit 0.679; alkane_20/TZVP total
+301.913 = ao_eval 12.498 + A-build 256.934 (85.1%) + GEMV 17.951 + block GEMMs
+10.879 + fit 0.123. All accounted to 98.7%+.
 
-| system | nbf | COSX s | LinK warm s | COSX/LinK |
-|---|---|---|---|---|
-| alkane_20 | 490 | 116.234 | 73.219 | 1.587 |
-| alkane_32 | 778 | 209.713 | 192.725 | **1.088** |
+Note the `direct` rows: `build_jk` computes J AND K in one quartet sweep and only
+K is used, so the direct column over-states a K-only build by whatever fraction
+of that sweep J costs. It is reported unadjusted because that is what was
+measured; it is an upper bound on exact-K alone, and it is used here only as the
+ACCURACY reference and as a rough ceiling, never as the headline denominator
+(LinK is).
 
-Pre-registration P3 predicted **8-11x** at alkane_32/def2-SVP, i.e. the ratio
-continuing to worsen. It went the other way, to 1.088, and it is now within 9%
-of parity at 98 atoms and DOUBLE zeta — the basis where COSX is supposed to be
-at its worst. The P3 prediction was anchored on the void pre-fix LinK series
-(see Finding 0) and on the total-wall exponent 2.16 that the sparse half
-transforms have since removed, so its failure is expected in hindsight; it is
-recorded as a miss rather than quietly dropped because the pre-registration
-committed to it. Pairwise tail exponents in atoms over these two points:
-COSX total **1.29**, LinK warm **2.12**. LinK is the one growing faster.
+**The one flagged row, recorded rather than quietly dropped or quietly kept.**
+The `alkane_20/def2-TZVP` direct build printed `PSI full avg10 before=0.01`,
+which this lane's own protocol says is grounds to DISCARD and retake. Its wall
+time is therefore parenthesised above and **is not used in any ratio anywhere in
+this file**. Two honest observations about it, in both directions:
 
-Two internal controls say this is a measurement rather than an artifact:
+* Its internal consistency is intact — cpu 671.90 against wall 672.028 is
+  99.98%, i.e. the process was not actually starved of CPU during the segment,
+  and 0.01 is a decaying tail from the SCF that had just finished, not
+  contention during the build.
+* The retake nevertheless could not be completed. It was launched on a verified
+  clean box (`full avg10=0.00`, `avg60=0.00`, load 0.36) and a **different
+  agent's workload started on the same machine mid-run** — load average went to
+  18.4, CPU pressure `some avg10` to 50.6, memory PSI to 0.04, with several
+  `ferric-cli` processes and two multi-core python drivers resident. That retake
+  was killed rather than allowed to produce a contaminated number, and rather
+  than allowed to compete with someone else's job for the box.
 
-* The A-build (81.7% of COSX here) came in at **171.4 s** against a bracket of
-  157-200 s stated before the run from the C20 per-point cost and the earlier
-  A-build tail exponent 1.54 — the mechanism predicted the number.
-* `max|K_cosx - K_link|` is **4.827e-4** at alkane_32, versus **4.825e-4** at
-  alkane_20 — flat to 0.04% across a 1.6x change in nbf, i.e. the two builders
-  are tracking each other to a fixed accuracy while their COSTS diverge. A
-  construction error in either would not hold that constant.
+The ACCURACY numbers from that same cell are unaffected by timing contention and
+are used: `max|K_cosx - K_direct| = 2.5886e-4` (relative 3.307e-5),
+`||dK||_F/||K||_F = 8.746e-5`. A deviation between two matrices does not depend
+on how fast either was computed. Only the wall time is withheld.
 
-Sparsity is behaving as the O(N) argument requires: `kept_dd` 0.1458 -> 0.0657
-and `|A|/nbf` 0.2856 -> 0.1877 from C20 to C32, and `kept_dd` stays 0.28-0.29x
-the geometry-only fraction (0.3619 -> 0.2330) at both sizes. Pre-registration
-P3 predicted `kept_dd` 0.08-0.12 at this rung; the measured 0.0657 is just
-BELOW that band — the screen is slightly more effective than predicted, in the
-same direction as the trend.
+### How the two missing densities were finally produced
+
+The first pass abandoned both of these rungs because a single-threaded SCF would
+not fit a foreground window. The fix required no new physics and no new code:
+**the one-thread rule binds the TIMINGS, because timings must be comparable; it
+does not bind the DENSITY, which is an input.** Both densities were therefore
+converged on all 12 cores (`RAYON_NUM_THREADS=12`, `OPENBLAS_NUM_THREADS=1` —
+BLAS stays at one thread, that being the openblas-rayon hazard), chained across
+bounded foreground windows with the harness's existing save/restart knobs, and
+then every K build was timed at one thread on the saved result.
+
+| system | basis | nbf | threads | window | iters | wall s | outcome |
+|---|---|---|---|---|---|---|---|
+| alkane_20 | def2-TZVP | 872 | 12 | w1 | 3 | 523.6 | unconverged, saved (dp_rms 1.733e-3) |
+| alkane_20 | def2-TZVP | 872 | 12 | w2 (restart) | 5 | 901.6 | **converged, E = -782.10325185 Ha** |
+| alkane_48 | def2-SVP | 1162 | 12 | w1 | 4 | 528.0 | unconverged, saved (dp_rms 8.0e-4) |
+| alkane_48 | def2-SVP | 1162 | 12 | w2 (restart) | 5 | 717.6 | **converged, E = -1873.44027902 Ha** |
+
+**These four wall times are NOT comparable timings and must never be quoted as
+such** — they are 12-thread numbers recorded only to document what the densities
+cost. SCF mode is LinK-K + direct J at `density_conv` 1e-5 in every window, the
+same as the first pass used; the only change is the thread count.
+
+The size of the effect is worth recording, because it is the whole reason this
+lane could be finished: the first pass measured `alkane_20/def2-TZVP` failing to
+complete a SINGLE SCF iteration in a 1740 s single-threaded window. At 12 threads
+the same molecule converges in 8 iterations and 1425 s of wall. The first pass's
+conclusion that "the ceiling is the SCF" was therefore correct about WHERE the
+cost was and wrong about it being a ceiling: it was a self-imposed one-thread
+constraint applied to a step that never needed it.
+
+### COSX/LinK along the SIZE axis: it does NOT improve monotonically — the third
+### rung reverses the trend the first two showed
+
+**This section was written after two points and has been rewritten after the
+third. The two-point reading below it was wrong, and it is left visible rather
+than deleted, because it is the exact failure mode the "TOO CLEAN IS A STOP
+CONDITION" and "DO NOT DECLARE A NEGATIVE BELOW THE ONSET" conventions warn
+about — a two-point trend read as a trend.**
+
+| system | atoms | nbf | COSX s | LinK warm s | COSX/LinK |
+|---|---|---|---|---|---|
+| alkane_20 | 62  | 490  | 116.234 | 73.219  | 1.587 |
+| alkane_32 | 98  | 778  | 209.713 | 192.725 | 1.088 |
+| alkane_48 | 146 | 1162 | 354.835 | 291.398 | **1.218** |
+
+The ratio went 1.587 -> 1.088 -> **1.218**. It did not keep falling and it did
+not cross parity. The pre-registered prediction for this rung — stated in this
+file before it ran — was **COSX ~345 s, LinK ~447 s, ratio ~0.77**. COSX came in
+at 354.8 s (a 2.8% hit on a number predicted from the mechanism), but LinK came
+in at 291.4 s against 447 s predicted, so **the ratio prediction is a MISS and
+the direction of the claim it supported is withdrawn.**
+
+The pairwise tail exponents in atoms show exactly where the earlier reading went
+wrong, and it was not COSX:
+
+| segment | COSX total | COSX A-build | LinK warm |
+|---|---|---|---|
+| C20 -> C32 | 1.289 | 1.198 | 2.114 |
+| C32 -> C48 | 1.319 | 1.206 | 1.037 |
+| C20 -> C48 (both segments) | 1.303 | — | 1.613 |
+
+**COSX is the stable one.** Its total exponent is 1.289 then 1.319, and its
+A-build — 78-85% of the total at every rung — is 1.198 then 1.206, i.e.
+reproducible to 1% across two independent size steps. **LinK is the erratic
+one**: 2.114 then 1.037. A quantity cannot really scale as N^2.1 and then as
+N^1.04 over adjacent segments of the same homologous series, so the honest
+reading is that **the alkane_32 LinK point (192.7 s) is anomalously SLOW**, and
+the "monotone improvement" the two-point series appeared to show was one outlier
+in the denominator, not a trend in the numerator.
+
+That reading has an independent check that does not depend on my exponent
+arithmetic: at alkane_48 the exact direct build takes 605.7 s, i.e. LinK's
+screening buys 2.08x over exact there — a plausible LinK. Whereas at alkane_32,
+LinK at 192.7 s against COSX's 209.7 s would require the same screening to be
+buying much less; the C32 cell was never run with the direct arm, so that is
+inference, not measurement, and is flagged as such.
+
+**What survives, stated at the strength the data supports:** across 62 -> 146
+atoms at double zeta, COSX's cost grows as roughly **N^1.30** and LinK's as
+roughly **N^1.61**, so COSX's cost profile is the better-behaved of the two on
+the size axis — but the RATIO at any single size is not monotone, stays in the
+band **1.09-1.59 in LinK's favour**, and **never crosses parity at double
+zeta over the range measured**. Anyone quoting a crossover on the size axis at
+double zeta would be quoting the C32 outlier.
+
+Sparsity is behaving as the O(N) argument requires, and this is the one series
+here that IS monotone across all three points: `kept_dd` 0.1458 -> 0.0657 ->
+**0.0315** and `|A|/nbf` 0.2856 -> 0.1877 -> **0.1285** from C20 to C32 to C48,
+with `kept_dd` staying 0.20-0.29x the geometry-only fraction (0.3619 -> 0.2330
+-> 0.1565). The pre-registered values for alkane_48 were `kept_dd` ~0.035 and
+`|A|/nbf` ~0.13; measured 0.0315 and 0.1285. **Both HIT.** Peak RSS was predicted
+~0.9 GB and measured 786 MB — also a hit.
+
+So the mechanism-level predictions (what COSX itself costs, how sparse it gets,
+how much memory it holds) were accurate to a few percent at a rung never
+previously reached, and the prediction that failed was the one about the
+competitor. That is worth separating explicitly: **COSX is now predictable; LinK
+is not yet.**
 
 Density policy, applied uniformly: every builder in a rung contracts the SAME D,
 so the density cancels from every ratio; what it must NOT be is structurally
@@ -178,6 +310,83 @@ converged for this lane: direct J+K SCF, **E = -1249.34789834 Ha, converged,
 `dens_alkane_32_svp.bin`. That 28-minute SCF for a single 98-atom double-zeta
 density is itself part of the ceiling: at one thread on this box, converging a
 density costs more than every K build being compared on it.
+alkane_48/def2-SVP and alkane_20/def2-TZVP were converged on 12 cores in the
+second sitting — see the density table above; converged, `density_conv` 1e-5.
+
+## THE HEADLINE: the L axis at size, the regime the campaign was authorised for
+
+`alkane_20 / def2-TZVP` — 62 atoms, nbf 872, L_max 3 — is the cell this whole
+campaign existed to measure and had never reached. It is the clean L-axis
+experiment because it is the SAME 62-atom molecule and the SAME 341 000 grid
+points as `alkane_20 / def2-SVP`: the system is held fixed and **only the
+angular momentum moves.**
+
+| builder | alkane_20/def2-SVP (L=2, nbf 490) | alkane_20/def2-TZVP (L=3, nbf 872) | SVP -> TZVP factor |
+|---|---|---|---|
+| COSX | 116.234 s | **301.913 s** | **2.60x** |
+| LinK (warm) | 73.219 s | **448.822 s** | **6.13x** |
+| COSX / LinK | 1.587 | **0.673** | ratio flips through parity |
+
+**COSX wins here, and it is the first time it has won anything in this campaign.**
+Pre-registration for this cell, stated in this file before it ran, was COSX
+232-465 s, LinK 366-1098 s, ratio 0.3-0.7. Measured: **301.9 s, 448.8 s, 0.673.
+All three inside their bands — a clean three-for-three HIT**, and the ratio is
+below parity as predicted.
+
+The mechanism is visible in the split rather than only in the total. Going
+SVP -> TZVP at fixed molecule and fixed grid:
+
+* COSX's A-build goes 99.027 -> 256.934 s (2.59x) while the POINT COUNT is
+  unchanged at 341 000. The per-point A-build cost goes 2.90e-4 -> 7.53e-4 s/pt.
+  COSX pays for L only through the shell dimensions of its 3c1e blocks, and that
+  cost is roughly quadratic in nbf at fixed grid (nbf ratio 1.78, nbf^2 ratio
+  3.17, measured 2.59 — sub-quadratic because the density screen tightens).
+* LinK pays for L through the cost of an analytic four-centre quartet, which
+  explodes with angular momentum. 6.13x for a 1.78x change in nbf is an
+  effective exponent of **3.35 in nbf**, against COSX's **1.65**.
+
+That is the literature's entire case for seminumerical exchange, reproduced here
+as a measurement on this implementation for the first time.
+
+Two controls that make this a measurement rather than an artifact:
+
+* **`kept_dd` and `|A|/nbf` barely move**: 0.1458 -> 0.1443 and 0.2856 -> 0.2850
+  from SVP to TZVP. Since the molecule and grid are identical and only the basis
+  changed, the sparsity SHOULD be a geometric property and therefore nearly
+  invariant — and it is, to 1%. Had COSX's win come from the screen discarding
+  more work at TZVP, these would have dropped; they did not, so the speed
+  advantage is not bought with sparsity.
+* **The accuracy is BETTER at TZVP, not worse**: `max|K_cosx - K_direct|` is
+  2.589e-4 (relative 3.31e-5) at TZVP against 4.827e-4 (relative 6.75e-5) at SVP
+  on the same grid. A COSX win accompanied by degraded accuracy would not be a
+  win — that was stated in advance as the artifact hypothesis for this lane —
+  and the accuracy went the other way.
+
+### Where the L-axis advantage does NOT extend, stated so it is not over-claimed
+
+The clean, unflagged comparison that makes the boundary concrete does not need
+the direct arm at all — it is LinK's own two numbers. LinK costs **448.8 s at
+nbf 872 with L=3** and **291.4 s at nbf 1162 with L=2**: analytic exchange is
+1.54x MORE expensive on 33% FEWER basis functions, purely because the angular
+momentum went up by one. COSX on the same two cells goes 301.9 -> 354.8 s, i.e.
+it gets CHEAPER at the high-L cell, tracking nbf and the grid (which is priced
+by ATOMS, and C20 has 62 against C48's 146) rather than by L.
+
+Analytic exchange is priced by angular momentum; COSX is priced by basis size
+and atom count. That asymmetry is the whole finding, and it also says where COSX
+will NOT help: on a big low-L system — exactly the alkane_48/def2-SVP rung where
+COSX loses to LinK at 1.218.
+
+(The flagged direct measurement points the same way — 672 s at C20/TZVP against
+605.7 s at C48/SVP, more expensive on fewer basis functions — but it is a
+flagged row, so the argument above is built on the LinK pair instead, which is
+clean at both ends.)
+
+**So the campaign's authorised regime resolves as: COSX wins on the L axis
+(0.673 at 62 atoms, triple zeta) and loses on the size axis at low L
+(1.088-1.587 at double zeta). The two axes point in opposite directions, and
+only one cell in this lane has both at once — none does, since alkane_32/TZVP
+was not reached.** See the next section.
 
 ### Prediction for the next rung, stated before it ran
 
@@ -327,7 +536,19 @@ This is the cell that tests COSX's actual claim — high angular momentum AT siz
 If instead COSX/LinK stays at or above 1 here, the L-axis case is not what the
 literature claims on this implementation, and the whitepaper cannot lean on it.
 
-## The rungs that were NOT reached, and why — the real ceiling is the SCF
+## The rungs that were NOT reached in the FIRST sitting — SUPERSEDED, both since
+## reached
+
+**Status as of the second sitting (2026-09-09): both rungs described in this
+section were subsequently MEASURED, and their pre-registered predictions are no
+longer untested. The section is kept as written because its diagnosis was the
+thing that unblocked the lane, and because its final claim — that the SCF is the
+ceiling — needs correcting rather than deleting.**
+
+The correction, stated up front: the SCF was the BOTTLENECK, not a CEILING. Both
+densities were produced in about 20 minutes each once the SCF was allowed the
+cores it wanted (see "How the two missing densities were finally produced"). What
+follows was the state of knowledge before that.
 
 Attempted and abandoned, recorded rather than omitted. **Both** further rungs
 are well inside every K builder's MEMORY limit and both failed for the same
@@ -372,28 +593,161 @@ Two consequences worth carrying forward:
    LinK 366-1098 s, ratio 0.3-0.7) stand **UNTESTED**. They are committed
    predictions, not results, and must not be quoted as findings.
 
+**Both of those are now TESTED — see the tables above and the verdict table
+below. Point 1 was right and acting on it is what finished the lane; point 2 no
+longer holds.** For the record, since consequence 1 is the transferable lesson:
+the first sitting concluded that alkane_20/def2-TZVP could not complete ONE SCF
+iteration in a 1740 s window. That was a true measurement of a single-threaded
+run and a false conclusion about the rung, because nothing required the SCF to
+be single-threaded. The one-thread rule is a rule about COMPARABILITY of
+timings, and it had been applied to a step that produces no timing at all. This
+is worth carrying forward as a general trap: **a constraint adopted for one part
+of an experiment silently propagating to the parts it does not govern, and being
+mistaken for a property of the system.**
+
+### The rung that is still not reached, and the honest reason
+
+**alkane_32 / def2-TZVP** (98 atoms, nbf 1388, L_max 3) — the cell that would
+have BOTH axes at once, size AND angular momentum, and the only one that could
+say whether the L-axis win at 62 atoms survives to 98.
+
+It was not attempted, and the reason is not cost:
+
+* Cost was estimated as feasible. From the measured C20/TZVP SCF (8 iterations,
+  1425 s at 12 threads) and an nbf ratio of 1388/872 = 1.59, the SCF projects to
+  roughly 1-1.5 hours across two or three windows, and the K cells to roughly
+  600 s (COSX) and 1100 s (LinK) each. That is comparable to what this sitting
+  already spent.
+* It was blocked by **machine availability, not by the method**. Partway through
+  this sitting another agent's workload started on the same box: load average
+  went from 0.4 to 22, CPU pressure `some avg10` to 51%, and available memory to
+  2 GB. Under this lane's own binding rules — one thread on an otherwise idle
+  box, PSI `full avg10` 0.00 before AND after every kept number — no comparable
+  timing can be taken in that condition, and taking the machine for a further
+  2-3 hours would have been taking it from someone else's job.
+
+So the correct label for alkane_32/def2-TZVP is **NOT ATTEMPTED (resource
+contention)**, which is a different and weaker statement than the first
+sitting's "could not be produced". Nothing about it is believed to be
+infeasible. Whoever picks it up needs one idle box for about three hours; the
+recipe is `scripts/queue/cosx_large_scf_mt.sh` for the density followed by
+`scripts/queue/cosx_large_build2.sh main` and `... direct` for the cells.
+
+**A prediction for that cell, stated here before it runs so it cannot be fitted
+afterwards.** At C20 the L=2 -> L=3 move multiplied COSX by 2.60 and LinK by
+6.13, flipping the ratio from 1.587 to 0.673 (factor 0.424). At C48/SVP the
+ratio is 1.218 and at C32/SVP it is 1.088. Applying the SAME L-axis factor to
+the C32/SVP ratio gives **COSX/LinK ~ 0.46 at alkane_32/def2-TZVP** (band
+0.40-0.75, the width allowing for the C32/SVP LinK point being the suspected
+outlier — if it is, the SVP anchor is too low and the TZVP ratio lands nearer
+0.6-0.75). In absolute terms, **COSX 500-750 s and LinK 900-1600 s.** Sparsity:
+`kept_dd` ~0.065 and `|A|/nbf` ~0.19, i.e. essentially the C32/SVP values, since
+the L-axis move at C20 left both invariant to 1%. Peak RSS under 1.1 GB.
+
+Artifact hypothesis alongside it, as this lane requires: the L-axis advantage is
+real if it is carried by the A-BUILD ratio at roughly unchanged `kept_dd`. If
+instead a COSX win at C32/TZVP arrives WITH `kept_dd` well below 0.065, the
+screen is discarding work that the bigger basis should have kept, and the tell
+would be `max|K_cosx - K_direct|` rising above the ~2.6e-4 seen at C20/TZVP.
+Accuracy is the control on the timing, and a faster COSX with a worse K is not a
+result.
+
 ## Reading against the pre-registration
 
 | pre-registered | outcome |
 |---|---|
 | P1: DF-K fails first, at the very first rung, by disk-spill with NO preflight refusal | **CONFIRMED.** DF-K's tensor is 4.33 GB at alkane_20/def2-SVP against a 2 GB budget, and `three_index_source.rs` has no refusal — it spills. Never executed, per the safety rule. |
-| P1: COSX runs furthest, with its ceiling set by WALL TIME not RSS | **CONFIRMED so far.** Peak RSS 645 MB / 724 MB at the two measured rungs, against a 6 GB cap; the closed-form block requirement is 2.08 GB even at alkane_48/def2-QZVP. |
-| P1: direct/LinK fail on TIME around nbf 1000-1400 | Partially tested: LinK is 192.7 s at nbf 778 and still far inside the window. Not yet falsified. |
-| P3: COSX/LinK 8-11x at alkane_32/def2-SVP | **REFUTED — measured 1.088**, and the ratio IMPROVED with size (1.587 -> 1.088) rather than worsening. See the miss analysis above. |
+| P1: COSX runs furthest, with its ceiling set by WALL TIME not RSS | **CONFIRMED.** Peak RSS 645 / 724 / 786 / 709 MB across all four measured rungs, against a 6 GB cap; the closed-form block requirement is 2.08 GB even at alkane_48/def2-QZVP. |
+| P1: direct/LinK fail on TIME around nbf 1000-1400 | **REFUTED.** At nbf 1162 (alkane_48/def2-SVP) LinK builds K in 291.4 s and the exact direct J+K sweep in 605.7 s — both comfortably inside a 30-minute window, not out of it. Neither builder failed on time at any rung of this lane. |
+| P3: COSX/LinK 8-11x at alkane_32/def2-SVP | **REFUTED — measured 1.088.** See the miss analysis above; note that the follow-on reading of this miss ("the ratio improves with size") was itself refuted by the next rung. |
 | P3: kept_dd 0.08-0.12 at alkane_32/def2-SVP | **Near miss, measured 0.0657** — below the band, same direction as the trend. |
 | P3: COSX total wall 400-700 s at alkane_32/def2-SVP | **REFUTED — measured 209.7 s.** The prediction used the old total-wall exponent 2.16, which the sparse half transforms removed. |
+| **alkane_48/def2-SVP: COSX ~345 s** (stated in this file before the rung ran) | **HIT — measured 354.8 s**, 2.8% high. |
+| **alkane_48/def2-SVP: LinK ~447 s** | **MISS — measured 291.4 s**, 35% low. The prediction used LinK's C20->C32 tail exponent 2.12; LinK actually grew at 1.04 over C32->C48. |
+| **alkane_48/def2-SVP: COSX/LinK ~0.77 (crossing below parity)** | **MISS — measured 1.218.** COSX did NOT cross parity on the size axis at double zeta, and the ratio rose rather than continuing to fall. The miss is entirely in the denominator: COSX landed where predicted, LinK did not. |
+| **alkane_48/def2-SVP: kept_dd ~0.035, \|A\|/nbf ~0.13, peak RSS ~0.9 GB** | **HIT, HIT, HIT — measured 0.0315, 0.1285, 786 MB.** |
+| **alkane_20/def2-TZVP: COSX 232-465 s** | **HIT — measured 301.9 s**, mid-band. |
+| **alkane_20/def2-TZVP: LinK 366-1098 s** | **HIT — measured 448.8 s**, low in band. |
+| **alkane_20/def2-TZVP: COSX/LinK 0.3-0.7, clearly BELOW parity** | **HIT — measured 0.673.** The L-axis claim is upheld: COSX beats LinK at 62 atoms and triple zeta. |
 | R1 (COSX hits the same wall as DF-K — would refute the memory argument) | **NOT observed.** COSX ran at every rung attempted, at <1 GB peak RSS. |
-| R2 (COSX/LinK worsens with N — would confine the claim to the L axis) | **NOT observed; the opposite happened.** |
-| R3 (COSX peak RSS grows super-linearly toward the cap) | **NOT observed.** 645 MB -> 724 MB for a 1.6x nbf increase. |
+| R2 (COSX/LinK worsens with N — would confine the claim to the L axis) | **PARTIALLY observed, and the confinement it implies is now the lane's conclusion.** The ratio does not worsen monotonically (1.587 -> 1.088 -> 1.218), but it never crosses parity on the size axis at double zeta either. It crosses only when L rises. So the defensible claim IS an L-axis claim, which is what R2 said the fallback wording would have to be. |
+| R3 (COSX peak RSS grows super-linearly toward the cap) | **NOT observed.** 645 -> 724 -> 786 MB across a 2.4x nbf increase; sub-linear in nbf. |
 | R4 (DF-K's spill works, so the wall is performance not feasibility) | **PARTIALLY UPHELD, and reported as such.** DF-K spills rather than refusing, so below the disk wall the honest claim is "IO-bound" (quantified: whole-tensor re-read per SCF iteration), not "cannot run". Only from alkane_32/def2-QZVP upward does the tensor exceed the free disk and DF-K become genuinely impossible here. |
 
-Three of my own quantitative predictions were wrong and are recorded as wrong.
-The direction of the error is uniform: I under-estimated COSX, because both
-anchors I predicted from (the pre-fix LinK series and the pre-sparse-half-
-transform total-wall exponent) were stale. That is the same failure the
-"AN UNAPPLIED FIX INVALIDATES THE VERDICT" convention warns about, arrived at
-from the other side — the fixes HAD been applied, and the verdict I was
-extrapolating from had not been re-derived.
+Tally over the whole lane: **six of my quantitative predictions were wrong and
+are recorded as wrong; seven were right.** The two sittings failed in opposite
+directions, which is itself the useful part.
+
+* First sitting: I UNDER-estimated COSX (P3's 8-11x and 400-700 s), because both
+  anchors were stale — the pre-fix LinK series and the pre-sparse-half-transform
+  total-wall exponent. That is the "AN UNAPPLIED FIX INVALIDATES THE VERDICT"
+  convention from the other side: the fixes had landed and my extrapolation had
+  not been re-derived from them.
+* Second sitting: I OVER-estimated COSX's relative position at alkane_48 (~0.77
+  predicted, 1.218 measured) — and did so by extrapolating a two-point tail
+  exponent for LinK, the very series whose first two points I had already
+  flagged as resting on a corrected builder. Every COSX-side number in that same
+  prediction was right to a few percent. **The pattern across both sittings is
+  that I can predict COSX from its own mechanism and cannot predict LinK from a
+  two-point fit** — and "fit the TAIL, not the whole series" does not rescue a
+  fit when the tail is two points long.
+
+The corollary worth carrying: the one prediction set that was fully correct
+(alkane_20/def2-TZVP, three for three) was the one derived from a MECHANISM —
+"the grid is unchanged so COSX pays for L only through shell dimensions, while
+an analytic quartet's cost explodes with L" — rather than from an extrapolated
+exponent.
+
+## COSX's accuracy across the lane, and why its flatness is WEAKER evidence than
+## it looks
+
+The pre-registration asked whether COSX's accuracy stays flat as the system
+grows. It does, and the numbers are almost too flat:
+
+| system | basis | max\|K_cosx − K_link\| | max\|K_cosx − K_direct\| | \|\|K\|\|max | relative |
+|---|---|---|---|---|---|
+| alkane_20 | def2-SVP  | 4.825e-4 | — | 7.157e0 | 6.742e-5 |
+| alkane_32 | def2-SVP  | 4.827e-4 | — | 7.157e0 | 6.744e-5 |
+| alkane_48 | def2-SVP  | 4.827e-4 | **4.8273e-4** | 7.157e0 | 6.745e-5 |
+| alkane_20 | def2-TZVP | 2.589e-4 | **2.5886e-4** | 7.828e0 | 3.307e-5 |
+
+So the answer to "does COSX's accuracy stay flat?" is **yes — 4.825e-4 ->
+4.827e-4 -> 4.827e-4 across C20 -> C32 -> C48, constant to 0.04% over a 2.4x
+change in nbf and a 2.4x change in atom count.** That is a HIT on the
+pre-registered expectation.
+
+**But this lane's own conventions say "TOO CLEAN IS A STOP CONDITION", so it was
+audited rather than written up.** Three digits of agreement across three system
+sizes is exactly the fingerprint of a number that is not actually varying with
+the thing it is plotted against. The audit:
+
+* `||K||max` is **identically 7.157e0** at every SVP alkane in this repo, from
+  butane (nbf 106) to alkane_48 (nbf 1162), and identically 7.827-7.828e0 at
+  every TZVP alkane. That is not a bug: `max|K|` in an alkane chain is attained
+  on a local C-H/C-C block, and a local quantity in a homologous chain saturates
+  after the first few units. Lengthening the chain adds more copies of the same
+  environment; it does not create a larger matrix element.
+* The same locality explains the deviation. COSX's error is a grid-quadrature
+  error on that same local block, so it too saturates. The constancy is
+  therefore expected physics for THIS system class.
+* **The control that shows the number is not simply stuck**: change the basis
+  instead of the length, and it moves — 4.827e-4 -> 2.589e-4 and 7.157 -> 7.828
+  at C20 going SVP -> TZVP. A frozen buffer would not do that.
+* **The independent-construction check**: at both cells where the exact direct
+  build was run, `max|K_cosx − K_direct|` reproduces `max|K_cosx − K_link|` to
+  four digits (4.8273e-4 vs 4.827e-4; 2.5886e-4 vs 2.589e-4). Since LinK and the
+  direct four-centre sweep are different constructions, this says the deviation
+  is COSX's own quadrature error against exact — not an artifact of comparing
+  COSX to a screened builder — and it retires the earlier concern in Finding 0
+  about which builder owned the residual.
+
+**The honest caveat, stated because the flatness will be quoted:** a linear
+alkane is the system class MOST likely to show a saturating max-element, so this
+evidence is weak for the general claim "COSX's accuracy is size-independent". It
+is strong for "COSX's accuracy does not DEGRADE with size on chains", which is
+what was measured. Demonstrating the general claim needs a system class whose
+max|K| actually grows — a globular or conjugated system — and no such system was
+run in this lane.
 
 ## Protocol decision: SAD guess densities are NOT usable in this lane
 
@@ -415,48 +769,89 @@ fit a foreground window that is itself reported as part of the ceiling.
 
 ## The plain statement asked for
 
-**Largest (system, basis) where COSX produced a K:** alkane_32 / def2-SVP,
-98 atoms, nbf 778, in 209.7 s at one thread with 724 MB peak RSS.
+**Largest (system, basis) where COSX produced a K:** alkane_48 / def2-SVP,
+146 atoms, nbf 1162, in 354.8 s at one thread with 786 MB peak RSS. The
+highest-angular-momentum cell it produced a K for is alkane_20 / def2-TZVP,
+nbf 872, L_max 3, in 301.9 s.
 
-**Could the alternatives?** Split honestly, because the two alternatives fail
-for different reasons and only one of them fails at all:
+**Could the alternatives?** Split honestly, because the three alternatives
+behave completely differently:
 
 * **DF-K: no, and it could not at any rung of this lane.** Its dressed 3-index
-  tensor is 17.37 GB at that cell against ~5.2 GB of free RAM (and 4.33 GB
-  already at the smallest rung, alkane_20/def2-SVP). It was refused here rather
-  than run, because the library's response to being over budget is not an error
-  but a silent spill to `/tmp` on a 95%-full partition, re-read every SCF
-  iteration. Above alkane_32/def2-QZVP (415 GB) the tensor exceeds the free
-  disk outright and DF-K cannot produce a K by any route on this box.
-* **LinK: yes — and it was slightly FASTER than COSX there (192.7 s vs
-  209.7 s).** COSX did not beat LinK at any rung measured in this lane. What it
-  did was close the gap monotonically with size: 1.587x at alkane_20/def2-SVP,
-  1.088x at alkane_32/def2-SVP, on a LinK that is now correct.
+  tensor is 57.94 GB at alkane_48/def2-SVP and 13.72 GB at alkane_20/def2-TZVP,
+  against ~5 GB of free RAM (and 4.33 GB already at the smallest rung). It was
+  refused rather than run, because the library's response to being over budget
+  is not an error but a silent spill to `/tmp` on a 95%-full partition, re-read
+  every SCF iteration. Above alkane_32/def2-QZVP (415 GB) the tensor exceeds the
+  free disk outright and DF-K cannot produce a K by any route on this box.
+* **LinK: yes, at every rung — and which of the two is faster depends entirely
+  on the angular momentum.** At double zeta LinK is faster (COSX/LinK 1.587,
+  1.088, 1.218 at C20, C32, C48). At triple zeta COSX is faster (0.673 at C20).
+* **Direct exact four-centre J+K: yes, and it is never competitive with either**
+  — 605.7 s at alkane_48/def2-SVP against LinK's 291.4 s and COSX's 354.8 s. It
+  serves here as the accuracy reference, and it confirms both screened builders
+  are doing real work rather than skipping it.
 
-So the defensible claim from this lane is **not** "COSX runs where nothing else
-can". At double zeta on this box, LinK runs everywhere COSX does and is
-marginally cheaper. The defensible claims are:
+### Does the L-axis-at-size regime show COSX winning, tying, or losing?
+
+**It shows COSX WINNING on the L axis, LOSING on the size axis at low L, and the
+combined regime is still unmeasured.** Stated precisely, because the campaign
+was authorised on this question:
+
+* **L axis, at 62 atoms: COSX WINS, 0.673.** Holding the molecule and the grid
+  fixed and moving only def2-SVP -> def2-TZVP costs COSX 2.60x and LinK 6.13x.
+  This is the first COSX win recorded anywhere in this campaign, it was
+  predicted in advance within a pre-registered band (0.3-0.7), and it came with
+  BETTER accuracy (2.589e-4 vs 4.827e-4) and unchanged sparsity (`kept_dd`
+  0.1443 vs 0.1458), so it is not bought by discarding work.
+* **Size axis, at double zeta: COSX LOSES at every size measured**, 1.587 /
+  1.088 / 1.218 at 62 / 98 / 146 atoms. It never crossed parity, and the
+  apparent monotone improvement seen after two points was reversed by the third.
+  COSX's own scaling is the better of the two (N^1.30 vs N^1.61 in atoms, with
+  COSX's A-build exponent reproducible to 1% across both segments), but a better
+  exponent has not yet turned into a win at any size that fits this box.
+* **Both axes at once: NOT MEASURED.** alkane_32/def2-TZVP would answer it and
+  was blocked by machine contention, not by cost or by any builder's limit. The
+  prediction for it is on the record above (ratio ~0.46, band 0.40-0.75).
+
+So the defensible claims from this lane are:
 
 1. **DF-K is out of memory from 62 atoms and double zeta upward**, by a margin
    that grows from 116x to 664x across the rung grid, and this follows from the
    two builders' own sizing (`naux*nbf^2` vs `O(nbf^2)`) rather than from an
-   extrapolation.
-2. **COSX's cost profile improves relative to LinK as the system grows** —
-   measured, two points, on a corrected baseline — and the block-GEMM term that
-   was previously projected to overwhelm it has been reduced to 2.6% of the
-   total by the sparse half transforms.
-3. **COSX's accuracy is stable while its cost advantage grows**:
-   `max|K_cosx - K_link|` is 4.825e-4 and 4.827e-4 at the two rungs (relative
-   6.742e-5 and 6.744e-5), constant to 0.04% across a 1.6x change in nbf.
-4. **The L axis at size — the regime the campaign was authorised for — is still
-   unmeasured**, and not for want of a K builder: the SCF that produces the
-   density does not fit a foreground window at nbf 872 on one thread.
+   extrapolation. COSX's peak RSS was 645-786 MB at all four measured rungs.
+2. **COSX's advantage is an ANGULAR-MOMENTUM advantage, not a system-size
+   advantage.** That is a narrower claim than the campaign set out to make and
+   it is the one the data supports: measured 0.673 at triple zeta, measured
+   1.088-1.587 (i.e. a loss) at double zeta across a 2.4x range in system size.
+   The whitepaper should say "COSX wins at high L" and must NOT say "COSX wins
+   at large N".
+3. **COSX's accuracy does not degrade with size on these systems**
+   (`max|K_cosx − K_direct|` 4.827e-4 at C48/SVP, matching the C20 and C32
+   values to 0.04%) and improves with angular momentum (2.589e-4 at C20/TZVP).
+   The flatness is partly a property of linear alkanes — see the audit section —
+   so quote it as "does not degrade on chains", not as size-independence.
+4. **COSX is now predictable from its own mechanism and LinK is not.** Every
+   COSX-side pre-registered number at the two new rungs landed within a few
+   percent (354.8 vs ~345 s; `kept_dd` 0.0315 vs ~0.035; `|A|/nbf` 0.1285 vs
+   ~0.13; RSS 786 MB vs ~0.9 GB), while both LinK predictions derived from
+   two-point tail exponents missed badly in both directions.
 
 ## What a follow-up should do first
 
-Converge the densities for alkane_20/def2-TZVP, alkane_48/def2-SVP and
-alkane_20/def2-QZVP using ALL cores (the one-thread rule binds the timings, not
-the density generation), save them, and only then run the K-builder cells at one
-thread. On this evidence that is ~4-8 core-hours of SCF for a set of cells whose
-K builds cost minutes, and it converts three pre-registered predictions into
-measurements.
+1. **alkane_32 / def2-TZVP** — the one cell that puts both axes together, and
+   the only thing standing between this lane and a complete answer. Needs one
+   idle box for ~3 hours. Density via
+   `scripts/queue/cosx_large_scf_mt.sh alkane_32 def2-tzvp <secs> w1` (12
+   threads, chained with `RESTART=`), then
+   `scripts/queue/cosx_large_build2.sh main alkane_32 def2-tzvp <secs>` and
+   `... direct ...` at one thread. Prediction is pre-registered above.
+2. **Re-take alkane_32 / def2-SVP LinK.** Its 192.7 s is the suspected outlier
+   that produced the false "ratio improves with size" reading, and it is cheap
+   to re-run on the existing saved density. Add the direct arm at that rung too,
+   which this lane never ran there — LinK's screening buys 2.08x over exact at
+   C48 and, if the C32 point is genuine, should buy noticeably less there.
+3. **A non-chain system at high L**, to test whether the accuracy flatness and
+   the L-axis win survive outside linear alkanes. Every system in this lane is a
+   linear alkane, which is the most favourable possible geometry for a
+   density-driven screen and the least informative one for a saturating max|K|.
