@@ -170,7 +170,18 @@ Three things follow, and only the first two are about COSX being better:
    this lane can name, and the gap WIDENS with both size (116x -> 437x at SVP)
    and angular momentum (116x -> 236x at C20), because DF-K's tensor carries the
    `naux` factor and COSX's block scratch does not.
-3. But note carefully what item 1 does NOT say. DF-K's over-budget behaviour is
+3. **The COSX column is block scratch, not process RSS, and the two differ by
+   an order of magnitude.** At alkane_20/def2-SVP the formula gives 0.038 GB
+   while the measured `VmHWM` for the cell was **645 MB** — and that cell also
+   ran LinK and held two K matrices, so it is an upper bound on COSX alone.
+   The residue is the grid (341 000 points and their weights), the libint2
+   engine pool, and the LinK pair lists. This is the repo's standing
+   "budget is read everywhere, spent nowhere" defect, not a new one, and it
+   means the COSX column below predicts the quantity `check_budget` GATES, not
+   the RSS the cgroup enforces. Every COSX row in the timing table therefore
+   carries a MEASURED peak RSS next to it, and the formula is used only for the
+   rungs where a measurement was not affordable — flagged as such.
+4. But note carefully what item 1 does NOT say. DF-K's over-budget behaviour is
    to SPILL, not to refuse, and a spilled DF-K may still produce a correct K,
    slowly, from disk. At 4.33 GB (C20/SVP) that spill is feasible on this
    partition; at 1382 GB it is not, and at 55-185 GB it would consume a quarter
@@ -178,6 +189,33 @@ Three things follow, and only the first two are about COSX being better:
    tensor exceeds the DISK; between the RAM wall and the disk wall the honest
    statement is "DF-K becomes IO-bound", which is pre-registration R4. The
    deliverable therefore distinguishes the two, rather than collapsing them.
+
+### Where the disk wall actually falls on this box
+
+207 GB free on a Samsung 860 QVO (QLC SSD; sustained write ~80-160 MB/s once
+the SLC cache is exhausted, which a multi-GB streaming spill does immediately).
+`/tmp` is on that same partition. Classifying each rung by which wall it hits:
+
+| rung | tensor | vs 5.2 GB RAM | vs 207 GB disk | verdict |
+|---|---|---|---|---|
+| C20/SVP  | 4.33 GB | over | fits (2%) | **spills; IO-bound but feasible** (R4) |
+| C20/TZVP | 13.72 GB | over | fits (7%) | spills; IO-bound |
+| C32/SVP  | 17.37 GB | over | fits (8%) | spills; IO-bound |
+| C32/TZVP | 55.30 GB | over | fits (27%) | spills; ~10 min of pure write per setup |
+| C48/SVP  | 57.94 GB | over | fits (28%) | spills; ~10 min of pure write per setup |
+| C20/QZVP | 103.96 GB | over | fits (50%) | spills; half the free disk, ~20 min write |
+| C48/TZVP | 184.94 GB | over | fits (89%) | at the edge; would leave 22 GB free |
+| C32/QZVP | 415.36 GB | over | **EXCEEDS** (2.0x) | **impossible on this box** |
+| C48/QZVP | 1382.49 GB | over | **EXCEEDS** (6.7x) | **impossible on this box** |
+
+So the honest split is: DF-K is out of RAM at every rung from 62 atoms /
+double-zeta upward, and out of DISK — genuinely unable to produce a K by any
+route — from **alkane_32 / def2-QZVP** (98 atoms, nbf 3804) upward. Note also
+that nothing in the library would TELL you this: it would begin writing and
+fail on ENOSPC partway, having filled a 95%-full shared partition. None of the
+disk rows above were executed; per the pre-registration's binding safety rule,
+the sizes and the mechanism are the finding and filling the disk to prove it is
+not.
 
 ## Protocol decision: SAD guess densities are NOT usable in this lane
 
