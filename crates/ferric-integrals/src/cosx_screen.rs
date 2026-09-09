@@ -367,6 +367,72 @@ impl PairBounds {
         }
     }
 
+    /// Upper bound on [`PairBounds::estimate`]`(s1, s2, r)` for EVERY `r` in
+    /// the axis-aligned box `[lo, hi]` — the coarse bound at
+    /// `R_c = max(0, d(M, box) - |AB|/2)`, with `d(M, box)` the EXACT distance
+    /// from the pair midpoint to the box (0 when `M` is inside it).
+    ///
+    /// Same validity argument as [`PairBounds::coarse_estimate_sphere`]: every
+    /// product centre `P_ij` lies on the segment `AB`, so
+    /// `|P_ij - r| >= |M - r| - |AB|/2 >= d(M, box) - |AB|/2` for every `r` in
+    /// the box, and every term of the bound is non-increasing in its `R`.
+    ///
+    /// # Why a box rather than a sphere
+    ///
+    /// `d(M, box)` is exact for the box, whereas the sphere query's
+    /// `|M - centre| - radius` is exact only for the ball — and the ball
+    /// enclosing a point set is generally far larger than the set. The Becke
+    /// grid is emitted atom-major / radial-major / angular-minor, so a
+    /// contiguous run of grid points is an ARC of one Lebedev sphere: its
+    /// bounding box hugs the arc while its bounding sphere has the radius of
+    /// the whole shell. Over the same points this bound is therefore never
+    /// looser than [`PairBounds::coarse_estimate_sphere`] and usually much
+    /// tighter, at identical cost (three clamped differences, one `sqrt`).
+    ///
+    /// Anchored by `tests/cosx_screen_box_anchors.rs`: never underestimates
+    /// inside its box, never exceeds the enclosing sphere's value, degenerates
+    /// to `total` strictly less often, and reproduces
+    /// [`PairBounds::coarse_estimate`] bitwise when `lo == hi`.
+    #[inline]
+    pub fn coarse_estimate_box(&self, s1: usize, s2: usize, lo: &[f64; 3], hi: &[f64; 3]) -> f64 {
+        let (s1, s2) = if s1 >= s2 { (s1, s2) } else { (s2, s1) };
+        let c = &self.coarse[tri(s1, s2)];
+        // Exact point-to-box distance: per axis, how far M lies outside the
+        // slab [lo, hi] (0 when inside). `max` of the two signed overhangs is
+        // the standard branchless form and is 0 exactly when lo <= M <= hi.
+        let dx = (c.mid[0] - hi[0]).max(lo[0] - c.mid[0]).max(0.0);
+        let dy = (c.mid[1] - hi[1]).max(lo[1] - c.mid[1]).max(0.0);
+        let dz = (c.mid[2] - hi[2]).max(lo[2] - c.mid[2]).max(0.0);
+        let rc = (dx * dx + dy * dy + dz * dz).sqrt() - c.half;
+        if rc <= 0.0 {
+            c.total
+        } else {
+            c.total.min(c.sum_bg / rc)
+        }
+    }
+
+    /// DIAGNOSTIC twin of [`PairBounds::coarse_estimate_box`] with the pair
+    /// extent `|AB|/2` set to zero. Not a valid bound (it can underestimate);
+    /// it exists only so a diagnostic can attribute a degenerate query to the
+    /// REGION reaching the pair midpoint (still degenerate here) rather than
+    /// to `|AB|/2` eating a positive distance (not degenerate here). See
+    /// `tests/cosx_region_diagnostics.rs`.
+    #[doc(hidden)]
+    #[inline]
+    pub fn coarse_estimate_box_zero_half(&self, s1: usize, s2: usize, lo: &[f64; 3], hi: &[f64; 3]) -> f64 {
+        let (s1, s2) = if s1 >= s2 { (s1, s2) } else { (s2, s1) };
+        let c = &self.coarse[tri(s1, s2)];
+        let dx = (c.mid[0] - hi[0]).max(lo[0] - c.mid[0]).max(0.0);
+        let dy = (c.mid[1] - hi[1]).max(lo[1] - c.mid[1]).max(0.0);
+        let dz = (c.mid[2] - hi[2]).max(lo[2] - c.mid[2]).max(0.0);
+        let rc = (dx * dx + dy * dy + dz * dz).sqrt();
+        if rc <= 0.0 {
+            c.total
+        } else {
+            c.total.min(c.sum_bg / rc)
+        }
+    }
+
     /// `estimate(s1, s2, r) >= threshold`, evaluated cheaply: an O(1)
     /// early-out on the `R = 0` value, then the one-sqrt coarse bound, then
     /// the per-term sum (heaviest first) stopping as soon as the partial sum
