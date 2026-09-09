@@ -1,0 +1,8 @@
+
+running 1 test
+
+=== COSX full-K cell: alkane_48 / def2-svp  natoms=146 nbf=1162 nocc=193 L_max=2  budget=2.15 GB  PSI now=0.00 ===
+DF-K sizing: jkfit naux=5364, dressed 3-index tensor = 57.942 GB (budget 2.15 GB)
+SCF pool: 1 rayon threads (not a timing)
+test cosx_full_k_cell has been running for over 60 seconds
+SCF iter=   1  E=-1895.9772508486  dE=1.896e3  dp_rms=inf  err_max=2.278e0

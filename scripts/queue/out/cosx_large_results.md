@@ -327,33 +327,50 @@ This is the cell that tests COSX's actual claim — high angular momentum AT siz
 If instead COSX/LinK stays at or above 1 here, the L-axis case is not what the
 literature claims on this implementation, and the whitepaper cannot lean on it.
 
-## The rung that was NOT reached, and why (alkane_48 / def2-SVP)
+## The rungs that were NOT reached, and why — the real ceiling is the SCF
 
-Attempted and abandoned, recorded rather than omitted. alkane_48/def2-SVP
-(146 atoms, nbf 1162) is well inside every builder's MEMORY limit — COSX's
-block requirement there is 0.133 GB and LinK holds no large tensor — but it was
-not measured, because **its density could not be produced in the available
-windows**. Two attempts:
+Attempted and abandoned, recorded rather than omitted. **Both** further rungs
+are well inside every K builder's MEMORY limit and both failed for the same
+reason: their DENSITY could not be produced in the available foreground windows.
 
-* `k_builder = "link"` SCF, `max_iter` 12: killed at 1750 s having not returned,
+**alkane_48 / def2-SVP** (146 atoms, nbf 1162; COSX block requirement 0.133 GB):
+
+* `k_builder = "link"` SCF, `max_iter` 12: killed at 1750 s without returning,
   so nothing was saved (the harness saves only after `solve_rhf` returns).
 * Same with `max_iter` 2, to force a return inside one window: also did not
   complete in 1750 s, i.e. **fewer than two LinK-K + direct-J iterations fit a
   29-minute single-threaded window at nbf 1162**.
 
-Converging it would take roughly 5-8 chained windows (2.5-4 hours of wall time)
-to produce one density, before any K builder is timed. That is the honest
-ceiling for this lane on this box, and it is a ceiling of the SCF driver at one
-thread, NOT of any K builder: the extrapolated K-build times (COSX ~345 s, LinK
-~447 s from the two-point exponents) are both comfortably inside a window. The
-prediction committed above therefore stands untested; it must NOT be quoted as
-a result.
+**alkane_20 / def2-TZVP** (62 atoms, nbf 872; COSX block requirement 0.085 GB) —
+the L-axis-at-size cell, the one this lane most wanted:
 
-This is the correct place to note what the lane's constraint actually was. The
-binding limit throughout was never COSX's memory and never DF-K's absence — it
-was that a single-threaded SCF costs more than everything being compared on its
-output (28 minutes for one 98-atom double-zeta density; more than 29 minutes for
-two iterations at 146 atoms).
+* `k_builder = "link"` SCF, default `max_iter`: `Terminated` at the 1740 s
+  timeout, no density written. PSI 0.00 before and after, so this is cost, not
+  contention.
+
+Both would need 5-8 chained windows (2.5-4 hours) to produce ONE density, before
+any K builder is timed.
+
+**This is the lane's actual ceiling, and it is not where the campaign expected
+it.** The binding limit was never COSX's memory (peak RSS 645-724 MB against a
+6 GB cap, closed-form block requirement 2.08 GB even at alkane_48/def2-QZVP) and
+never DF-K's absence. It is that **a single-threaded SCF costs more than every K
+build being compared on its output**: 1677 s for one 98-atom double-zeta
+density, and >1740 s for a 62-atom TRIPLE-zeta one. The K builds themselves are
+2-4 minutes.
+
+Two consequences worth carrying forward:
+
+1. The COSX-vs-LinK comparison at higher L and at 146 atoms is a **cheap**
+   measurement (both extrapolate to 3-8 minutes per build) gated behind an
+   **expensive** prerequisite. Anyone continuing this lane should converge the
+   densities FIRST, in parallel across cores — the SCF is the only part of this
+   that wants more than one thread, and the one-thread rule exists for the
+   timings, not for the density generation.
+2. The pre-registered predictions for both rungs (alkane_48/def2-SVP:
+   COSX ~345 s, LinK ~447 s, ratio ~0.77; alkane_20/def2-TZVP: COSX 232-465 s,
+   LinK 366-1098 s, ratio 0.3-0.7) stand **UNTESTED**. They are committed
+   predictions, not results, and must not be quoted as findings.
 
 ## Reading against the pre-registration
 
@@ -395,3 +412,51 @@ mode `docs/ao-laplace-locality-saturation.md` §5 is the worked example of.
 Densities in this lane are therefore SCF densities, and where one SCF does not
 fit a foreground window that is itself reported as part of the ceiling.
 
+
+## The plain statement asked for
+
+**Largest (system, basis) where COSX produced a K:** alkane_32 / def2-SVP,
+98 atoms, nbf 778, in 209.7 s at one thread with 724 MB peak RSS.
+
+**Could the alternatives?** Split honestly, because the two alternatives fail
+for different reasons and only one of them fails at all:
+
+* **DF-K: no, and it could not at any rung of this lane.** Its dressed 3-index
+  tensor is 17.37 GB at that cell against ~5.2 GB of free RAM (and 4.33 GB
+  already at the smallest rung, alkane_20/def2-SVP). It was refused here rather
+  than run, because the library's response to being over budget is not an error
+  but a silent spill to `/tmp` on a 95%-full partition, re-read every SCF
+  iteration. Above alkane_32/def2-QZVP (415 GB) the tensor exceeds the free
+  disk outright and DF-K cannot produce a K by any route on this box.
+* **LinK: yes — and it was slightly FASTER than COSX there (192.7 s vs
+  209.7 s).** COSX did not beat LinK at any rung measured in this lane. What it
+  did was close the gap monotonically with size: 1.587x at alkane_20/def2-SVP,
+  1.088x at alkane_32/def2-SVP, on a LinK that is now correct.
+
+So the defensible claim from this lane is **not** "COSX runs where nothing else
+can". At double zeta on this box, LinK runs everywhere COSX does and is
+marginally cheaper. The defensible claims are:
+
+1. **DF-K is out of memory from 62 atoms and double zeta upward**, by a margin
+   that grows from 116x to 664x across the rung grid, and this follows from the
+   two builders' own sizing (`naux*nbf^2` vs `O(nbf^2)`) rather than from an
+   extrapolation.
+2. **COSX's cost profile improves relative to LinK as the system grows** —
+   measured, two points, on a corrected baseline — and the block-GEMM term that
+   was previously projected to overwhelm it has been reduced to 2.6% of the
+   total by the sparse half transforms.
+3. **COSX's accuracy is stable while its cost advantage grows**:
+   `max|K_cosx - K_link|` is 4.825e-4 and 4.827e-4 at the two rungs (relative
+   6.742e-5 and 6.744e-5), constant to 0.04% across a 1.6x change in nbf.
+4. **The L axis at size — the regime the campaign was authorised for — is still
+   unmeasured**, and not for want of a K builder: the SCF that produces the
+   density does not fit a foreground window at nbf 872 on one thread.
+
+## What a follow-up should do first
+
+Converge the densities for alkane_20/def2-TZVP, alkane_48/def2-SVP and
+alkane_20/def2-QZVP using ALL cores (the one-thread rule binds the timings, not
+the density generation), save them, and only then run the K-builder cells at one
+thread. On this evidence that is ~4-8 core-hours of SCF for a set of cells whose
+K builds cost minutes, and it converts three pre-registered predictions into
+measurements.
