@@ -132,6 +132,16 @@ first group that keeps the pair: water (99% kept) grows only 1.8x at G=32,
 butane (79% kept) grows 8.2x. That early-out is working; it is just not enough
 to make a 0.12 pp gain worth 8x the screen cost.
 
+**On the non-monotonicity between group sizes** (butane G=64 keeps 90 397 968
+but G=32 keeps 90 401 296, i.e. slightly MORE): this is genuine, not noise —
+counts are deterministic. Kept work is only guaranteed monotone against the
+UNSPLIT test, which is the relation the union property proves and which
+`grouped_screen_never_drops_what_the_unsplit_screen_keeps` asserts; it is NOT
+guaranteed between two non-trivial group sizes. Halving a group shrinks its
+`fmax` (helps) but its centroid ball is not nested inside the longer arc's
+ball, so the geometric factor can move either way. The anchor is written
+against unsplit for exactly this reason.
+
 ### 3.2 Why: the cause split
 
 `cosx_region_diagnostics.rs`, same grid and same point order, attributing every
