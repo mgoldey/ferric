@@ -679,15 +679,21 @@ def run(system: str, basis: str, atom_grid, thresholds, anchors: Anchors,
     print(f"  kept-set symmetric difference: |FE only|={len(only_fe)}  "
           f"|SN only|={len(only_sn)}")
 
-    # positive control on the counter: SN reduced to FE must match FE exactly
+    # Positive control on the difference-counter itself.  Disable the E-branch
+    # (eps_E = +inf, NOT 0 -- at 0 the branch fires unconditionally and the
+    # control silently measures nothing; that error was caught by this anchor
+    # failing on ethane) and collapse the K-branch's density weight to ferric's
+    # shell scalar.  SN must then reproduce FE's kept set EXACTLY, which is what
+    # proves a later nonzero symmetric difference is structural rather than a
+    # bookkeeping artifact.
     global MUTATION
     saved = MUTATION
     MUTATION = "snlink_shell_scalar_density"
-    sn_as_fe = build_k(mol, coords, weights, D, bnd, ScreenSnLink(0.0, t), info,
+    sn_as_fe = build_k(mol, coords, weights, D, bnd, ScreenSnLink(math.inf, t), info,
                        record_set=True)
     MUTATION = saved
     anchors.check(
-        f"A4 positive control: SN(eps_E=0, dweight->fmax) == FE [{system}]",
+        f"A4 positive control: SN(eps_E=inf, dweight->fmax) == FE [{system}]",
         sn_as_fe.kept_set == fe.kept_set,
         f"symmetric difference = {len(sn_as_fe.kept_set ^ fe.kept_set)} "
         f"(kept {sn_as_fe.kept}/{sn_as_fe.total} vs FE {fe.kept}/{fe.total})",
@@ -739,6 +745,61 @@ def run(system: str, basis: str, atom_grid, thresholds, anchors: Anchors,
                 only_fe=len(only_fe), only_sn=len(only_sn))
 
 
+def diagnostics(system: str, basis: str, atom_grid):
+    """Why the screens do or do not bite: the distribution of the screening
+    products, and how often the sphere bound degenerates.
+
+    This is what turns "kept 100%" from an uninformative null into a
+    quantitative statement: the MINIMUM screening product over all pair-batches
+    is how large the threshold would have to be to drop even one, and the
+    fraction of pair-batches with `R_c <= 0` says whether the geometric decay
+    is available at this molecule/grid size at all.
+    """
+    mol, D, coords, weights, bnd, info = prepare_system(system, basis, atom_grid)
+    dmax = shell_dmax(D, info)
+    fes, sne, snk, bds, radii, nfall, ntot = [], [], [], [], [], 0, 0
+    for b0 in range(0, len(weights), BATCH_POINTS):
+        b1 = min(b0 + BATCH_POINTS, len(weights))
+        pts = coords[b0:b1]
+        ao = mol.eval_gto("GTOval", pts)
+        X = (ao * np.sqrt(weights[b0:b1])[:, None]).T
+        F = D @ X
+        fmax = shell_max(F, info)
+        xmax = shell_max(X, info)
+        c, r = batch_sphere(pts)
+        radii.append(r)
+        for s1 in range(mol.nbas):
+            for s2 in range(s1 + 1):
+                est = bnd.sphere(s1, s2, c, r)
+                pb = bnd.pairs[(s1, s2)]
+                ntot += 1
+                if float(np.linalg.norm(c - pb.mid)) - r - pb.half <= 0.0:
+                    nfall += 1
+                bds.append(est)
+                fes.append(est * max(fmax[s1], fmax[s2]))
+                sne.append(est * max(xmax[s1], xmax[s2]))
+                snk.append(est * max(float(np.max(dmax[:, s1] * xmax)),
+                                     float(np.max(dmax[:, s2] * xmax))))
+    fes, sne, snk, bds = map(np.array, (fes, sne, snk, bds))
+    radii = np.array(radii)
+    ratio = snk / fes
+    print(f"\n  DIAGNOSTICS [{system}/{basis}]")
+    print(f"    batch radius: median {np.median(radii):.2f}  max {radii.max():.2f} Bohr")
+    print(f"    sphere bound degenerates to its R=0 value (R_c<=0) for "
+          f"{100.0*nfall/ntot:.1f}% of pair-batches; min bound = {bds.min():.3e}")
+    print(f"    MIN screening product over all {len(fes)} pair-batches:")
+    print(f"       ferric  bound*fmax    = {fes.min():.3e}   "
+          f"({fes.min()/FERRIC_DEFAULT_T:.0f}x above the 1e-7 default)")
+    print(f"       sn-LinK bound*dweight = {snk.min():.3e}   "
+          f"({snk.min()/FERRIC_DEFAULT_T:.0f}x above)")
+    print(f"       sn-LinK bound*xmax    = {sne.min():.3e}   (E-branch; the only one that bites)")
+    print(f"    SN-K / FE product ratio: min {ratio.min():.3f} median {np.median(ratio):.3f} "
+          f"max {ratio.max():.3f}  (spread {ratio.max()/ratio.min():.1f}x)")
+    print(f"       SN tighter than FE on {100.0*(ratio<1).mean():.1f}% of pair-batches.")
+    print(f"       A spread of ~1.0 would mean SN is merely a THRESHOLD RESCALING of FE;")
+    print(f"       a large spread means the two orderings genuinely differ (the §3 artifact check).")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--systems", default="water,methane")
@@ -746,6 +807,9 @@ def main():
     ap.add_argument("--grid", default="50,110",
                     help="radial,angular atom grid (ferric's COSX default is 50,110)")
     ap.add_argument("--no-sweep", action="store_true")
+    ap.add_argument("--diagnostics", action="store_true",
+                    help="report the screening-product distribution instead of "
+                         "the anchor table (explains WHY a screen does/does not bite)")
     ap.add_argument("--mutate", default=None,
                     help="run a deliberately broken variant: drop_mirror | "
                          "counter_only | strict_gt | bound_underestimate")
@@ -769,6 +833,10 @@ def main():
                              bnd.sphere(s1, s2, c, r) * max(xmax[s1], xmax[s2]) > self.eps_e)
 
     atom_grid = tuple(int(x) for x in args.grid.split(","))
+    if args.diagnostics:
+        for s_ in args.systems.split(","):
+            diagnostics(s_.strip(), args.basis, atom_grid)
+        return 0
     thresholds = dict(ferric_t=FERRIC_DEFAULT_T, eps_e=FERRIC_DEFAULT_T,
                       eps_k=FERRIC_DEFAULT_T)
     anchors = Anchors()
