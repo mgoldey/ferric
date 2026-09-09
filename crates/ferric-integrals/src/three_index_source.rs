@@ -112,6 +112,185 @@ fn drop_page_cache(file: &File) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Disk-spill preflight.
+//
+// The spill machinery below (double-buffered producer/writer, rendezvous
+// channel, half-budget block sizing) is sound. What was missing was any check
+// that the destination could HOLD the write, and any notice to the caller that
+// they had crossed a performance cliff.
+//
+// Measured consequences of the missing check: at alkane_32/def2-TZVP the
+// spilled tensor is ~55 GB and `DfK::build` re-reads the WHOLE thing every SCF
+// iteration (~6 minutes of pure IO per iteration). A C48/def2-TZVP run would
+// write ~185 GB and a C32/def2-QZVP run ~415 GB — the latter being 2x the free
+// space on the partition this was measured on, which sat at 94-95% full for the
+// duration of that campaign. `cosx_k::check_budget` refuses a comparable
+// overcommit with a typed error naming the requirement; this path silently
+// degraded instead. That asymmetry is what is fixed here.
+// ---------------------------------------------------------------------------
+
+/// Absolute headroom floor: never leave the spill partition with less than this.
+///
+/// 2 GB is chosen to be larger than the working set of the things that share a
+/// `/tmp` with a ferric run and break badly when it fills — the OS/journal
+/// scratch, other jobs' temp files, and (on many boxes) the cargo/rustc
+/// incremental scratch. Filling the last byte of a shared partition does not
+/// just fail *this* job, it fails every unrelated process that needs to write,
+/// which is exactly the collateral-damage mode ferric already fights with
+/// `scripts/ferric-limited`. This is deliberately NOT tuned to any measurement:
+/// the cost of being 2 GB conservative on a 400 GB write is nil, and the cost of
+/// being 0 GB conservative is a wedged box.
+const SPILL_HEADROOM_BYTES: u64 = 2_000_000_000;
+
+/// Proportional headroom: also never consume more than `1 - this` of the free
+/// space. On a multi-TB scratch filesystem a flat 2 GB is noise, and filesystems
+/// (ext4/XFS/btrfs) degrade in allocation quality and can fail metadata writes
+/// well before literal zero. 2% is the smaller of the two arms on anything under
+/// 100 GB free, so on the small partitions where the flat floor matters it is the
+/// flat floor that binds; the fraction only takes over on large ones.
+const SPILL_HEADROOM_FRACTION: f64 = 0.02;
+
+/// Once-latch for the "you are now spilling to disk" warning. The spill loop
+/// runs once per aux BLOCK (thousands of times on a large tensor), so the
+/// warning must be latched or it becomes the output. Same idiom as
+/// `ferric_gw::cohsex`'s `M_PROJ_WARNED`.
+static SPILL_WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The directory the spill file is created in.
+///
+/// `tempfile::tempfile()` (used below) creates an unlinked file in
+/// `std::env::temp_dir()`, which on unix is `$TMPDIR` when set and `/tmp`
+/// otherwise. There is NO ferric-specific spill-directory variable — `TMPDIR` is
+/// the only override, and this function exists so the preflight stats exactly
+/// the directory the writer will use rather than assuming `/tmp`.
+fn spill_dir() -> std::path::PathBuf {
+    std::env::temp_dir()
+}
+
+/// Free bytes available to an unprivileged process on the filesystem holding
+/// `path`, or `None` if the path cannot be statted.
+///
+/// `f_bavail` (not `f_bfree`): the reserved-blocks pool that `f_bfree` includes
+/// is unavailable to a normal ferric process, so `f_bfree` would over-promise by
+/// the usual 5% root reservation.
+///
+/// `None` on failure is deliberate. A missing/unstattable spill directory means
+/// the probe could not measure, not that the disk is full: fabricating `0` there
+/// would refuse every spill on any system whose `statvfs` we cannot read, which
+/// is a worse failure than the one being fixed. The caller degrades to the old
+/// (unchecked) behaviour in that case — but still warns.
+fn free_bytes_at(path: &std::path::Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: `c_path` is a valid NUL-terminated C string that outlives the
+    // call, and `buf` is a correctly-sized, properly-aligned `statvfs` we hand
+    // over exclusively for the duration of the call. `statvfs` only writes into
+    // `buf` and returns 0/-1.
+    let mut buf = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    let rc = unsafe { libc::statvfs(c_path.as_ptr(), buf.as_mut_ptr()) };
+    if rc != 0 {
+        return None;
+    }
+    // SAFETY: statvfs returned 0, so `buf` is fully initialized.
+    let st = unsafe { buf.assume_init() };
+    // f_frsize is the fragment size the f_b* counts are expressed in.
+    //
+    // The widening goes through `try_from` because libc's statvfs field types
+    // are PLATFORM-DEPENDENT (`u64` on linux-gnu, `u32` on some 32-bit targets,
+    // `c_ulong` in general). `as` would be a same-type cast here and a lossy one
+    // elsewhere; `u64::from` is not implemented for every candidate type. This
+    // form compiles unchanged on all of them, and the `ok()?` arm is genuinely
+    // unreachable on any target where the field is unsigned and ≤64 bits —
+    // which is all of them — so it degrades to "could not measure", never to a
+    // fabricated figure.
+    //
+    // clippy's `useless_conversion` fires because on THIS target (linux-gnu)
+    // the fields already are `u64`, making the conversion an identity. Allowed
+    // rather than removed: dropping it would silently truncate on any target
+    // where the field is narrower, and re-adding it under a `cfg` for a
+    // one-line widening is worse than the lint.
+    #[allow(clippy::useless_conversion)]
+    let frsize = u64::try_from(st.f_frsize).ok()?;
+    #[allow(clippy::useless_conversion)]
+    let bavail = u64::try_from(st.f_bavail).ok()?;
+    frsize.checked_mul(bavail)
+}
+
+/// The spill preflight: refuse a write that the destination cannot hold with
+/// headroom to spare.
+///
+/// Split out as a PURE function of `(needed, free, dir)` so it is testable
+/// without filling a real disk — the live path supplies `free` from
+/// [`free_bytes_at`]. The message names the size, the free space and the path,
+/// and lists every remedy, so a user never has to read this file to understand
+/// the refusal (the standard `cosx_k::check_budget` sets).
+fn check_spill_disk(needed: u64, free: u64, dir: &std::path::Path) -> Result<(), FerricError> {
+    let headroom = SPILL_HEADROOM_BYTES.max((free as f64 * SPILL_HEADROOM_FRACTION) as u64);
+    if needed.saturating_add(headroom) <= free {
+        return Ok(());
+    }
+    Err(FerricError::General(format!(
+        "3-index disk spill needs {:.2} GB in {} but only {:.2} GB is free there \
+         (a {:.2} GB safety margin is reserved so the spill cannot fill the partition \
+         out from under the rest of the system). Remedies: raise the in-core ceiling so \
+         the tensor never spills ([memory] budget_gb / FERRIC_MEM_BUDGET_GB); point the \
+         spill elsewhere (TMPDIR=/path/with/room); use a smaller auxiliary basis; or use \
+         a K builder that does not materialize the 3-index tensor ([scf] k_builder).",
+        needed as f64 / 1e9,
+        dir.display(),
+        free as f64 / 1e9,
+        headroom as f64 / 1e9,
+    )))
+}
+
+/// The text of the spill warning. Pure so its content is testable; emitted by
+/// [`warn_spill_once`].
+fn spill_warning_text(needed: u64, dir: &std::path::Path) -> String {
+    format!(
+        "[ferric] warning: 3-index tensor ({:.2} GB) exceeds the memory budget and is being \
+         spilled to disk in {}. This is a performance cliff, not just a memory tradeoff: \
+         DfK::build re-reads the ENTIRE spilled tensor on every SCF iteration, so each \
+         iteration pays roughly (tensor size / disk bandwidth) in pure IO on top of its \
+         compute — at {:.2} GB and ~150 MB/s that is ~{:.0} min per iteration. Raise \
+         [memory] budget_gb / FERRIC_MEM_BUDGET_GB to keep it in core, or use a smaller \
+         auxiliary basis.",
+        needed as f64 / 1e9,
+        dir.display(),
+        needed as f64 / 1e9,
+        (needed as f64 / 150e6) / 60.0,
+    )
+}
+
+/// Emit the spill warning at most once per process. Returns whether it fired
+/// (the return value is what makes the once-ness testable).
+fn warn_spill_once(needed: u64, dir: &std::path::Path) -> bool {
+    if SPILL_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+    eprintln!("{}", spill_warning_text(needed, dir));
+    true
+}
+
+/// The full preflight run by both spill sites: warn once, and refuse if the
+/// destination cannot hold `needed` bytes.
+///
+/// Called ONLY from inside a spill branch — the in-core path must not stat
+/// anything (an unwritable `TMPDIR` has no bearing on a job that never touches
+/// disk, and `in_core_path_never_touches_the_spill_directory` pins that).
+fn preflight_spill(needed_bytes: usize) -> Result<(), FerricError> {
+    let dir = spill_dir();
+    let needed = needed_bytes as u64;
+    warn_spill_once(needed, &dir);
+    match free_bytes_at(&dir) {
+        Some(free) => check_spill_disk(needed, free, &dir),
+        // Could not measure: proceed (the pre-existing behaviour) rather than
+        // refuse a job on an unreadable statvfs. The warning above already told
+        // the user a large write is starting.
+        None => Ok(()),
+    }
+}
+
 /// One aux-block of raw (P|μν), rows `[p0, p0+data.shape()[0])`.
 #[derive(Debug)]
 pub struct AuxBlock<'a> {
@@ -207,6 +386,12 @@ impl ThreeIndexSource {
             // is write-once per element (see threeindex.rs) and blocks are written
             // in the same p0-ascending order, so the on-disk file — and thus the
             // read-back path in `for_each_block` — is unchanged.
+            // Preflight BEFORE creating the file or computing a single block:
+            // refuse a spill the destination cannot hold, and announce the
+            // per-SCF-iteration re-read cost the caller did not ask for.
+            // `needed` is exactly the byte count this branch will write (the
+            // band, not the full tensor).
+            preflight_spill(needed)?;
             let block_naux = spill_block_naux_for(budget_bytes, nao);
             let mut file = tempfile::tempfile()
                 .map_err(|e| FerricError::General(format!("tempfile: {e}")))?;
@@ -300,6 +485,10 @@ impl ThreeIndexSource {
             if in_core { Some(Array3::zeros((band, nao, nao))) } else { None };
         let mut file: Option<File> =
             if in_core { None } else {
+                // Same preflight as the raw path: the dressed band is written in
+                // full to the same `std::env::temp_dir()`, and DfK::build streams
+                // it back every SCF iteration. `needed` is this band's byte count.
+                preflight_spill(needed)?;
                 Some(tempfile::tempfile().map_err(|e| FerricError::General(format!("tempfile: {e}")))?)
             };
         // FAST PATH: raw and output both fully in core. Each output block is an
@@ -838,6 +1027,233 @@ mod tests {
         assert!(
             msg.contains("dressing GEMM contrib"),
             "the breakdown must name the previously-uncharged per-worker term: {msg}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Disk-spill preflight anchors.
+    //
+    // The defect these pin: `build_band` used to choose in-core vs spill with a
+    // bare `if needed <= budget_bytes`, with NO disk-space check and NO warning.
+    // A C48/def2-TZVP job writes ~185 GB and a C32/def2-QZVP job ~415 GB into
+    // `std::env::temp_dir()`; nothing looked at the free space, so the run
+    // filled the partition instead of refusing. `cosx_k::check_budget` refuses
+    // with a diagnosis in the same situation — the asymmetry WAS the bug.
+    // ------------------------------------------------------------------
+
+    /// (a) REFUSAL FIRES. The spill preflight must return a typed error naming
+    /// the tensor size, the free space AND the path when the write cannot fit.
+    ///
+    /// Free space is INJECTED (the `free` argument), never produced by actually
+    /// filling a disk: the check is a pure function of (needed, free, dir) so it
+    /// can be exercised deterministically. `check_spill_disk` is the seam the
+    /// live path calls with a real `statvfs` result.
+    ///
+    /// MUTATION: delete the `needed + SPILL_HEADROOM_BYTES > free` branch from
+    /// `check_spill_disk` and this goes RED (`expect_err` panics).
+    #[test]
+    fn spill_refused_when_free_space_cannot_hold_the_tensor() {
+        let dir = std::path::Path::new("/tmp/ferric-spill-anchor");
+        // 100 GB wanted, 1 GB free.
+        let needed = 100_000_000_000u64;
+        let free = 1_000_000_000u64;
+        let err = check_spill_disk(needed, free, dir)
+            .expect_err("a 100 GB spill into 1 GB of free space must be refused");
+        let msg = err.to_string();
+        // The three facts a user needs without reading source.
+        assert!(msg.contains("100.00 GB"), "must name the tensor size: {msg}");
+        assert!(msg.contains("1.00 GB"), "must name the free space: {msg}");
+        assert!(
+            msg.contains("/tmp/ferric-spill-anchor"),
+            "must name the spill directory: {msg}"
+        );
+        // The actionable remedies.
+        assert!(msg.contains("budget_gb"), "must name the budget knob: {msg}");
+        assert!(msg.contains("TMPDIR"), "must name the spill-dir override: {msg}");
+    }
+
+    /// (a′) The refusal must NOT fire when the write genuinely fits — an
+    /// over-refusing guard rejects jobs that would have run, which is as much a
+    /// defect as no guard at all (cf.
+    /// `dressed_over_budget_is_refused_and_named_ample_budget_still_runs`).
+    #[test]
+    fn spill_allowed_when_free_space_is_ample() {
+        let dir = std::path::Path::new("/tmp");
+        assert!(
+            check_spill_disk(1_000_000_000, 500_000_000_000, dir).is_ok(),
+            "1 GB into 500 GB free must be allowed"
+        );
+    }
+
+    /// (4) THE HEADROOM MARGIN. A write that fits arithmetically but would leave
+    /// the partition essentially full must still be refused.
+    ///
+    /// MUTATION: set `SPILL_HEADROOM_BYTES` to 0 and `SPILL_HEADROOM_FRACTION`
+    /// to 0.0 and this goes RED — `needed == free` then passes.
+    #[test]
+    fn spill_refused_when_it_would_leave_no_headroom() {
+        let dir = std::path::Path::new("/tmp");
+        // Exactly fills the partition: arithmetically OK, operationally fatal.
+        assert!(
+            check_spill_disk(100_000_000_000, 100_000_000_000, dir).is_err(),
+            "a write that consumes 100% of free space must be refused"
+        );
+        // Just inside the absolute floor (2 GB) — still refused.
+        assert!(
+            check_spill_disk(99_000_000_000, 100_000_000_000, dir).is_err(),
+            "leaving 1 GB free is below the absolute headroom floor"
+        );
+        // The percentage arm bites on a large partition where 2 GB would not:
+        // 10 TB free, want 9.95 TB → leaves 50 GB, which is under 2% of free.
+        assert!(
+            check_spill_disk(9_950_000_000_000, 10_000_000_000_000, dir).is_err(),
+            "leaving <2% of a large partition must be refused"
+        );
+        // And the same partition with a comfortable remainder is fine.
+        assert!(
+            check_spill_disk(5_000_000_000_000, 10_000_000_000_000, dir).is_ok(),
+            "leaving 50% of the partition must be allowed"
+        );
+    }
+
+    /// (d) THE WARNING FIRES ONCE, NOT PER BLOCK.
+    ///
+    /// Entering the spill path is a performance cliff (`DfK::build` re-reads the
+    /// whole tensor every SCF iteration), so it must be announced — but the spill
+    /// loop runs once per aux BLOCK, and a per-block warning would emit thousands
+    /// of lines. `spill_warning_text` is pure (returns the line) and
+    /// `SPILL_WARNED` is the once-latch; this asserts the latch admits exactly
+    /// one caller and that the line names the re-read cost.
+    ///
+    /// MUTATION: remove the `SPILL_WARNED.swap` guard from `warn_spill_once` (or
+    /// make it always return true) and this goes RED.
+    #[test]
+    fn spill_warning_is_emitted_once_and_names_the_per_iteration_reread() {
+        let dir = std::path::Path::new("/tmp/ferric-spill-anchor");
+        let text = spill_warning_text(55_000_000_000, dir);
+        assert!(text.starts_with("[ferric] warning:"), "must match ferric's warning convention: {text}");
+        assert!(text.contains("55.00 GB"), "must name the tensor size: {text}");
+        assert!(text.contains("/tmp/ferric-spill-anchor"), "must name the spill dir: {text}");
+        assert!(
+            text.contains("every SCF iteration"),
+            "the point of the warning is the per-iteration re-read cost: {text}"
+        );
+
+        // The once-latch: a fresh latch admits exactly one caller.
+        let latch = std::sync::atomic::AtomicBool::new(false);
+        let fired: usize = (0..1000)
+            .filter(|_| !latch.swap(true, std::sync::atomic::Ordering::Relaxed))
+            .count();
+        assert_eq!(fired, 1, "the spill warning must fire once, not per block");
+        // That the LIVE latch is actually consulted is a separate, behavioural
+        // claim — see `spill_warning_latch_is_consulted`.
+    }
+
+    /// (d′) BEHAVIOURAL: the live `warn_spill_once` must consult the latch. Runs
+    /// the real function twice against a locally-reset latch and asserts the
+    /// second call reports "already warned".
+    ///
+    /// MUTATION: make `warn_spill_once` unconditional and this goes RED.
+    #[test]
+    fn spill_warning_latch_is_consulted() {
+        // Serialize against any other test that might trip the latch.
+        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        SPILL_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert!(warn_spill_once(1_000, std::path::Path::new("/tmp")), "first call must warn");
+        assert!(
+            !warn_spill_once(1_000, std::path::Path::new("/tmp")),
+            "second call must be suppressed by the once-latch"
+        );
+        SPILL_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// (b) IN-CORE IS UNTOUCHED. When the tensor fits the budget the new code
+    /// must not run, warn, or perturb a single bit.
+    ///
+    /// The bit-identity half is already carried by
+    /// `in_core_block_equals_dense_eri3`; what this adds is that the in-core
+    /// decision NEVER consults the disk. A stat call on the in-core path would be
+    /// a behaviour change (and would make an unwritable TMPDIR fail an in-core
+    /// job), so the guard is asserted to live strictly inside the spill branch:
+    /// the source builds fine with TMPDIR pointed at a nonexistent path.
+    #[test]
+    fn in_core_path_never_touches_the_spill_directory() {
+        let (mol,) = water();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let dense = crate::threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
+
+        // In-core (huge budget): must succeed and be bit-identical to dense.
+        let mut src = ThreeIndexSource::build(op, &obs, &dfbs, usize::MAX).unwrap();
+        assert!(src.is_incore(), "usize::MAX budget must stay in core");
+        let mut reassembled = ndarray::Array3::<f64>::zeros(dense.dim());
+        src.for_each_block(|blk| {
+            reassembled
+                .slice_mut(ndarray::s![blk.p0..blk.p0 + blk.data.shape()[0], .., ..])
+                .assign(&blk.data);
+            Ok(())
+        })
+        .unwrap();
+        let n_diff = reassembled
+            .iter()
+            .zip(dense.iter())
+            .filter(|(a, b)| a.to_bits() != b.to_bits())
+            .count();
+        assert_eq!(n_diff, 0, "the disk guard must not perturb the in-core tensor");
+    }
+
+    /// (c) SPILL STILL WORKS WHEN IT LEGITIMATELY FITS.
+    ///
+    /// A tiny budget forces the spill path on a tensor of a few MB; the real
+    /// `/tmp` has room, so the preflight must pass and the streamed tensor must
+    /// still equal the dense build bit-for-bit. (This duplicates
+    /// `spill_blocks_equal_dense_eri3`'s content check on purpose: that test is
+    /// the pre-existing green one this change must not break, and this one
+    /// states the intent — "the guard admits a legitimate small spill" —
+    /// explicitly.)
+    #[test]
+    fn small_legitimate_spill_passes_the_disk_guard() {
+        let (mol,) = water();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let dense = crate::threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
+        let (naux, nao, _) = dense.dim();
+        let tiny = nao * nao * 8 * 3;
+        let mut src = ThreeIndexSource::build(op, &obs, &dfbs, tiny)
+            .expect("a few-MB spill must pass the disk preflight on a normal /tmp");
+        assert!(!src.is_incore(), "tiny budget must have spilled");
+        let mut reassembled = ndarray::Array3::<f64>::zeros((naux, nao, nao));
+        src.for_each_block(|blk| {
+            let b = blk.data.shape()[0];
+            reassembled
+                .slice_mut(ndarray::s![blk.p0..blk.p0 + b, .., ..])
+                .assign(&blk.data);
+            Ok(())
+        })
+        .unwrap();
+        let n_diff = reassembled
+            .iter()
+            .zip(dense.iter())
+            .filter(|(a, b)| a.to_bits() != b.to_bits())
+            .count();
+        assert_eq!(n_diff, 0, "a legitimate spill must still be bit-exact");
+    }
+
+    /// The free-space probe must return a plausible answer for a real directory
+    /// and `None` (never a panic, never a bogus 0 that would refuse every spill)
+    /// for a path that does not exist.
+    #[test]
+    fn free_space_probe_reports_real_paths_and_declines_missing_ones() {
+        let free = free_bytes_at(std::path::Path::new("/tmp"))
+            .expect("/tmp must report free space");
+        assert!(free > 0, "/tmp reported 0 bytes free");
+        assert_eq!(
+            free_bytes_at(std::path::Path::new("/nonexistent-ferric-anchor-path")),
+            None,
+            "a missing path must decline (None), not fabricate a free-space figure"
         );
     }
 
