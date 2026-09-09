@@ -671,22 +671,41 @@ def prepare_system(name, basis, atom_grid=(50, 110), do_scf=True):
 # ===========================================================================
 
 class Anchors:
+    """Two kinds of row, deliberately distinguished.
+
+    ``check`` rows are EXACTNESS ANCHORS: they test whether the code is right,
+    and a red one is a bug that invalidates everything downstream.  ``criterion``
+    rows test whether the METHOD is interesting, and a red one is a RESULT.
+    Only anchors set the exit status, so "the bound turned out not to pay" can
+    never be mistaken for "the implementation is broken".
+    """
+
     def __init__(self):
         self.rows = []
 
     def check(self, name, ok, detail):
-        self.rows.append((name, bool(ok), detail))
+        self.rows.append((name, bool(ok), detail, True))
         return ok
+
+    def criterion(self, name, met, detail):
+        self.rows.append((name, bool(met), detail, False))
+        return met
 
     def report(self) -> bool:
         print()
-        print(f"{'anchor':<58} {'':<5} detail")
+        print(f"{'anchor / criterion':<58} {'':<5} detail")
         print("-" * 132)
         allok = True
-        for name, ok, detail in self.rows:
-            allok &= ok
-            print(f"{name:<58} {'PASS' if ok else 'FAIL':<5} {detail}")
+        for name, ok, detail, is_anchor in self.rows:
+            if is_anchor:
+                allok &= ok
+                tag = "PASS" if ok else "FAIL"
+            else:
+                tag = "MET" if ok else "CRIT"
+            print(f"{name:<58} {tag:<5} {detail}")
         print("-" * 132)
+        print("PASS/FAIL = exactness anchors (a FAIL is a bug).  "
+              "MET/CRIT = pre-registered criteria (a CRIT is a result).")
         return allok
 
 
@@ -790,6 +809,19 @@ def anchor_non_inert(bnd_ipb, bnd_fe, mol, coords, weights, info, anchors, label
     degenerates to IPB-flat, alongside ferric's own degenerate fraction on the
     SAME decisions.  Pre-registered INERT criterion: if IPB-D lands in ferric's
     45-80% band, the lane closes.
+
+    A2 IS A CRITERION, NOT AN EXACTNESS ANCHOR, and it is reported as ``CRIT``
+    rather than PASS/FAIL for that reason.  A0/A1/A3/A4 test whether the CODE is
+    right, and a red row there is a bug.  A2 tests whether the METHOD is
+    interesting, and a red row there is a result.  Conflating them would let a
+    disappointing measurement read as a broken implementation, which is the
+    opposite of what an anchor table is for.
+
+    The criterion is also known to be a poor one -- see the results file, §6.3.
+    §4 measures that degeneracy does NOT predict kept work: IPB-D degenerates
+    ~20 pp less than ferric's bound and is worth ~0.2 pp against it.  The
+    threshold below is kept at its pre-registered value anyway, unchanged, so
+    the record shows what was actually promised.
     """
     deg_ipb = deg_fe = tot = 0
     gains = []
@@ -809,7 +841,7 @@ def anchor_non_inert(bnd_ipb, bnd_fe, mol, coords, weights, info, anchors, label
                     gains.append(f / d if d > 0 else math.inf)
     g = np.array(gains)
     frac = deg_ipb / tot
-    anchors.check(
+    anchors.criterion(
         f"A2 non-inert: IPB-D's distance factor bites [{label}]",
         frac < 0.45,
         f"IPB-D degenerate on {100*frac:.2f}% of {tot} (pair,batch) decisions "
