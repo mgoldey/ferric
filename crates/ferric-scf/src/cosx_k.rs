@@ -339,6 +339,16 @@ pub struct CosxConfig {
     /// adds more sub-batches (301 -> 1075), not bigger ones. Butane was
     /// grouping's most favourable case, not its least.
     ///
+    /// And the COST side degrades with size: the grouping multiplier is ~2x
+    /// steeper at C8 than at C4 at every matched group size (17.49x vs 8.17x at
+    /// G=8), because a lower kept fraction makes the first-group early-out fire
+    /// less often. Benefit stays flat at 0.1-0.3 pp. So grouping gets worse with
+    /// size on both sides of the trade.
+    ///
+    /// None of this is a criticism of the screen itself, which scales well
+    /// unscreened-to-screened: kept work falls 0.792 (C4) -> 0.486 (C8) ->
+    /// 0.307 (C12) at `screen_group = 0`. It is the ADDITION that does not pay.
+    ///
     /// The knob is kept so the measurement stays reproducible, and its default
     /// is `0`. A non-zero value is NOT recommended. Pinned by
     /// `tests/cosx_group_screen_anchors.rs`, which is written to FAIL if this

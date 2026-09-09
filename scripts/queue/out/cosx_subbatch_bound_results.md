@@ -25,6 +25,19 @@ reference study's measurement stands — the bound really does degenerate to its
 distance-free value on most decisions. But that degeneracy is only ~1/3 caused
 by the batch geometry, which is the only part sub-batching can address.
 
+**Confirmed past the ~30 Bohr locality onset (§4.5), so this negative IS
+licensed beyond small molecules.** The size axis reaches alkane_16 (38.7 Bohr)
+and the picture gets worse for grouping with size, not better: its addressable
+share of the degeneracy falls 37.9% -> 15.9% (C4 -> C16), the premise that
+bigger molecules have bigger sub-batch regions is false at the root (median
+extent 2.028 Bohr at every size while the diameter grows 3.70x), and its cost
+multiplier rises ~2x per size step (17.5x at C8 vs 8.2x at C4 for G=8) while
+the benefit stays flat at 0.1-0.3 pp.
+
+**This is a verdict on the ADDITION, not on the screen.** ferric's existing
+density-driven COSX screen scales well on its own — kept work falls 0.792 ->
+0.486 -> 0.307 across C4/C8/C12 (§4.5.5).
+
 ---
 
 ## 1. What was built
@@ -327,20 +340,70 @@ degenerate. The degeneracy that remains is concentrated on the pairs that
 matter, and §4.5.2 shows its `|AB|/2` component is the dominant one at every
 size. Do not read this row as headroom appearing.
 
-### 4.5.5 Coverage note
+### 4.5.5 The C12 unsplit row, and what the kept-work trend shows
 
-C12 (29.3 Bohr) and C16 (38.7 Bohr) kept-work counts did not fit the 15-minute
-run window on a box shared with three other agents, and are NOT reported here.
-They are not needed for the verdict: §4.5.2 and §4.5.3 (the discriminating
-measurements, which need no SCF and DO reach C16) show the region term
-collapsing with size, so kept work cannot start falling harder at C16 than at
-C4. The `#[ignore]`d test carries its exact invocation for a quiet box.
+The run hit its 15-minute timeout (`EXIT=124`) partway into C12, after
+completing its unsplit row. That row is a real measurement and is reported;
+C12's grouped rows and all of C16 are NOT, and no group-size claim is made for
+them.
 
-### 4.5.6 Verdict on the size axis
+Unsplit (`screen_group = 0`) across the size axis:
 
-**The negative is confirmed past the onset and the lane closes properly.**
-alkane_16 at 38.7 Bohr is past the ~30 Bohr scale, and grouping's addressable
-share of the problem is smaller there than at butane. The default stays `0`.
+| system | diam | kept frac | degenerate | bound evals |
+|---|---|---|---|---|
+| alkane_4 | 10.5 | 0.791577 | 0.6515 | 446 985 |
+| alkane_8 | 19.9 | 0.486154 | 0.5704 | 2 936 427 |
+| alkane_12 | 29.3 | **0.307073** | 0.5187 | 9 252 525 |
+
+**The EXISTING screen scales well** — kept falls 0.792 -> 0.486 -> 0.307 as the
+chain grows, which is the density-driven screen doing exactly what it should.
+This is worth stating explicitly because it is the correct reading of this
+branch's negative: *the screen is fine; the proposed addition to it is what does
+not pay.*
+
+It also sharpens the cost argument. The unsplit bound-evaluation count grows
+~3x per size step (447k -> 2.94M -> 9.25M) purely from the O(nsh^2) pair
+population, and §4.5.4 showed the grouping multiplier ON TOP of that gets
+steeper with size too (17.5x at C8 vs 8.2x at C4 for G=8). Those compound.
+
+### 4.5.6 Coverage note
+
+C12's grouped rows and all of C16's kept-work counts did not fit the 15-minute
+window on a box shared with three other agents, and are NOT reported. They are
+not needed for the verdict: §4.5.2 and §4.5.3 (the discriminating measurements,
+which need no SCF and DO reach C16) show the region term collapsing with size,
+so kept work cannot start falling harder at C16 than at C4. The `#[ignore]`d
+test carries its exact invocation for a quiet box.
+
+### 4.5.7 Verdict on the size axis
+
+**The negative is confirmed past the onset and the lane closes properly.** Three
+independent measurements agree, and two of them make the case STRONGER with
+size rather than merely holding:
+
+1. **§4.5.2 — the addressable share shrinks.** alkane_16 (38.7 Bohr) is past the
+   ~30 Bohr onset, and the region term (the only part grouping can fix) falls
+   from 37.9% of the degeneracy at C4 to 15.9% at C16, while `|AB|/2` stays
+   dominant throughout.
+2. **§4.5.3 — the premise is false at the root.** The median sub-batch extent is
+   2.028 Bohr at EVERY size while the diameter grows 3.70x. Longer chains get
+   more sub-batches, not bigger ones, so "bigger molecule => bigger region"
+   never happens.
+3. **§4.5.4 — the cost side degrades with size.** The grouping multiplier is
+   ~2x steeper at C8 than C4 at every matched group size (17.5x vs 8.2x at
+   G=8), because a lower kept fraction makes the first-group early-out fire
+   less often. Benefit stays flat at 0.1-0.3 pp.
+
+Taken together: as systems grow, grouping's benefit does not improve, its
+addressable share of the problem shrinks, and its cost multiplier rises. **The
+default stays `0`**, and it should stay `0` even if someone later finds a size
+where the kept-work column moves a little more — the cost curve is going the
+wrong way.
+
+**What this branch does NOT say:** the COSX screen is not the problem. §4.5.5
+shows the existing density-driven screen scaling well on its own (kept 0.792 ->
+0.486 -> 0.307 across C4/C8/C12). The negative here is about the proposed
+ADDITION to that screen, not the screen.
 
 ---
 
