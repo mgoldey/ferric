@@ -211,6 +211,76 @@ an alignment guard.
 
 ---
 
+## 4.5 THE SIZE AXIS: the negative is confirmed past the 30 Bohr onset
+
+Run 2026-09-09 on coordinator clearance, because a negative measured only below
+the onset is not licensed for C20+ (repo rule). Counts only.
+
+### 4.5.1 The hypothesis under test
+
+`|AB|/2` is a fixed property of a shell pair, but the batch region was expected
+to GROW with the molecule — a Becke grid over a longer chain spreading its
+256-point sub-batches further apart. If so, the region term would come to
+dominate at C16, grouping would start to matter, and the butane-scale flat
+curve would be an artifact of small molecules.
+
+### 4.5.2 The cause split vs size (`cause_split_vs_molecular_size_across_the_locality_onset`)
+
+def2-SVP, (50,110), box volume, ~25 sub-batches sampled across the whole grid
+at each size:
+
+| system | diam (Bohr) | nsh | group | degenerate | region reaches | `\|AB\|/2` eats it |
+|---|---|---|---|---|---|---|
+| alkane_4 | 10.5 | 54 | 256 | 67.56% | **37.88%** | 29.68% |
+| | | | 32 | 65.42% | 34.75% | 30.67% |
+| | | | 8 | 63.07% | 30.73% | 32.33% |
+| alkane_8 | 19.9 | 102 | 256 | 53.76% | 17.12% | **36.64%** |
+| | | | 32 | 50.83% | 12.67% | 38.16% |
+| | | | 8 | 49.11% | 10.55% | 38.56% |
+| alkane_12 | 29.3 | 150 | 256 | 52.97% | 21.56% | 31.41% |
+| | | | 32 | 49.86% | 16.76% | 33.11% |
+| | | | 8 | 48.09% | 14.16% | 33.93% |
+| **alkane_16** | **38.7** | 198 | 256 | 44.79% | **15.92%** | **28.86%** |
+| | | | 32 | 43.41% | 13.41% | 29.99% |
+| | | | 8 | 42.28% | 10.99% | 31.28% |
+
+**The hypothesis is refuted, and in the OPPOSITE direction from the concern.**
+The region share does not grow with size — it COLLAPSES, 37.9% -> 15.9% from
+C4 to C16 — while `|AB|/2` stays dominant at every size past C4 (1.8x the
+region term at C16). Butane was the most FAVOURABLE case for grouping, not the
+least. At C16 the fixable share of the degeneracy is smaller than it was at
+butane in both absolute and relative terms.
+
+### 4.5.3 The mechanism, measured directly (`subbatch_region_extent_is_size_independent`)
+
+Rather than infer why, the sub-batch extent (AABB half-diagonal) was measured:
+
+| system | diam | sub-batches | median extent | p90 | max |
+|---|---|---|---|---|---|
+| alkane_4 | 10.5 | 301 | **2.028** | 14.37 | 28.98 |
+| alkane_8 | 19.9 | 559 | **2.028** | 16.07 | 29.40 |
+| alkane_12 | 29.3 | 817 | **2.028** | 15.40 | 32.42 |
+| alkane_16 | 38.7 | 1075 | **2.028** | 15.40 | 35.81 |
+
+**The diameter grows 3.70x; the median sub-batch extent grows 1.00x.** A Becke
+sub-batch is an ATOM-LOCAL object — 256 consecutive points are ~2.3 Lebedev
+shells of one atom, and that does not care how long the chain is. Adding
+carbons adds MORE sub-batches (301 -> 1075), not bigger ones. Meanwhile `nsh`
+grows linearly (54 -> 198), so the O(nsh^2) pair denominator fills up with
+distant pairs, and a distant pair that degenerates does so because of `|AB|/2`,
+never because a 2 Bohr region reached it.
+
+This is asserted, not just printed: the test FAILS if the median extent ever
+grows more than 2x while the diameter grows 3.7x.
+
+### 4.5.4 Verdict on the size axis
+
+**The negative is confirmed past the onset and the lane closes properly.**
+alkane_16 at 38.7 Bohr is past the ~30 Bohr scale, and grouping's addressable
+share of the problem is smaller there than at butane. The default stays `0`.
+
+---
+
 ## 5. What would reopen this
 
 The verdict is provisional and dated, and the anchor is written to FAIL if it
@@ -222,14 +292,30 @@ degenerate fraction does NOT fall more than 0.05). Specifically:
   per-primitive-pair region test (rather than collapsing the shell pair onto its
   midpoint) attacks the part that actually dominates. Cost discipline is the
   obvious obstacle — that collapse is why the coarse bound is one `sqrt`.
-* **Larger systems.** Everything here is water (3 atoms) and butane (4 heavy
-  atoms). The repo rule "do not declare a negative below the onset" applies:
-  locality effects have a size threshold, and butane at 10.5 Bohr is below the
-  ~30 Bohr scale where alkane density-matrix locality turns on. The kept-work
-  column does fall faster on butane than water, so the trend is not obviously
-  flat with size. **This negative is stated for these two systems at these
-  thresholds and is not licensed to be extrapolated to C20+.** Re-running
-  §3.1 at alkane_8/12/16 is the cheap next check, and it needs only counts.
+* **~~Larger systems.~~ CLOSED by §4.5** (2026-09-09). The size axis was run to
+  alkane_16 (38.7 Bohr, past the ~30 Bohr onset) and the negative is confirmed
+  there: the region term COLLAPSES with size (37.9% -> 15.9%) rather than
+  growing, because a Becke sub-batch is atom-local (median extent 2.028 Bohr at
+  every size while the diameter grows 3.70x). Butane was grouping's best case.
+  What is still NOT covered: other chemistries (only linear alkanes), other
+  bases (only def2-SVP on the size axis), and 3D/globular systems where a
+  sub-batch's neighbours are denser than along a chain.
+
+### 5.1 A standing warning for whoever touches this next
+
+**Anchor (b) is NOT an alignment guard.** Two misalignment mutations were
+applied and BOTH left it green (§4.3). It verifies that K is correct; it does
+not verify that each group's bound is applied to that group's points. The
+reason is the result itself — at G=8 the union drops only 0.12 pp more work, so
+a misassigned bound cannot move K.
+
+Concretely: **if anyone makes grouping actually pay, anchor (b) must be
+re-mutated before it is trusted**, and until it goes red under a misalignment
+mutation it is not evidence about alignment. Do not read its green as coverage
+it does not have. This is recorded here, in the anchor's own doc comment, and
+in the implementing commit message, because a green test with unstated blind
+spots is exactly how the repo's "a test you have never seen fail is an
+assumption" failure mode recurs.
 
 ---
 
@@ -242,4 +328,17 @@ OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=1 \
   cargo test -p ferric-scf --release --test cosx_group_screen_anchors -- --nocapture --test-threads=1
 OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=1 \
   cargo test -p ferric-scf --release --test cosx_region_diagnostics -- --nocapture --test-threads=1
+```
+
+The size axis (§4.5) and the kept-work size sweep are heavier and explicit:
+
+```
+# cause split + region extent vs size (seconds; needs no SCF)
+OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=1 scripts/ferric-limited --max=4G --high=3600M -- \
+  cargo test -p ferric-scf --release --test cosx_region_diagnostics -- --nocapture --test-threads=1
+
+# kept-work counts C4..C16 (minutes per system; converged RHF + 5 COSX builds each)
+OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=1 scripts/ferric-limited --max=4G --high=3600M -- \
+  cargo test -p ferric-scf --release --test cosx_group_screen_anchors -- --ignored --nocapture \
+  --test-threads=1 kept_work_vs_group_size_across_the_locality_onset
 ```

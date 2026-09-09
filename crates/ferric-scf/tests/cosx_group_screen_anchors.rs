@@ -327,3 +327,63 @@ fn grouped_screen_never_drops_what_the_unsplit_screen_keeps() {
         }
     }
 }
+
+/// THE SIZE-AXIS COUNT SWEEP (run 2026-09-09 on coordinator clearance).
+///
+/// The butane-scale verdict in `grouped_screen_gain_is_negligible_against_a_
+/// superlinear_bound_cost` was measured at 10.5 Bohr, below the ~30 Bohr scale
+/// where alkane locality turns on, and the repo rule "do not declare a negative
+/// below the onset" says that is not licensed for C20+. This carries the same
+/// counts across C4 -> C16 (10.5 -> 38.7 Bohr), the last of which is past the
+/// onset.
+///
+/// Counts only, no timings: they are deterministic and load-immune, so a
+/// contended box cannot corrupt them.
+///
+/// # Cost discipline
+///
+/// This does a full unscreened + 4 screened COSX builds per system on top of a
+/// converged RHF, so it is `#[ignore]`d by default and run explicitly:
+///
+/// ```text
+/// OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=1 scripts/ferric-limited --max=4G --high=3600M -- \
+///   cargo test -p ferric-scf --release --test cosx_group_screen_anchors \
+///   -- --ignored --nocapture --test-threads=1 kept_work_vs_group_size_across_the_locality_onset
+/// ```
+#[test]
+#[ignore = "size sweep: minutes per system, run explicitly (see doc comment)"]
+fn kept_work_vs_group_size_across_the_locality_onset() {
+    println!(
+        "\n{:>10}  {:>6}  {:>10}  {:>11}  {:>13}  {:>12}  {:>7}",
+        "system", "group", "degenerate", "kept frac", "kept pairs", "bound evals", "vs G=0"
+    );
+    for name in ["alkane_4", "alkane_8", "alkane_12", "alkane_16"] {
+        let path = format!("{}/../../testdata/molecules/{name}.xyz", env!("CARGO_MANIFEST_DIR"));
+        let mol = Molecule::load_xyz(&path).expect("alkane");
+        let s = converged("alkane/def2-SVP", mol, "def2-svp");
+        let mut base_kept = 0.0_f64;
+        let mut base_evals = 0usize;
+        for g in GROUPS {
+            let (_, t) = build(&s, cfg_at(Some(thresh()), g));
+            let deg = t.screen_degenerate as f64 / t.bound_evals.max(1) as f64;
+            let kept = t.pairs_kept as f64 / t.pairs_total as f64;
+            if g == 0 {
+                base_kept = kept;
+                base_evals = t.bound_evals;
+            }
+            println!(
+                "{name:>10}  {g:>6}  {deg:>10.4}  {kept:>11.6}  {:>13}  {:>12}  {:>6.2}x",
+                t.pairs_kept,
+                t.bound_evals,
+                t.bound_evals as f64 / base_evals.max(1) as f64
+            );
+        }
+        println!(
+            "{name:>10}  --> kept fell {:.4} pp from G=0 to G=8\n",
+            100.0 * (base_kept - {
+                let (_, t) = build(&s, cfg_at(Some(thresh()), 8));
+                t.pairs_kept as f64 / t.pairs_total as f64
+            })
+        );
+    }
+}
