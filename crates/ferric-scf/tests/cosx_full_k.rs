@@ -181,6 +181,16 @@ fn cosx_full_k_cell() {
 
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
+    // NOTE (deliberate omission): a SAD-guess density is NOT an acceptable
+    // stand-in here, even though every builder would contract the same D.
+    // `ferric_scf::guess::sad_guess` writes ONLY atom-diagonal blocks and leaves
+    // every off-diagonal block exactly zero, so COSX's density-driven shell-pair
+    // screen would discard almost every off-atom pair and `kept_dd` — the very
+    // quantity this lane reports — would be an artifact of the guess, not of the
+    // molecule. (At def2-QZVP it is worse still: the l>=4 branch skips the
+    // free-atom solve entirely and leaves those blocks zero.) Densities here are
+    // therefore SCF densities, chained across foreground windows with
+    // COSX_FK_SCF_RESTART_IN when one window is not enough.
     let (d, _c_occ): (Array2<f64>, Array2<f64>) = if let Ok(path) = std::env::var("COSX_FK_DENSITY_IN") {
         let (d, c) = load_density(&path, nbf, nocc);
         println!("density loaded from {path} (provenance: an earlier SCF process of this harness; see its log for mode/convergence)");
