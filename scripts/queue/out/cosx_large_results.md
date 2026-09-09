@@ -312,6 +312,34 @@ disk rows above were executed; per the pre-registration's binding safety rule,
 the sizes and the mechanism are the finding and filling the disk to prove it is
 not.
 
+## The rung that was NOT reached, and why (alkane_48 / def2-SVP)
+
+Attempted and abandoned, recorded rather than omitted. alkane_48/def2-SVP
+(146 atoms, nbf 1162) is well inside every builder's MEMORY limit — COSX's
+block requirement there is 0.133 GB and LinK holds no large tensor — but it was
+not measured, because **its density could not be produced in the available
+windows**. Two attempts:
+
+* `k_builder = "link"` SCF, `max_iter` 12: killed at 1750 s having not returned,
+  so nothing was saved (the harness saves only after `solve_rhf` returns).
+* Same with `max_iter` 2, to force a return inside one window: also did not
+  complete in 1750 s, i.e. **fewer than two LinK-K + direct-J iterations fit a
+  29-minute single-threaded window at nbf 1162**.
+
+Converging it would take roughly 5-8 chained windows (2.5-4 hours of wall time)
+to produce one density, before any K builder is timed. That is the honest
+ceiling for this lane on this box, and it is a ceiling of the SCF driver at one
+thread, NOT of any K builder: the extrapolated K-build times (COSX ~345 s, LinK
+~447 s from the two-point exponents) are both comfortably inside a window. The
+prediction committed above therefore stands untested; it must NOT be quoted as
+a result.
+
+This is the correct place to note what the lane's constraint actually was. The
+binding limit throughout was never COSX's memory and never DF-K's absence — it
+was that a single-threaded SCF costs more than everything being compared on its
+output (28 minutes for one 98-atom double-zeta density; more than 29 minutes for
+two iterations at 146 atoms).
+
 ## Reading against the pre-registration
 
 | pre-registered | outcome |
