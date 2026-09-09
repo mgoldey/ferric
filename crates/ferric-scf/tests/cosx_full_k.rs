@@ -19,6 +19,10 @@
 //!   COSX_FK_DENSITY_IN  load (D, C_occ) saved by an earlier process
 //!   COSX_FK_THREADS     rayon threads for timed segments (default 1)
 //!   COSX_FK_FIT         "0" disables the overlap fit (default on)
+//!   COSX_FK_DIRECT      "1" also builds the EXACT direct four-centre K and prints
+//!                       max|K_cosx - K_direct| next to max|K_direct| (the accuracy
+//!                       reference; LinK is NOT one -- see the block's comment)
+//!   COSX_FK_DIRECT_K_OUT save the direct K for cross-process comparison
 //!   COSX_FK_LINK        "1" also times LinK builds and prints max|K_cosx - K_link|
 //!   COSX_FK_LINK_BUILDS number of LinK builds (default 2: cold = pool + pairs + build, then warm)
 //!   COSX_FK_BUILDS      number of COSX builds (default 1; the first also factorizes S_num)
@@ -202,10 +206,25 @@ fn cosx_full_k_cell() {
         Some("dense") => ferric_scf::cosx_k::CosxHalfTransform::Dense,
         Some(other) => panic!("COSX_FK_HALF = {other:?}: expected \"sparse\" or \"dense\""),
     };
-    let cfg = CosxConfig { overlap_fit: fit, screen_thresh, half_transform: half, ..CosxConfig::default() };
+    // COSX_FK_GRID: "<radial>,<angular>" overriding the (50,110) default, so the
+    // grid-sensitivity arm can be measured on ONE density in ONE process.
+    let mut cfg =
+        CosxConfig { overlap_fit: fit, screen_thresh, half_transform: half, ..CosxConfig::default() };
+    if let Ok(g) = std::env::var("COSX_FK_GRID") {
+        let (r, a) = g.split_once(',').expect("COSX_FK_GRID: \"<radial>,<angular>\"");
+        cfg.grid.n_radial = r.trim().parse().expect("COSX_FK_GRID radial");
+        cfg.grid.n_angular = a.trim().parse().expect("COSX_FK_GRID angular");
+        ferric_scf::cosx_k::validate_grid(&cfg.grid).expect("COSX_FK_GRID: unsupported grid");
+        println!("COSX_FK_GRID override: ({}, {})", cfg.grid.n_radial, cfg.grid.n_angular);
+    }
+    let cfg = cfg;
+    let (grid_r, grid_a) = (cfg.grid.n_radial, cfg.grid.n_angular);
     let mut cosx = CosxK::new(&ctx, &mol, &prep, cfg, budget_bytes).expect("CosxK::new");
     let npts = cosx.npts();
-    println!("COSX grid (50,110): {npts} points; overlap_fit={fit}; screen_thresh={screen_thresh:?}");
+    println!(
+        "COSX grid ({},{}): {npts} points; overlap_fit={fit}; screen_thresh={screen_thresh:?}",
+        grid_r, grid_a
+    );
     let mut k_cosx = Array2::<f64>::zeros((nbf, nbf));
     // COSX_FK_BUILDS=0: skip the COSX build (LinK-only process); K_cosx then
     // comes from COSX_FK_K_IN if given.
@@ -255,6 +274,35 @@ fn cosx_full_k_cell() {
         println!("K_cosx loaded from {path}");
     }
     let cosx_total_s = cosx.last_timings().total_s;
+
+    // ---------- optional DIRECT (exact four-centre) K: the accuracy reference ----------
+    // LinK is NOT a valid accuracy reference on this branch: standalone LinK
+    // differs from the direct K by 2.784e-3 on butane/def2-SVP where COSX's own
+    // error on the same density is 2.9e-4 (cosx_scaling_results.md finding #2),
+    // i.e. ~10x further from exact than the quantity being measured. `build_jk`
+    // computes J and K in one quartet sweep at `integral_thresh`; only K is used.
+    if env_flag("COSX_FK_DIRECT") {
+        let schwarz = SchwarzBounds::compute(op, &prep).expect("Schwarz bounds");
+        let mut j = Array2::<f64>::zeros((nbf, nbf));
+        let mut k_direct = Array2::<f64>::zeros((nbf, nbf));
+        let (wall, cpu, _) = timed("direct build_jk (exact four-centre J+K)", threads, || {
+            ferric_scf::rhf::build_jk(&ctx, &prep, &schwarz, LINK_THRESH, &d, &mut j, &mut k_direct)
+                .expect("build_jk")
+        });
+        let dev = (&k_cosx - &k_direct).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
+        let kmax = k_direct.mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
+        let fro = ((&k_cosx - &k_direct).mapv(|v| v * v).sum()).sqrt();
+        let fro_ref = (k_direct.mapv(|v| v * v).sum()).sqrt();
+        println!(
+            "DIRECT K (exact): wall {wall:.3} s cpu {cpu:.2} s; max|K_cosx - K_direct| = {dev:.6e} (max|K_direct| {kmax:.6e}, relative {:.3e}); ||dK||_F = {fro:.6e} (||K||_F {fro_ref:.6e}, relative {:.3e})",
+            dev / kmax,
+            fro / fro_ref
+        );
+        if let Ok(path) = std::env::var("COSX_FK_DIRECT_K_OUT") {
+            save_density(&path, &k_direct, &Array2::<f64>::zeros((nbf, 0)));
+            println!("K_direct saved to {path}");
+        }
+    }
 
     // ---------- optional LinK denominator + accuracy ----------
     if env_flag("COSX_FK_LINK") {
