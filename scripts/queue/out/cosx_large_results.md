@@ -388,7 +388,8 @@ clean at both ends.)
 only one cell in this lane has both at once — none does, since alkane_32/TZVP
 was not reached.** See the next section.
 
-### Prediction for the next rung, stated before it ran
+### Prediction for the next rung, stated before it ran — RESOLVED: COSX HIT,
+### LinK and the ratio MISSED (measured 354.8 s / 291.4 s / 1.218)
 
 From the two-point tail exponents above (COSX 1.29, LinK 2.12 in atoms), at
 alkane_48/def2-SVP (146 atoms, nbf 1162):
@@ -432,11 +433,36 @@ FERRIC_MEM_BUDGET_GB or use fewer threads
 
 i.e. a typed error naming the requirement, before any allocation.
 
-**DF-K has NO preflight.** `ferric_integrals::three_index_source` is a bare
+**DF-K had NO preflight when this lane measured it — that has since been FIXED,
+and this lane's measurements are what motivated the fix.**
+
+As measured here, `ferric_integrals::three_index_source` was a bare
 `if needed <= budget_bytes { in-core } else { spill }` (three_index_source.rs:190).
-Above budget there is no error and no disk-space check: it calls
-`tempfile::tempfile()` and streams the tensor to `/tmp`, which on this box is
-the same 95%-full root partition with 207 GB free.
+Above budget there was no error and no disk-space check: it called
+`tempfile::tempfile()` and streamed the tensor to `/tmp`, which on this box is
+the same 95%-full root partition with ~207 GB free.
+
+**Update (2026-09-09, `5a7136d7 fix(integrals): disk-space preflight + one-shot
+warning before 3-index spill`, landed on main after this lane's rung table was
+taken).** The asymmetry described below — COSX refusing an overcommit with a
+typed error while DF-K silently degraded — is now closed, and the commit cites
+this lane's numbers (the ~55 GB C32/TZVP spill re-read per iteration, the 415 GB
+C32/QZVP tensor against a 2.0x-smaller free disk) as its motivation. The spill
+branches now `statvfs` the directory the writer will actually use (`TMPDIR`, not
+an assumed `/tmp`), refuse with a typed error naming size, free space, path and
+remedies when the tensor plus a `max(2 GB, 2% of free)` margin does not fit, and
+emit a one-shot warning naming the per-iteration re-read when a spill does
+proceed. The in-core path is bit-identical and stats nothing.
+
+**What this changes in the reading below, and what it does not.** It changes the
+MECHANISM of DF-K's failure from "silently fills a shared partition" to "refuses
+with a diagnosis", which removes the safety hazard that made this lane refuse to
+execute DF-K at all. It does NOT change any SIZE in the table below, nor any
+conclusion drawn from those sizes: DF-K's tensor is still 4.33-1382 GB across
+this rung grid against COSX's 645-786 MB measured peak RSS, so DF-K is still out
+of memory at every rung from 62 atoms and double zeta upward. The rows below are
+therefore left as measured, with this correction noted once at the top rather
+than being edited in place — the sizes were and remain the finding.
 
 | system | basis | nbf | naux | COSX block need | DF-K dressed tensor | DF-K / COSX |
 |---|---|---|---|---|---|---|
@@ -515,13 +541,20 @@ the disk wall, is not a merely academic one either.
 So the honest split is: DF-K is out of RAM at every rung from 62 atoms /
 double-zeta upward, and out of DISK — genuinely unable to produce a K by any
 route — from **alkane_32 / def2-QZVP** (98 atoms, nbf 3804) upward. Note also
-that nothing in the library would TELL you this: it would begin writing and
-fail on ENOSPC partway, having filled a 95%-full shared partition. None of the
-disk rows above were executed; per the pre-registration's binding safety rule,
-the sizes and the mechanism are the finding and filling the disk to prove it is
-not.
+that, AT THE TIME THIS WAS MEASURED, nothing in the library would TELL you this:
+it would begin writing and fail on ENOSPC partway, having filled a 95%-full
+shared partition. None of the disk rows above were executed; per the
+pre-registration's binding safety rule, the sizes and the mechanism are the
+finding and filling the disk to prove it is not.
 
-### Prediction for alkane_20 / def2-TZVP, stated before that rung ran
+**That last sentence is now out of date in the best possible way**: `5a7136d7`
+(see the update above) makes the library refuse such a spill with a typed error
+naming the size, the free space and the path, so a user hitting the C32/QZVP row
+today gets a diagnosis instead of a filled partition. The size analysis is
+unchanged; only the failure mode is.
+
+### Prediction for alkane_20 / def2-TZVP, stated before that rung ran —
+### RESOLVED: three for three HIT (measured 301.9 s / 448.8 s / 0.673)
 
 This is the cell that tests COSX's actual claim — high angular momentum AT size
 — rather than size alone. nbf 872, L_max 3, same 62-atom molecule and same
@@ -633,6 +666,19 @@ infeasible. Whoever picks it up needs one idle box for about three hours; the
 recipe is `scripts/queue/cosx_large_scf_mt.sh` for the density followed by
 `scripts/queue/cosx_large_build2.sh main` and `... direct` for the cells.
 
+**Re-checked and declined a second time (13:12), after the lane was explicitly
+asked to attempt it.** The box was measured immediately before deciding: load
+average 18.6, `/proc/pressure/cpu` `some avg10` 43.5%, 3 GB available memory, and
+several of another agent's `ferric-cli` processes plus a multi-core python driver
+resident. Both halves of the cell are blocked by that, for different reasons:
+the density wants all 12 cores and would be taking them from someone else's
+running jobs, and the K builds afterwards need an idle box for a full hour to
+produce comparable single-thread numbers. Starting the SCF anyway would have
+produced a density (a density does not care about contention) but no timeable
+window to use it in, and would have degraded another agent's measurements in the
+process. Recorded here rather than left as silence, because "did not run" and
+"could not run" are different claims and only the first one is true.
+
 **A prediction for that cell, stated here before it runs so it cannot be fitted
 afterwards.** At C20 the L=2 -> L=3 move multiplied COSX by 2.60 and LinK by
 6.13, flipping the ratio from 1.587 to 0.673 (factor 0.424). At C48/SVP the
@@ -656,9 +702,12 @@ result.
 
 | pre-registered | outcome |
 |---|---|
-| P1: DF-K fails first, at the very first rung, by disk-spill with NO preflight refusal | **CONFIRMED.** DF-K's tensor is 4.33 GB at alkane_20/def2-SVP against a 2 GB budget, and `three_index_source.rs` has no refusal — it spills. Never executed, per the safety rule. |
+| P1: DF-K fails first, at the very first rung, by disk-spill with NO preflight refusal | **CONFIRMED AS MEASURED, and the defect it names has since been FIXED.** DF-K's tensor is 4.33 GB at alkane_20/def2-SVP against a 2 GB budget, and at measurement time `three_index_source.rs` had no refusal — it spilled. Never executed, per the safety rule. `5a7136d7` (landed on main after these rungs were taken, citing this lane's numbers) added the disk preflight, typed refusal and one-shot spill warning, so the prediction is confirmed about the code as it was and no longer describes the code as it is. |
 | P1: COSX runs furthest, with its ceiling set by WALL TIME not RSS | **CONFIRMED.** Peak RSS 645 / 724 / 786 / 709 MB across all four measured rungs, against a 6 GB cap; the closed-form block requirement is 2.08 GB even at alkane_48/def2-QZVP. |
 | P1: direct/LinK fail on TIME around nbf 1000-1400 | **REFUTED.** At nbf 1162 (alkane_48/def2-SVP) LinK builds K in 291.4 s and the exact direct J+K sweep in 605.7 s — both comfortably inside a 30-minute window, not out of it. Neither builder failed on time at any rung of this lane. |
+| P1: LinK outlasts direct by 1.2-3x | **HIT on the margin, but no ceiling was reached to test it as a CEILING.** Measured LinK/direct at alkane_48/def2-SVP is 291.4/605.7 = **2.08x**, inside the predicted 1.2-3x band. The prediction was framed as "where each one fails"; since neither failed, this is confirmed as a cost ratio only. |
+| P1: the ordering of ceilings is DF-K first, then direct, then LinK, then COSX | **UNTESTABLE AS STATED — only the first place was reached.** DF-K is out at every rung (memory, confirmed). The other three all ran at every rung attempted, so no ordering among them was observed. The lane produced a COST ordering instead, and it is not constant: at double zeta LinK < COSX < direct; at triple zeta COSX < LinK < direct. |
+| P3: COSX \|A\|/nbf **< 0.25** at alkane_48/def2-SVP | **HIT — measured 0.1285**, comfortably inside. (This is the same measurement as the later, tighter ~0.13 prediction stated mid-lane; both are recorded because both were committed before the rung ran.) |
 | P3: COSX/LinK 8-11x at alkane_32/def2-SVP | **REFUTED — measured 1.088.** See the miss analysis above; note that the follow-on reading of this miss ("the ratio improves with size") was itself refuted by the next rung. |
 | P3: kept_dd 0.08-0.12 at alkane_32/def2-SVP | **Near miss, measured 0.0657** — below the band, same direction as the trend. |
 | P3: COSX total wall 400-700 s at alkane_32/def2-SVP | **REFUTED — measured 209.7 s.** The prediction used the old total-wall exponent 2.16, which the sparse half transforms removed. |
@@ -673,10 +722,14 @@ result.
 | R2 (COSX/LinK worsens with N — would confine the claim to the L axis) | **PARTIALLY observed, and the confinement it implies is now the lane's conclusion.** The ratio does not worsen monotonically (1.587 -> 1.088 -> 1.218), but it never crosses parity on the size axis at double zeta either. It crosses only when L rises. So the defensible claim IS an L-axis claim, which is what R2 said the fallback wording would have to be. |
 | R3 (COSX peak RSS grows super-linearly toward the cap) | **NOT observed.** 645 -> 724 -> 786 MB across a 2.4x nbf increase; sub-linear in nbf. |
 | R4 (DF-K's spill works, so the wall is performance not feasibility) | **PARTIALLY UPHELD, and reported as such.** DF-K spills rather than refusing, so below the disk wall the honest claim is "IO-bound" (quantified: whole-tensor re-read per SCF iteration), not "cannot run". Only from alkane_32/def2-QZVP upward does the tensor exceed the free disk and DF-K become genuinely impossible here. |
+| **alkane_32/def2-TZVP: COSX/LinK ~0.46 (band 0.40-0.75); COSX 500-750 s, LinK 900-1600 s; kept_dd ~0.065, \|A\|/nbf ~0.19; RSS < 1.1 GB** | **UNTESTED — NOT REACHED.** Not attempted for machine-contention reasons (another agent's workload took the box to load 18-22 and 52% CPU pressure), NOT for cost or feasibility reasons; the cost projects to ~3 hours total. This remains a committed prediction and must not be quoted as a finding. |
+| **alkane_20/def2-TZVP direct exact-K wall time** | **UNTESTED — measured once at 672.0 s but with PSI `full avg10` 0.01, so DISCARDED per this lane's own protocol; the retake was killed by the same contention.** The accuracy figures from that cell ARE used (a matrix deviation does not depend on timing). |
+| alkane_20/def2-QZVP, alkane_48/def2-TZVP, and every QZVP rung | **UNTESTED — never attempted.** Listed in the sizing table for their memory requirements only. No timing, no density, no claim. |
 
 Tally over the whole lane: **six of my quantitative predictions were wrong and
-are recorded as wrong; seven were right.** The two sittings failed in opposite
-directions, which is itself the useful part.
+are recorded as wrong; eleven were right; three remain explicitly UNTESTED and
+are marked as such rather than being quietly dropped.** The two sittings failed
+in opposite directions, which is itself the useful part.
 
 * First sitting: I UNDER-estimated COSX (P3's 8-11x and 400-700 s), because both
   anchors were stale — the pre-fix LinK series and the pre-sparse-half-transform
@@ -780,10 +833,13 @@ behave completely differently:
 * **DF-K: no, and it could not at any rung of this lane.** Its dressed 3-index
   tensor is 57.94 GB at alkane_48/def2-SVP and 13.72 GB at alkane_20/def2-TZVP,
   against ~5 GB of free RAM (and 4.33 GB already at the smallest rung). It was
-  refused rather than run, because the library's response to being over budget
-  is not an error but a silent spill to `/tmp` on a 95%-full partition, re-read
-  every SCF iteration. Above alkane_32/def2-QZVP (415 GB) the tensor exceeds the
-  free disk outright and DF-K cannot produce a K by any route on this box.
+  refused rather than run, because at the time of measurement the library's
+  response to being over budget was not an error but a silent spill to `/tmp` on
+  a 95%-full partition, re-read every SCF iteration. (That silence is since
+  fixed by `5a7136d7`, which this lane's numbers motivated; the sizes and the
+  conclusion are unaffected.) Above alkane_32/def2-QZVP (415 GB) the tensor
+  exceeds the free disk outright and DF-K cannot produce a K by any route on
+  this box.
 * **LinK: yes, at every rung — and which of the two is faster depends entirely
   on the angular momentum.** At double zeta LinK is faster (COSX/LinK 1.587,
   1.088, 1.218 at C20, C32, C48). At triple zeta COSX is faster (0.673 at C20).
@@ -855,3 +911,33 @@ So the defensible claims from this lane are:
    the L-axis win survive outside linear alkanes. Every system in this lane is a
    linear alkane, which is the most favourable possible geometry for a
    density-driven screen and the least informative one for a saturating max|K|.
+
+## Lane verdict — one paragraph, for lifting into the whitepaper
+
+Across four measured cells on one 12-core box — linear alkanes at 62, 98 and 146
+atoms in def2-SVP (nbf 490/778/1162) and at 62 atoms in def2-TZVP (nbf 872), each
+K build timed single-threaded on a converged SCF density with memory pressure
+verified zero either side — **ferric's COSX is faster than its LinK when the
+angular momentum is high, and slower when only the system is large.** Holding the
+molecule and the 341 000-point grid fixed and moving def2-SVP to def2-TZVP costs
+COSX 2.60x but LinK 6.13x, taking COSX/LinK from 1.587 to **0.673**; along the
+size axis at double zeta the same ratio is 1.587, 1.088 and 1.218 at C20, C32 and
+C48 and never crosses parity, even though COSX's cost grows more slowly with atom
+count than LinK's (N^1.30 vs N^1.61, with COSX's dominant A-build term
+reproducible to 1% across both size steps). The high-L win is not bought by
+approximation: COSX's sparsity is unchanged between the two bases (kept_dd 0.1443
+vs 0.1458) and its error against the exact four-centre K is smaller at triple zeta
+than at double (2.589e-4 vs 4.827e-4, relative 3.3e-5 and 6.7e-5), the latter
+confirmed by two independent references agreeing to four digits. Separately and on
+sizing alone, DF-K is not a competitor anywhere in this range: its dressed
+three-index tensor is 4.3 GB at the smallest cell and 57.9 GB at the largest,
+against COSX's 645-786 MB measured peak RSS, a gap that widens with both size and
+angular momentum because the tensor carries a naux factor that COSX's block
+scratch does not. **What remains unmeasured is the combination** — no cell in this
+lane has both high L and large N, so whether the 0.673 advantage holds, grows or
+erodes as the system grows at fixed triple zeta is not known; alkane_32/def2-TZVP
+is the single experiment that would settle it, it is projected at ~3 hours, and a
+prediction for it (ratio ~0.46, band 0.40-0.75) is pre-registered above. The
+defensible claim is therefore **"COSX wins at high angular momentum"**, not "COSX
+wins at large N", and every system measured here is a linear alkane, which is the
+most favourable geometry for a density-driven screen.
