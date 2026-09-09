@@ -1,0 +1,13 @@
+SYSTEM alkane_8/sto-3g grid (25, 50) nbf=58 nsh=42 batches=127 diameter=19.87 Bohr
+  E_grid = 3.148e-03  max|K| = 7.169e+00
+  bound                    thresh    kept %  kept-wt %     K error
+  ferric                    1e-04    34.260     42.476   6.488e-04
+  ferric                    1e-05    47.650     55.061   3.932e-05
+  ferric                    1e-06    59.591     65.846   5.006e-06
+  ipb-flat                  1e-04    37.250     45.314   5.966e-04
+  ipb-flat                  1e-05    50.944     57.554   3.703e-05
+  ipb-flat                  1e-06    61.719     67.214   4.618e-06
+  ipb-dist                  1e-04    32.666     40.534   6.863e-04
+  ipb-dist                  1e-05    46.243     53.494   5.326e-05
+  ipb-dist                  1e-06    58.310     64.652   5.950e-06
+  min(ferric,ipb-dist)      1e-04    32.657     40.529   6.863e-04
