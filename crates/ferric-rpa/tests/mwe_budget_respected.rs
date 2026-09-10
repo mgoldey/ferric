@@ -155,6 +155,10 @@ fn estimate_does_not_chase_the_budget() {
             n_workers: 4,
             n_keep: naux,
             grid: Some(GridEstimateShape { npts, nbf, natoms, dipole_band_width: band, n_workers: 4 }),
+            // Grid path: the per-frequency dielectric is consumed and dropped,
+            // not retained, so n_quad is not a peak multiplier here. See
+            // PeakEstimateShape::need_inv_dielectric.
+            need_inv_dielectric: false,
         })
     };
 
