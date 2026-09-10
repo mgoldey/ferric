@@ -200,7 +200,20 @@ pub fn solve_rohf_best_effort(
         let main = config.dft_grid.clone().unwrap_or_default();
         let nlc = config.nlc_grid.clone()
             .unwrap_or(ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() });
-        let ks = KsXcUks::new_with_omega(mol, prep.basis_set(), name, &main, &nlc, config.xc_omega)
+        // Thread the caller's `[memory] budget_gb` into the grid AO cache --
+        // the largest single allocation in a DFT job. This used to call the
+        // UNbudgeted `new_with_omega`, which resolves from env/auto-detect
+        // and so silently DISCARDED `config.three_index_budget_bytes`. The
+        // budgeted constructor existed for exactly this and had ZERO
+        // production callers; its own doc records the symptom ("Setting
+        // `budget_gb = 4` on a 64 GB box still sized the grid cache against
+        // ~51 GB"), i.e. the documented primary knob did nothing while
+        // FERRIC_MEM_BUDGET_GB worked. 0 means unset, matching
+        // `rhf::resolve_three_index_budget`.
+        let ks = KsXcUks::new_with_omega_budgeted(
+            mol, prep.basis_set(), name, &main, &nlc, config.xc_omega,
+            (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes),
+        )
             .map_err(|e| FerricError::General(format!("KsXcUks init for {name}: {e:?}")))?;
         Some(Box::new(ks) as Box<dyn UksXcContribution>)
     } else {
