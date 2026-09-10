@@ -42,11 +42,11 @@ use crate::boys::{boys_localize, build_domains, build_pseudo_density_occ_sparse,
 /// The J and K terms both allocate large per-point intermediates INSIDE the
 /// `par_iter` over quadrature points, so every resident buffer is multiplied by
 /// the number of rayon worker threads. We derive a per-task ceiling by dividing
-/// the process-wide 3-index budget (`FERRIC_ERI3_BUDGET_GB`, else unlimited) by
-/// the active thread count, then reserve a fraction of that for the blocked
-/// intermediates.
+/// the process-wide 3-index budget by a FIXED nominal worker count
+/// ([`NOMINAL_TASK_WORKERS`]) — deliberately not the ambient one, see below —
+/// then reserve a fraction of that for the blocked intermediates.
 ///
-/// # Two defects fixed here
+/// # Three defects fixed here
 ///
 /// **1. The caller's budget was discarded.** This function used to call
 /// `resolve_budget_bytes(None)`, throwing away `LaplaceMp2::memory_budget_bytes`
@@ -69,36 +69,147 @@ use crate::boys::{boys_localize, build_domains, build_pseudo_density_occ_sparse,
 /// The floor still exists — a per-task ceiling of a few bytes would block the
 /// panels down to width 1 and make no progress — but when it binds, that is now
 /// stated on stderr instead of silently absorbed. The message names the
-/// actionable fix (raise the budget or lower the thread count), matching how the
-/// floored-band warnings in `ferric-cc`'s (T) drivers read.
+/// actionable fix (raise the budget), matching how the floored-band warnings in
+/// `ferric-cc`'s (T) drivers read.
 ///
-/// Note the old `usize::MAX` arm is gone: `resolve_budget_bytes` returns
-/// `usize::MAX` only for an explicitly infinite budget, never from the
-/// auto-detect or fallback paths, so `DEFAULT_PER_TASK` was effectively dead
-/// code. `usize::MAX / threads` is already an enormous per-task ceiling, which
-/// is the correct reading of "unlimited" anyway.
+/// **3. The ENERGY depended on `RAYON_NUM_THREADS`.** This is the reason the
+/// divisor is now a constant. The division used to be by
+/// `rayon::current_num_threads()`, and this function's return value sizes two
+/// panel widths that each k-block a floating-point accumulation:
+///
+/// * `block_mu` (`compute_ao`, `compute_sos_ao`) blocks
+///   `j_mat += &m_panel.dot(&n_panel.t())` in [`laplace_ao_coulomb_energy`] —
+///   a partial-sum accumulation over the μ axis, so the number of partial sums
+///   is `nbas / block_mu`.
+/// * `block_p` blocks `(0..naux).step_by(block_p).map(..).sum()` in
+///   [`laplace_exchange_energy`] — the number of partial sums IS
+///   `naux / block_p`.
+///
+/// k-blocking a reduction is a float reassociation — a coarse pairwise
+/// summation whose grouping changes the rounding, measured at ~7e-15 per
+/// odd-vs-even split by `three_index_source.rs`'s `DRESS_ROW_BLOCK`. So the same
+/// molecule, basis and `budget_gb` returned different last digits under
+/// `RAYON_NUM_THREADS=1` (share = total) and `=12` (share = total/12): a 12x
+/// swing in both widths, from ambient machine state that is not part of the
+/// configuration.
+///
+/// `rimp2::mo_stream_chunk_for` states the rule this now follows, and
+/// `mwe_mo_stream_chunk_budget.rs` CONTRACT 5 pins it for that path: a width
+/// that k-blocks a reduction may derive from the BUDGET — same config, same
+/// answer — but never from the ambient thread count, free memory, or wall
+/// clock. `mwe_laplace_width_is_thread_independent.rs` pins it here.
+///
+/// The cost of the constant divisor is honest and bounded: on a box with more
+/// than [`NOMINAL_TASK_WORKERS`] active workers the aggregate peak can exceed
+/// the budget by `n_workers / NOMINAL_TASK_WORKERS`, so an over-subscribed run
+/// warns (below). The alternative — keeping the ambient divisor — buys budget
+/// precision by making the reported energy unreproducible, which is the worse
+/// trade: a memory bound that is 8x loose is a performance problem, an energy
+/// that moves with the thread count is a correctness one.
+/// Smallest per-task ceiling that still lets the blocked panels make
+/// meaningful progress.
+const MIN_PER_TASK: usize = 64 * 1024 * 1024;
+
+/// The worker count the per-task share is computed against.
+///
+/// A FIXED constant, not `rayon::current_num_threads()`. See defect 3 in
+/// [`per_task_budget_bytes`]'s doc: this divisor sizes two k-blocking widths, so
+/// an ambient divisor made the reported energy a function of
+/// `RAYON_NUM_THREADS`. 8 is the nominal shared-box worker count on the
+/// machines ferric is developed and benchmarked on; a run with more active
+/// workers than this warns via [`warn_if_task_workers_exceed_nominal`] rather
+/// than silently re-sizing the panels.
+const NOMINAL_TASK_WORKERS: usize = 8;
+
 fn per_task_budget_bytes(explicit: Option<usize>) -> usize {
-    /// Smallest per-task ceiling that still lets the blocked panels make
-    /// meaningful progress.
-    const MIN_PER_TASK: usize = 64 * 1024 * 1024;
-    let threads = rayon::current_num_threads().max(1);
     let total = ferric_core::memory::resolve_budget_bytes(explicit);
-    let share = total / threads;
-    if share < MIN_PER_TASK {
-        eprintln!(
-            "ferric WARNING [Laplace-MP2]: the {:.2} GiB memory budget split over {threads} \
-             rayon threads gives {:.0} MiB per task, below the {:.0} MiB floor the blocked \
-             quadrature panels need. Using the floor, so the aggregate peak may reach {:.2} GiB \
-             — ABOVE the budget. Raise [memory] budget_gb / FERRIC_MEM_BUDGET_GB, or lower \
-             RAYON_NUM_THREADS.",
-            total as f64 / (1024.0 * 1024.0 * 1024.0),
-            share as f64 / (1024.0 * 1024.0),
-            MIN_PER_TASK as f64 / (1024.0 * 1024.0),
-            (MIN_PER_TASK.saturating_mul(threads)) as f64 / (1024.0 * 1024.0 * 1024.0),
-        );
-        return MIN_PER_TASK;
+    let share = total / NOMINAL_TASK_WORKERS;
+    // The floor is a memory statement, not a numerics one: it never varies with
+    // anything ambient, so a floored run is still reproducible from its config.
+    share.max(MIN_PER_TASK)
+}
+
+/// Warn when the live pool is wider than [`NOMINAL_TASK_WORKERS`].
+///
+/// [`per_task_budget_bytes`] divides by a constant so the panel widths — and
+/// hence the energy — do not move with the thread count. The memory consequence
+/// is real and belongs on stderr: with `n` active workers each holding one
+/// per-point panel set, the aggregate peak is `n / NOMINAL_TASK_WORKERS` times
+/// the per-task share.
+///
+/// Deliberately a SEPARATE function from the width computation. Folding this
+/// check into `per_task_budget_bytes` is what coupled the two in the first
+/// place: the moment an ambient quantity can change the returned bytes, it can
+/// change the fold order. Here it can only change what is printed.
+fn warn_if_task_workers_exceed_nominal(explicit: Option<usize>, stage: &str) {
+    let workers = rayon::current_num_threads().max(1);
+    if workers <= NOMINAL_TASK_WORKERS {
+        return;
     }
-    share
+    let total = ferric_core::memory::resolve_budget_bytes(explicit);
+    let share = per_task_budget_bytes(explicit);
+    let gib = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
+    eprintln!(
+        "ferric WARNING [Laplace-MP2 {stage}]: {workers} rayon workers are active but the \
+         per-task panel ceiling is sized for {NOMINAL_TASK_WORKERS} ({:.2} GiB each, from a \
+         {:.2} GiB budget), so the aggregate per-point peak may reach {:.2} GiB — ABOVE the \
+         budget. The ceiling is deliberately NOT divided by the live worker count: it sizes a \
+         k-blocking width, and an ambient divisor would make the reported energy depend on \
+         RAYON_NUM_THREADS. To bring the peak back under the budget, lower RAYON_NUM_THREADS \
+         to {NOMINAL_TASK_WORKERS} or raise [memory] budget_gb / FERRIC_MEM_BUDGET_GB \
+         (either leaves the energy unchanged only if you keep the budget fixed).",
+        gib(share),
+        gib(total),
+        gib(share.saturating_mul(workers)),
+    );
+}
+
+/// Test hook for [`per_task_budget_bytes`].
+///
+/// `mwe_laplace_width_is_thread_independent.rs` needs to call this under pinned
+/// rayon pools of several sizes. Exposed for the same reason
+/// `rimp2::mo_stream_chunk_for_test` and
+/// `ferric_rpa::properties::dipole_band_width_for_test` are: a width that
+/// k-blocks a reduction must be observable from a test that controls the worker
+/// count, because a test using the ambient pool cannot see a worker-dependent
+/// defect at all.
+#[doc(hidden)]
+pub fn per_task_budget_bytes_for_test(explicit: Option<usize>) -> usize {
+    per_task_budget_bytes(explicit)
+}
+
+/// The two panel widths [`per_task_budget_bytes`] sizes, for tests.
+///
+/// Returns `(block_mu, block_p)` for the given shape, computed with the SAME
+/// expressions as `compute_ao` and [`laplace_exchange_energy`].
+///
+/// # Why a test needs these and not just the byte ceiling
+///
+/// Both widths end in a `clamp(1, ..)` at full width. A budget large enough to
+/// reach that clamp yields full width at EVERY worker count, so a thread-
+/// invariance test run at such a budget passes whether or not the divisor is
+/// ambient — it measures the clamp, not the mechanism. Measured on
+/// water/cc-pVDZ (nbas=24, naux=84): full width needs only a 0.7 MiB share, far
+/// below the 64 MiB [`MIN_PER_TASK`] floor, so on water these widths can never
+/// bind and the defect is unreachable at that scale.
+///
+/// A test must therefore assert its own regime is one where the widths actually
+/// vary. Benzene/cc-pVDZ at a 0.5 GiB budget is the smallest such point:
+/// `block_p` was 362/181/120/45 at 1/2/3/12 workers under the ambient divisor,
+/// and is a constant 45 now.
+#[doc(hidden)]
+pub fn laplace_panel_widths_for_test(
+    explicit: Option<usize>, naux: usize, nbas: usize, nocc: usize,
+) -> (usize, usize) {
+    let task_budget = per_task_budget_bytes(explicit);
+    let mu_row_bytes = naux.max(1) * nbas.max(1) * 8 * 2;
+    let block_mu = (task_budget / mu_row_bytes.max(1)).clamp(1, nbas.max(1));
+    // Mirrors laplace_exchange_energy: rows = naux*nocc, one P contributes
+    // nocc rows x (naux*nocc) cols x 8 bytes to y_blk.
+    let rows = naux.max(1) * nocc.max(1);
+    let row_bytes = rows.max(1) * nocc.max(1) * 8;
+    let block_p = (task_budget / row_bytes.max(1)).clamp(1, naux.max(1));
+    (block_mu, block_p)
 }
 
 /// Row-sparse representation of a B^P slice (nbas × nbas matrix).
@@ -587,6 +698,7 @@ impl LaplaceMp2 {
             1.1,
         );
 
+        warn_if_task_workers_exceed_nominal(self.memory_budget_bytes, "MO quadrature");
         let k_budget = per_task_budget_bytes(self.memory_budget_bytes);
 
         // 2. Parallel quadrature over points
@@ -742,6 +854,7 @@ impl LaplaceMp2 {
         // are allocated INSIDE the per-point par_iter, so every buffer is
         // multiplied by the active rayon thread count — the budget is already
         // divided by that count in per_task_budget_bytes().
+        warn_if_task_workers_exceed_nominal(self.memory_budget_bytes, "AO quadrature");
         let task_budget = per_task_budget_bytes(self.memory_budget_bytes);
         // J-term panel width over the μ (leading AO) axis. Each open μ-row of the
         // M and N panels is (naux · nbas · 8) bytes; hold two panels (M, N), so
@@ -760,7 +873,7 @@ impl LaplaceMp2 {
         // BLAS-under-rayon — callers must run with OPENBLAS_NUM_THREADS=1 (or
         // an equivalent with_blas_threads(1, ..) scope) per the project's
         // rayon/BLAS threading convention; nothing here raises BLAS threads.
-        let (e_os, e_ss): (f64, f64) = self.points.par_iter().zip(self.weights.par_iter()).map(|(&t, &w)| {
+        let e_terms: Vec<(f64, f64)> = self.points.par_iter().zip(self.weights.par_iter()).map(|(&t, &w)| {
             // --- J term in AO basis ---
             // Build pseudo-densities: sparse (domain-restricted) when Boys-localized,
             // dense (canonical) otherwise.
@@ -799,7 +912,40 @@ impl LaplaceMp2 {
 
             let e_ss_k = e_os_k - e_exch_k;
             (-w * e_os_k, -w * e_ss_k)
-        }).reduce(|| (0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1));
+        // `collect` then fold in ASCENDING QUADRATURE-POINT ORDER, not
+        // `.reduce(|| (0.0,0.0), ..)`.
+        //
+        // rayon's `reduce` is a TREE fold: it combines partial results in
+        // whatever shape the work-splitting produced, so the association of
+        // this float sum depends on the worker count and on how rayon happened
+        // to split the point range. That made the returned energy vary with
+        // `RAYON_NUM_THREADS` independently of the panel-width defect fixed in
+        // `per_task_budget_bytes` — same config, different last digits.
+        //
+        // "Deterministic" is not "bit-identical": a tree fold IS deterministic
+        // for a fixed pool and split, and is still not reproducible across
+        // pools. Collecting into a Vec (indexed, so the order is the point
+        // order) and summing serially gives one fixed association for every
+        // worker count. n_quad is small — 3 to 9 — so the serial sum is free.
+        //
+        // HONESTY NOTE on the evidence for this half of the change. Mutating
+        // ONLY this fold back to `.par_iter().reduce(..)` — keeping the fixed
+        // divisor — leaves `laplace_energy_is_thread_independent.rs` GREEN at
+        // n_quad = 5 and 7 on benzene/cc-pVDZ across 1/2/3/12 workers. rayon
+        // does not split a range that short into a differently-shaped tree at
+        // those worker counts, so the reassociation never happens there.
+        //
+        // So this is a HARDENING change with no measured failure behind it, not
+        // a demonstrated bugfix — unlike the divisor above, whose mutant shifts
+        // the benzene correlation energy by 2.5e-13 Ha between 1 and 2 workers.
+        // It is kept because the property it buys is structural (the fold order
+        // is now a pure function of the point order, at any n_quad and any pool)
+        // and it costs nothing at n_quad ≤ 9, not because a test caught it.
+        // Do not cite this line as a fixed defect.
+        }).collect::<Vec<(f64, f64)>>();
+        let (e_os, e_ss) = e_terms
+            .iter()
+            .fold((0.0f64, 0.0f64), |acc, &(os, ss)| (acc.0 + os, acc.1 + ss));
 
         Ok((e_os + e_ss, e_os, e_ss))
     }
@@ -1020,6 +1166,7 @@ impl LaplaceMp2 {
         // before entering the quadrature loop.
         drop(b_ao);
 
+        warn_if_task_workers_exceed_nominal(self.memory_budget_bytes, "SOS AO quadrature");
         let task_budget = per_task_budget_bytes(self.memory_budget_bytes);
         let mu_row_bytes = naux.max(1) * nbas.max(1) * 8 * 2;
         let block_mu = (task_budget / mu_row_bytes.max(1)).clamp(1, nbas.max(1));
