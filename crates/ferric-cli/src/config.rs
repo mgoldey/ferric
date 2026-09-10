@@ -725,6 +725,29 @@ pub struct RpaCfg {
     /// in the NPZ bundle (`c6_iso`, `c6_aniso`, `alpha_atomic_dynamic`,
     /// `c6_freqs`, `c6_weights`). Default: true when `export_npz` is set.
     pub compute_c6: Option<bool>,
+    /// Accept an NPZ bundle that is MISSING one or more requested properties,
+    /// and still exit 0. Default: false (an incomplete bundle fails the run).
+    ///
+    /// # Why the default is false
+    ///
+    /// Each property in the export path is computed in a
+    /// `match { Ok => Some, Err => { warn; None } }` arm, and the bundle is
+    /// written regardless with the gaps as absent arrays. With no non-zero exit
+    /// anywhere in that block, a run whose polarizability step was refused by
+    /// the memory gate produced a well-formed, feature-poor NPZ and reported
+    /// success — indistinguishable to a caller from a complete one except by
+    /// re-reading stderr.
+    ///
+    /// That is how a 500-molecule QM9 feature regeneration lost `alpha_atomic`
+    /// on 476 of 500 molecules without a single failing job.
+    ///
+    /// The per-property warnings remain: a partial bundle is sometimes what a
+    /// user wants, and forcing a re-run of an expensive SCF to recover the
+    /// properties that DID work would be worse. What the default changes is
+    /// only that the run stops claiming success. Set this to `true` to opt back
+    /// in when gaps are acceptable — the honest form of what used to be
+    /// implicit.
+    pub allow_partial_npz: Option<bool>,
     /// C6 polarizability source. One of:
     ///   "ts"   — Tkatchenko-Scheffler single-pole model (default)
     ///   "pdep" — true PDEP-RPA dynamic α(iω) on the RPA quadrature grid
