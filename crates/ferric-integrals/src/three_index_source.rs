@@ -353,6 +353,38 @@ pub struct AuxBlock<'a> {
 enum Backend {
     InCore(Array3<f64>),
     DiskSpill { file: File, scratch: Array3<f64> },
+    /// Rebuild each aux block on demand instead of storing the tensor.
+    ///
+    /// The middle ground this type used to lack. There were only two modes --
+    /// whole tensor resident, or whole tensor on disk -- so a budget either
+    /// admitted an allocation up to 100% of itself or fell off the cliff
+    /// [`spill_warning_text`] describes: `DfK::build` re-reads the ENTIRE
+    /// spilled tensor on every SCF iteration.
+    ///
+    /// Recompute has the SAME one-block footprint as the spill path but writes
+    /// nothing and re-reads nothing, trading integral recompute for that IO.
+    ///
+    /// ```text
+    ///   backend      resident        disk    per-pass cost
+    ///   InCore       naux·nao²·8     none    none
+    ///   Recompute    block·nao²·8    NONE    recompute integrals
+    ///   DiskSpill    block·nao²·8    full    re-read the whole file
+    /// ```
+    ///
+    /// Holds `Arc<PreparedBasis>` rather than borrowing, deliberately. A
+    /// borrow forces a lifetime onto `ThreeIndexSource`, and
+    /// `fock_assembly::build_df_jk` builds its `dfbs` as a LOCAL and returns
+    /// the `DfJ`/`DfK` that hold the source — so a borrowing backend cannot
+    /// outlive it, on exactly the SCF J/K path that benefits most. An `Arc`
+    /// owns the base, keeps it alive, and leaves every existing call site and
+    /// struct field untouched. `PreparedBasis` is already `Send + Sync` with a
+    /// proper `Drop`, so this needs no new unsafe.
+    Recompute {
+        op: Operator,
+        obs: std::sync::Arc<PreparedBasis>,
+        dfbs: std::sync::Arc<PreparedBasis>,
+        scratch: Array3<f64>,
+    },
 }
 
 impl std::fmt::Debug for ThreeIndexSource {
@@ -387,6 +419,71 @@ pub struct ThreeIndexSource {
 impl ThreeIndexSource {
     /// `budget_bytes` is the hard ceiling for the resident raw 3-index footprint.
     /// Builds the FULL aux range `[0, naux)`.
+    /// Like [`Self::build`], but RECOMPUTES over-budget blocks instead of
+    /// spilling them to disk.
+    ///
+    /// In-core when the tensor fits the budget — byte-identical to
+    /// [`Self::build`] in that case. When it does not fit, this holds one
+    /// block and rebuilds each from `eri3_block` as `for_each_block` walks the
+    /// tensor, so it writes nothing and re-reads nothing.
+    ///
+    /// # Which to call
+    ///
+    /// Prefer this wherever the source is streamed more than once — an SCF
+    /// J/K build streams it every iteration, so the spill path pays its whole
+    /// file in IO per iteration (11.4 min/iteration at danuglipron/def2-TZVP
+    /// scale even after the μν packing). Recompute pays integrals instead.
+    ///
+    /// [`Self::build`] remains for callers that stream ONCE, where reading a
+    /// spilled file back is cheaper than recomputing integrals, and for the
+    /// DRESSED path, which cannot be rebuilt from the bases alone (it needs
+    /// the metric).
+    ///
+    /// Takes `Arc`s rather than references so the source can outlive the
+    /// caller's bases. A borrow would force a lifetime onto
+    /// `ThreeIndexSource`, and `fock_assembly::build_df_jk` builds its `dfbs`
+    /// as a LOCAL and returns the `DfJ`/`DfK` that hold the source — so a
+    /// borrowing backend cannot outlive it, on exactly the SCF J/K path that
+    /// benefits most. An `Arc` owns the base and keeps it alive, which is also
+    /// why every existing call site and struct field is untouched.
+    /// `PreparedBasis` is already `Send + Sync` with a proper `Drop`, so this
+    /// needs no new unsafe.
+    pub fn build_recomputing(
+        op: Operator,
+        obs: std::sync::Arc<PreparedBasis>,
+        dfbs: std::sync::Arc<PreparedBasis>,
+        budget_bytes: usize,
+    ) -> Result<Self, FerricError> {
+        let naux = dfbs.nbasis();
+        let nao = obs.nbasis();
+        let needed = naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
+        if needed <= budget_bytes {
+            // Fits: identical to `build`'s in-core branch.
+            let eri = crate::threeindex::eri3_block(op, &obs, &dfbs, 0, naux)?;
+            return Ok(Self {
+                naux,
+                nao,
+                block_naux: naux.max(1),
+                band_p0: 0,
+                band_p1: naux,
+                backend: Backend::InCore(eri),
+            });
+        }
+        // Over budget: one resident block, rebuilt per pass. `spill_block_naux_for`
+        // is reused for the width; only ONE block is live here (versus two on the
+        // spill pipeline), so that sizing is conservative for this backend.
+        let block_naux = spill_block_naux_for(budget_bytes, nao).min(naux.max(1));
+        let scratch = Array3::<f64>::zeros((block_naux, nao, nao));
+        Ok(Self {
+            naux,
+            nao,
+            block_naux,
+            band_p0: 0,
+            band_p1: naux,
+            backend: Backend::Recompute { op, obs, dfbs, scratch },
+        })
+    }
+
     pub fn build(
         op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis, budget_bytes: usize,
     ) -> Result<Self, FerricError> {
@@ -837,6 +934,16 @@ impl ThreeIndexSource {
         v
     }
 
+    /// Is this source backed by on-demand recompute?
+    ///
+    /// Test hook, paired with [`Self::is_spilled_for_test`]: a contract that
+    /// cannot see WHICH backend it got cannot distinguish "recomputed
+    /// correctly" from "silently still spilling".
+    #[doc(hidden)]
+    pub fn is_recompute_for_test(&self) -> bool {
+        matches!(self.backend, Backend::Recompute { .. })
+    }
+
     /// Is this source backed by the disk spill?
     ///
     /// Test hook. A reachability guard that cannot see which backend it got
@@ -884,6 +991,28 @@ impl ThreeIndexSource {
                     let l1 = (l0 + self.block_naux).min(band);
                     let view = eri.slice(ndarray::s![l0..l1, .., ..]);
                     f(AuxBlock { p0: band_p0 + l0, data: view })?;
+                }
+                Ok(())
+            }
+            Backend::Recompute { op, obs, dfbs, scratch } => {
+                // Rebuild each block from the bases rather than reading it back.
+                //
+                // BIT-IDENTICAL to what the in-core backend would have stored:
+                // `eri3_block` is a pure function of (op, obs, dfbs, p0, p1)
+                // and write-once per element, and nothing is summed across
+                // blocks here, so there is no reassociation to worry about.
+                // Pinned by `mwe_recompute_backend_avoids_disk.rs` CONTRACT 1.
+                let nb = band.div_ceil(self.block_naux.max(1));
+                for i in 0..nb {
+                    let l0 = i * self.block_naux;
+                    let l1 = (l0 + self.block_naux).min(band);
+                    let p0 = band_p0 + l0;
+                    let p1 = band_p0 + l1;
+                    let blk = crate::threeindex::eri3_block(*op, obs, dfbs, p0, p1)?;
+                    let b = l1 - l0;
+                    scratch.slice_mut(ndarray::s![0..b, .., ..]).assign(&blk);
+                    let view = scratch.slice(ndarray::s![0..b, .., ..]);
+                    f(AuxBlock { p0, data: view })?;
                 }
                 Ok(())
             }
