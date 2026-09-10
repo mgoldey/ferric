@@ -71,8 +71,76 @@ impl MemoryCfg {
 
     /// The unified budget in bytes for passing as an explicit `Option<usize>` to
     /// method configs / the resolver.
+    ///
+    /// Callers should run [`MemoryCfg::validate`] first — an unusable figure
+    /// reaches `gib_to_bytes` as `0` here, which `resolve_budget` treats as
+    /// "unset". [`MemoryCfg::validate`]'s doc explains why that is an inversion
+    /// rather than a degradation.
     pub fn budget_bytes(&self) -> Option<usize> {
         self.budget_gb().map(ferric_core::memory::gib_to_bytes)
+    }
+
+    /// Reject a `budget_gb` that cannot mean what the user wrote.
+    ///
+    /// # The inversion this prevents
+    ///
+    /// `gib_to_bytes` maps NaN and any non-positive input to `0`, and truncates
+    /// a positive-but-sub-byte figure to `0` as well. `resolve_budget` then
+    /// documents `0` as "unset" (`if b > 0`) and falls through to
+    /// `0.8 × detect_available_bytes()`.
+    ///
+    /// So `budget_gb = -4.0` (a typo'd sign), `budget_gb = 0.0` ("use no extra
+    /// memory") and `budget_gb = 1e-12` each ask for the tightest possible
+    /// ceiling and receive the LOOSEST one available — 80% of the whole box.
+    /// That reaches every method, because `budget_bytes()` is the single value
+    /// threaded into all of them, and the only trace was the audit line saying
+    /// `[source: auto (0.8 × available RAM)]` where the user expected
+    /// `explicit`.
+    ///
+    /// # Why erroring is this config's own convention
+    ///
+    /// Every config struct here carries `#[serde(deny_unknown_fields)]`, so a
+    /// typo'd KEY is already fatal, and the string knobs
+    /// (`QuadratureScheme`/`C6Source`/`DispersionPartition::parse_config_str`)
+    /// all hard-error on an unknown VALUE rather than silently defaulting. The
+    /// one knob that bounds memory should not be the exception — least of all
+    /// when its silent-default direction is "ignore the limit entirely".
+    ///
+    /// # Scope
+    ///
+    /// The check is on the RESOLVED BYTE COUNT, not the sign of the input: a
+    /// sign-only test would accept `1e-12`, which truncates to zero and inverts
+    /// identically. It covers the deprecated `three_index_budget_gb` alias too,
+    /// since that feeds the same [`MemoryCfg::budget_gb`] accessor.
+    ///
+    /// An ABSENT budget stays valid and still means auto-detect — the bug is
+    /// only that an unusable PRESENT one was indistinguishable from absent.
+    ///
+    /// Inert on every currently-valid config: any positive figure that maps to
+    /// a nonzero byte count resolves to the identical value it did before. Only
+    /// inputs that today silently mean "auto" begin to error.
+    pub fn validate(&self) -> Result<(), String> {
+        let Some(gb) = self.budget_gb() else {
+            return Ok(()); // absent: auto-detect, as documented.
+        };
+        let which =
+            if self.budget_gb.is_some() { "budget_gb" } else { "three_index_budget_gb (budget_gb)" };
+        if !gb.is_finite() || gb <= 0.0 {
+            return Err(format!(
+                "[memory] {which} = {gb} is not a usable budget: it must be finite and > 0. \
+                 A non-positive or NaN value resolves to 0 bytes, which ferric treats as \
+                 \"unset\" and replaces with 0.8 x available RAM — the opposite of what you \
+                 asked for. Remove the key to request auto-detection explicitly."
+            ));
+        }
+        if ferric_core::memory::gib_to_bytes(gb) == 0 {
+            return Err(format!(
+                "[memory] {which} = {gb} rounds to 0 bytes, which ferric treats as \"unset\" \
+                 and replaces with 0.8 x available RAM — the opposite of what you asked for. \
+                 Use a value of at least 1e-9 GiB, or remove the key to request auto-detection."
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1170,7 +1238,16 @@ impl ScfCfg {
 pub fn load_config(path: &str) -> Result<Config, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read config file {path:?}: {e}"))?;
-    toml::from_str(&text).map_err(|e| format!("{path}: {e}"))
+    let cfg: Config = toml::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
+    // Post-parse semantic validation. `deny_unknown_fields` already rejects a
+    // typo'd KEY at parse time; this catches a typo'd VALUE whose silent
+    // fall-through would be worse than an error. See `MemoryCfg::validate`.
+    //
+    // Validating HERE rather than at the lib.rs use site means every entry
+    // point is covered by construction — the CLI, and `ferric-batch`'s
+    // per-child TOML rewriting, which does not go through lib.rs's checks.
+    cfg.memory.validate().map_err(|e| format!("{path}: {e}"))?;
+    Ok(cfg)
 }
 
 #[cfg(test)]
