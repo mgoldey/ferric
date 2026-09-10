@@ -770,6 +770,11 @@ pub(crate) fn preflight_grid_path(
         // `run_pdep_rpa` first, and ITS preflight charges the stack from the
         // live config flag — so charging it again here would double-count.
         need_inv_dielectric: false,
+        // The AO tensor belongs to the INTERMEDIATES stage, which
+        // `run_pdep_rpa`'s preflight already charges from the same budget
+        // before this grid accumulation runs. Charging it again here would
+        // double-count and refuse property jobs that fit.
+        nao: 0,
     });
     ferric_core::memory::check_alloc(label, est, budget)?;
     Ok(budget)

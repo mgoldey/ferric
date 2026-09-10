@@ -313,6 +313,10 @@ fn preflight_check_closed_shell(
         n_workers,
         n_keep,
         grid: None,
+        // The resident (naux, nao, nao) AO tensor that ThreeIndexSource holds
+        // while b_ov streams out of it. Charged at the in-core size, which is
+        // what this very budget admits.
+        nao: nbas,
         // Read the live flag, not a constant: under it the per-frequency
         // inverse-dielectric stack is RETAINED, so n_quad multiplies peak bytes
         // instead of only wall time. ferric_gw sets this for every GW method.
@@ -884,11 +888,16 @@ pub fn run_u_pdep_rpa(
         let est_a = budget::estimate_peak_bytes(budget::PeakEstimateShape {
             naux, nocc: nocc_a, nvir: nvir_a, n_quad: config.quadrature.n_points, n_workers, n_keep,
             grid: None,
+            nao: nbas,
             need_inv_dielectric: config.need_inv_dielectric_freq,
         });
         let est_b = budget::estimate_peak_bytes(budget::PeakEstimateShape {
             naux, nocc: nocc_b, nvir: nvir_b, n_quad: config.quadrature.n_points, n_workers, n_keep,
             grid: None,
+            // The AO tensor is spin-INDEPENDENT (one (naux, nao, nao) source
+            // feeds both channels), so it is charged on the alpha shape only —
+            // charging it twice would refuse U-RPA jobs that fit.
+            nao: 0,
             need_inv_dielectric: false,
         });
         let est = est_a.saturating_add(est_b);
