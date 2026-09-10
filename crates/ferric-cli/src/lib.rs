@@ -1948,6 +1948,18 @@ fn run_pdep_rpa_arm(
             let compute_ef = cfg.rpa.compute_electric_field.unwrap_or(true);
             let compute_alpha_atomic = cfg.rpa.compute_alpha_atomic.unwrap_or(true);
 
+            // Properties that were REQUESTED and did not make it into the
+            // bundle. Every arm below is `Err(e) => { warn; None }`, and the
+            // bundle is written regardless with the gaps as absent arrays --
+            // which used to leave the process exiting 0 on an incomplete file.
+            // See `RpaCfg::allow_partial_npz` for the incident.
+            //
+            // Recording the REQUESTED-and-failed set, rather than counting
+            // absent fields in the finished bundle, is the distinction that
+            // keeps a deliberately disabled property (`compute_c6 = false`)
+            // from reading as a failure.
+            let mut npz_gaps: Vec<String> = Vec::new();
+
             let coords_arr = {
                 let mut a = Array2::<f64>::zeros((mol.atoms.len(), 3));
                 for (i, atom) in mol.atoms.iter().enumerate() {
@@ -1965,6 +1977,7 @@ fn run_pdep_rpa_arm(
                     Ok(v) => Some(v),
                     Err(e) => {
                         eprintln!("warning: esp_at_atoms failed: {e}");
+                        npz_gaps.push(format!("esp_atoms: {e}"));
                         None
                     }
                 }
@@ -1977,6 +1990,7 @@ fn run_pdep_rpa_arm(
                     Ok(v) => Some(v),
                     Err(e) => {
                         eprintln!("warning: electric_field_at_atoms failed: {e}");
+                        npz_gaps.push(format!("electric_field: {e}"));
                         None
                     }
                 }
@@ -1997,6 +2011,7 @@ fn run_pdep_rpa_arm(
                     }
                     Err(e) => {
                         eprintln!("warning: polarizability failed: {e}");
+                        npz_gaps.push(format!("alpha_tensor (polarizability): {e}"));
                         None
                     }
                 }
@@ -2019,6 +2034,7 @@ fn run_pdep_rpa_arm(
                     }
                     Err(e) => {
                         eprintln!("warning: per-atom α (Hirshfeld) failed: {e}");
+                        npz_gaps.push(format!("alpha_atomic (per-atom α): {e}"));
                         None
                     }
                 }
@@ -2435,6 +2451,17 @@ fn run_pdep_rpa_arm(
                     alpha_dyn_v = res.per_atom_dynamic.per_atom.clone();
                     c6_iso_opt = Some(res.c6_iso_pair.clone());
                     c6_aniso_v = res.c6_aniso_pair.clone();
+                } else {
+                    // Recorded HERE rather than in the arms above because the
+                    // TS branch computes inside a closure (which cannot also
+                    // borrow `npz_gaps` mutably). Reaching this point with
+                    // `compute_c6` true means C6 was requested and every path
+                    // to it warned and bailed; the specific reason is already
+                    // on stderr from those arms.
+                    npz_gaps.push(
+                        "c6_iso/c6_aniso/alpha_atomic_dynamic (see the C6 warning above)"
+                            .to_string(),
+                    );
                 }
             }
 
@@ -2492,9 +2519,14 @@ fn run_pdep_rpa_arm(
                     c6_aniso: if c6_aniso_v.is_empty() { None } else { Some(c6_aniso_v.as_slice()) },
                 },
             };
-            if let Err(e) = export_npz(npz_path, &npz_bundle) {
-                eprintln!("warning: failed to write {}: {}", npz_path, e);
+            // A file the caller asked for and did not get is not a warning.
+            let write_failed = if let Err(e) = export_npz(npz_path, &npz_bundle) {
+                eprintln!("error: failed to write {}: {}", npz_path, e);
+                true
             } else {
+                false
+            };
+            if !write_failed {
                 println!("Wrote NPZ feature bundle: {}", npz_path);
                 if c6_iso_opt.is_some() {
                     println!(
@@ -2504,6 +2536,41 @@ fn run_pdep_rpa_arm(
                          correct DOSD-comparable value, or docs/dosd-c6-rpa-vs-ts.md)."
                     );
                 }
+            }
+
+            // Refuse to report success on a bundle that is missing something
+            // the caller asked for.
+            //
+            // Each arm above warns and continues, which is often the right
+            // trade -- the SCF is expensive and the properties that DID work
+            // are worth keeping. What was wrong is that the PROCESS then exited
+            // 0, making an incomplete NPZ indistinguishable from a complete one
+            // to any caller that does not re-read stderr. A 500-molecule QM9
+            // feature regeneration lost `alpha_atomic` on 476 of 500 molecules
+            // that way, with 500 apparent successes.
+            //
+            // The file is still written before this check: a partial bundle is
+            // salvageable, and deleting it would throw away work. Only the exit
+            // status changes.
+            let allow_partial = cfg.rpa.allow_partial_npz.unwrap_or(false);
+            if (!npz_gaps.is_empty() || write_failed) && !allow_partial {
+                eprintln!(
+                    "error: the NPZ bundle is incomplete — {} requested propert{} failed:",
+                    npz_gaps.len() + usize::from(write_failed),
+                    if npz_gaps.len() + usize::from(write_failed) == 1 { "y" } else { "ies" },
+                );
+                for g in &npz_gaps {
+                    eprintln!("  - {g}");
+                }
+                if write_failed {
+                    eprintln!("  - the bundle could not be written at all");
+                }
+                eprintln!(
+                    "Exiting nonzero so a caller does not mistake this for a complete \
+                     bundle. Raise [memory] budget_gb if a gate refused, or set \
+                     [rpa] allow_partial_npz = true to accept the gaps."
+                );
+                std::process::exit(1);
             }
         }
 }
