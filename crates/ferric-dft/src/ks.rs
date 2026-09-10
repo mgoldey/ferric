@@ -536,7 +536,25 @@ impl KsXc {
         // batch — see `check_grid_budget`'s doc comment for why re-resolving
         // (a live, SCF-allocation-shrinking reading in the auto-detect case)
         // between these two steps would be unsound.
-        let budget = ferric_core::memory::resolve_budget_bytes(memory_budget_bytes);
+        // Resolve ONCE (the invariant `check_grid_budget`'s doc states), and
+        // resolve to what is still AVAILABLE rather than to the whole ceiling.
+        //
+        // The grid AO cache is not the only thing live: a KS-DFT job holds the
+        // DF 3-index tensor at the same time, and each gate used to compare
+        // against 100% of the budget, so both passed and the process held the
+        // SUM. That is the non-composing-gates defect `plan.rs`'s module doc
+        // names first, and the audit's critical row here.
+        //
+        // `available_budget_now` subtracts live RSS and reserves a headroom
+        // fraction, mirroring PySCF's `max_memory - current_memory()` and its
+        // `.9` factor. Note this does NOT weaken the resolve-once invariant:
+        // the value is still computed exactly once per construction and reused
+        // for BOTH the Full-vs-Batched decision and `resolve_batch_size`'s
+        // sizing. The doc's warning is against resolving more than once, not
+        // against which figure is resolved.
+        let budget = ferric_core::memory::available_budget_now(
+            ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
+        );
         // The plane count depends on the functional rung, so `is_mgga` has to
         // be known *before* the Full-vs-Batched decision and the batch sizing
         // — not just before the Fock builds that consume it.
@@ -733,7 +751,25 @@ impl KsXcUks {
         let nbf = nbasis(mol, bs)?;
         // See `KsXc::new` — resolve the budget ONCE and reuse it for both the
         // decision and the batch sizing.
-        let budget = ferric_core::memory::resolve_budget_bytes(memory_budget_bytes);
+        // Resolve ONCE (the invariant `check_grid_budget`'s doc states), and
+        // resolve to what is still AVAILABLE rather than to the whole ceiling.
+        //
+        // The grid AO cache is not the only thing live: a KS-DFT job holds the
+        // DF 3-index tensor at the same time, and each gate used to compare
+        // against 100% of the budget, so both passed and the process held the
+        // SUM. That is the non-composing-gates defect `plan.rs`'s module doc
+        // names first, and the audit's critical row here.
+        //
+        // `available_budget_now` subtracts live RSS and reserves a headroom
+        // fraction, mirroring PySCF's `max_memory - current_memory()` and its
+        // `.9` factor. Note this does NOT weaken the resolve-once invariant:
+        // the value is still computed exactly once per construction and reused
+        // for BOTH the Full-vs-Batched decision and `resolve_batch_size`'s
+        // sizing. The doc's warning is against resolving more than once, not
+        // against which figure is resolved.
+        let budget = ferric_core::memory::available_budget_now(
+            ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
+        );
         // See `KsXc::new_with_omega` — the rung feeds the plane count, so it
         // must be known before the budget decision, not after it.
         let is_mgga = xc.funcs.iter().any(|f| matches!(f.family(), FunctionalFamily::MetaGga));

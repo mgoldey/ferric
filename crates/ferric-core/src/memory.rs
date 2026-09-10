@@ -290,6 +290,61 @@ pub fn read_own_rss_bytes() -> Option<usize> {
     parse_vm_rss_bytes(&contents)
 }
 
+/// Fraction of the budget a composing gate may hand out, holding the rest back
+/// as headroom.
+///
+/// PySCF uses the same idea and the same magnitude (`pyscf/df/df.py:167`
+/// compares against `.9*max_memory`). Admitting an allocation that exactly
+/// fills the remaining ceiling leaves nothing for the temporaries the consumer
+/// builds on top of it — the GEMM output, the scratch, the copy — so the last
+/// tenth is reserved rather than spent.
+pub const BUDGET_HEADROOM_FRACTION: f64 = 0.9;
+
+/// What is still available for a NEW allocation, given the budget and the
+/// bytes already resident.
+///
+/// # Why this exists
+///
+/// Every gate in the tree compares its allocation against the WHOLE budget
+/// (`if needed <= budget`), so two simultaneously-live stages each pass
+/// independently and the process holds their SUM.
+/// [`crate::memory::plan`]'s module doc names this first among the three
+/// defects it was written to fix: "The gates do not compose ... Exactly one
+/// site in the tree accounts for prior residency."
+///
+/// The audit's concrete instance: a KS-DFT job holds the DF 3-index tensor AND
+/// the grid AO cache at once, each sized against 100% of `budget_gb`.
+///
+/// This mirrors PySCF's `max_memory - lib.current_memory()[0]`, with ferric's
+/// existing [`read_own_rss_bytes`] as the reader — which until now was used
+/// only observationally, by [`warn_if_rss_over`], i.e. AFTER a stage had
+/// already allocated.
+///
+/// # Behaviour at the edges, each pinned by `mwe_budget_gates_compose.rs`
+///
+/// * `resident_bytes = None` (RSS unreadable — a container or non-Linux) is
+///   treated as "nothing resident", preserving the previous behaviour exactly.
+///   Treating it as "nothing available" would refuse every job on such a
+///   system; observability must never break the computation it watches.
+/// * Over-subscription saturates at 0 rather than wrapping. `budget - rss`
+///   underflows once a stage has exceeded the ceiling — a reachable state, it
+///   is precisely what `warn_if_rss_over` reports — and a wrapped `usize` would
+///   become a near-infinite budget admitting everything, the exact inversion of
+///   the gate's purpose.
+pub fn available_budget_bytes(budget_bytes: usize, resident_bytes: Option<usize>) -> usize {
+    let resident = resident_bytes.unwrap_or(0);
+    let remaining = budget_bytes.saturating_sub(resident);
+    (remaining as f64 * BUDGET_HEADROOM_FRACTION) as usize
+}
+
+/// [`available_budget_bytes`] reading this process's live RSS.
+///
+/// The convenience form for gate call sites. Kept separate so the arithmetic
+/// stays a pure function that tests can drive without allocating.
+pub fn available_budget_now(budget_bytes: usize) -> usize {
+    available_budget_bytes(budget_bytes, read_own_rss_bytes())
+}
+
 /// Stage-seam RSS safety net: if the CURRENT process's RSS exceeds
 /// `over_factor × budget_bytes`, emit ONE stderr warning line naming the
 /// stage, the actual RSS, and the budget — purely observational, NEVER a hard
