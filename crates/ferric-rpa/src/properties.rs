@@ -942,7 +942,27 @@ fn dipole_band_width_with_threads(
 ) -> usize {
     let per_partial_bytes =
         natoms.max(1) * 3 * nbf.max(1) * nbf.max(1) * std::mem::size_of::<f64>();
-    (budget_bytes / per_partial_bytes.max(1)).max(1)
+    // Spend a FRACTION of the budget on in-flight partials, not all of it.
+    //
+    // This used to be `budget_bytes / per_partial_bytes`, i.e. "make the band
+    // as wide as the whole budget allows". Because `estimate_peak_bytes` then
+    // charges for the band this function just sized, the pre-flight estimate
+    // became a function of the budget itself: raising the budget widened the
+    // band, which raised the estimate, which failed the check again one rung
+    // higher. Measured on a 9-atom aug-cc-pVDZ molecule (naux=648, nbf=207):
+    // budget 4 GB -> "requires 4.45 GB"; 8 GB -> "requires 8.74 GB"; 12 GB ->
+    // passes only because the 1024-chunk clamp finally binds. A gate whose
+    // requirement tracks its own limit cannot be satisfied by raising the
+    // limit, and it told users to do exactly that.
+    //
+    // The band is a throughput knob, never a correctness one (fold order is a
+    // pure function of `npts`), so capping it at a fraction costs at most some
+    // parallelism on tight budgets and keeps the estimate a property of the
+    // problem rather than of the budget.
+    const BAND_BUDGET_NUMER: usize = 1;
+    const BAND_BUDGET_DENOM: usize = 4;
+    let band_bytes = budget_bytes / BAND_BUDGET_DENOM * BAND_BUDGET_NUMER;
+    (band_bytes / per_partial_bytes.max(1)).max(1)
 }
 
 /// Rayon-parallel, thread-count-independent, MEMORY-BOUNDED accumulation of

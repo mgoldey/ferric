@@ -120,3 +120,63 @@ fn dipole_band_width_floors_at_one() {
         }
     }
 }
+
+/// CONTRACT 4: raising the budget must not raise the requirement.
+///
+/// The band width is derived from the budget, and `estimate_peak_bytes` then
+/// charges for the band. When the width took the WHOLE budget, those two facts
+/// closed a loop: a bigger budget bought a wider band, which raised the
+/// estimate by about as much, so the pre-flight gate refused the job again one
+/// rung higher. Measured on a 9-atom aug-cc-pVDZ molecule (naux=648, nbf=207,
+/// npts=74250) before the fix: budget 4 GB -> "requires 4.45 GB"; 8 GB ->
+/// "requires 8.74 GB"; the gate only passed at 12 GB, where the 1024-chunk
+/// clamp finally bound the width instead of the budget.
+///
+/// A gate whose requirement tracks its own limit cannot be satisfied by raising
+/// the limit — and "raise [memory] budget_gb" is exactly what its error message
+/// told users to do. The estimate must be a property of the problem.
+#[test]
+fn estimate_does_not_chase_the_budget() {
+    use ferric_rpa::budget::{
+        effective_dipole_band_width, estimate_peak_bytes, GridEstimateShape, PeakEstimateShape,
+    };
+
+    // The shape that exposed this in production.
+    let (naux, nocc, nvir, nbf, natoms, npts) = (648usize, 25usize, 182usize, 207usize, 9usize, 74_250usize);
+    let gib = 1024usize * 1024 * 1024;
+
+    let estimate_at = |budget: usize| -> usize {
+        let band = effective_dipole_band_width(dipole_band_width(natoms, nbf, budget, 4), npts);
+        estimate_peak_bytes(PeakEstimateShape {
+            naux,
+            nocc,
+            nvir,
+            n_quad: 1,
+            n_workers: 4,
+            n_keep: naux,
+            grid: Some(GridEstimateShape { npts, nbf, natoms, dipole_band_width: band, n_workers: 4 }),
+        })
+    };
+
+    let at_2 = estimate_at(2 * gib);
+    let at_16 = estimate_at(16 * gib);
+
+    // The requirement may grow slightly with the budget (a wider band IS more
+    // memory), but it must not grow fast enough to outrun the budget itself.
+    // Pre-fix this ratio was ~1.0 at every rung: the estimate sat just above
+    // whatever it was given.
+    assert!(
+        at_2 <= 2 * gib,
+        "a 2 GiB budget estimates {:.2} GiB — the estimate is tracking the budget, not the problem",
+        at_2 as f64 / gib as f64
+    );
+    let growth = (at_16 - at_2) as f64 / (14 * gib) as f64;
+    assert!(
+        growth < 0.5,
+        "estimate grew by {:.0}% of the added budget (2 GiB -> 16 GiB: {:.2} -> {:.2} GiB); \
+         a gate that consumes most of any budget it is given can never be satisfied",
+        growth * 100.0,
+        at_2 as f64 / gib as f64,
+        at_16 as f64 / gib as f64
+    );
+}
