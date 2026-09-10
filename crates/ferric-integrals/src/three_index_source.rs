@@ -933,17 +933,41 @@ mod tests {
     /// tripped a genuine construction bug at some width — would show up as a
     /// growing or width-correlated error, and that is what this pins.
     ///
-    /// # Context on the SCF-level number, so nobody over-reads it
+    /// # Context on the SCF-level number — an OPEN question, not a closed one
     ///
     /// Low-memory validation of benzene/cc-pVDZ PBE showed a 1.6e-5 Ha spread
-    /// in the SCF energy across spilled budgets (identical at every in-core
-    /// budget from 0.2 to 8 GiB). That is ~1e9x the tensor deviation, which
-    /// looks alarming until you note the CLI's DEFAULT convergence is
-    /// `energy_conv = 1e-3`, `density_conv = 1e-6`: a 1.6e-5 Ha spread is well
-    /// INSIDE that tolerance, so it reflects the SCF stopping at slightly
-    /// different points on the same surface rather than a corrupted tensor.
-    /// The tensor-level bound below is the honest statement; the SCF number is
-    /// a convergence-tolerance artifact, not evidence of a defect.
+    /// in the SCF energy across spilled budgets, identical at every in-core
+    /// budget from 0.2 to 8 GiB. That is ~1e9x the tensor deviation bounded
+    /// below.
+    ///
+    /// A first pass attributed that to the CLI's default convergence
+    /// (`energy_conv = 1e-3`, `density_conv = 1e-6`), i.e. the SCF stopping at
+    /// slightly different points on the same surface. **That explanation was
+    /// tested and REFUTED.** At `energy_conv = 1e-8`:
+    ///
+    /// ```text
+    ///   density_conv   in-core (0.2 GB)              spilled (0.002 GB)
+    ///   1e-6           60 iters  -231.9508327929     35 iters  -231.9508283116
+    ///   1e-7           60 iters  -231.9508327929     35 iters  -231.9508283116
+    /// ```
+    ///
+    /// The gap is 4.5e-6 Ha and does NOT shrink when the tolerance tightens by
+    /// a decade — it does not move at all. Both runs satisfy the same
+    /// convergence criterion and land on different energies, and the iteration
+    /// counts differ (60 vs 35, against 11 for both at default settings), so
+    /// the spilled path takes a different SCF trajectory and converges
+    /// somewhere else.
+    ///
+    /// So: the tensor deviation this test bounds is genuinely a few ulp, but
+    /// that does NOT by itself explain the SCF-level spread, and the mechanism
+    /// connecting them is UNRESOLVED. Candidates not yet ruled out: DIIS
+    /// amplifying a few-ulp perturbation into a different extrapolation path;
+    /// a second spill-path difference outside the dressed tensor (the DfK
+    /// re-read path, or the raw spill blocks); or a genuine convergence
+    /// pathology in benzene/PBE that the two trajectories expose differently.
+    ///
+    /// Do not cite this test as evidence the SCF-level difference is benign.
+    /// It bounds the tensor and nothing more.
     #[test]
     fn spilled_dressed_tensor_stays_within_a_few_ulp_of_in_core() {
         let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
