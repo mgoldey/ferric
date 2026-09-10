@@ -129,18 +129,53 @@ fn the_width_is_deterministic() {
     }
 }
 
-/// CONTRACT 6: a wider MO block gets a narrower chunk at a fixed budget.
+/// CONTRACT 6: a wider MO block gets a STRICTLY narrower chunk at a fixed
+/// budget.
 ///
 /// The transient is `chunk · width · 8`, so holding the budget fixed and
-/// growing `width` must shrink `chunk` — otherwise the bound is not actually
-/// tracking bytes.
+/// growing `width` must shrink `chunk` — otherwise the bound is not tracking
+/// bytes.
+///
+/// # This contract used to be vacuous
+///
+/// It compared `chunk_for(1_000, 4 MiB)` against `chunk_for(1_000_000, 4 MiB)`
+/// with `wide <= narrow`. BOTH are 32: the narrow side's raw value is exactly
+/// `MO_STREAM_CHUNK_MIN` and the wide side's raw value is 0, floored to the
+/// same 32. So it asserted `32 <= 32`, which holds for any implementation —
+/// including one that ignored `width` entirely. Found by an
+/// adversarially-verified audit, confirmed 3/3.
+///
+/// Fixed by choosing a regime where the mechanism is LIVE: at 4 MiB, width 500
+/// gives 65 (strictly between the floor and the 256 cap) and width 2000 gives
+/// 32. The assertion is now strict, and CONTRACT 7 pins that the operands are
+/// genuinely unclamped so this cannot silently lapse back.
 #[test]
 fn a_wider_mo_block_narrows_the_chunk() {
-    let budget = 4 * 1024 * 1024; // small enough that neither case hits the cap
-    let narrow = chunk_for(1_000, budget);
-    let wide = chunk_for(1_000_000, budget);
+    let budget = 4 * 1024 * 1024;
+    let narrow = chunk_for(500, budget);
+    let wide = chunk_for(2_000, budget);
     assert!(
-        wide <= narrow,
-        "a 1000x wider MO block must not get a wider chunk: {wide} vs {narrow}"
+        wide < narrow,
+        "a 4x wider MO block must get a STRICTLY narrower chunk: {wide} vs {narrow}. \
+         Equality means both operands are clamped and the comparison proves nothing."
+    );
+}
+
+/// CONTRACT 7 (the reachability guard for CONTRACT 6): its narrow operand must
+/// be unclamped.
+///
+/// The check whose absence let CONTRACT 6 compare 32 to 32 for however long.
+/// If the narrow side sits at the floor or the cap, the comparison is between
+/// two clamps rather than between two budget-derived widths, and a regression
+/// that ignored `width` would pass unnoticed.
+#[test]
+fn contract_6_operands_are_not_both_clamped() {
+    let budget = 4 * 1024 * 1024;
+    let narrow = chunk_for(500, budget);
+    assert!(
+        narrow > MIN && narrow < HISTORICAL,
+        "CONTRACT 6's narrow operand is {narrow}, which is at a clamp (floor {MIN}, cap \
+         {HISTORICAL}) — so that contract is comparing clamps, not widths, and asserts \
+         nothing about the budget arithmetic."
     );
 }
