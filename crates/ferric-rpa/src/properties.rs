@@ -904,6 +904,15 @@ pub(crate) fn preflight_molecular_path(
 /// 3-atom/nbf=24 shape: 1.0x at 2 threads, 6.0x at 12, 32.0x at 64), so a test
 /// that cannot vary the worker count cannot see the defect at all.
 #[doc(hidden)]
+/// Fraction of the resolved memory budget that in-flight dipole partials may
+/// occupy: `BAND_BUDGET_NUMER / BAND_BUDGET_DENOM`.
+///
+/// Module-scoped so the band-width tests assert against the SAME constants the
+/// implementation uses. They were function-local, which let a test hardcode the
+/// pre-fraction answer (10) and stay green until the fraction landed.
+const BAND_BUDGET_NUMER: usize = 1;
+const BAND_BUDGET_DENOM: usize = 4;
+
 pub fn dipole_band_width_for_test(
     natoms: usize, nbf: usize, budget_bytes: usize, nthreads: usize,
 ) -> usize {
@@ -918,8 +927,11 @@ fn dipole_band_width(natoms: usize, nbf: usize, budget_bytes: usize) -> usize {
 ///
 /// The byte cap WINS over parallelism. A band of `w` chunks holds
 /// `w * natoms * 3 * nbf^2 * 8` bytes of partials live at once, so `w` is
-/// `budget_bytes / per_partial_bytes`, floored at 1 so a starvation budget
-/// still makes progress (slow, never stuck).
+/// `(budget_bytes * BAND_BUDGET_NUMER / BAND_BUDGET_DENOM) / per_partial_bytes`,
+/// floored at 1 so a starvation budget still makes progress (slow, never
+/// stuck). The band takes a FRACTION of the budget, not all of it -- see the
+/// comment on the fraction below for why charging the whole budget made the
+/// pre-flight estimate track its own limit.
 ///
 /// This deliberately does NOT floor at the rayon worker count. That floor used
 /// to be here, on the reasoning that banding should never starve parallelism
@@ -959,8 +971,6 @@ fn dipole_band_width_with_threads(
     // pure function of `npts`), so capping it at a fraction costs at most some
     // parallelism on tight budgets and keeps the estimate a property of the
     // problem rather than of the budget.
-    const BAND_BUDGET_NUMER: usize = 1;
-    const BAND_BUDGET_DENOM: usize = 4;
     let band_bytes = budget_bytes / BAND_BUDGET_DENOM * BAND_BUDGET_NUMER;
     (band_bytes / per_partial_bytes.max(1)).max(1)
 }
@@ -3252,9 +3262,21 @@ mod tests {
     fn dipole_band_width_respects_budget_and_floors() {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
         pool.install(|| {
-            // natoms=1, nbf=100: per_partial = 1*3*100*100*8 = 240_000 bytes;
-            // 2_400_000 byte budget -> 10.
-            assert_eq!(dipole_band_width(1, 100, 2_400_000), 10);
+            // natoms=1, nbf=100: per_partial = 1*3*100*100*8 = 240_000 bytes.
+            //
+            // The band gets BAND_BUDGET_NUMER/BAND_BUDGET_DENOM of the budget,
+            // not all of it, so a 2_400_000-byte budget yields
+            // (2_400_000/4)/240_000 = 2 partials in flight.
+            //
+            // This assertion previously hardcoded 10 -- the answer from before
+            // the band became a FRACTION of the budget. Stated against the
+            // constants themselves so it tracks the implementation instead of
+            // silently encoding one historical value of it.
+            let per_partial = 3 * 100 * 100 * std::mem::size_of::<f64>();
+            let budget = 2_400_000usize;
+            let expected = (budget / BAND_BUDGET_DENOM * BAND_BUDGET_NUMER) / per_partial;
+            assert_eq!(expected, 2, "arithmetic guard: the worked example is 2");
+            assert_eq!(dipole_band_width(1, 100, budget), expected);
             // A budget below one partial floors at ONE, not at the worker count.
             //
             // This assertion used to expect 2 (= the pool's worker count),
