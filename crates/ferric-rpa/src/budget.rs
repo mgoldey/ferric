@@ -117,8 +117,8 @@ pub struct PeakEstimateShape {
     /// n_quad = 20, 8 workers) the omission was 1.42 GB of retained stack plus
     /// 11.76 GB of concurrent `y` clones.
     ///
-    /// Defaults to `false` via [`PeakEstimateShape::energy_path`]; energy-path
-    /// callers estimate byte-identically to before this field existed.
+    /// Energy-path callers pass `false` and estimate byte-identically to
+    /// before this field existed.
     pub need_inv_dielectric: bool,
     /// AO basis size, for the `(naux, nao, nao)` three-index AO tensor that
     /// `ThreeIndexSource` holds resident while `b_ov` is streamed out of it.
