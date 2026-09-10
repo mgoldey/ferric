@@ -56,13 +56,33 @@
 //! a real reordering through. Contrast the spilled 3-index tensor, where a
 //! budget legitimately regroups a sum and the honest bar is ulp-bounded.
 //!
+//! # What this test must NOT do — a mistake this file already made
+//!
+//! Its first version asserted bit-identity against hardcoded reference values
+//! captured on the dev box. **CI failed them by 3.3e-7** (relative 1.9e-6),
+//! nine orders larger than any chunking reassociation. The cause was not the
+//! chunking at all: CI forces `OPENBLAS_CORETYPE=Haswell` while the dev box
+//! uses its native kernels, so the SCF converges to a slightly different
+//! density and the CHARGES differ before the grid loop is ever reached. The
+//! test was pinning a machine-dependent SCF result, not the property it names.
+//!
+//! The fix is to compare TWO CHUNK WIDTHS ON THE SAME MACHINE, via
+//! `becke_charges_chunked` / `atomic_effective_volumes_becke_chunked`. Both
+//! runs then share one density, so any difference is attributable to the
+//! chunking alone — which is the actual claim — and the assertion is
+//! machine-independent by construction.
+//!
+//! GENERAL RULE this cost: a cross-machine bit-identity assertion is only valid
+//! for a quantity with NO upstream floating-point dependence. Anything
+//! downstream of an SCF is not such a quantity.
+//!
 //! Run with `OPENBLAS_NUM_THREADS=1` per the project's rayon/BLAS convention.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::properties::{atomic_effective_volumes_becke, becke_charges};
+use ferric_scf::properties::becke_charges;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
@@ -83,44 +103,39 @@ fn fixture() -> (Molecule, PreparedBasis, basis::BasisSet, ndarray::Array2<f64>)
     (mol, obs, obs_bs, d)
 }
 
-/// Reference values captured from the UNCHUNKED implementation, so this test
-/// pins the fix against the code it replaced rather than against itself.
+/// Grid chunk widths to compare. `npts` for water/cc-pVDZ is 3 x 8250 =
+/// 24,750, so these span "one chunk" (fully unchunked) down to very narrow.
 ///
-/// Regenerate ONLY if the grid, basis, or SCF reference legitimately changes —
-/// never to make a failing chunking change pass.
-const REF_BECKE_CHARGES: [f64; 3] = [
-    -1.724_385_145_764_699_7e-1,
-    8.621_928_732_722_816_7e-2,
-    8.621_922_724_924_080_4e-2,
-];
+/// Comparing widths to EACH OTHER, rather than to a stored constant, is what
+/// makes this machine-independent — see the module doc.
+const WIDTHS: [usize; 5] = [24_750, 8_192, 1_024, 97, 13];
 
-/// Likewise for `atomic_effective_volumes_becke` (a.u., Bohr^3.e).
-const REF_ATOMIC_VOLUMES: [f64; 3] = [
-    1.801_679_390_031_562_3e1,
-    2.267_736_545_207_818_2e0,
-    2.267_736_845_344_593_2e0,
-];
-
-/// CONTRACT 1: `becke_charges` is bit-identical to the unchunked reference.
+/// CONTRACT 1: `becke_charges` is bit-identical across every chunk width.
 ///
-/// The strongest statement available: chunking may not move a bit, so any
-/// reordering introduced by the fix fails here rather than silently shifting a
-/// published charge.
+/// The core claim. One SCF density, several chunk widths, same machine: any
+/// difference is the chunking and nothing else. The unchunked width (one chunk
+/// spanning all points) is included, so this also pins that chunking did not
+/// change the answer relative to the pre-fix behaviour.
 #[test]
-fn becke_charges_are_bit_identical_to_the_unchunked_reference() {
+fn becke_charges_are_bit_identical_across_chunk_widths() {
+    use ferric_scf::properties::becke_charges_chunked;
     let (mol, obs, obs_bs, d) = fixture();
-    let q = becke_charges(&mol, &obs, &obs_bs, &d).unwrap();
-    assert_eq!(q.len(), 3, "water has three atoms");
-    for (i, (&got, &want)) in q.iter().zip(REF_BECKE_CHARGES.iter()).enumerate() {
-        assert_eq!(
-            got.to_bits(),
-            want.to_bits(),
-            "becke_charges[{i}] moved: {got:.17e} vs reference {want:.17e} \
-             (difference {:.3e}). Grid chunking must be numerically INERT — chi is a \
-             lookup table and the g axis is a free index of D.dot(chi), so a difference \
-             here means the ascending fold over grid points was disturbed.",
-            (got - want).abs()
-        );
+    let reference = becke_charges_chunked(&mol, &obs, &obs_bs, &d, Some(WIDTHS[0])).unwrap();
+    assert_eq!(reference.len(), 3, "water has three atoms");
+    for w in WIDTHS {
+        let got = becke_charges_chunked(&mol, &obs, &obs_bs, &d, Some(w)).unwrap();
+        for (i, (&g, &r)) in got.iter().zip(reference.iter()).enumerate() {
+            assert_eq!(
+                g.to_bits(),
+                r.to_bits(),
+                "becke_charges[{i}] moved between chunk widths {} and {w}: {r:.17e} vs \
+                 {g:.17e} (difference {:.3e}). Grid chunking must be numerically INERT — chi \
+                 is a lookup table and the g axis is a free index of D.dot(chi), so a \
+                 difference here means the ascending fold over grid points was disturbed.",
+                WIDTHS[0],
+                (g - r).abs()
+            );
+        }
     }
 }
 
@@ -140,35 +155,41 @@ fn becke_charges_sum_to_the_molecular_charge() {
     );
 }
 
-/// CONTRACT 3: `atomic_effective_volumes_becke` is stable and physical.
+/// CONTRACT 3: `atomic_effective_volumes_becke` likewise, plus a physical check.
 ///
-/// The sibling call site, chunked by the same change. Volumes are positive and
-/// the oxygen's exceeds each hydrogen's — enough to catch a chunking error that
-/// dropped or double-counted a band of grid points, which a bit-comparison
-/// against a hardcoded reference would also catch but which stays meaningful if
-/// the reference is ever regenerated.
+/// The sibling call site, chunked by the same change. Bit-identity across
+/// widths is the chunking claim; the ordering assertion is a physics invariant
+/// that stays meaningful on any machine and would catch a chunking error that
+/// dropped or double-counted a band of grid points.
 #[test]
-fn atomic_effective_volumes_are_positive_and_ordered() {
+fn atomic_effective_volumes_are_bit_identical_across_chunk_widths() {
+    use ferric_scf::properties::atomic_effective_volumes_becke_chunked;
     let (mol, obs, obs_bs, d) = fixture();
-    let v = atomic_effective_volumes_becke(&mol, &obs, &obs_bs, &d).unwrap();
-    assert_eq!(v.len(), 3);
-    for (i, &vi) in v.iter().enumerate() {
+    let reference =
+        atomic_effective_volumes_becke_chunked(&mol, &obs, &obs_bs, &d, Some(WIDTHS[0])).unwrap();
+    assert_eq!(reference.len(), 3);
+    for w in WIDTHS {
+        let got =
+            atomic_effective_volumes_becke_chunked(&mol, &obs, &obs_bs, &d, Some(w)).unwrap();
+        for (i, (&g, &r)) in got.iter().zip(reference.iter()).enumerate() {
+            assert_eq!(
+                g.to_bits(),
+                r.to_bits(),
+                "atomic_effective_volumes_becke[{i}] moved between chunk widths {} and {w}: \
+                 {r:.17e} vs {g:.17e} (difference {:.3e})",
+                WIDTHS[0],
+                (g - r).abs()
+            );
+        }
+    }
+    for (i, &vi) in reference.iter().enumerate() {
         assert!(vi > 0.0, "atom {i} effective volume must be positive, got {vi:.6e}");
     }
-    for (i, (&got, &want)) in v.iter().zip(REF_ATOMIC_VOLUMES.iter()).enumerate() {
-        assert_eq!(
-            got.to_bits(),
-            want.to_bits(),
-            "atomic_effective_volumes_becke[{i}] moved: {got:.17e} vs reference \
-             {want:.17e} (difference {:.3e})",
-            (got - want).abs()
-        );
-    }
     assert!(
-        v[0] > v[1] && v[0] > v[2],
-        "oxygen's effective volume ({:.4}) must exceed both hydrogens' ({:.4}, {:.4}) — \
-         a chunking error that dropped a band of points would show up here",
-        v[0], v[1], v[2]
+        reference[0] > reference[1] && reference[0] > reference[2],
+        "oxygen's effective volume ({:.4}) must exceed both hydrogens' ({:.4}, {:.4}) — a \
+         chunking error that dropped a band of points would show up here",
+        reference[0], reference[1], reference[2]
     );
 }
 
