@@ -899,6 +899,141 @@ mod tests {
         );
     }
 
+    /// The spilled dressed tensor must stay within a few ulp of the in-core one,
+    /// and the deviation must NOT grow as the budget shrinks.
+    ///
+    /// # What this covers that the sibling test does not
+    ///
+    /// `dressed_tensor_bitidentical_across_thread_counts` sets
+    /// `budget = usize::MAX / 4` with the comment "force the in-core fast path",
+    /// so the whole spill path — including the band width
+    /// [`spill_block_naux_for`] derives straight from the budget — is outside
+    /// its coverage.
+    ///
+    /// # Why the bar here is ulp-bounded and not bit-identity
+    ///
+    /// Bit-identity is the right bar ACROSS THREAD COUNTS (the sibling test)
+    /// because the thread count must not change the arithmetic at all. It is
+    /// the wrong bar across BUDGETS on this path: a spilled tensor is
+    /// necessarily assembled in different-sized pieces than an in-core one, so
+    /// the k-axis summation is grouped differently, and [`DRESS_K_BLOCK`]'s doc
+    /// documents that k-blocking is deliberately an accuracy knob here (its
+    /// measured table shows blocked summation is 1.19-3.9x MORE accurate than
+    /// full-k, and moves the SCF energy ~5e-9 Ha TOWARD a Kahan reference).
+    ///
+    /// Measured (benzene/cc-pVDZ, cc-pVDZ-RI): the spilled tensor differs from
+    /// in-core at ~4.26M of 5.46M elements, max abs 1.24e-14 against a largest
+    /// element of 9.96 — **1.25e-15 relative, 5.6 ulp**. That is ordinary
+    /// reassociation.
+    ///
+    /// # The property that actually matters, and is asserted
+    ///
+    /// The deviation must be BOUNDED and must not DRIFT with the budget. A
+    /// budget-derived band that degraded the tensor progressively — or that
+    /// tripped a genuine construction bug at some width — would show up as a
+    /// growing or width-correlated error, and that is what this pins.
+    ///
+    /// # Context on the SCF-level number, so nobody over-reads it
+    ///
+    /// Low-memory validation of benzene/cc-pVDZ PBE showed a 1.6e-5 Ha spread
+    /// in the SCF energy across spilled budgets (identical at every in-core
+    /// budget from 0.2 to 8 GiB). That is ~1e9x the tensor deviation, which
+    /// looks alarming until you note the CLI's DEFAULT convergence is
+    /// `energy_conv = 1e-3`, `density_conv = 1e-6`: a 1.6e-5 Ha spread is well
+    /// INSIDE that tolerance, so it reflects the SCF stopping at slightly
+    /// different points on the same surface rather than a corrupted tensor.
+    /// The tensor-level bound below is the honest statement; the SCF number is
+    /// a convergence-tolerance artifact, not evidence of a defect.
+    #[test]
+    fn spilled_dressed_tensor_stays_within_a_few_ulp_of_in_core() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let aux = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let naux = aux.nbasis();
+        let nao = obs.nbasis();
+        let mut m = Array2::<f64>::zeros((naux, naux));
+        for i in 0..naux {
+            for j in 0..naux {
+                m[(i, j)] = if i == j { 1.5 } else { 0.01 / ((i as f64 - j as f64).abs() + 1.0) };
+            }
+        }
+
+        let dress_at = |budget: usize| -> (Array3<f64>, bool) {
+            let mut raw = ThreeIndexSource::build(op, &obs, &aux, budget).unwrap();
+            let mut d = ThreeIndexSource::build_dressed(&mut raw, &m, budget).unwrap();
+            let spilled = matches!(d.backend, Backend::DiskSpill { .. });
+            let mut out = Array3::<f64>::zeros((naux, nao, nao));
+            d.for_each_block(&mut |blk: AuxBlock| {
+                let n = blk.data.shape()[0];
+                out.slice_mut(ndarray::s![blk.p0..blk.p0 + n, .., ..]).assign(&blk.data);
+                Ok(())
+            })
+            .unwrap();
+            (out, spilled)
+        };
+
+        let row_bytes = nao * nao * 8;
+        let (reference, ref_spilled) = dress_at(usize::MAX / 4);
+        assert!(!ref_spilled, "the reference must be the in-core backend");
+        let max_elem = reference.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
+        assert!(max_elem > 1.0, "sanity: the dressed tensor should not be ~zero");
+
+        // 64 ulp of the largest element: an order of magnitude above the 5.6 ulp
+        // measured, so ordinary BLAS variation across machines passes, while a
+        // real construction defect (which shows up at 1e-3 relative or worse,
+        // not 1e-14) fails loudly.
+        let tol = 64.0 * f64::EPSILON * max_elem;
+
+        let mut seen: Vec<(usize, f64)> = Vec::new();
+        for band in [10usize, 11, 12, 20, 21, 51, 52] {
+            let budget = (band * row_bytes + row_bytes / 2) * 2;
+            let (got, spilled) = dress_at(budget);
+            if !spilled {
+                continue;
+            }
+            let max_abs = reference
+                .iter()
+                .zip(got.iter())
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0f64, f64::max);
+            assert!(
+                max_abs <= tol,
+                "spilled dressed tensor (band={band}) deviates {max_abs:.3e} from in-core \
+                 ({:.1} ulp of the largest element {max_elem:.3e}), above the {:.1}-ulp bar. \
+                 A few ulp is expected reassociation; this much is a construction defect.",
+                max_abs / (f64::EPSILON * max_elem),
+                tol / (f64::EPSILON * max_elem)
+            );
+            seen.push((band, max_abs));
+        }
+
+        // Reachability: if nothing spilled, this asserted nothing.
+        assert!(
+            seen.len() >= 3,
+            "only {} budgets forced a spill, too few to see a trend — re-derive them from \
+             spill_block_naux_for",
+            seen.len()
+        );
+
+        // The deviation must not DRIFT with the band width. A narrower band means
+        // more partial sums, so a progressive degradation would show as a
+        // monotone rise; a construction bug keyed to some width would show as an
+        // outlier. Require the spread across widths to stay inside the same bar.
+        let worst = seen.iter().map(|&(_, e)| e).fold(0.0f64, f64::max);
+        let best = seen.iter().map(|&(_, e)| e).fold(f64::INFINITY, f64::min);
+        assert!(
+            worst <= tol,
+            "worst spilled deviation {worst:.3e} exceeds the {tol:.3e} bar: {seen:?}"
+        );
+        assert!(
+            worst / best.max(f64::MIN_POSITIVE) < 1e3,
+            "the deviation varies by {:.1e}x across band widths ({seen:?}), which suggests a \
+             width-dependent construction error rather than uniform reassociation",
+            worst / best.max(f64::MIN_POSITIVE)
+        );
+    }
+
     /// REGRESSION (defect A): removing the second copy must not move a bit.
     ///
     /// `build_dressed_band`'s parallel fast path used to `collect()` every
