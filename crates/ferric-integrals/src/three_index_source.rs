@@ -999,6 +999,13 @@ mod tests {
     ///    8 -> 2 leaves the gap the same order (6.5e-6 -> 2.3e-6), and the
     ///    IN-CORE energy alone moves 3.2e-6 Ha across that change.
     ///
+    ///    Do NOT extend that sweep to `diis_size = 1` and read it as more of
+    ///    the same: it converges to -222.04 Ha, ~10 Ha from the -231.95 every
+    ///    other setting reaches — a DIFFERENT electronic state. Its
+    ///    in-core/spilled gap (1.4e-5 Ha) is therefore not comparable and says
+    ///    nothing here. Measured, and recorded so the row is not mistaken for
+    ///    supporting data.
+    ///
     /// The discriminating sweep — same molecule, same basis, same spilled
     /// tensor, varying only the method:
     ///
