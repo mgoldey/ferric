@@ -64,12 +64,42 @@ pub fn solve_cdft_uhf(
     });
     let grid = build_atomic_grid(mol, &grid_cfg);
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
-    let chi = eval_basis_on_points(mol, bs, &pts)
-        .map_err(|e| FerricError::General(format!("cDFT AO grid eval: {e:?}")))?;
-    let w_mats: Vec<Array2<f64>> = cons
-        .iter()
-        .map(|c| build_weight_matrix(mol, &grid, &chi, &c.fragment))
-        .collect();
+    // Pre-flight the AO-grid buffer against the memory budget.
+    //
+    // This path is the largest ungated grid allocation in ferric-scf: the cDFT
+    // default grid is 99x302 = 29,898 points/atom, roughly 3.6x the 75x110
+    // production default, so `chi` alone is 12.2 GB at danuglipron/def2-SVP
+    // scale (73 atoms, nbf ~ 700) and 27.9 GB at def2-TZVP —
+    // and `build_weight_matrix` clones it, doubling that. Without this check the
+    // job walked straight into the allocation and was OOM-killed by the kernel;
+    // now it fails fast with a message naming the knobs.
+    //
+    // `ValueOnly`: only chi is built here (no gradients). The clone inside
+    // `build_weight_matrix` is a second plane, so this under-charges by 1x --
+    // stated rather than silently absorbed, because charging it here would
+    // reject grids that the pre-clone code path handles fine. The honest fix is
+    // to remove the clone; see the note there.
+    ferric_dft::ao_grid::check_ao_grid_budget(
+        ferric_dft::ao_grid::AoGridKind::ValueOnly,
+        prep.nbasis(),
+        pts.len(),
+    )
+    .map_err(|e| FerricError::General(format!("cDFT AO grid: {e}")))?;
+
+    let w_mats: Vec<Array2<f64>> = {
+        let chi = eval_basis_on_points(mol, bs, &pts)
+            .map_err(|e| FerricError::General(format!("cDFT AO grid eval: {e:?}")))?;
+        let w = cons
+            .iter()
+            .map(|c| build_weight_matrix(mol, &grid, &chi, &c.fragment))
+            .collect();
+        // Scope chi so it is FREED here rather than at function end. It is dead
+        // after this point (nothing below reads it), but Rust would otherwise
+        // keep the full (nbf, npts) buffer resident through the entire
+        // lambda-Newton loop below -- which runs a full inner UHF per iteration
+        // and is exactly where the peak matters.
+        w
+    };
 
     // Helper: run inner UHF for a given λ, return (scf, residual c(λ), pops).
     let run_inner = |lam: &[f64]| -> Result<(ScfResult, Vec<f64>, Vec<f64>), FerricError> {
