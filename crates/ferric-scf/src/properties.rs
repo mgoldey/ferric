@@ -481,6 +481,29 @@ pub fn atomic_effective_volumes_becke(
     obs_bs: &ferric_core::basis::BasisSet,
     density: &Array2<f64>,
 ) -> Result<Vec<f64>, FerricError> {
+    atomic_effective_volumes_becke_chunked(mol, _prep, obs_bs, density, None)
+}
+
+/// [`atomic_effective_volumes_becke`] with an explicit grid chunk width.
+///
+/// `None` uses the production width. A test hook: chunking here is meant to be
+/// numerically INERT, and the only honest way to assert that is to run TWO
+/// widths on the SAME machine and compare them to each other.
+///
+/// The first version of `mwe_scf_grid_chunking_is_inert.rs` instead pinned
+/// hardcoded reference values captured locally, and CI failed on them by
+/// 3.3e-7 — because CI forces `OPENBLAS_CORETYPE=Haswell` while the dev box
+/// uses its native kernels, so the SCF converges to a slightly different
+/// density and the CHARGES differ before chunking is even reached. That test
+/// was pinning a machine-dependent SCF result, not the chunking property.
+#[doc(hidden)]
+pub fn atomic_effective_volumes_becke_chunked(
+    mol: &Molecule,
+    _prep: &PreparedBasis,
+    obs_bs: &ferric_core::basis::BasisSet,
+    density: &Array2<f64>,
+    chunk_override: Option<usize>,
+) -> Result<Vec<f64>, FerricError> {
     use ferric_dft::ao_grid::eval_basis_on_points;
     use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
 
@@ -520,7 +543,7 @@ pub fn atomic_effective_volumes_becke(
     //     ascending order: the chunk loop is serial and outer, the point loop
     //     serial and inner, so the addition sequence is exactly what it was.
     // `mwe_scf_grid_chunking_is_inert.rs` pins this bit-for-bit.
-    let chunk = crate::reduce::deterministic_group_size(npts);
+    let chunk = chunk_override.unwrap_or_else(|| crate::reduce::deterministic_group_size(npts)).max(1);
     let mut vol = vec![0.0_f64; natoms];
     let mut g0 = 0usize;
     while g0 < npts {
@@ -562,6 +585,19 @@ pub fn becke_charges(
     obs_bs: &ferric_core::basis::BasisSet,
     density: &Array2<f64>,
 ) -> Result<Vec<f64>, FerricError> {
+    becke_charges_chunked(mol, _prep, obs_bs, density, None)
+}
+
+/// [`becke_charges`] with an explicit grid chunk width. See
+/// [`atomic_effective_volumes_becke_chunked`] for why this hook exists.
+#[doc(hidden)]
+pub fn becke_charges_chunked(
+    mol: &Molecule,
+    _prep: &PreparedBasis,
+    obs_bs: &ferric_core::basis::BasisSet,
+    density: &Array2<f64>,
+    chunk_override: Option<usize>,
+) -> Result<Vec<f64>, FerricError> {
     use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
     use ferric_dft::ao_grid::eval_basis_on_points;
 
@@ -598,7 +634,7 @@ pub fn becke_charges(
     //     loop is serial and outer.
     // `mwe_scf_grid_chunking_is_inert.rs` pins this bit-for-bit, including
     // across worker counts.
-    let chunk = crate::reduce::deterministic_group_size(npts);
+    let chunk = chunk_override.unwrap_or_else(|| crate::reduce::deterministic_group_size(npts)).max(1);
     let mut n_e = vec![0.0_f64; natoms];
     let mut g0 = 0usize;
     while g0 < npts {
