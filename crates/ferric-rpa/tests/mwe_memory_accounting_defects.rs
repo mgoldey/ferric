@@ -312,6 +312,8 @@ fn truncated_n_keep_still_charges_the_naux_wide_per_worker_scratch() {
     use ferric_rpa::budget::{estimate_peak_bytes, PeakEstimateShape};
 
     let full = PeakEstimateShape {
+        // Energy path: no retained inverse-dielectric stack.
+        need_inv_dielectric: false,
         naux: 500,
         nocc: 10,
         nvir: 100,
@@ -366,6 +368,8 @@ fn untruncated_estimate_is_unchanged_for_the_production_shape() {
         + /* outputs */ naux * naux * 2 * 8;
 
     let got = estimate_peak_bytes(PeakEstimateShape {
+        // Energy path: no retained inverse-dielectric stack.
+        need_inv_dielectric: false,
         naux, nocc, nvir, n_quad: 20, n_workers, n_keep: naux, grid: None,
     });
     assert_eq!(got, expect, "the production (n_keep == naux) estimate must be unchanged");
