@@ -933,41 +933,99 @@ mod tests {
     /// tripped a genuine construction bug at some width — would show up as a
     /// growing or width-correlated error, and that is what this pins.
     ///
-    /// # Context on the SCF-level number — an OPEN question, not a closed one
+    /// # The mechanism, RESOLVED 2026-09-10
     ///
-    /// Low-memory validation of benzene/cc-pVDZ PBE showed a 1.6e-5 Ha spread
-    /// in the SCF energy across spilled budgets, identical at every in-core
-    /// budget from 0.2 to 8 GiB. That is ~1e9x the tensor deviation bounded
-    /// below.
+    /// The deviation is introduced entirely by the DRESSING, and its cause is
+    /// that [`DRESS_K_BLOCK`] is defeated by the source's block boundaries.
     ///
-    /// A first pass attributed that to the CLI's default convergence
-    /// (`energy_conv = 1e-3`, `density_conv = 1e-6`), i.e. the SCF stopping at
-    /// slightly different points on the same surface. **That explanation was
-    /// tested and REFUTED.** At `energy_conv = 1e-8`:
+    /// The k-axis sweep is `for (q0, q1) in q_edges { split at DRESS_K_BLOCK }`,
+    /// and `q_edges` comes from `block_edges()`, which steps by
+    /// `self.block_naux` — the whole band for an in-core source, but
+    /// `spill_block_naux_for(budget/2, nao)` for a spilled one. The fixed
+    /// 128-wide split is then CLIPPED at every block boundary, so the number of
+    /// partial sums is budget-derived. Measured at benzene/cc-pVDZ (naux = 420):
     ///
     /// ```text
-    ///   density_conv   in-core (0.2 GB)              spilled (0.002 GB)
-    ///   1e-6           60 iters  -231.9508327929     35 iters  -231.9508283116
-    ///   1e-7           60 iters  -231.9508327929     35 iters  -231.9508283116
+    ///   in-core  band = 420  ->   4 partial sums (128/128/128/36)
+    ///   spilled  band =  52  ->   9 partial sums
+    ///   spilled  band =  21  ->  20 partial sums
+    ///   spilled  band =  10  ->  42 partial sums
     /// ```
     ///
-    /// The gap is 4.5e-6 Ha and does NOT shrink when the tolerance tightens by
-    /// a decade — it does not move at all. Both runs satisfy the same
-    /// convergence criterion and land on different energies, and the iteration
-    /// counts differ (60 vs 35, against 11 for both at default settings), so
-    /// the spilled path takes a different SCF trajectory and converges
-    /// somewhere else.
+    /// `DRESS_K_BLOCK`'s doc says it "pins the summation order"; on a spilled
+    /// source it does not, because the outer edges move underneath it.
     ///
-    /// So: the tensor deviation this test bounds is genuinely a few ulp, but
-    /// that does NOT by itself explain the SCF-level spread, and the mechanism
-    /// connecting them is UNRESOLVED. Candidates not yet ruled out: DIIS
-    /// amplifying a few-ulp perturbation into a different extrapolation path;
-    /// a second spill-path difference outside the dressed tensor (the DfK
-    /// re-read path, or the raw spill blocks); or a genuine convergence
-    /// pathology in benzene/PBE that the two trajectories expose differently.
+    /// The RAW (undressed) spill path is BIT-IDENTICAL to in-core at every band
+    /// width — 0 of 5,458,320 elements differ, verified by
+    /// `probe_raw_spilled_tensor_vs_in_core`. So there is no second spill-path
+    /// difference upstream; the dressing is the whole of it.
     ///
-    /// Do not cite this test as evidence the SCF-level difference is benign.
-    /// It bounds the tensor and nothing more.
+    /// # Why this is not fixed here
+    ///
+    /// Making the sum budget-independent needs the k-blocks to span source
+    /// blocks, i.e. buffering `DRESS_K_BLOCK` raw Q-rows before each GEMM. That
+    /// buffer is `128 * nao^2 * 8` — 13 MB at benzene/cc-pVDZ, 502 MB at
+    /// danuglipron/def2-SVP, 2.6 GB at def2-TZVP — held ON TOP of the spill
+    /// band, on the path that exists precisely because memory is short. At the
+    /// benzene/2 MB budget that buffer is 6.6x the entire budget. Trading the
+    /// memory the spill path is there to save, to remove a few ulp, is the
+    /// wrong trade.
+    ///
+    /// A partial measure (sub-blocking each source block at `DRESS_K_BLOCK`)
+    /// was implemented and MEASURED INERT: whenever the spill band is narrower
+    /// than 128 — which is the entire interesting regime — it splits nothing
+    /// and the deviation is unchanged at 5.62 ulp. It was reverted rather than
+    /// left in as a fix-shaped no-op.
+    ///
+    /// So the reassociation is inherent to streaming here, and the honest
+    /// engineering answer is the bound this test asserts.
+    ///
+    /// # The SCF-level number: RESOLVED — it is benzene/PBE, not the spill
+    ///
+    /// Low-memory validation showed a 1.6e-5 Ha spread in the benzene/cc-pVDZ
+    /// **PBE** energy across spilled budgets (identical at every in-core budget
+    /// from 0.2 to 8 GiB) — ~1e9x the tensor deviation bounded here. Three
+    /// explanations were proposed and tested; the first three all failed, which
+    /// is worth recording so nobody re-runs them:
+    ///
+    /// 1. *Convergence-tolerance artifact.* REFUTED: at `energy_conv = 1e-8`
+    ///    the gap is 4.5e-6 Ha and does not move between `density_conv` 1e-6
+    ///    and 1e-7, while iteration counts diverge (60 in-core vs 35 spilled).
+    /// 2. *A second spill difference upstream of the dressing.* REFUTED: the
+    ///    RAW spilled tensor is BIT-IDENTICAL to in-core at every band width
+    ///    (0 of 5,458,320 elements differ — `probe_raw_spilled_tensor_vs_in_core`).
+    ///    The dressing is the whole of the tensor deviation.
+    /// 3. *DIIS amplifying the ulp difference.* REFUTED: shrinking `diis_size`
+    ///    8 -> 2 leaves the gap the same order (6.5e-6 -> 2.3e-6), and the
+    ///    IN-CORE energy alone moves 3.2e-6 Ha across that change.
+    ///
+    /// The discriminating sweep — same molecule, same basis, same spilled
+    /// tensor, varying only the method:
+    ///
+    /// ```text
+    ///   benzene/cc-pVDZ, in-core (0.2 GB) vs spilled (0.002 GB)
+    ///     RHF    -230.7261263707  vs  -230.7261263690    gap 1.7e-09 Ha
+    ///     BLYP   -232.1531991510  vs  -232.1531991550    gap 4.0e-09 Ha
+    ///     PBE    -231.9508313583  vs  -231.9508248546    gap 6.5e-06 Ha
+    /// ```
+    ///
+    /// **BLYP is a GGA on the same Becke-Lebedev grid and is 1600x tighter than
+    /// PBE.** So this is not "DFT grid amplification" (an earlier draft of this
+    /// note said that, on the RHF row alone, before the BLYP row landed — it was
+    /// wrong). RHF and BLYP both show that the 5.6-ulp tensor deviation is worth
+    /// ~2-4e-9 Ha, i.e. negligible, exactly as this test's bound implies.
+    ///
+    /// What is left is a benzene/**PBE**-specific SCF sensitivity: that
+    /// particular surface is ill-conditioned enough that two trajectories from
+    /// ulp-different starting tensors converge ~6e-6 Ha apart. The `diis_size`
+    /// evidence corroborates it — the in-core PBE energy alone moves 3.2e-6 Ha
+    /// on a pure solver-setting change, while RHF and BLYP do not.
+    ///
+    /// Practical reading: the spill path is sound. A method whose own SCF is
+    /// well-conditioned reproduces to ~1e-9 Ha across the in-core/spilled
+    /// boundary. If a specific system/functional shows more, suspect that SCF,
+    /// not the tensor — and check it in-core by perturbing `diis_size` first.
+    ///
     #[test]
     fn spilled_dressed_tensor_stays_within_a_few_ulp_of_in_core() {
         let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
@@ -1021,6 +1079,13 @@ mod tests {
                 .zip(got.iter())
                 .map(|(x, y)| (x - y).abs())
                 .fold(0.0f64, f64::max);
+            let differing =
+                reference.iter().zip(got.iter()).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+            eprintln!(
+                "DRESSED band={band} differing={differing}/{} max_abs={max_abs:.3e} ({:.2} ulp)",
+                reference.len(),
+                if max_elem > 0.0 { max_abs / (f64::EPSILON * max_elem) } else { 0.0 },
+            );
             assert!(
                 max_abs <= tol,
                 "spilled dressed tensor (band={band}) deviates {max_abs:.3e} from in-core \
@@ -1056,6 +1121,61 @@ mod tests {
              width-dependent construction error rather than uniform reassociation",
             worst / best.max(f64::MIN_POSITIVE)
         );
+    }
+
+    /// DIAGNOSTIC: is the RAW (undressed) spilled tensor bit-identical to in-core?
+    ///
+    /// Discriminates H2 for the unresolved spill/SCF question recorded on
+    /// `spilled_dressed_tensor_stays_within_a_few_ulp_of_in_core`: if the RAW
+    /// spill path already differs, the 5.6-ulp dressed deviation is downstream
+    /// of a more basic difference and the search moves there. If the raw path
+    /// is bit-identical, the deviation is introduced by the DRESSING, which is
+    /// where the k-blocking lives.
+    #[test]
+    #[ignore = "diagnostic: prints, no assertions; run with --ignored --nocapture"]
+    fn probe_raw_spilled_tensor_vs_in_core() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let aux = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let naux = aux.nbasis();
+        let nao = obs.nbasis();
+
+        let raw_at = |budget: usize| -> (Array3<f64>, bool) {
+            let mut r = ThreeIndexSource::build(op, &obs, &aux, budget).unwrap();
+            let spilled = matches!(r.backend, Backend::DiskSpill { .. });
+            let mut out = Array3::<f64>::zeros((naux, nao, nao));
+            r.for_each_block(&mut |blk: AuxBlock| {
+                let n = blk.data.shape()[0];
+                out.slice_mut(ndarray::s![blk.p0..blk.p0 + n, .., ..]).assign(&blk.data);
+                Ok(())
+            })
+            .unwrap();
+            (out, spilled)
+        };
+
+        let row_bytes = nao * nao * 8;
+        let (reference, ref_spilled) = raw_at(usize::MAX / 4);
+        assert!(!ref_spilled, "reference must be in-core");
+        let max_elem = reference.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
+
+        for band in [10usize, 21, 52] {
+            let budget = (band * row_bytes + row_bytes / 2) * 2;
+            let (got, spilled) = raw_at(budget);
+            let differing =
+                reference.iter().zip(got.iter()).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+            let max_abs = reference
+                .iter()
+                .zip(got.iter())
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0f64, f64::max);
+            eprintln!(
+                "RAW band={band} spilled={spilled} differing={differing}/{} max_abs={max_abs:.3e} \
+                 ({:.2} ulp of max|elem|={max_elem:.3e})",
+                reference.len(),
+                if max_elem > 0.0 { max_abs / (f64::EPSILON * max_elem) } else { 0.0 },
+            );
+        }
     }
 
     /// REGRESSION (defect A): removing the second copy must not move a bit.
