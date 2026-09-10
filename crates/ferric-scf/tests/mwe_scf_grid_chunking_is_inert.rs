@@ -60,11 +60,20 @@
 //!
 //! Its first version asserted bit-identity against hardcoded reference values
 //! captured on the dev box. **CI failed them by 3.3e-7** (relative 1.9e-6),
-//! nine orders larger than any chunking reassociation. The cause was not the
-//! chunking at all: CI forces `OPENBLAS_CORETYPE=Haswell` while the dev box
-//! uses its native kernels, so the SCF converges to a slightly different
-//! density and the CHARGES differ before the grid loop is ever reached. The
-//! test was pinning a machine-dependent SCF result, not the property it names.
+//! nine orders larger than any chunking reassociation (~1e-15). The magnitude
+//! is the whole argument: at SCF scale rather than rounding scale, the CHARGES
+//! differed because the DENSITY differed, before the grid loop was ever
+//! reached. The test was pinning a machine-dependent SCF result, not the
+//! property it names.
+//!
+//! WHICH machine difference is NOT established. `ci.yml:67` sets
+//! `OPENBLAS_CORETYPE=Haswell` and that was the first suspicion, but it does
+//! NOT reproduce locally: native and Haswell give a bit-identical water/cc-pVDZ
+//! RHF energy on this box, so the cause is something else in the CI toolchain
+//! (CPU microarchitecture, a different OpenBLAS build, libint2, LAPACK). That
+//! does not weaken the conclusion — a cross-machine bit-identity assertion on
+//! an SCF-derived quantity is invalid whichever of those it is — but do not
+//! repeat "it's CORETYPE" as if it were measured.
 //!
 //! The fix is to compare TWO CHUNK WIDTHS ON THE SAME MACHINE, via
 //! `becke_charges_chunked` / `atomic_effective_volumes_becke_chunked`. Both
