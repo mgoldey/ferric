@@ -291,6 +291,58 @@ fn preflight_spill(needed_bytes: usize) -> Result<(), FerricError> {
     }
 }
 
+/// Packed μν-triangle length for `nao` basis functions: `nao*(nao+1)/2`.
+///
+/// PySCF calls this `nao_pair`. `(P|μν)` is symmetric in μν — `eri3_block`
+/// computes only `s2 in 0..=s1` and then writes BOTH `(μν)` and `(νμ)` — so a
+/// spill file storing the full square held every off-diagonal twice.
+#[inline]
+fn packed_pair_len(nao: usize) -> usize {
+    nao * (nao + 1) / 2
+}
+
+/// Pack `src` (b, nao, nao) into `dst` (b * packed_pair_len(nao)) lower
+/// triangle, row-major in (μ, ν≤μ) order.
+fn pack_lower_triangle(src: &ArrayView3<'_, f64>, nao: usize, dst: &mut [f64]) {
+    let b = src.shape()[0];
+    let pair = packed_pair_len(nao);
+    debug_assert!(dst.len() >= b * pair);
+    for pl in 0..b {
+        let base = pl * pair;
+        let mut k = 0usize;
+        for mu in 0..nao {
+            for nu in 0..=mu {
+                dst[base + k] = src[(pl, mu, nu)];
+                k += 1;
+            }
+        }
+        debug_assert_eq!(k, pair);
+    }
+}
+
+/// Inverse of [`pack_lower_triangle`]: expand `src` back into the full
+/// symmetric `(b, nao, nao)` block, writing BOTH `(μν)` and `(νμ)`.
+///
+/// This is what keeps the packing a pure STORAGE change: `for_each_block`
+/// already hands out a view of `scratch`, so unpacking here means every
+/// consumer still sees the identical `(b, nao, nao)` values it saw before.
+fn unpack_lower_triangle(src: &[f64], nao: usize, b: usize, dst: &mut Array3<f64>) {
+    let pair = packed_pair_len(nao);
+    debug_assert!(src.len() >= b * pair);
+    for pl in 0..b {
+        let base = pl * pair;
+        let mut k = 0usize;
+        for mu in 0..nao {
+            for nu in 0..=mu {
+                let v = src[base + k];
+                dst[(pl, mu, nu)] = v;
+                dst[(pl, nu, mu)] = v;
+                k += 1;
+            }
+        }
+    }
+}
+
 /// One aux-block of raw (P|μν), rows `[p0, p0+data.shape()[0])`.
 #[derive(Debug)]
 pub struct AuxBlock<'a> {
@@ -389,9 +441,15 @@ impl ThreeIndexSource {
             // Preflight BEFORE creating the file or computing a single block:
             // refuse a spill the destination cannot hold, and announce the
             // per-SCF-iteration re-read cost the caller did not ask for.
-            // `needed` is exactly the byte count this branch will write (the
-            // band, not the full tensor).
-            preflight_spill(needed)?;
+            // `needed` is the UNPACKED band size, used for the in-core decision
+            // above. What this branch actually WRITES is the packed triangle,
+            // ~half that -- so preflight the packed figure or the disk guard
+            // refuses spills that would comfortably fit, and the warning quotes
+            // a size and an IO time that are both 2x too large.
+            let spill_bytes = (band as u64)
+                .saturating_mul(packed_pair_len(nao) as u64)
+                .saturating_mul(8);
+            preflight_spill(spill_bytes as usize)?;
             let block_naux = spill_block_naux_for(budget_bytes, nao);
             let mut file = tempfile::tempfile()
                 .map_err(|e| FerricError::General(format!("tempfile: {e}")))?;
@@ -419,9 +477,19 @@ impl ThreeIndexSource {
                 });
 
                 // Consumer (this thread): write each block as it arrives. Pure I/O.
+                // Reused across blocks so the pack buffer is allocated once.
+                let mut packbuf: Vec<f64> = Vec::new();
                 for blk in rx.iter() {
                     let blk = blk?;
-                    let bytes: &[u8] = bytemuck::cast_slice(blk.as_slice().unwrap());
+                    // Store the PACKED μν triangle: half the bytes written, and
+                    // half the bytes re-read on every subsequent streaming pass
+                    // (which for DfK is every SCF iteration -- the cost the
+                    // spill warning quantifies).
+                    let b = blk.shape()[0];
+                    let pair = packed_pair_len(nao);
+                    packbuf.resize(b * pair, 0.0);
+                    pack_lower_triangle(&blk.view(), nao, &mut packbuf);
+                    let bytes: &[u8] = bytemuck::cast_slice(&packbuf[..b * pair]);
                     file.write_all(bytes)
                         .map_err(|e| FerricError::General(format!("spill write: {e}")))?;
                     // Evict just-written pages so the cgroup-charged page cache does
@@ -485,10 +553,16 @@ impl ThreeIndexSource {
             if in_core { Some(Array3::zeros((band, nao, nao))) } else { None };
         let mut file: Option<File> =
             if in_core { None } else {
-                // Same preflight as the raw path: the dressed band is written in
-                // full to the same `std::env::temp_dir()`, and DfK::build streams
-                // it back every SCF iteration. `needed` is this band's byte count.
-                preflight_spill(needed)?;
+                // Same preflight as the raw path, and for the same reason
+                // sized on the PACKED figure: `needed` is the unpacked band
+                // (used for the in-core decision above), but what is written is
+                // the μν triangle -- roughly half. Preflighting the unpacked
+                // number would refuse spills that fit and overstate the IO time
+                // in the warning by 2x.
+                let spill_bytes = band
+                    .saturating_mul(packed_pair_len(nao))
+                    .saturating_mul(8);
+                preflight_spill(spill_bytes)?;
                 Some(tempfile::tempfile().map_err(|e| FerricError::General(format!("tempfile: {e}")))?)
             };
         // FAST PATH: raw and output both fully in core. Each output block is an
@@ -694,7 +768,20 @@ impl ThreeIndexSource {
                 // Band-local destination: global P maps to row (P - band_p0).
                 arr.slice_mut(ndarray::s![p0 - band_p0..p1 - band_p0, .., ..]).assign(&accum);
             } else if let Some(f) = file.as_mut() {
-                let bytes: &[u8] = bytemuck::cast_slice(accum.as_slice().unwrap());
+                // PACKED, matching the raw spill path -- both are read back by
+                // the same `for_each_block` arm, so the two formats MUST agree.
+                // (Writing this one unpacked while the reader unpacks produced
+                // pure garbage: 5458316/5458320 elements wrong, caught by
+                // `spilled_dressed_tensor_stays_within_a_few_ulp_of_in_core`.)
+                //
+                // Valid here for the same reason as the raw path: the dressing
+                // is out[P,μν] = Σ_Q m[P,Q]·raw[Q,μν], and `m` does not touch
+                // the μν indices, so a μν-symmetric raw tensor stays symmetric.
+                let bl = accum.shape()[0];
+                let pair = packed_pair_len(nao);
+                let mut packbuf = vec![0.0f64; bl * pair];
+                pack_lower_triangle(&accum.view(), nao, &mut packbuf);
+                let bytes: &[u8] = bytemuck::cast_slice(&packbuf);
                 f.write_all(bytes).map_err(|e| FerricError::General(format!("dress write: {e}")))?;
                 drop_page_cache(f);
             }
@@ -750,6 +837,16 @@ impl ThreeIndexSource {
         v
     }
 
+    /// Is this source backed by the disk spill?
+    ///
+    /// Test hook. A reachability guard that cannot see which backend it got
+    /// asserts nothing — a "spilled" source that silently stayed in core makes
+    /// every downstream contract vacuous.
+    #[doc(hidden)]
+    pub fn is_spilled_for_test(&self) -> bool {
+        matches!(self.backend, Backend::DiskSpill { .. })
+    }
+
     /// GLOBAL number of aux functions (full tensor height), regardless of band.
     pub fn naux(&self) -> usize { self.naux }
     /// Number of AO basis functions.
@@ -792,15 +889,21 @@ impl ThreeIndexSource {
             }
             Backend::DiskSpill { file, scratch } => {
                 file.seek(SeekFrom::Start(0)).map_err(|e| FerricError::General(format!("seek: {e}")))?;
+                let mut packbuf: Vec<f64> = Vec::new();
                 let nb = band.div_ceil(self.block_naux.max(1));
                 for i in 0..nb {
                     let l0 = i * self.block_naux;
                     let l1 = (l0 + self.block_naux).min(band);
                     let b = l1 - l0;
-                    let elems = b * self.nao * self.nao;
-                    let buf = scratch.as_slice_mut().unwrap();
-                    let bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut buf[..elems]);
+                    // The file holds the PACKED triangle; read that, then expand
+                    // into `scratch` so the yielded view keeps its historical
+                    // (b, nao, nao) shape and every consumer is untouched.
+                    let pair = packed_pair_len(self.nao);
+                    let elems = b * pair;
+                    packbuf.resize(elems, 0.0);
+                    let bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut packbuf[..elems]);
                     file.read_exact(bytes).map_err(|e| FerricError::General(format!("spill read: {e}")))?;
+                    unpack_lower_triangle(&packbuf[..elems], self.nao, b, scratch);
                     let view = scratch.slice(ndarray::s![0..b, .., ..]);
                     f(AuxBlock { p0: band_p0 + l0, data: view })?;
                 }
