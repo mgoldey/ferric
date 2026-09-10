@@ -94,6 +94,32 @@ pub struct PeakEstimateShape {
     /// estimator modelled only naux/nocc/nvir/n_workers, so it would have
     /// passed a 16-17 GB job as fitting a 10 GB budget.
     pub grid: Option<GridEstimateShape>,
+    /// The caller needs `PdepRpaResult::inv_dielectric_freq`, i.e.
+    /// `PdepRpaConfig::need_inv_dielectric_freq` is set.
+    ///
+    /// This is the ONLY circumstance under which [`PeakEstimateShape::n_quad`]
+    /// is a peak-resident multiplier rather than a wall-time one, and getting
+    /// that distinction right is the whole reason the field exists:
+    ///
+    /// * `false` (the energy path): quadrature points are processed per worker
+    ///   via `map_init` and never retained, so `n_quad` genuinely drives only
+    ///   wall time. `mwe_estimator_sees_grid.rs` documents this under "what is
+    ///   NOT a defect" and says not to "fix" it — correctly, for that path.
+    /// * `true`: `run_pdep_rpa` calls `energy::eval_inv_dielectric_matrices`,
+    ///   which ends in `per_frequency(..)` whose `.collect()` RETAINS one owned
+    ///   `(m, m)` matrix per frequency. `n_quad` then multiplies peak bytes.
+    ///
+    /// It is not a corner case: `ferric_gw::with_inv_dielectric` forces the
+    /// flag on for EVERY GW method (Σ_c reads the stack), so every
+    /// G0W0/evGW/COHSEX/BSE run was pre-flighted against an estimate that
+    /// charged zero for it. At the benzene-dimer/aug-cc-pVTZ shape
+    /// `ferric_rpa::lib`'s own comment quotes (naux = m = 2976, nov = 61,740,
+    /// n_quad = 20, 8 workers) the omission was 1.42 GB of retained stack plus
+    /// 11.76 GB of concurrent `y` clones.
+    ///
+    /// Defaults to `false` via [`PeakEstimateShape::energy_path`]; energy-path
+    /// callers estimate byte-identically to before this field existed.
+    pub need_inv_dielectric: bool,
 }
 
 /// Shapes for the grid-path allocations in `properties.rs` / `dispersion.rs`.
@@ -206,7 +232,8 @@ pub fn estimate_grid_bytes(g: GridEstimateShape) -> usize {
 /// output instead, which dominates panel-transient savings anyway once the
 /// panel width itself is bounded.
 pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
-    let PeakEstimateShape { naux, nocc, nvir, n_quad, n_workers, n_keep, grid } = shape;
+    let PeakEstimateShape { naux, nocc, nvir, n_quad, n_workers, n_keep, grid, need_inv_dielectric } =
+        shape;
     let nov = nocc.saturating_mul(nvir);
     let m = n_keep.min(naux).max(1);
     let n_workers = n_workers.max(1);
@@ -274,8 +301,41 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     // not double the eri3/b_ov term again here.
     let output_arrays = naux.saturating_mul(m).saturating_mul(2).saturating_mul(F64_BYTES); // eigenvectors + eigenpotentials_aux
 
-    let n_quad_unused_guard = n_quad; // n_quad only affects wall-time, not peak resident bytes here — kept as a named no-op so a future refinement that DOES need it has an obvious slot, and so the parameter isn't silently dead.
-    let _ = n_quad_unused_guard;
+    // (3b) The per-frequency inverse-dielectric stack, when the caller keeps it.
+    //
+    // This is the slot the old `n_quad_unused_guard` no-op reserved. Its
+    // comment said "n_quad only affects wall-time, not peak resident bytes
+    // here" — true on the energy path, where `per_frequency`'s results are
+    // consumed and dropped, and FALSE under `need_inv_dielectric_freq`, where
+    // `eval_inv_dielectric_matrices` collects them into a retained
+    // `Vec<Array2>`. `ferric_gw::with_inv_dielectric` sets that flag for every
+    // GW method, so the common GW path was the one being mis-estimated.
+    //
+    // Two terms, both measured at the benzene-dimer/aTZ shape:
+    //   * the retained stack, n_quad owned (m, m) matrices          (1.42 GB)
+    //   * the concurrent `y.clone()` inside
+    //     `dielectric_matrix_from_projection`, one (m, nov) per live
+    //     worker — saturating at n_workers, since rayon runs at most
+    //     that many closures at once                               (11.76 GB)
+    //
+    // The clone term is the larger of the two and is charged rather than
+    // designed away here on purpose: a scratch-reusing
+    // `dielectric_matrix_from_projection_into` already exists beside the
+    // cloning variant, so removing the clone is a real follow-up — but an
+    // estimator must charge what the code allocates TODAY, not what a future
+    // refactor might. Under-charging is how a gate approves a job that then
+    // gets OOM-killed.
+    let inv_dielectric_bytes = if need_inv_dielectric {
+        let stack = n_quad.saturating_mul(m).saturating_mul(m).saturating_mul(F64_BYTES);
+        let clones = n_quad
+            .min(n_workers)
+            .saturating_mul(m)
+            .saturating_mul(nov)
+            .saturating_mul(F64_BYTES);
+        stack.saturating_add(clones)
+    } else {
+        0
+    };
 
     // (4) Grid path, when the caller is a per-atom property path. Additive:
     // chi/d_ai_ao/band-partials are live at the same time as b_ov and the
@@ -290,6 +350,7 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
         .saturating_add(y_projection_bytes)
         .saturating_add(output_arrays)
         .saturating_add(grid_peak)
+        .saturating_add(inv_dielectric_bytes)
 }
 
 #[cfg(test)]
@@ -305,6 +366,7 @@ mod tests {
     #[test]
     fn benzene_dimer_aqz_scale_exceeds_10gb_budget() {
         let shape = PeakEstimateShape {
+            need_inv_dielectric: false,
             naux: 2976,
             nocc: 42,
             nvir: 1470,
@@ -341,6 +403,7 @@ mod tests {
     fn small_system_scale_fits_typical_budget() {
         // water/cc-pVDZ: nao≈24, naux≈116 (cc-pvdz-ri), nocc≈5, nvir≈19.
         let shape = PeakEstimateShape {
+            need_inv_dielectric: false,
             naux: 116,
             nocc: 5,
             nvir: 19,
@@ -367,6 +430,7 @@ mod tests {
     #[test]
     fn estimate_scales_with_worker_count() {
         let base = PeakEstimateShape {
+            need_inv_dielectric: false,
             naux: 500, nocc: 10, nvir: 100, n_quad: 20, n_workers: 4, n_keep: 500,
             grid: None,
         };
@@ -382,6 +446,7 @@ mod tests {
     #[test]
     fn n_keep_above_naux_is_clamped_not_panicking() {
         let shape = PeakEstimateShape {
+            need_inv_dielectric: false,
             naux: 50, nocc: 5, nvir: 20, n_quad: 10, n_workers: 2, n_keep: 999,
             grid: None,
         };

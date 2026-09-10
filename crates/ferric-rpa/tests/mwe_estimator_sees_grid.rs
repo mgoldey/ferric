@@ -31,10 +31,20 @@
 //!
 //! # A note on what is NOT a defect
 //!
-//! `estimate_peak_bytes` deliberately discards `n_quad` (budget.rs:146-147,
-//! with a named no-op guard and a comment). That is CORRECT: quadrature points
-//! are processed per-worker via `map_init` and never retained, so `n_quad`
-//! drives wall time, not peak resident bytes. Do not "fix" it.
+//! `estimate_peak_bytes` discards `n_quad` ON THE ENERGY PATH. That is CORRECT
+//! there: quadrature points are processed per-worker via `map_init` and never
+//! retained, so `n_quad` drives wall time, not peak resident bytes. The shape
+//! below sets `need_inv_dielectric: false` and this file's contracts depend on
+//! that staying a no-op.
+//!
+//! REFINED 2026-09-10: the "do not fix it" instruction that used to sit here
+//! was too broad. It is only true while `need_inv_dielectric` is false. Under
+//! `PdepRpaConfig::need_inv_dielectric_freq` — which `ferric_gw` sets for EVERY
+//! GW method — `eval_inv_dielectric_matrices` collects the per-frequency
+//! matrices into a RETAINED `Vec<Array2>`, and `n_quad` becomes a peak-resident
+//! multiplier worth 1.42 GB (plus 11.76 GB of concurrent `y` clones) at
+//! benzene-dimer/aTZ scale. `mwe_estimator_sees_inv_dielectric.rs` pins that
+//! branch; this file pins that the energy path is unaffected by it.
 
 use ferric_rpa::budget::{
     estimate_grid_bytes, estimate_peak_bytes, GridEstimateShape, PeakEstimateShape,
@@ -52,6 +62,8 @@ const INCIDENT_NPTS: usize = 71 * 8250;
 /// before this work).
 fn energy_only_shape() -> PeakEstimateShape {
     PeakEstimateShape {
+        // Energy path: no retained inverse-dielectric stack. See the module doc.
+        need_inv_dielectric: false,
         naux: 2976,
         nocc: 150,
         nvir: 650,

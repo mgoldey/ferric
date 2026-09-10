@@ -749,8 +749,9 @@ pub(crate) fn preflight_grid_path(
         nocc,
         nvir,
         // The grid paths run their own frequency loops; n_quad drives wall time
-        // rather than peak resident bytes (see budget.rs's named no-op), so the
-        // value here is immaterial to the estimate.
+        // rather than peak resident bytes, so the value here is immaterial to
+        // the estimate — see `need_inv_dielectric` below, which is the one
+        // condition that changes that.
         n_quad: 1,
         n_workers: rayon::current_num_threads().max(1),
         // Pre-eigensolve, the retained-mode count is unknown; naux is the
@@ -763,6 +764,12 @@ pub(crate) fn preflight_grid_path(
             dipole_band_width: band,
             n_workers: rayon::current_num_threads().max(1),
         }),
+        // This preflight guards the grid ACCUMULATION, which consumes the
+        // per-frequency dielectric and drops it. Callers that additionally
+        // retain `inv_dielectric_freq` (the PDEP dynamic-alpha path) run
+        // `run_pdep_rpa` first, and ITS preflight charges the stack from the
+        // live config flag — so charging it again here would double-count.
+        need_inv_dielectric: false,
     });
     ferric_core::memory::check_alloc(label, est, budget)?;
     Ok(budget)

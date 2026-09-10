@@ -228,6 +228,10 @@ pub fn rs_mp2_lr_rpa(
             n_workers,
             n_keep,
             grid: None,
+            // rs-mp2-rpa consumes the RPA correlation energy only; it never
+            // asks for inv_dielectric_freq, so the per-frequency stack is
+            // built, consumed and dropped rather than retained.
+            need_inv_dielectric: false,
         });
         ferric_core::memory::check_alloc(
             &format!(

@@ -313,6 +313,10 @@ fn preflight_check_closed_shell(
         n_workers,
         n_keep,
         grid: None,
+        // Read the live flag, not a constant: under it the per-frequency
+        // inverse-dielectric stack is RETAINED, so n_quad multiplies peak bytes
+        // instead of only wall time. ferric_gw sets this for every GW method.
+        need_inv_dielectric: config.need_inv_dielectric_freq,
     });
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
     ferric_core::memory::check_alloc(
@@ -872,13 +876,20 @@ pub fn run_u_pdep_rpa(
         let nvir_b = nbas.saturating_sub(nocc_total_b);
         let n_workers = rayon::current_num_threads().max(1);
         let n_keep = naux;
+        // The retained stack is spin-SUMMED, not per-spin: U-GW builds ONE
+        // ε̃_U = I + Π_α + Π_β and inverts it, so there is a single n_quad x m^2
+        // stack for the pair. Charge it on the alpha shape only — charging both
+        // would double-count it, which is the over-estimation direction and
+        // would refuse U-GW jobs that fit.
         let est_a = budget::estimate_peak_bytes(budget::PeakEstimateShape {
             naux, nocc: nocc_a, nvir: nvir_a, n_quad: config.quadrature.n_points, n_workers, n_keep,
             grid: None,
+            need_inv_dielectric: config.need_inv_dielectric_freq,
         });
         let est_b = budget::estimate_peak_bytes(budget::PeakEstimateShape {
             naux, nocc: nocc_b, nvir: nvir_b, n_quad: config.quadrature.n_points, n_workers, n_keep,
             grid: None,
+            need_inv_dielectric: false,
         });
         let est = est_a.saturating_add(est_b);
         let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
