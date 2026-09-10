@@ -492,37 +492,65 @@ pub fn atomic_effective_volumes_becke(
     let home_atom: Vec<usize> = grid.iter().map(|g| g.home_atom).collect();
     let npts = points.len();
 
-    let chi = eval_basis_on_points(mol, obs_bs, &points).map_err(|e| {
-        FerricError::General(format!(
-            "atomic_effective_volumes_becke: chi eval failed: {e}"
-        ))
-    })?;
-    let nbf = chi.nrows();
-
     let pos: Vec<[f64; 3]> = mol
         .atoms
         .iter()
         .map(|at| [at.x, at.y, at.zpos])
         .collect();
 
+    // Evaluate chi in CHUNKS of grid points instead of materialising the whole
+    // (nbf, npts) matrix up front.
+    //
+    // The full matrix is 3.4 GB at danuglipron/def2-SVP scale (73 atoms, the
+    // default 75x110 grid => 602,250 points, nbf ~ 700) and 7.7 GB at
+    // def2-TZVP, none of it bounded by `[memory] budget_gb` — this function
+    // consults no budget, and `eval_basis_on_points` is not one of the sites
+    // `check_ao_grid_budget` guards. That is the allocation shape behind the
+    // 2026-07-13 incidents where ferric-cli reached 16-17 GB anon-RSS on the
+    // Becke-grid property path. Every consumer below reads chi one grid point
+    // at a time, so nothing needed the whole thing resident.
+    //
+    // Numerically INERT, and the reason is worth stating because "chunking is
+    // obviously safe" is how block-boundary regressions get in here (see
+    // `DRESS_ROW_BLOCK`'s doc for ~7e-15 from an odd GEMM row split):
+    //   * chi is a materialised lookup table, not a reduction — chi[mu, g] is a
+    //     pure function of point g's coordinates, so grouping points changes
+    //     nothing about the values.
+    //   * The one real reduction, `vol[a] += ...`, still runs over g in strict
+    //     ascending order: the chunk loop is serial and outer, the point loop
+    //     serial and inner, so the addition sequence is exactly what it was.
+    // `mwe_scf_grid_chunking_is_inert.rs` pins this bit-for-bit.
+    let chunk = crate::reduce::deterministic_group_size(npts);
     let mut vol = vec![0.0_f64; natoms];
-    for g in 0..npts {
-        let a = home_atom[g];
-        let mut rho = 0.0;
-        for mu in 0..nbf {
-            let cm = chi[(mu, g)];
-            if cm.abs() < 1e-30 {
-                continue;
+    let mut g0 = 0usize;
+    while g0 < npts {
+        let g1 = (g0 + chunk).min(npts);
+        let chi = eval_basis_on_points(mol, obs_bs, &points[g0..g1]).map_err(|e| {
+            FerricError::General(format!(
+                "atomic_effective_volumes_becke: chi eval failed: {e}"
+            ))
+        })?;
+        let nbf = chi.nrows();
+        for g in g0..g1 {
+            let gc = g - g0; // column index within this chunk
+            let a = home_atom[g];
+            let mut rho = 0.0;
+            for mu in 0..nbf {
+                let cm = chi[(mu, gc)];
+                if cm.abs() < 1e-30 {
+                    continue;
+                }
+                for nu in 0..nbf {
+                    rho += density[(mu, nu)] * cm * chi[(nu, gc)];
+                }
             }
-            for nu in 0..nbf {
-                rho += density[(mu, nu)] * cm * chi[(nu, g)];
-            }
+            let dx = points[g][0] - pos[a][0];
+            let dy = points[g][1] - pos[a][1];
+            let dz = points[g][2] - pos[a][2];
+            let r3 = (dx * dx + dy * dy + dz * dz).powf(1.5);
+            vol[a] += weights[g] * rho * r3;
         }
-        let dx = points[g][0] - pos[a][0];
-        let dy = points[g][1] - pos[a][1];
-        let dz = points[g][2] - pos[a][2];
-        let r3 = (dx * dx + dy * dy + dz * dz).powf(1.5);
-        vol[a] += weights[g] * rho * r3;
+        g0 = g1;
     }
     Ok(vol)
 }
@@ -544,31 +572,61 @@ pub fn becke_charges(
     let home_atom: Vec<usize> = grid.iter().map(|g| g.home_atom).collect();
     let npts = points.len();
 
-    let chi = eval_basis_on_points(mol, obs_bs, &points).map_err(|e| {
-        FerricError::General(format!("becke_charges: chi eval failed: {e}"))
-    })?;
-    let nbf = chi.nrows();
-    if density.nrows() != nbf || density.ncols() != nbf {
+    let nbf = density.nrows();
+    if density.ncols() != nbf {
         return Err(FerricError::General(format!(
-            "becke_charges: density shape {:?} != nbf {nbf}", density.dim()
+            "becke_charges: density shape {:?} is not square", density.dim()
         )));
     }
 
-    // ρ(r_g) = Σ_μν D_μν χ_μ(g) χ_ν(g) = Σ_μ χ_μ · (D·χ)_μ
-    let d_chi = density.dot(&chi);
-    let mut rho = vec![0.0_f64; npts];
-    for mu in 0..nbf {
-        for g in 0..npts {
-            rho[g] += chi[(mu, g)] * d_chi[(mu, g)];
-        }
-    }
-
-    // Per-atom electron count via Becke partition:
-    //   n^A = Σ_{g: home=A} w_g ρ(r_g)
-    // (Becke partition baked into `w_g · 1[home=A]`.)
+    // Chunk the grid instead of materialising the full (nbf, npts) chi AND its
+    // same-shaped product `D·chi` — two co-resident matrices, so this path's
+    // peak was TWICE the 3.4 GB / 7.7 GB figures quoted on
+    // `atomic_effective_volumes_becke` above (6.7 GB at danuglipron/def2-SVP,
+    // 15.4 GB at def2-TZVP), with no budget bounding either.
+    //
+    // Numerically INERT, and this site needs the argument spelled out because
+    // it contains a GEMM, which is exactly where block boundaries have bitten
+    // this repo before:
+    //   * `d_chi = D.dot(chi)` reduces over nbf (the SHARED index); g is a FREE
+    //     index of that product. Chunking g therefore splits independent output
+    //     COLUMNS and leaves the k-axis accumulation completely untouched.
+    //     Contrast `DRESS_ROW_BLOCK`, where the split moved a GEMM's output
+    //     ROWS and shifted OpenBLAS's accumulation lanes (~7e-15 per odd split).
+    //   * `rho[g]`'s sum over mu stays whole and in order within each g.
+    //   * `n_e[home] += w*rho` runs over g in strict ascending order: the chunk
+    //     loop is serial and outer.
+    // `mwe_scf_grid_chunking_is_inert.rs` pins this bit-for-bit, including
+    // across worker counts.
+    let chunk = crate::reduce::deterministic_group_size(npts);
     let mut n_e = vec![0.0_f64; natoms];
-    for g in 0..npts {
-        n_e[home_atom[g]] += weights[g] * rho[g];
+    let mut g0 = 0usize;
+    while g0 < npts {
+        let g1 = (g0 + chunk).min(npts);
+        let chi = eval_basis_on_points(mol, obs_bs, &points[g0..g1]).map_err(|e| {
+            FerricError::General(format!("becke_charges: chi eval failed: {e}"))
+        })?;
+        if chi.nrows() != nbf {
+            return Err(FerricError::General(format!(
+                "becke_charges: density shape {:?} != nbf {}", density.dim(), chi.nrows()
+            )));
+        }
+        // ρ(r_g) = Σ_μν D_μν χ_μ(g) χ_ν(g) = Σ_μ χ_μ · (D·χ)_μ
+        let d_chi = density.dot(&chi);
+        let w = g1 - g0;
+        let mut rho = vec![0.0_f64; w];
+        for mu in 0..nbf {
+            for gc in 0..w {
+                rho[gc] += chi[(mu, gc)] * d_chi[(mu, gc)];
+            }
+        }
+        // Per-atom electron count via Becke partition:
+        //   n^A = Σ_{g: home=A} w_g ρ(r_g)
+        // (Becke partition baked into `w_g · 1[home=A]`.)
+        for gc in 0..w {
+            n_e[home_atom[g0 + gc]] += weights[g0 + gc] * rho[gc];
+        }
+        g0 = g1;
     }
 
     // Mild renormalization: rescale to enforce Σ_A n^A = N_e (corrects
