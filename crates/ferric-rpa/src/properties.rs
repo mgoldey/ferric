@@ -3295,7 +3295,7 @@ mod tests {
             let wide = rayon::ThreadPoolBuilder::new().num_threads(8).build().unwrap();
             wide.install(|| {
                 assert_eq!(dipole_band_width(1, 100, 1), 1);
-                assert_eq!(dipole_band_width(1, 100, 2_400_000), 10);
+                assert_eq!(dipole_band_width(1, 100, budget), expected);
             });
         });
     }
