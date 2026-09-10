@@ -120,6 +120,47 @@ pub struct PeakEstimateShape {
     /// Defaults to `false` via [`PeakEstimateShape::energy_path`]; energy-path
     /// callers estimate byte-identically to before this field existed.
     pub need_inv_dielectric: bool,
+    /// AO basis size, for the `(naux, nao, nao)` three-index AO tensor that
+    /// `ThreeIndexSource` holds resident while `b_ov` is streamed out of it.
+    ///
+    /// `0` contributes nothing, so a caller that has no meaningful `nao`
+    /// estimates byte-identically to before this field existed.
+    ///
+    /// # Why this is not the "negligible" scratch the old comment described
+    ///
+    /// The intermediates comment below used to say the raw AO scratch is
+    /// "chunk-sized, `MO_STREAM_CHUNK` aux rows wide, not naux-wide, so it's
+    /// negligible next to the full b_ov". That is true of what the stream
+    /// reads INTO and false of what it reads FROM.
+    /// `compute_rpa_intermediates` (rimp2.rs) does:
+    ///
+    /// ```text
+    /// let budget_bytes = eri3_budget_bytes(config.memory_budget_bytes);
+    /// let mut src = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+    /// let b_ov = stream_dressed_mo_band(&mut src, .., None)?;
+    /// ```
+    ///
+    /// `src` is a SEPARATE full `(naux, nao, nao)` tensor, live for the whole
+    /// streaming call, and `eri3_budget_bytes` is `resolve_budget_bytes(..)` —
+    /// the WHOLE budget. `ThreeIndexSource::build`'s own gate is
+    /// `if band * nao * nao * 8 <= budget_bytes { InCore }`, so it will admit
+    /// an AO tensor occupying 100% of the same ceiling this estimate is then
+    /// checked against.
+    ///
+    /// It is not a rounding term — it is LARGER than the `b_ov` that was being
+    /// charged:
+    ///
+    /// ```text
+    ///   system                naux   nao   AO tensor   charged b_ov   ratio
+    ///   benzene/cc-pVDZ        420   114     0.04 GB       0.01 GB      6.7x
+    ///   benzene/aug-cc-pVTZ   1512   414     2.07 GB       0.10 GB     20.8x
+    ///   danuglipron/def2-SVP  2800   700    10.98 GB       1.23 GB      8.9x
+    /// ```
+    ///
+    /// Charged at the IN-CORE size deliberately: that is the branch the budget
+    /// permits, and a run that spills instead pays only a bounded band, so
+    /// this is the conservative direction — the correct one for a pre-flight.
+    pub nao: usize,
 }
 
 /// Shapes for the grid-path allocations in `properties.rs` / `dispersion.rs`.
@@ -232,8 +273,9 @@ pub fn estimate_grid_bytes(g: GridEstimateShape) -> usize {
 /// output instead, which dominates panel-transient savings anyway once the
 /// panel width itself is bounded.
 pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
-    let PeakEstimateShape { naux, nocc, nvir, n_quad, n_workers, n_keep, grid, need_inv_dielectric } =
-        shape;
+    let PeakEstimateShape {
+        naux, nocc, nvir, n_quad, n_workers, n_keep, grid, need_inv_dielectric, nao,
+    } = shape;
     let nov = nocc.saturating_mul(nvir);
     let m = n_keep.min(naux).max(1);
     let n_workers = n_workers.max(1);
@@ -249,11 +291,23 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     //     stream_dressed_mo_band (mirroring ri_mp2_spin_components), each
     //     aux-block chunk is dressed in place into the SAME output tensor as
     //     it streams — only one naux·nocc·nvir buffer is ever resident (the
-    //     raw AO block scratch is chunk-sized, `MO_STREAM_CHUNK` aux rows
+    //     raw AO block SCRATCH is chunk-sized, `MO_STREAM_CHUNK` aux rows
     //     wide, not naux-wide, so it's negligible next to the full b_ov).
+    //
+    //     CAVEAT the above used to omit: that is the buffer the stream reads
+    //     INTO. The `ThreeIndexSource` it reads FROM is a separate full
+    //     `(naux, nao, nao)` tensor, live across the whole streaming call and
+    //     admitted in-core at up to 100% of this very budget. It is charged
+    //     below as `ao_tensor_bytes` — see `PeakEstimateShape::nao`.
     let metric_bytes = naux.saturating_mul(naux).saturating_mul(3).saturating_mul(F64_BYTES);
     let eri3_and_bov_bytes = naux.saturating_mul(nov).saturating_mul(F64_BYTES);
-    let intermediates_peak = metric_bytes.saturating_add(eri3_and_bov_bytes);
+    // The resident three-index AO tensor. `nao == 0` (a caller that does not
+    // supply it) contributes nothing, keeping such callers byte-identical.
+    let ao_tensor_bytes =
+        naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(F64_BYTES);
+    let intermediates_peak = metric_bytes
+        .saturating_add(eri3_and_bov_bytes)
+        .saturating_add(ao_tensor_bytes);
 
     // (2) Lanczos full-rank eigensolve: assembled A (naux×naux, always fully
     // resident regardless of matvec panel width) + its eigh output
@@ -366,6 +420,8 @@ mod tests {
     #[test]
     fn benzene_dimer_aqz_scale_exceeds_10gb_budget() {
         let shape = PeakEstimateShape {
+            // AO tensor not modelled by this case.
+            nao: 0,
             need_inv_dielectric: false,
             naux: 2976,
             nocc: 42,
@@ -403,6 +459,8 @@ mod tests {
     fn small_system_scale_fits_typical_budget() {
         // water/cc-pVDZ: nao≈24, naux≈116 (cc-pvdz-ri), nocc≈5, nvir≈19.
         let shape = PeakEstimateShape {
+            // AO tensor not modelled by this case.
+            nao: 0,
             need_inv_dielectric: false,
             naux: 116,
             nocc: 5,
@@ -430,6 +488,8 @@ mod tests {
     #[test]
     fn estimate_scales_with_worker_count() {
         let base = PeakEstimateShape {
+            // AO tensor not modelled by this case.
+            nao: 0,
             need_inv_dielectric: false,
             naux: 500, nocc: 10, nvir: 100, n_quad: 20, n_workers: 4, n_keep: 500,
             grid: None,
@@ -446,6 +506,8 @@ mod tests {
     #[test]
     fn n_keep_above_naux_is_clamped_not_panicking() {
         let shape = PeakEstimateShape {
+            // AO tensor not modelled by this case.
+            nao: 0,
             need_inv_dielectric: false,
             naux: 50, nocc: 5, nvir: 20, n_quad: 10, n_workers: 2, n_keep: 999,
             grid: None,

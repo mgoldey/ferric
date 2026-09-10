@@ -159,6 +159,9 @@ fn estimate_does_not_chase_the_budget() {
             // not retained, so n_quad is not a peak multiplier here. See
             // PeakEstimateShape::need_inv_dielectric.
             need_inv_dielectric: false,
+            // Likewise the AO tensor belongs to the intermediates stage, not to
+            // the grid accumulation this contract exercises.
+            nao: 0,
         })
     };
 

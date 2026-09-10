@@ -62,6 +62,8 @@ const INCIDENT_NPTS: usize = 71 * 8250;
 /// before this work).
 fn energy_only_shape() -> PeakEstimateShape {
     PeakEstimateShape {
+        // AO tensor not modelled by this case.
+        nao: 0,
         // Energy path: no retained inverse-dielectric stack. See the module doc.
         need_inv_dielectric: false,
         naux: 2976,

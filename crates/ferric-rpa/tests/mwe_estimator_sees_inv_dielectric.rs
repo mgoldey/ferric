@@ -74,6 +74,8 @@ const F64: usize = 8;
 /// when it says the stack is "~1.85 GB at dimer/aTZ scale".
 fn dimer_atz(n_quad: usize, need_inv: bool) -> PeakEstimateShape {
     PeakEstimateShape {
+        // AO tensor not modelled by this case.
+        nao: 0,
         naux: 2976,
         nocc: 42,
         nvir: 1470,
