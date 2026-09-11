@@ -38,6 +38,12 @@ pub fn run_u_g0w0(
             "pdep eigenvalues_freq mode count does not match dressed eigenpotentials".into(),
         ));
     }
+    // Spin-summed pre-flight: both projections are live together below, but
+    // each project_b_into_pdep gates only against the whole budget alone.
+    crate::cohsex::guard_m_proj_both_spins(
+        v_dressed.ncols(), mo_b_a.n_act, mo_b_b.n_act, mo_b_a.naux,
+        gw_cfg.memory_budget_bytes,
+    )?;
     let m_proj_a = project_b_into_pdep(mo_b_a, v_dressed, gw_cfg.memory_budget_bytes)?;
     let m_proj_b = project_b_into_pdep(mo_b_b, v_dressed, gw_cfg.memory_budget_bytes)?;
     let sigma_x_a_all = sigma_x_diag(mo_b_a);
@@ -139,6 +145,12 @@ pub fn run_u_evgw0(
             "pdep eigenvalues_freq mode count does not match dressed eigenpotentials".into(),
         ));
     }
+    // Spin-summed pre-flight: both projections are live together below, but
+    // each project_b_into_pdep gates only against the whole budget alone.
+    crate::cohsex::guard_m_proj_both_spins(
+        v_dressed.ncols(), mo_b_a.n_act, mo_b_b.n_act, mo_b_a.naux,
+        gw_cfg.memory_budget_bytes,
+    )?;
     let m_proj_a = project_b_into_pdep(mo_b_a, v_dressed, gw_cfg.memory_budget_bytes)?;
     let m_proj_b = project_b_into_pdep(mo_b_b, v_dressed, gw_cfg.memory_budget_bytes)?;
     let sigma_x_a_all = sigma_x_diag(mo_b_a);
@@ -321,6 +333,12 @@ pub fn run_u_evgw(
                 &mo_b_a.v_inv_sqrt, &current_pdep.eigenpotentials,
             )?;
         }
+        // Spin-summed pre-flight, inside the evGW loop: the pair is rebuilt
+        // every iteration, so this is checked every iteration too.
+        crate::cohsex::guard_m_proj_both_spins(
+            current_v_dressed.ncols(), mo_b_a.n_act, mo_b_b.n_act, mo_b_a.naux,
+            gw_cfg.memory_budget_bytes,
+        )?;
         let m_proj_a =
             project_b_into_pdep(mo_b_a, &current_v_dressed, gw_cfg.memory_budget_bytes)?;
         let m_proj_b =

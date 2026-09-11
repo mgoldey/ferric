@@ -49,20 +49,42 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// same fix, as `ferric_rpa::properties::pdep_polarizability_static`; ferric-gw
 /// simply never got it.
 static M_PROJ_WARNED: AtomicBool = AtomicBool::new(false);
-fn guard_m_proj(m_modes: usize, n_act: usize, budget: Option<usize>) -> Result<(), FerricError> {
+fn guard_m_proj(
+    m_modes: usize, n_act: usize, naux: usize, budget: Option<usize>,
+) -> Result<(), FerricError> {
     let budget = ferric_core::memory::resolve_budget_bytes(budget);
-    let need = m_modes
+    // BOTH tensors, not just the one being allocated.
+    //
+    // `project_b_into_pdep` builds `m_proj` FROM `mo_b.b_full`, and `b_full`
+    // stays live across the whole GEMM -- this guard runs before the reshape
+    // at :130 and the product at :136, so at the peak both are resident. The
+    // old charge counted only `m_proj`, a clean 2x under-count at full rank
+    // where `m_modes == naux` makes them the same size:
+    //
+    //   system                naux  n_act    m_proj    b_full    true peak
+    //   benzene/aug-cc-pVTZ   1512    300   1.09 GB   1.09 GB      2.18 GB
+    //   GW100-scale           2000    500   4.00 GB   4.00 GB      8.00 GB
+    //
+    // Under truncation (`trunc_thresh > 0`) `m_modes < naux` and the two
+    // differ, which is why they are summed rather than doubled.
+    let m_proj_bytes = m_modes
         .saturating_mul(n_act)
         .saturating_mul(n_act)
         .saturating_mul(8);
+    let b_full_bytes = naux
+        .saturating_mul(n_act)
+        .saturating_mul(n_act)
+        .saturating_mul(8);
+    let need = m_proj_bytes.saturating_add(b_full_bytes);
     if need <= budget {
         return Ok(());
     }
     let msg = format!(
-        "projected M tensor ({m_modes}×{n_act}×{n_act} f64 = {:.2} GB) exceeds the memory \
-         budget ({:.2} GB) and is rebuilt every evGW iteration (×2 for U-GW). Full-rank GW \
-         at this scale needs trunc_thresh > 0 (rank truncation shrinks this quadratically), \
-         a smaller active space, or a larger budget.",
+        "projected M tensor ({m_modes}×{n_act}×{n_act}) plus the co-resident b_full \
+         ({naux}×{n_act}×{n_act}) = {:.2} GB exceeds the memory budget ({:.2} GB), and is \
+         rebuilt every evGW iteration (×2 for U-GW). Full-rank GW at this scale needs \
+         trunc_thresh > 0 (rank truncation shrinks the M half quadratically), a smaller \
+         active space, or a larger budget.",
         need as f64 / 1e9,
         budget as f64 / 1e9,
     );
@@ -117,6 +139,47 @@ pub fn sigma_x_diag(mo_b: &MoB) -> Array1<f64> {
 /// `None` to fall back to the env/auto ceiling). This function is FALLIBLE for
 /// that reason — see `guard_m_proj`'s docs for why the old warn-only form was
 /// not a gate.
+/// Pre-flight the BOTH-SPIN projection before either half is built.
+///
+/// U-GW allocates two `m_proj` tensors and holds them simultaneously
+/// (`u_cohsex.rs:30-34` builds both, then calls `cohsex_pieces` on each; the
+/// same shape repeats at `u_sigma.rs:41`, `:142` and `:325`, the last inside
+/// the evGW iteration loop). Each `project_b_into_pdep` call gates
+/// independently against the FULL budget, so both pass and the process holds
+/// the sum -- a 4x under-count once `b_full` is counted too, on GW's largest
+/// tensor pair.
+///
+/// Call this ONCE before the pair. The per-call guard inside
+/// `project_b_into_pdep` still runs and is still correct for the closed-shell
+/// path; this adds the spin-summed check that no single call can make.
+pub fn guard_m_proj_both_spins(
+    m_modes: usize,
+    n_act_a: usize,
+    n_act_b: usize,
+    naux: usize,
+    budget: Option<usize>,
+) -> Result<(), FerricError> {
+    let pair = |n_act: usize| -> usize {
+        let m = m_modes.saturating_mul(n_act).saturating_mul(n_act).saturating_mul(8);
+        let b = naux.saturating_mul(n_act).saturating_mul(n_act).saturating_mul(8);
+        m.saturating_add(b)
+    };
+    let need = pair(n_act_a).saturating_add(pair(n_act_b));
+    let resolved = ferric_core::memory::resolve_budget_bytes(budget);
+    if need <= resolved {
+        return Ok(());
+    }
+    Err(FerricError::General(format!(
+        "U-GW holds BOTH spin projections at once (alpha {m_modes}x{n_act_a}x{n_act_a} + \
+         beta {m_modes}x{n_act_b}x{n_act_b}, each with its co-resident b_full) = {:.2} GB, \
+         exceeding the memory budget ({:.2} GB). Each spin's own guard passes because it \
+         is checked against the whole budget independently. Needs trunc_thresh > 0, a \
+         smaller active space, or a larger budget.",
+        need as f64 / 1e9,
+        resolved as f64 / 1e9,
+    )))
+}
+
 pub fn project_b_into_pdep(
     mo_b: &MoB,
     v_dressed: &Array2<f64>,
@@ -125,7 +188,7 @@ pub fn project_b_into_pdep(
     let naux = mo_b.naux;
     let n_act = mo_b.n_act;
     let m_modes = v_dressed.ncols();
-    guard_m_proj(m_modes, n_act, memory_budget_bytes)?;
+    guard_m_proj(m_modes, n_act, naux, memory_budget_bytes)?;
     // Reshape b_full (naux, n_act, n_act) → (naux, n_act*n_act) for one GEMM.
     let b_flat = mo_b
         .b_full
