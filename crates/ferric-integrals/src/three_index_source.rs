@@ -43,6 +43,46 @@ fn spill_block_naux_for(budget_bytes: usize, nao: usize) -> usize {
     block_naux_for(budget_bytes / 2, nao)
 }
 
+/// Pure decision + report for the SEQUENTIAL blocked/spilled DF-dressing
+/// path's over-budget-by-construction warning (see the comment at its call
+/// site in `build_dressed_band`).
+///
+/// Mirrors the exact `MemoryPlan` reservations the sequential dressing loop
+/// makes: the optional in-core `dressed band` (only when `in_core`), plus the
+/// TWO co-resident `block_naux·nao²` blocks (`accum` and the `contrib` GEMM
+/// result added into it every iteration) — this is the same shape as
+/// `spill_block_naux_for` halves for on the RAW path, but `block_naux` here
+/// comes from the UN-halved `block_naux_for`, so the pair is ~2x budget by
+/// construction on a spilled source.
+///
+/// Returns `Some(report)` (the human-readable breakdown) when the plan does
+/// NOT fit the budget, `None` when it does. Extracted as a pure function
+/// (explicit shape arguments, no disk I/O, no `PreparedBasis`) so the
+/// warn-unconditionally behavior can be pinned in milliseconds instead of via
+/// the full spill machinery.
+fn blocked_dressing_overshoot_report(
+    budget_bytes: usize, in_core: bool, band: usize, block_naux: usize, nao: usize,
+) -> Option<String> {
+    let mut plan = MemoryPlan::with_budget_bytes(budget_bytes, "DF dressing (blocked)");
+    if in_core {
+        plan.reserve("dressed band B[P,mu,nu]", band * nao * nao, Lifetime::Resident);
+    }
+    plan.reserve("dressing accum block", block_naux * nao * nao, Lifetime::Resident);
+    plan.reserve("dressing GEMM contrib block", block_naux * nao * nao, Lifetime::Resident);
+    if plan.check().is_err() {
+        Some(plan.report())
+    } else {
+        None
+    }
+}
+
+#[doc(hidden)]
+pub fn blocked_dressing_overshoot_report_for_test(
+    budget_bytes: usize, in_core: bool, band: usize, block_naux: usize, nao: usize,
+) -> Option<String> {
+    blocked_dressing_overshoot_report(budget_bytes, in_core, band, block_naux, nao)
+}
+
 /// Output aux rows per dressing GEMM in `build_dressed_band`'s parallel fast
 /// path.
 ///
@@ -826,21 +866,32 @@ impl ThreeIndexSource {
         // budget by construction. Over-counting that refuses jobs which would
         // have fit is as much a bug as under-counting that OOMs, so the honest
         // figure is REPORTED (with the breakdown) rather than enforced.
-        {
-            let mut plan = MemoryPlan::with_budget_bytes(budget_bytes, "DF dressing (blocked)");
-            if in_core {
-                plan.reserve("dressed band B[P,mu,nu]", band * nao * nao, Lifetime::Resident);
-            }
-            plan.reserve("dressing accum block", block_naux * nao * nao, Lifetime::Resident);
-            plan.reserve("dressing GEMM contrib block", block_naux * nao * nao, Lifetime::Resident);
-            if plan.check().is_err() && ooc_trace() {
-                eprintln!(
-                    "[OOC dress] blocked path exceeds the byte budget (two live blocks per \
-                     iteration; block size is fixed because it sets the GEMM shape and hence \
-                     the result):\n{}",
-                    plan.report()
-                );
-            }
+        //
+        // FIXED 2026-09-10: the report was gated on `ooc_trace()` (the
+        // `FERRIC_OOC_TRACE` debug env var, default OFF), so in every
+        // production run the "REPORTED" promise above was false — the ~2x
+        // overshoot was computed and then silently discarded, and an operator
+        // whose job died in a cgroup MemoryMax got neither an error nor a
+        // warning. `ooc_trace()` still controls the VERBOSE per-decision
+        // in-core/spill trace elsewhere in this file; here it gated the ONLY
+        // channel that could ever tell anyone this path is running ~2x over
+        // budget by construction, so the two purposes should not share a
+        // toggle. Print unconditionally on `check()` failure instead — this
+        // adds a stderr line on an already-slow disk-spill path, allocates
+        // nothing, and changes no arithmetic (`plan.check()`'s Err is now
+        // read, not just computed).
+        //
+        // The decision (does this shape overshoot the budget?) is pulled out
+        // into `blocked_dressing_overshoot_report` so it is testable without
+        // driving the whole spill machinery (disk files, a real
+        // `PreparedBasis`) — see `blocked_dressing_overshoot_report_for_test`.
+        if let Some(report) = blocked_dressing_overshoot_report(budget_bytes, in_core, band, block_naux, nao) {
+            eprintln!(
+                "[ferric] WARNING: DF dressing (blocked/spilled) exceeds the byte budget \
+                 by construction (two live blocks per iteration; block size is fixed \
+                 because it sets the GEMM shape and hence the numerical result, so it is \
+                 not shrunk to fit):\n{report}"
+            );
         }
 
         let mut p0 = band_p0;

@@ -212,6 +212,62 @@ pub fn laplace_panel_widths_for_test(
     (block_mu, block_p)
 }
 
+/// Per-nonzero storage cost of a [`SparseBSlice`] entry: a `u16` column index
+/// (2 bytes) plus an `f64` value (8 bytes) = 10 bytes, vs. 8 bytes for the same
+/// entry in the dense tensor it is built from.
+const SPARSE_BYTES_PER_NNZ: usize = 10;
+const DENSE_BYTES_PER_ELEM: usize = 8;
+
+/// Peak resident bytes for the AO/SOS Laplace dressing-and-sparsify stage.
+///
+/// # What is actually co-resident, and when
+///
+/// `into_shape_with_order` is a zero-copy reshape for a contiguous row-major
+/// array (`ndarray::impl_methods::into_shape_with_order_impl` takes `self` by
+/// value and only rewrites strides — verified against ndarray 0.16.1's
+/// source), so `eri3_ao -> eri3_flat` and `b_flat_ao -> b_ao` do NOT double
+/// the tensor count: `eri3_flat` IS `eri3_ao`'s allocation, and `b_ao` IS
+/// `b_flat_ao`'s. The dressing GEMM `v_inv_sqrt.dot(&eri3_flat)` allocates one
+/// genuinely new tensor (`b_flat_ao`); NLL drops `eri3_flat` right after that
+/// call (its only use), well before `b_sparse` is built. So the dressing peak
+/// really is 2 dense tensors + the metric, matching the pre-flight fired
+/// before any of them are allocated.
+///
+/// The uncharged peak is a DIFFERENT stage: `b_sparse` (`Vec<SparseBSlice>`,
+/// built from `b_ao` via `SparseBSlice::from_dense`) is constructed WHILE
+/// `b_ao` is still alive — `drop(b_ao)` happens only after `b_sparse` (and,
+/// in `compute_ao`, also the MO transform) complete. Each retained entry
+/// costs [`SPARSE_BYTES_PER_NNZ`] (10 bytes: u16 col + f64 val) vs.
+/// [`DENSE_BYTES_PER_ELEM`] (8 bytes) in `b_ao`, so at low fill `b_sparse` is
+/// cheaper than `b_ao`, but as fill approaches 100% (a diffuse basis with the
+/// 1e-12 threshold retaining nearly everything) `b_sparse` can cost UP TO
+/// 1.25x `b_ao`'s size, not less. This function charges that worst case
+/// (`fill = 1.0`) since fill is data-dependent and not known before the
+/// tensor exists — the pre-flight must fail closed.
+///
+/// Measured at nbf=900/naux=2200 (this file's own "~14 GB" reference shape):
+/// dense_bytes = 14.256 GB, so old peak_bytes (2·dense + metric) = 28.589 GB,
+/// while the true peak at the `b_sparse` stage (dense + sparse@100% fill) is
+/// 14.256 + 17.820 = 32.076 GB — about 12.2% higher than what was charged,
+/// enough that a 30 GB budget would previously admit a job that needs 32 GB.
+fn laplace_dressing_peak_bytes(naux: usize, nbas: usize) -> usize {
+    let dense_bytes = naux.saturating_mul(nbas).saturating_mul(nbas).saturating_mul(DENSE_BYTES_PER_ELEM);
+    let metric_bytes = naux.saturating_mul(naux).saturating_mul(2).saturating_mul(DENSE_BYTES_PER_ELEM);
+    // Worst-case b_sparse: every entry retained, at SPARSE_BYTES_PER_NNZ each.
+    let sparse_worst_bytes = naux.saturating_mul(nbas).saturating_mul(nbas).saturating_mul(SPARSE_BYTES_PER_NNZ);
+    // Stage A (dressing): eri3_flat (== eri3_ao) + b_flat_ao (== b_ao), plus the metric.
+    let dressing_stage = dense_bytes.saturating_mul(2).saturating_add(metric_bytes);
+    // Stage B (sparsify): b_ao (dense_bytes) co-resident with b_sparse (up to
+    // sparse_worst_bytes), plus the metric (v_inv_sqrt is still alive too).
+    let sparsify_stage = dense_bytes.saturating_add(sparse_worst_bytes).saturating_add(metric_bytes);
+    dressing_stage.max(sparsify_stage)
+}
+
+#[doc(hidden)]
+pub fn laplace_dressing_peak_bytes_for_test(naux: usize, nbas: usize) -> usize {
+    laplace_dressing_peak_bytes(naux, nbas)
+}
+
 /// Row-sparse representation of a B^P slice (nbas × nbas matrix).
 ///
 /// For each row μ, stores only the column indices and values with |B^P_{μν}| > threshold.
@@ -763,15 +819,19 @@ impl LaplaceMp2 {
         // per-point 28.5 GB J-term buffers are what the μ-panel blocking below
         // eliminates; this resident tensor is the irreducible O(naux·nbas²) cost.)
         {
-            // TWO tensors of this size are co-resident, not one: the dressing
-            // below is `v_inv_sqrt.dot(&eri3_flat)`, so the raw `eri3_flat`
-            // input is still live while the `b_flat_ao` output is allocated.
-            // Counting a single copy under-reported the peak by ~2x -- the same
-            // "guard checks less than the code allocates" defect fixed in the
-            // (T) drivers. The naux^2 metric and its inverse-sqrt ride along.
-            let dense_bytes = naux.saturating_mul(nbas).saturating_mul(nbas).saturating_mul(8);
-            let metric_bytes = naux.saturating_mul(naux).saturating_mul(2).saturating_mul(8);
-            let peak_bytes = dense_bytes.saturating_mul(2).saturating_add(metric_bytes);
+            // Charge the LARGER of two stages, not just the dressing GEMM:
+            // (A) dressing: eri3_flat (== eri3_ao, zero-copy reshape) is still
+            //     live while the GEMM output b_flat_ao (== b_ao) is allocated
+            //     -- 2 dense tensors + the naux^2 metric.
+            // (B) sparsify: b_ao stays live while b_sparse is built from it
+            //     (`drop(b_ao)` only runs after b_sparse, and after the MO
+            //     transform on this AO path) -- b_sparse costs up to 1.25x
+            //     b_ao's bytes at worst-case (near-100%) fill, since each
+            //     retained entry is 10 bytes (u16 col + f64 val) vs. 8 bytes
+            //     dense. See laplace_dressing_peak_bytes's doc for the
+            //     measured magnitude (~12.2% higher than the old dressing-only
+            //     charge at nbf=900/naux=2200).
+            let peak_bytes = laplace_dressing_peak_bytes(naux, nbas);
             // Honor the CALLER's budget. This resolved `None`, which silently
             // discarded an explicit `[memory] budget_gb` in favour of an
             // env/auto-detected value.
@@ -779,8 +839,9 @@ impl LaplaceMp2 {
             if peak_bytes > budget {
                 return Err(FerricError::General(format!(
                     "laplace-MP2 AO path needs {:.2} GB resident (naux={naux}, nbas={nbas}: \
-                     two co-resident naux*nbas^2 tensors during the metric dressing, plus \
-                     the naux^2 metric) but the budget is {:.2} GB. Raise \
+                     two co-resident naux*nbas^2 tensors during the metric dressing, or \
+                     b_ao co-resident with a worst-case-dense b_sparse during sparsification, \
+                     plus the naux^2 metric) but the budget is {:.2} GB. Raise \
                      [memory] budget_gb / FERRIC_MEM_BUDGET_GB, or use compute_mo.",
                     peak_bytes as f64 / 1e9, budget as f64 / 1e9,
                 )));
@@ -1103,18 +1164,20 @@ impl LaplaceMp2 {
         let ymax = 2.0 * (eps[nmo - 1] - eps[0]);
         self.init_quadrature(ymin, ymax)?;
 
-        // Same resident-tensor pre-flight as compute_ao: two co-resident
-        // naux·nbas² tensors during the metric dressing plus the naux² metric.
+        // Same resident-tensor pre-flight as compute_ao: charge the larger of
+        // the dressing stage (eri3_flat + b_flat_ao + metric) and the
+        // sparsify stage (b_ao + worst-case-dense b_sparse + metric) -- see
+        // laplace_dressing_peak_bytes's doc for why both stages matter and
+        // the measured magnitude of the previously-uncharged stage.
         {
-            let dense_bytes = naux.saturating_mul(nbas).saturating_mul(nbas).saturating_mul(8);
-            let metric_bytes = naux.saturating_mul(naux).saturating_mul(2).saturating_mul(8);
-            let peak_bytes = dense_bytes.saturating_mul(2).saturating_add(metric_bytes);
+            let peak_bytes = laplace_dressing_peak_bytes(naux, nbas);
             let budget = ferric_core::memory::resolve_budget_bytes(self.memory_budget_bytes);
             if peak_bytes > budget {
                 return Err(FerricError::General(format!(
                     "laplace-SOS-MP2 AO path needs {:.2} GB resident (naux={naux}, nbas={nbas}: \
-                     two co-resident naux*nbas^2 tensors during the metric dressing, plus \
-                     the naux^2 metric) but the budget is {:.2} GB. Raise \
+                     two co-resident naux*nbas^2 tensors during the metric dressing, or \
+                     b_ao co-resident with a worst-case-dense b_sparse during sparsification, \
+                     plus the naux^2 metric) but the budget is {:.2} GB. Raise \
                      [memory] budget_gb / FERRIC_MEM_BUDGET_GB, or use compute_sos_mo.",
                     peak_bytes as f64 / 1e9,
                     budget as f64 / 1e9,
