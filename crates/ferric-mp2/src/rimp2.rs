@@ -142,6 +142,33 @@ pub fn eri3_budget_bytes(explicit: Option<usize>) -> usize {
 ///
 /// Call immediately before the first MO-side allocation. See
 /// `tests/mwe_rimp2_has_no_guard.rs`.
+/// MO-side block bytes for the RI-MP2 lane, worker count excluded.
+///
+/// Pure, so the arithmetic can be tested without a rayon pool. `include_b_vv`
+/// adds the `(naux, nvir, nvir)` block — which is `nvir/nocc` times `b_ov` and
+/// therefore the largest MO-side term at any production shape:
+///
+/// ```text
+///   system                  naux  nocc  nvir      b_ov      b_vv
+///   benzene/aug-cc-pVTZ     1512    21   393   0.100 GB  1.868 GB
+///   danuglipron/def2-SVP    2800    90   610   1.230 GB  8.335 GB
+/// ```
+///
+/// That flag used to be DEAD: the single call site in the workspace passed
+/// `false`, while `compute_mp2_intermediates_impl` built `b_vv` on a different
+/// path with no gate at all — its own comment calling it "the 13 GB hog".
+pub fn mo_side_alloc_bytes(
+    naux: usize, nocc: usize, nvir: usize, include_b_vv: bool,
+) -> usize {
+    let b_flat = naux.saturating_mul(nocc).saturating_mul(nvir).saturating_mul(8);
+    let b_vv = if include_b_vv {
+        naux.saturating_mul(nvir).saturating_mul(nvir).saturating_mul(8)
+    } else {
+        0
+    };
+    b_flat.saturating_add(b_vv)
+}
+
 pub(crate) fn check_mo_side_alloc(
     label: &str,
     naux: usize,
@@ -152,6 +179,7 @@ pub(crate) fn check_mo_side_alloc(
 ) -> Result<(), FerricError> {
     let n_workers = rayon::current_num_threads().max(1);
     let b_flat = naux.saturating_mul(nocc).saturating_mul(nvir).saturating_mul(8);
+    let _ = &b_flat;
     let g_i = nocc
         .saturating_mul(nvir)
         .saturating_mul(nvir)
@@ -1317,6 +1345,22 @@ fn compute_mp2_intermediates_impl(
 
     // B^P_{ia} = V^{-1/2} (P|ia); optionally B^P_{ij} and B^P_{ab} (CPKS only —
     // the gradient pipeline never reads them, and b_vv is the 13 GB hog).
+    // Gate the MO-side blocks BEFORE building them.
+    //
+    // `check_mo_side_alloc`'s `include_b_vv` arm existed for exactly this and
+    // was DEAD: the workspace's only call site (rimp2.rs, the RI-MP2 energy
+    // lane) passes `false`, while this path built the block with no gate at
+    // all -- the comment below calls it "the 13 GB hog". b_vv is nvir/nocc
+    // times b_ov, so it is the largest MO-side term at any production shape
+    // (1.87 GB at benzene/aug-cc-pVTZ, 8.34 GB at danuglipron/def2-SVP).
+    check_mo_side_alloc(
+        "RI-MP2 intermediates",
+        naux,
+        nocc,
+        nvir,
+        with_oo_vv,
+        ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes),
+    )?;
     let b_ov = eri3_mo_block_dressed(&mut src, &v_inv_sqrt, &c_occ, &c_vir)?;
     let (b_oo, b_vv) = if with_oo_vv {
         (
