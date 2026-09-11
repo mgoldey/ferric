@@ -723,6 +723,48 @@ pub fn pdep_polarizability_static_unrestricted(
 /// 16-17 GB anon-RSS reached the systemwide OOM killer three times on
 /// 2026-07-13.
 ///
+/// Extra co-resident bytes the open-shell branch of
+/// [`pdep_polarizability_becke_dynamic`] holds beyond what
+/// `preflight_grid_path` charges when called with `(nocc, nvir)` set to the
+/// LARGER spin channel (as that call site does — see the comment there).
+///
+/// `preflight_grid_path`/`estimate_peak_bytes` charge exactly one resident
+/// `naux·nov` buffer (the b_ov term) and one per-worker `naux·nov + naux²`
+/// scratch pair. The open-shell frequency loop actually holds BOTH spins'
+/// `b_ov` resident (properties.rs builds `inter_a` and `inter_b` and never
+/// drops either before the frequency loop runs) and, inside each worker's
+/// `map_init` closure, both `b_scaled_a` (naux·nov_a) and `b_scaled_b`
+/// (naux·nov_b) simultaneously, PLUS the accumulator `eps_mat` (naux²) and the
+/// transient `chi_s` (naux²) that is added into it once per spin — so a
+/// second live `naux²` buffer, not one. A prior version of this preflight's
+/// comment claimed "the per-worker frequency scratch is sized from one
+/// channel at a time"; that is contradicted by the `map_init` seed a few
+/// lines below it, which allocates a `(b_scaled_a, b_scaled_b)` PAIR — both
+/// buffers are written and read in the same loop body, not sequentially.
+///
+/// Measured at naux=1000, nov≈20000/spin, 12 workers (8 bytes/f64): charged
+/// total ≈2.18 GB, actual resident ≈4.35 GB — almost exactly double, not a
+/// rounding term.
+///
+/// Takes the SMALLER spin's `nov` (the larger one is already counted once by
+/// `preflight_grid_path`'s own `nov_max` term), so this is additive, not a
+/// double-count: total resident b_ov = `naux*(nov_max+nov_min)`, and the
+/// per-worker scratch is `naux*(nov_max+nov_min) + 2*naux²`.
+pub fn open_shell_dynamic_extra_bytes(naux: usize, nov_min: usize, n_workers: usize) -> usize {
+    const F64_BYTES: usize = 8;
+    let n_workers = n_workers.max(1);
+    // Second spin's resident b_ov (the first is already charged by the base
+    // estimate's `nov_max` term).
+    let extra_bov = naux.saturating_mul(nov_min).saturating_mul(F64_BYTES);
+    // Per worker: second spin's b_scaled (naux*nov_min) + the second live
+    // naux² buffer (chi_s, co-resident with eps_mat during the `+=`).
+    let extra_per_worker = naux
+        .saturating_mul(nov_min)
+        .saturating_add(naux.saturating_mul(naux))
+        .saturating_mul(F64_BYTES);
+    extra_bov.saturating_add(extra_per_worker.saturating_mul(n_workers))
+}
+
 /// Returns the resolved budget so callers can reuse it for banding decisions
 /// rather than resolving twice (and possibly inconsistently).
 pub(crate) fn preflight_grid_path(
@@ -1437,21 +1479,41 @@ pub fn pdep_polarizability_becke_dynamic(
         let npts = points.len();
         // Pre-flight before the grid work: npts comes from the grid just built,
         // never an assumed 75x110.
-        preflight_grid_path(
+        //
+        // Open-shell: `preflight_grid_path` below is called with the LARGER
+        // spin channel's (nocc, nvir) — both `RpaIntermediates` are resident,
+        // and (see `open_shell_dynamic_extra_bytes`'s doc) the per-worker
+        // frequency scratch actually holds BOTH channels at once, not one, so
+        // a second explicit check charges what the base estimate structurally
+        // cannot (it takes a single (naux, nocc, nvir) shape). This was
+        // previously a single-spin charge with a comment claiming the
+        // per-worker scratch was one-channel-at-a-time; that claim is false —
+        // see the `map_init` seed a few lines below, which allocates a
+        // `(b_scaled_a, b_scaled_b)` pair per worker.
+        let nov_a = inter_a.nocc.saturating_mul(inter_a.nvir);
+        let nov_b = inter_b.nocc.saturating_mul(inter_b.nvir);
+        let nov_min = nov_a.min(nov_b);
+        let n_workers = rayon::current_num_threads().max(1);
+        let grid_budget = preflight_grid_path(
             &format!(
                 "pdep_polarizability_becke_dynamic (U) (natoms={natoms}, nbf={}, npts={npts}, naux={naux})",
                 obs.nbasis()
             ),
             cfg.memory_budget_bytes,
             naux,
-            // Open-shell: charge the LARGER spin channel. Both intermediates
-            // are resident, but the per-worker frequency scratch is sized from
-            // one channel at a time.
             inter_a.nocc.max(inter_b.nocc),
             inter_a.nvir.max(inter_b.nvir),
             npts,
             obs.nbasis(),
             natoms,
+        )?;
+        ferric_core::memory::check_alloc(
+            &format!(
+                "pdep_polarizability_becke_dynamic (U) second-spin frequency scratch \
+                 (naux={naux}, nov_a={nov_a}, nov_b={nov_b}, n_workers={n_workers})"
+            ),
+            open_shell_dynamic_extra_bytes(naux, nov_min, n_workers),
+            grid_budget,
         )?;
 
         // nbf from the prepared basis, NOT from a materialized chi: the
@@ -2468,6 +2530,37 @@ pub fn molecular_dynamic_polarizability(
         let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
         let naux = inter_a.naux;
 
+        // Pre-flight: this open-shell branch had NO gate at all (unlike its
+        // per-atom sibling `pdep_polarizability_becke_dynamic`, which at
+        // least had a single-spin `preflight_grid_path` call). It holds both
+        // spins' `b_ov` resident plus, per rayon worker, both `b_scaled_{a,b}`
+        // (naux·nov_σ each) and TWO live naux² buffers (`eps_mat` and the
+        // `b_scaled.dot(&b_scaled.t())` temporary added into it via `+=` a few
+        // lines below) — the same two-spin/two-naux² shape documented on
+        // `open_shell_dynamic_extra_bytes`. `preflight_molecular_path`'s
+        // `n_spin` multiplies both the b_ov and b_scaled terms uniformly, so
+        // pass the LARGER spin's `nov` (conservative, over- not
+        // under-estimating for asymmetric α/β spaces) and add the second
+        // naux² buffer the helper does not model.
+        let nov_a = inter_a.nocc.saturating_mul(inter_a.nvir);
+        let nov_b = inter_b.nocc.saturating_mul(inter_b.nvir);
+        let mol_budget = preflight_molecular_path(
+            &format!(
+                "molecular_dynamic_polarizability (U) (naux={naux}, nov_a={nov_a}, nov_b={nov_b})"
+            ),
+            cfg.memory_budget_bytes,
+            naux,
+            nov_a.max(nov_b),
+            2,
+        )?;
+        ferric_core::memory::check_alloc(
+            &format!(
+                "molecular_dynamic_polarizability (U) second naux² dielectric buffer (naux={naux})"
+            ),
+            naux.saturating_mul(naux).saturating_mul(8),
+            mol_budget,
+        )?;
+
         // Orbital-energy slices (ROHF reuses α-MOs/eps for β).
         let eps_b_full: &[f64] = if matches!(rhf.spin, Spin::RestrictedOpen) {
             rhf.eps_a()
@@ -2632,6 +2725,19 @@ pub fn molecular_dynamic_polarizability(
     let first_occ = inter.first_occ;
     let naux = inter.naux;
     let nov = nocc * nvir;
+
+    // Pre-flight: same shape as `pdep_polarizability_static` (resident b_ov +
+    // per-worker b_scaled + eps_mat), but this closed-shell branch had no gate
+    // of any kind until now — it is not a grid path, so the 2026-07-13 sweep
+    // (which only covered `properties.rs`'s grid-based per-atom paths) missed
+    // it, same as its open-shell sibling above.
+    preflight_molecular_path(
+        &format!("molecular_dynamic_polarizability (naux={naux}, nocc={nocc}, nvir={nvir})"),
+        cfg.memory_budget_bytes,
+        naux,
+        nov,
+        1,
+    )?;
 
     let eps = rhf.eps_r();
     let eps_occ: Vec<f64> = eps[first_occ..first_occ + nocc].to_vec();
@@ -2856,6 +2962,83 @@ pub fn molecular_dynamic_polarizability_pdep(
     Ok(out)
 }
 
+/// Basis-function count for `bs` on `mol`, without materializing an AO-on-grid
+/// tensor to read it off `chi.nrows()`.
+///
+/// `atomic_effective_volumes_hirshfeld`/`hirshfeld_i_charges` need `nbf`
+/// BEFORE calling `eval_basis_on_grid` so their pre-flight gate can run before
+/// `chi` allocates (the point at which refusing is still cheap — the same
+/// convention `preflight_grid_path`'s doc states for the Becke path).
+///
+/// Delegates to `ferric_integrals::ao_grid::nbasis`, the canonical shell-sum
+/// (already used by `PreparedBasis::nbasis`), rather than re-deriving it —
+/// re-deriving it with a `filter_map` over `bs.for_element` would silently
+/// DROP any atom whose element is missing from the basis instead of erroring,
+/// which would under-count `nbf` and defeat the whole point of gating before
+/// `chi` allocates (a silently wrong, too-small charge is worse than no
+/// charge, since it looks like coverage that is not there).
+pub fn nbf_for_basis(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+) -> Result<usize, FerricError> {
+    Ok(ferric_integrals::ao_grid::nbasis(mol, bs)?)
+}
+
+/// Pure byte estimate for [`preflight_hirshfeld_grid_scan`], split out so it
+/// can be unit-tested against a hand-derived figure at an arbitrary shape
+/// without needing to control the ambient resolved memory budget (mirrors the
+/// `estimate_peak_bytes` / `check_alloc` split used throughout `budget.rs`).
+///
+/// Co-resident terms: `chi` and `d_chi` (both `(nbf, npts)`, genuinely read in
+/// the same loop), `rho_free` (`(natoms, npts)`), and the `O(npts)` side
+/// vectors (`rho`, `rho_sum`, and for `hirshfeld_i_charges` also `gx`/`gy`/
+/// `gz` — 5 vectors covers both callers without under-charging either).
+pub fn estimate_hirshfeld_grid_scan_bytes(nbf: usize, npts: usize, natoms: usize) -> usize {
+    const F64_BYTES: usize = 8;
+    let plane = nbf.saturating_mul(npts).saturating_mul(F64_BYTES);
+    let rho_free = natoms.saturating_mul(npts).saturating_mul(F64_BYTES);
+    let side_vectors = npts.saturating_mul(5).saturating_mul(F64_BYTES);
+    // chi + d_chi (two planes) + rho_free + side vectors.
+    plane
+        .saturating_add(plane)
+        .saturating_add(rho_free)
+        .saturating_add(side_vectors)
+}
+
+/// Pre-flight gate for [`atomic_effective_volumes_hirshfeld`] and
+/// [`hirshfeld_i_charges`], called BEFORE `eval_basis_on_grid` allocates `chi`.
+///
+/// The only gate these two functions had before this was the one INSIDE
+/// `eval_basis_on_grid` (`ferric_integrals::ao_grid::eval_basis_on_grid` ->
+/// `check_alloc` on `nbf*npts*8`, i.e. `chi` alone) — a callee-gate-cannot-
+/// see-caller defect: the callee has no way to know its caller immediately
+/// builds a second full `(nbf, npts)` block (`d_chi = density.dot(&chi)`,
+/// read in the SAME loop as `chi` so genuinely co-resident) plus a
+/// `(natoms, npts)` `rho_free` and several `O(npts)` side vectors on top. That
+/// callee gate also always resolves `resolve_budget_bytes(None)`, so it never
+/// sees whatever budget ferric-cli's `[memory] budget_gb` resolved for this
+/// call either way — a pre-existing, separate gap this preflight does not
+/// change (no `memory_budget_bytes` parameter is threaded to these two public
+/// functions today; adding one would change their signatures for every
+/// caller, out of scope here).
+///
+/// Measured at nbf=200, npts≈5.6e6 (a ~24 Bohr molecule under the default
+/// 6-Bohr-margin/0.20-spacing box), natoms=20, `[memory] budget_gb=10`: the
+/// callee's own gate approves `chi` alone (9.0 GB) against the 10 GB budget;
+/// the actual peak once `d_chi` (+9.0 GB) and `rho_free` (+0.9 GB) are added
+/// is ~18.9 GB — essentially 2x what was charged, on the export_npz default
+/// chain implicated in the 2026-07-13 16-17 GB anon-RSS incidents.
+pub fn preflight_hirshfeld_grid_scan(
+    label: &str,
+    nbf: usize,
+    npts: usize,
+    natoms: usize,
+) -> Result<(), FerricError> {
+    let budget = ferric_core::memory::resolve_budget_bytes(None);
+    let est = estimate_hirshfeld_grid_scan_bytes(nbf, npts, natoms);
+    ferric_core::memory::check_alloc(label, est, budget)
+}
+
 /// Per-atom effective volume via Hirshfeld (Slater proatom) partitioning:
 /// ```text
 ///   v_A = ∫ w^A_Hirsh(r) ρ(r) |r − R_A|³ dV
@@ -2881,10 +3064,22 @@ pub fn atomic_effective_volumes_hirshfeld(
     let hy = grid.step_y[1];
     let hz = grid.step_z[2];
 
+    // Pre-flight BEFORE `chi` allocates: `nbf` is available from the basis
+    // without materializing the grid tensor (see `nbf_for_basis`'s doc for
+    // why the callee's own gate is not enough here).
+    let nbf_pre = nbf_for_basis(mol, obs_bs)?;
+    preflight_hirshfeld_grid_scan(
+        &format!("atomic_effective_volumes_hirshfeld (nbf={nbf_pre}, npts={npts}, natoms={natoms})"),
+        nbf_pre,
+        npts,
+        natoms,
+    )?;
+
     let chi = eval_basis_on_grid(mol, obs_bs, &grid).map_err(|e| {
         FerricError::General(format!("atomic_effective_volumes_hirshfeld: chi failed: {e}"))
     })?;
     let nbf = chi.nrows();
+    debug_assert_eq!(nbf, nbf_pre, "nbf_for_basis must match eval_basis_on_grid's chi.nrows()");
 
     // ρ(r_g) = Σ_{μν} D_{μν} χ_μ χ_ν via matrix product.
     let d_chi = density.dot(&chi);
@@ -2981,9 +3176,23 @@ pub fn hirshfeld_i_charges(
     let hy = grid.step_y[1];
     let hz = grid.step_z[2];
 
+    // Pre-flight BEFORE `chi` allocates — see `preflight_hirshfeld_grid_scan`'s
+    // doc: this path (and its sibling `atomic_effective_volumes_hirshfeld`)
+    // had no gate but the one inside `eval_basis_on_grid`, which charges only
+    // `chi` and misses the co-resident `d_chi`/`rho_free`/side vectors built
+    // right after it returns.
+    let nbf_pre = nbf_for_basis(mol, obs_bs)?;
+    preflight_hirshfeld_grid_scan(
+        &format!("hirshfeld_i_charges (nbf={nbf_pre}, npts={npts}, natoms={natoms})"),
+        nbf_pre,
+        npts,
+        natoms,
+    )?;
+
     let chi = eval_basis_on_grid(mol, obs_bs, &grid)
         .map_err(|e| FerricError::General(format!("hirshfeld_i: chi eval failed: {e}")))?;
     let nbf = chi.nrows();
+    debug_assert_eq!(nbf, nbf_pre, "nbf_for_basis must match eval_basis_on_grid's chi.nrows()");
     if density.nrows() != nbf {
         return Err(FerricError::General("hirshfeld_i: density/nbf mismatch".into()));
     }
