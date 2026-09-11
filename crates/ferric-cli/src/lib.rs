@@ -1985,6 +1985,35 @@ fn run_pdep_rpa_arm(
                 None
             };
 
+            // `esp_points` is exported as an (npts, 3) Array2, so materialize
+            // the coordinate list into one here rather than at the call site.
+            let mut esp_surface_pts: Option<ndarray::Array2<f64>> = None;
+            let esp_surface = if cfg.rpa.compute_esp_surface.unwrap_or(false) {
+                let scale = cfg.rpa.esp_surface_vdw_scale.unwrap_or(1.4);
+                let nang = cfg.rpa.esp_surface_n_angular.unwrap_or(110);
+                match ferric_scf::properties::esp_on_surface(
+                    mol, prep, result.density_total(), scale, nang,
+                ) {
+                    Ok((pts, v)) => {
+                        let mut arr = ndarray::Array2::<f64>::zeros((pts.len(), 3));
+                        for (i, p) in pts.iter().enumerate() {
+                            arr[(i, 0)] = p[0];
+                            arr[(i, 1)] = p[1];
+                            arr[(i, 2)] = p[2];
+                        }
+                        esp_surface_pts = Some(arr);
+                        Some((pts, v))
+                    }
+                    Err(e) => {
+                        eprintln!("warning: esp_on_surface failed: {e}");
+                        npz_gaps.push(format!("esp_surface: {e}"));
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
             let ef_vec = if compute_ef {
                 match electric_field_at_atoms(mol, prep, result.density_total()) {
                     Ok(v) => Some(v),
@@ -2501,12 +2530,12 @@ fn run_pdep_rpa_arm(
                 },
                 polarizability: PolarizabilityBundle {
                     esp_atoms: esp_vec.as_deref(),
-                    // Surface ESP is a library/Python capability
-                    // (`ferric_scf::properties::esp_at_points`,
-                    // `ferric.esp_at_points`); the CLI has no TOML knob for
-                    // supplying the point set yet, so nothing to export here.
-                    esp_surface: None,
-                    esp_points: None,
+                    // Surface ESP: enabled by `[rpa] compute_esp_surface`.
+                    // The shell is generated internally (Lebedev spheres at
+                    // vdW radii, buried points dropped), so the caller supplies
+                    // a scale and an order rather than a point set.
+                    esp_surface: esp_surface.as_ref().map(|(_, v)| v.as_slice()),
+                    esp_points: esp_surface_pts.as_ref(),
                     alpha_tensor: alpha_arr.as_ref(),
                     electric_field: ef_vec.as_deref(),
                     alpha_atomic: alpha_atomic_vec.as_deref(),

@@ -13,6 +13,7 @@ ferric-dft = { path = "../ferric-dft" }
 ferric-integrals = { path = "../ferric-integrals" }
 ferric-mm = { path = "../ferric-mm" }
 ferric-pcm = { path = "../ferric-pcm" }
+ferric-quadrature = { path = "../ferric-quadrature" }
 ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
 openblas-src = { workspace = true }
