@@ -656,9 +656,55 @@ pub fn solve_uhf_fockmod(
 
             // Build the f_xc kernel (LDA or GGA) + reference density once per
             // Newton step (None for pure UHF). The response closure borrows it.
+            //
+            // `FxcKernelStore::build` -> `GgaFxcKernel::new`/`LdaFxcKernel::new`
+            // (ferric-dft/src/fxc.rs) calls `eval_basis_and_grad_on_points` on
+            // THIS SAME `main` grid config, i.e. it allocates a SECOND
+            // (nbf, npts) chi + (3, nbf, npts) dchi cache — 4 planes — that
+            // duplicates the one already resident in `xc_contrib` (the KS grid
+            // cache built once above, at construction, and held live for the
+            // whole SCF loop; it is not dropped before this branch runs).
+            // Measured at the shapes this crate's other memory findings use:
+            // benzene/aug-cc-pVTZ (nbf=414, ~12 atoms, npts=12*8250=99000) one
+            // plane is 414*99000*8 = 328 MB, so the duplicate 4-plane kernel
+            // costs 1.31 GB on top of the 1.31 GB KS cache already resident
+            // (2.62 GB peak where either gate alone only ever saw 1.31 GB);
+            // danuglipron/def2-SVP (nbf=700, 73 atoms, npts=73*8250=602250)
+            // one plane is 700*602250*8 = 3.37 GB, so the duplicate kernel
+            // costs 13.49 GB on top of the 13.49 GB KS cache (26.98 GB peak).
+            // `eval_basis_and_grad_on_points`'s own `check_ao_grid_budget`
+            // gate cannot see any of this: it re-resolves
+            // `resolve_budget_bytes(None)` — the WHOLE ceiling, ignoring
+            // `config.three_index_budget_bytes` AND the live KS cache — so it
+            // independently re-approves the duplicate against 100% of the
+            // budget the KS cache was already charged against.
+            //
+            // Gate it here instead, the way `ks.rs::new_with_omega_budgeted`
+            // gates its OWN grid cache: `available_budget_now` reads this
+            // process's live RSS (which by now already includes the resident
+            // KS cache) and reserves the same 0.9 headroom fraction PySCF
+            // uses, so a duplicate that would not actually fit is a clean
+            // `Err` here rather than a silent OOM three calls deeper. This
+            // does not fix the duplication itself (that requires teaching
+            // `GgaFxcKernel`/`LdaFxcKernel` to borrow `xc_contrib`'s cache
+            // instead of rebuilding it, which lives in ferric-dft, out of
+            // scope for this file) — it only makes the ALREADY-EXISTING
+            // second allocation honestly accounted for before it happens.
             let fxc_store = if xc_contrib.is_some() {
                 let main = config.dft_grid.clone().unwrap_or_default();
                 let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
+                let needed = fxc_kernel_duplicate_bytes(n, mol.atoms.len(), &main);
+                let avail = ferric_core::memory::available_budget_now(
+                    ferric_core::memory::resolve_budget_bytes(
+                        (config.three_index_budget_bytes != 0)
+                            .then_some(config.three_index_budget_bytes),
+                    ),
+                );
+                ferric_core::memory::check_alloc(
+                    "UHF/UKS Newton f_xc kernel (duplicate chi+dchi cache on the live KS grid)",
+                    needed,
+                    avail,
+                )?;
                 Some(crate::rohf::FxcKernelStore::build(mol, prep, &main, name, &d_a, &d_b)?)
             } else {
                 None
@@ -807,6 +853,26 @@ pub fn solve_uhf_fockmod(
         computed_quartets: total_quartets,
         induced_dipoles: last_induced_dipoles,
     })
+}
+
+/// Bytes the Newton f_xc kernel's own (chi, dchi) cache costs: 4 planes
+/// (`AoGridKind::ValueAndGrad` — 1 for chi, 3 for dchi's x/y/z) of
+/// `nbf * npts` `f64`s, where `npts = natoms * cfg.n_radial * cfg.n_angular`
+/// (the UNPRUNED atomic grid `GgaFxcKernel::new`/`LdaFxcKernel::new` build via
+/// `build_atomic_grid`, not `build_atomic_grid_pruned`).
+///
+/// A pure function of shape only (no rayon/env ambient state) so it is
+/// testable without constructing a molecule, basis, or grid. This is exactly
+/// the allocation that duplicates the live `xc_contrib` KS grid cache — see
+/// the call site's comment in `solve_uhf_fockmod` for the measured magnitude
+/// at benzene/aug-cc-pVTZ and danuglipron/def2-SVP shapes.
+pub fn fxc_kernel_duplicate_bytes(nbf: usize, natoms: usize, cfg: &ferric_dft::grid::AtomicGridConfig) -> usize {
+    const PLANES: usize = 4; // chi (1) + dchi x/y/z (3)
+    let npts = natoms.saturating_mul(cfg.n_radial).saturating_mul(cfg.n_angular);
+    PLANES
+        .saturating_mul(nbf)
+        .saturating_mul(npts)
+        .saturating_mul(std::mem::size_of::<f64>())
 }
 
 fn density(c: &Array2<f64>, nocc: usize) -> Array2<f64> {
