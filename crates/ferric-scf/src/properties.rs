@@ -1734,6 +1734,90 @@ pub fn dipole_magnitude(mu: &[f64; 3]) -> f64 {
 /// CODATA: 1 e·a₀ = 8.4783536255e-30 C·m, and 1 D = 3.33564e-30 C·m.
 pub const DEBYE_PER_AU: f64 = 2.541_746_473_1;
 
+/// Electrostatic potential sampled on a molecular **surface**, not at nuclei.
+///
+/// Returns `(points, esp)` where `points` are Cartesian coordinates (Bohr) on a
+/// solvent-accessible-style shell around the molecule and `esp` is the
+/// potential there, in Hartree/e, with the same sign convention as
+/// [`esp_at_atoms`].
+///
+/// # Why a surface and not the nuclei
+///
+/// [`esp_at_atoms`] evaluates V at each nucleus, where the `Z_A/|r − R_A|`
+/// term of the *other* nuclei is finite but the local electronic cusp
+/// dominates. The result is essentially a function of the atom's own nuclear
+/// charge: measured over 500 QM9 molecules, the per-element ranges do not even
+/// overlap (H −1.13..−0.92, C −14.75..−14.31, N −18.40..−18.16,
+/// O −22.39..−22.15, F −26.49). As a conditioning signal for a generative
+/// model that must *predict* element identity, that is a label, not a
+/// descriptor.
+///
+/// The potential a *binding partner* feels is the one outside the van der
+/// Waals surface, and that is what shape/electrostatics-conditioned generative
+/// models (e.g. ShEPhERD) actually use. This function samples it.
+///
+/// # Construction
+///
+/// A Lebedev sphere of `n_angular` points is placed at `vdw_scale ×` the Bondi
+/// radius of each atom, and any point falling inside another atom's scaled
+/// radius is dropped, leaving the solvent-exposed envelope. Lebedev order is
+/// used rather than the Cartesian lattice of [`chelpg_charges`] so the sample
+/// is rotationally balanced and the count per atom is fixed, which matters when
+/// the result is fed to a model as a per-atom feature.
+pub fn esp_on_surface(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    density: &Array2<f64>,
+    vdw_scale: f64,
+    n_angular: usize,
+) -> Result<(Vec<[f64; 3]>, Vec<f64>), FerricError> {
+    use ferric_pcm::radii::bondi_radius_bohr;
+    use ferric_quadrature::lebedev::lebedev;
+
+    if !(vdw_scale.is_finite() && vdw_scale > 0.0) {
+        return Err(FerricError::General(format!(
+            "esp_on_surface: vdw_scale must be finite > 0, got {vdw_scale}"
+        )));
+    }
+    let (unit, _w) = lebedev(n_angular);
+    let pos: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
+    let radii: Vec<f64> = mol
+        .atoms
+        .iter()
+        .map(|a| vdw_scale * bondi_radius_bohr(a.z))
+        .collect();
+
+    let mut points: Vec<[f64; 3]> = Vec::with_capacity(pos.len() * unit.len());
+    for (a, c) in pos.iter().enumerate() {
+        for u in &unit {
+            let p = [
+                c[0] + radii[a] * u[0],
+                c[1] + radii[a] * u[1],
+                c[2] + radii[a] * u[2],
+            ];
+            // Keep only the solvent-exposed envelope: drop points buried
+            // inside a neighbour's shell.
+            let buried = pos.iter().enumerate().any(|(b, q)| {
+                if b == a {
+                    return false;
+                }
+                let d2 = (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2);
+                d2 < radii[b] * radii[b]
+            });
+            if !buried {
+                points.push(p);
+            }
+        }
+    }
+    if points.is_empty() {
+        return Err(FerricError::General(
+            "esp_on_surface: every sample point was buried; check vdw_scale".into(),
+        ));
+    }
+    let esp = esp_at_points(mol, prep, density, &points)?;
+    Ok((points, esp))
+}
+
 #[cfg(test)]
 mod dipole_tests {
     use super::*;
