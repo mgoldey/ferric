@@ -658,6 +658,17 @@ pub struct RpaCfg {
     /// Compute and include ESP at each nuclear position in the NPZ bundle.
     /// Default: true when `export_npz` is set.
     pub compute_esp: Option<bool>,
+    /// Sample the electrostatic potential on the van der Waals surface, not at
+    /// the nuclei. `esp_atoms` is dominated by each atom's own nuclear cusp and
+    /// separates elements perfectly (H, C, N, O, F occupy disjoint ranges), so
+    /// it leaks identity to any model asked to predict it. The surface field is
+    /// what a binding partner feels and what shape/electrostatics-conditioned
+    /// generative models consume.
+    pub compute_esp_surface: Option<bool>,
+    /// vdW-radius multiplier for the `compute_esp_surface` shell (default 1.4).
+    pub esp_surface_vdw_scale: Option<f64>,
+    /// Lebedev order per atom for the `compute_esp_surface` shell (default 110).
+    pub esp_surface_n_angular: Option<usize>,
     /// Compute and include the static polarizability tensor in the NPZ bundle.
     /// Default: true when `export_npz` is set.
     pub compute_polarizability: Option<bool>,
