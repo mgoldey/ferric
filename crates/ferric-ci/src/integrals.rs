@@ -58,6 +58,31 @@ impl ActiveSpaceIntegrals {
 ///
 /// Validates the active window against the total MO count up front and returns
 /// a clean `Err` (never panics deep inside the transform).
+/// Peak elements held by [`build_active_space_integrals`].
+///
+/// FIVE buffers are co-resident and none is ever dropped:
+///
+/// ```text
+///   ao_eri  nbas^4              (:116)
+///   mo_eri  n_needed^4          (:156)
+///   t1      n_needed·nbas^3     (:162)
+///   t2      n_needed^2·nbas^2   (:184)
+///   t3      n_needed^3·nbas     (:206)
+/// ```
+///
+/// `n_needed = active_start + n_active`, which includes the inactive core, so
+/// the transform chain is not a rounding term: 1.27x the AO block at
+/// benzene/cc-pVDZ CAS(6,6) with an 18-orbital core, and exactly 5x in the
+/// limit `n_needed == nbas`.
+pub fn active_space_integral_elems(nbas: usize, n_needed: usize) -> usize {
+    let p = |b: usize, e: u32| b.saturating_pow(e);
+    p(nbas, 4)
+        .saturating_add(p(n_needed, 4))
+        .saturating_add(n_needed.saturating_mul(p(nbas, 3)))
+        .saturating_add(p(n_needed, 2).saturating_mul(p(nbas, 2)))
+        .saturating_add(p(n_needed, 3).saturating_mul(nbas))
+}
+
 pub fn build_active_space_integrals(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -108,9 +133,32 @@ pub fn build_active_space_integrals(
     // before the Davidson bases that field was written for, so a caller who
     // set a budget got it honoured on the later, smaller allocation and
     // ignored on the earlier, larger one.
+    // Charge ALL FIVE co-resident buffers, not just the AO block.
+    //
+    // This gate used to pass `n4` alone, but `build_active_space_integrals`
+    // then allocates mo_eri (:156), t1 (:162), t2 (:184) and t3 (:206) and
+    // never frees any of them -- `grep -n 'drop(' integrals.rs` returns
+    // nothing. The co-residency is forced by the code, not incidental: the t1
+    // loop reads ao_eri and the t2 loop reads t1.
+    //
+    // Magnitude, measured rather than assumed: `n_needed = active_start +
+    // n_active` INCLUDES the inactive core, so the transforms are not small.
+    //
+    //   case                               nbas  n_needed   ao_eri  peak  ratio
+    //   benzene/cc-pVDZ CAS(6,6) core 18    114        24  1.35 GB  1.71   1.27x
+    //   benzene, large core                 114        60  1.35 GB  2.74   2.03x
+    //   worst case n_needed = nbas          114       114  1.35 GB  6.76   5.00x
+    //
+    // 1.3x typically, 5x worst case -- a real under-count, though not the
+    // order of magnitude "five uncharged buffers" suggests.
+    let peak_elems = active_space_integral_elems(nbas, active_start + n_active);
     ferric_core::memory::check_alloc(
-        &format!("CAS-CI dense AO ERIs (nbas={nbas}; nbas^4 = {n4} f64)"),
-        n4.saturating_mul(8),
+        &format!(
+            "CAS-CI dense AO ERIs + MO transform chain (nbas={nbas}, \
+             n_needed={}; ao nbas^4 = {n4} f64, peak = {peak_elems} f64)",
+            active_start + n_active,
+        ),
+        peak_elems.saturating_mul(8),
         ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
     )?;
     let mut ao_eri = vec![0.0f64; n4];
