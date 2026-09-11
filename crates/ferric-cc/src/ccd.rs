@@ -141,6 +141,18 @@ pub fn ccd_spinorbital(
             .saturating_mul(6),
         Lifetime::Resident,
     );
+    // DIIS ring on flattened t (no2*nv2, no2*nv2): `Diis::step` clones BOTH
+    // arguments into separate histories every call, so a subspace of n holds
+    // 2n full-size copies of this driver's `oovv`-shaped amplitude tensor.
+    // See `crate::diis_history_elems`'s doc for the general derivation.
+    plan.reserve(
+        "DIIS amplitude + error history (2 x diis_subspace)",
+        crate::diis_history_elems(
+            no2.saturating_pow(2).saturating_mul(nv2.saturating_pow(2)),
+            cfg.diis_subspace,
+        ),
+        Lifetime::Resident,
+    );
     plan.check()?;
 
     // V^{-1/2} metric and AO 3-center integrals.
@@ -489,6 +501,76 @@ mod tests {
         assert_eq!(
             budgeted.correlation_energy, unbudgeted.correlation_energy,
             "the memory guard changed the energy"
+        );
+    }
+
+    /// The DIIS amplitude/error history must be charged.
+    ///
+    /// `Diis::step` clones BOTH its arguments into separate ring histories
+    /// every call, so a subspace of n holds 2n full `oovv`-shaped tensors —
+    /// against the 6 the working-set line already charges. Rather than
+    /// guess a discriminating budget, this reconstructs the OTHER
+    /// reservations' byte total directly from the basis dimensions (their
+    /// formulas are properties of the plan's non-DIIS lines, already pinned
+    /// by `ccd_guard_charges_eri3_ao`/`ccd_ample_budget_still_runs`; this
+    /// test's job is only to isolate the DIIS term) and bisects a budget
+    /// strictly between "holds everything else" and "also holds the ring".
+    #[test]
+    fn ccd_guard_charges_diis_history() {
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+
+        let nbas = obs.nbasis();
+        let naux = dfbs.nbasis();
+        let nocc_total = (mol.nelec() as usize) / 2;
+        let no = nocc_total; // frozen_core = 0
+        let nv = nbas - nocc_total;
+        let (no2, nv2) = (2 * no, 2 * nv);
+        let oovv_elems = no2.pow(2) * nv2.pow(2);
+
+        // Sum of every plan reservation EXCEPT the DIIS ring (the largest
+        // transient, not the sum of transients, per `MemoryPlan::peak_bytes`).
+        let eri3_ao = naux * nbas * nbas;
+        let b_blocks = naux * (no * nv * 2 + no.pow(2) + nv.pow(2));
+        let vvvv = nv2.pow(4);
+        let g_abcd = nv2.pow(4); // transient, same size as vvvv
+        let oovv_plus_clone = oovv_elems * 2;
+        let oooo = no2.pow(4);
+        let ovvo = oovv_elems;
+        let working_set = oovv_elems * 6;
+        let largest_transient = eri3_ao.max(g_abcd);
+        let non_diis_elems = b_blocks + vvvv + oovv_plus_clone + oooo + ovvo + working_set + largest_transient;
+        let non_diis_bytes = non_diis_elems * 8;
+
+        let diis_subspace = 4;
+        let diis_bytes = crate::diis_history_elems(oovv_elems, diis_subspace) * 8;
+
+        // Budget holds everything else with room to spare, but less than
+        // half the DIIS ring on top: must be refused once the ring is
+        // charged, and would have been ACCEPTED by a guard that omits it.
+        let budget_between = non_diis_bytes + diis_bytes / 4;
+
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 1,
+            diis_subspace,
+            memory_budget_bytes: Some(budget_between),
+            ..Default::default()
+        };
+        let refused = match ccd(&mol, &obs, &dfbs, op, &rhf, &cfg) {
+            Err(e) => e.to_string().contains("budget is"),
+            Ok(_) => false,
+        };
+        assert!(
+            refused,
+            "a budget covering every non-DIIS reservation plus only a \
+             quarter of the DIIS ring (subspace={diis_subspace}) was \
+             accepted — the ring is still uncharged"
         );
     }
 

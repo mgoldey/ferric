@@ -191,6 +191,20 @@ pub fn ccsd_closed_shell(
         nv4.saturating_mul(3),
         Lifetime::Transient,
     );
+    // DIIS ring on the PACKED (t1,t2) vector: `diis_step_two` concatenates
+    // t1 (no*nv) and t2 (no2*nv2) into ONE column of length dim1+dim2 before
+    // calling `Diis::step`, which clones that single argument into two
+    // separate histories every call — so a subspace of n holds 2n full-size
+    // copies of the COMBINED vector, not of t2 alone. See
+    // `crate::diis_history_elems`'s doc for the general derivation.
+    plan.reserve(
+        "DIIS packed (t1,t2) amplitude + error history (2 x diis_subspace)",
+        crate::diis_history_elems(
+            no.saturating_mul(nv).saturating_add(no2.saturating_mul(nv2)),
+            cfg.diis_subspace,
+        ),
+        Lifetime::Resident,
+    );
     plan.check()?;
 
     // V^{-1/2} metric and AO 3-center integrals, then dressed RI MO blocks.
@@ -879,6 +893,68 @@ mod tests {
         assert_eq!(
             budgeted.correlation_energy, unbudgeted.correlation_energy,
             "the memory guard changed the energy"
+        );
+    }
+
+    /// The DIIS ring on the PACKED (t1,t2) vector must be charged.
+    ///
+    /// `diis_step_two` concatenates t1 (no*nv) and t2 (no²*nv²) into one
+    /// column before calling `Diis::step`, which clones that single argument
+    /// into two separate histories every call — a subspace of n holds 2n
+    /// full-size copies of the COMBINED vector. This reconstructs the sum of
+    /// every OTHER plan reservation from the basis dimensions (their
+    /// formulas are pinned by the tests above; this test isolates the DIIS
+    /// term) and bisects a budget strictly between "holds everything else"
+    /// and "also holds the ring".
+    #[test]
+    fn cs_ccsd_guard_charges_diis_history() {
+        let (mol, obs, dfbs, op, rhf) =
+            setup("3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+                  "cc-pvdz", "cc-pvdz-ri");
+
+        let nbas = obs.nbasis();
+        let naux = dfbs.nbasis();
+        let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
+        let (no, nv) = (nocc_total, nbas - nocc_total);
+        let (no2, nv2, nv3, nv4) = (no.pow(2), nv.pow(2), nv.pow(3), nv.pow(4));
+
+        let eri3_ao = naux * nbas * nbas;
+        let b_blocks = naux * (no * nv * 2 + no2 + nv2);
+        let vvvv = nv4;
+        let ovvv_pair = 2 * no * nv3;
+        let chemist_blocks = no2 * no2 + no2 * nv2 * 3 + no2 * no * nv;
+        let ovov_ovoo_clones = no2 * nv2 + no2 * no * nv;
+        let t2_working_set = no2 * nv2 * 8;
+        let wvvvv_transient = nv4 * 3;
+        let largest_transient = eri3_ao.max(wvvvv_transient);
+        let non_diis_elems = b_blocks + vvvv + ovvv_pair + chemist_blocks
+            + ovov_ovoo_clones + t2_working_set + largest_transient;
+        let non_diis_bytes = non_diis_elems * 8;
+
+        let diis_subspace = 4;
+        let packed_elems = no * nv + no2 * nv2;
+        let diis_bytes = crate::diis_history_elems(packed_elems, diis_subspace) * 8;
+
+        // Holds everything else with room to spare, but only a quarter of
+        // the DIIS ring on top: must be refused once the ring is charged.
+        let budget_between = non_diis_bytes + diis_bytes / 4;
+
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 1,
+            diis_subspace,
+            memory_budget_bytes: Some(budget_between),
+            ..Default::default()
+        };
+        let refused = match ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg) {
+            Err(e) => e.to_string().contains("budget is"),
+            Ok(_) => false,
+        };
+        assert!(
+            refused,
+            "a budget covering every non-DIIS reservation plus only a \
+             quarter of the DIIS ring (subspace={diis_subspace}) was \
+             accepted — the packed (t1,t2) ring is still uncharged"
         );
     }
 
