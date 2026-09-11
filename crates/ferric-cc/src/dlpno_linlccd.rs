@@ -487,6 +487,22 @@ pub fn dlpno_linlccd_hh(
         plan.reserve("oooo <ij||kl>", no2_sq.saturating_mul(no2_sq), Resident);
         plan.reserve("t_guess t2[i,j,a,b]", oovv_elems, Resident);
     }
+    // The DIIS ring, which no plan charged.
+    //
+    // `Diis::step` clones BOTH arguments into SEPARATE histories every call
+    // (diis.rs:231-233), and each is one full amplitude tensor, so the
+    // steady-state history is 2 x diis_subspace copies -- 12 at the default 6,
+    // against the 5 the working-set line above reserves. At benzene/cc-pVDZ
+    // that is 5.9 GB uncharged versus 2.4 GB charged.
+    //
+    // Reserved BEFORE check() on purpose: the ring is filled by the iteration
+    // loop below, which runs after the gate, so charging it later would be
+    // charging it too late to refuse anything.
+    plan.reserve(
+        "DIIS amplitude + error history (2 x diis_subspace)",
+        crate::diis_history_elems(oovv_elems, cfg.diis_subspace),
+        ferric_core::memory::plan::Lifetime::Resident,
+    );
     plan.check()?;
 
     let eps = rhf.eps_r();
