@@ -7,6 +7,34 @@
 use ndarray::{Array2, Array4};
 
 /// Spin-orbital coupled-cluster doubles (CCD).
+/// Elements held by an amplitude DIIS ring at steady state.
+///
+/// `Diis::step` clones BOTH of its arguments into SEPARATE ring histories on
+/// every call (`ferric_scf::diis` :231-233):
+///
+/// ```text
+/// self.fock_hist.push(f.clone());
+/// let new_slot = self.err_hist.push(err.clone());
+/// ```
+///
+/// so a subspace of `n` holds `2n` full-size tensors, not `n`. For the CC
+/// amplitude drivers each argument is one `oovv_elems`
+/// (`(no2·nv2, no2·nv2)`), giving 12 copies at the default
+/// `diis_subspace = 6` — against the 5 the plans charged:
+///
+/// ```text
+///   system             oovv_elems    charged (5x)    DIIS (12x)
+///   ethane/cc-pVDZ        1498176        0.060 GB       0.144 GB
+///   benzene/cc-pVDZ      61027344        2.441 GB       5.859 GB
+/// ```
+///
+/// `subspace = 0` charges one slot, not none: every driver constructs with
+/// `cfg.diis_subspace.max(1)`, so the charge must match what the code does
+/// rather than what the config literally says.
+pub fn diis_history_elems(per_tensor_elems: usize, subspace: usize) -> usize {
+    per_tensor_elems.saturating_mul(2).saturating_mul(subspace.max(1))
+}
+
 pub mod ccd;
 /// Spin-orbital CCSD (coupled-cluster singles and doubles).
 pub mod ccsd;
