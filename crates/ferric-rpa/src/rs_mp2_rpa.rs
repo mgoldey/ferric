@@ -186,6 +186,22 @@ impl std::fmt::Display for RsMp2RpaResult {
     }
 }
 
+/// Bytes for ONE extra `naux*nocc*nvir` `RpaIntermediates::b_ov` buffer.
+///
+/// `estimate_peak_bytes`'s `eri3_and_bov_bytes` term already charges one such
+/// buffer per call (see `budget.rs`); this driver's `match cfg.formulation`
+/// arms hold a SECOND one co-resident (see the call-site comment in
+/// `rs_mp2_lr_rpa` for the exact bindings and why — both `DeltaLr` and
+/// `CoupledRings` bind an `RpaIntermediates` whose destructor does not run
+/// until the end of the match arm, i.e. after a second one has been built and
+/// is being used inside `run_pdep_rpa_from_intermediates`). Extracted as a
+/// pure function so the magnitude is testable without constructing a real
+/// `RpaIntermediates`.
+pub fn second_intermediate_bov_bytes(naux: usize, nocc: usize, nvir: usize) -> usize {
+    const F64_BYTES: usize = 8;
+    naux.saturating_mul(nocc).saturating_mul(nvir).saturating_mul(F64_BYTES)
+}
+
 /// SR-MP2 + LR-RPA, Δ-form (B) or coupled-rings (T).
 ///
 /// **DeltaLr (B)**: replaces MP2's long-range direct ring series with its dRPA\[erf\]
@@ -233,7 +249,39 @@ pub fn rs_mp2_lr_rpa(
             // asks for inv_dielectric_freq, so the per-frequency stack is
             // built, consumed and dropped rather than retained.
             need_inv_dielectric: false,
-        });
+        })
+        // `estimate_peak_bytes`'s `eri3_and_bov_bytes` term charges exactly
+        // ONE `naux*nocc*nvir` `b_ov` buffer — correct for what a SINGLE
+        // `compute_rpa_intermediates` call holds resident internally, but
+        // this driver is not a single call. Below, both formulations bind an
+        // `RpaIntermediates` to a `let` (`it_lr`/`it_full`/`it_sr`) whose last
+        // use is inside `run_pdep_rpa_from_intermediates(&it, ..)` — the
+        // owning binding is not moved or dropped early, so its destructor
+        // does not run until the end of the `match` arm, i.e. AFTER that
+        // call returns. Concretely:
+        //   * `DeltaLr`: `it_lr` is bound (line ~305) before the statements
+        //     `sc_of(&inter_of(Operator::coulomb())?)` and
+        //     `sc_of(&inter_of(op_sr)?)` each build and drop a second, fresh
+        //     `RpaIntermediates` — so two `b_ov` buffers are briefly
+        //     co-resident with `it_lr` twice in that arm.
+        //   * `CoupledRings`: `it_full` (bound line ~323) is still live
+        //     (not yet dropped — its destructor runs at the end of the arm)
+        //     while `it_sr` is built and then borrowed for the SECOND,
+        //     equally expensive `run_pdep_rpa_from_intermediates(&it_sr, ..)`
+        //     call — so both `b_ov` buffers are resident through that entire
+        //     eigensolve + frequency-quadrature stage, not just briefly.
+        // Both arms therefore hold a second `naux*nocc*nvir` `b_ov` buffer
+        // that `estimate_peak_bytes` never sees (it is only ever handed one
+        // `RpaIntermediates`' worth of shape at a time). Measured magnitude
+        // at realistic shapes: benzene/aug-cc-pVTZ (naux=1512, nocc=21,
+        // nvir=393) 0.10 GB; danuglipron/def2-SVP (naux=2800, nocc=90,
+        // nvir=610) 1.23 GB — a real, whole extra buffer (3-5% of the total
+        // estimate at these shapes, smaller than the AO-tensor/quadrature
+        // terms but not a rounding artifact), so it is added here rather than
+        // folded into `PeakEstimateShape` (which every other crate's call
+        // sites also construct — a field addition is out of scope for this
+        // fix).
+        .saturating_add(second_intermediate_bov_bytes(naux, nocc, nvir));
         ferric_core::memory::check_alloc(
             &format!(
                 "RS-MP2-RPA preflight (naux={naux}, nocc={nocc}, nvir={nvir}, \
