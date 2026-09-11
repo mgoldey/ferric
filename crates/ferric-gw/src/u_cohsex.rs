@@ -28,6 +28,15 @@ pub fn run_u_cohsex(
 
     let sigma_x_a_all = sigma_x_diag(mo_b_a);
     let sigma_x_b_all = sigma_x_diag(mo_b_b);
+    // Spin-summed pre-flight BEFORE either half exists: both projections (and
+    // both co-resident b_full tensors) are live together from here through
+    // `cohsex_pieces` below, but each `project_b_into_pdep` gates only against
+    // the whole budget on its own, so both would pass while the process holds
+    // the sum.
+    crate::cohsex::guard_m_proj_both_spins(
+        v_dressed.ncols(), mo_b_a.n_act, mo_b_b.n_act, mo_b_a.naux,
+        gw_cfg.memory_budget_bytes,
+    )?;
     let m_proj_a = project_b_into_pdep(mo_b_a, v_dressed, gw_cfg.memory_budget_bytes)?;
     let m_proj_b = project_b_into_pdep(mo_b_b, v_dressed, gw_cfg.memory_budget_bytes)?;
 
