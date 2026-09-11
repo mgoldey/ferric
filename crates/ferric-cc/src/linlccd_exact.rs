@@ -14,6 +14,7 @@
 
 use crate::linlccd::LadderVariant;
 use crate::{CcConfig, CcResult};
+use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -109,17 +110,74 @@ pub fn linlccd_exact(
     let nv = nbas - nocc_total;
     let (no2, nv2) = (2 * no, 2 * nv);
 
-    // The dense AO buffer dominates; count it plus the largest MO block.
+    // Fail-fast size guard, expressed as a [`MemoryPlan`].
+    //
+    // # Why this changed shape
+    //
+    // The previous guard charged only the dense AO buffer (`nbas^4`) plus
+    // `2*(no2*nv2)^2` for `v_oovv`/`d` — the smallest of the three MO blocks
+    // this driver can build. Two things were omitted, both load-bearing for
+    // `LadderVariant::Full`:
+    //
+    // * `vvvv_t`, the spin-orbital `(2nv)^4` VVVV block. It dwarfs every
+    //   other term here — at benzene/aug-cc-pVTZ scale (nbas=414, nv=393
+    //   spatial) it is ~3053 GB against an AO buffer of ~235 GB, i.e. it was
+    //   the DOMINANT uncharged term, not a rounding correction.
+    // * `transform_4`'s own internal working set (`t1`/`t2`/`t3`, each
+    //   `O(nbas^3 * n)` for the largest MO block being formed) — transient,
+    //   but co-resident with the `ao` buffer that is passed in, and at the
+    //   VVVV call each is O(100) GB at the same benzene scale.
+    //
+    // `oooo_t` (`(2no)^4`) is charged too, since `Hh` and `Full` both build
+    // it; it is far smaller than `vvvv_t` (no << nv in every realistic basis)
+    // but costs nothing to declare correctly rather than approximately.
     let nb2 = nbas * nbas;
-    let peak = nb2
-        .saturating_mul(nb2)
-        .saturating_add((no2 * no2 * nv2 * nv2).saturating_mul(2))
-        .saturating_mul(8);
-    ferric_core::memory::check_alloc(
-        &format!("exact LinLCCD {variant:?} (nbas={nbas}, no={no}, nv={nv})"),
-        peak,
-        ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes),
-    )?;
+    let mut plan = MemoryPlan::resolve(
+        cfg.memory_budget_bytes,
+        format!("exact LinLCCD {variant:?} (nbas={nbas}, no={no}, nv={nv})"),
+    );
+    plan.reserve("dense AO eri (nbas^4)", nb2.saturating_mul(nb2), Lifetime::Transient);
+    // transform_4's own t1/t2/t3 working set, sized for the largest MO block
+    // Every variant transforms OVOV; `Hh` and `Full` add OOOO; `Full` adds
+    // VVVV. Charge the LARGEST of the calls this variant actually makes —
+    // they are sequential, so the peak is the biggest one, not their sum.
+    let (n1, n2, _n3, n4) = match variant {
+        LadderVariant::Full => (nv, nv, nv, nv),
+        // OOOO vs OVOV: `no <= nv` in every realistic basis, so OVOV is the
+        // larger of the two calls `Hh` makes.
+        LadderVariant::Hh | LadderVariant::DriversOnly => (no, nv, no, nv),
+    };
+    let transform4_peak = n1
+        .saturating_mul(nbas.saturating_pow(3)) // t1: (n1, nu*lam*sig)
+        .max(n1.saturating_mul(n2).saturating_mul(nb2)) // t2: (n1*n2, nb2)
+        .max(n1.saturating_mul(n2).saturating_mul(nbas).saturating_mul(n4)); // t3
+    plan.reserve("transform_4 t1/t2/t3 working set", transform4_peak, Lifetime::Transient);
+    plan.reserve(
+        "v_oovv <ij||ab> + oovv_t clone",
+        no2.saturating_pow(2).saturating_mul(nv2.saturating_pow(2)).saturating_mul(2),
+        Lifetime::Resident,
+    );
+    if matches!(variant, LadderVariant::Hh | LadderVariant::Full) {
+        plan.reserve("oooo_t <ij||kl>", no2.saturating_pow(4), Lifetime::Resident);
+    }
+    if matches!(variant, LadderVariant::Full) {
+        plan.reserve("vvvv_t <ab||cd> (spin-orbital)", nv2.saturating_pow(4), Lifetime::Resident);
+    }
+    plan.reserve(
+        "d denominator + t/r/x amplitude working set",
+        no2.saturating_pow(2).saturating_mul(nv2.saturating_pow(2)).saturating_mul(3),
+        Lifetime::Resident,
+    );
+    // DIIS ring on flattened t (no2*nv2, no2*nv2): `Diis::step` clones BOTH
+    // arguments into separate histories every call (see
+    // `crate::diis_history_elems`'s doc), so a subspace of n holds 2n
+    // full-size copies of this tensor.
+    plan.reserve(
+        "DIIS amplitude + error history (2 x diis_subspace)",
+        crate::diis_history_elems(no2.saturating_pow(2).saturating_mul(nv2.saturating_pow(2)), cfg.diis_subspace),
+        Lifetime::Resident,
+    );
+    plan.check()?;
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
@@ -209,4 +267,112 @@ pub fn linlccd_exact(
         "exact LinLCCD {variant:?} did not converge in {} iterations",
         cfg.max_iter
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ferric_core::basis;
+    use ferric_core::parallel::ParallelContext;
+    use ferric_scf::rhf::{solve_rhf, RhfConfig};
+    use ferric_scf::screening::SchwarzBounds;
+
+    #[test]
+    fn linlccd_exact_fails_fast_under_tiny_budget() {
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let cfg = CcConfig {
+            frozen_core: 0,
+            memory_budget_bytes: Some(ferric_core::memory::gib_to_bytes(1e-6)),
+            ..Default::default()
+        };
+        let err = match linlccd_exact(&mol, &obs, op, &rhf, &cfg, LadderVariant::Full) {
+            Err(e) => e,
+            Ok(_) => panic!("exact LinLCCD should fail fast under tiny budget"),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("LinLCCD") && msg.contains("budget is"), "unexpected: {msg}");
+        assert!(msg.contains("memory plan"), "no plan breakdown: {msg}");
+    }
+
+    /// `vvvv_t` (the `(2nv)^4` VVVV block, only built under `LadderVariant::Full`)
+    /// must be charged.
+    ///
+    /// The regression: the old guard charged only the AO buffer and the
+    /// `v_oovv`/`d` working set, so a `Full`-variant job whose VVVV block alone
+    /// exceeded the budget was still admitted. This bisects between a budget
+    /// that holds everything EXCEPT `vvvv_t` (accepted for `Hh`, which never
+    /// builds it) and the same budget under `Full` (must now be refused).
+    #[test]
+    fn linlccd_exact_full_charges_vvvv_that_hh_does_not_need() {
+        let mol = Molecule::parse_xyz(
+            "3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+            0,
+            1,
+        )
+        .unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+
+        let nbas = obs.nbasis();
+        let nocc_total = (mol.nelec() as usize) / 2;
+        let nv = nbas - nocc_total;
+        let nv2 = 2 * nv;
+        let vvvv_bytes = nv2.pow(4) * 8;
+
+        // A budget just under vvvv_t's own size cannot possibly hold it PLUS
+        // everything else — so Full must be refused, while Hh (which never
+        // builds vvvv_t) should still be accepted at the same budget for the
+        // AO+oovv-only terms if they fit. We only assert the Full-refusal
+        // direction here, which is the one the old guard got wrong.
+        let cfg_full = CcConfig {
+            frozen_core: 0,
+            max_iter: 1,
+            diis_subspace: 1,
+            memory_budget_bytes: Some(vvvv_bytes),
+            ..Default::default()
+        };
+        let refused = match linlccd_exact(&mol, &obs, op, &rhf, &cfg_full, LadderVariant::Full) {
+            Err(e) => e.to_string().contains("budget is"),
+            Ok(_) => false,
+        };
+        assert!(
+            refused,
+            "Full variant accepted a budget of exactly one vvvv_t block \
+             ({vvvv_bytes} bytes) — vvvv_t is still uncharged"
+        );
+    }
+
+    /// An AMPLE budget must still run to completion for every variant — an
+    /// over-estimating guard is also a bug.
+    #[test]
+    fn linlccd_exact_ample_budget_still_converges() {
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-9,
+            memory_budget_bytes: Some(ferric_core::memory::gib_to_bytes(4.0)),
+            ..Default::default()
+        };
+        let r = linlccd_exact(&mol, &obs, op, &rhf, &cfg, LadderVariant::Full).unwrap();
+        // Full LinLCCD is exact (not just RI-approximate) for 2-electron
+        // systems, same anchor as the RI path's own H2 test.
+        assert!(
+            r.correlation_energy.is_finite(),
+            "an ample 4 GiB budget must not be refused"
+        );
+    }
 }

@@ -13,6 +13,7 @@
 
 use super::{CcConfig, CcResult};
 use ferric_core::mol::Molecule;
+use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -37,6 +38,91 @@ fn lbl2(a: ArrayD<f64>, l: [Axis; 2]) -> Tensor<2> {
 }
 
 /// Complete spin-orbital CCSD via `einsum!` + optional DIIS on T2.
+/// The dimensions the CCSD memory plan is a function of.
+///
+/// Split out so the plan's ARITHMETIC is reachable without running an SCF —
+/// the amplitude-loop terms it charges dominate only at shapes far too large
+/// to execute in a test, so a test that drives [`ccsd`] end-to-end can only
+/// ever exercise the small `eri3_ao` term. See
+/// `tests/mwe_ccsd_charges_both_vvvv_blocks.rs`.
+#[derive(Debug, Clone, Copy)]
+pub struct CcsdShape {
+    /// Spatial occupied orbitals (after freezing).
+    pub no: usize,
+    /// Spatial virtual orbitals.
+    pub nv: usize,
+    /// AO basis functions.
+    pub nbas: usize,
+    /// Auxiliary (density-fitting) basis functions.
+    pub naux: usize,
+    /// Configured DIIS subspace depth.
+    pub diis_subspace: usize,
+}
+
+/// Build the CCSD [`MemoryPlan`] for a given shape and budget.
+///
+/// # What dominates, and why the old guard was wrong twice
+///
+/// The previous guard charged a flat `3·(2nv)⁴ + eri3_ao`. The "3×" was meant
+/// for the VVVV *build* (the chemist-block `d`, exchange-block `e` and the
+/// `asym_phys` output), but `d` and `e` are built from `b_vv`, which is
+/// contracted with the SPATIAL `c_vir` — so they are `nv⁴` each, sixteen
+/// times smaller than `(2nv)⁴`. Only the `asym_phys` result is
+/// spin-orbital-sized, making the build-stage charge an over-count of about
+/// 2.67×.
+///
+/// That over-count masked a genuine omission. `vvvv` is built once and stays
+/// resident for the whole amplitude loop, while `wabef` — a SEPARATE `(2nv)⁴`
+/// buffer — is rebuilt every iteration by cloning `vvvv` and is still live
+/// when the ladder term reads it. Both are resident together, so the
+/// sustained peak is `2·(2nv)⁴`, which the old formula never named.
+pub fn ccsd_memory_plan(shape: CcsdShape, budget_bytes: Option<usize>) -> MemoryPlan {
+    let CcsdShape { no, nv, nbas, naux, diis_subspace } = shape;
+    let nv2 = 2 * nv;
+    let no2 = 2 * no;
+    let mut plan = MemoryPlan::resolve(
+        budget_bytes,
+        format!("CCSD (no={no}, nv={nv} spatial; VVVV block over {nv2} spin-orbital virtuals)"),
+    );
+    plan.reserve(
+        "eri3_ao (P|mn)",
+        naux.saturating_mul(nbas).saturating_mul(nbas),
+        Lifetime::Transient,
+    );
+    plan.reserve(
+        "VVVV build: d/e spatial chemist blocks",
+        nv.saturating_pow(4).saturating_mul(2),
+        Lifetime::Transient,
+    );
+    // `vvvv` (the pre-built spin-orbital <vv||vv> block) is resident for the
+    // ENTIRE amplitude loop, not just the build.
+    plan.reserve(
+        "vvvv <ab||cd> (spin-orbital, loop-resident)",
+        nv2.saturating_pow(4),
+        Lifetime::Resident,
+    );
+    // `wabef` is a SEPARATE (2nv)^4 buffer, rebuilt every iteration by cloning
+    // `vvvv` and held alongside it until the ladder term reads it — the term
+    // the old guard missed entirely.
+    plan.reserve(
+        "wabef <ab||ef> (rebuilt per iteration, co-resident with vvvv)",
+        nv2.saturating_pow(4),
+        Lifetime::Resident,
+    );
+    // DIIS ring on flattened T2 (no2*nv2, no2*nv2): `Diis::step` clones BOTH
+    // arguments into separate histories every call, so a subspace of n holds
+    // 2n full T2-shaped tensors. See `crate::diis_history_elems`.
+    plan.reserve(
+        "DIIS T2 amplitude + error history (2 x diis_subspace)",
+        crate::diis_history_elems(
+            no2.saturating_pow(2).saturating_mul(nv2.saturating_pow(2)),
+            diis_subspace,
+        ),
+        Lifetime::Resident,
+    );
+    plan
+}
+
 pub fn ccsd(
     _mol: &Molecule,
     obs: &PreparedBasis,
@@ -56,21 +142,39 @@ pub fn ccsd(
     let c_occ = c.slice(ndarray::s![.., first_occ..nocc_total]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
-    // Fail-fast size guard: peak is the antisymmetrized VVVV block g_vvvv (:159)
-    // — a (2nv)⁴ f64 tensor built from ~3 co-resident copies (direct + exchange
-    // einsum! outputs + asym_phys result :159-162), plus the dense AO 3-center
-    // eri3_ao (:81, naux·nbf²). Keep this next to those allocations.
+    // Fail-fast size guard, expressed as a [`MemoryPlan`].
+    //
+    // # Why this changed shape
+    //
+    // The previous guard charged a flat `3·(2nv)⁴ + eri3_ao` and stopped. The
+    // "3×" was meant for the VVVV *build* (:159-162: chemist-block `d`,
+    // exchange-block `e`, and the antisymmetrized `asym_phys` output), but
+    // `d`/`e` are SPATIAL (`nv⁴`, 16x smaller per copy than `(2nv)⁴`) — only
+    // the `asym_phys` result is spin-orbital-sized. So the build-stage number
+    // was already wrong (an over-count, ~2.67x the honest build peak).
+    //
+    // That over-count happened to still exceed the real problem: `vvvv`
+    // (built once at :173, loop-invariant, RESIDENT for the whole amplitude
+    // loop) and `wabef` (built fresh every iteration at :280-297 by cloning
+    // `vvvv` into a mutable `w` and adding terms, then bound to `wabef_t` and
+    // read again at :412) are BOTH `(2nv)⁴` and co-resident for the rest of
+    // each iteration — a sustained 2×(2nv)⁴, not a transient 3×. The old
+    // formula gated on the right ORDER of magnitude only by coincidence of an
+    // unrelated bug; fixing the build-stage over-count without adding the
+    // iteration-stage term would have UNDER-charged.
+    //
+    // Measured at benzene/aug-cc-pVTZ-scale (naux=1512, nbf=414, nv=393
+    // spatial, nv2=786 spin-orbital): honest build peak ~3435 GB, sustained
+    // iteration peak (vvvv + wabef) ~6107 GB — 1.78x the build peak. The old
+    // charge (9160 GB) exceeded both only by accident.
     let nv2 = 2 * nv;
     let naux = dfbs.nbasis();
-    let peak_vvvv = nv2.saturating_pow(4).saturating_mul(3).saturating_mul(8); // ~3× (2nv)⁴ f64
-    let eri3_bytes = naux.saturating_mul(nbas).saturating_mul(nbas).saturating_mul(8);
-    let peak = peak_vvvv.saturating_add(eri3_bytes);
-    let budget = ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes);
-    ferric_core::memory::check_alloc(
-        &format!("CCSD (no={no}, nv={nv} spatial; VVVV block over {nv2} spin-orbital virtuals)"),
-        peak,
-        budget,
-    )?;
+    let no2 = 2 * no;
+    let plan = ccsd_memory_plan(
+        CcsdShape { no, nv, nbas, naux, diis_subspace: cfg.diis_subspace },
+        cfg.memory_budget_bytes,
+    );
+    plan.check()?;
 
     // V^{-1/2} metric and AO 3-center integrals.
     let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
@@ -173,7 +277,7 @@ pub fn ccsd(
     let vvvv = lbl4(g_vvvv, [V, V, V, V]);
 
     // --- Spin-orbital orbital energies and denominators ---
-    let no2 = 2 * no; // nv2 computed above for the size guard
+    // (no2/nv2 computed above, alongside the size guard)
     let mut eo = vec![0.0f64; no2];
     let mut ev = vec![0.0f64; nv2];
     for i in 0..no {
@@ -609,5 +713,33 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(msg.contains("CCSD") && msg.contains("budget is"), "unexpected: {msg}");
+    }
+
+    /// An AMPLE budget must still run to completion. An over-estimating guard
+    /// is also a bug — this pass added terms (wabef, DIIS history) on top of
+    /// an already-inflated build estimate, so the total must not have grown
+    /// into refusing jobs that fit.
+    #[test]
+    fn ccsd_ample_budget_still_converges() {
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-qzvpp-rifit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let ctx = ParallelContext::default();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-9,
+            memory_budget_bytes: Some(ferric_core::memory::gib_to_bytes(4.0)),
+            ..Default::default()
+        };
+        let r = ccsd(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
+        assert!(
+            (r.correlation_energy - (-0.02052453)).abs() < 1e-6,
+            "an ample 4 GiB budget must not be refused: got {:.8}",
+            r.correlation_energy
+        );
     }
 }

@@ -46,6 +46,7 @@
 use ndarray::Array2;
 
 use ferric_core::basis::BasisSet;
+use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::error::FerricError;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -153,10 +154,36 @@ pub fn amplitude_linlccd_with_virtuals(
     // never formed (the lmp2 direct-assembly path, scale 1.0)
     let (rg, _gated) = assemble_ragged_direct(mol, dfbs, op, &lb, cfg.eps, 1.0, None, None)?;
 
+    // Fail-fast size guard for the dense terms THIS function allocates
+    // beyond `assemble_basis`/`assemble_ragged_direct` (which gate their own
+    // `eri3` blocking internally via `lcfg.eri3_budget_bytes`).
+    //
+    // Before this, none of the four public entry points in this file gated
+    // anything: `eri3_ao` (naux·nbas², built once for `oo_g` and, for
+    // `LadderVariant::Full`, a SECOND time for `bvv_t` — each transient and
+    // non-overlapping, so charged once as the dominant transient, not
+    // doubled), `oo_g` (no²·no², resident) and `bvv_t` (naux·nv², resident,
+    // Full only) were all unbounded allocations.
+    let naux = dfbs.nbasis();
+    let nbas = obs.nbasis();
+    let mut plan = MemoryPlan::resolve(
+        cfg.eri3_budget_bytes,
+        format!("amplitude LinLCCD {variant:?} (no={no}, nv={nv}, naux={naux})"),
+    );
+    plan.reserve(
+        "eri3_ao (P|mn) (built once for oo_g, and again for bvv_t under Full — non-overlapping)",
+        naux.saturating_mul(nbas).saturating_mul(nbas),
+        Lifetime::Transient,
+    );
+    plan.reserve("oo_g (ik|jl) whitened Gram", no.saturating_pow(2).saturating_mul(no.saturating_pow(2)), Lifetime::Resident);
+    if variant.needs_vvvv_pub() {
+        plan.reserve("bvv_t whitened (naux, nv^2)", naux.saturating_mul(nv.saturating_pow(2)), Lifetime::Resident);
+    }
+    plan.check()?;
+
     // hh ladder coefficients (ik|jl): the OOOO block is no⁴ — tiny — via
     // the same whitened RI Gram as the canonical implementation
     let vis = metric_inverse_sqrt(&lb.v2c, op)?;
-    let naux = lb.b_flat.nrows();
     let oo_g = {
         let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
         let boo = transform_3center_oo(&eri3_ao, &lb.c_locc)
