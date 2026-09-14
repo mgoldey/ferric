@@ -70,8 +70,41 @@ impl Engine {
     /// Create a 4-center two-electron integral engine.
     pub fn new_2e(op: Operator, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
         let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
+
+        // Exact terfc/terf go through the standalone table engine, not libint2 --
+        // the same dispatch `new_2center` makes. The engine payload carries no
+        // center count (the shim's `_2center` constructor is literally a
+        // pass-through to `_3center`), so the 3-center constructor serves the
+        // 4-center path too; only the buffer sizing differs.
+        if matches!(op.kind, OperatorKind::Terfc | OperatorKind::Terf) {
+            let is_terf = matches!(op.kind, OperatorKind::Terf);
+            // SAFETY: FFI call to create a terfc/terf table engine. Null-checked
+            // below; the handle is owned by this Engine and destroyed in Drop.
+            let h = unsafe {
+                if is_terf {
+                    ffi::scf_engine_create_terf_3center(op.distance, op.omega, prep.max_nprim(), prep.max_l(), precision, std::ptr::null())
+                } else {
+                    ffi::scf_engine_create_terfc_3center(op.distance, op.omega, prep.max_nprim(), prep.max_l(), precision, std::ptr::null())
+                }
+            };
+            if h.is_null() {
+                let name = if is_terf { "terf" } else { "terfc" };
+                return Err(FerricError::Libint(
+                    format!("{name} 4-center engine not available (tables missing? set FERRIC_TERF_TABLE_DIR)"),
+                ));
+            }
+            let n4 = max_fn * max_fn * max_fn * max_fn;
+            return Ok(Engine {
+                handles: vec![(1.0, h)],
+                buf: vec![0.0; n4],
+                scratch: vec![0.0; n4],
+                is_terfc: true,
+                is_terf,
+            });
+        }
+
         let mut handles = Vec::new();
-        
+
         let n_comp = if op.is_composite { op.num_components } else { 1 };
         for i in 0..n_comp {
             let (coeff, kind, omega) = if op.is_composite {
@@ -238,10 +271,28 @@ impl Engine {
         self.buf[..n].fill(0.0);
 
         for &(coeff, h) in &self.handles {
-            // SAFETY: `h` and `prep.handle()` are valid libint2 handles. Shell
-            // indices are in bounds (PreparedBasis owns them). `self.scratch` is
-            // sized to hold max_fn^4 doubles. Status checked via assert.
-            let written = unsafe { ffi::scf_compute_eri_quartet(h, prep.handle(), sh1 as c_int, sh2 as c_int, sh3 as c_int, sh4 as c_int, self.scratch.as_mut_ptr()) };
+            // SAFETY: `h` and `prep.handle()` are valid libint2 handles (or a
+            // terf/terfc table engine for those branches). Shell indices are in
+            // bounds (PreparedBasis owns them). `self.scratch` is sized to hold
+            // max_fn^4 doubles. Status checked below.
+            let written = unsafe {
+                if self.is_terf {
+                    ffi::scf_compute_terf_eri4(h, prep.handle(), sh1 as c_int, sh2 as c_int, sh3 as c_int, sh4 as c_int, self.scratch.as_mut_ptr())
+                } else if self.is_terfc {
+                    ffi::scf_compute_terfc_eri4(h, prep.handle(), sh1 as c_int, sh2 as c_int, sh3 as c_int, sh4 as c_int, self.scratch.as_mut_ptr())
+                } else {
+                    ffi::scf_compute_eri_quartet(h, prep.handle(), sh1 as c_int, sh2 as c_int, sh3 as c_int, sh4 as c_int, self.scratch.as_mut_ptr())
+                }
+            };
+            // The terf/terfc 4-center path REFUSES a quartet whose total angular
+            // momentum exceeds the table m-depth (SCF_EINVAL). That is a real
+            // refusal, not a libint2 bug, and it must not abort the process --
+            // callers see `None`, the same as a fully screened quartet. A
+            // Schwarz table built from this must therefore treat `None` as
+            // "cannot bound" rather than "zero"; schwarz.rs already floors it.
+            if written < 0 && (self.is_terf || self.is_terfc) {
+                return None;
+            }
             assert!(written >= 0, "libint2 internal error in eri quartet ({sh1},{sh2},{sh3},{sh4}): status {written}");
             if written > 0 {
                 let w = written as usize;
