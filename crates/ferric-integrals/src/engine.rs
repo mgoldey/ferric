@@ -1257,7 +1257,22 @@ mod tests {
     /// hand libint2 the SAME already-built ShellPair on the "disabled" arm's
     /// later calls if the enable/disable check were bypassed anywhere -- two
     /// independent engines close that gap entirely.
+    /// Serializes tests that touch the process-global `FERRIC_SHELLPAIR_CACHE`
+    /// against tests that assert the cache's DEFAULT state.
+    ///
+    /// The previous reasoning here was that the race window was "negligible"
+    /// because the env-var test reads the var immediately after setting it in
+    /// the same thread. That is wrong under a parallel test runner: `set_var`
+    /// mutates PROCESS state, so while it is set, ANY concurrently-running
+    /// test constructing an engine sees the cache disabled. MEASURED — the
+    /// pre-push gate (which runs the suite in parallel, unlike the
+    /// `--test-threads=1` runs this was developed under) failed all three
+    /// bit-identity tests at once with "cache must default to enabled".
+    /// Mirrors the `ENV_LOCK` already used in ferric-scf's tests.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn assert_cache_bit_identical_to_uncached(mol_path: &str, basis: &str, precision: f64) {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::load_xyz(mol_path).unwrap();
         let bs = basis::bundled(basis).unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -1482,15 +1497,19 @@ mod tests {
     #[test]
     fn shellpair_cache_env_var_disables_by_default_reading() {
         // Escape hatch smoke test: FERRIC_SHELLPAIR_CACHE=0 must produce a
-        // freshly-constructed engine reporting the cache disabled. Serialized
-        // against other env-var-sensitive tests in this crate via a local
-        // lock would be ideal, but this crate has no existing ENV_LOCK (only
-        // ferric-scf's rhf.rs does, for FERRIC_SCF_INCREMENTAL); this test
-        // only READS the var immediately after setting it in the same
-        // thread and does not call solve_rhf or anything else that reads
-        // process env asynchronously, so the window for cross-test
-        // interference is negligible. Uses a dedicated value ("off") to
-        // avoid colliding with any other test that might set "0".
+        // freshly-constructed engine reporting the cache disabled.
+        //
+        // Serialized against the default-state assertions via ENV_LOCK above.
+        // This comment previously argued the race window was "negligible"
+        // because the var is read immediately after being set in the same
+        // thread. That reasoning was wrong: `set_var` mutates PROCESS state,
+        // so while it is set, any test running CONCURRENTLY sees the cache
+        // disabled. The pre-push gate runs this suite in parallel (unlike the
+        // `--test-threads=1` runs it was developed under) and failed all three
+        // bit-identity tests at once on "cache must default to enabled".
+        // Uses a dedicated value ("off") to avoid colliding with any other
+        // test that might set "0".
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("FERRIC_SHELLPAIR_CACHE", "off");
         let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = basis::bundled("sto-3g").unwrap();

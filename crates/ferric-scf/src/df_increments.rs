@@ -16,7 +16,7 @@
 //! no existing code path — `solve_rhf`'s own exact incremental-Fock mechanism
 //! (`INCREMENTAL_FULL_REBUILD_EVERY`, `d_last_fock`) is completely untouched,
 //! and `solve_rhf_with_df_guess` is reused only via its pre-stage helper
-//! ([`crate::ladder::run_df_guess_pre_stage`]), never mutated.
+//! (`ladder::run_df_guess_pre_stage`), never mutated.
 //!
 //! # What this is (and is not) — the "second-order" framing, corrected
 //!
@@ -154,7 +154,7 @@ const DF_INCREMENTS_INNER_DENSITY_CONV: f64 = 1e-6;
 const DF_INCREMENTS_INNER_ENERGY_CONV: f64 = 1e-5;
 
 /// Two-stage-plus-correction SCF: (1) a loose DF-guess pre-stage builds a
-/// starting density `D0` ([`crate::ladder::run_df_guess_pre_stage`], the same
+/// starting density `D0` (`ladder::run_df_guess_pre_stage`, the same
 /// helper `solve_rhf_with_df_guess` uses); (2) ONE exact 4-index Fock build at
 /// `D0`, `F_ex(D0)`, retained as a frozen reference; (3) a DF-corrected inner
 /// loop iterates `F(D) = F_ex(D0) + F_DF(D - D0)`, where `F_DF` is built from
