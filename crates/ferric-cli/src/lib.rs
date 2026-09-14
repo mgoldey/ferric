@@ -421,6 +421,14 @@ pub fn run(args: Vec<String>) {
         verbose: cfg.scf.verbose,
     };
 
+    // Resolve/validate [scf] df_guess_aux up front (config-honesty: a knob
+    // that would silently do nothing under df_guess = false is a hard error)
+    // so a typo'd TOML fails fast instead of after an expensive SCF.
+    let df_guess_aux = cfg.scf.df_guess_aux_resolved().unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+
     if task == "optimize" {
         run_optimize(method, &cfg, &ctx, &mol, &bs, op, &rhf_config, budget_bytes);
         return;
@@ -485,6 +493,18 @@ pub fn run(args: Vec<String>) {
     // MaxIter instead of converging) + the ksdft_ladder tests in
     // ferric-scf/src/ladder.rs.
     let result = if method == "rhf" || method == "ksdft" {
+        // `[scf] df_guess` is not (yet) composed with the multi-rung
+        // convergence ladder — the ladder's own escalation (level shift /
+        // ADIIS / smearing) is a different mechanism aimed at hard-to-
+        // converge systems, and interleaving a DF pre-stage into every rung
+        // needs its own design (which rung(s) get it, whether DIIS state
+        // should reset between the ladder's *own* rungs the same way). Warn
+        // rather than silently ignore, per the config-honesty convention.
+        if cfg.scf.df_guess {
+            eprintln!(
+                "warning: [scf] df_guess is not yet composed with the {method} convergence ladder; ignored here (use kind = \"rimp2\" or another non-laddered method to use it)"
+            );
+        }
         let ladder = cfg.scf.build_ladder(&rhf_config);
         // Report the J/K path actually in use. RI-JK is now opt-in (the ladder
         // no longer substitutes it — see `ladder::default_ladder_from`), but
@@ -502,6 +522,29 @@ pub fn run(args: Vec<String>) {
             eprintln!("warning: SCF did not fully converge (best rung {}, exit {:?})", lr.rung_reached, lr.rung_outcomes.last().map(|o| o.exit));
         }
         lr.result
+    } else if cfg.scf.df_guess && mol.multiplicity == 1 {
+        // Opt-in DF-guess two-stage SCF (see
+        // `ferric_scf::ladder::solve_rhf_with_df_guess`). Restricted to the
+        // closed-shell path here: open-shell (UHF/ROHF) df_guess is not
+        // implemented and `mol.multiplicity > 1` below still needs the
+        // pdep-rpa/gw/mp2-v UHF fallback behavior, which a DF-guess RHF
+        // result cannot provide anyway (that fallback triggers on error, but
+        // an actual RHF solve on an open-shell molecule would already have
+        // failed inside solve_rhf; this branch simply doesn't apply then).
+        let dfg = ferric_scf::ladder::solve_rhf_with_df_guess(
+            &ctx, &mol, &prep, op, &bounds, &rhf_config, df_guess_aux.as_deref(),
+        ).unwrap_or_else(|e| {
+            eprintln!("error: DF-guess SCF failed: {e:?}");
+            std::process::exit(1);
+        });
+        eprintln!(
+            "[ferric] SCF: DF-guess pre-stage via {} ({} iters, {}), exact stage from that density",
+            df_guess_aux.as_deref().unwrap_or(ferric_scf::ladder::DF_GUESS_DEFAULT_AUX),
+            dfg.df_iterations,
+            if dfg.df_converged { "converged" } else { "did not fully converge" },
+        );
+        let _ = dfg.df_energy; // diagnostic only; the exact-stage result is authoritative
+        dfg.result
     } else {
         solve_rhf(&ctx, &mol, &prep, op, &bounds, &rhf_config).unwrap_or_else(|e| {
         // For pdep-rpa/gw/mp2-v with open-shell molecules the UHF dispatch inside

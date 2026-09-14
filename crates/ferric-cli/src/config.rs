@@ -1032,6 +1032,20 @@ pub struct ScfCfg {
     /// command. See `ferric_scf::rhf::RhfConfig::verbose`.
     #[serde(default)]
     pub verbose: bool,
+    /// Opt-in two-stage "DF guess" SCF (Psi4's "Andy trick 2.0"): converge a
+    /// density-fitted J/K SCF to a loose threshold first, then hand its
+    /// converged density to a fresh exact-4-index-integral SCF. Default
+    /// `false` — with this off, no DF pre-stage is constructed at all and the
+    /// SCF path is unchanged (byte-identical) from before this feature
+    /// existed. See `ferric_scf::ladder::solve_rhf_with_df_guess`.
+    #[serde(default)]
+    pub df_guess: bool,
+    /// Auxiliary (JK-fit) basis for the `df_guess` pre-stage only. Omitted =
+    /// `ferric_scf::ladder::DF_GUESS_DEFAULT_AUX` ("def2-universal-jkfit").
+    /// Ignored (with a hard error) when `df_guess = false`, matching the
+    /// project's cosx_*-style config-honesty convention: a knob that would
+    /// silently do nothing is refused rather than accepted.
+    pub df_guess_aux: Option<String>,
 }
 
 impl Default for ScfCfg {
@@ -1063,6 +1077,8 @@ impl Default for ScfCfg {
             mom_after_iter: 0,
             ladder: Vec::new(),
             verbose: false,
+            df_guess: false,
+            df_guess_aux: None,
         }
     }
 }
@@ -1146,6 +1162,19 @@ impl ScfCfg {
     /// guess (MINAO or SAD via use_sad_guess), false forces hcore.
     pub fn use_density_guess(&self) -> bool {
         !matches!(self.guess.as_deref(), Some("hcore") | Some("Hcore"))
+    }
+    /// Resolve `df_guess_aux` under the config-honesty convention: setting it
+    /// while `df_guess = false` would be a silent no-op, so it is a hard
+    /// error instead (mirrors `cosx_config`'s treatment of `cosx_*` knobs set
+    /// without `k_builder = "cosx"`).
+    pub fn df_guess_aux_resolved(&self) -> Result<Option<String>, String> {
+        if !self.df_guess && self.df_guess_aux.is_some() {
+            return Err(format!(
+                "[scf] df_guess_aux = {:?} is set but df_guess = false; it is only read with df_guess = true",
+                self.df_guess_aux
+            ));
+        }
+        Ok(self.df_guess_aux.clone())
     }
 }
 
@@ -2065,6 +2094,86 @@ restart = true
         assert_eq!(cfg.scf.ladder[1].level_shift, Some(0.5));
         assert!(cfg.scf.ladder[1].restart);
         assert!(!cfg.scf.ladder[0].restart);
+    }
+
+    /// (d) `[scf] df_guess` parses, defaults to `false`, and an explicit
+    /// `true` + `df_guess_aux` round-trips. Unknown keys in `[scf]` must
+    /// still hard-error (deny_unknown_fields is unaffected by the new
+    /// fields).
+    #[test]
+    fn scf_df_guess_key_parses_and_defaults_off() {
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rimp2"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert!(!cfg.scf.df_guess, "df_guess must default to false");
+        assert!(cfg.scf.df_guess_aux.is_none());
+
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rimp2"
+[scf]
+df_guess = true
+df_guess_aux = "def2-universal-jkfit"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert!(cfg.scf.df_guess);
+        assert_eq!(cfg.scf.df_guess_aux.as_deref(), Some("def2-universal-jkfit"));
+        assert_eq!(cfg.scf.df_guess_aux_resolved().unwrap().as_deref(), Some("def2-universal-jkfit"));
+    }
+
+    /// A typo'd key inside `[scf]` (e.g. `df_gess`) must still hard-error --
+    /// adding `df_guess`/`df_guess_aux` must not have loosened
+    /// `deny_unknown_fields` on `ScfCfg`.
+    #[test]
+    fn scf_section_still_rejects_typod_keys_after_df_guess_addition() {
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rimp2"
+[scf]
+df_gess = true
+"#;
+        let err = match toml::from_str::<Config>(toml_str) {
+            Ok(_) => panic!("typo'd df_guess key parsed successfully — deny_unknown_fields regressed"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("df_gess"), "error should name the bad key: {err}");
+    }
+
+    /// `df_guess_aux` set without `df_guess = true` is a silent-no-op knob
+    /// under the project's config-honesty convention -- must be a hard error
+    /// from `df_guess_aux_resolved`, not silently ignored.
+    #[test]
+    fn df_guess_aux_without_df_guess_is_rejected() {
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rimp2"
+[scf]
+df_guess_aux = "def2-universal-jkfit"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert!(!cfg.scf.df_guess);
+        assert!(
+            cfg.scf.df_guess_aux_resolved().is_err(),
+            "df_guess_aux set with df_guess=false must be rejected, not silently ignored"
+        );
     }
 
     #[test]

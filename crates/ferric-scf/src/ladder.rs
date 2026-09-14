@@ -97,6 +97,154 @@ pub fn solve_rhf_ladder(
     })
 }
 
+/// Default auxiliary basis for the DF-guess pre-stage: a JK-fit set (NOT an
+/// MP2/RI-fit set — see `RhfConfig::df_k_aux`'s doc on why K needs a
+/// dedicated JKFIT-type basis). Kept as its own constant, distinct from
+/// whatever `[mp2] auxbasis` the caller may have configured for a downstream
+/// correlated method, per the project convention that SCF JK aux stays
+/// separate from RPA/MP2 aux (see `ferric-jk-aux-convention`).
+pub const DF_GUESS_DEFAULT_AUX: &str = "def2-universal-jkfit";
+
+/// Outcome of a [`solve_rhf_with_df_guess`] run: the exact-stage `ScfResult`
+/// plus enough of the DF stage's own outcome to audit that it actually ran
+/// (iteration count, convergence, energy) without re-exposing a whole second
+/// `ScfResult`.
+#[derive(Debug, Clone)]
+#[must_use]
+pub struct DfGuessResult {
+    /// The exact-integral stage's result. This is what callers should treat
+    /// as "the" SCF result — the DF stage is purely a density generator and
+    /// never contributes to the returned energy/orbitals.
+    pub result: ScfResult,
+    /// Iteration count of the DF (fitted J/K) pre-stage.
+    pub df_iterations: usize,
+    /// Whether the DF pre-stage satisfied its own (loose) convergence gate.
+    /// `false` is not fatal here — even a partially-converged DF density is a
+    /// far better starting point than hcore/MINAO for the exact stage, so a
+    /// non-convergent DF stage is not an error, only a (silent, by design —
+    /// see `solve_rhf_with_df_guess` doc) missed speedup.
+    pub df_converged: bool,
+    /// The DF pre-stage's own final energy (fitted, NOT physically meaningful
+    /// as a final answer — reported for diagnostics/logging only).
+    pub df_energy: f64,
+}
+
+/// `max_iter` cap for the DF pre-stage (see `solve_rhf_with_df_guess` doc,
+/// "Loose DF-stage threshold" section): 25 is generous relative to Psi4's own
+/// ~10-ish DF pre-iterations, while still much less than a typical exact-SCF
+/// `max_iter` budget (default 200) — this stage exists to get INTO the right
+/// basin cheaply, not to fully converge there.
+pub const DF_GUESS_MAX_ITER: usize = 25;
+
+/// Loosening factor applied to `density_conv` for the DF pre-stage (see
+/// `solve_rhf_with_df_guess` doc).
+const DF_GUESS_DENSITY_CONV_LOOSEN: f64 = 1e3;
+/// Floor on the DF pre-stage's `density_conv`, so a caller with an already
+/// loose target doesn't get an even-looser DF stage than that floor implies.
+const DF_GUESS_DENSITY_CONV_FLOOR: f64 = 1e-5;
+/// Loosening factor applied to `energy_conv` for the DF pre-stage.
+const DF_GUESS_ENERGY_CONV_LOOSEN: f64 = 10.0;
+/// Floor on the DF pre-stage's `energy_conv`.
+const DF_GUESS_ENERGY_CONV_FLOOR: f64 = 1e-2;
+
+/// Two-stage "DF guess" SCF: converge a density-fitted J/K SCF to a LOOSE
+/// threshold first, then hand its converged (or best-effort) density to a
+/// fresh exact-4-index-integral SCF that runs to the caller's real
+/// `energy_conv`/`density_conv`. Mirrors Psi4's "Andy trick 2.0"
+/// (`psi4/driver/procrouting/scf_proc/scf_iterator.py:56-100`,
+/// `scf_compute_energy`): DF pre-iterations are far cheaper per-iteration
+/// than exact 4-index ones, and the fitted Fock operator's basin is close
+/// enough to the exact one that most of the iteration budget can be spent
+/// there instead.
+///
+/// `df_aux` selects the J/K fitting basis for the pre-stage only (`None` ->
+/// [`DF_GUESS_DEFAULT_AUX`]); it is never applied to the exact stage. `base`
+/// is the exact-stage config (its own `df_j_aux`/`df_k_aux` — normally both
+/// `None` — are left untouched and used verbatim for the exact stage).
+///
+/// # Why this is safe to bolt on as a pure wrapper
+///
+/// `base` is passed through UNCHANGED as the exact stage's config except for
+/// `init_guess_density` (set to the DF stage's final density) and
+/// `use_sad_guess` (forced `false`, since we now have a real starting
+/// density and must not let the MINAO/SAD guess override it — see
+/// `solve_rhf`'s guess-precedence doc: `init_guess_density` already wins over
+/// `use_sad_guess`, but setting it `false` here makes the precedence
+/// explicit rather than incidental). Every other field — `df_j_aux`/
+/// `df_k_aux` on `base` in particular — is whatever the CALLER wants for the
+/// exact stage (normally `None`, i.e. actually exact); the DF stage builds
+/// its OWN separate config with its own aux and never mutates `base`.
+///
+/// # DIIS reset at the DF→exact handoff
+///
+/// Psi4 explicitly resets its DIIS subspace at the handoff
+/// (`diis_manager_.reset_subspace()`) because the DF stage's error vectors
+/// are computed from a *different* (fitted) Fock operator and would poison
+/// the exact stage's extrapolation. Ferric needs no equivalent call here:
+/// `solve_rhf` constructs a brand-new `DiisDriver` from scratch on every
+/// invocation (see the top of its iteration setup) — there is no DIIS state
+/// that persists across separate `solve_rhf` calls in the first place. Two
+/// independent `solve_rhf` calls (as used here, and as `solve_rhf_ladder`
+/// already relies on for its rung-to-rung transitions) are DIIS-isolated by
+/// construction; only the density crosses the boundary. So the "reset" Psi4
+/// needs is already the default ferric behavior — there is nothing extra to
+/// wire up.
+///
+/// # Loose DF-stage threshold
+///
+/// The DF stage's fitted Fock operator has a DIFFERENT fixed point than the
+/// exact one (the RI approximation shifts it, typically ~1e-4 Ha territory
+/// per `default_ladder_from`'s doc on the historical DF-JK-ladder removal).
+/// Converging the DF stage to the caller's real (possibly 1e-8-1e-10) density
+/// threshold would burn iterations chasing precision in a density that the
+/// exact stage is about to perturb anyway. We instead loosen BOTH gates by a
+/// fixed factor relative to whatever the caller asked the exact stage to hit:
+///   - `density_conv`: `max(base.density_conv * 1e3, 1e-5)` — three orders
+///     looser than the target, floored at 1e-5 so a caller who already asked
+///     for something loose (e.g. 1e-4) doesn't get a DF stage LOOSER than
+///     that ratio would suggest is still a meaningful gate.
+///   - `energy_conv`: `max(base.energy_conv * 10.0, 1e-2)` — one order looser
+///     than the exact stage's (already loose, 1e-3-default) sanity bound.
+/// `max_iter` is capped at [`DF_GUESS_MAX_ITER`]. If the DF stage hits
+/// `max_iter` without converging, its (still much-improved-over-cold-guess)
+/// density is used anyway — see `DfGuessResult::df_converged`.
+pub fn solve_rhf_with_df_guess(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    base: &RhfConfig,
+    df_aux: Option<&str>,
+) -> Result<DfGuessResult, FerricError> {
+    let aux = df_aux.unwrap_or(DF_GUESS_DEFAULT_AUX);
+
+    let mut df_cfg = base.clone();
+    df_cfg.df_j_aux = Some(aux.to_string());
+    df_cfg.df_k_aux = Some(aux.to_string());
+    df_cfg.density_conv = (base.density_conv * DF_GUESS_DENSITY_CONV_LOOSEN).max(DF_GUESS_DENSITY_CONV_FLOOR);
+    df_cfg.energy_conv = (base.energy_conv * DF_GUESS_ENERGY_CONV_LOOSEN).max(DF_GUESS_ENERGY_CONV_FLOOR);
+    df_cfg.max_iter = base.max_iter.min(DF_GUESS_MAX_ITER);
+    // The DF stage still wants its own fast route to a starting density,
+    // exactly like an un-laddered `solve_rhf` call would.
+    df_cfg.init_guess_density = None;
+
+    let df_result = solve_rhf(ctx, mol, prep, op, bounds, &df_cfg)?;
+
+    let mut exact_cfg = base.clone();
+    exact_cfg.init_guess_density = Some(df_result.density_total.clone());
+    exact_cfg.use_sad_guess = false;
+
+    let result = solve_rhf(ctx, mol, prep, op, bounds, &exact_cfg)?;
+
+    Ok(DfGuessResult {
+        result,
+        df_iterations: df_result.iterations,
+        df_converged: df_result.converged,
+        df_energy: df_result.energy,
+    })
+}
+
 /// Built-in default ladder: stall/divergence abort on every rung, level-shift
 /// escalation, density carried forward. Tuned from CCuN/aTZ measurements
 /// (2026-07-08): rung 1 alone banks CCuN in <1 min. J/K is inherited from the
