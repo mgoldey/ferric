@@ -1981,7 +1981,6 @@ fn run_pdep_rpa_arm(
             verbose: cfg.scf.verbose,
             // Same resolved kind that already selected `bounds`'s CSB table
             // above; see the comment there for why it is parsed once.
-            screening: screening_kind,
         };
         // For open-shell molecules (multiplicity > 1) re-run with UHF + MOM so
         // the reference is converged, then dispatch to the unrestricted RPA.
@@ -2795,7 +2794,6 @@ fn run_gw(
             verbose: cfg.scf.verbose,
             // Same resolved kind that already selected `bounds`'s CSB table
             // above; see the comment there for why it is parsed once.
-            screening: screening_kind,
         };
         let gw_cfg = ferric_gw::GwConfig {
             method: gw_method,
@@ -2811,7 +2809,6 @@ fn run_gw(
             verbose: cfg.scf.verbose,
             // Same resolved kind that already selected `bounds`'s CSB table
             // above; see the comment there for why it is parsed once.
-            screening: screening_kind,
         };
         let ha_to_ev = 27.211_386_245_988_f64;
         if mol.multiplicity > 1 {
@@ -3094,7 +3091,6 @@ fn run_bse_tda(
             verbose: cfg.scf.verbose,
             // Same resolved kind that already selected `bounds`'s CSB table
             // above; see the comment there for why it is parsed once.
-            screening: screening_kind,
         };
         let ha_to_ev = 27.211_386_245_988_f64;
         let bse = ferric_gw::bse::run_bse_tda(
@@ -3203,7 +3199,6 @@ fn run_tdhf_static_polarizability(
             verbose: cfg.scf.verbose,
             // Same resolved kind that already selected `bounds`'s CSB table
             // above; see the comment there for why it is parsed once.
-            screening: screening_kind,
         };
         let res = ferric_gw::bse::run_rpax_static_polarizability(
             mol, prep, &dfbs, op, result, &rpa_cfg, frozen_core, scissor,
@@ -3449,7 +3444,6 @@ fn run_optimize(
                 verbose: cfg.scf.verbose,
                 // Same resolved kind that already selected `bounds`'s CSB table
                 // above; see the comment there for why it is parsed once.
-                screening: screening_kind,
             };
             let h_fd = 5e-4;
             let opt_result =
