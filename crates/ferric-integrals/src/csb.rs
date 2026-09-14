@@ -131,6 +131,114 @@
 //! **erfc**, and the Gaussian geminal — i.e. it covers every operator
 //! [`crate::schwarz::schwarz`] itself accepts, and more.
 //!
+//! ## Extending Table VI to ferric's `Terfc` / `Terf` (2026-09-14)
+//!
+//! ferric has two operators the paper does not discuss, implemented via the
+//! standalone 2-D interpolation-table engine (Dutoi & Head-Gordon, JPCA 2008;
+//! Goldey PhD thesis 2014) rather than libint2. Appendix B is not just a list
+//! — it is a *recipe*: compute `F_G(k)` and check positivity. Applying that
+//! recipe settles both, with opposite answers.
+//!
+//! The exact functional form, read from the shim rather than the name
+//! (`crates/ferric-integrals/shim/shim.cc:717-718`):
+//!
+//! ```text
+//!   terfc(r,r0)/r = 1/r  -  terf(r,r0)/r
+//!   terf(r,r0)/r  = ( erf(w(r-r0)) + erf(w(r+r0)) ) / (2 r),   w = 1/(r0 sqrt2)
+//! ```
+//!
+//! i.e. `G_terfc(r) = t(r)/r` with `t(r) = 1 - [erf(w(r-r0)) + erf(w(r+r0))]/2`,
+//! a smoothed step falling from `t(0) = 1` to `t(inf) = 0` with its edge at
+//! `r = r0` and edge width `~1/w`. (Note: `terf-tables/base_terfc_closed.py`'s
+//! docstring writes this WITHOUT the factor of 2. That form goes negative past
+//! `r ~ r0` and is not the shipped kernel; the shim and
+//! `scripts/terfc_pd_check.py` agree on the `/2`, and
+//! `tests/terfc_base_validation.rs` asserts `terfc/coulomb` stays in `(0,1)`,
+//! which the un-halved form would violate. Flagged, not silently corrected.)
+//!
+//! **`Terfc` IS positive-definite — with a closed form, not a sweep.** Since
+//! `t(r) - 1` is odd (`t(r) + t(-r) = 2`, checked numerically), `t(r) sin(kr)`
+//! decomposes so that the radial transform integrates in closed form:
+//!
+//! ```text
+//!   F_terfc(k) = (1 / (2 pi^2 k^2)) * ( 1 - cos(k r0) * e^{-k^2/(4 w^2)} )
+//! ```
+//!
+//! This was VERIFIED against direct oscillatory quadrature of
+//! `int_0^inf t(r) sin(kr) dr` at 72 combinations of
+//! `r0 in {0.7, 1.0, 1.98}`, `c = r0 w in {0.3, 1/sqrt2, 2.06987, 8.0}` and
+//! `k` spanning the danger points `2 pi m / r0`: **max absolute deviation
+//! 5.67e-15**.
+//!
+//! Positivity is then immediate and needs no numerics at all: `|cos(k r0)| <= 1`
+//! and `e^{-k^2/(4 w^2)} < 1` STRICTLY for every `k > 0` and finite `w`, so the
+//! bracket is `>= 1 - e^{-k^2/(4w^2)} > 0`. By Bochner's theorem (the paper's
+//! Appendix B) `G_terfc` is therefore a positive-definite function, and both
+//! the QQ bound and CSB apply to it rigorously.
+//!
+//! Two independent consistency checks on that closed form:
+//!
+//!   * `r0 -> 0` reduces it to `(1 - e^{-k^2/(4 w^2)}) / (2 pi^2 k^2)` — the
+//!     paper's own Table VI row for `erfc(w r12)/r12`, exactly. So this is a
+//!     strict GENERALIZATION of a row the authors derived, not a new claim
+//!     sitting beside it.
+//!   * `w -> inf` (sharp cutoff) gives `(1 - cos(k r0))/(2 pi^2 k^2) >= 0`,
+//!     which touches zero at `k = 2 pi m / r0`. The finite edge is exactly what
+//!     lifts those touch points off zero: the `e^{-k^2/(4 w^2)}` factor
+//!     multiplies the `cos` term down. This identifies the sharp-cutoff limit
+//!     as the boundary case and explains WHY the smoothing matters, rather
+//!     than leaving positivity as an unexplained numerical fact.
+//!
+//! This also corroborates, and upgrades, ferric's pre-existing sweep
+//! (`scripts/terfc_pd_check.py` -> `wiki/data/terfc-pd-sweep.txt`, 2026-08-13),
+//! which found `P(u) >= 5.0e-4 > 0` over `c in [0.2, 50]` numerically. A sweep
+//! can only ever fail to find a violation; the closed form proves there is
+//! none, for ALL `r0` and `w`, including the decoupled `(r0, omega)` family.
+//!
+//! **`Terf` is NOT positive-definite, and is therefore OUT OF SCOPE for CSB
+//! and for plain Schwarz alike.** Since `terf = Coulomb - terfc`:
+//!
+//! ```text
+//!   F_terf(k) = 1/(2 pi^2 k^2) - F_terfc(k)
+//!             = cos(k r0) * e^{-k^2/(4 w^2)} / (2 pi^2 k^2)
+//! ```
+//!
+//! and `cos(k r0)` changes sign — `F_terf(k) < 0` for every `k` with
+//! `k r0 in (pi/2, 3 pi/2) mod 2 pi`, e.g. `k r0 = pi` where `cos = -1`.
+//! Bochner's condition FAILS. Appendix A's requirement four (`<e,e> >= 0`) is
+//! not merely unproven for `terf`, it is false, so the two-electron integral
+//! over `terf` is NOT an inner product and the Cauchy-Schwarz step underlying
+//! BOTH `Q` and `M` is invalid. This is not a tightness question: a "Schwarz
+//! bound" for `terf` could be violated outright.
+//!
+//! Note the contrast with the paper's `erf` row, which IS positive
+//! (`e^{-k^2/(4w^2)}/(2 pi^2 k^2)`, no oscillation): `terf` is the *tempered*
+//! long-range complement, and it is the `cos(k r0)` introduced by the finite
+//! shell radius `r0` — not the long-rangedness — that breaks positivity.
+//!
+//! ### What is NOT yet implemented for `Terfc`, despite being valid
+//!
+//! CSB needs `(PP|QQ)` (for `M`) and `(PQ|PQ)` (for `Q`) SHELL QUARTETS. The
+//! terfc engine exposes only 3-centre and 2-centre entry points —
+//! `scf_compute_terfc_eri3` / `scf_compute_terfc_eri2`
+//! (`crates/ferric-integrals/shim/shim.h:201,206`); there is no
+//! `scf_compute_terfc_eri_quartet`. So neither `csb_m_table` nor
+//! `crate::schwarz::schwarz` can be built for `Terfc` today, and both correctly
+//! reject it at their `match op.kind` — for a MISSING-ENGINE reason, not a
+//! positivity one. The distinction matters: if a 4-centre terfc kernel is ever
+//! written, CSB becomes available immediately with no new theory, whereas for
+//! `Terf` no engine would make it valid.
+//!
+//! One caveat that would have to be settled first, and cannot be settled here:
+//! the terfc engine is INTERPOLATED (2-D tables in `(S, s)`), so integrals
+//! carry table error. The positivity proof above is for the EXACT kernel. A
+//! `Q` or `M` entry computed slightly LOW by interpolation would break the
+//! bound by that much, exactly as a precision-cliff zero would — see the
+//! "Precision discipline" section below, which is the same hazard in a
+//! different guise. A terfc CSB would therefore need its table error bounded
+//! and folded in as a relative inflation of `Q`/`M`, not merely a floor.
+//! Flagged as a prerequisite, not solved.
+//!
 //! **Conditions I checked for and did NOT find** (recorded because their
 //! absence is load-bearing): the derivation places no restriction on angular
 //! momentum, contraction depth, normalization convention, or basis-function

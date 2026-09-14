@@ -131,6 +131,29 @@ fn schwarz_pair(eng: &mut Engine, prep: &PreparedBasis, i: usize, j: usize) -> f
 /// `scf_compute_eri_quartet` kernel with unit coefficient as the serial loop,
 /// and each (i, j) is written exactly once, so the result is bit-identical to
 /// the serial loop regardless of thread count or block size.
+///
+/// # Why the operator set is `{Coulomb, ErfCoulomb, ErfcCoulomb}`
+///
+/// Two independent gates, and it is worth knowing which one a given operator
+/// fails, because they have different remedies:
+///
+/// 1. **Positive-definiteness.** Schwarz requires `G` to be a positive-definite
+///    function (Thompson & Ochsenfeld, JCP 147, 144101 (2017), Appendix B;
+///    Bochner's theorem on `F_G(k) > 0`). Their Table VI discharges this for
+///    all three accepted kinds, and also for `Yukawa`, `SlaterGeminal` and the
+///    Gaussian geminal. See [`crate::csb`]'s header, which extends the same
+///    recipe to ferric's own kernels and finds `Terfc` positive-definite (with
+///    a closed form, `F(k) = (1 - cos(k r0) e^{-k²/4ω²})/(2π²k²)`) but `Terf`
+///    NOT — `F_terf(k) = cos(k r0) e^{-k²/4ω²}/(2π²k²)` changes sign, so a
+///    "Schwarz bound" for `Terf` could be violated outright. No engine work
+///    would ever make `Terf` admissible here.
+/// 2. **An available 4-centre engine.** `Engine::new_2e` must be able to build
+///    the operator at all, and this pass needs `(ij|ij)` QUARTETS. `Terfc`
+///    fails only this second gate: the shim exposes `scf_compute_terfc_eri3` /
+///    `_eri2` but no quartet kernel (`shim.h:201,206`). If one is ever written,
+///    `Terfc` becomes admissible with no new theory — subject to bounding the
+///    interpolation-table error, since a `Q` computed slightly LOW by table
+///    error breaks the bound exactly as a precision-cliff zero would.
 pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, FerricError> {
     match op.kind {
         OperatorKind::Coulomb | OperatorKind::ErfCoulomb | OperatorKind::ErfcCoulomb => {}
