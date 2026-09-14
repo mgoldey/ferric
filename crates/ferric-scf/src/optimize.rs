@@ -243,7 +243,20 @@ fn compute_energy_and_gradient(
 ) -> Result<(f64, Array2<f64>), FerricError> {
     let bs = ferric_core::basis::bundled(basis_name)?;
     let prep = PreparedBasis::new(mol, &bs)?;
-    let bounds = SchwarzBounds::compute(op, &prep)?;
+    // Honour `[scf] screening` here too: geometry optimization rebuilds the
+    // bound at every step, and a step that silently dropped back to plain
+    // Schwarz would make the optimizer's energies inconsistent with a
+    // single-point run at the same geometry. `ScreeningKind::Schwarz` (the
+    // default) delegates verbatim to `compute`, so this is byte-identical
+    // unless CSB was explicitly selected.
+    //
+    // SCOPE: this governs the SCF only. `gradient.rs` carries its OWN inline
+    // `bounds.q[(s1,s2)] * bounds.q[(s3,s4)]` screen that does not consult
+    // `csb_m`, so the GRADIENT stays on plain Schwarz regardless. That is
+    // sound (plain Schwarz is still a rigorous bound, just looser) and is
+    // recorded as a known gap rather than silently assumed to be covered.
+    let bounds =
+        SchwarzBounds::compute_for_screening(op, &prep, rhf_config.screening)?;
     let res = solve_rhf(ctx, mol, &prep, op, &bounds, rhf_config)?;
     let grad = if let Some(xc_name) = rhf_config.xc.as_deref() {
         ks_gradient_closed(mol, &prep, &bs, op, &bounds, xc_name, &res, rhf_config.external_potential.as_ref())?
@@ -267,7 +280,20 @@ fn compute_energy_and_gradient_uhf(
     // tests/dft_gradient_mgga.rs.
     let bs = ferric_core::basis::bundled(basis_name)?;
     let prep = PreparedBasis::new(mol, &bs)?;
-    let bounds = SchwarzBounds::compute(op, &prep)?;
+    // Honour `[scf] screening` here too: geometry optimization rebuilds the
+    // bound at every step, and a step that silently dropped back to plain
+    // Schwarz would make the optimizer's energies inconsistent with a
+    // single-point run at the same geometry. `ScreeningKind::Schwarz` (the
+    // default) delegates verbatim to `compute`, so this is byte-identical
+    // unless CSB was explicitly selected.
+    //
+    // SCOPE: this governs the SCF only. `gradient.rs` carries its OWN inline
+    // `bounds.q[(s1,s2)] * bounds.q[(s3,s4)]` screen that does not consult
+    // `csb_m`, so the GRADIENT stays on plain Schwarz regardless. That is
+    // sound (plain Schwarz is still a rigorous bound, just looser) and is
+    // recorded as a known gap rather than silently assumed to be covered.
+    let bounds =
+        SchwarzBounds::compute_for_screening(op, &prep, uhf_config.screening)?;
     let res = solve_uhf(ctx, mol, &prep, &bounds, uhf_config)?;
     let ext = uhf_config.external_potential.as_ref();
     let grad = if let Some(xc_name) = uhf_config.xc.as_deref() {
@@ -291,7 +317,20 @@ fn compute_energy_and_gradient_rohf(
     // path above.
     let bs = ferric_core::basis::bundled(basis_name)?;
     let prep = PreparedBasis::new(mol, &bs)?;
-    let bounds = SchwarzBounds::compute(op, &prep)?;
+    // Honour `[scf] screening` here too: geometry optimization rebuilds the
+    // bound at every step, and a step that silently dropped back to plain
+    // Schwarz would make the optimizer's energies inconsistent with a
+    // single-point run at the same geometry. `ScreeningKind::Schwarz` (the
+    // default) delegates verbatim to `compute`, so this is byte-identical
+    // unless CSB was explicitly selected.
+    //
+    // SCOPE: this governs the SCF only. `gradient.rs` carries its OWN inline
+    // `bounds.q[(s1,s2)] * bounds.q[(s3,s4)]` screen that does not consult
+    // `csb_m`, so the GRADIENT stays on plain Schwarz regardless. That is
+    // sound (plain Schwarz is still a rigorous bound, just looser) and is
+    // recorded as a known gap rather than silently assumed to be covered.
+    let bounds =
+        SchwarzBounds::compute_for_screening(op, &prep, rohf_config.screening)?;
     let res = solve_rohf(ctx, mol, &prep, op, &bounds, rohf_config)?;
     let ext = rohf_config.external_potential.as_ref();
     let grad = if let Some(xc_name) = rohf_config.xc.as_deref() {
