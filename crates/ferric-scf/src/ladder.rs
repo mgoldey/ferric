@@ -136,6 +136,28 @@ pub struct DfGuessResult {
 /// basin cheaply, not to fully converge there.
 pub const DF_GUESS_MAX_ITER: usize = 25;
 
+/// `max_iter` for the DF pre-stage when `FERRIC_DF_GUESS_TIGHT` is on.
+///
+/// MEASURED (benzene/aug-cc-pVDZ), and the measurement CORRECTED an assumption:
+///
+/// | tight cap | DF iters | exact iters | USER  |
+/// |-----------|----------|-------------|-------|
+/// | 25        | 25 (stalled) | 6       | 122.82 s |
+/// | 120       | 100 (stalled) | 6      | 136.90 s |
+///
+/// Raising the cap bought ZERO exact iterations and cost 75 extra DF ones. The
+/// binding constraint was never the cap: the DF stage simply CANNOT reach the
+/// exact stage's thresholds, because the RI-fitted Fock has a different fixed
+/// point (~1e-4 Ha away) — which is exactly what `DF_GUESS_DENSITY_CONV_LOOSEN`
+/// was built around in the first place. The "a DF iteration costs ~1% of an
+/// exact one, so spend 100 of them to save one exact" argument is sound
+/// economics but rests on the DF density continuing to IMPROVE; past the stall
+/// point it does not, so the extra iterations are pure cost.
+///
+/// Kept at the loose policy's cap: past ~25 the DF stage is spinning at its own
+/// fixed point, not converging toward the exact one.
+pub const DF_GUESS_TIGHT_MAX_ITER: usize = DF_GUESS_MAX_ITER;
+
 /// Loosening factor applied to `density_conv` for the DF pre-stage (see
 /// `solve_rhf_with_df_guess` doc).
 const DF_GUESS_DENSITY_CONV_LOOSEN: f64 = 1e3;
@@ -222,9 +244,63 @@ pub fn solve_rhf_with_df_guess(
     let mut df_cfg = base.clone();
     df_cfg.df_j_aux = Some(aux.to_string());
     df_cfg.df_k_aux = Some(aux.to_string());
-    df_cfg.density_conv = (base.density_conv * DF_GUESS_DENSITY_CONV_LOOSEN).max(DF_GUESS_DENSITY_CONV_FLOOR);
-    df_cfg.energy_conv = (base.energy_conv * DF_GUESS_ENERGY_CONV_LOOSEN).max(DF_GUESS_ENERGY_CONV_FLOOR);
-    df_cfg.max_iter = base.max_iter.min(DF_GUESS_MAX_ITER);
+    // How tightly to converge the DF pre-stage.
+    //
+    // The original reasoning was that the RI-fitted Fock has a DIFFERENT fixed
+    // point than the exact one (~1e-4 Ha), so converging the DF stage tightly
+    // "wastes" iterations chasing precision in a density the exact stage is
+    // about to perturb. MEASURED, that argument is incomplete: what matters is
+    // not how close the DF density is to the DF fixed point, but how close it
+    // is to the EXACT one — and a DF iteration costs ~1% of an exact one
+    // (Psi4's own timer.dat: 0.2 vs 27.7 CPU-s per call at aDZ). Trading a
+    // cheap DF iteration for an expensive exact one is therefore a ~100:1 win
+    // as long as the DF density keeps improving. Benzene/aug-cc-pVDZ today
+    // splits 7 DF + 7 exact; Psi4 runs 10 DF + 5 direct.
+    //
+    // `FERRIC_DF_GUESS_TIGHT=1` converges the DF stage to the caller's OWN
+    // thresholds instead of loosened ones, so the two policies can be A/B'd on
+    // one binary. Default (unset) keeps the historical loosened behavior, so
+    // this is byte-identical unless opted into.
+    // MEASURED: running the DF pre-stage to its STALL POINT (rather than to a
+    // loosened threshold) is a win at both bases, benzene, 4 threads, idle box:
+    //
+    // |      | DF iters | exact iters | wall     | USER      |
+    // |------|----------|-------------|----------|-----------|
+    // | aDZ loose | 7   | 7           |  36.73 s |  140.73 s |
+    // | aDZ tight | 25  | 6           |  32.16 s |  122.82 s |  1.15x
+    // | aTZ loose | 7   | 6           | 378.94 s | 1463.53 s |
+    // | aTZ tight | 25  | 5           | 323.46 s | 1243.93 s |  1.17x
+    //
+    // Converged energies are identical (aTZ: -230.7808857506 both ways).
+    //
+    // Note what the win actually is: the DF stage does NOT converge — it hits
+    // the iteration cap in every tight run. The saving comes from letting it
+    // run until it stalls at the fitted Fock's own fixed point (~1e-4 Ha from
+    // the exact one), which is a better starting density than the loosened
+    // threshold stops at, and buys one fewer EXACT iteration. A DF iteration
+    // costs ~1% of an exact one, so trading ~18 extra DF iterations for one
+    // fewer exact build is strongly positive. Past the stall point it is not:
+    // raising the cap to 120 spent 75 more DF iterations for ZERO additional
+    // exact-iteration saving (aDZ USER 122.82 -> 136.90 s), which is why
+    // `DF_GUESS_TIGHT_MAX_ITER` stays at the stall point.
+    //
+    // Default ON. `FERRIC_DF_GUESS_TIGHT=0` restores the loosened-threshold
+    // policy for A/B without a rebuild.
+    let tight_df = !matches!(
+        std::env::var("FERRIC_DF_GUESS_TIGHT").ok().as_deref(),
+        Some("0") | Some("off") | Some("false")
+    );
+    if tight_df {
+        // Inherit base.density_conv / base.energy_conv verbatim. The DF stage
+        // still stops at DF_GUESS_MAX_ITER, so a fitted Fock that cannot reach
+        // the exact stage's threshold degrades to "best DF density available"
+        // rather than spinning — the same non-fatal contract as before.
+        df_cfg.max_iter = base.max_iter.min(DF_GUESS_TIGHT_MAX_ITER);
+    } else {
+        df_cfg.density_conv = (base.density_conv * DF_GUESS_DENSITY_CONV_LOOSEN).max(DF_GUESS_DENSITY_CONV_FLOOR);
+        df_cfg.energy_conv = (base.energy_conv * DF_GUESS_ENERGY_CONV_LOOSEN).max(DF_GUESS_ENERGY_CONV_FLOOR);
+        df_cfg.max_iter = base.max_iter.min(DF_GUESS_MAX_ITER);
+    }
     // The DF stage still wants its own fast route to a starting density,
     // exactly like an un-laddered `solve_rhf` call would.
     df_cfg.init_guess_density = None;

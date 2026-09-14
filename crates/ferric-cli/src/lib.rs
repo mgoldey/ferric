@@ -903,8 +903,30 @@ fn run_rimp2(
     );
     println!("  nbasis     = {}", prep.nbasis());
     println!("  RHF energy = {:.10} Hartree", result.energy);
+    // SCF iteration count AND convergence state. Their previous absence was
+    // actively harmful, not merely unhelpful: `solve_rhf` returns `Ok` on a
+    // `MaxIter` exit carrying a best-effort density, so a run that never
+    // converged printed an energy that LOOKED right (the density is close, so
+    // the energy agrees to ~5e-10) with nothing to distinguish it from a
+    // converged one. That hole produced two wrong performance diagnoses: an
+    // integral-precision ramp measured as "6.5x slower" was in fact spinning to
+    // max_iter — 100 iterations against the baseline's 12 — while reporting a
+    // perfectly plausible energy. A wall time is uninterpretable unless the
+    // iteration count is printed beside it.
+    println!(
+        "  SCF iters  = {}{}",
+        result.iterations,
+        if result.converged { "" } else { "  *** NOT CONVERGED ***" }
+    );
     println!("  MP2 corr   = {:.10} Hartree", mp2_result.mp2_corr);
     println!("  Total      = {:.10} Hartree", mp2_result.total_energy);
+    if !result.converged {
+        eprintln!(
+            "warning: SCF did not converge (exit {:?} after {} iterations) — the correlation \
+             energy above is built on an unconverged reference and must not be quoted",
+            result.exit, result.iterations
+        );
+    }
 }
 
 /// `method.kind = "mp3"`. Extracted verbatim from the former `main()`
