@@ -88,6 +88,13 @@ extern "C" {
     pub fn scf_engine_create_terf_2center(r0: c_double, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double, table_dir: *const c_char) -> *mut c_void;
     pub fn scf_compute_terf_eri3(eng: *mut c_void, obs: *const c_void, dfbs: *const c_void, shP: c_int, sh1: c_int, sh2: c_int, out: *mut c_double) -> c_int;
     pub fn scf_compute_terf_eri2(eng: *mut c_void, dfbs: *const c_void, shP: c_int, shQ: c_int, out: *mut c_double) -> c_int;
+    // 4-center terfc/terf quartets (sh1 sh2|op|sh3 sh4), all four shells from `obs`.
+    // These are what Schwarz/CSB need to build a (PQ|PQ) table for terfc.
+    pub fn scf_compute_terfc_eri4(eng: *mut c_void, obs: *const c_void, sh1: c_int, sh2: c_int, sh3: c_int, sh4: c_int, out: *mut c_double) -> c_int;
+    pub fn scf_compute_terf_eri4(eng: *mut c_void, obs: *const c_void, sh1: c_int, sh2: c_int, sh3: c_int, sh4: c_int, out: *mut c_double) -> c_int;
+    // Validation hook: the same 4-center MD path with the plain Coulomb kernel,
+    // for cross-checking the new contraction against libint2's own quartet.
+    pub fn scf_debug_coulomb_eri4(obs: *const c_void, sh1: c_int, sh2: c_int, sh3: c_int, sh4: c_int, out: *mut c_double) -> c_int;
     pub fn scf_compute_dipole(
         bs: *const c_void,
         origin: *const c_double,

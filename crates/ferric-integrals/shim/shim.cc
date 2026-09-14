@@ -1734,6 +1734,228 @@ bool compute_cart_eri2(const Shell &shP, const Shell &shQ,
     return any;
 }
 
+// 4-center quartet (a b | c d): both sides are GENUINE Gaussian pairs.
+//
+// compute_cart_eri3 is the special case of this routine in which the bra side
+// is a degenerate pair (exponent 0.0 partner, same center twice, lB=0) -- the
+// "phantom" aux Gaussian. Here both sides call the full 4-argument
+// build_hermite_E, so the bra pair (A,B) has exponent p = a+b and Gaussian
+// product center P, and the ket pair (C,D) has q = c+d and center Q.
+//
+// build_hermite_R is already general in Ltot -- it is called here with
+// Ltot = lA+lB+lC+lD instead of lP+lA+lB, nothing else changes.
+//
+// Output layout row-major [ncA][ncB][ncC][ncD] (A slowest, D fastest), matching
+// the eri3 convention of "bra index slowest".
+//
+// tables/r0/omega used only when use_boys==false (terf path).
+// Returns false if every primitive contribution was screened out of the tables.
+// True when a quartet's total angular momentum exceeds the m-depth stored in
+// the terf tables (and the Fn stack buffer sized to match). Entry points call
+// this BEFORE computing so they can return a negative status; compute_cart_eri4
+// itself can only answer `false`, which means "screened" to its callers.
+inline bool eri4_Ltot_exceeds_tables(const Shell &shA, const Shell &shB,
+                                     const Shell &shC, const Shell &shD) {
+    return shA.contr[0].l + shB.contr[0].l + shC.contr[0].l + shD.contr[0].l >=
+           TERFC_DIMM;
+}
+
+bool compute_cart_eri4(const Shell &shA, const Shell &shB,
+                       const Shell &shC, const Shell &shD,
+                       const TerfcTableSet *tables, double omega, double r0,
+                       bool use_boys, std::vector<double> &out_cart) {
+    const int lA = shA.contr[0].l;
+    const int lB = shB.contr[0].l;
+    const int lC = shC.contr[0].l;
+    const int lD = shD.contr[0].l;
+    const int Ltot = lA + lB + lC + lD;
+    const int ncA = ncart_of(lA), ncB = ncart_of(lB);
+    const int ncC = ncart_of(lC), ncD = ncart_of(lD);
+    out_cart.assign((size_t)ncA * ncB * ncC * ncD, 0.0);
+
+    // Fn is a fixed-size stack buffer of TERFC_DIMM entries; a quartet whose
+    // total angular momentum exceeds it would overrun. Callers MUST pre-check
+    // with eri4_Ltot_exceeds_tables() and return a negative status, because the
+    // `false` return here is indistinguishable from "fully screened" and would
+    // otherwise hand back zeros for a quartet that is merely too high-L -- a
+    // silently wrong Schwarz bound rather than an error. This is a belt-and-
+    // braces stop, not the reporting path. (Ltot <= 23 covers l <= 5 on all
+    // four shells; eri3/eri2 need no such guard as lP+lA+lB cannot reach 24.)
+    if (Ltot >= TERFC_DIMM) return false;
+
+    std::vector<std::array<int, 3>> compA, compB, compC, compD;
+    cart_components(lA, compA);
+    cart_components(lB, compB);
+    cart_components(lC, compC);
+    cart_components(lD, compD);
+
+    const auto &AO = shA.O;
+    const auto &BO = shB.O;
+    const auto &CO = shC.O;
+    const auto &DO = shD.O;
+
+    const double omega2 = omega * omega;
+    const double r02 = r0 * r0;
+    bool any = false;
+
+    // Bra pair (a,b) -> p, P; ket pair (c,d) -> q, Q.
+    for (size_t pa = 0; pa < shA.alpha.size(); ++pa) {
+        const double a = shA.alpha[pa];
+        const double ca = shA.contr[0].coeff[pa];
+        for (size_t pb = 0; pb < shB.alpha.size(); ++pb) {
+            const double b = shB.alpha[pb];
+            const double cb = shB.contr[0].coeff[pb];
+            const double p = a + b;
+            const double Px = (a * AO[0] + b * BO[0]) / p;
+            const double Py = (a * AO[1] + b * BO[1]) / p;
+            const double Pz = (a * AO[2] + b * BO[2]) / p;
+            // NOTE: the Gaussian-product factor exp(-(ab/p)|A-B|^2) is already
+            // carried by the Hermite E-coefficients below; do NOT multiply it
+            // in again here (same caveat as compute_cart_eri3).
+            const double cab = ca * cb;
+
+            // Hermite E-coefficients for the bra pair, hoisted out of the ket
+            // loops exactly as eri3 hoists its obs-pair E's out of the aux loop.
+            HermiteE Ex, Ey, Ez;
+            build_hermite_E(a, b, AO[0], BO[0], lA, lB, Ex);
+            build_hermite_E(a, b, AO[1], BO[1], lA, lB, Ey);
+            build_hermite_E(a, b, AO[2], BO[2], lA, lB, Ez);
+
+            for (size_t pc = 0; pc < shC.alpha.size(); ++pc) {
+                const double c = shC.alpha[pc];
+                const double cc = shC.contr[0].coeff[pc];
+                for (size_t pd = 0; pd < shD.alpha.size(); ++pd) {
+                    const double d = shD.alpha[pd];
+                    const double cd = shD.contr[0].coeff[pd];
+                    const double q = c + d;
+                    const double Qx = (c * CO[0] + d * DO[0]) / q;
+                    const double Qy = (c * CO[1] + d * DO[1]) / q;
+                    const double Qz = (c * CO[2] + d * DO[2]) / q;
+                    const double ccd = cc * cd;
+
+                    HermiteE ECx, ECy, ECz;
+                    build_hermite_E(c, d, CO[0], DO[0], lC, lD, ECx);
+                    build_hermite_E(c, d, CO[1], DO[1], lC, lD, ECy);
+                    build_hermite_E(c, d, CO[2], DO[2], lC, lD, ECz);
+
+                    // theta2 = Coulomb reduced exponent (p q/(p+q)); phi2 folds
+                    // in 1/omega^2 for the terf piece. Identical operator
+                    // decomposition as eri3/eri2 -- see terf_aux().
+                    const double theta2 = p * q / (p + q);
+                    const double PQx = Px - Qx;
+                    const double PQy = Py - Qy;
+                    const double PQz = Pz - Qz;
+                    const double PQ2 = PQx * PQx + PQy * PQy + PQz * PQz;
+
+                    double alpha_R;             // reduced exponent for build_hermite_R
+                    double Fn[TERFC_DIMM];      // Boys / terf-aux vector
+                    if (use_boys) {
+                        alpha_R = theta2;
+                        boys_upto(Ltot, theta2 * PQ2 /* Boys T */, Fn);
+                    } else {
+                        // phi^2 = 1/(1/p + 1/q + 1/omega^2)
+                        //       = theta2*omega2/(theta2+omega2)
+                        const double phi2 = theta2 * omega2 / (theta2 + omega2);
+                        const double S = phi2 * PQ2;
+                        const double s = phi2 * r02;
+                        const double phi_over_theta = std::sqrt(phi2 / theta2);
+                        // terf_aux always succeeds (table interp, or exact
+                        // series for far-field S > 20); the guard is defensive
+                        // only. Skipping here would leave the full Coulomb
+                        // value un-subtracted (terf -> 1/r at large r, NOT
+                        // negligible).
+                        if (!terf_aux(*tables, S, s, phi_over_theta, Ltot, Fn)) {
+                            continue;
+                        }
+                        alpha_R = phi2;
+                    }
+
+                    // Standard MD two-pair prefactor. eri3 uses the identical
+                    // expression with its aux exponent playing the role of the
+                    // bra pair exponent -- it is the p<->aux special case of
+                    // this, so it carries over unchanged.
+                    const double pref =
+                        2.0 * std::pow(M_PI, 2.5) / (p * q * std::sqrt(p + q));
+                    const double scale = pref * cab * ccd;
+
+                    HermiteR R;
+                    build_hermite_R(Ltot, alpha_R, PQx, PQy, PQz, Fn, R);
+                    any = true;
+
+                    // (a b | c d) = scale *
+                    //   sum_{tuv} Eab_{tuv} * sum_{t'u'v'} Ecd_{t'u'v'}
+                    //     * (-1)^{t'+u'+v'} * R_{t+t', u+u', v+v'}
+                    //
+                    // SIGN CONVENTION: the (-1)^{t'+u'+v'} belongs to the KET
+                    // (C,D) side, i.e. the side that is SUBTRACTED in
+                    // PQ = P - Q. Evidence: compute_cart_eri2 has genuine
+                    // (phantom-pair) Hermite sets on both sides with the same
+                    // PQ = P_bra - Q_ket convention, and puts the sign on the
+                    // (tq,uq,vq) = Q indices; compute_cart_eri3 uses
+                    // PQ = P_aux - Q_obspair and puts the sign on the obs-pair
+                    // (t,u,v) indices -- again the subtracted side. Both agree,
+                    // so the ket carries the sign here.
+                    for (int ia = 0; ia < ncA; ++ia) {
+                        const int ax = compA[ia][0], ay = compA[ia][1], az = compA[ia][2];
+                        for (int ib = 0; ib < ncB; ++ib) {
+                            const int bx = compB[ib][0], by = compB[ib][1], bz = compB[ib][2];
+                            for (int ic = 0; ic < ncC; ++ic) {
+                                const int cx = compC[ic][0], cy = compC[ic][1],
+                                          cz = compC[ic][2];
+                                for (int id = 0; id < ncD; ++id) {
+                                    const int dx = compD[id][0], dy = compD[id][1],
+                                              dz = compD[id][2];
+                                    double sum = 0.0;
+                                    for (int t = 0; t <= ax + bx; ++t) {
+                                        const double ex = Ex.at(ax, bx, t);
+                                        if (ex == 0.0) continue;
+                                        for (int u = 0; u <= ay + by; ++u) {
+                                            const double ey = Ey.at(ay, by, u);
+                                            if (ey == 0.0) continue;
+                                            for (int v = 0; v <= az + bz; ++v) {
+                                                const double ez = Ez.at(az, bz, v);
+                                                if (ez == 0.0) continue;
+                                                const double eab = ex * ey * ez;
+                                                for (int tc = 0; tc <= cx + dx; ++tc) {
+                                                    const double ecx = ECx.at(cx, dx, tc);
+                                                    if (ecx == 0.0) continue;
+                                                    for (int uc = 0; uc <= cy + dy; ++uc) {
+                                                        const double ecy =
+                                                            ECy.at(cy, dy, uc);
+                                                        if (ecy == 0.0) continue;
+                                                        for (int vc = 0; vc <= cz + dz;
+                                                             ++vc) {
+                                                            const double ecz =
+                                                                ECz.at(cz, dz, vc);
+                                                            if (ecz == 0.0) continue;
+                                                            const double ecd =
+                                                                ecx * ecy * ecz;
+                                                            const double sgn =
+                                                                ((tc + uc + vc) & 1)
+                                                                    ? -1.0
+                                                                    : 1.0;
+                                                            sum += eab * ecd * sgn *
+                                                                   R.at(t + tc, u + uc,
+                                                                        v + vc);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    out_cart[(((size_t)ia * ncB + ib) * ncC + ic) * ncD +
+                                             id] += scale * sum;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return any;
+}
+
 // Apply libint2 cart->pure transform on one axis of a 3-index block.
 // in_block: row-major [ncart_axis][rest]; out_block: [npure_axis][rest].
 inline void tform_axis(int L, int rest, const std::vector<double> &in,
@@ -1857,6 +2079,88 @@ void transform_cart_to_pure2(const Shell &shP, const Shell &shQ,
     }
 }
 
+// 4-center: transform [ncA][ncB][ncC][ncD] -> [nA][nB][nC][nD], axis by axis,
+// matching each shell's own pure/cartesian flag. Same strategy as
+// transform_cart_to_pure3, with one more middle axis.
+void transform_cart_to_pure4(const Shell &shA, const Shell &shB,
+                             const Shell &shC, const Shell &shD,
+                             const std::vector<double> &cart,
+                             std::vector<double> &pureout) {
+    const int lA = shA.contr[0].l, lB = shB.contr[0].l;
+    const int lC = shC.contr[0].l, lD = shD.contr[0].l;
+    const bool puA = shA.contr[0].pure, puB = shB.contr[0].pure;
+    const bool puC = shC.contr[0].pure, puD = shD.contr[0].pure;
+    const int ncA = ncart_of(lA), ncB = ncart_of(lB);
+    const int ncC = ncart_of(lC), ncD = ncart_of(lD);
+    const int nA = puA ? npure_of(lA) : ncA;
+    const int nB = puB ? npure_of(lB) : ncB;
+    const int nC = puC ? npure_of(lC) : ncC;
+    const int nD = puD ? npure_of(lD) : ncD;
+
+    // Axis A (outermost): one tform_axis pass with rest = ncB*ncC*ncD.
+    std::vector<double> tmp1;  // [nA][ncB][ncC][ncD]
+    if (puA && lA >= 1) {
+        tform_axis(lA, ncB * ncC * ncD, cart, tmp1);
+    } else {
+        tmp1 = cart;
+    }
+
+    // Axis B: for each of the nA outer blocks, transform [ncB][ncC*ncD].
+    std::vector<double> tmp2;  // [nA][nB][ncC][ncD]
+    if (puB && lB >= 1) {
+        tmp2.assign((size_t)nA * nB * ncC * ncD, 0.0);
+        std::vector<double> sub_in((size_t)ncB * ncC * ncD), sub_out;
+        for (int ia = 0; ia < nA; ++ia) {
+            for (int i = 0; i < ncB * ncC * ncD; ++i)
+                sub_in[i] = tmp1[((size_t)ia * ncB * ncC * ncD) + i];
+            tform_axis(lB, ncC * ncD, sub_in, sub_out);
+            for (int i = 0; i < nB * ncC * ncD; ++i)
+                tmp2[((size_t)ia * nB * ncC * ncD) + i] = sub_out[i];
+        }
+    } else {
+        tmp2 = tmp1;
+    }
+
+    // Axis C: for each of the nA*nB outer blocks, transform [ncC][ncD].
+    std::vector<double> tmp3;  // [nA][nB][nC][ncD]
+    if (puC && lC >= 1) {
+        tmp3.assign((size_t)nA * nB * nC * ncD, 0.0);
+        std::vector<double> sub_in((size_t)ncC * ncD), sub_out;
+        const int nouter = nA * nB;
+        for (int ob = 0; ob < nouter; ++ob) {
+            for (int i = 0; i < ncC * ncD; ++i)
+                sub_in[i] = tmp2[((size_t)ob * ncC * ncD) + i];
+            tform_axis(lC, ncD, sub_in, sub_out);
+            for (int i = 0; i < nC * ncD; ++i)
+                tmp3[((size_t)ob * nC * ncD) + i] = sub_out[i];
+        }
+    } else {
+        tmp3 = tmp2;
+    }
+
+    // Axis D (innermost): [nA*nB*nC][ncD] -> [nA*nB*nC][nD].
+    if (puD && lD >= 1) {
+        pureout.assign((size_t)nA * nB * nC * nD, 0.0);
+        const int nrows = nA * nB * nC;
+        const auto &coefs =
+            libint2::solidharmonics::SolidHarmonicsCoefficients<double>::instance(lD);
+        for (int row = 0; row < nrows; ++row) {
+            const double *src = &tmp3[(size_t)row * ncD];
+            double *dst = &pureout[(size_t)row * nD];
+            for (int s = 0; s < nD; ++s) {
+                const auto nc = coefs.nnz(s);
+                const auto *cidx = coefs.row_idx(s);
+                const auto *cval = coefs.row_values(s);
+                double acc = 0.0;
+                for (int ic = 0; ic < nc; ++ic) acc += cval[ic] * src[cidx[ic]];
+                dst[s] = acc;
+            }
+        }
+    } else {
+        pureout = tmp3;
+    }
+}
+
 } // anonymous namespace
 
 /* TEMP DEBUG (milestone validation only; remove before Task 2). Loads tables
@@ -1910,6 +2214,44 @@ extern "C" int scf_terfc_debug_coulomb_eri3(const scf_basis *obs,
         int n = dfbs->nfunc[shP] * obs->nfunc[sh1] * obs->nfunc[sh2];
         std::vector<double> pureout;
         transform_cart_to_pure3(shPsh, shAsh, shBsh, cart, pureout);
+        if ((int)pureout.size() != n) return SCF_EINTERNAL;
+        for (int i = 0; i < n; ++i) out[i] = pureout[i];
+        return n;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+/* Validation hook: the 4-center MD path run with the plain Coulomb kernel
+ * (use_boys=true, no tables), so it can be compared quartet-for-quartet against
+ * libint2's own scf_compute_eri_quartet. This is THE check that validates the
+ * new contraction -- the ket-side (-1)^(t+u+v) sign, the 2*pi^2.5/(p q sqrt(p+q))
+ * prefactor, the [n1][n2][n3][n4] layout and the four-axis solid-harmonic
+ * transform -- against an independent implementation. terf+terfc==coulomb cannot
+ * do that job: both sides share this machinery, so an error cancels.
+ * Writes n1*n2*n3*n4 doubles; returns that count, or a negative SCF_E* code. */
+extern "C" int scf_debug_coulomb_eri4(const scf_basis *obs, int sh1, int sh2,
+                                      int sh3, int sh4, double *out) {
+    try {
+        if (!obs || !out) return SCF_EINVAL;
+        const Shell &shAsh = obs->bs[sh1];
+        const Shell &shBsh = obs->bs[sh2];
+        const Shell &shCsh = obs->bs[sh3];
+        const Shell &shDsh = obs->bs[sh4];
+        if (eri4_Ltot_exceeds_tables(shAsh, shBsh, shCsh, shDsh)) {
+            return SCF_EINVAL;
+        }
+        const int n = obs->nfunc[sh1] * obs->nfunc[sh2] * obs->nfunc[sh3] *
+                      obs->nfunc[sh4];
+        std::vector<double> cart;
+        const bool any = compute_cart_eri4(shAsh, shBsh, shCsh, shDsh, nullptr,
+                                           0.0, 0.0, /*use_boys=*/true, cart);
+        if (!any) {
+            for (int i = 0; i < n; ++i) out[i] = 0.0;
+            return n;  // genuinely screened; libint2 should agree it is ~0
+        }
+        std::vector<double> pureout;
+        transform_cart_to_pure4(shAsh, shBsh, shCsh, shDsh, cart, pureout);
         if ((int)pureout.size() != n) return SCF_EINTERNAL;
         for (int i = 0; i < n; ++i) out[i] = pureout[i];
         return n;
@@ -2124,6 +2466,61 @@ extern "C" int scf_compute_terf_eri3(scf_engine *eng, const scf_basis *obs,
     }
 }
 
+extern "C" int scf_compute_terfc_eri4(scf_engine *eng, const scf_basis *obs,
+                                      int sh1, int sh2, int sh3, int sh4,
+                                      double *out) {
+    try {
+        if (!eng || !eng->is_terfc || !eng->terfc_tables) return SCF_EINVAL;
+        if (!obs || !out) return SCF_EINVAL;
+        // All four shells come from the orbital basis: a (PQ|PQ) Schwarz /
+        // CSB quartet is drawn from ONE basis, so there is no dfbs argument.
+        const Shell &shAsh = obs->bs[sh1];
+        const Shell &shBsh = obs->bs[sh2];
+        const Shell &shCsh = obs->bs[sh3];
+        const Shell &shDsh = obs->bs[sh4];
+        // Too-high total L is a refusal, not a screened block: returning zeros
+        // here would understate a Schwarz/CSB bound instead of reporting a gap.
+        if (eri4_Ltot_exceeds_tables(shAsh, shBsh, shCsh, shDsh)) {
+            return SCF_EINVAL;
+        }
+
+        // terfc = coulomb - terf. Both use the identical MD machinery (same
+        // ordering, prefactor, normalisation, cart->pure transform), so the
+        // subtraction is valid element-by-element in the Cartesian basis.
+        std::vector<double> cart_coul, cart_terf;
+        bool any_c = compute_cart_eri4(shAsh, shBsh, shCsh, shDsh, nullptr,
+                                       eng->omega, eng->r0, /*use_boys=*/true,
+                                       cart_coul);
+        bool any_t = compute_cart_eri4(shAsh, shBsh, shCsh, shDsh,
+                                       eng->terfc_tables.get(), eng->omega,
+                                       eng->r0, /*use_boys=*/false, cart_terf);
+        int n1 = obs->nfunc[sh1];
+        int n2 = obs->nfunc[sh2];
+        int n3 = obs->nfunc[sh3];
+        int n4 = obs->nfunc[sh4];
+        int n = n1 * n2 * n3 * n4;
+        if (!any_c && !any_t) {
+            for (int i = 0; i < n; ++i) out[i] = 0.0;
+            return 0;  // fully screened
+        }
+        // Form the Cartesian difference (terf may screen where Coulomb doesn't;
+        // treat a screened piece as an all-zero block of the right size).
+        std::vector<double> cart(cart_coul.size(), 0.0);
+        if (any_c) cart = cart_coul;
+        if (any_t) {
+            if (cart_terf.size() != cart.size()) return SCF_EINTERNAL;
+            for (size_t i = 0; i < cart.size(); ++i) cart[i] -= cart_terf[i];
+        }
+        std::vector<double> pureout;
+        transform_cart_to_pure4(shAsh, shBsh, shCsh, shDsh, cart, pureout);
+        if ((int)pureout.size() != n) return SCF_EINTERNAL;
+        for (int i = 0; i < n; ++i) out[i] = pureout[i];
+        return n;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
 extern "C" int scf_compute_terf_eri2(scf_engine *eng, const scf_basis *dfbs,
                                      int shP, int shQ, double *out) {
     try {
@@ -2147,6 +2544,49 @@ extern "C" int scf_compute_terf_eri2(scf_engine *eng, const scf_basis *dfbs,
         }
         std::vector<double> pureout;
         transform_cart_to_pure2(shPsh, shQsh, cart_terf, pureout);
+        if ((int)pureout.size() != n) return SCF_EINTERNAL;
+        for (int i = 0; i < n; ++i) out[i] = pureout[i];
+        return n;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+extern "C" int scf_compute_terf_eri4(scf_engine *eng, const scf_basis *obs,
+                                     int sh1, int sh2, int sh3, int sh4,
+                                     double *out) {
+    try {
+        if (!eng || !eng->is_terfc || !eng->is_terf_complement || !eng->terfc_tables) {
+            return SCF_EINVAL;
+        }
+        if (!obs || !out) return SCF_EINVAL;
+        const Shell &shAsh = obs->bs[sh1];
+        const Shell &shBsh = obs->bs[sh2];
+        const Shell &shCsh = obs->bs[sh3];
+        const Shell &shDsh = obs->bs[sh4];
+        // Too-high total L is a refusal, not a screened block: returning zeros
+        // here would understate a Schwarz/CSB bound instead of reporting a gap.
+        if (eri4_Ltot_exceeds_tables(shAsh, shBsh, shCsh, shDsh)) {
+            return SCF_EINVAL;
+        }
+
+        // terf is the SAME Cartesian block terfc subtracts from Coulomb --
+        // return it directly (no combine), so terf + terfc = coulomb exactly.
+        std::vector<double> cart_terf;
+        bool any_t = compute_cart_eri4(shAsh, shBsh, shCsh, shDsh,
+                                       eng->terfc_tables.get(), eng->omega,
+                                       eng->r0, /*use_boys=*/false, cart_terf);
+        int n1 = obs->nfunc[sh1];
+        int n2 = obs->nfunc[sh2];
+        int n3 = obs->nfunc[sh3];
+        int n4 = obs->nfunc[sh4];
+        int n = n1 * n2 * n3 * n4;
+        if (!any_t) {
+            for (int i = 0; i < n; ++i) out[i] = 0.0;
+            return 0;  // fully screened
+        }
+        std::vector<double> pureout;
+        transform_cart_to_pure4(shAsh, shBsh, shCsh, shDsh, cart_terf, pureout);
         if ((int)pureout.size() != n) return SCF_EINTERNAL;
         for (int i = 0; i < n; ++i) out[i] = pureout[i];
         return n;
