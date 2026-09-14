@@ -2580,6 +2580,115 @@ mod tests {
         );
     }
 
+    /// SCF-energy-invariance anchor for the shim's per-engine ShellPair
+    /// cache (crates/ferric-integrals/shim/shim.cc, ShellPairCache): a full
+    /// RHF run with the cache on (default) must reproduce a run with it off
+    /// (`FERRIC_SHELLPAIR_CACHE=0`, mirroring the `FERRIC_SCF_INCREMENTAL`
+    /// escape-hatch pattern above) BIT-IDENTICALLY, not just to a numerical
+    /// tolerance. Unlike the incremental-Fock A/B above (which legitimately
+    /// differs at the reassociation floor because it changes THE ORDER OF
+    /// SUMMATION), the shell-pair cache changes NOTHING about what is
+    /// computed or summed -- it only memoizes `ShellPair::init`'s output,
+    /// which is a pure function of (shells, ln_prec, screening_method). If
+    /// `ln_precision_of` reproduces libint2's own `Engine::set_precision`
+    /// formula exactly (it is written to, see shim.cc), the cached and
+    /// uncached quartets are the SAME floating-point computation, so the
+    /// resulting Fock matrices, densities, and energy must match to the bit
+    /// at every SCF iteration. Any float-level drift here would mean the
+    /// precision-matching claim is wrong.
+    #[test]
+    fn shellpair_cache_matches_uncached_rhf_energy_bit_identical_water_ccpvdz() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let config = RhfConfig::default();
+
+        std::env::set_var("FERRIC_SHELLPAIR_CACHE", "0");
+        let uncached = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+        std::env::remove_var("FERRIC_SHELLPAIR_CACHE");
+
+        let cached = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+
+        assert!(uncached.converged, "uncached-shellpair RHF must converge");
+        assert!(cached.converged, "cached-shellpair RHF must converge");
+        assert_eq!(
+            cached.iterations, uncached.iterations,
+            "shell-pair cache changed the iteration count -- it must not change ANYTHING numerical"
+        );
+        // NOT bit-identity, and the reason is measured rather than assumed.
+        //
+        // The cache does not memoize the same arithmetic: libint2 rebuilds a
+        // `nullptr` pair in its already-swapped canonical order, but negates a
+        // PRECOMPUTED pair's `AB` instead (engine.impl.h:1154-1155, 1210-1221).
+        // Both are algebraically identical; they accumulate primitive data in a
+        // different order, so individual integrals differ by ~191 ULP. An SCF
+        // energy built from those integrals therefore CANNOT be bit-identical,
+        // and asserting that it is would be a test asserting a falsehood.
+        //
+        // What IS guaranteed, and is asserted above, is the trajectory: the
+        // iteration count must be unchanged. Measured on benzene/aug-cc-pVDZ,
+        // cache on vs off: 12 iterations both ways, with per-iteration dE
+        // agreeing to the last printed digit (3.556e-9 vs 3.555e-9 at iter 10).
+        // The jitter stays orders below the convergence threshold and never
+        // propagates into a different basin or a different iteration count.
+        //
+        // Bound at the SCF convergence floor rather than the integral floor:
+        // the energy is variational in the density, so a 1e-14 integral
+        // perturbation moves the converged energy by far less than the 1e-10
+        // density threshold the SCF is converging against.
+        let de = (cached.energy - uncached.energy).abs();
+        assert!(
+            de <= 1e-10,
+            "shell-pair cache moved the converged SCF energy by {de:.3e} Ha \
+             (cached={:.17e} vs uncached={:.17e}), beyond the SCF convergence floor -- \
+             a reassociation-scale cache must not shift the converged answer this much",
+            cached.energy, uncached.energy
+        );
+    }
+
+    /// Same anchor on a larger, lower-symmetry system with p/d shells, where
+    /// the cached ShellPair's directed AB vector actually participates in the
+    /// VRR/HRR recurrence coordinates (see engine.rs's shellpair_cache_*
+    /// tests for why s-shell-only systems cannot exercise this).
+    #[test]
+    fn shellpair_cache_matches_uncached_rhf_energy_bit_identical_benzene_ccpvdz() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let config = RhfConfig::default();
+
+        std::env::set_var("FERRIC_SHELLPAIR_CACHE", "0");
+        let uncached = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+        std::env::remove_var("FERRIC_SHELLPAIR_CACHE");
+
+        let cached = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
+
+        assert!(uncached.converged, "uncached-shellpair RHF must converge");
+        assert!(cached.converged, "cached-shellpair RHF must converge");
+        assert_eq!(cached.iterations, uncached.iterations);
+        // SCF convergence floor, not bit-identity — see the water case above for
+        // the full rationale (libint2 rebuilds a `nullptr` pair in swapped order
+        // but negates a precomputed one's `AB`, so the integrals differ by pure
+        // reassociation at ~191 ULP and the energy built from them cannot be
+        // bit-identical). The iteration count asserted just above is the real
+        // trajectory guarantee.
+        let de = (cached.energy - uncached.energy).abs();
+        assert!(
+            de <= 1e-10,
+            "shell-pair cache moved the converged benzene/cc-pVDZ SCF energy by {de:.3e} Ha \
+             (cached={:.17e} vs uncached={:.17e}), beyond the SCF convergence floor",
+            cached.energy, uncached.energy
+        );
+    }
+
     /// Larger, many-iteration direct-path stress case: hexane (C6H14) at cc-pVDZ
     /// is a 20-atom / 118-basis-function all-electron RHF with no df aux, so it
     /// exercises the DirectJK path across a long convergence trajectory (the

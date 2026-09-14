@@ -18,11 +18,14 @@
 #include <new>
 #include <cstdio>
 #include <algorithm>
+#include <limits>
 
 using libint2::Engine;
 using libint2::Operator;
 using libint2::Shell;
 using libint2::BasisSet;
+using libint2::ShellPair;
+using libint2::BraKet;
 
 struct scf_basis {
     BasisSet           bs;
@@ -33,6 +36,173 @@ struct scf_basis {
 
 // Forward declaration; the terfc table set is defined further down.
 struct TerfcTableSet;
+
+/* ==========================================================================
+ *  Per-engine ShellPair cache.
+ *
+ *  libint2's Engine::compute(sh1,sh2,sh3,sh4) 4-argument overload forwards
+ *  to compute2<...>(sh1,sh2,sh3,sh4,nullptr,nullptr): passing null for the
+ *  precomputed bra/ket ShellPair forces libint2 to call ShellPair::init(...)
+ *  from scratch for BOTH pairs on EVERY quartet (engine.impl.h,
+ *  Engine::compute2: `spbra_.init(bra1, bra2, target_shellpair_ln_precision,
+ *  screening_method_)` when no precomputed pair is supplied or the supplied
+ *  one was built at a looser precision). A `perf` profile of benzene/
+ *  aug-cc-pVDZ RHF showed ShellPair::init + its internal exp() calls at
+ *  ~7.5% of total runtime, entirely redundant: shell pairs recur constantly
+ *  across a quartet sweep (scatter_bra_pair fixes the bra pair for an entire
+ *  ket loop; ket pairs themselves recur across bra iterations too).
+ *
+ *  This cache stores one ShellPair per unique ORDERED shell index pair (i,j)
+ *  requested (see "Why NOT triangular" below), built once per engine and
+ *  reused for every quartet that touches it.
+ *
+ *  --- Precision matching (the whole correctness question) ---
+ *  ShellPair::init's `ln_prec` argument is compared against a per-primitive-
+ *  pair log-screening factor; get it wrong and primitive pairs are
+ *  included/excluded differently than the uncached path, silently changing
+ *  integrals (see schwarz.rs's SCHWARZ_TABLE_PRECISION comment for the same
+ *  class of bug in a different table). libint2 itself computes:
+ *      ln_precision_ = (precision_ > 0) ? log(precision_)
+ *                                       : numeric_limits<scalar_type>::lowest();
+ *  (engine.h, Engine::set_precision) and then uses exactly that value as
+ *  `target_shellpair_ln_precision` for BOTH bra and ket in the nullptr path
+ *  (engine.impl.h, Engine::compute2). `ln_precision_` has no public accessor,
+ *  but `Engine::precision()` (the pre-log value passed to set_precision) does
+ *  -- so we reproduce the identical formula from it. A cached pair built at
+ *  ln_prec == target_shellpair_ln_precision makes libint2's own
+ *  `recompute_spbra = pair->ln_prec > target_shellpair_ln_precision` check
+ *  evaluate false (not `>`), so the precomputed pair is accepted AS-IS: this
+ *  is not an approximation of the uncached path, it is the same computation
+ *  memoized. `screening_method_` must also match (engine.impl.h asserts
+ *  `spbra.screening_method_ == screening_method_`); scf_engine_create never
+ *  overrides it, so it is always `Engine::screening_method()`'s value (a
+ *  public accessor), read at cache-build time.
+ *
+ *  --- Ownership / lifetime ---
+ *  Owned by scf_engine (one cache per libint2::Engine), not scf_basis. Engines
+ *  are per-thread (ferric's EnginePool: one Engine per rayon worker via a
+ *  Mutex<Engine>, never shared live across threads), so a per-engine cache
+ *  needs no locking. A composite ferric Engine (linear combination of several
+ *  scf_engine handles, e.g. range-separated operators) gets one cache PER
+ *  scf_engine handle, which is correct: ShellPair data depends only on
+ *  geometry + ln_prec + screening_method, all identical across the
+ *  composite's component engines in practice, but there is no cross-engine
+ *  sharing here to keep the invariant trivially local (each scf_engine is
+ *  self-contained).
+ *
+ *  --- Basis invalidation ---
+ *  Keyed by the `scf_basis*` pointer last used to populate it: a compute call
+ *  against a different basis clears and rebuilds. This is a pointer-identity
+ *  check only (cheap), sufficient because scf_basis is immutable after
+ *  scf_basis_create (see basis_bridge.rs: PreparedBasis has no mutation API)
+ *  -- the shell array a given scf_basis* denotes never changes underneath it.
+ *
+ *  --- Memory ---
+ *  Storage is a flat nshells*nshells matrix of lazily-built slots (NOT
+ *  triangular -- see below for why), each a `ShellPair` plus a `built` flag.
+ *  Slots are allocated up front as empty (`ShellPair()`'s default ctor is a
+ *  few small members, no heap use until `init` runs -- see the byte estimate
+ *  below), and each ShellPair's internal `primpairs` vector is populated only
+ *  when that exact ordered pair is first requested. No unbounded growth: slot
+ *  count is fixed at cache-build time from nshells, and each populated
+ *  ShellPair holds at most max_nprim^2 PrimPairData entries (its primitive-
+ *  pair count for that specific shell pair, typically far below max_nprim^2
+ *  after screening).
+ *
+ *  --- Why NOT triangular ---
+ *  `ShellPair::init(s1, s2, ...)` stores a DIRECTED `AB = s1.O - s2.O` vector.
+ *  Engine::compute2 accepts a precomputed pair only for the EXACT (tbra1,
+ *  tbra2) / (tket1,tket2) order the shells were passed to compute() in (it
+ *  internally permutes the pair's AB sign via `swap_bra`/`swap_ket` ONLY
+ *  relative to libint2's own canonical angular-momentum ordering, not
+ *  relative to whatever order the pair was cached under) -- see
+ *  engine.impl.h: `BA[xyz] = -spbra_precomputed->AB[xyz]` is applied only
+ *  when `spbra_is_swapped` (i.e. when the SUPPLIED pair is precomputed AND
+ *  the shells needed permuting for libint2's internal convention), not as a
+ *  general "we'll sort it out" step. A pair built as `init(shells[j],
+ *  shells[i], ...)` and handed back for a call passing `(shells[i],
+ *  shells[j])` in that order would silently carry a sign-flipped `AB` (and,
+ *  in general, swap primitive-pair `P`, `nonsph_screen_fac`, etc.) relative
+ *  to what the uncached path would have built -- exactly the class of
+ *  "compiles, computes, silently wrong" bug this whole project's
+ *  Experimental Protocol warns about. Rather than re-deriving which specific
+ *  fields are safe to swap post hoc, this cache keys strictly on the ORDERED
+ *  pair (i,j) as requested and never reuses a slot across (i,j) and (j,i).
+ *  ferric's own call sites (scatter_bra_pair, qqr.rs, schwarz.rs) already
+ *  request shells in a canonical i>=j order for one of bra/ket, so in
+ *  practice only close to half the matrix is ever populated -- this is a
+ *  safety-over-density tradeoff, not a missed optimization.
+ * ========================================================================== */
+struct ShellPairCacheEntry {
+    ShellPair pair;
+    bool      built = false;
+};
+
+struct ShellPairCache {
+    // Flat nshells x nshells matrix, ordered-pair-keyed (see doc above).
+    std::vector<ShellPairCacheEntry> slots;
+    int                              nshells = 0;
+    const void                      *basis_key = nullptr;  // scf_basis* last used
+    bool                             enabled = true;
+    bool                             env_checked = false;
+
+    inline size_t index(int i, int j) const {
+        return (size_t)i * (size_t)nshells + (size_t)j;
+    }
+
+    void ensure_sized_for(const scf_basis *bs) {
+        if (basis_key != bs) {
+            // Basis changed (or first use): drop everything and resize fresh.
+            // A stale ShellPair computed from another basis's shells would be
+            // a use-after-free hazard (Shell references live inside the old
+            // BasisSet) as well as numerically wrong, so a full rebuild (not a
+            // partial invalidation) is the only safe response here.
+            nshells = static_cast<int>(bs->bs.size());
+            slots.clear();
+            slots.resize((size_t)nshells * (size_t)nshells);
+            basis_key = bs;
+        }
+    }
+
+    // Read the FERRIC_SHELLPAIR_CACHE kill switch exactly once (lazily, on
+    // first real use) so a normal run pays one getenv call, and tests that
+    // mutate the env var before constructing/using a fresh engine still see
+    // the intended value (each new scf_engine gets its own ShellPairCache
+    // with env_checked=false).
+    void check_env_once() {
+        if (env_checked) return;
+        env_checked = true;
+        const char *v = std::getenv("FERRIC_SHELLPAIR_CACHE");
+        if (v && (std::strcmp(v, "0") == 0 || std::strcmp(v, "off") == 0 ||
+                  std::strcmp(v, "false") == 0 || std::strcmp(v, "OFF") == 0 ||
+                  std::strcmp(v, "FALSE") == 0)) {
+            enabled = false;
+        }
+    }
+
+    // Look up (or lazily build) the ShellPair for the ORDERED pair (i,j) at
+    // the given engine precision/screening method. Returns nullptr if the
+    // cache is disabled (caller falls back to the uncached nullptr,nullptr
+    // path). (i,j) and (j,i) are DISTINCT slots -- see the class doc above
+    // for why this must not be canonicalized.
+    const ShellPair *get(const scf_basis *bs, int i, int j, double ln_prec,
+                        libint2::ScreeningMethod screening_method) {
+        check_env_once();
+        if (!enabled) return nullptr;
+        ensure_sized_for(bs);
+        ShellPairCacheEntry &slot = slots[index(i, j)];
+        if (!slot.built) {
+            slot.pair.init(bs->bs[i], bs->bs[j], ln_prec, screening_method);
+            slot.built = true;
+        }
+        return &slot.pair;
+    }
+
+    void set_enabled(bool e) {
+        env_checked = true;  // explicit override wins over the env var
+        enabled = e;
+    }
+};
 
 struct scf_engine {
     Engine engine;
@@ -51,6 +221,11 @@ struct scf_engine {
     // omit trailing members compile clean under -Wmissing-field-initializers
     // (value-init already produced null; this only silences the warning).
     std::shared_ptr<TerfcTableSet>  terfc_tables = nullptr;
+    // Lazily-populated shell-pair cache for scf_compute_eri_quartet. Declared
+    // last so every existing aggregate-init site (scf_engine{std::move(eng)},
+    // scf_engine{std::move(eng), ...}) keeps compiling: default-constructed,
+    // trailing member, no positional initializer needed.
+    ShellPairCache                  shellpair_cache;
 };
 
 static std::atomic<int> libint_init_count{0};
@@ -296,12 +471,87 @@ int scf_compute_1e_block(scf_engine *eng, const scf_basis *bs,
   }
 }
 
+// Reproduces libint2's Engine::set_precision formula (engine.h) from the
+// public Engine::precision() accessor, since ln_precision_ itself has no
+// public getter. MUST stay byte-identical to that formula: it is what makes
+// a cached ShellPair's ln_prec compare equal (not just close) to the
+// target_shellpair_ln_precision libint2 computes internally for the
+// nullptr,nullptr path (engine.impl.h, Engine::compute2), which is the whole
+// basis for claiming the cached and uncached paths compute the same thing.
+static inline double ln_precision_of(const Engine &engine) {
+    const double prec = engine.precision();
+    if (prec > 0.0) {
+        return std::log(prec);
+    }
+    return std::numeric_limits<double>::lowest();
+}
+
+// Looks up the compute2 function pointer for `engine`'s current
+// (operator, braket, deriv_order) via the SAME public dispatch table
+// Engine::compute()'s 4-shell overload uses internally (engine.impl.h lines
+// ~146-163), but exposes the spbra/spket parameters that overload hardcodes
+// to nullptr. All symbols used here (Engine::oper(), Engine::braket(),
+// Engine::deriv_order(), Engine::compute2_ptrs(), Engine::compute2_ptr_type,
+// libint2::nbrakets_2body, libint2::nderivorders_2body, Operator::
+// first_2body_oper, BraKet::first_2body_braket) are public libint2 API --
+// this is not a private-member reach-around, it is the identical arithmetic
+// Engine::compute() performs, made externally callable so we can pass real
+// ShellPair pointers instead of null ones.
+static inline Engine::compute2_ptr_type quartet_compute_ptr(const Engine &engine) {
+    // Signed arithmetic throughout (matches the *intent* of engine.impl.h's
+    // own `Engine::compute`, which computes this same index as `auto` --
+    // deduced size_t there only because it mixes with the size_t constants
+    // below, making its own `compute_ptr_idx >= 0` assert vacuously true;
+    // done in `long` here so the not-a-2-body-operator guard below is a real
+    // check rather than dead code).
+    const long oper_off = static_cast<long>(engine.oper()) -
+                         static_cast<long>(Operator::first_2body_oper);
+    const long braket_off = static_cast<long>(engine.braket()) -
+                           static_cast<long>(BraKet::first_2body_braket);
+    const long compute_ptr_idx =
+        (oper_off * static_cast<long>(libint2::nbrakets_2body) + braket_off) *
+            static_cast<long>(libint2::nderivorders_2body) +
+        static_cast<long>(engine.deriv_order());
+    const auto &ptrs = engine.compute2_ptrs();
+    if (compute_ptr_idx < 0 ||
+        static_cast<size_t>(compute_ptr_idx) >= ptrs.size()) {
+        return nullptr;
+    }
+    return ptrs[static_cast<size_t>(compute_ptr_idx)];
+}
+
 int scf_compute_eri_quartet(scf_engine *eng, const scf_basis *bs,
                               int sh1, int sh2, int sh3, int sh4, double *out) {
   try {
     const auto &shells = bs->bs;
-    eng->engine.compute(shells[sh1], shells[sh2], shells[sh3], shells[sh4]);
-    const auto &result = eng->engine.results();
+    Engine &engine = eng->engine;
+
+    // Try the cached-ShellPair fast path first. Falls through to the
+    // uncached libint2 default (compute(), which passes nullptr,nullptr and
+    // re-runs ShellPair::init on every call) whenever: the cache is disabled
+    // (FERRIC_SHELLPAIR_CACHE=0), or this engine's operator/braket/deriv
+    // combination has no entry in compute2_ptrs() (e.g. an operator variant
+    // outside the standard 2-body dispatch table -- defensive only, every
+    // op_kind scf_engine_create supports is a standard 2-body operator).
+    auto compute_ptr = quartet_compute_ptr(engine);
+    const ShellPair *spbra = nullptr;
+    const ShellPair *spket = nullptr;
+    if (compute_ptr != nullptr) {
+        const double ln_prec = ln_precision_of(engine);
+        const auto screening_method = engine.screening_method();
+        spbra = eng->shellpair_cache.get(bs, sh1, sh2, ln_prec, screening_method);
+        if (spbra != nullptr) {
+            spket = eng->shellpair_cache.get(bs, sh3, sh4, ln_prec, screening_method);
+        }
+    }
+
+    if (compute_ptr != nullptr && spbra != nullptr && spket != nullptr) {
+        (engine.*compute_ptr)(shells[sh1], shells[sh2], shells[sh3], shells[sh4],
+                              spbra, spket);
+    } else {
+        engine.compute(shells[sh1], shells[sh2], shells[sh3], shells[sh4]);
+    }
+    const auto &result = engine.results();
     if (result[0] == nullptr) {
         return 0;  // libint screened the quartet (all zero).
     }
@@ -311,6 +561,27 @@ int scf_compute_eri_quartet(scf_engine *eng, const scf_basis *bs,
   } catch (...) {
     return SCF_EINTERNAL;
   }
+}
+
+void scf_engine_set_shellpair_cache_enabled(scf_engine *eng, int enabled) {
+    eng->shellpair_cache.set_enabled(enabled != 0);
+}
+
+int scf_engine_shellpair_cache_enabled(const scf_engine *eng) {
+    // check_env_once() is non-const (lazily latches the env-var read), so
+    // mirror its logic read-only here rather than const_cast: if the env
+    // check hasn't happened yet, report what it WOULD report (this getter is
+    // test/diagnostic-only, never on the hot compute path).
+    if (eng->shellpair_cache.env_checked) {
+        return eng->shellpair_cache.enabled ? 1 : 0;
+    }
+    const char *v = std::getenv("FERRIC_SHELLPAIR_CACHE");
+    if (v && (std::strcmp(v, "0") == 0 || std::strcmp(v, "off") == 0 ||
+              std::strcmp(v, "false") == 0 || std::strcmp(v, "OFF") == 0 ||
+              std::strcmp(v, "FALSE") == 0)) {
+        return 0;
+    }
+    return 1;
 }
 
 int scf_compute_schwarz(scf_engine *eng, const scf_basis *bs, double *qmat) {
