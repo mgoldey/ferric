@@ -1053,8 +1053,19 @@ pub struct ScfCfg {
     /// `mol.multiplicity == 1`). `rhf`/`ksdft` go through the convergence
     /// ladder, which does not compose with `df_guess` and warns rather than
     /// silently ignoring it; open-shell falls through untouched.
-    #[serde(default = "default_df_guess")]
-    pub df_guess: bool,
+    /// `None` = not set by the user (defaults ON — see `df_guess_enabled`).
+    ///
+    /// Deliberately `Option<bool>` rather than `bool`: once `df_guess` defaults
+    /// to TRUE, a plain `bool` cannot distinguish "the user asked for it" from
+    /// "it defaulted on", and the `df_guess`/`df_increments` mutual-exclusion
+    /// check then fires for anyone who sets only `df_increments = true` —
+    /// making that feature unusable without also writing `df_guess = false`.
+    /// CI caught exactly that (`scf_df_increments_key_parses_and_defaults_off`
+    /// panicked in `df_increments_aux_resolved`). Keeping the user's intent
+    /// distinguishable lets `df_increments` win over a DEFAULTED `df_guess`
+    /// while still rejecting an EXPLICIT request for both.
+    #[serde(default)]
+    pub df_guess: Option<bool>,
     /// Auxiliary (JK-fit) basis for the `df_guess` pre-stage only. Omitted =
     /// `ferric_scf::ladder::DF_GUESS_DEFAULT_AUX` ("def2-universal-jkfit").
     /// Ignored (with a hard error) when `df_guess = false`, matching the
@@ -1109,7 +1120,7 @@ impl Default for ScfCfg {
             mom_after_iter: 0,
             ladder: Vec::new(),
             verbose: false,
-            df_guess: true,
+            df_guess: None,
             df_guess_aux: None,
             df_increments: false,
             df_increments_aux: None,
@@ -1201,14 +1212,27 @@ impl ScfCfg {
     /// while `df_guess = false` would be a silent no-op, so it is a hard
     /// error instead (mirrors `cosx_config`'s treatment of `cosx_*` knobs set
     /// without `k_builder = "cosx"`).
+    /// Is the DF-guess pre-stage active? Defaults ON when the key is absent.
+    ///
+    /// `df_increments` takes precedence over a DEFAULTED `df_guess` (it runs
+    /// its own DF pre-stage internally, so the two would be redundant); an
+    /// EXPLICIT `df_guess = true` alongside `df_increments` is still a hard
+    /// error, because that is a user asking for two mutually exclusive things
+    /// rather than a default colliding with a request.
+    pub fn df_guess_enabled(&self) -> bool {
+        match self.df_guess {
+            Some(explicit) => explicit,
+            None => !self.df_increments,
+        }
+    }
     pub fn df_guess_aux_resolved(&self) -> Result<Option<String>, String> {
-        if !self.df_guess && self.df_guess_aux.is_some() {
+        if !self.df_guess_enabled() && self.df_guess_aux.is_some() {
             return Err(format!(
-                "[scf] df_guess_aux = {:?} is set but df_guess = false; it is only read with df_guess = true",
+                "[scf] df_guess_aux = {:?} is set but df_guess is off; it is only read with df_guess = true",
                 self.df_guess_aux
             ));
         }
-        if self.df_guess && self.df_increments {
+        if self.df_guess == Some(true) && self.df_increments {
             return Err(
                 "[scf] df_guess = true and df_increments = true are mutually exclusive \
                  (df_increments already runs its own DF-guess pre-stage internally); set only one"
@@ -1226,7 +1250,7 @@ impl ScfCfg {
                 self.df_increments_aux
             ));
         }
-        if self.df_guess && self.df_increments {
+        if self.df_guess == Some(true) && self.df_increments {
             return Err(
                 "[scf] df_guess = true and df_increments = true are mutually exclusive \
                  (df_increments already runs its own DF-guess pre-stage internally); set only one"
@@ -1236,14 +1260,6 @@ impl ScfCfg {
         Ok(self.df_increments_aux.clone())
     }
 }
-
-/// `[scf] df_guess` default. MUST stay in sync with `ScfCfg::default()`'s
-/// `df_guess` field: serde uses THIS for an omitted key, while the struct
-/// `Default` covers programmatic construction. A plain `#[serde(default)]`
-/// would yield `bool::default()` == false and silently disable the feature for
-/// every TOML that omits the key — i.e. almost all of them — so the flip to
-/// `true` has to be expressed here too, not just in `Default`.
-fn default_df_guess() -> bool { true }
 
 fn default_max_iter() -> usize { 100 }
 // Match the library convergence gate (rhf::scf_converged): density_conv is the
@@ -2178,7 +2194,11 @@ name = "sto-3g"
 kind = "rimp2"
 "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
-        assert!(!cfg.scf.df_guess, "df_guess must default to false");
+        // df_guess now defaults ON (matches Psi4's DF_SCF_GUESS). The FIELD
+        // stays None (user said nothing); the ACCESSOR is what carries the
+        // default, so df_increments can still take precedence over it.
+        assert_eq!(cfg.scf.df_guess, None, "absent key must stay None, not be materialised");
+        assert!(cfg.scf.df_guess_enabled(), "df_guess must default to ENABLED");
         assert!(cfg.scf.df_guess_aux.is_none());
 
         let toml_str = r#"
@@ -2193,7 +2213,7 @@ df_guess = true
 df_guess_aux = "def2-universal-jkfit"
 "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
-        assert!(cfg.scf.df_guess);
+        assert_eq!(cfg.scf.df_guess, Some(true), "explicit df_guess = true must be recorded as Some(true)");
         assert_eq!(cfg.scf.df_guess_aux.as_deref(), Some("def2-universal-jkfit"));
         assert_eq!(cfg.scf.df_guess_aux_resolved().unwrap().as_deref(), Some("def2-universal-jkfit"));
     }
@@ -2236,10 +2256,31 @@ kind = "rimp2"
 df_guess_aux = "def2-universal-jkfit"
 "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
-        assert!(!cfg.scf.df_guess);
+        // With df_guess defaulting ON, `df_guess_aux` alone is no longer a
+        // silent no-op — it is read. The rejection now applies only when the
+        // user EXPLICITLY turned df_guess off while still setting its aux.
+        assert!(cfg.scf.df_guess_enabled());
         assert!(
-            cfg.scf.df_guess_aux_resolved().is_err(),
-            "df_guess_aux set with df_guess=false must be rejected, not silently ignored"
+            cfg.scf.df_guess_aux_resolved().is_ok(),
+            "df_guess_aux alone is now honoured, since df_guess defaults on"
+        );
+
+        let toml_off = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rimp2"
+[scf]
+df_guess = false
+df_guess_aux = "def2-universal-jkfit"
+"#;
+        let cfg_off: Config = toml::from_str(toml_off).unwrap();
+        assert!(!cfg_off.scf.df_guess_enabled());
+        assert!(
+            cfg_off.scf.df_guess_aux_resolved().is_err(),
+            "df_guess_aux set with an EXPLICIT df_guess=false must be rejected, not silently ignored"
         );
     }
 
@@ -2275,6 +2316,53 @@ df_increments_aux = "def2-universal-jkfit"
         assert!(cfg.scf.df_increments);
         assert_eq!(cfg.scf.df_increments_aux.as_deref(), Some("def2-universal-jkfit"));
         assert_eq!(cfg.scf.df_increments_aux_resolved().unwrap().as_deref(), Some("def2-universal-jkfit"));
+    }
+
+    /// REGRESSION (caught by CI, not by local runs): once `df_guess` defaults
+    /// ON, a user who sets only `df_increments = true` must NOT be rejected by
+    /// the df_guess/df_increments mutual-exclusion check. With a plain `bool`
+    /// field the defaulted `df_guess` was indistinguishable from an explicit
+    /// one, so `df_increments_aux_resolved()` errored and the feature was
+    /// unusable without also writing `df_guess = false`.
+    #[test]
+    fn df_increments_alone_is_not_blocked_by_the_df_guess_default() {
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rimp2"
+[scf]
+df_increments = true
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert!(cfg.scf.df_increments);
+        assert!(
+            !cfg.scf.df_guess_enabled(),
+            "df_increments must take precedence over a DEFAULTED df_guess (it runs its own \
+             DF pre-stage), otherwise the two are redundant"
+        );
+        assert!(cfg.scf.df_increments_aux_resolved().is_ok());
+        assert!(cfg.scf.df_guess_aux_resolved().is_ok());
+
+        // But asking for BOTH explicitly is still a hard error — that is a
+        // user requesting two mutually exclusive things, not a default
+        // colliding with a request.
+        let both = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rimp2"
+[scf]
+df_guess = true
+df_increments = true
+"#;
+        let cfg_both: Config = toml::from_str(both).unwrap();
+        assert!(cfg_both.scf.df_increments_aux_resolved().is_err());
+        assert!(cfg_both.scf.df_guess_aux_resolved().is_err());
     }
 
     /// `df_increments_aux` set without `df_increments = true` is a silent
