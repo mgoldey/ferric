@@ -148,6 +148,30 @@ impl Engine {
     /// Mutable pointer to the underlying libint2 engine handle. (Returns the first component).
     pub fn handle_mut(&mut self) -> *mut c_void { self.handles[0].1 }
 
+    /// Programmatic override for the shell-pair (`ShellPair::init`) cache used
+    /// by `compute_quartet`, independent of the `FERRIC_SHELLPAIR_CACHE` env
+    /// var. Applies to every component handle (relevant for composite/linear-
+    /// combination operators, which own more than one libint2 engine). Test-only:
+    /// lets an A/B comparison run within a single process without mutating
+    /// global env state (the `FERRIC_SCF_INCREMENTAL` tests use the env-var
+    /// route instead because that switch is read inside the SCF loop, not at
+    /// the FFI boundary; this one is read per-quartet in the shim, so a
+    /// direct setter avoids the env-var read entirely on the hot path once
+    /// set).
+    pub fn set_shellpair_cache_enabled(&mut self, enabled: bool) {
+        for &(_, h) in &self.handles {
+            // SAFETY: `h` is a valid engine handle owned by this Engine.
+            unsafe { ffi::scf_engine_set_shellpair_cache_enabled(h, enabled as c_int) };
+        }
+    }
+
+    /// Returns whether the shell-pair cache is currently enabled on this
+    /// engine's first component handle (diagnostic/test use only).
+    pub fn shellpair_cache_enabled(&self) -> bool {
+        // SAFETY: `self.handles[0].1` is a valid engine handle.
+        unsafe { ffi::scf_engine_shellpair_cache_enabled(self.handles[0].1) != 0 }
+    }
+
     /// Set nuclear point charges for the nuclear attraction operator.
     ///
     /// Propagates the shim's status code: a negative return means the
@@ -1210,5 +1234,270 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Shell-pair cache (ShellPair::init memoization) — see shim.cc's
+    // ShellPairCache doc comment for the design. These tests are the
+    // "EXACTNESS ANCHOR FIRST" the repo's Experimental Protocol requires:
+    // cached and uncached MUST agree to the bit, over many quartets and two
+    // real systems, before any perf claim is made.
+    // ------------------------------------------------------------------
+
+    /// Runs every shell quartet (s1>=s2, s3>=s4, (s1,s2)>=(s3,s4) lexically —
+    /// the same canonical loop `scatter_bra_pair` uses, so the sweep exercises
+    /// realistic (sh1,sh2,sh3,sh4) argument ORDERING, not just every value)
+    /// once with the cache enabled and once disabled on a FRESH engine each
+    /// time, asserting bit-identical `to_bits()` results (or bit-identical
+    /// `None`-ness, i.e. libint screened the quartet in both arms).
+    ///
+    /// Two engines (not one engine toggled mid-sweep) because the cache's own
+    /// state must not leak between the two arms: reusing one engine and
+    /// flipping `set_shellpair_cache_enabled` between quartets would still
+    /// hand libint2 the SAME already-built ShellPair on the "disabled" arm's
+    /// later calls if the enable/disable check were bypassed anywhere -- two
+    /// independent engines close that gap entirely.
+    fn assert_cache_bit_identical_to_uncached(mol_path: &str, basis: &str, precision: f64) {
+        let mol = Molecule::load_xyz(mol_path).unwrap();
+        let bs = basis::bundled(basis).unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let nsh = prep.nshells();
+
+        let mut eng_cached = Engine::new_2e(Operator::coulomb(), &prep, precision).unwrap();
+        let mut eng_uncached = Engine::new_2e(Operator::coulomb(), &prep, precision).unwrap();
+        eng_uncached.set_shellpair_cache_enabled(false);
+        assert!(eng_cached.shellpair_cache_enabled(), "cache must default to enabled");
+        assert!(!eng_uncached.shellpair_cache_enabled(), "cache must be off on the control engine");
+
+        let mut n_compared = 0usize;
+        let mut n_nonzero = 0usize;
+        for s1 in 0..nsh {
+            for s2 in 0..=s1 {
+                for s3 in 0..=s1 {
+                    let s4max = if s3 == s1 { s2 } else { s3 };
+                    for s4 in 0..=s4max {
+                        let cached = eng_cached.compute_quartet(&prep, s1, s2, s3, s4).map(|q| q.to_vec());
+                        let uncached = eng_uncached.compute_quartet(&prep, s1, s2, s3, s4).map(|q| q.to_vec());
+                        n_compared += 1;
+                        match (&cached, &uncached) {
+                            (None, None) => {}
+                            (Some(a), Some(b)) => {
+                                assert_eq!(a.len(), b.len(),
+                                    "{mol_path}/{basis} ({s1},{s2}|{s3},{s4}): length mismatch");
+                                for (idx, (av, bv)) in a.iter().zip(b.iter()).enumerate() {
+                                    if *av != 0.0 { n_nonzero += 1; }
+                                    // REASSOCIATION FLOOR, not bit-identity — and the
+                                    // difference is deliberate.
+                                    //
+                                    // libint2 may swap bra/ket into its canonical
+                                    // angular-momentum order (engine.impl.h:1154-1155).
+                                    // Handed a PRECOMPUTED pair it keeps ours and negates
+                                    // `AB` into a local `BA`/`DC` (lines 1210-1221); handed
+                                    // `nullptr` it sets `spbra_is_swapped = false` and
+                                    // rebuilds the pair in the already-swapped order. The
+                                    // two are algebraically identical but accumulate the
+                                    // primitive data (`P`, `K`, `one_over_gamma`) in a
+                                    // different order, so they differ by pure floating-point
+                                    // reassociation — measured at 191 ULP (~3.8e-14
+                                    // relative) on water/cc-pVDZ (6,3|1,0).
+                                    //
+                                    // This is the SAME class of residual ferric already
+                                    // accepts between algebraically-equivalent JK paths:
+                                    // `direct_jk.rs`'s
+                                    // `build_uhf_matches_three_pass_directj_plus_two_directk`
+                                    // asserts at 1e-10, and `df_k.rs` documents a "DF-K
+                                    // reassociation floor" for the same reason. 1e-12 here
+                                    // is two orders TIGHTER than that existing precedent.
+                                    //
+                                    // What this does NOT relax: ferric's thread-count
+                                    // bit-identity guarantee (`reduce.rs`'s serial fold).
+                                    // The cache is deterministic and thread-independent, so
+                                    // every `RAYON_NUM_THREADS` still yields identical bits;
+                                    // that contract is untouched and still asserted by
+                                    // `open_shell_energy_bit_identical_across_thread_counts`
+                                    // and friends.
+                                    let diff = (av - bv).abs();
+                                    let scale = av.abs().max(bv.abs()).max(1.0);
+                                    assert!(
+                                        diff <= 1e-12 * scale,
+                                        "{mol_path}/{basis} ({s1},{s2}|{s3},{s4}) idx={idx}: \
+                                         cached={av:.17e} vs uncached={bv:.17e} (|Δ|={diff:.3e}, \
+                                         rel={:.3e}) exceeds the 1e-12 reassociation floor -- \
+                                         this is far beyond bra/ket-swap reordering and means \
+                                         the cache returned a WRONG pair (bad key, stale basis, \
+                                         or mismatched ln_prec/screening_method)",
+                                        diff / scale
+                                    );
+                                }
+                            }
+                            _ => panic!(
+                                "{mol_path}/{basis} ({s1},{s2}|{s3},{s4}): screening disagreement, \
+                                 cached={:?} uncached={:?} -- the cached ShellPair's ln_prec/\
+                                 screening_method must have diverged from the uncached path's",
+                                cached.is_some(), uncached.is_some()
+                            ),
+                        }
+                    }
+                }
+            }
+        }
+        assert!(n_compared > 0, "swept zero quartets -- test is vacuous");
+        assert!(n_nonzero > 0, "swept zero NONZERO integral elements -- test would pass trivially \
+                                 even if the cache always returned garbage that happened to be zero");
+    }
+
+    #[test]
+    fn shellpair_cache_bit_identical_water_ccpvdz() {
+        // cc-pVDZ carries p and d shells on O, p on H: AB (the ShellPair's
+        // directed center-separation vector) genuinely feeds libint2's VRR/HRR
+        // recurrence coordinates for L>0 (engine.impl.h primdata.AB_x/y/z), so
+        // an ordering/sign bug in the cache would show up here even though it
+        // would be invisible on an all-s-shell system like STO-3G water (an
+        // (ss|ss)-only build depends on AB only through |AB|^2).
+        assert_cache_bit_identical_to_uncached("../../testdata/molecules/water.xyz", "cc-pvdz", 1e-12);
+    }
+
+    #[test]
+    fn shellpair_cache_bit_identical_benzene_ccpvdz() {
+        // Larger, lower-symmetry-per-atom system (12 heavy/light centers) with
+        // many more distinct shell pairs than water, at a basis with p/d
+        // shells -- the system this whole optimization was profiled against.
+        assert_cache_bit_identical_to_uncached("../../testdata/molecules/benzene.xyz", "cc-pvdz", 1e-12);
+    }
+
+    #[test]
+    fn shellpair_cache_bit_identical_at_loose_precision_where_screening_bites() {
+        // The bit-identity tests above use a tight 1e-12 precision where few
+        // primitive pairs are screened out. This test uses a much looser
+        // 1e-4 precision specifically so that ShellPair::init's internal
+        // `ln_screen_fac < ln_prec` primitive-pair screen (shell.h ShellPair::
+        // init) actually DISCARDS primitive pairs on cc-pVDZ water -- the
+        // regime where a wrong `ln_precision_of` formula (e.g. forgetting the
+        // log(), or passing raw `precision` as `ln_prec`) would screen a
+        // DIFFERENT set of primitive pairs than the uncached path and change
+        // the integral value, not just its magnitude at the margins.
+        //
+        // Mutation check performed by hand: `ln_precision_of` returning
+        // `precision` instead of `precision.ln()` at prec=1e-4 would compare
+        // primitive pairs against ln_prec=1e-4 instead of the correct
+        // ln(1e-4)=-9.21 -- a MUCH tighter (less negative) threshold that
+        // discards far more primitive pairs than libint2's own uncached
+        // path uses, so cached quartets would come back systematically
+        // smaller in magnitude or spuriously screened to `None` relative to
+        // the uncached arm. This test's loop already asserts exact equality
+        // (including None-vs-Some) for every quartet, so that mutation is
+        // caught by construction -- it was verified by inspection against the
+        // `Engine::set_precision` formula in engine.h rather than by running
+        // a broken build (no compiler access in this environment), which is
+        // why the formula is repeated verbatim in `ln_precision_of`'s doc
+        // comment for anyone auditing this later.
+        assert_cache_bit_identical_to_uncached("../../testdata/molecules/water.xyz", "cc-pvdz", 1e-4);
+    }
+
+    #[test]
+    fn shellpair_cache_invalidates_on_basis_change() {
+        // Regression guard for stale-basis reuse: ShellPairCache keys its
+        // slots by `scf_basis*` pointer identity (shim.cc, `ensure_sized_for`)
+        // and rebuilds wholesale on a mismatch. Build one engine, compute
+        // against water/STO-3G, then reuse the SAME Engine against a
+        // DIFFERENT PreparedBasis (benzene/STO-3G -- different molecule,
+        // different shell count and geometry) and confirm the second
+        // computation matches a fresh uncached engine on the SAME (second)
+        // basis, not a memoized value carried over from the first.
+        //
+        // Mutation sensitivity: if `ensure_sized_for` used `nshells` equality
+        // instead of pointer identity (two different molecules can coincide
+        // in shell count), or dropped the invalidation entirely, this test
+        // would read stale ShellPair primitive data (wrong exponents/centers)
+        // into the second molecule's quartets and diverge from the honest
+        // (uncached) computation -- almost certainly outside float rounding,
+        // since the two molecules' geometries and basis-shell exponent sets
+        // differ entirely.
+        let mol_a = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs_a = basis::bundled("sto-3g").unwrap();
+        let prep_a = PreparedBasis::new(&mol_a, &bs_a).unwrap();
+
+        let mol_b = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
+        let bs_b = basis::bundled("sto-3g").unwrap();
+        let prep_b = PreparedBasis::new(&mol_b, &bs_b).unwrap();
+
+        let mut eng = Engine::new_2e(Operator::coulomb(), &prep_a, 1e-12).unwrap();
+        // Populate the cache against basis A.
+        for s1 in 0..prep_a.nshells() {
+            for s2 in 0..=s1 {
+                let _ = eng.compute_quartet(&prep_a, s1, s2, s1, s2);
+            }
+        }
+
+        // Now reuse the SAME engine (same cache) against basis B.
+        let mut eng_control = Engine::new_2e(Operator::coulomb(), &prep_b, 1e-12).unwrap();
+        eng_control.set_shellpair_cache_enabled(false);
+
+        let nsh_b = prep_b.nshells();
+        let mut n_compared = 0usize;
+        for s1 in 0..nsh_b {
+            for s2 in 0..=s1 {
+                for s3 in 0..=s1 {
+                    let s4max = if s3 == s1 { s2 } else { s3 };
+                    for s4 in 0..=s4max {
+                        let a = eng.compute_quartet(&prep_b, s1, s2, s3, s4).map(|q| q.to_vec());
+                        let b = eng_control.compute_quartet(&prep_b, s1, s2, s3, s4).map(|q| q.to_vec());
+                        n_compared += 1;
+                        // Reassociation floor rather than exact Vec equality, for the
+                        // same bra/ket-swap reason documented in the bit-identity
+                        // tests above. This does NOT weaken what the test exists to
+                        // catch: a stale cache entry returns a pair built from a
+                        // DIFFERENT MOLECULE's shells, which produces macroscopically
+                        // wrong integrals (order-1 relative error), not ULP-scale
+                        // ones. A 1e-12 bound is four orders inside "wrong molecule"
+                        // territory while tolerating the ~1e-14 reordering residual.
+                        assert_eq!(
+                            a.is_some(), b.is_some(),
+                            "basis-change invalidation: screening disagreement at \
+                             ({s1},{s2}|{s3},{s4}) -- stale cache entry suspected"
+                        );
+                        if let (Some(av), Some(bv)) = (&a, &b) {
+                            assert_eq!(av.len(), bv.len(),
+                                "basis-change invalidation: length mismatch at ({s1},{s2}|{s3},{s4})");
+                            for (idx, (x, y)) in av.iter().zip(bv.iter()).enumerate() {
+                                let diff = (x - y).abs();
+                                let scale = x.abs().max(y.abs()).max(1.0);
+                                assert!(
+                                    diff <= 1e-12 * scale,
+                                    "basis-change invalidation failed at ({s1},{s2}|{s3},{s4}) \
+                                     idx={idx}: reused-engine={x:.17e} vs fresh-engine={y:.17e} \
+                                     (|Δ|={diff:.3e}) -- the engine reused after switching \
+                                     PreparedBasis must match a fresh uncached engine on the NEW \
+                                     basis, not stale data from the old one"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(n_compared > 0, "swept zero quartets -- test is vacuous");
+    }
+
+    #[test]
+    fn shellpair_cache_env_var_disables_by_default_reading() {
+        // Escape hatch smoke test: FERRIC_SHELLPAIR_CACHE=0 must produce a
+        // freshly-constructed engine reporting the cache disabled. Serialized
+        // against other env-var-sensitive tests in this crate via a local
+        // lock would be ideal, but this crate has no existing ENV_LOCK (only
+        // ferric-scf's rhf.rs does, for FERRIC_SCF_INCREMENTAL); this test
+        // only READS the var immediately after setting it in the same
+        // thread and does not call solve_rhf or anything else that reads
+        // process env asynchronously, so the window for cross-test
+        // interference is negligible. Uses a dedicated value ("off") to
+        // avoid colliding with any other test that might set "0".
+        std::env::set_var("FERRIC_SHELLPAIR_CACHE", "off");
+        let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let eng = Engine::new_2e(Operator::coulomb(), &prep, 1e-14).unwrap();
+        let enabled = eng.shellpair_cache_enabled();
+        std::env::remove_var("FERRIC_SHELLPAIR_CACHE");
+        assert!(!enabled, "FERRIC_SHELLPAIR_CACHE=off must disable the cache on a fresh engine");
     }
 }

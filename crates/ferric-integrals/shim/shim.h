@@ -102,6 +102,19 @@ int scf_compute_eri_quartet(scf_engine *eng, const scf_basis *bs,
                               int sh1, int sh2, int sh3, int sh4,
                               double *out);
 
+/* Enable/disable the per-engine shell-pair (ShellPair::init) cache used by
+ * scf_compute_eri_quartet. Cache is lazily populated (one entry per unique
+ * (shell,shell) pair actually requested, triangular: (i,j) and (j,i) share
+ * the same slot). Enabled by default; controlled by the FERRIC_SHELLPAIR_CACHE
+ * environment variable ("0"/"off"/"false" disables) read once at first use.
+ * This setter exists so tests can force the cache on/off within a single
+ * process without depending on environment mutation ordering. Passing a
+ * nonzero `enabled` re-enables; the cache itself is invalidated (rebuilt) if
+ * `bs` differs from the basis last used to populate it. */
+void scf_engine_set_shellpair_cache_enabled(scf_engine *eng, int enabled);
+/* Returns 1 if the cache is currently enabled for this engine, 0 otherwise. */
+int  scf_engine_shellpair_cache_enabled(const scf_engine *eng);
+
 /* Compute the shell-pair Schwarz Q matrix, Q[i,j] = sqrt(max |(ij|ij)|).
  * out is caller-allocated row-major (nshells, nshells).
  * Returns SCF_OK or SCF_EINTERNAL. */
