@@ -60,7 +60,13 @@ const PAR_SCHWARZ_SHELL_THRESHOLD: usize = 64;
 /// the invariant and would scale better; `0.0` is chosen because the measured
 /// cost is small enough that the extra knob is not worth its failure modes —
 /// notably that it re-couples the table to a threshold the caller can change.
-const SCHWARZ_TABLE_PRECISION: f64 = 0.0;
+///
+/// `pub(crate)` (not private) so [`crate::csb`] builds its `M` table at the
+/// IDENTICAL precision rather than carrying a second copy of the literal that
+/// could silently drift. The underestimation hazard this constant exists to
+/// defeat applies verbatim to the `(PP|QQ)` table, and the remedy must not be
+/// allowed to diverge between the two.
+pub(crate) const SCHWARZ_TABLE_PRECISION: f64 = 0.0;
 
 /// Floor applied to every stored Q so that no table entry is ever exactly zero.
 ///
@@ -72,7 +78,13 @@ const SCHWARZ_TABLE_PRECISION: f64 = 0.0;
 /// survive a real screen — but it makes `estimate(..) > 0.0` true everywhere,
 /// which is precisely the trivial-limit guarantee. Same value and same
 /// rationale as PySCF's `q_cond` floor.
-const SCHWARZ_Q_FLOOR: f64 = 1e-100;
+///
+/// `pub(crate)` (not private) so [`crate::csb`] floors its `M` table with the
+/// IDENTICAL value rather than a second, silently-drifting copy. A stored
+/// `M = 0.0` is exactly as fatal there as a stored `Q = 0.0` is here — worse,
+/// in fact, because CSB takes a `min` and a zero `M` would win that `min` at
+/// every quartet touching the affected shell.
+pub(crate) const SCHWARZ_Q_FLOOR: f64 = 1e-100;
 
 /// Q(i,j) = sqrt(max_{a,b} |(ab|ab)|) over the functions of shell pair (i,j),
 /// from one computed (ij|ij) quartet block, floored at [`SCHWARZ_Q_FLOOR`] so

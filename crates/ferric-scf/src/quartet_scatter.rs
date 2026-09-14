@@ -329,6 +329,31 @@ pub(crate) fn canonical_bra_pairs(nsh: usize) -> Vec<(usize, usize)> {
 /// by every caller, not just `build_jk`. Returns the number of quartets that
 /// passed the screen and were computed (non-degenerate) by libint2, matching
 /// each caller's existing `computed_quartets` bookkeeping.
+///
+/// `m_table`: optional CSB `M` table
+/// ([`crate::screening::CsbBounds::m`]), built for the SAME operator as
+/// `q_table`. `None` — every caller at the default `[scf] screening =
+/// "schwarz"` — is byte-identical to before this parameter existed: the screen
+/// below reduces to the original `b12 * b34 * dmax < thresh` with the `min`
+/// refinement branch not taken at all (the `Option` is matched ONCE per BRA
+/// PAIR, outside the `(s3,s4)` loop, never per candidate).
+///
+/// When `Some`, this applies Eq. (8) of Thompson & Ochsenfeld, JCP 147, 144101
+/// (2017) — `min{Q_µν Q_λσ, M_µλ M_νσ, M_µσ M_νλ}` — as the bound, in place of
+/// the plain Schwarz product. This is the hot-loop reimplementation of
+/// [`crate::screening::CsbBounds::estimate`]'s math, kept deliberately in sync
+/// with it (row slices instead of a `Bound` vtable call, so the extra two
+/// multiplies and two `min`s are paid without a dynamic dispatch on top). The
+/// `min` is seeded with the Schwarz product for the same structural reason it
+/// is there: the refinement can only ever TIGHTEN, never loosen, whatever the
+/// `M` table contains.
+///
+/// The two rows `M[s1, :]` and `M[s2, :]` are sliced out ONCE here — before
+/// the `(s3, s4)` loop — so the inner loop pays only `&[f64]` indexing rather
+/// than repeated strided `Array2` lookups. That hoist is what keeps CSB from
+/// adding an `Option` branch to the ~46M-candidate inner loop the perf profile
+/// identified (`scatter_bra_pair` at 28.96% of a benzene/aug-cc-pVDZ RHF wall
+/// clock).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn scatter_bra_pair(
     engine: &mut Engine,
@@ -336,6 +361,7 @@ pub(crate) fn scatter_bra_pair(
     dims: &[usize],
     offs: &[usize],
     q_table: &Array2<f64>,
+    m_table: Option<&Array2<f64>>,
     screen: &DensityScreen,
     thresh: f64,
     d: &Array2<f64>,
@@ -369,6 +395,23 @@ pub(crate) fn scatter_bra_pair(
     let (o1, o2) = (offs[s1], offs[s2]);
     let sym12 = s1 != s2;
 
+    // Hoisted CSB `M` rows for this bra pair (see the doc above): one row
+    // slice each, taken ONCE per (s1,s2), not per (s3,s4) candidate.
+    // `ArrayView::to_slice()` ties the slice's lifetime to the BACKING ARRAY
+    // (`m_table`'s own borrow), not to the temporary `row(..)` view, so the
+    // resulting `&[f64]` is valid for the rest of this function. It returns
+    // `Some` for a standard-layout (C-contiguous) array's row, which every
+    // `csb_m_table` output is (built via `Array2::zeros` plus index
+    // assignment, never a view/transpose/slice of a larger array), so the
+    // `expect` cannot fire in practice; it exists to fail loudly rather than
+    // silently take a slower path if that ever changed.
+    let m_rows: Option<(&[f64], &[f64])> = m_table.map(|m| {
+        (
+            m.row(s1).to_slice().expect("csb M row(s1) not contiguous"),
+            m.row(s2).to_slice().expect("csb M row(s2) not contiguous"),
+        )
+    });
+
     for s3 in 0..=s1 {
         if check_interrupt
             && s3 % 100 == 0
@@ -380,7 +423,32 @@ pub(crate) fn scatter_bra_pair(
         for s4 in 0..=s4max {
             let b34 = q_table[(s3, s4)];
             let dmax = screen.dmax(s1, s2, s3, s4);
-            if b12 * b34 * dmax < thresh {
+            // Plain Schwarz product: the seed of the CSB `min` below, and the
+            // whole bound when `m_rows` is `None` (the default path, which is
+            // then byte-identical to the pre-CSB code).
+            let mut bound = b12 * b34;
+            // CSB, Eq. (8): min{ Q_µν Q_λσ, M_µλ M_νσ, M_µσ M_νλ }. Seeded
+            // with the Schwarz product already in `bound`, so a defective `M`
+            // table can only ever make this TIGHTER — never looser — which is
+            // the structural half of the safety argument in
+            // `crate::screening::CsbBounds`'s type docs. The other half (that
+            // a too-SMALL `M` would win this `min` and break validity) is
+            // defended by `csb_m_table`'s precision/floor discipline and
+            // caught by `tests/csb_screening.rs::csb_is_a_valid_upper_bound`.
+            //
+            // Applied to the OPERATOR bound only, before the density factor:
+            // `dmax` is a density magnitude, not an integral bound, and Eq. (8)
+            // bounds the integral. Multiplying it in afterwards keeps the
+            // Häser-Ahlrichs product structure `|(bound on integral)| · max|D|`
+            // that every caller's threshold is calibrated against.
+            if let Some((mr1, mr2)) = m_rows {
+                // SAFETY-BY-CONSTRUCTION: s3, s4 < nsh and the rows have
+                // length nsh, so these index in bounds.
+                let eq6 = mr1[s3] * mr2[s4];
+                let eq7 = mr1[s4] * mr2[s3];
+                bound = bound.min(eq6).min(eq7);
+            }
+            if bound * dmax < thresh {
                 continue;
             }
 

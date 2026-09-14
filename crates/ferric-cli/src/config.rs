@@ -972,6 +972,47 @@ pub struct ScfCfg {
     /// when DF-J/DF-K is active, when the functional uses no exact exchange, or
     /// for a range-separated functional.
     pub k_builder: Option<String>,
+    /// Shell-quartet screening bound: `"schwarz"` (default) or `"csb"`.
+    /// Unknown values are a hard error (strict parse, matching every other
+    /// string knob in this file — see CLAUDE.md's "config honesty" section).
+    ///
+    /// BOTH ARE RIGOROUS UPPER BOUNDS, so this is NOT an accuracy tradeoff.
+    /// `"csb"` is the combined Schwarz bound of Thompson & Ochsenfeld,
+    /// J. Chem. Phys. 147, 144101 (2017), Eq. (8):
+    ///
+    /// ```text
+    ///   |(µν|λσ)| ≤ min{ Q_µν Q_λσ, M_µλ M_νσ, M_µσ M_νλ },  M_µλ = sqrt(|(µµ|λλ)|)
+    /// ```
+    ///
+    /// Because it is a `min` that INCLUDES the plain Schwarz product, it can
+    /// never be looser than `"schwarz"`, so selecting it cannot discard a
+    /// quartet that `"schwarz"` would have kept above threshold. It costs one
+    /// extra `nshells²` table (one `(PP|QQ)` quartet per shell pair,
+    /// geometry-only, built once per bound construction — NOT per SCF
+    /// iteration).
+    ///
+    /// NOT to be confused with the CSAM family (Eqs. (9)/(11)/(12) of the same
+    /// paper), which the authors explicitly call "non-rigorous" and which Psi4
+    /// ships as its default. ferric does not offer CSAM through this key.
+    ///
+    /// WHERE IT PAYS: the paper states that for the long-range Coulomb
+    /// operator "the CSB estimate is no more useful than the QQ estimate for
+    /// currently tractable systems" (its Table I reports F_min = 1.000 for CSB
+    /// under `1/r12`), and that the win appears for strongly distance-decaying
+    /// kernels — `e^(-r12)`, `erfc(ω r12)/r12`. ferric's CLI runs Coulomb, so
+    /// expect a small or null win on ordinary HF/hybrid jobs. That is the
+    /// literature's own prediction, recorded here before any measurement;
+    /// nothing in this feature has been benchmarked.
+    ///
+    /// SCOPE: this CLI resolves `screening` ONCE and uses the SAME resolved
+    /// kind both to build its `SchwarzBounds` (via
+    /// `SchwarzBounds::compute_for_screening`, which attaches the CSB `M`
+    /// table to that value and thereby governs the default
+    /// `DirectJ`/`DirectK`/`DirectJK`/`build_jk` path for RHF, UHF and ROHF)
+    /// and to populate `RhfConfig::screening` (which governs the LinK path).
+    /// `k_builder = "cosx"` consumes no Schwarz table at all, so `screening`
+    /// has no effect there — a property of COSX, not a gap in this wiring.
+    pub screening: Option<String>,
     /// COSX exchange grid, `cosx_grid = { radial = 50, angular = 110 }`.
     /// Omitted = (50,110), the measured operating point (coarser grids fail the
     /// 0.1 kcal/mol isodesmic reaction-energy bar in the composed-budget audit).
@@ -1098,6 +1139,7 @@ impl Default for ScfCfg {
             soscf: false,
             integral_thresh: 1e-12,
             k_builder: None,
+            screening: None,
             cosx_grid: None,
             cosx_overlap_fit: None,
             cosx_backend: None,

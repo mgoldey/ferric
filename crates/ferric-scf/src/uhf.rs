@@ -346,12 +346,22 @@ pub fn solve_uhf_fockmod(
     let pluggable_k_kind = crate::fock_assembly::narrow_k_builder_to_supported(
         pluggable_k_kind, need_k, k_mix.omega,
     );
+    // `CsbView` applies CSB (Eq. (8) of Thompson & Ochsenfeld, JCP 147, 144101
+    // (2017)) when — and only when — the caller's `bounds` carries a `csb_m`
+    // table, i.e. when it was built via
+    // `SchwarzBounds::compute_for_screening(.., ScreeningKind::Csb)`. With no
+    // table it is byte-identical to passing `bounds` directly, so the default
+    // path is unchanged. Without this wrapper `[scf] screening = "csb"` would
+    // reach every direct builder and closed-shell LinK but silently NOT
+    // open-shell LinK, since `solve_uhf` has no bound-construction site of its
+    // own to consult a config field at.
+    let link_bound = crate::screening::CsbView::new(bounds);
     let mut pluggable_k: Option<Box<dyn KBuilder>> = crate::fock_assembly::build_pluggable_k(
         pluggable_k_kind,
         ctx,
         mol,
         prep,
-        bounds,
+        &link_bound,
         coulomb_op,
         &config.cosx,
         config.integral_thresh,

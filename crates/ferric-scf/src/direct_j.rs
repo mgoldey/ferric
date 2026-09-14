@@ -63,6 +63,9 @@ impl<'a> JBuilder for DirectJ<'a> {
         let max_q: f64 = self.bounds.q.iter().cloned().fold(0.0f64, f64::max);
         let bra_thresh = if max_q > 0.0 { thresh / max_q } else { thresh };
         let q_table = &self.bounds.q;
+        // CSB `M` table when `[scf] screening = "csb"` selected it; `None`
+        // (the default) leaves the hot loop on plain Schwarz, byte-identical.
+        let m_table = self.bounds.csb_m.as_ref();
         let op = self.bounds.op;
         let prep = self.prep;
 
@@ -121,7 +124,7 @@ impl<'a> JBuilder for DirectJ<'a> {
                 }
                 pool.with(|engine| {
                     local_count += scatter_bra_pair(
-                        engine, prep, dims, offs, q_table, &screen, thresh, d, s1, s2,
+                        engine, prep, dims, offs, q_table, m_table, &screen, thresh, d, s1, s2,
                         &mut mode, true,
                     );
                 });

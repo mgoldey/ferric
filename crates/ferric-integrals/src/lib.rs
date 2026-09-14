@@ -32,6 +32,10 @@ pub mod oneelectron;
 pub mod cabs;
 /// Schwarz upper bounds for integral screening.
 pub mod schwarz;
+/// CSB (combined Schwarz bound) integral screening: the RIGOROUS
+/// `min{Q_uv Q_ls, M_ul M_vs, M_us M_vl}` bound of Thompson & Ochsenfeld,
+/// JCP 147, 144101 (2017), Eq. (8). Never looser than plain Schwarz.
+pub mod csb;
 /// QQR distance-dependent integral screening (Ochsenfeld-style).
 pub mod qqr3;
 /// BLAS thread-count guard (re-exported from ferric-core for convenience).

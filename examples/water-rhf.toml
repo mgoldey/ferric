@@ -14,4 +14,12 @@ density_conv = 1e-7
 diis_size = 8
 integral_thresh = 1e-12
 #k_builder = "link"
+# Shell-quartet screening bound: "schwarz" (default) or "csb".
+# Both are RIGOROUS upper bounds, so "csb" is not an accuracy tradeoff --
+# it is min{Q_uv Q_ls, M_ul M_vs, M_us M_vl} (Thompson & Ochsenfeld,
+# JCP 147, 144101 (2017), Eq. 8), which includes the Schwarz product in the
+# min and therefore can never be looser. The paper reports it buys little
+# under the Coulomb operator and much more under strongly distance-decaying
+# kernels; see ScfCfg::screening's doc for the full scope.
+#screening = "csb"
 

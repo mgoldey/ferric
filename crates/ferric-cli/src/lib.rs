@@ -297,10 +297,30 @@ pub fn run(args: Vec<String>) {
         std::process::exit(1);
     });
     let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
+    // Resolved ONCE, here, so the SAME kind governs BOTH mechanisms:
+    //   * this `bounds` value, whose `csb_m` table (attached by
+    //     `compute_for_screening`) is what carries CSB into the default
+    //     `DirectJ`/`DirectK`/`DirectJK`/`build_jk` path for RHF, UHF and
+    //     ROHF — none of whose signatures change;
+    //   * `RhfConfig::screening` below, which governs the separate LinK path.
+    // Parsing it twice would risk the two silently disagreeing after a future
+    // edit touched only one site.
+    let screening_kind = cfg
+        .scf
+        .screening
+        .as_deref()
+        .map_or(Ok(ferric_scf::screening::ScreeningKind::default()), |s| {
+            ferric_scf::screening::ScreeningKind::parse_config_str(s)
+        })
+        .unwrap_or_else(|e| {
+            eprintln!("error: [scf] screening: {e}");
+            std::process::exit(1);
+        });
+    let bounds = SchwarzBounds::compute_for_screening(op, &prep, screening_kind)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
     // For ksdft, default RI-J/RI-K to def2-universal-jkfit (required for hybrids
     // and RSH; harmless for pure DFT). User can still override via [scf].
     let (xc, df_j_default, df_k_default) = if method == "ksdft" {
@@ -419,6 +439,9 @@ pub fn run(args: Vec<String>) {
         // (QmmmSystem(polarizabilities_angstrom3=) + run_qmmm) only.
         polarizable: None,
         verbose: cfg.scf.verbose,
+        // Same resolved kind that already selected `bounds`'s CSB table
+        // above; see the comment there for why it is parsed once.
+        screening: screening_kind,
     };
 
     // Resolve/validate [scf] df_guess_aux up front (config-honesty: a knob
@@ -1956,6 +1979,9 @@ fn run_pdep_rpa_arm(
             // LU log-det path for the correlation energy.
             need_eigenvalues_freq: false,
             verbose: cfg.scf.verbose,
+            // Same resolved kind that already selected `bounds`'s CSB table
+            // above; see the comment there for why it is parsed once.
+            screening: screening_kind,
         };
         // For open-shell molecules (multiplicity > 1) re-run with UHF + MOM so
         // the reference is converged, then dispatch to the unrestricted RPA.
@@ -2767,6 +2793,9 @@ fn run_gw(
             need_inv_dielectric_freq: true,
             need_eigenvalues_freq: true,
             verbose: cfg.scf.verbose,
+            // Same resolved kind that already selected `bounds`'s CSB table
+            // above; see the comment there for why it is parsed once.
+            screening: screening_kind,
         };
         let gw_cfg = ferric_gw::GwConfig {
             method: gw_method,
@@ -2780,6 +2809,9 @@ fn run_gw(
             // Reuse the single CLI-wide `--verbose`/`-v` flag / `[scf]
             // verbose` TOML key rather than adding a parallel `[gw] verbose`.
             verbose: cfg.scf.verbose,
+            // Same resolved kind that already selected `bounds`'s CSB table
+            // above; see the comment there for why it is parsed once.
+            screening: screening_kind,
         };
         let ha_to_ev = 27.211_386_245_988_f64;
         if mol.multiplicity > 1 {
@@ -3060,6 +3092,9 @@ fn run_bse_tda(
             need_inv_dielectric_freq: true,
             need_eigenvalues_freq: true,
             verbose: cfg.scf.verbose,
+            // Same resolved kind that already selected `bounds`'s CSB table
+            // above; see the comment there for why it is parsed once.
+            screening: screening_kind,
         };
         let ha_to_ev = 27.211_386_245_988_f64;
         let bse = ferric_gw::bse::run_bse_tda(
@@ -3166,6 +3201,9 @@ fn run_tdhf_static_polarizability(
             need_inv_dielectric_freq: false,
             need_eigenvalues_freq: true,
             verbose: cfg.scf.verbose,
+            // Same resolved kind that already selected `bounds`'s CSB table
+            // above; see the comment there for why it is parsed once.
+            screening: screening_kind,
         };
         let res = ferric_gw::bse::run_rpax_static_polarizability(
             mol, prep, &dfbs, op, result, &rpa_cfg, frozen_core, scissor,
@@ -3409,6 +3447,9 @@ fn run_optimize(
                 // LU log-det path for the correlation energy.
                 need_eigenvalues_freq: false,
                 verbose: cfg.scf.verbose,
+                // Same resolved kind that already selected `bounds`'s CSB table
+                // above; see the comment there for why it is parsed once.
+                screening: screening_kind,
             };
             let h_fd = 5e-4;
             let opt_result =

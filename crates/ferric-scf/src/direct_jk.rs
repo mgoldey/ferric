@@ -239,6 +239,19 @@ impl<'a> DirectJK<'a> {
         let shell_pairs = self.screened_bra_pairs(&d_max_shell)?;
 
         let q_table = &self.bounds.q;
+        // CSB `M` table when `[scf] screening = "csb"` selected it; `None`
+        // (the default) leaves the hot loop on plain Schwarz, byte-identical.
+        //
+        // NOT applied to the BRA-PAIR prefilter above, and that is not an
+        // omission: the prefilter screens the DIAGONAL quartet (s1,s2|s1,s2),
+        // where plain Schwarz is EXACT — Cauchy-Schwarz is an equality there,
+        // so Q(s1,s2)^2 == max |(s1 s2|s1 s2)| — and no valid upper bound can
+        // be smaller than an exact one. CSB's `min` therefore selects the
+        // Schwarz term at every diagonal quartet, making it provably inert on
+        // this loop. Same structural fact `qqr.rs` records for QQR (see
+        // `tests/qqr_diagonal_noop.rs`), and the same consequence: CSB acts
+        // only on the innermost per-quartet test, never on a pair list.
+        let m_table = self.bounds.csb_m.as_ref();
         let prep = self.prep;
         let nbf = prep.nbasis();
         let pool = self.pool.as_ref().expect("pool initialized by screened_bra_pairs");
@@ -270,8 +283,8 @@ impl<'a> DirectJK<'a> {
                     }
                     pool.with(|engine| {
                         local_count += scatter_bra_pair(
-                            engine, prep, dims, offs, q_table, &screen, thresh, d_total, s1, s2,
-                            &mut mode, true,
+                            engine, prep, dims, offs, q_table, m_table, &screen, thresh, d_total,
+                            s1, s2, &mut mode, true,
                         );
                     });
                 }
@@ -387,6 +400,19 @@ impl<'a> DirectJK<'a> {
         let shell_pairs = self.screened_bra_pairs(&d_max_shell)?;
 
         let q_table = &self.bounds.q;
+        // CSB `M` table when `[scf] screening = "csb"` selected it; `None`
+        // (the default) leaves the hot loop on plain Schwarz, byte-identical.
+        //
+        // NOT applied to the BRA-PAIR prefilter above, and that is not an
+        // omission: the prefilter screens the DIAGONAL quartet (s1,s2|s1,s2),
+        // where plain Schwarz is EXACT — Cauchy-Schwarz is an equality there,
+        // so Q(s1,s2)^2 == max |(s1 s2|s1 s2)| — and no valid upper bound can
+        // be smaller than an exact one. CSB's `min` therefore selects the
+        // Schwarz term at every diagonal quartet, making it provably inert on
+        // this loop. Same structural fact `qqr.rs` records for QQR (see
+        // `tests/qqr_diagonal_noop.rs`), and the same consequence: CSB acts
+        // only on the innermost per-quartet test, never on a pair list.
+        let m_table = self.bounds.csb_m.as_ref();
         let prep = self.prep;
         let nbf = prep.nbasis();
         let pool = self.pool.as_ref().expect("pool initialized by screened_bra_pairs");
@@ -427,7 +453,7 @@ impl<'a> DirectJK<'a> {
                     }
                     pool.with(|engine| {
                         local_count += scatter_bra_pair(
-                            engine, prep, dims, offs, q_table, &screen, thresh, d, s1, s2,
+                            engine, prep, dims, offs, q_table, m_table, &screen, thresh, d, s1, s2,
                             &mut mode, true,
                         );
                     });

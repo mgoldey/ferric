@@ -193,6 +193,40 @@ pub struct RhfConfig {
     /// field. Under MPI, only rank 0 prints (see `ctx.is_root()` at the print
     /// site) so ranks > 0 never duplicate the trace.
     pub verbose: bool,
+    /// Which screening bound to build for the LinK-specific pair list when
+    /// `k_builder == Some("link")`. Default
+    /// [`crate::screening::ScreeningKind::Schwarz`] — byte-identical to every
+    /// pre-CSB build. `Csb` selects [`crate::screening::CsbBounds`], the
+    /// RIGOROUS `min{Q_µν Q_λσ, M_µλ M_νσ, M_µσ M_νλ}` bound of Thompson &
+    /// Ochsenfeld, JCP 147, 144101 (2017), Eq. (8). Because CSB is a genuine
+    /// upper bound (unlike the CSAM family of Eqs. (9)/(11)/(12) in the same
+    /// paper), selecting it trades a slightly larger setup cost for a tighter
+    /// screen — it is NOT an accuracy tradeoff and cannot discard a quartet
+    /// carrying real weight.
+    ///
+    /// SCOPE OF THIS FIELD: read ONLY at the `link_schwarz_opt` construction
+    /// site in [`solve_rhf`] (i.e. only when `k_builder == "link"`), where it
+    /// selects whether the FRESH LinK table gets an `M` table. It does NOT by
+    /// itself affect the dense direct `build_jk`/`DirectJ`/`DirectK`/
+    /// `DirectJK` path (the default, `k_builder` unset), nor
+    /// `solve_uhf`/`solve_rohf` — all of those take their bound from the
+    /// CALLER-supplied `bounds: &SchwarzBounds` parameter, fixed before this
+    /// function is entered.
+    ///
+    /// Those paths are NOT stuck on plain Schwarz, though: they pick up CSB
+    /// from the `bounds` VALUE, via
+    /// [`crate::screening::SchwarzBounds::csb_m`] —
+    /// `quartet_scatter::scatter_bra_pair` consults it directly, and
+    /// `solve_uhf`/`solve_rohf` wrap `bounds` in
+    /// [`crate::screening::CsbView`] before handing it to LinK. Build that
+    /// value with `SchwarzBounds::compute_for_screening(op, prep, kind)`
+    /// rather than plain `compute` to opt those paths in.
+    ///
+    /// `ferric-cli` resolves `[scf] screening` ONCE and uses the same resolved
+    /// `ScreeningKind` for both mechanisms, so they never disagree there. A
+    /// caller that builds `bounds` via plain `compute` and sets `Csb` only
+    /// here gets CSB on closed-shell LinK alone — legal, just unusual.
+    pub screening: crate::screening::ScreeningKind,
 }
 
 impl Default for RhfConfig {
@@ -244,6 +278,7 @@ impl Default for RhfConfig {
             pcm: None,
             polarizable: None,
             verbose: false,
+            screening: crate::screening::ScreeningKind::default(),
         }
     }
 }
@@ -618,18 +653,38 @@ pub fn solve_rhf(
     )?;
     // Build the pluggable builder once — LinK's SignificantPairs and COSX's
     // grid/overlap-fit factor are geometry-only and expensive per iteration.
-    // When using "link", compute a fresh SchwarzBounds to own the lifetime.
+    // When using "link", compute a fresh screening bound to own the lifetime.
+    // `config.screening` selects Schwarz (default — byte-identical to the
+    // pre-CSB behaviour of always building a fresh `SchwarzBounds` here) or
+    // CSB. See `RhfConfig::screening` for the scope of THIS field (LinK only;
+    // the dense path picks CSB up from `bounds.csb_m` instead).
+    //
+    // `config.screening` selects the bound for the FRESH LinK table only (see
+    // `RhfConfig::screening` for why this is separate from the caller's
+    // `bounds`). `compute_for_screening` with `Schwarz` delegates verbatim to
+    // `compute`, so the default arm is byte-identical to the pre-CSB code that
+    // unconditionally called `SchwarzBounds::compute(op, prep)` here.
     let link_schwarz_opt = if pluggable_k == Some("link") {
-        Some(SchwarzBounds::compute(op, prep)?)
+        Some(SchwarzBounds::compute_for_screening(op, prep, config.screening)?)
     } else {
         None
     };
+    // `CsbView` applies Eq. (8) when — and only when — the wrapped value
+    // carries a `csb_m` table, and is byte-identical to plain Schwarz when it
+    // does not. Wrapping BOTH the fresh LinK bound and the fallback to the
+    // caller's `bounds` in the same view type gives `build_pluggable_k` one
+    // monomorphization without any enum plumbing, and makes the caller's
+    // `bounds` carry CSB into LinK on the paths that reach here with
+    // `link_schwarz_opt == None` (COSX, which reads no bound at all).
+    let link_bound = crate::screening::CsbView::new(
+        link_schwarz_opt.as_ref().unwrap_or(bounds),
+    );
     let mut k_builder: Option<Box<dyn KBuilder>> = crate::fock_assembly::build_pluggable_k(
         pluggable_k,
         ctx,
         mol,
         prep,
-        link_schwarz_opt.as_ref().unwrap_or(bounds),
+        &link_bound,
         op,
         &config.cosx,
         config.integral_thresh,
@@ -1333,7 +1388,8 @@ pub fn build_jk_with_pool(
             }
             pool.with(|engine| {
                 local_count += scatter_bra_pair(
-                    engine, prep, dims, offs, &bounds.q, &screen, thresh, d, s1, s2,
+                    engine, prep, dims, offs, &bounds.q, bounds.csb_m.as_ref(),
+                    &screen, thresh, d, s1, s2,
                     &mut mode, true,
                 );
             });
