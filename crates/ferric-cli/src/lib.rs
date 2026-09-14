@@ -428,6 +428,10 @@ pub fn run(args: Vec<String>) {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+    let df_increments_aux = cfg.scf.df_increments_aux_resolved().unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
 
     if task == "optimize" {
         run_optimize(method, &cfg, &ctx, &mol, &bs, op, &rhf_config, budget_bytes);
@@ -505,6 +509,11 @@ pub fn run(args: Vec<String>) {
                 "warning: [scf] df_guess is not yet composed with the {method} convergence ladder; ignored here (use kind = \"rimp2\" or another non-laddered method to use it)"
             );
         }
+        if cfg.scf.df_increments {
+            eprintln!(
+                "warning: [scf] df_increments is not yet composed with the {method} convergence ladder; ignored here (use kind = \"rimp2\" or another non-laddered method to use it)"
+            );
+        }
         let ladder = cfg.scf.build_ladder(&rhf_config);
         // Report the J/K path actually in use. RI-JK is now opt-in (the ladder
         // no longer substitutes it — see `ladder::default_ladder_from`), but
@@ -545,6 +554,33 @@ pub fn run(args: Vec<String>) {
         );
         let _ = dfg.df_energy; // diagnostic only; the exact-stage result is authoritative
         dfg.result
+    } else if cfg.scf.df_increments && mol.multiplicity == 1 {
+        // Opt-in DF-corrected incremental Fock SCF (see
+        // `ferric_scf::df_increments::solve_rhf_with_df_increments`).
+        // Restricted to the closed-shell path for the same reason `df_guess`
+        // is above.
+        let dfi = ferric_scf::df_increments::solve_rhf_with_df_increments(
+            &ctx, &mol, &prep, op, &bounds, &rhf_config, df_increments_aux.as_deref(),
+        ).unwrap_or_else(|e| {
+            eprintln!("error: DF-increments SCF failed: {e:?}");
+            std::process::exit(1);
+        });
+        eprintln!(
+            "[ferric] SCF: DF-increments via {} (DF-guess {} iters {}; DF-corrected inner loop {} iters {}; \
+             {} exact cleanup iters; {} total exact Fock builds)",
+            df_increments_aux.as_deref().unwrap_or(ferric_scf::ladder::DF_GUESS_DEFAULT_AUX),
+            dfi.df_guess_iterations,
+            if dfi.df_guess_converged { "converged" } else { "did not fully converge" },
+            dfi.inner_iterations,
+            if dfi.inner_converged { "converged" } else { "did not fully converge" },
+            dfi.exact_cleanup_iterations,
+            dfi.exact_builds,
+        );
+        if !dfi.result.converged {
+            eprintln!("warning: DF-increments SCF did not fully converge (exit {:?})", dfi.result.exit);
+        }
+        let _ = dfi.df_guess_energy; // diagnostic only; the final exact result is authoritative
+        dfi.result
     } else {
         solve_rhf(&ctx, &mol, &prep, op, &bounds, &rhf_config).unwrap_or_else(|e| {
         // For pdep-rpa/gw/mp2-v with open-shell molecules the UHF dispatch inside
