@@ -190,3 +190,69 @@ fn df_guess_result_type_is_used() {
     let _: f64 = dfg.df_energy;
     let _ = dfg.result.energy;
 }
+
+/// MECHANISM-ACTIVE guard for the stall-point (tight) DF pre-stage policy.
+///
+/// The other tests in this file all pass under EITHER policy — none of them
+/// would notice if the tight default silently reverted to the loosened
+/// threshold, which is precisely the "a passing test may be measuring
+/// inertness" failure this repo has a memory about. This one discriminates.
+///
+/// The two policies have opposite, individually-checkable signatures:
+///   loose: DF stage CONVERGES in few iterations (7 on benzene), exact stage
+///          then needs one MORE iteration.
+///   tight: DF stage runs to its cap WITHOUT converging (25), exact stage
+///          needs one FEWER.
+/// Asserting both halves means a revert in either direction fails here.
+///
+/// Measured on benzene (aTZ): loose 7 DF + 6 exact vs tight 25 DF + 5 exact.
+/// Water/STO-3G is used here for test cost; the DIRECTION is what is asserted,
+/// not the benzene counts, because the exact-iteration saving is system
+/// dependent and a point bar would be brittle.
+#[test]
+fn tight_df_pre_stage_runs_longer_and_shortens_the_exact_stage() {
+    let (mol, bs) = water_sto3g();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let base = RhfConfig { energy_conv: 1e-10, density_conv: 1e-9, ..Default::default() };
+
+    let run = |tight: bool| {
+        // SAFETY-ish: these tests run single-threaded within this binary for
+        // this env var's scope; mirrors the ENV_LOCK pattern used elsewhere.
+        if tight {
+            std::env::remove_var("FERRIC_DF_GUESS_TIGHT"); // default is ON
+        } else {
+            std::env::set_var("FERRIC_DF_GUESS_TIGHT", "0");
+        }
+        let r = solve_rhf_with_df_guess(&ctx, &mol, &prep, op, &bounds, &base, None).unwrap();
+        std::env::remove_var("FERRIC_DF_GUESS_TIGHT");
+        r
+    };
+
+    let loose = run(false);
+    let tight = run(true);
+
+    assert!(
+        tight.df_iterations > loose.df_iterations,
+        "tight policy must run the DF pre-stage LONGER (to its stall point): \
+         tight {} vs loose {} DF iterations — if these are equal the tight \
+         default is inert and the measured 1.15-1.18x is not being delivered",
+        tight.df_iterations, loose.df_iterations
+    );
+    assert!(
+        tight.result.iterations <= loose.result.iterations,
+        "tight policy must not COST exact iterations: tight {} vs loose {} — \
+         the entire justification is trading cheap DF iterations for expensive \
+         exact ones, so a regression here inverts the trade",
+        tight.result.iterations, loose.result.iterations
+    );
+    // Both must still land on the same converged answer.
+    let de = (tight.result.energy - loose.result.energy).abs();
+    assert!(
+        de < 1e-9,
+        "tight and loose DF policies converged to different energies (Δ={de:.3e} Ha) — \
+         the pre-stage is a density generator only and must not move the fixed point"
+    );
+}
