@@ -197,15 +197,27 @@ pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Ferric
         // exposes only `scf_compute_terfc_eri3`/`_eri2`, and a screening table
         // needs 4-center (PQ|PQ) quartets.
         //
-        // One caveat for whoever closes that gap: the proof is for the EXACT
-        // kernel while this engine is INTERPOLATED, so table error must be
-        // folded in as a relative inflation of Q/M, not merely floored — a
-        // table entry computed slightly LOW breaks the bound by that much.
+        // UPDATE: the 4-center engine now EXISTS (shim.cc compute_cart_eri4 /
+        // scf_compute_terfc_eri4, validated against libint2 in
+        // tests/eri4_vs_libint.rs). The caveat below has also been measured
+        // rather than assumed — see tests/eri4_terfc_schwarz_validity.rs:
+        // water/cc-pVDZ at r0=2 gives a min (PQ|PQ) diagonal of +8.40e-5 and a
+        // worst |(ab|cd)|/(Q_ab Q_cd) of 1 + 8.88e-16 (one ulp, at a
+        // diagonal-type quartet where Cauchy-Schwarz is an equality).
+        //
+        // It is still refused here, deliberately. What is measured is that the
+        // bound EXISTS on one molecule at one r0; what a production screen needs
+        // is an error budget across r0 and basis, since the proof is for the
+        // EXACT kernel while this engine is INTERPOLATED — a table entry
+        // computed slightly LOW breaks the bound by that much, so table error
+        // must be folded in as a relative inflation of Q/M, not merely floored.
+        // Flipping this gate is a separate, evidence-bearing change.
         OperatorKind::Terfc => {
             return Err(FerricError::Libint(
-                "Schwarz screening is valid for Terfc (the kernel is positive-definite) but is \
-                 not yet available: it needs 4-center (PQ|PQ) quartets and the shim exposes \
-                 only 3- and 2-center terfc kernels. This is an engine gap, not a validity one."
+                "Schwarz screening is valid for Terfc (the kernel is positive-definite) and the \
+                 4-center engine now exists, but it is not yet enabled: the bound has been \
+                 measured on one molecule at one r0 (see tests/eri4_terfc_schwarz_validity.rs), \
+                 not budgeted for interpolation error across r0 and basis."
                     .to_string(),
             ))
         }

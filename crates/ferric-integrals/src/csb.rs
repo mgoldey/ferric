@@ -399,8 +399,12 @@ pub fn csb_m_table(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Fe
         // SAME Cauchy-Schwarz argument, so CSB inherits Schwarz's requirement
         // that the kernel be positive-definite. terf is not (sign change at
         // k*r0 = pi; measured -7.543e-3 diagonal), so CSB is invalid there
-        // permanently. terfc IS positive-definite and CSB-eligible, blocked
-        // only by the missing 4-center engine.
+        // permanently. terfc IS positive-definite and CSB-eligible; the
+        // 4-center engine it needed now exists (shim.cc compute_cart_eri4), and
+        // the bound has been measured for Schwarz on water/cc-pVDZ at r0=2
+        // (tests/eri4_terfc_schwarz_validity.rs). It stays refused pending an
+        // interpolation-error budget across r0 and basis — see the longer note
+        // in schwarz.rs.
         OperatorKind::Terf => {
             return Err(FerricError::Libint(
                 "CSB screening is INVALID for the Terf operator, not merely unimplemented: CSB's \
@@ -411,8 +415,9 @@ pub fn csb_m_table(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Fe
         }
         OperatorKind::Terfc => {
             return Err(FerricError::Libint(
-                "CSB screening is valid for Terfc (positive-definite, proven) but needs 4-center \
-                 quartets the shim does not expose. Engine gap, not a validity one."
+                "CSB screening is valid for Terfc (positive-definite, proven) and the 4-center \
+                 engine now exists, but it is not yet enabled: the bound is measured on one \
+                 molecule at one r0, not budgeted for interpolation error. See schwarz()."
                     .to_string(),
             ))
         }
