@@ -1032,13 +1032,28 @@ pub struct ScfCfg {
     /// command. See `ferric_scf::rhf::RhfConfig::verbose`.
     #[serde(default)]
     pub verbose: bool,
-    /// Opt-in two-stage "DF guess" SCF (Psi4's "Andy trick 2.0"): converge a
-    /// density-fitted J/K SCF to a loose threshold first, then hand its
-    /// converged density to a fresh exact-4-index-integral SCF. Default
-    /// `false` — with this off, no DF pre-stage is constructed at all and the
-    /// SCF path is unchanged (byte-identical) from before this feature
-    /// existed. See `ferric_scf::ladder::solve_rhf_with_df_guess`.
-    #[serde(default)]
+    /// Two-stage "DF guess" SCF (Psi4's "Andy trick 2.0"): converge a
+    /// density-fitted J/K SCF first, then hand its density to a fresh
+    /// exact-4-index-integral SCF. See
+    /// `ferric_scf::ladder::solve_rhf_with_df_guess`.
+    ///
+    /// **Default `true`** (matching Psi4, whose `DF_SCF_GUESS` also defaults
+    /// on). Mathematically innocuous: the DF stage only produces a starting
+    /// DENSITY; the exact stage still determines the reported energy and
+    /// orbitals, so the converged answer is unchanged (measured: benzene/aTZ
+    /// -230.7808857506 either way, 1e-10 agreement) — only the iteration count
+    /// changes. Measured 1.93x at benzene/aug-cc-pVTZ (759.69 -> 393.85 s),
+    /// cutting 12 exact iterations to 7 DF + 6 exact.
+    ///
+    /// Set `false` to restore the pre-feature path, which is byte-identical to
+    /// before this existed (no DF pre-stage is constructed at all).
+    ///
+    /// SCOPE — this is why the default is safe to flip: the pre-stage only
+    /// engages on the closed-shell, non-laddered path (`rimp2` and friends,
+    /// `mol.multiplicity == 1`). `rhf`/`ksdft` go through the convergence
+    /// ladder, which does not compose with `df_guess` and warns rather than
+    /// silently ignoring it; open-shell falls through untouched.
+    #[serde(default = "default_df_guess")]
     pub df_guess: bool,
     /// Auxiliary (JK-fit) basis for the `df_guess` pre-stage only. Omitted =
     /// `ferric_scf::ladder::DF_GUESS_DEFAULT_AUX` ("def2-universal-jkfit").
@@ -1094,7 +1109,7 @@ impl Default for ScfCfg {
             mom_after_iter: 0,
             ladder: Vec::new(),
             verbose: false,
-            df_guess: false,
+            df_guess: true,
             df_guess_aux: None,
             df_increments: false,
             df_increments_aux: None,
@@ -1221,6 +1236,14 @@ impl ScfCfg {
         Ok(self.df_increments_aux.clone())
     }
 }
+
+/// `[scf] df_guess` default. MUST stay in sync with `ScfCfg::default()`'s
+/// `df_guess` field: serde uses THIS for an omitted key, while the struct
+/// `Default` covers programmatic construction. A plain `#[serde(default)]`
+/// would yield `bool::default()` == false and silently disable the feature for
+/// every TOML that omits the key — i.e. almost all of them — so the flip to
+/// `true` has to be expressed here too, not just in `Default`.
+fn default_df_guess() -> bool { true }
 
 fn default_max_iter() -> usize { 100 }
 // Match the library convergence gate (rhf::scf_converged): density_conv is the
