@@ -26,7 +26,7 @@
 //! | `csb_is_strictly_tighter_somewhere` | an INERT bound: a `min` that never selects an `M` term buys nothing, and would make the other tests pass vacuously |
 //! | `csb_trivial_limit_matches_schwarz_pair_list` | the exactness anchor at threshold 0: a bound that spuriously zeroes an entry makes a pair unreachable at EVERY threshold, including 0 |
 //! | `csb_hot_loop_matches_the_bound_trait` | drift between the two implementations of Eq. (8) (the `Bound` impl and `scatter_bra_pair`'s hoisted row slices) |
-//! | `csb_view_agrees_with_csb_bounds_and_degrades_to_schwarz` | the third implementation, `CsbView` (open-shell LinK), drifting — AND the degenerate case where a `CsbView` over table-less bounds is not exactly plain Schwarz |
+//! | `csb_view_agrees_with_csb_bounds_and_degrades_to_schwarz` | the third implementation, `LinkBound::SchwarzRef` (open-shell LinK), drifting — AND the degenerate case where a `SchwarzRef` over table-less bounds is not exactly plain Schwarz |
 //! | `csb_rhf_energy_matches_schwarz` | any end-to-end wiring defect that changes a converged energy |
 //! | `csb_rhf_is_thread_count_bit_identical` | a non-deterministic reduction introduced by the extra screen |
 //!
@@ -51,7 +51,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::screening::{Bound, CsbBounds, CsbView, ScreeningKind, SchwarzBounds};
+use ferric_scf::screening::{Bound, CsbBounds, LinkBound, ScreeningKind, SchwarzBounds};
 
 fn prep_for(path: &str, basis: &str) -> (Molecule, PreparedBasis) {
     let mol = Molecule::load_xyz(path).unwrap();
@@ -504,14 +504,14 @@ fn csb_hot_loop_matches_the_bound_trait() {
 /// **The THIRD implementation of Eq. (8) must also agree** — and must degrade
 /// to exactly plain Schwarz when there is no `M` table.
 ///
-/// [`CsbView`] is how `[scf] screening = "csb"` reaches open-shell LinK
+/// [`LinkBound::SchwarzRef`] is how `[scf] screening = "csb"` reaches open-shell LinK
 /// (`solve_uhf`/`solve_rohf` hand LinK the caller's `&SchwarzBounds`, and have
 /// no config-reading construction site of their own). It therefore evaluates
 /// Eq. (8) for a third time, from a `&SchwarzBounds` rather than from a
 /// `CsbBounds`, and must agree bitwise with both other implementations.
 ///
 /// The second half is the one that would actually catch a regression: a
-/// `CsbView` over table-less bounds must be BITWISE identical to plain
+/// `SchwarzRef` over table-less bounds must be BITWISE identical to plain
 /// Schwarz, because every default (non-CSB) open-shell LinK run now goes
 /// through it. If that ever stopped holding, `screening = "schwarz"` would
 /// silently stop being byte-identical to a pre-CSB build for UHF/ROHF — the
@@ -527,8 +527,8 @@ fn csb_view_agrees_with_csb_bounds_and_degrades_to_schwarz() {
             SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Csb).unwrap();
         let csb = CsbBounds::compute(op, &prep).unwrap();
 
-        let v_plain = CsbView::new(&plain);
-        let v_csb = CsbView::new(&withm);
+        let v_plain = LinkBound::SchwarzRef(&plain);
+        let v_csb = LinkBound::SchwarzRef(&withm);
         assert!(!v_plain.is_csb(), "a view over table-less bounds must NOT be applying CSB");
         assert!(v_csb.is_csb(), "a view over Csb-built bounds must be applying CSB");
 
@@ -543,7 +543,7 @@ fn csb_view_agrees_with_csb_bounds_and_degrades_to_schwarz() {
                         assert_eq!(
                             a.to_bits(),
                             b.to_bits(),
-                            "{:?}: CsbView at ({i},{j},{k},{l}) = {a:.17e} differs bitwise from \
+                            "{:?}: LinkBound::SchwarzRef at ({i},{j},{k},{l}) = {a:.17e} differs bitwise from \
                              CsbBounds = {b:.17e} — the third implementation of Eq. (8) has \
                              drifted",
                             op.kind
@@ -554,7 +554,7 @@ fn csb_view_agrees_with_csb_bounds_and_degrades_to_schwarz() {
                         assert_eq!(
                             p.to_bits(),
                             s.to_bits(),
-                            "{:?}: a CsbView over table-less bounds is not bitwise plain Schwarz \
+                            "{:?}: a SchwarzRef over table-less bounds is not bitwise plain Schwarz \
                              at ({i},{j},{k},{l}): {p:.17e} vs {s:.17e}. Every DEFAULT \
                              open-shell LinK run goes through this path, so this breaks the \
                              byte-identity guarantee for `screening = \"schwarz\"`.",

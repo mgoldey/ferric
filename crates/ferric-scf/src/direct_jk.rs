@@ -252,6 +252,13 @@ impl<'a> DirectJK<'a> {
         // `tests/qqr_diagonal_noop.rs`), and the same consequence: CSB acts
         // only on the innermost per-quartet test, never on a pair list.
         let m_table = self.bounds.csb_m.as_ref();
+        // CSAM `X` table when `[scf] screening = "csam"` selected it. Mutually
+        // exclusive with `m_table` by construction; `None` for both is the
+        // byte-identical plain-Schwarz default. Like CSB it is NOT applied to the
+        // bra-pair prefilter — but for a different reason: CSAM's diagonal
+        // refinement factor is exactly 1 (X's diagonal is 1.0 by Cauchy-Schwarz
+        // equality), so it too is provably inert on `(s1,s2|s1,s2)`.
+        let x_table = self.bounds.csam_x.as_ref();
         let prep = self.prep;
         let nbf = prep.nbasis();
         let pool = self.pool.as_ref().expect("pool initialized by screened_bra_pairs");
@@ -283,8 +290,8 @@ impl<'a> DirectJK<'a> {
                     }
                     pool.with(|engine| {
                         local_count += scatter_bra_pair(
-                            engine, prep, dims, offs, q_table, m_table, &screen, thresh, d_total,
-                            s1, s2, &mut mode, true,
+                            engine, prep, dims, offs, q_table, m_table, x_table, &screen, thresh,
+                            d_total, s1, s2, &mut mode, true,
                         );
                     });
                 }
@@ -413,6 +420,13 @@ impl<'a> DirectJK<'a> {
         // `tests/qqr_diagonal_noop.rs`), and the same consequence: CSB acts
         // only on the innermost per-quartet test, never on a pair list.
         let m_table = self.bounds.csb_m.as_ref();
+        // CSAM `X` table when `[scf] screening = "csam"` selected it. Mutually
+        // exclusive with `m_table` by construction; `None` for both is the
+        // byte-identical plain-Schwarz default. Like CSB it is NOT applied to the
+        // bra-pair prefilter — but for a different reason: CSAM's diagonal
+        // refinement factor is exactly 1 (X's diagonal is 1.0 by Cauchy-Schwarz
+        // equality), so it too is provably inert on `(s1,s2|s1,s2)`.
+        let x_table = self.bounds.csam_x.as_ref();
         let prep = self.prep;
         let nbf = prep.nbasis();
         let pool = self.pool.as_ref().expect("pool initialized by screened_bra_pairs");
@@ -453,8 +467,8 @@ impl<'a> DirectJK<'a> {
                     }
                     pool.with(|engine| {
                         local_count += scatter_bra_pair(
-                            engine, prep, dims, offs, q_table, m_table, &screen, thresh, d, s1, s2,
-                            &mut mode, true,
+                            engine, prep, dims, offs, q_table, m_table, x_table, &screen, thresh,
+                            d, s1, s2, &mut mode, true,
                         );
                     });
                 }

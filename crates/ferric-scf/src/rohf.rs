@@ -357,10 +357,10 @@ pub fn solve_rohf_best_effort(
     let pluggable_k_kind = crate::fock_assembly::narrow_k_builder_to_supported(
         pluggable_k_kind, need_k, k_mix.omega,
     );
-    // Same `CsbView` wrapper and same rationale as `solve_uhf`'s — see the
-    // comment there. No table on `bounds` (the default) makes this
+    // Same `LinkBound::SchwarzRef` adapter and same rationale as `solve_uhf`'s
+    // — see the comment there. No table on `bounds` (the default) makes this
     // byte-identical to passing `bounds` directly.
-    let link_bound = crate::screening::CsbView::new(bounds);
+    let link_bound = crate::screening::LinkBound::SchwarzRef(bounds);
     let mut pluggable_k: Option<Box<dyn KBuilder>> = crate::fock_assembly::build_pluggable_k(
         pluggable_k_kind,
         ctx,

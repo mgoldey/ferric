@@ -972,28 +972,47 @@ pub struct ScfCfg {
     /// when DF-J/DF-K is active, when the functional uses no exact exchange, or
     /// for a range-separated functional.
     pub k_builder: Option<String>,
-    /// Shell-quartet screening bound: `"schwarz"` (default) or `"csb"`.
-    /// Unknown values are a hard error (strict parse, matching every other
-    /// string knob in this file — see CLAUDE.md's "config honesty" section).
-    ///
-    /// BOTH ARE RIGOROUS UPPER BOUNDS, so this is NOT an accuracy tradeoff.
-    /// `"csb"` is the combined Schwarz bound of Thompson & Ochsenfeld,
-    /// J. Chem. Phys. 147, 144101 (2017), Eq. (8):
+    /// Shell-quartet screening bound: `"schwarz"` (default), `"csb"`, or
+    /// `"csam"`. Unknown values are a hard error (strict parse, matching every
+    /// other string knob in this file — see CLAUDE.md's "config honesty"
+    /// section).
     ///
     /// ```text
-    ///   |(µν|λσ)| ≤ min{ Q_µν Q_λσ, M_µλ M_νσ, M_µσ M_νλ },  M_µλ = sqrt(|(µµ|λλ)|)
+    ///   "schwarz"  RIGOROUS      Q_µν Q_λσ                                (default)
+    ///   "csb"      RIGOROUS      min{ Q_µν Q_λσ, M_µλ M_νσ, M_µσ M_νλ }    Eq. (8)
+    ///   "csam"     NON-RIGOROUS  Q_µν Q_λσ · sqrt(max(X_µλ X_νσ, X_µσ X_νλ))
+    ///                                                                 Eq. (9)/(11)/(12)
     /// ```
     ///
-    /// Because it is a `min` that INCLUDES the plain Schwarz product, it can
-    /// never be looser than `"schwarz"`, so selecting it cannot discard a
-    /// quartet that `"schwarz"` would have kept above threshold. It costs one
-    /// extra `nshells²` table (one `(PP|QQ)` quartet per shell pair,
-    /// geometry-only, built once per bound construction — NOT per SCF
-    /// iteration).
+    /// All three are from Thompson & Ochsenfeld, J. Chem. Phys. 147, 144101
+    /// (2017), with `M_µλ = sqrt(|(µµ|λλ)|)` and `X_µλ` the normalised ratio
+    /// `max|(µµ|λλ)| / sqrt(|(µµ|µµ)||(λλ|λλ)|)`.
     ///
-    /// NOT to be confused with the CSAM family (Eqs. (9)/(11)/(12) of the same
-    /// paper), which the authors explicitly call "non-rigorous" and which Psi4
-    /// ships as its default. ferric does not offer CSAM through this key.
+    /// `"schwarz"` and `"csb"` ARE RIGOROUS UPPER BOUNDS, so choosing between
+    /// THEM is NOT an accuracy tradeoff — it is speed-vs-setup-cost. Because
+    /// CSB is a `min` that INCLUDES the plain Schwarz product, it can never be
+    /// looser than `"schwarz"`, so selecting it cannot discard a quartet that
+    /// `"schwarz"` would have kept above threshold. It costs one extra
+    /// `nshells²` table (one `(PP|QQ)` quartet per shell pair, geometry-only,
+    /// built once per bound construction — NOT per SCF iteration).
+    ///
+    /// `"csam"` IS NOT A BOUND. The authors explicitly call Eqs. (9)/(11)/(12)
+    /// "non-rigorous" in their own voice, and the estimate CAN fall below the
+    /// true integral magnitude — so it can discard a quartet carrying real
+    /// weight. That makes it an ACCURACY-VS-THRESHOLD TRADEOFF: its error is
+    /// controlled by `integral_thresh`, and it grows LINEARLY with system size
+    /// at fixed threshold (the paper's Fig. 2). Measured energy errors are
+    /// nonetheless small — −0.20 … +1.80 nanohartree at ϑ = 1e-12 (Table V),
+    /// 0.05–9.35 µH at ϑ = 1e-10 (Table III) — which is why Psi4 ships CSAM as
+    /// its own default (`SCREENING=CSAM`). ferric does NOT: `"schwarz"` remains
+    /// the default here, and `"csam"` must be asked for explicitly.
+    ///
+    /// `"csam"` is refused for SHORT-RANGE (`erfc`) operators with a typed
+    /// error naming `"csb"` — the paper's own recommendation for those kernels
+    /// (Conclusion, p. 144101-8/9), where the rigorous bound is both available
+    /// and excellent. A range-separated functional therefore fails loudly under
+    /// `screening = "csam"` rather than silently substituting a different
+    /// screen.
     ///
     /// WHERE IT PAYS: the paper states that for the long-range Coulomb
     /// operator "the CSB estimate is no more useful than the QQ estimate for
@@ -1006,8 +1025,8 @@ pub struct ScfCfg {
     ///
     /// SCOPE: this CLI resolves `screening` ONCE and uses the SAME resolved
     /// kind both to build its `SchwarzBounds` (via
-    /// `SchwarzBounds::compute_for_screening`, which attaches the CSB `M`
-    /// table to that value and thereby governs the default
+    /// `SchwarzBounds::compute_for_screening`, which attaches the CSB `M` or
+    /// CSAM `X` table to that value and thereby governs the default
     /// `DirectJ`/`DirectK`/`DirectJK`/`build_jk` path for RHF, UHF and ROHF)
     /// and to populate `RhfConfig::screening` (which governs the LinK path).
     /// `k_builder = "cosx"` consumes no Schwarz table at all, so `screening`

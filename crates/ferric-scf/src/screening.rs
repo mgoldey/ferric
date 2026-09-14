@@ -2,6 +2,7 @@
 
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::csam;
 use ferric_integrals::csb;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::schwarz;
@@ -25,9 +26,13 @@ pub trait Bound: Sync + Send {
 /// Used to skip negligible shell quartets during Fock matrix construction:
 /// if Q(s1,s2) * Q(s3,s4) * max|D| < threshold, the quartet is skipped.
 ///
-/// Optionally carries the CSB `M` table (see [`SchwarzBounds::csb_m`]), which
-/// upgrades the screen in [`crate::quartet_scatter::scatter_bra_pair`] from
-/// plain Schwarz to Eq. (8) without changing any builder's signature.
+/// Optionally carries ONE refinement table — the CSB `M` table (see
+/// [`SchwarzBounds::csb_m`]) or the CSAM `X` table (see
+/// [`SchwarzBounds::csam_x`]) — which upgrades the screen in
+/// [`crate::quartet_scatter::scatter_bra_pair`] from plain Schwarz to Eq. (8)
+/// or Eq. (9)/(11)/(12) respectively, without changing any builder's
+/// signature. At most one is ever attached: they come from a single
+/// three-way `match` in [`SchwarzBounds::compute_for_screening`].
 #[derive(Debug, Clone)]
 #[must_use = "Schwarz bounds are expensive to compute; dropping them wastes work"]
 pub struct SchwarzBounds {
@@ -54,13 +59,24 @@ pub struct SchwarzBounds {
     /// `tests/csb_screening.rs::csb_hot_loop_matches_the_bound_trait` for the
     /// assertion that keeps them from drifting.
     pub csb_m: Option<Array2<f64>>,
+    /// CSAM `X` table, `X[P][Q] = max_{µ∈P,λ∈Q} |(µµ|λλ)| / sqrt(|(µµ|µµ)||(λλ|λλ)|)`,
+    /// built for the SAME `op` as `q`. `None` unless
+    /// [`Self::compute_for_screening`] was called with [`ScreeningKind::Csam`].
+    ///
+    /// Distinct from `csb_m` because the two are different quantities feeding
+    /// different formulas: `csb_m` is a plain `sqrt` of a diagonal integral and
+    /// composes via `min` (rigorous); `csam_x` is a normalised RATIO and
+    /// composes multiplicatively (non-rigorous). They are deliberately kept
+    /// side by side rather than unified — a single "refinement table" field
+    /// would invite exactly the confusion that makes CSAM look like a bound.
+    pub csam_x: Option<Array2<f64>>,
 }
 
 impl SchwarzBounds {
     /// Compute Schwarz screening bounds for all shell pairs.
     ///
-    /// Always leaves `csb_m` as `None`, i.e. plain Schwarz. Use
-    /// [`Self::compute_for_screening`] to opt into CSB.
+    /// Always leaves BOTH `csb_m` and `csam_x` as `None`, i.e. plain Schwarz.
+    /// Use [`Self::compute_for_screening`] to opt into CSB or CSAM.
     pub fn compute(op: Operator, prep: &PreparedBasis) -> Result<Self, FerricError> {
         let q = schwarz::schwarz(op, prep)?;
         let nsh = prep.nshells();
@@ -78,27 +94,45 @@ impl SchwarzBounds {
             op,
             nshells: nsh,
             csb_m: None,
+            csam_x: None,
         })
     }
 
     /// Compute Schwarz bounds, additionally building the CSB `M` table when
-    /// `kind == ScreeningKind::Csb`.
+    /// `kind == ScreeningKind::Csb`, or the CSAM `X` table when
+    /// `kind == ScreeningKind::Csam`.
     ///
     /// `ScreeningKind::Schwarz` delegates verbatim to [`Self::compute`] and is
     /// therefore byte-identical to it — there is no separate code path that
     /// could drift.
     ///
-    /// The `M` table is built from the SAME `op` passed here, so the
+    /// This three-way `match` is what makes `csb_m` and `csam_x` MUTUALLY
+    /// EXCLUSIVE: exactly one arm runs, so at most one table is ever attached.
+    /// Every downstream consumer relies on that (`scatter_bra_pair` and
+    /// `LinkBound`'s `schwarz_ref_estimate` both check CSB first and CSAM only
+    /// in the `else`, so the rigorous one would win if it were ever violated).
+    ///
+    /// The refinement table is built from the SAME `op` passed here, so the
     /// per-operator contract cannot be violated by a caller: there is no way
-    /// to supply two operators.
+    /// to supply two operators. Under `Csam` a short-range (`erfc`) `op` is a
+    /// hard error naming `screening = "csb"`, surfaced by the `?` below.
     pub fn compute_for_screening(
         op: Operator,
         prep: &PreparedBasis,
         kind: ScreeningKind,
     ) -> Result<Self, FerricError> {
         let mut bounds = Self::compute(op, prep)?;
-        if kind == ScreeningKind::Csb {
-            bounds.csb_m = Some(csb::csb_m_table(op, prep)?);
+        match kind {
+            ScreeningKind::Schwarz => {}
+            ScreeningKind::Csb => {
+                bounds.csb_m = Some(csb::csb_m_table(op, prep)?);
+            }
+            ScreeningKind::Csam => {
+                // `csam_x_table` itself refuses short-range kernels and names
+                // `screening = "csb"` in the error, so an erfc run under
+                // `csam` fails loudly here rather than silently under-screening.
+                bounds.csam_x = Some(csam::csam_x_table(op, prep)?);
+            }
         }
         Ok(bounds)
     }
@@ -117,11 +151,15 @@ impl Bound for SchwarzBounds {
 
 /// Which shell-quartet screening bound to use.
 ///
-/// Both variants are RIGOROUS upper bounds, so this knob is a
-/// speed-vs-setup-cost choice, NOT an accuracy tradeoff: neither can discard a
-/// quartet carrying weight above the threshold. (Contrast the non-rigorous
-/// CSAM family of Eqs. (9)/(11)/(12) of the same paper, which ferric
-/// deliberately does not offer through this enum.)
+/// `Schwarz` and `Csb` are RIGOROUS upper bounds, so choosing between THOSE
+/// TWO is a speed-vs-setup-cost choice, NOT an accuracy tradeoff: neither can
+/// discard a quartet carrying weight above the threshold.
+///
+/// `Csam` is NOT a bound. It is the non-rigorous estimate of Eqs. (9)/(11)/(12)
+/// of the same paper, it can underestimate a true integral, and selecting it IS
+/// an accuracy-vs-threshold tradeoff. The distinction is the single most
+/// important thing about this enum — see each variant's own doc, and
+/// [`CsamBounds`] for the full accounting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScreeningKind {
     /// Plain Cauchy-Schwarz, `Q_µν · Q_λσ`. The default, and byte-identical to
@@ -133,6 +171,23 @@ pub enum ScreeningKind {
     /// JCP 147, 144101 (2017), Eq. (8). Rigorous, and never looser than
     /// `Schwarz` by construction (see [`CsbBounds`]).
     Csb,
+    /// The combined Schwarz approximation (CSAM), same paper, Eq. (9)/(11)/(12).
+    ///
+    /// **NON-RIGOROUS for every kernel, including Coulomb** — the paper says so
+    /// in its own words ("we use M̃_µλ to formulate our non-rigorous combined
+    /// Schwarz approximations", `≈` not `≤`). It can and does underestimate
+    /// true integrals, so it is an *estimate*, not a `Bound`, and is exposed
+    /// only through the audited `LinkBound::Csam` seam.
+    ///
+    /// Measured energy errors are nonetheless small and threshold-controlled:
+    /// −0.20 … +1.80 **nanohartree** at ϑ = 1e-12 (the paper's Table V) and
+    /// 0.05–9.35 µH at ϑ = 1e-10 (Table III), growing LINEARLY with system
+    /// size (Fig. 2). This is why Psi4 ships it as its own default
+    /// (`SCREENING=CSAM`) for Coulomb and erf.
+    ///
+    /// Short-range kernels route to [`ScreeningKind::Csb`] instead — the
+    /// paper's own recommendation (p. 144101-8/9).
+    Csam,
 }
 
 impl ScreeningKind {
@@ -146,8 +201,9 @@ impl ScreeningKind {
         match s {
             "schwarz" => Ok(ScreeningKind::Schwarz),
             "csb" => Ok(ScreeningKind::Csb),
+            "csam" => Ok(ScreeningKind::Csam),
             other => Err(FerricError::General(format!(
-                "unknown screening kind {other:?}; expected \"schwarz\" or \"csb\""
+                "unknown screening kind {other:?}; expected \"schwarz\", \"csb\" or \"csam\""
             ))),
         }
     }
@@ -309,64 +365,309 @@ impl Bound for CsbBounds {
     }
 }
 
-/// A zero-copy `Bound` view over a `&SchwarzBounds`, applying CSB when (and
-/// only when) that value carries a `csb_m` table.
+/// CSAM screening ESTIMATE: a tight but **non-rigorous** (underestimating)
+/// multiplicative refinement of [`SchwarzBounds`], ported from Psi4's
+/// `shell_significant_csam()` (`psi4/src/psi4/libmints/twobody.cc`,
+/// lines 206-224 / 363-398).
 ///
-/// # Why this exists
+/// # NOT a `Bound` — deliberately
 ///
-/// `SchwarzBounds::estimate` deliberately stays plain Schwarz: `QqrBounds`
-/// composes on top of it (`self.schwarz.estimate(..)`) and `pairs.rs` calls it
-/// on diagonal quartets, and silently changing what those see would be a
-/// non-local behaviour change for a knob that is meant to be opt-in. So the
-/// CSB refinement is applied at the two places that actually screen quartets:
-/// `quartet_scatter::scatter_bra_pair` (the dense direct path) and, via this
-/// adapter, the LinK pair/quartet screen.
+/// This type does **not** implement [`Bound`], and must not be made to. The
+/// `Bound` contract is "never underestimates `|(sh1 sh2|sh3 sh4)|`"; CSAM
+/// violates it. See `ferric_integrals::csam`'s module header for the
+/// primary-source citation (Thompson & Ochsenfeld, J. Chem. Phys. 147,
+/// 144101 (2017) — the Coulomb operator appears only in that abstract's
+/// *non-rigorous estimate* sentence) and for the independent numerical
+/// reproduction showing `true/estimate` up to 2.53 (Coulomb) and 9.37
+/// (`erfc`) using *Psi4's own* formula on a harness where plain Schwarz
+/// saturates at exactly 1.000000.
 ///
-/// `solve_rhf` builds its own LinK bound from `config.screening` and does not
-/// need this. `solve_uhf`/`solve_rohf` take the CALLER's `&SchwarzBounds` and
-/// have no `RhfConfig::screening`-equivalent construction site of their own —
-/// they wrap it here instead, so `[scf] screening = "csb"` reaches open-shell
-/// LinK through the same single `bounds` value that carries it to the direct
-/// builders. Without this wrapper, open-shell LinK would silently stay on
-/// plain Schwarz while closed-shell LinK and every direct builder used CSB —
-/// exactly the kind of half-wired knob CLAUDE.md's "config honesty" section
-/// treats as a defect.
+/// Consequently this is an accuracy-vs-threshold tradeoff knob, NOT a
+/// free speedup: any quartet it discards may carry real weight, and the
+/// justification for using it is that the discarded weight shrinks with the
+/// screening threshold — a claim that must be MEASURED (see
+/// `csam_screening.rs`'s error-vs-threshold characterization test), never
+/// assumed.
+///
+/// Contrast [`CsbBounds`] directly above, which is the RIGOROUS member of the
+/// same paper's family (Eq. (8), a `min` of three genuine Cauchy-Schwarz
+/// bounds) and therefore carries none of the caveats in this doc comment.
+///
+/// Structured like [`crate::qqr::QqrBounds`] — a Schwarz bound composed with
+/// a `<= 1` multiplicative factor — except QQR's factor is a rigorous
+/// GEOMETRIC (distance) one, while this one is a non-rigorous ALGEBRAIC
+/// (exchange-type) estimate. They are not combined here (Psi4 does not
+/// combine them either; CSAM is presented there as an alternative to, not a
+/// composition with, its own MBFS/QQR-style distance bound).
+///
+/// # Square-root convention (read before touching this file)
+///
+/// ferric's `SchwarzBounds::estimate` is the UNSQUARED bound
+/// `Q(i,j) * Q(k,l)` on `|(ij|kl)|` (verified: `Q(i,j) =
+/// sqrt(max|(ij|ij)|)` in `ferric_integrals::schwarz::schwarz_pair`, and
+/// `estimate` multiplies two such `Q`s with no further rooting/squaring).
+/// Psi4's CSAM works throughout in SQUARED quantities and its `csam_2` factor
+/// is meant to multiply a squared Schwarz product. Composing it onto ferric's
+/// UNSQUARED estimate therefore requires `sqrt(csam_2)`, not `csam_2` itself —
+/// see the full derivation in `ferric_integrals::csam`'s module doc. Using the
+/// bare (squared) factor here would silently square the effective per-pair
+/// ratio and over-tighten the bound into an invalid (underestimating) one.
+///
+/// # Rigor, honestly stated
+///
+/// CSAM is NON-RIGOROUS for **every** kernel, Coulomb included — the paper
+/// labels Eqs. (9)/(11)/(12) "our non-rigorous combined Schwarz
+/// approximations" in its own voice. What that costs is a threshold-controlled
+/// error, not a guarantee: Thompson & Ochsenfeld's Table V (aug-cc-pVDZ,
+/// `theta = 1e-12`) measures CSAM HF energy errors of **-0.20 to +1.80
+/// nanohartree** across six systems, against the rigorous QQ bound's own
+/// -1.50..+0.70 nH on the same rows; Table III (cc-pVDZ, `theta = 1e-10`)
+/// gives 0.05-9.35 microhartree, roughly 2x QQ's. The error does grow linearly
+/// with system size at fixed threshold (Fig. 2) — that, not any measured
+/// blow-up, is the reason to prefer a rigorous bound where one is available.
+///
+/// # Per-operator
+///
+/// [`ferric_integrals::csam::csam_x_table`] accepts `Coulomb` and
+/// `ErfCoulomb`; it routes `ErfcCoulomb` to the rigorous CSB bound (`screening
+/// = "csb"`) with a typed error, following the paper's own conclusion that CSB
+/// should be the default estimate for short-range operators. Plain
+/// [`SchwarzBounds`] also remains rigorous and supports all three.
+///
+/// The `X` table passed to [`CsamBounds::new`] MUST still have been built by
+/// [`ferric_integrals::csam::csam_x_table`] with the SAME [`Operator`] as the
+/// wrapped [`SchwarzBounds`]. Unlike `qqr.rs`'s geometric envelope (which has an entirely
+/// separate, previously-buggy operator-attenuation history — see that
+/// module's doc), CSAM's attenuation lives inside the integrals that build
+/// `X` itself, so there is no separate operator-dependent factor to apply or
+/// omit here; the hazard is purely "don't mix tables built under different
+/// operators", which [`CsamBounds::new`] cannot itself detect (the caller
+/// must build both from the same `op`).
+#[derive(Debug, Clone)]
+pub struct CsamBounds {
+    schwarz: SchwarzBounds,
+    /// `X[(p,q)]`, symmetric, `X[(p,p)] == 1.0`, built by
+    /// [`ferric_integrals::csam::csam_x_table`] for the SAME operator as
+    /// `schwarz`.
+    x: Array2<f64>,
+}
+
+impl CsamBounds {
+    /// Build CSAM bounds from an already-computed [`SchwarzBounds`] and its
+    /// matching CSAM `X` table (see [`ferric_integrals::csam::csam_x_table`]).
+    /// Does not itself validate that `x` was built with `schwarz.op` — that
+    /// is the caller's responsibility (mirrors [`crate::qqr::QqrBounds::new`],
+    /// which similarly trusts its caller to pass a `Molecule`/`BasisSet`
+    /// consistent with `schwarz`).
+    pub fn new(schwarz: SchwarzBounds, x: Array2<f64>) -> Self {
+        let nshells = schwarz.nshells;
+        assert_eq!(
+            x.dim(),
+            (nshells, nshells),
+            "CSAM X table shape {:?} does not match Schwarz nshells {nshells}",
+            x.dim()
+        );
+        CsamBounds { schwarz, x }
+    }
+
+    /// Convenience constructor: computes both the Schwarz table and the CSAM
+    /// `X` table for `op` from scratch, guaranteeing they share the same
+    /// operator (closes the one hazard [`CsamBounds::new`] cannot check).
+    pub fn compute(op: Operator, prep: &PreparedBasis) -> Result<Self, FerricError> {
+        let schwarz = SchwarzBounds::compute(op, prep)?;
+        let x = csam::csam_x_table(op, prep)?;
+        Ok(Self::new(schwarz, x))
+    }
+
+    /// Access the underlying Schwarz bounds.
+    pub fn schwarz(&self) -> &SchwarzBounds {
+        &self.schwarz
+    }
+
+    /// The CSAM `X` table.
+    pub fn x(&self) -> &Array2<f64> {
+        &self.x
+    }
+
+    /// The CSAM exchange-type refinement factor for shell quartet
+    /// `(sh1,sh2|sh3,sh4)`: `sqrt(max(X[sh1,sh3]*X[sh2,sh4],
+    /// X[sh1,sh4]*X[sh2,sh3]))` — see the type-level doc for why the square
+    /// root is required in ferric's (unsquared) convention. This mirrors
+    /// Psi4's `csam_2 = max(mm_rr*nn_ss, mm_ss*nn_rr)` with Psi4's
+    /// `(M,N|R,S)` renamed to ferric's `(sh1,sh2|sh3,sh4)`: `mm_rr` pairs
+    /// bra-shell-1 with ket-shell-1 (`X[sh1,sh3]`), `nn_ss` pairs bra-shell-2
+    /// with ket-shell-2 (`X[sh2,sh4]`) — one cross term — and the other term
+    /// swaps which ket shell pairs with which bra shell (`X[sh1,sh4]`,
+    /// `X[sh2,sh3]`), matching Psi4's other listed cross term.
+    fn refinement_factor(&self, sh1: usize, sh2: usize, sh3: usize, sh4: usize) -> f64 {
+        let term_a = self.x[(sh1, sh3)] * self.x[(sh2, sh4)];
+        let term_b = self.x[(sh1, sh4)] * self.x[(sh2, sh3)];
+        term_a.max(term_b).max(0.0).sqrt()
+    }
+}
+
+impl CsamBounds {
+    /// The CSAM **estimate** (NOT a bound) of `|(sh1 sh2|sh3 sh4)|`.
+    ///
+    /// Named `estimate_nonrigorous` rather than `estimate`, and deliberately
+    /// NOT an impl of [`Bound`], so that no call site can obtain this value
+    /// through a `&dyn Bound` and treat it as an upper bound. It can fall
+    /// BELOW the true integral magnitude — see the type-level doc.
+    pub fn estimate_nonrigorous(&self, sh1: usize, sh2: usize, sh3: usize, sh4: usize) -> f64 {
+        let schwarz_est = self.schwarz.estimate(sh1, sh2, sh3, sh4);
+        let factor = self.refinement_factor(sh1, sh2, sh3, sh4);
+        // `factor` is `sqrt(product of two X ratios each in [0,1])`, so it is
+        // itself in [0,1] up to roundoff; clamp defensively so a tiny
+        // overshoot from floating-point error cannot make the estimate exceed
+        // plain Schwarz. NOTE this clamp bounds the estimate from ABOVE only:
+        // nothing here (and nothing in Psi4) clamps it from BELOW against the
+        // true integral, which is precisely why it is not a bound.
+        schwarz_est * factor.min(1.0)
+    }
+}
+
+/// A `Bound` implementation chosen at runtime from [`ScreeningKind`], for
+/// call sites (currently: `solve_rhf`'s LinK-builder construction, and
+/// `solve_uhf`/`solve_rohf`'s) that need to pass either an owned freshly-built
+/// table OR a borrowed already-existing one to the SAME generic
+/// `build_pluggable_k::<B: Bound>` call without duplicating that call per
+/// variant.
+///
+/// # `SchwarzRef` — the borrowing variant, and why it is not merely a placeholder
+///
+/// `SchwarzRef` borrows a caller-supplied `&SchwarzBounds` and applies
+/// WHICHEVER refinement table that value happens to carry:
+///
+/// * no table (the default) → plain Schwarz, BITWISE, not merely equivalent;
+/// * `csb_m` present → CSB Eq. (8), the same `min` as [`CsbBounds::estimate`];
+/// * `csam_x` present → the CSAM multiplicative estimate, the same formula as
+///   [`CsamBounds::estimate_nonrigorous`].
+///
+/// That is what makes this ONE enum sufficient for every LinK seam.
+/// `solve_rhf` builds its own LinK bound from `config.screening` and uses the
+/// owned variants. `solve_uhf`/`solve_rohf` take the CALLER's
+/// `&SchwarzBounds` and have no `RhfConfig::screening`-equivalent construction
+/// site of their own — they pass `SchwarzRef(bounds)` instead, so
+/// `[scf] screening = "csb"`/`"csam"` reaches open-shell LinK through the same
+/// single `bounds` value that carries it to the direct builders. Without that,
+/// open-shell LinK would silently stay on plain Schwarz while closed-shell
+/// LinK and every direct builder used the selected refinement — exactly the
+/// kind of half-wired knob CLAUDE.md's "config honesty" section treats as a
+/// defect.
+///
+/// `SchwarzRef` additionally serves as the zero-cost placeholder for the
+/// non-"link" branch (the common "direct"/"cosx" case, where
+/// `build_pluggable_k` never reads this argument at all — see that function's
+/// `match kind`), so no table is cloned or recomputed there.
 ///
 /// Borrowing, never cloning: the `nshells²` tables are read through `&`.
-#[derive(Debug, Clone, Copy)]
-pub struct CsbView<'a> {
-    bounds: &'a SchwarzBounds,
+///
+/// # Historical note
+///
+/// This enum replaces an earlier `CsbView<'a>` borrowing wrapper that did
+/// exactly what `SchwarzRef` does, but for CSB only. The two were merged
+/// because the enum is the more general shape and one adapter at this seam is
+/// easier to audit than two.
+pub enum LinkBound<'a> {
+    Schwarz(SchwarzBounds),
+    SchwarzRef(&'a SchwarzBounds),
+    Csb(CsbBounds),
+    Csam(CsamBounds),
 }
 
-impl<'a> CsbView<'a> {
-    /// Wrap a `&SchwarzBounds`. If it carries no `csb_m` table (the default),
-    /// this is exactly plain Schwarz — byte-identical, not merely equivalent.
-    pub fn new(bounds: &'a SchwarzBounds) -> Self {
-        CsbView { bounds }
-    }
-
-    /// Whether this view is actually applying CSB (i.e. the wrapped bounds
-    /// carry an `M` table). Used by tests to prove non-vacuity.
+impl LinkBound<'_> {
+    /// Whether this bound is actually applying CSB — i.e. it is an owned
+    /// [`CsbBounds`], or a `SchwarzRef` over bounds carrying a `csb_m` table.
+    /// Used by tests to prove non-vacuity (a refinement that never engages
+    /// makes every other assertion pass for the wrong reason).
     pub fn is_csb(&self) -> bool {
-        self.bounds.csb_m.is_some()
-    }
-}
-
-impl Bound for CsbView<'_> {
-    #[inline]
-    fn estimate(&self, sh1: usize, sh2: usize, sh3: usize, sh4: usize) -> f64 {
-        // Same `.min()`-seeded-with-Schwarz structure as `CsbBounds::estimate`
-        // — see that impl's doc for why the seed order is the safety property.
-        let schwarz_est = self.bounds.q[(sh1, sh2)] * self.bounds.q[(sh3, sh4)];
-        match &self.bounds.csb_m {
-            None => schwarz_est,
-            Some(m) => {
-                let eq6 = m[(sh1, sh3)] * m[(sh2, sh4)];
-                let eq7 = m[(sh1, sh4)] * m[(sh2, sh3)];
-                schwarz_est.min(eq6).min(eq7)
-            }
+        match self {
+            LinkBound::Csb(_) => true,
+            LinkBound::SchwarzRef(b) => b.csb_m.is_some(),
+            LinkBound::Schwarz(b) => b.csb_m.is_some(),
+            LinkBound::Csam(_) => false,
         }
     }
+
+    /// Whether this bound is applying the non-rigorous CSAM estimate.
+    pub fn is_csam(&self) -> bool {
+        match self {
+            LinkBound::Csam(_) => true,
+            LinkBound::SchwarzRef(b) => b.csam_x.is_some(),
+            LinkBound::Schwarz(b) => b.csam_x.is_some(),
+            LinkBound::Csb(_) => false,
+        }
+    }
+}
+
+/// NOTE: implementing [`Bound`] here means a `LinkBound::Csam` reaches LinK
+/// through a trait whose contract is "never underestimates" — which CSAM
+/// violates (see [`CsamBounds`]). That is tolerated ONLY because selecting
+/// the `Csam` variant is an explicit, non-default opt-in
+/// (`[scf] screening = "csam"`) into a documented non-rigorous estimate; the
+/// `estimate_nonrigorous` call below is deliberately spelled out rather than
+/// routed through a `Bound` impl on `CsamBounds` itself, so that this is the
+/// single auditable place where the non-rigorous value enters bound-typed
+/// code. Do not add further `Bound` impls that forward to CSAM.
+///
+/// The `Csb` arm carries NO such caveat: CSB (Eq. (8)) is a RIGOROUS upper
+/// bound — a `min` seeded with the plain Schwarz product — so forwarding it to
+/// the real [`CsbBounds::estimate`] through this `Bound` impl honours the
+/// trait's contract exactly as `Schwarz` does. Likewise `SchwarzRef` is
+/// rigorous unless the borrowed value carries a `csam_x` table, which only
+/// `compute_for_screening(.., Csam)` can attach.
+impl Bound for LinkBound<'_> {
+    #[inline]
+    fn estimate(&self, sh1: usize, sh2: usize, sh3: usize, sh4: usize) -> f64 {
+        match self {
+            LinkBound::Schwarz(b) => schwarz_ref_estimate(b, sh1, sh2, sh3, sh4),
+            LinkBound::SchwarzRef(b) => schwarz_ref_estimate(b, sh1, sh2, sh3, sh4),
+            LinkBound::Csb(b) => b.estimate(sh1, sh2, sh3, sh4),
+            LinkBound::Csam(b) => b.estimate_nonrigorous(sh1, sh2, sh3, sh4),
+        }
+    }
+}
+
+/// The estimate a borrowed [`SchwarzBounds`] implies, honouring whichever
+/// refinement table it carries.
+///
+/// Kept as a free function so both the `Schwarz` (owned) and `SchwarzRef`
+/// (borrowed) arms of [`LinkBound`]'s `Bound` impl share ONE body — a second
+/// copy is exactly how the old `CsbView`/`CsbBounds` pair could drift.
+///
+/// The `csb_m` arm reproduces [`CsbBounds::estimate`]'s `.min()`-seeded-with-
+/// Schwarz structure verbatim (see that impl's doc for why the seed order is
+/// the safety property), and the `csam_x` arm reproduces
+/// [`CsamBounds::estimate_nonrigorous`]'s clamped multiply. A value carrying
+/// NEITHER table — every default build — returns the bare Schwarz product,
+/// bitwise.
+///
+/// `csb_m` and `csam_x` are mutually exclusive by construction:
+/// [`SchwarzBounds::compute_for_screening`] is a three-way `match` on one
+/// [`ScreeningKind`] and attaches at most one of them. The `csb_m` arm is
+/// checked FIRST, so were both ever attached (only reachable by hand-mutating
+/// the struct), the RIGOROUS one would win — the safe direction.
+#[inline]
+fn schwarz_ref_estimate(
+    b: &SchwarzBounds,
+    sh1: usize,
+    sh2: usize,
+    sh3: usize,
+    sh4: usize,
+) -> f64 {
+    let schwarz_est = b.q[(sh1, sh2)] * b.q[(sh3, sh4)];
+    if let Some(m) = &b.csb_m {
+        let eq6 = m[(sh1, sh3)] * m[(sh2, sh4)];
+        let eq7 = m[(sh1, sh4)] * m[(sh2, sh3)];
+        return schwarz_est.min(eq6).min(eq7);
+    }
+    if let Some(x) = &b.csam_x {
+        let term_a = x[(sh1, sh3)] * x[(sh2, sh4)];
+        let term_b = x[(sh1, sh4)] * x[(sh2, sh3)];
+        let factor = term_a.max(term_b).max(0.0).sqrt().min(1.0);
+        return schwarz_est * factor;
+    }
+    schwarz_est
 }
 
 #[cfg(test)]
@@ -465,16 +766,61 @@ mod csb_unit_tests {
             ScreeningKind::parse_config_str("csb").unwrap(),
             ScreeningKind::Csb
         );
+        assert_eq!(
+            ScreeningKind::parse_config_str("csam").unwrap(),
+            ScreeningKind::Csam
+        );
         assert_eq!(ScreeningKind::default(), ScreeningKind::Schwarz);
-        for bad in ["CSB", "Schwarz", "csam", "qqr", ""] {
+        // "csam" moved OUT of this list when the CSAM branch merged in — it is
+        // now an accepted (non-rigorous, opt-in) value, asserted above.
+        for bad in ["CSB", "Schwarz", "CSAM", "qqr", ""] {
             let err = ScreeningKind::parse_config_str(bad)
                 .expect_err("unknown screening kind must be a hard error, not a silent default");
             let msg = format!("{err}");
             assert!(
-                msg.contains("csb") && msg.contains("schwarz"),
+                msg.contains("csb") && msg.contains("schwarz") && msg.contains("csam"),
                 "the error must name the accepted set; got: {msg}"
             );
         }
+    }
+
+    /// On a DIAGONAL quartet (sh1==sh3, sh2==sh4) the CSAM refinement factor is
+    /// `sqrt(X[sh1,sh1]*X[sh2,sh2]) = sqrt(1*1) = 1` (X's diagonal is exactly
+    /// 1.0 by Cauchy-Schwarz equality), so CSAM must equal Schwarz exactly
+    /// there — the same "self-quartet" case QQR's overlapping-pair test checks
+    /// for its own bound, and the same structural inertness `CsbBounds`'s type
+    /// doc records for CSB.
+    #[test]
+    fn csam_bounds_compute_matches_schwarz_on_diagonal_quartets() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("cc-pvdz").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let csam = CsamBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let nsh = prep.nshells();
+        for i in 0..nsh {
+            for j in 0..nsh {
+                let s = csam.schwarz().estimate(i, j, i, j);
+                let c = csam.estimate_nonrigorous(i, j, i, j);
+                assert!(
+                    (s - c).abs() < 1e-12 * s.max(1.0),
+                    "diagonal quartet ({i},{j},{i},{j}): CSAM = {c} != Schwarz = {s}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn csam_bounds_new_rejects_mismatched_table_shape() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let schwarz = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+        let nsh = prep.nshells();
+        let wrong_shape = Array2::<f64>::zeros((nsh + 1, nsh + 1));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            CsamBounds::new(schwarz, wrong_shape)
+        }));
+        assert!(result.is_err(), "CsamBounds::new must reject a mismatched X table shape");
     }
 }
 

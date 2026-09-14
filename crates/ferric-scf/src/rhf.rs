@@ -204,28 +204,41 @@ pub struct RhfConfig {
     /// screen — it is NOT an accuracy tradeoff and cannot discard a quartet
     /// carrying real weight.
     ///
+    /// `Csam` selects [`crate::screening::CsamBounds`]' formula, Eqs.
+    /// (9)/(11)/(12) of the same paper — a tighter but **NON-RIGOROUS**
+    /// estimate that CAN underestimate the true integral and therefore discard
+    /// quartets carrying real weight (see that type's doc, and
+    /// `ferric_integrals::csam`'s module header, for the citation and the
+    /// measured violation). Its error is controlled by `integral_thresh`, so
+    /// selecting it trades accuracy for speed rather than tightening a bound
+    /// for free. Short-range (`erfc`) operators are refused under `Csam` with a
+    /// typed error naming `screening = "csb"`.
+    ///
     /// SCOPE OF THIS FIELD: read ONLY at the `link_schwarz_opt` construction
     /// site in [`solve_rhf`] (i.e. only when `k_builder == "link"`), where it
-    /// selects whether the FRESH LinK table gets an `M` table. It does NOT by
-    /// itself affect the dense direct `build_jk`/`DirectJ`/`DirectK`/
+    /// selects whether the FRESH LinK table gets an `M` or `X` table. It does
+    /// NOT by itself affect the dense direct `build_jk`/`DirectJ`/`DirectK`/
     /// `DirectJK` path (the default, `k_builder` unset), nor
     /// `solve_uhf`/`solve_rohf` — all of those take their bound from the
     /// CALLER-supplied `bounds: &SchwarzBounds` parameter, fixed before this
     /// function is entered.
     ///
-    /// Those paths are NOT stuck on plain Schwarz, though: they pick up CSB
-    /// from the `bounds` VALUE, via
-    /// [`crate::screening::SchwarzBounds::csb_m`] —
-    /// `quartet_scatter::scatter_bra_pair` consults it directly, and
+    /// Those paths are NOT stuck on plain Schwarz, though: they pick the
+    /// refinement up from the `bounds` VALUE, via
+    /// [`crate::screening::SchwarzBounds::csb_m`] /
+    /// [`crate::screening::SchwarzBounds::csam_x`] —
+    /// `quartet_scatter::scatter_bra_pair` consults them directly, and
     /// `solve_uhf`/`solve_rohf` wrap `bounds` in
-    /// [`crate::screening::CsbView`] before handing it to LinK. Build that
-    /// value with `SchwarzBounds::compute_for_screening(op, prep, kind)`
-    /// rather than plain `compute` to opt those paths in.
+    /// [`crate::screening::LinkBound::SchwarzRef`] before handing it to LinK.
+    /// Build that value with
+    /// `SchwarzBounds::compute_for_screening(op, prep, kind)` rather than plain
+    /// `compute` to opt those paths in.
     ///
     /// `ferric-cli` resolves `[scf] screening` ONCE and uses the same resolved
     /// `ScreeningKind` for both mechanisms, so they never disagree there. A
-    /// caller that builds `bounds` via plain `compute` and sets `Csb` only
-    /// here gets CSB on closed-shell LinK alone — legal, just unusual.
+    /// caller that builds `bounds` via plain `compute` and sets `Csb`/`Csam`
+    /// only here gets that refinement on closed-shell LinK alone — legal, just
+    /// unusual.
     pub screening: crate::screening::ScreeningKind,
 }
 
@@ -655,28 +668,35 @@ pub fn solve_rhf(
     // grid/overlap-fit factor are geometry-only and expensive per iteration.
     // When using "link", compute a fresh screening bound to own the lifetime.
     // `config.screening` selects Schwarz (default — byte-identical to the
-    // pre-CSB behaviour of always building a fresh `SchwarzBounds` here) or
-    // CSB. See `RhfConfig::screening` for the scope of THIS field (LinK only;
-    // the dense path picks CSB up from `bounds.csb_m` instead).
+    // pre-CSB/CSAM behaviour of always building a fresh `SchwarzBounds` here),
+    // CSB or CSAM. See `RhfConfig::screening` for the scope of THIS field
+    // (LinK only; the dense path picks the refinement up from
+    // `bounds.csb_m`/`bounds.csam_x` instead).
     //
-    // `config.screening` selects the bound for the FRESH LinK table only (see
-    // `RhfConfig::screening` for why this is separate from the caller's
-    // `bounds`). `compute_for_screening` with `Schwarz` delegates verbatim to
-    // `compute`, so the default arm is byte-identical to the pre-CSB code that
+    // `compute_for_screening` with `Schwarz` delegates verbatim to `compute`,
+    // so the default arm is byte-identical to the pre-CSB code that
     // unconditionally called `SchwarzBounds::compute(op, prep)` here.
+    //
+    // ERROR ROUTING: `op` here can be ATTENUATED — a range-separated
+    // functional drives LinK with `Operator::erfc(omega)`. `csam_x_table`
+    // routes `ErfcCoulomb` to the rigorous CSB bound rather than estimating
+    // it, so `compute_for_screening(.., Csam)` returns an error naming
+    // `screening = "csb"` and the `?` surfaces it here. That makes
+    // `screening = "csam"` + an RSH functional a clean, actionable error
+    // rather than a silent substitution.
     let link_schwarz_opt = if pluggable_k == Some("link") {
         Some(SchwarzBounds::compute_for_screening(op, prep, config.screening)?)
     } else {
         None
     };
-    // `CsbView` applies Eq. (8) when — and only when — the wrapped value
-    // carries a `csb_m` table, and is byte-identical to plain Schwarz when it
-    // does not. Wrapping BOTH the fresh LinK bound and the fallback to the
-    // caller's `bounds` in the same view type gives `build_pluggable_k` one
-    // monomorphization without any enum plumbing, and makes the caller's
-    // `bounds` carry CSB into LinK on the paths that reach here with
-    // `link_schwarz_opt == None` (COSX, which reads no bound at all).
-    let link_bound = crate::screening::CsbView::new(
+    // `LinkBound::SchwarzRef` applies whichever refinement the wrapped value
+    // carries — CSB's Eq. (8) `min` for `csb_m`, CSAM's multiplicative factor
+    // for `csam_x`, and plain Schwarz (bitwise) for neither. Wrapping BOTH the
+    // fresh LinK bound and the fallback to the caller's `bounds` in the same
+    // adapter gives `build_pluggable_k` one monomorphization, and makes the
+    // caller's `bounds` carry the refinement into LinK on the paths that reach
+    // here with `link_schwarz_opt == None` (COSX, which reads no bound at all).
+    let link_bound = crate::screening::LinkBound::SchwarzRef(
         link_schwarz_opt.as_ref().unwrap_or(bounds),
     );
     let mut k_builder: Option<Box<dyn KBuilder>> = crate::fock_assembly::build_pluggable_k(
@@ -1389,7 +1409,7 @@ pub fn build_jk_with_pool(
             pool.with(|engine| {
                 local_count += scatter_bra_pair(
                     engine, prep, dims, offs, &bounds.q, bounds.csb_m.as_ref(),
-                    &screen, thresh, d, s1, s2,
+                    bounds.csam_x.as_ref(), &screen, thresh, d, s1, s2,
                     &mut mode, true,
                 );
             });

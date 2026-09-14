@@ -14,12 +14,23 @@ density_conv = 1e-7
 diis_size = 8
 integral_thresh = 1e-12
 #k_builder = "link"
-# Shell-quartet screening bound: "schwarz" (default) or "csb".
-# Both are RIGOROUS upper bounds, so "csb" is not an accuracy tradeoff --
-# it is min{Q_uv Q_ls, M_ul M_vs, M_us M_vl} (Thompson & Ochsenfeld,
-# JCP 147, 144101 (2017), Eq. 8), which includes the Schwarz product in the
-# min and therefore can never be looser. The paper reports it buys little
-# under the Coulomb operator and much more under strongly distance-decaying
-# kernels; see ScfCfg::screening's doc for the full scope.
+# Shell-quartet screening bound: "schwarz" (default), "csb", or "csam".
+# All three are from Thompson & Ochsenfeld, JCP 147, 144101 (2017).
+#
+#   "schwarz"  RIGOROUS      Q_uv Q_ls                                (default)
+#   "csb"      RIGOROUS      min{Q_uv Q_ls, M_ul M_vs, M_us M_vl}     Eq. 8
+#   "csam"     NON-RIGOROUS  Q_uv Q_ls * sqrt(max(X_ul X_vs, X_us X_vl))
+#                                                                Eq. 9/11/12
+#
+# "csb" is not an accuracy tradeoff: the min INCLUDES the Schwarz product, so
+# it can never be looser. "csam" IS one -- the authors call it non-rigorous in
+# their own voice, it can underestimate a true integral and drop a quartet
+# carrying real weight, and its (small, threshold-controlled) error grows
+# linearly with system size. Psi4 ships CSAM as its default; ferric does not.
+# "csam" is refused for short-range (erfc) kernels with an error naming "csb".
+#
+# The paper reports CSB buys little under the Coulomb operator and much more
+# under strongly distance-decaying kernels; see ScfCfg::screening's doc for the
+# full scope.
 #screening = "csb"
 

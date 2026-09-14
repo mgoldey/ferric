@@ -36,6 +36,13 @@ pub mod schwarz;
 /// `min{Q_uv Q_ls, M_ul M_vs, M_us M_vl}` bound of Thompson & Ochsenfeld,
 /// JCP 147, 144101 (2017), Eq. (8). Never looser than plain Schwarz.
 pub mod csb;
+/// CSAM (combined Schwarz approximation) integral screening: the
+/// NON-RIGOROUS multiplicative estimate of Eqs. (9)/(11)/(12) of the same
+/// paper, ported from Psi4's `shell_significant_csam()`. Tighter than plain
+/// Schwarz, but it can UNDERESTIMATE the true integral — an opt-in
+/// accuracy-vs-threshold tradeoff, not a free speedup. Contrast [`csb`] above,
+/// which is the rigorous member of the family.
+pub mod csam;
 /// QQR distance-dependent integral screening (Ochsenfeld-style).
 pub mod qqr3;
 /// BLAS thread-count guard (re-exported from ferric-core for convenience).

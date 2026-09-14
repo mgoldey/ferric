@@ -348,12 +348,35 @@ pub(crate) fn canonical_bra_pairs(nsh: usize) -> Vec<(usize, usize)> {
 /// is there: the refinement can only ever TIGHTEN, never loosen, whatever the
 /// `M` table contains.
 ///
-/// The two rows `M[s1, :]` and `M[s2, :]` are sliced out ONCE here — before
-/// the `(s3, s4)` loop — so the inner loop pays only `&[f64]` indexing rather
-/// than repeated strided `Array2` lookups. That hoist is what keeps CSB from
-/// adding an `Option` branch to the ~46M-candidate inner loop the perf profile
-/// identified (`scatter_bra_pair` at 28.96% of a benzene/aug-cc-pVDZ RHF wall
-/// clock).
+/// `x_table`: optional CSAM `X` table
+/// ([`crate::screening::SchwarzBounds::csam_x`]), likewise built for the SAME
+/// operator as `q_table`. `None` is again byte-identical to the plain Schwarz
+/// screen. When `Some`, the plain Schwarz product is multiplied by
+/// `sqrt(max(X[s1,s3]*X[s2,s4], X[s1,s4]*X[s2,s3])).min(1.0)` — the hot-loop
+/// reimplementation of [`crate::screening::CsamBounds::estimate_nonrigorous`].
+///
+/// **NOTE: the CSAM refinement is a NON-RIGOROUS estimate.** It can drop a
+/// quartet whose true contribution exceeds the threshold (see
+/// `ferric_integrals::csam`'s module header). It is reached only via the
+/// explicit `[scf] screening = "csam"` opt-in. The CSB refinement carries no
+/// such caveat — it is a rigorous `min`.
+///
+/// `m_table` and `x_table` are MUTUALLY EXCLUSIVE per call: they come from
+/// `SchwarzBounds::{csb_m, csam_x}`, which
+/// [`crate::screening::SchwarzBounds::compute_for_screening`] populates from a
+/// three-way `match` on ONE [`crate::screening::ScreeningKind`], so at most one
+/// is ever `Some`. The loop below nevertheless checks CSB FIRST and CSAM only
+/// in its `else`, so were both somehow attached (reachable only by
+/// hand-mutating the struct) the RIGOROUS refinement would win — the safe
+/// direction, and the same precedence
+/// [`crate::screening::LinkBound`]'s `schwarz_ref_estimate` uses.
+///
+/// The two rows `M[s1, :]`/`M[s2, :]` (or `X[s1, :]`/`X[s2, :]`) are sliced out
+/// ONCE here — before the `(s3, s4)` loop — so the inner loop pays only
+/// `&[f64]` indexing rather than repeated strided `Array2` lookups. That hoist
+/// is what keeps either refinement from adding an `Option` branch to the ~46M-
+/// candidate inner loop the perf profile identified (`scatter_bra_pair` at
+/// 28.96% of a benzene/aug-cc-pVDZ RHF wall clock).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn scatter_bra_pair(
     engine: &mut Engine,
@@ -362,6 +385,7 @@ pub(crate) fn scatter_bra_pair(
     offs: &[usize],
     q_table: &Array2<f64>,
     m_table: Option<&Array2<f64>>,
+    x_table: Option<&Array2<f64>>,
     screen: &DensityScreen,
     thresh: f64,
     d: &Array2<f64>,
@@ -412,6 +436,17 @@ pub(crate) fn scatter_bra_pair(
         )
     });
 
+    // Hoisted CSAM `X` rows, on exactly the same terms as the CSB `M` rows
+    // above (same once-per-bra-pair slicing, same contiguity reasoning — every
+    // `csam_x_table` output is likewise built via `Array2::zeros` plus index
+    // assignment, never a view/transpose/slice of a larger array).
+    let x_rows: Option<(&[f64], &[f64])> = x_table.map(|x| {
+        (
+            x.row(s1).to_slice().expect("csam X row(s1) not contiguous"),
+            x.row(s2).to_slice().expect("csam X row(s2) not contiguous"),
+        )
+    });
+
     for s3 in 0..=s1 {
         if check_interrupt
             && s3 % 100 == 0
@@ -447,7 +482,36 @@ pub(crate) fn scatter_bra_pair(
                 let eq6 = mr1[s3] * mr2[s4];
                 let eq7 = mr1[s4] * mr2[s3];
                 bound = bound.min(eq6).min(eq7);
+            } else if let Some((xr1, xr2)) = x_rows {
+                // CSAM, the NON-RIGOROUS alternative: multiply the Schwarz
+                // product by sqrt(max(X[s1,s3]*X[s2,s4], X[s1,s4]*X[s2,s3])).
+                // Same formula as `crate::screening::CsamBounds`'s
+                // `refinement_factor` (kept in sync deliberately: this is the
+                // hot-loop reimplementation of that method's math, not an
+                // approximation of it, using row slices instead of a `Bound`
+                // trait call so the sqrt/max cost is paid without a vtable
+                // dispatch on top). `.min(1.0)` mirrors
+                // `estimate_nonrigorous`'s clamp, so roundoff can never make
+                // this LOOSER than plain Schwarz.
+                //
+                // In the `else` of the CSB branch, not beside it: the two
+                // tables are mutually exclusive by construction (see this
+                // function's doc), and checking CSB first means the RIGOROUS
+                // refinement wins if that invariant is ever broken by hand.
+                let term_a = xr1[s3] * xr2[s4];
+                let term_b = xr1[s4] * xr2[s3];
+                let factor = term_a.max(term_b).max(0.0).sqrt().min(1.0);
+                bound *= factor;
             }
+            // NOTE (merge, 2026-09-14): `dmax` multiplies the FINISHED operator
+            // bound here rather than being folded in before the refinement.
+            // For CSB that ordering is required (the `min` must compare
+            // integral bounds against integral bounds, not density-scaled
+            // ones). For CSAM it is merely a pure reassociation of a product —
+            // algebraically identical to the CSAM branch's own
+            // `(b12*b34*dmax)*factor`, but NOT bitwise identical to it. The
+            // byte-identity anchor that matters is unaffected: with both
+            // tables `None` this is still exactly `b12 * b34 * dmax < thresh`.
             if bound * dmax < thresh {
                 continue;
             }
