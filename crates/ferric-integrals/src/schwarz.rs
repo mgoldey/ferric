@@ -157,6 +157,58 @@ fn schwarz_pair(eng: &mut Engine, prep: &PreparedBasis, i: usize, j: usize) -> f
 pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, FerricError> {
     match op.kind {
         OperatorKind::Coulomb | OperatorKind::ErfCoulomb | OperatorKind::ErfcCoulomb => {}
+        // INVALID BY CONSTRUCTION, not merely unimplemented. Schwarz screening
+        // IS the Cauchy-Schwarz inequality, which needs the two-electron form
+        // to be an inner product — i.e. the kernel positive-definite. terf is
+        // not: its Fourier transform
+        //     F_terf(k) = cos(k*r0) * exp(-k^2/4w^2) / (2 pi^2 k^2)
+        // changes sign at k*r0 = pi (Bochner), so the form is indefinite,
+        // `(ij|ij)` can be NEGATIVE, and `Q = sqrt((ij|ij))` is not even real.
+        //
+        // MEASURED, not merely derived — water/cc-pVDZ 2-center diagonals:
+        //   r0=2: min (P|P)_terf = -7.543e-3    r0=4: -4.439e-4
+        // with plain erf (same omegas) and terfc both staying >= 0 on the same
+        // basis and engine. See tests/terf_positivity_probe.rs. The cause is
+        // the FINITE SHELL RADIUS r0 (the cos factor), NOT long-rangedness:
+        // plain erf is long-range and positive-definite.
+        //
+        // No tightening will fix this and no future implementation should
+        // "add terf support" here. Long-range terf work relies on its own lack
+        // of sparsity instead (the integrals approach 1/R and do not decay, so
+        // there is little for a distance screen to discard) plus RI/DF, which
+        // is what production RSH codes do for the long-range piece.
+        OperatorKind::Terf => {
+            return Err(FerricError::Libint(
+                "Schwarz screening is INVALID for the Terf operator, not merely unimplemented: \
+                 terf's kernel is not positive-definite (its Fourier transform cos(k*r0) \
+                 exp(-k^2/4w^2)/(2 pi^2 k^2) changes sign at k*r0 = pi), so the two-electron \
+                 form is indefinite, (ij|ij) can be negative, and Q = sqrt((ij|ij)) is not real. \
+                 Measured: min (P|P)_terf = -7.543e-3 on water/cc-pVDZ at r0=2. Use RI/DF for \
+                 the long-range piece; terf integrals do not decay with separation, so there is \
+                 little for a distance screen to discard in any case."
+                    .to_string(),
+            ))
+        }
+        // Positive-definite (proven: F_terfc(k) = (1 - cos(k*r0) exp(-k^2/4w^2))
+        // / (2 pi^2 k^2) >= (1 - exp(-k^2/4w^2)) / (2 pi^2 k^2) > 0 for all
+        // (r0, omega); verified against quadrature to 5.67e-15, and r0 -> 0
+        // reproduces the published erfc transform). So Schwarz and CSB are both
+        // VALID here — this is an ENGINE gap, not a validity one: the shim
+        // exposes only `scf_compute_terfc_eri3`/`_eri2`, and a screening table
+        // needs 4-center (PQ|PQ) quartets.
+        //
+        // One caveat for whoever closes that gap: the proof is for the EXACT
+        // kernel while this engine is INTERPOLATED, so table error must be
+        // folded in as a relative inflation of Q/M, not merely floored — a
+        // table entry computed slightly LOW breaks the bound by that much.
+        OperatorKind::Terfc => {
+            return Err(FerricError::Libint(
+                "Schwarz screening is valid for Terfc (the kernel is positive-definite) but is \
+                 not yet available: it needs 4-center (PQ|PQ) quartets and the shim exposes \
+                 only 3- and 2-center terfc kernels. This is an engine gap, not a validity one."
+                    .to_string(),
+            ))
+        }
         _ => {
             return Err(FerricError::Libint(format!(
                 "operator {:?} not implemented",

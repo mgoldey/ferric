@@ -394,6 +394,28 @@ use ndarray::Array2;
 pub fn csb_m_table(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, FerricError> {
     match op.kind {
         OperatorKind::Coulomb | OperatorKind::ErfCoulomb | OperatorKind::ErfcCoulomb => {}
+        // See `schwarz()`'s matching arms for the full reasoning. Briefly: CSB
+        // is `min{Q Q, M M, M M}` and every one of those terms comes from the
+        // SAME Cauchy-Schwarz argument, so CSB inherits Schwarz's requirement
+        // that the kernel be positive-definite. terf is not (sign change at
+        // k*r0 = pi; measured -7.543e-3 diagonal), so CSB is invalid there
+        // permanently. terfc IS positive-definite and CSB-eligible, blocked
+        // only by the missing 4-center engine.
+        OperatorKind::Terf => {
+            return Err(FerricError::Libint(
+                "CSB screening is INVALID for the Terf operator, not merely unimplemented: CSB's \
+                 M terms come from the same Cauchy-Schwarz argument as Schwarz, and terf's \
+                 kernel is not positive-definite. See schwarz() for the measured evidence."
+                    .to_string(),
+            ))
+        }
+        OperatorKind::Terfc => {
+            return Err(FerricError::Libint(
+                "CSB screening is valid for Terfc (positive-definite, proven) but needs 4-center \
+                 quartets the shim does not expose. Engine gap, not a validity one."
+                    .to_string(),
+            ))
+        }
         _ => {
             return Err(FerricError::Libint(format!(
                 "operator {:?} not implemented for CSB screening (mirrors schwarz())",
