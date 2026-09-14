@@ -165,3 +165,6 @@ pub use qmmm::{BoundaryChargeScheme, QmSelection, QmmmAtom, QmmmSystem};
 /// Jacob's ladder solver: run a sequence of methods (HF→DFT→MP2→…) reusing orbitals.
 pub mod ladder;
 pub use ladder::{solve_rhf_ladder, default_ladder, ksdft_ladder, Rung, LadderResult, RungOutcome};
+
+pub mod df_increments;
+pub use df_increments::{solve_rhf_with_df_increments, DfIncrementsResult};

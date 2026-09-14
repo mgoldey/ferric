@@ -1046,6 +1046,23 @@ pub struct ScfCfg {
     /// project's cosx_*-style config-honesty convention: a knob that would
     /// silently do nothing is refused rather than accepted.
     pub df_guess_aux: Option<String>,
+    /// Opt-in DF-corrected incremental Fock SCF: after a DF-guess pre-stage
+    /// builds a density D0, do ONE exact 4-index Fock build F_ex(D0), then run
+    /// a cheap DF-corrected inner loop on F(D) = F_ex(D0) + F_DF(D - D0)
+    /// before a mandatory final exact build (+ exact cleanup iterations if
+    /// needed) produces the reported answer. Default `false` — with this off,
+    /// this mechanism is not constructed at all and the SCF path is
+    /// byte-identical to before this feature existed. Mutually exclusive with
+    /// `df_guess` (this subsumes it — the DF-guess pre-stage is always run as
+    /// part of this mechanism); setting both is a hard error. See
+    /// `ferric_scf::df_increments::solve_rhf_with_df_increments`.
+    #[serde(default)]
+    pub df_increments: bool,
+    /// Auxiliary (JK-fit) basis for BOTH the `df_increments` pre-stage AND its
+    /// DF-corrected inner-loop builders. Omitted =
+    /// `ferric_scf::ladder::DF_GUESS_DEFAULT_AUX` ("def2-universal-jkfit").
+    /// Ignored (with a hard error) when `df_increments = false`.
+    pub df_increments_aux: Option<String>,
 }
 
 impl Default for ScfCfg {
@@ -1079,6 +1096,8 @@ impl Default for ScfCfg {
             verbose: false,
             df_guess: false,
             df_guess_aux: None,
+            df_increments: false,
+            df_increments_aux: None,
         }
     }
 }
@@ -1174,7 +1193,32 @@ impl ScfCfg {
                 self.df_guess_aux
             ));
         }
+        if self.df_guess && self.df_increments {
+            return Err(
+                "[scf] df_guess = true and df_increments = true are mutually exclusive \
+                 (df_increments already runs its own DF-guess pre-stage internally); set only one"
+                    .to_string(),
+            );
+        }
         Ok(self.df_guess_aux.clone())
+    }
+    /// Resolve `df_increments_aux` under the same config-honesty convention as
+    /// `df_guess_aux_resolved`.
+    pub fn df_increments_aux_resolved(&self) -> Result<Option<String>, String> {
+        if !self.df_increments && self.df_increments_aux.is_some() {
+            return Err(format!(
+                "[scf] df_increments_aux = {:?} is set but df_increments = false; it is only read with df_increments = true",
+                self.df_increments_aux
+            ));
+        }
+        if self.df_guess && self.df_increments {
+            return Err(
+                "[scf] df_guess = true and df_increments = true are mutually exclusive \
+                 (df_increments already runs its own DF-guess pre-stage internally); set only one"
+                    .to_string(),
+            );
+        }
+        Ok(self.df_increments_aux.clone())
     }
 }
 
@@ -2174,6 +2218,104 @@ df_guess_aux = "def2-universal-jkfit"
             cfg.scf.df_guess_aux_resolved().is_err(),
             "df_guess_aux set with df_guess=false must be rejected, not silently ignored"
         );
+    }
+
+    /// `[scf] df_increments` parses, defaults to `false`, and an explicit
+    /// `true` + `df_increments_aux` round-trips. Mirrors
+    /// `scf_df_guess_key_parses_and_defaults_off`.
+    #[test]
+    fn scf_df_increments_key_parses_and_defaults_off() {
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rimp2"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert!(!cfg.scf.df_increments, "df_increments must default to false");
+        assert!(cfg.scf.df_increments_aux.is_none());
+
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rimp2"
+[scf]
+df_increments = true
+df_increments_aux = "def2-universal-jkfit"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert!(cfg.scf.df_increments);
+        assert_eq!(cfg.scf.df_increments_aux.as_deref(), Some("def2-universal-jkfit"));
+        assert_eq!(cfg.scf.df_increments_aux_resolved().unwrap().as_deref(), Some("def2-universal-jkfit"));
+    }
+
+    /// `df_increments_aux` set without `df_increments = true` is a silent
+    /// no-op knob otherwise -- rejected by `df_increments_aux_resolved`.
+    #[test]
+    fn df_increments_aux_without_df_increments_is_rejected() {
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rimp2"
+[scf]
+df_increments_aux = "def2-universal-jkfit"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert!(!cfg.scf.df_increments);
+        assert!(
+            cfg.scf.df_increments_aux_resolved().is_err(),
+            "df_increments_aux set with df_increments=false must be rejected, not silently ignored"
+        );
+    }
+
+    /// `df_guess = true` and `df_increments = true` together must be a hard
+    /// error, not a silent "one wins" resolution -- `df_increments` already
+    /// runs its own internal DF-guess pre-stage, so composing both would be
+    /// ambiguous about which mechanism actually governs the run.
+    #[test]
+    fn df_guess_and_df_increments_together_is_rejected() {
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rimp2"
+[scf]
+df_guess = true
+df_increments = true
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert!(cfg.scf.df_guess_aux_resolved().is_err());
+        assert!(cfg.scf.df_increments_aux_resolved().is_err());
+    }
+
+    /// Adding `df_increments`/`df_increments_aux` must not have loosened
+    /// `deny_unknown_fields` on `ScfCfg`.
+    #[test]
+    fn scf_section_still_rejects_typod_keys_after_df_increments_addition() {
+        let toml_str = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rimp2"
+[scf]
+df_incremnts = true
+"#;
+        match toml::from_str::<Config>(toml_str) {
+            Ok(_) => panic!("typo'd df_increments key parsed successfully — deny_unknown_fields regressed"),
+            Err(_) => {}
+        }
     }
 
     #[test]
