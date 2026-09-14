@@ -225,7 +225,13 @@ struct scf_engine {
     // last so every existing aggregate-init site (scf_engine{std::move(eng)},
     // scf_engine{std::move(eng), ...}) keeps compiling: default-constructed,
     // trailing member, no positional initializer needed.
-    ShellPairCache                  shellpair_cache;
+    // Explicit default-init for the same reason `terfc_tables` carries one
+    // above: the eight `scf_engine{...}` aggregate-init sites in this file all
+    // omit the trailing members, which is correct (value-init already runs
+    // ShellPairCache's own default ctor) but trips
+    // -Wmissing-field-initializers on every one of them. This only silences
+    // the warning; it changes no behavior.
+    ShellPairCache                  shellpair_cache = {};
 };
 
 static std::atomic<int> libint_init_count{0};

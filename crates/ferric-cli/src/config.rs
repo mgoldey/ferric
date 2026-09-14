@@ -2335,10 +2335,10 @@ kind = "rimp2"
 [scf]
 df_incremnts = true
 "#;
-        match toml::from_str::<Config>(toml_str) {
-            Ok(_) => panic!("typo'd df_increments key parsed successfully — deny_unknown_fields regressed"),
-            Err(_) => {}
-        }
+        assert!(
+            toml::from_str::<Config>(toml_str).is_err(),
+            "typo'd df_increments key parsed successfully — deny_unknown_fields regressed"
+        );
     }
 
     #[test]
