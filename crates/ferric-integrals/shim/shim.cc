@@ -1053,6 +1053,20 @@ bool load_terfc_table(const std::string &path, int pts, double S_max, double s_m
     out.data.resize(count);
     f.read(reinterpret_cast<char *>(out.data.data()), count * sizeof(double));
     if (!f) return false;
+    // EXPERIMENT (2026-09-15): only n=0 is ever read by the live kernel, so
+    // drop the n axis here. Footprint falls 12x and consecutive m become
+    // contiguous (m-stride 12 doubles -> 1). Values are bit-identical: this
+    // is a gather of the same entries, no arithmetic.
+    {
+        std::vector<double> packed((size_t)out.nS * out.ns * out.dimm);
+        for (size_t iS = 0; iS < (size_t)out.nS; ++iS)
+            for (size_t is = 0; is < (size_t)out.ns; ++is)
+                for (size_t m = 0; m < (size_t)out.dimm; ++m)
+                    packed[(iS * out.ns + is) * out.dimm + m] =
+                        out.data[((iS * out.ns + is) * out.dimm + m) * out.dimn];
+        out.data.swap(packed);
+        out.dimn = 1;
+    }
     out.delta_S = 1.0 / pts;
     out.delta_s = 1.0 / pts;
     out.S_max = S_max;
