@@ -2921,7 +2921,8 @@ extern "C" int scf_terf_libint2_vs_md_eri3(const scf_basis *obs,
 
         // --- MD path (existing production kernel) ---
         scf_engine *emd = scf_engine_create_terf_3center(
-            r0, omega, obs->max_nprim, obs->max_L, 0.0, table_dir);
+            r0, omega, std::max(obs->max_nprim, dfbs->max_nprim),
+            std::max(obs->max_L, dfbs->max_L), 0.0, table_dir);
         if (!emd) return -101;   // MD engine ctor failed
         const int wmd = scf_compute_terf_eri3(emd, obs, dfbs, shP, sh1, sh2, md.data());
         scf_engine_destroy(emd);
@@ -2929,7 +2930,8 @@ extern "C" int scf_terf_libint2_vs_md_eri3(const scf_basis *obs,
 
         // --- libint2-native path ---
         scf_engine *eli = scf_engine_create_terf_libint2(
-            r0, omega, 3, obs->max_nprim, obs->max_L, 0.0, table_dir);
+            r0, omega, 3, std::max(obs->max_nprim, dfbs->max_nprim),
+            std::max(obs->max_L, dfbs->max_L), 0.0, table_dir);
         if (!eli) return -102;   // libint2 terf engine ctor failed
         const int wli = scf_compute_eri3(eli, obs, dfbs, shP, sh1, sh2, li.data());
         scf_engine_destroy(eli);

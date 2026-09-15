@@ -99,6 +99,9 @@ extern "C" {
     pub fn scf_terf_gm_eval_matches_terf_aux(table_dir: *const c_char, mismatches: *mut c_int, worst: *mut c_double) -> c_int;
     // STEP 4 gate: libint2-native terf vs the hand-rolled MD path (feature-gated
     // build only; the symbol is absent without FERRIC_LIBINT2_TERF).
+    // STEP 4/5: libint2-native terf engine (feature-gated build only).
+    // braket: 2 -> xs_xs, 3 -> xs_xx, 4 -> xx_xx. Params are {omega, r0}.
+    pub fn scf_engine_create_terf_libint2(r0: c_double, omega: c_double, braket: c_int, max_nprim: c_int, max_l: c_int, precision: c_double, table_dir: *const c_char) -> *mut c_void;
     pub fn scf_terf_libint2_vs_md_eri3(obs: *const c_void, dfbs: *const c_void, shP: c_int, sh1: c_int, sh2: c_int, r0: c_double, omega: c_double, table_dir: *const c_char, max_abs: *mut c_double, max_rel: *mut c_double) -> c_int;
     pub fn scf_compute_dipole(
         bs: *const c_void,
