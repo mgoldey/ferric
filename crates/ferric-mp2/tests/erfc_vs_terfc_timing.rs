@@ -119,8 +119,11 @@ fn erfc_vs_terfc_ri_mp2() {
 
     eprintln!(
         "\nNOTE: erfc is a libint2-native single-pass operator; terfc is two \
-         compute_cart_eri3 passes (Coulomb + terf tables) plus a subtraction. \
-         A 1.0x ratio is structurally unlikely -- the floor is ~2x on integral \
-         work alone unless the second pass is eliminated."
+         compute_cart_eri3 passes (Coulomb + terf tables) plus a subtraction.\n\
+         MEASURED 2026-09-15 (decane, 3-index block): coulomb 0.55s, \
+         erfc 0.98s, terf 13.9s, terfc 20.4s. So the pass COUNT is not the \
+         story -- libint2's erfc is only 1.8x Coulomb, while the terf table \
+         pass alone is ~25x Coulomb. The gap is the table kernel, not the \
+         extra pass; an earlier note here claiming a '~2x floor' was wrong."
     );
 }
