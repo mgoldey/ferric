@@ -1279,15 +1279,84 @@ void terf_G_series(double S, double s, int mmax, double *G) {
 // -------------------------------------------------------------------------
 inline bool terf_aux(const TerfcTableSet &set, double S, double s,
                      double phi_over_theta, int mmax, double *A) {
-    double g;
-    if (interp_G(set, S, s, /*m=*/0, /*n=*/0, g)) {
-        A[0] = phi_over_theta * g;
-        for (int m = 1; m <= mmax; ++m) {
-            // coverage is (S,s)-only, so these cannot fail after m=0 succeeded
-            if (!interp_G(set, S, s, m, /*n=*/0, g)) return false;
-            A[m] = phi_over_theta * g;
+    // Fast path: every m shares the SAME (S, s), so the table selection, the
+    // node windows and the Lagrange WEIGHTS are identical across m -- only the
+    // tabulated values differ. The old loop called interp_G once per m, which
+    // recomputed all of that mmax+1 times; lagrange_1d is O(K^2) with a divide
+    // in its inner loop and runs 11 times per interp_G, so that redundancy
+    // dominated the terf kernel (measured: terf eri3 31.5 s vs Coulomb 0.54 s
+    // on decane/cc-pVDZ+RI).
+    //
+    // Hoist everything (S, s)-dependent, then loop m innermost over a plain
+    // weighted sum of table reads. Numerically this is the SAME interpolation:
+    // same nodes, same weights, same summation order over (a, c) -- the weights
+    // are merely computed once instead of mmax+1 times. Pinned bit-identical
+    // against the reference path by tests/terf_table_interp_identity.rs.
+    {
+        const TerfcTable *tbl = nullptr;
+        for (const auto &t : set.tables) {
+            if (t.covers(S, s)) { tbl = &t; break; }
         }
-        return true;
+        if (tbl) {
+            const int K = 10;
+            const int nS = tbl->nS, ns = tbl->ns;
+            const double fS = S / tbl->delta_S;
+            const double fs = s / tbl->delta_s;
+            auto window = [](double f, int N, int Kw) -> int {
+                if (N < Kw) return 0;
+                int i0 = (int)std::floor(f) - Kw / 2 + 1;
+                if (i0 < 0) i0 = 0;
+                if (i0 > N - Kw) i0 = N - Kw;
+                return i0;
+            };
+            const int K_S = std::min(K, nS);
+            const int K_s = std::min(K, ns);
+            const int iS0 = window(fS, nS, K_S);
+            const int is0 = window(fs, ns, K_s);
+
+            // Lagrange cardinal weights on consecutive-integer nodes. Computed
+            // exactly as lagrange_1d does (same factor order), so the products
+            // below reproduce its arithmetic term by term.
+            double wS[16], ws[16];
+            for (int j = 0; j < K_S; ++j) {
+                const double xj = iS0 + j;
+                double term = 1.0;
+                for (int k = 0; k < K_S; ++k) {
+                    if (k == j) continue;
+                    const double xk = iS0 + k;
+                    term *= (fS - xk) / (xj - xk);
+                }
+                wS[j] = term;
+            }
+            for (int j = 0; j < K_s; ++j) {
+                const double xj = is0 + j;
+                double term = 1.0;
+                for (int k = 0; k < K_s; ++k) {
+                    if (k == j) continue;
+                    const double xk = is0 + k;
+                    term *= (fs - xk) / (xj - xk);
+                }
+                ws[j] = term;
+            }
+
+            // n is ALWAYS 0 at every call site, so index the row directly and
+            // walk m with the table's m-stride instead of re-deriving the
+            // offset per lookup.
+            const int dimn = tbl->dimn;
+            for (int m = 0; m <= mmax; ++m) {
+                double acc = 0.0;
+                for (int a = 0; a < K_S; ++a) {
+                    const int iS = iS0 + a;
+                    double rowacc = 0.0;
+                    for (int c = 0; c < K_s; ++c) {
+                        rowacc += ws[c] * tbl->data[((((size_t)iS * ns) + (is0 + c)) * tbl->dimm + m) * dimn];
+                    }
+                    acc += wS[a] * rowacc;
+                }
+                A[m] = phi_over_theta * acc;
+            }
+            return true;
+        }
     }
     // Outside all tables: exact series (reachable only for S > 20, s < 1/2).
     double gser[TERFC_DIMM];
