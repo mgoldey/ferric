@@ -1444,6 +1444,28 @@ inline bool terf_gm_eval_impl(const TerfcTableSet &set, double rho, double T,
     return terf_aux(set, S, s, phi_over_theta, mmax, Gm);
 }
 
+
+#ifdef FERRIC_LIBINT2_TERF
+/* Host hook for libint2's Operator::terf core evaluator (STEP 4).
+ *
+ * libint2 must not own the multi-MB interpolation tables, so terf_gm_eval calls
+ * back here. Signature is fixed by libint2::os_core_ints::terf_gm_eval::hook_type.
+ * Returns false only if the tables are unavailable.
+ *
+ * Thread-safety: get_terfc_tables caches a shared_ptr behind the process-global
+ * g_terfc_tables; the tables are immutable once loaded and terf_gm_eval_impl
+ * only reads them, so concurrent rayon workers are safe. The FIRST call must
+ * happen before threads fan out -- scf_engine_create_terf_libint2 forces the
+ * load at engine-construction time for exactly that reason.
+ */
+bool ferric_terf_libint2_hook(double rho, double T, int mmax, double omega,
+                              double r0, double *Gm) {
+    auto set = g_terfc_tables;          // shared_ptr copy: no torn read
+    if (!set) return false;
+    return terf_gm_eval_impl(*set, rho, T, mmax, omega, r0, Gm);
+}
+#endif
+
 } // anonymous namespace
 
 /* --------------------------------------------------------------------------
@@ -2798,3 +2820,103 @@ extern "C" int scf_terf_gm_eval_matches_terf_aux(const char *table_dir,
         return SCF_EINTERNAL;
     }
 }
+
+
+#ifdef FERRIC_LIBINT2_TERF
+/* STEP 4: create a libint2 engine driving Operator::terf, so terf rides the
+ * SAME generated recurrences as Coulomb/erfc instead of the hand-rolled MD
+ * driver (which measured 25.4x slower than libint2 with no tables at all).
+ *
+ * `braket` selects 2-, 3- or 4-center: 2 -> xs_xs, 3 -> xs_xx, 4 -> xx_xx.
+ * Loads the tables and installs the core-eval hook BEFORE the engine exists,
+ * so no worker thread can race the first table load.
+ */
+extern "C" scf_engine *scf_engine_create_terf_libint2(double r0, double omega,
+                                                      int braket, int max_nprim,
+                                                      int max_L, double precision,
+                                                      const char *table_dir) {
+    std::lock_guard<std::mutex> lock(libint_ctor_mutex);
+    try {
+        auto tables = get_terfc_tables(resolve_table_dir(table_dir));
+        if (!tables) return nullptr;      // tables missing => fail loudly
+        libint2::os_core_ints::terf_gm_eval<double>::hook() =
+            &ferric_terf_libint2_hook;
+
+        libint2::BraKet bk;
+        switch (braket) {
+            case 2: bk = libint2::BraKet::xs_xs; break;
+            case 3: bk = libint2::BraKet::xs_xx; break;
+            case 4: bk = libint2::BraKet::xx_xx; break;
+            default: return nullptr;
+        }
+        // NOTE: the 6th ctor arg is Params, NOT BraKet -- passing the BraKet
+        // there silently mis-constructs and the engine fails. Follow the
+        // working pattern used by scf_engine_create_3center: construct, then
+        // .set(BraKet), then .set_params().
+        auto *out = new (std::nothrow) scf_engine{
+            Engine(libint2::Operator::terf, max_nprim, max_L, 0, precision)};
+        if (!out) return nullptr;
+        out->engine.set(bk);
+        out->engine.set_params(std::array<double, 2>{{omega, r0}});
+        // Both false: this engine is NOT the table-MD path. The compute
+        // functions that branch on is_terfc must never see this handle --
+        // it is driven through scf_compute_eri{2,3,_quartet} instead.
+        out->is_terfc = false;
+        out->is_terf_complement = false;
+        out->r0 = r0;
+        out->omega = omega;
+        out->terfc_tables = std::move(tables);
+        return out;
+    } catch (...) {
+        return nullptr;
+    }
+}
+#endif
+
+#ifdef FERRIC_LIBINT2_TERF
+/* STEP 4 accuracy gate: the libint2-native terf path vs the hand-rolled MD
+ * path, on the SAME 3-index block. These will NOT be bit-identical (different
+ * recurrence order), so the caller compares against a stated tolerance.
+ * Writes max|libint2 - md| to *max_abs and max|.|/max|md| to *max_rel.
+ * Returns the number of elements compared, or a negative SCF_E* code. */
+extern "C" int scf_terf_libint2_vs_md_eri3(const scf_basis *obs,
+                                           const scf_basis *dfbs,
+                                           int shP, int sh1, int sh2,
+                                           double r0, double omega,
+                                           const char *table_dir,
+                                           double *max_abs, double *max_rel) {
+    try {
+        if (!obs || !dfbs) return -100;
+        const int nP = dfbs->nfunc[shP], n1 = obs->nfunc[sh1], n2 = obs->nfunc[sh2];
+        const int n = nP * n1 * n2;
+        std::vector<double> md(n, 0.0), li(n, 0.0);
+
+        // --- MD path (existing production kernel) ---
+        scf_engine *emd = scf_engine_create_terf_3center(
+            r0, omega, obs->max_nprim, obs->max_L, 0.0, table_dir);
+        if (!emd) return -101;   // MD engine ctor failed
+        const int wmd = scf_compute_terf_eri3(emd, obs, dfbs, shP, sh1, sh2, md.data());
+        scf_engine_destroy(emd);
+        if (wmd < 0) return wmd;
+
+        // --- libint2-native path ---
+        scf_engine *eli = scf_engine_create_terf_libint2(
+            r0, omega, 3, obs->max_nprim, obs->max_L, 0.0, table_dir);
+        if (!eli) return -102;   // libint2 terf engine ctor failed
+        const int wli = scf_compute_eri3(eli, obs, dfbs, shP, sh1, sh2, li.data());
+        scf_engine_destroy(eli);
+        if (wli < 0) return wli;
+
+        double mabs = 0.0, scale = 0.0;
+        for (int i = 0; i < n; ++i) {
+            mabs = std::max(mabs, std::fabs(li[i] - md[i]));
+            scale = std::max(scale, std::fabs(md[i]));
+        }
+        if (max_abs) *max_abs = mabs;
+        if (max_rel) *max_rel = scale > 0.0 ? mabs / scale : 0.0;
+        return n;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+#endif
