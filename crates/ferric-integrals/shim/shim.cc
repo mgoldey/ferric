@@ -1093,11 +1093,23 @@ std::shared_ptr<TerfcTableSet> get_terfc_tables(const std::string &dir) {
     auto set = std::make_shared<TerfcTableSet>();
     // (pts, S_max, s_max, filename) finest-first.
     struct Spec { int pts; double S_max; double s_max; const char *name; };
+    // pts/unit is normally the shipped 16/8/4/2. FERRIC_TERF_PTS_DIV=N divides
+    // every pts by N so a COARSER regenerated table set (same S/s coverage,
+    // fewer points per unit) can be loaded with the correct delta_S/delta_s.
+    // Experiment knob only -- the default path is unchanged.
+    int ptsdiv = 1;
+    if (const char *e = std::getenv("FERRIC_TERF_PTS_DIV")) {
+        // Only 1 and 2 are valid: the shipped pts are 16/8/4/2, so any larger
+        // divisor drives the last table's pts to 0 and delta = 1.0/0 = inf,
+        // silently corrupting every lookup rather than failing.
+        int v = atoi(e);
+        if (v == 1 || v == 2) ptsdiv = v;
+    }
     const Spec specs[] = {
-        {16, 4.0,  2.0,  "16_4_2.bin"},
-        {8,  10.0, 5.0,  "8_10_5.bin"},
-        {4,  20.0, 20.0, "4_20_20.bin"},
-        {2,  20.0, 80.0, "2_20_80.bin"},
+        {16 / ptsdiv, 4.0,  2.0,  "16_4_2.bin"},
+        {8  / ptsdiv, 10.0, 5.0,  "8_10_5.bin"},
+        {4  / ptsdiv, 20.0, 20.0, "4_20_20.bin"},
+        {2  / ptsdiv, 20.0, 80.0, "2_20_80.bin"},
     };
     for (const auto &sp : specs) {
         TerfcTable t;
@@ -1392,6 +1404,44 @@ inline bool terf_aux(const TerfcTableSet &set, double S, double s,
     terf_G_series(S, s, mmax, gser);
     for (int m = 0; m <= mmax; ++m) A[m] = phi_over_theta * gser[m];
     return true;
+}
+
+
+/* ==========================================================================
+ *  STEP 1 of the libint2 core-eval port (wiki/perf-tasks/terf-as-libint2-core-eval.md)
+ *
+ *  terf_gm_eval_impl is the argument-mapping core of a libint2
+ *  `os_core_ints::terf_gm_eval<Real>`. libint2 hands a core evaluator
+ *  (Gm, rho, T, mmax, <oper params>); terf_aux needs (S, s, phi_over_theta).
+ *  The map, with theta2 == libint2's rho and T == theta2 * PQ2:
+ *
+ *      phi2           = rho * omega^2 / (rho + omega^2)
+ *      S              = phi2 * PQ2   = T * (phi2 / rho)
+ *      s              = phi2 * r0^2
+ *      phi_over_theta = sqrt(phi2 / rho)
+ *
+ *  Nothing here is new numerics -- it is the SAME terf_aux on arguments
+ *  recovered from libint2's convention. The gate
+ *  scf_terf_gm_eval_matches_terf_aux() proves that claim bit-for-bit before a
+ *  single libint2 header is patched. If it ever fails, the mapping is wrong
+ *  and the port must stop.
+ * ========================================================================== */
+inline bool terf_gm_eval_impl(const TerfcTableSet &set, double rho, double T,
+                              int mmax, double omega, double r0, double *Gm) {
+    if (!(rho > 0.0) || !(omega > 0.0)) return false;
+    const double omega2 = omega * omega;
+    const double phi2 = rho * omega2 / (rho + omega2);
+    // Recover PQ2 and form S exactly as compute_cart_eri3 does (S = phi2*PQ2),
+    // NOT as T*(phi2/rho). The two are algebraically identical but round
+    // differently: measured 32/336 sample points differ by up to 7.1e-15,
+    // which propagated to 242/3024 mismatches in the gate. Matching the
+    // reference's expression keeps the port bit-identical, so the gate tests
+    // the MAPPING rather than a choice of floating-point association.
+    const double PQ2 = T / rho;
+    const double S = phi2 * PQ2;
+    const double s = phi2 * r0 * r0;
+    const double phi_over_theta = std::sqrt(phi2 / rho);
+    return terf_aux(set, S, s, phi_over_theta, mmax, Gm);
 }
 
 } // anonymous namespace
@@ -2688,6 +2738,62 @@ extern "C" int scf_compute_terf_eri4(scf_engine *eng, const scf_basis *obs,
         if ((int)pureout.size() != n) return SCF_EINTERNAL;
         for (int i = 0; i < n; ++i) out[i] = pureout[i];
         return n;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+/* Gate for STEP 1: terf_gm_eval_impl must reproduce terf_aux BIT-FOR-BIT when
+ * fed libint2-convention arguments. Returns the number of (rho,T,omega,r0,m)
+ * samples compared, or a negative SCF_E* code. `*mismatches` receives the count
+ * of non-bit-identical values -- it MUST be 0. */
+extern "C" int scf_terf_gm_eval_matches_terf_aux(const char *table_dir,
+                                                 int *mismatches,
+                                                 double *worst_abs_diff) {
+    try {
+        auto set = get_terfc_tables(resolve_table_dir(table_dir));
+        if (!set) return SCF_EINVAL;
+        int compared = 0, bad = 0;
+        double worst = 0.0;
+        const int mmax = 8;
+        double A[TERFC_DIMM], B[TERFC_DIMM];
+        // Span the regimes that matter: table-covered and series-fallback, tight
+        // and diffuse primitives, both curvature-linked and decoupled omega.
+        for (double rho : {0.05, 0.25, 1.0, 4.0, 20.0, 100.0}) {
+            for (double pq2 : {0.0, 0.01, 0.5, 2.0, 10.0, 50.0, 200.0}) {
+                for (double r0 : {0.75, 1.0, 2.0, 4.0}) {
+                    for (double wmul : {1.0, 2.0}) {
+                        const double omega = wmul / (r0 * std::sqrt(2.0));
+                        const double T = rho * pq2;
+                        // reference: the existing production path
+                        const double omega2 = omega * omega;
+                        const double phi2 = rho * omega2 / (rho + omega2);
+                        const double S = phi2 * pq2;
+                        const double sarg = phi2 * r0 * r0;
+                        const double pot = std::sqrt(phi2 / rho);
+                        const bool ok_ref = terf_aux(*set, S, sarg, pot, mmax, A);
+                        const bool ok_new =
+                            terf_gm_eval_impl(*set, rho, T, mmax, omega, r0, B);
+                        if (ok_ref != ok_new) { ++bad; continue; }
+                        if (!ok_ref) continue;
+                        for (int m = 0; m <= mmax; ++m) {
+                            ++compared;
+                            unsigned long long ba, bb;
+                            std::memcpy(&ba, &A[m], 8);
+                            std::memcpy(&bb, &B[m], 8);
+                            if (ba != bb) {
+                                ++bad;
+                                const double d = std::fabs(A[m] - B[m]);
+                                if (d > worst) worst = d;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (mismatches) *mismatches = bad;
+        if (worst_abs_diff) *worst_abs_diff = worst;
+        return compared;
     } catch (...) {
         return SCF_EINTERNAL;
     }

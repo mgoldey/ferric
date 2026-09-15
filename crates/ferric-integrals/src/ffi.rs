@@ -95,6 +95,8 @@ extern "C" {
     // Validation hook: the same 4-center MD path with the plain Coulomb kernel,
     // for cross-checking the new contraction against libint2's own quartet.
     pub fn scf_debug_coulomb_eri4(obs: *const c_void, sh1: c_int, sh2: c_int, sh3: c_int, sh4: c_int, out: *mut c_double) -> c_int;
+    // STEP 1 gate for the libint2 core-eval port: terf_gm_eval_impl vs terf_aux.
+    pub fn scf_terf_gm_eval_matches_terf_aux(table_dir: *const c_char, mismatches: *mut c_int, worst: *mut c_double) -> c_int;
     pub fn scf_compute_dipole(
         bs: *const c_void,
         origin: *const c_double,
