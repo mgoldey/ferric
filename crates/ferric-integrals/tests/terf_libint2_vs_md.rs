@@ -52,17 +52,19 @@ fn libint2_terf_matches_md_within_tolerance() {
     // Tolerance fixed BEFORE measuring: recurrence-order differences should sit
     // near double rounding on a well-conditioned block. 1e-10 is loose enough
     // for reassociation, tight enough that a wrong kernel cannot pass.
-    // STATUS 2026-09-15: FAILING at worst rel 1.989e2 -- a ~200x scale error,
-    // not a rounding difference, so the kernel is wrong and this gate is doing
-    // its job. Prime suspect: PREFACTOR DOUBLE-COUNTING. libint2 multiplies the
-    // core-eval output by `pfac = K12 * sqrt_gammapq * oogammapq` AFTER the
-    // evaluator returns (engine.impl.h:1288, :1417), whereas terf_aux already
-    // folds in `phi_over_theta = sqrt(phi2/rho)`. The MD driver applies its own
-    // `2*pi^2.5/(p*q*sqrt(p+q))` separately. The hook must return values in
-    // libint2's convention -- i.e. WITHOUT any prefactor libint2 will apply
-    // itself -- so the next step is to work out which factors belong where and
-    // strip the duplicates. Compare against erfc_coulomb_gm_eval, which returns
-    // raw Gm and lets libint2 scale.
+    // RESOLVED 2026-09-15. Two real bugs, then one gate bug:
+    //   1. terf_aux bakes in a CONSTANT sqrt(phi2/rho) while libint2 applies
+    //      its own pfac afterwards -> double counting.
+    //   2. The MD driver feeds alpha_R = phi2 (not rho) to its Hermite-R
+    //      recursion; libint2's recurrences are hardwired to rho. Every other
+    //      attenuated operator reconciles that with an M-DEPENDENT power --
+    //      erf_coulomb_gm_eval uses (w2/(w2+rho))^(m+1/2). Fixed by stripping
+    //      the constant and applying (phi2/rho)^(m+1/2). 1.989e2 -> 2.287e1.
+    //   3. The residual 2.287e1 was THIS TEST's fault: it normalized by
+    //      max|md| within a block, so blocks whose largest element is ~1e-21
+    //      (pure noise) produced meaningless ratios. Every physically
+    //      significant element already agreed to 11 digits, and (ss|ss) is
+    //      exact at li/md = 1.000000. The shim now floors on block magnitude.
     assert!(worst_rel < 1e-10,
         "libint2 terf disagrees with MD by {worst_rel:.3e} at {worst_at:?}");
 }

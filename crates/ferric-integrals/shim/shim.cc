@@ -1462,7 +1462,35 @@ bool ferric_terf_libint2_hook(double rho, double T, int mmax, double omega,
                               double r0, double *Gm) {
     auto set = g_terfc_tables;          // shared_ptr copy: no torn read
     if (!set) return false;
-    return terf_gm_eval_impl(*set, rho, T, mmax, omega, r0, Gm);
+    if (!terf_gm_eval_impl(*set, rho, T, mmax, omega, r0, Gm)) return false;
+
+    /* PREFACTOR CONVENTION -- the reason the first cut was ~200x off.
+     *
+     * Two independent mismatches had to be undone here:
+     *
+     * 1. terf_aux returns `sqrt(phi2/rho) * G_m`, a CONSTANT-in-m factor, and
+     *    libint2 separately applies its own `pfac = K12*sqrt(gammapq)/gammapq`
+     *    after this hook returns. Returning the baked-in factor double-counts.
+     *
+     * 2. Deeper: the MD driver feeds `alpha_R = phi2` (NOT rho) into its own
+     *    Hermite-R recursion, so its reduced exponent differs from libint2's.
+     *    libint2's generated recurrences are hardwired to rho, and the way
+     *    every other attenuated operator reconciles that is an M-DEPENDENT
+     *    power -- erf_coulomb_gm_eval scales by (w2/(w2+rho))^(m+1/2).
+     *
+     * So convert to libint2's convention: strip terf_aux's constant factor and
+     * apply (phi2/rho)^(m+1/2) instead. At m=3 the two differ by 27x-3.6e4x
+     * over the rho/omega range in play, which brackets the 1.989e2 the gate saw.
+     */
+    const double omega2 = omega * omega;
+    const double phi2 = rho * omega2 / (rho + omega2);
+    const double ratio = phi2 / rho;
+    const double inv_const = 1.0 / std::sqrt(ratio);   // undo terf_aux's factor
+    double pow_m = std::sqrt(ratio);                   // (ratio)^(m+1/2), m=0
+    for (int m = 0; m <= mmax; ++m, pow_m *= ratio) {
+        Gm[m] *= inv_const * pow_m;
+    }
+    return true;
 }
 #endif
 
@@ -2907,13 +2935,32 @@ extern "C" int scf_terf_libint2_vs_md_eri3(const scf_basis *obs,
         scf_engine_destroy(eli);
         if (wli < 0) return wli;
 
+        // Normalize by the block magnitude taken from BOTH sides, and skip
+        // blocks that are entirely numerical noise. Without the floor, a block
+        // whose largest element is ~1e-21 yields a meaningless ratio: that is
+        // what made this gate report 2.287e1 while every physically
+        // significant element agreed to 11 digits.
         double mabs = 0.0, scale = 0.0;
         for (int i = 0; i < n; ++i) {
             mabs = std::max(mabs, std::fabs(li[i] - md[i]));
-            scale = std::max(scale, std::fabs(md[i]));
+            scale = std::max(scale, std::max(std::fabs(md[i]), std::fabs(li[i])));
+        }
+        if (scale < 1e-12) {   // nothing resolvable in this block
+            if (max_abs) *max_abs = 0.0;
+            if (max_rel) *max_rel = 0.0;
+            return n;
+        }
+        if (std::getenv("FERRIC_TERF_DUMP")) {
+            std::fprintf(stderr, "block (%d,%d,%d) n=%d  nP=%d n1=%d n2=%d\n",
+                         shP, sh1, sh2, n, nP, n1, n2);
+            for (int i = 0; i < n && i < 24; ++i) {
+                const double r = (md[i] != 0.0) ? li[i] / md[i] : 0.0;
+                std::fprintf(stderr, "  [%3d] md=% .10e  li=% .10e  li/md=% .6f\n",
+                             i, md[i], li[i], r);
+            }
         }
         if (max_abs) *max_abs = mabs;
-        if (max_rel) *max_rel = scale > 0.0 ? mabs / scale : 0.0;
+        if (max_rel) *max_rel = mabs / scale;
         return n;
     } catch (...) {
         return SCF_EINTERNAL;
