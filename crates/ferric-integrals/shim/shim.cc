@@ -1,3 +1,4 @@
+#include <chrono>
 // Implementation of the scf libint2 shim. See shim.h for the contract.
 #include "shim.h"
 
@@ -1245,8 +1246,49 @@ void boys_upto(int mmax, double T, double *F) {
 // function, G_m(S,0) = F_m(S) (verified to 1e-77). For S > 600 the
 // s-dependence is < e^{-580} relative, so Boys is used directly (also avoids
 // e^{-S} underflow in the PMF recurrence).
+// Crossover to the large-S asymptotic G_m -> F_m(S).
+//
+// terf = 1/2[erf(w(r+r0)) + erf(w(r-r0))], so at large separation the r0 shift
+// washes out and the reduced auxiliary collapses onto the plain Boys function.
+// (Oracle check, mpmath: the ratio Phi_terf/Phi_erf converges to exactly
+// 2.000000, and in the reduced variables the erf anchor identity
+// Phi[erf(w r)/r] = sqrt(scr) F_0(scr S) leaves F_m(S) itself.)
+//
+// MEASURED asymptotic-vs-series relative error (m=0..4), 2026-09-15:
+//    S=20  1.6e-5 .. 5.2e-3   (s=0.05..1.0)  -- NOT converged, keep the series
+//    S=30  5.3e-9 .. 7.8e-6                  -- still short
+//    S=50  1.3e-13                           -- converged
+//    S=75  1.1e-13, and s-INDEPENDENT from here on
+//    S=300 1.9e-12   S=600 1.1e-11           -- error GROWS
+//
+// That growth is the SERIES degrading, not the asymptotic: the series sums
+// N = S + 12*sqrt(S) + 60 terms with cancellation, so the old 600.0 cutoff sat
+// exactly where the series is WEAKEST. 75.0 is chosen conservatively: 1.1e-13
+// is four orders below the 1.7e-9 the K=10 interpolation itself delivers, so
+// this never becomes the accuracy-limiting step.
+//
+// Cost: the series is 6563 ns/call (five heap allocations plus ~five loops of
+// length N); the asymptotic is one Boys call at 29.6 ns/call -- 222x.
+//
+// WHERE the series traffic actually sits (measured; this is what sets 50 rather
+// than 75). Series calls by S bucket:
+//            (20,30]  (30,50]  (50,75]  (75,150]  (150,400]
+//   decane     50.6%    43.2%     6.3%      0.0%       0.0%
+//   alkane_20  17.9%    26.2%    20.5%     27.9%       7.4%
+//
+// A 75 cutoff reaches 0.0% of decane's series traffic and 35.3% of
+// alkane_20's -- and the end-to-end benchmark tracked that exposure exactly
+// (decane 8.79x -> 8.72x i.e. unchanged; alkane_20 19.65x -> 12.91x, +34%).
+// Dropping to 50 keeps 1.3e-13 accuracy -- still four orders below the 1.7e-9
+// the K=10 table itself delivers -- while lifting alkane_20 coverage to 55.8%.
+//
+// Going below 50 is NOT free: at S=30 the asymptotic is only 5.3e-9..7.8e-6,
+// i.e. no better than the table. The (20,50] window needs the B1/B2 tau
+// quadrature instead. See wiki/perf-tasks/terf-closed-form-asymptotic.md.
+constexpr double TERF_ASYMPTOTIC_S = 50.0;
+
 void terf_G_series(double S, double s, int mmax, double *G) {
-    if (S > 600.0) {
+    if (S > TERF_ASYMPTOTIC_S) {
         boys_upto(mmax, S, G);
         return;
     }
@@ -1318,6 +1360,7 @@ void terf_G_series(double S, double s, int mmax, double *G) {
 //  changes numerical output in the far field, so it needs its own accuracy
 //  gate against the series, which is the exact reference.
 // -------------------------------------------------------------------------
+extern "C" { unsigned long long g_terf_tab = 0, g_terf_ser = 0; }
 inline bool terf_aux(const TerfcTableSet &set, double S, double s,
                      double phi_over_theta, int mmax, double *A) {
     // Fast path: every m shares the SAME (S, s), so the table selection, the
@@ -1339,6 +1382,13 @@ inline bool terf_aux(const TerfcTableSet &set, double S, double s,
             if (t.covers(S, s)) { tbl = &t; break; }
         }
         if (tbl) {
+            // K=10 per Dutoi. MEASURED 2026-09-15 vs the exact Poisson series:
+            // K=10 -> 1.7e-9, K=8 -> 5.6e-7, K=6 -> 1.8e-4, K=4 -> 1.0e-1.
+            // Smooth geometric convergence (~24x per step), so this is real
+            // Lagrange behaviour, not sampling noise. RI-MP2 needs ~1e-9 on the
+            // kernel for uHa energies, so 10 is the MINIMUM usable order --
+            // lowering it is not a speed/accuracy tradeoff, it is a broken
+            // kernel. See tests/terf_interp_accuracy.rs.
             const int K = 10;
             const int nS = tbl->nS, ns = tbl->ns;
             const double fS = S / tbl->delta_S;
@@ -1383,6 +1433,7 @@ inline bool terf_aux(const TerfcTableSet &set, double S, double s,
             // n is ALWAYS 0 at every call site, so index the row directly and
             // walk m with the table's m-stride instead of re-deriving the
             // offset per lookup.
+            __atomic_fetch_add(&g_terf_tab, 1, __ATOMIC_RELAXED);
             const int dimn = tbl->dimn;
             for (int m = 0; m <= mmax; ++m) {
                 double acc = 0.0;
@@ -1400,6 +1451,7 @@ inline bool terf_aux(const TerfcTableSet &set, double S, double s,
         }
     }
     // Outside all tables: exact series (reachable only for S > 20, s < 1/2).
+    __atomic_fetch_add(&g_terf_ser, 1, __ATOMIC_RELAXED);
     double gser[TERFC_DIMM];
     terf_G_series(S, s, mmax, gser);
     for (int m = 0; m <= mmax; ++m) A[m] = phi_over_theta * gser[m];
@@ -2969,3 +3021,111 @@ extern "C" int scf_terf_libint2_vs_md_eri3(const scf_basis *obs,
     }
 }
 #endif
+
+/* How accurate is the K-point interpolation against the EXACT Poisson series?
+ * The series (terf_G_series) is the reference the tables were generated from,
+ * so this measures real error, not agreement with another approximation.
+ * Sweeps (S,s) inside table coverage. Returns samples compared; writes the
+ * worst relative error to *worst_rel. */
+extern "C" int scf_terf_interp_accuracy(const char *table_dir, int mmax,
+                                        double *worst_rel) {
+    try {
+        auto set = get_terfc_tables(resolve_table_dir(table_dir));
+        if (!set) return SCF_EINVAL;
+        int n = 0; double worst = 0.0;
+        double A[TERFC_DIMM], G[TERFC_DIMM];
+        // Stay inside the finest tables' coverage (S<=4, s<=2) and off-node,
+        // where interpolation error is largest.
+        for (double S = 0.037; S < 4.0; S += 0.137) {
+            for (double sv = 0.023; sv < 2.0; sv += 0.091) {
+                if (!terf_aux(*set, S, sv, 1.0, mmax, A)) continue;
+                terf_G_series(S, sv, mmax, G);
+                for (int m = 0; m <= mmax; ++m) {
+                    const double den = std::fabs(G[m]);
+                    if (den < 1e-14) continue;      // no resolvable signal
+                    const double rel = std::fabs(A[m] - G[m]) / den;
+                    if (rel > worst) worst = rel;
+                    ++n;
+                }
+            }
+        }
+        if (worst_rel) *worst_rel = worst;
+        return n;
+    } catch (...) { return SCF_EINTERNAL; }
+}
+
+extern "C" void scf_terf_series_counters(unsigned long long *tab,
+                                         unsigned long long *ser) {
+    if (tab) *tab = g_terf_tab;
+    if (ser) *ser = g_terf_ser;
+}
+extern "C" void scf_terf_series_reset(void) { g_terf_tab = 0; g_terf_ser = 0; }
+
+/* Micro-benchmark + accuracy of the large-S asymptotic vs the exact series.
+ *
+ *   Phi_terf(S) -> 2*sqrt(scr)*F_0(scr*S),  scr = w^2/(rho+w^2)
+ *
+ * terf_G_series does 5 heap allocations and ~5 loops of length
+ * N = S + 12*sqrt(S) + 60 per call; the asymptotic is ONE Boys call. This
+ * measures both the speed ratio and the accuracy, so the tradeoff is data.
+ * NOTE: terf_aux's (S,s) are already the REDUCED variables, and
+ *   s = phi2*r0^2, S = phi2*PQ2 -- so scr*S == s*(PQ2/r0^2) is NOT available
+ * here; the asymptotic must be expressed in (S,s) alone. Derivation:
+ *   scr = w^2/(rho+w^2) = phi2/rho, and the table's G is already the
+ *   phi-reduced auxiliary, so in reduced variables the erf anchor is just
+ *   F_0(S) itself. Hence the asymptotic G_m -> F_m(S) as s -> small.
+ * The probe below tests exactly that against the shipped series.
+ */
+extern "C" int scf_terf_asym_probe(int mmax, int reps,
+                                   double *ser_ns, double *asym_ns,
+                                   double *worst_rel) {
+    try {
+        double gser[TERFC_DIMM], gasy[TERFC_DIMM];
+        // representative out-of-table points: S>20, s small (curvature-linked)
+        const double Ss[] = {25, 50, 100, 200, 400};
+        const double ss[] = {0.05, 0.2, 0.5};
+        double worst = 0.0;
+        // accuracy first -- per (S,s), so the crossover is chosen from data
+        if (std::getenv("FERRIC_ASYM_DUMP")) {
+            std::fprintf(stderr, "      S      s       worst rel err (m=0..%d)\n", mmax);
+            for (double S : {20.,30.,50.,75.,100.,150.,200.,300.,400.,600.}) {
+                for (double sv : {0.05,0.2,0.5,1.0}) {
+                    terf_G_series(S, sv, mmax, gser);
+                    boys_upto(mmax, S, gasy);
+                    double w2 = 0.0;
+                    for (int m = 0; m <= mmax; ++m) {
+                        const double den = std::fabs(gser[m]);
+                        if (den < 1e-300) continue;
+                        w2 = std::max(w2, std::fabs(gasy[m]-gser[m])/den);
+                    }
+                    std::fprintf(stderr, "  %7.1f %5.2f   %.3e%s\n", S, sv, w2,
+                                 w2 < 1e-13 ? "   <-- safe" : "");
+                }
+            }
+        }
+        for (double S : Ss) {
+            for (double sv : ss) {
+                terf_G_series(S, sv, mmax, gser);
+                boys_upto(mmax, S, gasy);          // candidate asymptotic
+                for (int m = 0; m <= mmax; ++m) {
+                    const double den = std::fabs(gser[m]);
+                    if (den < 1e-300) continue;
+                    worst = std::max(worst, std::fabs(gasy[m]-gser[m])/den);
+                }
+            }
+        }
+        if (worst_rel) *worst_rel = worst;
+        // timing
+        auto t0 = std::chrono::steady_clock::now();
+        for (int r = 0; r < reps; ++r)
+            for (double S : Ss) for (double sv : ss) terf_G_series(S, sv, mmax, gser);
+        auto t1 = std::chrono::steady_clock::now();
+        for (int r = 0; r < reps; ++r)
+            for (double S : Ss) for (double sv : ss) boys_upto(mmax, S, gasy);
+        auto t2 = std::chrono::steady_clock::now();
+        const double n = (double)reps * 15.0;
+        if (ser_ns)  *ser_ns  = std::chrono::duration<double,std::nano>(t1-t0).count()/n;
+        if (asym_ns) *asym_ns = std::chrono::duration<double,std::nano>(t2-t1).count()/n;
+        return 1;
+    } catch (...) { return SCF_EINTERNAL; }
+}

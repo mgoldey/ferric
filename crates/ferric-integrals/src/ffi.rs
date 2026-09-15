@@ -96,6 +96,10 @@ extern "C" {
     // for cross-checking the new contraction against libint2's own quartet.
     pub fn scf_debug_coulomb_eri4(obs: *const c_void, sh1: c_int, sh2: c_int, sh3: c_int, sh4: c_int, out: *mut c_double) -> c_int;
     // STEP 1 gate for the libint2 core-eval port: terf_gm_eval_impl vs terf_aux.
+    pub fn scf_terf_asym_probe(mmax: c_int, reps: c_int, ser_ns: *mut c_double, asym_ns: *mut c_double, worst_rel: *mut c_double) -> c_int;
+    pub fn scf_terf_series_counters(tab: *mut u64, ser: *mut u64);
+    pub fn scf_terf_series_reset();
+    pub fn scf_terf_interp_accuracy(table_dir: *const c_char, mmax: c_int, worst_rel: *mut c_double) -> c_int;
     pub fn scf_terf_gm_eval_matches_terf_aux(table_dir: *const c_char, mismatches: *mut c_int, worst: *mut c_double) -> c_int;
     // STEP 4 gate: libint2-native terf vs the hand-rolled MD path (feature-gated
     // build only; the symbol is absent without FERRIC_LIBINT2_TERF).

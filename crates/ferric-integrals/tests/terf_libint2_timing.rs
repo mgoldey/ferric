@@ -92,17 +92,22 @@ fn libint2_terf_vs_md_timing() {
     let name = std::env::var("FERRIC_BENCH_MOL").unwrap_or_else(|_| "alkane_10".into());
     let mol = Molecule::load_xyz(&format!(
         "{}/../../testdata/molecules/{name}.xyz", env!("CARGO_MANIFEST_DIR"))).unwrap();
-    let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
-    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
-    let r0 = 2.0_f64;
+    let obsname = std::env::var("FERRIC_BENCH_BASIS").unwrap_or_else(|_| "cc-pvdz".into());
+    let auxname = std::env::var("FERRIC_BENCH_AUX").unwrap_or_else(|_| "cc-pvdz-ri".into());
+    let obs = PreparedBasis::new(&mol, &basis::bundled(&obsname).unwrap()).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &basis::bundled(&auxname).unwrap()).unwrap();
+    let r0: f64 = std::env::var("FERRIC_BENCH_R0").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(2.0);
     let omega = 1.0 / (r0 * 2.0_f64.sqrt());
 
-    eprintln!("\n=== {name}: nbf={} naux={}  load1={:.2} ===",
+    eprintln!("\n=== {name} / {obsname}+{auxname} r0={r0}: nbf={} naux={}  load1={:.2} ===",
               obs.nbasis(), dfbs.nbasis(), load1());
 
     // Interleaved, minima of 3 -- the box drifts, so alternate every arm.
     let (mut c, mut e, mut md, mut li) = (f64::MAX, f64::MAX, f64::MAX, f64::MAX);
-    for _ in 0..3 {
+    let rounds: usize = std::env::var("FERRIC_BENCH_ROUNDS").ok()
+        .and_then(|v| v.parse().ok()).unwrap_or(3);
+    for _ in 0..rounds {
         c  = c.min(sweep_md(&obs, &dfbs, Operator::coulomb()));
         e  = e.min(sweep_md(&obs, &dfbs, Operator::erfc(0.222234)));
         md = md.min(sweep_md(&obs, &dfbs, Operator::terf(r0)));
