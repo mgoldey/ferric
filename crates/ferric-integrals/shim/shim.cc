@@ -1276,6 +1276,21 @@ void terf_G_series(double S, double s, int mmax, double *G) {
 //  made (P|Q)_terfc spuriously INDEFINITE on larger systems (alkane_4+/
 //  cc-pVDZ-RI at r0=0.75 A; alkane_12 at r0=1.05 A) and blew up downstream
 //  RI-MP2 energies. Always returns true.
+//
+//  FREQUENCY, measured — the series path is NOT rare, despite reading like an
+//  edge case. Instrumented on decane / cc-pVDZ + cc-pVDZ-RI (terf 3-index
+//  block): 40 785 656 table hits vs 8 330 944 series fallbacks = 17.0% of all
+//  terf_aux calls, and `perf` puts terf_G_series at 18.4% of total runtime
+//  (second only to terf_aux itself at 29.6%). The coverage ceiling is
+//  S_max = 20 across every registered table, and tight primitives on separated
+//  centers clear it routinely.
+//
+//  So the obvious next optimization on this kernel is NOT micro-tuning the
+//  interpolation further — it is extending table coverage past S = 20 (or
+//  giving the series a cheaper large-S asymptotic form), which would convert
+//  ~18% of runtime into ~10x-cheaper table lookups. Not attempted here: it
+//  changes numerical output in the far field, so it needs its own accuracy
+//  gate against the series, which is the exact reference.
 // -------------------------------------------------------------------------
 inline bool terf_aux(const TerfcTableSet &set, double S, double s,
                      double phi_over_theta, int mmax, double *A) {
