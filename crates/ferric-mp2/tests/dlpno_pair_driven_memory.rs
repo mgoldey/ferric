@@ -19,6 +19,38 @@
 //! mark, so two measurements running concurrently in the same binary would
 //! each report the other's allocations.
 //!
+//! # MEASURED, 2026-09-16, C12H26/cc-pVDZ (nocc=49, nvir=249, naux=1036)
+//!
+//! Release build, `OPENBLAS_NUM_THREADS=1`, under `scripts/ferric-limited`, on a
+//! contended box. TWO independent runs, because one is an anecdote:
+//!
+//! ```text
+//!                                    run 1        run 2
+//!   baseline peak RSS after SCF+RI   1.862 GiB    1.819 GiB
+//!   b_ov itself                      0.094 GiB    0.094 GiB
+//!   after pair-driven (delta)       +0.000 GiB   +0.000 GiB
+//!   dense g alone                    1.109 GiB    1.109 GiB
+//!   after dense (delta)             +0.774 GiB   +0.822 GiB
+//!   E_corr, both paths              -1.768119419499 Ha (identical)
+//! ```
+//!
+//! The pair-driven path did not move the process high-water mark AT ALL, in
+//! either run: its per-pair blocks are 0.47 MiB here and are served from heap
+//! the allocator already held. The dense path added 0.77-0.82 GiB on top for a
+//! 1.109 GiB array; the shortfall against the full 1.109 is the allocator
+//! reusing pages freed by the SCF, and it is why the assertions below are
+//! written as fractions of the array size rather than as byte equalities.
+//!
+//! The baseline varies run to run (1.862 vs 1.819) because it includes the SCF
+//! and RI transform, whose peak depends on allocator and scheduling detail. That
+//! is exactly why the reported quantity is a DELTA against a baseline taken in
+//! the same process, not an absolute.
+//!
+//! MUTATION-TESTED: allocating the dense `g` before the baseline is read (the
+//! ordering trap this file's own doc warns about) moves the pair-driven delta
+//! from +0.000 to +0.801 GiB and fails the assertion. The zero is therefore a
+//! measurement, not an artifact of where the reads were placed.
+//!
 //! # What these numbers are, and are not
 //!
 //! They are a fixed-size memory comparison, which is robust to a busy box: an
@@ -26,7 +58,8 @@
 //! They are NOT timings, and nothing here should be read as a speedup. Per the
 //! repo's measurement rules a wall-clock claim needs a quiet box, and anything
 //! run under a cgroup cap is good for fixed-size comparison only, never for
-//! fitting a scaling exponent.
+//! fitting a scaling exponent. The box was contended throughout (load 2-8 on
+//! 12 cores), which is why no timing is reported.
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -68,14 +101,22 @@ fn gib(b: u64) -> f64 {
     b as f64 / 1024.0f64.powi(3)
 }
 
-/// C20H42 — chosen because at cc-pVDZ (nocc=81, nvir=409) the dense `g` is
-/// 8.2 GiB, a real fraction of this 23 GB box, while one pair block is 1.3 MiB.
-/// Benzene was tried first and rejected: its dense `g` is 28 MiB at cc-pVDZ,
-/// which is invisible in RSS and would have made the comparison unmeasurable.
-fn alkane20() -> Molecule {
-    Molecule::load_xyz("../../testdata/molecules/alkane_20.xyz")
-        .or_else(|_| Molecule::load_xyz("testdata/molecules/alkane_20.xyz"))
-        .expect("alkane_20.xyz")
+/// C12H26 — sized so the comparison is actually measurable on this box.
+///
+/// At cc-pVDZ (nocc=49, nvir=249) the dense `g` is 1.11 GiB, which is a clear
+/// signal in RSS, while one pair block is 0.47 MiB. Two other choices were tried
+/// and rejected, and the reasons are recorded so nobody repeats them:
+///
+/// * benzene/cc-pVDZ — dense `g` is only 28 MiB, invisible in RSS;
+/// * C20H42/cc-pVDZ — dense `g` is 8.2 GiB, which is the right size, but its
+///   SCF + RI transform alone reached 5.8 GB RSS and had burned 71 CPU-minutes
+///   without finishing on a shared box, so the SETUP dominated the thing being
+///   measured. (It was not thrashing: si/so were 0 and the process was
+///   compute-bound.)
+fn alkane12() -> Molecule {
+    Molecule::load_xyz("../../testdata/molecules/alkane_12.xyz")
+        .or_else(|_| Molecule::load_xyz("testdata/molecules/alkane_12.xyz"))
+        .expect("alkane_12.xyz")
 }
 
 struct Setup {
@@ -88,7 +129,7 @@ struct Setup {
 
 fn setup(basis_name: &str) -> Setup {
     let ctx = ParallelContext::new();
-    let mol = alkane20();
+    let mol = alkane12();
     let obs_bs = basis::bundled(basis_name).unwrap();
     let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
@@ -127,7 +168,7 @@ fn peak_rss_dense_versus_pair_driven() {
 
     let base = peak_rss_bytes();
     eprintln!(
-        "C20H42/cc-pVDZ: nocc={} nvir={} naux={}\n  baseline peak RSS after SCF+RI: {:.3} GiB\n  \
+        "C12H26/cc-pVDZ: nocc={} nvir={} naux={}\n  baseline peak RSS after SCF+RI: {:.3} GiB\n  \
          b_ov itself: {:.3} GiB",
         s.nocc,
         s.nvir,
@@ -179,18 +220,41 @@ fn peak_rss_dense_versus_pair_driven() {
     // dense array. Allow generous slack for allocator behaviour and the per-pair
     // blocks; the claim is an order of magnitude, not a byte count.
     let paired_delta = after_paired.saturating_sub(base);
+    let dense_delta = after_dense.saturating_sub(after_paired);
+    // A zero delta is the EXPECTED outcome, not a divide-by-zero to paper over:
+    // the per-pair blocks are small enough to be served from heap the allocator
+    // already holds, so the process high-water mark never moves. Printing a
+    // "1190915208x" ratio from `max(1)` would be noise dressed as a result, so
+    // report the deltas and say plainly when the pair-driven one did not move.
     eprintln!(
-        "  VERDICT: pair-driven added {:.3} GiB; the dense g alone is {:.3} GiB ({:.1}x)",
+        "  VERDICT: pair-driven added {:.3} GiB{}; the dense path then added \
+         {:.3} GiB for a g of {:.3} GiB",
         gib(paired_delta),
-        gib(predicted as u64),
-        predicted as f64 / (paired_delta.max(1)) as f64
+        if paired_delta == 0 {
+            " (peak RSS did not move at all)"
+        } else {
+            ""
+        },
+        gib(dense_delta),
+        gib(predicted as u64)
     );
     assert!(
-        (paired_delta as f64) < 0.5 * predicted as f64,
+        (paired_delta as f64) < 0.25 * predicted as f64,
         "pair-driven added {:.3} GiB, which is not decisively less than the dense \
          array's {:.3} GiB",
         gib(paired_delta),
         gib(predicted as u64)
+    );
+    // Guard the guard: the dense path must really have cost something here,
+    // otherwise the comparison above is between two zeros and proves nothing.
+    // This is the premise that makes the paired result meaningful.
+    assert!(
+        (dense_delta as f64) > 0.25 * predicted as f64,
+        "premise: the dense path should have grown peak RSS by a real fraction of \
+         its {:.3} GiB array, but it only added {:.3} GiB — this system is too \
+         small for the comparison to mean anything",
+        gib(predicted as u64),
+        gib(dense_delta)
     );
 }
 
