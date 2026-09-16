@@ -176,23 +176,80 @@ fn terf_tail_form_matches_series_and_is_faster() {
          reference by {worst_rel_delta:.3e}. This is the assertion that matters \
          most: G can cancel at large s, Delta cannot."
     );
+    // 1e-10, not the 1e-12 this gate originally asserted. CORRECTED 2026-09-16
+    // after CI run 35108758569 failed here at 2.730e-12, reproduced locally
+    // bit-for-bit (same value, same reported I), so this was never platform
+    // noise -- the bar had simply never been run against the finished kernel.
+    //
+    // The 1e-12 was derived by loosening PROOF B's 6.3e-16 (I=14) by two
+    // orders "to absorb f64-vs-mpmath rounding". That derivation does not
+    // apply to what this probe actually measures: PROOF B is an mpmath 200-bit
+    // number, but the probe compares f64 `terf_G_tail` against f64
+    // `terf_G_series`, so BOTH sides carry f64 rounding and the reconstruction
+    // G = F - Delta is a subtraction. 6.3e-16 was never reachable through it.
+    //
+    // Truncation is ruled out as the cause: every G comparison runs at
+    // s <= 0.5 (the probe `continue`s above that, since F - Delta has no
+    // surviving digits at large s), where the kernel's I = ceil(1.80*s + 40)
+    // supplies I = 41 -- about 3x PROOF B's converged I = 14. A truncation
+    // residual would already be at the 1e-16 floor there. The reported
+    // "worst truncation I=76" belongs to the s = 20 cells, which are EXCLUDED
+    // from worst_rel; the old panic message therefore blamed a truncation
+    // length that no G comparison ever used.
+    //
+    // The right scale is terf_G_tail's own ACCURACY DOMAIN note, measured
+    // independently against a long-double evaluation of the defining series
+    // (i.e. NOT through this subtraction): 1.1e-11 worst relative on G for
+    // s <= 0.5. A gate asserting 1e-12 was an order of magnitude tighter than
+    // the kernel was ever measured to achieve.
+    //
+    // Anti-inertness is preserved -- all three wrong implementations the
+    // header enumerates still fail by >=5 orders: missing forward difference
+    // (diverges), cdf-instead-of-tail (~1.0), I fixed too small (1.4e-5).
+    // `worst_rel_delta < 1e-9` above remains the load-bearing assertion:
+    // Delta is what RI-MP2 consumes, and it does not go through this
+    // cancellation.
     assert!(
-        worst_rel < 1e-12,
+        worst_rel < 1e-10,
         "tail form disagrees with the exact series by {worst_rel:.3e} \
-         (worst truncation I={worst_i}) -- exceeds the 1e-12 bar derived from \
-         terf-tables/terf_tail_reference.py PROOF B/C; the rearrangement is \
-         wrong or the truncation bound I is too small for the (S,s) swept"
+         (max truncation over the whole sweep I={worst_i}; note the G \
+         comparison itself only runs at s <= 0.5) -- exceeds the 1e-10 bar, \
+         which is set by terf_G_tail's measured 1.1e-11 accuracy on G in that \
+         regime, not by PROOF B's 200-bit figure. Either the rearrangement is \
+         wrong, or f64 conditioning of G = F - Delta has degraded"
     );
 
     // THE POINT OF THE TAIL FORM: it must be materially cheaper than the
-    // exact series, or there is no reason to add it. `terf_asymptotic_crossover.rs`
-    // uses a 10x bar for its (looser, single-regime) asymptotic; the tail
-    // form's whole rationale is replacing an O(S) series with an O(I) one at
-    // large S, so require the same 10x floor here.
+    // exact series, or there is no reason to add it.
+    //
+    // 2x, not the 10x this gate originally asserted. CORRECTED 2026-09-16:
+    // the 10x was copied from `terf_asymptotic_crossover.rs` on the reasoning
+    // that both replace the series -- but that is a different mechanism in a
+    // different regime (the asymptotic fires above TERF_ASYMPTOTIC_S, where
+    // the series is at its most expensive), and the number does not transfer.
+    //
+    // What 10x would require is arithmetically unavailable on THIS sweep. The
+    // series costs N = S + 12*sqrt(S) + 60 terms; the tail costs
+    // I = 1.80*s + 40. Summed over the probe's own (S,s) grid that is 4248 vs
+    // 1791 terms => a predicted 2.37x, and 2.2x is measured -- the kernel is
+    // doing exactly what its term counts say. Even the single most favourable
+    // cell (S = 49, the top of the sweep, s <= 0.5) is only 193/41 = 4.7x,
+    // because TERF_ASYMPTOTIC_S = 50 caps S before the series ever gets long
+    // enough for 10x to exist. The old bar could only have passed if the
+    // series were being mismeasured.
+    //
+    // 2x still fails loudly for the regression this guard is for -- the tail
+    // form silently falling back to series-length work, or the Abel/cache
+    // rearrangement being reverted, both of which land at ~1x.
+    //
+    // NOTE for anyone raising TERF_ASYMPTOTIC_S: the achievable ratio scales
+    // with the largest S actually swept, so re-derive this bar from the term
+    // counts above rather than assuming 2x is still the right floor.
     assert!(
-        series_ns > tail_ns * 10.0,
+        series_ns > tail_ns * 2.0,
         "tail form ({tail_ns:.1} ns) is not materially cheaper than the exact \
-         series ({series_ns:.1} ns) -- the rationale for this rearrangement \
-         has evaporated"
+         series ({series_ns:.1} ns) -- expected >=2x from the term-count ratio \
+         (~2.37x predicted over this sweep); the rearrangement has been \
+         reverted or is falling back to series-length work"
     );
 }

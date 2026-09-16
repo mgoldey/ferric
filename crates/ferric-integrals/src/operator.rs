@@ -241,9 +241,11 @@ impl Operator {
     /// terf(r,r0)/r as a sum of n erfc(w_i r)/r terms converges far too slowly
     /// to be useful (worst relative error over r in [0.01, 25]):
     ///
-    ///        r0      n=2       n=3       n=4
-    ///       1.05   5.6e-02   6.5e-04   3.3e-05
-    ///       2.00   3.8e-01   5.3e-02   6.8e-04
+    /// ```text
+    /// r0      n=2       n=3       n=4
+    /// 1.05   5.6e-02   6.5e-04   3.3e-05
+    /// 2.00   3.8e-01   5.3e-02   6.8e-04
+    /// ```
     ///
     /// Each erfc term costs ~1.46x Coulomb (libint2-native), so n<=3 is the
     /// budget to beat the current table path at ~5.5x. At n=3 the error is
