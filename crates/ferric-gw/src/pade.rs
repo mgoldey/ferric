@@ -146,7 +146,9 @@ mod tests {
         let exact = f(Complex64::new(-0.17, 0.0)).re; // −1.2012751775
         assert!(
             (val.re - exact).abs() < 1e-6,
-            "shifted-node far-eval Padé: got {:.10}, exact {:.10}", val.re, exact
+            "shifted-node far-eval Padé: got {:.10}, exact {:.10}",
+            val.re,
+            exact
         );
     }
 

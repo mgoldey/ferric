@@ -99,8 +99,8 @@ fn converged_density(mol: &Molecule, prep: &PreparedBasis) -> Array2<f64> {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, prep).expect("Schwarz bounds");
     let config = RhfConfig::default();
-    let res = solve_rhf(&ParallelContext::default(), mol, prep, op, &bounds, &config)
-        .expect("RHF solve");
+    let res =
+        solve_rhf(&ParallelContext::default(), mol, prep, op, &bounds, &config).expect("RHF solve");
     assert!(
         res.converged,
         "RHF did not converge — refusing to time a K build against an unconverged density"
@@ -120,11 +120,7 @@ struct Timing {
     quartets: usize,
 }
 
-fn time_schwarz(
-    prep: &PreparedBasis,
-    d: &Array2<f64>,
-    thresh: f64,
-) -> (Timing, Array2<f64>) {
+fn time_schwarz(prep: &PreparedBasis, d: &Array2<f64>, thresh: f64) -> (Timing, Array2<f64>) {
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
     let n = prep.nbasis();
@@ -148,7 +144,12 @@ fn time_schwarz(
         best = best.min(t2.elapsed());
     }
     (
-        Timing { table, pairlists, k_build: best, quartets },
+        Timing {
+            table,
+            pairlists,
+            k_build: best,
+            quartets,
+        },
         k,
     )
 }
@@ -185,7 +186,12 @@ fn time_qqr(
         best = best.min(t2.elapsed());
     }
     (
-        Timing { table, pairlists, k_build: best, quartets },
+        Timing {
+            table,
+            pairlists,
+            k_build: best,
+            quartets,
+        },
         schwarz_part,
         k,
     )
@@ -214,16 +220,18 @@ fn report(stem: &str, basis_name: &str) {
 
     let t_scf = Instant::now();
     let d = converged_density(&mol, &prep);
-    println!("reference density: converged RHF in {:.2?}", t_scf.elapsed());
+    println!(
+        "reference density: converged RHF in {:.2?}",
+        t_scf.elapsed()
+    );
 
     for thresh in THRESHOLDS {
         let (ts, k_s) = time_schwarz(&prep, &d, thresh);
         let (tq, qqr_schwarz_part, k_q) = time_qqr(&mol, &bs, &prep, &d, thresh);
 
         let marginal_table = tq.table.saturating_sub(qqr_schwarz_part);
-        let quartet_saving = 100.0
-            * (ts.quartets as f64 - tq.quartets as f64)
-            / (ts.quartets as f64).max(1.0);
+        let quartet_saving =
+            100.0 * (ts.quartets as f64 - tq.quartets as f64) / (ts.quartets as f64).max(1.0);
         let k_speedup = ts.k_build.as_secs_f64() / tq.k_build.as_secs_f64();
 
         println!("\n--- thresh = {thresh:.0e} ---");
@@ -248,7 +256,10 @@ fn report(stem: &str, basis_name: &str) {
             (tq.pairlists.as_secs_f64() + tq.k_build.as_secs_f64())
                 - (ts.pairlists.as_secs_f64() + ts.k_build.as_secs_f64())
         );
-        println!("  max|K_QQR - K_Schwarz| = {:.3e}", max_abs_diff(&k_s, &k_q));
+        println!(
+            "  max|K_QQR - K_Schwarz| = {:.3e}",
+            max_abs_diff(&k_s, &k_q)
+        );
     }
 }
 

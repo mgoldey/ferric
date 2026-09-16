@@ -48,13 +48,13 @@ pub mod energy;
 pub mod gradient;
 /// Block Lanczos eigensolver for the static dielectric matrix.
 pub mod lanczos;
-/// Geometry optimization using RPA gradients.
-pub mod optimize;
 /// Laplace-separable chi0 kernel for the PDEP dielectric matvec.
 pub mod laplace_chi0;
 /// MPI-distributed PDEP-RPA frequency quadrature.
 #[cfg(feature = "mpi")]
 pub mod mpi_rpa;
+/// Geometry optimization using RPA gradients.
+pub mod optimize;
 /// PNO truncation for local RPA.
 pub mod pno;
 /// Post-RPA properties: polarizability, Hirshfeld/Lowdin charges, ESP, electric field.
@@ -123,9 +123,7 @@ fn dielectric_apply(
 ) -> Array2<f64> {
     match laplace {
         None => sternheimer::dielectric_matrix(v_mat, b_ov, eps_occ, eps_vir, omega),
-        Some(q) => laplace_chi0::dielectric_matrix_laplace(
-            v_mat, b_ov, eps_occ, eps_vir, omega, q,
-        ),
+        Some(q) => laplace_chi0::dielectric_matrix_laplace(v_mat, b_ov, eps_occ, eps_vir, omega, q),
     }
 }
 
@@ -191,7 +189,8 @@ fn build_atom_seed(dfbs: &PreparedBasis) -> Result<Array2<f64>, FerricError> {
     }
 
     // QR-orthonormalize: drops linearly dependent columns, keeps only rank(seed) vectors.
-    let (q, _r) = seed.qr()
+    let (q, _r) = seed
+        .qr()
         .map_err(|e| FerricError::General(format!("atom seed QR failed: {e}")))?;
     Ok(q)
 }
@@ -282,8 +281,11 @@ pub struct PdepRpaResult {
 
 impl std::fmt::Display for PdepRpaResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "PDEP-RPA correlation: {:.10} Ha ({} eigenpotentials, converged: {})",
-            self.e_rpa, self.n_eigenpotentials, self.eigensolver_converged)
+        write!(
+            f,
+            "PDEP-RPA correlation: {:.10} Ha ({} eigenpotentials, converged: {})",
+            self.e_rpa, self.n_eigenpotentials, self.eigensolver_converged
+        )
     }
 }
 
@@ -308,7 +310,9 @@ fn preflight_check_closed_shell(
     let n_workers = rayon::current_num_threads().max(1);
     let n_keep = naux; // trunc_thresh unknown pre-eigensolve; conservative upper bound
     let est = budget::estimate_peak_bytes(budget::PeakEstimateShape {
-        naux, nocc, nvir,
+        naux,
+        nocc,
+        nvir,
         n_quad: config.quadrature.n_points,
         n_workers,
         n_keep,
@@ -355,7 +359,6 @@ fn davidson_default_max_vecs(naux: usize, budget_bytes: usize) -> usize {
     derived.min(3 * naux.max(1))
 }
 
-
 /// Top-level PDEP-RPA energy calculation.
 pub fn run_pdep_rpa(
     mol: &Molecule,
@@ -369,7 +372,11 @@ pub fn run_pdep_rpa(
     // Step 1: Build RI-MO B^P_ia tensor and V^{-1/2}. RPA only needs the
     // occ-vir block; skip the full-MP2 amplitudes/density that the gradient
     // path requires.
-    let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes, ..Default::default() };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: config.frozen_core,
+        memory_budget_bytes: config.memory_budget_bytes,
+        ..Default::default()
+    };
     let _t_setup = crate::timing::Stage::start("pdep:rpa_intermediates(ERI3+metric+MOtransform)");
     let inter = compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     _t_setup.end();
@@ -433,9 +440,10 @@ pub(crate) fn run_pdep_rpa_eigensolve(
     // a subspace size gets it. Only the DEFAULT is budget-derived, and it is
     // capped at the historical 3·naux so an ample budget is unchanged.
     let max_vecs = if config.eigensolver_max_vecs == 0 {
-        davidson_default_max_vecs(naux, ferric_core::memory::resolve_budget_bytes(
-            config.memory_budget_bytes,
-        ))
+        davidson_default_max_vecs(
+            naux,
+            ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes),
+        )
     } else {
         config.eigensolver_max_vecs
     };
@@ -460,13 +468,15 @@ pub(crate) fn run_pdep_rpa_eigensolve(
     // Build the Laplace quadrature once if the Laplace χ₀ backend was selected.
     // The same `(t_l, w_l)` are reused at every (ω, V) inside the Davidson loop
     // and in the post-Davidson `eval_eigenvalues_at_frequencies` path.
-    let laplace_chi0_quad: Option<ferric_quadrature::LaplaceQuadrature> =
-        match config.chi0_backend {
-            Chi0Backend::Dense => None,
-            Chi0Backend::Laplace { n_quad } => Some(
-                laplace_chi0::build_laplace_for_gaps(eps_occ_ref, eps_vir_ref, n_quad)?,
-            ),
-        };
+    let laplace_chi0_quad: Option<ferric_quadrature::LaplaceQuadrature> = match config.chi0_backend
+    {
+        Chi0Backend::Dense => None,
+        Chi0Backend::Laplace { n_quad } => Some(laplace_chi0::build_laplace_for_gaps(
+            eps_occ_ref,
+            eps_vir_ref,
+            n_quad,
+        )?),
+    };
     let laplace_for_davidson = laplace_chi0_quad.clone();
 
     // Atom-localized seed gives 3·N_atoms scaling when n_desired ≪ naux (PDEP truncation
@@ -477,8 +487,7 @@ pub(crate) fn run_pdep_rpa_eigensolve(
     // Heuristic: when trunc_thresh > 0 AND naux > 4·N_atoms, use atom seed; otherwise
     // identity seed. This keeps the PDEP win for production runs without breaking the
     // full-basis verification path.
-    let use_atom_seed =
-        config.trunc_thresh > 0.0 && naux > 4 * dfbs.natoms();
+    let use_atom_seed = config.trunc_thresh > 0.0 && naux > 4 * dfbs.natoms();
 
     // Optional screened-tile representation (Boys-localized occupied,
     // per-orbital aux-row screening). Only used inside the Davidson/Lanczos
@@ -486,23 +495,39 @@ pub(crate) fn run_pdep_rpa_eigensolve(
     // energy integration still uses the dense b_ov path for correctness.
     // Resolve Auto → Dense/BoysScreened by atom count (boys-screening-crossover).
     let resolved_sparsity = config.chi0_sparsity.resolve(mol.atoms.len());
-    if let Chi0Sparsity::Auto { boys_thresh, atom_cutoff, .. } = config.chi0_sparsity {
+    if let Chi0Sparsity::Auto {
+        boys_thresh,
+        atom_cutoff,
+        ..
+    } = config.chi0_sparsity
+    {
         let picked = match resolved_sparsity {
-            Chi0Sparsity::BoysScreened { thresh, dist_cutoff } => {
+            Chi0Sparsity::BoysScreened {
+                thresh,
+                dist_cutoff,
+            } => {
                 format!("BoysScreened{{{thresh:e}, dist_cutoff {dist_cutoff}}}")
             }
             _ => "Dense".to_string(),
         };
-        let cmp = if mol.atoms.len() >= atom_cutoff { "≥" } else { "<" };
+        let cmp = if mol.atoms.len() >= atom_cutoff {
+            "≥"
+        } else {
+            "<"
+        };
         eprintln!(
             "chi0_sparsity auto: {} atoms {cmp} cutoff {atom_cutoff} → {picked} (boys_thresh {boys_thresh:e})",
             mol.atoms.len()
         );
     }
-    let _t_screen_build = crate::timing::Stage::start("pdep:boys_screen_build(localize+screened_3idx)");
+    let _t_screen_build =
+        crate::timing::Stage::start("pdep:boys_screen_build(localize+screened_3idx)");
     let screened_bov_opt: Option<ScreenedBov> = match resolved_sparsity {
         Chi0Sparsity::Dense => None,
-        Chi0Sparsity::BoysScreened { thresh, dist_cutoff } => {
+        Chi0Sparsity::BoysScreened {
+            thresh,
+            dist_cutoff,
+        } => {
             let (sb, _boys) = screen::build_screened_bov_boys(
                 mol,
                 obs,
@@ -536,7 +561,10 @@ pub(crate) fn run_pdep_rpa_eigensolve(
                 seed,
                 |v_mat: &Array2<f64>, omega: f64| {
                     sternheimer_sparse::dielectric_matrix_screened(
-                        v_mat, sb_ref, &eps_vir_seed, omega,
+                        v_mat,
+                        sb_ref,
+                        &eps_vir_seed,
+                        omega,
                     )
                 },
                 config.eigensolver_conv_thresh,
@@ -585,7 +613,11 @@ pub(crate) fn run_pdep_rpa_eigensolve(
                     seed,
                     |v_mat: &Array2<f64>, omega: f64| {
                         dielectric_apply(
-                            v_mat, b_ov_ref, eps_occ_ref, eps_vir_ref, omega,
+                            v_mat,
+                            b_ov_ref,
+                            eps_occ_ref,
+                            eps_vir_ref,
+                            omega,
                             laplace_q,
                         )
                     },
@@ -600,7 +632,11 @@ pub(crate) fn run_pdep_rpa_eigensolve(
                     naux,
                     |v_mat: &Array2<f64>, omega: f64| {
                         dielectric_apply(
-                            v_mat, b_ov_ref, eps_occ_ref, eps_vir_ref, omega,
+                            v_mat,
+                            b_ov_ref,
+                            eps_occ_ref,
+                            eps_vir_ref,
+                            omega,
                             laplace_q,
                         )
                     },
@@ -626,12 +662,14 @@ pub(crate) fn run_pdep_rpa_eigensolve(
             // matvec never materializes the whole naux-wide block at once.
             let nov = nocc * nvir;
             let matvec = |v: &Array2<f64>| -> Array2<f64> {
-                sternheimer::dielectric_apply(
-                    v, b_ov_ref, eps_occ_ref, eps_vir_ref, 0.0,
-                )
+                sternheimer::dielectric_apply(v, b_ov_ref, eps_occ_ref, eps_vir_ref, 0.0)
             };
             let lz = lanczos::run_lanczos_full_rank_budgeted(
-                naux, nov, matvec, naux, config.memory_budget_bytes,
+                naux,
+                nov,
+                matvec,
+                naux,
+                config.memory_budget_bytes,
             )?;
             davidson::DavidsonResult {
                 eigenvalues: lz.eigenvalues,
@@ -664,7 +702,10 @@ pub(crate) fn run_pdep_rpa_eigensolve(
     let n_keep = n_keep.max(1);
 
     let eigenvalues_static: Vec<f64> = davidson_result.eigenvalues[..n_keep].to_vec();
-    let eigenvectors = davidson_result.eigenvectors.slice(ndarray::s![.., ..n_keep]).to_owned();
+    let eigenvectors = davidson_result
+        .eigenvectors
+        .slice(ndarray::s![.., ..n_keep])
+        .to_owned();
 
     // Back-transform from V^{-1/2}-dressed basis to physical aux-basis coefficients:
     // c_α (physical) = V^{-1/2} · V_α (dressed). Used for real-space cube export.
@@ -754,7 +795,12 @@ pub fn run_pdep_rpa_from_intermediates(
         && stage.laplace_chi0_quad.is_none();
     let trace_log_summands = if logdet_ok {
         Some(energy::eval_trace_log_summands_budgeted(
-            &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs, config.memory_budget_bytes,
+            &eigenvectors,
+            b_ov,
+            &eps_occ,
+            &eps_vir,
+            &quad_freqs,
+            config.memory_budget_bytes,
         )?)
     } else {
         None
@@ -767,10 +813,20 @@ pub fn run_pdep_rpa_from_intermediates(
     } else {
         match stage.laplace_chi0_quad.as_ref() {
             None => energy::eval_eigenvalues_at_frequencies_budgeted(
-                &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs, config.memory_budget_bytes,
+                &eigenvectors,
+                b_ov,
+                &eps_occ,
+                &eps_vir,
+                &quad_freqs,
+                config.memory_budget_bytes,
             )?,
             Some(q) => energy::eval_eigenvalues_at_frequencies_laplace(
-                &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs, q,
+                &eigenvectors,
+                b_ov,
+                &eps_occ,
+                &eps_vir,
+                &quad_freqs,
+                q,
             )?,
         }
     };
@@ -780,9 +836,16 @@ pub fn run_pdep_rpa_from_intermediates(
     // (non-Laplace) χ₀ path is wired here. Gated on `need_inv_dielectric_freq`
     // so energy-only runs never materialize the nquad × M² stack (~1.85 GB at
     // dimer/aTZ scale) — GW/BSE/property callers set the flag (M9).
-    let inv_dielectric_freq = match (config.need_inv_dielectric_freq, stage.laplace_chi0_quad.as_ref()) {
+    let inv_dielectric_freq = match (
+        config.need_inv_dielectric_freq,
+        stage.laplace_chi0_quad.as_ref(),
+    ) {
         (true, None) => Some(energy::eval_inv_dielectric_matrices(
-            &eigenvectors, b_ov, &eps_occ, &eps_vir, &quad_freqs,
+            &eigenvectors,
+            b_ov,
+            &eps_occ,
+            &eps_vir,
+            &quad_freqs,
         )?),
         _ => None,
     };
@@ -810,7 +873,11 @@ pub fn run_pdep_rpa_from_intermediates(
     // Step 8: Diagnostic RI-dRPA energy (optional — full naux²×N_quad cost).
     let e_rpa_dft_diag = if config.run_diagnostics {
         Some(diagnostics::ri_drpa_energy(
-            b_ov, &eps_occ, &eps_vir, &quad_freqs, &quad_weights,
+            b_ov,
+            &eps_occ,
+            &eps_vir,
+            &quad_freqs,
+            &quad_weights,
         )?)
     } else {
         None
@@ -886,13 +953,23 @@ pub fn run_u_pdep_rpa(
         // would double-count it, which is the over-estimation direction and
         // would refuse U-GW jobs that fit.
         let est_a = budget::estimate_peak_bytes(budget::PeakEstimateShape {
-            naux, nocc: nocc_a, nvir: nvir_a, n_quad: config.quadrature.n_points, n_workers, n_keep,
+            naux,
+            nocc: nocc_a,
+            nvir: nvir_a,
+            n_quad: config.quadrature.n_points,
+            n_workers,
+            n_keep,
             grid: None,
             nao: nbas,
             need_inv_dielectric: config.need_inv_dielectric_freq,
         });
         let est_b = budget::estimate_peak_bytes(budget::PeakEstimateShape {
-            naux, nocc: nocc_b, nvir: nvir_b, n_quad: config.quadrature.n_points, n_workers, n_keep,
+            naux,
+            nocc: nocc_b,
+            nvir: nvir_b,
+            n_quad: config.quadrature.n_points,
+            n_workers,
+            n_keep,
             grid: None,
             // The AO tensor is spin-INDEPENDENT (one (naux, nao, nao) source
             // feeds both channels), so it is charged on the alpha shape only —
@@ -912,7 +989,11 @@ pub fn run_u_pdep_rpa(
         )?;
     }
 
-    let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes, ..Default::default() };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: config.frozen_core,
+        memory_budget_bytes: config.memory_budget_bytes,
+        ..Default::default()
+    };
     let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
     let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
     let naux = inter_a.naux;
@@ -937,30 +1018,33 @@ pub fn run_u_pdep_rpa(
     let max_vecs = if config.eigensolver_max_vecs == 0 {
         // Budget-derived default, capped at the historical 3·naux (see the
         // closed-shell path above).
-        davidson_default_max_vecs(naux, ferric_core::memory::resolve_budget_bytes(
-            config.memory_budget_bytes,
-        ))
+        davidson_default_max_vecs(
+            naux,
+            ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes),
+        )
     } else {
         config.eigensolver_max_vecs
     };
 
     // Build per-spin Laplace quadratures if the Laplace χ₀ backend is
     // selected. Each spin has its own gap range so we keep two quadratures.
-    let laplace_pair: Option<(ferric_quadrature::LaplaceQuadrature, ferric_quadrature::LaplaceQuadrature)> =
-        match config.chi0_backend {
-            Chi0Backend::Dense => None,
-            Chi0Backend::Laplace { n_quad } => {
-                let qa = laplace_chi0::build_laplace_for_gaps(&eps_occ_a, &eps_vir_a, n_quad)?;
-                let qb = if eps_occ_b.is_empty() {
-                    // Empty spin channel: build a degenerate quadrature; it
-                    // never gets used in the per-spin accumulator (early-out).
-                    qa.clone()
-                } else {
-                    laplace_chi0::build_laplace_for_gaps(&eps_occ_b, &eps_vir_b, n_quad)?
-                };
-                Some((qa, qb))
-            }
-        };
+    let laplace_pair: Option<(
+        ferric_quadrature::LaplaceQuadrature,
+        ferric_quadrature::LaplaceQuadrature,
+    )> = match config.chi0_backend {
+        Chi0Backend::Dense => None,
+        Chi0Backend::Laplace { n_quad } => {
+            let qa = laplace_chi0::build_laplace_for_gaps(&eps_occ_a, &eps_vir_a, n_quad)?;
+            let qb = if eps_occ_b.is_empty() {
+                // Empty spin channel: build a degenerate quadrature; it
+                // never gets used in the per-spin accumulator (early-out).
+                qa.clone()
+            } else {
+                laplace_chi0::build_laplace_for_gaps(&eps_occ_b, &eps_vir_b, n_quad)?
+            };
+            Some((qa, qb))
+        }
+    };
 
     // Eigensolve. Lanczos is preferred per [[ferric-rpa-status]]; Davidson
     // is kept as fallback to mirror the closed-shell dispatch.
@@ -1018,7 +1102,11 @@ pub fn run_u_pdep_rpa(
                 }
             };
             let lz = lanczos::run_lanczos_full_rank_budgeted(
-                naux, nov, matvec, naux, config.memory_budget_bytes,
+                naux,
+                nov,
+                matvec,
+                naux,
+                config.memory_budget_bytes,
             )?;
             davidson::DavidsonResult {
                 eigenvalues: lz.eigenvalues,
@@ -1034,7 +1122,9 @@ pub fn run_u_pdep_rpa(
                     let chan_a = channel::RpaChannel::new(b_a, ea_o, ea_v);
                     let chan_b = channel::RpaChannel::new(b_b, eb_o, eb_v);
                     match &lap {
-                        None => sternheimer::dielectric_apply_unrestricted(v_mat, &chan_a, &chan_b, omega),
+                        None => sternheimer::dielectric_apply_unrestricted(
+                            v_mat, &chan_a, &chan_b, omega,
+                        ),
                         Some((qa, qb)) => laplace_chi0::dielectric_matrix_laplace_unrestricted(
                             v_mat, &chan_a, qa, &chan_b, qb, omega,
                         ),
@@ -1056,7 +1146,10 @@ pub fn run_u_pdep_rpa(
     let n_keep = n_keep.max(1);
 
     let eigenvalues_static: Vec<f64> = davidson_result.eigenvalues[..n_keep].to_vec();
-    let eigenvectors = davidson_result.eigenvectors.slice(ndarray::s![.., ..n_keep]).to_owned();
+    let eigenvectors = davidson_result
+        .eigenvectors
+        .slice(ndarray::s![.., ..n_keep])
+        .to_owned();
 
     let eigenpotentials_aux = inter_a.v_inv_sqrt.dot(&eigenvectors);
 
@@ -1066,12 +1159,17 @@ pub fn run_u_pdep_rpa(
     let freq_chan_b = channel::RpaChannel::new(&inter_b.b_ov, &eps_occ_b, &eps_vir_b);
     let eigenvalues_freq = match laplace_pair.as_ref() {
         None => energy::eval_eigenvalues_at_frequencies_unrestricted(
-            &eigenvectors, &freq_chan_a, &freq_chan_b, &quad_freqs,
+            &eigenvectors,
+            &freq_chan_a,
+            &freq_chan_b,
+            &quad_freqs,
         )?,
         Some((qa, qb)) => energy::eval_eigenvalues_at_frequencies_laplace_unrestricted(
             &eigenvectors,
-            &freq_chan_a, qa,
-            &freq_chan_b, qb,
+            &freq_chan_a,
+            qa,
+            &freq_chan_b,
+            qb,
             &quad_freqs,
         )?,
     };
@@ -1082,7 +1180,10 @@ pub fn run_u_pdep_rpa(
     // nquad × M² inverse-dielectric stack; energy-only runs skip it.
     let inv_dielectric_freq = match (config.need_inv_dielectric_freq, laplace_pair.as_ref()) {
         (true, None) => Some(energy::eval_inv_dielectric_matrices_unrestricted(
-            &eigenvectors, &freq_chan_a, &freq_chan_b, &quad_freqs,
+            &eigenvectors,
+            &freq_chan_a,
+            &freq_chan_b,
+            &quad_freqs,
         )?),
         _ => None,
     };

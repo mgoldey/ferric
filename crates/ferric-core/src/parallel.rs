@@ -75,14 +75,16 @@ impl ParallelContext {
         {
             // Initialize MPI exactly once and park the Universe process-globally
             // so it is never finalized until process exit.
-            let holder = MPI_UNIVERSE.get_or_init(|| {
-                mpi::initialize().map(MpiUniverseHolder)
-            });
+            let holder = MPI_UNIVERSE.get_or_init(|| mpi::initialize().map(MpiUniverseHolder));
             if holder.is_some() {
                 let w = SimpleCommunicator::world();
                 let rank = w.rank() as usize;
                 let size = w.size() as usize;
-                return Self { mpi_active: size > 1, rank, size };
+                return Self {
+                    mpi_active: size > 1,
+                    rank,
+                    size,
+                };
             }
         }
 
@@ -350,7 +352,10 @@ pub fn physical_cores_from_sysfs(cpu_root: &str) -> Option<usize> {
         let name = entry.file_name();
         let name = name.to_string_lossy();
         // Only cpuN directories; skip cpuidle/cpufreq/etc.
-        if !name.starts_with("cpu") || !name[3..].chars().all(|c| c.is_ascii_digit()) || name.len() == 3 {
+        if !name.starts_with("cpu")
+            || !name[3..].chars().all(|c| c.is_ascii_digit())
+            || name.len() == 3
+        {
             continue;
         }
         let path = entry.path().join("topology/thread_siblings_list");
@@ -384,7 +389,6 @@ pub fn aux_band_for(n: usize, rank: usize, size: usize) -> (usize, usize) {
 }
 
 impl ParallelContext {
-
     /// Run a task only on the root process.
     pub fn root_only<F, R>(&self, f: F) -> Option<R>
     where
@@ -416,7 +420,9 @@ impl Default for ParallelContext {
 #[cfg(test)]
 mod tests {
     use super::aux_band_for;
-    use super::{local_ranks_per_node_with, physical_cores, physical_cores_from_sysfs, threads_per_rank};
+    use super::{
+        local_ranks_per_node_with, physical_cores, physical_cores_from_sysfs, threads_per_rank,
+    };
 
     #[test]
     fn aux_band_single_rank_is_full_range() {
@@ -468,7 +474,16 @@ mod tests {
         let bands: Vec<_> = (0..8).map(|r| aux_band_for(3, r, 8)).collect();
         assert_eq!(
             bands,
-            vec![(0, 1), (1, 2), (2, 3), (3, 3), (3, 3), (3, 3), (3, 3), (3, 3)]
+            vec![
+                (0, 1),
+                (1, 2),
+                (2, 3),
+                (3, 3),
+                (3, 3),
+                (3, 3),
+                (3, 3),
+                (3, 3)
+            ]
         );
         // Every rank width is 0 or 1, and the non-empty bands still tile [0,3).
         for (r, &(p0, p1)) in bands.iter().enumerate() {
@@ -578,7 +593,9 @@ mod tests {
         // aborting a run over a performance knob. A comma list (heterogeneous
         // Slurm allocation) is exactly this case.
         assert_eq!(
-            local_ranks_per_node_with(|k| (k == "OMPI_COMM_WORLD_LOCAL_SIZE").then(|| "nope".into())),
+            local_ranks_per_node_with(
+                |k| (k == "OMPI_COMM_WORLD_LOCAL_SIZE").then(|| "nope".into())
+            ),
             1
         );
         assert_eq!(
@@ -604,7 +621,9 @@ mod tests {
     #[test]
     fn physical_cores_is_sane_and_at_most_logical() {
         let phys = physical_cores();
-        let logical = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let logical = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
         assert!(phys >= 1, "physical core count must be at least 1");
         assert!(
             phys <= logical,
@@ -627,7 +646,10 @@ mod tests {
     #[test]
     fn single_rank_context_installs_full_width_pool() {
         let ctx = super::ParallelContext::default();
-        assert_eq!(ctx.size, 1, "a non-MPI test binary must report a single rank");
+        assert_eq!(
+            ctx.size, 1,
+            "a non-MPI test binary must report a single rank"
+        );
         assert_eq!(
             ctx.rayon_threads(),
             physical_cores(),
@@ -664,7 +686,10 @@ mod tests {
         );
 
         // Unreadable root -> None, so the caller falls back to the logical count.
-        assert_eq!(physical_cores_from_sysfs("/definitely/not/a/sysfs/root"), None);
+        assert_eq!(
+            physical_cores_from_sysfs("/definitely/not/a/sysfs/root"),
+            None
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

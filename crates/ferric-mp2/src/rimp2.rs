@@ -98,8 +98,11 @@ pub struct RiMp2Result {
 
 impl std::fmt::Display for RiMp2Result {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "RI-MP2 total: {:.10} Ha (corr: {:.10})",
-            self.total_energy, self.mp2_corr)
+        write!(
+            f,
+            "RI-MP2 total: {:.10} Ha (corr: {:.10})",
+            self.total_energy, self.mp2_corr
+        )
     }
 }
 
@@ -157,12 +160,15 @@ pub fn eri3_budget_bytes(explicit: Option<usize>) -> usize {
 /// That flag used to be DEAD: the single call site in the workspace passed
 /// `false`, while `compute_mp2_intermediates_impl` built `b_vv` on a different
 /// path with no gate at all — its own comment calling it "the 13 GB hog".
-pub fn mo_side_alloc_bytes(
-    naux: usize, nocc: usize, nvir: usize, include_b_vv: bool,
-) -> usize {
-    let b_flat = naux.saturating_mul(nocc).saturating_mul(nvir).saturating_mul(8);
+pub fn mo_side_alloc_bytes(naux: usize, nocc: usize, nvir: usize, include_b_vv: bool) -> usize {
+    let b_flat = naux
+        .saturating_mul(nocc)
+        .saturating_mul(nvir)
+        .saturating_mul(8);
     let b_vv = if include_b_vv {
-        naux.saturating_mul(nvir).saturating_mul(nvir).saturating_mul(8)
+        naux.saturating_mul(nvir)
+            .saturating_mul(nvir)
+            .saturating_mul(8)
     } else {
         0
     };
@@ -178,7 +184,10 @@ pub(crate) fn check_mo_side_alloc(
     budget_bytes: usize,
 ) -> Result<(), FerricError> {
     let n_workers = rayon::current_num_threads().max(1);
-    let b_flat = naux.saturating_mul(nocc).saturating_mul(nvir).saturating_mul(8);
+    let b_flat = naux
+        .saturating_mul(nocc)
+        .saturating_mul(nvir)
+        .saturating_mul(8);
     let _ = &b_flat;
     let g_i = nocc
         .saturating_mul(nvir)
@@ -186,7 +195,9 @@ pub(crate) fn check_mo_side_alloc(
         .saturating_mul(8)
         .saturating_mul(n_workers);
     let b_vv = if include_b_vv {
-        naux.saturating_mul(nvir).saturating_mul(nvir).saturating_mul(8)
+        naux.saturating_mul(nvir)
+            .saturating_mul(nvir)
+            .saturating_mul(8)
     } else {
         0
     };
@@ -235,7 +246,10 @@ pub(crate) fn check_u_mo_side_alloc(
     // Per-worker energy transient, charged for the larger spin (the spin loops
     // are sequential, so both do not fan out concurrently).
     let g_i = |no: usize, nv: usize| {
-        no.saturating_mul(nv).saturating_mul(nv).saturating_mul(8).saturating_mul(n_workers)
+        no.saturating_mul(nv)
+            .saturating_mul(nv)
+            .saturating_mul(8)
+            .saturating_mul(n_workers)
     };
     let g_peak = g_i(nocc_a, nvir_a).max(g_i(nocc_b, nvir_b));
 
@@ -305,14 +319,17 @@ pub fn eri3_mo_ov_blocked(
         // more), and each output element is written exactly once, so the result
         // is bit-identical to the serial loop at any thread count.
         use rayon::prelude::*;
-        ndarray::Zip::from(mo.slice_mut(ndarray::s![p0..p1, .., ..]).axis_iter_mut(Axis(0)))
-            .and(blk.axis_iter(Axis(0)))
-            .into_par_iter()
-            .for_each(|(mut mo_p, bp_ao)| {
-                let tmp = c_occ.t().dot(&bp_ao);
-                let bp_mo = tmp.dot(c_vir);
-                mo_p.assign(&bp_mo);
-            });
+        ndarray::Zip::from(
+            mo.slice_mut(ndarray::s![p0..p1, .., ..])
+                .axis_iter_mut(Axis(0)),
+        )
+        .and(blk.axis_iter(Axis(0)))
+        .into_par_iter()
+        .for_each(|(mut mo_p, bp_ao)| {
+            let tmp = c_occ.t().dot(&bp_ao);
+            let bp_mo = tmp.dot(c_vir);
+            mo_p.assign(&bp_mo);
+        });
         p0 = p1;
     }
     Ok(mo)
@@ -612,10 +629,7 @@ pub fn stream_dressed_mo_band_budgeted(
             }
             // Dress into only the requested output band, accumulating in place
             // (beta=1): b_flat[P-band_p0, pq] += V^{-1/2}[band, Qchunk] · mo_blk.
-            let msub = v_inv_sqrt.slice(ndarray::s![
-                band_p0..band_p1,
-                blk.p0 + q0..blk.p0 + q1
-            ]);
+            let msub = v_inv_sqrt.slice(ndarray::s![band_p0..band_p1, blk.p0 + q0..blk.p0 + q1]);
             ndarray::linalg::general_mat_mul(1.0, &msub, &mo_blk, 1.0, &mut b_flat);
             q0 = q1;
         }
@@ -692,7 +706,9 @@ pub fn ri_mp2_robust_attenuated_metric(
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
 
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
     let naux = dfbs.nbasis();
@@ -739,7 +755,9 @@ pub fn ri_mp2_robust_attenuated_metric(
     let mut g = &cj + &cj.t();
     g -= &cvc;
 
-    Ok(spin_components_from_g(&g, eps, nocc, nvir, first_occ, nocc_total))
+    Ok(spin_components_from_g(
+        &g, eps, nocc, nvir, first_occ, nocc_total,
+    ))
 }
 
 /// Sweep-friendly [`ri_mp2_robust_attenuated_metric`]: takes the
@@ -784,7 +802,9 @@ pub fn ri_mp2_robust_attenuated_metric_with(
     let mut g = &cj + &cj.t();
     g -= &cvc;
 
-    Ok(spin_components_from_g(&g, eps, nocc, nvir, first_occ, nocc_total))
+    Ok(spin_components_from_g(
+        &g, eps, nocc, nvir, first_occ, nocc_total,
+    ))
 }
 
 /// The `metric_op`-independent inputs [`ri_mp2_robust_attenuated_metric_with`]
@@ -841,7 +861,11 @@ pub fn spin_components_from_g(
             }
         }
     }
-    SpinComponents { e_os, e_ss, e_total: e_os + e_ss }
+    SpinComponents {
+        e_os,
+        e_ss,
+        e_total: e_os + e_ss,
+    }
 }
 
 /// Compute RI-MP2 opposite-spin and same-spin correlation energies separately, returning `(SpinComponents, B_ov)`.
@@ -862,7 +886,9 @@ pub fn ri_mp2_spin_components(
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
 
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
     // (P|Q) metric and V^{-1/2}.
@@ -897,7 +923,12 @@ pub fn ri_mp2_spin_components(
     // on mo_stream_chunk_for, shifts the last digits); at an ample budget it
     // resolves to the historical 256 and is bit-identical.
     let b_flat = stream_dressed_mo_band_budgeted(
-        &mut src, &v2c_inv_sqrt, &c_occ, &c_vir, None, Some(budget_bytes),
+        &mut src,
+        &v2c_inv_sqrt,
+        &c_occ,
+        &c_vir,
+        None,
+        Some(budget_bytes),
     )?; // (naux, nocc*nvir)
 
     if let Some(k) = config.kappa {
@@ -908,7 +939,13 @@ pub fn ri_mp2_spin_components(
         }
     }
     let sc = spin_components_from_b_ov_kappa(
-        &b_flat, eps, nocc, nvir, first_occ, nocc_total, config.kappa,
+        &b_flat,
+        eps,
+        nocc,
+        nvir,
+        first_occ,
+        nocc_total,
+        config.kappa,
     );
     Ok((sc, b_flat))
 }
@@ -1056,7 +1093,11 @@ pub fn spin_components_from_b_ov_kappa(
         e_os += e_os_i;
         e_ss += e_ss_i;
     }
-    SpinComponents { e_os, e_ss, e_total: e_os + e_ss }
+    SpinComponents {
+        e_os,
+        e_ss,
+        e_total: e_os + e_ss,
+    }
 }
 
 /// Compute the RI-MP2 correlation energy.
@@ -1120,14 +1161,14 @@ impl Mp2Intermediates {
         // Since t_ik,ab = (ia|kb) / D, we can effectively scale the whole P.
         // Actually, SCS-MP2 is equivalent to scaling the t2 amplitudes.
         // A simple way to get the SCS density: P_scs = c_os * P_os + c_ss * P_ss.
-        // But our P_oo is already the sum. 
+        // But our P_oo is already the sum.
         // Standard MP2: P_total = P_OS + P_SS.
         // SCS-MP2: P_total = c_os * P_OS + c_ss * P_SS.
         // This requires computing OS and SS density parts separately.
-        
+
         // For now, let's approximate by average scaling if c_os == c_ss.
         // Proper implementation requires splitting build_mp2_density into OS/SS.
-        let scale = (c_os + c_ss) / 2.0; 
+        let scale = (c_os + c_ss) / 2.0;
         &self.p_oo * scale
     }
 
@@ -1185,7 +1226,8 @@ pub fn compute_rpa_intermediates_spin(
     use ferric_scf::Spin;
     if matches!(rhf.spin, Spin::Restricted) {
         return Err(FerricError::General(
-            "compute_rpa_intermediates_spin: use compute_rpa_intermediates for Restricted results".into(),
+            "compute_rpa_intermediates_spin: use compute_rpa_intermediates for Restricted results"
+                .into(),
         ));
     }
     let nbas = obs.nbasis();
@@ -1217,7 +1259,9 @@ pub fn compute_rpa_intermediates_spin(
     // eigh V^{-1/2}; Cholesky for Coulomb/erfc. (RSH-RPA path.)
     let v_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
 
-    let c_occ = c_full.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_occ = c_full
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
     let c_vir = c_full.slice(ndarray::s![.., nocc_total..]).to_owned();
 
     // Stream raw (P|mu nu) aux-blocks from a budgeted ThreeIndexSource and
@@ -1233,8 +1277,13 @@ pub fn compute_rpa_intermediates_spin(
     let b_ov = stream_dressed_mo_band(&mut src, &v_inv_sqrt, &c_occ, &c_vir, None)?;
 
     Ok(RpaIntermediates {
-        b_ov, v_inv_sqrt,
-        nocc, nvir, nocc_total, first_occ, naux,
+        b_ov,
+        v_inv_sqrt,
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+        naux,
     })
 }
 
@@ -1262,7 +1311,9 @@ pub fn compute_rpa_intermediates(
     // eigh V^{-1/2}; Cholesky for Coulomb/erfc. (RSH-RPA path.)
     let v_inv_sqrt = metric_inverse_sqrt(&v2c, op)?;
 
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
     // Stream + dress on the fly (see compute_rpa_intermediates_spin's doc for
@@ -1272,8 +1323,13 @@ pub fn compute_rpa_intermediates(
     let b_ov = stream_dressed_mo_band(&mut src, &v_inv_sqrt, &c_occ, &c_vir, None)?;
 
     Ok(RpaIntermediates {
-        b_ov, v_inv_sqrt,
-        nocc, nvir, nocc_total, first_occ, naux,
+        b_ov,
+        v_inv_sqrt,
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+        naux,
     })
 }
 
@@ -1331,7 +1387,9 @@ fn compute_mp2_intermediates_impl(
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
 
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
     // Budget-aware raw (P|μν) source: in-core when it fits, disk-spilled in
@@ -1339,9 +1397,8 @@ fn compute_mp2_intermediates_impl(
     // and dress with V^{-1/2} on the fly (see eri3_mo_block_dressed), so the
     // peak transient is one aux-block MO panel — not the former dense
     // (naux, nao², 14.3 GB) AO tensor plus its three transformed copies.
-    let mut src = ThreeIndexSource::build(
-        op, obs, dfbs, eri3_budget_bytes(config.memory_budget_bytes),
-    )?;
+    let mut src =
+        ThreeIndexSource::build(op, obs, dfbs, eri3_budget_bytes(config.memory_budget_bytes))?;
 
     // B^P_{ia} = V^{-1/2} (P|ia); optionally B^P_{ij} and B^P_{ab} (CPKS only —
     // the gradient pipeline never reads them, and b_vv is the 13 GB hog).
@@ -1364,8 +1421,18 @@ fn compute_mp2_intermediates_impl(
     let b_ov = eri3_mo_block_dressed(&mut src, &v_inv_sqrt, &c_occ, &c_vir)?;
     let (b_oo, b_vv) = if with_oo_vv {
         (
-            Some(eri3_mo_block_dressed(&mut src, &v_inv_sqrt, &c_occ, &c_occ)?),
-            Some(eri3_mo_block_dressed(&mut src, &v_inv_sqrt, &c_vir, &c_vir)?),
+            Some(eri3_mo_block_dressed(
+                &mut src,
+                &v_inv_sqrt,
+                &c_occ,
+                &c_occ,
+            )?),
+            Some(eri3_mo_block_dressed(
+                &mut src,
+                &v_inv_sqrt,
+                &c_vir,
+                &c_vir,
+            )?),
         )
     } else {
         (None, None)
@@ -1378,13 +1445,29 @@ fn compute_mp2_intermediates_impl(
     let (e_os, e_ss) = (sc.e_os, sc.e_ss);
 
     let (t2, _) = crate::oo_rimp2::compute_t2_and_integrals(
-        &b_ov, rhf.eps_r(), nocc, nvir, nocc_total, first_occ, naux,
+        &b_ov,
+        rhf.eps_r(),
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+        naux,
     );
     let (p_oo, p_vv) = crate::oo_rimp2::build_mp2_density(&t2, nocc, nvir);
 
     Ok(Mp2Intermediates {
-        t2, b_ov, b_oo, b_vv, v_inv_sqrt, p_oo, p_vv,
-        nocc, nvir, nocc_total, first_occ, naux,
+        t2,
+        b_ov,
+        b_oo,
+        b_vv,
+        v_inv_sqrt,
+        p_oo,
+        p_vv,
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+        naux,
         e_mp2: e_os + e_ss,
     })
 }
@@ -1579,20 +1662,27 @@ pub fn ri_mp2_einsum(
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
 
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
     // V^{-1/2} and AO 3-center integrals — identical to ri_mp2_spin_components
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
-    let eri3_mo = eri3_mo_ov_blocked(op, obs, dfbs, &c_occ, &c_vir, eri3_budget_bytes(config.memory_budget_bytes))?; // (naux, nocc, nvir)
+    let eri3_mo = eri3_mo_ov_blocked(
+        op,
+        obs,
+        dfbs,
+        &c_occ,
+        &c_vir,
+        eri3_budget_bytes(config.memory_budget_bytes),
+    )?; // (naux, nocc, nvir)
 
     // B^P_{ia} = V^{-1/2} (Q|ia); same b_flat as the scalar path. Outside any
     // rayon region (einsum! runs after this returns). Opt-in BLAS raise via
     // FERRIC_BLAS_THREADS (default 1, unchanged behavior).
-    let flat = eri3_mo
-        .into_shape_with_order((naux, nocc * nvir))
-        .unwrap();
+    let flat = eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap();
     let b_flat = with_blas_threads(opt_in_blas_threads(), || v_inv_sqrt.dot(&flat)); // (naux, nocc*nvir)
     let b_3d = b_flat
         .into_shape_with_order((naux, nocc, nvir))
@@ -1637,7 +1727,11 @@ pub fn ri_mp2_einsum(
     let e_os: f64 = einsum!("ijab,ijab->", &t_t, &v_t);
     let e_ss: f64 = einsum!("ijab,ijab->", &t_t, &vmx_t);
 
-    Ok(SpinComponents { e_os, e_ss, e_total: e_os + e_ss })
+    Ok(SpinComponents {
+        e_os,
+        e_ss,
+        e_total: e_os + e_ss,
+    })
 }
 
 #[cfg(test)]
@@ -1697,14 +1791,20 @@ mod tests {
         }
 
         // (naux, nocc, nvir, first_occ)
-        let cases = [(60usize, 5usize, 12usize, 0usize), (120, 8, 40, 2), (40, 3, 1, 0)];
+        let cases = [
+            (60usize, 5usize, 12usize, 0usize),
+            (120, 8, 40, 2),
+            (40, 3, 1, 0),
+        ];
         for (naux, nocc, nvir, first_occ) in cases {
             let width = nocc * nvir;
             let nocc_total = first_occ + nocc;
             let mut b_ov = Array2::<f64>::zeros((naux, width));
             let mut s: u64 = 0x243f_6a88_85a3_08d3;
             for v in b_ov.iter_mut() {
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 *v = ((s >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 0.05;
             }
             // Occupied below the gap, virtual above, so every denominator is
@@ -1869,17 +1969,42 @@ mod tests {
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
 
-        let (sc, _) = ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
-        eprintln!("SpinComponents: E_OS={:.10}, E_SS={:.10}, E_total={:.10}", sc.e_os, sc.e_ss, sc.e_total);
-        assert!((sc.e_os + sc.e_ss - sc.e_total).abs() < 1e-15,
-            "E_OS + E_SS = {} + {} = {} vs total {}", sc.e_os, sc.e_ss, sc.e_os + sc.e_ss, sc.e_total);
+        let (sc, _) =
+            ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
+        eprintln!(
+            "SpinComponents: E_OS={:.10}, E_SS={:.10}, E_total={:.10}",
+            sc.e_os, sc.e_ss, sc.e_total
+        );
+        assert!(
+            (sc.e_os + sc.e_ss - sc.e_total).abs() < 1e-15,
+            "E_OS + E_SS = {} + {} = {} vs total {}",
+            sc.e_os,
+            sc.e_ss,
+            sc.e_os + sc.e_ss,
+            sc.e_total
+        );
         // OS should be larger magnitude than SS for H2
-        assert!(sc.e_os.abs() > sc.e_ss.abs(),
-            "OS ({}) should dominate SS ({})", sc.e_os, sc.e_ss);
+        assert!(
+            sc.e_os.abs() > sc.e_ss.abs(),
+            "OS ({}) should dominate SS ({})",
+            sc.e_os,
+            sc.e_ss
+        );
     }
 
     /// The symmetry-exploiting `spin_components_from_b_ov` (iterating only
@@ -1900,14 +2025,25 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(
             &ferric_core::parallel::ParallelContext::default(),
-            &mol, &obs, op, &bounds,
-            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
-        ).unwrap();
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
 
         // Build the dressed b_ov intermediate exactly as ri_mp2_spin_components does.
-        let cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
+        let cfg = RiMp2Config {
+            frozen_core: 0,
+            memory_budget_bytes: None,
+            ..Default::default()
+        };
         let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         let b_ov = &inter.b_ov;
         let nocc = inter.nocc;
@@ -1939,12 +2075,24 @@ mod tests {
         let sc = spin_components_from_b_ov(b_ov, eps, nocc, nvir, first_occ, nocc_total);
 
         let rel = |a: f64, b: f64| (a - b).abs() / a.abs().max(1e-30);
-        assert!(rel(ref_os, sc.e_os) < 1e-12,
-            "e_os mismatch: naive {ref_os:.14} vs prod {:.14} (rel {:e})", sc.e_os, rel(ref_os, sc.e_os));
-        assert!(rel(ref_ss, sc.e_ss) < 1e-12,
-            "e_ss mismatch: naive {ref_ss:.14} vs prod {:.14} (rel {:e})", sc.e_ss, rel(ref_ss, sc.e_ss));
-        assert!(rel(ref_os + ref_ss, sc.e_total) < 1e-12,
-            "e_total mismatch: naive {:.14} vs prod {:.14}", ref_os + ref_ss, sc.e_total);
+        assert!(
+            rel(ref_os, sc.e_os) < 1e-12,
+            "e_os mismatch: naive {ref_os:.14} vs prod {:.14} (rel {:e})",
+            sc.e_os,
+            rel(ref_os, sc.e_os)
+        );
+        assert!(
+            rel(ref_ss, sc.e_ss) < 1e-12,
+            "e_ss mismatch: naive {ref_ss:.14} vs prod {:.14} (rel {:e})",
+            sc.e_ss,
+            rel(ref_ss, sc.e_ss)
+        );
+        assert!(
+            rel(ref_os + ref_ss, sc.e_total) < 1e-12,
+            "e_total mismatch: naive {:.14} vs prod {:.14}",
+            ref_os + ref_ss,
+            sc.e_total
+        );
         eprintln!(
             "symmetry check: e_os {:.12} e_ss {:.12} e_total {:.12} (naive-matched)",
             sc.e_os, sc.e_ss, sc.e_total
@@ -1983,13 +2131,32 @@ mod tests {
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        let cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
+        let cfg = RiMp2Config {
+            frozen_core: 0,
+            memory_budget_bytes: None,
+            ..Default::default()
+        };
 
         let (sc_ref, _) = ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         let sc_ein = ri_mp2_einsum(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
-        assert!((sc_ein.e_os - sc_ref.e_os).abs() < 1e-9, "os {} vs {}", sc_ein.e_os, sc_ref.e_os);
-        assert!((sc_ein.e_ss - sc_ref.e_ss).abs() < 1e-9, "ss {} vs {}", sc_ein.e_ss, sc_ref.e_ss);
-        assert!((sc_ein.e_total - sc_ref.e_total).abs() < 1e-9, "tot {} vs {}", sc_ein.e_total, sc_ref.e_total);
+        assert!(
+            (sc_ein.e_os - sc_ref.e_os).abs() < 1e-9,
+            "os {} vs {}",
+            sc_ein.e_os,
+            sc_ref.e_os
+        );
+        assert!(
+            (sc_ein.e_ss - sc_ref.e_ss).abs() < 1e-9,
+            "ss {} vs {}",
+            sc_ein.e_ss,
+            sc_ref.e_ss
+        );
+        assert!(
+            (sc_ein.e_total - sc_ref.e_total).abs() < 1e-9,
+            "tot {} vs {}",
+            sc_ein.e_total,
+            sc_ref.e_total
+        );
     }
 
     #[test]
@@ -2002,16 +2169,38 @@ mod tests {
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig::default(),
+        )
+        .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
 
-        let cfg = RiMp2Config { frozen_core: 2, memory_budget_bytes: None, ..Default::default() };
+        let cfg = RiMp2Config {
+            frozen_core: 2,
+            memory_budget_bytes: None,
+            ..Default::default()
+        };
         let res = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg);
-        assert!(res.is_err(), "frozen_core > nocc must be an error, got {res:?}");
-        let cfg_all = RiMp2Config { frozen_core: 1, memory_budget_bytes: None, ..Default::default() };
+        assert!(
+            res.is_err(),
+            "frozen_core > nocc must be an error, got {res:?}"
+        );
+        let cfg_all = RiMp2Config {
+            frozen_core: 1,
+            memory_budget_bytes: None,
+            ..Default::default()
+        };
         let res_all = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg_all);
-        assert!(res_all.is_err(), "freezing every occupied orbital must be an error, got {res_all:?}");
+        assert!(
+            res_all.is_err(),
+            "freezing every occupied orbital must be an error, got {res_all:?}"
+        );
     }
 
     #[test]
@@ -2022,33 +2211,60 @@ mod tests {
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
 
-        let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
+        let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default())
+            .unwrap();
         let mp2 = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
 
-        assert!((inter.e_mp2 - mp2.mp2_corr).abs() < 1e-12,
-            "intermediates energy {} != ri_mp2 {}", inter.e_mp2, mp2.mp2_corr);
+        assert!(
+            (inter.e_mp2 - mp2.mp2_corr).abs() < 1e-12,
+            "intermediates energy {} != ri_mp2 {}",
+            inter.e_mp2,
+            mp2.mp2_corr
+        );
 
         for i in 0..inter.nocc {
             for j in 0..inter.nocc {
-                assert!((inter.p_oo[(i,j)] - inter.p_oo[(j,i)]).abs() < 1e-12, "P_oo not symmetric");
+                assert!(
+                    (inter.p_oo[(i, j)] - inter.p_oo[(j, i)]).abs() < 1e-12,
+                    "P_oo not symmetric"
+                );
             }
         }
         for a in 0..inter.nvir {
             for b in 0..inter.nvir {
-                assert!((inter.p_vv[(a,b)] - inter.p_vv[(b,a)]).abs() < 1e-12, "P_vv not symmetric");
+                assert!(
+                    (inter.p_vv[(a, b)] - inter.p_vv[(b, a)]).abs() < 1e-12,
+                    "P_vv not symmetric"
+                );
             }
         }
 
-        let tr_oo: f64 = (0..inter.nocc).map(|i| inter.p_oo[(i,i)]).sum();
-        let tr_vv: f64 = (0..inter.nvir).map(|a| inter.p_vv[(a,a)]).sum();
+        let tr_oo: f64 = (0..inter.nocc).map(|i| inter.p_oo[(i, i)]).sum();
+        let tr_vv: f64 = (0..inter.nvir).map(|a| inter.p_vv[(a, a)]).sum();
         assert!(tr_oo < 0.0, "tr(P_oo) should be negative: {}", tr_oo);
         assert!(tr_vv > 0.0, "tr(P_vv) should be positive: {}", tr_vv);
-        assert!((tr_oo + tr_vv).abs() < 1e-10,
-            "density not conserved: tr(P_oo)={} + tr(P_vv)={} = {}", tr_oo, tr_vv, tr_oo + tr_vv);
+        assert!(
+            (tr_oo + tr_vv).abs() < 1e-10,
+            "density not conserved: tr(P_oo)={} + tr(P_vv)={} = {}",
+            tr_oo,
+            tr_vv,
+            tr_oo + tr_vv
+        );
     }
 
     /// The terfc kernel is positive-definite (3D Fourier transform k̂(q) > 0), so
@@ -2065,9 +2281,10 @@ mod tests {
             eprintln!("skipping: FERRIC_TERF_TABLE_DIR not set");
             return;
         }
-        let mol = Molecule::load_xyz(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/molecules/alkane_4.xyz"),
-        )
+        let mol = Molecule::load_xyz(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testdata/molecules/alkane_4.xyz"
+        ))
         .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
@@ -2176,7 +2393,10 @@ mod tests {
             &obs,
             opc,
             &bounds,
-            &RhfConfig { energy_conv: 1e-9, ..Default::default() },
+            &RhfConfig {
+                energy_conv: 1e-9,
+                ..Default::default()
+            },
         )
         .unwrap();
         let cfg = RiMp2Config::default();

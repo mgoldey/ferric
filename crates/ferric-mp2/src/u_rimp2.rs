@@ -38,8 +38,11 @@ pub struct URiMp2Result {
 
 impl std::fmt::Display for URiMp2Result {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "U-RI-MP2 total: {:.10} Ha (corr: {:.10})",
-            self.total_energy, self.mp2_corr)
+        write!(
+            f,
+            "U-RI-MP2 total: {:.10} Ha (corr: {:.10})",
+            self.total_energy, self.mp2_corr
+        )
     }
 }
 
@@ -171,7 +174,12 @@ pub fn u_ri_mp2(
 
     let e_total = e_aa + e_bb + e_ab;
     Ok(URiMp2Result {
-        components: URiMp2Components { e_aa, e_bb, e_ab, e_total },
+        components: URiMp2Components {
+            e_aa,
+            e_bb,
+            e_ab,
+            e_total,
+        },
         mp2_corr: e_total,
         total_energy: scf.energy + e_total,
     })
@@ -235,10 +243,19 @@ pub fn compute_u_mp2_amplitudes(
 
     let e_total = e_aa + e_bb + e_ab;
     Ok(UMp2Amplitudes {
-        inter_a, inter_b,
-        eps_a: eps_a_vec, eps_b: eps_b_vec,
-        t_aa, t_bb, t_ab,
-        components: URiMp2Components { e_aa, e_bb, e_ab, e_total },
+        inter_a,
+        inter_b,
+        eps_a: eps_a_vec,
+        eps_b: eps_b_vec,
+        t_aa,
+        t_bb,
+        t_ab,
+        components: URiMp2Components {
+            e_aa,
+            e_bb,
+            e_ab,
+            e_total,
+        },
     })
 }
 
@@ -317,7 +334,14 @@ pub(crate) fn same_spin_pair_kernel(
     use ndarray::Axis;
     use rayon::prelude::*;
 
-    let SpinChannel { b, eps, nocc, nvir, first_occ, nocc_total } = ch;
+    let SpinChannel {
+        b,
+        eps,
+        nocc,
+        nvir,
+        first_occ,
+        nocc_total,
+    } = ch;
 
     if !want_amplitudes {
         // Energy-only: no t tensor to write, so the per-i partial is just a
@@ -434,8 +458,22 @@ pub(crate) fn opposite_spin_pair_kernel(
     use ndarray::Axis;
     use rayon::prelude::*;
 
-    let SpinChannel { b: b_a, eps: eps_a, nocc: nocc_a, nvir: nvir_a, first_occ: first_occ_a, nocc_total: nocc_total_a } = ch_a;
-    let SpinChannel { b: b_b, eps: eps_b, nocc: nocc_b, nvir: nvir_b, first_occ: first_occ_b, nocc_total: nocc_total_b } = ch_b;
+    let SpinChannel {
+        b: b_a,
+        eps: eps_a,
+        nocc: nocc_a,
+        nvir: nvir_a,
+        first_occ: first_occ_a,
+        nocc_total: nocc_total_a,
+    } = ch_a;
+    let SpinChannel {
+        b: b_b,
+        eps: eps_b,
+        nocc: nocc_b,
+        nvir: nvir_b,
+        first_occ: first_occ_b,
+        nocc_total: nocc_total_b,
+    } = ch_b;
 
     if !want_amplitudes {
         let partials: Vec<f64> = (0..nocc_a)
@@ -500,13 +538,14 @@ pub(crate) fn opposite_spin_pair_kernel(
 /// Build the same-spin amplitude tensor and accumulate its energy:
 ///   t[i,j,a,b] = K_iajb / D,   K_iajb = (ia|jb) - (ib|ja)
 ///   E = ¼ Σ t · K
-fn build_same_spin_amplitudes(
-    inter: &RpaIntermediates,
-    eps: &[f64],
-) -> (Array4<f64>, f64) {
+fn build_same_spin_amplitudes(inter: &RpaIntermediates, eps: &[f64]) -> (Array4<f64>, f64) {
     let ch = SpinChannel {
-        b: &inter.b_ov, eps, nocc: inter.nocc, nvir: inter.nvir,
-        first_occ: inter.first_occ, nocc_total: inter.nocc_total,
+        b: &inter.b_ov,
+        eps,
+        nocc: inter.nocc,
+        nvir: inter.nvir,
+        first_occ: inter.first_occ,
+        nocc_total: inter.nocc_total,
     };
     let (energy, t) = same_spin_pair_kernel(ch, true);
     (t.unwrap(), energy)
@@ -522,12 +561,20 @@ fn build_opposite_spin_amplitudes(
     eps_b: &[f64],
 ) -> (Array4<f64>, f64) {
     let ch_a = SpinChannel {
-        b: &inter_a.b_ov, eps: eps_a, nocc: inter_a.nocc, nvir: inter_a.nvir,
-        first_occ: inter_a.first_occ, nocc_total: inter_a.nocc_total,
+        b: &inter_a.b_ov,
+        eps: eps_a,
+        nocc: inter_a.nocc,
+        nvir: inter_a.nvir,
+        first_occ: inter_a.first_occ,
+        nocc_total: inter_a.nocc_total,
     };
     let ch_b = SpinChannel {
-        b: &inter_b.b_ov, eps: eps_b, nocc: inter_b.nocc, nvir: inter_b.nvir,
-        first_occ: inter_b.first_occ, nocc_total: inter_b.nocc_total,
+        b: &inter_b.b_ov,
+        eps: eps_b,
+        nocc: inter_b.nocc,
+        nvir: inter_b.nvir,
+        first_occ: inter_b.first_occ,
+        nocc_total: inter_b.nocc_total,
     };
     let (energy, t) = opposite_spin_pair_kernel(ch_a, ch_b, true);
     (t.unwrap(), energy)
@@ -666,7 +713,12 @@ pub fn build_u_mp2_density(amps: &UMp2Amplitudes) -> UMp2Density {
         }
     }
 
-    UMp2Density { p_oo_a, p_vv_a, p_oo_b, p_vv_b }
+    UMp2Density {
+        p_oo_a,
+        p_vv_a,
+        p_oo_b,
+        p_vv_b,
+    }
 }
 
 /// Compute the U-MP2 orbital gradient `g^σ_{ai} = ∂E_MP2/∂κ^σ_{ai}` at fixed
@@ -700,8 +752,8 @@ pub fn build_u_mp2_density(amps: &UMp2Amplitudes) -> UMp2Density {
 pub struct UMp2GradientBlocks {
     pub same_a: Array2<f64>,
     pub same_b: Array2<f64>,
-    pub ab_a:   Array2<f64>,
-    pub ab_b:   Array2<f64>,
+    pub ab_a: Array2<f64>,
+    pub ab_b: Array2<f64>,
 }
 
 /// `budget_bytes` is the caller-resolved memory ceiling for the VVOV panel
@@ -787,10 +839,8 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
         (b_ov, b_vv, b_oo)
     };
 
-    let (bov_a, bvv_a, boo_a) =
-        extract_blocks(b_full_a, nocc_a, nvir_a, first_occ_a, nocc_total_a);
-    let (bov_b, bvv_b, boo_b) =
-        extract_blocks(b_full_b, nocc_b, nvir_b, first_occ_b, nocc_total_b);
+    let (bov_a, bvv_a, boo_a) = extract_blocks(b_full_a, nocc_a, nvir_a, first_occ_a, nocc_total_a);
+    let (bov_b, bvv_b, boo_b) = extract_blocks(b_full_b, nocc_b, nvir_b, first_occ_b, nocc_total_b);
 
     // OOOV blocks are small (nocc²·nov) — build once for each spin and the two
     // cross-spin orderings.
@@ -798,16 +848,16 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
     //   ooov_b[i·nocc_b+k, j·nvir_b+b] = (ik|jb)_β
     let ooov_a = boo_a.t().dot(&bov_a); // (nocc_a², nocc_a·nvir_a)
     let ooov_b = boo_b.t().dot(&bov_b); // (nocc_b², nocc_b·nvir_b)
-    // Cross-spin OOOV / OVOO:
-    //   ooov_ab[i·nocc_a+k, J·nvir_b+B] = (ik_α | JB_β)
-    //   ovoo_ab[i·nvir_a+a, J·nocc_b+K] = (ia_α | JK_β)
+                                        // Cross-spin OOOV / OVOO:
+                                        //   ooov_ab[i·nocc_a+k, J·nvir_b+B] = (ik_α | JB_β)
+                                        //   ovoo_ab[i·nvir_a+a, J·nocc_b+K] = (ia_α | JK_β)
     let ooov_ab = boo_a.t().dot(&bov_b); // (nocc_a², nocc_b·nvir_b)
     let ovoo_ab = bov_a.t().dot(&boo_b); // (nocc_a·nvir_a, nocc_b²)
 
     let mut same_a = Array2::<f64>::zeros((nvir_a, nocc_a));
-    let mut ab_a   = Array2::<f64>::zeros((nvir_a, nocc_a));
+    let mut ab_a = Array2::<f64>::zeros((nvir_a, nocc_a));
     let mut same_b = Array2::<f64>::zeros((nvir_b, nocc_b));
-    let mut ab_b   = Array2::<f64>::zeros((nvir_b, nocc_b));
+    let mut ab_b = Array2::<f64>::zeros((nvir_b, nocc_b));
 
     // VVOV panel width from the caller-resolved resident-bytes budget: one
     // c-value of a VVOV panel costs nvir·nov·8 bytes. We panel over the outer
@@ -848,7 +898,7 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
         let bvv_panel = bvv_a.slice(ndarray::s![.., c0 * nvir_a..c1 * nvir_a]);
         // (ca|jb)_α, panel rows local (c-c0)·nvir_a+a
         let vvov_a = bvv_panel.t().dot(&bov_a); // ((c1-c0)·nvir_a, nov_a)
-        // (ca_α | JB_β), panel rows local (c-c0)·nvir_a+a
+                                                // (ca_α | JB_β), panel rows local (c-c0)·nvir_a+a
         let vvov_ab = bvv_panel.t().dot(&bov_b); // ((c1-c0)·nvir_a, nov_b)
 
         for c in c0..c1 {
@@ -957,7 +1007,7 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
         let bvv_panel = bvv_b.slice(ndarray::s![.., c0 * nvir_b..c1 * nvir_b]);
         // (ca|jb)_β, panel rows local (c-c0)·nvir_b+a
         let vvov_b = bvv_panel.t().dot(&bov_b); // ((c1-c0)·nvir_b, nov_b)
-        // (ia_α | CB_β), C in the c-panel; cols local (c-c0)·nvir_b+B
+                                                // (ia_α | CB_β), C in the c-panel; cols local (c-c0)·nvir_b+B
         let ovvv_ab = bov_a.t().dot(&bvv_panel); // (nov_a, (c1-c0)·nvir_b)
 
         for c in c0..c1 {
@@ -1040,15 +1090,24 @@ pub fn compute_u_mp2_orbital_gradient_blocks(
         c0 = c1;
     }
 
-    UMp2GradientBlocks { same_a, same_b, ab_a, ab_b }
+    UMp2GradientBlocks {
+        same_a,
+        same_b,
+        ab_a,
+        ab_b,
+    }
 }
 
 /// Same-spin contribution:
 ///   ¼ Σ_{ij,ab} [(ia|jb) - (ib|ja)]² / (ε_i+ε_j-ε_a-ε_b)
 fn same_spin_pair_energy(inter: &RpaIntermediates, eps: &[f64]) -> f64 {
     let ch = SpinChannel {
-        b: &inter.b_ov, eps, nocc: inter.nocc, nvir: inter.nvir,
-        first_occ: inter.first_occ, nocc_total: inter.nocc_total,
+        b: &inter.b_ov,
+        eps,
+        nocc: inter.nocc,
+        nvir: inter.nvir,
+        first_occ: inter.first_occ,
+        nocc_total: inter.nocc_total,
     };
     let (energy, _) = same_spin_pair_kernel(ch, false);
     energy
@@ -1064,12 +1123,20 @@ fn opposite_spin_pair_energy(
 ) -> f64 {
     assert_eq!(inter_a.naux, inter_b.naux);
     let ch_a = SpinChannel {
-        b: &inter_a.b_ov, eps: eps_a, nocc: inter_a.nocc, nvir: inter_a.nvir,
-        first_occ: inter_a.first_occ, nocc_total: inter_a.nocc_total,
+        b: &inter_a.b_ov,
+        eps: eps_a,
+        nocc: inter_a.nocc,
+        nvir: inter_a.nvir,
+        first_occ: inter_a.first_occ,
+        nocc_total: inter_a.nocc_total,
     };
     let ch_b = SpinChannel {
-        b: &inter_b.b_ov, eps: eps_b, nocc: inter_b.nocc, nvir: inter_b.nvir,
-        first_occ: inter_b.first_occ, nocc_total: inter_b.nocc_total,
+        b: &inter_b.b_ov,
+        eps: eps_b,
+        nocc: inter_b.nocc,
+        nvir: inter_b.nvir,
+        first_occ: inter_b.first_occ,
+        nocc_total: inter_b.nocc_total,
     };
     let (energy, _) = opposite_spin_pair_kernel(ch_a, ch_b, false);
     energy
@@ -1119,11 +1186,15 @@ pub(crate) fn u_mp2_energy_fixed_eps(
 
     let b_a_ov_raw = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_a_occ, &c_a_vir);
     let b_a_ov = v_inv_sqrt.dot(
-        &b_a_ov_raw.into_shape_with_order((naux, nocc_a * nvir_a)).unwrap(),
+        &b_a_ov_raw
+            .into_shape_with_order((naux, nocc_a * nvir_a))
+            .unwrap(),
     );
     let b_b_ov_raw = crate::mo_transform::transform_3center_ov(&eri3_ao, &c_b_occ, &c_b_vir);
     let b_b_ov = v_inv_sqrt.dot(
-        &b_b_ov_raw.into_shape_with_order((naux, nocc_b * nvir_b)).unwrap(),
+        &b_b_ov_raw
+            .into_shape_with_order((naux, nocc_b * nvir_b))
+            .unwrap(),
     );
 
     // This FD helper has no frozen core: first_occ=0, nocc_total=nocc for
@@ -1133,20 +1204,48 @@ pub(crate) fn u_mp2_energy_fixed_eps(
     let mut e_total = 0.0;
 
     if which == "aa" || which == "all" {
-        let ch = SpinChannel { b: &b_a_ov, eps: eps_a, nocc: nocc_a, nvir: nvir_a, first_occ: 0, nocc_total: nocc_a };
+        let ch = SpinChannel {
+            b: &b_a_ov,
+            eps: eps_a,
+            nocc: nocc_a,
+            nvir: nvir_a,
+            first_occ: 0,
+            nocc_total: nocc_a,
+        };
         let (e_aa, _) = same_spin_pair_kernel(ch, false);
         e_total += e_aa;
     }
 
     if which == "bb" || which == "all" {
-        let ch = SpinChannel { b: &b_b_ov, eps: eps_b, nocc: nocc_b, nvir: nvir_b, first_occ: 0, nocc_total: nocc_b };
+        let ch = SpinChannel {
+            b: &b_b_ov,
+            eps: eps_b,
+            nocc: nocc_b,
+            nvir: nvir_b,
+            first_occ: 0,
+            nocc_total: nocc_b,
+        };
         let (e_bb, _) = same_spin_pair_kernel(ch, false);
         e_total += e_bb;
     }
 
     if which == "ab" || which == "all" {
-        let ch_a = SpinChannel { b: &b_a_ov, eps: eps_a, nocc: nocc_a, nvir: nvir_a, first_occ: 0, nocc_total: nocc_a };
-        let ch_b = SpinChannel { b: &b_b_ov, eps: eps_b, nocc: nocc_b, nvir: nvir_b, first_occ: 0, nocc_total: nocc_b };
+        let ch_a = SpinChannel {
+            b: &b_a_ov,
+            eps: eps_a,
+            nocc: nocc_a,
+            nvir: nvir_a,
+            first_occ: 0,
+            nocc_total: nocc_a,
+        };
+        let ch_b = SpinChannel {
+            b: &b_b_ov,
+            eps: eps_b,
+            nocc: nocc_b,
+            nvir: nvir_b,
+            first_occ: 0,
+            nocc_total: nocc_b,
+        };
         let (e_ab, _) = opposite_spin_pair_kernel(ch_a, ch_b, false);
         e_total += e_ab;
     }
@@ -1181,28 +1280,48 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol_cs, &dfbs_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = ferric_scf::rhf::solve_rhf(
-            &ctx, &mol_cs, &obs, op, &bounds, &RhfConfig::default(),
-        ).unwrap();
-        let cs = crate::rimp2::ri_mp2(
-            &mol_cs, &obs, &dfbs, op, &rhf, &RiMp2Config::default(),
-        ).unwrap();
+        let rhf =
+            ferric_scf::rhf::solve_rhf(&ctx, &mol_cs, &obs, op, &bounds, &RhfConfig::default())
+                .unwrap();
+        let cs =
+            crate::rimp2::ri_mp2(&mol_cs, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
 
         // Open-shell run on same molecule (singlet, M=1)
         let mol_us = Molecule::parse_xyz(xyz, 0, 1).unwrap();
-        let uhf_cfg = UhfConfig { max_iter: 200, energy_conv: 1e-10, density_conv: 1e-8, ..Default::default() };
+        let uhf_cfg = UhfConfig {
+            max_iter: 200,
+            energy_conv: 1e-10,
+            density_conv: 1e-8,
+            ..Default::default()
+        };
         // UHF will converge to a symmetric solution for singlet H2 if seeded
         // from neutral RHF MOs (no spin contamination).
         let c_seed = rhf.mos_r().clone();
         let uhf = ferric_scf::uhf::solve_uhf_with_guess(
-            &ctx, &mol_us, &obs, &bounds, &uhf_cfg, Some((&c_seed, &c_seed)),
-        ).unwrap();
+            &ctx,
+            &mol_us,
+            &obs,
+            &bounds,
+            &uhf_cfg,
+            Some((&c_seed, &c_seed)),
+        )
+        .unwrap();
 
         let us = u_ri_mp2(&mol_us, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
         let diff = (us.mp2_corr - cs.mp2_corr).abs();
-        println!("CS E_MP2 = {:.10}, US E_MP2 = {:.10}, diff = {:.3e}", cs.mp2_corr, us.mp2_corr, diff);
-        println!("  components: αα={:.6e} ββ={:.6e} αβ={:.6e}", us.components.e_aa, us.components.e_bb, us.components.e_ab);
-        assert!(diff < 1e-7, "closed-shell U-RI-MP2 disagrees with RI-MP2: diff={}", diff);
+        println!(
+            "CS E_MP2 = {:.10}, US E_MP2 = {:.10}, diff = {:.3e}",
+            cs.mp2_corr, us.mp2_corr, diff
+        );
+        println!(
+            "  components: αα={:.6e} ββ={:.6e} αβ={:.6e}",
+            us.components.e_aa, us.components.e_bb, us.components.e_ab
+        );
+        assert!(
+            diff < 1e-7,
+            "closed-shell U-RI-MP2 disagrees with RI-MP2: diff={}",
+            diff
+        );
     }
 
     /// Validate U-RI-MP2 on OH/cc-pVDZ against the PySCF FD reference
@@ -1223,20 +1342,29 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
 
         let uhf_cfg = UhfConfig {
-            max_iter: 200, energy_conv: 1e-10, density_conv: 1e-8, ..Default::default()
+            max_iter: 200,
+            energy_conv: 1e-10,
+            density_conv: 1e-8,
+            ..Default::default()
         };
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
         println!("OH UHF: E={:.8}, iters={}", uhf.energy, uhf.iterations);
 
         let res = u_ri_mp2(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
-        println!("U-RI-MP2 components: αα={:.6e} ββ={:.6e} αβ={:.6e}",
-            res.components.e_aa, res.components.e_bb, res.components.e_ab);
+        println!(
+            "U-RI-MP2 components: αα={:.6e} ββ={:.6e} αβ={:.6e}",
+            res.components.e_aa, res.components.e_bb, res.components.e_ab
+        );
         println!("E_corr (ferric) = {:.8}", res.mp2_corr);
         println!("E_corr (PySCF)  = -0.15100299");
         let pyscf_e_corr = -0.151002988955374;
         let diff = (res.mp2_corr - pyscf_e_corr).abs();
         println!("diff = {:.3e} Ha", diff);
-        assert!(diff < 5e-4, "U-RI-MP2 on OH off by {:.3e} Ha vs PySCF UMP2 (RI noise tolerance 5e-4)", diff);
+        assert!(
+            diff < 5e-4,
+            "U-RI-MP2 on OH off by {:.3e} Ha vs PySCF UMP2 (RI noise tolerance 5e-4)",
+            diff
+        );
     }
 
     /// Validate amplitude builder on OH/cc-pVDZ:
@@ -1255,18 +1383,28 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let uhf_cfg = UhfConfig {
-            max_iter: 200, energy_conv: 1e-10, density_conv: 1e-8, ..Default::default()
+            max_iter: 200,
+            energy_conv: 1e-10,
+            density_conv: 1e-8,
+            ..Default::default()
         };
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
 
         let energy_res = u_ri_mp2(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
-        let amps = compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
+        let amps =
+            compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
 
         // Energy consistency
         let diff = (amps.components.e_total - energy_res.components.e_total).abs();
-        println!("E_total via amplitudes = {:.10}, via u_ri_mp2 = {:.10}, diff = {:.3e}",
-                 amps.components.e_total, energy_res.components.e_total, diff);
-        assert!(diff < 1e-12, "amplitude energy disagrees with closed-form: diff={}", diff);
+        println!(
+            "E_total via amplitudes = {:.10}, via u_ri_mp2 = {:.10}, diff = {:.3e}",
+            amps.components.e_total, energy_res.components.e_total, diff
+        );
+        assert!(
+            diff < 1e-12,
+            "amplitude energy disagrees with closed-form: diff={}",
+            diff
+        );
 
         // Same-spin antisymmetry: t[i,j,a,b] should equal -t[j,i,a,b] and -t[i,j,b,a]
         let nocc_a = amps.inter_a.nocc;
@@ -1285,14 +1423,27 @@ mod tests {
                 }
             }
         }
-        println!("max |t_aa[ijab] + t_aa[jiab]| = {:.3e} (must be zero)", max_asym);
-        assert!(max_asym < 1e-12, "αα amplitudes not antisymmetric: max asym={}", max_asym);
+        println!(
+            "max |t_aa[ijab] + t_aa[jiab]| = {:.3e} (must be zero)",
+            max_asym
+        );
+        assert!(
+            max_asym < 1e-12,
+            "αα amplitudes not antisymmetric: max asym={}",
+            max_asym
+        );
 
         // Shapes
-        println!("shapes: t_aa={:?}, t_bb={:?}, t_ab={:?}",
-                 amps.t_aa.shape(), amps.t_bb.shape(), amps.t_ab.shape());
-        println!("components: αα={:.6e} ββ={:.6e} αβ={:.6e}",
-                 amps.components.e_aa, amps.components.e_bb, amps.components.e_ab);
+        println!(
+            "shapes: t_aa={:?}, t_bb={:?}, t_ab={:?}",
+            amps.t_aa.shape(),
+            amps.t_bb.shape(),
+            amps.t_ab.shape()
+        );
+        println!(
+            "components: αα={:.6e} ββ={:.6e} αβ={:.6e}",
+            amps.components.e_aa, amps.components.e_bb, amps.components.e_ab
+        );
     }
 
     /// Sanity-check the unrelaxed U-MP2 density matrices on OH/cc-pVDZ:
@@ -1311,36 +1462,55 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let uhf_cfg = UhfConfig {
-            max_iter: 200, energy_conv: 1e-10, density_conv: 1e-8, ..Default::default()
+            max_iter: 200,
+            energy_conv: 1e-10,
+            density_conv: 1e-8,
+            ..Default::default()
         };
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
-        let amps = compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
+        let amps =
+            compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
         let dens = build_u_mp2_density(&amps);
 
         for (name, p) in [
-            ("p_oo_a", &dens.p_oo_a), ("p_vv_a", &dens.p_vv_a),
-            ("p_oo_b", &dens.p_oo_b), ("p_vv_b", &dens.p_vv_b),
+            ("p_oo_a", &dens.p_oo_a),
+            ("p_vv_a", &dens.p_vv_a),
+            ("p_oo_b", &dens.p_oo_b),
+            ("p_vv_b", &dens.p_vv_b),
         ] {
             let (n, _) = p.dim();
             let mut max_asym = 0.0_f64;
             for i in 0..n {
                 for j in 0..n {
-                    max_asym = max_asym.max((p[(i,j)] - p[(j,i)]).abs());
+                    max_asym = max_asym.max((p[(i, j)] - p[(j, i)]).abs());
                 }
             }
             println!("{}: max asym = {:.3e}", name, max_asym);
-            assert!(max_asym < 1e-14, "{} not symmetric: max asym={}", name, max_asym);
+            assert!(
+                max_asym < 1e-14,
+                "{} not symmetric: max asym={}",
+                name,
+                max_asym
+            );
         }
 
-        let tr = |p: &Array2<f64>| -> f64 { (0..p.dim().0).map(|i| p[(i,i)]).sum() };
+        let tr = |p: &Array2<f64>| -> f64 { (0..p.dim().0).map(|i| p[(i, i)]).sum() };
         let tr_oo_a = tr(&dens.p_oo_a);
         let tr_vv_a = tr(&dens.p_vv_a);
         let tr_oo_b = tr(&dens.p_oo_b);
         let tr_vv_b = tr(&dens.p_vv_b);
-        println!("α: tr(P_oo)={:.6e}, tr(P_vv)={:.6e}, sum={:.3e}",
-                 tr_oo_a, tr_vv_a, tr_oo_a + tr_vv_a);
-        println!("β: tr(P_oo)={:.6e}, tr(P_vv)={:.6e}, sum={:.3e}",
-                 tr_oo_b, tr_vv_b, tr_oo_b + tr_vv_b);
+        println!(
+            "α: tr(P_oo)={:.6e}, tr(P_vv)={:.6e}, sum={:.3e}",
+            tr_oo_a,
+            tr_vv_a,
+            tr_oo_a + tr_vv_a
+        );
+        println!(
+            "β: tr(P_oo)={:.6e}, tr(P_vv)={:.6e}, sum={:.3e}",
+            tr_oo_b,
+            tr_vv_b,
+            tr_oo_b + tr_vv_b
+        );
         assert!(tr_oo_a < 0.0 && tr_vv_a > 0.0, "α sign wrong");
         assert!(tr_oo_b < 0.0 && tr_vv_b > 0.0, "β sign wrong");
         assert!((tr_oo_a + tr_vv_a).abs() < 1e-10, "α density not conserved");
@@ -1361,15 +1531,26 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = ferric_scf::rhf::solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let rhf = ferric_scf::rhf::solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default())
+            .unwrap();
         let c_seed = rhf.mos_r().clone();
         let uhf_cfg = UhfConfig {
-            max_iter: 200, energy_conv: 1e-10, density_conv: 1e-8, ..Default::default()
+            max_iter: 200,
+            energy_conv: 1e-10,
+            density_conv: 1e-8,
+            ..Default::default()
         };
         let uhf = ferric_scf::uhf::solve_uhf_with_guess(
-            &ctx, &mol, &obs, &bounds, &uhf_cfg, Some((&c_seed, &c_seed)),
-        ).unwrap();
-        let amps = compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
+            &ctx,
+            &mol,
+            &obs,
+            &bounds,
+            &uhf_cfg,
+            Some((&c_seed, &c_seed)),
+        )
+        .unwrap();
+        let amps =
+            compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
         let dens = build_u_mp2_density(&amps);
 
         // Note: α/β MOs in a closed-shell-via-UHF run agree in *eigenvalues*
@@ -1377,13 +1558,15 @@ mod tests {
         // (cc-pVDZ on H2 has multiple degenerate virtuals). The density matrix
         // P is therefore gauge-dependent — but its trace and eigenvalues
         // (natural occupation numbers) are invariant. Compare those.
-        let tr = |p: &Array2<f64>| -> f64 { (0..p.dim().0).map(|i| p[(i,i)]).sum() };
+        let tr = |p: &Array2<f64>| -> f64 { (0..p.dim().0).map(|i| p[(i, i)]).sum() };
         let tr_oo_a = tr(&dens.p_oo_a);
         let tr_oo_b = tr(&dens.p_oo_b);
         let tr_vv_a = tr(&dens.p_vv_a);
         let tr_vv_b = tr(&dens.p_vv_b);
-        println!("H2 traces: P_oo_a={:.6e} P_oo_b={:.6e}; P_vv_a={:.6e} P_vv_b={:.6e}",
-                 tr_oo_a, tr_oo_b, tr_vv_a, tr_vv_b);
+        println!(
+            "H2 traces: P_oo_a={:.6e} P_oo_b={:.6e}; P_vv_a={:.6e} P_vv_b={:.6e}",
+            tr_oo_a, tr_oo_b, tr_vv_a, tr_vv_b
+        );
         assert!((tr_oo_a - tr_oo_b).abs() < 1e-10);
         assert!((tr_vv_a - tr_vv_b).abs() < 1e-10);
         // Per-spin conservation
@@ -1417,10 +1600,14 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let uhf_cfg = UhfConfig {
-            max_iter: 200, energy_conv: 1e-10, density_conv: 1e-8, ..Default::default()
+            max_iter: 200,
+            energy_conv: 1e-10,
+            density_conv: 1e-8,
+            ..Default::default()
         };
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
-        let amps = compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
+        let amps =
+            compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
 
         let nocc_a = amps.inter_a.nocc;
         let nocc_b = amps.inter_b.nocc;
@@ -1441,8 +1628,8 @@ mod tests {
             kap[(nocc + a, k)] = h;
             kap[(k, nocc + a)] = -h;
             let eye = Array2::<f64>::eye(nmo);
-            let lhs = &eye - 0.5 * &kap;  // I - κ/2
-            let rhs = &eye + 0.5 * &kap;  // I + κ/2
+            let lhs = &eye - 0.5 * &kap; // I - κ/2
+            let rhs = &eye + 0.5 * &kap; // I + κ/2
             let mut u = Array2::zeros((nmo, nmo));
             for col in 0..nmo {
                 let rhs_col = rhs.column(col).to_owned();
@@ -1455,36 +1642,60 @@ mod tests {
 
         // FD for α rotation: per-block (aa, ab)
         let mut fd_same_a = Array2::<f64>::zeros((nvir_a, nocc_a));
-        let mut fd_ab_a   = Array2::<f64>::zeros((nvir_a, nocc_a));
+        let mut fd_ab_a = Array2::<f64>::zeros((nvir_a, nocc_a));
         for a in 0..nvir_a {
             for k in 0..nocc_a {
                 let up = cayley(nmo, a, k, nocc_a, step);
                 let um = cayley(nmo, a, k, nocc_a, -step);
                 let c_a_p = c_a0.dot(&up);
                 let c_a_m = c_a0.dot(&um);
-                let ep_aa = super::u_mp2_energy_fixed_eps(&obs, &dfbs, op, &c_a_p, &c_b0, &eps_a, &eps_b, nocc_a, nocc_b, "aa").unwrap();
-                let em_aa = super::u_mp2_energy_fixed_eps(&obs, &dfbs, op, &c_a_m, &c_b0, &eps_a, &eps_b, nocc_a, nocc_b, "aa").unwrap();
-                let ep_ab = super::u_mp2_energy_fixed_eps(&obs, &dfbs, op, &c_a_p, &c_b0, &eps_a, &eps_b, nocc_a, nocc_b, "ab").unwrap();
-                let em_ab = super::u_mp2_energy_fixed_eps(&obs, &dfbs, op, &c_a_m, &c_b0, &eps_a, &eps_b, nocc_a, nocc_b, "ab").unwrap();
+                let ep_aa = super::u_mp2_energy_fixed_eps(
+                    &obs, &dfbs, op, &c_a_p, &c_b0, &eps_a, &eps_b, nocc_a, nocc_b, "aa",
+                )
+                .unwrap();
+                let em_aa = super::u_mp2_energy_fixed_eps(
+                    &obs, &dfbs, op, &c_a_m, &c_b0, &eps_a, &eps_b, nocc_a, nocc_b, "aa",
+                )
+                .unwrap();
+                let ep_ab = super::u_mp2_energy_fixed_eps(
+                    &obs, &dfbs, op, &c_a_p, &c_b0, &eps_a, &eps_b, nocc_a, nocc_b, "ab",
+                )
+                .unwrap();
+                let em_ab = super::u_mp2_energy_fixed_eps(
+                    &obs, &dfbs, op, &c_a_m, &c_b0, &eps_a, &eps_b, nocc_a, nocc_b, "ab",
+                )
+                .unwrap();
                 fd_same_a[(a, k)] = (ep_aa - em_aa) / (2.0 * step);
-                fd_ab_a[(a, k)]   = (ep_ab - em_ab) / (2.0 * step);
+                fd_ab_a[(a, k)] = (ep_ab - em_ab) / (2.0 * step);
             }
         }
         // FD for β rotation: per-block (bb, ab)
         let mut fd_same_b = Array2::<f64>::zeros((nvir_b, nocc_b));
-        let mut fd_ab_b   = Array2::<f64>::zeros((nvir_b, nocc_b));
+        let mut fd_ab_b = Array2::<f64>::zeros((nvir_b, nocc_b));
         for a in 0..nvir_b {
             for k in 0..nocc_b {
                 let up = cayley(nmo, a, k, nocc_b, step);
                 let um = cayley(nmo, a, k, nocc_b, -step);
                 let c_b_p = c_b0.dot(&up);
                 let c_b_m = c_b0.dot(&um);
-                let ep_bb = super::u_mp2_energy_fixed_eps(&obs, &dfbs, op, &c_a0, &c_b_p, &eps_a, &eps_b, nocc_a, nocc_b, "bb").unwrap();
-                let em_bb = super::u_mp2_energy_fixed_eps(&obs, &dfbs, op, &c_a0, &c_b_m, &eps_a, &eps_b, nocc_a, nocc_b, "bb").unwrap();
-                let ep_ab = super::u_mp2_energy_fixed_eps(&obs, &dfbs, op, &c_a0, &c_b_p, &eps_a, &eps_b, nocc_a, nocc_b, "ab").unwrap();
-                let em_ab = super::u_mp2_energy_fixed_eps(&obs, &dfbs, op, &c_a0, &c_b_m, &eps_a, &eps_b, nocc_a, nocc_b, "ab").unwrap();
+                let ep_bb = super::u_mp2_energy_fixed_eps(
+                    &obs, &dfbs, op, &c_a0, &c_b_p, &eps_a, &eps_b, nocc_a, nocc_b, "bb",
+                )
+                .unwrap();
+                let em_bb = super::u_mp2_energy_fixed_eps(
+                    &obs, &dfbs, op, &c_a0, &c_b_m, &eps_a, &eps_b, nocc_a, nocc_b, "bb",
+                )
+                .unwrap();
+                let ep_ab = super::u_mp2_energy_fixed_eps(
+                    &obs, &dfbs, op, &c_a0, &c_b_p, &eps_a, &eps_b, nocc_a, nocc_b, "ab",
+                )
+                .unwrap();
+                let em_ab = super::u_mp2_energy_fixed_eps(
+                    &obs, &dfbs, op, &c_a0, &c_b_m, &eps_a, &eps_b, nocc_a, nocc_b, "ab",
+                )
+                .unwrap();
                 fd_same_b[(a, k)] = (ep_bb - em_bb) / (2.0 * step);
-                fd_ab_b[(a, k)]   = (ep_ab - em_ab) / (2.0 * step);
+                fd_ab_b[(a, k)] = (ep_ab - em_ab) / (2.0 * step);
             }
         }
 
@@ -1492,7 +1703,10 @@ mod tests {
         let b_full_a = crate::oo_rimp2::compute_b_full_mo(&obs, &dfbs, op, &c_a0).unwrap();
         let b_full_b = crate::oo_rimp2::compute_b_full_mo(&obs, &dfbs, op, &c_b0).unwrap();
         let blocks = super::compute_u_mp2_orbital_gradient_blocks(
-            &amps, &b_full_a, &b_full_b, ferric_core::memory::resolve_budget_bytes(None),
+            &amps,
+            &b_full_a,
+            &b_full_b,
+            ferric_core::memory::resolve_budget_bytes(None),
         );
 
         let report = |label: &str, g: &Array2<f64>, g_fd: &Array2<f64>| -> bool {
@@ -1500,9 +1714,9 @@ mod tests {
             let n = g.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
             let diff = g - g_fd;
             let max_diff = diff.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-            let rms: f64 = (diff.iter().map(|v| v*v).sum::<f64>() / (diff.len() as f64)).sqrt();
-            let dot: f64 = g.iter().zip(g_fd.iter()).map(|(a,b)| a*b).sum();
-            let nrm2_fd: f64 = g_fd.iter().map(|v| v*v).sum();
+            let rms: f64 = (diff.iter().map(|v| v * v).sum::<f64>() / (diff.len() as f64)).sqrt();
+            let dot: f64 = g.iter().zip(g_fd.iter()).map(|(a, b)| a * b).sum();
+            let nrm2_fd: f64 = g_fd.iter().map(|v| v * v).sum();
             let c = if nrm2_fd > 0.0 { dot / nrm2_fd } else { 0.0 };
             let rel = if nfd > 0.0 { max_diff / nfd } else { 0.0 };
             // Absolute gate: analytic and FD share the same RI B-tensor path, so
@@ -1515,11 +1729,30 @@ mod tests {
             ok
         };
 
-        let ok1 = report("αα→g_a (same_a vs FD αα-only α-rot)", &blocks.same_a, &fd_same_a);
-        let ok2 = report("αβ→g_a (ab_a   vs FD αβ-only α-rot)", &blocks.ab_a,   &fd_ab_a);
-        let ok3 = report("ββ→g_b (same_b vs FD ββ-only β-rot)", &blocks.same_b, &fd_same_b);
-        let ok4 = report("αβ→g_b (ab_b   vs FD αβ-only β-rot)", &blocks.ab_b,   &fd_ab_b);
-        assert!(ok1 && ok2 && ok3 && ok4, "per-block gradient failed — see diagnostics above");
+        let ok1 = report(
+            "αα→g_a (same_a vs FD αα-only α-rot)",
+            &blocks.same_a,
+            &fd_same_a,
+        );
+        let ok2 = report(
+            "αβ→g_a (ab_a   vs FD αβ-only α-rot)",
+            &blocks.ab_a,
+            &fd_ab_a,
+        );
+        let ok3 = report(
+            "ββ→g_b (same_b vs FD ββ-only β-rot)",
+            &blocks.same_b,
+            &fd_same_b,
+        );
+        let ok4 = report(
+            "αβ→g_b (ab_b   vs FD αβ-only β-rot)",
+            &blocks.ab_b,
+            &fd_ab_b,
+        );
+        assert!(
+            ok1 && ok2 && ok3 && ok4,
+            "per-block gradient failed — see diagnostics above"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1630,16 +1863,33 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let uhf_cfg = UhfConfig {
-            max_iter: 200, energy_conv: 1e-10, density_conv: 1e-8, ..Default::default()
+            max_iter: 200,
+            energy_conv: 1e-10,
+            density_conv: 1e-8,
+            ..Default::default()
         };
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
 
         let inter_a = compute_rpa_intermediates_spin(
-            &mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default(), true,
-        ).unwrap();
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &uhf,
+            &RiMp2Config::default(),
+            true,
+        )
+        .unwrap();
         let inter_b = compute_rpa_intermediates_spin(
-            &mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default(), false,
-        ).unwrap();
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &uhf,
+            &RiMp2Config::default(),
+            false,
+        )
+        .unwrap();
         let eps_a: &[f64] = &uhf.eps_alpha;
         let eps_b: &[f64] = uhf.eps_beta.as_deref().unwrap_or(&uhf.eps_alpha);
 
@@ -1652,15 +1902,34 @@ mod tests {
 
         // Old scalar quintuple-loop path, same intermediates.
         let e_aa_old = old_scalar_same_spin_energy(
-            &inter_a.b_ov, eps_a, inter_a.nocc, inter_a.nvir, inter_a.first_occ, inter_a.nocc_total,
+            &inter_a.b_ov,
+            eps_a,
+            inter_a.nocc,
+            inter_a.nvir,
+            inter_a.first_occ,
+            inter_a.nocc_total,
         );
         let e_bb_old = old_scalar_same_spin_energy(
-            &inter_b.b_ov, eps_b, inter_b.nocc, inter_b.nvir, inter_b.first_occ, inter_b.nocc_total,
+            &inter_b.b_ov,
+            eps_b,
+            inter_b.nocc,
+            inter_b.nvir,
+            inter_b.first_occ,
+            inter_b.nocc_total,
         );
         let e_ab_old = old_scalar_opposite_spin_energy(
-            &inter_a.b_ov, &inter_b.b_ov, eps_a, eps_b,
-            inter_a.nocc, inter_a.nvir, inter_a.first_occ, inter_a.nocc_total,
-            inter_b.nocc, inter_b.nvir, inter_b.first_occ, inter_b.nocc_total,
+            &inter_a.b_ov,
+            &inter_b.b_ov,
+            eps_a,
+            eps_b,
+            inter_a.nocc,
+            inter_a.nvir,
+            inter_a.first_occ,
+            inter_a.nocc_total,
+            inter_b.nocc,
+            inter_b.nvir,
+            inter_b.first_occ,
+            inter_b.nocc_total,
         );
         let e_total_old = e_aa_old + e_bb_old + e_ab_old;
 
@@ -1684,17 +1953,30 @@ mod tests {
             "OH kernel-vs-scalar: total new={:.15e} old={:.15e} diff={:.3e}",
             e_total_new, e_total_old, diff_total
         );
-        assert!(diff_aa < 1e-12, "αα kernel disagrees with old scalar loop: diff={diff_aa:e}");
-        assert!(diff_bb < 1e-12, "ββ kernel disagrees with old scalar loop: diff={diff_bb:e}");
-        assert!(diff_ab < 1e-12, "αβ kernel disagrees with old scalar loop: diff={diff_ab:e}");
-        assert!(diff_total < 1e-12, "total kernel disagrees with old scalar loop: diff={diff_total:e}");
+        assert!(
+            diff_aa < 1e-12,
+            "αα kernel disagrees with old scalar loop: diff={diff_aa:e}"
+        );
+        assert!(
+            diff_bb < 1e-12,
+            "ββ kernel disagrees with old scalar loop: diff={diff_bb:e}"
+        );
+        assert!(
+            diff_ab < 1e-12,
+            "αβ kernel disagrees with old scalar loop: diff={diff_ab:e}"
+        );
+        assert!(
+            diff_total < 1e-12,
+            "total kernel disagrees with old scalar loop: diff={diff_total:e}"
+        );
 
         // Also check the amplitude builders agree bit-for-bit in energy with
         // the closed-form path (already covered by
         // u_mp2_amplitudes_consistent_on_oh), and additionally cross-check
         // against the old-scalar total here so both amplitude AND
         // energy-only call sites are pinned by one test.
-        let amps = compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
+        let amps =
+            compute_u_mp2_amplitudes(&mol, &obs, &dfbs, op, &uhf, &RiMp2Config::default()).unwrap();
         let diff_amp_total = (amps.components.e_total - e_total_old).abs();
         println!(
             "OH amplitude-path total = {:.15e} vs old scalar total = {:.15e}, diff={:.3e}",

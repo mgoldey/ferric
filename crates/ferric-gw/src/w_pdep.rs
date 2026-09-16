@@ -47,7 +47,9 @@ pub fn redress_eigenpotentials(
         let eye = Array2::<f64>::eye(v_inv_sqrt.nrows());
         let v_sqrt_factor = v_inv_sqrt
             .solve_triangular(UPLO::Lower, Diag::NonUnit, &eye)
-            .map_err(|e| FerricError::General(format!("triangular solve(v_inv_sqrt) failed: {e}")))?;
+            .map_err(|e| {
+                FerricError::General(format!("triangular solve(v_inv_sqrt) failed: {e}"))
+            })?;
         Ok(v_sqrt_factor.dot(eigenpotentials_phys))
     })
 }

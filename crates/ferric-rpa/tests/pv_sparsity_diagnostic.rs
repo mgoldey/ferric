@@ -154,7 +154,11 @@ fn decay_profile(m: &Array2<f64>, centers: &[[f64; 3]], bin_width: f64, nbins: u
 /// valence/hard partitioning and in convergence robustness.
 ///
 /// It is labeled `boys_virtual` everywhere in the output, NOT "VV-HV".
-fn boys_localize_virtuals(c_vir: &Array2<f64>, dip: &[Array2<f64>; 3], max_iter: usize) -> Array2<f64> {
+fn boys_localize_virtuals(
+    c_vir: &Array2<f64>,
+    dip: &[Array2<f64>; 3],
+    max_iter: usize,
+) -> Array2<f64> {
     ferric_mp2::boys::boys_localize(c_vir, dip, max_iter).c_loc
 }
 
@@ -326,7 +330,10 @@ fn analyze(sys: &SystemData) -> Vec<(String, f64, f64)> {
 
         // Max asymmetry between the two virtual constructions, as a check that
         // they really do span the same space.
-        let d = (&p_v_can - &p_v_loc).iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+        let d = (&p_v_can - &p_v_loc)
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0_f64, f64::max);
         let scale = p_v_can.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
         println!(
             "  |P_vir_canonical - P_vir_boys|_max = {:.3e}  (|P|max = {:.3e}, rel {:.3e})",
@@ -359,14 +366,21 @@ fn analyze(sys: &SystemData) -> Vec<(String, f64, f64)> {
 /// genuinely differ — so it cannot pass vacuously by the localizer no-oping.
 #[test]
 fn virtual_localization_cannot_change_the_virtual_pseudo_density() {
-    let sys = run_scf("../../testdata/molecules/alkane_4.xyz", "sto-3g", "alkane_4/STO-3G [teeth]");
+    let sys = run_scf(
+        "../../testdata/molecules/alkane_4.xyz",
+        "sto-3g",
+        "alkane_4/STO-3G [teeth]",
+    );
     let dip = dipole(&sys.prep, [0.0, 0.0, 0.0]).unwrap();
     let c_loc = boys_localize_virtuals(&sys.c_vir, &dip, 400);
     let f_loc = c_loc.t().dot(&sys.f_ao).dot(&c_loc);
 
     // GUARD AGAINST A VACUOUS PASS: the localizer must actually have rotated
     // the orbitals. If c_loc == c_vir the invariance assertion below is trivial.
-    let coef_change = (&c_loc - &sys.c_vir).iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+    let coef_change = (&c_loc - &sys.c_vir)
+        .iter()
+        .map(|v| v.abs())
+        .fold(0.0_f64, f64::max);
     assert!(
         coef_change > 0.1,
         "Boys localization barely moved the virtual coefficients (max Δ = {coef_change:.3e}); \
@@ -396,9 +410,15 @@ fn virtual_localization_cannot_change_the_virtual_pseudo_density() {
     for &tau in &taus {
         let p_can = pseudo_density_vir(&sys.c_vir, &sys.eps_vir, tau);
         let p_loc = pseudo_density_vir_fock(&c_loc, &f_loc, tau);
-        let max_err = (&p_can - &p_loc).iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+        let max_err = (&p_can - &p_loc)
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0_f64, f64::max);
         let scale = p_can.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
-        println!("  τ={tau:.4}: |ΔP_v|max = {max_err:.3e}  (rel {:.3e})", max_err / scale);
+        println!(
+            "  τ={tau:.4}: |ΔP_v|max = {max_err:.3e}  (rel {:.3e})",
+            max_err / scale
+        );
         assert!(
             max_err / scale < 1e-8,
             "P_v must be invariant under virtual-space rotation at τ={tau}: \
@@ -417,7 +437,11 @@ fn virtual_localization_cannot_change_the_virtual_pseudo_density() {
 /// same function.
 #[test]
 fn scalar_path_on_localized_virtuals_is_wrong_and_differs() {
-    let sys = run_scf("../../testdata/molecules/alkane_4.xyz", "sto-3g", "alkane_4/STO-3G [neg ctrl]");
+    let sys = run_scf(
+        "../../testdata/molecules/alkane_4.xyz",
+        "sto-3g",
+        "alkane_4/STO-3G [neg ctrl]",
+    );
     let dip = dipole(&sys.prep, [0.0, 0.0, 0.0]).unwrap();
     let c_loc = boys_localize_virtuals(&sys.c_vir, &dip, 400);
     let taus = tau_grid(&sys);
@@ -426,7 +450,10 @@ fn scalar_path_on_localized_virtuals_is_wrong_and_differs() {
     let p_correct = pseudo_density_vir(&sys.c_vir, &sys.eps_vir, tau);
     // WRONG on purpose: canonical ε with non-canonical orbitals.
     let p_wrong = pseudo_density_vir(&c_loc, &sys.eps_vir, tau);
-    let d = (&p_correct - &p_wrong).iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+    let d = (&p_correct - &p_wrong)
+        .iter()
+        .map(|v| v.abs())
+        .fold(0.0_f64, f64::max);
     let scale = p_correct.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
     println!("scalar-on-localized rel deviation = {:.3e}", d / scale);
     assert!(
@@ -445,10 +472,26 @@ fn scalar_path_on_localized_virtuals_is_wrong_and_differs() {
 #[test]
 fn pv_sparsity_and_decay_sweep() {
     let systems: Vec<(&str, &str, &str)> = vec![
-        ("../../testdata/molecules/water.xyz", "sto-3g", "water/STO-3G"),
-        ("../../testdata/molecules/alkane_4.xyz", "sto-3g", "alkane_4/STO-3G"),
-        ("../../testdata/molecules/alkane_8.xyz", "sto-3g", "alkane_8/STO-3G"),
-        ("../../testdata/molecules/benzene.xyz", "sto-3g", "benzene/STO-3G"),
+        (
+            "../../testdata/molecules/water.xyz",
+            "sto-3g",
+            "water/STO-3G",
+        ),
+        (
+            "../../testdata/molecules/alkane_4.xyz",
+            "sto-3g",
+            "alkane_4/STO-3G",
+        ),
+        (
+            "../../testdata/molecules/alkane_8.xyz",
+            "sto-3g",
+            "alkane_8/STO-3G",
+        ),
+        (
+            "../../testdata/molecules/benzene.xyz",
+            "sto-3g",
+            "benzene/STO-3G",
+        ),
     ];
 
     let mut summary: Vec<(String, String, f64, f64)> = Vec::new();
@@ -461,9 +504,19 @@ fn pv_sparsity_and_decay_sweep() {
     }
 
     println!("\n\n================ SATURATION SUMMARY ================");
-    println!("{:<18} {:<34} {:>8} {:>10} {:>8}", "system", "quantity", "r(1e-4)", "diameter", "r/diam");
+    println!(
+        "{:<18} {:<34} {:>8} {:>10} {:>8}",
+        "system", "quantity", "r(1e-4)", "diameter", "r/diam"
+    );
     for (sysname, q, r, d) in &summary {
-        println!("{:<18} {:<34} {:>8.1} {:>10.2} {:>8.2}", sysname, q, r, d, r / d);
+        println!(
+            "{:<18} {:<34} {:>8.1} {:>10.2} {:>8.2}",
+            sysname,
+            q,
+            r,
+            d,
+            r / d
+        );
     }
     println!("\nIf r/diam is ~constant across systems, the profile STRETCHES with the");
     println!("molecule and truncation is NOT transferable. If r saturates at a fixed");
@@ -509,11 +562,31 @@ fn pv_decay_at_a_real_basis() {
     // most informative rows. Per Matt: basis quality beats system size, so
     // alkane_4/cc-pVDZ matters more than alkane_8/STO-3G.
     let systems: Vec<(&str, &str, &str)> = vec![
-        ("../../testdata/molecules/water.xyz", "cc-pvdz", "water/cc-pVDZ"),
-        ("../../testdata/molecules/alkane_2.xyz", "cc-pvdz", "alkane_2/cc-pVDZ"),
-        ("../../testdata/molecules/alkane_4.xyz", "cc-pvdz", "alkane_4/cc-pVDZ"),
-        ("../../testdata/molecules/benzene.xyz", "cc-pvdz", "benzene/cc-pVDZ"),
-        ("../../testdata/molecules/alkane_8.xyz", "cc-pvdz", "alkane_8/cc-pVDZ"),
+        (
+            "../../testdata/molecules/water.xyz",
+            "cc-pvdz",
+            "water/cc-pVDZ",
+        ),
+        (
+            "../../testdata/molecules/alkane_2.xyz",
+            "cc-pvdz",
+            "alkane_2/cc-pVDZ",
+        ),
+        (
+            "../../testdata/molecules/alkane_4.xyz",
+            "cc-pvdz",
+            "alkane_4/cc-pVDZ",
+        ),
+        (
+            "../../testdata/molecules/benzene.xyz",
+            "cc-pvdz",
+            "benzene/cc-pVDZ",
+        ),
+        (
+            "../../testdata/molecules/alkane_8.xyz",
+            "cc-pvdz",
+            "alkane_8/cc-pVDZ",
+        ),
     ];
 
     let mut summary: Vec<(String, usize, usize, String, f64, f64)> = Vec::new();
@@ -535,7 +608,13 @@ fn pv_decay_at_a_real_basis() {
     for (sysname, nocc, nvir, q, r, d) in &summary {
         println!(
             "{:<20} {:>5} {:>6} {:<34} {:>8.1} {:>10.2} {:>8.2}",
-            sysname, nocc, nvir, q, r, d, r / d
+            sysname,
+            nocc,
+            nvir,
+            q,
+            r,
+            d,
+            r / d
         );
     }
     println!(
@@ -570,7 +649,11 @@ fn pv_decay_at_a_real_basis() {
 /// occupied and virtual decay profiles are measured on the same footing.
 #[test]
 fn metric_resolves_locality_at_larger_size() {
-    let sys = run_scf("../../testdata/molecules/alkane_16.xyz", "sto-3g", "alkane_16/STO-3G [metric check]");
+    let sys = run_scf(
+        "../../testdata/molecules/alkane_16.xyz",
+        "sto-3g",
+        "alkane_16/STO-3G [metric check]",
+    );
     let centers = ao_centers(&sys.prep);
     let taus = tau_grid(&sys);
     let tau = taus[taus.len() / 2];
@@ -584,7 +667,10 @@ fn metric_resolves_locality_at_larger_size() {
     print_profile("P_vir canonical", &prof_v);
     let ro = radius_below(&prof_o, 1e-4, BIN_WIDTH).unwrap_or(f64::NAN);
     let rv = radius_below(&prof_v, 1e-4, BIN_WIDTH).unwrap_or(f64::NAN);
-    println!("r(1e-4) P_occ = {ro:.1}  P_vir = {rv:.1}  diameter = {:.2}", sys.diameter);
+    println!(
+        "r(1e-4) P_occ = {ro:.1}  P_vir = {rv:.1}  diameter = {:.2}",
+        sys.diameter
+    );
 
     // TEETH: if P_occ's required radius is essentially the whole molecule even
     // at this size, then the OCCUPIED pseudo-density is not usefully local

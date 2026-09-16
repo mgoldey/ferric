@@ -117,7 +117,10 @@ fn qqr_vs_schwarz_difference_falls_with_threshold_alkane_8() {
         &RhfConfig::default(),
     )
     .expect("RHF");
-    assert!(res.converged, "RHF must converge before measuring screening");
+    assert!(
+        res.converged,
+        "RHF must converge before measuring screening"
+    );
     let d = res.density_total;
 
     let thresholds = [1e-6f64, 1e-8, 1e-10, 1e-12];

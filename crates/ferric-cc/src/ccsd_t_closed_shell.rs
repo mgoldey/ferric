@@ -151,8 +151,14 @@ use rayon::prelude::*;
 
 /// The 6 permutations of `(0,1,2)` in a fixed, deterministic order. Used both
 /// to build the pair-symmetrized `W` and to enumerate the multiplicity classes.
-const PERMS3: [[usize; 3]; 6] =
-    [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+const PERMS3: [[usize; 3]; 6] = [
+    [0, 1, 2],
+    [0, 2, 1],
+    [1, 0, 2],
+    [1, 2, 0],
+    [2, 0, 1],
+    [2, 1, 0],
+];
 
 /// Number of distinct orderings of the occupied triple `(i,j,k)` given
 /// `i <= j <= k`.
@@ -290,7 +296,10 @@ fn raw_w_block(
 
 /// Permute the three axes of a `[nv,nv,nv]` block: `out[x0,x1,x2] = x[axes]`.
 fn permute3(x: &Array3<f64>, axes: [usize; 3]) -> Array3<f64> {
-    x.view().permuted_axes(axes).as_standard_layout().into_owned()
+    x.view()
+        .permuted_axes(axes)
+        .as_standard_layout()
+        .into_owned()
 }
 
 /// Fully pair-symmetrized `W[a,b,c]` for the occupied triple `(i,j,k)`:
@@ -349,9 +358,7 @@ fn add_v_singles(
             let t1jb = t1[[j, b]];
             let gij_ab = g_ij[[a, b]];
             for c in 0..nv {
-                v[[a, b, c]] += g_jk[[b, c]] * t1ia
-                    + g_ik[[a, c]] * t1jb
-                    + gij_ab * t1[[k, c]];
+                v[[a, b, c]] += g_jk[[b, c]] * t1ia + g_ik[[a, c]] * t1jb + gij_ab * t1[[k, c]];
             }
         }
     }
@@ -378,10 +385,9 @@ pub fn ccsd_t_closed_shell(
     cc: &CcResult,
     cfg: &CcConfig,
 ) -> Result<f64, FerricError> {
-    let t1 = cc
-        .t1
-        .as_ref()
-        .ok_or_else(|| FerricError::General("closed-shell CCSD(T) requires T1 amplitudes".into()))?;
+    let t1 = cc.t1.as_ref().ok_or_else(|| {
+        FerricError::General("closed-shell CCSD(T) requires T1 amplitudes".into())
+    })?;
 
     let nbas = obs.nbasis();
     let nocc_total = rhf.eps_r().iter().filter(|&&e| e < 0.0).count();
@@ -439,7 +445,12 @@ pub fn ccsd_t_closed_shell(
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
     let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
     use Axis::{O, V};
-    let b_ov = build_b(&transform_3center_ov(&eri3_ao, &c_occ, &c_vir), &v_inv_sqrt, O, V);
+    let b_ov = build_b(
+        &transform_3center_ov(&eri3_ao, &c_occ, &c_vir),
+        &v_inv_sqrt,
+        O,
+        V,
+    );
     let b_oo = build_b(&transform_3center_oo(&eri3_ao, &c_occ), &v_inv_sqrt, O, O);
     let b_vv = build_b(&transform_3center_vv(&eri3_ao, &c_vir), &v_inv_sqrt, V, V);
     drop(eri3_ao);
@@ -563,8 +574,7 @@ mod tests {
     fn setup(xyz: &str, obs_name: &str) -> Setup {
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled(obs_name).unwrap()).unwrap();
-        let dfbs =
-            PreparedBasis::new(&mol, &basis::bundled("def2-qzvpp-rifit").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-qzvpp-rifit").unwrap()).unwrap();
         let op = Operator::coulomb();
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
@@ -574,14 +584,28 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig { energy_conv: 1e-11, ..Default::default() },
+            &RhfConfig {
+                energy_conv: 1e-11,
+                ..Default::default()
+            },
         )
         .unwrap();
-        Setup { mol, obs, dfbs, op, rhf }
+        Setup {
+            mol,
+            obs,
+            dfbs,
+            op,
+            rhf,
+        }
     }
 
     fn cc_cfg() -> CcConfig {
-        CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-10, ..Default::default() }
+        CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-10,
+            ..Default::default()
+        }
     }
 
     /// Run BOTH (T) implementations from the SAME converged spin-adapted CCSD
@@ -627,7 +651,10 @@ mod tests {
             "H2O/cc-pVDZ (T): spin-orbital = {t_old:.12}, closed-shell = {t_new:.12}, diff = {diff:.3e}"
         );
         // Guard against a vacuous pass: (T) must be a real, negative number.
-        assert!(t_new < -1e-4, "(T) = {t_new:.12} is not a plausible triples energy");
+        assert!(
+            t_new < -1e-4,
+            "(T) = {t_new:.12} is not a plausible triples energy"
+        );
         assert!(
             diff < 1e-9,
             "closed-shell (T) = {t_new:.12} disagrees with spin-orbital (T) = {t_old:.12} by {diff:.3e}"
@@ -650,14 +677,22 @@ mod tests {
     fn closed_shell_t_matches_spin_orbital_t_with_frozen_core() {
         let s = setup(H2O, "cc-pvdz");
         // Water has 5 occupied spatial orbitals; freeze the O 1s.
-        let cfg = CcConfig { frozen_core: 1, max_iter: 100, energy_conv: 1e-10, ..Default::default() };
+        let cfg = CcConfig {
+            frozen_core: 1,
+            max_iter: 100,
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
         let (t_old, t_new) = both_t_with(&s, cfg);
         let diff = (t_old - t_new).abs();
         println!(
             "H2O/cc-pVDZ frozen_core=1 (T): spin-orbital = {t_old:.12}, \
              closed-shell = {t_new:.12}, diff = {diff:.3e}"
         );
-        assert!(t_new < -1e-4, "(T) = {t_new:.12} is not a plausible triples energy");
+        assert!(
+            t_new < -1e-4,
+            "(T) = {t_new:.12} is not a plausible triples energy"
+        );
         assert!(
             diff < 1e-9,
             "frozen-core closed-shell (T) = {t_new:.12} disagrees with spin-orbital \
@@ -684,7 +719,10 @@ mod tests {
         println!(
             "H2O/STO-3G (T): spin-orbital = {t_old:.12}, closed-shell = {t_new:.12}, diff = {diff:.3e}"
         );
-        assert!(t_new < -1e-6, "(T) = {t_new:.12} is not a plausible triples energy");
+        assert!(
+            t_new < -1e-6,
+            "(T) = {t_new:.12} is not a plausible triples energy"
+        );
         assert!(diff < 1e-10, "closed-shell (T) disagrees by {diff:.3e}");
     }
 
@@ -741,7 +779,10 @@ mod tests {
         let cfg = cc_cfg();
         let r_cs = ccsd_closed_shell(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &cfg).unwrap();
         let run = |n: usize| -> f64 {
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .build()
+                .unwrap();
             pool.install(|| {
                 ccsd_t_closed_shell(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &r_cs, &cfg).unwrap()
             })
@@ -825,12 +866,13 @@ mod tests {
     #[test]
     #[ignore = "timing demo, run explicitly with --ignored --nocapture"]
     fn perf_closed_shell_t_vs_spin_orbital_ethane() {
-        let xyz_path =
-            format!("{}/../../testdata/molecules/alkane_2.xyz", env!("CARGO_MANIFEST_DIR"));
+        let xyz_path = format!(
+            "{}/../../testdata/molecules/alkane_2.xyz",
+            env!("CARGO_MANIFEST_DIR")
+        );
         let mol = Molecule::load_xyz(&xyz_path).unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
-        let dfbs =
-            PreparedBasis::new(&mol, &basis::bundled("def2-qzvpp-rifit").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-qzvpp-rifit").unwrap()).unwrap();
         let op = Operator::coulomb();
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
@@ -840,10 +882,19 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig { energy_conv: 1e-11, ..Default::default() },
+            &RhfConfig {
+                energy_conv: 1e-11,
+                ..Default::default()
+            },
         )
         .unwrap();
-        let s = Setup { mol, obs, dfbs, op, rhf };
+        let s = Setup {
+            mol,
+            obs,
+            dfbs,
+            op,
+            rhf,
+        };
         perf_ab(&s, "ethane/cc-pVDZ", 2);
     }
 }

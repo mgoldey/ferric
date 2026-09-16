@@ -9,8 +9,8 @@ use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::cosx_k::CosxConfig;
-use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::result::ScfResult;
+use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
 const WATER: &str = "3
@@ -30,7 +30,12 @@ fn run(cfg: RhfConfig) -> ScfResult {
 }
 
 fn tight() -> RhfConfig {
-    RhfConfig { energy_conv: 1e-10, density_conv: 1e-8, cosx: cosx_default(), ..Default::default() }
+    RhfConfig {
+        energy_conv: 1e-10,
+        density_conv: 1e-8,
+        cosx: cosx_default(),
+        ..Default::default()
+    }
 }
 
 /// `COSX_ANCHOR_HALF=dense` runs this suite on the DENSE half transform
@@ -42,16 +47,25 @@ fn cosx_default() -> CosxConfig {
         Some("dense") => CosxHalfTransform::Dense,
         Some(other) => panic!("COSX_ANCHOR_HALF = {other:?}: expected \"sparse\" or \"dense\""),
     };
-    CosxConfig { half_transform: half, ..CosxConfig::default() }
+    CosxConfig {
+        half_transform: half,
+        ..CosxConfig::default()
+    }
 }
 
 #[test]
 fn cosx_rhf_water_ccpvdz_vs_direct() {
     let direct = run(tight());
-    let cosx = run(RhfConfig { k_builder: Some("cosx".into()), ..tight() });
+    let cosx = run(RhfConfig {
+        k_builder: Some("cosx".into()),
+        ..tight()
+    });
     let cosx_nofit = run(RhfConfig {
         k_builder: Some("cosx".into()),
-        cosx: CosxConfig { overlap_fit: false, ..cosx_default() },
+        cosx: CosxConfig {
+            overlap_fit: false,
+            ..cosx_default()
+        },
         ..tight()
     });
     assert!(direct.converged && cosx.converged && cosx_nofit.converged);
@@ -67,8 +81,14 @@ fn cosx_rhf_water_ccpvdz_vs_direct() {
     // weights, missing symmetrization) is O(1) Ha off — see the anchors'
     // mutation proofs.
     assert!(de.abs() < 1e-4, "COSX+fit energy off by {de:e} Ha");
-    assert!(de_nofit.abs() < 1e-4, "COSX no-fit energy off by {de_nofit:e} Ha");
-    assert!(de.abs() > 1e-12, "COSX energy equals direct to 1e-12 — the COSX K is not being used");
+    assert!(
+        de_nofit.abs() < 1e-4,
+        "COSX no-fit energy off by {de_nofit:e} Ha"
+    );
+    assert!(
+        de.abs() > 1e-12,
+        "COSX energy equals direct to 1e-12 — the COSX K is not being used"
+    );
 }
 
 /// Refinement: the SCF energy error must fall with the grid (the SCF-level
@@ -81,16 +101,27 @@ fn cosx_rhf_energy_error_falls_with_grid() {
         let mut cosx = cosx_default();
         cosx.grid.n_radial = nr;
         cosx.grid.n_angular = na;
-        let r = run(RhfConfig { k_builder: Some("cosx".into()), cosx, ..tight() });
+        let r = run(RhfConfig {
+            k_builder: Some("cosx".into()),
+            cosx,
+            ..tight()
+        });
         assert!(r.converged);
         let e = (r.energy - direct.energy).abs();
         println!("COSX ({nr},{na}) + fit: |dE| = {e:.3e} Ha");
         errs.push(e);
     }
     for w in errs.windows(2) {
-        assert!(w[1] < w[0], "SCF energy error did not fall with the grid: {errs:?}");
+        assert!(
+            w[1] < w[0],
+            "SCF energy error did not fall with the grid: {errs:?}"
+        );
     }
-    assert!(errs[2] < 1e-6, "COSX (99,302) SCF energy error {:.3e} >= 1e-6 Ha", errs[2]);
+    assert!(
+        errs[2] < 1e-6,
+        "COSX (99,302) SCF energy error {:.3e} >= 1e-6 Ha",
+        errs[2]
+    );
 }
 
 /// With DF-K active the pluggable builder is ignored (warning on stderr) and
@@ -98,7 +129,11 @@ fn cosx_rhf_energy_error_falls_with_grid() {
 #[test]
 fn cosx_is_ignored_and_warned_when_df_k_is_active() {
     let aux = "def2-universal-jkfit";
-    let df = run(RhfConfig { df_j_aux: Some(aux.into()), df_k_aux: Some(aux.into()), ..tight() });
+    let df = run(RhfConfig {
+        df_j_aux: Some(aux.into()),
+        df_k_aux: Some(aux.into()),
+        ..tight()
+    });
     let df_cosx = run(RhfConfig {
         df_j_aux: Some(aux.into()),
         df_k_aux: Some(aux.into()),
@@ -106,7 +141,11 @@ fn cosx_is_ignored_and_warned_when_df_k_is_active() {
         ..tight()
     });
     assert!(df.converged && df_cosx.converged);
-    assert_eq!(df.energy.to_bits(), df_cosx.energy.to_bits(), "DF-JK energy changed when k_builder=cosx was set");
+    assert_eq!(
+        df.energy.to_bits(),
+        df_cosx.energy.to_bits(),
+        "DF-JK energy changed when k_builder=cosx was set"
+    );
     assert_eq!(df.iterations, df_cosx.iterations);
 }
 
@@ -120,10 +159,17 @@ fn cosx_config_errors_are_typed() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
     let ctx = ParallelContext::default();
-    let bad = RhfConfig { k_builder: Some("cosxx".into()), ..Default::default() };
+    let bad = RhfConfig {
+        k_builder: Some("cosxx".into()),
+        ..Default::default()
+    };
     assert!(solve_rhf(&ctx, &mol, &prep, op, &bounds, &bad).is_err());
     let mut cosx = cosx_default();
     cosx.grid.n_angular = 194;
-    let bad_grid = RhfConfig { k_builder: Some("cosx".into()), cosx, ..Default::default() };
+    let bad_grid = RhfConfig {
+        k_builder: Some("cosx".into()),
+        cosx,
+        ..Default::default()
+    };
     assert!(solve_rhf(&ctx, &mol, &prep, op, &bounds, &bad_grid).is_err());
 }

@@ -17,8 +17,8 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_rpa::properties::atomic_effective_volumes_becke;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::uhf::solve_uhf;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::uhf::solve_uhf;
 
 struct AtomSpec {
     symbol: &'static str,
@@ -57,13 +57,48 @@ fn vol_for_atom(spec: &AtomSpec, obs_name: &str) -> f64 {
 #[ignore = "benchmark: free-atom Becke volumes (TS vol_free); --release --ignored --nocapture"]
 fn free_atom_becke_volumes() {
     let atoms = [
-        AtomSpec { symbol: "H",  z: 1,  mult: 2, xyz: "1\nH\nH 0 0 0\n" },
-        AtomSpec { symbol: "He", z: 2,  mult: 1, xyz: "1\nHe\nHe 0 0 0\n" },
-        AtomSpec { symbol: "C",  z: 6,  mult: 1, xyz: "1\nC\nC 0 0 0\n" },   // RHF singlet
-        AtomSpec { symbol: "N",  z: 7,  mult: 4, xyz: "1\nN\nN 0 0 0\n" },   // UHF quartet
-        AtomSpec { symbol: "O",  z: 8,  mult: 1, xyz: "1\nO\nO 0 0 0\n" },   // RHF singlet
-        AtomSpec { symbol: "F",  z: 9,  mult: 2, xyz: "1\nF\nF 0 0 0\n" },   // UHF doublet
-        AtomSpec { symbol: "Ne", z: 10, mult: 1, xyz: "1\nNe\nNe 0 0 0\n" },
+        AtomSpec {
+            symbol: "H",
+            z: 1,
+            mult: 2,
+            xyz: "1\nH\nH 0 0 0\n",
+        },
+        AtomSpec {
+            symbol: "He",
+            z: 2,
+            mult: 1,
+            xyz: "1\nHe\nHe 0 0 0\n",
+        },
+        AtomSpec {
+            symbol: "C",
+            z: 6,
+            mult: 1,
+            xyz: "1\nC\nC 0 0 0\n",
+        }, // RHF singlet
+        AtomSpec {
+            symbol: "N",
+            z: 7,
+            mult: 4,
+            xyz: "1\nN\nN 0 0 0\n",
+        }, // UHF quartet
+        AtomSpec {
+            symbol: "O",
+            z: 8,
+            mult: 1,
+            xyz: "1\nO\nO 0 0 0\n",
+        }, // RHF singlet
+        AtomSpec {
+            symbol: "F",
+            z: 9,
+            mult: 2,
+            xyz: "1\nF\nF 0 0 0\n",
+        }, // UHF doublet
+        AtomSpec {
+            symbol: "Ne",
+            z: 10,
+            mult: 1,
+            xyz: "1\nNe\nNe 0 0 0\n",
+        },
     ];
 
     // vol_free values currently in the code (to compare against)
@@ -76,7 +111,9 @@ fn free_atom_becke_volumes() {
     println!();
 
     print!("{:>4}  {:>8}", "Atom", "table");
-    for b in &bases { print!("  {:>12}", b); }
+    for b in &bases {
+        print!("  {:>12}", b);
+    }
     println!();
     println!("{}", "-".repeat(4 + 8 + 2 + bases.len() * 14 + 4));
 

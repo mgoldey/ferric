@@ -75,8 +75,12 @@ fn workspace_root() -> PathBuf {
 /// what a too-small `[memory] budget_gb` produced in the incident.
 fn run(tag: &str, budget_gb: &str, extra: &str) -> (bool, String, String) {
     let root = workspace_root();
-    let toml_path = root.join("target").join(format!("mwe_npz_partial_{tag}.toml"));
-    let npz_path = root.join("target").join(format!("mwe_npz_partial_{tag}.npz"));
+    let toml_path = root
+        .join("target")
+        .join(format!("mwe_npz_partial_{tag}.toml"));
+    let npz_path = root
+        .join("target")
+        .join(format!("mwe_npz_partial_{tag}.npz"));
     let _ = std::fs::remove_file(&npz_path);
     std::fs::write(
         &toml_path,

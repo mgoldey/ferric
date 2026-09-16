@@ -129,8 +129,11 @@ pub struct CasCiResult {
 
 impl std::fmt::Display for CasCiResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "CAS-CI energy: {:.10} Ha ({} dets, {} iters, converged: {})",
-            self.e_total, self.n_determinants, self.iterations, self.converged)
+        write!(
+            f,
+            "CAS-CI energy: {:.10} Ha ({} dets, {} iters, converged: {})",
+            self.e_total, self.n_determinants, self.iterations, self.converged
+        )
     }
 }
 
@@ -186,7 +189,12 @@ pub fn run_cas_ci(
 
     // ---- Active-space integrals ---------------------------------------
     let ints = integrals::build_active_space_integrals(
-        mol, prep, rhf, active_start, n_active, config.memory_budget_bytes,
+        mol,
+        prep,
+        rhf,
+        active_start,
+        n_active,
+        config.memory_budget_bytes,
     )?;
 
     // ---- Determinant space --------------------------------------------
@@ -342,8 +350,14 @@ mod tests {
             Ok(_) => panic!("a 1-byte budget must be refused before allocating"),
             Err(e) => e.to_string(),
         };
-        assert!(msg.contains("CAS-CI"), "message must name the method: {msg}");
-        assert!(msg.contains("budget is"), "message must name the budget: {msg}");
+        assert!(
+            msg.contains("CAS-CI"),
+            "message must name the method: {msg}"
+        );
+        assert!(
+            msg.contains("budget is"),
+            "message must name the budget: {msg}"
+        );
         // NOT asserted here: that the message names `N_det`. At H2/STO-3G the
         // dense-AO-ERI gate is reached first, so a 1-byte budget can only ever
         // refuse there -- the Davidson N_det gate is downstream of it and never
@@ -560,8 +574,7 @@ mod tests {
             active_start: 1,
             ..Default::default()
         };
-        let ints =
-            integrals::build_active_space_integrals(&mol, &prep, &rhf, 1, 6, None).unwrap();
+        let ints = integrals::build_active_space_integrals(&mol, &prep, &rhf, 1, 6, None).unwrap();
         let space = hamiltonian::DeterminantSpace {
             alpha_strings: strings::enumerate_strings(6, 4),
             beta_strings: strings::enumerate_strings(6, 4),

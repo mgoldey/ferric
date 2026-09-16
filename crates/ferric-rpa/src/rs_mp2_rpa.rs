@@ -5,9 +5,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_mp2::rimp2::{
-    compute_rpa_intermediates, spin_components_from_b_ov, RiMp2Config,
-};
+use ferric_mp2::rimp2::{compute_rpa_intermediates, spin_components_from_b_ov, RiMp2Config};
 use ferric_scf::ScfResult;
 
 use crate::{run_pdep_rpa_from_intermediates, PdepRpaConfig};
@@ -130,7 +128,10 @@ impl Default for RsMp2RpaConfig {
             r0: 3.18,
             terf_omega: None,
             frozen_core: 0,
-            drpa: PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() },
+            drpa: PdepRpaConfig {
+                trunc_thresh: 0.0,
+                ..Default::default()
+            },
             formulation: RsMp2RpaFormulation::DeltaLr,
         }
     }
@@ -181,8 +182,11 @@ pub struct RsMp2RpaResult {
 
 impl std::fmt::Display for RsMp2RpaResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "RS-MP2+RPA total: {:.10} Ha (corr: {:.10})",
-            self.total_energy, self.e_corr)
+        write!(
+            f,
+            "RS-MP2+RPA total: {:.10} Ha (corr: {:.10})",
+            self.total_energy, self.e_corr
+        )
     }
 }
 
@@ -199,7 +203,9 @@ impl std::fmt::Display for RsMp2RpaResult {
 /// `RpaIntermediates`.
 pub fn second_intermediate_bov_bytes(naux: usize, nocc: usize, nvir: usize) -> usize {
     const F64_BYTES: usize = 8;
-    naux.saturating_mul(nocc).saturating_mul(nvir).saturating_mul(F64_BYTES)
+    naux.saturating_mul(nocc)
+        .saturating_mul(nvir)
+        .saturating_mul(F64_BYTES)
 }
 
 /// SR-MP2 + LR-RPA, Δ-form (B) or coupled-rings (T).
@@ -222,7 +228,8 @@ pub fn rs_mp2_lr_rpa(
     // (Item 3) both compare against this same configured ceiling — previously
     // re-resolved via two separate `resolve_budget_bytes(cfg.drpa.memory_budget_bytes)`
     // calls ten lines apart.
-    let resolved_budget_bytes = ferric_core::memory::resolve_budget_bytes(cfg.drpa.memory_budget_bytes);
+    let resolved_budget_bytes =
+        ferric_core::memory::resolve_budget_bytes(cfg.drpa.memory_budget_bytes);
 
     // Pre-flight peak-memory gate (M2-style fail-fast, see budget.rs). Cheap
     // shape values only (nelec/nbasis accessors, no ERI/GEMM work) so this
@@ -239,7 +246,9 @@ pub fn rs_mp2_lr_rpa(
         let n_workers = rayon::current_num_threads().max(1);
         let n_keep = naux; // trunc_thresh unknown pre-eigensolve; cfg.drpa default is 0.0 (keep-all)
         let est = crate::budget::estimate_peak_bytes(crate::budget::PeakEstimateShape {
-            naux, nocc, nvir,
+            naux,
+            nocc,
+            nvir,
             n_quad: cfg.drpa.quadrature.n_points,
             n_workers,
             n_keep,
@@ -293,7 +302,11 @@ pub fn rs_mp2_lr_rpa(
         )?;
     }
 
-    let ri_cfg = RiMp2Config { frozen_core: cfg.frozen_core, memory_budget_bytes: cfg.drpa.memory_budget_bytes, ..Default::default() };
+    let ri_cfg = RiMp2Config {
+        frozen_core: cfg.frozen_core,
+        memory_budget_bytes: cfg.drpa.memory_budget_bytes,
+        ..Default::default()
+    };
 
     // SHARED-INTERMEDIATE FUSION. The MP2 spin components and the dRPA solves
     // both need the dressed b_ov = V^{-1/2}(P|op|ia) for the SAME operator, and
@@ -321,9 +334,7 @@ pub fn rs_mp2_lr_rpa(
         Ok(it)
     };
     let sc_of = |it: &ferric_mp2::rimp2::RpaIntermediates| {
-        spin_components_from_b_ov(
-            &it.b_ov, eps, it.nocc, it.nvir, it.first_occ, it.nocc_total,
-        )
+        spin_components_from_b_ov(&it.b_ov, eps, it.nocc, it.nvir, it.first_occ, it.nocc_total)
     };
 
     let mut drpa_cfg = cfg.drpa.clone();
@@ -346,48 +357,75 @@ pub fn rs_mp2_lr_rpa(
 
     // LR/SR intermediates: needed for sc_lr (always, for e_dmp2_lr) and for the
     // DeltaLr dRPA. Coulomb/SR built inside their arms to avoid unused work.
-    let (e_corr, e_drpa_lr, e_corr_naive, e_delta_drpa_full, e_delta_drpa_sr,
-         sc_full, sc_sr, sc_lr) =
-        match cfg.formulation {
-            RsMp2RpaFormulation::DeltaLr => {
-                let it_lr = inter_of(op_lr)?;
-                let sc_lr = sc_of(&it_lr);
-                let sc_full = sc_of(&inter_of(Operator::coulomb())?);
-                let sc_sr = sc_of(&inter_of(op_sr)?);
-                let e_dmp2_lr = 2.0 * sc_lr.e_os;
-                // op_lr is erf(ω) for Erf, terf(r0) for Terf — the LR dRPA must
-                // use the SAME long-range operator the attenuator selected, not a
-                // hardcoded erf. drpa_cfg carries main's memory budget knobs.
-                let drpa_lr = run_pdep_rpa_from_intermediates(
-                    &it_lr, mol, obs, dfbs, op_lr, rhf, &drpa_cfg,
-                )?;
-                let e_corr = sc_full.e_total + drpa_lr.e_rpa - e_dmp2_lr;
-                (e_corr, Some(drpa_lr.e_rpa), Some(sc_sr.e_total + drpa_lr.e_rpa),
-                 None, None, sc_full, sc_sr, sc_lr)
-            }
-            RsMp2RpaFormulation::CoupledRings => {
-                // LR only enters via e_dmp2_lr = 2·E_OS[lr]; no LR dRPA needed.
-                let sc_lr = sc_of(&inter_of(op_lr)?);
-                let it_full = inter_of(Operator::coulomb())?;
-                let it_sr = inter_of(op_sr)?;
-                let sc_full = sc_of(&it_full);
-                let sc_sr = sc_of(&it_sr);
-                let drpa_coul = run_pdep_rpa_from_intermediates(
-                    &it_full, mol, obs, dfbs, Operator::coulomb(), rhf, &drpa_cfg,
-                )?;
-                // op_sr is erfc(ω) for Erf, terfc(r0) for Terf — the SR dRPA must
-                // use the attenuator-selected short-range operator, not hardcoded erfc.
-                let drpa_erfc = run_pdep_rpa_from_intermediates(
-                    &it_sr, mol, obs, dfbs, op_sr, rhf, &drpa_cfg,
-                )?;
-                let delta_full = drpa_coul.e_rpa - 2.0 * sc_full.e_os;
-                let delta_sr = drpa_erfc.e_rpa - 2.0 * sc_sr.e_os;
-                // T: E_MP2[Coulomb] + ΔdRPA[Coulomb] − ΔdRPA[erfc]
-                let e_corr = sc_full.e_total + delta_full - delta_sr;
-                (e_corr, None, None, Some(delta_full), Some(delta_sr),
-                 sc_full, sc_sr, sc_lr)
-            }
-        };
+    let (
+        e_corr,
+        e_drpa_lr,
+        e_corr_naive,
+        e_delta_drpa_full,
+        e_delta_drpa_sr,
+        sc_full,
+        sc_sr,
+        sc_lr,
+    ) = match cfg.formulation {
+        RsMp2RpaFormulation::DeltaLr => {
+            let it_lr = inter_of(op_lr)?;
+            let sc_lr = sc_of(&it_lr);
+            let sc_full = sc_of(&inter_of(Operator::coulomb())?);
+            let sc_sr = sc_of(&inter_of(op_sr)?);
+            let e_dmp2_lr = 2.0 * sc_lr.e_os;
+            // op_lr is erf(ω) for Erf, terf(r0) for Terf — the LR dRPA must
+            // use the SAME long-range operator the attenuator selected, not a
+            // hardcoded erf. drpa_cfg carries main's memory budget knobs.
+            let drpa_lr =
+                run_pdep_rpa_from_intermediates(&it_lr, mol, obs, dfbs, op_lr, rhf, &drpa_cfg)?;
+            let e_corr = sc_full.e_total + drpa_lr.e_rpa - e_dmp2_lr;
+            (
+                e_corr,
+                Some(drpa_lr.e_rpa),
+                Some(sc_sr.e_total + drpa_lr.e_rpa),
+                None,
+                None,
+                sc_full,
+                sc_sr,
+                sc_lr,
+            )
+        }
+        RsMp2RpaFormulation::CoupledRings => {
+            // LR only enters via e_dmp2_lr = 2·E_OS[lr]; no LR dRPA needed.
+            let sc_lr = sc_of(&inter_of(op_lr)?);
+            let it_full = inter_of(Operator::coulomb())?;
+            let it_sr = inter_of(op_sr)?;
+            let sc_full = sc_of(&it_full);
+            let sc_sr = sc_of(&it_sr);
+            let drpa_coul = run_pdep_rpa_from_intermediates(
+                &it_full,
+                mol,
+                obs,
+                dfbs,
+                Operator::coulomb(),
+                rhf,
+                &drpa_cfg,
+            )?;
+            // op_sr is erfc(ω) for Erf, terfc(r0) for Terf — the SR dRPA must
+            // use the attenuator-selected short-range operator, not hardcoded erfc.
+            let drpa_erfc =
+                run_pdep_rpa_from_intermediates(&it_sr, mol, obs, dfbs, op_sr, rhf, &drpa_cfg)?;
+            let delta_full = drpa_coul.e_rpa - 2.0 * sc_full.e_os;
+            let delta_sr = drpa_erfc.e_rpa - 2.0 * sc_sr.e_os;
+            // T: E_MP2[Coulomb] + ΔdRPA[Coulomb] − ΔdRPA[erfc]
+            let e_corr = sc_full.e_total + delta_full - delta_sr;
+            (
+                e_corr,
+                None,
+                None,
+                Some(delta_full),
+                Some(delta_sr),
+                sc_full,
+                sc_sr,
+                sc_lr,
+            )
+        }
+    };
 
     // Closed shell: E_MP2 = Σ (ia|jb)[2(ia|jb)−(ib|ja)]/Δ; the direct (ring)
     // part 2Σ(ia|jb)²/Δ — the 2nd-order truncation of dRPA — equals 2·E_OS.
@@ -413,12 +451,12 @@ mod tests {
     // These reference-cross-check tests call the standalone entry points
     // directly (the production path uses the fused intermediates above).
     use crate::run_pdep_rpa;
-    use ferric_mp2::rimp2::ri_mp2_spin_components;
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
     use ferric_core::parallel::ParallelContext;
     use ferric_integrals::basis_bridge::PreparedBasis;
     use ferric_integrals::operator::Operator;
+    use ferric_mp2::rimp2::ri_mp2_spin_components;
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
     use ferric_scf::ScfResult;
@@ -431,9 +469,16 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(
             &ParallelContext::default(),
-            &mol, &obs, op, &bounds,
-            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
-        ).unwrap();
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         (mol, obs, dfbs, rhf)
     }
@@ -449,16 +494,32 @@ mod tests {
     fn omega_to_zero_reduces_to_mp2() {
         let (mol, obs, dfbs, rhf) = setup_h2();
         let full = ferric_mp2::rimp2::ri_mp2(
-            &mol, &obs, &dfbs, Operator::coulomb(), &rhf,
+            &mol,
+            &obs,
+            &dfbs,
+            Operator::coulomb(),
+            &rhf,
             &ferric_mp2::rimp2::RiMp2Config::default(),
-        ).unwrap();
-        let cfg = RsMp2RpaConfig { omega: 0.05, ..Default::default() };
+        )
+        .unwrap();
+        let cfg = RsMp2RpaConfig {
+            omega: 0.05,
+            ..Default::default()
+        };
         let r = rs_mp2_lr_rpa(&mol, &obs, &dfbs, &rhf, &cfg).unwrap();
         let drpa_lr = r.e_drpa_lr.unwrap();
-        eprintln!("MP2 corr {:.10}  Δ-form corr {:.10}  ΔLR {:.2e}",
-            full.mp2_corr, r.e_corr, drpa_lr - r.e_dmp2_lr);
-        assert!((r.e_corr - full.mp2_corr).abs() < 1e-5,
-            "omega→0 must reduce to MP2: {} vs {}", r.e_corr, full.mp2_corr);
+        eprintln!(
+            "MP2 corr {:.10}  Δ-form corr {:.10}  ΔLR {:.2e}",
+            full.mp2_corr,
+            r.e_corr,
+            drpa_lr - r.e_dmp2_lr
+        );
+        assert!(
+            (r.e_corr - full.mp2_corr).abs() < 1e-5,
+            "omega→0 must reduce to MP2: {} vs {}",
+            r.e_corr,
+            full.mp2_corr
+        );
         assert!((r.total_energy - (rhf.energy + r.e_corr)).abs() < 1e-12);
     }
 
@@ -475,19 +536,32 @@ mod tests {
     #[test]
     fn omega_to_infinity_is_mp2_plus_delta_drpa() {
         let (mol, obs, dfbs, rhf) = setup_h2();
-        let cfg = RsMp2RpaConfig { omega: 200.0, ..Default::default() };
+        let cfg = RsMp2RpaConfig {
+            omega: 200.0,
+            ..Default::default()
+        };
         let r = rs_mp2_lr_rpa(&mol, &obs, &dfbs, &rhf, &cfg).unwrap();
 
         let ri_cfg = RiMp2Config::default();
-        let (sc, _) = ri_mp2_spin_components(
-            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &ri_cfg).unwrap();
-        let drpa_cfg = PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() };
-        let drpa_coul = run_pdep_rpa(
-            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &drpa_cfg).unwrap();
+        let (sc, _) =
+            ri_mp2_spin_components(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &ri_cfg).unwrap();
+        let drpa_cfg = PdepRpaConfig {
+            trunc_thresh: 0.0,
+            ..Default::default()
+        };
+        let drpa_coul =
+            run_pdep_rpa(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &drpa_cfg).unwrap();
         let expected = sc.e_total + drpa_coul.e_rpa - 2.0 * sc.e_os;
-        eprintln!("Δ-form(ω=200) {:.10}  MP2+ΔdRPA[Coulomb] {:.10}", r.e_corr, expected);
-        assert!((r.e_corr - expected).abs() < 1e-6,
-            "omega→∞ limit broken: {} vs {}", r.e_corr, expected);
+        eprintln!(
+            "Δ-form(ω=200) {:.10}  MP2+ΔdRPA[Coulomb] {:.10}",
+            r.e_corr, expected
+        );
+        assert!(
+            (r.e_corr - expected).abs() < 1e-6,
+            "omega→∞ limit broken: {} vs {}",
+            r.e_corr,
+            expected
+        );
         assert!((r.total_energy - (rhf.energy + r.e_corr)).abs() < 1e-12);
     }
 
@@ -500,9 +574,14 @@ mod tests {
     fn coupled_rings_omega_to_zero_reduces_to_mp2() {
         let (mol, obs, dfbs, rhf) = setup_h2();
         let full = ferric_mp2::rimp2::ri_mp2(
-            &mol, &obs, &dfbs, Operator::coulomb(), &rhf,
+            &mol,
+            &obs,
+            &dfbs,
+            Operator::coulomb(),
+            &rhf,
             &ferric_mp2::rimp2::RiMp2Config::default(),
-        ).unwrap();
+        )
+        .unwrap();
         let cfg = RsMp2RpaConfig {
             omega: 0.05,
             formulation: RsMp2RpaFormulation::CoupledRings,
@@ -518,7 +597,8 @@ mod tests {
         assert!(
             (r.e_corr - full.mp2_corr).abs() < 1e-5,
             "CoupledRings ω→0 must reduce to MP2: {} vs {}",
-            r.e_corr, full.mp2_corr
+            r.e_corr,
+            full.mp2_corr
         );
         assert!((r.total_energy - (rhf.energy + r.e_corr)).abs() < 1e-12);
     }
@@ -537,20 +617,26 @@ mod tests {
         let r = rs_mp2_lr_rpa(&mol, &obs, &dfbs, &rhf, &cfg).unwrap();
 
         let ri_cfg = RiMp2Config::default();
-        let (sc, _) = ri_mp2_spin_components(
-            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &ri_cfg).unwrap();
-        let drpa_cfg = PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() };
-        let drpa_coul = run_pdep_rpa(
-            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &drpa_cfg).unwrap();
+        let (sc, _) =
+            ri_mp2_spin_components(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &ri_cfg).unwrap();
+        let drpa_cfg = PdepRpaConfig {
+            trunc_thresh: 0.0,
+            ..Default::default()
+        };
+        let drpa_coul =
+            run_pdep_rpa(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &drpa_cfg).unwrap();
         let expected = sc.e_total + drpa_coul.e_rpa - 2.0 * sc.e_os;
         eprintln!(
             "CoupledRings(ω=200): e_corr={:.10}  MP2+ΔdRPA[Coulomb]={:.10}  diff={:.2e}",
-            r.e_corr, expected, r.e_corr - expected
+            r.e_corr,
+            expected,
+            r.e_corr - expected
         );
         assert!(
             (r.e_corr - expected).abs() < 1e-6,
             "CoupledRings ω→∞ limit broken: {} vs {}",
-            r.e_corr, expected
+            r.e_corr,
+            expected
         );
         assert!((r.total_energy - (rhf.energy + r.e_corr)).abs() < 1e-12);
     }
@@ -572,26 +658,31 @@ mod tests {
 
         // Pre-fusion reconstruction: separate transforms for each operator.
         let ri_cfg = RiMp2Config::default();
-        let (sc_full, _) = ri_mp2_spin_components(
-            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &ri_cfg).unwrap();
-        let (sc_sr, _) = ri_mp2_spin_components(
-            &mol, &obs, &dfbs, Operator::erfc(omega), &rhf, &ri_cfg).unwrap();
+        let (sc_full, _) =
+            ri_mp2_spin_components(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &ri_cfg).unwrap();
+        let (sc_sr, _) =
+            ri_mp2_spin_components(&mol, &obs, &dfbs, Operator::erfc(omega), &rhf, &ri_cfg)
+                .unwrap();
         let drpa_cfg = cfg.drpa.clone();
-        let drpa_coul = run_pdep_rpa(
-            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &drpa_cfg).unwrap();
-        let drpa_erfc = run_pdep_rpa(
-            &mol, &obs, &dfbs, Operator::erfc(omega), &rhf, &drpa_cfg).unwrap();
+        let drpa_coul =
+            run_pdep_rpa(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &drpa_cfg).unwrap();
+        let drpa_erfc =
+            run_pdep_rpa(&mol, &obs, &dfbs, Operator::erfc(omega), &rhf, &drpa_cfg).unwrap();
         let delta_full = drpa_coul.e_rpa - 2.0 * sc_full.e_os;
         let delta_sr = drpa_erfc.e_rpa - 2.0 * sc_sr.e_os;
         let expected = sc_full.e_total + delta_full - delta_sr;
 
         eprintln!(
             "fusion check: fused={:.12} unfused={:.12} diff={:.2e}",
-            fused.e_corr, expected, fused.e_corr - expected
+            fused.e_corr,
+            expected,
+            fused.e_corr - expected
         );
         assert!(
             (fused.e_corr - expected).abs() < 1e-10,
-            "fusion not bit-identical: {} vs {}", fused.e_corr, expected
+            "fusion not bit-identical: {} vs {}",
+            fused.e_corr,
+            expected
         );
     }
 
@@ -626,10 +717,18 @@ mod tests {
         }
         let (mol, obs, dfbs, rhf) = setup_h2();
         let full = ferric_mp2::rimp2::ri_mp2(
-            &mol, &obs, &dfbs, Operator::coulomb(), &rhf,
+            &mol,
+            &obs,
+            &dfbs,
+            Operator::coulomb(),
+            &rhf,
             &ferric_mp2::rimp2::RiMp2Config::default(),
-        ).unwrap();
-        for form in [RsMp2RpaFormulation::DeltaLr, RsMp2RpaFormulation::CoupledRings] {
+        )
+        .unwrap();
+        for form in [
+            RsMp2RpaFormulation::DeltaLr,
+            RsMp2RpaFormulation::CoupledRings,
+        ] {
             let cfg = RsMp2RpaConfig {
                 attenuator: Attenuator::Terf,
                 r0: 20.0,
@@ -637,11 +736,18 @@ mod tests {
                 ..Default::default()
             };
             let r = rs_mp2_lr_rpa(&mol, &obs, &dfbs, &rhf, &cfg).unwrap();
-            eprintln!("terf(r0=20, {form:?}): MP2={:.10} e_corr={:.10} diff={:.2e}",
-                full.mp2_corr, r.e_corr, r.e_corr - full.mp2_corr);
-            assert!((r.e_corr - full.mp2_corr).abs() < 1e-4,
+            eprintln!(
+                "terf(r0=20, {form:?}): MP2={:.10} e_corr={:.10} diff={:.2e}",
+                full.mp2_corr,
+                r.e_corr,
+                r.e_corr - full.mp2_corr
+            );
+            assert!(
+                (r.e_corr - full.mp2_corr).abs() < 1e-4,
                 "terf large-r0 must reduce to MP2 ({form:?}): {} vs {}",
-                r.e_corr, full.mp2_corr);
+                r.e_corr,
+                full.mp2_corr
+            );
             assert!((r.total_energy - (rhf.energy + r.e_corr)).abs() < 1e-12);
         }
     }
@@ -663,13 +769,19 @@ mod tests {
         }
         let (mol, obs, dfbs, rhf) = setup_h2();
         let ri_cfg = RiMp2Config::default();
-        let (sc, _) = ri_mp2_spin_components(
-            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &ri_cfg).unwrap();
-        let rpa_cfg = PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() };
-        let rpa_coul = run_pdep_rpa(
-            &mol, &obs, &dfbs, Operator::coulomb(), &rhf, &rpa_cfg).unwrap();
+        let (sc, _) =
+            ri_mp2_spin_components(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &ri_cfg).unwrap();
+        let rpa_cfg = PdepRpaConfig {
+            trunc_thresh: 0.0,
+            ..Default::default()
+        };
+        let rpa_coul =
+            run_pdep_rpa(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &rpa_cfg).unwrap();
         let expected = sc.e_total + rpa_coul.e_rpa - 2.0 * sc.e_os;
-        for form in [RsMp2RpaFormulation::DeltaLr, RsMp2RpaFormulation::CoupledRings] {
+        for form in [
+            RsMp2RpaFormulation::DeltaLr,
+            RsMp2RpaFormulation::CoupledRings,
+        ] {
             let cfg = RsMp2RpaConfig {
                 attenuator: Attenuator::Terf,
                 r0: 0.05,
@@ -677,10 +789,18 @@ mod tests {
                 ..Default::default()
             };
             let r = rs_mp2_lr_rpa(&mol, &obs, &dfbs, &rhf, &cfg).unwrap();
-            eprintln!("terf(r0=0.05, {form:?}): e_corr={:.10} MP2+ΔdRPA[Coul]={:.10} diff={:.2e}",
-                r.e_corr, expected, r.e_corr - expected);
-            assert!((r.e_corr - expected).abs() < 5e-4,
-                "terf small-r0 limit broken ({form:?}): {} vs {}", r.e_corr, expected);
+            eprintln!(
+                "terf(r0=0.05, {form:?}): e_corr={:.10} MP2+ΔdRPA[Coul]={:.10} diff={:.2e}",
+                r.e_corr,
+                expected,
+                r.e_corr - expected
+            );
+            assert!(
+                (r.e_corr - expected).abs() < 5e-4,
+                "terf small-r0 limit broken ({form:?}): {} vs {}",
+                r.e_corr,
+                expected
+            );
             assert!((r.total_energy - (rhf.energy + r.e_corr)).abs() < 1e-12);
         }
     }
@@ -690,13 +810,34 @@ mod tests {
     #[test]
     fn erf_default_unchanged_by_terf_plumbing() {
         let (mol, obs, dfbs, rhf) = setup_h2();
-        let a = rs_mp2_lr_rpa(&mol, &obs, &dfbs, &rhf,
-            &RsMp2RpaConfig { omega: 0.42, ..Default::default() }).unwrap();
-        let b = rs_mp2_lr_rpa(&mol, &obs, &dfbs, &rhf,
-            &RsMp2RpaConfig { omega: 0.42, attenuator: Attenuator::Erf,
-                ..Default::default() }).unwrap();
-        assert_eq!(a.e_corr.to_bits(), b.e_corr.to_bits(),
-            "explicit Erf must be bit-identical to the default");
+        let a = rs_mp2_lr_rpa(
+            &mol,
+            &obs,
+            &dfbs,
+            &rhf,
+            &RsMp2RpaConfig {
+                omega: 0.42,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let b = rs_mp2_lr_rpa(
+            &mol,
+            &obs,
+            &dfbs,
+            &rhf,
+            &RsMp2RpaConfig {
+                omega: 0.42,
+                attenuator: Attenuator::Erf,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            a.e_corr.to_bits(),
+            b.e_corr.to_bits(),
+            "explicit Erf must be bit-identical to the default"
+        );
     }
 
     /// Item 3 smoke test: a normal small H2/cc-pVDZ run under a generous

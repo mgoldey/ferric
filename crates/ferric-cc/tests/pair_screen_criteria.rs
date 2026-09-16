@@ -50,8 +50,7 @@ struct System {
 /// criteria are then measured against the SAME orbitals and integrals, so any
 /// difference is the screening rule and nothing else.
 fn prepare(label: &str, path: &str, bas: &str) -> System {
-    try_prepare(label, path, bas)
-        .unwrap_or_else(|e| panic!("{label}/{bas}: {e}"))
+    try_prepare(label, path, bas).unwrap_or_else(|e| panic!("{label}/{bas}: {e}"))
 }
 
 /// Fallible variant: returns `Err` when the basis lacks an element, so a sweep
@@ -62,10 +61,17 @@ fn try_prepare(label: &str, path: &str, bas: &str) -> Result<System, String> {
     let mol = Molecule::load_xyz(path).map_err(|e| format!("{e:?}"))?;
     let bset = basis::bundled(bas).map_err(|e| format!("{e:?}"))?;
     let obs = PreparedBasis::new(&mol, &bset).map_err(|e| format!("{e:?}"))?;
-    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").map_err(|e| format!("{e:?}"))?)
-        .map_err(|e| format!("{e:?}"))?;
+    let dfbs = PreparedBasis::new(
+        &mol,
+        &basis::bundled("cc-pvdz-ri").map_err(|e| format!("{e:?}"))?,
+    )
+    .map_err(|e| format!("{e:?}"))?;
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).map_err(|e| format!("{e:?}"))?;
-    let scf = RhfConfig { density_conv: 1e-9, max_iter: 200, ..Default::default() };
+    let scf = RhfConfig {
+        density_conv: 1e-9,
+        max_iter: 200,
+        ..Default::default()
+    };
     let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf)
         .map_err(|e| format!("{e:?}"))?;
     if !rhf.converged {
@@ -88,7 +94,10 @@ fn try_prepare(label: &str, path: &str, bas: &str) -> Result<System, String> {
         (0..naux).map(|k| b[(k, p)] * b[(k, q)]).sum()
     });
 
-    let c_occ = rhf.mos_r().slice(ndarray::s![.., ..nocc + inter.first_occ]).to_owned();
+    let c_occ = rhf
+        .mos_r()
+        .slice(ndarray::s![.., ..nocc + inter.first_occ])
+        .to_owned();
     let dip = ferric_integrals::oneelectron::dipole(&obs, [0.0, 0.0, 0.0])
         .map_err(|e| format!("{e:?}"))?;
     let all_centers = boys_localize(&c_occ, &dip, 200).centers;
@@ -146,7 +155,11 @@ fn total_energy(sys: &System) -> f64 {
 fn distance_vs_pair_energy_screening() {
     let systems = [
         prepare("water/6-31G", "../../testdata/molecules/water.xyz", "6-31g"),
-        prepare("benzene/STO-3G", "../../testdata/molecules/benzene.xyz", "sto-3g"),
+        prepare(
+            "benzene/STO-3G",
+            "../../testdata/molecules/benzene.xyz",
+            "sto-3g",
+        ),
     ];
 
     for sys in &systems {
@@ -157,7 +170,10 @@ fn distance_vs_pair_energy_screening() {
         );
 
         eprintln!("  DISTANCE criterion (Bohr):");
-        eprintln!("    {:>8}  {:>10}  {:>12}", "cutoff", "retention", "|dE| (Ha)");
+        eprintln!(
+            "    {:>8}  {:>10}  {:>12}",
+            "cutoff", "retention", "|dE| (Ha)"
+        );
         let mut dist_pts: Vec<(f64, f64)> = Vec::new();
         for cut in [f64::INFINITY, 8.0, 6.0, 4.0, 3.0, 2.0, 1.0, 0.5] {
             let d = build_pair_domains(&sys.centers, cut, f64::INFINITY).unwrap();
@@ -168,7 +184,10 @@ fn distance_vs_pair_energy_screening() {
         }
 
         eprintln!("  PAIR-ENERGY criterion (Eh):");
-        eprintln!("    {:>8}  {:>10}  {:>12}", "t_cut", "retention", "|dE| (Ha)");
+        eprintln!(
+            "    {:>8}  {:>10}  {:>12}",
+            "t_cut", "retention", "|dE| (Ha)"
+        );
         let pe = estimate_pair_energies(
             sys.g.view(),
             &sys.eps,
@@ -194,7 +213,10 @@ fn distance_vs_pair_energy_screening() {
         // the energy-criterion point with the closest retention and compare their
         // errors.
         eprintln!("  MATCHED-RETENTION COMPARISON (lower error at equal retention wins):");
-        eprintln!("    {:>10}  {:>12}  {:>12}  {:>8}", "retention", "dist |dE|", "energy |dE|", "winner");
+        eprintln!(
+            "    {:>10}  {:>12}  {:>12}  {:>8}",
+            "retention", "dist |dE|", "energy |dE|", "winner"
+        );
         let mut energy_wins = 0;
         let mut compared = 0;
         for &(dret, derr) in &dist_pts {
@@ -203,16 +225,19 @@ fn distance_vs_pair_energy_screening() {
             }
             let (eret, eerr) = en_pts
                 .iter()
-                .min_by(|a, b| {
-                    (a.0 - dret).abs().partial_cmp(&(b.0 - dret).abs()).unwrap()
-                })
+                .min_by(|a, b| (a.0 - dret).abs().partial_cmp(&(b.0 - dret).abs()).unwrap())
                 .copied()
                 .unwrap();
             if (eret - dret).abs() > 0.15 {
                 continue; // no comparable point; skip rather than mislead
             }
             compared += 1;
-            let winner = if eerr < derr { energy_wins += 1; "energy" } else { "distance" };
+            let winner = if eerr < derr {
+                energy_wins += 1;
+                "energy"
+            } else {
+                "distance"
+            };
             eprintln!("    {dret:>10.4}  {derr:>12.3e}  {eerr:>12.3e}  {winner:>8}");
         }
         eprintln!("  -> energy criterion won {energy_wins}/{compared} matched comparisons");
@@ -233,7 +258,11 @@ fn distance_vs_pair_energy_screening() {
 
         // Zero threshold is exact.
         let d0 = build_pair_domains_by_energy(&sys.centers, &pe, 0.0, f64::INFINITY).unwrap();
-        assert!(d0.is_complete(), "{}: t_cut=0 must retain every pair", sys.label);
+        assert!(
+            d0.is_complete(),
+            "{}: t_cut=0 must retain every pair",
+            sys.label
+        );
         assert!(
             (energy_from_retained(sys, &d0) - e_full).abs() < 1e-12,
             "{}: t_cut=0 must reproduce the full correlation energy",
@@ -245,7 +274,11 @@ fn distance_vs_pair_energy_screening() {
         for t in [0.0, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3] {
             let d = build_pair_domains_by_energy(&sys.centers, &pe, t, f64::INFINITY).unwrap();
             let r = pair_mask_retention(&d);
-            assert!(r <= last + 1e-12, "{}: retention rose with the threshold", sys.label);
+            assert!(
+                r <= last + 1e-12,
+                "{}: retention rose with the threshold",
+                sys.label
+            );
             last = r;
         }
     }
@@ -281,51 +314,60 @@ fn default_threshold_validated_across_molecules() {
     // could shift the pair-energy distribution -- which is exactly the untested
     // dimension this sweep closes.
     for basis_name in ["sto-3g", "cc-pvdz"] {
-    eprintln!("\n=== t_cut_pairs default validation ({basis_name}), threshold = 1e-5 Eh");
-    eprintln!(
-        "{:16} {:>5} {:>14} {:>10} {:>12} {:>10}",
-        "molecule", "nocc", "E_corr", "retention", "|dE| (Ha)", "kcal/mol"
-    );
-
-    let mut worst = 0.0_f64;
-    let mut worst_name = String::new();
-    for (label, file) in mols {
-        let sys = match try_prepare(label, &format!("../../testdata/molecules/{file}"), basis_name) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("{label:16} SKIPPED ({e})");
-                continue;
-            }
-        };
-        let e_full = total_energy(&sys);
-        let pe = estimate_pair_energies(
-            sys.g.view(), &sys.eps, sys.nocc, sys.nvir, sys.first_occ, sys.nocc_total,
-        )
-        .unwrap();
-        let d = build_pair_domains_by_energy(&sys.centers, &pe, 1e-5, f64::INFINITY).unwrap();
-        let ret = pair_mask_retention(&d);
-        let err = (energy_from_retained(&sys, &d) - e_full).abs();
+        eprintln!("\n=== t_cut_pairs default validation ({basis_name}), threshold = 1e-5 Eh");
         eprintln!(
-            "{label:16} {:>5} {e_full:>14.8} {ret:>10.4} {err:>12.3e} {:>10.4}",
-            sys.nocc,
-            err / KCAL
+            "{:16} {:>5} {:>14} {:>10} {:>12} {:>10}",
+            "molecule", "nocc", "E_corr", "retention", "|dE| (Ha)", "kcal/mol"
         );
-        if err > worst {
-            worst = err;
-            worst_name = label.to_string();
-        }
-    }
 
-    eprintln!(
-        "worst case ({basis_name}): {worst_name} at {worst:.3e} Ha = {:.4} kcal/mol",
-        worst / KCAL
-    );
-    assert!(
-        worst < KCAL,
-        "the default t_cut_pairs = 1e-5 costs {:.4} kcal/mol on {worst_name} \
+        let mut worst = 0.0_f64;
+        let mut worst_name = String::new();
+        for (label, file) in mols {
+            let sys = match try_prepare(
+                label,
+                &format!("../../testdata/molecules/{file}"),
+                basis_name,
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("{label:16} SKIPPED ({e})");
+                    continue;
+                }
+            };
+            let e_full = total_energy(&sys);
+            let pe = estimate_pair_energies(
+                sys.g.view(),
+                &sys.eps,
+                sys.nocc,
+                sys.nvir,
+                sys.first_occ,
+                sys.nocc_total,
+            )
+            .unwrap();
+            let d = build_pair_domains_by_energy(&sys.centers, &pe, 1e-5, f64::INFINITY).unwrap();
+            let ret = pair_mask_retention(&d);
+            let err = (energy_from_retained(&sys, &d) - e_full).abs();
+            eprintln!(
+                "{label:16} {:>5} {e_full:>14.8} {ret:>10.4} {err:>12.3e} {:>10.4}",
+                sys.nocc,
+                err / KCAL
+            );
+            if err > worst {
+                worst = err;
+                worst_name = label.to_string();
+            }
+        }
+
+        eprintln!(
+            "worst case ({basis_name}): {worst_name} at {worst:.3e} Ha = {:.4} kcal/mol",
+            worst / KCAL
+        );
+        assert!(
+            worst < KCAL,
+            "the default t_cut_pairs = 1e-5 costs {:.4} kcal/mol on {worst_name} \
          in {basis_name}, which is too much for a DEFAULT -- either loosen the \
          claim or tighten the threshold",
-        worst / KCAL
-    );
+            worst / KCAL
+        );
     }
 }

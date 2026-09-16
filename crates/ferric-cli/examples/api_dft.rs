@@ -40,8 +40,7 @@ fn main() {
     // The SCF ladder starts from a simpler functional and ramps up,
     // improving convergence robustness for DFT.
     let ladder = default_ladder_from(&cfg);
-    let lr = solve_rhf_ladder(&ctx, &mol, &prep, op, &bounds, &ladder)
-        .expect("KS-DFT failed");
+    let lr = solve_rhf_ladder(&ctx, &mol, &prep, op, &bounds, &ladder).expect("KS-DFT failed");
 
     println!("PBE/cc-pVDZ energy:  {:.10} Ha", lr.result.energy);
     println!("Converged:           {}", lr.converged);

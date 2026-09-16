@@ -135,10 +135,21 @@ fn converged_energy_is_independent_of_diis_size() {
 fn plain_hf_still_converges_quickly() {
     let (mol, obs, bounds) = water_sto3g();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig { density_conv: 1e-8, max_iter: 100, ..Default::default() };
+    let cfg = RhfConfig {
+        density_conv: 1e-8,
+        max_iter: 100,
+        ..Default::default()
+    };
 
     let res = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg).unwrap();
-    eprintln!("RHF water/STO-3G: iters={} E={:.12}", res.iterations, res.energy);
+    eprintln!(
+        "RHF water/STO-3G: iters={} E={:.12}",
+        res.iterations, res.energy
+    );
     assert!(res.converged, "plain RHF must converge");
-    assert!(res.iterations < 20, "RHF took {} iterations", res.iterations);
+    assert!(
+        res.iterations < 20,
+        "RHF took {} iterations",
+        res.iterations
+    );
 }

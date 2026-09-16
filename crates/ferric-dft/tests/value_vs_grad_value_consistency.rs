@@ -4,12 +4,17 @@
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
-use ferric_dft::ao_grid::{eval_basis_and_grad_on_points, eval_basis_on_points,
-                          eval_basis_grad_hess_on_points};
+use ferric_dft::ao_grid::{
+    eval_basis_and_grad_on_points, eval_basis_grad_hess_on_points, eval_basis_on_points,
+};
 
 fn check(label: &str, basis_name: &str) {
     let mol = Molecule::parse_xyz(
-        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n", 0, 1).unwrap();
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        0,
+        1,
+    )
+    .unwrap();
     let bs = basis::bundled(basis_name).unwrap();
     let pts = vec![[0.3_f64, 0.2, 0.4], [-0.5, 0.6, 0.1], [1.1, -0.3, 0.5]];
 
@@ -24,10 +29,24 @@ fn check(label: &str, basis_name: &str) {
         let vh = chi_h[idx];
         max_vh = max_vh.max((v - vh).abs());
     }
-    eprintln!("[{label}] |value-vs-grad-value| = {max_vg:.2e}, |value-vs-hess-value| = {max_vh:.2e}");
-    assert!(max_vg < 1e-14, "{label}: value/grad value differ by {max_vg:.2e}");
-    assert!(max_vh < 1e-14, "{label}: value/hess value differ by {max_vh:.2e}");
+    eprintln!(
+        "[{label}] |value-vs-grad-value| = {max_vg:.2e}, |value-vs-hess-value| = {max_vh:.2e}"
+    );
+    assert!(
+        max_vg < 1e-14,
+        "{label}: value/grad value differ by {max_vg:.2e}"
+    );
+    assert!(
+        max_vh < 1e-14,
+        "{label}: value/hess value differ by {max_vh:.2e}"
+    );
 }
 
-#[test] fn def2_tzvp() { check("def2-tzvp", "def2-tzvp"); }
-#[test] fn aug_cc_pvtz() { check("aug-cc-pvtz", "aug-cc-pvtz"); }
+#[test]
+fn def2_tzvp() {
+    check("def2-tzvp", "def2-tzvp");
+}
+#[test]
+fn aug_cc_pvtz() {
+    check("aug-cc-pvtz", "aug-cc-pvtz");
+}

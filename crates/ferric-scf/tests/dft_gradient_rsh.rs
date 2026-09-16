@@ -40,27 +40,50 @@ fn fd_gradient(xyz: &str, basis_name: &str, delta: f64) -> Array2<f64> {
     // own BLAS internally, so nesting under this outer iterator is safe (the
     // same pattern the production code uses, e.g. rimp2.rs's per-pair
     // parallelism over per-i BLAS3 GEMMs).
-    let pairs: Vec<(usize, usize)> = (0..natoms).flat_map(|a| (0..3).map(move |c| (a, c))).collect();
+    let pairs: Vec<(usize, usize)> = (0..natoms)
+        .flat_map(|a| (0..3).map(move |c| (a, c)))
+        .collect();
     let results: Vec<((usize, usize), f64)> = pairs
         .par_iter()
         .map(|&(atom, coord)| {
             let mut mol_p = mol.clone();
             let mut mol_m = mol.clone();
             match coord {
-                0 => { mol_p.atoms[atom].x += delta; mol_m.atoms[atom].x -= delta; }
-                1 => { mol_p.atoms[atom].y += delta; mol_m.atoms[atom].y -= delta; }
-                _ => { mol_p.atoms[atom].zpos += delta; mol_m.atoms[atom].zpos -= delta; }
+                0 => {
+                    mol_p.atoms[atom].x += delta;
+                    mol_m.atoms[atom].x -= delta;
+                }
+                1 => {
+                    mol_p.atoms[atom].y += delta;
+                    mol_m.atoms[atom].y -= delta;
+                }
+                _ => {
+                    mol_p.atoms[atom].zpos += delta;
+                    mol_m.atoms[atom].zpos -= delta;
+                }
             }
             let prep_p = PreparedBasis::new(&mol_p, &bs).unwrap();
             let bounds_p = SchwarzBounds::compute(Operator::coulomb(), &prep_p).unwrap();
             let res_p = solve_rhf(
-                &ParallelContext::default(), &mol_p, &prep_p, Operator::coulomb(), &bounds_p, &cfg,
-            ).unwrap();
+                &ParallelContext::default(),
+                &mol_p,
+                &prep_p,
+                Operator::coulomb(),
+                &bounds_p,
+                &cfg,
+            )
+            .unwrap();
             let prep_m = PreparedBasis::new(&mol_m, &bs).unwrap();
             let bounds_m = SchwarzBounds::compute(Operator::coulomb(), &prep_m).unwrap();
             let res_m = solve_rhf(
-                &ParallelContext::default(), &mol_m, &prep_m, Operator::coulomb(), &bounds_m, &cfg,
-            ).unwrap();
+                &ParallelContext::default(),
+                &mol_m,
+                &prep_m,
+                Operator::coulomb(),
+                &bounds_m,
+                &cfg,
+            )
+            .unwrap();
             ((atom, coord), (res_p.energy - res_m.energy) / (2.0 * delta))
         })
         .collect();
@@ -79,8 +102,16 @@ fn run_case(label: &str, xyz: &str, basis_name: &str, tol: f64) {
     let cfg = cfg();
     let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
     let g_ana = ks_gradient_closed(
-        &mol, &prep, &bs, op, &bounds, "HYB_GGA_XC_WB97X", &res, None,
-    ).unwrap();
+        &mol,
+        &prep,
+        &bs,
+        op,
+        &bounds,
+        "HYB_GGA_XC_WB97X",
+        &res,
+        None,
+    )
+    .unwrap();
     let g_fd = fd_gradient(xyz, basis_name, 5e-4);
 
     eprintln!("=== {label} wB97X (RSH) gradient analytic vs FD ===");
@@ -88,10 +119,14 @@ fn run_case(label: &str, xyz: &str, basis_name: &str, tol: f64) {
     for a in 0..mol.atoms.len() {
         for c in 0..3 {
             let diff = (g_ana[(a, c)] - g_fd[(a, c)]).abs();
-            if diff > max_diff { max_diff = diff; }
+            if diff > max_diff {
+                max_diff = diff;
+            }
             eprintln!(
                 "  atom={a} coord={c}: ana={:+.6e} fd={:+.6e} diff={:.2e}",
-                g_ana[(a, c)], g_fd[(a, c)], diff
+                g_ana[(a, c)],
+                g_fd[(a, c)],
+                diff
             );
         }
     }
@@ -111,19 +146,30 @@ fn wb97x_gradient_h2_sto3g_vs_fd() {
 
 #[test]
 fn wb97x_gradient_h2o_sto3g_vs_fd() {
-    run_case("H2O/sto-3g",
-             "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
-             "sto-3g", 2e-3);
+    run_case(
+        "H2O/sto-3g",
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        "sto-3g",
+        2e-3,
+    );
 }
 
 #[test]
 fn wb97x_gradient_h2_ccpvdz_vs_fd() {
-    run_case("H2/cc-pVDZ", "2\nH2\nH 0 0 0\nH 0 0 0.74\n", "cc-pvdz", 1e-3);
+    run_case(
+        "H2/cc-pVDZ",
+        "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
+        "cc-pvdz",
+        1e-3,
+    );
 }
 
 #[test]
 fn wb97x_gradient_h2o_ccpvdz_vs_fd() {
-    run_case("H2O/cc-pVDZ",
-             "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
-             "cc-pvdz", 2e-3);
+    run_case(
+        "H2O/cc-pVDZ",
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        "cc-pvdz",
+        2e-3,
+    );
 }

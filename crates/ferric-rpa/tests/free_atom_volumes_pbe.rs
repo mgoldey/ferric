@@ -148,9 +148,13 @@ fn free_atom_scf_converges_z1_18_pbe() {
             z,
             symbol(z),
             gs_mult(z),
-            v_dz.map(|v| format!("{v:.3}")).unwrap_or_else(|| "FAILED".into()),
-            v_tz.map(|v| format!("{v:.3}")).unwrap_or_else(|| "FAILED".into()),
-            dz_tz.map(|p| format!("{p:+.1}%")).unwrap_or_else(|| "N/A".into()),
+            v_dz.map(|v| format!("{v:.3}"))
+                .unwrap_or_else(|| "FAILED".into()),
+            v_tz.map(|v| format!("{v:.3}"))
+                .unwrap_or_else(|| "FAILED".into()),
+            dz_tz
+                .map(|p| format!("{p:+.1}%"))
+                .unwrap_or_else(|| "N/A".into()),
         );
 
         // The gate: a finite converged volume at BOTH bases. aug-cc-pVTZ is the
@@ -242,8 +246,7 @@ fn diagnose_becke_vs_hirshfeld_grid_truncation() {
         };
 
         let v_becke = atomic_effective_volumes_becke(&mol, &obs, &bs, &density).unwrap()[0];
-        let v_hirsh =
-            atomic_effective_volumes_hirshfeld(&mol, &bs, &density, None).unwrap()[0];
+        let v_hirsh = atomic_effective_volumes_hirshfeld(&mol, &bs, &density, None).unwrap()[0];
         // Both partition weights are trivially 1 for a single free atom, so any
         // gap between the two is a pure grid/truncation artifact (the bounded
         // 6-Bohr Hirshfeld grid truncates diffuse tails, e.g. Na's 3s valence).

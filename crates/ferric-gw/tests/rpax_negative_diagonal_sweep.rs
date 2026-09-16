@@ -83,10 +83,15 @@ fn ab_min_eigs(
     let n = nocc * nvir;
 
     let mob = mo_b::build_full_b(mol, obs, dfbs, op, ks, 0, None).unwrap();
-    let (v_dressed, _dev) = w_pdep::redress_with_check(&mob.v_inv_sqrt, &pdep.eigenpotentials).unwrap();
+    let (v_dressed, _dev) =
+        w_pdep::redress_with_check(&mob.v_inv_sqrt, &pdep.eigenpotentials).unwrap();
     let m_proj = ferric_gw::cohsex::project_b_into_pdep(&mob, &v_dressed, None).unwrap();
     let m_modes = m_proj.shape()[0];
-    let w_red: Vec<f64> = pdep.eigenvalues_static.iter().map(|&l| 1.0 / l - 1.0).collect();
+    let w_red: Vec<f64> = pdep
+        .eigenvalues_static
+        .iter()
+        .map(|&l| 1.0 / l - 1.0)
+        .collect();
     let b = &mob.b_full;
     let naux = mob.naux;
     let bare = |p: usize, q: usize, r: usize, s: usize| -> f64 {
@@ -189,7 +194,10 @@ fn sweep_negative_diagonal() {
         let ks = match solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg) {
             Ok(r) if r.converged => r,
             Ok(r) => {
-                eprintln!("[{}] SKIP: SCF did not converge (energy={:.6})", c.name, r.energy);
+                eprintln!(
+                    "[{}] SKIP: SCF did not converge (energy={:.6})",
+                    c.name, r.energy
+                );
                 continue;
             }
             Err(e) => {
@@ -239,10 +247,40 @@ fn sweep_negative_diagonal() {
 #[ignore = "slow: same sweep but with scissor=0.36 (typical GW-gap proxy); --release --ignored --nocapture"]
 fn sweep_with_scissor_correction() {
     let cases = vec![
-        Case { name: "water/cc-pvdz/PBE", xyz: "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n", charge: 0, mult: 1, basis: "cc-pvdz", xc: "PBE" },
-        Case { name: "water/sto-3g/PBE", xyz: "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n", charge: 0, mult: 1, basis: "sto-3g", xc: "PBE" },
-        Case { name: "N2/cc-pvdz/PBE (eq)", xyz: "2\nN2\nN 0.0 0.0 0.0\nN 0.0 0.0 1.0977\n", charge: 0, mult: 1, basis: "cc-pvdz", xc: "PBE" },
-        Case { name: "LiH/cc-pvdz/PBE", xyz: "2\nLiH\nLi 0.0 0.0 0.0\nH 0.0 0.0 1.5949\n", charge: 0, mult: 1, basis: "cc-pvdz", xc: "PBE" },
+        Case {
+            name: "water/cc-pvdz/PBE",
+            xyz:
+                "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n",
+            charge: 0,
+            mult: 1,
+            basis: "cc-pvdz",
+            xc: "PBE",
+        },
+        Case {
+            name: "water/sto-3g/PBE",
+            xyz:
+                "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n",
+            charge: 0,
+            mult: 1,
+            basis: "sto-3g",
+            xc: "PBE",
+        },
+        Case {
+            name: "N2/cc-pvdz/PBE (eq)",
+            xyz: "2\nN2\nN 0.0 0.0 0.0\nN 0.0 0.0 1.0977\n",
+            charge: 0,
+            mult: 1,
+            basis: "cc-pvdz",
+            xc: "PBE",
+        },
+        Case {
+            name: "LiH/cc-pvdz/PBE",
+            xyz: "2\nLiH\nLi 0.0 0.0 0.0\nH 0.0 0.0 1.5949\n",
+            charge: 0,
+            mult: 1,
+            basis: "cc-pvdz",
+            xc: "PBE",
+        },
     ];
     let ctx = ParallelContext::default();
     let mut any_negative = false;
@@ -254,19 +292,33 @@ fn sweep_with_scissor_correction() {
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let scf_cfg = RhfConfig { xc: Some(c.xc.to_string()), ..Default::default() };
+        let scf_cfg = RhfConfig {
+            xc: Some(c.xc.to_string()),
+            ..Default::default()
+        };
         let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
         assert!(ks.converged);
 
-        let res = run_rpax_static_polarizability(&mol, &obs, &dfbs, op, &ks, &pdep_cfg(), 0, scissor);
+        let res =
+            run_rpax_static_polarizability(&mol, &obs, &dfbs, op, &ks, &pdep_cfg(), 0, scissor);
         match res {
             Ok(r) => {
                 let diag_neg = r.tensor[0][0] < 0.0 || r.tensor[1][1] < 0.0 || r.tensor[2][2] < 0.0;
-                if diag_neg { any_negative = true; }
+                if diag_neg {
+                    any_negative = true;
+                }
                 eprintln!(
                     "[{} @ scissor={scissor}] diag=({:+.4},{:+.4},{:+.4}) iso={:+.4}{}",
-                    c.name, r.tensor[0][0], r.tensor[1][1], r.tensor[2][2], r.iso,
-                    if diag_neg { "  <<< STILL NEGATIVE" } else { "  (fixed)" }
+                    c.name,
+                    r.tensor[0][0],
+                    r.tensor[1][1],
+                    r.tensor[2][2],
+                    r.iso,
+                    if diag_neg {
+                        "  <<< STILL NEGATIVE"
+                    } else {
+                        "  (fixed)"
+                    }
                 );
             }
             Err(e) => eprintln!("[{}] ERRORED: {e}", c.name),

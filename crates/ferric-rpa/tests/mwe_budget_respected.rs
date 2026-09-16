@@ -142,7 +142,8 @@ fn estimate_does_not_chase_the_budget() {
     };
 
     // The shape that exposed this in production.
-    let (naux, nocc, nvir, nbf, natoms, npts) = (648usize, 25usize, 182usize, 207usize, 9usize, 74_250usize);
+    let (naux, nocc, nvir, nbf, natoms, npts) =
+        (648usize, 25usize, 182usize, 207usize, 9usize, 74_250usize);
     let gib = 1024usize * 1024 * 1024;
 
     let estimate_at = |budget: usize| -> usize {
@@ -154,7 +155,13 @@ fn estimate_does_not_chase_the_budget() {
             n_quad: 1,
             n_workers: 4,
             n_keep: naux,
-            grid: Some(GridEstimateShape { npts, nbf, natoms, dipole_band_width: band, n_workers: 4 }),
+            grid: Some(GridEstimateShape {
+                npts,
+                nbf,
+                natoms,
+                dipole_band_width: band,
+                n_workers: 4,
+            }),
             // Grid path: the per-frequency dielectric is consumed and dropped,
             // not retained, so n_quad is not a peak multiplier here. See
             // PeakEstimateShape::need_inv_dielectric.

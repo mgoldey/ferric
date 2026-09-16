@@ -44,7 +44,11 @@ fn sweep_one(name: &str, path: &str) {
     let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let scf = RhfConfig { density_conv: 1e-8, max_iter: 200, ..Default::default() };
+    let scf = RhfConfig {
+        density_conv: 1e-8,
+        max_iter: 200,
+        ..Default::default()
+    };
 
     let rhf = match solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf) {
         Ok(r) if r.converged => r,
@@ -62,7 +66,10 @@ fn sweep_one(name: &str, path: &str) {
     let nocc = (mol.nelec() / 2) as usize;
 
     let run = |sparsity: Chi0Sparsity| -> Option<(f64, f64)> {
-        let cfg = PdepRpaConfig { chi0_sparsity: sparsity, ..Default::default() };
+        let cfg = PdepRpaConfig {
+            chi0_sparsity: sparsity,
+            ..Default::default()
+        };
         let t = Instant::now();
         match run_pdep_rpa(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &cfg) {
             Ok(r) => Some((t.elapsed().as_secs_f64(), r.e_rpa)),
@@ -73,7 +80,9 @@ fn sweep_one(name: &str, path: &str) {
         }
     };
 
-    let Some((t_dense, e_dense)) = run(Chi0Sparsity::Dense) else { return };
+    let Some((t_dense, e_dense)) = run(Chi0Sparsity::Dense) else {
+        return;
+    };
 
     // Two screens, measured separately because only ONE of them was contaminated
     // by the Boys sign bug:
@@ -82,14 +91,16 @@ fn sweep_one(name: &str, path: &str) {
     //   * `dist_cutoff` is the G6 centroid-DISTANCE envelope -- exactly the thing
     //     that could not possibly prune when every centroid was collapsed onto one
     //     point, which is why "dist_cutoff prunes NOTHING" needs re-testing.
-    let Some((t_bound, e_bound)) =
-        run(Chi0Sparsity::BoysScreened { thresh: 1e-3, dist_cutoff: f64::INFINITY })
-    else {
+    let Some((t_bound, e_bound)) = run(Chi0Sparsity::BoysScreened {
+        thresh: 1e-3,
+        dist_cutoff: f64::INFINITY,
+    }) else {
         return;
     };
-    let Some((t_dist, e_dist)) =
-        run(Chi0Sparsity::BoysScreened { thresh: 1e-3, dist_cutoff: 10.0 })
-    else {
+    let Some((t_dist, e_dist)) = run(Chi0Sparsity::BoysScreened {
+        thresh: 1e-3,
+        dist_cutoff: 10.0,
+    }) else {
         return;
     };
 

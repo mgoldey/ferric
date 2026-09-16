@@ -16,16 +16,24 @@
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_gw::bse::run_bse_tda;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_rpa::config::{Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig, QuadratureConfig, QuadratureScheme, SternheimerConfig};
+use ferric_rpa::config::{
+    Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig, QuadratureConfig, QuadratureScheme,
+    SternheimerConfig,
+};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-use ferric_gw::bse::run_bse_tda;
 
 const HA_TO_EV: f64 = 27.211386245988_f64;
 
-fn prepare_h2o() -> (Molecule, PreparedBasis, PreparedBasis, ferric_scf::ScfResult) {
+fn prepare_h2o() -> (
+    Molecule,
+    PreparedBasis,
+    PreparedBasis,
+    ferric_scf::ScfResult,
+) {
     let xyz = "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n";
     let mol = Molecule::parse_xyz(xyz, 0, 1).expect("parse H2O");
     let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
@@ -39,7 +47,11 @@ fn prepare_h2o() -> (Molecule, PreparedBasis, PreparedBasis, ferric_scf::ScfResu
 
 fn pdep_cfg() -> PdepRpaConfig {
     PdepRpaConfig {
-        quadrature: QuadratureConfig { scheme: QuadratureScheme::GaussLegendre, n_points: 16, u0: 0.5 },
+        quadrature: QuadratureConfig {
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: 16,
+            u0: 0.5,
+        },
         eigensolver_conv_thresh: 1e-7,
         eigensolver_max_vecs: 0,
         trunc_thresh: 0.0, // keep ALL modes (full screened W, for reference match)
@@ -64,7 +76,9 @@ fn bse_tda_h2o_lowest_singlet() {
         .expect("BSE-TDA runs");
     eprintln!(
         "\nBSE-TDA@G0W0@HF / cc-pVDZ H2O   (nocc={} nvir={}, {} states)",
-        res.nocc, res.nvir, res.omega.len()
+        res.nocc,
+        res.nvir,
+        res.omega.len()
     );
     eprintln!("  lowest 8 singlets (eV):");
     for (n, &om) in res.omega.iter().take(8).enumerate() {
@@ -115,16 +129,32 @@ fn cis_tda_h2o_assembly_xcheck() {
 fn gl12() -> ([f64; 12], [f64; 12]) {
     (
         [
-            -0.981560634246719, -0.904117256370475, -0.769902674194305,
-            -0.587317954286617, -0.367831498998180, -0.125233408511469,
-            0.125233408511469, 0.367831498998180, 0.587317954286617,
-            0.769902674194305, 0.904117256370475, 0.981560634246719,
+            -0.981560634246719,
+            -0.904117256370475,
+            -0.769902674194305,
+            -0.587317954286617,
+            -0.367831498998180,
+            -0.125233408511469,
+            0.125233408511469,
+            0.367831498998180,
+            0.587317954286617,
+            0.769902674194305,
+            0.904117256370475,
+            0.981560634246719,
         ],
         [
-            0.047175336386512, 0.106939325995318, 0.160078328543346,
-            0.203167426723066, 0.233492536538355, 0.249147045813403,
-            0.249147045813403, 0.233492536538355, 0.203167426723066,
-            0.160078328543346, 0.106939325995318, 0.047175336386512,
+            0.047175336386512,
+            0.106939325995318,
+            0.160078328543346,
+            0.203167426723066,
+            0.233492536538355,
+            0.249147045813403,
+            0.249147045813403,
+            0.233492536538355,
+            0.203167426723066,
+            0.160078328543346,
+            0.106939325995318,
+            0.047175336386512,
         ],
     )
 }
@@ -150,19 +180,45 @@ fn bse_c6_h2o_vs_dosd() {
     use ferric_gw::bse::run_bse_c6;
     let (mol, obs, dfbs, rhf) = prepare_h2o();
     let (freqs, weights) = cp_grid(0.6);
-    let res = run_bse_c6(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pdep_cfg(), 0, &freqs, &weights)
-        .expect("BSE C6 runs");
+    let res = run_bse_c6(
+        &mol,
+        &obs,
+        &dfbs,
+        Operator::coulomb(),
+        &rhf,
+        &pdep_cfg(),
+        0,
+        &freqs,
+        &weights,
+    )
+    .expect("BSE C6 runs");
     let dosd = 45.3;
     let err = 100.0 * (res.c6 - dosd) / dosd;
     eprintln!("\nBSE-C6@G0W0@HF / cc-pVDZ H2O");
-    eprintln!("  α_static (iso) = {:.4} a.u.  (DOSD α0 = 9.64)", res.alpha_static);
-    eprintln!("  α(iω) profile  = {:?}", res.alpha_iso.iter().map(|a| (a*100.0).round()/100.0).collect::<Vec<_>>());
+    eprintln!(
+        "  α_static (iso) = {:.4} a.u.  (DOSD α0 = 9.64)",
+        res.alpha_static
+    );
+    eprintln!(
+        "  α(iω) profile  = {:?}",
+        res.alpha_iso
+            .iter()
+            .map(|a| (a * 100.0).round() / 100.0)
+            .collect::<Vec<_>>()
+    );
     eprintln!("  C6 = {:.3} a.u.   (DOSD 45.3)   err = {err:+.2}%", res.c6);
     // Gate: finite, positive, physically sane. The absolute C6 is bounded by the
     // GW gap (being tightened) AND the cc-pVDZ basis α deficit (~−15% known).
-    assert!(res.c6.is_finite() && res.c6 > 0.0, "C6 must be finite positive");
+    assert!(
+        res.c6.is_finite() && res.c6 > 0.0,
+        "C6 must be finite positive"
+    );
     assert!(res.alpha_static > 0.0, "static α must be positive");
-    assert!((10.0..120.0).contains(&res.c6), "C6 {:.2} outside sane window for water", res.c6);
+    assert!(
+        (10.0..120.0).contains(&res.c6),
+        "C6 {:.2} outside sane window for water",
+        res.c6
+    );
 }
 
 /// RPAx@PBE spike: gate 2's screened (A±B) kernel but on a PBE-KS reference
@@ -183,19 +239,48 @@ fn rpax_pbe_c6_h2o_vs_dosd() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig { xc: Some("PBE".to_string()), ..Default::default() };
+    let scf_cfg = RhfConfig {
+        xc: Some("PBE".to_string()),
+        ..Default::default()
+    };
     let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
     let (freqs, weights) = cp_grid(0.6);
-    let res = run_bse_c6_ks(&mol, &obs, &dfbs, op, &ks, &pdep_cfg(), 0, &freqs, &weights, 0.0)
-        .expect("RPAx@PBE C6 runs");
+    let res = run_bse_c6_ks(
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &ks,
+        &pdep_cfg(),
+        0,
+        &freqs,
+        &weights,
+        0.0,
+    )
+    .expect("RPAx@PBE C6 runs");
     let dosd = 45.3;
     let err = 100.0 * (res.c6 - dosd) / dosd;
     eprintln!("\nRPAx@PBE / cc-pVDZ H2O");
-    eprintln!("  α_static (iso) = {:.4} a.u.  (DOSD α0 = 9.64; gate2 HF was 5.24)", res.alpha_static);
-    eprintln!("  α(iω) profile  = {:?}", res.alpha_iso.iter().map(|a| (a*100.0).round()/100.0).collect::<Vec<_>>());
-    eprintln!("  C6 = {:.3} a.u.   (DOSD 45.3; gate2 HF was 16.88)   err = {err:+.2}%", res.c6);
-    assert!(res.c6.is_finite() && res.c6 > 0.0, "C6 must be finite positive");
+    eprintln!(
+        "  α_static (iso) = {:.4} a.u.  (DOSD α0 = 9.64; gate2 HF was 5.24)",
+        res.alpha_static
+    );
+    eprintln!(
+        "  α(iω) profile  = {:?}",
+        res.alpha_iso
+            .iter()
+            .map(|a| (a * 100.0).round() / 100.0)
+            .collect::<Vec<_>>()
+    );
+    eprintln!(
+        "  C6 = {:.3} a.u.   (DOSD 45.3; gate2 HF was 16.88)   err = {err:+.2}%",
+        res.c6
+    );
+    assert!(
+        res.c6.is_finite() && res.c6 > 0.0,
+        "C6 must be finite positive"
+    );
     assert!(res.alpha_static > 0.0, "static α must be positive");
 }
 
@@ -216,7 +301,10 @@ fn rpax_static_polarizability_h2o_matches_dynamic_omega0() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig { xc: Some("PBE".to_string()), ..Default::default() };
+    let scf_cfg = RhfConfig {
+        xc: Some("PBE".to_string()),
+        ..Default::default()
+    };
     let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
     let res = run_rpax_static_polarizability(&mol, &obs, &dfbs, op, &ks, &pdep_cfg(), 0, 0.0)
@@ -225,7 +313,10 @@ fn rpax_static_polarizability_h2o_matches_dynamic_omega0() {
     eprintln!("\nRPAx@PBE static polarizability / cc-pVDZ H2O");
     eprintln!("  alpha_iso = {:.4} a.u.  (DOSD alpha0 = {dosd})", res.iso);
     eprintln!("  tensor = {:?}", res.tensor);
-    assert!(res.iso.is_finite() && res.iso > 0.0, "static alpha must be finite positive");
+    assert!(
+        res.iso.is_finite() && res.iso > 0.0,
+        "static alpha must be finite positive"
+    );
     assert!(
         (5.0..15.0).contains(&res.iso),
         "static alpha {:.3} outside sane window for water",
@@ -235,10 +326,24 @@ fn rpax_static_polarizability_h2o_matches_dynamic_omega0() {
     // Cross-check against the dynamic path's own ω=0 point (single-point CP
     // grid so freqs[0] == 0 exactly).
     let (freqs, weights) = (vec![0.0_f64], vec![1.0_f64]);
-    let dyn_res = run_bse_c6_ks(&mol, &obs, &dfbs, op, &ks, &pdep_cfg(), 0, &freqs, &weights, 0.0)
-        .expect("dynamic RPAx@PBE (single freq) runs");
+    let dyn_res = run_bse_c6_ks(
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &ks,
+        &pdep_cfg(),
+        0,
+        &freqs,
+        &weights,
+        0.0,
+    )
+    .expect("dynamic RPAx@PBE (single freq) runs");
     let diff = (res.iso - dyn_res.alpha_static).abs();
-    eprintln!("  static-only iso = {:.6}  dynamic-at-0 = {:.6}  diff = {diff:e}", res.iso, dyn_res.alpha_static);
+    eprintln!(
+        "  static-only iso = {:.6}  dynamic-at-0 = {:.6}  diff = {diff:e}",
+        res.iso, dyn_res.alpha_static
+    );
     assert!(
         diff < 1e-6,
         "static-only fast path must match the dynamic path's omega=0 point: {:.8} vs {:.8}",
@@ -263,14 +368,47 @@ fn rpax_pbe_scissor_scan_h2o() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
-    let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds,
-        &RhfConfig { xc: Some("PBE".to_string()), ..Default::default() }).unwrap();
+    let ks = solve_rhf(
+        &ctx,
+        &mol,
+        &obs,
+        op,
+        &bounds,
+        &RhfConfig {
+            xc: Some("PBE".to_string()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let (freqs, weights) = cp_grid(0.6);
-    eprintln!("\nRPAx@PBE C6 scissor scan (water; KS gap 7.05 eV → GW gap 16.86 eV at scissor≈0.36):");
-    eprintln!("  {:>8}  {:>9}  {:>9}  {:>8}", "scissor", "α_static", "C6", "C6 err%");
+    eprintln!(
+        "\nRPAx@PBE C6 scissor scan (water; KS gap 7.05 eV → GW gap 16.86 eV at scissor≈0.36):"
+    );
+    eprintln!(
+        "  {:>8}  {:>9}  {:>9}  {:>8}",
+        "scissor", "α_static", "C6", "C6 err%"
+    );
     for &sc in &[0.0, 0.10, 0.20, 0.36, 0.50] {
-        let r = run_bse_c6_ks(&mol, &obs, &dfbs, op, &ks, &pdep_cfg(), 0, &freqs, &weights, sc).unwrap();
-        eprintln!("  {:>8.2}  {:>9.4}  {:>9.3}  {:>+7.1}", sc, r.alpha_static, r.c6, 100.0*(r.c6-45.3)/45.3);
+        let r = run_bse_c6_ks(
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &ks,
+            &pdep_cfg(),
+            0,
+            &freqs,
+            &weights,
+            sc,
+        )
+        .unwrap();
+        eprintln!(
+            "  {:>8.2}  {:>9.4}  {:>9.3}  {:>+7.1}",
+            sc,
+            r.alpha_static,
+            r.c6,
+            100.0 * (r.c6 - 45.3) / 45.3
+        );
     }
     eprintln!("  DOSD: α0=9.64, C6=45.3. If C6 climbs toward 45 → gap problem (build GW@PBE).");
 }

@@ -285,8 +285,8 @@ fn converged_density(mol: &Molecule, bs: &BasisSet, prep: &PreparedBasis) -> Arr
     // ("energy_conv is a sanity bound, not a target") warns about. Do not
     // re-tighten these without measuring the alkane_8 wall time first.
     let config = RhfConfig::default();
-    let res = solve_rhf(&ParallelContext::default(), mol, prep, op, &bounds, &config)
-        .expect("RHF solve");
+    let res =
+        solve_rhf(&ParallelContext::default(), mol, prep, op, &bounds, &config).expect("RHF solve");
     assert!(
         res.converged,
         "RHF did not converge for the screening anchor — refusing to measure screening error \
@@ -420,7 +420,10 @@ fn run_thresh_sweep(kind: BoundKind, stem: &str, basis_name: &str) {
         kind.label(),
         mol.atoms.len()
     );
-    eprintln!("{:>10}  {:>14}  {:>14}", "thresh", "max|dK|", "retained_pairs");
+    eprintln!(
+        "{:>10}  {:>14}  {:>14}",
+        "thresh", "max|dK|", "retained_pairs"
+    );
 
     let full_triangle = nsh * (nsh + 1) / 2;
     let mut errs: Vec<(f64, f64)> = Vec::new();
@@ -691,9 +694,15 @@ impl DirectJkRef {
         // or stale file cannot slip past.
         assert!(rec.converged, "{tag}: PySCF reference is not converged");
         assert!(!rec.eri_cached, "{tag}: PySCF reference was built with a CACHED in-core ERI tensor — not a direct-path reference");
-        assert!(rec.direct_scf, "{tag}: PySCF reference was not built with direct_scf=True");
         assert!(
-            matches!(rec.storage.as_str(), "lower_triangle_rowmajor" | "energy_only"),
+            rec.direct_scf,
+            "{tag}: PySCF reference was not built with direct_scf=True"
+        );
+        assert!(
+            matches!(
+                rec.storage.as_str(),
+                "lower_triangle_rowmajor" | "energy_only"
+            ),
             "{tag}: reference uses unknown storage layout {:?}. Regenerate with \
              scripts/gen_pyscf_directjk_refs.py.",
             rec.storage
@@ -796,13 +805,13 @@ fn check_directjk_vs_pyscf(tag: &str, e_bar: f64, jk_bar: f64, unscreened: bool)
     // large deviation and no indication of why — or worse, been "fixed" by
     // loosening the tolerance until they passed.
     if rec.has_matrices() {
-    let s_ferric = permute_to_pyscf(
-        &ferric_integrals::oneelectron::overlap(&prep),
-        &rec.ao_permutation,
-    );
-    let s_ref = rec.square(&rec.overlap);
-    let s_dev = max_abs_diff(&s_ferric, &s_ref);
-    assert!(
+        let s_ferric = permute_to_pyscf(
+            &ferric_integrals::oneelectron::overlap(&prep),
+            &rec.ao_permutation,
+        );
+        let s_ref = rec.square(&rec.overlap);
+        let s_dev = max_abs_diff(&s_ferric, &s_ref);
+        assert!(
         s_dev < 1e-10,
         "{tag}: AO overlap matrices disagree by {s_dev:.3e} after applying ao_permutation — the \
          two codes' AO orderings (or basis definitions) do not match, so the J/K comparison \
@@ -824,8 +833,15 @@ fn check_directjk_vs_pyscf(tag: &str, e_bar: f64, jk_bar: f64, unscreened: bool)
         integral_thresh: PRODUCTION_INTEGRAL_THRESH,
         ..Default::default()
     };
-    let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &config)
-        .expect("RHF solve");
+    let res = solve_rhf(
+        &ParallelContext::default(),
+        &mol,
+        &prep,
+        op,
+        &bounds,
+        &config,
+    )
+    .expect("RHF solve");
     assert!(res.converged, "{tag}: ferric RHF did not converge");
     let de = (res.energy - rec.e_tot).abs();
     eprintln!(
@@ -877,8 +893,14 @@ fn check_directjk_vs_pyscf(tag: &str, e_bar: f64, jk_bar: f64, unscreened: bool)
         )
         .expect("ferric build_jk");
         (
-            max_abs_diff(&permute_to_pyscf(&j_f, &rec.ao_permutation), &rec.square(&rec.j)),
-            max_abs_diff(&permute_to_pyscf(&k_f, &rec.ao_permutation), &rec.square(&rec.k)),
+            max_abs_diff(
+                &permute_to_pyscf(&j_f, &rec.ao_permutation),
+                &rec.square(&rec.j),
+            ),
+            max_abs_diff(
+                &permute_to_pyscf(&k_f, &rec.ao_permutation),
+                &rec.square(&rec.k),
+            ),
         )
     };
 

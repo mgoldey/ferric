@@ -32,9 +32,9 @@ use crate::w_pdep;
 use crate::{GwConfig, GwResult};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_rpa::PdepRpaResult;
 use ferric_scf::ScfResult;
-use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 
 /// Sub-sample `npts` node indices from an `nw`-point evaluation grid with a
 /// *decreasing* step size — a direct port of PySCF `gw_ac._get_ac_idx`
@@ -44,7 +44,12 @@ use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 /// sparser at large ω — the node distribution that makes the Thiele–Padé fit
 /// stable for the long ε_HOMO→ε_F extrapolation that a small-gap (KS/PBE)
 /// reference requires. Returns strictly-increasing, in-range indices.
-pub(crate) fn pade_node_indices(nw: usize, npts: usize, step_ratio: f64, idx_start: usize) -> Vec<usize> {
+pub(crate) fn pade_node_indices(
+    nw: usize,
+    npts: usize,
+    step_ratio: f64,
+    idx_start: usize,
+) -> Vec<usize> {
     // PySCF requires nw > npts; if the caller passes a grid too small, fall back
     // to using every available node (still ascending) rather than erroring.
     if nw <= npts {
@@ -160,7 +165,7 @@ pub(crate) fn sigma_c_at_z(
     let v_owned = v.to_owned();
     for k in 0..n_quad {
         let wv = with_blas_threads(opt_in_blas_threads(), || inv_diel_freq[k].dot(&v)); // (m_modes, n_act)
-        // Column-wise dot: W_{n,k} = Σ_α V[α,n]·WV[α,n].
+                                                                                        // Column-wise dot: W_{n,k} = Σ_α V[α,n]·WV[α,n].
         let col = (&v_owned * &wv).sum_axis(ndarray::Axis(0)); // (n_act,)
         w_nk.column_mut(k).assign(&col);
     }
@@ -239,7 +244,13 @@ pub(crate) fn solve_qp_for_mo(
         .iter()
         .map(|&z| {
             sigma_c_at_z(
-                m_loc, z, m_proj, inv_diel_freq, quad_weights, quad_freqs, eps_prop,
+                m_loc,
+                z,
+                m_proj,
+                inv_diel_freq,
+                quad_weights,
+                quad_freqs,
+                eps_prop,
             )
         })
         .collect();
@@ -360,7 +371,9 @@ pub fn run_g0w0(
             let eps_m = mo_b.eps_act[m_loc];
 
             // KS reference: shift = Σ_x − v_xc (inside the QP self-consistency).
-            let shift = vxc_diag.map(|v| sigma_x_all[m_loc] - v[mo_abs]).unwrap_or(0.0);
+            let shift = vxc_diag
+                .map(|v| sigma_x_all[m_loc] - v[mo_abs])
+                .unwrap_or(0.0);
             let (eps_qp_m, sc_final, z_renorm, converged) = solve_qp_for_mo(
                 m_loc,
                 eps_m,
@@ -374,7 +387,14 @@ pub fn run_g0w0(
                 ef,
                 shift,
             )?;
-            Ok((eps_m, sigma_x_all[m_loc], eps_qp_m, sc_final, z_renorm, converged))
+            Ok((
+                eps_m,
+                sigma_x_all[m_loc],
+                eps_qp_m,
+                sc_final,
+                z_renorm,
+                converged,
+            ))
         })
         .collect::<Result<Vec<_>, FerricError>>()?;
     for (idx, &(eps_m, sx, eps_qp_m, sc_final, z_renorm, converged)) in qp_rows.iter().enumerate() {
@@ -465,7 +485,9 @@ pub fn run_evgw0(
         .iter()
         .map(|&mo_abs| {
             let m_loc = mo_abs - first_act;
-            vxc_diag.map(|v| sigma_x_all[m_loc] - v[mo_abs]).unwrap_or(0.0)
+            vxc_diag
+                .map(|v| sigma_x_all[m_loc] - v[mo_abs])
+                .unwrap_or(0.0)
         })
         .collect();
     for (idx, &mo_abs) in mo_indices.iter().enumerate() {
@@ -616,7 +638,9 @@ pub fn run_evgw(
         .iter()
         .map(|&mo_abs| {
             let m_loc = mo_abs - first_act;
-            vxc_diag.map(|v| sigma_x_all[m_loc] - v[mo_abs]).unwrap_or(0.0)
+            vxc_diag
+                .map(|v| sigma_x_all[m_loc] - v[mo_abs])
+                .unwrap_or(0.0)
         })
         .collect();
     for (idx, &mo_abs) in mo_indices.iter().enumerate() {
@@ -636,10 +660,8 @@ pub fn run_evgw(
         // Rebuild PDEP on iterations > 0.
         if it > 0 {
             current_pdep = ferric_rpa::run_pdep_rpa(mol, obs, dfbs, op, &shifted_rhf, pdep_cfg)?;
-            current_v_dressed = w_pdep::redress_eigenpotentials(
-                &mo_b.v_inv_sqrt,
-                &current_pdep.eigenpotentials,
-            )?;
+            current_v_dressed =
+                w_pdep::redress_eigenpotentials(&mo_b.v_inv_sqrt, &current_pdep.eigenpotentials)?;
         }
         let m_proj = project_b_into_pdep(mo_b, &current_v_dressed, gw_cfg.memory_budget_bytes)?;
         let inv_diel_freq = current_pdep.inv_dielectric_freq.as_ref().ok_or_else(|| {
@@ -732,15 +754,28 @@ mod tests {
         // idx_start=1), the convention this ports. Computed against the local
         // pyscf checkout — see the fix commit message.
         let got = pade_node_indices(101, 18, 2.0 / 3.0, 1);
-        let expect = vec![1, 8, 14, 20, 27, 33, 39, 44, 50, 56, 61, 66, 72, 77, 81, 86, 91, 95];
-        assert_eq!(got, expect, "must reproduce PySCF _get_ac_idx(101,18,2/3,1)");
+        let expect = vec![
+            1, 8, 14, 20, 27, 33, 39, 44, 50, 56, 61, 66, 72, 77, 81, 86, 91, 95,
+        ];
+        assert_eq!(
+            got, expect,
+            "must reproduce PySCF _get_ac_idx(101,18,2/3,1)"
+        );
 
         let got2 = pade_node_indices(50, 18, 2.0 / 3.0, 1);
-        let expect2 = vec![1, 4, 7, 11, 14, 17, 20, 23, 25, 28, 31, 33, 36, 38, 41, 43, 45, 48];
-        assert_eq!(got2, expect2, "must reproduce PySCF _get_ac_idx(50,18,2/3,1)");
+        let expect2 = vec![
+            1, 4, 7, 11, 14, 17, 20, 23, 25, 28, 31, 33, 36, 38, 41, 43, 45, 48,
+        ];
+        assert_eq!(
+            got2, expect2,
+            "must reproduce PySCF _get_ac_idx(50,18,2/3,1)"
+        );
 
         // Degenerate guard: nw <= npts falls back to all indices (ascending).
-        assert_eq!(pade_node_indices(10, 18, 2.0 / 3.0, 1), (0..10).collect::<Vec<_>>());
+        assert_eq!(
+            pade_node_indices(10, 18, 2.0 / 3.0, 1),
+            (0..10).collect::<Vec<_>>()
+        );
     }
 
     /// Reference scalar implementation of sigma_c_at_z (the pre-BLAS3 loop nest),
@@ -827,10 +862,22 @@ mod tests {
                 Complex64::new(0.05, 1.2),
             ] {
                 let got = sigma_c_at_z(
-                    m_idx, z, &m_proj, &inv_diel_freq, &quad_weights, &quad_freqs, &eps_act,
+                    m_idx,
+                    z,
+                    &m_proj,
+                    &inv_diel_freq,
+                    &quad_weights,
+                    &quad_freqs,
+                    &eps_act,
                 );
                 let want = sigma_c_at_z_scalar_ref(
-                    m_idx, z, &m_proj, &inv_diel_freq, &quad_weights, &quad_freqs, &eps_act,
+                    m_idx,
+                    z,
+                    &m_proj,
+                    &inv_diel_freq,
+                    &quad_weights,
+                    &quad_freqs,
+                    &eps_act,
                 );
                 assert!(
                     (got.re - want.re).abs() < 1e-12 && (got.im - want.im).abs() < 1e-12,
@@ -856,11 +903,23 @@ mod tests {
         let ef = fermi_level(&eps_act, 1);
 
         let (eps_qp, _sc, _z, converged) = solve_qp_for_mo(
-            0, eps_act[0], &m_proj, &inv_diel_freq, &quad_weights, &quad_freqs,
-            &eps_act, 0, 1.0, ef, 0.0,
+            0,
+            eps_act[0],
+            &m_proj,
+            &inv_diel_freq,
+            &quad_weights,
+            &quad_freqs,
+            &eps_act,
+            0,
+            1.0,
+            ef,
+            0.0,
         )
         .expect("well-conditioned Padé fit must not error");
-        assert!(converged, "expected Newton to converge for a mild self-energy");
+        assert!(
+            converged,
+            "expected Newton to converge for a mild self-energy"
+        );
         assert!(eps_qp.is_finite());
     }
 
@@ -896,9 +955,17 @@ mod tests {
         // support points give the model genuine curvature so the linearized
         // start is displaced ~1e-3 from the self-consistent root.
         let (eps_qp, _sc, _z, converged) = solve_qp_for_mo(
-            0, eps_act[0], &m_proj, &inv_diel_freq, &quad_weights, &quad_freqs,
-            &eps_act, 8, 0.1, // qp_newton_damp at clamp minimum
-            ef, 0.0,
+            0,
+            eps_act[0],
+            &m_proj,
+            &inv_diel_freq,
+            &quad_weights,
+            &quad_freqs,
+            &eps_act,
+            8,
+            0.1, // qp_newton_damp at clamp minimum
+            ef,
+            0.0,
         )
         .expect("well-conditioned Padé fit must not error");
         assert!(
@@ -911,11 +978,23 @@ mod tests {
         // Same system, undamped: must converge — proves the flag tracks the
         // solve outcome and not the system construction.
         let (_e, _s, _z2, converged_full) = solve_qp_for_mo(
-            0, eps_act[0], &m_proj, &inv_diel_freq, &quad_weights, &quad_freqs,
-            &eps_act, 8, 1.0, ef, 0.0,
+            0,
+            eps_act[0],
+            &m_proj,
+            &inv_diel_freq,
+            &quad_weights,
+            &quad_freqs,
+            &eps_act,
+            8,
+            1.0,
+            ef,
+            0.0,
         )
         .expect("well-conditioned Padé fit must not error");
-        assert!(converged_full, "undamped Newton on the same system must converge");
+        assert!(
+            converged_full,
+            "undamped Newton on the same system must converge"
+        );
     }
 
     // The degenerate-Padé-node guard (repeated support point -> Err instead

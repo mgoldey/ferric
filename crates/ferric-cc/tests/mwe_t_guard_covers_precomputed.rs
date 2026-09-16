@@ -98,9 +98,8 @@ fn a_budget_can_pass_the_guard_and_still_not_hold_bcei() {
 /// than none, because it looks like protection.
 #[test]
 fn the_undercount_worsens_as_the_system_grows() {
-    let ratio = |no: usize, nv: usize| {
-        bcei_bytes(2 * no, 2 * nv) as f64 / guard_bytes(2 * nv) as f64
-    };
+    let ratio =
+        |no: usize, nv: usize| bcei_bytes(2 * no, 2 * nv) as f64 / guard_bytes(2 * nv) as f64;
 
     let small = ratio(5, 19); // H2O/cc-pVDZ
     let large = ratio(21, 93); // benzene/cc-pVDZ

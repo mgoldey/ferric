@@ -159,13 +159,26 @@ fn check_closed_shell_limit(method: GwMethod, tol_ha: f64, max_ev_iter: usize) {
     let res_open = run_u_gw(&mol, &obs, &dfbs, op, &uhf, &pdep, &gcfg_open)
         .unwrap_or_else(|e| panic!("open-shell run_u_gw({method:?}) failed: {e}"));
 
-    assert_eq!(res_closed.mo_indices, res_open.mo_indices, "{method:?}: QP MO ranges differ");
+    assert_eq!(
+        res_closed.mo_indices, res_open.mo_indices,
+        "{method:?}: QP MO ranges differ"
+    );
 
     let mut max_dev_qp = 0.0_f64;
     for (idx, &mo_abs) in res_closed.mo_indices.iter().enumerate() {
         for (spin, eps_qp_spin, sigma_c_spin, sigma_x_spin) in [
-            ("alpha", &res_open.eps_qp_a, &res_open.sigma_c_a, &res_open.sigma_x_a),
-            ("beta", &res_open.eps_qp_b, &res_open.sigma_c_b, &res_open.sigma_x_b),
+            (
+                "alpha",
+                &res_open.eps_qp_a,
+                &res_open.sigma_c_a,
+                &res_open.sigma_x_a,
+            ),
+            (
+                "beta",
+                &res_open.eps_qp_b,
+                &res_open.sigma_c_b,
+                &res_open.sigma_x_b,
+            ),
         ] {
             let dev_qp = (res_closed.eps_qp[idx] - eps_qp_spin[idx]).abs();
             let dev_sx = (res_closed.sigma_x[idx] - sigma_x_spin[idx]).abs();

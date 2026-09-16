@@ -72,13 +72,19 @@ fn vxc_at(xc_name: &str) -> f64 {
 #[test]
 fn vxc_b3lyp_h2o_is_hermitian() {
     let asym = vxc_at("B3LYP");
-    assert!(asym < 1e-12, "V_xc(B3LYP) not Hermitian: max asym = {asym:.2e}");
+    assert!(
+        asym < 1e-12,
+        "V_xc(B3LYP) not Hermitian: max asym = {asym:.2e}"
+    );
 }
 
 #[test]
 fn vxc_wb97xv_h2o_is_hermitian() {
     let asym = vxc_at("wB97X-V");
-    assert!(asym < 1e-12, "V_xc(wB97X-V) not Hermitian: max asym = {asym:.2e}");
+    assert!(
+        asym < 1e-12,
+        "V_xc(wB97X-V) not Hermitian: max asym = {asym:.2e}"
+    );
 }
 
 /// Central-difference ∂χ_μ/∂r at a fixed electron position vs the analytic

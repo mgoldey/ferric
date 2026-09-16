@@ -277,8 +277,8 @@ mod tests {
         for n_ang in [110, 302] {
             for z in [1, 6, 8, 16, 26] {
                 let (rs, _) = treutler_ahlrichs_m4(z, 75);
-                let orders = angular_orders_for_atom(z, &rs, n_ang, PruneScheme::NwchemLike)
-                    .unwrap();
+                let orders =
+                    angular_orders_for_atom(z, &rs, n_ang, PruneScheme::NwchemLike).unwrap();
                 assert_eq!(orders.len(), rs.len());
                 for o in orders {
                     assert!(

@@ -13,8 +13,11 @@ use ferric_scf::screening::SchwarzBounds;
 
 fn build_h2o() -> Molecule {
     Molecule::parse_xyz(
-        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n", 0, 1,
-    ).unwrap()
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        0,
+        1,
+    )
+    .unwrap()
 }
 
 #[test]
@@ -28,7 +31,7 @@ fn vxc_lda_h2o_is_hermitian_and_energy_is_negative() {
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
 
     let grid = build_atomic_grid(&mol, &AtomicGridConfig::default());
-    let pts: Vec<[f64;3]> = grid.iter().map(|g| g.xyz).collect();
+    let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi) = eval_basis_and_grad_on_points(&mol, &bs, &pts).unwrap();
     let dens = eval_density_closed(&rhf.density_total, &chi, &dchi);
 
@@ -41,7 +44,9 @@ fn vxc_lda_h2o_is_hermitian_and_energy_is_negative() {
     for i in 0..n {
         for j in 0..n {
             let a = (vxc[(i, j)] - vxc[(j, i)]).abs();
-            if a > asym { asym = a; }
+            if a > asym {
+                asym = a;
+            }
         }
     }
     assert!(asym < 1e-12, "V_xc not Hermitian: max asym = {asym:.2e}");
@@ -49,9 +54,9 @@ fn vxc_lda_h2o_is_hermitian_and_energy_is_negative() {
     // LDA E_xc for H2O / cc-pVDZ on (75,110) grid should be ~ -8.85 Ha
     // (compare against PySCF; loose bracket for sanity check only)
     eprintln!("LDA E_xc(H2O, cc-pVDZ) = {e_xc:.6} Ha");
-    assert!(e_xc < 0.0,        "E_xc should be negative; got {e_xc}");
-    assert!(e_xc > -15.0,      "E_xc is too negative: {e_xc}");
-    assert!(e_xc < -3.0,       "E_xc is too small in magnitude: {e_xc}");
+    assert!(e_xc < 0.0, "E_xc should be negative; got {e_xc}");
+    assert!(e_xc > -15.0, "E_xc is too negative: {e_xc}");
+    assert!(e_xc < -3.0, "E_xc is too small in magnitude: {e_xc}");
 }
 
 #[test]
@@ -65,7 +70,7 @@ fn vxc_pbe_h2o_is_hermitian() {
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
 
     let grid = build_atomic_grid(&mol, &AtomicGridConfig::default());
-    let pts: Vec<[f64;3]> = grid.iter().map(|g| g.xyz).collect();
+    let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi) = eval_basis_and_grad_on_points(&mol, &bs, &pts).unwrap();
     let dens = eval_density_closed(&rhf.density_total, &chi, &dchi);
 
@@ -77,10 +82,15 @@ fn vxc_pbe_h2o_is_hermitian() {
     for i in 0..n {
         for j in 0..n {
             let a = (vxc[(i, j)] - vxc[(j, i)]).abs();
-            if a > asym { asym = a; }
+            if a > asym {
+                asym = a;
+            }
         }
     }
-    assert!(asym < 1e-12, "V_xc(PBE) not Hermitian: max asym = {asym:.2e}");
+    assert!(
+        asym < 1e-12,
+        "V_xc(PBE) not Hermitian: max asym = {asym:.2e}"
+    );
 
     eprintln!("PBE E_xc(H2O, cc-pVDZ) = {e_xc:.6} Ha");
     assert!(e_xc < 0.0 && e_xc > -15.0, "PBE E_xc out of range: {e_xc}");

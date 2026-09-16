@@ -41,7 +41,11 @@ fn run_case(label: &str, xyz: &str, xc: &str, hybrid: bool, ref_file: &str, tol:
     let cfg = RhfConfig {
         xc: Some(xc.into()),
         df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: if hybrid { Some("def2-universal-jkfit".into()) } else { None },
+        df_k_aux: if hybrid {
+            Some("def2-universal-jkfit".into())
+        } else {
+            None
+        },
         energy_conv: 1e-3,
         density_conv: 1e-8,
         ..Default::default()
@@ -58,10 +62,14 @@ fn run_case(label: &str, xyz: &str, xc: &str, hybrid: bool, ref_file: &str, tol:
     for a in 0..mol.atoms.len() {
         for c in 0..3 {
             let diff = (g_ferric[(a, c)] - r.grad[a][c]).abs();
-            if diff > max_diff { max_diff = diff; }
+            if diff > max_diff {
+                max_diff = diff;
+            }
             eprintln!(
                 "  atom={a} coord={c}: ferric={:+.6e} pyscf={:+.6e} diff={:.2e}",
-                g_ferric[(a, c)], r.grad[a][c], diff
+                g_ferric[(a, c)],
+                r.grad[a][c],
+                diff
             );
         }
     }
@@ -69,59 +77,106 @@ fn run_case(label: &str, xyz: &str, xc: &str, hybrid: bool, ref_file: &str, tol:
     for a in 0..mol.atoms.len() {
         for c in 0..3 {
             let diff = (g_ferric[(a, c)] - r.grad[a][c]).abs();
-            assert!(diff < tol, "{label} {xc}: atom={a} coord={c} diff={diff:.2e}");
+            assert!(
+                diff < tol,
+                "{label} {xc}: atom={a} coord={c} diff={diff:.2e}"
+            );
         }
     }
 }
 
 #[test]
 fn lda_h2_ccpvdz_vs_pyscf_grad() {
-    run_case("H2", "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
-             "LDA", false, "h2_cc-pvdz_lda_grad.json", 1e-4);
+    run_case(
+        "H2",
+        "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
+        "LDA",
+        false,
+        "h2_cc-pvdz_lda_grad.json",
+        1e-4,
+    );
 }
 
 #[test]
 fn lda_h2o_ccpvdz_vs_pyscf_grad() {
-    run_case("H2O",
-             "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
-             "LDA", false, "h2o_cc-pvdz_lda_grad.json", 1e-4);
+    run_case(
+        "H2O",
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        "LDA",
+        false,
+        "h2o_cc-pvdz_lda_grad.json",
+        1e-4,
+    );
 }
 
 #[test]
 fn pbe_h2_ccpvdz_vs_pyscf_grad() {
-    run_case("H2", "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
-             "PBE", false, "h2_cc-pvdz_pbe_grad.json", 1e-4);
+    run_case(
+        "H2",
+        "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
+        "PBE",
+        false,
+        "h2_cc-pvdz_pbe_grad.json",
+        1e-4,
+    );
 }
 
 #[test]
 fn pbe_h2o_ccpvdz_vs_pyscf_grad() {
-    run_case("H2O",
-             "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
-             "PBE", false, "h2o_cc-pvdz_pbe_grad.json", 1e-4);
+    run_case(
+        "H2O",
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        "PBE",
+        false,
+        "h2o_cc-pvdz_pbe_grad.json",
+        1e-4,
+    );
 }
 
 #[test]
 fn b3lyp_h2_ccpvdz_vs_pyscf_grad() {
-    run_case("H2", "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
-             "B3LYP", true, "h2_cc-pvdz_b3lyp_grad.json", 1e-4);
+    run_case(
+        "H2",
+        "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
+        "B3LYP",
+        true,
+        "h2_cc-pvdz_b3lyp_grad.json",
+        1e-4,
+    );
 }
 
 #[test]
 fn b3lyp_h2o_ccpvdz_vs_pyscf_grad() {
-    run_case("H2O",
-             "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
-             "B3LYP", true, "h2o_cc-pvdz_b3lyp_grad.json", 1e-4);
+    run_case(
+        "H2O",
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        "B3LYP",
+        true,
+        "h2o_cc-pvdz_b3lyp_grad.json",
+        1e-4,
+    );
 }
 
 #[test]
 fn wb97xv_h2_ccpvdz_vs_pyscf_grad() {
-    run_case("H2", "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
-             "wB97X-V", true, "h2_cc-pvdz_wb97x_v_grad.json", 2e-4);
+    run_case(
+        "H2",
+        "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
+        "wB97X-V",
+        true,
+        "h2_cc-pvdz_wb97x_v_grad.json",
+        2e-4,
+    );
 }
 
 #[test]
 fn wb97xv_h2o_ccpvdz_vs_pyscf_grad() {
-    run_case("H2O",
-             "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
-             "wB97X-V", true, "h2o_cc-pvdz_wb97x_v_grad.json", 2e-4);
+    run_case(
+        "H2O",
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        "wB97X-V",
+        true,
+        "h2o_cc-pvdz_wb97x_v_grad.json",
+        2e-4,
+    );
 }

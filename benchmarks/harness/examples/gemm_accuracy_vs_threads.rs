@@ -95,12 +95,18 @@ fn err(got: &Array2<f64>, want: &Array2<f64>) -> (f64, f64) {
 fn main() {
     // Shapes chosen so k is LARGE — accumulation error grows with k, and k is
     // exactly the axis threaded OpenBLAS splits.
-    let cases = [(200usize, 4000usize, 200usize), (400, 2000, 400), (100, 8000, 100)];
+    let cases = [
+        (200usize, 4000usize, 200usize),
+        (400, 2000, 400),
+        (100, 8000, 100),
+    ];
 
     for (m, k, n) in cases {
         let mut s: u64 = 0x243f_6a88_85a3_08d3;
         let mut rnd = || {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5
         };
         let a = Array2::from_shape_fn((m, k), |_| rnd());
@@ -115,7 +121,10 @@ fn main() {
             rows.push((format!("threaded dgemm ({t} threads)"), gemm(&a, &b, t)));
         }
         for blk in [128usize, 256, 512] {
-            rows.push((format!("serial k-blocked (blk={blk})"), gemm_kblocked(&a, &b, blk)));
+            rows.push((
+                format!("serial k-blocked (blk={blk})"),
+                gemm_kblocked(&a, &b, blk),
+            ));
         }
         // Does k-blocking make the result thread-INDEPENDENT? Only if OpenBLAS
         // never splits inside a block.
@@ -127,10 +136,16 @@ fn main() {
         }
 
         let base = rows[0].1.clone();
-        println!("{:<32} {:>12} {:>12} {:>10}", "ordering", "max|err|", "rel err", "vs serial");
+        println!(
+            "{:<32} {:>12} {:>12} {:>10}",
+            "ordering", "max|err|", "rel err", "vs serial"
+        );
         for (name, got) in &rows {
             let (abs, rel) = err(got, &want);
-            let bitsame = got.iter().zip(base.iter()).all(|(x, y)| x.to_bits() == y.to_bits());
+            let bitsame = got
+                .iter()
+                .zip(base.iter())
+                .all(|(x, y)| x.to_bits() == y.to_bits());
             println!(
                 "{:<32} {:>12.3e} {:>12.3e} {:>10}",
                 name,
@@ -150,8 +165,14 @@ fn main() {
         unsafe { openblas_set_num_threads(12) };
         let kb12 = gemm_kblocked(&a, &b, 128);
         unsafe { openblas_set_num_threads(1) };
-        let same4 = kb1.iter().zip(kb4.iter()).all(|(x, y)| x.to_bits() == y.to_bits());
-        let same12 = kb1.iter().zip(kb12.iter()).all(|(x, y)| x.to_bits() == y.to_bits());
+        let same4 = kb1
+            .iter()
+            .zip(kb4.iter())
+            .all(|(x, y)| x.to_bits() == y.to_bits());
+        let same12 = kb1
+            .iter()
+            .zip(kb12.iter())
+            .all(|(x, y)| x.to_bits() == y.to_bits());
         println!(
             "  k-blocked(128) bit-identical across threads?  1-vs-4: {}   1-vs-12: {}",
             if same4 { "YES" } else { "NO" },

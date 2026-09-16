@@ -221,7 +221,10 @@ mod inner {
                 )));
             }
         }
-        let mo_locs: Vec<usize> = mo_indices.iter().map(|&mo_abs| mo_abs - first_act).collect();
+        let mo_locs: Vec<usize> = mo_indices
+            .iter()
+            .map(|&mo_abs| mo_abs - first_act)
+            .collect();
         let eps_mf_locs: Vec<f64> = mo_locs.iter().map(|&m_loc| mo_b.eps_act[m_loc]).collect();
         let static_shifts: Vec<f64> = mo_indices
             .iter()

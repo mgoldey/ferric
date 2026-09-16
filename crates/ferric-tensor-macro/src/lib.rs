@@ -89,9 +89,18 @@ pub fn einsum(input: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
     let mut it = args.into_iter();
-    let spec_expr = match it.next() { Some(e) => e, None => return compile_err("einsum! needs a spec string") };
-    let lhs = match it.next() { Some(e) => e, None => return compile_err("einsum! needs a left operand") };
-    let rhs = match it.next() { Some(e) => e, None => return compile_err("einsum! needs a right operand") };
+    let spec_expr = match it.next() {
+        Some(e) => e,
+        None => return compile_err("einsum! needs a spec string"),
+    };
+    let lhs = match it.next() {
+        Some(e) => e,
+        None => return compile_err("einsum! needs a left operand"),
+    };
+    let rhs = match it.next() {
+        Some(e) => e,
+        None => return compile_err("einsum! needs a right operand"),
+    };
     // Optional scale factor as a 4th argument; defaults to 1.0.
     let scale_expr: Expr = match it.next() {
         Some(e) => e,
@@ -102,18 +111,29 @@ pub fn einsum(input: TokenStream) -> TokenStream {
             &spec_expr,
             "einsum! takes 2 operands and an optional scale: einsum!(spec, &a, &b[, scale])",
         )
-        .to_compile_error().into();
+        .to_compile_error()
+        .into();
     }
 
     let spec = match &spec_expr {
-        Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) => s.value(),
-        _ => return syn::Error::new_spanned(&spec_expr, "einsum! spec must be a string literal")
-            .to_compile_error().into(),
+        Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(s),
+            ..
+        }) => s.value(),
+        _ => {
+            return syn::Error::new_spanned(&spec_expr, "einsum! spec must be a string literal")
+                .to_compile_error()
+                .into()
+        }
     };
 
     let parsed = match parse_spec(&spec) {
         Ok(p) => p,
-        Err(msg) => return syn::Error::new_spanned(&spec_expr, msg).to_compile_error().into(),
+        Err(msg) => {
+            return syn::Error::new_spanned(&spec_expr, msg)
+                .to_compile_error()
+                .into()
+        }
     };
 
     let l_batch_v: Vec<usize> = parsed.left_batch.iter().map(|&x| x as usize).collect();
@@ -185,14 +205,17 @@ pub fn einsum(input: TokenStream) -> TokenStream {
         quote! {{
             let __res = #core;
             *__res.iter().next().expect("einsum scalar: empty result")
-        }}.into()
+        }}
+        .into()
     } else {
         core.into()
     }
 }
 
 fn compile_err(msg: &str) -> TokenStream {
-    syn::Error::new(proc_macro2::Span::call_site(), msg).to_compile_error().into()
+    syn::Error::new(proc_macro2::Span::call_site(), msg)
+        .to_compile_error()
+        .into()
 }
 
 struct Parsed {
@@ -210,9 +233,15 @@ struct Parsed {
 
 fn parse_spec(spec: &str) -> Result<Parsed, String> {
     let spec = spec.replace(' ', "");
-    let (ins, out) = spec.split_once("->").ok_or_else(|| "einsum spec must contain '->'".to_string())?;
-    let (la, ra) = ins.split_once(',').ok_or_else(|| "einsum spec must have exactly two comma-separated inputs".to_string())?;
-    if ra.contains(',') { return Err("einsum! is binary: exactly two inputs".to_string()); }
+    let (ins, out) = spec
+        .split_once("->")
+        .ok_or_else(|| "einsum spec must contain '->'".to_string())?;
+    let (la, ra) = ins
+        .split_once(',')
+        .ok_or_else(|| "einsum spec must have exactly two comma-separated inputs".to_string())?;
+    if ra.contains(',') {
+        return Err("einsum! is binary: exactly two inputs".to_string());
+    }
     let lchars: Vec<char> = la.chars().collect();
     let rchars: Vec<char> = ra.chars().collect();
     let ochars: Vec<char> = out.chars().collect();
@@ -229,7 +258,11 @@ fn parse_spec(spec: &str) -> Result<Parsed, String> {
     let mut left_contr = Vec::new();
     for (pos, &c) in lchars.iter().enumerate() {
         if in_right(c) {
-            if in_out(c) { left_batch.push((c, pos as u8)); } else { left_contr.push((c, pos as u8)); }
+            if in_out(c) {
+                left_batch.push((c, pos as u8));
+            } else {
+                left_contr.push((c, pos as u8));
+            }
         } else {
             left_free.push((c, pos as u8));
         }
@@ -239,7 +272,11 @@ fn parse_spec(spec: &str) -> Result<Parsed, String> {
     let mut right_contr = Vec::new();
     for (pos, &c) in rchars.iter().enumerate() {
         if in_left(c) {
-            if in_out(c) { right_batch.push((c, pos as u8)); } else { right_contr.push((c, pos as u8)); }
+            if in_out(c) {
+                right_batch.push((c, pos as u8));
+            } else {
+                right_contr.push((c, pos as u8));
+            }
         } else {
             right_free.push((c, pos as u8));
         }
@@ -247,7 +284,9 @@ fn parse_spec(spec: &str) -> Result<Parsed, String> {
     // order right_contr to match left_contr letters
     let mut right_contr_ordered = Vec::new();
     for (lc, _) in &left_contr {
-        let p = right_contr.iter().find(|(rc, _)| rc == lc)
+        let p = right_contr
+            .iter()
+            .find(|(rc, _)| rc == lc)
             .ok_or_else(|| format!("contracted index '{lc}' missing from right operand"))?;
         right_contr_ordered.push(*p);
     }
@@ -257,7 +296,9 @@ fn parse_spec(spec: &str) -> Result<Parsed, String> {
     // order right_batch to match left_batch letters
     let mut right_batch_ordered = Vec::new();
     for (lc, _) in &left_batch {
-        let p = right_batch.iter().find(|(rc, _)| rc == lc)
+        let p = right_batch
+            .iter()
+            .find(|(rc, _)| rc == lc)
             .ok_or_else(|| format!("batch index '{lc}' missing from right operand"))?;
         right_batch_ordered.push(*p);
     }
@@ -275,7 +316,11 @@ fn parse_spec(spec: &str) -> Result<Parsed, String> {
     }
 
     #[derive(PartialEq)]
-    enum Side { Batch, Left, Right }
+    enum Side {
+        Batch,
+        Left,
+        Right,
+    }
     let mut out_from_batch = Vec::new();
     let mut out_from_left = Vec::new();
     let mut out_from_right = Vec::new();
@@ -293,12 +338,18 @@ fn parse_spec(spec: &str) -> Result<Parsed, String> {
             out_from_right.push(*p);
             provenance.push(Side::Right);
         } else {
-            return Err(format!("output index '{oc}' is not a free or batch index of either input"));
+            return Err(format!(
+                "output index '{oc}' is not a free or batch index of either input"
+            ));
         }
     }
     // The runtime emits axes in (batch..., left-free..., right-free...) order.
     // The output spec must list them in that order.
-    let rank = |s: &Side| match s { Side::Batch => 0, Side::Left => 1, Side::Right => 2 };
+    let rank = |s: &Side| match s {
+        Side::Batch => 0,
+        Side::Left => 1,
+        Side::Right => 2,
+    };
     let mut max_rank = 0;
     for side in &provenance {
         let r = rank(side);

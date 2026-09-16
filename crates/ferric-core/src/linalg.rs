@@ -54,8 +54,8 @@
 
 use std::os::raw::{c_char, c_int};
 
-use ndarray::Array2;
 use crate::error::FerricError;
+use ndarray::Array2;
 
 /// Which triangle of the (symmetric) input holds the data. Mirrors
 /// `ndarray_linalg::UPLO` so call sites read the same.

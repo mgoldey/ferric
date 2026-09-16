@@ -132,12 +132,7 @@ mod ffi {
         /// Second functional derivative of LDA. For unpolarized (nspin=1)
         /// the layout is [v2rho2 per point]. For polarized (nspin=2) the
         /// layout is [v2rho2_αα, v2rho2_αβ, v2rho2_ββ] per point.
-        pub fn xc_lda_fxc(
-            p: *const XcFuncOpaque,
-            np: usize,
-            rho: *const f64,
-            v2rho2: *mut f64,
-        );
+        pub fn xc_lda_fxc(p: *const XcFuncOpaque, np: usize, rho: *const f64, v2rho2: *mut f64);
 
         /// Second functional derivatives of a GGA. For polarized (nspin=2) the
         /// output layouts are (per grid point):
@@ -174,11 +169,7 @@ mod ffi {
         /// functional that carries them. For functionals without VV10, the
         /// values written are zero (per libxc convention) and the caller
         /// should treat (0, 0) as "no VV10".
-        pub fn xc_nlc_coef(
-            p: *const XcFuncOpaque,
-            nlc_b: *mut f64,
-            nlc_c: *mut f64,
-        );
+        pub fn xc_nlc_coef(p: *const XcFuncOpaque, nlc_b: *mut f64, nlc_c: *mut f64);
     }
 }
 
@@ -233,11 +224,17 @@ pub enum LibxcError {
     #[error("external parameter count mismatch: functional expects {expected}, got {got}")]
     ExtParamCount { expected: usize, got: usize },
     #[error("external parameter {position} is named {actual:?}, expected {expected:?}")]
-    ExtParamName { position: usize, actual: String, expected: String },
+    ExtParamName {
+        position: usize,
+        actual: String,
+        expected: String,
+    },
 }
 
 impl From<LibxcError> for ferric_core::error::FerricError {
-    fn from(e: LibxcError) -> Self { Self::General(e.to_string()) }
+    fn from(e: LibxcError) -> Self {
+        Self::General(e.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -355,7 +352,13 @@ impl XcFunctional {
 
         let ptr = Self::alloc_and_init_unlocked(id, nspin, name)?;
         let family = infer_family_from_name(name);
-        Ok(Self { ptr, family, nspin, libxc_id: id, ext_params: None })
+        Ok(Self {
+            ptr,
+            family,
+            nspin,
+            libxc_id: id,
+            ext_params: None,
+        })
     }
 
     /// Number of external parameters this functional exposes.
@@ -407,7 +410,9 @@ impl XcFunctional {
                 return Vec::new();
             }
             let n = ffi::xc_func_info_get_n_ext_params(info).max(0);
-            (0..n).map(|i| ffi::xc_func_info_get_ext_params_default_value(info, i)).collect()
+            (0..n)
+                .map(|i| ffi::xc_func_info_get_ext_params_default_value(info, i))
+                .collect()
         }
     }
 
@@ -426,7 +431,10 @@ impl XcFunctional {
             return Err(LibxcError::NoExtParams);
         }
         if params.len() != expected {
-            return Err(LibxcError::ExtParamCount { expected, got: params.len() });
+            return Err(LibxcError::ExtParamCount {
+                expected,
+                got: params.len(),
+            });
         }
         // SAFETY: params.len() == expected == the count libxc reports for this handle,
         // so libxc reads exactly within bounds. Serialized against concurrent
@@ -467,7 +475,10 @@ impl XcFunctional {
         let rc = unsafe { ffi::xc_func_init(ptr, id, nspin as c_int) };
         if rc != 0 {
             unsafe { ffi::xc_func_free(ptr) };
-            return Err(LibxcError::InitFailed { name: name_for_err.to_string(), rc });
+            return Err(LibxcError::InitFailed {
+                name: name_for_err.to_string(),
+                rc,
+            });
         }
         Ok(ptr)
     }
@@ -511,7 +522,13 @@ impl XcFunctional {
             }
             ptr
         };
-        Self { ptr, family, nspin, libxc_id: id, ext_params: ext_params.map(|p| p.to_vec()) }
+        Self {
+            ptr,
+            family,
+            nspin,
+            libxc_id: id,
+            ext_params: ext_params.map(|p| p.to_vec()),
+        }
     }
 
     /// The functional family (LDA, GGA, hybrid, meta-GGA, etc.).
@@ -664,15 +681,14 @@ impl XcFunctional {
         debug_assert!(self.nspin == 2, "eval_lda_fxc_polarized requires nspin=2");
         let n = v2rho2.len() / 3;
         assert_eq!(rho.len(), 2 * n, "polarized rho buffer must be 2 * npts");
-        assert_eq!(v2rho2.len(), 3 * n, "polarized v2rho2 buffer must be 3 * npts");
+        assert_eq!(
+            v2rho2.len(),
+            3 * n,
+            "polarized v2rho2 buffer must be 3 * npts"
+        );
         // SAFETY: handle is non-null + fully initialised; lengths verified.
         unsafe {
-            ffi::xc_lda_fxc(
-                self.ptr as *const _,
-                n,
-                rho.as_ptr(),
-                v2rho2.as_mut_ptr(),
-            );
+            ffi::xc_lda_fxc(self.ptr as *const _, n, rho.as_ptr(), v2rho2.as_mut_ptr());
         }
     }
 
@@ -712,10 +728,26 @@ impl XcFunctional {
         debug_assert!(self.nspin == 2, "eval_gga_fxc_polarized requires nspin=2");
         let n = v2rho2.len() / 3;
         assert_eq!(rho.len(), 2 * n, "polarized rho buffer must be 2 * npts");
-        assert_eq!(sigma.len(), 3 * n, "polarized sigma buffer must be 3 * npts");
-        assert_eq!(v2rho2.len(), 3 * n, "polarized v2rho2 buffer must be 3 * npts");
-        assert_eq!(v2rhosigma.len(), 6 * n, "polarized v2rhosigma buffer must be 6 * npts");
-        assert_eq!(v2sigma2.len(), 6 * n, "polarized v2sigma2 buffer must be 6 * npts");
+        assert_eq!(
+            sigma.len(),
+            3 * n,
+            "polarized sigma buffer must be 3 * npts"
+        );
+        assert_eq!(
+            v2rho2.len(),
+            3 * n,
+            "polarized v2rho2 buffer must be 3 * npts"
+        );
+        assert_eq!(
+            v2rhosigma.len(),
+            6 * n,
+            "polarized v2rhosigma buffer must be 6 * npts"
+        );
+        assert_eq!(
+            v2sigma2.len(),
+            6 * n,
+            "polarized v2sigma2 buffer must be 6 * npts"
+        );
         // SAFETY: handle is non-null + fully initialised; lengths verified.
         unsafe {
             ffi::xc_gga_fxc(
@@ -746,9 +778,17 @@ impl XcFunctional {
         debug_assert!(self.nspin == 2, "eval_gga_polarized requires nspin=2");
         let n = exc.len();
         assert_eq!(rho.len(), 2 * n, "polarized rho buffer must be 2 * npts");
-        assert_eq!(sigma.len(), 3 * n, "polarized sigma buffer must be 3 * npts");
+        assert_eq!(
+            sigma.len(),
+            3 * n,
+            "polarized sigma buffer must be 3 * npts"
+        );
         assert_eq!(vrho.len(), 2 * n, "polarized vrho buffer must be 2 * npts");
-        assert_eq!(vsigma.len(), 3 * n, "polarized vsigma buffer must be 3 * npts");
+        assert_eq!(
+            vsigma.len(),
+            3 * n,
+            "polarized vsigma buffer must be 3 * npts"
+        );
         // SAFETY (per chunk): disjoint `[g0, g1)` sub-ranges (rho/vrho stride
         // 2, sigma/vsigma stride 3, exc stride 1); own worker-local handle.
         let exc_ptr = SendPtr(exc.as_mut_ptr());
@@ -889,10 +929,18 @@ impl XcFunctional {
         debug_assert!(self.nspin == 2, "eval_mgga_polarized requires nspin=2");
         let n = exc.len();
         assert_eq!(rho.len(), 2 * n, "polarized rho buffer must be 2 * npts");
-        assert_eq!(sigma.len(), 3 * n, "polarized sigma buffer must be 3 * npts");
+        assert_eq!(
+            sigma.len(),
+            3 * n,
+            "polarized sigma buffer must be 3 * npts"
+        );
         assert_eq!(tau.len(), 2 * n, "polarized tau buffer must be 2 * npts");
         assert_eq!(vrho.len(), 2 * n, "polarized vrho buffer must be 2 * npts");
-        assert_eq!(vsigma.len(), 3 * n, "polarized vsigma buffer must be 3 * npts");
+        assert_eq!(
+            vsigma.len(),
+            3 * n,
+            "polarized vsigma buffer must be 3 * npts"
+        );
         assert_eq!(vtau.len(), 2 * n, "polarized vtau buffer must be 2 * npts");
         // SAFETY (per chunk): disjoint `[g0, g1)` sub-ranges (rho/vrho/tau/vtau
         // stride 2, sigma/vsigma stride 3, exc stride 1); own worker-local
@@ -935,12 +983,7 @@ impl XcFunctional {
         // SAFETY: handle is non-null and fully initialised; xc_hyb_cam_coef writes
         // the three CAM parameters through valid stack pointers and does not retain them.
         unsafe {
-            ffi::xc_hyb_cam_coef(
-                self.ptr as *const _,
-                &mut omega,
-                &mut alpha,
-                &mut beta,
-            );
+            ffi::xc_hyb_cam_coef(self.ptr as *const _, &mut omega, &mut alpha, &mut beta);
         }
         if omega == 0.0 {
             None
@@ -1053,11 +1096,23 @@ pub struct XcDef {
 pub fn k_mix_from_xc_def(xc: &XcDef) -> crate::xc_trait::KMix {
     use crate::xc_trait::KMix;
     if let Some(cam) = xc.cam {
-        KMix { sr: cam.c_sr, lr: cam.c_lr, omega: cam.omega }
+        KMix {
+            sr: cam.c_sr,
+            lr: cam.c_lr,
+            omega: cam.omega,
+        }
     } else if let Some(mix) = xc.b3lyp_mix {
-        KMix { sr: mix, lr: mix, omega: 0.0 }
+        KMix {
+            sr: mix,
+            lr: mix,
+            omega: 0.0,
+        }
     } else {
-        KMix { sr: 0.0, lr: 0.0, omega: 0.0 }
+        KMix {
+            sr: 0.0,
+            lr: 0.0,
+            omega: 0.0,
+        }
     }
 }
 
@@ -1112,7 +1167,6 @@ pub fn xc_def_from_name(name: &str) -> Result<XcDef, LibxcError> {
     xc_def_from_name_nspin(name, 1)
 }
 
-
 /// [`xc_def_from_name_nspin`] with the range-separation parameter ω
 /// OVERRIDDEN (Bohr⁻¹): every component functional carrying an `_omega`
 /// external parameter gets it replaced (all other parameters keep their
@@ -1143,7 +1197,10 @@ pub fn xc_def_from_name_nspin_omega(
         if let Some(pos) = names.iter().position(|n| n == "_omega") {
             let mut values = f.ext_param_defaults();
             if values.len() != names.len() {
-                return Err(LibxcError::ExtParamCount { expected: names.len(), got: values.len() });
+                return Err(LibxcError::ExtParamCount {
+                    expected: names.len(),
+                    got: values.len(),
+                });
             }
             values[pos] = omega;
             f.set_ext_params(&values)?;
@@ -1232,13 +1289,13 @@ pub const WB97X_L_V_VV10: Vv10Params = Vv10Params { b: 10.0, c: 0.01 };
 /// Positional application alone would silently scramble the coefficients if libxc
 /// ever reordered its parameter list; checking the names makes that a hard error
 /// instead of a wrong number.
-fn apply_named_ext_params(
-    f: &mut XcFunctional,
-    spec: &[(&str, f64)],
-) -> Result<(), LibxcError> {
+fn apply_named_ext_params(f: &mut XcFunctional, spec: &[(&str, f64)]) -> Result<(), LibxcError> {
     let names = f.ext_param_names();
     if names.len() != spec.len() {
-        return Err(LibxcError::ExtParamCount { expected: names.len(), got: spec.len() });
+        return Err(LibxcError::ExtParamCount {
+            expected: names.len(),
+            got: spec.len(),
+        });
     }
     for (i, (want, _)) in spec.iter().enumerate() {
         if names[i] != *want {
@@ -1304,7 +1361,11 @@ pub fn wb97x_l_v_def(nspin: u32) -> Result<XcDef, LibxcError> {
     // hybrid struct: xc_func_set_ext_params updates the functional's internal
     // parameters, but ferric reads CAM separately to build the SR/LR exchange
     // operators, and those MUST agree with the ω/α/β we just set.
-    let cam = CamCoeffs { omega: 0.1, c_sr: 1.0 + (-0.4), c_lr: 1.0 };
+    let cam = CamCoeffs {
+        omega: 0.1,
+        c_sr: 1.0 + (-0.4),
+        c_lr: 1.0,
+    };
 
     Ok(XcDef {
         funcs: vec![f],
@@ -1322,8 +1383,7 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
     // ωB97X-L-V: stock ωB97X-V form with the paper's re-fitted coefficients.
     // Checked before the friendly-name layer so it cannot collide with WB97XV.
     {
-        let key: String =
-            upper.chars().filter(|c| *c != '-' && *c != '_').collect();
+        let key: String = upper.chars().filter(|c| *c != '-' && *c != '_').collect();
         if key == "WB97XLV" {
             return wb97x_l_v_def(nspin);
         }
@@ -1345,7 +1405,13 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
             let vv10 = f.vv10_coeffs();
             if cam.is_some() {
                 f.set_family(FunctionalFamily::RangeSepGga);
-                return Ok(XcDef { funcs: vec![f], cam, vv10, b3lyp_mix: None, weights: None });
+                return Ok(XcDef {
+                    funcs: vec![f],
+                    cam,
+                    vv10,
+                    b3lyp_mix: None,
+                    weights: None,
+                });
             }
             let mix = f.exact_exchange_mix();
             f.set_family(FunctionalFamily::HybridGga);
@@ -1366,7 +1432,13 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
             f.set_family(fam);
             funcs.push(f);
         }
-        return Ok(XcDef { funcs, cam: None, vv10: None, b3lyp_mix: None, weights: None });
+        return Ok(XcDef {
+            funcs,
+            cam: None,
+            vv10: None,
+            b3lyp_mix: None,
+            weights: None,
+        });
     }
 
     // Raw (non-friendly) meta-GGA identifiers: only the semilocal SCAN / r2SCAN
@@ -1377,9 +1449,12 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
     if upper.contains("MGGA") {
         let is_supported_raw_mgga = matches!(
             upper.as_str(),
-            "MGGA_X_SCAN" | "MGGA_C_SCAN"
-                | "MGGA_X_R2SCAN" | "MGGA_C_R2SCAN"
-                | "MGGA_X_TPSS" | "MGGA_C_TPSS"
+            "MGGA_X_SCAN"
+                | "MGGA_C_SCAN"
+                | "MGGA_X_R2SCAN"
+                | "MGGA_C_R2SCAN"
+                | "MGGA_X_TPSS"
+                | "MGGA_C_TPSS"
         );
         if !is_supported_raw_mgga {
             return Err(LibxcError::Unsupported(format!(
@@ -1390,7 +1465,13 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
         }
         let mut f = XcFunctional::new(name, nspin)?;
         f.set_family(FunctionalFamily::MetaGga);
-        return Ok(XcDef { funcs: vec![f], cam: None, vv10: None, b3lyp_mix: None, weights: None });
+        return Ok(XcDef {
+            funcs: vec![f],
+            cam: None,
+            vv10: None,
+            b3lyp_mix: None,
+            weights: None,
+        });
     }
 
     // Unrecognized friendly name: treat as a raw libxc identifier.
@@ -1400,7 +1481,13 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
         let vv10 = f.vv10_coeffs();
         if cam.is_some() {
             f.set_family(FunctionalFamily::RangeSepGga);
-            Ok(XcDef { funcs: vec![f], cam, vv10, b3lyp_mix: None, weights: None })
+            Ok(XcDef {
+                funcs: vec![f],
+                cam,
+                vv10,
+                b3lyp_mix: None,
+                weights: None,
+            })
         } else {
             let mix = f.exact_exchange_mix();
             if mix != 0.0 {
@@ -1414,10 +1501,22 @@ pub fn xc_def_from_name_nspin(name: &str, nspin: u32) -> Result<XcDef, LibxcErro
                 })
             } else if name.to_uppercase().contains("LDA") {
                 f.set_family(FunctionalFamily::Lda);
-                Ok(XcDef { funcs: vec![f], cam: None, vv10, b3lyp_mix: None, weights: None })
+                Ok(XcDef {
+                    funcs: vec![f],
+                    cam: None,
+                    vv10,
+                    b3lyp_mix: None,
+                    weights: None,
+                })
             } else {
                 f.set_family(FunctionalFamily::Gga);
-                Ok(XcDef { funcs: vec![f], cam: None, vv10, b3lyp_mix: None, weights: None })
+                Ok(XcDef {
+                    funcs: vec![f],
+                    cam: None,
+                    vv10,
+                    b3lyp_mix: None,
+                    weights: None,
+                })
             }
         }
     }
@@ -1471,9 +1570,8 @@ mod tests {
     #[test]
     fn scan_and_r2scan_resolve_as_metagga() {
         for name in ["SCAN", "r2SCAN", "R2SCAN"] {
-            let def = xc_def_from_name(name).unwrap_or_else(|e| {
-                panic!("{name} should resolve as meta-GGA, got {e:?}")
-            });
+            let def = xc_def_from_name(name)
+                .unwrap_or_else(|e| panic!("{name} should resolve as meta-GGA, got {e:?}"));
             assert_eq!(def.funcs.len(), 2, "{name}: X + C pair");
             for f in &def.funcs {
                 assert_eq!(

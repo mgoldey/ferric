@@ -312,8 +312,7 @@ impl TripleTnoBasis {
 
         // Per-pair PNOs over the COMPLETE i <= j pair list (see the doc above).
         let pair_domains = complete_pair_domains(&domains.centers)?;
-        let pnos: PnoTransforms =
-            build_pno_transforms(&pair_domains, nvir, t_cut_tno, t2_pair)?;
+        let pnos: PnoTransforms = build_pno_transforms(&pair_domains, nvir, t_cut_tno, t2_pair)?;
         // Charged at the POST-truncation size that actually came back.
         let pno_elems: usize = pnos
             .pairs
@@ -331,10 +330,18 @@ impl TripleTnoBasis {
             triples.push(t);
             // Re-declaring the same label REPLACES it (see `MemoryPlan::reserve`),
             // so this refines one running total rather than double-counting.
-            plan.reserve("triple TNO transforms Q^(ijk)", tno_elems, Lifetime::Resident);
+            plan.reserve(
+                "triple TNO transforms Q^(ijk)",
+                tno_elems,
+                Lifetime::Resident,
+            );
             plan.check()?;
         }
-        Ok(Self { triples, nvir, t_cut_tno })
+        Ok(Self {
+            triples,
+            nvir,
+            t_cut_tno,
+        })
     }
 
     /// True when nothing was truncated: every triple kept all `nvir` virtuals.
@@ -413,22 +420,20 @@ fn build_one_tno(
     let mut m = Array2::<f64>::zeros((nvir, nvir));
     let mut source_pair_dims = Vec::with_capacity(pairs.len());
     for &(p, q) in &pairs {
-        let entry = pnos
-            .pairs
-            .iter()
-            .find(|e| e.ij == (p, q))
-            .ok_or_else(|| {
-                FerricError::General(format!(
-                    "TNO for triple ({i},{j},{k}): no PNO basis for constituent \
+        let entry = pnos.pairs.iter().find(|e| e.ij == (p, q)).ok_or_else(|| {
+            FerricError::General(format!(
+                "TNO for triple ({i},{j},{k}): no PNO basis for constituent \
                      pair ({p},{q})"
-                ))
-            })?;
+            ))
+        })?;
         source_pair_dims.push(entry.transform.ncols());
         m = m + entry.transform.dot(&entry.transform.t());
     }
 
     let (eigs, vecs) = eigh_dc(&m, Uplo::Upper).map_err(|e| {
-        FerricError::General(format!("TNO union eigh failed for triple ({i},{j},{k}): {e}"))
+        FerricError::General(format!(
+            "TNO union eigh failed for triple ({i},{j},{k}): {e}"
+        ))
     })?;
     let keep: Vec<usize> = (0..nvir).filter(|&c| eigs[c] > UNION_RANK_TOL).collect();
     if keep.is_empty() {
@@ -491,7 +496,11 @@ fn build_one_tno(
 ///
 /// [`FerricError::General`] when `x` is not `(nvir, nvir, nvir)` for `tno`'s
 /// parent basis dimension.
-pub fn w3_to_tno(x: &Array3<f64>, tno: &TripleTno, nvir: usize) -> Result<Array3<f64>, FerricError> {
+pub fn w3_to_tno(
+    x: &Array3<f64>,
+    tno: &TripleTno,
+    nvir: usize,
+) -> Result<Array3<f64>, FerricError> {
     if x.dim() != (nvir, nvir, nvir) {
         return Err(FerricError::General(format!(
             "w3_to_tno: block is {:?}, expected ({nvir}, {nvir}, {nvir})",
@@ -516,7 +525,11 @@ pub fn w3_to_tno(x: &Array3<f64>, tno: &TripleTno, nvir: usize) -> Result<Array3
             .map_err(|e| FerricError::General(format!("w3_to_tno reshape back: {e}")))?
             .to_owned();
         // Cycle axes so the next pass contracts what is now the last axis.
-        cur = red3.view().permuted_axes([1, 2, 0]).as_standard_layout().into_owned();
+        cur = red3
+            .view()
+            .permuted_axes([1, 2, 0])
+            .as_standard_layout()
+            .into_owned();
         dims = (d1, n, d0);
     }
     Ok(cur)
@@ -559,7 +572,11 @@ pub fn w3_from_tno(
             .to_shape((d0, d1, nvir))
             .map_err(|e| FerricError::General(format!("w3_from_tno reshape back: {e}")))?
             .to_owned();
-        cur = up3.view().permuted_axes([1, 2, 0]).as_standard_layout().into_owned();
+        cur = up3
+            .view()
+            .permuted_axes([1, 2, 0])
+            .as_standard_layout()
+            .into_owned();
         dims = (d1, nvir, d0);
     }
     Ok(cur)
@@ -694,7 +711,9 @@ pub fn dense_triple_contribution(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dlpno_ccsd_t::{build_triple_domains, complete_triple_domains, screened_triple_energy};
+    use crate::dlpno_ccsd_t::{
+        build_triple_domains, complete_triple_domains, screened_triple_energy,
+    };
     use ndarray::Array4;
 
     // ------------------------------------------------------------------
@@ -703,7 +722,9 @@ mod tests {
     // ------------------------------------------------------------------
 
     fn lcg(seed: &mut u64) -> f64 {
-        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((*seed >> 33) as f64 / (1u64 << 31) as f64) - 1.0
     }
 
@@ -744,7 +765,10 @@ mod tests {
     }
 
     fn line_centers(nocc: usize, spacing: f64) -> Array2<f64> {
-        Array2::from_shape_fn((nocc, 3), |(i, ax)| if ax == 0 { i as f64 * spacing } else { 0.0 })
+        Array2::from_shape_fn(
+            (nocc, 3),
+            |(i, ax)| if ax == 0 { i as f64 * spacing } else { 0.0 },
+        )
     }
 
     fn toy(nocc: usize, nvir: usize, t_cut: f64, spacing: f64) -> (TripleTnoBasis, Array4<f64>) {
@@ -798,7 +822,10 @@ mod tests {
             }
         }
         eprintln!("stage 1: max |Q^T Q - I| over 20 triples = {worst:.3e}");
-        assert!(worst < 1e-10, "TNO transforms are not orthogonal: {worst:.3e}");
+        assert!(
+            worst < 1e-10,
+            "TNO transforms are not orthogonal: {worst:.3e}"
+        );
     }
 
     /// Orthonormality must hold under TRUNCATION too, where the transform is
@@ -807,7 +834,10 @@ mod tests {
     fn stage1_truncated_transforms_are_still_orthonormal() {
         let (nocc, nvir) = (4, 6);
         let (basis, _) = toy(nocc, nvir, 1e-3, 1.5);
-        assert!(!basis.is_complete(), "test premise: something must truncate");
+        assert!(
+            !basis.is_complete(),
+            "test premise: something must truncate"
+        );
 
         let mut worst = 0.0f64;
         for t in &basis.triples {
@@ -847,20 +877,22 @@ mod tests {
         let amp =
             |i: usize, j: usize| Array2::from_shape_fn((nvir, nvir), |(a, b)| t2[[i, j, a, b]]);
         let centers = line_centers(nocc, 1.5);
-        let pnos = build_pno_transforms(
-            &complete_pair_domains(&centers).unwrap(),
-            nvir,
-            0.0,
-            amp,
-        )
-        .unwrap();
+        let pnos = build_pno_transforms(&complete_pair_domains(&centers).unwrap(), nvir, 0.0, amp)
+            .unwrap();
 
         let mut n_checked = 0usize;
         for i in 0..nocc {
             for j in 0..nocc {
                 for k in 0..nocc {
                     let want = build_one_tno(&pnos, nvir, &ev, i, j, k).unwrap();
-                    for p in [(i, j, k), (i, k, j), (j, i, k), (j, k, i), (k, i, j), (k, j, i)] {
+                    for p in [
+                        (i, j, k),
+                        (i, k, j),
+                        (j, i, k),
+                        (j, k, i),
+                        (k, i, j),
+                        (k, j, i),
+                    ] {
                         let got = build_one_tno(&pnos, nvir, &ev, p.0, p.1, p.2).unwrap();
                         assert_eq!(got.ijk, want.ijk, "sorted key differs at {p:?}");
                         assert_eq!(
@@ -947,7 +979,9 @@ mod tests {
             let q = &t.transform;
             let n = t.ntno();
             let f = Array2::from_shape_fn((n, n), |(a, b)| {
-                (0..nvir).map(|c| q[(c, a)] * q[(c, b)] * ev[c]).sum::<f64>()
+                (0..nvir)
+                    .map(|c| q[(c, a)] * q[(c, b)] * ev[c])
+                    .sum::<f64>()
             });
             for a in 0..n {
                 for b in 0..n {
@@ -963,8 +997,14 @@ mod tests {
             "stage 1: max off-diag F in the SEMICANONICAL TNO basis = {worst_off:.3e}, \
              max |F_aa - eps_a| = {worst_diag:.3e}"
         );
-        assert!(worst_off < 1e-10, "Fock is not diagonal in the stored basis: {worst_off:.3e}");
-        assert!(worst_diag < 1e-10, "stored eps disagree with F_aa: {worst_diag:.3e}");
+        assert!(
+            worst_off < 1e-10,
+            "Fock is not diagonal in the stored basis: {worst_off:.3e}"
+        );
+        assert!(
+            worst_diag < 1e-10,
+            "stored eps disagree with F_aa: {worst_diag:.3e}"
+        );
     }
 
     /// **The PREMISE of the previous test**, and the reason the diagonal-only
@@ -1051,8 +1091,14 @@ mod tests {
                         3
                     };
                     assert_eq!(p.len(), want, "triple ({i},{j},{k}) gave pairs {p:?}");
-                    assert!(p.windows(2).all(|w| w[0] < w[1]), "pairs not sorted/unique: {p:?}");
-                    assert!(p.iter().all(|&(a, b)| a <= b), "pair not internally sorted: {p:?}");
+                    assert!(
+                        p.windows(2).all(|w| w[0] < w[1]),
+                        "pairs not sorted/unique: {p:?}"
+                    );
+                    assert!(
+                        p.iter().all(|&(a, b)| a <= b),
+                        "pair not internally sorted: {p:?}"
+                    );
                 }
             }
         }
@@ -1090,7 +1136,10 @@ mod tests {
         let mut strict_by_cut = Vec::new();
         for &cut in &[1e-3f64, 1e-2, 3e-2] {
             let (basis, _) = toy(nocc, nvir, cut, 1.5);
-            assert!(!basis.is_complete(), "test premise: PNOs must truncate at {cut:.0e}");
+            assert!(
+                !basis.is_complete(),
+                "test premise: PNOs must truncate at {cut:.0e}"
+            );
 
             let mut n_strict = 0usize;
             for t in &basis.triples {
@@ -1145,11 +1194,17 @@ mod tests {
         let (loose, _) = toy(nocc, nvir, 1e-3, 1.5);
 
         assert!(tight.is_complete());
-        assert!(!loose.is_complete(), "a loose threshold should truncate something");
+        assert!(
+            !loose.is_complete(),
+            "a loose threshold should truncate something"
+        );
         assert!(loose.virtual_retention() < 1.0);
         let (tno_el, dense_el) = loose.block_elements();
         eprintln!("stage 1: block elements {tno_el} (TNO) vs {dense_el} (dense)");
-        assert!(tno_el < dense_el, "TNO block count {tno_el} not below dense {dense_el}");
+        assert!(
+            tno_el < dense_el,
+            "TNO block count {tno_el} not below dense {dense_el}"
+        );
         // The exact-limit basis must report NO compression.
         let (t_el, t_dense) = tight.block_elements();
         assert_eq!(t_el, t_dense, "t_cut_tno = 0 must report full block counts");
@@ -1180,7 +1235,10 @@ mod tests {
         let b_scr = TripleTnoBasis::build(&screened, nvir, &ev, 0.0, amp).unwrap();
         assert!(b_scr.triples.len() < b_all.triples.len());
         let keys: Vec<_> = b_scr.triples.iter().map(|t| t.ijk).collect();
-        assert_eq!(keys, screened.triples, "TNO blocks must track the retained triple list");
+        assert_eq!(
+            keys, screened.triples,
+            "TNO blocks must track the retained triple list"
+        );
         assert_eq!(nocc, 4);
     }
 
@@ -1215,19 +1273,35 @@ mod tests {
         let (basis, _) = toy(nocc, nvir, 0.0, 1.5);
         let x = cube(nvir, 0xA5A5_1234_DEAD_BEEF);
         let scale = x.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-        assert!(scale > 1e-3, "block is ~zero — the round trip check would be vacuous");
+        assert!(
+            scale > 1e-3,
+            "block is ~zero — the round trip check would be vacuous"
+        );
 
         let mut worst = 0.0f64;
         for t in &basis.triples {
             let y = w3_to_tno(&x, t, nvir).unwrap();
-            assert_eq!(y.dim(), (nvir, nvir, nvir), "triple {:?} block truncated", t.ijk);
+            assert_eq!(
+                y.dim(),
+                (nvir, nvir, nvir),
+                "triple {:?} block truncated",
+                t.ijk
+            );
             let back = w3_from_tno(&y, t, nvir).unwrap();
             worst = worst.max(
-                x.iter().zip(back.iter()).map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max),
+                x.iter()
+                    .zip(back.iter())
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0f64, f64::max),
             );
         }
-        eprintln!("stage 2: max |x - roundtrip(x)| over 20 triples = {worst:.3e} (max |x| = {scale:.3e})");
-        assert!(worst < 1e-10, "triple-block round trip is not exact: {worst:.3e}");
+        eprintln!(
+            "stage 2: max |x - roundtrip(x)| over 20 triples = {worst:.3e} (max |x| = {scale:.3e})"
+        );
+        assert!(
+            worst < 1e-10,
+            "triple-block round trip is not exact: {worst:.3e}"
+        );
     }
 
     /// The forward transform must be the honest three-axis contraction. Checked
@@ -1259,10 +1333,16 @@ mod tests {
                 }
             }
         }
-        let worst =
-            got.iter().zip(want.iter()).map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max);
+        let worst = got
+            .iter()
+            .zip(want.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f64, f64::max);
         eprintln!("stage 2: max |GEMM path - naive sextuple sum| = {worst:.3e}");
-        assert!(worst < 1e-10, "the three-axis transform is mis-cycled: {worst:.3e}");
+        assert!(
+            worst < 1e-10,
+            "the three-axis transform is mis-cycled: {worst:.3e}"
+        );
     }
 
     /// Truncation must make the round trip LOSSY — otherwise the threshold is
@@ -1281,7 +1361,10 @@ mod tests {
             }
             let back = w3_from_tno(&w3_to_tno(&x, t, nvir).unwrap(), t, nvir).unwrap();
             worst = worst.max(
-                x.iter().zip(back.iter()).map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max),
+                x.iter()
+                    .zip(back.iter())
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0f64, f64::max),
             );
         }
         eprintln!("stage 2: truncated round-trip max deviation = {worst:.3e}");
@@ -1337,7 +1420,10 @@ mod tests {
             "stage 3: max |E_TNO - E_dense| = {worst_abs:.3e} (max |E_dense| = \
              {scale:.3e}, max rel = {worst_rel:.3e})"
         );
-        assert!(scale > 1e-3, "contributions are ~zero — the check would be vacuous");
+        assert!(
+            scale > 1e-3,
+            "contributions are ~zero — the check would be vacuous"
+        );
         assert!(
             worst_rel < 1e-10,
             "untruncated TNO contribution must reproduce dense: rel {worst_rel:.3e}"
@@ -1389,10 +1475,13 @@ mod tests {
         }
         let (eigs, vecs) = eigh_dc(&m, Uplo::Upper).unwrap();
         let keep: Vec<usize> = (0..nvir).filter(|&c| eigs[c] > UNION_RANK_TOL).collect();
-        let q_raw =
-            Array2::from_shape_fn((nvir, keep.len()), |(a, slot)| vecs[(a, keep[slot])]);
+        let q_raw = Array2::from_shape_fn((nvir, keep.len()), |(a, slot)| vecs[(a, keep[slot])]);
         let eps_naive: Vec<f64> = (0..q_raw.ncols())
-            .map(|a| (0..nvir).map(|c| q_raw[(c, a)] * q_raw[(c, a)] * ev[c]).sum())
+            .map(|a| {
+                (0..nvir)
+                    .map(|c| q_raw[(c, a)] * q_raw[(c, a)] * ev[c])
+                    .sum()
+            })
             .collect();
         let bad = TripleTno {
             ijk: (i, j, k),
@@ -1458,8 +1547,14 @@ mod tests {
 
         let rel = (e_tno - e_dense).abs() / e_dense.abs();
         eprintln!("stage 3: banded E = {e_tno:.12} (TNO) vs {e_dense:.12} (dense), rel {rel:.3e}");
-        assert!(e_dense.abs() > 1e-3, "banded energy is ~zero — the check is vacuous");
-        assert!(rel < 1e-10, "TNO band must reproduce the dense band: rel {rel:.3e}");
+        assert!(
+            e_dense.abs() > 1e-3,
+            "banded energy is ~zero — the check is vacuous"
+        );
+        assert!(
+            rel < 1e-10,
+            "TNO band must reproduce the dense band: rel {rel:.3e}"
+        );
     }
 
     /// Truncation must actually change the per-triple contribution — a knob that
@@ -1494,7 +1589,10 @@ mod tests {
             bt.virtual_retention(),
             b0.triples.len()
         );
-        assert!(n_changed > 0, "truncation had no effect on any triple contribution");
+        assert!(
+            n_changed > 0,
+            "truncation had no effect on any triple contribution"
+        );
     }
 
     /// Shape and input errors must be reported, not divided through.
@@ -1533,13 +1631,12 @@ mod tests {
         assert_eq!(t.ntno(), nvir, "zero cut must keep the full virtual space");
     }
 
-
     /// An empty occupied space produces no TNO blocks and must not panic.
     #[test]
     fn edge_empty_system() {
         let d = complete_triple_domains(&Array2::<f64>::zeros((0, 3))).unwrap();
-        let b = TripleTnoBasis::build(&d, 3, &eps_vir(3), 0.0, |_, _| Array2::zeros((3, 3)))
-            .unwrap();
+        let b =
+            TripleTnoBasis::build(&d, 3, &eps_vir(3), 0.0, |_, _| Array2::zeros((3, 3))).unwrap();
         assert!(b.triples.is_empty());
         assert!(b.is_complete());
         assert_eq!(b.virtual_retention(), 1.0);
@@ -1569,8 +1666,14 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(err.contains("DLPNO-(T) TNO basis"), "must name the method: {err}");
-        assert!(err.contains("transforms"), "breakdown must name a term: {err}");
+        assert!(
+            err.contains("DLPNO-(T) TNO basis"),
+            "must name the method: {err}"
+        );
+        assert!(
+            err.contains("transforms"),
+            "breakdown must name a term: {err}"
+        );
     }
 
     /// AN OVER-ESTIMATING GUARD IS ALSO A BUG. An ample budget must build the
@@ -1588,15 +1691,9 @@ mod tests {
                 |i: usize, j: usize| Array2::from_shape_fn((nvir, nvir), |(a, b)| t2[[i, j, a, b]]);
 
             let reference = TripleTnoBasis::build(&d, nvir, &ev, t_cut, block).unwrap();
-            let guarded = TripleTnoBasis::build_within_budget(
-                &d,
-                nvir,
-                &ev,
-                t_cut,
-                block,
-                1usize << 30,
-            )
-            .unwrap();
+            let guarded =
+                TripleTnoBasis::build_within_budget(&d, nvir, &ev, t_cut, block, 1usize << 30)
+                    .unwrap();
 
             assert_eq!(guarded.triples.len(), reference.triples.len());
             for (g, r) in guarded.triples.iter().zip(reference.triples.iter()) {
@@ -1621,13 +1718,20 @@ mod tests {
             |i: usize, j: usize| Array2::from_shape_fn((nvir, nvir), |(a, b)| t2[[i, j, a, b]]);
 
         let truncated = TripleTnoBasis::build(&d, nvir, &ev, 1e-3, block).unwrap();
-        assert!(!truncated.is_complete(), "test premise: something must truncate");
+        assert!(
+            !truncated.is_complete(),
+            "test premise: something must truncate"
+        );
 
         // Exactly the bytes the truncated build actually holds.
         let pair_d = complete_pair_domains(&d.centers).unwrap();
         let pnos = build_pno_transforms(&pair_d, nvir, 1e-3, block).unwrap();
         let need = (pnos.pairs.iter().map(|p| p.transform.len()).sum::<usize>()
-            + truncated.triples.iter().map(|t| t.transform.len()).sum::<usize>())
+            + truncated
+                .triples
+                .iter()
+                .map(|t| t.transform.len())
+                .sum::<usize>())
             * 8;
 
         assert!(

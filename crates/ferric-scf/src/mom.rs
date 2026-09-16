@@ -107,7 +107,8 @@ pub fn mom_reorder(
         out.column_mut(target).assign(&c_new.column(source));
     }
     for (target, &source) in open_chosen.iter().enumerate() {
-        out.column_mut(n_closed + target).assign(&c_new.column(source));
+        out.column_mut(n_closed + target)
+            .assign(&c_new.column(source));
     }
     for (target, &source) in virt_chosen.iter().enumerate() {
         out.column_mut(n_closed + n_open + target)

@@ -19,7 +19,10 @@ fn operator_kind_to_ffi(kind: OperatorKind) -> Result<c_int, FerricError> {
         OperatorKind::ErfcCoulomb => Ok(ffi::OP_ERFC_COULOMB),
         OperatorKind::Yukawa => Ok(ffi::OP_YUKAWA),
         OperatorKind::SlaterGeminal => Ok(ffi::OP_SLATER_GEMINAL),
-        _ => Err(FerricError::Libint(format!("operator {:?} not supported for libint2 engines", kind))),
+        _ => Err(FerricError::Libint(format!(
+            "operator {:?} not supported for libint2 engines",
+            kind
+        ))),
     }
 }
 
@@ -71,8 +74,12 @@ impl Engine {
     pub fn new_2e(op: Operator, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
         let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
         let mut handles = Vec::new();
-        
-        let n_comp = if op.is_composite { op.num_components } else { 1 };
+
+        let n_comp = if op.is_composite {
+            op.num_components
+        } else {
+            1
+        };
         for i in 0..n_comp {
             let (coeff, kind, omega) = if op.is_composite {
                 (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i])
@@ -84,12 +91,22 @@ impl Engine {
             // from the PreparedBasis. The shim catches C++ exceptions and returns
             // null on failure (checked below). The returned handle is owned by this
             // Engine and destroyed in Drop.
-            let h = unsafe { ffi::scf_engine_create(op_kind, omega, prep.max_nprim(), prep.max_l(), precision) };
-            if h.is_null() { return Err(FerricError::Libint("engine_create returned null".into())); }
+            let h = unsafe {
+                ffi::scf_engine_create(op_kind, omega, prep.max_nprim(), prep.max_l(), precision)
+            };
+            if h.is_null() {
+                return Err(FerricError::Libint("engine_create returned null".into()));
+            }
             handles.push((coeff, h));
         }
 
-        Ok(Engine { handles, buf: vec![0.0; max_fn * max_fn * max_fn * max_fn], scratch: vec![0.0; max_fn * max_fn * max_fn * max_fn] , is_terfc: false, is_terf: false })
+        Ok(Engine {
+            handles,
+            buf: vec![0.0; max_fn * max_fn * max_fn * max_fn],
+            scratch: vec![0.0; max_fn * max_fn * max_fn * max_fn],
+            is_terfc: false,
+            is_terf: false,
+        })
     }
 
     /// Create a geminal (F12) two-electron engine from an STG `Operator`
@@ -99,15 +116,25 @@ impl Engine {
     ///
     /// Returns an error if libint2 lacks the G12 integral class (the FFI returns
     /// null) or the operator is not a geminal kind.
-    pub fn new_2e_geminal(op: Operator, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
+    pub fn new_2e_geminal(
+        op: Operator,
+        prep: &PreparedBasis,
+        precision: f64,
+    ) -> Result<Self, FerricError> {
         let op_kind = match op.kind {
             OperatorKind::Cgtg => ffi::OP_CGTG,
             OperatorKind::CgtgCoulomb => ffi::OP_CGTG_X_COULOMB,
             OperatorKind::Delcgtg2 => ffi::OP_DELCGTG2,
-            other => return Err(FerricError::Libint(format!("not a geminal operator: {other:?}"))),
+            other => {
+                return Err(FerricError::Libint(format!(
+                    "not a geminal operator: {other:?}"
+                )))
+            }
         };
         if !op.is_composite || op.num_components == 0 {
-            return Err(FerricError::Libint("geminal operator has no Gaussian fit".into()));
+            return Err(FerricError::Libint(
+                "geminal operator has no Gaussian fit".into(),
+            ));
         }
         let ng = op.num_components;
         let exps: Vec<f64> = op.c_omegas[..ng].to_vec();
@@ -117,8 +144,13 @@ impl Engine {
         // returns null on failure (checked below).
         let handle = unsafe {
             ffi::scf_engine_create_geminal(
-                op_kind, ng as c_int, exps.as_ptr(), coefs.as_ptr(),
-                prep.max_nprim(), prep.max_l(), precision,
+                op_kind,
+                ng as c_int,
+                exps.as_ptr(),
+                coefs.as_ptr(),
+                prep.max_nprim(),
+                prep.max_l(),
+                precision,
             )
         };
         if handle.is_null() {
@@ -137,16 +169,32 @@ impl Engine {
     }
 
     /// Create a one-electron integral engine (overlap, kinetic, or nuclear).
-    pub fn new_1e(op_kind: c_int, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
+    pub fn new_1e(
+        op_kind: c_int,
+        prep: &PreparedBasis,
+        precision: f64,
+    ) -> Result<Self, FerricError> {
         // SAFETY: FFI call with valid PreparedBasis metadata. Null-checked below.
-        let handle = unsafe { ffi::scf_engine_create(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision) };
-        if handle.is_null() { return Err(FerricError::Libint("engine_create returned null".into())); }
+        let handle = unsafe {
+            ffi::scf_engine_create(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision)
+        };
+        if handle.is_null() {
+            return Err(FerricError::Libint("engine_create returned null".into()));
+        }
         let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
-        Ok(Engine { handles: vec![(1.0, handle)], buf: vec![0.0; max_fn * max_fn], scratch: Vec::new() , is_terfc: false, is_terf: false })
+        Ok(Engine {
+            handles: vec![(1.0, handle)],
+            buf: vec![0.0; max_fn * max_fn],
+            scratch: Vec::new(),
+            is_terfc: false,
+            is_terf: false,
+        })
     }
 
     /// Mutable pointer to the underlying libint2 engine handle. (Returns the first component).
-    pub fn handle_mut(&mut self) -> *mut c_void { self.handles[0].1 }
+    pub fn handle_mut(&mut self) -> *mut c_void {
+        self.handles[0].1
+    }
 
     /// Programmatic override for the shell-pair (`ShellPair::init`) cache used
     /// by `compute_quartet`, independent of the `FERRIC_SHELLPAIR_CACHE` env
@@ -186,7 +234,11 @@ impl Engine {
             // scf_engine_create variant). `prep.atoms()` is a valid CAtom slice
             // alive for the duration of this call. The shim copies the data.
             let ret = unsafe {
-                ffi::scf_engine_set_point_charges(h, prep.atoms().as_ptr(), prep.atoms().len() as c_int)
+                ffi::scf_engine_set_point_charges(
+                    h,
+                    prep.atoms().as_ptr(),
+                    prep.atoms().len() as c_int,
+                )
             };
             if ret < 0 {
                 return Err(FerricError::Libint(format!(
@@ -203,7 +255,11 @@ impl Engine {
     /// for gradient consumers.
     ///
     /// Propagates the shim's status code the same way as [`Self::set_point_charges`].
-    pub fn set_point_charges_extra(&mut self, prep: &PreparedBasis, extra: &[PointCharge]) -> Result<(), FerricError> {
+    pub fn set_point_charges_extra(
+        &mut self,
+        prep: &PreparedBasis,
+        extra: &[PointCharge],
+    ) -> Result<(), FerricError> {
         let mut atoms: Vec<CAtom> = prep.atoms().to_vec();
         atoms.extend(extra.iter().map(|pc| CAtom {
             atomic_number: pc.q,
@@ -228,12 +284,24 @@ impl Engine {
 
     /// Compute a shell quartet of 4-center ERIs. Returns `None` if screened to zero.
     pub fn compute_quartet(
-        &mut self, prep: &PreparedBasis, sh1: usize, sh2: usize, sh3: usize, sh4: usize,
+        &mut self,
+        prep: &PreparedBasis,
+        sh1: usize,
+        sh2: usize,
+        sh3: usize,
+        sh4: usize,
     ) -> Option<&[f64]> {
-        let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2] * prep.shell_dims()[sh3] * prep.shell_dims()[sh4];
-        if self.buf.len() < n { self.buf.resize(n, 0.0); }
-        if self.scratch.len() < n { self.scratch.resize(n, 0.0); }
-        
+        let n = prep.shell_dims()[sh1]
+            * prep.shell_dims()[sh2]
+            * prep.shell_dims()[sh3]
+            * prep.shell_dims()[sh4];
+        if self.buf.len() < n {
+            self.buf.resize(n, 0.0);
+        }
+        if self.scratch.len() < n {
+            self.scratch.resize(n, 0.0);
+        }
+
         let mut max_written = 0;
         self.buf[..n].fill(0.0);
 
@@ -241,52 +309,130 @@ impl Engine {
             // SAFETY: `h` and `prep.handle()` are valid libint2 handles. Shell
             // indices are in bounds (PreparedBasis owns them). `self.scratch` is
             // sized to hold max_fn^4 doubles. Status checked via assert.
-            let written = unsafe { ffi::scf_compute_eri_quartet(h, prep.handle(), sh1 as c_int, sh2 as c_int, sh3 as c_int, sh4 as c_int, self.scratch.as_mut_ptr()) };
-            assert!(written >= 0, "libint2 internal error in eri quartet ({sh1},{sh2},{sh3},{sh4}): status {written}");
+            let written = unsafe {
+                ffi::scf_compute_eri_quartet(
+                    h,
+                    prep.handle(),
+                    sh1 as c_int,
+                    sh2 as c_int,
+                    sh3 as c_int,
+                    sh4 as c_int,
+                    self.scratch.as_mut_ptr(),
+                )
+            };
+            assert!(
+                written >= 0,
+                "libint2 internal error in eri quartet ({sh1},{sh2},{sh3},{sh4}): status {written}"
+            );
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
-                for i in 0..w { self.buf[i] += coeff * self.scratch[i]; }
+                for i in 0..w {
+                    self.buf[i] += coeff * self.scratch[i];
+                }
             }
         }
-        
-        if max_written == 0 { None } else { Some(&self.buf[..max_written]) }
+
+        if max_written == 0 {
+            None
+        } else {
+            Some(&self.buf[..max_written])
+        }
     }
 
     /// Compute a shell pair block of one-electron integrals.
     pub fn compute_1e_block(&mut self, prep: &PreparedBasis, sh1: usize, sh2: usize) -> &[f64] {
         let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2];
-        if self.buf.len() < n { self.buf.resize(n, 0.0); }
+        if self.buf.len() < n {
+            self.buf.resize(n, 0.0);
+        }
         // SAFETY: Valid engine/basis handles and in-bounds shell indices.
         // `self.buf` is sized to hold max_fn^2 doubles. Status checked via assert.
-        let written = unsafe { ffi::scf_compute_1e_block(self.handles[0].1, prep.handle(), sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr()) };
-        assert!(written >= 0, "libint2 internal error in 1e block ({sh1},{sh2}): status {written}");
+        let written = unsafe {
+            ffi::scf_compute_1e_block(
+                self.handles[0].1,
+                prep.handle(),
+                sh1 as c_int,
+                sh2 as c_int,
+                self.buf.as_mut_ptr(),
+            )
+        };
+        assert!(
+            written >= 0,
+            "libint2 internal error in 1e block ({sh1},{sh2}): status {written}"
+        );
         &self.buf[..written as usize]
     }
 
     /// Create a first-derivative one-electron integral engine.
-    pub fn new_1e_deriv(op_kind: c_int, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
+    pub fn new_1e_deriv(
+        op_kind: c_int,
+        prep: &PreparedBasis,
+        precision: f64,
+    ) -> Result<Self, FerricError> {
         // SAFETY: FFI call with valid PreparedBasis metadata. Null-checked below.
-        let handle = unsafe { ffi::scf_engine_create_deriv(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision) };
-        if handle.is_null() { return Err(FerricError::Libint("derivative engine not available".into())); }
+        let handle = unsafe {
+            ffi::scf_engine_create_deriv(op_kind, 0.0, prep.max_nprim(), prep.max_l(), precision)
+        };
+        if handle.is_null() {
+            return Err(FerricError::Libint(
+                "derivative engine not available".into(),
+            ));
+        }
         let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
-        Ok(Engine { handles: vec![(1.0, handle)], buf: vec![0.0; 6 * max_fn * max_fn], scratch: Vec::new() , is_terfc: false, is_terf: false })
+        Ok(Engine {
+            handles: vec![(1.0, handle)],
+            buf: vec![0.0; 6 * max_fn * max_fn],
+            scratch: Vec::new(),
+            is_terfc: false,
+            is_terf: false,
+        })
     }
 
     /// Create a first-derivative 4-center two-electron integral engine.
-    pub fn new_2e_deriv(op: Operator, prep: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
+    pub fn new_2e_deriv(
+        op: Operator,
+        prep: &PreparedBasis,
+        precision: f64,
+    ) -> Result<Self, FerricError> {
         let max_fn = prep.shell_dims().iter().copied().max().unwrap_or(1);
         let mut handles = Vec::new();
-        let n_comp = if op.is_composite { op.num_components } else { 1 };
+        let n_comp = if op.is_composite {
+            op.num_components
+        } else {
+            1
+        };
         for i in 0..n_comp {
-            let (coeff, kind, omega) = if op.is_composite { (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i]) } else { (1.0, op.kind, op.omega) };
+            let (coeff, kind, omega) = if op.is_composite {
+                (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i])
+            } else {
+                (1.0, op.kind, op.omega)
+            };
             let op_kind = operator_kind_to_ffi(kind)?;
             // SAFETY: FFI call with valid metadata. Null-checked below.
-            let h = unsafe { ffi::scf_engine_create_deriv(op_kind, omega, prep.max_nprim(), prep.max_l(), precision) };
-            if h.is_null() { return Err(FerricError::Libint("derivative engine not available".into())); }
+            let h = unsafe {
+                ffi::scf_engine_create_deriv(
+                    op_kind,
+                    omega,
+                    prep.max_nprim(),
+                    prep.max_l(),
+                    precision,
+                )
+            };
+            if h.is_null() {
+                return Err(FerricError::Libint(
+                    "derivative engine not available".into(),
+                ));
+            }
             handles.push((coeff, h));
         }
-        Ok(Engine { handles, buf: vec![0.0; 12 * max_fn * max_fn * max_fn * max_fn], scratch: vec![0.0; 12 * max_fn * max_fn * max_fn * max_fn] , is_terfc: false, is_terf: false })
+        Ok(Engine {
+            handles,
+            buf: vec![0.0; 12 * max_fn * max_fn * max_fn * max_fn],
+            scratch: vec![0.0; 12 * max_fn * max_fn * max_fn * max_fn],
+            is_terfc: false,
+            is_terf: false,
+        })
     }
 
     /// Returns the derivative blocks of n1*n2 doubles each: 6 blocks
@@ -294,18 +440,40 @@ impl Engine {
     /// 3*(2 + natoms) blocks for a nuclear engine with point charges set
     /// (the extra blocks are the operator-center derivatives).
     /// Returns None if all derivatives were screened to zero.
-    pub fn compute_1e_deriv_block(&mut self, prep: &PreparedBasis, sh1: usize, sh2: usize) -> Option<&[f64]> {
+    pub fn compute_1e_deriv_block(
+        &mut self,
+        prep: &PreparedBasis,
+        sh1: usize,
+        sh2: usize,
+    ) -> Option<&[f64]> {
         let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2];
         // Worst case is the nuclear operator: 3*(2 + natoms) blocks. Sizing for
         // it unconditionally keeps the shim's write (nderiv * n doubles) in
         // bounds for every 1e engine kind.
         let total = 3 * (2 + prep.atoms().len()) * n;
-        if self.buf.len() < total { self.buf.resize(total, 0.0); }
+        if self.buf.len() < total {
+            self.buf.resize(total, 0.0);
+        }
         // SAFETY: Valid handles and in-bounds shell indices. `self.buf` is
         // sized to 3*(2+natoms)*n doubles (worst-case nuclear deriv).
-        let written = unsafe { ffi::scf_compute_1e_deriv_block(self.handles[0].1, prep.handle(), sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr()) };
-        assert!(written >= 0, "libint2 internal error in 1e deriv block ({sh1},{sh2}): status {written}");
-        if written == 0 { None } else { Some(&self.buf[..written as usize]) }
+        let written = unsafe {
+            ffi::scf_compute_1e_deriv_block(
+                self.handles[0].1,
+                prep.handle(),
+                sh1 as c_int,
+                sh2 as c_int,
+                self.buf.as_mut_ptr(),
+            )
+        };
+        assert!(
+            written >= 0,
+            "libint2 internal error in 1e deriv block ({sh1},{sh2}): status {written}"
+        );
+        if written == 0 {
+            None
+        } else {
+            Some(&self.buf[..written as usize])
+        }
     }
 
     /// Like `compute_1e_deriv_block`, but sizes the internal buffer for an
@@ -314,19 +482,47 @@ impl Engine {
     /// `set_point_charges_extra` with a nonempty `extra` list — the default
     /// `compute_1e_deriv_block`'s buffer would be undersized for the extra
     /// charge-derivative blocks libint2 writes.
-    pub fn compute_1e_deriv_block_n(&mut self, prep: &PreparedBasis, sh1: usize, sh2: usize, n_charges: usize) -> Option<&[f64]> {
+    pub fn compute_1e_deriv_block_n(
+        &mut self,
+        prep: &PreparedBasis,
+        sh1: usize,
+        sh2: usize,
+        n_charges: usize,
+    ) -> Option<&[f64]> {
         let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2];
         let total = 3 * (2 + n_charges) * n;
-        if self.buf.len() < total { self.buf.resize(total, 0.0); }
+        if self.buf.len() < total {
+            self.buf.resize(total, 0.0);
+        }
         // SAFETY: Valid handles and in-bounds shell indices. `self.buf` is
         // sized to 3*(2+n_charges)*n doubles to accommodate extra charges.
-        let written = unsafe { ffi::scf_compute_1e_deriv_block(self.handles[0].1, prep.handle(), sh1 as c_int, sh2 as c_int, self.buf.as_mut_ptr()) };
-        assert!(written >= 0, "libint2 internal error in 1e deriv block ({sh1},{sh2}): status {written}");
-        if written == 0 { None } else { Some(&self.buf[..written as usize]) }
+        let written = unsafe {
+            ffi::scf_compute_1e_deriv_block(
+                self.handles[0].1,
+                prep.handle(),
+                sh1 as c_int,
+                sh2 as c_int,
+                self.buf.as_mut_ptr(),
+            )
+        };
+        assert!(
+            written >= 0,
+            "libint2 internal error in 1e deriv block ({sh1},{sh2}): status {written}"
+        );
+        if written == 0 {
+            None
+        } else {
+            Some(&self.buf[..written as usize])
+        }
     }
 
     /// Create a 3-center integral engine for density fitting: (P|mu nu).
-    pub fn new_3center(op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
+    pub fn new_3center(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        precision: f64,
+    ) -> Result<Self, FerricError> {
         let max_nprim = obs.max_nprim().max(dfbs.max_nprim());
         let max_l = obs.max_l().max(dfbs.max_l());
         let max_fn_obs = obs.shell_dims().iter().copied().max().unwrap_or(1);
@@ -339,9 +535,23 @@ impl Engine {
             // for table_dir falls back to FERRIC_TERF_TABLE_DIR. Null-checked below.
             let h = unsafe {
                 if is_terf {
-                    ffi::scf_engine_create_terf_3center(op.distance, op.omega, max_nprim, max_l, precision, std::ptr::null())
+                    ffi::scf_engine_create_terf_3center(
+                        op.distance,
+                        op.omega,
+                        max_nprim,
+                        max_l,
+                        precision,
+                        std::ptr::null(),
+                    )
                 } else {
-                    ffi::scf_engine_create_terfc_3center(op.distance, op.omega, max_nprim, max_l, precision, std::ptr::null())
+                    ffi::scf_engine_create_terfc_3center(
+                        op.distance,
+                        op.omega,
+                        max_nprim,
+                        max_l,
+                        precision,
+                        std::ptr::null(),
+                    )
                 }
             };
             if h.is_null() {
@@ -361,20 +571,42 @@ impl Engine {
 
         let mut handles = Vec::new();
 
-        let n_comp = if op.is_composite { op.num_components } else { 1 };
+        let n_comp = if op.is_composite {
+            op.num_components
+        } else {
+            1
+        };
         for i in 0..n_comp {
-            let (coeff, kind, omega) = if op.is_composite { (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i]) } else { (1.0, op.kind, op.omega) };
+            let (coeff, kind, omega) = if op.is_composite {
+                (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i])
+            } else {
+                (1.0, op.kind, op.omega)
+            };
             let op_kind = operator_kind_to_ffi(kind)?;
             // SAFETY: FFI call with valid metadata. Null-checked below.
-            let h = unsafe { ffi::scf_engine_create_3center(op_kind, omega, max_nprim, max_l, precision) };
-            if h.is_null() { return Err(FerricError::Libint("3-center engine not available".into())); }
+            let h = unsafe {
+                ffi::scf_engine_create_3center(op_kind, omega, max_nprim, max_l, precision)
+            };
+            if h.is_null() {
+                return Err(FerricError::Libint("3-center engine not available".into()));
+            }
             handles.push((coeff, h));
         }
-        Ok(Engine { handles, buf: vec![0.0; max_fn_df * max_fn_obs * max_fn_obs], scratch: vec![0.0; max_fn_df * max_fn_obs * max_fn_obs] , is_terfc: false, is_terf: false })
+        Ok(Engine {
+            handles,
+            buf: vec![0.0; max_fn_df * max_fn_obs * max_fn_obs],
+            scratch: vec![0.0; max_fn_df * max_fn_obs * max_fn_obs],
+            is_terfc: false,
+            is_terf: false,
+        })
     }
 
     /// Create a 2-center integral engine for the Coulomb metric: (P|Q).
-    pub fn new_2center(op: Operator, dfbs: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
+    pub fn new_2center(
+        op: Operator,
+        dfbs: &PreparedBasis,
+        precision: f64,
+    ) -> Result<Self, FerricError> {
         let max_fn = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
 
         // Exact terfc/terf go through the standalone table engine, not libint2.
@@ -384,9 +616,23 @@ impl Engine {
             // Null-checked below.
             let h = unsafe {
                 if is_terf {
-                    ffi::scf_engine_create_terf_2center(op.distance, op.omega, dfbs.max_nprim(), dfbs.max_l(), precision, std::ptr::null())
+                    ffi::scf_engine_create_terf_2center(
+                        op.distance,
+                        op.omega,
+                        dfbs.max_nprim(),
+                        dfbs.max_l(),
+                        precision,
+                        std::ptr::null(),
+                    )
                 } else {
-                    ffi::scf_engine_create_terfc_2center(op.distance, op.omega, dfbs.max_nprim(), dfbs.max_l(), precision, std::ptr::null())
+                    ffi::scf_engine_create_terfc_2center(
+                        op.distance,
+                        op.omega,
+                        dfbs.max_nprim(),
+                        dfbs.max_l(),
+                        precision,
+                        std::ptr::null(),
+                    )
                 }
             };
             if h.is_null() {
@@ -406,76 +652,171 @@ impl Engine {
 
         let mut handles = Vec::new();
 
-        let n_comp = if op.is_composite { op.num_components } else { 1 };
+        let n_comp = if op.is_composite {
+            op.num_components
+        } else {
+            1
+        };
         for i in 0..n_comp {
-            let (coeff, kind, omega) = if op.is_composite { (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i]) } else { (1.0, op.kind, op.omega) };
+            let (coeff, kind, omega) = if op.is_composite {
+                (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i])
+            } else {
+                (1.0, op.kind, op.omega)
+            };
             let op_kind = operator_kind_to_ffi(kind)?;
             // SAFETY: FFI call with valid metadata. Null-checked below.
-            let h = unsafe { ffi::scf_engine_create_2center(op_kind, omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
-            if h.is_null() { return Err(FerricError::Libint("2-center engine not available".into())); }
+            let h = unsafe {
+                ffi::scf_engine_create_2center(
+                    op_kind,
+                    omega,
+                    dfbs.max_nprim(),
+                    dfbs.max_l(),
+                    precision,
+                )
+            };
+            if h.is_null() {
+                return Err(FerricError::Libint("2-center engine not available".into()));
+            }
             handles.push((coeff, h));
         }
-        Ok(Engine { handles, buf: vec![0.0; max_fn * max_fn], scratch: vec![0.0; max_fn * max_fn] , is_terfc: false, is_terf: false })
+        Ok(Engine {
+            handles,
+            buf: vec![0.0; max_fn * max_fn],
+            scratch: vec![0.0; max_fn * max_fn],
+            is_terfc: false,
+            is_terf: false,
+        })
     }
 
     /// Compute a 3-center ERI shell triplet (P|mu nu). Returns `None` if screened.
-    pub fn compute_eri3(&mut self, obs: &PreparedBasis, dfbs: &PreparedBasis, sh_p: usize, sh1: usize, sh2: usize) -> Option<&[f64]> {
+    pub fn compute_eri3(
+        &mut self,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        sh_p: usize,
+        sh1: usize,
+        sh2: usize,
+    ) -> Option<&[f64]> {
         let n = dfbs.shell_dims()[sh_p] * obs.shell_dims()[sh1] * obs.shell_dims()[sh2];
-        if self.buf.len() < n { self.buf.resize(n, 0.0); }
-        if self.scratch.len() < n { self.scratch.resize(n, 0.0); }
-        
+        if self.buf.len() < n {
+            self.buf.resize(n, 0.0);
+        }
+        if self.scratch.len() < n {
+            self.scratch.resize(n, 0.0);
+        }
+
         let mut max_written = 0;
         self.buf[..n].fill(0.0);
-        
+
         for &(coeff, h) in &self.handles {
             // SAFETY: `h`, `obs.handle()`, `dfbs.handle()` are valid libint2
             // handles. Shell indices are in bounds. `self.scratch` is sized to
             // hold max_fn_df * max_fn_obs^2 doubles. Status checked via assert.
             let written = unsafe {
                 if self.is_terf {
-                    ffi::scf_compute_terf_eri3(h, obs.handle(), dfbs.handle(), sh_p as c_int, sh1 as c_int, sh2 as c_int, self.scratch.as_mut_ptr())
+                    ffi::scf_compute_terf_eri3(
+                        h,
+                        obs.handle(),
+                        dfbs.handle(),
+                        sh_p as c_int,
+                        sh1 as c_int,
+                        sh2 as c_int,
+                        self.scratch.as_mut_ptr(),
+                    )
                 } else if self.is_terfc {
-                    ffi::scf_compute_terfc_eri3(h, obs.handle(), dfbs.handle(), sh_p as c_int, sh1 as c_int, sh2 as c_int, self.scratch.as_mut_ptr())
+                    ffi::scf_compute_terfc_eri3(
+                        h,
+                        obs.handle(),
+                        dfbs.handle(),
+                        sh_p as c_int,
+                        sh1 as c_int,
+                        sh2 as c_int,
+                        self.scratch.as_mut_ptr(),
+                    )
                 } else {
-                    ffi::scf_compute_eri3(h, obs.handle(), dfbs.handle(), sh_p as c_int, sh1 as c_int, sh2 as c_int, self.scratch.as_mut_ptr())
+                    ffi::scf_compute_eri3(
+                        h,
+                        obs.handle(),
+                        dfbs.handle(),
+                        sh_p as c_int,
+                        sh1 as c_int,
+                        sh2 as c_int,
+                        self.scratch.as_mut_ptr(),
+                    )
                 }
             };
-            assert!(written >= 0, "internal error in eri3 ({sh_p}|{sh1},{sh2}): status {written}");
+            assert!(
+                written >= 0,
+                "internal error in eri3 ({sh_p}|{sh1},{sh2}): status {written}"
+            );
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
-                for i in 0..w { self.buf[i] += coeff * self.scratch[i]; }
+                for i in 0..w {
+                    self.buf[i] += coeff * self.scratch[i];
+                }
             }
         }
-        if max_written == 0 { None } else { Some(&self.buf[..max_written]) }
+        if max_written == 0 {
+            None
+        } else {
+            Some(&self.buf[..max_written])
+        }
     }
 
     /// Compute a 2-center ERI shell pair (P|Q).
     pub fn compute_eri2(&mut self, dfbs: &PreparedBasis, sh_p: usize, sh_q: usize) -> &[f64] {
         let n = dfbs.shell_dims()[sh_p] * dfbs.shell_dims()[sh_q];
-        if self.buf.len() < n { self.buf.resize(n, 0.0); }
-        if self.scratch.len() < n { self.scratch.resize(n, 0.0); }
-        
+        if self.buf.len() < n {
+            self.buf.resize(n, 0.0);
+        }
+        if self.scratch.len() < n {
+            self.scratch.resize(n, 0.0);
+        }
+
         let mut max_written = 0;
         self.buf[..n].fill(0.0);
-        
+
         for &(coeff, h) in &self.handles {
             // SAFETY: `h` and `dfbs.handle()` are valid handles. Shell indices
             // in bounds. `self.scratch` sized for max_fn^2. Status checked.
             let written = unsafe {
                 if self.is_terf {
-                    ffi::scf_compute_terf_eri2(h, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.scratch.as_mut_ptr())
+                    ffi::scf_compute_terf_eri2(
+                        h,
+                        dfbs.handle(),
+                        sh_p as c_int,
+                        sh_q as c_int,
+                        self.scratch.as_mut_ptr(),
+                    )
                 } else if self.is_terfc {
-                    ffi::scf_compute_terfc_eri2(h, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.scratch.as_mut_ptr())
+                    ffi::scf_compute_terfc_eri2(
+                        h,
+                        dfbs.handle(),
+                        sh_p as c_int,
+                        sh_q as c_int,
+                        self.scratch.as_mut_ptr(),
+                    )
                 } else {
-                    ffi::scf_compute_eri2(h, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.scratch.as_mut_ptr())
+                    ffi::scf_compute_eri2(
+                        h,
+                        dfbs.handle(),
+                        sh_p as c_int,
+                        sh_q as c_int,
+                        self.scratch.as_mut_ptr(),
+                    )
                 }
             };
-            assert!(written >= 0, "internal error in eri2 ({sh_p}|{sh_q}): status {written}");
+            assert!(
+                written >= 0,
+                "internal error in eri2 ({sh_p}|{sh_q}): status {written}"
+            );
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
-                for i in 0..w { self.buf[i] += coeff * self.scratch[i]; }
+                for i in 0..w {
+                    self.buf[i] += coeff * self.scratch[i];
+                }
             }
         }
         &self.buf[..max_written]
@@ -484,113 +825,252 @@ impl Engine {
     /// Returns 12 blocks of n1*n2*n3*n4 doubles: [dx1..dz1, dx2..dz2, dx3..dz3, dx4..dz4].
     /// Returns None if all derivatives were screened to zero.
     pub fn compute_eri_deriv_quartet(
-        &mut self, prep: &PreparedBasis, sh1: usize, sh2: usize, sh3: usize, sh4: usize,
+        &mut self,
+        prep: &PreparedBasis,
+        sh1: usize,
+        sh2: usize,
+        sh3: usize,
+        sh4: usize,
     ) -> Option<&[f64]> {
-        let n = prep.shell_dims()[sh1] * prep.shell_dims()[sh2] * prep.shell_dims()[sh3] * prep.shell_dims()[sh4];
+        let n = prep.shell_dims()[sh1]
+            * prep.shell_dims()[sh2]
+            * prep.shell_dims()[sh3]
+            * prep.shell_dims()[sh4];
         let total = 12 * n;
-        if self.buf.len() < total { self.buf.resize(total, 0.0); }
-        if self.scratch.len() < total { self.scratch.resize(total, 0.0); }
-        
+        if self.buf.len() < total {
+            self.buf.resize(total, 0.0);
+        }
+        if self.scratch.len() < total {
+            self.scratch.resize(total, 0.0);
+        }
+
         let mut max_written = 0;
         self.buf[..total].fill(0.0);
-        
+
         for &(coeff, h) in &self.handles {
             // SAFETY: Valid handles and in-bounds shell indices. Buffer sized
             // for 12 * max_fn^4 doubles. Status checked via assert.
-            let written = unsafe { ffi::scf_compute_eri_deriv_quartet(h, prep.handle(), sh1 as c_int, sh2 as c_int, sh3 as c_int, sh4 as c_int, self.scratch.as_mut_ptr()) };
+            let written = unsafe {
+                ffi::scf_compute_eri_deriv_quartet(
+                    h,
+                    prep.handle(),
+                    sh1 as c_int,
+                    sh2 as c_int,
+                    sh3 as c_int,
+                    sh4 as c_int,
+                    self.scratch.as_mut_ptr(),
+                )
+            };
             assert!(written >= 0, "libint2 internal error in eri deriv quartet ({sh1},{sh2},{sh3},{sh4}): status {written}");
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
-                for i in 0..w { self.buf[i] += coeff * self.scratch[i]; }
+                for i in 0..w {
+                    self.buf[i] += coeff * self.scratch[i];
+                }
             }
         }
-        if max_written == 0 { None } else { Some(&self.buf[..max_written]) }
+        if max_written == 0 {
+            None
+        } else {
+            Some(&self.buf[..max_written])
+        }
     }
 
     /// Create a 3-center derivative engine: d(P|mu nu)/dR.
-    pub fn new_3center_deriv(op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
+    pub fn new_3center_deriv(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        precision: f64,
+    ) -> Result<Self, FerricError> {
         let max_nprim = obs.max_nprim().max(dfbs.max_nprim());
         let max_l = obs.max_l().max(dfbs.max_l());
         let max_fn_obs = obs.shell_dims().iter().copied().max().unwrap_or(1);
         let max_fn_df = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
         let mut handles = Vec::new();
-        
-        let n_comp = if op.is_composite { op.num_components } else { 1 };
+
+        let n_comp = if op.is_composite {
+            op.num_components
+        } else {
+            1
+        };
         for i in 0..n_comp {
-            let (coeff, kind, omega) = if op.is_composite { (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i]) } else { (1.0, op.kind, op.omega) };
+            let (coeff, kind, omega) = if op.is_composite {
+                (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i])
+            } else {
+                (1.0, op.kind, op.omega)
+            };
             let op_kind = operator_kind_to_ffi(kind)?;
             // SAFETY: FFI call with valid metadata. Null-checked below.
-            let h = unsafe { ffi::scf_engine_create_3center_deriv(op_kind, omega, max_nprim, max_l, precision) };
-            if h.is_null() { return Err(FerricError::Libint("3-center derivative engine not available".into())); }
+            let h = unsafe {
+                ffi::scf_engine_create_3center_deriv(op_kind, omega, max_nprim, max_l, precision)
+            };
+            if h.is_null() {
+                return Err(FerricError::Libint(
+                    "3-center derivative engine not available".into(),
+                ));
+            }
             handles.push((coeff, h));
         }
-        Ok(Engine { handles, buf: vec![0.0; 9 * max_fn_df * max_fn_obs * max_fn_obs], scratch: vec![0.0; 9 * max_fn_df * max_fn_obs * max_fn_obs] , is_terfc: false, is_terf: false })
+        Ok(Engine {
+            handles,
+            buf: vec![0.0; 9 * max_fn_df * max_fn_obs * max_fn_obs],
+            scratch: vec![0.0; 9 * max_fn_df * max_fn_obs * max_fn_obs],
+            is_terfc: false,
+            is_terf: false,
+        })
     }
 
     /// Create a 2-center derivative engine: d(P|Q)/dR.
-    pub fn new_2center_deriv(op: Operator, dfbs: &PreparedBasis, precision: f64) -> Result<Self, FerricError> {
+    pub fn new_2center_deriv(
+        op: Operator,
+        dfbs: &PreparedBasis,
+        precision: f64,
+    ) -> Result<Self, FerricError> {
         let max_fn = dfbs.shell_dims().iter().copied().max().unwrap_or(1);
         let mut handles = Vec::new();
-        
-        let n_comp = if op.is_composite { op.num_components } else { 1 };
+
+        let n_comp = if op.is_composite {
+            op.num_components
+        } else {
+            1
+        };
         for i in 0..n_comp {
-            let (coeff, kind, omega) = if op.is_composite { (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i]) } else { (1.0, op.kind, op.omega) };
+            let (coeff, kind, omega) = if op.is_composite {
+                (op.c_coeffs[i], op.c_kinds[i], op.c_omegas[i])
+            } else {
+                (1.0, op.kind, op.omega)
+            };
             let op_kind = operator_kind_to_ffi(kind)?;
             // SAFETY: FFI call with valid metadata. Null-checked below.
-            let h = unsafe { ffi::scf_engine_create_2center_deriv(op_kind, omega, dfbs.max_nprim(), dfbs.max_l(), precision) };
-            if h.is_null() { return Err(FerricError::Libint("2-center derivative engine not available".into())); }
+            let h = unsafe {
+                ffi::scf_engine_create_2center_deriv(
+                    op_kind,
+                    omega,
+                    dfbs.max_nprim(),
+                    dfbs.max_l(),
+                    precision,
+                )
+            };
+            if h.is_null() {
+                return Err(FerricError::Libint(
+                    "2-center derivative engine not available".into(),
+                ));
+            }
             handles.push((coeff, h));
         }
-        Ok(Engine { handles, buf: vec![0.0; 6 * max_fn * max_fn], scratch: vec![0.0; 6 * max_fn * max_fn] , is_terfc: false, is_terf: false })
+        Ok(Engine {
+            handles,
+            buf: vec![0.0; 6 * max_fn * max_fn],
+            scratch: vec![0.0; 6 * max_fn * max_fn],
+            is_terfc: false,
+            is_terf: false,
+        })
     }
 
     /// Compute 3-center ERI derivatives: 9 blocks (3 centers × 3 coords) of nP*n1*n2.
-    pub fn compute_eri3_deriv(&mut self, obs: &PreparedBasis, dfbs: &PreparedBasis, sh_p: usize, sh1: usize, sh2: usize) -> Option<&[f64]> {
+    pub fn compute_eri3_deriv(
+        &mut self,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        sh_p: usize,
+        sh1: usize,
+        sh2: usize,
+    ) -> Option<&[f64]> {
         let n = dfbs.shell_dims()[sh_p] * obs.shell_dims()[sh1] * obs.shell_dims()[sh2];
         let total = 9 * n;
-        if self.buf.len() < total { self.buf.resize(total, 0.0); }
-        if self.scratch.len() < total { self.scratch.resize(total, 0.0); }
-        
+        if self.buf.len() < total {
+            self.buf.resize(total, 0.0);
+        }
+        if self.scratch.len() < total {
+            self.scratch.resize(total, 0.0);
+        }
+
         let mut max_written = 0;
         self.buf[..total].fill(0.0);
-        
+
         for &(coeff, h) in &self.handles {
             // SAFETY: Valid handles, in-bounds shell indices, buffer sized for
             // 9 * max_fn_df * max_fn_obs^2. Status checked via assert.
-            let written = unsafe { ffi::scf_compute_eri3_deriv(h, obs.handle(), dfbs.handle(), sh_p as c_int, sh1 as c_int, sh2 as c_int, self.scratch.as_mut_ptr()) };
-            assert!(written >= 0, "libint2 internal error in eri3 deriv ({sh_p}|{sh1},{sh2}): status {written}");
+            let written = unsafe {
+                ffi::scf_compute_eri3_deriv(
+                    h,
+                    obs.handle(),
+                    dfbs.handle(),
+                    sh_p as c_int,
+                    sh1 as c_int,
+                    sh2 as c_int,
+                    self.scratch.as_mut_ptr(),
+                )
+            };
+            assert!(
+                written >= 0,
+                "libint2 internal error in eri3 deriv ({sh_p}|{sh1},{sh2}): status {written}"
+            );
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
-                for i in 0..w { self.buf[i] += coeff * self.scratch[i]; }
+                for i in 0..w {
+                    self.buf[i] += coeff * self.scratch[i];
+                }
             }
         }
-        if max_written == 0 { None } else { Some(&self.buf[..max_written]) }
+        if max_written == 0 {
+            None
+        } else {
+            Some(&self.buf[..max_written])
+        }
     }
 
     /// Compute 2-center ERI derivatives: 6 blocks (2 centers × 3 coords) of nP*nQ.
-    pub fn compute_eri2_deriv(&mut self, dfbs: &PreparedBasis, sh_p: usize, sh_q: usize) -> Option<&[f64]> {
+    pub fn compute_eri2_deriv(
+        &mut self,
+        dfbs: &PreparedBasis,
+        sh_p: usize,
+        sh_q: usize,
+    ) -> Option<&[f64]> {
         let n = dfbs.shell_dims()[sh_p] * dfbs.shell_dims()[sh_q];
         let total = 6 * n;
-        if self.buf.len() < total { self.buf.resize(total, 0.0); }
-        if self.scratch.len() < total { self.scratch.resize(total, 0.0); }
-        
+        if self.buf.len() < total {
+            self.buf.resize(total, 0.0);
+        }
+        if self.scratch.len() < total {
+            self.scratch.resize(total, 0.0);
+        }
+
         let mut max_written = 0;
         self.buf[..total].fill(0.0);
-        
+
         for &(coeff, h) in &self.handles {
             // SAFETY: Valid handles, in-bounds shell indices, buffer sized for
             // 6 * max_fn^2. Status checked via assert.
-            let written = unsafe { ffi::scf_compute_eri2_deriv(h, dfbs.handle(), sh_p as c_int, sh_q as c_int, self.scratch.as_mut_ptr()) };
-            assert!(written >= 0, "libint2 internal error in eri2 deriv ({sh_p}|{sh_q}): status {written}");
+            let written = unsafe {
+                ffi::scf_compute_eri2_deriv(
+                    h,
+                    dfbs.handle(),
+                    sh_p as c_int,
+                    sh_q as c_int,
+                    self.scratch.as_mut_ptr(),
+                )
+            };
+            assert!(
+                written >= 0,
+                "libint2 internal error in eri2 deriv ({sh_p}|{sh_q}): status {written}"
+            );
             if written > 0 {
                 let w = written as usize;
                 max_written = max_written.max(w);
-                for i in 0..w { self.buf[i] += coeff * self.scratch[i]; }
+                for i in 0..w {
+                    self.buf[i] += coeff * self.scratch[i];
+                }
             }
         }
-        if max_written == 0 { None } else { Some(&self.buf[..max_written]) }
+        if max_written == 0 {
+            None
+        } else {
+            Some(&self.buf[..max_written])
+        }
     }
 }
 
@@ -634,7 +1114,12 @@ mod tests {
         let prep = water_sto3g();
         let natoms = prep.atoms().len();
         let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, &prep, 1e-14).unwrap();
-        let extra = vec![PointCharge { q: 1.5, x: 0.0, y: 0.0, z: 10.0 }];
+        let extra = vec![PointCharge {
+            q: 1.5,
+            x: 0.0,
+            y: 0.0,
+            z: 10.0,
+        }];
         eng.set_point_charges_extra(&prep, &extra).unwrap();
         // No direct getter for the engine's internal charge list (opaque C++ state);
         // this test instead verifies the energy contribution changes vs. real-atoms-only,
@@ -650,13 +1135,20 @@ mod tests {
         let natoms = prep.atoms().len();
         let mut eng_a = Engine::new_1e_deriv(ffi::OP_NUCLEAR, &prep, 1e-14).unwrap();
         eng_a.set_point_charges(&prep).unwrap();
-        let block_a = eng_a.compute_1e_deriv_block(&prep, 0, 0).map(|s| s.to_vec());
+        let block_a = eng_a
+            .compute_1e_deriv_block(&prep, 0, 0)
+            .map(|s| s.to_vec());
 
         let mut eng_b = Engine::new_1e_deriv(ffi::OP_NUCLEAR, &prep, 1e-14).unwrap();
         eng_b.set_point_charges_extra(&prep, &[]).unwrap();
-        let block_b = eng_b.compute_1e_deriv_block_n(&prep, 0, 0, natoms).map(|s| s.to_vec());
+        let block_b = eng_b
+            .compute_1e_deriv_block_n(&prep, 0, 0, natoms)
+            .map(|s| s.to_vec());
 
-        assert_eq!(block_a, block_b, "zero-extra-charges path must match the original exactly");
+        assert_eq!(
+            block_a, block_b,
+            "zero-extra-charges path must match the original exactly"
+        );
     }
 
     #[test]
@@ -664,11 +1156,19 @@ mod tests {
         let prep = water_sto3g();
         let natoms = prep.atoms().len();
         let mut eng = Engine::new_1e_deriv(ffi::OP_NUCLEAR, &prep, 1e-14).unwrap();
-        let extra = vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 10.0 }];
+        let extra = vec![PointCharge {
+            q: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 10.0,
+        }];
         eng.set_point_charges_extra(&prep, &extra).unwrap();
         let n_charges = natoms + extra.len();
         let block = eng.compute_1e_deriv_block_n(&prep, 0, 0, n_charges);
-        assert!(block.is_some(), "expected a nonzero derivative block for shell pair (0,0)");
+        assert!(
+            block.is_some(),
+            "expected a nonzero derivative block for shell pair (0,0)"
+        );
         let block = block.unwrap();
         let n1n2 = prep.shell_dims()[0] * prep.shell_dims()[0];
         // 3*(2+n_charges) blocks total, each of size n1n2.
@@ -715,7 +1215,10 @@ mod tests {
         let q = eng.compute_quartet(&prep, 0, 0, 0, 0);
         assert!(q.is_some(), "ErfcCoulomb should produce non-zero integrals");
         let v = q.unwrap()[0];
-        assert!(v > 0.0 && v < 0.7746, "erfc (00|00) = {v}, should be between 0 and full Coulomb 0.7746");
+        assert!(
+            v > 0.0 && v < 0.7746,
+            "erfc (00|00) = {v}, should be between 0 and full Coulomb 0.7746"
+        );
     }
 
     #[test]
@@ -731,8 +1234,14 @@ mod tests {
         let v_erf = eng_erf.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
         let v_erfc = eng_erfc.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
 
-        assert!((v_full - v_erf - v_erfc).abs() < 1e-10,
-            "erf + erfc should equal Coulomb: {} + {} = {} vs {}", v_erf, v_erfc, v_erf + v_erfc, v_full);
+        assert!(
+            (v_full - v_erf - v_erfc).abs() < 1e-10,
+            "erf + erfc should equal Coulomb: {} + {} = {} vs {}",
+            v_erf,
+            v_erfc,
+            v_erf + v_erfc,
+            v_full
+        );
     }
 
     /// True when this libint2 actually carries the G12 integral class.
@@ -811,15 +1320,26 @@ mod tests {
         }
         let gamma = 1.0;
 
-        let mut e_f12 = Engine::new_2e_geminal(Operator::stg(gamma, OperatorKind::Cgtg), &prep, 1e-14).unwrap();
+        let mut e_f12 =
+            Engine::new_2e_geminal(Operator::stg(gamma, OperatorKind::Cgtg), &prep, 1e-14).unwrap();
         let v_f12 = e_f12.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
-        assert!(v_f12 < 0.0, "⟨f12⟩ should be < 0 (geminal is -exp/gamma), got {v_f12}");
+        assert!(
+            v_f12 < 0.0,
+            "⟨f12⟩ should be < 0 (geminal is -exp/gamma), got {v_f12}"
+        );
 
-        let mut e_fc = Engine::new_2e_geminal(Operator::stg(gamma, OperatorKind::CgtgCoulomb), &prep, 1e-14).unwrap();
+        let mut e_fc = Engine::new_2e_geminal(
+            Operator::stg(gamma, OperatorKind::CgtgCoulomb),
+            &prep,
+            1e-14,
+        )
+        .unwrap();
         let v_fc = e_fc.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
         assert!(v_fc < 0.0, "⟨f12/r12⟩ should be < 0, got {v_fc}");
 
-        let mut e_dc = Engine::new_2e_geminal(Operator::stg(gamma, OperatorKind::Delcgtg2), &prep, 1e-14).unwrap();
+        let mut e_dc =
+            Engine::new_2e_geminal(Operator::stg(gamma, OperatorKind::Delcgtg2), &prep, 1e-14)
+                .unwrap();
         let v_dc = e_dc.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
         assert!(v_dc >= 0.0, "⟨|∇f12|^2⟩ should be ≥ 0, got {v_dc}");
     }
@@ -836,7 +1356,10 @@ mod tests {
         let q = eng.compute_quartet(&prep, 0, 0, 0, 0);
         assert!(q.is_some(), "Yukawa (00|00) screened/empty");
         let v = q.unwrap()[0];
-        assert!(v.is_finite() && v > 0.0, "Yukawa (00|00) = {v} not finite/positive");
+        assert!(
+            v.is_finite() && v > 0.0,
+            "Yukawa (00|00) = {v} not finite/positive"
+        );
     }
 
     #[test]
@@ -891,8 +1414,14 @@ mod tests {
                 .unwrap()
                 .compute_quartet(&prep, 0, 0, 0, 0)
                 .unwrap()[0];
-            assert!(v < v_coul, "yukawa(zeta={zeta})={v} must be < coulomb {v_coul}");
-            assert!(v > prev, "yukawa should increase toward coulomb as zeta shrinks");
+            assert!(
+                v < v_coul,
+                "yukawa(zeta={zeta})={v} must be < coulomb {v_coul}"
+            );
+            assert!(
+                v > prev,
+                "yukawa should increase toward coulomb as zeta shrinks"
+            );
             prev = v;
         }
         // At zeta=0.01, U = 1e-4/(4 rho) is still >= Umin for these compact H 1s
@@ -969,7 +1498,10 @@ mod tests {
                 }
             }
         }
-        assert!(any_attenuated, "expected the 3c Yukawa to be attenuated below Coulomb somewhere");
+        assert!(
+            any_attenuated,
+            "expected the 3c Yukawa to be attenuated below Coulomb somewhere"
+        );
 
         // 2-center: sweep all pairs, including the diagonal (P|P) T=0 blocks.
         let mut c2 = Engine::new_2center(Operator::coulomb(), &dfbs, 1e-14).unwrap();
@@ -995,7 +1527,10 @@ mod tests {
         assert!(eng.is_ok(), "SlaterGeminal engine failed: {:?}", eng.err());
         let mut eng = eng.unwrap();
         let v = eng.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
-        assert!(v.is_finite() && v > 0.0, "exact stg (00|00) = {v} should be > 0");
+        assert!(
+            v.is_finite() && v > 0.0,
+            "exact stg (00|00) = {v} should be > 0"
+        );
     }
 
     #[test]
@@ -1082,14 +1617,20 @@ mod tests {
         // 2*gamma for every element that samples r12>0 (slower decay), and the
         // "squared = doubled-decay" operator is the correct, smaller one.
         let mut e_single = Engine::new_2e(Operator::slater_geminal(gamma), &prep, 1e-14).unwrap();
-        let v_single = e_single.compute_quartet(&prep, 0, 0, 1, 1).unwrap().to_vec();
+        let v_single = e_single
+            .compute_quartet(&prep, 0, 0, 1, 1)
+            .unwrap()
+            .to_vec();
         assert_eq!(v_sq_direct.len(), v_single.len());
 
         // Every squared-geminal (doubled-decay) matrix element must be positive,
         // finite, and no larger than the single-geminal one (exp(-2gr) <= exp(-gr)).
         let mut saw_strictly_smaller = false;
         for (sq, si) in v_sq_direct.iter().zip(v_single.iter()) {
-            assert!(sq.is_finite() && *sq > 0.0, "squared geminal element {sq} not finite/positive");
+            assert!(
+                sq.is_finite() && *sq > 0.0,
+                "squared geminal element {sq} not finite/positive"
+            );
             assert!(
                 *sq <= *si + 1e-12,
                 "doubled-decay element {sq} should be <= single-decay {si}"
@@ -1134,14 +1675,17 @@ mod tests {
         let mut eng_terfc = Engine::new_2e(op_terfc, &prep, 1e-14).unwrap();
         let q = eng_terfc.compute_quartet(&prep, 0, 0, 0, 0);
         assert!(q.is_some(), "terfc_fit should produce non-zero integrals");
-        
+
         let v = q.unwrap()[0];
         // The value should be bounded by the standard coulomb operator
         let op_coulomb = Operator::coulomb();
         let mut eng_coulomb = Engine::new_2e(op_coulomb, &prep, 1e-14).unwrap();
         let v_coulomb = eng_coulomb.compute_quartet(&prep, 0, 0, 0, 0).unwrap()[0];
-        
-        assert!(v > 0.0 && v < v_coulomb, "terfc integral {v} should be attenuated (0 < v < {v_coulomb})");
+
+        assert!(
+            v > 0.0 && v < v_coulomb,
+            "terfc integral {v} should be attenuated (0 < v < {v_coulomb})"
+        );
     }
 
     #[test]
@@ -1163,7 +1707,9 @@ mod tests {
         // sum to zero per coordinate.
         for coord in 0..3 {
             for idx in 0..n {
-                let sum: f64 = (0..2 + natoms).map(|c| deriv[(3 * c + coord) * n + idx]).sum();
+                let sum: f64 = (0..2 + natoms)
+                    .map(|c| deriv[(3 * c + coord) * n + idx])
+                    .sum();
                 assert!(sum.abs() < 1e-10, "coord={coord} idx={idx} sum={sum:.2e}");
             }
         }
@@ -1226,9 +1772,15 @@ mod tests {
                             let d0 = deriv[coord * block_sz + idx];
                             let d1 = deriv[(3 + coord) * block_sz + idx];
                             let sum = d0 + d1;
-                            assert!(sum.abs() < 1e-10,
+                            assert!(
+                                sum.abs() < 1e-10,
                                 "2c translational invariance: sh({},{}) coord={} idx={} sum={:.2e}",
-                                sh_p, sh_q, coord, idx, sum);
+                                sh_p,
+                                sh_q,
+                                coord,
+                                idx,
+                                sum
+                            );
                         }
                     }
                 }
@@ -1281,8 +1833,14 @@ mod tests {
         let mut eng_cached = Engine::new_2e(Operator::coulomb(), &prep, precision).unwrap();
         let mut eng_uncached = Engine::new_2e(Operator::coulomb(), &prep, precision).unwrap();
         eng_uncached.set_shellpair_cache_enabled(false);
-        assert!(eng_cached.shellpair_cache_enabled(), "cache must default to enabled");
-        assert!(!eng_uncached.shellpair_cache_enabled(), "cache must be off on the control engine");
+        assert!(
+            eng_cached.shellpair_cache_enabled(),
+            "cache must default to enabled"
+        );
+        assert!(
+            !eng_uncached.shellpair_cache_enabled(),
+            "cache must be off on the control engine"
+        );
 
         let mut n_compared = 0usize;
         let mut n_nonzero = 0usize;
@@ -1291,16 +1849,25 @@ mod tests {
                 for s3 in 0..=s1 {
                     let s4max = if s3 == s1 { s2 } else { s3 };
                     for s4 in 0..=s4max {
-                        let cached = eng_cached.compute_quartet(&prep, s1, s2, s3, s4).map(|q| q.to_vec());
-                        let uncached = eng_uncached.compute_quartet(&prep, s1, s2, s3, s4).map(|q| q.to_vec());
+                        let cached = eng_cached
+                            .compute_quartet(&prep, s1, s2, s3, s4)
+                            .map(|q| q.to_vec());
+                        let uncached = eng_uncached
+                            .compute_quartet(&prep, s1, s2, s3, s4)
+                            .map(|q| q.to_vec());
                         n_compared += 1;
                         match (&cached, &uncached) {
                             (None, None) => {}
                             (Some(a), Some(b)) => {
-                                assert_eq!(a.len(), b.len(),
-                                    "{mol_path}/{basis} ({s1},{s2}|{s3},{s4}): length mismatch");
+                                assert_eq!(
+                                    a.len(),
+                                    b.len(),
+                                    "{mol_path}/{basis} ({s1},{s2}|{s3},{s4}): length mismatch"
+                                );
                                 for (idx, (av, bv)) in a.iter().zip(b.iter()).enumerate() {
-                                    if *av != 0.0 { n_nonzero += 1; }
+                                    if *av != 0.0 {
+                                        n_nonzero += 1;
+                                    }
                                     // REASSOCIATION FLOOR, not bit-identity — and the
                                     // difference is deliberate.
                                     //
@@ -1369,7 +1936,11 @@ mod tests {
         // an ordering/sign bug in the cache would show up here even though it
         // would be invisible on an all-s-shell system like STO-3G water (an
         // (ss|ss)-only build depends on AB only through |AB|^2).
-        assert_cache_bit_identical_to_uncached("../../testdata/molecules/water.xyz", "cc-pvdz", 1e-12);
+        assert_cache_bit_identical_to_uncached(
+            "../../testdata/molecules/water.xyz",
+            "cc-pvdz",
+            1e-12,
+        );
     }
 
     #[test]
@@ -1377,7 +1948,11 @@ mod tests {
         // Larger, lower-symmetry-per-atom system (12 heavy/light centers) with
         // many more distinct shell pairs than water, at a basis with p/d
         // shells -- the system this whole optimization was profiled against.
-        assert_cache_bit_identical_to_uncached("../../testdata/molecules/benzene.xyz", "cc-pvdz", 1e-12);
+        assert_cache_bit_identical_to_uncached(
+            "../../testdata/molecules/benzene.xyz",
+            "cc-pvdz",
+            1e-12,
+        );
     }
 
     #[test]
@@ -1406,7 +1981,11 @@ mod tests {
         // a broken build (no compiler access in this environment), which is
         // why the formula is repeated verbatim in `ln_precision_of`'s doc
         // comment for anyone auditing this later.
-        assert_cache_bit_identical_to_uncached("../../testdata/molecules/water.xyz", "cc-pvdz", 1e-4);
+        assert_cache_bit_identical_to_uncached(
+            "../../testdata/molecules/water.xyz",
+            "cc-pvdz",
+            1e-4,
+        );
     }
 
     #[test]
@@ -1455,8 +2034,12 @@ mod tests {
                 for s3 in 0..=s1 {
                     let s4max = if s3 == s1 { s2 } else { s3 };
                     for s4 in 0..=s4max {
-                        let a = eng.compute_quartet(&prep_b, s1, s2, s3, s4).map(|q| q.to_vec());
-                        let b = eng_control.compute_quartet(&prep_b, s1, s2, s3, s4).map(|q| q.to_vec());
+                        let a = eng
+                            .compute_quartet(&prep_b, s1, s2, s3, s4)
+                            .map(|q| q.to_vec());
+                        let b = eng_control
+                            .compute_quartet(&prep_b, s1, s2, s3, s4)
+                            .map(|q| q.to_vec());
                         n_compared += 1;
                         // Reassociation floor rather than exact Vec equality, for the
                         // same bra/ket-swap reason documented in the bit-identity
@@ -1467,7 +2050,8 @@ mod tests {
                         // ones. A 1e-12 bound is four orders inside "wrong molecule"
                         // territory while tolerating the ~1e-14 reordering residual.
                         assert_eq!(
-                            a.is_some(), b.is_some(),
+                            a.is_some(),
+                            b.is_some(),
                             "basis-change invalidation: screening disagreement at \
                              ({s1},{s2}|{s3},{s4}) -- stale cache entry suspected"
                         );
@@ -1517,6 +2101,9 @@ mod tests {
         let eng = Engine::new_2e(Operator::coulomb(), &prep, 1e-14).unwrap();
         let enabled = eng.shellpair_cache_enabled();
         std::env::remove_var("FERRIC_SHELLPAIR_CACHE");
-        assert!(!enabled, "FERRIC_SHELLPAIR_CACHE=off must disable the cache on a fresh engine");
+        assert!(
+            !enabled,
+            "FERRIC_SHELLPAIR_CACHE=off must disable the cache on a fresh engine"
+        );
     }
 }

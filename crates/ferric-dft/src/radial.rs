@@ -31,27 +31,26 @@
 /// Indexed by Z (Z=1 is index 1; index 0 is unused placeholder 1.0).
 const TA_XI: &[f64] = &[
     // Z=0 (unused)
-    1.0,
-    // Z=1..10
-    0.8, 0.9, 1.8, 1.4, 1.3, 1.1, 0.9, 0.9, 0.9, 0.9,
-    // Z=11..18
-    1.4, 1.3, 1.3, 1.2, 1.1, 1.0, 1.0, 1.0,
-    // Z=19..36
+    1.0, // Z=1..10
+    0.8, 0.9, 1.8, 1.4, 1.3, 1.1, 0.9, 0.9, 0.9, 0.9, // Z=11..18
+    1.4, 1.3, 1.3, 1.2, 1.1, 1.0, 1.0, 1.0, // Z=19..36
     1.5, 1.4, 1.3, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.1, 1.1, 1.1, 1.1, 1.0, 0.9, 0.9,
     // Z=37..54
     0.9, 0.9, 2.0, 1.7, 1.5, 1.5, 1.35, 1.35, 1.25, 1.2, 1.25, 1.3, 1.5, 1.5, 1.3, 1.2,
     // Z=55..86
-    1.2, 1.15, 1.15, 1.15, 2.5, 2.2, 2.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5,
-    1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5,
-    // Z=87..103
-    1.5, 2.5, 2.1, 3.685, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5,
-    1.5,
+    1.2, 1.15, 1.15, 1.15, 2.5, 2.2, 2.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5,
+    1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, // Z=87..103
+    1.5, 2.5, 2.1, 3.685, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5,
 ];
 
 /// Return the TA ξ parameter for atomic number `z`.
 fn ta_xi(z: i32) -> f64 {
     let z = z as usize;
-    if z < TA_XI.len() { TA_XI[z] } else { 1.5 }
+    if z < TA_XI.len() {
+        TA_XI[z]
+    } else {
+        1.5
+    }
 }
 
 /// Treutler-Ahlrichs M4 radial nodes for atomic number `z`, `n` points.
@@ -68,7 +67,7 @@ fn ta_xi(z: i32) -> f64 {
 pub fn treutler_ahlrichs_m4(z: i32, n: usize) -> (Vec<f64>, Vec<f64>) {
     let alpha = 0.6_f64;
     let xi = ta_xi(z);
-    let ln2 = xi / 2.0_f64.ln();   // = ξ / ln(2)
+    let ln2 = xi / 2.0_f64.ln(); // = ξ / ln(2)
     let pi = std::f64::consts::PI;
     let np1 = (n + 1) as f64;
 
@@ -79,12 +78,12 @@ pub fn treutler_ahlrichs_m4(z: i32, n: usize) -> (Vec<f64>, Vec<f64>) {
     // radii increase from small to large (matching PySCF's `r[::-1]`).
     for k in 1..=n {
         let theta = pi * (k as f64) / np1;
-        let x = theta.cos();   // x decreases as k increases; x[1] ≈ +1, x[n] ≈ -1
+        let x = theta.cos(); // x decreases as k increases; x[1] ≈ +1, x[n] ≈ -1
         let one_plus = 1.0 + x;
         let one_minus = 1.0 - x;
         // r = -ln2 * (1+x)^α * ln((1-x)/2)
         // Note: (1-x)/2 ∈ (0,1) so ln((1-x)/2) < 0, making r > 0.
-        let log_term = (one_minus / 2.0).ln();  // negative for x ∈ (-1, 1)
+        let log_term = (one_minus / 2.0).ln(); // negative for x ∈ (-1, 1)
         let r = -ln2 * one_plus.powf(alpha) * log_term;
         // dr/dx = ln2 * (1+x)^α * [-α/(1+x) * ln((1-x)/2) + 1/(1-x)]
         let dr_dx = ln2 * one_plus.powf(alpha) * (-alpha / one_plus * log_term + 1.0 / one_minus);
@@ -112,7 +111,9 @@ mod tests {
         let alpha = 1.0_f64;
         let exact = (std::f64::consts::PI / alpha).powf(1.5);
         let (rs, ws) = treutler_ahlrichs_m4(8, 50); // Oxygen, 50 radial pts
-        let approx: f64 = rs.iter().zip(ws.iter())
+        let approx: f64 = rs
+            .iter()
+            .zip(ws.iter())
             .map(|(r, w)| w * (-alpha * r * r).exp())
             .sum();
         let err = (approx - exact).abs() / exact.abs();
@@ -129,8 +130,12 @@ mod tests {
         let zf = z as f64;
         let exact = zf;
         let (rs, ws) = treutler_ahlrichs_m4(z, 80);
-        let approx: f64 = rs.iter().zip(ws.iter())
-            .map(|(r, w)| w * zf * xi_slater.powi(3) / std::f64::consts::PI * (-2.0 * xi_slater * r).exp())
+        let approx: f64 = rs
+            .iter()
+            .zip(ws.iter())
+            .map(|(r, w)| {
+                w * zf * xi_slater.powi(3) / std::f64::consts::PI * (-2.0 * xi_slater * r).exp()
+            })
             .sum();
         let err = (approx - exact).abs() / exact.abs();
         eprintln!("TA-M4 Slater(Z=6) 80pt: exact={exact}, approx={approx:.6}, relerr={err:.2e}");

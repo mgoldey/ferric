@@ -44,17 +44,46 @@ pub struct CAtom {
 extern "C" {
     pub fn scf_libint_init();
     pub fn scf_libint_finalize();
-    pub fn scf_basis_create(shells: *const CShell, nshells: c_int, atoms: *const CAtom, natoms: c_int) -> *mut c_void;
+    pub fn scf_basis_create(
+        shells: *const CShell,
+        nshells: c_int,
+        atoms: *const CAtom,
+        natoms: c_int,
+    ) -> *mut c_void;
     pub fn scf_basis_destroy(bs: *mut c_void);
     pub fn scf_basis_nbasis(bs: *const c_void) -> c_int;
     pub fn scf_basis_nshells(bs: *const c_void) -> c_int;
     pub fn scf_basis_shell_dims(bs: *const c_void, out: *mut c_int);
     pub fn scf_basis_max_dims(bs: *const c_void, max_nprim: *mut c_int, max_l: *mut c_int);
-    pub fn scf_engine_create(op_kind: c_int, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double) -> *mut c_void;
+    pub fn scf_engine_create(
+        op_kind: c_int,
+        omega: c_double,
+        max_nprim: c_int,
+        max_l: c_int,
+        precision: c_double,
+    ) -> *mut c_void;
     pub fn scf_engine_destroy(eng: *mut c_void);
-    pub fn scf_engine_set_point_charges(eng: *mut c_void, atoms: *const CAtom, natoms: c_int) -> c_int;
-    pub fn scf_compute_1e_block(eng: *mut c_void, bs: *const c_void, sh1: c_int, sh2: c_int, out: *mut c_double) -> c_int;
-    pub fn scf_compute_eri_quartet(eng: *mut c_void, bs: *const c_void, sh1: c_int, sh2: c_int, sh3: c_int, sh4: c_int, out: *mut c_double) -> c_int;
+    pub fn scf_engine_set_point_charges(
+        eng: *mut c_void,
+        atoms: *const CAtom,
+        natoms: c_int,
+    ) -> c_int;
+    pub fn scf_compute_1e_block(
+        eng: *mut c_void,
+        bs: *const c_void,
+        sh1: c_int,
+        sh2: c_int,
+        out: *mut c_double,
+    ) -> c_int;
+    pub fn scf_compute_eri_quartet(
+        eng: *mut c_void,
+        bs: *const c_void,
+        sh1: c_int,
+        sh2: c_int,
+        sh3: c_int,
+        sh4: c_int,
+        out: *mut c_double,
+    ) -> c_int;
     /// Programmatic override of the per-engine shell-pair cache used by
     /// `scf_compute_eri_quartet`, independent of the `FERRIC_SHELLPAIR_CACHE`
     /// env var (so tests can A/B within one process without mutating global
@@ -64,30 +93,166 @@ extern "C" {
     /// for this engine, 0 otherwise. Diagnostic/test use only.
     pub fn scf_engine_shellpair_cache_enabled(eng: *const c_void) -> c_int;
     pub fn scf_compute_schwarz(eng: *mut c_void, bs: *const c_void, qmat: *mut c_double) -> c_int;
-    pub fn scf_engine_create_deriv(op_kind: c_int, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double) -> *mut c_void;
-    pub fn scf_engine_create_geminal(op_kind: c_int, ngauss: c_int, exps: *const c_double, coefs: *const c_double, max_nprim: c_int, max_l: c_int, precision: c_double) -> *mut c_void;
-    pub fn scf_compute_1e_deriv_block(eng: *mut c_void, bs: *const c_void, sh1: c_int, sh2: c_int, out: *mut c_double) -> c_int;
-    pub fn scf_compute_eri_deriv_quartet(eng: *mut c_void, bs: *const c_void, sh1: c_int, sh2: c_int, sh3: c_int, sh4: c_int, out: *mut c_double) -> c_int;
-    pub fn scf_engine_create_3center(op_kind: c_int, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double) -> *mut c_void;
-    pub fn scf_engine_create_2center(op_kind: c_int, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double) -> *mut c_void;
-    pub fn scf_compute_eri3(eng: *mut c_void, obs: *const c_void, dfbs: *const c_void, shP: c_int, sh1: c_int, sh2: c_int, out: *mut c_double) -> c_int;
-    pub fn scf_compute_eri2(eng: *mut c_void, dfbs: *const c_void, shP: c_int, shQ: c_int, out: *mut c_double) -> c_int;
-    pub fn scf_engine_create_3center_deriv(op_kind: c_int, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double) -> *mut c_void;
-    pub fn scf_engine_create_2center_deriv(op_kind: c_int, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double) -> *mut c_void;
-    pub fn scf_compute_eri3_deriv(eng: *mut c_void, obs: *const c_void, dfbs: *const c_void, shP: c_int, sh1: c_int, sh2: c_int, out: *mut c_double) -> c_int;
-    pub fn scf_compute_eri2_deriv(eng: *mut c_void, dfbs: *const c_void, shP: c_int, shQ: c_int, out: *mut c_double) -> c_int;
+    pub fn scf_engine_create_deriv(
+        op_kind: c_int,
+        omega: c_double,
+        max_nprim: c_int,
+        max_l: c_int,
+        precision: c_double,
+    ) -> *mut c_void;
+    pub fn scf_engine_create_geminal(
+        op_kind: c_int,
+        ngauss: c_int,
+        exps: *const c_double,
+        coefs: *const c_double,
+        max_nprim: c_int,
+        max_l: c_int,
+        precision: c_double,
+    ) -> *mut c_void;
+    pub fn scf_compute_1e_deriv_block(
+        eng: *mut c_void,
+        bs: *const c_void,
+        sh1: c_int,
+        sh2: c_int,
+        out: *mut c_double,
+    ) -> c_int;
+    pub fn scf_compute_eri_deriv_quartet(
+        eng: *mut c_void,
+        bs: *const c_void,
+        sh1: c_int,
+        sh2: c_int,
+        sh3: c_int,
+        sh4: c_int,
+        out: *mut c_double,
+    ) -> c_int;
+    pub fn scf_engine_create_3center(
+        op_kind: c_int,
+        omega: c_double,
+        max_nprim: c_int,
+        max_l: c_int,
+        precision: c_double,
+    ) -> *mut c_void;
+    pub fn scf_engine_create_2center(
+        op_kind: c_int,
+        omega: c_double,
+        max_nprim: c_int,
+        max_l: c_int,
+        precision: c_double,
+    ) -> *mut c_void;
+    pub fn scf_compute_eri3(
+        eng: *mut c_void,
+        obs: *const c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        sh1: c_int,
+        sh2: c_int,
+        out: *mut c_double,
+    ) -> c_int;
+    pub fn scf_compute_eri2(
+        eng: *mut c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        shQ: c_int,
+        out: *mut c_double,
+    ) -> c_int;
+    pub fn scf_engine_create_3center_deriv(
+        op_kind: c_int,
+        omega: c_double,
+        max_nprim: c_int,
+        max_l: c_int,
+        precision: c_double,
+    ) -> *mut c_void;
+    pub fn scf_engine_create_2center_deriv(
+        op_kind: c_int,
+        omega: c_double,
+        max_nprim: c_int,
+        max_l: c_int,
+        precision: c_double,
+    ) -> *mut c_void;
+    pub fn scf_compute_eri3_deriv(
+        eng: *mut c_void,
+        obs: *const c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        sh1: c_int,
+        sh2: c_int,
+        out: *mut c_double,
+    ) -> c_int;
+    pub fn scf_compute_eri2_deriv(
+        eng: *mut c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        shQ: c_int,
+        out: *mut c_double,
+    ) -> c_int;
     // Exact terfc(r,r0)/r via 2D interpolation tables (Dutoi/Goldey). table_dir may be
     // null (falls back to FERRIC_TERF_TABLE_DIR). See shim.h / terf-tables/terf_plan.md.
-    pub fn scf_engine_create_terfc_3center(r0: c_double, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double, table_dir: *const c_char) -> *mut c_void;
-    pub fn scf_engine_create_terfc_2center(r0: c_double, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double, table_dir: *const c_char) -> *mut c_void;
-    pub fn scf_compute_terfc_eri3(eng: *mut c_void, obs: *const c_void, dfbs: *const c_void, shP: c_int, sh1: c_int, sh2: c_int, out: *mut c_double) -> c_int;
-    pub fn scf_compute_terfc_eri2(eng: *mut c_void, dfbs: *const c_void, shP: c_int, shQ: c_int, out: *mut c_double) -> c_int;
+    pub fn scf_engine_create_terfc_3center(
+        r0: c_double,
+        omega: c_double,
+        max_nprim: c_int,
+        max_l: c_int,
+        precision: c_double,
+        table_dir: *const c_char,
+    ) -> *mut c_void;
+    pub fn scf_engine_create_terfc_2center(
+        r0: c_double,
+        omega: c_double,
+        max_nprim: c_int,
+        max_l: c_int,
+        precision: c_double,
+        table_dir: *const c_char,
+    ) -> *mut c_void;
+    pub fn scf_compute_terfc_eri3(
+        eng: *mut c_void,
+        obs: *const c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        sh1: c_int,
+        sh2: c_int,
+        out: *mut c_double,
+    ) -> c_int;
+    pub fn scf_compute_terfc_eri2(
+        eng: *mut c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        shQ: c_int,
+        out: *mut c_double,
+    ) -> c_int;
     // terf(r,r0)/r = tempered LONG-RANGE complement of terfc (terf + terfc = coulomb),
     // same tables/curvature constraint. See shim.h.
-    pub fn scf_engine_create_terf_3center(r0: c_double, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double, table_dir: *const c_char) -> *mut c_void;
-    pub fn scf_engine_create_terf_2center(r0: c_double, omega: c_double, max_nprim: c_int, max_l: c_int, precision: c_double, table_dir: *const c_char) -> *mut c_void;
-    pub fn scf_compute_terf_eri3(eng: *mut c_void, obs: *const c_void, dfbs: *const c_void, shP: c_int, sh1: c_int, sh2: c_int, out: *mut c_double) -> c_int;
-    pub fn scf_compute_terf_eri2(eng: *mut c_void, dfbs: *const c_void, shP: c_int, shQ: c_int, out: *mut c_double) -> c_int;
+    pub fn scf_engine_create_terf_3center(
+        r0: c_double,
+        omega: c_double,
+        max_nprim: c_int,
+        max_l: c_int,
+        precision: c_double,
+        table_dir: *const c_char,
+    ) -> *mut c_void;
+    pub fn scf_engine_create_terf_2center(
+        r0: c_double,
+        omega: c_double,
+        max_nprim: c_int,
+        max_l: c_int,
+        precision: c_double,
+        table_dir: *const c_char,
+    ) -> *mut c_void;
+    pub fn scf_compute_terf_eri3(
+        eng: *mut c_void,
+        obs: *const c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        sh1: c_int,
+        sh2: c_int,
+        out: *mut c_double,
+    ) -> c_int;
+    pub fn scf_compute_terf_eri2(
+        eng: *mut c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        shQ: c_int,
+        out: *mut c_double,
+    ) -> c_int;
     pub fn scf_compute_dipole(
         bs: *const c_void,
         origin: *const c_double,

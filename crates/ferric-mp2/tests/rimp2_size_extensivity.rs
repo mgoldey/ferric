@@ -79,7 +79,11 @@ fn h2_dimer_far() -> Molecule {
     let mut atoms: Vec<Atom> = Vec::with_capacity(4);
     atoms.extend(m1.atoms);
     atoms.extend(m2.atoms);
-    Molecule { atoms, charge: 0, multiplicity: 1 }
+    Molecule {
+        atoms,
+        charge: 0,
+        multiplicity: 1,
+    }
 }
 
 fn rimp2_total_energy(mol: &Molecule) -> f64 {
@@ -95,7 +99,10 @@ fn rimp2_total_energy(mol: &Molecule) -> f64 {
         ..Default::default()
     };
     let rhf = solve_rhf(&ParallelContext::default(), mol, &obs, op, &bounds, &cfg).unwrap();
-    assert!(rhf.converged, "RHF must converge for the extensivity check to be meaningful");
+    assert!(
+        rhf.converged,
+        "RHF must converge for the extensivity check to be meaningful"
+    );
 
     let mp2_cfg = RiMp2Config::default();
     let result = ri_mp2(mol, &obs, &dfbs, op, &rhf, &mp2_cfg).unwrap();

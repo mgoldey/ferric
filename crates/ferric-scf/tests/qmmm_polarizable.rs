@@ -73,7 +73,12 @@ fn point_charge_field_matrix(prep: &PreparedBasis, site: [f64; 3]) -> [Array2<f6
     let n_charges = natoms + 1;
 
     let mut eng = Engine::new_1e_deriv(ffi::OP_NUCLEAR, prep, 1e-14).unwrap();
-    let extra = [PointCharge { q: 1.0, x: site[0], y: site[1], z: site[2] }];
+    let extra = [PointCharge {
+        q: 1.0,
+        x: site[0],
+        y: site[1],
+        z: site[2],
+    }];
     eng.set_point_charges_extra(prep, &extra).unwrap();
 
     let mut out = [
@@ -83,7 +88,9 @@ fn point_charge_field_matrix(prep: &PreparedBasis, site: [f64; 3]) -> [Array2<f6
     ];
     for s1 in 0..nsh {
         for s2 in 0..nsh {
-            let Some(deriv) = eng.compute_1e_deriv_block_n(prep, s1, s2, n_charges) else { continue };
+            let Some(deriv) = eng.compute_1e_deriv_block_n(prep, s1, s2, n_charges) else {
+                continue;
+            };
             let n1 = dims[s1];
             let n2 = dims[s2];
             let block_sz = n1 * n2;
@@ -126,7 +133,9 @@ fn p_shell_field_matrix(prep: &PreparedBasis, site: [f64; 3], zeta: f64) -> [Arr
     ];
     for s1 in 0..nsh {
         for s2 in 0..nsh {
-            let Some(block) = eng.compute_eri3(prep, &site_basis.prep, sh_p, s1, s2) else { continue };
+            let Some(block) = eng.compute_eri3(prep, &site_basis.prep, sh_p, s1, s2) else {
+                continue;
+            };
             let n1 = dims[s1];
             let n2 = dims[s2];
             for c in 0..3 {
@@ -213,7 +222,10 @@ fn p_shell_dipole_potential_matches_charge_derivative_block() {
         eprintln!("[qmmm-polarizable] p-shell pin: field axis {c} <- p-shell fn {p_fn}, max|diff|={e:.3e}");
         max_err = max_err.max(e);
     }
-    assert!(max_err < 1e-8, "p-shell dipole-potential pin failed: max_err = {max_err:.3e}");
+    assert!(
+        max_err < 1e-8,
+        "p-shell dipole-potential pin failed: max_err = {max_err:.3e}"
+    );
 }
 
 /// **Task B2 pin, ζ-sweep**: the p-shell (smeared dipole) converges to the
@@ -235,7 +247,9 @@ fn p_shell_zeta_convergence_sweep() {
             .map(|c| {
                 let p_fn = expected_p_axis_for_field_axis(c);
                 let predicted = -norm_p * &p_shell[p_fn];
-                (&reference[c] - &predicted).iter().fold(0.0_f64, |acc, &v| acc.max(v.abs()))
+                (&reference[c] - &predicted)
+                    .iter()
+                    .fold(0.0_f64, |acc, &v| acc.max(v.abs()))
             })
             .fold(0.0_f64, f64::max);
         eprintln!("[qmmm-polarizable] zeta={zeta:.0e}: norm_p={norm_p:.6e} max_err={max_err:.3e}");
@@ -249,7 +263,11 @@ fn p_shell_zeta_convergence_sweep() {
         prev_err = Some(max_err);
     }
     // At the default dipole_zeta=1e4 the error must be tight.
-    assert!(prev_err.unwrap() < 1e-6, "p-shell error at zeta=1e5 should be tiny: {:.3e}", prev_err.unwrap());
+    assert!(
+        prev_err.unwrap() < 1e-6,
+        "p-shell error at zeta=1e5 should be tiny: {:.3e}",
+        prev_err.unwrap()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -272,11 +290,21 @@ fn scf_energy(mol: &Molecule, cfg: &RhfConfig) -> f64 {
 #[test]
 fn polarizable_none_is_bit_identical_to_plain_scf() {
     let mol = water_bohr();
-    let cfg_before = RhfConfig { density_conv: 1e-11, ..Default::default() };
-    let cfg_after = RhfConfig { density_conv: 1e-11, polarizable: None, ..Default::default() };
+    let cfg_before = RhfConfig {
+        density_conv: 1e-11,
+        ..Default::default()
+    };
+    let cfg_after = RhfConfig {
+        density_conv: 1e-11,
+        polarizable: None,
+        ..Default::default()
+    };
     let e_before = scf_energy(&mol, &cfg_before);
     let e_after = scf_energy(&mol, &cfg_after);
-    assert_eq!(e_before, e_after, "polarizable: None must be bit-identical to omitting the field");
+    assert_eq!(
+        e_before, e_after,
+        "polarizable: None must be bit-identical to omitting the field"
+    );
 }
 
 /// **Anchor 2**: `Some(PolarizableSites { sites: vec![], .. })` (empty site
@@ -286,7 +314,10 @@ fn polarizable_none_is_bit_identical_to_plain_scf() {
 #[test]
 fn polarizable_empty_sites_is_bit_identical_to_plain_scf() {
     let mol = water_bohr();
-    let cfg_before = RhfConfig { density_conv: 1e-11, ..Default::default() };
+    let cfg_before = RhfConfig {
+        density_conv: 1e-11,
+        ..Default::default()
+    };
     let cfg_after = RhfConfig {
         density_conv: 1e-11,
         polarizable: Some(PolarizableSites {
@@ -300,7 +331,10 @@ fn polarizable_empty_sites_is_bit_identical_to_plain_scf() {
     };
     let e_before = scf_energy(&mol, &cfg_before);
     let e_after = scf_energy(&mol, &cfg_after);
-    assert_eq!(e_before, e_after, "empty polarizable sites must be bit-identical to no polarizable config");
+    assert_eq!(
+        e_before, e_after,
+        "empty polarizable sites must be bit-identical to no polarizable config"
+    );
 }
 
 /// **Anchor 3**: `alpha = 0` on every site must give `e_pol == 0.0` exactly
@@ -317,8 +351,16 @@ fn alpha_zero_gives_zero_polarization_energy() {
     // exercises the physical alpha->0 LIMIT, matching the prototype's own
     // anchor (`alpha_zero_anchor_check` in proto_polarizable_embedding.py).
     let mol = water_bohr();
-    let site = PolarizableSite { x: 3.0, y: -2.0, z: 4.0, alpha: 1e-12 };
-    let cfg_plain = RhfConfig { density_conv: 1e-11, ..Default::default() };
+    let site = PolarizableSite {
+        x: 3.0,
+        y: -2.0,
+        z: 4.0,
+        alpha: 1e-12,
+    };
+    let cfg_plain = RhfConfig {
+        density_conv: 1e-11,
+        ..Default::default()
+    };
     let cfg_pol = RhfConfig {
         density_conv: 1e-11,
         polarizable: Some(PolarizableSites {
@@ -354,15 +396,24 @@ fn distant_single_site_matches_perturbative_limit() {
     let ctx = ParallelContext::default();
 
     // Gas-phase field at the site from the converged gas-phase density.
-    let cfg_gas = RhfConfig { density_conv: 1e-12, ..Default::default() };
+    let cfg_gas = RhfConfig {
+        density_conv: 1e-12,
+        ..Default::default()
+    };
     let r_gas = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_gas).unwrap();
     assert!(r_gas.converged);
     let site_xyz = [0.0, 0.0, -12.0];
-    let e_gas = ferric_scf::qmmm::electric_field_at_points(&mol, &prep, r_gas.density_total(), &[site_xyz])
-        .unwrap()[0];
+    let e_gas =
+        ferric_scf::qmmm::electric_field_at_points(&mol, &prep, r_gas.density_total(), &[site_xyz])
+            .unwrap()[0];
 
     let alpha = 1.0;
-    let site = PolarizableSite { x: site_xyz[0], y: site_xyz[1], z: site_xyz[2], alpha };
+    let site = PolarizableSite {
+        x: site_xyz[0],
+        y: site_xyz[1],
+        z: site_xyz[2],
+        alpha,
+    };
     let cfg_pol = RhfConfig {
         density_conv: 1e-12,
         polarizable: Some(PolarizableSites {
@@ -376,13 +427,18 @@ fn distant_single_site_matches_perturbative_limit() {
     };
     let r_pol = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_pol).unwrap();
     assert!(r_pol.converged);
-    let mu = r_pol.induced_dipoles.as_ref().expect("polarizable run must carry induced_dipoles");
+    let mu = r_pol
+        .induced_dipoles
+        .as_ref()
+        .expect("polarizable run must carry induced_dipoles");
     let mu_z = mu[(0, 2)];
 
     let mu_pred = alpha * e_gas[2];
-    let e_pol_pred = -0.5 * alpha * (e_gas[0] * e_gas[0] + e_gas[1] * e_gas[1] + e_gas[2] * e_gas[2]);
+    let e_pol_pred =
+        -0.5 * alpha * (e_gas[0] * e_gas[0] + e_gas[1] * e_gas[1] + e_gas[2] * e_gas[2]);
 
-    let e_pol_actual = r_pol.energy - r_gas.energy - (r_pol.energy - r_gas.energy - e_pol_pred).max(0.0) * 0.0;
+    let e_pol_actual =
+        r_pol.energy - r_gas.energy - (r_pol.energy - r_gas.energy - e_pol_pred).max(0.0) * 0.0;
     // e_pol is not directly exposed on ScfResult (only induced_dipoles) —
     // recompute it via mm_only convention: E_total = E_gas_with_site_field
     // + e_pol_contribution. Simpler: just check mu, and check E_pol via the
@@ -393,14 +449,20 @@ fn distant_single_site_matches_perturbative_limit() {
     eprintln!(
         "[qmmm-polarizable] distant site: mu_z={mu_z:.10e} predicted={mu_pred:.10e} rel_err={mu_err:.3e}"
     );
-    assert!(mu_err < 0.01, "distant-site mu_z limit failed: rel_err = {mu_err:.3e}");
+    assert!(
+        mu_err < 0.01,
+        "distant-site mu_z limit failed: rel_err = {mu_err:.3e}"
+    );
 
     let e_shift = r_pol.energy - r_gas.energy;
     let e_pol_err = (e_shift - e_pol_pred).abs() / e_pol_pred.abs().max(1e-12);
     eprintln!(
         "[qmmm-polarizable] distant site: E_shift={e_shift:.10e} e_pol_predicted={e_pol_pred:.10e} rel_err={e_pol_err:.3e}"
     );
-    assert!(e_pol_err < 0.02, "distant-site e_pol limit failed: rel_err = {e_pol_err:.3e}");
+    assert!(
+        e_pol_err < 0.02,
+        "distant-site e_pol limit failed: rel_err = {e_pol_err:.3e}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -441,7 +503,10 @@ fn load_ref(tag: &str) -> PeRef {
 fn mol_from_ref(r: &PeRef) -> Molecule {
     let mut xyz = format!("{}\nwater\n", r.atoms.len());
     for a in &r.atoms {
-        xyz += &format!("{} {} {} {}\n", a.symbol, a.xyz_bohr[0], a.xyz_bohr[1], a.xyz_bohr[2]);
+        xyz += &format!(
+            "{} {} {} {}\n",
+            a.symbol, a.xyz_bohr[0], a.xyz_bohr[1], a.xyz_bohr[2]
+        );
     }
     // xyz_bohr values are already in Bohr; parse_xyz assumes Å input and
     // converts, so scale up by 1/ANG2BOHR before feeding it in, undoing
@@ -471,18 +536,32 @@ fn run_pe_case(tag: &str) {
     let sites: Vec<PolarizableSite> = r
         .sites
         .iter()
-        .map(|s| PolarizableSite { x: s.xyz_bohr[0], y: s.xyz_bohr[1], z: s.xyz_bohr[2], alpha: s.alpha_bohr3 })
+        .map(|s| PolarizableSite {
+            x: s.xyz_bohr[0],
+            y: s.xyz_bohr[1],
+            z: s.xyz_bohr[2],
+            alpha: s.alpha_bohr3,
+        })
         .collect();
     let point_charges: Vec<PointCharge> = r
         .sites
         .iter()
-        .map(|s| PointCharge { q: s.q, x: s.xyz_bohr[0], y: s.xyz_bohr[1], z: s.xyz_bohr[2] })
+        .map(|s| PointCharge {
+            q: s.q,
+            x: s.xyz_bohr[0],
+            y: s.xyz_bohr[1],
+            z: s.xyz_bohr[2],
+        })
         .collect();
 
     let cfg = RhfConfig {
         density_conv: 1e-11,
         max_iter: 200,
-        external_potential: Some(ExternalPotential { point_charges, smeared_charges: vec![], field: None }),
+        external_potential: Some(ExternalPotential {
+            point_charges,
+            smeared_charges: vec![],
+            field: None,
+        }),
         polarizable: Some(PolarizableSites {
             sites,
             thole_a: r.thole_a,
@@ -496,10 +575,16 @@ fn run_pe_case(tag: &str) {
     assert!(result.converged, "{tag}: SCF did not converge");
 
     let e_err = (result.energy - r.energy).abs();
-    eprintln!("[qmmm-polarizable] {tag}: E ferric={:.10} pyscf={:.10} |diff|={e_err:.3e}", result.energy, r.energy);
+    eprintln!(
+        "[qmmm-polarizable] {tag}: E ferric={:.10} pyscf={:.10} |diff|={e_err:.3e}",
+        result.energy, r.energy
+    );
     assert!(e_err < 1e-7, "{tag}: energy mismatch {e_err:.3e}");
 
-    let mu = result.induced_dipoles.as_ref().expect("induced_dipoles must be populated");
+    let mu = result
+        .induced_dipoles
+        .as_ref()
+        .expect("induced_dipoles must be populated");
     let mut max_mu_err = 0.0_f64;
     for (i, mu_ref) in r.induced_dipoles.iter().enumerate() {
         for c in 0..3 {
@@ -516,20 +601,54 @@ fn run_pe_case(tag: &str) {
     let sites2: Vec<PolarizableSite> = r
         .sites
         .iter()
-        .map(|s| PolarizableSite { x: s.xyz_bohr[0], y: s.xyz_bohr[1], z: s.xyz_bohr[2], alpha: s.alpha_bohr3 })
+        .map(|s| PolarizableSite {
+            x: s.xyz_bohr[0],
+            y: s.xyz_bohr[1],
+            z: s.xyz_bohr[2],
+            alpha: s.alpha_bohr3,
+        })
         .collect();
-    let pol_cfg2 = PolarizableSites { sites: sites2, thole_a: r.thole_a, exclusions: vec![], dipole_zeta: 1e4, max_sites_dense: 4000 };
-    let site_basis_p: Vec<[f64; 4]> =
-        r.sites.iter().map(|s| [s.xyz_bohr[0], s.xyz_bohr[1], s.xyz_bohr[2], 1e4]).collect();
+    let pol_cfg2 = PolarizableSites {
+        sites: sites2,
+        thole_a: r.thole_a,
+        exclusions: vec![],
+        dipole_zeta: 1e4,
+        max_sites_dense: 4000,
+    };
+    let site_basis_p: Vec<[f64; 4]> = r
+        .sites
+        .iter()
+        .map(|s| [s.xyz_bohr[0], s.xyz_bohr[1], s.xyz_bohr[2], 1e4])
+        .collect();
     let site_basis_p = SiteBasis::new(&site_basis_p, 1).unwrap();
     let ext2 = ExternalPotential {
-        point_charges: r.sites.iter().map(|s| PointCharge { q: s.q, x: s.xyz_bohr[0], y: s.xyz_bohr[1], z: s.xyz_bohr[2] }).collect(),
+        point_charges: r
+            .sites
+            .iter()
+            .map(|s| PointCharge {
+                q: s.q,
+                x: s.xyz_bohr[0],
+                y: s.xyz_bohr[1],
+                z: s.xyz_bohr[2],
+            })
+            .collect(),
         smeared_charges: vec![],
         field: None,
     };
-    let ir = induce(&mol, &prep, Some(&ext2), &pol_cfg2, &site_basis_p, result.density_total()).unwrap();
+    let ir = induce(
+        &mol,
+        &prep,
+        Some(&ext2),
+        &pol_cfg2,
+        &site_basis_p,
+        result.density_total(),
+    )
+    .unwrap();
     let e_pol_err = (ir.e_pol - r.e_pol).abs();
-    eprintln!("[qmmm-polarizable] {tag}: e_pol ferric={:.10e} pyscf={:.10e} |diff|={e_pol_err:.3e}", ir.e_pol, r.e_pol);
+    eprintln!(
+        "[qmmm-polarizable] {tag}: e_pol ferric={:.10e} pyscf={:.10e} |diff|={e_pol_err:.3e}",
+        ir.e_pol, r.e_pol
+    );
     assert!(e_pol_err < 1e-7, "{tag}: e_pol mismatch {e_pol_err:.3e}");
 }
 
@@ -559,7 +678,13 @@ fn matches_pyscf_prototype_three_sites_nodamp() {
 fn induce_empty_sites_returns_zero_result() {
     let mol = water_bohr();
     let prep = sto3g_prep(&mol);
-    let sites = PolarizableSites { sites: vec![], thole_a: Some(2.1304), exclusions: vec![], dipole_zeta: 1e4, max_sites_dense: 4000 };
+    let sites = PolarizableSites {
+        sites: vec![],
+        thole_a: Some(2.1304),
+        exclusions: vec![],
+        dipole_zeta: 1e4,
+        max_sites_dense: 4000,
+    };
     let site_basis_p = SiteBasis::new(&[[0.0, 0.0, 0.0, 1e4]], 1).unwrap();
     let d = Array2::<f64>::zeros((prep.nbasis(), prep.nbasis()));
     let result = induce(&mol, &prep, None, &sites, &site_basis_p, &d).unwrap();
@@ -575,8 +700,18 @@ fn induce_rejects_more_sites_than_max_sites_dense() {
     let prep = sto3g_prep(&mol);
     let sites = PolarizableSites {
         sites: vec![
-            PolarizableSite { x: 0.0, y: 0.0, z: 5.0, alpha: 1.0 },
-            PolarizableSite { x: 0.0, y: 0.0, z: 6.0, alpha: 1.0 },
+            PolarizableSite {
+                x: 0.0,
+                y: 0.0,
+                z: 5.0,
+                alpha: 1.0,
+            },
+            PolarizableSite {
+                x: 0.0,
+                y: 0.0,
+                z: 6.0,
+                alpha: 1.0,
+            },
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
@@ -586,7 +721,10 @@ fn induce_rejects_more_sites_than_max_sites_dense() {
     let site_basis_p = SiteBasis::new(&[[0.0, 0.0, 5.0, 1e4], [0.0, 0.0, 6.0, 1e4]], 1).unwrap();
     let d = Array2::<f64>::zeros((prep.nbasis(), prep.nbasis()));
     let result = induce(&mol, &prep, None, &sites, &site_basis_p, &d);
-    assert!(result.is_err(), "exceeding max_sites_dense must be a typed error");
+    assert!(
+        result.is_err(),
+        "exceeding max_sites_dense must be a typed error"
+    );
 }
 
 /// A non-positive or non-finite polarizability must be REFUSED, not fed to the
@@ -609,7 +747,12 @@ fn induce_rejects_non_positive_alpha() {
     // Both illegal values must be refused: a negative stiffness and a NaN.
     for bad in [-1.0_f64, f64::NAN] {
         let sites = PolarizableSites {
-            sites: vec![PolarizableSite { x: 0.0, y: 0.0, z: 5.0, alpha: bad }],
+            sites: vec![PolarizableSite {
+                x: 0.0,
+                y: 0.0,
+                z: 5.0,
+                alpha: bad,
+            }],
             thole_a: Some(2.1304),
             exclusions: vec![],
             dipole_zeta: 1e4,
@@ -624,9 +767,6 @@ fn induce_rejects_non_positive_alpha() {
     }
 }
 
-
-
-
 // ---------------------------------------------------------------------------
 // Task B3: gradients
 // ---------------------------------------------------------------------------
@@ -639,8 +779,18 @@ fn two_site_setup() -> (Molecule, PolarizableSites, ExternalPotential) {
     let mol = water_bohr();
     let sites = PolarizableSites {
         sites: vec![
-            PolarizableSite { x: 3.0, y: -2.0, z: 4.0, alpha: 1.0 },
-            PolarizableSite { x: -2.5, y: 3.3, z: -3.7, alpha: 0.8 },
+            PolarizableSite {
+                x: 3.0,
+                y: -2.0,
+                z: 4.0,
+                alpha: 1.0,
+            },
+            PolarizableSite {
+                x: -2.5,
+                y: 3.3,
+                z: -3.7,
+                alpha: 0.8,
+            },
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
@@ -649,8 +799,18 @@ fn two_site_setup() -> (Molecule, PolarizableSites, ExternalPotential) {
     };
     let ext = ExternalPotential {
         point_charges: vec![
-            PointCharge { q: 0.5, x: 3.0, y: -2.0, z: 4.0 },
-            PointCharge { q: -0.3, x: -2.5, y: 3.3, z: -3.7 },
+            PointCharge {
+                q: 0.5,
+                x: 3.0,
+                y: -2.0,
+                z: 4.0,
+            },
+            PointCharge {
+                q: -0.3,
+                x: -2.5,
+                y: 3.3,
+                z: -3.7,
+            },
         ],
         smeared_charges: vec![],
         field: None,
@@ -676,8 +836,18 @@ fn two_site_setup_no_colocated_charge() -> (Molecule, PolarizableSites, External
     let mol = water_bohr();
     let sites = PolarizableSites {
         sites: vec![
-            PolarizableSite { x: 3.0, y: -2.0, z: 4.0, alpha: 1.0 },
-            PolarizableSite { x: -2.5, y: 3.3, z: -3.7, alpha: 0.8 },
+            PolarizableSite {
+                x: 3.0,
+                y: -2.0,
+                z: 4.0,
+                alpha: 1.0,
+            },
+            PolarizableSite {
+                x: -2.5,
+                y: 3.3,
+                z: -3.7,
+                alpha: 0.8,
+            },
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
@@ -690,8 +860,18 @@ fn two_site_setup_no_colocated_charge() -> (Molecule, PolarizableSites, External
     // a colocated charge.
     let ext = ExternalPotential {
         point_charges: vec![
-            PointCharge { q: 0.5, x: 4.5, y: -3.0, z: 5.5 },
-            PointCharge { q: -0.3, x: -4.0, y: 4.5, z: -5.0 },
+            PointCharge {
+                q: 0.5,
+                x: 4.5,
+                y: -3.0,
+                z: 5.5,
+            },
+            PointCharge {
+                q: -0.3,
+                x: -4.0,
+                y: 4.5,
+                z: -5.0,
+            },
         ],
         smeared_charges: vec![],
         field: None,
@@ -699,7 +879,11 @@ fn two_site_setup_no_colocated_charge() -> (Molecule, PolarizableSites, External
     (mol, sites, ext)
 }
 
-fn scf_energy_polarizable(mol: &Molecule, sites: &PolarizableSites, ext: &ExternalPotential) -> f64 {
+fn scf_energy_polarizable(
+    mol: &Molecule,
+    sites: &PolarizableSites,
+    ext: &ExternalPotential,
+) -> f64 {
     let prep = sto3g_prep(mol);
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
@@ -734,7 +918,14 @@ fn qm_gradient_with_polarizable_sites_matches_finite_difference() {
     assert!(result.converged);
 
     let analytic = ferric_scf::gradient::rhf_gradient_with_polarizable(
-        &mol, &prep, op, &bounds, &result, Some(&ext), Some(&sites), result.induced_dipoles.as_ref(),
+        &mol,
+        &prep,
+        op,
+        &bounds,
+        &result,
+        Some(&ext),
+        Some(&sites),
+        result.induced_dipoles.as_ref(),
     )
     .unwrap();
 
@@ -746,9 +937,18 @@ fn qm_gradient_with_polarizable_sites_matches_finite_difference() {
             let mut mol_p = mol.clone();
             let mut mol_m = mol.clone();
             match c {
-                0 => { mol_p.atoms[a].x += h; mol_m.atoms[a].x -= h; }
-                1 => { mol_p.atoms[a].y += h; mol_m.atoms[a].y -= h; }
-                _ => { mol_p.atoms[a].zpos += h; mol_m.atoms[a].zpos -= h; }
+                0 => {
+                    mol_p.atoms[a].x += h;
+                    mol_m.atoms[a].x -= h;
+                }
+                1 => {
+                    mol_p.atoms[a].y += h;
+                    mol_m.atoms[a].y -= h;
+                }
+                _ => {
+                    mol_p.atoms[a].zpos += h;
+                    mol_m.atoms[a].zpos -= h;
+                }
             }
             let e_p = scf_energy_polarizable(&mol_p, &sites, &ext);
             let e_m = scf_energy_polarizable(&mol_m, &sites, &ext);
@@ -800,9 +1000,18 @@ fn site_force_with_polarizable_sites_matches_finite_difference() {
             let mut sites_p = sites.clone();
             let mut sites_m = sites.clone();
             match c {
-                0 => { sites_p.sites[i].x += h; sites_m.sites[i].x -= h; }
-                1 => { sites_p.sites[i].y += h; sites_m.sites[i].y -= h; }
-                _ => { sites_p.sites[i].z += h; sites_m.sites[i].z -= h; }
+                0 => {
+                    sites_p.sites[i].x += h;
+                    sites_m.sites[i].x -= h;
+                }
+                1 => {
+                    sites_p.sites[i].y += h;
+                    sites_m.sites[i].y -= h;
+                }
+                _ => {
+                    sites_p.sites[i].z += h;
+                    sites_m.sites[i].z -= h;
+                }
             }
             let e_p = scf_energy_polarizable(&mol, &sites_p, &ext);
             let e_m = scf_energy_polarizable(&mol, &sites_m, &ext);
@@ -812,7 +1021,8 @@ fn site_force_with_polarizable_sites_matches_finite_difference() {
             assert!(
                 err < 1e-6,
                 "site_gradient[{i}][{c}]: analytic {:.10e} vs FD {:.10e} (delta {err:.3e})",
-                dedr[(i, c)], fd
+                dedr[(i, c)],
+                fd
             );
         }
     }
@@ -841,8 +1051,18 @@ fn qm_and_site_gradients_sum_to_zero_translational_invariance() {
     let mol = water_bohr();
     let sites = PolarizableSites {
         sites: vec![
-            PolarizableSite { x: 3.0, y: -2.0, z: 4.0, alpha: 1.0 },
-            PolarizableSite { x: -2.5, y: 3.3, z: -3.7, alpha: 0.8 },
+            PolarizableSite {
+                x: 3.0,
+                y: -2.0,
+                z: 4.0,
+                alpha: 1.0,
+            },
+            PolarizableSite {
+                x: -2.5,
+                y: 3.3,
+                z: -3.7,
+                alpha: 0.8,
+            },
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
@@ -864,10 +1084,25 @@ fn qm_and_site_gradients_sum_to_zero_translational_invariance() {
     let mu = result.induced_dipoles.clone().unwrap();
 
     let qm_grad = ferric_scf::gradient::rhf_gradient_with_polarizable(
-        &mol, &prep, op, &bounds, &result, None, Some(&sites), Some(&mu),
+        &mol,
+        &prep,
+        op,
+        &bounds,
+        &result,
+        None,
+        Some(&sites),
+        Some(&mu),
     )
     .unwrap();
-    let site_grad = ferric_scf::polarizable::site_gradient(&mol, &prep, result.density_total(), None, &sites, &mu).unwrap();
+    let site_grad = ferric_scf::polarizable::site_gradient(
+        &mol,
+        &prep,
+        result.density_total(),
+        None,
+        &sites,
+        &mu,
+    )
+    .unwrap();
 
     let mut total = [0.0_f64; 3];
     for a in 0..mol.atoms.len() {
@@ -882,7 +1117,11 @@ fn qm_and_site_gradients_sum_to_zero_translational_invariance() {
     }
     eprintln!("[qmmm-polarizable] translational invariance sum = {total:?}");
     for c in 0..3 {
-        assert!(total[c].abs() < 1e-8, "translational invariance failed on axis {c}: {:.3e}", total[c]);
+        assert!(
+            total[c].abs() < 1e-8,
+            "translational invariance failed on axis {c}: {:.3e}",
+            total[c]
+        );
     }
 }
 
@@ -942,9 +1181,13 @@ fn charge_gradient_contribution_matches_finite_difference() {
 
     // Classical dE/dR_charge = -q * E_QM(r_charge) (negative of the force
     // mm_forces computes), at the SAME converged density.
-    let charge_positions: Vec<[f64; 3]> =
-        ext.point_charges.iter().map(|pc| [pc.x, pc.y, pc.z]).collect();
-    let field = electric_field_at_points(&mol, &prep, result.density_total(), &charge_positions).unwrap();
+    let charge_positions: Vec<[f64; 3]> = ext
+        .point_charges
+        .iter()
+        .map(|pc| [pc.x, pc.y, pc.z])
+        .collect();
+    let field =
+        electric_field_at_points(&mol, &prep, result.density_total(), &charge_positions).unwrap();
     let classical_dedr: Vec<[f64; 3]> = field
         .iter()
         .zip(ext.point_charges.iter())
@@ -958,9 +1201,18 @@ fn charge_gradient_contribution_matches_finite_difference() {
             let mut ext_p = ext.clone();
             let mut ext_m = ext.clone();
             match c {
-                0 => { ext_p.point_charges[k].x += h; ext_m.point_charges[k].x -= h; }
-                1 => { ext_p.point_charges[k].y += h; ext_m.point_charges[k].y -= h; }
-                _ => { ext_p.point_charges[k].z += h; ext_m.point_charges[k].z -= h; }
+                0 => {
+                    ext_p.point_charges[k].x += h;
+                    ext_m.point_charges[k].x -= h;
+                }
+                1 => {
+                    ext_p.point_charges[k].y += h;
+                    ext_m.point_charges[k].y -= h;
+                }
+                _ => {
+                    ext_p.point_charges[k].z += h;
+                    ext_m.point_charges[k].z -= h;
+                }
             }
             let e_p = scf_energy_polarizable(&mol, &sites, &ext_p);
             let e_m = scf_energy_polarizable(&mol, &sites, &ext_m);
@@ -983,7 +1235,10 @@ fn charge_gradient_contribution_matches_finite_difference() {
 #[test]
 fn charge_gradient_contribution_zero_sites_is_zero() {
     let (_mol, _sites, ext) = two_site_setup_no_colocated_charge();
-    let empty_sites = PolarizableSites { sites: vec![], ..Default::default() };
+    let empty_sites = PolarizableSites {
+        sites: vec![],
+        ..Default::default()
+    };
     let dipoles = Array2::<f64>::zeros((0, 3));
     let (point_rows, smeared_rows) =
         ferric_scf::polarizable::charge_gradient_contribution(&ext, &empty_sites, &dipoles);
@@ -993,4 +1248,3 @@ fn charge_gradient_contribution_zero_sites_is_zero() {
         assert_eq!(*row, [0.0, 0.0, 0.0]);
     }
 }
-

@@ -46,55 +46,55 @@ pub use result::{ScfResult, Spin};
 /// Post-SCF one-electron property evaluation (dipole, charges, ESP).
 pub mod properties;
 
-/// Schwarz-based integral screening re-exports.
-pub mod screening;
-/// Range-separated hybrid ω-tuning via IP/EA condition.
-pub mod omega_tuning;
-/// Semi-canonical orbital transformation for frozen-core post-HF.
-pub mod semicanonical;
-/// QQR distance-dependent screening adapter for the SCF layer.
-pub mod qqr;
-/// Significant and density-screened shell-pair lists.
-pub mod pairs;
+/// COSMO conductor-like implicit solvation model.
+pub mod cosmo;
+pub(crate) mod driver;
 /// J/K builder traits and composite Fock matrix assembly.
 pub mod fock;
 pub(crate) mod fock_assembly;
-pub(crate) mod driver;
-/// COSMO conductor-like implicit solvation model.
-pub mod cosmo;
+/// Range-separated hybrid ω-tuning via IP/EA condition.
+pub mod omega_tuning;
+/// Significant and density-screened shell-pair lists.
+pub mod pairs;
+/// QQR distance-dependent screening adapter for the SCF layer.
+pub mod qqr;
+/// Schwarz-based integral screening re-exports.
+pub mod screening;
+/// Semi-canonical orbital transformation for frozen-core post-HF.
+pub mod semicanonical;
 pub use cosmo::{CosmoCavity, CosmoConfig, CosmoResult};
-/// MPI reduction helpers for distributed Fock matrix assembly.
-pub mod reduce;
-/// Shell-quartet work distribution for integral-direct builds.
-pub mod quartet_scatter;
 /// Integral-direct Coulomb (J) matrix builder.
 pub mod direct_j;
-/// Integral-direct exchange (K) matrix builder.
-pub mod direct_k;
 /// Combined integral-direct J+K Fock builder.
 pub mod direct_jk;
+/// Integral-direct exchange (K) matrix builder.
+pub mod direct_k;
+/// Shell-quartet work distribution for integral-direct builds.
+pub mod quartet_scatter;
+/// MPI reduction helpers for distributed Fock matrix assembly.
+pub mod reduce;
 /// Re-export: [`EnginePool`](ferric_integrals::engine_pool::EnginePool) moved
 /// down to `ferric-integrals` so integral-level code (schwarz, 3-index) can use
 /// it too. Kept here so existing `ferric_scf::engine_pool::…` paths still work.
 pub use ferric_integrals::engine_pool;
+/// COSX seminumerical exchange builder (grid-based K, overlap-fitted).
+pub mod cosx_k;
 /// Density-fitted Coulomb (J) matrix builder (RI-J).
 pub mod df_j;
 /// Density-fitted exchange (K) matrix builder (RI-K).
 pub mod df_k;
-/// LinK exchange builder: linear-scaling K via Schwarz-screened column lists.
-pub mod link_k;
-/// COSX seminumerical exchange builder (grid-based K, overlap-fitted).
-pub mod cosx_k;
 /// DIIS convergence accelerator for SCF iterations.
 pub mod diis;
 /// Initial guess generators: core Hamiltonian, SAD, read-in.
 pub mod guess;
-/// Fermi-smearing (fractional occupation) for metallic/near-degenerate systems.
-pub mod smearing;
+/// LinK exchange builder: linear-scaling K via Schwarz-screened column lists.
+pub mod link_k;
 /// Closed-shell restricted Hartree-Fock solver.
 pub mod rhf;
 /// Newton-step RHF solver with exact orbital Hessian.
 pub mod rhf_newton;
+/// Fermi-smearing (fractional occupation) for metallic/near-degenerate systems.
+pub mod smearing;
 /// Unrestricted Hartree-Fock solver (α/β spin channels).
 pub mod uhf;
 pub use uhf::{solve_uhf, solve_uhf_fockmod, UhfConfig};
@@ -107,32 +107,30 @@ pub use cdft_coupling::{coupling_hab, DiabaticState, HabResult};
 /// Restricted open-shell Hartree-Fock solver (ROHF).
 pub mod rohf;
 pub use rohf::{solve_rohf, RohfConfig};
+/// Davidson eigensolver adapted for local SCF orbital optimization.
+pub mod davidson_local;
+/// Analytical nuclear gradients for RHF, UHF, and ROHF.
+pub mod gradient;
 /// Maximum Overlap Method for tracking orbital character across SCF iterations.
 pub mod mom;
+/// Augmented Hessian (AH) ROHF solver for difficult convergence cases.
+pub mod rohf_ah;
 /// Newton-step ROHF solver with f_xc kernel acceleration.
 pub mod rohf_newton;
 /// Newton-step UHF/UKS solver with coupled α/β orbital rotations.
 pub mod uhf_newton;
-/// Davidson eigensolver adapted for local SCF orbital optimization.
-pub mod davidson_local;
-/// Augmented Hessian (AH) ROHF solver for difficult convergence cases.
-pub mod rohf_ah;
-/// Analytical nuclear gradients for RHF, UHF, and ROHF.
-pub mod gradient;
 pub use gradient::{rhf_gradient, rohf_gradient, uhf_gradient};
 /// Analytical nuclear gradients for Kohn-Sham DFT (XC + grid response).
 pub mod ks_gradient;
 pub use ks_gradient::ks_gradient_closed;
-/// Geometry optimization via L-BFGS with energy/gradient convergence.
-pub mod optimize;
 /// Harmonic vibrational frequencies from finite-difference Hessian.
 pub mod frequencies;
 /// Analytic RHF second derivatives (Hessian) — nuclear term implemented,
 /// electronic terms stubbed pending LIBINT2_MAX_DERIV_ORDER >= 2.
 pub mod hessian;
-pub use frequencies::{
-    harmonic_frequencies, FrequencyConfig, FrequencyReference, FrequencyResult,
-};
+/// Geometry optimization via L-BFGS with energy/gradient convergence.
+pub mod optimize;
+pub use frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference, FrequencyResult};
 /// Continuous Fast Multipole Method (CFMM) for long-range Coulomb.
 ///
 /// CORRECT BUT NOT PRODUCTION — still gated behind the off-by-default
@@ -164,7 +162,7 @@ pub mod qmmm;
 pub use qmmm::{BoundaryChargeScheme, QmSelection, QmmmAtom, QmmmSystem};
 /// Jacob's ladder solver: run a sequence of methods (HF→DFT→MP2→…) reusing orbitals.
 pub mod ladder;
-pub use ladder::{solve_rhf_ladder, default_ladder, ksdft_ladder, Rung, LadderResult, RungOutcome};
+pub use ladder::{default_ladder, ksdft_ladder, solve_rhf_ladder, LadderResult, Rung, RungOutcome};
 
 pub mod df_increments;
 pub use df_increments::{solve_rhf_with_df_increments, DfIncrementsResult};

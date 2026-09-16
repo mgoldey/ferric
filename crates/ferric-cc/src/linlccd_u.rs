@@ -126,7 +126,8 @@ pub fn u_linlccd(
     plan.reserve(
         "b_ov_a/b_ov_b dressed RI blocks",
         naux.saturating_mul(
-            no_a.saturating_mul(nv_a).saturating_add(no_b.saturating_mul(nv_b)),
+            no_a.saturating_mul(nv_a)
+                .saturating_add(no_b.saturating_mul(nv_b)),
         ),
         Lifetime::Resident,
     );
@@ -147,7 +148,11 @@ pub fn u_linlccd(
         "g_ovov aa/ab/bb spin blocks",
         no_a.saturating_mul(nv_a)
             .saturating_pow(2)
-            .saturating_add(no_a.saturating_mul(nv_a).saturating_mul(no_b).saturating_mul(nv_b))
+            .saturating_add(
+                no_a.saturating_mul(nv_a)
+                    .saturating_mul(no_b)
+                    .saturating_mul(nv_b),
+            )
             .saturating_add(no_b.saturating_mul(nv_b).saturating_pow(2)),
         Lifetime::Transient,
     );
@@ -156,7 +161,10 @@ pub fn u_linlccd(
         plan.reserve(
             "g_oooo aa/ab/bb spin blocks",
             no_a.saturating_pow(4)
-                .saturating_add(no_a.saturating_pow(2).saturating_mul(no_b.saturating_pow(2)))
+                .saturating_add(
+                    no_a.saturating_pow(2)
+                        .saturating_mul(no_b.saturating_pow(2)),
+                )
                 .saturating_add(no_b.saturating_pow(4)),
             Lifetime::Transient,
         );
@@ -166,7 +174,10 @@ pub fn u_linlccd(
         plan.reserve(
             "g_vvvv aa/ab/bb spin blocks",
             nv_a.saturating_pow(4)
-                .saturating_add(nv_a.saturating_pow(2).saturating_mul(nv_b.saturating_pow(2)))
+                .saturating_add(
+                    nv_a.saturating_pow(2)
+                        .saturating_mul(nv_b.saturating_pow(2)),
+                )
                 .saturating_add(nv_b.saturating_pow(4)),
             Lifetime::Transient,
         );
@@ -200,8 +211,12 @@ pub fn u_linlccd(
         .as_ref()
         .ok_or_else(|| FerricError::General("unrestricted result carries no beta MOs".into()))?;
 
-    let occ_a = c_a.slice(ndarray::s![.., first_occ..first_occ + no_a]).to_owned();
-    let occ_b = c_b.slice(ndarray::s![.., first_occ..first_occ + no_b]).to_owned();
+    let occ_a = c_a
+        .slice(ndarray::s![.., first_occ..first_occ + no_a])
+        .to_owned();
+    let occ_b = c_b
+        .slice(ndarray::s![.., first_occ..first_occ + no_b])
+        .to_owned();
     let vir_a = c_a.slice(ndarray::s![.., nocc_a_tot..]).to_owned();
     let vir_b = c_b.slice(ndarray::s![.., nocc_b_tot..]).to_owned();
 
@@ -218,7 +233,11 @@ pub fn u_linlccd(
     let g_ovov_ab = chemist(&b_ov_a, &b_ov_b);
     let g_ovov_bb = chemist(&b_ov_b, &b_ov_b);
     let v_oovv = u_asym_oovv(
-        &SpinBlocks { aa: &g_ovov_aa, ab: &g_ovov_ab, bb: &g_ovov_bb },
+        &SpinBlocks {
+            aa: &g_ovov_aa,
+            ab: &g_ovov_ab,
+            bb: &g_ovov_bb,
+        },
         no_a,
         no_b,
         nv_a,
@@ -231,7 +250,15 @@ pub fn u_linlccd(
         let g_aa = chemist(&b_oo_a, &b_oo_a);
         let g_ab = chemist(&b_oo_a, &b_oo_b);
         let g_bb = chemist(&b_oo_b, &b_oo_b);
-        let v = u_asym_same(&SpinBlocks { aa: &g_aa, ab: &g_ab, bb: &g_bb }, no_a, no_b);
+        let v = u_asym_same(
+            &SpinBlocks {
+                aa: &g_aa,
+                ab: &g_ab,
+                bb: &g_bb,
+            },
+            no_a,
+            no_b,
+        );
         Some(Tensor::new(v, [Axis::O, Axis::O, Axis::O, Axis::O]))
     } else {
         None
@@ -243,7 +270,15 @@ pub fn u_linlccd(
         let g_aa = chemist(&b_vv_a, &b_vv_a);
         let g_ab = chemist(&b_vv_a, &b_vv_b);
         let g_bb = chemist(&b_vv_b, &b_vv_b);
-        let v = u_asym_same(&SpinBlocks { aa: &g_aa, ab: &g_ab, bb: &g_bb }, nv_a, nv_b);
+        let v = u_asym_same(
+            &SpinBlocks {
+                aa: &g_aa,
+                ab: &g_ab,
+                bb: &g_bb,
+            },
+            nv_a,
+            nv_b,
+        );
         Some(Tensor::new(v, [Axis::V, Axis::V, Axis::V, Axis::V]))
     } else {
         None
@@ -255,11 +290,7 @@ pub fn u_linlccd(
     // Stage-seam RSS safety net: the transient `eri3_ao` and the spatial spin
     // blocks are freed and every resident tensor exists, so RSS here is
     // directly comparable to the plan's projected peak. Observational only.
-    ferric_core::memory::warn_if_rss_over(
-        "U-LinLCCD MO blocks built",
-        plan.budget_bytes(),
-        1.1,
-    );
+    ferric_core::memory::warn_if_rss_over("U-LinLCCD MO blocks built", plan.budget_bytes(), 1.1);
 
     // Interleaved spin-orbital energies. Padded slots (where one spin has fewer
     // orbitals) get a large gap so any residual amplitude there is driven to zero;
@@ -301,7 +332,11 @@ pub fn u_linlccd(
         let e_corr: f64 = 0.25 * einsum!("ijab,ijab->", &oovv_t, &t_t);
         if iter > 0 && (e_corr - e_old).abs() < cfg.energy_conv {
             let t2 = t.clone().into_dimensionality::<ndarray::Ix4>().unwrap();
-            return Ok(CcResult { correlation_energy: e_corr, t1: None, t2 });
+            return Ok(CcResult {
+                correlation_energy: e_corr,
+                t1: None,
+                t2,
+            });
         }
         e_old = e_corr;
 
@@ -317,8 +352,16 @@ pub fn u_linlccd(
 
         let t_new = &r / &d;
         let err = &t_new - &t;
-        let t_flat = t_new.view().into_shape_with_order((dim, dim)).unwrap().to_owned();
-        let err_flat = err.view().into_shape_with_order((dim, dim)).unwrap().to_owned();
+        let t_flat = t_new
+            .view()
+            .into_shape_with_order((dim, dim))
+            .unwrap()
+            .to_owned();
+        let err_flat = err
+            .view()
+            .into_shape_with_order((dim, dim))
+            .unwrap()
+            .to_owned();
         t = diis
             .step(&t_flat, &err_flat)
             .into_shape_with_order(IxDyn(&[no2, no2, nv2, nv2]))

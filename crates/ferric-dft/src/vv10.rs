@@ -366,24 +366,24 @@ pub fn vv10_egrad(
     let cells = use_cells.then(|| CellList::build(&xyz_in, &active_in, NLC_CUTOFF_BOHR));
 
     // Per-pair egrad accumulation for outer point i, partner j.
-    let accum = |j: usize, w0i: f64, ki: f64, xi: [f64; 3],
-                 fx: &mut f64, fy: &mut f64, fz: &mut f64| {
-        let dx = xyz_in[j][0] - xi[0];
-        let dy = xyz_in[j][1] - xi[1];
-        let dz = xyz_in[j][2] - xi[2];
-        let r2 = dx * dx + dy * dy + dz * dz;
-        let g_i = r2 * w0i + ki;
-        let g_p = r2 * w0_in[j] + k_in[j];
-        let g_t = g_i + g_p;
-        if g_i < 1e-30 || g_p < 1e-30 || g_t < 1e-30 {
-            return;
-        }
-        let t = rpw[j] / (g_i * g_p * g_t);
-        let q = t * (w0i / g_i + w0_in[j] / g_p + (w0i + w0_in[j]) / g_t);
-        *fx += q * dx;
-        *fy += q * dy;
-        *fz += q * dz;
-    };
+    let accum =
+        |j: usize, w0i: f64, ki: f64, xi: [f64; 3], fx: &mut f64, fy: &mut f64, fz: &mut f64| {
+            let dx = xyz_in[j][0] - xi[0];
+            let dy = xyz_in[j][1] - xi[1];
+            let dz = xyz_in[j][2] - xi[2];
+            let r2 = dx * dx + dy * dy + dz * dz;
+            let g_i = r2 * w0i + ki;
+            let g_p = r2 * w0_in[j] + k_in[j];
+            let g_t = g_i + g_p;
+            if g_i < 1e-30 || g_p < 1e-30 || g_t < 1e-30 {
+                return;
+            }
+            let t = rpw[j] / (g_i * g_p * g_t);
+            let q = t * (w0i / g_i + w0_in[j] / g_p + (w0i + w0_in[j]) / g_t);
+            *fx += q * dx;
+            *fy += q * dy;
+            *fz += q * dz;
+        };
 
     // Outer rows are independent — parallel map, serial inner loop.
     let rows = map_rows(n_out, |i| {
@@ -716,11 +716,11 @@ fn vv10_internal_cutoff(
     let setup = map_rows(npts, setup_point);
 
     let mut rho = vec![0.0_f64; npts];
-    let mut w0  = vec![0.0_f64; npts];
-    let mut kp  = vec![0.0_f64; npts];
+    let mut w0 = vec![0.0_f64; npts];
+    let mut kp = vec![0.0_f64; npts];
     let mut dw0_dr = vec![0.0_f64; npts];
     let mut dw0_dg = vec![0.0_f64; npts];
-    let mut dk_dr  = vec![0.0_f64; npts];
+    let mut dk_dr = vec![0.0_f64; npts];
     let mut active = vec![false; npts];
     let mut xyz = vec![[0.0_f64; 3]; npts];
     let mut rho_w = vec![0.0_f64; npts];
@@ -762,30 +762,30 @@ fn vv10_internal_cutoff(
     // The `Vv10Damping::None` branch skips the multiply entirely, so the
     // undamped path is bit-identical to the pre-damping code.
     let damped = !damping.is_none();
-    let accum = |p: usize, w0i: f64, ki: f64, xi: [f64; 3],
-                 fi: &mut f64, ui: &mut f64, wi: &mut f64| {
-        #[cfg(test)]
-        count_pair_visit();
-        let dx = xyz[p][0] - xi[0];
-        let dy = xyz[p][1] - xi[1];
-        let dz = xyz[p][2] - xi[2];
-        let r2 = dx * dx + dy * dy + dz * dz;
-        let gp_val = r2 * w0[p] + kp[p];
-        let gi_val = r2 * w0i + ki;
-        let gt_val = gi_val + gp_val;
-        if gi_val < 1e-30 || gp_val < 1e-30 || gt_val < 1e-30 {
-            return;
-        }
-        let t = if damped {
-            rho_w[p] * damping.factor_from_r2(r2) / (gi_val * gp_val * gt_val)
-        } else {
-            rho_w[p] / (gi_val * gp_val * gt_val)
+    let accum =
+        |p: usize, w0i: f64, ki: f64, xi: [f64; 3], fi: &mut f64, ui: &mut f64, wi: &mut f64| {
+            #[cfg(test)]
+            count_pair_visit();
+            let dx = xyz[p][0] - xi[0];
+            let dy = xyz[p][1] - xi[1];
+            let dz = xyz[p][2] - xi[2];
+            let r2 = dx * dx + dy * dy + dz * dz;
+            let gp_val = r2 * w0[p] + kp[p];
+            let gi_val = r2 * w0i + ki;
+            let gt_val = gi_val + gp_val;
+            if gi_val < 1e-30 || gp_val < 1e-30 || gt_val < 1e-30 {
+                return;
+            }
+            let t = if damped {
+                rho_w[p] * damping.factor_from_r2(r2) / (gi_val * gp_val * gt_val)
+            } else {
+                rho_w[p] / (gi_val * gp_val * gt_val)
+            };
+            *fi += t;
+            let t_u = t * (1.0 / gi_val + 1.0 / gt_val);
+            *ui += t_u;
+            *wi += t_u * r2;
         };
-        *fi += t;
-        let t_u = t * (1.0 / gi_val + 1.0 / gt_val);
-        *ui += t_u;
-        *wi += t_u * r2;
-    };
 
     let row_fn = |i: usize| -> (f64, f64, f64) {
         if !active[i] {
@@ -829,7 +829,9 @@ fn vv10_internal_cutoff(
     let mut exc = vec![0.0_f64; npts];
     let mut e_nl = 0.0_f64;
     for g in 0..npts {
-        if !active[g] { continue; }
+        if !active[g] {
+            continue;
+        }
         let (f_g, u_g, w_g) = fuw[g];
         let exc_g = beta + 0.5 * f_g;
         exc[g] = exc_g;
@@ -837,7 +839,13 @@ fn vv10_internal_cutoff(
         vsig[g] = 1.5 * w_g * dw0_dg[g];
         e_nl += grid[g].weight * rho[g] * exc_g;
     }
-    Vv10Internal { e_nl, vrho, vsig, exc, active }
+    Vv10Internal {
+        e_nl,
+        vrho,
+        vsig,
+        exc,
+        active,
+    }
 }
 
 /// Compute the VV10 energy contribution and add the matrix V_nl to `f`.
@@ -847,8 +855,8 @@ fn vv10_internal_cutoff(
 /// the `_scratch` variant to skip the per-iteration `(nbf, npts)` allocation.
 pub fn add_vv10(
     grid: &[GridPoint],
-    chi: &Array2<f64>,        // (nbf, npts)
-    dchi: &Array3<f64>,       // (3, nbf, npts)
+    chi: &Array2<f64>,  // (nbf, npts)
+    dchi: &Array3<f64>, // (3, nbf, npts)
     dens: &DensityGrid,
     params: &Vv10Params,
     f: &mut Array2<f64>,
@@ -865,8 +873,8 @@ pub fn add_vv10(
 /// the semilocal path already amortizes.
 pub fn add_vv10_scratch(
     grid: &[GridPoint],
-    chi: &Array2<f64>,        // (nbf, npts)
-    dchi: &Array3<f64>,       // (3, nbf, npts)
+    chi: &Array2<f64>,  // (nbf, npts)
+    dchi: &Array3<f64>, // (3, nbf, npts)
     dens: &DensityGrid,
     params: &Vv10Params,
     f: &mut Array2<f64>,
@@ -878,7 +886,13 @@ pub fn add_vv10_scratch(
 
     // Compute energy + per-point potentials via the shared pair-sum routine.
     let out = vv10_internal(grid, dens, params);
-    let Vv10Internal { e_nl, vrho, vsig, active, .. } = out;
+    let Vv10Internal {
+        e_nl,
+        vrho,
+        vsig,
+        active,
+        ..
+    } = out;
 
     // V_nl matrix contribution — same GEMM pattern as semilocal V_xc.
     //   LDA-like piece: V_μν += Σ_g w_g · vrho_g · χ_μg · χ_νg
@@ -888,7 +902,13 @@ pub fn add_vv10_scratch(
     let buf = scratch.ensure((nbf, npts));
 
     let s: Array1<f64> = (0..npts)
-        .map(|g| if active[g] { grid[g].weight * vrho[g] } else { 0.0 })
+        .map(|g| {
+            if active[g] {
+                grid[g].weight * vrho[g]
+            } else {
+                0.0
+            }
+        })
         .collect();
     scale_columns_into(chi.view(), &s, buf);
     // Digestion GEMM (nbf, npts)·(npts, nbf), outside any rayon region — this
@@ -994,7 +1014,10 @@ mod damping_tests {
         let at_zero = d.factor_from_r2(0.0);
         let far = d.factor_from_r2(30.0 * 30.0);
         eprintln!("damping factor: R=0 -> {at_zero:.3e}, R=30 Bohr -> {far:.14}");
-        assert!(at_zero.abs() < 1e-12, "factor at R=0 must vanish, got {at_zero}");
+        assert!(
+            at_zero.abs() < 1e-12,
+            "factor at R=0 must vanish, got {at_zero}"
+        );
         assert!(
             (far - 1.0).abs() < 1e-12,
             "factor at R=30 Bohr must be 1, got {far}"
@@ -1004,7 +1027,10 @@ mod damping_tests {
         for r in [0.0_f64, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0] {
             let f = d.factor_from_r2(r * r);
             assert!((0.0..=1.0).contains(&f), "factor {f} out of [0,1] at R={r}");
-            assert!(f > prev, "factor must increase with R (R={r}: {f} !> {prev})");
+            assert!(
+                f > prev,
+                "factor must increase with R (R={r}: {f} !> {prev})"
+            );
             prev = f;
         }
         // The None arm is the exact identity, never a near-1.0 float.
@@ -1086,10 +1112,7 @@ mod cutoff_tests {
     /// can drive the VV10 internals directly. Only used for small molecules
     /// (water) — see `synthetic_density_on_grid` for larger geometries, where
     /// a real SCF is too slow for a debug-build unit test.
-    fn nlc_density(
-        mol: &Molecule,
-        basis_name: &str,
-    ) -> (Vv10Params, Vec<GridPoint>, DensityGrid) {
+    fn nlc_density(mol: &Molecule, basis_name: &str) -> (Vv10Params, Vec<GridPoint>, DensityGrid) {
         let bs = basis::bundled(basis_name).unwrap();
         let obs = PreparedBasis::new(mol, &bs).unwrap();
         let op = Operator::coulomb();
@@ -1143,9 +1166,9 @@ mod cutoff_tests {
         let grid = crate::grid::build_atomic_grid(mol, &nlc_cfg);
         let npts = grid.len();
         const ALPHA: f64 = 2.0; // Bohr^-2, a valence-like decay (density falls
-                                 // off fast enough that S = Σ w ρ^(1/4) stays
-                                 // within NLC_CUTOFF_BOHR's documented S ≲ 60
-                                 // validity range even for a 48-atom chain).
+                                // off fast enough that S = Σ w ρ^(1/4) stays
+                                // within NLC_CUTOFF_BOHR's documented S ≲ 60
+                                // validity range even for a 48-atom chain).
 
         let mut rho = Array1::<f64>::zeros(npts);
         let mut grad = Array2::<f64>::zeros((3, npts));
@@ -1196,7 +1219,9 @@ mod cutoff_tests {
         // 1e-6 GiB. Take the crate-wide lock (lib.rs) that every other
         // budget-touching test module already uses; a module-local lock cannot
         // stop a cross-module race on a process-global.
-        let _env = crate::TEST_BUDGET_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = crate::TEST_BUDGET_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mol = Molecule::parse_xyz(
             "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
             0,
@@ -1206,7 +1231,14 @@ mod cutoff_tests {
         let (params, grid, dens) = nlc_density(&mol, "cc-pvdz");
 
         let e_exact = vv10_internal_cutoff(&grid, &dens, &params, None, Vv10Damping::None).e_nl;
-        let e_cut = vv10_internal_cutoff(&grid, &dens, &params, Some(NLC_CUTOFF_BOHR), Vv10Damping::None).e_nl;
+        let e_cut = vv10_internal_cutoff(
+            &grid,
+            &dens,
+            &params,
+            Some(NLC_CUTOFF_BOHR),
+            Vv10Damping::None,
+        )
+        .e_nl;
         let err = (e_cut - e_exact).abs();
         eprintln!(
             "[water] npts={} E_nl exact={:.12} cutoff={:.12} |Δ|={:.3e}",
@@ -1215,7 +1247,10 @@ mod cutoff_tests {
             e_cut,
             err
         );
-        assert!(err < 1e-8, "water VV10 cutoff error {err:.3e} exceeds 1e-8 Ha");
+        assert!(
+            err < 1e-8,
+            "water VV10 cutoff error {err:.3e} exceeds 1e-8 Ha"
+        );
     }
 
     #[test]
@@ -1230,7 +1265,9 @@ mod cutoff_tests {
         // 1e-6 GiB. Take the crate-wide lock (lib.rs) that every other
         // budget-touching test module already uses; a module-local lock cannot
         // stop a cross-module race on a process-global.
-        let _env = crate::TEST_BUDGET_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = crate::TEST_BUDGET_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // A synthetic 24-atom linear chain (bond length 2.9 Bohr, ≈1.53 Å,
         // matching a real C-C bond), NOT a bundled alkane geometry: the
         // longest bundled alkane (C20H42, 62 atoms) only spans ≈59 Bohr along
@@ -1248,7 +1285,10 @@ mod cutoff_tests {
         let mut xyz = String::new();
         xyz.push_str(&format!("{NCHAIN}\nsynthetic chain\n"));
         for i in 0..NCHAIN {
-            xyz.push_str(&format!("C {:.6} 0.0 0.0\n", i as f64 * BOND_BOHR * 0.529177));
+            xyz.push_str(&format!(
+                "C {:.6} 0.0 0.0\n",
+                i as f64 * BOND_BOHR * 0.529177
+            ));
         }
         let mol = Molecule::parse_xyz(&xyz, 0, 1).unwrap();
         assert!(mol.atoms.len() >= 20, "expected ≥20-atom chain");
@@ -1275,7 +1315,14 @@ mod cutoff_tests {
         let e_exact = vv10_internal_cutoff(&grid, &dens, &params, None, Vv10Damping::None).e_nl;
         let visits_dense = PAIR_VISITS.swap(0, Ordering::Relaxed);
 
-        let e_cut = vv10_internal_cutoff(&grid, &dens, &params, Some(NLC_CUTOFF_BOHR), Vv10Damping::None).e_nl;
+        let e_cut = vv10_internal_cutoff(
+            &grid,
+            &dens,
+            &params,
+            Some(NLC_CUTOFF_BOHR),
+            Vv10Damping::None,
+        )
+        .e_nl;
         let visits_cut = PAIR_VISITS.load(Ordering::Relaxed);
 
         let err = (e_cut - e_exact).abs();

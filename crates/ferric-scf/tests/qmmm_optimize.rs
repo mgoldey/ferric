@@ -33,8 +33,22 @@ fn ethane_atoms() -> Vec<QmmmAtom> {
     ];
     for k in 0..3 {
         let phi = 2.0 * std::f64::consts::PI * (k as f64) / 3.0;
-        atoms.push(QmmmAtom::new("H", 1, ch * s * phi.cos(), ch * s * phi.sin(), ch * c, 0.033));
-        atoms.push(QmmmAtom::new("H", 1, ch * s * phi.cos(), ch * s * phi.sin(), cc - ch * c, 0.033));
+        atoms.push(QmmmAtom::new(
+            "H",
+            1,
+            ch * s * phi.cos(),
+            ch * s * phi.sin(),
+            ch * c,
+            0.033,
+        ));
+        atoms.push(QmmmAtom::new(
+            "H",
+            1,
+            ch * s * phi.cos(),
+            ch * s * phi.sin(),
+            cc - ch * c,
+            0.033,
+        ));
     }
     atoms
 }
@@ -45,58 +59,138 @@ fn ethane_bonds() -> Vec<(usize, usize)> {
 
 fn capped_ethane() -> QmmmSystem {
     let bonds = ethane_bonds();
-    QmmmSystem::new(&ethane_atoms(), QmSelection::Indices(vec![0, 2, 4, 6]), 0, 1)
-        .unwrap()
-        .with_link_atoms(&bonds, DEFAULT_LINK_SCALE)
-        .unwrap()
-        .with_boundary_charges(&bonds, BoundaryChargeScheme::RedistributedChargeDipole)
-        .unwrap()
+    QmmmSystem::new(
+        &ethane_atoms(),
+        QmSelection::Indices(vec![0, 2, 4, 6]),
+        0,
+        1,
+    )
+    .unwrap()
+    .with_link_atoms(&bonds, DEFAULT_LINK_SCALE)
+    .unwrap()
+    .with_boundary_charges(&bonds, BoundaryChargeScheme::RedistributedChargeDipole)
+    .unwrap()
 }
 
 /// Same made-up-but-generic parameters as `tests/qmmm_mm.rs::full_ethane_topology`.
 fn full_ethane_topology() -> MmTopology {
     let bonds = vec![
-        Bond { i: 0, j: 1, k: 0.35, r0: ETHANE_CC },
-        Bond { i: 0, j: 2, k: 0.4, r0: 1.09 * ANG2BOHR },
-        Bond { i: 0, j: 4, k: 0.4, r0: 1.09 * ANG2BOHR },
-        Bond { i: 0, j: 6, k: 0.4, r0: 1.09 * ANG2BOHR },
-        Bond { i: 1, j: 3, k: 0.4, r0: 1.09 * ANG2BOHR },
-        Bond { i: 1, j: 5, k: 0.4, r0: 1.09 * ANG2BOHR },
-        Bond { i: 1, j: 7, k: 0.4, r0: 1.09 * ANG2BOHR },
+        Bond {
+            i: 0,
+            j: 1,
+            k: 0.35,
+            r0: ETHANE_CC,
+        },
+        Bond {
+            i: 0,
+            j: 2,
+            k: 0.4,
+            r0: 1.09 * ANG2BOHR,
+        },
+        Bond {
+            i: 0,
+            j: 4,
+            k: 0.4,
+            r0: 1.09 * ANG2BOHR,
+        },
+        Bond {
+            i: 0,
+            j: 6,
+            k: 0.4,
+            r0: 1.09 * ANG2BOHR,
+        },
+        Bond {
+            i: 1,
+            j: 3,
+            k: 0.4,
+            r0: 1.09 * ANG2BOHR,
+        },
+        Bond {
+            i: 1,
+            j: 5,
+            k: 0.4,
+            r0: 1.09 * ANG2BOHR,
+        },
+        Bond {
+            i: 1,
+            j: 7,
+            k: 0.4,
+            r0: 1.09 * ANG2BOHR,
+        },
     ];
     let theta0 = 109.5_f64.to_radians();
     let mut angles = vec![];
     for h in [2, 4, 6] {
-        angles.push(Angle { i: h, j: 0, k: 1, k_theta: 0.06, theta0 });
+        angles.push(Angle {
+            i: h,
+            j: 0,
+            k: 1,
+            k_theta: 0.06,
+            theta0,
+        });
     }
     for h in [3, 5, 7] {
-        angles.push(Angle { i: h, j: 1, k: 0, k_theta: 0.06, theta0 });
+        angles.push(Angle {
+            i: h,
+            j: 1,
+            k: 0,
+            k_theta: 0.06,
+            theta0,
+        });
     }
     let hc0 = [2, 4, 6];
     for a in 0..3 {
         for b in (a + 1)..3 {
-            angles.push(Angle { i: hc0[a], j: 0, k: hc0[b], k_theta: 0.04, theta0 });
+            angles.push(Angle {
+                i: hc0[a],
+                j: 0,
+                k: hc0[b],
+                k_theta: 0.04,
+                theta0,
+            });
         }
     }
     let hc1 = [3, 5, 7];
     for a in 0..3 {
         for b in (a + 1)..3 {
-            angles.push(Angle { i: hc1[a], j: 1, k: hc1[b], k_theta: 0.04, theta0 });
+            angles.push(Angle {
+                i: hc1[a],
+                j: 1,
+                k: hc1[b],
+                k_theta: 0.04,
+                theta0,
+            });
         }
     }
     let mut torsions = vec![];
     for &hi in &[2, 4, 6] {
         for &hj in &[3, 5, 7] {
-            torsions.push(Torsion { i: hi, j: 0, k: 1, l: hj, periodicity: 3, k_phi: 0.02, phase: 0.0 });
+            torsions.push(Torsion {
+                i: hi,
+                j: 0,
+                k: 1,
+                l: hj,
+                periodicity: 3,
+                k_phi: 0.02,
+                phase: 0.0,
+            });
         }
     }
     let charges = vec![-0.1, -0.1, 0.033, 0.033, 0.033, 0.033, 0.033, 0.033];
     // Deliberately small sigma -- see tests/qmmm_mm.rs's identical comment:
     // this geometry's nonbonded pairs sit at bonded-range separations, so a
     // realistic sigma would put every pair deep in the LJ repulsive wall.
-    let lj_small = LjParams { sigma: 0.5 * ANG2BOHR, epsilon: 0.0157 / 627.509_474 };
-    let lj_c = LjParams { sigma: 0.6 * ANG2BOHR, epsilon: 0.109 / 627.509_474 };
-    let lj = vec![lj_c, lj_c, lj_small, lj_small, lj_small, lj_small, lj_small, lj_small];
+    let lj_small = LjParams {
+        sigma: 0.5 * ANG2BOHR,
+        epsilon: 0.0157 / 627.509_474,
+    };
+    let lj_c = LjParams {
+        sigma: 0.6 * ANG2BOHR,
+        epsilon: 0.109 / 627.509_474,
+    };
+    let lj = vec![
+        lj_c, lj_c, lj_small, lj_small, lj_small, lj_small, lj_small, lj_small,
+    ];
 
     MmTopology::new(charges, lj, bonds, angles, torsions).unwrap()
 }
@@ -114,11 +208,24 @@ fn full_ethane_topology() -> MmTopology {
 fn optimize_qmmm_with_no_mm_matches_optimize_geometry() {
     let ctx = ParallelContext::default();
     let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 1.0\n", 0, 1).unwrap();
-    let rhf_config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let opt_config = OptimizeConfig { trust_radius: 0.1, ..Default::default() };
+    let rhf_config = RhfConfig {
+        energy_conv: 1e-10,
+        ..Default::default()
+    };
+    let opt_config = OptimizeConfig {
+        trust_radius: 0.1,
+        ..Default::default()
+    };
 
-    let plain =
-        optimize_geometry(&ctx, &mol, "sto-3g", Operator::coulomb(), &rhf_config, &opt_config).unwrap();
+    let plain = optimize_geometry(
+        &ctx,
+        &mol,
+        "sto-3g",
+        Operator::coulomb(),
+        &rhf_config,
+        &opt_config,
+    )
+    .unwrap();
     assert!(plain.converged);
 
     let atoms = vec![
@@ -161,8 +268,16 @@ fn optimize_qmmm_with_no_mm_matches_optimize_geometry() {
 fn optimize_qmmm_capped_ethane_converges_with_small_final_gradient() {
     let ctx = ParallelContext::default();
     let system = capped_ethane();
-    let opt_config = OptimizeConfig { trust_radius: 0.15, max_steps: 60, ..Default::default() };
-    let rhf_config = RhfConfig { energy_conv: 1e-10, density_conv: 1e-9, ..Default::default() };
+    let opt_config = OptimizeConfig {
+        trust_radius: 0.15,
+        max_steps: 60,
+        ..Default::default()
+    };
+    let rhf_config = RhfConfig {
+        energy_conv: 1e-10,
+        density_conv: 1e-9,
+        ..Default::default()
+    };
 
     let cfg = QmmmOptimizeConfig {
         method: QmmmMethod::Rhf,
@@ -173,10 +288,19 @@ fn optimize_qmmm_capped_ethane_converges_with_small_final_gradient() {
     };
     let result = optimize_qmmm(&ctx, &system, "sto-3g", &cfg).unwrap();
 
-    assert!(result.converged, "capped ethane QM/MM optimization did not converge in {} steps", result.steps);
+    assert!(
+        result.converged,
+        "capped ethane QM/MM optimization did not converge in {} steps",
+        result.steps
+    );
     // Monotone decrease (energies[0] is the START, before any step).
     for w in result.energies.windows(2) {
-        assert!(w[1] <= w[0] + 1e-10, "energy increased: {:?} -> {:?}", w[0], w[1]);
+        assert!(
+            w[1] <= w[0] + 1e-10,
+            "energy increased: {:?} -> {:?}",
+            w[0],
+            w[1]
+        );
     }
     eprintln!(
         "[F2-2] capped ethane RCD: {} steps, converged={}, E_final = {:.10} Ha",
@@ -215,8 +339,16 @@ fn optimize_qmmm_full_topology_move_all_decreases_monotonically_and_converges() 
     let ctx = ParallelContext::default();
     let system = capped_ethane();
     let top = full_ethane_topology();
-    let opt_config = OptimizeConfig { trust_radius: 0.1, max_steps: 80, ..Default::default() };
-    let rhf_config = RhfConfig { energy_conv: 1e-10, density_conv: 1e-9, ..Default::default() };
+    let opt_config = OptimizeConfig {
+        trust_radius: 0.1,
+        max_steps: 80,
+        ..Default::default()
+    };
+    let rhf_config = RhfConfig {
+        energy_conv: 1e-10,
+        density_conv: 1e-9,
+        ..Default::default()
+    };
 
     let cfg = QmmmOptimizeConfig {
         method: QmmmMethod::Rhf,
@@ -227,9 +359,18 @@ fn optimize_qmmm_full_topology_move_all_decreases_monotonically_and_converges() 
     };
     let result = optimize_qmmm(&ctx, &system, "sto-3g", &cfg).unwrap();
 
-    assert!(result.converged, "full-topology MoveMm::All did not converge in {} steps", result.steps);
+    assert!(
+        result.converged,
+        "full-topology MoveMm::All did not converge in {} steps",
+        result.steps
+    );
     for w in result.energies.windows(2) {
-        assert!(w[1] <= w[0] + 1e-8, "energy increased: {:?} -> {:?}", w[0], w[1]);
+        assert!(
+            w[1] <= w[0] + 1e-8,
+            "energy increased: {:?} -> {:?}",
+            w[0],
+            w[1]
+        );
     }
     eprintln!(
         "[F2-2] full-topology MoveMm::All ethane: {} steps, converged={}, E_final = {:.10} Ha",
@@ -245,7 +386,8 @@ fn optimize_qmmm_full_topology_move_all_decreases_monotonically_and_converges() 
     for &i in &system.mm_indices {
         let a0 = &system.atoms[i];
         let a1 = &result.system.atoms[i];
-        let d = ((a1.x - a0.x).powi(2) + (a1.y - a0.y).powi(2) + (a1.z_pos - a0.z_pos).powi(2)).sqrt();
+        let d =
+            ((a1.x - a0.x).powi(2) + (a1.y - a0.y).powi(2) + (a1.z_pos - a0.z_pos).powi(2)).sqrt();
         eprintln!("[F2-2] MM atom {i} displacement under MoveMm::All: {d:.6e} Bohr");
         if d > 1e-4 {
             any_mm_moved = true;
@@ -313,7 +455,12 @@ fn move_with_polarizable_scf_config_is_a_typed_error() {
         mm_topology: None,
         scf: RhfConfig {
             polarizable: Some(PolarizableSites {
-                sites: vec![PolarizableSite { x: 5.0, y: 0.0, z: 0.0, alpha: 1.0 }],
+                sites: vec![PolarizableSite {
+                    x: 5.0,
+                    y: 0.0,
+                    z: 0.0,
+                    alpha: 1.0,
+                }],
                 ..Default::default()
             }),
             ..Default::default()
@@ -321,5 +468,8 @@ fn move_with_polarizable_scf_config_is_a_typed_error() {
     };
     let err = optimize_qmmm(&ctx, &system, "sto-3g", &cfg).unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("polarizable"), "error should mention polarizable: {msg}");
+    assert!(
+        msg.contains("polarizable"),
+        "error should mention polarizable: {msg}"
+    );
 }

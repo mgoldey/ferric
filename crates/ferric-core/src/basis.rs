@@ -3,14 +3,14 @@
 //! Supports BSE-JSON and Gaussian-94 input formats, plus a set of bundled
 //! basis sets compiled into the binary via `include_str!`.
 
-use crate::basis_util::{parse_float_list, canonical_name};
+use crate::basis_util::{canonical_name, parse_float_list};
 use crate::ecp::{EcpDef, EcpShell, EcpTerm};
 use crate::elements::symbol_to_z;
 use crate::FerricError;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::str::FromStr;
 use std::fs;
+use std::str::FromStr;
 
 /// A single contracted Gaussian shell.
 ///
@@ -67,7 +67,11 @@ impl BasisSet {
 ///
 /// Spherical: 2l+1. Cartesian: (l+1)(l+2)/2.
 pub fn num_functions(l: i32, pure: bool) -> usize {
-    if pure { (2 * l + 1) as usize } else { ((l + 1) * (l + 2) / 2) as usize }
+    if pure {
+        (2 * l + 1) as usize
+    } else {
+        ((l + 1) * (l + 2) / 2) as usize
+    }
 }
 
 // --- BSE-JSON parser ---
@@ -115,12 +119,15 @@ pub fn load_bse_json(path: &str) -> Result<BasisSet, FerricError> {
 }
 
 fn parse_bse_json(text: &str, name: &str) -> Result<BasisSet, FerricError> {
-    let bf: BseFile = serde_json::from_str(text).map_err(|e| FerricError::Basis(format!("BSE JSON: {e}")))?;
+    let bf: BseFile =
+        serde_json::from_str(text).map_err(|e| FerricError::Basis(format!("BSE JSON: {e}")))?;
     let mut shells: HashMap<i32, Vec<Shell>> = HashMap::new();
     let mut ecps: HashMap<i32, EcpDef> = HashMap::new();
     let bs_name = bf.name.unwrap_or_else(|| name.to_string());
     for (z_str, elem) in &bf.elements {
-        let z: i32 = z_str.parse().map_err(|e| FerricError::Basis(format!("bad element key {z_str:?}: {e}")))?;
+        let z: i32 = z_str
+            .parse()
+            .map_err(|e| FerricError::Basis(format!("bad element key {z_str:?}: {e}")))?;
         if let (Some(n_core), Some(pots)) = (elem.ecp_electrons, elem.ecp_potentials.as_ref()) {
             ecps.insert(z, parse_ecp_block(z, n_core, pots)?);
         }
@@ -138,29 +145,53 @@ fn parse_bse_json(text: &str, name: &str) -> Result<BasisSet, FerricError> {
                 for col in &sh.coefficients {
                     let mut coefs = parse_float_list(col)?;
                     if coefs.len() != exps.len() {
-                        return Err(FerricError::Basis(format!("{} coeffs vs {} exps", coefs.len(), exps.len())));
+                        return Err(FerricError::Basis(format!(
+                            "{} coeffs vs {} exps",
+                            coefs.len(),
+                            exps.len()
+                        )));
                     }
                     renormalize_contraction(&exps, &mut coefs, l);
-                    shells.entry(z).or_default().push(Shell { l, pure: shell_pure, exponents: exps.clone(), coefficients: coefs });
+                    shells.entry(z).or_default().push(Shell {
+                        l,
+                        pure: shell_pure,
+                        exponents: exps.clone(),
+                        coefficients: coefs,
+                    });
                 }
             } else {
                 // Multiple angular momenta (e.g. SP) — column k corresponds to angular_momentum[k]
                 for (k, &l) in sh.angular_momentum.iter().enumerate() {
                     if k >= sh.coefficients.len() {
-                        return Err(FerricError::Basis(format!("shell missing coefficient column {k}")));
+                        return Err(FerricError::Basis(format!(
+                            "shell missing coefficient column {k}"
+                        )));
                     }
                     let mut coefs = parse_float_list(&sh.coefficients[k])?;
                     if coefs.len() != exps.len() {
-                        return Err(FerricError::Basis(format!("{} coeffs vs {} exps", coefs.len(), exps.len())));
+                        return Err(FerricError::Basis(format!(
+                            "{} coeffs vs {} exps",
+                            coefs.len(),
+                            exps.len()
+                        )));
                     }
                     renormalize_contraction(&exps, &mut coefs, l);
                     let shell_pure = pure && l >= 2;
-                    shells.entry(z).or_default().push(Shell { l, pure: shell_pure, exponents: exps.clone(), coefficients: coefs });
+                    shells.entry(z).or_default().push(Shell {
+                        l,
+                        pure: shell_pure,
+                        exponents: exps.clone(),
+                        coefficients: coefs,
+                    });
                 }
             }
         }
     }
-    Ok(BasisSet { name: bs_name, shells, ecps })
+    Ok(BasisSet {
+        name: bs_name,
+        shells,
+        ecps,
+    })
 }
 
 /// Parse a single element's `ecp_potentials` block (BSE-JSON) into an [`EcpDef`].
@@ -189,11 +220,21 @@ fn parse_ecp_block(z: i32, n_core: i32, pots: &[BseEcpPotential]) -> Result<EcpD
             )));
         }
         let terms = (0..n)
-            .map(|k| EcpTerm { coef: coefs[k], r_exp: pot.r_exponents[k], gexp: gexps[k] })
+            .map(|k| EcpTerm {
+                coef: coefs[k],
+                r_exp: pot.r_exponents[k],
+                gexp: gexps[k],
+            })
             .collect();
-        ecp_shells.push(EcpShell { angular_momentum: l, terms });
+        ecp_shells.push(EcpShell {
+            angular_momentum: l,
+            terms,
+        });
     }
-    Ok(EcpDef { n_core, shells: ecp_shells })
+    Ok(EcpDef {
+        n_core,
+        shells: ecp_shells,
+    })
 }
 
 /// Rescale a contraction so its contracted AO has unit self-overlap.
@@ -228,7 +269,9 @@ fn renormalize_contraction(exps: &[f64], coefs: &mut [f64], l: i32) {
     }
     if s > 0.0 {
         let scale = 1.0 / s.sqrt();
-        for c in coefs.iter_mut() { *c *= scale; }
+        for c in coefs.iter_mut() {
+            *c *= scale;
+        }
     }
 }
 
@@ -247,37 +290,66 @@ fn parse_g94(text: &str, name: &str) -> Result<BasisSet, FerricError> {
     let mut lines = text.lines().peekable();
     while let Some(line) = lines.next() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('!') { continue; }
-        if line == "****" { cur_z = None; continue; }
+        if line.is_empty() || line.starts_with('!') {
+            continue;
+        }
+        if line == "****" {
+            cur_z = None;
+            continue;
+        }
         if cur_z.is_none() {
             let fields: Vec<&str> = line.split_whitespace().collect();
             if fields.len() >= 2 {
-                if let Some(z) = symbol_to_z(fields[0]) { cur_z = Some(z); }
+                if let Some(z) = symbol_to_z(fields[0]) {
+                    cur_z = Some(z);
+                }
             }
             continue;
         }
         let z = cur_z.unwrap();
         let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() < 3 { continue; }
+        if fields.len() < 3 {
+            continue;
+        }
         let shell_type = fields[0].to_uppercase();
-        let nprim: usize = fields[1].parse().map_err(|e| FerricError::Basis(format!("bad nprim: {e}")))?;
+        let nprim: usize = fields[1]
+            .parse()
+            .map_err(|e| FerricError::Basis(format!("bad nprim: {e}")))?;
         let is_sp = shell_type == "SP";
         let ncol = if is_sp { 2 } else { 1 };
         let mut exps = Vec::with_capacity(nprim);
         let mut coefs: Vec<Vec<f64>> = (0..ncol).map(|_| Vec::with_capacity(nprim)).collect();
         for _ in 0..nprim {
-            let pline = lines.next().ok_or_else(|| FerricError::Basis("unexpected EOF in shell".into()))?;
+            let pline = lines
+                .next()
+                .ok_or_else(|| FerricError::Basis("unexpected EOF in shell".into()))?;
             let pf: Vec<&str> = pline.split_whitespace().collect();
             if pf.len() < 1 + ncol {
-                return Err(FerricError::Basis(format!("primitive line has {} fields, want {}", pf.len(), 1 + ncol)));
+                return Err(FerricError::Basis(format!(
+                    "primitive line has {} fields, want {}",
+                    pf.len(),
+                    1 + ncol
+                )));
             }
-            exps.push(pf[0].parse::<f64>().map_err(|e| FerricError::Basis(format!("bad exponent: {e}")))?);
+            exps.push(
+                pf[0]
+                    .parse::<f64>()
+                    .map_err(|e| FerricError::Basis(format!("bad exponent: {e}")))?,
+            );
             for c in 0..ncol {
-                coefs[c].push(pf[1 + c].parse::<f64>().map_err(|e| FerricError::Basis(format!("bad coefficient: {e}")))?);
+                coefs[c].push(
+                    pf[1 + c]
+                        .parse::<f64>()
+                        .map_err(|e| FerricError::Basis(format!("bad coefficient: {e}")))?,
+                );
             }
         }
         let l = match shell_type.as_str() {
-            "S" | "SP" => 0, "P" => 1, "D" => 2, "F" => 3, "G" => 4,
+            "S" | "SP" => 0,
+            "P" => 1,
+            "D" => 2,
+            "F" => 3,
+            "G" => 4,
             other => return Err(FerricError::Basis(format!("unknown shell type {other:?}"))),
         };
         // G94 convention: spherical for L>=2
@@ -287,15 +359,34 @@ fn parse_g94(text: &str, name: &str) -> Result<BasisSet, FerricError> {
             let mut c_p = coefs[1].clone();
             renormalize_contraction(&exps, &mut c_s, 0);
             renormalize_contraction(&exps, &mut c_p, 1);
-            shells.entry(z).or_default().push(Shell { l: 0, pure: false, exponents: exps.clone(), coefficients: c_s });
-            shells.entry(z).or_default().push(Shell { l: 1, pure: false, exponents: exps, coefficients: c_p });
+            shells.entry(z).or_default().push(Shell {
+                l: 0,
+                pure: false,
+                exponents: exps.clone(),
+                coefficients: c_s,
+            });
+            shells.entry(z).or_default().push(Shell {
+                l: 1,
+                pure: false,
+                exponents: exps,
+                coefficients: c_p,
+            });
         } else {
             let mut c0 = coefs[0].clone();
             renormalize_contraction(&exps, &mut c0, l);
-            shells.entry(z).or_default().push(Shell { l, pure, exponents: exps, coefficients: c0 });
+            shells.entry(z).or_default().push(Shell {
+                l,
+                pure,
+                exponents: exps,
+                coefficients: c0,
+            });
         }
     }
-    Ok(BasisSet { name: name.to_string(), shells, ecps: HashMap::new() })
+    Ok(BasisSet {
+        name: name.to_string(),
+        shells,
+        ecps: HashMap::new(),
+    })
 }
 
 // --- Bundled basis sets ---
@@ -417,13 +508,18 @@ mod tests {
         // Heavy atoms present with ECP (28-electron core for all three).
         for &z in &[47, 53, 54] {
             assert!(bs.for_element(z).is_some(), "Z={z} orbital shells missing");
-            let ecp = bs.ecp_for_element(z).unwrap_or_else(|| panic!("Z={z} ECP missing"));
+            let ecp = bs
+                .ecp_for_element(z)
+                .unwrap_or_else(|| panic!("Z={z} ECP missing"));
             assert_eq!(ecp.n_core, 28, "Z={z} should replace a 28-electron core");
         }
         // Light atoms present WITHOUT ECP.
         for &z in &[1, 6, 13, 17] {
             assert!(bs.for_element(z).is_some(), "light Z={z} shells missing");
-            assert!(bs.ecp_for_element(z).is_none(), "light Z={z} must not carry an ECP");
+            assert!(
+                bs.ecp_for_element(z).is_none(),
+                "light Z={z} must not carry an ECP"
+            );
         }
     }
 
@@ -436,18 +532,35 @@ mod tests {
         let tz = bundled("aug-cc-pVTZ-PP").unwrap();
         // Heavy atoms present with 28-core ECP, and TZ shell count > DZ.
         for &z in &[47, 53, 54] {
-            let tz_sh = tz.for_element(z).unwrap_or_else(|| panic!("Z={z} orbital shells missing"));
-            let ecp = tz.ecp_for_element(z).unwrap_or_else(|| panic!("Z={z} ECP missing"));
+            let tz_sh = tz
+                .for_element(z)
+                .unwrap_or_else(|| panic!("Z={z} orbital shells missing"));
+            let ecp = tz
+                .ecp_for_element(z)
+                .unwrap_or_else(|| panic!("Z={z} ECP missing"));
             assert_eq!(ecp.n_core, 28, "Z={z} should replace a 28-electron core");
             let dz_n = dz.for_element(z).unwrap().len();
-            assert!(tz_sh.len() > dz_n, "Z={z} TZ shells ({}) should exceed DZ ({dz_n})", tz_sh.len());
+            assert!(
+                tz_sh.len() > dz_n,
+                "Z={z} TZ shells ({}) should exceed DZ ({dz_n})",
+                tz_sh.len()
+            );
         }
         // Light atoms present WITHOUT ECP, and TZ shell count > DZ.
         for &z in &[1, 6, 13, 17] {
-            let tz_sh = tz.for_element(z).unwrap_or_else(|| panic!("light Z={z} shells missing"));
-            assert!(tz.ecp_for_element(z).is_none(), "light Z={z} must not carry an ECP");
+            let tz_sh = tz
+                .for_element(z)
+                .unwrap_or_else(|| panic!("light Z={z} shells missing"));
+            assert!(
+                tz.ecp_for_element(z).is_none(),
+                "light Z={z} must not carry an ECP"
+            );
             let dz_n = dz.for_element(z).unwrap().len();
-            assert!(tz_sh.len() > dz_n, "light Z={z} TZ shells ({}) should exceed DZ ({dz_n})", tz_sh.len());
+            assert!(
+                tz_sh.len() > dz_n,
+                "light Z={z} TZ shells ({}) should exceed DZ ({dz_n})",
+                tz_sh.len()
+            );
         }
     }
 
@@ -461,8 +574,12 @@ mod tests {
         let tz = bundled("cc-pvtz").unwrap();
         let tz_ri = bundled("cc-pvtz-rifit").unwrap();
         for &z in &[1, 6, 7, 8] {
-            let dz_sh = dz.for_element(z).unwrap_or_else(|| panic!("Z={z} missing from cc-pVDZ"));
-            let tz_sh = tz.for_element(z).unwrap_or_else(|| panic!("Z={z} missing from cc-pVTZ"));
+            let dz_sh = dz
+                .for_element(z)
+                .unwrap_or_else(|| panic!("Z={z} missing from cc-pVDZ"));
+            let tz_sh = tz
+                .for_element(z)
+                .unwrap_or_else(|| panic!("Z={z} missing from cc-pVTZ"));
             assert!(
                 tz_sh.len() > dz_sh.len(),
                 "Z={z} cc-pVTZ shells ({}) should exceed cc-pVDZ ({})",
@@ -479,9 +596,18 @@ mod tests {
         // Documented upstream gaps, asserted so the doc comment cannot drift
         // from the data: K(19) is absent from cc-pVTZ, and K(19)+Ca(20) from
         // the rifit. If upstream data is ever refreshed this fails loudly.
-        assert!(tz.for_element(19).is_none(), "cc-pVTZ unexpectedly has K(19)");
-        assert!(tz_ri.for_element(19).is_none(), "cc-pvtz-rifit unexpectedly has K(19)");
-        assert!(tz_ri.for_element(20).is_none(), "cc-pvtz-rifit unexpectedly has Ca(20)");
+        assert!(
+            tz.for_element(19).is_none(),
+            "cc-pVTZ unexpectedly has K(19)"
+        );
+        assert!(
+            tz_ri.for_element(19).is_none(),
+            "cc-pvtz-rifit unexpectedly has K(19)"
+        );
+        assert!(
+            tz_ri.for_element(20).is_none(),
+            "cc-pvtz-rifit unexpectedly has Ca(20)"
+        );
     }
 
     #[test]
@@ -493,8 +619,12 @@ mod tests {
         let tz = bundled("aug-cc-pvtz").unwrap();
         let qz = bundled("aug-cc-pvqz").unwrap();
         for &z in &[1, 6, 7, 8] {
-            let tz_sh = tz.for_element(z).unwrap_or_else(|| panic!("Z={z} missing from aTZ"));
-            let qz_sh = qz.for_element(z).unwrap_or_else(|| panic!("Z={z} missing from aQZ"));
+            let tz_sh = tz
+                .for_element(z)
+                .unwrap_or_else(|| panic!("Z={z} missing from aTZ"));
+            let qz_sh = qz
+                .for_element(z)
+                .unwrap_or_else(|| panic!("Z={z} missing from aQZ"));
             assert!(
                 qz_sh.len() > tz_sh.len(),
                 "Z={z} aQZ shells ({}) should exceed aTZ ({})",
@@ -521,7 +651,10 @@ mod tests {
         let c_shells = bs.for_element(6).unwrap();
         let d_shell = c_shells.iter().find(|s| s.l == 2);
         assert!(d_shell.is_some(), "def2-SVP carbon should have d shells");
-        assert!(d_shell.unwrap().pure, "def2-SVP d shells should be spherical");
+        assert!(
+            d_shell.unwrap().pure,
+            "def2-SVP d shells should be spherical"
+        );
     }
 
     #[test]
@@ -563,18 +696,18 @@ mod tests {
 
     #[test]
     fn test_num_functions_cartesian() {
-        assert_eq!(num_functions(0, false), 1);  // s
-        assert_eq!(num_functions(1, false), 3);  // p
-        assert_eq!(num_functions(2, false), 6);  // 6d
+        assert_eq!(num_functions(0, false), 1); // s
+        assert_eq!(num_functions(1, false), 3); // p
+        assert_eq!(num_functions(2, false), 6); // 6d
         assert_eq!(num_functions(3, false), 10); // 10f
     }
 
     #[test]
     fn test_num_functions_spherical() {
-        assert_eq!(num_functions(0, true), 1);  // s
-        assert_eq!(num_functions(1, true), 3);  // p
-        assert_eq!(num_functions(2, true), 5);  // 5d
-        assert_eq!(num_functions(3, true), 7);  // 7f
+        assert_eq!(num_functions(0, true), 1); // s
+        assert_eq!(num_functions(1, true), 3); // p
+        assert_eq!(num_functions(2, true), 5); // 5d
+        assert_eq!(num_functions(3, true), 7); // 7f
     }
 
     #[test]
@@ -583,14 +716,20 @@ mod tests {
         let o_shells = bs.for_element(8).unwrap();
         assert!(!o_shells.is_empty(), "cc-pVDZ-RI should have oxygen shells");
         let max_l = o_shells.iter().map(|s| s.l).max().unwrap();
-        assert!(max_l >= 3, "cc-pVDZ-RI oxygen should have at least f functions, got max_l={max_l}");
+        assert!(
+            max_l >= 3,
+            "cc-pVDZ-RI oxygen should have at least f functions, got max_l={max_l}"
+        );
     }
 
     #[test]
     fn test_bundled_def2svp_rifit() {
         let bs = bundled("def2-svp-rifit").unwrap();
         let h_shells = bs.for_element(1).unwrap();
-        assert!(!h_shells.is_empty(), "def2-SVP-RIFIT should have hydrogen shells");
+        assert!(
+            !h_shells.is_empty(),
+            "def2-SVP-RIFIT should have hydrogen shells"
+        );
     }
 
     /// s and p shells must NEVER be pure, in ANY bundled basis, even when the

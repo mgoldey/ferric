@@ -49,7 +49,9 @@ use crate::config::PdepRpaConfig;
 // Shared pure helpers now defined in ferric-scf (see module doc above):
 // imported here because RPA-dependent functions in THIS file still call them
 // directly (unqualified), same as before the move.
-use ferric_scf::properties::{debug_toggle, eig3_sym, hirshfeld_margin, hirshfeld_spacing, slater_xi_for_z};
+use ferric_scf::properties::{
+    debug_toggle, eig3_sym, hirshfeld_margin, hirshfeld_spacing, slater_xi_for_z,
+};
 
 // Public re-export: every symbol that moved to ferric-scf but was `pub` here
 // before the move, so every existing call site
@@ -62,9 +64,8 @@ use ferric_scf::properties::{debug_toggle, eig3_sym, hirshfeld_margin, hirshfeld
 // outside the crate.
 pub use ferric_scf::properties::{
     atomic_effective_volumes_becke, becke_charges, chelpg_and_resp_charges, chelpg_charges,
-    esp_at_atoms, esp_at_points,
-    electric_field_at_atoms, lowdin_charges, mulliken_charges, resp_charges,
-    spherically_averaged_proatom, ProatomProvider, RadialProatom,
+    electric_field_at_atoms, esp_at_atoms, esp_at_points, lowdin_charges, mulliken_charges,
+    resp_charges, spherically_averaged_proatom, ProatomProvider, RadialProatom,
 };
 
 /// Solve the (naux × naux) screened-dielectric system ε̃·y^d = w^d for the
@@ -201,8 +202,7 @@ pub fn pdep_polarizability_static(
         memory_budget_bytes: cfg.memory_budget_bytes,
         ..Default::default()
     };
-    let inter =
-        ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
+    let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov; // shape (naux, nov)
     let nocc = inter.nocc;
     let nvir = inter.nvir;
@@ -231,8 +231,12 @@ pub fn pdep_polarizability_static(
     // MO-basis dipole μ^d_{ia} = ⟨ψ_i|r_d|ψ_a⟩ from AO dipole + MO transform.
     let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let c = rhf.mos_r();
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
-    let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
+    let c_vir = c
+        .slice(ndarray::s![.., nocc_total..nocc_total + nvir])
+        .to_owned();
     // mu_mo[d] : (nocc, nvir)
     let mu_mo: [Array2<f64>; 3] = std::array::from_fn(|d| {
         // C_occ^T · D^d_AO · C_vir
@@ -271,8 +275,7 @@ pub fn pdep_polarizability_static(
     });
 
     // w^d_P = Σ_ia B̃^P_ia · μ^d_ia / Δε_ia.
-    let w_vec: [ndarray::Array1<f64>; 3] =
-        std::array::from_fn(|d| b_ov.dot(&mu_flat_inv[d]));
+    let w_vec: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_flat_inv[d]));
 
     // Dressed dielectric ε̃ at ω=0: ε̃ = I + 4 B̃ D^{-1} B̃^T
     //   (scale_ia² = 4/Δε_ia at ω=0)
@@ -544,26 +547,63 @@ pub fn pdep_polarizability_static_unrestricted(
     } else {
         rhf.eps_b()
     };
-    let eps_occ_a: Vec<f64> = rhf.eps_a()[inter_a.first_occ..inter_a.first_occ + inter_a.nocc].to_vec();
-    let eps_vir_a: Vec<f64> = rhf.eps_a()[inter_a.nocc_total..inter_a.nocc_total + inter_a.nvir].to_vec();
-    let eps_occ_b: Vec<f64> = eps_b_full[inter_b.first_occ..inter_b.first_occ + inter_b.nocc].to_vec();
-    let eps_vir_b: Vec<f64> = eps_b_full[inter_b.nocc_total..inter_b.nocc_total + inter_b.nvir].to_vec();
+    let eps_occ_a: Vec<f64> =
+        rhf.eps_a()[inter_a.first_occ..inter_a.first_occ + inter_a.nocc].to_vec();
+    let eps_vir_a: Vec<f64> =
+        rhf.eps_a()[inter_a.nocc_total..inter_a.nocc_total + inter_a.nvir].to_vec();
+    let eps_occ_b: Vec<f64> =
+        eps_b_full[inter_b.first_occ..inter_b.first_occ + inter_b.nocc].to_vec();
+    let eps_vir_b: Vec<f64> =
+        eps_b_full[inter_b.nocc_total..inter_b.nocc_total + inter_b.nvir].to_vec();
 
     // Per-spin MO-basis dipole μ_σ^d_{ia} = ⟨ψ_iσ|r_d|ψ_aσ⟩.
     let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let c_a = rhf.mos_a();
-    let c_b = if matches!(rhf.spin, Spin::RestrictedOpen) { rhf.mos_a() } else { rhf.mos_b() };
-    let c_occ_a = c_a.slice(ndarray::s![.., inter_a.first_occ..inter_a.first_occ + inter_a.nocc]).to_owned();
-    let c_vir_a = c_a.slice(ndarray::s![.., inter_a.nocc_total..inter_a.nocc_total + inter_a.nvir]).to_owned();
-    let c_occ_b = c_b.slice(ndarray::s![.., inter_b.first_occ..inter_b.first_occ + inter_b.nocc]).to_owned();
-    let c_vir_b = c_b.slice(ndarray::s![.., inter_b.nocc_total..inter_b.nocc_total + inter_b.nvir]).to_owned();
-    let mu_mo_a: [Array2<f64>; 3] = std::array::from_fn(|d| c_occ_a.t().dot(&dip_ao[d]).dot(&c_vir_a));
-    let mu_mo_b: [Array2<f64>; 3] = std::array::from_fn(|d| c_occ_b.t().dot(&dip_ao[d]).dot(&c_vir_b));
+    let c_b = if matches!(rhf.spin, Spin::RestrictedOpen) {
+        rhf.mos_a()
+    } else {
+        rhf.mos_b()
+    };
+    let c_occ_a = c_a
+        .slice(ndarray::s![
+            ..,
+            inter_a.first_occ..inter_a.first_occ + inter_a.nocc
+        ])
+        .to_owned();
+    let c_vir_a = c_a
+        .slice(ndarray::s![
+            ..,
+            inter_a.nocc_total..inter_a.nocc_total + inter_a.nvir
+        ])
+        .to_owned();
+    let c_occ_b = c_b
+        .slice(ndarray::s![
+            ..,
+            inter_b.first_occ..inter_b.first_occ + inter_b.nocc
+        ])
+        .to_owned();
+    let c_vir_b = c_b
+        .slice(ndarray::s![
+            ..,
+            inter_b.nocc_total..inter_b.nocc_total + inter_b.nvir
+        ])
+        .to_owned();
+    let mu_mo_a: [Array2<f64>; 3] =
+        std::array::from_fn(|d| c_occ_a.t().dot(&dip_ao[d]).dot(&c_vir_a));
+    let mu_mo_b: [Array2<f64>; 3] =
+        std::array::from_fn(|d| c_occ_b.t().dot(&dip_ao[d]).dot(&c_vir_b));
 
     // Per-spin 1/Δε tables and flattened μ vectors.
-    let build_flats = |nocc: usize, nvir: usize, eps_o: &[f64], eps_v: &[f64], mu_mo: &[Array2<f64>; 3]|
-        -> ([ndarray::Array1<f64>; 3], [ndarray::Array1<f64>; 3], ndarray::Array1<f64>)
-    {
+    let build_flats = |nocc: usize,
+                       nvir: usize,
+                       eps_o: &[f64],
+                       eps_v: &[f64],
+                       mu_mo: &[Array2<f64>; 3]|
+     -> (
+        [ndarray::Array1<f64>; 3],
+        [ndarray::Array1<f64>; 3],
+        ndarray::Array1<f64>,
+    ) {
         let nov = nocc * nvir;
         let mut inv_de = ndarray::Array1::<f64>::zeros(nov);
         for i in 0..nocc {
@@ -590,7 +630,8 @@ pub fn pdep_polarizability_static_unrestricted(
         build_flats(inter_b.nocc, inter_b.nvir, &eps_occ_b, &eps_vir_b, &mu_mo_b);
 
     // w_σ^d_P = Σ_ia B̃_σ^P_ia · μ_σ^d_ia / Δε_iaσ ; total w^d = w_α^d + w_β^d
-    let w_a: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| inter_a.b_ov.dot(&mu_flat_inv_a[d]));
+    let w_a: [ndarray::Array1<f64>; 3] =
+        std::array::from_fn(|d| inter_a.b_ov.dot(&mu_flat_inv_a[d]));
     let w_b: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
         if inter_b.nocc == 0 {
             ndarray::Array1::<f64>::zeros(naux)
@@ -602,9 +643,13 @@ pub fn pdep_polarizability_static_unrestricted(
 
     // ε̃ = I + 2 B̃_α D_α^{-1} B̃_α^T + 2 B̃_β D_β^{-1} B̃_β^T
     let mut eps_mat = Array2::<f64>::zeros((naux, naux));
-    for p in 0..naux { eps_mat[(p, p)] = 1.0; }
+    for p in 0..naux {
+        eps_mat[(p, p)] = 1.0;
+    }
     for (b_ov, inv_de) in [(&inter_a.b_ov, &inv_de_a), (&inter_b.b_ov, &inv_de_b)] {
-        if b_ov.shape()[1] == 0 { continue; }
+        if b_ov.shape()[1] == 0 {
+            continue;
+        }
         let mut b_scaled = b_ov.clone();
         for ia in 0..inv_de.len() {
             let s = (2.0 * inv_de[ia]).sqrt();
@@ -632,7 +677,11 @@ pub fn pdep_polarizability_static_unrestricted(
     for i in 0..3 {
         for j in 0..3 {
             let bare_a = 2.0 * mu_flat_a[i].dot(&mu_flat_inv_a[j]);
-            let bare_b = if inter_b.nocc == 0 { 0.0 } else { 2.0 * mu_flat_b[i].dot(&mu_flat_inv_b[j]) };
+            let bare_b = if inter_b.nocc == 0 {
+                0.0
+            } else {
+                2.0 * mu_flat_b[i].dot(&mu_flat_inv_b[j])
+            };
             let coupled = w_total[i].dot(&y_vec[j]);
             tensor[i][j] = bare_a + bare_b - 4.0 * coupled;
         }
@@ -649,7 +698,11 @@ pub fn pdep_polarizability_static_unrestricted(
     let iso = (tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0;
     let principal = eig3_sym(tensor)?;
 
-    Ok(PolarizabilityResult { tensor, iso, principal })
+    Ok(PolarizabilityResult {
+        tensor,
+        iso,
+        principal,
+    })
 }
 
 /// Per-atom static polarizability decomposition via Hirshfeld partitioning.
@@ -782,10 +835,8 @@ pub(crate) fn preflight_grid_path(
     // so a nominally huge width cannot materialize more partials than there are
     // chunks. Estimating with the unclamped value refuses trivial jobs (see
     // `effective_dipole_band_width`).
-    let band = crate::budget::effective_dipole_band_width(
-        dipole_band_width(natoms, nbf, budget),
-        npts,
-    );
+    let band =
+        crate::budget::effective_dipole_band_width(dipole_band_width(natoms, nbf, budget), npts);
     let est = crate::budget::estimate_peak_bytes(crate::budget::PeakEstimateShape {
         naux,
         nocc,
@@ -877,23 +928,52 @@ pub(crate) fn preflight_hirshfeld_path(
     let mut plan = MemoryPlan::with_budget_bytes(budget, label);
 
     // Resident RI intermediates and the dressed dielectric.
-    plan.reserve("b_ov (naux,nov)", naux.saturating_mul(nov), Lifetime::Resident);
-    plan.reserve("b_scaled (naux,nov)", naux.saturating_mul(nov), Lifetime::Resident);
-    plan.reserve("eps_mat (naux,naux)", naux.saturating_mul(naux), Lifetime::Resident);
+    plan.reserve(
+        "b_ov (naux,nov)",
+        naux.saturating_mul(nov),
+        Lifetime::Resident,
+    );
+    plan.reserve(
+        "b_scaled (naux,nov)",
+        naux.saturating_mul(nov),
+        Lifetime::Resident,
+    );
+    plan.reserve(
+        "eps_mat (naux,naux)",
+        naux.saturating_mul(naux),
+        Lifetime::Resident,
+    );
 
     // Grid-side terms. `chi` and `combined` are the two that make this path
     // heavier than the Becke one, and they are co-resident by construction.
-    plan.reserve("chi (nbf,npts)", nbf.saturating_mul(npts), Lifetime::Resident);
-    plan.reserve("combined (nbf,npts)", nbf.saturating_mul(npts), Lifetime::Resident);
-    plan.reserve("rho_free (natoms,npts)", natoms.saturating_mul(npts), Lifetime::Resident);
-    plan.reserve("rho_sum + ri_grid (4,npts)", npts.saturating_mul(4), Lifetime::Resident);
+    plan.reserve(
+        "chi (nbf,npts)",
+        nbf.saturating_mul(npts),
+        Lifetime::Resident,
+    );
+    plan.reserve(
+        "combined (nbf,npts)",
+        nbf.saturating_mul(npts),
+        Lifetime::Resident,
+    );
+    plan.reserve(
+        "rho_free (natoms,npts)",
+        natoms.saturating_mul(npts),
+        Lifetime::Resident,
+    );
+    plan.reserve(
+        "rho_sum + ri_grid (4,npts)",
+        npts.saturating_mul(4),
+        Lifetime::Resident,
+    );
 
     // The `_dynamic` variant's per-frequency rayon scratch. `n_workers == 1`
     // makes this the static path's (serial) footprint without special-casing.
     if n_workers > 1 {
         plan.reserve_per_worker(
             "per-omega b_scaled + eps_mat",
-            naux.saturating_mul(nov).saturating_add(naux.saturating_mul(naux)),
+            naux.saturating_mul(nov)
+                .saturating_add(naux.saturating_mul(naux)),
             n_workers,
         );
     }
@@ -939,7 +1019,11 @@ pub(crate) fn preflight_molecular_path(
         naux.saturating_mul(nov).saturating_mul(n_spin),
         Lifetime::Resident,
     );
-    plan.reserve("eps_mat (naux,naux)", naux.saturating_mul(naux), Lifetime::Resident);
+    plan.reserve(
+        "eps_mat (naux,naux)",
+        naux.saturating_mul(naux),
+        Lifetime::Resident,
+    );
 
     plan.check()?;
     Ok(budget)
@@ -968,7 +1052,10 @@ const BAND_BUDGET_NUMER: usize = 1;
 const BAND_BUDGET_DENOM: usize = 4;
 
 pub fn dipole_band_width_for_test(
-    natoms: usize, nbf: usize, budget_bytes: usize, nthreads: usize,
+    natoms: usize,
+    nbf: usize,
+    budget_bytes: usize,
+    nthreads: usize,
 ) -> usize {
     dipole_band_width_with_threads(natoms, nbf, budget_bytes, nthreads)
 }
@@ -1004,7 +1091,10 @@ fn dipole_band_width(natoms: usize, nbf: usize, budget_bytes: usize) -> usize {
 /// band width changes only how many chunks are in flight — never the fold
 /// order, and hence never the result.
 fn dipole_band_width_with_threads(
-    natoms: usize, nbf: usize, budget_bytes: usize, _nthreads: usize,
+    natoms: usize,
+    nbf: usize,
+    budget_bytes: usize,
+    _nthreads: usize,
 ) -> usize {
     let per_partial_bytes =
         natoms.max(1) * 3 * nbf.max(1) * nbf.max(1) * std::mem::size_of::<f64>();
@@ -1063,7 +1153,16 @@ pub(crate) fn accumulate_atom_centred_dipoles_pub(
     budget_bytes: usize,
 ) -> Result<Vec<[Array2<f64>; 3]>, FerricError> {
     accumulate_atom_centred_dipoles(
-        npts, natoms, nbf, home_atom, weights, points, atom_pos, mol, obs_bs, budget_bytes,
+        npts,
+        natoms,
+        nbf,
+        home_atom,
+        weights,
+        points,
+        atom_pos,
+        mol,
+        obs_bs,
+        budget_bytes,
     )
 }
 
@@ -1190,9 +1289,7 @@ pub fn pdep_polarizability_becke(
     // ω=0 reproduces the static per-atom α exactly. Delegate to it rather than
     // duplicate the per-spin static math (DRY).
     if !matches!(rhf.spin, Spin::Restricted) {
-        let dyn0 = pdep_polarizability_becke_dynamic(
-            mol, obs, obs_bs, dfbs, rhf, op, cfg, &[0.0],
-        )?;
+        let dyn0 = pdep_polarizability_becke_dynamic(mol, obs, obs_bs, dfbs, rhf, op, cfg, &[0.0])?;
         // dyn0[atom][freq=0] → per-atom static tensor.
         return Ok(dyn0.into_iter().map(|per_freq| per_freq[0]).collect());
     }
@@ -1211,8 +1308,7 @@ pub fn pdep_polarizability_becke(
         memory_budget_bytes: cfg.memory_budget_bytes,
         ..Default::default()
     };
-    let inter =
-        ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
+    let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
     let nocc = inter.nocc;
     let nvir = inter.nvir;
@@ -1226,8 +1322,12 @@ pub fn pdep_polarizability_becke(
     let eps_vir: Vec<f64> = eps[nocc_total..nocc_total + nvir].to_vec();
 
     let c = rhf.mos_r();
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
-    let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
+    let c_vir = c
+        .slice(ndarray::s![.., nocc_total..nocc_total + nvir])
+        .to_owned();
 
     let mut inv_de = ndarray::Array1::<f64>::zeros(nov);
     for i in 0..nocc {
@@ -1312,8 +1412,9 @@ pub fn pdep_polarizability_becke(
     // 2026-07-13 gauge-origin regression: danuglipron's cryo-EM lab-frame
     // pose produced α^A up to hundreds of a.u. via this renormalization).
     let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
-    let mut d_ai_ao: Vec<[Array2<f64>; 3]> =
-        accumulate_atom_centred_dipoles(npts, natoms, nbf, &home_atom, &weights, &points, &atom_pos, mol, obs_bs, budget)?;
+    let mut d_ai_ao: Vec<[Array2<f64>; 3]> = accumulate_atom_centred_dipoles(
+        npts, natoms, nbf, &home_atom, &weights, &points, &atom_pos, mol, obs_bs, budget,
+    )?;
     // Symmetrize per-atom AO dipoles.
     for d in 0..3 {
         for a in 0..natoms {
@@ -1343,9 +1444,8 @@ pub fn pdep_polarizability_becke(
     // to. Paired below with the atom-centred bra (mu_ai_flat) to give
     // α^A_{dj} = ∂μ^A_d/∂E_j, exactly as in pdep_polarizability_hirshfeld.
     let dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
-    let mu_mo: [Array2<f64>; 3] = std::array::from_fn(|d| {
-        c_occ.t().dot(&dip_ao_analytical[d]).dot(&c_vir)
-    });
+    let mu_mo: [Array2<f64>; 3] =
+        std::array::from_fn(|d| c_occ.t().dot(&dip_ao_analytical[d]).dot(&c_vir));
     let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
         let mut v = ndarray::Array1::<f64>::zeros(nov);
         for i in 0..nocc {
@@ -1355,10 +1455,8 @@ pub fn pdep_polarizability_becke(
         }
         v
     });
-    let mu_flat_inv: [ndarray::Array1<f64>; 3] =
-        std::array::from_fn(|d| &mu_flat[d] * &inv_de);
-    let w_mol: [ndarray::Array1<f64>; 3] =
-        std::array::from_fn(|d| b_ov.dot(&mu_flat_inv[d]));
+    let mu_flat_inv: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &inv_de);
+    let w_mol: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_flat_inv[d]));
     let y_mol = solve_dielectric_3(&eps_mat, &w_mol)?;
 
     // Assemble per-atom α^A.
@@ -1443,32 +1541,68 @@ pub fn pdep_polarizability_becke_dynamic(
         } else {
             rhf.eps_b()
         };
-        let eps_occ_a: Vec<f64> = rhf.eps_a()[inter_a.first_occ..inter_a.first_occ + inter_a.nocc].to_vec();
-        let eps_vir_a: Vec<f64> = rhf.eps_a()[inter_a.nocc_total..inter_a.nocc_total + inter_a.nvir].to_vec();
-        let eps_occ_b: Vec<f64> = eps_b_full[inter_b.first_occ..inter_b.first_occ + inter_b.nocc].to_vec();
-        let eps_vir_b: Vec<f64> = eps_b_full[inter_b.nocc_total..inter_b.nocc_total + inter_b.nvir].to_vec();
+        let eps_occ_a: Vec<f64> =
+            rhf.eps_a()[inter_a.first_occ..inter_a.first_occ + inter_a.nocc].to_vec();
+        let eps_vir_a: Vec<f64> =
+            rhf.eps_a()[inter_a.nocc_total..inter_a.nocc_total + inter_a.nvir].to_vec();
+        let eps_occ_b: Vec<f64> =
+            eps_b_full[inter_b.first_occ..inter_b.first_occ + inter_b.nocc].to_vec();
+        let eps_vir_b: Vec<f64> =
+            eps_b_full[inter_b.nocc_total..inter_b.nocc_total + inter_b.nvir].to_vec();
 
         // Per-spin e_ia tables.
         let e_ia_a = {
             let (nocc, nvir) = (inter_a.nocc, inter_a.nvir);
             let mut v = ndarray::Array1::<f64>::zeros(nocc * nvir);
-            for i in 0..nocc { for a in 0..nvir { v[i*nvir+a] = eps_vir_a[a] - eps_occ_a[i]; } }
+            for i in 0..nocc {
+                for a in 0..nvir {
+                    v[i * nvir + a] = eps_vir_a[a] - eps_occ_a[i];
+                }
+            }
             v
         };
         let e_ia_b = {
             let (nocc, nvir) = (inter_b.nocc, inter_b.nvir);
             let mut v = ndarray::Array1::<f64>::zeros(nocc * nvir);
-            for i in 0..nocc { for a in 0..nvir { v[i*nvir+a] = eps_vir_b[a] - eps_occ_b[i]; } }
+            for i in 0..nocc {
+                for a in 0..nvir {
+                    v[i * nvir + a] = eps_vir_b[a] - eps_occ_b[i];
+                }
+            }
             v
         };
 
         // MO coefficient slices per spin.
         let c_a = rhf.mos_a();
-        let c_b = if matches!(rhf.spin, Spin::RestrictedOpen) { rhf.mos_a() } else { rhf.mos_b() };
-        let c_occ_a = c_a.slice(ndarray::s![.., inter_a.first_occ..inter_a.first_occ+inter_a.nocc]).to_owned();
-        let c_vir_a = c_a.slice(ndarray::s![.., inter_a.nocc_total..inter_a.nocc_total+inter_a.nvir]).to_owned();
-        let c_occ_b = c_b.slice(ndarray::s![.., inter_b.first_occ..inter_b.first_occ+inter_b.nocc]).to_owned();
-        let c_vir_b = c_b.slice(ndarray::s![.., inter_b.nocc_total..inter_b.nocc_total+inter_b.nvir]).to_owned();
+        let c_b = if matches!(rhf.spin, Spin::RestrictedOpen) {
+            rhf.mos_a()
+        } else {
+            rhf.mos_b()
+        };
+        let c_occ_a = c_a
+            .slice(ndarray::s![
+                ..,
+                inter_a.first_occ..inter_a.first_occ + inter_a.nocc
+            ])
+            .to_owned();
+        let c_vir_a = c_a
+            .slice(ndarray::s![
+                ..,
+                inter_a.nocc_total..inter_a.nocc_total + inter_a.nvir
+            ])
+            .to_owned();
+        let c_occ_b = c_b
+            .slice(ndarray::s![
+                ..,
+                inter_b.first_occ..inter_b.first_occ + inter_b.nocc
+            ])
+            .to_owned();
+        let c_vir_b = c_b
+            .slice(ndarray::s![
+                ..,
+                inter_b.nocc_total..inter_b.nocc_total + inter_b.nvir
+            ])
+            .to_owned();
 
         // Becke grid (spin-agnostic).
         let grid_cfg = ferric_dft::grid::AtomicGridConfig::default();
@@ -1525,16 +1659,25 @@ pub fn pdep_polarizability_becke_dynamic(
 
         // Per-atom atom-centred AO dipole matrices (ω-independent).
         let mut d_ai_ao: Vec<[Array2<f64>; 3]> = accumulate_atom_centred_dipoles(
-            npts, natoms, nbf, &home_atom, &weights_g, &points, &atom_pos, mol, obs_bs,
+            npts,
+            natoms,
+            nbf,
+            &home_atom,
+            &weights_g,
+            &points,
+            &atom_pos,
+            mol,
+            obs_bs,
             ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes),
         )?;
         for a in 0..natoms {
             for d in 0..3 {
                 let m = &mut d_ai_ao[a][d];
                 for i in 0..nbf {
-                    for j in (i+1)..nbf {
-                        let avg = 0.5*(m[(i,j)]+m[(j,i)]);
-                        m[(i,j)] = avg; m[(j,i)] = avg;
+                    for j in (i + 1)..nbf {
+                        let avg = 0.5 * (m[(i, j)] + m[(j, i)]);
+                        m[(i, j)] = avg;
+                        m[(j, i)] = avg;
                     }
                 }
             }
@@ -1543,31 +1686,51 @@ pub fn pdep_polarizability_becke_dynamic(
         // Transform per-atom AO dipoles to per-spin MO basis.
         let nov_a = inter_a.nocc * inter_a.nvir;
         let nov_b = inter_b.nocc * inter_b.nvir;
-        let mu_ai_flat_a: Vec<[ndarray::Array1<f64>; 3]> = (0..natoms).map(|a| {
-            std::array::from_fn(|d| {
-                let mo = c_occ_a.t().dot(&d_ai_ao[a][d]).dot(&c_vir_a);
-                let mut v = ndarray::Array1::<f64>::zeros(nov_a);
-                for i in 0..inter_a.nocc { for ax in 0..inter_a.nvir { v[i*inter_a.nvir+ax] = mo[(i,ax)]; } }
-                v
+        let mu_ai_flat_a: Vec<[ndarray::Array1<f64>; 3]> = (0..natoms)
+            .map(|a| {
+                std::array::from_fn(|d| {
+                    let mo = c_occ_a.t().dot(&d_ai_ao[a][d]).dot(&c_vir_a);
+                    let mut v = ndarray::Array1::<f64>::zeros(nov_a);
+                    for i in 0..inter_a.nocc {
+                        for ax in 0..inter_a.nvir {
+                            v[i * inter_a.nvir + ax] = mo[(i, ax)];
+                        }
+                    }
+                    v
+                })
             })
-        }).collect();
-        let mu_ai_flat_b: Vec<[ndarray::Array1<f64>; 3]> = (0..natoms).map(|a| {
-            std::array::from_fn(|d| {
-                if inter_b.nocc == 0 { return ndarray::Array1::<f64>::zeros(1.max(nov_b)); }
-                let mo = c_occ_b.t().dot(&d_ai_ao[a][d]).dot(&c_vir_b);
-                let mut v = ndarray::Array1::<f64>::zeros(nov_b);
-                for i in 0..inter_b.nocc { for ax in 0..inter_b.nvir { v[i*inter_b.nvir+ax] = mo[(i,ax)]; } }
-                v
+            .collect();
+        let mu_ai_flat_b: Vec<[ndarray::Array1<f64>; 3]> = (0..natoms)
+            .map(|a| {
+                std::array::from_fn(|d| {
+                    if inter_b.nocc == 0 {
+                        return ndarray::Array1::<f64>::zeros(1.max(nov_b));
+                    }
+                    let mo = c_occ_b.t().dot(&d_ai_ao[a][d]).dot(&c_vir_b);
+                    let mut v = ndarray::Array1::<f64>::zeros(nov_b);
+                    for i in 0..inter_b.nocc {
+                        for ax in 0..inter_b.nvir {
+                            v[i * inter_b.nvir + ax] = mo[(i, ax)];
+                        }
+                    }
+                    v
+                })
             })
-        }).collect();
+            .collect();
 
         // Molecular MO dipoles per spin (sum over atoms).
         let mu_flat_a: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
-            mu_ai_flat_a.iter().fold(ndarray::Array1::zeros(nov_a), |acc, ai| acc + &ai[d])
+            mu_ai_flat_a
+                .iter()
+                .fold(ndarray::Array1::zeros(nov_a), |acc, ai| acc + &ai[d])
         });
         let mu_flat_b: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
-            if inter_b.nocc == 0 { return ndarray::Array1::zeros(1); }
-            mu_ai_flat_b.iter().fold(ndarray::Array1::zeros(nov_b), |acc, ai| acc + &ai[d])
+            if inter_b.nocc == 0 {
+                return ndarray::Array1::zeros(1);
+            }
+            mu_ai_flat_b
+                .iter()
+                .fold(ndarray::Array1::zeros(nov_b), |acc, ai| acc + &ai[d])
         });
 
         // Frequency loop: each ω is fully independent. Parallelize over
@@ -1587,10 +1750,12 @@ pub fn pdep_polarizability_becke_dynamic(
                     // copies naux*nov doubles per worker PER SPIN that are then
                     // discarded (~23.5 GB at naux=2976/nov=61740 across 8
                     // workers). Same resident footprint, without the copy.
-                    || (
-                        Array2::<f64>::zeros(inter_a.b_ov.raw_dim()),
-                        Array2::<f64>::zeros(inter_b.b_ov.raw_dim()),
-                    ),
+                    || {
+                        (
+                            Array2::<f64>::zeros(inter_a.b_ov.raw_dim()),
+                            Array2::<f64>::zeros(inter_b.b_ov.raw_dim()),
+                        )
+                    },
                     |(b_scaled_a, b_scaled_b), &omega| -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
                         let omega2 = omega * omega;
 
@@ -1598,13 +1763,19 @@ pub fn pdep_polarizability_becke_dynamic(
                         let g_a = {
                             let n = e_ia_a.len();
                             let mut v = ndarray::Array1::<f64>::zeros(n);
-                            for ia in 0..n { let e = e_ia_a[ia]; v[ia] = e/(omega2+e*e); }
+                            for ia in 0..n {
+                                let e = e_ia_a[ia];
+                                v[ia] = e / (omega2 + e * e);
+                            }
                             v
                         };
                         let g_b = if inter_b.nocc > 0 {
                             let n = e_ia_b.len();
                             let mut v = ndarray::Array1::<f64>::zeros(n);
-                            for ia in 0..n { let e = e_ia_b[ia]; v[ia] = e/(omega2+e*e); }
+                            for ia in 0..n {
+                                let e = e_ia_b[ia];
+                                v[ia] = e / (omega2 + e * e);
+                            }
                             v
                         } else {
                             ndarray::Array1::<f64>::zeros(1)
@@ -1612,13 +1783,17 @@ pub fn pdep_polarizability_becke_dynamic(
 
                         // ε̃(ω) = I + 2 B̃_α diag(g_α) B̃_αᵀ + 2 B̃_β diag(g_β) B̃_βᵀ.
                         let mut eps_mat = Array2::<f64>::zeros((naux, naux));
-                        for p in 0..naux { eps_mat[(p,p)] = 1.0; }
+                        for p in 0..naux {
+                            eps_mat[(p, p)] = 1.0;
+                        }
                         for (b_ov, g, b_scaled) in [
                             (&inter_a.b_ov, &g_a, &mut *b_scaled_a),
                             (&inter_b.b_ov, &g_b, &mut *b_scaled_b),
                         ] {
                             let nov = b_ov.shape()[1];
-                            if nov == 0 { continue; }
+                            if nov == 0 {
+                                continue;
+                            }
                             b_scaled.assign(b_ov);
                             for ia in 0..nov {
                                 let s = (2.0 * g[ia]).sqrt();
@@ -1631,7 +1806,9 @@ pub fn pdep_polarizability_becke_dynamic(
                         // w_total^d(ω) = B̃_α (μ_α^d ⊙ g_α) + B̃_β (μ_β^d ⊙ g_β).
                         let w_total: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
                             let wa = inter_a.b_ov.dot(&(&mu_flat_a[d] * &g_a));
-                            if inter_b.nocc == 0 { return wa; }
+                            if inter_b.nocc == 0 {
+                                return wa;
+                            }
                             let wb = inter_b.b_ov.dot(&(&mu_flat_b[d] * &g_b));
                             wa + wb
                         });
@@ -1642,25 +1819,31 @@ pub fn pdep_polarizability_becke_dynamic(
                             // w_ai_total^d = B̃_α (μ_α^{A,d} ⊙ g_α) + B̃_β (μ_β^{A,d} ⊙ g_β).
                             let w_ai: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
                                 let wa = inter_a.b_ov.dot(&(&mu_ai_flat_a[a][d] * &g_a));
-                                if inter_b.nocc == 0 { return wa; }
+                                if inter_b.nocc == 0 {
+                                    return wa;
+                                }
                                 let wb = inter_b.b_ov.dot(&(&mu_ai_flat_b[a][d] * &g_b));
                                 wa + wb
                             });
                             for d in 0..3 {
                                 for j in 0..3 {
-                                    let bare_a = 2.0 * mu_ai_flat_a[a][d].dot(&(&mu_flat_a[j] * &g_a));
+                                    let bare_a =
+                                        2.0 * mu_ai_flat_a[a][d].dot(&(&mu_flat_a[j] * &g_a));
                                     let bare_b = if inter_b.nocc > 0 {
                                         2.0 * mu_ai_flat_b[a][d].dot(&(&mu_flat_b[j] * &g_b))
-                                    } else { 0.0 };
+                                    } else {
+                                        0.0
+                                    };
                                     let coupled = w_ai[d].dot(&y_total[j]);
                                     row[a][d][j] = bare_a + bare_b - 4.0 * coupled;
                                 }
                             }
                             // Symmetrize.
                             for i in 0..3 {
-                                for j in (i+1)..3 {
-                                    let avg = 0.5*(row[a][i][j]+row[a][j][i]);
-                                    row[a][i][j] = avg; row[a][j][i] = avg;
+                                for j in (i + 1)..3 {
+                                    let avg = 0.5 * (row[a][i][j] + row[a][j][i]);
+                                    row[a][i][j] = avg;
+                                    row[a][j][i] = avg;
                                 }
                             }
                         }
@@ -1681,8 +1864,7 @@ pub fn pdep_polarizability_becke_dynamic(
     }
 
     // --- Closed-shell path below (unchanged) ---
-    let inter =
-        ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
+    let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
     let nocc = inter.nocc;
     let nvir = inter.nvir;
@@ -1696,8 +1878,12 @@ pub fn pdep_polarizability_becke_dynamic(
     let eps_vir: Vec<f64> = eps[nocc_total..nocc_total + nvir].to_vec();
 
     let c = rhf.mos_r();
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
-    let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
+    let c_vir = c
+        .slice(ndarray::s![.., nocc_total..nocc_total + nvir])
+        .to_owned();
 
     // ε_ia table (the bare excitation energies).
     let mut e_ia = ndarray::Array1::<f64>::zeros(nov);
@@ -1739,17 +1925,14 @@ pub fn pdep_polarizability_becke_dynamic(
     // Using (r - R_A) instead of the lab-frame r makes each per-atom contribution
     // to α^A(iω) origin-independent: at all frequencies, α^A and Σ_A α^A are
     // unchanged by a global translation of the coordinate system.
-    let atom_pos: Vec<[f64; 3]> = mol
-        .atoms
-        .iter()
-        .map(|at| [at.x, at.y, at.zpos])
-        .collect();
+    let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
 
     // No pre-flight gate on this path yet (tracked), so resolve the budget here
     // rather than band against the old hardcoded 512 MB const.
     let budget = ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes);
-    let mut d_ai_ao: Vec<[Array2<f64>; 3]> =
-        accumulate_atom_centred_dipoles(npts, natoms, nbf, &home_atom, &weights, &points, &atom_pos, mol, obs_bs, budget)?;
+    let mut d_ai_ao: Vec<[Array2<f64>; 3]> = accumulate_atom_centred_dipoles(
+        npts, natoms, nbf, &home_atom, &weights, &points, &atom_pos, mol, obs_bs, budget,
+    )?;
     for d in 0..3 {
         for a in 0..natoms {
             let m = &mut d_ai_ao[a][d];
@@ -1830,7 +2013,11 @@ pub fn pdep_polarizability_becke_dynamic(
     // Flatten the Becke-sum molecular dipole (sum of atom-centred pieces).
     let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
         let mut v = ndarray::Array1::<f64>::zeros(nov);
-        for i in 0..nocc { for ax in 0..nvir { v[i*nvir+ax] = mu_mo[d][(i,ax)]; } }
+        for i in 0..nocc {
+            for ax in 0..nvir {
+                v[i * nvir + ax] = mu_mo[d][(i, ax)];
+            }
+        }
         v
     });
 
@@ -1858,19 +2045,27 @@ pub fn pdep_polarizability_becke_dynamic(
                 |b_scaled, &omega| -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
                     let omega2 = omega * omega;
                     let mut g = ndarray::Array1::<f64>::zeros(nov);
-                    for ia in 0..nov { let e = e_ia[ia]; g[ia] = e / (omega2 + e * e); }
+                    for ia in 0..nov {
+                        let e = e_ia[ia];
+                        g[ia] = e / (omega2 + e * e);
+                    }
 
                     // ε̃(ω) = I + 4 B̃ diag(g) B̃^T
                     b_scaled.assign(b_ov);
                     for ia in 0..nov {
-                        b_scaled.column_mut(ia).mapv_inplace(|x| x * (4.0 * g[ia]).sqrt());
+                        b_scaled
+                            .column_mut(ia)
+                            .mapv_inplace(|x| x * (4.0 * g[ia]).sqrt());
                     }
                     let mut eps_mat: Array2<f64> = b_scaled.dot(&b_scaled.t());
-                    for p in 0..naux { eps_mat[(p, p)] += 1.0; }
+                    for p in 0..naux {
+                        eps_mat[(p, p)] += 1.0;
+                    }
 
                     // Solve ε̃ y^j = B·(g⊙μ^{Becke,j}) once per direction.
                     let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
-                    let w_mol: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
+                    let w_mol: [ndarray::Array1<f64>; 3] =
+                        std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
                     let y_mol = solve_dielectric_3(&eps_mat, &w_mol)?;
 
                     let mut row: Vec<[[f64; 3]; 3]> = vec![[[0.0; 3]; 3]; natoms];
@@ -1885,10 +2080,13 @@ pub fn pdep_polarizability_becke_dynamic(
                             }
                         }
                         // Symmetrize.
-                        for i in 0..3 { for j in (i+1)..3 {
-                            let avg = 0.5*(tensor[i][j]+tensor[j][i]);
-                            tensor[i][j] = avg; tensor[j][i] = avg;
-                        }}
+                        for i in 0..3 {
+                            for j in (i + 1)..3 {
+                                let avg = 0.5 * (tensor[i][j] + tensor[j][i]);
+                                tensor[i][j] = avg;
+                                tensor[j][i] = avg;
+                            }
+                        }
                         row[a] = tensor;
                     }
                     Ok(row)
@@ -1897,8 +2095,7 @@ pub fn pdep_polarizability_becke_dynamic(
             .collect::<Vec<Result<Vec<[[f64; 3]; 3]>, FerricError>>>()
     });
 
-    let mut out: Vec<Vec<[[f64; 3]; 3]>> =
-        vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
+    let mut out: Vec<Vec<[[f64; 3]; 3]>> = vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
     for (k, row) in rows.into_iter().enumerate() {
         let row = row?;
         for a in 0..natoms {
@@ -1923,8 +2120,8 @@ pub fn pdep_polarizability_hirshfeld(
     cfg: &PdepRpaConfig,
     proatom: Option<&ProatomProvider>,
 ) -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
-    use ferric_integrals::ao_grid::GridSpec;
     use ferric_integrals::ao_grid::eval_basis_on_grid;
+    use ferric_integrals::ao_grid::GridSpec;
 
     if !matches!(rhf.spin, Spin::Restricted) {
         return Err(FerricError::General(
@@ -1949,8 +2146,7 @@ pub fn pdep_polarizability_hirshfeld(
         memory_budget_bytes: cfg.memory_budget_bytes,
         ..Default::default()
     };
-    let inter =
-        ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
+    let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
     let b_ov = &inter.b_ov;
     let nocc = inter.nocc;
     let nvir = inter.nvir;
@@ -1969,11 +2165,14 @@ pub fn pdep_polarizability_hirshfeld(
     // α^A_{dj} = ∂μ^A_d/∂E_j, exactly as in pdep_polarizability_hirshfeld_dynamic.
     let dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let c = rhf.mos_r();
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
-    let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
-    let mu_mo: [Array2<f64>; 3] = std::array::from_fn(|d| {
-        c_occ.t().dot(&dip_ao_analytical[d]).dot(&c_vir)
-    });
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
+    let c_vir = c
+        .slice(ndarray::s![.., nocc_total..nocc_total + nvir])
+        .to_owned();
+    let mu_mo: [Array2<f64>; 3] =
+        std::array::from_fn(|d| c_occ.t().dot(&dip_ao_analytical[d]).dot(&c_vir));
 
     let mut inv_de = ndarray::Array1::<f64>::zeros(nov);
     for i in 0..nocc {
@@ -2026,7 +2225,9 @@ pub fn pdep_polarizability_hirshfeld(
 
     // χ_μ(r_g) on grid: shape (nbf_obs, npts).
     let chi = eval_basis_on_grid(mol, obs_bs, &grid).map_err(|e| {
-        FerricError::General(format!("pdep_polarizability_hirshfeld: chi eval failed: {e}"))
+        FerricError::General(format!(
+            "pdep_polarizability_hirshfeld: chi eval failed: {e}"
+        ))
     })?;
     debug_assert_eq!(chi.nrows(), nbf);
 
@@ -2148,10 +2349,8 @@ pub fn pdep_polarizability_hirshfeld(
         }
         v
     });
-    let mu_flat_inv: [ndarray::Array1<f64>; 3] =
-        std::array::from_fn(|d| &mu_flat[d] * &inv_de);
-    let w_mol: [ndarray::Array1<f64>; 3] =
-        std::array::from_fn(|d| b_ov.dot(&mu_flat_inv[d]));
+    let mu_flat_inv: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &inv_de);
+    let w_mol: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_flat_inv[d]));
     let y_mol = solve_dielectric_3(&eps_mat, &w_mol)?;
 
     // Assemble α^A: pair the atom-centred bra (mu_ai_flat) with the lab-frame
@@ -2240,14 +2439,15 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     freqs: &[f64],
     proatom: Option<&ProatomProvider>,
 ) -> Result<Vec<Vec<[[f64; 3]; 3]>>, FerricError> {
-    use ferric_integrals::ao_grid::GridSpec;
     use ferric_integrals::ao_grid::eval_basis_on_grid;
+    use ferric_integrals::ao_grid::GridSpec;
     use ferric_integrals::blas_threads::with_blas_threads;
     use rayon::prelude::*;
 
     if !matches!(rhf.spin, Spin::Restricted) {
         return Err(FerricError::General(
-            "pdep_polarizability_hirshfeld_dynamic: only closed-shell (Restricted) supported".into(),
+            "pdep_polarizability_hirshfeld_dynamic: only closed-shell (Restricted) supported"
+                .into(),
         ));
     }
 
@@ -2279,11 +2479,19 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     let eps_occ: Vec<f64> = eps[first_occ..first_occ + nocc].to_vec();
     let eps_vir: Vec<f64> = eps[nocc_total..nocc_total + nvir].to_vec();
     let mut e_ia = ndarray::Array1::<f64>::zeros(nov);
-    for i in 0..nocc { for a in 0..nvir { e_ia[i*nvir+a] = eps_vir[a] - eps_occ[i]; } }
+    for i in 0..nocc {
+        for a in 0..nvir {
+            e_ia[i * nvir + a] = eps_vir[a] - eps_occ[i];
+        }
+    }
 
     let c = rhf.mos_r();
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
-    let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
+    let c_vir = c
+        .slice(ndarray::s![.., nocc_total..nocc_total + nvir])
+        .to_owned();
 
     // --- Grid setup (identical to static Hirshfeld path) ---
     let _dip_ao_analytical = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
@@ -2315,7 +2523,9 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     )?;
 
     let chi = eval_basis_on_grid(mol, obs_bs, &grid).map_err(|e| {
-        FerricError::General(format!("pdep_polarizability_hirshfeld_dynamic: chi eval failed: {e}"))
+        FerricError::General(format!(
+            "pdep_polarizability_hirshfeld_dynamic: chi eval failed: {e}"
+        ))
     })?;
     debug_assert_eq!(chi.nrows(), nbf);
 
@@ -2325,13 +2535,17 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     // the weight w^A = ρ_free^A/(Σρ_free) is formed at use below.
     let mut rho_free: Vec<Vec<f64>> = vec![vec![0.0; npts]; natoms];
     let mut rho_sum: Vec<f64> = vec![0.0; npts];
-    let hx = grid.step_x[0]; let hy = grid.step_y[1]; let hz = grid.step_z[2];
+    let hx = grid.step_x[0];
+    let hy = grid.step_y[1];
+    let hz = grid.step_z[2];
     for a in 0..natoms {
         let z_a = mol.atoms[a].z;
         let xi = slater_xi_for_z(z_a);
         let prefac = z_a as f64 * xi.powi(3) / std::f64::consts::PI;
         let pa = proatom.and_then(|p| p(z_a, 0)); // neutral same-basis proatom
-        let rax = mol.atoms[a].x; let ray = mol.atoms[a].y; let raz = mol.atoms[a].zpos;
+        let rax = mol.atoms[a].x;
+        let ray = mol.atoms[a].y;
+        let raz = mol.atoms[a].zpos;
         for ix in 0..grid.n_x {
             let x = grid.origin[0] + ix as f64 * hx;
             for iy in 0..grid.n_y {
@@ -2339,12 +2553,13 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
                 for iz in 0..grid.n_z {
                     let z = grid.origin[2] + iz as f64 * hz;
                     let g = (ix * grid.n_y + iy) * grid.n_z + iz;
-                    let r = ((x-rax).powi(2)+(y-ray).powi(2)+(z-raz).powi(2)).sqrt();
+                    let r = ((x - rax).powi(2) + (y - ray).powi(2) + (z - raz).powi(2)).sqrt();
                     let rho = match &pa {
                         Some(p) => p.at(r),
                         None => prefac * (-2.0 * xi * r).exp(),
                     };
-                    rho_free[a][g] = rho; rho_sum[g] += rho;
+                    rho_free[a][g] = rho;
+                    rho_sum[g] += rho;
                 }
             }
         }
@@ -2359,7 +2574,9 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
             for iz in 0..grid.n_z {
                 let z = grid.origin[2] + iz as f64 * hz;
                 let g = (ix * grid.n_y + iy) * grid.n_z + iz;
-                ri_grid[0][g] = x; ri_grid[1][g] = y; ri_grid[2][g] = z;
+                ri_grid[0][g] = x;
+                ri_grid[1][g] = y;
+                ri_grid[2][g] = z;
             }
         }
     }
@@ -2376,8 +2593,7 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     // restore per-atom symmetry). The molecular total is computed separately
     // from the lab-frame molecular α (see `molecular_dynamic_polarizability`).
     let eps_floor = 1e-12;
-    let atom_pos: Vec<[f64; 3]> =
-        mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
+    let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
 
     // Build each atom's 3 AO dipole matrices and transform to the (small) MO
     // occ-vir basis in the SAME pass, so only one atom's AO copy (3·nbf²) is
@@ -2385,29 +2601,41 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     // site has NO cross-atom renormalization (see the gauge note above), so the
     // per-atom AO matrices are independent — dropping each before the next is
     // exact. Numerics are unchanged vs the previous build-all-then-transform.
-    let mu_ai_flat: Vec<[ndarray::Array1<f64>; 3]> = (0..natoms).map(|a| {
-        let ra = atom_pos[a];
-        let mut wa = vec![0.0_f64; npts];
-        for g in 0..npts { wa[g] = rho_free[a][g] / (rho_sum[g] + eps_floor); }
-        std::array::from_fn(|i_cart| {
-            let ra_d = ra[i_cart];
-            let mut combined = Array2::<f64>::zeros((nbf, npts));
-            for mu in 0..nbf {
-                let chi_mu = chi.row(mu);
-                for g in 0..npts {
-                    combined[(mu, g)] = chi_mu[g] * wa[g] * (ri_grid[i_cart][g] - ra_d) * dv;
-                }
+    let mu_ai_flat: Vec<[ndarray::Array1<f64>; 3]> = (0..natoms)
+        .map(|a| {
+            let ra = atom_pos[a];
+            let mut wa = vec![0.0_f64; npts];
+            for g in 0..npts {
+                wa[g] = rho_free[a][g] / (rho_sum[g] + eps_floor);
             }
-            let d = chi.dot(&combined.t());
-            let mut d_sym = Array2::<f64>::zeros((nbf, nbf));
-            for mu in 0..nbf { for nu in 0..nbf { d_sym[(mu,nu)] = 0.5*(d[(mu,nu)]+d[(nu,mu)]); } }
-            // Transform to MO and keep only the length-nov vector; d_sym drops here.
-            let mo = c_occ.t().dot(&d_sym).dot(&c_vir);
-            let mut v = ndarray::Array1::<f64>::zeros(nov);
-            for i in 0..nocc { for ax in 0..nvir { v[i*nvir+ax] = mo[(i,ax)]; } }
-            v
+            std::array::from_fn(|i_cart| {
+                let ra_d = ra[i_cart];
+                let mut combined = Array2::<f64>::zeros((nbf, npts));
+                for mu in 0..nbf {
+                    let chi_mu = chi.row(mu);
+                    for g in 0..npts {
+                        combined[(mu, g)] = chi_mu[g] * wa[g] * (ri_grid[i_cart][g] - ra_d) * dv;
+                    }
+                }
+                let d = chi.dot(&combined.t());
+                let mut d_sym = Array2::<f64>::zeros((nbf, nbf));
+                for mu in 0..nbf {
+                    for nu in 0..nbf {
+                        d_sym[(mu, nu)] = 0.5 * (d[(mu, nu)] + d[(nu, mu)]);
+                    }
+                }
+                // Transform to MO and keep only the length-nov vector; d_sym drops here.
+                let mo = c_occ.t().dot(&d_sym).dot(&c_vir);
+                let mut v = ndarray::Array1::<f64>::zeros(nov);
+                for i in 0..nocc {
+                    for ax in 0..nvir {
+                        v[i * nvir + ax] = mo[(i, ax)];
+                    }
+                }
+                v
+            })
         })
-    }).collect();
+        .collect();
 
     // Molecular (field-side) dipole: the TRUE lab-frame molecular dipole Σ_i r_i
     // from the analytical AO integrals — the perturbation a uniform field
@@ -2417,7 +2645,11 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
     let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
         let mo = c_occ.t().dot(&_dip_ao_analytical[d]).dot(&c_vir);
         let mut v = ndarray::Array1::<f64>::zeros(nov);
-        for i in 0..nocc { for ax in 0..nvir { v[i * nvir + ax] = mo[(i, ax)]; } }
+        for i in 0..nocc {
+            for ax in 0..nvir {
+                v[i * nvir + ax] = mo[(i, ax)];
+            }
+        }
         v
     });
 
@@ -2440,17 +2672,27 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
                 |b_scaled, &omega| -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
                     let omega2 = omega * omega;
                     let mut g = ndarray::Array1::<f64>::zeros(nov);
-                    for ia in 0..nov { let e = e_ia[ia]; g[ia] = e / (omega2 + e*e); }
+                    for ia in 0..nov {
+                        let e = e_ia[ia];
+                        g[ia] = e / (omega2 + e * e);
+                    }
 
                     // ε̃(ω) = I + 4 B̃ diag(g) B̃^T
                     b_scaled.assign(b_ov);
-                    for ia in 0..nov { b_scaled.column_mut(ia).mapv_inplace(|x| x * (4.0*g[ia]).sqrt()); }
+                    for ia in 0..nov {
+                        b_scaled
+                            .column_mut(ia)
+                            .mapv_inplace(|x| x * (4.0 * g[ia]).sqrt());
+                    }
                     let mut eps_mat: Array2<f64> = b_scaled.dot(&b_scaled.t());
-                    for p in 0..naux { eps_mat[(p,p)] += 1.0; }
+                    for p in 0..naux {
+                        eps_mat[(p, p)] += 1.0;
+                    }
 
                     // Solve ε̃ y^j = B·(g⊙μ^j) once per direction (molecular Hirshfeld dipole).
                     let mu_g: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| &mu_flat[d] * &g);
-                    let w_mol: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
+                    let w_mol: [ndarray::Array1<f64>; 3] =
+                        std::array::from_fn(|d| b_ov.dot(&mu_g[d]));
                     let y_mol = solve_dielectric_3(&eps_mat, &w_mol)?;
 
                     let mut row: Vec<[[f64; 3]; 3]> = vec![[[0.0; 3]; 3]; natoms];
@@ -2464,10 +2706,13 @@ pub fn pdep_polarizability_hirshfeld_dynamic(
                                 tensor[d][j] = 4.0 * bare - 16.0 * coupled;
                             }
                         }
-                        for i in 0..3 { for j in (i+1)..3 {
-                            let avg = 0.5*(tensor[i][j]+tensor[j][i]);
-                            tensor[i][j] = avg; tensor[j][i] = avg;
-                        }}
+                        for i in 0..3 {
+                            for j in (i + 1)..3 {
+                                let avg = 0.5 * (tensor[i][j] + tensor[j][i]);
+                                tensor[i][j] = avg;
+                                tensor[j][i] = avg;
+                            }
+                        }
                         row[a] = tensor;
                     }
                     Ok(row)
@@ -2516,16 +2761,16 @@ pub fn molecular_dynamic_polarizability(
     if !matches!(rhf.spin, Spin::Restricted) {
         use ferric_mp2::rimp2::compute_rpa_intermediates_spin;
         let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
-        frozen_core: 0,
-        // Propagate the caller's explicit budget. This was hardcoded
-        // `None`, which silently discarded a user's `[memory] budget_gb`
-        // and let `resolve_budget` substitute an env/auto-detected value
-        // (~0.8x available RAM) instead -- so a run pinned to 4 GB could
-        // take ~14 GB on a 23 GB box. See
-        // tests/mwe_explicit_budget_reaches_mp2.rs.
-        memory_budget_bytes: cfg.memory_budget_bytes,
-        ..Default::default()
-    };
+            frozen_core: 0,
+            // Propagate the caller's explicit budget. This was hardcoded
+            // `None`, which silently discarded a user's `[memory] budget_gb`
+            // and let `resolve_budget` substitute an env/auto-detected value
+            // (~0.8x available RAM) instead -- so a run pinned to 4 GB could
+            // take ~14 GB on a 23 GB box. See
+            // tests/mwe_explicit_budget_reaches_mp2.rs.
+            memory_budget_bytes: cfg.memory_budget_bytes,
+            ..Default::default()
+        };
         let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
         let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
         let naux = inter_a.naux;
@@ -2591,10 +2836,16 @@ pub fn molecular_dynamic_polarizability(
         };
         let mk_mu = |inter: &ferric_mp2::rimp2::RpaIntermediates, c: &Array2<f64>| {
             let c_occ = c
-                .slice(ndarray::s![.., inter.first_occ..inter.first_occ + inter.nocc])
+                .slice(ndarray::s![
+                    ..,
+                    inter.first_occ..inter.first_occ + inter.nocc
+                ])
                 .to_owned();
             let c_vir = c
-                .slice(ndarray::s![.., inter.nocc_total..inter.nocc_total + inter.nvir])
+                .slice(ndarray::s![
+                    ..,
+                    inter.nocc_total..inter.nocc_total + inter.nvir
+                ])
                 .to_owned();
             let nov = inter.nocc * inter.nvir;
             let arr: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
@@ -2628,10 +2879,12 @@ pub fn molecular_dynamic_polarizability(
                     // copies naux*nov doubles per worker PER SPIN that are then
                     // discarded (~23.5 GB at naux=2976/nov=61740 across 8
                     // workers). Same resident footprint, without the copy.
-                    || (
-                        Array2::<f64>::zeros(inter_a.b_ov.raw_dim()),
-                        Array2::<f64>::zeros(inter_b.b_ov.raw_dim()),
-                    ),
+                    || {
+                        (
+                            Array2::<f64>::zeros(inter_a.b_ov.raw_dim()),
+                            Array2::<f64>::zeros(inter_b.b_ov.raw_dim()),
+                        )
+                    },
                     |(b_scaled_a, b_scaled_b), &omega| -> Result<[[f64; 3]; 3], FerricError> {
                         let omega2 = omega * omega;
                         let g_of = |e_ia: &ndarray::Array1<f64>| {
@@ -2752,8 +3005,12 @@ pub fn molecular_dynamic_polarizability(
     // Lab-frame molecular dipole in the MO occ-vir basis.
     let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let c = rhf.mos_r();
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
-    let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
+    let c_vir = c
+        .slice(ndarray::s![.., nocc_total..nocc_total + nvir])
+        .to_owned();
     let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
         let mo = c_occ.t().dot(&dip_ao[d]).dot(&c_vir);
         let mut v = ndarray::Array1::<f64>::zeros(nov);
@@ -2786,7 +3043,9 @@ pub fn molecular_dynamic_polarizability(
                     // ε̃(ω) = I + 4 B̃ diag(g) B̃^T
                     b_scaled.assign(b_ov);
                     for ia in 0..nov {
-                        b_scaled.column_mut(ia).mapv_inplace(|x| x * (4.0 * g[ia]).sqrt());
+                        b_scaled
+                            .column_mut(ia)
+                            .mapv_inplace(|x| x * (4.0 * g[ia]).sqrt());
                     }
                     let mut eps_mat: Array2<f64> = b_scaled.dot(&b_scaled.t());
                     for p in 0..naux {
@@ -2856,7 +3115,8 @@ pub fn molecular_dynamic_polarizability_pdep(
     let winv = rpa.inv_dielectric_freq.as_ref().ok_or_else(|| {
         FerricError::General(
             "molecular_dynamic_polarizability_pdep: inv_dielectric_freq is None \
-             (Laplace χ₀ path unsupported)".into(),
+             (Laplace χ₀ path unsupported)"
+                .into(),
         )
     })?;
 
@@ -2892,8 +3152,12 @@ pub fn molecular_dynamic_polarizability_pdep(
     // Lab-frame molecular dipole in the MO occ-vir basis (origin [0,0,0]).
     let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let c = rhf.mos_r();
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
-    let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
+    let c_vir = c
+        .slice(ndarray::s![.., nocc_total..nocc_total + nvir])
+        .to_owned();
     let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
         let mo = c_occ.t().dot(&dip_ao[d]).dot(&c_vir);
         let mut v = ndarray::Array1::<f64>::zeros(nov);
@@ -3051,8 +3315,8 @@ pub fn atomic_effective_volumes_hirshfeld(
     density: &Array2<f64>,
     proatom: Option<&ProatomProvider>,
 ) -> Result<Vec<f64>, FerricError> {
-    use ferric_integrals::ao_grid::GridSpec;
     use ferric_integrals::ao_grid::eval_basis_on_grid;
+    use ferric_integrals::ao_grid::GridSpec;
 
     let natoms = mol.atoms.len();
     let spacing = hirshfeld_spacing();
@@ -3069,17 +3333,24 @@ pub fn atomic_effective_volumes_hirshfeld(
     // why the callee's own gate is not enough here).
     let nbf_pre = nbf_for_basis(mol, obs_bs)?;
     preflight_hirshfeld_grid_scan(
-        &format!("atomic_effective_volumes_hirshfeld (nbf={nbf_pre}, npts={npts}, natoms={natoms})"),
+        &format!(
+            "atomic_effective_volumes_hirshfeld (nbf={nbf_pre}, npts={npts}, natoms={natoms})"
+        ),
         nbf_pre,
         npts,
         natoms,
     )?;
 
     let chi = eval_basis_on_grid(mol, obs_bs, &grid).map_err(|e| {
-        FerricError::General(format!("atomic_effective_volumes_hirshfeld: chi failed: {e}"))
+        FerricError::General(format!(
+            "atomic_effective_volumes_hirshfeld: chi failed: {e}"
+        ))
     })?;
     let nbf = chi.nrows();
-    debug_assert_eq!(nbf, nbf_pre, "nbf_for_basis must match eval_basis_on_grid's chi.nrows()");
+    debug_assert_eq!(
+        nbf, nbf_pre,
+        "nbf_for_basis must match eval_basis_on_grid's chi.nrows()"
+    );
 
     // ρ(r_g) = Σ_{μν} D_{μν} χ_μ χ_ν via matrix product.
     let d_chi = density.dot(&chi);
@@ -3108,7 +3379,8 @@ pub fn atomic_effective_volumes_hirshfeld(
                 for iz in 0..grid.n_z {
                     let z = grid.origin[2] + iz as f64 * hz;
                     let g = (ix * grid.n_y + iy) * grid.n_z + iz;
-                    let r = ((x-rax)*(x-rax)+(y-ray)*(y-ray)+(z-raz)*(z-raz)).sqrt();
+                    let r = ((x - rax) * (x - rax) + (y - ray) * (y - ray) + (z - raz) * (z - raz))
+                        .sqrt();
                     let r0 = match &pa {
                         Some(p) => p.at(r),
                         None => prefac * (-2.0 * xi * r).exp(),
@@ -3133,8 +3405,10 @@ pub fn atomic_effective_volumes_hirshfeld(
                     let z = grid.origin[2] + iz as f64 * hz;
                     let g = (ix * grid.n_y + iy) * grid.n_z + iz;
                     let w = rho_free[a][g] / (rho_sum[g] + eps_floor);
-                    let dx = x - rax; let dy = y - ray; let dz = z - raz;
-                    let r3 = (dx*dx + dy*dy + dz*dz).powf(1.5);
+                    let dx = x - rax;
+                    let dy = y - ray;
+                    let dz = z - raz;
+                    let r3 = (dx * dx + dy * dy + dz * dz).powf(1.5);
                     acc += w * rho[g] * r3 * dv;
                 }
             }
@@ -3163,8 +3437,8 @@ pub fn hirshfeld_i_charges(
     density: &Array2<f64>,
     proatom: &dyn Fn(i32, i32) -> Option<RadialProatom>,
 ) -> Result<Vec<f64>, FerricError> {
-    use ferric_integrals::ao_grid::GridSpec;
     use ferric_integrals::ao_grid::eval_basis_on_grid;
+    use ferric_integrals::ao_grid::GridSpec;
 
     let natoms = mol.atoms.len();
     let spacing = hirshfeld_spacing();
@@ -3192,14 +3466,21 @@ pub fn hirshfeld_i_charges(
     let chi = eval_basis_on_grid(mol, obs_bs, &grid)
         .map_err(|e| FerricError::General(format!("hirshfeld_i: chi eval failed: {e}")))?;
     let nbf = chi.nrows();
-    debug_assert_eq!(nbf, nbf_pre, "nbf_for_basis must match eval_basis_on_grid's chi.nrows()");
+    debug_assert_eq!(
+        nbf, nbf_pre,
+        "nbf_for_basis must match eval_basis_on_grid's chi.nrows()"
+    );
     if density.nrows() != nbf {
-        return Err(FerricError::General("hirshfeld_i: density/nbf mismatch".into()));
+        return Err(FerricError::General(
+            "hirshfeld_i: density/nbf mismatch".into(),
+        ));
     }
     let d_chi = density.dot(&chi);
     let mut rho = vec![0.0_f64; npts];
     for mu in 0..nbf {
-        for g in 0..npts { rho[g] += chi[(mu, g)] * d_chi[(mu, g)]; }
+        for g in 0..npts {
+            rho[g] += chi[(mu, g)] * d_chi[(mu, g)];
+        }
     }
 
     // Precompute grid coordinates.
@@ -3213,7 +3494,9 @@ pub fn hirshfeld_i_charges(
             for iz in 0..grid.n_z {
                 let z = grid.origin[2] + iz as f64 * hz;
                 let g = (ix * grid.n_y + iy) * grid.n_z + iz;
-                gx[g] = x; gy[g] = y; gz[g] = z;
+                gx[g] = x;
+                gy[g] = y;
+                gz[g] = z;
             }
         }
     }
@@ -3221,12 +3504,22 @@ pub fn hirshfeld_i_charges(
     // Cache integer-charge proatoms per element (z, q_int).
     let mut cache: std::collections::HashMap<(i32, i32), Option<RadialProatom>> =
         std::collections::HashMap::new();
-    let get = |z: i32, qi: i32, cache: &mut std::collections::HashMap<(i32, i32), Option<RadialProatom>>| -> Option<RadialProatom> {
-        cache.entry((z, qi)).or_insert_with(|| proatom(z, qi)).clone()
+    let get = |z: i32,
+               qi: i32,
+               cache: &mut std::collections::HashMap<(i32, i32), Option<RadialProatom>>|
+     -> Option<RadialProatom> {
+        cache
+            .entry((z, qi))
+            .or_insert_with(|| proatom(z, qi))
+            .clone()
     };
 
     // Interpolated proatom density at distance r for fractional charge q.
-    let proatom_rho = |z: i32, q: f64, r: f64, cache: &mut std::collections::HashMap<(i32, i32), Option<RadialProatom>>| -> f64 {
+    let proatom_rho = |z: i32,
+                       q: f64,
+                       r: f64,
+                       cache: &mut std::collections::HashMap<(i32, i32), Option<RadialProatom>>|
+     -> f64 {
         let q_lo = q.floor() as i32;
         let q_hi = q_lo + 1;
         let f = q - q_lo as f64;
@@ -3276,7 +3569,11 @@ pub fn hirshfeld_i_charges(
             n_e[a] = acc;
         }
         let n_sum: f64 = n_e.iter().sum();
-        let scale = if n_sum.abs() > 1e-12 { n_elec_target / n_sum } else { 1.0 };
+        let scale = if n_sum.abs() > 1e-12 {
+            n_elec_target / n_sum
+        } else {
+            1.0
+        };
         let mut max_dq = 0.0_f64;
         for a in 0..natoms {
             let q_new = mol.atoms[a].z as f64 - scale * n_e[a];
@@ -3287,7 +3584,9 @@ pub fn hirshfeld_i_charges(
             let r: Vec<f64> = q.iter().map(|x| (x * 1000.0).round() / 1000.0).collect();
             eprintln!("HI iter {_it}: q = {r:?} (max_dq={max_dq:.2e})");
         }
-        if max_dq < tol { break; }
+        if max_dq < tol {
+            break;
+        }
     }
     Ok(q)
 }
@@ -3336,9 +3635,8 @@ pub fn hirshfeld_charges(
     let gw: Vec<f64> = grid.iter().map(|g| g.weight).collect();
     let npts = points.len();
 
-    let chi = eval_basis_on_points(mol, obs_bs, &points).map_err(|e| {
-        FerricError::General(format!("hirshfeld_charges: chi eval failed: {e}"))
-    })?;
+    let chi = eval_basis_on_points(mol, obs_bs, &points)
+        .map_err(|e| FerricError::General(format!("hirshfeld_charges: chi eval failed: {e}")))?;
     let nbf = chi.nrows();
     if density.nrows() != nbf || density.ncols() != nbf {
         return Err(FerricError::General(format!(
@@ -3449,7 +3747,10 @@ mod tests {
     /// the byte budget, never anywhere close to that.
     #[test]
     fn dipole_band_width_bounds_live_memory_at_realistic_scale() {
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(6).build().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(6)
+            .build()
+            .unwrap();
         pool.install(|| {
             // Danuglipron/def2-svp-scale: 71 atoms, nbf~500.
             let natoms = 71;
@@ -3481,7 +3782,10 @@ mod tests {
 
     #[test]
     fn dipole_band_width_respects_budget_and_floors() {
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
         pool.install(|| {
             // natoms=1, nbf=100: per_partial = 1*3*100*100*8 = 240_000 bytes.
             //
@@ -3513,7 +3817,10 @@ mod tests {
             // The floor must NOT depend on the ambient pool size: same budget,
             // same answer, whatever the worker count. (Regression guard for the
             // exact defect above — see tests/mwe_budget_respected.rs.)
-            let wide = rayon::ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+            let wide = rayon::ThreadPoolBuilder::new()
+                .num_threads(8)
+                .build()
+                .unwrap();
             wide.install(|| {
                 assert_eq!(dipole_band_width(1, 100, 1), 1);
                 assert_eq!(dipole_band_width(1, 100, budget), expected);
@@ -3530,7 +3837,8 @@ mod tests {
         use crate::run_pdep_rpa;
 
         let ctx = ParallelContext::default();
-        let xyz = "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n";
+        let xyz =
+            "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n";
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let obs_bs = basis::bundled("cc-pvdz").unwrap();
         let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -3542,7 +3850,9 @@ mod tests {
 
         let cfg = PdepRpaConfig {
             quadrature: QuadratureConfig {
-                scheme: QuadratureScheme::GaussLegendre, n_points: 12, u0: 0.5,
+                scheme: QuadratureScheme::GaussLegendre,
+                n_points: 12,
+                u0: 0.5,
             },
             trunc_thresh: 0.0,
             eigensolver_conv_thresh: 1e-9,
@@ -3553,12 +3863,19 @@ mod tests {
         };
         let rpa = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
 
-        let full = molecular_dynamic_polarizability(
-            &mol, &obs, &dfbs, &rhf, op, &cfg, &rpa.quad_freqs,
-        ).unwrap();
+        let full =
+            molecular_dynamic_polarizability(&mol, &obs, &dfbs, &rhf, op, &cfg, &rpa.quad_freqs)
+                .unwrap();
         let pdep = molecular_dynamic_polarizability_pdep(
-            &rpa, &mol, &obs, &dfbs, &rhf, op, cfg.memory_budget_bytes,
-        ).unwrap();
+            &rpa,
+            &mol,
+            &obs,
+            &dfbs,
+            &rhf,
+            op,
+            cfg.memory_budget_bytes,
+        )
+        .unwrap();
 
         assert_eq!(full.len(), pdep.len());
         let mut max_abs = 0.0_f64;
@@ -3569,7 +3886,10 @@ mod tests {
                 }
             }
         }
-        assert!(max_abs < 1e-8, "untruncated PDEP α deviates from full by {max_abs:.3e}");
+        assert!(
+            max_abs < 1e-8,
+            "untruncated PDEP α deviates from full by {max_abs:.3e}"
+        );
     }
 
     fn build_h2() -> (Molecule, PreparedBasis, PreparedBasis, Operator, ScfResult) {
@@ -3602,10 +3922,9 @@ mod tests {
             ..Default::default()
         };
         let freqs = [0.0, 0.5, 2.0, 10.0];
-        let dyn_a = pdep_polarizability_becke_dynamic(
-            &mol, &obs, &bs, &dfbs, &rhf, op, &cfg, &freqs,
-        )
-        .unwrap();
+        let dyn_a =
+            pdep_polarizability_becke_dynamic(&mol, &obs, &bs, &dfbs, &rhf, op, &cfg, &freqs)
+                .unwrap();
         let mol_iso = |k: usize| -> f64 {
             dyn_a
                 .iter()
@@ -3616,7 +3935,10 @@ mod tests {
         let a1 = mol_iso(1);
         let a2 = mol_iso(2);
         let a3 = mol_iso(3);
-        assert!(a0 > a1 && a1 > a2 && a2 > a3, "not monotone: {a0} {a1} {a2} {a3}");
+        assert!(
+            a0 > a1 && a1 > a2 && a2 > a3,
+            "not monotone: {a0} {a1} {a2} {a3}"
+        );
         assert!(a0 > 0.0, "α(0) must be positive: {a0}");
         assert!(a3 < 0.05 * a0, "tail too large: α(10)={a3} α(0)={a0}");
     }
@@ -3633,10 +3955,9 @@ mod tests {
             ..Default::default()
         };
 
-        let dynamic = pdep_polarizability_becke_dynamic(
-            &mol, &obs, &bs, &dfbs, &rhf, op, &cfg, &[0.0, 0.5],
-        )
-        .unwrap();
+        let dynamic =
+            pdep_polarizability_becke_dynamic(&mol, &obs, &bs, &dfbs, &rhf, op, &cfg, &[0.0, 0.5])
+                .unwrap();
         assert_eq!(dynamic.len(), 2, "H2 should have 2 atoms");
 
         let iso = |t: &[[f64; 3]; 3]| (t[0][0] + t[1][1] + t[2][2]) / 3.0;
@@ -3672,10 +3993,9 @@ mod tests {
         };
 
         let freqs = [0.0, 0.5, 2.0, 10.0];
-        let dyn_a = pdep_polarizability_becke_dynamic(
-            &mol, &obs, &bs, &dfbs, &rhf, op, &cfg, &freqs,
-        )
-        .unwrap();
+        let dyn_a =
+            pdep_polarizability_becke_dynamic(&mol, &obs, &bs, &dfbs, &rhf, op, &cfg, &freqs)
+                .unwrap();
         // Sum atomic isotropic α at each frequency = molecular iso (sum rule).
         let iso_at = |k: usize| -> f64 {
             dyn_a
@@ -3687,7 +4007,10 @@ mod tests {
         let a1 = iso_at(1);
         let a2 = iso_at(2);
         let a3 = iso_at(3);
-        assert!(a0 > a1 && a1 > a2 && a2 > a3, "not monotone: {a0} {a1} {a2} {a3}");
+        assert!(
+            a0 > a1 && a1 > a2 && a2 > a3,
+            "not monotone: {a0} {a1} {a2} {a3}"
+        );
         assert!(a0 > 0.0, "α(0) must be positive: {a0}");
         // High-ω tail ~ 1/ω²: α(10) ≪ α(0).
         assert!(a3 < 0.05 * a0, "tail too large: α(10)={a3} α(0)={a0}");
@@ -3725,10 +4048,9 @@ mod tests {
         };
 
         let freqs = [0.0, 0.5, 2.0, 10.0];
-        let dyn_a = pdep_polarizability_becke_dynamic(
-            &mol, &obs, &bs, &dfbs, &uhf, op, &cfg, &freqs,
-        )
-        .unwrap();
+        let dyn_a =
+            pdep_polarizability_becke_dynamic(&mol, &obs, &bs, &dfbs, &uhf, op, &cfg, &freqs)
+                .unwrap();
         assert_eq!(dyn_a.len(), 1);
 
         let iso = |t: &[[f64; 3]; 3]| (t[0][0] + t[1][1] + t[2][2]) / 3.0;
@@ -3737,7 +4059,10 @@ mod tests {
         let a2 = iso(&dyn_a[0][2]);
         let a3 = iso(&dyn_a[0][3]);
         assert!(a0 > 0.0, "α(0) not positive: {a0}");
-        assert!(a0 > a1 && a1 > a2 && a2 > a3, "not monotone: {a0} {a1} {a2} {a3}");
+        assert!(
+            a0 > a1 && a1 > a2 && a2 > a3,
+            "not monotone: {a0} {a1} {a2} {a3}"
+        );
         assert!(a3 < 0.05 * a0, "tail too large: α(10)={a3} α(0)={a0}");
     }
 
@@ -3748,15 +4073,19 @@ mod tests {
         // molecular α(iω) as the closed-shell (Restricted) path. nα=nβ, so the
         // spin-summed dielectric (2·Π_α + 2·Π_β) must reproduce the closed-shell
         // 4·Π. If the per-spin factors were wrong this would diverge.
-        use ferric_scf::uhf::solve_uhf;
         use ferric_scf::rhf::RhfConfig;
+        use ferric_scf::uhf::solve_uhf;
 
         let xyz = "2\nH2\nH 0 0 0\nH 0 0 0.74083\n";
         let op = Operator::coulomb();
         let obs_bs = basis::bundled("cc-pvdz").unwrap();
         let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let ctx = ParallelContext::default();
-        let cfg = PdepRpaConfig { frozen_core: 0, trunc_thresh: 0.0, ..Default::default() };
+        let cfg = PdepRpaConfig {
+            frozen_core: 0,
+            trunc_thresh: 0.0,
+            ..Default::default()
+        };
         let freqs = [0.0, 0.3, 1.0, 4.0];
 
         // Closed-shell (Restricted) reference.
@@ -3765,13 +4094,18 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol_r, &dfbs_bs).unwrap();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol_r, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        let mol_dyn_r = molecular_dynamic_polarizability(&mol_r, &obs, &dfbs, &rhf, op, &cfg, &freqs).unwrap();
+        let mol_dyn_r =
+            molecular_dynamic_polarizability(&mol_r, &obs, &dfbs, &rhf, op, &cfg, &freqs).unwrap();
 
         // Same molecule forced through UHF as a singlet (nα = nβ).
         let mol_u = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let uhf = solve_uhf(&ctx, &mol_u, &obs, &bounds, &RhfConfig::default()).unwrap();
-        assert!(!matches!(uhf.spin, Spin::Restricted), "UHF solve should be unrestricted");
-        let mol_dyn_u = molecular_dynamic_polarizability(&mol_u, &obs, &dfbs, &uhf, op, &cfg, &freqs).unwrap();
+        assert!(
+            !matches!(uhf.spin, Spin::Restricted),
+            "UHF solve should be unrestricted"
+        );
+        let mol_dyn_u =
+            molecular_dynamic_polarizability(&mol_u, &obs, &dfbs, &uhf, op, &cfg, &freqs).unwrap();
 
         let iso = |t: &[[f64; 3]; 3]| (t[0][0] + t[1][1] + t[2][2]) / 3.0;
         for k in 0..freqs.len() {
@@ -3854,7 +4188,9 @@ mod tests {
         // shared helper, so this test does not silently pass if both paths
         // shared a latent bug.
         for d in 0..3 {
-            let y_lu = eps_mat.solve(&w[d]).expect("LU solve must succeed on SPD matrix");
+            let y_lu = eps_mat
+                .solve(&w[d])
+                .expect("LU solve must succeed on SPD matrix");
             for i in 0..n {
                 let diff = (y_chol[d][i] - y_lu[i]).abs();
                 assert!(

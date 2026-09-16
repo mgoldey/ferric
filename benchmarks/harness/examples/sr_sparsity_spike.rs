@@ -72,7 +72,14 @@ fn main() {
 
         println!(
             "{:>4} {:>6} {:>6} | {:>10} {:>9.2} | {:>10} {:>9.2} | {:>8.2}",
-            n, prep.natoms(), nsh, coul_prs, coul_per, erfc_prs, erfc_per, ratio
+            n,
+            prep.natoms(),
+            nsh,
+            coul_prs,
+            coul_per,
+            erfc_prs,
+            erfc_per,
+            ratio
         );
     }
 

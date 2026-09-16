@@ -216,7 +216,11 @@ fn gather_vdd(
     }
     for (bx, &sp) in dsh.iter().enumerate() {
         for (by, &sq) in dsh.iter().enumerate() {
-            let (key, transposed) = if sp >= sq { ((sp, sq), false) } else { ((sq, sp), true) };
+            let (key, transposed) = if sp >= sq {
+                ((sp, sq), false)
+            } else {
+                ((sq, sp), true)
+            };
             let blk = metric_blocks.get(&key).ok_or_else(|| {
                 FerricError::General(format!(
                     "lmp2_direct: metric block ({sp},{sq}) missing for {ctx}"
@@ -357,7 +361,12 @@ fn fit_domain_group(
     }
     let d = dfuncs.len();
     // V_DD gathered block-wise from the sparse metric, ONCE per group
-    let vdd = gather_vdd(dsh, ctx.dims_df, ctx.metric_blocks, &format!("pair ({i0},{j0})"))?;
+    let vdd = gather_vdd(
+        dsh,
+        ctx.dims_df,
+        ctx.metric_blocks,
+        &format!("pair ({i0},{j0})"),
+    )?;
     let vdd_inv = vdd.invc().map_err(|e| {
         FerricError::General(format!(
             "lmp2_direct V_DD Cholesky inverse (group of pair ({i0},{j0})): {e}"
@@ -448,15 +457,28 @@ pub fn assemble_ragged_direct_local(
         Some(cal) => pair_gate_keep(&spaces.occ_centers, &spaces.occ_spreads, no, eps, cal),
         None => (vec![true; no * no], 0),
     };
-    let partners: Vec<Vec<usize>> =
-        (0..no).map(|i| (0..no).filter(|&j| keep[i * no + j]).collect()).collect();
+    let partners: Vec<Vec<usize>> = (0..no)
+        .map(|i| (0..no).filter(|&j| keep[i * no + j]).collect())
+        .collect();
 
     let atom_xyz: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
     let occ_xyz: Vec<[f64; 3]> = (0..no)
-        .map(|i| [spaces.occ_centers[(i, 0)], spaces.occ_centers[(i, 1)], spaces.occ_centers[(i, 2)]])
+        .map(|i| {
+            [
+                spaces.occ_centers[(i, 0)],
+                spaces.occ_centers[(i, 1)],
+                spaces.occ_centers[(i, 2)],
+            ]
+        })
         .collect();
     let virt_xyz: Vec<[f64; 3]> = (0..nv)
-        .map(|a| [spaces.virt_centers[(a, 0)], spaces.virt_centers[(a, 1)], spaces.virt_centers[(a, 2)]])
+        .map(|a| {
+            [
+                spaces.virt_centers[(a, 0)],
+                spaces.virt_centers[(a, 1)],
+                spaces.virt_centers[(a, 2)],
+            ]
+        })
         .collect();
 
     let nsh_df = dfbs.nshells();
@@ -474,14 +496,20 @@ pub fn assemble_ragged_direct_local(
         Some(rv) => {
             let rv2 = rv * rv;
             (0..no)
-                .map(|i| (0..nv).filter(|&a| dist2(virt_xyz[a], occ_xyz[i]) <= rv2).collect())
+                .map(|i| {
+                    (0..nv)
+                        .filter(|&a| dist2(virt_xyz[a], occ_xyz[i]) <= rv2)
+                        .collect()
+                })
                 .collect()
         }
     };
-    let occ_supp: Vec<Vec<usize>> =
-        (0..no).map(|i| supp_shells(obs, spaces.c_locc.column(i), dcfg.ao_tail)).collect();
-    let virt_supp: Vec<Vec<usize>> =
-        (0..nv).map(|a| supp_shells(obs, spaces.c_vloc.column(a), dcfg.ao_tail)).collect();
+    let occ_supp: Vec<Vec<usize>> = (0..no)
+        .map(|i| supp_shells(obs, spaces.c_locc.column(i), dcfg.ao_tail))
+        .collect();
+    let virt_supp: Vec<Vec<usize>> = (0..nv)
+        .map(|a| supp_shells(obs, spaces.c_vloc.column(a), dcfg.ao_tail))
+        .collect();
 
     // extended per-occupied unions over surviving partners (pair sets are
     // D_ij = D_i ∪ D_j and C_ij = V_i ∪ V_j, both ⊆ the extended sets)
@@ -529,7 +557,12 @@ pub fn assemble_ragged_direct_local(
         });
         batches = batches
             .chunks(dcfg.batch_merge)
-            .map(|ch| (ch[0].0, ch.iter().flat_map(|(_, is)| is.iter().copied()).collect()))
+            .map(|ch| {
+                (
+                    ch[0].0,
+                    ch.iter().flat_map(|(_, is)| is.iter().copied()).collect(),
+                )
+            })
             .collect();
     }
     stats.t_maps_s = t0.elapsed().as_secs_f64();
@@ -537,13 +570,13 @@ pub fn assemble_ragged_direct_local(
     // ---- stage 3: batched integral evaluation + half-transform ----
     let t0 = Instant::now();
     Engine::new_3center(op, obs, dfbs, 1e-14)?; // surface construction errors serially
-    // Cauchy–Schwarz factors for the batch triple cut, same-op kernel:
-    // |(P|μν)| ≤ √(P|P) · Q(μν). The aux factor is per aux SHELL
-    // (√ of the max (P|P) diagonal over the shell — conservative at shell
-    // granularity); dropping it would make the cut non-conservative
-    // wherever √(P|P) > 1 (found in review before any merge).
-    // schwarz() supports Coulomb/erf/erfc only — name the knob in the error
-    // so a terfc/table-engine run knows the fix is schwarz_skip = 0.0.
+                                                // Cauchy–Schwarz factors for the batch triple cut, same-op kernel:
+                                                // |(P|μν)| ≤ √(P|P) · Q(μν). The aux factor is per aux SHELL
+                                                // (√ of the max (P|P) diagonal over the shell — conservative at shell
+                                                // granularity); dropping it would make the cut non-conservative
+                                                // wherever √(P|P) > 1 (found in review before any merge).
+                                                // schwarz() supports Coulomb/erf/erfc only — name the knob in the error
+                                                // so a terfc/table-engine run knows the fix is schwarz_skip = 0.0.
     let qpair: Option<(Array2<f64>, Vec<f64>)> = if dcfg.schwarz_skip > 0.0 {
         let sb = ferric_scf::screening::SchwarzBounds::compute(op, obs).map_err(|e| {
             FerricError::General(format!(
@@ -585,8 +618,7 @@ pub fn assemble_ragged_direct_local(
             let p_shells = sorted_union(is.iter().map(|&i| aux_ext[i].iter().copied()));
             let s_shells = sorted_union(is.iter().map(|&i| occ_supp[i].iter().copied()));
             let batch_virts = sorted_union(is.iter().map(|&i| virt_ext[i].iter().copied()));
-            let n_shells =
-                sorted_union(batch_virts.iter().map(|&a| virt_supp[a].iter().copied()));
+            let n_shells = sorted_union(batch_virts.iter().map(|&a| virt_supp[a].iter().copied()));
             let s_funcs = shell_funcs(obs, &s_shells);
             let n_funcs = shell_funcs(obs, &n_shells);
             let (nsf, nnf) = (s_funcs.len(), n_funcs.len());
@@ -654,13 +686,21 @@ pub fn assemble_ragged_direct_local(
                         col_pos[a] = k;
                     }
                     let b = Array2::<f64>::zeros((rows.len(), cols.len()));
-                    Strip { rows, row_pos, cols, col_pos, b }
+                    Strip {
+                        rows,
+                        row_pos,
+                        cols,
+                        col_pos,
+                        b,
+                    }
                 })
                 .collect();
 
             // slab the batch's aux shells under the per-worker share of the
             // GLOBAL scratch budget (workers run concurrently under rayon)
-            let n_workers = rayon::current_num_threads().max(1).min(batches.len().max(1));
+            let n_workers = rayon::current_num_threads()
+                .max(1)
+                .min(batches.len().max(1));
             let per_func = nsf.max(1) * nnf.max(1) * 8;
             let max_funcs = ((dcfg.scratch_budget_bytes / n_workers) / per_func).max(1);
             let mut slab_start = 0usize;
@@ -745,7 +785,11 @@ pub fn assemble_ragged_direct_local(
                 }
                 slab_start = slab_end;
             }
-            (is.iter().copied().zip(strips).collect::<Vec<_>>(), n_triples, n_skipped)
+            (
+                is.iter().copied().zip(strips).collect::<Vec<_>>(),
+                n_triples,
+                n_skipped,
+            )
         })
         .collect();
 
@@ -917,7 +961,9 @@ pub fn assemble_ragged_direct_local(
     let mut pairs: Vec<PairBlock> = Vec::new();
     for (px, s) in slots.into_iter().enumerate() {
         pairs.extend(s.ok_or_else(|| {
-            FerricError::General(format!("lmp2_direct: pair slot {px} never filled (grouping bug)"))
+            FerricError::General(format!(
+                "lmp2_direct: pair slot {px} never filled (grouping bug)"
+            ))
         })?);
     }
     let mut by_i: HashMap<usize, Vec<usize>> = HashMap::new();
@@ -1039,8 +1085,9 @@ pub fn assemble_boo_direct(
     }
     // occupied AO supports (ao_tail ≡ zeroing small coefficients, the same
     // rule and trivial limit as the ov strips)
-    let occ_supp: Vec<Vec<usize>> =
-        (0..no).map(|i| supp_shells(obs, spaces.c_locc.column(i), dcfg.ao_tail)).collect();
+    let occ_supp: Vec<Vec<usize>> = (0..no)
+        .map(|i| supp_shells(obs, spaces.c_locc.column(i), dcfg.ao_tail))
+        .collect();
     let u_shells = sorted_union(occ_supp.iter().map(|s| s.iter().copied()));
     let u_funcs = shell_funcs(obs, &u_shells);
     let nuf = u_funcs.len();
@@ -1303,7 +1350,13 @@ pub fn assemble_pp_fitted_direct(
     let no = spaces.no;
     let atom_xyz: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
     let occ_xyz: Vec<[f64; 3]> = (0..no)
-        .map(|i| [spaces.occ_centers[(i, 0)], spaces.occ_centers[(i, 1)], spaces.occ_centers[(i, 2)]])
+        .map(|i| {
+            [
+                spaces.occ_centers[(i, 0)],
+                spaces.occ_centers[(i, 1)],
+                spaces.occ_centers[(i, 2)],
+            ]
+        })
         .collect();
     let df_shell_atom = dfbs.shell_to_atom();
     let r_aux2 = dcfg.aux_radius_bohr * dcfg.aux_radius_bohr;
@@ -1322,7 +1375,9 @@ pub fn assemble_pp_fitted_direct(
     let mut group_list: Vec<(Vec<usize>, Vec<usize>)> = dom_groups.into_iter().collect();
     group_list.sort_unstable_by_key(|(_, pxs)| pxs[0]);
     Engine::new_3center(op, obs, dfbs, 1e-14)?; // surface construction errors serially
-    let n_workers = rayon::current_num_threads().max(1).min(group_list.len().max(1));
+    let n_workers = rayon::current_num_threads()
+        .max(1)
+        .min(group_list.len().max(1));
     let budget_share = (dcfg.scratch_budget_bytes / n_workers).max(1);
     let group_out: Vec<Result<Vec<(usize, PpFitted)>, FerricError>> = group_list
         .par_iter()
@@ -1344,14 +1399,25 @@ pub fn assemble_pp_fitted_direct(
             })?;
             let uvirt = sorted_union(pxs.iter().map(|&px| {
                 let pb = &rg.pairs[px];
-                pb.da.iter().copied().chain(pb.db.iter().copied()).collect::<Vec<_>>()
+                pb.da
+                    .iter()
+                    .copied()
+                    .chain(pb.db.iter().copied())
+                    .collect::<Vec<_>>()
             }));
             let mut u_pos = vec![usize::MAX; spaces.nv];
             for (k, &a) in uvirt.iter().enumerate() {
                 u_pos[a] = k;
             }
             let avv = avv_for_group(
-                obs, dfbs, op, spaces, dsh, &uvirt, dcfg.ao_tail, budget_share,
+                obs,
+                dfbs,
+                op,
+                spaces,
+                dsh,
+                &uvirt,
+                dcfg.ao_tail,
+                budget_share,
             )?;
             let mut out = Vec::with_capacity(pxs.len());
             for &px in pxs {
@@ -1465,7 +1531,11 @@ pub fn amplitude_lmp2_direct_with_virtuals(
     } else {
         f64::NAN
     };
-    let t_reference_s = if cfg.compute_reference { t0.elapsed().as_secs_f64() } else { 0.0 };
+    let t_reference_s = if cfg.compute_reference {
+        t0.elapsed().as_secs_f64()
+    } else {
+        0.0
+    };
 
     let t0 = Instant::now();
     let (t, iters, relres, converged, flops_mv) =
@@ -1478,8 +1548,11 @@ pub fn amplitude_lmp2_direct_with_virtuals(
     let e_corr = hylleraas_energy(&rg, &t);
 
     let total_el = (no * nv) as u64 * (no * nv) as u64;
-    let kept: u64 =
-        rg.pairs.iter().map(|pb| pb.pat.iter().filter(|&&x| x).count() as u64).sum();
+    let kept: u64 = rg
+        .pairs
+        .iter()
+        .map(|pb| pb.pat.iter().filter(|&&x| x).count() as u64)
+        .sum();
     let dom: Vec<usize> = {
         let mut per_i: Vec<Vec<bool>> = vec![vec![false; nv]; no];
         for pb in &rg.pairs {
@@ -1487,10 +1560,17 @@ pub fn amplitude_lmp2_direct_with_virtuals(
                 per_i[pb.i][a] = true;
             }
         }
-        per_i.iter().map(|v| v.iter().filter(|&&x| x).count()).collect()
+        per_i
+            .iter()
+            .map(|v| v.iter().filter(|&&x| x).count())
+            .collect()
     };
     let dom_max = dom.iter().copied().max().unwrap_or(0);
-    let dom_mean = if no > 0 { dom.iter().sum::<usize>() as f64 / no as f64 } else { 0.0 };
+    let dom_mean = if no > 0 {
+        dom.iter().sum::<usize>() as f64 / no as f64
+    } else {
+        0.0
+    };
     let dense_flops =
         2 * ((no * no) as u64 * (nv as u64).pow(3) + (no as u64).pow(3) * (nv * nv) as u64);
     let t_solve_s = t0.elapsed().as_secs_f64();
@@ -1514,7 +1594,12 @@ pub fn amplitude_lmp2_direct_with_virtuals(
             n_pairs_gated,
             aux_dom_mean: dstats.strip_rows_mean,
             aux_dom_max: dstats.strip_rows_max,
-            timings: StageTimings { t_spaces_s: 0.0, t_assembly_s, t_solve_s, t_reference_s },
+            timings: StageTimings {
+                t_spaces_s: 0.0,
+                t_assembly_s,
+                t_solve_s,
+                t_reference_s,
+            },
         },
         dstats,
     ))

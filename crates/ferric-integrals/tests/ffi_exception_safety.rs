@@ -100,7 +100,10 @@ fn in_range_shell_overlap_is_clean() {
     // is the right size and finite — the numbers themselves are covered by the
     // oneelectron.rs unit tests; here we only need "the happy path still works".
     assert_eq!(block.len(), 25, "d-shell overlap block must be 5x5");
-    assert!(block.iter().all(|v| v.is_finite()), "overlap must be finite");
+    assert!(
+        block.iter().all(|v| v.is_finite()),
+        "overlap must be finite"
+    );
 }
 
 /// The load-bearing test: a shell above the compiled `LIBINT_MAX_AM` must NOT
@@ -119,7 +122,8 @@ fn over_max_am_shell_is_caught_not_ub() {
 
     // PreparedBasis construction itself does not call libint2 compute; it should
     // succeed (it just records shell metadata).
-    let prep = PreparedBasis::new(&mol, &bs).expect("PreparedBasis::new should not fail on an L=7 shell");
+    let prep =
+        PreparedBasis::new(&mol, &bs).expect("PreparedBasis::new should not fail on an L=7 shell");
 
     match Engine::new_1e(ffi::OP_OVERLAP, &prep, 1e-14) {
         Err(_) => {

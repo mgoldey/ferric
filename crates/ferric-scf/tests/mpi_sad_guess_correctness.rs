@@ -146,7 +146,10 @@ fn mpi_sad_guess_direct_rhf_water_sto3g() {
     let mol = water_mol();
 
     let res = sad_direct_rhf_energy(&ctx, &mol);
-    assert!(res.converged, "RHF with SAD guess must converge for this smoke geometry");
+    assert!(
+        res.converged,
+        "RHF with SAD guess must converge for this smoke geometry"
+    );
 
     // Known-correct serial RHF/STO-3G water energy for this geometry, with
     // use_sad_guess: true and df_j_aux/df_k_aux unset (SAD guess construction
@@ -158,5 +161,10 @@ fn mpi_sad_guess_direct_rhf_water_sto3g() {
     // system — only the path taken to get there differs).
     const EXPECTED_SERIAL_ENERGY: f64 = -74.963_227_299_664;
 
-    assert_correct_and_agreeing(&ctx, "sad-guess-direct-rhf", res.energy, EXPECTED_SERIAL_ENERGY);
+    assert_correct_and_agreeing(
+        &ctx,
+        "sad-guess-direct-rhf",
+        res.energy,
+        EXPECTED_SERIAL_ENERGY,
+    );
 }

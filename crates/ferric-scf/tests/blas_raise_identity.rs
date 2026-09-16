@@ -138,7 +138,8 @@ fn rks_lda_dfj_converged_energy_consistent_across_blas_thread_counts() {
                 ..Default::default()
             };
 
-            let run = || solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
+            let run =
+                || solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
 
             let baseline = run();
 

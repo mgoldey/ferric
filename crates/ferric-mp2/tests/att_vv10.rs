@@ -96,7 +96,13 @@ fn build_uhf_case(xyz: &str, charge: i32, mult: usize, basis_name: &str) -> Open
     assert_eq!(scf.spin, Spin::Unrestricted);
     let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
     let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
-    OpenCase { mol, bs, obs, dfbs, scf }
+    OpenCase {
+        mol,
+        bs,
+        obs,
+        dfbs,
+        scf,
+    }
 }
 
 /// ROHF open-shell case.
@@ -121,7 +127,13 @@ fn build_rohf_case(xyz: &str, charge: i32, mult: usize, basis_name: &str) -> Ope
     assert_eq!(scf.spin, Spin::RestrictedOpen);
     let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
     let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
-    OpenCase { mol, bs, obs, dfbs, scf }
+    OpenCase {
+        mol,
+        bs,
+        obs,
+        dfbs,
+        scf,
+    }
 }
 
 /// OH radical, STO-3G, UHF doublet. The standard small open-shell probe.
@@ -187,7 +199,10 @@ fn vv10_energy_matches_wb97xv_add_vv10_path() {
     // wB97X-V's VV10 parameters, straight from libxc.
     let xc = ferric_dft::libxc::xc_def_from_name("wB97X-V").unwrap();
     let params = xc.vv10.expect("wB97X-V must carry VV10 parameters");
-    eprintln!("wB97X-V VV10 params from libxc: b={}, C={}", params.b, params.c);
+    eprintln!(
+        "wB97X-V VV10 params from libxc: b={}, C={}",
+        params.b, params.c
+    );
 
     let grid_cfg = test_grid();
     let grid = build_atomic_grid(&c.mol, &grid_cfg);
@@ -566,7 +581,15 @@ fn vv10_increases_binding_on_a_bound_dimer() {
     let mono = build_case(mono_xyz, "sto-3g");
     let cfg = erfc_test_config();
 
-    let rd = att_mp2_vv10(&dimer.mol, &dimer.obs, &dimer.bs, &dimer.dfbs, &dimer.rhf, &cfg).unwrap();
+    let rd = att_mp2_vv10(
+        &dimer.mol,
+        &dimer.obs,
+        &dimer.bs,
+        &dimer.dfbs,
+        &dimer.rhf,
+        &cfg,
+    )
+    .unwrap();
     let rm = att_mp2_vv10(&mono.mol, &mono.obs, &mono.bs, &mono.dfbs, &mono.rhf, &cfg).unwrap();
 
     // Interaction energies (dimer minus 2x monomer), with and without the VV10 term.
@@ -629,7 +652,10 @@ fn published_parameters_are_the_paper_values() {
         cfg.r0_bohr
     );
     assert_eq!(cfg.vv10.b, 11.0, "b must be 11.0 (Table 1)");
-    assert_eq!(cfg.vv10.c, 0.0089, "C must be 0.0089 (LC-VV10 value, section 3)");
+    assert_eq!(
+        cfg.vv10.c, 0.0089,
+        "C must be 0.0089 (LC-VV10 value, section 3)"
+    );
     assert_eq!(cfg.attenuator, AttVv10Attenuator::Terfc);
     match cfg.vv10_damping {
         Vv10Damping::Terfc { r0_bohr, .. } => assert_eq!(
@@ -698,7 +724,10 @@ fn angstrom_to_bohr_conversion_and_damping_sync() {
         "1.35 A must be ~2.5511 Bohr, got {}",
         cfg.r0_bohr
     );
-    assert!(cfg.r0_bohr > 1.35, "Bohr value must exceed the Angstrom value");
+    assert!(
+        cfg.r0_bohr > 1.35,
+        "Bohr value must exceed the Angstrom value"
+    );
     match cfg.vv10_damping {
         Vv10Damping::Terfc { r0_bohr, .. } => assert_eq!(r0_bohr, cfg.r0_bohr),
         other => panic!("damping should have stayed terfc, got {other:?}"),
@@ -844,8 +873,14 @@ fn decoupled_omega_at_linked_value_matches_linked() {
     // The operator BITS are identical for the MP2 half (same primitive), so
     // any d_att is pure summation-order noise; still asserted at the shared
     // 1e-12 bar rather than == 0.0 to avoid pinning rayon reduction order.
-    assert!(d_att <= 1e-12, "attMP2 halves differ by {d_att:.3e} > 1e-12");
-    assert!(d_vv10 <= 1e-12, "VV10 halves differ by {d_vv10:.3e} > 1e-12");
+    assert!(
+        d_att <= 1e-12,
+        "attMP2 halves differ by {d_att:.3e} > 1e-12"
+    );
+    assert!(
+        d_vv10 <= 1e-12,
+        "VV10 halves differ by {d_vv10:.3e} > 1e-12"
+    );
     assert!(d_total <= 1e-12, "totals differ by {d_total:.3e} > 1e-12");
 }
 
@@ -897,7 +932,10 @@ fn sharp_omega_completes_and_matches_coulomb_when_seam_is_outside_the_density() 
         r_linked.e_c_att_mp2, r_sharp.e_c_att_mp2, r_linked.e_nl_vv10, r_sharp.e_nl_vv10
     );
     assert!(r_sharp.total.is_finite());
-    assert!(r_sharp.e_c_att_mp2 < 0.0, "attMP2 correlation must stay negative");
+    assert!(
+        r_sharp.e_c_att_mp2 < 0.0,
+        "attMP2 correlation must stay negative"
+    );
     assert_eq!(r_sharp.components_sum_to_total(), 0.0);
     // Pin the MEASURED direction: seam inside the density over-correlates.
     assert!(
@@ -1117,14 +1155,16 @@ fn closed_shell_singlet_through_open_shell_path_matches_restricted() {
          R: E_c = {:.12} (e_os = {:.12}, e_ss = {:.12}), E_nl = {:.12}, total = {:.12}\n  \
          U: E_c = {:.12} (e_aa = {e_aa:.12}, e_bb = {e_bb:.12}, e_ab = {e_ab:.12}), \
          E_nl = {:.12}, total = {:.12}",
-        r.e_c_att_mp2, e_os, e_ss, r.e_nl_vv10, r.total,
-        u.e_c_att_mp2, u.e_nl_vv10, u.total
+        r.e_c_att_mp2, e_os, e_ss, r.e_nl_vv10, r.total, u.e_c_att_mp2, u.e_nl_vv10, u.total
     );
 
     // (a) the correlation halves must agree
     let d_ec = (u.e_c_att_mp2 - r.e_c_att_mp2).abs();
-    eprintln!("  |ΔE_c| = {d_ec:.3e}, |ΔE_nl| = {:.3e}, |Δtotal| = {:.3e}",
-        (u.e_nl_vv10 - r.e_nl_vv10).abs(), (u.total - r.total).abs());
+    eprintln!(
+        "  |ΔE_c| = {d_ec:.3e}, |ΔE_nl| = {:.3e}, |Δtotal| = {:.3e}",
+        (u.e_nl_vv10 - r.e_nl_vv10).abs(),
+        (u.total - r.total).abs()
+    );
     // TOLERANCES. These compare two INDEPENDENT SCF solutions (a restricted and
     // an unrestricted one that collapsed onto it) fed through two INDEPENDENT
     // RI-MP2 code paths (`ri_mp2_spin_components` vs `u_ri_mp2`'s per-spin
@@ -1201,7 +1241,11 @@ fn vv10_is_spin_agnostic_on_a_collapsed_singlet() {
 
     // The UHF total density really is the spin sum, not a copy of one channel.
     let d_a = &u_case.scf.density_alpha;
-    let d_b = u_case.scf.density_beta.as_ref().expect("UHF must carry a beta density");
+    let d_b = u_case
+        .scf
+        .density_beta
+        .as_ref()
+        .expect("UHF must carry a beta density");
     let d_sum = d_a + d_b;
     let max_dev = (&d_sum - u_case.scf.density_total())
         .iter()
@@ -1217,13 +1261,28 @@ fn vv10_is_spin_agnostic_on_a_collapsed_singlet() {
         omega_bohr_inv: None,
     };
     let (e_r, n_r) = vv10_energy_on_density(
-        &r_case.mol, &r_case.bs, r_case.rhf.density_total(), &params, damping, &test_grid(),
-    ).unwrap();
+        &r_case.mol,
+        &r_case.bs,
+        r_case.rhf.density_total(),
+        &params,
+        damping,
+        &test_grid(),
+    )
+    .unwrap();
     let (e_u, n_u) = vv10_energy_on_density(
-        &u_case.mol, &u_case.bs, u_case.scf.density_total(), &params, damping, &test_grid(),
-    ).unwrap();
-    eprintln!("VV10 spin agnosticism: E_nl[RHF rho] = {e_r:.14}, E_nl[UHF rho] = {e_u:.14}, \
-               diff = {:.3e} ({n_r} vs {n_u} pts)", (e_r - e_u).abs());
+        &u_case.mol,
+        &u_case.bs,
+        u_case.scf.density_total(),
+        &params,
+        damping,
+        &test_grid(),
+    )
+    .unwrap();
+    eprintln!(
+        "VV10 spin agnosticism: E_nl[RHF rho] = {e_r:.14}, E_nl[UHF rho] = {e_u:.14}, \
+               diff = {:.3e} ({n_r} vs {n_u} pts)",
+        (e_r - e_u).abs()
+    );
     assert_eq!(n_r, n_u);
     assert!(
         (e_r - e_u).abs() < 1e-10,
@@ -1251,9 +1310,7 @@ fn same_spin_vanishes_exactly_when_only_one_virtual() {
         other => panic!("expected unrestricted components, got {other:?}"),
     };
     let nbf = c.obs.nbasis();
-    eprintln!(
-        "OH/STO-3G (nbf={nbf}, nvir=1): e_aa={e_aa:.12}, e_bb={e_bb:.12}, e_ab={e_ab:.12}"
-    );
+    eprintln!("OH/STO-3G (nbf={nbf}, nvir=1): e_aa={e_aa:.12}, e_bb={e_bb:.12}, e_ab={e_ab:.12}");
     assert_eq!(
         nbf, 6,
         "this test depends on OH/STO-3G having nbf=6 (nocc_alpha=5 => nvir=1)"
@@ -1301,12 +1358,25 @@ fn oh_radical_uhf_components_are_physical_and_additive() {
     assert!(r.is_open_shell_extrapolation());
 
     assert!(r.e_hf < 0.0 && r.e_hf.is_finite());
-    assert!(e_aa < 0.0, "same-spin αα correlation must be negative, got {e_aa}");
-    assert!(e_bb < 0.0, "same-spin ββ correlation must be negative, got {e_bb}");
-    assert!(e_ab < 0.0, "opposite-spin correlation must be negative, got {e_ab}");
+    assert!(
+        e_aa < 0.0,
+        "same-spin αα correlation must be negative, got {e_aa}"
+    );
+    assert!(
+        e_bb < 0.0,
+        "same-spin ββ correlation must be negative, got {e_bb}"
+    );
+    assert!(
+        e_ab < 0.0,
+        "opposite-spin correlation must be negative, got {e_ab}"
+    );
     assert!(r.e_c_att_mp2 < 0.0);
     // As for closed shell, E_nl as defined here is a small positive number.
-    assert!(r.e_nl_vv10 > 0.0 && r.e_nl_vv10.is_finite(), "got {}", r.e_nl_vv10);
+    assert!(
+        r.e_nl_vv10 > 0.0 && r.e_nl_vv10.is_finite(),
+        "got {}",
+        r.e_nl_vv10
+    );
 
     // The α and β channels genuinely differ for a doublet — if they came out
     // equal, the β channel is being fed the α orbitals (or vice versa).
@@ -1448,7 +1518,10 @@ fn open_shell_frozen_core_is_honoured_and_range_checked() {
     let base = erfc_test_config();
     let all_electron = u_att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.scf, &base).unwrap();
 
-    let fc1 = AttVv10Config { frozen_core: 1, ..base.clone() };
+    let fc1 = AttVv10Config {
+        frozen_core: 1,
+        ..base.clone()
+    };
     let frozen = u_att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.scf, &fc1).unwrap();
     eprintln!(
         "OH/STO-3G frozen core: all-electron E_c = {:.10}, frozen_core=1 E_c = {:.10}",
@@ -1464,7 +1537,10 @@ fn open_shell_frozen_core_is_honoured_and_range_checked() {
     assert_eq!(frozen.e_nl_vv10, all_electron.e_nl_vv10);
 
     // Absurd frozen_core: must be a clean error, not a panic or a usize wrap.
-    let fc_huge = AttVv10Config { frozen_core: 1000, ..base.clone() };
+    let fc_huge = AttVv10Config {
+        frozen_core: 1000,
+        ..base.clone()
+    };
     let err = u_att_mp2_vv10(&c.mol, &c.obs, &c.bs, &c.dfbs, &c.scf, &fc_huge)
         .expect_err("frozen_core beyond nocc must error");
     eprintln!("frozen_core=1000 rejection: {err}");

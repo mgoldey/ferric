@@ -27,9 +27,16 @@ fn boys_centers(xyz: &str, bas: &str) -> (Array2<f64>, usize, usize) {
     let mol = Molecule::load_xyz(xyz).unwrap();
     let obs = PreparedBasis::new(&mol, &basis::bundled(bas).unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let cfg = RhfConfig { density_conv: 1e-9, max_iter: 100, ..Default::default() };
+    let cfg = RhfConfig {
+        density_conv: 1e-9,
+        max_iter: 100,
+        ..Default::default()
+    };
     let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg).unwrap();
-    assert!(rhf.converged, "SCF must converge for the localization to mean anything");
+    assert!(
+        rhf.converged,
+        "SCF must converge for the localization to mean anything"
+    );
 
     let nocc = (mol.nelec() / 2) as usize;
     let nbas = obs.nbasis();
@@ -146,7 +153,10 @@ fn domains_and_pnos_compose() {
 
     let all = complete_pair_domains(&centers).unwrap();
     let screened = build_pair_domains(&centers, 4.0, f64::INFINITY).unwrap();
-    assert!(screened.pairs.len() < all.pairs.len(), "test premise: screening drops pairs");
+    assert!(
+        screened.pairs.len() < all.pairs.len(),
+        "test premise: screening drops pairs"
+    );
 
     let amp = |nvir: usize| {
         Array2::<f64>::from_shape_fn((nvir, nvir), |(a, b)| {

@@ -138,7 +138,10 @@ fn the_result_is_monotone_in_budget_and_residency() {
         let mut last = 0usize;
         for gb in 1..=8 {
             let a = available_budget_bytes(gb * GIB, Some(rss));
-            assert!(a >= last, "not monotone in budget at {gb} GiB, rss={rss}: {a} < {last}");
+            assert!(
+                a >= last,
+                "not monotone in budget at {gb} GiB, rss={rss}: {a} < {last}"
+            );
             last = a;
         }
     }
@@ -146,7 +149,10 @@ fn the_result_is_monotone_in_budget_and_residency() {
     let mut last = usize::MAX;
     for gb in 0..=8 {
         let a = available_budget_bytes(budget, Some(gb * GIB));
-        assert!(a <= last, "not monotone in residency at {gb} GiB: {a} > {last}");
+        assert!(
+            a <= last,
+            "not monotone in residency at {gb} GiB: {a} > {last}"
+        );
         last = a;
     }
 }

@@ -18,14 +18,14 @@ use ferric_core::memory::plan::MemoryPlan;
 use ferric_core::mol::Molecule;
 
 use crate::ao_grid::{
-    collect_shells, eval_basis_and_grad_on_points, eval_basis_and_grad_on_points_unchecked,
-    nbasis, AoGridKind, GtoEvalError,
+    collect_shells, eval_basis_and_grad_on_points, eval_basis_and_grad_on_points_unchecked, nbasis,
+    AoGridKind, GtoEvalError,
 };
 use crate::density_on_grid::{
     eval_density_closed, eval_density_uks, eval_tau_closed, eval_tau_uks, DensityGrid,
 };
-use crate::libxc::FunctionalFamily;
 use crate::grid::{build_atomic_grid_pruned, AtomicGridConfig, GridPoint};
+use crate::libxc::FunctionalFamily;
 use crate::libxc::{xc_def_from_name, xc_def_from_name_nspin, LibxcError, XcDef};
 use crate::vv10::add_vv10_scratch;
 use crate::vxc::{semilocal_vxc_closed_scratch, semilocal_vxc_polarized_scratch, VxcScratch};
@@ -60,11 +60,21 @@ pub enum KsXcError {
     Grid(ferric_core::error::FerricError),
 }
 
-impl From<GtoEvalError> for KsXcError { fn from(e: GtoEvalError) -> Self { Self::Eval(e) } }
-impl From<LibxcError>  for KsXcError { fn from(e: LibxcError)  -> Self { Self::Libxc(e) } }
+impl From<GtoEvalError> for KsXcError {
+    fn from(e: GtoEvalError) -> Self {
+        Self::Eval(e)
+    }
+}
+impl From<LibxcError> for KsXcError {
+    fn from(e: LibxcError) -> Self {
+        Self::Libxc(e)
+    }
+}
 
 impl From<KsXcError> for ferric_core::error::FerricError {
-    fn from(e: KsXcError) -> Self { Self::General(e.to_string()) }
+    fn from(e: KsXcError) -> Self {
+        Self::General(e.to_string())
+    }
 }
 
 /// Resident `(nbf, batch_pts)` `f64` planes one batched semilocal V_xc pass
@@ -166,7 +176,11 @@ fn batch_planes(is_uks: bool, needs_tau: bool) -> usize {
 /// `exc_total` 1, `vrho_{a,b}` 2, `vsigma_{aa,ab,bb}` 3, `vtau_{a,b}` 2, and
 /// one functional's `exc` 1 + `vrho` 2 + `vsigma` 3 + `vtau` 2 = 40.
 fn batch_point_doubles(is_uks: bool) -> usize {
-    if is_uks { 40 } else { 20 }
+    if is_uks {
+        40
+    } else {
+        20
+    }
 }
 
 /// `f64`s a batched pass needs per grid point, planes included — the divisor
@@ -228,7 +242,11 @@ fn check_grid_budget(
     needs_tau: bool,
 ) -> Result<bool, KsXcError> {
     let base = full_cache_bytes(nbf, npts, is_uks, needs_tau);
-    let needed = if has_vv10 { base.saturating_mul(2) } else { base };
+    let needed = if has_vv10 {
+        base.saturating_mul(2)
+    } else {
+        base
+    };
     if needed <= budget {
         return Ok(true);
     }
@@ -320,7 +338,10 @@ fn batched_add_xc_closed(
     // Shells depend only on (mol, bs), not on the batch — collect ONCE outside
     // the loop instead of re-parsing them every batch.
     let shells = collect_shells(mol, bs)?;
-    let nbf: usize = shells.iter().map(|s| ferric_core::basis::num_functions(s.l, s.pure)).sum();
+    let nbf: usize = shells
+        .iter()
+        .map(|s| ferric_core::basis::num_functions(s.l, s.pure))
+        .sum();
 
     let npts = grid.len();
     let batch_pts = batch_pts.max(1);
@@ -348,10 +369,13 @@ fn batched_add_xc_closed(
         // budget failure.
         let (chi, dchi) = eval_basis_and_grad_on_points_unchecked(&shells, nbf, &pts)?;
         let dens = eval_density_closed(d, &chi, &dchi);
-        let tau: Option<Array1<f64>> = if is_mgga { Some(eval_tau_closed(d, &dchi)) } else { None };
-        let (e_xc_batch, vxc_batch) = semilocal_vxc_closed_scratch(
-            batch_grid, &chi, &dchi, &dens, tau.as_ref(), xc, scratch,
-        );
+        let tau: Option<Array1<f64>> = if is_mgga {
+            Some(eval_tau_closed(d, &dchi))
+        } else {
+            None
+        };
+        let (e_xc_batch, vxc_batch) =
+            semilocal_vxc_closed_scratch(batch_grid, &chi, &dchi, &dens, tau.as_ref(), xc, scratch);
         *f += &vxc_batch;
         e_xc_total += e_xc_batch;
         g0 = g1;
@@ -377,7 +401,10 @@ fn batched_add_xc_uks(
     f_b: &mut Array2<f64>,
 ) -> Result<f64, KsXcError> {
     let shells = collect_shells(mol, bs)?;
-    let nbf: usize = shells.iter().map(|s| ferric_core::basis::num_functions(s.l, s.pure)).sum();
+    let nbf: usize = shells
+        .iter()
+        .map(|s| ferric_core::basis::num_functions(s.l, s.pure))
+        .sum();
 
     let npts = grid.len();
     let batch_pts = batch_pts.max(1);
@@ -395,11 +422,14 @@ fn batched_add_xc_uks(
         // under a drifted (auto-detect) budget reading.
         let (chi, dchi) = eval_basis_and_grad_on_points_unchecked(&shells, nbf, &pts)?;
         let dens = eval_density_uks(d_a, d_b, &chi, &dchi);
-        let tau = if is_mgga { Some(eval_tau_uks(d_a, d_b, &dchi)) } else { None };
+        let tau = if is_mgga {
+            Some(eval_tau_uks(d_a, d_b, &dchi))
+        } else {
+            None
+        };
         let tau_ref = tau.as_ref().map(|(a, b)| (a, b));
-        let (e_xc_batch, vxc_a_batch, vxc_b_batch) = semilocal_vxc_polarized_scratch(
-            batch_grid, &chi, &dchi, &dens, tau_ref, xc, scratch,
-        );
+        let (e_xc_batch, vxc_a_batch, vxc_b_batch) =
+            semilocal_vxc_polarized_scratch(batch_grid, &chi, &dchi, &dens, tau_ref, xc, scratch);
         *f_a += &vxc_a_batch;
         *f_b += &vxc_b_batch;
         e_xc_total += e_xc_batch;
@@ -558,9 +588,11 @@ impl KsXc {
         // The plane count depends on the functional rung, so `is_mgga` has to
         // be known *before* the Full-vs-Batched decision and the batch sizing
         // — not just before the Fock builds that consume it.
-        let is_mgga = xc.funcs.iter().any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
-        let fits =
-            check_grid_budget(nbf, grid.len(), xc.vv10.is_some(), budget, false, is_mgga)?;
+        let is_mgga = xc
+            .funcs
+            .iter()
+            .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
+        let fits = check_grid_budget(nbf, grid.len(), xc.vv10.is_some(), budget, false, is_mgga)?;
         let cache = if fits {
             let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
             let (chi, dchi) = eval_basis_and_grad_on_points(mol, bs, &pts)?;
@@ -584,8 +616,15 @@ impl KsXc {
         };
 
         Ok(Self {
-            xc, grid, cache, mol: mol.clone(), bs: bs.clone(),
-            nlc_grid, nlc_chi, nlc_dchi, is_mgga,
+            xc,
+            grid,
+            cache,
+            mol: mol.clone(),
+            bs: bs.clone(),
+            nlc_grid,
+            nlc_chi,
+            nlc_dchi,
+            is_mgga,
             scratch: Mutex::new(VxcScratch::new()),
             nlc_scratch: Mutex::new(VxcScratch::new()),
         })
@@ -611,16 +650,33 @@ impl XcContribution for KsXc {
                 // functionals. Compute it from D and ∇χ (no explicit occupied
                 // MOs required — see eval_tau_closed) only when a meta-GGA
                 // component is present.
-                let tau = if self.is_mgga { Some(eval_tau_closed(d, dchi)) } else { None };
+                let tau = if self.is_mgga {
+                    Some(eval_tau_closed(d, dchi))
+                } else {
+                    None
+                };
                 let (e_xc, vxc) = semilocal_vxc_closed_scratch(
-                    &self.grid, chi, dchi, &dens, tau.as_ref(), &self.xc, &mut scratch,
+                    &self.grid,
+                    chi,
+                    dchi,
+                    &dens,
+                    tau.as_ref(),
+                    &self.xc,
+                    &mut scratch,
                 );
                 *f += &vxc;
                 e_xc
             }
             GridCache::Batched { batch_pts } => batched_add_xc_closed(
-                &self.mol, &self.bs, &self.grid, *batch_pts, d, &self.xc, self.is_mgga,
-                &mut scratch, f,
+                &self.mol,
+                &self.bs,
+                &self.grid,
+                *batch_pts,
+                d,
+                &self.xc,
+                self.is_mgga,
+                &mut scratch,
+                f,
             )
             .expect(
                 "batched AO evaluation failed for a basis already accepted by KsXc::new \
@@ -641,8 +697,7 @@ impl XcContribution for KsXc {
             self.xc.vv10.as_ref(),
         ) {
             let nlc_dens = eval_density_closed(d, c, dc);
-            let mut nlc_scratch =
-                self.nlc_scratch.lock().unwrap_or_else(|e| e.into_inner());
+            let mut nlc_scratch = self.nlc_scratch.lock().unwrap_or_else(|e| e.into_inner());
             add_vv10_scratch(g, c, dc, &nlc_dens, params, f, &mut nlc_scratch)
         } else {
             0.0
@@ -653,13 +708,25 @@ impl XcContribution for KsXc {
 
     fn k_mix(&self) -> KMix {
         if let Some(cam) = self.xc.cam {
-            return KMix { sr: cam.c_sr, lr: cam.c_lr, omega: cam.omega };
+            return KMix {
+                sr: cam.c_sr,
+                lr: cam.c_lr,
+                omega: cam.omega,
+            };
         }
         if let Some(mix) = self.xc.b3lyp_mix {
-            return KMix { sr: mix, lr: mix, omega: 0.0 };
+            return KMix {
+                sr: mix,
+                lr: mix,
+                omega: 0.0,
+            };
         }
         // Pure functional (LDA, PBE): no exact exchange
-        KMix { sr: 0.0, lr: 0.0, omega: 0.0 }
+        KMix {
+            sr: 0.0,
+            lr: 0.0,
+            omega: 0.0,
+        }
     }
 }
 
@@ -772,9 +839,11 @@ impl KsXcUks {
         );
         // See `KsXc::new_with_omega` — the rung feeds the plane count, so it
         // must be known before the budget decision, not after it.
-        let is_mgga = xc.funcs.iter().any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
-        let fits =
-            check_grid_budget(nbf, grid.len(), xc.vv10.is_some(), budget, true, is_mgga)?;
+        let is_mgga = xc
+            .funcs
+            .iter()
+            .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
+        let fits = check_grid_budget(nbf, grid.len(), xc.vv10.is_some(), budget, true, is_mgga)?;
         let cache = if fits {
             let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
             let (chi, dchi) = eval_basis_and_grad_on_points(mol, bs, &pts)?;
@@ -798,8 +867,15 @@ impl KsXcUks {
         };
 
         Ok(Self {
-            xc, grid, cache, mol: mol.clone(), bs: bs.clone(),
-            nlc_grid, nlc_chi, nlc_dchi, is_mgga,
+            xc,
+            grid,
+            cache,
+            mol: mol.clone(),
+            bs: bs.clone(),
+            nlc_grid,
+            nlc_chi,
+            nlc_dchi,
+            is_mgga,
             scratch: Mutex::new(VxcScratch::new()),
             nlc_scratch: Mutex::new(VxcScratch::new()),
         })
@@ -821,18 +897,37 @@ impl UksXcContribution for KsXcUks {
             GridCache::Full { chi, dchi } => {
                 let dens = eval_density_uks(d_a, d_b, chi, dchi);
                 // Per-spin τ only for meta-GGA (from the two spin density matrices).
-                let tau = if self.is_mgga { Some(eval_tau_uks(d_a, d_b, dchi)) } else { None };
+                let tau = if self.is_mgga {
+                    Some(eval_tau_uks(d_a, d_b, dchi))
+                } else {
+                    None
+                };
                 let tau_ref = tau.as_ref().map(|(a, b)| (a, b));
                 let (e_xc, vxc_a, vxc_b) = semilocal_vxc_polarized_scratch(
-                    &self.grid, chi, dchi, &dens, tau_ref, &self.xc, &mut scratch,
+                    &self.grid,
+                    chi,
+                    dchi,
+                    &dens,
+                    tau_ref,
+                    &self.xc,
+                    &mut scratch,
                 );
                 *f_a += &vxc_a;
                 *f_b += &vxc_b;
                 e_xc
             }
             GridCache::Batched { batch_pts } => batched_add_xc_uks(
-                &self.mol, &self.bs, &self.grid, *batch_pts, d_a, d_b, &self.xc, self.is_mgga,
-                &mut scratch, f_a, f_b,
+                &self.mol,
+                &self.bs,
+                &self.grid,
+                *batch_pts,
+                d_a,
+                d_b,
+                &self.xc,
+                self.is_mgga,
+                &mut scratch,
+                f_a,
+                f_b,
             )
             .expect(
                 "batched AO evaluation failed for a basis already accepted by KsXcUks::new \
@@ -854,8 +949,7 @@ impl UksXcContribution for KsXcUks {
             let d_total = d_a + d_b;
             let dens_total: DensityGrid = eval_density_closed(&d_total, c, dc);
             // Apply VV10 to a single Fock buffer, then add to both spins.
-            let mut nlc_scratch =
-                self.nlc_scratch.lock().unwrap_or_else(|e| e.into_inner());
+            let mut nlc_scratch = self.nlc_scratch.lock().unwrap_or_else(|e| e.into_inner());
             let mut v_nl = Array2::<f64>::zeros(f_a.dim());
             let e = add_vv10_scratch(g, c, dc, &dens_total, params, &mut v_nl, &mut nlc_scratch);
             *f_a += &v_nl;
@@ -870,12 +964,24 @@ impl UksXcContribution for KsXcUks {
 
     fn k_mix(&self) -> KMix {
         if let Some(cam) = self.xc.cam {
-            return KMix { sr: cam.c_sr, lr: cam.c_lr, omega: cam.omega };
+            return KMix {
+                sr: cam.c_sr,
+                lr: cam.c_lr,
+                omega: cam.omega,
+            };
         }
         if let Some(mix) = self.xc.b3lyp_mix {
-            return KMix { sr: mix, lr: mix, omega: 0.0 };
+            return KMix {
+                sr: mix,
+                lr: mix,
+                omega: 0.0,
+            };
         }
-        KMix { sr: 0.0, lr: 0.0, omega: 0.0 }
+        KMix {
+            sr: 0.0,
+            lr: 0.0,
+            omega: 0.0,
+        }
     }
 }
 
@@ -911,7 +1017,10 @@ mod batching_tests {
         // A tiny budget still makes forward progress (>=1 point per batch).
         assert_eq!(resolve_batch_size(1500, 400_000, 1, false, false), 1);
         // A huge budget batches to (at most) the whole grid in one go.
-        assert_eq!(resolve_batch_size(7, 100, usize::MAX / 2, false, false), 100);
+        assert_eq!(
+            resolve_batch_size(7, 100, usize::MAX / 2, false, false),
+            100
+        );
     }
 
     /// The batch size must not move when the rayon pool does — the batched
@@ -940,9 +1049,17 @@ mod batching_tests {
         let resident = 1 + 3 + 1;
 
         // Closed-shell LDA/GGA: largest stage is phi = D·chi (1 plane).
-        assert_eq!(batch_planes(false, false), resident + 1, "closed-shell LDA/GGA");
+        assert_eq!(
+            batch_planes(false, false),
+            resident + 1,
+            "closed-shell LDA/GGA"
+        );
         // Closed-shell meta-GGA: eval_tau_closed's psi[0..3] (3) beats phi (1).
-        assert_eq!(batch_planes(false, true), resident + 3, "closed-shell meta-GGA");
+        assert_eq!(
+            batch_planes(false, true),
+            resident + 3,
+            "closed-shell meta-GGA"
+        );
         // UKS LDA/GGA: eval_density_uks runs two GEMMs, phi_a + phi_b (2).
         assert_eq!(batch_planes(true, false), resident + 2, "UKS LDA/GGA");
         // UKS meta-GGA: eval_tau_uks is two *sequential* eval_tau_closed calls,
@@ -989,7 +1106,10 @@ mod batching_tests {
         // And every one of them is smaller than the old 5-plane sizing, which
         // is the whole point: the fallback used to over-commit by up to ~1.6×.
         let old_5_plane = BUDGET / (5 * NBF * 8);
-        assert!(gga < old_5_plane, "{gga} must be below the old {old_5_plane}");
+        assert!(
+            gga < old_5_plane,
+            "{gga} must be below the old {old_5_plane}"
+        );
         assert!(uks_mgga < old_5_plane);
     }
 
@@ -1013,7 +1133,10 @@ mod batching_tests {
     #[test]
     fn an_ample_budget_still_takes_the_whole_grid_in_one_batch() {
         for &(uks, tau) in &[(false, false), (false, true), (true, false), (true, true)] {
-            assert_eq!(resolve_batch_size(500, 200_000, usize::MAX / 2, uks, tau), 200_000);
+            assert_eq!(
+                resolve_batch_size(500, 200_000, usize::MAX / 2, uks, tau),
+                200_000
+            );
             // ...and check_grid_budget agrees that the Full cache fits.
             assert!(
                 check_grid_budget(500, 200_000, false, usize::MAX / 2, uks, tau).unwrap(),
@@ -1030,8 +1153,12 @@ mod batching_tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_budget_env();
 
-        let mol = Molecule::parse_xyz("3\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.96\nH 0.93 0.0 -0.24\n", 0, 1)
-            .unwrap();
+        let mol = Molecule::parse_xyz(
+            "3\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.96\nH 0.93 0.0 -0.24\n",
+            0,
+            1,
+        )
+        .unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
@@ -1042,7 +1169,12 @@ mod batching_tests {
         // — this test checks that batching reproduces the cached-path numbers
         // for a FIXED D, not that PBE/SCF converges to anything in particular.
         let rhf = ferric_scf::rhf::solve_rhf(
-            &ctx, &mol, &prep, op, &bounds, &ferric_scf::rhf::RhfConfig::default(),
+            &ctx,
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &ferric_scf::rhf::RhfConfig::default(),
         )
         .unwrap();
         let d = rhf.density_total;
@@ -1050,8 +1182,16 @@ mod batching_tests {
         // Small, coarse grid so the `Full` cache is tiny (a handful of KB) —
         // this keeps the "over-budget" trigger firmly in the test's control
         // via a tiny FERRIC_MEM_BUDGET_GB rather than actually needing GBs.
-        let main = AtomicGridConfig { n_radial: 20, n_angular: 26, ..Default::default() };
-        let nlc = AtomicGridConfig { n_radial: 10, n_angular: 26, ..Default::default() };
+        let main = AtomicGridConfig {
+            n_radial: 20,
+            n_angular: 26,
+            ..Default::default()
+        };
+        let nlc = AtomicGridConfig {
+            n_radial: 10,
+            n_angular: 26,
+            ..Default::default()
+        };
 
         // 1) Full-cache path: plenty of budget.
         clear_budget_env();
@@ -1112,14 +1252,26 @@ mod batching_tests {
         let bounds = ferric_scf::screening::SchwarzBounds::compute(op, &prep).unwrap();
         let ctx = ParallelContext::default();
         let uhf = ferric_scf::uhf::solve_uhf(
-            &ctx, &mol, &prep, &bounds, &ferric_scf::uhf::UhfConfig::default(),
+            &ctx,
+            &mol,
+            &prep,
+            &bounds,
+            &ferric_scf::uhf::UhfConfig::default(),
         )
         .unwrap();
         let d_a: Array2<f64> = uhf.density_alpha;
         let d_b: Array2<f64> = uhf.density_beta.unwrap();
 
-        let main = AtomicGridConfig { n_radial: 20, n_angular: 26, ..Default::default() };
-        let nlc = AtomicGridConfig { n_radial: 10, n_angular: 26, ..Default::default() };
+        let main = AtomicGridConfig {
+            n_radial: 20,
+            n_angular: 26,
+            ..Default::default()
+        };
+        let nlc = AtomicGridConfig {
+            n_radial: 10,
+            n_angular: 26,
+            ..Default::default()
+        };
 
         clear_budget_env();
         std::env::set_var(VAR, "1000");
@@ -1140,12 +1292,25 @@ mod batching_tests {
         clear_budget_env();
 
         let e_diff = (e_full - e_batched).abs();
-        assert!(e_diff <= 1e-10, "UKS batched E_xc must match cached to <=1e-10 Ha, diff={e_diff:.3e}");
+        assert!(
+            e_diff <= 1e-10,
+            "UKS batched E_xc must match cached to <=1e-10 Ha, diff={e_diff:.3e}"
+        );
 
-        let fa_diff = (&fa_full - &fa_batched).iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
-        let fb_diff = (&fb_full - &fb_batched).iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
-        assert!(fa_diff <= 1e-10, "UKS batched V_alpha must match cached, diff={fa_diff:.3e}");
-        assert!(fb_diff <= 1e-10, "UKS batched V_beta must match cached, diff={fb_diff:.3e}");
+        let fa_diff = (&fa_full - &fa_batched)
+            .iter()
+            .fold(0.0_f64, |m, &x| m.max(x.abs()));
+        let fb_diff = (&fb_full - &fb_batched)
+            .iter()
+            .fold(0.0_f64, |m, &x| m.max(x.abs()));
+        assert!(
+            fa_diff <= 1e-10,
+            "UKS batched V_alpha must match cached, diff={fa_diff:.3e}"
+        );
+        assert!(
+            fb_diff <= 1e-10,
+            "UKS batched V_beta must match cached, diff={fb_diff:.3e}"
+        );
     }
 
     /// Regression for the mid-run panic this task fixes: the OLD batched path
@@ -1169,27 +1334,47 @@ mod batching_tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_budget_env();
 
-        let mol = Molecule::parse_xyz("3\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.96\nH 0.93 0.0 -0.24\n", 0, 1)
-            .unwrap();
+        let mol = Molecule::parse_xyz(
+            "3\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.96\nH 0.93 0.0 -0.24\n",
+            0,
+            1,
+        )
+        .unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = ferric_scf::screening::SchwarzBounds::compute(op, &prep).unwrap();
         let ctx = ParallelContext::default();
         let rhf = ferric_scf::rhf::solve_rhf(
-            &ctx, &mol, &prep, op, &bounds, &ferric_scf::rhf::RhfConfig::default(),
+            &ctx,
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &ferric_scf::rhf::RhfConfig::default(),
         )
         .unwrap();
         let d = rhf.density_total;
 
-        let main = AtomicGridConfig { n_radial: 20, n_angular: 26, ..Default::default() };
-        let nlc = AtomicGridConfig { n_radial: 10, n_angular: 26, ..Default::default() };
+        let main = AtomicGridConfig {
+            n_radial: 20,
+            n_angular: 26,
+            ..Default::default()
+        };
+        let nlc = AtomicGridConfig {
+            n_radial: 10,
+            n_angular: 26,
+            ..Default::default()
+        };
 
         // Construct under a tiny (but not absurdly tiny) budget: forces
         // Batched, and sizes batch_pts against ~10.7 KB.
         std::env::set_var(VAR, "0.00001");
         let ks = KsXc::new(&mol, &bs, "PBE", &main, &nlc).unwrap();
-        assert!(matches!(ks.cache, GridCache::Batched { .. }), "expected Batched under a tiny budget");
+        assert!(
+            matches!(ks.cache, GridCache::Batched { .. }),
+            "expected Batched under a tiny budget"
+        );
 
         // Simulate the budget draining further mid-SCF (e.g. another
         // allocation elsewhere in the process shrinking 0.8×MemAvailable):
@@ -1206,8 +1391,14 @@ mod batching_tests {
 
         clear_budget_env();
 
-        assert!(e_xc.is_finite(), "batched add_xc must produce a finite E_xc despite budget shrinking mid-run");
-        assert!(f.iter().all(|x| x.is_finite()), "batched V_xc Fock contribution must be finite");
+        assert!(
+            e_xc.is_finite(),
+            "batched add_xc must produce a finite E_xc despite budget shrinking mid-run"
+        );
+        assert!(
+            f.iter().all(|x| x.is_finite()),
+            "batched V_xc Fock contribution must be finite"
+        );
     }
 
     /// Directly exercises `eval_basis_and_grad_on_points_unchecked`: sized
@@ -1220,8 +1411,12 @@ mod batching_tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_budget_env();
 
-        let mol = Molecule::parse_xyz("3\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.96\nH 0.93 0.0 -0.24\n", 0, 1)
-            .unwrap();
+        let mol = Molecule::parse_xyz(
+            "3\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.96\nH 0.93 0.0 -0.24\n",
+            0,
+            1,
+        )
+        .unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
 
         let shells = crate::ao_grid::collect_shells(&mol, &bs).unwrap();
@@ -1235,12 +1430,18 @@ mod batching_tests {
         // (matches the magnitude the rest of this module's tests already use).
         std::env::set_var(VAR, "0.000001"); // ~1 KB
         let checked = eval_basis_and_grad_on_points(&mol, &bs, &pts);
-        assert!(checked.is_err(), "sanity: tiny budget must fail the checked path");
+        assert!(
+            checked.is_err(),
+            "sanity: tiny budget must fail the checked path"
+        );
 
         // The unchecked variant, called with the SAME tiny budget still set,
         // must still succeed — it never resolves or checks the budget at all.
         let unchecked = eval_basis_and_grad_on_points_unchecked(&shells, nbf, &pts);
         clear_budget_env();
-        assert!(unchecked.is_ok(), "unchecked evaluator must succeed regardless of the live budget");
+        assert!(
+            unchecked.is_ok(),
+            "unchecked evaluator must succeed regardless of the live budget"
+        );
     }
 }

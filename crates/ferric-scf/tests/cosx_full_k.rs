@@ -59,11 +59,17 @@ fn testdata(rel: &str) -> String {
 }
 
 fn env_flag(name: &str) -> bool {
-    matches!(std::env::var(name).ok().as_deref(), Some("1") | Some("true") | Some("yes"))
+    matches!(
+        std::env::var(name).ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    )
 }
 
 fn env_num<T: std::str::FromStr>(name: &str, default: T) -> T {
-    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 
 fn psi_full_avg10() -> String {
@@ -71,7 +77,8 @@ fn psi_full_avg10() -> String {
         .ok()
         .and_then(|s| {
             s.lines().find(|l| l.starts_with("full")).and_then(|l| {
-                l.split_whitespace().find_map(|t| t.strip_prefix("avg10=").map(str::to_string))
+                l.split_whitespace()
+                    .find_map(|t| t.strip_prefix("avg10=").map(str::to_string))
             })
         })
         .unwrap_or_else(|| "n/a".into())
@@ -94,7 +101,10 @@ fn timed<T>(label: &str, threads: usize, f: impl FnOnce() -> T + Send) -> (f64, 
 where
     T: Send,
 {
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().expect("rayon pool");
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .expect("rayon pool");
     let before = psi_full_avg10();
     let c0 = cpu_seconds();
     let t0 = Instant::now();
@@ -111,9 +121,11 @@ fn peak_rss_mb() -> f64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
         .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("VmHWM:"))
-                .and_then(|l| l.split_whitespace().nth(1).and_then(|v| v.parse::<f64>().ok()))
+            s.lines().find(|l| l.starts_with("VmHWM:")).and_then(|l| {
+                l.split_whitespace()
+                    .nth(1)
+                    .and_then(|v| v.parse::<f64>().ok())
+            })
         })
         .map(|kb| kb / 1024.0)
         .unwrap_or(f64::NAN)
@@ -131,8 +143,17 @@ fn load_density(path: &str, nbf: usize, nocc: usize) -> (Array2<f64>, Array2<f64
     let bytes = std::fs::read(path).expect("read density file");
     let n_d = nbf * nbf;
     let n_c = nbf * nocc;
-    assert_eq!(bytes.len(), (n_d + n_c) * 8, "density file length does not match nbf={nbf}, nocc={nocc}");
-    let vals: Vec<f64> = bytes.as_chunks::<8>().0.iter().map(|c| f64::from_le_bytes(*c)).collect();
+    assert_eq!(
+        bytes.len(),
+        (n_d + n_c) * 8,
+        "density file length does not match nbf={nbf}, nocc={nocc}"
+    );
+    let vals: Vec<f64> = bytes
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|c| f64::from_le_bytes(*c))
+        .collect();
     let d = Array2::from_shape_vec((nbf, nbf), vals[..n_d].to_vec()).expect("D shape");
     let c = Array2::from_shape_vec((nbf, nocc), vals[n_d..].to_vec()).expect("C_occ shape");
     (d, c)
@@ -148,7 +169,8 @@ fn cosx_full_k_cell() {
     let fit = !matches!(std::env::var("COSX_FK_FIT").ok().as_deref(), Some("0"));
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(None);
 
-    let mol = Molecule::load_xyz(&testdata(&format!("testdata/molecules/{system}.xyz"))).expect("xyz");
+    let mol =
+        Molecule::load_xyz(&testdata(&format!("testdata/molecules/{system}.xyz"))).expect("xyz");
     let bs = bundled(&basis).expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("prep");
     let nbf = prep.nbasis();
@@ -175,7 +197,10 @@ fn cosx_full_k_cell() {
     );
 
     if env_flag("COSX_FK_SIZE_ONLY") {
-        println!("COSX_FK_SIZE_ONLY: sizing printed, no build. peak RSS {:.1} MB", peak_rss_mb());
+        println!(
+            "COSX_FK_SIZE_ONLY: sizing printed, no build. peak RSS {:.1} MB",
+            peak_rss_mb()
+        );
         return;
     }
 
@@ -191,7 +216,9 @@ fn cosx_full_k_cell() {
     // free-atom solve entirely and leaves those blocks zero.) Densities here are
     // therefore SCF densities, chained across foreground windows with
     // COSX_FK_SCF_RESTART_IN when one window is not enough.
-    let (d, _c_occ): (Array2<f64>, Array2<f64>) = if let Ok(path) = std::env::var("COSX_FK_DENSITY_IN") {
+    let (d, _c_occ): (Array2<f64>, Array2<f64>) = if let Ok(path) =
+        std::env::var("COSX_FK_DENSITY_IN")
+    {
         let (d, c) = load_density(&path, nbf, nocc);
         println!("density loaded from {path} (provenance: an earlier SCF process of this harness; see its log for mode/convergence)");
         (d, c)
@@ -203,7 +230,11 @@ fn cosx_full_k_cell() {
         // COSX_FK_SCF_DCONV, default 1e-5 — the SCF is not the timed quantity).
         let scf_mode = std::env::var("COSX_FK_SCF").unwrap_or_else(|_| "dfjk".into());
         let scf_cfg = match scf_mode.as_str() {
-            "dfjk" => RhfConfig { df_j_aux: Some(JKFIT.to_string()), df_k_aux: Some(JKFIT.to_string()), ..RhfConfig::default() },
+            "dfjk" => RhfConfig {
+                df_j_aux: Some(JKFIT.to_string()),
+                df_k_aux: Some(JKFIT.to_string()),
+                ..RhfConfig::default()
+            },
             // Window-chaining knobs (an SCF that does not fit one foreground
             // window): COSX_FK_SCF_MAXITER caps the iterations, the density is
             // saved UNCONVERGED (flagged) when COSX_FK_SCF_SAVE_UNCONVERGED=1,
@@ -222,14 +253,22 @@ fn cosx_full_k_cell() {
                 }),
                 ..RhfConfig::default()
             },
-            other => panic!("COSX_FK_SCF = {other:?}: expected \"dfjk\", \"direct\", \"link\" or \"cosx\""),
+            other => panic!(
+                "COSX_FK_SCF = {other:?}: expected \"dfjk\", \"direct\", \"link\" or \"cosx\""
+            ),
         };
-        println!("SCF pool: {} rayon threads (not a timing)", rayon::current_num_threads());
+        println!(
+            "SCF pool: {} rayon threads (not a timing)",
+            rayon::current_num_threads()
+        );
         let t0 = Instant::now();
         let res = solve_rhf(&ctx, &mol, &prep, op, &schwarz, &scf_cfg).expect("RHF");
         println!(
             "{scf_mode} RHF: E={:.8} converged={} iters={} in {:.1} s (default pool, not a timing)",
-            res.energy, res.converged, res.iterations, t0.elapsed().as_secs_f64()
+            res.energy,
+            res.converged,
+            res.iterations,
+            t0.elapsed().as_secs_f64()
         );
         let d = res.density_total.clone();
         let c_occ = res.mos_r().slice(ndarray::s![.., ..nocc]).to_owned();
@@ -240,7 +279,10 @@ fn cosx_full_k_cell() {
                 return;
             }
         }
-        assert!(res.converged, "refusing to time K builds on an unconverged density");
+        assert!(
+            res.converged,
+            "refusing to time K builds on an unconverged density"
+        );
         (d, c_occ)
     };
 
@@ -258,14 +300,23 @@ fn cosx_full_k_cell() {
     };
     // COSX_FK_GRID: "<radial>,<angular>" overriding the (50,110) default, so the
     // grid-sensitivity arm can be measured on ONE density in ONE process.
-    let mut cfg =
-        CosxConfig { overlap_fit: fit, screen_thresh, half_transform: half, ..CosxConfig::default() };
+    let mut cfg = CosxConfig {
+        overlap_fit: fit,
+        screen_thresh,
+        half_transform: half,
+        ..CosxConfig::default()
+    };
     if let Ok(g) = std::env::var("COSX_FK_GRID") {
-        let (r, a) = g.split_once(',').expect("COSX_FK_GRID: \"<radial>,<angular>\"");
+        let (r, a) = g
+            .split_once(',')
+            .expect("COSX_FK_GRID: \"<radial>,<angular>\"");
         cfg.grid.n_radial = r.trim().parse().expect("COSX_FK_GRID radial");
         cfg.grid.n_angular = a.trim().parse().expect("COSX_FK_GRID angular");
         ferric_scf::cosx_k::validate_grid(&cfg.grid).expect("COSX_FK_GRID: unsupported grid");
-        println!("COSX_FK_GRID override: ({}, {})", cfg.grid.n_radial, cfg.grid.n_angular);
+        println!(
+            "COSX_FK_GRID override: ({}, {})",
+            cfg.grid.n_radial, cfg.grid.n_angular
+        );
     }
     let cfg = cfg;
     let (grid_r, grid_a) = (cfg.grid.n_radial, cfg.grid.n_angular);
@@ -279,8 +330,14 @@ fn cosx_full_k_cell() {
     // COSX_FK_BUILDS=0: skip the COSX build (LinK-only process); K_cosx then
     // comes from COSX_FK_K_IN if given.
     for b in 0..builds {
-        let label = if b == 0 { "COSX K build #1 (engine pool + S_num factor + build)" } else { "COSX K build (warm)" };
-        let (wall, cpu, _) = timed(label, threads, || cosx.build(&d, &mut k_cosx).expect("COSX build"));
+        let label = if b == 0 {
+            "COSX K build #1 (engine pool + S_num factor + build)"
+        } else {
+            "COSX K build (warm)"
+        };
+        let (wall, cpu, _) = timed(label, threads, || {
+            cosx.build(&d, &mut k_cosx).expect("COSX build")
+        });
         let t = *cosx.last_timings();
         let acc = t.ao_eval_s + t.a_build_s + t.contract_s + t.blas_s + t.fit_s;
         println!(
@@ -336,10 +393,20 @@ fn cosx_full_k_cell() {
         let mut j = Array2::<f64>::zeros((nbf, nbf));
         let mut k_direct = Array2::<f64>::zeros((nbf, nbf));
         let (wall, cpu, _) = timed("direct build_jk (exact four-centre J+K)", threads, || {
-            ferric_scf::rhf::build_jk(&ctx, &prep, &schwarz, LINK_THRESH, &d, &mut j, &mut k_direct)
-                .expect("build_jk")
+            ferric_scf::rhf::build_jk(
+                &ctx,
+                &prep,
+                &schwarz,
+                LINK_THRESH,
+                &d,
+                &mut j,
+                &mut k_direct,
+            )
+            .expect("build_jk")
         });
-        let dev = (&k_cosx - &k_direct).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
+        let dev = (&k_cosx - &k_direct)
+            .mapv(f64::abs)
+            .fold(0.0_f64, |m, &v| m.max(v));
         let kmax = k_direct.mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
         let fro = ((&k_cosx - &k_direct).mapv(|v| v * v).sum()).sqrt();
         let fro_ref = (k_direct.mapv(|v| v * v).sum()).sqrt();
@@ -363,15 +430,25 @@ fn cosx_full_k_cell() {
         let mut wall = f64::NAN;
         let mut cpu = f64::NAN;
         for b in 0..link_builds.max(1) {
-            let label = if b == 0 { "LinK K build (cold: pool + pairs + build)" } else { "LinK K build (warm: update_density + build)" };
+            let label = if b == 0 {
+                "LinK K build (cold: pool + pairs + build)"
+            } else {
+                "LinK K build (warm: update_density + build)"
+            };
             (wall, cpu, _) = timed(label, threads, || {
                 link.update_density(&d);
                 link.build(&d, &mut k_link).expect("LinK build")
             });
         }
-        let dev = (&k_cosx - &k_link).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
+        let dev = (&k_cosx - &k_link)
+            .mapv(f64::abs)
+            .fold(0.0_f64, |m, &v| m.max(v));
         let kmax = k_link.mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
-        let ratio = if cosx_total_s > 0.0 { format!("{:.3}", cosx_total_s / wall) } else { "n/a (COSX not built in this process)".into() };
+        let ratio = if cosx_total_s > 0.0 {
+            format!("{:.3}", cosx_total_s / wall)
+        } else {
+            "n/a (COSX not built in this process)".into()
+        };
         println!(
             "LinK K (last build): wall {wall:.3} s cpu {cpu:.2} s; COSX/LinK = {ratio}; max|K_cosx - K_link| = {dev:.3e} (||K||max {kmax:.3e})"
         );
@@ -392,13 +469,21 @@ fn cosx_full_k_cell() {
                  is disk-spill (no preflight error); the SIZE is the finding."
             );
         } else {
-            let (setup, _, mut dfk) = timed("DF-K setup (3-index build + V^-1/2 dressing)", threads, || {
-                ferric_scf::df_k::DfK::new(op, &prep, &aux_prep, budget_bytes).expect("DfK::new")
-            });
+            let (setup, _, mut dfk) = timed(
+                "DF-K setup (3-index build + V^-1/2 dressing)",
+                threads,
+                || {
+                    ferric_scf::df_k::DfK::new(op, &prep, &aux_prep, budget_bytes)
+                        .expect("DfK::new")
+                },
+            );
             let mut k_dfk = Array2::<f64>::zeros((nbf, nbf));
-            let (t_dens, cpu_d, _) =
-                timed("DF-K density-path build", threads, || dfk.build(&d, &mut k_dfk).expect("dfk build"));
-            let dev = (&k_cosx - &k_dfk).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
+            let (t_dens, cpu_d, _) = timed("DF-K density-path build", threads, || {
+                dfk.build(&d, &mut k_dfk).expect("dfk build")
+            });
+            let dev = (&k_cosx - &k_dfk)
+                .mapv(f64::abs)
+                .fold(0.0_f64, |m, &v| m.max(v));
             println!(
                 "DF-K: setup {setup:.3} s; density-path build {t_dens:.3} s (cpu {cpu_d:.2}); \
                  tensor {dfk_tensor_gb:.3} GB; max|K_cosx - K_dfk| = {dev:.3e}"
@@ -406,5 +491,9 @@ fn cosx_full_k_cell() {
         }
     }
 
-    println!("CELL PEAK RSS: {:.1} MB  (VmHWM)  PSI full avg10 now={}", peak_rss_mb(), psi_full_avg10());
+    println!(
+        "CELL PEAK RSS: {:.1} MB  (VmHWM)  PSI full avg10 now={}",
+        peak_rss_mb(),
+        psi_full_avg10()
+    );
 }

@@ -57,8 +57,26 @@ fn run_case(name: &str, xyz: &str, obs_name: &str, dfbs_name: &str, reps: usize)
 
     println!("\n=== {name}  (obs={obs_name}, aux={dfbs_name}, naux={naux}) ===");
     for &trunc in &[0.0_f64, 1e-4] {
-        let (td, ed, md) = time_solver(&mol, &obs, &dfbs, op, &rhf, Eigensolver::Davidson, trunc, reps);
-        let (tl, el, ml) = time_solver(&mol, &obs, &dfbs, op, &rhf, Eigensolver::Lanczos, trunc, reps);
+        let (td, ed, md) = time_solver(
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &rhf,
+            Eigensolver::Davidson,
+            trunc,
+            reps,
+        );
+        let (tl, el, ml) = time_solver(
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &rhf,
+            Eigensolver::Lanczos,
+            trunc,
+            reps,
+        );
         let de = (ed - el).abs();
         println!(
             "  trunc={trunc:.0e}: Davidson {:7.1}ms (M={md}, E={ed:.8})  |  Lanczos {:7.1}ms (M={ml}, E={el:.8})  |  Lanczos/Davidson={:.2}x  ΔE={de:.1e}",

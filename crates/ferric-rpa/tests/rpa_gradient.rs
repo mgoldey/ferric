@@ -282,7 +282,9 @@ fn rpa_gradient_h2o_ccpvdz_vs_pyscf() {
 fn rpa_gradient_h2o_ccpvtz_fd_self_consistent() {
     let mol = h2o();
     let obs_bs = basis::bundled("cc-pvtz").unwrap();
-    let aux_bs = basis::bundled("cc-pvtz-ri").or_else(|_| basis::bundled("cc-pvdz-ri")).unwrap();
+    let aux_bs = basis::bundled("cc-pvtz-ri")
+        .or_else(|_| basis::bundled("cc-pvdz-ri"))
+        .unwrap();
     let op = Operator::coulomb();
     let cfg = small_rpa_cfg(20);
 

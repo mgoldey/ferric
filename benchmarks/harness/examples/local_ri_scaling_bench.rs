@@ -237,9 +237,11 @@ fn main() {
         // transforms (bit-identical to the dense path; never materialize the
         // naux*nbas^2 AO tensor, ~13 GB at C32/cc-pVDZ).
         let eri3_loc =
-            ferric_mp2::rimp2::eri3_mo_ov_blocked(op, &obs, &dfbs, &c_occ_loc, &c_vir_can, 2 << 30).unwrap();
+            ferric_mp2::rimp2::eri3_mo_ov_blocked(op, &obs, &dfbs, &c_occ_loc, &c_vir_can, 2 << 30)
+                .unwrap();
         let eri3_can =
-            ferric_mp2::rimp2::eri3_mo_ov_blocked(op, &obs, &dfbs, &c_occ_can, &c_vir_can, 2 << 30).unwrap();
+            ferric_mp2::rimp2::eri3_mo_ov_blocked(op, &obs, &dfbs, &c_occ_can, &c_vir_can, 2 << 30)
+                .unwrap();
 
         // Reshape (P, i, a) -> (P, ia) once; every fit below is a GEMM on this.
         let nov = nocc * nvir;
@@ -281,7 +283,16 @@ fn main() {
         println!("### alkane_{n_c}  (C_{n_c}H_{})  nocc={nocc}  nvir={nvir}  naux={naux}  |G_exact|={g_exact_norm:.4}  E_corr={e_exact:.9}", 2 * n_c + 2);
         println!(
             "{:>8}  {:>10}  {:>10}  {:>14}  {:>10}  {:>10}  {:>12}  {:>12}  {:>12}  {:>12}",
-            "R_cut(B)", "avg|P_i|", "retention", "Local FLOPs", "FLOP ratio", "c_err", "g_err_naive", "g_err_robust", "dE_naive(Ha)", "dE_rob(Ha)"
+            "R_cut(B)",
+            "avg|P_i|",
+            "retention",
+            "Local FLOPs",
+            "FLOP ratio",
+            "c_err",
+            "g_err_naive",
+            "g_err_robust",
+            "dE_naive(Ha)",
+            "dE_rob(Ha)"
         );
 
         let aux_shell_centers = dfbs.shell_centers();
@@ -386,9 +397,11 @@ fn main() {
                 let g_rob = &g_1 + &g_1.t() - &g_sym;
                 let dense_naive = frob_diff(&g_1, g_exact) / g_exact_norm;
                 let dense_robust = frob_diff(&g_rob, g_exact) / g_exact_norm;
-                for (trace_v, dense_v) in [(g_err_naive, dense_naive), (g_err_robust, dense_robust)] {
+                for (trace_v, dense_v) in [(g_err_naive, dense_naive), (g_err_robust, dense_robust)]
+                {
                     if dense_v > 1e-8 {
-                        xcheck_max_rel_dev = xcheck_max_rel_dev.max((trace_v - dense_v).abs() / dense_v);
+                        xcheck_max_rel_dev =
+                            xcheck_max_rel_dev.max((trace_v - dense_v).abs() / dense_v);
                     }
                 }
             }

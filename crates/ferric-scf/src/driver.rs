@@ -134,7 +134,17 @@ pub(crate) fn prepare<'a>(
     } else {
         (None, None)
     };
-    Ok(ScfEnv { s, h, vnn, ooc_budget, cosmo_cavity, pcm_ctx, polarizable_site_basis, dfk_sr, dfk_lr })
+    Ok(ScfEnv {
+        s,
+        h,
+        vnn,
+        ooc_budget,
+        cosmo_cavity,
+        pcm_ctx,
+        polarizable_site_basis,
+        dfk_sr,
+        dfk_lr,
+    })
 }
 
 /// The default virtual-block level shift: the user's value, or 0.5 for
@@ -165,10 +175,13 @@ pub(crate) fn effective_level_shift(config: &RhfConfig) -> f64 {
 pub(crate) fn density_change(d_new: &Array2<f64>, d_old: &Array2<f64>) -> (f64, f64) {
     match (d_new.as_slice(), d_old.as_slice()) {
         (Some(a), Some(b)) => {
-            let (sum_sq, max) = a.iter().zip(b.iter()).fold((0.0f64, 0.0f64), |(sum_sq, max), (&x, &y)| {
-                let diff = x - y;
-                (sum_sq + diff * diff, f64::max(max, diff.abs()))
-            });
+            let (sum_sq, max) =
+                a.iter()
+                    .zip(b.iter())
+                    .fold((0.0f64, 0.0f64), |(sum_sq, max), (&x, &y)| {
+                        let diff = x - y;
+                        (sum_sq + diff * diff, f64::max(max, diff.abs()))
+                    });
             let n2 = (a.len() as f64).max(1.0);
             ((sum_sq / n2).sqrt(), max)
         }
@@ -249,11 +262,7 @@ pub(crate) fn warn_if_diis_history_large(
 /// traceable to a specific solver/point in the run. `variant` is e.g. "RHF",
 /// "UHF", "ROHF"; `stage` is e.g. "setup" or "converged".
 pub(crate) fn warn_if_rss_over_at_stage(variant: &str, stage: &str, ooc_budget: usize) {
-    ferric_core::memory::warn_if_rss_over(
-        &format!("{variant} {stage}"),
-        ooc_budget,
-        1.1,
-    );
+    ferric_core::memory::warn_if_rss_over(&format!("{variant} {stage}"), ooc_budget, 1.1);
 }
 
 /// Diagonalize a Fock matrix in the rectangular canonical-orthogonal basis
@@ -318,7 +327,10 @@ pub(crate) fn solvent_terms(
     focks: &mut [&mut Array2<f64>],
 ) -> Result<(f64, f64, f64, Option<Array2<f64>>), FerricError> {
     let e_cosmo = if let Some(cavity) = cosmo_cavity {
-        let cosmo_cfg = config.cosmo.as_ref().expect("cosmo cavity implies config.cosmo");
+        let cosmo_cfg = config
+            .cosmo
+            .as_ref()
+            .expect("cosmo cavity implies config.cosmo");
         let cr = crate::cosmo::cosmo_reaction_field(mol, prep, cavity, cosmo_cfg, d_total)?;
         for f in focks.iter_mut() {
             **f += &cr.v_reaction;

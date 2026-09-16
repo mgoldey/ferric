@@ -42,12 +42,21 @@ use std::time::Instant;
 /// `sink` accumulates a value from every block so the optimizer cannot elide
 /// the sweep -- a dead-code-eliminated sweep would report `b = 0` and fake a
 /// GO verdict, which is precisely the artifact this guards against.
-fn time_one_sweep(eng: &mut Engine, prep: &PreparedBasis, charges: &[CAtom], sink: &mut f64) -> f64 {
+fn time_one_sweep(
+    eng: &mut Engine,
+    prep: &PreparedBasis,
+    charges: &[CAtom],
+    sink: &mut f64,
+) -> f64 {
     let nsh = prep.nshells();
     let dims = prep.shell_dims();
     let t0 = Instant::now();
     let rc = unsafe {
-        ffi::scf_engine_set_point_charges(eng.handle_mut(), charges.as_ptr(), charges.len() as c_int)
+        ffi::scf_engine_set_point_charges(
+            eng.handle_mut(),
+            charges.as_ptr(),
+            charges.len() as c_int,
+        )
     };
     assert!(rc >= 0, "set_point_charges failed: {rc}");
     for s1 in 0..nsh {

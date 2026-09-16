@@ -44,7 +44,9 @@
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
-use ferric_rpa::properties::{estimate_hirshfeld_grid_scan_bytes, nbf_for_basis, preflight_hirshfeld_grid_scan};
+use ferric_rpa::properties::{
+    estimate_hirshfeld_grid_scan_bytes, nbf_for_basis, preflight_hirshfeld_grid_scan,
+};
 
 /// The audit's incident-adjacent shape: nbf=200, a ~24 Bohr molecule under the
 /// default 6-Bohr-margin/0.20-spacing box (npts ≈ 178³), natoms=20.
@@ -78,10 +80,12 @@ fn full_estimate_is_materially_larger_than_chi_alone() {
 /// (2 planes + rho_free + 5 side vectors, all f64).
 #[test]
 fn estimate_matches_hand_derived_formula() {
-    let expected =
-        (2 * NBF * NPTS + NATOMS * NPTS + 5 * NPTS) * F64_BYTES;
+    let expected = (2 * NBF * NPTS + NATOMS * NPTS + 5 * NPTS) * F64_BYTES;
     let got = estimate_hirshfeld_grid_scan_bytes(NBF, NPTS, NATOMS);
-    assert_eq!(got, expected, "estimate_hirshfeld_grid_scan_bytes({NBF},{NPTS},{NATOMS}) = {got}, expected {expected}");
+    assert_eq!(
+        got, expected,
+        "estimate_hirshfeld_grid_scan_bytes({NBF},{NPTS},{NATOMS}) = {got}, expected {expected}"
+    );
 }
 
 /// CONTRACT 3 (OVER-REJECTION): a trivial shape (water-scale nbf/npts) must
@@ -95,12 +99,7 @@ fn a_trivial_shape_is_not_refused() {
     let tiny_nbf = 7; // water/STO-3G
     let tiny_npts = 1000;
     let tiny_natoms = 3;
-    let res = preflight_hirshfeld_grid_scan(
-        "mwe trivial shape",
-        tiny_nbf,
-        tiny_npts,
-        tiny_natoms,
-    );
+    let res = preflight_hirshfeld_grid_scan("mwe trivial shape", tiny_nbf, tiny_npts, tiny_natoms);
     assert!(
         res.is_ok(),
         "a kilobyte-scale request must not be refused by any budget this test \
@@ -122,7 +121,10 @@ fn nbf_for_basis_matches_the_canonical_shell_sum() {
 
     let expected = ferric_integrals::ao_grid::nbasis(&mol, &bs).unwrap();
     let got = nbf_for_basis(&mol, &bs).unwrap();
-    assert_eq!(got, expected, "nbf_for_basis disagreed with ao_grid::nbasis");
+    assert_eq!(
+        got, expected,
+        "nbf_for_basis disagreed with ao_grid::nbasis"
+    );
     // STO-3G water: O gets 1s/2s/2p (5 functions), each H gets 1s (1 each) = 7.
     assert_eq!(got, 7, "STO-3G water should have 7 basis functions");
 }

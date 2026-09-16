@@ -41,7 +41,10 @@ pub fn run_u_g0w0(
     // Spin-summed pre-flight: both projections are live together below, but
     // each project_b_into_pdep gates only against the whole budget alone.
     crate::cohsex::guard_m_proj_both_spins(
-        v_dressed.ncols(), mo_b_a.n_act, mo_b_b.n_act, mo_b_a.naux,
+        v_dressed.ncols(),
+        mo_b_a.n_act,
+        mo_b_b.n_act,
+        mo_b_a.naux,
         gw_cfg.memory_budget_bytes,
     )?;
     let m_proj_a = project_b_into_pdep(mo_b_a, v_dressed, gw_cfg.memory_budget_bytes)?;
@@ -57,12 +60,24 @@ pub fn run_u_g0w0(
     let quad_weights = pdep.quad_weights.clone();
 
     let (eps_qp_a, eps_mf_a, sx_a, sc_a, z_a, conv_a) = qp_per_spin_g0w0(
-        mo_b_a, &m_proj_a, &sigma_x_a_all, inv_diel_freq, &quad_weights, &quad_freqs,
-        &qp_range, gw_cfg,
+        mo_b_a,
+        &m_proj_a,
+        &sigma_x_a_all,
+        inv_diel_freq,
+        &quad_weights,
+        &quad_freqs,
+        &qp_range,
+        gw_cfg,
     )?;
     let (eps_qp_b, eps_mf_b, sx_b, sc_b, z_b, conv_b) = qp_per_spin_g0w0(
-        mo_b_b, &m_proj_b, &sigma_x_b_all, inv_diel_freq, &quad_weights, &quad_freqs,
-        &qp_range, gw_cfg,
+        mo_b_b,
+        &m_proj_b,
+        &sigma_x_b_all,
+        inv_diel_freq,
+        &quad_weights,
+        &quad_freqs,
+        &qp_range,
+        gw_cfg,
     )?;
     let mo_indices: Vec<usize> = qp_range.collect();
     warn_if_unconverged("U-G0W0 (alpha)", &mo_indices, &conv_a);
@@ -70,8 +85,16 @@ pub fn run_u_g0w0(
 
     Ok(UGwResult {
         mo_indices,
-        eps_mf_a, eps_qp_a, sigma_x_a: sx_a, sigma_c_a: sc_a, z_factor_a: z_a,
-        eps_mf_b, eps_qp_b, sigma_x_b: sx_b, sigma_c_b: sc_b, z_factor_b: z_b,
+        eps_mf_a,
+        eps_qp_a,
+        sigma_x_a: sx_a,
+        sigma_c_a: sc_a,
+        z_factor_a: z_a,
+        eps_mf_b,
+        eps_qp_b,
+        sigma_x_b: sx_b,
+        sigma_c_b: sc_b,
+        z_factor_b: z_b,
         qp_converged_a: conv_a,
         qp_converged_b: conv_b,
         n_ev_iter: 0,
@@ -91,7 +114,17 @@ fn qp_per_spin_g0w0(
     quad_freqs: &[f64],
     qp_range: &std::ops::Range<usize>,
     gw_cfg: &GwConfig,
-) -> Result<(Array1<f64>, Array1<f64>, Array1<f64>, Array1<f64>, Array1<f64>, Vec<bool>), FerricError> {
+) -> Result<
+    (
+        Array1<f64>,
+        Array1<f64>,
+        Array1<f64>,
+        Array1<f64>,
+        Array1<f64>,
+        Vec<bool>,
+    ),
+    FerricError,
+> {
     let first_act = mo_b.first_act;
     let ef = fermi_level(&mo_b.eps_act, mo_b.n_occ_act);
     let mo_indices: Vec<usize> = qp_range.clone().collect();
@@ -113,10 +146,26 @@ fn qp_per_spin_g0w0(
             let m_loc = mo_abs - first_act;
             let eps_m = mo_b.eps_act[m_loc];
             let (eps_qp_m, sc_final, z_renorm, converged) = solve_qp_for_mo(
-                m_loc, eps_m, m_proj, inv_diel_freq, quad_weights, quad_freqs,
-                &mo_b.eps_act, gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef, 0.0,
+                m_loc,
+                eps_m,
+                m_proj,
+                inv_diel_freq,
+                quad_weights,
+                quad_freqs,
+                &mo_b.eps_act,
+                gw_cfg.pade_npts,
+                gw_cfg.qp_newton_damp,
+                ef,
+                0.0,
             )?;
-            Ok((eps_m, sigma_x_all[m_loc], eps_qp_m, sc_final, z_renorm, converged))
+            Ok((
+                eps_m,
+                sigma_x_all[m_loc],
+                eps_qp_m,
+                sc_final,
+                z_renorm,
+                converged,
+            ))
         })
         .collect::<Result<Vec<_>, FerricError>>()?;
     for (idx, &(eps_m, sx, eps_qp_m, sc_final, z_renorm, converged)) in qp_rows.iter().enumerate() {
@@ -148,7 +197,10 @@ pub fn run_u_evgw0(
     // Spin-summed pre-flight: both projections are live together below, but
     // each project_b_into_pdep gates only against the whole budget alone.
     crate::cohsex::guard_m_proj_both_spins(
-        v_dressed.ncols(), mo_b_a.n_act, mo_b_b.n_act, mo_b_a.naux,
+        v_dressed.ncols(),
+        mo_b_a.n_act,
+        mo_b_b.n_act,
+        mo_b_a.naux,
         gw_cfg.memory_budget_bytes,
     )?;
     let m_proj_a = project_b_into_pdep(mo_b_a, v_dressed, gw_cfg.memory_budget_bytes)?;
@@ -207,22 +259,46 @@ pub fn run_u_evgw0(
                 let mla = mo_abs - first_act_a;
                 let mlb = mo_abs - first_act_b;
                 let ra = solve_qp_for_mo(
-                    mla, mo_b_a.eps_act[mla], &m_proj_a, inv_diel_freq,
-                    &pdep.quad_weights, &pdep.quad_freqs, &eps_prop_a,
-                    gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_a, 0.0,
+                    mla,
+                    mo_b_a.eps_act[mla],
+                    &m_proj_a,
+                    inv_diel_freq,
+                    &pdep.quad_weights,
+                    &pdep.quad_freqs,
+                    &eps_prop_a,
+                    gw_cfg.pade_npts,
+                    gw_cfg.qp_newton_damp,
+                    ef_a,
+                    0.0,
                 )?;
                 let rb = solve_qp_for_mo(
-                    mlb, mo_b_b.eps_act[mlb], &m_proj_b, inv_diel_freq,
-                    &pdep.quad_weights, &pdep.quad_freqs, &eps_prop_b,
-                    gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_b, 0.0,
+                    mlb,
+                    mo_b_b.eps_act[mlb],
+                    &m_proj_b,
+                    inv_diel_freq,
+                    &pdep.quad_weights,
+                    &pdep.quad_freqs,
+                    &eps_prop_b,
+                    gw_cfg.pade_npts,
+                    gw_cfg.qp_newton_damp,
+                    ef_b,
+                    0.0,
                 )?;
                 Ok((ra, rb))
             })
             .collect::<Result<Vec<_>, FerricError>>()?;
         for (idx, &((ena, sca, za, cona), (enb, scb, zb, conb))) in qp_new.iter().enumerate() {
-            max_dev = max_dev.max((ena - eps_qp_a[idx]).abs()).max((enb - eps_qp_b[idx]).abs());
-            eps_qp_a[idx] = ena; sc_a[idx] = sca; z_a[idx] = za; conv_a[idx] = cona;
-            eps_qp_b[idx] = enb; sc_b[idx] = scb; z_b[idx] = zb; conv_b[idx] = conb;
+            max_dev = max_dev
+                .max((ena - eps_qp_a[idx]).abs())
+                .max((enb - eps_qp_b[idx]).abs());
+            eps_qp_a[idx] = ena;
+            sc_a[idx] = sca;
+            z_a[idx] = za;
+            conv_a[idx] = cona;
+            eps_qp_b[idx] = enb;
+            sc_b[idx] = scb;
+            z_b[idx] = zb;
+            conv_b[idx] = conb;
         }
         iter_done = it + 1;
         // Live per-iteration progress (see RhfConfig.verbose's doc for the
@@ -251,8 +327,16 @@ pub fn run_u_evgw0(
 
     Ok(UGwResult {
         mo_indices,
-        eps_mf_a, eps_qp_a, sigma_x_a: sx_a, sigma_c_a: sc_a, z_factor_a: z_a,
-        eps_mf_b, eps_qp_b, sigma_x_b: sx_b, sigma_c_b: sc_b, z_factor_b: z_b,
+        eps_mf_a,
+        eps_qp_a,
+        sigma_x_a: sx_a,
+        sigma_c_a: sc_a,
+        z_factor_a: z_a,
+        eps_mf_b,
+        eps_qp_b,
+        sigma_x_b: sx_b,
+        sigma_c_b: sc_b,
+        z_factor_b: z_b,
         qp_converged_a: conv_a,
         qp_converged_b: conv_b,
         n_ev_iter: iter_done,
@@ -277,9 +361,8 @@ pub fn run_u_evgw(
 ) -> Result<UGwResult, FerricError> {
     let mut shifted_scf = scf.clone();
     let mut current_pdep = pdep0;
-    let mut current_v_dressed = w_pdep::redress_eigenpotentials(
-        &mo_b_a.v_inv_sqrt, &current_pdep.eigenpotentials,
-    )?;
+    let mut current_v_dressed =
+        w_pdep::redress_eigenpotentials(&mo_b_a.v_inv_sqrt, &current_pdep.eigenpotentials)?;
 
     let first_act_a = mo_b_a.first_act;
     let first_act_b = mo_b_b.first_act;
@@ -329,20 +412,20 @@ pub fn run_u_evgw(
         }
         if it > 0 {
             current_pdep = ferric_rpa::run_u_pdep_rpa(mol, obs, dfbs, op, &shifted_scf, pdep_cfg)?;
-            current_v_dressed = w_pdep::redress_eigenpotentials(
-                &mo_b_a.v_inv_sqrt, &current_pdep.eigenpotentials,
-            )?;
+            current_v_dressed =
+                w_pdep::redress_eigenpotentials(&mo_b_a.v_inv_sqrt, &current_pdep.eigenpotentials)?;
         }
         // Spin-summed pre-flight, inside the evGW loop: the pair is rebuilt
         // every iteration, so this is checked every iteration too.
         crate::cohsex::guard_m_proj_both_spins(
-            current_v_dressed.ncols(), mo_b_a.n_act, mo_b_b.n_act, mo_b_a.naux,
+            current_v_dressed.ncols(),
+            mo_b_a.n_act,
+            mo_b_b.n_act,
+            mo_b_a.naux,
             gw_cfg.memory_budget_bytes,
         )?;
-        let m_proj_a =
-            project_b_into_pdep(mo_b_a, &current_v_dressed, gw_cfg.memory_budget_bytes)?;
-        let m_proj_b =
-            project_b_into_pdep(mo_b_b, &current_v_dressed, gw_cfg.memory_budget_bytes)?;
+        let m_proj_a = project_b_into_pdep(mo_b_a, &current_v_dressed, gw_cfg.memory_budget_bytes)?;
+        let m_proj_b = project_b_into_pdep(mo_b_b, &current_v_dressed, gw_cfg.memory_budget_bytes)?;
         let inv_diel_freq = current_pdep.inv_dielectric_freq.as_ref().ok_or_else(|| {
             FerricError::General(
                 "PDEP result missing inv_dielectric_freq (GW requires the dense χ₀ path)".into(),
@@ -363,22 +446,46 @@ pub fn run_u_evgw(
                 let mla = mo_abs - first_act_a;
                 let mlb = mo_abs - first_act_b;
                 let ra = solve_qp_for_mo(
-                    mla, mo_b_a.eps_act[mla], &m_proj_a, inv_diel_freq,
-                    &current_pdep.quad_weights, &current_pdep.quad_freqs, &eps_prop_a,
-                    gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_a, 0.0,
+                    mla,
+                    mo_b_a.eps_act[mla],
+                    &m_proj_a,
+                    inv_diel_freq,
+                    &current_pdep.quad_weights,
+                    &current_pdep.quad_freqs,
+                    &eps_prop_a,
+                    gw_cfg.pade_npts,
+                    gw_cfg.qp_newton_damp,
+                    ef_a,
+                    0.0,
                 )?;
                 let rb = solve_qp_for_mo(
-                    mlb, mo_b_b.eps_act[mlb], &m_proj_b, inv_diel_freq,
-                    &current_pdep.quad_weights, &current_pdep.quad_freqs, &eps_prop_b,
-                    gw_cfg.pade_npts, gw_cfg.qp_newton_damp, ef_b, 0.0,
+                    mlb,
+                    mo_b_b.eps_act[mlb],
+                    &m_proj_b,
+                    inv_diel_freq,
+                    &current_pdep.quad_weights,
+                    &current_pdep.quad_freqs,
+                    &eps_prop_b,
+                    gw_cfg.pade_npts,
+                    gw_cfg.qp_newton_damp,
+                    ef_b,
+                    0.0,
                 )?;
                 Ok((ra, rb))
             })
             .collect::<Result<Vec<_>, FerricError>>()?;
         for (idx, &((ena, sca, za, cona), (enb, scb, zb, conb))) in qp_new.iter().enumerate() {
-            max_dev = max_dev.max((ena - eps_qp_a[idx]).abs()).max((enb - eps_qp_b[idx]).abs());
-            eps_qp_a[idx] = ena; sc_a[idx] = sca; z_a[idx] = za; conv_a[idx] = cona;
-            eps_qp_b[idx] = enb; sc_b[idx] = scb; z_b[idx] = zb; conv_b[idx] = conb;
+            max_dev = max_dev
+                .max((ena - eps_qp_a[idx]).abs())
+                .max((enb - eps_qp_b[idx]).abs());
+            eps_qp_a[idx] = ena;
+            sc_a[idx] = sca;
+            z_a[idx] = za;
+            conv_a[idx] = cona;
+            eps_qp_b[idx] = enb;
+            sc_b[idx] = scb;
+            z_b[idx] = zb;
+            conv_b[idx] = conb;
         }
         iter_done = it + 1;
         // Live per-iteration progress (see RhfConfig.verbose's doc for the
@@ -407,8 +514,16 @@ pub fn run_u_evgw(
 
     Ok(UGwResult {
         mo_indices,
-        eps_mf_a, eps_qp_a, sigma_x_a: sx_a, sigma_c_a: sc_a, z_factor_a: z_a,
-        eps_mf_b, eps_qp_b, sigma_x_b: sx_b, sigma_c_b: sc_b, z_factor_b: z_b,
+        eps_mf_a,
+        eps_qp_a,
+        sigma_x_a: sx_a,
+        sigma_c_a: sc_a,
+        z_factor_a: z_a,
+        eps_mf_b,
+        eps_qp_b,
+        sigma_x_b: sx_b,
+        sigma_c_b: sc_b,
+        z_factor_b: z_b,
         qp_converged_a: conv_a,
         qp_converged_b: conv_b,
         n_ev_iter: iter_done,

@@ -92,7 +92,9 @@ impl Default for VxcScratch {
 impl VxcScratch {
     /// Create an empty scratch buffer (allocates on first use).
     pub fn new() -> Self {
-        Self { buf: Array2::zeros((0, 0)) }
+        Self {
+            buf: Array2::zeros((0, 0)),
+        }
     }
 
     /// Buffer of exactly `dim`, reallocating only on shape change.
@@ -135,8 +137,8 @@ pub(crate) fn scale_columns_into(
 /// functionals and ignored for LDA/GGA. Pass `None` for a pure LDA/GGA call.
 pub fn semilocal_vxc_closed(
     grid: &[GridPoint],
-    chi: &Array2<f64>,         // (nbf, npts)
-    dchi: &Array3<f64>,        // (3, nbf, npts)
+    chi: &Array2<f64>,  // (nbf, npts)
+    dchi: &Array3<f64>, // (3, nbf, npts)
     dens: &DensityGrid,
     tau: Option<&Array1<f64>>,
     xc: &XcDef,
@@ -151,8 +153,8 @@ pub fn semilocal_vxc_closed(
 /// `tau == None` panics (a programming error at the call site).
 pub fn semilocal_vxc_closed_scratch(
     grid: &[GridPoint],
-    chi: &Array2<f64>,         // (nbf, npts)
-    dchi: &Array3<f64>,        // (3, nbf, npts)
+    chi: &Array2<f64>,  // (nbf, npts)
+    dchi: &Array3<f64>, // (3, nbf, npts)
     dens: &DensityGrid,
     tau: Option<&Array1<f64>>,
     xc: &XcDef,
@@ -161,16 +163,19 @@ pub fn semilocal_vxc_closed_scratch(
     let (nbf, npts) = chi.dim();
     debug_assert_eq!(dchi.dim(), (3, nbf, npts));
 
-    let has_mgga = xc.funcs.iter().any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
+    let has_mgga = xc
+        .funcs
+        .iter()
+        .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
 
     let w: Array1<f64> = grid.iter().map(|g| g.weight).collect();
 
-    let mut exc_total    = Array1::<f64>::zeros(npts);
-    let mut vrho_total   = Array1::<f64>::zeros(npts);
+    let mut exc_total = Array1::<f64>::zeros(npts);
+    let mut vrho_total = Array1::<f64>::zeros(npts);
     let mut vsigma_total = Array1::<f64>::zeros(npts);
-    let mut vtau_total   = Array1::<f64>::zeros(npts);
+    let mut vtau_total = Array1::<f64>::zeros(npts);
 
-    let rho_slice   = dens.rho.as_slice().expect("rho is contiguous");
+    let rho_slice = dens.rho.as_slice().expect("rho is contiguous");
     let sigma_slice = dens.sigma.as_slice().expect("sigma is contiguous");
     // τ input for meta-GGA. Required when a meta-GGA component is present; the
     // empty fallback is never read on the LDA/GGA path (only meta-GGA eval
@@ -191,20 +196,15 @@ pub fn semilocal_vxc_closed_scratch(
     // (rayon collect/join overhead would exceed the work).
     for (i, func) in xc.funcs.iter().enumerate() {
         let w_i = xc.weights.as_ref().map_or(1.0, |ws| ws[i]);
-        let mut exc  = vec![0.0_f64; npts];
+        let mut exc = vec![0.0_f64; npts];
         let mut vrho = vec![0.0_f64; npts];
         match func.family() {
             FunctionalFamily::Lda => {
                 func.eval_lda_unpolarized(rho_slice, &mut exc, &mut vrho);
             }
-            FunctionalFamily::Gga
-            | FunctionalFamily::HybridGga
-            | FunctionalFamily::RangeSepGga => {
+            FunctionalFamily::Gga | FunctionalFamily::HybridGga | FunctionalFamily::RangeSepGga => {
                 let mut vsigma = vec![0.0_f64; npts];
-                func.eval_gga_unpolarized(
-                    rho_slice, sigma_slice,
-                    &mut exc, &mut vrho, &mut vsigma,
-                );
+                func.eval_gga_unpolarized(rho_slice, sigma_slice, &mut exc, &mut vrho, &mut vsigma);
                 vsigma_total
                     .iter_mut()
                     .zip(&vsigma)
@@ -214,8 +214,13 @@ pub fn semilocal_vxc_closed_scratch(
                 let mut vsigma = vec![0.0_f64; npts];
                 let mut vtau = vec![0.0_f64; npts];
                 func.eval_mgga_unpolarized(
-                    rho_slice, sigma_slice, tau_slice,
-                    &mut exc, &mut vrho, &mut vsigma, &mut vtau,
+                    rho_slice,
+                    sigma_slice,
+                    tau_slice,
+                    &mut exc,
+                    &mut vrho,
+                    &mut vsigma,
+                    &mut vtau,
                 );
                 vsigma_total
                     .iter_mut()
@@ -227,8 +232,14 @@ pub fn semilocal_vxc_closed_scratch(
                     .for_each(|(t, &v)| *t += w_i * v);
             }
         }
-        exc_total.iter_mut().zip(&exc).for_each(|(t, &v)| *t += w_i * v);
-        vrho_total.iter_mut().zip(&vrho).for_each(|(t, &v)| *t += w_i * v);
+        exc_total
+            .iter_mut()
+            .zip(&exc)
+            .for_each(|(t, &v)| *t += w_i * v);
+        vrho_total
+            .iter_mut()
+            .zip(&vrho)
+            .for_each(|(t, &v)| *t += w_i * v);
     }
 
     // E_xc = Σ_g w_g · ρ(r_g) · ε_xc(r_g). Deterministic grouped reduction —
@@ -253,8 +264,7 @@ pub fn semilocal_vxc_closed_scratch(
     // unchanged behavior); opt_in_blas_threads()'s rayon-worker self-guard
     // also protects any caller reached from inside a rayon pool (e.g.
     // free-atom SAD grid builds under run_serial_pool).
-    let mut vxc: Array2<f64> =
-        with_blas_threads(opt_in_blas_threads(), || buf.dot(&chi.t()));
+    let mut vxc: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || buf.dot(&chi.t()));
 
     // ──────────────────────────────────────────────────────────────────────
     // GGA piece: V_gga_μν = Σ_g (2 w_g v_σ_g) ·
@@ -266,7 +276,10 @@ pub fn semilocal_vxc_closed_scratch(
     // ──────────────────────────────────────────────────────────────────────
     // The σ = |∇ρ|² coupling term is present for GGA and meta-GGA (both carry
     // a v_σ); only pure LDA skips it.
-    let has_gga = xc.funcs.iter().any(|f| !matches!(f.family(), FunctionalFamily::Lda));
+    let has_gga = xc
+        .funcs
+        .iter()
+        .any(|f| !matches!(f.family(), FunctionalFamily::Lda));
     if has_gga {
         for axis in 0..3 {
             let dchi_axis = dchi.index_axis(Axis(0), axis);
@@ -276,7 +289,11 @@ pub fn semilocal_vxc_closed_scratch(
                 .and(&vsigma_total)
                 .and(&grad_axis)
                 .map_collect(|&w, &r, &v, &gr| {
-                    if r > DENSITY_FLOOR { 2.0 * w * v * gr } else { 0.0 }
+                    if r > DENSITY_FLOOR {
+                        2.0 * w * v * gr
+                    } else {
+                        0.0
+                    }
                 });
             scale_columns_into(chi.view(), &f_ax, buf);
             // Same opt-in-raise digestion GEMM as the LDA piece above.
@@ -298,12 +315,19 @@ pub fn semilocal_vxc_closed_scratch(
     if has_mgga {
         for axis in 0..3 {
             let dchi_axis = dchi.index_axis(Axis(0), axis);
-            let f_ax: Array1<f64> = Zip::from(&w)
-                .and(&dens.rho)
-                .and(&vtau_total)
-                .map_collect(|&w, &r, &vt| {
-                    if r > DENSITY_FLOOR { 0.5 * w * vt } else { 0.0 }
-                });
+            let f_ax: Array1<f64> =
+                Zip::from(&w)
+                    .and(&dens.rho)
+                    .and(&vtau_total)
+                    .map_collect(
+                        |&w, &r, &vt| {
+                            if r > DENSITY_FLOOR {
+                                0.5 * w * vt
+                            } else {
+                                0.0
+                            }
+                        },
+                    );
             scale_columns_into(dchi_axis, &f_ax, buf);
             let m_axis: Array2<f64> =
                 with_blas_threads(opt_in_blas_threads(), || buf.dot(&dchi_axis.t()));
@@ -360,7 +384,10 @@ pub fn semilocal_vxc_polarized_scratch(
     let (nbf, npts) = chi.dim();
     debug_assert_eq!(dchi.dim(), (3, nbf, npts));
 
-    let has_mgga = xc.funcs.iter().any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
+    let has_mgga = xc
+        .funcs
+        .iter()
+        .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
 
     let w: Array1<f64> = grid.iter().map(|g| g.weight).collect();
 
@@ -369,11 +396,11 @@ pub fn semilocal_vxc_polarized_scratch(
     let mut rho_in = vec![0.0_f64; 2 * npts];
     let mut sigma_in = vec![0.0_f64; 3 * npts];
     for g in 0..npts {
-        rho_in[2 * g + 0]     = dens.rho_a[g];
-        rho_in[2 * g + 1]     = dens.rho_b[g];
-        sigma_in[3 * g + 0]   = dens.sigma[(0, g)];
-        sigma_in[3 * g + 1]   = dens.sigma[(1, g)];
-        sigma_in[3 * g + 2]   = dens.sigma[(2, g)];
+        rho_in[2 * g + 0] = dens.rho_a[g];
+        rho_in[2 * g + 1] = dens.rho_b[g];
+        sigma_in[3 * g + 0] = dens.sigma[(0, g)];
+        sigma_in[3 * g + 1] = dens.sigma[(1, g)];
+        sigma_in[3 * g + 2] = dens.sigma[(2, g)];
     }
     // Interleaved per-spin τ (`tau_in[2g+0]=τ_α`, `tau_in[2g+1]=τ_β`), only for
     // meta-GGA. Empty otherwise.
@@ -389,7 +416,7 @@ pub fn semilocal_vxc_polarized_scratch(
         Vec::new()
     };
 
-    let mut exc_total    = Array1::<f64>::zeros(npts);
+    let mut exc_total = Array1::<f64>::zeros(npts);
     let mut vrho_a_total = Array1::<f64>::zeros(npts);
     let mut vrho_b_total = Array1::<f64>::zeros(npts);
     let mut vsigma_aa_total = Array1::<f64>::zeros(npts);
@@ -408,14 +435,9 @@ pub fn semilocal_vxc_polarized_scratch(
             FunctionalFamily::Lda => {
                 func.eval_lda_polarized(&rho_in, &mut exc, &mut vrho);
             }
-            FunctionalFamily::Gga
-            | FunctionalFamily::HybridGga
-            | FunctionalFamily::RangeSepGga => {
+            FunctionalFamily::Gga | FunctionalFamily::HybridGga | FunctionalFamily::RangeSepGga => {
                 let mut vsigma = vec![0.0_f64; 3 * npts];
-                func.eval_gga_polarized(
-                    &rho_in, &sigma_in,
-                    &mut exc, &mut vrho, &mut vsigma,
-                );
+                func.eval_gga_polarized(&rho_in, &sigma_in, &mut exc, &mut vrho, &mut vsigma);
                 for g in 0..npts {
                     vsigma_aa_total[g] += w_i * vsigma[3 * g + 0];
                     vsigma_ab_total[g] += w_i * vsigma[3 * g + 1];
@@ -426,8 +448,13 @@ pub fn semilocal_vxc_polarized_scratch(
                 let mut vsigma = vec![0.0_f64; 3 * npts];
                 let mut vtau = vec![0.0_f64; 2 * npts];
                 func.eval_mgga_polarized(
-                    &rho_in, &sigma_in, &tau_in,
-                    &mut exc, &mut vrho, &mut vsigma, &mut vtau,
+                    &rho_in,
+                    &sigma_in,
+                    &tau_in,
+                    &mut exc,
+                    &mut vrho,
+                    &mut vsigma,
+                    &mut vtau,
                 );
                 for g in 0..npts {
                     vsigma_aa_total[g] += w_i * vsigma[3 * g + 0];
@@ -439,7 +466,7 @@ pub fn semilocal_vxc_polarized_scratch(
             }
         }
         for g in 0..npts {
-            exc_total[g]    += w_i * exc[g];
+            exc_total[g] += w_i * exc[g];
             vrho_a_total[g] += w_i * vrho[2 * g + 0];
             vrho_b_total[g] += w_i * vrho[2 * g + 1];
         }
@@ -451,7 +478,10 @@ pub fn semilocal_vxc_polarized_scratch(
         w[g] * (dens.rho_a[g] + dens.rho_b[g]) * exc_total[g]
     });
 
-    let has_gga = xc.funcs.iter().any(|f| !matches!(f.family(), FunctionalFamily::Lda));
+    let has_gga = xc
+        .funcs
+        .iter()
+        .any(|f| !matches!(f.family(), FunctionalFamily::Lda));
 
     let buf = scratch.ensure((nbf, npts));
 
@@ -462,7 +492,8 @@ pub fn semilocal_vxc_polarized_scratch(
                      vtau_sigma: &Array1<f64>,
                      grad_self: &Array2<f64>,
                      grad_cross: &Array2<f64>,
-                     rho_floor_ref: &Array1<f64>| -> Array2<f64> {
+                     rho_floor_ref: &Array1<f64>|
+     -> Array2<f64> {
         // LDA piece: V^σ_μν = Σ_g (w v_ρσ) · χ_μg · χ_νg
         let s: Array1<f64> = Zip::from(&w)
             .and(rho_floor_ref)
@@ -476,8 +507,7 @@ pub fn semilocal_vxc_polarized_scratch(
         // unchanged behavior); opt_in_blas_threads()'s rayon-worker self-guard
         // also protects any caller reached from inside a rayon pool (e.g.
         // free-atom SAD grid builds under run_serial_pool).
-        let mut v: Array2<f64> =
-            with_blas_threads(opt_in_blas_threads(), || buf.dot(&chi.t()));
+        let mut v: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || buf.dot(&chi.t()));
 
         if has_gga {
             // GGA piece for spin σ:
@@ -528,9 +558,15 @@ pub fn semilocal_vxc_polarized_scratch(
                 let f_ax: Array1<f64> = Zip::from(&w)
                     .and(rho_floor_ref)
                     .and(vtau_sigma)
-                    .map_collect(|&w, &r, &vt| {
-                        if r > DENSITY_FLOOR { 0.5 * w * vt } else { 0.0 }
-                    });
+                    .map_collect(
+                        |&w, &r, &vt| {
+                            if r > DENSITY_FLOOR {
+                                0.5 * w * vt
+                            } else {
+                                0.0
+                            }
+                        },
+                    );
                 scale_columns_into(dchi_axis, &f_ax, buf);
                 // Same opt-in-raise digestion GEMM as the LDA piece above.
                 let m_axis: Array2<f64> =
@@ -545,12 +581,22 @@ pub fn semilocal_vxc_polarized_scratch(
     // Floor each spin block on its own ρ_σ (libxc treats v_ρσ as ill-defined
     // where ρ_σ → 0). For the αβ cross-term, gate on the smaller of the two.
     let v_a = build(
-        &vrho_a_total, &vsigma_aa_total, &vsigma_ab_total, &vtau_a_total,
-        &dens.grad_a, &dens.grad_b, &dens.rho_a,
+        &vrho_a_total,
+        &vsigma_aa_total,
+        &vsigma_ab_total,
+        &vtau_a_total,
+        &dens.grad_a,
+        &dens.grad_b,
+        &dens.rho_a,
     );
     let v_b = build(
-        &vrho_b_total, &vsigma_bb_total, &vsigma_ab_total, &vtau_b_total,
-        &dens.grad_b, &dens.grad_a, &dens.rho_b,
+        &vrho_b_total,
+        &vsigma_bb_total,
+        &vsigma_ab_total,
+        &vtau_b_total,
+        &dens.grad_b,
+        &dens.grad_a,
+        &dens.rho_b,
     );
 
     (e_xc, v_a, v_b)
@@ -580,8 +626,16 @@ mod tests {
         let r1 = run(1);
         let r4 = run(4);
         let r8 = run(8);
-        assert_eq!(r1.to_bits(), r4.to_bits(), "1 vs 4 threads: {r1:e} vs {r4:e}");
-        assert_eq!(r1.to_bits(), r8.to_bits(), "1 vs 8 threads: {r1:e} vs {r8:e}");
+        assert_eq!(
+            r1.to_bits(),
+            r4.to_bits(),
+            "1 vs 4 threads: {r1:e} vs {r4:e}"
+        );
+        assert_eq!(
+            r1.to_bits(),
+            r8.to_bits(),
+            "1 vs 8 threads: {r1:e} vs {r8:e}"
+        );
 
         // Grouped re-association may differ from the flat serial fold in the
         // last ulps, but must agree to near machine precision.

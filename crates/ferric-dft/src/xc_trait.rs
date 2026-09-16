@@ -29,7 +29,11 @@ pub struct KMix {
 impl Default for KMix {
     fn default() -> Self {
         // Plain HF: full exact exchange, no range-separation.
-        Self { sr: 1.0, lr: 1.0, omega: 0.0 }
+        Self {
+            sr: 1.0,
+            lr: 1.0,
+            omega: 0.0,
+        }
     }
 }
 

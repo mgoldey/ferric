@@ -50,7 +50,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// simply never got it.
 static M_PROJ_WARNED: AtomicBool = AtomicBool::new(false);
 fn guard_m_proj(
-    m_modes: usize, n_act: usize, naux: usize, budget: Option<usize>,
+    m_modes: usize,
+    n_act: usize,
+    naux: usize,
+    budget: Option<usize>,
 ) -> Result<(), FerricError> {
     let budget = ferric_core::memory::resolve_budget_bytes(budget);
     // BOTH tensors, not just the one being allocated.
@@ -160,8 +163,14 @@ pub fn guard_m_proj_both_spins(
     budget: Option<usize>,
 ) -> Result<(), FerricError> {
     let pair = |n_act: usize| -> usize {
-        let m = m_modes.saturating_mul(n_act).saturating_mul(n_act).saturating_mul(8);
-        let b = naux.saturating_mul(n_act).saturating_mul(n_act).saturating_mul(8);
+        let m = m_modes
+            .saturating_mul(n_act)
+            .saturating_mul(n_act)
+            .saturating_mul(8);
+        let b = naux
+            .saturating_mul(n_act)
+            .saturating_mul(n_act)
+            .saturating_mul(8);
         m.saturating_add(b)
     };
     let need = pair(n_act_a).saturating_add(pair(n_act_b));
@@ -396,7 +405,10 @@ mod tests {
         // PAR_ROWS_THRESHOLD=8 so the parallel branch runs at 4 threads.
         let mo_b = synthetic_mo_b(10, 12, 5);
         let run_with_threads = |n: usize| -> Array1<f64> {
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .build()
+                .unwrap();
             pool.install(|| sigma_x_diag(&mo_b))
         };
         let r1 = run_with_threads(1);
@@ -459,10 +471,21 @@ mod tests {
         let gw_cfg = GwConfig::default();
 
         let run_with_threads = |n: usize| -> GwResult {
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .build()
+                .unwrap();
             pool.install(|| {
-                run_cohsex(&mol, &rhf, &mo_b, &v_dressed, rhf_stub_pdep(), 0..n_act, &gw_cfg)
-                    .unwrap()
+                run_cohsex(
+                    &mol,
+                    &rhf,
+                    &mo_b,
+                    &v_dressed,
+                    rhf_stub_pdep(),
+                    0..n_act,
+                    &gw_cfg,
+                )
+                .unwrap()
             })
         };
         let r1 = run_with_threads(1);
@@ -499,9 +522,18 @@ mod tests {
         let err = project_b_into_pdep(&mo_b, &v_dressed, Some(1_000))
             .expect_err("an over-budget M projection must be an Err, not a warning")
             .to_string();
-        assert!(err.contains("project_b_into_pdep"), "must name the site: {err}");
-        assert!(err.contains("projected M tensor"), "must name the term: {err}");
-        assert!(err.contains("trunc_thresh"), "must keep the actionable advice: {err}");
+        assert!(
+            err.contains("project_b_into_pdep"),
+            "must name the site: {err}"
+        );
+        assert!(
+            err.contains("projected M tensor"),
+            "must name the term: {err}"
+        );
+        assert!(
+            err.contains("trunc_thresh"),
+            "must keep the actionable advice: {err}"
+        );
     }
 
     /// An over-estimating guard is also a bug. The SAME shape under an ample
@@ -540,5 +572,4 @@ mod tests {
             "a caller-supplied 1 kB ceiling was ignored — the budget is not reaching the guard"
         );
     }
-
 }

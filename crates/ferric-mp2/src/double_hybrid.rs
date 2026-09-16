@@ -40,8 +40,18 @@ pub enum DoubleHybridKind {
 impl DoubleHybridKind {
     pub fn mp2_config(&self) -> Mp2DoubleHybridConfig {
         match self {
-            Self::B2plyp => Mp2DoubleHybridConfig { c_os: 0.27, c_ss: 0.27, frozen_core: 0, memory_budget_bytes: None },
-            Self::DsdPbep86 => Mp2DoubleHybridConfig { c_os: 0.56, c_ss: 0.29, frozen_core: 0, memory_budget_bytes: None },
+            Self::B2plyp => Mp2DoubleHybridConfig {
+                c_os: 0.27,
+                c_ss: 0.27,
+                frozen_core: 0,
+                memory_budget_bytes: None,
+            },
+            Self::DsdPbep86 => Mp2DoubleHybridConfig {
+                c_os: 0.56,
+                c_ss: 0.29,
+                frozen_core: 0,
+                memory_budget_bytes: None,
+            },
         }
     }
 
@@ -67,8 +77,11 @@ pub struct Mp2DoubleHybridResult {
 
 impl std::fmt::Display for Mp2DoubleHybridResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Double hybrid total: {:.10} Ha (KS: {:.10}, MP2 corr: {:.10})",
-            self.total_energy, self.e_ks, self.e_corr_scaled)
+        write!(
+            f,
+            "Double hybrid total: {:.10} Ha (KS: {:.10}, MP2 corr: {:.10})",
+            self.total_energy, self.e_ks, self.e_corr_scaled
+        )
     }
 }
 

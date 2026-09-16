@@ -634,7 +634,11 @@ pub fn cosmo_reaction_field(
         // SAFETY: probe is a valid CAtom slice; handle_mut() returns the live engine pointer;
         // probe.len() fits in c_int. The shim catches C++ exceptions and returns a negative rc.
         let rc = unsafe {
-            ffi::scf_engine_set_point_charges(engine.handle_mut(), probe.as_ptr(), probe.len() as std::os::raw::c_int)
+            ffi::scf_engine_set_point_charges(
+                engine.handle_mut(),
+                probe.as_ptr(),
+                probe.len() as std::os::raw::c_int,
+            )
         };
         if rc < 0 {
             return Err(FerricError::General(format!(
@@ -719,7 +723,11 @@ pub fn cosmo_reaction_field(
         }];
         // SAFETY: same contract as pass 1 — valid CAtom slice, live engine pointer, rc checked.
         let rc = unsafe {
-            ffi::scf_engine_set_point_charges(engine.handle_mut(), probe.as_ptr(), probe.len() as std::os::raw::c_int)
+            ffi::scf_engine_set_point_charges(
+                engine.handle_mut(),
+                probe.as_ptr(),
+                probe.len() as std::os::raw::c_int,
+            )
         };
         if rc < 0 {
             return Err(FerricError::General(format!(
@@ -805,31 +813,49 @@ mod tests {
     #[test]
     fn f_epsilon_matches_pyscf_cosmo_convention() {
         // f(eps) = (eps-1)/(eps+0.5); water eps=78.39 -> ~0.9873.
-        let cfg = CosmoConfig { epsilon: 78.39, ..Default::default() };
+        let cfg = CosmoConfig {
+            epsilon: 78.39,
+            ..Default::default()
+        };
         let f = cfg.f_epsilon();
         let expected = (78.39 - 1.0) / (78.39 + 0.5);
         assert!((f - expected).abs() < 1e-12);
-        assert!(f > 0.98 && f < 1.0, "f(eps) for water should be close to 1 (near-conductor limit), got {f}");
+        assert!(
+            f > 0.98 && f < 1.0,
+            "f(eps) for water should be close to 1 (near-conductor limit), got {f}"
+        );
     }
 
     #[test]
     fn f_epsilon_vacuum_limit_is_zero() {
         // eps -> 1 (vacuum): f(eps) -> 0, no screening.
-        let cfg = CosmoConfig { epsilon: 1.0 + 1e-9, ..Default::default() };
+        let cfg = CosmoConfig {
+            epsilon: 1.0 + 1e-9,
+            ..Default::default()
+        };
         assert!(cfg.f_epsilon().abs() < 1e-6);
     }
 
     #[test]
     fn config_rejects_invalid_epsilon() {
-        let cfg = CosmoConfig { epsilon: 0.5, ..Default::default() };
+        let cfg = CosmoConfig {
+            epsilon: 0.5,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
-        let cfg2 = CosmoConfig { epsilon: f64::NAN, ..Default::default() };
+        let cfg2 = CosmoConfig {
+            epsilon: f64::NAN,
+            ..Default::default()
+        };
         assert!(cfg2.validate().is_err());
     }
 
     #[test]
     fn config_rejects_invalid_lebedev_order() {
-        let cfg = CosmoConfig { lebedev_order: 7, ..Default::default() };
+        let cfg = CosmoConfig {
+            lebedev_order: 7,
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
     }
 
@@ -863,14 +889,20 @@ mod tests {
     #[test]
     fn s_matrix_symmetric_and_diagonal_positive_point_charge() {
         let mol = water();
-        let cfg = CosmoConfig { lebedev_order: 26, ..Default::default() };
+        let cfg = CosmoConfig {
+            lebedev_order: 26,
+            ..Default::default()
+        };
         let cavity = CosmoCavity::build(&mol, &cfg).unwrap();
         let s = cavity.build_s_matrix(SMatrixKind::PointCharge);
         let n = cavity.n_segments();
         for k in 0..n {
             assert!(s[(k, k)] > 0.0, "diagonal must be positive");
             for l in 0..n {
-                assert!((s[(k, l)] - s[(l, k)]).abs() < 1e-12, "S not symmetric at ({k},{l})");
+                assert!(
+                    (s[(k, l)] - s[(l, k)]).abs() < 1e-12,
+                    "S not symmetric at ({k},{l})"
+                );
             }
         }
     }
@@ -878,14 +910,20 @@ mod tests {
     #[test]
     fn s_matrix_symmetric_and_diagonal_positive_gaussian_smeared() {
         let mol = water();
-        let cfg = CosmoConfig { lebedev_order: 26, ..Default::default() };
+        let cfg = CosmoConfig {
+            lebedev_order: 26,
+            ..Default::default()
+        };
         let cavity = CosmoCavity::build(&mol, &cfg).unwrap();
         let s = cavity.build_s_matrix(SMatrixKind::GaussianSmeared);
         let n = cavity.n_segments();
         for k in 0..n {
             assert!(s[(k, k)] > 0.0, "diagonal must be positive");
             for l in 0..n {
-                assert!((s[(k, l)] - s[(l, k)]).abs() < 1e-12, "S not symmetric at ({k},{l})");
+                assert!(
+                    (s[(k, l)] - s[(l, k)]).abs() < 1e-12,
+                    "S not symmetric at ({k},{l})"
+                );
             }
         }
     }

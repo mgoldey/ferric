@@ -95,8 +95,18 @@ pub fn cross_overlap(
         "provenance mask length must match merged nbasis"
     );
 
-    let obs_idx: Vec<usize> = mask.iter().enumerate().filter(|(_, &m)| m).map(|(i, _)| i).collect();
-    let ri_idx: Vec<usize> = mask.iter().enumerate().filter(|(_, &m)| !m).map(|(i, _)| i).collect();
+    let obs_idx: Vec<usize> = mask
+        .iter()
+        .enumerate()
+        .filter(|(_, &m)| m)
+        .map(|(i, _)| i)
+        .collect();
+    let ri_idx: Vec<usize> = mask
+        .iter()
+        .enumerate()
+        .filter(|(_, &m)| !m)
+        .map(|(i, _)| i)
+        .collect();
     let nobs = obs_idx.len();
     let nri = ri_idx.len();
 

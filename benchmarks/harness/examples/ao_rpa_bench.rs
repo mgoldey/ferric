@@ -62,12 +62,42 @@ struct OmegaCfg {
 
 fn omega_cfgs() -> Vec<OmegaCfg> {
     vec![
-        OmegaCfg { label: "GL    20 u0=0.5", scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5 },
-        OmegaCfg { label: "GL    10 u0=0.5", scheme: QuadratureScheme::GaussLegendre, n_points: 10, u0: 0.5 },
-        OmegaCfg { label: "Cheb  20 u0=0.2", scheme: QuadratureScheme::ChebyshevTan,  n_points: 20, u0: 0.2 },
-        OmegaCfg { label: "Cheb  16 u0=0.2", scheme: QuadratureScheme::ChebyshevTan,  n_points: 16, u0: 0.2 },
-        OmegaCfg { label: "Cheb  10 u0=0.2", scheme: QuadratureScheme::ChebyshevTan,  n_points: 10, u0: 0.2 },
-        OmegaCfg { label: "Cheb  10 u0=0.1", scheme: QuadratureScheme::ChebyshevTan,  n_points: 10, u0: 0.1 },
+        OmegaCfg {
+            label: "GL    20 u0=0.5",
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: 20,
+            u0: 0.5,
+        },
+        OmegaCfg {
+            label: "GL    10 u0=0.5",
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: 10,
+            u0: 0.5,
+        },
+        OmegaCfg {
+            label: "Cheb  20 u0=0.2",
+            scheme: QuadratureScheme::ChebyshevTan,
+            n_points: 20,
+            u0: 0.2,
+        },
+        OmegaCfg {
+            label: "Cheb  16 u0=0.2",
+            scheme: QuadratureScheme::ChebyshevTan,
+            n_points: 16,
+            u0: 0.2,
+        },
+        OmegaCfg {
+            label: "Cheb  10 u0=0.2",
+            scheme: QuadratureScheme::ChebyshevTan,
+            n_points: 10,
+            u0: 0.2,
+        },
+        OmegaCfg {
+            label: "Cheb  10 u0=0.1",
+            scheme: QuadratureScheme::ChebyshevTan,
+            n_points: 10,
+            u0: 0.1,
+        },
     ]
 }
 
@@ -84,15 +114,20 @@ fn main() {
     println!("τ-grid: {n_tau}-pt minimax for AO path; canonical uses same ω-grid as AO");
     println!("Goal: find (scheme, n_ω, u₀) where n_fb=0 AND |Δ| vs canonical < 50 µHa");
     println!();
-    println!("{:<6} {:<18} {:>14} {:>14} {:>10} {:>5} {:>8} {:>8}",
-        "mol", "ω-config", "E_c canon", "E_c AO-τ", "Δ (µHa)", "n_fb", "t_canon", "t_AO");
+    println!(
+        "{:<6} {:<18} {:>14} {:>14} {:>10} {:>5} {:>8} {:>8}",
+        "mol", "ω-config", "E_c canon", "E_c AO-τ", "Δ (µHa)", "n_fb", "t_canon", "t_AO"
+    );
     println!("{:-<92}", "");
 
     for case in &cases() {
         let mol = match (case.path, case.xyz) {
             (Some(p), _) => match Molecule::load_xyz(p) {
                 Ok(m) => m,
-                Err(_) => { println!("{:<6} (missing: {})", case.name, p); continue; }
+                Err(_) => {
+                    println!("{:<6} (missing: {})", case.name, p);
+                    continue;
+                }
             },
             (None, Some(x)) => Molecule::parse_xyz(x, 0, 1).unwrap(),
             _ => continue,
@@ -110,8 +145,18 @@ fn main() {
         let nvir = nbas - nocc;
 
         let inter = compute_rpa_intermediates(
-            &mol, &obs, &dfbs, op, &rhf, &ferric_mp2::rimp2::RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() },
-        ).unwrap();
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &rhf,
+            &ferric_mp2::rimp2::RiMp2Config {
+                frozen_core: 0,
+                memory_budget_bytes: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let eps = rhf.eps_r();
         let eps_occ: Vec<f64> = eps.iter().take(nocc).copied().collect();
         let eps_vir: Vec<f64> = eps.iter().skip(nocc).take(nvir).copied().collect();
@@ -125,8 +170,10 @@ fn main() {
         let lap = build_tau_quadrature(&eps_occ, &eps_vir, n_tau).unwrap();
         let t_max = lap.points.iter().cloned().fold(0.0_f64, f64::max);
         let omega_safe = std::f64::consts::FRAC_PI_2 / t_max;
-        println!(">> {} nbas={} nocc={} t_max={:.3}  ω·t_max≤π/2 ⇒ ω≤{:.3} Ha",
-            case.name, nbas, nocc, t_max, omega_safe);
+        println!(
+            ">> {} nbas={} nocc={} t_max={:.3}  ω·t_max≤π/2 ⇒ ω≤{:.3} Ha",
+            case.name, nbas, nocc, t_max, omega_safe
+        );
 
         // Adaptive ChebyshevTan u₀ targeting ω_max · t_max = π/2 for each N.
         let mut adaptive: Vec<OmegaCfg> = vec![];
@@ -135,7 +182,9 @@ fn main() {
             let tan_max = (std::f64::consts::PI * nf / (2.0 * (nf + 1.0))).tan();
             let u0_adapt = std::f64::consts::FRAC_PI_2 / (t_max * tan_max);
             adaptive.push(OmegaCfg {
-                label: Box::leak(format!("Cheb-adapt n={} u₀={:.4}", n_om, u0_adapt).into_boxed_str()),
+                label: Box::leak(
+                    format!("Cheb-adapt n={} u₀={:.4}", n_om, u0_adapt).into_boxed_str(),
+                ),
                 scheme: QuadratureScheme::ChebyshevTan,
                 n_points: n_om,
                 u0: u0_adapt,
@@ -155,20 +204,26 @@ fn main() {
 
             // Canonical reference on this same ω-grid.
             let t0 = Instant::now();
-            let e_canon = ri_drpa_energy(
-                &inter.b_ov, &eps_occ, &eps_vir, &quad_freqs, &quad_weights,
-            ).unwrap();
+            let e_canon =
+                ri_drpa_energy(&inter.b_ov, &eps_occ, &eps_vir, &quad_freqs, &quad_weights)
+                    .unwrap();
             let t_canon = t0.elapsed().as_secs_f64();
 
             // AO-τ path WITHOUT fallback — pure cubic candidate.
             let t0 = Instant::now();
             let (e_ao, _, _, n_fb) = ao_rpa_correlation_energy(
-                &eri3, &inter.v_inv_sqrt, &c_occ, &c_vir,
-                &eps_occ, &eps_vir,
-                &quad_freqs, &quad_weights,
+                &eri3,
+                &inter.v_inv_sqrt,
+                &c_occ,
+                &c_vir,
+                &eps_occ,
+                &eps_vir,
+                &quad_freqs,
+                &quad_weights,
                 n_tau,
-                None,   // <-- no fallback; aliasing here will show up as a big |Δ|
-            ).unwrap();
+                None, // <-- no fallback; aliasing here will show up as a big |Δ|
+            )
+            .unwrap();
             let t_ao = t0.elapsed().as_secs_f64();
 
             let delta_uha = (e_ao - e_canon) * 1e6;

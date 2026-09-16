@@ -46,8 +46,8 @@
 use ndarray::Array2;
 
 use ferric_core::basis::BasisSet;
-use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::error::FerricError;
+use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -62,8 +62,8 @@ use ferric_mp2::lmp2_direct::{
     assemble_boo_direct, assemble_pp_fitted_direct, assemble_ragged_direct_local, DirectConfig,
     DirectStats, OoGram, PpFitted,
 };
-use ferric_mp2::ragged::{apply_pattern, gather_into, matvec_indexed, solve_ragged_with, Ragged};
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_vv};
+use ferric_mp2::ragged::{apply_pattern, gather_into, matvec_indexed, solve_ragged_with, Ragged};
 use ferric_mp2::rimp2::metric_inverse_sqrt;
 
 /// Configuration for amplitude-threshold LinLCCD.
@@ -175,9 +175,17 @@ pub fn amplitude_linlccd_with_virtuals(
         naux.saturating_mul(nbas).saturating_mul(nbas),
         Lifetime::Transient,
     );
-    plan.reserve("oo_g (ik|jl) whitened Gram", no.saturating_pow(2).saturating_mul(no.saturating_pow(2)), Lifetime::Resident);
+    plan.reserve(
+        "oo_g (ik|jl) whitened Gram",
+        no.saturating_pow(2).saturating_mul(no.saturating_pow(2)),
+        Lifetime::Resident,
+    );
     if variant.needs_vvvv_pub() {
-        plan.reserve("bvv_t whitened (naux, nv^2)", naux.saturating_mul(nv.saturating_pow(2)), Lifetime::Resident);
+        plan.reserve(
+            "bvv_t whitened (naux, nv^2)",
+            naux.saturating_mul(nv.saturating_pow(2)),
+            Lifetime::Resident,
+        );
     }
     plan.check()?;
 
@@ -216,7 +224,11 @@ pub fn amplitude_linlccd_with_virtuals(
     let (e_corr, it, relres) = linlccd_masked_solve(&rg, &lb.f_oo, oo.as_ref(), pp, cfg)?;
 
     let n = no * nv;
-    let kept: usize = rg.pairs.iter().map(|pb| pb.pat.iter().filter(|&&x| x).count()).sum();
+    let kept: usize = rg
+        .pairs
+        .iter()
+        .map(|pb| pb.pat.iter().filter(|&&x| x).count())
+        .sum();
     Ok(AmplitudeLinLccdResult {
         e_corr,
         e_total: rhf.energy + e_corr,
@@ -249,13 +261,7 @@ enum PpSource<'a> {
 
 /// pp block application shared by both pp sources: given the pair's block
 /// `m` (rows (a,c), cols (b,d)), accumulate `out[a,b] += Σ_cd m T[c,d]`.
-fn apply_pp_block(
-    rp: &mut Array2<f64>,
-    m: &Array2<f64>,
-    nda: usize,
-    ndb: usize,
-    tp: &Array2<f64>,
-) {
+fn apply_pp_block(rp: &mut Array2<f64>, m: &Array2<f64>, nda: usize, ndb: usize, tp: &Array2<f64>) {
     for ra in 0..nda {
         for cb in 0..ndb {
             let mut acc = 0.0;
@@ -369,7 +375,11 @@ fn linlccd_masked_solve(
                 let jv = pb.j_blk[(r_, c_)];
                 let sr = pb.pos_da[b];
                 let sc = pb.pos_db[a];
-                let t_swap = if sr != usize::MAX && sc != usize::MAX { t[p][(sr, sc)] } else { 0.0 };
+                let t_swap = if sr != usize::MAX && sc != usize::MAX {
+                    t[p][(sr, sc)]
+                } else {
+                    0.0
+                };
                 e_corr += jv * (2.0 * t[p][(r_, c_)] - t_swap);
             }
         }
@@ -456,7 +466,9 @@ pub fn amplitude_linlccd_direct_with_virtuals(
     // strength of the Phase-1 PSD measurement (GO verdict recorded in
     // WIKI-APPEND-linlccd-direct.md); see PpFitted's doc for the license.
     let pp_factors: Option<Vec<PpFitted>> = if variant.needs_vvvv_pub() {
-        Some(assemble_pp_fitted_direct(mol, obs, dfbs, op, &spaces, &rg, dcfg)?)
+        Some(assemble_pp_fitted_direct(
+            mol, obs, dfbs, op, &spaces, &rg, dcfg,
+        )?)
     } else {
         None
     };
@@ -466,7 +478,11 @@ pub fn amplitude_linlccd_direct_with_virtuals(
     };
     let (e_corr, it, relres) = linlccd_masked_solve(&rg, &spaces.f_oo, oo.as_ref(), pp, cfg)?;
     let n = spaces.no * spaces.nv;
-    let kept: usize = rg.pairs.iter().map(|pb| pb.pat.iter().filter(|&&x| x).count()).sum();
+    let kept: usize = rg
+        .pairs
+        .iter()
+        .map(|pb| pb.pat.iter().filter(|&&x| x).count())
+        .sum();
     Ok((
         AmplitudeLinLccdResult {
             e_corr,

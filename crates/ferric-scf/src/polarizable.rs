@@ -179,7 +179,6 @@ pub(crate) fn norm_int_p_shell(zeta: f64) -> f64 {
     2f64.powf(0.25) * zeta.powf(1.25) / (2.0 * std::f64::consts::PI.powf(0.75))
 }
 
-
 /// One polarizable MM site: position (Bohr) and isotropic polarisability
 /// (Bohr^3).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -227,7 +226,9 @@ impl Default for PolarizableSites {
 impl PolarizableSites {
     /// Normalised (unordered) exclusion check.
     fn is_excluded(&self, i: usize, j: usize) -> bool {
-        self.exclusions.iter().any(|&(a, b)| (a == i && b == j) || (a == j && b == i))
+        self.exclusions
+            .iter()
+            .any(|&(a, b)| (a == i && b == j) || (a == j && b == i))
     }
 }
 
@@ -247,7 +248,13 @@ pub struct InductionResult {
 
 /// Thole-damped dipole-dipole interaction tensor `T_ij` (3x3, a.u.).
 /// `thole_a: None` gives the bare (undamped) tensor.
-fn thole_tensor(ri: [f64; 3], rj: [f64; 3], alpha_i: f64, alpha_j: f64, thole_a: Option<f64>) -> [[f64; 3]; 3] {
+fn thole_tensor(
+    ri: [f64; 3],
+    rj: [f64; 3],
+    alpha_i: f64,
+    alpha_j: f64,
+    thole_a: Option<f64>,
+) -> [[f64; 3]; 3] {
     let d = [ri[0] - rj[0], ri[1] - rj[1], ri[2] - rj[2]];
     let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
     let r = r2.sqrt();
@@ -275,7 +282,10 @@ fn thole_tensor(ri: [f64; 3], rj: [f64; 3], alpha_i: f64, alpha_j: f64, thole_a:
 
 /// Field of `ext`'s permanent (point + Gaussian-smeared) charges at each
 /// site, honouring colocation-based exclusions (see module doc).
-fn permanent_field_at_sites(sites: &PolarizableSites, ext: Option<&ExternalPotential>) -> Vec<[f64; 3]> {
+fn permanent_field_at_sites(
+    sites: &PolarizableSites,
+    ext: Option<&ExternalPotential>,
+) -> Vec<[f64; 3]> {
     let n = sites.sites.len();
     let mut e_perm = vec![[0.0_f64; 3]; n];
     let Some(ext) = ext else { return e_perm };
@@ -346,7 +356,10 @@ fn permanent_field_at_sites(sites: &PolarizableSites, ext: Option<&ExternalPoten
 /// Solve the dense Thole-damped induction system `B mu = e_ext` for the
 /// converged induced dipoles, given the total (QM + permanent) field at each
 /// site.
-fn solve_induction(sites: &PolarizableSites, e_total: &[[f64; 3]]) -> Result<Array2<f64>, FerricError> {
+fn solve_induction(
+    sites: &PolarizableSites,
+    e_total: &[[f64; 3]],
+) -> Result<Array2<f64>, FerricError> {
     let n = sites.sites.len();
     let mut b = Array2::<f64>::zeros((3 * n, 3 * n));
     for (i, site) in sites.sites.iter().enumerate() {
@@ -367,7 +380,13 @@ fn solve_induction(sites: &PolarizableSites, e_total: &[[f64; 3]]) -> Result<Arr
             }
             let ri = [sites.sites[i].x, sites.sites[i].y, sites.sites[i].z];
             let rj = [sites.sites[j].x, sites.sites[j].y, sites.sites[j].z];
-            let t = thole_tensor(ri, rj, sites.sites[i].alpha, sites.sites[j].alpha, sites.thole_a);
+            let t = thole_tensor(
+                ri,
+                rj,
+                sites.sites[i].alpha,
+                sites.sites[j].alpha,
+                sites.thole_a,
+            );
             for a in 0..3 {
                 for c in 0..3 {
                     b[(3 * i + a, 3 * j + c)] = -t[a][c];
@@ -381,9 +400,9 @@ fn solve_induction(sites: &PolarizableSites, e_total: &[[f64; 3]]) -> Result<Arr
             rhs[(3 * i + a, 0)] = e[a];
         }
     }
-    let mu_flat = b
-        .solve_into(rhs.column(0).to_owned())
-        .map_err(|e| FerricError::Lapack(format!("polarizable induction dense solve failed: {e}")))?;
+    let mu_flat = b.solve_into(rhs.column(0).to_owned()).map_err(|e| {
+        FerricError::Lapack(format!("polarizable induction dense solve failed: {e}"))
+    })?;
     let mut mu = Array2::<f64>::zeros((n, 3));
     for i in 0..n {
         for a in 0..3 {
@@ -461,7 +480,9 @@ fn build_v_induced(
         let mu = [dipoles[(i, 0)], dipoles[(i, 1)], dipoles[(i, 2)]];
         for s1 in 0..nsh {
             for s2 in 0..nsh {
-                let Some(block) = eng.compute_eri3(prep, &site_basis_p.prep, sh_p, s1, s2) else { continue };
+                let Some(block) = eng.compute_eri3(prep, &site_basis_p.prep, sh_p, s1, s2) else {
+                    continue;
+                };
                 let n1 = dims[s1];
                 let n2 = dims[s2];
                 let o1 = offs[s1];
@@ -535,12 +556,18 @@ pub fn induce(
     let mut e_pol = 0.0_f64;
     for i in 0..n {
         e_pol -= 0.5
-            * (dipoles[(i, 0)] * e_total[i][0] + dipoles[(i, 1)] * e_total[i][1] + dipoles[(i, 2)] * e_total[i][2]);
+            * (dipoles[(i, 0)] * e_total[i][0]
+                + dipoles[(i, 1)] * e_total[i][1]
+                + dipoles[(i, 2)] * e_total[i][2]);
     }
 
     let v_induced = build_v_induced(prep, site_basis_p, sites.dipole_zeta, &dipoles)?;
 
-    Ok(InductionResult { dipoles, e_pol, v_induced })
+    Ok(InductionResult {
+        dipoles,
+        e_pol,
+        v_induced,
+    })
 }
 
 /// Polarisation energy from `E^perm` alone (dipoles induced by the OTHER
@@ -548,7 +575,10 @@ pub fn induce(
 /// constant a caller can subtract to get an interaction energy that excludes
 /// the MM region's own self-polarisation. Returns `0.0` for an empty site
 /// list without any solve.
-pub fn mm_only_polarization_energy(ext: Option<&ExternalPotential>, sites: &PolarizableSites) -> Result<f64, FerricError> {
+pub fn mm_only_polarization_energy(
+    ext: Option<&ExternalPotential>,
+    sites: &PolarizableSites,
+) -> Result<f64, FerricError> {
     let n = sites.sites.len();
     if n == 0 {
         return Ok(0.0);
@@ -564,11 +594,12 @@ pub fn mm_only_polarization_energy(ext: Option<&ExternalPotential>, sites: &Pola
     let mut e_pol = 0.0_f64;
     for i in 0..n {
         e_pol -= 0.5
-            * (dipoles[(i, 0)] * e_perm[i][0] + dipoles[(i, 1)] * e_perm[i][1] + dipoles[(i, 2)] * e_perm[i][2]);
+            * (dipoles[(i, 0)] * e_perm[i][0]
+                + dipoles[(i, 1)] * e_perm[i][1]
+                + dipoles[(i, 2)] * e_perm[i][2]);
     }
     Ok(e_pol)
 }
-
 
 // ---------------------------------------------------------------------------
 // Task B3: gradients
@@ -658,7 +689,13 @@ pub fn qm_gradient_contribution(
     dipoles: &Array2<f64>,
     d: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
-    let natoms = prep.shell_to_atom().iter().copied().max().map(|m| m + 1).unwrap_or(0);
+    let natoms = prep
+        .shell_to_atom()
+        .iter()
+        .copied()
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0);
     let mut grad = Array2::<f64>::zeros((natoms, 3));
     let n = sites.sites.len();
     if n == 0 {
@@ -696,7 +733,10 @@ pub fn qm_gradient_contribution(
         let mu = [dipoles[(i, 0)], dipoles[(i, 1)], dipoles[(i, 2)]];
         for s1 in 0..nsh {
             for s2 in 0..nsh {
-                let Some(deriv) = eng.compute_eri3_deriv(prep, &site_basis_p.prep, sh_p, s1, s2) else { continue };
+                let Some(deriv) = eng.compute_eri3_deriv(prep, &site_basis_p.prep, sh_p, s1, s2)
+                else {
+                    continue;
+                };
                 let n1 = dims[s1];
                 let n2 = dims[s2];
                 let block_sz = 3 * n1 * n2; // nP=3 (p-shell) * n1 * n2
@@ -755,11 +795,21 @@ pub fn polarizable_gradient_term(
     dipoles: &Array2<f64>,
     d_total: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
-    let natoms = prep.shell_to_atom().iter().copied().max().map(|m| m + 1).unwrap_or(0);
+    let natoms = prep
+        .shell_to_atom()
+        .iter()
+        .copied()
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0);
     if sites.sites.is_empty() {
         return Ok(Array2::zeros((natoms, 3)));
     }
-    let site_xyz: Vec<[f64; 4]> = sites.sites.iter().map(|s| [s.x, s.y, s.z, sites.dipole_zeta]).collect();
+    let site_xyz: Vec<[f64; 4]> = sites
+        .sites
+        .iter()
+        .map(|s| [s.x, s.y, s.z, sites.dipole_zeta])
+        .collect();
     let site_basis_p = SiteBasis::new(&site_xyz, 1)?;
     qm_gradient_contribution(mol, prep, sites, &site_basis_p, dipoles, d_total)
 }
@@ -811,7 +861,11 @@ pub fn site_gradient(
     }
 
     let norm_p = norm_int_p_shell(sites.dipole_zeta);
-    let site_xyz: Vec<[f64; 4]> = sites.sites.iter().map(|s| [s.x, s.y, s.z, sites.dipole_zeta]).collect();
+    let site_xyz: Vec<[f64; 4]> = sites
+        .sites
+        .iter()
+        .map(|s| [s.x, s.y, s.z, sites.dipole_zeta])
+        .collect();
     let site_basis_p = SiteBasis::new(&site_xyz, 1)?;
 
     // 1. QM-centre part via translational invariance (Fock-term derivative).
@@ -825,7 +879,10 @@ pub fn site_gradient(
         let mut site_grad = [0.0_f64; 3];
         for s1 in 0..nsh {
             for s2 in 0..nsh {
-                let Some(deriv) = eng.compute_eri3_deriv(prep, &site_basis_p.prep, sh_p, s1, s2) else { continue };
+                let Some(deriv) = eng.compute_eri3_deriv(prep, &site_basis_p.prep, sh_p, s1, s2)
+                else {
+                    continue;
+                };
                 let n1 = dims[s1];
                 let n2 = dims[s2];
                 let block_sz = 3 * n1 * n2;
@@ -1070,8 +1127,17 @@ pub fn charge_gradient_contribution(
 /// `dE_charge[c]/dR_site[k] = q*(delta_ck/r^3 - 3 d[c] d[k]/r^5)`,
 /// `d = r_site - r_charge`; `d/dR_charge = -d/dR_site` by translational
 /// invariance of this two-point kernel.
-fn point_charge_field_grad_wrt_site(r_site: [f64; 3], r_charge: [f64; 3], q: f64, mu: [f64; 3]) -> ([f64; 3], [f64; 3]) {
-    let d = [r_site[0] - r_charge[0], r_site[1] - r_charge[1], r_site[2] - r_charge[2]];
+fn point_charge_field_grad_wrt_site(
+    r_site: [f64; 3],
+    r_charge: [f64; 3],
+    q: f64,
+    mu: [f64; 3],
+) -> ([f64; 3], [f64; 3]) {
+    let d = [
+        r_site[0] - r_charge[0],
+        r_site[1] - r_charge[1],
+        r_site[2] - r_charge[2],
+    ];
     let r2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
     let r = r2.sqrt();
     let r3 = r2 * r;

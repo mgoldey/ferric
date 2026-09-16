@@ -131,7 +131,10 @@ fn with_the_flag_the_estimate_grows_with_n_quad() {
 #[test]
 fn the_charge_covers_the_stack_and_the_per_worker_clones() {
     let s = dimer_atz(20, true);
-    let off = estimate_peak_bytes(PeakEstimateShape { need_inv_dielectric: false, ..s });
+    let off = estimate_peak_bytes(PeakEstimateShape {
+        need_inv_dielectric: false,
+        ..s
+    });
     let on = estimate_peak_bytes(s);
     let delta = on - off;
 
@@ -163,7 +166,10 @@ fn the_charge_covers_the_stack_and_the_per_worker_clones() {
 #[test]
 fn the_charge_is_not_wildly_over() {
     let s = dimer_atz(20, true);
-    let off = estimate_peak_bytes(PeakEstimateShape { need_inv_dielectric: false, ..s });
+    let off = estimate_peak_bytes(PeakEstimateShape {
+        need_inv_dielectric: false,
+        ..s
+    });
     let delta = estimate_peak_bytes(s) - off;
 
     let m = s.n_keep;
@@ -187,7 +193,10 @@ fn the_charge_is_not_wildly_over() {
 fn the_clone_charge_saturates_at_the_worker_count() {
     let charge = |nq: usize| -> usize {
         let s = dimer_atz(nq, true);
-        let off = estimate_peak_bytes(PeakEstimateShape { need_inv_dielectric: false, ..s });
+        let off = estimate_peak_bytes(PeakEstimateShape {
+            need_inv_dielectric: false,
+            ..s
+        });
         estimate_peak_bytes(s) - off
     };
     let m = 2976usize;

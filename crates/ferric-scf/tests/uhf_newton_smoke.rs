@@ -48,13 +48,22 @@ fn uhf_newton_oh_matches_diis_only() {
         max_iter: 200,
         ..Default::default()
     };
-    let cfg_newton = RhfConfig { newton_trigger: 1e-2, ..cfg_diis.clone() };
+    let cfg_newton = RhfConfig {
+        newton_trigger: 1e-2,
+        ..cfg_diis.clone()
+    };
 
     let r_diis = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg_diis).unwrap();
     let r_newton = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg_newton).unwrap();
 
-    eprintln!("UHF/OH  DIIS:   E = {:.10}, iters = {}", r_diis.energy, r_diis.iterations);
-    eprintln!("UHF/OH  Newton: E = {:.10}, iters = {}", r_newton.energy, r_newton.iterations);
+    eprintln!(
+        "UHF/OH  DIIS:   E = {:.10}, iters = {}",
+        r_diis.energy, r_diis.iterations
+    );
+    eprintln!(
+        "UHF/OH  Newton: E = {:.10}, iters = {}",
+        r_newton.energy, r_newton.iterations
+    );
 
     assert!(r_diis.converged && r_newton.converged);
     assert!(
@@ -86,7 +95,10 @@ fn uks_pbe_newton_engages_gga_fxc_and_matches_diis() {
         level_shift: 0.2,
         ..Default::default()
     };
-    let cfg_newton = RhfConfig { newton_trigger: 1e-2, ..cfg_diis.clone() };
+    let cfg_newton = RhfConfig {
+        newton_trigger: 1e-2,
+        ..cfg_diis.clone()
+    };
 
     let r_diis = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg_diis).unwrap();
 
@@ -95,7 +107,10 @@ fn uks_pbe_newton_engages_gga_fxc_and_matches_diis() {
     let after = ferric_scf::rohf::GGA_FXC_KERNEL_BUILDS.load(Ordering::Relaxed);
     let gga_builds = after.saturating_sub(before);
 
-    eprintln!("UKS/OH/PBE  DIIS:   E = {:.10}, iters = {}", r_diis.energy, r_diis.iterations);
+    eprintln!(
+        "UKS/OH/PBE  DIIS:   E = {:.10}, iters = {}",
+        r_diis.energy, r_diis.iterations
+    );
     eprintln!(
         "UKS/OH/PBE  Newton: E = {:.10}, iters = {}, GGA-fxc builds = {}",
         r_newton.energy, r_newton.iterations, gga_builds
@@ -125,8 +140,8 @@ fn uks_pbe_newton_engages_gga_fxc_and_matches_diis() {
 /// through a thin re-implementation of the gradient at rotated C.
 #[test]
 fn uhf_hessian_matvec_matches_finite_difference() {
-    use ferric_scf::rhf::build_jk;
     use ferric_integrals::oneelectron;
+    use ferric_scf::rhf::build_jk;
     use ndarray::Array2;
     use ndarray_linalg::Solve;
 
@@ -157,8 +172,12 @@ fn uhf_hessian_matvec_matches_finite_difference() {
 
     // Occ→virt gradient g^σ_{ai} = F^σ_{ai} at MOs (c_a, c_b), via full Fock.
     let grad_at = |ca: &Array2<f64>, cb: &Array2<f64>| -> (Array2<f64>, Array2<f64>) {
-        let da = ca.slice(ndarray::s![.., ..nocc_a]).dot(&ca.slice(ndarray::s![.., ..nocc_a]).t());
-        let db = cb.slice(ndarray::s![.., ..nocc_b]).dot(&cb.slice(ndarray::s![.., ..nocc_b]).t());
+        let da = ca
+            .slice(ndarray::s![.., ..nocc_a])
+            .dot(&ca.slice(ndarray::s![.., ..nocc_a]).t());
+        let db = cb
+            .slice(ndarray::s![.., ..nocc_b])
+            .dot(&cb.slice(ndarray::s![.., ..nocc_b]).t());
         let dt = &da + &db;
         let mut j = Array2::<f64>::zeros((n, n));
         let mut kdum = Array2::<f64>::zeros((n, n));
@@ -177,7 +196,9 @@ fn uhf_hessian_matvec_matches_finite_difference() {
             let nv = n - nocc;
             let mut o = Array2::<f64>::zeros((nv, nocc));
             for (ir, a) in (nocc..n).enumerate() {
-                for i in 0..nocc { o[(ir, i)] = m[(a, i)]; }
+                for i in 0..nocc {
+                    o[(ir, i)] = m[(a, i)];
+                }
             }
             o
         };
@@ -210,15 +231,21 @@ fn uhf_hessian_matvec_matches_finite_difference() {
         let mut u = Array2::<f64>::zeros((n, n));
         for col in 0..n {
             let sol = am.solve(&bm.column(col).to_owned()).unwrap();
-            for row in 0..n { u[(row, col)] = sol[row]; }
+            for row in 0..n {
+                u[(row, col)] = sol[row];
+            }
         }
         c.dot(&u)
     };
 
     // Analytic H·κ from the solver's own matvec.
     let f_a_mo = {
-        let da = c_a.slice(ndarray::s![.., ..nocc_a]).dot(&c_a.slice(ndarray::s![.., ..nocc_a]).t());
-        let db = c_b.slice(ndarray::s![.., ..nocc_b]).dot(&c_b.slice(ndarray::s![.., ..nocc_b]).t());
+        let da = c_a
+            .slice(ndarray::s![.., ..nocc_a])
+            .dot(&c_a.slice(ndarray::s![.., ..nocc_a]).t());
+        let db = c_b
+            .slice(ndarray::s![.., ..nocc_b])
+            .dot(&c_b.slice(ndarray::s![.., ..nocc_b]).t());
         let dt = &da + &db;
         let mut j = Array2::<f64>::zeros((n, n));
         let mut kdum = Array2::<f64>::zeros((n, n));
@@ -230,8 +257,12 @@ fn uhf_hessian_matvec_matches_finite_difference() {
         c_a.t().dot(&fa).dot(&c_a)
     };
     let f_b_mo = {
-        let da = c_a.slice(ndarray::s![.., ..nocc_a]).dot(&c_a.slice(ndarray::s![.., ..nocc_a]).t());
-        let db = c_b.slice(ndarray::s![.., ..nocc_b]).dot(&c_b.slice(ndarray::s![.., ..nocc_b]).t());
+        let da = c_a
+            .slice(ndarray::s![.., ..nocc_a])
+            .dot(&c_a.slice(ndarray::s![.., ..nocc_a]).t());
+        let db = c_b
+            .slice(ndarray::s![.., ..nocc_b])
+            .dot(&c_b.slice(ndarray::s![.., ..nocc_b]).t());
         let dt = &da + &db;
         let mut j = Array2::<f64>::zeros((n, n));
         let mut kdum = Array2::<f64>::zeros((n, n));
@@ -258,7 +289,8 @@ fn uhf_hessian_matvec_matches_finite_difference() {
         ooc_budget: ferric_core::memory::resolve_budget_bytes(None),
     };
     let pool = ferric_scf::engine_pool::EnginePool::new(bounds.op, &prep, 1e-14).unwrap();
-    let (hk_a, hk_b) = ferric_scf::uhf_newton::hessian_matvec(&ctx, &inputs, &ka, &kb, &pool).unwrap();
+    let (hk_a, hk_b) =
+        ferric_scf::uhf_newton::hessian_matvec(&ctx, &inputs, &ka, &kb, &pool).unwrap();
 
     // Central-difference the orbital gradient along κ:  [g(εκ) − g(−εκ)]/(2ε)
     // → H·κ as ε → 0. Compare the analytic matvec against a small-ε ladder,
@@ -276,7 +308,11 @@ fn uhf_hessian_matvec_matches_finite_difference() {
 
     let fro = |a: &Array2<f64>| -> f64 { a.iter().map(|&x| x * x).sum::<f64>().sqrt() };
     let fro_diff = |a: &Array2<f64>, b: &Array2<f64>| -> f64 {
-        a.iter().zip(b.iter()).map(|(x, y)| (x - y) * (x - y)).sum::<f64>().sqrt()
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y) * (x - y))
+            .sum::<f64>()
+            .sqrt()
     };
     let scale = (fro(&hk_a).powi(2) + fro(&hk_b).powi(2)).sqrt().max(1e-30);
 

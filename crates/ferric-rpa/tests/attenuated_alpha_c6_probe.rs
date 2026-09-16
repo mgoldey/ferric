@@ -145,13 +145,28 @@ fn attenuated_water_rpa_pbe_c6_probe() {
     println!("\n=== water aug-cc-pVDZ : attenuated RPA@PBE α and C6 ===");
     println!("  ref: CRC α_iso ≈ 9.8 a.u. ;  DOSD molecular C6 ≈ 45.4 a.u.");
     println!("  (RPA@PBE is a GOOD baseline ~−15%; watch for overshoot past 45.4)\n");
-    println!("  {:>8}  {:>12}  {:>14}  {:>10}", "ω(Bohr⁻¹)", "α_iso(a.u.)", "C6_mol(a.u.)", "C6 err%");
+    println!(
+        "  {:>8}  {:>12}  {:>14}  {:>10}",
+        "ω(Bohr⁻¹)", "α_iso(a.u.)", "C6_mol(a.u.)", "C6 err%"
+    );
 
     for &w in omegas_bohr {
-        let op = if w == 0.0 { Operator::coulomb() } else { Operator::erfc(w) };
+        let op = if w == 0.0 {
+            Operator::coulomb()
+        } else {
+            Operator::erfc(w)
+        };
         let alpha = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, op, &cfg).unwrap();
         let dp = pdep_dynamic_polarizability(
-            &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Becke, None,
+            &mol,
+            &obs,
+            &obs_bs,
+            &dfbs,
+            &rhf,
+            op,
+            &cfg,
+            DispersionPartition::Becke,
+            None,
         )
         .unwrap();
         let c6 = casimir_polder_c6(&dp);
@@ -213,7 +228,11 @@ fn pdep_rank_vs_attenuation_water() {
         "ω(Bohr⁻¹)", "naux", "rank", "rank/naux", "|trace_log|"
     );
     for &w in &[0.0_f64, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5] {
-        let op = if w == 0.0 { Operator::coulomb() } else { Operator::erfc(w) };
+        let op = if w == 0.0 {
+            Operator::coulomb()
+        } else {
+            Operator::erfc(w)
+        };
         let spec = dielectric_spectrum_static(&mol, &obs, &dfbs, &rhf, op, thresh, None).unwrap();
         println!(
             "  {:>10.3}  {:>6}  {:>6}  {:>10.4}  {:>12.5}",
@@ -295,9 +314,21 @@ fn screening_omega_vs_gap() {
         let gap = eps[nocc] - eps[nocc - 1]; // LUMO − HOMO (a.u.)
 
         let c6_at = |w: f64| -> f64 {
-            let op = if w == 0.0 { Operator::coulomb() } else { Operator::erfc(w) };
+            let op = if w == 0.0 {
+                Operator::coulomb()
+            } else {
+                Operator::erfc(w)
+            };
             let dp = pdep_dynamic_polarizability(
-                &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Becke, None,
+                &mol,
+                &obs,
+                &obs_bs,
+                &dfbs,
+                &rhf,
+                op,
+                &cfg,
+                DispersionPartition::Becke,
+                None,
             )
             .unwrap();
             casimir_polder_c6(&dp).c6_molecular_iso
@@ -315,7 +346,11 @@ fn screening_omega_vs_gap() {
         } else {
             for _ in 0..24 {
                 let mid = 0.5 * (lo + hi);
-                if c6_at(mid) < target { lo = mid; } else { hi = mid; }
+                if c6_at(mid) < target {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
             }
             0.5 * (lo + hi)
         };
@@ -377,7 +412,13 @@ fn attenuation_structure_vs_scalar() {
     let iso = |t: &[[f64; 3]; 3]| (t[0][0] + t[1][1] + t[2][2]) / 3.0;
 
     // First pass: collect baseline & attenuated C6 + the α(iω) profiles.
-    struct Row { label: String, c6_0: f64, c6_w: f64, dosd: f64, ratios: Vec<(f64, f64)> }
+    struct Row {
+        label: String,
+        c6_0: f64,
+        c6_w: f64,
+        dosd: f64,
+        ratios: Vec<(f64, f64)>,
+    }
     let mut rows: Vec<Row> = Vec::new();
 
     for (label, xyz, dosd) in mols {
@@ -398,21 +439,48 @@ fn attenuation_structure_vs_scalar() {
         let rhf = solve_rhf(&ctx, &mol, &obs, scf_op, &bounds, &scf_cfg).unwrap();
 
         let dp0 = pdep_dynamic_polarizability(
-            &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::coulomb(), &cfg, DispersionPartition::Becke, None,
-        ).unwrap();
+            &mol,
+            &obs,
+            &obs_bs,
+            &dfbs,
+            &rhf,
+            Operator::coulomb(),
+            &cfg,
+            DispersionPartition::Becke,
+            None,
+        )
+        .unwrap();
         let dpw = pdep_dynamic_polarizability(
-            &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::erfc(omega_fixed), &cfg, DispersionPartition::Becke, None,
-        ).unwrap();
+            &mol,
+            &obs,
+            &obs_bs,
+            &dfbs,
+            &rhf,
+            Operator::erfc(omega_fixed),
+            &cfg,
+            DispersionPartition::Becke,
+            None,
+        )
+        .unwrap();
 
         let c6_0 = casimir_polder_c6(&dp0).c6_molecular_iso;
         let c6_w = casimir_polder_c6(&dpw).c6_molecular_iso;
 
         // r(iω) = α_att(iω) / α_0(iω) across the grid.
-        let ratios: Vec<(f64, f64)> = dp0.freqs.iter().enumerate().map(|(k, &w)| {
-            (w, iso(&dpw.molecular[k]) / iso(&dp0.molecular[k]))
-        }).collect();
+        let ratios: Vec<(f64, f64)> = dp0
+            .freqs
+            .iter()
+            .enumerate()
+            .map(|(k, &w)| (w, iso(&dpw.molecular[k]) / iso(&dp0.molecular[k])))
+            .collect();
 
-        rows.push(Row { label: label.to_string(), c6_0, c6_w, dosd: *dosd, ratios });
+        rows.push(Row {
+            label: label.to_string(),
+            c6_0,
+            c6_w,
+            dosd: *dosd,
+            ratios,
+        });
     }
 
     // Global scalar s = mean(DOSD/C6_0) — the best single multiplicative correction.
@@ -420,18 +488,29 @@ fn attenuation_structure_vs_scalar() {
 
     println!("\n=== Attenuation structure vs scalar (RPA@PBE C6, ω={omega_fixed} Bohr⁻¹) ===");
     println!("  global scalar s = mean(DOSD/C6₀) = {s:.4}\n");
-    println!("  {:>5}  {:>9}  {:>9}  {:>9}  {:>10}  {:>10}",
-        "mol", "C6₀ err%", "C6(ω) err%", "scalar err%", "att |err|", "scalar |err|");
+    println!(
+        "  {:>5}  {:>9}  {:>9}  {:>9}  {:>10}  {:>10}",
+        "mol", "C6₀ err%", "C6(ω) err%", "scalar err%", "att |err|", "scalar |err|"
+    );
     let (mut att_mae, mut sca_mae) = (0.0, 0.0);
     for r in &rows {
         let e0 = 100.0 * (r.c6_0 - r.dosd) / r.dosd;
         let ew = 100.0 * (r.c6_w - r.dosd) / r.dosd;
         let es = 100.0 * (s * r.c6_0 - r.dosd) / r.dosd;
-        att_mae += ew.abs(); sca_mae += es.abs();
-        println!("  {:>5}  {:>+8.2}  {:>+9.2}  {:>+10.2}  {:>10.2}  {:>10.2}",
-            r.label, e0, ew, es, ew.abs(), es.abs());
+        att_mae += ew.abs();
+        sca_mae += es.abs();
+        println!(
+            "  {:>5}  {:>+8.2}  {:>+9.2}  {:>+10.2}  {:>10.2}  {:>10.2}",
+            r.label,
+            e0,
+            ew,
+            es,
+            ew.abs(),
+            es.abs()
+        );
     }
-    att_mae /= rows.len() as f64; sca_mae /= rows.len() as f64;
+    att_mae /= rows.len() as f64;
+    sca_mae /= rows.len() as f64;
     println!("\n  MAE: attenuation(ω=0.30) = {att_mae:.2}%   global scalar = {sca_mae:.2}%");
     println!("  (attenuation MAE < scalar MAE ⟹ structured/real; ≈ ⟹ scale in disguise)\n");
 
@@ -441,17 +520,23 @@ fn attenuation_structure_vs_scalar() {
     let grid = &rows[0].ratios;
     let idxs: Vec<usize> = {
         let n = grid.len();
-        vec![0, n/4, n/2, 3*n/4, n-1]
+        vec![0, n / 4, n / 2, 3 * n / 4, n - 1]
     };
     print!("  {:>5} ", "ω→");
-    for &k in &idxs { print!("{:>9.3}", grid[k].0); }
+    for &k in &idxs {
+        print!("{:>9.3}", grid[k].0);
+    }
     println!("   span%");
     for r in &rows {
         print!("  {:>5} ", r.label);
         let vals: Vec<f64> = idxs.iter().map(|&k| r.ratios[k].1).collect();
-        for v in &vals { print!("{:>9.4}", v); }
-        let (lo, hi) = (vals.iter().cloned().fold(f64::MAX, f64::min),
-                        vals.iter().cloned().fold(f64::MIN, f64::max));
+        for v in &vals {
+            print!("{:>9.4}", v);
+        }
+        let (lo, hi) = (
+            vals.iter().cloned().fold(f64::MAX, f64::min),
+            vals.iter().cloned().fold(f64::MIN, f64::max),
+        );
         println!("   {:>5.1}", 100.0 * (hi - lo) / lo);
     }
     println!("\n  span% = spread of r(iω) over frequency. Near 0 ⟹ uniform lift (scalar).");
@@ -514,34 +599,73 @@ fn erf_rpa_c6_and_structure() {
 
         // Full-Coulomb baseline C6 for reference.
         let dp_cb = pdep_dynamic_polarizability(
-            &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::coulomb(), &cfg, DispersionPartition::Becke, None,
-        ).unwrap();
+            &mol,
+            &obs,
+            &obs_bs,
+            &dfbs,
+            &rhf,
+            Operator::coulomb(),
+            &cfg,
+            DispersionPartition::Becke,
+            None,
+        )
+        .unwrap();
         let c6_cb = casimir_polder_c6(&dp_cb).c6_molecular_iso;
 
-        print!("  {:>5}  DOSD={:>7.1}  C6(full)={:>7.2}({:+5.1}%) | erf ω:",
-            label, dosd, c6_cb, 100.0*(c6_cb-dosd)/dosd);
+        print!(
+            "  {:>5}  DOSD={:>7.1}  C6(full)={:>7.2}({:+5.1}%) | erf ω:",
+            label,
+            dosd,
+            c6_cb,
+            100.0 * (c6_cb - dosd) / dosd
+        );
         for &w in &omegas {
             let dp = pdep_dynamic_polarizability(
-                &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::erf(w), &cfg, DispersionPartition::Becke, None,
-            ).unwrap();
+                &mol,
+                &obs,
+                &obs_bs,
+                &dfbs,
+                &rhf,
+                Operator::erf(w),
+                &cfg,
+                DispersionPartition::Becke,
+                None,
+            )
+            .unwrap();
             let c6 = casimir_polder_c6(&dp).c6_molecular_iso;
-            print!("  {:.1}→{:+.0}%", w, 100.0*(c6-dosd)/dosd);
+            print!("  {:.1}→{:+.0}%", w, 100.0 * (c6 - dosd) / dosd);
         }
         println!();
 
         // Structure diagnostic on water only: r(iω)=α_erf(iω)/α_full(iω) at ω=1.0.
         if *label == "h2o" {
             let dpw = pdep_dynamic_polarizability(
-                &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::erf(1.0), &cfg, DispersionPartition::Becke, None,
-            ).unwrap();
+                &mol,
+                &obs,
+                &obs_bs,
+                &dfbs,
+                &rhf,
+                Operator::erf(1.0),
+                &cfg,
+                DispersionPartition::Becke,
+                None,
+            )
+            .unwrap();
             println!("\n  --- erf correction shape r(iω)=α_erf(ω=1.0)/α_full, water ---");
             let n = dp_cb.freqs.len();
-            let idxs = [0usize, n/4, n/2, 3*n/4, n-1];
+            let idxs = [0usize, n / 4, n / 2, 3 * n / 4, n - 1];
             print!("    {:>5}", "ω→");
-            for &k in &idxs { print!("{:>10.3}", dp_cb.freqs[k]); }
+            for &k in &idxs {
+                print!("{:>10.3}", dp_cb.freqs[k]);
+            }
             println!();
             print!("    {:>5}", "r");
-            for &k in &idxs { print!("{:>10.4}", iso(&dpw.molecular[k]) / iso(&dp_cb.molecular[k])); }
+            for &k in &idxs {
+                print!(
+                    "{:>10.4}",
+                    iso(&dpw.molecular[k]) / iso(&dp_cb.molecular[k])
+                );
+            }
             println!("\n    (erfc was HIGH at low-iω→1.0 at high-iω. erf rising at high-iω ⟹ short-range, real.)\n");
         }
     }
@@ -599,8 +723,16 @@ fn attenuated_rpa_correlation_recovery_water_ccpvdz() {
     let omega_bohr = 0.222_f64;
     let sr = run_pdep_rpa(&mol, &obs, &dfbs, Operator::erfc(omega_bohr), &rhf, &cfg).unwrap();
 
-    assert!(full.e_rpa < 0.0, "full-Coulomb E_c should be negative, got {}", full.e_rpa);
-    assert!(sr.e_rpa < 0.0, "SR (erfc) E_c should be negative, got {}", sr.e_rpa);
+    assert!(
+        full.e_rpa < 0.0,
+        "full-Coulomb E_c should be negative, got {}",
+        full.e_rpa
+    );
+    assert!(
+        sr.e_rpa < 0.0,
+        "SR (erfc) E_c should be negative, got {}",
+        sr.e_rpa
+    );
 
     let recovery = sr.e_rpa / full.e_rpa;
     println!(
@@ -669,14 +801,25 @@ fn erfc_rpa_omega_to_zero_matches_coulomb_rpa() {
     let scf_op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
     let rhf = solve_rhf(
-        &ctx, &mol, &obs, scf_op, &bounds,
-        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
-    ).unwrap();
+        &ctx,
+        &mol,
+        &obs,
+        scf_op,
+        &bounds,
+        &RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert!(rhf.converged, "H2/cc-pVDZ RHF reference did not converge");
 
     // Full rank (trunc_thresh = 0.0): this is an energy comparison, not a
     // production-size perf run, so no truncation noise should enter.
-    let cfg = PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() };
+    let cfg = PdepRpaConfig {
+        trunc_thresh: 0.0,
+        ..Default::default()
+    };
 
     let coul = run_pdep_rpa(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &cfg).unwrap();
     let sr = run_pdep_rpa(&mol, &obs, &dfbs, Operator::erfc(0.01), &rhf, &cfg).unwrap();
@@ -708,16 +851,30 @@ fn erfc_rpa_omega_to_infinity_vanishes() {
     let scf_op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(scf_op, &obs).unwrap();
     let rhf = solve_rhf(
-        &ctx, &mol, &obs, scf_op, &bounds,
-        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
-    ).unwrap();
+        &ctx,
+        &mol,
+        &obs,
+        scf_op,
+        &bounds,
+        &RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert!(rhf.converged, "H2/cc-pVDZ RHF reference did not converge");
 
-    let cfg = PdepRpaConfig { trunc_thresh: 0.0, ..Default::default() };
+    let cfg = PdepRpaConfig {
+        trunc_thresh: 0.0,
+        ..Default::default()
+    };
 
     let sr = run_pdep_rpa(&mol, &obs, &dfbs, Operator::erfc(20.0), &rhf, &cfg).unwrap();
 
-    println!("\nH2/cc-pVDZ dRPA: erfc(ω=20) e_rpa={:.12} (should -> 0)\n", sr.e_rpa);
+    println!(
+        "\nH2/cc-pVDZ dRPA: erfc(ω=20) e_rpa={:.12} (should -> 0)\n",
+        sr.e_rpa
+    );
     assert!(
         sr.e_rpa.abs() < 5e-7,
         "erfc(ω→∞) must vanish: e_rpa={:.10}",

@@ -56,9 +56,7 @@ use crate::lmp2_direct::{assemble_ragged_direct_local, DirectConfig, DirectStats
 use crate::ragged::{
     apply_pattern, matvec_indexed, ring_product, ring_product_planned, Ragged, RingPlan,
 };
-use crate::rimp2::{
-    active_occ, eri3_budget_bytes, eri3_mo_ov_blocked, metric_inverse_sqrt,
-};
+use crate::rimp2::{active_occ, eri3_budget_bytes, eri3_mo_ov_blocked, metric_inverse_sqrt};
 use ferric_integrals::threeindex::coulomb_metric_2c;
 
 /// Configuration for amplitude-threshold dRPA via localized Riccati fixed-point iteration.
@@ -148,8 +146,14 @@ pub struct AmplitudeDrpaResult {
 
 impl std::fmt::Display for AmplitudeDrpaResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Amplitude-dRPA total: {:.10} Ha (corr: {:.10}, keep: {:.1}%, {} iters)",
-            self.e_total, self.e_corr, self.keep_fraction * 100.0, self.iterations)
+        write!(
+            f,
+            "Amplitude-dRPA total: {:.10} Ha (corr: {:.10}, keep: {:.1}%, {} iters)",
+            self.e_total,
+            self.e_corr,
+            self.keep_fraction * 100.0,
+            self.iterations
+        )
     }
 }
 
@@ -189,12 +193,16 @@ fn fock_super(t4: &Array4<f64>, f_oo: &Array2<f64>, f_vv: &Array2<f64>) -> Array
 }
 
 fn to4(m: &Array2<f64>, no: usize, nv: usize) -> Array4<f64> {
-    m.clone().into_shape_with_order((no, nv, no, nv)).expect("compound reshape")
+    m.clone()
+        .into_shape_with_order((no, nv, no, nv))
+        .expect("compound reshape")
 }
 
 fn to2(m: &Array4<f64>) -> Array2<f64> {
     let (no, nv, _, _) = m.dim();
-    m.clone().into_shape_with_order((no * nv, no * nv)).expect("compound reshape")
+    m.clone()
+        .into_shape_with_order((no * nv, no * nv))
+        .expect("compound reshape")
 }
 
 /// Flatten a ragged block collection into one row vector (shape (1, total)),
@@ -315,8 +323,13 @@ pub fn amplitude_drpa_scan(
     let lb = assemble_basis(mol, obs, dfbs, op, rhf, &lcfg, &vvhv)?;
     let mut out = Vec::with_capacity(eps_list.len());
     for &eps in eps_list {
-        let cfg = AmplitudeDrpaConfig { eps, ..base_cfg.clone() };
-        out.push(amplitude_drpa_from_basis(mol, obs, dfbs, op, rhf, &cfg, &lb)?);
+        let cfg = AmplitudeDrpaConfig {
+            eps,
+            ..base_cfg.clone()
+        };
+        out.push(amplitude_drpa_from_basis(
+            mol, obs, dfbs, op, rhf, &cfg, &lb,
+        )?);
     }
     Ok(out)
 }
@@ -358,7 +371,10 @@ pub fn amplitude_drpa_scan_timed(
     let mut out = Vec::with_capacity(eps_list.len());
     let mut walls = Vec::with_capacity(eps_list.len());
     for &eps in eps_list {
-        let cfg = AmplitudeDrpaConfig { eps, ..base_cfg.clone() };
+        let cfg = AmplitudeDrpaConfig {
+            eps,
+            ..base_cfg.clone()
+        };
         let t0 = Instant::now();
         let r = amplitude_drpa_from_basis(mol, obs, dfbs, op, rhf, &cfg, &lb)?;
         walls.push(t0.elapsed().as_secs_f64());
@@ -382,16 +398,8 @@ fn amplitude_drpa_from_basis(
 ) -> Result<AmplitudeDrpaResult, FerricError> {
     // B = 2 (ia|jb), assembled directly onto ragged blocks (scale = 2.0;
     // the eps mask therefore acts on |B| exactly as the dense V1 did)
-    let (rg, _gated) = assemble_ragged_direct(
-        mol,
-        dfbs,
-        op,
-        lb,
-        cfg.eps,
-        2.0,
-        cfg.pair_gate_cal,
-        None,
-    )?;
+    let (rg, _gated) =
+        assemble_ragged_direct(mol, dfbs, op, lb, cfg.eps, 2.0, cfg.pair_gate_cal, None)?;
     let (e_corr, it, relres) = riccati_masked_solve(&rg, &lb.f_oo, cfg)?;
     let e_ref = if cfg.compute_reference {
         canonical_plasmon_drpa(mol, obs, dfbs, op, rhf, cfg)?
@@ -399,7 +407,11 @@ fn amplitude_drpa_from_basis(
         f64::NAN
     };
     let n = lb.no * lb.nv;
-    let kept: usize = rg.pairs.iter().map(|pb| pb.pat.iter().filter(|&&x| x).count()).sum();
+    let kept: usize = rg
+        .pairs
+        .iter()
+        .map(|pb| pb.pat.iter().filter(|&&x| x).count())
+        .sum();
     Ok(AmplitudeDrpaResult {
         e_corr,
         e_total: rhf.energy + e_corr,
@@ -426,7 +438,11 @@ fn riccati_masked_solve(
     cfg: &AmplitudeDrpaConfig,
 ) -> Result<(f64, usize, f64), FerricError> {
     let b_blocks: Vec<Array2<f64>> = rg.pairs.iter().map(|pb| pb.j_blk.clone()).collect();
-    let bnorm = b_blocks.iter().map(|b| b.iter().map(|x| x * x).sum::<f64>()).sum::<f64>().sqrt();
+    let bnorm = b_blocks
+        .iter()
+        .map(|b| b.iter().map(|x| x * x).sum::<f64>())
+        .sum::<f64>()
+        .sqrt();
     // B is the CONSTANT first operand of `ring_product(rg, b_blocks, ·)`
     // across every fixed-point iteration (it's the integral block, never
     // reassigned below) — build the plan once so its sub-block gathers
@@ -436,7 +452,11 @@ fn riccati_masked_solve(
     let b_ring_plan = RingPlan::new(rg, &b_blocks);
 
     // damped fixed point T <- T - R(T)/D on the pattern, all ragged
-    let shapes: Vec<(usize, usize)> = rg.pairs.iter().map(|pb| (pb.da.len(), pb.db.len())).collect();
+    let shapes: Vec<(usize, usize)> = rg
+        .pairs
+        .iter()
+        .map(|pb| (pb.da.len(), pb.db.len()))
+        .collect();
     let mut t: Vec<Array2<f64>> = rg
         .pairs
         .iter()
@@ -451,9 +471,9 @@ fn riccati_masked_solve(
     while it < cfg.fp_max_iter && !converged {
         it += 1;
         let f_t = matvec_indexed(rg, f_oo, &t, &mut flops); // pattern-projected
-        // BT + TB + TBT = BT + T*(B + BT): two ring products per iteration
-        // instead of three (exact by linearity of the contraction in its
-        // second operand; fp summation order shifts within anchor bars)
+                                                            // BT + TB + TBT = BT + T*(B + BT): two ring products per iteration
+                                                            // instead of three (exact by linearity of the contraction in its
+                                                            // second operand; fp summation order shifts within anchor bars)
         let bt = ring_product_planned(&b_ring_plan, &t);
         let u: Vec<Array2<f64>> = b_blocks.iter().zip(&bt).map(|(b, c)| b + c).collect();
         let tu = ring_product(rg, &t, &u);
@@ -605,7 +625,11 @@ pub fn amplitude_drpa_direct_with_virtuals(
         f64::NAN
     };
     let n = spaces.no * spaces.nv;
-    let kept: usize = rg.pairs.iter().map(|pb| pb.pat.iter().filter(|&&x| x).count()).sum();
+    let kept: usize = rg
+        .pairs
+        .iter()
+        .map(|pb| pb.pat.iter().filter(|&&x| x).count())
+        .sum();
     Ok((
         AmplitudeDrpaResult {
             e_corr,
@@ -647,7 +671,10 @@ pub fn amplitude_drpa_dense(
     let (no, nv) = (lp.no, lp.nv);
     let n = no * nv;
     let b2 = lp.j_dense.mapv(|x| 2.0 * x); // B = 2 (ia|jb)
-    let mask: Vec<bool> = b2.iter().map(|&x| cfg.eps == 0.0 || x.abs() > cfg.eps).collect();
+    let mask: Vec<bool> = b2
+        .iter()
+        .map(|&x| cfg.eps == 0.0 || x.abs() > cfg.eps)
+        .collect();
     let kept = mask.iter().filter(|&&m| m).count();
 
     // denominators from the localized Fock diagonals (positive for gapped)
@@ -717,7 +744,12 @@ pub fn amplitude_drpa_dense(
             "drpa_amplitude: Riccati fixed point failed to converge (relres {relres:.2e} after {it} iters)"
         )));
     }
-    let e_corr = 0.5 * b_masked.iter().zip(t2.iter()).map(|(b, t)| b * t).sum::<f64>();
+    let e_corr = 0.5
+        * b_masked
+            .iter()
+            .zip(t2.iter())
+            .map(|(b, t)| b * t)
+            .sum::<f64>();
 
     let e_ref = if cfg.compute_reference {
         canonical_plasmon_drpa(mol, obs, dfbs, op, rhf, cfg)?

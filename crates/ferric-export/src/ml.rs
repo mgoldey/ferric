@@ -1,7 +1,7 @@
+use crate::cube::ExportError;
 use ndarray::{Array1, Array2, Array3, Array4};
 use ndarray_npy::NpzWriter;
 use std::fs::File;
-use crate::cube::ExportError;
 
 /// Atomic partial-charge schemes for the NPZ bundle. Grouping these (rather
 /// than flat positional `Option<&[f64]>` params) mirrors `PdepRpaConfig`'s
@@ -107,49 +107,72 @@ pub fn export_npz(path: &str, bundle: &NpzBundle) -> Result<(), ExportError> {
     let mut writer = NpzWriter::new(file);
 
     if let Some(c) = bundle.mo_coeffs {
-        writer.add_array("mo_coeffs", c).map_err(|e| ExportError::Other(e.to_string()))?;
+        writer
+            .add_array("mo_coeffs", c)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
     if let Some(e) = bundle.orbital_energies {
         let e_arr = Array1::from_vec(e.to_vec());
-        writer.add_array("orbital_energies", &e_arr).map_err(|e| ExportError::Other(e.to_string()))?;
+        writer
+            .add_array("orbital_energies", &e_arr)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
     if let Some(v) = bundle.pdep_eigenvectors {
-        writer.add_array("pdep_eigenvectors", v).map_err(|e| ExportError::Other(e.to_string()))?;
+        writer
+            .add_array("pdep_eigenvectors", v)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
     if let Some(bc) = bundle.boys_coeffs {
-        writer.add_array("boys_coeffs", bc).map_err(|e| ExportError::Other(e.to_string()))?;
+        writer
+            .add_array("boys_coeffs", bc)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
     if let Some(oc) = bundle.orbital_centers {
-        writer.add_array("orbital_centers", oc).map_err(|e| ExportError::Other(e.to_string()))?;
+        writer
+            .add_array("orbital_centers", oc)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
     }
     if let Some(os) = bundle.orbital_spreads {
         let a = Array1::from_vec(os.to_vec());
-        writer.add_array("orbital_spreads", &a).map_err(|e| ExportError::Other(e.to_string()))?;
+        writer
+            .add_array("orbital_spreads", &a)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
     }
     if let Some(m2) = bundle.density_second_moment {
-        writer.add_array("density_second_moment", m2).map_err(|e| ExportError::Other(e.to_string()))?;
+        writer
+            .add_array("density_second_moment", m2)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
     if let Some(c) = bundle.coords {
-        writer.add_array("coords", c).map_err(|e| ExportError::Other(e.to_string()))?;
+        writer
+            .add_array("coords", c)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
     if let Some(z) = bundle.atomic_numbers {
         let z_arr = Array1::from_vec(z.iter().map(|&x| x as i64).collect());
-        writer.add_array("atomic_numbers", &z_arr).map_err(|e| ExportError::Other(e.to_string()))?;
+        writer
+            .add_array("atomic_numbers", &z_arr)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
     if let Some(v) = bundle.polarizability.esp_atoms {
         let v_arr = Array1::from_vec(v.to_vec());
-        writer.add_array("esp_atoms", &v_arr).map_err(|e| ExportError::Other(e.to_string()))?;
+        writer
+            .add_array("esp_atoms", &v_arr)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
     // Surface ESP: values and coordinates travel together or not at all.
-    match (bundle.polarizability.esp_surface, bundle.polarizability.esp_points) {
+    match (
+        bundle.polarizability.esp_surface,
+        bundle.polarizability.esp_points,
+    ) {
         (Some(v), Some(pts)) => {
             if pts.ncols() != 3 || pts.nrows() != v.len() {
                 return Err(ExportError::Other(format!(
@@ -161,8 +184,12 @@ pub fn export_npz(path: &str, bundle: &NpzBundle) -> Result<(), ExportError> {
                 )));
             }
             let v_arr = Array1::from_vec(v.to_vec());
-            writer.add_array("esp_surface", &v_arr).map_err(|e| ExportError::Other(e.to_string()))?;
-            writer.add_array("esp_points", pts).map_err(|e| ExportError::Other(e.to_string()))?;
+            writer
+                .add_array("esp_surface", &v_arr)
+                .map_err(|e| ExportError::Other(e.to_string()))?;
+            writer
+                .add_array("esp_points", pts)
+                .map_err(|e| ExportError::Other(e.to_string()))?;
         }
         (Some(_), None) => {
             return Err(ExportError::Other(
@@ -182,19 +209,23 @@ pub fn export_npz(path: &str, bundle: &NpzBundle) -> Result<(), ExportError> {
     if let Some(a) = bundle.polarizability.alpha_tensor {
         let flat: Vec<f64> = a.iter().flat_map(|row| row.iter().copied()).collect();
         let a_arr = Array2::from_shape_vec((3, 3), flat).unwrap();
-        writer.add_array("alpha_tensor", &a_arr).map_err(|e| ExportError::Other(e.to_string()))?;
+        writer
+            .add_array("alpha_tensor", &a_arr)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
     if let Some(ef) = bundle.polarizability.electric_field {
         let n = ef.len();
         let flat: Vec<f64> = ef.iter().flat_map(|row| row.iter().copied()).collect();
         let ef_arr = Array2::from_shape_vec((n, 3), flat).unwrap();
-        writer.add_array("electric_field", &ef_arr)
+        writer
+            .add_array("electric_field", &ef_arr)
             .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
     if let Some(dm) = bundle.density_matrix {
-        writer.add_array("density_matrix", dm)
+        writer
+            .add_array("density_matrix", dm)
             .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
@@ -251,12 +282,16 @@ pub fn export_npz(path: &str, bundle: &NpzBundle) -> Result<(), ExportError> {
 
     if let Some(f) = bundle.dispersion.c6_freqs {
         let a = Array1::from_vec(f.to_vec());
-        writer.add_array("c6_freqs", &a).map_err(|e| ExportError::Other(e.to_string()))?;
+        writer
+            .add_array("c6_freqs", &a)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
     if let Some(w) = bundle.dispersion.c6_weights {
         let a = Array1::from_vec(w.to_vec());
-        writer.add_array("c6_weights", &a).map_err(|e| ExportError::Other(e.to_string()))?;
+        writer
+            .add_array("c6_weights", &a)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
     if let Some(ad) = bundle.dispersion.alpha_atomic_dynamic {
@@ -279,7 +314,9 @@ pub fn export_npz(path: &str, bundle: &NpzBundle) -> Result<(), ExportError> {
     }
 
     if let Some(c) = bundle.dispersion.c6_iso {
-        writer.add_array("c6_iso", c).map_err(|e| ExportError::Other(e.to_string()))?;
+        writer
+            .add_array("c6_iso", c)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
     if let Some(ca) = bundle.dispersion.c6_aniso {
@@ -295,14 +332,20 @@ pub fn export_npz(path: &str, bundle: &NpzBundle) -> Result<(), ExportError> {
             }
         }
         let arr = Array4::from_shape_vec((n, n, 3, 3), flat).unwrap();
-        writer.add_array("c6_aniso", &arr).map_err(|e| ExportError::Other(e.to_string()))?;
+        writer
+            .add_array("c6_aniso", &arr)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
     if let Some(mu) = bundle.dipole {
         let mu_arr = Array1::from_vec(mu.to_vec());
-        writer.add_array("dipole", &mu_arr).map_err(|e| ExportError::Other(e.to_string()))?;
+        writer
+            .add_array("dipole", &mu_arr)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    writer.finish().map_err(|e| ExportError::Other(e.to_string()))?;
+    writer
+        .finish()
+        .map_err(|e| ExportError::Other(e.to_string()))?;
     Ok(())
 }

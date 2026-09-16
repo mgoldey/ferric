@@ -158,8 +158,8 @@ mod tests {
     /// independent strict-upper-triangle entries).
     fn seeded_antisym_6x6(scale: f64) -> Array2<f64> {
         let vals = [
-            0.31, -0.42, 0.17, 0.23, -0.11, 0.28, 0.05, -0.19, 0.37, -0.08,
-            0.14, -0.26, 0.09, 0.21, -0.33,
+            0.31, -0.42, 0.17, 0.23, -0.11, 0.28, 0.05, -0.19, 0.37, -0.08, 0.14, -0.26, 0.09,
+            0.21, -0.33,
         ];
         let mut kappa = Array2::<f64>::zeros((6, 6));
         let mut idx = 0;

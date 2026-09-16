@@ -205,8 +205,9 @@ impl ExternalPotential {
                 // (see the module-level derivation and
                 // `smeared_charge_gradient_matches_numeric_derivative` for
                 // the numeric check).
-                let dpot_dr = (2.0 / (std::f64::consts::PI.sqrt() * sc.width)) * (-sz_r * sz_r).exp() / r
-                    - erf(sz_r) / r2;
+                let dpot_dr =
+                    (2.0 / (std::f64::consts::PI.sqrt() * sc.width)) * (-sz_r * sz_r).exp() / r
+                        - erf(sz_r) / r2;
                 // Chain rule: R = |R_A - R_C|, dR/dR_A = (R_A - R_C)/R.
                 let coeff = za * sc.q * dpot_dr / r;
                 grad[(i, 0)] += coeff * dx;
@@ -245,8 +246,9 @@ impl ExternalPotential {
                 let r = r2.sqrt();
                 let sqrt_zeta = 1.0 / sc.width;
                 let sz_r = sqrt_zeta * r;
-                let dpot_dr = (2.0 / (std::f64::consts::PI.sqrt() * sc.width)) * (-sz_r * sz_r).exp() / r
-                    - erf(sz_r) / r2;
+                let dpot_dr =
+                    (2.0 / (std::f64::consts::PI.sqrt() * sc.width)) * (-sz_r * sz_r).exp() / r
+                        - erf(sz_r) / r2;
                 // dE/dR_A = za*q*dpot_dr/r * (dx,dy,dz); dE/dR_site = -that
                 // (dR/dR_site = -(dx,dy,dz)/r).
                 let coeff = -za * sc.q * dpot_dr / r;
@@ -409,7 +411,12 @@ mod tests {
     fn smeared_charges_empty_is_true_no_op() {
         let mol = single_h_atom();
         let ep_before = super::ExternalPotential {
-            point_charges: vec![super::PointCharge { q: 2.0, x: 0.0, y: 0.0, z: 5.0 }],
+            point_charges: vec![super::PointCharge {
+                q: 2.0,
+                x: 0.0,
+                y: 0.0,
+                z: 5.0,
+            }],
             smeared_charges: Vec::new(),
             field: None,
         };
@@ -432,7 +439,13 @@ mod tests {
     fn is_empty_false_when_only_smeared_charges_present() {
         let ep = super::ExternalPotential {
             point_charges: vec![],
-            smeared_charges: vec![super::SmearedCharge { q: 1.0, x: 0.0, y: 0.0, z: 0.0, width: 1.0 }],
+            smeared_charges: vec![super::SmearedCharge {
+                q: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                width: 1.0,
+            }],
             field: None,
         };
         assert!(!ep.is_empty());
@@ -445,18 +458,32 @@ mod tests {
     fn tight_width_smeared_energy_matches_point_charge_energy() {
         let mol = single_h_atom();
         let ep_point = super::ExternalPotential {
-            point_charges: vec![super::PointCharge { q: 2.0, x: 0.0, y: 0.0, z: 5.0 }],
+            point_charges: vec![super::PointCharge {
+                q: 2.0,
+                x: 0.0,
+                y: 0.0,
+                z: 5.0,
+            }],
             smeared_charges: Vec::new(),
             field: None,
         };
         let ep_smeared = super::ExternalPotential {
             point_charges: vec![],
-            smeared_charges: vec![super::SmearedCharge { q: 2.0, x: 0.0, y: 0.0, z: 5.0, width: 1e-3 }],
+            smeared_charges: vec![super::SmearedCharge {
+                q: 2.0,
+                x: 0.0,
+                y: 0.0,
+                z: 5.0,
+                width: 1e-3,
+            }],
             field: None,
         };
         let e_point = ep_point.charge_nuclear_energy(&mol);
         let e_smeared = ep_smeared.charge_nuclear_energy(&mol);
-        assert!((e_point - e_smeared).abs() < 1e-9, "point {e_point} vs smeared {e_smeared}");
+        assert!(
+            (e_point - e_smeared).abs() < 1e-9,
+            "point {e_point} vs smeared {e_smeared}"
+        );
     }
 
     /// The analytic `charge_nuclear_gradient` smeared-charge term against a
@@ -469,7 +496,13 @@ mod tests {
         let mol = Molecule::parse_xyz("1\nH\nH 0.3 -0.2 0.5\n", 0, 2).unwrap();
         let ep = super::ExternalPotential {
             point_charges: vec![],
-            smeared_charges: vec![super::SmearedCharge { q: 1.7, x: 1.1, y: -0.6, z: 2.3, width: 0.8 }],
+            smeared_charges: vec![super::SmearedCharge {
+                q: 1.7,
+                x: 1.1,
+                y: -0.6,
+                z: 2.3,
+                width: 0.8,
+            }],
             field: None,
         };
         let g = ep.charge_nuclear_gradient(&mol);
@@ -480,9 +513,18 @@ mod tests {
             let mut mol_p = mol.clone();
             let mut mol_m = mol.clone();
             match axis {
-                0 => { mol_p.atoms[0].x += h; mol_m.atoms[0].x -= h; }
-                1 => { mol_p.atoms[0].y += h; mol_m.atoms[0].y -= h; }
-                _ => { mol_p.atoms[0].zpos += h; mol_m.atoms[0].zpos -= h; }
+                0 => {
+                    mol_p.atoms[0].x += h;
+                    mol_m.atoms[0].x -= h;
+                }
+                1 => {
+                    mol_p.atoms[0].y += h;
+                    mol_m.atoms[0].y -= h;
+                }
+                _ => {
+                    mol_p.atoms[0].zpos += h;
+                    mol_m.atoms[0].zpos -= h;
+                }
             }
             let e_p = ep.charge_nuclear_energy(&mol_p);
             let e_m = ep.charge_nuclear_energy(&mol_m);
@@ -506,7 +548,13 @@ mod tests {
     #[test]
     fn smeared_charge_nuclear_site_gradient_matches_numeric_derivative() {
         let mol = Molecule::parse_xyz("2\nH2\nH 0.3 -0.2 0.5\nH -0.4 0.6 -0.3\n", 0, 1).unwrap();
-        let base = super::SmearedCharge { q: 1.7, x: 1.1, y: -0.6, z: 2.3, width: 0.8 };
+        let base = super::SmearedCharge {
+            q: 1.7,
+            x: 1.1,
+            y: -0.6,
+            z: 2.3,
+            width: 0.8,
+        };
         let ep = super::ExternalPotential {
             point_charges: vec![],
             smeared_charges: vec![base],
@@ -520,12 +568,29 @@ mod tests {
             let mut site_p = base;
             let mut site_m = base;
             match axis {
-                0 => { site_p.x += h; site_m.x -= h; }
-                1 => { site_p.y += h; site_m.y -= h; }
-                _ => { site_p.z += h; site_m.z -= h; }
+                0 => {
+                    site_p.x += h;
+                    site_m.x -= h;
+                }
+                1 => {
+                    site_p.y += h;
+                    site_m.y -= h;
+                }
+                _ => {
+                    site_p.z += h;
+                    site_m.z -= h;
+                }
             }
-            let ep_p = super::ExternalPotential { point_charges: vec![], smeared_charges: vec![site_p], field: None };
-            let ep_m = super::ExternalPotential { point_charges: vec![], smeared_charges: vec![site_m], field: None };
+            let ep_p = super::ExternalPotential {
+                point_charges: vec![],
+                smeared_charges: vec![site_p],
+                field: None,
+            };
+            let ep_m = super::ExternalPotential {
+                point_charges: vec![],
+                smeared_charges: vec![site_m],
+                field: None,
+            };
             let e_p = ep_p.charge_nuclear_energy(&mol);
             let e_m = ep_m.charge_nuclear_energy(&mol);
             let fd = (e_p - e_m) / (2.0 * h);
@@ -546,13 +611,24 @@ mod tests {
     fn tight_width_smeared_gradient_matches_point_charge_gradient() {
         let mol = single_h_atom();
         let ep_point = super::ExternalPotential {
-            point_charges: vec![super::PointCharge { q: 2.0, x: 0.3, y: -0.4, z: 5.0 }],
+            point_charges: vec![super::PointCharge {
+                q: 2.0,
+                x: 0.3,
+                y: -0.4,
+                z: 5.0,
+            }],
             smeared_charges: Vec::new(),
             field: None,
         };
         let ep_smeared = super::ExternalPotential {
             point_charges: vec![],
-            smeared_charges: vec![super::SmearedCharge { q: 2.0, x: 0.3, y: -0.4, z: 5.0, width: 1e-3 }],
+            smeared_charges: vec![super::SmearedCharge {
+                q: 2.0,
+                x: 0.3,
+                y: -0.4,
+                z: 5.0,
+                width: 1e-3,
+            }],
             field: None,
         };
         let g_point = ep_point.charge_nuclear_gradient(&mol);
@@ -560,7 +636,9 @@ mod tests {
         for k in 0..3 {
             assert!(
                 (g_point[(0, k)] - g_smeared[(0, k)]).abs() < 1e-6,
-                "component {k}: point {} vs smeared {}", g_point[(0, k)], g_smeared[(0, k)]
+                "component {k}: point {} vs smeared {}",
+                g_point[(0, k)],
+                g_smeared[(0, k)]
             );
         }
     }

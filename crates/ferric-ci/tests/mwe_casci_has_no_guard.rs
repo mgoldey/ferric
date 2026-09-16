@@ -48,7 +48,9 @@ fn binom(n: usize, k: usize) -> usize {
 
 /// Production peak: two Davidson bases of `max_subspace` vectors each.
 fn davidson_bytes(ndet: usize, max_subspace: usize) -> usize {
-    ndet.saturating_mul(max_subspace).saturating_mul(2).saturating_mul(8)
+    ndet.saturating_mul(max_subspace)
+        .saturating_mul(2)
+        .saturating_mul(8)
 }
 
 /// The dense Hamiltonian, if a caller ever reaches for it.

@@ -73,7 +73,10 @@ fn df_guess_converges_to_same_energy_as_plain_scf() {
     };
 
     let plain = solve_rhf(&ctx, &mol, &prep, op, &bounds, &base).unwrap();
-    assert!(plain.converged, "plain SCF must converge for this comparison to mean anything");
+    assert!(
+        plain.converged,
+        "plain SCF must converge for this comparison to mean anything"
+    );
 
     let dfg = solve_rhf_with_df_guess(&ctx, &mol, &prep, op, &bounds, &base, None).unwrap();
     assert!(dfg.result.converged, "DF-guess exact stage must converge");
@@ -83,7 +86,9 @@ fn df_guess_converges_to_same_energy_as_plain_scf() {
         de < 1e-8,
         "DF-guess exact-stage energy {:.12} disagrees with plain-SCF energy {:.12} by {:.3e} \
          Ha -- the DF pre-stage must only change convergence SPEED, not the converged fixed point",
-        dfg.result.energy, plain.energy, de
+        dfg.result.energy,
+        plain.energy,
+        de
     );
 }
 
@@ -111,7 +116,10 @@ fn df_guess_pre_stage_actually_runs_fitted_scf() {
     let base = RhfConfig::default();
     let dfg = solve_rhf_with_df_guess(&ctx, &mol, &prep, op, &bounds, &base, None).unwrap();
 
-    assert!(dfg.df_iterations > 0, "DF pre-stage must run at least one SCF iteration");
+    assert!(
+        dfg.df_iterations > 0,
+        "DF pre-stage must run at least one SCF iteration"
+    );
     // The DF stage's own converged energy is a FITTED quantity (def2-universal-
     // jkfit RI-J/RI-K), not the exact-integral energy -- it should differ from
     // the exact-stage energy by an amount characteristic of the RI fitting
@@ -125,7 +133,9 @@ fn df_guess_pre_stage_actually_runs_fitted_scf() {
         delta > 1e-7,
         "DF pre-stage energy {:.12} is suspiciously close to the exact-stage energy {:.12} \
          (Δ={:.3e} Ha) -- the DF stage may not actually be running density-fitted J/K",
-        dfg.df_energy, dfg.result.energy, delta
+        dfg.df_energy,
+        dfg.result.energy,
+        delta
     );
 
     // The DF stage must also respect its capped max_iter: it should not have
@@ -133,7 +143,8 @@ fn df_guess_pre_stage_actually_runs_fitted_scf() {
     assert!(
         dfg.df_iterations <= ferric_scf::ladder::DF_GUESS_MAX_ITER,
         "DF pre-stage ran {} iterations, exceeding its documented cap of {}",
-        dfg.df_iterations, ferric_scf::ladder::DF_GUESS_MAX_ITER
+        dfg.df_iterations,
+        ferric_scf::ladder::DF_GUESS_MAX_ITER
     );
 }
 
@@ -161,8 +172,15 @@ fn df_guess_exact_stage_ignores_pre_stage_aux_choice() {
 
     let default_aux = solve_rhf_with_df_guess(&ctx, &mol, &prep, op, &bounds, &base, None).unwrap();
     let explicit_aux = solve_rhf_with_df_guess(
-        &ctx, &mol, &prep, op, &bounds, &base, Some("def2-universal-jkfit"),
-    ).unwrap();
+        &ctx,
+        &mol,
+        &prep,
+        op,
+        &bounds,
+        &base,
+        Some("def2-universal-jkfit"),
+    )
+    .unwrap();
 
     assert!(default_aux.result.converged && explicit_aux.result.converged);
     let de = (default_aux.result.energy - explicit_aux.result.energy).abs();
@@ -184,7 +202,8 @@ fn df_guess_result_type_is_used() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let dfg = solve_rhf_with_df_guess(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default(), None).unwrap();
+    let dfg = solve_rhf_with_df_guess(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default(), None)
+        .unwrap();
     let _: bool = dfg.df_converged;
     let _: usize = dfg.df_iterations;
     let _: f64 = dfg.df_energy;
@@ -216,7 +235,11 @@ fn tight_df_pre_stage_runs_longer_and_shortens_the_exact_stage() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let base = RhfConfig { energy_conv: 1e-10, density_conv: 1e-9, ..Default::default() };
+    let base = RhfConfig {
+        energy_conv: 1e-10,
+        density_conv: 1e-9,
+        ..Default::default()
+    };
 
     let run = |tight: bool| {
         // SAFETY-ish: these tests run single-threaded within this binary for
@@ -239,14 +262,16 @@ fn tight_df_pre_stage_runs_longer_and_shortens_the_exact_stage() {
         "tight policy must run the DF pre-stage LONGER (to its stall point): \
          tight {} vs loose {} DF iterations — if these are equal the tight \
          default is inert and the measured 1.15-1.18x is not being delivered",
-        tight.df_iterations, loose.df_iterations
+        tight.df_iterations,
+        loose.df_iterations
     );
     assert!(
         tight.result.iterations <= loose.result.iterations,
         "tight policy must not COST exact iterations: tight {} vs loose {} — \
          the entire justification is trading cheap DF iterations for expensive \
          exact ones, so a regression here inverts the trade",
-        tight.result.iterations, loose.result.iterations
+        tight.result.iterations,
+        loose.result.iterations
     );
     // Both must still land on the same converged answer.
     let de = (tight.result.energy - loose.result.energy).abs();

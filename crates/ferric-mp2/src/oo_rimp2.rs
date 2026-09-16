@@ -27,8 +27,8 @@ use ferric_integrals::threeindex;
 use ferric_scf::diis::Diis;
 use ferric_scf::engine_pool::EnginePool;
 use ferric_scf::rhf::build_jk_with_pool;
-use ferric_scf::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::ScfResult;
 use ndarray::{Array2, Array3};
 use std::cell::RefCell;
 
@@ -100,8 +100,11 @@ pub struct OoRiMp2Result {
 
 impl std::fmt::Display for OoRiMp2Result {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "OO-RI-MP2 total: {:.10} Ha ({} iters, converged: {})",
-            self.total_energy, self.iterations, self.converged)
+        write!(
+            f,
+            "OO-RI-MP2 total: {:.10} Ha ({} iters, converged: {})",
+            self.total_energy, self.iterations, self.converged
+        )
     }
 }
 
@@ -146,7 +149,12 @@ impl OoRiMp2AoTensors {
         dfbs: &PreparedBasis,
         op: Operator,
     ) -> Result<Self, FerricError> {
-        Self::build_with_budget(obs, dfbs, op, ferric_core::memory::resolve_budget_bytes(None))
+        Self::build_with_budget(
+            obs,
+            dfbs,
+            op,
+            ferric_core::memory::resolve_budget_bytes(None),
+        )
     }
 
     /// Build with an explicit resident-bytes budget for the raw 3-index tensor.
@@ -161,7 +169,12 @@ impl OoRiMp2AoTensors {
         let src = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
         let naux = src.naux();
         let nao = src.nao();
-        Ok(Self { v2c_inv_sqrt, eri3_ao: RefCell::new(src), naux, nao })
+        Ok(Self {
+            v2c_inv_sqrt,
+            eri3_ao: RefCell::new(src),
+            naux,
+            nao,
+        })
     }
 
     /// Number of auxiliary basis functions (rows of the 3-index tensor).
@@ -232,9 +245,16 @@ fn compute_rimp2_with_orbitals(
     eps: &[f64],
     orb: &OrbitalSpace,
 ) -> Result<(f64, Array2<f64>), FerricError> {
-    let OrbitalSpace { nocc, nocc_total, first_occ, nvir } = *orb;
+    let OrbitalSpace {
+        nocc,
+        nocc_total,
+        first_occ,
+        nvir,
+    } = *orb;
 
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
     // MO transform (P|μν) -> (P|ia) and dress with V^{-1/2} on the fly, via the
@@ -249,9 +269,8 @@ fn compute_rimp2_with_orbitals(
     )?;
 
     // MP2 energy via i-blocked wide GEMMs (same path as the main RI-MP2 lane).
-    let sc = crate::rimp2::spin_components_from_b_ov(
-        &b_flat, eps, nocc, nvir, first_occ, nocc_total,
-    );
+    let sc =
+        crate::rimp2::spin_components_from_b_ov(&b_flat, eps, nocc, nvir, first_occ, nocc_total);
     Ok((sc.e_total, b_flat))
 }
 
@@ -310,7 +329,9 @@ fn compute_hf_energy(
     let mut k_mat = Array2::zeros((n, n));
     let ctx = ferric_core::parallel::ParallelContext::default();
     let band_bytes = ferric_scf::reduce::resolve_band_bytes(ooc_budget);
-    build_jk_with_pool(&ctx, prep, bounds, 1e-12, &d, &mut j_mat, &mut k_mat, pool, band_bytes)?;
+    build_jk_with_pool(
+        &ctx, prep, bounds, 1e-12, &d, &mut j_mat, &mut k_mat, pool, band_bytes,
+    )?;
 
     // F = H + J - 0.5*K
     let f = h + &j_mat - &(0.5 * &k_mat);
@@ -645,13 +666,13 @@ pub fn build_oo_mp2_relaxed_density(
 ) -> Array2<f64> {
     let (p_oo, p_vv) = build_mp2_density(t2, nocc, nvir);
     let mut p = Array2::zeros((nmo, nmo));
-    
+
     // HF occupied part
     for i in 0..nocc {
         let idx = first_occ + i;
         p[(idx, idx)] = 2.0;
     }
-    
+
     // MP2 correction
     for i in 0..nocc {
         for j in 0..nocc {
@@ -668,11 +689,7 @@ pub fn build_oo_mp2_relaxed_density(
 }
 
 /// Build the MP2 unrelaxed 1-particle density matrix in MO basis.
-pub fn build_mp2_density(
-    t2: &[f64],
-    nocc: usize,
-    nvir: usize,
-) -> (Array2<f64>, Array2<f64>) {
+pub fn build_mp2_density(t2: &[f64], nocc: usize, nvir: usize) -> (Array2<f64>, Array2<f64>) {
     let nov = nocc * nvir;
 
     // P^MP2_ij = -sum_{kab} t_{ik,ab} (2 t_{jk,ab} - t_{jk,ba})
@@ -1163,7 +1180,9 @@ pub fn oo_ri_mp2(
     // classical repulsion let the unconstrained Cayley rotation collapse to a
     // spuriously low, unphysical stationary point).
     let vnn = mol.nuclear_repulsion()
-        + ext.map(|e| e.charge_nuclear_energy(mol) + e.field_nuclear_energy(mol)).unwrap_or(0.0);
+        + ext
+            .map(|e| e.charge_nuclear_energy(mol) + e.field_nuclear_energy(mol))
+            .unwrap_or(0.0);
 
     // AO-side invariants: built once, reused every iteration + backtrack.
     // Thread the config budget (M1 resolver) rather than the env-only default.
@@ -1182,7 +1201,8 @@ pub fn oo_ri_mp2(
     let mut c = rhf.mos_r().clone();
 
     // Initial energies
-    let (mut e_hf, mut f_ao, _d) = compute_hf_energy(obs, bounds, &c, nocc_total, &h, vnn, &pool, budget_bytes)?;
+    let (mut e_hf, mut f_ao, _d) =
+        compute_hf_energy(obs, bounds, &c, nocc_total, &h, vnn, &pool, budget_bytes)?;
     let mut eps = orbital_energies(&c, &f_ao);
     let (mut e_mp2, mut b_ov) = compute_rimp2_with_orbitals(&ao, &c, &eps, &orb)?;
     let mut total_energy = e_hf + e_mp2;
@@ -1242,16 +1262,11 @@ pub fn oo_ri_mp2(
         // `/proc/self/status` read per macro-iteration would be pure overhead.
         // Observational only, never an error.
         if iter == 1 {
-            ferric_core::memory::warn_if_rss_over(
-                "OO-RI-MP2 b_full built",
-                budget_bytes,
-                1.1,
-            );
+            ferric_core::memory::warn_if_rss_over("OO-RI-MP2 b_full built", budget_bytes, 1.1);
         }
 
-        let (t2, _eri_ov) = compute_t2_and_integrals(
-            &b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux,
-        );
+        let (t2, _eri_ov) =
+            compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
 
         // Fock matrix in MO basis
         let f_mo = c.t().dot(&f_ao).dot(&c);
@@ -1259,7 +1274,15 @@ pub fn oo_ri_mp2(
         // Orbital gradient g_{ai} with full 2e response terms (gated on the
         // same once-per-call resolved budget as the AO tensors / t2 pair).
         let g = compute_orbital_gradient(
-            &f_mo, &t2, &b_full, &eps, nocc, nvir, first_occ, nocc_total, budget_bytes,
+            &f_mo,
+            &t2,
+            &b_full,
+            &eps,
+            nocc,
+            nvir,
+            first_occ,
+            nocc_total,
+            budget_bytes,
         )?;
 
         // Check gradient norm
@@ -1342,8 +1365,16 @@ pub fn oo_ri_mp2(
         }
 
         // Evaluate energy at the new (possibly DIIS-extrapolated) orbitals
-        let (ehf, fao, _d) =
-            compute_hf_energy(obs, bounds, &c_new, nocc_total, &h, vnn, &pool, budget_bytes)?;
+        let (ehf, fao, _d) = compute_hf_energy(
+            obs,
+            bounds,
+            &c_new,
+            nocc_total,
+            &h,
+            vnn,
+            &pool,
+            budget_bytes,
+        )?;
         let epsnew = orbital_energies(&c_new, &fao);
         let (emp2, bov) = compute_rimp2_with_orbitals(&ao, &c_new, &epsnew, &orb)?;
         let total_new = ehf + emp2;
@@ -1375,8 +1406,16 @@ pub fn oo_ri_mp2(
                 }
                 let u2 = cayley_rotation(&k)?;
                 bt_c = c.dot(&u2);
-                let (eh, fa, _) =
-                    compute_hf_energy(obs, bounds, &bt_c, nocc_total, &h, vnn, &pool, budget_bytes)?;
+                let (eh, fa, _) = compute_hf_energy(
+                    obs,
+                    bounds,
+                    &bt_c,
+                    nocc_total,
+                    &h,
+                    vnn,
+                    &pool,
+                    budget_bytes,
+                )?;
                 let en = orbital_energies(&bt_c, &fa);
                 let (em, bo) = compute_rimp2_with_orbitals(&ao, &bt_c, &en, &orb)?;
                 bt_total = eh + em;
@@ -1436,12 +1475,19 @@ pub fn oo_ri_mp2(
                 budget_bytes,
             )?;
             let b_full2 = compute_b_full_mo_with(&ao, &c)?;
-            let (t2_2, _) = compute_t2_and_integrals(
-                &b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux2,
-            );
+            let (t2_2, _) =
+                compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux2);
             let f_mo2 = c.t().dot(&f_ao).dot(&c);
             let g2 = compute_orbital_gradient(
-                &f_mo2, &t2_2, &b_full2, &eps, nocc, nvir, first_occ, nocc_total, budget_bytes,
+                &f_mo2,
+                &t2_2,
+                &b_full2,
+                &eps,
+                nocc,
+                nvir,
+                first_occ,
+                nocc_total,
+                budget_bytes,
             )?;
             grad_norm = g2.iter().map(|x| x * x).sum::<f64>().sqrt();
 
@@ -1497,7 +1543,16 @@ pub fn energy_at_kappa(
     let u = cayley_rotation(kappa)?;
     let c_rot = c_init.dot(&u);
     let pool = EnginePool::new(bounds.op, obs, 1e-14)?;
-    let (e_hf, f_ao, _) = compute_hf_energy(obs, bounds, &c_rot, nocc_total, &h, vnn, &pool, ferric_core::memory::resolve_budget_bytes(None))?;
+    let (e_hf, f_ao, _) = compute_hf_energy(
+        obs,
+        bounds,
+        &c_rot,
+        nocc_total,
+        &h,
+        vnn,
+        &pool,
+        ferric_core::memory::resolve_budget_bytes(None),
+    )?;
     let eps = orbital_energies(&c_rot, &f_ao);
     let (e_mp2, _) = compute_rimp2_with_orbitals(&ao, &c_rot, &eps, orb)?;
     Ok(e_hf + e_mp2)
@@ -1512,7 +1567,14 @@ mod tests {
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
 
-    fn setup_h2() -> (Molecule, PreparedBasis, PreparedBasis, Operator, SchwarzBounds, ScfResult) {
+    fn setup_h2() -> (
+        Molecule,
+        PreparedBasis,
+        PreparedBasis,
+        Operator,
+        SchwarzBounds,
+        ScfResult,
+    ) {
         let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
@@ -1576,7 +1638,9 @@ mod tests {
         assert!(check_t2_pair_alloc("test small OO-MP2", nocc, nvir, budget_bytes).is_ok());
         // Also must not reject under the real auto-resolved budget (None -> resolve_budget_bytes).
         let auto_budget = ferric_core::memory::resolve_budget_bytes(None);
-        assert!(check_t2_pair_alloc("test small OO-MP2 (auto budget)", nocc, nvir, auto_budget).is_ok());
+        assert!(
+            check_t2_pair_alloc("test small OO-MP2 (auto budget)", nocc, nvir, auto_budget).is_ok()
+        );
     }
 
     /// Memory-guard regression for the gradient-intermediates guard (Finding 2
@@ -1595,7 +1659,11 @@ mod tests {
         let budget_bytes = ferric_core::memory::gib_to_bytes(1.0); // 1 GiB — tiny vs ~69 GB
         let err = check_gradient_intermediates_alloc(
             "OO-RI-MP2 gradient intermediates",
-            nocc, nvir, naux, nmo, budget_bytes,
+            nocc,
+            nvir,
+            naux,
+            nmo,
+            budget_bytes,
         )
         .unwrap_err();
         let msg = err.to_string();
@@ -1613,7 +1681,11 @@ mod tests {
         // break every currently-passing OO-MP2 convergence test.
         assert!(check_gradient_intermediates_alloc(
             "OO-RI-MP2 gradient intermediates",
-            5, 19, 84, 24, budget_bytes,
+            5,
+            19,
+            84,
+            24,
+            budget_bytes,
         )
         .is_ok());
     }
@@ -1638,26 +1710,56 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&obs, &bounds, c, nocc_total, &h, _mol.nuclear_repulsion(), &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(
+            &obs,
+            &bounds,
+            c,
+            nocc_total,
+            &h,
+            _mol.nuclear_repulsion(),
+            &pool,
+            ferric_core::memory::resolve_budget_bytes(None),
+        )
+        .unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e, b_flat) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
 
         // Small H2/cc-pVDZ scale must pass under a generous explicit budget.
         let ok = compute_t2_only(
-            &b_flat, &eps, nocc, nvir, nocc_total, first_occ, naux,
+            &b_flat,
+            &eps,
+            nocc,
+            nvir,
+            nocc_total,
+            first_occ,
+            naux,
             Some(ferric_core::memory::gib_to_bytes(1.0)),
         );
-        assert!(ok.is_ok(), "small-system compute_t2_only unexpectedly rejected: {:?}", ok.err());
+        assert!(
+            ok.is_ok(),
+            "small-system compute_t2_only unexpectedly rejected: {:?}",
+            ok.err()
+        );
 
         // A tiny budget must reject even this small system (proves the guard
         // is actually wired into compute_t2_only, not a no-op).
         let tiny_budget = 100usize; // 100 bytes -- far below even this tiny nov²
         let err = compute_t2_only(
-            &b_flat, &eps, nocc, nvir, nocc_total, first_occ, naux, Some(tiny_budget),
+            &b_flat,
+            &eps,
+            nocc,
+            nvir,
+            nocc_total,
+            first_occ,
+            naux,
+            Some(tiny_budget),
         )
         .unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("budget is"), "expected a budget-shaped error message, got: {msg}");
+        assert!(
+            msg.contains("budget is"),
+            "expected a budget-shaped error message, got: {msg}"
+        );
     }
 
     /// GEMM restructure (P6-residual) regression: `compute_t2_and_integrals`
@@ -1680,7 +1782,17 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&obs, &bounds, c, nocc_total, &h, mol.nuclear_repulsion(), &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(
+            &obs,
+            &bounds,
+            c,
+            nocc_total,
+            &h,
+            mol.nuclear_repulsion(),
+            &pool,
+            ferric_core::memory::resolve_budget_bytes(None),
+        )
+        .unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e, b_flat) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
 
@@ -1695,8 +1807,9 @@ mod tests {
                 for j in 0..nocc {
                     for b in 0..nvir {
                         let jb = j * nvir + b;
-                        let eri_iajb: f64 =
-                            (0..naux.min(b_flat.nrows())).map(|p| b_flat[(p, ia)] * b_flat[(p, jb)]).sum();
+                        let eri_iajb: f64 = (0..naux.min(b_flat.nrows()))
+                            .map(|p| b_flat[(p, ia)] * b_flat[(p, jb)])
+                            .sum();
                         let denom = eps[first_occ + i] + eps[first_occ + j]
                             - eps[nocc_total + a]
                             - eps[nocc_total + b];
@@ -1823,19 +1936,38 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(
             &ferric_core::parallel::ParallelContext::default(),
-            &mol, &obs, op, &bounds,
-            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
         )
         .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
-        assert!(mol.nelec() as usize / 2 > 1, "need nocc > 1 or occ-occ is vacuous");
+        assert!(
+            mol.nelec() as usize / 2 > 1,
+            "need nocc > 1 or occ-occ is vacuous"
+        );
 
         let oo = oo_ri_mp2(
-            &mol, &obs, &dfbs, op, &bounds, &rhf, &OoRiMp2Config::default(), None,
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &bounds,
+            &rhf,
+            &OoRiMp2Config::default(),
+            None,
         )
         .unwrap();
-        assert!(oo.converged, "OO must converge for this diagnostic to mean anything");
+        assert!(
+            oo.converged,
+            "OO must converge for this diagnostic to mean anything"
+        );
 
         let nocc = mol.nelec() as usize / 2;
         let c = &oo.mos;
@@ -1844,8 +1976,17 @@ mod tests {
         // orbital_energies() takes its diagonal from.
         let h = oneelectron::hcore(&obs);
         let pool = EnginePool::new(bounds.op, &obs, 1e-14).unwrap();
-        let (_e, f_ao, _d) =
-            compute_hf_energy(&obs, &bounds, c, nocc, &h, mol.nuclear_repulsion(), &pool, 0).unwrap();
+        let (_e, f_ao, _d) = compute_hf_energy(
+            &obs,
+            &bounds,
+            c,
+            nocc,
+            &h,
+            mol.nuclear_repulsion(),
+            &pool,
+            0,
+        )
+        .unwrap();
         let f_mo = c.t().dot(&f_ao).dot(c);
         let n = f_mo.nrows();
 
@@ -1926,14 +2067,23 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&obs, &bounds, c, nocc_total, &h, mol.nuclear_repulsion(), &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(
+            &obs,
+            &bounds,
+            c,
+            nocc_total,
+            &h,
+            mol.nuclear_repulsion(),
+            &pool,
+            ferric_core::memory::resolve_budget_bytes(None),
+        )
+        .unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
 
         // Build t2 amplitudes
-        let (t2, _) = compute_t2_and_integrals(
-            &b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux,
-        );
+        let (t2, _) =
+            compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
 
         // Build full-MO B tensor for gradient
         let b_full = compute_b_full_mo_with(&ao, c).unwrap();
@@ -1942,7 +2092,15 @@ mod tests {
         // usize::MAX budget: guard passes, full-width panel — preserves the
         // pre-budget-parameter behavior for this tiny test system.
         let g = compute_orbital_gradient(
-            &f_mo, &t2, &b_full, &eps, nocc, nvir, first_occ, nocc_total, usize::MAX,
+            &f_mo,
+            &t2,
+            &b_full,
+            &eps,
+            nocc,
+            nvir,
+            first_occ,
+            nocc_total,
+            usize::MAX,
         )
         .unwrap();
 
@@ -1959,20 +2117,16 @@ mod tests {
                 kappa_plus[(a_mo, i_mo)] = delta;
                 kappa_plus[(i_mo, a_mo)] = -delta;
 
-                let e_plus = energy_at_kappa(
-                    &mol, &obs, &dfbs, op, &bounds, c, &kappa_plus, &orb,
-                )
-                .unwrap();
+                let e_plus =
+                    energy_at_kappa(&mol, &obs, &dfbs, op, &bounds, c, &kappa_plus, &orb).unwrap();
 
                 // kappa- : perturb (a,i) by -delta
                 let mut kappa_minus = Array2::zeros((nbas, nbas));
                 kappa_minus[(a_mo, i_mo)] = -delta;
                 kappa_minus[(i_mo, a_mo)] = delta;
 
-                let e_minus = energy_at_kappa(
-                    &mol, &obs, &dfbs, op, &bounds, c, &kappa_minus, &orb,
-                )
-                .unwrap();
+                let e_minus =
+                    energy_at_kappa(&mol, &obs, &dfbs, op, &bounds, c, &kappa_minus, &orb).unwrap();
 
                 let fd_grad = (e_plus - e_minus) / (2.0 * delta);
                 let analytic = g[(a, i)];
@@ -2058,13 +2212,22 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&obs, &bounds, c, nocc_total, &h, mol.nuclear_repulsion(), &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(
+            &obs,
+            &bounds,
+            c,
+            nocc_total,
+            &h,
+            mol.nuclear_repulsion(),
+            &pool,
+            ferric_core::memory::resolve_budget_bytes(None),
+        )
+        .unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
 
-        let (t2, _) = compute_t2_and_integrals(
-            &b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux,
-        );
+        let (t2, _) =
+            compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
 
         let b_full = compute_b_full_mo_with(&ao, c).unwrap();
 
@@ -2072,7 +2235,15 @@ mod tests {
         // usize::MAX budget: guard passes, full-width panel — preserves the
         // pre-budget-parameter behavior for this tiny test system.
         let g = compute_orbital_gradient(
-            &f_mo, &t2, &b_full, &eps, nocc, nvir, first_occ, nocc_total, usize::MAX,
+            &f_mo,
+            &t2,
+            &b_full,
+            &eps,
+            nocc,
+            nvir,
+            first_occ,
+            nocc_total,
+            usize::MAX,
         )
         .unwrap();
 
@@ -2091,18 +2262,14 @@ mod tests {
                 let mut kappa_plus = Array2::zeros((nbas, nbas));
                 kappa_plus[(a_mo, i_mo)] = delta;
                 kappa_plus[(i_mo, a_mo)] = -delta;
-                let e_plus = energy_at_kappa(
-                    &mol, &obs, &dfbs, op, &bounds, c, &kappa_plus, &orb,
-                )
-                .unwrap();
+                let e_plus =
+                    energy_at_kappa(&mol, &obs, &dfbs, op, &bounds, c, &kappa_plus, &orb).unwrap();
 
                 let mut kappa_minus = Array2::zeros((nbas, nbas));
                 kappa_minus[(a_mo, i_mo)] = -delta;
                 kappa_minus[(i_mo, a_mo)] = delta;
-                let e_minus = energy_at_kappa(
-                    &mol, &obs, &dfbs, op, &bounds, c, &kappa_minus, &orb,
-                )
-                .unwrap();
+                let e_minus =
+                    energy_at_kappa(&mol, &obs, &dfbs, op, &bounds, c, &kappa_minus, &orb).unwrap();
 
                 let fd_grad = (e_plus - e_minus) / (2.0 * delta);
                 let analytic = g[(a, i)];
@@ -2193,17 +2360,42 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&obs, &bounds, c, nocc_total, &h, mol.nuclear_repulsion(), &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(
+            &obs,
+            &bounds,
+            c,
+            nocc_total,
+            &h,
+            mol.nuclear_repulsion(),
+            &pool,
+            ferric_core::memory::resolve_budget_bytes(None),
+        )
+        .unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e_mp2, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
         let naux = dfbs.nbasis();
-        let (t2, _) = compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
+        let (t2, _) =
+            compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
         let b_full = compute_b_full_mo_with(&ao, c).unwrap();
         let f_mo = c.t().dot(&f_ao).dot(c);
         // usize::MAX budget: guard passes, full-width panel (pre-parameter behavior).
-        let g_analytic = compute_orbital_gradient(&f_mo, &t2, &b_full, &eps, nocc, nvir, first_occ, nocc_total, usize::MAX).unwrap();
+        let g_analytic = compute_orbital_gradient(
+            &f_mo,
+            &t2,
+            &b_full,
+            &eps,
+            nocc,
+            nvir,
+            first_occ,
+            nocc_total,
+            usize::MAX,
+        )
+        .unwrap();
         let analytic_norm = g_analytic.iter().map(|x| x * x).sum::<f64>().sqrt();
-        eprintln!("Independently recomputed analytic |g| at convergence: {:.2e}", analytic_norm);
+        eprintln!(
+            "Independently recomputed analytic |g| at convergence: {:.2e}",
+            analytic_norm
+        );
 
         // Central finite difference of the total energy around the converged
         // orbitals, in every (a,i) rotation direction — an FD gradient that is
@@ -2319,7 +2511,8 @@ mod tests {
         assert!(
             oo.total_energy <= ri.total_energy + 1e-10,
             "OO={:.10} should be <= RI={:.10}",
-            oo.total_energy, ri.total_energy
+            oo.total_energy,
+            ri.total_energy
         );
     }
 
@@ -2402,7 +2595,9 @@ mod tests {
         assert!(
             (rhf.energy - psi4_refscf).abs() < 1e-6,
             "SCF mismatch vs Psi4 refscf: ferric={:.10}, psi4={:.10}, diff={:.2e}",
-            rhf.energy, psi4_refscf, (rhf.energy - psi4_refscf).abs()
+            rhf.energy,
+            psi4_refscf,
+            (rhf.energy - psi4_refscf).abs()
         );
 
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
@@ -2463,18 +2658,44 @@ mod tests {
         // b_full identical.
         let b_ref = compute_b_full_mo_with(&ao_ref, c).unwrap();
         let b_spill = compute_b_full_mo_with(&ao_spill, c).unwrap();
-        let maxdiff = (&b_ref - &b_spill).iter().map(|v| v.abs()).fold(0.0, f64::max);
-        assert!(maxdiff < 1e-12, "b_full spill vs in-core maxdiff={maxdiff:.2e}");
+        let maxdiff = (&b_ref - &b_spill)
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0, f64::max);
+        assert!(
+            maxdiff < 1e-12,
+            "b_full spill vs in-core maxdiff={maxdiff:.2e}"
+        );
 
         // MP2 energy + b_ov identical.
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&obs, &bounds, c, nocc_total, &h, mol.nuclear_repulsion(), &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(
+            &obs,
+            &bounds,
+            c,
+            nocc_total,
+            &h,
+            mol.nuclear_repulsion(),
+            &pool,
+            ferric_core::memory::resolve_budget_bytes(None),
+        )
+        .unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (e_ref, bov_ref) = compute_rimp2_with_orbitals(&ao_ref, c, &eps, &orb).unwrap();
         let (e_spill, bov_spill) = compute_rimp2_with_orbitals(&ao_spill, c, &eps, &orb).unwrap();
-        assert!((e_ref - e_spill).abs() < 1e-12, "E_MP2 spill vs in-core: {:.3e}", (e_ref - e_spill).abs());
-        let bovdiff = (&bov_ref - &bov_spill).iter().map(|v| v.abs()).fold(0.0, f64::max);
-        assert!(bovdiff < 1e-12, "b_ov spill vs in-core maxdiff={bovdiff:.2e}");
+        assert!(
+            (e_ref - e_spill).abs() < 1e-12,
+            "E_MP2 spill vs in-core: {:.3e}",
+            (e_ref - e_spill).abs()
+        );
+        let bovdiff = (&bov_ref - &bov_spill)
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0, f64::max);
+        assert!(
+            bovdiff < 1e-12,
+            "b_ov spill vs in-core maxdiff={bovdiff:.2e}"
+        );
     }
 
     /// The VVOV c-panelled gradient must be exact for any panel width:
@@ -2494,10 +2715,21 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&obs, &bounds, c, nocc_total, &h, mol.nuclear_repulsion(), &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(
+            &obs,
+            &bounds,
+            c,
+            nocc_total,
+            &h,
+            mol.nuclear_repulsion(),
+            &pool,
+            ferric_core::memory::resolve_budget_bytes(None),
+        )
+        .unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
-        let (t2, _) = compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
+        let (t2, _) =
+            compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
         let b_full = compute_b_full_mo_with(&ao, c).unwrap();
         let f_mo = c.t().dot(&f_ao).dot(c);
 
@@ -2594,9 +2826,14 @@ mod tests {
         }
         let mo_raw_flat = mo_raw.into_shape_with_order((naux, nmo * nmo)).unwrap();
         let b_full_ref_flat = v2c_inv_sqrt.dot(&mo_raw_flat);
-        let b_full_ref = b_full_ref_flat.into_shape_with_order((naux, nmo, nmo)).unwrap();
+        let b_full_ref = b_full_ref_flat
+            .into_shape_with_order((naux, nmo, nmo))
+            .unwrap();
 
-        let b_full_maxdiff = (&b_full - &b_full_ref).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        let b_full_maxdiff = (&b_full - &b_full_ref)
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0, f64::max);
         assert!(
             b_full_maxdiff < 1e-10,
             "compute_b_full_mo_with (rayon path) vs unchunked scalar reference: maxdiff={b_full_maxdiff:.3e}"
@@ -2618,7 +2855,10 @@ mod tests {
                 .assign(&bq_mo.into_shape_with_order(nov).unwrap());
         }
         let b_ov_ref = v2c_inv_sqrt.dot(&mo_ov_raw);
-        let b_ov_maxdiff = (&b_ov - &b_ov_ref).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        let b_ov_maxdiff = (&b_ov - &b_ov_ref)
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0, f64::max);
         assert!(
             b_ov_maxdiff < 1e-10,
             "compute_rimp2_with_orbitals b_ov (rayon path) vs unchunked scalar reference: maxdiff={b_ov_maxdiff:.3e}"
@@ -2668,10 +2908,21 @@ mod tests {
         let h = oneelectron::hcore(&obs);
         let ao = OoRiMp2AoTensors::build(&obs, &dfbs, op).unwrap();
         let pool = EnginePool::new(op, &obs, 1e-14).unwrap();
-        let (_e_hf, f_ao, _) = compute_hf_energy(&obs, &bounds, c, nocc_total, &h, mol.nuclear_repulsion(), &pool, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (_e_hf, f_ao, _) = compute_hf_energy(
+            &obs,
+            &bounds,
+            c,
+            nocc_total,
+            &h,
+            mol.nuclear_repulsion(),
+            &pool,
+            ferric_core::memory::resolve_budget_bytes(None),
+        )
+        .unwrap();
         let eps = orbital_energies(c, &f_ao);
         let (_e, b_ov) = compute_rimp2_with_orbitals(&ao, c, &eps, &orb).unwrap();
-        let (t2, _) = compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
+        let (t2, _) =
+            compute_t2_and_integrals(&b_ov, &eps, nocc, nvir, nocc_total, first_occ, naux);
         let b_full = compute_b_full_mo_with(&ao, c).unwrap();
         let f_mo = c.t().dot(&f_ao).dot(c);
 
@@ -2679,7 +2930,10 @@ mod tests {
         // inside more than one GEMM panel, exercising the interaction of
         // panelling and rayon scheduling together.
         let run_with_threads = |n: usize| -> Array2<f64> {
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .build()
+                .unwrap();
             pool.install(|| {
                 compute_orbital_gradient_panelled(
                     &f_mo, &t2, &b_full, &eps, nocc, nvir, first_occ, nocc_total, 3,
@@ -2698,16 +2952,20 @@ mod tests {
                     g4[(a, i)].to_bits(),
                     "OO gradient not bit-identical 1 vs 4 threads at (a={a}, i={i}): \
                      1={:.17e} (0x{:016x}), 4={:.17e} (0x{:016x})",
-                    g1[(a, i)], g1[(a, i)].to_bits(),
-                    g4[(a, i)], g4[(a, i)].to_bits(),
+                    g1[(a, i)],
+                    g1[(a, i)].to_bits(),
+                    g4[(a, i)],
+                    g4[(a, i)].to_bits(),
                 );
                 assert_eq!(
                     g1[(a, i)].to_bits(),
                     g8[(a, i)].to_bits(),
                     "OO gradient not bit-identical 1 vs 8 threads at (a={a}, i={i}): \
                      1={:.17e} (0x{:016x}), 8={:.17e} (0x{:016x})",
-                    g1[(a, i)], g1[(a, i)].to_bits(),
-                    g8[(a, i)], g8[(a, i)].to_bits(),
+                    g1[(a, i)],
+                    g1[(a, i)].to_bits(),
+                    g8[(a, i)],
+                    g8[(a, i)].to_bits(),
                 );
             }
         }
@@ -2737,7 +2995,10 @@ mod tests {
                 assert!(
                     (utu[(i, j)] - expected).abs() < 1e-12,
                     "U^T U[{},{}] = {}, expected {}",
-                    i, j, utu[(i, j)], expected
+                    i,
+                    j,
+                    utu[(i, j)],
+                    expected
                 );
             }
         }

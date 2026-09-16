@@ -122,7 +122,12 @@ fn fixture() -> Fixture {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ferric_core::parallel::ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-    Fixture { mol, obs, dfbs, rhf }
+    Fixture {
+        mol,
+        obs,
+        dfbs,
+        rhf,
+    }
 }
 
 fn energy_at(f: &Fixture, n_quad: usize, threads: usize) -> f64 {

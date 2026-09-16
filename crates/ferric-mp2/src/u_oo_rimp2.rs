@@ -10,14 +10,14 @@
 //!
 //! Reference: Bozkaya, JCP 139, 154105 (2013).
 
-use crate::rimp2::active_occ;
-use crate::u_rimp2::{compute_u_mp2_amplitudes, compute_u_mp2_orbital_gradient, URiMp2Components};
 use crate::oo_rimp2::{compute_b_full_mo_with, OoRiMp2AoTensors};
 use crate::orbital_rotation::cayley_rotation;
+use crate::rimp2::active_occ;
+use crate::u_rimp2::{compute_u_mp2_amplitudes, compute_u_mp2_orbital_gradient, URiMp2Components};
 use ferric_core::external_potential::ExternalPotential;
 use ferric_core::mol::Molecule;
-use ferric_core::FerricError;
 use ferric_core::parallel::ParallelContext;
+use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
@@ -96,8 +96,11 @@ pub struct UOoRiMp2Result {
 
 impl std::fmt::Display for UOoRiMp2Result {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "U-OO-RI-MP2 total: {:.10} Ha (corr: {:.10}, {} iters, converged: {})",
-            self.total_energy, self.mp2_corr, self.iterations, self.converged)
+        write!(
+            f,
+            "U-OO-RI-MP2 total: {:.10} Ha (corr: {:.10}, {} iters, converged: {})",
+            self.total_energy, self.mp2_corr, self.iterations, self.converged
+        )
     }
 }
 
@@ -145,8 +148,12 @@ fn compute_uhf_energy(
         for nu in 0..n {
             let mut sa = 0.0;
             let mut sb = 0.0;
-            for i in 0..nocc_a { sa += c_a[(mu, i)] * c_a[(nu, i)]; }
-            for i in 0..nocc_b { sb += c_b[(mu, i)] * c_b[(nu, i)]; }
+            for i in 0..nocc_a {
+                sa += c_a[(mu, i)] * c_a[(nu, i)];
+            }
+            for i in 0..nocc_b {
+                sb += c_b[(mu, i)] * c_b[(nu, i)];
+            }
             d_a[(mu, nu)] = sa;
             d_b[(mu, nu)] = sb;
         }
@@ -248,9 +255,18 @@ fn check_u_amplitude_alloc(
     nvir_b: usize,
     budget_bytes: usize,
 ) -> Result<(), FerricError> {
-    let t_aa_elems = nocc_a.saturating_mul(nocc_a).saturating_mul(nvir_a).saturating_mul(nvir_a);
-    let t_bb_elems = nocc_b.saturating_mul(nocc_b).saturating_mul(nvir_b).saturating_mul(nvir_b);
-    let t_ab_elems = nocc_a.saturating_mul(nocc_b).saturating_mul(nvir_a).saturating_mul(nvir_b);
+    let t_aa_elems = nocc_a
+        .saturating_mul(nocc_a)
+        .saturating_mul(nvir_a)
+        .saturating_mul(nvir_a);
+    let t_bb_elems = nocc_b
+        .saturating_mul(nocc_b)
+        .saturating_mul(nvir_b)
+        .saturating_mul(nvir_b);
+    let t_ab_elems = nocc_a
+        .saturating_mul(nocc_b)
+        .saturating_mul(nvir_a)
+        .saturating_mul(nvir_b);
     let peak = t_aa_elems
         .saturating_add(t_bb_elems)
         .saturating_add(t_ab_elems)
@@ -291,11 +307,7 @@ fn check_u_bfull_alloc(
 /// driving κ down the gradient.  At HF stationarity F_ai = 0, so g_HF = 0
 /// there. As MP2 perturbs orbitals, F_ai becomes nonzero and `+2·F_ai` is
 /// the restoring force.
-fn add_hf_gradient(
-    g_mp2: &Array2<f64>,
-    f_mo: &Array2<f64>,
-    nocc: usize,
-) -> Array2<f64> {
+fn add_hf_gradient(g_mp2: &Array2<f64>, f_mo: &Array2<f64>, nocc: usize) -> Array2<f64> {
     let (nvir, nocc_check) = g_mp2.dim();
     assert_eq!(nocc, nocc_check);
     let mut g = g_mp2.clone();
@@ -355,7 +367,9 @@ pub fn u_oo_ri_mp2(
     // bug from the closed-shell fix: a missing classical charge-nuclear/
     // field-nuclear term lets the unconstrained orbital rotation collapse).
     let vnn = mol.nuclear_repulsion()
-        + ext.map(|e| e.charge_nuclear_energy(mol) + e.field_nuclear_energy(mol)).unwrap_or(0.0);
+        + ext
+            .map(|e| e.charge_nuclear_energy(mol) + e.field_nuclear_energy(mol))
+            .unwrap_or(0.0);
 
     // Resolved once per call (not per iteration) — gates the AO-tensor build,
     // the RiMp2Config threaded into every compute_u_mp2_amplitudes call, and
@@ -383,7 +397,16 @@ pub fn u_oo_ri_mp2(
 
     // Initial UHF energy + Fock
     let (mut e_hf, mut f_a, mut f_b) = compute_uhf_energy(
-        &ctx, obs, bounds, &c_a, &c_b, nocc_total_a, nocc_total_b, &h, vnn, budget_bytes,
+        &ctx,
+        obs,
+        bounds,
+        &c_a,
+        &c_b,
+        nocc_total_a,
+        nocc_total_b,
+        &h,
+        vnn,
+        budget_bytes,
     )?;
     let mut eps_a = orbital_energies_mo(&c_a, &f_a);
     let mut eps_b = orbital_energies_mo(&c_b, &f_b);
@@ -392,19 +415,39 @@ pub fn u_oo_ri_mp2(
     // see check_u_amplitude_alloc's doc comment for the co-residency this
     // bounds (t_aa+t_bb+t_ab, all three spin channels at once).
     check_u_amplitude_alloc(
-        "U-OO-RI-MP2 initial amplitude trio", nocc_a, nvir_a, nocc_b, nvir_b, budget_bytes,
+        "U-OO-RI-MP2 initial amplitude trio",
+        nocc_a,
+        nvir_a,
+        nocc_b,
+        nvir_b,
+        budget_bytes,
     )?;
     let scf_view = make_scf_view(
-        &c_a, &c_b, &f_a, &f_b, eps_a.clone(), eps_b.clone(),
-        nocc_total_a, nocc_total_b, e_hf,
+        &c_a,
+        &c_b,
+        &f_a,
+        &f_b,
+        eps_a.clone(),
+        eps_b.clone(),
+        nocc_total_a,
+        nocc_total_b,
+        e_hf,
     );
     let mut amps = compute_u_mp2_amplitudes(mol, obs, dfbs, op, &scf_view, &mp2_cfg)?;
     let mut e_mp2 = amps.components.e_total;
     let mut total_energy = e_hf + e_mp2;
     let mut grad_norm = f64::MAX;
 
-    let mut diis_a = if config.use_diis { Some(Diis::new(config.diis_size)) } else { None };
-    let mut diis_b = if config.use_diis { Some(Diis::new(config.diis_size)) } else { None };
+    let mut diis_a = if config.use_diis {
+        Some(Diis::new(config.diis_size))
+    } else {
+        None
+    };
+    let mut diis_b = if config.use_diis {
+        Some(Diis::new(config.diis_size))
+    } else {
+        None
+    };
 
     let mut mu = config.level_shift;
     let mut stuck_count: usize = 0;
@@ -417,11 +460,15 @@ pub fn u_oo_ri_mp2(
         // for the gradient contraction just below — see check_u_bfull_alloc's
         // doc comment and the "MEMORY NOTE" above.
         check_u_bfull_alloc(
-            &format!("U-OO-RI-MP2 b_full_a/b_full_b (iter {iter})"), ao.naux(), nbas, budget_bytes,
+            &format!("U-OO-RI-MP2 b_full_a/b_full_b (iter {iter})"),
+            ao.naux(),
+            nbas,
+            budget_bytes,
         )?;
         let b_full_a = compute_b_full_mo_with(&ao, &c_a)?;
         let b_full_b = compute_b_full_mo_with(&ao, &c_b)?;
-        let (g_mp2_a, g_mp2_b) = compute_u_mp2_orbital_gradient(&amps, &b_full_a, &b_full_b, budget_bytes);
+        let (g_mp2_a, g_mp2_b) =
+            compute_u_mp2_orbital_gradient(&amps, &b_full_a, &b_full_b, budget_bytes);
 
         // Add HF Brillouin term: g_total = g_mp2 − 2·F^σ_{a+nocc, i}
         let f_mo_a = c_a.t().dot(&f_a).dot(&c_a);
@@ -434,11 +481,14 @@ pub fn u_oo_ri_mp2(
             add_hf_gradient(&g_mp2_b, &f_mo_b, nocc_total_b)
         };
         // Slice gradient to the active (non-frozen-core) occupied block.
-        let g_a_act = g_a.slice(ndarray::s![.., first_occ..first_occ + nocc_a]).to_owned();
+        let g_a_act = g_a
+            .slice(ndarray::s![.., first_occ..first_occ + nocc_a])
+            .to_owned();
         let g_b_act = if nocc_b == 0 {
             Array2::<f64>::zeros((nvir_b, 0))
         } else {
-            g_b.slice(ndarray::s![.., first_occ..first_occ + nocc_b]).to_owned()
+            g_b.slice(ndarray::s![.., first_occ..first_occ + nocc_b])
+                .to_owned()
         };
 
         let gn2_a: f64 = g_a_act.iter().map(|x| x * x).sum();
@@ -457,11 +507,17 @@ pub fn u_oo_ri_mp2(
 
         if grad_norm < config.grad_conv {
             return Ok(UOoRiMp2Result {
-                total_energy, hf_energy: e_hf, mp2_corr: e_mp2,
+                total_energy,
+                hf_energy: e_hf,
+                mp2_corr: e_mp2,
                 components: amps.components.clone(),
-                converged: true, iterations: iter, grad_norm,
-                mos_alpha: c_a, mos_beta: c_b,
-                eps_alpha: eps_a, eps_beta: eps_b,
+                converged: true,
+                iterations: iter,
+                grad_norm,
+                mos_alpha: c_a,
+                mos_beta: c_b,
+                eps_alpha: eps_a,
+                eps_beta: eps_b,
             });
         }
 
@@ -482,9 +538,13 @@ pub fn u_oo_ri_mp2(
         }
         // Cap rotations
         let ka_max = kappa_a.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-        if ka_max > config.max_kappa { kappa_a *= config.max_kappa / ka_max; }
+        if ka_max > config.max_kappa {
+            kappa_a *= config.max_kappa / ka_max;
+        }
         let kb_max = kappa_b.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-        if kb_max > config.max_kappa { kappa_b *= config.max_kappa / kb_max; }
+        if kb_max > config.max_kappa {
+            kappa_b *= config.max_kappa / kb_max;
+        }
 
         // Build full (nmo × nmo) antisymmetric κ matrices
         let nmo = nbas;
@@ -543,18 +603,37 @@ pub fn u_oo_ri_mp2(
 
         // Evaluate at new orbitals
         let (e_hf_new, f_a_new, f_b_new) = compute_uhf_energy(
-            &ctx, obs, bounds, &c_a_new, &c_b_new, nocc_total_a, nocc_total_b, &h, vnn, budget_bytes,
+            &ctx,
+            obs,
+            bounds,
+            &c_a_new,
+            &c_b_new,
+            nocc_total_a,
+            nocc_total_b,
+            &h,
+            vnn,
+            budget_bytes,
         )?;
         let eps_a_new = orbital_energies_mo(&c_a_new, &f_a_new);
         let eps_b_new = orbital_energies_mo(&c_b_new, &f_b_new);
         let scf_view_new = make_scf_view(
-            &c_a_new, &c_b_new, &f_a_new, &f_b_new,
-            eps_a_new.clone(), eps_b_new.clone(),
-            nocc_total_a, nocc_total_b, e_hf_new,
+            &c_a_new,
+            &c_b_new,
+            &f_a_new,
+            &f_b_new,
+            eps_a_new.clone(),
+            eps_b_new.clone(),
+            nocc_total_a,
+            nocc_total_b,
+            e_hf_new,
         );
         check_u_amplitude_alloc(
             &format!("U-OO-RI-MP2 amplitude trio (iter {iter})"),
-            nocc_a, nvir_a, nocc_b, nvir_b, budget_bytes,
+            nocc_a,
+            nvir_a,
+            nocc_b,
+            nvir_b,
+            budget_bytes,
         )?;
         let amps_new = compute_u_mp2_amplitudes(mol, obs, dfbs, op, &scf_view_new, &mp2_cfg)?;
         let total_new = e_hf_new + amps_new.components.e_total;
@@ -583,21 +662,50 @@ pub fn u_oo_ri_mp2(
                 bt_c_a = c_a.dot(&ua2);
                 bt_c_b = c_b.dot(&ub2);
                 let (eh, fa, fb) = compute_uhf_energy(
-                    &ctx, obs, bounds, &bt_c_a, &bt_c_b, nocc_total_a, nocc_total_b, &h, vnn, budget_bytes,
+                    &ctx,
+                    obs,
+                    bounds,
+                    &bt_c_a,
+                    &bt_c_b,
+                    nocc_total_a,
+                    nocc_total_b,
+                    &h,
+                    vnn,
+                    budget_bytes,
                 )?;
                 let ea = orbital_energies_mo(&bt_c_a, &fa);
                 let eb = orbital_energies_mo(&bt_c_b, &fb);
-                let sv = make_scf_view(&bt_c_a, &bt_c_b, &fa, &fb, ea.clone(), eb.clone(),
-                    nocc_total_a, nocc_total_b, eh);
+                let sv = make_scf_view(
+                    &bt_c_a,
+                    &bt_c_b,
+                    &fa,
+                    &fb,
+                    ea.clone(),
+                    eb.clone(),
+                    nocc_total_a,
+                    nocc_total_b,
+                    eh,
+                );
                 check_u_amplitude_alloc(
                     &format!("U-OO-RI-MP2 amplitude trio (iter {iter}, backtrack {_bt})"),
-                    nocc_a, nvir_a, nocc_b, nvir_b, budget_bytes,
+                    nocc_a,
+                    nvir_a,
+                    nocc_b,
+                    nvir_b,
+                    budget_bytes,
                 )?;
                 let am = compute_u_mp2_amplitudes(mol, obs, dfbs, op, &sv, &mp2_cfg)?;
                 bt_total = eh + am.components.e_total;
-                bt_ehf = eh; bt_fa = fa; bt_fb = fb;
-                bt_eps_a = ea; bt_eps_b = eb; bt_amps = am;
-                if bt_total <= total_energy + 1e-12 { accepted = true; break; }
+                bt_ehf = eh;
+                bt_fa = fa;
+                bt_fb = fb;
+                bt_eps_a = ea;
+                bt_eps_b = eb;
+                bt_amps = am;
+                if bt_total <= total_energy + 1e-12 {
+                    accepted = true;
+                    break;
+                }
             }
             if accepted {
                 c_a = bt_c_a;
@@ -610,8 +718,12 @@ pub fn u_oo_ri_mp2(
                 amps = bt_amps;
                 e_mp2 = amps.components.e_total;
                 total_energy = bt_total;
-                if let Some(ref mut d) = diis_a { d.reset(); }
-                if let Some(ref mut d) = diis_b { d.reset(); }
+                if let Some(ref mut d) = diis_a {
+                    d.reset();
+                }
+                if let Some(ref mut d) = diis_b {
+                    d.reset();
+                }
                 stuck_count = 0;
             } else {
                 stuck_count += 1;
@@ -620,18 +732,28 @@ pub fn u_oo_ri_mp2(
                     "  backtracking failed at iter {iter} (stuck {stuck_count}/{STUCK_LIMIT}); μ {mu:.3}→{mu_new:.3}"
                 );
                 mu = mu_new;
-                if let Some(ref mut d) = diis_a { d.reset(); }
-                if let Some(ref mut d) = diis_b { d.reset(); }
+                if let Some(ref mut d) = diis_a {
+                    d.reset();
+                }
+                if let Some(ref mut d) = diis_b {
+                    d.reset();
+                }
                 if stuck_count >= STUCK_LIMIT {
                     eprintln!(
                         "  U-OO-RI-MP2: bailing after {STUCK_LIMIT} stuck iters; returning current (non-converged) state"
                     );
                     return Ok(UOoRiMp2Result {
-                        total_energy, hf_energy: e_hf, mp2_corr: e_mp2,
+                        total_energy,
+                        hf_energy: e_hf,
+                        mp2_corr: e_mp2,
                         components: amps.components.clone(),
-                        converged: false, iterations: iter, grad_norm,
-                        mos_alpha: c_a, mos_beta: c_b,
-                        eps_alpha: eps_a, eps_beta: eps_b,
+                        converged: false,
+                        iterations: iter,
+                        grad_norm,
+                        mos_alpha: c_a,
+                        mos_beta: c_b,
+                        eps_alpha: eps_a,
+                        eps_beta: eps_b,
                     });
                 }
                 // Don't accept the tiny step; keep old c_a/c_b/etc, retry next iter with larger μ.
@@ -652,21 +774,33 @@ pub fn u_oo_ri_mp2(
 
         if de < config.energy_conv && iter > 1 && grad_norm < config.grad_conv * 10.0 {
             return Ok(UOoRiMp2Result {
-                total_energy, hf_energy: e_hf, mp2_corr: e_mp2,
+                total_energy,
+                hf_energy: e_hf,
+                mp2_corr: e_mp2,
                 components: amps.components.clone(),
-                converged: true, iterations: iter, grad_norm,
-                mos_alpha: c_a, mos_beta: c_b,
-                eps_alpha: eps_a, eps_beta: eps_b,
+                converged: true,
+                iterations: iter,
+                grad_norm,
+                mos_alpha: c_a,
+                mos_beta: c_b,
+                eps_alpha: eps_a,
+                eps_beta: eps_b,
             });
         }
     }
 
     Ok(UOoRiMp2Result {
-        total_energy, hf_energy: e_hf, mp2_corr: e_mp2,
+        total_energy,
+        hf_energy: e_hf,
+        mp2_corr: e_mp2,
         components: amps.components.clone(),
-        converged: false, iterations: config.max_iter, grad_norm,
-        mos_alpha: c_a, mos_beta: c_b,
-        eps_alpha: eps_a, eps_beta: eps_b,
+        converged: false,
+        iterations: config.max_iter,
+        grad_norm,
+        mos_alpha: c_a,
+        mos_beta: c_b,
+        eps_alpha: eps_a,
+        eps_beta: eps_b,
     })
 }
 
@@ -695,11 +829,19 @@ mod tests {
         let nvir_b = 902;
         let budget_bytes = ferric_core::memory::gib_to_bytes(1.0);
         let err = check_u_amplitude_alloc(
-            "test large U-OO-MP2", nocc_a, nvir_a, nocc_b, nvir_b, budget_bytes,
+            "test large U-OO-MP2",
+            nocc_a,
+            nvir_a,
+            nocc_b,
+            nvir_b,
+            budget_bytes,
         )
         .unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("GB"), "expected a GB-shaped estimate in the error message, got: {msg}");
+        assert!(
+            msg.contains("GB"),
+            "expected a GB-shaped estimate in the error message, got: {msg}"
+        );
         assert!(
             msg.contains("budget is"),
             "expected the configured budget named in the error message, got: {msg}"
@@ -711,7 +853,10 @@ mod tests {
         let t_bb = nocc_b * nocc_b * nvir_b * nvir_b;
         let t_ab = nocc_a * nocc_b * nvir_a * nvir_b;
         let total_gb = (t_aa + t_bb + t_ab) as f64 * 8.0 / 1e9;
-        assert!(total_gb > 40.0, "test fixture too small to exercise the large-scale guard: {total_gb:.1} GB");
+        assert!(
+            total_gb > 40.0,
+            "test fixture too small to exercise the large-scale guard: {total_gb:.1} GB"
+        );
     }
 
     /// Companion acceptance test: a small/typical open-shell system (OH/cc-pVDZ
@@ -727,12 +872,22 @@ mod tests {
         let nvir_b = 19;
         let budget_bytes = ferric_core::memory::gib_to_bytes(1.0);
         assert!(check_u_amplitude_alloc(
-            "test small U-OO-MP2", nocc_a, nvir_a, nocc_b, nvir_b, budget_bytes,
+            "test small U-OO-MP2",
+            nocc_a,
+            nvir_a,
+            nocc_b,
+            nvir_b,
+            budget_bytes,
         )
         .is_ok());
         let auto_budget = ferric_core::memory::resolve_budget_bytes(None);
         assert!(check_u_amplitude_alloc(
-            "test small U-OO-MP2 (auto budget)", nocc_a, nvir_a, nocc_b, nvir_b, auto_budget,
+            "test small U-OO-MP2 (auto budget)",
+            nocc_a,
+            nvir_a,
+            nocc_b,
+            nvir_b,
+            auto_budget,
         )
         .is_ok());
     }
@@ -746,13 +901,21 @@ mod tests {
         let budget_bytes = ferric_core::memory::gib_to_bytes(1.0);
         let err = check_u_bfull_alloc("test large b_full", 3000, 1000, budget_bytes).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("GB"), "expected a GB-shaped estimate, got: {msg}");
-        assert!(msg.contains("budget is"), "expected the configured budget named, got: {msg}");
+        assert!(
+            msg.contains("GB"),
+            "expected a GB-shaped estimate, got: {msg}"
+        );
+        assert!(
+            msg.contains("budget is"),
+            "expected the configured budget named, got: {msg}"
+        );
 
         // Small scale (water/cc-pVDZ-ish: naux~116, nmo~24) must pass.
         assert!(check_u_bfull_alloc("test small b_full", 116, 24, budget_bytes).is_ok());
         let auto_budget = ferric_core::memory::resolve_budget_bytes(None);
-        assert!(check_u_bfull_alloc("test small b_full (auto budget)", 116, 24, auto_budget).is_ok());
+        assert!(
+            check_u_bfull_alloc("test small b_full (auto budget)", 116, 24, auto_budget).is_ok()
+        );
     }
 
     /// On a closed-shell singlet (H2 in cc-pVDZ), U-OO-RI-MP2 from a UHF
@@ -773,32 +936,46 @@ mod tests {
         // Closed-shell OO-RI-MP2 reference
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
         let oo_cfg = crate::oo_rimp2::OoRiMp2Config {
-            grad_conv: 1e-7, energy_conv: 1e-10, max_iter: 50,
+            grad_conv: 1e-7,
+            energy_conv: 1e-10,
+            max_iter: 50,
             ..Default::default()
         };
-        let cs_oo = crate::oo_rimp2::oo_ri_mp2(
-            &mol, &obs, &dfbs, op, &bounds, &rhf, &oo_cfg, None,
-        ).unwrap();
+        let cs_oo = crate::oo_rimp2::oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &oo_cfg, None)
+            .unwrap();
 
         // UHF reference seeded from RHF MOs to land at the same singlet solution
         let c_seed = rhf.mos_r().clone();
         let uhf_cfg = UhfConfig {
-            max_iter: 200, energy_conv: 1e-10, density_conv: 1e-8, ..Default::default()
+            max_iter: 200,
+            energy_conv: 1e-10,
+            density_conv: 1e-8,
+            ..Default::default()
         };
         let uhf = solve_uhf_with_guess(
-            &ctx, &mol, &obs, &bounds, &uhf_cfg, Some((&c_seed, &c_seed)),
-        ).unwrap();
+            &ctx,
+            &mol,
+            &obs,
+            &bounds,
+            &uhf_cfg,
+            Some((&c_seed, &c_seed)),
+        )
+        .unwrap();
         let uoo_cfg = UOoRiMp2Config {
-            grad_conv: 1e-7, energy_conv: 1e-10, max_iter: 50, ..Default::default()
+            grad_conv: 1e-7,
+            energy_conv: 1e-10,
+            max_iter: 50,
+            ..Default::default()
         };
-        let us_oo = u_oo_ri_mp2(
-            &mol, &obs, &dfbs, op, &bounds, &uhf, &uoo_cfg, None,
-        ).unwrap();
+        let us_oo = u_oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &uhf, &uoo_cfg, None).unwrap();
 
         let de = (us_oo.total_energy - cs_oo.total_energy).abs();
         println!("CS OO-MP2 E_tot = {:.10}", cs_oo.total_energy);
         println!("US OO-MP2 E_tot = {:.10}", us_oo.total_energy);
-        println!("diff = {:.3e}, U converged in {} iters", de, us_oo.iterations);
+        println!(
+            "diff = {:.3e}, U converged in {} iters",
+            de, us_oo.iterations
+        );
         assert!(us_oo.converged, "U-OO-MP2 didn't converge on H2");
         // H2/cc-pVDZ has degenerate virtuals (π_g); the CS-OO surface has a
         // flat gauge direction so CS and U can land at slightly different
@@ -820,22 +997,41 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let uhf_cfg = UhfConfig { max_iter: 200, ..Default::default() };
+        let uhf_cfg = UhfConfig {
+            max_iter: 200,
+            ..Default::default()
+        };
         let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &uhf_cfg).unwrap();
         let umpc = crate::u_rimp2::u_ri_mp2(
-            &mol, &obs, &dfbs, op, &uhf, &crate::rimp2::RiMp2Config::default(),
-        ).unwrap();
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &uhf,
+            &crate::rimp2::RiMp2Config::default(),
+        )
+        .unwrap();
         let e_start = uhf.energy + umpc.mp2_corr;
         println!("Starting UHF+UMP2 = {:.10}", e_start);
 
         let oo = u_oo_ri_mp2(
-            &mol, &obs, &dfbs, op, &bounds, &uhf, &UOoRiMp2Config::default(), None,
-        ).unwrap();
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &bounds,
+            &uhf,
+            &UOoRiMp2Config::default(),
+            None,
+        )
+        .unwrap();
         println!(
             "U-OO-MP2: E_tot = {:.10}, iters = {}, |g|={:.2e}, converged={}",
             oo.total_energy, oo.iterations, oo.grad_norm, oo.converged,
         );
-        assert!(oo.total_energy <= e_start + 1e-8, "U-OO-MP2 did not lower E vs UHF+UMP2");
+        assert!(
+            oo.total_energy <= e_start + 1e-8,
+            "U-OO-MP2 did not lower E vs UHF+UMP2"
+        );
     }
 }
-

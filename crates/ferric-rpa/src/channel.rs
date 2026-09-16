@@ -26,6 +26,10 @@ pub struct RpaChannel<'a> {
 impl<'a> RpaChannel<'a> {
     /// Bundle the RI block and orbital energies for one spin channel.
     pub fn new(b_ov: &'a Array2<f64>, eps_occ: &'a [f64], eps_vir: &'a [f64]) -> Self {
-        Self { b_ov, eps_occ, eps_vir }
+        Self {
+            b_ov,
+            eps_occ,
+            eps_vir,
+        }
     }
 }

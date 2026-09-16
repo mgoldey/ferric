@@ -1,4 +1,4 @@
-use ferric_core::mol::{Molecule, Atom};
+use ferric_core::mol::{Atom, Molecule};
 use ferric_export::cube::{export_cube, GridSpec};
 use ferric_export::ml::{export_npz, NpzBundle};
 use ndarray::{Array1, Array2, Array3};
@@ -9,8 +9,24 @@ use std::fs;
 fn test_export_cube() {
     let mol = Molecule {
         atoms: vec![
-            Atom { symbol: "H".to_string(), z: 1, x: 0.0, y: 0.0, zpos: 0.0, ghost: false, n_core_ecp: 0 },
-            Atom { symbol: "H".to_string(), z: 1, x: 1.4, y: 0.0, zpos: 0.0, ghost: false, n_core_ecp: 0 },
+            Atom {
+                symbol: "H".to_string(),
+                z: 1,
+                x: 0.0,
+                y: 0.0,
+                zpos: 0.0,
+                ghost: false,
+                n_core_ecp: 0,
+            },
+            Atom {
+                symbol: "H".to_string(),
+                z: 1,
+                x: 1.4,
+                y: 0.0,
+                zpos: 0.0,
+                ghost: false,
+                n_core_ecp: 0,
+            },
         ],
         charge: 0,
         multiplicity: 1,
@@ -44,7 +60,8 @@ fn test_export_npz() {
             orbital_energies: Some(&orbital_energies),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     assert!(std::path::Path::new(path).exists());
     fs::remove_file(path).unwrap();
@@ -60,10 +77,8 @@ fn test_export_npz() {
 /// "passed" (it only checked file existence, not content).
 #[test]
 fn test_export_npz_round_trip_values() {
-    let mo_coeffs = Array2::<f64>::from_shape_vec((2, 3), vec![
-        1.0, 2.0, 3.0,
-        4.0, 5.0, 6.0,
-    ]).unwrap();
+    let mo_coeffs =
+        Array2::<f64>::from_shape_vec((2, 3), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
     let orbital_energies = vec![-1.5, -0.75, 0.25];
     let path = "test_round_trip.npz";
 
@@ -74,7 +89,8 @@ fn test_export_npz_round_trip_values() {
             orbital_energies: Some(&orbital_energies),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
 
     let mut npz = NpzReader::new(fs::File::open(path).unwrap()).unwrap();
     let read_mo_coeffs: Array2<f64> = npz.by_name("mo_coeffs.npy").unwrap();
@@ -100,11 +116,8 @@ fn test_export_npz_round_trip_values() {
 fn npz_surface_esp_round_trips_with_its_coordinates() {
     use ferric_export::ml::PolarizabilityBundle;
 
-    let pts = Array2::from_shape_vec(
-        (3, 3),
-        vec![0.0, 0.0, 10.0, 0.0, 0.0, 20.0, 1.0, 2.0, 3.0],
-    )
-    .unwrap();
+    let pts = Array2::from_shape_vec((3, 3), vec![0.0, 0.0, 10.0, 0.0, 0.0, 20.0, 1.0, 2.0, 3.0])
+        .unwrap();
     let vals = [-6.84e-3, -1.71e-3, 4.2e-2];
 
     let path = "test_esp_surface.npz";
@@ -126,7 +139,10 @@ fn npz_surface_esp_round_trips_with_its_coordinates() {
     for (a, b) in got_v.iter().zip(vals.iter()) {
         assert!((a - b).abs() < 1e-15, "value round-trip: {a} vs {b}");
     }
-    assert!((got_p[(1, 2)] - 20.0).abs() < 1e-15, "coordinate round-trip");
+    assert!(
+        (got_p[(1, 2)] - 20.0).abs() < 1e-15,
+        "coordinate round-trip"
+    );
     fs::remove_file(path).ok();
 }
 
@@ -149,7 +165,9 @@ fn npz_surface_esp_rejects_a_missing_half() {
         },
         ..Default::default()
     };
-    let err = export_npz("test_esp_bad1.npz", &values_only).unwrap_err().to_string();
+    let err = export_npz("test_esp_bad1.npz", &values_only)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("without esp_points"), "got: {err}");
 
     let points_only = NpzBundle {
@@ -159,7 +177,9 @@ fn npz_surface_esp_rejects_a_missing_half() {
         },
         ..Default::default()
     };
-    let err = export_npz("test_esp_bad2.npz", &points_only).unwrap_err().to_string();
+    let err = export_npz("test_esp_bad2.npz", &points_only)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("without esp_surface"), "got: {err}");
 
     // ...and a length/shape mismatch must not be written either.
@@ -172,10 +192,16 @@ fn npz_surface_esp_rejects_a_missing_half() {
         },
         ..Default::default()
     };
-    let err = export_npz("test_esp_bad3.npz", &mismatched).unwrap_err().to_string();
+    let err = export_npz("test_esp_bad3.npz", &mismatched)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("expected (3, 3)"), "got: {err}");
 
-    for f in ["test_esp_bad1.npz", "test_esp_bad2.npz", "test_esp_bad3.npz"] {
+    for f in [
+        "test_esp_bad1.npz",
+        "test_esp_bad2.npz",
+        "test_esp_bad3.npz",
+    ] {
         fs::remove_file(f).ok();
     }
 }

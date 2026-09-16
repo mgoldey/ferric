@@ -69,7 +69,11 @@ fn wred_probe_water_pbe() {
     let pdep = ferric_rpa::run_pdep_rpa(&mol, &obs, &dfbs, op, &ks, &pdep_cfg()).unwrap();
     let lam = &pdep.eigenvalues_static;
     eprintln!("n_eigenpotentials = {}", pdep.n_eigenpotentials);
-    eprintln!("lambda_alpha(0) stats: min={:.6} max={:.6}", lam.iter().cloned().fold(f64::MAX, f64::min), lam.iter().cloned().fold(f64::MIN, f64::max));
+    eprintln!(
+        "lambda_alpha(0) stats: min={:.6} max={:.6}",
+        lam.iter().cloned().fold(f64::MAX, f64::min),
+        lam.iter().cloned().fold(f64::MIN, f64::max)
+    );
     let n_neg = lam.iter().filter(|&&l| l < 0.0).count();
     let n_small = lam.iter().filter(|&&l| l.abs() < 1e-3).count();
     eprintln!("count(lambda<0) = {n_neg}   count(|lambda|<1e-3) = {n_small}");
@@ -77,13 +81,23 @@ fn wred_probe_water_pbe() {
     let mut sorted: Vec<f64> = lam.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     eprintln!("10 smallest lambda: {:?}", &sorted[..10.min(sorted.len())]);
-    eprintln!("10 largest lambda: {:?}", &sorted[sorted.len().saturating_sub(10)..]);
+    eprintln!(
+        "10 largest lambda: {:?}",
+        &sorted[sorted.len().saturating_sub(10)..]
+    );
 
     // w_red = 1/lambda - 1
     let w_red: Vec<f64> = lam.iter().map(|&l| 1.0 / l - 1.0).collect();
     let mut wsorted = w_red.clone();
     wsorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    eprintln!("w_red: min={:.6} max={:.6}", wsorted[0], wsorted[wsorted.len()-1]);
+    eprintln!(
+        "w_red: min={:.6} max={:.6}",
+        wsorted[0],
+        wsorted[wsorted.len() - 1]
+    );
     eprintln!("10 smallest w_red: {:?}", &wsorted[..10.min(wsorted.len())]);
-    eprintln!("10 largest w_red: {:?}", &wsorted[wsorted.len().saturating_sub(10)..]);
+    eprintln!(
+        "10 largest w_red: {:?}",
+        &wsorted[wsorted.len().saturating_sub(10)..]
+    );
 }

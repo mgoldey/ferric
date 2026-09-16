@@ -78,8 +78,14 @@ pub struct OmegaTuneResult {
 
 impl std::fmt::Display for OmegaTuneResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ω-tuning: ω* = {:.6} Bohr⁻¹ (J = {:.6}, {} evals, converged: {})",
-            self.omega, self.j, self.evals.len(), self.converged)
+        write!(
+            f,
+            "ω-tuning: ω* = {:.6} Bohr⁻¹ (J = {:.6}, {} evals, converged: {})",
+            self.omega,
+            self.j,
+            self.evals.len(),
+            self.converged
+        )
     }
 }
 
@@ -118,7 +124,12 @@ fn eval_j(
         });
     }
     let ip = cat.energy - neutral.energy;
-    Ok(OmegaEval { omega, eps_homo, ip_delta_scf: ip, j: eps_homo + ip })
+    Ok(OmegaEval {
+        omega,
+        eps_homo,
+        ip_delta_scf: ip,
+        j: eps_homo + ip,
+    })
 }
 
 /// Golden-section minimization of |J(ω)| over the bracket.
@@ -177,5 +188,10 @@ pub fn tune_omega(
         .cloned()
         .min_by(|x, y| x.j.abs().partial_cmp(&y.j.abs()).expect("NaN J"))
         .expect("at least two evaluations");
-    Ok(OmegaTuneResult { omega: best.omega, j: best.j, evals, converged })
+    Ok(OmegaTuneResult {
+        omega: best.omega,
+        j: best.j,
+        evals,
+        converged,
+    })
 }

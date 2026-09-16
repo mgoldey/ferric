@@ -60,7 +60,11 @@ pub struct XcSpec<'a> {
 impl<'a> XcSpec<'a> {
     /// Convenience constructor using the default grids.
     pub fn new(name: &'a str) -> Self {
-        Self { name, grid: None, nlc_grid: None }
+        Self {
+            name,
+            grid: None,
+            nlc_grid: None,
+        }
     }
 
     fn build(
@@ -69,15 +73,16 @@ impl<'a> XcSpec<'a> {
         prep: &PreparedBasis,
     ) -> Result<Box<dyn ferric_dft::xc_trait::UksXcContribution>, FerricError> {
         let main = self.grid.clone().unwrap_or_default();
-        let nlc = self.nlc_grid.clone().unwrap_or(ferric_dft::grid::AtomicGridConfig {
-            n_radial: 50,
-            n_angular: 50,
-            ..Default::default()
-        });
+        let nlc = self
+            .nlc_grid
+            .clone()
+            .unwrap_or(ferric_dft::grid::AtomicGridConfig {
+                n_radial: 50,
+                n_angular: 50,
+                ..Default::default()
+            });
         let ks = ferric_dft::ks::KsXcUks::new(mol, prep.basis_set(), self.name, &main, &nlc)
-            .map_err(|e| {
-                FerricError::General(format!("KsXcUks init for {}: {e:?}", self.name))
-            })?;
+            .map_err(|e| FerricError::General(format!("KsXcUks init for {}: {e:?}", self.name)))?;
         Ok(Box::new(ks) as Box<dyn ferric_dft::xc_trait::UksXcContribution>)
     }
 }
@@ -245,7 +250,15 @@ pub fn semicanonicalize(
 
     // Coulomb from the TOTAL density (one build).
     let (mut j_tot, mut k_scratch) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
-    crate::rhf::build_jk(ctx, prep, bounds, integral_thresh, &d_total, &mut j_tot, &mut k_scratch)?;
+    crate::rhf::build_jk(
+        ctx,
+        prep,
+        bounds,
+        integral_thresh,
+        &d_total,
+        &mut j_tot,
+        &mut k_scratch,
+    )?;
 
     let mut f_a = &h + &j_tot;
     let mut f_b = &h + &j_tot;
@@ -267,10 +280,26 @@ pub fn semicanonicalize(
         // occ_factor/scale = 1.0: these are per-spin Focks built from per-spin
         // densities, matching how solve_uhf calls this (uhf.rs:314-319).
         crate::fock_assembly::subtract_rsh_exchange(
-            &mut dfk_sr, &mut dfk_lr, d_a, None, 1.0, &mut f_a, k_mix.sr, k_mix.lr, 1.0,
+            &mut dfk_sr,
+            &mut dfk_lr,
+            d_a,
+            None,
+            1.0,
+            &mut f_a,
+            k_mix.sr,
+            k_mix.lr,
+            1.0,
         )?;
         crate::fock_assembly::subtract_rsh_exchange(
-            &mut dfk_sr, &mut dfk_lr, d_b, None, 1.0, &mut f_b, k_mix.sr, k_mix.lr, 1.0,
+            &mut dfk_sr,
+            &mut dfk_lr,
+            d_b,
+            None,
+            1.0,
+            &mut f_b,
+            k_mix.sr,
+            k_mix.lr,
+            1.0,
         )?;
     } else {
         // Full K for a pure-HF reference; k_mix.sr for a plain hybrid. A pure
@@ -278,10 +307,26 @@ pub fn semicanonicalize(
         let c_k = if xc_contrib.is_some() { k_mix.sr } else { 1.0 };
         if c_k != 0.0 {
             let (mut j_scratch, mut k_a) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
-            crate::rhf::build_jk(ctx, prep, bounds, integral_thresh, d_a, &mut j_scratch, &mut k_a)?;
+            crate::rhf::build_jk(
+                ctx,
+                prep,
+                bounds,
+                integral_thresh,
+                d_a,
+                &mut j_scratch,
+                &mut k_a,
+            )?;
             let mut k_b = Array2::zeros((n, n));
             j_scratch.fill(0.0);
-            crate::rhf::build_jk(ctx, prep, bounds, integral_thresh, d_b, &mut j_scratch, &mut k_b)?;
+            crate::rhf::build_jk(
+                ctx,
+                prep,
+                bounds,
+                integral_thresh,
+                d_b,
+                &mut j_scratch,
+                &mut k_b,
+            )?;
             f_a.scaled_add(-c_k, &k_a);
             f_b.scaled_add(-c_k, &k_b);
         }
@@ -373,5 +418,8 @@ fn rohf_occupations(mol: &ferric_core::mol::Molecule) -> Result<(usize, usize), 
             mol.multiplicity
         )));
     }
-    Ok((((nelec + two_s) / 2) as usize, ((nelec - two_s) / 2) as usize))
+    Ok((
+        ((nelec + two_s) / 2) as usize,
+        ((nelec - two_s) / 2) as usize,
+    ))
 }

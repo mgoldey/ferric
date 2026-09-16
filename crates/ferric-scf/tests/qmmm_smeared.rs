@@ -58,7 +58,11 @@ fn scf_energy(mol: &Molecule, ext: Option<&ExternalPotential>) -> f64 {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig { external_potential: ext.cloned(), density_conv: 1e-11, ..Default::default() };
+    let cfg = RhfConfig {
+        external_potential: ext.cloned(),
+        density_conv: 1e-11,
+        ..Default::default()
+    };
     let r = solve_rhf(&ctx, mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged);
     r.energy
@@ -69,7 +73,13 @@ fn scf_energy(mol: &Molecule, ext: Option<&ExternalPotential>) -> f64 {
 fn one_smeared_site() -> ExternalPotential {
     ExternalPotential {
         point_charges: vec![],
-        smeared_charges: vec![SmearedCharge { q: 0.6, x: 1.5, y: -2.0, z: 3.0, width: 1.0 }],
+        smeared_charges: vec![SmearedCharge {
+            q: 0.6,
+            x: 1.5,
+            y: -2.0,
+            z: 3.0,
+            width: 1.0,
+        }],
         field: None,
     }
 }
@@ -84,7 +94,11 @@ fn smeared_qm_gradient_matches_finite_difference() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig { external_potential: Some(ext.clone()), density_conv: 1e-11, ..Default::default() };
+    let cfg = RhfConfig {
+        external_potential: Some(ext.clone()),
+        density_conv: 1e-11,
+        ..Default::default()
+    };
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(result.converged);
 
@@ -98,9 +112,18 @@ fn smeared_qm_gradient_matches_finite_difference() {
             let mut mol_p = mol.clone();
             let mut mol_m = mol.clone();
             match c {
-                0 => { mol_p.atoms[a].x += h; mol_m.atoms[a].x -= h; }
-                1 => { mol_p.atoms[a].y += h; mol_m.atoms[a].y -= h; }
-                _ => { mol_p.atoms[a].zpos += h; mol_m.atoms[a].zpos -= h; }
+                0 => {
+                    mol_p.atoms[a].x += h;
+                    mol_m.atoms[a].x -= h;
+                }
+                1 => {
+                    mol_p.atoms[a].y += h;
+                    mol_m.atoms[a].y -= h;
+                }
+                _ => {
+                    mol_p.atoms[a].zpos += h;
+                    mol_m.atoms[a].zpos -= h;
+                }
             }
             let e_p = scf_energy(&mol_p, Some(&ext));
             let e_m = scf_energy(&mol_m, Some(&ext));
@@ -133,7 +156,11 @@ fn smeared_site_force_matches_finite_difference() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig { external_potential: Some(base.clone()), density_conv: 1e-11, ..Default::default() };
+    let cfg = RhfConfig {
+        external_potential: Some(base.clone()),
+        density_conv: 1e-11,
+        ..Default::default()
+    };
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(result.converged);
     let d_total = result.density_total();
@@ -145,12 +172,29 @@ fn smeared_site_force_matches_finite_difference() {
         let mut site_p = site;
         let mut site_m = site;
         match c {
-            0 => { site_p.x += h; site_m.x -= h; }
-            1 => { site_p.y += h; site_m.y -= h; }
-            _ => { site_p.z += h; site_m.z -= h; }
+            0 => {
+                site_p.x += h;
+                site_m.x -= h;
+            }
+            1 => {
+                site_p.y += h;
+                site_m.y -= h;
+            }
+            _ => {
+                site_p.z += h;
+                site_m.z -= h;
+            }
         }
-        let ext_p = ExternalPotential { point_charges: vec![], smeared_charges: vec![site_p], field: None };
-        let ext_m = ExternalPotential { point_charges: vec![], smeared_charges: vec![site_m], field: None };
+        let ext_p = ExternalPotential {
+            point_charges: vec![],
+            smeared_charges: vec![site_p],
+            field: None,
+        };
+        let ext_m = ExternalPotential {
+            point_charges: vec![],
+            smeared_charges: vec![site_m],
+            field: None,
+        };
         let e_p = scf_energy(&mol, Some(&ext_p));
         let e_m = scf_energy(&mol, Some(&ext_m));
         let fd = (e_p - e_m) / (2.0 * h);
@@ -179,7 +223,9 @@ fn full_gradient_translational_invariance_smeared_only() {
     let qm: Vec<usize> = (0..3).collect();
     let sys = QmmmSystem::new(&atoms, QmSelection::Indices(qm), 0, 1).unwrap();
     let mol = sys.to_qm_molecule();
-    let ep = sys.to_external_potential().expect("smeared MM charges present");
+    let ep = sys
+        .to_external_potential()
+        .expect("smeared MM charges present");
     assert_eq!(ep.point_charges.len(), 0);
     assert_eq!(ep.smeared_charges.len(), 2);
 
@@ -187,7 +233,11 @@ fn full_gradient_translational_invariance_smeared_only() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig { external_potential: Some(ep.clone()), density_conv: 1e-11, ..Default::default() };
+    let cfg = RhfConfig {
+        external_potential: Some(ep.clone()),
+        density_conv: 1e-11,
+        ..Default::default()
+    };
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(result.converged);
 
@@ -203,7 +253,10 @@ fn full_gradient_translational_invariance_smeared_only() {
         col_sum[2] += row[2];
     }
     for (k, s) in col_sum.iter().enumerate() {
-        assert!(s.abs() < 1e-8, "column {k} sum = {s:.3e} (expected 0, translational invariance)");
+        assert!(
+            s.abs() < 1e-8,
+            "column {k} sum = {s:.3e} (expected 0, translational invariance)"
+        );
     }
 }
 
@@ -269,17 +322,40 @@ fn check_smeared(name: &str) {
     let mut atoms: Vec<QmmmAtom> = r
         .atoms
         .iter()
-        .map(|a| QmmmAtom::new(a.symbol.clone(), z_of(&a.symbol), a.xyz_bohr[0], a.xyz_bohr[1], a.xyz_bohr[2], 99.0))
+        .map(|a| {
+            QmmmAtom::new(
+                a.symbol.clone(),
+                z_of(&a.symbol),
+                a.xyz_bohr[0],
+                a.xyz_bohr[1],
+                a.xyz_bohr[2],
+                99.0,
+            )
+        })
         .collect();
     for (c, &width) in r.mm_charges.iter().zip(r.radii.iter()) {
-        atoms.push(QmmmAtom::new_smeared("X", 0, c.xyz_bohr[0], c.xyz_bohr[1], c.xyz_bohr[2], c.q, width));
+        atoms.push(QmmmAtom::new_smeared(
+            "X",
+            0,
+            c.xyz_bohr[0],
+            c.xyz_bohr[1],
+            c.xyz_bohr[2],
+            c.q,
+            width,
+        ));
     }
     let qm: Vec<usize> = (0..r.atoms.len()).collect();
     let sys = QmmmSystem::new(&atoms, QmSelection::Indices(qm), r.charge, r.multiplicity).unwrap();
     let mol = sys.to_qm_molecule();
     assert_eq!(mol.atoms.len(), r.atoms.len());
-    let ep = sys.to_external_potential().expect("reference has MM charges");
-    assert_eq!(ep.point_charges.len(), 0, "all reference MM charges are smeared");
+    let ep = sys
+        .to_external_potential()
+        .expect("reference has MM charges");
+    assert_eq!(
+        ep.point_charges.len(),
+        0,
+        "all reference MM charges are smeared"
+    );
     assert_eq!(ep.smeared_charges.len(), r.mm_charges.len());
 
     let prep = sto3g_prep(&mol);
@@ -287,17 +363,35 @@ fn check_smeared(name: &str) {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig { external_potential: Some(ep.clone()), density_conv: 1e-10, ..Default::default() };
-    let gas_cfg = RhfConfig { density_conv: 1e-10, ..Default::default() };
+    let cfg = RhfConfig {
+        external_potential: Some(ep.clone()),
+        density_conv: 1e-10,
+        ..Default::default()
+    };
+    let gas_cfg = RhfConfig {
+        density_conv: 1e-10,
+        ..Default::default()
+    };
     let scf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     let gas = solve_rhf(&ctx, &mol, &prep, op, &bounds, &gas_cfg).unwrap();
     assert!(scf.converged && gas.converged);
 
-    let qm_grad = rhf_gradient(&mol, &prep, op, &bounds, &scf, cfg.external_potential.as_ref()).unwrap();
+    let qm_grad = rhf_gradient(
+        &mol,
+        &prep,
+        op,
+        &bounds,
+        &scf,
+        cfg.external_potential.as_ref(),
+    )
+    .unwrap();
     let forces = mm_forces(&sys, &mol, &prep, scf.density_total()).unwrap();
 
     let de_gas = (gas.energy - r.energy_gas_phase).abs();
-    assert!(de_gas < 5e-8, "{name}: gas-phase energy off by {de_gas:.3e}");
+    assert!(
+        de_gas < 5e-8,
+        "{name}: gas-phase energy off by {de_gas:.3e}"
+    );
 
     let shift_f = scf.energy - gas.energy;
     let shift_p = r.energy - r.energy_gas_phase;
@@ -310,7 +404,12 @@ fn check_smeared(name: &str) {
     for (i, (f, g)) in forces.iter().zip(r.mm_gradient.iter()).enumerate() {
         for k in 0..3 {
             let d = (f[k] + g[k]).abs();
-            assert!(d < 1e-6, "{name}: MM force[{i}][{k}] ferric {} vs PySCF -grad {} (Δ {d:.3e})", f[k], -g[k]);
+            assert!(
+                d < 1e-6,
+                "{name}: MM force[{i}][{k}] ferric {} vs PySCF -grad {} (Δ {d:.3e})",
+                f[k],
+                -g[k]
+            );
         }
     }
 
@@ -356,7 +455,13 @@ fn tiny_width_scf_matches_point_charge_scf() {
     };
     let ext_smeared = ExternalPotential {
         point_charges: vec![],
-        smeared_charges: vec![SmearedCharge { q, x, y, z, width: 1e-3 }],
+        smeared_charges: vec![SmearedCharge {
+            q,
+            x,
+            y,
+            z,
+            width: 1e-3,
+        }],
         field: None,
     };
 
@@ -364,19 +469,35 @@ fn tiny_width_scf_matches_point_charge_scf() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg_point = RhfConfig { external_potential: Some(ext_point.clone()), density_conv: 1e-11, ..Default::default() };
-    let cfg_smeared = RhfConfig { external_potential: Some(ext_smeared.clone()), density_conv: 1e-11, ..Default::default() };
+    let cfg_point = RhfConfig {
+        external_potential: Some(ext_point.clone()),
+        density_conv: 1e-11,
+        ..Default::default()
+    };
+    let cfg_smeared = RhfConfig {
+        external_potential: Some(ext_smeared.clone()),
+        density_conv: 1e-11,
+        ..Default::default()
+    };
     let r_point = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_point).unwrap();
     let r_smeared = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_smeared).unwrap();
     assert!(r_point.converged && r_smeared.converged);
 
     let de = (r_point.energy - r_smeared.energy).abs();
-    assert!(de < 1e-9, "tiny-width SCF energy vs point-charge SCF energy differ by {de:.3e}");
+    assert!(
+        de < 1e-9,
+        "tiny-width SCF energy vs point-charge SCF energy differ by {de:.3e}"
+    );
 
     let g_point = rhf_gradient(&mol, &prep, op, &bounds, &r_point, Some(&ext_point)).unwrap();
     let g_smeared = rhf_gradient(&mol, &prep, op, &bounds, &r_smeared, Some(&ext_smeared)).unwrap();
-    let max_diff: f64 = (&g_point - &g_smeared).iter().fold(0.0, |acc: f64, &v| acc.max(v.abs()));
-    assert!(max_diff < 1e-8, "tiny-width gradient vs point-charge gradient differ by {max_diff:.3e}");
+    let max_diff: f64 = (&g_point - &g_smeared)
+        .iter()
+        .fold(0.0, |acc: f64, &v| acc.max(v.abs()));
+    assert!(
+        max_diff < 1e-8,
+        "tiny-width gradient vs point-charge gradient differ by {max_diff:.3e}"
+    );
 }
 
 // NOTE: this file used to carry `empty_smeared_charges_gradient_is_bit_identical`

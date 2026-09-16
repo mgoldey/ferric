@@ -133,9 +133,7 @@ impl QqrBounds3 {
             .saturating_mul(nsh_obs)
             .saturating_mul(std::mem::size_of::<[f64; 3]>() + 2 * std::mem::size_of::<f64>());
         ferric_core::memory::check_alloc(
-            &format!(
-                "QQR-3 obs pair tables (nsh_obs={nsh_obs} ordered pairs, dense by design)"
-            ),
+            &format!("QQR-3 obs pair tables (nsh_obs={nsh_obs} ordered pairs, dense by design)"),
             pair_bytes,
             ferric_core::memory::resolve_budget_bytes(None),
         )?;
@@ -189,21 +187,29 @@ impl QqrBounds3 {
     }
 
     /// Number of obs-basis shells.
-    pub fn nsh_obs(&self) -> usize { self.nsh_obs }
+    pub fn nsh_obs(&self) -> usize {
+        self.nsh_obs
+    }
     /// Number of aux-basis shells.
-    pub fn nsh_aux(&self) -> usize { self.nsh_aux }
+    pub fn nsh_aux(&self) -> usize {
+        self.nsh_aux
+    }
     /// Operator this bound was built for.
-    pub fn op(&self) -> Operator { self.op }
+    pub fn op(&self) -> Operator {
+        self.op
+    }
 
     #[doc(hidden)]
     pub fn debug_distance(&self, p: usize, s1: usize, s2: usize) -> f64 {
         let idx = s1 * self.nsh_obs + s2;
         let c = self.obs_pair_centers[idx];
         let a = self.aux_centers[p];
-        ((c[0]-a[0]).powi(2)+(c[1]-a[1]).powi(2)+(c[2]-a[2]).powi(2)).sqrt()
+        ((c[0] - a[0]).powi(2) + (c[1] - a[1]).powi(2) + (c[2] - a[2]).powi(2)).sqrt()
     }
     #[doc(hidden)]
-    pub fn debug_aux_extent(&self, p: usize) -> f64 { self.aux_extents[p] }
+    pub fn debug_aux_extent(&self, p: usize) -> f64 {
+        self.aux_extents[p]
+    }
     #[doc(hidden)]
     pub fn debug_obs_extent(&self, s1: usize, s2: usize) -> f64 {
         self.obs_pair_extents[s1 * self.nsh_obs + s2]
@@ -416,7 +422,10 @@ fn q3_aux_tight(op: Operator, dfbs: &PreparedBasis) -> Result<Vec<f64>, FerricEr
     let q3: Vec<f64> = (0..nsh)
         .into_par_iter()
         .map_init(
-            || Engine::new_2center(op, dfbs, QQR3_SEED_PREC).expect("2-center engine (pre-validated)"),
+            || {
+                Engine::new_2center(op, dfbs, QQR3_SEED_PREC)
+                    .expect("2-center engine (pre-validated)")
+            },
             |eng, p| {
                 let block = eng.compute_eri2(dfbs, p, p);
                 let np = dims[p];
@@ -524,10 +533,7 @@ fn q_obs_tight(op: Operator, obs: &PreparedBasis) -> Result<Array2<f64>, FerricE
     Ok(q)
 }
 
-fn collect_min_exponents_and_origins(
-    mol: &Molecule,
-    bs: &BasisSet,
-) -> (Vec<f64>, Vec<[f64; 3]>) {
+fn collect_min_exponents_and_origins(mol: &Molecule, bs: &BasisSet) -> (Vec<f64>, Vec<[f64; 3]>) {
     let mut min_exps = Vec::new();
     let mut origins = Vec::new();
     for atom in &mol.atoms {
@@ -566,8 +572,10 @@ mod tests {
             let err = (got - expect).abs();
             // Relative tolerance for the tiny tail values.
             let tol = 1e-12 * expect.max(1e-12) + 1e-13;
-            assert!(err < tol.max(1e-12),
-                "erfc({x}) = {got}, expected {expect}, err {err:.3e}");
+            assert!(
+                err < tol.max(1e-12),
+                "erfc({x}) = {got}, expected {expect}, err {err:.3e}"
+            );
         }
         assert!((erfc(0.0) - 1.0).abs() < 1e-15);
         // monotone decreasing
@@ -610,27 +618,35 @@ mod tests {
                     for pp in 0..dims_aux[p] {
                         for ii in 0..dims_obs[s1] {
                             for jj in 0..dims_obs[s2] {
-                                let v = dense[(offs_aux[p] + pp,
-                                               offs_obs[s1] + ii,
-                                               offs_obs[s2] + jj)].abs();
-                                if v > tru { tru = v; }
+                                let v = dense
+                                    [(offs_aux[p] + pp, offs_obs[s1] + ii, offs_obs[s2] + jj)]
+                                    .abs();
+                                if v > tru {
+                                    tru = v;
+                                }
                             }
                         }
                     }
-                    assert!(bound >= tru - 1e-12,
+                    assert!(
+                        bound >= tru - 1e-12,
                         "estimate3({p},{s1},{s2}) = {bound:.6e} UNDER-estimates \
                          true |(P|μν)| = {tru:.6e} (deficit {:.3e})",
-                        tru - bound);
+                        tru - bound
+                    );
                     if tru > 1e-14 {
                         let ratio = tru / bound;
-                        if ratio > worst_ratio { worst_ratio = ratio; }
+                        if ratio > worst_ratio {
+                            worst_ratio = ratio;
+                        }
                     }
                 }
             }
         }
         eprintln!("{path}: worst |true|/bound = {worst_ratio:.4} (must be ≤ 1)");
-        assert!(worst_ratio <= 1.0 + 1e-9,
-            "bound is invalid: worst ratio {worst_ratio} > 1");
+        assert!(
+            worst_ratio <= 1.0 + 1e-9,
+            "bound is invalid: worst ratio {worst_ratio} > 1"
+        );
     }
 
     #[test]
@@ -678,10 +694,8 @@ mod tests {
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let aux = PreparedBasis::new(&mol, &aux_bs).unwrap();
-        let qqr3_c = QqrBounds3::new(
-            Operator::coulomb(), &mol, &obs, &aux).unwrap();
-        let qqr3_e = QqrBounds3::new(
-            Operator::erfc(0.5), &mol, &obs, &aux).unwrap();
+        let qqr3_c = QqrBounds3::new(Operator::coulomb(), &mol, &obs, &aux).unwrap();
+        let qqr3_e = QqrBounds3::new(Operator::erfc(0.5), &mol, &obs, &aux).unwrap();
         let mut found_strictly_smaller = false;
         for p in 0..qqr3_c.nsh_aux() {
             for s1 in 0..qqr3_c.nsh_obs() {
@@ -693,16 +707,20 @@ mod tests {
                     // only check the distance envelope on a normalized ratio
                     // when both are nonzero. The strict-smaller condition is
                     // about the *combined* bound being tighter.
-                    assert!(e <= c + 1e-14,
-                        "erfc QQR3 not ≤ Coulomb QQR3 at ({p},{s1},{s2}): {e} vs {c}");
+                    assert!(
+                        e <= c + 1e-14,
+                        "erfc QQR3 not ≤ Coulomb QQR3 at ({p},{s1},{s2}): {e} vs {c}"
+                    );
                     if c > 1e-10 && (e / c) < 0.99 {
                         found_strictly_smaller = true;
                     }
                 }
             }
         }
-        assert!(found_strictly_smaller,
-            "erfc QQR3 should be strictly smaller than Coulomb QQR3 somewhere");
+        assert!(
+            found_strictly_smaller,
+            "erfc QQR3 should be strictly smaller than Coulomb QQR3 somewhere"
+        );
     }
 
     /// Serial references for `q3_aux_tight`/`q_obs_tight` (pre-parallelization
@@ -764,14 +782,24 @@ mod tests {
         let mol = Molecule::load_xyz("../../testdata/molecules/alkane_6.xyz").unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let aux = PreparedBasis::new(&mol, &aux_bs).unwrap();
-        assert!(aux.nshells() >= 64,
-            "test aux basis too small to exercise the parallel path: {} shells", aux.nshells());
+        assert!(
+            aux.nshells() >= 64,
+            "test aux basis too small to exercise the parallel path: {} shells",
+            aux.nshells()
+        );
         for op in [Operator::coulomb(), Operator::erfc(0.222)] {
             let par = q3_aux_tight(op, &aux).unwrap();
             let ser = q3_aux_tight_serial(op, &aux);
             assert_eq!(par.len(), ser.len());
-            let n_diff = par.iter().zip(ser.iter()).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
-            assert_eq!(n_diff, 0, "q3_aux_tight: {n_diff} elements differ bitwise (op={op:?})");
+            let n_diff = par
+                .iter()
+                .zip(ser.iter())
+                .filter(|(a, b)| a.to_bits() != b.to_bits())
+                .count();
+            assert_eq!(
+                n_diff, 0,
+                "q3_aux_tight: {n_diff} elements differ bitwise (op={op:?})"
+            );
         }
     }
 
@@ -781,14 +809,24 @@ mod tests {
         let mol = Molecule::load_xyz("../../testdata/molecules/alkane_6.xyz").unwrap();
         let obs_bs = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
-        assert!(obs.nshells() >= 64,
-            "test obs basis too small to exercise the parallel path: {} shells", obs.nshells());
+        assert!(
+            obs.nshells() >= 64,
+            "test obs basis too small to exercise the parallel path: {} shells",
+            obs.nshells()
+        );
         for op in [Operator::coulomb(), Operator::erfc(0.222)] {
             let par = q_obs_tight(op, &obs).unwrap();
             let ser = q_obs_tight_serial(op, &obs);
             assert_eq!(par.dim(), ser.dim());
-            let n_diff = par.iter().zip(ser.iter()).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
-            assert_eq!(n_diff, 0, "q_obs_tight: {n_diff} elements differ bitwise (op={op:?})");
+            let n_diff = par
+                .iter()
+                .zip(ser.iter())
+                .filter(|(a, b)| a.to_bits() != b.to_bits())
+                .count();
+            assert_eq!(
+                n_diff, 0,
+                "q_obs_tight: {n_diff} elements differ bitwise (op={op:?})"
+            );
         }
     }
 }

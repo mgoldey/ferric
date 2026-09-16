@@ -58,7 +58,11 @@ const THREAD_COUNTS: [usize; 5] = [1, 2, 8, 12, 64];
 /// and the byte cap happened to coincide at the ambient width. A test that
 /// cannot vary the worker count cannot observe this class of bug.
 fn with_threads<T: Send>(n: usize, f: impl FnOnce() -> T + Send) -> T {
-    rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap().install(f)
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(n)
+        .build()
+        .unwrap()
+        .install(f)
 }
 
 /// CONTRACT 1: the per-task ceiling is the same at every worker count.
@@ -90,11 +94,11 @@ fn the_per_task_ceiling_does_not_depend_on_the_thread_count() {
 #[test]
 fn thread_invariance_holds_at_every_budget() {
     for budget in [
-        1024 * 1024usize,              // 1 MiB — below any floor
-        64 * 1024 * 1024,              // 64 MiB — at the historical MIN_PER_TASK
-        512 * 1024 * 1024,             // 512 MiB
-        8 * 1024 * 1024 * 1024,        // 8 GiB
-        128 * 1024 * 1024 * 1024,      // 128 GiB — far above anything that binds
+        1024 * 1024usize,         // 1 MiB — below any floor
+        64 * 1024 * 1024,         // 64 MiB — at the historical MIN_PER_TASK
+        512 * 1024 * 1024,        // 512 MiB
+        8 * 1024 * 1024 * 1024,   // 8 GiB
+        128 * 1024 * 1024 * 1024, // 128 GiB — far above anything that binds
     ] {
         let reference = with_threads(1, || per_task(Some(budget)));
         for n in THREAD_COUNTS {

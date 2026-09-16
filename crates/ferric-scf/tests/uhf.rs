@@ -74,7 +74,10 @@ fn maybe_check_energy(slug: &str, energy: f64, tol: f64) {
             );
         }
     } else {
-        eprintln!("note: {slug} reference missing; energy observed = {:.10}", energy);
+        eprintln!(
+            "note: {slug} reference missing; energy observed = {:.10}",
+            energy
+        );
     }
 }
 
@@ -87,7 +90,13 @@ fn uhf_h_doublet_sto3g() {
     let two_s = mol.multiplicity as i64 - 1;
     let nocc_a = ((nelec + two_s) / 2) as usize;
     let nocc_b = ((nelec - two_s) / 2) as usize;
-    let s2 = s_squared_diag(&res.mos_alpha, res.mos_beta.as_ref().unwrap(), &s, nocc_a, nocc_b);
+    let s2 = s_squared_diag(
+        &res.mos_alpha,
+        res.mos_beta.as_ref().unwrap(),
+        &s,
+        nocc_a,
+        nocc_b,
+    );
     assert!((s2 - 0.75).abs() < 1e-8, "<S^2> = {}", s2);
     eprintln!("H/sto-3g  E = {:.10}  <S^2> = {:.6}", res.energy, s2);
     maybe_check_energy("h_sto-3g_uhf.json", res.energy, 1e-6);
@@ -104,7 +113,13 @@ fn uhf_oh_doublet_ccpvdz() {
     let two_s = mol.multiplicity as i64 - 1;
     let nocc_a = ((nelec + two_s) / 2) as usize;
     let nocc_b = ((nelec - two_s) / 2) as usize;
-    let s2 = s_squared_diag(&res.mos_alpha, res.mos_beta.as_ref().unwrap(), &s, nocc_a, nocc_b);
+    let s2 = s_squared_diag(
+        &res.mos_alpha,
+        res.mos_beta.as_ref().unwrap(),
+        &s,
+        nocc_a,
+        nocc_b,
+    );
     eprintln!("OH/cc-pvdz E = {:.10}  <S^2> = {:.6}", res.energy, s2);
     // doublet ideal 0.75; allow up to 0.05 contamination
     assert!(s2 < 0.85 && s2 > 0.70, "<S^2> = {} out of range", s2);
@@ -118,9 +133,7 @@ fn uhf_ch3_doublet_ccpvdz() {
     let (x1, y1) = (r, 0.0);
     let (x2, y2) = (-0.5 * r, r * (3f64).sqrt() * 0.5);
     let (x3, y3) = (-0.5 * r, -r * (3f64).sqrt() * 0.5);
-    let xyz = format!(
-        "4\nCH3\nC 0 0 0\nH {x1} {y1} 0\nH {x2:.6} {y2:.6} 0\nH {x3:.6} {y3:.6} 0\n"
-    );
+    let xyz = format!("4\nCH3\nC 0 0 0\nH {x1} {y1} 0\nH {x2:.6} {y2:.6} 0\nH {x3:.6} {y3:.6} 0\n");
     let (res, mol, prep) = run_uhf(&xyz, 0, 2, "cc-pvdz");
     assert!(res.converged, "CH3/cc-pvdz UHF did not converge");
     let s = ferric_integrals::oneelectron::overlap(&prep);
@@ -128,7 +141,13 @@ fn uhf_ch3_doublet_ccpvdz() {
     let two_s = mol.multiplicity as i64 - 1;
     let nocc_a = ((nelec + two_s) / 2) as usize;
     let nocc_b = ((nelec - two_s) / 2) as usize;
-    let s2 = s_squared_diag(&res.mos_alpha, res.mos_beta.as_ref().unwrap(), &s, nocc_a, nocc_b);
+    let s2 = s_squared_diag(
+        &res.mos_alpha,
+        res.mos_beta.as_ref().unwrap(),
+        &s,
+        nocc_a,
+        nocc_b,
+    );
     eprintln!("CH3/cc-pvdz E = {:.10}  <S^2> = {:.6}", res.energy, s2);
     assert!(s2 < 0.85 && s2 > 0.70, "<S^2> = {} out of range", s2);
     maybe_check_energy("ch3_cc-pvdz_uhf.json", res.energy, 1e-6);
@@ -157,7 +176,10 @@ fn uhf_gradient_h_atom_fd() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let cfg = UhfConfig { energy_conv: 1e-12, ..Default::default() };
+    let cfg = UhfConfig {
+        energy_conv: 1e-12,
+        ..Default::default()
+    };
     let ctx = ParallelContext::default();
     let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     let g = uhf_gradient(&mol, &prep, op, &bounds, &res, None).unwrap();
@@ -192,9 +214,18 @@ fn uhf_gradient_oh_sto3g_fd() {
             let mut mp = mol.clone();
             let mut mm = mol.clone();
             match coord {
-                0 => { mp.atoms[atom].x += h; mm.atoms[atom].x -= h; }
-                1 => { mp.atoms[atom].y += h; mm.atoms[atom].y -= h; }
-                _ => { mp.atoms[atom].zpos += h; mm.atoms[atom].zpos -= h; }
+                0 => {
+                    mp.atoms[atom].x += h;
+                    mm.atoms[atom].x -= h;
+                }
+                1 => {
+                    mp.atoms[atom].y += h;
+                    mm.atoms[atom].y -= h;
+                }
+                _ => {
+                    mp.atoms[atom].zpos += h;
+                    mm.atoms[atom].zpos -= h;
+                }
             }
             let ep = fd_energy(&mp, "sto-3g");
             let em = fd_energy(&mm, "sto-3g");
@@ -208,10 +239,18 @@ fn uhf_gradient_oh_sto3g_fd() {
             let diff = (analytic[(atom, c)] - fd[(atom, c)]).abs();
             eprintln!(
                 "atom={atom} coord={c}: analytic={:.8} fd={:.8} diff={:.2e}",
-                analytic[(atom, c)], fd[(atom, c)], diff
+                analytic[(atom, c)],
+                fd[(atom, c)],
+                diff
             );
-            if diff > max_diff { max_diff = diff; }
+            if diff > max_diff {
+                max_diff = diff;
+            }
         }
     }
-    assert!(max_diff < 1e-4, "UHF gradient FD mismatch: max diff = {:.2e}", max_diff);
+    assert!(
+        max_diff < 1e-4,
+        "UHF gradient FD mismatch: max diff = {:.2e}",
+        max_diff
+    );
 }

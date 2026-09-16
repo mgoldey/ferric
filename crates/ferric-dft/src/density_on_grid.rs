@@ -42,8 +42,8 @@ pub struct DensityGrid {
 /// point-major loops.
 pub fn eval_density_closed(
     d: &Array2<f64>,
-    chi: &Array2<f64>,        // (nbf, npts)
-    dchi: &Array3<f64>,       // (3, nbf, npts)
+    chi: &Array2<f64>,  // (nbf, npts)
+    dchi: &Array3<f64>, // (3, nbf, npts)
 ) -> DensityGrid {
     let (nbf, npts) = chi.dim();
     debug_assert_eq!(d.dim(), (nbf, nbf));
@@ -182,7 +182,12 @@ pub fn eval_density_uks(
             gby += pb * dchi_s[(1, mu, g)];
             gbz += pb * dchi_s[(2, mu, g)];
         }
-        (ra, rb, [2.0 * gax, 2.0 * gay, 2.0 * gaz], [2.0 * gbx, 2.0 * gby, 2.0 * gbz])
+        (
+            ra,
+            rb,
+            [2.0 * gax, 2.0 * gay, 2.0 * gaz],
+            [2.0 * gbx, 2.0 * gby, 2.0 * gbz],
+        )
     };
     let fill = |g: usize,
                 rho_a: &mut Array1<f64>,
@@ -225,7 +230,13 @@ pub fn eval_density_uks(
         sigma[(1, g)] = ax * bx + ay * by + az * bz;
         sigma[(2, g)] = bx * bx + by * by + bz * bz;
     }
-    UksDensityGrid { rho_a, rho_b, grad_a, grad_b, sigma }
+    UksDensityGrid {
+        rho_a,
+        rho_b,
+        grad_a,
+        grad_b,
+        sigma,
+    }
 }
 
 /// Kinetic-energy density τ(r) on a grid, from a density matrix and ∇χ.
@@ -319,7 +330,9 @@ mod tests {
     fn synth(n: usize, seed: u64) -> Vec<f64> {
         (0..n)
             .map(|i| {
-                let x = (i as u64).wrapping_mul(6364136223846793005).wrapping_add(seed);
+                let x = (i as u64)
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(seed);
                 // map to (-1, 1) with irregular mantissas
                 ((x >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
             })
@@ -390,7 +403,11 @@ mod tests {
         let r1 = run(1);
         let r4 = run(4);
 
-        assert_bits_eq(r1.rho.as_slice().unwrap(), r4.rho.as_slice().unwrap(), "rho 1v4");
+        assert_bits_eq(
+            r1.rho.as_slice().unwrap(),
+            r4.rho.as_slice().unwrap(),
+            "rho 1v4",
+        );
         assert_bits_eq(
             r1.grad.as_slice().unwrap(),
             r4.grad.as_slice().unwrap(),
@@ -405,7 +422,11 @@ mod tests {
         // ...and identical to the old μ-outer serial algorithm (same per-point
         // ascending-μ addition order — only the loop nest changed).
         let refr = naive_closed(&d, &chi, &dchi);
-        assert_bits_eq(r1.rho.as_slice().unwrap(), refr.rho.as_slice().unwrap(), "rho vs ref");
+        assert_bits_eq(
+            r1.rho.as_slice().unwrap(),
+            refr.rho.as_slice().unwrap(),
+            "rho vs ref",
+        );
         assert_bits_eq(
             r1.grad.as_slice().unwrap(),
             refr.grad.as_slice().unwrap(),
@@ -494,8 +515,16 @@ mod tests {
         let r1 = run(1);
         let r4 = run(4);
 
-        assert_bits_eq(r1.rho_a.as_slice().unwrap(), r4.rho_a.as_slice().unwrap(), "rho_a");
-        assert_bits_eq(r1.rho_b.as_slice().unwrap(), r4.rho_b.as_slice().unwrap(), "rho_b");
+        assert_bits_eq(
+            r1.rho_a.as_slice().unwrap(),
+            r4.rho_a.as_slice().unwrap(),
+            "rho_a",
+        );
+        assert_bits_eq(
+            r1.rho_b.as_slice().unwrap(),
+            r4.rho_b.as_slice().unwrap(),
+            "rho_b",
+        );
         assert_bits_eq(
             r1.grad_a.as_slice().unwrap(),
             r4.grad_a.as_slice().unwrap(),
@@ -515,7 +544,11 @@ mod tests {
         // Cross-check the fused UKS path against two closed-shell evaluations
         // (same per-spin math; σ channels recomputed): α block bitwise.
         let ca = naive_closed(&d_a, &chi, &dchi);
-        assert_bits_eq(r1.rho_a.as_slice().unwrap(), ca.rho.as_slice().unwrap(), "rho_a vs closed");
+        assert_bits_eq(
+            r1.rho_a.as_slice().unwrap(),
+            ca.rho.as_slice().unwrap(),
+            "rho_a vs closed",
+        );
         assert_bits_eq(
             r1.grad_a.as_slice().unwrap(),
             ca.grad.as_slice().unwrap(),

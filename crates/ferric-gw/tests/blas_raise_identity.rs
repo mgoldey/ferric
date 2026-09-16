@@ -14,9 +14,9 @@
 //! takes ENV_LOCK for its whole body, so no BLAS call ever runs concurrently
 //! with a raised count.
 
+use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
-use ferric_core::basis;
 use ferric_gw::mo_b::MoB;
 use ferric_gw::{bse, cohsex, mo_b, w_pdep};
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -163,8 +163,8 @@ fn project_b_into_pdep_consistent_across_blas_thread_counts() {
     let mut v_dressed = Array2::<f64>::zeros((naux, naux));
     for p in 0..naux {
         for a in 0..naux {
-            v_dressed[(p, a)] = ((p * 5 + a * 11 + 3) as f64).cos() * 0.05
-                + if p == a { 1.0 } else { 0.0 };
+            v_dressed[(p, a)] =
+                ((p * 5 + a * 11 + 3) as f64).cos() * 0.05 + if p == a { 1.0 } else { 0.0 };
         }
     }
 

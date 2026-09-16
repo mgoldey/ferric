@@ -48,7 +48,11 @@ fn semicanonicalization_measurably_corrects_open_shell_mp2() {
     let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let cfg = RhfConfig { density_conv: 1e-9, max_iter: 200, ..Default::default() };
+    let cfg = RhfConfig {
+        density_conv: 1e-9,
+        max_iter: 200,
+        ..Default::default()
+    };
 
     let rohf = solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg).unwrap();
     assert!(rohf.converged);
@@ -56,16 +60,26 @@ fn semicanonicalization_measurably_corrects_open_shell_mp2() {
     let semi = sc.to_unrestricted_result(&rohf);
 
     let mp2 = |s: &ferric_scf::result::ScfResult| {
-        u_ri_mp2(&mol, &obs, &dfbs, Operator::coulomb(), s, &RiMp2Config::default())
-            .unwrap()
-            .mp2_corr
+        u_ri_mp2(
+            &mol,
+            &obs,
+            &dfbs,
+            Operator::coulomb(),
+            s,
+            &RiMp2Config::default(),
+        )
+        .unwrap()
+        .mp2_corr
     };
     let e_raw = mp2(&rohf);
     let e_semi = mp2(&semi);
     let e_uhf = ferric_scf::uhf::solve_uhf(&ctx, &mol, &obs, &bounds, &cfg).map(|u| mp2(&u));
 
     eprintln!("E_corr(raw ROHF fallback) = {e_raw:.10}");
-    eprintln!("E_corr(semi-canonical)    = {e_semi:.10}   shift = {:+.3e}", e_semi - e_raw);
+    eprintln!(
+        "E_corr(semi-canonical)    = {e_semi:.10}   shift = {:+.3e}",
+        e_semi - e_raw
+    );
     if let Ok(u) = &e_uhf {
         eprintln!("E_corr(true UHF ref)      = {u:.10}");
     }

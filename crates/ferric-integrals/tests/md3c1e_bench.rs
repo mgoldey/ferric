@@ -37,16 +37,21 @@ fn testdata(rel: &str) -> String {
 }
 
 fn env_num<T: std::str::FromStr>(name: &str, default: T) -> T {
-    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 
 fn psi_full_avg10() -> String {
     std::fs::read_to_string("/proc/pressure/memory")
         .ok()
         .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("full"))
-                .and_then(|l| l.split_whitespace().nth(1).map(|kv| kv.trim_start_matches("avg10=").to_string()))
+            s.lines().find(|l| l.starts_with("full")).and_then(|l| {
+                l.split_whitespace()
+                    .nth(1)
+                    .map(|kv| kv.trim_start_matches("avg10=").to_string())
+            })
         })
         .unwrap_or_else(|| "n/a".to_string())
 }
@@ -80,7 +85,10 @@ fn timed<T>(label: &str, f: impl FnOnce() -> T) -> (f64, f64, T) {
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0 >> 11
     }
 }
@@ -101,7 +109,11 @@ fn sample_indices(n: usize, k: usize, seed: u64) -> Vec<usize> {
 /// `ferric_dft::radial`.
 fn ta_xi(z: i32) -> f64 {
     const XI: [f64; 11] = [1.0, 0.8, 0.9, 1.8, 1.4, 1.3, 1.1, 0.9, 0.9, 0.9, 0.9];
-    if (z as usize) < XI.len() { XI[z as usize] } else { 1.5 }
+    if (z as usize) < XI.len() {
+        XI[z as usize]
+    } else {
+        1.5
+    }
 }
 
 /// TA-M4 radii (small→large), the same formula as `ferric_dft::radial::treutler_ahlrichs_m4`.
@@ -138,9 +150,15 @@ fn measure_md_batched(kern: &Md3c1e, pts: &[[f64; 3]], batch: usize) -> f64 {
     let (secs, _cpu, checksum) = timed(&format!("md3c1e batched B={batch}"), || {
         let mut checksum = 0.0_f64;
         for chunk in pts.chunks(batch) {
-            kern.for_each_pair(chunk, None, CosxScreen::none(), &mut scr, |_s1, _s2, blk| {
-                checksum += blk[0] + blk[blk.len() - 1];
-            })
+            kern.for_each_pair(
+                chunk,
+                None,
+                CosxScreen::none(),
+                &mut scr,
+                |_s1, _s2, blk| {
+                    checksum += blk[0] + blk[blk.len() - 1];
+                },
+            )
             .expect("md3c1e batch");
         }
         checksum
@@ -157,7 +175,8 @@ fn md3c1e_vs_cosx_a_per_point_cell() {
     let npts: usize = env_num("MD_BENCH_NPTS", 2000);
     let n_dropin: usize = env_num("MD_BENCH_DROPIN_NPTS", 200);
 
-    let mol = Molecule::load_xyz(&testdata(&format!("testdata/molecules/{system}.xyz"))).expect("xyz");
+    let mol =
+        Molecule::load_xyz(&testdata(&format!("testdata/molecules/{system}.xyz"))).expect("xyz");
     let bs = bundled(&basis).expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("prep");
     let kern = Md3c1e::new(&prep).expect("md3c1e");
@@ -172,39 +191,59 @@ fn md3c1e_vs_cosx_a_per_point_cell() {
     );
 
     let grid = grid_points(&mol);
-    assert_eq!(grid.len(), mol.atoms.len() * N_RADIAL * N_ANGULAR, "grid point count");
+    assert_eq!(
+        grid.len(),
+        mol.atoms.len() * N_RADIAL * N_ANGULAR,
+        "grid point count"
+    );
     let idx = sample_indices(grid.len(), npts, SEED);
     let pts: Vec<[f64; 3]> = idx.iter().map(|&i| grid[i]).collect();
-    println!("grid (50,110): {} points; sampled {} at random (seed {SEED})", grid.len(), pts.len());
+    println!(
+        "grid (50,110): {} points; sampled {} at random (seed {SEED})",
+        grid.len(),
+        pts.len()
+    );
 
     // ---- preflight: the kernel being timed IS the anchored kernel ----
     let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, &prep, 1e-14).expect("nuclear engine");
     {
         let mut scr = kern.scratch();
-        let batch = kern.a_matrices(&pts[..3], None, CosxScreen::none(), &mut scr).expect("md batch");
+        let batch = kern
+            .a_matrices(&pts[..3], None, CosxScreen::none(), &mut scr)
+            .expect("md batch");
         let mut worst = 0.0_f64;
         for (k, r) in pts[..3].iter().enumerate() {
-            let want = a_matrix_at_point_with(&mut eng, &prep, r, None, CosxScreen::none()).expect("cosx_a").a;
+            let want = a_matrix_at_point_with(&mut eng, &prep, r, None, CosxScreen::none())
+                .expect("cosx_a")
+                .a;
             let got = batch.a.index_axis(ndarray::Axis(0), k);
-            let d = (&got - &want).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
+            let d = (&got - &want)
+                .mapv(f64::abs)
+                .fold(0.0_f64, |m, &v| m.max(v));
             worst = worst.max(d);
         }
         println!("preflight: max|A_md - A_cosx_a| over 3 sampled points = {worst:.3e}");
-        assert!(worst <= 1e-12, "refusing to time a kernel that disagrees with cosx_a");
+        assert!(
+            worst <= 1e-12,
+            "refusing to time a kernel that disagrees with cosx_a"
+        );
     }
 
     // ---- FLOP count (spec convention) ----
     let flops = kern.flops_per_point();
     println!(
         "operation count per point: R-tensor {:.0}  contraction {:.0}  total {:.0}",
-        flops.r_tensor, flops.contraction, flops.total()
+        flops.r_tensor,
+        flops.contraction,
+        flops.total()
     );
 
     // ---- (1) cosx_a per point ----
     let (secs_cosx, _, _) = timed("cosx_a unscreened, one reused engine", || {
         let mut acc = 0.0_f64;
         for r in &pts {
-            let p = a_matrix_at_point_with(&mut eng, &prep, r, None, CosxScreen::none()).expect("cosx_a");
+            let p = a_matrix_at_point_with(&mut eng, &prep, r, None, CosxScreen::none())
+                .expect("cosx_a");
             acc += p.a[(0, 0)];
         }
         acc
@@ -222,7 +261,8 @@ fn md3c1e_vs_cosx_a_per_point_cell() {
         let mut scr = kern.scratch();
         let mut acc = 0.0_f64;
         for r in &pts[..n_dropin] {
-            let p = md3c1e::a_matrix_at_point_with(&kern, &mut scr, r, None, CosxScreen::none()).expect("md drop-in");
+            let p = md3c1e::a_matrix_at_point_with(&kern, &mut scr, r, None, CosxScreen::none())
+                .expect("md drop-in");
             acc += p.a[(0, 0)];
         }
         acc
@@ -283,7 +323,11 @@ fn md3c1e_flop_count_calibration_water_ccpvdz() {
         f.contraction,
         f.total()
     );
-    assert_eq!(prep.nshells(), 12, "spec's segmented shell count for water/cc-pVDZ");
+    assert_eq!(
+        prep.nshells(),
+        12,
+        "spec's segmented shell count for water/cc-pVDZ"
+    );
     assert!(f.total() > 0.0);
 }
 
@@ -299,14 +343,17 @@ fn md3c1e_flop_count_calibration_water_ccpvdz() {
 fn md3c1e_boys_cost_attribution() {
     let system = std::env::var("MD_BENCH_SYSTEM").unwrap_or_else(|_| "alkane_4".into());
     let basis = std::env::var("MD_BENCH_BASIS").unwrap_or_else(|_| "def2-svp".into());
-    let mol = Molecule::load_xyz(&testdata(&format!("testdata/molecules/{system}.xyz"))).expect("xyz");
+    let mol =
+        Molecule::load_xyz(&testdata(&format!("testdata/molecules/{system}.xyz"))).expect("xyz");
     let bs = bundled(&basis).expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("prep");
     let kern = Md3c1e::new(&prep).expect("md3c1e");
     let f = kern.flops_per_point();
     let n_eval = 2_000_000usize;
     let mut rng = Lcg(SEED);
-    let ts: Vec<f64> = (0..n_eval).map(|_| 60.0 * (rng.next() as f64) / ((1u64 << 53) as f64)).collect();
+    let ts: Vec<f64> = (0..n_eval)
+        .map(|_| 60.0 * (rng.next() as f64) / ((1u64 << 53) as f64))
+        .collect();
     let mut out = [0.0_f64; 9];
     let mut ns = [0.0_f64; 3];
     for (k, nmax) in [0usize, 4, 8].iter().enumerate() {

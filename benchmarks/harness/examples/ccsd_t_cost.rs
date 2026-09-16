@@ -37,7 +37,10 @@ fn main() {
         &obs,
         op,
         &bounds,
-        &RhfConfig { max_iter: 100, ..Default::default() },
+        &RhfConfig {
+            max_iter: 100,
+            ..Default::default()
+        },
     )
     .unwrap();
     assert!(rhf.converged);
@@ -69,11 +72,20 @@ fn main() {
 
     let total = t_ccsd_so + t_triples;
     println!("\nCCSD(T) as run today (spin-orbital CCSD + spin-orbital (T)):");
-    println!("  spin-orbital CCSD   {t_ccsd_so:8.2} s  ({:.0}%)", 100.0 * t_ccsd_so / total);
-    println!("  (T) triples         {t_triples:8.2} s  ({:.0}%)", 100.0 * t_triples / total);
+    println!(
+        "  spin-orbital CCSD   {t_ccsd_so:8.2} s  ({:.0}%)",
+        100.0 * t_ccsd_so / total
+    );
+    println!(
+        "  (T) triples         {t_triples:8.2} s  ({:.0}%)",
+        100.0 * t_triples / total
+    );
     println!("  TOTAL               {total:8.2} s");
     println!("\nFor comparison:");
-    println!("  spin-adapted CCSD   {t_ccsd_cs:8.2} s  ({:.1}x faster than spin-orbital)", t_ccsd_so / t_ccsd_cs);
+    println!(
+        "  spin-adapted CCSD   {t_ccsd_cs:8.2} s  ({:.1}x faster than spin-orbital)",
+        t_ccsd_so / t_ccsd_cs
+    );
     println!(
         "\n  E_corr(CCSD) so={:.10}  cs={:.10}  diff={:.2e}",
         r_so.correlation_energy,

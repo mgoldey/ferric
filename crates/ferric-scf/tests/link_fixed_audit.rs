@@ -58,11 +58,17 @@ fn testdata(rel: &str) -> String {
 }
 
 fn env_flag(name: &str) -> bool {
-    matches!(std::env::var(name).ok().as_deref(), Some("1") | Some("true") | Some("yes"))
+    matches!(
+        std::env::var(name).ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    )
 }
 
 fn env_num<T: std::str::FromStr>(name: &str, default: T) -> T {
-    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 
 fn psi_full_avg10() -> String {
@@ -70,7 +76,8 @@ fn psi_full_avg10() -> String {
         .ok()
         .and_then(|s| {
             s.lines().find(|l| l.starts_with("full")).and_then(|l| {
-                l.split_whitespace().find_map(|t| t.strip_prefix("avg10=").map(str::to_string))
+                l.split_whitespace()
+                    .find_map(|t| t.strip_prefix("avg10=").map(str::to_string))
             })
         })
         .unwrap_or_else(|| "n/a".into())
@@ -90,11 +97,18 @@ fn cpu_seconds() -> f64 {
 }
 
 /// (wall s, cpu s, psi before, psi after, value)
-fn timed<T>(label: &str, threads: usize, f: impl FnOnce() -> T + Send) -> (f64, f64, String, String, T)
+fn timed<T>(
+    label: &str,
+    threads: usize,
+    f: impl FnOnce() -> T + Send,
+) -> (f64, f64, String, String, T)
 where
     T: Send,
 {
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().expect("rayon pool");
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .expect("rayon pool");
     let before = psi_full_avg10();
     let c0 = cpu_seconds();
     let t0 = Instant::now();
@@ -116,8 +130,17 @@ fn save_matrix(path: &str, m: &Array2<f64>) {
 
 fn load_matrix(path: &str, nbf: usize) -> Array2<f64> {
     let bytes = std::fs::read(path).expect("read matrix file");
-    assert_eq!(bytes.len(), nbf * nbf * 8, "matrix file length does not match nbf={nbf}");
-    let vals: Vec<f64> = bytes.as_chunks::<8>().0.iter().map(|c| f64::from_le_bytes(*c)).collect();
+    assert_eq!(
+        bytes.len(),
+        nbf * nbf * 8,
+        "matrix file length does not match nbf={nbf}"
+    );
+    let vals: Vec<f64> = bytes
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|c| f64::from_le_bytes(*c))
+        .collect();
     Array2::from_shape_vec((nbf, nbf), vals).expect("matrix shape")
 }
 
@@ -129,7 +152,12 @@ fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
 /// the same density so the kept fractions can be compared like for like:
 /// old sp `estimate(i,j,i,j) > thresh` (i.e. `Q² > thresh`); old dp
 /// `max|D[j,σ]| · Q(j,σ) > thresh`. Returns (sp_total, dp_total).
-fn prefix_pair_totals(bound: &dyn Bound, prep: &PreparedBasis, d: &Array2<f64>, thresh: f64) -> (usize, usize) {
+fn prefix_pair_totals(
+    bound: &dyn Bound,
+    prep: &PreparedBasis,
+    d: &Array2<f64>,
+    thresh: f64,
+) -> (usize, usize) {
     let nsh = prep.nshells();
     let dims = prep.shell_dims();
     let offs = prep.shell_offsets();
@@ -171,7 +199,8 @@ fn link_fixed_audit_cell() {
         .collect();
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(None);
 
-    let mol = Molecule::load_xyz(&testdata(&format!("testdata/molecules/{system}.xyz"))).expect("xyz");
+    let mol =
+        Molecule::load_xyz(&testdata(&format!("testdata/molecules/{system}.xyz"))).expect("xyz");
     let bs = bundled(&basis).expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("prep");
     let nbf = prep.nbasis();
@@ -204,7 +233,10 @@ fn link_fixed_audit_cell() {
             }),
             ..RhfConfig::default()
         };
-        println!("direct SCF pool: {} rayon threads (not a timing)", rayon::current_num_threads());
+        println!(
+            "direct SCF pool: {} rayon threads (not a timing)",
+            rayon::current_num_threads()
+        );
         let t0 = Instant::now();
         let res = solve_rhf(&ctx, &mol, &prep, op, &schwarz, &scf_cfg).expect("direct RHF");
         println!(
@@ -222,7 +254,10 @@ fn link_fixed_audit_cell() {
                 return;
             }
         }
-        assert!(res.converged, "refusing to time K builds on an unconverged density");
+        assert!(
+            res.converged,
+            "refusing to time K builds on an unconverged density"
+        );
         d
     };
 
@@ -239,12 +274,21 @@ fn link_fixed_audit_cell() {
                 let mut k = Array2::<f64>::zeros((nbf, nbf));
                 let mut last = (f64::NAN, f64::NAN, String::new(), String::new(), 0usize);
                 for b in 0..builds {
-                    let label = if b == 0 { "DirectK build #1 (cold: pool + build)" } else { "DirectK build (warm)" };
+                    let label = if b == 0 {
+                        "DirectK build #1 (cold: pool + build)"
+                    } else {
+                        "DirectK build (warm)"
+                    };
                     k.fill(0.0);
-                    last = timed(label, threads, || dk.build(&d, &mut k).expect("DirectK build"));
+                    last = timed(label, threads, || {
+                        dk.build(&d, &mut k).expect("DirectK build")
+                    });
                 }
                 let (wall, cpu, pb, pa, n) = last;
-                let dev = k_ref.as_ref().map(|r| format!("{:.3e}", max_abs_diff(r, &k))).unwrap_or_else(|| "n/a".into());
+                let dev = k_ref
+                    .as_ref()
+                    .map(|r| format!("{:.3e}", max_abs_diff(r, &k)))
+                    .unwrap_or_else(|| "n/a".into());
                 println!("ROW | {system} | {basis} | direct_k | nbf={nbf} | wall={wall:.3} | cpu={cpu:.2} | quartets={n} | max|K-Kref|={dev} | PSI {pb}/{pa}");
                 if let Ok(path) = std::env::var("LFA_K_OUT") {
                     save_matrix(&path, &k);
@@ -259,13 +303,23 @@ fn link_fixed_audit_cell() {
                 let mut k = Array2::<f64>::zeros((nbf, nbf));
                 let mut last = (f64::NAN, f64::NAN, String::new(), String::new(), 0usize);
                 for b in 0..builds {
-                    let label = if b == 0 { "build_jk #1 (J+K, default builder; constructs its own pool)" } else { "build_jk (J+K, default builder)" };
+                    let label = if b == 0 {
+                        "build_jk #1 (J+K, default builder; constructs its own pool)"
+                    } else {
+                        "build_jk (J+K, default builder)"
+                    };
                     j.fill(0.0);
                     k.fill(0.0);
-                    last = timed(label, threads, || build_jk(&ctx, &prep, &schwarz, thresh, &d, &mut j, &mut k).expect("build_jk"));
+                    last = timed(label, threads, || {
+                        build_jk(&ctx, &prep, &schwarz, thresh, &d, &mut j, &mut k)
+                            .expect("build_jk")
+                    });
                 }
                 let (wall, cpu, pb, pa, n) = last;
-                let dev = k_ref.as_ref().map(|r| format!("{:.3e}", max_abs_diff(r, &k))).unwrap_or_else(|| "n/a".into());
+                let dev = k_ref
+                    .as_ref()
+                    .map(|r| format!("{:.3e}", max_abs_diff(r, &k)))
+                    .unwrap_or_else(|| "n/a".into());
                 println!("ROW | {system} | {basis} | direct_jk | nbf={nbf} | wall={wall:.3} | cpu={cpu:.2} | quartets={n} | max|K-Kref|={dev} | PSI {pb}/{pa}");
             }
             "link" => {
@@ -273,7 +327,11 @@ fn link_fixed_audit_cell() {
                 let mut k = Array2::<f64>::zeros((nbf, nbf));
                 let mut last = (f64::NAN, f64::NAN, String::new(), String::new(), 0usize);
                 for b in 0..builds {
-                    let label = if b == 0 { "LinK build #1 (cold: pool + pairs + build)" } else { "LinK build (warm: update_density + build)" };
+                    let label = if b == 0 {
+                        "LinK build #1 (cold: pool + pairs + build)"
+                    } else {
+                        "LinK build (warm: update_density + build)"
+                    };
                     k.fill(0.0);
                     last = timed(label, threads, || {
                         link.update_density(&d);
@@ -287,7 +345,10 @@ fn link_fixed_audit_cell() {
                 let dp = DensityPairs::build(&d, &schwarz, &prep, thresh).total_pairs();
                 let (sp_old, dp_old) = prefix_pair_totals(&schwarz, &prep, &d, thresh);
                 let sq = nsh * nsh;
-                let dev = k_ref.as_ref().map(|r| format!("{:.3e}", max_abs_diff(r, &k))).unwrap_or_else(|| "n/a".into());
+                let dev = k_ref
+                    .as_ref()
+                    .map(|r| format!("{:.3e}", max_abs_diff(r, &k)))
+                    .unwrap_or_else(|| "n/a".into());
                 println!(
                     "ROW | {system} | {basis} | link | nbf={nbf} | wall={wall:.3} | cpu={cpu:.2} | quartets={n} | max|K-Kref|={dev} | PSI {pb}/{pa} \
                      | sp fixed {sp}/{sq} ({:.4}) prefix {sp_old}/{sq} ({:.4}) | dp fixed {dp}/{sq} ({:.4}) prefix {dp_old}/{sq} ({:.4})",
@@ -299,18 +360,28 @@ fn link_fixed_audit_cell() {
             }
             "cosx" => {
                 let cfg = CosxConfig::default();
-                let mut cosx = CosxK::new(&ctx, &mol, &prep, cfg, budget_bytes).expect("CosxK::new");
+                let mut cosx =
+                    CosxK::new(&ctx, &mol, &prep, cfg, budget_bytes).expect("CosxK::new");
                 let npts = cosx.npts();
                 let mut k = Array2::<f64>::zeros((nbf, nbf));
                 let mut last = (f64::NAN, f64::NAN, String::new(), String::new(), 0usize);
                 for b in 0..builds {
-                    let label = if b == 0 { "COSX build #1 (pool + S_num factor + build)" } else { "COSX build (warm)" };
+                    let label = if b == 0 {
+                        "COSX build #1 (pool + S_num factor + build)"
+                    } else {
+                        "COSX build (warm)"
+                    };
                     k.fill(0.0);
-                    last = timed(label, threads, || cosx.build(&d, &mut k).expect("COSX build"));
+                    last = timed(label, threads, || {
+                        cosx.build(&d, &mut k).expect("COSX build")
+                    });
                 }
                 let (wall, cpu, pb, pa, _) = last;
                 let t = *cosx.last_timings();
-                let dev = k_ref.as_ref().map(|r| format!("{:.3e}", max_abs_diff(r, &k))).unwrap_or_else(|| "n/a".into());
+                let dev = k_ref
+                    .as_ref()
+                    .map(|r| format!("{:.3e}", max_abs_diff(r, &k)))
+                    .unwrap_or_else(|| "n/a".into());
                 println!(
                     "ROW | {system} | {basis} | cosx | nbf={nbf} | wall={wall:.3} | cpu={cpu:.2} | total={:.3} A-build={:.3} GEMMs={:.3} | npts={npts} pairs kept {}/{} ({:.4}) | max|K-Kref|={dev} | PSI {pb}/{pa}",
                     t.total_s,
@@ -321,7 +392,9 @@ fn link_fixed_audit_cell() {
                     t.pairs_kept as f64 / t.pairs_total as f64
                 );
             }
-            other => panic!("LFA_BUILDERS: unknown builder {other:?} (direct_k, direct_jk, link, cosx)"),
+            other => {
+                panic!("LFA_BUILDERS: unknown builder {other:?} (direct_k, direct_jk, link, cosx)")
+            }
         }
     }
     println!("PSI end={}", psi_full_avg10());

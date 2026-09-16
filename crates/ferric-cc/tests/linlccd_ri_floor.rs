@@ -21,13 +21,14 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
 fn mol_path(name: &str) -> String {
-    format!("{}/../../testdata/molecules/{}", env!("CARGO_MANIFEST_DIR"), name)
+    format!(
+        "{}/../../testdata/molecules/{}",
+        env!("CARGO_MANIFEST_DIR"),
+        name
+    )
 }
 
-fn converged_rhf(
-    mol: &Molecule,
-    obs: &PreparedBasis,
-) -> ferric_scf::result::ScfResult {
+fn converged_rhf(mol: &Molecule, obs: &PreparedBasis) -> ferric_scf::result::ScfResult {
     let bounds = SchwarzBounds::compute(Operator::coulomb(), obs).unwrap();
     let rhf = solve_rhf(
         &ParallelContext::default(),
@@ -35,7 +36,11 @@ fn converged_rhf(
         obs,
         Operator::coulomb(),
         &bounds,
-        &RhfConfig { density_conv: 1e-10, max_iter: 200, ..Default::default() },
+        &RhfConfig {
+            density_conv: 1e-10,
+            max_iter: 200,
+            ..Default::default()
+        },
     )
     .unwrap();
     assert!(rhf.converged, "reference SCF must converge");
@@ -60,7 +65,11 @@ fn exact_drivers_only_reproduces_canonical_mp2() {
         &obs,
         op,
         &rhf,
-        &CcConfig { energy_conv: 1e-12, max_iter: 100, ..Default::default() },
+        &CcConfig {
+            energy_conv: 1e-12,
+            max_iter: 100,
+            ..Default::default()
+        },
         LadderVariant::DriversOnly,
     )
     .unwrap()
@@ -84,7 +93,11 @@ fn exact_drivers_only_reproduces_canonical_mp2() {
 #[test]
 fn measure_ri_error_vs_exact() {
     let op = Operator::coulomb();
-    let cfg = CcConfig { energy_conv: 1e-12, max_iter: 200, ..Default::default() };
+    let cfg = CcConfig {
+        energy_conv: 1e-12,
+        max_iter: 200,
+        ..Default::default()
+    };
 
     for (obs_name, aux_name) in [("sto-3g", "cc-pvdz-ri"), ("cc-pvdz", "cc-pvdz-ri")] {
         let mol = Molecule::load_xyz(&mol_path("water.xyz")).unwrap();
@@ -126,24 +139,42 @@ fn ri_reproduces_the_hh_contribution() {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let rhf = converged_rhf(&mol, &obs);
     let op = Operator::coulomb();
-    let cfg = CcConfig { energy_conv: 1e-12, max_iter: 200, ..Default::default() };
+    let cfg = CcConfig {
+        energy_conv: 1e-12,
+        max_iter: 200,
+        ..Default::default()
+    };
 
-    let d_ri = linlccd(&mol, &obs, &dfbs, op, &rhf, &cfg, LadderVariant::DriversOnly)
+    let d_ri = linlccd(
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &rhf,
+        &cfg,
+        LadderVariant::DriversOnly,
+    )
+    .unwrap()
+    .correlation_energy;
+    let h_ri = linlccd(&mol, &obs, &dfbs, op, &rhf, &cfg, LadderVariant::Hh)
         .unwrap()
         .correlation_energy;
-    let h_ri =
-        linlccd(&mol, &obs, &dfbs, op, &rhf, &cfg, LadderVariant::Hh).unwrap().correlation_energy;
     let d_ex = linlccd_exact(&mol, &obs, op, &rhf, &cfg, LadderVariant::DriversOnly)
         .unwrap()
         .correlation_energy;
-    let h_ex =
-        linlccd_exact(&mol, &obs, op, &rhf, &cfg, LadderVariant::Hh).unwrap().correlation_energy;
+    let h_ex = linlccd_exact(&mol, &obs, op, &rhf, &cfg, LadderVariant::Hh)
+        .unwrap()
+        .correlation_energy;
 
     // The hh contribution itself, isolated in each scheme.
     let hh_ri = h_ri - d_ri;
     let hh_ex = h_ex - d_ex;
-    eprintln!("hh contribution: RI = {hh_ri:+.10}  exact = {hh_ex:+.10}  \
-               diff = {:+.3e} ({:.3}%)", hh_ri - hh_ex, 100.0 * (hh_ri - hh_ex) / hh_ex);
+    eprintln!(
+        "hh contribution: RI = {hh_ri:+.10}  exact = {hh_ex:+.10}  \
+               diff = {:+.3e} ({:.3}%)",
+        hh_ri - hh_ex,
+        100.0 * (hh_ri - hh_ex) / hh_ex
+    );
 
     assert!(
         (hh_ri - hh_ex).abs() < 1e-3,
@@ -167,15 +198,20 @@ fn ri_error_under_short_range_attenuation() {
     let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let rhf = converged_rhf(&mol, &obs);
-    let cfg = CcConfig { energy_conv: 1e-12, max_iter: 200, ..Default::default() };
+    let cfg = CcConfig {
+        energy_conv: 1e-12,
+        max_iter: 200,
+        ..Default::default()
+    };
 
     for omega in [0.1_f64, 0.5] {
         let op = Operator::erfc(omega);
         let e_ri = linlccd(&mol, &obs, &dfbs, op, &rhf, &cfg, LadderVariant::Hh)
             .unwrap()
             .correlation_energy;
-        let e_ex =
-            linlccd_exact(&mol, &obs, op, &rhf, &cfg, LadderVariant::Hh).unwrap().correlation_energy;
+        let e_ex = linlccd_exact(&mol, &obs, op, &rhf, &cfg, LadderVariant::Hh)
+            .unwrap()
+            .correlation_energy;
         let err = e_ri - e_ex;
         eprintln!(
             "erfc(omega={omega})  RI = {e_ri:14.10}  exact = {e_ex:14.10}  \

@@ -36,7 +36,10 @@ fn testdata(rel: &str) -> String {
 struct Lcg(u64);
 impl Lcg {
     fn next_f64(&mut self) -> f64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
     }
 }
@@ -90,7 +93,11 @@ struct Stats {
 
 impl Stats {
     fn new() -> Self {
-        Self { by_l: [[0.0; 5]; 5], visited: [[0; 5]; 5], by_class: Vec::new() }
+        Self {
+            by_l: [[0.0; 5]; 5],
+            visited: [[0; 5]; 5],
+            by_class: Vec::new(),
+        }
     }
     fn record_class(&mut self, c: Class, v: f64) {
         if let Some(e) = self.by_class.iter_mut().find(|e| e.0 == c) {
@@ -103,7 +110,13 @@ impl Stats {
 
 /// Compare one full `(nbf, nbf)` matrix pair block-by-block; returns the
 /// worst scaled diff over the matrix.
-fn compare_blocks(kern: &Md3c1e, got: &Array2<f64>, want: &Array2<f64>, stats: &mut Stats, label: &str) -> f64 {
+fn compare_blocks(
+    kern: &Md3c1e,
+    got: &Array2<f64>,
+    want: &Array2<f64>,
+    stats: &mut Stats,
+    label: &str,
+) -> f64 {
     let nsh = kern.nshells();
     let mut worst = 0.0_f64;
     for s1 in 0..nsh {
@@ -120,11 +133,20 @@ fn compare_blocks(kern: &Md3c1e, got: &Array2<f64>, want: &Array2<f64>, stats: &
                     mag = mag.max(w.abs());
                     // symmetric fill
                     let gt = got[(o2 + j, o1 + i)];
-                    assert_eq!(g, gt, "{label}: md3c1e output not symmetric at ({},{})", o1 + i, o2 + j);
+                    assert_eq!(
+                        g,
+                        gt,
+                        "{label}: md3c1e output not symmetric at ({},{})",
+                        o1 + i,
+                        o2 + j
+                    );
                 }
             }
             let scaled = diff / mag.max(1.0);
-            let (la, lb) = (kern.shell_l(s1).min(kern.shell_l(s2)), kern.shell_l(s1).max(kern.shell_l(s2)));
+            let (la, lb) = (
+                kern.shell_l(s1).min(kern.shell_l(s2)),
+                kern.shell_l(s1).max(kern.shell_l(s2)),
+            );
             stats.by_l[la][lb] = stats.by_l[la][lb].max(scaled);
             stats.visited[la][lb] += 1;
             worst = worst.max(scaled);
@@ -158,18 +180,30 @@ fn run_case(name: &str, xyz: &str, basis: &str, stats: &mut Stats) {
     // Reference, one point at a time.
     let want: Vec<Array2<f64>> = pts
         .iter()
-        .map(|(_, r)| cosx_a::a_matrix_at_point_with(&mut eng, &prep, r, None, CosxScreen::none()).expect("cosx_a").a)
+        .map(|(_, r)| {
+            cosx_a::a_matrix_at_point_with(&mut eng, &prep, r, None, CosxScreen::none())
+                .expect("cosx_a")
+                .a
+        })
         .collect();
 
     // Batched MD path, batches of BATCH (exercises tile padding).
     let mut worst = 0.0_f64;
     for (b0, chunk) in pts.chunks(BATCH).enumerate() {
         let coords: Vec<[f64; 3]> = chunk.iter().map(|(_, r)| *r).collect();
-        let batch = kern.a_matrices(&coords, None, CosxScreen::none(), &mut scr).expect("md3c1e batch");
+        let batch = kern
+            .a_matrices(&coords, None, CosxScreen::none(), &mut scr)
+            .expect("md3c1e batch");
         assert_eq!(batch.pairs_kept, batch.pairs_total);
         for (k, (class, _)) in chunk.iter().enumerate() {
             let got = batch.a.index_axis(ndarray::Axis(0), k).to_owned();
-            let w = compare_blocks(&kern, &got, &want[b0 * BATCH + k], stats, &format!("{name} batch pt {}", b0 * BATCH + k));
+            let w = compare_blocks(
+                &kern,
+                &got,
+                &want[b0 * BATCH + k],
+                stats,
+                &format!("{name} batch pt {}", b0 * BATCH + k),
+            );
             stats.record_class(*class, w);
             worst = worst.max(w);
         }
@@ -180,8 +214,16 @@ fn run_case(name: &str, xyz: &str, basis: &str, stats: &mut Stats) {
         if *class == Class::Random {
             continue;
         }
-        let got = md3c1e::a_matrix_at_point_with(&kern, &mut scr, r, None, CosxScreen::none()).expect("drop-in").a;
-        let w = compare_blocks(&kern, &got, &want[k], stats, &format!("{name} drop-in pt {k} {class:?}"));
+        let got = md3c1e::a_matrix_at_point_with(&kern, &mut scr, r, None, CosxScreen::none())
+            .expect("drop-in")
+            .a;
+        let w = compare_blocks(
+            &kern,
+            &got,
+            &want[k],
+            stats,
+            &format!("{name} drop-in pt {k} {class:?}"),
+        );
         worst = worst.max(w);
     }
     println!("[{name}] worst scaled |diff| over all probes and paths: {worst:.3e}");
@@ -190,15 +232,36 @@ fn run_case(name: &str, xyz: &str, basis: &str, stats: &mut Stats) {
 #[test]
 fn md3c1e_matches_cosx_a_on_every_l_pair_including_degenerate_probes() {
     let mut stats = Stats::new();
-    run_case("water", "testdata/molecules/water.xyz", "cc-pvdz", &mut stats);
-    run_case("butane", "testdata/molecules/alkane_4.xyz", "def2-svp", &mut stats);
-    run_case("butane", "testdata/molecules/alkane_4.xyz", "def2-qzvp", &mut stats);
+    run_case(
+        "water",
+        "testdata/molecules/water.xyz",
+        "cc-pvdz",
+        &mut stats,
+    );
+    run_case(
+        "butane",
+        "testdata/molecules/alkane_4.xyz",
+        "def2-svp",
+        &mut stats,
+    );
+    run_case(
+        "butane",
+        "testdata/molecules/alkane_4.xyz",
+        "def2-qzvp",
+        &mut stats,
+    );
 
     println!("\nmax scaled |A_md - A_cosx_a| per (l_a, l_b):");
-    println!("{:>6} {:>6} {:>12} {:>8}", "l_a", "l_b", "max|diff|", "blocks");
+    println!(
+        "{:>6} {:>6} {:>12} {:>8}",
+        "l_a", "l_b", "max|diff|", "blocks"
+    );
     for la in 0..=4 {
         for lb in la..=4 {
-            println!("{la:>6} {lb:>6} {:>12.3e} {:>8}", stats.by_l[la][lb], stats.visited[la][lb]);
+            println!(
+                "{la:>6} {lb:>6} {:>12.3e} {:>8}",
+                stats.by_l[la][lb], stats.visited[la][lb]
+            );
             assert!(
                 stats.visited[la][lb] > 0,
                 "reachability: (l_a, l_b) = ({la}, {lb}) was never visited — the anchor would pass vacuously for that combination"
@@ -209,8 +272,17 @@ fn md3c1e_matches_cosx_a_on_every_l_pair_including_degenerate_probes() {
     for (c, v) in &stats.by_class {
         println!("  {c:<12?} {v:.3e}");
     }
-    for c in [Class::Random, Class::OnNucleus, Class::Near1em4, Class::Near1em8, Class::Far] {
-        assert!(stats.by_class.iter().any(|e| e.0 == c), "probe class {c:?} never exercised");
+    for c in [
+        Class::Random,
+        Class::OnNucleus,
+        Class::Near1em4,
+        Class::Near1em8,
+        Class::Far,
+    ] {
+        assert!(
+            stats.by_class.iter().any(|e| e.0 == c),
+            "probe class {c:?} never exercised"
+        );
     }
 }
 
@@ -229,12 +301,20 @@ fn md3c1e_drop_in_screens_identically_to_cosx_a() {
         let want = cosx_a::a_matrix_at_point(&prep, r, Some(&bounds), screen).expect("cosx_a");
         let got = md3c1e::a_matrix_at_point(&prep, r, Some(&bounds), screen).expect("md3c1e");
         assert_eq!(got.pairs_total, want.pairs_total);
-        assert_eq!(got.pairs_kept, want.pairs_kept, "kept count differs at {r:?}");
+        assert_eq!(
+            got.pairs_kept, want.pairs_kept,
+            "kept count differs at {r:?}"
+        );
         any_dropped |= want.pairs_kept < want.pairs_total;
-        let diff = (&got.a - &want.a).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
+        let diff = (&got.a - &want.a)
+            .mapv(f64::abs)
+            .fold(0.0_f64, |m, &v| m.max(v));
         assert!(diff <= BAR, "screened A differs by {diff:.3e} at {r:?}");
     }
-    assert!(any_dropped, "screen dropped nothing at any probe: the test did not exercise screening");
+    assert!(
+        any_dropped,
+        "screen dropped nothing at any probe: the test did not exercise screening"
+    );
 }
 
 /// The FMA (AVX2) and portable code paths are two compilations of one
@@ -249,11 +329,19 @@ fn md3c1e_fma_and_portable_paths_agree() {
         println!("no AVX2/FMA on this host; nothing to compare");
         return;
     }
-    let pts: Vec<[f64; 3]> = (0..20).map(|i| [0.3 * i as f64 - 2.0, 0.17 * i as f64, 1.0 - 0.1 * i as f64]).collect();
+    let pts: Vec<[f64; 3]> = (0..20)
+        .map(|i| [0.3 * i as f64 - 2.0, 0.17 * i as f64, 1.0 - 0.1 * i as f64])
+        .collect();
     let mut scr = kern.scratch();
-    let a = kern.a_matrices(&pts, None, CosxScreen::none(), &mut scr).expect("fma").a;
+    let a = kern
+        .a_matrices(&pts, None, CosxScreen::none(), &mut scr)
+        .expect("fma")
+        .a;
     kern.set_use_fma(false);
-    let b = kern.a_matrices(&pts, None, CosxScreen::none(), &mut scr).expect("portable").a;
+    let b = kern
+        .a_matrices(&pts, None, CosxScreen::none(), &mut scr)
+        .expect("portable")
+        .a;
     let diff = (&a - &b).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
     println!("fma vs portable max|diff| = {diff:.3e}");
     assert!(diff <= 1e-13, "fma vs portable differ by {diff:.3e}");

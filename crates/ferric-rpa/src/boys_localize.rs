@@ -41,7 +41,9 @@ pub fn boys_localize_occupied(
     nocc_active: usize,
 ) -> Result<BoysOccupied, FerricError> {
     let c_can = rhf.mos_r();
-    let c_occ_active = c_can.slice(s![.., first_occ..first_occ + nocc_active]).to_owned();
+    let c_occ_active = c_can
+        .slice(s![.., first_occ..first_occ + nocc_active])
+        .to_owned();
 
     // Dipole AO integrals at origin; localization rotation is gauge-invariant
     // for the choice of origin (only diagonal differences and off-diagonals are
@@ -62,9 +64,13 @@ pub fn boys_localize_occupied(
     // Cheap diagnostic: distance of each centroid from the mean (Bohr).
     let mut mean = [0.0f64; 3];
     for c in &centroids {
-        for a in 0..3 { mean[a] += c[a]; }
+        for a in 0..3 {
+            mean[a] += c[a];
+        }
     }
-    for a in 0..3 { mean[a] /= nocc_active.max(1) as f64; }
+    for a in 0..3 {
+        mean[a] /= nocc_active.max(1) as f64;
+    }
     let spreads: Vec<f64> = centroids
         .iter()
         .map(|c| {

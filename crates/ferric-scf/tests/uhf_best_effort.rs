@@ -14,10 +14,10 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
+use ferric_scf::result::ScfExit;
 use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::{solve_uhf, solve_uhf_best_effort};
-use ferric_scf::result::ScfExit;
 
 /// An OH radical with a 1-iteration cap: guaranteed not to converge.
 fn setup() -> (Molecule, PreparedBasis, SchwarzBounds) {
@@ -30,12 +30,19 @@ fn setup() -> (Molecule, PreparedBasis, SchwarzBounds) {
 #[test]
 fn best_effort_returns_usable_state_when_it_fails() {
     let (mol, obs, bounds) = setup();
-    let cfg = RhfConfig { max_iter: 1, density_conv: 1e-14, ..Default::default() };
+    let cfg = RhfConfig {
+        max_iter: 1,
+        density_conv: 1e-14,
+        ..Default::default()
+    };
 
     let r = solve_uhf_best_effort(&ParallelContext::default(), &mol, &obs, &bounds, &cfg, None)
         .expect("best-effort must return Ok even when the SCF does not converge");
 
-    assert!(!r.converged, "test premise: this SCF must NOT have converged");
+    assert!(
+        !r.converged,
+        "test premise: this SCF must NOT have converged"
+    );
     assert_eq!(r.exit, ScfExit::MaxIter);
 
     // The point of the exercise: the density and MOs must be REAL, not zeros. A ladder
@@ -43,7 +50,10 @@ fn best_effort_returns_usable_state_when_it_fails() {
     let n = obs.nbasis();
     assert_eq!(r.density_total.dim(), (n, n));
     assert_eq!(r.mos_alpha.dim(), (n, n));
-    assert!(r.density_beta.is_some(), "UHF result must carry a beta density");
+    assert!(
+        r.density_beta.is_some(),
+        "UHF result must carry a beta density"
+    );
     assert!(r.mos_beta.is_some(), "UHF result must carry beta MOs");
 
     let trace: f64 = (0..n).map(|i| r.density_total[[i, i]]).sum();
@@ -51,8 +61,14 @@ fn best_effort_returns_usable_state_when_it_fails() {
         trace > 1.0,
         "density trace {trace:.6} is not a real density -- the best-effort state is empty"
     );
-    assert!(r.density_total.iter().all(|v| v.is_finite()), "density has non-finite entries");
-    assert!(r.mos_alpha.iter().all(|v| v.is_finite()), "MOs have non-finite entries");
+    assert!(
+        r.density_total.iter().all(|v| v.is_finite()),
+        "density has non-finite entries"
+    );
+    assert!(
+        r.mos_alpha.iter().all(|v| v.is_finite()),
+        "MOs have non-finite entries"
+    );
     assert!(r.energy.is_finite(), "energy is not finite");
 }
 
@@ -60,7 +76,11 @@ fn best_effort_returns_usable_state_when_it_fails() {
 #[test]
 fn solve_uhf_keeps_its_error_contract() {
     let (mol, obs, bounds) = setup();
-    let cfg = RhfConfig { max_iter: 1, density_conv: 1e-14, ..Default::default() };
+    let cfg = RhfConfig {
+        max_iter: 1,
+        density_conv: 1e-14,
+        ..Default::default()
+    };
 
     let r = solve_uhf(&ParallelContext::default(), &mol, &obs, &bounds, &cfg);
     assert!(
@@ -75,7 +95,11 @@ fn solve_uhf_keeps_its_error_contract() {
 #[test]
 fn converged_results_agree_between_the_two_entry_points() {
     let (mol, obs, bounds) = setup();
-    let cfg = RhfConfig { max_iter: 200, density_conv: 1e-8, ..Default::default() };
+    let cfg = RhfConfig {
+        max_iter: 200,
+        density_conv: 1e-8,
+        ..Default::default()
+    };
 
     let a = solve_uhf(&ParallelContext::default(), &mol, &obs, &bounds, &cfg).unwrap();
     let b = solve_uhf_best_effort(&ParallelContext::default(), &mol, &obs, &bounds, &cfg, None)

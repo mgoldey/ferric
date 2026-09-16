@@ -89,8 +89,15 @@ fn load_mol(stem: &str) -> Molecule {
 fn converged_density(mol: &Molecule, prep: &PreparedBasis) -> Array2<f64> {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, prep).expect("Schwarz bounds");
-    let res = solve_rhf(&ParallelContext::default(), mol, prep, op, &bounds, &RhfConfig::default())
-        .expect("RHF solve");
+    let res = solve_rhf(
+        &ParallelContext::default(),
+        mol,
+        prep,
+        op,
+        &bounds,
+        &RhfConfig::default(),
+    )
+    .expect("RHF solve");
     assert!(
         res.converged,
         "RHF did not converge — refusing to measure screening counts on an unconverged density"
@@ -135,8 +142,16 @@ fn measure(stem: &str, basis_name: &str) -> Counts {
 
     let mut j_b = Array2::<f64>::zeros((nbf, nbf));
     let mut k_b = Array2::<f64>::zeros((nbf, nbf));
-    let build_jk_n = build_jk(&ctx, &prep, &bounds, PRODUCTION_THRESH, &d, &mut j_b, &mut k_b)
-        .expect("build_jk");
+    let build_jk_n = build_jk(
+        &ctx,
+        &prep,
+        &bounds,
+        PRODUCTION_THRESH,
+        &d,
+        &mut j_b,
+        &mut k_b,
+    )
+    .expect("build_jk");
 
     let mut k_link = Array2::<f64>::zeros((nbf, nbf));
     let mut link = LinkK::new(&ctx, &prep, &bounds, op, PRODUCTION_THRESH, usize::MAX);
@@ -146,7 +161,9 @@ fn measure(stem: &str, basis_name: &str) -> Counts {
     let sq = (nsh * nsh) as f64;
     let dp = DensityPairs::build(&d, &bounds, &prep, PRODUCTION_THRESH).total_pairs();
     let sp = SignificantPairs::build(&bounds, nsh, PRODUCTION_THRESH).total_pairs();
-    let k_dev = (&k_link - &k_direct).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    let k_dev = (&k_link - &k_direct)
+        .iter()
+        .fold(0.0f64, |m, v| m.max(v.abs()));
 
     eprintln!(
         "\n=== {stem}/{basis_name} nsh={nsh} nbf={nbf} thresh={PRODUCTION_THRESH:.0e} ===\n  \
@@ -319,7 +336,8 @@ fn check_reachability(stem: &str, basis_name: &str, require_dp_pruning: bool) {
          LinK's per-quartet screen used a single global max|D| scalar while build_jk uses the \
          six-pairwise Haser-Ahlrichs table. K is correct (checked above), so this is a SCREENING \
          QUALITY regression, not a correctness one.",
-        c.link, c.build_jk
+        c.link,
+        c.build_jk
     );
 
     // LinK must also remain a subset of DirectK — the #50 property. Same
@@ -330,7 +348,8 @@ fn check_reachability(stem: &str, basis_name: &str, require_dp_pruning: bool) {
         "{stem}/{basis_name}: LinK evaluated {} quartets vs DirectK's {} — LinK is no longer a \
          subset of the canonical loop, which means the pair lists are admitting quartets the \
          dense screen rejects (a dedup/ownership defect).",
-        c.link, c.direct_k
+        c.link,
+        c.direct_k
     );
 
     // The dp-pruning bar is 0.0 by default — see DP_MIN_PRUNED_FRACTION for the
@@ -344,7 +363,11 @@ fn check_reachability(stem: &str, basis_name: &str, require_dp_pruning: bool) {
         "  dp list pruned {:.2}% of ordered pairs (bar {:.2}%{})",
         100.0 * pruned,
         100.0 * DP_MIN_PRUNED_FRACTION,
-        if DP_MIN_PRUNED_FRACTION <= 0.0 { ", disabled — see DP_MIN_PRUNED_FRACTION" } else { "" }
+        if DP_MIN_PRUNED_FRACTION <= 0.0 {
+            ", disabled — see DP_MIN_PRUNED_FRACTION"
+        } else {
+            ""
+        }
     );
     if require_dp_pruning && DP_MIN_PRUNED_FRACTION > 0.0 {
         assert!(

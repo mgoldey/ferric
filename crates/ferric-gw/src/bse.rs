@@ -33,8 +33,8 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
-use ferric_integrals::operator::Operator;
 use ferric_integrals::oneelectron;
+use ferric_integrals::operator::Operator;
 use ferric_rpa::PdepRpaConfig;
 use ferric_scf::ScfResult;
 use ndarray::{Array1, Array2};
@@ -98,8 +98,13 @@ impl BseResult {
 
 impl std::fmt::Display for BseResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "BSE-TDA: {} excitations, lowest {:.4} eV (f = {:.6})",
-            self.omega.len(), self.lowest_ev(), self.lowest_oscillator_strength())
+        write!(
+            f,
+            "BSE-TDA: {} excitations, lowest {:.4} eV (f = {:.6})",
+            self.omega.len(),
+            self.lowest_ev(),
+            self.lowest_oscillator_strength()
+        )
     }
 }
 
@@ -359,7 +364,11 @@ pub fn run_bse_tda(
     // order once oscillator strengths needed both together. Assert the
     // ascending invariant instead of re-deriving it.
     debug_assert!(
-        evals.as_slice().unwrap().windows(2).all(|w| w[0] <= w[1] + 1e-9),
+        evals
+            .as_slice()
+            .unwrap()
+            .windows(2)
+            .all(|w| w[0] <= w[1] + 1e-9),
         "eigh eigenvalues expected ascending"
     );
     let omega: Vec<f64> = evals.to_vec();
@@ -436,7 +445,9 @@ pub fn run_cis_tda(
     frozen_core: usize,
 ) -> Result<BseResult, FerricError> {
     if !matches!(rhf.spin, ferric_scf::Spin::Restricted) {
-        return Err(FerricError::General("run_cis_tda: closed-shell (RHF) only".into()));
+        return Err(FerricError::General(
+            "run_cis_tda: closed-shell (RHF) only".into(),
+        ));
     }
     let nmo = rhf.eps_r().len();
     let nocc_total = (mol.nelec() as usize) / 2;
@@ -519,11 +530,25 @@ pub fn run_cis_tda(
     let omega: Vec<f64> = evals.to_vec();
 
     let mu_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
-    let oscillator_strength =
-        tda_oscillator_strengths(&evals, &evecs, &mu_ao, rhf.mos_r(), first_act, nocc_total, nocc, nvir);
+    let oscillator_strength = tda_oscillator_strengths(
+        &evals,
+        &evecs,
+        &mu_ao,
+        rhf.mos_r(),
+        first_act,
+        nocc_total,
+        nocc,
+        nvir,
+    );
 
     let eps_act: Vec<f64> = (first_act..nmo).map(|p| eps[p]).collect();
-    Ok(BseResult { omega, nocc, nvir, eps_qp: eps_act, oscillator_strength })
+    Ok(BseResult {
+        omega,
+        nocc,
+        nvir,
+        eps_qp: eps_act,
+        oscillator_strength,
+    })
 }
 
 /// Result of a BSE dynamic-polarizability / C6 calculation (gate 2).
@@ -570,7 +595,9 @@ pub fn run_bse_c6(
 ) -> Result<BseC6Result, FerricError> {
     use std::f64::consts::PI;
     if !matches!(rhf.spin, ferric_scf::Spin::Restricted) {
-        return Err(FerricError::General("run_bse_c6: closed-shell (RHF) only".into()));
+        return Err(FerricError::General(
+            "run_bse_c6: closed-shell (RHF) only".into(),
+        ));
     }
     let nmo = rhf.eps_r().len();
     let nocc_total = (mol.nelec() as usize) / 2;
@@ -617,7 +644,12 @@ pub fn run_bse_c6(
     let m_modes = m_proj.shape()[0];
     // Reduced screening weight; screened W = bare v + Σ w_α MM (mode-set-robust,
     // see run_bse_c6_ks).
-    let w_red: Vec<f64> = gw.pdep.eigenvalues_static.iter().map(|&l| 1.0 / l - 1.0).collect();
+    let w_red: Vec<f64> = gw
+        .pdep
+        .eigenvalues_static
+        .iter()
+        .map(|&l| 1.0 / l - 1.0)
+        .collect();
     let b = &mob.b_full;
     let naux = mob.naux;
     let bare = |p: usize, q: usize, r: usize, s: usize| -> f64 {
@@ -748,9 +780,18 @@ pub fn run_bse_c6(
         }
     };
 
-    let c6 = 3.0 / PI * (0..freqs.len()).map(|k| weights[k] * alpha_iso[k] * alpha_iso[k]).sum::<f64>();
+    let c6 = 3.0 / PI
+        * (0..freqs.len())
+            .map(|k| weights[k] * alpha_iso[k] * alpha_iso[k])
+            .sum::<f64>();
     let alpha_static = *alpha_iso.first().unwrap_or(&0.0);
-    Ok(BseC6Result { c6, alpha_iso, alpha_static, nocc, nvir })
+    Ok(BseC6Result {
+        c6,
+        alpha_iso,
+        alpha_static,
+        nocc,
+        nvir,
+    })
 }
 
 /// RPAx@KS spike: BSE-form screened-(A±B) α(iω)/C6 on a Kohn–Sham (e.g. PBE)
@@ -790,7 +831,9 @@ pub fn run_bse_c6_ks(
 ) -> Result<BseC6Result, FerricError> {
     use std::f64::consts::PI;
     if !matches!(ks.spin, ferric_scf::Spin::Restricted) {
-        return Err(FerricError::General("run_bse_c6_ks: closed-shell only".into()));
+        return Err(FerricError::General(
+            "run_bse_c6_ks: closed-shell only".into(),
+        ));
     }
     let nmo = ks.eps_r().len();
     let nocc_total = (mol.nelec() as usize) / 2;
@@ -803,7 +846,11 @@ pub fn run_bse_c6_ks(
     // PDEP screening modes from the KS response.
     let pdep = ferric_rpa::run_pdep_rpa(mol, obs, dfbs, op, ks, pdep_cfg)?;
     {
-        let lmax = pdep.eigenvalues_static.iter().cloned().fold(f64::MIN, f64::max);
+        let lmax = pdep
+            .eigenvalues_static
+            .iter()
+            .cloned()
+            .fold(f64::MIN, f64::max);
         let homo = eps[nocc_total - 1];
         let lumo = eps[nocc_total];
         eprintln!(
@@ -840,7 +887,11 @@ pub fn run_bse_c6_ks(
     // M<naux dimensions; the naive Σ(1/λ)MM form then loses bare-exchange weight
     // — see the basis-check diagnostic). The reduced weight only multiplies the
     // genuine screening, which vanishes for the dropped λ≈1 modes.
-    let w_red: Vec<f64> = pdep.eigenvalues_static.iter().map(|&l| 1.0 / l - 1.0).collect();
+    let w_red: Vec<f64> = pdep
+        .eigenvalues_static
+        .iter()
+        .map(|&l| 1.0 / l - 1.0)
+        .collect();
     let b = &mob.b_full;
     let naux = mob.naux;
     let bare = |p: usize, q: usize, r: usize, s: usize| -> f64 {
@@ -862,10 +913,11 @@ pub fn run_bse_c6_ks(
         // and the bare (HOMO a=0,a=0 | ...) — checks M-projection consistency vs PySCF.
         let a0 = nocc; // first virtual local index
         let i0 = nocc - 1; // HOMO local
-        // BARE-LIMIT check on the off-diagonal pair coupling: Σ_α M[α,aa] M[α,ii]
-        // (unit weights) MUST equal bare(aa|ii) if m_proj spans the full RI space.
-        let mproj_bare_aaii: f64 =
-            (0..m_modes).map(|al| m_proj[(al, a0, a0)] * m_proj[(al, i0, i0)]).sum();
+                           // BARE-LIMIT check on the off-diagonal pair coupling: Σ_α M[α,aa] M[α,ii]
+                           // (unit weights) MUST equal bare(aa|ii) if m_proj spans the full RI space.
+        let mproj_bare_aaii: f64 = (0..m_modes)
+            .map(|al| m_proj[(al, a0, a0)] * m_proj[(al, i0, i0)])
+            .sum();
         eprintln!(
             "RPAx@KS xch diag: bare(aa|ii)={:.5} W(aa|ii)={:.5}  bare(ai|ai)={:.5} W(ai|ai)={:.5}",
             bare(a0, a0, i0, i0),
@@ -981,9 +1033,18 @@ pub fn run_bse_c6_ks(
                 .collect::<Result<Vec<f64>, FerricError>>()?
         }
     };
-    let c6 = 3.0 / PI * (0..freqs.len()).map(|k| weights[k] * alpha_iso[k] * alpha_iso[k]).sum::<f64>();
+    let c6 = 3.0 / PI
+        * (0..freqs.len())
+            .map(|k| weights[k] * alpha_iso[k] * alpha_iso[k])
+            .sum::<f64>();
     let alpha_static = *alpha_iso.first().unwrap_or(&0.0);
-    Ok(BseC6Result { c6, alpha_iso, alpha_static, nocc, nvir })
+    Ok(BseC6Result {
+        c6,
+        alpha_iso,
+        alpha_static,
+        nocc,
+        nvir,
+    })
 }
 
 /// Result of a static-only RPAx@KS polarizability calculation.
@@ -1072,7 +1133,12 @@ pub fn run_rpax_static_polarizability(
     // Fail-fast on the dense (A±B) buffers: apb + amb + sysm co-resident, same
     // 3 n×n f64 buffers as run_bse_c6_ks's per-frequency solve (here there's
     // only ONE "frequency", ω=0, so peak residency is identical).
-    check_bse_dense_alloc("RPAx static polarizability (KS)", n, 3, pdep_cfg.memory_budget_bytes)?;
+    check_bse_dense_alloc(
+        "RPAx static polarizability (KS)",
+        n,
+        3,
+        pdep_cfg.memory_budget_bytes,
+    )?;
 
     let mob = mo_b::build_full_b(
         mol,
@@ -1086,7 +1152,11 @@ pub fn run_rpax_static_polarizability(
     let (v_dressed, _dev) = w_pdep::redress_with_check(&mob.v_inv_sqrt, &pdep.eigenpotentials)?;
     let m_proj = project_b_into_pdep(&mob, &v_dressed, pdep_cfg.memory_budget_bytes)?;
     let m_modes = m_proj.shape()[0];
-    let w_red: Vec<f64> = pdep.eigenvalues_static.iter().map(|&l| 1.0 / l - 1.0).collect();
+    let w_red: Vec<f64> = pdep
+        .eigenvalues_static
+        .iter()
+        .map(|&l| 1.0 / l - 1.0)
+        .collect();
     let b = &mob.b_full;
     let naux = mob.naux;
     let bare = |p: usize, q: usize, r: usize, s: usize| -> f64 {
@@ -1187,7 +1257,12 @@ pub fn run_rpax_static_polarizability(
         }
     }
     let iso = (tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0;
-    Ok(RpaxStaticPolarizabilityResult { tensor, iso, nocc, nvir })
+    Ok(RpaxStaticPolarizabilityResult {
+        tensor,
+        iso,
+        nocc,
+        nvir,
+    })
 }
 
 #[cfg(test)]
@@ -1220,7 +1295,10 @@ mod tests {
         std::env::remove_var("FERRIC_MEM_BUDGET_GB");
         let err = res.unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("CIS-TDA") && msg.contains("budget is"), "unexpected: {msg}");
+        assert!(
+            msg.contains("CIS-TDA") && msg.contains("budget is"),
+            "unexpected: {msg}"
+        );
     }
 
     #[test]
@@ -1247,7 +1325,10 @@ mod tests {
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
 
         let run_with_threads = |n: usize| -> BseResult {
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .build()
+                .unwrap();
             pool.install(|| run_cis_tda(&mol, &obs, &dfbs, op, &rhf, 0).unwrap())
         };
 

@@ -57,13 +57,17 @@ fn pbe_ks_h2o_energy_and_homo_match_pyscf() {
     assert!(
         (rks.energy - PYSCF_E).abs() < 2e-3,
         "PBE-KS energy {:.8} vs PySCF {:.8} (Δ {:.2e} Ha)",
-        rks.energy, PYSCF_E, rks.energy - PYSCF_E
+        rks.energy,
+        PYSCF_E,
+        rks.energy - PYSCF_E
     );
     // HOMO orbital energy: the quantity GW consumes. Looser than energy because
     // it is grid-sensitive, but must be well within chemical relevance.
     assert!(
         (homo_ev - PYSCF_HOMO_EV).abs() < 0.05,
         "PBE-KS ε_HOMO {:.5} eV vs PySCF {:.5} eV (Δ {:.4} eV)",
-        homo_ev, PYSCF_HOMO_EV, homo_ev - PYSCF_HOMO_EV
+        homo_ev,
+        PYSCF_HOMO_EV,
+        homo_ev - PYSCF_HOMO_EV
     );
 }
