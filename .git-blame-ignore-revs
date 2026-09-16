@@ -1,0 +1,24 @@
+# Revisions to skip when running `git blame`.
+#
+# GitHub honours this file automatically. For local git, opt in once per
+# clone (it is not a tracked setting):
+#
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# ONLY pure-formatting commits belong here. A commit listed here is one
+# whose diff a reader should never need to attribute -- if a revision in
+# this list changed behaviour, blame would silently point past the real
+# author of that change, which is worse than the noise it removes. Both
+# entries below were mechanical tool runs with no hand edits, each
+# isolated into its own commit precisely so it could be listed here.
+
+# style: rustfmt the workspace
+# `cargo fmt --all`, default stable settings, no rustfmt.toml. 499 of 555
+# .rs files -- the tree had never been formatted.
+dca0b132af569e96e99fb5dc24451138be1e7078
+
+# style: ruff format the Python tree
+# `ruff format`, 234 of 244 parseable .py files. The remaining file,
+# terf-tables/generate_interpolation_tables.py, is frozen Python 2 and is
+# excluded via extend-exclude in pyproject.toml.
+dfa7d30a9a01523d453b5ed95bb2c13d3938bbdd

@@ -21,12 +21,15 @@ Output: testdata/reference/h2o_cc-pvdz_rpa_grad.json (and cc-pvtz variant).
 
 Run: OPENBLAS_NUM_THREADS=1 python3 scripts/gen_pyscf_rpa_grad.py
 """
+
 import json
 import os
 import sys
 import time
 
-sys.path.insert(0, os.environ.get("PYSCF_PATH", os.path.expanduser("~/qc/pyscf")))  # local checkout
+sys.path.insert(
+    0, os.environ.get("PYSCF_PATH", os.path.expanduser("~/qc/pyscf"))
+)  # local checkout
 
 import numpy as np
 from pyscf import df, gto, scf
@@ -65,7 +68,7 @@ def fd_gradient(atom_coords_bohr, atom_symbols, basis, aux, h=5e-4):
             em = total_energy(cm, atom_symbols, basis, aux)
             grad[a, c] = (ep - em) / (2 * h)
             print(
-                f"  atom {a} coord {c}: E+={ep:.10f} E-={em:.10f}  F={-grad[a,c]:+.6e}",
+                f"  atom {a} coord {c}: E+={ep:.10f} E-={em:.10f}  F={-grad[a, c]:+.6e}",
                 flush=True,
             )
     return grad

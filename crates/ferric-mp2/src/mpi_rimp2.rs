@@ -86,8 +86,8 @@ mod inner {
     use ferric_core::FerricError;
     use ferric_integrals::basis_bridge::PreparedBasis;
     use ferric_integrals::operator::Operator;
-    use ferric_integrals::threeindex::coulomb_metric_2c;
     use ferric_integrals::three_index_source::ThreeIndexSource;
+    use ferric_integrals::threeindex::coulomb_metric_2c;
     use ferric_scf::ScfResult;
     use ndarray::Array2;
 
@@ -166,7 +166,9 @@ mod inner {
         let eps = rhf.eps_r();
         let c = rhf.mos_r();
 
-        let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+        let c_occ = c
+            .slice(ndarray::s![.., first_occ..first_occ + nocc])
+            .to_owned();
         let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
         // (P|Q) metric and V^{-1/2}. Small (naux, naux); every rank builds and
@@ -182,7 +184,8 @@ mod inner {
         // Full raw AO source, budget-bounded / streamable (the dressing sum
         // over Q needs every Q regardless of this rank's P band) — same
         // requirement ThreeIndexSource::build_dressed_band imposes on DF-K.
-        let mut raw = ThreeIndexSource::build(op, obs, dfbs, eri3_budget_bytes(config.memory_budget_bytes))?;
+        let mut raw =
+            ThreeIndexSource::build(op, obs, dfbs, eri3_budget_bytes(config.memory_budget_bytes))?;
 
         // This rank's band of the dressed B^P_ia tensor: shape (band, nocc*nvir).
         // Real memory reduction — only [p0,p1) rows are ever resident here.

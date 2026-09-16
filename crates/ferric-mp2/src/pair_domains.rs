@@ -94,8 +94,7 @@ impl PairDomains {
     /// `pair_domains_infinite_cutoff_is_complete` pins.
     pub fn is_complete(&self) -> bool {
         let total_pairs = self.nocc * (self.nocc + 1) / 2;
-        self.pairs.len() == total_pairs
-            && self.coupled.iter().all(|c| c.len() == self.pairs.len())
+        self.pairs.len() == total_pairs && self.coupled.iter().all(|c| c.len() == self.pairs.len())
     }
 }
 
@@ -294,7 +293,12 @@ mod tests {
 
     /// Four orbitals on a line at x = 0, 2, 20, 22 Bohr: two well-separated clusters.
     fn two_clusters() -> Array2<f64> {
-        array![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [20.0, 0.0, 0.0], [22.0, 0.0, 0.0]]
+        array![
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [20.0, 0.0, 0.0],
+            [22.0, 0.0, 0.0]
+        ]
     }
 
     /// THE EXACTNESS GUARANTEE: infinite cutoffs must screen nothing.
@@ -310,7 +314,11 @@ mod tests {
         assert_eq!(d.pair_retention(), 1.0);
         assert_eq!(d.coupling_retention(), 1.0);
         for row in &d.coupled {
-            assert_eq!(row.len(), d.pairs.len(), "every pair must couple to every pair");
+            assert_eq!(
+                row.len(),
+                d.pairs.len(),
+                "every pair must couple to every pair"
+            );
         }
     }
 
@@ -325,8 +333,14 @@ mod tests {
         assert_eq!(d.pairs.len(), 6, "got {:?}", d.pairs);
         assert!(d.pairs.contains(&(0, 1)));
         assert!(d.pairs.contains(&(2, 3)));
-        assert!(!d.pairs.contains(&(0, 2)), "cross-cluster pair must be screened");
-        assert!(!d.pairs.contains(&(1, 3)), "cross-cluster pair must be screened");
+        assert!(
+            !d.pairs.contains(&(0, 2)),
+            "cross-cluster pair must be screened"
+        );
+        assert!(
+            !d.pairs.contains(&(1, 3)),
+            "cross-cluster pair must be screened"
+        );
         assert!(!d.is_complete());
         assert!(d.pair_retention() < 1.0);
     }
@@ -341,7 +355,10 @@ mod tests {
         let d = build_pair_domains(&c, 0.0, 0.0).unwrap();
         assert_eq!(d.pairs.len(), 4, "only the 4 diagonal pairs should remain");
         for i in 0..4 {
-            assert!(d.pairs.contains(&(i, i)), "diagonal ({i},{i}) was screened out");
+            assert!(
+                d.pairs.contains(&(i, i)),
+                "diagonal ({i},{i}) was screened out"
+            );
         }
         // Each still couples to itself, so the coupling rows are never empty.
         for row in &d.coupled {
@@ -390,7 +407,9 @@ mod tests {
         let mut s = seed;
         let v: Vec<f64> = (0..n)
             .map(|_| {
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 ((s >> 33) as f64 / (1u64 << 31) as f64) - 1.0
             })
             .collect();

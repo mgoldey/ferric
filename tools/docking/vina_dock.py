@@ -28,6 +28,7 @@ lower. Cheap scoring is what MAKES a search possible.
   the only way to know whether the search works on a given target, and it is
   the first thing this module should be used for.
 """
+
 from __future__ import annotations
 
 import tempfile
@@ -58,9 +59,10 @@ def _require(module: str):
 @dataclass
 class DockedPose:
     """One pose from the search, in the receptor's coordinate frame."""
+
     symbols: list[str]
     coords_angstrom: list[tuple[float, float, float]]
-    vina_score: float          # kcal/mol, empirical -- a ranking heuristic only
+    vina_score: float  # kcal/mol, empirical -- a ranking heuristic only
     rank: int
 
 
@@ -71,6 +73,7 @@ class DockResult:
     `poses` is empty and `error` set when the search did not run. As everywhere
     in this codebase, a failure never comes back as a neutral-looking number.
     """
+
     poses: list[DockedPose] = field(default_factory=list)
     error: str | None = None
     box_center: tuple[float, float, float] | None = None
@@ -111,9 +114,17 @@ def prepare_receptor(pdb_path: str | Path, out_pdbqt: str | Path) -> Path:
     # 3223 -> 3882, which is Meeko adding hydrogens). Re-run that check for any
     # new receptor rather than assuming it carries over.
     proc = subprocess.run(
-        ["mk_prepare_receptor.py", "--read_pdb", str(pdb_path),
-         "-o", str(out_pdbqt.with_suffix("")), "-p", "--allow_bad_res"],
-        capture_output=True, text=True,
+        [
+            "mk_prepare_receptor.py",
+            "--read_pdb",
+            str(pdb_path),
+            "-o",
+            str(out_pdbqt.with_suffix("")),
+            "-p",
+            "--allow_bad_res",
+        ],
+        capture_output=True,
+        text=True,
     )
     produced = out_pdbqt.with_suffix(".pdbqt")
     if not produced.is_file():
@@ -147,19 +158,27 @@ def _ligand_pdbqt_from_rdkit(mol) -> str:
 # "NO ALIGNABLE POSE", because RDKit rejected every geometry over the bogus
 # element. Mapped explicitly, with a documented fallback.
 _AUTODOCK_TO_ELEMENT = {
-    "A": "C",    # aromatic carbon
+    "A": "C",  # aromatic carbon
     "C": "C",
-    "OA": "O",   # H-bond acceptor oxygen
+    "OA": "O",  # H-bond acceptor oxygen
     "O": "O",
-    "NA": "N",   # H-bond acceptor nitrogen -- NOT sodium
+    "NA": "N",  # H-bond acceptor nitrogen -- NOT sodium
     "NS": "N",
     "N": "N",
-    "SA": "S",   # H-bond acceptor sulfur
+    "SA": "S",  # H-bond acceptor sulfur
     "S": "S",
-    "HD": "H",   # polar hydrogen (donor)
+    "HD": "H",  # polar hydrogen (donor)
     "H": "H",
-    "F": "F", "Cl": "CL", "Br": "BR", "I": "I", "P": "P",
-    "Mg": "MG", "Mn": "MN", "Zn": "ZN", "Ca": "CA", "Fe": "FE",
+    "F": "F",
+    "Cl": "CL",
+    "Br": "BR",
+    "I": "I",
+    "P": "P",
+    "Mg": "MG",
+    "Mn": "MN",
+    "Zn": "ZN",
+    "Ca": "CA",
+    "Fe": "FE",
 }
 
 
@@ -176,9 +195,12 @@ def _element_from_autodock_type(raw: str) -> str:
         if t.upper() == key.upper():
             return el.capitalize()
     lead = "".join(ch for ch in t if ch.isalpha())
-    return (lead[:2] if len(lead) >= 2 and lead[:2].upper() in
-            ("CL", "BR", "SI", "SE", "ZN", "FE", "MG", "MN", "CA")
-            else lead[:1]).capitalize()
+    return (
+        lead[:2]
+        if len(lead) >= 2
+        and lead[:2].upper() in ("CL", "BR", "SI", "SE", "ZN", "FE", "MG", "MN", "CA")
+        else lead[:1]
+    ).capitalize()
 
 
 def _parse_pdbqt_models(text: str):
@@ -192,7 +214,7 @@ def _parse_pdbqt_models(text: str):
             if len(parts) >= 4:
                 score = float(parts[3])
         elif line.startswith(("ATOM", "HETATM")) and cur:
-            raw = (line[77:79].strip() or line[12:16].strip())
+            raw = line[77:79].strip() or line[12:16].strip()
             syms.append(_element_from_autodock_type(raw))
             crds.append((float(line[30:38]), float(line[38:46]), float(line[46:54])))
         elif line.startswith("ENDMDL") and cur:
@@ -256,16 +278,26 @@ def dock_ligand(
         v.dock(exhaustiveness=exhaustiveness, n_poses=n_poses)
         out = v.poses(n_poses=n_poses)
     except Exception as e:  # noqa: BLE001
-        return DockResult(error=f"Vina docking failed: {type(e).__name__}: {e}",
-                          box_center=box_center, box_size=box_size)
+        return DockResult(
+            error=f"Vina docking failed: {type(e).__name__}: {e}",
+            box_center=box_center,
+            box_size=box_size,
+        )
 
     models = _parse_pdbqt_models(out)
     poses = [
-        DockedPose(symbols=s, coords_angstrom=c,
-                   vina_score=sc if sc is not None else float("nan"), rank=i)
+        DockedPose(
+            symbols=s,
+            coords_angstrom=c,
+            vina_score=sc if sc is not None else float("nan"),
+            rank=i,
+        )
         for i, (s, c, sc) in enumerate(models)
     ]
     if not poses:
-        return DockResult(error="Vina returned no parseable pose",
-                          box_center=box_center, box_size=box_size)
+        return DockResult(
+            error="Vina returned no parseable pose",
+            box_center=box_center,
+            box_size=box_size,
+        )
     return DockResult(poses=poses, box_center=box_center, box_size=box_size)

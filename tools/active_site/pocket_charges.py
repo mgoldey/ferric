@@ -1,4 +1,5 @@
 """Derive classical point charges for a protein pocket from a PDB file."""
+
 from __future__ import annotations
 
 import tempfile
@@ -23,6 +24,7 @@ class PocketCharges:
     `derive_pocket_charges` populates them (needed by lane C for OpenMM
     parametrisation and by `QmmmSystem`'s whole-residue selection).
     """
+
     charges: list[PointCharge]
     source_pdb: Path
     ff: str
@@ -35,8 +37,13 @@ class PocketCharges:
         self.n_charges = len(self.charges)
 
 
-def _too_close(px: float, py: float, pz: float, ligand_bohr: list[tuple[float, float, float]],
-                cutoff_bohr: float) -> bool:
+def _too_close(
+    px: float,
+    py: float,
+    pz: float,
+    ligand_bohr: list[tuple[float, float, float]],
+    cutoff_bohr: float,
+) -> bool:
     for lx, ly, lz in ligand_bohr:
         d2 = (px - lx) ** 2 + (py - ly) ** 2 + (pz - lz) ** 2
         if d2 < cutoff_bohr * cutoff_bohr:
@@ -67,10 +74,16 @@ def pocket_point_charges(
         raise RuntimeError(f"PDB2PQR produced no ATOM/HETATM charges for {pocket_pdb}")
 
     if ligand_coords_angstrom:
-        ligand_bohr = [(x * ANGSTROM_TO_BOHR, y * ANGSTROM_TO_BOHR, z * ANGSTROM_TO_BOHR)
-                        for x, y, z in ligand_coords_angstrom]
+        ligand_bohr = [
+            (x * ANGSTROM_TO_BOHR, y * ANGSTROM_TO_BOHR, z * ANGSTROM_TO_BOHR)
+            for x, y, z in ligand_coords_angstrom
+        ]
         cutoff_bohr = overlap_cutoff_angstrom * ANGSTROM_TO_BOHR
-        charges = [c for c in charges if not _too_close(c[1], c[2], c[3], ligand_bohr, cutoff_bohr)]
+        charges = [
+            c
+            for c in charges
+            if not _too_close(c[1], c[2], c[3], ligand_bohr, cutoff_bohr)
+        ]
         if not charges:
             raise RuntimeError(
                 "All pocket charges were filtered out as ligand-overlapping — "
@@ -118,10 +131,16 @@ def derive_pocket_charges(
         raise RuntimeError(f"PDB2PQR produced no ATOM/HETATM charges for {pocket_pdb}")
 
     if ligand_coords_angstrom:
-        ligand_bohr = [(x * ANGSTROM_TO_BOHR, y * ANGSTROM_TO_BOHR, z * ANGSTROM_TO_BOHR)
-                        for x, y, z in ligand_coords_angstrom]
+        ligand_bohr = [
+            (x * ANGSTROM_TO_BOHR, y * ANGSTROM_TO_BOHR, z * ANGSTROM_TO_BOHR)
+            for x, y, z in ligand_coords_angstrom
+        ]
         cutoff_bohr = overlap_cutoff_angstrom * ANGSTROM_TO_BOHR
-        pqr_atoms = [a for a in pqr_atoms if not _too_close(a.x, a.y, a.z, ligand_bohr, cutoff_bohr)]
+        pqr_atoms = [
+            a
+            for a in pqr_atoms
+            if not _too_close(a.x, a.y, a.z, ligand_bohr, cutoff_bohr)
+        ]
         if not pqr_atoms:
             raise RuntimeError(
                 "All pocket charges were filtered out as ligand-overlapping — "

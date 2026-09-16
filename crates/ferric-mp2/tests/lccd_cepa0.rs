@@ -46,10 +46,19 @@ fn setup(xyz: &str, obs_name: &str, aux_name: &str) -> Setup {
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
     )
     .unwrap();
-    Setup { mol, obs, dfbs, rhf, bounds }
+    Setup {
+        mol,
+        obs,
+        dfbs,
+        rhf,
+        bounds,
+    }
 }
 
 /// THE EXACTNESS ANCHOR: the `e_mp2` the solver reports (its own energy
@@ -68,7 +77,10 @@ fn lccd_energy_functional_reproduces_mp2_at_first_order() {
         ("water.xyz", "6-31g", "cc-pvdz-ri", 1),
     ] {
         let su = setup(xyz, obs_name, aux);
-        let cfg = LccdConfig { frozen_core: fc, ..Default::default() };
+        let cfg = LccdConfig {
+            frozen_core: fc,
+            ..Default::default()
+        };
         let r = lccd(
             &su.mol,
             &su.obs,
@@ -85,7 +97,10 @@ fn lccd_energy_functional_reproduces_mp2_at_first_order() {
             &su.dfbs,
             Operator::coulomb(),
             &su.rhf,
-            &RiMp2Config { frozen_core: fc, ..Default::default() },
+            &RiMp2Config {
+                frozen_core: fc,
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -114,7 +129,10 @@ fn lccd_energy_functional_reproduces_mp2_at_first_order() {
 #[test]
 fn lccd_is_not_merely_mp2() {
     let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
-    let cfg = LccdConfig { frozen_core: 1, ..Default::default() };
+    let cfg = LccdConfig {
+        frozen_core: 1,
+        ..Default::default()
+    };
     let r = lccd(
         &su.mol,
         &su.obs,
@@ -150,7 +168,10 @@ fn lccd_is_not_merely_mp2() {
 #[test]
 fn the_lccd_operator_is_genuinely_non_symmetric() {
     let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
-    let cfg = LccdConfig { frozen_core: 1, ..Default::default() };
+    let cfg = LccdConfig {
+        frozen_core: 1,
+        ..Default::default()
+    };
     let a = dense_operator(
         &su.mol,
         &su.obs,
@@ -217,7 +238,10 @@ fn lccd_matches_the_exact_eri_oracle() {
         ("water.xyz", "6-31g", "cc-pvdz-ri", 1, -0.133_996_954_6_f64),
     ] {
         let su = setup(xyz, obs_name, aux);
-        let cfg = LccdConfig { frozen_core: fc, ..Default::default() };
+        let cfg = LccdConfig {
+            frozen_core: fc,
+            ..Default::default()
+        };
         let r = lccd(
             &su.mol,
             &su.obs,
@@ -241,7 +265,6 @@ fn lccd_matches_the_exact_eri_oracle() {
         );
     }
 }
-
 
 /// A GUARD YOU HAVE NEVER SEEN FIRE IS AN ASSUMPTION. CEPA(0)'s documented
 /// failure mode is convergence onto a SPURIOUS fixed point with a perfectly
@@ -287,7 +310,10 @@ fn cepa0_breakdown_is_rejected_not_silently_returned() {
     // the bound and confirm the solver reports a clean, converged, and
     // completely wrong answer. If this ever starts failing to converge
     // instead, the test above stops testing the guard.
-    let unguarded = LccdConfig { max_corr_vs_mp2: None, ..Default::default() };
+    let unguarded = LccdConfig {
+        max_corr_vs_mp2: None,
+        ..Default::default()
+    };
     let r = lccd(
         &su.mol,
         &su.obs,
@@ -301,7 +327,10 @@ fn cepa0_breakdown_is_rejected_not_silently_returned() {
         "r=4.0 UNGUARDED: E_corr={:.6} E_MP2={:.6} relres={:.2e} converged={}",
         r.e_corr, r.e_mp2, r.relres, r.converged
     );
-    assert!(r.converged && r.relres < 1e-10, "the residual looks healthy");
+    assert!(
+        r.converged && r.relres < 1e-10,
+        "the residual looks healthy"
+    );
     assert!(
         r.e_corr < -5.0,
         "expected the spurious ~-18 Ha fixed point, got {:.6}",

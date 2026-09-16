@@ -97,7 +97,11 @@ pub fn coulomb_metric_2c(op: Operator, dfbs: &PreparedBasis) -> Result<Array2<f6
 /// Writes go to disjoint `(p, mu, nu)` regions — each `sp` owns a distinct
 /// aux-row band — so the raw-pointer scatter is data-race-free and bit-identical
 /// to the serial build.
-pub fn eri3_tensor(op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis) -> Result<Array3<f64>, FerricError> {
+pub fn eri3_tensor(
+    op: Operator,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+) -> Result<Array3<f64>, FerricError> {
     use rayon::prelude::*;
 
     let naux = dfbs.nbasis();
@@ -175,7 +179,11 @@ pub fn eri3_tensor(op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis) -> R
 /// from distinct workers never overlap and every element is written exactly
 /// once — the output is bit-identical to the serial fill.
 pub fn eri3_block(
-    op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis, p0: usize, p1: usize,
+    op: Operator,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    p0: usize,
+    p1: usize,
 ) -> Result<Array3<f64>, FerricError> {
     use rayon::prelude::*;
 
@@ -208,7 +216,9 @@ pub fn eri3_block(
             let pbase = offs_df[sp];
             let np = dims_df[sp];
             // Skip aux shells entirely outside [p0, p1).
-            if pbase + np <= p0 || pbase >= p1 { return; }
+            if pbase + np <= p0 || pbase >= p1 {
+                return;
+            }
             for s1 in 0..nsh_obs {
                 let n1 = dims_obs[s1];
                 let m0 = offs_obs[s1];
@@ -218,7 +228,9 @@ pub fn eri3_block(
                         let n0 = offs_obs[s2];
                         for p in 0..np {
                             let pg = pbase + p;
-                            if pg < p0 || pg >= p1 { continue; }
+                            if pg < p0 || pg >= p1 {
+                                continue;
+                            }
                             let pl = pg - p0;
                             for i in 0..n1 {
                                 for j in 0..n2 {
@@ -309,7 +321,9 @@ pub fn eri3_tensor_screened(
                         if q3p * q_obs[(s1, s2)] < thresh {
                             continue;
                         }
-                        let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) else { continue };
+                        let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) else {
+                            continue;
+                        };
                         kept += 1;
                         let n2 = dims_obs[s2];
                         let n0 = offs_obs[s2];
@@ -402,7 +416,9 @@ pub fn eri3_tensor_screened_qqr(
                         if bounds.estimate3(sp, s1, s2) < thresh {
                             continue;
                         }
-                        let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) else { continue };
+                        let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) else {
+                            continue;
+                        };
                         kept += 1;
                         let n2 = dims_obs[s2];
                         let n0 = offs_obs[s2];
@@ -474,7 +490,9 @@ mod tests {
                     if q3p * q_obs[(s1, s2)] < thresh {
                         continue;
                     }
-                    let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) else { continue };
+                    let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) else {
+                        continue;
+                    };
                     n_kept += 1;
                     let np = dims_df[sp];
                     let n1 = dims_obs[s1];
@@ -524,7 +542,9 @@ mod tests {
                     if bounds.estimate3(sp, s1, s2) < thresh {
                         continue;
                     }
-                    let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) else { continue };
+                    let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) else {
+                        continue;
+                    };
                     n_kept += 1;
                     let np = dims_df[sp];
                     let n1 = dims_obs[s1];
@@ -549,7 +569,11 @@ mod tests {
     /// change and any difference at all is a bug.
     fn assert_bit_identical(a: &Array3<f64>, b: &Array3<f64>, what: &str) {
         assert_eq!(a.dim(), b.dim(), "{what}: shape mismatch");
-        let n_diff = a.iter().zip(b.iter()).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+        let n_diff = a
+            .iter()
+            .zip(b.iter())
+            .filter(|(x, y)| x.to_bits() != y.to_bits())
+            .count();
         assert_eq!(n_diff, 0, "{what}: {n_diff} elements differ bitwise");
     }
 
@@ -563,17 +587,24 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         for op in [Operator::coulomb(), Operator::erfc(0.222)] {
             for &thresh in &[0.0, 1e-10, 1e-4, 1e-2] {
-                let (ser, k_ser, t_ser) = eri3_tensor_screened_serial(op, &obs, &dfbs, thresh).unwrap();
+                let (ser, k_ser, t_ser) =
+                    eri3_tensor_screened_serial(op, &obs, &dfbs, thresh).unwrap();
                 let (par, k_par, t_par) = eri3_tensor_screened(op, &obs, &dfbs, thresh).unwrap();
-                assert_eq!((k_par, t_par), (k_ser, t_ser),
-                    "screening counts diverge at thresh={thresh:.0e}");
+                assert_eq!(
+                    (k_par, t_par),
+                    (k_ser, t_ser),
+                    "screening counts diverge at thresh={thresh:.0e}"
+                );
                 assert_bit_identical(&ser, &par, &format!("schwarz-screened thresh={thresh:.0e}"));
             }
         }
         // Sanity: at 1e-2 screening must actually drop triples, otherwise the
         // "screening fires" leg of this test is vacuous.
         let (_, k, t) = eri3_tensor_screened(Operator::erfc(0.222), &obs, &dfbs, 1e-2).unwrap();
-        assert!(k < t, "expected screening to fire at thresh=1e-2 ({k}/{t} kept)");
+        assert!(
+            k < t,
+            "expected screening to fire at thresh=1e-2 ({k}/{t} kept)"
+        );
     }
 
     #[test]
@@ -588,19 +619,26 @@ mod tests {
                 eri3_tensor_screened_qqr_serial(op, &obs, &dfbs, &bounds, thresh).unwrap();
             let (par, k_par, t_par) =
                 eri3_tensor_screened_qqr(op, &obs, &dfbs, &bounds, thresh).unwrap();
-            assert_eq!((k_par, t_par), (k_ser, t_ser),
-                "QQR screening counts diverge at thresh={thresh:.0e}");
+            assert_eq!(
+                (k_par, t_par),
+                (k_ser, t_ser),
+                "QQR screening counts diverge at thresh={thresh:.0e}"
+            );
             assert_bit_identical(&ser, &par, &format!("qqr-screened thresh={thresh:.0e}"));
         }
         // Sanity: the loose threshold must actually drop triples.
         let (_, k, t) = eri3_tensor_screened_qqr(op, &obs, &dfbs, &bounds, 1e-2).unwrap();
-        assert!(k < t, "expected QQR screening to fire at thresh=1e-2 ({k}/{t} kept)");
+        assert!(
+            k < t,
+            "expected QQR screening to fire at thresh=1e-2 ({k}/{t} kept)"
+        );
     }
 
     #[test]
     fn eri3_block_equals_dense_slice() {
         use crate::basis_bridge::PreparedBasis;
-        let mol = Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let op = Operator::coulomb();
@@ -609,8 +647,14 @@ mod tests {
         let (p0, p1) = (2, naux.min(9));
         let blk = eri3_block(op, &obs, &dfbs, p0, p1).unwrap();
         let ref_slice = dense.slice(ndarray::s![p0..p1, .., ..]);
-        let maxdiff = (&blk - &ref_slice).iter().map(|v| v.abs()).fold(0.0, f64::max);
-        assert!(maxdiff == 0.0, "eri3_block != dense slice, maxdiff={maxdiff}");
+        let maxdiff = (&blk - &ref_slice)
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0, f64::max);
+        assert!(
+            maxdiff == 0.0,
+            "eri3_block != dense slice, maxdiff={maxdiff}"
+        );
     }
 
     #[test]
@@ -622,12 +666,16 @@ mod tests {
         let n = dfbs.nbasis();
         for i in 0..n {
             for j in 0..n {
-                assert!((v[(i, j)] - v[(j, i)]).abs() < 1e-12,
-                    "(P|Q) not symmetric at ({i},{j})");
+                assert!(
+                    (v[(i, j)] - v[(j, i)]).abs() < 1e-12,
+                    "(P|Q) not symmetric at ({i},{j})"
+                );
             }
         }
         // Diagonal should be positive
-        for i in 0..n { assert!(v[(i, i)] > 0.0, "(P|P) should be positive"); }
+        for i in 0..n {
+            assert!(v[(i, i)] > 0.0, "(P|P) should be positive");
+        }
     }
 
     /// Serial reference for `coulomb_metric_2c` (pre-parallelization
@@ -663,14 +711,24 @@ mod tests {
         let mol = Molecule::load_xyz("../../testdata/molecules/alkane_6.xyz").unwrap();
         let dfbs_set = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();
-        assert!(dfbs.nshells() >= 64,
-            "test aux basis too small to exercise the parallel path: {} shells", dfbs.nshells());
+        assert!(
+            dfbs.nshells() >= 64,
+            "test aux basis too small to exercise the parallel path: {} shells",
+            dfbs.nshells()
+        );
         for op in [Operator::coulomb(), Operator::erfc(0.222)] {
             let par = coulomb_metric_2c(op, &dfbs).unwrap();
             let ser = coulomb_metric_2c_serial(op, &dfbs);
             assert_eq!(par.dim(), ser.dim());
-            let n_diff = par.iter().zip(ser.iter()).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
-            assert_eq!(n_diff, 0, "coulomb_metric_2c: {n_diff} elements differ bitwise (op={op:?})");
+            let n_diff = par
+                .iter()
+                .zip(ser.iter())
+                .filter(|(a, b)| a.to_bits() != b.to_bits())
+                .count();
+            assert_eq!(
+                n_diff, 0,
+                "coulomb_metric_2c: {n_diff} elements differ bitwise (op={op:?})"
+            );
         }
     }
 
@@ -686,10 +744,19 @@ mod tests {
         let dense = eri3_tensor(Operator::coulomb(), &obs, &dfbs).unwrap();
         let (screened, n_kept, n_total) =
             eri3_tensor_screened(Operator::coulomb(), &obs, &dfbs, 0.0).unwrap();
-        assert_eq!(n_kept, n_total, "thresh=0 should keep every (P,s1,s2≤s1) triple");
-        let max_diff = dense.iter().zip(screened.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max);
-        assert!(max_diff < 1e-12, "screened tensor diverges from dense: max diff {max_diff:.2e}");
+        assert_eq!(
+            n_kept, n_total,
+            "thresh=0 should keep every (P,s1,s2≤s1) triple"
+        );
+        let max_diff = dense
+            .iter()
+            .zip(screened.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f64, f64::max);
+        assert!(
+            max_diff < 1e-12,
+            "screened tensor diverges from dense: max diff {max_diff:.2e}"
+        );
     }
 
     #[test]
@@ -705,15 +772,19 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();
         let op = Operator::erfc(0.222);
         let unscreened = eri3_tensor(op, &obs, &dfbs).unwrap();
-        let (screened, n_kept, n_total) =
-            eri3_tensor_screened(op, &obs, &dfbs, 1e-10).unwrap();
+        let (screened, n_kept, n_total) = eri3_tensor_screened(op, &obs, &dfbs, 1e-10).unwrap();
         eprintln!("H2O/cc-pVDZ erfc(0.222) eri3 screening: {n_kept}/{n_total} triples kept");
         // Either we drop some, or the system is too small for screening to fire.
         // Tensor agreement is the load-bearing check.
-        let max_diff = unscreened.iter().zip(screened.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max);
-        assert!(max_diff < 1e-9,
-            "screened erfc tensor diverges from unscreened: max diff {max_diff:.2e}");
+        let max_diff = unscreened
+            .iter()
+            .zip(screened.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f64, f64::max);
+        assert!(
+            max_diff < 1e-9,
+            "screened erfc tensor diverges from unscreened: max diff {max_diff:.2e}"
+        );
     }
 
     #[test]
@@ -733,10 +804,15 @@ mod tests {
         let (screened, n_kept, n_total) =
             eri3_tensor_screened_qqr(op, &obs, &dfbs, &bounds, 1e-10).unwrap();
         eprintln!("water erfc QQR3 thresh=1e-10: {n_kept}/{n_total} kept");
-        let max_diff = unscreened.iter().zip(screened.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max);
-        assert!(max_diff < 1e-9,
-            "QQR-screened tensor diverges from unscreened: max diff {max_diff:.2e}");
+        let max_diff = unscreened
+            .iter()
+            .zip(screened.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f64, f64::max);
+        assert!(
+            max_diff < 1e-9,
+            "QQR-screened tensor diverges from unscreened: max diff {max_diff:.2e}"
+        );
     }
 
     #[test]
@@ -753,23 +829,28 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();
         eprintln!(
             "decane: nbas={}, naux={}, nsh_obs={}, nsh_aux={}",
-            obs.nbasis(), dfbs.nbasis(), obs.nshells(), dfbs.nshells()
+            obs.nbasis(),
+            dfbs.nbasis(),
+            obs.nshells(),
+            dfbs.nshells()
         );
 
         // Coulomb screens little — the operator has infinite range.
         let op_c = Operator::coulomb();
-        let (_, n_kept_c, n_total_c) =
-            eri3_tensor_screened(op_c, &obs, &dfbs, 1e-10).unwrap();
-        eprintln!("  Coulomb thresh=1e-10: {n_kept_c}/{n_total_c} triples kept ({:.1}%)",
-            100.0 * n_kept_c as f64 / n_total_c as f64);
+        let (_, n_kept_c, n_total_c) = eri3_tensor_screened(op_c, &obs, &dfbs, 1e-10).unwrap();
+        eprintln!(
+            "  Coulomb thresh=1e-10: {n_kept_c}/{n_total_c} triples kept ({:.1}%)",
+            100.0 * n_kept_c as f64 / n_total_c as f64
+        );
 
         // erfc with the dissertation optimal omega should drop substantially more.
         let op_e = Operator::erfc(0.222);
         for &thresh in &[1e-12, 1e-10, 1e-8, 1e-6] {
-            let (_, n_kept, n_total) =
-                eri3_tensor_screened(op_e, &obs, &dfbs, thresh).unwrap();
-            eprintln!("  Schwarz erfc(0.222) thresh={thresh:.0e}: {n_kept}/{n_total} kept ({:.1}%)",
-                100.0 * n_kept as f64 / n_total as f64);
+            let (_, n_kept, n_total) = eri3_tensor_screened(op_e, &obs, &dfbs, thresh).unwrap();
+            eprintln!(
+                "  Schwarz erfc(0.222) thresh={thresh:.0e}: {n_kept}/{n_total} kept ({:.1}%)",
+                100.0 * n_kept as f64 / n_total as f64
+            );
         }
 
         // QQR-3 with distance-aware bound — this is what should actually fire
@@ -778,8 +859,10 @@ mod tests {
         for &thresh in &[1e-12, 1e-10, 1e-8, 1e-6] {
             let (_, n_kept, n_total) =
                 eri3_tensor_screened_qqr(op_e, &obs, &dfbs, &bounds, thresh).unwrap();
-            eprintln!("  QQR3   erfc(0.222) thresh={thresh:.0e}: {n_kept}/{n_total} kept ({:.1}%)",
-                100.0 * n_kept as f64 / n_total as f64);
+            eprintln!(
+                "  QQR3   erfc(0.222) thresh={thresh:.0e}: {n_kept}/{n_total} kept ({:.1}%)",
+                100.0 * n_kept as f64 / n_total as f64
+            );
         }
     }
 
@@ -796,8 +879,10 @@ mod tests {
         for p in 0..naux {
             for i in 0..nbas {
                 for j in 0..nbas {
-                    assert!((eri[(p, i, j)] - eri[(p, j, i)]).abs() < 1e-12,
-                        "ERI3 not symmetric at P={p},i={i},j={j}");
+                    assert!(
+                        (eri[(p, i, j)] - eri[(p, j, i)]).abs() < 1e-12,
+                        "ERI3 not symmetric at P={p},i={i},j={j}"
+                    );
                 }
             }
         }

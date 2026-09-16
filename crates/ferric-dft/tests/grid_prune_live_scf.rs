@@ -134,7 +134,11 @@ fn run_scf(xyz: &str, basis_name: &str, xc: &str, prune: Option<PruneScheme>) ->
         // The single variable under test. 75x110 is `AtomicGridConfig::
         // default()`'s shape and the shape the PySCF references were
         // generated at.
-        dft_grid: Some(AtomicGridConfig { n_radial: 75, n_angular: 110, prune }),
+        dft_grid: Some(AtomicGridConfig {
+            n_radial: 75,
+            n_angular: 110,
+            prune,
+        }),
         ..Default::default()
     };
     // The ladder, as dft_pbe.rs / dft_b3lyp.rs use. dft_lda.rs uses plain
@@ -158,30 +162,126 @@ struct Case {
 /// The closed-shell reference matrix, mirroring the cases in `dft_lda.rs`,
 /// `dft_pbe.rs` and `dft_b3lyp.rs` that have a bundled reference JSON.
 const CASES: &[Case] = &[
-    Case { label: "H2",  xyz: H2,  basis: "cc-pvdz", xc: "LDA",   reference: "h2_cc-pvdz_lda.json" },
-    Case { label: "H2O", xyz: H2O, basis: "cc-pvdz", xc: "LDA",   reference: "h2o_cc-pvdz_lda.json" },
-    Case { label: "CH4", xyz: CH4, basis: "cc-pvdz", xc: "LDA",   reference: "methane_cc-pvdz_lda.json" },
-    Case { label: "H2",  xyz: H2,  basis: "cc-pvdz", xc: "PBE",   reference: "h2_cc-pvdz_pbe.json" },
-    Case { label: "H2O", xyz: H2O, basis: "cc-pvdz", xc: "PBE",   reference: "h2o_cc-pvdz_pbe.json" },
-    Case { label: "CH4", xyz: CH4, basis: "cc-pvdz", xc: "PBE",   reference: "methane_cc-pvdz_pbe.json" },
-    Case { label: "H2",  xyz: H2,  basis: "cc-pvdz", xc: "B3LYP", reference: "h2_cc-pvdz_b3lyp.json" },
-    Case { label: "H2O", xyz: H2O, basis: "cc-pvdz", xc: "B3LYP", reference: "h2o_cc-pvdz_b3lyp.json" },
-    Case { label: "CH4", xyz: CH4, basis: "cc-pvdz", xc: "B3LYP", reference: "methane_cc-pvdz_b3lyp.json" },
+    Case {
+        label: "H2",
+        xyz: H2,
+        basis: "cc-pvdz",
+        xc: "LDA",
+        reference: "h2_cc-pvdz_lda.json",
+    },
+    Case {
+        label: "H2O",
+        xyz: H2O,
+        basis: "cc-pvdz",
+        xc: "LDA",
+        reference: "h2o_cc-pvdz_lda.json",
+    },
+    Case {
+        label: "CH4",
+        xyz: CH4,
+        basis: "cc-pvdz",
+        xc: "LDA",
+        reference: "methane_cc-pvdz_lda.json",
+    },
+    Case {
+        label: "H2",
+        xyz: H2,
+        basis: "cc-pvdz",
+        xc: "PBE",
+        reference: "h2_cc-pvdz_pbe.json",
+    },
+    Case {
+        label: "H2O",
+        xyz: H2O,
+        basis: "cc-pvdz",
+        xc: "PBE",
+        reference: "h2o_cc-pvdz_pbe.json",
+    },
+    Case {
+        label: "CH4",
+        xyz: CH4,
+        basis: "cc-pvdz",
+        xc: "PBE",
+        reference: "methane_cc-pvdz_pbe.json",
+    },
+    Case {
+        label: "H2",
+        xyz: H2,
+        basis: "cc-pvdz",
+        xc: "B3LYP",
+        reference: "h2_cc-pvdz_b3lyp.json",
+    },
+    Case {
+        label: "H2O",
+        xyz: H2O,
+        basis: "cc-pvdz",
+        xc: "B3LYP",
+        reference: "h2o_cc-pvdz_b3lyp.json",
+    },
+    Case {
+        label: "CH4",
+        xyz: CH4,
+        basis: "cc-pvdz",
+        xc: "B3LYP",
+        reference: "methane_cc-pvdz_b3lyp.json",
+    },
     // NH3 — the 4th molecule every reference suite carries. Worth including
     // because it is the case `dft_pbe.rs` documents as landing in a WRONG SCF
     // solution under plain DIIS (hence the ladder), i.e. the case most
     // sensitive to the Fock matrix being perturbed — which is exactly what
     // pruning does, every iteration.
-    Case { label: "NH3", xyz: NH3, basis: "cc-pvdz", xc: "LDA",   reference: "nh3_cc-pvdz_lda.json" },
-    Case { label: "NH3", xyz: NH3, basis: "cc-pvdz", xc: "PBE",   reference: "nh3_cc-pvdz_pbe.json" },
-    Case { label: "NH3", xyz: NH3, basis: "cc-pvdz", xc: "B3LYP", reference: "nh3_cc-pvdz_b3lyp.json" },
+    Case {
+        label: "NH3",
+        xyz: NH3,
+        basis: "cc-pvdz",
+        xc: "LDA",
+        reference: "nh3_cc-pvdz_lda.json",
+    },
+    Case {
+        label: "NH3",
+        xyz: NH3,
+        basis: "cc-pvdz",
+        xc: "PBE",
+        reference: "nh3_cc-pvdz_pbe.json",
+    },
+    Case {
+        label: "NH3",
+        xyz: NH3,
+        basis: "cc-pvdz",
+        xc: "B3LYP",
+        reference: "nh3_cc-pvdz_b3lyp.json",
+    },
     // Second basis, mirroring the def2-SVP arms of the same suites. def2-SVP
     // is the basis whose contractions are renormalised at load, so it
     // exercises a different AO path than cc-pVDZ.
-    Case { label: "H2O", xyz: H2O, basis: "def2-svp", xc: "LDA",   reference: "h2o_def2-svp_lda.json" },
-    Case { label: "H2O", xyz: H2O, basis: "def2-svp", xc: "PBE",   reference: "h2o_def2-svp_pbe.json" },
-    Case { label: "H2O", xyz: H2O, basis: "def2-svp", xc: "B3LYP", reference: "h2o_def2-svp_b3lyp.json" },
-    Case { label: "CH4", xyz: CH4, basis: "def2-svp", xc: "PBE",   reference: "methane_def2-svp_pbe.json" },
+    Case {
+        label: "H2O",
+        xyz: H2O,
+        basis: "def2-svp",
+        xc: "LDA",
+        reference: "h2o_def2-svp_lda.json",
+    },
+    Case {
+        label: "H2O",
+        xyz: H2O,
+        basis: "def2-svp",
+        xc: "PBE",
+        reference: "h2o_def2-svp_pbe.json",
+    },
+    Case {
+        label: "H2O",
+        xyz: H2O,
+        basis: "def2-svp",
+        xc: "B3LYP",
+        reference: "h2o_def2-svp_b3lyp.json",
+    },
+    Case {
+        label: "CH4",
+        xyz: CH4,
+        basis: "def2-svp",
+        xc: "PBE",
+        reference: "methane_def2-svp_pbe.json",
+    },
 ];
 
 /// THE gate. A full pruned-grid SCF must reproduce the PySCF reference to the
@@ -199,8 +299,7 @@ fn pruned_scf_matches_pyscf_within_the_existing_reference_tolerance() {
     );
     for c in CASES {
         let r: Ref =
-            serde_json::from_str(&std::fs::read_to_string(ref_path(c.reference)).unwrap())
-                .unwrap();
+            serde_json::from_str(&std::fs::read_to_string(ref_path(c.reference)).unwrap()).unwrap();
         assert!(r.converged, "PySCF reference {} not converged", c.reference);
 
         let e_pruned = run_scf(c.xyz, c.basis, c.xc, Some(PruneScheme::NwchemLike));
@@ -251,14 +350,26 @@ fn prune_none_reproduces_the_flat_grid_bit_for_bit() {
     // to `build_atomic_grid`, point for point and weight for weight.
     use ferric_dft::grid::{build_atomic_grid, build_atomic_grid_pruned};
     let mol = Molecule::parse_xyz(H2O, 0, 1).unwrap();
-    let cfg = AtomicGridConfig { n_radial: 75, n_angular: 110, prune: None };
+    let cfg = AtomicGridConfig {
+        n_radial: 75,
+        n_angular: 110,
+        prune: None,
+    };
     let flat = build_atomic_grid(&mol, &cfg);
     let none = build_atomic_grid_pruned(&mol, &cfg, None).unwrap();
     assert_eq!(flat.len(), none.len());
     for (i, (a, b)) in flat.iter().zip(none.iter()).enumerate() {
-        assert_eq!(a.weight.to_bits(), b.weight.to_bits(), "weight at point {i}");
+        assert_eq!(
+            a.weight.to_bits(),
+            b.weight.to_bits(),
+            "weight at point {i}"
+        );
         for k in 0..3 {
-            assert_eq!(a.xyz[k].to_bits(), b.xyz[k].to_bits(), "xyz[{k}] at point {i}");
+            assert_eq!(
+                a.xyz[k].to_bits(),
+                b.xyz[k].to_bits(),
+                "xyz[{k}] at point {i}"
+            );
         }
     }
 }
@@ -276,10 +387,13 @@ fn the_pruned_scf_really_uses_fewer_points() {
 
     for (label, xyz) in [("H2", H2), ("H2O", H2O), ("CH4", CH4)] {
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
-        let cfg = AtomicGridConfig { n_radial: 75, n_angular: 110, prune: None };
+        let cfg = AtomicGridConfig {
+            n_radial: 75,
+            n_angular: 110,
+            prune: None,
+        };
         let flat = build_atomic_grid(&mol, &cfg);
-        let pruned =
-            build_atomic_grid_pruned(&mol, &cfg, Some(PruneScheme::NwchemLike)).unwrap();
+        let pruned = build_atomic_grid_pruned(&mol, &cfg, Some(PruneScheme::NwchemLike)).unwrap();
         let saved = 100.0 * (1.0 - pruned.len() as f64 / flat.len() as f64);
         eprintln!(
             "[{label}] 75x110: flat {} -> pruned {} ({saved:.1}% fewer)",
@@ -317,7 +431,11 @@ fn vv10_nlc_grid_survives_a_pruned_main_grid() {
     let mol = Molecule::parse_xyz(H2O, 0, 1).unwrap();
 
     // (1) 50x50 + pruning must error, not silently un-prune.
-    let nlc_pruned = AtomicGridConfig { n_radial: 50, n_angular: 50, prune: None };
+    let nlc_pruned = AtomicGridConfig {
+        n_radial: 50,
+        n_angular: 50,
+        prune: None,
+    };
     assert!(
         build_atomic_grid_pruned(&mol, &nlc_pruned, Some(PruneScheme::NwchemLike)).is_err(),
         "pruning at n_angular = 50 must be a hard error"
@@ -326,8 +444,11 @@ fn vv10_nlc_grid_survives_a_pruned_main_grid() {
     // (2) The default NLC config carries prune = None, so it builds fine even
     // while the main grid is pruned. This is the invariant the KsXc wiring
     // relies on.
-    let nlc_default =
-        AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() };
+    let nlc_default = AtomicGridConfig {
+        n_radial: 50,
+        n_angular: 50,
+        ..Default::default()
+    };
     assert!(
         nlc_default.prune.is_none(),
         "AtomicGridConfig::default() must keep prune = None or every 50x50 NLC \
@@ -353,13 +474,20 @@ fn vv10_nlc_grid_survives_a_pruned_main_grid() {
             n_angular: 110,
             prune: Some(PruneScheme::NwchemLike),
         }),
-        nlc_grid: Some(AtomicGridConfig { n_radial: 50, n_angular: 50, prune: None }),
+        nlc_grid: Some(AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 50,
+            prune: None,
+        }),
         ..Default::default()
     };
     let ladder = default_ladder_from(&cfg);
     let lr = solve_rhf_ladder(&ctx, &mol, &obs, op, &bounds, &ladder)
         .expect("pruned-main-grid wB97X-V SCF must build its NLC grid unpruned and run");
-    eprintln!("[H2O/cc-pVDZ/wB97X-V] pruned main grid + flat NLC: E = {:.9} Ha", lr.result.energy);
+    eprintln!(
+        "[H2O/cc-pVDZ/wB97X-V] pruned main grid + flat NLC: E = {:.9} Ha",
+        lr.result.energy
+    );
     assert!(lr.result.energy.is_finite());
 }
 
@@ -390,6 +518,10 @@ fn gradient_grid_rejects_a_pruned_config_instead_of_ignoring_it() {
 
     // ...and the unpruned config still works, so this is a targeted rejection
     // rather than a broken path.
-    let flat = AtomicGridConfig { n_radial: 75, n_angular: 110, prune: None };
+    let flat = AtomicGridConfig {
+        n_radial: 75,
+        n_angular: 110,
+        prune: None,
+    };
     assert!(build_atomic_grid_with_response(&mol, &flat).is_ok());
 }

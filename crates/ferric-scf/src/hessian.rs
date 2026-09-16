@@ -107,8 +107,7 @@ pub fn hess_nuclear_repulsion(mol: &Molecule) -> Array2<f64> {
             // Off-diagonal block (i, j)
             for x in 0..3 {
                 for y in 0..3 {
-                    let val = zz * (-3.0 * d[x] * d[y] / r5
-                        + if x == y { 1.0 / r3 } else { 0.0 });
+                    let val = zz * (-3.0 * d[x] * d[y] / r5 + if x == y { 1.0 / r3 } else { 0.0 });
                     h[(3 * i + x, 3 * j + y)] = val;
                     // Diagonal block accumulation: h[i,i] -= h[i,j]
                     h[(3 * i + x, 3 * i + y)] -= val;
@@ -139,7 +138,7 @@ pub fn hess_nuclear_repulsion(mol: &Molecule) -> Array2<f64> {
 /// requires `LIBINT2_MAX_DERIV_ORDER >= 2` at libint2 compile time.
 /// Current installation has `LIBINT2_MAX_DERIV_ORDER = 1`.
 #[allow(dead_code)] // scaffold: kept as the implementation roadmap for the
-// deriv_order=2 work; unreachable until rhf_hessian's guard is lifted.
+                    // deriv_order=2 work; unreachable until rhf_hessian's guard is lifted.
 fn skeleton_hess_1e(
     _mol: &Molecule,
     prep: &PreparedBasis,
@@ -185,7 +184,7 @@ fn skeleton_hess_1e(
 ///
 /// Same libint2 `deriv_order=2` requirement as the 1e skeleton.
 #[allow(dead_code)] // scaffold: kept as the implementation roadmap for the
-// deriv_order=2 work; unreachable until rhf_hessian's guard is lifted.
+                    // deriv_order=2 work; unreachable until rhf_hessian's guard is lifted.
 fn skeleton_hess_overlap(
     _mol: &Molecule,
     prep: &PreparedBasis,
@@ -224,7 +223,7 @@ fn skeleton_hess_overlap(
 /// For 4 shell centers, the second-derivative ERI has
 /// (4×3 + 4×3 choose 2) / 2 = 78 unique derivative blocks.
 #[allow(dead_code)] // scaffold: kept as the implementation roadmap for the
-// deriv_order=2 work; unreachable until rhf_hessian's guard is lifted.
+                    // deriv_order=2 work; unreachable until rhf_hessian's guard is lifted.
 fn skeleton_hess_2e(
     _mol: &Molecule,
     prep: &PreparedBasis,
@@ -282,7 +281,7 @@ fn skeleton_hess_2e(
 /// the response terms it produces are contracted with the skeleton Hessian from
 /// terms 2–4, so the full analytic Hessian needs all components to be nonzero.
 #[allow(dead_code)] // scaffold: kept as the implementation roadmap for the
-// deriv_order=2 work; unreachable until rhf_hessian's guard is lifted.
+                    // deriv_order=2 work; unreachable until rhf_hessian's guard is lifted.
 fn cpks_response(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -377,7 +376,8 @@ mod tests {
         Molecule::parse_xyz(
             "3\nwater\nO 0.000000 0.000000 0.117300\n\
              H 0.000000 0.757200 -0.469200\nH 0.000000 -0.757200 -0.469200\n",
-            0, 1,
+            0,
+            1,
         )
         .unwrap()
     }

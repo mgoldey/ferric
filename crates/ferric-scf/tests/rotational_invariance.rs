@@ -33,8 +33,8 @@
 //! distances alone, so RHF is the cleanest possible probe of rotational
 //! invariance.
 
-use ferric_core::mol::{Atom, Molecule};
 use ferric_core::basis;
+use ferric_core::mol::{Atom, Molecule};
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -65,7 +65,11 @@ fn rotate_90_about_z(mol: &Molecule) -> Molecule {
             n_core_ecp: a.n_core_ecp,
         })
         .collect();
-    Molecule { atoms, charge: mol.charge, multiplicity: mol.multiplicity }
+    Molecule {
+        atoms,
+        charge: mol.charge,
+        multiplicity: mol.multiplicity,
+    }
 }
 
 fn rhf_energy(mol: &Molecule) -> f64 {
@@ -79,7 +83,10 @@ fn rhf_energy(mol: &Molecule) -> f64 {
         ..Default::default()
     };
     let res = solve_rhf(&ParallelContext::default(), mol, &prep, op, &bounds, &cfg).unwrap();
-    assert!(res.converged, "RHF must converge for the rotational-invariance check to be meaningful");
+    assert!(
+        res.converged,
+        "RHF must converge for the rotational-invariance check to be meaningful"
+    );
     res.energy
 }
 

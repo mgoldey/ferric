@@ -27,7 +27,9 @@ pub enum TensorError {
 }
 
 impl From<TensorError> for ferric_core::error::FerricError {
-    fn from(e: TensorError) -> Self { Self::General(e.to_string()) }
+    fn from(e: TensorError) -> Self {
+        Self::General(e.to_string())
+    }
 }
 
 /// Contract two operands over their contracted axes into one GEMM.
@@ -63,14 +65,20 @@ pub fn einsum_binary(
     let (lf, lc) = (l2.view().shape()[0], l2.view().shape()[1]);
     let (rc, rf) = (r2.view().shape()[0], r2.view().shape()[1]);
     if lc != rc {
-        return Err(TensorError::ContractedDimMismatch { left: lc, right: rc });
+        return Err(TensorError::ContractedDimMismatch {
+            left: lc,
+            right: rc,
+        });
     }
 
     let mut out2 = ArrayD::<f64>::zeros(IxDyn(&[lf, rf]));
     {
         let l2m = l2.view().into_dimensionality::<ndarray::Ix2>().unwrap();
         let r2m = r2.view().into_dimensionality::<ndarray::Ix2>().unwrap();
-        let mut o2m = out2.view_mut().into_dimensionality::<ndarray::Ix2>().unwrap();
+        let mut o2m = out2
+            .view_mut()
+            .into_dimensionality::<ndarray::Ix2>()
+            .unwrap();
         // Threading model, in two independent layers:
         //
         // 1. `gemm_row_banded` fans the GEMM out over rayon on disjoint bands
@@ -135,8 +143,15 @@ pub fn einsum_binary_batched(
 ) -> Result<ArrayD<f64>, TensorError> {
     // Fast path: no batch axes -> one GEMM, then scale.
     if left_batch.is_empty() {
-        let mut out =
-            einsum_binary(left, left_free, left_contr, right, right_free, right_contr, out_shape)?;
+        let mut out = einsum_binary(
+            left,
+            left_free,
+            left_contr,
+            right,
+            right_free,
+            right_contr,
+            out_shape,
+        )?;
         if scale != 1.0 {
             out.mapv_inplace(|x| x * scale);
         }
@@ -154,17 +169,26 @@ pub fn einsum_binary_batched(
     let (rc, rf) = (r3.shape()[1], r3.shape()[2]);
     if nb != r3.shape()[0] {
         // Batch extents disagree: treat as a contracted-dim style mismatch.
-        return Err(TensorError::ContractedDimMismatch { left: nb, right: r3.shape()[0] });
+        return Err(TensorError::ContractedDimMismatch {
+            left: nb,
+            right: r3.shape()[0],
+        });
     }
     if lc != rc {
-        return Err(TensorError::ContractedDimMismatch { left: lc, right: rc });
+        return Err(TensorError::ContractedDimMismatch {
+            left: lc,
+            right: rc,
+        });
     }
 
     let mut out3 = ArrayD::<f64>::zeros(IxDyn(&[nb, lf, rf]));
     {
         let l3m = l3.view().into_dimensionality::<ndarray::Ix3>().unwrap();
         let r3m = r3.view().into_dimensionality::<ndarray::Ix3>().unwrap();
-        let mut o3m = out3.view_mut().into_dimensionality::<ndarray::Ix3>().unwrap();
+        let mut o3m = out3
+            .view_mut()
+            .into_dimensionality::<ndarray::Ix3>()
+            .unwrap();
         // Opt-in multi-threaded BLAS for every batch-slice GEMM in this loop
         // (default resolves to 1 — a no-op — unless FERRIC_BLAS_THREADS is
         // set). This is a plain sequential `for`, not a par_iter; the
@@ -346,7 +370,10 @@ fn row_band_width(m: usize, workers: usize) -> usize {
 /// production bounds (and asserts the merged case is actually reachable, so the
 /// check cannot pass vacuously).
 fn row_band_bounds(m: usize, width: usize) -> Vec<(usize, usize)> {
-    debug_assert!(is_valid_band_width(width), "band width {width} must be even");
+    debug_assert!(
+        is_valid_band_width(width),
+        "band width {width} must be even"
+    );
     let mut bounds = Vec::new();
     let mut r0 = 0;
     while r0 < m {
@@ -485,13 +512,20 @@ fn gemm_row_banded(
             bands.push(head);
             rest = tail;
         }
-        debug_assert_eq!(rest.nrows(), 0, "row bands must cover every output row exactly once");
+        debug_assert_eq!(
+            rest.nrows(),
+            0,
+            "row bands must cover every output row exactly once"
+        );
     }
     with_blas_threads(1, || {
-        bands.par_iter_mut().zip(bounds.par_iter()).for_each(|(band, &(r0, r1))| {
-            let lb = left.slice(ndarray::s![r0..r1, ..]);
-            gemm_kblocked(&lb, right, band);
-        });
+        bands
+            .par_iter_mut()
+            .zip(bounds.par_iter())
+            .for_each(|(band, &(r0, r1))| {
+                let lb = left.slice(ndarray::s![r0..r1, ..]);
+                gemm_kblocked(&lb, right, band);
+            });
     });
 }
 
@@ -549,7 +583,9 @@ pub fn permute_to_owned(permuted: ndarray::ArrayViewD<f64>) -> ArrayD<f64> {
     let n0 = shape[0];
     let slab: usize = shape[1..].iter().product::<usize>().max(1);
     let mut out = ArrayD::<f64>::zeros(IxDyn(&shape));
-    let buf = out.as_slice_mut().expect("freshly allocated ArrayD is contiguous");
+    let buf = out
+        .as_slice_mut()
+        .expect("freshly allocated ArrayD is contiguous");
     buf.par_chunks_mut(slab).enumerate().for_each(|(k, chunk)| {
         let src = permuted.index_axis(ndarray::Axis(0), k);
         // Each (n-1)-dim source slab is still strided; let ndarray's own
@@ -572,15 +608,34 @@ fn to_3d(
     third: &[usize],
     which: &str,
 ) -> ArrayD<f64> {
-    let order: Vec<usize> =
-        batch.iter().chain(second.iter()).chain(third.iter()).copied().collect();
+    let order: Vec<usize> = batch
+        .iter()
+        .chain(second.iter())
+        .chain(third.iter())
+        .copied()
+        .collect();
     let is_identity = order.iter().enumerate().all(|(i, &p)| i == p);
     if !is_identity {
-        log::debug!("einsum: {which} operand permuted to {:?} (transpose copy)", order);
+        log::debug!(
+            "einsum: {which} operand permuted to {:?} (transpose copy)",
+            order
+        );
     }
-    let nb: usize = batch.iter().map(|&ax| op.shape()[ax]).product::<usize>().max(1);
-    let d1: usize = second.iter().map(|&ax| op.shape()[ax]).product::<usize>().max(1);
-    let d2: usize = third.iter().map(|&ax| op.shape()[ax]).product::<usize>().max(1);
+    let nb: usize = batch
+        .iter()
+        .map(|&ax| op.shape()[ax])
+        .product::<usize>()
+        .max(1);
+    let d1: usize = second
+        .iter()
+        .map(|&ax| op.shape()[ax])
+        .product::<usize>()
+        .max(1);
+    let d2: usize = third
+        .iter()
+        .map(|&ax| op.shape()[ax])
+        .product::<usize>()
+        .max(1);
     let permuted = op.permuted_axes(order);
     permute_to_owned(permuted.view())
         .into_shape_with_order(IxDyn(&[nb, d1, d2]))
@@ -602,9 +657,10 @@ impl Operand2d<'_> {
     fn view(&self) -> ndarray::ArrayView2<'_, f64> {
         match self {
             Operand2d::Borrowed(v) => v.reborrow(),
-            Operand2d::Owned(a) => {
-                a.view().into_dimensionality::<ndarray::Ix2>().expect("2D by construction")
-            }
+            Operand2d::Owned(a) => a
+                .view()
+                .into_dimensionality::<ndarray::Ix2>()
+                .expect("2D by construction"),
         }
     }
 }
@@ -634,8 +690,16 @@ fn to_2d_or_transpose<'a>(
     second: &[usize],
     which: &str,
 ) -> Operand2d<'a> {
-    let rows: usize = first.iter().map(|&ax| op.shape()[ax]).product::<usize>().max(1);
-    let cols: usize = second.iter().map(|&ax| op.shape()[ax]).product::<usize>().max(1);
+    let rows: usize = first
+        .iter()
+        .map(|&ax| op.shape()[ax])
+        .product::<usize>()
+        .max(1);
+    let cols: usize = second
+        .iter()
+        .map(|&ax| op.shape()[ax])
+        .product::<usize>()
+        .max(1);
 
     // `into_shape_with_order` consumes the view, so hand it a clone — an
     // ArrayView clone is just a pointer + shape + strides, not the data.
@@ -665,10 +729,21 @@ fn to_2d(op: ArrayViewD<f64>, first: &[usize], second: &[usize], which: &str) ->
     let order: Vec<usize> = first.iter().chain(second.iter()).copied().collect();
     let is_identity = order.iter().enumerate().all(|(i, &p)| i == p);
     if !is_identity {
-        log::debug!("einsum: {which} operand permuted to {:?} (transpose copy)", order);
+        log::debug!(
+            "einsum: {which} operand permuted to {:?} (transpose copy)",
+            order
+        );
     }
-    let rows: usize = first.iter().map(|&ax| op.shape()[ax]).product::<usize>().max(1);
-    let cols: usize = second.iter().map(|&ax| op.shape()[ax]).product::<usize>().max(1);
+    let rows: usize = first
+        .iter()
+        .map(|&ax| op.shape()[ax])
+        .product::<usize>()
+        .max(1);
+    let cols: usize = second
+        .iter()
+        .map(|&ax| op.shape()[ax])
+        .product::<usize>()
+        .max(1);
     let permuted = op.permuted_axes(order);
     // The result must be C-contiguous so `into_shape_with_order` (which requires
     // standard layout) succeeds; `permute_to_owned` guarantees that.
@@ -714,18 +789,28 @@ mod tests {
         let (m, k, n) = (24usize, 3000usize, 24usize);
         let mut s: u64 = 0x9e37_79b9_7f4a_7c15;
         let mut rnd = || {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5
         };
         // Mixed magnitudes: a few large terms among many small ones is the
         // classic case where naive left-to-right accumulation loses digits.
         let a = Array2::from_shape_fn((m, k), |(_, p)| {
             let v = rnd();
-            if p % 97 == 0 { v * 1e6 } else { v }
+            if p % 97 == 0 {
+                v * 1e6
+            } else {
+                v
+            }
         });
         let b = Array2::from_shape_fn((k, n), |(p, _)| {
             let v = rnd();
-            if p % 89 == 0 { v * 1e6 } else { v }
+            if p % 89 == 0 {
+                v * 1e6
+            } else {
+                v
+            }
         });
 
         // Neumaier-compensated reference.
@@ -749,7 +834,10 @@ mod tests {
         }
 
         let err_of = |got: &Array2<f64>| -> f64 {
-            got.iter().zip(want.iter()).map(|(g, w)| (g - w).abs()).fold(0.0f64, f64::max)
+            got.iter()
+                .zip(want.iter())
+                .map(|(g, w)| (g - w).abs())
+                .fold(0.0f64, f64::max)
         };
 
         let mut full = Array2::<f64>::zeros((m, n));
@@ -784,20 +872,35 @@ mod tests {
     /// Deterministic mixed-magnitude test matrices. Mixed magnitudes matter:
     /// uniformly-scaled data can mask an ordering change because the low bits
     /// happen to agree, so a bit-identity test on it is weaker than it looks.
-    fn gemm_pair(m: usize, k: usize, n: usize, seed: u64) -> (ndarray::Array2<f64>, ndarray::Array2<f64>) {
+    fn gemm_pair(
+        m: usize,
+        k: usize,
+        n: usize,
+        seed: u64,
+    ) -> (ndarray::Array2<f64>, ndarray::Array2<f64>) {
         use ndarray::Array2;
         let mut s = seed | 1;
         let mut rnd = || {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5
         };
         let a = Array2::from_shape_fn((m, k), |(_, p)| {
             let v = rnd();
-            if p % 37 == 0 { v * 1e7 } else { v }
+            if p % 37 == 0 {
+                v * 1e7
+            } else {
+                v
+            }
         });
         let b = Array2::from_shape_fn((k, n), |(p, _)| {
             let v = rnd();
-            if p % 23 == 0 { v * 1e7 } else { v }
+            if p % 23 == 0 {
+                v * 1e7
+            } else {
+                v
+            }
         });
         (a, b)
     }
@@ -836,7 +939,10 @@ mod tests {
                 // (a) exact ascending partition of 0..m.
                 let mut expect = 0usize;
                 for &(r0, r1) in &b {
-                    assert_eq!(r0, expect, "m={m} w={width}: band starts {r0}, want {expect}");
+                    assert_eq!(
+                        r0, expect,
+                        "m={m} w={width}: band starts {r0}, want {expect}"
+                    );
                     assert!(r1 > r0, "m={m} w={width}: empty band {r0}..{r1}");
                     expect = r1;
                 }
@@ -921,7 +1027,11 @@ mod tests {
             }
         }
 
-        for (m, k, n) in [(301usize, 1000usize, 97usize), (128, 2000, 64), (65, 3000, 33)] {
+        for (m, k, n) in [
+            (301usize, 1000usize, 97usize),
+            (128, 2000, 64),
+            (65, 3000, 33),
+        ] {
             let (a, b) = gemm_pair(m, k, n, 0xb17_1de4 ^ m as u64);
             let mut want = Array2::<f64>::zeros((m, n));
             gemm_kblocked(&a.view(), &b.view(), &mut want.view_mut());
@@ -938,7 +1048,8 @@ mod tests {
                     .count();
                 if width % 2 == 0 {
                     assert_eq!(
-                        bad, 0,
+                        bad,
+                        0,
                         "({m}x{k}x{n}) EVEN band width {width}: {bad}/{} elements differ \
                          from the unbanded product. Even-width bit-identity is the \
                          invariant that lets the band width depend on thread count; if \
@@ -980,7 +1091,8 @@ mod tests {
                     .filter(|(g, w)| g.to_bits() != w.to_bits())
                     .count();
                 assert_eq!(
-                    bad, 0,
+                    bad,
+                    0,
                     "({m}x{k}x{n}) production row_band_bounds at width {width}: \
                      {bad}/{} elements differ",
                     m * n,
@@ -1030,10 +1142,13 @@ mod tests {
                 rest = t;
             }
             with_blas_threads(1, || {
-                bands.par_iter_mut().zip(bounds.par_iter()).for_each(|(band, &(a, b))| {
-                    let lb = left.slice(ndarray::s![a..b, ..]);
-                    gemm_kblocked(&lb, right, band);
-                });
+                bands
+                    .par_iter_mut()
+                    .zip(bounds.par_iter())
+                    .for_each(|(band, &(a, b))| {
+                        let lb = left.slice(ndarray::s![a..b, ..]);
+                        gemm_kblocked(&lb, right, band);
+                    });
             });
         }
 
@@ -1064,7 +1179,11 @@ mod tests {
             }
             let ser = t.elapsed().as_secs_f64() / reps as f64;
 
-            print!("{:<34} {:>8.2}m", format!("{label} [{m}x{k}x{n}]"), ser * 1e3);
+            print!(
+                "{:<34} {:>8.2}m",
+                format!("{label} [{m}x{k}x{n}]"),
+                ser * 1e3
+            );
             for w in widths {
                 banded_at(w, &a.view(), &b.view(), &mut o.view_mut());
                 let t = Instant::now();
@@ -1099,7 +1218,10 @@ mod tests {
         ];
         let threads = rayon::current_num_threads();
         println!("rayon threads = {threads}");
-        println!("{:<38} {:>10} {:>10} {:>8}", "shape", "serial ms", "band ms", "speedup");
+        println!(
+            "{:<38} {:>10} {:>10} {:>8}",
+            "shape", "serial ms", "band ms", "speedup"
+        );
         for (m, k, n, label) in shapes {
             let (a, b) = gemm_pair(m, k, n, 0x5eed ^ m as u64);
             let mut o = Array2::<f64>::zeros((m, n));
@@ -1135,7 +1257,11 @@ mod tests {
     #[ignore]
     fn rowsplit_probe() {
         use ndarray::Array2;
-        for (m, k, n) in [(33usize, 4000usize, 200usize), (64, 4000, 64), (301, 1000, 97)] {
+        for (m, k, n) in [
+            (33usize, 4000usize, 200usize),
+            (64, 4000, 64),
+            (301, 1000, 97),
+        ] {
             println!("--- m={m} k={k} n={n} ---");
             let (a, b) = gemm_pair(m, k, n, 0xfeed);
             let mut full = Array2::<f64>::zeros((m, n));
@@ -1156,13 +1282,19 @@ mod tests {
                     general_mat_mul(1.0, &la, &b.view(), 0.0, &mut ob);
                     r0 = r1;
                 }
-                let bad =
-                    got.iter().zip(full.iter()).filter(|(g, w)| g.to_bits() != w.to_bits()).count();
+                let bad = got
+                    .iter()
+                    .zip(full.iter())
+                    .filter(|(g, w)| g.to_bits() != w.to_bits())
+                    .count();
                 let rows: Vec<usize> = (0..m)
                     .filter(|&i| (0..n).any(|j| got[[i, j]].to_bits() != full[[i, j]].to_bits()))
                     .collect();
-                let maxdev =
-                    got.iter().zip(full.iter()).map(|(g, w)| (g - w).abs()).fold(0.0f64, f64::max);
+                let maxdev = got
+                    .iter()
+                    .zip(full.iter())
+                    .map(|(g, w)| (g - w).abs())
+                    .fold(0.0f64, f64::max);
                 let shown: Vec<usize> = rows.iter().copied().take(12).collect();
                 println!(
                     "split={split}: {bad}/{} differ (maxdev {maxdev:.3e}); {} rows differ, first {shown:?}",
@@ -1202,7 +1334,8 @@ mod tests {
                 .filter(|(g, w)| g.to_bits() != w.to_bits())
                 .count();
             assert_eq!(
-                bad, 0,
+                bad,
+                0,
                 "{label} ({m}x{k}x{n}): row-banded GEMM must be BIT-identical to \
                  serial gemm_kblocked, but {bad}/{} elements differ",
                 m * n,
@@ -1253,7 +1386,8 @@ mod tests {
                     .filter(|(g, w)| g.to_bits() != w.to_bits())
                     .count();
                 assert_eq!(
-                    bad, 0,
+                    bad,
+                    0,
                     "{label} ({m}x{k}x{n}): the bands chosen for {threads} workers \
                      (width {width}) differ from the unbanded product in {bad}/{} \
                      elements — the band width may vary with thread count ONLY \
@@ -1281,7 +1415,10 @@ mod tests {
                 .zip(want.iter())
                 .filter(|(g, w)| g.to_bits() != w.to_bits())
                 .count();
-            assert_eq!(bad, 0, "{label} ({m}x{k}x{n}): gemm_row_banded differs in {bad} elements");
+            assert_eq!(
+                bad, 0,
+                "{label} ({m}x{k}x{n}): gemm_row_banded differs in {bad} elements"
+            );
         }
     }
 
@@ -1296,19 +1433,32 @@ mod tests {
         let mut s: u64 = 0xdead_c0de;
         let v: Vec<f64> = (0..np * ni * ni)
             .map(|_| {
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5
             })
             .collect();
         let bt = Array::from_shape_vec(IxDyn(&[np, ni, ni]), v).unwrap();
 
         let run = || {
-            einsum_binary(bt.view(), &[1, 2], &[0], bt.view(), &[1, 2], &[0], &[ni, ni, ni, ni])
-                .unwrap()
+            einsum_binary(
+                bt.view(),
+                &[1, 2],
+                &[0],
+                bt.view(),
+                &[1, 2],
+                &[0],
+                &[ni, ni, ni, ni],
+            )
+            .unwrap()
         };
         let ambient = run();
         for threads in [1usize, 4, 12] {
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
             let got = pool.install(run);
             let bad = got
                 .iter()
@@ -1316,7 +1466,8 @@ mod tests {
                 .filter(|(g, w)| g.to_bits() != w.to_bits())
                 .count();
             assert_eq!(
-                bad, 0,
+                bad,
+                0,
                 "einsum_binary at {threads} rayon threads differs from ambient in \
                  {bad}/{} elements",
                 ambient.len(),
@@ -1348,21 +1499,25 @@ mod tests {
     #[test]
     fn transpose_dispatch_matches_naive_reference() {
         // (spec, dims) with every index a distinct extent.
-        let dims: std::collections::HashMap<char, usize> =
-            [
-                ('P', 7),
-                ('i', 3),
-                ('j', 4),
-                ('a', 5),
-                ('b', 2),
-                ('c', 6),
-                ('d', 3),
-                ('k', 2),
-                ('l', 4),
-            ]
-            .into_iter()
-            .collect();
-        let specs = ["Pia,Pjb->iajb", "ijcd,abcd->ijab", "akic,kjbc->aijb", "ijcd,klcd->ijkl"];
+        let dims: std::collections::HashMap<char, usize> = [
+            ('P', 7),
+            ('i', 3),
+            ('j', 4),
+            ('a', 5),
+            ('b', 2),
+            ('c', 6),
+            ('d', 3),
+            ('k', 2),
+            ('l', 4),
+        ]
+        .into_iter()
+        .collect();
+        let specs = [
+            "Pia,Pjb->iajb",
+            "ijcd,abcd->ijab",
+            "akic,kjbc->aijb",
+            "ijcd,klcd->ijkl",
+        ];
 
         for spec in specs {
             let (lhs, out) = spec.split_once("->").unwrap();
@@ -1376,7 +1531,9 @@ mod tests {
                 let mut s = seed;
                 let v: Vec<f64> = (0..n)
                     .map(|_| {
-                        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                        s = s
+                            .wrapping_mul(6364136223846793005)
+                            .wrapping_add(1442695040888963407);
                         (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5
                     })
                     .collect();
@@ -1386,10 +1543,15 @@ mod tests {
             let r = mk(&rsh, 0x1234);
 
             // Axis roles, exactly as the macro computes them.
-            let contr: Vec<u8> =
-                ls.iter().copied().filter(|c| rs.contains(c) && !out.contains(c)).collect();
+            let contr: Vec<u8> = ls
+                .iter()
+                .copied()
+                .filter(|c| rs.contains(c) && !out.contains(c))
+                .collect();
             let pos = |s: &[u8], want: &[u8]| -> Vec<usize> {
-                want.iter().map(|c| s.iter().position(|x| x == c).unwrap()).collect()
+                want.iter()
+                    .map(|c| s.iter().position(|x| x == c).unwrap())
+                    .collect()
             };
             let lfree: Vec<u8> = ls.iter().copied().filter(|c| out.contains(c)).collect();
             let rfree: Vec<u8> = rs.iter().copied().filter(|c| out.contains(c)).collect();
@@ -1448,15 +1610,23 @@ mod tests {
         ];
         for (shape, order) in cases {
             let n: usize = shape.iter().product();
-            let a =
-                Array::from_shape_vec(IxDyn(&shape), (0..n).map(|x| x as f64 * 0.5 - 3.0).collect())
-                    .unwrap();
+            let a = Array::from_shape_vec(
+                IxDyn(&shape),
+                (0..n).map(|x| x as f64 * 0.5 - 3.0).collect(),
+            )
+            .unwrap();
             let permuted = a.view().permuted_axes(order.clone());
             let want = permuted.as_standard_layout().into_owned();
             let got = permute_to_owned(permuted.view());
-            assert_eq!(got.shape(), want.shape(), "shape mismatch for {shape:?} / {order:?}");
+            assert_eq!(
+                got.shape(),
+                want.shape(),
+                "shape mismatch for {shape:?} / {order:?}"
+            );
             assert!(
-                got.iter().zip(want.iter()).all(|(g, w)| g.to_bits() == w.to_bits()),
+                got.iter()
+                    .zip(want.iter())
+                    .all(|(g, w)| g.to_bits() == w.to_bits()),
                 "parallel permute must be BIT-identical to serial for {shape:?} / {order:?}",
             );
         }
@@ -1477,15 +1647,23 @@ mod tests {
         let b = Array::from_shape_vec(IxDyn(&[2, 3]), (0..6).map(|x| x as f64).collect()).unwrap();
         let out = einsum_binary(a.view(), &[1], &[0], b.view(), &[0], &[1], &[2, 2]).unwrap();
         let mut want = Array::zeros(IxDyn(&[2, 2]));
-        for i in 0..2 { for j in 0..2 { let mut s=0.0; for k in 0..3 { s += a[[k,i]]*b[[j,k]]; } want[[i,j]]=s; } }
+        for i in 0..2 {
+            for j in 0..2 {
+                let mut s = 0.0;
+                for k in 0..3 {
+                    s += a[[k, i]] * b[[j, k]];
+                }
+                want[[i, j]] = s;
+            }
+        }
         assert!((&out - &want).iter().all(|x| x.abs() < 1e-12));
     }
 
     #[test]
     fn scalar_output() {
-        let a = Array::from_shape_vec(IxDyn(&[2, 2]), vec![1.0,2.0,3.0,4.0]).unwrap();
-        let b = Array::from_shape_vec(IxDyn(&[2, 2]), vec![1.0,1.0,1.0,1.0]).unwrap();
-        let out = einsum_binary(a.view(), &[], &[0,1], b.view(), &[], &[0,1], &[]).unwrap();
+        let a = Array::from_shape_vec(IxDyn(&[2, 2]), vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        let b = Array::from_shape_vec(IxDyn(&[2, 2]), vec![1.0, 1.0, 1.0, 1.0]).unwrap();
+        let out = einsum_binary(a.view(), &[], &[0, 1], b.view(), &[], &[0, 1], &[]).unwrap();
         assert_eq!(out.len(), 1);
         assert!((out.iter().next().unwrap() - 10.0).abs() < 1e-12);
     }
@@ -1513,8 +1691,16 @@ mod tests {
         let cases: &[(&[usize], &[usize], &str)] = &[
             (&[8, 8, 8, 8], &[1, 0, 3, 2], "small 4-D, below threshold"),
             (&[6, 5, 7, 4], &[3, 1, 0, 2], "ragged 4-D, below threshold"),
-            (&[16, 16, 16, 16], &[1, 0, 3, 2], "P(ij)P(ab)-shaped, above threshold"),
-            (&[12, 14, 13, 15], &[2, 0, 3, 1], "ragged 4-D, above threshold"),
+            (
+                &[16, 16, 16, 16],
+                &[1, 0, 3, 2],
+                "P(ij)P(ab)-shaped, above threshold",
+            ),
+            (
+                &[12, 14, 13, 15],
+                &[2, 0, 3, 1],
+                "ragged 4-D, above threshold",
+            ),
         ];
 
         for (shape, axes, label) in cases {
@@ -1523,22 +1709,31 @@ mod tests {
             // accidental arithmetic (rather than pure movement) would show up.
             let mut s: u64 = 0x9E37_79B9_7F4A_7C15;
             let src = ArrayD::from_shape_fn(IxDyn(shape), |_| {
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 let v = (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5;
-                if s.is_multiple_of(41) { v * 1e9 } else { v }
+                if s.is_multiple_of(41) {
+                    v * 1e9
+                } else {
+                    v
+                }
             });
 
             // Reference: ndarray's serial path — exactly what the call sites
             // used before this function existed.
-            let want = src.view().permuted_axes(IxDyn(axes)).as_standard_layout().into_owned();
+            let want = src
+                .view()
+                .permuted_axes(IxDyn(axes))
+                .as_standard_layout()
+                .into_owned();
 
             for threads in [1usize, 2, 3, 4, 8, 13] {
                 let pool = rayon::ThreadPoolBuilder::new()
                     .num_threads(threads)
                     .build()
                     .expect("thread pool builds");
-                let got =
-                    pool.install(|| permute_to_owned(src.view().permuted_axes(IxDyn(axes))));
+                let got = pool.install(|| permute_to_owned(src.view().permuted_axes(IxDyn(axes))));
 
                 assert_eq!(
                     got.shape(),
@@ -1563,14 +1758,37 @@ mod tests {
 
     #[test]
     fn three_index_eri_build() {
-        let p=2; let n=2;
-        let bt = Array::from_shape_vec(IxDyn(&[p,n,n]), (0..p*n*n).map(|x| x as f64).collect()).unwrap();
-        let out = einsum_binary(bt.view(), &[1,2], &[0], bt.view(), &[1,2], &[0], &[n,n,n,n]).unwrap();
-        let mut want = Array::zeros(IxDyn(&[n,n,n,n]));
-        for i in 0..n {for a in 0..n {for j in 0..n {for b in 0..n {
-            let mut s=0.0; for pp in 0..p { s+= bt[[pp,i,a]]*bt[[pp,j,b]]; }
-            want[[i,a,j,b]]=s;
-        }}}}
+        let p = 2;
+        let n = 2;
+        let bt = Array::from_shape_vec(
+            IxDyn(&[p, n, n]),
+            (0..p * n * n).map(|x| x as f64).collect(),
+        )
+        .unwrap();
+        let out = einsum_binary(
+            bt.view(),
+            &[1, 2],
+            &[0],
+            bt.view(),
+            &[1, 2],
+            &[0],
+            &[n, n, n, n],
+        )
+        .unwrap();
+        let mut want = Array::zeros(IxDyn(&[n, n, n, n]));
+        for i in 0..n {
+            for a in 0..n {
+                for j in 0..n {
+                    for b in 0..n {
+                        let mut s = 0.0;
+                        for pp in 0..p {
+                            s += bt[[pp, i, a]] * bt[[pp, j, b]];
+                        }
+                        want[[i, a, j, b]] = s;
+                    }
+                }
+            }
+        }
         assert!((&out - &want).iter().all(|x| x.abs() < 1e-12));
     }
 }

@@ -10,7 +10,10 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_rpa::config::{Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig, QuadratureConfig, QuadratureScheme, SternheimerConfig};
+use ferric_rpa::config::{
+    Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig, QuadratureConfig, QuadratureScheme,
+    SternheimerConfig,
+};
 use ferric_rpa::run_pdep_rpa;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -55,17 +58,21 @@ H  0.0  -0.755453 -0.471161
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).expect("Schwarz");
     let ctx = ParallelContext::default();
     let rhf = solve_rhf(
-        &ctx, &mol, &obs, Operator::coulomb(), &bounds,
+        &ctx,
+        &mol,
+        &obs,
+        Operator::coulomb(),
+        &bounds,
         &RhfConfig::default(),
     )
     .expect("RHF");
 
     let pcfg = pdep_cfg();
-    let res_full = run_pdep_rpa(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pcfg)
-        .expect("full RPA");
+    let res_full =
+        run_pdep_rpa(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pcfg).expect("full RPA");
     // omega = 0.222 Bohr⁻¹ = att-MP2 default
-    let res_sr = run_pdep_rpa(&mol, &obs, &dfbs, Operator::erfc(0.222), &rhf, &pcfg)
-        .expect("SR RPA");
+    let res_sr =
+        run_pdep_rpa(&mol, &obs, &dfbs, Operator::erfc(0.222), &rhf, &pcfg).expect("SR RPA");
 
     eprintln!("Full Coulomb RPA E_c     = {:.6} Ha", res_full.e_rpa);
     eprintln!("erfc(ω=0.222 Bohr⁻¹) RPA = {:.6} Ha", res_sr.e_rpa);

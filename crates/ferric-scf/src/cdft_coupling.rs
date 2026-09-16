@@ -31,11 +31,7 @@ pub struct Pairing {
 }
 
 /// SVD-pair two occupied MO sets. `c_occ_a`/`c_occ_b` are (nbf, nocc).
-pub fn biorth_pairing(
-    c_occ_a: &Array2<f64>,
-    c_occ_b: &Array2<f64>,
-    s: &Array2<f64>,
-) -> Pairing {
+pub fn biorth_pairing(c_occ_a: &Array2<f64>, c_occ_b: &Array2<f64>, s: &Array2<f64>) -> Pairing {
     // M = C_aᵀ S C_b, shape (nocc, nocc).
     let m = c_occ_a.t().dot(s).dot(c_occ_b);
     let (u_opt, sigma, vt_opt) = m.svd(true, true).expect("SVD of MO-overlap failed");
@@ -45,7 +41,12 @@ pub fn biorth_pairing(
     let c_tilde_a = c_occ_a.dot(&u);
     let c_tilde_b = c_occ_b.dot(&vt.t());
     let det_m: f64 = sigma.iter().product();
-    Pairing { det_m, s_vals: sigma, c_tilde_a, c_tilde_b }
+    Pairing {
+        det_m,
+        s_vals: sigma,
+        c_tilde_a,
+        c_tilde_b,
+    }
 }
 
 /// ⟨Ψ_a|Ô|Ψ_b⟩ for a one-body AO operator Ô, given both spins' pairings and
@@ -81,9 +82,12 @@ pub fn cross_one_body(
 
     // Count near-zero singular values per spin.
     let zeros = |p: &Pairing| -> Vec<usize> {
-        p.s_vals.iter().enumerate()
+        p.s_vals
+            .iter()
+            .enumerate()
             .filter(|(_, &s)| s < S_TOL)
-            .map(|(i, _)| i).collect()
+            .map(|(i, _)| i)
+            .collect()
     };
     let za = zeros(pair_alpha);
     let zb = zeros(pair_beta);
@@ -104,7 +108,10 @@ pub fn cross_one_body(
         } else {
             (pair_beta, &db, zb[0], pair_alpha.det_m)
         };
-        let prod_nonzero: f64 = p_zero.s_vals.iter().enumerate()
+        let prod_nonzero: f64 = p_zero
+            .s_vals
+            .iter()
+            .enumerate()
             .filter(|(i, _)| *i != k)
             .map(|(_, s)| *s)
             .product();
@@ -149,10 +156,22 @@ pub fn coupling_hab(
     state_b: &DiabaticState,
     s: &Array2<f64>,
 ) -> HabResult {
-    let ca_occ_a = state_a.c_a.slice(ndarray::s![.., ..state_a.nocc_a]).to_owned();
-    let ca_occ_b = state_a.c_b.slice(ndarray::s![.., ..state_a.nocc_b]).to_owned();
-    let cb_occ_a = state_b.c_a.slice(ndarray::s![.., ..state_b.nocc_a]).to_owned();
-    let cb_occ_b = state_b.c_b.slice(ndarray::s![.., ..state_b.nocc_b]).to_owned();
+    let ca_occ_a = state_a
+        .c_a
+        .slice(ndarray::s![.., ..state_a.nocc_a])
+        .to_owned();
+    let ca_occ_b = state_a
+        .c_b
+        .slice(ndarray::s![.., ..state_a.nocc_b])
+        .to_owned();
+    let cb_occ_a = state_b
+        .c_a
+        .slice(ndarray::s![.., ..state_b.nocc_a])
+        .to_owned();
+    let cb_occ_b = state_b
+        .c_b
+        .slice(ndarray::s![.., ..state_b.nocc_b])
+        .to_owned();
 
     let pair_alpha = biorth_pairing(&ca_occ_a, &cb_occ_a, s);
     let pair_beta = biorth_pairing(&ca_occ_b, &cb_occ_b, s);
@@ -166,9 +185,8 @@ pub fn coupling_hab(
     //   H_raw = ½[(E_b S_ab − λ_b⟨a|W_b|b⟩) + (E_a S_ab − λ_a⟨a|W_a|b⟩)].
     let e_a = state_a.energy;
     let e_b = state_b.energy;
-    let h_raw = 0.5
-        * ((e_b * s_ab - state_b.lambda * w_b_elem)
-            + (e_a * s_ab - state_a.lambda * w_a_elem));
+    let h_raw =
+        0.5 * ((e_b * s_ab - state_b.lambda * w_b_elem) + (e_a * s_ab - state_a.lambda * w_a_elem));
 
     // Symmetric orthogonalization. Guard the degenerate denominator.
     let denom = 1.0 - s_ab * s_ab;
@@ -180,5 +198,10 @@ pub fn coupling_hab(
         (h_raw - 0.5 * (e_a + e_b) * s_ab) / denom
     };
 
-    HabResult { h_ab, s_ab, e_a, e_b }
+    HabResult {
+        h_ab,
+        s_ab,
+        e_a,
+        e_b,
+    }
 }

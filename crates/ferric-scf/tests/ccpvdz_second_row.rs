@@ -141,7 +141,11 @@ fn run(case: &Case) -> f64 {
         case.nbasis
     );
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let cfg = RhfConfig { density_conv: 1e-10, max_iter: 200, ..Default::default() };
+    let cfg = RhfConfig {
+        density_conv: 1e-10,
+        max_iter: 200,
+        ..Default::default()
+    };
     let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg).unwrap();
     assert!(rhf.converged, "{}: SCF must converge", case.label);
     rhf.energy
@@ -159,7 +163,10 @@ fn energy_coincidence_is_stable() {
     for case in ENERGY_COINCIDES {
         let e = run(case);
         let d = (e - case.pyscf).abs();
-        eprintln!("{:12} ferric {e:.10}  PySCF {:.10}  |dE| = {d:.2e}", case.label, case.pyscf);
+        eprintln!(
+            "{:12} ferric {e:.10}  PySCF {:.10}  |dE| = {d:.2e}",
+            case.label, case.pyscf
+        );
         assert!(
             d < 1e-8,
             "{}: ferric {e:.10} vs PySCF {:.10}, |dE| = {d:.3e}",
@@ -213,14 +220,25 @@ fn first_row_ccpvdz_is_unchanged() {
     ))
     .unwrap();
     let obs = PreparedBasis::new(&mol, &bs).unwrap();
-    assert_eq!(obs.nbasis(), 24, "water/cc-pVDZ must still be 24 basis functions");
+    assert_eq!(
+        obs.nbasis(),
+        24,
+        "water/cc-pVDZ must still be 24 basis functions"
+    );
 
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let cfg = RhfConfig { density_conv: 1e-10, max_iter: 200, ..Default::default() };
+    let cfg = RhfConfig {
+        density_conv: 1e-10,
+        max_iter: 200,
+        ..Default::default()
+    };
     let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg).unwrap();
 
     let expected = -76.0267679973766_f64;
-    eprintln!("water/cc-pVDZ ferric {:.10}  ref {expected:.10}", rhf.energy);
+    eprintln!(
+        "water/cc-pVDZ ferric {:.10}  ref {expected:.10}",
+        rhf.energy
+    );
     assert!(
         (rhf.energy - expected).abs() < 1e-6,
         "water/cc-pVDZ moved to {:.10} (ref {expected:.10}) — adding Z = 11..18 \

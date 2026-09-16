@@ -24,7 +24,9 @@ pub enum GtoEvalError {
 }
 
 impl From<GtoEvalError> for ferric_core::error::FerricError {
-    fn from(e: GtoEvalError) -> Self { Self::General(e.to_string()) }
+    fn from(e: GtoEvalError) -> Self {
+        Self::General(e.to_string())
+    }
 }
 
 /// Number of resident `f64` "planes" of shape `(nbf, npts)` a dense AO-grid
@@ -111,10 +113,15 @@ pub struct LocatedShell<'a> {
 
 /// Build the flat list of basis functions in the same order as `PreparedBasis`
 /// (atom-major, shell-within-atom in basis-set order, function-within-shell).
-pub fn collect_shells<'a>(mol: &Molecule, bs: &'a BasisSet) -> Result<Vec<LocatedShell<'a>>, GtoEvalError> {
+pub fn collect_shells<'a>(
+    mol: &Molecule,
+    bs: &'a BasisSet,
+) -> Result<Vec<LocatedShell<'a>>, GtoEvalError> {
     let mut out = Vec::new();
     for atom in &mol.atoms {
-        let shells = bs.for_element(atom.z).ok_or(GtoEvalError::MissingElement { z: atom.z })?;
+        let shells = bs
+            .for_element(atom.z)
+            .ok_or(GtoEvalError::MissingElement { z: atom.z })?;
         for sh in shells {
             out.push(LocatedShell {
                 l: sh.l,
@@ -166,9 +173,7 @@ fn radial(shell: &LocatedShell, r2: f64) -> f64 {
     };
     let mut v = 0.0;
     for (a, c) in shell.exponents.iter().zip(shell.coefficients.iter()) {
-        let n = (2.0 * a / pi).powf(0.75)
-            * (4.0 * a).powi(l) .sqrt()
-            / dbl_fact.sqrt();
+        let n = (2.0 * a / pi).powf(0.75) * (4.0 * a).powi(l).sqrt() / dbl_fact.sqrt();
         v += c * n * (-a * r2).exp();
     }
     v
@@ -183,7 +188,13 @@ fn radial(shell: &LocatedShell, r2: f64) -> f64 {
 /// For Cartesian d: order is xx, xy, xz, yy, yz, zz (libint2 convention).
 ///
 /// Supports s, p, d, f, and g (pure + Cartesian); l ≥ 5 returns `UnsupportedL`.
-pub fn eval_shell(shell: &LocatedShell, dx: f64, dy: f64, dz: f64, out: &mut [f64]) -> Result<(), GtoEvalError> {
+pub fn eval_shell(
+    shell: &LocatedShell,
+    dx: f64,
+    dy: f64,
+    dz: f64,
+    out: &mut [f64],
+) -> Result<(), GtoEvalError> {
     let r2 = dx * dx + dy * dy + dz * dz;
     let rad = radial(shell, r2);
 
@@ -237,7 +248,9 @@ pub fn eval_shell(shell: &LocatedShell, dx: f64, dy: f64, dz: f64, out: &mut [f6
             let sqrt15 = 15.0_f64.sqrt();
             let sqrt10_4 = 10.0_f64.sqrt() * 0.25; // √10 / 4
             let sqrt6_4 = 6.0_f64.sqrt() * 0.25;
-            let x2 = dx * dx; let y2 = dy * dy; let z2 = dz * dz;
+            let x2 = dx * dx;
+            let y2 = dy * dy;
+            let z2 = dz * dz;
             // m = -3: √(5/8) · y(3x² − y²)  (proportional)
             out[0] = rad * sqrt10_4 * dy * (3.0 * x2 - y2);
             // m = -2: √15 · xyz
@@ -256,7 +269,9 @@ pub fn eval_shell(shell: &LocatedShell, dx: f64, dy: f64, dz: f64, out: &mut [f6
         (3, false) => {
             // Cartesian f: 10 functions in libint2 order
             //   xxx, xxy, xxz, xyy, xyz, xzz, yyy, yyz, yzz, zzz
-            let x2 = dx * dx; let y2 = dy * dy; let z2 = dz * dz;
+            let x2 = dx * dx;
+            let y2 = dy * dy;
+            let z2 = dz * dz;
             out[0] = rad * x2 * dx;
             out[1] = rad * x2 * dy;
             out[2] = rad * x2 * dz;
@@ -278,7 +293,9 @@ pub fn eval_shell(shell: &LocatedShell, dx: f64, dy: f64, dz: f64, out: &mut [f6
             let s70 = 70.0_f64.sqrt();
             let s5 = 5.0_f64.sqrt();
             let s10 = 10.0_f64.sqrt();
-            let x2 = dx * dx; let y2 = dy * dy; let z2 = dz * dz;
+            let x2 = dx * dx;
+            let y2 = dy * dy;
+            let z2 = dz * dz;
             let r2v = x2 + y2 + z2;
             // m = -4: (√35/2) · xy(x² − y²)
             out[0] = rad * 0.5 * s35 * dx * dy * (x2 - y2);
@@ -303,7 +320,9 @@ pub fn eval_shell(shell: &LocatedShell, dx: f64, dy: f64, dz: f64, out: &mut [f6
             // Cartesian g: 15 functions in libint2 STANDARD order
             //   xxxx, xxxy, xxxz, xxyy, xxyz, xxzz, xyyy, xyyz, xyzz, xzzz,
             //   yyyy, yyyz, yyzz, yzzz, zzzz
-            let x2 = dx * dx; let y2 = dy * dy; let z2 = dz * dz;
+            let x2 = dx * dx;
+            let y2 = dy * dy;
+            let z2 = dz * dz;
             out[0] = rad * x2 * x2;
             out[1] = rad * x2 * dx * dy;
             out[2] = rad * x2 * dx * dz;
@@ -508,15 +527,17 @@ fn eval_shell_and_grad(
             // Pure f (libint2 m = -3 .. +3), normalizations matching `eval_shell`.
             let s15 = 15.0_f64.sqrt();
             let c10 = 10.0_f64.sqrt() * 0.25; // √10 / 4
-            let c6  = 6.0_f64.sqrt() * 0.25;  // √6  / 4
-            let x2 = dx * dx; let y2 = dy * dy; let z2 = dz * dz;
+            let c6 = 6.0_f64.sqrt() * 0.25; // √6  / 4
+            let x2 = dx * dx;
+            let y2 = dy * dy;
+            let z2 = dz * dz;
             // A_m
             let a_m = [
                 c10 * dy * (3.0 * x2 - y2),                  // m = -3
                 s15 * dx * dy * dz,                          // m = -2
-                c6  * dy * (4.0 * z2 - x2 - y2),             // m = -1
+                c6 * dy * (4.0 * z2 - x2 - y2),              // m = -1
                 0.5 * dz * (2.0 * z2 - 3.0 * x2 - 3.0 * y2), // m =  0
-                c6  * dx * (4.0 * z2 - x2 - y2),             // m = +1
+                c6 * dx * (4.0 * z2 - x2 - y2),              // m = +1
                 0.5 * s15 * dz * (x2 - y2),                  // m = +2
                 c10 * dx * (x2 - 3.0 * y2),                  // m = +3
             ];
@@ -524,9 +545,9 @@ fn eval_shell_and_grad(
             let amx = [
                 c10 * 6.0 * dx * dy,
                 s15 * dy * dz,
-                c6  * (-2.0) * dx * dy,
+                c6 * (-2.0) * dx * dy,
                 -3.0 * dx * dz,
-                c6  * (4.0 * z2 - 3.0 * x2 - y2),
+                c6 * (4.0 * z2 - 3.0 * x2 - y2),
                 s15 * dx * dz,
                 c10 * (3.0 * x2 - 3.0 * y2),
             ];
@@ -534,9 +555,9 @@ fn eval_shell_and_grad(
             let amy = [
                 c10 * (3.0 * x2 - 3.0 * y2),
                 s15 * dx * dz,
-                c6  * (4.0 * z2 - x2 - 3.0 * y2),
+                c6 * (4.0 * z2 - x2 - 3.0 * y2),
                 -3.0 * dy * dz,
-                c6  * (-2.0) * dx * dy,
+                c6 * (-2.0) * dx * dy,
                 -s15 * dy * dz,
                 c10 * (-6.0) * dx * dy,
             ];
@@ -544,9 +565,9 @@ fn eval_shell_and_grad(
             let amz = [
                 0.0,
                 s15 * dx * dy,
-                c6  * 8.0 * dy * dz,
+                c6 * 8.0 * dy * dz,
                 0.5 * (6.0 * z2 - 3.0 * x2 - 3.0 * y2),
-                c6  * 8.0 * dx * dz,
+                c6 * 8.0 * dx * dz,
                 0.5 * s15 * (x2 - y2),
                 0.0,
             ];
@@ -559,22 +580,56 @@ fn eval_shell_and_grad(
         }
         (3, false) => {
             // Cartesian f (libint2 order: xxx, xxy, xxz, xyy, xyz, xzz, yyy, yyz, yzz, zzz).
-            let x2 = dx * dx; let y2 = dy * dy; let z2 = dz * dz;
+            let x2 = dx * dx;
+            let y2 = dy * dy;
+            let z2 = dz * dz;
             let a_m = [
-                x2 * dx, x2 * dy, x2 * dz, dx * y2, dx * dy * dz,
-                dx * z2, y2 * dy, y2 * dz, dy * z2, z2 * dz,
+                x2 * dx,
+                x2 * dy,
+                x2 * dz,
+                dx * y2,
+                dx * dy * dz,
+                dx * z2,
+                y2 * dy,
+                y2 * dz,
+                dy * z2,
+                z2 * dz,
             ];
             let amx = [
-                3.0 * x2, 2.0 * dx * dy, 2.0 * dx * dz, y2, dy * dz,
-                z2, 0.0, 0.0, 0.0, 0.0,
+                3.0 * x2,
+                2.0 * dx * dy,
+                2.0 * dx * dz,
+                y2,
+                dy * dz,
+                z2,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
             ];
             let amy = [
-                0.0, x2, 0.0, 2.0 * dx * dy, dx * dz,
-                0.0, 3.0 * y2, 2.0 * dy * dz, z2, 0.0,
+                0.0,
+                x2,
+                0.0,
+                2.0 * dx * dy,
+                dx * dz,
+                0.0,
+                3.0 * y2,
+                2.0 * dy * dz,
+                z2,
+                0.0,
             ];
             let amz = [
-                0.0, 0.0, x2, 0.0, dx * dy,
-                2.0 * dx * dz, 0.0, y2, 2.0 * dy * dz, 3.0 * z2,
+                0.0,
+                0.0,
+                x2,
+                0.0,
+                dx * dy,
+                2.0 * dx * dz,
+                0.0,
+                y2,
+                2.0 * dy * dz,
+                3.0 * z2,
             ];
             for m in 0..10 {
                 out[m] = rad * a_m[m];
@@ -593,48 +648,62 @@ fn eval_shell_and_grad(
             let s5 = 5.0_f64.sqrt();
             let s10 = 10.0_f64.sqrt();
             let a_m = [
-                0.5*s35 * (1.0*dx*dx*dx*dy - 1.0*dx*dy*dy*dy),  // m=-4
-                0.25*s70 * (-1.0*dy*dy*dy*dz + 3.0*dx*dx*dy*dz),  // m=-3
-                0.5*s5 * (-1.0*dx*dy*dy*dy - 1.0*dx*dx*dx*dy + 6.0*dx*dy*dz*dz),  // m=-2
-                0.25*s10 * (-3.0*dy*dy*dy*dz + 4.0*dy*dz*dz*dz - 3.0*dx*dx*dy*dz),  // m=-1
-                0.125 * (3.0*dx*dx*dx*dx + 3.0*dy*dy*dy*dy + 8.0*dz*dz*dz*dz - 24.0*dx*dx*dz*dz - 24.0*dy*dy*dz*dz + 6.0*dx*dx*dy*dy),  // m= 0
-                0.25*s10 * (-3.0*dx*dx*dx*dz + 4.0*dx*dz*dz*dz - 3.0*dx*dy*dy*dz),  // m=+1
-                0.25*s5 * (1.0*dy*dy*dy*dy - 1.0*dx*dx*dx*dx - 6.0*dy*dy*dz*dz + 6.0*dx*dx*dz*dz),  // m=+2
-                0.25*s70 * (1.0*dx*dx*dx*dz - 3.0*dx*dy*dy*dz),  // m=+3
-                0.125*s35 * (1.0*dx*dx*dx*dx + 1.0*dy*dy*dy*dy - 6.0*dx*dx*dy*dy),  // m=+4
+                0.5 * s35 * (1.0 * dx * dx * dx * dy - 1.0 * dx * dy * dy * dy), // m=-4
+                0.25 * s70 * (-1.0 * dy * dy * dy * dz + 3.0 * dx * dx * dy * dz), // m=-3
+                0.5 * s5
+                    * (-1.0 * dx * dy * dy * dy - 1.0 * dx * dx * dx * dy
+                        + 6.0 * dx * dy * dz * dz), // m=-2
+                0.25 * s10
+                    * (-3.0 * dy * dy * dy * dz + 4.0 * dy * dz * dz * dz
+                        - 3.0 * dx * dx * dy * dz), // m=-1
+                0.125
+                    * (3.0 * dx * dx * dx * dx + 3.0 * dy * dy * dy * dy + 8.0 * dz * dz * dz * dz
+                        - 24.0 * dx * dx * dz * dz
+                        - 24.0 * dy * dy * dz * dz
+                        + 6.0 * dx * dx * dy * dy), // m= 0
+                0.25 * s10
+                    * (-3.0 * dx * dx * dx * dz + 4.0 * dx * dz * dz * dz
+                        - 3.0 * dx * dy * dy * dz), // m=+1
+                0.25 * s5
+                    * (1.0 * dy * dy * dy * dy - 1.0 * dx * dx * dx * dx - 6.0 * dy * dy * dz * dz
+                        + 6.0 * dx * dx * dz * dz), // m=+2
+                0.25 * s70 * (1.0 * dx * dx * dx * dz - 3.0 * dx * dy * dy * dz), // m=+3
+                0.125
+                    * s35
+                    * (1.0 * dx * dx * dx * dx + 1.0 * dy * dy * dy * dy - 6.0 * dx * dx * dy * dy), // m=+4
             ];
             let amx = [
-                0.5*s35 * (-1.0*dy*dy*dy + 3.0*dx*dx*dy),  // m=-4
-                0.25*s70 * (6.0*dx*dy*dz),  // m=-3
-                0.5*s5 * (-1.0*dy*dy*dy - 3.0*dx*dx*dy + 6.0*dy*dz*dz),  // m=-2
-                0.25*s10 * (-6.0*dx*dy*dz),  // m=-1
-                0.125 * (12.0*dx*dx*dx - 48.0*dx*dz*dz + 12.0*dx*dy*dy),  // m= 0
-                0.25*s10 * (4.0*dz*dz*dz - 9.0*dx*dx*dz - 3.0*dy*dy*dz),  // m=+1
-                0.25*s5 * (-4.0*dx*dx*dx + 12.0*dx*dz*dz),  // m=+2
-                0.25*s70 * (-3.0*dy*dy*dz + 3.0*dx*dx*dz),  // m=+3
-                0.125*s35 * (4.0*dx*dx*dx - 12.0*dx*dy*dy),  // m=+4
+                0.5 * s35 * (-1.0 * dy * dy * dy + 3.0 * dx * dx * dy), // m=-4
+                0.25 * s70 * (6.0 * dx * dy * dz),                      // m=-3
+                0.5 * s5 * (-1.0 * dy * dy * dy - 3.0 * dx * dx * dy + 6.0 * dy * dz * dz), // m=-2
+                0.25 * s10 * (-6.0 * dx * dy * dz),                     // m=-1
+                0.125 * (12.0 * dx * dx * dx - 48.0 * dx * dz * dz + 12.0 * dx * dy * dy), // m= 0
+                0.25 * s10 * (4.0 * dz * dz * dz - 9.0 * dx * dx * dz - 3.0 * dy * dy * dz), // m=+1
+                0.25 * s5 * (-4.0 * dx * dx * dx + 12.0 * dx * dz * dz), // m=+2
+                0.25 * s70 * (-3.0 * dy * dy * dz + 3.0 * dx * dx * dz), // m=+3
+                0.125 * s35 * (4.0 * dx * dx * dx - 12.0 * dx * dy * dy), // m=+4
             ];
             let amy = [
-                0.5*s35 * (1.0*dx*dx*dx - 3.0*dx*dy*dy),  // m=-4
-                0.25*s70 * (-3.0*dy*dy*dz + 3.0*dx*dx*dz),  // m=-3
-                0.5*s5 * (-1.0*dx*dx*dx - 3.0*dx*dy*dy + 6.0*dx*dz*dz),  // m=-2
-                0.25*s10 * (4.0*dz*dz*dz - 9.0*dy*dy*dz - 3.0*dx*dx*dz),  // m=-1
-                0.125 * (12.0*dy*dy*dy - 48.0*dy*dz*dz + 12.0*dx*dx*dy),  // m= 0
-                0.25*s10 * (-6.0*dx*dy*dz),  // m=+1
-                0.25*s5 * (4.0*dy*dy*dy - 12.0*dy*dz*dz),  // m=+2
-                0.25*s70 * (-6.0*dx*dy*dz),  // m=+3
-                0.125*s35 * (4.0*dy*dy*dy - 12.0*dx*dx*dy),  // m=+4
+                0.5 * s35 * (1.0 * dx * dx * dx - 3.0 * dx * dy * dy), // m=-4
+                0.25 * s70 * (-3.0 * dy * dy * dz + 3.0 * dx * dx * dz), // m=-3
+                0.5 * s5 * (-1.0 * dx * dx * dx - 3.0 * dx * dy * dy + 6.0 * dx * dz * dz), // m=-2
+                0.25 * s10 * (4.0 * dz * dz * dz - 9.0 * dy * dy * dz - 3.0 * dx * dx * dz), // m=-1
+                0.125 * (12.0 * dy * dy * dy - 48.0 * dy * dz * dz + 12.0 * dx * dx * dy), // m= 0
+                0.25 * s10 * (-6.0 * dx * dy * dz),                    // m=+1
+                0.25 * s5 * (4.0 * dy * dy * dy - 12.0 * dy * dz * dz), // m=+2
+                0.25 * s70 * (-6.0 * dx * dy * dz),                    // m=+3
+                0.125 * s35 * (4.0 * dy * dy * dy - 12.0 * dx * dx * dy), // m=+4
             ];
             let amz = [
-                0.0,  // m=-4
-                0.25*s70 * (-1.0*dy*dy*dy + 3.0*dx*dx*dy),  // m=-3
-                0.5*s5 * (12.0*dx*dy*dz),  // m=-2
-                0.25*s10 * (-3.0*dy*dy*dy - 3.0*dx*dx*dy + 12.0*dy*dz*dz),  // m=-1
-                0.125 * (32.0*dz*dz*dz - 48.0*dx*dx*dz - 48.0*dy*dy*dz),  // m= 0
-                0.25*s10 * (-3.0*dx*dx*dx - 3.0*dx*dy*dy + 12.0*dx*dz*dz),  // m=+1
-                0.25*s5 * (-12.0*dy*dy*dz + 12.0*dx*dx*dz),  // m=+2
-                0.25*s70 * (1.0*dx*dx*dx - 3.0*dx*dy*dy),  // m=+3
-                0.0,  // m=+4
+                0.0,                                                                           // m=-4
+                0.25 * s70 * (-1.0 * dy * dy * dy + 3.0 * dx * dx * dy), // m=-3
+                0.5 * s5 * (12.0 * dx * dy * dz),                        // m=-2
+                0.25 * s10 * (-3.0 * dy * dy * dy - 3.0 * dx * dx * dy + 12.0 * dy * dz * dz), // m=-1
+                0.125 * (32.0 * dz * dz * dz - 48.0 * dx * dx * dz - 48.0 * dy * dy * dz), // m= 0
+                0.25 * s10 * (-3.0 * dx * dx * dx - 3.0 * dx * dy * dy + 12.0 * dx * dz * dz), // m=+1
+                0.25 * s5 * (-12.0 * dy * dy * dz + 12.0 * dx * dx * dz), // m=+2
+                0.25 * s70 * (1.0 * dx * dx * dx - 3.0 * dx * dy * dy),   // m=+3
+                0.0,                                                      // m=+4
             ];
             for m in 0..9 {
                 out[m] = rad * a_m[m];
@@ -647,27 +716,79 @@ fn eval_shell_and_grad(
             // Cartesian g (libint2 STANDARD order):
             //   xxxx, xxxy, xxxz, xxyy, xxyz, xxzz, xyyy, xyyz, xyzz, xzzz,
             //   yyyy, yyyz, yyzz, yzzz, zzzz
-            let x2 = dx * dx; let y2 = dy * dy; let z2 = dz * dz;
-            let x3 = x2 * dx; let y3 = y2 * dy; let z3 = z2 * dz;
+            let x2 = dx * dx;
+            let y2 = dy * dy;
+            let z2 = dz * dz;
+            let x3 = x2 * dx;
+            let y3 = y2 * dy;
+            let z3 = z2 * dz;
             let a_m = [
-                x2 * x2, x3 * dy, x3 * dz, x2 * y2, x2 * dy * dz,
-                x2 * z2, dx * y3, dx * y2 * dz, dx * dy * z2, dx * z3,
-                y2 * y2, y3 * dz, y2 * z2, dy * z3, z2 * z2,
+                x2 * x2,
+                x3 * dy,
+                x3 * dz,
+                x2 * y2,
+                x2 * dy * dz,
+                x2 * z2,
+                dx * y3,
+                dx * y2 * dz,
+                dx * dy * z2,
+                dx * z3,
+                y2 * y2,
+                y3 * dz,
+                y2 * z2,
+                dy * z3,
+                z2 * z2,
             ];
             let amx = [
-                4.0 * x3, 3.0 * x2 * dy, 3.0 * x2 * dz, 2.0 * dx * y2, 2.0 * dx * dy * dz,
-                2.0 * dx * z2, y3, y2 * dz, dy * z2, z3,
-                0.0, 0.0, 0.0, 0.0, 0.0,
+                4.0 * x3,
+                3.0 * x2 * dy,
+                3.0 * x2 * dz,
+                2.0 * dx * y2,
+                2.0 * dx * dy * dz,
+                2.0 * dx * z2,
+                y3,
+                y2 * dz,
+                dy * z2,
+                z3,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
             ];
             let amy = [
-                0.0, x3, 0.0, 2.0 * x2 * dy, x2 * dz,
-                0.0, 3.0 * dx * y2, 2.0 * dx * dy * dz, dx * z2, 0.0,
-                4.0 * y3, 3.0 * y2 * dz, 2.0 * dy * z2, z3, 0.0,
+                0.0,
+                x3,
+                0.0,
+                2.0 * x2 * dy,
+                x2 * dz,
+                0.0,
+                3.0 * dx * y2,
+                2.0 * dx * dy * dz,
+                dx * z2,
+                0.0,
+                4.0 * y3,
+                3.0 * y2 * dz,
+                2.0 * dy * z2,
+                z3,
+                0.0,
             ];
             let amz = [
-                0.0, 0.0, x3, 0.0, x2 * dy,
-                2.0 * x2 * dz, 0.0, dx * y2, 2.0 * dx * dy * dz, 3.0 * dx * z2,
-                0.0, y3, 2.0 * y2 * dz, 3.0 * dy * z2, 4.0 * z3,
+                0.0,
+                0.0,
+                x3,
+                0.0,
+                x2 * dy,
+                2.0 * x2 * dz,
+                0.0,
+                dx * y2,
+                2.0 * dx * dy * dz,
+                3.0 * dx * z2,
+                0.0,
+                y3,
+                2.0 * y2 * dz,
+                3.0 * dy * z2,
+                4.0 * z3,
             ];
             for m in 0..15 {
                 out[m] = rad * a_m[m];
@@ -757,7 +878,9 @@ pub fn eval_basis_and_grad_on_points_unchecked(
         let mut row_offset = 0usize;
         for sh in shells {
             buf.fill(0.0);
-            for row in gradbuf.iter_mut() { row.fill(0.0); }
+            for row in gradbuf.iter_mut() {
+                row.fill(0.0);
+            }
 
             let n = num_functions(sh.l, sh.pure);
             let dx = p[0] - sh.center[0];
@@ -796,9 +919,7 @@ pub fn eval_basis_and_grad_on_points_unchecked(
         points
             .par_iter()
             .enumerate()
-            .try_for_each(|(g, p)| {
-                eval_into(g, p, chi_addr as *mut f64, dchi_addr as *mut f64)
-            })?;
+            .try_for_each(|(g, p)| eval_into(g, p, chi_addr as *mut f64, dchi_addr as *mut f64))?;
     } else {
         for (g, p) in points.iter().enumerate() {
             eval_into(g, p, chi_addr as *mut f64, dchi_addr as *mut f64)?;
@@ -812,10 +933,12 @@ pub fn eval_basis_and_grad_on_points_unchecked(
 /// `hess_buf[a*3+b][i]` = ∂²χ_i/∂x_a ∂x_b for the i-th basis function.
 fn eval_shell_grad_hess(
     sh: &LocatedShell,
-    dx: f64, dy: f64, dz: f64,
+    dx: f64,
+    dy: f64,
+    dz: f64,
     out: &mut [f64],
     out_grad: &mut [[f64; 15]; 3],
-    out_hess: &mut [[f64; 15]; 9],   // axis-pair index 3*a+b, function index i
+    out_hess: &mut [[f64; 15]; 9], // axis-pair index 3*a+b, function index i
 ) -> Result<(), GtoEvalError> {
     let r2 = dx * dx + dy * dy + dz * dz;
     let (rad, drad, d2rad) = radial_and_d_d2(sh, r2);
@@ -833,8 +956,7 @@ fn eval_shell_grad_hess(
                 out_grad[a][0] = two_dr * d[a];
                 for b in 0..3 {
                     let delta_ab = if a == b { 1.0 } else { 0.0 };
-                    out_hess[a * 3 + b][0] =
-                        two_dr * delta_ab + four_d2r * d[a] * d[b];
+                    out_hess[a * 3 + b][0] = two_dr * delta_ab + four_d2r * d[a] * d[b];
                 }
             }
         }
@@ -856,11 +978,10 @@ fn eval_shell_grad_hess(
                     for i in 0..3 {
                         let d_ai = if a == i { 1.0 } else { 0.0 };
                         let d_bi = if b == i { 1.0 } else { 0.0 };
-                        out_hess[a * 3 + b][i] =
-                            two_dr * delta_ab * d[i]
-                          + four_d2r * d[a] * d[b] * d[i]
-                          + two_dr * d[a] * d_bi
-                          + two_dr * d[b] * d_ai;
+                        out_hess[a * 3 + b][i] = two_dr * delta_ab * d[i]
+                            + four_d2r * d[a] * d[b] * d[i]
+                            + two_dr * d[a] * d_bi
+                            + two_dr * d[b] * d_ai;
                     }
                 }
             }
@@ -881,9 +1002,9 @@ fn eval_shell_grad_hess(
                 s3 * (dx * dx - dy * dy) * 0.5,
             ];
             // Angular gradient ∂A_m/∂x_a: rows = axis (x, y, z), cols = m.
-            let amx = [s3 * dy,  0.0,        -dx,        s3 * dz,    s3 * dx];
-            let amy = [s3 * dx,  s3 * dz,    -dy,        0.0,       -s3 * dy];
-            let amz = [0.0,      s3 * dy,    2.0 * dz,   s3 * dx,    0.0];
+            let amx = [s3 * dy, 0.0, -dx, s3 * dz, s3 * dx];
+            let amy = [s3 * dx, s3 * dz, -dy, 0.0, -s3 * dy];
+            let amz = [0.0, s3 * dy, 2.0 * dz, s3 * dx, 0.0];
             // Angular Hessian ∂²A_m/∂x_a∂x_b: rows = (a*3+b), cols = m.
             // m_xy:  d²/dxdy = √3,  others 0
             // m_yz:  d²/dydz = √3,  others 0
@@ -892,23 +1013,23 @@ fn eval_shell_grad_hess(
             // m_x²−y²: d²/dxx = √3, d²/dyy = -√3, others 0
             let ah: [[f64; 5]; 9] = [
                 // xx
-                [0.0,  0.0,  -1.0,  0.0,   s3],
+                [0.0, 0.0, -1.0, 0.0, s3],
                 // xy
-                [s3,   0.0,   0.0,  0.0,   0.0],
+                [s3, 0.0, 0.0, 0.0, 0.0],
                 // xz
-                [0.0,  0.0,   0.0,  s3,    0.0],
+                [0.0, 0.0, 0.0, s3, 0.0],
                 // yx (= xy by symmetry)
-                [s3,   0.0,   0.0,  0.0,   0.0],
+                [s3, 0.0, 0.0, 0.0, 0.0],
                 // yy
-                [0.0,  0.0,  -1.0,  0.0,  -s3],
+                [0.0, 0.0, -1.0, 0.0, -s3],
                 // yz
-                [0.0,  s3,    0.0,  0.0,   0.0],
+                [0.0, s3, 0.0, 0.0, 0.0],
                 // zx (= xz)
-                [0.0,  0.0,   0.0,  s3,    0.0],
+                [0.0, 0.0, 0.0, s3, 0.0],
                 // zy (= yz)
-                [0.0,  s3,    0.0,  0.0,   0.0],
+                [0.0, s3, 0.0, 0.0, 0.0],
                 // zz
-                [0.0,  0.0,   2.0,  0.0,   0.0],
+                [0.0, 0.0, 2.0, 0.0, 0.0],
             ];
             let ag = [amx, amy, amz];
             for m in 0..5 {
@@ -919,8 +1040,7 @@ fn eval_shell_grad_hess(
                 for a in 0..3 {
                     for b in 0..3 {
                         let delta_ab = if a == b { 1.0 } else { 0.0 };
-                        out_hess[a * 3 + b][m] =
-                              two_dr * delta_ab * a_m[m]
+                        out_hess[a * 3 + b][m] = two_dr * delta_ab * a_m[m]
                             + four_d2r * d[a] * d[b] * a_m[m]
                             + two_dr * d[a] * ag[b][m]
                             + two_dr * d[b] * ag[a][m]
@@ -932,9 +1052,9 @@ fn eval_shell_grad_hess(
         (2, false) => {
             // Cartesian d, libint2 order: xx, xy, xz, yy, yz, zz.
             let a_m = [dx * dx, dx * dy, dx * dz, dy * dy, dy * dz, dz * dz];
-            let amx = [2.0 * dx, dy,       dz,       0.0,      0.0,      0.0];
-            let amy = [0.0,      dx,       0.0,      2.0 * dy, dz,       0.0];
-            let amz = [0.0,      0.0,      dx,       0.0,      dy,       2.0 * dz];
+            let amx = [2.0 * dx, dy, dz, 0.0, 0.0, 0.0];
+            let amy = [0.0, dx, 0.0, 2.0 * dy, dz, 0.0];
+            let amz = [0.0, 0.0, dx, 0.0, dy, 2.0 * dz];
             // Angular Hessians ∂²A_m/∂x_a∂x_b for each m:
             //   xx: only Hxx = 2
             //   xy: Hxy = Hyx = 1
@@ -971,8 +1091,7 @@ fn eval_shell_grad_hess(
                 for a in 0..3 {
                     for b in 0..3 {
                         let delta_ab = if a == b { 1.0 } else { 0.0 };
-                        out_hess[a * 3 + b][m] =
-                              two_dr * delta_ab * a_m[m]
+                        out_hess[a * 3 + b][m] = two_dr * delta_ab * a_m[m]
                             + four_d2r * d[a] * d[b] * a_m[m]
                             + two_dr * d[a] * ag[b][m]
                             + two_dr * d[b] * ag[a][m]
@@ -985,41 +1104,43 @@ fn eval_shell_grad_hess(
             // Pure f (libint2 m = -3 .. +3), matches `eval_shell` normalizations.
             let s15 = 15.0_f64.sqrt();
             let c10 = 10.0_f64.sqrt() * 0.25;
-            let c6  = 6.0_f64.sqrt() * 0.25;
-            let x2 = dx * dx; let y2 = dy * dy; let z2 = dz * dz;
+            let c6 = 6.0_f64.sqrt() * 0.25;
+            let x2 = dx * dx;
+            let y2 = dy * dy;
+            let z2 = dz * dz;
             let a_m = [
                 c10 * dy * (3.0 * x2 - y2),
                 s15 * dx * dy * dz,
-                c6  * dy * (4.0 * z2 - x2 - y2),
+                c6 * dy * (4.0 * z2 - x2 - y2),
                 0.5 * dz * (2.0 * z2 - 3.0 * x2 - 3.0 * y2),
-                c6  * dx * (4.0 * z2 - x2 - y2),
+                c6 * dx * (4.0 * z2 - x2 - y2),
                 0.5 * s15 * dz * (x2 - y2),
                 c10 * dx * (x2 - 3.0 * y2),
             ];
             let amx = [
                 c10 * 6.0 * dx * dy,
                 s15 * dy * dz,
-                c6  * (-2.0) * dx * dy,
+                c6 * (-2.0) * dx * dy,
                 -3.0 * dx * dz,
-                c6  * (4.0 * z2 - 3.0 * x2 - y2),
+                c6 * (4.0 * z2 - 3.0 * x2 - y2),
                 s15 * dx * dz,
                 c10 * (3.0 * x2 - 3.0 * y2),
             ];
             let amy = [
                 c10 * (3.0 * x2 - 3.0 * y2),
                 s15 * dx * dz,
-                c6  * (4.0 * z2 - x2 - 3.0 * y2),
+                c6 * (4.0 * z2 - x2 - 3.0 * y2),
                 -3.0 * dy * dz,
-                c6  * (-2.0) * dx * dy,
+                c6 * (-2.0) * dx * dy,
                 -s15 * dy * dz,
                 c10 * (-6.0) * dx * dy,
             ];
             let amz = [
                 0.0,
                 s15 * dx * dy,
-                c6  * 8.0 * dy * dz,
+                c6 * 8.0 * dy * dz,
                 0.5 * (6.0 * z2 - 3.0 * x2 - 3.0 * y2),
-                c6  * 8.0 * dx * dz,
+                c6 * 8.0 * dx * dz,
                 0.5 * s15 * (x2 - y2),
                 0.0,
             ];
@@ -1033,23 +1154,55 @@ fn eval_shell_grad_hess(
             // m=+3: x(x²-3y²)·c10   → Hxx=6c10·x, Hyy=-6c10·x, Hzz=0, Hxy=-6c10·y, Hxz=Hyz=0
             let ah: [[f64; 7]; 9] = [
                 // xx: m=-3..+3
-                [ 6.0*c10*dy,         0.0,          -2.0*c6*dy,        -3.0*dz,        -6.0*c6*dx,        s15*dz,         6.0*c10*dx ],
+                [
+                    6.0 * c10 * dy,
+                    0.0,
+                    -2.0 * c6 * dy,
+                    -3.0 * dz,
+                    -6.0 * c6 * dx,
+                    s15 * dz,
+                    6.0 * c10 * dx,
+                ],
                 // xy
-                [ 6.0*c10*dx,         s15*dz,       -2.0*c6*dx,         0.0,           -2.0*c6*dy,        0.0,           -6.0*c10*dy ],
+                [
+                    6.0 * c10 * dx,
+                    s15 * dz,
+                    -2.0 * c6 * dx,
+                    0.0,
+                    -2.0 * c6 * dy,
+                    0.0,
+                    -6.0 * c10 * dy,
+                ],
                 // xz
-                [ 0.0,                 s15*dy,       0.0,              -3.0*dx,         8.0*c6*dz,        s15*dx,         0.0 ],
+                [0.0, s15 * dy, 0.0, -3.0 * dx, 8.0 * c6 * dz, s15 * dx, 0.0],
                 // yx (= xy)
-                [ 6.0*c10*dx,         s15*dz,       -2.0*c6*dx,         0.0,           -2.0*c6*dy,        0.0,           -6.0*c10*dy ],
+                [
+                    6.0 * c10 * dx,
+                    s15 * dz,
+                    -2.0 * c6 * dx,
+                    0.0,
+                    -2.0 * c6 * dy,
+                    0.0,
+                    -6.0 * c10 * dy,
+                ],
                 // yy
-                [-6.0*c10*dy,         0.0,          -6.0*c6*dy,        -3.0*dz,        -2.0*c6*dx,       -s15*dz,        -6.0*c10*dx ],
+                [
+                    -6.0 * c10 * dy,
+                    0.0,
+                    -6.0 * c6 * dy,
+                    -3.0 * dz,
+                    -2.0 * c6 * dx,
+                    -s15 * dz,
+                    -6.0 * c10 * dx,
+                ],
                 // yz
-                [ 0.0,                 s15*dx,       8.0*c6*dz,        -3.0*dy,         0.0,             -s15*dy,         0.0 ],
+                [0.0, s15 * dx, 8.0 * c6 * dz, -3.0 * dy, 0.0, -s15 * dy, 0.0],
                 // zx (= xz)
-                [ 0.0,                 s15*dy,       0.0,              -3.0*dx,         8.0*c6*dz,        s15*dx,         0.0 ],
+                [0.0, s15 * dy, 0.0, -3.0 * dx, 8.0 * c6 * dz, s15 * dx, 0.0],
                 // zy (= yz)
-                [ 0.0,                 s15*dx,       8.0*c6*dz,        -3.0*dy,         0.0,             -s15*dy,         0.0 ],
+                [0.0, s15 * dx, 8.0 * c6 * dz, -3.0 * dy, 0.0, -s15 * dy, 0.0],
                 // zz
-                [ 0.0,                 0.0,          8.0*c6*dy,         6.0*dz,         8.0*c6*dx,        0.0,            0.0 ],
+                [0.0, 0.0, 8.0 * c6 * dy, 6.0 * dz, 8.0 * c6 * dx, 0.0, 0.0],
             ];
             let ag = [amx, amy, amz];
             for m in 0..7 {
@@ -1060,8 +1213,7 @@ fn eval_shell_grad_hess(
                 for a in 0..3 {
                     for b in 0..3 {
                         let delta_ab = if a == b { 1.0 } else { 0.0 };
-                        out_hess[a * 3 + b][m] =
-                              two_dr * delta_ab * a_m[m]
+                        out_hess[a * 3 + b][m] = two_dr * delta_ab * a_m[m]
                             + four_d2r * d[a] * d[b] * a_m[m]
                             + two_dr * d[a] * ag[b][m]
                             + two_dr * d[b] * ag[a][m]
@@ -1072,22 +1224,56 @@ fn eval_shell_grad_hess(
         }
         (3, false) => {
             // Cartesian f (libint2 order): xxx, xxy, xxz, xyy, xyz, xzz, yyy, yyz, yzz, zzz.
-            let x2 = dx * dx; let y2 = dy * dy; let z2 = dz * dz;
+            let x2 = dx * dx;
+            let y2 = dy * dy;
+            let z2 = dz * dz;
             let a_m = [
-                x2 * dx, x2 * dy, x2 * dz, dx * y2, dx * dy * dz,
-                dx * z2, y2 * dy, y2 * dz, dy * z2, z2 * dz,
+                x2 * dx,
+                x2 * dy,
+                x2 * dz,
+                dx * y2,
+                dx * dy * dz,
+                dx * z2,
+                y2 * dy,
+                y2 * dz,
+                dy * z2,
+                z2 * dz,
             ];
             let amx = [
-                3.0 * x2, 2.0 * dx * dy, 2.0 * dx * dz, y2, dy * dz,
-                z2, 0.0, 0.0, 0.0, 0.0,
+                3.0 * x2,
+                2.0 * dx * dy,
+                2.0 * dx * dz,
+                y2,
+                dy * dz,
+                z2,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
             ];
             let amy = [
-                0.0, x2, 0.0, 2.0 * dx * dy, dx * dz,
-                0.0, 3.0 * y2, 2.0 * dy * dz, z2, 0.0,
+                0.0,
+                x2,
+                0.0,
+                2.0 * dx * dy,
+                dx * dz,
+                0.0,
+                3.0 * y2,
+                2.0 * dy * dz,
+                z2,
+                0.0,
             ];
             let amz = [
-                0.0, 0.0, x2, 0.0, dx * dy,
-                2.0 * dx * dz, 0.0, y2, 2.0 * dy * dz, 3.0 * z2,
+                0.0,
+                0.0,
+                x2,
+                0.0,
+                dx * dy,
+                2.0 * dx * dz,
+                0.0,
+                y2,
+                2.0 * dy * dz,
+                3.0 * z2,
             ];
             // Angular Hessians by monomial (xxx ... zzz)
             //   xxx (x³): Hxx=6x
@@ -1102,23 +1288,56 @@ fn eval_shell_grad_hess(
             //   zzz (z³): Hzz=6z
             let ah: [[f64; 10]; 9] = [
                 // xx
-                [6.0*dx, 2.0*dy, 2.0*dz, 0.0,    0.0,    0.0,    0.0,    0.0,    0.0,    0.0 ],
+                [
+                    6.0 * dx,
+                    2.0 * dy,
+                    2.0 * dz,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
                 // xy
-                [0.0,    2.0*dx, 0.0,    2.0*dy, dz,     0.0,    0.0,    0.0,    0.0,    0.0 ],
+                [0.0, 2.0 * dx, 0.0, 2.0 * dy, dz, 0.0, 0.0, 0.0, 0.0, 0.0],
                 // xz
-                [0.0,    0.0,    2.0*dx, 0.0,    dy,     2.0*dz, 0.0,    0.0,    0.0,    0.0 ],
+                [0.0, 0.0, 2.0 * dx, 0.0, dy, 2.0 * dz, 0.0, 0.0, 0.0, 0.0],
                 // yx (= xy)
-                [0.0,    2.0*dx, 0.0,    2.0*dy, dz,     0.0,    0.0,    0.0,    0.0,    0.0 ],
+                [0.0, 2.0 * dx, 0.0, 2.0 * dy, dz, 0.0, 0.0, 0.0, 0.0, 0.0],
                 // yy
-                [0.0,    0.0,    0.0,    2.0*dx, 0.0,    0.0,    6.0*dy, 2.0*dz, 0.0,    0.0 ],
+                [
+                    0.0,
+                    0.0,
+                    0.0,
+                    2.0 * dx,
+                    0.0,
+                    0.0,
+                    6.0 * dy,
+                    2.0 * dz,
+                    0.0,
+                    0.0,
+                ],
                 // yz
-                [0.0,    0.0,    0.0,    0.0,    dx,     0.0,    0.0,    2.0*dy, 2.0*dz, 0.0 ],
+                [0.0, 0.0, 0.0, 0.0, dx, 0.0, 0.0, 2.0 * dy, 2.0 * dz, 0.0],
                 // zx (= xz)
-                [0.0,    0.0,    2.0*dx, 0.0,    dy,     2.0*dz, 0.0,    0.0,    0.0,    0.0 ],
+                [0.0, 0.0, 2.0 * dx, 0.0, dy, 2.0 * dz, 0.0, 0.0, 0.0, 0.0],
                 // zy (= yz)
-                [0.0,    0.0,    0.0,    0.0,    dx,     0.0,    0.0,    2.0*dy, 2.0*dz, 0.0 ],
+                [0.0, 0.0, 0.0, 0.0, dx, 0.0, 0.0, 2.0 * dy, 2.0 * dz, 0.0],
                 // zz
-                [0.0,    0.0,    0.0,    0.0,    0.0,    2.0*dx, 0.0,    0.0,    2.0*dy, 6.0*dz ],
+                [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    2.0 * dx,
+                    0.0,
+                    0.0,
+                    2.0 * dy,
+                    6.0 * dz,
+                ],
             ];
             let ag = [amx, amy, amz];
             for m in 0..10 {
@@ -1129,8 +1348,7 @@ fn eval_shell_grad_hess(
                 for a in 0..3 {
                     for b in 0..3 {
                         let delta_ab = if a == b { 1.0 } else { 0.0 };
-                        out_hess[a * 3 + b][m] =
-                              two_dr * delta_ab * a_m[m]
+                        out_hess[a * 3 + b][m] = two_dr * delta_ab * a_m[m]
                             + four_d2r * d[a] * d[b] * a_m[m]
                             + two_dr * d[a] * ag[b][m]
                             + two_dr * d[b] * ag[a][m]
@@ -1146,70 +1364,174 @@ fn eval_shell_grad_hess(
             let s5 = 5.0_f64.sqrt();
             let s10 = 10.0_f64.sqrt();
             let a_m = [
-                0.5*s35 * (1.0*dx*dx*dx*dy - 1.0*dx*dy*dy*dy),  // m=-4
-                0.25*s70 * (-1.0*dy*dy*dy*dz + 3.0*dx*dx*dy*dz),  // m=-3
-                0.5*s5 * (-1.0*dx*dy*dy*dy - 1.0*dx*dx*dx*dy + 6.0*dx*dy*dz*dz),  // m=-2
-                0.25*s10 * (-3.0*dy*dy*dy*dz + 4.0*dy*dz*dz*dz - 3.0*dx*dx*dy*dz),  // m=-1
-                0.125 * (3.0*dx*dx*dx*dx + 3.0*dy*dy*dy*dy + 8.0*dz*dz*dz*dz - 24.0*dx*dx*dz*dz - 24.0*dy*dy*dz*dz + 6.0*dx*dx*dy*dy),  // m= 0
-                0.25*s10 * (-3.0*dx*dx*dx*dz + 4.0*dx*dz*dz*dz - 3.0*dx*dy*dy*dz),  // m=+1
-                0.25*s5 * (1.0*dy*dy*dy*dy - 1.0*dx*dx*dx*dx - 6.0*dy*dy*dz*dz + 6.0*dx*dx*dz*dz),  // m=+2
-                0.25*s70 * (1.0*dx*dx*dx*dz - 3.0*dx*dy*dy*dz),  // m=+3
-                0.125*s35 * (1.0*dx*dx*dx*dx + 1.0*dy*dy*dy*dy - 6.0*dx*dx*dy*dy),  // m=+4
+                0.5 * s35 * (1.0 * dx * dx * dx * dy - 1.0 * dx * dy * dy * dy), // m=-4
+                0.25 * s70 * (-1.0 * dy * dy * dy * dz + 3.0 * dx * dx * dy * dz), // m=-3
+                0.5 * s5
+                    * (-1.0 * dx * dy * dy * dy - 1.0 * dx * dx * dx * dy
+                        + 6.0 * dx * dy * dz * dz), // m=-2
+                0.25 * s10
+                    * (-3.0 * dy * dy * dy * dz + 4.0 * dy * dz * dz * dz
+                        - 3.0 * dx * dx * dy * dz), // m=-1
+                0.125
+                    * (3.0 * dx * dx * dx * dx + 3.0 * dy * dy * dy * dy + 8.0 * dz * dz * dz * dz
+                        - 24.0 * dx * dx * dz * dz
+                        - 24.0 * dy * dy * dz * dz
+                        + 6.0 * dx * dx * dy * dy), // m= 0
+                0.25 * s10
+                    * (-3.0 * dx * dx * dx * dz + 4.0 * dx * dz * dz * dz
+                        - 3.0 * dx * dy * dy * dz), // m=+1
+                0.25 * s5
+                    * (1.0 * dy * dy * dy * dy - 1.0 * dx * dx * dx * dx - 6.0 * dy * dy * dz * dz
+                        + 6.0 * dx * dx * dz * dz), // m=+2
+                0.25 * s70 * (1.0 * dx * dx * dx * dz - 3.0 * dx * dy * dy * dz), // m=+3
+                0.125
+                    * s35
+                    * (1.0 * dx * dx * dx * dx + 1.0 * dy * dy * dy * dy - 6.0 * dx * dx * dy * dy), // m=+4
             ];
             let amx = [
-                0.5*s35 * (-1.0*dy*dy*dy + 3.0*dx*dx*dy),  // m=-4
-                0.25*s70 * (6.0*dx*dy*dz),  // m=-3
-                0.5*s5 * (-1.0*dy*dy*dy - 3.0*dx*dx*dy + 6.0*dy*dz*dz),  // m=-2
-                0.25*s10 * (-6.0*dx*dy*dz),  // m=-1
-                0.125 * (12.0*dx*dx*dx - 48.0*dx*dz*dz + 12.0*dx*dy*dy),  // m= 0
-                0.25*s10 * (4.0*dz*dz*dz - 9.0*dx*dx*dz - 3.0*dy*dy*dz),  // m=+1
-                0.25*s5 * (-4.0*dx*dx*dx + 12.0*dx*dz*dz),  // m=+2
-                0.25*s70 * (-3.0*dy*dy*dz + 3.0*dx*dx*dz),  // m=+3
-                0.125*s35 * (4.0*dx*dx*dx - 12.0*dx*dy*dy),  // m=+4
+                0.5 * s35 * (-1.0 * dy * dy * dy + 3.0 * dx * dx * dy), // m=-4
+                0.25 * s70 * (6.0 * dx * dy * dz),                      // m=-3
+                0.5 * s5 * (-1.0 * dy * dy * dy - 3.0 * dx * dx * dy + 6.0 * dy * dz * dz), // m=-2
+                0.25 * s10 * (-6.0 * dx * dy * dz),                     // m=-1
+                0.125 * (12.0 * dx * dx * dx - 48.0 * dx * dz * dz + 12.0 * dx * dy * dy), // m= 0
+                0.25 * s10 * (4.0 * dz * dz * dz - 9.0 * dx * dx * dz - 3.0 * dy * dy * dz), // m=+1
+                0.25 * s5 * (-4.0 * dx * dx * dx + 12.0 * dx * dz * dz), // m=+2
+                0.25 * s70 * (-3.0 * dy * dy * dz + 3.0 * dx * dx * dz), // m=+3
+                0.125 * s35 * (4.0 * dx * dx * dx - 12.0 * dx * dy * dy), // m=+4
             ];
             let amy = [
-                0.5*s35 * (1.0*dx*dx*dx - 3.0*dx*dy*dy),  // m=-4
-                0.25*s70 * (-3.0*dy*dy*dz + 3.0*dx*dx*dz),  // m=-3
-                0.5*s5 * (-1.0*dx*dx*dx - 3.0*dx*dy*dy + 6.0*dx*dz*dz),  // m=-2
-                0.25*s10 * (4.0*dz*dz*dz - 9.0*dy*dy*dz - 3.0*dx*dx*dz),  // m=-1
-                0.125 * (12.0*dy*dy*dy - 48.0*dy*dz*dz + 12.0*dx*dx*dy),  // m= 0
-                0.25*s10 * (-6.0*dx*dy*dz),  // m=+1
-                0.25*s5 * (4.0*dy*dy*dy - 12.0*dy*dz*dz),  // m=+2
-                0.25*s70 * (-6.0*dx*dy*dz),  // m=+3
-                0.125*s35 * (4.0*dy*dy*dy - 12.0*dx*dx*dy),  // m=+4
+                0.5 * s35 * (1.0 * dx * dx * dx - 3.0 * dx * dy * dy), // m=-4
+                0.25 * s70 * (-3.0 * dy * dy * dz + 3.0 * dx * dx * dz), // m=-3
+                0.5 * s5 * (-1.0 * dx * dx * dx - 3.0 * dx * dy * dy + 6.0 * dx * dz * dz), // m=-2
+                0.25 * s10 * (4.0 * dz * dz * dz - 9.0 * dy * dy * dz - 3.0 * dx * dx * dz), // m=-1
+                0.125 * (12.0 * dy * dy * dy - 48.0 * dy * dz * dz + 12.0 * dx * dx * dy), // m= 0
+                0.25 * s10 * (-6.0 * dx * dy * dz),                    // m=+1
+                0.25 * s5 * (4.0 * dy * dy * dy - 12.0 * dy * dz * dz), // m=+2
+                0.25 * s70 * (-6.0 * dx * dy * dz),                    // m=+3
+                0.125 * s35 * (4.0 * dy * dy * dy - 12.0 * dx * dx * dy), // m=+4
             ];
             let amz = [
-                0.0,  // m=-4
-                0.25*s70 * (-1.0*dy*dy*dy + 3.0*dx*dx*dy),  // m=-3
-                0.5*s5 * (12.0*dx*dy*dz),  // m=-2
-                0.25*s10 * (-3.0*dy*dy*dy - 3.0*dx*dx*dy + 12.0*dy*dz*dz),  // m=-1
-                0.125 * (32.0*dz*dz*dz - 48.0*dx*dx*dz - 48.0*dy*dy*dz),  // m= 0
-                0.25*s10 * (-3.0*dx*dx*dx - 3.0*dx*dy*dy + 12.0*dx*dz*dz),  // m=+1
-                0.25*s5 * (-12.0*dy*dy*dz + 12.0*dx*dx*dz),  // m=+2
-                0.25*s70 * (1.0*dx*dx*dx - 3.0*dx*dy*dy),  // m=+3
-                0.0,  // m=+4
+                0.0,                                                                           // m=-4
+                0.25 * s70 * (-1.0 * dy * dy * dy + 3.0 * dx * dx * dy), // m=-3
+                0.5 * s5 * (12.0 * dx * dy * dz),                        // m=-2
+                0.25 * s10 * (-3.0 * dy * dy * dy - 3.0 * dx * dx * dy + 12.0 * dy * dz * dz), // m=-1
+                0.125 * (32.0 * dz * dz * dz - 48.0 * dx * dx * dz - 48.0 * dy * dy * dz), // m= 0
+                0.25 * s10 * (-3.0 * dx * dx * dx - 3.0 * dx * dy * dy + 12.0 * dx * dz * dz), // m=+1
+                0.25 * s5 * (-12.0 * dy * dy * dz + 12.0 * dx * dx * dz), // m=+2
+                0.25 * s70 * (1.0 * dx * dx * dx - 3.0 * dx * dy * dy),   // m=+3
+                0.0,                                                      // m=+4
             ];
             // Angular Hessians ∂²A_m/∂a∂b (a*3+b indexing), cols m=-4..+4.
             // Generated from the same sympy solid-harmonic derivation.
             let ah: [[f64; 9]; 9] = [
                 // xx
-                [ 0.5*s35*(6.0*dx*dy), 0.25*s70*(6.0*dy*dz), 0.5*s5*(-6.0*dx*dy), 0.25*s10*(-6.0*dy*dz), 0.125*(-48.0*dz*dz + 12.0*dy*dy + 36.0*dx*dx), 0.25*s10*(-18.0*dx*dz), 0.25*s5*(-12.0*dx*dx + 12.0*dz*dz), 0.25*s70*(6.0*dx*dz), 0.125*s35*(-12.0*dy*dy + 12.0*dx*dx) ],
+                [
+                    0.5 * s35 * (6.0 * dx * dy),
+                    0.25 * s70 * (6.0 * dy * dz),
+                    0.5 * s5 * (-6.0 * dx * dy),
+                    0.25 * s10 * (-6.0 * dy * dz),
+                    0.125 * (-48.0 * dz * dz + 12.0 * dy * dy + 36.0 * dx * dx),
+                    0.25 * s10 * (-18.0 * dx * dz),
+                    0.25 * s5 * (-12.0 * dx * dx + 12.0 * dz * dz),
+                    0.25 * s70 * (6.0 * dx * dz),
+                    0.125 * s35 * (-12.0 * dy * dy + 12.0 * dx * dx),
+                ],
                 // xy
-                [ 0.5*s35*(-3.0*dy*dy + 3.0*dx*dx), 0.25*s70*(6.0*dx*dz), 0.5*s5*(-3.0*dx*dx - 3.0*dy*dy + 6.0*dz*dz), 0.25*s10*(-6.0*dx*dz), 0.125*(24.0*dx*dy), 0.25*s10*(-6.0*dy*dz), 0.0, 0.25*s70*(-6.0*dy*dz), 0.125*s35*(-24.0*dx*dy) ],
+                [
+                    0.5 * s35 * (-3.0 * dy * dy + 3.0 * dx * dx),
+                    0.25 * s70 * (6.0 * dx * dz),
+                    0.5 * s5 * (-3.0 * dx * dx - 3.0 * dy * dy + 6.0 * dz * dz),
+                    0.25 * s10 * (-6.0 * dx * dz),
+                    0.125 * (24.0 * dx * dy),
+                    0.25 * s10 * (-6.0 * dy * dz),
+                    0.0,
+                    0.25 * s70 * (-6.0 * dy * dz),
+                    0.125 * s35 * (-24.0 * dx * dy),
+                ],
                 // xz
-                [ 0.0, 0.25*s70*(6.0*dx*dy), 0.5*s5*(12.0*dy*dz), 0.25*s10*(-6.0*dx*dy), 0.125*(-96.0*dx*dz), 0.25*s10*(-9.0*dx*dx - 3.0*dy*dy + 12.0*dz*dz), 0.25*s5*(24.0*dx*dz), 0.25*s70*(-3.0*dy*dy + 3.0*dx*dx), 0.0 ],
+                [
+                    0.0,
+                    0.25 * s70 * (6.0 * dx * dy),
+                    0.5 * s5 * (12.0 * dy * dz),
+                    0.25 * s10 * (-6.0 * dx * dy),
+                    0.125 * (-96.0 * dx * dz),
+                    0.25 * s10 * (-9.0 * dx * dx - 3.0 * dy * dy + 12.0 * dz * dz),
+                    0.25 * s5 * (24.0 * dx * dz),
+                    0.25 * s70 * (-3.0 * dy * dy + 3.0 * dx * dx),
+                    0.0,
+                ],
                 // yx (= xy)
-                [ 0.5*s35*(-3.0*dy*dy + 3.0*dx*dx), 0.25*s70*(6.0*dx*dz), 0.5*s5*(-3.0*dx*dx - 3.0*dy*dy + 6.0*dz*dz), 0.25*s10*(-6.0*dx*dz), 0.125*(24.0*dx*dy), 0.25*s10*(-6.0*dy*dz), 0.0, 0.25*s70*(-6.0*dy*dz), 0.125*s35*(-24.0*dx*dy) ],
+                [
+                    0.5 * s35 * (-3.0 * dy * dy + 3.0 * dx * dx),
+                    0.25 * s70 * (6.0 * dx * dz),
+                    0.5 * s5 * (-3.0 * dx * dx - 3.0 * dy * dy + 6.0 * dz * dz),
+                    0.25 * s10 * (-6.0 * dx * dz),
+                    0.125 * (24.0 * dx * dy),
+                    0.25 * s10 * (-6.0 * dy * dz),
+                    0.0,
+                    0.25 * s70 * (-6.0 * dy * dz),
+                    0.125 * s35 * (-24.0 * dx * dy),
+                ],
                 // yy
-                [ 0.5*s35*(-6.0*dx*dy), 0.25*s70*(-6.0*dy*dz), 0.5*s5*(-6.0*dx*dy), 0.25*s10*(-18.0*dy*dz), 0.125*(-48.0*dz*dz + 12.0*dx*dx + 36.0*dy*dy), 0.25*s10*(-6.0*dx*dz), 0.25*s5*(-12.0*dz*dz + 12.0*dy*dy), 0.25*s70*(-6.0*dx*dz), 0.125*s35*(-12.0*dx*dx + 12.0*dy*dy) ],
+                [
+                    0.5 * s35 * (-6.0 * dx * dy),
+                    0.25 * s70 * (-6.0 * dy * dz),
+                    0.5 * s5 * (-6.0 * dx * dy),
+                    0.25 * s10 * (-18.0 * dy * dz),
+                    0.125 * (-48.0 * dz * dz + 12.0 * dx * dx + 36.0 * dy * dy),
+                    0.25 * s10 * (-6.0 * dx * dz),
+                    0.25 * s5 * (-12.0 * dz * dz + 12.0 * dy * dy),
+                    0.25 * s70 * (-6.0 * dx * dz),
+                    0.125 * s35 * (-12.0 * dx * dx + 12.0 * dy * dy),
+                ],
                 // yz
-                [ 0.0, 0.25*s70*(-3.0*dy*dy + 3.0*dx*dx), 0.5*s5*(12.0*dx*dz), 0.25*s10*(-9.0*dy*dy - 3.0*dx*dx + 12.0*dz*dz), 0.125*(-96.0*dy*dz), 0.25*s10*(-6.0*dx*dy), 0.25*s5*(-24.0*dy*dz), 0.25*s70*(-6.0*dx*dy), 0.0 ],
+                [
+                    0.0,
+                    0.25 * s70 * (-3.0 * dy * dy + 3.0 * dx * dx),
+                    0.5 * s5 * (12.0 * dx * dz),
+                    0.25 * s10 * (-9.0 * dy * dy - 3.0 * dx * dx + 12.0 * dz * dz),
+                    0.125 * (-96.0 * dy * dz),
+                    0.25 * s10 * (-6.0 * dx * dy),
+                    0.25 * s5 * (-24.0 * dy * dz),
+                    0.25 * s70 * (-6.0 * dx * dy),
+                    0.0,
+                ],
                 // zx (= xz)
-                [ 0.0, 0.25*s70*(6.0*dx*dy), 0.5*s5*(12.0*dy*dz), 0.25*s10*(-6.0*dx*dy), 0.125*(-96.0*dx*dz), 0.25*s10*(-9.0*dx*dx - 3.0*dy*dy + 12.0*dz*dz), 0.25*s5*(24.0*dx*dz), 0.25*s70*(-3.0*dy*dy + 3.0*dx*dx), 0.0 ],
+                [
+                    0.0,
+                    0.25 * s70 * (6.0 * dx * dy),
+                    0.5 * s5 * (12.0 * dy * dz),
+                    0.25 * s10 * (-6.0 * dx * dy),
+                    0.125 * (-96.0 * dx * dz),
+                    0.25 * s10 * (-9.0 * dx * dx - 3.0 * dy * dy + 12.0 * dz * dz),
+                    0.25 * s5 * (24.0 * dx * dz),
+                    0.25 * s70 * (-3.0 * dy * dy + 3.0 * dx * dx),
+                    0.0,
+                ],
                 // zy (= yz)
-                [ 0.0, 0.25*s70*(-3.0*dy*dy + 3.0*dx*dx), 0.5*s5*(12.0*dx*dz), 0.25*s10*(-9.0*dy*dy - 3.0*dx*dx + 12.0*dz*dz), 0.125*(-96.0*dy*dz), 0.25*s10*(-6.0*dx*dy), 0.25*s5*(-24.0*dy*dz), 0.25*s70*(-6.0*dx*dy), 0.0 ],
+                [
+                    0.0,
+                    0.25 * s70 * (-3.0 * dy * dy + 3.0 * dx * dx),
+                    0.5 * s5 * (12.0 * dx * dz),
+                    0.25 * s10 * (-9.0 * dy * dy - 3.0 * dx * dx + 12.0 * dz * dz),
+                    0.125 * (-96.0 * dy * dz),
+                    0.25 * s10 * (-6.0 * dx * dy),
+                    0.25 * s5 * (-24.0 * dy * dz),
+                    0.25 * s70 * (-6.0 * dx * dy),
+                    0.0,
+                ],
                 // zz
-                [ 0.0, 0.0, 0.5*s5*(12.0*dx*dy), 0.25*s10*(24.0*dy*dz), 0.125*(-48.0*dx*dx - 48.0*dy*dy + 96.0*dz*dz), 0.25*s10*(24.0*dx*dz), 0.25*s5*(-12.0*dy*dy + 12.0*dx*dx), 0.0, 0.0 ],
+                [
+                    0.0,
+                    0.0,
+                    0.5 * s5 * (12.0 * dx * dy),
+                    0.25 * s10 * (24.0 * dy * dz),
+                    0.125 * (-48.0 * dx * dx - 48.0 * dy * dy + 96.0 * dz * dz),
+                    0.25 * s10 * (24.0 * dx * dz),
+                    0.25 * s5 * (-12.0 * dy * dy + 12.0 * dx * dx),
+                    0.0,
+                    0.0,
+                ],
             ];
             let ag = [amx, amy, amz];
             for m in 0..9 {
@@ -1220,8 +1542,7 @@ fn eval_shell_grad_hess(
                 for a in 0..3 {
                     for b in 0..3 {
                         let delta_ab = if a == b { 1.0 } else { 0.0 };
-                        out_hess[a * 3 + b][m] =
-                              two_dr * delta_ab * a_m[m]
+                        out_hess[a * 3 + b][m] = two_dr * delta_ab * a_m[m]
                             + four_d2r * d[a] * d[b] * a_m[m]
                             + two_dr * d[a] * ag[b][m]
                             + two_dr * d[b] * ag[a][m]
@@ -1234,57 +1555,244 @@ fn eval_shell_grad_hess(
             // Cartesian g (libint2 STANDARD order):
             //   xxxx, xxxy, xxxz, xxyy, xxyz, xxzz, xyyy, xyyz, xyzz, xzzz,
             //   yyyy, yyyz, yyzz, yzzz, zzzz
-            let x2 = dx * dx; let y2 = dy * dy; let z2 = dz * dz;
-            let x3 = x2 * dx; let y3 = y2 * dy; let z3 = z2 * dz;
+            let x2 = dx * dx;
+            let y2 = dy * dy;
+            let z2 = dz * dz;
+            let x3 = x2 * dx;
+            let y3 = y2 * dy;
+            let z3 = z2 * dz;
             let a_m = [
-                x2 * x2, x3 * dy, x3 * dz, x2 * y2, x2 * dy * dz,
-                x2 * z2, dx * y3, dx * y2 * dz, dx * dy * z2, dx * z3,
-                y2 * y2, y3 * dz, y2 * z2, dy * z3, z2 * z2,
+                x2 * x2,
+                x3 * dy,
+                x3 * dz,
+                x2 * y2,
+                x2 * dy * dz,
+                x2 * z2,
+                dx * y3,
+                dx * y2 * dz,
+                dx * dy * z2,
+                dx * z3,
+                y2 * y2,
+                y3 * dz,
+                y2 * z2,
+                dy * z3,
+                z2 * z2,
             ];
             let amx = [
-                4.0 * x3, 3.0 * x2 * dy, 3.0 * x2 * dz, 2.0 * dx * y2, 2.0 * dx * dy * dz,
-                2.0 * dx * z2, y3, y2 * dz, dy * z2, z3,
-                0.0, 0.0, 0.0, 0.0, 0.0,
+                4.0 * x3,
+                3.0 * x2 * dy,
+                3.0 * x2 * dz,
+                2.0 * dx * y2,
+                2.0 * dx * dy * dz,
+                2.0 * dx * z2,
+                y3,
+                y2 * dz,
+                dy * z2,
+                z3,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
             ];
             let amy = [
-                0.0, x3, 0.0, 2.0 * x2 * dy, x2 * dz,
-                0.0, 3.0 * dx * y2, 2.0 * dx * dy * dz, dx * z2, 0.0,
-                4.0 * y3, 3.0 * y2 * dz, 2.0 * dy * z2, z3, 0.0,
+                0.0,
+                x3,
+                0.0,
+                2.0 * x2 * dy,
+                x2 * dz,
+                0.0,
+                3.0 * dx * y2,
+                2.0 * dx * dy * dz,
+                dx * z2,
+                0.0,
+                4.0 * y3,
+                3.0 * y2 * dz,
+                2.0 * dy * z2,
+                z3,
+                0.0,
             ];
             let amz = [
-                0.0, 0.0, x3, 0.0, x2 * dy,
-                2.0 * x2 * dz, 0.0, dx * y2, 2.0 * dx * dy * dz, 3.0 * dx * z2,
-                0.0, y3, 2.0 * y2 * dz, 3.0 * dy * z2, 4.0 * z3,
+                0.0,
+                0.0,
+                x3,
+                0.0,
+                x2 * dy,
+                2.0 * x2 * dz,
+                0.0,
+                dx * y2,
+                2.0 * dx * dy * dz,
+                3.0 * dx * z2,
+                0.0,
+                y3,
+                2.0 * y2 * dz,
+                3.0 * dy * z2,
+                4.0 * z3,
             ];
             // Angular Hessians ∂²A_m/∂a∂b, rows = axis-pair (a*3+b), cols = 15 g cart.
             let ah: [[f64; 15]; 9] = [
                 // xx
-                [12.0*x2, 6.0*dx*dy, 6.0*dx*dz, 2.0*y2, 2.0*dy*dz, 2.0*z2,
-                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [
+                    12.0 * x2,
+                    6.0 * dx * dy,
+                    6.0 * dx * dz,
+                    2.0 * y2,
+                    2.0 * dy * dz,
+                    2.0 * z2,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
                 // xy
-                [0.0, 3.0*x2, 0.0, 4.0*dx*dy, 2.0*dx*dz, 0.0,
-                 3.0*y2, 2.0*dy*dz, z2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [
+                    0.0,
+                    3.0 * x2,
+                    0.0,
+                    4.0 * dx * dy,
+                    2.0 * dx * dz,
+                    0.0,
+                    3.0 * y2,
+                    2.0 * dy * dz,
+                    z2,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
                 // xz
-                [0.0, 0.0, 3.0*x2, 0.0, 2.0*dx*dy, 4.0*dx*dz,
-                 0.0, y2, 2.0*dy*dz, 3.0*z2, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [
+                    0.0,
+                    0.0,
+                    3.0 * x2,
+                    0.0,
+                    2.0 * dx * dy,
+                    4.0 * dx * dz,
+                    0.0,
+                    y2,
+                    2.0 * dy * dz,
+                    3.0 * z2,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
                 // yx (= xy)
-                [0.0, 3.0*x2, 0.0, 4.0*dx*dy, 2.0*dx*dz, 0.0,
-                 3.0*y2, 2.0*dy*dz, z2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [
+                    0.0,
+                    3.0 * x2,
+                    0.0,
+                    4.0 * dx * dy,
+                    2.0 * dx * dz,
+                    0.0,
+                    3.0 * y2,
+                    2.0 * dy * dz,
+                    z2,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
                 // yy
-                [0.0, 0.0, 0.0, 2.0*x2, 0.0, 0.0,
-                 6.0*dx*dy, 2.0*dx*dz, 0.0, 0.0, 12.0*y2, 6.0*dy*dz, 2.0*z2, 0.0, 0.0],
+                [
+                    0.0,
+                    0.0,
+                    0.0,
+                    2.0 * x2,
+                    0.0,
+                    0.0,
+                    6.0 * dx * dy,
+                    2.0 * dx * dz,
+                    0.0,
+                    0.0,
+                    12.0 * y2,
+                    6.0 * dy * dz,
+                    2.0 * z2,
+                    0.0,
+                    0.0,
+                ],
                 // yz
-                [0.0, 0.0, 0.0, 0.0, x2, 0.0,
-                 0.0, 2.0*dx*dy, 2.0*dx*dz, 0.0, 0.0, 3.0*y2, 4.0*dy*dz, 3.0*z2, 0.0],
+                [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    x2,
+                    0.0,
+                    0.0,
+                    2.0 * dx * dy,
+                    2.0 * dx * dz,
+                    0.0,
+                    0.0,
+                    3.0 * y2,
+                    4.0 * dy * dz,
+                    3.0 * z2,
+                    0.0,
+                ],
                 // zx (= xz)
-                [0.0, 0.0, 3.0*x2, 0.0, 2.0*dx*dy, 4.0*dx*dz,
-                 0.0, y2, 2.0*dy*dz, 3.0*z2, 0.0, 0.0, 0.0, 0.0, 0.0],
+                [
+                    0.0,
+                    0.0,
+                    3.0 * x2,
+                    0.0,
+                    2.0 * dx * dy,
+                    4.0 * dx * dz,
+                    0.0,
+                    y2,
+                    2.0 * dy * dz,
+                    3.0 * z2,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
                 // zy (= yz)
-                [0.0, 0.0, 0.0, 0.0, x2, 0.0,
-                 0.0, 2.0*dx*dy, 2.0*dx*dz, 0.0, 0.0, 3.0*y2, 4.0*dy*dz, 3.0*z2, 0.0],
+                [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    x2,
+                    0.0,
+                    0.0,
+                    2.0 * dx * dy,
+                    2.0 * dx * dz,
+                    0.0,
+                    0.0,
+                    3.0 * y2,
+                    4.0 * dy * dz,
+                    3.0 * z2,
+                    0.0,
+                ],
                 // zz
-                [0.0, 0.0, 0.0, 0.0, 0.0, 2.0*x2,
-                 0.0, 0.0, 2.0*dx*dy, 6.0*dx*dz, 0.0, 0.0, 2.0*y2, 6.0*dy*dz, 12.0*z2],
+                [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    2.0 * x2,
+                    0.0,
+                    0.0,
+                    2.0 * dx * dy,
+                    6.0 * dx * dz,
+                    0.0,
+                    0.0,
+                    2.0 * y2,
+                    6.0 * dy * dz,
+                    12.0 * z2,
+                ],
             ];
             let ag = [amx, amy, amz];
             for m in 0..15 {
@@ -1295,8 +1803,7 @@ fn eval_shell_grad_hess(
                 for a in 0..3 {
                     for b in 0..3 {
                         let delta_ab = if a == b { 1.0 } else { 0.0 };
-                        out_hess[a * 3 + b][m] =
-                              two_dr * delta_ab * a_m[m]
+                        out_hess[a * 3 + b][m] = two_dr * delta_ab * a_m[m]
                             + four_d2r * d[a] * d[b] * a_m[m]
                             + two_dr * d[a] * ag[b][m]
                             + two_dr * d[b] * ag[a][m]
@@ -1358,8 +1865,12 @@ pub fn eval_basis_grad_hess_on_points(
         let mut row_offset = 0usize;
         for sh in &shells {
             buf.fill(0.0);
-            for row in gradbuf.iter_mut() { row.fill(0.0); }
-            for row in hessbuf.iter_mut() { row.fill(0.0); }
+            for row in gradbuf.iter_mut() {
+                row.fill(0.0);
+            }
+            for row in hessbuf.iter_mut() {
+                row.fill(0.0);
+            }
 
             let n = num_functions(sh.l, sh.pure);
             let dx = p[0] - sh.center[0];
@@ -1439,8 +1950,12 @@ impl GridSpec {
         for atom in &mol.atoms {
             let coords = [atom.x, atom.y, atom.zpos];
             for i in 0..3 {
-                if coords[i] < min[i] { min[i] = coords[i]; }
-                if coords[i] > max[i] { max[i] = coords[i]; }
+                if coords[i] < min[i] {
+                    min[i] = coords[i];
+                }
+                if coords[i] > max[i] {
+                    max[i] = coords[i];
+                }
             }
         }
 
@@ -1495,7 +2010,10 @@ pub fn eval_basis_on_grid(
 
     let peak = nbf.saturating_mul(npts).saturating_mul(8);
     ferric_core::memory::check_alloc(
-        &format!("cube AO-on-grid (nbf={nbf}, npts={npts} = {}×{}×{})", grid.n_x, grid.n_y, grid.n_z),
+        &format!(
+            "cube AO-on-grid (nbf={nbf}, npts={npts} = {}×{}×{})",
+            grid.n_x, grid.n_y, grid.n_z
+        ),
         peak,
         ferric_core::memory::resolve_budget_bytes(None),
     )
@@ -1528,9 +2046,17 @@ pub fn eval_basis_on_grid(
                 for iz in 0..grid.n_z {
                     let z = grid.origin[2] + iz as f64 * hz;
                     let g = grid_index(grid, ix, iy, iz);
-                    eval_point_into(&shells, &shell_offsets, x, y, z, &mut shell_buf, |row, v| {
-                        chi[(row, g)] = v;
-                    })?;
+                    eval_point_into(
+                        &shells,
+                        &shell_offsets,
+                        x,
+                        y,
+                        z,
+                        &mut shell_buf,
+                        |row, v| {
+                            chi[(row, g)] = v;
+                        },
+                    )?;
                 }
             }
         }

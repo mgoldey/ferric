@@ -20,7 +20,11 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
 fn mol_path(name: &str) -> String {
-    format!("{}/../../testdata/molecules/{}", env!("CARGO_MANIFEST_DIR"), name)
+    format!(
+        "{}/../../testdata/molecules/{}",
+        env!("CARGO_MANIFEST_DIR"),
+        name
+    )
 }
 
 /// Converge RHF and return everything the correlated methods need.
@@ -28,7 +32,12 @@ fn setup(
     xyz: &str,
     obs_name: &str,
     aux_name: &str,
-) -> (Molecule, PreparedBasis, PreparedBasis, ferric_scf::result::ScfResult) {
+) -> (
+    Molecule,
+    PreparedBasis,
+    PreparedBasis,
+    ferric_scf::result::ScfResult,
+) {
     let mol = Molecule::load_xyz(&mol_path(xyz)).unwrap();
     let obs = PreparedBasis::new(&mol, &basis::bundled(obs_name).unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled(aux_name).unwrap()).unwrap();
@@ -40,7 +49,10 @@ fn setup(
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-9, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-9,
+            ..Default::default()
+        },
     )
     .unwrap();
     (mol, obs, dfbs, rhf)
@@ -68,7 +80,11 @@ fn hh_ladder_off_reproduces_rimp2() {
         &dfbs,
         op,
         &rhf,
-        &CcConfig { energy_conv: 1e-11, max_iter: 100, ..Default::default() },
+        &CcConfig {
+            energy_conv: 1e-11,
+            max_iter: 100,
+            ..Default::default()
+        },
         LadderVariant::DriversOnly,
     )
     .unwrap()
@@ -95,11 +111,23 @@ fn hh_ladder_off_reproduces_rimp2() {
 fn hh_ladder_is_nonzero_and_reduces_correlation() {
     let (mol, obs, dfbs, rhf) = setup("water.xyz", "cc-pvdz", "cc-pvdz-ri");
     let op = Operator::coulomb();
-    let cfg = CcConfig { energy_conv: 1e-11, max_iter: 100, ..Default::default() };
+    let cfg = CcConfig {
+        energy_conv: 1e-11,
+        max_iter: 100,
+        ..Default::default()
+    };
 
-    let e_drivers = linlccd(&mol, &obs, &dfbs, op, &rhf, &cfg, LadderVariant::DriversOnly)
-        .unwrap()
-        .correlation_energy;
+    let e_drivers = linlccd(
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &rhf,
+        &cfg,
+        LadderVariant::DriversOnly,
+    )
+    .unwrap()
+    .correlation_energy;
     let e_hh = linlccd(&mol, &obs, &dfbs, op, &rhf, &cfg, LadderVariant::Hh)
         .unwrap()
         .correlation_energy;
@@ -130,7 +158,11 @@ fn hh_ladder_is_nonzero_and_reduces_correlation() {
 #[test]
 fn size_consistent_on_separated_water_dimer() {
     let op = Operator::coulomb();
-    let cfg = CcConfig { energy_conv: 1e-11, max_iter: 200, ..Default::default() };
+    let cfg = CcConfig {
+        energy_conv: 1e-11,
+        max_iter: 200,
+        ..Default::default()
+    };
 
     let monomer = Molecule::load_xyz(&mol_path("water.xyz")).unwrap();
 
@@ -153,10 +185,15 @@ fn size_consistent_on_separated_water_dimer() {
             &obs,
             op,
             &bounds,
-            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
         )
         .unwrap();
-        linlccd(m, &obs, &dfbs, op, &rhf, &cfg, LadderVariant::Hh).unwrap().correlation_energy
+        linlccd(m, &obs, &dfbs, op, &rhf, &cfg, LadderVariant::Hh)
+            .unwrap()
+            .correlation_energy
     };
 
     let e_mono = run(&monomer);
@@ -192,7 +229,11 @@ fn size_consistent_on_separated_water_dimer() {
 #[test]
 fn h2_dissociation_stays_regular() {
     let op = Operator::coulomb();
-    let cfg = CcConfig { energy_conv: 1e-10, max_iter: 300, ..Default::default() };
+    let cfg = CcConfig {
+        energy_conv: 1e-10,
+        max_iter: 300,
+        ..Default::default()
+    };
 
     let mut prev = 0.0f64;
     for &r_ang in &[0.74_f64, 1.5, 3.0, 6.0, 9.0, 11.0] {
@@ -207,7 +248,11 @@ fn h2_dissociation_stays_regular() {
             &obs,
             op,
             &bounds,
-            &RhfConfig { energy_conv: 1e-10, max_iter: 200, ..Default::default() },
+            &RhfConfig {
+                energy_conv: 1e-10,
+                max_iter: 200,
+                ..Default::default()
+            },
         )
         .unwrap();
         assert!(
@@ -223,7 +268,10 @@ fn h2_dissociation_stays_regular() {
         eprintln!("R = {r_ang:5.2} A   E_corr = {e:.10}");
 
         assert!(e.is_finite(), "LinLCCD(hh) diverged at R = {r_ang} A");
-        assert!(e < 0.0, "correlation energy must be negative; got {e:.10} at R = {r_ang} A");
+        assert!(
+            e < 0.0,
+            "correlation energy must be negative; got {e:.10} at R = {r_ang} A"
+        );
         assert!(
             e.abs() < 1.0,
             "correlation energy {e:.10} at R = {r_ang} A is unphysically large \
@@ -248,7 +296,11 @@ fn h2_dissociation_stays_regular() {
 #[test]
 fn hh_dressing_bounds_amplitudes_where_mp2_blows_up() {
     let op = Operator::coulomb();
-    let cfg = CcConfig { energy_conv: 1e-10, max_iter: 300, ..Default::default() };
+    let cfg = CcConfig {
+        energy_conv: 1e-10,
+        max_iter: 300,
+        ..Default::default()
+    };
 
     for &r_ang in &[6.0_f64, 9.0, 11.0] {
         let xyz = format!("2\n\nH 0.0 0.0 0.0\nH 0.0 0.0 {r_ang}\n");
@@ -262,10 +314,17 @@ fn hh_dressing_bounds_amplitudes_where_mp2_blows_up() {
             &obs,
             op,
             &bounds,
-            &RhfConfig { energy_conv: 1e-10, max_iter: 200, ..Default::default() },
+            &RhfConfig {
+                energy_conv: 1e-10,
+                max_iter: 200,
+                ..Default::default()
+            },
         )
         .unwrap();
-        assert!(rhf.converged, "RHF reference did not converge at R = {r_ang} A");
+        assert!(
+            rhf.converged,
+            "RHF reference did not converge at R = {r_ang} A"
+        );
 
         let e_mp2 = ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default())
             .unwrap()
@@ -295,7 +354,11 @@ fn h6_ring(r_ang: f64) -> String {
     let mut s = String::from("6\n\n");
     for k in 0..6 {
         let th = std::f64::consts::PI / 3.0 * (k as f64);
-        s.push_str(&format!("H {:.10} {:.10} 0.0\n", r_ang * th.cos(), r_ang * th.sin()));
+        s.push_str(&format!(
+            "H {:.10} {:.10} 0.0\n",
+            r_ang * th.cos(),
+            r_ang * th.sin()
+        ));
     }
     s
 }
@@ -318,7 +381,11 @@ fn h6_ring(r_ang: f64) -> String {
 #[test]
 fn h6_ring_stays_robust_where_ccd_fails() {
     let op = Operator::coulomb();
-    let cfg = CcConfig { energy_conv: 1e-10, max_iter: 200, ..Default::default() };
+    let cfg = CcConfig {
+        energy_conv: 1e-10,
+        max_iter: 200,
+        ..Default::default()
+    };
 
     let mut prev_hh = 0.0f64;
     let mut prev_mp2 = 0.0f64;
@@ -333,10 +400,17 @@ fn h6_ring_stays_robust_where_ccd_fails() {
             &obs,
             op,
             &bounds,
-            &RhfConfig { energy_conv: 1e-10, max_iter: 200, ..Default::default() },
+            &RhfConfig {
+                energy_conv: 1e-10,
+                max_iter: 200,
+                ..Default::default()
+            },
         )
         .unwrap();
-        assert!(rhf.converged, "RHF reference did not converge for H6 at R = {r} A");
+        assert!(
+            rhf.converged,
+            "RHF reference did not converge for H6 at R = {r} A"
+        );
 
         let e_mp2 = ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default())
             .unwrap()

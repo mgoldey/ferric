@@ -99,7 +99,12 @@ use ferric_scf::screening::SchwarzBounds;
 /// the 1024 target chunks, so the chunking is genuinely exercised (many chunks,
 /// not one). A single-atom fixture would leave `chunk_size >= npts` and the
 /// mechanism inert — this test would then pass whatever the code did.
-fn fixture() -> (Molecule, PreparedBasis, basis::BasisSet, ndarray::Array2<f64>) {
+fn fixture() -> (
+    Molecule,
+    PreparedBasis,
+    basis::BasisSet,
+    ndarray::Array2<f64>,
+) {
     let xyz = "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n";
     let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
     let obs_bs = basis::bundled("cc-pvdz").unwrap();
@@ -178,8 +183,7 @@ fn atomic_effective_volumes_are_bit_identical_across_chunk_widths() {
         atomic_effective_volumes_becke_chunked(&mol, &obs, &obs_bs, &d, Some(WIDTHS[0])).unwrap();
     assert_eq!(reference.len(), 3);
     for w in WIDTHS {
-        let got =
-            atomic_effective_volumes_becke_chunked(&mol, &obs, &obs_bs, &d, Some(w)).unwrap();
+        let got = atomic_effective_volumes_becke_chunked(&mol, &obs, &obs_bs, &d, Some(w)).unwrap();
         for (i, (&g, &r)) in got.iter().zip(reference.iter()).enumerate() {
             assert_eq!(
                 g.to_bits(),
@@ -192,13 +196,18 @@ fn atomic_effective_volumes_are_bit_identical_across_chunk_widths() {
         }
     }
     for (i, &vi) in reference.iter().enumerate() {
-        assert!(vi > 0.0, "atom {i} effective volume must be positive, got {vi:.6e}");
+        assert!(
+            vi > 0.0,
+            "atom {i} effective volume must be positive, got {vi:.6e}"
+        );
     }
     assert!(
         reference[0] > reference[1] && reference[0] > reference[2],
         "oxygen's effective volume ({:.4}) must exceed both hydrogens' ({:.4}, {:.4}) — a \
          chunking error that dropped a band of points would show up here",
-        reference[0], reference[1], reference[2]
+        reference[0],
+        reference[1],
+        reference[2]
     );
 }
 

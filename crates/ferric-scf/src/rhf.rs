@@ -9,16 +9,16 @@ use crate::direct_jk::DirectJK;
 use crate::direct_k::DirectK;
 use crate::fock::{JBuilder, KBuilder};
 use crate::guess::hcore_guess;
-use ferric_dft::cdft::Constraint;
 use crate::result::{ScfExit, ScfResult, Spin};
+use ferric_dft::cdft::Constraint;
 
 use crate::screening::SchwarzBounds;
 use ferric_core::mol::Molecule;
+use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
-use ferric_core::parallel::ParallelContext;
 use ndarray::linalg::general_mat_mul;
 use ndarray::Array2;
 use ndarray_linalg::Eigh;
@@ -454,12 +454,18 @@ pub fn solve_rhf(
     // shared driver env can size the RSH fitter pair from k_mix, and so the
     // JK-aux auto-defaults below can see hybrid/RSH-ness.
     use ferric_dft::ks::KsXc;
-    use ferric_dft::xc_trait::{XcContribution, KMix};
+    use ferric_dft::xc_trait::{KMix, XcContribution};
 
     let xc_contrib: Option<Box<dyn XcContribution>> = if let Some(name) = config.xc.as_deref() {
         let main = config.dft_grid.clone().unwrap_or_default();
-        let nlc = config.nlc_grid.clone()
-            .unwrap_or(ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() });
+        let nlc = config
+            .nlc_grid
+            .clone()
+            .unwrap_or(ferric_dft::grid::AtomicGridConfig {
+                n_radial: 50,
+                n_angular: 50,
+                ..Default::default()
+            });
         // Thread the caller's `[memory] budget_gb` into the grid AO cache --
         // the largest single allocation in a DFT job. This used to call the
         // UNbudgeted `new_with_omega`, which resolves from env/auto-detect
@@ -471,10 +477,15 @@ pub fn solve_rhf(
         // FERRIC_MEM_BUDGET_GB worked. 0 means unset, matching
         // `rhf::resolve_three_index_budget`.
         let ks = KsXc::new_with_omega_budgeted(
-            mol, prep.basis_set(), name, &main, &nlc, config.xc_omega,
+            mol,
+            prep.basis_set(),
+            name,
+            &main,
+            &nlc,
+            config.xc_omega,
             (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes),
         )
-            .map_err(|e| FerricError::General(format!("KsXc init for {name}: {e:?}")))?;
+        .map_err(|e| FerricError::General(format!("KsXc init for {name}: {e:?}")))?;
         Some(Box::new(ks) as Box<dyn XcContribution>)
     } else {
         None
@@ -484,8 +495,17 @@ pub fn solve_rhf(
     // Shared geometry-only environment: S, hcore(+ECP, +external), V_nn
     // (+external), COSMO/PCM contexts, resolved memory budget, RSH fitters.
     // One construction serving all six SCF variants — see crate::driver.
-    let crate::driver::ScfEnv { s, h, vnn, ooc_budget, cosmo_cavity, pcm_ctx, polarizable_site_basis, mut dfk_sr, mut dfk_lr } =
-        crate::driver::prepare(ctx, mol, prep, config, &k_mix)?;
+    let crate::driver::ScfEnv {
+        s,
+        h,
+        vnn,
+        ooc_budget,
+        cosmo_cavity,
+        pcm_ctx,
+        polarizable_site_basis,
+        mut dfk_sr,
+        mut dfk_lr,
+    } = crate::driver::prepare(ctx, mol, prep, config, &k_mix)?;
 
     let n = prep.nbasis();
     let nelec = mol.nelec();
@@ -544,7 +564,11 @@ pub fn solve_rhf(
     // Combined DIIS driver. With the default `diis_flavor = Pulay` this is a
     // pure-Pulay driver whose `step` is byte-identical to `Diis::step`;
     // ADIIS/EDIIS activate only when a caller opts in.
-    let mut diis = DiisDriver::new(config.diis_flavor, config.diis_size, config.diis_switch_thresh);
+    let mut diis = DiisDriver::new(
+        config.diis_flavor,
+        config.diis_size,
+        config.diis_switch_thresh,
+    );
     // RHF extrapolates with `step` (α-only), so two matrices per subspace
     // entry; an ADIIS/EDIIS flavor additionally keeps an EnergyDiis pair live
     // alongside the Pulay history (DiisDriver::new forces switch_thresh to 0
@@ -592,9 +616,13 @@ pub fn solve_rhf(
     // DFT-specific.)
     let k_consumed = xc_contrib.is_none() || k_mix.sr > 0.0 || k_mix.omega > 0.0;
     use crate::fock_assembly::DEFAULT_JK_AUX;
-    let df_j_aux_eff: Option<String> = config.df_j_aux.clone()
+    let df_j_aux_eff: Option<String> = config
+        .df_j_aux
+        .clone()
         .or_else(|| needs_j.then(|| DEFAULT_JK_AUX.into()));
-    let df_k_aux_eff: Option<String> = config.df_k_aux.clone()
+    let df_k_aux_eff: Option<String> = config
+        .df_k_aux
+        .clone()
         .or_else(|| needs_k.then(|| DEFAULT_JK_AUX.into()));
 
     // Density-fitted Coulomb (RI-J) / exchange (RI-K). Builds 3-center
@@ -605,7 +633,13 @@ pub fn solve_rhf(
     // builds/holds only its band of B (memory scales with rank count);
     // size-1 / non-MPI is byte-identical to the serial path.
     let (mut df_j, mut df_k) = crate::fock_assembly::build_df_jk(
-        ctx, mol, op, prep, df_j_aux_eff.as_deref(), df_k_aux_eff.as_deref(), ooc_budget,
+        ctx,
+        mol,
+        op,
+        prep,
+        df_j_aux_eff.as_deref(),
+        df_k_aux_eff.as_deref(),
+        ooc_budget,
     )?;
 
     // A pluggable K builder ("link" / "cosx") is only consumed on the
@@ -614,7 +648,9 @@ pub fn solve_rhf(
     // pre-existing silent no-op for "link" — so warn and skip construction.
     let df_any = df_j.is_some() || df_k.is_some();
     let pluggable_k = crate::fock_assembly::resolve_k_builder(
-        config.k_builder.as_deref(), df_any, df_k.is_some(),
+        config.k_builder.as_deref(),
+        df_any,
+        df_k.is_some(),
     )?;
     // Build the pluggable builder once — LinK's SignificantPairs and COSX's
     // grid/overlap-fit factor are geometry-only and expensive per iteration.
@@ -675,14 +711,14 @@ pub fn solve_rhf(
     // Diverged). The Converged path re-diagonalizes fresh and is NOT built from
     // this closure.
     let build_nonconverged = |exit: ScfExit,
-                               d: &Array2<f64>,
-                               c: &Array2<f64>,
-                               eps: &[f64],
-                               f: &Array2<f64>,
-                               energy: f64,
-                               iter: usize,
-                               cq: usize,
-                               induced_dipoles: Option<Array2<f64>>|
+                              d: &Array2<f64>,
+                              c: &Array2<f64>,
+                              eps: &[f64],
+                              f: &Array2<f64>,
+                              energy: f64,
+                              iter: usize,
+                              cq: usize,
+                              induced_dipoles: Option<Array2<f64>>|
      -> ScfResult {
         ScfResult {
             spin: Spin::Restricted,
@@ -708,23 +744,42 @@ pub fn solve_rhf(
     // per-thread libint2 EnginePool on first use (engines are constructed behind
     // a global ctor mutex), so a loop-local builder would pay that construction
     // every iteration. Which builders exist mirrors the branch structure below.
-    let mut direct_j: Option<DirectJ> = if (df_any && df_j.is_none()) || (!df_any && k_builder.is_some()) {
-        Some(DirectJ::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
-    } else {
-        None
-    };
+    let mut direct_j: Option<DirectJ> =
+        if (df_any && df_j.is_none()) || (!df_any && k_builder.is_some()) {
+            Some(DirectJ::new(
+                ctx,
+                prep,
+                bounds,
+                config.integral_thresh,
+                ooc_budget,
+            ))
+        } else {
+            None
+        };
     // Only build the exchange builder when exact exchange is actually consumed
     // (see `k_consumed`). Pure DFT (LDA/GGA, k_mix all zero) discards any K it
     // builds, so a full direct 4-center K on an all-electron heavy-atom system
     // (e.g. Cu2/aug-cc-pVDZ) dominated the iteration at ~99 s while the actual XC
     // grid work was ~0.4 s. HF and hybrids/RSH keep k_consumed = true, unaffected.
     let mut direct_k: Option<DirectK> = if df_any && df_k.is_none() && k_consumed {
-        Some(DirectK::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
+        Some(DirectK::new(
+            ctx,
+            prep,
+            bounds,
+            config.integral_thresh,
+            ooc_budget,
+        ))
     } else {
         None
     };
     let mut direct_jk: Option<DirectJK> = if !df_any && k_builder.is_none() {
-        Some(DirectJK::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
+        Some(DirectJK::new(
+            ctx,
+            prep,
+            bounds,
+            config.integral_thresh,
+            ooc_budget,
+        ))
     } else {
         None
     };
@@ -853,7 +908,9 @@ pub fn solve_rhf(
             if direct_incremental {
                 // Incremental: j_buf/k_buf still hold J(d_last)/K(d_last); add
                 // only the contribution of ΔD = d - d_last. Exact by linearity.
-                let d_prev = d_last_fock.as_ref().expect("d_last_fock set on full rebuild");
+                let d_prev = d_last_fock
+                    .as_ref()
+                    .expect("d_last_fock set on full rebuild");
                 let delta_d = &d - d_prev;
                 total_quartets += djk.build_incremental(&delta_d, &mut j_buf, &mut k_buf)?;
             } else {
@@ -886,7 +943,15 @@ pub fn solve_rhf(
             // so eff_scale = 0.5·2.0 = 1.0 matches the density path's
             // scale = 0.5 against the already-doubled `d`.
             crate::fock_assembly::subtract_rsh_exchange(
-                dfk_sr, dfk_lr, &d, d_occ.as_ref(), 2.0, &mut f, k_mix.sr, k_mix.lr, 0.5,
+                dfk_sr,
+                dfk_lr,
+                &d,
+                d_occ.as_ref(),
+                2.0,
+                &mut f,
+                k_mix.sr,
+                k_mix.lr,
+                0.5,
             )?;
         } else if k_mix.sr > 0.0 {
             // Plain hybrid or pure HF: K already built by the builder path above.
@@ -993,9 +1058,22 @@ pub fn solve_rhf(
         // Divergence: energy climbing for consecutive iters (see ScfMonitor).
         if mon.diverging(energy, config.divergence_tol) {
             if scf_trace() {
-                eprintln!("SCF diverged at iter={iter}: dE={:.3e} > tol for 3 iters", energy - mon.prev_e);
+                eprintln!(
+                    "SCF diverged at iter={iter}: dE={:.3e} > tol for 3 iters",
+                    energy - mon.prev_e
+                );
             }
-            return Ok(build_nonconverged(ScfExit::Diverged, &d, &last_c, &last_eps, &f, energy, iter, total_quartets, last_induced_dipoles.clone()));
+            return Ok(build_nonconverged(
+                ScfExit::Diverged,
+                &d,
+                &last_c,
+                &last_eps,
+                &f,
+                energy,
+                iter,
+                total_quartets,
+                last_induced_dipoles.clone(),
+            ));
         }
 
         // Stall: running-min err_max over a window stopped falling. Robust to
@@ -1006,7 +1084,17 @@ pub fn solve_rhf(
                 let w = config.stall_window.unwrap_or(0);
                 eprintln!("SCF stalled at iter={iter}: err_max={err_max:.3e} (no progress over {w} iters)");
             }
-            return Ok(build_nonconverged(ScfExit::Stalled, &d, &last_c, &last_eps, &f, energy, iter, total_quartets, last_induced_dipoles.clone()));
+            return Ok(build_nonconverged(
+                ScfExit::Stalled,
+                &d,
+                &last_c,
+                &last_eps,
+                &f,
+                energy,
+                iter,
+                total_quartets,
+                last_induced_dipoles.clone(),
+            ));
         }
 
         if iter > 1 {
@@ -1015,11 +1103,14 @@ pub fn solve_rhf(
                 // is active (trace-gated; `energy` is the smeared internal energy,
                 // the free energy is E − σ·S).
                 if scf_trace() {
-                    if let (Some(sigma), Some(sm)) = (config.smearing_sigma, last_smearing.as_ref()) {
+                    if let (Some(sigma), Some(sm)) = (config.smearing_sigma, last_smearing.as_ref())
+                    {
                         eprintln!(
                             "SCF converged with Fermi smearing σ={sigma:.3e} Ha: \
                              μ={:.6} Ha, S={:.4e} k_B, E_free=E−σS={:.10} Ha",
-                            sm.mu, sm.entropy, energy - sigma * sm.entropy
+                            sm.mu,
+                            sm.entropy,
+                            energy - sigma * sm.entropy
                         );
                     }
                 }
@@ -1075,7 +1166,9 @@ pub fn solve_rhf(
                 let main = config.dft_grid.clone().unwrap_or_default();
                 let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
                 let d_half = 0.5 * &d;
-                Some(crate::rohf::FxcKernelStore::build(mol, prep, &main, name, &d_half, &d_half)?)
+                Some(crate::rohf::FxcKernelStore::build(
+                    mol, prep, &main, name, &d_half, &d_half,
+                )?)
             } else {
                 None
             };
@@ -1236,7 +1329,17 @@ pub fn build_jk(
     k: &mut Array2<f64>,
 ) -> Result<usize, FerricError> {
     let pool = crate::engine_pool::EnginePool::new(bounds.op, prep, 1e-14)?;
-    build_jk_with_pool(ctx, prep, bounds, thresh, d, j, k, &pool, crate::reduce::default_band_bytes())
+    build_jk_with_pool(
+        ctx,
+        prep,
+        bounds,
+        thresh,
+        d,
+        j,
+        k,
+        &pool,
+        crate::reduce::default_band_bytes(),
+    )
 }
 
 /// Same as [`build_jk`], but takes a caller-supplied [`crate::engine_pool::EnginePool`]
@@ -1267,8 +1370,10 @@ pub fn build_jk_with_pool(
     pool: &crate::engine_pool::EnginePool,
     band_bytes: usize,
 ) -> Result<usize, FerricError> {
+    use crate::quartet_scatter::{
+        build_d_max_shell, canonical_bra_pairs, scatter_bra_pair, DensityScreen, JkMode,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use crate::quartet_scatter::{build_d_max_shell, canonical_bra_pairs, scatter_bra_pair, DensityScreen, JkMode};
 
     ctx.check_interrupted()?;
 
@@ -1322,29 +1427,36 @@ pub fn build_jk_with_pool(
     // `reduce::default_band_bytes()` (env/auto-resolved), preserving the old
     // behavior byte-for-byte.
     let screen = DensityScreen::SixPair(&d_max_shell);
-    crate::reduce::grouped_deterministic_sum_pair(&mut total_j, &mut total_k, n_groups, nbf, band_bytes, |g| {
-        let lo = g * group_size;
-        let hi = (lo + group_size).min(n_pairs);
-        let mut mode = JkMode::new_both(nbf);
-        let mut local_count = 0usize;
-        for &(s1, s2) in &shell_pairs[lo..hi] {
-            if ferric_core::INTERRUPT.load(std::sync::atomic::Ordering::Relaxed) {
-                continue;
+    crate::reduce::grouped_deterministic_sum_pair(
+        &mut total_j,
+        &mut total_k,
+        n_groups,
+        nbf,
+        band_bytes,
+        |g| {
+            let lo = g * group_size;
+            let hi = (lo + group_size).min(n_pairs);
+            let mut mode = JkMode::new_both(nbf);
+            let mut local_count = 0usize;
+            for &(s1, s2) in &shell_pairs[lo..hi] {
+                if ferric_core::INTERRUPT.load(std::sync::atomic::Ordering::Relaxed) {
+                    continue;
+                }
+                pool.with(|engine| {
+                    local_count += scatter_bra_pair(
+                        engine, prep, dims, offs, &bounds.q, &screen, thresh, d, s1, s2, &mut mode,
+                        true,
+                    );
+                });
             }
-            pool.with(|engine| {
-                local_count += scatter_bra_pair(
-                    engine, prep, dims, offs, &bounds.q, &screen, thresh, d, s1, s2,
-                    &mut mode, true,
-                );
-            });
-        }
-        let (local_j, local_k) = match mode {
-            JkMode::Both(j, k) => (j, k),
-            _ => unreachable!("build_jk_with_pool always uses JkMode::Both"),
-        };
-        computed_quartets.fetch_add(local_count, std::sync::atomic::Ordering::Relaxed);
-        Ok((local_j, local_k))
-    })?;
+            let (local_j, local_k) = match mode {
+                JkMode::Both(j, k) => (j, k),
+                _ => unreachable!("build_jk_with_pool always uses JkMode::Both"),
+            };
+            computed_quartets.fetch_add(local_count, std::sync::atomic::Ordering::Relaxed);
+            Ok((local_j, local_k))
+        },
+    )?;
 
     *j += &total_j;
     *k += &total_k;
@@ -1354,8 +1466,16 @@ pub fn build_jk_with_pool(
         use mpi::traits::CommunicatorCollectives;
         let mut j_global = Array2::zeros(j.dim());
         let mut k_global = Array2::zeros(k.dim());
-        world.all_reduce_into(j.as_slice().unwrap(), j_global.as_slice_mut().unwrap(), mpi::collective::SystemOperation::sum());
-        world.all_reduce_into(k.as_slice().unwrap(), k_global.as_slice_mut().unwrap(), mpi::collective::SystemOperation::sum());
+        world.all_reduce_into(
+            j.as_slice().unwrap(),
+            j_global.as_slice_mut().unwrap(),
+            mpi::collective::SystemOperation::sum(),
+        );
+        world.all_reduce_into(
+            k.as_slice().unwrap(),
+            k_global.as_slice_mut().unwrap(),
+            mpi::collective::SystemOperation::sum(),
+        );
         *j = j_global;
         *k = k_global;
     }
@@ -1455,10 +1575,7 @@ pub(crate) fn canonical_orthogonalizer(s: &Array2<f64>) -> Result<Array2<f64>, F
 /// by appending (n − m) zero MO columns with sentinel energy 1e6, so every
 /// downstream consumer (GW, RPA, density build) sees the historical (n × n) /
 /// length-n shapes while the near-singular directions are inert virtuals.
-fn diagonalize(
-    f: &Array2<f64>,
-    x: &Array2<f64>,
-) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
+fn diagonalize(f: &Array2<f64>, x: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
     crate::driver::diagonalize_rect(f, x)
 }
 
@@ -1597,15 +1714,26 @@ mod tests {
         // Place a +1 point charge 20 Bohr away (weak perturbation, should shift
         // energy by a small, nonzero, well-defined amount and not break convergence).
         let ext = ExternalPotential {
-            point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 20.0 }],
+            point_charges: vec![PointCharge {
+                q: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 20.0,
+            }],
             smeared_charges: Vec::new(),
             field: None,
         };
-        let config = RhfConfig { external_potential: Some(ext.clone()), ..Default::default() };
+        let config = RhfConfig {
+            external_potential: Some(ext.clone()),
+            ..Default::default()
+        };
         let perturbed = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
 
         assert!(perturbed.converged);
-        assert!((perturbed.energy - base.energy).abs() > 1e-8, "energy did not change");
+        assert!(
+            (perturbed.energy - base.energy).abs() > 1e-8,
+            "energy did not change"
+        );
 
         // Classical charge-nuclear energy alone (no electronic response) must be
         // a lower bound on the magnitude of a repulsive-like shift; more
@@ -1627,7 +1755,10 @@ mod tests {
         let ctx = ParallelContext::default();
 
         let a = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
-        let config = RhfConfig { external_potential: None, ..Default::default() };
+        let config = RhfConfig {
+            external_potential: None,
+            ..Default::default()
+        };
         let b = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
         assert_eq!(a.energy, b.energy);
     }
@@ -1647,7 +1778,10 @@ mod tests {
         let ctx = ParallelContext::default();
 
         let a = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
-        let config = RhfConfig { verbose: false, ..Default::default() };
+        let config = RhfConfig {
+            verbose: false,
+            ..Default::default()
+        };
         let b = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
         assert_eq!(a.energy, b.energy);
         assert_eq!(a.iterations, b.iterations);
@@ -1672,7 +1806,10 @@ mod tests {
         let ctx = ParallelContext::default();
 
         let quiet = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
-        let config = RhfConfig { verbose: true, ..Default::default() };
+        let config = RhfConfig {
+            verbose: true,
+            ..Default::default()
+        };
         let loud = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
         assert_eq!(quiet.energy, loud.energy);
         assert_eq!(quiet.iterations, loud.iterations);
@@ -1696,7 +1833,10 @@ mod tests {
         let ctx = ParallelContext::default();
 
         let a = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
-        let config = RhfConfig { pcm: None, ..Default::default() };
+        let config = RhfConfig {
+            pcm: None,
+            ..Default::default()
+        };
         let b = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
         assert_eq!(a.energy, b.energy);
     }
@@ -1971,11 +2111,19 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
         let ctx = ParallelContext::default();
 
-        let base_config = RhfConfig { xc: Some("PBE".to_string()), ..Default::default() };
+        let base_config = RhfConfig {
+            xc: Some("PBE".to_string()),
+            ..Default::default()
+        };
         let base = solve_rhf(&ctx, &mol, &prep, op, &bounds, &base_config).unwrap();
 
         let ext = ExternalPotential {
-            point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 20.0 }],
+            point_charges: vec![PointCharge {
+                q: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 20.0,
+            }],
             smeared_charges: Vec::new(),
             field: None,
         };
@@ -2040,11 +2188,24 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
         let ctx = ParallelContext::default();
-        let base = RhfConfig { energy_conv: 1e-12, ..Default::default() };
-        let mom = RhfConfig { mom_after_iter: 2, ..base.clone() };
-        let e0 = solve_rhf(&ctx, &mol, &prep, op, &bounds, &base).unwrap().energy;
-        let e1 = solve_rhf(&ctx, &mol, &prep, op, &bounds, &mom).unwrap().energy;
-        assert!((e0 - e1).abs() < 1e-9, "MOM changed water RHF: {e0} vs {e1}");
+        let base = RhfConfig {
+            energy_conv: 1e-12,
+            ..Default::default()
+        };
+        let mom = RhfConfig {
+            mom_after_iter: 2,
+            ..base.clone()
+        };
+        let e0 = solve_rhf(&ctx, &mol, &prep, op, &bounds, &base)
+            .unwrap()
+            .energy;
+        let e1 = solve_rhf(&ctx, &mol, &prep, op, &bounds, &mom)
+            .unwrap()
+            .energy;
+        assert!(
+            (e0 - e1).abs() < 1e-9,
+            "MOM changed water RHF: {e0} vs {e1}"
+        );
     }
 
     /// A24-21 (C2H4·Ar dimer, aug-cc-pVDZ, DF-JK): aufbau DIIS-8 plateaus
@@ -2084,7 +2245,10 @@ mod tests {
             result.energy
         );
         // Ground-state check: DIIS-16 + MOM lands on the C2H4+Ar limit.
-        let config16 = RhfConfig { diis_size: 16, ..config };
+        let config16 = RhfConfig {
+            diis_size: 16,
+            ..config
+        };
         let r16 = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config16).unwrap();
         assert!(
             (r16.energy - (-604.8439254747)).abs() < 1e-5,
@@ -2136,7 +2300,8 @@ mod tests {
     fn rhf_level_shift_converges_cose() {
         // See ENV_LOCK doc comment: solve_rhf reads the budget env vars.
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let xyz = "3\nCOSe\nO 0.0000 0.0000 1.159\nC 0.0000 0.0000 0.0000\nSe 0.0000 0.0000 -1.709\n";
+        let xyz =
+            "3\nCOSe\nO 0.0000 0.0000 1.159\nC 0.0000 0.0000 0.0000\nSe 0.0000 0.0000 -1.709\n";
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled("aug-cc-pvdz").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -2149,7 +2314,10 @@ mod tests {
             ..Default::default()
         };
         let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
-        assert!(result.converged, "COSe RHF did not converge with level shift");
+        assert!(
+            result.converged,
+            "COSe RHF did not converge with level shift"
+        );
         assert!(
             (result.energy - (-2512.5713600037)).abs() < 1e-5,
             "COSe RHF: got {:.10}, expected PySCF -2512.5713600037",
@@ -2180,7 +2348,10 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
         let ctx = ParallelContext::default();
         // Default config (no level shift, no MOM) — the exact path gw100_full uses.
-        let config = RhfConfig { max_iter: 60, ..Default::default() };
+        let config = RhfConfig {
+            max_iter: 60,
+            ..Default::default()
+        };
         let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
         assert!(
             result.converged,
@@ -2198,13 +2369,13 @@ mod tests {
 
     #[test]
     fn divergence_aborts_early() {
-        use ferric_core::mol::Molecule;
+        use crate::result::ScfExit;
+        use crate::screening::SchwarzBounds;
         use ferric_core::basis;
+        use ferric_core::mol::Molecule;
         use ferric_core::parallel::ParallelContext;
         use ferric_integrals::basis_bridge::PreparedBasis;
         use ferric_integrals::operator::Operator;
-        use crate::screening::SchwarzBounds;
-        use crate::result::ScfExit;
 
         // A guess/level-shift-free run on a hard system that oscillates. We assert
         // the detector CAN fire and returns the right exit reason, using a synthetic
@@ -2228,7 +2399,10 @@ mod tests {
             ..Default::default()
         };
         let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
-        assert!(r.converged, "water/sto-3g must still converge with detectors on");
+        assert!(
+            r.converged,
+            "water/sto-3g must still converge with detectors on"
+        );
         assert_eq!(r.exit, ScfExit::Converged);
     }
 
@@ -2252,7 +2426,10 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
         let ctx = ParallelContext::default();
         // max_iter = 1 guarantees non-convergence for water.
-        let cfg = RhfConfig { max_iter: 1, ..Default::default() };
+        let cfg = RhfConfig {
+            max_iter: 1,
+            ..Default::default()
+        };
         let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg)
             .expect("max_iter must now return Ok, not Err");
         assert!(!r.converged, "should not be converged in 1 iter");
@@ -2287,8 +2464,11 @@ mod tests {
         // 2e-5 energy floor. This is the whole point of the redesign: BOTH the
         // gradient and ΔE floor with naux, only ΔP converges.
         let r = scf_converged(sig(2e-5, 1e-9, 9e-8), E_CONV, D_CONV);
-        assert_eq!(r, Some(ScfExit::Converged),
-            "must converge on ΔP even when BOTH the gradient and ΔE floor above their tols");
+        assert_eq!(
+            r,
+            Some(ScfExit::Converged),
+            "must converge on ΔP even when BOTH the gradient and ΔE floor above their tols"
+        );
     }
 
     #[test]
@@ -2304,7 +2484,10 @@ mod tests {
         // loose bound) — an early iteration where DIIS briefly stalls the density
         // while the energy is far from settled. The loose ΔE bound still catches it.
         let r = scf_converged(sig(1e-2, 5e-7, 4e-6), E_CONV, D_CONV);
-        assert_eq!(r, None, "an actively-descending energy must not be accepted");
+        assert_eq!(
+            r, None,
+            "an actively-descending energy must not be accepted"
+        );
     }
 
     #[test]
@@ -2312,7 +2495,10 @@ mod tests {
         // dp_rms looks settled but one density element is still swinging
         // (dp_max > 10·density_conv) → reject (ORCA TolMaxP guard).
         let r = scf_converged(sig(2e-5, 5e-7, 5e-5), E_CONV, D_CONV);
-        assert_eq!(r, None, "dp_max companion must reject a single moving element");
+        assert_eq!(
+            r, None,
+            "dp_max companion must reject a single moving element"
+        );
     }
 
     // --- stall_detected: pure-arithmetic positive-trip tests ---
@@ -2380,12 +2566,8 @@ mod tests {
     /// exactly across pools of different sizes.
     #[test]
     fn build_jk_bit_identical_across_thread_counts() {
-        let mol = Molecule::parse_xyz(
-            "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n",
-            0,
-            1,
-        )
-        .unwrap();
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
@@ -2475,8 +2657,12 @@ mod tests {
             pool.install(|| {
                 let ctx = ParallelContext::default();
                 let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
-                assert!(result.converged, "RHF did not converge at {threads} threads");
-                let grad = crate::gradient::rhf_gradient(&mol, &prep, op, &bounds, &result, None).unwrap();
+                assert!(
+                    result.converged,
+                    "RHF did not converge at {threads} threads"
+                );
+                let grad =
+                    crate::gradient::rhf_gradient(&mol, &prep, op, &bounds, &result, None).unwrap();
                 (result.energy, grad)
             })
         };
@@ -2529,8 +2715,14 @@ mod tests {
         // Incremental (default).
         let incr = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
 
-        assert!(full.converged, "full-rebuild RHF must converge for {mol_path}/{basis}");
-        assert!(incr.converged, "incremental RHF must converge for {mol_path}/{basis}");
+        assert!(
+            full.converged,
+            "full-rebuild RHF must converge for {mol_path}/{basis}"
+        );
+        assert!(
+            incr.converged,
+            "incremental RHF must converge for {mol_path}/{basis}"
+        );
         (incr.energy, incr.iterations, full.energy, full.iterations)
     }
 
@@ -2646,7 +2838,8 @@ mod tests {
             "shell-pair cache moved the converged SCF energy by {de:.3e} Ha \
              (cached={:.17e} vs uncached={:.17e}), beyond the SCF convergence floor -- \
              a reassociation-scale cache must not shift the converged answer this much",
-            cached.energy, uncached.energy
+            cached.energy,
+            uncached.energy
         );
     }
 
@@ -2685,7 +2878,8 @@ mod tests {
             de <= 1e-10,
             "shell-pair cache moved the converged benzene/cc-pVDZ SCF energy by {de:.3e} Ha \
              (cached={:.17e} vs uncached={:.17e}), beyond the SCF convergence floor",
-            cached.energy, uncached.energy
+            cached.energy,
+            uncached.energy
         );
     }
 

@@ -16,6 +16,7 @@ they get dedicated tests:
     with no error anywhere. `test_point_charges_actually_change_the_energy`
     pins that the field is really being applied.
 """
+
 from __future__ import annotations
 
 import math
@@ -35,7 +36,7 @@ from tools.campaign.xtb_engine import (
 pytestmark = pytest.mark.skipif(
     not xtb_available(),
     reason="the `xtb` binary is not on PATH; see tools/campaign/xtb_engine.py "
-           "for the LD_LIBRARY_PATH/XTBPATH setup this box needs",
+    "for the LD_LIBRARY_PATH/XTBPATH setup this box needs",
 )
 
 WATER_SYMBOLS = ["O", "H", "H"]
@@ -87,6 +88,7 @@ def test_relax_of_an_already_relaxed_geometry_is_idempotent():
 
 # ── the point-charge invariant ──
 
+
 def test_point_charges_actually_change_the_energy():
     """THE test for silently-ignored point charges.
 
@@ -121,8 +123,12 @@ def test_point_charge_sign_flips_the_shift():
     A magnitude-only bug (e.g. dropping the sign when writing the file) would
     pass the 'charges do something' test above but be physically wrong."""
     vac = singlepoint(WATER_SYMBOLS, WATER).energy
-    plus = singlepoint(WATER_SYMBOLS, WATER, point_charges=[(2.0, 0.0, 0.0, 3.0)]).energy
-    minus = singlepoint(WATER_SYMBOLS, WATER, point_charges=[(-2.0, 0.0, 0.0, 3.0)]).energy
+    plus = singlepoint(
+        WATER_SYMBOLS, WATER, point_charges=[(2.0, 0.0, 0.0, 3.0)]
+    ).energy
+    minus = singlepoint(
+        WATER_SYMBOLS, WATER, point_charges=[(-2.0, 0.0, 0.0, 3.0)]
+    ).energy
     assert (plus - vac) * (minus - vac) < 0, (
         f"+2 shift {plus - vac:.6f} and -2 shift {minus - vac:.6f} have the "
         "same sign -- the charge sign is being dropped"
@@ -131,12 +137,11 @@ def test_point_charge_sign_flips_the_shift():
 
 # ── honest failure ──
 
+
 def test_bad_geometry_reports_an_error_and_no_energy():
     """Two atoms on top of each other must fail with an error, not return 0.0."""
     r = singlepoint(["O", "O"], [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)])
-    assert r.energy is None or not r.ok, (
-        "coincident atoms produced a usable energy"
-    )
+    assert r.energy is None or not r.ok, "coincident atoms produced a usable energy"
     if not r.ok:
         assert r.error is not None
         assert r.energy is None, "a failed run must report energy=None, never 0.0"
@@ -174,9 +179,11 @@ def test_relax_refuses_to_run_when_the_build_check_fails(monkeypatch):
 # MD at elevated temperature crosses torsional barriers, so it can reach a
 # different basin -- which is the only mechanism here that can.
 
+
 def test_anneal_returns_multiple_distinct_frames():
-    frames, run = anneal(WATER_SYMBOLS, WATER, picoseconds=0.3,
-                         dump_every_fs=50.0, skip_build_check=True)
+    frames, run = anneal(
+        WATER_SYMBOLS, WATER, picoseconds=0.3, dump_every_fs=50.0, skip_build_check=True
+    )
     assert run.ok, run.error
     assert run.n_frames == len(frames) >= 2
     assert all(len(f) == len(WATER_SYMBOLS) for f in frames)
@@ -187,8 +194,9 @@ def test_anneal_returns_multiple_distinct_frames():
 
 def test_anneal_frames_are_physical():
     """Hot MD frames are distorted, but not broken: bonds must stay bonds."""
-    frames, run = anneal(WATER_SYMBOLS, WATER, picoseconds=0.3,
-                         dump_every_fs=50.0, skip_build_check=True)
+    frames, run = anneal(
+        WATER_SYMBOLS, WATER, picoseconds=0.3, dump_every_fs=50.0, skip_build_check=True
+    )
     assert run.ok, run.error
     for f in frames:
         oh = math.dist(f[0], f[1])
@@ -202,10 +210,17 @@ def test_anneal_respects_the_pocket_field():
     than free-solution conformer generation -- the exact failure it exists to
     fix.
     """
-    vac, rv = anneal(WATER_SYMBOLS, WATER, picoseconds=0.3, dump_every_fs=50.0,
-                     skip_build_check=True)
-    fld, rf = anneal(WATER_SYMBOLS, WATER, picoseconds=0.3, dump_every_fs=50.0,
-                     point_charges=[(-2.0, 0.0, 0.0, 4.0)], skip_build_check=True)
+    vac, rv = anneal(
+        WATER_SYMBOLS, WATER, picoseconds=0.3, dump_every_fs=50.0, skip_build_check=True
+    )
+    fld, rf = anneal(
+        WATER_SYMBOLS,
+        WATER,
+        picoseconds=0.3,
+        dump_every_fs=50.0,
+        point_charges=[(-2.0, 0.0, 0.0, 4.0)],
+        skip_build_check=True,
+    )
     assert rv.ok and rf.ok, (rv.error, rf.error)
     assert vac[-1] != fld[-1], (
         "a -2 point charge 4 Bohr away did not change the trajectory -- the "
@@ -228,8 +243,7 @@ def test_anneal_refuses_without_a_build_check(monkeypatch):
 
 def test_anneal_reports_a_missing_binary_rather_than_raising(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda _: None)
-    frames, run = anneal(WATER_SYMBOLS, WATER, picoseconds=0.1,
-                         skip_build_check=True)
+    frames, run = anneal(WATER_SYMBOLS, WATER, picoseconds=0.1, skip_build_check=True)
     assert frames == [] and not run.ok
     assert "not on PATH" in (run.error or "")
 
@@ -257,5 +271,7 @@ def test_trajectory_parser_handles_a_truncated_final_frame(tmp_path):
     frame = "3\n energy: -5.0\nO 0.0 0.0 0.0\nH 0.96 0.0 0.0\nH -0.24 0.93 0.0\n"
     trj.write_text(frame + frame + "3\n energy: -5.0\nO 0.0 0.0 0.0\n")
     frames = _read_trajectory(trj, 3)
-    assert len(frames) == 2, f"expected the truncated frame to be dropped, got {len(frames)}"
+    assert len(frames) == 2, (
+        f"expected the truncated frame to be dropped, got {len(frames)}"
+    )
     assert all(len(f) == 3 for f in frames)

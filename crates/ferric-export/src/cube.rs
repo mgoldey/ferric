@@ -52,9 +52,21 @@ pub fn export_cube(
     )?;
 
     // Grid vectors
-    writeln!(writer, "{:5} {:12.6} {:12.6} {:12.6}", grid.n_x, grid.step_x[0], grid.step_x[1], grid.step_x[2])?;
-    writeln!(writer, "{:5} {:12.6} {:12.6} {:12.6}", grid.n_y, grid.step_y[0], grid.step_y[1], grid.step_y[2])?;
-    writeln!(writer, "{:5} {:12.6} {:12.6} {:12.6}", grid.n_z, grid.step_z[0], grid.step_z[1], grid.step_z[2])?;
+    writeln!(
+        writer,
+        "{:5} {:12.6} {:12.6} {:12.6}",
+        grid.n_x, grid.step_x[0], grid.step_x[1], grid.step_x[2]
+    )?;
+    writeln!(
+        writer,
+        "{:5} {:12.6} {:12.6} {:12.6}",
+        grid.n_y, grid.step_y[0], grid.step_y[1], grid.step_y[2]
+    )?;
+    writeln!(
+        writer,
+        "{:5} {:12.6} {:12.6} {:12.6}",
+        grid.n_z, grid.step_z[0], grid.step_z[1], grid.step_z[2]
+    )?;
 
     // Atoms
     for atom in &mol.atoms {
@@ -208,7 +220,11 @@ mod mo_cube_tests {
             let lines: Vec<&str> = contents.lines().collect();
             // 2 comment lines + 1 atom-count/origin line + 3 grid-vector
             // lines + 2 atom lines = 8 header lines, then volumetric data.
-            assert!(lines.len() > 8, "cube file {path} too short: {} lines", lines.len());
+            assert!(
+                lines.len() > 8,
+                "cube file {path} too short: {} lines",
+                lines.len()
+            );
             assert!(lines[0].contains("Ferric"));
             // atom-count line: first token should be "2" (2 H atoms)
             let natoms: usize = lines[2].split_whitespace().next().unwrap().parse().unwrap();
@@ -218,7 +234,10 @@ mod mo_cube_tests {
                 .iter()
                 .flat_map(|l| l.split_whitespace())
                 .any(|tok| tok.parse::<f64>().is_ok());
-            assert!(has_numeric_data, "cube file {path} has no parseable volumetric data");
+            assert!(
+                has_numeric_data,
+                "cube file {path} has no parseable volumetric data"
+            );
 
             std::fs::remove_file(&path).ok();
         }
@@ -228,6 +247,9 @@ mod mo_cube_tests {
         // |C_H2| for the lowest (totally symmetric) MO, matching the
         // AO-level symmetry check in gto_eval.rs's normalization test.
         let c0 = rhf.mos_r().column(0);
-        assert!((c0[0].abs() - c0[1].abs()).abs() < 1e-8, "bonding MO not symmetric: {c0:?}");
+        assert!(
+            (c0[0].abs() - c0[1].abs()).abs() < 1e-8,
+            "bonding MO not symmetric: {c0:?}"
+        );
     }
 }

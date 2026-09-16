@@ -12,6 +12,7 @@ exists mainly to enforce two things the providers themselves cannot:
 2.  **A molecule nothing could score gets `liability_score is None`.** Not 0.0,
     not omitted from the output — present, unranked, and visibly so.
 """
+
 from __future__ import annotations
 
 from .alerts import RdkitAlertsProvider

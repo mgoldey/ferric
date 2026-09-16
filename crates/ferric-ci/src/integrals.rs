@@ -17,10 +17,10 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
-use ferric_integrals::operator::Operator;
 use ferric_integrals::oneelectron::hcore;
-use ndarray::Array2;
+use ferric_integrals::operator::Operator;
 use ferric_scf::ScfResult;
+use ndarray::Array2;
 
 /// Active-space integrals in the MO basis, plus the closed-shell core energy.
 #[derive(Debug, Clone)]

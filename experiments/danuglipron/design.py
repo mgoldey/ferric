@@ -46,6 +46,7 @@ conformer reaches the bound pose within the conventional 2.0 A bar (best 2.23 A)
 The analogue DESIGNS below are unaffected -- they are 2D hypotheses -- but every
 3D fit number computed from them measures pose error rather than chemistry.
 """
+
 from __future__ import annotations
 
 from tools.morph.design import Analogue, PharmacophoreSpec
@@ -98,7 +99,11 @@ GLP1R_PHARMACOPHORE = PharmacophoreSpec(
         ),
         ("fused_diazole_core", "c1nc2ccccc2n1", 1),
         ("basic_amine_linker", "[NX3;H0;!$(N[C,S]=[O,S,N]);!$(N=*);R]", 1),
-        ("electron_poor_aryl_terminus", "[$(c[CX2]#[NX1]),$(c[F,Cl]),$(c[CX4](F)(F)F)]", 1),
+        (
+            "electron_poor_aryl_terminus",
+            "[$(c[CX2]#[NX1]),$(c[F,Cl]),$(c[CX4](F)(F)F)]",
+            1,
+        ),
     )
 )
 

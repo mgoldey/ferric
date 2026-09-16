@@ -15,13 +15,24 @@ ECP encoding matches the bundled def2-ecp.json convention:
 
 Run: python3 scripts/gw100/gen_def2svp_ecp_blocks.py
 """
+
 import json
 import os
 from pyscf import gto
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BUNDLED = os.path.normpath(
-    os.path.join(HERE, "..", "..", "crates", "ferric-core", "src", "basis", "bundled", "def2-svp.json")
+    os.path.join(
+        HERE,
+        "..",
+        "..",
+        "crates",
+        "ferric-core",
+        "src",
+        "basis",
+        "bundled",
+        "def2-svp.json",
+    )
 )
 
 ELEMENTS = {"53": "I", "54": "Xe"}
@@ -36,12 +47,14 @@ def basis_block_to_shells(b):
         exps = [str(r[0]) for r in rows]
         ncol = len(rows[0]) - 1
         coeffs = [[str(r[1 + c]) for r in rows] for c in range(ncol)]
-        shells.append({
-            "function_type": "gto_spherical",
-            "angular_momentum": [l],
-            "exponents": exps,
-            "coefficients": coeffs,
-        })
+        shells.append(
+            {
+                "function_type": "gto_spherical",
+                "angular_momentum": [l],
+                "exponents": exps,
+                "coefficients": coeffs,
+            }
+        )
     return shells
 
 
@@ -57,21 +70,27 @@ def ecp_to_potentials(e):
         out_l = local_l if l == -1 else l
         ams, r_exps, gexps, coefs = [], [], [], []
         for r_power, terms in enumerate(c[1]):
-            for (zeta, d) in terms:
+            for zeta, d in terms:
                 ams.append(out_l)
                 r_exps.append(int(r_power))
                 gexps.append(str(zeta))
                 coefs.append(str(d))
         if not ams:
             continue
-        pots.append({
-            "angular_momentum": [out_l],
-            "r_exponents": r_exps,
-            "gaussian_exponents": gexps,
-            "coefficients": [coefs],
-        })
+        pots.append(
+            {
+                "angular_momentum": [out_l],
+                "r_exponents": r_exps,
+                "gaussian_exponents": gexps,
+                "coefficients": [coefs],
+            }
+        )
     # Sort local channel first to match bundled def2-ecp.json convention.
-    pots.sort(key=lambda p: 0 if p["angular_momentum"][0] == local_l else p["angular_momentum"][0] + 1)
+    pots.sort(
+        key=lambda p: (
+            0 if p["angular_momentum"][0] == local_l else p["angular_momentum"][0] + 1
+        )
+    )
     return ncore, pots
 
 
@@ -88,8 +107,10 @@ def main():
             "ecp_potentials": pots,
         }
         data["elements"][z] = elem
-        print(f"Z={z} {sym}: {len(elem['electron_shells'])} shells, "
-              f"ncore={ncore}, {len(pots)} ecp channels")
+        print(
+            f"Z={z} {sym}: {len(elem['electron_shells'])} shells, "
+            f"ncore={ncore}, {len(pots)} ecp channels"
+        )
     with open(BUNDLED, "w") as f:
         json.dump(data, f)
     print(f"merged into {BUNDLED}")

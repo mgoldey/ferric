@@ -39,8 +39,8 @@ use std::sync::Mutex;
 pub struct LdaFxcKernel {
     pub xc: XcDef,
     pub grid: Vec<GridPoint>,
-    pub chi: Array2<f64>,     // (nbf, npts)
-    pub dchi: Array3<f64>,    // (3, nbf, npts) — unused for LDA but kept for symmetry
+    pub chi: Array2<f64>,  // (nbf, npts)
+    pub dchi: Array3<f64>, // (3, nbf, npts) — unused for LDA but kept for symmetry
     /// Pre-scaled χ scratch reused across Newton iterations (`apply_with_ref`
     /// takes `&self`, hence the Mutex; uncontended — one lock per matvec).
     scratch: Mutex<VxcScratch>,
@@ -55,15 +55,23 @@ impl LdaFxcKernel {
         cfg: &AtomicGridConfig,
     ) -> Result<Self, String> {
         if xc.funcs.iter().any(|f| f.family() != FunctionalFamily::Lda) {
-            return Err("LdaFxcKernel: all sub-functionals must be LDA-family for the f_xc \
+            return Err(
+                "LdaFxcKernel: all sub-functionals must be LDA-family for the f_xc \
                  response. GGA response not implemented yet."
-                .to_string());
+                    .to_string(),
+            );
         }
         let grid = build_atomic_grid(mol, cfg);
         let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
         let (chi, dchi) =
             eval_basis_and_grad_on_points(mol, bs, &pts).map_err(|e| format!("{e:?}"))?;
-        Ok(Self { xc, grid, chi, dchi, scratch: Mutex::new(VxcScratch::new()) })
+        Ok(Self {
+            xc,
+            grid,
+            chi,
+            dchi,
+            scratch: Mutex::new(VxcScratch::new()),
+        })
     }
 
     /// Compute (δV_xc^α, δV_xc^β) in AO basis given (δD_α, δD_β).
@@ -89,7 +97,10 @@ impl LdaFxcKernel {
 
         // Placeholder — real entry point is apply_with_ref.
         let _ = (drho_a, drho_b, npts, nbf);
-        (Array2::zeros(d_delta_a.dim()), Array2::zeros(d_delta_b.dim()))
+        (
+            Array2::zeros(d_delta_a.dim()),
+            Array2::zeros(d_delta_b.dim()),
+        )
     }
 
     /// Compute (δV_xc^α, δV_xc^β) given the reference per-spin densities
@@ -126,9 +137,13 @@ impl LdaFxcKernel {
         let mut v2_tmp = vec![0.0f64; 3 * npts];
         for (i, f) in self.xc.funcs.iter().enumerate() {
             let w_i = self.xc.weights.as_ref().map_or(1.0, |ws| ws[i]);
-            for x in v2_tmp.iter_mut() { *x = 0.0; }
+            for x in v2_tmp.iter_mut() {
+                *x = 0.0;
+            }
             f.eval_lda_fxc_polarized(&rho_packed, &mut v2_tmp);
-            for (a, b) in v2.iter_mut().zip(v2_tmp.iter()) { *a += w_i * *b; }
+            for (a, b) in v2.iter_mut().zip(v2_tmp.iter()) {
+                *a += w_i * *b;
+            }
         }
 
         // δV(r_g) per spin (LDA):
@@ -156,31 +171,27 @@ impl LdaFxcKernel {
         let mut scratch = self.scratch.lock().unwrap_or_else(|e| e.into_inner());
         let buf = scratch.ensure((nbf, npts));
 
-        let fac_a: Array1<f64> =
-            (0..npts).map(|g| self.grid[g].weight * dv_a[g]).collect();
+        let fac_a: Array1<f64> = (0..npts).map(|g| self.grid[g].weight * dv_a[g]).collect();
         scale_columns_into(self.chi.view(), &fac_a, buf);
         // Digestion GEMM (nbf, npts)·(npts, nbf), outside any rayon region —
         // apply_with_ref is called once per matvec from the serial ROHF
         // AH-Newton solver (rohf_newton.rs/rohf_ah.rs; neither uses rayon).
         // Opt-in BLAS raise via FERRIC_BLAS_THREADS (default 1, unchanged
         // behavior); mirrors vxc.rs's semilocal_vxc_closed_scratch idiom.
-        let dvxc_a: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || buf.dot(&self.chi.t()));
+        let dvxc_a: Array2<f64> =
+            with_blas_threads(opt_in_blas_threads(), || buf.dot(&self.chi.t()));
 
-        let fac_b: Array1<f64> =
-            (0..npts).map(|g| self.grid[g].weight * dv_b[g]).collect();
+        let fac_b: Array1<f64> = (0..npts).map(|g| self.grid[g].weight * dv_b[g]).collect();
         scale_columns_into(self.chi.view(), &fac_b, buf);
         // Same opt-in-raise digestion GEMM as the alpha-spin piece above.
-        let dvxc_b: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || buf.dot(&self.chi.t()));
+        let dvxc_b: Array2<f64> =
+            with_blas_threads(opt_in_blas_threads(), || buf.dot(&self.chi.t()));
         (dvxc_a, dvxc_b)
     }
 
     /// Convenience: precompute the reference per-spin density on this
     /// kernel's grid from (D_α, D_β).
-    pub fn reference_density(
-        &self,
-        d_a: &Array2<f64>,
-        d_b: &Array2<f64>,
-    ) -> (Vec<f64>, Vec<f64>) {
+    pub fn reference_density(&self, d_a: &Array2<f64>, d_b: &Array2<f64>) -> (Vec<f64>, Vec<f64>) {
         let rho_a = eval_density_closed(d_a, &self.chi, &self.dchi).rho.to_vec();
         let rho_b = eval_density_closed(d_b, &self.chi, &self.dchi).rho.to_vec();
         (rho_a, rho_b)
@@ -216,16 +227,28 @@ impl GgaFxcKernel {
         xc: XcDef,
         cfg: &AtomicGridConfig,
     ) -> Result<Self, String> {
-        if xc.funcs.iter().any(|f| f.family() == FunctionalFamily::MetaGga) {
-            return Err("GgaFxcKernel: meta-GGA f_xc response (τ second derivative) \
+        if xc
+            .funcs
+            .iter()
+            .any(|f| f.family() == FunctionalFamily::MetaGga)
+        {
+            return Err(
+                "GgaFxcKernel: meta-GGA f_xc response (τ second derivative) \
                  is not implemented — meta-GGA SCF must use the DIIS path"
-                .to_string());
+                    .to_string(),
+            );
         }
         let grid = build_atomic_grid(mol, cfg);
         let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
         let (chi, dchi) =
             eval_basis_and_grad_on_points(mol, bs, &pts).map_err(|e| format!("{e:?}"))?;
-        Ok(Self { xc, grid, chi, dchi, scratch: Mutex::new(VxcScratch::new()) })
+        Ok(Self {
+            xc,
+            grid,
+            chi,
+            dchi,
+            scratch: Mutex::new(VxcScratch::new()),
+        })
     }
 
     /// Precompute the reference per-spin density (ρ, ∇ρ, σ channels) on this
@@ -312,9 +335,15 @@ impl GgaFxcKernel {
         let mut t_ss = vec![0.0f64; 6 * npts];
         for (i, f) in self.xc.funcs.iter().enumerate() {
             let w_i = self.xc.weights.as_ref().map_or(1.0, |ws| ws[i]);
-            for x in t_rr.iter_mut() { *x = 0.0; }
-            for x in t_rs.iter_mut() { *x = 0.0; }
-            for x in t_ss.iter_mut() { *x = 0.0; }
+            for x in t_rr.iter_mut() {
+                *x = 0.0;
+            }
+            for x in t_rs.iter_mut() {
+                *x = 0.0;
+            }
+            for x in t_ss.iter_mut() {
+                *x = 0.0;
+            }
             match f.family() {
                 FunctionalFamily::Lda => {
                     f.eval_lda_fxc_polarized(&rho_packed, &mut t_rr);
@@ -323,17 +352,26 @@ impl GgaFxcKernel {
                 | FunctionalFamily::HybridGga
                 | FunctionalFamily::RangeSepGga => {
                     f.eval_gga_fxc_polarized(
-                        &rho_packed, &sigma_packed,
-                        &mut t_rr, &mut t_rs, &mut t_ss,
+                        &rho_packed,
+                        &sigma_packed,
+                        &mut t_rr,
+                        &mut t_rs,
+                        &mut t_ss,
                     );
                 }
                 FunctionalFamily::MetaGga => unreachable!(
                     "GgaFxcKernel built with a meta-GGA functional (rejected in ::new)"
                 ),
             }
-            for (a, b) in v2rho2.iter_mut().zip(&t_rr) { *a += w_i * *b; }
-            for (a, b) in v2rhosigma.iter_mut().zip(&t_rs) { *a += w_i * *b; }
-            for (a, b) in v2sigma2.iter_mut().zip(&t_ss) { *a += w_i * *b; }
+            for (a, b) in v2rho2.iter_mut().zip(&t_rr) {
+                *a += w_i * *b;
+            }
+            for (a, b) in v2rhosigma.iter_mut().zip(&t_rs) {
+                *a += w_i * *b;
+            }
+            for (a, b) in v2sigma2.iter_mut().zip(&t_ss) {
+                *a += w_i * *b;
+            }
         }
 
         // Reference and perturbation gradients as (3, npts) views.
@@ -386,19 +424,34 @@ impl GgaFxcKernel {
             let fss_bb_bb = v2sigma2[6 * g + 5];
 
             // δv_ρσ = Σ_σ' (∂v_ρσ/∂ρ_σ') δρ_σ' + Σ_c (∂v_ρσ/∂σ_c) δσ_c
-            let dv_rho_a = frr_aa * dra + frr_ab * drb
-                + frs_a_aa * dsig_aa + frs_a_ab * dsig_ab + frs_a_bb * dsig_bb;
-            let dv_rho_b = frr_ab * dra + frr_bb * drb
-                + frs_b_aa * dsig_aa + frs_b_ab * dsig_ab + frs_b_bb * dsig_bb;
+            let dv_rho_a = frr_aa * dra
+                + frr_ab * drb
+                + frs_a_aa * dsig_aa
+                + frs_a_ab * dsig_ab
+                + frs_a_bb * dsig_bb;
+            let dv_rho_b = frr_ab * dra
+                + frr_bb * drb
+                + frs_b_aa * dsig_aa
+                + frs_b_ab * dsig_ab
+                + frs_b_bb * dsig_bb;
 
             // δv_σc = Σ_σ' (∂v_σc/∂ρ_σ') δρ_σ' + Σ_c'(∂v_σc/∂σ_c') δσ_c'
             //   ∂v_σc/∂ρ_σ' is v2rhosigma (same array, ρ↔σ symmetric).
-            let dv_sig_aa = frs_a_aa * dra + frs_b_aa * drb
-                + fss_aa_aa * dsig_aa + fss_aa_ab * dsig_ab + fss_aa_bb * dsig_bb;
-            let dv_sig_ab = frs_a_ab * dra + frs_b_ab * drb
-                + fss_aa_ab * dsig_aa + fss_ab_ab * dsig_ab + fss_ab_bb * dsig_bb;
-            let dv_sig_bb = frs_a_bb * dra + frs_b_bb * drb
-                + fss_aa_bb * dsig_aa + fss_ab_bb * dsig_ab + fss_bb_bb * dsig_bb;
+            let dv_sig_aa = frs_a_aa * dra
+                + frs_b_aa * drb
+                + fss_aa_aa * dsig_aa
+                + fss_aa_ab * dsig_ab
+                + fss_aa_bb * dsig_bb;
+            let dv_sig_ab = frs_a_ab * dra
+                + frs_b_ab * drb
+                + fss_aa_ab * dsig_aa
+                + fss_ab_ab * dsig_ab
+                + fss_ab_bb * dsig_bb;
+            let dv_sig_bb = frs_a_bb * dra
+                + frs_b_bb * drb
+                + fss_aa_bb * dsig_aa
+                + fss_ab_bb * dsig_ab
+                + fss_bb_bb * dsig_bb;
 
             // u^σ = δv_ρσ (multiplies χ_μχ_ν).
             u_a[g] = dv_rho_a;
@@ -431,12 +484,21 @@ impl GgaFxcKernel {
                     FunctionalFamily::Gga
                     | FunctionalFamily::HybridGga
                     | FunctionalFamily::RangeSepGga => {
-                        for x in exc.iter_mut() { *x = 0.0; }
-                        for x in vrho.iter_mut() { *x = 0.0; }
-                        for x in vsigma.iter_mut() { *x = 0.0; }
+                        for x in exc.iter_mut() {
+                            *x = 0.0;
+                        }
+                        for x in vrho.iter_mut() {
+                            *x = 0.0;
+                        }
+                        for x in vsigma.iter_mut() {
+                            *x = 0.0;
+                        }
                         f.eval_gga_polarized(
-                            &rho_packed, &sigma_packed,
-                            &mut exc, &mut vrho, &mut vsigma,
+                            &rho_packed,
+                            &sigma_packed,
+                            &mut exc,
+                            &mut vrho,
+                            &mut vsigma,
                         );
                         for g in 0..npts {
                             vsig_aa[g] += w_i * vsigma[3 * g];
@@ -456,11 +518,9 @@ impl GgaFxcKernel {
             let vbb = vsig_bb[g];
             for ax in 0..3 {
                 // + 2 v_σαα ∇δρ_α + v_σαβ ∇δρ_β  (α spin)
-                w_a[(ax, g)] += 2.0 * vaa * grad_del_a[(ax, g)]
-                    + vab * grad_del_b[(ax, g)];
+                w_a[(ax, g)] += 2.0 * vaa * grad_del_a[(ax, g)] + vab * grad_del_b[(ax, g)];
                 // + 2 v_σββ ∇δρ_β + v_σαβ ∇δρ_α  (β spin)
-                w_b[(ax, g)] += 2.0 * vbb * grad_del_b[(ax, g)]
-                    + vab * grad_del_a[(ax, g)];
+                w_b[(ax, g)] += 2.0 * vbb * grad_del_b[(ax, g)] + vab * grad_del_a[(ax, g)];
             }
         }
 
@@ -471,8 +531,7 @@ impl GgaFxcKernel {
         // Build V^σ = (scalar u term) + Σ_axis (w-vector axis term).
         let build = |u: &[f64], w: &Array2<f64>, buf: &mut Array2<f64>| -> Array2<f64> {
             // Scalar (LDA-like) piece: Σ_g (w_g u_g) χ_μg χ_νg.
-            let fac_u: Array1<f64> =
-                (0..npts).map(|g| self.grid[g].weight * u[g]).collect();
+            let fac_u: Array1<f64> = (0..npts).map(|g| self.grid[g].weight * u[g]).collect();
             scale_columns_into(self.chi.view(), &fac_u, buf);
             let mut v: Array2<f64> =
                 with_blas_threads(opt_in_blas_threads(), || buf.dot(&self.chi.t()));
@@ -482,8 +541,7 @@ impl GgaFxcKernel {
             for axis in 0..3 {
                 let dchi_axis = self.dchi.index_axis(Axis(0), axis);
                 let w_ax = w.index_axis(Axis(0), axis);
-                let fac_w: Array1<f64> =
-                    (0..npts).map(|g| self.grid[g].weight * w_ax[g]).collect();
+                let fac_w: Array1<f64> = (0..npts).map(|g| self.grid[g].weight * w_ax[g]).collect();
                 scale_columns_into(self.chi.view(), &fac_w, buf);
                 let m_axis: Array2<f64> =
                     with_blas_threads(opt_in_blas_threads(), || buf.dot(&dchi_axis.t()));
@@ -565,7 +623,9 @@ mod tests {
         let mut rng = Xorshift64(0x243F6A8885A308D3);
 
         let chi = Array2::<f64>::from_shape_fn((nbf, npts), |_| rng.next_f64());
-        let weights: Vec<f64> = (0..npts).map(|_| 0.5 + 0.5 * rng.next_f64().abs()).collect();
+        let weights: Vec<f64> = (0..npts)
+            .map(|_| 0.5 + 0.5 * rng.next_f64().abs())
+            .collect();
         let dv_a: Vec<f64> = (0..npts).map(|_| rng.next_f64()).collect();
         let dv_b: Vec<f64> = (0..npts).map(|_| rng.next_f64()).collect();
 
@@ -745,13 +805,18 @@ mod tests {
         a.iter().fold(0.0_f64, |m, &x| m.max(x.abs()))
     }
     fn max_abs_diff2(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-        a.iter().zip(b.iter()).fold(0.0_f64, |m, (&x, &y)| m.max((x - y).abs()))
+        a.iter()
+            .zip(b.iter())
+            .fold(0.0_f64, |m, (&x, &y)| m.max((x - y).abs()))
     }
     fn fro(a: &Array2<f64>) -> f64 {
         a.iter().fold(0.0_f64, |s, &x| s + x * x).sqrt()
     }
     fn fro_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-        a.iter().zip(b.iter()).fold(0.0_f64, |s, (&x, &y)| s + (x - y) * (x - y)).sqrt()
+        a.iter()
+            .zip(b.iter())
+            .fold(0.0_f64, |s, (&x, &y)| s + (x - y) * (x - y))
+            .sqrt()
     }
 
     /// PBE GGA f_xc response must match the central difference of the vxc.rs
@@ -766,17 +831,11 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner());
         // OH radical (doublet), 6-31G — small, converges fast, D_α ≠ D_β so all
         // spin channels (αα, αβ, ββ) of the kernel are exercised.
-        let mol = Molecule::parse_xyz(
-            "2\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.97\n",
-            0,
-            2,
-        )
-        .unwrap();
+        let mol = Molecule::parse_xyz("2\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.97\n", 0, 2).unwrap();
         let bs = basis::bundled("6-31g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
-        let bounds =
-            ferric_scf::screening::SchwarzBounds::compute(op, &prep).unwrap();
+        let bounds = ferric_scf::screening::SchwarzBounds::compute(op, &prep).unwrap();
         let ctx = ParallelContext::default();
 
         // A plain UHF density is a perfectly good *physical* reference for the
@@ -792,7 +851,11 @@ mod tests {
         let d_b = res.density_beta.clone().unwrap();
 
         // PBE (pure GGA — exercises v2rho2 + v2rhosigma + v2sigma2).
-        let cfg = AtomicGridConfig { n_radial: 50, n_angular: 110, ..Default::default() };
+        let cfg = AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 110,
+            ..Default::default()
+        };
         let xc_def = crate::libxc::xc_def_from_name_nspin("PBE", 2).unwrap();
         let kernel = GgaFxcKernel::new(&mol, &bs, xc_def, &cfg).unwrap();
 
@@ -837,11 +900,18 @@ mod tests {
         // shrink of the residual. This is the load-bearing correctness proof.
         let rel_at = |eps: f64| -> f64 {
             let (fd_a, fd_b) = fd_vxc_response(
-                &kernel.grid, &kernel.chi, &kernel.dchi, &xc_oracle,
-                &d_a, &d_b, &dd_a, &dd_b, eps,
+                &kernel.grid,
+                &kernel.chi,
+                &kernel.dchi,
+                &xc_oracle,
+                &d_a,
+                &d_b,
+                &dd_a,
+                &dd_b,
+                eps,
             );
-            let rel = (fro_diff(&an_a, &fd_a).powi(2) + fro_diff(&an_b, &fd_b).powi(2)).sqrt()
-                / scale;
+            let rel =
+                (fro_diff(&an_a, &fd_a).powi(2) + fro_diff(&an_b, &fd_b).powi(2)).sqrt() / scale;
             eprintln!("GGA-fxc FD check: eps={eps:.2e}  rel_err(fro)={rel:.3e}");
             rel
         };
@@ -869,14 +939,16 @@ mod tests {
             rel_errs[1] < rel_errs[0] && rel_errs[0] / rel_errs[1] > 4.0,
             "GGA f_xc FD residual must fall ≥ quadratically on the first halving: \
              {:.3e} → {:.3e} (want ratio > 4). ladder={rel_errs:?}",
-            rel_errs[0], rel_errs[1]
+            rel_errs[0],
+            rel_errs[1]
         );
         for w in rel_errs.windows(2) {
             assert!(
                 w[1] <= w[0] * 1.0000001,
                 "GGA f_xc FD residual must be monotonically non-increasing: \
                  {:.3e} → {:.3e}. ladder={rel_errs:?}",
-                w[0], w[1]
+                w[0],
+                w[1]
             );
         }
     }
@@ -907,13 +979,23 @@ mod tests {
         let d_a = res.density_alpha.clone();
         let d_b = res.density_beta.clone().unwrap();
 
-        let cfg = AtomicGridConfig { n_radial: 50, n_angular: 110, ..Default::default() };
+        let cfg = AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 110,
+            ..Default::default()
+        };
         let lda_k = LdaFxcKernel::new(
-            &mol, &bs, crate::libxc::xc_def_from_name_nspin("LDA", 2).unwrap(), &cfg,
+            &mol,
+            &bs,
+            crate::libxc::xc_def_from_name_nspin("LDA", 2).unwrap(),
+            &cfg,
         )
         .unwrap();
         let gga_k = GgaFxcKernel::new(
-            &mol, &bs, crate::libxc::xc_def_from_name_nspin("LDA", 2).unwrap(), &cfg,
+            &mol,
+            &bs,
+            crate::libxc::xc_def_from_name_nspin("LDA", 2).unwrap(),
+            &cfg,
         )
         .unwrap();
 

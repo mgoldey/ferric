@@ -12,7 +12,9 @@
 pub enum Chi0Backend {
     #[default]
     Dense,
-    Laplace { n_quad: usize },
+    Laplace {
+        n_quad: usize,
+    },
 }
 
 /// Sparsity strategy for the χ₀ build / dielectric matvec.
@@ -64,8 +66,15 @@ pub enum Chi0Backend {
 pub enum Chi0Sparsity {
     #[default]
     Dense,
-    BoysScreened { thresh: f64, dist_cutoff: f64 },
-    Auto { boys_thresh: f64, atom_cutoff: usize, dist_cutoff: f64 },
+    BoysScreened {
+        thresh: f64,
+        dist_cutoff: f64,
+    },
+    Auto {
+        boys_thresh: f64,
+        atom_cutoff: usize,
+        dist_cutoff: f64,
+    },
 }
 
 impl Chi0Sparsity {
@@ -74,9 +83,16 @@ impl Chi0Sparsity {
     /// are returned unchanged; only `Auto` consults `natoms`.
     pub fn resolve(self, natoms: usize) -> Chi0Sparsity {
         match self {
-            Chi0Sparsity::Auto { boys_thresh, atom_cutoff, dist_cutoff } => {
+            Chi0Sparsity::Auto {
+                boys_thresh,
+                atom_cutoff,
+                dist_cutoff,
+            } => {
                 if natoms >= atom_cutoff {
-                    Chi0Sparsity::BoysScreened { thresh: boys_thresh, dist_cutoff }
+                    Chi0Sparsity::BoysScreened {
+                        thresh: boys_thresh,
+                        dist_cutoff,
+                    }
                 } else {
                     Chi0Sparsity::Dense
                 }
@@ -114,7 +130,9 @@ impl Chi0Sparsity {
             Some((h, r)) => {
                 let r = r.trim();
                 let radius = r.parse::<f64>().map_err(|_| {
-                    format!("chi0_sparsity: invalid distance cutoff '{r}' (expected radius in Bohr)")
+                    format!(
+                        "chi0_sparsity: invalid distance cutoff '{r}' (expected radius in Bohr)"
+                    )
                 })?;
                 // Explicit NaN check + `<= 0.0` instead of `!(radius > 0.0)`: the
                 // negated-comparison form is equivalent (NaN fails `> 0.0`, so its
@@ -138,9 +156,13 @@ impl Chi0Sparsity {
         let parts: Vec<&str> = head.split(':').collect();
         match parts.as_slice() {
             ["dense"] => Ok(Chi0Sparsity::Dense),
-            ["boys"] => Ok(Chi0Sparsity::BoysScreened { thresh: DEF_THRESH, dist_cutoff }),
+            ["boys"] => Ok(Chi0Sparsity::BoysScreened {
+                thresh: DEF_THRESH,
+                dist_cutoff,
+            }),
             ["boys", t] => Ok(Chi0Sparsity::BoysScreened {
-                thresh: t.parse::<f64>()
+                thresh: t
+                    .parse::<f64>()
                     .map_err(|_| format!("chi0_sparsity: invalid boys threshold '{t}'"))?,
                 dist_cutoff,
             }),
@@ -151,14 +173,17 @@ impl Chi0Sparsity {
             }),
             ["auto", c] => Ok(Chi0Sparsity::Auto {
                 boys_thresh: DEF_THRESH,
-                atom_cutoff: c.parse::<usize>()
+                atom_cutoff: c
+                    .parse::<usize>()
                     .map_err(|_| format!("chi0_sparsity: invalid auto cutoff '{c}'"))?,
                 dist_cutoff,
             }),
             ["auto", c, t] => Ok(Chi0Sparsity::Auto {
-                boys_thresh: t.parse::<f64>()
+                boys_thresh: t
+                    .parse::<f64>()
                     .map_err(|_| format!("chi0_sparsity: invalid auto threshold '{t}'"))?,
-                atom_cutoff: c.parse::<usize>()
+                atom_cutoff: c
+                    .parse::<usize>()
                     .map_err(|_| format!("chi0_sparsity: invalid auto cutoff '{c}'"))?,
                 dist_cutoff,
             }),
@@ -399,7 +424,10 @@ pub struct SternheimerConfig {
 
 impl Default for SternheimerConfig {
     fn default() -> Self {
-        Self { max_iter: 50, conv_thresh: 1e-8 }
+        Self {
+            max_iter: 50,
+            conv_thresh: 1e-8,
+        }
     }
 }
 
@@ -409,17 +437,43 @@ mod tests {
 
     #[test]
     fn auto_resolves_dense_below_cutoff_boys_at_or_above() {
-        let auto = Chi0Sparsity::Auto { boys_thresh: 1e-3, atom_cutoff: 30, dist_cutoff: f64::INFINITY };
+        let auto = Chi0Sparsity::Auto {
+            boys_thresh: 1e-3,
+            atom_cutoff: 30,
+            dist_cutoff: f64::INFINITY,
+        };
         // Below the cutoff → Dense (Boys overhead dominates; boys-screening-crossover).
         assert_eq!(auto.resolve(12), Chi0Sparsity::Dense);
         assert_eq!(auto.resolve(29), Chi0Sparsity::Dense);
         // At/above the cutoff → BoysScreened with the configured threshold; the
         // distance cutoff is carried through unchanged.
-        assert_eq!(auto.resolve(30), Chi0Sparsity::BoysScreened { thresh: 1e-3, dist_cutoff: f64::INFINITY });
-        assert_eq!(auto.resolve(120), Chi0Sparsity::BoysScreened { thresh: 1e-3, dist_cutoff: f64::INFINITY });
+        assert_eq!(
+            auto.resolve(30),
+            Chi0Sparsity::BoysScreened {
+                thresh: 1e-3,
+                dist_cutoff: f64::INFINITY
+            }
+        );
+        assert_eq!(
+            auto.resolve(120),
+            Chi0Sparsity::BoysScreened {
+                thresh: 1e-3,
+                dist_cutoff: f64::INFINITY
+            }
+        );
         // A finite distance cutoff on Auto propagates into the resolved BoysScreened.
-        let auto_r = Chi0Sparsity::Auto { boys_thresh: 1e-3, atom_cutoff: 30, dist_cutoff: 12.0 };
-        assert_eq!(auto_r.resolve(30), Chi0Sparsity::BoysScreened { thresh: 1e-3, dist_cutoff: 12.0 });
+        let auto_r = Chi0Sparsity::Auto {
+            boys_thresh: 1e-3,
+            atom_cutoff: 30,
+            dist_cutoff: 12.0,
+        };
+        assert_eq!(
+            auto_r.resolve(30),
+            Chi0Sparsity::BoysScreened {
+                thresh: 1e-3,
+                dist_cutoff: 12.0
+            }
+        );
     }
 
     #[test]
@@ -427,13 +481,56 @@ mod tests {
         use Chi0Sparsity::*;
         const INF: f64 = f64::INFINITY;
         assert_eq!(Chi0Sparsity::parse_config_str(None).unwrap(), Dense);
-        assert_eq!(Chi0Sparsity::parse_config_str(Some("dense")).unwrap(), Dense);
-        assert_eq!(Chi0Sparsity::parse_config_str(Some("boys")).unwrap(), BoysScreened { thresh: 1e-4, dist_cutoff: INF });
-        assert_eq!(Chi0Sparsity::parse_config_str(Some("boys:1e-3")).unwrap(), BoysScreened { thresh: 1e-3, dist_cutoff: INF });
-        assert_eq!(Chi0Sparsity::parse_config_str(Some("auto")).unwrap(), Auto { boys_thresh: 1e-4, atom_cutoff: 30, dist_cutoff: INF });
-        assert_eq!(Chi0Sparsity::parse_config_str(Some("auto:24")).unwrap(), Auto { boys_thresh: 1e-4, atom_cutoff: 24, dist_cutoff: INF });
-        assert_eq!(Chi0Sparsity::parse_config_str(Some("auto:24:5e-4")).unwrap(), Auto { boys_thresh: 5e-4, atom_cutoff: 24, dist_cutoff: INF });
-        assert_eq!(Chi0Sparsity::parse_config_str(Some("  AUTO ")).unwrap(), Auto { boys_thresh: 1e-4, atom_cutoff: 30, dist_cutoff: INF });
+        assert_eq!(
+            Chi0Sparsity::parse_config_str(Some("dense")).unwrap(),
+            Dense
+        );
+        assert_eq!(
+            Chi0Sparsity::parse_config_str(Some("boys")).unwrap(),
+            BoysScreened {
+                thresh: 1e-4,
+                dist_cutoff: INF
+            }
+        );
+        assert_eq!(
+            Chi0Sparsity::parse_config_str(Some("boys:1e-3")).unwrap(),
+            BoysScreened {
+                thresh: 1e-3,
+                dist_cutoff: INF
+            }
+        );
+        assert_eq!(
+            Chi0Sparsity::parse_config_str(Some("auto")).unwrap(),
+            Auto {
+                boys_thresh: 1e-4,
+                atom_cutoff: 30,
+                dist_cutoff: INF
+            }
+        );
+        assert_eq!(
+            Chi0Sparsity::parse_config_str(Some("auto:24")).unwrap(),
+            Auto {
+                boys_thresh: 1e-4,
+                atom_cutoff: 24,
+                dist_cutoff: INF
+            }
+        );
+        assert_eq!(
+            Chi0Sparsity::parse_config_str(Some("auto:24:5e-4")).unwrap(),
+            Auto {
+                boys_thresh: 5e-4,
+                atom_cutoff: 24,
+                dist_cutoff: INF
+            }
+        );
+        assert_eq!(
+            Chi0Sparsity::parse_config_str(Some("  AUTO ")).unwrap(),
+            Auto {
+                boys_thresh: 1e-4,
+                atom_cutoff: 30,
+                dist_cutoff: INF
+            }
+        );
         assert!(Chi0Sparsity::parse_config_str(Some("frobnicate")).is_err());
         assert!(Chi0Sparsity::parse_config_str(Some("boys:nope")).is_err());
     }
@@ -444,19 +541,33 @@ mod tests {
         // `@<radius>` sets dist_cutoff (Bohr) on both boys and auto forms.
         assert_eq!(
             Chi0Sparsity::parse_config_str(Some("boys@12")).unwrap(),
-            BoysScreened { thresh: 1e-4, dist_cutoff: 12.0 }
+            BoysScreened {
+                thresh: 1e-4,
+                dist_cutoff: 12.0
+            }
         );
         assert_eq!(
             Chi0Sparsity::parse_config_str(Some("boys:1e-3@8.5")).unwrap(),
-            BoysScreened { thresh: 1e-3, dist_cutoff: 8.5 }
+            BoysScreened {
+                thresh: 1e-3,
+                dist_cutoff: 8.5
+            }
         );
         assert_eq!(
             Chi0Sparsity::parse_config_str(Some("auto:24:5e-4@15")).unwrap(),
-            Auto { boys_thresh: 5e-4, atom_cutoff: 24, dist_cutoff: 15.0 }
+            Auto {
+                boys_thresh: 5e-4,
+                atom_cutoff: 24,
+                dist_cutoff: 15.0
+            }
         );
         assert_eq!(
             Chi0Sparsity::parse_config_str(Some("AUTO@10")).unwrap(),
-            Auto { boys_thresh: 1e-4, atom_cutoff: 30, dist_cutoff: 10.0 }
+            Auto {
+                boys_thresh: 1e-4,
+                atom_cutoff: 30,
+                dist_cutoff: 10.0
+            }
         );
         // Bad radii and misplaced `@` error rather than silently defaulting.
         assert!(Chi0Sparsity::parse_config_str(Some("boys@nope")).is_err());
@@ -503,7 +614,10 @@ mod tests {
         // Dense/BoysScreened ignore atom count — they resolve to themselves.
         assert_eq!(Chi0Sparsity::Dense.resolve(5), Chi0Sparsity::Dense);
         assert_eq!(Chi0Sparsity::Dense.resolve(500), Chi0Sparsity::Dense);
-        let b = Chi0Sparsity::BoysScreened { thresh: 1e-4, dist_cutoff: f64::INFINITY };
+        let b = Chi0Sparsity::BoysScreened {
+            thresh: 1e-4,
+            dist_cutoff: f64::INFINITY,
+        };
         assert_eq!(b.resolve(5), b);
         assert_eq!(b.resolve(500), b);
     }

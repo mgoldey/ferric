@@ -11,12 +11,15 @@
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_gw::{run_gw, GwConfig, GwMethod};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_rpa::config::{Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig, QuadratureConfig, QuadratureScheme, SternheimerConfig};
+use ferric_rpa::config::{
+    Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig, QuadratureConfig, QuadratureScheme,
+    SternheimerConfig,
+};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-use ferric_gw::{run_gw, GwConfig, GwMethod};
 
 const HA_TO_EV: f64 = 27.211386245988_f64;
 
@@ -81,8 +84,17 @@ fn cohsex_h2o_runs() {
         method: GwMethod::Cohsex,
         ..Default::default()
     };
-    let res = run_gw(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pcfg, &gcfg, None)
-        .expect("COHSEX runs");
+    let res = run_gw(
+        &mol,
+        &obs,
+        &dfbs,
+        Operator::coulomb(),
+        &rhf,
+        &pcfg,
+        &gcfg,
+        None,
+    )
+    .expect("COHSEX runs");
     // HOMO is MO index 4 for water (5 doubly occupied: 1s_O, 2s, 2p × 3).
     let nocc = (mol.nelec() as usize) / 2;
     let homo_idx = res
@@ -114,8 +126,17 @@ fn evgw_h2o_homo_ip() {
         ev_conv_thresh: 5e-4,
         ..Default::default()
     };
-    let res = run_gw(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pcfg, &gcfg, None)
-        .expect("evGW runs");
+    let res = run_gw(
+        &mol,
+        &obs,
+        &dfbs,
+        Operator::coulomb(),
+        &rhf,
+        &pcfg,
+        &gcfg,
+        None,
+    )
+    .expect("evGW runs");
     let nocc = (mol.nelec() as usize) / 2;
     let homo_idx = res
         .mo_indices
@@ -145,8 +166,17 @@ fn evgw0_h2o_homo_ip() {
         ev_conv_thresh: 1e-4,
         ..Default::default()
     };
-    let res = run_gw(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pcfg, &gcfg, None)
-        .expect("evGW0 runs");
+    let res = run_gw(
+        &mol,
+        &obs,
+        &dfbs,
+        Operator::coulomb(),
+        &rhf,
+        &pcfg,
+        &gcfg,
+        None,
+    )
+    .expect("evGW0 runs");
     let nocc = (mol.nelec() as usize) / 2;
     let homo_idx = res
         .mo_indices
@@ -186,8 +216,17 @@ fn g0w0_h2o_gap_and_lumo() {
         qp_mos: Some(0..nmo),
         ..Default::default()
     };
-    let res = run_gw(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pcfg, &gcfg, None)
-        .expect("G0W0 runs");
+    let res = run_gw(
+        &mol,
+        &obs,
+        &dfbs,
+        Operator::coulomb(),
+        &rhf,
+        &pcfg,
+        &gcfg,
+        None,
+    )
+    .expect("G0W0 runs");
     let nocc = (mol.nelec() as usize) / 2;
     let homo = res.eps_qp[nocc - 1] * HA_TO_EV;
     let lumo = res.eps_qp[nocc] * HA_TO_EV;
@@ -220,8 +259,17 @@ fn g0w0_h2o_homo_ip() {
         method: GwMethod::G0W0,
         ..Default::default()
     };
-    let res = run_gw(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &pcfg, &gcfg, None)
-        .expect("G0W0 runs");
+    let res = run_gw(
+        &mol,
+        &obs,
+        &dfbs,
+        Operator::coulomb(),
+        &rhf,
+        &pcfg,
+        &gcfg,
+        None,
+    )
+    .expect("G0W0 runs");
     let nocc = (mol.nelec() as usize) / 2;
     let homo_idx = res
         .mo_indices
@@ -230,13 +278,19 @@ fn g0w0_h2o_homo_ip() {
         .expect("HOMO in qp range");
     let ip_ev = -res.eps_qp[homo_idx] * HA_TO_EV;
     eprintln!("G0W0@HF/cc-pVDZ H2O IP = {ip_ev:.3} eV (ref ≈ 11.97 eV)");
-    eprintln!("  ε_mf  = {:.4} Ha = {:.3} eV", res.eps_mf[homo_idx],
-              res.eps_mf[homo_idx] * HA_TO_EV);
+    eprintln!(
+        "  ε_mf  = {:.4} Ha = {:.3} eV",
+        res.eps_mf[homo_idx],
+        res.eps_mf[homo_idx] * HA_TO_EV
+    );
     eprintln!("  Σ_x   = {:.4} Ha", res.sigma_x[homo_idx]);
     eprintln!("  Σ_c   = {:.4} Ha", res.sigma_c[homo_idx]);
     eprintln!("  Z     = {:.4}", res.z_factor[homo_idx]);
-    eprintln!("  ε_qp  = {:.4} Ha = {:.3} eV", res.eps_qp[homo_idx],
-              res.eps_qp[homo_idx] * HA_TO_EV);
+    eprintln!(
+        "  ε_qp  = {:.4} Ha = {:.3} eV",
+        res.eps_qp[homo_idx],
+        res.eps_qp[homo_idx] * HA_TO_EV
+    );
     // Spike tolerance: ±0.30 eV on the published 11.97 eV.
     assert!(
         (11.97 - 0.30..11.97 + 0.30).contains(&ip_ev),

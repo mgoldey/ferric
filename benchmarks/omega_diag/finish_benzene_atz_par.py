@@ -34,6 +34,7 @@ Launch (detached):
 Tunables (env): BZ_CONC (3), BZ_PER_JOB_GB (7 — admission headroom per job),
   BZ_HEARTBEAT_S (120), BZ_YIELD_TO (default "run_aconf_cli"), BZ_TIMEOUT (21600).
 """
+
 import os
 import subprocess
 import threading
@@ -74,8 +75,10 @@ def admit(key):
             return
         with _lock:
             nr = len(_state["running"])
-        log(f"[gate] {key}: {avail:.1f}GB avail (<{PER_JOB_GB}); "
-            f"{nr} running; waiting {WAIT_S}s")
+        log(
+            f"[gate] {key}: {avail:.1f}GB avail (<{PER_JOB_GB}); "
+            f"{nr} running; waiting {WAIT_S}s"
+        )
         time.sleep(WAIT_S)
 
 
@@ -86,8 +89,10 @@ def heartbeat():
             r = sorted(_state["running"])
             d, t = _state["done"], _state["total"]
         mi = base.meminfo()
-        log(f"[hb] {d}/{t} done, avail={mi.get('MemAvailable', 0):.1f}GB, "
-            f"running={r or '(none)'}")
+        log(
+            f"[hb] {d}/{t} done, avail={mi.get('MemAvailable', 0):.1f}GB, "
+            f"running={r or '(none)'}"
+        )
 
 
 def run_one(job):
@@ -111,8 +116,14 @@ def run_one(job):
     status = "FAIL"
     try:
         with open(op, "w") as f, open(op + ".err", "w") as e:
-            subprocess.run([BIN, f"{OUT}/toml/{key}.toml"], stdout=f, stderr=e,
-                           env=ENV, timeout=TIMEOUT, preexec_fn=_oom)
+            subprocess.run(
+                [BIN, f"{OUT}/toml/{key}.toml"],
+                stdout=f,
+                stderr=e,
+                env=ENV,
+                timeout=TIMEOUT,
+                preexec_fn=_oom,
+            )
         ok = os.path.exists(op) and marker in open(op).read()
         status = "ok" if ok else "FAIL"
     except subprocess.TimeoutExpired:
@@ -131,10 +142,13 @@ def main():
     if not jobs:
         log("nothing to do — benzene aTZ tail already complete.")
     else:
-        log(f"benzene aTZ tail: {len(jobs)} jobs, CONC={CONC}, "
-            f"per-job-gate={PER_JOB_GB}GB, yield-to={base.YIELD_TO or '(none)'}")
+        log(
+            f"benzene aTZ tail: {len(jobs)} jobs, CONC={CONC}, "
+            f"per-job-gate={PER_JOB_GB}GB, yield-to={base.YIELD_TO or '(none)'}"
+        )
         threading.Thread(target=heartbeat, daemon=True).start()
         from concurrent.futures import ThreadPoolExecutor, as_completed
+
         with ThreadPoolExecutor(max_workers=CONC) as ex:
             futs = {ex.submit(run_one, j): j for j in jobs}
             for fut in as_completed(futs):

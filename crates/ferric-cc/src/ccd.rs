@@ -4,10 +4,10 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::ScfResult;
 use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, transform_3center_vv};
 use ferric_mp2::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_mp2::spinorbital::{asym_oovv, asym_ovvo, asym_same, build_b, transpose_b};
+use ferric_scf::ScfResult;
 use ferric_tensors::{einsum, permute_to_owned, Axis, Tensor};
 use ndarray::{ArrayD, IxDyn};
 
@@ -65,7 +65,9 @@ pub fn ccd_spinorbital(
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + no]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + no])
+        .to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
     // Fail-fast size guard, expressed as a [`MemoryPlan`].
@@ -167,8 +169,18 @@ pub fn ccd_spinorbital(
         Axis::O,
         Axis::V,
     );
-    let b_oo = build_b(&transform_3center_oo(&eri3_ao, &c_occ), &v_inv_sqrt, Axis::O, Axis::O);
-    let b_vv = build_b(&transform_3center_vv(&eri3_ao, &c_vir), &v_inv_sqrt, Axis::V, Axis::V);
+    let b_oo = build_b(
+        &transform_3center_oo(&eri3_ao, &c_occ),
+        &v_inv_sqrt,
+        Axis::O,
+        Axis::O,
+    );
+    let b_vv = build_b(
+        &transform_3center_vv(&eri3_ao, &c_vir),
+        &v_inv_sqrt,
+        Axis::V,
+        Axis::V,
+    );
     let b_vo = transpose_b(&b_ov);
 
     // --- Spin-orbital antisymmetrized integral blocks ---
@@ -247,15 +259,16 @@ pub fn ccd_spinorbital(
         let d_e = (e_corr - e_old).abs();
         if iter > 0 && d_e < 1e-10 {
             // Reshape spin-orbital t (no2,no2,nv2,nv2) into Array4 stored (i,j,a,b).
-            let t2 = t
-                .clone()
-                .into_dimensionality::<ndarray::Ix4>()
-                .unwrap();
+            let t2 = t.clone().into_dimensionality::<ndarray::Ix4>().unwrap();
             println!(
                 "spin-orbital CCD converged in {} iterations. E_corr = {:.10}",
                 iter, e_corr
             );
-            return Ok(CcResult { correlation_energy: e_corr, t1: None, t2 });
+            return Ok(CcResult {
+                correlation_energy: e_corr,
+                t1: None,
+                t2,
+            });
         }
         e_old = e_corr;
 
@@ -334,10 +347,14 @@ pub fn ccd_spinorbital(
             .unwrap()
             .to_owned();
         let t_ext = diis.step(&t_flat, &err_flat);
-        t = t_ext.into_shape_with_order(IxDyn(&[no2, no2, nv2, nv2])).unwrap();
+        t = t_ext
+            .into_shape_with_order(IxDyn(&[no2, no2, nv2, nv2]))
+            .unwrap();
     }
 
-    Err(FerricError::Convergence("spin-orbital CCD did not converge".into()))
+    Err(FerricError::Convergence(
+        "spin-orbital CCD did not converge".into(),
+    ))
 }
 
 #[cfg(test)]
@@ -345,11 +362,11 @@ mod tests {
     use super::*;
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
+    use ferric_core::parallel::ParallelContext;
     use ferric_integrals::basis_bridge::PreparedBasis;
     use ferric_integrals::operator::Operator;
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
-    use ferric_core::parallel::ParallelContext;
 
     #[test]
     fn test_ccd_h2_sto3g() {
@@ -359,19 +376,19 @@ mod tests {
         let obs = PreparedBasis::new(&mol, &obs_set).unwrap();
         let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();
         let op = Operator::coulomb();
-        
+
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf_config = RhfConfig::default();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &rhf_config).unwrap();
-        
+
         let cc_cfg = CcConfig {
             frozen_core: 0,
             max_iter: 50,
             energy_conv: 1e-8,
             ..Default::default()
         };
-        
+
         let result = ccd(&mol, &obs, &dfbs, op, &rhf, &cc_cfg).unwrap();
 
         println!("CCD correlation energy: {:.10}", result.correlation_energy);
@@ -404,13 +421,19 @@ mod tests {
             Ok(_) => panic!("CCD should fail fast under tiny budget"),
         };
         let msg = err.to_string();
-        assert!(msg.contains("CCD") && msg.contains("budget is"), "unexpected: {msg}");
+        assert!(
+            msg.contains("CCD") && msg.contains("budget is"),
+            "unexpected: {msg}"
+        );
         // The plan's breakdown must NAME the terms, not just report a total —
         // that breakdown is the whole reason `check_alloc` was replaced by a
         // `MemoryPlan` here (a bare "needs X GB" is what made the historical
         // incidents slow to diagnose).
         assert!(msg.contains("memory plan"), "no plan breakdown: {msg}");
-        assert!(msg.contains("v_vvvv"), "breakdown must name the ladder: {msg}");
+        assert!(
+            msg.contains("v_vvvv"),
+            "breakdown must name the ladder: {msg}"
+        );
     }
 
     /// `eri3_ao` must be charged by the guard.
@@ -481,8 +504,12 @@ mod tests {
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        let base =
-            CcConfig { frozen_core: 0, max_iter: 50, energy_conv: 1e-8, ..Default::default() };
+        let base = CcConfig {
+            frozen_core: 0,
+            max_iter: 50,
+            energy_conv: 1e-8,
+            ..Default::default()
+        };
         let unbudgeted = ccd(&mol, &obs, &dfbs, op, &rhf, &base).unwrap();
         let budgeted = ccd(
             &mol,
@@ -544,7 +571,8 @@ mod tests {
         let ovvo = oovv_elems;
         let working_set = oovv_elems * 6;
         let largest_transient = eri3_ao.max(g_abcd);
-        let non_diis_elems = b_blocks + vvvv + oovv_plus_clone + oooo + ovvo + working_set + largest_transient;
+        let non_diis_elems =
+            b_blocks + vvvv + oovv_plus_clone + oooo + ovvo + working_set + largest_transient;
         let non_diis_bytes = non_diis_elems * 8;
 
         let diis_subspace = 4;
@@ -588,15 +616,29 @@ mod tests {
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        let cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-8, ..Default::default() };
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-8,
+            ..Default::default()
+        };
         let r = ccd_spinorbital(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
-        assert!((r.correlation_energy - (-0.02052453)).abs() < 1e-6, "got {:.8}", r.correlation_energy);
+        assert!(
+            (r.correlation_energy - (-0.02052453)).abs() < 1e-6,
+            "got {:.8}",
+            r.correlation_energy
+        );
     }
 
     #[test]
     #[ignore]
     fn ri_convergence_check_h2() {
-        for aux in ["cc-pvdz-ri", "def2-tzvpp-rifit", "def2-qzvpp-rifit", "aug-cc-pvtz-rifit"] {
+        for aux in [
+            "cc-pvdz-ri",
+            "def2-tzvpp-rifit",
+            "def2-qzvpp-rifit",
+            "aug-cc-pvtz-rifit",
+        ] {
             let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
             let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
             let dfbs = PreparedBasis::new(&mol, &basis::bundled(aux).unwrap()).unwrap();
@@ -604,28 +646,56 @@ mod tests {
             let ctx = ParallelContext::default();
             let bounds = SchwarzBounds::compute(op, &obs).unwrap();
             let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-            let cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-8, ..Default::default() };
+            let cfg = CcConfig {
+                frozen_core: 0,
+                max_iter: 100,
+                energy_conv: 1e-8,
+                ..Default::default()
+            };
             let r = ccd_spinorbital(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
-            println!("aux={:20} E_corr={:.10} (ref -0.02052453, diff {:.2e})",
-                aux, r.correlation_energy, r.correlation_energy - (-0.02052453));
+            println!(
+                "aux={:20} E_corr={:.10} (ref -0.02052453, diff {:.2e})",
+                aux,
+                r.correlation_energy,
+                r.correlation_energy - (-0.02052453)
+            );
         }
     }
 
     #[test]
     #[ignore]
     fn ri_convergence_check_h2o() {
-        for aux in ["cc-pvdz-ri", "def2-tzvpp-rifit", "aug-cc-pvtz-rifit", "def2-qzvpp-rifit"] {
-            let mol = Molecule::parse_xyz("3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n", 0, 1).unwrap();
+        for aux in [
+            "cc-pvdz-ri",
+            "def2-tzvpp-rifit",
+            "aug-cc-pvtz-rifit",
+            "def2-qzvpp-rifit",
+        ] {
+            let mol = Molecule::parse_xyz(
+                "3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+                0,
+                1,
+            )
+            .unwrap();
             let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
             let dfbs = PreparedBasis::new(&mol, &basis::bundled(aux).unwrap()).unwrap();
             let op = Operator::coulomb();
             let ctx = ParallelContext::default();
             let bounds = SchwarzBounds::compute(op, &obs).unwrap();
             let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-            let cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-8, ..Default::default() };
+            let cfg = CcConfig {
+                frozen_core: 0,
+                max_iter: 100,
+                energy_conv: 1e-8,
+                ..Default::default()
+            };
             let r = ccd_spinorbital(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
-            println!("aux={:20} E_corr={:.10} (ref -0.21259542, diff {:.2e})",
-                aux, r.correlation_energy, r.correlation_energy - (-0.21259542));
+            println!(
+                "aux={:20} E_corr={:.10} (ref -0.21259542, diff {:.2e})",
+                aux,
+                r.correlation_energy,
+                r.correlation_energy - (-0.21259542)
+            );
         }
     }
 
@@ -635,16 +705,30 @@ mod tests {
         // def2-qzvpp-rifit drives the RI error to ~3e-7 (cc-pvdz-ri leaves ~1.4e-4,
         // just over the gate — see ri_convergence_check_h2o); the residual physics
         // is exact (H2 nails the exact value at 1e-6).
-        let mol = Molecule::parse_xyz("3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n", 0, 1).unwrap();
+        let mol = Molecule::parse_xyz(
+            "3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+            0,
+            1,
+        )
+        .unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-qzvpp-rifit").unwrap()).unwrap();
         let op = Operator::coulomb();
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        let cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-8, ..Default::default() };
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-8,
+            ..Default::default()
+        };
         let r = ccd_spinorbital(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
-        assert!((r.correlation_energy - (-0.21259542)).abs() < 1e-4, "got {:.8}", r.correlation_energy);
+        assert!(
+            (r.correlation_energy - (-0.21259542)).abs() < 1e-4,
+            "got {:.8}",
+            r.correlation_energy
+        );
     }
 
     #[test]
@@ -657,16 +741,27 @@ mod tests {
             "5\nmethane Td\nC 0.0 0.0 0.0\nH 0.629118 0.629118 0.629118\n\
              H -0.629118 -0.629118 0.629118\nH -0.629118 0.629118 -0.629118\n\
              H 0.629118 -0.629118 -0.629118\n",
-            0, 1,
-        ).unwrap();
+            0,
+            1,
+        )
+        .unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-qzvpp-rifit").unwrap()).unwrap();
         let op = Operator::coulomb();
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        let cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-8, ..Default::default() };
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-8,
+            ..Default::default()
+        };
         let r = ccd_spinorbital(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
-        assert!((r.correlation_energy - (-0.07904596471422148)).abs() < 1e-4, "got {:.8}", r.correlation_energy);
+        assert!(
+            (r.correlation_energy - (-0.07904596471422148)).abs() < 1e-4,
+            "got {:.8}",
+            r.correlation_energy
+        );
     }
 }

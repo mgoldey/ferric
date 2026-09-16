@@ -51,7 +51,10 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=stdc++");
 
     // libecpint link (static): ecpint + its internal Faddeeva
-    println!("cargo:rustc-link-search=native={}", ecpint_lib_dir.display());
+    println!(
+        "cargo:rustc-link-search=native={}",
+        ecpint_lib_dir.display()
+    );
     println!("cargo:rustc-link-lib=static=ecpint");
     println!("cargo:rustc-link-lib=static=Faddeeva");
 

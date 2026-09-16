@@ -16,6 +16,7 @@ mult, n_quad, u0}.
 Usage:
     python scripts/gen_pyscf_u_rpa_ref.py
 """
+
 import json
 import os
 import sys
@@ -104,8 +105,11 @@ def u_rpa_energy(mol, mf, dfbs, n_quad: int = 20, u0: float = 0.5) -> float:
 
     e_c = 0.0
     for w, omega in zip(weights, omegas):
-        eps_mat = np.eye(naux) + pi_sigma(bA, eo_a, ev_a, omega) \
-                                + pi_sigma(bB, eo_b, ev_b, omega)
+        eps_mat = (
+            np.eye(naux)
+            + pi_sigma(bA, eo_a, ev_a, omega)
+            + pi_sigma(bB, eo_b, ev_b, omega)
+        )
         lam, _ = eigh(eps_mat)
         contrib = np.sum(np.log(lam) + (1.0 - lam))
         e_c += w * contrib
@@ -113,8 +117,9 @@ def u_rpa_energy(mol, mf, dfbs, n_quad: int = 20, u0: float = 0.5) -> float:
 
 
 def make_uhf(atom: str, basis: str, spin_2s: int):
-    mol = gto.M(atom=atom, basis=basis, unit="angstrom",
-                charge=0, spin=spin_2s, verbose=0)
+    mol = gto.M(
+        atom=atom, basis=basis, unit="angstrom", charge=0, spin=spin_2s, verbose=0
+    )
     mf = scf.UHF(mol)
     mf.kernel()
     if not mf.converged:
@@ -123,8 +128,9 @@ def make_uhf(atom: str, basis: str, spin_2s: int):
 
 
 def make_uhf_charged(atom: str, basis: str, charge: int, spin_2s: int):
-    mol = gto.M(atom=atom, basis=basis, unit="angstrom",
-                charge=charge, spin=spin_2s, verbose=0)
+    mol = gto.M(
+        atom=atom, basis=basis, unit="angstrom", charge=charge, spin=spin_2s, verbose=0
+    )
     mf = scf.UHF(mol)
     mf.kernel()
     if not mf.converged:
@@ -134,26 +140,44 @@ def make_uhf_charged(atom: str, basis: str, charge: int, spin_2s: int):
 
 cases = [
     # (output stub, atom, basis, aux_basis, 2S, mult, charge)
-    ("h_cc-pvdz_u-rpa",  "H 0 0 0",          "cc-pvdz", "cc-pvdz-ri", 1, 2, 0),
+    ("h_cc-pvdz_u-rpa", "H 0 0 0", "cc-pvdz", "cc-pvdz-ri", 1, 2, 0),
     ("oh_cc-pvdz_u-rpa", "O 0 0 0; H 0 0 0.97", "cc-pvdz", "cc-pvdz-ri", 1, 2, 0),
     # CH3 methyl radical, planar D3h, C-H=1.079 A -- same geometry as the
     # U-G0W0 row's PySCF cross-check (scripts/gw100/geom_radicals/ch3.xyz).
     # Multi-atom (not diatomic), heavier center atom than H/OH.
-    ("ch3_cc-pvdz_u-rpa",
-     "C 0.000000 0.000000 0.000000; "
-     "H 1.079000 0.000000 0.000000; "
-     "H -0.539500 0.934441 0.000000; "
-     "H -0.539500 -0.934441 0.000000",
-     "cc-pvdz", "cc-pvdz-ri", 1, 2, 0),
+    (
+        "ch3_cc-pvdz_u-rpa",
+        "C 0.000000 0.000000 0.000000; "
+        "H 1.079000 0.000000 0.000000; "
+        "H -0.539500 0.934441 0.000000; "
+        "H -0.539500 -0.934441 0.000000",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+        1,
+        2,
+        0,
+    ),
     # Cation comparison vs ferric GW100 driver — same geometry (Bohr→Angstrom-equivalent
     # taken from the driver's literal angstrom values, since ferric parse_xyz treats the
     # XYZ block as angstroms by default).
-    ("h2o_cation_cc-pvdz_u-rpa",
-     "O 0.0 0.0 0.117790; H 0.0 0.755453 -0.471161; H 0.0 -0.755453 -0.471161",
-     "cc-pvdz", "cc-pvdz-ri", 1, 2, 1),
-    ("h2o_cation_aug-cc-pvtz_u-rpa",
-     "O 0.0 0.0 0.117790; H 0.0 0.755453 -0.471161; H 0.0 -0.755453 -0.471161",
-     "aug-cc-pvtz", "aug-cc-pvtz-ri", 1, 2, 1),
+    (
+        "h2o_cation_cc-pvdz_u-rpa",
+        "O 0.0 0.0 0.117790; H 0.0 0.755453 -0.471161; H 0.0 -0.755453 -0.471161",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+        1,
+        2,
+        1,
+    ),
+    (
+        "h2o_cation_aug-cc-pvtz_u-rpa",
+        "O 0.0 0.0 0.117790; H 0.0 0.755453 -0.471161; H 0.0 -0.755453 -0.471161",
+        "aug-cc-pvtz",
+        "aug-cc-pvtz-ri",
+        1,
+        2,
+        1,
+    ),
 ]
 
 for stub, atom, basis, aux, spin_2s, mult, charge in cases:
@@ -172,7 +196,9 @@ for stub, atom, basis, aux, spin_2s, mult, charge in cases:
         "u0": 0.5,
         "method": "u-pdep-rpa",
     }
-    print(f"{stub:35s} E_scf={mf.e_tot:.10f}  E_c={e_c:.10f}  E_tot={mf.e_tot+e_c:.10f}")
+    print(
+        f"{stub:35s} E_scf={mf.e_tot:.10f}  E_c={e_c:.10f}  E_tot={mf.e_tot + e_c:.10f}"
+    )
     with open(os.path.join(ROOT, f"testdata/reference/{stub}.json"), "w") as f:
         json.dump(out, f, indent=2)
 

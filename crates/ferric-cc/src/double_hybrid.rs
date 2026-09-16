@@ -65,7 +65,11 @@ impl Default for DoubleHybridConfig {
             lambda: WB97X_L_V_LAMBDA,
             omega: WB97X_L_V_OMEGA,
             variant: LadderVariant::Hh,
-            cc: CcConfig { energy_conv: 1e-9, max_iter: 100, ..Default::default() },
+            cc: CcConfig {
+                energy_conv: 1e-9,
+                max_iter: 100,
+                ..Default::default()
+            },
         }
     }
 }
@@ -94,8 +98,11 @@ pub struct DoubleHybridResult {
 
 impl std::fmt::Display for DoubleHybridResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Double hybrid total: {:.10} Ha (KS: {:.10}, λ·E_c: {:.10})",
-            self.total_energy, self.e_ks, self.e_c_scaled)
+        write!(
+            f,
+            "Double hybrid total: {:.10} Ha (KS: {:.10}, λ·E_c: {:.10})",
+            self.total_energy, self.e_ks, self.e_c_scaled
+        )
     }
 }
 
@@ -237,14 +244,8 @@ pub fn run_wb97x_l_v(
     }
 
     let ladder = ferric_scf::ladder::ksdft_ladder(&base);
-    let lr = ferric_scf::ladder::solve_rhf_ladder(
-        ctx,
-        mol,
-        obs,
-        Operator::coulomb(),
-        bounds,
-        &ladder,
-    )?;
+    let lr =
+        ferric_scf::ladder::solve_rhf_ladder(ctx, mol, obs, Operator::coulomb(), bounds, &ladder)?;
 
     if !lr.converged {
         return Err(FerricError::ScfConvergence {

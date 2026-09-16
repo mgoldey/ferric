@@ -9,7 +9,25 @@ description = "Python bindings for ferric, a Rust-native quantum chemistry engin
 readme = "README.md"
 license = { text = "MIT OR Apache-2.0" }
 authors = [{ name = "Matthew Goldey", email = "matthew.goldey@gmail.com" }]
-requires-python = ">=3.9"
+# Was ">=3.9", which made `uv lock`/`uv run` fail repo-wide:
+#
+#   × No solution found when resolving dependencies for split (markers:
+#   │ python_full_version == '3.10.*'):
+#   ╰─▶ Because the requested Python version (>=3.9) does not satisfy
+#       Python>=3.11 and ipython>=9.13.0 depends on Python>=3.11 ...
+#
+# uv builds ONE universal lockfile that has to resolve for every Python
+# version `requires-python` claims to support, including the ones nobody
+# actually installs on. >=3.9 was never true: .github/workflows/wheels.yml's
+# `build-wheels` matrix (and its `test-wheels` smoke matrix right after it)
+# only ever built cp310/cp311/cp312/cp313 -- cp39 was not, and is not, part
+# of the release artifact. >=3.10 is the floor the wheel matrix has actually
+# been proving for every release; declaring >=3.9 just meant `uv lock` was
+# trying (and, once [dev]'s ipython floor got bumped to a 3.11-only
+# release, failing) to solve for a Python version this project does not
+# ship wheels for. See the `ipython` pin in the `dev` extra below for the
+# other half of this fix.
+requires-python = ">=3.10"
 dependencies = [
     "numpy>=2.0.0",
     "gemmi>=0.7",
@@ -66,12 +84,25 @@ docking = [
     "scipy>=1.11",
 ]
 dev = [
-    "ipython>=9.13.0",
+    # Was ">=9.13.0". ipython 9.x requires Python>=3.11 (PyPI's own
+    # requires_python metadata for every 9.x release, checked directly:
+    # `>=3.11`), which is stricter than this project's floor of 3.10 -- so
+    # `uv lock`'s universal resolver could never satisfy `ferric[dev]` while
+    # solving for the cp310 split, and `uv lock`/`uv run`/`uv sync` failed
+    # for EVERYONE, not just cp310 users, because a universal lock has to
+    # solve for every split at once. 8.18 is the oldest 8.x release that
+    # still supports 3.10 (ipython 8.39.0, the last 8.x release, needs
+    # >=3.10; nothing older than 8.18 is worth pinning down to). Leaving the
+    # floor unbounded above (no "<9" ceiling) still lets 3.11+ resolve to
+    # current 9.x ipython -- only the cp310 split falls back to 8.39.0.
+    "ipython>=8.18",
     "matplotlib>=3.8",
     "scipy>=1.11",
     "h5py>=3.9",
     "sympy>=1.14.0",
     "pytest>=9.1.1",
+    # For CI's Python coverage reporting (pytest --cov=...).
+    "pytest-cov>=7.0.0",
 ]
 reference = [
     "pyscf>=2.10",
@@ -79,6 +110,26 @@ reference = [
 build = [
     "maturin[patchelf]>=1.13.3",
 ]
+
+[tool.ruff]
+# Matches the floor established in `requires-python` above (see that
+# comment): the wheel matrix -- and therefore everything this repo actually
+# promises to run on -- starts at cp310.
+target-version = "py310"
+# NOT `exclude` -- that replaces ruff's own sensible default exclude list
+# (`.git`, `.venv`, `__pycache__`, etc.) instead of adding to it.
+#
+# terf-tables/generate_interpolation_tables.py is a frozen Python-2
+# dissertation artifact kept as history (see its `.pre-commit-config.yaml`
+# exclusions, which carry the same justification). It does not parse as
+# Python 3 at all: pointed at the repo root, ruff does not stop at style
+# findings on this file -- it cascades into 45,000+ `invalid-syntax`
+# diagnostics from the first Python-2-only construct onward, which drowns
+# out every real finding elsewhere in the tree and makes a repo-wide `ruff
+# check .`/`ruff format --check .` meaningless. It is deliberately never
+# going to be ported; excluding it is the only way a tree-wide ruff run
+# reports anything useful.
+extend-exclude = ["terf-tables/generate_interpolation_tables.py"]
 
 [tool.maturin]
 manifest-path = "crates/ferric-python/Cargo.toml"

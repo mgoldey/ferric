@@ -59,7 +59,14 @@ pub fn solve_uhf_with_guess(
     config: &UhfConfig,
     initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
 ) -> Result<ScfResult, FerricError> {
-    err_if_unconverged(solve_uhf_best_effort(ctx, mol, prep, bounds, config, initial_mos)?)
+    err_if_unconverged(solve_uhf_best_effort(
+        ctx,
+        mol,
+        prep,
+        bounds,
+        config,
+        initial_mos,
+    )?)
 }
 
 /// Convert a non-converged best-effort result into the historical hard error.
@@ -67,7 +74,10 @@ fn err_if_unconverged(r: ScfResult) -> Result<ScfResult, FerricError> {
     if r.converged {
         Ok(r)
     } else {
-        Err(FerricError::ScfConvergence { iterations: r.iterations, last_energy: r.energy })
+        Err(FerricError::ScfConvergence {
+            iterations: r.iterations,
+            last_energy: r.energy,
+        })
     }
 }
 
@@ -119,8 +129,14 @@ pub fn solve_uhf_fockmod(
     // Build UKS XC contribution once. None for pure UHF.
     let xc_contrib: Option<Box<dyn UksXcContribution>> = if let Some(name) = config.xc.as_deref() {
         let main = config.dft_grid.clone().unwrap_or_default();
-        let nlc = config.nlc_grid.clone()
-            .unwrap_or(ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() });
+        let nlc = config
+            .nlc_grid
+            .clone()
+            .unwrap_or(ferric_dft::grid::AtomicGridConfig {
+                n_radial: 50,
+                n_angular: 50,
+                ..Default::default()
+            });
         // Thread the caller's `[memory] budget_gb` into the grid AO cache --
         // the largest single allocation in a DFT job. This used to call the
         // UNbudgeted `new_with_omega`, which resolves from env/auto-detect
@@ -132,10 +148,15 @@ pub fn solve_uhf_fockmod(
         // FERRIC_MEM_BUDGET_GB worked. 0 means unset, matching
         // `rhf::resolve_three_index_budget`.
         let ks = KsXcUks::new_with_omega_budgeted(
-            mol, prep.basis_set(), name, &main, &nlc, config.xc_omega,
+            mol,
+            prep.basis_set(),
+            name,
+            &main,
+            &nlc,
+            config.xc_omega,
             (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes),
         )
-            .map_err(|e| FerricError::General(format!("KsXcUks init for {name}: {e:?}")))?;
+        .map_err(|e| FerricError::General(format!("KsXcUks init for {name}: {e:?}")))?;
         Some(Box::new(ks) as Box<dyn UksXcContribution>)
     } else {
         None
@@ -161,8 +182,17 @@ pub fn solve_uhf_fockmod(
     // into hcore once, byte-identical to plain hcore for all-electron bases),
     // V_nn(+external), COSMO/PCM contexts, resolved memory budget, RSH
     // fitters. One construction serving all six SCF variants (crate::driver).
-    let crate::driver::ScfEnv { s, h, vnn, ooc_budget, cosmo_cavity, pcm_ctx, polarizable_site_basis, mut dfk_sr, mut dfk_lr } =
-        crate::driver::prepare(ctx, mol, prep, config, &k_mix)?;
+    let crate::driver::ScfEnv {
+        s,
+        h,
+        vnn,
+        ooc_budget,
+        cosmo_cavity,
+        pcm_ctx,
+        polarizable_site_basis,
+        mut dfk_sr,
+        mut dfk_lr,
+    } = crate::driver::prepare(ctx, mol, prep, config, &k_mix)?;
     let n = prep.nbasis();
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;
@@ -180,9 +210,7 @@ pub fn solve_uhf_fockmod(
     let nocc_a = ((nelec + two_s) / 2) as usize;
     let nocc_b = ((nelec - two_s) / 2) as usize;
     if nocc_a + nocc_b != nelec as usize {
-        return Err(FerricError::General(
-            "UHF: nocc_a + nocc_b != nelec".into(),
-        ));
+        return Err(FerricError::General("UHF: nocc_a + nocc_b != nelec".into()));
     }
     if nocc_b > nocc_a {
         return Err(FerricError::General("UHF: nocc_b > nocc_a".into()));
@@ -197,7 +225,8 @@ pub fn solve_uhf_fockmod(
         if ca0.dim() != (n, n) || cb0.dim() != (n, n) {
             return Err(FerricError::General(format!(
                 "solve_uhf_with_guess: initial MO shape mismatch (got {:?}/{:?}, want ({n},{n}))",
-                ca0.dim(), cb0.dim()
+                ca0.dim(),
+                cb0.dim()
             )));
         }
         (ca0.clone(), cb0.clone())
@@ -300,8 +329,16 @@ pub fn solve_uhf_fockmod(
     // `PreparedBasis` when both names are set and identical (see its doc);
     // it independently gates each output on its own `Option`, so this is
     // byte-identical to the previous two-independent-`if` structure.
-    let j_aux_eff = if k_mix.omega == 0.0 { config.df_j_aux.as_deref() } else { None };
-    let k_aux_eff = if need_k && k_mix.omega == 0.0 { config.df_k_aux.as_deref() } else { None };
+    let j_aux_eff = if k_mix.omega == 0.0 {
+        config.df_j_aux.as_deref()
+    } else {
+        None
+    };
+    let k_aux_eff = if need_k && k_mix.omega == 0.0 {
+        config.df_k_aux.as_deref()
+    } else {
+        None
+    };
     let (mut df_j, mut df_k) = crate::fock_assembly::build_df_jk(
         ctx, mol, coulomb_op, prep, j_aux_eff, k_aux_eff, ooc_budget,
     )?;
@@ -343,9 +380,8 @@ pub fn solve_uhf_fockmod(
         df_j.is_some() || df_k.is_some(),
         df_k.is_some(),
     )?;
-    let pluggable_k_kind = crate::fock_assembly::narrow_k_builder_to_supported(
-        pluggable_k_kind, need_k, k_mix.omega,
-    );
+    let pluggable_k_kind =
+        crate::fock_assembly::narrow_k_builder_to_supported(pluggable_k_kind, need_k, k_mix.omega);
     let mut pluggable_k: Option<Box<dyn KBuilder>> = crate::fock_assembly::build_pluggable_k(
         pluggable_k_kind,
         ctx,
@@ -376,18 +412,32 @@ pub fn solve_uhf_fockmod(
         None
     };
     let mut direct_j: Option<DirectJ> = if df_j.is_none() && !combined_direct_jk {
-        Some(DirectJ::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
+        Some(DirectJ::new(
+            ctx,
+            prep,
+            bounds,
+            config.integral_thresh,
+            ooc_budget,
+        ))
     } else {
         None
     };
-    let mut direct_k: Option<DirectK> =
-        if need_k && k_mix.omega == 0.0 && df_k.is_none() && !combined_direct_jk
-            && pluggable_k.is_none()
-        {
-            Some(DirectK::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
-        } else {
-            None
-        };
+    let mut direct_k: Option<DirectK> = if need_k
+        && k_mix.omega == 0.0
+        && df_k.is_none()
+        && !combined_direct_jk
+        && pluggable_k.is_none()
+    {
+        Some(DirectK::new(
+            ctx,
+            prep,
+            bounds,
+            config.integral_thresh,
+            ooc_budget,
+        ))
+    } else {
+        None
+    };
 
     // ── Incremental (differential) Fock build, combined DirectJK path only ──
     // Same scheme (and the same `FERRIC_SCF_INCREMENTAL` kill switch and
@@ -442,8 +492,9 @@ pub fn solve_uhf_fockmod(
         // here (DF-J or DirectJ) and K below, as before.
         if let Some(djk) = direct_jk.as_mut() {
             if direct_incremental {
-                let (da_prev, db_prev) =
-                    d_last_fock.as_ref().expect("d_last_fock set on full rebuild");
+                let (da_prev, db_prev) = d_last_fock
+                    .as_ref()
+                    .expect("d_last_fock set on full rebuild");
                 let delta_a = &d_a - da_prev;
                 let delta_b = &d_b - db_prev;
                 let delta_total = &delta_a + &delta_b;
@@ -456,14 +507,8 @@ pub fn solve_uhf_fockmod(
                     &mut k_b_buf,
                 )?;
             } else {
-                total_quartets += djk.build_uhf(
-                    &d_total,
-                    &d_a,
-                    &d_b,
-                    &mut j_buf,
-                    &mut k_a_buf,
-                    &mut k_b_buf,
-                )?;
+                total_quartets +=
+                    djk.build_uhf(&d_total, &d_a, &d_b, &mut j_buf, &mut k_a_buf, &mut k_b_buf)?;
             }
             d_last_fock = Some((d_a.clone(), d_b.clone()));
         } else if let Some(dfj) = df_j.as_mut() {
@@ -484,10 +529,26 @@ pub fn solve_uhf_fockmod(
             let dfk_sr = dfk_sr.as_mut().expect("dfk_sr built when omega>0");
             let dfk_lr = dfk_lr.as_mut().expect("dfk_lr built when omega>0");
             crate::fock_assembly::subtract_rsh_exchange(
-                dfk_sr, dfk_lr, &d_a, d_occ_a.as_ref(), 1.0, &mut f_a, k_mix.sr, k_mix.lr, 1.0,
+                dfk_sr,
+                dfk_lr,
+                &d_a,
+                d_occ_a.as_ref(),
+                1.0,
+                &mut f_a,
+                k_mix.sr,
+                k_mix.lr,
+                1.0,
             )?;
             crate::fock_assembly::subtract_rsh_exchange(
-                dfk_sr, dfk_lr, &d_b, d_occ_b.as_ref(), 1.0, &mut f_b, k_mix.sr, k_mix.lr, 1.0,
+                dfk_sr,
+                dfk_lr,
+                &d_b,
+                d_occ_b.as_ref(),
+                1.0,
+                &mut f_b,
+                k_mix.sr,
+                k_mix.lr,
+                1.0,
             )?;
         } else if need_k {
             if direct_jk.is_some() {
@@ -496,7 +557,11 @@ pub fn solve_uhf_fockmod(
                 // Per-spin `update_density(D_σ)` + `build(D_σ)` from one shared
                 // instance (see fock_assembly::build_open_shell_pluggable_k).
                 total_quartets += crate::fock_assembly::build_open_shell_pluggable_k(
-                    kb.as_mut(), &d_a, &d_b, &mut k_a_buf, &mut k_b_buf,
+                    kb.as_mut(),
+                    &d_a,
+                    &d_b,
+                    &mut k_a_buf,
+                    &mut k_b_buf,
                 )?;
             } else if let Some(dfk) = df_k.as_mut() {
                 // C_occ half-transform per spin when available (D_σ = C_occ,σ·C_occ,σᵀ);
@@ -520,8 +585,7 @@ pub fn solve_uhf_fockmod(
 
         // Electronic energy BEFORE adding V_xc (V_xc is one-body in F_σ but
         // E_xc is its own integral).
-        let e_elec_no_xc: f64 =
-            0.5 * ((&(&h + &f_a) * &d_a).sum() + (&(&h + &f_b) * &d_b).sum());
+        let e_elec_no_xc: f64 = 0.5 * ((&(&h + &f_a) * &d_a).sum() + (&(&h + &f_b) * &d_b).sum());
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
             x.add_xc_uks(&d_a, &d_b, &mut f_a, &mut f_b)
         } else {
@@ -592,7 +656,8 @@ pub fn solve_uhf_fockmod(
 
         // Divergence / stall early exits (shared driver::ScfMonitor; both are
         // no-ops at the None defaults — UHF previously ignored these knobs).
-        if mon.diverging(energy, config.divergence_tol) || mon.stalled(err_max, config.stall_window) {
+        if mon.diverging(energy, config.divergence_tol) || mon.stalled(err_max, config.stall_window)
+        {
             return Err(FerricError::ScfConvergence {
                 iterations: iter,
                 last_energy: mon.prev_e,
@@ -705,7 +770,9 @@ pub fn solve_uhf_fockmod(
                     needed,
                     avail,
                 )?;
-                Some(crate::rohf::FxcKernelStore::build(mol, prep, &main, name, &d_a, &d_b)?)
+                Some(crate::rohf::FxcKernelStore::build(
+                    mol, prep, &main, name, &d_a, &d_b,
+                )?)
             } else {
                 None
             };
@@ -777,14 +844,12 @@ pub fn solve_uhf_fockmod(
         if config.mom_after_iter > 0 && iter > config.mom_after_iter {
             if let Some(ref_a) = mom_ref_a.as_ref() {
                 if nocc_a > 0 {
-                    c_a_new =
-                        crate::mom::mom_reorder(&c_a_new, &s, ref_a, &empty_open, nocc_a, 0);
+                    c_a_new = crate::mom::mom_reorder(&c_a_new, &s, ref_a, &empty_open, nocc_a, 0);
                 }
             }
             if let Some(ref_b) = mom_ref_b.as_ref() {
                 if nocc_b > 0 {
-                    c_b_new =
-                        crate::mom::mom_reorder(&c_b_new, &s, ref_b, &empty_open, nocc_b, 0);
+                    c_b_new = crate::mom::mom_reorder(&c_b_new, &s, ref_b, &empty_open, nocc_b, 0);
                 }
             }
         }
@@ -866,9 +931,15 @@ pub fn solve_uhf_fockmod(
 /// the allocation that duplicates the live `xc_contrib` KS grid cache — see
 /// the call site's comment in `solve_uhf_fockmod` for the measured magnitude
 /// at benzene/aug-cc-pVTZ and danuglipron/def2-SVP shapes.
-pub fn fxc_kernel_duplicate_bytes(nbf: usize, natoms: usize, cfg: &ferric_dft::grid::AtomicGridConfig) -> usize {
+pub fn fxc_kernel_duplicate_bytes(
+    nbf: usize,
+    natoms: usize,
+    cfg: &ferric_dft::grid::AtomicGridConfig,
+) -> usize {
     const PLANES: usize = 4; // chi (1) + dchi x/y/z (3)
-    let npts = natoms.saturating_mul(cfg.n_radial).saturating_mul(cfg.n_angular);
+    let npts = natoms
+        .saturating_mul(cfg.n_radial)
+        .saturating_mul(cfg.n_angular);
     PLANES
         .saturating_mul(nbf)
         .saturating_mul(npts)
@@ -964,10 +1035,7 @@ fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Array2<f64> 
 /// result back to (n × n) with sentinel-energy zero columns for any dropped
 /// near-singular modes. Mirrors `crate::rhf::diagonalize`. See that function for
 /// the shape/padding rationale.
-fn diagonalize(
-    f: &Array2<f64>,
-    x: &Array2<f64>,
-) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
+fn diagonalize(f: &Array2<f64>, x: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
     crate::driver::diagonalize_rect(f, x)
 }
 
@@ -996,10 +1064,10 @@ fn expectation_s_squared(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ferric_integrals::oneelectron;
     use ferric_core::basis;
     use ferric_core::external_potential::{ExternalPotential, PointCharge};
     use ferric_core::parallel::ParallelContext;
+    use ferric_integrals::oneelectron;
 
     #[test]
     fn test_uhf_h_atom_sto3g() {
@@ -1064,7 +1132,11 @@ mod tests {
             5,
             3,
         );
-        assert!((s2 - 2.0).abs() < 0.05, "O atom ⟨S²⟩ = {} (expected ≈2.0)", s2);
+        assert!(
+            (s2 - 2.0).abs() < 0.05,
+            "O atom ⟨S²⟩ = {} (expected ≈2.0)",
+            s2
+        );
     }
 
     #[test]
@@ -1079,7 +1151,11 @@ mod tests {
         let mut mol = Molecule::parse_xyz("1\nXe\nXe 0 0 0\n", 0, 1).unwrap();
         let bs = basis::bundled("def2-svp").unwrap();
         mol.apply_ecp(&bs);
-        assert_eq!(mol.nelec(), 26, "def2 Xe ECP should remove 28 core electrons");
+        assert_eq!(
+            mol.nelec(),
+            26,
+            "def2 Xe ECP should remove 28 core electrons"
+        );
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let op = ferric_integrals::operator::Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
@@ -1127,7 +1203,10 @@ mod tests {
         let ctx = ParallelContext::default();
         let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg)
             .expect("UKS-PBE Br atom with fractional occ should converge");
-        assert!(res.converged, "UKS-PBE Br atom did not converge with fractional occ");
+        assert!(
+            res.converged,
+            "UKS-PBE Br atom did not converge with fractional occ"
+        );
         // Sanity: ⟨S²⟩ for a clean doublet (S=1/2) = 0.75; allow mild contamination.
         let s2 = expectation_s_squared(
             &res.mos_alpha,
@@ -1136,7 +1215,11 @@ mod tests {
             18,
             17,
         );
-        assert!((s2 - 0.75).abs() < 0.1, "Br atom ⟨S²⟩ = {} (expected ≈0.75)", s2);
+        assert!(
+            (s2 - 0.75).abs() < 0.1,
+            "Br atom ⟨S²⟩ = {} (expected ≈0.75)",
+            s2
+        );
     }
 
     #[test]
@@ -1163,7 +1246,12 @@ mod tests {
             .expect("UKS-PBE Br atom baseline should converge");
 
         let ext = ExternalPotential {
-            point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 20.0 }],
+            point_charges: vec![PointCharge {
+                q: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 20.0,
+            }],
             smeared_charges: Vec::new(),
             field: None,
         };
@@ -1207,7 +1295,10 @@ mod tests {
         let ctx = ParallelContext::default();
         let res = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg)
             .expect("UKS-PBE O atom with fractional occ should solve");
-        assert!(res.converged, "UKS-PBE O atom did not converge with fractional occ");
+        assert!(
+            res.converged,
+            "UKS-PBE O atom did not converge with fractional occ"
+        );
     }
 
     #[test]

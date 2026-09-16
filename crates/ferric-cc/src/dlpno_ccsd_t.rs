@@ -382,17 +382,25 @@ mod tests {
     /// Four orbitals on a line at x = 0, 2, 20, 22 Bohr: two well-separated
     /// clusters. Same fixture as `ferric_mp2::pair_domains`' tests.
     fn two_clusters() -> Array2<f64> {
-        array![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [20.0, 0.0, 0.0], [22.0, 0.0, 0.0]]
+        array![
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [20.0, 0.0, 0.0],
+            [22.0, 0.0, 0.0]
+        ]
     }
 
     fn line_centers(nocc: usize, spacing: f64) -> Array2<f64> {
-        Array2::from_shape_fn((nocc, 3), |(i, ax)| {
-            if ax == 0 {
-                i as f64 * spacing
-            } else {
-                0.0
-            }
-        })
+        Array2::from_shape_fn(
+            (nocc, 3),
+            |(i, ax)| {
+                if ax == 0 {
+                    i as f64 * spacing
+                } else {
+                    0.0
+                }
+            },
+        )
     }
 
     /// Deterministic pseudo-random per-triple contribution, so exactness
@@ -404,7 +412,9 @@ mod tests {
             .wrapping_add((j as u64).wrapping_mul(0xBF58476D1CE4E5B9))
             .wrapping_add((k as u64).wrapping_mul(0x94D049BB133111EB))
             .wrapping_add(1);
-        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((s >> 33) as f64 / (1u64 << 31) as f64) - 1.0
     }
 
@@ -466,7 +476,10 @@ mod tests {
     fn generous_finite_cutoff_is_also_the_identity() {
         let c = two_clusters(); // max separation 22 Bohr
         let d = build_triple_domains(&c, 1000.0).unwrap();
-        assert!(d.is_complete(), "a cutoff past the whole molecule must screen nothing");
+        assert!(
+            d.is_complete(),
+            "a cutoff past the whole molecule must screen nothing"
+        );
 
         let got = screened_triple_energy(&d, |i, j, k| Ok(contrib(i, j, k))).unwrap();
         let dense = screened_triple_energy(&complete_triple_domains(&c).unwrap(), |i, j, k| {
@@ -497,8 +510,8 @@ mod tests {
                 "weighted i<=j<=k band must cover all nocc^3 ordered triples (nocc={nocc})"
             );
             // And the spin-orbital convention must NOT accidentally agree.
-            let so_convention = 6.0 * (nocc * (nocc.saturating_sub(1)) * (nocc.saturating_sub(2))
-                / 6) as f64;
+            let so_convention =
+                6.0 * (nocc * (nocc.saturating_sub(1)) * (nocc.saturating_sub(2)) / 6) as f64;
             if nocc >= 3 {
                 assert!(
                     (total - so_convention).abs() > 0.5,
@@ -539,7 +552,10 @@ mod tests {
             assert_eq!(n1, 4, "cutoff {cut}: all i==j==k triples must survive");
             assert_eq!(n3, 12, "cutoff {cut}: all two-equal triples must survive");
             // Only the all-distinct class may shrink.
-            assert!(n6 <= 4, "cutoff {cut}: nocc=4 has C(4,3)=4 distinct triples");
+            assert!(
+                n6 <= 4,
+                "cutoff {cut}: nocc=4 has C(4,3)=4 distinct triples"
+            );
         }
     }
 
@@ -630,8 +646,14 @@ mod tests {
 
         assert!(!d.is_complete());
         assert!(d.triple_retention() < 1.0);
-        assert!(!d.triples.contains(&(0, 1, 2)), "cross-cluster triple survived");
-        assert!(!d.triples.contains(&(1, 2, 3)), "cross-cluster triple survived");
+        assert!(
+            !d.triples.contains(&(0, 1, 2)),
+            "cross-cluster triple survived"
+        );
+        assert!(
+            !d.triples.contains(&(1, 2, 3)),
+            "cross-cluster triple survived"
+        );
         assert_eq!(d.triples.len(), 16, "16 repeated-index triples, 0 distinct");
 
         // Weighted retention must be BELOW plain retention. Screening can only
@@ -664,7 +686,10 @@ mod tests {
             (e_dense - e_cut).abs() > 1e-12,
             "screening had no effect; the cutoff is inert ({e_dense} vs {e_cut})"
         );
-        assert!(cut.triple_retention() < 1.0, "premise: this cutoff should drop triples");
+        assert!(
+            cut.triple_retention() < 1.0,
+            "premise: this cutoff should drop triples"
+        );
     }
 
     /// The screened energy must equal the dense one restricted to the retained

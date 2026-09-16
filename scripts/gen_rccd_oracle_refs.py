@@ -19,6 +19,7 @@ below. It is a basis-incompleteness difference, not solver error.
 
 Usage:  OPENBLAS_NUM_THREADS=4 python3 scripts/gen_rccd_oracle_refs.py
 """
+
 import os
 import sys
 

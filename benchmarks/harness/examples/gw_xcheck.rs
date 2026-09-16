@@ -31,7 +31,9 @@ const HA_TO_EV: f64 = 27.211386245988_f64;
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let path = args.next().expect("usage: gw_xcheck <file.xyz> <obs> <ri-aux>");
+    let path = args
+        .next()
+        .expect("usage: gw_xcheck <file.xyz> <obs> <ri-aux>");
     let obs_name = args.next().unwrap_or_else(|| "def2-tzvp".to_string());
     let aux_name = args.next().unwrap_or_else(|| "def2-tzvp-rifit".to_string());
 

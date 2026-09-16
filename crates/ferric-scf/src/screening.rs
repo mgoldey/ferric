@@ -94,6 +94,9 @@ mod tests {
         let bound: &dyn Bound = &bounds;
         let est = bound.estimate(0, 1, 2, 3);
         let direct = bounds.q[(0, 1)] * bounds.q[(2, 3)];
-        assert!((est - direct).abs() < 1e-15, "trait dispatch mismatch: {est} vs {direct}");
+        assert!(
+            (est - direct).abs() < 1e-15,
+            "trait dispatch mismatch: {est} vs {direct}"
+        );
     }
 }

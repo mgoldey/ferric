@@ -122,9 +122,20 @@ pub fn pair_block_from_g_cand(
     for (k, &b) in db.iter().enumerate() {
         pos_db[b] = k;
     }
-    Some(PairBlock { i, j, da, db, pat, fvv_aa, fvv_bb, j_blk, denom, pos_da, pos_db })
+    Some(PairBlock {
+        i,
+        j,
+        da,
+        db,
+        pat,
+        fvv_aa,
+        fvv_bb,
+        j_blk,
+        denom,
+        pos_da,
+        pos_db,
+    })
 }
-
 
 /// Zero out elements of `x` that lie outside the sparsity pattern `pat`.
 pub fn apply_pattern(x: &mut Array2<f64>, pat: &[bool], nb: usize) {
@@ -149,7 +160,9 @@ pub fn solve_ragged(
     rtol: f64,
     max_iter: usize,
 ) -> (Vec<Array2<f64>>, usize, f64, bool, u64) {
-    solve_ragged_with(rg, rtol, max_iter, |t, flops| matvec_indexed(rg, f_oo, t, flops))
+    solve_ragged_with(rg, rtol, max_iter, |t, flops| {
+        matvec_indexed(rg, f_oo, t, flops)
+    })
 }
 
 /// [`solve_ragged`] with a caller-supplied pattern-projected SPD matvec —
@@ -356,21 +369,32 @@ impl RingPlan {
     /// this plan — the dRPA solver holds `x = b_blocks`, assembled once
     /// before the fixed-point loop starts).
     pub fn new(rg: &Ragged, x: &[Array2<f64>]) -> RingPlan {
-        let pair_index: HashMap<(usize, usize), usize> =
-            rg.pairs.iter().enumerate().map(|(p, pb)| ((pb.i, pb.j), p)).collect();
-        let dims: Vec<(usize, usize)> =
-            rg.pairs.iter().map(|pb| (pb.da.len(), pb.db.len())).collect();
+        let pair_index: HashMap<(usize, usize), usize> = rg
+            .pairs
+            .iter()
+            .enumerate()
+            .map(|(p, pb)| ((pb.i, pb.j), p))
+            .collect();
+        let dims: Vec<(usize, usize)> = rg
+            .pairs
+            .iter()
+            .map(|pb| (pb.da.len(), pb.db.len()))
+            .collect();
         let triples: Vec<Vec<RingTriple>> = rg
             .pairs
             .iter()
             .map(|out_pb| {
                 let (i, j) = (out_pb.i, out_pb.j);
                 let mut out = Vec::new();
-                let Some(iks) = rg.by_i.get(&i) else { return out };
+                let Some(iks) = rg.by_i.get(&i) else {
+                    return out;
+                };
                 for &p_ik in iks {
                     let ik = &rg.pairs[p_ik];
                     let k = ik.j;
-                    let Some(&p_kj) = pair_index.get(&(k, j)) else { continue };
+                    let Some(&p_kj) = pair_index.get(&(k, j)) else {
+                        continue;
+                    };
                     let kj = &rg.pairs[p_kj];
                     let cset: Vec<(usize, usize)> = ik
                         .db
@@ -412,7 +436,13 @@ impl RingPlan {
                             panel_x[(rr, cc)] = xs[(rx, cx)];
                         }
                     }
-                    out.push(RingTriple { p_kj, cset, rows, cols, panel_x });
+                    out.push(RingTriple {
+                        p_kj,
+                        cset,
+                        rows,
+                        cols,
+                        panel_x,
+                    });
                 }
                 out
             })
@@ -473,14 +503,14 @@ fn accumulate_triple(acc: &mut Array2<f64>, t: &RingTriple, y: &[Array2<f64>]) {
 /// Rayon-parallel over output pairs (each writes only its own block —
 /// deterministic by construction). The result is NOT pattern-masked here;
 /// callers project with [`apply_pattern`] when required.
-pub fn ring_product(
-    rg: &Ragged,
-    x: &[Array2<f64>],
-    y: &[Array2<f64>],
-) -> Vec<Array2<f64>> {
+pub fn ring_product(rg: &Ragged, x: &[Array2<f64>], y: &[Array2<f64>]) -> Vec<Array2<f64>> {
     use rayon::prelude::*;
-    let pair_index: HashMap<(usize, usize), usize> =
-        rg.pairs.iter().enumerate().map(|(p, pb)| ((pb.i, pb.j), p)).collect();
+    let pair_index: HashMap<(usize, usize), usize> = rg
+        .pairs
+        .iter()
+        .enumerate()
+        .map(|(p, pb)| ((pb.i, pb.j), p))
+        .collect();
     rg.pairs
         .par_iter()
         .map(|out_pb| {
@@ -492,7 +522,9 @@ pub fn ring_product(
                 for &p_ik in iks {
                     let ik = &rg.pairs[p_ik];
                     let k = ik.j;
-                    let Some(&p_kj) = pair_index.get(&(k, j)) else { continue };
+                    let Some(&p_kj) = pair_index.get(&(k, j)) else {
+                        continue;
+                    };
                     let kj = &rg.pairs[p_kj];
                     // contraction set: Db_ik ∩ Da_kj (global virtual ids)
                     let cset: Vec<(usize, usize)> = ik

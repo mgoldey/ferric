@@ -257,7 +257,8 @@ pub fn harmonic_frequencies(
 
     // Energy at the undisplaced geometry, and an early check that the method
     // combination actually produces a gradient at all.
-    let (energy, _) = energy_and_gradient(ctx, mol, basis_name, op, scf_config, freq_config.reference)?;
+    let (energy, _) =
+        energy_and_gradient(ctx, mol, basis_name, op, scf_config, freq_config.reference)?;
 
     // --- Step 1: central-difference the analytic gradient -----------------
     // Column b of the Hessian is d(g)/d(x_b), so we displace coordinate b and
@@ -275,8 +276,22 @@ pub fn harmonic_frequencies(
         displace(&mut mol_p, atom, coord, delta);
         displace(&mut mol_m, atom, coord, -delta);
 
-        let (_, g_p) = energy_and_gradient(ctx, &mol_p, basis_name, op, scf_config, freq_config.reference)?;
-        let (_, g_m) = energy_and_gradient(ctx, &mol_m, basis_name, op, scf_config, freq_config.reference)?;
+        let (_, g_p) = energy_and_gradient(
+            ctx,
+            &mol_p,
+            basis_name,
+            op,
+            scf_config,
+            freq_config.reference,
+        )?;
+        let (_, g_m) = energy_and_gradient(
+            ctx,
+            &mol_m,
+            basis_name,
+            op,
+            scf_config,
+            freq_config.reference,
+        )?;
         n_evals += 2;
 
         for a in 0..n_coord {
@@ -338,7 +353,10 @@ pub fn frequencies_from_cartesian_hessian(
 
     // --- Step 3: mass-weight ---------------------------------------------
     // Masses in electron masses so eigenvalues land in atomic units.
-    let mass_au: Vec<f64> = masses_amu.iter().map(|m| m * AMU_TO_ELECTRON_MASS).collect();
+    let mass_au: Vec<f64> = masses_amu
+        .iter()
+        .map(|m| m * AMU_TO_ELECTRON_MASS)
+        .collect();
     for (i, m) in mass_au.iter().enumerate() {
         if !(m.is_finite() && *m > 0.0) {
             return Err(FerricError::General(format!(
@@ -450,9 +468,8 @@ pub fn frequencies_from_cartesian_hessian(
     }
 
     let n_vib = frequencies.len();
-    let normal_modes = Array2::from_shape_vec((n_vib, n_coord), modes).map_err(|e| {
-        FerricError::General(format!("normal-mode array shape error: {e}"))
-    })?;
+    let normal_modes = Array2::from_shape_vec((n_vib, n_coord), modes)
+        .map_err(|e| FerricError::General(format!("normal-mode array shape error: {e}")))?;
 
     Ok(FrequencyResult {
         frequencies,
@@ -725,12 +742,20 @@ mod tests {
         // This is THE test for the projection: a nonlinear molecule must have
         // a rank-6 translation/rotation subspace, a linear one rank 5.
         let m = water();
-        let mass: Vec<f64> = atom_masses(&m).unwrap().iter().map(|x| x * AMU_TO_ELECTRON_MASS).collect();
+        let mass: Vec<f64> = atom_masses(&m)
+            .unwrap()
+            .iter()
+            .map(|x| x * AMU_TO_ELECTRON_MASS)
+            .collect();
         let b = translation_rotation_basis(&m, &mass).unwrap();
         assert_eq!(b.len(), 6, "bent water must have 6 trans/rot modes");
 
         let c = co2();
-        let cmass: Vec<f64> = atom_masses(&c).unwrap().iter().map(|x| x * AMU_TO_ELECTRON_MASS).collect();
+        let cmass: Vec<f64> = atom_masses(&c)
+            .unwrap()
+            .iter()
+            .map(|x| x * AMU_TO_ELECTRON_MASS)
+            .collect();
         let cb = translation_rotation_basis(&c, &cmass).unwrap();
         assert_eq!(cb.len(), 5, "linear CO2 must have 5 trans/rot modes");
 
@@ -787,7 +812,10 @@ mod tests {
         assert_eq!(r.trans_rot_frequencies.len(), 6, "water needs 6 zero modes");
         assert_eq!(r.frequencies.len(), 3, "water has 3N-6 = 3 vibrations");
         for f in &r.trans_rot_frequencies {
-            assert!(f.abs() < ZERO_MODE_TOL_CM, "projected trans/rot mode not zero: {f} cm^-1");
+            assert!(
+                f.abs() < ZERO_MODE_TOL_CM,
+                "projected trans/rot mode not zero: {f} cm^-1"
+            );
         }
     }
 
@@ -798,10 +826,17 @@ mod tests {
         let h = spring_hessian(&m, 0.5);
         let r = frequencies_from_cartesian_hessian(&m, &h, &masses).unwrap();
         assert!(r.is_linear, "CO2 must be detected as linear");
-        assert_eq!(r.trans_rot_frequencies.len(), 5, "linear CO2 needs 5 zero modes");
+        assert_eq!(
+            r.trans_rot_frequencies.len(),
+            5,
+            "linear CO2 needs 5 zero modes"
+        );
         assert_eq!(r.frequencies.len(), 4, "CO2 has 3N-5 = 4 vibrations");
         for f in &r.trans_rot_frequencies {
-            assert!(f.abs() < ZERO_MODE_TOL_CM, "projected trans/rot mode not zero: {f} cm^-1");
+            assert!(
+                f.abs() < ZERO_MODE_TOL_CM,
+                "projected trans/rot mode not zero: {f} cm^-1"
+            );
         }
     }
 
@@ -827,7 +862,10 @@ mod tests {
         let ht = spring_hessian(&t, 0.5);
         let rt = frequencies_from_cartesian_hessian(&t, &ht, &masses).unwrap();
         for (a, b) in base.frequencies.iter().zip(rt.frequencies.iter()) {
-            assert!((a - b).abs() < 1e-8, "translation changed a frequency: {a} vs {b}");
+            assert!(
+                (a - b).abs() < 1e-8,
+                "translation changed a frequency: {a} vs {b}"
+            );
         }
         assert_eq!(rt.trans_rot_frequencies.len(), 6);
 
@@ -846,11 +884,21 @@ mod tests {
         let hr = spring_hessian(&r, 0.5);
         let rr = frequencies_from_cartesian_hessian(&r, &hr, &masses).unwrap();
         for (a, b) in base.frequencies.iter().zip(rr.frequencies.iter()) {
-            assert!((a - b).abs() < 1e-8, "rotation changed a frequency: {a} vs {b}");
+            assert!(
+                (a - b).abs() < 1e-8,
+                "rotation changed a frequency: {a} vs {b}"
+            );
         }
-        assert_eq!(rr.trans_rot_frequencies.len(), 6, "rotated water still needs 6 zeros");
+        assert_eq!(
+            rr.trans_rot_frequencies.len(),
+            6,
+            "rotated water still needs 6 zeros"
+        );
         for f in &rr.trans_rot_frequencies {
-            assert!(f.abs() < ZERO_MODE_TOL_CM, "rotated trans/rot mode not zero: {f}");
+            assert!(
+                f.abs() < ZERO_MODE_TOL_CM,
+                "rotated trans/rot mode not zero: {f}"
+            );
         }
     }
 
@@ -970,14 +1018,20 @@ mod tests {
     #[test]
     fn test_water_sto3g_frequencies_vs_pyscf() {
         let m = water();
-        let cfg = RhfConfig { energy_conv: 1e-11, ..Default::default() };
+        let cfg = RhfConfig {
+            energy_conv: 1e-11,
+            ..Default::default()
+        };
         let fc = FrequencyConfig::default();
         let ctx = ParallelContext::default();
         let r = harmonic_frequencies(&ctx, &m, "sto-3g", Operator::coulomb(), &cfg, &fc).unwrap();
 
         eprintln!("water/STO-3G freqs (cm^-1): {:?}", r.frequencies);
         eprintln!("  trans/rot: {:?}", r.trans_rot_frequencies);
-        eprintln!("  asymmetry: {:.3e} Ha/Bohr^2, {} gradient evals", r.asymmetry, r.n_gradient_evaluations);
+        eprintln!(
+            "  asymmetry: {:.3e} Ha/Bohr^2, {} gradient evals",
+            r.asymmetry, r.n_gradient_evaluations
+        );
 
         assert_eq!(r.n_gradient_evaluations, 6 * 3);
         assert_eq!(r.trans_rot_frequencies.len(), 6);
@@ -999,7 +1053,10 @@ mod tests {
     #[test]
     fn test_water_ccpvdz_frequencies_vs_pyscf() {
         let m = water();
-        let cfg = RhfConfig { energy_conv: 1e-11, ..Default::default() };
+        let cfg = RhfConfig {
+            energy_conv: 1e-11,
+            ..Default::default()
+        };
         let fc = FrequencyConfig::default();
         let ctx = ParallelContext::default();
         let r = harmonic_frequencies(&ctx, &m, "cc-pvdz", Operator::coulomb(), &cfg, &fc).unwrap();
@@ -1011,7 +1068,11 @@ mod tests {
 
         assert_eq!(r.trans_rot_frequencies.len(), 6);
         assert_eq!(r.frequencies.len(), 3);
-        assert_eq!(r.n_imaginary(), 0, "equilibrium water has no imaginary modes");
+        assert_eq!(
+            r.n_imaginary(),
+            0,
+            "equilibrium water has no imaginary modes"
+        );
 
         // PySCF RHF/cc-pVDZ, isotope_avg masses (generated locally 2026-07-26):
         //   [1804.2202, 3953.5732, 4050.4122]
@@ -1030,7 +1091,10 @@ mod tests {
     #[test]
     fn test_co2_sto3g_linear_five_zero_modes() {
         let m = co2();
-        let cfg = RhfConfig { energy_conv: 1e-11, ..Default::default() };
+        let cfg = RhfConfig {
+            energy_conv: 1e-11,
+            ..Default::default()
+        };
         let fc = FrequencyConfig::default();
         let ctx = ParallelContext::default();
         let r = harmonic_frequencies(&ctx, &m, "sto-3g", Operator::coulomb(), &cfg, &fc).unwrap();
@@ -1039,7 +1103,11 @@ mod tests {
         eprintln!("  trans/rot: {:?}", r.trans_rot_frequencies);
 
         assert!(r.is_linear);
-        assert_eq!(r.trans_rot_frequencies.len(), 5, "linear molecule: 5 zero modes");
+        assert_eq!(
+            r.trans_rot_frequencies.len(),
+            5,
+            "linear molecule: 5 zero modes"
+        );
         assert_eq!(r.frequencies.len(), 4, "CO2 has 3N-5 = 4 vibrations");
         for f in &r.trans_rot_frequencies {
             assert!(
@@ -1072,10 +1140,14 @@ mod tests {
     #[test]
     fn test_water_frequencies_invariant_to_rigid_rotation_scf() {
         let m = water();
-        let cfg = RhfConfig { energy_conv: 1e-11, ..Default::default() };
+        let cfg = RhfConfig {
+            energy_conv: 1e-11,
+            ..Default::default()
+        };
         let fc = FrequencyConfig::default();
         let ctx = ParallelContext::default();
-        let base = harmonic_frequencies(&ctx, &m, "sto-3g", Operator::coulomb(), &cfg, &fc).unwrap();
+        let base =
+            harmonic_frequencies(&ctx, &m, "sto-3g", Operator::coulomb(), &cfg, &fc).unwrap();
 
         // Rotate (3-4-5 about z, then about x) and translate.
         let (ca, sa) = (0.6f64, 0.8f64);

@@ -1,8 +1,11 @@
 """The DFT cost model, and the counter-intuitive fact it exists to pin."""
+
 from __future__ import annotations
 
 from tools.pipeline.cost import (
-    GRID_POINTS_PER_ATOM, DftSize, fits_in_budget,
+    GRID_POINTS_PER_ATOM,
+    DftSize,
+    fits_in_budget,
 )
 
 # The two systems the campaign actually compared (RESULTS.md M10 + correction).
@@ -48,7 +51,7 @@ def test_xc_work_ratio_is_modest_compared_to_the_runtime_blowup():
 
 
 def test_budget_gate_detects_the_batching_cliff():
-    assert fits_in_budget(DRUG_STO3G, budget_gb=9.6)      # 12G cap -> 0.8x
+    assert fits_in_budget(DRUG_STO3G, budget_gb=9.6)  # 12G cap -> 0.8x
     assert not fits_in_budget(DRUG_STO3G, budget_gb=2.0)  # would batch
 
 
@@ -79,7 +82,7 @@ def test_atom_count_alone_hides_composition():
     work_ratio = d.xc_work / a.xc_work
     assert abs(atom_ratio - 1.13) < 0.02
     assert abs(work_ratio - 1.86) < 0.02
-    assert work_ratio > 1.6 * atom_ratio      # composition dominates
+    assert work_ratio > 1.6 * atom_ratio  # composition dominates
 
 
 def test_xc_fock_work_predicts_measured_alkane_runtimes():
@@ -117,7 +120,7 @@ def test_xc_fock_work_is_quadratic_in_basis_not_linear():
     small = DftSize(n_atoms=10, n_basis_functions=50)
     big = DftSize(n_atoms=10, n_basis_functions=100)
     assert big.xc_fock_work == 4 * small.xc_fock_work
-    assert big.xc_work == 2 * small.xc_work        # the one-pass term is linear
+    assert big.xc_work == 2 * small.xc_work  # the one-pass term is linear
 
 
 def test_model_is_documented_as_per_iteration_not_total():
@@ -147,10 +150,10 @@ def test_correcting_for_iteration_count_recovers_the_measurement():
     danu = DftSize(n_atoms=71, n_basis_functions=235)
 
     work_only = danu.predicted_seconds(a20, 130.2)
-    assert abs(work_only - 612.4) / 612.4 > 0.3          # work alone: way off
+    assert abs(work_only - 612.4) / 612.4 > 0.3  # work alone: way off
 
     with_iters = work_only * (18 / 10)
-    assert abs(with_iters - 612.4) / 612.4 < 0.25        # with iterations: close
+    assert abs(with_iters - 612.4) / 612.4 < 0.25  # with iterations: close
 
 
 def test_ri_tensor_is_a_first_class_memory_term():

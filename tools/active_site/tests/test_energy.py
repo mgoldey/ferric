@@ -15,7 +15,9 @@ def test_compute_energy_vacuum_no_pocket():
 
 
 def test_compute_energy_use_field_false_forces_vacuum():
-    pocket = PocketCharges(charges=[(1.0, 0.0, 0.0, 10.0)], source_pdb=Path("fake.pdb"), ff="AMBER")
+    pocket = PocketCharges(
+        charges=[(1.0, 0.0, 0.0, 10.0)], source_pdb=Path("fake.pdb"), ff="AMBER"
+    )
     embedded = embed_ligand(WATER_XYZ, pocket=pocket, basis="sto-3g")
     vac = compute_energy(embedded, use_field=False)
     field = compute_energy(embedded, use_field=True)

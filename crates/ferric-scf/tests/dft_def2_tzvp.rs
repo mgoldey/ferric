@@ -12,7 +12,11 @@ use ferric_scf::screening::SchwarzBounds;
 
 fn run_h2o(xc: &str, basis_name: &str) -> f64 {
     let mol = Molecule::parse_xyz(
-        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n", 0, 1).unwrap();
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        0,
+        1,
+    )
+    .unwrap();
     let bs = basis::bundled(basis_name).unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
@@ -25,7 +29,10 @@ fn run_h2o(xc: &str, basis_name: &str) -> f64 {
         ..Default::default()
     };
     let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
-    eprintln!("{xc} H2O/{basis_name}: E = {:.8} ({} iter)", res.energy, res.iterations);
+    eprintln!(
+        "{xc} H2O/{basis_name}: E = {:.8} ({} iter)",
+        res.energy, res.iterations
+    );
     res.energy
 }
 

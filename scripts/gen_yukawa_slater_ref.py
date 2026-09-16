@@ -26,6 +26,7 @@ Then:
     Slater blob  = 4 pi (mu/pi)^{3/2} ∫_0^inf s^2 exp(-mu s^2 - gamma s) ds
     fit blob     = sum_k c_k (mu/(mu+alpha_k))^{3/2}   (6-term Tew-Klopper fit)
 """
+
 import numpy as np
 from scipy import integrate
 
@@ -34,8 +35,15 @@ alphas = np.array([3.42525091, 0.62391373, 0.16885540])
 coeffs = np.array([0.15432897, 0.53532814, 0.44463454])
 Nprim = (2.0 * alphas / np.pi) ** 0.75
 d = coeffs * Nprim
-def s_overlap(a, b): return (np.pi / (a + b)) ** 1.5
-S = sum(d[i] * d[j] * s_overlap(alphas[i], alphas[j]) for i in range(3) for j in range(3))
+
+
+def s_overlap(a, b):
+    return (np.pi / (a + b)) ** 1.5
+
+
+S = sum(
+    d[i] * d[j] * s_overlap(alphas[i], alphas[j]) for i in range(3) for j in range(3)
+)
 d = d / np.sqrt(S)  # unit-normalized contraction
 
 # rho0 as a sum of unit-normalized s-Gaussian blobs (weights sum to 1).
@@ -44,9 +52,11 @@ for i in range(3):
     for j in range(3):
         p = alphas[i] + alphas[j]
         w = d[i] * d[j] * (np.pi / p) ** 1.5
-        p_list.append(p); w_list.append(w)
+        p_list.append(p)
+        w_list.append(w)
 p_arr, w_arr = np.array(p_list), np.array(w_list)
 assert abs(w_arr.sum() - 1.0) < 1e-10
+
 
 def yukawa_blob(p, q, zeta):
     mu = p * q / (p + q)
@@ -54,9 +64,11 @@ def yukawa_blob(p, q, zeta):
     val, _ = integrate.quad(f, 0.0, np.inf, limit=200)
     return 4.0 * np.pi * (mu / np.pi) ** 1.5 * val
 
+
 def coulomb_blob(p, q):
     mu = p * q / (p + q)
     return 2.0 * np.sqrt(mu / np.pi)
+
 
 def slater_blob_exact(p, q, gamma):
     mu = p * q / (p + q)
@@ -64,23 +76,40 @@ def slater_blob_exact(p, q, gamma):
     val, _ = integrate.quad(f, 0.0, np.inf, limit=200)
     return 4.0 * np.pi * (mu / np.pi) ** 1.5 * val
 
-FIT = [(0.241393, 0.301846), (0.844001, 0.255338), (3.044055, 0.197575),
-       (13.499604, 0.139390), (76.617811, 0.082572), (765.962887, 0.034801)]
+
+FIT = [
+    (0.241393, 0.301846),
+    (0.844001, 0.255338),
+    (3.044055, 0.197575),
+    (13.499604, 0.139390),
+    (76.617811, 0.082572),
+    (765.962887, 0.034801),
+]
+
+
 def slater_blob_fit(p, q, gamma):
     mu = p * q / (p + q)
     g2 = gamma * gamma
     return sum(c * (mu / (mu + a * g2)) ** 1.5 for a, c in FIT)
 
+
 def contract(blob_fn, *args):
-    return sum(w_arr[a] * w_arr[b] * blob_fn(p_arr[a], p_arr[b], *args)
-               for a in range(9) for b in range(9))
+    return sum(
+        w_arr[a] * w_arr[b] * blob_fn(p_arr[a], p_arr[b], *args)
+        for a in range(9)
+        for b in range(9)
+    )
+
 
 if __name__ == "__main__":
     print("=== Yukawa exp(-zeta r)/r, (00|00) H2/STO-3G ===")
     for zeta in [0.5, 1.0, 2.0]:
         print("  zeta=%.3f : %.12f" % (zeta, contract(yukawa_blob, zeta)))
-    c = sum(w_arr[a] * w_arr[b] * coulomb_blob(p_arr[a], p_arr[b])
-            for a in range(9) for b in range(9))
+    c = sum(
+        w_arr[a] * w_arr[b] * coulomb_blob(p_arr[a], p_arr[b])
+        for a in range(9)
+        for b in range(9)
+    )
     print("  Coulomb  : %.12f   (must equal PySCF int2e 0.774605943920)" % c)
 
     print("=== Slater geminal exp(-gamma r), (00|00) H2/STO-3G, gamma=1 ===")

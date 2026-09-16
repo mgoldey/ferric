@@ -103,7 +103,10 @@ fn energy(
     // SCF always uses the plain Coulomb operator; only the MP2 correlation is attenuated.
     let coul = Operator::coulomb();
     let bounds = SchwarzBounds::compute(coul, &obs).ok()?;
-    let cfg = RhfConfig { max_iter: 300, ..Default::default() };
+    let cfg = RhfConfig {
+        max_iter: 300,
+        ..Default::default()
+    };
     let rhf = solve_rhf(ctx, &mol, &obs, coul, &bounds, &cfg).ok()?;
     let mp2 = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).ok()?;
     Some(mp2.total_energy)
@@ -119,7 +122,13 @@ fn interaction_kcal(
     let n_atoms = d.xyz.lines().count() - 2;
     let e_dim = energy(ctx, &subsystem_xyz(d.xyz, None), obs, dfbs, op)?;
     let e_a = energy(ctx, &subsystem_xyz(d.xyz, Some((0, d.n_a))), obs, dfbs, op)?;
-    let e_b = energy(ctx, &subsystem_xyz(d.xyz, Some((d.n_a, n_atoms))), obs, dfbs, op)?;
+    let e_b = energy(
+        ctx,
+        &subsystem_xyz(d.xyz, Some((d.n_a, n_atoms))),
+        obs,
+        dfbs,
+        op,
+    )?;
     Some((e_dim - e_a - e_b) * HA_TO_KCAL)
 }
 
@@ -130,7 +139,14 @@ fn main() {
     let r0 = 1.05 * ANG2BOHR; // aDZ-optimal terfc cutoff (paper)
 
     say!("MP2(terfc) dimer validation — {obs} / r0=1.05 A / NON-CP (paper variant I)");
-    say!("{:<24} {:>10} {:>10} {:>10} {:>10}", "system", "MP2", "terfc", "CCSD(T)ref", "MP2err");
+    say!(
+        "{:<24} {:>10} {:>10} {:>10} {:>10}",
+        "system",
+        "MP2",
+        "terfc",
+        "CCSD(T)ref",
+        "MP2err"
+    );
     for d in dimers() {
         let e_mp2 = interaction_kcal(&ctx, &d, obs, dfbs, Operator::coulomb());
         let e_terfc = interaction_kcal(&ctx, &d, obs, dfbs, Operator::terfc(r0));
@@ -138,11 +154,16 @@ fn main() {
             (Some(m), Some(t)) => {
                 say!(
                     "{:<24} {:>10.3} {:>10.3} {:>10.3} {:>+10.3}",
-                    d.name, m, t, d.ref_kcal, m - d.ref_kcal
+                    d.name,
+                    m,
+                    t,
+                    d.ref_kcal,
+                    m - d.ref_kcal
                 );
                 say!(
                     "  -> terfc err vs CCSD(T): {:+.3} kcal/mol  (MP2 err {:+.3})",
-                    t - d.ref_kcal, m - d.ref_kcal
+                    t - d.ref_kcal,
+                    m - d.ref_kcal
                 );
             }
             _ => say!("{:<24} FAILED (SCF/MP2 did not converge)", d.name),

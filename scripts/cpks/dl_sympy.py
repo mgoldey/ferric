@@ -13,22 +13,24 @@ This is the tracable reference: a tiny system (nocc=1, nvir=2) where the full
 relaxed α is computable in closed form, validating the analytic ∂L structure
 WITHOUT finite difference.
 """
+
 import sympy as sp
 
 # --- tiny closed-shell system: 1 occ, 2 vir (3 spatial MOs) ---
 nocc, nvir = 1, 2
 nmo = nocc + nvir
-O = list(range(nocc))            # occ indices 0
-V = list(range(nocc, nmo))       # vir indices 1,2
+O = list(range(nocc))  # occ indices 0
+V = list(range(nocc, nmo))  # vir indices 1,2
 
 # Orbital energies (symbolic, field-independent baseline).
-eps = sp.symbols(f'e0:{nmo}', real=True)
+eps = sp.symbols(f"e0:{nmo}", real=True)
 
 # Field strength.
-F = sp.symbols('F', real=True)
+F = sp.symbols("F", real=True)
 
 # Dipole matrix in MO basis: r_pq (symmetric). Field couples h += -F r.
-r = sp.Matrix(nmo, nmo, lambda p, q: sp.Symbol(f'r{min(p,q)}{max(p,q)}', real=True))
+r = sp.Matrix(nmo, nmo, lambda p, q: sp.Symbol(f"r{min(p, q)}{max(p, q)}", real=True))
+
 
 # MO 2e integrals (pq|rs) as a symbolic 4-index dict with 8-fold symmetry.
 def eri_sym(p, q, rr, s):
@@ -36,7 +38,8 @@ def eri_sym(p, q, rr, s):
     a, b = (p, q) if p <= q else (q, p)
     c, d = (rr, s) if rr <= s else (s, rr)
     (a, b), (c, d) = sorted([(a, b), (c, d)])
-    return sp.Symbol(f'I_{a}{b}_{c}{d}', real=True)
+    return sp.Symbol(f"I_{a}{b}_{c}{d}", real=True)
+
 
 # Perturbed orbitals at first order: canonical CPHF would give U; for the tiny
 # closed-form check we treat the field as making h_pq = eps_p δ_pq - F r_pq and

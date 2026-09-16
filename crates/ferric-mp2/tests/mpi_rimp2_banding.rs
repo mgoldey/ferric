@@ -132,8 +132,16 @@ fn assert_all_ranks_agree(ctx: &ParallelContext, label: &str, value: f64, tol: f
     if let Some(world) = ctx.world() {
         let mut v_max = 0.0f64;
         let mut v_min = 0.0f64;
-        world.all_reduce_into(std::slice::from_ref(&value), std::slice::from_mut(&mut v_max), SystemOperation::max());
-        world.all_reduce_into(std::slice::from_ref(&value), std::slice::from_mut(&mut v_min), SystemOperation::min());
+        world.all_reduce_into(
+            std::slice::from_ref(&value),
+            std::slice::from_mut(&mut v_max),
+            SystemOperation::max(),
+        );
+        world.all_reduce_into(
+            std::slice::from_ref(&value),
+            std::slice::from_mut(&mut v_min),
+            SystemOperation::min(),
+        );
         let spread = v_max - v_min;
         if ctx.is_root() {
             eprintln!(
@@ -167,8 +175,15 @@ fn mpi_rimp2_np1_matches_serial_water() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &df_rhf_config()).unwrap();
-    assert!(rhf.converged, "rank {}/{}: water RHF must converge (energy={:.10})", ctx.rank, ctx.size, rhf.energy);
-    eprintln!("[np1] rank {}/{}: RHF energy = {:.12}", ctx.rank, ctx.size, rhf.energy);
+    assert!(
+        rhf.converged,
+        "rank {}/{}: water RHF must converge (energy={:.10})",
+        ctx.rank, ctx.size, rhf.energy
+    );
+    eprintln!(
+        "[np1] rank {}/{}: RHF energy = {:.12}",
+        ctx.rank, ctx.size, rhf.energy
+    );
     let cfg = RiMp2Config::default();
 
     let (sc_serial, _) = ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
@@ -176,21 +191,29 @@ fn mpi_rimp2_np1_matches_serial_water() {
 
     eprintln!(
         "[np1] rank {}/{}: serial mp2_corr={:.15}  mpi mp2_corr={:.15}  diff={:.3e}",
-        ctx.rank, ctx.size, sc_serial.e_total, mpi_res.mp2_corr,
+        ctx.rank,
+        ctx.size,
+        sc_serial.e_total,
+        mpi_res.mp2_corr,
         (sc_serial.e_total - mpi_res.mp2_corr).abs()
     );
     assert!(
         (sc_serial.e_total - mpi_res.mp2_corr).abs() < 1e-11,
         "np1 MPI RI-MP2 must match serial to ~machine precision: serial={:.15} mpi={:.15}",
-        sc_serial.e_total, mpi_res.mp2_corr
+        sc_serial.e_total,
+        mpi_res.mp2_corr
     );
     assert!(
         (sc_serial.e_os - mpi_res.e_os).abs() < 1e-11,
-        "e_os mismatch: serial={:.15} mpi={:.15}", sc_serial.e_os, mpi_res.e_os
+        "e_os mismatch: serial={:.15} mpi={:.15}",
+        sc_serial.e_os,
+        mpi_res.e_os
     );
     assert!(
         (sc_serial.e_ss - mpi_res.e_ss).abs() < 1e-11,
-        "e_ss mismatch: serial={:.15} mpi={:.15}", sc_serial.e_ss, mpi_res.e_ss
+        "e_ss mismatch: serial={:.15} mpi={:.15}",
+        sc_serial.e_ss,
+        mpi_res.e_ss
     );
 
     assert_all_ranks_agree(&ctx, "water np1/np-N mp2_corr", mpi_res.mp2_corr, 1e-12);
@@ -212,7 +235,10 @@ fn mpi_rimp2_cross_rank_agreement_water() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &df_rhf_config()).unwrap();
-    eprintln!("[water] rank {}/{}: RHF energy = {:.12} converged={}", ctx.rank, ctx.size, rhf.energy, rhf.converged);
+    eprintln!(
+        "[water] rank {}/{}: RHF energy = {:.12} converged={}",
+        ctx.rank, ctx.size, rhf.energy, rhf.converged
+    );
     let cfg = RiMp2Config::default();
 
     let (p0, p1) = ctx.aux_band(dfbs.nbasis());
@@ -220,7 +246,10 @@ fn mpi_rimp2_cross_rank_agreement_water() {
 
     eprintln!(
         "[water] rank {}/{}: aux band=[{p0},{p1})  RI-MP2 corr = {:.15} Ha  bits=0x{:016x}",
-        ctx.rank, ctx.size, mpi_res.mp2_corr, mpi_res.mp2_corr.to_bits()
+        ctx.rank,
+        ctx.size,
+        mpi_res.mp2_corr,
+        mpi_res.mp2_corr.to_bits()
     );
     assert_all_ranks_agree(&ctx, "water", mpi_res.mp2_corr, 1e-12);
 
@@ -236,10 +265,16 @@ fn mpi_rimp2_cross_rank_agreement_water() {
     // check that the number is in the right ballpark.
     assert!(
         (mpi_res.mp2_corr - (-0.2040334729)).abs() < 5e-4,
-        "RI-MP2 corr sanity bound vs canonical-RHF PySCF ref: got {:.10}, ref -0.2040334729", mpi_res.mp2_corr
+        "RI-MP2 corr sanity bound vs canonical-RHF PySCF ref: got {:.10}, ref -0.2040334729",
+        mpi_res.mp2_corr
     );
 
-    eprintln!("[mem] rank {}/{}: peak RSS (VmHWM) = {:.1} MiB", ctx.rank, ctx.size, peak_rss_mib());
+    eprintln!(
+        "[mem] rank {}/{}: peak RSS (VmHWM) = {:.1} MiB",
+        ctx.rank,
+        ctx.size,
+        peak_rss_mib()
+    );
 }
 
 /// Benzene: bigger aux basis (def2-universal-jkfit-scale naux), the same
@@ -248,7 +283,11 @@ fn mpi_rimp2_cross_rank_agreement_water() {
 #[test]
 fn mpi_rimp2_cross_rank_agreement_benzene() {
     let ctx = ParallelContext::default();
-    let mol = Molecule::load_xyz(concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/molecules/benzene.xyz")).unwrap();
+    let mol = Molecule::load_xyz(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testdata/molecules/benzene.xyz"
+    ))
+    .unwrap();
     let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let op = Operator::coulomb();
@@ -261,11 +300,19 @@ fn mpi_rimp2_cross_rank_agreement_benzene() {
 
     eprintln!(
         "[benzene] rank {}/{}: aux band=[{p0},{p1})  RI-MP2 corr = {:.15} Ha  bits=0x{:016x}",
-        ctx.rank, ctx.size, mpi_res.mp2_corr, mpi_res.mp2_corr.to_bits()
+        ctx.rank,
+        ctx.size,
+        mpi_res.mp2_corr,
+        mpi_res.mp2_corr.to_bits()
     );
     assert_all_ranks_agree(&ctx, "benzene", mpi_res.mp2_corr, 1e-9);
 
-    eprintln!("[mem] rank {}/{}: peak RSS (VmHWM) = {:.1} MiB", ctx.rank, ctx.size, peak_rss_mib());
+    eprintln!(
+        "[mem] rank {}/{}: peak RSS (VmHWM) = {:.1} MiB",
+        ctx.rank,
+        ctx.size,
+        peak_rss_mib()
+    );
 }
 
 /// Focused memory-scaling probe (load-bearing evidence for B_ov *banding*,
@@ -290,7 +337,11 @@ fn mpi_rimp2_cross_rank_agreement_benzene() {
 #[ignore]
 fn mpi_rimp2_band_memory_probe() {
     let ctx = ParallelContext::default();
-    let mol = Molecule::load_xyz(concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/molecules/alkane_10.xyz")).unwrap();
+    let mol = Molecule::load_xyz(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testdata/molecules/alkane_10.xyz"
+    ))
+    .unwrap();
     let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let op = Operator::coulomb();
@@ -326,7 +377,11 @@ fn mpi_rimp2_band_memory_probe() {
     use mpi::traits::CommunicatorCollectives;
     if let Some(world) = ctx.world() {
         let mut total_band_mib = 0.0f64;
-        world.all_reduce_into(std::slice::from_ref(&band_b_mib), std::slice::from_mut(&mut total_band_mib), SystemOperation::sum());
+        world.all_reduce_into(
+            std::slice::from_ref(&band_b_mib),
+            std::slice::from_mut(&mut total_band_mib),
+            SystemOperation::sum(),
+        );
         if ctx.is_root() {
             eprintln!(
                 "[mem-probe] Sum per-rank theoretical B_ov bands = {total_band_mib:.2} MiB (full tensor = {full_b_mib:.2} MiB)"

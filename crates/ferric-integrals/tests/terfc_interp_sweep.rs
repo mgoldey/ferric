@@ -61,9 +61,8 @@ fn sweep_interp_vs_series_full_domain() {
                     continue;
                 }
                 for &s_small in &s_vals {
-                    let gi = unsafe {
-                        scf_terfc_debug_interp_G(cdir.as_ptr(), s_big, s_small, m, 0)
-                    };
+                    let gi =
+                        unsafe { scf_terfc_debug_interp_G(cdir.as_ptr(), s_big, s_small, m, 0) };
                     let gs = unsafe { scf_terfc_debug_series_G(s_big, s_small, m) };
                     if !gi.is_finite() || !gs.is_finite() {
                         eprintln!("NONFINITE at S={s_big} s={s_small} m={m}: {gi} {gs}");

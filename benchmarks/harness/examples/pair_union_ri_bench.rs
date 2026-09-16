@@ -99,7 +99,13 @@ fn gather_rows(full: &ndarray::ArrayView2<f64>, idx: &[usize]) -> Array2<f64> {
 /// axis = 0 rotates the row occ index, axis = 1 the column occ index.
 /// Y[i,...] = sum_i' U[i,i'] X[i',...]. rayon over column chunks
 /// (matrixmultiply GEMMs — no OpenBLAS under rayon).
-fn rotate_occ_axis(g: &Array2<f64>, u_rot: &Array2<f64>, nocc: usize, nvir: usize, axis: usize) -> Array2<f64> {
+fn rotate_occ_axis(
+    g: &Array2<f64>,
+    u_rot: &Array2<f64>,
+    nocc: usize,
+    nvir: usize,
+    axis: usize,
+) -> Array2<f64> {
     use rayon::prelude::*;
     let nov = nocc * nvir;
     assert_eq!(g.dim(), (nov, nov));
@@ -153,7 +159,13 @@ fn mp2_energy_from_g(g: &Array2<f64>, eps: &[f64], nocc: usize, nvir: usize) -> 
 
 /// Exact canonical MP2 energy from global-fit coefficients (per-i GEMMs,
 /// rayon over i; matrixmultiply — no OpenBLAS under rayon).
-fn mp2_energy_exact(a_can: &Array2<f64>, c_glob_can: &Array2<f64>, eps: &[f64], nocc: usize, nvir: usize) -> f64 {
+fn mp2_energy_exact(
+    a_can: &Array2<f64>,
+    c_glob_can: &Array2<f64>,
+    eps: &[f64],
+    nocc: usize,
+    nvir: usize,
+) -> f64 {
     use rayon::prelude::*;
     (0..nocc)
         .into_par_iter()
@@ -188,7 +200,15 @@ struct BinStat {
 
 impl BinStat {
     fn new() -> Self {
-        BinStat { n: 0, sum_m: 0.0, sum_gnorm: 0.0, max_abs_naive: 0.0, max_abs_rob: 0.0, sum_abs_rob: 0.0, max_rel_rob: 0.0 }
+        BinStat {
+            n: 0,
+            sum_m: 0.0,
+            sum_gnorm: 0.0,
+            max_abs_naive: 0.0,
+            max_abs_rob: 0.0,
+            sum_abs_rob: 0.0,
+            max_rel_rob: 0.0,
+        }
     }
 }
 
@@ -223,8 +243,15 @@ fn main() {
     // Optional CLI args select the chain lengths (e.g. `pair_union_ri_bench
     // 20 32` to add only the new points to an existing series); default runs
     // the full list.
-    let args: Vec<usize> = std::env::args().skip(1).filter_map(|a| a.parse().ok()).collect();
-    let systems: Vec<usize> = if args.is_empty() { vec![4, 8, 12, 16, 20, 32] } else { args };
+    let args: Vec<usize> = std::env::args()
+        .skip(1)
+        .filter_map(|a| a.parse().ok())
+        .collect();
+    let systems: Vec<usize> = if args.is_empty() {
+        vec![4, 8, 12, 16, 20, 32]
+    } else {
+        args
+    };
     for n_c in systems {
         let path = format!("testdata/molecules/alkane_{n_c}.xyz");
         let Ok(mol) = Molecule::load_xyz(&path) else {
@@ -246,7 +273,10 @@ fn main() {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let ctx = ParallelContext::default();
-        let scf_cfg = RhfConfig { density_conv: 1e-8, ..Default::default() };
+        let scf_cfg = RhfConfig {
+            density_conv: 1e-8,
+            ..Default::default()
+        };
         let rhf = match solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg) {
             Ok(res) => res,
             Err(e) => {
@@ -281,19 +311,22 @@ fn main() {
         // reference + energy assembly) is gated with the energy assembly —
         // at C32 its per-thread (nvir x nov) GEMM scratch alone is ~5 GB.
         let energy_on = nov <= ENERGY_MAX_NOV;
-        let eri3_loc = match eri3_mo_ov_blocked(op, &obs, &dfbs, &c_occ_loc, &c_vir_can, ERI3_BUDGET_BYTES) {
-            Ok(t) => t,
-            Err(e) => {
-                println!("alkane_{n_c}: 3c transform failed: {e}\n");
-                continue;
-            }
-        };
+        let eri3_loc =
+            match eri3_mo_ov_blocked(op, &obs, &dfbs, &c_occ_loc, &c_vir_can, ERI3_BUDGET_BYTES) {
+                Ok(t) => t,
+                Err(e) => {
+                    println!("alkane_{n_c}: 3c transform failed: {e}\n");
+                    continue;
+                }
+            };
         let a2 = eri3_loc.to_shape((naux, nov)).unwrap().to_owned();
         drop(eri3_loc);
         let c_glob_loc = v_global_inv.dot(&a2);
 
         let e_exact = if energy_on {
-            let eri3_can = eri3_mo_ov_blocked(op, &obs, &dfbs, &c_occ_can, &c_vir_can, ERI3_BUDGET_BYTES).unwrap();
+            let eri3_can =
+                eri3_mo_ov_blocked(op, &obs, &dfbs, &c_occ_can, &c_vir_can, ERI3_BUDGET_BYTES)
+                    .unwrap();
             let a2_can = eri3_can.to_shape((naux, nov)).unwrap().to_owned();
             let c_glob_can = v_global_inv.dot(&a2_can);
             Some(mp2_energy_exact(&a2_can, &c_glob_can, &eps, nocc, nvir))
@@ -305,13 +338,18 @@ fn main() {
         let aux_shell_offsets = dfbs.shell_offsets();
         let aux_shell_dims = dfbs.shell_dims();
 
-        let e_corr_str = e_exact.map_or("skipped (nov too large)".to_string(), |e| format!("{e:.9}"));
+        let e_corr_str =
+            e_exact.map_or("skipped (nov too large)".to_string(), |e| format!("{e:.9}"));
         println!(
             "### alkane_{n_c}  nocc={nocc}  nvir={nvir}  naux={naux}  E_corr={e_corr_str}  energy_assembly={}",
             if energy_on { "yes" } else { "no (nov too large)" }
         );
 
-        let radii: &[f64] = if n_c == 4 { &[6.0, 10.0, 50.0] } else { &[6.0, 10.0] };
+        let radii: &[f64] = if n_c == 4 {
+            &[6.0, 10.0, 50.0]
+        } else {
+            &[6.0, 10.0]
+        };
 
         for &r_cut in radii {
             // Per-orbital aux-function domains.
@@ -321,7 +359,8 @@ fn main() {
                 let mut fns = Vec::new();
                 for s_aux in 0..dfbs.nshells() {
                     let c = aux_shell_centers[s_aux];
-                    let d2 = (ci[0] - c[0]).powi(2) + (ci[1] - c[1]).powi(2) + (ci[2] - c[2]).powi(2);
+                    let d2 =
+                        (ci[0] - c[0]).powi(2) + (ci[1] - c[1]).powi(2) + (ci[2] - c[2]).powi(2);
                     if d2.sqrt() <= r_cut {
                         let f0 = aux_shell_offsets[s_aux];
                         fns.extend(f0..f0 + aux_shell_dims[s_aux]);
@@ -337,13 +376,25 @@ fn main() {
             let mut sum_gex2 = 0.0f64;
             let mut n_singular = 0usize;
 
-            let mut g_naive_loc = if energy_on { Some(Array2::<f64>::zeros((nov, nov))) } else { None };
-            let mut g_rob_loc = if energy_on { Some(Array2::<f64>::zeros((nov, nov))) } else { None };
+            let mut g_naive_loc = if energy_on {
+                Some(Array2::<f64>::zeros((nov, nov)))
+            } else {
+                None
+            };
+            let mut g_rob_loc = if energy_on {
+                Some(Array2::<f64>::zeros((nov, nov)))
+            } else {
+                None
+            };
 
             for i in 0..nocc {
                 for j in i..nocc {
                     // Union domain, sorted + deduped.
-                    let mut idx: Vec<usize> = orb_domains[i].iter().chain(orb_domains[j].iter()).copied().collect();
+                    let mut idx: Vec<usize> = orb_domains[i]
+                        .iter()
+                        .chain(orb_domains[j].iter())
+                        .copied()
+                        .collect();
                     idx.sort_unstable();
                     idx.dedup();
                     let m = idx.len();
@@ -408,15 +459,19 @@ fn main() {
                     worst.push((er, r_ij, rel, i, j));
 
                     if let (Some(gn), Some(gr)) = (g_naive_loc.as_mut(), g_rob_loc.as_mut()) {
-                        gn.slice_mut(s![i * nvir..(i + 1) * nvir, j * nvir..(j + 1) * nvir]).assign(&naive_ij);
-                        gr.slice_mut(s![i * nvir..(i + 1) * nvir, j * nvir..(j + 1) * nvir]).assign(&rob_ij);
+                        gn.slice_mut(s![i * nvir..(i + 1) * nvir, j * nvir..(j + 1) * nvir])
+                            .assign(&naive_ij);
+                        gr.slice_mut(s![i * nvir..(i + 1) * nvir, j * nvir..(j + 1) * nvir])
+                            .assign(&rob_ij);
                         if i != j {
                             // Robust block is symmetric under (ia)<->(jb) by
                             // construction; the one-sided naive (j,i) block is
                             // its OWN one-sided fit, not the transpose.
                             let naive_ji = a_j_dom.t().dot(&ct_i);
-                            gn.slice_mut(s![j * nvir..(j + 1) * nvir, i * nvir..(i + 1) * nvir]).assign(&naive_ji);
-                            gr.slice_mut(s![j * nvir..(j + 1) * nvir, i * nvir..(i + 1) * nvir]).assign(&rob_ij.t());
+                            gn.slice_mut(s![j * nvir..(j + 1) * nvir, i * nvir..(i + 1) * nvir])
+                                .assign(&naive_ji);
+                            gr.slice_mut(s![j * nvir..(j + 1) * nvir, i * nvir..(i + 1) * nvir])
+                                .assign(&rob_ij.t());
                         }
                     }
                 }
@@ -427,7 +482,14 @@ fn main() {
             println!("\n-- r_cut = {r_cut} Bohr   total ||dG||_F/||G||_F: naive {tot_naive:.3e}  robust {tot_rob:.3e}   singular domains skipped: {n_singular}");
             println!(
                 "{:>6} {:>7} {:>9} {:>11} {:>13} {:>13} {:>13} {:>12}",
-                "R bin", "npairs", "avg m", "avg|G_ex|", "max abs naive", "max abs rob", "mean abs rob", "max rel rob"
+                "R bin",
+                "npairs",
+                "avg m",
+                "avg|G_ex|",
+                "max abs naive",
+                "max abs rob",
+                "mean abs rob",
+                "max rel rob"
             );
             for (k, b) in bins.iter().enumerate() {
                 if b.n == 0 {
@@ -457,7 +519,11 @@ fn main() {
                     let g_can = rotate_occ_axis(&g1, &u_rot, nocc, nvir, 1);
                     drop(g1);
                     let e_fit = mp2_energy_from_g(&g_can, &eps, nocc, nvir);
-                    println!("   dE_{label} = {:.3e} Ha  (E_fit {:.9})", e_fit - e_exact.unwrap(), e_fit);
+                    println!(
+                        "   dE_{label} = {:.3e} Ha  (E_fit {:.9})",
+                        e_fit - e_exact.unwrap(),
+                        e_fit
+                    );
                 }
             }
         }

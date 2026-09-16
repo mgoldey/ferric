@@ -17,8 +17,8 @@
 use crate::engine_pool::EnginePool;
 use crate::rhf::build_jk_with_pool;
 use crate::screening::SchwarzBounds;
-use ferric_core::FerricError;
 use ferric_core::parallel::ParallelContext;
+use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::Array2;
 use ndarray_linalg::Solve;
@@ -30,18 +30,19 @@ use ndarray_linalg::Solve;
 /// The lifetime parameter lets callers pass closures that borrow stack-local
 /// data (e.g., a `LdaFxcKernel` + reference ρ); otherwise the trait-object
 /// default would force `+ 'static`.
-pub type FxcResponse<'a> = dyn Fn(&Array2<f64>, &Array2<f64>) -> (Array2<f64>, Array2<f64>) + Sync + 'a;
+pub type FxcResponse<'a> =
+    dyn Fn(&Array2<f64>, &Array2<f64>) -> (Array2<f64>, Array2<f64>) + Sync + 'a;
 
 /// Inputs to one Newton step.
 pub struct RohfNewtonInputs<'a> {
     pub prep: &'a PreparedBasis,
     pub bounds: &'a SchwarzBounds,
-    pub c: &'a Array2<f64>,          // MO coeffs (n × n), columns ordered closed | open | virt
-    pub f_a_mo: &'a Array2<f64>,     // α Fock in MO basis (current iter)
-    pub f_b_mo: &'a Array2<f64>,     // β Fock in MO basis
+    pub c: &'a Array2<f64>, // MO coeffs (n × n), columns ordered closed | open | virt
+    pub f_a_mo: &'a Array2<f64>, // α Fock in MO basis (current iter)
+    pub f_b_mo: &'a Array2<f64>, // β Fock in MO basis
     pub nocc_double: usize,
     pub nocc_open: usize,
-    pub k_mix_sr: f64,               // K mixing coefficient (1.0 for HF, c_HF for hybrid; ignored for RSH)
+    pub k_mix_sr: f64, // K mixing coefficient (1.0 for HF, c_HF for hybrid; ignored for RSH)
     pub fxc: Option<&'a FxcResponse<'a>>,
     pub thresh: f64,
     /// Solver-resolved memory budget (see `rhf::resolve_three_index_budget`),
@@ -98,8 +99,8 @@ pub fn rohf_newton_step(
     let f_sum_diag: Vec<f64> = (0..n).map(|i| f_a_diag[i] + f_b_diag[i]).collect();
 
     let diag_vc = build_diag_perspin(&f_sum_diag, nocc_a..n, 0..nc, level_shift);
-    let diag_vo = build_diag_perspin(&f_a_diag,   nocc_a..n, nc..nocc_a, level_shift);
-    let diag_oc = build_diag_perspin(&f_b_diag,   nc..nocc_a, 0..nc, level_shift);
+    let diag_vo = build_diag_perspin(&f_a_diag, nocc_a..n, nc..nocc_a, level_shift);
+    let diag_oc = build_diag_perspin(&f_b_diag, nc..nocc_a, 0..nc, level_shift);
 
     // Initial guess: diagonal solve κ⁰ = −g / Δε.
     let mut k_vc = elemwise_div_neg(&g_vc, &diag_vc);
@@ -109,7 +110,9 @@ pub fn rohf_newton_step(
     // Early-exit if the gradient itself is below tolerance (we're already
     // at a stationary point — the off-diagonal matvec correction would
     // only amplify numerical noise).
-    let gmax = arr_max_abs(&g_vc).max(arr_max_abs(&g_vo)).max(arr_max_abs(&g_oc));
+    let gmax = arr_max_abs(&g_vc)
+        .max(arr_max_abs(&g_vo))
+        .max(arr_max_abs(&g_oc));
     let cg_max_iter_effective = if gmax < cg_conv { 0 } else { cg_max_iter };
 
     // Preconditioned conjugate-gradient solve for H·κ = −g.
@@ -136,12 +139,12 @@ pub fn rohf_newton_step(
     let mut p_vo = z_vo.clone();
     let mut p_oc = z_oc.clone();
 
-    let mut rz_old: f64 =
-        inner(&r_vc, &z_vc) + inner(&r_vo, &z_vo) + inner(&r_oc, &z_oc);
+    let mut rz_old: f64 = inner(&r_vc, &z_vc) + inner(&r_vo, &z_vo) + inner(&r_oc, &z_oc);
 
     for _it in 0..cg_max_iter_effective {
-        let max_resid =
-            arr_max_abs(&r_vc).max(arr_max_abs(&r_vo)).max(arr_max_abs(&r_oc));
+        let max_resid = arr_max_abs(&r_vc)
+            .max(arr_max_abs(&r_vo))
+            .max(arr_max_abs(&r_oc));
         if max_resid < cg_conv {
             break;
         }
@@ -164,8 +167,7 @@ pub fn rohf_newton_step(
         z_vc = elemwise_div(&r_vc, &diag_vc);
         z_vo = elemwise_div(&r_vo, &diag_vo);
         z_oc = elemwise_div(&r_oc, &diag_oc);
-        let rz_new: f64 =
-            inner(&r_vc, &z_vc) + inner(&r_vo, &z_vo) + inner(&r_oc, &z_oc);
+        let rz_new: f64 = inner(&r_vc, &z_vc) + inner(&r_vo, &z_vo) + inner(&r_oc, &z_oc);
         let beta = rz_new / rz_old;
         rz_old = rz_new;
         // p ← z + β p
@@ -175,8 +177,14 @@ pub fn rohf_newton_step(
     }
 
     // Trust-radius clip.
-    let kmax = arr_max_abs(&k_vc).max(arr_max_abs(&k_vo)).max(arr_max_abs(&k_oc));
-    let scale = if kmax > max_step { max_step / kmax } else { 1.0 };
+    let kmax = arr_max_abs(&k_vc)
+        .max(arr_max_abs(&k_vo))
+        .max(arr_max_abs(&k_oc));
+    let scale = if kmax > max_step {
+        max_step / kmax
+    } else {
+        1.0
+    };
     if scale < 1.0 {
         k_vc.mapv_inplace(|x| x * scale);
         k_vo.mapv_inplace(|x| x * scale);
@@ -213,7 +221,8 @@ pub fn rohf_newton_step(
     let mut u = Array2::<f64>::zeros((n, n));
     for col in 0..n {
         let bcol = b.column(col).to_owned();
-        let sol = a.solve(&bcol)
+        let sol = a
+            .solve(&bcol)
             .map_err(|e| FerricError::Lapack(format!("Cayley solve: {e}")))?;
         for row in 0..n {
             u[(row, col)] = sol[row];
@@ -326,17 +335,31 @@ pub(crate) fn hessian_matvec(
     let band_bytes = crate::reduce::resolve_band_bytes(inp.ooc_budget);
     let dd_tot = &dd_a_ao + &dd_b_ao;
     let mut dj = Array2::<f64>::zeros((n, n));
-    let mut dk_dum = Array2::<f64>::zeros((n, n));  // discarded — we want J only here
-    // Build J on δD_total. We re-use build_jk but only keep J; K is rebuilt per-spin below.
-    build_jk_with_pool(ctx, inp.prep, inp.bounds, inp.thresh, &dd_tot, &mut dj, &mut dk_dum, pool, band_bytes)?;
+    let mut dk_dum = Array2::<f64>::zeros((n, n)); // discarded — we want J only here
+                                                   // Build J on δD_total. We re-use build_jk but only keep J; K is rebuilt per-spin below.
+    build_jk_with_pool(
+        ctx,
+        inp.prep,
+        inp.bounds,
+        inp.thresh,
+        &dd_tot,
+        &mut dj,
+        &mut dk_dum,
+        pool,
+        band_bytes,
+    )?;
 
     // δK per spin.
     let mut dk_a = Array2::<f64>::zeros((n, n));
     let mut dk_b = Array2::<f64>::zeros((n, n));
     let mut j_dum = Array2::<f64>::zeros((n, n));
-    build_jk_with_pool(ctx, inp.prep, inp.bounds, inp.thresh, &dd_a_ao, &mut j_dum, &mut dk_a, pool, band_bytes)?;
+    build_jk_with_pool(
+        ctx, inp.prep, inp.bounds, inp.thresh, &dd_a_ao, &mut j_dum, &mut dk_a, pool, band_bytes,
+    )?;
     j_dum.fill(0.0);
-    build_jk_with_pool(ctx, inp.prep, inp.bounds, inp.thresh, &dd_b_ao, &mut j_dum, &mut dk_b, pool, band_bytes)?;
+    build_jk_with_pool(
+        ctx, inp.prep, inp.bounds, inp.thresh, &dd_b_ao, &mut j_dum, &mut dk_b, pool, band_bytes,
+    )?;
 
     let c_k = inp.k_mix_sr;
     let mut df_a: Array2<f64> = &dj - &(c_k * &dk_a);
@@ -354,8 +377,8 @@ pub(crate) fn hessian_matvec(
     let df_b_mo = inp.c.t().dot(&df_b).dot(inp.c);
 
     let mut h_vc = pack_block(&df_a_mo, &df_b_mo, nocc_a..n, 0..nc, true);
-    let mut h_vo = pack_block(&df_a_mo, &df_b_mo, nocc_a..n, nc..nocc_a, false);  // α
-    let mut h_oc = pack_block(&df_b_mo, &df_b_mo, nc..nocc_a, 0..nc, false);       // β
+    let mut h_vo = pack_block(&df_a_mo, &df_b_mo, nocc_a..n, nc..nocc_a, false); // α
+    let mut h_oc = pack_block(&df_b_mo, &df_b_mo, nc..nocc_a, 0..nc, false); // β
 
     // Per-spin diagonal Fock-commutator: each block uses the diagonal Fock
     // entries from the spin(s) that actually change occupation in that block.
@@ -435,11 +458,21 @@ fn build_diag_perspin(
     out
 }
 
-fn elemwise_div(num: &Array2<f64>, den: &Array2<f64>) -> Array2<f64> { num / den }
-fn elemwise_div_neg(num: &Array2<f64>, den: &Array2<f64>) -> Array2<f64> { -num / den }
-fn neg(a: &Array2<f64>) -> Array2<f64> { -a }
-fn sub(a: &Array2<f64>, b: &Array2<f64>) -> Array2<f64> { a - b }
-fn arr_max_abs(a: &Array2<f64>) -> f64 { a.iter().fold(0.0f64, |m, &v| m.max(v.abs())) }
+fn elemwise_div(num: &Array2<f64>, den: &Array2<f64>) -> Array2<f64> {
+    num / den
+}
+fn elemwise_div_neg(num: &Array2<f64>, den: &Array2<f64>) -> Array2<f64> {
+    -num / den
+}
+fn neg(a: &Array2<f64>) -> Array2<f64> {
+    -a
+}
+fn sub(a: &Array2<f64>, b: &Array2<f64>) -> Array2<f64> {
+    a - b
+}
+fn arr_max_abs(a: &Array2<f64>) -> f64 {
+    a.iter().fold(0.0f64, |m, &v| m.max(v.abs()))
+}
 fn inner(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }

@@ -157,7 +157,9 @@ pub fn hessian_matvec(
     let mut dj = Array2::<f64>::zeros((n, n));
     let mut dk = Array2::<f64>::zeros((n, n));
     let band_bytes = crate::reduce::resolve_band_bytes(inp.ooc_budget);
-    build_jk_with_pool(ctx, inp.prep, inp.bounds, inp.thresh, &dd_ao, &mut dj, &mut dk, pool, band_bytes)?;
+    build_jk_with_pool(
+        ctx, inp.prep, inp.bounds, inp.thresh, &dd_ao, &mut dj, &mut dk, pool, band_bytes,
+    )?;
 
     // F = H + J − ½·k_mix·K  ⇒  δF = δJ − ½·k_mix·δK.
     let c_k = inp.k_mix_sr;

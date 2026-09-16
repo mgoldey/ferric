@@ -36,7 +36,10 @@ pub struct MmEnergy {
 
 impl MmEnergy {
     fn sum(self) -> Self {
-        Self { total: self.bond + self.angle + self.torsion + self.lj + self.coulomb, ..self }
+        Self {
+            total: self.bond + self.angle + self.torsion + self.lj + self.coulomb,
+            ..self
+        }
     }
 }
 
@@ -72,7 +75,11 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 
 #[inline]
 fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 
 #[inline]
@@ -88,7 +95,10 @@ pub fn energy(top: &MmTopology, coords: &Array2<f64>) -> Result<MmEnergy, Ferric
 }
 
 /// Energy and analytic gradient (`dE/dR`, Hartree/Bohr), `(n_atoms, 3)`.
-pub fn gradient(top: &MmTopology, coords: &Array2<f64>) -> Result<(MmEnergy, Array2<f64>), FerricError> {
+pub fn gradient(
+    top: &MmTopology,
+    coords: &Array2<f64>,
+) -> Result<(MmEnergy, Array2<f64>), FerricError> {
     check_coords(top, coords)?;
     let n = top.n_atoms();
     let mut g = Array2::<f64>::zeros((n, 3));
@@ -102,8 +112,16 @@ pub fn gradient(top: &MmTopology, coords: &Array2<f64>) -> Result<(MmEnergy, Arr
         e.bond += b.k * dr * dr;
         let dedr = 2.0 * b.k * dr;
         let unit = [rij[0] / r, rij[1] / r, rij[2] / r];
-        add_row(&mut g, b.i, [dedr * unit[0], dedr * unit[1], dedr * unit[2]]);
-        add_row(&mut g, b.j, [-dedr * unit[0], -dedr * unit[1], -dedr * unit[2]]);
+        add_row(
+            &mut g,
+            b.i,
+            [dedr * unit[0], dedr * unit[1], dedr * unit[2]],
+        );
+        add_row(
+            &mut g,
+            b.j,
+            [-dedr * unit[0], -dedr * unit[1], -dedr * unit[2]],
+        );
     }
 
     // Angles: E = k(theta - theta0)^2 with theta the i-j-k bond angle at j.
@@ -134,9 +152,21 @@ pub fn gradient(top: &MmTopology, coords: &Array2<f64>) -> Result<(MmEnergy, Arr
         }
         let dtj = [-(dti[0] + dtk[0]), -(dti[1] + dtk[1]), -(dti[2] + dtk[2])];
 
-        add_row(&mut g, a.i, [dedtheta * dti[0], dedtheta * dti[1], dedtheta * dti[2]]);
-        add_row(&mut g, a.j, [dedtheta * dtj[0], dedtheta * dtj[1], dedtheta * dtj[2]]);
-        add_row(&mut g, a.k, [dedtheta * dtk[0], dedtheta * dtk[1], dedtheta * dtk[2]]);
+        add_row(
+            &mut g,
+            a.i,
+            [dedtheta * dti[0], dedtheta * dti[1], dedtheta * dti[2]],
+        );
+        add_row(
+            &mut g,
+            a.j,
+            [dedtheta * dtj[0], dedtheta * dtj[1], dedtheta * dtj[2]],
+        );
+        add_row(
+            &mut g,
+            a.k,
+            [dedtheta * dtk[0], dedtheta * dtk[1], dedtheta * dtk[2]],
+        );
     }
 
     // Torsions: E = k(1 + cos(n*phi - delta)), Blondel-Karplus gradient.
@@ -146,10 +176,42 @@ pub fn gradient(top: &MmTopology, coords: &Array2<f64>) -> Result<(MmEnergy, Arr
         let arg = n * phi - t.phase;
         e.torsion += t.k_phi * (1.0 + arg.cos());
         let dedphi = -t.k_phi * n * arg.sin();
-        add_row(&mut g, t.i, [dedphi * grads[0][0], dedphi * grads[0][1], dedphi * grads[0][2]]);
-        add_row(&mut g, t.j, [dedphi * grads[1][0], dedphi * grads[1][1], dedphi * grads[1][2]]);
-        add_row(&mut g, t.k, [dedphi * grads[2][0], dedphi * grads[2][1], dedphi * grads[2][2]]);
-        add_row(&mut g, t.l, [dedphi * grads[3][0], dedphi * grads[3][1], dedphi * grads[3][2]]);
+        add_row(
+            &mut g,
+            t.i,
+            [
+                dedphi * grads[0][0],
+                dedphi * grads[0][1],
+                dedphi * grads[0][2],
+            ],
+        );
+        add_row(
+            &mut g,
+            t.j,
+            [
+                dedphi * grads[1][0],
+                dedphi * grads[1][1],
+                dedphi * grads[1][2],
+            ],
+        );
+        add_row(
+            &mut g,
+            t.k,
+            [
+                dedphi * grads[2][0],
+                dedphi * grads[2][1],
+                dedphi * grads[2][2],
+            ],
+        );
+        add_row(
+            &mut g,
+            t.l,
+            [
+                dedphi * grads[3][0],
+                dedphi * grads[3][1],
+                dedphi * grads[3][2],
+            ],
+        );
     }
 
     // Nonbonded: all pairs, minus exclusions, with 1-4 scaling.
@@ -159,8 +221,11 @@ pub fn gradient(top: &MmTopology, coords: &Array2<f64>) -> Result<(MmEnergy, Arr
             if top.exclusions().contains(&pair) {
                 continue;
             }
-            let (scale_lj, scale_coul) =
-                if top.pairs14().contains(&pair) { (top.scale_lj_14, top.scale_coul_14) } else { (1.0, 1.0) };
+            let (scale_lj, scale_coul) = if top.pairs14().contains(&pair) {
+                (top.scale_lj_14, top.scale_coul_14)
+            } else {
+                (1.0, 1.0)
+            };
 
             let rij = diff(coords, i, j);
             let r = norm(rij);
@@ -175,7 +240,11 @@ pub fn gradient(top: &MmTopology, coords: &Array2<f64>) -> Result<(MmEnergy, Arr
                 // dE/dr = scale*4*eps*(-12 sr12 + 6 sr6)/r
                 let dedr = scale_lj * 4.0 * mixed.epsilon * (-12.0 * sr12 + 6.0 * sr6) / r;
                 add_row(&mut g, i, [dedr * unit[0], dedr * unit[1], dedr * unit[2]]);
-                add_row(&mut g, j, [-dedr * unit[0], -dedr * unit[1], -dedr * unit[2]]);
+                add_row(
+                    &mut g,
+                    j,
+                    [-dedr * unit[0], -dedr * unit[1], -dedr * unit[2]],
+                );
             }
 
             let qq = top.charges[i] * top.charges[j];
@@ -183,7 +252,11 @@ pub fn gradient(top: &MmTopology, coords: &Array2<f64>) -> Result<(MmEnergy, Arr
                 e.coulomb += scale_coul * qq / r;
                 let dedr = -scale_coul * qq / (r * r);
                 add_row(&mut g, i, [dedr * unit[0], dedr * unit[1], dedr * unit[2]]);
-                add_row(&mut g, j, [-dedr * unit[0], -dedr * unit[1], -dedr * unit[2]]);
+                add_row(
+                    &mut g,
+                    j,
+                    [-dedr * unit[0], -dedr * unit[1], -dedr * unit[2]],
+                );
             }
         }
     }
@@ -194,7 +267,10 @@ pub fn gradient(top: &MmTopology, coords: &Array2<f64>) -> Result<(MmEnergy, Arr
 /// Lorentz-Berthelot combining rules: sigma arithmetic mean, epsilon
 /// geometric mean.
 fn mix(a: LjParams, b: LjParams) -> LjParams {
-    LjParams { sigma: 0.5 * (a.sigma + b.sigma), epsilon: (a.epsilon * b.epsilon).sqrt() }
+    LjParams {
+        sigma: 0.5 * (a.sigma + b.sigma),
+        epsilon: (a.epsilon * b.epsilon).sqrt(),
+    }
 }
 
 /// Dihedral angle `phi` (radians, signed) for atoms i-j-k-l, and `dphi/dR`
@@ -219,7 +295,13 @@ fn mix(a: LjParams, b: LjParams) -> LjParams {
 /// production and is well-conditioned away from phi = 0/pi; the sign
 /// disambiguation via `r_ij . n` avoids the branch-cut issue an unsigned
 /// `acos` alone would have.
-fn dihedral_and_gradient(coords: &Array2<f64>, i: usize, j: usize, k: usize, l: usize) -> (f64, [[f64; 3]; 4]) {
+fn dihedral_and_gradient(
+    coords: &Array2<f64>,
+    i: usize,
+    j: usize,
+    k: usize,
+    l: usize,
+) -> (f64, [[f64; 3]; 4]) {
     let r_ij = diff(coords, i, j); // Ri - Rj
     let r_kj = diff(coords, k, j); // Rk - Rj
     let r_kl = diff(coords, k, l); // Rk - Rl
@@ -316,8 +398,16 @@ pub fn qm_mm_lj_energy_gradient(
             let sr12 = sr6 * sr6;
             e += 4.0 * mixed.epsilon * (sr12 - sr6);
             let dedr = 4.0 * mixed.epsilon * (-12.0 * sr12 + 6.0 * sr6) / r;
-            add_row(&mut g_qm, a, [dedr * unit[0], dedr * unit[1], dedr * unit[2]]);
-            add_row(&mut g_mm, b, [-dedr * unit[0], -dedr * unit[1], -dedr * unit[2]]);
+            add_row(
+                &mut g_qm,
+                a,
+                [dedr * unit[0], dedr * unit[1], dedr * unit[2]],
+            );
+            add_row(
+                &mut g_mm,
+                b,
+                [-dedr * unit[0], -dedr * unit[1], -dedr * unit[2]],
+            );
         }
     }
 

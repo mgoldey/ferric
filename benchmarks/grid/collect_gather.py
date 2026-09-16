@@ -17,6 +17,7 @@ self-contained in one output file, compared against A24 CCSD(T)/CBS.
 Counterpoise throughout: E_int = E(dimer) - E(mA_cp) - E(mB_cp), all three in
 the dimer basis. Usage:  python3 collect_gather.py [--basis atz]
 """
+
 import argparse
 import re
 import sys

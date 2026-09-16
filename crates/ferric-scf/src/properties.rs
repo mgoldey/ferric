@@ -190,8 +190,7 @@ pub fn esp_at_atoms(
                                 for i in 0..n1 {
                                     for j in 0..n2 {
                                         // Full block entries, no symmetry collapse needed.
-                                        v_elec +=
-                                            density[(o1 + i, o2 + j)] * block[i * n2 + j];
+                                        v_elec += density[(o1 + i, o2 + j)] * block[i * n2 + j];
                                     }
                                 }
                             } else {
@@ -199,9 +198,8 @@ pub fn esp_at_atoms(
                                 // 2× since (s2,s1) is the symmetric partner.
                                 for i in 0..n1 {
                                     for j in 0..n2 {
-                                        v_elec += 2.0
-                                            * density[(o1 + i, o2 + j)]
-                                            * block[i * n2 + j];
+                                        v_elec +=
+                                            2.0 * density[(o1 + i, o2 + j)] * block[i * n2 + j];
                                     }
                                 }
                             }
@@ -515,11 +513,7 @@ pub fn atomic_effective_volumes_becke_chunked(
     let home_atom: Vec<usize> = grid.iter().map(|g| g.home_atom).collect();
     let npts = points.len();
 
-    let pos: Vec<[f64; 3]> = mol
-        .atoms
-        .iter()
-        .map(|at| [at.x, at.y, at.zpos])
-        .collect();
+    let pos: Vec<[f64; 3]> = mol.atoms.iter().map(|at| [at.x, at.y, at.zpos]).collect();
 
     // Evaluate chi in CHUNKS of grid points instead of materialising the whole
     // (nbf, npts) matrix up front.
@@ -543,7 +537,9 @@ pub fn atomic_effective_volumes_becke_chunked(
     //     ascending order: the chunk loop is serial and outer, the point loop
     //     serial and inner, so the addition sequence is exactly what it was.
     // `mwe_scf_grid_chunking_is_inert.rs` pins this bit-for-bit.
-    let chunk = chunk_override.unwrap_or_else(|| crate::reduce::deterministic_group_size(npts)).max(1);
+    let chunk = chunk_override
+        .unwrap_or_else(|| crate::reduce::deterministic_group_size(npts))
+        .max(1);
     let mut vol = vec![0.0_f64; natoms];
     let mut g0 = 0usize;
     while g0 < npts {
@@ -598,8 +594,8 @@ pub fn becke_charges_chunked(
     density: &Array2<f64>,
     chunk_override: Option<usize>,
 ) -> Result<Vec<f64>, FerricError> {
-    use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
     use ferric_dft::ao_grid::eval_basis_on_points;
+    use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
 
     let natoms = mol.atoms.len();
     let grid = build_atomic_grid(mol, &AtomicGridConfig::default());
@@ -611,7 +607,8 @@ pub fn becke_charges_chunked(
     let nbf = density.nrows();
     if density.ncols() != nbf {
         return Err(FerricError::General(format!(
-            "becke_charges: density shape {:?} is not square", density.dim()
+            "becke_charges: density shape {:?} is not square",
+            density.dim()
         )));
     }
 
@@ -634,17 +631,20 @@ pub fn becke_charges_chunked(
     //     loop is serial and outer.
     // `mwe_scf_grid_chunking_is_inert.rs` pins this bit-for-bit, including
     // across worker counts.
-    let chunk = chunk_override.unwrap_or_else(|| crate::reduce::deterministic_group_size(npts)).max(1);
+    let chunk = chunk_override
+        .unwrap_or_else(|| crate::reduce::deterministic_group_size(npts))
+        .max(1);
     let mut n_e = vec![0.0_f64; natoms];
     let mut g0 = 0usize;
     while g0 < npts {
         let g1 = (g0 + chunk).min(npts);
-        let chi = eval_basis_on_points(mol, obs_bs, &points[g0..g1]).map_err(|e| {
-            FerricError::General(format!("becke_charges: chi eval failed: {e}"))
-        })?;
+        let chi = eval_basis_on_points(mol, obs_bs, &points[g0..g1])
+            .map_err(|e| FerricError::General(format!("becke_charges: chi eval failed: {e}")))?;
         if chi.nrows() != nbf {
             return Err(FerricError::General(format!(
-                "becke_charges: density shape {:?} != nbf {}", density.dim(), chi.nrows()
+                "becke_charges: density shape {:?} != nbf {}",
+                density.dim(),
+                chi.nrows()
             )));
         }
         // ρ(r_g) = Σ_μν D_μν χ_μ(g) χ_ν(g) = Σ_μ χ_μ · (D·χ)_μ
@@ -669,7 +669,11 @@ pub fn becke_charges_chunked(
     // residual grid-quadrature error of ~0.003 e on N_e=10).
     let n_target = mol.nelec() as f64;
     let n_sum: f64 = n_e.iter().sum();
-    let scale = if n_sum.abs() > 1e-12 { n_target / n_sum } else { 1.0 };
+    let scale = if n_sum.abs() > 1e-12 {
+        n_target / n_sum
+    } else {
+        1.0
+    };
 
     Ok((0..natoms)
         .map(|a| mol.atoms[a].z as f64 - scale * n_e[a])
@@ -724,7 +728,11 @@ impl RadialProatom {
         let mut hi = n - 1;
         while hi - lo > 1 {
             let mid = (lo + hi) / 2;
-            if self.radii[mid] <= r { lo = mid; } else { hi = mid; }
+            if self.radii[mid] <= r {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
         }
         let t = (r - self.radii[lo]) / (self.radii[hi] - self.radii[lo]);
         (1.0 - t) * self.rho[lo] + t * self.rho[hi]
@@ -747,7 +755,15 @@ pub fn spherically_averaged_proatom(
 
     let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("X");
     let atom_mol = Molecule {
-        atoms: vec![Atom { symbol: sym.to_string(), z, x: 0.0, y: 0.0, zpos: 0.0, ghost: false, n_core_ecp: 0 }],
+        atoms: vec![Atom {
+            symbol: sym.to_string(),
+            z,
+            x: 0.0,
+            y: 0.0,
+            zpos: 0.0,
+            ghost: false,
+            n_core_ecp: 0,
+        }],
         charge: 0,
         multiplicity: 1,
     };
@@ -755,7 +771,10 @@ pub fn spherically_averaged_proatom(
     let mut rho = vec![0.0_f64; radii.len()];
     for (ri, &r) in radii.iter().enumerate() {
         // Build the sphere of radius r and evaluate the density on it.
-        let pts: Vec<[f64; 3]> = dirs.iter().map(|d| [d[0] * r, d[1] * r, d[2] * r]).collect();
+        let pts: Vec<[f64; 3]> = dirs
+            .iter()
+            .map(|d| [d[0] * r, d[1] * r, d[2] * r])
+            .collect();
         let chi = eval_basis_on_points(&atom_mol, atom_bs, &pts)
             .map_err(|e| FerricError::General(format!("proatom chi eval: {e}")))?;
         let nbf = chi.nrows();
@@ -771,7 +790,10 @@ pub fn spherically_averaged_proatom(
         }
         rho[ri] = acc.max(0.0);
     }
-    Ok(RadialProatom { radii: radii.to_vec(), rho })
+    Ok(RadialProatom {
+        radii: radii.to_vec(),
+        rho,
+    })
 }
 
 /// Provider of spherically-averaged free-atom proatom densities: given element
@@ -982,18 +1004,16 @@ fn chelpg_grid_esp(
 
     let natoms = mol.atoms.len();
     if natoms == 0 {
-        return Err(FerricError::General("chelpg_grid_esp: empty molecule".into()));
+        return Err(FerricError::General(
+            "chelpg_grid_esp: empty molecule".into(),
+        ));
     }
 
     // Bounding box (Bohr) + margin, same convention as
     // `ferric_export::cube::GridSpec::bounding_box`.
     let mut lo = [f64::MAX; 3];
     let mut hi = [f64::MIN; 3];
-    let atom_pos: Vec<[f64; 3]> = mol
-        .atoms
-        .iter()
-        .map(|a| [a.x, a.y, a.zpos])
-        .collect();
+    let atom_pos: Vec<[f64; 3]> = mol.atoms.iter().map(|a| [a.x, a.y, a.zpos]).collect();
     let atom_r_excl: Vec<f64> = mol
         .atoms
         .iter()
@@ -1034,7 +1054,11 @@ fn chelpg_grid_esp(
         center[1] - half_pts[1] as f64 * spacing,
         center[2] - half_pts[2] as f64 * spacing,
     ];
-    let n = [2 * half_pts[0] + 1, 2 * half_pts[1] + 1, 2 * half_pts[2] + 1];
+    let n = [
+        2 * half_pts[0] + 1,
+        2 * half_pts[1] + 1,
+        2 * half_pts[2] + 1,
+    ];
     let npts_total = n[0] * n[1] * n[2];
 
     // Size guard, mirroring `eval_basis_on_grid`'s fail-fast convention:
@@ -1151,7 +1175,12 @@ pub fn esp_at_points(
                         FerricError::General(format!("esp_at_points: engine init failed: {e}"))
                     })?;
 
-                    let probe = [CAtom { atomic_number: 1.0, x: r[0], y: r[1], z: r[2] }];
+                    let probe = [CAtom {
+                        atomic_number: 1.0,
+                        x: r[0],
+                        y: r[1],
+                        z: r[2],
+                    }];
                     // SAFETY: probe is a stack-local CAtom slice; handle_mut() is the live engine
                     // pointer; probe.len() fits in c_int. Shim catches C++ exceptions → negative rc.
                     let rc = unsafe {
@@ -1434,7 +1463,14 @@ pub fn resp_charges(
     let b = resp_restraint_b();
     let is_heavy: Vec<bool> = mol.atoms.iter().map(|a| a.z != 1).collect();
 
-    solve_resp_restrained(&atom_pos, &grid, mol.charge as f64, &is_heavy, restraint_weight, b)
+    solve_resp_restrained(
+        &atom_pos,
+        &grid,
+        mol.charge as f64,
+        &is_heavy,
+        restraint_weight,
+        b,
+    )
 }
 
 /// CHELPG **and** RESP charges from ONE shared ESP grid.
@@ -1595,17 +1631,29 @@ pub fn slater_xi_for_z(z: i32) -> f64 {
     // which uses the renormalized additive partition and is more tolerant
     // of proatom shape errors than absolute charge analysis.
     let r_bs_ang: f64 = match z {
-        1 => 0.25,  2 => 0.30,
-        3 => 1.45,  4 => 1.05,  5 => 0.85,  6 => 0.70,  7 => 0.65,  8 => 0.60,
-        9 => 0.50, 10 => 0.45,
-        11 => 1.80, 12 => 1.50, 13 => 1.25, 14 => 1.10, 15 => 1.00, 16 => 1.00,
-        17 => 1.00, 18 => 0.71,
+        1 => 0.25,
+        2 => 0.30,
+        3 => 1.45,
+        4 => 1.05,
+        5 => 0.85,
+        6 => 0.70,
+        7 => 0.65,
+        8 => 0.60,
+        9 => 0.50,
+        10 => 0.45,
+        11 => 1.80,
+        12 => 1.50,
+        13 => 1.25,
+        14 => 1.10,
+        15 => 1.00,
+        16 => 1.00,
+        17 => 1.00,
+        18 => 0.71,
         _ => 1.00,
     };
     let r_bs_bohr = r_bs_ang * 1.8897259886;
     1.0 / r_bs_bohr
 }
-
 
 /// 3x3 symmetric eigenvalue solver via Jacobi rotations.  Returns the three
 /// eigenvalues sorted ascending.  Used to report principal polarizabilities.
@@ -1625,13 +1673,19 @@ pub fn eig3_sym(a: [[f64; 3]; 3]) -> Result<[f64; 3], FerricError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rhf::{solve_rhf, RhfConfig};
+    use crate::screening::SchwarzBounds;
     use ferric_core::basis;
     use ferric_core::parallel::ParallelContext;
     use ferric_integrals::operator::Operator;
-    use crate::rhf::{solve_rhf, RhfConfig};
-    use crate::screening::SchwarzBounds;
 
-    fn build_h2() -> (Molecule, PreparedBasis, PreparedBasis, Operator, crate::result::ScfResult) {
+    fn build_h2() -> (
+        Molecule,
+        PreparedBasis,
+        PreparedBasis,
+        Operator,
+        crate::result::ScfResult,
+    ) {
         // H2 at 1.4 Bohr, cc-pVDZ orbital + cc-pVDZ-RI aux.
         let xyz = "2\nH2\nH 0 0 0\nH 0 0 0.74083\n";
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
@@ -1861,7 +1915,10 @@ mod dipole_tests {
             &prep,
             op,
             &bounds,
-            &crate::rhf::RhfConfig { density_conv: 1e-10, ..Default::default() },
+            &crate::rhf::RhfConfig {
+                density_conv: 1e-10,
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -1872,8 +1929,16 @@ mod dipole_tests {
 
         // Water's C2v axis is z in this geometry, so x/y must vanish by symmetry.
         // That is a structural check a wrong-axis bug fails immediately.
-        assert!(mu[0].abs() < 1e-8, "x component must vanish by symmetry: {}", mu[0]);
-        assert!(mu[1].abs() < 1e-8, "y component must vanish by symmetry: {}", mu[1]);
+        assert!(
+            mu[0].abs() < 1e-8,
+            "x component must vanish by symmetry: {}",
+            mu[0]
+        );
+        assert!(
+            mu[1].abs() < 1e-8,
+            "y component must vanish by symmetry: {}",
+            mu[1]
+        );
         // PySCF: 0.6796424222 a.u. Tolerance is 1e-6, ~20x the observed
         // 4.3e-8 residual, which is SCF-convergence noise rather than a
         // method difference (both are plain RHF on the same geometry/basis).
@@ -1891,8 +1956,7 @@ mod dipole_tests {
     fn ecp_dipole_uses_the_effective_nuclear_charge() {
         let ctx = ParallelContext::default();
         let bs = basis::bundled("def2-svp").unwrap();
-        let mut mol =
-            Molecule::parse_xyz("2\n\nI 0.0 0.0 0.0\nH 0.0 0.0 1.61\n", 0, 1).unwrap();
+        let mut mol = Molecule::parse_xyz("2\n\nI 0.0 0.0 0.0\nH 0.0 0.0 1.61\n", 0, 1).unwrap();
         mol.apply_ecp(&bs);
         // TEETH: without an active ECP this test says nothing about ECPs.
         assert!(
@@ -1904,7 +1968,12 @@ mod dipole_tests {
         let op = Operator::coulomb();
         let bounds = crate::screening::SchwarzBounds::compute(op, &prep).unwrap();
         let rhf = crate::rhf::solve_rhf(
-            &ctx, &mol, &prep, op, &bounds, &crate::rhf::RhfConfig::default(),
+            &ctx,
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &crate::rhf::RhfConfig::default(),
         )
         .unwrap();
 

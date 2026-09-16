@@ -184,12 +184,7 @@ impl DensityPairs {
     /// index-order-preserving (rayon's documented guarantee), so the resulting
     /// `Vec<Vec<usize>>` is in ascending-`j` order exactly like the serial
     /// push loop — bit/element-for-element identical, not just equal as sets.
-    pub fn build(
-        d: &Array2<f64>,
-        bound: &dyn Bound,
-        prep: &PreparedBasis,
-        threshold: f64,
-    ) -> Self {
+    pub fn build(d: &Array2<f64>, bound: &dyn Bound, prep: &PreparedBasis, threshold: f64) -> Self {
         let nsh = prep.nshells();
         let dims = prep.shell_dims();
         let offs = prep.shell_offsets();
@@ -197,7 +192,11 @@ impl DensityPairs {
         // qmax[x] = max_y Q(x,y): the largest Schwarz factor of any shell pair
         // containing x (O(nsh²) diagonal estimates, once per build).
         let qmax: Vec<f64> = (0..nsh)
-            .map(|x| (0..nsh).map(|y| bound.estimate(x, y, x, y).sqrt()).fold(0.0f64, f64::max))
+            .map(|x| {
+                (0..nsh)
+                    .map(|y| bound.estimate(x, y, x, y).sqrt())
+                    .fold(0.0f64, f64::max)
+            })
             .collect();
 
         let row_for = |j: usize| -> Vec<usize> {
@@ -362,7 +361,15 @@ mod tests {
             density_conv: 1e-8,
             ..Default::default()
         };
-        let result = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &prep, op, &bounds, &config).unwrap();
+        let result = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &config,
+        )
+        .unwrap();
         assert!(result.converged);
 
         let dp = DensityPairs::build(result.density_r(), &bounds, &prep, 1e-12);
@@ -430,8 +437,11 @@ mod tests {
         let mol = Molecule::load_xyz("../../testdata/molecules/alkane_6.xyz").unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
-        assert!(prep.nshells() >= 64,
-            "test basis too small to exercise the parallel path: {} shells", prep.nshells());
+        assert!(
+            prep.nshells() >= 64,
+            "test basis too small to exercise the parallel path: {} shells",
+            prep.nshells()
+        );
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
 
@@ -443,7 +453,9 @@ mod tests {
         let mut state: u64 = 0x243F6A8885A308D3;
         for i in 0..n {
             for j in 0..=i {
-                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 let v = ((state >> 33) as f64 / u32::MAX as f64) * 2.0 - 1.0;
                 d[(i, j)] = v;
                 d[(j, i)] = v;
@@ -456,7 +468,8 @@ mod tests {
             assert_eq!(par.pairs.len(), ser.len());
             for j in 0..ser.len() {
                 assert_eq!(
-                    par.partners(j), ser[j].as_slice(),
+                    par.partners(j),
+                    ser[j].as_slice(),
                     "DensityPairs row {j} mismatch at threshold={threshold:.0e}"
                 );
             }
@@ -465,14 +478,20 @@ mod tests {
 
     #[test]
     fn test_intersect_sorted_basic() {
-        assert_eq!(intersect_sorted(&[1, 3, 5, 7, 9], &[2, 3, 5, 8, 9]), vec![3, 5, 9]);
+        assert_eq!(
+            intersect_sorted(&[1, 3, 5, 7, 9], &[2, 3, 5, 8, 9]),
+            vec![3, 5, 9]
+        );
         assert_eq!(intersect_sorted(&[0, 1, 2], &[0, 1, 2]), vec![0, 1, 2]);
         assert_eq!(intersect_sorted(&[1], &[1]), vec![1]);
     }
 
     #[test]
     fn test_intersect_sorted_empty() {
-        assert_eq!(intersect_sorted(&[1, 3, 5], &[2, 4, 6]), Vec::<usize>::new());
+        assert_eq!(
+            intersect_sorted(&[1, 3, 5], &[2, 4, 6]),
+            Vec::<usize>::new()
+        );
         assert_eq!(intersect_sorted(&[], &[1, 2, 3]), Vec::<usize>::new());
         assert_eq!(intersect_sorted(&[1, 2, 3], &[]), Vec::<usize>::new());
         assert_eq!(intersect_sorted(&[], &[]), Vec::<usize>::new());

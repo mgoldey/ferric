@@ -46,9 +46,18 @@ fn co_sto3g() -> PreparedBasis {
 /// repeated calls on the same `Engine` -- which reuse one internal scratch
 /// buffer -- don't alias). Panics if the quartet screens to zero; callers
 /// only invoke this on quartets already confirmed nonzero.
-fn quartet(eng: &mut Engine, prep: &PreparedBasis, s1: usize, s2: usize, s3: usize, s4: usize) -> Vec<f64> {
+fn quartet(
+    eng: &mut Engine,
+    prep: &PreparedBasis,
+    s1: usize,
+    s2: usize,
+    s3: usize,
+    s4: usize,
+) -> Vec<f64> {
     eng.compute_quartet(prep, s1, s2, s3, s4)
-        .unwrap_or_else(|| panic!("shell quartet ({s1},{s2},{s3},{s4}) unexpectedly screened to zero"))
+        .unwrap_or_else(|| {
+            panic!("shell quartet ({s1},{s2},{s3},{s4}) unexpectedly screened to zero")
+        })
         .to_vec()
 }
 
@@ -75,7 +84,10 @@ fn eri_quartet_is_invariant_under_all_8_index_permutations() {
     let prep = co_sto3g();
     let dims = prep.shell_dims().to_vec();
     let nsh = prep.nshells();
-    assert!(nsh >= 4, "fixture must have at least 4 shells to exercise mixed s/p quartets, got {nsh}");
+    assert!(
+        nsh >= 4,
+        "fixture must have at least 4 shells to exercise mixed s/p quartets, got {nsh}"
+    );
 
     let mut eng = Engine::new_2e(Operator::coulomb(), &prep, 1e-14).unwrap();
 
@@ -98,7 +110,10 @@ fn eri_quartet_is_invariant_under_all_8_index_permutations() {
                     if !(s1 >= s2 && s3 >= s4 && (s1, s2) >= (s3, s4)) {
                         continue;
                     }
-                    let Some(canonical) = eng.compute_quartet(&prep, s1, s2, s3, s4).map(|s| s.to_vec()) else {
+                    let Some(canonical) = eng
+                        .compute_quartet(&prep, s1, s2, s3, s4)
+                        .map(|s| s.to_vec())
+                    else {
                         continue; // screened to zero; nothing to compare
                     };
                     let (n1, n2, n3, n4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
@@ -145,5 +160,8 @@ fn eri_quartet_is_invariant_under_all_8_index_permutations() {
             }
         }
     }
-    assert!(n_checked > 0, "no nonzero shell quartets were found to check -- fixture is degenerate");
+    assert!(
+        n_checked > 0,
+        "no nonzero shell quartets were found to check -- fixture is degenerate"
+    );
 }

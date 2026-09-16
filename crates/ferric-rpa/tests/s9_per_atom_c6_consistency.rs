@@ -258,7 +258,11 @@ fn partition_dependence_becke_vs_hirshfeld_water() {
     for (a, label) in labels.iter().enumerate() {
         let becke = res_becke.c6_iso_pair[(a, a)];
         let hirshfeld = res_hirshfeld.c6_iso_pair[(a, a)];
-        let ratio = if becke.abs() > 1e-12 { hirshfeld / becke } else { f64::NAN };
+        let ratio = if becke.abs() > 1e-12 {
+            hirshfeld / becke
+        } else {
+            f64::NAN
+        };
         ratios.push(ratio);
         println!(
             "  atom {label}: Becke C6_self={becke:.4}  Hirshfeld C6_self={hirshfeld:.4}  ratio(H/B)={ratio:.3}"
@@ -274,7 +278,11 @@ fn partition_dependence_becke_vs_hirshfeld_water() {
         .filter(|r| r.is_finite() && **r > 0.0)
         .cloned()
         .fold(f64::INFINITY, f64::min);
-    let spread = if min_ratio > 0.0 { max_ratio / min_ratio } else { f64::NAN };
+    let spread = if min_ratio > 0.0 {
+        max_ratio / min_ratio
+    } else {
+        f64::NAN
+    };
     println!(
         "  partition-dependence spread across atoms (max ratio / min ratio) = {spread:.2}x \
          (memory's CH4 finding was ~10x-100x on individual atoms)"

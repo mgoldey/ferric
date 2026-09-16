@@ -8,6 +8,7 @@ QM density): those describe the ligand's own electronic response, this
 describes the raw external field the pocket exerts before any ligand
 response is computed. All positions and outputs are in Bohr atomic units.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -26,8 +27,10 @@ def pocket_field_at_atoms(
     a ligand's atom positions (e.g. from `_read_xyz_atoms`).
     """
     sites_bohr = np.array(
-        [(x * ANGSTROM_TO_BOHR, y * ANGSTROM_TO_BOHR, z * ANGSTROM_TO_BOHR)
-         for x, y, z in site_coords_angstrom],
+        [
+            (x * ANGSTROM_TO_BOHR, y * ANGSTROM_TO_BOHR, z * ANGSTROM_TO_BOHR)
+            for x, y, z in site_coords_angstrom
+        ],
         dtype=np.float64,
     )
     charges = np.array([c[0] for c in pocket.charges], dtype=np.float64)

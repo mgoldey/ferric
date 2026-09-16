@@ -65,7 +65,10 @@ fn set_ext_params_changes_evaluated_energy() {
 #[test]
 fn applied_ext_params_round_trip() {
     let mut f = XcFunctional::new("HYB_GGA_XC_WB97X_V", 1).unwrap();
-    assert!(f.applied_ext_params().is_none(), "fresh handle should report no overrides");
+    assert!(
+        f.applied_ext_params().is_none(),
+        "fresh handle should report no overrides"
+    );
 
     let values: Vec<f64> = WB97X_L_V_EXT_PARAMS.iter().map(|(_, v)| *v).collect();
     f.set_ext_params(&values).unwrap();
@@ -73,7 +76,10 @@ fn applied_ext_params_round_trip() {
 
     // Defaults must differ from our overrides, else the test above proves nothing.
     let defaults = f.ext_param_defaults();
-    assert_ne!(defaults, values, "wB97X-L-V params coincide with stock wB97X-V defaults");
+    assert_ne!(
+        defaults, values,
+        "wB97X-L-V params coincide with stock wB97X-V defaults"
+    );
 }
 
 /// A wrong-length slice must be rejected, NOT passed to libxc.
@@ -84,9 +90,18 @@ fn applied_ext_params_round_trip() {
 #[test]
 fn wrong_length_ext_params_is_rejected() {
     let mut f = XcFunctional::new("HYB_GGA_XC_WB97X_V", 1).unwrap();
-    assert!(f.set_ext_params(&[0.4, 0.154]).is_err(), "short slice must be rejected");
-    assert!(f.set_ext_params(&[0.0; 19]).is_err(), "long slice must be rejected");
-    assert!(f.applied_ext_params().is_none(), "rejected calls must not record params");
+    assert!(
+        f.set_ext_params(&[0.4, 0.154]).is_err(),
+        "short slice must be rejected"
+    );
+    assert!(
+        f.set_ext_params(&[0.0; 19]).is_err(),
+        "long slice must be rejected"
+    );
+    assert!(
+        f.applied_ext_params().is_none(),
+        "rejected calls must not record params"
+    );
 }
 
 /// THE PARALLEL-CLONE TRAP.
@@ -141,29 +156,52 @@ fn ext_params_survive_the_parallel_worker_clone() {
 #[test]
 fn wb97x_l_v_resolves_with_paper_parameters() {
     for name in ["wB97X-L-V", "WB97X_L_V", "wb97xlv"] {
-        let def = xc_def_from_name(name)
-            .unwrap_or_else(|e| panic!("{name} should resolve: {e}"));
+        let def = xc_def_from_name(name).unwrap_or_else(|e| panic!("{name} should resolve: {e}"));
 
-        let cam = def.cam.expect("wB97X-L-V is range-separated; CAM must be present");
-        assert!((cam.omega - 0.1).abs() < 1e-12, "{name}: omega {} != 0.1 a0^-1", cam.omega);
+        let cam = def
+            .cam
+            .expect("wB97X-L-V is range-separated; CAM must be present");
+        assert!(
+            (cam.omega - 0.1).abs() < 1e-12,
+            "{name}: omega {} != 0.1 a0^-1",
+            cam.omega
+        );
         // eqn (27): full long-range HF exchange, lambda-scaled short-range.
-        assert!((cam.c_lr - 1.0).abs() < 1e-12, "{name}: c_lr {} != 1.0", cam.c_lr);
+        assert!(
+            (cam.c_lr - 1.0).abs() < 1e-12,
+            "{name}: c_lr {} != 1.0",
+            cam.c_lr
+        );
         assert!(
             (cam.c_sr - WB97X_L_V_LAMBDA).abs() < 1e-12,
             "{name}: c_sr {} != lambda {WB97X_L_V_LAMBDA}",
             cam.c_sr
         );
 
-        let vv10 = def.vv10.expect("wB97X-L-V includes VV10 nonlocal correlation");
-        assert!((vv10.b - 10.0).abs() < 1e-12, "{name}: VV10 b {} != 10.0", vv10.b);
-        assert!((vv10.c - 0.01).abs() < 1e-12, "{name}: VV10 C {} != 0.01", vv10.c);
+        let vv10 = def
+            .vv10
+            .expect("wB97X-L-V includes VV10 nonlocal correlation");
+        assert!(
+            (vv10.b - 10.0).abs() < 1e-12,
+            "{name}: VV10 b {} != 10.0",
+            vv10.b
+        );
+        assert!(
+            (vv10.c - 0.01).abs() < 1e-12,
+            "{name}: VV10 C {} != 0.01",
+            vv10.c
+        );
 
         assert_eq!(def.funcs.len(), 1);
         let applied = def.funcs[0]
             .applied_ext_params()
             .expect("the re-fitted coefficients must be applied, not left at stock values");
         let expected: Vec<f64> = WB97X_L_V_EXT_PARAMS.iter().map(|(_, v)| *v).collect();
-        assert_eq!(applied, expected.as_slice(), "{name}: wrong coefficients applied");
+        assert_eq!(
+            applied,
+            expected.as_slice(),
+            "{name}: wrong coefficients applied"
+        );
     }
 }
 

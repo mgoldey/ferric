@@ -98,7 +98,11 @@ fn measure(label: &str, xyz: &str, basis: &str, sample: usize) -> Row {
     let prep = PreparedBasis::new(&mol, &bs).expect("prep");
     let bounds = PairBounds::build(&prep).expect("bounds");
 
-    let cfg = AtomicGridConfig { n_radial: 50, n_angular: 110, ..Default::default() };
+    let cfg = AtomicGridConfig {
+        n_radial: 50,
+        n_angular: 110,
+        ..Default::default()
+    };
     let grid = build_atomic_grid(&mol, &cfg);
     let npts = grid.len();
 
@@ -112,8 +116,14 @@ fn measure(label: &str, xyz: &str, basis: &str, sample: usize) -> Row {
     let mut total_pairs = 0usize;
     let t0 = Instant::now();
     for r in &pts {
-        let p = a_matrix_at_point_with(&mut eng, &prep, r, Some(&bounds), CosxScreen::at(PROD_THRESH))
-            .expect("A build");
+        let p = a_matrix_at_point_with(
+            &mut eng,
+            &prep,
+            r,
+            Some(&bounds),
+            CosxScreen::at(PROD_THRESH),
+        )
+        .expect("A build");
         kept_sum += p.pairs_kept;
         total_pairs = p.pairs_total;
     }
@@ -157,8 +167,10 @@ fn run_series(basis: &str, sample: usize) {
         ("alkane_20", "testdata/molecules/alkane_20.xyz"),
     ];
 
-    println!("\n=== COSX Stage 2 sweep: basis={basis}, threshold={PROD_THRESH:.0e}, \
-              grid=(50,110), sample={sample} pts ===");
+    println!(
+        "\n=== COSX Stage 2 sweep: basis={basis}, threshold={PROD_THRESH:.0e}, \
+              grid=(50,110), sample={sample} pts ==="
+    );
     println!(
         "{:>10} {:>7} {:>6} {:>6} {:>10} {:>11} {:>11} {:>9} {:>12}",
         "system", "natoms", "nsh", "nbf", "npts", "pairs_tot", "kept_mean", "frac", "s/point"
@@ -169,7 +181,14 @@ fn run_series(basis: &str, sample: usize) {
         let r = measure(label, path, basis, sample);
         println!(
             "{:>10} {:>7} {:>6} {:>6} {:>10} {:>11} {:>11.1} {:>9.4} {:>12.3e}",
-            r.label, r.natoms, r.nsh, r.nbf, r.npts, r.total_pairs, r.kept_mean, r.frac,
+            r.label,
+            r.natoms,
+            r.nsh,
+            r.nbf,
+            r.npts,
+            r.total_pairs,
+            r.kept_mean,
+            r.frac,
             r.secs_per_point
         );
         rows.push(r);
@@ -179,8 +198,13 @@ fn run_series(basis: &str, sample: usize) {
     let fracs: Vec<f64> = rows.iter().map(|r| r.frac).collect();
     let falling = fracs.windows(2).all(|w| w[1] < w[0]);
     let drop = fracs[0] / fracs[fracs.len() - 1];
-    println!("\n(a) surviving-pair fraction monotonically falling: {falling}  \
-              (first {:.4} -> last {:.4}, ratio {:.2}x)", fracs[0], fracs[fracs.len()-1], drop);
+    println!(
+        "\n(a) surviving-pair fraction monotonically falling: {falling}  \
+              (first {:.4} -> last {:.4}, ratio {:.2}x)",
+        fracs[0],
+        fracs[fracs.len() - 1],
+        drop
+    );
 
     // --- GO bar (b): tail exponent of the KEPT-PAIR COUNT vs nsh ---
     // Dense reference: total pairs grow as nsh^2, so the dense exponent is 2.
@@ -191,8 +215,14 @@ fn run_series(basis: &str, sample: usize) {
     let e_tot = tail_exponent(&nsh, &tot);
     println!("(b) tail exponent (last 3) of kept-pairs vs nsh : {e_kept:.3}");
     println!("    tail exponent (last 3) of TOTAL pairs vs nsh: {e_tot:.3}  (dense reference)");
-    println!("    -> screened path is {} the dense path",
-        if e_kept < e_tot - 0.1 { "ASYMPTOTICALLY BETTER than" } else { "NOT better than" });
+    println!(
+        "    -> screened path is {} the dense path",
+        if e_kept < e_tot - 0.1 {
+            "ASYMPTOTICALLY BETTER than"
+        } else {
+            "NOT better than"
+        }
+    );
 
     // --- Per-point cost scaling, the thing that actually decides feasibility ---
     let spp: Vec<f64> = rows.iter().map(|r| r.secs_per_point).collect();
@@ -200,8 +230,11 @@ fn run_series(basis: &str, sample: usize) {
     println!("(c) tail exponent (last 3) of A-build s/point vs nsh: {e_cost:.3}");
     for r in &rows {
         // Cost of ONE full K build = s/point * npts (one A sweep per grid point).
-        println!("    {:>10}: full-grid A-build per SCF iteration = {:.1} s",
-            r.label, r.secs_per_point * r.npts as f64);
+        println!(
+            "    {:>10}: full-grid A-build per SCF iteration = {:.1} s",
+            r.label,
+            r.secs_per_point * r.npts as f64
+        );
     }
 }
 

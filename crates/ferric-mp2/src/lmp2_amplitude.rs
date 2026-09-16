@@ -56,7 +56,9 @@ use ferric_scf::result::ScfResult;
 
 use crate::boys::boys_localize;
 use crate::ragged::{pair_block_from_g_cand, solve_ragged, PairBlock, Ragged};
-use crate::rimp2::{active_occ, eri3_mo_ov_blocked, eri3_budget_bytes, metric_inverse_sqrt, ri_mp2, RiMp2Config};
+use crate::rimp2::{
+    active_occ, eri3_budget_bytes, eri3_mo_ov_blocked, metric_inverse_sqrt, ri_mp2, RiMp2Config,
+};
 use ferric_integrals::threeindex::coulomb_metric_2c;
 
 /// Configuration for amplitude-threshold local MP2 (WSHG23 single-threshold scheme).
@@ -152,8 +154,14 @@ pub struct AmplitudeLmp2Result {
 
 impl std::fmt::Display for AmplitudeLmp2Result {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Amplitude-LMP2 total: {:.10} Ha (corr: {:.10}, keep: {:.1}%, {} CG iters)",
-            self.e_total, self.e_corr, self.keep_fraction * 100.0, self.cg_iterations)
+        write!(
+            f,
+            "Amplitude-LMP2 total: {:.10} Ha (corr: {:.10}, keep: {:.1}%, {} CG iters)",
+            self.e_total,
+            self.e_corr,
+            self.keep_fraction * 100.0,
+            self.cg_iterations
+        )
     }
 }
 
@@ -209,7 +217,11 @@ fn lowdin(c: &Array2<f64>, s: &Array2<f64>) -> Result<Array2<f64>, FerricError> 
 
 /// Canonical orthonormalization keeping the `rank` largest-eigenvalue
 /// directions; errors if the kept spectrum dips below the lindep floor.
-fn canonical_orth(c: &Array2<f64>, s: &Array2<f64>, rank: usize) -> Result<Array2<f64>, FerricError> {
+fn canonical_orth(
+    c: &Array2<f64>,
+    s: &Array2<f64>,
+    rank: usize,
+) -> Result<Array2<f64>, FerricError> {
     const LINDEP: f64 = 1e-8;
     let o = c.t().dot(&s.dot(c));
     let (w, v) = eigh(&o)?;
@@ -247,7 +259,10 @@ fn pivoted_cholesky_order(m: &Array2<f64>, rank: usize) -> Result<Vec<usize>, Fe
         let (j, &dj) = d
             .iter()
             .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).expect("NaN in pivoted Cholesky diagonal"))
+            .max_by(|a, b| {
+                a.1.partial_cmp(b.1)
+                    .expect("NaN in pivoted Cholesky diagonal")
+            })
             .expect("empty diagonal");
         if dj <= 0.0 {
             return Err(FerricError::General(format!(
@@ -306,7 +321,11 @@ fn cross_overlap_with_minimal(
         n_obs_shells.insert(z, o.len());
         merged.insert(z, v);
     }
-    let merged_bs = BasisSet { name: "lmp2-obs+sto3g".to_string(), shells: merged, ecps: obs_bs.ecps.clone() };
+    let merged_bs = BasisSet {
+        name: "lmp2-obs+sto3g".to_string(),
+        shells: merged,
+        ecps: obs_bs.ecps.clone(),
+    };
     let comb = PreparedBasis::new(mol, &merged_bs)?;
     let s_comb = overlap(&comb);
 
@@ -484,7 +503,11 @@ pub fn build_vvhv(
     let mut c_vloc = Array2::<f64>::zeros((nao, n_l + n_h));
     c_vloc.slice_mut(s![.., ..n_l]).assign(&c_l);
     c_vloc.slice_mut(s![.., n_l..]).assign(&c_h);
-    Ok(VvHv { c_vloc, n_valence: n_l, n_hard: n_h })
+    Ok(VvHv {
+        c_vloc,
+        n_valence: n_l,
+        n_hard: n_h,
+    })
 }
 
 fn solve_spd(a: &Array2<f64>, b: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
@@ -537,7 +560,6 @@ pub fn check_vvhv(
 // ---------------------------------------------------------------------------
 // ragged per-pair domain-block PCG solver
 // ---------------------------------------------------------------------------
-
 
 // ---------------------------------------------------------------------------
 // driver
@@ -661,7 +683,17 @@ pub fn localized_spaces(
     let f_ao = rhf.fock_r();
     let f_oo = c_locc.t().dot(&f_ao.dot(&c_locc));
     let f_vv = c_vloc.t().dot(&f_ao.dot(&c_vloc));
-    Ok(LocalizedSpaces { c_locc, c_vloc, f_oo, f_vv, occ_centers, occ_spreads, virt_centers, no, nv })
+    Ok(LocalizedSpaces {
+        c_locc,
+        c_vloc,
+        f_oo,
+        f_vv,
+        occ_centers,
+        occ_spreads,
+        virt_centers,
+        no,
+        nv,
+    })
 }
 
 /// Basis stage of the assembly — no (no·nv)² object is ever formed here.
@@ -675,7 +707,16 @@ pub fn assemble_basis(
     vvhv: &VvHv,
 ) -> Result<LocalizedBasis, FerricError> {
     let sp = localized_spaces(mol, obs, rhf, cfg.frozen_core, vvhv)?;
-    let LocalizedSpaces { c_locc, f_oo, f_vv, occ_centers, occ_spreads, no, nv, .. } = sp;
+    let LocalizedSpaces {
+        c_locc,
+        f_oo,
+        f_vv,
+        occ_centers,
+        occ_spreads,
+        no,
+        nv,
+        ..
+    } = sp;
     let c_vloc = &vvhv.c_vloc;
     let budget = eri3_budget_bytes(cfg.eri3_budget_bytes);
     let b3 = eri3_mo_ov_blocked(op, obs, dfbs, &c_locc, c_vloc, budget)?;
@@ -684,7 +725,17 @@ pub fn assemble_basis(
     let b_flat = b3
         .into_shape_with_order((naux, no * nv))
         .map_err(|e| FerricError::General(format!("lmp2_amplitude reshape: {e}")))?;
-    Ok(LocalizedBasis { c_locc, f_oo, f_vv, occ_centers, occ_spreads, no, nv, b_flat, v2c })
+    Ok(LocalizedBasis {
+        c_locc,
+        f_oo,
+        f_vv,
+        occ_centers,
+        occ_spreads,
+        no,
+        nv,
+        b_flat,
+        v2c,
+    })
 }
 
 /// Assemble the localized-basis problem (Boys occupieds, caller's virtuals,
@@ -779,9 +830,13 @@ fn domain_fit_pair(
     use ndarray_linalg::InverseC;
     let naux = b_flat.nrows();
     let dist2 = |p: usize, k: usize| -> f64 {
-        (0..3).map(|x| (aux_xyz[(p, x)] - occ_centers[(k, x)]).powi(2)).sum()
+        (0..3)
+            .map(|x| (aux_xyz[(p, x)] - occ_centers[(k, x)]).powi(2))
+            .sum()
     };
-    let dom: Vec<usize> = (0..naux).filter(|&p| dist2(p, i) <= r2 || dist2(p, j) <= r2).collect();
+    let dom: Vec<usize> = (0..naux)
+        .filter(|&p| dist2(p, i) <= r2 || dist2(p, j) <= r2)
+        .collect();
     if dom.is_empty() {
         return Err(FerricError::General(format!(
             "lmp2_amplitude: empty aux domain for pair ({i},{j}) at radius {radius} Bohr"
@@ -808,7 +863,6 @@ fn domain_fit_pair(
     }
     Ok(a_i.t().dot(&vdd_inv.dot(&a_j)))
 }
-
 
 /// The integral-free R⁻⁶ pair gate (paper's linked gate): returns the
 /// (no·no) keep mask and the count of gated UNIQUE off-diagonal pairs.
@@ -890,8 +944,18 @@ pub fn assemble_ragged_direct(
     pair_gate_cal: Option<f64>,
     fit_radius_bohr: Option<f64>,
 ) -> Result<(Ragged, usize), FerricError> {
-    assemble_ragged_direct_aux(mol, dfbs, op, lb, eps, scale, pair_gate_cal, fit_radius_bohr, None)
-        .map(|(rg, g, _, _)| (rg, g))
+    assemble_ragged_direct_aux(
+        mol,
+        dfbs,
+        op,
+        lb,
+        eps,
+        scale,
+        pair_gate_cal,
+        fit_radius_bohr,
+        None,
+    )
+    .map(|(rg, g, _, _)| (rg, g))
 }
 
 /// [`assemble_ragged_direct`] with the ε-linked per-pair AUX truncation
@@ -947,7 +1011,12 @@ pub fn assemble_ragged_direct_aux(
             *qslot = sq * bt.column(col).dot(&bt.column(col)).sqrt();
         }
         let qmax: Vec<f64> = (0..no)
-            .map(|i| qv[i * nv..(i + 1) * nv].iter().cloned().fold(0.0f64, f64::max))
+            .map(|i| {
+                qv[i * nv..(i + 1) * nv]
+                    .iter()
+                    .cloned()
+                    .fold(0.0f64, f64::max)
+            })
             .collect();
         (qv, qmax)
     });
@@ -981,9 +1050,7 @@ pub fn assemble_ragged_direct_aux(
         .map(|&(i, j)| {
             let cand: Vec<usize> = match (&q, eps > 0.0) {
                 (Some((qv, qmax)), true) => (0..nv)
-                    .filter(|&a| {
-                        qv[i * nv + a] * qmax[j] >= eps || qv[j * nv + a] * qmax[i] >= eps
-                    })
+                    .filter(|&a| qv[i * nv + a] * qmax[j] >= eps || qv[j * nv + a] * qmax[i] >= eps)
                     .collect(),
                 _ => (0..nv).collect(),
             };
@@ -1066,8 +1133,11 @@ pub fn assemble_ragged_direct_aux(
             if scale != 1.0 {
                 g.mapv_inplace(|x| scale * x);
             }
-            let cand_used: Vec<usize> =
-                if g.nrows() == nv { (0..nv).collect() } else { cand.clone() };
+            let cand_used: Vec<usize> = if g.nrows() == nv {
+                (0..nv).collect()
+            } else {
+                cand.clone()
+            };
             let mut out = Vec::with_capacity(2);
             if let Some(pb) = pair_block_from_g_cand(i, j, &g, &cand_used, nv, f_vv, &fo, &fv, eps)
             {
@@ -1105,7 +1175,12 @@ pub fn assemble_ragged_direct_aux(
         aux_sizes.iter().sum::<usize>() as f64 / aux_sizes.len() as f64
     };
     let aux_dom_max = aux_sizes.iter().copied().max().unwrap_or(0);
-    Ok((Ragged { pairs, by_i, by_j }, n_pairs_gated, aux_dom_mean, aux_dom_max))
+    Ok((
+        Ragged { pairs, by_i, by_j },
+        n_pairs_gated,
+        aux_dom_mean,
+        aux_dom_max,
+    ))
 }
 
 /// Same as [`amplitude_lmp2`], with a caller-supplied virtual space — the
@@ -1149,17 +1224,26 @@ pub fn amplitude_lmp2_with_virtuals(
             dfbs,
             op,
             rhf,
-            &RiMp2Config { frozen_core: cfg.frozen_core, memory_budget_bytes: cfg.eri3_budget_bytes, ..Default::default() },
+            &RiMp2Config {
+                frozen_core: cfg.frozen_core,
+                memory_budget_bytes: cfg.eri3_budget_bytes,
+                ..Default::default()
+            },
         )?
         .mp2_corr
     } else {
         f64::NAN
     };
-    let t_reference_s = if cfg.compute_reference { t0.elapsed().as_secs_f64() } else { 0.0 };
+    let t_reference_s = if cfg.compute_reference {
+        t0.elapsed().as_secs_f64()
+    } else {
+        0.0
+    };
 
     // ---- ragged solve ----
     let t0 = std::time::Instant::now();
-    let (t, iters, relres, converged, flops_mv) = solve_ragged(&rg, f_oo, cfg.cg_rtol, cfg.cg_max_iter);
+    let (t, iters, relres, converged, flops_mv) =
+        solve_ragged(&rg, f_oo, cfg.cg_rtol, cfg.cg_max_iter);
     if !converged {
         return Err(FerricError::General(format!(
             "lmp2_amplitude: ragged CG failed to converge (relres {relres:.2e} after {iters} iters)"
@@ -1183,11 +1267,19 @@ pub fn amplitude_lmp2_with_virtuals(
                 per_i[pb.i][a] = true;
             }
         }
-        per_i.iter().map(|v| v.iter().filter(|&&x| x).count()).collect()
+        per_i
+            .iter()
+            .map(|v| v.iter().filter(|&&x| x).count())
+            .collect()
     };
     let dom_max = dom.iter().copied().max().unwrap_or(0);
-    let dom_mean = if no > 0 { dom.iter().sum::<usize>() as f64 / no as f64 } else { 0.0 };
-    let dense_flops = 2 * ((no * no) as u64 * (nv as u64).pow(3) + (no as u64).pow(3) * (nv * nv) as u64);
+    let dom_mean = if no > 0 {
+        dom.iter().sum::<usize>() as f64 / no as f64
+    } else {
+        0.0
+    };
+    let dense_flops =
+        2 * ((no * no) as u64 * (nv as u64).pow(3) + (no as u64).pow(3) * (nv * nv) as u64);
 
     let t_solve_s = t0.elapsed().as_secs_f64();
     Ok(AmplitudeLmp2Result {
@@ -1208,6 +1300,11 @@ pub fn amplitude_lmp2_with_virtuals(
         n_pairs_gated,
         aux_dom_mean,
         aux_dom_max,
-        timings: StageTimings { t_spaces_s: 0.0, t_assembly_s, t_solve_s, t_reference_s },
+        timings: StageTimings {
+            t_spaces_s: 0.0,
+            t_assembly_s,
+            t_solve_s,
+            t_reference_s,
+        },
     })
 }

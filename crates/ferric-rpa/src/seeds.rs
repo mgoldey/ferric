@@ -60,12 +60,24 @@ pub fn build_boys_seed_unrestricted(
     // Per-spin Boys seed (occupied-only or occ×vir products). If a channel
     // has zero occupied (e.g. β on H atom), skip it.
     let seed_a = if inter_a.nocc > 0 {
-        Some(boys_seed_one_spin(obs, c_full_a, inter_a, n_seed_target, mode)?)
+        Some(boys_seed_one_spin(
+            obs,
+            c_full_a,
+            inter_a,
+            n_seed_target,
+            mode,
+        )?)
     } else {
         None
     };
     let seed_b = if inter_b.nocc > 0 {
-        Some(boys_seed_one_spin(obs, c_full_b, inter_b, n_seed_target, mode)?)
+        Some(boys_seed_one_spin(
+            obs,
+            c_full_b,
+            inter_b,
+            n_seed_target,
+            mode,
+        )?)
     } else {
         None
     };
@@ -123,9 +135,7 @@ fn boys_seed_one_spin(
     let first_occ = inter.first_occ;
     let b_ov = &inter.b_ov;
 
-    let c_occ_active = c_full
-        .slice(s![.., first_occ..first_occ + nocc])
-        .to_owned();
+    let c_occ_active = c_full.slice(s![.., first_occ..first_occ + nocc]).to_owned();
     let dip = dipole(obs, [0.0, 0.0, 0.0])?;
     let boys = boys_localize(&c_occ_active, &dip, 200);
     let s_mat = overlap(obs);
@@ -140,7 +150,17 @@ fn boys_seed_one_spin(
     let eps_occ = vec![0.0f64; nocc];
     let eps_vir = vec![1.0f64; nvir];
 
-    build_seed_inner(naux, nocc, nvir, b_ov, &u_mix, &eps_occ, &eps_vir, n_seed_target, mode)
+    build_seed_inner(
+        naux,
+        nocc,
+        nvir,
+        b_ov,
+        &u_mix,
+        &eps_occ,
+        &eps_vir,
+        n_seed_target,
+        mode,
+    )
 }
 
 /// Inner seed builder (shared between restricted and per-spin paths).
@@ -268,9 +288,7 @@ pub fn build_boys_seed(
 
     // Active-occupied canonical block (skip frozen core).
     let c_can = rhf.mos_r();
-    let c_occ_active = c_can
-        .slice(s![.., first_occ..first_occ + nocc])
-        .to_owned();
+    let c_occ_active = c_can.slice(s![.., first_occ..first_occ + nocc]).to_owned();
 
     // Dipole AO integrals at origin; Boys formula only needs the diagonal
     // differences and off-diagonals — origin choice is gauge-invariant for
@@ -306,7 +324,7 @@ pub fn build_boys_seed(
             let mut vsum = Array2::<f64>::zeros((nocc, naux));
             for i in 0..nocc {
                 let block = b_ov.slice(s![.., i * nvir..(i + 1) * nvir]); // (naux, nvir)
-                // Sum over a: take row-sum across columns.
+                                                                          // Sum over a: take row-sum across columns.
                 let row_sum: Array1<f64> = block.sum_axis(ndarray::Axis(1));
                 vsum.slice_mut(s![i, ..]).assign(&row_sum);
             }
@@ -337,8 +355,7 @@ pub fn build_boys_seed(
                 }
                 eps_loc[i_loc] = e;
             }
-            let mut pairs: Vec<(usize, usize, f64)> =
-                Vec::with_capacity(nocc * nvir);
+            let mut pairs: Vec<(usize, usize, f64)> = Vec::with_capacity(nocc * nvir);
             for i_loc in 0..nocc {
                 for a in 0..nvir {
                     let denom = eps_vir[a] - eps_loc[i_loc];

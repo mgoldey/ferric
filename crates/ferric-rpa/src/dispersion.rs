@@ -214,8 +214,7 @@ pub fn casimir_polder_c6(dyn_pol: &DynamicPolarizability) -> C6Result {
         .collect();
 
     let mut c6_iso_pair = Array2::<f64>::zeros((natoms, natoms));
-    let mut c6_aniso_pair: Vec<Vec<[[f64; 3]; 3]>> =
-        vec![vec![[[0.0; 3]; 3]; natoms]; natoms];
+    let mut c6_aniso_pair: Vec<Vec<[[f64; 3]; 3]>> = vec![vec![[[0.0; 3]; 3]; natoms]; natoms];
     for (a, (iso_row, aniso_row)) in rows.into_iter().enumerate() {
         for b in 0..natoms {
             c6_iso_pair[(a, b)] = iso_row[b];
@@ -282,8 +281,7 @@ pub fn ts_dynamic_polarizability(
 ) -> Result<DynamicPolarizability, FerricError> {
     let natoms = z.len();
     let nfreq = freqs.len();
-    let mut per_atom: Vec<Vec<[[f64; 3]; 3]>> =
-        vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
+    let mut per_atom: Vec<Vec<[[f64; 3]; 3]>> = vec![vec![[[0.0; 3]; 3]; nfreq]; natoms];
 
     // Per-atom (α_eff, ω_A) — shared with the MBD path (mbd::ts_atom_params).
     let params = crate::dispersion::mbd::ts_atom_params(z, vol_ratio, alpha_static)?;
@@ -295,7 +293,11 @@ pub fn ts_dynamic_polarizability(
         let (alpha_iso_eff, omega_a) = params[a];
 
         // Shape factor: static tensor normalized so its iso average is 1.
-        let inv_st_iso = if st_iso.abs() > 1e-12 { 1.0 / st_iso } else { 0.0 };
+        let inv_st_iso = if st_iso.abs() > 1e-12 {
+            1.0 / st_iso
+        } else {
+            0.0
+        };
         let mut shape = [[0.0_f64; 3]; 3];
         if inv_st_iso != 0.0 {
             for i in 0..3 {
@@ -533,7 +535,7 @@ pub fn pdep_dynamic_polarizability_truncated(
         ..Default::default()
     };
     let inter = ferric_mp2::rimp2::compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
-    let b_ov = &inter.b_ov;   // shape (naux, nov) — un-dressed raw RI
+    let b_ov = &inter.b_ov; // shape (naux, nov) — un-dressed raw RI
     let nocc = inter.nocc;
     let nvir = inter.nvir;
     let nocc_total = inter.nocc_total;
@@ -545,11 +547,19 @@ pub fn pdep_dynamic_polarizability_truncated(
     let eps_occ: Vec<f64> = eps[first_occ..first_occ + nocc].to_vec();
     let eps_vir: Vec<f64> = eps[nocc_total..nocc_total + nvir].to_vec();
     let mut e_ia = ndarray::Array1::<f64>::zeros(nov);
-    for i in 0..nocc { for a in 0..nvir { e_ia[i*nvir+a] = eps_vir[a] - eps_occ[i]; } }
+    for i in 0..nocc {
+        for a in 0..nvir {
+            e_ia[i * nvir + a] = eps_vir[a] - eps_occ[i];
+        }
+    }
 
     let c = rhf.mos_r();
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
-    let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
+    let c_vir = c
+        .slice(ndarray::s![.., nocc_total..nocc_total + nvir])
+        .to_owned();
 
     // Becke grid + per-atom atom-centred AO dipoles (identical to full path).
     let grid_cfg = AtomicGridConfig::default();
@@ -607,32 +617,52 @@ pub fn pdep_dynamic_polarizability_truncated(
         obs_bs,
         ferric_core::memory::resolve_budget_bytes(cfg.memory_budget_bytes),
     )?;
-    for a in 0..natoms { for d in 0..3 {
-        let m = &mut d_ai_ao[a][d];
-        for i in 0..nbf { for j in (i+1)..nbf {
-            let avg = 0.5*(m[(i,j)]+m[(j,i)]); m[(i,j)] = avg; m[(j,i)] = avg;
-        }}
-    }}
+    for a in 0..natoms {
+        for d in 0..3 {
+            let m = &mut d_ai_ao[a][d];
+            for i in 0..nbf {
+                for j in (i + 1)..nbf {
+                    let avg = 0.5 * (m[(i, j)] + m[(j, i)]);
+                    m[(i, j)] = avg;
+                    m[(j, i)] = avg;
+                }
+            }
+        }
+    }
 
     // Per-atom MO dipoles + molecular sums.
-    let mu_ai_mo: Vec<[Array2<f64>; 3]> = (0..natoms).map(|a|
-        std::array::from_fn(|d| c_occ.t().dot(&d_ai_ao[a][d]).dot(&c_vir))
-    ).collect();
+    let mu_ai_mo: Vec<[Array2<f64>; 3]> = (0..natoms)
+        .map(|a| std::array::from_fn(|d| c_occ.t().dot(&d_ai_ao[a][d]).dot(&c_vir)))
+        .collect();
     let mut mu_mo: [Array2<f64>; 3] = std::array::from_fn(|_| Array2::<f64>::zeros((nocc, nvir)));
-    for a in 0..natoms { for d in 0..3 { mu_mo[d] = &mu_mo[d] + &mu_ai_mo[a][d]; } }
+    for a in 0..natoms {
+        for d in 0..3 {
+            mu_mo[d] = &mu_mo[d] + &mu_ai_mo[a][d];
+        }
+    }
 
     let mu_flat: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| {
         let mut v = ndarray::Array1::<f64>::zeros(nov);
-        for i in 0..nocc { for ax in 0..nvir { v[i*nvir+ax] = mu_mo[d][(i,ax)]; } }
+        for i in 0..nocc {
+            for ax in 0..nvir {
+                v[i * nvir + ax] = mu_mo[d][(i, ax)];
+            }
+        }
         v
     });
-    let mu_ai_flat: Vec<[ndarray::Array1<f64>; 3]> = (0..natoms).map(|a|
-        std::array::from_fn(|d| {
-            let mut v = ndarray::Array1::<f64>::zeros(nov);
-            for i in 0..nocc { for ax in 0..nvir { v[i*nvir+ax] = mu_ai_mo[a][d][(i,ax)]; } }
-            v
+    let mu_ai_flat: Vec<[ndarray::Array1<f64>; 3]> = (0..natoms)
+        .map(|a| {
+            std::array::from_fn(|d| {
+                let mut v = ndarray::Array1::<f64>::zeros(nov);
+                for i in 0..nocc {
+                    for ax in 0..nvir {
+                        v[i * nvir + ax] = mu_ai_mo[a][d][(i, ax)];
+                    }
+                }
+                v
+            })
         })
-    ).collect();
+        .collect();
 
     // Use the dressed (V^{-1/2}-basis) eigenvectors stored in PdepRpaResult.
     // b_ov = V^{-1/2} (P|ia) is also in the dressed basis, so:
@@ -681,22 +711,30 @@ pub fn pdep_dynamic_polarizability_truncated(
                 |ct_b_g, &omega| -> Result<Vec<[[f64; 3]; 3]>, FerricError> {
                     let omega2 = omega * omega;
                     let mut g = ndarray::Array1::<f64>::zeros(nov);
-                    for ia in 0..nov { let e = e_ia[ia]; g[ia] = e / (omega2 + e*e); }
+                    for ia in 0..nov {
+                        let e = e_ia[ia];
+                        g[ia] = e / (omega2 + e * e);
+                    }
 
                     // B̃_g = B̃ diag(g): (naux, nov) → scale columns.
                     // We compute Uᵀ B̃_g = (Uᵀ B̃) diag(g) = ct_b * diag(g) efficiently
                     // as a column-scaled product, refilled from ct_b each ω.
                     ct_b_g.assign(&ct_b);
-                    for ia in 0..nov { ct_b_g.column_mut(ia).mapv_inplace(|x| x * g[ia]); }
+                    for ia in 0..nov {
+                        ct_b_g.column_mut(ia).mapv_inplace(|x| x * g[ia]);
+                    }
 
                     // ε̃_M(ω) = I_M + 4 (Uᵀ B̃_g) (Uᵀ B̃_g)ᵀ  [M×M SPD]
                     // = I + 4 ct_b_g · ct_b_gᵀ
                     let mut eps_m: Array2<f64> = ct_b_g.dot(&ct_b_g.t());
                     eps_m.mapv_inplace(|x| x * 4.0);
-                    for alpha in 0..n_modes { eps_m[(alpha, alpha)] += 1.0; }
+                    for alpha in 0..n_modes {
+                        eps_m[(alpha, alpha)] += 1.0;
+                    }
 
                     // Molecular projected dipole: w_M^d = Uᵀ B̃_g μ^d = ct_b_g · μ^d
-                    let w_mol_m: [ndarray::Array1<f64>; 3] = std::array::from_fn(|d| ct_b_g.dot(&mu_flat[d]));
+                    let w_mol_m: [ndarray::Array1<f64>; 3] =
+                        std::array::from_fn(|d| ct_b_g.dot(&mu_flat[d]));
                     // Solve ε̃_M y_M^d = w_M^d  (M×M, small)
                     let y_mol_m = crate::properties::solve_dielectric_3(&eps_m, &w_mol_m)?;
 
@@ -715,10 +753,13 @@ pub fn pdep_dynamic_polarizability_truncated(
                             }
                         }
                         // Symmetrize.
-                        for i in 0..3 { for j in (i+1)..3 {
-                            let avg = 0.5*(tensor[i][j]+tensor[j][i]);
-                            tensor[i][j] = avg; tensor[j][i] = avg;
-                        }}
+                        for i in 0..3 {
+                            for j in (i + 1)..3 {
+                                let avg = 0.5 * (tensor[i][j] + tensor[j][i]);
+                                tensor[i][j] = avg;
+                                tensor[j][i] = avg;
+                            }
+                        }
                         row[a] = tensor;
                     }
                     Ok(row)
@@ -737,7 +778,12 @@ pub fn pdep_dynamic_polarizability_truncated(
 
     // Truncated/benchmark path: molecular total not its concern; leave empty so
     // casimir_polder_c6 falls back to the per-atom pair sum.
-    Ok(DynamicPolarizability { freqs, weights, per_atom: out, molecular: Vec::new() })
+    Ok(DynamicPolarizability {
+        freqs,
+        weights,
+        per_atom: out,
+        molecular: Vec::new(),
+    })
 }
 
 #[cfg(test)]
@@ -770,7 +816,12 @@ mod tests {
                 [[a, 0.0, 0.0], [0.0, a, 0.0], [0.0, 0.0, a]]
             })
             .collect()];
-        let dp = DynamicPolarizability { freqs, weights, per_atom, molecular: Vec::new() };
+        let dp = DynamicPolarizability {
+            freqs,
+            weights,
+            per_atom,
+            molecular: Vec::new(),
+        };
         let res = casimir_polder_c6(&dp);
         let c6 = res.c6_iso_pair[(0, 0)];
         let analytic = 0.75 * alpha0 * alpha0 * omega0;

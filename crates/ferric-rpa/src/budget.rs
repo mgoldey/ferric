@@ -221,7 +221,13 @@ pub fn effective_dipole_band_width(nominal: usize, npts: usize) -> usize {
 /// Kept separate from [`estimate_peak_bytes`]'s energy terms so each can be
 /// unit-tested against a hand-derived figure.
 pub fn estimate_grid_bytes(g: GridEstimateShape) -> usize {
-    let GridEstimateShape { npts, nbf, natoms, dipole_band_width, n_workers } = g;
+    let GridEstimateShape {
+        npts,
+        nbf,
+        natoms,
+        dipole_band_width,
+        n_workers,
+    } = g;
 
     // chi: evaluated PER GRID CHUNK inside the banded accumulation, one buffer
     // per rayon worker, each `chunk_size = npts/TARGET_CHUNKS` points wide.
@@ -274,7 +280,15 @@ pub fn estimate_grid_bytes(g: GridEstimateShape) -> usize {
 /// panel width itself is bounded.
 pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     let PeakEstimateShape {
-        naux, nocc, nvir, n_quad, n_workers, n_keep, grid, need_inv_dielectric, nao,
+        naux,
+        nocc,
+        nvir,
+        n_quad,
+        n_workers,
+        n_keep,
+        grid,
+        need_inv_dielectric,
+        nao,
     } = shape;
     let nov = nocc.saturating_mul(nvir);
     let m = n_keep.min(naux).max(1);
@@ -299,12 +313,17 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     //     `(naux, nao, nao)` tensor, live across the whole streaming call and
     //     admitted in-core at up to 100% of this very budget. It is charged
     //     below as `ao_tensor_bytes` — see `PeakEstimateShape::nao`.
-    let metric_bytes = naux.saturating_mul(naux).saturating_mul(3).saturating_mul(F64_BYTES);
+    let metric_bytes = naux
+        .saturating_mul(naux)
+        .saturating_mul(3)
+        .saturating_mul(F64_BYTES);
     let eri3_and_bov_bytes = naux.saturating_mul(nov).saturating_mul(F64_BYTES);
     // The resident three-index AO tensor. `nao == 0` (a caller that does not
     // supply it) contributes nothing, keeping such callers byte-identical.
-    let ao_tensor_bytes =
-        naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(F64_BYTES);
+    let ao_tensor_bytes = naux
+        .saturating_mul(nao)
+        .saturating_mul(nao)
+        .saturating_mul(F64_BYTES);
     let intermediates_peak = metric_bytes
         .saturating_add(eri3_and_bov_bytes)
         .saturating_add(ao_tensor_bytes);
@@ -312,7 +331,10 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     // (2) Lanczos full-rank eigensolve: assembled A (naux×naux, always fully
     // resident regardless of matvec panel width) + its eigh output
     // (eigenvectors naux×naux + eigenvalues naux, folded into the naux² term).
-    let lanczos_peak = naux.saturating_mul(naux).saturating_mul(2).saturating_mul(F64_BYTES);
+    let lanczos_peak = naux
+        .saturating_mul(naux)
+        .saturating_mul(2)
+        .saturating_mul(F64_BYTES);
 
     // (3) Frequency-quadrature loop: per-worker (m, nov) + (m, m) scratch via
     // map_init, times n_workers (this is the term that scales with rayon
@@ -353,7 +375,10 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     // distinct, simultaneously-live allocations at the point the frequency
     // loop runs (b_ov + eigensolve output + per-worker scratch), but we must
     // not double the eri3/b_ov term again here.
-    let output_arrays = naux.saturating_mul(m).saturating_mul(2).saturating_mul(F64_BYTES); // eigenvectors + eigenpotentials_aux
+    let output_arrays = naux
+        .saturating_mul(m)
+        .saturating_mul(2)
+        .saturating_mul(F64_BYTES); // eigenvectors + eigenpotentials_aux
 
     // (3b) The per-frequency inverse-dielectric stack, when the caller keeps it.
     //
@@ -380,7 +405,10 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     // refactor might. Under-charging is how a gate approves a job that then
     // gets OOM-killed.
     let inv_dielectric_bytes = if need_inv_dielectric {
-        let stack = n_quad.saturating_mul(m).saturating_mul(m).saturating_mul(F64_BYTES);
+        let stack = n_quad
+            .saturating_mul(m)
+            .saturating_mul(m)
+            .saturating_mul(F64_BYTES);
         let clones = n_quad
             .min(n_workers)
             .saturating_mul(m)
@@ -448,8 +476,14 @@ mod tests {
         let msg = err.to_string();
         let est_gb = format!("{:.2} GB", est as f64 / 1e9);
         let budget_gb = format!("{:.2} GB", budget as f64 / 1e9);
-        assert!(msg.contains(&est_gb), "message should contain estimated GB figure: {msg}");
-        assert!(msg.contains(&budget_gb), "message should contain budgeted GB figure: {msg}");
+        assert!(
+            msg.contains(&est_gb),
+            "message should contain estimated GB figure: {msg}"
+        );
+        assert!(
+            msg.contains(&budget_gb),
+            "message should contain budgeted GB figure: {msg}"
+        );
     }
 
     /// Water/cc-pVDZ-like small-system dimensions must stay comfortably under
@@ -491,13 +525,24 @@ mod tests {
             // AO tensor not modelled by this case.
             nao: 0,
             need_inv_dielectric: false,
-            naux: 500, nocc: 10, nvir: 100, n_quad: 20, n_workers: 4, n_keep: 500,
+            naux: 500,
+            nocc: 10,
+            nvir: 100,
+            n_quad: 20,
+            n_workers: 4,
+            n_keep: 500,
             grid: None,
         };
-        let doubled = PeakEstimateShape { n_workers: 8, ..base };
+        let doubled = PeakEstimateShape {
+            n_workers: 8,
+            ..base
+        };
         let est_base = estimate_peak_bytes(base);
         let est_doubled = estimate_peak_bytes(doubled);
-        assert!(est_doubled > est_base, "doubling workers must increase the estimate");
+        assert!(
+            est_doubled > est_base,
+            "doubling workers must increase the estimate"
+        );
     }
 
     /// n_keep should never be allowed to exceed naux inside the estimator
@@ -509,12 +554,20 @@ mod tests {
             // AO tensor not modelled by this case.
             nao: 0,
             need_inv_dielectric: false,
-            naux: 50, nocc: 5, nvir: 20, n_quad: 10, n_workers: 2, n_keep: 999,
+            naux: 50,
+            nocc: 5,
+            nvir: 20,
+            n_quad: 10,
+            n_workers: 2,
+            n_keep: 999,
             grid: None,
         };
         // Must not panic; must equal the naux-clamped estimate.
         let est = estimate_peak_bytes(shape);
-        let clamped = estimate_peak_bytes(PeakEstimateShape { n_keep: 50, ..shape });
+        let clamped = estimate_peak_bytes(PeakEstimateShape {
+            n_keep: 50,
+            ..shape
+        });
         assert_eq!(est, clamped);
     }
 }

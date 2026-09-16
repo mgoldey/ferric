@@ -97,6 +97,9 @@ fn atom_populations_sum_to_electron_count() {
         n_sum += population(&w, &d_a, &d_b, &SpinChannel::Total);
     }
     let nelec = mol.nelec() as f64;
-    assert!((n_sum - nelec).abs() < 1e-6, "Σ pop {n_sum} vs nelec {nelec}");
+    assert!(
+        (n_sum - nelec).abs() < 1e-6,
+        "Σ pop {n_sum} vs nelec {nelec}"
+    );
     let _ = (n, d_total);
 }

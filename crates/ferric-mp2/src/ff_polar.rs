@@ -27,8 +27,8 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_scf::diis::Diis;
-use ferric_scf::rhf::{build_jk, RhfConfig};
 use ferric_scf::result::{ScfResult, Spin};
+use ferric_scf::rhf::{build_jk, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
 /// `FERRIC_FF_TRACE` descriptor: finite-field α driver trace (env-only debug toggle).
@@ -112,7 +112,10 @@ pub(crate) fn solve_rhf_with_external(
     let n = prep.nbasis();
     let nelec = mol.nelec();
     if nelec % 2 != 0 {
-        return Err(FerricError::ScfConvergence { iterations: 0, last_energy: 0.0 });
+        return Err(FerricError::ScfConvergence {
+            iterations: 0,
+            last_energy: 0.0,
+        });
     }
     let nocc = (nelec / 2) as usize;
     let vnn = mol.nuclear_repulsion();
@@ -154,8 +157,15 @@ pub(crate) fn solve_rhf_with_external(
         ctx.check_interrupted()?;
         j_buf.fill(0.0);
         k_buf.fill(0.0);
-        total_quartets +=
-            build_jk(ctx, prep, bounds, config.integral_thresh, &d, &mut j_buf, &mut k_buf)?;
+        total_quartets += build_jk(
+            ctx,
+            prep,
+            bounds,
+            config.integral_thresh,
+            &d,
+            &mut j_buf,
+            &mut k_buf,
+        )?;
 
         // F = H(+field) + J − ½K
         let f = &h + &j_buf - &(0.5 * &k_buf);
@@ -201,7 +211,10 @@ pub(crate) fn solve_rhf_with_external(
         let c_occ = c.slice(ndarray::s![.., ..nocc]);
         d = 2.0 * c_occ.dot(&c_occ.t());
     }
-    Err(FerricError::ScfConvergence { iterations: config.max_iter, last_energy: prev_e })
+    Err(FerricError::ScfConvergence {
+        iterations: config.max_iter,
+        last_energy: prev_e,
+    })
 }
 
 /// Build the MP2 relaxed AO 1-PDM for an (already converged) RHF reference.
@@ -360,7 +373,12 @@ fn solve_zvector_cg(
     eps: &[f64],
 ) -> Result<Array2<f64>, FerricError> {
     use crate::zvector::compute_az_product;
-    let ferric_core::orbitals::OrbitalSpace { nocc, nvir, nocc_total, first_occ } = *orb;
+    let ferric_core::orbitals::OrbitalSpace {
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+    } = *orb;
 
     // EnginePool is geometry/basis-only (density-independent) — build ONCE
     // here and reuse across every compute_az_product call in the CG loop
@@ -390,25 +408,37 @@ fn solve_zvector_cg(
 
     let dot = |x: &Array2<f64>, y: &Array2<f64>| -> f64 {
         let mut s = 0.0;
-        for a in 0..nvir { for i in 0..nocc { s += x[(a, i)] * y[(a, i)]; } }
+        for a in 0..nvir {
+            for i in 0..nocc {
+                s += x[(a, i)] * y[(a, i)];
+            }
+        }
         s
     };
 
     // Jacobi-preconditioned CG. x0 = L/Δε (the uncoupled guess).
     let mut x = Array2::<f64>::zeros((nvir, nocc));
-    for a in 0..nvir { for i in 0..nocc {
-        let d = de(a, i);
-        if d.abs() > 1e-12 { x[(a, i)] = l[(a, i)] / d; }
-    }}
+    for a in 0..nvir {
+        for i in 0..nocc {
+            let d = de(a, i);
+            if d.abs() > 1e-12 {
+                x[(a, i)] = l[(a, i)] / d;
+            }
+        }
+    }
 
     // r = L − M·x ; z_pc = M_diag^{-1} r ; p = z_pc
     let mut r = l - &apply(&x)?;
     let precond = |r: &Array2<f64>| -> Array2<f64> {
         let mut z = Array2::<f64>::zeros((nvir, nocc));
-        for a in 0..nvir { for i in 0..nocc {
-            let d = de(a, i);
-            if d.abs() > 1e-12 { z[(a, i)] = r[(a, i)] / d; }
-        }}
+        for a in 0..nvir {
+            for i in 0..nocc {
+                let d = de(a, i);
+                if d.abs() > 1e-12 {
+                    z[(a, i)] = r[(a, i)] / d;
+                }
+            }
+        }
         z
     };
     let mut z_pc = precond(&r);
@@ -420,22 +450,32 @@ fn solve_zvector_cg(
     let trace = crate::zvector::zvec_trace();
     for it in 0..max_iter {
         let resid_max = r.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
-        if trace { eprintln!("  [zvec-cg] iter={it:3}  max_resid={resid_max:.3e}"); }
-        if resid_max < tol { break; }
+        if trace {
+            eprintln!("  [zvec-cg] iter={it:3}  max_resid={resid_max:.3e}");
+        }
+        if resid_max < tol {
+            break;
+        }
         let mp = apply(&p)?;
         let denom = dot(&p, &mp);
-        if denom.abs() < 1e-30 { break; }
+        if denom.abs() < 1e-30 {
+            break;
+        }
         let alpha = rz_old / denom;
-        for a in 0..nvir { for i in 0..nocc {
-            x[(a, i)] += alpha * p[(a, i)];
-            r[(a, i)] -= alpha * mp[(a, i)];
-        }}
+        for a in 0..nvir {
+            for i in 0..nocc {
+                x[(a, i)] += alpha * p[(a, i)];
+                r[(a, i)] -= alpha * mp[(a, i)];
+            }
+        }
         z_pc = precond(&r);
         let rz_new = dot(&r, &z_pc);
         let beta = rz_new / rz_old;
-        for a in 0..nvir { for i in 0..nocc {
-            p[(a, i)] = z_pc[(a, i)] + beta * p[(a, i)];
-        }}
+        for a in 0..nvir {
+            for i in 0..nocc {
+                p[(a, i)] = z_pc[(a, i)] + beta * p[(a, i)];
+            }
+        }
         rz_old = rz_new;
     }
     Ok(x)
@@ -506,8 +546,10 @@ pub fn mp2_polarizability_static(
         let rhf_p = solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v_plus)?;
         let rhf_m = solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v_minus)?;
 
-        let p_p = mp2_relaxed_density_ao(mol, obs, dfbs, op, bounds, &rhf_p, mp2_config, density_mode)?;
-        let p_m = mp2_relaxed_density_ao(mol, obs, dfbs, op, bounds, &rhf_m, mp2_config, density_mode)?;
+        let p_p =
+            mp2_relaxed_density_ao(mol, obs, dfbs, op, bounds, &rhf_p, mp2_config, density_mode)?;
+        let p_m =
+            mp2_relaxed_density_ao(mol, obs, dfbs, op, bounds, &rhf_m, mp2_config, density_mode)?;
 
         let mu_p = mp2_dipole(mol, &dip_ao, &p_p);
         let mu_m = mp2_dipole(mol, &dip_ao, &p_m);
@@ -529,7 +571,11 @@ pub fn mp2_polarizability_static(
     let iso = (tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0;
     let principal = eig3_sym(tensor);
 
-    Ok(Mp2Polarizability { tensor, iso, principal })
+    Ok(Mp2Polarizability {
+        tensor,
+        iso,
+        principal,
+    })
 }
 
 /// Crate-visible alias so `cpks_polar` reuses the same 3×3 symmetric eig.

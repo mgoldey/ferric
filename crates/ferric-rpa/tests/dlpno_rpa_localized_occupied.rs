@@ -112,7 +112,12 @@ fn setup(path: &str, obs_name: &str, aux_name: &str, label: &str) -> Case {
 
 /// Apply an occupied-space rotation to `b_ov`, in place of rebuilding integrals:
 /// `B'^P_{i'a} = Σ_i U_{i i'} B^P_{ia}`.
-fn rotate_b_ov_occupied(b_ov: &Array2<f64>, u: &Array2<f64>, nocc: usize, nvir: usize) -> Array2<f64> {
+fn rotate_b_ov_occupied(
+    b_ov: &Array2<f64>,
+    u: &Array2<f64>,
+    nocc: usize,
+    nvir: usize,
+) -> Array2<f64> {
     let naux = b_ov.nrows();
     assert_eq!(b_ov.ncols(), nocc * nvir);
     assert_eq!(u.dim(), (nocc, nocc));
@@ -140,8 +145,18 @@ fn rotate_b_ov_occupied(b_ov: &Array2<f64>, u: &Array2<f64>, nocc: usize, nvir: 
 #[test]
 fn anchor_boys_rotation_is_orthogonal_and_nontrivial() {
     for (path, obs, aux, label) in [
-        ("../../testdata/molecules/water.xyz", "sto-3g", "cc-pvdz-ri", "water/STO-3G"),
-        ("../../testdata/molecules/alkane_4.xyz", "sto-3g", "cc-pvdz-ri", "alkane_4/STO-3G"),
+        (
+            "../../testdata/molecules/water.xyz",
+            "sto-3g",
+            "cc-pvdz-ri",
+            "water/STO-3G",
+        ),
+        (
+            "../../testdata/molecules/alkane_4.xyz",
+            "sto-3g",
+            "cc-pvdz-ri",
+            "alkane_4/STO-3G",
+        ),
     ] {
         let c = setup(path, obs, aux, label);
         let n = c.u_boys.nrows();
@@ -169,8 +184,14 @@ fn anchor_boys_rotation_is_orthogonal_and_nontrivial() {
             }
             m
         };
-        println!("  {}: |UᵀU − I|max = {:.3e}   |U − I|max = {:.3}", label, orth_err, off_ident);
-        assert!(orth_err < 1e-9, "{label}: U is not orthogonal ({orth_err:.3e})");
+        println!(
+            "  {}: |UᵀU − I|max = {:.3e}   |U − I|max = {:.3}",
+            label, orth_err, off_ident
+        );
+        assert!(
+            orth_err < 1e-9,
+            "{label}: U is not orthogonal ({orth_err:.3e})"
+        );
         assert!(
             off_ident > 0.1,
             "{label}: Boys rotation is essentially the identity (|U−I| = {off_ident:.3e}); \
@@ -184,7 +205,12 @@ fn anchor_boys_rotation_is_orthogonal_and_nontrivial() {
 /// `rotate_b_ov_occupied` itself — the only new machinery in this file.
 #[test]
 fn anchor_b_ov_rotation_helper_is_correct() {
-    let c = setup("../../testdata/molecules/alkane_4.xyz", "sto-3g", "cc-pvdz-ri", "alkane_4 anchor-2");
+    let c = setup(
+        "../../testdata/molecules/alkane_4.xyz",
+        "sto-3g",
+        "cc-pvdz-ri",
+        "alkane_4 anchor-2",
+    );
     let (nocc, nvir) = (c.inter.nocc, c.inter.nvir);
     let b = &c.inter.b_ov;
 
@@ -197,7 +223,11 @@ fn anchor_b_ov_rotation_helper_is_correct() {
     let b_rot = rotate_b_ov_occupied(b, &c.u_boys, nocc, nvir);
     let b_back = rotate_b_ov_occupied(&b_rot, &c.u_boys.t().to_owned(), nocc, nvir);
     let scale = b.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
-    let e_rt = (&b_back - b).iter().map(|v| v.abs()).fold(0.0_f64, f64::max) / scale;
+    let e_rt = (&b_back - b)
+        .iter()
+        .map(|v| v.abs())
+        .fold(0.0_f64, f64::max)
+        / scale;
     println!("  round-trip (U then Uᵀ) rel error = {e_rt:.3e}");
     assert!(e_rt < 1e-10, "U/Uᵀ round-trip must be exact: {e_rt:.3e}");
 
@@ -229,17 +259,52 @@ fn dlpno_rpa_reduced_basis_canonical_vs_localized_occupied() {
     // truncate anything and the comparison would be vacuous. That is a
     // pass-condition-reachability constraint, not a result.
     for (path, obs, aux, label) in [
-        ("../../testdata/molecules/alkane_2.xyz", "sto-3g", "cc-pvdz-ri", "alkane_2/STO-3G"),
-        ("../../testdata/molecules/alkane_4.xyz", "sto-3g", "cc-pvdz-ri", "alkane_4/STO-3G"),
-        ("../../testdata/molecules/benzene.xyz", "sto-3g", "cc-pvdz-ri", "benzene/STO-3G"),
+        (
+            "../../testdata/molecules/alkane_2.xyz",
+            "sto-3g",
+            "cc-pvdz-ri",
+            "alkane_2/STO-3G",
+        ),
+        (
+            "../../testdata/molecules/alkane_4.xyz",
+            "sto-3g",
+            "cc-pvdz-ri",
+            "alkane_4/STO-3G",
+        ),
+        (
+            "../../testdata/molecules/benzene.xyz",
+            "sto-3g",
+            "cc-pvdz-ri",
+            "benzene/STO-3G",
+        ),
         // 6-31G / cc-pVDZ rows: the ONLY regime where DLPNO-RPA truncates at
         // all, hence the only rows where the canonical-vs-localized comparison
         // is non-vacuous on counts. STO-3G is minimal (nvir < nocc) and the
         // union always re-inflates to full rank there.
-        ("../../testdata/molecules/water.xyz", "6-31g", "cc-pvdz-ri", "water/6-31G"),
-        ("../../testdata/molecules/water.xyz", "cc-pvdz", "cc-pvdz-ri", "water/cc-pVDZ"),
-        ("../../testdata/molecules/alkane_2.xyz", "6-31g", "cc-pvdz-ri", "alkane_2/6-31G"),
-        ("../../testdata/molecules/alkane_4.xyz", "6-31g", "cc-pvdz-ri", "alkane_4/6-31G"),
+        (
+            "../../testdata/molecules/water.xyz",
+            "6-31g",
+            "cc-pvdz-ri",
+            "water/6-31G",
+        ),
+        (
+            "../../testdata/molecules/water.xyz",
+            "cc-pvdz",
+            "cc-pvdz-ri",
+            "water/cc-pVDZ",
+        ),
+        (
+            "../../testdata/molecules/alkane_2.xyz",
+            "6-31g",
+            "cc-pvdz-ri",
+            "alkane_2/6-31G",
+        ),
+        (
+            "../../testdata/molecules/alkane_4.xyz",
+            "6-31g",
+            "cc-pvdz-ri",
+            "alkane_4/6-31G",
+        ),
     ] {
         let c = setup(path, obs, aux, label);
         let (nocc, nvir) = (c.inter.nocc, c.inter.nvir);
@@ -298,8 +363,13 @@ fn dlpno_rpa_reduced_basis_canonical_vs_localized_occupied() {
                     );
                 }
                 (x, y) => {
-                    println!("  {:<18} {:>10.0e}  build failed: can={:?} loc={:?}",
-                        "", t, x.err(), y.err());
+                    println!(
+                        "  {:<18} {:>10.0e}  build failed: can={:?} loc={:?}",
+                        "",
+                        t,
+                        x.err(),
+                        y.err()
+                    );
                 }
             }
         }
@@ -339,7 +409,12 @@ fn dlpno_rpa_reduced_basis_canonical_vs_localized_occupied() {
 /// the result above can be interpreted honestly.
 #[test]
 fn dlpno_rpa_occupied_energies_are_canonical_by_construction() {
-    let c = setup("../../testdata/molecules/alkane_4.xyz", "sto-3g", "cc-pvdz-ri", "alkane_4 eps-audit");
+    let c = setup(
+        "../../testdata/molecules/alkane_4.xyz",
+        "sto-3g",
+        "cc-pvdz-ri",
+        "alkane_4 eps-audit",
+    );
     let nocc = c.inter.nocc;
     // F_loc in the localized occupied basis is Uᵀ diag(eps_occ) U.
     let eps_occ: Vec<f64> = c.eps[c.inter.first_occ..c.inter.first_occ + nocc].to_vec();

@@ -109,7 +109,7 @@ class CosxK:
         self.fitted = fitted
         ao = dft.numint.eval_ao(mol, coords)
         sw = np.sqrt(np.abs(weights))
-        self.X = (ao * sw[:, None]).T                    # (nbf, npts)
+        self.X = (ao * sw[:, None]).T  # (nbf, npts)
         self.npts = len(weights)
         if fitted:
             S = mol.intor("int1e_ovlp")
@@ -149,10 +149,14 @@ def run_cosx_scf(mol, coords, weights, fitted=False, conv=1e-9):
 
     def get_jk(mol_=None, dm=None, hermi=1, with_j=True, with_k=True, omega=None):
         dm = np.asarray(dm)
-        vj = bare_jk(mol, dm, hermi=hermi, with_j=True, with_k=False)[0] \
-            if with_j else None
+        vj = (
+            bare_jk(mol, dm, hermi=hermi, with_j=True, with_k=False)[0]
+            if with_j
+            else None
+        )
         vk = builder(dm) if with_k else None
         return vj, vk
+
     mf.get_jk = get_jk
     e = mf.kernel()
     return e, mf.converged, builder
@@ -162,8 +166,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mol", default="water")
     ap.add_argument("--basis", default="cc-pvdz")
-    ap.add_argument("--anchor", action="store_true",
-                    help="run the exactness anchor only")
+    ap.add_argument(
+        "--anchor", action="store_true", help="run the exactness anchor only"
+    )
     ap.add_argument("--fitted", action="store_true")
     args = ap.parse_args()
 
@@ -194,12 +199,14 @@ def main():
         return
 
     grids = [(25, 50), (35, 86), (50, 110), (75, 194), (99, 302)]
-    print(f"{'grid':>12} {'npts':>9} {'max|dK|':>13} {'|dE_total|':>13} "
-          f"{'iters':>6} {'conv':>6}")
+    print(
+        f"{'grid':>12} {'npts':>9} {'max|dK|':>13} {'|dE_total|':>13} "
+        f"{'iters':>6} {'conv':>6}"
+    )
     print("-" * 68)
 
     rows = []
-    for (nrad, nang) in grids:
+    for nrad, nang in grids:
         coords, weights = build_grid(mol, nrad, nang)
         t0 = time.time()
         e, conv, builder = run_cosx_scf(mol, coords, weights, fitted=args.fitted)
@@ -208,13 +215,15 @@ def main():
         dK = np.abs(builder(D_ref) - K_ref).max()
         dE = abs(e - e_ref)
         rows.append((nrad, nang, len(weights), dK, dE))
-        print(f"{nrad:5d}x{nang:<6d} {len(weights):9d} {dK:13.4e} {dE:13.4e} "
-              f"{'-':>6} {str(conv):>6}   ({time.time()-t0:.1f}s)")
+        print(
+            f"{nrad:5d}x{nang:<6d} {len(weights):9d} {dK:13.4e} {dE:13.4e} "
+            f"{'-':>6} {str(conv):>6}   ({time.time() - t0:.1f}s)"
+        )
 
     print()
     print("RATIO max|dK| / |dE_total|  -- how much stricter the matrix bar is:")
-    for (nr, na, n, dK, dE) in rows:
-        print(f"  {nr:3d}x{na:<4d}  {dK/dE:10.1f}x")
+    for nr, na, n, dK, dE in rows:
+        print(f"  {nr:3d}x{na:<4d}  {dK / dE:10.1f}x")
 
     print()
     # The decision-relevant question: which is the COARSEST grid meeting a
@@ -223,8 +232,7 @@ def main():
         ok = [(nr, na, n) for (nr, na, n, dK, dE) in rows if dE < bar]
         if ok:
             nr, na, n = ok[0]
-            print(f"coarsest grid with |dE| < {bar:.0e} Ha: ({nr},{na}) "
-                  f"npts={n}")
+            print(f"coarsest grid with |dE| < {bar:.0e} Ha: ({nr},{na}) npts={n}")
         else:
             print(f"coarsest grid with |dE| < {bar:.0e} Ha: none in series")
 
@@ -232,9 +240,11 @@ def main():
     n_assumed = [r[2] for r in rows if (r[0], r[1]) == (50, 110)][0]
     print()
     print(f"npts at the ASSUMED (50,110): {n_assumed}")
-    for (nr, na, n, dK, dE) in rows:
-        print(f"  ({nr},{na}): npts={n:8d}  cost factor vs assumed = "
-              f"{n/n_assumed:6.3f}x   |dE|={dE:.3e}")
+    for nr, na, n, dK, dE in rows:
+        print(
+            f"  ({nr},{na}): npts={n:8d}  cost factor vs assumed = "
+            f"{n / n_assumed:6.3f}x   |dE|={dE:.3e}"
+        )
 
 
 if __name__ == "__main__":

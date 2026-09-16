@@ -17,6 +17,7 @@ to PySCF's analytic Hessian.
 Usage:
     OPENBLAS_NUM_THREADS=1 uv run --no-sync python scripts/proto_hessian.py
 """
+
 import os
 import sys
 import numpy as np
@@ -47,8 +48,7 @@ def hess_nuc(mol):
             qi, qj = charges[i], charges[j]
             # Off-diagonal: d²(qi*qj/|r_i-r_j|)/dR_i_x dR_j_y
             # = qi*qj * (-3 r_x r_y / r^5 + delta_xy / r^3)
-            h[i, j] = qi * qj * (-3.0 * np.outer(rij, rij) / r**5
-                                 + np.eye(3) / r**3)
+            h[i, j] = qi * qj * (-3.0 * np.outer(rij, rij) / r**5 + np.eye(3) / r**3)
             h[i, i] -= h[i, j]
     return h
 
@@ -70,7 +70,7 @@ def skeleton_hess_1e(mol, dm, hessobj):
     for ia in range(natm):
         for ja in range(ia + 1):
             h = hcore_deriv(ia, ja)
-            hess[ia, ja] += np.einsum('xypq,pq->xy', h, dm)
+            hess[ia, ja] += np.einsum("xypq,pq->xy", h, dm)
         for ja in range(ia):
             hess[ja, ia] = hess[ia, ja].T
     return hess
@@ -88,17 +88,19 @@ def skeleton_hess_ovlp(mol, dme):
     nao = mol.nao
     aoslices = mol.aoslice_by_atom()
 
-    s1aa = mol.intor('int1e_ipipovlp', comp=9).reshape(3, 3, nao, nao)
-    s1ab = mol.intor('int1e_ipovlpip', comp=9).reshape(3, 3, nao, nao)
+    s1aa = mol.intor("int1e_ipipovlp", comp=9).reshape(3, 3, nao, nao)
+    s1ab = mol.intor("int1e_ipovlpip", comp=9).reshape(3, 3, nao, nao)
 
     hess = np.zeros((natm, natm, 3, 3))
     for ia in range(natm):
         p0, p1 = aoslices[ia][2:]
-        hess[ia, ia] -= np.einsum('xypq,pq->xy', s1aa[:, :, p0:p1], dme[p0:p1]) * 2
+        hess[ia, ia] -= np.einsum("xypq,pq->xy", s1aa[:, :, p0:p1], dme[p0:p1]) * 2
         for ja in range(ia + 1):
             q0, q1 = aoslices[ja][2:]
-            hess[ia, ja] -= np.einsum('xypq,pq->xy', s1ab[:, :, p0:p1, q0:q1],
-                                      dme[p0:p1, q0:q1]) * 2
+            hess[ia, ja] -= (
+                np.einsum("xypq,pq->xy", s1ab[:, :, p0:p1, q0:q1], dme[p0:p1, q0:q1])
+                * 2
+            )
     for ia in range(natm):
         for ja in range(ia):
             hess[ja, ia] = hess[ia, ja].T
@@ -123,16 +125,23 @@ def skeleton_hess_2e(mol, dm):
 
     # Same-atom second derivative integrals (∂²/∂A_x ∂A_y on first index pair)
     vj1_diag, vk1_diag = _get_jk(
-        mol, 'int2e_ipip1', 9, 's2kl',
-        ['lk->s1ij', dm,    # J
-         'jk->s1il', dm],   # K
-        vhfopt=pyscf_hess_rhf._make_vhfopt(mol, dm, 'ipip1', 'int2e_ipip1ipip2')
+        mol,
+        "int2e_ipip1",
+        9,
+        "s2kl",
+        [
+            "lk->s1ij",
+            dm,  # J
+            "jk->s1il",
+            dm,
+        ],  # K
+        vhfopt=pyscf_hess_rhf._make_vhfopt(mol, dm, "ipip1", "int2e_ipip1ipip2"),
     )
     vj1_diag = vj1_diag.reshape(3, 3, nao, nao)
     vk1_diag = vk1_diag.reshape(3, 3, nao, nao)
 
-    ip1ip2_opt = pyscf_hess_rhf._make_vhfopt(mol, dm, 'ip1ip2', 'int2e_ip1ip2')
-    ipvip1_opt = pyscf_hess_rhf._make_vhfopt(mol, dm, 'ipvip1', 'int2e_ipvip1ipvip2')
+    ip1ip2_opt = pyscf_hess_rhf._make_vhfopt(mol, dm, "ip1ip2", "int2e_ip1ip2")
+    ipvip1_opt = pyscf_hess_rhf._make_vhfopt(mol, dm, "ipvip1", "int2e_ipvip1ipvip2")
 
     ej = np.zeros((natm, natm, 3, 3))
     ek = np.zeros((natm, natm, 3, 3))
@@ -144,19 +153,24 @@ def skeleton_hess_2e(mol, dm):
 
         # Cross-atom: ∂/∂A on first pair, ∂/∂B on second pair
         vj1, vk1, vk2 = _get_jk(
-            mol, 'int2e_ip1ip2', 9, 's1',
-            ['ji->s1kl', dm[:, p0:p1],
-             'li->s1kj', dm[:, p0:p1],
-             'lj->s1ki', dm],
-            shls_slice=shls_slice, vhfopt=ip1ip2_opt
+            mol,
+            "int2e_ip1ip2",
+            9,
+            "s1",
+            ["ji->s1kl", dm[:, p0:p1], "li->s1kj", dm[:, p0:p1], "lj->s1ki", dm],
+            shls_slice=shls_slice,
+            vhfopt=ip1ip2_opt,
         )
         vk1[:, :, p0:p1] += vk2
 
         vj2, vk2 = _get_jk(
-            mol, 'int2e_ipvip1', 9, 's2kl',
-            ['lk->s1ij', dm,
-             'li->s1kj', dm[:, p0:p1]],
-            shls_slice=shls_slice, vhfopt=ipvip1_opt
+            mol,
+            "int2e_ipvip1",
+            9,
+            "s2kl",
+            ["lk->s1ij", dm, "li->s1kj", dm[:, p0:p1]],
+            shls_slice=shls_slice,
+            vhfopt=ipvip1_opt,
         )
         vj1[:, :, p0:p1] += vj2.transpose(0, 2, 1) * 0.5
         vk1 += vk2.transpose(0, 2, 1)
@@ -164,13 +178,13 @@ def skeleton_hess_2e(mol, dm):
         vk1 = vk1.reshape(3, 3, nao, nao)
 
         # Same-atom diagonal
-        ej[ia, ia] += np.einsum('xypq,pq->xy', vj1_diag[:, :, p0:p1], dm[p0:p1]) * 2
-        ek[ia, ia] += np.einsum('xypq,pq->xy', vk1_diag[:, :, p0:p1], dm[p0:p1])
+        ej[ia, ia] += np.einsum("xypq,pq->xy", vj1_diag[:, :, p0:p1], dm[p0:p1]) * 2
+        ek[ia, ia] += np.einsum("xypq,pq->xy", vk1_diag[:, :, p0:p1], dm[p0:p1])
 
         for ja in range(ia + 1):
             q0, q1 = aoslices[ja][2:]
-            ej[ia, ja] += np.einsum('xypq,pq->xy', vj1[:, :, q0:q1], dm[q0:q1]) * 4
-            ek[ia, ja] += np.einsum('xypq,pq->xy', vk1[:, :, q0:q1], dm[q0:q1])
+            ej[ia, ja] += np.einsum("xypq,pq->xy", vj1[:, :, q0:q1], dm[q0:q1]) * 4
+            ek[ia, ja] += np.einsum("xypq,pq->xy", vk1[:, :, q0:q1], dm[q0:q1])
 
         for ja in range(ia):
             ej[ja, ia] = ej[ia, ja].T
@@ -179,20 +193,32 @@ def skeleton_hess_2e(mol, dm):
     return ej, ek
 
 
-def _get_jk(mol, intor, comp, aosym, script_dms,
-            shls_slice=None, cintopt=None, vhfopt=None):
+def _get_jk(
+    mol, intor, comp, aosym, script_dms, shls_slice=None, cintopt=None, vhfopt=None
+):
     """Thin wrapper around PySCF's _vhf.direct_bindm."""
     from pyscf.scf import _vhf
+
     intor = mol._add_suffix(intor)
     scripts = script_dms[::2]
     dms = script_dms[1::2]
-    vs = _vhf.direct_bindm(intor, aosym, scripts, dms, comp,
-                           mol._atm, mol._bas, mol._env, vhfopt=vhfopt,
-                           cintopt=cintopt, shls_slice=shls_slice)
+    vs = _vhf.direct_bindm(
+        intor,
+        aosym,
+        scripts,
+        dms,
+        comp,
+        mol._atm,
+        mol._bas,
+        mol._env,
+        vhfopt=vhfopt,
+        cintopt=cintopt,
+        shls_slice=shls_slice,
+    )
     for k, script in enumerate(scripts):
-        if 's2' in script:
+        if "s2" in script:
             hermi = 1
-        elif 'a2' in script:
+        elif "a2" in script:
             hermi = 2
         else:
             continue
@@ -233,12 +259,21 @@ def cpks_response(mol, mf, hess_partial):
         shl0, shl1 = aoslices[ia][:2]
         shls_slice = (shl0, shl1) + (0, mol.nbas) * 3
         vj1, vj2, vk1, vk2 = _get_jk(
-            mol, 'int2e_ip1', 3, 's2kl',
-            ['ji->s2kl', -dm0[:, p0:p1],
-             'lk->s1ij', -dm0,
-             'li->s1kj', -dm0[:, p0:p1],
-             'jk->s1il', -dm0],
-            shls_slice=shls_slice
+            mol,
+            "int2e_ip1",
+            3,
+            "s2kl",
+            [
+                "ji->s2kl",
+                -dm0[:, p0:p1],
+                "lk->s1ij",
+                -dm0,
+                "li->s1kj",
+                -dm0[:, p0:p1],
+                "jk->s1il",
+                -dm0,
+            ],
+            shls_slice=shls_slice,
         )
         vhf = vj1 - vk1 * 0.5
         vhf[:, p0:p1] += vj2 - vk2 * 0.5
@@ -263,7 +298,7 @@ def cpks_response(mol, mf, hess_partial):
         return v1vo
 
     # Build overlap gradient
-    s1a = -mol.intor('int1e_ipovlp', comp=3)
+    s1a = -mol.intor("int1e_ipovlp", comp=3)
 
     def _ao2mo(mat):
         return np.array([reduce(np.dot, (mo_coeff.T, x, mocc)) for x in mat])
@@ -283,7 +318,7 @@ def cpks_response(mol, mf, hess_partial):
     s1vo = np.vstack(s1vo_all)
 
     mo1, e1 = cphf.solve(fx, mo_energy, mo_occ, h1vo, s1vo)
-    mo1 = np.einsum('pq,xqi->xpi', mo_coeff, mo1).reshape(-1, 3, nao, nocc)
+    mo1 = np.einsum("pq,xqi->xpi", mo_coeff, mo1).reshape(-1, 3, nao, nocc)
     e1 = e1.reshape(-1, 3, nocc, nocc)
 
     mo1s = {}
@@ -299,16 +334,15 @@ def cpks_response(mol, mf, hess_partial):
         s1ao = np.zeros((3, nao, nao))
         s1ao[:, p0:p1] += s1a[:, p0:p1]
         s1ao[:, :, p0:p1] += s1a[:, p0:p1].transpose(0, 2, 1)
-        s1oo = np.einsum('xpq,pi,qj->xij', s1ao, mocc, mocc)
+        s1oo = np.einsum("xpq,pi,qj->xij", s1ao, mocc, mocc)
 
         for ja in range(ia + 1):
             # *2 for double occupancy, *2 for +c.c.
-            dm1 = np.einsum('ypi,qi->ypq', mo1s[ja], mocc)
-            de2[ia, ja] += np.einsum('xpq,ypq->xy', h1ao_list[ia], dm1) * 4
-            dm1 = np.einsum('ypi,qi,i->ypq', mo1s[ja], mocc,
-                            mo_energy[:nocc])
-            de2[ia, ja] -= np.einsum('xpq,ypq->xy', s1ao, dm1) * 4
-            de2[ia, ja] -= np.einsum('xpq,ypq->xy', s1oo, e1s[ja]) * 2
+            dm1 = np.einsum("ypi,qi->ypq", mo1s[ja], mocc)
+            de2[ia, ja] += np.einsum("xpq,ypq->xy", h1ao_list[ia], dm1) * 4
+            dm1 = np.einsum("ypi,qi,i->ypq", mo1s[ja], mocc, mo_energy[:nocc])
+            de2[ia, ja] -= np.einsum("xpq,ypq->xy", s1ao, dm1) * 4
+            de2[ia, ja] -= np.einsum("xpq,ypq->xy", s1oo, e1s[ja]) * 2
 
         for ja in range(ia):
             de2[ja, ia] = de2[ia, ja].T
@@ -324,7 +358,7 @@ def run_test(atom_str, basis, label):
     print(f"  {label}: {basis}")
     print(f"{'=' * 70}")
 
-    mol = gto.M(atom=atom_str, basis=basis, unit='Angstrom', verbose=0)
+    mol = gto.M(atom=atom_str, basis=basis, unit="Angstrom", verbose=0)
     mf = scf.RHF(mol)
     mf.conv_tol = 1e-12
     mf.kernel()
@@ -338,7 +372,7 @@ def run_test(atom_str, basis, label):
 
     # Density matrix and energy-weighted density
     dm = np.dot(mocc, mocc.T) * 2
-    dme = np.einsum('pi,qi,i->pq', mocc, mocc, mo_energy[:nocc]) * 2
+    dme = np.einsum("pi,qi,i->pq", mocc, mocc, mo_energy[:nocc]) * 2
 
     # --- Component 1: Nuclear repulsion Hessian ---
     h_nuc = hess_nuc(mol)
@@ -369,7 +403,8 @@ def run_test(atom_str, basis, label):
 
     # Validate partial electronic Hessian against PySCF
     h_partial_ref = pyscf_hess_rhf.partial_hess_elec(
-        hessobj, mo_energy, mo_coeff, mo_occ)
+        hessobj, mo_energy, mo_coeff, mo_occ
+    )
     err_partial = np.max(np.abs(h_elec_partial - h_partial_ref))
     print(f"\n  Partial electronic Hessian max error: {err_partial:.2e}")
 
@@ -398,24 +433,27 @@ def run_test(atom_str, basis, label):
             blk_err = np.max(np.abs(h_total[i, j] - h_pyscf[i, j]))
             blk_mag = np.max(np.abs(h_pyscf[i, j]))
             if blk_mag > 1e-10:
-                print(f"    [{i},{j}]: err={blk_err:.2e}  mag={blk_mag:.6f}  "
-                      f"rel={blk_err / blk_mag:.2e}")
+                print(
+                    f"    [{i},{j}]: err={blk_err:.2e}  mag={blk_mag:.6f}  "
+                    f"rel={blk_err / blk_mag:.2e}"
+                )
 
     # Mass-weighted Hessian → frequencies (cm⁻¹)
     from pyscf.hessian.thermo import harmonic_analysis
+
     freq_info = harmonic_analysis(mol, h_pyscf)
-    freqs = freq_info['freq_wavenumber']
+    freqs = freq_info["freq_wavenumber"]
     print(f"\n  Vibrational frequencies (cm⁻¹, PySCF reference):")
     for i, f in enumerate(freqs):
         if abs(f) > 10:  # skip trans/rot
-            print(f"    ν_{i+1} = {f:.1f}")
+            print(f"    ν_{i + 1} = {f:.1f}")
 
     freq_info_ours = harmonic_analysis(mol, h_total)
-    freqs_ours = freq_info_ours['freq_wavenumber']
+    freqs_ours = freq_info_ours["freq_wavenumber"]
     print(f"\n  Vibrational frequencies (cm⁻¹, our Hessian):")
     for i, f in enumerate(freqs_ours):
         if abs(f) > 10:
-            print(f"    ν_{i+1} = {f:.1f}")
+            print(f"    ν_{i + 1} = {f:.1f}")
 
     # Frequency errors for real modes
     real_mask = np.abs(freqs) > 10
@@ -433,15 +471,17 @@ if __name__ == "__main__":
     np.set_printoptions(precision=8, linewidth=120)
 
     results = []
-    results.append(run_test('H 0 0 0; H 0 0 0.74', 'sto-3g', 'H2'))
-    results.append(run_test(
-        'O 0 0 0.117; H 0 0.757 -0.469; H 0 -0.757 -0.469',
-        'sto-3g', 'H2O'
-    ))
-    results.append(run_test(
-        'O 0 0 0.117; H 0 0.757 -0.469; H 0 -0.757 -0.469',
-        'cc-pvdz', 'H2O (cc-pVDZ)'
-    ))
+    results.append(run_test("H 0 0 0; H 0 0 0.74", "sto-3g", "H2"))
+    results.append(
+        run_test("O 0 0 0.117; H 0 0.757 -0.469; H 0 -0.757 -0.469", "sto-3g", "H2O")
+    )
+    results.append(
+        run_test(
+            "O 0 0 0.117; H 0 0.757 -0.469; H 0 -0.757 -0.469",
+            "cc-pvdz",
+            "H2O (cc-pVDZ)",
+        )
+    )
 
     print(f"\n{'=' * 70}")
     print(f"  Summary: {sum(results)}/{len(results)} passed")

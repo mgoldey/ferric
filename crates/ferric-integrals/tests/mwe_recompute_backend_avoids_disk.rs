@@ -65,7 +65,8 @@ fn materialize(src: &mut ThreeIndexSource, naux: usize, nao: usize) -> Array3<f6
     let mut out = Array3::<f64>::zeros((naux, nao, nao));
     src.for_each_block(&mut |blk: AuxBlock| {
         let n = blk.data.shape()[0];
-        out.slice_mut(ndarray::s![blk.p0..blk.p0 + n, .., ..]).assign(&blk.data);
+        out.slice_mut(ndarray::s![blk.p0..blk.p0 + n, .., ..])
+            .assign(&blk.data);
         Ok(())
     })
     .unwrap();
@@ -92,10 +93,14 @@ fn the_recomputed_tensor_is_bit_identical_to_in_core() {
         ThreeIndexSource::build_recomputing(op, obs.clone(), dfbs.clone(), full / 8).unwrap();
     let got = materialize(&mut recomp, naux, nao);
 
-    let differing =
-        reference.iter().zip(got.iter()).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+    let differing = reference
+        .iter()
+        .zip(got.iter())
+        .filter(|(a, b)| a.to_bits() != b.to_bits())
+        .count();
     assert_eq!(
-        differing, 0,
+        differing,
+        0,
         "the recomputed tensor differs from in-core at {differing} of {} elements. \
          eri3_block is a pure function of (op, obs, dfbs, p0, p1), so rebuilding a block \
          must reproduce it exactly.",
@@ -113,8 +118,7 @@ fn an_over_budget_source_recomputes_instead_of_spilling() {
     let (_mol, obs, dfbs) = fixture();
     let op = Operator::coulomb();
     let full = dfbs.nbasis() * obs.nbasis() * obs.nbasis() * 8;
-    let src =
-        ThreeIndexSource::build_recomputing(op, obs.clone(), dfbs.clone(), full / 8).unwrap();
+    let src = ThreeIndexSource::build_recomputing(op, obs.clone(), dfbs.clone(), full / 8).unwrap();
     assert!(
         src.is_recompute_for_test(),
         "a budget below the full tensor must select the Recompute backend"
@@ -160,8 +164,11 @@ fn a_second_streaming_pass_reproduces_the_first() {
         ThreeIndexSource::build_recomputing(op, obs.clone(), dfbs.clone(), full / 8).unwrap();
     let first = materialize(&mut src, naux, nao);
     let second = materialize(&mut src, naux, nao);
-    let differing =
-        first.iter().zip(second.iter()).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+    let differing = first
+        .iter()
+        .zip(second.iter())
+        .filter(|(a, b)| a.to_bits() != b.to_bits())
+        .count();
     assert_eq!(
         differing, 0,
         "a second pass over the same Recompute source differed at {differing} elements — \

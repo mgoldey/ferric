@@ -11,6 +11,7 @@ MMFF can fail to type an atom, and an analogue that produces zero usable
 conformers must be reported as such rather than silently contributing nothing to
 a ranking.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -26,6 +27,7 @@ class EmbeddedAnalogue:
     `error` non-None means no usable geometry: the analogue must appear in
     reports as UNEVALUATED, never as a zero/neutral score.
     """
+
     analogue: Analogue
     symbols: list[str] = field(default_factory=list)
     # One (natoms, 3) list-of-tuples per conformer, in Angstrom.
@@ -68,9 +70,11 @@ class EmbeddedAnalogue:
         paths = []
         for i, coords in enumerate(self.conformers):
             p = out_dir / f"{prefix}_conf_{i:02d}.xyz"
-            lines = [str(len(self.symbols)),
-                     f"{self.analogue.label} conf {i} "
-                     f"mmff={self.mmff_energies[i]:.4f}kcal/mol"]
+            lines = [
+                str(len(self.symbols)),
+                f"{self.analogue.label} conf {i} "
+                f"mmff={self.mmff_energies[i]:.4f}kcal/mol",
+            ]
             for sym, (x, y, z) in zip(self.symbols, coords):
                 lines.append(f"{sym:<3s} {x:14.8f} {y:14.8f} {z:14.8f}")
             p.write_text("\n".join(lines) + "\n")

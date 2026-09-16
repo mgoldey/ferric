@@ -46,11 +46,17 @@ fn testdata(rel: &str) -> String {
 struct Lcg(u64);
 impl Lcg {
     fn next_f64(&mut self) -> f64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
     }
     fn next_u64(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0 >> 11
     }
 }
@@ -138,7 +144,11 @@ impl LegacySignedOverlap {
                 let idx = tri(s1, s2);
                 mag[idx] = m.sqrt();
                 let (c1, c2) = (centres[s1], centres[s2]);
-                centre[idx] = [0.5 * (c1[0] + c2[0]), 0.5 * (c1[1] + c2[1]), 0.5 * (c1[2] + c2[2])];
+                centre[idx] = [
+                    0.5 * (c1[0] + c2[0]),
+                    0.5 * (c1[1] + c2[1]),
+                    0.5 * (c1[2] + c2[2]),
+                ];
             }
         }
         Self { nsh, mag, centre }
@@ -172,7 +182,13 @@ struct CheckReport {
 /// Run every shell pair × every probe through `est` against the exact
 /// blocks from `md3c1e`. Never asserts — the callers decide what a
 /// violation means (the legacy test WANTS them).
-fn check_estimator(name: &str, xyz: &str, basis: &str, est: &dyn Estimator, n_random: usize) -> CheckReport {
+fn check_estimator(
+    name: &str,
+    xyz: &str,
+    basis: &str,
+    est: &dyn Estimator,
+    n_random: usize,
+) -> CheckReport {
     let mol = Molecule::load_xyz(&testdata(xyz)).expect("xyz");
     let bs = bundled(basis).expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("prep");
@@ -200,7 +216,9 @@ fn check_estimator(name: &str, xyz: &str, basis: &str, est: &dyn Estimator, n_ra
     const BATCH: usize = 16;
     for chunk in pts.chunks(BATCH) {
         let coords: Vec<[f64; 3]> = chunk.iter().map(|(_, r)| *r).collect();
-        let batch = kern.a_matrices(&coords, None, CosxScreen::none(), &mut scr).expect("md3c1e batch");
+        let batch = kern
+            .a_matrices(&coords, None, CosxScreen::none(), &mut scr)
+            .expect("md3c1e batch");
         for (k, (class, r)) in chunk.iter().enumerate() {
             let a = batch.a.index_axis(Axis(0), k);
             for s1 in 0..nsh {
@@ -230,7 +248,11 @@ fn check_estimator(name: &str, xyz: &str, basis: &str, est: &dyn Estimator, n_ra
                     // TRUE value is largest (ON the nucleus it vanishes by
                     // parity/angular orthogonality — the bug bit off-centre).
                     if s1 != s2 && l1 != l2 && atom_of[s1] == atom_of[s2] {
-                        match rep.same_centre_mixed.iter_mut().find(|e| e.0 == s1 && e.1 == s2) {
+                        match rep
+                            .same_centre_mixed
+                            .iter_mut()
+                            .find(|e| e.0 == s1 && e.1 == s2)
+                        {
                             Some(e) if e.4 >= t => {}
                             Some(e) => {
                                 e.4 = t;
@@ -281,7 +303,12 @@ fn print_tightness(name: &str, rep: &CheckReport) {
 const CASES: [(&str, &str, &str, usize); 3] = [
     ("water", "testdata/molecules/water.xyz", "cc-pvdz", 195),
     ("butane", "testdata/molecules/alkane_4.xyz", "def2-svp", 170),
-    ("butane", "testdata/molecules/alkane_4.xyz", "def2-qzvp", 170),
+    (
+        "butane",
+        "testdata/molecules/alkane_4.xyz",
+        "def2-qzvp",
+        170,
+    ),
 ];
 
 #[test]
@@ -302,7 +329,10 @@ fn screen_bound_never_underestimates_any_shell_pair() {
 
         // The exact failure mode: same-centre pairs with l1 != l2, probed on
         // their own nucleus. Their bound must be O(true), never ~0.
-        assert!(!rep.same_centre_mixed.is_empty(), "{name}/{basis}: no same-centre mixed-l pair found");
+        assert!(
+            !rep.same_centre_mixed.is_empty(),
+            "{name}/{basis}: no same-centre mixed-l pair found"
+        );
         println!("[{name}/{basis}] same-centre mixed-l pairs at their worst probe (s1,s2,l1,l2, true, bound) — first 30 of {}:", rep.same_centre_mixed.len());
         let mut worst_ratio = 0.0_f64;
         for (n, (s1, s2, l1, l2, t, b)) in rep.same_centre_mixed.iter().enumerate() {
@@ -319,7 +349,9 @@ fn screen_bound_never_underestimates_any_shell_pair() {
 
         if !rep.violations.is_empty() {
             for (s1, s2, l1, l2, c, t, b) in rep.violations.iter().take(20) {
-                println!("  VIOLATION ({s1},{s2}) l=({l1},{l2}) {c:?}: true {t:.4e} > bound {b:.4e}");
+                println!(
+                    "  VIOLATION ({s1},{s2}) l=({l1},{l2}) {c:?}: true {t:.4e} > bound {b:.4e}"
+                );
             }
         }
         assert!(
@@ -331,7 +363,10 @@ fn screen_bound_never_underestimates_any_shell_pair() {
     }
     for la in 0..=4 {
         for lb in la..=4 {
-            assert!(visited[la][lb], "reachability: (l_a,l_b)=({la},{lb}) never visited");
+            assert!(
+                visited[la][lb],
+                "reachability: (l_a,l_b)=({la},{lb}) never visited"
+            );
         }
     }
 }
@@ -360,7 +395,12 @@ fn coarse_bound_dominates_fine_bound_everywhere() {
                     c[d] += r[d] / chunk.len() as f64;
                 }
             }
-            let rad = chunk.iter().map(|(_, r)| ((r[0] - c[0]).powi(2) + (r[1] - c[1]).powi(2) + (r[2] - c[2]).powi(2)).sqrt()).fold(0.0, f64::max);
+            let rad = chunk
+                .iter()
+                .map(|(_, r)| {
+                    ((r[0] - c[0]).powi(2) + (r[1] - c[1]).powi(2) + (r[2] - c[2]).powi(2)).sqrt()
+                })
+                .fold(0.0, f64::max);
             for _ in chunk {
                 spheres.push((c, rad));
             }
@@ -400,16 +440,33 @@ fn legacy_signed_overlap_bound_underestimates() {
     let prep = PreparedBasis::new(&mol, &bs).expect("prep");
     let legacy = LegacySignedOverlap::build(&prep);
     let rep = check_estimator(&format!("LEGACY {name}"), xyz, basis, &legacy, n_random);
-    let worst = rep.violations.iter().map(|v| v.5 - v.6).fold(0.0_f64, f64::max);
-    let n_same_centre_zero = rep.same_centre_mixed.iter().filter(|e| e.5 < 1e-6 && e.4 > 1e-2).count();
+    let worst = rep
+        .violations
+        .iter()
+        .map(|v| v.5 - v.6)
+        .fold(0.0_f64, f64::max);
+    let n_same_centre_zero = rep
+        .same_centre_mixed
+        .iter()
+        .filter(|e| e.5 < 1e-6 && e.4 > 1e-2)
+        .count();
     println!(
         "[LEGACY] violations={} worst underestimate (true - bound)={worst:.3e} same-centre mixed-l pairs with bound<1e-6 while true>1e-2: {n_same_centre_zero}/{}",
         rep.violations.len(),
         rep.same_centre_mixed.len()
     );
-    assert!(!rep.violations.is_empty(), "the legacy bound was not caught violating: checker is broken");
-    assert!(worst > 0.1, "legacy worst underestimate {worst:.3e} should be O(0.1-1)");
-    assert!(n_same_centre_zero > 0, "legacy same-centre mixed-l bounds should be ~0; checker did not see it");
+    assert!(
+        !rep.violations.is_empty(),
+        "the legacy bound was not caught violating: checker is broken"
+    );
+    assert!(
+        worst > 0.1,
+        "legacy worst underestimate {worst:.3e} should be O(0.1-1)"
+    );
+    assert!(
+        n_same_centre_zero > 0,
+        "legacy same-centre mixed-l bounds should be ~0; checker did not see it"
+    );
 }
 
 /// Trivial limit: a threshold of 0 (vacuous) and a threshold far below any
@@ -424,11 +481,21 @@ fn screen_zero_threshold_matches_unscreened() {
     let bounds = PairBounds::build(&prep).expect("bounds");
     let mut scr = kern.scratch();
     let pts: Vec<[f64; 3]> = probes(&mol, 40).iter().map(|(_, r)| *r).collect();
-    let want = kern.a_matrices(&pts, None, CosxScreen::none(), &mut scr).expect("unscreened");
+    let want = kern
+        .a_matrices(&pts, None, CosxScreen::none(), &mut scr)
+        .expect("unscreened");
     for t in [0.0, -1.0, 1e-300] {
-        let got = kern.a_matrices(&pts, Some(&bounds), CosxScreen::at(t), &mut scr).expect("screened");
-        assert_eq!(got.pairs_kept, got.pairs_total, "t={t}: dropped pairs in the trivial limit");
-        assert_eq!(got.a, want.a, "t={t}: screened matrices differ from unscreened");
+        let got = kern
+            .a_matrices(&pts, Some(&bounds), CosxScreen::at(t), &mut scr)
+            .expect("screened");
+        assert_eq!(
+            got.pairs_kept, got.pairs_total,
+            "t={t}: dropped pairs in the trivial limit"
+        );
+        assert_eq!(
+            got.a, want.a,
+            "t={t}: screened matrices differ from unscreened"
+        );
     }
 }
 
@@ -501,7 +568,9 @@ fn becke_weights_all(mol: &Molecule, r: [f64; 3]) -> Vec<f64> {
             }
             let rb = bragg_slater_bohr(mol.atoms[b].z);
             let (aa, ab) = (&mol.atoms[a], &mol.atoms[b]);
-            let r_ab = ((aa.x - ab.x).powi(2) + (aa.y - ab.y).powi(2) + (aa.zpos - ab.zpos).powi(2)).sqrt();
+            let r_ab =
+                ((aa.x - ab.x).powi(2) + (aa.y - ab.y).powi(2) + (aa.zpos - ab.zpos).powi(2))
+                    .sqrt();
             let mu = (dists[a] - dists[b]) / r_ab;
             let chi = ra / rb;
             let u = (chi - 1.0) / (chi + 1.0);
@@ -599,7 +668,10 @@ fn screen_drops_pairs_on_octane_def2svp_at_1e7() {
         "[octane/def2-svp] t={t:e}: nsh={nsh} pairs={total} mean kept fraction {frac:.4} (per-point kept min {kept_min} max {kept_max}) over {} points",
         idx.len()
     );
-    assert!(frac < 0.95, "screen is vacuous at t={t:e}: kept fraction {frac:.4}");
+    assert!(
+        frac < 0.95,
+        "screen is vacuous at t={t:e}: kept fraction {frac:.4}"
+    );
 }
 
 /// The screen's DECISIONS on the sparsity harness's own grid sample: every
@@ -612,7 +684,12 @@ fn screen_drops_pairs_on_octane_def2svp_at_1e7() {
 fn dropped_pairs_are_truly_negligible_on_grid_samples() {
     let t = 1e-7_f64;
     for (name, xyz, basis, npts) in [
-        ("butane", "testdata/molecules/alkane_4.xyz", "def2-svp", 2000usize),
+        (
+            "butane",
+            "testdata/molecules/alkane_4.xyz",
+            "def2-svp",
+            2000usize,
+        ),
         ("octane", "testdata/molecules/alkane_8.xyz", "def2-svp", 600),
     ] {
         let mol = Molecule::load_xyz(&testdata(xyz)).expect("xyz");
@@ -628,7 +705,9 @@ fn dropped_pairs_are_truly_negligible_on_grid_samples() {
         let (mut n_dropped, mut n_kept, mut kept_negligible) = (0usize, 0usize, 0usize);
         let mut max_dropped_true = 0.0_f64;
         for chunk in pts.chunks(64) {
-            let batch = kern.a_matrices(chunk, None, CosxScreen::none(), &mut scr).expect("md3c1e");
+            let batch = kern
+                .a_matrices(chunk, None, CosxScreen::none(), &mut scr)
+                .expect("md3c1e");
             for (k, r) in chunk.iter().enumerate() {
                 let a = batch.a.index_axis(Axis(0), k);
                 for s1 in 0..nsh {
@@ -660,7 +739,10 @@ fn dropped_pairs_are_truly_negligible_on_grid_samples() {
             n_kept as f64 / tot as f64,
             kept_negligible as f64 / tot as f64
         );
-        assert!(n_dropped > 0, "{name}/{basis}: nothing was dropped; the decision check is vacuous");
+        assert!(
+            n_dropped > 0,
+            "{name}/{basis}: nothing was dropped; the decision check is vacuous"
+        );
     }
 }
 
@@ -738,7 +820,16 @@ fn hcore_guess_density(prep: &PreparedBasis, nocc: usize) -> Array2<f64> {
 
 /// COSX exchange `K_{mu,nu} = Σ_g w_g χ_mu(g) [A^g (D χ(g))]_nu`, symmetrized,
 /// through `Md3c1e::for_each_pair` with the given screen. Returns `(K, kept, total)`.
-fn cosx_k(kern: &Md3c1e, mol: &Molecule, bs: &BasisSet, pts: &[[f64; 3]], wts: &[f64], d: &Array2<f64>, bounds: Option<&PairBounds>, screen: CosxScreen) -> (Array2<f64>, usize, usize) {
+fn cosx_k(
+    kern: &Md3c1e,
+    mol: &Molecule,
+    bs: &BasisSet,
+    pts: &[[f64; 3]],
+    wts: &[f64],
+    d: &Array2<f64>,
+    bounds: Option<&PairBounds>,
+    screen: CosxScreen,
+) -> (Array2<f64>, usize, usize) {
     let nbf = kern.nbasis();
     let nsh = kern.nshells();
     let mut k = Array2::<f64>::zeros((nbf, nbf));
@@ -803,7 +894,9 @@ fn exact_k(prep: &PreparedBasis, d: &Array2<f64>) -> Array2<f64> {
         for s2 in 0..nsh {
             for s3 in 0..nsh {
                 for s4 in 0..nsh {
-                    let Some(q) = eng.compute_quartet(prep, s1, s2, s3, s4) else { continue };
+                    let Some(q) = eng.compute_quartet(prep, s1, s2, s3, s4) else {
+                        continue;
+                    };
                     let (n1, n2, n3, n4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
                     for i in 0..n1 {
                         for j in 0..n2 {
@@ -811,7 +904,8 @@ fn exact_k(prep: &PreparedBasis, d: &Array2<f64>) -> Array2<f64> {
                                 for l in 0..n4 {
                                     let v = q[((i * n2 + j) * n3 + kk) * n4 + l];
                                     // (mu lam | nu sig): mu=i, lam=j, nu=kk, sig=l
-                                    k[(offs[s1] + i, offs[s3] + kk)] += v * d[(offs[s2] + j, offs[s4] + l)];
+                                    k[(offs[s1] + i, offs[s3] + kk)] +=
+                                        v * d[(offs[s2] + j, offs[s4] + l)];
                                 }
                             }
                         }
@@ -839,17 +933,35 @@ fn screened_k_matches_unscreened_k_below_grid_error_water_ccpvdz() {
     let (pts, wts) = becke_grid(&mol, 50, 110);
     assert_eq!(pts.len(), 3 * 50 * 110);
     let wsum: f64 = wts.iter().sum();
-    println!("[water/cc-pvdz] (50,110) grid: {} points, Σw = {wsum:.6}", pts.len());
+    println!(
+        "[water/cc-pvdz] (50,110) grid: {} points, Σw = {wsum:.6}",
+        pts.len()
+    );
 
     let (k_ref, kept0, total0) = cosx_k(&kern, &mol, &bs, &pts, &wts, &d, None, CosxScreen::none());
     assert_eq!(kept0, total0);
     let k_exact = exact_k(&prep, &d);
     let grid_err = max_abs(&(&k_ref - &k_exact));
-    println!("[water/cc-pvdz] max|K| = {:.4e}; grid error max|K_cosx - K_exact| = {grid_err:.3e}", max_abs(&k_exact));
-    assert!(grid_err < 1e-3, "COSX grid error {grid_err:.3e} is implausibly large — harness bug, not a screen question");
+    println!(
+        "[water/cc-pvdz] max|K| = {:.4e}; grid error max|K_cosx - K_exact| = {grid_err:.3e}",
+        max_abs(&k_exact)
+    );
+    assert!(
+        grid_err < 1e-3,
+        "COSX grid error {grid_err:.3e} is implausibly large — harness bug, not a screen question"
+    );
 
     for t in [1e-7, 1e-8] {
-        let (k_scr, kept, total) = cosx_k(&kern, &mol, &bs, &pts, &wts, &d, Some(&bounds), CosxScreen::at(t));
+        let (k_scr, kept, total) = cosx_k(
+            &kern,
+            &mol,
+            &bs,
+            &pts,
+            &wts,
+            &d,
+            Some(&bounds),
+            CosxScreen::at(t),
+        );
         let err = max_abs(&(&k_scr - &k_ref));
         println!(
             "[water/cc-pvdz] t={t:e}: max|K_scr - K_unscr| = {err:.3e}  (batch-level kept pairs {kept}/{total} = {:.3})",

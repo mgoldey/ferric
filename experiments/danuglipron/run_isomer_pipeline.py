@@ -38,6 +38,7 @@ Run:
     OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
     uv run --no-sync python experiments/danuglipron/run_isomer_pipeline.py
 """
+
 from __future__ import annotations
 
 import json
@@ -62,7 +63,10 @@ from tools.docking import prepare_receptor  # noqa: E402
 from tools.isomers import enumerate_with_report  # noqa: E402
 from tools.pipeline import Stage, run_funnel  # noqa: E402
 from tools.pipeline.tiers import (  # noqa: E402
-    tier1_dock, tier2_forcefield, tier3_gfn2, tier4_dft,
+    tier1_dock,
+    tier2_forcefield,
+    tier3_gfn2,
+    tier4_dft,
 )
 from experiments.danuglipron.design import DANUGLIPRON_SMILES  # noqa: E402
 
@@ -85,11 +89,14 @@ def main() -> int:
         DANUGLIPRON_SMILES, max_candidates=MAX_CANDIDATES, mw_range=(300.0, 700.0)
     )
     print("=== ENUMERATION ===")
-    print(f"  generated {rep.n_generated} -> dedup {rep.n_after_dedup} "
-          f"-> filtered {rep.n_after_filter}")
+    print(
+        f"  generated {rep.n_generated} -> dedup {rep.n_after_dedup} "
+        f"-> filtered {rep.n_after_filter}"
+    )
     for r in rep.rejected[:5]:
         print(f"    rejected: {r[:95]}")
     from collections import Counter
+
     print(f"  by kind: {dict(Counter(i.kind for i in cands))}")
 
     # Score the pH-7.4 species (RESULTS.md M5: neutral-vs-anion was a
@@ -118,7 +125,9 @@ def main() -> int:
     size = tuple(float(x) for x in (ref.max(axis=0) - ref.min(axis=0) + 8.0))
     print(f"\n=== RECEPTOR ===\n  preparing {RECEPTOR_PDB.name} ...", flush=True)
     receptor = prepare_receptor(RECEPTOR_PDB, RECEPTOR_PDBQT)
-    print(f"  {receptor.name}; box centre {np.round(center,1)} size {np.round(size,1)}")
+    print(
+        f"  {receptor.name}; box centre {np.round(center, 1)} size {np.round(size, 1)}"
+    )
 
     context = {
         "seed": SEED,
@@ -177,8 +186,9 @@ def main() -> int:
         # workers=10 on a 12-core box: fan-out beats Vina's internal threading
         # above ~4 workers (M11), and leaving 2 cores free keeps the box usable
         # for whoever else is on it.
-        Stage(Tier.SEARCH, tier1_dock, keep=KEEPS[0], name="dock",
-              workers=dock_workers),
+        Stage(
+            Tier.SEARCH, tier1_dock, keep=KEEPS[0], name="dock", workers=dock_workers
+        ),
         Stage(Tier.FORCE_FIELD, tier2_forcefield, keep=KEEPS[1], name="mmff"),
         Stage(Tier.SEMIEMPIRICAL, tier3_gfn2, keep=KEEPS[2], name="gfn2"),
         Stage(Tier.QUANTUM, tier4_dft, keep=KEEPS[3], name="dft"),
@@ -196,51 +206,85 @@ def main() -> int:
     # "tier 4 reordered tier 3's ranking: True -> DFT is load-bearing" having
     # computed nothing (RESULTS.md M10). `tier_agreement` returns None rather
     # than a verdict when fewer than 2 candidates are common.
-    gfn2_scores = {c.canonical: report.value("gfn2", c.canonical)
-                   for c in cands if report.value("gfn2", c.canonical) is not None}
-    dft_scores = {c: v for c in gfn2_scores
-                  if (v := report.value("dft", c)) is not None}
+    gfn2_scores = {
+        c.canonical: report.value("gfn2", c.canonical)
+        for c in cands
+        if report.value("gfn2", c.canonical) is not None
+    }
+    dft_scores = {
+        c: v for c in gfn2_scores if (v := report.value("dft", c)) is not None
+    }
     agreement = tier_agreement(gfn2_scores, dft_scores)
 
     print("\n=== SURVIVORS ===")
     for n, iso in enumerate(report.survivors, 1):
-        print(f"  {n}. {iso.transform:24s} gfn2 {report.value('gfn2', iso.canonical)}"
-              f"  dft {report.value('dft', iso.canonical)}")
+        print(
+            f"  {n}. {iso.transform:24s} gfn2 {report.value('gfn2', iso.canonical)}"
+            f"  dft {report.value('dft', iso.canonical)}"
+        )
 
     reordered = agreement["reordered"]
     print(f"\ntier 4 vs tier 3 on the {agreement['n_common']} candidates both scored:")
     if reordered is None:
         print(f"  -> UNTESTABLE: {agreement['note']}")
     elif reordered:
-        print(f"  -> DFT REORDERED GFN2 (tau={agreement['kendall_tau']:.3f}); "
-              f"tier 4 is load-bearing here")
+        print(
+            f"  -> DFT REORDERED GFN2 (tau={agreement['kendall_tau']:.3f}); "
+            f"tier 4 is load-bearing here"
+        )
     else:
-        print(f"  -> GFN2 ordering survived DFT (tau={agreement['kendall_tau']:.3f}); "
-              f"tier 4 is skippable for this system")
+        print(
+            f"  -> GFN2 ordering survived DFT (tau={agreement['kendall_tau']:.3f}); "
+            f"tier 4 is skippable for this system"
+        )
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps({
-        "parent": DANUGLIPRON_SMILES,
-        "seed": SEED,
-        "keeps": list(KEEPS),
-        "enumeration": {"n_generated": rep.n_generated,
-                        "n_after_dedup": rep.n_after_dedup,
-                        "n_after_filter": rep.n_after_filter,
-                        "rejected": rep.rejected},
-        "outcomes": [{"tier": int(o.tier), "n_in": o.n_in, "n_out": o.n_out,
-                      "n_failed": o.n_failed, "note": o.note,
-                      "errors": o.errors} for o in report.outcomes],
-        "results": {stage: [{"id": r.candidate_id, "value": r.value,
-                             "error": r.error} for r in rs]
-                    for stage, rs in report.results.items()},
-        "survivors": [{"smiles": i.canonical, "kind": i.kind,
-                       "transform": i.transform,
-                       "gfn2": report.value("gfn2", i.canonical),
-                       "dft": report.value("dft", i.canonical)}
-                      for i in report.survivors],
-        "tier4_vs_tier3": agreement,
-        "wall_seconds": time.time() - t_start,
-    }, indent=2))
+    OUT.write_text(
+        json.dumps(
+            {
+                "parent": DANUGLIPRON_SMILES,
+                "seed": SEED,
+                "keeps": list(KEEPS),
+                "enumeration": {
+                    "n_generated": rep.n_generated,
+                    "n_after_dedup": rep.n_after_dedup,
+                    "n_after_filter": rep.n_after_filter,
+                    "rejected": rep.rejected,
+                },
+                "outcomes": [
+                    {
+                        "tier": int(o.tier),
+                        "n_in": o.n_in,
+                        "n_out": o.n_out,
+                        "n_failed": o.n_failed,
+                        "note": o.note,
+                        "errors": o.errors,
+                    }
+                    for o in report.outcomes
+                ],
+                "results": {
+                    stage: [
+                        {"id": r.candidate_id, "value": r.value, "error": r.error}
+                        for r in rs
+                    ]
+                    for stage, rs in report.results.items()
+                },
+                "survivors": [
+                    {
+                        "smiles": i.canonical,
+                        "kind": i.kind,
+                        "transform": i.transform,
+                        "gfn2": report.value("gfn2", i.canonical),
+                        "dft": report.value("dft", i.canonical),
+                    }
+                    for i in report.survivors
+                ],
+                "tier4_vs_tier3": agreement,
+                "wall_seconds": time.time() - t_start,
+            },
+            indent=2,
+        )
+    )
     print(f"\nwrote {OUT}  ({time.time() - t_start:.0f}s total)")
     return 0
 

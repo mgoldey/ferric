@@ -6,8 +6,8 @@ use ferric_integrals::operator::Operator;
 use ferric_rpa::config::{QuadratureConfig, QuadratureScheme};
 use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::ScfResult;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -57,7 +57,11 @@ fn pyscf_compat_config(n_quad: usize) -> PdepRpaConfig {
 fn h2_sto3g_rpa_energy_sign() {
     let (mol, obs, dfbs, op, rhf) = setup("../../testdata/molecules/h2.xyz", "sto-3g", "sto-3g");
     let result = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &PdepRpaConfig::default()).unwrap();
-    assert!(result.e_rpa < 0.0, "E_c should be negative, got {}", result.e_rpa);
+    assert!(
+        result.e_rpa < 0.0,
+        "E_c should be negative, got {}",
+        result.e_rpa
+    );
     assert!(result.n_eigenpotentials > 0);
 }
 
@@ -67,7 +71,10 @@ fn energy_only_run_does_not_materialize_inv_dielectric_freq() {
     // inverse-dielectric stack — it is only consumed by GW/BSE/property paths.
     let (mol, obs, dfbs, op, rhf) = setup("../../testdata/molecules/h2.xyz", "sto-3g", "sto-3g");
     let cfg = PdepRpaConfig::default();
-    assert!(!cfg.need_inv_dielectric_freq, "default config must be energy-only");
+    assert!(
+        !cfg.need_inv_dielectric_freq,
+        "default config must be energy-only"
+    );
     let result = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
     assert!(
         result.inv_dielectric_freq.is_none(),
@@ -97,7 +104,11 @@ fn inv_dielectric_freq_built_when_flag_set() {
         "one inverse-dielectric matrix per quadrature frequency"
     );
     let m = result.n_eigenpotentials;
-    assert_eq!(winv[0].shape(), &[m, m], "each matrix is M×M in the PDEP basis");
+    assert_eq!(
+        winv[0].shape(),
+        &[m, m],
+        "each matrix is M×M in the PDEP basis"
+    );
 }
 
 #[test]
@@ -108,19 +119,28 @@ fn h2_sto3g_pdep_rpa_matches_pyscf() {
     let cfg = pyscf_compat_config(40);
     let result = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
     let diff = (result.e_rpa - e_ref).abs();
-    println!("H2/STO-3G  ferric={:.10} pyscf={:.10}  diff={:.2e}", result.e_rpa, e_ref, diff);
+    println!(
+        "H2/STO-3G  ferric={:.10} pyscf={:.10}  diff={:.2e}",
+        result.e_rpa, e_ref, diff
+    );
     assert!(diff < 1e-6, "H2/STO-3G PDEP-RPA differs by {:.2e}", diff);
 }
 
 #[test]
 fn h2o_cc_pvdz_pdep_rpa_matches_pyscf() {
     let e_ref = load_ref("../../testdata/reference/h2o_cc-pvdz_rpa.json");
-    let (mol, obs, dfbs, op, rhf) =
-        setup("../../testdata/molecules/water.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/water.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+    );
     let cfg = pyscf_compat_config(40);
     let result = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
     let diff = (result.e_rpa - e_ref).abs();
-    println!("H2O/cc-pVDZ ferric={:.10} pyscf={:.10}  diff={:.2e}", result.e_rpa, e_ref, diff);
+    println!(
+        "H2O/cc-pVDZ ferric={:.10} pyscf={:.10}  diff={:.2e}",
+        result.e_rpa, e_ref, diff
+    );
     assert!(diff < 1e-6, "H2O/cc-pVDZ PDEP-RPA differs by {:.2e}", diff);
 }
 
@@ -135,8 +155,15 @@ fn h2o_aug_cc_pvdz_pdep_rpa_matches_pyscf() {
     let cfg = pyscf_compat_config(40);
     let result = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
     let diff = (result.e_rpa - e_ref).abs();
-    println!("H2O/aug-cc-pVDZ ferric={:.10} pyscf={:.10}  diff={:.2e}", result.e_rpa, e_ref, diff);
-    assert!(diff < 1e-6, "H2O/aug-cc-pVDZ PDEP-RPA differs by {:.2e}", diff);
+    println!(
+        "H2O/aug-cc-pVDZ ferric={:.10} pyscf={:.10}  diff={:.2e}",
+        result.e_rpa, e_ref, diff
+    );
+    assert!(
+        diff < 1e-6,
+        "H2O/aug-cc-pVDZ PDEP-RPA differs by {:.2e}",
+        diff
+    );
 }
 
 #[test]
@@ -150,8 +177,15 @@ fn h2o_aug_cc_pvtz_pdep_rpa_matches_pyscf() {
     let cfg = pyscf_compat_config(40);
     let result = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
     let diff = (result.e_rpa - e_ref).abs();
-    println!("H2O/aug-cc-pVTZ ferric={:.10} pyscf={:.10}  diff={:.2e}", result.e_rpa, e_ref, diff);
-    assert!(diff < 1e-6, "H2O/aug-cc-pVTZ PDEP-RPA differs by {:.2e}", diff);
+    println!(
+        "H2O/aug-cc-pVTZ ferric={:.10} pyscf={:.10}  diff={:.2e}",
+        result.e_rpa, e_ref, diff
+    );
+    assert!(
+        diff < 1e-6,
+        "H2O/aug-cc-pVTZ PDEP-RPA differs by {:.2e}",
+        diff
+    );
 }
 
 #[test]
@@ -174,8 +208,11 @@ fn h2_sto3g_pdep_rpa_vs_ri_drpa() {
 fn h2o_cc_pvdz_quadrature_convergence() {
     // 20 vs 40 GL points should both match PySCF to ≤1e-5.
     let e_ref = load_ref("../../testdata/reference/h2o_cc-pvdz_rpa.json");
-    let (mol, obs, dfbs, op, rhf) =
-        setup("../../testdata/molecules/water.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/water.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+    );
     for &n in &[20usize, 40] {
         let cfg = pyscf_compat_config(n);
         let result = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
@@ -190,8 +227,11 @@ fn h2o_cc_pvdz_pdep_truncation_convergence() {
     // PDEP test: can we recover full RPA energy with M ≈ 3 × N_atoms eigenpotentials?
     // H2O has 3 atoms → target M ≈ 9. Full naux=84.
     let e_ref = load_ref("../../testdata/reference/h2o_cc-pvdz_rpa.json");
-    let (mol, obs, dfbs, op, rhf) =
-        setup("../../testdata/molecules/water.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/water.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+    );
 
     println!("\nPDEP truncation study (H2O/cc-pVDZ, naux=84):");
     println!("PySCF (full):      {:.10}", e_ref);
@@ -204,7 +244,10 @@ fn h2o_cc_pvdz_pdep_truncation_convergence() {
         let diff = result.e_rpa - e_ref;
         println!(
             "  trunc={:.0e}: M={:3} E_c={:.10}  diff={:+.2e}  λ_max={:.3} λ_min={:.3e}",
-            thresh, result.n_eigenpotentials, result.e_rpa, diff,
+            thresh,
+            result.n_eigenpotentials,
+            result.e_rpa,
+            diff,
             result.eigenvalues_static.first().copied().unwrap_or(0.0),
             result.eigenvalues_static.last().copied().unwrap_or(0.0),
         );
@@ -230,8 +273,12 @@ fn h2o_aug_cc_pvtz_timing_comparison() {
     let t0 = Instant::now();
     let r_full = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_full).unwrap();
     let dt_full = t0.elapsed();
-    println!("  full (M=naux={}):  E_c={:.10}  t={:.2}s",
-        r_full.n_eigenpotentials, r_full.e_rpa, dt_full.as_secs_f64());
+    println!(
+        "  full (M=naux={}):  E_c={:.10}  t={:.2}s",
+        r_full.n_eigenpotentials,
+        r_full.e_rpa,
+        dt_full.as_secs_f64()
+    );
 
     // PDEP truncated
     for &th in &[1e-1, 1e-2, 1e-3, 1e-4] {
@@ -241,9 +288,15 @@ fn h2o_aug_cc_pvtz_timing_comparison() {
         let r = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         let dt = t0.elapsed();
         let diff = (r.e_rpa - r_full.e_rpa).abs();
-        println!("  trunc={:.0e}: M={:3} E_c={:.10}  diff_vs_full={:.2e}  t={:.2}s ({:.0}% of full)",
-            th, r.n_eigenpotentials, r.e_rpa, diff,
-            dt.as_secs_f64(), 100.0 * dt.as_secs_f64() / dt_full.as_secs_f64());
+        println!(
+            "  trunc={:.0e}: M={:3} E_c={:.10}  diff_vs_full={:.2e}  t={:.2}s ({:.0}% of full)",
+            th,
+            r.n_eigenpotentials,
+            r.e_rpa,
+            diff,
+            dt.as_secs_f64(),
+            100.0 * dt.as_secs_f64() / dt_full.as_secs_f64()
+        );
     }
 }
 
@@ -265,8 +318,12 @@ fn benzene_cc_pvdz_timing() {
     let t0 = Instant::now();
     let r = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
     let dt = t0.elapsed();
-    println!("  trunc=1e-4 frozen_core=6: M={} E_c={:.10} t={:.2}s",
-        r.n_eigenpotentials, r.e_rpa, dt.as_secs_f64());
+    println!(
+        "  trunc=1e-4 frozen_core=6: M={} E_c={:.10} t={:.2}s",
+        r.n_eigenpotentials,
+        r.e_rpa,
+        dt.as_secs_f64()
+    );
 }
 
 /// Lanczos-vs-Davidson agreement under PDEP truncation: both eigensolvers
@@ -304,10 +361,7 @@ fn lanczos_matches_davidson_under_truncation() {
         let d = (r_targeted.e_rpa - r_ref.e_rpa).abs();
         eprintln!(
             "thresh={thresh:.0e}: Lanczos M={} E={:.10} vs Davidson M={} E={:.10} d={d:.2e}",
-            r_targeted.n_eigenpotentials,
-            r_targeted.e_rpa,
-            r_ref.n_eigenpotentials,
-            r_ref.e_rpa,
+            r_targeted.n_eigenpotentials, r_targeted.e_rpa, r_ref.n_eigenpotentials, r_ref.e_rpa,
         );
         assert_eq!(
             r_targeted.n_eigenpotentials, r_ref.n_eigenpotentials,
@@ -343,7 +397,10 @@ fn run_lanczos_eigensolve_benchmark(label: &str, xyz: &str, obs_name: &str, dfbs
 
     let (mol, obs, dfbs, op, rhf) = setup(xyz, obs_name, dfbs_name);
 
-    let mp2_cfg = RiMp2Config { frozen_core: 8, ..Default::default() };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: 8,
+        ..Default::default()
+    };
     let inter = compute_rpa_intermediates(&mol, &obs, &dfbs, op, &rhf, &mp2_cfg).unwrap();
     let naux = inter.naux;
     let nocc = inter.nocc;
@@ -354,33 +411,48 @@ fn run_lanczos_eigensolve_benchmark(label: &str, xyz: &str, obs_name: &str, dfbs
     let eps_occ: Vec<f64> = rhf.eps_r()[first_occ..first_occ + nocc].to_vec();
     let eps_vir: Vec<f64> = rhf.eps_r()[nocc_total..nocc_total + nvir].to_vec();
 
-    eprintln!("{label}: naux={naux} nocc={nocc} nvir={nvir} nov={}", nocc * nvir);
+    eprintln!(
+        "{label}: naux={naux} nocc={nocc} nvir={nvir} nov={}",
+        nocc * nvir
+    );
 
     let thresh = 1e-2;
 
     let t0 = Instant::now();
     let dense = lanczos::run_lanczos_full_rank_budgeted(
-        naux, nocc * nvir,
+        naux,
+        nocc * nvir,
         |v: &Array2<f64>| sternheimer::dielectric_apply(v, b_ov, &eps_occ, &eps_vir, 0.0),
-        naux, None,
-    ).unwrap();
+        naux,
+        None,
+    )
+    .unwrap();
     let dt_dense = t0.elapsed();
 
-    let dense_kept: Vec<f64> = dense.eigenvalues.iter()
+    let dense_kept: Vec<f64> = dense
+        .eigenvalues
+        .iter()
         .copied()
         .filter(|&lam| (lam - 1.0).abs() > thresh)
         .collect();
-    eprintln!("dense: {naux} modes, {} above thresh={thresh:.0e}, {:.1}ms",
-        dense_kept.len(), dt_dense.as_secs_f64() * 1e3);
+    eprintln!(
+        "dense: {naux} modes, {} above thresh={thresh:.0e}, {:.1}ms",
+        dense_kept.len(),
+        dt_dense.as_secs_f64() * 1e3
+    );
 
     let dense_sum: f64 = dense_kept.iter().map(|&l| l - 1.0 - l.ln()).sum();
 
     for block_size in [256, 128, 64] {
-        if block_size >= naux { continue; }
+        if block_size >= naux {
+            continue;
+        }
         let mut raw = Array2::<f64>::zeros((naux, block_size));
         let mut state: u64 = 0xDEAD_BEEF_CAFE_BABEu64;
         for x in raw.iter_mut() {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             *x = (state >> 33) as f64 / (1u64 << 31) as f64 - 1.0;
         }
         let (seed, _) = raw.qr().unwrap();
@@ -390,8 +462,12 @@ fn run_lanczos_eigensolve_benchmark(label: &str, xyz: &str, obs_name: &str, dfbs
         let lz = lanczos::run_lanczos_targeted(
             seed,
             |v: &Array2<f64>| sternheimer::dielectric_apply(v, b_ov, &eps_occ, &eps_vir, 0.0),
-            thresh, max_iter, 1e-6, false,
-        ).unwrap();
+            thresh,
+            max_iter,
+            1e-6,
+            false,
+        )
+        .unwrap();
         let dt_lz = t0.elapsed();
 
         let speedup = dt_dense.as_secs_f64() / dt_lz.as_secs_f64();
@@ -400,8 +476,11 @@ fn run_lanczos_eigensolve_benchmark(label: &str, xyz: &str, obs_name: &str, dfbs
         eprintln!(
             "targeted m={block_size:3}: {} modes, conv={}, resid={:.1e}, \
              {:.1}ms ({:.2}x vs dense), energy_d={d:.2e}",
-            lz.eigenvalues.len(), lz.converged, lz.max_resid,
-            dt_lz.as_secs_f64() * 1e3, speedup,
+            lz.eigenvalues.len(),
+            lz.converged,
+            lz.max_resid,
+            dt_lz.as_secs_f64() * 1e3,
+            speedup,
         );
     }
 }
@@ -410,7 +489,10 @@ fn run_lanczos_eigensolve_benchmark(label: &str, xyz: &str, obs_name: &str, dfbs
 #[ignore]
 fn targeted_lanczos_benchmark_dz() {
     run_lanczos_eigensolve_benchmark(
-        "C8/DZ", "../../testdata/molecules/alkane_8.xyz", "cc-pvdz", "cc-pvdz-ri",
+        "C8/DZ",
+        "../../testdata/molecules/alkane_8.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
     );
 }
 
@@ -418,6 +500,9 @@ fn targeted_lanczos_benchmark_dz() {
 #[ignore]
 fn targeted_lanczos_benchmark_tz() {
     run_lanczos_eigensolve_benchmark(
-        "C8/TZ", "../../testdata/molecules/alkane_8.xyz", "cc-pvtz", "cc-pvtz-rifit",
+        "C8/TZ",
+        "../../testdata/molecules/alkane_8.xyz",
+        "cc-pvtz",
+        "cc-pvtz-rifit",
     );
 }

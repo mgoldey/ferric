@@ -43,8 +43,13 @@ fn b3lyp_auto_aux_matches_explicit() {
     let e_explicit = run_h2("B3LYP", true);
     let e_auto = run_h2("B3LYP", false);
     let diff = (e_explicit - e_auto).abs();
-    eprintln!("B3LYP H2/STO-3G: explicit aux={e_explicit:.10}, auto aux={e_auto:.10}, diff={diff:.2e}");
-    assert!(diff < 1e-12, "B3LYP auto-default aux gave different energy: diff={diff:.2e}");
+    eprintln!(
+        "B3LYP H2/STO-3G: explicit aux={e_explicit:.10}, auto aux={e_auto:.10}, diff={diff:.2e}"
+    );
+    assert!(
+        diff < 1e-12,
+        "B3LYP auto-default aux gave different energy: diff={diff:.2e}"
+    );
 }
 
 #[test]
@@ -53,5 +58,8 @@ fn wb97xv_auto_aux_matches_explicit() {
     let e_auto = run_h2("wB97X-V", false);
     let diff = (e_explicit - e_auto).abs();
     eprintln!("wB97X-V H2/STO-3G: explicit={e_explicit:.10}, auto={e_auto:.10}, diff={diff:.2e}");
-    assert!(diff < 1e-12, "wB97X-V auto-default aux gave different energy: diff={diff:.2e}");
+    assert!(
+        diff < 1e-12,
+        "wB97X-V auto-default aux gave different energy: diff={diff:.2e}"
+    );
 }

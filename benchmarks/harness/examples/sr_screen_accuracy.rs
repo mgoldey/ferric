@@ -20,11 +20,17 @@ fn main() {
 
     println!("# RAW (P|μν) erfc screening accuracy — cc-pVDZ/cc-pVDZ-RI, ω=0.222");
     println!("# maxdiff = max |dense_erfc − qqr_screened_erfc| over the raw AO tensor");
-    println!("{:>4} {:>8} | {:>8} {:>10} {:>12}", "C", "thresh", "kept%", "maxdiff", "sum|drop|");
+    println!(
+        "{:>4} {:>8} | {:>8} {:>10} {:>12}",
+        "C", "thresh", "kept%", "maxdiff", "sum|drop|"
+    );
 
     for n in [4usize, 6, 8, 10] {
         let path = format!("testdata/molecules/alkane_{n}.xyz");
-        let mol = match Molecule::load_xyz(&path) { Ok(m) => m, Err(_) => continue };
+        let mol = match Molecule::load_xyz(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux).unwrap();
         let dense = eri3_tensor(op, &obs, &dfbs).unwrap();
@@ -38,12 +44,18 @@ fn main() {
             let mut sumdrop = 0.0f64;
             for (a, b) in dense.iter().zip(scr.iter()) {
                 let d = (a - b).abs();
-                if d > maxdiff { maxdiff = d; }
+                if d > maxdiff {
+                    maxdiff = d;
+                }
                 sumdrop += d;
             }
             println!(
                 "{:>4} {:>8.0e} | {:>7.1}% {:>10.3e} {:>12.3e}",
-                n, thresh, 100.0 * nk as f64 / nt as f64, maxdiff, sumdrop,
+                n,
+                thresh,
+                100.0 * nk as f64 / nt as f64,
+                maxdiff,
+                sumdrop,
             );
         }
     }

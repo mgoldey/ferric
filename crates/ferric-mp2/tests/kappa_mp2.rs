@@ -35,10 +35,18 @@ fn setup(xyz: &str, obs_name: &str, aux_name: &str) -> Setup {
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
     )
     .unwrap();
-    Setup { mol, obs, dfbs, rhf }
+    Setup {
+        mol,
+        obs,
+        dfbs,
+        rhf,
+    }
 }
 
 fn e_total(su: &Setup, kappa: Option<f64>) -> f64 {
@@ -48,7 +56,10 @@ fn e_total(su: &Setup, kappa: Option<f64>) -> f64 {
         &su.dfbs,
         Operator::coulomb(),
         &su.rhf,
-        &RiMp2Config { kappa, ..Default::default() },
+        &RiMp2Config {
+            kappa,
+            ..Default::default()
+        },
     )
     .unwrap()
     .0
@@ -96,7 +107,10 @@ fn h2_single_pair_matches_the_analytic_damping() {
         let e_pred = -k2 * d1 * d1 / (2.0 * delta);
         let dev = (e - e_pred).abs();
         eprintln!("kappa={kappa}: E={e:.12} analytic={e_pred:.12} dev={dev:.3e}");
-        assert!(dev < 1e-12, "analytic single-pair identity broken at kappa={kappa}");
+        assert!(
+            dev < 1e-12,
+            "analytic single-pair identity broken at kappa={kappa}"
+        );
     }
 }
 
@@ -105,7 +119,10 @@ fn h2_single_pair_matches_the_analytic_damping() {
 #[test]
 fn kappa_monotone_and_validated() {
     let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
-    let es: Vec<f64> = [0.5, 1.0, 1.45, 2.0].iter().map(|&k| e_total(&su, Some(k))).collect();
+    let es: Vec<f64> = [0.5, 1.0, 1.45, 2.0]
+        .iter()
+        .map(|&k| e_total(&su, Some(k)))
+        .collect();
     eprintln!("E(kappa) sweep: {es:?}");
     for w in es.windows(2) {
         assert!(w[0].abs() < w[1].abs(), "not monotone: {w:?}");
@@ -117,7 +134,10 @@ fn kappa_monotone_and_validated() {
             &su.dfbs,
             Operator::coulomb(),
             &su.rhf,
-            &RiMp2Config { kappa: Some(bad), ..Default::default() },
+            &RiMp2Config {
+                kappa: Some(bad),
+                ..Default::default()
+            },
         );
         assert!(r.is_err(), "kappa={bad} not rejected");
     }

@@ -18,6 +18,7 @@ Usage: parallel_complete.py [nworkers] [rayon_per_worker]
 Idempotent: skips molecules already converged/failed. Run after stopping the
 serial sweeps. Writes each row under a file lock; safe for concurrent workers.
 """
+
 import json
 import os
 import re
@@ -53,9 +54,11 @@ def remaining():
     high-budget retry of recoverable cost-timeouts, disjoint from the main runner.
     """
     txt = SRC.read_text()
+
     def natoms(n):
         m = re.search(rf'name:\s*"{n}".*?xyz:\s*"(\d+)', txt, re.S)
         return int(m.group(1)) if m else 999
+
     only = os.environ.get("GW100_ONLY", "").strip()
     only_set = set(only.split(",")) if only else None
     work = []
@@ -80,6 +83,7 @@ def _locked_update(basis, mutate):
     on the same basis — the threading.Lock alone cannot see them). Same .lock
     path as run_sweep.save_basis. Per-pid tmp so writers never share one tmp."""
     import fcntl
+
     with _lock:
         p = HERE / f"results_{basis}.json"
         with open(p.with_suffix(".lock"), "w") as lf:
@@ -96,6 +100,7 @@ def save_row(basis, mol, row):
         d["molecules"][mol] = row
         d["failed"] = [f for f in d.get("failed", []) if f != mol]
         return True
+
     _locked_update(basis, mutate)
 
 
@@ -103,9 +108,11 @@ def mark_failed(basis, mol):
     def mutate(d):
         if mol in d["molecules"]:
             return False
-        fl = set(d.get("failed", [])); fl.add(mol)
+        fl = set(d.get("failed", []))
+        fl.add(mol)
         d["failed"] = sorted(fl)
         return True
+
     _locked_update(basis, mutate)
 
 
@@ -119,33 +126,56 @@ def run_one(basis, mol, rayon):
     # PySCF-validated columns at ~5-10x the speed of the full ladder.
     max_atoms = os.environ.get("GW100_FULL_MAX_ATOMS", "10")
     pbe_all = os.environ.get("GW100_PBE_ALL", "0")
-    env = dict(os.environ,
-               OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS=str(rayon),
-               OMP_NUM_THREADS="1", MKL_NUM_THREADS="1",
-               GW100_TRUNC="1e-4", GW100_FULL_MAX_ATOMS=max_atoms,
-               GW100_PBE_ALL=pbe_all, GW100_DONE=skip)
-    proc = subprocess.Popen([str(BIN), basis], env=env, text=True,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1)
+    env = dict(
+        os.environ,
+        OPENBLAS_NUM_THREADS="1",
+        RAYON_NUM_THREADS=str(rayon),
+        OMP_NUM_THREADS="1",
+        MKL_NUM_THREADS="1",
+        GW100_TRUNC="1e-4",
+        GW100_FULL_MAX_ATOMS=max_atoms,
+        GW100_PBE_ALL=pbe_all,
+        GW100_DONE=skip,
+    )
+    proc = subprocess.Popen(
+        [str(BIN), basis],
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+    )
     start = time.monotonic()
     got = False
+
     def watchdog():
         while proc.poll() is None:
             time.sleep(15)
             if time.monotonic() - start > MOL_BUDGET:
-                proc.kill(); return
-    wd = threading.Thread(target=watchdog, daemon=True); wd.start()
+                proc.kill()
+                return
+
+    wd = threading.Thread(target=watchdog, daemon=True)
+    wd.start()
     for line in proc.stdout:
         m = ROW.match(line.strip())
         if m and m.group("mol") == mol:
-            dd = m.groupdict(); dd.pop("mol")
+            dd = m.groupdict()
+            dd.pop("mol")
             row = {k: float(v) for k, v in dd.items()}
             save_row(basis, mol, row)
             got = True
-            print(f"  [+] {basis[:8]} {mol}  G0W0={row['G0W0']:.3f}  ({time.monotonic()-start:.0f}s)", flush=True)
+            print(
+                f"  [+] {basis[:8]} {mol}  G0W0={row['G0W0']:.3f}  ({time.monotonic() - start:.0f}s)",
+                flush=True,
+            )
     proc.wait()
     if not got:
         mark_failed(basis, mol)
-        print(f"  [x] {basis[:8]} {mol} FAILED/timeout  ({time.monotonic()-start:.0f}s)", flush=True)
+        print(
+            f"  [x] {basis[:8]} {mol} FAILED/timeout  ({time.monotonic() - start:.0f}s)",
+            flush=True,
+        )
 
 
 def main():
@@ -154,10 +184,14 @@ def main():
     if not BIN.exists():
         sys.exit(f"binary missing: {BIN}")
     work = remaining()
-    print(f"[parallel] {len(work)} (basis,mol) to do; {nworkers} workers x RAYON={rayon}", flush=True)
+    print(
+        f"[parallel] {len(work)} (basis,mol) to do; {nworkers} workers x RAYON={rayon}",
+        flush=True,
+    )
 
     work_lock = threading.Lock()
     it = iter(work)
+
     def worker():
         while True:
             with work_lock:

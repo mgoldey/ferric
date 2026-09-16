@@ -16,6 +16,7 @@ the same equations rather than a reimplementation of the same algorithm.
 
 Usage:  OPENBLAS_NUM_THREADS=4 python3 scripts/gen_lccd_oracle_refs.py
 """
+
 import os
 import sys
 

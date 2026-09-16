@@ -25,8 +25,8 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::gradient::rhf_gradient_with_polarizable;
 use ferric_scf::polarizable::PolarizableSites;
 use ferric_scf::qmmm::{
-    full_gradient, full_gradient_with_polarizable, mm_forces, polarizable_site_gradient, QmSelection,
-    QmmmAtom, QmmmSystem,
+    full_gradient, full_gradient_with_polarizable, mm_forces, polarizable_site_gradient,
+    QmSelection, QmmmAtom, QmmmSystem,
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -68,8 +68,14 @@ fn run_polarizable(sys: &QmmmSystem) -> PolarizableRun {
     let (prep, op, bounds) = setup(&mol);
     let ctx = ParallelContext::default();
     let pol_sites = sys.to_polarizable_sites();
-    let polarizable =
-        if pol_sites.is_empty() { None } else { Some(PolarizableSites { sites: pol_sites, ..Default::default() }) };
+    let polarizable = if pol_sites.is_empty() {
+        None
+    } else {
+        Some(PolarizableSites {
+            sites: pol_sites,
+            ..Default::default()
+        })
+    };
     let ext = sys.to_external_potential();
     let cfg = RhfConfig {
         external_potential: ext.clone(),
@@ -81,7 +87,14 @@ fn run_polarizable(sys: &QmmmSystem) -> PolarizableRun {
     let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged, "polarizable-embedded SCF failed to converge");
     let qm_gradient = rhf_gradient_with_polarizable(
-        &mol, &prep, op, &bounds, &r, ext.as_ref(), cfg.polarizable.as_ref(), r.induced_dipoles.as_ref(),
+        &mol,
+        &prep,
+        op,
+        &bounds,
+        &r,
+        ext.as_ref(),
+        cfg.polarizable.as_ref(),
+        r.induced_dipoles.as_ref(),
     )
     .unwrap();
     PolarizableRun {
@@ -109,29 +122,57 @@ fn full_gradient_with_polarizable_matches_plain_full_gradient_when_not_polarizab
         a
     };
     let sys = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2]), 0, 1).unwrap();
-    assert!(sys.to_polarizable_sites().is_empty(), "test setup must have zero polarizable sites");
+    assert!(
+        sys.to_polarizable_sites().is_empty(),
+        "test setup must have zero polarizable sites"
+    );
 
     let mol = sys.to_qm_molecule();
     let (prep, op, bounds) = setup(&mol);
     let ctx = ParallelContext::default();
     let ext = sys.to_external_potential();
-    let cfg = RhfConfig { external_potential: ext.clone(), density_conv: 1e-10, ..Default::default() };
+    let cfg = RhfConfig {
+        external_potential: ext.clone(),
+        density_conv: 1e-10,
+        ..Default::default()
+    };
     let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged);
-    let qm_grad = ferric_scf::gradient::rhf_gradient(&mol, &prep, op, &bounds, &r, ext.as_ref()).unwrap();
+    let qm_grad =
+        ferric_scf::gradient::rhf_gradient(&mol, &prep, op, &bounds, &r, ext.as_ref()).unwrap();
     let forces = mm_forces(&sys, &mol, &prep, r.density_total()).unwrap();
 
     let plain = full_gradient(&sys, &qm_grad, &forces).unwrap();
 
-    let empty_sites = PolarizableSites { sites: vec![], ..Default::default() };
+    let empty_sites = PolarizableSites {
+        sites: vec![],
+        ..Default::default()
+    };
     let site_rows = polarizable_site_gradient(
-        &sys, &mol, &prep, r.density_total(), ext.as_ref(), &empty_sites, &Array2::zeros((0, 3)),
+        &sys,
+        &mol,
+        &prep,
+        r.density_total(),
+        ext.as_ref(),
+        &empty_sites,
+        &Array2::zeros((0, 3)),
     )
     .unwrap();
-    assert!(site_rows.is_empty(), "no polarizable sites must give an empty row list");
+    assert!(
+        site_rows.is_empty(),
+        "no polarizable sites must give an empty row list"
+    );
 
     let with_pol = full_gradient_with_polarizable(
-        &sys, &qm_grad, &forces, ext.as_ref(), &empty_sites, None, &mol, &prep, r.density_total(),
+        &sys,
+        &qm_grad,
+        &forces,
+        ext.as_ref(),
+        &empty_sites,
+        None,
+        &mol,
+        &prep,
+        r.density_total(),
     )
     .unwrap();
 
@@ -170,12 +211,26 @@ fn colocated_charge_and_polarizable_site_row_matches_finite_difference() {
     let (prep, _op, _bounds) = setup(&mol);
     let ext = sys.to_external_potential();
     let pol_sites = sys.to_polarizable_sites();
-    let sites = PolarizableSites { sites: pol_sites, ..Default::default() };
-    let dipoles = run.induced_dipoles.as_ref().expect("polarizable run must produce induced dipoles");
+    let sites = PolarizableSites {
+        sites: pol_sites,
+        ..Default::default()
+    };
+    let dipoles = run
+        .induced_dipoles
+        .as_ref()
+        .expect("polarizable run must produce induced dipoles");
 
     let forces = mm_forces(&sys, &mol, &prep, &run.density_total).unwrap();
     let full = full_gradient_with_polarizable(
-        &sys, &run.qm_gradient, &forces, ext.as_ref(), &sites, Some(dipoles), &mol, &prep, &run.density_total,
+        &sys,
+        &run.qm_gradient,
+        &forces,
+        ext.as_ref(),
+        &sites,
+        Some(dipoles),
+        &mol,
+        &prep,
+        &run.density_total,
     )
     .unwrap();
 
@@ -186,7 +241,10 @@ fn colocated_charge_and_polarizable_site_row_matches_finite_difference() {
     let plain = full_gradient(&sys, &run.qm_gradient, &forces).unwrap();
     let cl_idx = 3;
     let differs = (0..3).any(|k| (full[(cl_idx, k)] - plain[(cl_idx, k)]).abs() > 1e-8);
-    assert!(differs, "polarizable terms must be nonzero on the colocated charge+alpha atom's row");
+    assert!(
+        differs,
+        "polarizable terms must be nonzero on the colocated charge+alpha atom's row"
+    );
 
     let h = 1e-3;
     let atoms0 = {
@@ -210,16 +268,28 @@ fn colocated_charge_and_polarizable_site_row_matches_finite_difference() {
         let mut plus = atoms0.clone();
         let mut minus = atoms0.clone();
         match k {
-            0 => { plus[a].x += h; minus[a].x -= h; }
-            1 => { plus[a].y += h; minus[a].y -= h; }
-            _ => { plus[a].z_pos += h; minus[a].z_pos -= h; }
+            0 => {
+                plus[a].x += h;
+                minus[a].x -= h;
+            }
+            1 => {
+                plus[a].y += h;
+                minus[a].y -= h;
+            }
+            _ => {
+                plus[a].z_pos += h;
+                minus[a].z_pos -= h;
+            }
         }
         let fd = (energy_at(&plus) - energy_at(&minus)) / (2.0 * h);
         let an = full[(a, k)];
         let err = (an - fd).abs();
         max_err = max_err.max(err);
         eprintln!("[qmmm-B5] {label}: analytic {an:+.8e}, FD {fd:+.8e}, |Δ| {err:.2e}");
-        assert!(err < 2e-6, "{label}: analytic {an:+.8e} vs FD {fd:+.8e} (|Δ| {err:.2e})");
+        assert!(
+            err < 2e-6,
+            "{label}: analytic {an:+.8e} vs FD {fd:+.8e} (|Δ| {err:.2e})"
+        );
     }
     eprintln!("[qmmm-B5] max|analytic - FD| (colocated charge+alpha acid test) = {max_err:.3e}");
 }
@@ -245,12 +315,26 @@ fn two_colocated_charge_and_polarizable_sites_match_finite_difference() {
     let (prep, _op, _bounds) = setup(&mol);
     let ext = sys.to_external_potential();
     let pol_sites = sys.to_polarizable_sites();
-    let sites = PolarizableSites { sites: pol_sites, ..Default::default() };
-    let dipoles = run.induced_dipoles.as_ref().expect("polarizable run must produce induced dipoles");
+    let sites = PolarizableSites {
+        sites: pol_sites,
+        ..Default::default()
+    };
+    let dipoles = run
+        .induced_dipoles
+        .as_ref()
+        .expect("polarizable run must produce induced dipoles");
 
     let forces = mm_forces(&sys, &mol, &prep, &run.density_total).unwrap();
     let full = full_gradient_with_polarizable(
-        &sys, &run.qm_gradient, &forces, ext.as_ref(), &sites, Some(dipoles), &mol, &prep, &run.density_total,
+        &sys,
+        &run.qm_gradient,
+        &forces,
+        ext.as_ref(),
+        &sites,
+        Some(dipoles),
+        &mol,
+        &prep,
+        &run.density_total,
     )
     .unwrap();
 
@@ -276,16 +360,30 @@ fn two_colocated_charge_and_polarizable_sites_match_finite_difference() {
         let mut plus = atoms0.clone();
         let mut minus = atoms0.clone();
         match k {
-            0 => { plus[a].x += h; minus[a].x -= h; }
-            1 => { plus[a].y += h; minus[a].y -= h; }
-            _ => { plus[a].z_pos += h; minus[a].z_pos -= h; }
+            0 => {
+                plus[a].x += h;
+                minus[a].x -= h;
+            }
+            1 => {
+                plus[a].y += h;
+                minus[a].y -= h;
+            }
+            _ => {
+                plus[a].z_pos += h;
+                minus[a].z_pos -= h;
+            }
         }
         let fd = (energy_at(&plus) - energy_at(&minus)) / (2.0 * h);
         let an = full[(a, k)];
         let err = (an - fd).abs();
         max_err = max_err.max(err);
-        eprintln!("[qmmm-B5] mutual induction {label}: analytic {an:+.8e}, FD {fd:+.8e}, |Δ| {err:.2e}");
-        assert!(err < 2e-6, "{label}: analytic {an:+.8e} vs FD {fd:+.8e} (|Δ| {err:.2e})");
+        eprintln!(
+            "[qmmm-B5] mutual induction {label}: analytic {an:+.8e}, FD {fd:+.8e}, |Δ| {err:.2e}"
+        );
+        assert!(
+            err < 2e-6,
+            "{label}: analytic {an:+.8e} vs FD {fd:+.8e} (|Δ| {err:.2e})"
+        );
     }
     eprintln!("[qmmm-B5] max|analytic - FD| (two-site mutual induction) = {max_err:.3e}");
 }
@@ -300,18 +398,32 @@ fn full_gradient_with_polarizable_column_sums_vanish() {
     let (prep, _op, _bounds) = setup(&mol);
     let ext = sys.to_external_potential();
     let pol_sites = sys.to_polarizable_sites();
-    let sites = PolarizableSites { sites: pol_sites, ..Default::default() };
+    let sites = PolarizableSites {
+        sites: pol_sites,
+        ..Default::default()
+    };
     let dipoles = run.induced_dipoles.as_ref().unwrap();
 
     let forces = mm_forces(&sys, &mol, &prep, &run.density_total).unwrap();
     let full = full_gradient_with_polarizable(
-        &sys, &run.qm_gradient, &forces, ext.as_ref(), &sites, Some(dipoles), &mol, &prep, &run.density_total,
+        &sys,
+        &run.qm_gradient,
+        &forces,
+        ext.as_ref(),
+        &sites,
+        Some(dipoles),
+        &mol,
+        &prep,
+        &run.density_total,
     )
     .unwrap();
 
     for k in 0..3 {
         let sum: f64 = (0..full.nrows()).map(|i| full[(i, k)]).sum();
-        assert!(sum.abs() < 1e-6, "column {k} sum = {sum:.3e}, expected ~0 (translational invariance)");
+        assert!(
+            sum.abs() < 1e-6,
+            "column {k} sum = {sum:.3e}, expected ~0 (translational invariance)"
+        );
     }
 }
 

@@ -195,10 +195,8 @@ pub fn build_s_d_kind(tess: &[Tessera], kind: SdKind) -> (Array2<f64>, Array2<f6
                     // `D = S*nrij/rij**2 - 2*xi_r_ij/sqrt(pi)*exp(-xi_r_ij**2)*nrij/rij**3`
                     // evaluated once per (i,j) with nrij = (r_i-r_j)·n_j, and
                     // once per (j,i) with nrij = (r_j-r_i)·n_i.
-                    let gauss_term = 2.0 / std::f64::consts::PI.sqrt()
-                        * xi_r
-                        * (-xi_r * xi_r).exp()
-                        / (r2 * r);
+                    let gauss_term =
+                        2.0 / std::f64::consts::PI.sqrt() * xi_r * (-xi_r * xi_r).exp() / (r2 * r);
 
                     let dot_j = dx * tj.normal[0] + dy * tj.normal[1] + dz * tj.normal[2];
                     d[(i, j)] = s_ij * dot_j / r2 - gauss_term * dot_j;

@@ -9,6 +9,12 @@ from .funnel import FunnelReport, Stage, run_funnel
 from .tiers import TierResult, tier1_dock, tier2_forcefield, tier3_gfn2, tier4_dft
 
 __all__ = [
-    "FunnelReport", "Stage", "run_funnel", "TierResult",
-    "tier1_dock", "tier2_forcefield", "tier3_gfn2", "tier4_dft",
+    "FunnelReport",
+    "Stage",
+    "run_funnel",
+    "TierResult",
+    "tier1_dock",
+    "tier2_forcefield",
+    "tier3_gfn2",
+    "tier4_dft",
 ]

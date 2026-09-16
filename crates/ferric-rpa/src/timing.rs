@@ -39,7 +39,11 @@ impl Stage {
     pub fn start(label: &'static str) -> Self {
         Stage {
             label,
-            t0: if enabled() { Some(Instant::now()) } else { None },
+            t0: if enabled() {
+                Some(Instant::now())
+            } else {
+                None
+            },
         }
     }
 

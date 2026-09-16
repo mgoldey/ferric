@@ -31,6 +31,7 @@ child oom_score_adj=1000 so the OOM killer never takes Claude/other sessions.
 After completion run derisk_atz_cp.py for the analysis stage (extend its OMEGAS
 to include 0.20/0.42-T rows if it filters them).
 """
+
 from pathlib import Path
 import os, subprocess, threading, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -40,15 +41,24 @@ os.chdir(ROOT)
 OUT = "benchmarks/omega_diag/derisk"
 GEO = "benchmarks/grid/geoms"
 BIN = "target/release/ferric-cli"
-ENV = dict(os.environ, OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS="1",
-           OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
+ENV = dict(
+    os.environ,
+    OPENBLAS_NUM_THREADS="1",
+    RAYON_NUM_THREADS="1",
+    OMP_NUM_THREADS="1",
+    MKL_NUM_THREADS="1",
+)
 
-LIGHT_ANCHORS = [("01", "ammonia_HB"), ("02", "water_HB"),
-                 ("08", "methane_D"), ("09", "ethene_D")]
+LIGHT_ANCHORS = [
+    ("01", "ammonia_HB"),
+    ("02", "water_HB"),
+    ("08", "methane_D"),
+    ("09", "ethene_D"),
+]
 BZ = ("11", "benzene_PD")
-B_OMEGAS = [0.30, 0.42, 0.55, 0.673, 0.80]     # benzene, delta-lr
-T_OMEGAS = [0.20, 0.30, 0.42]                  # benzene, coupled-rings
-T_LIGHT_OMEGAS = [0.20]                        # new grid point for the anchors
+B_OMEGAS = [0.30, 0.42, 0.55, 0.673, 0.80]  # benzene, delta-lr
+T_OMEGAS = [0.20, 0.30, 0.42]  # benzene, coupled-rings
+T_LIGHT_OMEGAS = [0.20]  # new grid point for the anchors
 BASIS, AUX, BT = "aug-cc-pvtz", "aug-cc-pvtz-rifit", "atz"
 
 TIMEOUT = int(os.environ.get("ATZ_CP_TIMEOUT", "21600"))
@@ -89,8 +99,10 @@ def _heartbeat():
         with _lock:
             run = sorted(_running)
             d, t = _done[0], _total[0]
-        log(f"[hb] {d}/{t} done, mem={_mem_available_gb():.1f}GB, "
-            f"running={run if run else '(waiting)'}")
+        log(
+            f"[hb] {d}/{t} done, mem={_mem_available_gb():.1f}GB, "
+            f"running={run if run else '(waiting)'}"
+        )
 
 
 def fc_count(xyz):
@@ -99,7 +111,7 @@ def fc_count(xyz):
         if not ln.strip():
             continue
         s = ln.split()[0]
-        if s.startswith('@') or s.upper().startswith('H'):
+        if s.startswith("@") or s.upper().startswith("H"):
             continue
         n += 1
     return n
@@ -159,9 +171,11 @@ def needs_run(key, marker):
 
 
 def frags_for(sid):
-    return {"dimer": f"{GEO}/s22-{sid}_dimer.xyz",
-            "cpA": f"{GEO}/s22-{sid}_mA_cp.xyz",
-            "cpB": f"{GEO}/s22-{sid}_mB_cp.xyz"}
+    return {
+        "dimer": f"{GEO}/s22-{sid}_dimer.xyz",
+        "cpA": f"{GEO}/s22-{sid}_mA_cp.xyz",
+        "cpB": f"{GEO}/s22-{sid}_mB_cp.xyz",
+    }
 
 
 def enumerate_jobs():
@@ -173,9 +187,13 @@ def enumerate_jobs():
             for omega in T_LIGHT_OMEGAS:
                 key = f"{label}_{sid}_{BT}_w{omega}_T_{fr}"
                 if needs_run(key, "Total energy"):
-                    light.append((key, rsmp2_toml(absxyz(xyz), omega,
-                                                  "coupled-rings", fc),
-                                  "Total energy"))
+                    light.append(
+                        (
+                            key,
+                            rsmp2_toml(absxyz(xyz), omega, "coupled-rings", fc),
+                            "Total energy",
+                        )
+                    )
     # HEAVY: benzene tail (re-scoped)
     sid, label = BZ
     for fr, xyz in frags_for(sid).items():
@@ -183,14 +201,23 @@ def enumerate_jobs():
         for omega in B_OMEGAS:
             key = f"{label}_{sid}_{BT}_w{omega}_B_{fr}"
             if needs_run(key, "Total energy"):
-                heavy.append((key, rsmp2_toml(absxyz(xyz), omega,
-                                              "delta-lr", fc), "Total energy"))
+                heavy.append(
+                    (
+                        key,
+                        rsmp2_toml(absxyz(xyz), omega, "delta-lr", fc),
+                        "Total energy",
+                    )
+                )
         for omega in T_OMEGAS:
             key = f"{label}_{sid}_{BT}_w{omega}_T_{fr}"
             if needs_run(key, "Total energy"):
-                heavy.append((key, rsmp2_toml(absxyz(xyz), omega,
-                                              "coupled-rings", fc),
-                              "Total energy"))
+                heavy.append(
+                    (
+                        key,
+                        rsmp2_toml(absxyz(xyz), omega, "coupled-rings", fc),
+                        "Total energy",
+                    )
+                )
         key = f"{label}_{sid}_{BT}_RHF_{fr}"
         if needs_run(key, "RHF energy"):
             heavy.append((key, scf_toml(absxyz(xyz), fc), "RHF energy"))
@@ -202,8 +229,10 @@ def enumerate_jobs():
 
 def _wait_for_memory(key, need_gb):
     while _mem_available_gb() < need_gb:
-        log(f"[preflight] {key}: {_mem_available_gb():.1f}GB free "
-            f"(<{need_gb}); waiting {PREFLIGHT_WAIT_S}s")
+        log(
+            f"[preflight] {key}: {_mem_available_gb():.1f}GB free "
+            f"(<{need_gb}); waiting {PREFLIGHT_WAIT_S}s"
+        )
         time.sleep(PREFLIGHT_WAIT_S)
 
 
@@ -215,7 +244,7 @@ def run_one(job, need_gb):
     _wait_for_memory(key, need_gb)
     with _lock:
         _running.add(key)
-    open(f"{OUT}/toml/{key}.toml", 'w').write(toml)
+    open(f"{OUT}/toml/{key}.toml", "w").write(toml)
     t0 = time.monotonic()
 
     def _raise_oom_score():
@@ -226,9 +255,15 @@ def run_one(job, need_gb):
             pass
 
     try:
-        with open(op, 'w') as f, open(op + ".err", 'w') as e:
-            subprocess.run([BIN, f"{OUT}/toml/{key}.toml"], stdout=f, stderr=e,
-                           env=ENV, timeout=TIMEOUT, preexec_fn=_raise_oom_score)
+        with open(op, "w") as f, open(op + ".err", "w") as e:
+            subprocess.run(
+                [BIN, f"{OUT}/toml/{key}.toml"],
+                stdout=f,
+                stderr=e,
+                env=ENV,
+                timeout=TIMEOUT,
+                preexec_fn=_raise_oom_score,
+            )
     except subprocess.TimeoutExpired:
         return key, "TIMEOUT", time.monotonic() - t0
     finally:
@@ -242,8 +277,10 @@ def run_one(job, need_gb):
 def _run_pool(jobs, concurrency, tag, need_gb):
     if not jobs:
         return
-    log(f"[par:{tag}] {len(jobs)} jobs, concurrency={concurrency}, "
-        f"preflight={need_gb}GB")
+    log(
+        f"[par:{tag}] {len(jobs)} jobs, concurrency={concurrency}, "
+        f"preflight={need_gb}GB"
+    )
     with ThreadPoolExecutor(max_workers=concurrency) as ex:
         futs = {ex.submit(run_one, j, need_gb): j[0] for j in jobs}
         for fut in as_completed(futs):
@@ -262,9 +299,11 @@ def main():
     if _total[0] == 0:
         log("[par] nothing to do — all v2 aTZ CP jobs complete.")
         return
-    log(f"[par] v2 scope: {len(light)} light (T@0.2 anchors) + "
+    log(
+        f"[par] v2 scope: {len(light)} light (T@0.2 anchors) + "
         f"{len(heavy)} heavy (benzene: B×{len(B_OMEGAS)}ω, T×{len(T_OMEGAS)}ω, "
-        f"RHF) jobs")
+        f"RHF) jobs"
+    )
     threading.Thread(target=_heartbeat, daemon=True).start()
     _run_pool(light, LIGHT_CONC, "light", PREFLIGHT_LIGHT_GB)
     _run_pool(heavy, 1, "heavy", PREFLIGHT_HEAVY_GB)

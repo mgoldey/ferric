@@ -181,7 +181,9 @@ fn pure_factor(l: usize, pure: bool) -> f64 {
     let c = ferric_cart2sph(l);
     let nf = 2 * l + 1;
     let ncart = (l + 1) * (l + 2) / 2;
-    (0..nf).map(|j| (0..ncart).map(|n| c[n * nf + j].abs()).sum::<f64>()).fold(0.0, f64::max)
+    (0..nf)
+        .map(|j| (0..ncart).map(|n| c[n * nf + j].abs()).sum::<f64>())
+        .fold(0.0, f64::max)
 }
 
 /// Binomial coefficient for the small `l` in play.
@@ -223,17 +225,27 @@ impl PairBounds {
         let mut sh = Vec::with_capacity(nsh);
         for (s, ls) in shells.iter().enumerate() {
             if ls.l < 0 || ls.l as usize > MAX_L {
-                return Err(FerricError::Basis(format!("cosx_screen: shell {s} has l={} (supported 0..={MAX_L})", ls.l)));
+                return Err(FerricError::Basis(format!(
+                    "cosx_screen: shell {s} has l={} (supported 0..={MAX_L})",
+                    ls.l
+                )));
             }
             if ls.exponents.len() != ls.coefficients.len() {
-                return Err(FerricError::Basis(format!("cosx_screen: shell {s} exponent/coefficient length mismatch")));
+                return Err(FerricError::Basis(format!(
+                    "cosx_screen: shell {s} exponent/coefficient length mismatch"
+                )));
             }
             let l = ls.l as usize;
             sh.push(Sh {
                 l,
                 center: ls.center,
                 exps: ls.exponents.to_vec(),
-                coefs: ls.exponents.iter().zip(ls.coefficients).map(|(&a, &c)| (c * prim_norm(a, l)).abs()).collect(),
+                coefs: ls
+                    .exponents
+                    .iter()
+                    .zip(ls.coefficients)
+                    .map(|(&a, &c)| (c * prim_norm(a, l)).abs())
+                    .collect(),
                 sfac: pure_factor(l, ls.pure),
             });
         }
@@ -243,7 +255,11 @@ impl PairBounds {
                 term_start.push(terms.len() as u32);
                 let (sa, sb) = (&sh[s1], &sh[s2]);
                 let (la, lb) = (sa.l, sb.l);
-                let q = [sa.center[0] - sb.center[0], sa.center[1] - sb.center[1], sa.center[2] - sb.center[2]];
+                let q = [
+                    sa.center[0] - sb.center[0],
+                    sa.center[1] - sb.center[1],
+                    sa.center[2] - sb.center[2],
+                ];
                 let ab2 = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
                 let ab = ab2.sqrt();
                 let sfac = sa.sfac * sb.sfac;
@@ -285,13 +301,23 @@ impl PairBounds {
                         let g1 = 0.5 * (2.0 * PI / p).sqrt();
                         tot += beta0 + beta1;
                         sum_bg += beta0 * g0 + beta1 * g1;
-                        terms.push(PrimTerm { cen, beta0: beta0 * ROUNDING_SLACK, beta1: beta1 * ROUNDING_SLACK, g0, g1 });
+                        terms.push(PrimTerm {
+                            cen,
+                            beta0: beta0 * ROUNDING_SLACK,
+                            beta1: beta1 * ROUNDING_SLACK,
+                            g0,
+                            g1,
+                        });
                     }
                 }
                 // Heaviest terms first so the early-exit in `exceeds` usually
                 // needs one term for a kept pair.
                 let lo = *term_start.last().expect("pushed above") as usize;
-                terms[lo..].sort_by(|x, y| (y.beta0 + y.beta1).partial_cmp(&(x.beta0 + x.beta1)).expect("finite weights"));
+                terms[lo..].sort_by(|x, y| {
+                    (y.beta0 + y.beta1)
+                        .partial_cmp(&(x.beta0 + x.beta1))
+                        .expect("finite weights")
+                });
                 coarse.push(Coarse {
                     mid: [
                         0.5 * (sa.center[0] + sb.center[0]),
@@ -305,7 +331,12 @@ impl PairBounds {
             }
         }
         term_start.push(terms.len() as u32);
-        Ok(Self { nsh, term_start, terms, coarse })
+        Ok(Self {
+            nsh,
+            term_start,
+            terms,
+            coarse,
+        })
     }
 
     /// Number of shells this was built for.
@@ -353,7 +384,13 @@ impl PairBounds {
     /// test a K builder should run once per spatially local batch; only pairs
     /// that pass it need any per-point work.
     #[inline]
-    pub fn coarse_estimate_sphere(&self, s1: usize, s2: usize, centre: &[f64; 3], radius: f64) -> f64 {
+    pub fn coarse_estimate_sphere(
+        &self,
+        s1: usize,
+        s2: usize,
+        centre: &[f64; 3],
+        radius: f64,
+    ) -> f64 {
         let (s1, s2) = if s1 >= s2 { (s1, s2) } else { (s2, s1) };
         let c = &self.coarse[tri(s1, s2)];
         let dx = centre[0] - c.mid[0];
@@ -429,7 +466,13 @@ impl PairBounds {
     /// `tests/cosx_region_diagnostics.rs`.
     #[doc(hidden)]
     #[inline]
-    pub fn coarse_estimate_box_zero_half(&self, s1: usize, s2: usize, lo: &[f64; 3], hi: &[f64; 3]) -> f64 {
+    pub fn coarse_estimate_box_zero_half(
+        &self,
+        s1: usize,
+        s2: usize,
+        lo: &[f64; 3],
+        hi: &[f64; 3],
+    ) -> f64 {
         let (s1, s2) = if s1 >= s2 { (s1, s2) } else { (s2, s1) };
         let c = &self.coarse[tri(s1, s2)];
         let dx = (c.mid[0] - hi[0]).max(lo[0] - c.mid[0]).max(0.0);
@@ -455,7 +498,10 @@ impl PairBounds {
         if self.coarse[idx].total < threshold || self.coarse_estimate(s1, s2, r) < threshold {
             return false;
         }
-        let (lo, hi) = (self.term_start[idx] as usize, self.term_start[idx + 1] as usize);
+        let (lo, hi) = (
+            self.term_start[idx] as usize,
+            self.term_start[idx + 1] as usize,
+        );
         let mut acc = 0.0_f64;
         for t in &self.terms[lo..hi] {
             let dx = r[0] - t.cen[0];
@@ -480,7 +526,10 @@ impl PairBounds {
     pub fn estimate(&self, s1: usize, s2: usize, r: &[f64; 3]) -> f64 {
         let (s1, s2) = if s1 >= s2 { (s1, s2) } else { (s2, s1) };
         let idx = tri(s1, s2);
-        let (lo, hi) = (self.term_start[idx] as usize, self.term_start[idx + 1] as usize);
+        let (lo, hi) = (
+            self.term_start[idx] as usize,
+            self.term_start[idx + 1] as usize,
+        );
         let mut acc = 0.0_f64;
         for t in &self.terms[lo..hi] {
             let dx = r[0] - t.cen[0];

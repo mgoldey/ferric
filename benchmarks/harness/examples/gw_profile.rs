@@ -63,7 +63,9 @@ fn pdep_cfg() -> PdepRpaConfig {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let path = args.next().expect("usage: gw_profile <file.xyz> <obs> <ri-aux>");
+    let path = args
+        .next()
+        .expect("usage: gw_profile <file.xyz> <obs> <ri-aux>");
     let obs_name = args.next().unwrap_or_else(|| "def2-tzvp".to_string());
     let aux_name = args.next().unwrap_or_else(|| "def2-tzvp-rifit".to_string());
 
@@ -74,19 +76,42 @@ fn main() {
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
 
-    println!("# gw_profile: {} / {}  (nbf will print below)", path, obs_name);
-    let obs = timed!("PreparedBasis(obs)", PreparedBasis::new(&mol, &obs_bs).expect("obs"));
-    let dfbs = timed!("PreparedBasis(aux)", PreparedBasis::new(&mol, &aux_bs).expect("aux"));
-    let bounds = timed!("SchwarzBounds", SchwarzBounds::compute(op, &obs).expect("schwarz"));
-    let rhf = timed!("solve_rhf", solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).expect("rhf"));
+    println!(
+        "# gw_profile: {} / {}  (nbf will print below)",
+        path, obs_name
+    );
+    let obs = timed!(
+        "PreparedBasis(obs)",
+        PreparedBasis::new(&mol, &obs_bs).expect("obs")
+    );
+    let dfbs = timed!(
+        "PreparedBasis(aux)",
+        PreparedBasis::new(&mol, &aux_bs).expect("aux")
+    );
+    let bounds = timed!(
+        "SchwarzBounds",
+        SchwarzBounds::compute(op, &obs).expect("schwarz")
+    );
+    let rhf = timed!(
+        "solve_rhf",
+        solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).expect("rhf")
+    );
 
     // One standalone PDEP-RPA: this is what each of the 4 run_gw calls rebuilds.
-    let _pdep = timed!("run_pdep_rpa (1x)", run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &pdep_cfg()).expect("pdep"));
+    let _pdep = timed!(
+        "run_pdep_rpa (1x)",
+        run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &pdep_cfg()).expect("pdep")
+    );
 
     // Each method's FULL run_gw (includes its own run_pdep_rpa + build_full_b).
     // Sum of G0W0+COHSEX+evGW0 ≈ the redundant-setup cost we'd save by sharing.
     let cfg = pdep_cfg();
-    for method in [GwMethod::G0W0, GwMethod::Cohsex, GwMethod::EvGw0, GwMethod::EvGw] {
+    for method in [
+        GwMethod::G0W0,
+        GwMethod::Cohsex,
+        GwMethod::EvGw0,
+        GwMethod::EvGw,
+    ] {
         let tag = match method {
             GwMethod::G0W0 => "run_gw[G0W0]",
             GwMethod::Cohsex => "run_gw[COHSEX]",
@@ -94,8 +119,16 @@ fn main() {
             GwMethod::EvGw => "run_gw[evGW]",
             GwMethod::ScCohsex => "run_gw[scCOHSEX]",
         };
-        let gcfg = GwConfig { method, max_ev_iter: 8, ev_conv_thresh: 1e-4, ..Default::default() };
-        let _ = timed!(tag, run_gw(&mol, &obs, &dfbs, op, &rhf, &cfg, &gcfg, None).expect("gw"));
+        let gcfg = GwConfig {
+            method,
+            max_ev_iter: 8,
+            ev_conv_thresh: 1e-4,
+            ..Default::default()
+        };
+        let _ = timed!(
+            tag,
+            run_gw(&mol, &obs, &dfbs, op, &rhf, &cfg, &gcfg, None).expect("gw")
+        );
     }
     println!("# Reading: if run_gw[G0W0]≈run_gw[COHSEX]≈run_gw[evGW0] and each is");
     println!("# dominated by 'run_pdep_rpa (1x)'-scale setup, sharing W0 across the");

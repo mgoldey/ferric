@@ -35,7 +35,10 @@ fn probe_terfc_vs_exact_coulomb() {
         &obs,
         opc,
         &bounds,
-        &RhfConfig { energy_conv: 1e-9, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-9,
+            ..Default::default()
+        },
     )
     .unwrap();
     let cfg = RiMp2Config::default();
@@ -46,7 +49,10 @@ fn probe_terfc_vs_exact_coulomb() {
         .e_total;
     let e_exact = canonical_mp2(&mol, &obs, opc, &rhf, 0).unwrap();
     eprintln!("E_coul  RI    = {e_ri_coul:.10}");
-    eprintln!("E_coul  EXACT = {e_exact:.10}   (RI err {:+.3e})", e_ri_coul - e_exact);
+    eprintln!(
+        "E_coul  EXACT = {e_exact:.10}   (RI err {:+.3e})",
+        e_ri_coul - e_exact
+    );
     eprintln!();
     eprintln!("   r0      E_terfc(RI)      /E_RI_coul     /E_exact_coul");
     for &r0a in &[0.75_f64, 1.05, 1.5, 2.0, 3.0, 6.0, 12.0] {

@@ -3,6 +3,7 @@
 cross-check against ferric. Uses the identical geometries (TURBOMOLE -> Bohr,
 fed to PySCF in Bohr directly) so the only difference is the program.
 """
+
 import os
 import sys
 import time
@@ -43,6 +44,7 @@ def energy(name, basis="cc-pvdz", auxbasis="cc-pvdz-ri"):
     mf = scf.RHF(mol).density_fit(auxbasis="def2-universal-jkfit").run()
     # RI-MP2 with the same correlation aux as ferric (cc-pVDZ-RI)
     from pyscf.mp.dfmp2_native import DFMP2
+
     pt = DFMP2(mf, auxbasis=auxbasis).run()
     return mf.e_tot + pt.e_corr, mf.e_tot, pt.e_corr
 
@@ -56,13 +58,18 @@ def main():
         try:
             tot, rhf, corr = energy(n)
             e[n] = tot
-            print(f"  {n:12s} E = {tot:.8f} Ha  (RHF {rhf:.8f}, MP2corr {corr:.8f})", flush=True)
+            print(
+                f"  {n:12s} E = {tot:.8f} Ha  (RHF {rhf:.8f}, MP2corr {corr:.8f})",
+                flush=True,
+            )
         except Exception as ex:
             print(f"  {n:12s} FAILED: {ex}", flush=True)
             e[n] = None
 
     print(f"\n# reactions (kcal/mol): PySCF vs CCSD(T)/CBS ref")
-    print(f"{'rxn':>3} {'reactant':>10} {'product':>10} {'pyscf':>9} {'ref':>9} {'err':>8}")
+    print(
+        f"{'rxn':>3} {'reactant':>10} {'product':>10} {'pyscf':>9} {'ref':>9} {'err':>8}"
+    )
     errs = []
     for i, (a, b, ref) in enumerate(R.REACTIONS, 1):
         if e.get(a) is None or e.get(b) is None:
@@ -77,11 +84,14 @@ def main():
         mx = max(abs(x) for x in errs)
         rmsd = (sum(x * x for x in errs) / len(errs)) ** 0.5
         md = sum(errs) / len(errs)
-        print(f"\n# {len(errs)}/{len(R.REACTIONS)} reactions | "
-              f"MAE={mae:.3f}  MD={md:+.3f}  RMSD={rmsd:.3f}  MAX={mx:.3f} kcal/mol "
-              f"| {time.time()-t0:.1f}s")
+        print(
+            f"\n# {len(errs)}/{len(R.REACTIONS)} reactions | "
+            f"MAE={mae:.3f}  MD={md:+.3f}  RMSD={rmsd:.3f}  MAX={mx:.3f} kcal/mol "
+            f"| {time.time() - t0:.1f}s"
+        )
     # dump per-conformer for the ferric diff
     import json
+
     with open(os.path.join(HERE, "aconf_pyscf_energies.json"), "w") as fh:
         json.dump(e, fh, indent=2)
 

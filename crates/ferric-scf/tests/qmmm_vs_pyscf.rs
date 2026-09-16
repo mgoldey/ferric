@@ -97,10 +97,26 @@ fn system_from_ref(r: &QmmmRef) -> QmmmSystem {
     let mut atoms: Vec<QmmmAtom> = r
         .atoms
         .iter()
-        .map(|a| QmmmAtom::new(a.symbol.clone(), z_of(&a.symbol), a.xyz_bohr[0], a.xyz_bohr[1], a.xyz_bohr[2], 99.0))
+        .map(|a| {
+            QmmmAtom::new(
+                a.symbol.clone(),
+                z_of(&a.symbol),
+                a.xyz_bohr[0],
+                a.xyz_bohr[1],
+                a.xyz_bohr[2],
+                99.0,
+            )
+        })
         .collect();
     for c in &r.mm_charges {
-        atoms.push(QmmmAtom::new("X", 0, c.xyz_bohr[0], c.xyz_bohr[1], c.xyz_bohr[2], c.q));
+        atoms.push(QmmmAtom::new(
+            "X",
+            0,
+            c.xyz_bohr[0],
+            c.xyz_bohr[1],
+            c.xyz_bohr[2],
+            c.q,
+        ));
     }
     let qm: Vec<usize> = (0..r.atoms.len()).collect();
     QmmmSystem::new(&atoms, QmSelection::Indices(qm), r.charge, r.multiplicity).unwrap()
@@ -121,7 +137,9 @@ fn run(r: &QmmmRef) -> Run {
     // a nonzero dummy charge in the QM region must not leak into the
     // potential, and the MM sites must not become nuclei.
     assert_eq!(mol.atoms.len(), r.atoms.len());
-    let ep = sys.to_external_potential().expect("reference has MM charges");
+    let ep = sys
+        .to_external_potential()
+        .expect("reference has MM charges");
     assert_eq!(ep.point_charges.len(), r.mm_charges.len());
 
     let bs = basis::bundled("sto-3g").unwrap();
@@ -130,20 +148,43 @@ fn run(r: &QmmmRef) -> Run {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let cfg = RhfConfig { external_potential: Some(ep), density_conv: 1e-10, ..Default::default() };
-    let gas_cfg = RhfConfig { density_conv: 1e-10, ..Default::default() };
+    let cfg = RhfConfig {
+        external_potential: Some(ep),
+        density_conv: 1e-10,
+        ..Default::default()
+    };
+    let gas_cfg = RhfConfig {
+        density_conv: 1e-10,
+        ..Default::default()
+    };
 
     let (scf, gas, grad) = match r.method.as_str() {
         "rhf" => {
             let s = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
             let g = solve_rhf(&ctx, &mol, &prep, op, &bounds, &gas_cfg).unwrap();
-            let grad = rhf_gradient(&mol, &prep, op, &bounds, &s, cfg.external_potential.as_ref()).unwrap();
+            let grad = rhf_gradient(
+                &mol,
+                &prep,
+                op,
+                &bounds,
+                &s,
+                cfg.external_potential.as_ref(),
+            )
+            .unwrap();
             (s, g, grad)
         }
         "uhf" => {
             let s = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
             let g = solve_uhf(&ctx, &mol, &prep, &bounds, &gas_cfg).unwrap();
-            let grad = uhf_gradient(&mol, &prep, op, &bounds, &s, cfg.external_potential.as_ref()).unwrap();
+            let grad = uhf_gradient(
+                &mol,
+                &prep,
+                op,
+                &bounds,
+                &s,
+                cfg.external_potential.as_ref(),
+            )
+            .unwrap();
             (s, g, grad)
         }
         m => panic!("unknown method {m}"),
@@ -170,7 +211,10 @@ fn check(name: &str) {
     let out = run(&r);
 
     let de_gas = (out.energy_gas - r.energy_gas_phase).abs();
-    assert!(de_gas < 5e-8, "{name}: gas-phase energy off by {de_gas:.3e}");
+    assert!(
+        de_gas < 5e-8,
+        "{name}: gas-phase energy off by {de_gas:.3e}"
+    );
     let de = (out.energy - r.energy).abs();
     assert!(
         de < 5e-8,
@@ -182,11 +226,19 @@ fn check(name: &str) {
     // check it explicitly so a shared gas-phase offset could not mask it.
     let shift_f = out.energy - out.energy_gas;
     let shift_p = r.energy - r.energy_gas_phase;
-    assert!((shift_f - shift_p).abs() < 1e-8, "{name}: embedding shift {shift_f:.3e} vs {shift_p:.3e}");
+    assert!(
+        (shift_f - shift_p).abs() < 1e-8,
+        "{name}: embedding shift {shift_f:.3e} vs {shift_p:.3e}"
+    );
 
     for k in 0..3 {
         let d = (out.dipole[k] - r.dipole[k]).abs();
-        assert!(d < 1e-6, "{name}: dipole[{k}] ferric {} vs PySCF {} (Δ {d:.3e})", out.dipole[k], r.dipole[k]);
+        assert!(
+            d < 1e-6,
+            "{name}: dipole[{k}] ferric {} vs PySCF {} (Δ {d:.3e})",
+            out.dipole[k],
+            r.dipole[k]
+        );
     }
 
     assert_eq!(out.mm_forces.len(), r.mm_gradient.len());
@@ -194,7 +246,12 @@ fn check(name: &str) {
         for k in 0..3 {
             // ferric returns the FORCE; PySCF's grad_*_mm is dE/dR.
             let d = (f[k] + g[k]).abs();
-            assert!(d < 1e-6, "{name}: MM force[{i}][{k}] ferric {} vs PySCF −grad {} (Δ {d:.3e})", f[k], -g[k]);
+            assert!(
+                d < 1e-6,
+                "{name}: MM force[{i}][{k}] ferric {} vs PySCF −grad {} (Δ {d:.3e})",
+                f[k],
+                -g[k]
+            );
         }
     }
 
@@ -202,14 +259,23 @@ fn check(name: &str) {
     for (a, g) in r.qm_gradient.iter().enumerate() {
         for k in 0..3 {
             let d = (out.qm_gradient[(a, k)] - g[k]).abs();
-            assert!(d < 1e-6, "{name}: QM gradient[{a}][{k}] ferric {} vs PySCF {} (Δ {d:.3e})", out.qm_gradient[(a, k)], g[k]);
+            assert!(
+                d < 1e-6,
+                "{name}: QM gradient[{a}][{k}] ferric {} vs PySCF {} (Δ {d:.3e})",
+                out.qm_gradient[(a, k)],
+                g[k]
+            );
         }
     }
 
     eprintln!(
         "[qmmm-vs-pyscf] {name}: ΔE {de:.2e}, shift ferric {shift_f:+.8} / PySCF {shift_p:+.8}, \
          max|ΔF_mm| {:.2e}",
-        out.mm_forces.iter().zip(r.mm_gradient.iter()).flat_map(|(f, g)| (0..3).map(move |k| (f[k] + g[k]).abs())).fold(0.0, f64::max)
+        out.mm_forces
+            .iter()
+            .zip(r.mm_gradient.iter())
+            .flat_map(|(f, g)| (0..3).map(move |k| (f[k] + g[k]).abs()))
+            .fold(0.0, f64::max)
     );
 }
 

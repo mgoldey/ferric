@@ -36,6 +36,7 @@ Usage (one point of the series; run across alkane_5/10/15/20 and fit):
     scripts/ferric-limited -- uv run --no-sync python \
         experiments/danuglipron/probes/dft_cost_split.py <xyz> <charge> [basis]
 """
+
 from __future__ import annotations
 
 import sys
@@ -57,9 +58,12 @@ def main() -> int:
     t0 = time.time()
     res = ferric.run_dft(mol, bs, functional="PBE")
     dt = time.time() - t0
-    print(f"{path.split('/')[-1]:20s} natoms={mol.natoms():3d} "
-          f"nelec={mol.nelec():4d} basis={basis:9s} "
-          f"{dt:8.1f} s  conv={res.converged}", flush=True)
+    print(
+        f"{path.split('/')[-1]:20s} natoms={mol.natoms():3d} "
+        f"nelec={mol.nelec():4d} basis={basis:9s} "
+        f"{dt:8.1f} s  conv={res.converged}",
+        flush=True,
+    )
     return 0
 
 

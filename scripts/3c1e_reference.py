@@ -50,7 +50,7 @@ import numpy as np
 # Evaluated with a small-T Taylor series and a large-T asymptotic form plus
 # downward recursion.  See the spec for the breakpoint justification.
 
-BOYS_T_SMALL = 1e-12   # below this, use the T=0 limit exactly
+BOYS_T_SMALL = 1e-12  # below this, use the T=0 limit exactly
 
 # Taylor/downward below, asymptotic/upward above.
 #
@@ -448,9 +448,9 @@ def _segmented_shells(mol) -> list[tuple[int, np.ndarray, np.ndarray, np.ndarray
         #
         # This discontinuity at l=2 is invisible on any s/p-only check -- it is
         # exactly how a bug here survives a water/STO-3G validation.
-        angular = np.array([
-            (2.0 * a / math.pi) ** 0.75 * (4.0 * a) ** (l / 2.0) for a in exps
-        ])
+        angular = np.array(
+            [(2.0 * a / math.pi) ** 0.75 * (4.0 * a) ** (l / 2.0) for a in exps]
+        )
         sh_fac = math.sqrt(4.0 * math.pi / (2 * l + 1)) if l >= 2 else 1.0
         for k in range(ctr.shape[1]):
             cs = ctr[:, k] * angular
@@ -508,9 +508,9 @@ def a_matrices(mol, pts: np.ndarray) -> np.ndarray:
                 Tb = cart2sph_matrix(lb)
                 blk = np.einsum("gmn,mp,nq->gpq", blk, Ta, Tb, optimize=True)
             oi, oj = offs[i], offs[j]
-            out[:, oi:oi + dims[i], oj:oj + dims[j]] = blk
+            out[:, oi : oi + dims[i], oj : oj + dims[j]] = blk
             if i != j:
-                out[:, oj:oj + dims[j], oi:oi + dims[i]] = blk.transpose(0, 2, 1)
+                out[:, oj : oj + dims[j], oi : oi + dims[i]] = blk.transpose(0, 2, 1)
     return out
 
 
@@ -591,8 +591,9 @@ def run_self_test() -> int:
         ok = err < 1e-14
         if not ok:
             n_fail += 1
-        print(f"  F_0({T:9.4g}) = {got:.15f}  err {err:8.2e}  "
-              f"{'PASS' if ok else 'FAIL'}")
+        print(
+            f"  F_0({T:9.4g}) = {got:.15f}  err {err:8.2e}  {'PASS' if ok else 'FAIL'}"
+        )
 
     # Agreement of the two branches ACROSS the switch.
     #
@@ -609,9 +610,9 @@ def run_self_test() -> int:
     # (see BOYS_T_SWITCH), so comparing there would test nothing useful.
     probe_T = np.array([35.0, 36.0, 45.0, 80.0])
     try:
-        BOYS_T_SWITCH = 1e9          # force the Taylor/downward branch
+        BOYS_T_SWITCH = 1e9  # force the Taylor/downward branch
         f_small = boys_vec(8, probe_T)
-        BOYS_T_SWITCH = 0.0          # force the asymptotic/upward branch
+        BOYS_T_SWITCH = 0.0  # force the asymptotic/upward branch
         f_large = boys_vec(8, probe_T)
     finally:
         BOYS_T_SWITCH = saved
@@ -619,8 +620,10 @@ def run_self_test() -> int:
     ok = rel < 1e-12
     if not ok:
         n_fail += 1
-    print(f"  branch agreement at T=25..40 (n<=8): max rel diff "
-          f"{rel:.2e}  {'PASS' if ok else 'FAIL'}")
+    print(
+        f"  branch agreement at T=25..40 (n<=8): max rel diff "
+        f"{rel:.2e}  {'PASS' if ok else 'FAIL'}"
+    )
 
     # Independent check of F_n against ARBITRARY-PRECISION quadrature.
     #
@@ -648,8 +651,10 @@ def run_self_test() -> int:
         ok = worst < 1e-13
         if not ok:
             n_fail += 1
-        print(f"  F_n vs mpmath (50 dps, n<=7): max rel err "
-              f"{worst:.2e}  {'PASS' if ok else 'FAIL'}")
+        print(
+            f"  F_n vs mpmath (50 dps, n<=7): max rel err "
+            f"{worst:.2e}  {'PASS' if ok else 'FAIL'}"
+        )
 
     # Breakpoint guard.  The two checks above compare each branch only where it
     # is valid, so neither notices if BOYS_T_SWITCH is moved DOWN into the
@@ -668,15 +673,23 @@ def run_self_test() -> int:
     ok = rel_sw < 1e-15
     if not ok:
         n_fail += 1
-    print(f"  asymptotic branch exact at the T={Tsw:g} breakpoint: rel "
-          f"{rel_sw:.2e}  {'PASS' if ok else 'FAIL'}")
+    print(
+        f"  asymptotic branch exact at the T={Tsw:g} breakpoint: rel "
+        f"{rel_sw:.2e}  {'PASS' if ok else 'FAIL'}"
+    )
 
     # Normalization convention pin: PySCF's (l,0,0) Cartesian self-overlap is
     # 1 for l<2 and 4pi/(2l+1) for l>=2.  The reference depends on this.
     ok_all = True
     for l in range(5):
-        mol = gto.M(atom="H 0 0 0", basis=[[l, [1.7, 1.0]]], unit="Bohr",
-                    spin=1, cart=True, verbose=0)
+        mol = gto.M(
+            atom="H 0 0 0",
+            basis=[[l, [1.7, 1.0]]],
+            unit="Bohr",
+            spin=1,
+            cart=True,
+            verbose=0,
+        )
         s00 = float(mol.intor("int1e_ovlp")[0, 0])
         want = 1.0 if l < 2 else 4.0 * np.pi / (2 * l + 1)
         if abs(s00 - want) > 1e-12:
@@ -684,8 +697,10 @@ def run_self_test() -> int:
             print(f"  l={l}: S00={s00} expected {want}   FAIL")
     if not ok_all:
         n_fail += 1
-    print(f"  AO normalization convention (l=0..4)"
-          f"{'':>27}  {'PASS' if ok_all else 'FAIL'}")
+    print(
+        f"  AO normalization convention (l=0..4)"
+        f"{'':>27}  {'PASS' if ok_all else 'FAIL'}"
+    )
 
     print("=" * 78)
     print(f"{'ALL PASS' if n_fail == 0 else str(n_fail) + ' FAILURE(S)'}")

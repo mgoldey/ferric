@@ -46,10 +46,7 @@ use ndarray::Array4;
 ///
 /// [`FerricError::General`] when `t2`'s occupied dimensions disagree with
 /// `domains.nocc`.
-pub fn apply_pair_mask(
-    t2: &mut Array4<f64>,
-    domains: &PairDomains,
-) -> Result<usize, FerricError> {
+pub fn apply_pair_mask(t2: &mut Array4<f64>, domains: &PairDomains) -> Result<usize, FerricError> {
     let (ni, nj, _, _) = t2.dim();
     if ni != domains.nocc || nj != domains.nocc {
         return Err(FerricError::General(format!(
@@ -103,13 +100,18 @@ mod tests {
     use ndarray::{array, Array2};
 
     fn line_centers(nocc: usize, spacing: f64) -> Array2<f64> {
-        Array2::from_shape_fn((nocc, 3), |(i, ax)| if ax == 0 { i as f64 * spacing } else { 0.0 })
+        Array2::from_shape_fn(
+            (nocc, 3),
+            |(i, ax)| if ax == 0 { i as f64 * spacing } else { 0.0 },
+        )
     }
 
     fn filled_t2(nocc: usize, nvir: usize) -> Array4<f64> {
         let mut s = 0x9E3779B97F4A7C15u64;
         Array4::from_shape_fn((nocc, nocc, nvir, nvir), |_| {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((s >> 33) as f64 / (1u64 << 31) as f64) - 1.0
         })
     }
@@ -191,8 +193,14 @@ mod tests {
 
         for i in 0..nocc {
             for j in 0..nocc {
-                let ij_zero = masked.slice(ndarray::s![i, j, .., ..]).iter().all(|&v| v == 0.0);
-                let ji_zero = masked.slice(ndarray::s![j, i, .., ..]).iter().all(|&v| v == 0.0);
+                let ij_zero = masked
+                    .slice(ndarray::s![i, j, .., ..])
+                    .iter()
+                    .all(|&v| v == 0.0);
+                let ji_zero = masked
+                    .slice(ndarray::s![j, i, .., ..])
+                    .iter()
+                    .all(|&v| v == 0.0);
                 assert_eq!(ij_zero, ji_zero, "pair ({i},{j}) masked asymmetrically");
             }
         }

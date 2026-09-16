@@ -56,7 +56,10 @@ fn testdata(rel: &str) -> String {
 struct Lcg(u64);
 impl Lcg {
     fn next_f64(&mut self) -> f64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
     }
 }
@@ -123,12 +126,21 @@ fn cases() -> Vec<Case> {
         1,
     )
     .expect("water");
-    let butane = Molecule::load_xyz(&testdata("testdata/molecules/alkane_4.xyz")).expect("alkane_4");
+    let butane =
+        Molecule::load_xyz(&testdata("testdata/molecules/alkane_4.xyz")).expect("alkane_4");
     let bw = bundled("cc-pvdz").expect("cc-pvdz");
     let bb = bundled("def2-svp").expect("def2-svp");
     vec![
-        Case { label: "water/cc-pVDZ", prep: PreparedBasis::new(&water, &bw).expect("prep"), mol: water },
-        Case { label: "butane/def2-SVP", prep: PreparedBasis::new(&butane, &bb).expect("prep"), mol: butane },
+        Case {
+            label: "water/cc-pVDZ",
+            prep: PreparedBasis::new(&water, &bw).expect("prep"),
+            mol: water,
+        },
+        Case {
+            label: "butane/def2-SVP",
+            prep: PreparedBasis::new(&butane, &bb).expect("prep"),
+            mol: butane,
+        },
     ]
 }
 
@@ -165,7 +177,11 @@ fn probes_in_box(lo: &[f64; 3], hi: &[f64; 3], rng: &mut Lcg) -> Vec<[f64; 3]> {
             if c & 4 == 0 { lo[2] } else { hi[2] },
         ]);
     }
-    v.push([0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2])]);
+    v.push([
+        0.5 * (lo[0] + hi[0]),
+        0.5 * (lo[1] + hi[1]),
+        0.5 * (lo[2] + hi[2]),
+    ]);
     for _ in 0..24 {
         v.push([
             lo[0] + rng.next_f64() * (hi[0] - lo[0]),
@@ -206,8 +222,15 @@ fn box_bound_never_underestimates_inside_the_box() {
                 }
             }
         }
-        println!("{}: {checked} (pair, probe-in-box) checks, tightest true/bound = {worst:.4}", c.label);
-        assert!(checked > 100_000, "{}: only {checked} checks — the anchor is too thin", c.label);
+        println!(
+            "{}: {checked} (pair, probe-in-box) checks, tightest true/bound = {worst:.4}",
+            c.label
+        );
+        assert!(
+            checked > 100_000,
+            "{}: only {checked} checks — the anchor is too thin",
+            c.label
+        );
     }
 }
 
@@ -240,8 +263,14 @@ fn box_bound_is_never_looser_than_a_ball_containing_the_box() {
             let (lo, hi) = aabb(&region);
             // The box's circumscribing sphere: centre = box centre, radius =
             // half the diagonal. This ball provably CONTAINS the box.
-            let cc = [0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2])];
-            let rr = 0.5 * ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt();
+            let cc = [
+                0.5 * (lo[0] + hi[0]),
+                0.5 * (lo[1] + hi[1]),
+                0.5 * (lo[2] + hi[2]),
+            ];
+            let rr = 0.5
+                * ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2))
+                    .sqrt();
             let (cen, rad) = bounding_sphere(&region);
             for s1 in 0..nsh {
                 for s2 in 0..=s1 {
@@ -274,7 +303,11 @@ fn box_bound_is_never_looser_than_a_ball_containing_the_box() {
             100.0 * box_wins as f64 / total as f64,
             100.0 * sph_wins as f64 / total as f64,
         );
-        assert!(tighter > 0, "{}: the box is never tighter than its circumscribing sphere — inert", c.label);
+        assert!(
+            tighter > 0,
+            "{}: the box is never tighter than its circumscribing sphere — inert",
+            c.label
+        );
     }
 }
 
@@ -306,8 +339,15 @@ fn box_bound_degenerates_less_often_than_the_sphere() {
             }
         }
         let (fb, fs) = (deg_box as f64 / total as f64, deg_sph as f64 / total as f64);
-        println!("{}: degenerate fraction  sphere {fs:.4}  box {fb:.4}  ({total} queries)", c.label);
-        assert!(fb < fs, "{}: box degenerates as often as the sphere ({fb:.4} vs {fs:.4}) — inert", c.label);
+        println!(
+            "{}: degenerate fraction  sphere {fs:.4}  box {fb:.4}  ({total} queries)",
+            c.label
+        );
+        assert!(
+            fb < fs,
+            "{}: box degenerates as often as the sphere ({fb:.4} vs {fs:.4}) — inert",
+            c.label
+        );
     }
 }
 

@@ -237,11 +237,15 @@ pub(crate) fn dipole_ov_mo(
         first_occ,
     } = *orb;
     let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
     let c_vir = c
         .slice(ndarray::s![.., nocc_total..nocc_total + nvir])
         .to_owned();
-    Ok(std::array::from_fn(|d| c_occ.t().dot(&dip_ao[d]).dot(&c_vir)))
+    Ok(std::array::from_fn(|d| {
+        c_occ.t().dot(&dip_ao[d]).dot(&c_vir)
+    }))
 }
 
 /// HF-level analytic (CPHF) polarizability — Layer 1 only. Validation rung and
@@ -276,7 +280,8 @@ pub fn mp2_polarizability_analytic_hf(
     let mut u: Vec<Array2<f64>> = Vec::with_capacity(3);
     for x in 0..3 {
         let rhs = -&mu[x];
-        let (ux, resid, iters, conv) = solve_cphf_cg(c, &rhs, obs, bounds, &orb, eps, budget_bytes)?;
+        let (ux, resid, iters, conv) =
+            solve_cphf_cg(c, &rhs, obs, bounds, &orb, eps, budget_bytes)?;
         if !conv {
             return Err(FerricError::General(format!(
                 "cpks HF α: CPHF U^{x} did not converge (resid={resid:.2e}, iters={iters})"
@@ -382,7 +387,8 @@ pub fn analytic_dt2_full(
     // --- CPHF U^x: (Δε + 0.5 A) U = −μ^x_ov  (same operator/conventions as HF α) ---
     let mu_oc = dipole_ov_mo(obs, c, &orb)?; // (nocc,nvir)
     let mu_vo = mu_oc[axis].t().to_owned(); // (nvir,nocc)
-    let (u, resid, iters, conv) = solve_cphf_cg(c, &(-&mu_vo), obs, bounds, &orb, eps, budget_bytes)?;
+    let (u, resid, iters, conv) =
+        solve_cphf_cg(c, &(-&mu_vo), obs, bounds, &orb, eps, budget_bytes)?;
     if !conv {
         return Err(FerricError::General(format!(
             "analytic_dt2: CPHF U^{axis} not converged (resid={resid:.2e}, iters={iters})"
@@ -412,9 +418,9 @@ pub fn analytic_dt2_full(
     // μ in MO: μ_pq = Cᵀ D^x_AO C.
     let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let mu_mo = c.t().dot(&dip_ao[axis]).dot(c); // (nmo,nmo)
-    // (pp|ck): for occ p=i → Σ_P b_oo[P,i,i] b_ov[P,c? ...]; ck is occ-vir (k occ, c vir).
-    // Use B_ov for (ck): (ck)≡(k c) with k occ, c vir → b_ov[P, k*nvir + c].
-    // (pp|ck) = Σ_P B^P_pp B^P_kc ;  (pc|pk): p occ-or-vir mixed — handle per block.
+                                                 // (pp|ck): for occ p=i → Σ_P b_oo[P,i,i] b_ov[P,c? ...]; ck is occ-vir (k occ, c vir).
+                                                 // Use B_ov for (ck): (ck)≡(k c) with k occ, c vir → b_ov[P, k*nvir + c].
+                                                 // (pp|ck) = Σ_P B^P_pp B^P_kc ;  (pc|pk): p occ-or-vir mixed — handle per block.
     let de = |i: usize, j: usize, a: usize, b: usize| {
         eps[first_occ + i] + eps[first_occ + j] - eps[nocc_total + a] - eps[nocc_total + b]
     };
@@ -426,8 +432,12 @@ pub fn analytic_dt2_full(
     // Textbook perturbed-Fock-diagonal form — replaces the ad-hoc (pp|ck)
     // contractions. (Note: −r_axis sign convention is pinned by the FD oracle.)
     let nbas = obs.nbasis();
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
-    let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
+    let c_vir = c
+        .slice(ndarray::s![.., nocc_total..nocc_total + nvir])
+        .to_owned();
     // ∂D_AO from U (factor 2 = closed-shell occupancy).
     let mut dd_ao = Array2::<f64>::zeros((nbas, nbas));
     for a in 0..nvir {
@@ -502,8 +512,7 @@ pub fn analytic_dt2_along(
     mp2_config: &RiMp2Config,
     axis: usize,
 ) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
-    let (dt2, u, _df) =
-        analytic_dt2_full(ctx, mol, obs, dfbs, op, bounds, rhf, mp2_config, axis)?;
+    let (dt2, u, _df) = analytic_dt2_full(ctx, mol, obs, dfbs, op, bounds, rhf, mp2_config, axis)?;
     Ok((dt2, u))
 }
 
@@ -532,13 +541,18 @@ pub fn fd_dt2_along(
                 v[(mu, nu)] = -field * dip_ao[axis][(mu, nu)];
             }
         }
-        let rhf_f = crate::ff_polar::solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v)?;
+        let rhf_f =
+            crate::ff_polar::solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v)?;
         let inter = compute_mp2_intermediates(mol, obs, dfbs, op, &rhf_f, mp2_config)?;
         Ok(inter.t2)
     };
     let tp = t2_at(h)?;
     let tm = t2_at(-h)?;
-    Ok(tp.iter().zip(tm.iter()).map(|(p, m)| (p - m) / (2.0 * h)).collect())
+    Ok(tp
+        .iter()
+        .zip(tm.iter())
+        .map(|(p, m)| (p - m) / (2.0 * h))
+        .collect())
 }
 
 /// Analytic ∂E_MP2/∂F along `axis` — a GAUGE-INVARIANT scalar (immune to the
@@ -579,9 +593,15 @@ pub fn analytic_de_mp2_along(
             }
         }
     }
-    let eri = |ia: usize, jb: usize| (0..naux).map(|p| inter.b_ov[(p, ia)] * inter.b_ov[(p, jb)]).sum::<f64>();
+    let eri = |ia: usize, jb: usize| {
+        (0..naux)
+            .map(|p| inter.b_ov[(p, ia)] * inter.b_ov[(p, jb)])
+            .sum::<f64>()
+    };
     let deri = |ia: usize, jb: usize| {
-        (0..naux).map(|p| db_ov[(p, ia)] * inter.b_ov[(p, jb)] + inter.b_ov[(p, ia)] * db_ov[(p, jb)]).sum::<f64>()
+        (0..naux)
+            .map(|p| db_ov[(p, ia)] * inter.b_ov[(p, jb)] + inter.b_ov[(p, ia)] * db_ov[(p, jb)])
+            .sum::<f64>()
     };
     let mut de = 0.0;
     for i in 0..nocc {
@@ -633,7 +653,8 @@ pub fn fd_de_mp2_along(
                 v[(mu, nu)] = -field * dip_ao[axis][(mu, nu)];
             }
         }
-        let rhf_f = crate::ff_polar::solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v)?;
+        let rhf_f =
+            crate::ff_polar::solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v)?;
         let inter = compute_mp2_intermediates(mol, obs, dfbs, op, &rhf_f, mp2_config)?;
         Ok(inter.e_mp2)
     };
@@ -676,7 +697,9 @@ pub fn debug_dd_norms(
             let uai = u[(a, i)];
             for mu in 0..nbas {
                 for nu in 0..nbas {
-                    dd[(mu, nu)] += 2.0 * uai * (c_vir[(mu, a)] * c_occ[(nu, i)] + c_occ[(mu, i)] * c_vir[(nu, a)]);
+                    dd[(mu, nu)] += 2.0
+                        * uai
+                        * (c_vir[(mu, a)] * c_occ[(nu, i)] + c_occ[(mu, i)] * c_vir[(nu, a)]);
                 }
             }
         }
@@ -685,7 +708,11 @@ pub fn debug_dd_norms(
     let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let dens = |field: f64| -> Result<Array2<f64>, FerricError> {
         let mut v = Array2::<f64>::zeros((nbas, nbas));
-        for m in 0..nbas { for n in 0..nbas { v[(m, n)] = -field * dip_ao[axis][(m, n)]; } }
+        for m in 0..nbas {
+            for n in 0..nbas {
+                v[(m, n)] = -field * dip_ao[axis][(m, n)];
+            }
+        }
         let r = crate::ff_polar::solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v)?;
         Ok(r.density_total().to_owned())
     };
@@ -694,7 +721,11 @@ pub fn debug_dd_norms(
     let fd = (&dp - &dm).mapv(|x| x / (2.0 * h));
     let an_n = dd.iter().map(|x| x * x).sum::<f64>().sqrt();
     let fd_n = fd.iter().map(|x| x * x).sum::<f64>().sqrt();
-    let maxd = dd.iter().zip(fd.iter()).map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max);
+    let maxd = dd
+        .iter()
+        .zip(fd.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f64, f64::max);
     Ok((an_n, fd_n, maxd))
 }
 
@@ -729,35 +760,54 @@ pub fn debug_dd_traces(
     let c_occ = c.slice(ndarray::s![.., 0..nocc]).to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc..]).to_owned();
     let mut dd = Array2::<f64>::zeros((nbas, nbas));
-    for a in 0..nvir { for i in 0..nocc {
-        let uai = u[(a, i)];
-        for mu in 0..nbas { for nu in 0..nbas {
-            dd[(mu, nu)] += 2.0 * uai * (c_vir[(mu, a)] * c_occ[(nu, i)] + c_occ[(mu, i)] * c_vir[(nu, a)]);
-        }}
-    }}
+    for a in 0..nvir {
+        for i in 0..nocc {
+            let uai = u[(a, i)];
+            for mu in 0..nbas {
+                for nu in 0..nbas {
+                    dd[(mu, nu)] += 2.0
+                        * uai
+                        * (c_vir[(mu, a)] * c_occ[(nu, i)] + c_occ[(mu, i)] * c_vir[(nu, a)]);
+                }
+            }
+        }
+    }
     let dens = |field: f64| -> Result<Array2<f64>, FerricError> {
         let mut v = Array2::<f64>::zeros((nbas, nbas));
-        for m in 0..nbas { for n in 0..nbas { v[(m, n)] = -field * dip_ao[axis][(m, n)]; } }
+        for m in 0..nbas {
+            for n in 0..nbas {
+                v[(m, n)] = -field * dip_ao[axis][(m, n)];
+            }
+        }
         let r = crate::ff_polar::solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v)?;
         Ok(r.density_total().to_owned())
     };
     let fd = (&dens(h)? - &dens(-h)?).mapv(|x| x / (2.0 * h));
-    let tr = |d: &Array2<f64>| -> [f64; 3] {
-        std::array::from_fn(|y| -(d * &dip_ao[y]).sum())
-    };
+    let tr = |d: &Array2<f64>| -> [f64; 3] { std::array::from_fn(|y| -(d * &dip_ao[y]).sum()) };
     Ok((tr(&dd), tr(&fd)))
 }
 
 /// DIAGNOSTIC: E_MP2 at a single field along `axis` (for parabola/sign checks).
 pub fn debug_emp2_at_field(
-    ctx: &ParallelContext, mol: &Molecule, obs: &PreparedBasis, dfbs: &PreparedBasis,
-    op: Operator, bounds: &SchwarzBounds, scf_config: &ferric_scf::rhf::RhfConfig,
-    mp2_config: &RiMp2Config, axis: usize, field: f64,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    scf_config: &ferric_scf::rhf::RhfConfig,
+    mp2_config: &RiMp2Config,
+    axis: usize,
+    field: f64,
 ) -> Result<f64, FerricError> {
     let n = obs.nbasis();
-    let dip = oneelectron::dipole(obs, [0.0,0.0,0.0])?;
-    let mut v = Array2::<f64>::zeros((n,n));
-    for m in 0..n { for k in 0..n { v[(m,k)] = -field*dip[axis][(m,k)]; } }
+    let dip = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
+    let mut v = Array2::<f64>::zeros((n, n));
+    for m in 0..n {
+        for k in 0..n {
+            v[(m, k)] = -field * dip[axis][(m, k)];
+        }
+    }
     let r = crate::ff_polar::solve_rhf_with_external(ctx, mol, obs, bounds, scf_config, &v)?;
     Ok(compute_mp2_intermediates(mol, obs, dfbs, op, &r, mp2_config)?.e_mp2)
 }
@@ -772,7 +822,12 @@ fn veff_vo_mo(
     dm_mo: &Array2<f64>,
     orb: &OrbitalSpace,
 ) -> Result<Array2<f64>, FerricError> {
-    let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = *orb;
+    let OrbitalSpace {
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+    } = *orb;
     let nbas = obs.nbasis();
     let dm_ao = c.dot(dm_mo).dot(&c.t());
     let mut j = Array2::<f64>::zeros((nbas, nbas));
@@ -844,7 +899,8 @@ pub fn static_relaxed_density_ao(
     let xvo = &l + &veff;
 
     // (Δε + A) z = −Xvo  (full-A operator, ascale=1.0).
-    let (z, resid, iters, conv) = solve_cphf_cg_scaled(c, &(-&xvo), obs, bounds, &orb, eps, 1.0, budget_bytes)?;
+    let (z, resid, iters, conv) =
+        solve_cphf_cg_scaled(c, &(-&xvo), obs, bounds, &orb, eps, 1.0, budget_bytes)?;
     if !conv {
         return Err(FerricError::General(format!(
             "static_relaxed_density: z not converged (resid={resid:.2e}, iters={iters})"
@@ -918,8 +974,7 @@ fn dmp2_density_response(
                         let ac = (i * nvir + a) * nov + j * nvir + cc;
                         let bc = (i * nvir + b) * nov + j * nvir + cc;
                         let cb = (i * nvir + cc) * nov + j * nvir + b;
-                        s += dt2[ac] * (2.0 * t2[bc] - t2[cb])
-                            + t2[ac] * (2.0 * dt2[bc] - dt2[cb]);
+                        s += dt2[ac] * (2.0 * t2[bc] - t2[cb]) + t2[ac] * (2.0 * dt2[bc] - dt2[cb]);
                     }
                 }
             }
@@ -960,12 +1015,14 @@ pub fn analytic_alpha_amplitude_only(
         let mut ddm = Array2::<f64>::zeros((nmo, nmo));
         for i in 0..nocc {
             for j in 0..nocc {
-                ddm[(first_occ + i, first_occ + j)] = (dp_oo[(i, j)] + dp_oo[(j, i)]) * cpks_weight("CPKS_WP", 1.0);
+                ddm[(first_occ + i, first_occ + j)] =
+                    (dp_oo[(i, j)] + dp_oo[(j, i)]) * cpks_weight("CPKS_WP", 1.0);
             }
         }
         for a in 0..nvir {
             for b in 0..nvir {
-                ddm[(nocc_total + a, nocc_total + b)] = (dp_vv[(a, b)] + dp_vv[(b, a)]) * cpks_weight("CPKS_WP", 1.0);
+                ddm[(nocc_total + a, nocc_total + b)] =
+                    (dp_vv[(a, b)] + dp_vv[(b, a)]) * cpks_weight("CPKS_WP", 1.0);
             }
         }
         let ddm_ao = c.dot(&ddm).dot(&c.t());
@@ -982,7 +1039,11 @@ pub fn analytic_alpha_amplitude_only(
     }
     let iso = (tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0;
     let principal = eig3_sym(tensor);
-    Ok(Mp2Polarizability { tensor, iso, principal })
+    Ok(Mp2Polarizability {
+        tensor,
+        iso,
+        principal,
+    })
 }
 
 /// Full-MO B response ∂B^P_pq from the CPHF U^x (occ↔vir rotation):
@@ -994,7 +1055,12 @@ fn db_full_from_u(
     u: &Array2<f64>,
     orb: &OrbitalSpace,
 ) -> ndarray::Array3<f64> {
-    let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = *orb;
+    let OrbitalSpace {
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+    } = *orb;
     let naux = b_full.shape()[0];
     let nmo = b_full.shape()[1];
     // U as a full-MO antisymmetric-ish generator Θ_pq: occ i ← vir c with +U_ci,
@@ -1003,8 +1069,8 @@ fn db_full_from_u(
     let mut theta = Array2::<f64>::zeros((nmo, nmo)); // Θ_{q,p}: q mixes into p
     for a in 0..nvir {
         for i in 0..nocc {
-            theta[(nocc_total + a, first_occ + i)] = u[(a, i)];   // occ i gains vir a
-            theta[(first_occ + i, nocc_total + a)] = -u[(a, i)];  // vir a gains −occ i
+            theta[(nocc_total + a, first_occ + i)] = u[(a, i)]; // occ i gains vir a
+            theta[(first_occ + i, nocc_total + a)] = -u[(a, i)]; // vir a gains −occ i
         }
     }
     // ∂B^P_pq = Σ_r Θ_rp B^P_rq + Σ_r Θ_rq B^P_pr
@@ -1052,7 +1118,8 @@ pub fn analytic_alpha_relaxed(
     // Un-perturbed pieces (field-independent): base Lagrangian inputs + z.
     let f_mo0 = c.t().dot(rhf.fock_r()).dot(c);
     let b_full = crate::oo_rimp2::compute_b_full_mo(obs, dfbs, op, c)?;
-    let (z0, _l0) = crate::zvector::solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes)?;
+    let (z0, _l0) =
+        crate::zvector::solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes)?;
     let de = |a: usize, i: usize| eps[nocc_total + a] - eps[first_occ + i];
 
     let mut tensor = [[0.0f64; 3]; 3];
@@ -1067,7 +1134,12 @@ pub fn analytic_alpha_relaxed(
         let eps_step: f64 = cpks_weight("CPKS_EPS", 1e-4);
         let lag_at = |s: f64| -> Array2<f64> {
             let f = &f_mo0 + &(s * &df_mo);
-            let t: Vec<f64> = inter.t2.iter().zip(dt2.iter()).map(|(a, b)| a + s * b).collect();
+            let t: Vec<f64> = inter
+                .t2
+                .iter()
+                .zip(dt2.iter())
+                .map(|(a, b)| a + s * b)
+                .collect();
             let poo = &inter.p_oo + &(s * &dp_oo);
             let pvv = &inter.p_vv + &(s * &dp_vv);
             let bf = &b_full + &(s * &db_full);
@@ -1082,8 +1154,8 @@ pub fn analytic_alpha_relaxed(
         // − ∂Δε·z₀  (∂ε from df_mo diagonal).
         for a in 0..nvir {
             for i in 0..nocc {
-                let ddenom = df_mo[(nocc_total + a, nocc_total + a)]
-                    - df_mo[(first_occ + i, first_occ + i)];
+                let ddenom =
+                    df_mo[(nocc_total + a, nocc_total + a)] - df_mo[(first_occ + i, first_occ + i)];
                 rhs[(a, i)] -= ddenom * z0[(a, i)];
             }
         }
@@ -1103,8 +1175,12 @@ pub fn analytic_alpha_relaxed(
                 }
             }
             // D^{z₀}_AO = Σ_ai z0_ai (C_a C_iᵀ + C_i C_aᵀ).
-            let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
-            let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
+            let c_occ = c
+                .slice(ndarray::s![.., first_occ..first_occ + nocc])
+                .to_owned();
+            let c_vir = c
+                .slice(ndarray::s![.., nocc_total..nocc_total + nvir])
+                .to_owned();
             let nbas = obs.nbasis();
             // (i) ∂D^{z₀}_AO from rotating C: ∂C_·p = Σ_q Θ_qp C_·q.
             // ∂C_occ_i = Σ_a U_ai C_vir_a ; ∂C_vir_a = −Σ_i U_ai C_occ_i.
@@ -1114,7 +1190,9 @@ pub fn analytic_alpha_relaxed(
             for a in 0..nvir {
                 for i in 0..nocc {
                     let zai = z0[(a, i)];
-                    if zai == 0.0 { continue; }
+                    if zai == 0.0 {
+                        continue;
+                    }
                     for mu in 0..nbas {
                         for nu in 0..nbas {
                             // ∂ of (C_a C_iᵀ + C_i C_aᵀ)
@@ -1132,16 +1210,19 @@ pub fn analytic_alpha_relaxed(
             ferric_scf::rhf::build_jk(ctx, obs, bounds, 1e-12, &dd_z, &mut jz, &mut kz)?;
             let g_ddz = 4.0 * &jz - &kz - &kz.t();
             let part_i = c.t().dot(&g_ddz).dot(c); // full MO; take vo block below
-            // (ii) Az₀ in full MO = Cᵀ G(D^{z₀}) C.
+                                                   // (ii) Az₀ in full MO = Cᵀ G(D^{z₀}) C.
             let mut dz0_ao = Array2::<f64>::zeros((nbas, nbas));
             for a in 0..nvir {
                 for i in 0..nocc {
                     let zai = z0[(a, i)];
-                    if zai == 0.0 { continue; }
+                    if zai == 0.0 {
+                        continue;
+                    }
                     for mu in 0..nbas {
                         for nu in 0..nbas {
                             dz0_ao[(mu, nu)] += zai
-                                * (c_vir[(mu, a)] * c_occ[(nu, i)] + c_occ[(mu, i)] * c_vir[(nu, a)]);
+                                * (c_vir[(mu, a)] * c_occ[(nu, i)]
+                                    + c_occ[(mu, i)] * c_vir[(nu, a)]);
                         }
                     }
                 }
@@ -1151,20 +1232,22 @@ pub fn analytic_alpha_relaxed(
             ferric_scf::rhf::build_jk(ctx, obs, bounds, 1e-12, &dz0_ao, &mut jz0, &mut kz0)?;
             let g_z0 = 4.0 * &jz0 - &kz0 - &kz0.t();
             let az0_full = c.t().dot(&g_z0).dot(c); // (nmo,nmo)
-            // ∂(Az₀)_ai = part_i[a,i] + Σ_p Θ_pa az0_full[p,i] + Σ_p Θ_pi az0_full[a,p]
+                                                    // ∂(Az₀)_ai = part_i[a,i] + Σ_p Θ_pa az0_full[p,i] + Σ_p Θ_pi az0_full[a,p]
             let theta_az = theta.t().dot(&az0_full); // Σ_p Θ_pa az0[p,i] → [a-row? careful]
             let az_theta = az0_full.dot(&theta); // Σ_p az0[a,p] Θ_pi
             for a in 0..nvir {
                 let a_mo = nocc_total + a;
                 for i in 0..nocc {
                     let i_mo = first_occ + i;
-                    let daz0 = part_i[(a_mo, i_mo)] + theta_az[(a_mo, i_mo)] + az_theta[(a_mo, i_mo)];
+                    let daz0 =
+                        part_i[(a_mo, i_mo)] + theta_az[(a_mo, i_mo)] + az_theta[(a_mo, i_mo)];
                     rhs[(a, i)] -= waz * daz0;
                 }
             }
         }
         // Perturbed Z-vector: (Δε+A) ∂z = rhs  (full A to match z₀'s operator).
-        let (dz, dresid, _it, dconv) = solve_cphf_cg_scaled(c, &rhs, obs, bounds, &orb, eps, 1.0, budget_bytes)?;
+        let (dz, dresid, _it, dconv) =
+            solve_cphf_cg_scaled(c, &rhs, obs, bounds, &orb, eps, 1.0, budget_bytes)?;
         if !dconv {
             return Err(FerricError::General(format!(
                 "analytic_alpha_relaxed: ∂z axis {x} not converged (resid={dresid:.2e})"
@@ -1176,12 +1259,14 @@ pub fn analytic_alpha_relaxed(
         let mut ddm = Array2::<f64>::zeros((nmo, nmo));
         for i in 0..nocc {
             for j in 0..nocc {
-                ddm[(first_occ + i, first_occ + j)] = (dp_oo[(i, j)] + dp_oo[(j, i)]) * cpks_weight("CPKS_WP", 1.0);
+                ddm[(first_occ + i, first_occ + j)] =
+                    (dp_oo[(i, j)] + dp_oo[(j, i)]) * cpks_weight("CPKS_WP", 1.0);
             }
         }
         for a in 0..nvir {
             for b in 0..nvir {
-                ddm[(nocc_total + a, nocc_total + b)] = (dp_vv[(a, b)] + dp_vv[(b, a)]) * cpks_weight("CPKS_WP", 1.0);
+                ddm[(nocc_total + a, nocc_total + b)] =
+                    (dp_vv[(a, b)] + dp_vv[(b, a)]) * cpks_weight("CPKS_WP", 1.0);
             }
         }
         // vo/ov block: SCF reference orbital response (2·U, the ∂ of the 2δ core
@@ -1191,7 +1276,8 @@ pub fn analytic_alpha_relaxed(
         for a in 0..nvir {
             for i in 0..nocc {
                 let w2u: f64 = cpks_weight("CPKS_W2U", 1.0);
-                let wz: f64 = cpks_weight("CPKS_WZ", 1.0); let vo = w2u * 2.0 * u[(a, i)] + wz * dz[(a, i)];
+                let wz: f64 = cpks_weight("CPKS_WZ", 1.0);
+                let vo = w2u * 2.0 * u[(a, i)] + wz * dz[(a, i)];
                 ddm[(nocc_total + a, first_occ + i)] += vo;
                 ddm[(first_occ + i, nocc_total + a)] += vo;
             }
@@ -1210,7 +1296,11 @@ pub fn analytic_alpha_relaxed(
     }
     let iso = (tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0;
     let principal = eig3_sym(tensor);
-    Ok(Mp2Polarizability { tensor, iso, principal })
+    Ok(Mp2Polarizability {
+        tensor,
+        iso,
+        principal,
+    })
 }
 
 // ===========================================================================
@@ -1251,25 +1341,43 @@ fn full_mo_eri(b_full: &ndarray::Array3<f64>) -> Array4<f64> {
     let nmo = b_full.shape()[1];
     let mut imo = Array4::<f64>::zeros((nmo, nmo, nmo, nmo));
     // (pq|rs) = Σ_P B[P,p,q] B[P,r,s]
-    let bmat = b_full.view().into_shape_with_order((naux, nmo * nmo)).unwrap();
+    let bmat = b_full
+        .view()
+        .into_shape_with_order((naux, nmo * nmo))
+        .unwrap();
     let g = bmat.t().dot(&bmat); // (nmo*nmo, nmo*nmo)
-    for p in 0..nmo { for q in 0..nmo { for rr in 0..nmo { for s in 0..nmo {
-        imo[(p, q, rr, s)] = g[(p * nmo + q, rr * nmo + s)];
-    }}}}
+    for p in 0..nmo {
+        for q in 0..nmo {
+            for rr in 0..nmo {
+                for s in 0..nmo {
+                    imo[(p, q, rr, s)] = g[(p * nmo + q, rr * nmo + s)];
+                }
+            }
+        }
+    }
     imo
 }
 
 #[inline]
-fn eri4(imo: &Array4<f64>, p: usize, q: usize, r: usize, s: usize) -> f64 { imo[(p, q, r, s)] }
+fn eri4(imo: &Array4<f64>, p: usize, q: usize, r: usize, s: usize) -> f64 {
+    imo[(p, q, r, s)]
+}
 
 /// t2[i,a,j,b] = (ia|jb)/Δε  from a full-MO ERI tensor.
 fn t2_full(imo: &Array4<f64>, eps: &[f64], nocc: usize, nvir: usize) -> Vec<f64> {
     let nov = nocc * nvir;
     let mut t = vec![0.0; nov * nov];
-    for i in 0..nocc { for a in 0..nvir { for j in 0..nocc { for b in 0..nvir {
-        let d = eps[i] + eps[j] - eps[nocc + a] - eps[nocc + b];
-        t[(i * nvir + a) * nov + j * nvir + b] = eri4(imo, i, nocc + a, j, nocc + b) / d;
-    }}}}
+    for i in 0..nocc {
+        for a in 0..nvir {
+            for j in 0..nocc {
+                for b in 0..nvir {
+                    let d = eps[i] + eps[j] - eps[nocc + a] - eps[nocc + b];
+                    t[(i * nvir + a) * nov + j * nvir + b] =
+                        eri4(imo, i, nocc + a, j, nocc + b) / d;
+                }
+            }
+        }
+    }
     t
 }
 
@@ -1284,83 +1392,151 @@ fn relaxed_dm_full(imo: &Array4<f64>, eps: &[f64], nocc: usize, nvir: usize) -> 
 
     // P_oo, P_vv (one-sided).
     let mut p_oo = Array2::<f64>::zeros((nocc, nocc));
-    for i in 0..nocc { for j in 0..nocc {
-        let mut s = 0.0;
-        for k in 0..nocc { for a in 0..nvir { for b in 0..nvir {
-            s += tt(i, a, k, b) * (2.0 * tt(j, a, k, b) - tt(j, b, k, a));
-        }}}
-        p_oo[(i, j)] = -s;
-    }}
+    for i in 0..nocc {
+        for j in 0..nocc {
+            let mut s = 0.0;
+            for k in 0..nocc {
+                for a in 0..nvir {
+                    for b in 0..nvir {
+                        s += tt(i, a, k, b) * (2.0 * tt(j, a, k, b) - tt(j, b, k, a));
+                    }
+                }
+            }
+            p_oo[(i, j)] = -s;
+        }
+    }
     let mut p_vv = Array2::<f64>::zeros((nvir, nvir));
-    for a in 0..nvir { for b in 0..nvir {
-        let mut s = 0.0;
-        for i in 0..nocc { for j in 0..nocc { for cc in 0..nvir {
-            s += tt(i, a, j, cc) * (2.0 * tt(i, b, j, cc) - tt(i, cc, j, b));
-        }}}
-        p_vv[(a, b)] = s;
-    }}
+    for a in 0..nvir {
+        for b in 0..nvir {
+            let mut s = 0.0;
+            for i in 0..nocc {
+                for j in 0..nocc {
+                    for cc in 0..nvir {
+                        s += tt(i, a, j, cc) * (2.0 * tt(i, b, j, cc) - tt(i, cc, j, b));
+                    }
+                }
+            }
+            p_vv[(a, b)] = s;
+        }
+    }
 
     // dm_P = P+Pᵀ in oo/vv (MO).
     let mut dm_p = Array2::<f64>::zeros((nmo, nmo));
-    for i in 0..nocc { for j in 0..nocc { dm_p[(i, j)] = p_oo[(i, j)] + p_oo[(j, i)]; } }
-    for a in 0..nvir { for b in 0..nvir { dm_p[(nocc + a, nocc + b)] = p_vv[(a, b)] + p_vv[(b, a)]; } }
+    for i in 0..nocc {
+        for j in 0..nocc {
+            dm_p[(i, j)] = p_oo[(i, j)] + p_oo[(j, i)];
+        }
+    }
+    for a in 0..nvir {
+        for b in 0..nvir {
+            dm_p[(nocc + a, nocc + b)] = p_vv[(a, b)] + p_vv[(b, a)];
+        }
+    }
 
     // L (4-term integral Lagrangian, full-MO indices). Mirrors build_lagrangian integral part.
     let mut l = Array2::<f64>::zeros((nvir, nocc));
-    for c in 0..nvir { for k in 0..nocc {
-        let mut g = 0.0;
-        for j in 0..nocc { for a in 0..nvir { for b in 0..nvir {
-            g += tt(k, a, j, b) * (2.0 * eri4(imo, nocc + c, nocc + a, j, nocc + b) - eri4(imo, nocc + c, nocc + b, j, nocc + a));
-        }}}
-        for i in 0..nocc { for a in 0..nvir { for b in 0..nvir {
-            g += tt(i, a, k, b) * (2.0 * eri4(imo, i, nocc + a, nocc + c, nocc + b) - eri4(imo, i, nocc + b, nocc + c, nocc + a));
-        }}}
-        for i in 0..nocc { for j in 0..nocc { for b in 0..nvir {
-            g -= tt(i, c, j, b) * (2.0 * eri4(imo, i, k, j, nocc + b) - eri4(imo, i, nocc + b, j, k));
-        }}}
-        for i in 0..nocc { for j in 0..nocc { for a in 0..nvir {
-            g -= tt(i, a, j, c) * (2.0 * eri4(imo, i, nocc + a, j, k) - eri4(imo, i, k, j, nocc + a));
-        }}}
-        l[(c, k)] = g;
-    }}
+    for c in 0..nvir {
+        for k in 0..nocc {
+            let mut g = 0.0;
+            for j in 0..nocc {
+                for a in 0..nvir {
+                    for b in 0..nvir {
+                        g += tt(k, a, j, b)
+                            * (2.0 * eri4(imo, nocc + c, nocc + a, j, nocc + b)
+                                - eri4(imo, nocc + c, nocc + b, j, nocc + a));
+                    }
+                }
+            }
+            for i in 0..nocc {
+                for a in 0..nvir {
+                    for b in 0..nvir {
+                        g += tt(i, a, k, b)
+                            * (2.0 * eri4(imo, i, nocc + a, nocc + c, nocc + b)
+                                - eri4(imo, i, nocc + b, nocc + c, nocc + a));
+                    }
+                }
+            }
+            for i in 0..nocc {
+                for j in 0..nocc {
+                    for b in 0..nvir {
+                        g -= tt(i, c, j, b)
+                            * (2.0 * eri4(imo, i, k, j, nocc + b) - eri4(imo, i, nocc + b, j, k));
+                    }
+                }
+            }
+            for i in 0..nocc {
+                for j in 0..nocc {
+                    for a in 0..nvir {
+                        g -= tt(i, a, j, c)
+                            * (2.0 * eri4(imo, i, nocc + a, j, k) - eri4(imo, i, k, j, nocc + a));
+                    }
+                }
+            }
+            l[(c, k)] = g;
+        }
+    }
 
     // (2J−K)[dm_P]_vo in MO: G_pq = Σ_rs [2(pq|rs) − (pr|qs)] dm_P[r,s].
     let mut xvo = l.clone();
-    for c in 0..nvir { for k in 0..nocc {
-        let mut g = 0.0;
-        for r in 0..nmo { for s in 0..nmo {
-            g += (2.0 * eri4(imo, nocc + c, k, r, s) - eri4(imo, nocc + c, r, k, s)) * dm_p[(r, s)];
-        }}
-        xvo[(c, k)] += g;
-    }}
+    for c in 0..nvir {
+        for k in 0..nocc {
+            let mut g = 0.0;
+            for r in 0..nmo {
+                for s in 0..nmo {
+                    g += (2.0 * eri4(imo, nocc + c, k, r, s) - eri4(imo, nocc + c, r, k, s))
+                        * dm_p[(r, s)];
+                }
+            }
+            xvo[(c, k)] += g;
+        }
+    }
 
     // (Δε + A) z = −Xvo, with full A (dense solve mirroring clean-room).
     let z = solve_zvec_dense(imo, eps, &(-&xvo), nocc, nvir);
 
     // D = 2δ_core + dm_P + z.
     let mut d = dm_p;
-    for i in 0..nocc { d[(i, i)] += 2.0; }
-    for a in 0..nvir { for i in 0..nocc { d[(nocc + a, i)] += z[(a, i)]; d[(i, nocc + a)] += z[(a, i)]; } }
+    for i in 0..nocc {
+        d[(i, i)] += 2.0;
+    }
+    for a in 0..nvir {
+        for i in 0..nocc {
+            d[(nocc + a, i)] += z[(a, i)];
+            d[(i, nocc + a)] += z[(a, i)];
+        }
+    }
     d
 }
 
 /// Dense solve of (Δε + A) x = rhs with the full orbital Hessian
 /// A_{ai,bj} = 4(ai|bj) − (ab|ij) − (aj|bi), from a full-MO ERI tensor.
-fn solve_zvec_dense(imo: &Array4<f64>, eps: &[f64], rhs: &Array2<f64>, nocc: usize, nvir: usize) -> Array2<f64> {
+fn solve_zvec_dense(
+    imo: &Array4<f64>,
+    eps: &[f64],
+    rhs: &Array2<f64>,
+    nocc: usize,
+    nvir: usize,
+) -> Array2<f64> {
     use ndarray_linalg::Solve;
     let n = nvir * nocc;
     let mut m = Array2::<f64>::zeros((n, n));
-    for a in 0..nvir { for i in 0..nocc {
-        let ai = a * nocc + i;
-        for b in 0..nvir { for j in 0..nocc {
-            let bj = b * nocc + j;
-            m[(ai, bj)] = 4.0 * eri4(imo, nocc + a, i, nocc + b, j)
-                - eri4(imo, nocc + a, nocc + b, i, j)
-                - eri4(imo, nocc + a, j, nocc + b, i);
-        }}
-        m[(ai, ai)] += eps[nocc + a] - eps[i];
-    }}
-    let x = m.solve(&rhs.view().into_shape_with_order(n).unwrap().to_owned()).unwrap();
+    for a in 0..nvir {
+        for i in 0..nocc {
+            let ai = a * nocc + i;
+            for b in 0..nvir {
+                for j in 0..nocc {
+                    let bj = b * nocc + j;
+                    m[(ai, bj)] = 4.0 * eri4(imo, nocc + a, i, nocc + b, j)
+                        - eri4(imo, nocc + a, nocc + b, i, j)
+                        - eri4(imo, nocc + a, j, nocc + b, i);
+                }
+            }
+            m[(ai, ai)] += eps[nocc + a] - eps[i];
+        }
+    }
+    let x = m
+        .solve(&rhs.view().into_shape_with_order(n).unwrap().to_owned())
+        .unwrap();
     x.into_shape_with_order((nvir, nocc)).unwrap()
 }
 
@@ -1380,7 +1556,9 @@ pub fn analytic_alpha_full(
     // `_bounds` unused: the full-MO recipe uses the dense ERI tensor (no screened
     // JK). Kept in the signature for API parity with the finite-field path.
     if !matches!(rhf.spin, Spin::Restricted) {
-        return Err(FerricError::General("analytic_alpha_full: Restricted only".into()));
+        return Err(FerricError::General(
+            "analytic_alpha_full: Restricted only".into(),
+        ));
     }
     let c = rhf.mos_r();
     let nmo = c.ncols();
@@ -1413,15 +1591,21 @@ pub fn analytic_alpha_full(
     for q in 0..3 {
         // U^q: (Δε+A) U = −r^q_vo (CPHF, dense, same operator as the z-solve).
         let mut rvo = Array2::<f64>::zeros((nvir, nocc));
-        for a in 0..nvir { for i in 0..nocc { rvo[(a, i)] = r_mo[q][(nocc + a, i)]; } }
+        for a in 0..nvir {
+            for i in 0..nocc {
+                rvo[(a, i)] = r_mo[q][(nocc + a, i)];
+            }
+        }
         let u = solve_zvec_dense(&imo0, &eps_full, &(-&rvo), nocc, nvir);
 
         // Θ generator: Θ_{vir,occ}=U, Θ_{occ,vir}=−U.
         let mut theta = Array2::<f64>::zeros((nmo, nmo));
-        for a in 0..nvir { for i in 0..nocc {
-            theta[(nocc + a, i)] = u[(a, i)];
-            theta[(i, nocc + a)] = -u[(a, i)];
-        }}
+        for a in 0..nvir {
+            for i in 0..nocc {
+                theta[(nocc + a, i)] = u[(a, i)];
+                theta[(i, nocc + a)] = -u[(a, i)];
+            }
+        }
 
         // ∂Imo = Σ_idx Θ-rotate each of the 4 MO indices.
         // For ±ε we build imo(±) = imo0 ± ε·∂Imo directly via rotated contraction.
@@ -1435,10 +1619,12 @@ pub fn analytic_alpha_full(
         let mut ddm = (&dp - &dm).mapv(|x| x / (2.0 * ed));
 
         // + 2U SCF core response in vo/ov.
-        for a in 0..nvir { for i in 0..nocc {
-            ddm[(nocc + a, i)] += 2.0 * u[(a, i)];
-            ddm[(i, nocc + a)] += 2.0 * u[(a, i)];
-        }}
+        for a in 0..nvir {
+            for i in 0..nocc {
+                ddm[(nocc + a, i)] += 2.0 * u[(a, i)];
+                ddm[(i, nocc + a)] += 2.0 * u[(a, i)];
+            }
+        }
 
         // α_pq = −Σ ∂D · r_mo[p]  (MO basis).
         for p in 0..3 {
@@ -1446,13 +1632,21 @@ pub fn analytic_alpha_full(
         }
     }
     // Symmetrize.
-    for i in 0..3 { for j in (i + 1)..3 {
-        let avg = 0.5 * (tensor[i][j] + tensor[j][i]); tensor[i][j] = avg; tensor[j][i] = avg;
-    }}
+    for i in 0..3 {
+        for j in (i + 1)..3 {
+            let avg = 0.5 * (tensor[i][j] + tensor[j][i]);
+            tensor[i][j] = avg;
+            tensor[j][i] = avg;
+        }
+    }
     let _ = orb;
     let iso = (tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0;
     let principal = eig3_sym(tensor);
-    Ok(Mp2Polarizability { tensor, iso, principal })
+    Ok(Mp2Polarizability {
+        tensor,
+        iso,
+        principal,
+    })
 }
 
 /// ∂Imo via Θ-rotation of all 4 MO indices: ∂(pq|rs) = Σ_x [Θ_xp(xq|rs)+Θ_xq(px|rs)
@@ -1460,16 +1654,22 @@ pub fn analytic_alpha_full(
 fn rotate_eri(imo: &Array4<f64>, theta: &Array2<f64>) -> Array4<f64> {
     let nmo = imo.shape()[0];
     let mut d = Array4::<f64>::zeros((nmo, nmo, nmo, nmo));
-    for p in 0..nmo { for q in 0..nmo { for r in 0..nmo { for s in 0..nmo {
-        let mut acc = 0.0;
-        for x in 0..nmo {
-            acc += theta[(x, p)] * imo[(x, q, r, s)]
-                 + theta[(x, q)] * imo[(p, x, r, s)]
-                 + theta[(x, r)] * imo[(p, q, x, s)]
-                 + theta[(x, s)] * imo[(p, q, r, x)];
+    for p in 0..nmo {
+        for q in 0..nmo {
+            for r in 0..nmo {
+                for s in 0..nmo {
+                    let mut acc = 0.0;
+                    for x in 0..nmo {
+                        acc += theta[(x, p)] * imo[(x, q, r, s)]
+                            + theta[(x, q)] * imo[(p, x, r, s)]
+                            + theta[(x, r)] * imo[(p, q, x, s)]
+                            + theta[(x, s)] * imo[(p, q, r, x)];
+                    }
+                    d[(p, q, r, s)] = acc;
+                }
+            }
         }
-        d[(p, q, r, s)] = acc;
-    }}}}
+    }
     d
 }
 
@@ -1515,7 +1715,7 @@ fn build_apb_amb(
                     let coul = eri4(imo, nocc + a, i, nocc + b, j); // (ai|bj)
                     let exch_abij = eri4(imo, nocc + a, nocc + b, i, j); // (ab|ij)
                     let exch_ajbi = eri4(imo, nocc + a, j, nocc + b, i); // (aj|bi)
-                    // A = Δε δ + 2(ai|bj) − (ab|ij);  B = 2(ai|bj) − (aj|bi)
+                                                                         // A = Δε δ + 2(ai|bj) − (ab|ij);  B = 2(ai|bj) − (aj|bi)
                     let a_el = 2.0 * coul - exch_abij;
                     let b_el = 2.0 * coul - exch_ajbi;
                     apb[(ai, bj)] = a_el + b_el; // 4(ai|bj) − (ab|ij) − (aj|bi)
@@ -1592,7 +1792,7 @@ pub fn build_apb_amb_screened(
                     let coul = eri4(imo, nocc + a, i, nocc + b, j); // bare (ai|bj)
                     let exch_abij = sw(nocc + a, nocc + b, i, j); // (ab|W|ij)
                     let exch_ajbi = sw(nocc + a, j, nocc + b, i); // (aj|W|bi)
-                    // A = Δε δ + 2(ai|bj)_v − (ab|ij)_W;  B = 2(ai|bj)_v − (aj|bi)_W
+                                                                  // A = Δε δ + 2(ai|bj)_v − (ab|ij)_W;  B = 2(ai|bj)_v − (aj|bi)_W
                     let a_el = 2.0 * coul - exch_abij;
                     let b_el = 2.0 * coul - exch_ajbi;
                     apb[(ai, bj)] = a_el + b_el; // 4(ai|bj)_v − (ab|ij)_W − (aj|bi)_W
@@ -1637,8 +1837,7 @@ pub fn bse_gate0_residuals(
     // Bare-v limit of the screened builder: modes = raw RI tensor, weights = 1.
     let naux = b_full.shape()[0];
     let weights = vec![1.0_f64; naux];
-    let (apb_w, amb_w) =
-        build_apb_amb_screened(&imo, &b_full, &weights, &eps, nocc, nvir);
+    let (apb_w, amb_w) = build_apb_amb_screened(&imo, &b_full, &weights, &eps, nocc, nvir);
 
     let dmax = |x: &Array2<f64>, y: &Array2<f64>| -> f64 {
         x.iter()
@@ -1662,7 +1861,9 @@ pub fn dynamic_cphf_alpha_iw(
 ) -> Result<[[f64; 3]; 3], FerricError> {
     use ndarray_linalg::Solve;
     if !matches!(rhf.spin, Spin::Restricted) {
-        return Err(FerricError::General("dynamic_cphf_alpha_iw: Restricted only".into()));
+        return Err(FerricError::General(
+            "dynamic_cphf_alpha_iw: Restricted only".into(),
+        ));
     }
     let c = rhf.mos_r();
     let nmo = c.ncols();
@@ -1787,7 +1988,11 @@ pub fn frozen_mp2_c6_molecular(
     let hf0 = dynamic_cphf_alpha_iw(ctx, mol, obs, dfbs, op, rhf, 0.0)?;
     let hf0_iso = (hf0[0][0] + hf0[1][1] + hf0[2][2]) / 3.0;
     let mp2_iso = mp2_stat.iso;
-    let scale = if hf0_iso.abs() > 1e-12 { mp2_iso / hf0_iso } else { 1.0 };
+    let scale = if hf0_iso.abs() > 1e-12 {
+        mp2_iso / hf0_iso
+    } else {
+        1.0
+    };
 
     // HF frequency shape, rescaled to MP2 magnitude.
     let mut iso_prof = Vec::with_capacity(freqs.len());

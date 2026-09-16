@@ -77,9 +77,7 @@ fn report(stem: &str, basis_name: &str) {
     for thresh in [1e-8, 1e-10, 1e-12] {
         // Population A: ALL unique shell quartets — what PR #35 measured over.
         let all = (0..nsh).flat_map(move |i| {
-            (0..=i).flat_map(move |j| {
-                (0..=i).flat_map(move |k| (0..=k).map(move |l| (i, j, k, l)))
-            })
+            (0..=i).flat_map(move |j| (0..=i).flat_map(move |k| (0..=k).map(move |l| (i, j, k, l))))
         });
         let (tot_a, s_a, q_a) = counts(&sb, &qb, all, thresh);
         let extra_a = 100.0 * (s_a as f64 - q_a as f64) / (s_a as f64).max(1.0);

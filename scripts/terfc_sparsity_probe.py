@@ -22,6 +22,7 @@ Needs FERRIC_TERF_TABLE_DIR.
 
 Usage: python scripts/terfc_sparsity_probe.py [xyz] [basis] [auxbasis]
 """
+
 import sys
 
 import numpy as np
@@ -71,15 +72,28 @@ def main():
     eye = np.eye(nbas)
 
     print(f"# terfc sparsity probe  {xyz}  {basis}/{auxbasis}  nbas={nbas} naux={naux}")
-    print(f"# r0 = {R0_BOHR} Bohr fixed; thresholds relative to each tensor's own max\n")
+    print(
+        f"# r0 = {R0_BOHR} Bohr fixed; thresholds relative to each tensor's own max\n"
+    )
 
     ops = [("coulomb", {}), (f"erfc w={ERFC_W}", dict(operator="erfc", omega=ERFC_W))]
     for r0w in R0W_LIST:
         w = r0w / R0_BOHR
         label = "terfc linked" if abs(r0w - 2**0.5 / 2) < 1e-12 else f"terfc r0w={r0w}"
-        ops.append((label, dict(operator="terfc", omega=(None if abs(r0w - 2**0.5/2) < 1e-12 else w), r0=R0_BOHR)))
+        ops.append(
+            (
+                label,
+                dict(
+                    operator="terfc",
+                    omega=(None if abs(r0w - 2**0.5 / 2) < 1e-12 else w),
+                    r0=R0_BOHR,
+                ),
+            )
+        )
 
-    print(f"{'operator':>16} {'metric<1e-8':>12} {'eri3<1e-6':>10} {'eri3<1e-8':>10} {'eri3<1e-10':>11} {'shpair@1e-8':>12}")
+    print(
+        f"{'operator':>16} {'metric<1e-8':>12} {'eri3<1e-6':>10} {'eri3<1e-8':>10} {'eri3<1e-10':>11} {'shpair@1e-8':>12}"
+    )
     for label, kw in ops:
         v = ferric.compute_metric_2c(mol, obs, aux, **kw) if kw else v_c
         t3 = ferric.compute_eri3_mo(mol, obs, aux, eye, eye, **kw)
@@ -87,15 +101,22 @@ def main():
         st = sparsity_stats(t3, TAUS, g3)
         mfrac = float(np.mean(np.abs(v) < 1e-8 * np.abs(v).max()))
         blk = block_droppable(t3, o_offs, o_dims, 1e-8, g3)
-        print(f"{label:>16} {mfrac:>12.3f} {st[1e-6]:>10.3f} {st[1e-8]:>10.3f} {st[1e-10]:>11.3f} {blk:>12.3f}", flush=True)
+        print(
+            f"{label:>16} {mfrac:>12.3f} {st[1e-6]:>10.3f} {st[1e-8]:>10.3f} {st[1e-10]:>11.3f} {blk:>12.3f}",
+            flush=True,
+        )
         del t3, v
 
     # Anchor: split identity on the metric at the sharpest decoupled point.
     w = R0W_LIST[-1] / R0_BOHR
-    v_sr = ferric.compute_metric_2c(mol, obs, aux, operator="terfc", omega=w, r0=R0_BOHR)
+    v_sr = ferric.compute_metric_2c(
+        mol, obs, aux, operator="terfc", omega=w, r0=R0_BOHR
+    )
     v_lr = ferric.compute_metric_2c(mol, obs, aux, operator="terf", omega=w, r0=R0_BOHR)
     dev = np.abs(v_sr + v_lr - v_c).max() / np.abs(v_c).max()
-    print(f"\n# anchor: max|terf+terfc-coulomb|/max|coulomb| at r0w={R0W_LIST[-1]} = {dev:.3e}")
+    print(
+        f"\n# anchor: max|terf+terfc-coulomb|/max|coulomb| at r0w={R0W_LIST[-1]} = {dev:.3e}"
+    )
 
 
 if __name__ == "__main__":

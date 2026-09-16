@@ -12,7 +12,10 @@ use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
 fn co_rpa_energy(n_threads: usize) -> f64 {
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(n_threads).build().unwrap();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(n_threads)
+        .build()
+        .unwrap();
     pool.install(|| {
         let ctx = ParallelContext::default();
         let mol = Molecule::parse_xyz("2\nCO\nC 0 0 -0.6442\nO 0 0 0.4828\n", 0, 1).unwrap();
@@ -21,7 +24,9 @@ fn co_rpa_energy(n_threads: usize) -> f64 {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        run_pdep_rpa(&mol, &obs, &aux, op, &rhf, &PdepRpaConfig::default()).unwrap().e_rpa
+        run_pdep_rpa(&mol, &obs, &aux, op, &rhf, &PdepRpaConfig::default())
+            .unwrap()
+            .e_rpa
     })
 }
 
@@ -29,6 +34,8 @@ fn co_rpa_energy(n_threads: usize) -> f64 {
 fn freq_quad_parallel_matches_serial_and_no_crash() {
     let serial = co_rpa_energy(1);
     let parallel = co_rpa_energy(4); // would stack-overflow pre-fix if BLAS threaded
-    assert!((serial - parallel).abs() < 1e-10,
-        "RPA energy serial {serial} vs parallel {parallel}");
+    assert!(
+        (serial - parallel).abs() < 1e-10,
+        "RPA energy serial {serial} vs parallel {parallel}"
+    );
 }

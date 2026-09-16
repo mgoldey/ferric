@@ -12,6 +12,7 @@ top-level metadata untouched. If "35" already matches the BSE block, it is a no-
 Usage:
     python3 scripts/gw100/add_br_def2svp.py
 """
+
 import json
 import sys
 from pathlib import Path
@@ -34,7 +35,9 @@ def main() -> int:
 
     # def2-SVP Br is all-electron: refuse to proceed if BSE ever hands us an ECP.
     if "ecp_potentials" in br_block or "ecp_electrons" in br_block:
-        print("ERROR: BSE returned an ECP for Br in def2-svp; refusing.", file=sys.stderr)
+        print(
+            "ERROR: BSE returned an ECP for Br in def2-svp; refusing.", file=sys.stderr
+        )
         return 1
 
     if bundled["elements"].get(KEY) == br_block:

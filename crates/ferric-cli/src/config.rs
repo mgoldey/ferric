@@ -46,7 +46,10 @@ impl Config {
     /// means "follow `[rpa]`", and reporting it as a second, independent 0
     /// would put a key in the audit line that the user never typed.
     fn frozen_core_keys(&self) -> Vec<(&'static str, FrozenCore)> {
-        let mut keys = vec![("[mp2]", self.mp2.frozen_core), ("[rpa]", self.rpa.frozen_core)];
+        let mut keys = vec![
+            ("[mp2]", self.mp2.frozen_core),
+            ("[rpa]", self.rpa.frozen_core),
+        ];
         if let Some(fc) = self.gw.frozen_core {
             keys.push(("[gw]", fc));
         }
@@ -210,8 +213,11 @@ impl MemoryCfg {
         let Some(gb) = self.budget_gb() else {
             return Ok(()); // absent: auto-detect, as documented.
         };
-        let which =
-            if self.budget_gb.is_some() { "budget_gb" } else { "three_index_budget_gb (budget_gb)" };
+        let which = if self.budget_gb.is_some() {
+            "budget_gb"
+        } else {
+            "three_index_budget_gb (budget_gb)"
+        };
         if !gb.is_finite() || gb <= 0.0 {
             return Err(format!(
                 "[memory] {which} = {gb} is not a usable budget: it must be finite and > 0. \
@@ -291,7 +297,9 @@ impl ExternalPotentialCfg {
     /// Convert into the solver-facing type. Returns `None` when both
     /// `point_charges` is empty and `field` is unset (a true no-op,
     /// matching `RhfConfig.external_potential`'s `None` default).
-    pub fn to_external_potential(&self) -> Option<ferric_core::external_potential::ExternalPotential> {
+    pub fn to_external_potential(
+        &self,
+    ) -> Option<ferric_core::external_potential::ExternalPotential> {
         if self.point_charges.is_empty() && self.field.is_none() {
             return None;
         }
@@ -421,9 +429,9 @@ impl<'de> Deserialize<'de> for FrozenCore {
             }
 
             fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<FrozenCore, E> {
-                usize::try_from(v).map(FrozenCore::Count).map_err(|_| {
-                    E::custom(format!("frozen_core = {v} does not fit in a usize"))
-                })
+                usize::try_from(v)
+                    .map(FrozenCore::Count)
+                    .map_err(|_| E::custom(format!("frozen_core = {v} does not fit in a usize")))
             }
 
             fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<FrozenCore, E> {
@@ -438,7 +446,11 @@ impl<'de> Deserialize<'de> for FrozenCore {
             fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<FrozenCore, E> {
                 // `freeze_core = true` is how several other programs spell it;
                 // accept it rather than make the user guess which word we want.
-                Ok(if v { FrozenCore::Auto } else { FrozenCore::Count(0) })
+                Ok(if v {
+                    FrozenCore::Auto
+                } else {
+                    FrozenCore::Count(0)
+                })
             }
 
             fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<FrozenCore, E> {
@@ -1119,7 +1131,9 @@ pub struct MoleculeCfg {
     pub multiplicity: usize,
 }
 
-fn default_multiplicity() -> usize { 1 }
+fn default_multiplicity() -> usize {
+    1
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1136,9 +1150,13 @@ pub struct MethodCfg {
     pub task: String,
 }
 
-fn default_task() -> String { "energy".into() }
+fn default_task() -> String {
+    "energy".into()
+}
 
-fn default_n_roots() -> usize { 3 }
+fn default_n_roots() -> usize {
+    3
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1391,11 +1409,12 @@ impl ScfCfg {
             cfg.overlap_fit = fit;
         }
         if let Some(h) = self.cosx_half_transform.as_deref() {
-            cfg.half_transform =
-                CosxHalfTransform::parse_config_str(h).map_err(|e| format!("[scf] cosx_half_transform: {e}"))?;
+            cfg.half_transform = CosxHalfTransform::parse_config_str(h)
+                .map_err(|e| format!("[scf] cosx_half_transform: {e}"))?;
         }
         if let Some(b) = self.cosx_backend.as_deref() {
-            cfg.backend = CosxBackend::parse_config_str(b).map_err(|e| format!("[scf] cosx_backend: {e}"))?;
+            cfg.backend =
+                CosxBackend::parse_config_str(b).map_err(|e| format!("[scf] cosx_backend: {e}"))?;
         }
         match self.cosx_screen_thresh {
             Some(t) if !(t >= 0.0) || !t.is_finite() => {
@@ -1484,14 +1503,24 @@ impl ScfCfg {
     }
 }
 
-fn default_max_iter() -> usize { 100 }
+fn default_max_iter() -> usize {
+    100
+}
 // Match the library convergence gate (rhf::scf_converged): density_conv is the
 // tight (reachable) ΔP signal; energy_conv is a LOOSE "not-descending" bound. A
 // tight energy_conv hangs a large DF molecule (dE floors on the RI noise level).
-fn default_energy_conv() -> f64 { 1e-3 }
-fn default_density_conv() -> f64 { 1e-6 }
-fn default_diis_size() -> usize { 8 }
-fn default_integral_thresh() -> f64 { 1e-12 }
+fn default_energy_conv() -> f64 {
+    1e-3
+}
+fn default_density_conv() -> f64 {
+    1e-6
+}
+fn default_diis_size() -> usize {
+    8
+}
+fn default_integral_thresh() -> f64 {
+    1e-12
+}
 
 /// One `[[scf.ladder]]` rung. Every field is optional and overrides the
 /// corresponding field of the `base` `RhfConfig` passed to
@@ -1689,29 +1718,84 @@ mod tests {
         let c = parse("k_builder = \"cosx\"\n").scf.cosx_config().unwrap();
         assert_eq!((c.grid.n_radial, c.grid.n_angular), (50, 110));
         assert!(c.overlap_fit);
-        assert_eq!(c.screen_thresh, Some(ferric_scf::cosx_k::COSX_DEFAULT_SCREEN_THRESH));
-        assert_eq!(c.half_transform, ferric_scf::cosx_k::CosxHalfTransform::SPARSE_DEFAULT);
+        assert_eq!(
+            c.screen_thresh,
+            Some(ferric_scf::cosx_k::COSX_DEFAULT_SCREEN_THRESH)
+        );
+        assert_eq!(
+            c.half_transform,
+            ferric_scf::cosx_k::CosxHalfTransform::SPARSE_DEFAULT
+        );
         // Half transform: both spellings resolve, unknown values and dead knobs error.
-        let c = parse("k_builder = \"cosx\"\ncosx_half_transform = \"dense\"\n").scf.cosx_config().unwrap();
-        assert_eq!(c.half_transform, ferric_scf::cosx_k::CosxHalfTransform::Dense);
-        let c = parse("k_builder = \"cosx\"\ncosx_half_transform = \"sparse\"\n").scf.cosx_config().unwrap();
-        assert_eq!(c.half_transform, ferric_scf::cosx_k::CosxHalfTransform::SPARSE_DEFAULT);
-        assert!(parse("k_builder = \"cosx\"\ncosx_half_transform = \"Dense\"\n").scf.cosx_config().is_err());
-        assert!(parse("k_builder = \"link\"\ncosx_half_transform = \"dense\"\n").scf.cosx_config().is_err());
+        let c = parse("k_builder = \"cosx\"\ncosx_half_transform = \"dense\"\n")
+            .scf
+            .cosx_config()
+            .unwrap();
+        assert_eq!(
+            c.half_transform,
+            ferric_scf::cosx_k::CosxHalfTransform::Dense
+        );
+        let c = parse("k_builder = \"cosx\"\ncosx_half_transform = \"sparse\"\n")
+            .scf
+            .cosx_config()
+            .unwrap();
+        assert_eq!(
+            c.half_transform,
+            ferric_scf::cosx_k::CosxHalfTransform::SPARSE_DEFAULT
+        );
+        assert!(
+            parse("k_builder = \"cosx\"\ncosx_half_transform = \"Dense\"\n")
+                .scf
+                .cosx_config()
+                .is_err()
+        );
+        assert!(
+            parse("k_builder = \"link\"\ncosx_half_transform = \"dense\"\n")
+                .scf
+                .cosx_config()
+                .is_err()
+        );
         // Screen knob: explicit value honoured, 0 disables, negative/NaN refused,
         // dead-knob refused, and > 0 refused with the unscreened cosx-a backend
         // (which resolves to None by itself, never a refusal from the default).
-        let c = parse("k_builder = \"cosx\"\ncosx_screen_thresh = 1e-9\n").scf.cosx_config().unwrap();
+        let c = parse("k_builder = \"cosx\"\ncosx_screen_thresh = 1e-9\n")
+            .scf
+            .cosx_config()
+            .unwrap();
         assert_eq!(c.screen_thresh, Some(1e-9));
-        let c = parse("k_builder = \"cosx\"\ncosx_screen_thresh = 0.0\n").scf.cosx_config().unwrap();
+        let c = parse("k_builder = \"cosx\"\ncosx_screen_thresh = 0.0\n")
+            .scf
+            .cosx_config()
+            .unwrap();
         assert_eq!(c.screen_thresh, Some(0.0));
-        assert!(parse("k_builder = \"cosx\"\ncosx_screen_thresh = -1e-7\n").scf.cosx_config().is_err());
-        assert!(parse("k_builder = \"cosx\"\ncosx_screen_thresh = nan\n").scf.cosx_config().is_err());
-        assert!(parse("k_builder = \"link\"\ncosx_screen_thresh = 1e-7\n").scf.cosx_config().is_err());
-        assert!(parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\ncosx_screen_thresh = 1e-7\n").scf.cosx_config().is_err());
-        let c = parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\n").scf.cosx_config().unwrap();
+        assert!(parse("k_builder = \"cosx\"\ncosx_screen_thresh = -1e-7\n")
+            .scf
+            .cosx_config()
+            .is_err());
+        assert!(parse("k_builder = \"cosx\"\ncosx_screen_thresh = nan\n")
+            .scf
+            .cosx_config()
+            .is_err());
+        assert!(parse("k_builder = \"link\"\ncosx_screen_thresh = 1e-7\n")
+            .scf
+            .cosx_config()
+            .is_err());
+        assert!(parse(
+            "k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\ncosx_screen_thresh = 1e-7\n"
+        )
+        .scf
+        .cosx_config()
+        .is_err());
+        let c = parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\n")
+            .scf
+            .cosx_config()
+            .unwrap();
         assert!(c.screen_thresh.is_none());
-        let c = parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\ncosx_screen_thresh = 0.0\n").scf.cosx_config().unwrap();
+        let c =
+            parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\ncosx_screen_thresh = 0.0\n")
+                .scf
+                .cosx_config()
+                .unwrap();
         assert_eq!(c.screen_thresh, Some(0.0));
         // Explicit knobs are honoured.
         let c = parse("k_builder = \"cosx\"\ncosx_grid = { radial = 75, angular = 302 }\ncosx_overlap_fit = false\n")
@@ -1723,18 +1807,46 @@ mod tests {
         // Backend: default md3c1e; both spellings resolve; anything else errors.
         use ferric_scf::cosx_k::CosxBackend;
         assert_eq!(c.backend, CosxBackend::Md3c1e);
-        let c = parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\n").scf.cosx_config().unwrap();
+        let c = parse("k_builder = \"cosx\"\ncosx_backend = \"cosx-a\"\n")
+            .scf
+            .cosx_config()
+            .unwrap();
         assert_eq!(c.backend, CosxBackend::CosxA);
-        let c = parse("k_builder = \"cosx\"\ncosx_backend = \"md3c1e\"\n").scf.cosx_config().unwrap();
+        let c = parse("k_builder = \"cosx\"\ncosx_backend = \"md3c1e\"\n")
+            .scf
+            .cosx_config()
+            .unwrap();
         assert_eq!(c.backend, CosxBackend::Md3c1e);
-        assert!(parse("k_builder = \"cosx\"\ncosx_backend = \"libint\"\n").scf.cosx_config().is_err());
-        assert!(parse("k_builder = \"cosx\"\ncosx_backend = \"cosx_a\"\n").scf.cosx_config().is_err());
+        assert!(parse("k_builder = \"cosx\"\ncosx_backend = \"libint\"\n")
+            .scf
+            .cosx_config()
+            .is_err());
+        assert!(parse("k_builder = \"cosx\"\ncosx_backend = \"cosx_a\"\n")
+            .scf
+            .cosx_config()
+            .is_err());
         // Dead-knob refusal.
-        assert!(parse("cosx_overlap_fit = false\n").scf.cosx_config().is_err());
-        assert!(parse("cosx_backend = \"md3c1e\"\n").scf.cosx_config().is_err());
-        assert!(parse("k_builder = \"link\"\ncosx_grid = { radial = 50, angular = 110 }\n").scf.cosx_config().is_err());
+        assert!(parse("cosx_overlap_fit = false\n")
+            .scf
+            .cosx_config()
+            .is_err());
+        assert!(parse("cosx_backend = \"md3c1e\"\n")
+            .scf
+            .cosx_config()
+            .is_err());
+        assert!(
+            parse("k_builder = \"link\"\ncosx_grid = { radial = 50, angular = 110 }\n")
+                .scf
+                .cosx_config()
+                .is_err()
+        );
         // Untabulated angular order is a typed error, not a panic.
-        assert!(parse("k_builder = \"cosx\"\ncosx_grid = { radial = 50, angular = 194 }\n").scf.cosx_config().is_err());
+        assert!(
+            parse("k_builder = \"cosx\"\ncosx_grid = { radial = 50, angular = 194 }\n")
+                .scf
+                .cosx_config()
+                .is_err()
+        );
         // Typo inside the inline table hard-errors at parse time.
         let s = "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\nkind = \"rhf\"\n[scf]\nk_builder = \"cosx\"\ncosx_grid = { radial = 50, angulr = 110 }\n";
         assert!(toml::from_str::<Config>(s).is_err());
@@ -1758,7 +1870,10 @@ trunc_threshold = 1e-12
             Ok(_) => panic!("typo'd key parsed successfully — deny_unknown_fields regressed"),
             Err(e) => e.to_string(),
         };
-        assert!(err.contains("trunc_threshold"), "error should name the bad key: {err}");
+        assert!(
+            err.contains("trunc_threshold"),
+            "error should name the bad key: {err}"
+        );
     }
 
     /// `[dft] grid_prune` reaches the strict parser, and unknown values are a
@@ -1869,11 +1984,18 @@ mp2v_vv10_damping = "terfc"
         let att = cfg.mp2.build_att_vv10_config(&water(), None).unwrap();
         assert!((att.r0_angstrom() - 1.00).abs() < 1e-12);
         // 1.00 A = 1.8897259886 Bohr; ~0.529 would mean the conversion inverted.
-        assert!((att.r0_bohr - 1.889_725_988_6).abs() < 1e-9, "got {}", att.r0_bohr);
+        assert!(
+            (att.r0_bohr - 1.889_725_988_6).abs() < 1e-9,
+            "got {}",
+            att.r0_bohr
+        );
         assert_eq!(att.vv10.b, 11.0);
         assert_eq!(att.vv10.c, 0.0089);
         assert_eq!(att.frozen_core, 1, "[mp2] frozen_core must thread through");
-        assert_eq!(att.attenuator, ferric_mp2::att_vv10::AttVv10Attenuator::Terfc);
+        assert_eq!(
+            att.attenuator,
+            ferric_mp2::att_vv10::AttVv10Attenuator::Terfc
+        );
         // Eq. 11: the VV10 damping r0 MUST be the same r0 the MP2 half uses.
         match att.vv10_damping {
             ferric_dft::vv10::Vv10Damping::Terfc { r0_bohr, .. } => {
@@ -1889,7 +2011,9 @@ mp2v_vv10_damping = "terfc"
     #[test]
     fn mp2_v_defaults_are_the_published_parameters() {
         let published = ferric_mp2::att_vv10::AttVv10Config::mp2_v_terfc_atz();
-        let att = Mp2Cfg::default().build_att_vv10_config(&water(), None).unwrap();
+        let att = Mp2Cfg::default()
+            .build_att_vv10_config(&water(), None)
+            .unwrap();
         assert_eq!(att.r0_bohr, published.r0_bohr);
         assert_eq!(att.vv10.b, published.vv10.b);
         assert_eq!(att.vv10.c, published.vv10.c);
@@ -1955,7 +2079,9 @@ mp2v_vv10_damping = "terfc"
         }
         // Omitted omega = the linked width, in both halves (byte-identical
         // pre-decoupling behavior).
-        let linked = Mp2Cfg::default().build_att_vv10_config(&water(), None).unwrap();
+        let linked = Mp2Cfg::default()
+            .build_att_vv10_config(&water(), None)
+            .unwrap();
         assert_eq!(linked.omega, None);
         assert!(matches!(
             linked.effective_vv10_damping().unwrap(),
@@ -2055,7 +2181,10 @@ mp2v_bb = 11.0
             Ok(_) => panic!("typo'd mp2v key parsed successfully"),
             Err(e) => e.to_string(),
         };
-        assert!(err.contains("mp2v_bb"), "error should name the bad key: {err}");
+        assert!(
+            err.contains("mp2v_bb"),
+            "error should name the bad key: {err}"
+        );
     }
 
     #[test]
@@ -2201,7 +2330,10 @@ kind = "tdhf-static-polarizability"
         let mut gw = GwCfg::default();
         gw.method = Some("gw-bse".to_string());
         let err = gw.parse_method().unwrap_err();
-        assert!(err.contains("gw-bse"), "error should name the bad value: {err}");
+        assert!(
+            err.contains("gw-bse"),
+            "error should name the bad value: {err}"
+        );
     }
 
     #[test]
@@ -2299,17 +2431,70 @@ formulation = "delta-lr"
         assert_eq!(mk(Some("dense")).unwrap(), Chi0Sparsity::Dense);
         // boys with default (1e-4) + explicit threshold. dist_cutoff defaults to ∞.
         const INF: f64 = f64::INFINITY;
-        assert_eq!(mk(Some("boys")).unwrap(), Chi0Sparsity::BoysScreened { thresh: 1e-4, dist_cutoff: INF });
-        assert_eq!(mk(Some("boys:1e-3")).unwrap(), Chi0Sparsity::BoysScreened { thresh: 1e-3, dist_cutoff: INF });
+        assert_eq!(
+            mk(Some("boys")).unwrap(),
+            Chi0Sparsity::BoysScreened {
+                thresh: 1e-4,
+                dist_cutoff: INF
+            }
+        );
+        assert_eq!(
+            mk(Some("boys:1e-3")).unwrap(),
+            Chi0Sparsity::BoysScreened {
+                thresh: 1e-3,
+                dist_cutoff: INF
+            }
+        );
         // boys/auto with an explicit `@<radius>` distance cutoff (Bohr).
-        assert_eq!(mk(Some("boys:1e-3@12")).unwrap(), Chi0Sparsity::BoysScreened { thresh: 1e-3, dist_cutoff: 12.0 });
-        assert_eq!(mk(Some("auto:24:5e-4@8")).unwrap(), Chi0Sparsity::Auto { boys_thresh: 5e-4, atom_cutoff: 24, dist_cutoff: 8.0 });
+        assert_eq!(
+            mk(Some("boys:1e-3@12")).unwrap(),
+            Chi0Sparsity::BoysScreened {
+                thresh: 1e-3,
+                dist_cutoff: 12.0
+            }
+        );
+        assert_eq!(
+            mk(Some("auto:24:5e-4@8")).unwrap(),
+            Chi0Sparsity::Auto {
+                boys_thresh: 5e-4,
+                atom_cutoff: 24,
+                dist_cutoff: 8.0
+            }
+        );
         // auto with defaults (cutoff 30, thresh 1e-4), explicit cutoff, explicit cutoff+thresh.
-        assert_eq!(mk(Some("auto")).unwrap(), Chi0Sparsity::Auto { boys_thresh: 1e-4, atom_cutoff: 30, dist_cutoff: INF });
-        assert_eq!(mk(Some("auto:24")).unwrap(), Chi0Sparsity::Auto { boys_thresh: 1e-4, atom_cutoff: 24, dist_cutoff: INF });
-        assert_eq!(mk(Some("auto:24:5e-4")).unwrap(), Chi0Sparsity::Auto { boys_thresh: 5e-4, atom_cutoff: 24, dist_cutoff: INF });
+        assert_eq!(
+            mk(Some("auto")).unwrap(),
+            Chi0Sparsity::Auto {
+                boys_thresh: 1e-4,
+                atom_cutoff: 30,
+                dist_cutoff: INF
+            }
+        );
+        assert_eq!(
+            mk(Some("auto:24")).unwrap(),
+            Chi0Sparsity::Auto {
+                boys_thresh: 1e-4,
+                atom_cutoff: 24,
+                dist_cutoff: INF
+            }
+        );
+        assert_eq!(
+            mk(Some("auto:24:5e-4")).unwrap(),
+            Chi0Sparsity::Auto {
+                boys_thresh: 5e-4,
+                atom_cutoff: 24,
+                dist_cutoff: INF
+            }
+        );
         // case-insensitive + whitespace tolerant.
-        assert_eq!(mk(Some("  AUTO ")).unwrap(), Chi0Sparsity::Auto { boys_thresh: 1e-4, atom_cutoff: 30, dist_cutoff: INF });
+        assert_eq!(
+            mk(Some("  AUTO ")).unwrap(),
+            Chi0Sparsity::Auto {
+                boys_thresh: 1e-4,
+                atom_cutoff: 30,
+                dist_cutoff: INF
+            }
+        );
         // garbage → error (not silently ignored).
         assert!(mk(Some("frobnicate")).is_err());
         assert!(mk(Some("boys:notanumber")).is_err());
@@ -2433,8 +2618,14 @@ kind = "rimp2"
         // df_guess now defaults ON (matches Psi4's DF_SCF_GUESS). The FIELD
         // stays None (user said nothing); the ACCESSOR is what carries the
         // default, so df_increments can still take precedence over it.
-        assert_eq!(cfg.scf.df_guess, None, "absent key must stay None, not be materialised");
-        assert!(cfg.scf.df_guess_enabled(), "df_guess must default to ENABLED");
+        assert_eq!(
+            cfg.scf.df_guess, None,
+            "absent key must stay None, not be materialised"
+        );
+        assert!(
+            cfg.scf.df_guess_enabled(),
+            "df_guess must default to ENABLED"
+        );
         assert!(cfg.scf.df_guess_aux.is_none());
 
         let toml_str = r#"
@@ -2449,9 +2640,19 @@ df_guess = true
 df_guess_aux = "def2-universal-jkfit"
 "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
-        assert_eq!(cfg.scf.df_guess, Some(true), "explicit df_guess = true must be recorded as Some(true)");
-        assert_eq!(cfg.scf.df_guess_aux.as_deref(), Some("def2-universal-jkfit"));
-        assert_eq!(cfg.scf.df_guess_aux_resolved().unwrap().as_deref(), Some("def2-universal-jkfit"));
+        assert_eq!(
+            cfg.scf.df_guess,
+            Some(true),
+            "explicit df_guess = true must be recorded as Some(true)"
+        );
+        assert_eq!(
+            cfg.scf.df_guess_aux.as_deref(),
+            Some("def2-universal-jkfit")
+        );
+        assert_eq!(
+            cfg.scf.df_guess_aux_resolved().unwrap().as_deref(),
+            Some("def2-universal-jkfit")
+        );
     }
 
     /// A typo'd key inside `[scf]` (e.g. `df_gess`) must still hard-error --
@@ -2470,10 +2671,15 @@ kind = "rimp2"
 df_gess = true
 "#;
         let err = match toml::from_str::<Config>(toml_str) {
-            Ok(_) => panic!("typo'd df_guess key parsed successfully — deny_unknown_fields regressed"),
+            Ok(_) => {
+                panic!("typo'd df_guess key parsed successfully — deny_unknown_fields regressed")
+            }
             Err(e) => e.to_string(),
         };
-        assert!(err.contains("df_gess"), "error should name the bad key: {err}");
+        assert!(
+            err.contains("df_gess"),
+            "error should name the bad key: {err}"
+        );
     }
 
     /// `df_guess_aux` set without `df_guess = true` is a silent-no-op knob
@@ -2534,7 +2740,10 @@ name = "sto-3g"
 kind = "rimp2"
 "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
-        assert!(!cfg.scf.df_increments, "df_increments must default to false");
+        assert!(
+            !cfg.scf.df_increments,
+            "df_increments must default to false"
+        );
         assert!(cfg.scf.df_increments_aux.is_none());
 
         let toml_str = r#"
@@ -2550,8 +2759,14 @@ df_increments_aux = "def2-universal-jkfit"
 "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert!(cfg.scf.df_increments);
-        assert_eq!(cfg.scf.df_increments_aux.as_deref(), Some("def2-universal-jkfit"));
-        assert_eq!(cfg.scf.df_increments_aux_resolved().unwrap().as_deref(), Some("def2-universal-jkfit"));
+        assert_eq!(
+            cfg.scf.df_increments_aux.as_deref(),
+            Some("def2-universal-jkfit")
+        );
+        assert_eq!(
+            cfg.scf.df_increments_aux_resolved().unwrap().as_deref(),
+            Some("def2-universal-jkfit")
+        );
     }
 
     /// REGRESSION (caught by CI, not by local runs): once `df_guess` defaults
@@ -2708,7 +2923,11 @@ kind = "rhf"
         assert_eq!(built[0].config.max_iter, 100,
             "ksdft rung 0 must honor the caller's own max_iter, not default_ladder_from's hardcoded 60");
         for (i, rung) in built.iter().enumerate() {
-            assert_eq!(rung.config.xc.as_deref(), Some("B3LYP"), "rung {i} must carry xc");
+            assert_eq!(
+                rung.config.xc.as_deref(),
+                Some("B3LYP"),
+                "rung {i} must carry xc"
+            );
         }
     }
 
@@ -2733,17 +2952,32 @@ kind = "rhf"
         let built = cfg.build_ladder(&base);
         assert_eq!(built.len(), ferric_scf::ladder::default_ladder().len());
         for (i, rung) in built.iter().enumerate() {
-            assert_eq!(rung.config.mom_after_iter, 5, "rung {i} must inherit base.mom_after_iter");
+            assert_eq!(
+                rung.config.mom_after_iter, 5,
+                "rung {i} must inherit base.mom_after_iter"
+            );
             // RI-JK is opt-in: the ladder escalates convergence knobs only and
             // must never silently swap exact 4-index J/K for density fitting
             // (that changes the method, ~1e-4 Ha). The base here leaves the aux
             // unset, so every rung must too.
-            assert!(rung.config.df_j_aux.is_none(), "rung {i} must not inject DF-J aux");
-            assert!(rung.config.df_k_aux.is_none(), "rung {i} must not inject DF-K aux");
+            assert!(
+                rung.config.df_j_aux.is_none(),
+                "rung {i} must not inject DF-J aux"
+            );
+            assert!(
+                rung.config.df_k_aux.is_none(),
+                "rung {i} must not inject DF-K aux"
+            );
         }
         assert_eq!(built[0].config.level_shift, 0.0);
-        assert_eq!(built[1].config.level_shift, 0.0, "rung 1 adds ADIIS, not level shift yet");
-        assert!(built[2].config.level_shift > 0.0, "rung 2 must add level shift");
+        assert_eq!(
+            built[1].config.level_shift, 0.0,
+            "rung 1 adds ADIIS, not level shift yet"
+        );
+        assert!(
+            built[2].config.level_shift > 0.0,
+            "rung 2 must add level shift"
+        );
     }
 
     #[test]
@@ -2848,7 +3082,10 @@ epsilon = 78.39
         let cosmo = cfg.cosmo.unwrap();
         assert_eq!(cosmo.epsilon, 78.39);
         assert_eq!(cosmo.radius_scale, ferric_scf::cosmo::DEFAULT_RADIUS_SCALE);
-        assert_eq!(cosmo.lebedev_order, ferric_scf::cosmo::DEFAULT_LEBEDEV_ORDER);
+        assert_eq!(
+            cosmo.lebedev_order,
+            ferric_scf::cosmo::DEFAULT_LEBEDEV_ORDER
+        );
     }
 
     #[test]
@@ -2882,7 +3119,10 @@ kind = "rhf"
 epsilonn = 78.39
 "#;
         let result: Result<Config, _> = toml::from_str(toml_str);
-        assert!(result.is_err(), "typo'd cosmo key should fail to parse, not silently default");
+        assert!(
+            result.is_err(),
+            "typo'd cosmo key should fail to parse, not silently default"
+        );
     }
 
     #[test]
@@ -2933,7 +3173,9 @@ max_iter = 42
     fn frozen_core_still_accepts_a_plain_integer() {
         // The pre-existing surface: every input file in the wild writes a
         // number, and every one of them must keep parsing to that number.
-        let cfg = cfg_with("[mp2]\nfrozen_core = 3\n[rpa]\nfrozen_core = 0\n[gw]\nfrozen_core = 5\n").unwrap();
+        let cfg =
+            cfg_with("[mp2]\nfrozen_core = 3\n[rpa]\nfrozen_core = 0\n[gw]\nfrozen_core = 5\n")
+                .unwrap();
         assert_eq!(cfg.mp2.frozen_core, FrozenCore::Count(3));
         assert_eq!(cfg.rpa.frozen_core, FrozenCore::Count(0));
         assert_eq!(cfg.gw.frozen_core, Some(FrozenCore::Count(5)));
@@ -2957,9 +3199,9 @@ max_iter = 42
     fn frozen_core_accepts_the_documented_spellings() {
         for (body, want) in [
             ("frozen_core = \"auto\"", FrozenCore::Auto),
-            ("frozen_core = \"AUTO\"", FrozenCore::Auto),   // case-insensitive
+            ("frozen_core = \"AUTO\"", FrozenCore::Auto), // case-insensitive
             ("frozen_core = \"  auto \"", FrozenCore::Auto), // trimmed
-            ("frozen_core = true", FrozenCore::Auto),       // freeze_core = true elsewhere
+            ("frozen_core = true", FrozenCore::Auto),     // freeze_core = true elsewhere
             ("frozen_core = \"none\"", FrozenCore::Count(0)),
             ("frozen_core = false", FrozenCore::Count(0)),
         ] {
@@ -2985,7 +3227,10 @@ max_iter = 42
         // would correlate the core and change the energy with no diagnostic.
         let err = cfg_err("[mp2]\nfrozen_core = \"fc\"\n");
         assert!(err.contains("unknown value"), "{err}");
-        assert!(err.contains("auto"), "the error must name the spelling we DO accept: {err}");
+        assert!(
+            err.contains("auto"),
+            "the error must name the spelling we DO accept: {err}"
+        );
     }
 
     #[test]
@@ -3035,9 +3280,15 @@ max_iter = 42
         // ... and the same for the other two sections, so a stray key cannot
         // sail through just because the method family differs.
         let cfg = cfg_with("[rpa]\nfrozen_core = 9\n").unwrap();
-        assert!(cfg.validate_frozen_core(&water()).unwrap_err().contains("[rpa]"));
+        assert!(cfg
+            .validate_frozen_core(&water())
+            .unwrap_err()
+            .contains("[rpa]"));
         let cfg = cfg_with("[gw]\nfrozen_core = 9\n").unwrap();
-        assert!(cfg.validate_frozen_core(&water()).unwrap_err().contains("[gw]"));
+        assert!(cfg
+            .validate_frozen_core(&water())
+            .unwrap_err()
+            .contains("[gw]"));
     }
 
     #[test]
@@ -3062,35 +3313,65 @@ max_iter = 42
             2,
         )
         .unwrap();
-        assert!(cfg_with("[mp2]\nfrozen_core = 4\n").unwrap().validate_frozen_core(&ch3).is_err());
-        assert!(cfg_with("[mp2]\nfrozen_core = 1\n").unwrap().validate_frozen_core(&ch3).is_ok());
+        assert!(cfg_with("[mp2]\nfrozen_core = 4\n")
+            .unwrap()
+            .validate_frozen_core(&ch3)
+            .is_err());
+        assert!(cfg_with("[mp2]\nfrozen_core = 1\n")
+            .unwrap()
+            .validate_frozen_core(&ch3)
+            .is_ok());
     }
 
     #[test]
     fn validate_frozen_core_accepts_the_ordinary_cases() {
-        for body in ["", "[mp2]\nfrozen_core = 0\n", "[mp2]\nfrozen_core = 1\n", "[mp2]\nfrozen_core = \"auto\"\n"] {
+        for body in [
+            "",
+            "[mp2]\nfrozen_core = 0\n",
+            "[mp2]\nfrozen_core = 1\n",
+            "[mp2]\nfrozen_core = \"auto\"\n",
+        ] {
             assert!(
-                cfg_with(body).unwrap().validate_frozen_core(&water()).is_ok(),
+                cfg_with(body)
+                    .unwrap()
+                    .validate_frozen_core(&water())
+                    .is_ok(),
                 "must accept: {body:?}"
             );
         }
         // A molecule with no electrons to freeze at all (H2) still passes with
         // the default, which is the `n_frozen > 0` guard doing its job.
         let h2 = Molecule::parse_xyz("2\nH2\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n", 0, 1).unwrap();
-        assert!(cfg_with("[mp2]\nfrozen_core = \"auto\"\n").unwrap().validate_frozen_core(&h2).is_ok());
-        assert_eq!(cfg_with("[mp2]\nfrozen_core = \"auto\"\n").unwrap().mp2.frozen_core.resolve(&h2), 0);
+        assert!(cfg_with("[mp2]\nfrozen_core = \"auto\"\n")
+            .unwrap()
+            .validate_frozen_core(&h2)
+            .is_ok());
+        assert_eq!(
+            cfg_with("[mp2]\nfrozen_core = \"auto\"\n")
+                .unwrap()
+                .mp2
+                .frozen_core
+                .resolve(&h2),
+            0
+        );
     }
 
     #[test]
     fn frozen_core_audit_line_is_printed_only_for_auto() {
         // An explicit count is already in the input file; an auto count is a
         // number nobody wrote down, so the run must report it.
-        assert!(cfg_with("[mp2]\nfrozen_core = 1\n").unwrap().frozen_core_audit_lines(&water()).is_empty());
+        assert!(cfg_with("[mp2]\nfrozen_core = 1\n")
+            .unwrap()
+            .frozen_core_audit_lines(&water())
+            .is_empty());
         let lines = cfg_with("[mp2]\nfrozen_core = \"auto\"\n[rpa]\nfrozen_core = \"auto\"\n")
             .unwrap()
             .frozen_core_audit_lines(&water());
         assert_eq!(lines.len(), 2, "{lines:?}");
-        assert!(lines[0].contains("[mp2]") && lines[0].contains('1'), "{lines:?}");
+        assert!(
+            lines[0].contains("[mp2]") && lines[0].contains('1'),
+            "{lines:?}"
+        );
         assert!(lines[1].contains("[rpa]"), "{lines:?}");
     }
 }

@@ -118,15 +118,41 @@ mod tests {
         // point PAR_WORK_THRESHOLD, so build_weight_matrix takes the rayon path.
         let mol = Molecule {
             atoms: vec![
-                Atom { symbol: "H".into(), z: 1, x: 0.0, y: 0.0, zpos: 0.0, ghost: false, n_core_ecp: 0 },
-                Atom { symbol: "H".into(), z: 1, x: 0.0, y: 0.0, zpos: 1.4, ghost: false, n_core_ecp: 0 },
+                Atom {
+                    symbol: "H".into(),
+                    z: 1,
+                    x: 0.0,
+                    y: 0.0,
+                    zpos: 0.0,
+                    ghost: false,
+                    n_core_ecp: 0,
+                },
+                Atom {
+                    symbol: "H".into(),
+                    z: 1,
+                    x: 0.0,
+                    y: 0.0,
+                    zpos: 1.4,
+                    ghost: false,
+                    n_core_ecp: 0,
+                },
             ],
             charge: 0,
             multiplicity: 1,
         };
-        let grid = build_atomic_grid(&mol, &AtomicGridConfig { n_radial: 25, n_angular: 50, ..Default::default() });
+        let grid = build_atomic_grid(
+            &mol,
+            &AtomicGridConfig {
+                n_radial: 25,
+                n_angular: 50,
+                ..Default::default()
+            },
+        );
         let npts = grid.len();
-        assert!(npts >= 2_000, "test must exercise the parallel path (npts={npts})");
+        assert!(
+            npts >= 2_000,
+            "test must exercise the parallel path (npts={npts})"
+        );
 
         // Deterministic synthetic AO values (nbf = 2).
         let nbf = 2;

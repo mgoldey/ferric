@@ -74,9 +74,7 @@ pub fn build_dnv_transform(
     let nocc_total = inter.nocc_total;
     let b_ov = &inter.b_ov;
 
-    let (t2, _eri) = compute_t2_and_integrals(
-        b_ov, eps, nocc, nvir, nocc_total, first_occ, naux,
-    );
+    let (t2, _eri) = compute_t2_and_integrals(b_ov, eps, nocc, nvir, nocc_total, first_occ, naux);
     let nov = nocc * nvir;
 
     let mut n_osv_per: Vec<usize> = vec![0; nocc];
@@ -103,7 +101,11 @@ pub fn build_dnv_transform(
             .eigh(ndarray_linalg::UPLO::Upper)
             .map_err(|e| FerricError::General(format!("OSV eigh for orbital {i}: {e}")))?;
         let kept: Vec<usize> = (0..nvir).filter(|&k| occ_eigs[k].abs() > t_osv).collect();
-        let kept = if kept.is_empty() { vec![nvir - 1] } else { kept };
+        let kept = if kept.is_empty() {
+            vec![nvir - 1]
+        } else {
+            kept
+        };
         n_osv_per[i] = kept.len();
         let mut p = Array2::<f64>::zeros((nvir, kept.len()));
         for (slot, &k) in kept.iter().enumerate() {
@@ -155,7 +157,9 @@ pub fn build_dnv_transform(
     // nvir) we want the QR of the (nvir, ncols) but only keep nvir
     // columns. For tall matrices we keep all.
     let (q, _r) = if filtered.ncols() <= filtered.nrows() {
-        filtered.qr().map_err(|e| FerricError::General(format!("DNV QR: {e}")))?
+        filtered
+            .qr()
+            .map_err(|e| FerricError::General(format!("DNV QR: {e}")))?
     } else {
         // Force ncols ≤ nrows by transposing for QR? Simpler: just truncate
         // input to nvir columns first; rank can't exceed nvir.
@@ -163,7 +167,9 @@ pub fn build_dnv_transform(
         for j in 0..nvir {
             sliced.slice_mut(s![.., j]).assign(&filtered.column(j));
         }
-        sliced.qr().map_err(|e| FerricError::General(format!("DNV QR: {e}")))?
+        sliced
+            .qr()
+            .map_err(|e| FerricError::General(format!("DNV QR: {e}")))?
     };
     let n_vir_reduced = q.ncols();
 
@@ -230,7 +236,11 @@ pub fn run_pdep_rpa_osv(
     use crate::lanczos;
     use ferric_mp2::rimp2::{compute_rpa_intermediates, RiMp2Config};
 
-    let mp2_cfg = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes, ..Default::default() };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: config.frozen_core,
+        memory_budget_bytes: config.memory_budget_bytes,
+        ..Default::default()
+    };
     let inter = compute_rpa_intermediates(mol, obs, dfbs, op, rhf, &mp2_cfg)?;
 
     let dnv = build_dnv_transform(&inter, rhf.eps_r(), t_osv)?;
@@ -249,7 +259,11 @@ pub fn run_pdep_rpa_osv(
     // Davidson/Lanczos eigensolve with identity seed (matches the closed-
     // shell test path for trunc_thresh=0).
     let seed = Array2::<f64>::eye(naux);
-    let max_iter = if config.eigensolver_max_vecs == 0 { 3 * naux } else { config.eigensolver_max_vecs };
+    let max_iter = if config.eigensolver_max_vecs == 0 {
+        3 * naux
+    } else {
+        config.eigensolver_max_vecs
+    };
 
     // Borrowed, not cloned: `run_lanczos_seeded` takes `F: Fn(&Array2<f64>) ->
     // Array2<f64>` with no `'static` bound and calls `matvec` synchronously
@@ -265,7 +279,12 @@ pub fn run_pdep_rpa_osv(
         crate::sternheimer::dielectric_apply(v, b_ref, eo, ev, 0.0)
     };
     let lz = lanczos::run_lanczos_seeded(
-        seed, matvec, naux, max_iter, config.eigensolver_conv_thresh, config.verbose,
+        seed,
+        matvec,
+        naux,
+        max_iter,
+        config.eigensolver_conv_thresh,
+        config.verbose,
     )?;
     if !lz.converged {
         eprintln!(
@@ -277,7 +296,11 @@ pub fn run_pdep_rpa_osv(
     let eigvals = &lz.eigenvalues;
     let eigvecs = &lz.eigenvectors;
 
-    let n_keep = eigvals.iter().filter(|&&lam| (lam - 1.0).abs() > config.trunc_thresh).count().max(1);
+    let n_keep = eigvals
+        .iter()
+        .filter(|&&lam| (lam - 1.0).abs() > config.trunc_thresh)
+        .count()
+        .max(1);
     let v_kept = eigvecs.slice(s![.., ..n_keep]).to_owned();
 
     let (quad_freqs, quad_weights) = crate::quadrature::build_quadrature(&config.quadrature);
@@ -287,7 +310,12 @@ pub fn run_pdep_rpa_osv(
     // eigendecomposition entirely. Equivalence to the eigenvalue path is gated
     // by energy.rs::logdet_energy_matches_eigenvalue_energy.
     let summands = crate::energy::eval_trace_log_summands_budgeted(
-        &v_kept, &b_ov, &eps_occ, &eps_vir, &quad_freqs, config.memory_budget_bytes,
+        &v_kept,
+        &b_ov,
+        &eps_occ,
+        &eps_vir,
+        &quad_freqs,
+        config.memory_budget_bytes,
     )?;
     let e_c = crate::energy::rpa_correlation_energy_from_summands(&quad_weights, &summands);
 
@@ -320,8 +348,18 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
         let inter = compute_rpa_intermediates(
-            &mol, &obs, &dfbs, op, &rhf, &RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() },
-        ).unwrap();
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &rhf,
+            &RiMp2Config {
+                frozen_core: 0,
+                memory_budget_bytes: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         (inter, rhf.eps_r().to_vec())
     }
 
@@ -331,17 +369,25 @@ mod tests {
         let dnv = build_dnv_transform(&inter, &eps, 0.0).unwrap();
         // At t_osv=0, the concatenated OSV basis spans the full nvir-dim
         // virtual space, so after QR we should have n_vir_reduced = nvir.
-        eprintln!("DNV n_osv_per_orbital at t_osv=0: {:?}", dnv.n_osv_per_orbital);
-        eprintln!("DNV n_vir_reduced = {} (nvir = {})", dnv.n_vir_reduced, inter.nvir);
-        assert_eq!(dnv.n_vir_reduced, inter.nvir,
-            "lossless DNV must span the full virtual space");
+        eprintln!(
+            "DNV n_osv_per_orbital at t_osv=0: {:?}",
+            dnv.n_osv_per_orbital
+        );
+        eprintln!(
+            "DNV n_vir_reduced = {} (nvir = {})",
+            dnv.n_vir_reduced, inter.nvir
+        );
+        assert_eq!(
+            dnv.n_vir_reduced, inter.nvir,
+            "lossless DNV must span the full virtual space"
+        );
     }
 
     #[test]
     fn osv_rpa_at_zero_threshold_matches_canonical_h2o() {
         // Lossless OSV transform must reproduce canonical RI-RPA at t_osv=0.
-        use crate::{run_pdep_rpa, PdepRpaConfig};
         use crate::config::{QuadratureConfig, QuadratureScheme};
+        use crate::{run_pdep_rpa, PdepRpaConfig};
         use ferric_core::mol::Molecule;
         let ctx = ParallelContext::default();
         let xyz = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
@@ -356,7 +402,9 @@ mod tests {
 
         let cfg = PdepRpaConfig {
             quadrature: QuadratureConfig {
-                scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5,
+                scheme: QuadratureScheme::GaussLegendre,
+                n_points: 20,
+                u0: 0.5,
             },
             frozen_core: 0,
             trunc_thresh: 0.0,
@@ -364,15 +412,15 @@ mod tests {
             ..Default::default()
         };
 
-        let e_canonical = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap().e_rpa;
-        let (e_osv, n_kept, _naux) = run_pdep_rpa_osv(
-            &mol, &obs, &dfbs, op, &rhf, &cfg, 0.0,
-        ).unwrap();
+        let e_canonical = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg)
+            .unwrap()
+            .e_rpa;
+        let (e_osv, n_kept, _naux) =
+            run_pdep_rpa_osv(&mol, &obs, &dfbs, op, &rhf, &cfg, 0.0).unwrap();
 
         eprintln!("OSV/RPA H2O: canonical={e_canonical:.10}, osv={e_osv:.10}, nOSV={n_kept}");
         let dev = (e_canonical - e_osv).abs();
-        assert!(dev < 1e-6,
-            "OSV-RPA at t_osv=0 ≠ canonical: dev={dev:.2e}");
+        assert!(dev < 1e-6, "OSV-RPA at t_osv=0 ≠ canonical: dev={dev:.2e}");
     }
 
     #[test]
@@ -380,8 +428,8 @@ mod tests {
         // Sweep t_osv and report (n_vir_reduced, ΔE) — characterizes the
         // accuracy-vs-compression tradeoff. No assertion past sanity bounds;
         // this is a probe test for tuning t_osv on real molecules.
-        use crate::{run_pdep_rpa, PdepRpaConfig};
         use crate::config::{QuadratureConfig, QuadratureScheme};
+        use crate::{run_pdep_rpa, PdepRpaConfig};
         use ferric_core::mol::Molecule;
         let ctx = ParallelContext::default();
         let xyz = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
@@ -396,7 +444,9 @@ mod tests {
 
         let cfg = PdepRpaConfig {
             quadrature: QuadratureConfig {
-                scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5,
+                scheme: QuadratureScheme::GaussLegendre,
+                n_points: 20,
+                u0: 0.5,
             },
             frozen_core: 0,
             trunc_thresh: 0.0,
@@ -404,7 +454,9 @@ mod tests {
             ..Default::default()
         };
 
-        let e_canonical = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap().e_rpa;
+        let e_canonical = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg)
+            .unwrap()
+            .e_rpa;
         eprintln!("Canonical RPA(H2O/cc-pVDZ) = {e_canonical:.10}");
         eprintln!("DNV truncation curve:");
         eprintln!("    t_osv     n_vir_red    ΔE (mHa)");
@@ -415,16 +467,20 @@ mod tests {
         }
         // Sanity check: at t_osv=1e-8 (essentially lossless), ΔE should be sub-μHa.
         let (e_tight, _, _) = run_pdep_rpa_osv(&mol, &obs, &dfbs, op, &rhf, &cfg, 1e-8).unwrap();
-        assert!((e_tight - e_canonical).abs() < 1e-6,
-            "DNV at t_osv=1e-8 should match canonical to <1 μHa");
+        assert!(
+            (e_tight - e_canonical).abs() < 1e-6,
+            "DNV at t_osv=1e-8 should match canonical to <1 μHa"
+        );
     }
 
     #[test]
     fn dnv_high_threshold_truncates_aggressively() {
         let (inter, eps) = h2o_intermediates();
         let dnv = build_dnv_transform(&inter, &eps, 1e-3).unwrap();
-        eprintln!("DNV at t_osv=1e-3: n_vir_reduced = {} (canonical nvir = {})",
-            dnv.n_vir_reduced, inter.nvir);
+        eprintln!(
+            "DNV at t_osv=1e-3: n_vir_reduced = {} (canonical nvir = {})",
+            dnv.n_vir_reduced, inter.nvir
+        );
         assert!(dnv.n_vir_reduced <= inter.nvir, "DNV cannot exceed nvir");
     }
 }

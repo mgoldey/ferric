@@ -4,6 +4,7 @@ The report is not decoration: an enumeration that silently drops candidates is
 indistinguishable from one that never made them, and the point of this package
 is that a candidate list can be regenerated and audited rather than trusted.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -21,6 +22,7 @@ class EnumerationReport:
     assert it, because a report whose counts do not nest is describing
     something other than what happened.
     """
+
     n_generated: int = 0
     n_after_dedup: int = 0
     n_after_filter: int = 0
@@ -48,9 +50,9 @@ def enumerate_with_report(
 
     rep = EnumerationReport()
     generated: list[Isomer] = [Isomer(parent_smiles, "parent", "none", parent_smiles)]
-    generated += substituent_scan(parent_smiles,
-                                  substituents or COMMON_SUBSTITUENTS,
-                                  site_smarts)
+    generated += substituent_scan(
+        parent_smiles, substituents or COMMON_SUBSTITUENTS, site_smarts
+    )
     if include_bioisosteres:
         generated += bioisostere_swaps(parent_smiles)
     if include_rings:
@@ -64,8 +66,9 @@ def enumerate_with_report(
     # Parent first, then a stable (kind, transform, canonical) order.
     seen: set[str] = set()
     deduped: list[Isomer] = []
-    for iso in sorted(generated,
-                      key=lambda i: (not i.is_parent, i.kind, i.transform, i.canonical)):
+    for iso in sorted(
+        generated, key=lambda i: (not i.is_parent, i.kind, i.transform, i.canonical)
+    ):
         if iso.canonical in seen:
             continue
         seen.add(iso.canonical)

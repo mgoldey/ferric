@@ -39,7 +39,10 @@ fn main() {
         &obs,
         op,
         &bounds,
-        &RhfConfig { max_iter: 100, ..Default::default() },
+        &RhfConfig {
+            max_iter: 100,
+            ..Default::default()
+        },
     )
     .unwrap();
     assert!(rhf.converged, "RHF must converge");

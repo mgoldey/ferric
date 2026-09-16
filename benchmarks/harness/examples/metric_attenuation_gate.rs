@@ -32,13 +32,13 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::screening::SchwarzBounds;
 use ferric_mp2::canonical::canonical_mp2;
 use ferric_mp2::rimp2::{
     ri_mp2, ri_mp2_robust_attenuated_metric, ri_mp2_robust_attenuated_metric_with,
     robust_fit_coulomb_parts, RiMp2Config,
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
+use ferric_scf::screening::SchwarzBounds;
 
 /// Orbital + RI aux basis for the whole gate. Small by design: the gate asks
 /// "does the metric perturbation match the RI error", a ferric-vs-ferric
@@ -71,8 +71,15 @@ fn run_system(mol: &Molecule, label: &str, want_canonical: bool) -> Point {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
 
-    let rhf = solve_rhf(&ParallelContext::default(), mol, &obs, op, &bounds, &RhfConfig::default())
-        .unwrap_or_else(|e| panic!("{label}: RHF failed: {e}"));
+    let rhf = solve_rhf(
+        &ParallelContext::default(),
+        mol,
+        &obs,
+        op,
+        &bounds,
+        &RhfConfig::default(),
+    )
+    .unwrap_or_else(|e| panic!("{label}: RHF failed: {e}"));
 
     // Exact-ERI MP2: the ground truth both RI variants are measured against.
     let e_canonical = want_canonical.then(|| {
@@ -80,7 +87,11 @@ fn run_system(mol: &Molecule, label: &str, want_canonical: bool) -> Point {
             .unwrap_or_else(|e| panic!("{label}: canonical MP2 failed: {e}"))
     });
 
-    let base_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
+    let base_cfg = RiMp2Config {
+        frozen_core: 0,
+        memory_budget_bytes: None,
+        ..Default::default()
+    };
     let e_ri_coulomb = ri_mp2(mol, &obs, &dfbs, op, &rhf, &base_cfg)
         .unwrap_or_else(|e| panic!("{label}: Coulomb-metric RI-MP2 failed: {e}"))
         .mp2_corr;
@@ -112,8 +123,19 @@ fn run_system(mol: &Molecule, label: &str, want_canonical: bool) -> Point {
         let met = Operator::erfc(w);
         // A failure here is DATA (unusable omega_m), not a crash: record None.
         let e = ri_mp2_robust_attenuated_metric_with(
-            &obs, &dfbs, met, &j_ov, &v_c, &c_occ, &c_vir,
-            rhf.eps_r(), nocc, nvir, 0, nocc_total, &base_cfg,
+            &obs,
+            &dfbs,
+            met,
+            &j_ov,
+            &v_c,
+            &c_occ,
+            &c_vir,
+            rhf.eps_r(),
+            nocc,
+            nvir,
+            0,
+            nocc_total,
+            &base_cfg,
         )
         .ok()
         .map(|r| r.e_total);
@@ -123,15 +145,27 @@ fn run_system(mol: &Molecule, label: &str, want_canonical: bool) -> Point {
         attenuated.push((w, e));
     }
 
-    Point { e_canonical, e_ri_coulomb, e_robust_coulomb, attenuated }
+    Point {
+        e_canonical,
+        e_ri_coulomb,
+        e_robust_coulomb,
+        attenuated,
+    }
 }
 
 /// Probe 0: N non-interacting waters at 50 Bohr separation along z.
 fn noninteracting_cluster(n: usize) -> Molecule {
     // Single water, coordinates in Angstrom (parse_xyz converts to Bohr).
-    let mono = [("O", 0.0, 0.0, 0.0), ("H", 0.757, 0.586, 0.0), ("H", -0.757, 0.586, 0.0)];
+    let mono = [
+        ("O", 0.0, 0.0, 0.0),
+        ("H", 0.757, 0.586, 0.0),
+        ("H", -0.757, 0.586, 0.0),
+    ];
     const SEP_ANG: f64 = 26.46; // ~50 Bohr
-    let mut lines = vec![format!("{}", 3 * n), String::from("non-interacting water cluster")];
+    let mut lines = vec![
+        format!("{}", 3 * n),
+        String::from("non-interacting water cluster"),
+    ];
     for i in 0..n {
         for (s, x, y, z) in mono.iter() {
             lines.push(format!("{s} {x} {y} {}", z + (i as f64) * SEP_ANG));
@@ -156,18 +190,32 @@ fn main() {
         (p1.e_robust_coulomb - p1.e_ri_coulomb).abs(),
         (p2.e_robust_coulomb - p2.e_ri_coulomb).abs()
     );
-    println!("{:>8}  {:>16}  {:>16}  {:>12}", "omega_m", "E(2)", "2*E(1)", "residual");
+    println!(
+        "{:>8}  {:>16}  {:>16}  {:>12}",
+        "omega_m", "E(2)", "2*E(1)", "residual"
+    );
     let ri_resid = p2.e_ri_coulomb - 2.0 * p1.e_ri_coulomb;
     println!(
         "{:>8}  {:>16.10}  {:>16.10}  {:>12.2e}   <- Coulomb metric (baseline)",
-        "coulomb", p2.e_ri_coulomb, 2.0 * p1.e_ri_coulomb, ri_resid
+        "coulomb",
+        p2.e_ri_coulomb,
+        2.0 * p1.e_ri_coulomb,
+        ri_resid
     );
     for ((w, e2), (_, e1)) in p2.attenuated.iter().zip(p1.attenuated.iter()) {
         match (e2, e1) {
             (Some(e2), Some(e1)) => {
                 let resid = e2 - 2.0 * e1;
-                let verdict = if resid.abs() <= ri_resid.abs().max(1e-9) { "ok" } else { "VIOLATION" };
-                println!("{w:>8.2}  {:>16.10}  {:>16.10}  {resid:>12.2e}   {verdict}", e2, 2.0 * e1);
+                let verdict = if resid.abs() <= ri_resid.abs().max(1e-9) {
+                    "ok"
+                } else {
+                    "VIOLATION"
+                };
+                println!(
+                    "{w:>8.2}  {:>16.10}  {:>16.10}  {resid:>12.2e}   {verdict}",
+                    e2,
+                    2.0 * e1
+                );
             }
             _ => println!("{w:>8.2}  {:>16}  {:>16}  {:>12}   unusable", "-", "-", "-"),
         }
@@ -194,7 +242,10 @@ fn main() {
         let p = run_system(&mol, &format!("alkane_{n_c}"), true);
         let d_ri = p.e_ri_coulomb - p.e_canonical.expect("canonical requested for alkanes");
 
-        println!("### alkane_{n_c}  (C{n_c})   dE_RI = {d_ri:+.3e} Ha  ({:+.4} kcal/mol)", d_ri * 627.509);
+        println!(
+            "### alkane_{n_c}  (C{n_c})   dE_RI = {d_ri:+.3e} Ha  ({:+.4} kcal/mol)",
+            d_ri * 627.509
+        );
         println!(
             "{:>8}  {:>14}  {:>12}  {:>12}  {:>10}",
             "omega_m", "dE_metric/Ha", "|dE_m|/|dE_RI|", "dE_m/N", "verdict"
@@ -206,9 +257,14 @@ fn main() {
                     let ratio = d_m.abs() / d_ri.abs().max(1e-14);
                     let per_unit = d_m / (n_c as f64);
                     let verdict = if ratio <= 1.0 { "PASS" } else { "fail" };
-                    println!("{w:>8.2}  {d_m:>+14.3e}  {ratio:>12.2}  {per_unit:>+12.3e}  {verdict:>10}");
+                    println!(
+                        "{w:>8.2}  {d_m:>+14.3e}  {ratio:>12.2}  {per_unit:>+12.3e}  {verdict:>10}"
+                    );
                 }
-                None => println!("{w:>8.2}  {:>14}  {:>12}  {:>12}  {:>10}", "-", "-", "-", "unusable"),
+                None => println!(
+                    "{w:>8.2}  {:>14}  {:>12}  {:>12}  {:>10}",
+                    "-", "-", "-", "unusable"
+                ),
             }
         }
         println!();

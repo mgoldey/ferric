@@ -56,7 +56,13 @@ const NAUX: usize = 1512;
 const F64: usize = 8;
 
 fn shape(diis_subspace: usize) -> CcsdShape {
-    CcsdShape { no: NO, nv: NV, nbas: NBAS, naux: NAUX, diis_subspace }
+    CcsdShape {
+        no: NO,
+        nv: NV,
+        nbas: NBAS,
+        naux: NAUX,
+        diis_subspace,
+    }
 }
 
 /// Smallest budget the plan accepts, found by bisection.
@@ -66,12 +72,17 @@ fn shape(diis_subspace: usize) -> CcsdShape {
 fn smallest_accepted_budget(diis_subspace: usize) -> usize {
     let (mut lo, mut hi) = (0usize, usize::MAX / 4);
     assert!(
-        ccsd_memory_plan(shape(diis_subspace), Some(hi)).check().is_ok(),
+        ccsd_memory_plan(shape(diis_subspace), Some(hi))
+            .check()
+            .is_ok(),
         "fixture is broken: even an enormous budget was refused"
     );
     while lo + 1 < hi {
         let mid = lo + (hi - lo) / 2;
-        if ccsd_memory_plan(shape(diis_subspace), Some(mid)).check().is_ok() {
+        if ccsd_memory_plan(shape(diis_subspace), Some(mid))
+            .check()
+            .is_ok()
+        {
             hi = mid;
         } else {
             lo = mid;

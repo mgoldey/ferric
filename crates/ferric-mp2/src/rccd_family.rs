@@ -331,7 +331,13 @@ fn solve_riccati(
         }
         t2 = t2_new;
     }
-    RiccatiSolve { t2, iterations: it, relres, converged, diverged }
+    RiccatiSolve {
+        t2,
+        iterations: it,
+        relres,
+        converged,
+        diverged,
+    }
 }
 
 /// Smallest `Ω²` eigenvalue of `(A−B)(A+B)` with `A = diag(e_ov) + B`, on
@@ -384,7 +390,16 @@ fn localized(
             "rccd_family: VV-HV construction check failed (orth {dev_orth:.2e}, span {dev_span:.2e})"
         )));
     }
-    localized_with_virtuals(mol, obs, dfbs, op, rhf, frozen_core, eri3_budget_bytes, &vvhv)
+    localized_with_virtuals(
+        mol,
+        obs,
+        dfbs,
+        op,
+        rhf,
+        frozen_core,
+        eri3_budget_bytes,
+        &vvhv,
+    )
 }
 
 fn localized_with_virtuals(
@@ -442,7 +457,11 @@ pub fn sosex(
             if sol.diverged { ", DIVERGED" } else { "" }
         )));
     }
-    let e_drccd = 0.5 * b2.iter().zip(sol.t2.iter()).map(|(b, t)| b * t).sum::<f64>();
+    let e_drccd = 0.5
+        * b2.iter()
+            .zip(sol.t2.iter())
+            .map(|(b, t)| b * t)
+            .sum::<f64>();
     let e_sosex = sosex_energy(&lp.j_dense, &sol.t2, no, nv);
     Ok(SosexResult {
         e_drccd,

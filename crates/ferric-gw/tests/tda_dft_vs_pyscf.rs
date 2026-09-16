@@ -58,7 +58,8 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
-const WATER: &str = "3\nwater\nO 0.0000 0.0000 0.1173\nH 0.0000 0.7572 -0.4692\nH 0.0000 -0.7572 -0.4692\n";
+const WATER: &str =
+    "3\nwater\nO 0.0000 0.0000 0.1173\nH 0.0000 0.7572 -0.4692\nH 0.0000 -0.7572 -0.4692\n";
 const HARTREE_TO_EV: f64 = 27.211_386_245_988;
 
 struct PyState {
@@ -193,7 +194,10 @@ fn compare(xc: Option<&str>, key: &str, obs_name: &str, tol_ev: f64, n_check: us
     // TEETH: for a DFT functional the f_xc term must actually be active, else
     // this is silently re-testing the CIS path the anchor already covers.
     if xc.is_some() {
-        assert!(tda.fxc_included, "{key}: f_xc must be included for a functional");
+        assert!(
+            tda.fxc_included,
+            "{key}: f_xc must be included for a functional"
+        );
     }
 
     let n = n_check.min(py.states.len()).min(tda.omega.len());

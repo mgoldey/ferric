@@ -41,6 +41,7 @@ Env tunables: same convention as bisect_a24_aqz_crossing.py
    BIS_WAIT_S, BIS_TIMEOUT, BIS_R0_TOL, BIS_KCAL_TOL, BIS_MAX_ITERS)
   plus BIS_TABLE_DIR (terf-tables override, same as ET_TABLE_DIR).
 """
+
 from pathlib import Path
 import math
 import os
@@ -59,18 +60,27 @@ K = 627.509474
 
 RAYON_NUM_THREADS = os.environ.get("BIS_RAYON_THREADS", "8")
 _LD_LIBRARY_PATH = os.pathsep.join(
-    p for p in [os.path.expanduser("~/.local/lib"), os.environ.get("LD_LIBRARY_PATH", "")] if p)
+    p
+    for p in [os.path.expanduser("~/.local/lib"), os.environ.get("LD_LIBRARY_PATH", "")]
+    if p
+)
 
 _TERF_DIR = os.environ.get("BIS_TABLE_DIR", "")
 if not _TERF_DIR or not os.path.exists(os.path.join(_TERF_DIR, "16_4_2.bin")):
-    for cand in (f"{ROOT}/terf-tables"):
+    for cand in f"{ROOT}/terf-tables":
         if os.path.exists(os.path.join(cand, "16_4_2.bin")):
             _TERF_DIR = cand
             break
 
-ENV = dict(os.environ, OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS=RAYON_NUM_THREADS,
-           OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", LD_LIBRARY_PATH=_LD_LIBRARY_PATH,
-           FERRIC_TERF_TABLE_DIR=_TERF_DIR)
+ENV = dict(
+    os.environ,
+    OPENBLAS_NUM_THREADS="1",
+    RAYON_NUM_THREADS=RAYON_NUM_THREADS,
+    OMP_NUM_THREADS="1",
+    MKL_NUM_THREADS="1",
+    LD_LIBRARY_PATH=_LD_LIBRARY_PATH,
+    FERRIC_TERF_TABLE_DIR=_TERF_DIR,
+)
 
 FERRIC_MAX_GB = os.environ.get("BIS_FERRIC_MAX_GB", "16")
 FERRIC_HIGH_GB = os.environ.get("BIS_FERRIC_HIGH_GB", "14")
@@ -89,8 +99,8 @@ BASIS, AUX = "aug-cc-pvqz", "aug-cc-pvqz-rifit"
 # (benchmarks/a24-subset/run_a24.py, scripts/run_a24_omega_check.py):
 # idx -> (name, CCSD(T)/CBS interaction energy, kcal/mol)
 SYSTEMS = {
-    2:  ("H2O-H2O", -5.014),
-    5:  ("NH3-NH3", -3.157),
+    2: ("H2O-H2O", -5.014),
+    5: ("NH3-NH3", -3.157),
     14: ("C2H4-C2H4", -1.110),
     19: ("CH4-CH4", -0.538),
 }
@@ -199,7 +209,7 @@ def out_path(key):
     return f"{OUT}/{key}.out"
 
 
-TOT_RE = re.compile(r'Total energy\s*=\s*(-?[0-9.]+)')
+TOT_RE = re.compile(r"Total energy\s*=\s*(-?[0-9.]+)")
 
 
 def grab_total(key):
@@ -226,8 +236,14 @@ def run_one(key, toml):
     wait_for_gate(key)
     toml_path = f"{OUT}/{key}.toml"
     open(toml_path, "w").write(toml)
-    cmd = [FERRIC_LIMITED, f"--max={FERRIC_MAX_GB}G", f"--high={FERRIC_HIGH_GB}G",
-           "--", BIN, toml_path]
+    cmd = [
+        FERRIC_LIMITED,
+        f"--max={FERRIC_MAX_GB}G",
+        f"--high={FERRIC_HIGH_GB}G",
+        "--",
+        BIN,
+        toml_path,
+    ]
     t0 = time.monotonic()
     try:
         with open(op, "w") as f, open(op + ".err", "w") as e:
@@ -247,8 +263,10 @@ def preflight():
     check than a synthetic minimal case."""
     xyz = f"{OUT}/geom_a24-19_mA.xyz"
     if not os.path.exists(xyz):
-        log(f"PREFLIGHT FAIL: geometry {xyz} missing -- run "
-            "scripts/run_a24_omega_check.py first to stage A24 geometries.")
+        log(
+            f"PREFLIGHT FAIL: geometry {xyz} missing -- run "
+            "scripts/run_a24_omega_check.py first to stage A24 geometries."
+        )
         return False
     if not _TERF_DIR:
         log("PREFLIGHT FAIL: terf-tables directory not found. Set BIS_TABLE_DIR.")
@@ -256,8 +274,14 @@ def preflight():
     fc = fc_count(xyz)
     tp = f"{OUT}/_preflight_terf_a24-19.toml"
     open(tp, "w").write(terf_toml(xyz, 1.0, "delta-lr", fc))  # 1.0 A, mid-bracket probe
-    cmd = [FERRIC_LIMITED, f"--max={FERRIC_MAX_GB}G", f"--high={FERRIC_HIGH_GB}G",
-           "--", BIN, tp]
+    cmd = [
+        FERRIC_LIMITED,
+        f"--max={FERRIC_MAX_GB}G",
+        f"--high={FERRIC_HIGH_GB}G",
+        "--",
+        BIN,
+        tp,
+    ]
     r = subprocess.run(cmd, capture_output=True, text=True, env=ENV, timeout=600)
     combined = (r.stdout or "") + (r.stderr or "")
     if r.returncode != 0 or "Total energy" not in combined:
@@ -267,17 +291,21 @@ def preflight():
         return False
     low = combined.lower()
     if "attenuator" in low and "terf" not in low.split("attenuator", 1)[1][:40]:
-        log("PREFLIGHT FAIL: binary ran but attenuator is not 'terf' -- likely "
-            "silent erf-fallback. Refusing to sweep.")
+        log(
+            "PREFLIGHT FAIL: binary ran but attenuator is not 'terf' -- likely "
+            "silent erf-fallback. Refusing to sweep."
+        )
         return False
     log("PREFLIGHT OK: terf stanza accepted at aQZ, CH4 monomer ran to 'Total energy'.")
     return True
 
 
 def evaluate_r0(idx, r0, form, tag):
-    frags = {"dimer": f"{OUT}/geom_a24-{idx}_dimer.xyz",
-             "mA_cp": f"{OUT}/geom_a24-{idx}_mA_cp.xyz",
-             "mB_cp": f"{OUT}/geom_a24-{idx}_mB_cp.xyz"}
+    frags = {
+        "dimer": f"{OUT}/geom_a24-{idx}_dimer.xyz",
+        "mA_cp": f"{OUT}/geom_a24-{idx}_mA_cp.xyz",
+        "mB_cp": f"{OUT}/geom_a24-{idx}_mB_cp.xyz",
+    }
     results = {}
     for fr, xyz in frags.items():
         if not os.path.exists(xyz):
@@ -320,31 +348,41 @@ def bisect(idx, tag):
     global CCSDT_CURRENT
     CCSDT_CURRENT = ccsdt
     form = FORMS[tag]
-    log(f"=== A24-{idx} ({name}) {tag} ({form}) aQZ terf r0-bisection: "
-        f"target {ccsdt} kcal/mol ===")
+    log(
+        f"=== A24-{idx} ({name}) {tag} ({form}) aQZ terf r0-bisection: "
+        f"target {ccsdt} kcal/mol ==="
+    )
     r_lo0, r_hi0 = INITIAL_BRACKET[tag]
     e_lo = evaluate_r0(idx, r_lo0, form, tag)
     if e_lo is None:
         log(f"A24-{idx} {tag}: seed point at r0={r_lo0} FAILED -- aborting.")
         return
-    log(f"A24-{idx} {tag}: r0={r_lo0} -> binding={e_lo:.4f} kcal/mol "
-        f"(delta={e_lo - ccsdt:+.4f})")
+    log(
+        f"A24-{idx} {tag}: r0={r_lo0} -> binding={e_lo:.4f} kcal/mol "
+        f"(delta={e_lo - ccsdt:+.4f})"
+    )
     e_hi = evaluate_r0(idx, r_hi0, form, tag)
     if e_hi is None:
         log(f"A24-{idx} {tag}: seed point at r0={r_hi0} FAILED -- aborting.")
         return
-    log(f"A24-{idx} {tag}: r0={r_hi0} -> binding={e_hi:.4f} kcal/mol "
-        f"(delta={e_hi - ccsdt:+.4f})")
+    log(
+        f"A24-{idx} {tag}: r0={r_hi0} -> binding={e_hi:.4f} kcal/mol "
+        f"(delta={e_hi - ccsdt:+.4f})"
+    )
     lo, hi = (r_lo0, e_lo), (r_hi0, e_hi)
 
     if (lo[1] - ccsdt) * (hi[1] - ccsdt) > 0:
-        log(f"A24-{idx} {tag}: seed bracket [{lo[0]}, {hi[0]}] does not straddle "
-            f"zero (errs {lo[1]-ccsdt:+.4f}, {hi[1]-ccsdt:+.4f}) -- widening "
-            "needed, stopping this system/formulation for manual re-seeding.")
+        log(
+            f"A24-{idx} {tag}: seed bracket [{lo[0]}, {hi[0]}] does not straddle "
+            f"zero (errs {lo[1] - ccsdt:+.4f}, {hi[1] - ccsdt:+.4f}) -- widening "
+            "needed, stopping this system/formulation for manual re-seeding."
+        )
         return
 
-    log(f"=== A24-{idx} {tag} bisection: bracket [{lo[0]}, {hi[0]}] -> "
-        f"[{lo[1]:.4f}, {hi[1]:.4f}] kcal/mol, target {ccsdt} ===")
+    log(
+        f"=== A24-{idx} {tag} bisection: bracket [{lo[0]}, {hi[0]}] -> "
+        f"[{lo[1]:.4f}, {hi[1]:.4f}] kcal/mol, target {ccsdt} ==="
+    )
     best = None
     for it in range(1, MAX_ITERS + 1):
         if abs(hi[0] - lo[0]) <= R0_TOL:
@@ -352,8 +390,10 @@ def bisect(idx, tag):
             break
         r0 = round(next_point(lo, hi), 4)
         if r0 in (lo[0], hi[0]) or r0 <= 0:
-            log(f"A24-{idx} {tag}: next point {r0} collides with bracket "
-                "endpoint or is non-physical -- stopping.")
+            log(
+                f"A24-{idx} {tag}: next point {r0} collides with bracket "
+                "endpoint or is non-physical -- stopping."
+            )
             break
         log(f"A24-{idx} {tag} iter {it}: probing r0={r0}")
         e = evaluate_r0(idx, r0, form, tag)
@@ -361,11 +401,15 @@ def bisect(idx, tag):
             log(f"A24-{idx} {tag} iter {it}: a leg FAILED at r0={r0} -- aborting.")
             return
         best = (r0, e)
-        log(f"A24-{idx} {tag} iter {it}: r0={r0} -> binding={e:.4f} kcal/mol "
-            f"(target {ccsdt}, delta={e - ccsdt:+.4f})")
+        log(
+            f"A24-{idx} {tag} iter {it}: r0={r0} -> binding={e:.4f} kcal/mol "
+            f"(target {ccsdt}, delta={e - ccsdt:+.4f})"
+        )
         if abs(e - ccsdt) <= KCAL_TOL:
-            log(f"A24-{idx} {tag}: |binding - CCSDT| <= {KCAL_TOL} -- "
-                f"converged at r0={r0}.")
+            log(
+                f"A24-{idx} {tag}: |binding - CCSDT| <= {KCAL_TOL} -- "
+                f"converged at r0={r0}."
+            )
             break
         if (e - ccsdt) * (lo[1] - ccsdt) > 0:
             lo = (r0, e)
@@ -374,10 +418,14 @@ def bisect(idx, tag):
     else:
         log(f"A24-{idx} {tag}: MAX_ITERS ({MAX_ITERS}) reached without converging.")
     if best is not None:
-        log(f"A24-{idx} {tag}: best point r0={best[0]} (omega={omega_of(best[0]):.4f}) "
-            f"-> binding={best[1]:.4f} kcal/mol (delta={best[1] - ccsdt:+.4f})")
-    log(f"A24-{idx} {tag}: final bracket [{lo[0]}, {hi[0]}] -> "
-        f"[{lo[1]:.4f}, {hi[1]:.4f}] kcal/mol")
+        log(
+            f"A24-{idx} {tag}: best point r0={best[0]} (omega={omega_of(best[0]):.4f}) "
+            f"-> binding={best[1]:.4f} kcal/mol (delta={best[1] - ccsdt:+.4f})"
+        )
+    log(
+        f"A24-{idx} {tag}: final bracket [{lo[0]}, {hi[0]}] -> "
+        f"[{lo[1]:.4f}, {hi[1]:.4f}] kcal/mol"
+    )
 
 
 CCSDT_CURRENT = None

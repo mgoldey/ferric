@@ -130,8 +130,14 @@ use crate::dlpno_ccsd_t_virtual::TripleTno;
 /// The 6 permutations of `(0,1,2)`, in the same fixed order
 /// [`crate::ccsd_t_closed_shell`] uses, so the accumulation sequence of `W`
 /// matches the dense path term for term.
-const PERMS3: [[usize; 3]; 6] =
-    [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+const PERMS3: [[usize; 3]; 6] = [
+    [0, 1, 2],
+    [0, 2, 1],
+    [1, 0, 2],
+    [1, 2, 0],
+    [2, 0, 1],
+    [2, 1, 0],
+];
 
 /// Chemist-notation integral blocks and amplitudes in the **canonical** virtual
 /// basis — the inputs [`triple_contribution_in_tno`] projects.
@@ -259,20 +265,35 @@ impl TripleWorkspace {
             // axis cycle between them (the same idiom as w3_to_tno, but the
             // intermediate dimensions shrink as we go, which is the point). ---
             let g = blocks.ovvv.index_axis(ndarray::Axis(0), p); // [a,b,d]
-            // pass 1: contract d.  (a*b, nv) . (nv, n) -> [a,b,d̃]
-            let f1 = g.to_shape((nv * nv, nv)).map_err(reshape_err("ovvv[p] (ab,d)"))?;
+                                                                 // pass 1: contract d.  (a*b, nv) . (nv, n) -> [a,b,d̃]
+            let f1 = g
+                .to_shape((nv * nv, nv))
+                .map_err(reshape_err("ovvv[p] (ab,d)"))?;
             let r1 = rot_last(f1.view(), q);
-            let r1 = r1.to_shape((nv, nv, n)).map_err(reshape_err("ovvv r1"))?.to_owned();
+            let r1 = r1
+                .to_shape((nv, nv, n))
+                .map_err(reshape_err("ovvv r1"))?
+                .to_owned();
             // cycle -> [b,d̃,a], contract a
             let c1 = cycle(&r1);
-            let f2 = c1.to_shape((nv * n, nv)).map_err(reshape_err("ovvv (bd,a)"))?;
+            let f2 = c1
+                .to_shape((nv * n, nv))
+                .map_err(reshape_err("ovvv (bd,a)"))?;
             let r2 = rot_last(f2.view(), q);
-            let r2 = r2.to_shape((nv, n, n)).map_err(reshape_err("ovvv r2"))?.to_owned();
+            let r2 = r2
+                .to_shape((nv, n, n))
+                .map_err(reshape_err("ovvv r2"))?
+                .to_owned();
             // cycle -> [d̃,ã,b], contract b
             let c2 = cycle(&r2);
-            let f3 = c2.to_shape((n * n, nv)).map_err(reshape_err("ovvv (da,b)"))?;
+            let f3 = c2
+                .to_shape((n * n, nv))
+                .map_err(reshape_err("ovvv (da,b)"))?;
             let r3 = rot_last(f3.view(), q);
-            let r3 = r3.to_shape((n, n, n)).map_err(reshape_err("ovvv r3"))?.to_owned();
+            let r3 = r3
+                .to_shape((n, n, n))
+                .map_err(reshape_err("ovvv r3"))?
+                .to_owned();
             // cycle -> [ã,b̃,d̃]
             ovvv_t.push(cycle(&r3));
 
@@ -281,42 +302,95 @@ impl TripleWorkspace {
             let h = blocks.ovoo.index_axis(ndarray::Axis(0), p); // [a,l,j]
             let ht = h.permuted_axes([1, 2, 0]); // [l,j,a]
             let hts = ht.as_standard_layout().into_owned();
-            let fh = hts.to_shape((no * no, nv)).map_err(reshape_err("ovoo (lj,a)"))?;
+            let fh = hts
+                .to_shape((no * no, nv))
+                .map_err(reshape_err("ovoo (lj,a)"))?;
             let rh = rot_last(fh.view(), q);
-            let rh = rh.to_shape((no, no, n)).map_err(reshape_err("ovoo rot"))?.to_owned();
+            let rh = rh
+                .to_shape((no, no, n))
+                .map_err(reshape_err("ovoo rot"))?
+                .to_owned();
             // [l,j,ã] -> [ã,l,j]
-            ovoo_t.push(rh.view().permuted_axes([2, 0, 1]).as_standard_layout().into_owned());
+            ovoo_t.push(
+                rh.view()
+                    .permuted_axes([2, 0, 1])
+                    .as_standard_layout()
+                    .into_owned(),
+            );
 
             // --- ovov[p] : [a,j,b] -> [ã,j,b̃]. ---
             let o = blocks.ovov.index_axis(ndarray::Axis(0), p); // [a,j,b]
-            let fo = o.to_shape((nv * no, nv)).map_err(reshape_err("ovov (aj,b)"))?;
+            let fo = o
+                .to_shape((nv * no, nv))
+                .map_err(reshape_err("ovov (aj,b)"))?;
             let ro = rot_last(fo.view(), q);
-            let ro = ro.to_shape((nv, no, n)).map_err(reshape_err("ovov rot b"))?.to_owned();
+            let ro = ro
+                .to_shape((nv, no, n))
+                .map_err(reshape_err("ovov rot b"))?
+                .to_owned();
             // [a,j,b̃] -> [j,b̃,a], contract a
             let oc = cycle(&ro);
-            let fo2 = oc.to_shape((no * n, nv)).map_err(reshape_err("ovov (jb,a)"))?;
+            let fo2 = oc
+                .to_shape((no * n, nv))
+                .map_err(reshape_err("ovov (jb,a)"))?;
             let ro2 = rot_last(fo2.view(), q);
-            let ro2 = ro2.to_shape((no, n, n)).map_err(reshape_err("ovov rot a"))?.to_owned();
+            let ro2 = ro2
+                .to_shape((no, n, n))
+                .map_err(reshape_err("ovov rot a"))?
+                .to_owned();
             // [j,b̃,ã] -> [ã,j,b̃]
-            ovov_t.push(ro2.view().permuted_axes([2, 0, 1]).as_standard_layout().into_owned());
+            ovov_t.push(
+                ro2.view()
+                    .permuted_axes([2, 0, 1])
+                    .as_standard_layout()
+                    .into_owned(),
+            );
         }
 
         // --- t2 : [l,m,a,b] -> [l,m,ã,b̃]. ---
-        let f2 = blocks.t2.to_shape((no * no * nv, nv)).map_err(reshape_err("t2 (lma,b)"))?;
+        let f2 = blocks
+            .t2
+            .to_shape((no * no * nv, nv))
+            .map_err(reshape_err("t2 (lma,b)"))?;
         let r = rot_last(f2.view(), q);
-        let r = r.to_shape((no * no, nv, n)).map_err(reshape_err("t2 mid"))?.to_owned();
+        let r = r
+            .to_shape((no * no, nv, n))
+            .map_err(reshape_err("t2 mid"))?
+            .to_owned();
         // [(lm),a,b̃] -> [(lm),b̃,a]
-        let rt = r.view().permuted_axes([0, 2, 1]).as_standard_layout().into_owned();
-        let f2b = rt.to_shape((no * no * n, nv)).map_err(reshape_err("t2 (lmb,a)"))?;
+        let rt = r
+            .view()
+            .permuted_axes([0, 2, 1])
+            .as_standard_layout()
+            .into_owned();
+        let f2b = rt
+            .to_shape((no * no * n, nv))
+            .map_err(reshape_err("t2 (lmb,a)"))?;
         let r2 = rot_last(f2b.view(), q);
-        let r2 = r2.to_shape((no, no, n, n)).map_err(reshape_err("t2 out"))?.to_owned();
+        let r2 = r2
+            .to_shape((no, no, n, n))
+            .map_err(reshape_err("t2 out"))?
+            .to_owned();
         // currently [l,m,b̃,ã]; swap the last two axes back to [l,m,ã,b̃]
-        let t2_t = r2.view().permuted_axes([0, 1, 3, 2]).as_standard_layout().into_owned();
+        let t2_t = r2
+            .view()
+            .permuted_axes([0, 1, 3, 2])
+            .as_standard_layout()
+            .into_owned();
 
         // --- t1 : [l,a] -> [l,ã]. ---
         let t1_t = blocks.t1.dot(q);
 
-        Ok(Self { n, no, ovvv_t, occ_used, ovoo_t, ovov_t, t2_t, t1_t })
+        Ok(Self {
+            n,
+            no,
+            ovvv_t,
+            occ_used,
+            ovoo_t,
+            ovov_t,
+            t2_t,
+            t1_t,
+        })
     }
 
     /// Slot of occupied index `p` in the per-`i` projected blocks.
@@ -336,12 +410,18 @@ fn reshape_err(what: &'static str) -> impl Fn(ndarray::ShapeError) -> FerricErro
 
 /// Cycle a 3-tensor's axes: `[0,1,2] -> [1,2,0]`, materialized standard-layout.
 fn cycle(x: &Array3<f64>) -> Array3<f64> {
-    x.view().permuted_axes([1, 2, 0]).as_standard_layout().into_owned()
+    x.view()
+        .permuted_axes([1, 2, 0])
+        .as_standard_layout()
+        .into_owned()
 }
 
 /// Permute a 3-tensor's axes, materialized standard-layout.
 fn permute3(x: &Array3<f64>, axes: [usize; 3]) -> Array3<f64> {
-    x.view().permuted_axes(axes).as_standard_layout().into_owned()
+    x.view()
+        .permuted_axes(axes)
+        .as_standard_layout()
+        .into_owned()
 }
 
 /// `w0[ã,b̃,c̃] = Σ_d̃ (i ã|b̃ d̃)·t2̃[k,j,c̃,d̃] − Σ_l (i ã|l j)·t2̃[l,k,b̃,c̃]`, the
@@ -364,19 +444,29 @@ fn raw_w_tno(
 
     // Term 1: (ab, d) . (d, c) -> (ab, c) == [ã,b̃,c̃].
     let g = &ws.ovvv_t[si]; // [ã,b̃,d̃]
-    let g2 = g.to_shape((n * n, n)).map_err(reshape_err("tno ovvv (ab,d)"))?;
+    let g2 = g
+        .to_shape((n * n, n))
+        .map_err(reshape_err("tno ovvv (ab,d)"))?;
     let t2_k = ws.t2_t.index_axis(ndarray::Axis(0), k);
     let t2_kj = t2_k.index_axis(ndarray::Axis(0), j); // [c̃,d̃]
     let term1 = g2.dot(&t2_kj.t()); // (ab, c)
-    let mut out = term1.to_shape((n, n, n)).map_err(reshape_err("tno term1"))?.to_owned();
+    let mut out = term1
+        .to_shape((n, n, n))
+        .map_err(reshape_err("tno term1"))?
+        .to_owned();
 
     // Term 2: (a, l) . (l, bc) -> (a, bc) == [ã,b̃,c̃].
     let hh = &ws.ovoo_t[si]; // [ã,l,j]
     let h = hh.index_axis(ndarray::Axis(2), j); // [ã,l]
     let t2_bk = ws.t2_t.index_axis(ndarray::Axis(1), k); // [l,b̃,c̃]
-    let t2_k2 = t2_bk.to_shape((no, n * n)).map_err(reshape_err("tno t2[:,k]"))?;
+    let t2_k2 = t2_bk
+        .to_shape((no, n * n))
+        .map_err(reshape_err("tno t2[:,k]"))?;
     let term2 = h.dot(&t2_k2); // (a, bc)
-    let term2 = term2.to_shape((n, n, n)).map_err(reshape_err("tno term2"))?.to_owned();
+    let term2 = term2
+        .to_shape((n, n, n))
+        .map_err(reshape_err("tno term2"))?
+        .to_owned();
 
     out -= &term2;
     Ok(out)
@@ -622,8 +712,12 @@ pub fn triple_cost(
     // --- kernel: 6 raw blocks + the W̃·V/D reduction ---
     // term 1: (n*n, n) . (n, n)      -> n^4
     // term 2: (n, no) . (no, n*n)    -> no * n^3
-    let per_raw = n.saturating_pow(4).saturating_add(no.saturating_mul(n.saturating_pow(3)));
-    let kernel = per_raw.saturating_mul(6).saturating_add(n.saturating_pow(3));
+    let per_raw = n
+        .saturating_pow(4)
+        .saturating_add(no.saturating_mul(n.saturating_pow(3)));
+    let kernel = per_raw
+        .saturating_mul(6)
+        .saturating_add(n.saturating_pow(3));
 
     // --- transform (TripleWorkspace::new) ---
     // ovvv[p]: nv^3*n + nv^2*n^2 + nv*n^3, per distinct occupied index
@@ -646,7 +740,11 @@ pub fn triple_cost(
         .saturating_pow(2)
         .saturating_mul(nv.saturating_pow(2))
         .saturating_mul(n)
-        .saturating_add(no.saturating_pow(2).saturating_mul(nv).saturating_mul(n.saturating_pow(2)));
+        .saturating_add(
+            no.saturating_pow(2)
+                .saturating_mul(nv)
+                .saturating_mul(n.saturating_pow(2)),
+        );
     let t1_cost = no.saturating_mul(nv).saturating_mul(n);
     let transform = per_i
         .saturating_mul(n_distinct_occ)
@@ -683,7 +781,11 @@ pub fn sweep_cost(
         let (i, j, k) = t.ijk;
         let mut occ = [i, j, k];
         occ.sort_unstable();
-        let nd = { let mut v = occ.to_vec(); v.dedup(); v.len() };
+        let nd = {
+            let mut v = occ.to_vec();
+            v.dedup();
+            v.len()
+        };
 
         let c = triple_cost(no, nv, t.ntno(), nd)?;
         tno.add(&c);
@@ -708,12 +810,12 @@ pub struct SweepCost {
 
 impl SweepCost {
     fn add(&mut self, c: &TripleCost) {
-        self.working_set_elements =
-            self.working_set_elements.saturating_add(c.working_set_elements);
+        self.working_set_elements = self
+            .working_set_elements
+            .saturating_add(c.working_set_elements);
         self.kernel_flops = self.kernel_flops.saturating_add(c.kernel_flops);
         self.transform_flops = self.transform_flops.saturating_add(c.transform_flops);
-        self.max_working_set_elements =
-            self.max_working_set_elements.max(c.working_set_elements);
+        self.max_working_set_elements = self.max_working_set_elements.max(c.working_set_elements);
     }
 
     /// `kernel_flops + transform_flops`.
@@ -735,7 +837,9 @@ mod tests {
     // ------------------------------------------------------------------
 
     fn lcg(seed: &mut u64) -> f64 {
-        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((*seed >> 33) as f64 / (1u64 << 31) as f64) - 1.0
     }
 
@@ -771,7 +875,10 @@ mod tests {
     }
 
     fn line_centers(nocc: usize, spacing: f64) -> Array2<f64> {
-        Array2::from_shape_fn((nocc, 3), |(i, ax)| if ax == 0 { i as f64 * spacing } else { 0.0 })
+        Array2::from_shape_fn(
+            (nocc, 3),
+            |(i, ax)| if ax == 0 { i as f64 * spacing } else { 0.0 },
+        )
     }
 
     /// Deterministic pseudo-random blocks of every shape the kernel consumes.
@@ -796,7 +903,17 @@ mod tests {
             let ovvv = Array4::from_shape_fn((no, nv, nv, nv), |_| lcg(&mut s));
             let ovoo = Array4::from_shape_fn((no, nv, no, no), |_| lcg(&mut s));
             let t1 = Array2::from_shape_fn((no, nv), |_| 0.05 * lcg(&mut s));
-            Self { no, nv, ovvv, ovoo, ovov, t1, t2, eo, ev }
+            Self {
+                no,
+                nv,
+                ovvv,
+                ovoo,
+                ovov,
+                t1,
+                t2,
+                eo,
+                ev,
+            }
         }
 
         fn blocks(&self) -> CanonicalBlocks<'_> {
@@ -827,8 +944,11 @@ mod tests {
                 let g2 = g.to_shape((nv * nv, nv)).unwrap();
                 let t2_k = self.t2.index_axis(ndarray::Axis(0), k);
                 let t2_kj = t2_k.index_axis(ndarray::Axis(0), j);
-                let mut out =
-                    g2.dot(&t2_kj.t()).to_shape((nv, nv, nv)).unwrap().to_owned();
+                let mut out = g2
+                    .dot(&t2_kj.t())
+                    .to_shape((nv, nv, nv))
+                    .unwrap()
+                    .to_owned();
                 let ovoo_j = self.ovoo.index_axis(ndarray::Axis(3), j);
                 let h = ovoo_j.index_axis(ndarray::Axis(0), i);
                 let t2_bk = self.t2.index_axis(ndarray::Axis(1), k);
@@ -928,8 +1048,14 @@ mod tests {
              relative to the band scale {scale:.3e} = {worst_scaled:.3e}; \
              classes m=1:{n1} m=3:{n3} m=6:{n6}"
         );
-        assert!(scale > 1e-3, "contributions are ~zero — the gate would be vacuous");
-        assert!(n1 > 0 && n3 > 0 && n6 > 0, "all three multiplicity classes must be exercised");
+        assert!(
+            scale > 1e-3,
+            "contributions are ~zero — the gate would be vacuous"
+        );
+        assert!(
+            n1 > 0 && n3 > 0 && n6 > 0,
+            "all three multiplicity classes must be exercised"
+        );
         assert!(
             worst_scaled < 1e-12,
             "TNO-basis kernel must reproduce the dense contribution: {worst_scaled:.3e} \
@@ -1025,8 +1151,14 @@ mod tests {
             eprintln!(
                 "gate 1 (no={no}, nv={nv}): max deviation / band scale ({scale:.3e}) = {worst:.3e}"
             );
-            assert!(scale > 1e-6, "no={no} nv={nv}: contributions ~zero, gate vacuous");
-            assert!(worst < 1e-12, "no={no} nv={nv}: {worst:.3e} of the band scale");
+            assert!(
+                scale > 1e-6,
+                "no={no} nv={nv}: contributions ~zero, gate vacuous"
+            );
+            assert!(
+                worst < 1e-12,
+                "no={no} nv={nv}: {worst:.3e} of the band scale"
+            );
         }
     }
 
@@ -1120,9 +1252,17 @@ mod tests {
         .unwrap();
 
         let rel = (e_tno - e_dense).abs() / e_dense.abs();
-        eprintln!("gate 2: banded E = {e_tno:.12} (TNO kernel) vs {e_dense:.12} (dense), rel {rel:.3e}");
-        assert!(e_dense.abs() > 1e-3, "banded energy is ~zero — the gate is vacuous");
-        assert!(rel < 1e-10, "TNO-kernel band must reproduce the dense band: rel {rel:.3e}");
+        eprintln!(
+            "gate 2: banded E = {e_tno:.12} (TNO kernel) vs {e_dense:.12} (dense), rel {rel:.3e}"
+        );
+        assert!(
+            e_dense.abs() > 1e-3,
+            "banded energy is ~zero — the gate is vacuous"
+        );
+        assert!(
+            rel < 1e-10,
+            "TNO-kernel band must reproduce the dense band: rel {rel:.3e}"
+        );
     }
 
     /// A guard against the divisor trap being satisfied by accident: applying
@@ -1181,7 +1321,10 @@ mod tests {
             "gate 3: H2O/STO-3G (T) — ccsd_t_closed_shell = {e_ref:.12}, TNO kernel \
              (t_cut = 0, retention {retention:.3}) = {e_tno:.12}, diff = {diff:.3e}"
         );
-        assert!(e_ref < -1e-6, "reference (T) = {e_ref} is not a plausible triples energy");
+        assert!(
+            e_ref < -1e-6,
+            "reference (T) = {e_ref} is not a plausible triples energy"
+        );
         assert_eq!(retention, 1.0, "t_cut_tno = 0 must keep every virtual");
         assert!(
             diff / e_ref.abs() < 1e-9,
@@ -1202,7 +1345,10 @@ mod tests {
             "gate 3: H2O/6-31G (T) — ccsd_t_closed_shell = {e_ref:.12}, TNO kernel \
              (t_cut = 0, retention {retention:.3}) = {e_tno:.12}, diff = {diff:.3e}"
         );
-        assert!(e_ref < -1e-5, "reference (T) = {e_ref} is not a plausible triples energy");
+        assert!(
+            e_ref < -1e-5,
+            "reference (T) = {e_ref} is not a plausible triples energy"
+        );
         assert_eq!(retention, 1.0);
         assert!(
             diff / e_ref.abs() < 1e-9,
@@ -1234,7 +1380,9 @@ mod tests {
     fn truncation_on_the_real_system_is_swept_not_assumed() {
         let (e_ref, e0, r0) = real_h2o("sto-3g", 0.0);
         assert_eq!(r0, 1.0);
-        eprintln!("H2O/STO-3G (T): ccsd_t_closed_shell {e_ref:.12} | t_cut=0 {e0:.12} (ret {r0:.3})");
+        eprintln!(
+            "H2O/STO-3G (T): ccsd_t_closed_shell {e_ref:.12} | t_cut=0 {e0:.12} (ret {r0:.3})"
+        );
 
         let mut moved = None;
         for &cut in &[1e-6f64, 1e-5, 1e-4, 1e-3, 1e-2, 3e-2, 1e-1] {
@@ -1294,10 +1442,18 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig { energy_conv: 1e-11, ..Default::default() },
+            &RhfConfig {
+                energy_conv: 1e-11,
+                ..Default::default()
+            },
         )
         .unwrap();
-        let cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-10, ..Default::default() };
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
         let cc: CcResult = ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         let e_ref = ccsd_t_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cc, &cfg).unwrap();
 
@@ -1314,20 +1470,34 @@ mod tests {
         let v_inv_sqrt = cholesky_inverse_sqrt(&v2c).unwrap();
         let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
         use Axis::{O, V};
-        let b_ov = build_b(&transform_3center_ov(&eri3_ao, &c_occ, &c_vir), &v_inv_sqrt, O, V);
+        let b_ov = build_b(
+            &transform_3center_ov(&eri3_ao, &c_occ, &c_vir),
+            &v_inv_sqrt,
+            O,
+            V,
+        );
         let b_oo = build_b(&transform_3center_oo(&eri3_ao, &c_occ), &v_inv_sqrt, O, O);
         let b_vv = build_b(&transform_3center_vv(&eri3_ao, &c_vir), &v_inv_sqrt, V, V);
         drop(eri3_ao);
-        let ovvv: Array4<f64> =
-            einsum!("Pia,Pbd->iabd", &b_ov, &b_vv).into_dimensionality().unwrap();
-        let ovoo: Array4<f64> =
-            einsum!("Pia,Plj->ialj", &b_ov, &b_oo).into_dimensionality().unwrap();
-        let ovov: Array4<f64> =
-            einsum!("Pia,Pjb->iajb", &b_ov, &b_ov).into_dimensionality().unwrap();
+        let ovvv: Array4<f64> = einsum!("Pia,Pbd->iabd", &b_ov, &b_vv)
+            .into_dimensionality()
+            .unwrap();
+        let ovoo: Array4<f64> = einsum!("Pia,Plj->ialj", &b_ov, &b_oo)
+            .into_dimensionality()
+            .unwrap();
+        let ovov: Array4<f64> = einsum!("Pia,Pjb->iajb", &b_ov, &b_ov)
+            .into_dimensionality()
+            .unwrap();
 
         let t1 = cc.t1.as_ref().unwrap().clone();
         let t2 = cc.t2.clone();
-        let blocks = CanonicalBlocks { ovvv: &ovvv, ovoo: &ovoo, ovov: &ovov, t1: &t1, t2: &t2 };
+        let blocks = CanonicalBlocks {
+            ovvv: &ovvv,
+            ovoo: &ovoo,
+            ovov: &ovov,
+            t1: &t1,
+            t2: &t2,
+        };
         let eo: Vec<f64> = (0..no).map(|i| eps[i]).collect();
         let ev: Vec<f64> = (0..nv).map(|a| eps[nocc_total + a]).collect();
 
@@ -1400,7 +1570,10 @@ mod tests {
         for w in rows.windows(2) {
             let (c0, r0, a) = &w[0];
             let (c1, r1, b) = &w[1];
-            assert!(r1 <= r0, "retention rose from {r0} at {c0:.0e} to {r1} at {c1:.0e}");
+            assert!(
+                r1 <= r0,
+                "retention rose from {r0} at {c0:.0e} to {r1} at {c1:.0e}"
+            );
             assert!(
                 b.working_set_elements < a.working_set_elements,
                 "working set did not strictly decrease from t_cut {c0:.0e} ({}) to \
@@ -1529,7 +1702,13 @@ mod tests {
         let mut max_ws = 0usize;
         for t in &basis.triples {
             let (i, j, k) = t.ijk;
-            let nd = if i == k { 1 } else if i == j || j == k { 2 } else { 3 };
+            let nd = if i == k {
+                1
+            } else if i == j || j == k {
+                2
+            } else {
+                3
+            };
             let c = triple_cost(toy.no, toy.nv, t.ntno(), nd).unwrap();
             want_ws += c.working_set_elements;
             want_k += c.kernel_flops;
@@ -1569,7 +1748,10 @@ mod tests {
             }
         }
         assert!(n_small > 0, "test premise: something must have truncated");
-        eprintln!("cost: {n_small}/{} triples ran on a strictly sub-dense block", basis.triples.len());
+        eprintln!(
+            "cost: {n_small}/{} triples ran on a strictly sub-dense block",
+            basis.triples.len()
+        );
     }
 
     // ================= input validation ====================================

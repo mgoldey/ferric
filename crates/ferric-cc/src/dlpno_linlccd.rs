@@ -243,7 +243,12 @@ pub fn so_t2_from_pno(
 ///
 /// Note this holds in the PNO basis because both orientations share `Q`, so
 /// `Q ᵀ(−X)Q = −(Q ᵀXQ)`.
-fn so_oriented_amp(blocks: &[Array2<f64>], basis: &PairPnoBasis, p: usize, x: usize) -> Array2<f64> {
+fn so_oriented_amp(
+    blocks: &[Array2<f64>],
+    basis: &PairPnoBasis,
+    p: usize,
+    x: usize,
+) -> Array2<f64> {
     let (i, j) = basis.pairs[p].ij;
     if x == i || i == j {
         blocks[p].clone()
@@ -312,7 +317,9 @@ pub fn pno_hh_ladder(
                 if v == 0.0 {
                     continue;
                 }
-                let Some(p_kl) = index.get(k, l) else { continue };
+                let Some(p_kl) = index.get(k, l) else {
+                    continue;
+                };
                 let s = overlaps.get(p_ij, p_kl);
                 let t = so_oriented_amp(t_pno, basis, p_kl, k);
                 let conv = s.dot(&t).dot(&s.t());
@@ -478,10 +485,18 @@ pub fn dlpno_linlccd_hh(
     );
     {
         use ferric_core::memory::plan::Lifetime::{Resident, Transient};
-        plan.reserve("eri3_ao (P|mu nu)", naux.saturating_mul(nbas).saturating_mul(nbas), Transient);
+        plan.reserve(
+            "eri3_ao (P|mu nu)",
+            naux.saturating_mul(nbas).saturating_mul(nbas),
+            Transient,
+        );
         plan.reserve("g_iajb (ia|jb)", (no * nv).saturating_pow(2), Transient);
         plan.reserve("g_ijkl (ij|kl)", no.saturating_pow(4), Transient);
-        plan.reserve("b_ov B(P|ia)", naux.saturating_mul(no).saturating_mul(nv), Resident);
+        plan.reserve(
+            "b_ov B(P|ia)",
+            naux.saturating_mul(no).saturating_mul(nv),
+            Resident,
+        );
         plan.reserve("v_oovv <ij||ab>", oovv_elems, Resident);
         plan.reserve("v4 <ij||ab> (clone)", oovv_elems, Resident);
         plan.reserve("oooo <ij||kl>", no2_sq.saturating_mul(no2_sq), Resident);
@@ -507,7 +522,9 @@ pub fn dlpno_linlccd_hh(
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + no]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + no])
+        .to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
     let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
@@ -525,7 +542,12 @@ pub fn dlpno_linlccd_hh(
         asym_oovv(&g_iajb, no, nv)
     };
     let oooo = {
-        let b_oo = build_b(&transform_3center_oo(&eri3_ao, &c_occ), &v_inv_sqrt, Axis::O, Axis::O);
+        let b_oo = build_b(
+            &transform_3center_oo(&eri3_ao, &c_occ),
+            &v_inv_sqrt,
+            Axis::O,
+            Axis::O,
+        );
         let g_ijkl: ArrayD<f64> = einsum!("Pij,Pkl->ijkl", &b_oo, &b_oo);
         asym_same(&g_ijkl, no)
     };
@@ -571,13 +593,17 @@ pub fn dlpno_linlccd_hh(
             d
         }
         None => {
-            let centers = Array2::<f64>::from_shape_fn((no2, 3), |(i, ax)| {
-                if ax == 0 {
-                    i as f64
-                } else {
-                    0.0
-                }
-            });
+            let centers =
+                Array2::<f64>::from_shape_fn(
+                    (no2, 3),
+                    |(i, ax)| {
+                        if ax == 0 {
+                            i as f64
+                        } else {
+                            0.0
+                        }
+                    },
+                );
             owned_domains = complete_pair_domains(&centers)?;
             &owned_domains
         }
@@ -631,12 +657,14 @@ pub fn dlpno_linlccd_hh(
 
         // Residual: driver + ½ hh ladder, all pair-shaped.
         let ladder = pno_hh_ladder(&t_pno, &oooo, &basis, &overlaps, &index)?;
-        let r: Vec<Array2<f64>> =
-            v_pno.iter().zip(ladder.iter()).map(|(v, x)| v + 0.5 * x).collect();
+        let r: Vec<Array2<f64>> = v_pno
+            .iter()
+            .zip(ladder.iter())
+            .map(|(v, x)| v + 0.5 * x)
+            .collect();
 
         // Jacobi update on SEMICANONICAL denominators.
-        let t_new: Vec<Array2<f64>> =
-            r.iter().zip(denoms.iter()).map(|(ri, d)| ri / d).collect();
+        let t_new: Vec<Array2<f64>> = r.iter().zip(denoms.iter()).map(|(ri, d)| ri / d).collect();
 
         // DIIS on the flattened per-pair concatenation.
         let mut flat = Array2::<f64>::zeros((dim, 1));
@@ -692,7 +720,11 @@ fn pno_energy(v_pno: &[Array2<f64>], t_pno: &[Array2<f64>], basis: &PairPnoBasis
     for (p, pair) in basis.pairs.iter().enumerate() {
         let (i, j) = pair.ij;
         let w = if i == j { 1.0 } else { 2.0 };
-        let s: f64 = v_pno[p].iter().zip(t_pno[p].iter()).map(|(a, b)| a * b).sum();
+        let s: f64 = v_pno[p]
+            .iter()
+            .zip(t_pno[p].iter())
+            .map(|(a, b)| a * b)
+            .sum();
         e += w * s;
     }
     e
@@ -775,7 +807,9 @@ impl HhFlopCount {
         for (p_ij, _pair) in basis.pairs.iter().enumerate() {
             for k in 0..no2 {
                 for l in 0..no2 {
-                    let Some(&p_kl) = idx.get(&(k, l)) else { continue };
+                    let Some(&p_kl) = idx.get(&(k, l)) else {
+                        continue;
+                    };
                     lad_pno += conv(npno[p_ij], npno[p_kl]);
                     lad_n += 1;
                 }
@@ -810,7 +844,11 @@ impl HhFlopCount {
     /// PNO cost as a fraction of dense, per row. 1.0 = no compression.
     pub fn ratios(&self) -> [f64; 3] {
         let r = |(a, b): (usize, usize)| if b == 0 { 1.0 } else { a as f64 / b as f64 };
-        [r(self.amplitude_elements), r(self.max_pair_block), r(self.ladder_flops)]
+        [
+            r(self.amplitude_elements),
+            r(self.max_pair_block),
+            r(self.ladder_flops),
+        ]
     }
 
     /// The number that decides whether the whole construction is worth anything:
@@ -846,7 +884,10 @@ impl HhFlopCount {
             let ratio = if b == 0 { 1.0 } else { a as f64 / b as f64 };
             s.push_str(&format!("  {name}  {a:>12}  {b:>12}   {ratio:>6.4}\n"));
         }
-        s.push_str(&format!("  transform (once)    {:>12}\n", self.transform_flops));
+        s.push_str(&format!(
+            "  transform (once)    {:>12}\n",
+            self.transform_flops
+        ));
         s
     }
 }
@@ -901,14 +942,28 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig { energy_conv: 1e-11, ..Default::default() },
+            &RhfConfig {
+                energy_conv: 1e-11,
+                ..Default::default()
+            },
         )
         .unwrap();
-        Sys { mol, obs, dfbs, rhf, op }
+        Sys {
+            mol,
+            obs,
+            dfbs,
+            rhf,
+            op,
+        }
     }
 
     fn cfg() -> CcConfig {
-        CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-10, ..Default::default() }
+        CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-10,
+            ..Default::default()
+        }
     }
 
     /// The spin-orbital pieces of a system, for the stage-1 fixtures.
@@ -941,7 +996,12 @@ mod tests {
         );
         let g_iajb: ArrayD<f64> = einsum!("Pia,Pjb->iajb", &b_ov, &b_ov);
         let v_oovv = asym_oovv(&g_iajb, no, nv);
-        let b_oo = build_b(&transform_3center_oo(&eri3, &c_occ), &v_inv_sqrt, Axis::O, Axis::O);
+        let b_oo = build_b(
+            &transform_3center_oo(&eri3, &c_occ),
+            &v_inv_sqrt,
+            Axis::O,
+            Axis::O,
+        );
         let g_ijkl: ArrayD<f64> = einsum!("Pij,Pkl->ijkl", &b_oo, &b_oo);
         let oooo = asym_same(&g_ijkl, no);
 
@@ -959,7 +1019,13 @@ mod tests {
         let t = Array4::from_shape_fn((no2, no2, nv2, nv2), |(i, j, a, b)| {
             v4[[i, j, a, b]] / (eo[i] + eo[j] - ev[a] - ev[b])
         });
-        Blocks { oooo, t, no2, nv2, ev }
+        Blocks {
+            oooo,
+            t,
+            no2,
+            nv2,
+            ev,
+        }
     }
 
     fn so_centers(no2: usize) -> Array2<f64> {
@@ -999,16 +1065,25 @@ mod tests {
         let got = so_t2_from_pno(&pno, &basis, b.no2).unwrap();
         let want = dense_hh_ladder(&b.oooo, &b.t).unwrap();
 
-        let worst =
-            got.iter().zip(want.iter()).map(|(x, y)| (x - y).abs()).fold(0.0f64, f64::max);
+        let worst = got
+            .iter()
+            .zip(want.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f64, f64::max);
         let scale = want.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
         eprintln!(
             "stage 1 (water/STO-3G, no2={}, nv2={}): max |hh(dense) - hh(PNO)| = {worst:.3e} \
              (scale {scale:.3e})",
             b.no2, b.nv2
         );
-        assert!(scale > 1e-4, "the hh ladder is ~zero ({scale:.3e}) — the check is vacuous");
-        assert!(worst < 1e-12, "S-inserted hh ladder is NOT exact: {worst:.3e}");
+        assert!(
+            scale > 1e-4,
+            "the hh ladder is ~zero ({scale:.3e}) — the check is vacuous"
+        );
+        assert!(
+            worst < 1e-12,
+            "S-inserted hh ladder is NOT exact: {worst:.3e}"
+        );
     }
 
     /// The same contract on a system where the PNO rotation is genuinely
@@ -1030,8 +1105,11 @@ mod tests {
         )
         .unwrap();
         let want = dense_hh_ladder(&b.oooo, &b.t).unwrap();
-        let worst =
-            got.iter().zip(want.iter()).map(|(x, y)| (x - y).abs()).fold(0.0f64, f64::max);
+        let worst = got
+            .iter()
+            .zip(want.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f64, f64::max);
         eprintln!(
             "stage 1 (water/6-31G, no2={}, nv2={}): max deviation = {worst:.3e}",
             b.no2, b.nv2
@@ -1094,11 +1172,19 @@ mod tests {
 
         let back = so_t2_from_pno(&so_t2_to_pno(&b.t, &basis).unwrap(), &basis, b.no2).unwrap();
         let worst =
-            b.t.iter().zip(back.iter()).map(|(x, y)| (x - y).abs()).fold(0.0f64, f64::max);
+            b.t.iter()
+                .zip(back.iter())
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0f64, f64::max);
         let scale = b.t.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-        eprintln!("stage 1: spin-orbital round trip max deviation = {worst:.3e} (scale {scale:.3e})");
+        eprintln!(
+            "stage 1: spin-orbital round trip max deviation = {worst:.3e} (scale {scale:.3e})"
+        );
         assert!(scale > 1e-4, "t is ~zero — the round trip check is vacuous");
-        assert!(worst < 1e-12, "spin-orbital round trip is not exact: {worst:.3e}");
+        assert!(
+            worst < 1e-12,
+            "spin-orbital round trip is not exact: {worst:.3e}"
+        );
     }
 
     /// The mirror algebra `so_oriented_amp` and `so_t2_from_pno` rest on, pinned
@@ -1144,7 +1230,10 @@ mod tests {
         assert!(scale > 1e-4, "t is ~zero — the derivation check is vacuous");
         assert!(occ < 1e-14, "occupied swap does not flip sign: {occ:.3e}");
         assert!(vir < 1e-14, "virtual swap does not flip sign: {vir:.3e}");
-        assert!(both < 1e-14, "the DOUBLE swap must KEEP sign, deviation {both:.3e}");
+        assert!(
+            both < 1e-14,
+            "the DOUBLE swap must KEEP sign, deviation {both:.3e}"
+        );
     }
 
     /// Truncation must actually change the ladder — an inert knob would make the
@@ -1155,23 +1244,37 @@ mod tests {
         let b = blocks(&s);
         let b0 = build_basis(&b, 0.0);
         let bt = build_basis(&b, 1e-5);
-        assert!(!bt.is_complete(), "test premise: 1e-5 must truncate something");
+        assert!(
+            !bt.is_complete(),
+            "test premise: 1e-5 must truncate something"
+        );
 
         let go = |basis: &PairPnoBasis| {
             let ov = PairOverlaps::build(basis);
             let ix = PairIndex::new(basis, b.no2).unwrap();
             let tp = so_t2_to_pno(&b.t, basis).unwrap();
-            so_t2_from_pno(&pno_hh_ladder(&tp, &b.oooo, basis, &ov, &ix).unwrap(), basis, b.no2)
-                .unwrap()
+            so_t2_from_pno(
+                &pno_hh_ladder(&tp, &b.oooo, basis, &ov, &ix).unwrap(),
+                basis,
+                b.no2,
+            )
+            .unwrap()
         };
         let x0 = go(&b0);
         let xt = go(&bt);
-        let dev = x0.iter().zip(xt.iter()).map(|(x, y)| (x - y).abs()).fold(0.0f64, f64::max);
+        let dev = x0
+            .iter()
+            .zip(xt.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f64, f64::max);
         eprintln!(
             "stage 1: truncated ladder (retention {:.3}) differs by {dev:.3e}",
             bt.virtual_retention()
         );
-        assert!(dev > 1e-14, "truncation had no effect on the ladder — the knob is inert");
+        assert!(
+            dev > 1e-14,
+            "truncation had no effect on the ladder — the knob is inert"
+        );
     }
 
     /// Bad inputs must error rather than produce a plausible wrong number.
@@ -1185,9 +1288,14 @@ mod tests {
         let t_pno = so_t2_to_pno(&b.t, &basis).unwrap();
 
         // Wrong block count.
-        assert!(
-            pno_hh_ladder(&t_pno[..t_pno.len() - 1], &b.oooo, &basis, &overlaps, &index).is_err()
-        );
+        assert!(pno_hh_ladder(
+            &t_pno[..t_pno.len() - 1],
+            &b.oooo,
+            &basis,
+            &overlaps,
+            &index
+        )
+        .is_err());
         // oooo with the wrong dimension.
         let bad = ArrayD::<f64>::zeros(ndarray::IxDyn(&[b.no2 + 1; 4]));
         assert!(pno_hh_ladder(&t_pno, &bad, &basis, &overlaps, &index).is_err());
@@ -1215,8 +1323,7 @@ mod tests {
         let s = water("sto-3g");
         let c = cfg();
         let dense = dense_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &c).unwrap();
-        let pno =
-            dlpno_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &c, 0.0, None).unwrap();
+        let pno = dlpno_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &c, 0.0, None).unwrap();
 
         let dev = (pno.correlation_energy - dense.correlation_energy).abs();
         eprintln!(
@@ -1232,7 +1339,10 @@ mod tests {
             dense.correlation_energy.abs() > 1e-4,
             "E_corr is ~zero — the comparison is vacuous"
         );
-        assert_eq!(pno.virtual_retention, 1.0, "t_cut_pno = 0 must keep every virtual");
+        assert_eq!(
+            pno.virtual_retention, 1.0,
+            "t_cut_pno = 0 must keep every virtual"
+        );
         assert!(
             dev < 1e-9,
             "CLOSED PNO iteration must reproduce dense LinLCCD(hh): {:.14} vs {:.14}",
@@ -1249,8 +1359,7 @@ mod tests {
         let s = water("6-31g");
         let c = cfg();
         let dense = dense_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &c).unwrap();
-        let pno =
-            dlpno_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &c, 0.0, None).unwrap();
+        let pno = dlpno_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &c, 0.0, None).unwrap();
 
         let dev = (pno.correlation_energy - dense.correlation_energy).abs();
         eprintln!(
@@ -1258,7 +1367,10 @@ mod tests {
              ({} iters, retention {:.3})",
             dense.correlation_energy, pno.correlation_energy, pno.iterations, pno.virtual_retention
         );
-        assert!(dev < 1e-9, "closed PNO iteration is not exact at 6-31G: {dev:.3e}");
+        assert!(
+            dev < 1e-9,
+            "closed PNO iteration is not exact at 6-31G: {dev:.3e}"
+        );
     }
 
     /// The iteration must actually iterate. If the hh ladder contributed nothing,
@@ -1269,16 +1381,27 @@ mod tests {
         let s = water("6-31g");
         let c = cfg();
         let hh = dlpno_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &c, 0.0, None).unwrap();
-        let mp2 =
-            crate::linlccd::linlccd(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &c, LadderVariant::DriversOnly)
-                .unwrap();
+        let mp2 = crate::linlccd::linlccd(
+            &s.mol,
+            &s.obs,
+            &s.dfbs,
+            s.op,
+            &s.rhf,
+            &c,
+            LadderVariant::DriversOnly,
+        )
+        .unwrap();
         let shift = (hh.correlation_energy - mp2.correlation_energy).abs();
         eprintln!(
             "stage 2: E(hh) = {:.12}, E(drivers only / MP2) = {:.12}, ladder shift = {shift:.3e}, \
              iters = {}",
             hh.correlation_energy, mp2.correlation_energy, hh.iterations
         );
-        assert!(hh.iterations > 1, "the iteration converged in {} steps — it never iterated", hh.iterations);
+        assert!(
+            hh.iterations > 1,
+            "the iteration converged in {} steps — it never iterated",
+            hh.iterations
+        );
         assert!(
             shift > 1e-5,
             "the hh ladder shifted the energy by only {shift:.3e} — stage 2 would be pinning \
@@ -1299,8 +1422,21 @@ mod tests {
         let c = cfg();
         let no = s.mol.nelec() as usize / 2;
         let spatial = complete_pair_domains(&so_centers(no)).unwrap();
-        let r = dlpno_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &c, 0.0, Some(&spatial));
-        assert!(r.is_err(), "spatial domains must be rejected, got {:?}", r.map(|x| x.correlation_energy));
+        let r = dlpno_linlccd_hh(
+            &s.mol,
+            &s.obs,
+            &s.dfbs,
+            s.op,
+            &s.rhf,
+            &c,
+            0.0,
+            Some(&spatial),
+        );
+        assert!(
+            r.is_err(),
+            "spatial domains must be rejected, got {:?}",
+            r.map(|x| x.correlation_energy)
+        );
     }
 
     /// Truncation must move the energy — an inert knob makes the stage-3 curve
@@ -1311,14 +1447,22 @@ mod tests {
         let c = cfg();
         let e0 = dlpno_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &c, 0.0, None).unwrap();
         let et = dlpno_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &c, 1e-5, None).unwrap();
-        assert!(et.virtual_retention < 1.0, "test premise: 1e-5 must truncate");
+        assert!(
+            et.virtual_retention < 1.0,
+            "test premise: 1e-5 must truncate"
+        );
         let d = (et.correlation_energy - e0.correlation_energy).abs();
         eprintln!(
             "stage 2: E(exact) = {:.12}, E(t_cut=1e-5, retention {:.3}) = {:.12}, dE = {:+.3e}",
-            e0.correlation_energy, et.virtual_retention, et.correlation_energy,
+            e0.correlation_energy,
+            et.virtual_retention,
+            et.correlation_energy,
             et.correlation_energy - e0.correlation_energy
         );
-        assert!(d > 1e-12, "truncation had no effect on the converged energy");
+        assert!(
+            d > 1e-12,
+            "truncation had no effect on the converged energy"
+        );
         assert!(
             et.correlation_energy.abs() < e0.correlation_energy.abs(),
             "truncation must REDUCE |E_corr|: {:.12} vs {:.12}",
@@ -1371,7 +1515,11 @@ mod tests {
             f0.ladder_flops.0
         );
         assert!(ft.amplitude_elements.0 < f0.amplitude_elements.0);
-        assert_eq!(f0.ratios()[0], 1.0, "zero truncation must be exactly the dense count");
+        assert_eq!(
+            f0.ratios()[0],
+            1.0,
+            "zero truncation must be exactly the dense count"
+        );
     }
 
     /// **THE MOST IMPORTANT NUMBER IN THE REPORT.** The one-off PNO transform
@@ -1389,8 +1537,7 @@ mod tests {
         // Iteration count from a real converged run, so the amortization is not
         // a guess.
         let c = cfg();
-        let run =
-            dlpno_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &c, 0.0, None).unwrap();
+        let run = dlpno_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &c, 0.0, None).unwrap();
         let n_iter = run.iterations.max(1);
 
         eprintln!("stage 3: converged in {n_iter} iterations at t_cut_pno = 0");
@@ -1404,7 +1551,11 @@ mod tests {
                      transform {} flops  transform/(n_iter*saved) = {r:.3}  {}",
                     basis.virtual_retention(),
                     f.transform_flops,
-                    if r < 1.0 { "PAYS FOR ITSELF" } else { "NET LOSS" }
+                    if r < 1.0 {
+                        "PAYS FOR ITSELF"
+                    } else {
+                        "NET LOSS"
+                    }
                 ),
                 None => eprintln!(
                     "  t_cut = {t_cut:.0e}  retention {:.4}  ladder saved NOTHING — the \
@@ -1423,7 +1574,10 @@ mod tests {
             None,
             "at t_cut_pno = 0 the ladder cost equals dense, so there is no saving to amortize"
         );
-        assert!(f0.transform_flops > 0, "the transform must have a nonzero cost");
+        assert!(
+            f0.transform_flops > 0,
+            "the transform must have a nonzero cost"
+        );
     }
 
     /// The accuracy/cost curve on a real system, reported as data.
@@ -1439,12 +1593,14 @@ mod tests {
             .unwrap()
             .correlation_energy;
         eprintln!("stage 3 accuracy/cost curve — water/6-31G, dense E_corr = {dense:.12}");
-        eprintln!("  t_cut_pno   retention   E_corr           dE (Ha)      ladder ratio  amp ratio");
+        eprintln!(
+            "  t_cut_pno   retention   E_corr           dE (Ha)      ladder ratio  amp ratio"
+        );
 
         let mut prev_flops = usize::MAX;
         for &t_cut in &[0.0, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3] {
-            let r = dlpno_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &c, t_cut, None)
-                .unwrap();
+            let r =
+                dlpno_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &c, t_cut, None).unwrap();
             let ratios = r.flops.ratios();
             eprintln!(
                 "  {t_cut:9.0e}   {:.4}     {:.12}  {:+.3e}    {:.4}        {:.4}",
@@ -1495,12 +1651,18 @@ mod tests {
         let err = dlpno_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &cfg, 0.0, None)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("DLPNO-LinLCCD(hh) setup"), "must name the method: {err}");
+        assert!(
+            err.contains("DLPNO-LinLCCD(hh) setup"),
+            "must name the method: {err}"
+        );
         assert!(
             err.contains("v_oovv") || err.contains("t_guess") || err.contains("v4"),
             "breakdown must name a dense setup term: {err}"
         );
-        assert!(err.contains("budget"), "must say what the ceiling was: {err}");
+        assert!(
+            err.contains("budget"),
+            "must say what the ceiling was: {err}"
+        );
     }
 
     /// AN OVER-ESTIMATING GUARD IS ALSO A BUG. A budget that comfortably holds
@@ -1545,7 +1707,10 @@ mod tests {
         let s = water("sto-3g");
         let base = cfg();
         let run = |bytes: usize| {
-            let c = CcConfig { memory_budget_bytes: Some(bytes), ..base.clone() };
+            let c = CcConfig {
+                memory_budget_bytes: Some(bytes),
+                ..base.clone()
+            };
             dlpno_linlccd_hh(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &c, 0.0, None)
                 .err()
                 .map(|e| e.to_string())

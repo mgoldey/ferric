@@ -29,6 +29,7 @@ run until it has passed. This is not paranoia: the installed `~/.local` copy's
 hash matches none of the known-good build artifacts, so the build provenance is
 genuinely unknown and has to be established empirically.
 """
+
 from __future__ import annotations
 
 import math
@@ -53,7 +54,9 @@ def _xtb_env() -> dict[str, str]:
     env = dict(os.environ)
     libdirs = [str(prefix / "lib" / "x86_64-linux-gnu"), str(prefix / "lib")]
     existing = env.get("LD_LIBRARY_PATH", "")
-    env["LD_LIBRARY_PATH"] = ":".join([d for d in libdirs if d] + ([existing] if existing else []))
+    env["LD_LIBRARY_PATH"] = ":".join(
+        [d for d in libdirs if d] + ([existing] if existing else [])
+    )
     env.setdefault("XTBPATH", str(prefix / "share" / "xtb"))
     # libxtb is not thread-safe and we parallelize across processes; a threaded
     # BLAS underneath would also fight the process-level parallelism.
@@ -76,7 +79,8 @@ class XtbRun:
     infinitely unstable (or stable, depending on the comparison) and silently
     corrupt a ranking.
     """
-    energy: float | None                 # Hartree
+
+    energy: float | None  # Hartree
     coords_angstrom: list[tuple[float, float, float]] | None
     symbols: list[str]
     converged: bool
@@ -97,6 +101,7 @@ class AnnealRun:
     while `error` was None -- a contradictory state that the first version of
     `anneal` actually produced.
     """
+
     n_frames: int
     ok: bool
     error: str | None = None
@@ -114,7 +119,7 @@ def _read_xyz(path: Path):
     lines = path.read_text().splitlines()
     n = int(lines[0].split()[0])
     symbols, coords = [], []
-    for line in lines[2:2 + n]:
+    for line in lines[2 : 2 + n]:
         p = line.split()
         symbols.append(p[0])
         coords.append((float(p[1]), float(p[2]), float(p[3])))
@@ -142,9 +147,15 @@ def _run_xtb(
     """
     if not xtb_available():
         return (
-            XtbRun(None, None, list(symbols), False,
-                   error="the `xtb` binary is not on PATH"),
-            None, "",
+            XtbRun(
+                None,
+                None,
+                list(symbols),
+                False,
+                error="the `xtb` binary is not on PATH",
+            ),
+            None,
+            "",
         )
 
     workdir = tempfile.mkdtemp(prefix="ferric-xtb-")
@@ -169,14 +180,24 @@ def _run_xtb(
 
     try:
         proc = subprocess.run(
-            cmd, cwd=workdir, env=_xtb_env(), capture_output=True,
-            text=True, timeout=timeout,
+            cmd,
+            cwd=workdir,
+            env=_xtb_env(),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired:
         return (
-            XtbRun(None, None, list(symbols), False,
-                   error=f"xtb timed out after {timeout:.0f}s"),
-            None, workdir,
+            XtbRun(
+                None,
+                None,
+                list(symbols),
+                False,
+                error=f"xtb timed out after {timeout:.0f}s",
+            ),
+            None,
+            workdir,
         )
 
     out = proc.stdout
@@ -184,11 +205,19 @@ def _run_xtb(
     m = _ENERGY_RE.search(out)
     if proc.returncode != 0 or m is None:
         return (
-            XtbRun(None, None, list(symbols), False,
-                   error=(f"xtb exited {proc.returncode} without a parseable "
-                          f"TOTAL ENERGY; stderr: {proc.stderr.strip()[:300]}"),
-                   stdout_tail=tail),
-            None, workdir,
+            XtbRun(
+                None,
+                None,
+                list(symbols),
+                False,
+                error=(
+                    f"xtb exited {proc.returncode} without a parseable "
+                    f"TOTAL ENERGY; stderr: {proc.stderr.strip()[:300]}"
+                ),
+                stdout_tail=tail,
+            ),
+            None,
+            workdir,
         )
 
     energy = float(m.group(1))
@@ -239,7 +268,10 @@ def relax(
         ok, err = verify_xtb_build()
         if not ok:
             return XtbRun(
-                None, None, list(symbols), False,
+                None,
+                None,
+                list(symbols),
+                False,
                 error=f"refusing to optimize: xtb build check failed -- {err}",
             )
 
@@ -308,7 +340,8 @@ def anneal(
         ok, err = verify_xtb_build()
         if not ok:
             return [], AnnealRun(
-                0, False, f"refusing to run MD: xtb build check failed -- {err}")
+                0, False, f"refusing to run MD: xtb build check failed -- {err}"
+            )
 
     if not xtb_available():
         return [], AnnealRun(0, False, "the `xtb` binary is not on PATH")
@@ -322,8 +355,8 @@ def anneal(
         f"   time={picoseconds}\n"
         f"   step={timestep_fs}\n"
         f"   dump={dump_every_fs}\n"
-        "   shake=2\n"     # constrain X-H, so a 1 fs step is stable
-        "   hmass=4\n"     # hydrogen mass repartitioning, same reason
+        "   shake=2\n"  # constrain X-H, so a 1 fs step is stable
+        "   hmass=4\n"  # hydrogen mass repartitioning, same reason
         "$end\n"
     )
     if point_charges:
@@ -332,11 +365,28 @@ def anneal(
             rows.append(f"{q:18.10f} {x:18.10f} {y:18.10f} {z:18.10f}")
         (wd / "pcharge").write_text("\n".join(rows) + "\n")
 
-    cmd = ["xtb", "mol.xyz", "--gfn", "2", "--chrg", str(charge), "--uhf",
-           str(uhf), "--md", "--input", "md.inp"]
+    cmd = [
+        "xtb",
+        "mol.xyz",
+        "--gfn",
+        "2",
+        "--chrg",
+        str(charge),
+        "--uhf",
+        str(uhf),
+        "--md",
+        "--input",
+        "md.inp",
+    ]
     try:
-        proc = subprocess.run(cmd, cwd=workdir, env=_xtb_env(),
-                              capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(
+            cmd,
+            cwd=workdir,
+            env=_xtb_env(),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
     except subprocess.TimeoutExpired:
         shutil.rmtree(workdir, ignore_errors=True)
         return [], AnnealRun(0, False, f"xtb MD timed out after {timeout:.0f}s")
@@ -346,7 +396,8 @@ def anneal(
         tail = "\n".join(proc.stdout.splitlines()[-20:])
         shutil.rmtree(workdir, ignore_errors=True)
         return [], AnnealRun(
-            0, False,
+            0,
+            False,
             f"xtb MD exited {proc.returncode} with no trajectory; "
             f"stderr: {proc.stderr.strip()[:300]}",
             stdout_tail=tail,
@@ -371,7 +422,7 @@ def _read_trajectory(path: Path, natoms: int):
         if n != natoms:
             break
         coords = []
-        for row in lines[i + 2:i + 2 + n]:
+        for row in lines[i + 2 : i + 2 + n]:
             p = row.split()
             if len(p) < 4:
                 break

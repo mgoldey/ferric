@@ -12,6 +12,7 @@ Run:  python3 scripts/gw100/gen_ecp_scf_ref.py
 Out:  testdata/reference/xe_def2svp_ecp_rhf.json
       testdata/reference/i2_def2svp_ecp_rhf.json
 """
+
 import json
 import os
 import numpy as np
@@ -25,19 +26,28 @@ HARTREE_TO_EV = 27.211386245988
 CASES = {
     "xe_def2svp_ecp_rhf": dict(
         atom="Xe 0.0 0.0 0.0",
-        spin=0, charge=0,
+        spin=0,
+        charge=0,
     ),
     "i2_def2svp_ecp_rhf": dict(
         # I2 bond length 2.666 A -> Bohr; keep Bohr explicit so ferric matches.
         atom="I 0.0 0.0 0.0; I 0.0 0.0 5.037557",  # 2.666 A in Bohr
-        spin=0, charge=0,
+        spin=0,
+        charge=0,
     ),
 }
 
 
 def run_case(name, cfg):
-    mol = gto.M(atom=cfg["atom"], basis="def2-svp", ecp="def2-svp",
-                spin=cfg["spin"], charge=cfg["charge"], unit="Bohr", cart=False)
+    mol = gto.M(
+        atom=cfg["atom"],
+        basis="def2-svp",
+        ecp="def2-svp",
+        spin=cfg["spin"],
+        charge=cfg["charge"],
+        unit="Bohr",
+        cart=False,
+    )
     mf = scf.RHF(mol)
     mf.conv_tol = 1e-11
     e_tot = mf.kernel()
@@ -66,8 +76,10 @@ def run_case(name, cfg):
     out = os.path.join(REFDIR, name + ".json")
     with open(out, "w") as f:
         json.dump(ref, f)
-    print(f"{name}: nelec={mol.nelectron} nao={mol.nao} "
-          f"E={e_tot:.10f} Ha  e_HOMO={e_homo:.6f} Ha ({e_homo*HARTREE_TO_EV:.4f} eV)")
+    print(
+        f"{name}: nelec={mol.nelectron} nao={mol.nao} "
+        f"E={e_tot:.10f} Ha  e_HOMO={e_homo:.6f} Ha ({e_homo * HARTREE_TO_EV:.4f} eV)"
+    )
     print(f"  e_nuc={mol.energy_nuc():.10f}  -> {out}")
 
 

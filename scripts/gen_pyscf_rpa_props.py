@@ -22,6 +22,7 @@ Usage:
   python scripts/gen_pyscf_rpa_props.py h2 cc-pvdz cc-pvdz-ri
   python scripts/gen_pyscf_rpa_props.py h2o cc-pvdz cc-pvdz-ri
 """
+
 import json
 import os
 import sys
@@ -109,8 +110,10 @@ def efield_at_atoms(mol, dm):
         h = 1e-4
         e_elec = np.zeros(3)
         for d in range(3):
-            Rp = Ra.copy(); Rp[d] += h
-            Rn = Ra.copy(); Rn[d] -= h
+            Rp = Ra.copy()
+            Rp[d] += h
+            Rn = Ra.copy()
+            Rn[d] -= h
             mol.set_rinv_origin(Rp)
             Tp = mol.intor("int1e_rinv")
             mol.set_rinv_origin(Rn)
@@ -152,9 +155,9 @@ def alpha_direct_rpa(mf):
     de = (mo_energy[nocc:][None, :] - mo_energy[:nocc][:, None]).reshape(-1)
     D = np.diag(de)
     eri_ao = mol.intor("int2e").reshape(nmo, nmo, nmo, nmo)
-    eri_iajb = np.einsum(
-        "pqrs,pi,qa,rj,sb->iajb", eri_ao, occ, vir, occ, vir
-    ).reshape(nocc * nvir, nocc * nvir)
+    eri_iajb = np.einsum("pqrs,pi,qa,rj,sb->iajb", eri_ao, occ, vir, occ, vir).reshape(
+        nocc * nvir, nocc * nvir
+    )
     ApB = D + 4.0 * eri_iajb
     alpha = np.zeros((3, 3))
     for i in range(3):
@@ -193,8 +196,10 @@ def alpha_fd_hf(mol, eps=5e-4):
 
     alpha = np.zeros((3, 3))
     for j in range(3):
-        Ep = np.zeros(3); Ep[j] = eps
-        En = np.zeros(3); En[j] = -eps
+        Ep = np.zeros(3)
+        Ep[j] = eps
+        En = np.zeros(3)
+        En[j] = -eps
         mu_p = dipole_with_field(Ep)
         mu_n = dipole_with_field(En)
         # Sign convention: H' = -d·E adds -E·r to electronic hcore.  Above
@@ -237,8 +242,7 @@ def alpha_cphf(mf):
 
     # CPHF solves (e_a - e_i) U_ai + Σ A_{ai,bj} U_bj = -<i|r|a>.
     s1 = np.zeros_like(h1)  # static; no orbital metric perturbation
-    mo1, _ = _cphf.solve(fx, mo_energy, mo_occ, h1, s1,
-                         max_cycle=80, tol=1e-9)
+    mo1, _ = _cphf.solve(fx, mo_energy, mo_occ, h1, s1, max_cycle=80, tol=1e-9)
     # mo1 has shape (3, no, nv) from cphf.solve: the U^x_{ia} coefficients
     # such that |i^(1)> = Σ_a U^x_{ia} |a>.
     # α_ij = -2 * Σ_{ia} <i|r_j|a> U^x_{ia}  (factor 2 = spin sum, RHF).
@@ -291,7 +295,9 @@ def main():
         "aux_basis": aux,
         "scf_energy": float(mf.e_tot),
         "esp_at_atoms": [float(v) for v in v_atoms],
-        "electric_field_at_atoms": [[float(e_field[a, d]) for d in range(3)] for a in range(e_field.shape[0])],
+        "electric_field_at_atoms": [
+            [float(e_field[a, d]) for d in range(3)] for a in range(e_field.shape[0])
+        ],
         "alpha_tensor": [[float(alpha[i, j]) for j in range(3)] for i in range(3)],
         "alpha_iso": float(alpha_iso),
         "alpha_principal": [float(x) for x in eigs],

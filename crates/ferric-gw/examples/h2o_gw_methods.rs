@@ -37,7 +37,10 @@ H  0.0  -0.755453 -0.471161
     let nocc = (mol.nelec() as usize) / 2;
     let homo_abs = nocc - 1;
     println!("Water/cc-pVDZ — first IP (eV) by method:");
-    println!("  RHF Koopmans (−ε_HOMO): {:.3}", -rhf.eps_r()[homo_abs] * HA_TO_EV);
+    println!(
+        "  RHF Koopmans (−ε_HOMO): {:.3}",
+        -rhf.eps_r()[homo_abs] * HA_TO_EV
+    );
 
     let pdep_cfg = PdepRpaConfig {
         quadrature: QuadratureConfig {

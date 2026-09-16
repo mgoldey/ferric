@@ -14,6 +14,7 @@ Run:
     LD_LIBRARY_PATH=$HOME/.local/lib/x86_64-linux-gnu:$HOME/.local/lib \
     OPENBLAS_NUM_THREADS=1 uv run --no-sync python experiments/danuglipron/run_fit.py
 """
+
 from __future__ import annotations
 
 import json
@@ -93,8 +94,10 @@ def main() -> int:
 
     print(f"deriving pocket charges from {POCKET_PDB} ...", flush=True)
     pocket = derive_pocket_charges(POCKET_PDB)
-    print(f"  {pocket.n_charges} charges, net {sum(c[0] for c in pocket.charges):+.3f} e",
-          flush=True)
+    print(
+        f"  {pocket.n_charges} charges, net {sum(c[0] for c in pocket.charges):+.3f} e",
+        flush=True,
+    )
 
     ens = load_xyz_ensemble(ENSEMBLE)
     i_ref = ens.labels.index("conf_00_cryo_em")
@@ -108,21 +111,28 @@ def main() -> int:
     if free_json.exists():
         d = json.loads(free_json.read_text())
         free_min = d["free_min_energy_ha"]
-        print(f"  free minimum from Arm A: {d['free_min_label']} "
-              f"({free_min:.6f} Ha), spread {d['spread_kcal_mol']:.2f} kcal/mol",
-              flush=True)
+        print(
+            f"  free minimum from Arm A: {d['free_min_label']} "
+            f"({free_min:.6f} Ha), spread {d['spread_kcal_mol']:.2f} kcal/mol",
+            flush=True,
+        )
 
     tox_provider = RdkitAlertsProvider()
     candidates: list[Candidate] = []
     records = []
 
-    print(f"\nscoring {len(danuglipron_analogues())} candidates "
-          f"x up to {N_CONF} conformers ...\n", flush=True)
+    print(
+        f"\nscoring {len(danuglipron_analogues())} candidates "
+        f"x up to {N_CONF} conformers ...\n",
+        flush=True,
+    )
 
     for ana in danuglipron_analogues():
         t0 = time.time()
         cand = Candidate(
-            label=ana.label, smiles=ana.smiles, hypothesis=ana.hypothesis,
+            label=ana.label,
+            smiles=ana.smiles,
+            hypothesis=ana.hypothesis,
             is_negative_control=ana.is_negative_control,
             net_charge=ana.net_charge,
         )
@@ -149,18 +159,24 @@ def main() -> int:
             cand.notes.append(f"embedding failed: {emb.error}")
             candidates.append(cand)
             records.append({"label": ana.label, "error": emb.error})
-            print(f"{ana.label:30s} UNEVALUATED (embedding): {emb.error[:60]}",
-                  flush=True)
+            print(
+                f"{ana.label:30s} UNEVALUATED (embedding): {emb.error[:60]}", flush=True
+            )
             continue
         poses = []
         for k, coords in enumerate(emb.conformers):
             al = align_to_reference(
-                ana.scoring_smiles, emb.symbols, coords,
-                DANUGLIPRON_SMILES, ref_symbols, ref_coords,
+                ana.scoring_smiles,
+                emb.symbols,
+                coords,
+                DANUGLIPRON_SMILES,
+                ref_symbols,
+                ref_coords,
             )
             if al.ok:
-                poses.append((f"conf_{k:02d}", al.symbols, al.coords_angstrom,
-                              al.rmsd_angstrom))
+                poses.append(
+                    (f"conf_{k:02d}", al.symbols, al.coords_angstrom, al.rmsd_angstrom)
+                )
             else:
                 cand.notes.append(f"conf_{k:02d} alignment failed: {al.error}")
 
@@ -173,8 +189,9 @@ def main() -> int:
 
         fits = []
         for pose_label, syms, coords, rmsd in poses:
-            fr = pose_fit(syms, coords, pocket.charges, label=pose_label,
-                          charge=ana.net_charge)
+            fr = pose_fit(
+                syms, coords, pocket.charges, label=pose_label, charge=ana.net_charge
+            )
             fits.append((fr, rmsd))
 
         good = [(f, r) for f, r in fits if f.ok]
@@ -183,7 +200,9 @@ def main() -> int:
             cand.notes.append(f"all fits failed: {first_err}")
             candidates.append(cand)
             records.append({"label": ana.label, "error": first_err})
-            print(f"{ana.label:30s} UNEVALUATED (fit): {str(first_err)[:60]}", flush=True)
+            print(
+                f"{ana.label:30s} UNEVALUATED (fit): {str(first_err)[:60]}", flush=True
+            )
             continue
 
         best, best_rmsd = min(good, key=lambda fr: fr[0].interaction_kcal)
@@ -214,34 +233,39 @@ def main() -> int:
             )
 
         dt = time.time() - t0
-        print(f"{ana.label:30s} fit_mean={mean_fit:+8.2f}  (min {min(values):+8.2f}, "
-              f"spread {spread:5.1f}) n={len(good)}/{len(fits)} "
-              f"rmsd {best_rmsd:.2f} A {dt:.0f}s"
-              + ("  [NEG-CTRL]" if ana.is_negative_control else ""), flush=True)
+        print(
+            f"{ana.label:30s} fit_mean={mean_fit:+8.2f}  (min {min(values):+8.2f}, "
+            f"spread {spread:5.1f}) n={len(good)}/{len(fits)} "
+            f"rmsd {best_rmsd:.2f} A {dt:.0f}s"
+            + ("  [NEG-CTRL]" if ana.is_negative_control else ""),
+            flush=True,
+        )
 
         candidates.append(cand)
-        records.append({
-            "label": ana.label,
-            "smiles": ana.smiles,
-            "hypothesis": ana.hypothesis,
-            "is_negative_control": ana.is_negative_control,
-            "liability": cand.liability,
-            "net_charge": ana.net_charge,
-            "scoring_smiles": ana.scoring_smiles,
-            "best_pose": best.label,
-            "scaffold_rmsd_angstrom": best_rmsd,
-            "fit_kcal_mol": mean_fit,
-            "fit_mean_kcal_mol": mean_fit,
-            "fit_min_kcal_mol": min(values),
-            "fit_spread_kcal_mol": spread,
-            "fit_sem_kcal_mol": cand.fit_sem_kcal,
-            "e_vacuum_ha": best.e_vacuum,
-            "e_in_field_ha": best.e_in_field,
-            "n_pocket_charges": best.n_pocket_charges,
-            "n_poses_scored": len(good),
-            "all_pose_fits_kcal": [f.interaction_kcal for f, _ in good],
-            "notes": cand.notes,
-        })
+        records.append(
+            {
+                "label": ana.label,
+                "smiles": ana.smiles,
+                "hypothesis": ana.hypothesis,
+                "is_negative_control": ana.is_negative_control,
+                "liability": cand.liability,
+                "net_charge": ana.net_charge,
+                "scoring_smiles": ana.scoring_smiles,
+                "best_pose": best.label,
+                "scaffold_rmsd_angstrom": best_rmsd,
+                "fit_kcal_mol": mean_fit,
+                "fit_mean_kcal_mol": mean_fit,
+                "fit_min_kcal_mol": min(values),
+                "fit_spread_kcal_mol": spread,
+                "fit_sem_kcal_mol": cand.fit_sem_kcal,
+                "e_vacuum_ha": best.e_vacuum,
+                "e_in_field_ha": best.e_in_field,
+                "n_pocket_charges": best.n_pocket_charges,
+                "n_poses_scored": len(good),
+                "all_pose_fits_kcal": [f.interaction_kcal for f, _ in good],
+                "notes": cand.notes,
+            }
+        )
 
     # ── the cryo-EM bound pose, reported separately ──
     #
@@ -259,26 +283,40 @@ def main() -> int:
     rc = np.asarray(ref_coords)
     oh = [
         (float(np.linalg.norm(rc[h] - rc[o])), h)
-        for h, s_h in enumerate(ref_symbols) if s_h == "H"
-        for o, s_o in enumerate(ref_symbols) if s_o == "O"
+        for h, s_h in enumerate(ref_symbols)
+        if s_h == "H"
+        for o, s_o in enumerate(ref_symbols)
+        if s_o == "O"
         if float(np.linalg.norm(rc[h] - rc[o])) < 1.15
     ]
-    cryo_neutral = pose_fit(ref_symbols, ref_coords, pocket.charges,
-                            label="conf_00_cryo_em_neutral")
+    cryo_neutral = pose_fit(
+        ref_symbols, ref_coords, pocket.charges, label="conf_00_cryo_em_neutral"
+    )
     cryo = cryo_neutral
     if oh:
         _, h_idx = min(oh)
         anion_symbols = [s_ for k, s_ in enumerate(ref_symbols) if k != h_idx]
         anion_coords = [c_ for k, c_ in enumerate(ref_coords) if k != h_idx]
-        cryo = pose_fit(anion_symbols, anion_coords, pocket.charges,
-                        label="conf_00_cryo_em_anion", charge=-1)
+        cryo = pose_fit(
+            anion_symbols,
+            anion_coords,
+            pocket.charges,
+            label="conf_00_cryo_em_anion",
+            charge=-1,
+        )
     if cryo.ok:
-        print(f"\n[reference] experimental cryo-EM pose (7LCJ), ANION: "
-              f"{cryo.interaction_kcal:+.2f} kcal/mol, "
-              f"{cryo.n_pocket_charges} charges", flush=True)
+        print(
+            f"\n[reference] experimental cryo-EM pose (7LCJ), ANION: "
+            f"{cryo.interaction_kcal:+.2f} kcal/mol, "
+            f"{cryo.n_pocket_charges} charges",
+            flush=True,
+        )
     if cryo_neutral.ok:
-        print(f"[reference] same pose as NEUTRAL acid (for contrast): "
-              f"{cryo_neutral.interaction_kcal:+.2f} kcal/mol", flush=True)
+        print(
+            f"[reference] same pose as NEUTRAL acid (for contrast): "
+            f"{cryo_neutral.interaction_kcal:+.2f} kcal/mol",
+            flush=True,
+        )
 
     # ── the gate ──
     print("\n" + "=" * 78)
@@ -301,36 +339,43 @@ def main() -> int:
     print(format_table(candidates))
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps({
-        "pocket_pdb": POCKET_PDB,
-        "n_pocket_charges": pocket.n_charges,
-        "method_fit": "GFN2-xTB in-field minus vacuum, same geometry",
-        "method_align": "rigid Kabsch on MCS scaffold vs 7LCJ bound pose (NOT docking)",
-        "method_tox": "RDKit FilterCatalog alert sets + Lipinski/Veber (offline baseline)",
-        "n_conformers_per_analogue": N_CONF,
-        "free_min_energy_ha": free_min,
-        "gate_passed": gate.passed,
-        "gate_detail": gate.detail,
-        "gate_parent_fit_kcal": gate.parent_fit,
-        "gate_control_fits_kcal": gate.control_fits,
-        "precision_passed": precision.passed,
-        "precision_detail": precision.detail,
-        "charge_confound_passed": confound.passed,
-        "charge_confound_detail": confound.detail,
-        "ranking_axis": "mean interaction energy over a fixed number of aligned poses "
-                        "(NOT the min, which is a biased estimator whose bias grows "
-                        "with sample count)",
-        "cryo_em_reference_fit_kcal_anion": cryo.interaction_kcal if cryo.ok else None,
-        "cryo_em_reference_fit_kcal_neutral": (
-            cryo_neutral.interaction_kcal if cryo_neutral.ok else None
-        ),
-        "ionization_note": (
-            "every candidate retaining an ionizable acid/bioisostere is scored as "
-            "its pH-7.4 ANION (net charge -1); NC1-methyl-ester cannot ionize and "
-            "is scored neutral, which is the hypothesis that control tests"
-        ),
-        "candidates": records,
-    }, indent=2))
+    OUT.write_text(
+        json.dumps(
+            {
+                "pocket_pdb": POCKET_PDB,
+                "n_pocket_charges": pocket.n_charges,
+                "method_fit": "GFN2-xTB in-field minus vacuum, same geometry",
+                "method_align": "rigid Kabsch on MCS scaffold vs 7LCJ bound pose (NOT docking)",
+                "method_tox": "RDKit FilterCatalog alert sets + Lipinski/Veber (offline baseline)",
+                "n_conformers_per_analogue": N_CONF,
+                "free_min_energy_ha": free_min,
+                "gate_passed": gate.passed,
+                "gate_detail": gate.detail,
+                "gate_parent_fit_kcal": gate.parent_fit,
+                "gate_control_fits_kcal": gate.control_fits,
+                "precision_passed": precision.passed,
+                "precision_detail": precision.detail,
+                "charge_confound_passed": confound.passed,
+                "charge_confound_detail": confound.detail,
+                "ranking_axis": "mean interaction energy over a fixed number of aligned poses "
+                "(NOT the min, which is a biased estimator whose bias grows "
+                "with sample count)",
+                "cryo_em_reference_fit_kcal_anion": cryo.interaction_kcal
+                if cryo.ok
+                else None,
+                "cryo_em_reference_fit_kcal_neutral": (
+                    cryo_neutral.interaction_kcal if cryo_neutral.ok else None
+                ),
+                "ionization_note": (
+                    "every candidate retaining an ionizable acid/bioisostere is scored as "
+                    "its pH-7.4 ANION (net charge -1); NC1-methyl-ester cannot ionize and "
+                    "is scored neutral, which is the hypothesis that control tests"
+                ),
+                "candidates": records,
+            },
+            indent=2,
+        )
+    )
     print(f"\nwrote {OUT}")
     return 0
 

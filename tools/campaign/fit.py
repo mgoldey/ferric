@@ -65,6 +65,7 @@ Vacuum and in-field energies must be at the SAME geometry, or the difference
 picks up a relaxation energy as well. `pose_fit` enforces that by construction:
 it computes both from one coordinate array.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -89,10 +90,11 @@ DEFAULT_FIELD_CUTOFF_BOHR = 30.0
 @dataclass
 class FitResult:
     """Electrostatic fit of one pose in one pocket."""
+
     label: str
-    e_vacuum: float | None            # Hartree
-    e_in_field: float | None          # Hartree
-    interaction_kcal: float | None    # negative = favorable
+    e_vacuum: float | None  # Hartree
+    e_in_field: float | None  # Hartree
+    interaction_kcal: float | None  # negative = favorable
     n_pocket_charges: int
     error: str | None = None
 
@@ -143,7 +145,11 @@ def pose_fit(
 
     if not charges:
         return FitResult(
-            label, None, None, None, 0,
+            label,
+            None,
+            None,
+            None,
+            0,
             error=(
                 "no pocket charges within the field cutoff of this pose -- the "
                 "pose is outside the pocket, or the coordinate frames of ligand "
@@ -154,13 +160,25 @@ def pose_fit(
 
     vac = singlepoint(symbols, coords_angstrom, charge=charge)
     if not vac.ok:
-        return FitResult(label, None, None, None, len(charges),
-                         error=f"vacuum single point failed: {vac.error}")
+        return FitResult(
+            label,
+            None,
+            None,
+            None,
+            len(charges),
+            error=f"vacuum single point failed: {vac.error}",
+        )
 
     fld = singlepoint(symbols, coords_angstrom, charge=charge, point_charges=charges)
     if not fld.ok:
-        return FitResult(label, vac.energy, None, None, len(charges),
-                         error=f"in-field single point failed: {fld.error}")
+        return FitResult(
+            label,
+            vac.energy,
+            None,
+            None,
+            len(charges),
+            error=f"in-field single point failed: {fld.error}",
+        )
 
     return FitResult(
         label=label,
@@ -191,8 +209,14 @@ def best_pose_fit(
     """
     labels = labels or [f"conf_{i:02d}" for i in range(len(conformers))]
     results = [
-        pose_fit(syms, coords, point_charges, label=lbl, charge=charge,
-                 field_cutoff_bohr=field_cutoff_bohr)
+        pose_fit(
+            syms,
+            coords,
+            point_charges,
+            label=lbl,
+            charge=charge,
+            field_cutoff_bohr=field_cutoff_bohr,
+        )
         for syms, coords, lbl in zip(symbols_per_conformer, conformers, labels)
     ]
     good = [r for r in results if r.ok]

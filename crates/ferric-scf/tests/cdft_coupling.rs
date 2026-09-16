@@ -26,7 +26,11 @@ fn pairing_swapped_columns_det_minus_one() {
     let c_b = array![[0.0, 1.0], [1.0, 0.0], [0.0, 0.0]]; // columns swapped
     let p = biorth_pairing(&c_a, &c_b, &s);
     // SVD singular values are non-negative, so |det_m| = product = 1.
-    assert!((p.det_m.abs() - 1.0).abs() < 1e-12, "|det_m| {}", p.det_m.abs());
+    assert!(
+        (p.det_m.abs() - 1.0).abs() < 1e-12,
+        "|det_m| {}",
+        p.det_m.abs()
+    );
 }
 
 /// For identical α and β sets (S = I, C_a = C_b), the one-body element equals
@@ -36,9 +40,11 @@ fn cross_one_body_identical_is_expectation() {
     use ferric_scf::cdft_coupling::{biorth_pairing, cross_one_body};
     let s = Array2::<f64>::eye(3);
     let c = array![[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]; // 2 occ
-    // Operator: diagonal AO operator diag(2,3,5).
+                                                        // Operator: diagonal AO operator diag(2,3,5).
     let mut op = Array2::<f64>::zeros((3, 3));
-    op[(0, 0)] = 2.0; op[(1, 1)] = 3.0; op[(2, 2)] = 5.0;
+    op[(0, 0)] = 2.0;
+    op[(1, 1)] = 3.0;
+    op[(2, 2)] = 5.0;
     let pa = biorth_pairing(&c, &c, &s);
     let pb = biorth_pairing(&c, &c, &s);
     let s_ab = pa.det_m * pb.det_m; // = 1
@@ -62,7 +68,11 @@ fn cross_one_body_single_zero_overlap_is_finite() {
     let pa = biorth_pairing(&c_a, &c_b, &s);
     // One singular value should be ~1 (shared AO0) and one ~0 (orthogonal pair).
     let n_zero = pa.s_vals.iter().filter(|&&s| s < 1e-8).count();
-    assert_eq!(n_zero, 1, "expected exactly one zero overlap, s={:?}", pa.s_vals);
+    assert_eq!(
+        n_zero, 1,
+        "expected exactly one zero overlap, s={:?}",
+        pa.s_vals
+    );
 
     // β identical (occupies AO0, AO1).
     let cb = array![[1.0, 0.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0]];
@@ -73,7 +83,8 @@ fn cross_one_body_single_zero_overlap_is_finite() {
 
     // Operator that connects AO1 and AO2 (the orthogonal pair): off-diagonal.
     let mut op = Array2::<f64>::zeros((4, 4));
-    op[(1, 2)] = 1.0; op[(2, 1)] = 1.0;
+    op[(1, 2)] = 1.0;
+    op[(2, 1)] = 1.0;
     let val = cross_one_body(&op, &pa, &pb, s_ab);
     // Finite and nonzero: the single zero-overlap pair carries the element.
     assert!(val.is_finite(), "element not finite: {val}");
@@ -88,8 +99,15 @@ fn coupling_identical_state_is_clean() {
     let s = Array2::<f64>::eye(3);
     let c = array![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     let w = Array2::<f64>::eye(3);
-    let st = DiabaticState { c_a: &c, c_b: &c, nocc_a: 2, nocc_b: 1,
-        energy: -3.0, lambda: 0.5, w: &w };
+    let st = DiabaticState {
+        c_a: &c,
+        c_b: &c,
+        nocc_a: 2,
+        nocc_b: 1,
+        energy: -3.0,
+        lambda: 0.5,
+        w: &w,
+    };
     let r = coupling_hab(&st, &st, &s);
     assert!((r.s_ab - 1.0).abs() < 1e-10, "S_ab {}", r.s_ab);
     assert!(r.h_ab.is_finite(), "H_ab not finite");
@@ -106,14 +124,38 @@ fn coupling_symmetric_under_swap() {
     let (ct, st_) = (t.cos(), t.sin());
     let c2 = array![[ct, 0.0, -st_], [0.0, 1.0, 0.0], [st_, 0.0, ct]];
     let w = Array2::<f64>::eye(3);
-    let a = DiabaticState { c_a: &c1, c_b: &c1, nocc_a: 2, nocc_b: 1,
-        energy: -3.0, lambda: 0.5, w: &w };
-    let b = DiabaticState { c_a: &c2, c_b: &c2, nocc_a: 2, nocc_b: 1,
-        energy: -2.9, lambda: 0.4, w: &w };
+    let a = DiabaticState {
+        c_a: &c1,
+        c_b: &c1,
+        nocc_a: 2,
+        nocc_b: 1,
+        energy: -3.0,
+        lambda: 0.5,
+        w: &w,
+    };
+    let b = DiabaticState {
+        c_a: &c2,
+        c_b: &c2,
+        nocc_a: 2,
+        nocc_b: 1,
+        energy: -2.9,
+        lambda: 0.4,
+        w: &w,
+    };
     let ab = coupling_hab(&a, &b, &s);
     let ba = coupling_hab(&b, &a, &s);
-    assert!((ab.s_ab - ba.s_ab).abs() < 1e-10, "S_ab asym {} {}", ab.s_ab, ba.s_ab);
-    assert!((ab.h_ab - ba.h_ab).abs() < 1e-8, "H_ab asym {} {}", ab.h_ab, ba.h_ab);
+    assert!(
+        (ab.s_ab - ba.s_ab).abs() < 1e-10,
+        "S_ab asym {} {}",
+        ab.s_ab,
+        ba.s_ab
+    );
+    assert!(
+        (ab.h_ab - ba.h_ab).abs() < 1e-8,
+        "H_ab asym {} {}",
+        ab.h_ab,
+        ba.h_ab
+    );
 }
 
 // End-to-end: two charge-constrained He₂⁺ states → coupling. He₂⁺ is 3
@@ -125,9 +167,9 @@ fn coupling_symmetric_under_swap() {
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_dft::ao_grid::eval_basis_on_points;
 use ferric_dft::cdft::{build_weight_matrix, Constraint, SpinChannel};
 use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
-use ferric_dft::ao_grid::eval_basis_on_points;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron::overlap;
 use ferric_integrals::operator::Operator;
@@ -149,7 +191,11 @@ fn he2_plus_hab(r_ang: f64) -> (f64, f64, f64, f64) {
     let s = overlap(&prep);
 
     // Weight matrices (rebuild on the driver's grid: 99×302).
-    let gcfg = AtomicGridConfig { n_radial: 99, n_angular: 302, ..Default::default() };
+    let gcfg = AtomicGridConfig {
+        n_radial: 99,
+        n_angular: 302,
+        ..Default::default()
+    };
     let grid = build_atomic_grid(&mol, &gcfg);
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let chi = eval_basis_on_points(&mol, &bs, &pts).unwrap();
@@ -166,13 +212,27 @@ fn he2_plus_hab(r_ang: f64) -> (f64, f64, f64, f64) {
     // physically flat response (∂N/∂λ≈1e-3) and lands the driver on the
     // localized plateau rather than walking λ over the cliff.
     let cfg0 = RhfConfig {
-        constraints: vec![Constraint { fragment: vec![0], spin: SpinChannel::Total, target: 1.0 }],
-        cdft_lambda_tol: 1e-2, fractional_occ: false, dft_grid: Some(gcfg.clone()), level_shift: 0.2,
+        constraints: vec![Constraint {
+            fragment: vec![0],
+            spin: SpinChannel::Total,
+            target: 1.0,
+        }],
+        cdft_lambda_tol: 1e-2,
+        fractional_occ: false,
+        dft_grid: Some(gcfg.clone()),
+        level_shift: 0.2,
         ..Default::default()
     };
     let cfg1 = RhfConfig {
-        constraints: vec![Constraint { fragment: vec![1], spin: SpinChannel::Total, target: 1.0 }],
-        cdft_lambda_tol: 1e-2, fractional_occ: false, dft_grid: Some(gcfg.clone()), level_shift: 0.2,
+        constraints: vec![Constraint {
+            fragment: vec![1],
+            spin: SpinChannel::Total,
+            target: 1.0,
+        }],
+        cdft_lambda_tol: 1e-2,
+        fractional_occ: false,
+        dft_grid: Some(gcfg.clone()),
+        level_shift: 0.2,
         ..Default::default()
     };
     let ra = solve_cdft_uhf(&ctx, &mol, &prep, &bs, &bounds, &cfg0).unwrap();
@@ -183,12 +243,22 @@ fn he2_plus_hab(r_ang: f64) -> (f64, f64, f64, f64) {
     let ca_b = ra.scf.mos_beta.as_ref().unwrap();
     let cb_b = rb.scf.mos_beta.as_ref().unwrap();
     let state_a = DiabaticState {
-        c_a: &ra.scf.mos_alpha, c_b: ca_b, nocc_a, nocc_b,
-        energy: ra.scf.energy, lambda: ra.lambdas[0], w: &w0,
+        c_a: &ra.scf.mos_alpha,
+        c_b: ca_b,
+        nocc_a,
+        nocc_b,
+        energy: ra.scf.energy,
+        lambda: ra.lambdas[0],
+        w: &w0,
     };
     let state_b = DiabaticState {
-        c_a: &rb.scf.mos_alpha, c_b: cb_b, nocc_a, nocc_b,
-        energy: rb.scf.energy, lambda: rb.lambdas[0], w: &w1,
+        c_a: &rb.scf.mos_alpha,
+        c_b: cb_b,
+        nocc_a,
+        nocc_b,
+        energy: rb.scf.energy,
+        lambda: rb.lambdas[0],
+        w: &w1,
     };
     let res = coupling_hab(&state_a, &state_b, &s);
     (res.h_ab.abs(), res.s_ab, res.e_a, res.e_b)
@@ -197,10 +267,15 @@ fn he2_plus_hab(r_ang: f64) -> (f64, f64, f64, f64) {
 #[test]
 fn he2_plus_coupling_is_finite_and_symmetric() {
     let (hab, s_ab, e_a, e_b) = he2_plus_hab(2.5);
-    eprintln!("He2+ @2.5Å: |H_ab|={hab:.6} Ha ({:.4} eV), S_ab={s_ab:.6}, E_a={e_a:.6}, E_b={e_b:.6}",
-              hab * 27.211386);
+    eprintln!(
+        "He2+ @2.5Å: |H_ab|={hab:.6} Ha ({:.4} eV), S_ab={s_ab:.6}, E_a={e_a:.6}, E_b={e_b:.6}",
+        hab * 27.211386
+    );
     // Symmetric system: the two diabatic energies must match.
-    assert!((e_a - e_b).abs() < 1e-4, "diabatic energies differ: {e_a} vs {e_b}");
+    assert!(
+        (e_a - e_b).abs() < 1e-4,
+        "diabatic energies differ: {e_a} vs {e_b}"
+    );
     assert!(hab.is_finite() && hab > 0.0, "|H_ab| = {hab}");
     // Physical coupling for He2+ at 2.5 Å is on the order of 0.01–0.2 Ha.
     assert!(hab < 1.0, "|H_ab| implausibly large: {hab}");
@@ -218,5 +293,8 @@ fn he2_plus_coupling_decays_with_distance() {
     let (h30, s30, _, _) = he2_plus_hab(3.0);
     let (h35, s35, _, _) = he2_plus_hab(3.5);
     eprintln!("|H_ab|: R=2.5 → {h25:.6} (S={s25:.4}), R=3.0 → {h30:.6} (S={s30:.4}), R=3.5 → {h35:.6} (S={s35:.4})");
-    assert!(h25 > h30 && h30 > h35, "|H_ab| not strictly decreasing: {h25}, {h30}, {h35}");
+    assert!(
+        h25 > h30 && h30 > h35,
+        "|H_ab| not strictly decreasing: {h25}, {h30}, {h35}"
+    );
 }

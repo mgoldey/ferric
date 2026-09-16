@@ -119,7 +119,10 @@ fn eval_density_closed_consistent_across_blas_thread_counts() {
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
 
     let grid = build_atomic_grid(&mol, &AtomicGridConfig::default());
-    assert!(grid.len() >= 512, "grid must exceed PAR_MIN_PTS to exercise both paths");
+    assert!(
+        grid.len() >= 512,
+        "grid must exceed PAR_MIN_PTS to exercise both paths"
+    );
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi) = eval_basis_and_grad_on_points(&mol, &bs, &pts).unwrap();
 
@@ -130,8 +133,14 @@ fn eval_density_closed_consistent_across_blas_thread_counts() {
     let raised = run();
     std::env::remove_var("FERRIC_BLAS_THREADS");
 
-    let maxdiff_rho = (&base.rho - &raised.rho).iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-    let maxdiff_grad = (&base.grad - &raised.grad).iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+    let maxdiff_rho = (&base.rho - &raised.rho)
+        .iter()
+        .map(|v| v.abs())
+        .fold(0.0f64, f64::max);
+    let maxdiff_grad = (&base.grad - &raised.grad)
+        .iter()
+        .map(|v| v.abs())
+        .fold(0.0f64, f64::max);
     assert!(
         maxdiff_rho <= 1e-11 && maxdiff_grad <= 1e-11,
         "eval_density_closed drifts beyond reduction-order noise across BLAS thread counts: maxdiff_rho={maxdiff_rho:e} maxdiff_grad={maxdiff_grad:e}"
@@ -166,7 +175,10 @@ fn eval_density_uks_consistent_across_blas_thread_counts() {
     }
 
     let grid = build_atomic_grid(&mol, &AtomicGridConfig::default());
-    assert!(grid.len() >= 512, "grid must exceed PAR_MIN_PTS to exercise both paths");
+    assert!(
+        grid.len() >= 512,
+        "grid must exceed PAR_MIN_PTS to exercise both paths"
+    );
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi) = eval_basis_and_grad_on_points(&mol, &bs, &pts).unwrap();
 
@@ -177,13 +189,21 @@ fn eval_density_uks_consistent_across_blas_thread_counts() {
     let raised = run();
     std::env::remove_var("FERRIC_BLAS_THREADS");
 
-    let maxdiff_a = (&base.rho_a - &raised.rho_a).iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-    let maxdiff_b = (&base.rho_b - &raised.rho_b).iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+    let maxdiff_a = (&base.rho_a - &raised.rho_a)
+        .iter()
+        .map(|v| v.abs())
+        .fold(0.0f64, f64::max);
+    let maxdiff_b = (&base.rho_b - &raised.rho_b)
+        .iter()
+        .map(|v| v.abs())
+        .fold(0.0f64, f64::max);
     assert!(
         maxdiff_a <= 1e-11 && maxdiff_b <= 1e-11,
         "eval_density_uks drifts beyond reduction-order noise across BLAS thread counts: maxdiff_a={maxdiff_a:e} maxdiff_b={maxdiff_b:e}"
     );
-    eprintln!("blas_raise_identity: eval_density_uks maxdiff_a={maxdiff_a:e} maxdiff_b={maxdiff_b:e}");
+    eprintln!(
+        "blas_raise_identity: eval_density_uks maxdiff_a={maxdiff_a:e} maxdiff_b={maxdiff_b:e}"
+    );
 }
 
 /// FERRIC_BLAS_THREADS=2 must reproduce LdaFxcKernel::apply_with_ref's
@@ -235,8 +255,14 @@ fn lda_fxc_apply_with_ref_consistent_across_blas_thread_counts() {
     let (raised_a, raised_b) = run();
     std::env::remove_var("FERRIC_BLAS_THREADS");
 
-    let maxdiff_a = (&base_a - &raised_a).iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-    let maxdiff_b = (&base_b - &raised_b).iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+    let maxdiff_a = (&base_a - &raised_a)
+        .iter()
+        .map(|v| v.abs())
+        .fold(0.0f64, f64::max);
+    let maxdiff_b = (&base_b - &raised_b)
+        .iter()
+        .map(|v| v.abs())
+        .fold(0.0f64, f64::max);
     assert!(
         maxdiff_a <= 1e-11 && maxdiff_b <= 1e-11,
         "LdaFxcKernel::apply_with_ref drifts beyond reduction-order noise across BLAS thread counts: maxdiff_a={maxdiff_a:e} maxdiff_b={maxdiff_b:e}"
@@ -267,7 +293,10 @@ fn cdft_weight_matrix_consistent_across_blas_thread_counts() {
     let raised = run();
     std::env::remove_var("FERRIC_BLAS_THREADS");
 
-    let maxdiff = (&base - &raised).iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+    let maxdiff = (&base - &raised)
+        .iter()
+        .map(|v| v.abs())
+        .fold(0.0f64, f64::max);
     assert!(
         maxdiff <= 1e-11,
         "build_weight_matrix drifts beyond reduction-order noise across BLAS thread counts: maxdiff={maxdiff:e}"
@@ -311,7 +340,10 @@ fn wb97xv_gradient_consistent_across_blas_thread_counts() {
     let raised = run();
     std::env::remove_var("FERRIC_BLAS_THREADS");
 
-    let maxdiff = (&base - &raised).iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+    let maxdiff = (&base - &raised)
+        .iter()
+        .map(|v| v.abs())
+        .fold(0.0f64, f64::max);
     assert!(
         maxdiff <= 1e-9,
         "wB97X-V gradient drifts beyond reduction-order noise across BLAS thread counts: maxdiff={maxdiff:e}"

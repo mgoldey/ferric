@@ -46,10 +46,19 @@ fn setup(xyz: &str, obs_name: &str, aux_name: &str) -> Setup {
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
     )
     .unwrap();
-    Setup { mol, obs, obs_bs, dfbs, rhf }
+    Setup {
+        mol,
+        obs,
+        obs_bs,
+        dfbs,
+        rhf,
+    }
 }
 
 /// Independent-construction MP2 energies from the SAME localized (ia|jb)
@@ -98,7 +107,10 @@ fn sosex_functional_reproduces_full_mp2_in_the_first_order_limit() {
         ("h2.xyz", "sto-3g", "sto-3g", 0),
     ] {
         let su = setup(xyz, obs_name, aux);
-        let cfg = RccdConfig { frozen_core: fc, ..Default::default() };
+        let cfg = RccdConfig {
+            frozen_core: fc,
+            ..Default::default()
+        };
         let (lp, d2) = localized_problem_and_denominators(
             &su.mol,
             &su.obs,
@@ -158,7 +170,10 @@ fn sosex_functional_reproduces_full_mp2_in_the_first_order_limit() {
 #[test]
 fn wrong_exchange_weight_or_axis_breaks_the_mp2_limit() {
     let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
-    let cfg = RccdConfig { frozen_core: 1, ..Default::default() };
+    let cfg = RccdConfig {
+        frozen_core: 1,
+        ..Default::default()
+    };
     let (lp, d2) = localized_problem_and_denominators(
         &su.mol,
         &su.obs,
@@ -206,7 +221,6 @@ fn wrong_exchange_weight_or_axis_breaks_the_mp2_limit() {
     );
 }
 
-
 /// Converged-amplitude references from an INDEPENDENT construction: the
 /// spin-orbital antisymmetrized Riccati oracle of notebook 15, re-run at
 /// ferric's OWN testdata geometries with EXACT (non-RI) integrals.
@@ -252,16 +266,37 @@ mod oracle_refs {
 fn sosex_and_rccd_match_the_exact_eri_oracle() {
     for (xyz, obs_name, aux, fc, want) in [
         ("h2.xyz", "sto-3g", "cc-pvdz-ri", 0, oracle_refs::H2_STO3G),
-        ("water.xyz", "6-31g", "cc-pvdz-ri", 1, oracle_refs::WATER_631G_FC1),
+        (
+            "water.xyz",
+            "6-31g",
+            "cc-pvdz-ri",
+            1,
+            oracle_refs::WATER_631G_FC1,
+        ),
     ] {
         let su = setup(xyz, obs_name, aux);
-        let cfg = RccdConfig { frozen_core: fc, ..Default::default() };
+        let cfg = RccdConfig {
+            frozen_core: fc,
+            ..Default::default()
+        };
         let s = sosex(
-            &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            Operator::coulomb(),
+            &su.rhf,
+            &cfg,
         )
         .unwrap();
         let r = rccd(
-            &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            Operator::coulomb(),
+            &su.rhf,
+            &cfg,
         )
         .unwrap();
         let (w_drccd, w_sosex, w_s, w_t) = want;
@@ -280,11 +315,26 @@ fn sosex_and_rccd_match_the_exact_eri_oracle() {
         );
         assert!(s.converged && r.singlet.converged && r.triplet.converged);
         let bar = oracle_refs::RI_BAR;
-        assert!((s.e_drccd - w_drccd).abs() < bar, "drCCD off oracle on {xyz}");
-        assert!((s.e_sosex - w_sosex).abs() < bar, "SOSEX off oracle on {xyz}");
-        assert!((r.singlet.e_corr - w_s).abs() < bar, "E_S off oracle on {xyz}");
-        assert!((r.triplet.e_corr - w_t).abs() < bar, "E_T off oracle on {xyz}");
-        assert!((r.e_corr - (w_s + w_t)).abs() < 2.0 * bar, "E_rCCD off oracle on {xyz}");
+        assert!(
+            (s.e_drccd - w_drccd).abs() < bar,
+            "drCCD off oracle on {xyz}"
+        );
+        assert!(
+            (s.e_sosex - w_sosex).abs() < bar,
+            "SOSEX off oracle on {xyz}"
+        );
+        assert!(
+            (r.singlet.e_corr - w_s).abs() < bar,
+            "E_S off oracle on {xyz}"
+        );
+        assert!(
+            (r.triplet.e_corr - w_t).abs() < bar,
+            "E_T off oracle on {xyz}"
+        );
+        assert!(
+            (r.e_corr - (w_s + w_t)).abs() < 2.0 * bar,
+            "E_rCCD off oracle on {xyz}"
+        );
     }
 }
 
@@ -294,13 +344,28 @@ fn sosex_and_rccd_match_the_exact_eri_oracle() {
 #[test]
 fn the_three_energies_are_actually_distinct() {
     let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
-    let cfg = RccdConfig { frozen_core: 1, ..Default::default() };
+    let cfg = RccdConfig {
+        frozen_core: 1,
+        ..Default::default()
+    };
     let s = sosex(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
     )
     .unwrap();
     let r = rccd(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
     )
     .unwrap();
     eprintln!(
@@ -318,9 +383,18 @@ fn the_three_energies_are_actually_distinct() {
 #[test]
 fn rccd_channel_weight_is_one_to_one_not_one_to_three() {
     let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
-    let cfg = RccdConfig { frozen_core: 1, ..Default::default() };
+    let cfg = RccdConfig {
+        frozen_core: 1,
+        ..Default::default()
+    };
     let r = rccd(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
     )
     .unwrap();
     let one_to_three = r.singlet.e_corr + 3.0 * r.triplet.e_corr;

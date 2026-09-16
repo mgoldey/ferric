@@ -34,9 +34,21 @@ fn main() {
         ..Default::default()
     };
     let t_rhf = Instant::now();
-    let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &rhf_cfg).unwrap();
+    let rhf = solve_rhf(
+        &ParallelContext::default(),
+        &mol,
+        &obs,
+        op,
+        &bounds,
+        &rhf_cfg,
+    )
+    .unwrap();
     assert!(rhf.converged);
-    eprintln!("RHF {:.10} Ha ({:.2}s, untimed reference)", rhf.energy, t_rhf.elapsed().as_secs_f64());
+    eprintln!(
+        "RHF {:.10} Ha ({:.2}s, untimed reference)",
+        rhf.energy,
+        t_rhf.elapsed().as_secs_f64()
+    );
 
     let dfbs_set = basis::bundled(aux_name).unwrap();
     let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();

@@ -35,6 +35,7 @@ Usage: python scripts/py_domain_fit_demo.py [xyz] [basis] [auxbasis]
        (defaults: testdata/molecules/alkane_4.xyz cc-pvdz cc-pvdz-ri)
 Env:   DEMO_FORCE_STREAM=1  force the streaming tier (validation)
 """
+
 import os
 import sys
 
@@ -65,7 +66,9 @@ def domains_and_fit(a3, v, centers, aux_centers, aux_offs, aux_dims, r_cut):
     for i in range(nocc):
         d = np.linalg.norm(aux_centers - centers[i], axis=1)
         sh = np.nonzero(d <= r_cut)[0]
-        idx = np.concatenate([np.arange(aux_offs[s], aux_offs[s] + aux_dims[s]) for s in sh])
+        idx = np.concatenate(
+            [np.arange(aux_offs[s], aux_offs[s] + aux_dims[s]) for s in sh]
+        )
         sizes.append(len(idx))
         c_t[idx, i, :] = np.linalg.solve(v[np.ix_(idx, idx)], a3[idx, i, :])
     return c_t, sizes
@@ -86,9 +89,7 @@ def stream_energies(a2c, dc, v_dc, lu, eps_occ, eps_vir):
         dc_c = dc[:, cols]
         vdc_c = v_dc[:, cols]
         d_j = (
-            eps_occ[None, j0:j1, None]
-            - eps_vir[:, None, None]
-            - eps_vir[None, None, :]
+            eps_occ[None, j0:j1, None] - eps_vir[:, None, None] - eps_vir[None, None, :]
         )  # (nvir, jchunk, nvir), missing eps_occ[i]
         for i in range(nocc):
             icols = slice(i * nvir, (i + 1) * nvir)
@@ -144,7 +145,9 @@ def main():
 
     stream = nov > DENSE_MAX_NOV or os.environ.get("DEMO_FORCE_STREAM") == "1"
     tier = "stream" if stream else "dense"
-    print(f"# {xyz}  {basis}/{auxbasis}  nocc={nocc} nvir={nvir} naux={naux}  tier={tier}")
+    print(
+        f"# {xyz}  {basis}/{auxbasis}  nocc={nocc} nvir={nvir} naux={naux}  tier={tier}"
+    )
     print(f"# Boys converged in {boys.iterations} sweeps")
 
     # Trace-identity ingredients (aux-space; used by both tiers for errors).
@@ -164,9 +167,13 @@ def main():
 
         e_exact = mp2_energy_dense(to_canonical(g_ex), eps_occ, eps_vir)
         rimp2 = ferric.run_rimp2(mol, basis_set=obs, auxbasis=aux)
-        print(f"# E_corr anchor: demo exact fit {e_exact:.9f} vs run_rimp2 {rimp2.mp2_corr:.9f}  (d = {e_exact - rimp2.mp2_corr:.2e})\n")
+        print(
+            f"# E_corr anchor: demo exact fit {e_exact:.9f} vs run_rimp2 {rimp2.mp2_corr:.9f}  (d = {e_exact - rimp2.mp2_corr:.2e})\n"
+        )
     else:
-        print("# stream tier: errors via aux-space trace identities; energies j-chunked\n")
+        print(
+            "# stream tier: errors via aux-space trace identities; energies j-chunked\n"
+        )
 
     a2c = None
     if stream:
@@ -176,7 +183,9 @@ def main():
 
     rows = []
     for r_cut in r_cuts:
-        c_t, sizes = domains_and_fit(a3, v, centers, aux_centers, aux_offs, aux_dims, r_cut)
+        c_t, sizes = domains_and_fit(
+            a3, v, centers, aux_centers, aux_offs, aux_dims, r_cut
+        )
         c2 = c_t.reshape(naux, nov)
         del c_t
         dc_loc = c2 - c_glob
@@ -196,18 +205,27 @@ def main():
             g_rob = g_1 + c2.T @ (a2 - v @ c2)
             dense_naive = np.linalg.norm(g_1 - g_ex) / g_ex_norm
             dense_rob = np.linalg.norm(g_rob - g_ex) / g_ex_norm
-            for t_val, d_val, lab in ((g_naive_err, dense_naive, "naive"), (g_rob_err, dense_rob, "robust")):
+            for t_val, d_val, lab in (
+                (g_naive_err, dense_naive, "naive"),
+                (g_rob_err, dense_rob, "robust"),
+            ):
                 if d_val > 1e-8 and abs(t_val - d_val) / d_val > 1e-6:
-                    print(f"!! trace-vs-dense mismatch ({lab}) at r={r_cut}: {t_val:.6e} vs {d_val:.6e}")
+                    print(
+                        f"!! trace-vs-dense mismatch ({lab}) at r={r_cut}: {t_val:.6e} vs {d_val:.6e}"
+                    )
             de_na = mp2_energy_dense(to_canonical(g_1), eps_occ, eps_vir) - e_exact
             de_rb = mp2_energy_dense(to_canonical(g_rob), eps_occ, eps_vir) - e_exact
             del g_1, g_rob
         else:
             # Rotate COEFFICIENTS to canonical (cheap), then stream energies.
-            dc_can = np.einsum("ij,pja->pia", u, dc_loc.reshape(naux, nocc, nvir)).reshape(naux, nov)
+            dc_can = np.einsum(
+                "ij,pja->pia", u, dc_loc.reshape(naux, nocc, nvir)
+            ).reshape(naux, nov)
             del dc_loc, c2
             v_dc = v @ dc_can
-            e_ex_s, e_na_s, e_rb_s = stream_energies(a2c, dc_can, v_dc, lu, eps_occ, eps_vir)
+            e_ex_s, e_na_s, e_rb_s = stream_energies(
+                a2c, dc_can, v_dc, lu, eps_occ, eps_vir
+            )
             del dc_can, v_dc
             de_na, de_rb = e_na_s - e_ex_s, e_rb_s - e_ex_s
             if r_cut == r_cuts[0]:
@@ -216,7 +234,9 @@ def main():
         r, avg, ce, gn, gr = rows[-1]
         ratio = gr / ce**2 if ce > 1e-10 else float("nan")
         if len(rows) == 1:
-            print(f"{'r_cut':>6} {'avg|P_i|':>9} {'c_err':>10} {'g_naive':>10} {'g_rob':>10} {'rob/cerr^2':>11} {'dE_naive':>11} {'dE_rob':>11}")
+            print(
+                f"{'r_cut':>6} {'avg|P_i|':>9} {'c_err':>10} {'g_naive':>10} {'g_rob':>10} {'rob/cerr^2':>11} {'dE_naive':>11} {'dE_rob':>11}"
+            )
         print(
             f"{r:>6.1f} {avg:>9.1f} {ce:>10.3e} {gn:>10.3e} {gr:>10.3e} {ratio:>11.3e} {de_na:>11.3e} {de_rb:>11.3e}"
         )

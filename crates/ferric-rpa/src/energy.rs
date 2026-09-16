@@ -13,7 +13,9 @@ use ndarray::Array2;
 /// loop reuses this exact error-mapping so its error messages match the
 /// serial path verbatim.
 pub(crate) fn dielectric_lapack_err(what: &str, e: impl std::fmt::Display) -> FerricError {
-    FerricError::Lapack(format!("{what} (NaN/Inf dielectric from near-degenerate reference?): {e}"))
+    FerricError::Lapack(format!(
+        "{what} (NaN/Inf dielectric from near-degenerate reference?): {e}"
+    ))
 }
 
 /// Shared per-frequency parallel scaffold: evaluate `f` at every quadrature
@@ -67,20 +69,14 @@ fn rows_into_array(n_quad: usize, m: usize, rows: Vec<Vec<f64>>) -> Array2<f64> 
 ///
 /// # Returns
 /// RPA correlation energy in Hartree.
-pub fn rpa_correlation_energy(
-    quad_weights: &[f64],
-    eigenvalues_freq: &Array2<f64>,
-) -> f64 {
+pub fn rpa_correlation_energy(quad_weights: &[f64], eigenvalues_freq: &Array2<f64>) -> f64 {
     let n_quad = quad_weights.len();
     assert_eq!(eigenvalues_freq.nrows(), n_quad);
 
     let mut e_c = 0.0f64;
     for (k, &wk) in quad_weights.iter().enumerate() {
         let row = eigenvalues_freq.row(k);
-        let contrib: f64 = row
-            .iter()
-            .map(|&lam| lam.ln() + (1.0 - lam))
-            .sum();
+        let contrib: f64 = row.iter().map(|&lam| lam.ln() + (1.0 - lam)).sum();
         e_c += wk * contrib;
     }
     e_c / (2.0 * std::f64::consts::PI)
@@ -125,7 +121,14 @@ pub fn eval_eigenvalues_at_frequencies_laplace(
         || (Array2::<f64>::zeros((m, nov)), Array2::<f64>::zeros((m, m))),
         |(rhs_scaled, out), omega| {
             dielectric_matrix_laplace_into(
-                eigenvectors, b_ov, eps_occ, eps_vir, omega, laplace, rhs_scaled, out,
+                eigenvectors,
+                b_ov,
+                eps_occ,
+                eps_vir,
+                omega,
+                laplace,
+                rhs_scaled,
+                out,
             );
             let evals = ferric_core::linalg::eigvalsh_dc(out, ferric_core::linalg::Uplo::Upper)
                 .map_err(|e| dielectric_lapack_err("Laplace dielectric eigh failed", e))?;
@@ -151,12 +154,17 @@ pub fn eval_eigenvalues_at_frequencies_unrestricted(
     let n_quad = quad_freqs.len();
     let m = eigenvectors.ncols();
 
-    let rows = per_frequency(quad_freqs, || (), |(), omega| {
-        let eps_proj = dielectric_matrix_unrestricted(eigenvectors, chan_a, chan_b, omega);
-        let evals = ferric_core::linalg::eigvalsh_dc(&eps_proj, ferric_core::linalg::Uplo::Upper)
-            .map_err(|e| dielectric_lapack_err("unrestricted dielectric eigh failed", e))?;
-        Ok(evals)
-    })?;
+    let rows = per_frequency(
+        quad_freqs,
+        || (),
+        |(), omega| {
+            let eps_proj = dielectric_matrix_unrestricted(eigenvectors, chan_a, chan_b, omega);
+            let evals =
+                ferric_core::linalg::eigvalsh_dc(&eps_proj, ferric_core::linalg::Uplo::Upper)
+                    .map_err(|e| dielectric_lapack_err("unrestricted dielectric eigh failed", e))?;
+            Ok(evals)
+        },
+    )?;
     Ok(rows_into_array(n_quad, m, rows))
 }
 
@@ -177,17 +185,24 @@ pub fn eval_eigenvalues_at_frequencies_laplace_unrestricted(
     let n_quad = quad_freqs.len();
     let m = eigenvectors.ncols();
 
-    let rows = per_frequency(quad_freqs, || (), |(), omega| {
-        let eps_proj = dielectric_matrix_laplace_unrestricted(
-            eigenvectors,
-            chan_a, laplace_a,
-            chan_b, laplace_b,
-            omega,
-        );
-        let evals = ferric_core::linalg::eigvalsh_dc(&eps_proj, ferric_core::linalg::Uplo::Upper)
-            .map_err(|e| dielectric_lapack_err("U-Laplace dielectric eigh failed", e))?;
-        Ok(evals)
-    })?;
+    let rows = per_frequency(
+        quad_freqs,
+        || (),
+        |(), omega| {
+            let eps_proj = dielectric_matrix_laplace_unrestricted(
+                eigenvectors,
+                chan_a,
+                laplace_a,
+                chan_b,
+                laplace_b,
+                omega,
+            );
+            let evals =
+                ferric_core::linalg::eigvalsh_dc(&eps_proj, ferric_core::linalg::Uplo::Upper)
+                    .map_err(|e| dielectric_lapack_err("U-Laplace dielectric eigh failed", e))?;
+            Ok(evals)
+        },
+    )?;
     Ok(rows_into_array(n_quad, m, rows))
 }
 
@@ -246,12 +261,20 @@ pub fn eval_eigenvalues_at_frequencies(
 /// cannot see it.
 #[doc(hidden)]
 pub fn quad_panel_width_for_test(
-    m: usize, nov: usize, n_workers: usize, memory_budget_bytes: Option<usize>,
+    m: usize,
+    nov: usize,
+    n_workers: usize,
+    memory_budget_bytes: Option<usize>,
 ) -> usize {
     quad_panel_width(m, nov, n_workers, memory_budget_bytes)
 }
 
-fn quad_panel_width(m: usize, nov: usize, n_workers: usize, memory_budget_bytes: Option<usize>) -> usize {
+fn quad_panel_width(
+    m: usize,
+    nov: usize,
+    n_workers: usize,
+    memory_budget_bytes: Option<usize>,
+) -> usize {
     let Some(budget) = memory_budget_bytes else {
         return nov.max(1);
     };
@@ -341,7 +364,12 @@ pub fn eval_eigenvalues_at_frequencies_budgeted(
     // is actually needed does each worker's scratch narrow to (m, panel_width).
     let rows = per_frequency(
         quad_freqs,
-        || (Array2::<f64>::zeros((m, panel_width)), Array2::<f64>::zeros((m, m))),
+        || {
+            (
+                Array2::<f64>::zeros((m, panel_width)),
+                Array2::<f64>::zeros((m, m)),
+            )
+        },
         |(rhs_scaled, out), omega| {
             let scale = build_scale_factors(eps_occ, eps_vir, omega);
             if use_panelled {
@@ -380,8 +408,8 @@ pub fn eval_eigenvalues_at_frequencies_budgeted(
 /// transposition (see [`ferric_core::linalg::logdet_lu`]'s layout note).
 fn dielectric_trace_log_summand(eps_proj: &Array2<f64>, what: &str) -> Result<f64, FerricError> {
     let m = eps_proj.nrows();
-    let log_det = ferric_core::linalg::logdet_lu(eps_proj)
-        .map_err(|e| dielectric_lapack_err(what, e))?;
+    let log_det =
+        ferric_core::linalg::logdet_lu(eps_proj).map_err(|e| dielectric_lapack_err(what, e))?;
     let trace: f64 = (0..m).map(|i| eps_proj[(i, i)]).sum();
     Ok(log_det + (m as f64 - trace))
 }
@@ -392,7 +420,11 @@ fn dielectric_trace_log_summand(eps_proj: &Array2<f64>, what: &str) -> Result<f6
 /// which takes the eigenvalue tensor instead; the two agree to round-off.
 pub fn rpa_correlation_energy_from_summands(quad_weights: &[f64], summands: &[f64]) -> f64 {
     assert_eq!(quad_weights.len(), summands.len());
-    let e_c: f64 = quad_weights.iter().zip(summands).map(|(&w, &s)| w * s).sum();
+    let e_c: f64 = quad_weights
+        .iter()
+        .zip(summands)
+        .map(|(&w, &s)| w * s)
+        .sum();
     e_c / (2.0 * std::f64::consts::PI)
 }
 
@@ -430,7 +462,12 @@ pub fn eval_trace_log_summands_budgeted(
 
     per_frequency(
         quad_freqs,
-        || (Array2::<f64>::zeros((m, panel_width)), Array2::<f64>::zeros((m, m))),
+        || {
+            (
+                Array2::<f64>::zeros((m, panel_width)),
+                Array2::<f64>::zeros((m, m)),
+            )
+        },
         |(rhs_scaled, out), omega| {
             let scale = build_scale_factors(eps_occ, eps_vir, omega);
             if use_panelled {
@@ -468,18 +505,22 @@ pub fn eval_inv_dielectric_matrices(
     let m = eigenvectors.ncols();
     let y = eigenvectors.t().dot(b_ov);
 
-    per_frequency(quad_freqs, || (), |(), omega| {
-        let scale = build_scale_factors(eps_occ, eps_vir, omega);
-        let eps_proj = dielectric_matrix_from_projection(&y, &scale);
-        let mut winv = eps_proj
-            .inv()
-            .map_err(|e| dielectric_lapack_err("PDEP-basis dielectric inversion failed", e))?;
-        // Subtract identity → dynamic part W̃_d = ε̃⁻¹ − I.
-        for d in 0..m {
-            winv[(d, d)] -= 1.0;
-        }
-        Ok(winv)
-    })
+    per_frequency(
+        quad_freqs,
+        || (),
+        |(), omega| {
+            let scale = build_scale_factors(eps_occ, eps_vir, omega);
+            let eps_proj = dielectric_matrix_from_projection(&y, &scale);
+            let mut winv = eps_proj
+                .inv()
+                .map_err(|e| dielectric_lapack_err("PDEP-basis dielectric inversion failed", e))?;
+            // Subtract identity → dynamic part W̃_d = ε̃⁻¹ − I.
+            for d in 0..m {
+                winv[(d, d)] -= 1.0;
+            }
+            Ok(winv)
+        },
+    )
 }
 
 /// Unrestricted variant of [`eval_inv_dielectric_matrices`]: full per-frequency
@@ -494,16 +535,20 @@ pub fn eval_inv_dielectric_matrices_unrestricted(
     use ndarray_linalg::Inverse;
 
     let m = eigenvectors.ncols();
-    per_frequency(quad_freqs, || (), |(), omega| {
-        let eps_proj = dielectric_matrix_unrestricted(eigenvectors, chan_a, chan_b, omega);
-        let mut winv = eps_proj
-            .inv()
-            .map_err(|e| dielectric_lapack_err("U PDEP-basis dielectric inversion failed", e))?;
-        for d in 0..m {
-            winv[(d, d)] -= 1.0;
-        }
-        Ok(winv)
-    })
+    per_frequency(
+        quad_freqs,
+        || (),
+        |(), omega| {
+            let eps_proj = dielectric_matrix_unrestricted(eigenvectors, chan_a, chan_b, omega);
+            let mut winv = eps_proj.inv().map_err(|e| {
+                dielectric_lapack_err("U PDEP-basis dielectric inversion failed", e)
+            })?;
+            for d in 0..m {
+                winv[(d, d)] -= 1.0;
+            }
+            Ok(winv)
+        },
+    )
 }
 
 #[cfg(test)]
@@ -560,8 +605,7 @@ mod tests {
         for (k, &omega) in quad_freqs.iter().enumerate() {
             let scale = crate::sternheimer::build_scale_factors(&eps_occ, &eps_vir, omega);
             let eps_mat = crate::sternheimer::dielectric_matrix_from_projection(&y, &scale);
-            let (expected_evals, _) =
-                eps_mat.eigh(UPLO::Upper).expect("reference eigh failed");
+            let (expected_evals, _) = eps_mat.eigh(UPLO::Upper).expect("reference eigh failed");
             for (alpha, &expected) in expected_evals.iter().enumerate() {
                 let g = got[(k, alpha)];
                 assert!(
@@ -594,7 +638,10 @@ mod tests {
         let n_workers = 8;
         let tiny_budget = 8usize * 1024 * 1024; // 8 MiB — far too small for full width
         let k = quad_panel_width(m, nov, n_workers, Some(tiny_budget));
-        assert!(k < nov, "expected a narrowed panel width, got {k} (nov={nov})");
+        assert!(
+            k < nov,
+            "expected a narrowed panel width, got {k} (nov={nov})"
+        );
         assert!(k >= 1, "panel width must never be zero");
     }
 
@@ -645,7 +692,12 @@ mod tests {
         );
 
         let got = eval_eigenvalues_at_frequencies_budgeted(
-            &eigenvectors, &b_ov, &eps_occ, &eps_vir, &quad_freqs, Some(tiny_budget),
+            &eigenvectors,
+            &b_ov,
+            &eps_occ,
+            &eps_vir,
+            &quad_freqs,
+            Some(tiny_budget),
         )
         .expect("eval_eigenvalues_at_frequencies_budgeted failed");
 
@@ -654,8 +706,7 @@ mod tests {
         for (k, &omega) in quad_freqs.iter().enumerate() {
             let scale = crate::sternheimer::build_scale_factors(&eps_occ, &eps_vir, omega);
             let eps_mat = crate::sternheimer::dielectric_matrix_from_projection(&y, &scale);
-            let (expected_evals, _) =
-                eps_mat.eigh(UPLO::Upper).expect("reference eigh failed");
+            let (expected_evals, _) = eps_mat.eigh(UPLO::Upper).expect("reference eigh failed");
             for (alpha, &expected) in expected_evals.iter().enumerate() {
                 let g = got[(k, alpha)];
                 assert!(
@@ -679,10 +730,18 @@ mod tests {
         let eps_vir = vec![0.3f64, 0.9f64];
         let quad_freqs = vec![0.1f64, 0.5, 1.0];
 
-        let a = eval_eigenvalues_at_frequencies(&eigenvectors, &b_ov, &eps_occ, &eps_vir, &quad_freqs).unwrap();
+        let a =
+            eval_eigenvalues_at_frequencies(&eigenvectors, &b_ov, &eps_occ, &eps_vir, &quad_freqs)
+                .unwrap();
         let b = eval_eigenvalues_at_frequencies_budgeted(
-            &eigenvectors, &b_ov, &eps_occ, &eps_vir, &quad_freqs, None,
-        ).unwrap();
+            &eigenvectors,
+            &b_ov,
+            &eps_occ,
+            &eps_vir,
+            &quad_freqs,
+            None,
+        )
+        .unwrap();
         assert_eq!(a, b);
     }
 
@@ -693,11 +752,7 @@ mod tests {
     #[test]
     fn trace_log_summand_matches_eigenvalue_sum() {
         // A small SPD matrix standing in for ε̃(iω).
-        let eps = ndarray::array![
-            [3.0f64, 0.4, -0.2],
-            [0.4, 2.5, 0.7],
-            [-0.2, 0.7, 4.0]
-        ];
+        let eps = ndarray::array![[3.0f64, 0.4, -0.2], [0.4, 2.5, 0.7], [-0.2, 0.7, 4.0]];
         let evals =
             ferric_core::linalg::eigvalsh_dc(&eps, ferric_core::linalg::Uplo::Upper).unwrap();
         let eig_way: f64 = evals.iter().map(|&l| l.ln() + (1.0 - l)).sum();
@@ -727,7 +782,12 @@ mod tests {
         let e_eig = rpa_correlation_energy(&quad_weights, &evals);
 
         let summands = eval_trace_log_summands_budgeted(
-            &eigenvectors, &b_ov, &eps_occ, &eps_vir, &quad_freqs, None,
+            &eigenvectors,
+            &b_ov,
+            &eps_occ,
+            &eps_vir,
+            &quad_freqs,
+            None,
         )
         .unwrap();
         let e_lu = rpa_correlation_energy_from_summands(&quad_weights, &summands);
@@ -765,13 +825,23 @@ mod tests {
         );
 
         let evals = eval_eigenvalues_at_frequencies_budgeted(
-            &eigenvectors, &b_ov, &eps_occ, &eps_vir, &quad_freqs, Some(tiny_budget),
+            &eigenvectors,
+            &b_ov,
+            &eps_occ,
+            &eps_vir,
+            &quad_freqs,
+            Some(tiny_budget),
         )
         .unwrap();
         let e_eig = rpa_correlation_energy(&quad_weights, &evals);
 
         let summands = eval_trace_log_summands_budgeted(
-            &eigenvectors, &b_ov, &eps_occ, &eps_vir, &quad_freqs, Some(tiny_budget),
+            &eigenvectors,
+            &b_ov,
+            &eps_occ,
+            &eps_vir,
+            &quad_freqs,
+            Some(tiny_budget),
         )
         .unwrap();
         let e_lu = rpa_correlation_energy_from_summands(&quad_weights, &summands);

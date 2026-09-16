@@ -51,4 +51,3 @@ pub trait KBuilder {
     fn update_density(&mut self, d: &Array2<f64>);
     fn reset(&mut self);
 }
-

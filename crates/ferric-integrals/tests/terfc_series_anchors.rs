@@ -116,7 +116,10 @@ fn series_g_matches_mpmath_anchors() {
     ];
     for &(s_big, s_small, m, g_ref) in ANCHORS {
         let g = unsafe { scf_terfc_debug_series_G(s_big, s_small, m) };
-        assert!(g.is_finite(), "series G_{m}({s_big},{s_small}) returned NaN");
+        assert!(
+            g.is_finite(),
+            "series G_{m}({s_big},{s_small}) returned NaN"
+        );
         let rel = rel_diff(g, g_ref);
         assert!(
             rel < 1e-10,
@@ -148,8 +151,7 @@ fn series_matches_table_interp_at_seam() {
     for &s_big in &[19.5_f64, 19.99] {
         for &s_small in &[0.1_f64, 0.45] {
             for &m in &[0_i32, 4, 8] {
-                let gi =
-                    unsafe { scf_terfc_debug_interp_G(cdir.as_ptr(), s_big, s_small, m, 0) };
+                let gi = unsafe { scf_terfc_debug_interp_G(cdir.as_ptr(), s_big, s_small, m, 0) };
                 let gs = unsafe { scf_terfc_debug_series_G(s_big, s_small, m) };
                 assert!(
                     gi.is_finite() && gs.is_finite(),

@@ -94,11 +94,7 @@ fn sym_inverse(a: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
 /// projected out; its near-null eigenvalues (the OBS-spanned directions PLUS any
 /// linear dependencies introduced by the union) are dropped at
 /// `CABS_NULL_THRESH`, leaving ncabs ≈ n(aux) genuinely-complementary functions.
-pub fn build_cabs(
-    mol: &Molecule,
-    obs: &BasisSet,
-    aux: &BasisSet,
-) -> Result<Cabs, FerricError> {
+pub fn build_cabs(mol: &Molecule, obs: &BasisSet, aux: &BasisSet) -> Result<Cabs, FerricError> {
     // RIBS = OBS ∪ aux (union, OBS-inclusive). Functions are atom-major:
     // per atom, OBS shells then aux shells — so OBS/aux functions interleave
     // and are NOT contiguous. We partition by provenance mask, then reorder
@@ -110,8 +106,18 @@ pub fn build_cabs(
 
     let mask = union_obs_mask(mol, obs, aux); // true = OBS-origin function
     debug_assert_eq!(mask.len(), ri_prep.nbasis());
-    let obs_idx: Vec<usize> = mask.iter().enumerate().filter(|(_, &m)| m).map(|(i, _)| i).collect();
-    let aux_idx: Vec<usize> = mask.iter().enumerate().filter(|(_, &m)| !m).map(|(i, _)| i).collect();
+    let obs_idx: Vec<usize> = mask
+        .iter()
+        .enumerate()
+        .filter(|(_, &m)| m)
+        .map(|(i, _)| i)
+        .collect();
+    let aux_idx: Vec<usize> = mask
+        .iter()
+        .enumerate()
+        .filter(|(_, &m)| !m)
+        .map(|(i, _)| i)
+        .collect();
     let nobs = obs_idx.len();
     let naux = aux_idx.len();
     let nri = nobs + naux;
@@ -134,7 +140,9 @@ pub fn build_cabs(
         .map_err(|e| FerricError::General(format!("CABS Schur-complement eigh failed: {e}")))?;
 
     // Keep eigenvalues above lindep; these directions are genuinely outside OBS.
-    let keep: Vec<usize> = (0..naux).filter(|&i| q_evals[i] > CABS_NULL_THRESH).collect();
+    let keep: Vec<usize> = (0..naux)
+        .filter(|&i| q_evals[i] > CABS_NULL_THRESH)
+        .collect();
     let ncabs = keep.len();
 
     // c2 = aux-block coeffs = v / sqrt(w); c1 = OBS-block coeffs = ls12 · c2.
@@ -162,7 +170,14 @@ pub fn build_cabs(
     // S_OR = ⟨OBS | RIBS⟩ for downstream use: OBS rows of the union overlap.
     let s_or = take_block(&s_union, &obs_idx, &(0..nri).collect::<Vec<_>>());
 
-    Ok(Cabs { coeffs, s_rr: s_union, s_or, nobs, nri, ncabs })
+    Ok(Cabs {
+        coeffs,
+        s_rr: s_union,
+        s_or,
+        nobs,
+        nri,
+        ncabs,
+    })
 }
 
 /// Extract A[rows, cols] into a fresh (|rows| × |cols|) matrix.

@@ -34,7 +34,10 @@ mod budget_guard_tests {
         let err = check_ao_grid_budget(AoGridKind::ValueGradHess, nbf, npts).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("nbf=1500"), "message should cite nbf: {msg}");
-        assert!(msg.contains("npts=412500"), "message should cite npts: {msg}");
+        assert!(
+            msg.contains("npts=412500"),
+            "message should cite npts: {msg}"
+        );
         assert!(
             msg.contains("GB"),
             "message should state the estimated/budgeted sizes in GB: {msg}"

@@ -9,6 +9,7 @@
 //! where A_{ia,jb} = δ_{ij}δ_{ab}(ε_a − ε_i) + 2(ia|jb) − c_HF(ij|ab) + (ia|f_xc|jb)
 //!       B_{ia,jb} = 2(ia|bj) − c_HF(ib|aj) + (ia|f_xc|bj)
 
+use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -16,7 +17,6 @@ use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex;
-use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_mp2::rimp2::{eri3_budget_bytes, metric_inverse_sqrt, stream_dressed_mo_band};
 use ferric_scf::ScfResult;
 use ndarray::{Array1, Array2};
@@ -51,7 +51,11 @@ pub struct TddftConfig {
 
 impl Default for TddftConfig {
     fn default() -> Self {
-        Self { n_roots: 3, method: TddftMethod::Tda, memory_budget_bytes: None }
+        Self {
+            n_roots: 3,
+            method: TddftMethod::Tda,
+            memory_budget_bytes: None,
+        }
     }
 }
 
@@ -68,14 +72,26 @@ pub struct TddftResult {
 impl std::fmt::Display for TddftResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let ha_to_ev = 27.211_386_245_988;
-        writeln!(f, "TDDFT {:?} — {} roots:", self.method, self.excitation_energies.len())?;
+        writeln!(
+            f,
+            "TDDFT {:?} — {} roots:",
+            self.method,
+            self.excitation_energies.len()
+        )?;
         for (i, (&e, &osc)) in self
             .excitation_energies
             .iter()
             .zip(&self.oscillator_strengths)
             .enumerate()
         {
-            writeln!(f, "  {}: {:.6} Ha  ({:.4} eV)  f = {:.6}", i + 1, e, e * ha_to_ev, osc)?;
+            writeln!(
+                f,
+                "  {}: {:.6} Ha  ({:.4} eV)  f = {:.6}",
+                i + 1,
+                e,
+                e * ha_to_ev,
+                osc
+            )?;
         }
         Ok(())
     }
@@ -118,9 +134,21 @@ fn build_b_tensors(
     // that matters.
     let naux = v2c_inv_sqrt.nrows();
     let (nocc, nvir) = (c_occ.ncols(), c_vir.ncols());
-    plan.reserve("B(P|ia) [b_ov]", naux.saturating_mul(nocc * nvir), Lifetime::Resident);
-    plan.reserve("B(P|ij) [b_oo]", naux.saturating_mul(nocc * nocc), Lifetime::Resident);
-    plan.reserve("B(P|ab) [b_vv]", naux.saturating_mul(nvir * nvir), Lifetime::Resident);
+    plan.reserve(
+        "B(P|ia) [b_ov]",
+        naux.saturating_mul(nocc * nvir),
+        Lifetime::Resident,
+    );
+    plan.reserve(
+        "B(P|ij) [b_oo]",
+        naux.saturating_mul(nocc * nocc),
+        Lifetime::Resident,
+    );
+    plan.reserve(
+        "B(P|ab) [b_vv]",
+        naux.saturating_mul(nvir * nvir),
+        Lifetime::Resident,
+    );
     plan.check()?;
     let b_ov = stream_dressed_mo_band(&mut src, &v2c_inv_sqrt, c_occ, c_vir, None)?;
     let b_oo = stream_dressed_mo_band(&mut src, &v2c_inv_sqrt, c_occ, c_occ, None)?;
@@ -461,8 +489,14 @@ pub fn run_tddft(
     );
     reserve_dense_response(&mut plan, config.method, dim);
 
-    let (b_ov, b_oo, b_vv) =
-        build_b_tensors(obs, dfbs, &c_occ, &c_vir, &mut plan, config.memory_budget_bytes)?;
+    let (b_ov, b_oo, b_vv) = build_b_tensors(
+        obs,
+        dfbs,
+        &c_occ,
+        &c_vir,
+        &mut plan,
+        config.memory_budget_bytes,
+    )?;
 
     let n_roots = config.n_roots.min(dim);
 
@@ -512,9 +546,7 @@ pub fn run_tddft(
             })?;
 
             // ω = √(Ω²), recover X from Z: X ∝ (A−B)^{1/2} Z / √ω
-            let omega = omega_sq.mapv(|v| {
-                if v > 0.0 { v.sqrt() } else { 0.0 }
-            });
+            let omega = omega_sq.mapv(|v| if v > 0.0 { v.sqrt() } else { 0.0 });
 
             // The eigenvectors of the original problem: X ∝ (A−B)^{1/2} Z
             let x = amb_sqrt.dot(&z);
@@ -524,7 +556,15 @@ pub fn run_tddft(
     };
 
     let (osc, tdips) = oscillator_strengths(
-        mol, obs, &c_occ, &c_vir, nocc, nvir, &eigenvalues, &eigenvectors, n_roots,
+        mol,
+        obs,
+        &c_occ,
+        &c_vir,
+        nocc,
+        nvir,
+        &eigenvalues,
+        &eigenvectors,
+        n_roots,
     )?;
 
     // Take the lowest n_roots positive excitations

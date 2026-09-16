@@ -7,6 +7,7 @@ classical point-charge field.
 geometry (once per conformer, in a screening/optimization loop) and reuse
 the fixed `PocketCharges` across all of them.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -30,9 +31,11 @@ def _read_xyz_atoms(xyz_path: str | Path) -> list[_XyzAtom]:
         lines = f.readlines()
     n = int(lines[0].strip())
     atoms = []
-    for line in lines[2:2 + n]:
+    for line in lines[2 : 2 + n]:
         parts = line.split()
-        atoms.append(_XyzAtom(parts[0], float(parts[1]), float(parts[2]), float(parts[3])))
+        atoms.append(
+            _XyzAtom(parts[0], float(parts[1]), float(parts[2]), float(parts[3]))
+        )
     return atoms
 
 
@@ -41,6 +44,7 @@ class EmbeddedLigand:
     """A QM ligand (Molecule + basis) plus the (already ligand-overlap-filtered)
     pocket point charges it should be evaluated against, if any.
     """
+
     mol: object  # ferric.Molecule
     basis_set: object  # ferric.BasisSet
     basis_name: str
@@ -60,10 +64,16 @@ def _filter_pocket_for_ligand(
         return None
     from .pocket_charges import _too_close  # local import: private helper reuse
 
-    ligand_bohr = [(x * ANGSTROM_TO_BOHR, y * ANGSTROM_TO_BOHR, z * ANGSTROM_TO_BOHR)
-                   for x, y, z in ligand_coords_angstrom]
+    ligand_bohr = [
+        (x * ANGSTROM_TO_BOHR, y * ANGSTROM_TO_BOHR, z * ANGSTROM_TO_BOHR)
+        for x, y, z in ligand_coords_angstrom
+    ]
     cutoff_bohr = overlap_cutoff_angstrom * ANGSTROM_TO_BOHR
-    return [c for c in pocket.charges if not _too_close(c[1], c[2], c[3], ligand_bohr, cutoff_bohr)]
+    return [
+        c
+        for c in pocket.charges
+        if not _too_close(c[1], c[2], c[3], ligand_bohr, cutoff_bohr)
+    ]
 
 
 def embed_ligand(
@@ -80,11 +90,18 @@ def embed_ligand(
     basis_set = ferric.BasisSet.bundled(basis)
     atoms = _read_xyz_atoms(ligand_xyz)
     ligand_coords_angstrom = [(a.x, a.y, a.z) for a in atoms]
-    point_charges = _filter_pocket_for_ligand(pocket, ligand_coords_angstrom, overlap_cutoff_angstrom)
+    point_charges = _filter_pocket_for_ligand(
+        pocket, ligand_coords_angstrom, overlap_cutoff_angstrom
+    )
     return EmbeddedLigand(
-        mol=mol, basis_set=basis_set, basis_name=basis,
-        point_charges=point_charges, pocket=pocket, source_xyz=Path(ligand_xyz),
-        coords_angstrom=ligand_coords_angstrom, symbols=[a.symbol for a in atoms],
+        mol=mol,
+        basis_set=basis_set,
+        basis_name=basis,
+        point_charges=point_charges,
+        pocket=pocket,
+        source_xyz=Path(ligand_xyz),
+        coords_angstrom=ligand_coords_angstrom,
+        symbols=[a.symbol for a in atoms],
     )
 
 
@@ -108,9 +125,16 @@ def embed_ligand_from_coords(
 
     mol = ferric.Molecule.from_xyz_string(xyz_string, charge, multiplicity)
     basis_set = ferric.BasisSet.bundled(basis)
-    point_charges = _filter_pocket_for_ligand(pocket, coords_angstrom, overlap_cutoff_angstrom)
+    point_charges = _filter_pocket_for_ligand(
+        pocket, coords_angstrom, overlap_cutoff_angstrom
+    )
     return EmbeddedLigand(
-        mol=mol, basis_set=basis_set, basis_name=basis,
-        point_charges=point_charges, pocket=pocket, source_xyz=None,
-        coords_angstrom=list(coords_angstrom), symbols=list(symbols),
+        mol=mol,
+        basis_set=basis_set,
+        basis_name=basis,
+        point_charges=point_charges,
+        pocket=pocket,
+        source_xyz=None,
+        coords_angstrom=list(coords_angstrom),
+        symbols=list(symbols),
     )

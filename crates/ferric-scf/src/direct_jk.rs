@@ -1,9 +1,9 @@
 //! Combined direct Coulomb + exchange (J+K) matrix construction from a single quartet pass.
 
 use crate::screening::SchwarzBounds;
+use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_core::parallel::ParallelContext;
 use ndarray::Array2;
 
 /// Is the open-shell INCREMENTAL (ΔD) Fock build enabled?
@@ -115,7 +115,14 @@ impl<'a> DirectJK<'a> {
         thresh: f64,
         mem_budget: usize,
     ) -> Self {
-        DirectJK { ctx, prep, bounds, thresh, mem_budget, pool: None }
+        DirectJK {
+            ctx,
+            prep,
+            bounds,
+            thresh,
+            mem_budget,
+            pool: None,
+        }
     }
 
     /// Incremental Fock build: given the DENSITY CHANGE `delta_d = D_new - D_last`,
@@ -165,8 +172,11 @@ impl<'a> DirectJK<'a> {
         let nsh = self.prep.nshells();
         let max_d = d_max_shell.iter().cloned().fold(0.0f64, f64::max);
         let max_q: f64 = self.bounds.q.iter().cloned().fold(0.0f64, f64::max);
-        let bra_thresh =
-            if max_q > 0.0 { self.thresh / (max_q * max_d.max(1e-30)) } else { self.thresh };
+        let bra_thresh = if max_q > 0.0 {
+            self.thresh / (max_q * max_d.max(1e-30))
+        } else {
+            self.thresh
+        };
         let q_table = &self.bounds.q;
         let mut shell_pairs: Vec<(usize, usize)> = Vec::new();
         for s1 in 0..nsh {
@@ -184,7 +194,11 @@ impl<'a> DirectJK<'a> {
         // fold init below would fire once per work-chunk and storm the global
         // libint2 ctor mutex (catastrophic for heavy-element bases).
         if self.pool.is_none() {
-            self.pool = Some(crate::engine_pool::EnginePool::new(self.bounds.op, self.prep, 1e-14)?);
+            self.pool = Some(crate::engine_pool::EnginePool::new(
+                self.bounds.op,
+                self.prep,
+                1e-14,
+            )?);
         }
         Ok(shell_pairs)
     }
@@ -223,10 +237,10 @@ impl<'a> DirectJK<'a> {
         k_a: &mut Array2<f64>,
         k_b: &mut Array2<f64>,
     ) -> Result<usize, FerricError> {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use crate::quartet_scatter::{
             build_d_max_shell_spin_sum, scatter_bra_pair, DensityScreen, JkMode,
         };
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         self.ctx.check_interrupted()?;
 
@@ -241,7 +255,10 @@ impl<'a> DirectJK<'a> {
         let q_table = &self.bounds.q;
         let prep = self.prep;
         let nbf = prep.nbasis();
-        let pool = self.pool.as_ref().expect("pool initialized by screened_bra_pairs");
+        let pool = self
+            .pool
+            .as_ref()
+            .expect("pool initialized by screened_bra_pairs");
 
         let n_pairs = shell_pairs.len();
         let group_size = crate::reduce::deterministic_group_size(n_pairs);
@@ -356,8 +373,8 @@ impl<'a> DirectJK<'a> {
         j: &mut Array2<f64>,
         k: &mut Array2<f64>,
     ) -> Result<usize, FerricError> {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use crate::quartet_scatter::{build_d_max_shell, scatter_bra_pair, DensityScreen, JkMode};
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         self.ctx.check_interrupted()?;
 
@@ -389,7 +406,10 @@ impl<'a> DirectJK<'a> {
         let q_table = &self.bounds.q;
         let prep = self.prep;
         let nbf = prep.nbasis();
-        let pool = self.pool.as_ref().expect("pool initialized by screened_bra_pairs");
+        let pool = self
+            .pool
+            .as_ref()
+            .expect("pool initialized by screened_bra_pairs");
 
         // Deterministic, memory-bounded reduction (see direct_k / reduce.rs). The
         // old `fold(..).reduce(..)` tree held one J and one K nbf² partial per
@@ -487,9 +507,7 @@ mod tests {
     /// result cannot depend on the thread count.
     /// Two open-shell test densities (α ≠ β, both symmetric) plus their sum,
     /// on H2O/cc-pVDZ. Shared by the `build_uhf` anchors below.
-    fn uhf_test_densities(
-        n: usize,
-    ) -> (Array2<f64>, Array2<f64>, Array2<f64>) {
+    fn uhf_test_densities(n: usize) -> (Array2<f64>, Array2<f64>, Array2<f64>) {
         let mut d_a = Array2::<f64>::zeros((n, n));
         let mut d_b = Array2::<f64>::zeros((n, n));
         for i in 0..n {
@@ -554,7 +572,8 @@ mod tests {
         let mut ka = Array2::zeros((n, n));
         let mut kb = Array2::zeros((n, n));
         let mut djk = DirectJK::new(&ctx, &prep, &bounds, thresh, usize::MAX);
-        djk.build_uhf(&d_total, &d_a, &d_b, &mut j, &mut ka, &mut kb).unwrap();
+        djk.build_uhf(&d_total, &d_a, &d_b, &mut j, &mut ka, &mut kb)
+            .unwrap();
 
         let max_abs_diff = |x: &Array2<f64>, y: &Array2<f64>| -> f64 {
             (x - y).iter().map(|v| v.abs()).fold(0.0f64, f64::max)
@@ -624,9 +643,13 @@ mod tests {
         let mut ka = Array2::zeros((n, n));
         let mut kb = Array2::zeros((n, n));
         let mut djk = DirectJK::new(&ctx, &prep, &bounds, thresh, usize::MAX);
-        djk.build_uhf(&d_total, &d_half, &d_half, &mut j, &mut ka, &mut kb).unwrap();
+        djk.build_uhf(&d_total, &d_half, &d_half, &mut j, &mut ka, &mut kb)
+            .unwrap();
 
-        assert_eq!(ka, kb, "equal spin densities must give bit-identical K_alpha/K_beta");
+        assert_eq!(
+            ka, kb,
+            "equal spin densities must give bit-identical K_alpha/K_beta"
+        );
         let max_abs_diff = |x: &Array2<f64>, y: &Array2<f64>| -> f64 {
             (x - y).iter().map(|v| v.abs()).fold(0.0f64, f64::max)
         };
@@ -681,14 +704,18 @@ mod tests {
         let mut ka_full = Array2::zeros((n, n));
         let mut kb_full = Array2::zeros((n, n));
         let mut djk_f = DirectJK::new(&ctx, &prep, &bounds, thresh, usize::MAX);
-        djk_f.build_uhf(&t1, &a1, &b1, &mut j_full, &mut ka_full, &mut kb_full).unwrap();
+        djk_f
+            .build_uhf(&t1, &a1, &b1, &mut j_full, &mut ka_full, &mut kb_full)
+            .unwrap();
 
         // Build at the old density, then accumulate the delta.
         let mut j_inc = Array2::zeros((n, n));
         let mut ka_inc = Array2::zeros((n, n));
         let mut kb_inc = Array2::zeros((n, n));
         let mut djk_i = DirectJK::new(&ctx, &prep, &bounds, thresh, usize::MAX);
-        djk_i.build_uhf(&t0, &a0, &b0, &mut j_inc, &mut ka_inc, &mut kb_inc).unwrap();
+        djk_i
+            .build_uhf(&t0, &a0, &b0, &mut j_inc, &mut ka_inc, &mut kb_inc)
+            .unwrap();
         let da = &a1 - &a0;
         let db = &b1 - &b0;
         let dt = &t1 - &t0;
@@ -740,33 +767,41 @@ mod tests {
         let (d_a, d_b, d_total) = uhf_test_densities(n);
 
         let run = |threads: usize| -> (Array2<f64>, Array2<f64>, Array2<f64>) {
-            let pool =
-                rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
             pool.install(|| {
                 let ctx = ParallelContext::default();
                 let mut j = Array2::zeros((n, n));
                 let mut ka = Array2::zeros((n, n));
                 let mut kb = Array2::zeros((n, n));
                 let mut djk = DirectJK::new(&ctx, &prep, &bounds, 1e-14, usize::MAX);
-                djk.build_uhf(&d_total, &d_a, &d_b, &mut j, &mut ka, &mut kb).unwrap();
+                djk.build_uhf(&d_total, &d_a, &d_b, &mut j, &mut ka, &mut kb)
+                    .unwrap();
                 (j, ka, kb)
             })
         };
         let r1 = run(1);
         let r4 = run(4);
-        assert_eq!(r1.0, r4.0, "combined UHF J must be bit-identical across thread counts");
-        assert_eq!(r1.1, r4.1, "combined UHF K_alpha must be bit-identical across thread counts");
-        assert_eq!(r1.2, r4.2, "combined UHF K_beta must be bit-identical across thread counts");
+        assert_eq!(
+            r1.0, r4.0,
+            "combined UHF J must be bit-identical across thread counts"
+        );
+        assert_eq!(
+            r1.1, r4.1,
+            "combined UHF K_alpha must be bit-identical across thread counts"
+        );
+        assert_eq!(
+            r1.2, r4.2,
+            "combined UHF K_beta must be bit-identical across thread counts"
+        );
     }
 
     #[test]
     fn direct_builders_bit_identical_across_thread_counts() {
-        let mol = Molecule::parse_xyz(
-            "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n",
-            0,
-            1,
-        )
-        .unwrap();
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
         let bs = basis::bundled("cc-pvdz").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
@@ -808,9 +843,21 @@ mod tests {
 
         let r1 = build_all(1);
         let r4 = build_all(4);
-        assert_eq!(r1.0, r4.0, "DirectJK J must be bit-identical across thread counts");
-        assert_eq!(r1.1, r4.1, "DirectJK K must be bit-identical across thread counts");
-        assert_eq!(r1.2, r4.2, "DirectJ J must be bit-identical across thread counts");
-        assert_eq!(r1.3, r4.3, "DirectK K must be bit-identical across thread counts");
+        assert_eq!(
+            r1.0, r4.0,
+            "DirectJK J must be bit-identical across thread counts"
+        );
+        assert_eq!(
+            r1.1, r4.1,
+            "DirectJK K must be bit-identical across thread counts"
+        );
+        assert_eq!(
+            r1.2, r4.2,
+            "DirectJ J must be bit-identical across thread counts"
+        );
+        assert_eq!(
+            r1.3, r4.3,
+            "DirectK K must be bit-identical across thread counts"
+        );
     }
 }

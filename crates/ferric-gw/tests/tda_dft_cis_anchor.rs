@@ -34,7 +34,8 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
-const WATER: &str = "3\nwater\nO 0.0000 0.0000 0.1173\nH 0.0000 0.7572 -0.4692\nH 0.0000 -0.7572 -0.4692\n";
+const WATER: &str =
+    "3\nwater\nO 0.0000 0.0000 0.1173\nH 0.0000 0.7572 -0.4692\nH 0.0000 -0.7572 -0.4692\n";
 
 /// Shared setup: converged RHF on `xyz` in `obs_name`, plus the RI aux basis.
 struct Ref {
@@ -59,7 +60,13 @@ fn build_rhf(xyz: &str, obs_name: &str, aux_name: &str) -> Ref {
     };
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(rhf.converged, "reference RHF did not converge");
-    Ref { mol, obs, dfbs, op, rhf }
+    Ref {
+        mol,
+        obs,
+        dfbs,
+        op,
+        rhf,
+    }
 }
 
 /// Core anchor, parameterized over basis so one failure mode (a basis-size- or
@@ -70,7 +77,10 @@ fn anchor_at(obs_name: &str, aux_name: &str, frozen_core: usize) {
     let cis = run_cis_tda(&r.mol, &r.obs, &r.dfbs, r.op, &r.rhf, frozen_core).unwrap();
 
     // xc_name = None  ⇒  c_HF = 1.0 and NO f_xc kernel is constructed.
-    let cfg = TdaDftConfig { frozen_core, ..Default::default() };
+    let cfg = TdaDftConfig {
+        frozen_core,
+        ..Default::default()
+    };
     let tda = run_tda_dft(&r.mol, &r.obs, &r.dfbs, r.op, &r.rhf, None, &cfg).unwrap();
 
     assert_eq!(tda.c_hf, 1.0, "xc=None must give c_HF = 1 (pure CIS)");
@@ -213,7 +223,10 @@ fn fxc_term_is_not_a_no_op() {
         op,
         &ks,
         Some("LDA"),
-        &TdaDftConfig { include_fxc: true, ..Default::default() },
+        &TdaDftConfig {
+            include_fxc: true,
+            ..Default::default()
+        },
     )
     .unwrap();
     let without = run_tda_dft(
@@ -223,7 +236,10 @@ fn fxc_term_is_not_a_no_op() {
         op,
         &ks,
         Some("LDA"),
-        &TdaDftConfig { include_fxc: false, ..Default::default() },
+        &TdaDftConfig {
+            include_fxc: false,
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -259,12 +275,19 @@ fn exact_exchange_fraction_is_read_from_the_functional() {
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-10, density_conv: 1e-9, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-10,
+            density_conv: 1e-9,
+            ..Default::default()
+        },
     )
     .unwrap();
 
     // Only the c_HF resolution is under test, so skip the (expensive) kernel.
-    let no_kernel = TdaDftConfig { include_fxc: false, ..Default::default() };
+    let no_kernel = TdaDftConfig {
+        include_fxc: false,
+        ..Default::default()
+    };
     for (name, want) in [("LDA", 0.0), ("PBE", 0.0), ("B3LYP", 0.2)] {
         let res = run_tda_dft(&mol, &obs, &dfbs, op, &rhf, Some(name), &no_kernel).unwrap();
         assert!(
@@ -292,7 +315,11 @@ fn unsupported_functionals_are_rejected_not_silently_approximated() {
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-10, density_conv: 1e-9, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-10,
+            density_conv: 1e-9,
+            ..Default::default()
+        },
     )
     .unwrap();
     let cfg = TdaDftConfig::default();
@@ -303,14 +330,25 @@ fn unsupported_functionals_are_rejected_not_silently_approximated() {
     let err = run_tda_dft(&mol, &obs, &dfbs, op, &rhf, Some("wB97X-V"), &cfg)
         .expect_err("wB97X-V must be rejected");
     let msg = err.to_string();
-    assert!(msg.contains("VV10"), "wB97X-V should hit the VV10 guard: {msg}");
+    assert!(
+        msg.contains("VV10"),
+        "wB97X-V should hit the VV10 guard: {msg}"
+    );
     eprintln!("VV10 rejected: {msg}");
 
     // A range-separated hybrid WITHOUT VV10, so the range-separation guard is
     // the one under test rather than being shadowed by the VV10 check above.
     // (CAM-B3LYP has no nonlocal correlation term.)
-    let err = run_tda_dft(&mol, &obs, &dfbs, op, &rhf, Some("HYB_GGA_XC_CAM_B3LYP"), &cfg)
-        .expect_err("RSH must be rejected");
+    let err = run_tda_dft(
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &rhf,
+        Some("HYB_GGA_XC_CAM_B3LYP"),
+        &cfg,
+    )
+    .expect_err("RSH must be rejected");
     let msg = err.to_string();
     assert!(
         msg.contains("range-separated"),
@@ -344,10 +382,17 @@ fn open_shell_reference_is_rejected() {
         &mol,
         &obs,
         &bounds,
-        &ferric_scf::uhf::UhfConfig { energy_conv: 1e-9, density_conv: 1e-7, ..Default::default() },
+        &ferric_scf::uhf::UhfConfig {
+            energy_conv: 1e-9,
+            density_conv: 1e-7,
+            ..Default::default()
+        },
     )
     .unwrap();
     let err = run_tda_dft(&mol, &obs, &dfbs, op, &uhf, None, &TdaDftConfig::default())
         .expect_err("open-shell reference must be rejected");
-    assert!(err.to_string().contains("closed-shell"), "unexpected: {err}");
+    assert!(
+        err.to_string().contains("closed-shell"),
+        "unexpected: {err}"
+    );
 }

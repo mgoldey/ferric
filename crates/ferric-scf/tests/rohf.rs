@@ -72,9 +72,7 @@ fn rohf_ch3_doublet_ccpvdz() {
     let (x1, y1) = (r, 0.0);
     let (x2, y2) = (-0.5 * r, r * (3f64).sqrt() * 0.5);
     let (x3, y3) = (-0.5 * r, -r * (3f64).sqrt() * 0.5);
-    let xyz = format!(
-        "4\nCH3\nC 0 0 0\nH {x1} {y1} 0\nH {x2:.6} {y2:.6} 0\nH {x3:.6} {y3:.6} 0\n"
-    );
+    let xyz = format!("4\nCH3\nC 0 0 0\nH {x1} {y1} 0\nH {x2:.6} {y2:.6} 0\nH {x3:.6} {y3:.6} 0\n");
     let (res, _mol, _prep) = run_rohf(&xyz, 0, 2, "cc-pvdz");
     assert!(res.converged, "CH3/cc-pvdz ROHF did not converge");
     eprintln!("CH3/cc-pvdz E = {:.10}", res.energy);
@@ -103,7 +101,9 @@ fn fd_energy(mol: &Molecule, basis_name: &str) -> f64 {
         ..Default::default()
     };
     let ctx = ParallelContext::default();
-    solve_rohf(&ctx, mol, &prep, op, &bounds, &cfg).unwrap().energy
+    solve_rohf(&ctx, mol, &prep, op, &bounds, &cfg)
+        .unwrap()
+        .energy
 }
 
 #[test]
@@ -132,9 +132,18 @@ fn rohf_gradient_oh_sto3g_fd() {
             let mut mp = mol.clone();
             let mut mm = mol.clone();
             match coord {
-                0 => { mp.atoms[atom].x += h; mm.atoms[atom].x -= h; }
-                1 => { mp.atoms[atom].y += h; mm.atoms[atom].y -= h; }
-                _ => { mp.atoms[atom].zpos += h; mm.atoms[atom].zpos -= h; }
+                0 => {
+                    mp.atoms[atom].x += h;
+                    mm.atoms[atom].x -= h;
+                }
+                1 => {
+                    mp.atoms[atom].y += h;
+                    mm.atoms[atom].y -= h;
+                }
+                _ => {
+                    mp.atoms[atom].zpos += h;
+                    mm.atoms[atom].zpos -= h;
+                }
             }
             let ep = fd_energy(&mp, "sto-3g");
             let em = fd_energy(&mm, "sto-3g");
@@ -148,10 +157,18 @@ fn rohf_gradient_oh_sto3g_fd() {
             let diff = (analytic[(atom, c)] - fd[(atom, c)]).abs();
             eprintln!(
                 "atom={atom} coord={c}: analytic={:.8} fd={:.8} diff={:.2e}",
-                analytic[(atom, c)], fd[(atom, c)], diff
+                analytic[(atom, c)],
+                fd[(atom, c)],
+                diff
             );
-            if diff > max_diff { max_diff = diff; }
+            if diff > max_diff {
+                max_diff = diff;
+            }
         }
     }
-    assert!(max_diff < 1e-4, "ROHF gradient FD mismatch: max diff = {:.2e}", max_diff);
+    assert!(
+        max_diff < 1e-4,
+        "ROHF gradient FD mismatch: max diff = {:.2e}",
+        max_diff
+    );
 }

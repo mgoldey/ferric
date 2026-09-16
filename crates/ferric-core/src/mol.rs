@@ -41,7 +41,11 @@ impl Atom {
     /// energy must use.
     #[inline]
     pub fn effective_z(&self) -> i32 {
-        if self.ghost { 0 } else { self.z - self.n_core_ecp }
+        if self.ghost {
+            0
+        } else {
+            self.z - self.n_core_ecp
+        }
     }
 }
 
@@ -62,7 +66,10 @@ impl Atom {
 /// molecule declared as a closed-shell singlet) sails through molecule
 /// construction and only fails deep in the SCF loop as a misleading
 /// `"SCF did not converge after 0 iterations"` error.
-fn validate_electron_multiplicity_parity(nelec: i32, multiplicity: usize) -> Result<(), FerricError> {
+fn validate_electron_multiplicity_parity(
+    nelec: i32,
+    multiplicity: usize,
+) -> Result<(), FerricError> {
     let two_s = multiplicity as i64 - 1; // multiplicity - 1 = 2S = n_alpha - n_beta
     let numerator = nelec as i64 + two_s;
     // n_alpha = numerator / 2 must be a non-negative integer, AND the implied
@@ -165,9 +172,15 @@ impl Molecule {
             let z = symbol_to_z(sym).ok_or_else(|| {
                 FerricError::XyzParse(format!("unknown element {raw_sym:?} at atom {i}"))
             })?;
-            let x: f64 = fields[1].parse().map_err(|e| FerricError::XyzParse(format!("atom {i} x: {e}")))?;
-            let y: f64 = fields[2].parse().map_err(|e| FerricError::XyzParse(format!("atom {i} y: {e}")))?;
-            let zpos: f64 = fields[3].parse().map_err(|e| FerricError::XyzParse(format!("atom {i} z: {e}")))?;
+            let x: f64 = fields[1]
+                .parse()
+                .map_err(|e| FerricError::XyzParse(format!("atom {i} x: {e}")))?;
+            let y: f64 = fields[2]
+                .parse()
+                .map_err(|e| FerricError::XyzParse(format!("atom {i} y: {e}")))?;
+            let zpos: f64 = fields[3]
+                .parse()
+                .map_err(|e| FerricError::XyzParse(format!("atom {i} z: {e}")))?;
             atoms.push(Atom {
                 symbol: sym.to_string(),
                 z,
@@ -178,7 +191,11 @@ impl Molecule {
                 n_core_ecp: 0,
             });
         }
-        let mol = Molecule { atoms, charge, multiplicity };
+        let mol = Molecule {
+            atoms,
+            charge,
+            multiplicity,
+        };
         validate_electron_multiplicity_parity(mol.nelec(), multiplicity)?;
         Ok(mol)
     }
@@ -189,9 +206,13 @@ impl Molecule {
     pub fn nuclear_repulsion(&self) -> f64 {
         let mut v = 0.0;
         for i in 0..self.atoms.len() {
-            if self.atoms[i].ghost { continue; }
+            if self.atoms[i].ghost {
+                continue;
+            }
             for j in (i + 1)..self.atoms.len() {
-                if self.atoms[j].ghost { continue; }
+                if self.atoms[j].ghost {
+                    continue;
+                }
                 let a = &self.atoms[i];
                 let b = &self.atoms[j];
                 let dx = a.x - b.x;
@@ -314,15 +335,33 @@ impl Molecule {
 /// removed subtracted — [`Molecule::auto_frozen_core`] does that.
 pub fn core_orbitals(z: i32) -> usize {
     let mut n = 0;
-    if z > 2 { n += 1; }   // 1s
-    if z > 10 { n += 4; }  // 2s 2p
-    if z > 18 { n += 4; }  // 3s 3p
-    if z > 30 { n += 5; }  // 3d
-    if z > 36 { n += 4; }  // 4s 4p
-    if z > 48 { n += 5; }  // 4d
-    if z > 54 { n += 4; }  // 5s 5p
-    if z > 80 { n += 7; }  // 4f
-    if z > 86 { n += 4; }  // 6s 6p
+    if z > 2 {
+        n += 1;
+    } // 1s
+    if z > 10 {
+        n += 4;
+    } // 2s 2p
+    if z > 18 {
+        n += 4;
+    } // 3s 3p
+    if z > 30 {
+        n += 5;
+    } // 3d
+    if z > 36 {
+        n += 4;
+    } // 4s 4p
+    if z > 48 {
+        n += 5;
+    } // 4d
+    if z > 54 {
+        n += 4;
+    } // 5s 5p
+    if z > 80 {
+        n += 7;
+    } // 4f
+    if z > 86 {
+        n += 4;
+    } // 6s 6p
     n
 }
 
@@ -361,7 +400,10 @@ mod tests {
         let xyz = "3\nwater optimized HF/cc-pVDZ\nO   0.000000   0.000000   0.117790\nH   0.000000   0.755453  -0.471161\nH   0.000000  -0.755453  -0.471161\n";
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let vnn = mol.nuclear_repulsion();
-        assert!((vnn - 9.189193229309746).abs() < 1e-6, "Vnn = {vnn}, expected 9.189193...");
+        assert!(
+            (vnn - 9.189193229309746).abs() < 1e-6,
+            "Vnn = {vnn}, expected 9.189193..."
+        );
     }
 
     #[test]
@@ -384,7 +426,10 @@ mod tests {
         // Ghost atom properties
         let ghost = &mol.atoms[3];
         assert!(ghost.ghost, "last atom should be a ghost");
-        assert_eq!(ghost.z, 8, "ghost O should still have z=8 for basis assignment");
+        assert_eq!(
+            ghost.z, 8,
+            "ghost O should still have z=8 for basis assignment"
+        );
         assert_eq!(ghost.symbol, "O");
 
         // Real atoms are not ghosts
@@ -395,7 +440,11 @@ mod tests {
         // nelec: ghost O contributes no electrons
         let water_xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
         let water = Molecule::parse_xyz(water_xyz, 0, 1).unwrap();
-        assert_eq!(mol.nelec(), water.nelec(), "nelec should equal water alone (ghost contributes 0 electrons)");
+        assert_eq!(
+            mol.nelec(),
+            water.nelec(),
+            "nelec should equal water alone (ghost contributes 0 electrons)"
+        );
 
         // nuclear_repulsion: ghost O at 100 Å contributes zero
         let vnn_ghost = mol.nuclear_repulsion();
@@ -514,13 +563,23 @@ mod tests {
     fn core_orbitals_matches_the_small_core_convention() {
         // One representative per plateau, plus both sides of every step.
         for (z, want) in [
-            (1, 0), (2, 0),            // H-He: nothing to freeze
-            (3, 1), (6, 1), (10, 1),   // Li-Ne: 1s
-            (11, 5), (14, 5), (18, 5), // Na-Ar: +2s2p
-            (19, 9), (26, 9), (30, 9), // K-Zn: +3s3p (3d stays CORRELATED)
-            (31, 14), (36, 14),        // Ga-Kr: +3d
-            (37, 18), (48, 18),        // Rb-Cd: +4s4p (4d stays correlated)
-            (49, 23), (54, 23),        // In-Xe: +4d
+            (1, 0),
+            (2, 0), // H-He: nothing to freeze
+            (3, 1),
+            (6, 1),
+            (10, 1), // Li-Ne: 1s
+            (11, 5),
+            (14, 5),
+            (18, 5), // Na-Ar: +2s2p
+            (19, 9),
+            (26, 9),
+            (30, 9), // K-Zn: +3s3p (3d stays CORRELATED)
+            (31, 14),
+            (36, 14), // Ga-Kr: +3d
+            (37, 18),
+            (48, 18), // Rb-Cd: +4s4p (4d stays correlated)
+            (49, 23),
+            (54, 23), // In-Xe: +4d
         ] {
             assert_eq!(core_orbitals(z), want, "core_orbitals({z})");
         }
@@ -541,12 +600,19 @@ mod tests {
     #[test]
     fn auto_frozen_core_sums_over_atoms() {
         // Water: only O has a core. H contributes nothing.
-        let xyz = "3\nwater\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n";
-        assert_eq!(Molecule::parse_xyz(xyz, 0, 1).unwrap().auto_frozen_core(), 1);
+        let xyz =
+            "3\nwater\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n";
+        assert_eq!(
+            Molecule::parse_xyz(xyz, 0, 1).unwrap().auto_frozen_core(),
+            1
+        );
 
         // Two heavy atoms, one 1s each; the third-row atom adds 2s2p as well.
         let xyz = "2\nCS\nC 0.0 0.0 0.0\nS 0.0 0.0 1.54\n";
-        assert_eq!(Molecule::parse_xyz(xyz, 0, 1).unwrap().auto_frozen_core(), 1 + 5);
+        assert_eq!(
+            Molecule::parse_xyz(xyz, 0, 1).unwrap().auto_frozen_core(),
+            1 + 5
+        );
     }
 
     #[test]

@@ -117,8 +117,16 @@ fn assert_all_ranks_agree(ctx: &ParallelContext, label: &str, value: f64, tol: f
     if let Some(world) = ctx.world() {
         let mut v_max = 0.0f64;
         let mut v_min = 0.0f64;
-        world.all_reduce_into(std::slice::from_ref(&value), std::slice::from_mut(&mut v_max), SystemOperation::max());
-        world.all_reduce_into(std::slice::from_ref(&value), std::slice::from_mut(&mut v_min), SystemOperation::min());
+        world.all_reduce_into(
+            std::slice::from_ref(&value),
+            std::slice::from_mut(&mut v_max),
+            SystemOperation::max(),
+        );
+        world.all_reduce_into(
+            std::slice::from_ref(&value),
+            std::slice::from_mut(&mut v_min),
+            SystemOperation::min(),
+        );
         let spread = v_max - v_min;
         if ctx.is_root() {
             eprintln!(
@@ -148,8 +156,15 @@ fn mpi_rpa_np1_matches_serial_water() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &df_rhf_config()).unwrap();
-    assert!(rhf.converged, "rank {}/{}: water RHF must converge (energy={:.10})", ctx.rank, ctx.size, rhf.energy);
-    eprintln!("[np1] rank {}/{}: RHF energy = {:.12}", ctx.rank, ctx.size, rhf.energy);
+    assert!(
+        rhf.converged,
+        "rank {}/{}: water RHF must converge (energy={:.10})",
+        ctx.rank, ctx.size, rhf.energy
+    );
+    eprintln!(
+        "[np1] rank {}/{}: RHF energy = {:.12}",
+        ctx.rank, ctx.size, rhf.energy
+    );
 
     let cfg = rpa_cfg();
     let serial = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
@@ -157,16 +172,24 @@ fn mpi_rpa_np1_matches_serial_water() {
 
     eprintln!(
         "[np1] rank {}/{}: serial e_rpa={:.15}  mpi e_rpa={:.15}  diff={:.3e}",
-        ctx.rank, ctx.size, serial.e_rpa, mpi_res.e_rpa, (serial.e_rpa - mpi_res.e_rpa).abs()
+        ctx.rank,
+        ctx.size,
+        serial.e_rpa,
+        mpi_res.e_rpa,
+        (serial.e_rpa - mpi_res.e_rpa).abs()
     );
     assert!(
         (serial.e_rpa - mpi_res.e_rpa).abs() < 1e-11,
         "np1 MPI RPA must match serial to ~machine precision: serial={:.15} mpi={:.15}",
-        serial.e_rpa, mpi_res.e_rpa
+        serial.e_rpa,
+        mpi_res.e_rpa
     );
 
     // eigenvalues_freq must match row-for-row (same dielectric build/eigh per ω).
-    assert_eq!(serial.eigenvalues_freq.dim(), mpi_res.eigenvalues_freq.dim());
+    assert_eq!(
+        serial.eigenvalues_freq.dim(),
+        mpi_res.eigenvalues_freq.dim()
+    );
     let max_eval_diff = serial
         .eigenvalues_freq
         .iter()
@@ -174,11 +197,20 @@ fn mpi_rpa_np1_matches_serial_water() {
         .map(|(a, b)| (a - b).abs())
         .fold(0.0_f64, f64::max);
     eprintln!("[np1] max |eigenvalues_freq diff| = {max_eval_diff:.3e}");
-    assert!(max_eval_diff < 1e-11, "eigenvalues_freq mismatch: max diff {max_eval_diff:.3e}");
+    assert!(
+        max_eval_diff < 1e-11,
+        "eigenvalues_freq mismatch: max diff {max_eval_diff:.3e}"
+    );
 
     // inv_dielectric_freq (needed by GW) must also match.
-    let serial_invd = serial.inv_dielectric_freq.as_ref().expect("need_inv_dielectric_freq=true");
-    let mpi_invd = mpi_res.inv_dielectric_freq.as_ref().expect("need_inv_dielectric_freq=true");
+    let serial_invd = serial
+        .inv_dielectric_freq
+        .as_ref()
+        .expect("need_inv_dielectric_freq=true");
+    let mpi_invd = mpi_res
+        .inv_dielectric_freq
+        .as_ref()
+        .expect("need_inv_dielectric_freq=true");
     assert_eq!(serial_invd.len(), mpi_invd.len());
     let mut max_invd_diff = 0.0_f64;
     for (a, b) in serial_invd.iter().zip(mpi_invd.iter()) {
@@ -187,7 +219,10 @@ fn mpi_rpa_np1_matches_serial_water() {
         }
     }
     eprintln!("[np1] max |inv_dielectric_freq diff| = {max_invd_diff:.3e}");
-    assert!(max_invd_diff < 1e-11, "inv_dielectric_freq mismatch: max diff {max_invd_diff:.3e}");
+    assert!(
+        max_invd_diff < 1e-11,
+        "inv_dielectric_freq mismatch: max diff {max_invd_diff:.3e}"
+    );
 
     assert_all_ranks_agree(&ctx, "water np1/np-N e_rpa", mpi_res.e_rpa, 1e-12);
 }
@@ -205,14 +240,20 @@ fn mpi_rpa_cross_rank_agreement_water() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &df_rhf_config()).unwrap();
-    eprintln!("[water] rank {}/{}: RHF energy = {:.12} converged={}", ctx.rank, ctx.size, rhf.energy, rhf.converged);
+    eprintln!(
+        "[water] rank {}/{}: RHF energy = {:.12} converged={}",
+        ctx.rank, ctx.size, rhf.energy, rhf.converged
+    );
 
     let cfg = rpa_cfg();
     let mpi_res = run_pdep_rpa_mpi(&ctx, &mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
 
     eprintln!(
         "[water] rank {}/{}: RPA corr = {:.15} Ha  bits=0x{:016x}",
-        ctx.rank, ctx.size, mpi_res.e_rpa, mpi_res.e_rpa.to_bits()
+        ctx.rank,
+        ctx.size,
+        mpi_res.e_rpa,
+        mpi_res.e_rpa.to_bits()
     );
     assert_all_ranks_agree(&ctx, "water", mpi_res.e_rpa, 1e-12);
 
@@ -222,10 +263,16 @@ fn mpi_rpa_cross_rank_agreement_water() {
     // pins exact numerical agreement).
     assert!(
         mpi_res.e_rpa < -0.1 && mpi_res.e_rpa > -0.6,
-        "RPA correlation energy sanity bound: got {:.6}", mpi_res.e_rpa
+        "RPA correlation energy sanity bound: got {:.6}",
+        mpi_res.e_rpa
     );
 
-    eprintln!("[mem] rank {}/{}: peak RSS (VmHWM) = {:.1} MiB", ctx.rank, ctx.size, peak_rss_mib());
+    eprintln!(
+        "[mem] rank {}/{}: peak RSS (VmHWM) = {:.1} MiB",
+        ctx.rank,
+        ctx.size,
+        peak_rss_mib()
+    );
 }
 
 /// Benzene: bigger aux basis / more quadrature-relevant frequency points,
@@ -234,7 +281,11 @@ fn mpi_rpa_cross_rank_agreement_water() {
 #[test]
 fn mpi_rpa_cross_rank_agreement_benzene() {
     let ctx = ParallelContext::default();
-    let mol = Molecule::load_xyz(concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/molecules/benzene.xyz")).unwrap();
+    let mol = Molecule::load_xyz(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testdata/molecules/benzene.xyz"
+    ))
+    .unwrap();
     let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let op = Operator::coulomb();
@@ -246,11 +297,19 @@ fn mpi_rpa_cross_rank_agreement_benzene() {
 
     eprintln!(
         "[benzene] rank {}/{}: RPA corr = {:.15} Ha  bits=0x{:016x}",
-        ctx.rank, ctx.size, mpi_res.e_rpa, mpi_res.e_rpa.to_bits()
+        ctx.rank,
+        ctx.size,
+        mpi_res.e_rpa,
+        mpi_res.e_rpa.to_bits()
     );
     assert_all_ranks_agree(&ctx, "benzene", mpi_res.e_rpa, 1e-9);
 
-    eprintln!("[mem] rank {}/{}: peak RSS (VmHWM) = {:.1} MiB", ctx.rank, ctx.size, peak_rss_mib());
+    eprintln!(
+        "[mem] rank {}/{}: peak RSS (VmHWM) = {:.1} MiB",
+        ctx.rank,
+        ctx.size,
+        peak_rss_mib()
+    );
 }
 
 /// Compute-scaling probe (mirrors `mpi_rimp2_band_memory_probe` /
@@ -272,7 +331,11 @@ fn mpi_rpa_cross_rank_agreement_benzene() {
 #[ignore]
 fn mpi_rpa_freq_compute_probe() {
     let ctx = ParallelContext::default();
-    let mol = Molecule::load_xyz(concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/molecules/benzene.xyz")).unwrap();
+    let mol = Molecule::load_xyz(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testdata/molecules/benzene.xyz"
+    ))
+    .unwrap();
     let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let op = Operator::coulomb();
@@ -281,7 +344,9 @@ fn mpi_rpa_freq_compute_probe() {
 
     let cfg = rpa_cfg();
     let n_quad = cfg.quadrature.n_points;
-    let my_freqs = (0..n_quad).filter(|k| k % ctx.size.max(1) == ctx.rank).count();
+    let my_freqs = (0..n_quad)
+        .filter(|k| k % ctx.size.max(1) == ctx.rank)
+        .count();
 
     let rss_before = cur_rss_mib();
     let t0 = std::time::Instant::now();
@@ -293,7 +358,16 @@ fn mpi_rpa_freq_compute_probe() {
         "[freq-probe] rank {}/{}: n_quad={n_quad} this-rank-freqs={my_freqs}  \
          wall={:.3}s  RSS_before={rss_before:.1} RSS_after={rss_after:.1} delta={:.1} MiB  \
          e_rpa={:.10}",
-        ctx.rank, ctx.size, elapsed.as_secs_f64(), rss_after - rss_before, mpi_res.e_rpa,
+        ctx.rank,
+        ctx.size,
+        elapsed.as_secs_f64(),
+        rss_after - rss_before,
+        mpi_res.e_rpa,
     );
-    eprintln!("[mem] rank {}/{}: peak RSS (VmHWM) = {:.1} MiB", ctx.rank, ctx.size, peak_rss_mib());
+    eprintln!(
+        "[mem] rank {}/{}: peak RSS (VmHWM) = {:.1} MiB",
+        ctx.rank,
+        ctx.size,
+        peak_rss_mib()
+    );
 }

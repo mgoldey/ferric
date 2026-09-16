@@ -12,6 +12,7 @@ The second theme: alignment must place the molecule IN the pocket. A conformer
 the whole analogue arm produces no data. `test_alignment_moves_an_origin_centred_
 conformer_into_the_pocket_frame` is the end-to-end check on real data.
 """
+
 from __future__ import annotations
 
 import math
@@ -25,9 +26,15 @@ from tools.campaign.align import align_by_index_map, align_to_reference, kabsch
 def _random_rigid(coords, seed=0, reflect=False):
     rng = np.random.default_rng(seed)
     a, b, c = rng.uniform(0, 2 * math.pi, 3)
-    Rz = np.array([[math.cos(a), -math.sin(a), 0], [math.sin(a), math.cos(a), 0], [0, 0, 1]])
-    Ry = np.array([[math.cos(b), 0, math.sin(b)], [0, 1, 0], [-math.sin(b), 0, math.cos(b)]])
-    Rx = np.array([[1, 0, 0], [0, math.cos(c), -math.sin(c)], [0, math.sin(c), math.cos(c)]])
+    Rz = np.array(
+        [[math.cos(a), -math.sin(a), 0], [math.sin(a), math.cos(a), 0], [0, 0, 1]]
+    )
+    Ry = np.array(
+        [[math.cos(b), 0, math.sin(b)], [0, 1, 0], [-math.sin(b), 0, math.cos(b)]]
+    )
+    Rx = np.array(
+        [[1, 0, 0], [0, math.cos(c), -math.sin(c)], [0, math.sin(c), math.cos(c)]]
+    )
     R = Rz @ Ry @ Rx
     if reflect:
         R = R @ np.diag([1.0, 1.0, -1.0])
@@ -35,16 +42,19 @@ def _random_rigid(coords, seed=0, reflect=False):
 
 
 # A rigid, chiral 5-atom fragment.
-FRAG = np.array([
-    [0.0, 0.0, 0.0],
-    [1.5, 0.0, 0.0],
-    [0.0, 1.4, 0.0],
-    [0.0, 0.0, 1.3],
-    [-1.1, -0.9, -0.7],
-])
+FRAG = np.array(
+    [
+        [0.0, 0.0, 0.0],
+        [1.5, 0.0, 0.0],
+        [0.0, 1.4, 0.0],
+        [0.0, 0.0, 1.3],
+        [-1.1, -0.9, -0.7],
+    ]
+)
 
 
 # ── Kabsch core ──
+
 
 def test_kabsch_recovers_a_known_rigid_transform_exactly():
     moved = _random_rigid(FRAG, seed=7)
@@ -87,8 +97,9 @@ def test_kabsch_rejects_degenerate_input():
 
 
 def test_align_by_index_map_reports_too_few_pairs():
-    a = align_by_index_map(["C", "C"], [(0, 0, 0), (1, 0, 0)], [(0, 0, 0), (1, 0, 0)],
-                           [(0, 0)])
+    a = align_by_index_map(
+        ["C", "C"], [(0, 0, 0), (1, 0, 0)], [(0, 0, 0), (1, 0, 0)], [(0, 0)]
+    )
     assert not a.ok
     assert "matched atom pairs" in a.error
 
@@ -112,9 +123,7 @@ def test_cryo_em_pose_is_the_only_one_in_the_pocket_frame(ensemble):
     """Documents the measured fact this module exists for. If a future data
     refresh puts every conformer in the pocket frame, alignment becomes
     unnecessary and this test says so by failing."""
-    centroids = [
-        np.mean(np.asarray(c), axis=0) for c in ensemble.conformers
-    ]
+    centroids = [np.mean(np.asarray(c), axis=0) for c in ensemble.conformers]
     cryo = centroids[ensemble.labels.index("conf_00_cryo_em")]
     assert np.linalg.norm(cryo) > 100, "cryo-EM pose is no longer in a protein frame"
     others = [
@@ -133,8 +142,12 @@ def test_alignment_moves_an_origin_centred_conformer_into_the_pocket_frame(ensem
     i_mob = ensemble.labels.index("conf_02_rdkit")
 
     aligned = align_to_reference(
-        DANU, ensemble.symbols_per_conformer[i_mob], ensemble.conformers[i_mob],
-        DANU, ensemble.symbols_per_conformer[i_ref], ensemble.conformers[i_ref],
+        DANU,
+        ensemble.symbols_per_conformer[i_mob],
+        ensemble.conformers[i_mob],
+        DANU,
+        ensemble.symbols_per_conformer[i_ref],
+        ensemble.conformers[i_ref],
     )
     assert aligned.ok, aligned.error
     assert aligned.n_matched_atoms >= 20, (
@@ -158,8 +171,12 @@ def test_alignment_preserves_internal_geometry(ensemble):
     i_mob = ensemble.labels.index("conf_04_rdkit")
     before = np.asarray(ensemble.conformers[i_mob])
     aligned = align_to_reference(
-        DANU, ensemble.symbols_per_conformer[i_mob], ensemble.conformers[i_mob],
-        DANU, ensemble.symbols_per_conformer[i_ref], ensemble.conformers[i_ref],
+        DANU,
+        ensemble.symbols_per_conformer[i_mob],
+        ensemble.conformers[i_mob],
+        DANU,
+        ensemble.symbols_per_conformer[i_ref],
+        ensemble.conformers[i_ref],
     )
     assert aligned.ok, aligned.error
     after = np.asarray(aligned.coords_angstrom)
@@ -178,8 +195,12 @@ def test_alignment_of_a_pose_onto_itself_is_a_no_op(ensemble):
     it, and must report ~zero RMSD."""
     i = ensemble.labels.index("conf_00_cryo_em")
     aligned = align_to_reference(
-        DANU, ensemble.symbols_per_conformer[i], ensemble.conformers[i],
-        DANU, ensemble.symbols_per_conformer[i], ensemble.conformers[i],
+        DANU,
+        ensemble.symbols_per_conformer[i],
+        ensemble.conformers[i],
+        DANU,
+        ensemble.symbols_per_conformer[i],
+        ensemble.conformers[i],
     )
     assert aligned.ok, aligned.error
     assert aligned.rmsd_angstrom < 1e-6
@@ -193,8 +214,12 @@ def test_wrong_molecule_is_rejected_by_the_formula_check(ensemble):
     i = ensemble.labels.index("conf_00_cryo_em")
     # Claim the pose is benzene. Same coordinates, wrong declared identity.
     aligned = align_to_reference(
-        "c1ccccc1", ensemble.symbols_per_conformer[i], ensemble.conformers[i],
-        DANU, ensemble.symbols_per_conformer[i], ensemble.conformers[i],
+        "c1ccccc1",
+        ensemble.symbols_per_conformer[i],
+        ensemble.conformers[i],
+        DANU,
+        ensemble.symbols_per_conformer[i],
+        ensemble.conformers[i],
     )
     assert not aligned.ok
     assert "formula" in (aligned.error or "")
@@ -203,11 +228,17 @@ def test_wrong_molecule_is_rejected_by_the_formula_check(ensemble):
 def test_mismatched_symbol_count_is_rejected(ensemble):
     i = ensemble.labels.index("conf_00_cryo_em")
     aligned = align_to_reference(
-        DANU, ensemble.symbols_per_conformer[i][:-1], ensemble.conformers[i],
-        DANU, ensemble.symbols_per_conformer[i], ensemble.conformers[i],
+        DANU,
+        ensemble.symbols_per_conformer[i][:-1],
+        ensemble.conformers[i],
+        DANU,
+        ensemble.symbols_per_conformer[i],
+        ensemble.conformers[i],
     )
     assert not aligned.ok
-    assert "coordinate rows" in (aligned.error or "") or "formula" in (aligned.error or "")
+    assert "coordinate rows" in (aligned.error or "") or "formula" in (
+        aligned.error or ""
+    )
 
 
 def test_relabelled_atoms_are_a_known_limitation_not_a_silent_win(ensemble):
@@ -227,8 +258,12 @@ def test_relabelled_atoms_are_a_known_limitation_not_a_silent_win(ensemble):
     i = ensemble.labels.index("conf_00_cryo_em")
     scrambled = list(reversed(ensemble.symbols_per_conformer[i]))
     aligned = align_to_reference(
-        DANU, scrambled, ensemble.conformers[i],
-        DANU, ensemble.symbols_per_conformer[i], ensemble.conformers[i],
+        DANU,
+        scrambled,
+        ensemble.conformers[i],
+        DANU,
+        ensemble.symbols_per_conformer[i],
+        ensemble.conformers[i],
     )
     # It succeeds -- that is the limitation. Assert the shape so a future change
     # that DOES catch this fails here and gets the docstring updated.
@@ -244,6 +279,7 @@ def test_relabelled_atoms_are_a_known_limitation_not_a_silent_win(ensemble):
 # campaign (RESULTS.md M7). Four rounds of measurement characterised a scoring
 # metric that was being fed poses 2-4 A from the binding mode. The check costs
 # one alignment per pose and would have caught it immediately.
+
 
 def test_pose_quality_gate_rejects_an_all_bad_ensemble():
     from tools.campaign.align import AlignedPose, pose_quality_gate
@@ -288,14 +324,21 @@ def test_committed_danuglipron_ensemble_fails_the_pose_quality_gate(ensemble):
 
     i_ref = ensemble.labels.index("conf_00_cryo_em")
     aligned = []
-    for lbl, syms, coords in zip(ensemble.labels, ensemble.symbols_per_conformer,
-                                 ensemble.conformers):
+    for lbl, syms, coords in zip(
+        ensemble.labels, ensemble.symbols_per_conformer, ensemble.conformers
+    ):
         if lbl == "conf_00_cryo_em":
             continue  # the reference itself is trivially 0.00 A
-        aligned.append(align_to_reference(
-            DANU, syms, coords,
-            DANU, ensemble.symbols_per_conformer[i_ref], ensemble.conformers[i_ref],
-        ))
+        aligned.append(
+            align_to_reference(
+                DANU,
+                syms,
+                coords,
+                DANU,
+                ensemble.symbols_per_conformer[i_ref],
+                ensemble.conformers[i_ref],
+            )
+        )
 
     passed, detail = pose_quality_gate(aligned)
     assert not passed, (
@@ -313,8 +356,12 @@ def test_reference_aligned_onto_itself_is_exactly_zero(ensemble):
 
     i = ensemble.labels.index("conf_00_cryo_em")
     al = align_to_reference(
-        DANU, ensemble.symbols_per_conformer[i], ensemble.conformers[i],
-        DANU, ensemble.symbols_per_conformer[i], ensemble.conformers[i],
+        DANU,
+        ensemble.symbols_per_conformer[i],
+        ensemble.conformers[i],
+        DANU,
+        ensemble.symbols_per_conformer[i],
+        ensemble.conformers[i],
     )
     assert al.ok
     assert al.n_matched_atoms == 41, "all 41 heavy atoms must match"

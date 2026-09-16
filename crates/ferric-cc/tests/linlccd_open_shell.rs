@@ -21,7 +21,11 @@ use ferric_scf::semicanonical::semicanonicalize;
 use ferric_scf::uhf::solve_uhf;
 
 fn mol_path(name: &str) -> String {
-    format!("{}/../../testdata/molecules/{}", env!("CARGO_MANIFEST_DIR"), name)
+    format!(
+        "{}/../../testdata/molecules/{}",
+        env!("CARGO_MANIFEST_DIR"),
+        name
+    )
 }
 
 /// THE LOAD-BEARING TEST — closed-shell UHF must reproduce RHF.
@@ -36,8 +40,16 @@ fn u_linlccd_matches_restricted_on_closed_shell() {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig { density_conv: 1e-10, max_iter: 200, ..Default::default() };
-    let cfg = CcConfig { energy_conv: 1e-11, max_iter: 200, ..Default::default() };
+    let scf_cfg = RhfConfig {
+        density_conv: 1e-10,
+        max_iter: 200,
+        ..Default::default()
+    };
+    let cfg = CcConfig {
+        energy_conv: 1e-11,
+        max_iter: 200,
+        ..Default::default()
+    };
     let op = Operator::coulomb();
 
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
@@ -52,9 +64,16 @@ fn u_linlccd_matches_restricted_on_closed_shell() {
     );
 
     for variant in [LadderVariant::DriversOnly, LadderVariant::Hh] {
-        let r = linlccd(&mol, &obs, &dfbs, op, &rhf, &cfg, variant).unwrap().correlation_energy;
-        let u = u_linlccd(&mol, &obs, &dfbs, op, &uhf, &cfg, variant).unwrap().correlation_energy;
-        eprintln!("{variant:12?}  restricted = {r:.12}  unrestricted = {u:.12}  diff = {:+.3e}", u - r);
+        let r = linlccd(&mol, &obs, &dfbs, op, &rhf, &cfg, variant)
+            .unwrap()
+            .correlation_energy;
+        let u = u_linlccd(&mol, &obs, &dfbs, op, &uhf, &cfg, variant)
+            .unwrap()
+            .correlation_energy;
+        eprintln!(
+            "{variant:12?}  restricted = {r:.12}  unrestricted = {u:.12}  diff = {:+.3e}",
+            u - r
+        );
         assert!(
             (u - r).abs() < 1e-8,
             "{variant:?}: unrestricted path disagrees with the validated restricted one \
@@ -71,22 +90,48 @@ fn runs_on_an_open_shell_doublet() {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig { density_conv: 1e-10, max_iter: 200, ..Default::default() };
-    let cfg = CcConfig { energy_conv: 1e-11, max_iter: 200, ..Default::default() };
+    let scf_cfg = RhfConfig {
+        density_conv: 1e-10,
+        max_iter: 200,
+        ..Default::default()
+    };
+    let cfg = CcConfig {
+        energy_conv: 1e-11,
+        max_iter: 200,
+        ..Default::default()
+    };
 
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &scf_cfg).unwrap();
     assert!(uhf.converged);
 
-    let drivers =
-        u_linlccd(&mol, &obs, &dfbs, Operator::coulomb(), &uhf, &cfg, LadderVariant::DriversOnly)
-            .unwrap()
-            .correlation_energy;
-    let hh = u_linlccd(&mol, &obs, &dfbs, Operator::coulomb(), &uhf, &cfg, LadderVariant::Hh)
-        .unwrap()
-        .correlation_energy;
+    let drivers = u_linlccd(
+        &mol,
+        &obs,
+        &dfbs,
+        Operator::coulomb(),
+        &uhf,
+        &cfg,
+        LadderVariant::DriversOnly,
+    )
+    .unwrap()
+    .correlation_energy;
+    let hh = u_linlccd(
+        &mol,
+        &obs,
+        &dfbs,
+        Operator::coulomb(),
+        &uhf,
+        &cfg,
+        LadderVariant::Hh,
+    )
+    .unwrap()
+    .correlation_energy;
 
     eprintln!("OH doublet: drivers = {drivers:.10}   LinLCCD(hh) = {hh:.10}");
-    assert!(drivers < 0.0 && hh < 0.0, "correlation energies must be negative");
+    assert!(
+        drivers < 0.0 && hh < 0.0,
+        "correlation energies must be negative"
+    );
     assert!(drivers.is_finite() && hh.is_finite());
     // Same signature as the closed-shell case: the hh dressing widens the gap, so it
     // reduces the magnitude of the correlation energy.
@@ -108,8 +153,16 @@ fn raw_rohf_is_refused_but_semicanonical_works() {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig { density_conv: 1e-10, max_iter: 200, ..Default::default() };
-    let cfg = CcConfig { energy_conv: 1e-11, max_iter: 200, ..Default::default() };
+    let scf_cfg = RhfConfig {
+        density_conv: 1e-10,
+        max_iter: 200,
+        ..Default::default()
+    };
+    let cfg = CcConfig {
+        energy_conv: 1e-11,
+        max_iter: 200,
+        ..Default::default()
+    };
     let op = Operator::coulomb();
 
     let rohf = solve_rohf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
@@ -127,7 +180,10 @@ fn raw_rohf_is_refused_but_semicanonical_works() {
         .correlation_energy;
 
     eprintln!("ROHF -> semi-canonical -> LinLCCD(hh): E_corr = {e:.10}");
-    assert!(e < 0.0 && e.is_finite(), "correlation energy must be negative and finite");
+    assert!(
+        e < 0.0 && e.is_finite(),
+        "correlation energy must be negative and finite"
+    );
 }
 
 /// The short-range attenuated operator must work open-shell too — this is the path
@@ -139,19 +195,51 @@ fn short_range_attenuation_works_open_shell() {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig { density_conv: 1e-10, max_iter: 200, ..Default::default() };
-    let cfg = CcConfig { energy_conv: 1e-11, max_iter: 200, ..Default::default() };
+    let scf_cfg = RhfConfig {
+        density_conv: 1e-10,
+        max_iter: 200,
+        ..Default::default()
+    };
+    let cfg = CcConfig {
+        energy_conv: 1e-11,
+        max_iter: 200,
+        ..Default::default()
+    };
 
     let uhf = solve_uhf(&ctx, &mol, &obs, &bounds, &scf_cfg).unwrap();
-    let coul = u_linlccd(&mol, &obs, &dfbs, Operator::coulomb(), &uhf, &cfg, LadderVariant::Hh)
-        .unwrap()
-        .correlation_energy;
-    let sr = u_linlccd(&mol, &obs, &dfbs, Operator::erfc(0.1), &uhf, &cfg, LadderVariant::Hh)
-        .unwrap()
-        .correlation_energy;
-    let strong = u_linlccd(&mol, &obs, &dfbs, Operator::erfc(1.0), &uhf, &cfg, LadderVariant::Hh)
-        .unwrap()
-        .correlation_energy;
+    let coul = u_linlccd(
+        &mol,
+        &obs,
+        &dfbs,
+        Operator::coulomb(),
+        &uhf,
+        &cfg,
+        LadderVariant::Hh,
+    )
+    .unwrap()
+    .correlation_energy;
+    let sr = u_linlccd(
+        &mol,
+        &obs,
+        &dfbs,
+        Operator::erfc(0.1),
+        &uhf,
+        &cfg,
+        LadderVariant::Hh,
+    )
+    .unwrap()
+    .correlation_energy;
+    let strong = u_linlccd(
+        &mol,
+        &obs,
+        &dfbs,
+        Operator::erfc(1.0),
+        &uhf,
+        &cfg,
+        LadderVariant::Hh,
+    )
+    .unwrap()
+    .correlation_energy;
 
     eprintln!("Coulomb = {coul:.10}   erfc(0.1) = {sr:.10}   erfc(1.0) = {strong:.10}");
     assert!(sr.is_finite() && strong.is_finite());

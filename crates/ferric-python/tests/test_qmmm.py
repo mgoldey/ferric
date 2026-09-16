@@ -5,6 +5,7 @@ The numbers here are pinned to the SAME PySCF references the Rust tests use
 (testdata/reference/*_qmmm_*.json), so the binding is checked against an
 independent code, not against itself.
 """
+
 import json
 import math
 import os
@@ -16,7 +17,9 @@ import ferric
 
 from conftest import BOHR_PER_ANGSTROM, WATER_ANGSTROM, WATER_SYMBOLS, water_xyz_string
 
-REFDIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "testdata", "reference")
+REFDIR = os.path.join(
+    os.path.dirname(__file__), "..", "..", "..", "testdata", "reference"
+)
 
 
 def _load(name):
@@ -50,7 +53,9 @@ def test_molecule_coords_bohr_are_the_internal_values():
     # they really are the internal Bohr values, not a second conversion.
     from conftest import nuclear_repulsion_from_bohr
 
-    assert nuclear_repulsion_from_bohr(bohr, [8, 1, 1]) == pytest.approx(mol.nuclear_repulsion(), abs=1e-10)
+    assert nuclear_repulsion_from_bohr(bohr, [8, 1, 1]) == pytest.approx(
+        mol.nuclear_repulsion(), abs=1e-10
+    )
 
 
 def test_optimized_geometry_is_retrievable():
@@ -72,13 +77,18 @@ def test_optimized_geometry_is_retrievable():
 def _water_ref_system(ref):
     """Full structure = the reference QM atoms, then its MM charges as atoms."""
     symbols = [a["symbol"] for a in ref["atoms"]] + ["X"] * len(ref["mm_charges"])
-    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [c["xyz_bohr"] for c in ref["mm_charges"]]
+    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [
+        c["xyz_bohr"] for c in ref["mm_charges"]
+    ]
     coords_ang = [[v / BOHR_PER_ANGSTROM for v in xyz] for xyz in coords_bohr]
     charges = [99.0] * len(ref["atoms"]) + [c["q"] for c in ref["mm_charges"]]
     return ferric.QmmmSystem(
-        symbols, coords_ang, charges,
+        symbols,
+        coords_ang,
+        charges,
         qm_indices=list(range(len(ref["atoms"]))),
-        charge=ref["charge"], multiplicity=ref["multiplicity"],
+        charge=ref["charge"],
+        multiplicity=ref["multiplicity"],
     )
 
 
@@ -105,11 +115,15 @@ def test_qmmm_system_partitions_and_exposes_point_charges_in_bohr():
 def test_qmmm_system_by_radius_selects_neighbours():
     ref = _load("water_sto-3g_qmmm_two_charges.json")
     symbols = [a["symbol"] for a in ref["atoms"]] + ["X", "X"]
-    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [c["xyz_bohr"] for c in ref["mm_charges"]]
+    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [
+        c["xyz_bohr"] for c in ref["mm_charges"]
+    ]
     coords_ang = [[v / BOHR_PER_ANGSTROM for v in xyz] for xyz in coords_bohr]
     charges = [0, 0, 0, 1.0, -1.0]
     # Seed on O with a 1.2 Å radius: catches both H (0.96 Å), not the charges.
-    sys = ferric.QmmmSystem(symbols, coords_ang, charges, qm_seeds=[0], qm_radius_angstrom=1.2)
+    sys = ferric.QmmmSystem(
+        symbols, coords_ang, charges, qm_seeds=[0], qm_radius_angstrom=1.2
+    )
     assert sys.qm_indices() == [0, 1, 2]
     assert sys.mm_indices() == [3, 4]
 
@@ -117,13 +131,19 @@ def test_qmmm_system_by_radius_selects_neighbours():
 def test_qmmm_system_residue_ids_selects_whole_residues():
     ref = _load("water_sto-3g_qmmm_two_charges.json")
     symbols = [a["symbol"] for a in ref["atoms"]] + ["X", "X"]
-    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [c["xyz_bohr"] for c in ref["mm_charges"]]
+    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [
+        c["xyz_bohr"] for c in ref["mm_charges"]
+    ]
     coords_ang = [[v / BOHR_PER_ANGSTROM for v in xyz] for xyz in coords_bohr]
     charges = [0, 0, 0, 1.0, -1.0]
     # residue_ids = one atom per residue must reproduce the by-atom result
     # (the exactness anchor): same seeds/radius, same split.
     sys = ferric.QmmmSystem(
-        symbols, coords_ang, charges, qm_seeds=[0], qm_radius_angstrom=1.2,
+        symbols,
+        coords_ang,
+        charges,
+        qm_seeds=[0],
+        qm_radius_angstrom=1.2,
         residue_ids=[0, 1, 2, 3, 4],
     )
     assert sys.qm_indices() == [0, 1, 2]
@@ -133,12 +153,17 @@ def test_qmmm_system_residue_ids_selects_whole_residues():
 def test_qmmm_system_residue_ids_and_qm_indices_conflict():
     ref = _load("water_sto-3g_qmmm_two_charges.json")
     symbols = [a["symbol"] for a in ref["atoms"]] + ["X", "X"]
-    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [c["xyz_bohr"] for c in ref["mm_charges"]]
+    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [
+        c["xyz_bohr"] for c in ref["mm_charges"]
+    ]
     coords_ang = [[v / BOHR_PER_ANGSTROM for v in xyz] for xyz in coords_bohr]
     charges = [0, 0, 0, 1.0, -1.0]
     with pytest.raises(ValueError):
         ferric.QmmmSystem(
-            symbols, coords_ang, charges, qm_indices=[0, 1, 2],
+            symbols,
+            coords_ang,
+            charges,
+            qm_indices=[0, 1, 2],
             residue_ids=[0, 1, 2, 3, 4],
         )
 
@@ -147,7 +172,9 @@ def test_qmmm_system_point_charges_feed_run_rhf_to_the_pyscf_reference():
     ref = _load("water_sto-3g_qmmm_plus_lonepair.json")
     sys = _water_ref_system(ref)
     bs = ferric.BasisSet.bundled("sto-3g")
-    r = ferric.run_rhf(sys.qm_molecule(), bs, point_charges=sys.point_charges(), density_conv=1e-10)
+    r = ferric.run_rhf(
+        sys.qm_molecule(), bs, point_charges=sys.point_charges(), density_conv=1e-10
+    )
     assert r.converged
     # 5e-8: the known ~2.4e-8 ferric-below-PySCF mean-field floor on water/STO-3G.
     assert r.energy == pytest.approx(ref["energy"], abs=5e-8)
@@ -195,13 +222,18 @@ def _water_dft_ref_system(ref):
     energy/energy_gas_phase.
     """
     symbols = [a["symbol"] for a in ref["atoms"]] + ["X"] * len(ref["mm_charges"])
-    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [c["xyz_bohr"] for c in ref["mm_charges"]]
+    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [
+        c["xyz_bohr"] for c in ref["mm_charges"]
+    ]
     coords_ang = [[v / BOHR_PER_ANGSTROM for v in xyz] for xyz in coords_bohr]
     charges = [99.0] * len(ref["atoms"]) + [c["q"] for c in ref["mm_charges"]]
     return ferric.QmmmSystem(
-        symbols, coords_ang, charges,
+        symbols,
+        coords_ang,
+        charges,
         qm_indices=list(range(len(ref["atoms"]))),
-        charge=ref["charge"], multiplicity=ref["multiplicity"],
+        charge=ref["charge"],
+        multiplicity=ref["multiplicity"],
     )
 
 
@@ -246,8 +278,10 @@ def _ethane():
     for k in range(3):
         phi = 2 * math.pi * k / 3
         symbols += ["H", "H"]
-        coords += [(_CH * s * math.cos(phi), _CH * s * math.sin(phi), _CH * c),
-                   (_CH * s * math.cos(phi), _CH * s * math.sin(phi), _CC - _CH * c)]
+        coords += [
+            (_CH * s * math.cos(phi), _CH * s * math.sin(phi), _CH * c),
+            (_CH * s * math.cos(phi), _CH * s * math.sin(phi), _CC - _CH * c),
+        ]
         charges += [0.033, 0.033]
     bonds = [(0, 1), (0, 2), (0, 4), (0, 6), (1, 3), (1, 5), (1, 7)]
     return symbols, coords, charges, bonds
@@ -255,7 +289,9 @@ def _ethane():
 
 def test_link_atom_caps_the_cut_bond():
     symbols, coords, charges, bonds = _ethane()
-    sys = ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6]).with_link_atoms(bonds)
+    sys = ferric.QmmmSystem(
+        symbols, coords, charges, qm_indices=[0, 2, 4, 6]
+    ).with_link_atoms(bonds)
     assert sys.qm_atom_count() == 4
     mol = sys.qm_molecule()
     assert mol.natoms() == 5
@@ -270,7 +306,9 @@ def test_link_atom_caps_the_cut_bond():
 
 def test_boundary_scheme_strings_are_strict():
     symbols, coords, charges, bonds = _ethane()
-    base = ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6]).with_link_atoms(bonds)
+    base = ferric.QmmmSystem(
+        symbols, coords, charges, qm_indices=[0, 2, 4, 6]
+    ).with_link_atoms(bonds)
     for name, n_charges in [("keep", 4), ("delete-host", 3), ("rc", 6), ("rcd", 6)]:
         s = base.with_boundary_charges(bonds, name)
         assert len(s.point_charges()) == n_charges, name
@@ -283,7 +321,9 @@ def test_boundary_scheme_strings_are_strict():
 
 def test_rcd_conserves_charge_and_moves_the_nearest_charge_away():
     symbols, coords, charges, bonds = _ethane()
-    base = ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6]).with_link_atoms(bonds)
+    base = ferric.QmmmSystem(
+        symbols, coords, charges, qm_indices=[0, 2, 4, 6]
+    ).with_link_atoms(bonds)
     rcd = base.with_boundary_charges(bonds, "rcd")
     q_base = sum(q for q, *_ in base.point_charges())
     q_rcd = sum(q for q, *_ in rcd.point_charges())
@@ -293,13 +333,15 @@ def test_rcd_conserves_charge_and_moves_the_nearest_charge_away():
 
 def test_run_qmmm_full_gradient_covers_the_whole_structure_across_a_cut():
     symbols, coords, charges, bonds = _ethane()
-    sys = (ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6])
-           .with_link_atoms(bonds)
-           .with_boundary_charges(bonds, "rcd"))
+    sys = (
+        ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6])
+        .with_link_atoms(bonds)
+        .with_boundary_charges(bonds, "rcd")
+    )
     r = ferric.run_qmmm(sys, "sto-3g")
     assert r.converged
-    assert r.qm_gradient().shape == (5, 3)   # 4 QM + 1 link
-    assert r.mm_forces().shape == (6, 3)     # 3 M2 + 3 midpoints
+    assert r.qm_gradient().shape == (5, 3)  # 4 QM + 1 link
+    assert r.mm_forces().shape == (6, 3)  # 3 M2 + 3 midpoints
     full = r.full_gradient()
     assert full.shape == (8, 3)
     assert np.all(np.isfinite(full))
@@ -359,12 +401,16 @@ def test_run_qmmm_with_full_ethane_topology_reports_mm_energy_and_full_gradient(
         charges=charges,
         sigmas_angstrom=lj_sigma,
         epsilons_kcal=lj_eps,
-        bonds=[(0, 1, 310.0, 1.53)] + [(0, h, 340.0, 1.09) for h in (2, 4, 6)] + [(1, h, 340.0, 1.09) for h in (3, 5, 7)],
+        bonds=[(0, 1, 310.0, 1.53)]
+        + [(0, h, 340.0, 1.09) for h in (2, 4, 6)]
+        + [(1, h, 340.0, 1.09) for h in (3, 5, 7)],
         angles=angles,
         torsions=torsions,
     )
 
-    sys = ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6]).with_link_atoms(bonds)
+    sys = ferric.QmmmSystem(
+        symbols, coords, charges, qm_indices=[0, 2, 4, 6]
+    ).with_link_atoms(bonds)
     r = ferric.run_qmmm(sys, "sto-3g", mm_topology=top)
     assert r.converged
     e = r.mm_energy
@@ -381,10 +427,19 @@ def test_run_qmmm_without_mm_topology_has_zero_mm_energy():
     # indistinguishable from passing an all-zero one, and the reported
     # mm_energy must be all zero (not merely absent).
     symbols, coords, charges, bonds = _ethane()
-    sys = ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6]).with_link_atoms(bonds)
+    sys = ferric.QmmmSystem(
+        symbols, coords, charges, qm_indices=[0, 2, 4, 6]
+    ).with_link_atoms(bonds)
     r = ferric.run_qmmm(sys, "sto-3g")
     e = r.mm_energy
-    assert e == {"bond": 0.0, "angle": 0.0, "torsion": 0.0, "lj": 0.0, "coulomb": 0.0, "total": 0.0}
+    assert e == {
+        "bond": 0.0,
+        "angle": 0.0,
+        "torsion": 0.0,
+        "lj": 0.0,
+        "coulomb": 0.0,
+        "total": 0.0,
+    }
 
 
 # ── Gaussian-smeared MM charges (Lane A) ──
@@ -395,14 +450,21 @@ def _water_ref_system_smeared(ref):
     per-charge Gaussian widths, in Bohr in the ref -> Angstrom for the
     constructor) as atoms."""
     symbols = [a["symbol"] for a in ref["atoms"]] + ["X"] * len(ref["mm_charges"])
-    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [c["xyz_bohr"] for c in ref["mm_charges"]]
+    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [
+        c["xyz_bohr"] for c in ref["mm_charges"]
+    ]
     coords_ang = [[v / BOHR_PER_ANGSTROM for v in xyz] for xyz in coords_bohr]
     charges = [99.0] * len(ref["atoms"]) + [c["q"] for c in ref["mm_charges"]]
-    widths_ang = [0.0] * len(ref["atoms"]) + [w / BOHR_PER_ANGSTROM for w in ref["radii"]]
+    widths_ang = [0.0] * len(ref["atoms"]) + [
+        w / BOHR_PER_ANGSTROM for w in ref["radii"]
+    ]
     return ferric.QmmmSystem(
-        symbols, coords_ang, charges,
+        symbols,
+        coords_ang,
+        charges,
         qm_indices=list(range(len(ref["atoms"]))),
-        charge=ref["charge"], multiplicity=ref["multiplicity"],
+        charge=ref["charge"],
+        multiplicity=ref["multiplicity"],
         widths_angstrom=widths_ang,
     )
 
@@ -453,11 +515,13 @@ def test_run_qmmm_smeared_offaxis_distinct_widths_matches_pyscf():
 def test_run_rhf_smeared_charges_kwarg_matches_pyscf():
     ref = _load("water_sto-3g_qmmm_smeared_r1.json")
     mol = ferric.Molecule.from_xyz_string(
-        "3\nwater\n" + "\n".join(
+        "3\nwater\n"
+        + "\n".join(
             f"{a['symbol']} {a['xyz_bohr'][0] / BOHR_PER_ANGSTROM} "
             f"{a['xyz_bohr'][1] / BOHR_PER_ANGSTROM} {a['xyz_bohr'][2] / BOHR_PER_ANGSTROM}"
             for a in ref["atoms"]
-        ) + "\n"
+        )
+        + "\n"
     )
     bs = ferric.BasisSet.bundled("sto-3g")
     smeared = [
@@ -475,20 +539,25 @@ def test_tiny_width_smeared_charge_scf_matches_point_charge_scf():
     # tiny_width_scf_matches_point_charge_scf test.
     ref = _load("water_sto-3g_qmmm_plus_lonepair.json")
     mol = ferric.Molecule.from_xyz_string(
-        "3\nwater\n" + "\n".join(
+        "3\nwater\n"
+        + "\n".join(
             f"{a['symbol']} {a['xyz_bohr'][0] / BOHR_PER_ANGSTROM} "
             f"{a['xyz_bohr'][1] / BOHR_PER_ANGSTROM} {a['xyz_bohr'][2] / BOHR_PER_ANGSTROM}"
             for a in ref["atoms"]
-        ) + "\n"
+        )
+        + "\n"
     )
     bs = ferric.BasisSet.bundled("sto-3g")
     c = ref["mm_charges"][0]
-    r_point = ferric.run_rhf(mol, bs, point_charges=[(c["q"], *c["xyz_bohr"])], density_conv=1e-11)
+    r_point = ferric.run_rhf(
+        mol, bs, point_charges=[(c["q"], *c["xyz_bohr"])], density_conv=1e-11
+    )
     r_smeared = ferric.run_rhf(
         mol, bs, smeared_charges=[(c["q"], *c["xyz_bohr"], 1e-3)], density_conv=1e-11
     )
     assert r_point.converged and r_smeared.converged
     assert r_point.energy == pytest.approx(r_smeared.energy, abs=1e-9)
+
 
 # ── run_optimize_qmmm ──
 
@@ -518,9 +587,11 @@ def test_run_optimize_qmmm_h2_in_a_field_matches_run_optimize():
 
 def test_run_optimize_qmmm_capped_ethane_relaxes_the_frontier_bond():
     symbols, coords, charges, bonds = _ethane()
-    sys = (ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6])
-           .with_link_atoms(bonds)
-           .with_boundary_charges(bonds, "rcd"))
+    sys = (
+        ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6])
+        .with_link_atoms(bonds)
+        .with_boundary_charges(bonds, "rcd")
+    )
 
     result = ferric.run_optimize_qmmm(sys, "sto-3g", move_mm="none", max_steps=60)
     assert result.converged
@@ -594,12 +665,18 @@ def test_run_optimize_qmmm_full_topology_move_all_converges():
         torsions=torsions,
     )
 
-    sys = (ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6])
-           .with_link_atoms(bonds)
-           .with_boundary_charges(bonds, "rcd"))
+    sys = (
+        ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6])
+        .with_link_atoms(bonds)
+        .with_boundary_charges(bonds, "rcd")
+    )
 
     result = ferric.run_optimize_qmmm(
-        sys, "sto-3g", move_mm="all", mm_topology=top, max_steps=80,
+        sys,
+        "sto-3g",
+        move_mm="all",
+        mm_topology=top,
+        max_steps=80,
     )
     assert result.converged
     energies = result.energies()
@@ -632,7 +709,9 @@ def test_run_optimize_qmmm_move_mm_without_topology_raises():
     # make_err() to RuntimeError -- same convention as e.g. a bad k_builder
     # string or an unconverged-SCF report elsewhere in this module.
     symbols, coords, charges, bonds = _ethane()
-    sys = ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6]).with_link_atoms(bonds)
+    sys = ferric.QmmmSystem(
+        symbols, coords, charges, qm_indices=[0, 2, 4, 6]
+    ).with_link_atoms(bonds)
     with pytest.raises(RuntimeError, match="mm_topology"):
         ferric.run_optimize_qmmm(sys, "sto-3g", move_mm="all")
     with pytest.raises(RuntimeError, match="mm_topology"):
@@ -641,7 +720,9 @@ def test_run_optimize_qmmm_move_mm_without_topology_raises():
 
 def test_run_optimize_qmmm_bad_move_mm_string_raises():
     symbols, coords, charges, bonds = _ethane()
-    sys = ferric.QmmmSystem(symbols, coords, charges, qm_indices=[0, 2, 4, 6]).with_link_atoms(bonds)
+    sys = ferric.QmmmSystem(
+        symbols, coords, charges, qm_indices=[0, 2, 4, 6]
+    ).with_link_atoms(bonds)
     with pytest.raises(ValueError):
         ferric.run_optimize_qmmm(sys, "sto-3g", move_mm="everything")
 
@@ -657,7 +738,9 @@ def _pe_case(tag):
     both at the SAME position -- the realistic "one atom, one role" case)."""
     ref = _load(f"{tag}.json")
     symbols = [a["symbol"] for a in ref["atoms"]] + ["X"] * len(ref["sites"])
-    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [s["xyz_bohr"] for s in ref["sites"]]
+    coords_bohr = [a["xyz_bohr"] for a in ref["atoms"]] + [
+        s["xyz_bohr"] for s in ref["sites"]
+    ]
     coords_angstrom = [[c / ANG2BOHR for c in xyz] for xyz in coords_bohr]
     charges = [0.0] * len(ref["atoms"]) + [s["q"] for s in ref["sites"]]
     polarizabilities_angstrom3 = [0.0] * len(ref["atoms"]) + [
@@ -676,7 +759,11 @@ def _pe_case(tag):
 
 @pytest.mark.parametrize(
     "tag",
-    ["water_sto-3g_pe_one_site", "water_sto-3g_pe_three_sites", "water_sto-3g_pe_three_sites_nodamp"],
+    [
+        "water_sto-3g_pe_one_site",
+        "water_sto-3g_pe_three_sites",
+        "water_sto-3g_pe_three_sites_nodamp",
+    ],
 )
 def test_run_qmmm_polarizable_matches_pyscf_prototype(tag):
     sys, ref = _pe_case(tag)
@@ -690,11 +777,15 @@ def test_run_qmmm_polarizable_matches_pyscf_prototype(tag):
     assert abs(result.energy - ref["energy"]) < 1e-7, (
         f"{tag}: energy {result.energy} vs pyscf {ref['energy']}"
     )
-    assert abs(result.e_pol - ref["e_pol"]) < 1e-7, f"{tag}: e_pol {result.e_pol} vs pyscf {ref['e_pol']}"
+    assert abs(result.e_pol - ref["e_pol"]) < 1e-7, (
+        f"{tag}: e_pol {result.e_pol} vs pyscf {ref['e_pol']}"
+    )
     dipoles = result.induced_dipoles()
     assert dipoles is not None
     ref_dipoles = np.array(ref["induced_dipoles"])
-    assert np.max(np.abs(np.asarray(dipoles) - ref_dipoles)) < 1e-6, f"{tag}: dipole mismatch"
+    assert np.max(np.abs(np.asarray(dipoles) - ref_dipoles)) < 1e-6, (
+        f"{tag}: dipole mismatch"
+    )
 
 
 def test_run_qmmm_polarizable_disabled_matches_plain_embedding():
@@ -824,13 +915,20 @@ def test_run_qmmm_uhf_polarizable_gradient_differs_from_non_polarizable():
         [c / ANG2BOHR for c in [4.0, -1.0, 2.0]]
     ]
     sys_plain = ferric.QmmmSystem(
-        symbols, coords, [0.0, 0.0, 0.5], qm_indices=[0, 1], charge=0, multiplicity=2,
+        symbols,
+        coords,
+        [0.0, 0.0, 0.5],
+        qm_indices=[0, 1],
+        charge=0,
+        multiplicity=2,
     )
     r_plain = ferric.run_qmmm(sys_plain, "sto-3g", method="uhf", density_conv=1e-10)
     assert r_plain.converged
 
     delta = np.max(np.abs(r_pol.qm_gradient() - r_plain.qm_gradient()))
-    assert delta > 1e-4, f"polarizable gradient contribution suspiciously small: {delta:.3e}"
+    assert delta > 1e-4, (
+        f"polarizable gradient contribution suspiciously small: {delta:.3e}"
+    )
 
 
 # ── Lane B5: full_gradient() includes the polarizable force terms ──
@@ -845,7 +943,9 @@ def _water_plus_one_polarizable_atom(cl_xyz_angstrom, cl_charge, cl_alpha_bohr3)
     charges = [0.0, 0.0, 0.0, cl_charge]
     polarizabilities_angstrom3 = [0.0, 0.0, 0.0, cl_alpha_bohr3 / (ANG2BOHR**3)]
     return ferric.QmmmSystem(
-        symbols, coords_angstrom, charges,
+        symbols,
+        coords_angstrom,
+        charges,
         qm_indices=[0, 1, 2],
         polarizabilities_angstrom3=polarizabilities_angstrom3,
     )
@@ -877,4 +977,6 @@ def test_run_qmmm_full_gradient_colocated_charge_and_alpha_matches_finite_differ
         minus[axis] -= h_ang
         fd = (energy_at(plus) - energy_at(minus)) / (2.0 * (h_ang * ANG2BOHR))
         an = full[3, axis]
-        assert an == pytest.approx(fd, abs=1e-5), f"Cl row, {label}: analytic {an} vs FD {fd}"
+        assert an == pytest.approx(fd, abs=1e-5), (
+            f"Cl row, {label}: analytic {an} vs FD {fd}"
+        )

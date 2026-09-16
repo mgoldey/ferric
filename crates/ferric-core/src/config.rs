@@ -290,7 +290,10 @@ mod tests {
         let r = v
             .resolve(None, lookup(&[("FERRIC_LINDEP_THRESH", "1e-9")]))
             .unwrap();
-        assert_eq!(r.audit_line(), "FERRIC_LINDEP_THRESH: 0.000000001  [source: env]");
+        assert_eq!(
+            r.audit_line(),
+            "FERRIC_LINDEP_THRESH: 0.000000001  [source: env]"
+        );
         let r = v.resolve(Some(1e-3), lookup(&[])).unwrap();
         assert_eq!(
             r.audit_line(),

@@ -60,7 +60,13 @@ pub(crate) enum JkMode<'d> {
     KOnly(Array2<f64>),
     Both(Array2<f64>, Array2<f64>),
     /// `(J, K_α, K_β, D_α, D_β)` — see the variant note above.
-    Uhf(Array2<f64>, Array2<f64>, Array2<f64>, &'d Array2<f64>, &'d Array2<f64>),
+    Uhf(
+        Array2<f64>,
+        Array2<f64>,
+        Array2<f64>,
+        &'d Array2<f64>,
+        &'d Array2<f64>,
+    ),
 }
 
 impl<'d> JkMode<'d> {
@@ -370,10 +376,7 @@ pub(crate) fn scatter_bra_pair(
     let sym12 = s1 != s2;
 
     for s3 in 0..=s1 {
-        if check_interrupt
-            && s3 % 100 == 0
-            && ferric_core::INTERRUPT.load(Ordering::Relaxed)
-        {
+        if check_interrupt && s3 % 100 == 0 && ferric_core::INTERRUPT.load(Ordering::Relaxed) {
             return local_count;
         }
         let s4max = if s3 == s1 { s2 } else { s3 };
@@ -437,9 +440,8 @@ pub(crate) fn scatter_bra_pair(
                         for c in 0..n3 {
                             for dd in 0..n4 {
                                 // SAFETY: flat index < n1*n2*n3*n4 by loop bounds; q has that many elements from the engine.
-                                let v = unsafe {
-                                    *q.get_unchecked(((a * n2 + b) * n3 + c) * n4 + dd)
-                                };
+                                let v =
+                                    unsafe { *q.get_unchecked(((a * n2 + b) * n3 + c) * n4 + dd) };
                                 let mu = o1 + a;
                                 let nu = o2 + b;
                                 let la = o3 + c;
@@ -515,9 +517,18 @@ mod tests {
         let t = j_heavy_table();
         let six = DensityScreen::SixPair(&t).dmax(0, 1, 2, 3);
         let four = DensityScreen::FourPairK(&t).dmax(0, 1, 2, 3);
-        assert_eq!(six, 1.0, "SixPair must pick up the large d12/d34 J pairings");
-        assert_eq!(four, 1e-9, "FourPairK must see only the small exchange pairings");
-        assert!(four < six, "FourPairK ({four:e}) must be tighter than SixPair ({six:e})");
+        assert_eq!(
+            six, 1.0,
+            "SixPair must pick up the large d12/d34 J pairings"
+        );
+        assert_eq!(
+            four, 1e-9,
+            "FourPairK must see only the small exchange pairings"
+        );
+        assert!(
+            four < six,
+            "FourPairK ({four:e}) must be tighter than SixPair ({six:e})"
+        );
     }
 
     /// `FourPairK <= SixPair` for EVERY quartet of a random-ish table — the
@@ -530,7 +541,9 @@ mod tests {
         let mut state: u64 = 0x9E3779B97F4A7C15;
         for i in 0..n {
             for j in 0..=i {
-                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 let v = (state >> 33) as f64 / u32::MAX as f64;
                 t[(i, j)] = v;
                 t[(j, i)] = v;
@@ -604,10 +617,17 @@ mod tests {
         let d_a = Array2::<f64>::zeros((1, 1));
         let d_b = Array2::<f64>::zeros((1, 1));
 
-        let invalid = |m: &JkMode<'_>| matches!(screen, DensityScreen::FourPairK(_)) && m.accumulates_j();
+        let invalid =
+            |m: &JkMode<'_>| matches!(screen, DensityScreen::FourPairK(_)) && m.accumulates_j();
 
-        assert!(invalid(&JkMode::new_j(1)), "FourPairK + JOnly must be flagged invalid");
-        assert!(invalid(&JkMode::new_both(1)), "FourPairK + Both must be flagged invalid");
+        assert!(
+            invalid(&JkMode::new_j(1)),
+            "FourPairK + JOnly must be flagged invalid"
+        );
+        assert!(
+            invalid(&JkMode::new_both(1)),
+            "FourPairK + Both must be flagged invalid"
+        );
         assert!(
             invalid(&JkMode::new_uhf(1, &d_a, &d_b)),
             "FourPairK + Uhf must be flagged invalid"

@@ -75,6 +75,7 @@ runs go under scripts/ferric-limited --max=4G --high=3600M --):
       --xyz testdata/molecules/water.xyz [--omega 1.0] \
       [--phase anchors|aux|virt|all] [--out scripts/queue/out/x.txt]
 """
+
 import argparse
 import os
 import sys
@@ -91,6 +92,7 @@ log = base.log
 
 
 # ---------------------------------------------------------------- setup
+
 
 def setup(xyz, basis, omega):
     t0 = time.time()
@@ -115,14 +117,29 @@ def setup(xyz, basis, omega):
     occ_cen = base.boys_centroids(mol, C_act)
     virt_cen = base.boys_centroids(mol, C_vloc)
     no, nv, naux = A.shape
-    log(f"== {xyz} basis={basis} op={'coulomb' if omega is None else f'erfc{omega:g}'} "
-        f"no={no} nv={nv} naux={naux} nao={mol.nao} ({time.time()-t0:.1f}s)")
-    return dict(mol=mol, mf=mf, A=A, V=V, Jg=Jg, Foo=Foo, Fvv=Fvv,
-                aux_xyz=aux_xyz, occ_cen=occ_cen, virt_cen=virt_cen,
-                no=no, nv=nv, naux=naux)
+    log(
+        f"== {xyz} basis={basis} op={'coulomb' if omega is None else f'erfc{omega:g}'} "
+        f"no={no} nv={nv} naux={naux} nao={mol.nao} ({time.time() - t0:.1f}s)"
+    )
+    return dict(
+        mol=mol,
+        mf=mf,
+        A=A,
+        V=V,
+        Jg=Jg,
+        Foo=Foo,
+        Fvv=Fvv,
+        aux_xyz=aux_xyz,
+        occ_cen=occ_cen,
+        virt_cen=virt_cen,
+        no=no,
+        nv=nv,
+        naux=naux,
+    )
 
 
 # ------------------------------------------------- energies (two algebras)
+
 
 def solve_full_mp2_closed(J, Foo, Fvv):
     """eps=0 (unmasked) MP2 energy via pseudo-canonical rotation — closed
@@ -133,8 +150,12 @@ def solve_full_mp2_closed(J, Foo, Fvv):
     Jc = np.einsum("kajb,ac->kcjb", Jc, Uv, optimize=True)
     Jc = np.einsum("kcjb,jl->kclb", Jc, Uo, optimize=True)
     Jc = np.einsum("kclb,bd->kcld", Jc, Uv, optimize=True)
-    D = (wv[None, :, None, None] + wv[None, None, None, :]
-         - wo[:, None, None, None] - wo[None, None, :, None])
+    D = (
+        wv[None, :, None, None]
+        + wv[None, None, None, :]
+        - wo[:, None, None, None]
+        - wo[None, None, :, None]
+    )
     assert D.min() > 0, "non-positive denominator"
     tc = -Jc / D
     t = np.einsum("kcld,ik->icld", tc, Uo, optimize=True)
@@ -152,6 +173,7 @@ def masked_energy(J, Foo, Fvv, mask):
 
 
 # ------------------------------------------------------- C1: aux domains
+
 
 def fit_domains(A, V, doms):
     """Domain-local same-kernel fit with per-i aux sets `doms` (pair domain
@@ -180,8 +202,9 @@ def fit_domains(A, V, doms):
 
 
 def aux_doms_dist(ctx, r):
-    dist = np.linalg.norm(ctx["aux_xyz"][None, :, :]
-                          - ctx["occ_cen"][:, None, :], axis=2)
+    dist = np.linalg.norm(
+        ctx["aux_xyz"][None, :, :] - ctx["occ_cen"][:, None, :], axis=2
+    )
     return [np.nonzero(dist[i] <= r)[0] for i in range(ctx["no"])]
 
 
@@ -221,8 +244,9 @@ def aux_doms_tail(ctx, budget, metric_norm=False):
 def dom_locality(ctx, doms):
     """Max/mean-p95 distance of selected aux functions from their
     occupied's centroid — the distance-ball-in-disguise witness."""
-    dist = np.linalg.norm(ctx["aux_xyz"][None, :, :]
-                          - ctx["occ_cen"][:, None, :], axis=2)
+    dist = np.linalg.norm(
+        ctx["aux_xyz"][None, :, :] - ctx["occ_cen"][:, None, :], axis=2
+    )
     dmax, d95 = 0.0, []
     for i, d in enumerate(doms):
         if len(d):
@@ -233,14 +257,24 @@ def dom_locality(ctx, doms):
 
 def run_aux(ctx, e_ref, tag, outfh):
     log("  -- C1 aux-domain frontier (dE = E_full(J_dom) - E_full(J_glob)) --")
-    sweeps = ([("dist", r, lambda r=r: aux_doms_dist(ctx, r))
-               for r in (4.0, 5.0, 6.0, 7.0, 8.0, 10.0, 12.0, 15.0)]
-              + [("mag", t, lambda t=t: aux_doms_mag(ctx, t))
-                 for t in (3e-2, 1e-2, 3e-3, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5)]
-              + [("magm", t, lambda t=t: aux_doms_mag(ctx, t, metric_norm=True))
-                 for t in (3e-2, 1e-2, 3e-3, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5)]
-              + [("tail", b, lambda b=b: aux_doms_tail(ctx, b))
-                 for b in (1e-1, 3e-2, 1e-2, 3e-3, 1e-3, 1e-4)])
+    sweeps = (
+        [
+            ("dist", r, lambda r=r: aux_doms_dist(ctx, r))
+            for r in (4.0, 5.0, 6.0, 7.0, 8.0, 10.0, 12.0, 15.0)
+        ]
+        + [
+            ("mag", t, lambda t=t: aux_doms_mag(ctx, t))
+            for t in (3e-2, 1e-2, 3e-3, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5)
+        ]
+        + [
+            ("magm", t, lambda t=t: aux_doms_mag(ctx, t, metric_norm=True))
+            for t in (3e-2, 1e-2, 3e-3, 1e-3, 3e-4, 1e-4, 3e-5, 1e-5)
+        ]
+        + [
+            ("tail", b, lambda b=b: aux_doms_tail(ctx, b))
+            for b in (1e-1, 3e-2, 1e-2, 3e-3, 1e-3, 1e-4)
+        ]
+    )
     for rule, knob, mk in sweeps:
         t0 = time.time()
         doms = mk()
@@ -252,16 +286,19 @@ def run_aux(ctx, e_ref, tag, outfh):
         de = e - e_ref
         djmax = np.abs(Jd - ctx["Jg"]).max()
         locmax, loc95 = dom_locality(ctx, doms)
-        row = (f"{tag} aux {rule:>4s} knob={knob:<9g} pairdom={dmean:7.1f}/"
-               f"{dmax_sz:4d} of {ctx['naux']} dE={de:+.3e} maxdJ={djmax:.2e} "
-               f"locmax={locmax:5.1f} loc95={loc95:5.1f} solvefail={nfail} "
-               f"({time.time()-t0:.1f}s)")
+        row = (
+            f"{tag} aux {rule:>4s} knob={knob:<9g} pairdom={dmean:7.1f}/"
+            f"{dmax_sz:4d} of {ctx['naux']} dE={de:+.3e} maxdJ={djmax:.2e} "
+            f"locmax={locmax:5.1f} loc95={loc95:5.1f} solvefail={nfail} "
+            f"({time.time() - t0:.1f}s)"
+        )
         log("    " + row)
         outfh.write(row + "\n")
         outfh.flush()
 
 
 # --------------------------------------------- C2: virtual candidates
+
 
 def q_fit_global(ctx):
     """q_ia = sqrt(max((ia|ia)_globalfit, 0))."""
@@ -298,8 +335,9 @@ def cand_schwarz(q, threshold):
 
 
 def cand_dist(ctx, rv):
-    d = np.linalg.norm(ctx["virt_cen"][None, :, :]
-                       - ctx["occ_cen"][:, None, :], axis=2)  # (no, nv)
+    d = np.linalg.norm(
+        ctx["virt_cen"][None, :, :] - ctx["occ_cen"][:, None, :], axis=2
+    )  # (no, nv)
     inr = d <= rv  # inr[i, a]
     # cand[i,a,j] = inr[i,a] | inr[j,a]
     return inr[:, :, None] | inr.T[None, :, :]
@@ -324,21 +362,33 @@ def run_virt(ctx, tag, outfh, eps_list, qloc_radius=10.0):
     qg = q_fit_global(ctx)
     ql = q_fit_local(ctx, qloc_radius)
     qdev = np.abs(qg - ql).max()
-    log(f"    q_fit: global vs strip-local(r={qloc_radius:g}) max dev "
-        f"{qdev:.2e} (qmax {qg.max():.3f})")
+    log(
+        f"    q_fit: global vs strip-local(r={qloc_radius:g}) max dev "
+        f"{qdev:.2e} (qmax {qg.max():.3f})"
+    )
     for eps in eps_list:
         mask8 = (np.abs(J) > eps) | (np.abs(K) > eps)
         e8, it8 = masked_energy(J, ctx["Foo"], ctx["Fvv"], mask8)
-        row = (f"{tag} virt eps={eps:g} eps-only E={e8:.10f} "
-               f"kept={int(mask8.sum())} cg={it8}")
+        row = (
+            f"{tag} virt eps={eps:g} eps-only E={e8:.10f} "
+            f"kept={int(mask8.sum())} cg={it8}"
+        )
         log("    " + row)
         outfh.write(row + "\n")
-        sweeps = ([("rv", r, lambda r=r: cand_dist(ctx, r))
-                   for r in (4.0, 6.0, 8.0, 10.0, 12.0)]
-                  + [("kap", k, lambda k=k: cand_schwarz(qg, k * eps))
-                     for k in (0.1, 0.3, 1.0, 3.0, 10.0)]
-                  + [("kapl", k, lambda k=k: cand_schwarz(ql, k * eps))
-                     for k in (0.3, 1.0, 3.0)])
+        sweeps = (
+            [
+                ("rv", r, lambda r=r: cand_dist(ctx, r))
+                for r in (4.0, 6.0, 8.0, 10.0, 12.0)
+            ]
+            + [
+                ("kap", k, lambda k=k: cand_schwarz(qg, k * eps))
+                for k in (0.1, 0.3, 1.0, 3.0, 10.0)
+            ]
+            + [
+                ("kapl", k, lambda k=k: cand_schwarz(ql, k * eps))
+                for k in (0.3, 1.0, 3.0)
+            ]
+        )
         for rule, knob, mk in sweeps:
             t0 = time.time()
             cand = mk()
@@ -349,10 +399,12 @@ def run_virt(ctx, tag, outfh, eps_list, qloc_radius=10.0):
             e, it = masked_energy(J, ctx["Foo"], ctx["Fvv"], mask8 & allow)
             de = e - e8
             cmean, cmax = cand_sizes(cand)
-            row = (f"{tag} virt eps={eps:g} {rule:>4s} knob={knob:<6g} "
-                   f"|C|={cmean:6.1f}/{cmax:4d} of {ctx['nv']} dE={de:+.3e} "
-                   f"escapes={n_esc} worst|J|esc={worst_esc:.2e} cg={it} "
-                   f"({time.time()-t0:.1f}s)")
+            row = (
+                f"{tag} virt eps={eps:g} {rule:>4s} knob={knob:<6g} "
+                f"|C|={cmean:6.1f}/{cmax:4d} of {ctx['nv']} dE={de:+.3e} "
+                f"escapes={n_esc} worst|J|esc={worst_esc:.2e} cg={it} "
+                f"({time.time() - t0:.1f}s)"
+            )
             log("    " + row)
             outfh.write(row + "\n")
             outfh.flush()
@@ -360,15 +412,16 @@ def run_virt(ctx, tag, outfh, eps_list, qloc_radius=10.0):
 
 # ----------------------------------------------------- anchors + mutations
 
+
 def run_anchors(ctx, tag, outfh):
     log("  -- anchors (must pass BEFORE any sweep) --")
     # A4: two-algebra energy cross-check on the global fit
     e_closed = solve_full_mp2_closed(ctx["Jg"], ctx["Foo"], ctx["Fvv"])
-    e_cg, _ = masked_energy(ctx["Jg"], ctx["Foo"], ctx["Fvv"],
-                            np.ones_like(ctx["Jg"], dtype=bool))
+    e_cg, _ = masked_energy(
+        ctx["Jg"], ctx["Foo"], ctx["Fvv"], np.ones_like(ctx["Jg"], dtype=bool)
+    )
     d4 = abs(e_closed - e_cg)
-    log(f"    A4 closed-form vs masked-CG (eps=0): |dE|={d4:.3e} "
-        f"E={e_closed:.10f}")
+    log(f"    A4 closed-form vs masked-CG (eps=0): |dE|={d4:.3e} E={e_closed:.10f}")
     if d4 > 1e-9:
         raise SystemExit("A4 FAILED: two-algebra eps=0 energies disagree")
     # A1: distance rule, trivial radius
@@ -384,19 +437,22 @@ def run_anchors(ctx, tag, outfh):
     if d2 > 1e-10 or nf:
         raise SystemExit("A2 FAILED")
     # M1: gutted magnitude rule must fail A2
-    Jd, _, _, _ = fit_domains(ctx["A"], ctx["V"],
-                              aux_doms_mag(ctx, 0.0, mutate=True))
+    Jd, _, _, _ = fit_domains(ctx["A"], ctx["V"], aux_doms_mag(ctx, 0.0, mutate=True))
     dm = np.abs(Jd - ctx["Jg"]).max()
-    log(f"    M1 mag(0, drop-top): max|dJ|={dm:.3e} "
-        f"{'MUTATION-OK' if dm > 1e-10 else 'MUTATION-BROKEN'}")
+    log(
+        f"    M1 mag(0, drop-top): max|dJ|={dm:.3e} "
+        f"{'MUTATION-OK' if dm > 1e-10 else 'MUTATION-BROKEN'}"
+    )
     if dm <= 1e-10:
         raise SystemExit("M1 BROKEN: gutted aux rule still passes A2")
     # A3: trivial virtual candidates leave the mask untouched
     eps = 1e-3
     J = ctx["Jg"]
     mask8 = (np.abs(J) > eps) | (np.abs(J.transpose(0, 3, 2, 1)) > eps)
-    for name, cand in (("kap0", cand_schwarz(q_fit_global(ctx), 0.0)),
-                       ("rv1e9", cand_dist(ctx, 1e9))):
+    for name, cand in (
+        ("kap0", cand_schwarz(q_fit_global(ctx), 0.0)),
+        ("rv1e9", cand_dist(ctx, 1e9)),
+    ):
         if not cand.all():
             raise SystemExit(f"A3 FAILED: {name} candidate mask not all-true")
     log("    A3 kap0/rv1e9: candidate masks all-true (mask untouched) OK")
@@ -405,12 +461,16 @@ def run_anchors(ctx, tag, outfh):
     qm[np.unravel_index(np.argmax(qm), qm.shape)] = 0.0
     allow = allow_from_cand(cand_schwarz(qm, eps))
     n_esc = int((mask8 & ~allow).sum())
-    log(f"    M2 zeroed-top-q kappa=1: escapes={n_esc} "
-        f"{'MUTATION-OK' if n_esc > 0 else 'MUTATION-BROKEN'}")
+    log(
+        f"    M2 zeroed-top-q kappa=1: escapes={n_esc} "
+        f"{'MUTATION-OK' if n_esc > 0 else 'MUTATION-BROKEN'}"
+    )
     if n_esc == 0:
         raise SystemExit("M2 BROKEN: corrupted q still conservative")
-    outfh.write(f"{tag} anchors PASSED (A1 {d1:.1e} A2 {d2:.1e} A4 {d4:.1e}) "
-                f"mutations FAILED-as-required (M1 {dm:.1e} M2 esc={n_esc})\n")
+    outfh.write(
+        f"{tag} anchors PASSED (A1 {d1:.1e} A2 {d2:.1e} A4 {d4:.1e}) "
+        f"mutations FAILED-as-required (M1 {dm:.1e} M2 esc={n_esc})\n"
+    )
     outfh.flush()
     return e_closed
 
@@ -420,16 +480,18 @@ def main():
     ap.add_argument("--xyz", required=True)
     ap.add_argument("--basis", default="6-31g")
     ap.add_argument("--omega", type=float, default=None)
-    ap.add_argument("--phase", default="all",
-                    choices=["anchors", "aux", "virt", "all"])
+    ap.add_argument("--phase", default="all", choices=["anchors", "aux", "virt", "all"])
     ap.add_argument("--eps", default="1e-3,1e-4")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
     eps_list = [float(x) for x in a.eps.split(",") if x]
-    tag = (f"{os.path.basename(a.xyz).replace('.xyz','')} {a.basis} "
-           f"{'coul' if a.omega is None else f'erfc{a.omega:g}'}")
-    outpath = a.out or os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                    "out", "eps_linked_maps.txt")
+    tag = (
+        f"{os.path.basename(a.xyz).replace('.xyz', '')} {a.basis} "
+        f"{'coul' if a.omega is None else f'erfc{a.omega:g}'}"
+    )
+    outpath = a.out or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "out", "eps_linked_maps.txt"
+    )
     os.makedirs(os.path.dirname(outpath), exist_ok=True)
     ctx = setup(a.xyz, a.basis, a.omega)
     with open(outpath, "a") as outfh:

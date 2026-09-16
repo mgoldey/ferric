@@ -26,8 +26,22 @@ fn ethane_atoms() -> Vec<QmmmAtom> {
     ];
     for k in 0..3 {
         let phi = 2.0 * std::f64::consts::PI * (k as f64) / 3.0;
-        atoms.push(QmmmAtom::new("H", 1, ch * s * phi.cos(), ch * s * phi.sin(), ch * c, 0.033));
-        atoms.push(QmmmAtom::new("H", 1, ch * s * phi.cos(), ch * s * phi.sin(), cc - ch * c, 0.033));
+        atoms.push(QmmmAtom::new(
+            "H",
+            1,
+            ch * s * phi.cos(),
+            ch * s * phi.sin(),
+            ch * c,
+            0.033,
+        ));
+        atoms.push(QmmmAtom::new(
+            "H",
+            1,
+            ch * s * phi.cos(),
+            ch * s * phi.sin(),
+            cc - ch * c,
+            0.033,
+        ));
     }
     atoms
 }
@@ -37,10 +51,15 @@ fn ethane_bonds() -> Vec<(usize, usize)> {
 }
 
 fn capped_ethane() -> QmmmSystem {
-    QmmmSystem::new(&ethane_atoms(), QmSelection::Indices(vec![0, 2, 4, 6]), 0, 1)
-        .unwrap()
-        .with_link_atoms(&ethane_bonds(), DEFAULT_LINK_SCALE)
-        .unwrap()
+    QmmmSystem::new(
+        &ethane_atoms(),
+        QmSelection::Indices(vec![0, 2, 4, 6]),
+        0,
+        1,
+    )
+    .unwrap()
+    .with_link_atoms(&ethane_bonds(), DEFAULT_LINK_SCALE)
+    .unwrap()
 }
 
 fn ethane_coords_full() -> Array2<f64> {
@@ -61,38 +80,105 @@ fn ethane_coords_full() -> Array2<f64> {
 /// physics one).
 fn full_ethane_topology() -> MmTopology {
     let bonds = vec![
-        Bond { i: 0, j: 1, k: 0.35, r0: ETHANE_CC },
-        Bond { i: 0, j: 2, k: 0.4, r0: 1.09 * ANG2BOHR },
-        Bond { i: 0, j: 4, k: 0.4, r0: 1.09 * ANG2BOHR },
-        Bond { i: 0, j: 6, k: 0.4, r0: 1.09 * ANG2BOHR },
-        Bond { i: 1, j: 3, k: 0.4, r0: 1.09 * ANG2BOHR },
-        Bond { i: 1, j: 5, k: 0.4, r0: 1.09 * ANG2BOHR },
-        Bond { i: 1, j: 7, k: 0.4, r0: 1.09 * ANG2BOHR },
+        Bond {
+            i: 0,
+            j: 1,
+            k: 0.35,
+            r0: ETHANE_CC,
+        },
+        Bond {
+            i: 0,
+            j: 2,
+            k: 0.4,
+            r0: 1.09 * ANG2BOHR,
+        },
+        Bond {
+            i: 0,
+            j: 4,
+            k: 0.4,
+            r0: 1.09 * ANG2BOHR,
+        },
+        Bond {
+            i: 0,
+            j: 6,
+            k: 0.4,
+            r0: 1.09 * ANG2BOHR,
+        },
+        Bond {
+            i: 1,
+            j: 3,
+            k: 0.4,
+            r0: 1.09 * ANG2BOHR,
+        },
+        Bond {
+            i: 1,
+            j: 5,
+            k: 0.4,
+            r0: 1.09 * ANG2BOHR,
+        },
+        Bond {
+            i: 1,
+            j: 7,
+            k: 0.4,
+            r0: 1.09 * ANG2BOHR,
+        },
     ];
     let theta0 = 109.5_f64.to_radians();
     let mut angles = vec![];
     for h in [2, 4, 6] {
-        angles.push(Angle { i: h, j: 0, k: 1, k_theta: 0.06, theta0 });
+        angles.push(Angle {
+            i: h,
+            j: 0,
+            k: 1,
+            k_theta: 0.06,
+            theta0,
+        });
     }
     for h in [3, 5, 7] {
-        angles.push(Angle { i: h, j: 1, k: 0, k_theta: 0.06, theta0 });
+        angles.push(Angle {
+            i: h,
+            j: 1,
+            k: 0,
+            k_theta: 0.06,
+            theta0,
+        });
     }
     let hc0 = [2, 4, 6];
     for a in 0..3 {
         for b in (a + 1)..3 {
-            angles.push(Angle { i: hc0[a], j: 0, k: hc0[b], k_theta: 0.04, theta0 });
+            angles.push(Angle {
+                i: hc0[a],
+                j: 0,
+                k: hc0[b],
+                k_theta: 0.04,
+                theta0,
+            });
         }
     }
     let hc1 = [3, 5, 7];
     for a in 0..3 {
         for b in (a + 1)..3 {
-            angles.push(Angle { i: hc1[a], j: 1, k: hc1[b], k_theta: 0.04, theta0 });
+            angles.push(Angle {
+                i: hc1[a],
+                j: 1,
+                k: hc1[b],
+                k_theta: 0.04,
+                theta0,
+            });
         }
     }
     let mut torsions = vec![];
     for &hi in &[2, 4, 6] {
         for &hj in &[3, 5, 7] {
-            torsions.push(Torsion { i: hi, j: 0, k: 1, l: hj, periodicity: 3, k_phi: 0.02, phase: 0.0 });
+            torsions.push(Torsion {
+                i: hi,
+                j: 0,
+                k: 1,
+                l: hj,
+                periodicity: 3,
+                k_phi: 0.02,
+                phase: 0.0,
+            });
         }
     }
 
@@ -108,14 +194,38 @@ fn full_ethane_topology() -> MmTopology {
     // appropriate separation, by ferric-mm's own nonbonded_hand_computed_
     // and_gradient_vs_fd and the OpenMM cross-validation).
     let lj = vec![
-        LjParams { sigma: 0.6 * ANG2BOHR, epsilon: 0.109 / 627.509_474 },
-        LjParams { sigma: 0.6 * ANG2BOHR, epsilon: 0.109 / 627.509_474 },
-        LjParams { sigma: 0.5 * ANG2BOHR, epsilon: 0.0157 / 627.509_474 },
-        LjParams { sigma: 0.5 * ANG2BOHR, epsilon: 0.0157 / 627.509_474 },
-        LjParams { sigma: 0.5 * ANG2BOHR, epsilon: 0.0157 / 627.509_474 },
-        LjParams { sigma: 0.5 * ANG2BOHR, epsilon: 0.0157 / 627.509_474 },
-        LjParams { sigma: 0.5 * ANG2BOHR, epsilon: 0.0157 / 627.509_474 },
-        LjParams { sigma: 0.5 * ANG2BOHR, epsilon: 0.0157 / 627.509_474 },
+        LjParams {
+            sigma: 0.6 * ANG2BOHR,
+            epsilon: 0.109 / 627.509_474,
+        },
+        LjParams {
+            sigma: 0.6 * ANG2BOHR,
+            epsilon: 0.109 / 627.509_474,
+        },
+        LjParams {
+            sigma: 0.5 * ANG2BOHR,
+            epsilon: 0.0157 / 627.509_474,
+        },
+        LjParams {
+            sigma: 0.5 * ANG2BOHR,
+            epsilon: 0.0157 / 627.509_474,
+        },
+        LjParams {
+            sigma: 0.5 * ANG2BOHR,
+            epsilon: 0.0157 / 627.509_474,
+        },
+        LjParams {
+            sigma: 0.5 * ANG2BOHR,
+            epsilon: 0.0157 / 627.509_474,
+        },
+        LjParams {
+            sigma: 0.5 * ANG2BOHR,
+            epsilon: 0.0157 / 627.509_474,
+        },
+        LjParams {
+            sigma: 0.5 * ANG2BOHR,
+            epsilon: 0.0157 / 627.509_474,
+        },
     ];
 
     MmTopology::new(charges, lj, bonds, angles, torsions).unwrap()
@@ -131,7 +241,13 @@ fn qmmm_mm_terms_with_empty_topology_is_zero() {
     let n = sys.atoms.len();
     let top = MmTopology::new(
         vec![0.0; n],
-        vec![LjParams { sigma: 0.0, epsilon: 0.0 }; n],
+        vec![
+            LjParams {
+                sigma: 0.0,
+                epsilon: 0.0
+            };
+            n
+        ],
         vec![],
         vec![],
         vec![],
@@ -183,20 +299,51 @@ fn capped_ethane_surviving_bonded_term_counts_match_hand_derivation() {
     let qm: std::collections::HashSet<usize> = sys.qm_indices.iter().copied().collect();
     let has_mm = |atoms: &[usize]| atoms.iter().any(|a| !qm.contains(a));
 
-    let surviving_bonds: Vec<_> = top.bonds.iter().filter(|b| has_mm(&[b.i, b.j])).cloned().collect();
-    let surviving_angles: Vec<_> =
-        top.angles.iter().filter(|a| has_mm(&[a.i, a.j, a.k])).cloned().collect();
-    let surviving_torsions: Vec<_> =
-        top.torsions.iter().filter(|t| has_mm(&[t.i, t.j, t.k, t.l])).cloned().collect();
+    let surviving_bonds: Vec<_> = top
+        .bonds
+        .iter()
+        .filter(|b| has_mm(&[b.i, b.j]))
+        .cloned()
+        .collect();
+    let surviving_angles: Vec<_> = top
+        .angles
+        .iter()
+        .filter(|a| has_mm(&[a.i, a.j, a.k]))
+        .cloned()
+        .collect();
+    let surviving_torsions: Vec<_> = top
+        .torsions
+        .iter()
+        .filter(|t| has_mm(&[t.i, t.j, t.k, t.l]))
+        .cloned()
+        .collect();
 
-    assert_eq!(surviving_bonds.len(), 4, "hand count: 4 bonds cross or are MM-MM");
-    assert_eq!(surviving_angles.len(), 9, "hand count: 9 of 12 angles survive");
-    assert_eq!(surviving_torsions.len(), 9, "hand count: all 9 torsions cross");
+    assert_eq!(
+        surviving_bonds.len(),
+        4,
+        "hand count: 4 bonds cross or are MM-MM"
+    );
+    assert_eq!(
+        surviving_angles.len(),
+        9,
+        "hand count: 9 of 12 angles survive"
+    );
+    assert_eq!(
+        surviving_torsions.len(),
+        9,
+        "hand count: all 9 torsions cross"
+    );
 
     let n = sys.atoms.len();
     let manual_top = MmTopology::new(
         vec![0.0; n],
-        vec![LjParams { sigma: 0.0, epsilon: 0.0 }; n],
+        vec![
+            LjParams {
+                sigma: 0.0,
+                epsilon: 0.0
+            };
+            n
+        ],
         surviving_bonds,
         surviving_angles,
         surviving_torsions,
@@ -241,7 +388,11 @@ fn qmmm_mm_terms_gradient_matches_fd() {
             max_err = max_err.max((fd - g[(i, c)]).abs());
         }
     }
-    assert!(max_err < 1e-8, "max analytic-vs-FD err {max_err:.3e} (e0.total={:.10})", e0.total);
+    assert!(
+        max_err < 1e-8,
+        "max analytic-vs-FD err {max_err:.3e} (e0.total={:.10})",
+        e0.total
+    );
 }
 
 /// Trivial-limit sanity: an all-QM system (no MM atoms at all) has the MM
@@ -253,7 +404,13 @@ fn qmmm_mm_terms_gradient_matches_fd() {
 #[test]
 fn all_qm_system_has_zero_mm_contribution_even_with_nontrivial_topology() {
     let atoms = ethane_atoms();
-    let sys = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2, 3, 4, 5, 6, 7]), 0, 1).unwrap();
+    let sys = QmmmSystem::new(
+        &atoms,
+        QmSelection::Indices(vec![0, 1, 2, 3, 4, 5, 6, 7]),
+        0,
+        1,
+    )
+    .unwrap();
     let top = full_ethane_topology();
     let coords = ethane_coords_full();
     let (e, g) = qmmm_mm_terms(&sys, &top, &coords).unwrap();

@@ -12,12 +12,15 @@
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_gw::bse::{run_bse_tda, run_cis_tda};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_rpa::config::{Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig, QuadratureConfig, QuadratureScheme, SternheimerConfig};
+use ferric_rpa::config::{
+    Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig, QuadratureConfig, QuadratureScheme,
+    SternheimerConfig,
+};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
-use ferric_gw::bse::{run_bse_tda, run_cis_tda};
 
 const HA_TO_EV: f64 = 27.211386245988_f64;
 
@@ -25,7 +28,11 @@ const C2H4_XYZ: &str = "6\nethylene\nC 0.000000 0.000000 0.669500\nC 0.000000 0.
 
 fn pdep_cfg() -> PdepRpaConfig {
     PdepRpaConfig {
-        quadrature: QuadratureConfig { scheme: QuadratureScheme::GaussLegendre, n_points: 16, u0: 0.5 },
+        quadrature: QuadratureConfig {
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: 16,
+            u0: 0.5,
+        },
         eigensolver_conv_thresh: 1e-7,
         eigensolver_max_vecs: 0,
         trunc_thresh: 0.0,
@@ -56,14 +63,26 @@ fn run_at_basis(obs_name: &str, dfbs_name: &str) {
     // Bare CIS-TDA (no GW, no screening) -- isolates the kernel/formula.
     let cis = run_cis_tda(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
     eprintln!("CIS-TDA (bare HF, no GW):");
-    for (n, (&om, &f)) in cis.omega.iter().zip(cis.oscillator_strength.iter()).take(4).enumerate() {
+    for (n, (&om, &f)) in cis
+        .omega
+        .iter()
+        .zip(cis.oscillator_strength.iter())
+        .take(4)
+        .enumerate()
+    {
         eprintln!("  n={} Omega={:.4} eV  f={:.5}", n + 1, om * HA_TO_EV, f);
     }
 
     // Full BSE-TDA (G0W0@HF screened) -- the pilot's actual path.
     let bse = run_bse_tda(&mol, &obs, &dfbs, op, &rhf, &pdep_cfg(), 0).unwrap();
     eprintln!("BSE-TDA (G0W0@HF screened):");
-    for (n, (&om, &f)) in bse.omega.iter().zip(bse.oscillator_strength.iter()).take(4).enumerate() {
+    for (n, (&om, &f)) in bse
+        .omega
+        .iter()
+        .zip(bse.oscillator_strength.iter())
+        .take(4)
+        .enumerate()
+    {
         eprintln!("  n={} Omega={:.4} eV  f={:.5}", n + 1, om * HA_TO_EV, f);
     }
 }

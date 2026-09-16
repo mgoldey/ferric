@@ -12,6 +12,7 @@ The failure mode being prevented: an analogue that failed to embed gets
 `fit=None`, a `None`-as-0 coercion makes it look like a perfect binder, and it
 tops the recommended front.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -30,10 +31,20 @@ def _set(**overrides) -> list[Candidate]:
     """A parent plus two controls that behave correctly (controls bind worse)."""
     cands = [
         Candidate("parent", liability=0.2, fit_kcal=-30.0, strain_kcal=2.0),
-        Candidate("NC1-methyl-ester", liability=0.2, fit_kcal=-18.0,
-                  strain_kcal=2.0, is_negative_control=True),
-        Candidate("NC2-decyano", liability=0.1, fit_kcal=-20.0,
-                  strain_kcal=1.5, is_negative_control=True),
+        Candidate(
+            "NC1-methyl-ester",
+            liability=0.2,
+            fit_kcal=-18.0,
+            strain_kcal=2.0,
+            is_negative_control=True,
+        ),
+        Candidate(
+            "NC2-decyano",
+            liability=0.1,
+            fit_kcal=-20.0,
+            strain_kcal=1.5,
+            is_negative_control=True,
+        ),
     ]
     for c in cands:
         if c.label in overrides:
@@ -43,6 +54,7 @@ def _set(**overrides) -> list[Candidate]:
 
 
 # ── the gate ──
+
 
 def test_gate_passes_when_controls_bind_worse():
     g = fit_discriminates_controls(_set())
@@ -78,8 +90,7 @@ def test_gate_failure_reports_noise_domination_when_that_is_the_cause():
     should say so rather than offer a generic checklist."""
     cands = [
         Candidate("parent", fit_kcal=-30.0, fit_sem_kcal=40.0),
-        Candidate("NC1", fit_kcal=-35.0, fit_sem_kcal=40.0,
-                  is_negative_control=True),
+        Candidate("NC1", fit_kcal=-35.0, fit_sem_kcal=40.0, is_negative_control=True),
     ]
     g = fit_discriminates_controls(cands, parent_label="parent")
     assert not g.passed
@@ -104,7 +115,10 @@ def test_gate_fails_with_no_controls():
 
 def test_gate_fails_when_parent_unmeasured():
     g = fit_discriminates_controls(
-        [Candidate("parent"), Candidate("NC1", fit_kcal=-10.0, is_negative_control=True)]
+        [
+            Candidate("parent"),
+            Candidate("NC1", fit_kcal=-10.0, is_negative_control=True),
+        ]
     )
     assert not g.passed
     assert "no fit measurement" in g.detail
@@ -112,14 +126,13 @@ def test_gate_fails_when_parent_unmeasured():
 
 def test_gate_fails_when_a_control_is_unmeasured():
     """An unmeasured control must not silently count as passing."""
-    g = fit_discriminates_controls(
-        _set(**{"NC2-decyano": {"fit_kcal": None}})
-    )
+    g = fit_discriminates_controls(_set(**{"NC2-decyano": {"fit_kcal": None}}))
     assert not g.passed
     assert "no fit measurement" in g.detail
 
 
 # ── dominance / missing data ──
+
 
 def test_dominates_requires_better_on_one_and_no_worse_on_any():
     a = {"liability": 0.1, "fit_loss": 0.0, "strain": 1.0}
@@ -159,13 +172,19 @@ def test_partial_measurement_compares_only_on_shared_axes():
 
 # ── the front ──
 
+
 def test_pareto_front_excludes_negative_controls_by_default():
     """A control can be non-dominated (low liability because it deleted the
     acid); putting it on the recommended front would recommend an inactive."""
     cands = [
         Candidate("parent", liability=0.5, fit_kcal=-30.0, strain_kcal=2.0),
-        Candidate("NC2", liability=0.0, fit_kcal=-20.0, strain_kcal=0.0,
-                  is_negative_control=True),
+        Candidate(
+            "NC2",
+            liability=0.0,
+            fit_kcal=-20.0,
+            strain_kcal=0.0,
+            is_negative_control=True,
+        ),
     ]
     front = pareto_front(cands)
     assert [c.label for c in front] == ["parent"]
@@ -177,7 +196,9 @@ def test_pareto_front_keeps_the_tradeoff_set_and_drops_the_dominated():
         Candidate("parent", liability=0.4, fit_kcal=-30.0, strain_kcal=3.0),
         Candidate("good_all_round", liability=0.2, fit_kcal=-32.0, strain_kcal=1.0),
         Candidate("dominated", liability=0.5, fit_kcal=-25.0, strain_kcal=4.0),
-        Candidate("low_liab_worse_fit", liability=0.05, fit_kcal=-22.0, strain_kcal=3.0),
+        Candidate(
+            "low_liab_worse_fit", liability=0.05, fit_kcal=-22.0, strain_kcal=3.0
+        ),
     ]
     labels = {c.label for c in pareto_front(cands)}
     assert "good_all_round" in labels
@@ -198,10 +219,12 @@ def test_fit_loss_is_relative_to_the_parent_and_signed_correctly():
 
 def test_format_table_prints_missing_axes_as_dashes_not_zeros():
     """A 0.00 in a report reads as a measurement. Missing must look missing."""
-    out = format_table([
-        Candidate("parent", liability=0.2, fit_kcal=-30.0, strain_kcal=1.0),
-        Candidate("unmeasured"),
-    ])
+    out = format_table(
+        [
+            Candidate("parent", liability=0.2, fit_kcal=-30.0, strain_kcal=1.0),
+            Candidate("unmeasured"),
+        ]
+    )
     unmeasured_row = [l for l in out.splitlines() if l.startswith("unmeasured")][0]
     assert "--" in unmeasured_row
     assert "0.00" not in unmeasured_row, (
@@ -210,6 +233,7 @@ def test_format_table_prints_missing_axes_as_dashes_not_zeros():
 
 
 # ── the precision check ──
+
 
 def test_precision_check_fails_when_noise_exceeds_signal():
     """A 16 kcal/mol candidate range with 8 kcal/mol standard errors cannot be
@@ -260,12 +284,13 @@ def test_precision_check_passes_when_the_estimator_is_precise():
 
 # ── pairwise significance ──
 
+
 def test_pairwise_significance_distinguishes_clear_and_unclear_pairs():
     from tools.campaign.rank import significant_difference
 
     parent = Candidate("parent", fit_kcal=-119.8, fit_sem_kcal=7.4)
-    far = Candidate("far", fit_kcal=-22.9, fit_sem_kcal=1.7)      # 96.9 apart
-    near = Candidate("near", fit_kcal=-123.1, fit_sem_kcal=6.9)   # 3.3 apart
+    far = Candidate("far", fit_kcal=-22.9, fit_sem_kcal=1.7)  # 96.9 apart
+    near = Candidate("near", fit_kcal=-123.1, fit_sem_kcal=6.9)  # 3.3 apart
 
     assert significant_difference(parent, far) is True
     assert significant_difference(parent, near) is False, (
@@ -292,7 +317,9 @@ def test_pairwise_significance_is_symmetric():
 
 
 def test_precision_check_needs_two_candidates_with_precision():
-    assert not noise_exceeds_signal([Candidate("a", fit_kcal=-1.0, fit_sem_kcal=1.0)]).passed
+    assert not noise_exceeds_signal(
+        [Candidate("a", fit_kcal=-1.0, fit_sem_kcal=1.0)]
+    ).passed
     assert not noise_exceeds_signal([Candidate("a", fit_kcal=-1.0)]).passed
 
 
@@ -316,11 +343,14 @@ def test_precision_check_ignores_candidates_missing_either_value():
 # That clean separation read as "the metric discriminates the pharmacophore"
 # when it was measuring ionization state.
 
+
 def test_charge_confound_flags_a_mixed_charge_set():
     from tools.campaign.rank import charge_confound
 
-    cands = [Candidate(f"anion{i}", fit_kcal=f, net_charge=-1)
-             for i, f in enumerate([-120.0, -140.0, -160.0])]
+    cands = [
+        Candidate(f"anion{i}", fit_kcal=f, net_charge=-1)
+        for i, f in enumerate([-120.0, -140.0, -160.0])
+    ]
     cands.append(Candidate("neutral", fit_kcal=-22.0, net_charge=0))
     r = charge_confound(cands)
     assert not r.passed
@@ -332,8 +362,10 @@ def test_charge_confound_passes_for_a_single_charge_state():
     """The clean case: everything at the same charge, nothing to confound."""
     from tools.campaign.rank import charge_confound
 
-    cands = [Candidate(f"a{i}", fit_kcal=f, net_charge=-1)
-             for i, f in enumerate([-120.0, -140.0, -160.0])]
+    cands = [
+        Candidate(f"a{i}", fit_kcal=f, net_charge=-1)
+        for i, f in enumerate([-120.0, -140.0, -160.0])
+    ]
     r = charge_confound(cands)
     assert r.passed
     assert "every scored candidate has net charge -1" in r.detail
@@ -345,10 +377,12 @@ def test_charge_confound_passes_when_within_spread_exceeds_between():
     mixed set rather than a measurement."""
     from tools.campaign.rank import charge_confound
 
-    cands = [Candidate("a", fit_kcal=-10.0, net_charge=-1),
-             Candidate("b", fit_kcal=-90.0, net_charge=-1),
-             Candidate("c", fit_kcal=-45.0, net_charge=0),
-             Candidate("d", fit_kcal=-55.0, net_charge=0)]
+    cands = [
+        Candidate("a", fit_kcal=-10.0, net_charge=-1),
+        Candidate("b", fit_kcal=-90.0, net_charge=-1),
+        Candidate("c", fit_kcal=-45.0, net_charge=0),
+        Candidate("d", fit_kcal=-55.0, net_charge=0),
+    ]
     r = charge_confound(cands)
     assert r.passed, r.detail
 
@@ -357,12 +391,26 @@ def test_charge_confound_reproduces_the_campaign_numbers():
     """Pin the real case: 10 anions plus 1 neutral must be flagged."""
     from tools.campaign.rank import charge_confound
 
-    anions = [-159.8, -144.6, -135.3, -131.5, -130.6, -126.3, -126.1, -124.6,
-              -121.1, -118.4]
-    cands = [Candidate(f"a{i}", fit_kcal=f, net_charge=-1)
-             for i, f in enumerate(anions)]
-    cands.append(Candidate("NC1-methyl-ester", fit_kcal=-22.3, net_charge=0,
-                           is_negative_control=True))
+    anions = [
+        -159.8,
+        -144.6,
+        -135.3,
+        -131.5,
+        -130.6,
+        -126.3,
+        -126.1,
+        -124.6,
+        -121.1,
+        -118.4,
+    ]
+    cands = [
+        Candidate(f"a{i}", fit_kcal=f, net_charge=-1) for i, f in enumerate(anions)
+    ]
+    cands.append(
+        Candidate(
+            "NC1-methyl-ester", fit_kcal=-22.3, net_charge=0, is_negative_control=True
+        )
+    )
     r = charge_confound(cands)
     assert not r.passed
     # between ~ -132 vs -22 = ~110; within (anions) ~ 41
@@ -370,6 +418,7 @@ def test_charge_confound_reproduces_the_campaign_numbers():
 
 
 # ── tier agreement (does the expensive tier reorder the cheap one?) ──────────
+
 
 def test_tier_agreement_detects_identical_and_reversed_orders():
     from tools.campaign.rank import tier_agreement
@@ -418,7 +467,7 @@ def test_tier_agreement_compares_only_the_common_set():
     from tools.campaign.rank import tier_agreement
 
     cheap = {"a": 1.0, "b": 2.0, "c": 3.0, "d": 4.0}
-    expensive = {"c": 1.0, "a": 2.0}          # only 2 of 4, and in swapped order
+    expensive = {"c": 1.0, "a": 2.0}  # only 2 of 4, and in swapped order
     r = tier_agreement(cheap, expensive)
     assert r["n_common"] == 2
     assert r["cheap_order"] == ["a", "c"]

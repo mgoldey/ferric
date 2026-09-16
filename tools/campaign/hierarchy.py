@@ -75,6 +75,7 @@ own best pose, no rescoring would be needed.
     alone. `TierOutcome.seconds` is None when unmeasured, never 0.0, because a
     zero reads as "free".
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -83,15 +84,17 @@ from enum import IntEnum
 
 class Tier(IntEnum):
     """Cost tiers, ordered cheapest first."""
-    SEARCH = 1          # empirical docking -- generates poses
-    FORCE_FIELD = 2     # MMFF / GFN-FF -- relax, declash
-    SEMIEMPIRICAL = 3   # GFN2-xTB -- rank
-    QUANTUM = 4         # DFT + dispersion -- final energetics
+
+    SEARCH = 1  # empirical docking -- generates poses
+    FORCE_FIELD = 2  # MMFF / GFN-FF -- relax, declash
+    SEMIEMPIRICAL = 3  # GFN2-xTB -- rank
+    QUANTUM = 4  # DFT + dispersion -- final energetics
 
 
 @dataclass(frozen=True)
 class TierSpec:
     """What one tier costs, what it is for, and how it was validated."""
+
     tier: Tier
     method: str
     seconds_per_pose: float
@@ -107,6 +110,7 @@ class TierSpec:
 @dataclass
 class TierOutcome:
     """What a tier did to a candidate population, for an auditable funnel."""
+
     tier: Tier
     n_in: int
     n_out: int
@@ -149,8 +153,10 @@ def unvalidated_tiers(hierarchy: "tuple[TierSpec, ...]") -> list[TierSpec]:
 
 
 def describe(hierarchy: "tuple[TierSpec, ...]") -> str:
-    lines = [f"{'tier':>4s}  {'method':26s} {'s/pose':>9s} {'poses':>10s}  validated",
-             "-" * 78]
+    lines = [
+        f"{'tier':>4s}  {'method':26s} {'s/pose':>9s} {'poses':>10s}  validated",
+        "-" * 78,
+    ]
     for t in hierarchy:
         lines.append(
             f"{int(t.tier):>4d}  {t.method:26s} {t.seconds_per_pose:9.0e} "

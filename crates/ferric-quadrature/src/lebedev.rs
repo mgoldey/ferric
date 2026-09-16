@@ -30,9 +30,12 @@ type Triplet = (f64, f64, f64);
 
 fn class_a1(w: f64) -> Vec<(Triplet, f64)> {
     vec![
-        ((1.0, 0.0, 0.0), w), ((-1.0, 0.0, 0.0), w),
-        ((0.0, 1.0, 0.0), w), ((0.0, -1.0, 0.0), w),
-        ((0.0, 0.0, 1.0), w), ((0.0, 0.0, -1.0), w),
+        ((1.0, 0.0, 0.0), w),
+        ((-1.0, 0.0, 0.0), w),
+        ((0.0, 1.0, 0.0), w),
+        ((0.0, -1.0, 0.0), w),
+        ((0.0, 0.0, 1.0), w),
+        ((0.0, 0.0, -1.0), w),
     ]
 }
 
@@ -185,8 +188,16 @@ pub fn lebedev(order: usize) -> (Vec<[f64; 3]>, Vec<f64>) {
             v.extend(class_c(0.2982344963171804e-2_f64, 0.2644152887060663_f64));
             v.extend(class_c(0.3600820932216460e-2_f64, 0.5718955891878961_f64));
             // 2 d-orbits (case 5: 48 pts each), two-parameter (a, b)
-            v.extend(class_d(0.3571540554273387e-2_f64, 0.2510034751770465_f64, 0.8000727494073952_f64));
-            v.extend(class_d(0.3392312205006170e-2_f64, 0.1233548532583327_f64, 0.4127724083168531_f64));
+            v.extend(class_d(
+                0.3571540554273387e-2_f64,
+                0.2510034751770465_f64,
+                0.8000727494073952_f64,
+            ));
+            v.extend(class_d(
+                0.3392312205006170e-2_f64,
+                0.1233548532583327_f64,
+                0.4127724083168531_f64,
+            ));
             v
         }
         _ => panic!("lebedev: unsupported order {order} (try 6, 14, 26, 50, 110, 302)"),
@@ -207,23 +218,50 @@ mod tests {
     fn check_weight_sum(order: usize, tol: f64) {
         let (pts, wts) = lebedev(order);
         let sum: f64 = wts.iter().sum();
-        assert!((sum - 1.0).abs() < tol,
-            "order {order}: weight sum {sum} != 1 (n_pts={})", pts.len());
+        assert!(
+            (sum - 1.0).abs() < tol,
+            "order {order}: weight sum {sum} != 1 (n_pts={})",
+            pts.len()
+        );
     }
 
     fn check_unit_norm(order: usize) {
         let (pts, _) = lebedev(order);
         for p in &pts {
             let n2: f64 = p.iter().map(|x| x * x).sum();
-            assert!((n2 - 1.0).abs() < 1e-12, "non-unit point {:?}, |·|²={n2}", p);
+            assert!(
+                (n2 - 1.0).abs() < 1e-12,
+                "non-unit point {:?}, |·|²={n2}",
+                p
+            );
         }
     }
 
-    #[test] fn lebedev_6_sum_and_norm() { check_weight_sum(6, 1e-12); check_unit_norm(6); }
-    #[test] fn lebedev_14_sum_and_norm() { check_weight_sum(14, 1e-12); check_unit_norm(14); }
-    #[test] fn lebedev_26_sum_and_norm() { check_weight_sum(26, 1e-12); check_unit_norm(26); }
-    #[test] fn lebedev_50_sum_and_norm() { check_weight_sum(50, 1e-10); check_unit_norm(50); }
-    #[test] fn lebedev_110_sum_and_norm() { check_weight_sum(110, 1e-9); check_unit_norm(110); }
+    #[test]
+    fn lebedev_6_sum_and_norm() {
+        check_weight_sum(6, 1e-12);
+        check_unit_norm(6);
+    }
+    #[test]
+    fn lebedev_14_sum_and_norm() {
+        check_weight_sum(14, 1e-12);
+        check_unit_norm(14);
+    }
+    #[test]
+    fn lebedev_26_sum_and_norm() {
+        check_weight_sum(26, 1e-12);
+        check_unit_norm(26);
+    }
+    #[test]
+    fn lebedev_50_sum_and_norm() {
+        check_weight_sum(50, 1e-10);
+        check_unit_norm(50);
+    }
+    #[test]
+    fn lebedev_110_sum_and_norm() {
+        check_weight_sum(110, 1e-9);
+        check_unit_norm(110);
+    }
 
     /// Lebedev integrates spherical harmonics Y_lm exactly up to degree L.
     /// For order 110, L=15 — so r² Y_2m should integrate to 0 over the sphere.
@@ -231,10 +269,14 @@ mod tests {
     fn lebedev_110_integrates_y22_to_zero() {
         let (pts, wts) = lebedev(110);
         // Y_2,2 ∝ x² - y² (real form). ∫ Y_2,2 = 0.
-        let int_y22: f64 = pts.iter().zip(wts.iter())
-            .map(|(p, w)| w * (p[0]*p[0] - p[1]*p[1]))
+        let int_y22: f64 = pts
+            .iter()
+            .zip(wts.iter())
+            .map(|(p, w)| w * (p[0] * p[0] - p[1] * p[1]))
             .sum();
-        assert!(int_y22.abs() < 1e-10,
-            "Lebedev-110 should integrate Y_2,2 to 0, got {int_y22:.3e}");
+        assert!(
+            int_y22.abs() < 1e-10,
+            "Lebedev-110 should integrate Y_2,2 to 0, got {int_y22:.3e}"
+        );
     }
 }

@@ -33,12 +33,18 @@ fn probe_terfc_r0_scan_wide() {
         &obs,
         opc,
         &bounds,
-        &RhfConfig { energy_conv: 1e-9, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-9,
+            ..Default::default()
+        },
     )
     .unwrap();
 
     let cfg = RiMp2Config::default();
-    let cfg_cmet = RiMp2Config { metric_op: Some(opc), ..RiMp2Config::default() };
+    let cfg_cmet = RiMp2Config {
+        metric_op: Some(opc),
+        ..RiMp2Config::default()
+    };
 
     let ec = ri_mp2_spin_components(&mol, &obs, &dfbs, opc, &rhf, &cfg)
         .unwrap()
@@ -48,8 +54,8 @@ fn probe_terfc_r0_scan_wide() {
     eprintln!("   r0     ratio(terfc-metric)   ratio(coulomb-metric)");
     for &r0a in &[1.0_f64, 1.5, 2.0, 3.0, 4.0, 6.0, 10.0, 20.0, 50.0] {
         let op = Operator::terfc(r0a * A2B);
-        let rt = ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &cfg)
-            .map(|r| r.0.e_total / ec);
+        let rt =
+            ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &cfg).map(|r| r.0.e_total / ec);
         let rc = ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &cfg_cmet)
             .map(|r| r.0.e_total / ec);
         match (rt, rc) {

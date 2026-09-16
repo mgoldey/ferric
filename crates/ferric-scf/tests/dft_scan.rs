@@ -71,8 +71,15 @@ fn run_case(label: &str, xyz: &str, xc: &str, expected_file: &str) {
 
     let r: Ref =
         serde_json::from_str(&fs::read_to_string(ref_path(expected_file)).unwrap()).unwrap();
-    assert!(r.converged, "PySCF reference {} not converged", expected_file);
-    assert!(res.converged, "ferric {xc} SCF for {label} did not converge");
+    assert!(
+        r.converged,
+        "PySCF reference {} not converged",
+        expected_file
+    );
+    assert!(
+        res.converged,
+        "ferric {xc} SCF for {label} did not converge"
+    );
 
     let err = (res.energy - r.e_total).abs();
     eprintln!(
@@ -82,7 +89,8 @@ fn run_case(label: &str, xyz: &str, xc: &str, expected_file: &str) {
     assert!(
         err < TOL,
         "{xc} E_total mismatch for {label}: err = {err:.2e} (ferric={:.10}, pyscf={:.10})",
-        res.energy, r.e_total
+        res.energy,
+        r.e_total
     );
 }
 
@@ -167,7 +175,10 @@ fn run_uks_case(label: &str, xyz: &str, mult: usize, xc: &str, expected_file: &s
     let r: Ref =
         serde_json::from_str(&fs::read_to_string(ref_path(expected_file)).unwrap()).unwrap();
     assert!(r.converged, "PySCF reference {expected_file} not converged");
-    assert!(res.converged, "ferric {xc} UKS SCF for {label} did not converge");
+    assert!(
+        res.converged,
+        "ferric {xc} UKS SCF for {label} did not converge"
+    );
 
     let err = (res.energy - r.e_total).abs();
     eprintln!(
@@ -177,7 +188,8 @@ fn run_uks_case(label: &str, xyz: &str, mult: usize, xc: &str, expected_file: &s
     assert!(
         err < TOL,
         "{xc} UKS E_total mismatch for {label}: err = {err:.2e} (ferric={:.10}, pyscf={:.10})",
-        res.energy, r.e_total
+        res.energy,
+        r.e_total
     );
 }
 
@@ -267,6 +279,9 @@ fn scan_gradient_ccpvdz_d_shell_vs_pyscf() {
     );
     // Translational invariance: the two H forces must be equal and opposite.
     let ti = (grad[(0, 2)] + grad[(1, 2)]).abs();
-    assert!(ti < 1e-8, "H2 SCAN gradient violates translational invariance by {ti:.3e}");
+    assert!(
+        ti < 1e-8,
+        "H2 SCAN gradient violates translational invariance by {ti:.3e}"
+    );
     assert!(diff < 1e-4, "H2/cc-pVDZ SCAN gradient vs PySCF: {diff:.3e}");
 }

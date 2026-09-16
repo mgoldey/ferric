@@ -38,19 +38,35 @@ fn main() {
 
     println!("# OSV (DNV) compression sweep — ferric PNO prefactor win");
     println!("# cc-pVDZ/cc-pVDZ-RI; e_dense via run_pdep_rpa; e_osv via run_pdep_rpa_osv");
-    println!("{:>8} {:>6} {:>8} | {:>8} {:>12} {:>11} {:>9} {:>8}",
-        "mol", "nvir", "t_osv", "n_vir_red", "compress%", "ΔE (Ha)", "t_dense", "speedup");
+    println!(
+        "{:>8} {:>6} {:>8} | {:>8} {:>12} {:>11} {:>9} {:>8}",
+        "mol", "nvir", "t_osv", "n_vir_red", "compress%", "ΔE (Ha)", "t_dense", "speedup"
+    );
 
     for &(name, path) in SYSTEMS {
         let mol = match Molecule::load_xyz(path) {
-            Ok(m) => m, Err(e) => { eprintln!("skip {name}: {e}"); continue; }
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("skip {name}: {e}");
+                continue;
+            }
         };
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds,
-            &RhfConfig { energy_conv: 1e-9, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(
+            &ctx,
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-9,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let nocc = mol.nelec() as usize / 2;
         let nvir = obs.nbasis() - nocc;
@@ -75,7 +91,9 @@ fn main() {
         println!();
     }
     println!("# compress% = n_vir_reduced/nvir (the prefactor ratio). ΔE = OSV − dense.");
-    println!("# Read: production t_osv = smallest compress% whose |ΔE| is acceptable (e.g. <1e-4 Ha).");
+    println!(
+        "# Read: production t_osv = smallest compress% whose |ΔE| is acceptable (e.g. <1e-4 Ha)."
+    );
     println!("# NOTE these molecules are tiny — speedup understates the win (overhead-dominated);");
     println!("#      the compress% ratio is the size-independent signal for the prefactor.");
 }

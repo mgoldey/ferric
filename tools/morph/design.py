@@ -26,6 +26,7 @@ cannot-ionize control look equivalent to its parent.
 An analogue is a *hypothesis expressed as a structure*. Nothing here is a claim
 about what happens in an organism.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -41,6 +42,7 @@ class PharmacophoreSpec:
     fit is measured later, in the pocket, by the QM pipeline; conflating the two
     would let a 2D pattern match stand in for an actual pose.
     """
+
     features: tuple[tuple[str, str, int], ...]
 
     def check(self, mol) -> dict[str, bool]:
@@ -50,11 +52,11 @@ class PharmacophoreSpec:
         for name, smarts, min_count in self.features:
             patt = Chem.MolFromSmarts(smarts)
             if patt is None:
-                raise ValueError(f"pharmacophore feature {name!r} has invalid SMARTS {smarts!r}")
+                raise ValueError(
+                    f"pharmacophore feature {name!r} has invalid SMARTS {smarts!r}"
+                )
             out[name] = len(mol.GetSubstructMatches(patt)) >= min_count
         return out
-
-
 
 
 @dataclass
@@ -86,6 +88,7 @@ class Analogue:
     control look equivalent to its parent. An ionization state is not a detail;
     it is the measurement.
     """
+
     label: str
     smiles: str
     hypothesis: str
@@ -111,7 +114,9 @@ class Analogue:
 
         mol = Chem.MolFromSmiles(self.smiles)
         if mol is None:
-            raise ValueError(f"analogue {self.label!r} has unparseable SMILES: {self.smiles}")
+            raise ValueError(
+                f"analogue {self.label!r} has unparseable SMILES: {self.smiles}"
+            )
         return self.pharmacophore.check(mol)
 
     @property

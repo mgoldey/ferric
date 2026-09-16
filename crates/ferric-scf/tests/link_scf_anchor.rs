@@ -35,8 +35,8 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::fock::KBuilder;
 use ferric_scf::link_k::LinkK;
-use ferric_scf::rhf::{build_jk, solve_rhf, RhfConfig};
 use ferric_scf::result::ScfResult;
+use ferric_scf::rhf::{build_jk, solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ndarray::Array2;
 
@@ -63,7 +63,14 @@ fn run(mol: &Molecule, bs: &BasisSet, cfg: &RhfConfig) -> ScfResult {
 fn direct_and_link(mol: &Molecule, basis_name: &str) -> (ScfResult, ScfResult) {
     let bs = basis::bundled(basis_name).expect("basis");
     let direct = run(mol, &bs, &RhfConfig::default());
-    let link = run(mol, &bs, &RhfConfig { k_builder: Some("link".into()), ..Default::default() });
+    let link = run(
+        mol,
+        &bs,
+        &RhfConfig {
+            k_builder: Some("link".into()),
+            ..Default::default()
+        },
+    );
     (direct, link)
 }
 
@@ -76,7 +83,11 @@ fn check_scf_agreement(label: &str, direct: &ScfResult, link: &ScfResult, e_bar:
         direct.energy, direct.iterations, direct.converged, link.energy, link.iterations, link.converged
     );
     assert!(direct.converged, "{label}: direct SCF did not converge");
-    assert!(link.converged, "{label}: LinK SCF did not converge (E={:.10}, {} iters)", link.energy, link.iterations);
+    assert!(
+        link.converged,
+        "{label}: LinK SCF did not converge (E={:.10}, {} iters)",
+        link.energy, link.iterations
+    );
     assert!(
         de.abs() <= e_bar,
         "{label}: LinK SCF energy differs from direct by {de:+.3e} Ha (bar {e_bar:.0e})"
@@ -84,7 +95,8 @@ fn check_scf_agreement(label: &str, direct: &ScfResult, link: &ScfResult, e_bar:
     assert!(
         di.abs() <= 3,
         "{label}: LinK took {} iterations vs direct {} (more than 3 apart)",
-        link.iterations, direct.iterations
+        link.iterations,
+        direct.iterations
     );
 }
 
@@ -158,7 +170,9 @@ fn link_k_matches_direct_k_butane_at_production_thresh() {
     let mut k_link = Array2::zeros((n, n));
     link.build(&d, &mut k_link).expect("link");
 
-    let max_dk = (&k_link - &k_direct).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    let max_dk = (&k_link - &k_direct)
+        .iter()
+        .fold(0.0f64, |m, v| m.max(v.abs()));
     println!("butane/def2-SVP converged D, thresh=1e-12: max|K_link - K_direct| = {max_dk:.3e}");
     assert!(
         max_dk < LINK_VS_DIRECT_K_BAR,
@@ -210,7 +224,9 @@ fn link_k_matches_direct_k_alkane_16_at_production_thresh() {
     let mut k_link = Array2::zeros((n, n));
     link.build(&d, &mut k_link).expect("link");
 
-    let max_dk = (&k_link - &k_direct).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+    let max_dk = (&k_link - &k_direct)
+        .iter()
+        .fold(0.0f64, |m, v| m.max(v.abs()));
     println!("alkane_16/def2-SVP converged D, thresh=1e-12: max|K_link - K_direct| = {max_dk:.3e}");
     assert!(
         max_dk < LINK_VS_DIRECT_K_BAR,

@@ -31,7 +31,9 @@ fn sym(n: usize) -> Array2<f64> {
     let mut a = Array2::<f64>::zeros((n, n));
     for i in 0..n {
         for j in i..n {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let v = (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5;
             a[[i, j]] = v;
             a[[j, i]] = v;
@@ -46,12 +48,17 @@ fn run_eigh(n: usize, threads: i32, label: &str) {
     let a = sym(n);
     let (w, _v) = a.eigh(ndarray_linalg::UPLO::Lower).expect("eigh failed");
     unsafe { openblas_set_num_threads(1) };
-    println!("  [{label}] n={n} threads={threads} OK (lambda_0={:.6})", w[0]);
+    println!(
+        "  [{label}] n={n} threads={threads} OK (lambda_0={:.6})",
+        w[0]
+    );
 }
 
 fn main() {
-    let threads: i32 =
-        std::env::var("PROBE_THREADS").ok().and_then(|s| s.parse().ok()).unwrap_or(12);
+    let threads: i32 = std::env::var("PROBE_THREADS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(12);
     // benzene/aug-cc-pVTZ has naux=763; go past it.
     let sizes: Vec<usize> = std::env::var("PROBE_SIZES")
         .ok()
@@ -70,17 +77,23 @@ fn main() {
             .stack_size(2 * 1024 * 1024)
             .spawn(move || run_eigh(n, threads, "2MB-stack"))
             .expect("spawn");
-        h.join().expect("2 MB stack thread aborted — THIS is the documented hazard");
+        h.join()
+            .expect("2 MB stack thread aborted — THIS is the documented hazard");
     }
 
     // And inside an actual rayon worker. NOTE: the production resolver forces
     // 1 thread here via its `rayon::current_thread_index().is_some()` guard —
     // this deliberately bypasses that to test the underlying mechanism.
     println!("\ninside a rayon worker (guard bypassed on purpose):");
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .unwrap();
     pool.install(|| {
         use rayon::prelude::*;
-        sizes.par_iter().for_each(|&n| run_eigh(n, threads, "rayon-worker"));
+        sizes
+            .par_iter()
+            .for_each(|&n| run_eigh(n, threads, "rayon-worker"));
     });
 
     println!("\nAll probes completed without aborting.");

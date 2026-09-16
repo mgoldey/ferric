@@ -21,7 +21,9 @@ fn rand_tensor(shape: &[usize], seed: u64) -> ArrayD<f64> {
     let mut s = seed;
     let v: Vec<f64> = (0..n)
         .map(|_| {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (s >> 11) as f64 / (1u64 << 53) as f64 - 0.5
         })
         .collect();
@@ -55,8 +57,14 @@ fn permute_copy_parallel(op: &ArrayD<f64>, order: Vec<usize>) -> usize {
 }
 
 fn main() {
-    let no: usize = std::env::var("NO").ok().and_then(|s| s.parse().ok()).unwrap_or(10);
-    let nv: usize = std::env::var("NV").ok().and_then(|s| s.parse().ok()).unwrap_or(40);
+    let no: usize = std::env::var("NO")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
+    let nv: usize = std::env::var("NV")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(40);
     println!("spin-orbital CCD-ish shapes: no={no} nv={nv}");
 
     // "ijcd,abcd->ijab": right operand needs a permutation copy (abcd -> cdab).
@@ -75,9 +83,16 @@ fn main() {
     for _ in 0..reps {
         let t = Instant::now();
         // ijcd,abcd->ijab : left free [0,1] contr [2,3]; right free [0,1] contr [2,3]
-        let out =
-            einsum_binary(t2.view(), &[0, 1], &[2, 3], vvvv.view(), &[0, 1], &[2, 3], &[no, no, nv, nv])
-                .unwrap();
+        let out = einsum_binary(
+            t2.view(),
+            &[0, 1],
+            &[2, 3],
+            vvvv.view(),
+            &[0, 1],
+            &[2, 3],
+            &[no, no, nv, nv],
+        )
+        .unwrap();
         t_full = t_full.min(t.elapsed().as_secs_f64());
         std::hint::black_box(out.len());
     }

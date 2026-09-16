@@ -175,7 +175,12 @@ fn lda_nh3() {
 /// Second basis (widens past cc-pVDZ-only) across all four molecules.
 #[test]
 fn lda_h2_def2svp() {
-    run_case_basis("H2", "2\nH2\nH 0 0 0\nH 0 0 0.74\n", "def2-svp", "h2_def2-svp_lda.json");
+    run_case_basis(
+        "H2",
+        "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
+        "def2-svp",
+        "h2_def2-svp_lda.json",
+    );
 }
 
 #[test]

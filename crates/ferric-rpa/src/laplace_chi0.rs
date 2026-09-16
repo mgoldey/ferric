@@ -227,8 +227,10 @@ pub fn dielectric_matrix_laplace_into(
 #[allow(clippy::too_many_arguments)]
 pub fn dielectric_matrix_laplace_unrestricted_into(
     v_mat: &Array2<f64>,
-    chan_a: &RpaChannel, laplace_a: &LaplaceQuadrature,
-    chan_b: &RpaChannel, laplace_b: &LaplaceQuadrature,
+    chan_a: &RpaChannel,
+    laplace_a: &LaplaceQuadrature,
+    chan_b: &RpaChannel,
+    laplace_b: &LaplaceQuadrature,
     omega: f64,
     rhs_scaled_a: &mut Array2<f64>,
     rhs_scaled_b: &mut Array2<f64>,
@@ -240,8 +242,12 @@ pub fn dielectric_matrix_laplace_unrestricted_into(
     // Laplace quadrature is in the bad regime, fall back to dense for both
     // (mixing Dense for one spin and Laplace for the other would still
     // poison the trace-log).
-    let t_max = laplace_a.points.iter().chain(laplace_b.points.iter())
-        .cloned().fold(0.0_f64, f64::max);
+    let t_max = laplace_a
+        .points
+        .iter()
+        .chain(laplace_b.points.iter())
+        .cloned()
+        .fold(0.0_f64, f64::max);
     if omega * t_max > std::f64::consts::FRAC_PI_2 {
         use crate::sternheimer::dielectric_matrix_unrestricted;
         let dense = dielectric_matrix_unrestricted(v_mat, chan_a, chan_b, omega);
@@ -268,7 +274,11 @@ fn accumulate_one_spin(
     rhs_scaled: &mut Array2<f64>,
     out: &mut Array2<f64>,
 ) {
-    let RpaChannel { b_ov, eps_occ, eps_vir } = *chan;
+    let RpaChannel {
+        b_ov,
+        eps_occ,
+        eps_vir,
+    } = *chan;
     let m = v_mat.ncols();
     let nov = eps_occ.len() * eps_vir.len();
     if nov == 0 {
@@ -299,8 +309,10 @@ fn accumulate_one_spin(
 /// Allocating convenience wrapper around [`dielectric_matrix_laplace_unrestricted_into`].
 pub fn dielectric_matrix_laplace_unrestricted(
     v_mat: &Array2<f64>,
-    chan_a: &RpaChannel, laplace_a: &LaplaceQuadrature,
-    chan_b: &RpaChannel, laplace_b: &LaplaceQuadrature,
+    chan_a: &RpaChannel,
+    laplace_a: &LaplaceQuadrature,
+    chan_b: &RpaChannel,
+    laplace_b: &LaplaceQuadrature,
     omega: f64,
 ) -> Array2<f64> {
     let m = v_mat.ncols();
@@ -310,10 +322,7 @@ pub fn dielectric_matrix_laplace_unrestricted(
     let mut rhs_b = Array2::<f64>::zeros((m, nov_b.max(1)));
     let mut out = Array2::<f64>::zeros((m, m));
     dielectric_matrix_laplace_unrestricted_into(
-        v_mat,
-        chan_a, laplace_a,
-        chan_b, laplace_b,
-        omega, &mut rhs_a, &mut rhs_b, &mut out,
+        v_mat, chan_a, laplace_a, chan_b, laplace_b, omega, &mut rhs_a, &mut rhs_b, &mut out,
     );
     out
 }
@@ -332,7 +341,14 @@ pub fn dielectric_matrix_laplace(
     let mut rhs_scaled = Array2::<f64>::zeros((m, nov));
     let mut out = Array2::<f64>::zeros((m, m));
     dielectric_matrix_laplace_into(
-        v_mat, b_ov, eps_occ, eps_vir, omega, laplace, &mut rhs_scaled, &mut out,
+        v_mat,
+        b_ov,
+        eps_occ,
+        eps_vir,
+        omega,
+        laplace,
+        &mut rhs_scaled,
+        &mut out,
     );
     out
 }
@@ -354,8 +370,16 @@ mod tests {
         let m = 4usize;
 
         // Deterministic B and V.
-        let b_ov = Array2::from_shape_fn((naux, nov), |(p, ia)| 0.1 + 0.03 * (p as f64) - 0.02 * (ia as f64));
-        let v_mat = Array2::from_shape_fn((naux, m), |(p, a)| if p == a { 1.0 } else { 0.05 * (p as f64 - a as f64) });
+        let b_ov = Array2::from_shape_fn((naux, nov), |(p, ia)| {
+            0.1 + 0.03 * (p as f64) - 0.02 * (ia as f64)
+        });
+        let v_mat = Array2::from_shape_fn((naux, m), |(p, a)| {
+            if p == a {
+                1.0
+            } else {
+                0.05 * (p as f64 - a as f64)
+            }
+        });
         let eps_occ = vec![-0.6_f64, -0.4];
         let eps_vir = vec![0.2_f64, 0.7, 1.5];
 
@@ -371,7 +395,10 @@ mod tests {
             .map(|(a, b)| (a - b).abs())
             .fold(0.0_f64, f64::max);
         eprintln!("laplace_chi0 synthetic max err = {max_err:.3e}");
-        assert!(max_err < 1e-3, "Laplace vs Dense agreement: max_err={max_err}");
+        assert!(
+            max_err < 1e-3,
+            "Laplace vs Dense agreement: max_err={max_err}"
+        );
     }
 
     #[test]
@@ -382,8 +409,16 @@ mod tests {
         let naux = 4usize;
         let m = 4usize;
 
-        let b_ov = Array2::from_shape_fn((naux, nov), |(p, ia)| 0.1 + 0.03 * (p as f64) - 0.02 * (ia as f64));
-        let v_mat = Array2::from_shape_fn((naux, m), |(p, a)| if p == a { 1.0 } else { 0.05 * (p as f64 - a as f64) });
+        let b_ov = Array2::from_shape_fn((naux, nov), |(p, ia)| {
+            0.1 + 0.03 * (p as f64) - 0.02 * (ia as f64)
+        });
+        let v_mat = Array2::from_shape_fn((naux, m), |(p, a)| {
+            if p == a {
+                1.0
+            } else {
+                0.05 * (p as f64 - a as f64)
+            }
+        });
         let eps_occ = vec![-0.6_f64, -0.4];
         let eps_vir = vec![0.2_f64, 0.7, 1.5];
         let omega = 0.0;
@@ -394,12 +429,22 @@ mod tests {
             .map(|&n| {
                 let lap = build_laplace_for_gaps(&eps_occ, &eps_vir, n).unwrap();
                 let mat = dielectric_matrix_laplace(&v_mat, &b_ov, &eps_occ, &eps_vir, omega, &lap);
-                dense.iter().zip(mat.iter()).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max)
+                dense
+                    .iter()
+                    .zip(mat.iter())
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0, f64::max)
             })
             .collect();
-        eprintln!("laplace convergence: 3pt={:.3e} 5pt={:.3e} 7pt={:.3e}", errs[0], errs[1], errs[2]);
+        eprintln!(
+            "laplace convergence: 3pt={:.3e} 5pt={:.3e} 7pt={:.3e}",
+            errs[0], errs[1], errs[2]
+        );
         // Looser ordering: minimax tables are coarse for small n, but should
         // be monotonically better.
-        assert!(errs[2] <= errs[0], "more quadrature points should not increase error");
+        assert!(
+            errs[2] <= errs[0],
+            "more quadrature points should not increase error"
+        );
     }
 }

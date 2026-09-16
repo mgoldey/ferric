@@ -193,7 +193,10 @@ pub const COSX_DEFAULT_EPS_D: f64 = 1e-10;
 
 impl CosxHalfTransform {
     /// The sparse path at the pre-registered default thresholds.
-    pub const SPARSE_DEFAULT: Self = Self::Sparse { eps_ao: COSX_DEFAULT_EPS_AO, eps_d: COSX_DEFAULT_EPS_D };
+    pub const SPARSE_DEFAULT: Self = Self::Sparse {
+        eps_ao: COSX_DEFAULT_EPS_AO,
+        eps_d: COSX_DEFAULT_EPS_D,
+    };
 
     /// Strict config-string parser: `"sparse"` (default thresholds) or
     /// `"dense"`; anything else is an error, never a silent default.
@@ -224,7 +227,9 @@ pub const SUPPORTED_ANGULAR_ORDERS: [usize; 6] = [6, 14, 26, 50, 110, 302];
 /// Validate a COSX grid config: positive radial count and a tabulated Lebedev order.
 pub fn validate_grid(grid: &AtomicGridConfig) -> Result<(), FerricError> {
     if grid.n_radial == 0 {
-        return Err(FerricError::General("cosx grid: radial point count must be > 0".into()));
+        return Err(FerricError::General(
+            "cosx grid: radial point count must be > 0".into(),
+        ));
     }
     if !SUPPORTED_ANGULAR_ORDERS.contains(&grid.n_angular) {
         return Err(FerricError::General(format!(
@@ -382,7 +387,11 @@ pub const COSX_DEFAULT_SCREEN_THRESH: f64 = 1e-7;
 impl Default for CosxConfig {
     fn default() -> Self {
         Self {
-            grid: AtomicGridConfig { n_radial: 50, n_angular: 110, ..Default::default() },
+            grid: AtomicGridConfig {
+                n_radial: 50,
+                n_angular: 110,
+                ..Default::default()
+            },
             overlap_fit: true,
             screen_thresh: Some(COSX_DEFAULT_SCREEN_THRESH),
             backend: CosxBackend::Md3c1e,
@@ -584,7 +593,9 @@ impl<'a> CosxK<'a> {
             Some(_) => Some(PairBounds::build(prep)?),
             None => None,
         };
-        let s_ao = cfg.overlap_fit.then(|| ferric_integrals::oneelectron::overlap(prep));
+        let s_ao = cfg
+            .overlap_fit
+            .then(|| ferric_integrals::oneelectron::overlap(prep));
 
         Ok(Self {
             ctx,
@@ -666,9 +677,14 @@ impl<'a> CosxK<'a> {
         acc: &BlockCounters,
     ) -> Result<(Array2<f64>, Option<Vec<bool>>), FerricError> {
         match workers {
-            Workers::CosxA(engines) => Ok((self.contract_block_cosx_a(engines, pts, f, acc)?, None)),
+            Workers::CosxA(engines) => {
+                Ok((self.contract_block_cosx_a(engines, pts, f, acc)?, None))
+            }
             Workers::Md3c1e(scratch) => {
-                let kern = self.kernel.as_ref().expect("md3c1e kernel built in new() for this backend");
+                let kern = self
+                    .kernel
+                    .as_ref()
+                    .expect("md3c1e kernel built in new() for this backend");
                 self.contract_block_md3c1e(kern, scratch, pts, f, acc)
             }
         }
@@ -689,21 +705,26 @@ impl<'a> CosxK<'a> {
         let (bounds, screen) = self.screen_args();
         let prep = self.prep;
         let mut gt = Array2::<f64>::zeros((pts.len(), nbf));
-        let rows = gt.as_slice_mut().expect("freshly allocated standard layout");
-        rows.par_chunks_mut(nbf)
-            .enumerate()
-            .try_for_each(|(g, row)| -> Result<(), FerricError> {
+        let rows = gt
+            .as_slice_mut()
+            .expect("freshly allocated standard layout");
+        rows.par_chunks_mut(nbf).enumerate().try_for_each(
+            |(g, row)| -> Result<(), FerricError> {
                 let t0 = Instant::now();
-                let pt = engines.with(|eng| a_matrix_at_point_with(eng, prep, &pts[g], bounds, screen))?;
+                let pt = engines
+                    .with(|eng| a_matrix_at_point_with(eng, prep, &pts[g], bounds, screen))?;
                 let t1 = Instant::now();
                 let col = pt.a.dot(&f.column(g));
                 row.copy_from_slice(col.as_slice().expect("dot result contiguous"));
-                acc.a_ns.fetch_add((t1 - t0).as_nanos() as u64, Ordering::Relaxed);
-                acc.c_ns.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                acc.a_ns
+                    .fetch_add((t1 - t0).as_nanos() as u64, Ordering::Relaxed);
+                acc.c_ns
+                    .fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 acc.kept.fetch_add(pt.pairs_kept, Ordering::Relaxed);
                 acc.total.fetch_add(pt.pairs_total, Ordering::Relaxed);
                 Ok(())
-            })?;
+            },
+        )?;
         Ok(gt.reversed_axes())
     }
 
@@ -752,9 +773,12 @@ impl<'a> CosxK<'a> {
                     )
                 })?;
                 let geom = screen.as_ref().map_or(total, |sc| sc.geom_kept);
-                let (bev, deg) = screen.as_ref().map_or((0, 0), |sc| (sc.bound_evals, sc.degenerate));
+                let (bev, deg) = screen
+                    .as_ref()
+                    .map_or((0, 0), |sc| (sc.bound_evals, sc.degenerate));
                 let all_ns = t0.elapsed().as_nanos() as u64;
-                acc.a_ns.fetch_add(all_ns.saturating_sub(c_ns), Ordering::Relaxed);
+                acc.a_ns
+                    .fetch_add(all_ns.saturating_sub(c_ns), Ordering::Relaxed);
                 acc.c_ns.fetch_add(c_ns, Ordering::Relaxed);
                 acc.kept.fetch_add(kept * n, Ordering::Relaxed);
                 acc.kept_geom.fetch_add(geom * n, Ordering::Relaxed);
@@ -787,12 +811,23 @@ impl<'a> CosxK<'a> {
     /// contiguous group of `CosxConfig::screen_group` points (`0` = one group
     /// covering the whole sub-batch). See `CosxConfig::screen_thresh` and
     /// `CosxConfig::screen_group`.
-    fn batch_screen<'b>(&'b self, kern: &Md3c1e, pts: &[[f64; 3]], f: &[f64], n: usize) -> Option<BatchScreen<'b>> {
+    fn batch_screen<'b>(
+        &'b self,
+        kern: &Md3c1e,
+        pts: &[[f64; 3]],
+        f: &[f64],
+        n: usize,
+    ) -> Option<BatchScreen<'b>> {
         let thresh = self.cfg.screen_thresh?;
         let bounds = self.bounds.as_ref()?;
         let nsh = kern.nshells();
         // `0` and anything >= the sub-batch size are the same single group.
-        let g = if self.cfg.screen_group == 0 { n } else { self.cfg.screen_group.min(n) }.max(1);
+        let g = if self.cfg.screen_group == 0 {
+            n
+        } else {
+            self.cfg.screen_group.min(n)
+        }
+        .max(1);
         let mut regions = Vec::with_capacity(n.div_ceil(g));
         let mut fmax = Vec::with_capacity(n.div_ceil(g) * nsh);
         for (q, grp) in pts.chunks(g).enumerate() {
@@ -816,7 +851,11 @@ impl<'a> CosxK<'a> {
     /// `X_blk` to `F_blk` as `D X` or `C (C^T X)`; the sparse path always
     /// works from `D` (forming `C C^T` once for `Occ` — canonical MOs are
     /// delocalized, so only `D` carries the row sparsity `Λ` needs).
-    fn build_with(&mut self, src: HalfSource<'_>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
+    fn build_with(
+        &mut self,
+        src: HalfSource<'_>,
+        k: &mut Array2<f64>,
+    ) -> Result<usize, FerricError> {
         let t_start = Instant::now();
         self.ctx.check_interrupted()?;
         if self.workers.is_none() {
@@ -851,7 +890,16 @@ impl<'a> CosxK<'a> {
                         &d_occ
                     }
                 };
-                self.blocks_sparse(d, eps_ao, eps_d, workers, &acc, &mut t, &mut ktilde, snum.as_mut())?;
+                self.blocks_sparse(
+                    d,
+                    eps_ao,
+                    eps_d,
+                    workers,
+                    &acc,
+                    &mut t,
+                    &mut ktilde,
+                    snum.as_mut(),
+                )?;
             }
         }
         t.blas_s = t.half_s + t.ktilde_s + t.snum_s;
@@ -861,7 +909,10 @@ impl<'a> CosxK<'a> {
             if let Some(s) = snum {
                 self.snum = Some(factorize_snum(&s)?);
             }
-            let fac = self.snum.as_ref().expect("S_num factor present when fitting");
+            let fac = self
+                .snum
+                .as_ref()
+                .expect("S_num factor present when fitting");
             let s_ao = self.s_ao.as_ref().expect("overlap present when fitting");
             finalize_fitted(fac, s_ao, &ktilde, k)?;
         } else {
@@ -895,7 +946,11 @@ impl<'a> CosxK<'a> {
         ktilde: &mut Array2<f64>,
         mut snum: Option<&mut Array2<f64>>,
     ) -> Result<(), FerricError> {
-        for (pts, sw) in self.points.chunks(COSX_BLOCK_POINTS).zip(self.sqrt_w.chunks(COSX_BLOCK_POINTS)) {
+        for (pts, sw) in self
+            .points
+            .chunks(COSX_BLOCK_POINTS)
+            .zip(self.sqrt_w.chunks(COSX_BLOCK_POINTS))
+        {
             self.ctx.check_interrupted()?;
             let t0 = Instant::now();
             let x = self.eval_x_block(pts, sw)?;
@@ -952,7 +1007,11 @@ impl<'a> CosxK<'a> {
         t.gather_s += t0.elapsed().as_secs_f64();
         t.active_ao_frac_min = f64::INFINITY;
         t.active_ao_frac_max = 0.0;
-        for (pts, sw) in self.points.chunks(COSX_BLOCK_POINTS).zip(self.sqrt_w.chunks(COSX_BLOCK_POINTS)) {
+        for (pts, sw) in self
+            .points
+            .chunks(COSX_BLOCK_POINTS)
+            .zip(self.sqrt_w.chunks(COSX_BLOCK_POINTS))
+        {
             self.ctx.check_interrupted()?;
             let t0 = Instant::now();
             let x = self.eval_x_block(pts, sw)?;
@@ -1001,7 +1060,11 @@ impl<'a> CosxK<'a> {
             let t0 = Instant::now();
             let b_aos: Vec<usize> = match touched {
                 None => (0..nbf).collect(),
-                Some(tch) => aos_of_shells(tch.iter().enumerate().filter(|(_, &v)| v).map(|(s, _)| s), &self.shell_off, &self.shell_dim),
+                Some(tch) => aos_of_shells(
+                    tch.iter().enumerate().filter(|(_, &v)| v).map(|(s, _)| s),
+                    &self.shell_off,
+                    &self.shell_dim,
+                ),
             };
             t.out_ao_frac += b_aos.len() as f64 / nbf as f64;
             if !b_aos.is_empty() {
@@ -1024,11 +1087,14 @@ impl<'a> CosxK<'a> {
     /// Per-worker state for the configured backend.
     fn make_workers(&self) -> Result<Workers, FerricError> {
         Ok(match self.cfg.backend {
-            CosxBackend::CosxA => {
-                Workers::CosxA(ThreadSlots::new(|| Engine::new_1e(ffi::OP_NUCLEAR, self.prep, 1e-14))?)
-            }
+            CosxBackend::CosxA => Workers::CosxA(ThreadSlots::new(|| {
+                Engine::new_1e(ffi::OP_NUCLEAR, self.prep, 1e-14)
+            })?),
             CosxBackend::Md3c1e => {
-                let kern = self.kernel.as_ref().expect("md3c1e kernel built in new() for this backend");
+                let kern = self
+                    .kernel
+                    .as_ref()
+                    .expect("md3c1e kernel built in new() for this backend");
                 Workers::Md3c1e(ThreadSlots::new(|| Ok(kern.scratch()))?)
             }
         })
@@ -1060,7 +1126,10 @@ fn aos_of_shells(shells: impl Iterator<Item = usize>, off: &[usize], dim: &[usiz
 fn active_shells(x: &Array2<f64>, eps: f64, off: &[usize], dim: &[usize]) -> ShellMask {
     let shells: Vec<usize> = (0..off.len())
         .filter(|&s| {
-            let m = x.slice(ndarray::s![off[s]..off[s] + dim[s], ..]).iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+            let m = x
+                .slice(ndarray::s![off[s]..off[s] + dim[s], ..])
+                .iter()
+                .fold(0.0_f64, |m, &v| m.max(v.abs()));
             m >= eps
         })
         .collect();
@@ -1075,7 +1144,10 @@ fn shell_block_max(d: &Array2<f64>, off: &[usize], dim: &[usize]) -> Vec<f64> {
     for l in 0..nsh {
         for s in 0..nsh {
             out[l * nsh + s] = d
-                .slice(ndarray::s![off[l]..off[l] + dim[l], off[s]..off[s] + dim[s]])
+                .slice(ndarray::s![
+                    off[l]..off[l] + dim[l],
+                    off[s]..off[s] + dim[s]
+                ])
                 .iter()
                 .fold(0.0_f64, |m, &v| m.max(v.abs()));
         }
@@ -1085,10 +1157,17 @@ fn shell_block_max(d: &Array2<f64>, off: &[usize], dim: &[usize]) -> Vec<f64> {
 
 /// `Λ` for one block: shells `l` with `max_{s in A} dmax[l][s] >= eps`
 /// (`>=`: `eps = 0` keeps every shell whenever `A` is non-empty).
-fn lambda_shells(dmax: &[f64], a_shells: &[usize], eps: f64, off: &[usize], dim: &[usize]) -> ShellMask {
+fn lambda_shells(
+    dmax: &[f64],
+    a_shells: &[usize],
+    eps: f64,
+    off: &[usize],
+    dim: &[usize],
+) -> ShellMask {
     let nsh = off.len();
-    let shells: Vec<usize> =
-        (0..nsh).filter(|&l| a_shells.iter().any(|&s| dmax[l * nsh + s] >= eps)).collect();
+    let shells: Vec<usize> = (0..nsh)
+        .filter(|&l| a_shells.iter().any(|&s| dmax[l * nsh + s] >= eps))
+        .collect();
     let aos = aos_of_shells(shells.iter().copied(), off, dim);
     ShellMask { shells, aos }
 }
@@ -1147,7 +1226,10 @@ fn copy_columns(f: &ndarray::ArrayView2<f64>, c0: usize, n: usize) -> Vec<f64> {
     let nbf = f.nrows();
     let mut out = vec![0.0_f64; nbf * n];
     for (mu, dst) in out.chunks_exact_mut(n).enumerate() {
-        for (d, &v) in dst.iter_mut().zip(f.slice(ndarray::s![mu, c0..c0 + n]).iter()) {
+        for (d, &v) in dst
+            .iter_mut()
+            .zip(f.slice(ndarray::s![mu, c0..c0 + n]).iter())
+        {
             *d = v;
         }
     }
@@ -1168,7 +1250,15 @@ fn axpy_rows(a: &[f64], b: &[f64], y: &mut [f64]) {
 /// only `s1 >= s2`; the diagonal block is already the full `nf x nf` square).
 /// The kernel's sign is already `+1/|r-r_g|` — nothing is negated here.
 #[inline]
-fn accumulate_pair(kern: &Md3c1e, s1: usize, s2: usize, n: usize, blk: &[f64], f: &[f64], y: &mut [f64]) {
+fn accumulate_pair(
+    kern: &Md3c1e,
+    s1: usize,
+    s2: usize,
+    n: usize,
+    blk: &[f64],
+    f: &[f64],
+    y: &mut [f64],
+) {
     let (o1, o2) = (kern.shell_offset(s1), kern.shell_offset(s2));
     let (nf1, nf2) = (kern.shell_dim(s1), kern.shell_dim(s2));
     for i in 0..nf1 {
@@ -1238,7 +1328,12 @@ impl Region {
             .iter()
             .map(|p| (0..3).map(|d| (p[d] - c[d]) * (p[d] - c[d])).sum::<f64>())
             .fold(0.0_f64, f64::max);
-        Self { centre: c, radius: r2.sqrt(), lo, hi }
+        Self {
+            centre: c,
+            radius: r2.sqrt(),
+            lo,
+            hi,
+        }
     }
 
     /// The tightest valid geometric bound for this region: the smaller of the
@@ -1338,21 +1433,41 @@ fn shell_fmax_range(kern: &Md3c1e, f: &[f64], n: usize, g0: usize, g1: usize) ->
 /// transform adds, at its dense worst case, two more planes (`X[A]`, `G[B]`)
 /// and two squares (`D[Λ,A]`, `D_occ`); its gathered products are bounded by
 /// the planes already counted.
-fn check_budget(nbf: usize, backend: CosxBackend, half: CosxHalfTransform, mem_budget: usize) -> Result<(), FerricError> {
-    let budget = if mem_budget == 0 { ferric_core::memory::resolve_budget_bytes(None) } else { mem_budget };
+fn check_budget(
+    nbf: usize,
+    backend: CosxBackend,
+    half: CosxHalfTransform,
+    mem_budget: usize,
+) -> Result<(), FerricError> {
+    let budget = if mem_budget == 0 {
+        ferric_core::memory::resolve_budget_bytes(None)
+    } else {
+        mem_budget
+    };
     let threads = rayon::current_num_threads().max(1) + 1;
     let (n_planes, n_squares) = match half {
         CosxHalfTransform::Dense => (3usize, 5usize),
         CosxHalfTransform::Sparse { .. } => (5, 7),
     };
-    let planes = n_planes.saturating_mul(COSX_BLOCK_POINTS).saturating_mul(nbf).saturating_mul(8);
+    let planes = n_planes
+        .saturating_mul(COSX_BLOCK_POINTS)
+        .saturating_mul(nbf)
+        .saturating_mul(8);
     let per_thread = match backend {
         CosxBackend::CosxA => nbf.saturating_mul(nbf).saturating_mul(8),
-        CosxBackend::Md3c1e => 2usize.saturating_mul(nbf).saturating_mul(COSX_SUB_BATCH_POINTS).saturating_mul(8),
+        CosxBackend::Md3c1e => 2usize
+            .saturating_mul(nbf)
+            .saturating_mul(COSX_SUB_BATCH_POINTS)
+            .saturating_mul(8),
     };
     // Ktilde + S_num + S + L + L^T (+ D[Λ,A] + D_occ when sparse)
-    let squares = n_squares.saturating_mul(nbf).saturating_mul(nbf).saturating_mul(8);
-    let needed = planes.saturating_add(squares).saturating_add(threads.saturating_mul(per_thread));
+    let squares = n_squares
+        .saturating_mul(nbf)
+        .saturating_mul(nbf)
+        .saturating_mul(8);
+    let needed = planes
+        .saturating_add(squares)
+        .saturating_add(threads.saturating_mul(per_thread));
     if needed > budget {
         return Err(FerricError::General(format!(
             "CosxK: one grid block needs {:.2} GB (nbf={nbf}, {COSX_BLOCK_POINTS} pts x {n_planes} planes + {threads} per-thread {} buffers) \
@@ -1396,7 +1511,9 @@ fn finalize_fitted(
     let y = fac
         .l
         .solve_triangular(UPLO::Lower, Diag::NonUnit, ktilde)
-        .map_err(|e| FerricError::General(format!("CosxK overlap fit: forward solve failed: {e}")))?;
+        .map_err(|e| {
+            FerricError::General(format!("CosxK overlap fit: forward solve failed: {e}"))
+        })?;
     let z = fac
         .lt
         .solve_triangular(UPLO::Upper, Diag::NonUnit, &y)
@@ -1420,7 +1537,11 @@ impl<'a> KBuilder for CosxK<'a> {
     /// Sparse path: forms `C C^T` once and takes the density path (bitwise
     /// `build(C C^T)`, anchored) — the row mask needs the decaying `D`, not
     /// the delocalized `C`.
-    fn build_from_occ(&mut self, c_occ: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
+    fn build_from_occ(
+        &mut self,
+        c_occ: &Array2<f64>,
+        k: &mut Array2<f64>,
+    ) -> Result<usize, FerricError> {
         self.build_with(HalfSource::Occ(c_occ), k)
     }
 
@@ -1444,17 +1565,36 @@ mod tests {
         assert_eq!(c.screen_thresh, Some(COSX_DEFAULT_SCREEN_THRESH));
         assert_eq!(COSX_DEFAULT_SCREEN_THRESH, 1e-7);
         assert_eq!(c.backend, CosxBackend::Md3c1e);
-        assert_eq!(c.half_transform, CosxHalfTransform::Sparse { eps_ao: 1e-10, eps_d: 1e-10 });
+        assert_eq!(
+            c.half_transform,
+            CosxHalfTransform::Sparse {
+                eps_ao: 1e-10,
+                eps_d: 1e-10
+            }
+        );
     }
 
     #[test]
     fn half_transform_parser_is_strict_and_round_trips() {
-        assert_eq!(CosxHalfTransform::parse_config_str("dense").unwrap(), CosxHalfTransform::Dense);
-        assert_eq!(CosxHalfTransform::parse_config_str("sparse").unwrap(), CosxHalfTransform::SPARSE_DEFAULT);
+        assert_eq!(
+            CosxHalfTransform::parse_config_str("dense").unwrap(),
+            CosxHalfTransform::Dense
+        );
+        assert_eq!(
+            CosxHalfTransform::parse_config_str("sparse").unwrap(),
+            CosxHalfTransform::SPARSE_DEFAULT
+        );
         assert!(CosxHalfTransform::parse_config_str("Sparse").is_err());
         assert!(CosxHalfTransform::parse_config_str("").is_err());
         assert_eq!(CosxHalfTransform::Dense.as_str(), "dense");
-        assert_eq!(CosxHalfTransform::Sparse { eps_ao: 1.0, eps_d: 1.0 }.as_str(), "sparse");
+        assert_eq!(
+            CosxHalfTransform::Sparse {
+                eps_ao: 1.0,
+                eps_d: 1.0
+            }
+            .as_str(),
+            "sparse"
+        );
     }
 
     /// Masks on a toy layout: three shells of dims 1, 3, 1 (AOs 0 | 1..4 | 4).
@@ -1467,11 +1607,28 @@ mod tests {
         x[(0, 1)] = 0.5;
         x[(2, 0)] = 1e-12;
         let all = active_shells(&x, 0.0, &off, &dim);
-        assert_eq!(all, ShellMask { shells: vec![0, 1, 2], aos: vec![0, 1, 2, 3, 4] }, "eps = 0 must keep exact zeros");
+        assert_eq!(
+            all,
+            ShellMask {
+                shells: vec![0, 1, 2],
+                aos: vec![0, 1, 2, 3, 4]
+            },
+            "eps = 0 must keep exact zeros"
+        );
         let a = active_shells(&x, 1e-10, &off, &dim);
-        assert_eq!(a, ShellMask { shells: vec![0], aos: vec![0] });
+        assert_eq!(
+            a,
+            ShellMask {
+                shells: vec![0],
+                aos: vec![0]
+            }
+        );
         let a = active_shells(&x, 1e-12, &off, &dim);
-        assert_eq!(a.shells, vec![0, 1], ">= at the threshold keeps the shell (whole shell, not one AO)");
+        assert_eq!(
+            a.shells,
+            vec![0, 1],
+            ">= at the threshold keeps the shell (whole shell, not one AO)"
+        );
         assert_eq!(a.aos, vec![0, 1, 2, 3]);
 
         // D: shell block (2,0) large, (1,0) tiny, everything else 0.
@@ -1504,16 +1661,23 @@ mod tests {
         let gt = gather_rows_same_layout(&mt, &[1, 2]);
         assert_eq!(gt, ndarray::arr2(&[[2.0, 5.0, 8.0], [3.0, 6.0, 9.0]]));
         assert!(!gt.is_standard_layout() && gt.t().is_standard_layout());
-        assert_eq!(gather_block(&m, &[0, 2], &[1]), ndarray::arr2(&[[2.0], [8.0]]));
+        assert_eq!(
+            gather_block(&m, &[0, 2], &[1]),
+            ndarray::arr2(&[[2.0], [8.0]])
+        );
         let mut k = Array2::<f64>::ones((3, 3));
         scatter_add(&mut k, &[2, 0], &[1], &ndarray::arr2(&[[10.0], [20.0]]));
-        assert_eq!(k, ndarray::arr2(&[[1.0, 21.0, 1.0], [1.0, 1.0, 1.0], [1.0, 11.0, 1.0]]));
+        assert_eq!(
+            k,
+            ndarray::arr2(&[[1.0, 21.0, 1.0], [1.0, 1.0, 1.0], [1.0, 11.0, 1.0]])
+        );
     }
 
     #[test]
     fn batch_screen_keep_covers_both_orderings_and_is_vacuous_at_zero() {
         // Two-shell toy: bounds from a real (tiny) basis; fmax asymmetric.
-        let mol = ferric_core::mol::Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let mol =
+            ferric_core::mol::Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = ferric_core::basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let bounds = PairBounds::build(&prep).unwrap();
@@ -1540,8 +1704,14 @@ mod tests {
         let t = 0.5 * est;
         assert!(mk(vec![0.0, 1.0], t).keep(1, 0));
         assert!(mk(vec![1.0, 0.0], t).keep(1, 0));
-        assert!(!mk(vec![0.0, 0.0], t).keep(1, 0), "zero F on both shells must drop the pair");
-        assert!(!mk(vec![1e-3, 1e-3], est).keep(1, 0), "est * 1e-3 < est must drop");
+        assert!(
+            !mk(vec![0.0, 0.0], t).keep(1, 0),
+            "zero F on both shells must drop the pair"
+        );
+        assert!(
+            !mk(vec![1e-3, 1e-3], est).keep(1, 0),
+            "est * 1e-3 < est must drop"
+        );
         // Trivial limit: threshold 0 keeps everything, even with F == 0.
         assert!(mk(vec![0.0, 0.0], 0.0).keep(1, 0));
         // The geometry-only counter ignores F.
@@ -1552,7 +1722,8 @@ mod tests {
 
     #[test]
     fn shell_fmax_range_and_region_toy() {
-        let mol = ferric_core::mol::Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
+        let mol =
+            ferric_core::mol::Molecule::parse_xyz("2\nh2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
         let bs = ferric_core::basis::bundled("sto-3g").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let kern = Md3c1e::new(&prep).unwrap();
@@ -1564,7 +1735,12 @@ mod tests {
         assert_eq!(shell_fmax_range(&kern, &f, 3, 0, 2), vec![4.0, 0.5]);
         assert_eq!(shell_fmax_range(&kern, &f, 3, 2, 3), vec![2.0, 0.25]);
         // Region: centroid ball as before, plus the AABB of the same points.
-        let r = Region::of(&[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [1.0, 1.0, 0.0], [1.0, -1.0, 0.0]]);
+        let r = Region::of(&[
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.0, -1.0, 0.0],
+        ]);
         assert_eq!(r.centre, [1.0, 0.0, 0.0]);
         assert!((r.radius - 1.0).abs() < 1e-15);
         assert_eq!(r.lo, [0.0, -1.0, 0.0]);
@@ -1577,7 +1753,10 @@ mod tests {
             assert_eq!(CosxBackend::parse_config_str(b.as_str()).unwrap(), b);
         }
         assert!(CosxBackend::parse_config_str("libint").is_err());
-        assert!(CosxBackend::parse_config_str("MD3C1E").is_err(), "case-sensitive: no silent coercion");
+        assert!(
+            CosxBackend::parse_config_str("MD3C1E").is_err(),
+            "case-sensitive: no silent coercion"
+        );
         assert!(CosxBackend::parse_config_str("").is_err());
     }
 
@@ -1588,7 +1767,9 @@ mod tests {
         // Use a real kernel only for offsets/dims: water/STO-3G has 5 shells;
         // exercise shells 0 (s, dim 1) and 2 (p, dim 3).
         let mol = ferric_core::mol::Molecule::parse_xyz(
-            "3\nw\nO 0 0 0.1173\nH 0 0.7572 -0.4692\nH 0 -0.7572 -0.4692\n", 0, 1,
+            "3\nw\nO 0 0 0.1173\nH 0 0.7572 -0.4692\nH 0 -0.7572 -0.4692\n",
+            0,
+            1,
         )
         .unwrap();
         let bs = ferric_core::basis::bundled("sto-3g").unwrap();
@@ -1606,7 +1787,9 @@ mod tests {
                 1.0 + (ij / nf2) as f64 + 10.0 * (ij % nf2) as f64 + 100.0 * g as f64
             })
             .collect();
-        let f: Vec<f64> = (0..nbf * n).map(|k| (k / n) as f64 + 0.5 * (k % n) as f64).collect();
+        let f: Vec<f64> = (0..nbf * n)
+            .map(|k| (k / n) as f64 + 0.5 * (k % n) as f64)
+            .collect();
         let mut y = vec![0.0; nbf * n];
         accumulate_pair(&kern, s1, s2, n, &blk, &f, &mut y);
         // Dense reference: A has the block at (o1.., o2..) and its transpose.
@@ -1621,7 +1804,11 @@ mod tests {
             }
             for mu in 0..nbf {
                 let want: f64 = (0..nbf).map(|lam| a[(mu, lam)] * f[lam * n + g]).sum();
-                assert!((y[mu * n + g] - want).abs() < 1e-12, "mu={mu} g={g}: {} vs {want}", y[mu * n + g]);
+                assert!(
+                    (y[mu * n + g] - want).abs() < 1e-12,
+                    "mu={mu} g={g}: {} vs {want}",
+                    y[mu * n + g]
+                );
             }
         }
     }
@@ -1636,11 +1823,26 @@ mod tests {
 
     #[test]
     fn grid_validation_rejects_untabulated_orders_and_accepts_tabulated() {
-        let ok = AtomicGridConfig { n_radial: 50, n_angular: 110, ..Default::default() };
+        let ok = AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 110,
+            ..Default::default()
+        };
         assert!(validate_grid(&ok).is_ok());
-        let bad_ang = AtomicGridConfig { n_radial: 50, n_angular: 194, ..Default::default() };
-        assert!(validate_grid(&bad_ang).is_err(), "194 is not tabulated and must be refused, not panic");
-        let bad_rad = AtomicGridConfig { n_radial: 0, n_angular: 110, ..Default::default() };
+        let bad_ang = AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 194,
+            ..Default::default()
+        };
+        assert!(
+            validate_grid(&bad_ang).is_err(),
+            "194 is not tabulated and must be refused, not panic"
+        );
+        let bad_rad = AtomicGridConfig {
+            n_radial: 0,
+            n_angular: 110,
+            ..Default::default()
+        };
         assert!(validate_grid(&bad_rad).is_err());
     }
 

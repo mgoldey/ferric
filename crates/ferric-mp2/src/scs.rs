@@ -15,7 +15,6 @@ use ferric_scf::ScfResult;
 /// Angstrom to Bohr conversion factor.
 const ANGSTROM_TO_BOHR: f64 = 1.8897259886;
 
-
 /// Standard SCS-MP2 configuration (Grimme, JCP 2003).
 #[derive(Debug, Clone)]
 pub struct ScsMp2Config {
@@ -33,11 +32,14 @@ pub struct ScsMp2Config {
 
 impl Default for ScsMp2Config {
     fn default() -> Self {
-        Self { c_os: 6.0 / 5.0, c_ss: 1.0 / 3.0, frozen_core: 0, memory_budget_bytes: None }
+        Self {
+            c_os: 6.0 / 5.0,
+            c_ss: 1.0 / 3.0,
+            frozen_core: 0,
+            memory_budget_bytes: None,
+        }
     }
 }
-
-
 
 /// Result from SCS-MP2 or SCS-MP2(2terfc).
 #[derive(Debug, Clone)]
@@ -55,8 +57,11 @@ pub struct ScsMp2Result {
 
 impl std::fmt::Display for ScsMp2Result {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SCS-MP2 total: {:.10} Ha (OS: {:.10}, SS: {:.10})",
-            self.total_energy, self.e_os, self.e_ss)
+        write!(
+            f,
+            "SCS-MP2 total: {:.10} Ha (OS: {:.10}, SS: {:.10})",
+            self.total_energy, self.e_os, self.e_ss
+        )
     }
 }
 
@@ -71,7 +76,11 @@ pub fn scs_mp2(
     rhf: &ScfResult,
     config: &ScsMp2Config,
 ) -> Result<ScsMp2Result, FerricError> {
-    let ri_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes, ..Default::default() };
+    let ri_config = RiMp2Config {
+        frozen_core: config.frozen_core,
+        memory_budget_bytes: config.memory_budget_bytes,
+        ..Default::default()
+    };
     let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, Operator::coulomb(), rhf, &ri_config)?;
     let scs_corr = config.c_os * sc.e_os + config.c_ss * sc.e_ss;
     Ok(ScsMp2Result {
@@ -171,14 +180,29 @@ pub fn scs_mp2_2terfc(
             config.r0_nonbonded, config.r0_bonded
         )));
     }
-    let ri_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes, ..Default::default() };
+    let ri_config = RiMp2Config {
+        frozen_core: config.frozen_core,
+        memory_budget_bytes: config.memory_budget_bytes,
+        ..Default::default()
+    };
 
     // Spin components at r0(1) (bonded, shorter range) via exact terfc.
-    let (sc1, _) =
-        ri_mp2_spin_components(mol, obs, dfbs, Operator::terfc(config.r0_bonded), rhf, &ri_config)?;
+    let (sc1, _) = ri_mp2_spin_components(
+        mol,
+        obs,
+        dfbs,
+        Operator::terfc(config.r0_bonded),
+        rhf,
+        &ri_config,
+    )?;
     // Spin components at r0(2) (non-bonded, longer range).
     let (sc2, _) = ri_mp2_spin_components(
-        mol, obs, dfbs, Operator::terfc(config.r0_nonbonded), rhf, &ri_config,
+        mol,
+        obs,
+        dfbs,
+        Operator::terfc(config.r0_nonbonded),
+        rhf,
+        &ri_config,
     )?;
 
     // Thesis Eq 5.6: E = c_OS * E_OS(r0_1) + c_SS * [E_SS(r0_2) - E_SS(r0_1)].
@@ -220,9 +244,16 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(
             &ferric_core::parallel::ParallelContext::default(),
-            &mol, &obs, op, &bounds,
-            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
-        ).unwrap();
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         (mol, obs, dfbs, rhf)
@@ -236,9 +267,16 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(
             &ferric_core::parallel::ParallelContext::default(),
-            &mol, &obs, op, &bounds,
-            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
-        ).unwrap();
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         (mol, obs, dfbs, rhf)
@@ -248,13 +286,27 @@ mod tests {
     fn test_scs_mp2_unit_scaling_equals_standard() {
         let (mol, obs, dfbs, rhf) = setup_h2();
         let full = crate::rimp2::ri_mp2(
-            &mol, &obs, &dfbs, Operator::coulomb(), &rhf,
+            &mol,
+            &obs,
+            &dfbs,
+            Operator::coulomb(),
+            &rhf,
             &RiMp2Config::default(),
-        ).unwrap();
+        )
+        .unwrap();
         let scs = scs_mp2(
-            &mol, &obs, &dfbs, &rhf,
-            &ScsMp2Config { c_os: 1.0, c_ss: 1.0, frozen_core: 0, memory_budget_bytes: None },
-        ).unwrap();
+            &mol,
+            &obs,
+            &dfbs,
+            &rhf,
+            &ScsMp2Config {
+                c_os: 1.0,
+                c_ss: 1.0,
+                frozen_core: 0,
+                memory_budget_bytes: None,
+            },
+        )
+        .unwrap();
         eprintln!(
             "SCS (c_OS=1, c_SS=1) corr: {:.10}, standard RI-MP2 corr: {:.10}",
             scs.scs_corr, full.mp2_corr
@@ -262,7 +314,8 @@ mod tests {
         assert!(
             (scs.scs_corr - full.mp2_corr).abs() < 1e-10,
             "SCS with c_OS=c_SS=1 ({}) should equal standard ({})",
-            scs.scs_corr, full.mp2_corr
+            scs.scs_corr,
+            full.mp2_corr
         );
     }
 
@@ -340,13 +393,22 @@ mod tests {
         };
 
         // Independent reassembly.
-        let ri = RiMp2Config { frozen_core: cfg.frozen_core, ..Default::default() };
+        let ri = RiMp2Config {
+            frozen_core: cfg.frozen_core,
+            ..Default::default()
+        };
         let (sc_sr, _) =
             ri_mp2_spin_components(&mol, &obs, &dfbs, Operator::terfc(cfg.r0_bonded), &rhf, &ri)
                 .unwrap();
-        let (sc_mr, _) =
-            ri_mp2_spin_components(&mol, &obs, &dfbs, Operator::terfc(cfg.r0_nonbonded), &rhf, &ri)
-                .unwrap();
+        let (sc_mr, _) = ri_mp2_spin_components(
+            &mol,
+            &obs,
+            &dfbs,
+            Operator::terfc(cfg.r0_nonbonded),
+            &rhf,
+            &ri,
+        )
+        .unwrap();
         let expect = cfg.c_os * sc_sr.e_os + cfg.c_ss * (sc_mr.e_ss - sc_sr.e_ss);
 
         eprintln!(
@@ -360,7 +422,8 @@ mod tests {
             sc_sr.e_ss.abs() > 1e-4 && sc_mr.e_ss.abs() > 1e-4,
             "this test is meaningless unless same-spin correlation is real: \
              E_SS(SR)={}, E_SS(MR)={}",
-            sc_sr.e_ss, sc_mr.e_ss
+            sc_sr.e_ss,
+            sc_mr.e_ss
         );
         assert!(
             (got.scs_corr - expect).abs() < 1e-12,
@@ -369,7 +432,10 @@ mod tests {
         );
         // The reported components must be the pieces Eq. 12 actually used: e_os
         // at the SHORT range, e_ss as the midrange-minus-short DIFFERENCE.
-        assert!((got.e_os - sc_sr.e_os).abs() < 1e-12, "e_os must be E_OS(r0_SR)");
+        assert!(
+            (got.e_os - sc_sr.e_os).abs() < 1e-12,
+            "e_os must be E_OS(r0_SR)"
+        );
         assert!(
             (got.e_ss - (sc_mr.e_ss - sc_sr.e_ss)).abs() < 1e-12,
             "e_ss must be the difference E_SS(r0_MR) - E_SS(r0_SR), not a raw E_SS"
@@ -438,7 +504,10 @@ mod tests {
         eprintln!("swapped-r0 rejection: {err}");
 
         for bad in [0.0_f64, -1.0, f64::NAN] {
-            let cfg = ScsMp2TerfcConfig { r0_bonded: bad, ..base.clone() };
+            let cfg = ScsMp2TerfcConfig {
+                r0_bonded: bad,
+                ..base.clone()
+            };
             assert!(
                 scs_mp2_2terfc(&mol, &obs, &dfbs, &rhf, &cfg).is_err(),
                 "r0(1)={bad} must be rejected"
