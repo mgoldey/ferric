@@ -527,7 +527,7 @@ pub fn run(args: Vec<String>) {
         // needs its own design (which rung(s) get it, whether DIIS state
         // should reset between the ladder's *own* rungs the same way). Warn
         // rather than silently ignore, per the config-honesty convention.
-        if cfg.scf.df_guess {
+        if cfg.scf.df_guess_enabled() {
             eprintln!(
                 "warning: [scf] df_guess is not yet composed with the {method} convergence ladder; ignored here (use kind = \"rimp2\" or another non-laddered method to use it)"
             );
@@ -554,7 +554,7 @@ pub fn run(args: Vec<String>) {
             eprintln!("warning: SCF did not fully converge (best rung {}, exit {:?})", lr.rung_reached, lr.rung_outcomes.last().map(|o| o.exit));
         }
         lr.result
-    } else if cfg.scf.df_guess && mol.multiplicity == 1 {
+    } else if cfg.scf.df_guess_enabled() && mol.multiplicity == 1 {
         // Opt-in DF-guess two-stage SCF (see
         // `ferric_scf::ladder::solve_rhf_with_df_guess`). Restricted to the
         // closed-shell path here: open-shell (UHF/ROHF) df_guess is not
