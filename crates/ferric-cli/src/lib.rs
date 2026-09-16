@@ -462,6 +462,7 @@ pub fn run(args: Vec<String>) {
         // (QmmmSystem(polarizabilities_angstrom3=) + run_qmmm) only.
         polarizable: None,
         verbose: cfg.scf.verbose,
+        check_stability: cfg.scf.check_stability,
     };
 
     // Resolve/validate [scf] df_guess_aux up front (config-honesty: a knob

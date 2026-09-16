@@ -154,10 +154,28 @@ pub struct StabilityResult {
     /// Lowest eigenvalue of the electronic orbital Hessian, in Hartree per
     /// (radian²) of orbital rotation. Negative ⇒ a downhill rotation exists.
     pub lowest_eigenvalue: f64,
-    /// `lowest_eigenvalue < -tol`, where `tol` is [`noise_floor`](Self::noise_floor).
+    /// **NOT-PROVEN-UNSTABLE**, i.e. `lowest_eigenvalue > -noise_floor`.
     ///
-    /// `false` does NOT imply "definitely a saddle" when
-    /// `lowest_eigenvalue.abs() <= noise_floor` — see [`is_marginal`](Self::is_marginal).
+    /// DOCSTRING CORRECTION (2026-09-16, made while wiring this into the SCF
+    /// path): this previously documented the NEGATION of the code it sits on
+    /// — `lowest_eigenvalue < -tol`, which is the UNSTABLE condition. The code
+    /// has always been `> -noise_floor` and is unchanged; only the prose was
+    /// wrong. The distinction is not cosmetic, because it makes this field a
+    /// TRAP for callers:
+    ///
+    /// * `true` does **not** mean "a minimum". It includes the whole marginal
+    ///   band `-noise_floor < λ_min <= 0`, so a NEGATIVE eigenvalue can set it
+    ///   `true`.
+    /// * `false` does not mean "definitely a saddle" either when
+    ///   `lowest_eigenvalue.abs() <= noise_floor`.
+    ///
+    /// **Do not branch on this field alone.** Use [`verdict`](Self::verdict),
+    /// which is total over the four distinguishable outcomes and cannot be
+    /// misread, or replicate [`summary`](Self::summary)'s discipline of
+    /// checking [`converged`](Self::converged) and
+    /// [`is_marginal`](Self::is_marginal) FIRST. The field is retained because
+    /// it is what the analysis primitively computes and the existing tests
+    /// pin it.
     pub is_stable: bool,
     /// The Hessian eigenvector for `lowest_eigenvalue`, as the α occ→virt
     /// rotation block `(nvirt_α, nocc_α)`. Normalized jointly with
@@ -187,6 +205,47 @@ pub struct StabilityResult {
     pub noise_floor: f64,
 }
 
+/// The four distinguishable outcomes of a stability analysis.
+///
+/// Exists because [`StabilityResult::is_stable`] is a `bool` over a THREE-valued
+/// question (plus a fourth "we do not know"), and a `bool` cannot carry that:
+/// it is really "not proven unstable", so it reads `true` for a negative
+/// `lowest_eigenvalue` anywhere in the marginal band. Any caller that branches
+/// on it directly will eventually report "stable" for a saddle that happens to
+/// be shallow. Branching on this enum instead makes that misreading
+/// unrepresentable — the match is total and each arm names what it means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StabilityVerdict {
+    /// λ_min is positive and resolvably above the noise floor: a minimum with
+    /// respect to the rotations [`StabilityResult::kind`] covers, and only
+    /// those.
+    Stable,
+    /// λ_min is negative and resolvably below the noise floor: a SADDLE POINT.
+    /// The eigenvector is a downhill direction.
+    Unstable,
+    /// `|λ_min|` is at or below the noise floor. Neither a proven minimum nor a
+    /// proven saddle — the calculation cannot tell.
+    Marginal,
+    /// The eigensolve did not converge, so nothing is proven in either
+    /// direction. (Rayleigh–Ritz is variational, so a negative
+    /// `lowest_eigenvalue` here still proves an instability; it is a POSITIVE
+    /// one that proves nothing. That asymmetry is why this is a separate arm
+    /// and not folded into `Marginal`.)
+    Indeterminate,
+}
+
+impl StabilityVerdict {
+    /// Uppercase word for logs and warnings.
+    pub fn label(self) -> &'static str {
+        match self {
+            StabilityVerdict::Stable => "STABLE",
+            StabilityVerdict::Unstable => "UNSTABLE",
+            StabilityVerdict::Marginal => "MARGINAL",
+            StabilityVerdict::Indeterminate => "INDETERMINATE (eigensolver not converged)",
+        }
+    }
+}
+
 impl StabilityResult {
     /// True when `|λ_min|` sits at or below the numerical noise floor, i.e.
     /// the calculation cannot distinguish this point from marginally stable.
@@ -195,17 +254,28 @@ impl StabilityResult {
         self.lowest_eigenvalue.abs() <= self.noise_floor
     }
 
+    /// The verdict, as the total four-way answer rather than the
+    /// easily-misread [`is_stable`](Self::is_stable) bool. **This is what
+    /// callers should branch on.**
+    ///
+    /// Deliberately derived from `converged`, `noise_floor` and the SIGN of
+    /// `lowest_eigenvalue` — NOT from `is_stable`, so that a caller reading
+    /// this can never inherit that field's marginal-band ambiguity.
+    pub fn verdict(&self) -> StabilityVerdict {
+        if !self.converged {
+            StabilityVerdict::Indeterminate
+        } else if self.is_marginal() {
+            StabilityVerdict::Marginal
+        } else if self.lowest_eigenvalue > 0.0 {
+            StabilityVerdict::Stable
+        } else {
+            StabilityVerdict::Unstable
+        }
+    }
+
     /// One-line human summary for logs.
     pub fn summary(&self) -> String {
-        let verdict = if !self.converged {
-            "INDETERMINATE (eigensolver not converged)"
-        } else if self.is_marginal() {
-            "MARGINAL"
-        } else if self.is_stable {
-            "STABLE"
-        } else {
-            "UNSTABLE"
-        };
+        let verdict = self.verdict().label();
         format!(
             "{}: {} — lambda_min = {:+.6e} Ha (noise floor {:.1e}), \
              Davidson residual {:.2e} in {} iters",
@@ -786,4 +856,165 @@ where
         iterations: iters,
         converged: resid_norm < cfg.conv_thresh,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Post-SCF wiring: the opt-in check the solvers run after convergence.
+// ---------------------------------------------------------------------------
+
+/// Why a requested stability check did not produce a verdict.
+///
+/// This exists so a skip is never silent. `RhfConfig::check_stability` is
+/// opt-in, so a user who set it and got `ScfResult::stability == None` is owed
+/// an explanation of which precondition failed — the alternative (analysing
+/// whatever operator happens to be available) is exactly the failure mode this
+/// module was written to prevent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StabilitySkip {
+    /// ROHF/ROKS reference. The Roothaan open-shell Hessian is a THIRD operator
+    /// (`rohf_newton::hessian_matvec`, one MO set with closed/open/virtual
+    /// blocks and Roothaan coupling), not a special case of either implemented
+    /// one. Running `uhf_internal_stability` on it would analyse a UHF Hessian
+    /// at MO coefficients that are not a UHF stationary point — a wrong-operator
+    /// verdict that would look authoritative. Skipped deliberately.
+    Rohf,
+    /// Range-separated hybrid (ω ≠ 0). The Hessian matvec builds its exchange
+    /// response from the plain Coulomb `build_jk`, so the LR/SR split of the
+    /// converged Fock is not reproduced in the response. The Newton path gates
+    /// on `k_mix.omega == 0.0` for the same reason.
+    RangeSeparated,
+    /// Meta-GGA functional. There is no τ-dependent f_xc kernel in this
+    /// workspace (`xc_is_metagga` gates the Newton f_xc path for the same
+    /// reason), so the XC response term of the Hessian cannot be formed.
+    MetaGga,
+    /// A per-iteration Fock modifier was active (the cDFT path,
+    /// `solve_uhf_fockmod` with `fock_mod = Some(..)`). Such a run converges
+    /// the CONSTRAINED Fock, so the Brillouin condition that holds at its exit
+    /// is `F^constrained_{ai} = 0`; the bare UHF gradient is NOT zero there.
+    /// The implemented Hessian is the bare UHF one, and its lowest eigenvalue
+    /// at a non-stationary point of that same energy is not a stability
+    /// verdict — a constrained diabat is *meant* not to be an unconstrained
+    /// minimum. Skipped rather than answering a question nobody asked.
+    FockModified,
+    /// The eigensolve itself returned an error (empty rotation space, or a
+    /// failed J/K build inside the matvec). The message is printed at the call
+    /// site; SCF is not failed.
+    AnalysisFailed,
+}
+
+impl StabilitySkip {
+    /// The reason text printed to stderr when a requested check is skipped.
+    pub fn reason(self) -> &'static str {
+        match self {
+            StabilitySkip::Rohf => {
+                "the reference is ROHF/ROKS, whose Roothaan orbital Hessian is a \
+                 different operator from both implemented ones (UHF-internal and \
+                 RHF-internal); analysing either of those here would give a \
+                 wrong-operator verdict"
+            }
+            StabilitySkip::RangeSeparated => {
+                "the functional is range-separated (omega != 0) and the orbital-Hessian \
+                 matvec builds its exchange response from the plain Coulomb kernel, so \
+                 it does not reproduce the converged Fock's SR/LR split"
+            }
+            StabilitySkip::MetaGga => {
+                "the functional is a meta-GGA and no tau-dependent f_xc kernel exists in \
+                 this workspace, so the XC response term of the orbital Hessian cannot \
+                 be formed"
+            }
+            StabilitySkip::FockModified => {
+                "a per-iteration Fock modifier (cDFT constraint) was active, so the converged \
+                 state is stationary for the CONSTRAINED Fock and not for the bare UHF one that \
+                 the implemented Hessian belongs to"
+            }
+            StabilitySkip::AnalysisFailed => "the stability eigensolve returned an error",
+        }
+    }
+}
+
+/// Decide whether a KS/HF reference can be analysed at all, given the
+/// functional's range-separation and meta-GGA status.
+///
+/// Returns `Ok(())` when the reference is analysable with the operators that
+/// exist, or `Err(skip)` naming the precondition that failed. Mirrors EXACTLY
+/// the gates the Newton paths use (`k_mix.omega == 0.0` and
+/// `!rohf::xc_is_metagga(xc)`), because the stability analysis drives the same
+/// `hessian_matvec` those gates protect.
+///
+/// It deliberately does NOT gate on `xc.is_some()`: an LDA/GGA/hybrid KS
+/// reference IS analysable, provided the caller threads the same `fxc`
+/// response closure the Newton path builds. Passing `fxc: None` there would
+/// silently analyse the HF Hessian at the KS density — the trap this whole
+/// function exists to make impossible to fall into by accident, since a caller
+/// that gets `Ok(())` for a KS reference is thereby committed to supplying the
+/// kernel.
+pub fn ks_reference_is_analysable(xc: Option<&str>, omega: f64) -> Result<(), StabilitySkip> {
+    if omega != 0.0 {
+        return Err(StabilitySkip::RangeSeparated);
+    }
+    if crate::rohf::xc_is_metagga(xc) {
+        return Err(StabilitySkip::MetaGga);
+    }
+    Ok(())
+}
+
+/// Print the post-SCF stability verdict.
+///
+/// DIAGNOSTIC ONLY, by design: an instability is information, never an error.
+/// A deliberately-unstable state (a cDFT diabat, a MOM excited state) is a
+/// legitimate thing to compute, so this prints and returns — it never fails
+/// the SCF. See the module docs.
+///
+/// An UNSTABLE or INDETERMINATE verdict goes to stderr as a warning naming
+/// λ_min and the remedy; a STABLE or MARGINAL one goes to stderr as a plain
+/// informational line only when `verbose`, so a quiet run stays quiet.
+/// Branches on [`StabilityResult::verdict`], NOT on
+/// [`StabilityResult::is_stable`] — that field is "not proven unstable" and
+/// reads `true` for a marginal-NEGATIVE λ_min, so branching on it here would
+/// make this function print "stable" for a shallow saddle. The `match` is
+/// exhaustive so a future fifth outcome is a compile error, not a silent
+/// fall-through into the quiet arm.
+pub fn report_stability(res: &StabilityResult, verbose: bool) {
+    match res.verdict() {
+        StabilityVerdict::Indeterminate => eprintln!(
+            "SCF stability WARNING: {}\n  The eigensolve did NOT converge, so this verdict is not \
+             evidence of stability. Because Rayleigh-Ritz is variational, lambda_min is an UPPER \
+             bound on the true value: a negative value here still proves an instability, a \
+             positive one proves nothing. Raise StabilityConfig::max_iter or max_subspace.",
+            res.summary()
+        ),
+        StabilityVerdict::Marginal => eprintln!(
+            "SCF stability WARNING: {}\n  |lambda_min| = {:.3e} is at or below the numerical noise \
+             floor {:.1e}, so this point is NOT distinguishable from marginally stable and is \
+             neither a proven minimum nor a proven saddle. Note the sign is {}: treat this as \
+             'unknown', not as 'stable'. Tighten StabilityConfig::conv_thresh / noise_floor, or \
+             the SCF's own density_conv, to resolve it.",
+            res.summary(),
+            res.lowest_eigenvalue.abs(),
+            res.noise_floor,
+            if res.lowest_eigenvalue < 0.0 {
+                "NEGATIVE"
+            } else {
+                "positive"
+            }
+        ),
+        StabilityVerdict::Stable => {
+            if verbose {
+                eprintln!("SCF stability: {}", res.summary());
+            }
+        }
+        StabilityVerdict::Unstable => eprintln!(
+            "SCF stability WARNING: {}\n  This converged solution is a SADDLE POINT, not a \
+             minimum: lambda_min = {:+.6e} Ha < 0 means an orbital rotation exists that LOWERS \
+             the energy. The SCF is stationary (the gradient vanishes at a saddle too), so \
+             nothing else could have detected this.\n  REMEDY: re-converge from a guess rotated \
+             along the returned Hessian eigenvector (ScfResult::stability -> eigenvector_alpha / \
+             eigenvector_beta). A measured caveat: small steps fall straight back into the \
+             saddle's DIIS basin, so use a rotation of order 1 radian, not 0.1.\n  SCOPE: this \
+             verdict covers {} only; it says nothing about the rotations that space excludes.",
+            res.summary(),
+            res.lowest_eigenvalue,
+            res.kind.label()
+        ),
+    }
 }

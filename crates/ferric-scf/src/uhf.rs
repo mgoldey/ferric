@@ -678,6 +678,35 @@ pub fn solve_uhf_fockmod(
                 );
             }
             let density_total = &d_a + &d_b;
+
+            // ── Opt-in internal stability analysis (UHF/UKS) ─────────────────
+            // Runs ONLY at a converged exit and ONLY when the flag is set; with
+            // `check_stability = false` (the default) nothing below is
+            // constructed, so this branch is bit-identical to a build with no
+            // stability support. Diagnostic: it warns, it never Errs.
+            let stability = if config.check_stability {
+                stability_uhf(
+                    ctx,
+                    mol,
+                    prep,
+                    bounds,
+                    config,
+                    &c_a_f,
+                    &c_b_f,
+                    &f_a,
+                    &f_b,
+                    &d_a,
+                    &d_b,
+                    nocc_a,
+                    nocc_b,
+                    xc_contrib.is_some(),
+                    k_mix,
+                    ooc_budget,
+                    fock_mod.is_some(),
+                )
+            } else {
+                None
+            };
             return Ok(ScfResult {
                 spin: Spin::Unrestricted,
                 energy,
@@ -695,6 +724,7 @@ pub fn solve_uhf_fockmod(
                 iterations: iter,
                 computed_quartets: total_quartets,
                 induced_dipoles: last_induced_dipoles,
+                stability,
             });
         }
         mon.note_energy(energy);
@@ -917,7 +947,116 @@ pub fn solve_uhf_fockmod(
         iterations: config.max_iter,
         computed_quartets: total_quartets,
         induced_dipoles: last_induced_dipoles,
+        stability: None,
     })
+}
+
+/// Post-convergence internal stability analysis for a UHF/UKS solution.
+///
+/// Called ONLY from `solve_uhf_fockmod`'s converged exit and ONLY when
+/// `config.check_stability` is set. Returns `None` — meaning "not checked", per
+/// [`crate::result::ScfResult::stability`] — whenever the reference is not
+/// analysable with the operator that exists, ALWAYS after printing why.
+///
+/// # The KS trap this function exists to avoid
+///
+/// [`crate::uhf_newton::hessian_matvec`] takes an OPTIONAL `fxc` response
+/// closure. Passing `None` on a KS reference does not fail; it silently
+/// analyses the **HF** orbital Hessian at the **KS** density, producing a
+/// λ_min for an operator nobody asked about, presented with the same
+/// confidence as a correct one. So for `xc.is_some()` this builds the SAME
+/// [`crate::rohf::FxcKernelStore`] the UKS Newton branch a few hundred lines
+/// above builds at the same (d_α, d_β) reference, and where that kernel cannot
+/// be built — range-separated or meta-GGA — it SKIPS with a printed reason.
+/// Those are exactly the gates the UKS Newton branch itself uses.
+#[allow(clippy::too_many_arguments)]
+fn stability_uhf(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &UhfConfig,
+    c_a: &Array2<f64>,
+    c_b: &Array2<f64>,
+    f_a: &Array2<f64>,
+    f_b: &Array2<f64>,
+    d_a: &Array2<f64>,
+    d_b: &Array2<f64>,
+    nocc_a: usize,
+    nocc_b: usize,
+    has_xc: bool,
+    k_mix: ferric_dft::xc_trait::KMix,
+    ooc_budget: usize,
+    fock_modified: bool,
+) -> Option<crate::stability::StabilityResult> {
+    let skip = if fock_modified {
+        Some(crate::stability::StabilitySkip::FockModified)
+    } else {
+        crate::stability::ks_reference_is_analysable(config.xc.as_deref(), k_mix.omega).err()
+    };
+    if let Some(skip) = skip {
+        eprintln!(
+            "SCF stability: check requested but SKIPPED — {}. \
+             ScfResult::stability is None (not checked), which does NOT mean stable.",
+            skip.reason()
+        );
+        return None;
+    }
+
+    let fxc_store = if has_xc {
+        let grid = config.dft_grid.clone().unwrap_or_default();
+        let name = config.xc.as_deref().expect("has_xc implies Some(xc)");
+        match crate::rohf::FxcKernelStore::build(mol, prep, &grid, name, d_a, d_b) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!(
+                    "SCF stability: check requested but SKIPPED — the f_xc response kernel could \
+                     not be built ({e}), and analysing the HF Hessian at a KS density instead \
+                     would be a wrong-operator verdict. ScfResult::stability is None."
+                );
+                return None;
+            }
+        }
+    } else {
+        None
+    };
+    let fxc_storage = fxc_store.as_ref().map(|s| s.response());
+    let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
+
+    let f_a_mo = c_a.t().dot(f_a).dot(c_a);
+    let f_b_mo = c_b.t().dot(f_b).dot(c_b);
+    let inputs = crate::uhf_newton::UhfNewtonInputs {
+        prep,
+        bounds,
+        c_a,
+        c_b,
+        f_a_mo: &f_a_mo,
+        f_b_mo: &f_b_mo,
+        nocc_a,
+        nocc_b,
+        k_mix_sr: if has_xc { k_mix.sr } else { 1.0 },
+        fxc: fxc_ref,
+        thresh: config.integral_thresh,
+        ooc_budget,
+    };
+    match crate::stability::uhf_internal_stability(
+        ctx,
+        &inputs,
+        &crate::stability::StabilityConfig::default(),
+    ) {
+        Ok(res) => {
+            crate::stability::report_stability(&res, config.verbose);
+            Some(res)
+        }
+        Err(e) => {
+            eprintln!(
+                "SCF stability: check requested but FAILED — {}: {e}. ScfResult::stability is \
+                 None (not checked). The SCF result itself is unaffected.",
+                crate::stability::StabilitySkip::AnalysisFailed.reason()
+            );
+            None
+        }
+    }
 }
 
 /// Bytes the Newton f_xc kernel's own (chi, dchi) cache costs: 4 planes

@@ -193,6 +193,29 @@ pub struct RhfConfig {
     /// field. Under MPI, only rank 0 prints (see `ctx.is_root()` at the print
     /// site) so ranks > 0 never duplicate the trace.
     pub verbose: bool,
+    /// Opt-in post-convergence **internal stability analysis**: after the SCF
+    /// converges, take the lowest eigenvalue of the electronic orbital Hessian
+    /// and report whether the solution is a minimum or a SADDLE POINT (see
+    /// [`crate::stability`]). Default `false` — it costs a Davidson eigensolve
+    /// whose every matvec is a J/K build, and with it off nothing is
+    /// constructed at all, so the SCF path is bit-identical to a build with no
+    /// stability support (regression-guarded by
+    /// `stability_off_is_bit_identical_*` in `tests/scf_stability_wiring.rs`).
+    ///
+    /// The verdict lands on [`crate::result::ScfResult::stability`] as
+    /// `Some(..)`; `None` there means "not checked", never "checked and
+    /// stable". An instability is DIAGNOSTIC: it warns on stderr and never
+    /// makes the SCF return `Err`, because a deliberately-unstable state (a
+    /// cDFT diabat, a MOM excited state) is a legitimate thing to compute.
+    ///
+    /// Honoured by `solve_rhf`/`solve_rks` (RHF-internal, singlet channel) and
+    /// `solve_uhf`/`solve_uks` (UHF-internal, independent α/β rotations).
+    /// `solve_rohf`/`solve_roks` SKIP it with a printed reason — the Roothaan
+    /// Hessian is a third operator, and analysing a UHF or RHF one there would
+    /// be a wrong-operator verdict. Range-separated and meta-GGA functionals
+    /// are likewise skipped with a reason (see
+    /// [`crate::stability::ks_reference_is_analysable`]).
+    pub check_stability: bool,
 }
 
 impl Default for RhfConfig {
@@ -244,6 +267,7 @@ impl Default for RhfConfig {
             pcm: None,
             polarizable: None,
             verbose: false,
+            check_stability: false,
         }
     }
 }
@@ -293,6 +317,113 @@ impl RhfConfig {
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
         self
+    }
+    /// Enable the opt-in post-convergence internal stability analysis.
+    pub fn with_check_stability(mut self, check: bool) -> Self {
+        self.check_stability = check;
+        self
+    }
+}
+
+/// Post-convergence internal stability analysis for an RHF/RKS solution.
+///
+/// Called ONLY from `solve_rhf`'s converged exit and ONLY when
+/// `config.check_stability` is set. Returns `None` — meaning "not checked", per
+/// [`crate::result::ScfResult::stability`] — whenever the reference is not
+/// analysable with the operator that exists, ALWAYS after printing why.
+///
+/// # The KS trap this function exists to avoid
+///
+/// [`crate::rhf_newton::hessian_matvec`] takes an OPTIONAL `fxc` response
+/// closure. Passing `None` on a KS reference does not fail; it silently
+/// analyses the **HF** orbital Hessian at the **KS** density, producing a
+/// λ_min for an operator nobody asked about, presented with the same
+/// confidence as a correct one. So for `xc.is_some()` this function builds the
+/// SAME [`crate::rohf::FxcKernelStore`] the RKS Newton path builds at the same
+/// restricted reference (`d_α = d_β = ½·D`), and where that kernel cannot be
+/// built — range-separated (the matvec's K is plain-Coulomb) or meta-GGA (no τ
+/// f_xc kernel exists in this workspace) — it SKIPS with a printed reason
+/// rather than checking the wrong operator. Those are exactly the gates
+/// `solve_rhf`'s own Newton branch uses. Proven, not asserted, by
+/// `ks_reference_is_analysed_with_the_xc_kernel_not_the_hf_hessian`.
+#[allow(clippy::too_many_arguments)]
+fn stability_rhf(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+    c: &Array2<f64>,
+    f: &Array2<f64>,
+    d: &Array2<f64>,
+    nocc: usize,
+    has_xc: bool,
+    k_mix: ferric_dft::xc_trait::KMix,
+    ooc_budget: usize,
+) -> Option<crate::stability::StabilityResult> {
+    if let Err(skip) =
+        crate::stability::ks_reference_is_analysable(config.xc.as_deref(), k_mix.omega)
+    {
+        eprintln!(
+            "SCF stability: check requested but SKIPPED — {}. \
+             ScfResult::stability is None (not checked), which does NOT mean stable.",
+            skip.reason()
+        );
+        return None;
+    }
+
+    // The f_xc response kernel, at the same restricted reference the RKS Newton
+    // path uses (d_α = d_β = ½·D). `None` only for pure HF.
+    let fxc_store = if has_xc {
+        let grid = config.dft_grid.clone().unwrap_or_default();
+        let name = config.xc.as_deref().expect("has_xc implies Some(xc)");
+        let d_half = 0.5 * d;
+        match crate::rohf::FxcKernelStore::build(mol, prep, &grid, name, &d_half, &d_half) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!(
+                    "SCF stability: check requested but SKIPPED — the f_xc response kernel could \
+                     not be built ({e}), and analysing the HF Hessian at a KS density instead \
+                     would be a wrong-operator verdict. ScfResult::stability is None."
+                );
+                return None;
+            }
+        }
+    } else {
+        None
+    };
+    let fxc_storage = fxc_store.as_ref().map(|s| s.response());
+    let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
+
+    let f_mo = c.t().dot(f).dot(c);
+    let inputs = crate::rhf_newton::RhfNewtonInputs {
+        prep,
+        bounds,
+        c,
+        f_mo: &f_mo,
+        nocc,
+        k_mix_sr: if has_xc { k_mix.sr } else { 1.0 },
+        fxc: fxc_ref,
+        thresh: config.integral_thresh,
+        ooc_budget,
+    };
+    match crate::stability::rhf_internal_stability(
+        ctx,
+        &inputs,
+        &crate::stability::StabilityConfig::default(),
+    ) {
+        Ok(res) => {
+            crate::stability::report_stability(&res, config.verbose);
+            Some(res)
+        }
+        Err(e) => {
+            eprintln!(
+                "SCF stability: check requested but FAILED — {}: {e}. ScfResult::stability is \
+                 None (not checked). The SCF result itself is unaffected.",
+                crate::stability::StabilitySkip::AnalysisFailed.reason()
+            );
+            None
+        }
     }
 }
 
@@ -737,6 +868,10 @@ pub fn solve_rhf(
             exit,
             computed_quartets: cq,
             induced_dipoles,
+            // Non-converged exits (MaxIter/Stalled/Diverged) are never checked:
+            // stability is a property of a STATIONARY point, and these are not
+            // stationary. `None` = not checked, as documented on the field.
+            stability: None,
         }
     };
 
@@ -1117,6 +1252,30 @@ pub fn solve_rhf(
                 let (orb_e, c) = diagonalize(&f, &x)?;
                 let density_alpha = 0.5 * &d;
                 crate::driver::warn_if_rss_over_at_stage("RHF", "converged", ooc_budget);
+
+                // ── Opt-in internal stability analysis (RHF/RKS singlet) ─────
+                // Runs ONLY at a converged exit and ONLY when the flag is set;
+                // with `check_stability = false` (the default) nothing below is
+                // constructed, so this branch is bit-identical to a build with
+                // no stability support. Diagnostic: it warns, it never Errs.
+                let stability = if config.check_stability {
+                    stability_rhf(
+                        ctx,
+                        mol,
+                        prep,
+                        bounds,
+                        config,
+                        &c,
+                        &f,
+                        &d,
+                        nocc,
+                        xc_contrib.is_some(),
+                        k_mix,
+                        ooc_budget,
+                    )
+                } else {
+                    None
+                };
                 return Ok(ScfResult {
                     spin: Spin::Restricted,
                     energy,
@@ -1134,6 +1293,7 @@ pub fn solve_rhf(
                     iterations: iter,
                     computed_quartets: total_quartets,
                     induced_dipoles: last_induced_dipoles,
+                    stability,
                 });
             }
         }
