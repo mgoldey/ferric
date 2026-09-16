@@ -13,6 +13,9 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 
+/// One-to-one (energy, oscillator-strength) assignment of computed excited
+/// states to literature reference states.
+pub mod assign;
 /// Bethe-Salpeter equation (BSE-TDA) for optical excitations.
 pub mod bse;
 /// Closed-shell COHSEX (static screened exchange + Coulomb hole).

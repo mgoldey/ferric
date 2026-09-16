@@ -1,9 +1,22 @@
 """
 Compare ferric BSE-TDA[G0W0@HF]/aug-cc-pVDZ output against the
-testdata/reference/thiel_set_subset.json TBE reference set. See
-docs/bse-tda-phase2-results.md for the full writeup, methodology, and the
-state-matching caveat this script's naive nearest-energy heuristic carries
-(NOT a validated assignment -- see that doc before quoting these numbers).
+testdata/reference/thiel_set_subset.json TBE reference set.
+
+SUPERSEDED AS A SOURCE OF STATISTICS (2026-09-16). This script's naive
+nearest-computed-energy heuristic is non-injective and blind to oscillator
+strength; it is the defect documented in docs/bse-tda-phase2-results.md and
+fixed by crates/ferric-gw/src/assign.rs (Hungarian assignment on a joint
+energy + oscillator-strength cost). The 0.482 eV / +0.450 eV numbers this
+script prints are a LOWER BOUND, not a measurement.
+
+It is kept, unchanged, for exactly one purpose: reproducing that lower bound
+so the corrected statistic can be shown to come from the same logs and the
+same reference table. The authoritative numbers are computed and pinned by
+crates/ferric-gw/tests/bse_tda_phase2_assignment.rs -- run
+
+  OPENBLAS_NUM_THREADS=1 cargo test -p ferric-gw --test bse_tda_phase2_assignment
+
+and see docs/bse-tda-phase2-results.md's 2026-09-16 section for the writeup.
 
 Regenerate the logs this reads via:
   OPENBLAS_NUM_THREADS=1 cargo build --release -p ferric-cli --bin ferric
@@ -66,6 +79,7 @@ for m in ref["molecules"]:
 
 print()
 print("=== Aggregate (naive nearest-energy match, N=17 states) ===")
+print("=== SUPERSEDED: lower bound only, see the module docstring ===")
 diffs = []
 for m in ref["molecules"]:
     name = m["name"]
