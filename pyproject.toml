@@ -111,6 +111,26 @@ build = [
     "maturin[patchelf]>=1.13.3",
 ]
 
+[tool.ruff]
+# Matches the floor established in `requires-python` above (see that
+# comment): the wheel matrix -- and therefore everything this repo actually
+# promises to run on -- starts at cp310.
+target-version = "py310"
+# NOT `exclude` -- that replaces ruff's own sensible default exclude list
+# (`.git`, `.venv`, `__pycache__`, etc.) instead of adding to it.
+#
+# terf-tables/generate_interpolation_tables.py is a frozen Python-2
+# dissertation artifact kept as history (see its `.pre-commit-config.yaml`
+# exclusions, which carry the same justification). It does not parse as
+# Python 3 at all: pointed at the repo root, ruff does not stop at style
+# findings on this file -- it cascades into 45,000+ `invalid-syntax`
+# diagnostics from the first Python-2-only construct onward, which drowns
+# out every real finding elsewhere in the tree and makes a repo-wide `ruff
+# check .`/`ruff format --check .` meaningless. It is deliberately never
+# going to be ported; excluding it is the only way a tree-wide ruff run
+# reports anything useful.
+extend-exclude = ["terf-tables/generate_interpolation_tables.py"]
+
 [tool.maturin]
 manifest-path = "crates/ferric-python/Cargo.toml"
 features = ["pyo3/extension-module"]
