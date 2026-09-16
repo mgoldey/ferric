@@ -639,3 +639,68 @@ fn a_marginal_negative_eigenvalue_is_not_reported_as_stable() {
         );
     }
 }
+
+/// A cDFT run (`solve_uhf_fockmod` with `fock_mod = Some(..)`) converges the
+/// CONSTRAINED Fock: the Brillouin condition holding at its exit is
+/// `F^constrained_{ai} = 0`, so the BARE UHF gradient is nonzero there. The
+/// implemented Hessian is the bare UHF one, and its lowest eigenvalue at a
+/// point that is not stationary for that same energy is not a stability
+/// verdict — a constrained diabat is *meant* not to be an unconstrained
+/// minimum, so "UNSTABLE" there would be an answer to a question nobody asked.
+///
+/// Requesting a check on that path must therefore SKIP (leaving `None`, with a
+/// printed reason), the same discipline as ROHF.
+#[test]
+fn cdft_constrained_runs_skip_the_check() {
+    use ndarray::Array2;
+
+    let mol = Molecule::parse_xyz("2\nLiH\nLi 0 0 0\nH 0 0 1.6\n", 0, 1).unwrap();
+    let bs = basis::bundled("sto-3g").unwrap();
+    let prep = PreparedBasis::new(&mol, &bs).unwrap();
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
+    let ctx = ParallelContext::default();
+    let n = prep.nbasis();
+
+    // A trivially non-zero Fock modifier standing in for a cDFT constraint: the
+    // point is only that `fock_mod` is `Some`, which is what the skip keys on.
+    let shift: Array2<f64> = Array2::from_elem((n, n), 1e-3);
+    let fm = |f_a: &mut Array2<f64>, f_b: &mut Array2<f64>| {
+        *f_a += &shift;
+        *f_b += &shift;
+    };
+    let res = ferric_scf::uhf::solve_uhf_fockmod(
+        &ctx,
+        &mol,
+        &prep,
+        &bounds,
+        &tight(true),
+        None,
+        Some(&fm),
+    )
+    .unwrap();
+    assert!(res.converged, "the constrained SCF must converge");
+    eprintln!(
+        "CDFT SKIP  E = {:.10}  stability = {:?} (must be None)",
+        res.energy,
+        res.stability.as_ref().map(|s| s.lowest_eigenvalue)
+    );
+    assert!(
+        res.stability.is_none(),
+        "a Fock-modified (constrained) run must SKIP the check; the bare UHF Hessian's lowest \
+         eigenvalue at a constrained stationary point is not a stability verdict"
+    );
+
+    // Reachability check: the SAME molecule and config WITHOUT the modifier
+    // must produce a verdict, so the skip above is the modifier's doing and not
+    // an inert branch that never produces Some for this system anyway.
+    let free = solve_uhf(&ctx, &mol, &prep, &bounds, &tight(true)).unwrap();
+    assert!(
+        free.stability.is_some(),
+        "without the Fock modifier the same system MUST produce a verdict -- otherwise the skip \
+         test above proves nothing"
+    );
+    eprintln!(
+        "CDFT SKIP  unconstrained control  {}",
+        free.stability.as_ref().unwrap().summary()
+    );
+}
