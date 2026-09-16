@@ -47,7 +47,10 @@ fn free_atom_c6_matches_ts_reference() {
     // Pair-matrix symmetry.
     let c6_ho = res.c6_iso_pair[(0, 1)];
     let c6_oh = res.c6_iso_pair[(1, 0)];
-    assert!((c6_ho - c6_oh).abs() / c6_ho < 1e-12, "asymmetric C6 matrix");
+    assert!(
+        (c6_ho - c6_oh).abs() / c6_ho < 1e-12,
+        "asymmetric C6 matrix"
+    );
 
     // Heteronuclear C6(H-O) finite, positive, between the two homonuclear scales.
     assert!(c6_ho > 0.0 && c6_ho.is_finite());
@@ -81,18 +84,32 @@ fn pdep_dynamic_n2_anisotropy_correct_sign() {
     // so anisotropy is preserved. Becke atom-centred dipoles lose the charge-transfer
     // contribution along the bond axis and invert the zz/xx ordering.
     let dp = pdep_dynamic_polarizability(
-        &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Hirshfeld, None,
-    ).unwrap();
+        &mol,
+        &obs,
+        &obs_bs,
+        &dfbs,
+        &rhf,
+        op,
+        &cfg,
+        DispersionPartition::Hirshfeld,
+        None,
+    )
+    .unwrap();
 
     let res = casimir_polder_c6(&dp);
     let n = dp.per_atom.len();
 
     // Sum rule: per-atom α sum at ω=0 equals molecular sum.
-    let iso_sum: f64 = (0..n).map(|a| {
-        let t = dp.per_atom[a][0];
-        (t[0][0]+t[1][1]+t[2][2])/3.0
-    }).sum();
-    assert!(iso_sum > 0.0, "molecular α_iso(ω=0) must be positive: {iso_sum}");
+    let iso_sum: f64 = (0..n)
+        .map(|a| {
+            let t = dp.per_atom[a][0];
+            (t[0][0] + t[1][1] + t[2][2]) / 3.0
+        })
+        .sum();
+    assert!(
+        iso_sum > 0.0,
+        "molecular α_iso(ω=0) must be positive: {iso_sum}"
+    );
 
     // N₂ bond along z: the MOLECULAR α has α_zz > α_xx (σ electrons). The
     // anisotropy is a coupled/molecular property — it lives in `molecular`, NOT
@@ -102,9 +119,13 @@ fn pdep_dynamic_n2_anisotropy_correct_sign() {
     assert!(
         m0[2][2] > m0[0][0],
         "N2 molecular α_zz should exceed α_xx (bond-axis larger): zz={:.3} xx={:.3}",
-        m0[2][2], m0[0][0]
+        m0[2][2],
+        m0[0][0]
     );
-    assert!(m0[2][2] > 0.0 && m0[0][0] > 0.0, "molecular α components must be positive");
+    assert!(
+        m0[2][2] > 0.0 && m0[0][0] > 0.0,
+        "molecular α components must be positive"
+    );
 
     // Sanity: the molecular C6 total comes from `molecular`, not the per-atom sum.
     assert!(res.c6_molecular_iso > 0.0, "molecular C6 must be positive");
@@ -133,7 +154,15 @@ fn pdep_dynamic_per_atom_alpha_is_isotropic_n2() {
     };
 
     let dp = pdep_dynamic_polarizability(
-        &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Hirshfeld, None,
+        &mol,
+        &obs,
+        &obs_bs,
+        &dfbs,
+        &rhf,
+        op,
+        &cfg,
+        DispersionPartition::Hirshfeld,
+        None,
     )
     .unwrap();
 
@@ -175,7 +204,15 @@ fn pdep_dynamic_per_atom_c6_is_origin_independent() {
     };
 
     let dp = pdep_dynamic_polarizability(
-        &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Hirshfeld, None,
+        &mol,
+        &obs,
+        &obs_bs,
+        &dfbs,
+        &rhf,
+        op,
+        &cfg,
+        DispersionPartition::Hirshfeld,
+        None,
     )
     .unwrap();
     let res = casimir_polder_c6(&dp);
@@ -225,7 +262,15 @@ fn pdep_dynamic_c6_free_he_vs_reference() {
     };
 
     let dp = pdep_dynamic_polarizability(
-        &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Becke, None,
+        &mol,
+        &obs,
+        &obs_bs,
+        &dfbs,
+        &rhf,
+        op,
+        &cfg,
+        DispersionPartition::Becke,
+        None,
     )
     .unwrap();
 
@@ -303,7 +348,7 @@ fn anisotropic_c6_vs_kumar_meath() {
     // (label, xyz, C6_iso_DOSD, lit_alpha_par, lit_alpha_perp)
     let mols: &[(&str, &str, f64, f64, f64)] = &[
         // N2: DOSD C6 73.3 (Kumar-Meath school); α∥/α⊥ cross-checked above.
-        ("N2",  "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n", 73.3, 14.8, 10.2),
+        ("N2", "2\nn2\nN 0 0 0.0\nN 0 0 1.0977\n", 73.3, 14.8, 10.2),
         // CO2: DOSD C6 158.7. α∥/α⊥ = 27.25/13.02 a.u. (search-engine-summarized
         // from a secondary source, axis convention assumed molecular-axis =
         // parallel) — their mean, 17.76 a.u., is within 5% of the independently
@@ -312,7 +357,13 @@ fn anisotropic_c6_vs_kumar_meath() {
         // (three independently cross-checked sources), CO2's component SPLIT
         // itself is single-source and not confirmed against a primary paper —
         // treated as lower-confidence, hence the wider tolerance applied below.
-        ("CO2", "3\nco2\nC 0 0 0.0\nO 0 0 1.1621\nO 0 0 -1.1621\n", 158.7, 27.25, 13.02),
+        (
+            "CO2",
+            "3\nco2\nC 0 0 0.0\nO 0 0 1.1621\nO 0 0 -1.1621\n",
+            158.7,
+            27.25,
+            13.02,
+        ),
     ];
     let ctx = ParallelContext::default();
     let cfg = PdepRpaConfig::default();
@@ -326,14 +377,27 @@ fn anisotropic_c6_vs_kumar_meath() {
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let scf_cfg = RhfConfig { energy_conv: 1e-9, xc: Some("PBE".to_string()),
+        let scf_cfg = RhfConfig {
+            energy_conv: 1e-9,
+            xc: Some("PBE".to_string()),
             df_j_aux: Some("def2-universal-jkfit".to_string()),
-            df_k_aux: Some("def2-universal-jkfit".to_string()), ..Default::default() };
+            df_k_aux: Some("def2-universal-jkfit".to_string()),
+            ..Default::default()
+        };
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
         let dp = pdep_dynamic_polarizability(
-            &mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg, DispersionPartition::Becke, None,
-        ).unwrap();
+            &mol,
+            &obs,
+            &obs_bs,
+            &dfbs,
+            &rhf,
+            op,
+            &cfg,
+            DispersionPartition::Becke,
+            None,
+        )
+        .unwrap();
 
         // Per-frequency parallel/perp from the molecular tensor (z = bond axis).
         let nf = dp.freqs.len();
@@ -341,16 +405,19 @@ fn anisotropic_c6_vs_kumar_meath() {
         let (mut a_par0, mut a_perp0) = (0.0, 0.0);
         for k in 0..nf {
             let t = dp.molecular[k];
-            let a_par = t[2][2];                    // α_zz
+            let a_par = t[2][2]; // α_zz
             let a_perp = 0.5 * (t[0][0] + t[1][1]); // α_xx ≈ α_yy
             let a_bar = (a_par + 2.0 * a_perp) / 3.0;
             let d_a = a_par - a_perp;
             let wk = dp.weights[k];
-            c6_iso  += wk * a_bar * a_bar;
-            c6_par  += wk * a_par * a_par;
+            c6_iso += wk * a_bar * a_bar;
+            c6_par += wk * a_par * a_par;
             c6_perp += wk * a_perp * a_perp;
-            gamma6  += wk * d_a * d_a;
-            if k == 0 { a_par0 = a_par; a_perp0 = a_perp; }
+            gamma6 += wk * d_a * d_a;
+            if k == 0 {
+                a_par0 = a_par;
+                a_perp0 = a_perp;
+            }
         }
         c6_iso *= 3.0 / PI;
         c6_par *= 3.0 / PI;
@@ -360,21 +427,49 @@ fn anisotropic_c6_vs_kumar_meath() {
         let d_a0 = a_par0 - a_perp0;
         let lit_d_a0 = lit_apar - lit_aperp;
         eprintln!("\n  {label}:");
-        eprintln!("    static  α∥={:.3}  α⊥={:.3}  anisotropy Δα(0)={:.3}  (κ={:.3})",
-            a_par0, a_perp0, d_a0, d_a0 / (a_par0 + 2.0 * a_perp0));
-        eprintln!("    lit     α∥={:.3}  α⊥={:.3}  anisotropy Δα(0)={:.3}",
-            lit_apar, lit_aperp, lit_d_a0);
-        eprintln!("    C6_iso = {:.2}  (DOSD {:.1}, {:+.1}%)",
-            c6_iso, c6_dosd, 100.0 * (c6_iso - c6_dosd) / c6_dosd);
-        eprintln!("    C6∥ = {:.2}   C6⊥ = {:.2}   C6∥/C6⊥ = {:.3}", c6_par, c6_perp, c6_par / c6_perp);
+        eprintln!(
+            "    static  α∥={:.3}  α⊥={:.3}  anisotropy Δα(0)={:.3}  (κ={:.3})",
+            a_par0,
+            a_perp0,
+            d_a0,
+            d_a0 / (a_par0 + 2.0 * a_perp0)
+        );
+        eprintln!(
+            "    lit     α∥={:.3}  α⊥={:.3}  anisotropy Δα(0)={:.3}",
+            lit_apar, lit_aperp, lit_d_a0
+        );
+        eprintln!(
+            "    C6_iso = {:.2}  (DOSD {:.1}, {:+.1}%)",
+            c6_iso,
+            c6_dosd,
+            100.0 * (c6_iso - c6_dosd) / c6_dosd
+        );
+        eprintln!(
+            "    C6∥ = {:.2}   C6⊥ = {:.2}   C6∥/C6⊥ = {:.3}",
+            c6_par,
+            c6_perp,
+            c6_par / c6_perp
+        );
         eprintln!("    γ6 (aniso dispersion coef) = {:.2}", gamma6);
-        eprintln!("    γ6/C6_iso = {:.3}  (the dispersion-anisotropy ratio — DOSD CANNOT give this)", gamma6 / c6_iso);
+        eprintln!(
+            "    γ6/C6_iso = {:.3}  (the dispersion-anisotropy ratio — DOSD CANNOT give this)",
+            gamma6 / c6_iso
+        );
 
         // --- Qualitative / sign checks: must hold exactly, any failure is a
         // physics bug, not a systematic-bias question. ---
-        assert!(c6_iso > 0.0 && gamma6 >= 0.0, "{label}: C6/γ6 must be physical");
-        assert!(a_par0 > a_perp0, "{label}: axial α∥ should exceed equatorial α⊥, got α∥={a_par0:.3} α⊥={a_perp0:.3}");
-        assert!(c6_par > c6_perp, "{label}: C6∥ should exceed C6⊥, got C6∥={c6_par:.2} C6⊥={c6_perp:.2}");
+        assert!(
+            c6_iso > 0.0 && gamma6 >= 0.0,
+            "{label}: C6/γ6 must be physical"
+        );
+        assert!(
+            a_par0 > a_perp0,
+            "{label}: axial α∥ should exceed equatorial α⊥, got α∥={a_par0:.3} α⊥={a_perp0:.3}"
+        );
+        assert!(
+            c6_par > c6_perp,
+            "{label}: C6∥ should exceed C6⊥, got C6∥={c6_par:.2} C6⊥={c6_perp:.2}"
+        );
 
         // --- Quantitative checks vs literature, toleranced to ferric's
         // documented RPA@PBE/aug-cc-pVDZ systematic underbinding bias (see

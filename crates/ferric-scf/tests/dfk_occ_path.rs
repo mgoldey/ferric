@@ -33,9 +33,9 @@
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_core::FerricError;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::{solve_uhf, UhfConfig};
@@ -182,7 +182,10 @@ fn dfk_occ_path_caller_scaling_matches_true_density_build() {
     dfk.build_from_occ(&c_occ, &mut k_occ).unwrap();
     k_occ *= 2.0; // caller-supplied RHF factor — the thing under test
 
-    let max_abs = k_density.iter().cloned().fold(0.0f64, |a, b| a.max(b.abs()));
+    let max_abs = k_density
+        .iter()
+        .cloned()
+        .fold(0.0f64, |a, b| a.max(b.abs()));
     let max_diff = (&k_density - &k_occ)
         .iter()
         .cloned()
@@ -205,7 +208,10 @@ fn rhf_dfk_occ_path_matches_density_path() {
 
     let e_occ = rhf_dfjk_energy(&mol, &prep, false);
     let e_den = rhf_dfjk_energy(&mol, &prep, true);
-    eprintln!("RHF DF-JK water/cc-pVDZ: occ={e_occ:.12}  density={e_den:.12}  diff={:.2e}", (e_occ - e_den).abs());
+    eprintln!(
+        "RHF DF-JK water/cc-pVDZ: occ={e_occ:.12}  density={e_den:.12}  diff={:.2e}",
+        (e_occ - e_den).abs()
+    );
     assert!(
         (e_occ - e_den).abs() < DFJK_ENERGY_TOL,
         "DF-K C_occ path vs density path SCF energy diff = {:.3e} (occ={e_occ}, density={e_den})",
@@ -232,7 +238,10 @@ fn uhf_dfk_occ_path_matches_density_path() {
 
     let e_occ = uhf_dfjk_energy(&mol, &prep, false);
     let e_den = uhf_dfjk_energy(&mol, &prep, true);
-    eprintln!("UHF DF-JK OH/cc-pVDZ: occ={e_occ:.12}  density={e_den:.12}  diff={:.2e}", (e_occ - e_den).abs());
+    eprintln!(
+        "UHF DF-JK OH/cc-pVDZ: occ={e_occ:.12}  density={e_den:.12}  diff={:.2e}",
+        (e_occ - e_den).abs()
+    );
     assert!(
         (e_occ - e_den).abs() < DFJK_ENERGY_TOL,
         "UHF DF-K C_occ path vs density path SCF energy diff = {:.3e} (occ={e_occ}, density={e_den})",

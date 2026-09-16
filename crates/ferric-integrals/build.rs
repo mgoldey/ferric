@@ -28,7 +28,11 @@ fn main() {
         // wiki/perf-tasks/patches/libint2-terf-*.patch) selected via
         // LIBINT2_PREFIX. Off by default so stock libint2 still builds.
         .define(
-            if std::env::var("FERRIC_LIBINT2_TERF").is_ok() { "FERRIC_LIBINT2_TERF" } else { "FERRIC_UNUSED_TERF" },
+            if std::env::var("FERRIC_LIBINT2_TERF").is_ok() {
+                "FERRIC_LIBINT2_TERF"
+            } else {
+                "FERRIC_UNUSED_TERF"
+            },
             None,
         )
         .flag("-std=c++17")
@@ -59,7 +63,10 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=stdc++");
 
     // libecpint link (static): ecpint + its internal Faddeeva
-    println!("cargo:rustc-link-search=native={}", ecpint_lib_dir.display());
+    println!(
+        "cargo:rustc-link-search=native={}",
+        ecpint_lib_dir.display()
+    );
     println!("cargo:rustc-link-lib=static=ecpint");
     println!("cargo:rustc-link-lib=static=Faddeeva");
 

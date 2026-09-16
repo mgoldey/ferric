@@ -93,12 +93,16 @@ pub(crate) fn build_df_jk<'a>(
             // Multi-rank keeps the independent builds below.
             if ctx.size <= 1 {
                 let naux = dfbs.nbasis();
-                let mut raw =
-                    ferric_integrals::three_index_source::ThreeIndexSource::build_band(
-                        op, prep, &dfbs, ooc_budget, 0, naux,
-                    )?;
+                let mut raw = ferric_integrals::three_index_source::ThreeIndexSource::build_band(
+                    op, prep, &dfbs, ooc_budget, 0, naux,
+                )?;
                 let df_k = Some(DfK::from_full_raw(
-                    &mut raw, prep, &dfbs, op, ooc_budget, Some(ctx),
+                    &mut raw,
+                    prep,
+                    &dfbs,
+                    op,
+                    ooc_budget,
+                    Some(ctx),
                 )?);
                 let df_j = Some(DfJ::from_source(raw, op, &dfbs, ooc_budget, Some(ctx))?);
                 return Ok((df_j, df_k));
@@ -141,8 +145,20 @@ pub(crate) fn build_rsh_dfk_pair<'a>(
     let dfbs_set = ferric_core::basis::bundled(aux_name)?;
     let dfbs_prep = PreparedBasis::new(mol, &dfbs_set)?;
     Ok((
-        DfK::new_banded(Operator::erfc(omega), prep, &dfbs_prep, ooc_budget, Some(ctx))?,
-        DfK::new_banded(Operator::erf(omega), prep, &dfbs_prep, ooc_budget, Some(ctx))?,
+        DfK::new_banded(
+            Operator::erfc(omega),
+            prep,
+            &dfbs_prep,
+            ooc_budget,
+            Some(ctx),
+        )?,
+        DfK::new_banded(
+            Operator::erf(omega),
+            prep,
+            &dfbs_prep,
+            ooc_budget,
+            Some(ctx),
+        )?,
     ))
 }
 
@@ -240,7 +256,12 @@ pub(crate) fn build_pluggable_k<'a, B: crate::screening::Bound + Sync>(
 ) -> Result<Option<Box<dyn KBuilder + 'a>>, FerricError> {
     match kind {
         Some("link") => Ok(Some(Box::new(crate::link_k::LinkK::new(
-            ctx, prep, link_bound, op, integral_thresh, ooc_budget,
+            ctx,
+            prep,
+            link_bound,
+            op,
+            integral_thresh,
+            ooc_budget,
         )) as Box<dyn KBuilder + 'a>)),
         Some("cosx") => {
             // Seminumerical exchange is defined against the 1/r kernel only;

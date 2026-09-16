@@ -19,6 +19,7 @@ implemented for s/p shells only.
 Usage:
     python scripts/gen_pyscf_mgga_grad_refs.py
 """
+
 import json
 from pathlib import Path
 
@@ -31,10 +32,34 @@ MAIN_GRID = (75, 110)
 
 # (label, basis, atom spec, charge, multiplicity, pyscf xc string, file tag)
 CASES = [
-    ("h2",  "sto-3g", "H 0 0 0; H 0 0 0.74",                            0, 1, "SCAN",   "scan"),
-    ("h2o", "sto-3g", "O 0 0 0; H 0 0.7572 0.5868; H 0 -0.7572 0.5868", 0, 1, "SCAN",   "scan"),
-    ("h2o", "sto-3g", "O 0 0 0; H 0 0.7572 0.5868; H 0 -0.7572 0.5868", 0, 1, "R2SCAN", "r2scan"),
-    ("h2o", "6-31g",  "O 0 0 0; H 0 0.7572 0.5868; H 0 -0.7572 0.5868", 0, 1, "SCAN",   "scan"),
+    ("h2", "sto-3g", "H 0 0 0; H 0 0 0.74", 0, 1, "SCAN", "scan"),
+    (
+        "h2o",
+        "sto-3g",
+        "O 0 0 0; H 0 0.7572 0.5868; H 0 -0.7572 0.5868",
+        0,
+        1,
+        "SCAN",
+        "scan",
+    ),
+    (
+        "h2o",
+        "sto-3g",
+        "O 0 0 0; H 0 0.7572 0.5868; H 0 -0.7572 0.5868",
+        0,
+        1,
+        "R2SCAN",
+        "r2scan",
+    ),
+    (
+        "h2o",
+        "6-31g",
+        "O 0 0 0; H 0 0.7572 0.5868; H 0 -0.7572 0.5868",
+        0,
+        1,
+        "SCAN",
+        "scan",
+    ),
     # Open shell.
     #
     # NOTE (2026-07-27): OH is a POOR open-shell meta-GGA reference and is kept
@@ -49,13 +74,34 @@ CASES = [
     # CH3 (doublet) and O2 (triplet) all agree ferric-vs-PySCF to ~1e-8 Ha for
     # BOTH SCAN and r2SCAN at (99,302) — same code path, same buffers. Use
     # those to validate the polarized meta-GGA gradient, not OH.
-    ("oh",  "sto-3g", "O 0 0 0; H 0 0 0.97",                            0, 2, "SCAN",   "scan"),
-    ("nh2", "sto-3g", "N 0 0 0.1414; H 0 0.8067 -0.4950; H 0 -0.8067 -0.4950",
-                                                                        0, 2, "SCAN",   "scan"),
-    ("nh2", "sto-3g", "N 0 0 0.1414; H 0 0.8067 -0.4950; H 0 -0.8067 -0.4950",
-                                                                        0, 2, "R2SCAN", "r2scan"),
-    ("ch3", "sto-3g", "C 0 0 0; H 0 1.0790 0; H 0.9344 -0.5395 0; H -0.9344 -0.5395 0",
-                                                                        0, 2, "SCAN",   "scan"),
+    ("oh", "sto-3g", "O 0 0 0; H 0 0 0.97", 0, 2, "SCAN", "scan"),
+    (
+        "nh2",
+        "sto-3g",
+        "N 0 0 0.1414; H 0 0.8067 -0.4950; H 0 -0.8067 -0.4950",
+        0,
+        2,
+        "SCAN",
+        "scan",
+    ),
+    (
+        "nh2",
+        "sto-3g",
+        "N 0 0 0.1414; H 0 0.8067 -0.4950; H 0 -0.8067 -0.4950",
+        0,
+        2,
+        "R2SCAN",
+        "r2scan",
+    ),
+    (
+        "ch3",
+        "sto-3g",
+        "C 0 0 0; H 0 1.0790 0; H 0.9344 -0.5395 0; H -0.9344 -0.5395 0",
+        0,
+        2,
+        "SCAN",
+        "scan",
+    ),
 ]
 
 
@@ -93,8 +139,10 @@ def main():
         out = run_one(*case)
         path = REFDIR / f"{label}_{basis}_{tag}_grad.json"
         path.write_text(json.dumps(out, indent=2))
-        print(f"wrote {path}  E_total = {out['e_total']:.10f}  "
-              f"converged={out['converged']}")
+        print(
+            f"wrote {path}  E_total = {out['e_total']:.10f}  "
+            f"converged={out['converged']}"
+        )
 
 
 if __name__ == "__main__":

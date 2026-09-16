@@ -1,14 +1,14 @@
 //! Configurable SCF convergence ladder: walk a sequence of RhfConfig "rungs",
 //! carrying each rung's final density into the next, aborting a stuck rung early.
 
+use crate::result::{ScfExit, ScfResult};
+use crate::rhf::{solve_rhf, RhfConfig};
+use crate::screening::SchwarzBounds;
 use ferric_core::error::FerricError;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use crate::rhf::{solve_rhf, RhfConfig};
-use crate::result::{ScfExit, ScfResult};
-use crate::screening::SchwarzBounds;
 
 /// One rung of an SCF convergence ladder.
 #[derive(Debug, Clone)]
@@ -319,8 +319,10 @@ pub(crate) fn run_df_guess_pre_stage(
         // degrades to "best DF density available" rather than spinning.
         df_cfg.max_iter = base.max_iter.min(DF_GUESS_TIGHT_MAX_ITER);
     } else {
-        df_cfg.density_conv = (base.density_conv * DF_GUESS_DENSITY_CONV_LOOSEN).max(DF_GUESS_DENSITY_CONV_FLOOR);
-        df_cfg.energy_conv = (base.energy_conv * DF_GUESS_ENERGY_CONV_LOOSEN).max(DF_GUESS_ENERGY_CONV_FLOOR);
+        df_cfg.density_conv =
+            (base.density_conv * DF_GUESS_DENSITY_CONV_LOOSEN).max(DF_GUESS_DENSITY_CONV_FLOOR);
+        df_cfg.energy_conv =
+            (base.energy_conv * DF_GUESS_ENERGY_CONV_LOOSEN).max(DF_GUESS_ENERGY_CONV_FLOOR);
         df_cfg.max_iter = base.max_iter.min(DF_GUESS_MAX_ITER);
     }
 
@@ -380,22 +382,35 @@ pub fn default_ladder_from(base: &RhfConfig) -> Vec<Rung> {
     //   rung 2: + virtual-block level shift 0.5     (damps overshooting rotation)
     //   rung 3: + level shift 1.0 and SOSCF tail    (quadratic tail once err small)
     //   rung 4: + Fermi smearing σ=0.01 Ha          (near-degenerate d-manifold)
-    let with = |mut c: RhfConfig,
-                flavor: crate::diis::DiisFlavor,
-                newton: f64,
-                smear: Option<f64>| {
-        c.diis_flavor = flavor;
-        c.newton_trigger = newton;
-        c.smearing_sigma = smear;
-        c
-    };
+    let with =
+        |mut c: RhfConfig, flavor: crate::diis::DiisFlavor, newton: f64, smear: Option<f64>| {
+            c.diis_flavor = flavor;
+            c.newton_trigger = newton;
+            c.smearing_sigma = smear;
+            c
+        };
     use crate::diis::DiisFlavor::{Adiis, Pulay};
     vec![
-        Rung { config: rung(0.0, 60), restart: false },
-        Rung { config: with(rung(0.0, 60), Adiis, 0.0, None), restart: false },
-        Rung { config: with(rung(0.5, 60), Adiis, 0.0, None), restart: false },
-        Rung { config: with(rung(1.0, 80), Adiis, 1e-3, None), restart: false },
-        Rung { config: with(rung(0.5, 100), Pulay, 1e-3, Some(0.01)), restart: false },
+        Rung {
+            config: rung(0.0, 60),
+            restart: false,
+        },
+        Rung {
+            config: with(rung(0.0, 60), Adiis, 0.0, None),
+            restart: false,
+        },
+        Rung {
+            config: with(rung(0.5, 60), Adiis, 0.0, None),
+            restart: false,
+        },
+        Rung {
+            config: with(rung(1.0, 80), Adiis, 1e-3, None),
+            restart: false,
+        },
+        Rung {
+            config: with(rung(0.5, 100), Pulay, 1e-3, Some(0.01)),
+            restart: false,
+        },
     ]
 }
 
@@ -442,22 +457,35 @@ pub fn ksdft_ladder(base: &RhfConfig) -> Vec<Rung> {
     //   3: + level shift +0.5 and SOSCF tail (skipped internally for RSH/meta-GGA)
     //   4: + Fermi smearing σ=0.01 Ha (near-degenerate d-manifold last resort)
     let ls0 = base.level_shift;
-    let acc = |mut c: RhfConfig,
-               flavor: crate::diis::DiisFlavor,
-               newton: f64,
-               smear: Option<f64>| {
-        c.diis_flavor = flavor;
-        c.newton_trigger = newton;
-        c.smearing_sigma = smear;
-        c
-    };
+    let acc =
+        |mut c: RhfConfig, flavor: crate::diis::DiisFlavor, newton: f64, smear: Option<f64>| {
+            c.diis_flavor = flavor;
+            c.newton_trigger = newton;
+            c.smearing_sigma = smear;
+            c
+        };
     use crate::diis::DiisFlavor::{Adiis, Pulay};
     vec![
-        Rung { config: mk(ls0, base.max_iter), restart: false },
-        Rung { config: acc(mk(ls0, 60), Adiis, 0.0, None), restart: false },
-        Rung { config: acc(mk(ls0.max(0.5), 60), Adiis, 0.0, None), restart: false },
-        Rung { config: acc(mk(ls0.max(0.5) + 0.5, 80), Adiis, 1e-3, None), restart: false },
-        Rung { config: acc(mk(ls0.max(0.5), 100), Pulay, 1e-3, Some(0.01)), restart: false },
+        Rung {
+            config: mk(ls0, base.max_iter),
+            restart: false,
+        },
+        Rung {
+            config: acc(mk(ls0, 60), Adiis, 0.0, None),
+            restart: false,
+        },
+        Rung {
+            config: acc(mk(ls0.max(0.5), 60), Adiis, 0.0, None),
+            restart: false,
+        },
+        Rung {
+            config: acc(mk(ls0.max(0.5) + 0.5, 80), Adiis, 1e-3, None),
+            restart: false,
+        },
+        Rung {
+            config: acc(mk(ls0.max(0.5), 100), Pulay, 1e-3, Some(0.01)),
+            restart: false,
+        },
     ]
 }
 
@@ -513,11 +541,15 @@ pub fn solve_rohf_ladder(
         };
     }
 
-    let result = best.ok_or_else(|| {
-        FerricError::General("solve_rohf_ladder: empty ladder".into())
-    })?;
+    let result =
+        best.ok_or_else(|| FerricError::General("solve_rohf_ladder: empty ladder".into()))?;
     let n = outcomes.len().saturating_sub(1);
-    Ok(LadderResult { result, converged: false, rung_reached: n, rung_outcomes: outcomes })
+    Ok(LadderResult {
+        result,
+        converged: false,
+        rung_reached: n,
+        rung_outcomes: outcomes,
+    })
 }
 
 #[cfg(test)]
@@ -533,7 +565,10 @@ mod tests {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
         let ctx = ParallelContext::default();
-        let ladder = vec![Rung { config: RhfConfig::default(), restart: false }];
+        let ladder = vec![Rung {
+            config: RhfConfig::default(),
+            restart: false,
+        }];
         let lr = solve_rhf_ladder(&ctx, &mol, &prep, op, &bounds, &ladder).unwrap();
         assert!(lr.converged);
         assert_eq!(lr.rung_reached, 0);
@@ -564,13 +599,34 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
         let ctx = ParallelContext::default();
         let ladder = vec![
-            Rung { config: RhfConfig { use_sad_guess: false, max_iter: 3, ..Default::default() }, restart: false },
-            Rung { config: RhfConfig { use_sad_guess: false, max_iter: 6, ..Default::default() }, restart: false },
+            Rung {
+                config: RhfConfig {
+                    use_sad_guess: false,
+                    max_iter: 3,
+                    ..Default::default()
+                },
+                restart: false,
+            },
+            Rung {
+                config: RhfConfig {
+                    use_sad_guess: false,
+                    max_iter: 6,
+                    ..Default::default()
+                },
+                restart: false,
+            },
         ];
         let lr = solve_rhf_ladder(&ctx, &mol, &prep, op, &bounds, &ladder).unwrap();
-        assert!(lr.converged, "ladder should converge by rung 2 if carry-forward seeds it with rung 1's density");
+        assert!(
+            lr.converged,
+            "ladder should converge by rung 2 if carry-forward seeds it with rung 1's density"
+        );
         assert_eq!(lr.rung_reached, 1, "should have advanced to rung 2");
-        assert_eq!(lr.rung_outcomes[0].exit, ScfExit::MaxIter, "rung 1 must NOT converge in only 3 iters from cold hcore");
+        assert_eq!(
+            lr.rung_outcomes[0].exit,
+            ScfExit::MaxIter,
+            "rung 1 must NOT converge in only 3 iters from cold hcore"
+        );
         assert!(
             lr.rung_outcomes[1].iters <= 6,
             "rung 2 should converge within its 6-iter budget only because it inherited rung 1's density; \
@@ -597,7 +653,10 @@ mod tests {
             "ladder must not inject DF-K aux when the base left it unset"
         );
         assert_eq!(l[0].config.level_shift, 0.0);
-        assert_eq!(l[1].config.level_shift, 0.0, "rung 1 adds ADIIS, not level shift yet");
+        assert_eq!(
+            l[1].config.level_shift, 0.0,
+            "rung 1 adds ADIIS, not level shift yet"
+        );
         assert!(l[2].config.level_shift > 0.0, "rung 2 must add level shift");
         assert!(!l[2].restart, "rung 2 must inherit density");
     }
@@ -637,18 +696,29 @@ mod tests {
         };
         let ladder = ksdft_ladder(&base);
         // Every rung must keep the functional (else it silently runs bare HF).
-        assert!(ladder.iter().all(|r| r.config.xc.as_deref() == Some("B3LYP")),
-            "ksdft_ladder must carry xc into every rung");
-        assert!(ladder[0].config.df_k_aux.is_some(),
-            "hybrid needs RI-K aux auto-defaulted");
+        assert!(
+            ladder
+                .iter()
+                .all(|r| r.config.xc.as_deref() == Some("B3LYP")),
+            "ksdft_ladder must carry xc into every rung"
+        );
+        assert!(
+            ladder[0].config.df_k_aux.is_some(),
+            "hybrid needs RI-K aux auto-defaulted"
+        );
 
         let lr = solve_rhf_ladder(&ctx, &mol, &prep, op, &bounds, &ladder).unwrap();
-        assert!(lr.converged, "B3LYP ladder must converge benzene (reached rung {})", lr.rung_reached);
+        assert!(
+            lr.converged,
+            "B3LYP ladder must converge benzene (reached rung {})",
+            lr.rung_reached
+        );
         // Sanity vs the profiling run's last energy (-232.0846616020); a bare-HF
         // regression would land near -230.78 instead.
         assert!(
             (lr.result.energy - (-232.0846729516)).abs() < 1e-3,
-            "B3LYP/def2-SVP benzene E={:.10}, expected ~-232.0847", lr.result.energy
+            "B3LYP/def2-SVP benzene E={:.10}, expected ~-232.0847",
+            lr.result.energy
         );
     }
 
@@ -657,7 +727,11 @@ mod tests {
     /// stall/divergence early-abort on top.
     #[test]
     fn ksdft_ladder_carries_xc_and_escalates() {
-        let grid = ferric_dft::grid::AtomicGridConfig { n_radial: 99, n_angular: 302, ..Default::default() };
+        let grid = ferric_dft::grid::AtomicGridConfig {
+            n_radial: 99,
+            n_angular: 302,
+            ..Default::default()
+        };
         let base = RhfConfig {
             xc: Some("PBE".to_string()),
             dft_grid: Some(grid.clone()),
@@ -687,7 +761,10 @@ mod tests {
         assert!(l[3].config.newton_trigger > 0.0, "rung 3 adds SOSCF");
         assert!(l[4].config.smearing_sigma.is_some(), "rung 4 adds smearing");
         // Pure PBE (no exact exchange) still gets RI-J auto-defaulted for speed.
-        assert!(l[0].config.df_j_aux.is_some(), "RI-J auto-defaulted when xc set");
+        assert!(
+            l[0].config.df_j_aux.is_some(),
+            "RI-J auto-defaulted when xc set"
+        );
     }
 
     /// A bare-HF base (no xc) must NOT get DF-JK aux auto-forced by ksdft_ladder
@@ -717,7 +794,8 @@ mod tests {
     #[test]
     #[ignore] // STALE: see doc above — reference predates DF-JK removal
     fn ccun_atz_default_ladder_converges() {
-        let xyz = "3\nmol\nC 0.0000 0.0000 0.0000\nN 0.0000 0.0000 1.158\nCu 0.0000 0.0000 -1.832\n";
+        let xyz =
+            "3\nmol\nC 0.0000 0.0000 0.0000\nN 0.0000 0.0000 1.158\nCu 0.0000 0.0000 -1.832\n";
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let bs = basis::bundled("aug-cc-pvtz").unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -726,8 +804,11 @@ mod tests {
         let ctx = ParallelContext::default();
         let lr = solve_rhf_ladder(&ctx, &mol, &prep, op, &bounds, &default_ladder()).unwrap();
         assert!(lr.converged, "CCuN/aTZ must converge via default ladder");
-        assert!((lr.result.energy - (-1731.3137)).abs() < 1e-2,
-            "CCuN/aTZ E={:.6}, expected ~-1731.3137", lr.result.energy);
+        assert!(
+            (lr.result.energy - (-1731.3137)).abs() < 1e-2,
+            "CCuN/aTZ E={:.6}, expected ~-1731.3137",
+            lr.result.energy
+        );
         assert_eq!(lr.rung_reached, 0, "DF-JK rung 1 should suffice for CCuN");
     }
 }

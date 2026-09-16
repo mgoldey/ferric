@@ -155,7 +155,10 @@ fn rpa_correlation_energy(
     };
     let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_cfg)?;
     if !rhf.converged {
-        return Err(FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy });
+        return Err(FerricError::ScfConvergence {
+            iterations: rhf.iterations,
+            last_energy: rhf.energy,
+        });
     }
     let r = run_pdep_rpa(mol, &obs, &dfbs, op, &rhf, rpa_config)?;
     Ok(rhf.energy + r.e_rpa)
@@ -187,7 +190,10 @@ pub fn total_rpa_gradient(
     };
     let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_cfg)?;
     if !rhf.converged {
-        return Err(FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy });
+        return Err(FerricError::ScfConvergence {
+            iterations: rhf.iterations,
+            last_energy: rhf.energy,
+        });
     }
     let r: PdepRpaResult = run_pdep_rpa(mol, &obs, &dfbs, op, &rhf, rpa_config)?;
     let e_tot = rhf.energy + r.e_rpa;
@@ -230,11 +236,13 @@ mod tests {
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let op = Operator::coulomb();
         let cfg = small_rpa_cfg();
-        let grad =
-            rpa_correlation_gradient(&mol, &obs_bs, &aux_bs, op, &cfg, 5e-4).unwrap();
+        let grad = rpa_correlation_gradient(&mol, &obs_bs, &aux_bs, op, &cfg, 5e-4).unwrap();
         eprintln!("H2O/STO-3G RPA correlation gradient:");
         for (a, row) in grad.outer_iter().enumerate() {
-            eprintln!("  atom {a}: [{:+.6e}, {:+.6e}, {:+.6e}]", row[0], row[1], row[2]);
+            eprintln!(
+                "  atom {a}: [{:+.6e}, {:+.6e}, {:+.6e}]",
+                row[0], row[1], row[2]
+            );
         }
         for c in 0..3 {
             let s: f64 = (0..3).map(|a| grad[(a, c)]).sum();

@@ -17,6 +17,7 @@ assembly in numpy, mirroring crates/ferric-mp2/src/rimp2.rs:
 Usage: python scripts/py_rimp2_bench.py <xyz> <basis> <auxbasis> [--check]
   --check  also run the Rust run_rimp2 and assert |dE_corr| < 1e-8
 """
+
 import os
 import sys
 import time
@@ -51,14 +52,14 @@ def py_rimp2(mol, obs, aux, rhf, frozen_core=0):
 
     t0 = time.perf_counter()
     # (P|mu nu) -> (P|i a): virtual side first (one wide GEMM), then occ side.
-    half = eri3.reshape(naux * nbf, nbf) @ c_vir            # (naux*nbf, nvir)
+    half = eri3.reshape(naux * nbf, nbf) @ c_vir  # (naux*nbf, nvir)
     half = half.reshape(naux, nbf, nvir)
-    b = np.tensordot(c_occ, half, axes=([0], [1]))          # (nocc, naux, nvir)
+    b = np.tensordot(c_occ, half, axes=([0], [1]))  # (nocc, naux, nvir)
     b = np.ascontiguousarray(b.transpose(1, 0, 2)).reshape(naux, nocc * nvir)
     t["transform"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    b = sla.solve_triangular(L, b, lower=True)              # dressed B (naux, ia)
+    b = sla.solve_triangular(L, b, lower=True)  # dressed B (naux, ia)
     t["dress"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
@@ -67,16 +68,17 @@ def py_rimp2(mol, obs, aux, rhf, frozen_core=0):
     e_os = 0.0
     e_ss = 0.0
     for i in range(nocc):
-        b_i = b[:, i * nvir:(i + 1) * nvir]                 # (naux, nvir)
-        g = b_i.T @ b[:, i * nvir:]                         # (nvir, (nocc-i)*nvir)
+        b_i = b[:, i * nvir : (i + 1) * nvir]  # (naux, nvir)
+        g = b_i.T @ b[:, i * nvir :]  # (nvir, (nocc-i)*nvir)
         g = g.reshape(nvir, nocc - i, nvir).transpose(1, 0, 2)  # (j, a, b)
         denom = (e_o[i] + e_o[i:])[:, None, None] - e_v[:, None] - e_v[None, :]
         tamp = g / denom
         fac = np.full(nocc - i, 2.0)
-        fac[0] = 1.0                                        # j == i diagonal
+        fac[0] = 1.0  # j == i diagonal
         e_os += np.einsum("j,jab,jab->", fac, tamp, g, optimize=True)
-        e_ss += np.einsum("j,jab,jab->", fac, tamp, g - g.transpose(0, 2, 1),
-                          optimize=True)
+        e_ss += np.einsum(
+            "j,jab,jab->", fac, tamp, g - g.transpose(0, 2, 1), optimize=True
+        )
     t["energy"] = time.perf_counter() - t0
     t["mp2_total"] = t["metric"] + t["transform"] + t["dress"] + t["energy"]
     t["mp2_total_with_eri3"] = t["mp2_total"] + t["eri3"]
@@ -86,7 +88,7 @@ def py_rimp2(mol, obs, aux, rhf, frozen_core=0):
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     check = "--check" in sys.argv
-    dfjk = "--dfjk" in sys.argv        # fast DF-JK reference (timing-only runs)
+    dfjk = "--dfjk" in sys.argv  # fast DF-JK reference (timing-only runs)
     no_rust = "--no-rust" in sys.argv  # skip the Rust comparison leg
     xyz, basis_name, aux_name = args
     mol = ferric.Molecule.from_xyz(xyz)
@@ -95,7 +97,8 @@ def main():
 
     rhf_kwargs = (
         dict(df_j_aux="def2-universal-jkfit", df_k_aux="def2-universal-jkfit")
-        if dfjk else {}
+        if dfjk
+        else {}
     )
     t0 = time.perf_counter()
     # No kwargs: identical config to run_rimp2's internal RHF, so the reference
@@ -108,8 +111,10 @@ def main():
     e_corr_py = e_os + e_ss
 
     print(f"system: {xyz}  basis={basis_name} aux={aux_name}")
-    print(f"OPENBLAS_NUM_THREADS={os.environ.get('OPENBLAS_NUM_THREADS')} "
-          f"RAYON_NUM_THREADS={os.environ.get('RAYON_NUM_THREADS')}")
+    print(
+        f"OPENBLAS_NUM_THREADS={os.environ.get('OPENBLAS_NUM_THREADS')} "
+        f"RAYON_NUM_THREADS={os.environ.get('RAYON_NUM_THREADS')}"
+    )
     print(f"RHF energy {rhf.energy:.10f}  ({t_rhf:.3f} s)")
     print(f"python E_corr = {e_corr_py:.10f} (os {e_os:.10f}, ss {e_ss:.10f})")
     for k, v in t.items():
@@ -129,9 +134,11 @@ def main():
     r = ferric.run_rimp2(mol, obs, aux)
     t_rust_total = time.perf_counter() - t0
     t_rust_mp2 = t_rust_total - t_rhf2
-    print(f"rust  E_corr = {r.mp2_corr:.10f}  "
-          f"(total {t_rust_total:.3f} s, RHF warm {t_rhf2:.3f} s, "
-          f"MP2 stage ~{t_rust_mp2:.3f} s)")
+    print(
+        f"rust  E_corr = {r.mp2_corr:.10f}  "
+        f"(total {t_rust_total:.3f} s, RHF warm {t_rhf2:.3f} s, "
+        f"MP2 stage ~{t_rust_mp2:.3f} s)"
+    )
     d = e_corr_py - r.mp2_corr
     print(f"dE_corr(py - rust) = {d:.3e}")
     if check:

@@ -76,10 +76,7 @@ fn h2o_hirshfeld_origin_independence_and_symmetry() {
                 asym = asym.max((alpha_a[i][j] - alpha_a[j][i]).abs());
             }
         }
-        assert!(
-            asym < 1e-5,
-            "atom {a} symmetry violation {asym:.3e} > 1e-5"
-        );
+        assert!(asym < 1e-5, "atom {a} symmetry violation {asym:.3e} > 1e-5");
     }
 
     // Origin independence: translate the whole molecule far from the origin
@@ -186,7 +183,9 @@ fn h2o_hirshfeld_origin_independence_and_symmetry() {
 #[test]
 fn h2o_hirshfeld_i_adhoc_charges_physical() {
     use ferric_core::elements::z_to_symbol;
-    use ferric_rpa::properties::{hirshfeld_i_charges, spherically_averaged_proatom, RadialProatom};
+    use ferric_rpa::properties::{
+        hirshfeld_i_charges, spherically_averaged_proatom, RadialProatom,
+    };
 
     // Augmented basis so the O⁻ anion proatom binds (Hirshfeld-I requirement).
     let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
@@ -206,7 +205,9 @@ fn h2o_hirshfeld_i_adhoc_charges_physical() {
     // Ground-state multiplicity (2S+1) of an atom/ion with N electrons, from the
     // aufbau filling + Hund's rule on the open subshell (good for N ≤ 18).
     let mult_for_n = |n: i32| -> usize {
-        if n <= 0 { return 1; }
+        if n <= 0 {
+            return 1;
+        }
         // (subshell capacity) in aufbau order through 3p.
         let shells = [2, 2, 6, 2, 6]; // 1s,2s,2p,3s,3p
         let mut rem = n;
@@ -216,8 +217,14 @@ fn h2o_hirshfeld_i_adhoc_charges_physical() {
             rem -= inshell;
             // unpaired in this subshell by Hund: cap/2 orbitals, fill singly first.
             let norb = cap / 2;
-            unpaired = if inshell <= norb { inshell } else { cap - inshell };
-            if rem == 0 { break; }
+            unpaired = if inshell <= norb {
+                inshell
+            } else {
+                cap - inshell
+            };
+            if rem == 0 {
+                break;
+            }
         }
         (unpaired.unsigned_abs() as usize) + 1
     };
@@ -230,7 +237,10 @@ fn h2o_hirshfeld_i_adhoc_charges_physical() {
         let n_elec = z - qi;
         if n_elec <= 0 {
             // Bare nucleus (e.g. H+): zero electron density.
-            return Some(RadialProatom { radii: radii.clone(), rho: vec![0.0; radii.len()] });
+            return Some(RadialProatom {
+                radii: radii.clone(),
+                rho: vec![0.0; radii.len()],
+            });
         }
         let mult = mult_for_n(n_elec);
         let sym = z_to_symbol(z).unwrap_or("X");
@@ -243,12 +253,16 @@ fn h2o_hirshfeld_i_adhoc_charges_physical() {
         // non-augmented basis may not bind the extra electron; if SCF fails the
         // `?`/.ok() returns None and hirshfeld_i falls back to the nearest state.
         let dens = if mult == 1 {
-            solve_rhf(&ctx, &amol, &aobs, op, &abounds, &cfg).ok()?.density_r().to_owned()
+            solve_rhf(&ctx, &amol, &aobs, op, &abounds, &cfg)
+                .ok()?
+                .density_r()
+                .to_owned()
         } else {
             cfg.mom_after_iter = 5;
             ferric_scf::uhf::solve_uhf(&ctx, &amol, &aobs, &abounds, &cfg)
                 .ok()?
-                .density_total().to_owned()
+                .density_total()
+                .to_owned()
         };
         spherically_averaged_proatom(z, &bs, &dens, &radii).ok()
     };
@@ -259,10 +273,19 @@ fn h2o_hirshfeld_i_adhoc_charges_physical() {
     // Literature Hirshfeld-I water oxygen is −0.872 (Verstraelen 2016). HI is
     // intentionally over-ionic; accept the published HI window. (Plain neutral
     // Hirshfeld gives −0.32 — see the neutral test; HI sharpens it toward ESP.)
-    assert!((-0.95..=-0.78).contains(&q_o), "O charge outside Hirshfeld-I range: {q_o:.3} (lit -0.872)");
-    assert!((0.39..=0.48).contains(&q_h1), "H charge outside Hirshfeld-I range: {q_h1:.3} (lit +0.436)");
+    assert!(
+        (-0.95..=-0.78).contains(&q_o),
+        "O charge outside Hirshfeld-I range: {q_o:.3} (lit -0.872)"
+    );
+    assert!(
+        (0.39..=0.48).contains(&q_h1),
+        "H charge outside Hirshfeld-I range: {q_h1:.3} (lit +0.436)"
+    );
     assert!((q_o + q_h1 + q_h2).abs() < 1e-6, "charges must sum to 0");
-    assert!((q_h1 - q_h2).abs() < 1e-3, "equivalent H must have equal charge");
+    assert!(
+        (q_h1 - q_h2).abs() < 1e-3,
+        "equivalent H must have equal charge"
+    );
 }
 
 /// The SHIPPED fix: ad-hoc same-basis NEUTRAL proatoms give correct standard
@@ -272,37 +295,61 @@ fn h2o_hirshfeld_i_adhoc_charges_physical() {
 #[test]
 fn h2o_adhoc_neutral_hirshfeld_charges() {
     use ferric_core::elements::z_to_symbol;
-    use ferric_rpa::properties::{hirshfeld_i_charges, spherically_averaged_proatom, RadialProatom};
+    use ferric_rpa::properties::{
+        hirshfeld_i_charges, spherically_averaged_proatom, RadialProatom,
+    };
 
     let (mol, _obs, obs_bs, _dfbs, op, rhf) = setup_h2o_ccpvdz();
     let ctx = ParallelContext::default();
     let radii: Vec<f64> = (1..=300).map(|k| k as f64 * 0.05).collect();
     let gs_mult = |z: i32| -> usize {
-        match z { 1=>2,6=>3,7=>4,8=>3,9=>2,_=>1 }
+        match z {
+            1 => 2,
+            6 => 3,
+            7 => 4,
+            8 => 3,
+            9 => 2,
+            _ => 1,
+        }
     };
     let bs = obs_bs.clone();
     // Neutral-only proatoms (qi != 0 → None → no charge iteration: standard Hirshfeld).
     let proatom = |z: i32, qi: i32| -> Option<RadialProatom> {
-        if qi != 0 { return None; }
+        if qi != 0 {
+            return None;
+        }
         let sym = z_to_symbol(z).unwrap_or("X");
         let amol = Molecule::parse_xyz(&format!("1\n{sym}\n{sym} 0 0 0\n"), 0, gs_mult(z)).ok()?;
         let aobs = PreparedBasis::new(&amol, &bs).ok()?;
         let abounds = SchwarzBounds::compute(op, &aobs).ok()?;
         let mut cfg = RhfConfig::default();
         let dens = if gs_mult(z) == 1 {
-            solve_rhf(&ctx, &amol, &aobs, op, &abounds, &cfg).ok()?.density_r().to_owned()
+            solve_rhf(&ctx, &amol, &aobs, op, &abounds, &cfg)
+                .ok()?
+                .density_r()
+                .to_owned()
         } else {
             cfg.mom_after_iter = 5;
-            ferric_scf::uhf::solve_uhf(&ctx, &amol, &aobs, &abounds, &cfg).ok()?.density_total().to_owned()
+            ferric_scf::uhf::solve_uhf(&ctx, &amol, &aobs, &abounds, &cfg)
+                .ok()?
+                .density_total()
+                .to_owned()
         };
         spherically_averaged_proatom(z, &bs, &dens, &radii).ok()
     };
     let q = hirshfeld_i_charges(&mol, &obs_bs, rhf.density_r(), &proatom).unwrap();
-    eprintln!("H2O ad-hoc neutral Hirshfeld: O={:.4} H={:.4} H={:.4}", q[0], q[1], q[2]);
-    assert!((-0.45..=-0.20).contains(&q[0]), "O charge: {:.3} (legacy bug was -0.95)", q[0]);
+    eprintln!(
+        "H2O ad-hoc neutral Hirshfeld: O={:.4} H={:.4} H={:.4}",
+        q[0], q[1], q[2]
+    );
+    assert!(
+        (-0.45..=-0.20).contains(&q[0]),
+        "O charge: {:.3} (legacy bug was -0.95)",
+        q[0]
+    );
     assert!((0.10..=0.25).contains(&q[1]), "H charge: {:.3}", q[1]);
-    assert!((q[0]+q[1]+q[2]).abs() < 1e-6, "sum to 0");
-    assert!((q[1]-q[2]).abs() < 1e-3, "H symmetry");
+    assert!((q[0] + q[1] + q[2]).abs() < 1e-6, "sum to 0");
+    assert!((q[1] - q[2]).abs() < 1e-3, "H symmetry");
 }
 
 /// DIAGNOSTIC (2026-07-13): does an off-origin geometry WITH a nearby external
@@ -356,7 +403,10 @@ fn h2o_hirshfeld_with_external_point_charge_diagnostic() {
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf_cfg = RhfConfig { external_potential: Some(ext), ..Default::default() };
+        let rhf_cfg = RhfConfig {
+            external_potential: Some(ext),
+            ..Default::default()
+        };
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &rhf_cfg).unwrap();
 
         let alpha_mol = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, op, &cfg)
@@ -367,20 +417,19 @@ fn h2o_hirshfeld_with_external_point_charge_diagnostic() {
                 .unwrap();
 
         let iso = |t: &[[f64; 3]; 3]| (t[0][0] + t[1][1] + t[2][2]) / 3.0;
-        eprintln!(
-            "[{label}] molecular alpha_iso = {:.4}",
-            iso(&alpha_mol)
-        );
+        eprintln!("[{label}] molecular alpha_iso = {:.4}", iso(&alpha_mol));
         for (a, alpha_a) in alpha_atomic.iter().enumerate() {
             eprintln!("[{label}] atom {a} alpha_iso = {:.4}", iso(alpha_a));
         }
         (iso(&alpha_mol), alpha_atomic)
     };
 
-    let (mol_near, atomic_near) =
-        run_case([0.0, 0.0, 0.0], [5.0, 0.0, 0.0], "near-origin");
-    let (mol_far, atomic_far) =
-        run_case([130.0, 140.0, 150.0], [135.0, 140.0, 150.0], "far-from-origin");
+    let (mol_near, atomic_near) = run_case([0.0, 0.0, 0.0], [5.0, 0.0, 0.0], "near-origin");
+    let (mol_far, atomic_far) = run_case(
+        [130.0, 140.0, 150.0],
+        [135.0, 140.0, 150.0],
+        "far-from-origin",
+    );
 
     eprintln!("molecular alpha_iso: near={mol_near:.4} far={mol_far:.4}");
     assert!(

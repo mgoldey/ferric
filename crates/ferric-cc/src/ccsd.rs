@@ -12,8 +12,8 @@
 //! [`ferric_mp2::spinorbital::asym_phys`].
 
 use super::{CcConfig, CcResult};
-use ferric_core::mol::Molecule;
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
+use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -77,7 +77,13 @@ pub struct CcsdShape {
 /// when the ladder term reads it. Both are resident together, so the
 /// sustained peak is `2·(2nv)⁴`, which the old formula never named.
 pub fn ccsd_memory_plan(shape: CcsdShape, budget_bytes: Option<usize>) -> MemoryPlan {
-    let CcsdShape { no, nv, nbas, naux, diis_subspace } = shape;
+    let CcsdShape {
+        no,
+        nv,
+        nbas,
+        naux,
+        diis_subspace,
+    } = shape;
     let nv2 = 2 * nv;
     let no2 = 2 * no;
     let mut plan = MemoryPlan::resolve(
@@ -171,7 +177,13 @@ pub fn ccsd(
     let naux = dfbs.nbasis();
     let no2 = 2 * no;
     let plan = ccsd_memory_plan(
-        CcsdShape { no, nv, nbas, naux, diis_subspace: cfg.diis_subspace },
+        CcsdShape {
+            no,
+            nv,
+            nbas,
+            naux,
+            diis_subspace: cfg.diis_subspace,
+        },
         cfg.memory_budget_bytes,
     );
     plan.check()?;
@@ -188,8 +200,18 @@ pub fn ccsd(
         Axis::O,
         Axis::V,
     );
-    let b_oo = build_b(&transform_3center_oo(&eri3_ao, &c_occ), &v_inv_sqrt, Axis::O, Axis::O);
-    let b_vv = build_b(&transform_3center_vv(&eri3_ao, &c_vir), &v_inv_sqrt, Axis::V, Axis::V);
+    let b_oo = build_b(
+        &transform_3center_oo(&eri3_ao, &c_occ),
+        &v_inv_sqrt,
+        Axis::O,
+        Axis::O,
+    );
+    let b_vv = build_b(
+        &transform_3center_vv(&eri3_ao, &c_vir),
+        &v_inv_sqrt,
+        Axis::V,
+        Axis::V,
+    );
     let b_vo = transpose_b(&b_ov);
 
     // --- Build all 11 antisymmetrized spin-orbital <pq||rs> blocks ---
@@ -326,13 +348,14 @@ pub fn ccsd(
         // t_ia t_jb. einsum! emits left-free (i,a) before right-free (j,b) as
         // (i,a,j,b); permute to the (i,j,a,b) layout the antisymmetrizers expect.
         let oo1_iajb: ArrayD<f64> = einsum!("ia,jb->iajb", &t1_t, &t1_t);
-        let oo1: ArrayD<f64> = permute_to_owned(oo1_iajb.permuted_axes(IxDyn(&[0, 2, 1, 3])).view());
+        let oo1: ArrayD<f64> =
+            permute_to_owned(oo1_iajb.permuted_axes(IxDyn(&[0, 2, 1, 3])).view());
         let taus = &t2 + &(0.5 * p_ij_ab(&oo1));
         let tau = &t2 + &p_ij(&oo1); // P(ij) of (t_ia t_jb) == t_ia t_jb - t_ib t_ja... see note
-        // NOTE: tau = t2 + t_ia t_jb - t_ib t_ja. p_ij(oo1) = oo1 - swap_ij(oo1).
-        // swap_ij(t_ia t_jb) = t_ja t_ib (i<->j) -> that is the t_ib t_ja term? No:
-        // we need t_ib t_ja. swap_ij gives index [j,i,a,b] of oo1 = t_ja t_ib.
-        // But we want subtract t_ib t_ja = same value (scalars), so p_ij is correct.
+                                     // NOTE: tau = t2 + t_ia t_jb - t_ib t_ja. p_ij(oo1) = oo1 - swap_ij(oo1).
+                                     // swap_ij(t_ia t_jb) = t_ja t_ib (i<->j) -> that is the t_ib t_ja term? No:
+                                     // we need t_ib t_ja. swap_ij gives index [j,i,a,b] of oo1 = t_ja t_ib.
+                                     // But we want subtract t_ib t_ja = same value (scalars), so p_ij is correct.
         let taus_t = lbl4(taus.clone(), [O, O, V, V]);
         let tau_t = lbl4(tau.clone(), [O, O, V, V]);
 
@@ -350,7 +373,11 @@ pub fn ccsd(
         // -> einsum('inef,mnef->im') gives [i,m]; we want [m,i] => permute.
         let fmi: ArrayD<f64> = {
             let im: ArrayD<f64> = einsum!("inef,mnef->im", &taus_t, &oovv);
-            0.5 * im.view().permuted_axes(IxDyn(&[1, 0])).as_standard_layout().into_owned()
+            0.5 * im
+                .view()
+                .permuted_axes(IxDyn(&[1, 0]))
+                .as_standard_layout()
+                .into_owned()
         };
         let fmi_t = lbl2(fmi.clone(), [O, O]);
         // Fme[m,e] = einsum('nf,mnef->me', t1, oovv)
@@ -419,7 +446,8 @@ pub fn ccsd(
             // einsum! emits left-free (j,f) before right-free (n,b) as (j,f,n,b);
             // permute to the (j,n,f,b) layout used below.
             let tt_jfnb: ArrayD<f64> = einsum!("jf,nb->jfnb", &t1_t, &t1_t);
-            let tt: ArrayD<f64> = permute_to_owned(tt_jfnb.permuted_axes(IxDyn(&[0, 2, 1, 3])).view());
+            let tt: ArrayD<f64> =
+                permute_to_owned(tt_jfnb.permuted_axes(IxDyn(&[0, 2, 1, 3])).view());
             let x_jnfb = &(0.5 * &t2) + &tt;
             let x_t = lbl4(x_jnfb, [O, O, V, V]);
             // contract n,f ; from X left indices j,b ; from oovv right indices m,e.
@@ -447,7 +475,11 @@ pub fn ccsd(
             // - einsum('ma,mi->ia', t1, Fmi): contract m ; left-free a ; right-free i
             // -> 'ai'; want 'ia' = permute.
             let ai: ArrayD<f64> = einsum!("ma,mi->ai", &t1_t, &fmi_t);
-            r1 = r1 - ai.view().permuted_axes(IxDyn(&[1, 0])).as_standard_layout().into_owned();
+            r1 = r1
+                - ai.view()
+                    .permuted_axes(IxDyn(&[1, 0]))
+                    .as_standard_layout()
+                    .into_owned();
         }
         {
             // + einsum('imae,me->ia', t2, Fme): contract m,e ; left-free i,a ;
@@ -459,7 +491,11 @@ pub fn ccsd(
             // - einsum('nf,naif->ia', t1, ovov): contract n,f ; left-free (none) ;
             // right-free a,i -> 'ai'; want 'ia' = permute.
             let ai: ArrayD<f64> = einsum!("nf,naif->ai", &t1_t, &ovov);
-            r1 = r1 - ai.view().permuted_axes(IxDyn(&[1, 0])).as_standard_layout().into_owned();
+            r1 = r1
+                - ai.view()
+                    .permuted_axes(IxDyn(&[1, 0]))
+                    .as_standard_layout()
+                    .into_owned();
         }
         {
             // - 0.5 einsum('imef,maef->ia', t2, ovvv): contract m,e,f ; left-free i ;
@@ -471,7 +507,12 @@ pub fn ccsd(
             // - 0.5 einsum('mnae,nmei->ia', t2, oovo): contract m,n,e ; left-free a ;
             // right-free i -> 'ai'; want 'ia' = permute.
             let ai: ArrayD<f64> = einsum!("mnae,nmei->ai", &t2_t, &oovo);
-            r1 = r1 - 0.5 * ai.view().permuted_axes(IxDyn(&[1, 0])).as_standard_layout().into_owned();
+            r1 = r1
+                - 0.5
+                    * ai.view()
+                        .permuted_axes(IxDyn(&[1, 0]))
+                        .as_standard_layout()
+                        .into_owned();
         }
 
         // ===================== T2 residual =====================
@@ -494,7 +535,11 @@ pub fn ccsd(
             // mj = Fmi + 0.5 einsum('je,me->mj', t1, Fme): einsum('je,me->jm') contract e ;
             // left-free j ; right-free m -> 'jm'; want 'mj' = permute.
             let jm: ArrayD<f64> = einsum!("je,me->jm", &t1_t, &fme_t);
-            let mj_part = jm.view().permuted_axes(IxDyn(&[1, 0])).as_standard_layout().into_owned();
+            let mj_part = jm
+                .view()
+                .permuted_axes(IxDyn(&[1, 0]))
+                .as_standard_layout()
+                .into_owned();
             let mj = &fmi + &(0.5 * mj_part);
             let mj_t = lbl2(mj, [O, O]);
             // einsum('imab,mj->ijab', t2, mj): contract m ; left-free i,a,b ;
@@ -560,10 +605,20 @@ pub fn ccsd(
 
         // DIIS on T2 (error = increment). T1 plain.
         let err = &t2_new - &t2_prev;
-        let t2_flat = t2_new.view().into_shape_with_order((dim, dim)).unwrap().to_owned();
-        let err_flat = err.view().into_shape_with_order((dim, dim)).unwrap().to_owned();
+        let t2_flat = t2_new
+            .view()
+            .into_shape_with_order((dim, dim))
+            .unwrap()
+            .to_owned();
+        let err_flat = err
+            .view()
+            .into_shape_with_order((dim, dim))
+            .unwrap()
+            .to_owned();
         let t2_ext = diis.step(&t2_flat, &err_flat);
-        t2 = t2_ext.into_shape_with_order(IxDyn(&[no2, no2, nv2, nv2])).unwrap();
+        t2 = t2_ext
+            .into_shape_with_order(IxDyn(&[no2, no2, nv2, nv2]))
+            .unwrap();
         t2_prev = t2.clone();
         t1 = t1_new;
 
@@ -589,12 +644,18 @@ pub fn ccsd(
                 "spin-orbital CCSD converged in {} iterations. E_corr = {:.10}",
                 iter, e_corr
             );
-            return Ok(CcResult { correlation_energy: e_corr, t1: Some(t1_out), t2: t2_out });
+            return Ok(CcResult {
+                correlation_energy: e_corr,
+                t1: Some(t1_out),
+                t2: t2_out,
+            });
         }
         e_old = e_corr;
     }
 
-    Err(FerricError::Convergence("spin-orbital CCSD did not converge".into()))
+    Err(FerricError::Convergence(
+        "spin-orbital CCSD did not converge".into(),
+    ))
 }
 
 /// Clone the underlying `ArrayD` out of a labeled `Tensor<4>` (used to seed a
@@ -627,7 +688,12 @@ mod tests {
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        let cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-9, ..Default::default() };
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-9,
+            ..Default::default()
+        };
         let r = ccsd(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         println!("CCSD H2/STO-3G E_corr = {:.10}", r.correlation_energy);
         assert!(
@@ -653,7 +719,12 @@ mod tests {
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        let cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-9, ..Default::default() };
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-9,
+            ..Default::default()
+        };
         let r = ccsd(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         println!("CCSD H2O/cc-pVDZ E_corr = {:.10}", r.correlation_energy);
         assert!(
@@ -681,7 +752,12 @@ mod tests {
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        let cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-9, ..Default::default() };
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-9,
+            ..Default::default()
+        };
         let r = ccsd(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         println!("CCSD CH4/STO-3G E_corr = {:.10}", r.correlation_energy);
         assert!(
@@ -712,7 +788,10 @@ mod tests {
             Ok(_) => panic!("CCSD should fail fast under tiny budget"),
         };
         let msg = err.to_string();
-        assert!(msg.contains("CCSD") && msg.contains("budget is"), "unexpected: {msg}");
+        assert!(
+            msg.contains("CCSD") && msg.contains("budget is"),
+            "unexpected: {msg}"
+        );
     }
 
     /// An AMPLE budget must still run to completion. An over-estimating guard

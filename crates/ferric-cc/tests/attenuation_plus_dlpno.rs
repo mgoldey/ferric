@@ -58,7 +58,11 @@ fn attenuation_vs_coulomb_pair_locality() {
     let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let scf = RhfConfig { density_conv: 1e-9, max_iter: 200, ..Default::default() };
+    let scf = RhfConfig {
+        density_conv: 1e-9,
+        max_iter: 200,
+        ..Default::default()
+    };
     let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf).unwrap();
     assert!(rhf.converged, "SCF must converge");
 
@@ -68,7 +72,11 @@ fn attenuation_vs_coulomb_pair_locality() {
     // Pair-resolved MP2-like weight: for each occupied pair, how much correlation
     // does it carry? Built from the first-order amplitudes under each operator, so
     // "locality of the correlation" is measured directly rather than inferred.
-    let cc = CcConfig { energy_conv: 1e-10, max_iter: 100, ..Default::default() };
+    let cc = CcConfig {
+        energy_conv: 1e-10,
+        max_iter: 100,
+        ..Default::default()
+    };
     let ops: Vec<(&str, Operator)> = vec![
         ("Coulomb    ", Operator::coulomb()),
         ("erfc(0.10) ", Operator::erfc(0.10)),
@@ -88,8 +96,9 @@ fn attenuation_vs_coulomb_pair_locality() {
     let mut retentions: Vec<(String, Vec<f64>)> = Vec::new();
 
     for (label, op) in &ops {
-        let e_full =
-            linlccd(&mol, &obs, &dfbs, *op, &rhf, &cc, LadderVariant::Hh).unwrap().correlation_energy;
+        let e_full = linlccd(&mol, &obs, &dfbs, *op, &rhf, &cc, LadderVariant::Hh)
+            .unwrap()
+            .correlation_energy;
 
         let mut fracs = Vec::new();
         let mut cells = String::new();
@@ -146,92 +155,121 @@ fn pair_resolved_correlation_vs_distance() {
     use ferric_mp2::rimp2::{compute_rpa_intermediates, RiMp2Config};
 
     let ctx = ParallelContext::default();
-    for path in ["../../testdata/molecules/benzene.xyz", "../../testdata/molecules/alkane_8.xyz"] {
-    let mol = Molecule::load_xyz(path).unwrap();
-    let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
-    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
-    let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let scf = RhfConfig { density_conv: 1e-9, max_iter: 200, ..Default::default() };
-    let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf).unwrap();
-    let centers = boys_centers(&mol, &obs, &rhf);
-    eprintln!("\n=== {path}");
+    for path in [
+        "../../testdata/molecules/benzene.xyz",
+        "../../testdata/molecules/alkane_8.xyz",
+    ] {
+        let mol = Molecule::load_xyz(path).unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
+        let scf = RhfConfig {
+            density_conv: 1e-9,
+            max_iter: 200,
+            ..Default::default()
+        };
+        let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf).unwrap();
+        let centers = boys_centers(&mol, &obs, &rhf);
+        eprintln!("\n=== {path}");
 
-    let radii = [2.0_f64, 4.0, 6.0, 8.0, 12.0];
-    eprintln!("cumulative fraction of |E_corr(MP2)| within a pair radius");
-    eprintln!("(normalized per operator; higher = more local)\n");
-    eprintln!("{:12} {:>12} | {:>7} {:>7} {:>7} {:>7} {:>7}",
-              "operator", "E_corr", "2 Bohr", "4 Bohr", "6 Bohr", "8 Bohr", "12 Bohr");
+        let radii = [2.0_f64, 4.0, 6.0, 8.0, 12.0];
+        eprintln!("cumulative fraction of |E_corr(MP2)| within a pair radius");
+        eprintln!("(normalized per operator; higher = more local)\n");
+        eprintln!(
+            "{:12} {:>12} | {:>7} {:>7} {:>7} {:>7} {:>7}",
+            "operator", "E_corr", "2 Bohr", "4 Bohr", "6 Bohr", "8 Bohr", "12 Bohr"
+        );
 
-    let mut curves: Vec<(String, Vec<f64>)> = Vec::new();
-    for (label, op) in [("Coulomb    ", Operator::coulomb()),
-                        ("erfc(0.10) ", Operator::erfc(0.10)),
-                        ("erfc(0.42) ", Operator::erfc(0.42)),
-                        ("erfc(1.00) ", Operator::erfc(1.00))] {
-        let inter = compute_rpa_intermediates(
-            &mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
-        let (no, nv, naux) = (inter.nocc, inter.nvir, inter.naux);
-        let b = &inter.b_ov;
-        let eps = rhf.eps_r();
-        let (fo, not_) = (inter.first_occ, inter.nocc_total);
+        let mut curves: Vec<(String, Vec<f64>)> = Vec::new();
+        for (label, op) in [
+            ("Coulomb    ", Operator::coulomb()),
+            ("erfc(0.10) ", Operator::erfc(0.10)),
+            ("erfc(0.42) ", Operator::erfc(0.42)),
+            ("erfc(1.00) ", Operator::erfc(1.00)),
+        ] {
+            let inter =
+                compute_rpa_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default())
+                    .unwrap();
+            let (no, nv, naux) = (inter.nocc, inter.nvir, inter.naux);
+            let b = &inter.b_ov;
+            let eps = rhf.eps_r();
+            let (fo, not_) = (inter.first_occ, inter.nocc_total);
 
-        // Pair-resolved MP2 correlation energies.
-        let mut e_pair = vec![0.0f64; no * no];
-        for i in 0..no {
-            for j in 0..no {
-                let mut acc = 0.0;
-                for a in 0..nv {
-                    for bb in 0..nv {
-                        let iajb: f64 = (0..naux).map(|p| b[(p, i*nv+a)] * b[(p, j*nv+bb)]).sum();
-                        let ibja: f64 = (0..naux).map(|p| b[(p, i*nv+bb)] * b[(p, j*nv+a)]).sum();
-                        let d = eps[fo+i] + eps[fo+j] - eps[not_+a] - eps[not_+bb];
-                        acc += (2.0*iajb - ibja) * iajb / d;
-                    }
-                }
-                e_pair[i*no + j] = acc;
-            }
-        }
-        let total: f64 = e_pair.iter().sum();
-
-        let mut cells = String::new();
-        let mut fr = Vec::new();
-        for &r in &radii {
-            let mut inside = 0.0;
+            // Pair-resolved MP2 correlation energies.
+            let mut e_pair = vec![0.0f64; no * no];
             for i in 0..no {
                 for j in 0..no {
-                    let dist: f64 = (0..3).map(|ax|
-                        (centers[(i,ax)] - centers[(j,ax)]).powi(2)).sum::<f64>().sqrt();
-                    if dist <= r { inside += e_pair[i*no + j]; }
+                    let mut acc = 0.0;
+                    for a in 0..nv {
+                        for bb in 0..nv {
+                            let iajb: f64 = (0..naux)
+                                .map(|p| b[(p, i * nv + a)] * b[(p, j * nv + bb)])
+                                .sum();
+                            let ibja: f64 = (0..naux)
+                                .map(|p| b[(p, i * nv + bb)] * b[(p, j * nv + a)])
+                                .sum();
+                            let d = eps[fo + i] + eps[fo + j] - eps[not_ + a] - eps[not_ + bb];
+                            acc += (2.0 * iajb - ibja) * iajb / d;
+                        }
+                    }
+                    e_pair[i * no + j] = acc;
                 }
             }
-            let f = inside / total;
-            fr.push(f);
-            cells.push_str(&format!(" {f:>7.4}"));
-        }
-        eprintln!("{label} {total:>12.8} |{cells}");
-        curves.push((label.to_string(), fr));
-    }
+            let total: f64 = e_pair.iter().sum();
 
-    // Compare each attenuated curve to Coulomb at every radius.
-    let coul = curves[0].1.clone();
-    eprintln!("\ndifference vs Coulomb (positive = MORE local under attenuation):");
-    for (label, c) in &curves[1..] {
-        let d: Vec<String> = c.iter().zip(&coul).map(|(x,y)| format!("{:+.4}", x-y)).collect();
-        eprintln!("{label}              | {}", d.join(" "));
-    }
-
-    // Sanity: cumulative fractions must be monotone and reach ~1 at large radius.
-    for (label, c) in &curves {
-        for k in 1..c.len() {
-            assert!(c[k] >= c[k-1] - 1e-9, "{label}: cumulative fraction not monotone");
+            let mut cells = String::new();
+            let mut fr = Vec::new();
+            for &r in &radii {
+                let mut inside = 0.0;
+                for i in 0..no {
+                    for j in 0..no {
+                        let dist: f64 = (0..3)
+                            .map(|ax| (centers[(i, ax)] - centers[(j, ax)]).powi(2))
+                            .sum::<f64>()
+                            .sqrt();
+                        if dist <= r {
+                            inside += e_pair[i * no + j];
+                        }
+                    }
+                }
+                let f = inside / total;
+                fr.push(f);
+                cells.push_str(&format!(" {f:>7.4}"));
+            }
+            eprintln!("{label} {total:>12.8} |{cells}");
+            curves.push((label.to_string(), fr));
         }
-        // NOT asserted to reach 1.0: the largest radius only captures everything
-        // when it exceeds the molecule's own extent. C8 is longer than 12 Bohr, so
-        // its curve legitimately tops out around 0.88 -- asserting 1.0 here was a
-        // benzene-shaped assumption, not a property of the decomposition.
-        assert!(c[c.len()-1] > 0.5,
+
+        // Compare each attenuated curve to Coulomb at every radius.
+        let coul = curves[0].1.clone();
+        eprintln!("\ndifference vs Coulomb (positive = MORE local under attenuation):");
+        for (label, c) in &curves[1..] {
+            let d: Vec<String> = c
+                .iter()
+                .zip(&coul)
+                .map(|(x, y)| format!("{:+.4}", x - y))
+                .collect();
+            eprintln!("{label}              | {}", d.join(" "));
+        }
+
+        // Sanity: cumulative fractions must be monotone and reach ~1 at large radius.
+        for (label, c) in &curves {
+            for k in 1..c.len() {
+                assert!(
+                    c[k] >= c[k - 1] - 1e-9,
+                    "{label}: cumulative fraction not monotone"
+                );
+            }
+            // NOT asserted to reach 1.0: the largest radius only captures everything
+            // when it exceeds the molecule's own extent. C8 is longer than 12 Bohr, so
+            // its curve legitimately tops out around 0.88 -- asserting 1.0 here was a
+            // benzene-shaped assumption, not a property of the decomposition.
+            assert!(
+                c[c.len() - 1] > 0.5,
                 "{label}: largest radius should capture most correlation, got {:.6}",
-                c[c.len()-1]);
-    }
+                c[c.len() - 1]
+            );
+        }
     }
 }
 
@@ -244,18 +282,30 @@ fn attenuation_reduces_total_correlation() {
     let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let scf = RhfConfig { density_conv: 1e-9, max_iter: 200, ..Default::default() };
+    let scf = RhfConfig {
+        density_conv: 1e-9,
+        max_iter: 200,
+        ..Default::default()
+    };
     let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf).unwrap();
-    let cc = CcConfig { energy_conv: 1e-10, max_iter: 100, ..Default::default() };
+    let cc = CcConfig {
+        energy_conv: 1e-10,
+        max_iter: 100,
+        ..Default::default()
+    };
 
     let e = |op: Operator| {
-        linlccd(&mol, &obs, &dfbs, op, &rhf, &cc, LadderVariant::Hh).unwrap().correlation_energy
+        linlccd(&mol, &obs, &dfbs, op, &rhf, &cc, LadderVariant::Hh)
+            .unwrap()
+            .correlation_energy
     };
     let e_coul = e(Operator::coulomb());
     let e_01 = e(Operator::erfc(0.10));
     let e_10 = e(Operator::erfc(1.00));
 
-    eprintln!("water/STO-3G LinLCCD(hh): Coulomb {e_coul:.8}  erfc(0.1) {e_01:.8}  erfc(1.0) {e_10:.8}");
+    eprintln!(
+        "water/STO-3G LinLCCD(hh): Coulomb {e_coul:.8}  erfc(0.1) {e_01:.8}  erfc(1.0) {e_10:.8}"
+    );
     assert!(e_coul < 0.0 && e_01 < 0.0 && e_10 < 0.0);
     assert!(
         e_10.abs() < e_coul.abs(),

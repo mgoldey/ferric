@@ -43,11 +43,16 @@ fn h2o_atz_rpa(blas_threads: &str) -> f64 {
         &obs,
         op,
         &bounds,
-        &RhfConfig { max_iter: 100, ..Default::default() },
+        &RhfConfig {
+            max_iter: 100,
+            ..Default::default()
+        },
     )
     .unwrap();
     assert!(rhf.converged, "H2O/aug-cc-pVTZ RHF must converge");
-    let e = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &PdepRpaConfig::default()).unwrap().e_rpa;
+    let e = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &PdepRpaConfig::default())
+        .unwrap()
+        .e_rpa;
     std::env::remove_var("FERRIC_LANCZOS_BLAS_THREADS");
     e
 }
@@ -60,8 +65,14 @@ fn lanczos_blas_raise_does_not_abort_on_aug_cc_pvtz() {
     let e_serial = h2o_atz_rpa("1");
     let e_raised = h2o_atz_rpa("12");
 
-    assert!(e_serial.is_finite() && e_serial < 0.0, "serial RPA energy is not sane: {e_serial}");
-    assert!(e_raised.is_finite() && e_raised < 0.0, "raised RPA energy is not sane: {e_raised}");
+    assert!(
+        e_serial.is_finite() && e_serial < 0.0,
+        "serial RPA energy is not sane: {e_serial}"
+    );
+    assert!(
+        e_raised.is_finite() && e_raised < 0.0,
+        "raised RPA energy is not sane: {e_raised}"
+    );
 
     // Raising BLAS threads reorders reductions, so this is not expected to be
     // bit-identical — but it must agree far below anything physically

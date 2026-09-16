@@ -15,7 +15,8 @@ use std::os::raw::{c_char, c_double, c_int, c_void};
 use std::time::Instant;
 
 fn load1() -> f64 {
-    std::fs::read_to_string("/proc/loadavg").ok()
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()
         .and_then(|l| l.split_whitespace().next().and_then(|v| v.parse().ok()))
         .unwrap_or(-1.0)
 }
@@ -31,10 +32,14 @@ fn sweep_libint2(prep: &PreparedBasis, dfbs: &PreparedBasis, r0: f64, omega: f64
             // aux shells too, and the aux set goes higher than obs here.
             // Sizing from obs alone aborts libint2 with
             // "the angular momentum limit is exceeded". Matches Engine::new_3center.
-            r0, omega, 3,
+            r0,
+            omega,
+            3,
             prep.max_nprim().max(dfbs.max_nprim()),
-            prep.max_l().max(dfbs.max_l()), 0.0,
-            cdir.as_ptr() as *const c_char)
+            prep.max_l().max(dfbs.max_l()),
+            0.0,
+            cdir.as_ptr() as *const c_char,
+        )
     };
     assert!(!h.is_null(), "libint2 terf engine construction failed");
     let dims_o = prep.shell_dims();
@@ -48,10 +53,19 @@ fn sweep_libint2(prep: &PreparedBasis, dfbs: &PreparedBasis, r0: f64, omega: f64
             for s2 in 0..=s1 {
                 // SAFETY: in-bounds shells; buf sized for the largest block.
                 let n = unsafe {
-                    ffi::scf_compute_eri3(h, prep.handle(), dfbs.handle(),
-                        p as c_int, s1 as c_int, s2 as c_int, buf.as_mut_ptr())
+                    ffi::scf_compute_eri3(
+                        h,
+                        prep.handle(),
+                        dfbs.handle(),
+                        p as c_int,
+                        s1 as c_int,
+                        s2 as c_int,
+                        buf.as_mut_ptr(),
+                    )
                 };
-                if n > 0 { acc += buf[0]; }
+                if n > 0 {
+                    acc += buf[0];
+                }
             }
         }
     }
@@ -87,36 +101,51 @@ fn sweep_md(prep: &PreparedBasis, dfbs: &PreparedBasis, op: Operator) -> f64 {
 #[ignore = "timing; run with --ignored --nocapture on a QUIET box"]
 fn libint2_terf_vs_md_timing() {
     let Ok(_) = std::env::var("FERRIC_TERF_TABLE_DIR") else {
-        eprintln!("SKIP: FERRIC_TERF_TABLE_DIR unset"); return;
+        eprintln!("SKIP: FERRIC_TERF_TABLE_DIR unset");
+        return;
     };
     let name = std::env::var("FERRIC_BENCH_MOL").unwrap_or_else(|_| "alkane_10".into());
     let mol = Molecule::load_xyz(&format!(
-        "{}/../../testdata/molecules/{name}.xyz", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        "{}/../../testdata/molecules/{name}.xyz",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
     let obsname = std::env::var("FERRIC_BENCH_BASIS").unwrap_or_else(|_| "cc-pvdz".into());
     let auxname = std::env::var("FERRIC_BENCH_AUX").unwrap_or_else(|_| "cc-pvdz-ri".into());
     let obs = PreparedBasis::new(&mol, &basis::bundled(&obsname).unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled(&auxname).unwrap()).unwrap();
-    let r0: f64 = std::env::var("FERRIC_BENCH_R0").ok()
-        .and_then(|v| v.parse().ok()).unwrap_or(2.0);
+    let r0: f64 = std::env::var("FERRIC_BENCH_R0")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2.0);
     let omega = 1.0 / (r0 * 2.0_f64.sqrt());
 
-    eprintln!("\n=== {name} / {obsname}+{auxname} r0={r0}: nbf={} naux={}  load1={:.2} ===",
-              obs.nbasis(), dfbs.nbasis(), load1());
+    eprintln!(
+        "\n=== {name} / {obsname}+{auxname} r0={r0}: nbf={} naux={}  load1={:.2} ===",
+        obs.nbasis(),
+        dfbs.nbasis(),
+        load1()
+    );
 
     // Interleaved, minima of 3 -- the box drifts, so alternate every arm.
     let (mut c, mut e, mut md, mut li) = (f64::MAX, f64::MAX, f64::MAX, f64::MAX);
-    let rounds: usize = std::env::var("FERRIC_BENCH_ROUNDS").ok()
-        .and_then(|v| v.parse().ok()).unwrap_or(3);
+    let rounds: usize = std::env::var("FERRIC_BENCH_ROUNDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3);
     for _ in 0..rounds {
-        c  = c.min(sweep_md(&obs, &dfbs, Operator::coulomb()));
-        e  = e.min(sweep_md(&obs, &dfbs, Operator::erfc(0.222234)));
+        c = c.min(sweep_md(&obs, &dfbs, Operator::coulomb()));
+        e = e.min(sweep_md(&obs, &dfbs, Operator::erfc(0.222234)));
         md = md.min(sweep_md(&obs, &dfbs, Operator::terf(r0)));
         li = li.min(sweep_libint2(&obs, &dfbs, r0, omega));
     }
     eprintln!("  libint2 coulomb   {c:8.3}s   1.00x");
     eprintln!("  libint2 erfc      {e:8.3}s  {:5.2}x", e / c);
     eprintln!("  MD terf (today)   {md:8.3}s  {:5.2}x", md / c);
-    eprintln!("  libint2 terf NEW  {li:8.3}s  {:5.2}x   <-- speedup vs MD: {:.1}x",
-              li / c, md / li);
+    eprintln!(
+        "  libint2 terf NEW  {li:8.3}s  {:5.2}x   <-- speedup vs MD: {:.1}x",
+        li / c,
+        md / li
+    );
     eprintln!("  load1 after={:.2}", load1());
 }

@@ -10,6 +10,7 @@ UNEVALUATED, not scored as zero — see `test_strain_and_fit.py`), but it is
 confusing to debug from the symptom, so the constant is sourced from one place
 and pinned here.
 """
+
 from __future__ import annotations
 
 import pytest

@@ -164,7 +164,11 @@ impl SiteBasis {
         let shell_to_atom = prep.shell_to_atom();
         let mut site_shell = vec![usize::MAX; sites.len()];
         for (sh, &atom_idx) in shell_to_atom.iter().enumerate() {
-            debug_assert_eq!(site_shell[atom_idx], usize::MAX, "site {atom_idx} has more than one shell");
+            debug_assert_eq!(
+                site_shell[atom_idx],
+                usize::MAX,
+                "site {atom_idx} has more than one shell"
+            );
             site_shell[atom_idx] = sh;
         }
         assert!(
@@ -175,7 +179,12 @@ impl SiteBasis {
         let zeta: Vec<f64> = sites.iter().map(|s| s[3]).collect();
         let norm_int: Vec<f64> = zeta.iter().map(|&z| norm_int_s_shell(z)).collect();
 
-        Ok(SiteBasis { prep, site_shell, zeta, norm_int })
+        Ok(SiteBasis {
+            prep,
+            site_shell,
+            zeta,
+            norm_int,
+        })
     }
 }
 
@@ -223,7 +232,12 @@ mod tests {
 
         // Independent path: point-charge nuclear attraction.
         let ext = ExternalPotential {
-            point_charges: vec![PointCharge { q, x: site_xyz[0], y: site_xyz[1], z: site_xyz[2] }],
+            point_charges: vec![PointCharge {
+                q,
+                x: site_xyz[0],
+                y: site_xyz[1],
+                z: site_xyz[2],
+            }],
             smeared_charges: Vec::new(),
             field: None,
         };
@@ -261,7 +275,9 @@ mod tests {
             }
         }
 
-        let max_diff = (&v_site - &v_point).iter().fold(0.0_f64, |acc, &x| acc.max(x.abs()));
+        let max_diff = (&v_site - &v_point)
+            .iter()
+            .fold(0.0_f64, |acc, &x| acc.max(x.abs()));
         assert!(
             max_diff < 1e-9,
             "tight-zeta SiteBasis attraction disagrees with point-charge attraction by {max_diff:.3e} \
@@ -280,14 +296,24 @@ mod tests {
     fn distinct_widths_form_distinct_groups() {
         let sites = [[0.0, 0.0, 0.0, 1.0], [5.0, 0.0, 0.0, 4.0]];
         let sb = SiteBasis::new(&sites, 0).unwrap();
-        assert_eq!(sb.prep.nshells(), 2, "two distinct zetas must produce two shells");
+        assert_eq!(
+            sb.prep.nshells(),
+            2,
+            "two distinct zetas must produce two shells"
+        );
         assert_eq!(sb.site_shell.len(), 2);
-        assert_ne!(sb.site_shell[0], sb.site_shell[1], "distinct sites must map to distinct shells");
+        assert_ne!(
+            sb.site_shell[0], sb.site_shell[1],
+            "distinct sites must map to distinct shells"
+        );
         assert_eq!(sb.zeta, vec![1.0, 4.0]);
         // norm_int must track each site's OWN zeta, not get shared/aliased.
         assert!((sb.norm_int[0] - norm_int_s_shell(1.0)).abs() < 1e-14);
         assert!((sb.norm_int[1] - norm_int_s_shell(4.0)).abs() < 1e-14);
-        assert!((sb.norm_int[0] - sb.norm_int[1]).abs() > 1e-3, "distinct zetas must give distinct norm_int");
+        assert!(
+            (sb.norm_int[0] - sb.norm_int[1]).abs() > 1e-3,
+            "distinct zetas must give distinct norm_int"
+        );
     }
 
     /// Two sites sharing the SAME zeta land on the same pseudo-element (basis

@@ -10,6 +10,7 @@ stdout, not the [spike] lines.
 Usage: aggregate_trustmap.py <out1> <out2> ...
    or: aggregate_trustmap.py            (auto-globs scripts/queue/out/trunc_*FINEGRID*.out)
 """
+
 import re
 import sys
 from pathlib import Path
@@ -61,24 +62,32 @@ def main():
     print("# PDEP-truncation: compression vs accuracy across system size")
     print("#")
     print("# At the PRODUCTION 1e-4 default — modes kept and accuracy cost:")
-    print(f"{'system':10} {'atoms':>5} {'naux':>5} {'M@1e-4':>7} {'kept%':>6} "
-          f"| {'dE(µHa)':>8} {'dIP(meV)':>9} {'da(%)':>7} {'dC6(%)':>7}")
+    print(
+        f"{'system':10} {'atoms':>5} {'naux':>5} {'M@1e-4':>7} {'kept%':>6} "
+        f"| {'dE(µHa)':>8} {'dIP(meV)':>9} {'da(%)':>7} {'dC6(%)':>7}"
+    )
     print("-" * 80)
     for name, rows, _gw in runs:
         r = at_thresh(rows, 1e-4)
         kept = 100.0 * r["mk"] / r["na"]
-        print(f"{name:10} {NATOM.get(name,0):>5} {r['na']:>5} {r['mk']:>7} {kept:>5.0f}% "
-              f"| {r['de']*1e6:>8.2f} {r['dip']*1e3:>9.3f} {r['da']:>7.3f} {r['dc6']:>7.3f}")
+        print(
+            f"{name:10} {NATOM.get(name, 0):>5} {r['na']:>5} {r['mk']:>7} {kept:>5.0f}% "
+            f"| {r['de'] * 1e6:>8.2f} {r['dip'] * 1e3:>9.3f} {r['da']:>7.3f} {r['dc6']:>7.3f}"
+        )
 
     print("\n# How hard can you compress? (largest swept thresh = aggressive end)")
-    print(f"{'system':10} {'M@max':>6} {'kept%':>6} {'thresh':>7} "
-          f"| {'dE(mHa)':>8} {'da(%)':>7} {'dC6(%)':>7}")
+    print(
+        f"{'system':10} {'M@max':>6} {'kept%':>6} {'thresh':>7} "
+        f"| {'dE(mHa)':>8} {'da(%)':>7} {'dC6(%)':>7}"
+    )
     print("-" * 66)
     for name, rows, _gw in runs:
         r = max(rows, key=lambda x: x["th"])
         kept = 100.0 * r["mk"] / r["na"]
-        print(f"{name:10} {r['mk']:>6} {kept:>5.0f}% {r['th']:>7.0e} "
-              f"| {r['de']*1e3:>8.3f} {r['da']:>7.3f} {r['dc6']:>7.3f}")
+        print(
+            f"{name:10} {r['mk']:>6} {kept:>5.0f}% {r['th']:>7.0e} "
+            f"| {r['de'] * 1e3:>8.3f} {r['da']:>7.3f} {r['dc6']:>7.3f}"
+        )
 
     print("\n# Reading: at 1e-4, larger systems drop a LARGER mode fraction at the")
     print("# same (near-zero) accuracy cost — which is exactly where PDEP truncation")

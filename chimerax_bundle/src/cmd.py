@@ -8,6 +8,7 @@ pocket name produced by `activesite charges`, etc.). Anything you can do from
 these commands, you can do identically from a plain Python script or
 notebook by importing tools.active_site directly — that's the point.
 """
+
 from __future__ import annotations
 
 import sys
@@ -33,6 +34,7 @@ _ENERGIES: dict[str, object] = {}
 
 def _write_structure_pdb(session, structure, out_path: Path) -> None:
     from chimerax.pdb import save_pdb
+
     save_pdb(session, str(out_path), models=[structure])
 
 
@@ -72,13 +74,17 @@ activesite_charges_desc = CmdDesc(
 )
 
 
-def activesite_embed(session, structures, pocket_name: str, name: str, basis: str = "def2-svp"):
+def activesite_embed(
+    session, structures, pocket_name: str, name: str, basis: str = "def2-svp"
+):
     """Embed an open ligand structure against a stored pocket, under `name`."""
     from tools.active_site.ligand_embedding import embed_ligand
     import tempfile
 
     if pocket_name not in _POCKETS:
-        raise ValueError(f"no pocket named '{pocket_name}' — run activesite_charges first")
+        raise ValueError(
+            f"no pocket named '{pocket_name}' — run activesite_charges first"
+        )
     if len(structures) != 1:
         raise ValueError("activesite_embed expects exactly one structure")
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -94,20 +100,34 @@ def activesite_embed(session, structures, pocket_name: str, name: str, basis: st
 
 
 activesite_embed_desc = CmdDesc(
-    required=[("structures", AtomicStructuresArg), ("pocket_name", StringArg), ("name", StringArg)],
+    required=[
+        ("structures", AtomicStructuresArg),
+        ("pocket_name", StringArg),
+        ("name", StringArg),
+    ],
     keyword=[("basis", StringArg)],
     synopsis="Embed a ligand structure against a stored pocket",
 )
 
 
-def activesite_energy(session, embedded_name: str, name: str,
-                       method: str = "rhf", xc: str = None, field: bool = True):
+def activesite_energy(
+    session,
+    embedded_name: str,
+    name: str,
+    method: str = "rhf",
+    xc: str = None,
+    field: bool = True,
+):
     """Compute an energy for a stored embedded ligand, under `name`."""
     from tools.active_site.energy import compute_energy
 
     if embedded_name not in _EMBEDDED:
-        raise ValueError(f"no embedded ligand named '{embedded_name}' — run activesite_embed first")
-    result = compute_energy(_EMBEDDED[embedded_name], method=method, xc=xc, use_field=field)
+        raise ValueError(
+            f"no embedded ligand named '{embedded_name}' — run activesite_embed first"
+        )
+    result = compute_energy(
+        _EMBEDDED[embedded_name], method=method, xc=xc, use_field=field
+    )
     _ENERGIES[name] = result
     session.logger.info(
         f"activesite energy: '{name}' = {result.energy:.8f} Ha "
@@ -142,9 +162,15 @@ activesite_properties_desc = CmdDesc(
 )
 
 
-def activesite_bindingenergy(session, ligand_structures, pocket_structures,
-                              basis: str = "def2-svp", method: str = "rhf", xc: str = None,
-                              ff: str = "AMBER"):
+def activesite_bindingenergy(
+    session,
+    ligand_structures,
+    pocket_structures,
+    basis: str = "def2-svp",
+    method: str = "rhf",
+    xc: str = None,
+    ff: str = "AMBER",
+):
     """Straight passthrough to compute_binding_energy — the common-case
     one-shot command, built from the same stages as the others above.
     """
@@ -152,14 +178,21 @@ def activesite_bindingenergy(session, ligand_structures, pocket_structures,
     import tempfile
 
     if len(ligand_structures) != 1 or len(pocket_structures) != 1:
-        raise ValueError("activesite_bindingenergy expects exactly one ligand and one pocket structure")
+        raise ValueError(
+            "activesite_bindingenergy expects exactly one ligand and one pocket structure"
+        )
     with tempfile.TemporaryDirectory() as tmpdir:
         ligand_xyz = Path(tmpdir) / "ligand.xyz"
         pocket_pdb = Path(tmpdir) / "pocket.pdb"
         _write_structure_xyz(session, ligand_structures[0], ligand_xyz)
         _write_structure_pdb(session, pocket_structures[0], pocket_pdb)
         result = compute_binding_energy(
-            ligand_xyz, pocket_pdb, basis=basis, method=method, xc=xc, ff=ff,
+            ligand_xyz,
+            pocket_pdb,
+            basis=basis,
+            method=method,
+            xc=xc,
+            ff=ff,
         )
     session.logger.info(
         f"activesite bindingenergy: dE = {result.delta_e_kcal_mol:.2f} kcal/mol "
@@ -169,7 +202,15 @@ def activesite_bindingenergy(session, ligand_structures, pocket_structures,
 
 
 activesite_bindingenergy_desc = CmdDesc(
-    required=[("ligand_structures", AtomicStructuresArg), ("pocket_structures", AtomicStructuresArg)],
-    keyword=[("basis", StringArg), ("method", StringArg), ("xc", StringArg), ("ff", StringArg)],
+    required=[
+        ("ligand_structures", AtomicStructuresArg),
+        ("pocket_structures", AtomicStructuresArg),
+    ],
+    keyword=[
+        ("basis", StringArg),
+        ("method", StringArg),
+        ("xc", StringArg),
+        ("ff", StringArg),
+    ],
     synopsis="Compute field-vs-vacuum binding energy for a ligand in a pocket",
 )

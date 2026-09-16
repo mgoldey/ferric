@@ -17,8 +17,8 @@ use ferric_mp2::rimp2::{compute_rpa_intermediates, RiMp2Config};
 use ferric_rpa::laplace_chi0::{build_laplace_for_gaps, dielectric_matrix_laplace};
 use ferric_rpa::sternheimer::dielectric_matrix;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::ScfResult;
 use ndarray::Array2;
 
 fn setup(
@@ -50,12 +50,15 @@ fn h2o_ccpvdz_laplace_matches_dense_at_static() {
         "cc-pvdz-ri",
     );
 
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: 0,
+        memory_budget_bytes: None,
+        ..Default::default()
+    };
     let inter = compute_rpa_intermediates(&mol, &obs, &dfbs, op, &rhf, &mp2_cfg).unwrap();
     let b_ov = &inter.b_ov;
     let eps_occ: Vec<f64> = rhf.eps_r()[inter.first_occ..inter.first_occ + inter.nocc].to_vec();
-    let eps_vir: Vec<f64> =
-        rhf.eps_r()[inter.nocc_total..inter.nocc_total + inter.nvir].to_vec();
+    let eps_vir: Vec<f64> = rhf.eps_r()[inter.nocc_total..inter.nocc_total + inter.nvir].to_vec();
 
     let naux = inter.naux;
     // Full identity subspace — every aux function is a trial vector.
@@ -99,13 +102,21 @@ fn small_system_laplace_static_tight() {
         ((p as f64 * 0.7).sin() + (ia as f64 * 0.3).cos()) * 0.2
     });
     let v_mat = Array2::from_shape_fn((naux, m), |(p, a)| {
-        if p == a { 1.0 } else { 0.05 * (p as f64 - a as f64) }
+        if p == a {
+            1.0
+        } else {
+            0.05 * (p as f64 - a as f64)
+        }
     });
 
     let dense = dielectric_matrix(&v_mat, &b_ov, &eps_occ, &eps_vir, 0.0);
     let q = build_laplace_for_gaps(&eps_occ, &eps_vir, 7).unwrap();
     let lap = dielectric_matrix_laplace(&v_mat, &b_ov, &eps_occ, &eps_vir, 0.0, &q);
-    let err = dense.iter().zip(lap.iter()).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
+    let err = dense
+        .iter()
+        .zip(lap.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0, f64::max);
     eprintln!("small-system static: max err = {err:.3e}");
     assert!(err < 1e-3, "small system Laplace vs Dense err = {err}");
 }

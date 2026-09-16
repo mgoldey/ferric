@@ -206,7 +206,9 @@ pub fn linlccd(
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + no]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + no])
+        .to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
     // V^{-1/2} metric and AO 3-center integrals under the requested operator.
@@ -230,17 +232,33 @@ pub fn linlccd(
     let oovv_t = Tensor::new(v_oovv.clone(), [Axis::O, Axis::O, Axis::V, Axis::V]);
 
     let oooo_t = if variant.needs_oooo() {
-        let b_oo = build_b(&transform_3center_oo(&eri3_ao, &c_occ), &v_inv_sqrt, Axis::O, Axis::O);
+        let b_oo = build_b(
+            &transform_3center_oo(&eri3_ao, &c_occ),
+            &v_inv_sqrt,
+            Axis::O,
+            Axis::O,
+        );
         let g_ijkl: ArrayD<f64> = einsum!("Pij,Pkl->ijkl", &b_oo, &b_oo);
-        Some(Tensor::new(asym_same(&g_ijkl, no), [Axis::O, Axis::O, Axis::O, Axis::O]))
+        Some(Tensor::new(
+            asym_same(&g_ijkl, no),
+            [Axis::O, Axis::O, Axis::O, Axis::O],
+        ))
     } else {
         None
     };
 
     let vvvv_t = if variant.needs_vvvv() {
-        let b_vv = build_b(&transform_3center_vv(&eri3_ao, &c_vir), &v_inv_sqrt, Axis::V, Axis::V);
+        let b_vv = build_b(
+            &transform_3center_vv(&eri3_ao, &c_vir),
+            &v_inv_sqrt,
+            Axis::V,
+            Axis::V,
+        );
         let g_abcd: ArrayD<f64> = einsum!("Pab,Pcd->abcd", &b_vv, &b_vv);
-        Some(Tensor::new(asym_same(&g_abcd, nv), [Axis::V, Axis::V, Axis::V, Axis::V]))
+        Some(Tensor::new(
+            asym_same(&g_abcd, nv),
+            [Axis::V, Axis::V, Axis::V, Axis::V],
+        ))
     } else {
         None
     };
@@ -252,11 +270,7 @@ pub fn linlccd(
     // plan's projected peak. Observational only — it never errors. This file's
     // guard had omitted `eri3_ao` outright before the plan rewrite above, which
     // is precisely the estimator-undershoot class this net exists to surface.
-    ferric_core::memory::warn_if_rss_over(
-        "LinLCCD MO blocks built",
-        plan.budget_bytes(),
-        1.1,
-    );
+    ferric_core::memory::warn_if_rss_over("LinLCCD MO blocks built", plan.budget_bytes(), 1.1);
 
     // --- Spin-orbital energies (even index = alpha, odd = beta) ---
     let mut eo = vec![0.0f64; no2];
@@ -298,7 +312,11 @@ pub fn linlccd(
         let d_e = (e_corr - e_old).abs();
         if iter > 0 && d_e < conv {
             let t2 = t.clone().into_dimensionality::<ndarray::Ix4>().unwrap();
-            return Ok(CcResult { correlation_energy: e_corr, t1: None, t2 });
+            return Ok(CcResult {
+                correlation_energy: e_corr,
+                t1: None,
+                t2,
+            });
         }
         e_old = e_corr;
 
@@ -322,10 +340,20 @@ pub fn linlccd(
         let t_new = &r / &d;
         let err = &t_new - &t;
 
-        let t_flat = t_new.view().into_shape_with_order((dim, dim)).unwrap().to_owned();
-        let err_flat = err.view().into_shape_with_order((dim, dim)).unwrap().to_owned();
+        let t_flat = t_new
+            .view()
+            .into_shape_with_order((dim, dim))
+            .unwrap()
+            .to_owned();
+        let err_flat = err
+            .view()
+            .into_shape_with_order((dim, dim))
+            .unwrap()
+            .to_owned();
         let t_ext = diis.step(&t_flat, &err_flat);
-        t = t_ext.into_shape_with_order(IxDyn(&[no2, no2, nv2, nv2])).unwrap();
+        t = t_ext
+            .into_shape_with_order(IxDyn(&[no2, no2, nv2, nv2]))
+            .unwrap();
     }
 
     Err(FerricError::Convergence(format!(

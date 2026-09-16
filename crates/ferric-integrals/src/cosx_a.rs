@@ -83,7 +83,12 @@ pub fn a_matrix_at_point_with(
 
     // Install a unit probe charge at r_g. libint2 then evaluates the
     // nuclear-attraction operator -1/|r - r_g|.
-    let probe = [CAtom { atomic_number: 1.0, x: r[0], y: r[1], z: r[2] }];
+    let probe = [CAtom {
+        atomic_number: 1.0,
+        x: r[0],
+        y: r[1],
+        z: r[2],
+    }];
     // SAFETY: `probe` is a stack-local CAtom slice alive for the call;
     // `handle_mut()` is the live engine pointer; length fits in c_int. The
     // shim catches C++ exceptions and returns a negative status.
@@ -128,7 +133,11 @@ pub fn a_matrix_at_point_with(
         }
     }
 
-    Ok(CosxPoint { a, pairs_kept, pairs_total })
+    Ok(CosxPoint {
+        a,
+        pairs_kept,
+        pairs_total,
+    })
 }
 
 /// Build the A-matrix at one grid point, creating a throwaway engine.

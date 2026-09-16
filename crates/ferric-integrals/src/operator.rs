@@ -69,7 +69,11 @@ impl Operator {
     /// Iterate over the (coefficient, kind, omega) triples of a composite operator.
     /// Returns an empty iterator for primitive operators.
     pub fn components(&self) -> impl Iterator<Item = (f64, OperatorKind, f64)> + '_ {
-        let n = if self.is_composite { self.num_components } else { 0 };
+        let n = if self.is_composite {
+            self.num_components
+        } else {
+            0
+        };
         (0..n).map(move |i| (self.c_coeffs[i], self.c_kinds[i], self.c_omegas[i]))
     }
 
@@ -137,7 +141,10 @@ impl Operator {
     /// (e.g. 1e-6) expecting a clean Coulomb limit on RI paths -- that regime is
     /// out of the kernel's table domain.
     pub fn yukawa(zeta: f64) -> Self {
-        debug_assert!(zeta > 0.0, "Yukawa decay parameter zeta must be > 0 (got {zeta})");
+        debug_assert!(
+            zeta > 0.0,
+            "Yukawa decay parameter zeta must be > 0 (got {zeta})"
+        );
         Self::primitive(OperatorKind::Yukawa, zeta, 0.0)
     }
 
@@ -262,9 +269,9 @@ impl Operator {
     pub fn terfc_fit(r0: f64) -> Self {
         let base_omega = 1.0 / (r0 * std::f64::consts::SQRT_2);
         let mut op = Self::composite(&[
-            ( 1.5, OperatorKind::ErfcCoulomb, base_omega * 0.8),
+            (1.5, OperatorKind::ErfcCoulomb, base_omega * 0.8),
             (-0.6, OperatorKind::ErfcCoulomb, base_omega * 1.2),
-            ( 0.1, OperatorKind::ErfcCoulomb, base_omega * 2.0),
+            (0.1, OperatorKind::ErfcCoulomb, base_omega * 2.0),
         ]);
         op.distance = r0;
         op

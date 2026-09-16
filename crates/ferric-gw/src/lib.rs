@@ -13,32 +13,32 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 
+/// Bethe-Salpeter equation (BSE-TDA) for optical excitations.
+pub mod bse;
+/// Closed-shell COHSEX (static screened exchange + Coulomb hole).
+pub mod cohsex;
 /// GW method variants: G0W0, evGW0, evGW, COHSEX, sc-COHSEX.
 pub mod method;
 /// Full MO-basis B-tensor (B^P_{mn}) construction for GW self-energy.
 pub mod mo_b;
-/// PDEP-as-W: screened Coulomb from dielectric eigenpotentials.
-pub mod w_pdep;
-/// Pade continued-fraction analytic continuation from imaginary to real axis.
-pub mod pade;
-/// Closed-shell GW self-energy: Sigma_c, QP solver, G0W0/evGW0/evGW dispatch.
-pub mod sigma;
-/// Closed-shell COHSEX (static screened exchange + Coulomb hole).
-pub mod cohsex;
-/// Bethe-Salpeter equation (BSE-TDA) for optical excitations.
-pub mod bse;
-/// TDHF/RPAx static polarizability (dense A/B formulation).
-pub mod tddft;
-/// Quasiparticle Newton solver: find QP pole of Dyson equation.
-pub mod qp;
-/// Spin-unrestricted GW self-energy (U-G0W0, U-evGW0, U-evGW).
-pub mod u_sigma;
-/// Spin-unrestricted COHSEX.
-pub mod u_cohsex;
-/// V_xc diagonal in MO basis (for GW@KS correction).
-pub mod vxc_mo;
 /// MPI-distributed GW self-energy evaluation.
 pub mod mpi_gw;
+/// Pade continued-fraction analytic continuation from imaginary to real axis.
+pub mod pade;
+/// Quasiparticle Newton solver: find QP pole of Dyson equation.
+pub mod qp;
+/// Closed-shell GW self-energy: Sigma_c, QP solver, G0W0/evGW0/evGW dispatch.
+pub mod sigma;
+/// TDHF/RPAx static polarizability (dense A/B formulation).
+pub mod tddft;
+/// Spin-unrestricted COHSEX.
+pub mod u_cohsex;
+/// Spin-unrestricted GW self-energy (U-G0W0, U-evGW0, U-evGW).
+pub mod u_sigma;
+/// V_xc diagonal in MO basis (for GW@KS correction).
+pub mod vxc_mo;
+/// PDEP-as-W: screened Coulomb from dielectric eigenpotentials.
+pub mod w_pdep;
 
 pub use method::GwMethod;
 
@@ -173,8 +173,11 @@ impl std::fmt::Display for GwResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let n_conv = self.qp_converged.iter().filter(|&&c| c).count();
         let n_total = self.qp_converged.len();
-        write!(f, "GW: {}/{} QP converged, {} ev-iters, outer converged: {}",
-            n_conv, n_total, self.n_ev_iter, self.outer_converged)
+        write!(
+            f,
+            "GW: {}/{} QP converged, {} ev-iters, outer converged: {}",
+            n_conv, n_total, self.n_ev_iter, self.outer_converged
+        )
     }
 }
 
@@ -229,8 +232,11 @@ impl std::fmt::Display for UGwResult {
         let na = self.qp_converged_a.iter().filter(|&&c| c).count();
         let nb = self.qp_converged_b.iter().filter(|&&c| c).count();
         let n = self.qp_converged_a.len();
-        write!(f, "U-GW: α {}/{} β {}/{} QP converged, {} ev-iters",
-            na, n, nb, n, self.n_ev_iter)
+        write!(
+            f,
+            "U-GW: α {}/{} β {}/{} QP converged, {} ev-iters",
+            na, n, nb, n, self.n_ev_iter
+        )
     }
 }
 
@@ -281,7 +287,10 @@ pub fn run_u_gw(
     // 2026-07-18: an out-of-range upper bound used to panic deep inside a
     // rayon closure in u_sigma.rs/u_cohsex.rs instead of surfacing a clean
     // error).
-    let qp_range = gw_cfg.qp_mos.clone().unwrap_or_else(|| default_u_qp_range(mol, scf));
+    let qp_range = gw_cfg
+        .qp_mos
+        .clone()
+        .unwrap_or_else(|| default_u_qp_range(mol, scf));
     let nmo = scf.eps_alpha.len();
     if qp_range.end > nmo {
         return Err(FerricError::General(format!(
@@ -305,14 +314,16 @@ pub fn run_u_gw(
     )?;
     let (v_dressed, dress_dev) =
         w_pdep::redress_with_check(&mo_b_a.v_inv_sqrt, &pdep.eigenpotentials)?;
-    eprintln!(
-        "ferric-gw [U]: redressed eigenpotentials, max |‖V_α‖² − 1| = {dress_dev:.3e}"
-    );
+    eprintln!("ferric-gw [U]: redressed eigenpotentials, max |‖V_α‖² − 1| = {dress_dev:.3e}");
 
     let result = match gw_cfg.method {
         GwMethod::G0W0 => u_sigma::run_u_g0w0(&mo_b_a, &mo_b_b, pdep, qp_range, gw_cfg, &v_dressed),
-        GwMethod::Cohsex => u_cohsex::run_u_cohsex(&mo_b_a, &mo_b_b, pdep, qp_range, gw_cfg, &v_dressed),
-        GwMethod::EvGw0 => u_sigma::run_u_evgw0(&mo_b_a, &mo_b_b, pdep, qp_range, gw_cfg, &v_dressed),
+        GwMethod::Cohsex => {
+            u_cohsex::run_u_cohsex(&mo_b_a, &mo_b_b, pdep, qp_range, gw_cfg, &v_dressed)
+        }
+        GwMethod::EvGw0 => {
+            u_sigma::run_u_evgw0(&mo_b_a, &mo_b_b, pdep, qp_range, gw_cfg, &v_dressed)
+        }
         GwMethod::EvGw => u_sigma::run_u_evgw(
             mol, obs, dfbs, op, scf, pdep_cfg, &mo_b_a, &mo_b_b, pdep, qp_range, gw_cfg,
         ),
@@ -327,7 +338,10 @@ pub fn run_u_gw(
             gw_cfg.method, result.n_ev_iter, gw_cfg.ev_conv_thresh
         );
     }
-    for (spin, flags) in [("alpha", &result.qp_converged_a), ("beta", &result.qp_converged_b)] {
+    for (spin, flags) in [
+        ("alpha", &result.qp_converged_a),
+        ("beta", &result.qp_converged_b),
+    ] {
         let bad: Vec<usize> = flags
             .iter()
             .enumerate()
@@ -387,7 +401,10 @@ pub fn run_gw(
     // upper-bound validation anywhere else, and an out-of-range upper bound
     // used to panic deep inside a rayon closure in sigma.rs/cohsex.rs
     // instead of surfacing a clean error (found 2026-07-18).
-    let qp_range = gw_cfg.qp_mos.clone().unwrap_or_else(|| default_qp_range(mol, rhf));
+    let qp_range = gw_cfg
+        .qp_mos
+        .clone()
+        .unwrap_or_else(|| default_qp_range(mol, rhf));
     let nmo = rhf.eps_r().len();
     if qp_range.end > nmo {
         return Err(FerricError::General(format!(
@@ -417,14 +434,14 @@ pub fn run_gw(
     //    V_dressed = inv(V^{-1/2}) · eigenpotentials_phys.
     let (v_dressed, dress_dev) =
         w_pdep::redress_with_check(&mo_b.v_inv_sqrt, &pdep.eigenpotentials)?;
-    eprintln!(
-        "ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = {dress_dev:.3e}"
-    );
+    eprintln!("ferric-gw: redressed eigenpotentials, max |‖V_α‖² − 1| = {dress_dev:.3e}");
 
     // 4. Dispatch by method.
     let result = match gw_cfg.method {
         GwMethod::Cohsex => cohsex::run_cohsex(mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg),
-        GwMethod::G0W0 => sigma::run_g0w0(mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg, vxc_diag),
+        GwMethod::G0W0 => sigma::run_g0w0(
+            mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg, vxc_diag,
+        ),
         GwMethod::EvGw0 => sigma::run_evgw0(
             mol, rhf, &mo_b, &v_dressed, pdep, qp_range, gw_cfg, vxc_diag,
         ),

@@ -201,9 +201,21 @@ fn gfn2_gradient_matches_xtb_cli_gradient_file() {
     //   -8.6487037493821E-17  -4.7824880967663E-03  -1.8188529203163E-03
     //   -6.0237540921806E-18   4.7824880967663E-03  -1.8188529203164E-03
     const CLI_GRAD: [[f64; 3]; 3] = [
-        [9.2510791586002E-17, -2.3032361083061E-17, 3.6377058406328E-03],
-        [-8.6487037493821E-17, -4.7824880967663E-03, -1.8188529203163E-03],
-        [-6.0237540921806E-18, 4.7824880967663E-03, -1.8188529203164E-03],
+        [
+            9.2510791586002E-17,
+            -2.3032361083061E-17,
+            3.6377058406328E-03,
+        ],
+        [
+            -8.6487037493821E-17,
+            -4.7824880967663E-03,
+            -1.8188529203163E-03,
+        ],
+        [
+            -6.0237540921806E-18,
+            4.7824880967663E-03,
+            -1.8188529203164E-03,
+        ],
     ];
 
     let mol = water();
@@ -368,9 +380,18 @@ O   0.000000   0.000000   0.000000
 /// (repo config-honesty convention).
 #[test]
 fn unknown_method_string_errors() {
-    assert_eq!(XtbMethod::parse_config_str("gfn2").unwrap(), XtbMethod::Gfn2);
-    assert_eq!(XtbMethod::parse_config_str("GFN1-xTB").unwrap(), XtbMethod::Gfn1);
-    assert_eq!(XtbMethod::parse_config_str("gfn-ff").unwrap(), XtbMethod::GfnFf);
+    assert_eq!(
+        XtbMethod::parse_config_str("gfn2").unwrap(),
+        XtbMethod::Gfn2
+    );
+    assert_eq!(
+        XtbMethod::parse_config_str("GFN1-xTB").unwrap(),
+        XtbMethod::Gfn1
+    );
+    assert_eq!(
+        XtbMethod::parse_config_str("gfn-ff").unwrap(),
+        XtbMethod::GfnFf
+    );
     assert!(XtbMethod::parse_config_str("gfn3").is_err());
     assert!(XtbMethod::parse_config_str("").is_err());
 }

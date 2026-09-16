@@ -122,9 +122,7 @@ def test_elements_accept_atomic_numbers():
     by_symbol = ferric.ConformerEnsemble.from_coordinates(
         [WATER_ANGSTROM], ["O", "H", "H"]
     )
-    by_number = ferric.ConformerEnsemble.from_coordinates(
-        [WATER_ANGSTROM], [8, 1, 1]
-    )
+    by_number = ferric.ConformerEnsemble.from_coordinates([WATER_ANGSTROM], [8, 1, 1])
     assert by_symbol.elements() == by_number.elements()
     assert by_symbol.atomic_numbers() == by_number.atomic_numbers()
     assert np.array_equal(
@@ -139,9 +137,7 @@ def test_elements_accept_atomic_numbers():
 
 def test_ghost_atoms_carry_no_electrons():
     """A '@'-prefixed center is basis-only: it keeps its symbol but no charge."""
-    ens = ferric.ConformerEnsemble.from_coordinates(
-        [WATER_ANGSTROM], ["@O", "H", "H"]
-    )
+    ens = ferric.ConformerEnsemble.from_coordinates([WATER_ANGSTROM], ["@O", "H", "H"])
     assert ens.elements() == ["O", "H", "H"]
     assert ens.is_ghost() == [True, False, False]
     # Only the two real hydrogens contribute electrons.
@@ -229,9 +225,7 @@ def test_units_from_coordinates_agrees_with_parse_xyz(water_ensemble):
     """
     from_arrays = water_ensemble.molecule(0)
     from_string = ferric.Molecule.from_xyz_string(water_xyz_string())
-    assert (
-        from_arrays.nuclear_repulsion() == from_string.nuclear_repulsion()
-    ), (
+    assert from_arrays.nuclear_repulsion() == from_string.nuclear_repulsion(), (
         f"from_coordinates NRE {from_arrays.nuclear_repulsion()!r} != "
         f"parse_xyz NRE {from_string.nuclear_repulsion()!r}"
     )
@@ -482,9 +476,7 @@ def test_diagnostics_degenerate_ensemble_is_not_dominated():
 def test_diagnostics_energy_window_counts():
     """n_within_{1,2,5}kT count conformers inside each window of the minimum."""
     energies = [0.0, 0.5, 1.5, 3.0, 10.0]
-    d = ferric.boltzmann_weights(
-        [e * KT_AT_DEFAULT_T for e in energies]
-    ).diagnostics()
+    d = ferric.boltzmann_weights([e * KT_AT_DEFAULT_T for e in energies]).diagnostics()
     assert d.n_within_kt == 2  # 0.0, 0.5
     assert d.n_within_2kt == 3  # + 1.5
     assert d.n_within_5kt == 4  # + 3.0
@@ -692,17 +684,13 @@ def test_error_bool_is_not_an_atomic_number():
     not an out-of-range value.
     """
     with pytest.raises(TypeError, match="bool"):
-        ferric.ConformerEnsemble.from_coordinates(
-            [WATER_ANGSTROM], [True, 1, 1]
-        )
+        ferric.ConformerEnsemble.from_coordinates([WATER_ANGSTROM], [True, 1, 1])
 
 
 def test_error_bool_rejected_in_any_position():
     """Not just position 0 -- the guard must apply element-wise."""
     with pytest.raises(TypeError, match="bool"):
-        ferric.ConformerEnsemble.from_coordinates(
-            [WATER_ANGSTROM], [8, 1, False]
-        )
+        ferric.ConformerEnsemble.from_coordinates([WATER_ANGSTROM], [8, 1, False])
 
 
 def test_error_unknown_atomic_number():
@@ -712,9 +700,7 @@ def test_error_unknown_atomic_number():
 
 def test_error_unknown_element_symbol():
     with pytest.raises(ValueError):
-        ferric.ConformerEnsemble.from_coordinates(
-            [WATER_ANGSTROM], ["Xx", "H", "H"]
-        )
+        ferric.ConformerEnsemble.from_coordinates([WATER_ANGSTROM], ["Xx", "H", "H"])
 
 
 def test_error_empty_element_list():
@@ -724,9 +710,7 @@ def test_error_empty_element_list():
 
 def test_error_elements_wrong_type():
     with pytest.raises(TypeError):
-        ferric.ConformerEnsemble.from_coordinates(
-            [WATER_ANGSTROM], [None, "H", "H"]
-        )
+        ferric.ConformerEnsemble.from_coordinates([WATER_ANGSTROM], [None, "H", "H"])
 
 
 def test_error_energy_count_mismatch_at_construction():
@@ -749,9 +733,7 @@ def test_error_energies_unset(water_ensemble):
         water_ensemble.energies()
 
 
-@pytest.mark.parametrize(
-    "bad_t", [0.0, -1.0, -298.15, float("nan"), float("inf")]
-)
+@pytest.mark.parametrize("bad_t", [0.0, -1.0, -298.15, float("nan"), float("inf")])
 def test_error_bad_temperature(bad_t):
     """T <= 0 divides by zero / flips the exponent sign. Must raise."""
     with pytest.raises(ValueError, match="temperature"):
@@ -851,9 +833,7 @@ def test_process_survives_the_whole_error_surface(water_ensemble):
 
 
 def test_molecule_from_xyz_smoke():
-    mol = ferric.Molecule.from_xyz(
-        os.path.join(TESTDATA, "molecules", "water.xyz")
-    )
+    mol = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
     assert mol.natoms() == 3
     assert mol.nelec() == 10
     assert mol.nuclear_repulsion() == pytest.approx(9.189193229309746, abs=1e-6)
@@ -888,14 +868,10 @@ def test_run_rhf_water_sto3g(sto3g):
     The expected value is read from the committed PySCF reference rather than
     hardcoded here, so there is exactly one copy of the number in the repo.
     """
-    with open(
-        os.path.join(TESTDATA, "reference", "h2o_sto-3g_rhf.json")
-    ) as fh:
+    with open(os.path.join(TESTDATA, "reference", "h2o_sto-3g_rhf.json")) as fh:
         ref = json.load(fh)
 
-    mol = ferric.Molecule.from_xyz(
-        os.path.join(TESTDATA, "molecules", "water.xyz")
-    )
+    mol = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
     result = ferric.run_rhf(mol, sto3g)
     assert result.converged
     assert result.energy == pytest.approx(ref["energy"], abs=5e-8)
@@ -934,9 +910,7 @@ def test_ensemble_geometry_reaches_the_scf_unscaled(sto3g):
     still converging. Bit-identical is the correct expectation because both
     paths reach parse_xyz with the same text.
     """
-    ens = ferric.ConformerEnsemble.from_coordinates(
-        [WATER_ANGSTROM], WATER_SYMBOLS
-    )
+    ens = ferric.ConformerEnsemble.from_coordinates([WATER_ANGSTROM], WATER_SYMBOLS)
     from_ens = ferric.run_rhf(ens.molecule(0), sto3g).energy
     from_xyz = ferric.run_rhf(
         ferric.Molecule.from_xyz_string(water_xyz_string()), sto3g

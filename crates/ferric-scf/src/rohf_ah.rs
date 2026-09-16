@@ -61,9 +61,18 @@ pub fn rohf_ah_step(
     let mut g_flat = Array1::<f64>::zeros(n_kappa);
     {
         let mut idx = 0;
-        for &v in g_vc.iter() { g_flat[idx] = v; idx += 1; }
-        for &v in g_vo.iter() { g_flat[idx] = v; idx += 1; }
-        for &v in g_oc.iter() { g_flat[idx] = v; idx += 1; }
+        for &v in g_vc.iter() {
+            g_flat[idx] = v;
+            idx += 1;
+        }
+        for &v in g_vo.iter() {
+            g_flat[idx] = v;
+            idx += 1;
+        }
+        for &v in g_oc.iter() {
+            g_flat[idx] = v;
+            idx += 1;
+        }
     }
 
     // Early exit if already at a stationary point — the augmented matrix
@@ -92,19 +101,33 @@ pub fn rohf_ah_step(
             let mut k_vc_local = Array2::<f64>::zeros((nvirt, nc_local));
             let mut k_vo_local = Array2::<f64>::zeros((nvirt, no_local));
             let mut k_oc_local = Array2::<f64>::zeros((no_local, nc_local));
-            unpack_three(v_col.slice(ndarray::s![1..]), &mut k_vc_local, &mut k_vo_local, &mut k_oc_local);
+            unpack_three(
+                v_col.slice(ndarray::s![1..]),
+                &mut k_vc_local,
+                &mut k_vo_local,
+                &mut k_oc_local,
+            );
 
-            let (h_vc, h_vo, h_oc) = hessian_matvec(
-                ctx, base, &k_vc_local, &k_vo_local, &k_oc_local, &pool,
-            ).expect("hessian_matvec failed inside Davidson closure");
+            let (h_vc, h_vo, h_oc) =
+                hessian_matvec(ctx, base, &k_vc_local, &k_vo_local, &k_oc_local, &pool)
+                    .expect("hessian_matvec failed inside Davidson closure");
 
             // av[0] = g · κ
             let mut gk: f64 = 0.0;
             {
                 let mut idx = 0;
-                for &vv in k_vc_local.iter() { gk += g_flat[idx] * vv; idx += 1; }
-                for &vv in k_vo_local.iter() { gk += g_flat[idx] * vv; idx += 1; }
-                for &vv in k_oc_local.iter() { gk += g_flat[idx] * vv; idx += 1; }
+                for &vv in k_vc_local.iter() {
+                    gk += g_flat[idx] * vv;
+                    idx += 1;
+                }
+                for &vv in k_vo_local.iter() {
+                    gk += g_flat[idx] * vv;
+                    idx += 1;
+                }
+                for &vv in k_oc_local.iter() {
+                    gk += g_flat[idx] * vv;
+                    idx += 1;
+                }
             }
             av[(0, col)] = gk;
 
@@ -147,7 +170,7 @@ pub fn rohf_ah_step(
     let first = evec[0];
     if first.abs() < 1e-10 {
         return Err(FerricError::General(
-            "AH eigenvector has near-zero leading entry — degeneracy or wrong sign".into()
+            "AH eigenvector has near-zero leading entry — degeneracy or wrong sign".into(),
         ));
     }
     let kappa_flat: Array1<f64> = evec.slice(ndarray::s![1..]).mapv(|x| x / first);
@@ -158,8 +181,14 @@ pub fn rohf_ah_step(
     unpack_three(kappa_flat.view(), &mut k_vc, &mut k_vo, &mut k_oc);
 
     // 5. Trust-region clip.
-    let kmax = arr_max_abs(&k_vc).max(arr_max_abs(&k_vo)).max(arr_max_abs(&k_oc));
-    let scale = if kmax > max_step { max_step / kmax } else { 1.0 };
+    let kmax = arr_max_abs(&k_vc)
+        .max(arr_max_abs(&k_vo))
+        .max(arr_max_abs(&k_oc));
+    let scale = if kmax > max_step {
+        max_step / kmax
+    } else {
+        1.0
+    };
     if scale < 1.0 {
         k_vc.mapv_inplace(|x| x * scale);
         k_vo.mapv_inplace(|x| x * scale);
@@ -195,7 +224,8 @@ pub fn rohf_ah_step(
     let mut u = Array2::<f64>::zeros((n, n));
     for col in 0..n {
         let bcol = b.column(col).to_owned();
-        let sol = a.solve(&bcol)
+        let sol = a
+            .solve(&bcol)
             .map_err(|e| FerricError::Lapack(format!("AH Cayley solve: {e}")))?;
         for row in 0..n {
             u[(row, col)] = sol[row];

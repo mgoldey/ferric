@@ -228,7 +228,9 @@ fn union_subspace_for_orbital(
     }
 
     let (eigs, vecs) = eigh_dc(&m, Uplo::Upper).map_err(|e| {
-        FerricError::General(format!("PNO union eigh failed for occupied orbital {i}: {e}"))
+        FerricError::General(format!(
+            "PNO union eigh failed for occupied orbital {i}: {e}"
+        ))
     })?;
     let keep: Vec<usize> = (0..nvir).filter(|&k| eigs[k] > UNION_RANK_TOL).collect();
     if keep.is_empty() {
@@ -289,10 +291,11 @@ pub fn build_dlpno_rpa_transform(
     for q_i in &per_orbital {
         acc = acc + q_i.dot(&q_i.t());
     }
-    let (acc_eigs, acc_vecs) = eigh_dc(&acc, Uplo::Upper).map_err(|e| {
-        FerricError::General(format!("DLPNO-RPA shared-basis eigh failed: {e}"))
-    })?;
-    let keep: Vec<usize> = (0..nvir).filter(|&k| acc_eigs[k] > UNION_RANK_TOL).collect();
+    let (acc_eigs, acc_vecs) = eigh_dc(&acc, Uplo::Upper)
+        .map_err(|e| FerricError::General(format!("DLPNO-RPA shared-basis eigh failed: {e}")))?;
+    let keep: Vec<usize> = (0..nvir)
+        .filter(|&k| acc_eigs[k] > UNION_RANK_TOL)
+        .collect();
     if keep.is_empty() {
         return Err(FerricError::General(
             "DLPNO-RPA: shared reduced virtual basis is empty".into(),
@@ -312,8 +315,9 @@ pub fn build_dlpno_rpa_transform(
     let mut f_red = Array2::<f64>::zeros((n_vir_reduced, n_vir_reduced));
     for k in 0..n_vir_reduced {
         for l in 0..n_vir_reduced {
-            f_red[(k, l)] =
-                (0..nvir).map(|a| q[(a, k)] * eps[nocc_total + a] * q[(a, l)]).sum();
+            f_red[(k, l)] = (0..nvir)
+                .map(|a| q[(a, k)] * eps[nocc_total + a] * q[(a, l)])
+                .sum();
         }
     }
     let (eps_red, u_red) = eigh_dc(&f_red, Uplo::Upper).map_err(|e| {
@@ -360,8 +364,11 @@ fn rpa_energy_in_reduced_basis(
     config: &PdepRpaConfig,
 ) -> Result<f64, FerricError> {
     let seed = Array2::<f64>::eye(naux);
-    let max_iter =
-        if config.eigensolver_max_vecs == 0 { 3 * naux } else { config.eigensolver_max_vecs };
+    let max_iter = if config.eigensolver_max_vecs == 0 {
+        3 * naux
+    } else {
+        config.eigensolver_max_vecs
+    };
 
     let matvec = |v: &Array2<f64>| -> Array2<f64> {
         crate::sternheimer::dielectric_apply(v, b_ov, eps_occ, eps_vir, 0.0)
@@ -399,7 +406,10 @@ fn rpa_energy_in_reduced_basis(
         &quad_freqs,
         config.memory_budget_bytes,
     )?;
-    Ok(crate::energy::rpa_correlation_energy_from_summands(&quad_weights, &summands))
+    Ok(crate::energy::rpa_correlation_energy_from_summands(
+        &quad_weights,
+        &summands,
+    ))
 }
 
 /// PDEP-RPA correlation energy in a TRUE per-pair-PNO-derived reduced virtual space.
@@ -441,8 +451,7 @@ pub fn run_pdep_rpa_pno(
 
     let tr = build_dlpno_rpa_transform(&inter, eps, &domains, t_cut_pno)?;
 
-    let eps_occ: Vec<f64> =
-        eps[inter.first_occ..inter.first_occ + inter.nocc].to_vec();
+    let eps_occ: Vec<f64> = eps[inter.first_occ..inter.first_occ + inter.nocc].to_vec();
     let e_c = rpa_energy_in_reduced_basis(
         &tr.b_ov_pno,
         &eps_occ,
@@ -502,8 +511,7 @@ pub fn compare_osv_vs_pno(
     for &t in thresholds {
         let (e_osv, n_osv, _naux) =
             crate::pno::run_pdep_rpa_osv(mol, obs, dfbs, op, rhf, config, t)?;
-        let (e_pno, n_pno, tr) =
-            run_pdep_rpa_pno(mol, obs, dfbs, op, rhf, config, t)?;
+        let (e_pno, n_pno, tr) = run_pdep_rpa_pno(mol, obs, dfbs, op, rhf, config, t)?;
         rows.push(TruncationComparison {
             threshold: t,
             nvir: tr.nvir,
@@ -531,8 +539,7 @@ mod tests {
     use ferric_scf::screening::SchwarzBounds;
     use ferric_scf::ScfResult;
 
-    const H2O: &str =
-        "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
+    const H2O: &str = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
 
     /// H2O/STO-3G has nvir = 2. That is enough to pin exactness and error handling
     /// cheaply, but FAR too small to say anything about compression — with two
@@ -574,7 +581,13 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        Ref { mol, obs, dfbs, op, rhf }
+        Ref {
+            mol,
+            obs,
+            dfbs,
+            op,
+            rhf,
+        }
     }
 
     fn cfg() -> PdepRpaConfig {
@@ -598,7 +611,11 @@ mod tests {
             &r.dfbs,
             r.op,
             &r.rhf,
-            &RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() },
+            &RiMp2Config {
+                frozen_core: 0,
+                memory_budget_bytes: None,
+                ..Default::default()
+            },
         )
         .unwrap()
     }
@@ -681,8 +698,9 @@ mod tests {
         let r = water();
         let c = cfg();
 
-        let e_canonical =
-            crate::run_pdep_rpa(&r.mol, &r.obs, &r.dfbs, r.op, &r.rhf, &c).unwrap().e_rpa;
+        let e_canonical = crate::run_pdep_rpa(&r.mol, &r.obs, &r.dfbs, r.op, &r.rhf, &c)
+            .unwrap()
+            .e_rpa;
         let (e_pno, n_vir, tr) =
             run_pdep_rpa_pno(&r.mol, &r.obs, &r.dfbs, r.op, &r.rhf, &c, 0.0).unwrap();
 
@@ -715,13 +733,19 @@ mod tests {
         let pnos = build_pair_pnos(&inter, eps, &domains, 0.0).unwrap();
 
         // Take a single pair's raw PNO transform and build F_vir in it.
-        let p = &pnos.pairs.iter().find(|p| p.ij.0 != p.ij.1).unwrap().transform;
+        let p = &pnos
+            .pairs
+            .iter()
+            .find(|p| p.ij.0 != p.ij.1)
+            .unwrap()
+            .transform;
         let n = p.ncols();
         let mut f = Array2::<f64>::zeros((n, n));
         for a in 0..n {
             for b in 0..n {
-                f[(a, b)] =
-                    (0..nvir).map(|c| p[(c, a)] * eps[inter.nocc_total + c] * p[(c, b)]).sum();
+                f[(a, b)] = (0..nvir)
+                    .map(|c| p[(c, a)] * eps[inter.nocc_total + c] * p[(c, b)])
+                    .sum();
             }
         }
         let max_offdiag = (0..n)
@@ -761,7 +785,10 @@ mod tests {
             tr.pno_virtual_retention < 1.0,
             "a 1e-2 occupation threshold should truncate SOME pair's virtuals"
         );
-        assert!(tr.max_discarded_weight > 0.0, "truncation must report what it discarded");
+        assert!(
+            tr.max_discarded_weight > 0.0,
+            "truncation must report what it discarded"
+        );
         assert!(tr.n_vir_reduced <= tr.nvir);
     }
 
@@ -803,8 +830,7 @@ mod tests {
             let unions: Vec<usize> = (0..inter.nocc)
                 .map(|i| union_subspace_for_orbital(&pnos, i, nvir).unwrap().ncols())
                 .collect();
-            let mean_union =
-                unions.iter().sum::<usize>() as f64 / (unions.len() * nvir) as f64;
+            let mean_union = unions.iter().sum::<usize>() as f64 / (unions.len() * nvir) as f64;
             let tr = build_dlpno_rpa_transform(&inter, eps, &domains, t).unwrap();
             eprintln!(
                 "{:>9.0e}  {:>13.3}  {:>16.3}  {:>12.3}",
@@ -878,7 +904,10 @@ mod tests {
             compare_osv_vs_pno(&r.mol, &r.obs, &r.dfbs, r.op, &r.rhf, &c, &thresholds).unwrap();
 
         eprintln!("\n=== OSV vs TRUE PNO — benzene/STO-3G + cc-pvdz-ri ===");
-        eprintln!("canonical PDEP-RPA E_c = {e_canonical:.10} Ha, nvir = {}", rows[0].nvir);
+        eprintln!(
+            "canonical PDEP-RPA E_c = {e_canonical:.10} Ha, nvir = {}",
+            rows[0].nvir
+        );
         eprintln!(
             "{:>9}  {:>11}  {:>11}  {:>13}  {:>12}  {:>12}",
             "thresh", "n_vir(OSV)", "n_vir(PNO)", "PNO pair-ret", "dE OSV(mHa)", "dE PNO(mHa)"

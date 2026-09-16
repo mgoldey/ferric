@@ -29,26 +29,49 @@ fn g0w0_pbe_h2o_homo_ip_matches_pyscf() {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
 
     // PBE reference.
-    let cfg = RhfConfig { xc: Some("pbe".into()), ..Default::default() };
+    let cfg = RhfConfig {
+        xc: Some("pbe".into()),
+        ..Default::default()
+    };
     let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
     let nocc = (mol.nelec() as usize) / 2;
     let homo_abs = nocc - 1;
 
     let pdep_cfg = PdepRpaConfig {
-        quadrature: QuadratureConfig { scheme: QuadratureScheme::GaussLegendre, n_points: 16, u0: 0.5 },
+        quadrature: QuadratureConfig {
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: 16,
+            u0: 0.5,
+        },
         eigensolver_conv_thresh: 1e-7,
         trunc_thresh: 0.0,
         ..Default::default()
     };
-    let gcfg = GwConfig { method: GwMethod::G0W0, qp_mos: Some(homo_abs..homo_abs + 1),
-                          ..Default::default() };
+    let gcfg = GwConfig {
+        method: GwMethod::G0W0,
+        qp_mos: Some(homo_abs..homo_abs + 1),
+        ..Default::default()
+    };
     // KS reference: pass v_xc so Σx−vxc enters the QP self-consistency.
     let (vxc_diag, _) = vxc_diagonal_mo(&mol, &obs_bs, "pbe", &scf).unwrap();
-    let res = run_gw(&mol, &obs, &dfbs, op, &scf, &pdep_cfg, &gcfg, Some(&vxc_diag)).unwrap();
+    let res = run_gw(
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &scf,
+        &pdep_cfg,
+        &gcfg,
+        Some(&vxc_diag),
+    )
+    .unwrap();
     let loc = res.mo_indices.iter().position(|&i| i == homo_abs).unwrap();
     let ip = -res.eps_qp[loc] * HA;
 
     // Matches PySCF gw_ac @PBE to <0.1 eV.
-    assert!((ip - PYSCF_IP).abs() < 0.1,
-        "ferric G0W0@PBE IP {ip:.3} eV vs PySCF {PYSCF_IP:.3} eV (Δ {:.3})", ip - PYSCF_IP);
+    assert!(
+        (ip - PYSCF_IP).abs() < 0.1,
+        "ferric G0W0@PBE IP {ip:.3} eV vs PySCF {PYSCF_IP:.3} eV (Δ {:.3})",
+        ip - PYSCF_IP
+    );
 }

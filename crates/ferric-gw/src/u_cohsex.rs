@@ -34,7 +34,10 @@ pub fn run_u_cohsex(
     // the whole budget on its own, so both would pass while the process holds
     // the sum.
     crate::cohsex::guard_m_proj_both_spins(
-        v_dressed.ncols(), mo_b_a.n_act, mo_b_b.n_act, mo_b_a.naux,
+        v_dressed.ncols(),
+        mo_b_a.n_act,
+        mo_b_b.n_act,
+        mo_b_a.naux,
         gw_cfg.memory_budget_bytes,
     )?;
     let m_proj_a = project_b_into_pdep(mo_b_a, v_dressed, gw_cfg.memory_budget_bytes)?;
@@ -78,8 +81,16 @@ pub fn run_u_cohsex(
     let n_states = mo_indices.len();
     Ok(UGwResult {
         mo_indices,
-        eps_mf_a, eps_qp_a, sigma_x_a: sx_a, sigma_c_a: sc_a, z_factor_a: z_a,
-        eps_mf_b, eps_qp_b, sigma_x_b: sx_b, sigma_c_b: sc_b, z_factor_b: z_b,
+        eps_mf_a,
+        eps_qp_a,
+        sigma_x_a: sx_a,
+        sigma_c_a: sc_a,
+        z_factor_a: z_a,
+        eps_mf_b,
+        eps_qp_b,
+        sigma_x_b: sx_b,
+        sigma_c_b: sc_b,
+        z_factor_b: z_b,
         qp_converged_a: vec![true; n_states], // closed-form static, no Newton solve
         qp_converged_b: vec![true; n_states],
         n_ev_iter: 0,

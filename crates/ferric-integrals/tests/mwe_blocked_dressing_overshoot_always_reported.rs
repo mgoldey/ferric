@@ -84,7 +84,10 @@ fn in_core_band_reservation_can_tip_an_otherwise_fitting_shape_over_budget() {
     let band = 5; // + 5 more rows resident -> 6 (blocks) + 5 (band) = 11 > 10
     let without_band = overshoot(budget, false, 0, block_naux, nao);
     let with_band = overshoot(budget, true, band, block_naux, nao);
-    assert!(without_band.is_none(), "sanity: without the band this shape must fit");
+    assert!(
+        without_band.is_none(),
+        "sanity: without the band this shape must fit"
+    );
     assert!(
         with_band.is_some(),
         "adding the in-core band reservation must push this shape over budget"

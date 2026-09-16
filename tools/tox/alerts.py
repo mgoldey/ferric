@@ -31,6 +31,7 @@ problem, and exposure tracks the classic developability descriptors. Lipinski
 (Ro5) and Veber criteria are included on that basis, normalized to a 0-1
 "fraction of rules violated" so they aggregate with the alert densities.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -40,7 +41,11 @@ from .model import ToxEndpoint
 # Catalogs evaluated, in a fixed order so endpoint lists are reproducible.
 # Each entry: (endpoint suffix, RDKit FilterCatalogs attribute name, citation).
 _CATALOGS: list[tuple[str, str, str]] = [
-    ("brenk", "BRENK", "Brenk et al., ChemMedChem 2008 (unsuitable for lead-like libs)"),
+    (
+        "brenk",
+        "BRENK",
+        "Brenk et al., ChemMedChem 2008 (unsuitable for lead-like libs)",
+    ),
     ("pains", "PAINS", "Baell & Holloway, J Med Chem 2010 (frequent hitters)"),
     ("nih", "NIH", "NIH/MLSMR undesirable functionality filters"),
     ("chembl_glaxo", "CHEMBL_Glaxo", "Glaxo hard filters, via ChEMBL"),
@@ -118,14 +123,18 @@ class RdkitAlertsProvider:
 
         self._catalogs: list[tuple[str, object, str]] = []
         for suffix, attr, citation in _CATALOGS:
-            enum_val = getattr(FilterCatalog.FilterCatalogParams.FilterCatalogs, attr, None)
+            enum_val = getattr(
+                FilterCatalog.FilterCatalogParams.FilterCatalogs, attr, None
+            )
             if enum_val is None:
                 # A future RDKit dropping a catalog must not break the run; the
                 # endpoint simply won't be emitted (and its absence is visible).
                 continue
             params = FilterCatalog.FilterCatalogParams()
             params.AddCatalog(enum_val)
-            self._catalogs.append((suffix, FilterCatalog.FilterCatalog(params), citation))
+            self._catalogs.append(
+                (suffix, FilterCatalog.FilterCatalog(params), citation)
+            )
 
     def fetch(self, smiles: str) -> list[ToxEndpoint]:
         from rdkit import Chem
@@ -200,20 +209,29 @@ class RdkitAlertsProvider:
                 units="probability",
                 note=(
                     f"TPSA={d.tpsa:.1f} rotB={d.rotb}; "
-                    + (f"violations: {', '.join(veb)}" if veb else "no Veber violations")
+                    + (
+                        f"violations: {', '.join(veb)}"
+                        if veb
+                        else "no Veber violations"
+                    )
                 ),
             )
         )
         # Descriptors themselves, on 'raw' units so they are reported but never
         # averaged into the liability score.
         for nm, val, unit in [
-            ("mw", d.mw, "Da"), ("clogp", d.clogp, "log10"), ("tpsa", d.tpsa, "A^2"),
+            ("mw", d.mw, "Da"),
+            ("clogp", d.clogp, "log10"),
+            ("tpsa", d.tpsa, "A^2"),
             ("rotatable_bonds", float(d.rotb), "count"),
         ]:
             out.append(
                 ToxEndpoint(
-                    name=f"desc_{nm}", value=val, higher_is_worse=True,
-                    source=self.name, units=unit,
+                    name=f"desc_{nm}",
+                    value=val,
+                    higher_is_worse=True,
+                    source=self.name,
+                    units=unit,
                     note="Physicochemical descriptor, reported for context only.",
                 )
             )

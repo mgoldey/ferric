@@ -39,9 +39,14 @@ fn oh_radical() -> Molecule {
 
 fn plus_charge_field() -> ExternalPotential {
     ExternalPotential {
-        point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: -6.0 }],
+        point_charges: vec![PointCharge {
+            q: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: -6.0,
+        }],
         field: None,
-    smeared_charges: Vec::new(),
+        smeared_charges: Vec::new(),
     }
 }
 
@@ -75,9 +80,17 @@ fn u_oo_mp2_energy_shift_tracks_uhf_shift() {
 
     // Vacuum.
     let uhf_vac = solve_uhf(
-        &ParallelContext::default(), &mol, &obs, &bounds,
-        &RhfConfig { energy_conv: 1e-11, density_conv: 1e-10, ..Default::default() },
-    ).unwrap();
+        &ParallelContext::default(),
+        &mol,
+        &obs,
+        &bounds,
+        &RhfConfig {
+            energy_conv: 1e-11,
+            density_conv: 1e-10,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert!(uhf_vac.converged);
     let uoo_vac = u_oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &uhf_vac, &uoo_config, None).unwrap();
     assert!(uoo_vac.converged, "vacuum U-OO-MP2 must converge");
@@ -89,9 +102,20 @@ fn u_oo_mp2_energy_shift_tracks_uhf_shift() {
         density_conv: 1e-10,
         ..Default::default()
     };
-    let uhf_field = solve_uhf(&ParallelContext::default(), &mol, &obs, &bounds, &field_cfg).unwrap();
+    let uhf_field =
+        solve_uhf(&ParallelContext::default(), &mol, &obs, &bounds, &field_cfg).unwrap();
     assert!(uhf_field.converged);
-    let uoo_field = u_oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &uhf_field, &uoo_config, Some(&ext)).unwrap();
+    let uoo_field = u_oo_ri_mp2(
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &bounds,
+        &uhf_field,
+        &uoo_config,
+        Some(&ext),
+    )
+    .unwrap();
     assert!(uoo_field.converged, "U-OO-MP2 in the field must converge");
 
     let uoo_shift = uoo_field.total_energy - uoo_vac.total_energy;
@@ -101,7 +125,10 @@ fn u_oo_mp2_energy_shift_tracks_uhf_shift() {
     eprintln!("  UHF shift (measured here):  {uhf_shift_measured:.10} Ha");
     eprintln!("  UHF shift (PySCF ref):      {UHF_SHIFT:.10} Ha");
     eprintln!("  U-OO-MP2 shift:             {uoo_shift:.10} Ha");
-    eprintln!("  |U-OO-MP2 shift - UHF shift (PySCF ref)| = {:.3e}", (uoo_shift - UHF_SHIFT).abs());
+    eprintln!(
+        "  |U-OO-MP2 shift - UHF shift (PySCF ref)| = {:.3e}",
+        (uoo_shift - UHF_SHIFT).abs()
+    );
 
     // The bug: pre-fix, uoo_shift was exactly 0.0 (ext silently dropped
     // inside u_oo_ri_mp2's internal hcore rebuild + missing vnn term)
@@ -137,22 +164,44 @@ fn u_oo_mp2_ext_none_matches_vacuum() {
     let uoo_config = tight_uoo_config();
 
     let uhf = solve_uhf(
-        &ParallelContext::default(), &mol, &obs, &bounds,
-        &RhfConfig { energy_conv: 1e-11, density_conv: 1e-10, ..Default::default() },
-    ).unwrap();
+        &ParallelContext::default(),
+        &mol,
+        &obs,
+        &bounds,
+        &RhfConfig {
+            energy_conv: 1e-11,
+            density_conv: 1e-10,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert!(uhf.converged);
 
     let uoo_none = u_oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &uhf, &uoo_config, None).unwrap();
     let empty = ExternalPotential::default();
-    let uoo_empty = u_oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &uhf, &uoo_config, Some(&empty)).unwrap();
+    let uoo_empty = u_oo_ri_mp2(
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &bounds,
+        &uhf,
+        &uoo_config,
+        Some(&empty),
+    )
+    .unwrap();
 
     assert!(uoo_none.converged && uoo_empty.converged);
     assert_eq!(
         uoo_none.total_energy.to_bits(),
         uoo_empty.total_energy.to_bits(),
         "None vs Some(default) total_energy not bit-identical: {:.17e} vs {:.17e}",
-        uoo_none.total_energy, uoo_empty.total_energy,
+        uoo_none.total_energy,
+        uoo_empty.total_energy,
     );
 
-    eprintln!("U-OO-MP2 vacuum total_energy (ext=None): {:.10}", uoo_none.total_energy);
+    eprintln!(
+        "U-OO-MP2 vacuum total_energy (ext=None): {:.10}",
+        uoo_none.total_energy
+    );
 }

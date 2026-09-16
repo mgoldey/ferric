@@ -19,6 +19,7 @@ prior README table's Python-default convention), full-rank dRPA
 Idempotent (skips outputs already carrying "Total energy"); timestamped log;
 memory-gated. Writes ACONF_RSSCAN.md + aconf_rsscan.json.
 """
+
 import json
 import os
 import re
@@ -29,16 +30,31 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 BIN = os.path.join(ROOT, "target", "release", "ferric-cli")
-ENV = dict(os.environ, OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS="1",
-           OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
+ENV = dict(
+    os.environ,
+    OPENBLAS_NUM_THREADS="1",
+    RAYON_NUM_THREADS="1",
+    OMP_NUM_THREADS="1",
+    MKL_NUM_THREADS="1",
+)
 KCAL = 627.509474
 
 REACTIONS = [
-    ("B_T", "B_G", 0.598), ("P_TT", "P_TG", 0.614), ("P_TT", "P_GG", 0.961),
-    ("P_TT", "P_GX", 2.813), ("H_ttt", "H_gtt", 0.595), ("H_ttt", "H_tgt", 0.604),
-    ("H_ttt", "H_tgg", 0.934), ("H_ttt", "H_gtg", 1.178), ("H_ttt", "H_g+t+g-", 1.302),
-    ("H_ttt", "H_ggg", 1.250), ("H_ttt", "H_g+x-t+", 2.632), ("H_ttt", "H_t+g+x-", 2.740),
-    ("H_ttt", "H_g+x-g-", 3.283), ("H_ttt", "H_x+g-g-", 3.083), ("H_ttt", "H_x+g-x+", 4.925),
+    ("B_T", "B_G", 0.598),
+    ("P_TT", "P_TG", 0.614),
+    ("P_TT", "P_GG", 0.961),
+    ("P_TT", "P_GX", 2.813),
+    ("H_ttt", "H_gtt", 0.595),
+    ("H_ttt", "H_tgt", 0.604),
+    ("H_ttt", "H_tgg", 0.934),
+    ("H_ttt", "H_gtg", 1.178),
+    ("H_ttt", "H_g+t+g-", 1.302),
+    ("H_ttt", "H_ggg", 1.250),
+    ("H_ttt", "H_g+x-t+", 2.632),
+    ("H_ttt", "H_t+g+x-", 2.740),
+    ("H_ttt", "H_g+x-g-", 3.283),
+    ("H_ttt", "H_x+g-g-", 3.083),
+    ("H_ttt", "H_x+g-x+", 4.925),
 ]
 NAMES = sorted({n for r in REACTIONS for n in r[:2]})
 OMEGAS = [0.2, 0.3, 0.42, 0.55, 0.673, 0.8]
@@ -46,10 +62,10 @@ FORMS = [("delta-lr", "B"), ("coupled-rings", "T")]
 CONC = int(os.environ.get("ACONF_JOBS", "3"))
 MEM_GATE_GB = float(os.environ.get("ACONF_MEM_GB", "4"))
 
-TOTAL_PAT = r'Total energy\s*=\s*(-?[0-9.]+)'
-MP2_PAT = r'E\(MP2, Coulomb\)\s*=\s*(-?[0-9.]+)'
-BCORR_PAT = r'E_corr Δ-form \(B\)\s*=\s*(-?[0-9.]+)'
-BCORR_PAT_ASCII = r'E_corr .-form \(B\)\s*=\s*(-?[0-9.]+)'
+TOTAL_PAT = r"Total energy\s*=\s*(-?[0-9.]+)"
+MP2_PAT = r"E\(MP2, Coulomb\)\s*=\s*(-?[0-9.]+)"
+BCORR_PAT = r"E_corr Δ-form \(B\)\s*=\s*(-?[0-9.]+)"
+BCORR_PAT_ASCII = r"E_corr .-form \(B\)\s*=\s*(-?[0-9.]+)"
 
 
 def ts():
@@ -120,8 +136,14 @@ def run_one(job):
     t0 = time.monotonic()
     try:
         with open(op, "w") as f, open(op + ".err", "w") as e:
-            subprocess.run([BIN, f"{HERE}/toml/{k}.toml"], stdout=f, stderr=e,
-                           env=ENV, timeout=7200, preexec_fn=_oom)
+            subprocess.run(
+                [BIN, f"{HERE}/toml/{k}.toml"],
+                stdout=f,
+                stderr=e,
+                env=ENV,
+                timeout=7200,
+                preexec_fn=_oom,
+            )
     except subprocess.TimeoutExpired:
         return k, "TIMEOUT", time.monotonic() - t0
     ok = os.path.exists(op) and "Total energy" in open(op).read()
@@ -147,9 +169,9 @@ def stats(errs):
 def analyze():
     rows, data = [], {}
     # derived RI-MP2 baseline from the B outputs at the first omega
-    for method_label, ftag, omega_list in (
-            [("RI-MP2 (derived)", "B", [OMEGAS[0]])] +
-            [(f"{ftag}", ftag, OMEGAS) for _, ftag in FORMS]):
+    for method_label, ftag, omega_list in [("RI-MP2 (derived)", "B", [OMEGAS[0]])] + [
+        (f"{ftag}", ftag, OMEGAS) for _, ftag in FORMS
+    ]:
         for omega in omega_list:
             e = {}
             for n in NAMES:
@@ -158,7 +180,9 @@ def analyze():
                 if method_label.startswith("RI-MP2"):
                     mp2 = grab(k, MP2_PAT)
                     bcorr = grab(k, BCORR_PAT) or grab(k, BCORR_PAT_ASCII)
-                    e[n] = (tot - bcorr + mp2) if None not in (tot, bcorr, mp2) else None
+                    e[n] = (
+                        (tot - bcorr + mp2) if None not in (tot, bcorr, mp2) else None
+                    )
                 else:
                     e[n] = tot
             if any(v is None for v in e.values()):
@@ -170,18 +194,23 @@ def analyze():
                 "energies": e,
                 "errors": dict(zip([f"{r}->{p}" for r, p, _ in REACTIONS], errs)),
             }
-    L = ["# ACONF ω-scan, both formulations — cc-pVDZ (CLI re-run)\n",
-         "15 reactions vs W1h-val CCSD(T)/CBS; kcal/mol; frozen_core=0,",
-         "full-rank dRPA, current binary (see run_aconf_cli.py header for why",
-         "this supersedes the June-10 Python-API table).\n",
-         "| method | ω (Å⁻¹) | MAE | MD | RMSD | MAX |", "|---|---|---|---|---|---|"]
+    L = [
+        "# ACONF ω-scan, both formulations — cc-pVDZ (CLI re-run)\n",
+        "15 reactions vs W1h-val CCSD(T)/CBS; kcal/mol; frozen_core=0,",
+        "full-rank dRPA, current binary (see run_aconf_cli.py header for why",
+        "this supersedes the June-10 Python-API table).\n",
+        "| method | ω (Å⁻¹) | MAE | MD | RMSD | MAX |",
+        "|---|---|---|---|---|---|",
+    ]
     for label, omega, s in rows:
         if s is None:
             L.append(f"| {label} | {omega} | — | — | — | — |")
         else:
             mae, md, rmsd, mx = s
             om = "—" if label.startswith("RI-MP2") else omega
-            L.append(f"| {label} | {om} | {mae:.3f} | {md:+.3f} | {rmsd:.3f} | {mx:+.3f} |")
+            L.append(
+                f"| {label} | {om} | {mae:.3f} | {md:+.3f} | {rmsd:.3f} | {mx:+.3f} |"
+            )
     open(f"{HERE}/ACONF_RSSCAN.md", "w").write("\n".join(L) + "\n")
     json.dump(data, open(f"{HERE}/aconf_rsscan.json", "w"), indent=1)
     print("\n".join(L))
@@ -190,11 +219,20 @@ def analyze():
 def main():
     os.makedirs(f"{HERE}/toml", exist_ok=True)
     os.makedirs(f"{HERE}/out", exist_ok=True)
-    jobs = [(n, omega, form, ftag) for omega in OMEGAS
-            for form, ftag in FORMS for n in NAMES]
-    todo = [j for j in jobs if not (
-        os.path.exists(f"{HERE}/out/{key(j[0], j[1], j[3])}.out")
-        and "Total energy" in open(f"{HERE}/out/{key(j[0], j[1], j[3])}.out").read())]
+    jobs = [
+        (n, omega, form, ftag)
+        for omega in OMEGAS
+        for form, ftag in FORMS
+        for n in NAMES
+    ]
+    todo = [
+        j
+        for j in jobs
+        if not (
+            os.path.exists(f"{HERE}/out/{key(j[0], j[1], j[3])}.out")
+            and "Total energy" in open(f"{HERE}/out/{key(j[0], j[1], j[3])}.out").read()
+        )
+    ]
     log(f"{len(jobs)} jobs total, {len(todo)} to run, conc={CONC}")
     done = 0
     with ThreadPoolExecutor(max_workers=CONC) as ex:

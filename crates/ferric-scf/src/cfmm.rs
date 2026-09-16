@@ -113,15 +113,7 @@ use ndarray::Array2;
 /// in powers of `(x−Px)` via the binomial theorem and integrate each
 /// monomial against `exp(−p(x−Px)²)`, whose moments are the standard
 /// Gaussian moments (odd → 0, even → double factorial).
-fn moment_1d(
-    a_pow: usize,
-    b_pow: usize,
-    n_pow: usize,
-    pa: f64,
-    pb: f64,
-    pc: f64,
-    p: f64,
-) -> f64 {
+fn moment_1d(a_pow: usize, b_pow: usize, n_pow: usize, pa: f64, pb: f64, pc: f64, p: f64) -> f64 {
     // ∫ (x−Px)^m exp(−p (x−Px)²) dx = 0 for odd m,
     //                               = (m−1)!! / (2p)^{m/2} · √(π/p) for even m.
     // Expand (x−Ax)^a = Σ_u C(a,u) (x−Px)^u (Px−Ax)^{a−u}, i.e. offset pa = Px−Ax.
@@ -249,9 +241,9 @@ fn gather_shells(
     let mut out = Vec::with_capacity(prep.nshells());
     let mut s = 0usize;
     for &z in mol_atom_z.iter() {
-        let tmpls = bs.for_element(z).ok_or_else(|| {
-            FerricError::Basis(format!("CFMM: no basis shells for Z={z}"))
-        })?;
+        let tmpls = bs
+            .for_element(z)
+            .ok_or_else(|| FerricError::Basis(format!("CFMM: no basis shells for Z={z}")))?;
         for sh in tmpls {
             if s >= prep.nshells() {
                 return Err(FerricError::General(
@@ -360,17 +352,27 @@ fn cart_to_pure_matrix(l: usize) -> Result<Vec<f64>, FerricError> {
     let alpha = [1.0f64];
     let coef = [1.0f64];
     let pure_sh = LocatedShell {
-        l: l as i32, pure: true, exponents: &alpha, coefficients: &coef, center: [0.0; 3],
+        l: l as i32,
+        pure: true,
+        exponents: &alpha,
+        coefficients: &coef,
+        center: [0.0; 3],
     };
     let cart_sh = LocatedShell {
-        l: l as i32, pure: false, exponents: &alpha, coefficients: &coef, center: [0.0; 3],
+        l: l as i32,
+        pure: false,
+        exponents: &alpha,
+        coefficients: &coef,
+        center: [0.0; 3],
     };
 
     // Deterministic pseudo-random sample points (fixed seed → reproducible).
     let npts = 40 * ncart;
     let mut seed = 0x2545_F491_4F6C_DD1Du64;
     let mut rnd = || {
-        seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
         ((seed >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
     };
 
@@ -394,36 +396,54 @@ fn cart_to_pure_matrix(l: usize) -> Result<Vec<f64>, FerricError> {
     for i in 0..ncart {
         for j in 0..ncart {
             let mut s = 0.0;
-            for g in 0..npts { s += a[g * ncart + i] * a[g * ncart + j]; }
+            for g in 0..npts {
+                s += a[g * ncart + i] * a[g * ncart + j];
+            }
             ata[i * ncart + j] = s;
         }
         for j in 0..npure {
             let mut s = 0.0;
-            for g in 0..npts { s += a[g * ncart + i] * b[g * npure + j]; }
+            for g in 0..npts {
+                s += a[g * ncart + i] * b[g * npure + j];
+            }
             atb[i * npure + j] = s;
         }
     }
     for col in 0..ncart {
         let mut piv = col;
         for r in col..ncart {
-            if ata[r * ncart + col].abs() > ata[piv * ncart + col].abs() { piv = r; }
+            if ata[r * ncart + col].abs() > ata[piv * ncart + col].abs() {
+                piv = r;
+            }
         }
         if ata[piv * ncart + col].abs() < 1e-12 {
             return Err(FerricError::General(format!(
                 "CFMM cart_to_pure: singular normal equations at l={l}"
             )));
         }
-        for c in 0..ncart { ata.swap(col * ncart + c, piv * ncart + c); }
-        for c in 0..npure { atb.swap(col * npure + c, piv * npure + c); }
+        for c in 0..ncart {
+            ata.swap(col * ncart + c, piv * ncart + c);
+        }
+        for c in 0..npure {
+            atb.swap(col * npure + c, piv * npure + c);
+        }
         let dv = ata[col * ncart + col];
-        for c in 0..ncart { ata[col * ncart + c] /= dv; }
-        for c in 0..npure { atb[col * npure + c] /= dv; }
+        for c in 0..ncart {
+            ata[col * ncart + c] /= dv;
+        }
+        for c in 0..npure {
+            atb[col * npure + c] /= dv;
+        }
         for r in 0..ncart {
             if r != col {
                 let f = ata[r * ncart + col];
                 if f != 0.0 {
-                    for c in 0..ncart { ata[r * ncart + c] -= f * ata[col * ncart + c]; }
-                    for c in 0..npure { atb[r * npure + c] -= f * atb[col * npure + c]; }
+                    for c in 0..ncart {
+                        ata[r * ncart + c] -= f * ata[col * ncart + c];
+                    }
+                    for c in 0..npure {
+                        atb[r * npure + c] -= f * atb[col * npure + c];
+                    }
                 }
             }
         }
@@ -533,7 +553,12 @@ fn shell_pair_multipoles(
     let (bx, by, bz) = (sh2.center[0], sh2.center[1], sh2.center[2]);
     let ab2 = (ax - bx).powi(2) + (ay - by).powi(2) + (az - bz).powi(2);
 
-    for (ip, (&alpha, &c1)) in sh1.exponents.iter().zip(sh1.coefficients.iter()).enumerate() {
+    for (ip, (&alpha, &c1)) in sh1
+        .exponents
+        .iter()
+        .zip(sh1.coefficients.iter())
+        .enumerate()
+    {
         let _ = ip;
         let n1 = primitive_norm(alpha, sh1.l);
         for (&beta, &c2) in sh2.exponents.iter().zip(sh2.coefficients.iter()) {
@@ -577,8 +602,16 @@ fn shell_pair_multipoles(
     }
 
     // Cartesian → pure on each shell index, if that shell is pure.
-    let t1 = if sh1.pure { cart_transforms[sh1.l].as_ref() } else { None };
-    let t2 = if sh2.pure { cart_transforms[sh2.l].as_ref() } else { None };
+    let t1 = if sh1.pure {
+        cart_transforms[sh1.l].as_ref()
+    } else {
+        None
+    };
+    let t2 = if sh2.pure {
+        cart_transforms[sh2.l].as_ref()
+    } else {
+        None
+    };
     if t1.is_none() && t2.is_none() {
         return cart;
     }
@@ -589,11 +622,33 @@ fn shell_pair_multipoles(
         for b in 0..nf2 {
             let obase = (a * nf2 + b) * n_mom;
             for ca in 0..nc1 {
-                let wa = match t1 { Some(t) => t[a * nc1 + ca], None => if a == ca { 1.0 } else { 0.0 } };
-                if wa == 0.0 { continue; }
+                let wa = match t1 {
+                    Some(t) => t[a * nc1 + ca],
+                    None => {
+                        if a == ca {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                };
+                if wa == 0.0 {
+                    continue;
+                }
                 for cb in 0..nc2 {
-                    let wb = match t2 { Some(t) => t[b * nc2 + cb], None => if b == cb { 1.0 } else { 0.0 } };
-                    if wb == 0.0 { continue; }
+                    let wb = match t2 {
+                        Some(t) => t[b * nc2 + cb],
+                        None => {
+                            if b == cb {
+                                1.0
+                            } else {
+                                0.0
+                            }
+                        }
+                    };
+                    if wb == 0.0 {
+                        continue;
+                    }
                     let ibase = (ca * nc2 + cb) * n_mom;
                     let w = wa * wb;
                     for m in 0..n_mom {
@@ -802,7 +857,11 @@ impl CfmmBox {
                 let dy = if (i & 2) != 0 { h } else { -h };
                 let dz = if (i & 4) != 0 { h } else { -h };
                 children.push(CfmmBox::new(
-                    [self.center[0] + dx, self.center[1] + dy, self.center[2] + dz],
+                    [
+                        self.center[0] + dx,
+                        self.center[1] + dy,
+                        self.center[2] + dz,
+                    ],
                     self.width / 2.0,
                     self.level + 1,
                 ));
@@ -816,9 +875,15 @@ impl CfmmBox {
 
     fn get_child_index(&self, p: [f64; 3]) -> usize {
         let mut idx = 0;
-        if p[0] > self.center[0] { idx |= 1; }
-        if p[1] > self.center[1] { idx |= 2; }
-        if p[2] > self.center[2] { idx |= 4; }
+        if p[0] > self.center[0] {
+            idx |= 1;
+        }
+        if p[1] > self.center[1] {
+            idx |= 2;
+        }
+        if p[2] > self.center[2] {
+            idx |= 4;
+        }
         idx
     }
 
@@ -885,7 +950,11 @@ fn pair_center(sh1: &ShellData, sh2: &ShellData) -> [f64; 3] {
     if wsum > 0.0 {
         [acc[0] / wsum, acc[1] / wsum, acc[2] / wsum]
     } else {
-        [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0]
+        [
+            (a[0] + b[0]) / 2.0,
+            (a[1] + b[1]) / 2.0,
+            (a[2] + b[2]) / 2.0,
+        ]
     }
 }
 
@@ -1049,7 +1118,12 @@ impl CfmmJ {
             for s2 in 0..nsh {
                 let c = pair_center(&shells[s1], &shells[s2]);
                 let e = pair_extent(&shells[s1], &shells[s2], cfg.extent_thresh);
-                pairs.push(ShellPair { s1, s2, center: c, extent: e });
+                pairs.push(ShellPair {
+                    s1,
+                    s2,
+                    center: c,
+                    extent: e,
+                });
             }
         }
 
@@ -1070,7 +1144,9 @@ impl CfmmJ {
             (pmin[1] + pmax[1]) / 2.0,
             (pmin[2] + pmax[2]) / 2.0,
         ];
-        let span = (pmax[0] - pmin[0]).max(pmax[1] - pmin[1]).max(pmax[2] - pmin[2]);
+        let span = (pmax[0] - pmin[0])
+            .max(pmax[1] - pmin[1])
+            .max(pmax[2] - pmin[2]);
         let width = if span > 1e-8 { span * 1.1 } else { 1.0 };
 
         let mut root = CfmmBox::new(center, width, 0);
@@ -1078,7 +1154,15 @@ impl CfmmJ {
             root.insert_pair(i, pr.center, cfg.max_level);
         }
 
-        Ok(CfmmJ { prep, root, cfg, shells, pairs, cart_transforms, engine: None })
+        Ok(CfmmJ {
+            prep,
+            root,
+            cfg,
+            shells,
+            pairs,
+            cart_transforms,
+            engine: None,
+        })
     }
 
     /// Number of basis functions.
@@ -1181,8 +1265,7 @@ impl CfmmJ {
             }
         }
 
-        let pair_lists: Vec<Vec<usize>> =
-            leaves.iter().map(|l| l.pair_indices.clone()).collect();
+        let pair_lists: Vec<Vec<usize>> = leaves.iter().map(|l| l.pair_indices.clone()).collect();
 
         if self.engine.is_none() {
             self.engine = Some(Engine::new_2e(Operator::coulomb(), &self.prep, 1e-14)?);
@@ -1257,7 +1340,10 @@ impl CfmmJ {
             self.root.collect_leaves(&mut leaves);
             (
                 leaves.iter().map(|l| l.center).collect::<Vec<_>>(),
-                leaves.iter().map(|l| l.pair_indices.clone()).collect::<Vec<_>>(),
+                leaves
+                    .iter()
+                    .map(|l| l.pair_indices.clone())
+                    .collect::<Vec<_>>(),
             )
         };
 
@@ -1305,11 +1391,7 @@ impl CfmmJ {
     ///   Φ(r) ≈ Σ_ijk L_ijk (r−C_bra)^{ijk},
     ///   J_{μν} += Σ_ijk L_ijk M^{μν}_ijk        (μ,ν ∈ bra leaf)
     /// ```
-    fn far_field(
-        &mut self,
-        j: &mut Array2<f64>,
-        far_pairs: &[(usize, usize)],
-    ) {
+    fn far_field(&mut self, j: &mut Array2<f64>, far_pairs: &[(usize, usize)]) {
         if far_pairs.is_empty() {
             return;
         }
@@ -1321,8 +1403,7 @@ impl CfmmJ {
         self.root.collect_leaves(&mut leaves);
         let centers: Vec<[f64; 3]> = leaves.iter().map(|l| l.center).collect();
         let mpoles: Vec<Vec<f64>> = leaves.iter().map(|l| l.multipoles.clone()).collect();
-        let pair_lists: Vec<Vec<usize>> =
-            leaves.iter().map(|l| l.pair_indices.clone()).collect();
+        let pair_lists: Vec<Vec<usize>> = leaves.iter().map(|l| l.pair_indices.clone()).collect();
 
         // Accumulate a local expansion per bra leaf.
         let mut local: Vec<Vec<f64>> = vec![vec![0.0; n_mom]; leaves.len()];
@@ -1402,8 +1483,8 @@ fn add_m2l(
         for i in 0..=l {
             for j in 0..=(l - i) {
                 let k = l - i - j;
-                let inv_fact = 1.0
-                    / (factorial(i) as f64 * factorial(j) as f64 * factorial(k) as f64);
+                let inv_fact =
+                    1.0 / (factorial(i) as f64 * factorial(j) as f64 * factorial(k) as f64);
                 let mut val = 0.0;
                 for lp in 0..=l_max {
                     let sign = if lp % 2 == 0 { 1.0 } else { -1.0 };
@@ -1414,9 +1495,8 @@ fn add_m2l(
                             if m == 0.0 {
                                 continue;
                             }
-                            let f = factorial(ip) as f64
-                                * factorial(jp) as f64
-                                * factorial(kp) as f64;
+                            let f =
+                                factorial(ip) as f64 * factorial(jp) as f64 * factorial(kp) as f64;
                             val += sign * m / f * h[ijk_to_idx(i + ip, j + jp, k + kp)];
                         }
                     }
@@ -1568,8 +1648,15 @@ mod tests {
             integral_thresh: 1e-14,
             ..Default::default()
         };
-        let result =
-            solve_rhf(&ParallelContext::default(), mol, &prep, op, &bounds, &config).unwrap();
+        let result = solve_rhf(
+            &ParallelContext::default(),
+            mol,
+            &prep,
+            op,
+            &bounds,
+            &config,
+        )
+        .unwrap();
         assert!(result.converged, "RHF did not converge");
         result.density_total
     }
@@ -1583,7 +1670,16 @@ mod tests {
         let n = prep.nbasis();
         let mut j = Array2::zeros((n, n));
         let mut k = Array2::zeros((n, n));
-        build_jk(&ParallelContext::default(), &prep, &bounds, 1e-14, d, &mut j, &mut k).unwrap();
+        build_jk(
+            &ParallelContext::default(),
+            &prep,
+            &bounds,
+            1e-14,
+            d,
+            &mut j,
+            &mut k,
+        )
+        .unwrap();
         j
     }
 
@@ -1645,9 +1741,7 @@ mod tests {
             let mut worst = 0.0f64;
             for s1 in 0..prep.nshells() {
                 for s2 in 0..prep.nshells() {
-                    let m = shell_pair_multipoles(
-                        &shells[s1], &shells[s2], [0.0; 3], 0, &tf,
-                    );
+                    let m = shell_pair_multipoles(&shells[s1], &shells[s2], [0.0; 3], 0, &tf);
                     for a in 0..dims[s1] {
                         for b in 0..dims[s2] {
                             let got = m[a * dims[s2] + b];
@@ -1798,7 +1892,8 @@ mod tests {
         // Two well-separated H2 molecules along z.
         let mol = Molecule::parse_xyz(
             "4\ntwo H2\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\nH 0.0 0.0 20.0\nH 0.0 0.0 20.74\n",
-            0, 1,
+            0,
+            1,
         )
         .unwrap();
         let bs = basis::bundled("sto-3g").unwrap();
@@ -1816,9 +1911,13 @@ mod tests {
         // converts; hardcoding the .xyz numbers here would silently place the
         // expansion centers 1.89x too close and destroy the convergence.)
         let sc = prep.shell_centers();
-        let mid = |a: [f64; 3], b: [f64; 3]| [
-            (a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0,
-        ];
+        let mid = |a: [f64; 3], b: [f64; 3]| {
+            [
+                (a[0] + b[0]) / 2.0,
+                (a[1] + b[1]) / 2.0,
+                (a[2] + b[2]) / 2.0,
+            ]
+        };
         let bra_c = mid(sc[0], sc[1]);
         let ket_c = mid(sc[2], sc[3]);
 
@@ -1826,10 +1925,8 @@ mod tests {
         let mut errs: Vec<f64> = Vec::new();
         for l_max in [0usize, 1, 2, 3] {
             let n_mom = n_moments(l_max);
-            let m_ket =
-                shell_pair_multipoles(&shells[2], &shells[3], ket_c, l_max, &tf);
-            let m_bra =
-                shell_pair_multipoles(&shells[0], &shells[1], bra_c, l_max, &tf);
+            let m_ket = shell_pair_multipoles(&shells[2], &shells[3], ket_c, l_max, &tf);
+            let m_bra = shell_pair_multipoles(&shells[0], &shells[1], bra_c, l_max, &tf);
             let mut local = vec![0.0; n_mom];
             add_m2l(&mut local, &m_ket[..n_mom], bra_c, ket_c, l_max);
             let approx: f64 = (0..n_mom).map(|t| local[t] * m_bra[t]).sum();
@@ -1855,7 +1952,8 @@ mod tests {
         assert!(
             errs[2] < errs[0] * 1e-2,
             "l_max=2 ({:.3e}) must be much better than l_max=0 ({:.3e})",
-            errs[2], errs[0]
+            errs[2],
+            errs[0]
         );
         assert!(
             prev < 1e-6,
@@ -2008,7 +2106,10 @@ mod tests {
 
         let mut errs = Vec::new();
         for l_max in [2usize, 4, 6] {
-            let cfg = CfmmConfig { l_max, ..base.clone() };
+            let cfg = CfmmConfig {
+                l_max,
+                ..base.clone()
+            };
             let j_cfmm = cfmm_j(&mol, "sto-3g", &d, cfg);
             let diff = max_abs_diff(&j_ref, &j_cfmm);
             println!("[far] alkane_10 l_max={l_max}: max diff = {diff:.3e} (max|J| = {scale:.3e})");

@@ -78,7 +78,10 @@ fn tiny_explicit_budget_is_not_floored_to_the_default() {
 #[test]
 fn unset_budget_resolves_to_a_finite_named_ceiling() {
     let got = resolve_budget(None);
-    assert!(got.bytes > 0, "an unset budget must resolve to a positive ceiling");
+    assert!(
+        got.bytes > 0,
+        "an unset budget must resolve to a positive ceiling"
+    );
     assert!(
         got.bytes < usize::MAX,
         "an unset budget must be finite, got {}",

@@ -25,11 +25,24 @@ use ferric_core::mol::Molecule;
 /// for atomic partitioning.
 pub(crate) fn bragg_slater_bohr(z: i32) -> f64 {
     let r_a: f64 = match z {
-        1 => 0.35,  2 => 0.30,
-        3 => 1.45,  4 => 1.05, 5 => 0.85,  6 => 0.70,  7 => 0.65,  8 => 0.60,
-        9 => 0.50, 10 => 0.45,
-        11 => 1.80, 12 => 1.50, 13 => 1.25, 14 => 1.10, 15 => 1.00, 16 => 1.00,
-        17 => 1.00, 18 => 0.71,
+        1 => 0.35,
+        2 => 0.30,
+        3 => 1.45,
+        4 => 1.05,
+        5 => 0.85,
+        6 => 0.70,
+        7 => 0.65,
+        8 => 0.60,
+        9 => 0.50,
+        10 => 0.45,
+        11 => 1.80,
+        12 => 1.50,
+        13 => 1.25,
+        14 => 1.10,
+        15 => 1.00,
+        16 => 1.00,
+        17 => 1.00,
+        18 => 0.71,
         _ => 1.00,
     };
     r_a * 1.8897259886
@@ -131,13 +144,17 @@ pub fn becke_weights_all(mol: &Molecule, r: [f64; 3]) -> Vec<f64> {
     for a in 0..natoms {
         let r_a_bs = bragg_slater_bohr(mol.atoms[a].z);
         for b in 0..natoms {
-            if a == b { continue; }
+            if a == b {
+                continue;
+            }
             let r_b_bs = bragg_slater_bohr(mol.atoms[b].z);
             let dx = mol.atoms[a].x - mol.atoms[b].x;
             let dy = mol.atoms[a].y - mol.atoms[b].y;
             let dz = mol.atoms[a].zpos - mol.atoms[b].zpos;
             let r_ab = (dx * dx + dy * dy + dz * dz).sqrt();
-            if r_ab < 1e-12 { continue; }
+            if r_ab < 1e-12 {
+                continue;
+            }
             let mu = (r_dists[a] - r_dists[b]) / r_ab;
             let chi = r_a_bs / r_b_bs;
             let u = (chi - 1.0) / (chi + 1.0);
@@ -186,10 +203,7 @@ pub fn becke_weights_all(mol: &Molecule, r: [f64; 3]) -> Vec<f64> {
 ///   ∂f³/∂ν = f₂'·f₁'·f₀'  with fₖ' = 1.5·(1 − fₖ²) at the kth iterate.
 ///   ∂s_AB/∂R_C = −0.5 · (∂f³/∂ν) · (∂ν/∂μ) · ∂μ/∂R_C
 /// ```
-pub fn becke_weights_and_grad(
-    mol: &Molecule,
-    r: [f64; 3],
-) -> (Vec<f64>, Vec<Vec<[f64; 3]>>) {
+pub fn becke_weights_and_grad(mol: &Molecule, r: [f64; 3]) -> (Vec<f64>, Vec<Vec<[f64; 3]>>) {
     let natoms = mol.atoms.len();
     if natoms <= 1 {
         let w = if natoms == 1 { vec![1.0] } else { vec![] };
@@ -278,10 +292,7 @@ pub fn becke_weights_and_grad(
     }
     let t: f64 = p_cell.iter().sum();
     if t < 1e-30 {
-        return (
-            vec![0.0; natoms],
-            vec![vec![[0.0; 3]; natoms]; natoms],
-        );
+        return (vec![0.0; natoms], vec![vec![[0.0; 3]; natoms]; natoms]);
     }
     let inv_t = 1.0 / t;
     let weights: Vec<f64> = p_cell.iter().map(|p| p * inv_t).collect();
@@ -333,8 +344,24 @@ mod tests {
     fn h2_at(d: f64) -> Molecule {
         Molecule {
             atoms: vec![
-                Atom { symbol: "H".into(), z: 1, x: -d/2.0, y: 0.0, zpos: 0.0, ghost: false, n_core_ecp: 0 },
-                Atom { symbol: "H".into(), z: 1, x:  d/2.0, y: 0.0, zpos: 0.0, ghost: false, n_core_ecp: 0 },
+                Atom {
+                    symbol: "H".into(),
+                    z: 1,
+                    x: -d / 2.0,
+                    y: 0.0,
+                    zpos: 0.0,
+                    ghost: false,
+                    n_core_ecp: 0,
+                },
+                Atom {
+                    symbol: "H".into(),
+                    z: 1,
+                    x: d / 2.0,
+                    y: 0.0,
+                    zpos: 0.0,
+                    ghost: false,
+                    n_core_ecp: 0,
+                },
             ],
             charge: 0,
             multiplicity: 1,
@@ -354,8 +381,12 @@ mod tests {
         ] {
             let w = becke_weights_all(&mol, *r);
             let sum: f64 = w.iter().sum();
-            assert!((sum - 1.0).abs() < 1e-12,
-                "Becke weights at {:?}: sum {sum}, weights {:?}", r, w);
+            assert!(
+                (sum - 1.0).abs() < 1e-12,
+                "Becke weights at {:?}: sum {sum}, weights {:?}",
+                r,
+                w
+            );
         }
     }
 
@@ -364,9 +395,17 @@ mod tests {
         let mol = h2_at(1.4);
         // At atom A, w_A → 1 (smoothing function saturates at boundary).
         let w0 = becke_weights_all(&mol, [-0.7, 0.0, 0.0]);
-        assert!((w0[0] - 1.0).abs() < 1e-6, "Becke w_A at R_A = {} (expect 1)", w0[0]);
+        assert!(
+            (w0[0] - 1.0).abs() < 1e-6,
+            "Becke w_A at R_A = {} (expect 1)",
+            w0[0]
+        );
         let w1 = becke_weights_all(&mol, [0.7, 0.0, 0.0]);
-        assert!((w1[1] - 1.0).abs() < 1e-6, "Becke w_B at R_B = {} (expect 1)", w1[1]);
+        assert!(
+            (w1[1] - 1.0).abs() < 1e-6,
+            "Becke w_B at R_B = {} (expect 1)",
+            w1[1]
+        );
     }
 
     #[test]
@@ -392,19 +431,12 @@ mod tests {
     #[test]
     fn becke_weights_grad_sums_to_zero_h2() {
         let mol = h2_at(1.4);
-        for r in &[
-            [0.3, 0.4, 0.5_f64],
-            [-0.2, 0.6, 0.0],
-            [0.7, -0.1, 0.4],
-        ] {
+        for r in &[[0.3, 0.4, 0.5_f64], [-0.2, 0.6, 0.0], [0.7, -0.1, 0.4]] {
             let (_, dw) = becke_weights_and_grad(&mol, *r);
             for c in 0..2 {
                 for k in 0..3 {
                     let s: f64 = (0..2).map(|a| dw[a][c][k]).sum();
-                    assert!(
-                        s.abs() < 1e-12,
-                        "Σ_A dw^A/dR_{c}^{k} = {s:.3e} at r={r:?}"
-                    );
+                    assert!(s.abs() < 1e-12, "Σ_A dw^A/dR_{c}^{k} = {s:.3e} at r={r:?}");
                 }
             }
         }
@@ -422,8 +454,24 @@ mod tests {
         };
 
         let base = vec![
-            Atom { symbol: "C".into(), z: 6, x: 0.0, y: 0.0, zpos: 0.0, ghost: false, n_core_ecp: 0 },
-            Atom { symbol: "H".into(), z: 1, x: 2.0, y: 0.0, zpos: 0.0, ghost: false, n_core_ecp: 0 },
+            Atom {
+                symbol: "C".into(),
+                z: 6,
+                x: 0.0,
+                y: 0.0,
+                zpos: 0.0,
+                ghost: false,
+                n_core_ecp: 0,
+            },
+            Atom {
+                symbol: "H".into(),
+                z: 1,
+                x: 2.0,
+                y: 0.0,
+                zpos: 0.0,
+                ghost: false,
+                n_core_ecp: 0,
+            },
         ];
         let mol = build(base.clone());
         let (_, dw_ana) = becke_weights_and_grad(&mol, r);
@@ -434,9 +482,18 @@ mod tests {
                 let mut atoms_plus = base.clone();
                 let mut atoms_minus = base.clone();
                 match k {
-                    0 => { atoms_plus[c].x += h; atoms_minus[c].x -= h; }
-                    1 => { atoms_plus[c].y += h; atoms_minus[c].y -= h; }
-                    _ => { atoms_plus[c].zpos += h; atoms_minus[c].zpos -= h; }
+                    0 => {
+                        atoms_plus[c].x += h;
+                        atoms_minus[c].x -= h;
+                    }
+                    1 => {
+                        atoms_plus[c].y += h;
+                        atoms_minus[c].y -= h;
+                    }
+                    _ => {
+                        atoms_plus[c].zpos += h;
+                        atoms_minus[c].zpos -= h;
+                    }
                 }
                 let w_plus = becke_weights_all(&build(atoms_plus), r);
                 let w_minus = becke_weights_all(&build(atoms_minus), r);
@@ -444,7 +501,9 @@ mod tests {
                     let fd = (w_plus[a] - w_minus[a]) / (2.0 * h);
                     let ana = dw_ana[a][c][k];
                     let diff = (fd - ana).abs();
-                    if diff > max_err { max_err = diff; }
+                    if diff > max_err {
+                        max_err = diff;
+                    }
                 }
             }
         }
@@ -458,8 +517,24 @@ mod tests {
         // toward the smaller H (R_BS: C=0.70 Å, H=0.35 Å).
         let mol = Molecule {
             atoms: vec![
-                Atom { symbol: "C".into(), z: 6, x: 0.0, y: 0.0, zpos: 0.0, ghost: false, n_core_ecp: 0 },
-                Atom { symbol: "H".into(), z: 1, x: 2.0, y: 0.0, zpos: 0.0, ghost: false, n_core_ecp: 0 },
+                Atom {
+                    symbol: "C".into(),
+                    z: 6,
+                    x: 0.0,
+                    y: 0.0,
+                    zpos: 0.0,
+                    ghost: false,
+                    n_core_ecp: 0,
+                },
+                Atom {
+                    symbol: "H".into(),
+                    z: 1,
+                    x: 2.0,
+                    y: 0.0,
+                    zpos: 0.0,
+                    ghost: false,
+                    n_core_ecp: 0,
+                },
             ],
             charge: 0,
             multiplicity: 1,
@@ -467,7 +542,10 @@ mod tests {
         // Midpoint: x=1.0. Without size correction this would give w_C = w_H = 0.5.
         // With size correction toward smaller H, w_C should exceed 0.5.
         let w = becke_weights_all(&mol, [1.0, 0.0, 0.0]);
-        assert!(w[0] > 0.5,
-            "C-H midpoint Becke: w_C should exceed 0.5 from size correction, got w_C={}", w[0]);
+        assert!(
+            w[0] > 0.5,
+            "C-H midpoint Becke: w_C should exceed 0.5 from size correction, got w_C={}",
+            w[0]
+        );
     }
 }

@@ -124,6 +124,10 @@ mod tests {
         let (k, r, _f) = build_k_r(&s, &d, &tess, 78.4).unwrap();
         let v = Array1::<f64>::from_elem(tess.len(), 0.1);
         let res = solve_pcm_charges(&k, &r, &v).unwrap();
-        assert!(res.e_pcm < 0.0, "expected stabilizing (negative) E_pcm, got {}", res.e_pcm);
+        assert!(
+            res.e_pcm < 0.0,
+            "expected stabilizing (negative) E_pcm, got {}",
+            res.e_pcm
+        );
     }
 }

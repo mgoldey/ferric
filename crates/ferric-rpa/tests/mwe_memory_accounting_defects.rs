@@ -70,17 +70,30 @@ fn water_scf() -> WaterSetup {
 #[test]
 fn hirshfeld_static_refuses_a_starvation_budget() {
     let (mol, obs, obs_bs, dfbs, rhf) = water_scf();
-    let cfg = PdepRpaConfig { memory_budget_bytes: Some(1), ..PdepRpaConfig::default() };
+    let cfg = PdepRpaConfig {
+        memory_budget_bytes: Some(1),
+        ..PdepRpaConfig::default()
+    };
 
     let msg = pdep_polarizability_hirshfeld(
-        &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::coulomb(), &cfg, None,
+        &mol,
+        &obs,
+        &obs_bs,
+        &dfbs,
+        &rhf,
+        Operator::coulomb(),
+        &cfg,
+        None,
     )
     .expect_err("a 1-byte budget must be REFUSED before chi allocates")
     .to_string();
 
     // Actionable: name the path, its shape, and the remedy.
     for needle in ["pdep_polarizability_hirshfeld", "natoms=", "npts=", "nbf="] {
-        assert!(msg.contains(needle), "refusal must contain {needle:?}; got: {msg}");
+        assert!(
+            msg.contains(needle),
+            "refusal must contain {needle:?}; got: {msg}"
+        );
     }
     // And name the TERM that blew up — a bare total teaches nothing about
     // which allocation to shrink.
@@ -94,10 +107,20 @@ fn hirshfeld_static_refuses_a_starvation_budget() {
 #[test]
 fn hirshfeld_static_runs_under_an_ample_budget() {
     let (mol, obs, obs_bs, dfbs, rhf) = water_scf();
-    let cfg = PdepRpaConfig { memory_budget_bytes: Some(AMPLE), ..PdepRpaConfig::default() };
+    let cfg = PdepRpaConfig {
+        memory_budget_bytes: Some(AMPLE),
+        ..PdepRpaConfig::default()
+    };
 
     let alpha = pdep_polarizability_hirshfeld(
-        &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::coulomb(), &cfg, None,
+        &mol,
+        &obs,
+        &obs_bs,
+        &dfbs,
+        &rhf,
+        Operator::coulomb(),
+        &cfg,
+        None,
     )
     .expect("water/STO-3G must fit a 4 GiB budget comfortably");
 
@@ -118,10 +141,21 @@ fn hirshfeld_static_runs_under_an_ample_budget() {
 #[test]
 fn hirshfeld_dynamic_refuses_a_starvation_budget() {
     let (mol, obs, obs_bs, dfbs, rhf) = water_scf();
-    let cfg = PdepRpaConfig { memory_budget_bytes: Some(1), ..PdepRpaConfig::default() };
+    let cfg = PdepRpaConfig {
+        memory_budget_bytes: Some(1),
+        ..PdepRpaConfig::default()
+    };
 
     let msg = pdep_polarizability_hirshfeld_dynamic(
-        &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::coulomb(), &cfg, &[0.0], None,
+        &mol,
+        &obs,
+        &obs_bs,
+        &dfbs,
+        &rhf,
+        Operator::coulomb(),
+        &cfg,
+        &[0.0],
+        None,
     )
     .expect_err("a 1-byte budget must be REFUSED before chi allocates")
     .to_string();
@@ -143,10 +177,21 @@ fn hirshfeld_dynamic_refuses_a_starvation_budget() {
 #[test]
 fn hirshfeld_dynamic_runs_under_an_ample_budget() {
     let (mol, obs, obs_bs, dfbs, rhf) = water_scf();
-    let cfg = PdepRpaConfig { memory_budget_bytes: Some(AMPLE), ..PdepRpaConfig::default() };
+    let cfg = PdepRpaConfig {
+        memory_budget_bytes: Some(AMPLE),
+        ..PdepRpaConfig::default()
+    };
 
     let alpha = pdep_polarizability_hirshfeld_dynamic(
-        &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::coulomb(), &cfg, &[0.0], None,
+        &mol,
+        &obs,
+        &obs_bs,
+        &dfbs,
+        &rhf,
+        Operator::coulomb(),
+        &cfg,
+        &[0.0],
+        None,
     )
     .expect("water/STO-3G must fit a 4 GiB budget comfortably");
 
@@ -154,7 +199,10 @@ fn hirshfeld_dynamic_runs_under_an_ample_budget() {
     for per_atom in &alpha {
         assert_eq!(per_atom.len(), 1, "one 3x3 tensor per requested frequency");
         let t = &per_atom[0];
-        assert!((t[0][0] + t[1][1] + t[2][2]).is_finite(), "non-finite alpha trace");
+        assert!(
+            (t[0][0] + t[1][1] + t[2][2]).is_finite(),
+            "non-finite alpha trace"
+        );
     }
 }
 
@@ -169,13 +217,19 @@ fn hirshfeld_dynamic_runs_under_an_ample_budget() {
 #[test]
 fn molecular_static_refuses_a_starvation_budget() {
     let (mol, obs, _obs_bs, dfbs, rhf) = water_scf();
-    let cfg = PdepRpaConfig { memory_budget_bytes: Some(1), ..PdepRpaConfig::default() };
+    let cfg = PdepRpaConfig {
+        memory_budget_bytes: Some(1),
+        ..PdepRpaConfig::default()
+    };
 
     let msg = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), &cfg)
         .expect_err("a 1-byte budget must be REFUSED")
         .to_string();
 
-    assert!(msg.contains("pdep_polarizability_static"), "must name the path; got: {msg}");
+    assert!(
+        msg.contains("pdep_polarizability_static"),
+        "must name the path; got: {msg}"
+    );
     assert!(
         msg.contains("b_scaled (naux,nov)"),
         "breakdown must name the scaled-copy term — it is the one that is a \
@@ -186,26 +240,34 @@ fn molecular_static_refuses_a_starvation_budget() {
 #[test]
 fn molecular_static_runs_under_an_ample_budget() {
     let (mol, obs, _obs_bs, dfbs, rhf) = water_scf();
-    let cfg = PdepRpaConfig { memory_budget_bytes: Some(AMPLE), ..PdepRpaConfig::default() };
+    let cfg = PdepRpaConfig {
+        memory_budget_bytes: Some(AMPLE),
+        ..PdepRpaConfig::default()
+    };
 
     let res = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), &cfg)
         .expect("water/STO-3G must fit a 4 GiB budget");
     let t = res.tensor;
     let trace = t[0][0] + t[1][1] + t[2][2];
-    assert!(trace.is_finite() && trace > 0.0, "alpha trace must be finite and positive: {trace}");
+    assert!(
+        trace.is_finite() && trace > 0.0,
+        "alpha trace must be finite and positive: {trace}"
+    );
 }
 
 #[test]
 fn dielectric_spectrum_static_refuses_a_starvation_budget() {
     let (mol, obs, _obs_bs, dfbs, rhf) = water_scf();
 
-    let msg = dielectric_spectrum_static(
-        &mol, &obs, &dfbs, &rhf, Operator::coulomb(), 0.0, Some(1),
-    )
-    .expect_err("a 1-byte budget must be REFUSED")
-    .to_string();
+    let msg =
+        dielectric_spectrum_static(&mol, &obs, &dfbs, &rhf, Operator::coulomb(), 0.0, Some(1))
+            .expect_err("a 1-byte budget must be REFUSED")
+            .to_string();
 
-    assert!(msg.contains("dielectric_spectrum_static"), "must name the path; got: {msg}");
+    assert!(
+        msg.contains("dielectric_spectrum_static"),
+        "must name the path; got: {msg}"
+    );
 }
 
 #[test]
@@ -213,7 +275,13 @@ fn dielectric_spectrum_static_runs_under_an_ample_budget() {
     let (mol, obs, _obs_bs, dfbs, rhf) = water_scf();
 
     let spec = dielectric_spectrum_static(
-        &mol, &obs, &dfbs, &rhf, Operator::coulomb(), 0.0, Some(AMPLE),
+        &mol,
+        &obs,
+        &dfbs,
+        &rhf,
+        Operator::coulomb(),
+        0.0,
+        Some(AMPLE),
     )
     .expect("water/STO-3G must fit a 4 GiB budget");
     assert!(!spec.eigenvalues.is_empty(), "spectrum must be non-empty");
@@ -279,16 +347,21 @@ fn becke_path_does_not_allocate_the_monolithic_chi_it_never_charges() {
 fn becke_path_still_runs_and_returns_sane_tensors() {
     use ferric_rpa::properties::pdep_polarizability_becke;
     let (mol, obs, obs_bs, dfbs, rhf) = water_scf();
-    let cfg = PdepRpaConfig { memory_budget_bytes: Some(AMPLE), ..PdepRpaConfig::default() };
+    let cfg = PdepRpaConfig {
+        memory_budget_bytes: Some(AMPLE),
+        ..PdepRpaConfig::default()
+    };
 
-    let alpha = pdep_polarizability_becke(
-        &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::coulomb(), &cfg,
-    )
-    .expect("water/STO-3G must fit a 4 GiB budget");
+    let alpha =
+        pdep_polarizability_becke(&mol, &obs, &obs_bs, &dfbs, &rhf, Operator::coulomb(), &cfg)
+            .expect("water/STO-3G must fit a 4 GiB budget");
 
     assert_eq!(alpha.len(), mol.atoms.len());
     let total: f64 = alpha.iter().map(|t| t[0][0] + t[1][1] + t[2][2]).sum();
-    assert!(total.is_finite() && total > 0.0, "summed trace must be finite and positive");
+    assert!(
+        total.is_finite() && total > 0.0,
+        "summed trace must be finite and positive"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -332,8 +405,7 @@ fn truncated_n_keep_still_charges_the_naux_wide_per_worker_scratch() {
     // The per-worker allocation does not shrink when n_keep shrinks, so the
     // charge must not either. Before the fix, est_trunc collapsed to roughly
     // the m=10 figure and under-charged the real allocation ~50x on this term.
-    let naux_wide_per_worker =
-        (500usize * (10 * 100) + 500 * 500) * 8 * 8; // (naux*nov + naux^2) * 8 bytes * 8 workers
+    let naux_wide_per_worker = (500usize * (10 * 100) + 500 * 500) * 8 * 8; // (naux*nov + naux^2) * 8 bytes * 8 workers
     assert!(
         est_trunc >= naux_wide_per_worker,
         "a truncated n_keep must still charge the naux-wide per-worker scratch \
@@ -374,7 +446,16 @@ fn untruncated_estimate_is_unchanged_for_the_production_shape() {
         nao: 0,
         // Energy path: no retained inverse-dielectric stack.
         need_inv_dielectric: false,
-        naux, nocc, nvir, n_quad: 20, n_workers, n_keep: naux, grid: None,
+        naux,
+        nocc,
+        nvir,
+        n_quad: 20,
+        n_workers,
+        n_keep: naux,
+        grid: None,
     });
-    assert_eq!(got, expect, "the production (n_keep == naux) estimate must be unchanged");
+    assert_eq!(
+        got, expect,
+        "the production (n_keep == naux) estimate must be unchanged"
+    );
 }

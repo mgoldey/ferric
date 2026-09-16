@@ -1,4 +1,5 @@
 """Funnel bookkeeping: narrowing, failure accounting, and early stop."""
+
 from __future__ import annotations
 
 from tools.campaign.hierarchy import Tier
@@ -7,16 +8,19 @@ from tools.pipeline.funnel import FunnelReport, Stage, run_funnel
 from tools.pipeline.tiers import TierResult
 
 P = "OC(=O)c1ccccc1"
-CANDS = [Isomer(s, "substitutional", "t", P) for s in
-         ["OC(=O)c1ccccc1", "OC(=O)c1ccc(F)cc1", "OC(=O)c1ccc(Cl)cc1"]]
+CANDS = [
+    Isomer(s, "substitutional", "t", P)
+    for s in ["OC(=O)c1ccccc1", "OC(=O)c1ccc(F)cc1", "OC(=O)c1ccc(Cl)cc1"]
+]
 
 
 def _fake(score_by_canonical):
     """Deterministic stub tier keyed on canonical SMILES."""
+
     def fn(iso, ctx):
         v = score_by_canonical.get(iso.canonical)
-        return TierResult(iso.canonical, v,
-                          None if v is not None else "no value")
+        return TierResult(iso.canonical, v, None if v is not None else "no value")
+
     return fn
 
 
@@ -78,7 +82,9 @@ def test_errors_are_retained_for_diagnosis():
 def test_raw_results_are_kept_for_every_stage():
     stages = [Stage(Tier.FORCE_FIELD, _fake(ALL), keep=1, name="ff")]
     rep = run_funnel(CANDS, stages, {})
-    assert len(rep.results["ff"]) == 3, "results must cover all entrants, not just survivors"
+    assert len(rep.results["ff"]) == 3, (
+        "results must cover all entrants, not just survivors"
+    )
     assert rep.value("ff", CANDS[1].canonical) == -1.0
 
 
@@ -89,9 +95,11 @@ def test_keep_larger_than_the_population_is_not_an_error():
 
 # ── timing and parallel fan-out ──────────────────────────────────────────────
 
+
 def _slow_scorer(iso, context):
     """Deterministic score, with enough sleep that parallelism is observable."""
     import time as _t
+
     _t.sleep(0.05)
     return TierResult(iso.canonical, float(len(iso.canonical)))
 
@@ -125,16 +133,18 @@ def test_parallel_and_serial_produce_identical_survivors():
     tied scores would reorder and the survivor set could differ -- this is the
     test that catches it.
     """
-    cands = [Isomer(s, "sub", "t", "CO")
-             for s in ("CO", "CCO", "CCCO", "CCCCO", "CCCCCO", "CCCCCCO")]
+    cands = [
+        Isomer(s, "sub", "t", "CO")
+        for s in ("CO", "CCO", "CCCO", "CCCCO", "CCCCCO", "CCCCCCO")
+    ]
 
     serial = run_funnel(cands, [Stage(Tier.SEARCH, _slow_scorer, 3, "s")], {})
     par = run_funnel(cands, [Stage(Tier.SEARCH, _slow_scorer, 3, "s", workers=3)], {})
 
-    assert [i.canonical for i in serial.survivors] == \
-           [i.canonical for i in par.survivors]
-    assert [r.value for r in serial.results["s"]] == \
-           [r.value for r in par.results["s"]]
+    assert [i.canonical for i in serial.survivors] == [
+        i.canonical for i in par.survivors
+    ]
+    assert [r.value for r in serial.results["s"]] == [r.value for r in par.results["s"]]
 
 
 def test_parallel_preserves_input_order_in_results():
@@ -144,11 +154,9 @@ def test_parallel_preserves_input_order_in_results():
     recorded `results` list is also read positionally by the driver, so a
     completion-ordered list would misattribute scores.
     """
-    cands = [Isomer(s, "sub", "t", "CO")
-             for s in ("CCCCCCO", "CO", "CCCO", "CCCCO")]
+    cands = [Isomer(s, "sub", "t", "CO") for s in ("CCCCCCO", "CO", "CCCO", "CCCCO")]
     rep = run_funnel(cands, [Stage(Tier.SEARCH, _slow_scorer, 4, "s", workers=4)], {})
-    assert [r.candidate_id for r in rep.results["s"]] == \
-           [i.canonical for i in cands]
+    assert [r.candidate_id for r in rep.results["s"]] == [i.canonical for i in cands]
 
 
 def test_workers_of_one_stays_in_process():
@@ -165,8 +173,10 @@ def test_table_names_the_dominant_tier():
     optimization effort, and this campaign has twice been wrong about the
     answer from estimates alone.
     """
+
     def slow(iso, ctx):
         import time as _t
+
         _t.sleep(0.03)
         return TierResult(iso.canonical, float(len(iso.canonical)))
 
@@ -174,8 +184,11 @@ def test_table_names_the_dominant_tier():
         return TierResult(iso.canonical, float(len(iso.canonical)))
 
     cands = [Isomer(s, "sub", "t", "CO") for s in ("CO", "CCO", "CCCO")]
-    rep = run_funnel(cands, [Stage(Tier.SEARCH, slow, 2, "dock"),
-                             Stage(Tier.FORCE_FIELD, fast, 1, "mmff")], {})
+    rep = run_funnel(
+        cands,
+        [Stage(Tier.SEARCH, slow, 2, "dock"), Stage(Tier.FORCE_FIELD, fast, 1, "mmff")],
+        {},
+    )
     out = rep.table()
     assert "dominant tier 1" in out
     assert "s/cand" in out
@@ -188,11 +201,12 @@ def test_table_survives_untimed_outcomes():
     from tools.campaign.hierarchy import TierOutcome
 
     rep = FunnelReport()
-    rep.outcomes.append(TierOutcome(tier=Tier.SEARCH, n_in=3, n_out=1,
-                                    note="dock: kept 1 of 3 scored"))
+    rep.outcomes.append(
+        TierOutcome(tier=Tier.SEARCH, n_in=3, n_out=1, note="dock: kept 1 of 3 scored")
+    )
     out = rep.table()
     assert "dock" in out
-    assert "TOTAL" not in out      # nothing was timed, so no total is claimed
+    assert "TOTAL" not in out  # nothing was timed, so no total is claimed
 
 
 def _suicidal_scorer(iso, context):
@@ -202,6 +216,7 @@ def _suicidal_scorer(iso, context):
     segfault looks like from the pool's side -- not a catchable exception.
     """
     import os
+
     if iso.canonical == "CCO":
         os._exit(1)
     return TierResult(iso.canonical, float(len(iso.canonical)))
@@ -216,8 +231,9 @@ def test_a_dead_worker_costs_one_candidate_not_the_run():
     happened twice on 2026-09-03 before this guard existed.
     """
     cands = [Isomer(s, "sub", "t", "CO") for s in ("CO", "CCO", "CCCO", "CCCCO")]
-    rep = run_funnel(cands, [Stage(Tier.SEARCH, _suicidal_scorer, 3, "s",
-                                   workers=2)], {})
+    rep = run_funnel(
+        cands, [Stage(Tier.SEARCH, _suicidal_scorer, 3, "s", workers=2)], {}
+    )
 
     # The run completed and the survivors are the healthy candidates.
     assert len(rep.results["s"]) == 4
@@ -234,7 +250,7 @@ def test_a_dead_worker_costs_one_candidate_not_the_run():
 def test_results_stay_positionally_aligned_when_a_worker_dies():
     """Index-based placement must survive a casualty, or scores misattribute."""
     cands = [Isomer(s, "sub", "t", "CO") for s in ("CO", "CCO", "CCCO")]
-    rep = run_funnel(cands, [Stage(Tier.SEARCH, _suicidal_scorer, 3, "s",
-                                   workers=3)], {})
-    assert [r.candidate_id for r in rep.results["s"]] == \
-           [i.canonical for i in cands]
+    rep = run_funnel(
+        cands, [Stage(Tier.SEARCH, _suicidal_scorer, 3, "s", workers=3)], {}
+    )
+    assert [r.candidate_id for r in rep.results["s"]] == [i.canonical for i in cands]

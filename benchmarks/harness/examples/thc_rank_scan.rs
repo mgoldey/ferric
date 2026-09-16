@@ -89,9 +89,15 @@ fn pivoted_qr_diagonal(a: &Array2<f64>) -> Result<Vec<f64>, String> {
     let mut wq = [0.0f64; 1];
     unsafe {
         lapack_sys::dgeqp3_(
-            &m_i, &n_i, buf.as_mut_ptr(), &m_i,
-            jpvt.as_mut_ptr(), tau.as_mut_ptr(),
-            wq.as_mut_ptr(), &(-1 as c_int), &mut info,
+            &m_i,
+            &n_i,
+            buf.as_mut_ptr(),
+            &m_i,
+            jpvt.as_mut_ptr(),
+            tau.as_mut_ptr(),
+            wq.as_mut_ptr(),
+            &(-1 as c_int),
+            &mut info,
         );
     }
     if info != 0 {
@@ -102,9 +108,15 @@ fn pivoted_qr_diagonal(a: &Array2<f64>) -> Result<Vec<f64>, String> {
     let lwork_i = work.len() as c_int;
     unsafe {
         lapack_sys::dgeqp3_(
-            &m_i, &n_i, buf.as_mut_ptr(), &m_i,
-            jpvt.as_mut_ptr(), tau.as_mut_ptr(),
-            work.as_mut_ptr(), &lwork_i, &mut info,
+            &m_i,
+            &n_i,
+            buf.as_mut_ptr(),
+            &m_i,
+            jpvt.as_mut_ptr(),
+            tau.as_mut_ptr(),
+            work.as_mut_ptr(),
+            &lwork_i,
+            &mut info,
         );
     }
     if info != 0 {
@@ -153,7 +165,11 @@ fn scan_system(label: &str, mol: &Molecule, obs_name: &str, n_rad: usize, n_ang:
             return;
         }
     };
-    let cfg = AtomicGridConfig { n_radial: n_rad, n_angular: n_ang, prune: None };
+    let cfg = AtomicGridConfig {
+        n_radial: n_rad,
+        n_angular: n_ang,
+        prune: None,
+    };
     let grid = build_atomic_grid(mol, &cfg);
     let points: Vec<[f64; 3]> = grid.iter().map(|p| p.xyz).collect();
 
@@ -242,7 +258,9 @@ fn main() {
     println!();
     for n_c in [1usize, 2, 3] {
         let path = format!("testdata/molecules/alkane_{n_c}.xyz");
-        let Ok(mol) = Molecule::load_xyz(&path) else { continue };
+        let Ok(mol) = Molecule::load_xyz(&path) else {
+            continue;
+        };
         scan_system(&format!("alkane_{n_c}"), &mol, OBS2, n_rad, n_ang);
     }
 

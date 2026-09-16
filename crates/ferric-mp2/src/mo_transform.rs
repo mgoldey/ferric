@@ -58,18 +58,12 @@ pub fn transform_3center_ov(
 }
 
 /// Transform (P|mu nu) -> (P|ij) where i,j=occupied.
-pub fn transform_3center_oo(
-    eri3_ao: &Array3<f64>,
-    c_occ: &Array2<f64>,
-) -> Array3<f64> {
+pub fn transform_3center_oo(eri3_ao: &Array3<f64>, c_occ: &Array2<f64>) -> Array3<f64> {
     transform_3center(eri3_ao, c_occ, c_occ)
 }
 
 /// Transform (P|mu nu) -> (P|ab) where a,b=virtual.
-pub fn transform_3center_vv(
-    eri3_ao: &Array3<f64>,
-    c_vir: &Array2<f64>,
-) -> Array3<f64> {
+pub fn transform_3center_vv(eri3_ao: &Array3<f64>, c_vir: &Array2<f64>) -> Array3<f64> {
     transform_3center(eri3_ao, c_vir, c_vir)
 }
 
@@ -80,7 +74,10 @@ pub fn dress_3index(eri3_mo: &Array3<f64>, v_inv_sqrt: &Array2<f64>) -> Array3<f
     let naux = eri3_mo.shape()[0];
     let d1 = eri3_mo.shape()[1];
     let d2 = eri3_mo.shape()[2];
-    let flat = eri3_mo.view().into_shape_with_order((naux, d1 * d2)).unwrap();
+    let flat = eri3_mo
+        .view()
+        .into_shape_with_order((naux, d1 * d2))
+        .unwrap();
     v_inv_sqrt
         .dot(&flat)
         .into_shape_with_order((naux, d1, d2))
@@ -154,7 +151,9 @@ mod tests {
 
         let mut seed: u64 = 0x9E3779B97F4A7C15;
         let mut next = || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((seed >> 11) as f64) / ((1u64 << 53) as f64) - 0.5
         };
 
@@ -186,7 +185,11 @@ mod tests {
         let par_sq = transform_3center(&eri3, &c_left, &c_left);
         let serial_sq = transform_serial(&eri3, &c_left, &c_left);
         for (a, b) in par_sq.iter().zip(serial_sq.iter()) {
-            assert_eq!(a.to_bits(), b.to_bits(), "square par transform not bit-identical");
+            assert_eq!(
+                a.to_bits(),
+                b.to_bits(),
+                "square par transform not bit-identical"
+            );
         }
     }
 }

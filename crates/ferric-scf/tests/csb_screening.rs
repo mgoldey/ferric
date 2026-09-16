@@ -51,7 +51,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::screening::{Bound, CsbBounds, LinkBound, ScreeningKind, SchwarzBounds};
+use ferric_scf::screening::{Bound, CsbBounds, LinkBound, SchwarzBounds, ScreeningKind};
 
 fn prep_for(path: &str, basis: &str) -> (Molecule, PreparedBasis) {
     let mol = Molecule::load_xyz(path).unwrap();
@@ -72,7 +72,11 @@ fn prep_for(path: &str, basis: &str) -> (Molecule, PreparedBasis) {
 /// nothing and hand back a spuriously satisfied bound. A reference computed at
 /// the same precision as the table would share the table's defect and this
 /// whole file would prove nothing.
-fn worst_violation(prep: &PreparedBasis, csb: &CsbBounds, op: Operator) -> (f64, (usize, usize, usize, usize), usize) {
+fn worst_violation(
+    prep: &PreparedBasis,
+    csb: &CsbBounds,
+    op: Operator,
+) -> (f64, (usize, usize, usize, usize), usize) {
     let nsh = prep.nshells();
     let mut eng = Engine::new_2e(op, prep, 1e-30).unwrap();
     let mut worst = 0.0f64;
@@ -147,13 +151,37 @@ fn worst_violation(prep: &PreparedBasis, csb: &CsbBounds, op: Operator) -> (f64,
 #[test]
 fn csb_is_a_valid_upper_bound() {
     let cases: &[(&str, &str, Operator)] = &[
-        ("../../testdata/molecules/water.xyz", "cc-pvdz", Operator::coulomb()),
-        ("../../testdata/molecules/water.xyz", "cc-pvdz", Operator::erfc(1.0)),
-        ("../../testdata/molecules/water.xyz", "cc-pvdz", Operator::erf(1.0)),
-        ("../../testdata/molecules/benzene.xyz", "cc-pvdz", Operator::coulomb()),
+        (
+            "../../testdata/molecules/water.xyz",
+            "cc-pvdz",
+            Operator::coulomb(),
+        ),
+        (
+            "../../testdata/molecules/water.xyz",
+            "cc-pvdz",
+            Operator::erfc(1.0),
+        ),
+        (
+            "../../testdata/molecules/water.xyz",
+            "cc-pvdz",
+            Operator::erf(1.0),
+        ),
+        (
+            "../../testdata/molecules/benzene.xyz",
+            "cc-pvdz",
+            Operator::coulomb(),
+        ),
         // (e) THE 218,493x arm.
-        ("../../testdata/molecules/benzene.xyz", "cc-pvdz", Operator::erfc(1.0)),
-        ("../../testdata/molecules/benzene.xyz", "cc-pvdz", Operator::erf(1.0)),
+        (
+            "../../testdata/molecules/benzene.xyz",
+            "cc-pvdz",
+            Operator::erfc(1.0),
+        ),
+        (
+            "../../testdata/molecules/benzene.xyz",
+            "cc-pvdz",
+            Operator::erf(1.0),
+        ),
     ];
     for &(path, bas, op) in cases {
         let (_mol, prep) = prep_for(path, bas);
@@ -281,10 +309,7 @@ fn csb_is_never_looser_than_schwarz() {
 fn csb_is_strictly_tighter_somewhere() {
     let (_mol, prep) = prep_for("../../testdata/molecules/benzene.xyz", "cc-pvdz");
     let nsh = prep.nshells();
-    for (op, min_fraction) in [
-        (Operator::erfc(1.0), 0.05),
-        (Operator::coulomb(), 0.0),
-    ] {
+    for (op, min_fraction) in [(Operator::erfc(1.0), 0.05), (Operator::coulomb(), 0.0)] {
         let csb = CsbBounds::compute(op, &prep).unwrap();
         let mut improved = 0usize;
         let mut total = 0usize;
@@ -521,16 +546,21 @@ fn csb_view_agrees_with_csb_bounds_and_degrades_to_schwarz() {
     let (_mol, prep) = prep_for("../../testdata/molecules/benzene.xyz", "sto-3g");
     let nsh = prep.nshells();
     for op in [Operator::coulomb(), Operator::erfc(1.0)] {
-        let plain = SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Schwarz)
-            .unwrap();
-        let withm =
-            SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Csb).unwrap();
+        let plain =
+            SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Schwarz).unwrap();
+        let withm = SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Csb).unwrap();
         let csb = CsbBounds::compute(op, &prep).unwrap();
 
         let v_plain = LinkBound::SchwarzRef(&plain);
         let v_csb = LinkBound::SchwarzRef(&withm);
-        assert!(!v_plain.is_csb(), "a view over table-less bounds must NOT be applying CSB");
-        assert!(v_csb.is_csb(), "a view over Csb-built bounds must be applying CSB");
+        assert!(
+            !v_plain.is_csb(),
+            "a view over table-less bounds must NOT be applying CSB"
+        );
+        assert!(
+            v_csb.is_csb(),
+            "a view over Csb-built bounds must be applying CSB"
+        );
 
         for i in 0..nsh {
             for j in 0..=i {
@@ -669,7 +699,10 @@ fn csb_rhf_is_thread_count_bit_identical() {
         ..Default::default()
     };
     let bounds = SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Csb).unwrap();
-    assert!(bounds.csb_m.is_some(), "CSB table missing — this test would be vacuous");
+    assert!(
+        bounds.csb_m.is_some(),
+        "CSB table missing — this test would be vacuous"
+    );
 
     let run = |threads: usize| -> (u64, usize) {
         let pool = rayon::ThreadPoolBuilder::new()
@@ -686,7 +719,8 @@ fn csb_rhf_is_thread_count_bit_identical() {
     let (e1, q1) = run(1);
     let (e4, q4) = run(4);
     assert_eq!(
-        e1, e4,
+        e1,
+        e4,
         "CSB RHF energy is not bit-identical across thread counts: 1 thread \
          {:.17e} vs 4 threads {:.17e}",
         f64::from_bits(e1),

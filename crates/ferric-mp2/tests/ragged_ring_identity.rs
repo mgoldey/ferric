@@ -37,11 +37,18 @@ fn two_call_ring_algebra_matches_three_call_form() {
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
     )
     .unwrap();
     let vvhv = build_vvhv(&mol, &obs, &obs_bs, &rhf).unwrap();
-    let lcfg = AmplitudeLmp2Config { eps: 1e-3, frozen_core: 4, ..Default::default() };
+    let lcfg = AmplitudeLmp2Config {
+        eps: 1e-3,
+        frozen_core: 4,
+        ..Default::default()
+    };
     let lb = assemble_basis(&mol, &obs, &dfbs, op, &rhf, &lcfg, &vvhv).unwrap();
     let (rg, _) = assemble_ragged_direct(&mol, &dfbs, op, &lb, 1e-3, 2.0, None, None).unwrap();
     assert!(rg.pairs.len() > 50, "pattern too small to be a real test");
@@ -60,17 +67,29 @@ fn two_call_ring_algebra_matches_three_call_form() {
     let tu = ring_product(&rg, &t, &u);
 
     let max_abs = |blocks: &[Array2<f64>]| -> f64 {
-        blocks.iter().flat_map(|m| m.iter()).fold(0.0f64, |a, &v| a.max(v.abs()))
+        blocks
+            .iter()
+            .flat_map(|m| m.iter())
+            .fold(0.0f64, |a, &v| a.max(v.abs()))
     };
     let mut worst = 0.0f64;
     let mut scale = 0.0f64;
     for p in 0..rg.pairs.len() {
         let three = &(&bt[p] + &tb[p]) + &tbt[p];
         let two = &bt[p] + &tu[p];
-        worst = worst.max((&three - &two).mapv(f64::abs).iter().cloned().fold(0.0, f64::max));
+        worst = worst.max(
+            (&three - &two)
+                .mapv(f64::abs)
+                .iter()
+                .cloned()
+                .fold(0.0, f64::max),
+        );
         scale = scale.max(three.mapv(f64::abs).iter().cloned().fold(0.0, f64::max));
     }
-    eprintln!("2-call vs 3-call: max|diff| = {worst:.3e} (scale {scale:.3e}, tb magnitude {:.3e})", max_abs(&tb));
+    eprintln!(
+        "2-call vs 3-call: max|diff| = {worst:.3e} (scale {scale:.3e}, tb magnitude {:.3e})",
+        max_abs(&tb)
+    );
     assert!(scale > 1e-4, "identity tested on numerically trivial data");
     assert!(worst < 1e-13, "2-call ring algebra deviates: {worst:.3e}");
 
@@ -81,11 +100,19 @@ fn two_call_ring_algebra_matches_three_call_form() {
     for p in 0..rg.pairs.len() {
         let three = &(&bt[p] + &tb[p]) + &tbt[p];
         let two_bad = &bt[p] + &tu_bad[p];
-        worst_bad = worst_bad
-            .max((&three - &two_bad).mapv(f64::abs).iter().cloned().fold(0.0, f64::max));
+        worst_bad = worst_bad.max(
+            (&three - &two_bad)
+                .mapv(f64::abs)
+                .iter()
+                .cloned()
+                .fold(0.0, f64::max),
+        );
     }
     eprintln!("mutation arm (T*(B-BT)): max|diff| = {worst_bad:.3e}");
-    assert!(worst_bad > 1e-6, "mutation arm unreachable — identity test is vacuous");
+    assert!(
+        worst_bad > 1e-6,
+        "mutation arm unreachable — identity test is vacuous"
+    );
 }
 
 /// Deterministic LCG (fixed seed byte pattern, no ambient randomness) —
@@ -137,18 +164,28 @@ fn ring_product_planned_matches_ring_product_oracle() {
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
     )
     .unwrap();
     let vvhv = build_vvhv(&mol, &obs, &obs_bs, &rhf).unwrap();
-    let lcfg = AmplitudeLmp2Config { eps: 1e-3, frozen_core: 4, ..Default::default() };
+    let lcfg = AmplitudeLmp2Config {
+        eps: 1e-3,
+        frozen_core: 4,
+        ..Default::default()
+    };
     let lb = assemble_basis(&mol, &obs, &dfbs, op, &rhf, &lcfg, &vvhv).unwrap();
     let (rg, _) = assemble_ragged_direct(&mol, &dfbs, op, &lb, 1e-3, 2.0, None, None).unwrap();
     assert!(rg.pairs.len() > 50, "pattern too small to be a real test");
 
     let b: Vec<Array2<f64>> = rg.pairs.iter().map(|pb| pb.j_blk.clone()).collect();
-    let shapes: Vec<(usize, usize)> =
-        rg.pairs.iter().map(|pb| (pb.da.len(), pb.db.len())).collect();
+    let shapes: Vec<(usize, usize)> = rg
+        .pairs
+        .iter()
+        .map(|pb| (pb.da.len(), pb.db.len()))
+        .collect();
     let t = lcg_fill(&shapes, 0xC0FF_EE12_3456_789A);
 
     let oracle = ring_product(&rg, &b, &t);
@@ -158,12 +195,21 @@ fn ring_product_planned_matches_ring_product_oracle() {
     let mut worst = 0.0f64;
     let mut scale = 0.0f64;
     for p in 0..rg.pairs.len() {
-        worst = worst.max((&oracle[p] - &planned[p]).mapv(f64::abs).iter().cloned().fold(0.0, f64::max));
+        worst = worst.max(
+            (&oracle[p] - &planned[p])
+                .mapv(f64::abs)
+                .iter()
+                .cloned()
+                .fold(0.0, f64::max),
+        );
         scale = scale.max(oracle[p].mapv(f64::abs).iter().cloned().fold(0.0, f64::max));
     }
     eprintln!("planned vs oracle: max|diff| = {worst:.3e} (scale {scale:.3e})");
     assert!(scale > 1e-4, "identity tested on numerically trivial data");
-    assert!(worst < 1e-13, "ring_product_planned deviates from the oracle: {worst:.3e}");
+    assert!(
+        worst < 1e-13,
+        "ring_product_planned deviates from the oracle: {worst:.3e}"
+    );
 
     // MUTATION ARM: corrupt one cached panel entry in the plan (simulated
     // by rebuilding the plan against a B with one entry perturbed) and
@@ -179,9 +225,17 @@ fn ring_product_planned_matches_ring_product_oracle() {
     let bad_planned = ring_product_planned(&bad_plan, &t);
     let mut worst_bad = 0.0f64;
     for p in 0..rg.pairs.len() {
-        worst_bad = worst_bad
-            .max((&oracle[p] - &bad_planned[p]).mapv(f64::abs).iter().cloned().fold(0.0, f64::max));
+        worst_bad = worst_bad.max(
+            (&oracle[p] - &bad_planned[p])
+                .mapv(f64::abs)
+                .iter()
+                .cloned()
+                .fold(0.0, f64::max),
+        );
     }
     eprintln!("mutation arm (corrupted B panel): max|diff| vs oracle = {worst_bad:.3e}");
-    assert!(worst_bad > 1e-6, "mutation arm unreachable — corrupted-panel cache went undetected");
+    assert!(
+        worst_bad > 1e-6,
+        "mutation arm unreachable — corrupted-panel cache went undetected"
+    );
 }

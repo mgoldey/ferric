@@ -2,9 +2,9 @@
 
 use crate::fock::KBuilder;
 use crate::screening::SchwarzBounds;
+use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_core::parallel::ParallelContext;
 use ndarray::Array2;
 
 /// Direct exchange (K) matrix builder using O(N^4) shell quartets.
@@ -40,14 +40,23 @@ impl<'a> DirectK<'a> {
         thresh: f64,
         mem_budget: usize,
     ) -> Self {
-        DirectK { ctx, prep, bounds, thresh, mem_budget, pool: None }
+        DirectK {
+            ctx,
+            prep,
+            bounds,
+            thresh,
+            mem_budget,
+            pool: None,
+        }
     }
 }
 
 impl<'a> KBuilder for DirectK<'a> {
     fn build(&mut self, d: &Array2<f64>, k: &mut Array2<f64>) -> Result<usize, FerricError> {
+        use crate::quartet_scatter::{
+            canonical_bra_pairs, scatter_bra_pair, DensityScreen, JkMode,
+        };
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use crate::quartet_scatter::{canonical_bra_pairs, scatter_bra_pair, DensityScreen, JkMode};
 
         let nsh = self.prep.nshells();
         let dims = self.prep.shell_dims();
@@ -63,7 +72,11 @@ impl<'a> KBuilder for DirectK<'a> {
         // One engine per rayon thread (see engine_pool) — avoids the per-chunk
         // libint2-ctor-mutex storm that made heavy-element bases 10×+ slower.
         if self.pool.is_none() {
-            self.pool = Some(crate::engine_pool::EnginePool::new(self.bounds.op, self.prep, 1e-14)?);
+            self.pool = Some(crate::engine_pool::EnginePool::new(
+                self.bounds.op,
+                self.prep,
+                1e-14,
+            )?);
         }
         let pool = self.pool.as_ref().expect("pool initialized above");
 
@@ -101,10 +114,20 @@ impl<'a> KBuilder for DirectK<'a> {
                 }
                 pool.with(|engine| {
                     local_count += scatter_bra_pair(
-                        engine, self.prep, dims, offs, &self.bounds.q,
-                        self.bounds.csb_m.as_ref(), self.bounds.csam_x.as_ref(),
-                        &screen, self.thresh, d,
-                        s1, s2, &mut mode, true,
+                        engine,
+                        self.prep,
+                        dims,
+                        offs,
+                        &self.bounds.q,
+                        self.bounds.csb_m.as_ref(),
+                        self.bounds.csam_x.as_ref(),
+                        &screen,
+                        self.thresh,
+                        d,
+                        s1,
+                        s2,
+                        &mut mode,
+                        true,
                     );
                 });
             }
@@ -120,7 +143,11 @@ impl<'a> KBuilder for DirectK<'a> {
         if let Some(world) = self.ctx.world() {
             use mpi::traits::CommunicatorCollectives;
             let mut k_global = Array2::zeros(k.dim());
-            world.all_reduce_into(k.as_slice().unwrap(), k_global.as_slice_mut().unwrap(), mpi::collective::SystemOperation::sum());
+            world.all_reduce_into(
+                k.as_slice().unwrap(),
+                k_global.as_slice_mut().unwrap(),
+                mpi::collective::SystemOperation::sum(),
+            );
             *k = k_global;
         }
 

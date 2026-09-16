@@ -92,7 +92,11 @@ pub(crate) fn syrk_aat(a: &Array2<f64>) -> Array2<f64> {
 pub(crate) fn syrk_aat_into(a: &Array2<f64>, c: &mut Array2<f64>) {
     let m = a.nrows();
     let kdim = a.ncols();
-    assert_eq!(c.shape(), &[m, m], "syrk_aat_into: output buffer shape mismatch");
+    assert_eq!(
+        c.shape(),
+        &[m, m],
+        "syrk_aat_into: output buffer shape mismatch"
+    );
     if m == 0 || kdim == 0 {
         c.fill(0.0);
         return;
@@ -145,7 +149,11 @@ pub(crate) fn syrk_aat_into(a: &Array2<f64>, c: &mut Array2<f64>) {
 fn syrk_aat_accumulate_into(a: ArrayView2<f64>, c: &mut Array2<f64>) {
     let m = a.nrows();
     let kdim = a.ncols();
-    assert_eq!(c.shape(), &[m, m], "syrk_aat_accumulate_into: output buffer shape mismatch");
+    assert_eq!(
+        c.shape(),
+        &[m, m],
+        "syrk_aat_accumulate_into: output buffer shape mismatch"
+    );
     if m == 0 || kdim == 0 {
         return;
     }
@@ -286,7 +294,10 @@ fn is_plausibly_diagonal(v: &[f64]) -> bool {
 /// match) exactly as `dlpno_rpa.rs` and `screen.rs` now do.
 #[inline]
 pub fn build_scale_factors_with_prefactor(
-    eps_occ: &[f64], eps_vir: &[f64], omega: f64, prefactor: f64,
+    eps_occ: &[f64],
+    eps_vir: &[f64],
+    omega: f64,
+    prefactor: f64,
 ) -> Array1<f64> {
     debug_assert!(
         is_plausibly_diagonal(eps_occ) && is_plausibly_diagonal(eps_vir),
@@ -418,7 +429,10 @@ pub fn dielectric_matrix_from_projection(y: &Array2<f64>, scale: &Array1<f64>) -
 /// `map_init` (already the pattern in `dielectric_matrix_laplace_into`) caps
 /// this at one buffer pair per THREAD instead of per FREQUENCY.
 pub fn dielectric_matrix_from_projection_into(
-    y: &Array2<f64>, scale: &Array1<f64>, rhs_scaled: &mut Array2<f64>, out: &mut Array2<f64>,
+    y: &Array2<f64>,
+    scale: &Array1<f64>,
+    rhs_scaled: &mut Array2<f64>,
+    out: &mut Array2<f64>,
 ) {
     let m = y.shape()[0];
     let nov = scale.len();
@@ -482,7 +496,11 @@ pub fn dielectric_matrix_from_projection_into_panelled(
     let nov = scale.len();
     assert_eq!(y.shape()[1], nov);
     assert_eq!(out.shape(), &[m, m], "out shape");
-    assert_eq!(rhs_scaled_panel.shape()[0], m, "rhs_scaled_panel row count must be m");
+    assert_eq!(
+        rhs_scaled_panel.shape()[0],
+        m,
+        "rhs_scaled_panel row count must be m"
+    );
     let panel_width = rhs_scaled_panel.shape()[1].max(1);
 
     out.fill(0.0);
@@ -580,7 +598,11 @@ pub fn dielectric_apply_unrestricted(
     let mut out: Array2<f64> = v_mat.to_owned();
 
     for chan in [chan_a, chan_b] {
-        let RpaChannel { b_ov, eps_occ, eps_vir } = *chan;
+        let RpaChannel {
+            b_ov,
+            eps_occ,
+            eps_vir,
+        } = *chan;
         let scale = build_scale_factors_with_prefactor(eps_occ, eps_vir, omega, 2.0);
         let nov = scale.len();
         assert_eq!(b_ov.shape()[1], nov);
@@ -606,9 +628,15 @@ pub fn dielectric_matrix_unrestricted(
 ) -> Array2<f64> {
     let m = v_mat.ncols();
     let mut eps_mat = Array2::<f64>::zeros((m, m));
-    for alpha in 0..m { eps_mat[(alpha, alpha)] = 1.0; }
+    for alpha in 0..m {
+        eps_mat[(alpha, alpha)] = 1.0;
+    }
     for chan in [chan_a, chan_b] {
-        let RpaChannel { b_ov, eps_occ, eps_vir } = *chan;
+        let RpaChannel {
+            b_ov,
+            eps_occ,
+            eps_vir,
+        } = *chan;
         let scale = build_scale_factors_with_prefactor(eps_occ, eps_vir, omega, 2.0);
         let mut rhs_scaled = v_mat.t().dot(b_ov);
         let scale_row = scale.view().insert_axis(Axis(0));
@@ -635,11 +663,7 @@ mod tests {
         let eps_vir = vec![0.5f64];
         let v = ndarray::array![1.0f64]; // trial potential, naux=1
         let chi = chi_from_trial_potential(&v, &b_ov, &eps_occ, &eps_vir, 0.0);
-        assert!(
-            (chi + 2.0).abs() < 1e-12,
-            "expected χ = -2.0, got {}",
-            chi
-        );
+        assert!((chi + 2.0).abs() < 1e-12, "expected χ = -2.0, got {}", chi);
     }
 
     #[test]
@@ -651,11 +675,7 @@ mod tests {
         let eps_vir = vec![0.5f64];
         let v = ndarray::array![1.0f64];
         let chi = chi_from_trial_potential(&v, &b_ov, &eps_occ, &eps_vir, 1.0);
-        assert!(
-            (chi + 1.0).abs() < 1e-12,
-            "expected χ = -1.0, got {}",
-            chi
-        );
+        assert!((chi + 1.0).abs() < 1e-12, "expected χ = -1.0, got {}", chi);
     }
 
     #[test]
@@ -791,7 +811,12 @@ mod tests {
             let panel_width = panel_width.max(1);
             let mut rhs_scaled_panel = Array2::<f64>::zeros((m, panel_width));
             let mut out = Array2::<f64>::zeros((m, m));
-            dielectric_matrix_from_projection_into_panelled(&y, &scale, &mut rhs_scaled_panel, &mut out);
+            dielectric_matrix_from_projection_into_panelled(
+                &y,
+                &scale,
+                &mut rhs_scaled_panel,
+                &mut out,
+            );
 
             for ((i, j), &e) in expected.indexed_iter() {
                 assert!(
@@ -809,10 +834,7 @@ mod tests {
     /// when panelling isn't needed.
     #[test]
     fn dielectric_matrix_from_projection_into_panelled_matches_into_version() {
-        let y = ndarray::array![
-            [2.0f64, -0.3, 1.1, 0.4],
-            [0.5, 1.7, -0.9, 0.2],
-        ];
+        let y = ndarray::array![[2.0f64, -0.3, 1.1, 0.4], [0.5, 1.7, -0.9, 0.2],];
         let scale = ndarray::array![1.1f64, 0.6, 2.3, 0.9];
         let m = y.shape()[0];
         let nov = y.shape()[1];
@@ -824,7 +846,12 @@ mod tests {
         for panel_width in [1usize, 2, nov] {
             let mut rhs_scaled_panel = Array2::<f64>::zeros((m, panel_width));
             let mut out = Array2::<f64>::zeros((m, m));
-            dielectric_matrix_from_projection_into_panelled(&y, &scale, &mut rhs_scaled_panel, &mut out);
+            dielectric_matrix_from_projection_into_panelled(
+                &y,
+                &scale,
+                &mut rhs_scaled_panel,
+                &mut out,
+            );
             for ((i, j), &e) in expected.indexed_iter() {
                 assert!(
                     (out[(i, j)] - e).abs() < 1e-12,
@@ -847,9 +874,19 @@ mod tests {
         let mut rhs_scaled_panel = Array2::<f64>::zeros((2, 2)); // panel width 2 < nov=3
         let mut out = Array2::<f64>::zeros((2, 2));
 
-        dielectric_matrix_from_projection_into_panelled(&y, &scale_a, &mut rhs_scaled_panel, &mut out);
+        dielectric_matrix_from_projection_into_panelled(
+            &y,
+            &scale_a,
+            &mut rhs_scaled_panel,
+            &mut out,
+        );
         let first = out.clone();
-        dielectric_matrix_from_projection_into_panelled(&y, &scale_b, &mut rhs_scaled_panel, &mut out);
+        dielectric_matrix_from_projection_into_panelled(
+            &y,
+            &scale_b,
+            &mut rhs_scaled_panel,
+            &mut out,
+        );
         let second = out.clone();
 
         assert!(
@@ -887,7 +924,10 @@ mod canonical_guard_tests {
     #[should_panic(expected = "heavily out of ascending order")]
     fn scale_factor_guard_fires_on_localized_occupied_energies() {
         let eps_occ = [-0.5, -0.9, -0.6, -1.1, -0.7, -1.0, -0.8, -1.2];
-        assert!(descent_count(&eps_occ) > eps_occ.len() / 4, "test fixture must be scrambled");
+        assert!(
+            descent_count(&eps_occ) > eps_occ.len() / 4,
+            "test fixture must be scrambled"
+        );
         let eps_vir = [0.2, 0.4, 0.6, 0.8];
         let _ = build_scale_factors(&eps_occ, &eps_vir, 0.0);
     }
@@ -897,7 +937,10 @@ mod canonical_guard_tests {
     fn scale_factor_guard_fires_on_localized_virtual_energies() {
         let eps_occ = [-1.2, -1.0, -0.8, -0.6];
         let eps_vir = [0.7, 0.2, 0.8, 0.3, 0.9, 0.4, 1.0, 0.5];
-        assert!(descent_count(&eps_vir) > eps_vir.len() / 4, "test fixture must be scrambled");
+        assert!(
+            descent_count(&eps_vir) > eps_vir.len() / 4,
+            "test fixture must be scrambled"
+        );
         let _ = build_scale_factors(&eps_occ, &eps_vir, 0.0);
     }
 

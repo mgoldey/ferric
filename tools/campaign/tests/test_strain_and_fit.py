@@ -11,6 +11,7 @@ than the "we never measured this" that it actually means. Measured 2026-08-29:
 18 of the 20 committed danuglipron conformers are ~176 A from the pocket, so
 this path is the common case, not an edge case.
 """
+
 from __future__ import annotations
 
 import math
@@ -36,6 +37,7 @@ STRETCHED = [(0.0, 0.0, 0.0), (1.15, 0.0, 0.0), (-0.29, 1.11, 0.0)]
 
 # ── ensemble loading ──
 
+
 def test_formula_is_order_independent():
     assert _formula(["C", "H", "H"]) == _formula(["H", "C", "H"])
 
@@ -60,8 +62,9 @@ def test_symbols_property_refuses_to_answer_for_a_mixed_order_ensemble():
 
 
 def test_symbols_property_works_when_the_order_is_shared():
-    ens = XyzEnsemble([["O", "H"], ["O", "H"]], [[(0, 0, 0)], [(0, 0, 0)]],
-                      ["a", "b"], True, "H1O1")
+    ens = XyzEnsemble(
+        [["O", "H"], ["O", "H"]], [[(0, 0, 0)], [(0, 0, 0)]], ["a", "b"], True, "H1O1"
+    )
     assert ens.symbols == ["O", "H"]
 
 
@@ -78,6 +81,7 @@ def test_empty_directory_raises():
 
 
 # ── strain reference discipline ──
+
 
 @needs_xtb
 def test_free_reference_picks_the_lowest_conformer():
@@ -134,8 +138,7 @@ def test_strain_of_the_reference_geometry_against_itself_is_zero():
     r = pose_strain(WATER_SYMBOLS, relaxed_geom, ref, label="self")
     assert r.ok, r.error
     assert r.strain_kcal == pytest.approx(0.0, abs=0.05), (
-        f"the reference geometry has strain {r.strain_kcal:.4f} kcal/mol "
-        "against itself"
+        f"the reference geometry has strain {r.strain_kcal:.4f} kcal/mol against itself"
     )
 
 
@@ -151,7 +154,9 @@ def test_strain_is_positive_for_a_distorted_geometry():
     # instead assert on the single-point strain of the unrelaxed geometry.
     from tools.campaign.xtb_engine import HARTREE_TO_KCAL_MOL, singlepoint
 
-    sp = singlepoint(WATER_SYMBOLS, [(0.0, 0.0, 0.0), (1.30, 0.0, 0.0), (-1.30, 0.0, 0.0)])
+    sp = singlepoint(
+        WATER_SYMBOLS, [(0.0, 0.0, 0.0), (1.30, 0.0, 0.0), (-1.30, 0.0, 0.0)]
+    )
     assert sp.ok
     strain_unrelaxed = (sp.energy - ref.e_min) * HARTREE_TO_KCAL_MOL
     assert strain_unrelaxed > 10.0, (
@@ -161,6 +166,7 @@ def test_strain_is_positive_for_a_distorted_geometry():
 
 
 # ── fit: the UNEVALUATED invariant ──
+
 
 def test_charges_outside_the_cutoff_are_trimmed():
     charges = [(1.0, 0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 1000.0)]

@@ -61,14 +61,30 @@ fn spill_block_naux_for(budget_bytes: usize, nao: usize) -> usize {
 /// warn-unconditionally behavior can be pinned in milliseconds instead of via
 /// the full spill machinery.
 fn blocked_dressing_overshoot_report(
-    budget_bytes: usize, in_core: bool, band: usize, block_naux: usize, nao: usize,
+    budget_bytes: usize,
+    in_core: bool,
+    band: usize,
+    block_naux: usize,
+    nao: usize,
 ) -> Option<String> {
     let mut plan = MemoryPlan::with_budget_bytes(budget_bytes, "DF dressing (blocked)");
     if in_core {
-        plan.reserve("dressed band B[P,mu,nu]", band * nao * nao, Lifetime::Resident);
+        plan.reserve(
+            "dressed band B[P,mu,nu]",
+            band * nao * nao,
+            Lifetime::Resident,
+        );
     }
-    plan.reserve("dressing accum block", block_naux * nao * nao, Lifetime::Resident);
-    plan.reserve("dressing GEMM contrib block", block_naux * nao * nao, Lifetime::Resident);
+    plan.reserve(
+        "dressing accum block",
+        block_naux * nao * nao,
+        Lifetime::Resident,
+    );
+    plan.reserve(
+        "dressing GEMM contrib block",
+        block_naux * nao * nao,
+        Lifetime::Resident,
+    );
     if plan.check().is_err() {
         Some(plan.report())
     } else {
@@ -78,7 +94,11 @@ fn blocked_dressing_overshoot_report(
 
 #[doc(hidden)]
 pub fn blocked_dressing_overshoot_report_for_test(
-    budget_bytes: usize, in_core: bool, band: usize, block_naux: usize, nao: usize,
+    budget_bytes: usize,
+    in_core: bool,
+    band: usize,
+    block_naux: usize,
+    nao: usize,
 ) -> Option<String> {
     blocked_dressing_overshoot_report(budget_bytes, in_core, band, block_naux, nao)
 }
@@ -392,7 +412,10 @@ pub struct AuxBlock<'a> {
 
 enum Backend {
     InCore(Array3<f64>),
-    DiskSpill { file: File, scratch: Array3<f64> },
+    DiskSpill {
+        file: File,
+        scratch: Array3<f64>,
+    },
     /// Rebuild each aux block on demand instead of storing the tensor.
     ///
     /// The middle ground this type used to lack. There were only two modes --
@@ -502,7 +525,10 @@ impl ThreeIndexSource {
     ) -> Result<Self, FerricError> {
         let naux = dfbs.nbasis();
         let nao = obs.nbasis();
-        let needed = naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
+        let needed = naux
+            .saturating_mul(nao)
+            .saturating_mul(nao)
+            .saturating_mul(8);
         if needed <= budget_bytes {
             // Fits: identical to `build`'s in-core branch.
             let eri = crate::threeindex::eri3_block(op, &obs, &dfbs, 0, naux)?;
@@ -529,12 +555,21 @@ impl ThreeIndexSource {
             // No screen: `build_recompute` has no screened entry point yet.
             // If one is added it MUST store the same bounds+threshold here that
             // the original build used, or rebuilt blocks diverge from in-core.
-            backend: Backend::Recompute { op, obs, dfbs, scratch, screen: None },
+            backend: Backend::Recompute {
+                op,
+                obs,
+                dfbs,
+                scratch,
+                screen: None,
+            },
         })
     }
 
     pub fn build(
-        op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis, budget_bytes: usize,
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
     ) -> Result<Self, FerricError> {
         let naux = dfbs.nbasis();
         Self::build_band(op, obs, dfbs, budget_bytes, 0, naux)
@@ -549,8 +584,12 @@ impl ThreeIndexSource {
     /// `naux()` still returns the GLOBAL count so consumers can size and slice the
     /// full (naux, naux) metric with the global aux index.
     pub fn build_band(
-        op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis, budget_bytes: usize,
-        band_p0: usize, band_p1: usize,
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+        band_p0: usize,
+        band_p1: usize,
     ) -> Result<Self, FerricError> {
         Self::build_band_screened(op, obs, dfbs, budget_bytes, band_p0, band_p1, None)
     }
@@ -563,15 +602,25 @@ impl ThreeIndexSource {
     /// the original skipped. See `threeindex::eri3_block_screened`'s purity
     /// contract.
     pub fn build_band_screened(
-        op: Operator, obs: &PreparedBasis, dfbs: &PreparedBasis, budget_bytes: usize,
-        band_p0: usize, band_p1: usize,
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+        band_p0: usize,
+        band_p1: usize,
         screen: Option<(&crate::qqr3::QqrBounds3, f64)>,
     ) -> Result<Self, FerricError> {
         let naux = dfbs.nbasis();
         let nao = obs.nbasis();
-        assert!(band_p0 <= band_p1 && band_p1 <= naux, "invalid aux band [{band_p0},{band_p1}) for naux={naux}");
+        assert!(
+            band_p0 <= band_p1 && band_p1 <= naux,
+            "invalid aux band [{band_p0},{band_p1}) for naux={naux}"
+        );
         let band = band_p1 - band_p0;
-        let needed = band.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
+        let needed = band
+            .saturating_mul(nao)
+            .saturating_mul(nao)
+            .saturating_mul(8);
         if ooc_trace() {
             eprintln!(
                 "[OOC build] naux={naux} band=[{band_p0},{band_p1}) nao={nao} needed={:.2}GB budget={:.2}GB -> {}",
@@ -582,8 +631,16 @@ impl ThreeIndexSource {
         if needed <= budget_bytes {
             // In-core: build exactly the band (global rows [band_p0, band_p1)).
             // eri3_block returns a (band, nao, nao) tensor indexed band-locally.
-            let eri = crate::threeindex::eri3_block_screened(op, obs, dfbs, band_p0, band_p1, screen)?;
-            Ok(Self { naux, nao, block_naux: band.max(1), band_p0, band_p1, backend: Backend::InCore(eri) })
+            let eri =
+                crate::threeindex::eri3_block_screened(op, obs, dfbs, band_p0, band_p1, screen)?;
+            Ok(Self {
+                naux,
+                nao,
+                block_naux: band.max(1),
+                band_p0,
+                band_p1,
+                backend: Backend::InCore(eri),
+            })
         } else {
             // Double-buffered spill: a producer thread computes block N+1 (via the
             // rayon-parallel `eri3_block`) while this thread writes block N to
@@ -612,8 +669,8 @@ impl ThreeIndexSource {
                 .saturating_mul(8);
             preflight_spill(spill_bytes as usize)?;
             let block_naux = spill_block_naux_for(budget_bytes, nao);
-            let mut file = tempfile::tempfile()
-                .map_err(|e| FerricError::General(format!("tempfile: {e}")))?;
+            let mut file =
+                tempfile::tempfile().map_err(|e| FerricError::General(format!("tempfile: {e}")))?;
 
             // Channel carries either a computed block or a producer-side error.
             let (tx, rx) = std::sync::mpsc::sync_channel::<Result<Array3<f64>, FerricError>>(0);
@@ -626,7 +683,8 @@ impl ThreeIndexSource {
                     let mut p0 = band_p0;
                     while p0 < band_p1 {
                         let p1 = (p0 + block_naux).min(band_p1);
-                        let blk = crate::threeindex::eri3_block_screened(op, obs, dfbs, p0, p1, screen);
+                        let blk =
+                            crate::threeindex::eri3_block_screened(op, obs, dfbs, p0, p1, screen);
                         let is_err = blk.is_err();
                         // If the receiver hung up (writer hit an I/O error and
                         // returned early), stop producing.
@@ -663,7 +721,14 @@ impl ThreeIndexSource {
             file.flush().ok();
             drop_page_cache(&file);
             let scratch = Array3::<f64>::zeros((block_naux, nao, nao));
-            Ok(Self { naux, nao, block_naux, band_p0, band_p1, backend: Backend::DiskSpill { file, scratch } })
+            Ok(Self {
+                naux,
+                nao,
+                block_naux,
+                band_p0,
+                band_p1,
+                backend: Backend::DiskSpill { file, scratch },
+            })
         }
     }
 
@@ -671,7 +736,9 @@ impl ThreeIndexSource {
     /// `raw` is consumed (streamed) and `m` is (naux, naux). Produces the FULL
     /// aux range `[0, naux)`.
     pub fn build_dressed(
-        raw: &mut ThreeIndexSource, m: &Array2<f64>, budget_bytes: usize,
+        raw: &mut ThreeIndexSource,
+        m: &Array2<f64>,
+        budget_bytes: usize,
     ) -> Result<Self, FerricError> {
         let naux = raw.naux();
         Self::build_dressed_band(raw, m, budget_bytes, 0, naux)
@@ -685,21 +752,31 @@ impl ThreeIndexSource {
     /// The OUTPUT holds only the band — this is the memory lever for MPI DF-K:
     /// each rank dresses/holds only its own aux-band of `B[P,μ,ν]`.
     pub fn build_dressed_band(
-        raw: &mut ThreeIndexSource, m: &Array2<f64>, budget_bytes: usize,
-        band_p0: usize, band_p1: usize,
+        raw: &mut ThreeIndexSource,
+        m: &Array2<f64>,
+        budget_bytes: usize,
+        band_p0: usize,
+        band_p1: usize,
     ) -> Result<Self, FerricError> {
         let naux = raw.naux();
         assert!(
             raw.band_p0 == 0 && raw.band_p1 == naux,
             "build_dressed_band requires a FULL raw source (all Q); got raw band [{},{})",
-            raw.band_p0, raw.band_p1,
+            raw.band_p0,
+            raw.band_p1,
         );
-        assert!(band_p0 <= band_p1 && band_p1 <= naux, "invalid aux band [{band_p0},{band_p1}) for naux={naux}");
+        assert!(
+            band_p0 <= band_p1 && band_p1 <= naux,
+            "invalid aux band [{band_p0},{band_p1}) for naux={naux}"
+        );
         let nao = raw.nao();
         let band = band_p1 - band_p0;
         // Sizing is on the BAND footprint (what this rank actually holds), not the
         // full tensor — so a rank's budget applies to ITS band.
-        let needed = band.saturating_mul(nao).saturating_mul(nao).saturating_mul(8);
+        let needed = band
+            .saturating_mul(nao)
+            .saturating_mul(nao)
+            .saturating_mul(8);
         let block_naux = block_naux_for(budget_bytes, nao);
         let in_core = needed <= budget_bytes;
         if ooc_trace() {
@@ -710,22 +787,24 @@ impl ThreeIndexSource {
             );
         }
         // Output storage is band-local (height `band`), addressed by (P - band_p0).
-        let mut out_incore: Option<Array3<f64>> =
-            if in_core { Some(Array3::zeros((band, nao, nao))) } else { None };
-        let mut file: Option<File> =
-            if in_core { None } else {
-                // Same preflight as the raw path, and for the same reason
-                // sized on the PACKED figure: `needed` is the unpacked band
-                // (used for the in-core decision above), but what is written is
-                // the μν triangle -- roughly half. Preflighting the unpacked
-                // number would refuse spills that fit and overstate the IO time
-                // in the warning by 2x.
-                let spill_bytes = band
-                    .saturating_mul(packed_pair_len(nao))
-                    .saturating_mul(8);
-                preflight_spill(spill_bytes)?;
-                Some(tempfile::tempfile().map_err(|e| FerricError::General(format!("tempfile: {e}")))?)
-            };
+        let mut out_incore: Option<Array3<f64>> = if in_core {
+            Some(Array3::zeros((band, nao, nao)))
+        } else {
+            None
+        };
+        let mut file: Option<File> = if in_core {
+            None
+        } else {
+            // Same preflight as the raw path, and for the same reason
+            // sized on the PACKED figure: `needed` is the unpacked band
+            // (used for the in-core decision above), but what is written is
+            // the μν triangle -- roughly half. Preflighting the unpacked
+            // number would refuse spills that fit and overstate the IO time
+            // in the warning by 2x.
+            let spill_bytes = band.saturating_mul(packed_pair_len(nao)).saturating_mul(8);
+            preflight_spill(spill_bytes)?;
+            Some(tempfile::tempfile().map_err(|e| FerricError::General(format!("tempfile: {e}")))?)
+        };
         // FAST PATH: raw and output both fully in core. Each output block is an
         // independent linear combination over Q, so the blocks can be computed
         // concurrently — but ONLY with the SAME boundaries the sequential loop
@@ -747,7 +826,6 @@ impl ThreeIndexSource {
         // ran entirely on ONE core (BLAS is pinned to 1 thread under rayon per
         // the project convention), so DfK::new scaled only 1.35x across 12 cores.
         if in_core && raw.is_incore() {
-
             use rayon::prelude::*;
             let raw_flat = raw.incore_flat().expect("is_incore checked");
             let raw_p0 = raw.band().0;
@@ -802,9 +880,15 @@ impl ThreeIndexSource {
             // pool: charging `nthreads` copies when there are only 3 blocks
             // would over-count, and an over-estimating guard refuses jobs that
             // would have fit — as much a defect as an under-estimate.
-            let workers = rayon::current_num_threads().max(1).min(out_edges.len().max(1));
+            let workers = rayon::current_num_threads()
+                .max(1)
+                .min(out_edges.len().max(1));
             let mut plan = MemoryPlan::with_budget_bytes(budget_bytes, "DF dressing (in-core)");
-            plan.reserve("dressed band B[P,mu,nu]", band * nao * nao, Lifetime::Resident);
+            plan.reserve(
+                "dressed band B[P,mu,nu]",
+                band * nao * nao,
+                Lifetime::Resident,
+            );
             // Each worker holds one `contrib` GEMM result: `b × nao²` where
             // `b ≤ DRESS_ROW_BLOCK`. This is the term the old code never
             // charged for at all.
@@ -833,9 +917,7 @@ impl ThreeIndexSource {
                     let b = l1 - l0;
                     let p0 = band_p0 + l0;
                     let mut acc = ndarray::ArrayViewMut2::from_shape((b, row_elems), dst)
-                        .map_err(|e| {
-                            FerricError::General(format!("dress out reshape: {e}"))
-                        })?;
+                        .map_err(|e| FerricError::General(format!("dress out reshape: {e}")))?;
                     // Ascending Q sweep, sub-blocked to DRESS_K_BLOCK. The outer
                     // edges follow the source's own blocks (so a spilled source
                     // keeps its streaming order); the inner split is a fixed
@@ -909,7 +991,9 @@ impl ThreeIndexSource {
         // into `blocked_dressing_overshoot_report` so it is testable without
         // driving the whole spill machinery (disk files, a real
         // `PreparedBasis`) — see `blocked_dressing_overshoot_report_for_test`.
-        if let Some(report) = blocked_dressing_overshoot_report(budget_bytes, in_core, band, block_naux, nao) {
+        if let Some(report) =
+            blocked_dressing_overshoot_report(budget_bytes, in_core, band, block_naux, nao)
+        {
             eprintln!(
                 "[ferric] WARNING: DF dressing (blocked/spilled) exceeds the byte budget \
                  by construction (two live blocks per iteration; block size is fixed \
@@ -928,17 +1012,23 @@ impl ThreeIndexSource {
             // [p0, p1) are accumulated.
             raw.for_each_block(|rb| {
                 let rb_b = rb.data.shape()[0];
-                let raw_flat = rb.data.into_shape_with_order((rb_b, nao * nao))
+                let raw_flat = rb
+                    .data
+                    .into_shape_with_order((rb_b, nao * nao))
                     .map_err(|e| FerricError::General(format!("raw reshape: {e}")))?;
                 let msub = m.slice(ndarray::s![p0..p1, rb.p0..rb.p0 + rb_b]); // (b, rb_b)
                 let contrib = msub.dot(&raw_flat); // (b, nao*nao)
-                let mut acc_flat = accum.view_mut().into_shape_with_order((b, nao * nao)).unwrap();
+                let mut acc_flat = accum
+                    .view_mut()
+                    .into_shape_with_order((b, nao * nao))
+                    .unwrap();
                 acc_flat += &contrib;
                 Ok(())
             })?;
             if let Some(arr) = out_incore.as_mut() {
                 // Band-local destination: global P maps to row (P - band_p0).
-                arr.slice_mut(ndarray::s![p0 - band_p0..p1 - band_p0, .., ..]).assign(&accum);
+                arr.slice_mut(ndarray::s![p0 - band_p0..p1 - band_p0, .., ..])
+                    .assign(&accum);
             } else if let Some(f) = file.as_mut() {
                 // PACKED, matching the raw spill path -- both are read back by
                 // the same `for_each_block` arm, so the two formats MUST agree.
@@ -954,7 +1044,8 @@ impl ThreeIndexSource {
                 let mut packbuf = vec![0.0f64; bl * pair];
                 pack_lower_triangle(&accum.view(), nao, &mut packbuf);
                 let bytes: &[u8] = bytemuck::cast_slice(&packbuf);
-                f.write_all(bytes).map_err(|e| FerricError::General(format!("dress write: {e}")))?;
+                f.write_all(bytes)
+                    .map_err(|e| FerricError::General(format!("dress write: {e}")))?;
                 drop_page_cache(f);
             }
             p0 = p1;
@@ -963,7 +1054,10 @@ impl ThreeIndexSource {
             (Some(arr), _) => Backend::InCore(arr),
             (None, Some(f)) => {
                 f.sync_all().ok();
-                Backend::DiskSpill { file: f, scratch: Array3::zeros((block_naux, nao, nao)) }
+                Backend::DiskSpill {
+                    file: f,
+                    scratch: Array3::zeros((block_naux, nao, nao)),
+                }
             }
             _ => unreachable!(),
         };
@@ -978,7 +1072,9 @@ impl ThreeIndexSource {
     }
 
     /// True when the whole band is resident (no disk spill).
-    pub fn is_incore(&self) -> bool { matches!(self.backend, Backend::InCore(_)) }
+    pub fn is_incore(&self) -> bool {
+        matches!(self.backend, Backend::InCore(_))
+    }
 
     /// The resident tensor as a flat `(band_naux, nao*nao)` view; `None` when
     /// spilled. Rows are band-local (global P maps to `P - band_p0`).
@@ -1030,20 +1126,30 @@ impl ThreeIndexSource {
     }
 
     /// GLOBAL number of aux functions (full tensor height), regardless of band.
-    pub fn naux(&self) -> usize { self.naux }
+    pub fn naux(&self) -> usize {
+        self.naux
+    }
     /// Number of AO basis functions.
-    pub fn nao(&self) -> usize { self.nao }
+    pub fn nao(&self) -> usize {
+        self.nao
+    }
     /// The GLOBAL aux range `[p0, p1)` this source actually holds. `0..naux` for
     /// a full (non-banded) source.
-    pub fn band(&self) -> (usize, usize) { (self.band_p0, self.band_p1) }
+    pub fn band(&self) -> (usize, usize) {
+        (self.band_p0, self.band_p1)
+    }
     /// Number of aux rows resident in THIS source's band (`band_p1 - band_p0`).
-    pub fn band_naux(&self) -> usize { self.band_p1 - self.band_p0 }
+    pub fn band_naux(&self) -> usize {
+        self.band_p1 - self.band_p0
+    }
     /// Number of aux-blocks in this source's band.
     pub fn n_blocks(&self) -> usize {
         self.band_naux().div_ceil(self.block_naux.max(1))
     }
     /// Aux rows per block (last block may be smaller).
-    pub fn block_naux(&self) -> usize { self.block_naux }
+    pub fn block_naux(&self) -> usize {
+        self.block_naux
+    }
 
     /// Primary iteration API. Calls `f` once per aux-block, in order, over the
     /// resident band. `blk.p0` is the GLOBAL aux index of the block's first row
@@ -1065,11 +1171,20 @@ impl ThreeIndexSource {
                     let l0 = i * self.block_naux;
                     let l1 = (l0 + self.block_naux).min(band);
                     let view = eri.slice(ndarray::s![l0..l1, .., ..]);
-                    f(AuxBlock { p0: band_p0 + l0, data: view })?;
+                    f(AuxBlock {
+                        p0: band_p0 + l0,
+                        data: view,
+                    })?;
                 }
                 Ok(())
             }
-            Backend::Recompute { op, obs, dfbs, scratch, screen } => {
+            Backend::Recompute {
+                op,
+                obs,
+                dfbs,
+                scratch,
+                screen,
+            } => {
                 // Rebuild each block from the bases rather than reading it back.
                 //
                 // BIT-IDENTICAL to what the in-core backend would have stored:
@@ -1096,7 +1211,8 @@ impl ThreeIndexSource {
                 Ok(())
             }
             Backend::DiskSpill { file, scratch } => {
-                file.seek(SeekFrom::Start(0)).map_err(|e| FerricError::General(format!("seek: {e}")))?;
+                file.seek(SeekFrom::Start(0))
+                    .map_err(|e| FerricError::General(format!("seek: {e}")))?;
                 let mut packbuf: Vec<f64> = Vec::new();
                 let nb = band.div_ceil(self.block_naux.max(1));
                 for i in 0..nb {
@@ -1110,10 +1226,14 @@ impl ThreeIndexSource {
                     let elems = b * pair;
                     packbuf.resize(elems, 0.0);
                     let bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut packbuf[..elems]);
-                    file.read_exact(bytes).map_err(|e| FerricError::General(format!("spill read: {e}")))?;
+                    file.read_exact(bytes)
+                        .map_err(|e| FerricError::General(format!("spill read: {e}")))?;
                     unpack_lower_triangle(&packbuf[..elems], self.nao, b, scratch);
                     let view = scratch.slice(ndarray::s![0..b, .., ..]);
-                    f(AuxBlock { p0: band_p0 + l0, data: view })?;
+                    f(AuxBlock {
+                        p0: band_p0 + l0,
+                        data: view,
+                    })?;
                 }
                 // Reads also populate the cgroup-charged page cache; drop them so
                 // a full streaming pass doesn't pull the entire file into cache.
@@ -1127,12 +1247,14 @@ impl ThreeIndexSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operator::Operator;
     use crate::basis_bridge::PreparedBasis;
+    use crate::operator::Operator;
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
 
-    fn water() -> (Molecule,) { (Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap(),) }
+    fn water() -> (Molecule,) {
+        (Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap(),)
+    }
 
     /// The dressed tensor must not depend on RAYON_NUM_THREADS.
     ///
@@ -1155,20 +1277,28 @@ mod tests {
         // made cheaper, re-run that mutation check.
         let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("def2-svp").unwrap()).unwrap();
-        let aux = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let aux =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
         let op = Operator::coulomb();
         let naux = aux.nbasis();
         // A non-trivial, deterministic metric (symmetric, well-conditioned).
         let mut m = Array2::<f64>::zeros((naux, naux));
         for i in 0..naux {
             for j in 0..naux {
-                m[(i, j)] = if i == j { 1.5 } else { 0.01 / ((i as f64 - j as f64).abs() + 1.0) };
+                m[(i, j)] = if i == j {
+                    1.5
+                } else {
+                    0.01 / ((i as f64 - j as f64).abs() + 1.0)
+                };
             }
         }
         let budget = usize::MAX / 4; // force the in-core fast path
 
         let dress_with = |threads: usize| -> Array3<f64> {
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
             pool.install(|| {
                 let mut raw = ThreeIndexSource::build(op, &obs, &aux, budget).unwrap();
                 let d = ThreeIndexSource::build_dressed(&mut raw, &m, budget).unwrap();
@@ -1355,7 +1485,11 @@ mod tests {
         let mut m = Array2::<f64>::zeros((naux, naux));
         for i in 0..naux {
             for j in 0..naux {
-                m[(i, j)] = if i == j { 1.5 } else { 0.01 / ((i as f64 - j as f64).abs() + 1.0) };
+                m[(i, j)] = if i == j {
+                    1.5
+                } else {
+                    0.01 / ((i as f64 - j as f64).abs() + 1.0)
+                };
             }
         }
 
@@ -1366,7 +1500,8 @@ mod tests {
             let mut out = Array3::<f64>::zeros((naux, nao, nao));
             d.for_each_block(&mut |blk: AuxBlock| {
                 let n = blk.data.shape()[0];
-                out.slice_mut(ndarray::s![blk.p0..blk.p0 + n, .., ..]).assign(&blk.data);
+                out.slice_mut(ndarray::s![blk.p0..blk.p0 + n, .., ..])
+                    .assign(&blk.data);
                 Ok(())
             })
             .unwrap();
@@ -1377,7 +1512,10 @@ mod tests {
         let (reference, ref_spilled) = dress_at(usize::MAX / 4);
         assert!(!ref_spilled, "the reference must be the in-core backend");
         let max_elem = reference.iter().fold(0.0f64, |a, &x| a.max(x.abs()));
-        assert!(max_elem > 1.0, "sanity: the dressed tensor should not be ~zero");
+        assert!(
+            max_elem > 1.0,
+            "sanity: the dressed tensor should not be ~zero"
+        );
 
         // 64 ulp of the largest element: an order of magnitude above the 5.6 ulp
         // measured, so ordinary BLAS variation across machines passes, while a
@@ -1397,12 +1535,19 @@ mod tests {
                 .zip(got.iter())
                 .map(|(x, y)| (x - y).abs())
                 .fold(0.0f64, f64::max);
-            let differing =
-                reference.iter().zip(got.iter()).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+            let differing = reference
+                .iter()
+                .zip(got.iter())
+                .filter(|(x, y)| x.to_bits() != y.to_bits())
+                .count();
             eprintln!(
                 "DRESSED band={band} differing={differing}/{} max_abs={max_abs:.3e} ({:.2} ulp)",
                 reference.len(),
-                if max_elem > 0.0 { max_abs / (f64::EPSILON * max_elem) } else { 0.0 },
+                if max_elem > 0.0 {
+                    max_abs / (f64::EPSILON * max_elem)
+                } else {
+                    0.0
+                },
             );
             assert!(
                 max_abs <= tol,
@@ -1465,7 +1610,8 @@ mod tests {
             let mut out = Array3::<f64>::zeros((naux, nao, nao));
             r.for_each_block(&mut |blk: AuxBlock| {
                 let n = blk.data.shape()[0];
-                out.slice_mut(ndarray::s![blk.p0..blk.p0 + n, .., ..]).assign(&blk.data);
+                out.slice_mut(ndarray::s![blk.p0..blk.p0 + n, .., ..])
+                    .assign(&blk.data);
                 Ok(())
             })
             .unwrap();
@@ -1480,8 +1626,11 @@ mod tests {
         for band in [10usize, 21, 52] {
             let budget = (band * row_bytes + row_bytes / 2) * 2;
             let (got, spilled) = raw_at(budget);
-            let differing =
-                reference.iter().zip(got.iter()).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+            let differing = reference
+                .iter()
+                .zip(got.iter())
+                .filter(|(x, y)| x.to_bits() != y.to_bits())
+                .count();
             let max_abs = reference
                 .iter()
                 .zip(got.iter())
@@ -1491,7 +1640,11 @@ mod tests {
                 "RAW band={band} spilled={spilled} differing={differing}/{} max_abs={max_abs:.3e} \
                  ({:.2} ulp of max|elem|={max_elem:.3e})",
                 reference.len(),
-                if max_elem > 0.0 { max_abs / (f64::EPSILON * max_elem) } else { 0.0 },
+                if max_elem > 0.0 {
+                    max_abs / (f64::EPSILON * max_elem)
+                } else {
+                    0.0
+                },
             );
         }
     }
@@ -1524,7 +1677,8 @@ mod tests {
         let mut m = Array2::<f64>::zeros((naux, naux));
         for p in 0..naux {
             for q in 0..naux {
-                m[(p, q)] = 0.001 * (((p * 7 + q * 3) % 13) as f64) + if p == q { 1.0 } else { 0.0 };
+                m[(p, q)] =
+                    0.001 * (((p * 7 + q * 3) % 13) as f64) + if p == q { 1.0 } else { 0.0 };
             }
         }
         let budget = usize::MAX / 4; // force the in-core fast path
@@ -1620,7 +1774,10 @@ mod tests {
         let err = ThreeIndexSource::build_dressed(&mut raw2, &m, band_bytes)
             .expect_err("band + per-worker scratch exceeds a band-sized budget");
         let msg = err.to_string();
-        assert!(msg.contains("DF dressing (in-core)"), "must name the stage: {msg}");
+        assert!(
+            msg.contains("DF dressing (in-core)"),
+            "must name the stage: {msg}"
+        );
         assert!(
             msg.contains("dressing GEMM contrib"),
             "the breakdown must name the previously-uncharged per-worker term: {msg}"
@@ -1658,15 +1815,24 @@ mod tests {
             .expect_err("a 100 GB spill into 1 GB of free space must be refused");
         let msg = err.to_string();
         // The three facts a user needs without reading source.
-        assert!(msg.contains("100.00 GB"), "must name the tensor size: {msg}");
+        assert!(
+            msg.contains("100.00 GB"),
+            "must name the tensor size: {msg}"
+        );
         assert!(msg.contains("1.00 GB"), "must name the free space: {msg}");
         assert!(
             msg.contains("/tmp/ferric-spill-anchor"),
             "must name the spill directory: {msg}"
         );
         // The actionable remedies.
-        assert!(msg.contains("budget_gb"), "must name the budget knob: {msg}");
-        assert!(msg.contains("TMPDIR"), "must name the spill-dir override: {msg}");
+        assert!(
+            msg.contains("budget_gb"),
+            "must name the budget knob: {msg}"
+        );
+        assert!(
+            msg.contains("TMPDIR"),
+            "must name the spill-dir override: {msg}"
+        );
     }
 
     /// (a′) The refusal must NOT fire when the write genuinely fits — an
@@ -1728,9 +1894,18 @@ mod tests {
     fn spill_warning_is_emitted_once_and_names_the_per_iteration_reread() {
         let dir = std::path::Path::new("/tmp/ferric-spill-anchor");
         let text = spill_warning_text(55_000_000_000, dir);
-        assert!(text.starts_with("[ferric] warning:"), "must match ferric's warning convention: {text}");
-        assert!(text.contains("55.00 GB"), "must name the tensor size: {text}");
-        assert!(text.contains("/tmp/ferric-spill-anchor"), "must name the spill dir: {text}");
+        assert!(
+            text.starts_with("[ferric] warning:"),
+            "must match ferric's warning convention: {text}"
+        );
+        assert!(
+            text.contains("55.00 GB"),
+            "must name the tensor size: {text}"
+        );
+        assert!(
+            text.contains("/tmp/ferric-spill-anchor"),
+            "must name the spill dir: {text}"
+        );
         assert!(
             text.contains("every SCF iteration"),
             "the point of the warning is the per-iteration re-read cost: {text}"
@@ -1757,7 +1932,10 @@ mod tests {
         static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _g = GUARD.lock().unwrap_or_else(|e| e.into_inner());
         SPILL_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
-        assert!(warn_spill_once(1_000, std::path::Path::new("/tmp")), "first call must warn");
+        assert!(
+            warn_spill_once(1_000, std::path::Path::new("/tmp")),
+            "first call must warn"
+        );
         assert!(
             !warn_spill_once(1_000, std::path::Path::new("/tmp")),
             "second call must be suppressed by the once-latch"
@@ -1798,7 +1976,10 @@ mod tests {
             .zip(dense.iter())
             .filter(|(a, b)| a.to_bits() != b.to_bits())
             .count();
-        assert_eq!(n_diff, 0, "the disk guard must not perturb the in-core tensor");
+        assert_eq!(
+            n_diff, 0,
+            "the disk guard must not perturb the in-core tensor"
+        );
     }
 
     /// (c) SPILL STILL WORKS WHEN IT LEGITIMATELY FITS.
@@ -1844,8 +2025,8 @@ mod tests {
     /// for a path that does not exist.
     #[test]
     fn free_space_probe_reports_real_paths_and_declines_missing_ones() {
-        let free = free_bytes_at(std::path::Path::new("/tmp"))
-            .expect("/tmp must report free space");
+        let free =
+            free_bytes_at(std::path::Path::new("/tmp")).expect("/tmp must report free space");
         assert!(free > 0, "/tmp reported 0 bytes free");
         assert_eq!(
             free_bytes_at(std::path::Path::new("/nonexistent-ferric-anchor-path")),
@@ -1887,16 +2068,29 @@ mod tests {
         let dense = crate::threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
         let (naux, nao, _) = dense.dim();
         let mut src = ThreeIndexSource::build(op, &obs, &dfbs, 1).unwrap();
-        assert_eq!(src.n_blocks(), naux, "budget=1 byte should force 1-row blocks");
+        assert_eq!(
+            src.n_blocks(),
+            naux,
+            "budget=1 byte should force 1-row blocks"
+        );
         let mut reassembled = ndarray::Array3::<f64>::zeros((naux, nao, nao));
         src.for_each_block(|blk| {
             let b = blk.data.shape()[0];
-            reassembled.slice_mut(ndarray::s![blk.p0..blk.p0 + b, .., ..]).assign(&blk.data);
+            reassembled
+                .slice_mut(ndarray::s![blk.p0..blk.p0 + b, .., ..])
+                .assign(&blk.data);
             Ok(())
-        }).unwrap();
-        let n_diff = reassembled.iter().zip(dense.iter())
-            .filter(|(a, b)| a.to_bits() != b.to_bits()).count();
-        assert_eq!(n_diff, 0, "1-row spill blocks differ bitwise from dense eri3");
+        })
+        .unwrap();
+        let n_diff = reassembled
+            .iter()
+            .zip(dense.iter())
+            .filter(|(a, b)| a.to_bits() != b.to_bits())
+            .count();
+        assert_eq!(
+            n_diff, 0,
+            "1-row spill blocks differ bitwise from dense eri3"
+        );
     }
 
     #[test]
@@ -1910,15 +2104,28 @@ mod tests {
         // Tiny budget → force spill into several blocks.
         let tiny = nao * nao * 8 * 3; // ~3 aux rows per block
         let mut src = ThreeIndexSource::build(op, &obs, &dfbs, tiny).unwrap();
-        assert!(src.n_blocks() > 1, "expected spill into >1 block, got {}", src.n_blocks());
+        assert!(
+            src.n_blocks() > 1,
+            "expected spill into >1 block, got {}",
+            src.n_blocks()
+        );
         let mut reassembled = ndarray::Array3::<f64>::zeros((naux, nao, nao));
         src.for_each_block(|blk| {
             let b = blk.data.shape()[0];
-            reassembled.slice_mut(ndarray::s![blk.p0..blk.p0 + b, .., ..]).assign(&blk.data);
+            reassembled
+                .slice_mut(ndarray::s![blk.p0..blk.p0 + b, .., ..])
+                .assign(&blk.data);
             Ok(())
-        }).unwrap();
-        let maxdiff = (&reassembled - &dense).iter().map(|v| v.abs()).fold(0.0, f64::max);
-        assert!(maxdiff == 0.0, "spill blocks != dense eri3, maxdiff={maxdiff}");
+        })
+        .unwrap();
+        let maxdiff = (&reassembled - &dense)
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0, f64::max);
+        assert!(
+            maxdiff == 0.0,
+            "spill blocks != dense eri3, maxdiff={maxdiff}"
+        );
     }
 
     #[test]
@@ -1937,7 +2144,8 @@ mod tests {
 
         let mut reassembled = ndarray::Array3::<f64>::zeros((naux, nao, nao));
         for &(p0, p1) in &[(0usize, k), (k, naux)] {
-            let mut src = ThreeIndexSource::build_band(op, &obs, &dfbs, usize::MAX, p0, p1).unwrap();
+            let mut src =
+                ThreeIndexSource::build_band(op, &obs, &dfbs, usize::MAX, p0, p1).unwrap();
             assert_eq!(src.band(), (p0, p1));
             assert_eq!(src.band_naux(), p1 - p0);
             // naux stays GLOBAL even for a band.
@@ -1958,7 +2166,10 @@ mod tests {
             .zip(dense.iter())
             .filter(|(a, b)| a.to_bits() != b.to_bits())
             .count();
-        assert_eq!(n_diff, 0, "reassembled bands differ bitwise from dense eri3");
+        assert_eq!(
+            n_diff, 0,
+            "reassembled bands differ bitwise from dense eri3"
+        );
     }
 
     #[test]
@@ -1980,7 +2191,8 @@ mod tests {
         let mut m = Array2::<f64>::zeros((naux, naux));
         for p in 0..naux {
             for q in 0..naux {
-                m[(p, q)] = 0.001 * (((p * 7 + q * 3) % 13) as f64) + if p == q { 1.0 } else { 0.0 };
+                m[(p, q)] =
+                    0.001 * (((p * 7 + q * 3) % 13) as f64) + if p == q { 1.0 } else { 0.0 };
             }
         }
 
@@ -2078,11 +2290,19 @@ mod tests {
         assert_eq!(src.n_blocks(), 1);
         let mut reassembled = ndarray::Array3::<f64>::zeros(dense.dim());
         src.for_each_block(|blk| {
-            reassembled.slice_mut(ndarray::s![blk.p0..blk.p0 + blk.data.shape()[0], .., ..])
+            reassembled
+                .slice_mut(ndarray::s![blk.p0..blk.p0 + blk.data.shape()[0], .., ..])
                 .assign(&blk.data);
             Ok(())
-        }).unwrap();
-        let maxdiff = (&reassembled - &dense).iter().map(|v| v.abs()).fold(0.0, f64::max);
-        assert!(maxdiff == 0.0, "in-core raw block != dense eri3, maxdiff={maxdiff}");
+        })
+        .unwrap();
+        let maxdiff = (&reassembled - &dense)
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0, f64::max);
+        assert!(
+            maxdiff == 0.0,
+            "in-core raw block != dense eri3, maxdiff={maxdiff}"
+        );
     }
 }

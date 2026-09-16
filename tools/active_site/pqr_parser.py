@@ -15,6 +15,7 @@ PQR coordinates are in Angstrom; ferric's `point_charges` kwarg expects Bohr
 (matching `PointCharge`/`Molecule` internal units — see
 crates/ferric-core/src/mol.rs ANGSTROM_TO_BOHR), so this module converts.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -36,7 +37,9 @@ def parse_pqr(pqr_path: str | Path) -> list[tuple[float, float, float, float]]:
                     f"Unexpected PQR field count ({len(fields)}, expected 10): {line!r}"
                 )
             x, y, z, q = (float(v) for v in fields[5:9])
-            charges.append((q, x * ANGSTROM_TO_BOHR, y * ANGSTROM_TO_BOHR, z * ANGSTROM_TO_BOHR))
+            charges.append(
+                (q, x * ANGSTROM_TO_BOHR, y * ANGSTROM_TO_BOHR, z * ANGSTROM_TO_BOHR)
+            )
     return charges
 
 

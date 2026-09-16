@@ -65,6 +65,7 @@ def hcno_xyz_string():
 
 # ── 1. units ──
 
+
 def test_coords_are_angstrom_matching_the_input():
     """`coords()` returns the Ångström numbers that went in."""
     mol = ferric.Molecule.from_xyz_string(water_xyz_string())
@@ -119,11 +120,14 @@ def test_nuclear_repulsion_would_fail_on_angstrom_coordinates():
     wrong = nuclear_repulsion_from_bohr([list(r) for r in mol.coords()], HCNO_Z)
     # Å coordinates are numerically SMALLER, so 1/r is LARGER by exactly the
     # conversion factor. Assert the discrepancy is the expected large one.
-    assert wrong == pytest.approx(mol.nuclear_repulsion() * BOHR_PER_ANGSTROM, rel=1e-12)
+    assert wrong == pytest.approx(
+        mol.nuclear_repulsion() * BOHR_PER_ANGSTROM, rel=1e-12
+    )
     assert not math.isclose(wrong, mol.nuclear_repulsion(), rel_tol=0.4)
 
 
 # ── 2. atom order ──
+
 
 def test_all_four_accessors_agree_on_atom_order():
     """`symbols`/`coords`/`atomic_numbers`/`is_ghost` are four independent
@@ -148,6 +152,7 @@ def test_symbols_and_atomic_numbers_are_consistent():
 
 
 # ── 3. round-trip ──
+
 
 def test_to_xyz_string_round_trips_the_geometry():
     """`to_xyz_string` -> `from_xyz_string` is the loop a pose-relaxation
@@ -183,7 +188,10 @@ def test_round_trip_is_idempotent():
     a, b = once.coords(), twice.coords()
     for i in range(mol.natoms()):
         for j in range(3):
-            assert b[i][j] == pytest.approx(a[i][j], abs=0.0, rel=0.0) or b[i][j] == a[i][j]
+            assert (
+                b[i][j] == pytest.approx(a[i][j], abs=0.0, rel=0.0)
+                or b[i][j] == a[i][j]
+            )
 
 
 def test_to_xyz_string_records_charge_and_multiplicity():

@@ -23,6 +23,7 @@ derives its OWN exclusions/1-4 pairs from the bond list via a BFS, so the
 force field's `createExceptionsFromBonds`-derived exceptions are redundant
 with, not a second source of truth alongside, what ferric-mm computes).
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -32,7 +33,9 @@ Angle = tuple[int, int, int, float, float]
 Torsion = tuple[int, int, int, int, int, float, float]
 
 
-def topology_from_openmm(pdb_path: str | Path, forcefield: tuple[str, ...] = ("amber14-all.xml",)) -> dict:
+def topology_from_openmm(
+    pdb_path: str | Path, forcefield: tuple[str, ...] = ("amber14-all.xml",)
+) -> dict:
     """Build an OpenMM System from `pdb_path` and `forcefield`, and return
     its parameters in plain AMBER-convention units as a dict:
 
@@ -69,13 +72,17 @@ def topology_from_openmm(pdb_path: str | Path, forcefield: tuple[str, ...] = ("a
             for b in range(force.getNumBonds()):
                 i, j, r0, k = force.getBondParameters(b)
                 r0_ang = r0.value_in_unit(unit.angstrom)
-                k_amber = 0.5 * k.value_in_unit(unit.kilocalorie_per_mole / unit.angstrom**2)
+                k_amber = 0.5 * k.value_in_unit(
+                    unit.kilocalorie_per_mole / unit.angstrom**2
+                )
                 bonds.append((i, j, k_amber, r0_ang))
         elif isinstance(force, openmm.HarmonicAngleForce):
             for a in range(force.getNumAngles()):
                 i, j, k, theta0, k_theta = force.getAngleParameters(a)
                 theta0_deg = theta0.value_in_unit(unit.degree)
-                k_theta_amber = 0.5 * k_theta.value_in_unit(unit.kilocalorie_per_mole / unit.radian**2)
+                k_theta_amber = 0.5 * k_theta.value_in_unit(
+                    unit.kilocalorie_per_mole / unit.radian**2
+                )
                 angles.append((i, j, k, k_theta_amber, theta0_deg))
         elif isinstance(force, openmm.PeriodicTorsionForce):
             for t in range(force.getNumTorsions()):

@@ -103,7 +103,9 @@ CASES = [
 BASIS_TAG = "ccpvdz"
 # ferric's bundled basis JSON, parsed here into PySCF's basis format so that
 # both codes see BIT-IDENTICAL AO functions (see the module docstring).
-FERRIC_BASIS_JSON = ROOT / "crates" / "ferric-core" / "src" / "basis" / "bundled" / "cc-pvdz.json"
+FERRIC_BASIS_JSON = (
+    ROOT / "crates" / "ferric-core" / "src" / "basis" / "bundled" / "cc-pvdz.json"
+)
 
 # Elements appearing in the alkane test set.
 ELEMENTS = {"H": "1", "C": "6"}
@@ -214,7 +216,9 @@ def pack_lower(m):
     n = a.shape[0]
     asym = np.abs(a - a.T).max()
     if asym > 1e-12:
-        raise SystemExit(f"matrix is not symmetric (max|M - M^T| = {asym:.3e}); cannot pack")
+        raise SystemExit(
+            f"matrix is not symmetric (max|M - M^T| = {asym:.3e}); cannot pack"
+        )
     idx = np.tril_indices(n)
     return [float(f"{v:.12g}") for v in a[idx]]
 
@@ -243,7 +247,9 @@ def run_case(tag, stem, store_matrices):
     e_tot = mf.kernel()
 
     if not mf.converged:
-        raise SystemExit(f"[{tag}] PySCF RHF did NOT converge — refusing to write a reference")
+        raise SystemExit(
+            f"[{tag}] PySCF RHF did NOT converge — refusing to write a reference"
+        )
 
     # --- the direct-path guarantee (repo memory: pyscf-caches-eri-benchmark-trap) ---
     if mf._eri is not None:

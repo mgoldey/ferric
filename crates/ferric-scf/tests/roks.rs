@@ -30,11 +30,16 @@ fn run(xc: &str, xyz: &str, mult: usize, basis_name: &str) -> f64 {
     // though the energy is converged to ~1 mHa. Accept the plateau energy.
     match solve_rohf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg) {
         Ok(res) => {
-            eprintln!("ROKS {xc} {xyz} (mult={mult}, {basis_name}): E = {:.8} ({} iter, converged)",
-                      res.energy, res.iterations);
+            eprintln!(
+                "ROKS {xc} {xyz} (mult={mult}, {basis_name}): E = {:.8} ({} iter, converged)",
+                res.energy, res.iterations
+            );
             res.energy
         }
-        Err(FerricError::ScfConvergence { iterations, last_energy }) => {
+        Err(FerricError::ScfConvergence {
+            iterations,
+            last_energy,
+        }) => {
             eprintln!("ROKS {xc} {xyz} (mult={mult}, {basis_name}): E = {:.8} (plateaued after {iterations} iter)",
                       last_energy);
             last_energy

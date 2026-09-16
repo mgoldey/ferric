@@ -107,7 +107,7 @@ use ferric_scf::pairs::SignificantPairs;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 // No `Bound` import: `CsamBounds` deliberately does NOT implement that trait
 // (it underestimates -- see the header and the note at the call site below).
-use ferric_scf::screening::{CsamBounds, ScreeningKind, SchwarzBounds};
+use ferric_scf::screening::{CsamBounds, SchwarzBounds, ScreeningKind};
 
 fn load_mol(stem: &str) -> Molecule {
     Molecule::load_xyz(&format!("../../testdata/molecules/{stem}.xyz"))
@@ -206,8 +206,8 @@ fn check_validity_and_tightening(path: &str, basis_name: &str, op: Operator) -> 
     // Tight engine precision so libint does not prescreen a small-but-real
     // quartet to nothing and hand us a spuriously "satisfied" bound (same
     // precaution qqr.rs's validity test takes).
-    let mut eng = ferric_integrals::engine::Engine::new_2e(op, &prep, 1e-30)
-        .expect("tight-precision engine");
+    let mut eng =
+        ferric_integrals::engine::Engine::new_2e(op, &prep, 1e-30).expect("tight-precision engine");
 
     let mut worst_true_over_bound = 0.0f64;
     let mut found_strictly_tighter = false;
@@ -276,8 +276,11 @@ fn check_validity_and_tightening(path: &str, basis_name: &str, op: Operator) -> 
 /// refinement has no justification.
 #[test]
 fn csam_underestimates_on_water_coulomb_as_expected_for_a_nonrigorous_estimate() {
-    let (worst_ratio, _) =
-        check_validity_and_tightening("../../testdata/molecules/water.xyz", "cc-pvdz", Operator::coulomb());
+    let (worst_ratio, _) = check_validity_and_tightening(
+        "../../testdata/molecules/water.xyz",
+        "cc-pvdz",
+        Operator::coulomb(),
+    );
     eprintln!("water/cc-pVDZ Coulomb: worst |true|/estimate = {worst_ratio:.4}");
     assert!(
         worst_ratio > 1.0,
@@ -337,8 +340,11 @@ fn csam_underestimate_is_bounded_on_water_aug_cc_pvdz_coulomb() {
 /// specific mutant is designed to be caught by.
 #[test]
 fn csam_is_strictly_tighter_than_schwarz_somewhere_benzene() {
-    let (_, found_tighter) =
-        check_validity_and_tightening("../../testdata/molecules/benzene.xyz", "cc-pvdz", Operator::coulomb());
+    let (_, found_tighter) = check_validity_and_tightening(
+        "../../testdata/molecules/benzene.xyz",
+        "cc-pvdz",
+        Operator::coulomb(),
+    );
     assert!(
         found_tighter,
         "benzene/cc-pVDZ: CSAM was never strictly tighter than Schwarz anywhere sampled — \
@@ -473,14 +479,27 @@ fn csam_screening_rhf_energy_matches_schwarz() {
         ..Default::default()
     };
 
-    let cfg_schwarz = RhfConfig { screening: ScreeningKind::Schwarz, ..base.clone() };
-    let cfg_csam = RhfConfig { screening: ScreeningKind::Csam, ..base };
+    let cfg_schwarz = RhfConfig {
+        screening: ScreeningKind::Schwarz,
+        ..base.clone()
+    };
+    let cfg_csam = RhfConfig {
+        screening: ScreeningKind::Csam,
+        ..base
+    };
 
-    let res_schwarz = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_schwarz).expect("RHF (Schwarz) solve");
+    let res_schwarz =
+        solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_schwarz).expect("RHF (Schwarz) solve");
     let res_csam = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_csam).expect("RHF (CSAM) solve");
 
-    assert!(res_schwarz.converged, "Schwarz-screened LinK RHF did not converge");
-    assert!(res_csam.converged, "CSAM-screened LinK RHF did not converge");
+    assert!(
+        res_schwarz.converged,
+        "Schwarz-screened LinK RHF did not converge"
+    );
+    assert!(
+        res_csam.converged,
+        "CSAM-screened LinK RHF did not converge"
+    );
 
     let de = (res_schwarz.energy - res_csam.energy).abs();
     eprintln!(
@@ -563,8 +582,8 @@ fn csam_screening_computes_fewer_quartets_than_schwarz_on_default_path() {
 
     let bounds_schwarz = SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Schwarz)
         .expect("Schwarz bounds");
-    let bounds_csam = SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Csam)
-        .expect("CSAM bounds");
+    let bounds_csam =
+        SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Csam).expect("CSAM bounds");
     assert!(
         bounds_csam.csam_x.is_some(),
         "compute_for_screening(.., Csam) must attach a csam_x table"
@@ -590,8 +609,14 @@ fn csam_screening_computes_fewer_quartets_than_schwarz_on_default_path() {
         solve_rhf_direct_full_rebuild(&ctx, &mol, &prep, op, &bounds_schwarz, &config);
     let res_csam = solve_rhf_direct_full_rebuild(&ctx, &mol, &prep, op, &bounds_csam, &config);
 
-    assert!(res_schwarz.converged, "Schwarz-screened default-path RHF did not converge");
-    assert!(res_csam.converged, "CSAM-screened default-path RHF did not converge");
+    assert!(
+        res_schwarz.converged,
+        "Schwarz-screened default-path RHF did not converge"
+    );
+    assert!(
+        res_csam.converged,
+        "CSAM-screened default-path RHF did not converge"
+    );
 
     eprintln!(
         "alkane_8/cc-pVDZ DirectJK (full rebuild): Schwarz computed_quartets = {}, \
@@ -623,8 +648,8 @@ fn csam_screening_rhf_energy_matches_schwarz_on_default_path() {
 
     let bounds_schwarz = SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Schwarz)
         .expect("Schwarz bounds");
-    let bounds_csam = SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Csam)
-        .expect("CSAM bounds");
+    let bounds_csam =
+        SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Csam).expect("CSAM bounds");
 
     let config = RhfConfig {
         density_conv: 1e-9,
@@ -638,8 +663,14 @@ fn csam_screening_rhf_energy_matches_schwarz_on_default_path() {
     let res_csam = solve_rhf(&ctx, &mol, &prep, op, &bounds_csam, &config)
         .expect("RHF (CSAM, default path) solve");
 
-    assert!(res_schwarz.converged, "Schwarz-screened default-path RHF did not converge");
-    assert!(res_csam.converged, "CSAM-screened default-path RHF did not converge");
+    assert!(
+        res_schwarz.converged,
+        "Schwarz-screened default-path RHF did not converge"
+    );
+    assert!(
+        res_csam.converged,
+        "CSAM-screened default-path RHF did not converge"
+    );
 
     let de = (res_schwarz.energy - res_csam.energy).abs();
     eprintln!(
@@ -674,9 +705,8 @@ fn schwarz_screening_default_path_is_byte_identical_to_pre_csam_behavior() {
     let ctx = ParallelContext::default();
 
     let bounds_plain = SchwarzBounds::compute(op, &prep).expect("plain Schwarz bounds");
-    let bounds_via_kind =
-        SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Schwarz)
-            .expect("compute_for_screening(Schwarz) bounds");
+    let bounds_via_kind = SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Schwarz)
+        .expect("compute_for_screening(Schwarz) bounds");
     assert!(bounds_via_kind.csam_x.is_none());
     assert_eq!(
         bounds_plain.q, bounds_via_kind.q,
@@ -725,9 +755,12 @@ fn csam_screening_direct_jk_bit_identical_across_thread_counts() {
     let bs = basis::bundled("cc-pvdz").expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("PreparedBasis");
     let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Csam)
-        .expect("CSAM bounds");
-    assert!(bounds.csam_x.is_some(), "test requires CSAM to actually be active");
+    let bounds =
+        SchwarzBounds::compute_for_screening(op, &prep, ScreeningKind::Csam).expect("CSAM bounds");
+    assert!(
+        bounds.csam_x.is_some(),
+        "test requires CSAM to actually be active"
+    );
     let n = prep.nbasis();
 
     // Dense symmetric density so every surviving quartet actually contributes
@@ -741,7 +774,10 @@ fn csam_screening_direct_jk_bit_identical_across_thread_counts() {
     let d = 0.5 * (&d + &d.t());
 
     let run = |threads: usize| -> (ndarray::Array2<f64>, ndarray::Array2<f64>, usize) {
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
         pool.install(|| {
             let ctx = ParallelContext::default();
             let mut j = ndarray::Array2::zeros((n, n));
@@ -753,9 +789,18 @@ fn csam_screening_direct_jk_bit_identical_across_thread_counts() {
     };
     let r1 = run(1);
     let r4 = run(4);
-    assert_eq!(r1.2, r4.2, "CSAM-screened quartet count must be identical across thread counts");
-    assert_eq!(r1.0, r4.0, "CSAM-screened DirectJK J must be bit-identical across thread counts");
-    assert_eq!(r1.1, r4.1, "CSAM-screened DirectJK K must be bit-identical across thread counts");
+    assert_eq!(
+        r1.2, r4.2,
+        "CSAM-screened quartet count must be identical across thread counts"
+    );
+    assert_eq!(
+        r1.0, r4.0,
+        "CSAM-screened DirectJK J must be bit-identical across thread counts"
+    );
+    assert_eq!(
+        r1.1, r4.1,
+        "CSAM-screened DirectJK K must be bit-identical across thread counts"
+    );
 }
 
 /// ---------------------------------------------------------------------
@@ -844,8 +889,14 @@ fn csam_energy_error_shrinks_with_the_screening_threshold() {
 
         let r_schwarz = solve_rhf_direct_full_rebuild(&ctx, &mol, &prep, op, &b_schwarz, &config);
         let r_csam = solve_rhf_direct_full_rebuild(&ctx, &mol, &prep, op, &b_csam, &config);
-        assert!(r_schwarz.converged, "Schwarz run did not converge at thresh {thresh:.0e}");
-        assert!(r_csam.converged, "CSAM run did not converge at thresh {thresh:.0e}");
+        assert!(
+            r_schwarz.converged,
+            "Schwarz run did not converge at thresh {thresh:.0e}"
+        );
+        assert!(
+            r_csam.converged,
+            "CSAM run did not converge at thresh {thresh:.0e}"
+        );
 
         let err = (r_csam.energy - r_schwarz.energy).abs();
         eprintln!(

@@ -22,8 +22,7 @@ struct PropsRef {
 }
 
 fn load_ref(path: &str) -> PropsRef {
-    let s = std::fs::read_to_string(path)
-        .unwrap_or_else(|_| panic!("missing ref: {path}"));
+    let s = std::fs::read_to_string(path).unwrap_or_else(|_| panic!("missing ref: {path}"));
     serde_json::from_str(&s).unwrap()
 }
 
@@ -117,7 +116,9 @@ fn h2_polarizability_matches_pyscf_direct_rpa() {
     assert!(
         abs_iso < 3e-3,
         "α_iso: ferric={:.6}, pyscf={:.6} (Δ={:.2e})",
-        pol.iso, r.alpha_iso, abs_iso
+        pol.iso,
+        r.alpha_iso,
+        abs_iso
     );
 }
 
@@ -175,7 +176,9 @@ fn h2o_polarizability_and_esp_match_pyscf() {
     assert!(
         abs_iso < 5e-3 || abs_iso / r.alpha_iso < 0.02,
         "α_iso: ferric={:.6}, pyscf={:.6} (Δ={:.2e})",
-        pol.iso, r.alpha_iso, abs_iso
+        pol.iso,
+        r.alpha_iso,
+        abs_iso
     );
 }
 
@@ -230,6 +233,8 @@ fn nh3_polarizability_matches_pyscf() {
     assert!(
         abs_iso < 5e-3 || abs_iso / r.alpha_iso < 0.02,
         "α_iso: ferric={:.6}, pyscf={:.6} (Δ={:.2e})",
-        pol.iso, r.alpha_iso, abs_iso
+        pol.iso,
+        r.alpha_iso,
+        abs_iso
     );
 }

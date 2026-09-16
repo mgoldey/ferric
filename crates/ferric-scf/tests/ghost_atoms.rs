@@ -59,7 +59,10 @@ fn test_ghost_far_equals_isolated_he() {
 fn test_ghost_near_lowers_energy() {
     let e_alone = rhf_energy(HE_ALONE, "cc-pvdz");
     let e_near = rhf_energy(HE_NEAR_GHOST, "cc-pvdz");
-    eprintln!("He alone = {e_alone:.12}  He+near_ghost = {e_near:.12}  CP lowering = {:.3e}", e_near - e_alone);
+    eprintln!(
+        "He alone = {e_alone:.12}  He+near_ghost = {e_near:.12}  CP lowering = {:.3e}",
+        e_near - e_alone
+    );
     assert!(
         e_near <= e_alone + 1e-12,
         "RHF(He + near ghost He) = {e_near:.12} must be ≤ RHF(He) = {e_alone:.12} (variational)"
@@ -83,7 +86,10 @@ fn test_gradient_errors_on_ghost() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let config = RhfConfig { energy_conv: 1e-11, ..Default::default() };
+    let config = RhfConfig {
+        energy_conv: 1e-11,
+        ..Default::default()
+    };
     let ctx = ParallelContext::default();
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
 

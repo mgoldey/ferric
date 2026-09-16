@@ -30,15 +30,30 @@ fn main() {
 
     eprintln!("Solving RHF/aug-cc-pVTZ on benzene (not timed)...");
     let t_rhf = Instant::now();
-    let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &rhf_cfg).unwrap();
+    let rhf = solve_rhf(
+        &ParallelContext::default(),
+        &mol,
+        &obs,
+        op,
+        &bounds,
+        &rhf_cfg,
+    )
+    .unwrap();
     eprintln!(
         "RHF done: converged={} iters={} energy={:.10} Ha, wall={:.2}s",
-        rhf.converged, rhf.iterations, rhf.energy, t_rhf.elapsed().as_secs_f64()
+        rhf.converged,
+        rhf.iterations,
+        rhf.energy,
+        t_rhf.elapsed().as_secs_f64()
     );
 
     let dfbs_set = basis::bundled("aug-cc-pvtz-rifit").unwrap();
     let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();
-    let mp2_cfg = RiMp2Config { frozen_core: 6, memory_budget_bytes: None, ..Default::default() };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: 6,
+        memory_budget_bytes: None,
+        ..Default::default()
+    };
 
     eprintln!("Timing ri_mp2 (isolated, RHF excluded)...");
     let t_mp2 = Instant::now();

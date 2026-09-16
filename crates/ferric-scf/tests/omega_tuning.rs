@@ -31,9 +31,16 @@ fn omega_override_at_published_value_matches_default() {
     // published omega from libxc's own metadata
     let f = ferric_dft::libxc::XcFunctional::new("HYB_GGA_XC_WB97X_V", 1).unwrap();
     let names = f.ext_param_names();
-    let pos = names.iter().position(|n| n == "_omega").expect("wB97X-V has _omega");
+    let pos = names
+        .iter()
+        .position(|n| n == "_omega")
+        .expect("wB97X-V has _omega");
     let w_pub = f.ext_param_defaults()[pos];
-    let base = RhfConfig { xc: Some("wB97X-V".into()), energy_conv: 1e-9, ..Default::default() };
+    let base = RhfConfig {
+        xc: Some("wB97X-V".into()),
+        energy_conv: 1e-9,
+        ..Default::default()
+    };
     let r0 = solve_rhf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &base).unwrap();
     let r1 = solve_rhf(
         &ctx,
@@ -41,7 +48,10 @@ fn omega_override_at_published_value_matches_default() {
         &prep,
         Operator::coulomb(),
         &bounds,
-        &RhfConfig { xc_omega: Some(w_pub), ..base },
+        &RhfConfig {
+            xc_omega: Some(w_pub),
+            ..base
+        },
     )
     .unwrap();
     let de = (r1.energy - r0.energy).abs();
@@ -56,7 +66,11 @@ fn omega_override_at_published_value_matches_default() {
 fn omega_override_moves_the_energy_and_homo() {
     let (mol, prep, bounds) = h2_631g();
     let ctx = ParallelContext::default();
-    let base = RhfConfig { xc: Some("wB97X-V".into()), energy_conv: 1e-9, ..Default::default() };
+    let base = RhfConfig {
+        xc: Some("wB97X-V".into()),
+        energy_conv: 1e-9,
+        ..Default::default()
+    };
     let run = |w: f64| {
         solve_rhf(
             &ctx,
@@ -64,7 +78,10 @@ fn omega_override_moves_the_energy_and_homo() {
             &prep,
             Operator::coulomb(),
             &bounds,
-            &RhfConfig { xc_omega: Some(w), ..base.clone() },
+            &RhfConfig {
+                xc_omega: Some(w),
+                ..base.clone()
+            },
         )
         .unwrap()
     };
@@ -76,7 +93,10 @@ fn omega_override_moves_the_energy_and_homo() {
     assert!(de > 1e-5, "omega override did not move the energy");
     assert!(dh > 1e-3, "omega override did not move the HOMO");
     // more long-range exact exchange binds the HOMO deeper
-    assert!(hi.eps_r()[0] < lo.eps_r()[0], "HOMO did not deepen with omega");
+    assert!(
+        hi.eps_r()[0] < lo.eps_r()[0],
+        "HOMO did not deepen with omega"
+    );
 }
 
 /// Config honesty: a non-RSH functional with an ω override must hard-error,
@@ -91,7 +111,11 @@ fn omega_override_on_pbe_is_rejected() {
         &prep,
         Operator::coulomb(),
         &bounds,
-        &RhfConfig { xc: Some("PBE".into()), xc_omega: Some(0.3), ..Default::default() },
+        &RhfConfig {
+            xc: Some("PBE".into()),
+            xc_omega: Some(0.3),
+            ..Default::default()
+        },
     );
     assert!(r.is_err(), "PBE + xc_omega must be rejected");
 }
@@ -109,7 +133,10 @@ fn tune_omega_h2_converges_and_improves_j() {
         omega_hi: 1.2,
         omega_tol: 0.02,
         max_evals: 16,
-        scf: RhfConfig { energy_conv: 1e-9, ..Default::default() },
+        scf: RhfConfig {
+            energy_conv: 1e-9,
+            ..Default::default()
+        },
     };
     let r = tune_omega(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     eprintln!(
@@ -127,10 +154,17 @@ fn tune_omega_h2_converges_and_improves_j() {
         assert!(e.eps_homo < 0.0 && e.ip_delta_scf > 0.0);
     }
     assert!(r.converged);
-    let j_lo = r.evals.iter().find(|e| (e.omega - 0.2).abs() < 0.35).map(|e| e.j.abs());
+    let j_lo = r
+        .evals
+        .iter()
+        .find(|e| (e.omega - 0.2).abs() < 0.35)
+        .map(|e| e.j.abs());
     let j_best = r.j.abs();
     if let Some(jl) = j_lo {
-        assert!(j_best <= jl + 1e-12, "tuned J no better than a bracket-side eval");
+        assert!(
+            j_best <= jl + 1e-12,
+            "tuned J no better than a bracket-side eval"
+        );
     }
     assert!(r.omega > cfg.omega_lo && r.omega < cfg.omega_hi);
 }

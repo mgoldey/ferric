@@ -22,7 +22,11 @@ fn run(label: &str, xyz: &str, basis_name: &str) {
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-12, density_conv: 1e-11, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-12,
+            density_conv: 1e-11,
+            ..Default::default()
+        },
     )
     .unwrap();
 

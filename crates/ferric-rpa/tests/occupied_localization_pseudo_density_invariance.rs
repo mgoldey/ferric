@@ -135,7 +135,13 @@ fn boys_occ(sys: &Sys) -> (Array2<f64>, Array2<f64>, f64, f64, f64) {
         .iter()
         .map(|v| v.abs())
         .fold(0.0_f64, f64::max);
-    (c_loc.clone(), f_loc, boys_f(&sys.c_occ), boys_f(&c_loc), coef_change)
+    (
+        c_loc.clone(),
+        f_loc,
+        boys_f(&sys.c_occ),
+        boys_f(&c_loc),
+        coef_change,
+    )
 }
 
 fn taus(sys: &Sys) -> Vec<f64> {
@@ -165,8 +171,7 @@ fn decay_profile(m: &Array2<f64>, centers: &[[f64; 3]], bw: f64, nbins: usize) -
         for nu in 0..n {
             let a = centers[mu];
             let b = centers[nu];
-            let d =
-                ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+            let d = ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
             let bi = ((d / bw) as usize).min(nbins - 1);
             let v = m[(mu, nu)].abs();
             if v > binmax[bi] {
@@ -243,7 +248,11 @@ fn anchor_a_fock_form_reduces_to_scalar_form_for_canonical_orbitals() {
 /// exercised in its non-trivial regime).
 #[test]
 fn anchor_b_localization_actually_makes_the_fock_block_non_diagonal() {
-    let sys = run_scf("../../testdata/molecules/alkane_4.xyz", "sto-3g", "alkane_4 anchor-B");
+    let sys = run_scf(
+        "../../testdata/molecules/alkane_4.xyz",
+        "sto-3g",
+        "alkane_4 anchor-B",
+    );
     let f_can = sys.c_occ.t().dot(&sys.f_ao).dot(&sys.c_occ);
     let (_c_loc, f_loc, b0, b1, dcoef) = boys_occ(&sys);
 
@@ -262,9 +271,18 @@ fn anchor_b_localization_actually_makes_the_fock_block_non_diagonal() {
     println!("  Boys occupied functional {b0:.6} -> {b1:.6}, max Δcoef {dcoef:.3}");
     println!("  max |offdiag F_occ|: canonical {od_can:.3e}   localized {od_loc:.3e}");
 
-    assert!(b1 > b0, "Boys localization must MAXIMIZE the functional: {b0} -> {b1}");
-    assert!(dcoef > 0.1, "localizer barely moved coefficients (Δ={dcoef:.3e})");
-    assert!(od_can < 1e-8, "canonical occ Fock block must be diagonal: {od_can:.3e}");
+    assert!(
+        b1 > b0,
+        "Boys localization must MAXIMIZE the functional: {b0} -> {b1}"
+    );
+    assert!(
+        dcoef > 0.1,
+        "localizer barely moved coefficients (Δ={dcoef:.3e})"
+    );
+    assert!(
+        od_can < 1e-8,
+        "canonical occ Fock block must be diagonal: {od_can:.3e}"
+    );
     assert!(
         od_loc > 1e-2,
         "localized occ Fock block must be substantially non-diagonal (got {od_loc:.3e}); \
@@ -279,7 +297,11 @@ fn anchor_b_localization_actually_makes_the_fock_block_non_diagonal() {
 /// result below cannot be "the two code paths are secretly the same".
 #[test]
 fn anchor_c_the_broken_scalar_on_localized_construction_really_is_different() {
-    let sys = run_scf("../../testdata/molecules/alkane_4.xyz", "sto-3g", "alkane_4 anchor-C");
+    let sys = run_scf(
+        "../../testdata/molecules/alkane_4.xyz",
+        "sto-3g",
+        "alkane_4 anchor-C",
+    );
     let (c_loc, _f_loc, ..) = boys_occ(&sys);
     let tau_list = taus(&sys);
     let tau = tau_list[tau_list.len() / 2];
@@ -321,7 +343,10 @@ fn occupied_localization_cannot_change_the_occupied_pseudo_density() {
     ] {
         let sys = run_scf(path, "sto-3g", label);
         let (c_loc, f_loc, b0, b1, dcoef) = boys_occ(&sys);
-        assert!(b1 > b0 && dcoef > 0.1, "{label}: localizer no-oped (b {b0}->{b1}, Δ {dcoef:.3e})");
+        assert!(
+            b1 > b0 && dcoef > 0.1,
+            "{label}: localizer no-oped (b {b0}->{b1}, Δ {dcoef:.3e})"
+        );
 
         for &tau in taus(&sys).iter() {
             let p_can = pseudo_density_occ(&sys.c_occ, &sys.eps_occ, tau);
@@ -349,16 +374,16 @@ fn occupied_localization_cannot_change_the_occupied_pseudo_density() {
 /// locality the canonical one hides?" for the UNTRUNCATED construction.
 #[test]
 fn chi0_from_fully_localized_orbitals_is_identical_to_canonical() {
-    let sys = run_scf("../../testdata/molecules/water.xyz", "sto-3g", "water/STO-3G chi0");
+    let sys = run_scf(
+        "../../testdata/molecules/water.xyz",
+        "sto-3g",
+        "water/STO-3G chi0",
+    );
     let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
     let dfbs = basis::bundled("cc-pvdz-ri").unwrap();
     let dfprep = PreparedBasis::new(&mol, &dfbs).unwrap();
-    let eri3 = ferric_integrals::threeindex::eri3_tensor(
-        Operator::coulomb(),
-        &sys.prep,
-        &dfprep,
-    )
-    .unwrap();
+    let eri3 =
+        ferric_integrals::threeindex::eri3_tensor(Operator::coulomb(), &sys.prep, &dfprep).unwrap();
     println!("  eri3 dims = {:?}", eri3.dim());
 
     // Localize BOTH spaces, both via the correct matrix-exponential form.
@@ -423,8 +448,10 @@ fn per_atom_significant_pair_count_is_orbital_choice_independent() {
         ("../../testdata/molecules/alkane_6.xyz", "alkane_6/STO-3G"),
         ("../../testdata/molecules/alkane_8.xyz", "alkane_8/STO-3G"),
     ];
-    println!("\n{:<20} {:>6} {:>7} {:>10} {:>10} {:>10} {:>10} {:>11}",
-        "system", "natom", "nbas", "pairs/at:C", "pairs/at:L", "frac:C", "frac:L", "rel|ΔP|");
+    println!(
+        "\n{:<20} {:>6} {:>7} {:>10} {:>10} {:>10} {:>10} {:>11}",
+        "system", "natom", "nbas", "pairs/at:C", "pairs/at:L", "frac:C", "frac:L", "rel|ΔP|"
+    );
 
     let mut rows: Vec<(String, usize, f64, f64, f64, f64)> = Vec::new();
     for (path, label) in systems {
@@ -446,10 +473,15 @@ fn per_atom_significant_pair_count_is_orbital_choice_independent() {
         };
         let (cc, cl) = (count(&p_can), count(&p_loc));
         let (pac, pal) = (cc as f64 / sys.natoms as f64, cl as f64 / sys.natoms as f64);
-        let (fc, fl) = (cc as f64 / (nbas * nbas) as f64, cl as f64 / (nbas * nbas) as f64);
+        let (fc, fl) = (
+            cc as f64 / (nbas * nbas) as f64,
+            cl as f64 / (nbas * nbas) as f64,
+        );
 
-        println!("{:<20} {:>6} {:>7} {:>10.1} {:>10.1} {:>10.3} {:>10.3} {:>11.2e}",
-            label, sys.natoms, nbas, pac, pal, fc, fl, rel);
+        println!(
+            "{:<20} {:>6} {:>7} {:>10.1} {:>10.1} {:>10.3} {:>10.3} {:>11.2e}",
+            label, sys.natoms, nbas, pac, pal, fc, fl, rel
+        );
         rows.push((label.to_string(), sys.natoms, pac, pal, fc, fl));
 
         assert!(
@@ -500,8 +532,10 @@ fn domain_radius_saturation_canonical_vs_localized() {
         ("../../testdata/molecules/alkane_8.xyz", "alkane_8/STO-3G"),
         ("../../testdata/molecules/benzene.xyz", "benzene/STO-3G"),
     ];
-    println!("\n{:<20} {:>9} {:>11} {:>11} {:>9} {:>9}",
-        "system", "diameter", "r_occ:canon", "r_occ:local", "r/diam:C", "r/diam:L");
+    println!(
+        "\n{:<20} {:>9} {:>11} {:>11} {:>9} {:>9}",
+        "system", "diameter", "r_occ:canon", "r_occ:local", "r/diam:C", "r/diam:L"
+    );
     for (path, label) in systems {
         let sys = run_scf(path, "sto-3g", label);
         let (c_loc, f_loc, b0, b1, _) = boys_occ(&sys);
@@ -514,8 +548,15 @@ fn domain_radius_saturation_canonical_vs_localized() {
         let p_loc = pseudo_density_occ_fock(&c_loc, &f_loc, tau);
         let rc = radius_below(&decay_profile(&p_can, &centers, BW, NB), 1e-4, BW);
         let rl = radius_below(&decay_profile(&p_loc, &centers, BW, NB), 1e-4, BW);
-        println!("{:<20} {:>9.2} {:>11.1} {:>11.1} {:>9.2} {:>9.2}",
-            label, sys.diameter, rc, rl, rc / sys.diameter, rl / sys.diameter);
+        println!(
+            "{:<20} {:>9.2} {:>11.1} {:>11.1} {:>9.2} {:>9.2}",
+            label,
+            sys.diameter,
+            rc,
+            rl,
+            rc / sys.diameter,
+            rl / sys.diameter
+        );
         assert!(
             (rc - rl).abs() < 1e-9,
             "{label}: canonical and localized radii differ ({rc} vs {rl}) — would contradict \
@@ -538,7 +579,11 @@ fn domain_radius_saturation_canonical_vs_localized() {
 /// to itself.
 #[test]
 fn invariance_check_can_actually_fail() {
-    let sys = run_scf("../../testdata/molecules/alkane_4.xyz", "sto-3g", "alkane_4 meta-teeth");
+    let sys = run_scf(
+        "../../testdata/molecules/alkane_4.xyz",
+        "sto-3g",
+        "alkane_4 meta-teeth",
+    );
     let tl = taus(&sys);
     let tau = tl[tl.len() / 2];
     let p_can = pseudo_density_occ(&sys.c_occ, &sys.eps_occ, tau);
@@ -638,7 +683,11 @@ fn boys_screened_path_discards_a_substantial_off_diagonal_fock_coupling() {
             - diag.iter().cloned().fold(f64::INFINITY, f64::min);
         println!(
             "{:<20} {:>8} {:>14.4e} {:>14.4e} {:>12.3}",
-            label, n, off, spread, off / spread
+            label,
+            n,
+            off,
+            spread,
+            off / spread
         );
         assert!(
             off > 1e-3,

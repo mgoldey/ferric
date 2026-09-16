@@ -88,7 +88,11 @@ fn the_charge_scales_with_the_subspace() {
         diis_history_elems(one, 8) > diis_history_elems(one, 2),
         "a larger DIIS subspace holds more history and must cost more"
     );
-    assert_eq!(diis_history_elems(one, 1), 2 * one, "one slot is still two tensors");
+    assert_eq!(
+        diis_history_elems(one, 1),
+        2 * one,
+        "one slot is still two tensors"
+    );
 }
 
 /// CONTRACT 3: a zero subspace is treated as one slot.

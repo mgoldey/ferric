@@ -30,13 +30,9 @@ const BOHR_TO_ANGSTROM: f64 = 0.529_177_210_92;
 /// change one, re-sync the other and note it in the commit message.
 const S66_FRAGA: [usize; 67] = [
     0, // padding so index = S66 dimer #
-    3, 3, 3, 3, 6, 6, 6, 6, 7, 7,
-    7, 7, 12, 12, 12, 12, 12, 3, 6, 8,
-    9, 8, 9, 12, 11, 12, 12, 12, 11, 12,
-    12, 12, 11, 17, 17, 17, 15, 15, 12, 12,
-    12, 12, 12, 6, 4, 12, 12, 11, 12, 12,
-    4, 12, 12, 12, 12, 12, 12, 11, 4, 4,
-    17, 17, 12, 12, 11, 7,
+    3, 3, 3, 3, 6, 6, 6, 6, 7, 7, 7, 7, 12, 12, 12, 12, 12, 3, 6, 8, 9, 8, 9, 12, 11, 12, 12, 12,
+    11, 12, 12, 12, 11, 17, 17, 17, 15, 15, 12, 12, 12, 12, 12, 6, 4, 12, 12, 11, 12, 12, 4, 12,
+    12, 12, 12, 12, 12, 11, 4, 4, 17, 17, 12, 12, 11, 7,
 ];
 
 /// Covalent radii (Angstrom), Cordero et al. 2008 single-bond values. Only
@@ -65,7 +61,9 @@ struct UnionFind {
 
 impl UnionFind {
     fn new(n: usize) -> Self {
-        UnionFind { parent: (0..n).collect() }
+        UnionFind {
+            parent: (0..n).collect(),
+        }
     }
     fn find(&mut self, x: usize) -> usize {
         if self.parent[x] != x {
@@ -96,8 +94,7 @@ fn connected_components(mol: &Molecule, tol: f64) -> Vec<Vec<usize>> {
             let dz = ai.zpos - aj.zpos;
             let r_bohr = (dx * dx + dy * dy + dz * dz).sqrt();
             let r_ang = r_bohr * BOHR_TO_ANGSTROM;
-            let cutoff =
-                tol * (covalent_radius_angstrom(ai.z) + covalent_radius_angstrom(aj.z));
+            let cutoff = tol * (covalent_radius_angstrom(ai.z) + covalent_radius_angstrom(aj.z));
             if r_ang < cutoff {
                 uf.union(i, j);
             }

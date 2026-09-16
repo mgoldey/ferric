@@ -33,9 +33,10 @@ use ferric_quadrature::LaplaceQuadrature;
 use ferric_scf::ScfResult;
 use ndarray::Array2;
 
+use crate::boys::{
+    boys_localize, build_domains, build_pseudo_density_occ_sparse, build_pseudo_density_vir_sparse,
+};
 use crate::rimp2::active_occ;
-use crate::boys::{boys_localize, build_domains, build_pseudo_density_occ_sparse,
-                  build_pseudo_density_vir_sparse};
 
 /// Effective per-task memory budget for the quadrature-point closures.
 ///
@@ -199,7 +200,10 @@ pub fn per_task_budget_bytes_for_test(explicit: Option<usize>) -> usize {
 /// and is a constant 45 now.
 #[doc(hidden)]
 pub fn laplace_panel_widths_for_test(
-    explicit: Option<usize>, naux: usize, nbas: usize, nocc: usize,
+    explicit: Option<usize>,
+    naux: usize,
+    nbas: usize,
+    nocc: usize,
 ) -> (usize, usize) {
     let task_budget = per_task_budget_bytes(explicit);
     let mu_row_bytes = naux.max(1) * nbas.max(1) * 8 * 2;
@@ -251,15 +255,26 @@ const DENSE_BYTES_PER_ELEM: usize = 8;
 /// 14.256 + 17.820 = 32.076 GB — about 12.2% higher than what was charged,
 /// enough that a 30 GB budget would previously admit a job that needs 32 GB.
 fn laplace_dressing_peak_bytes(naux: usize, nbas: usize) -> usize {
-    let dense_bytes = naux.saturating_mul(nbas).saturating_mul(nbas).saturating_mul(DENSE_BYTES_PER_ELEM);
-    let metric_bytes = naux.saturating_mul(naux).saturating_mul(2).saturating_mul(DENSE_BYTES_PER_ELEM);
+    let dense_bytes = naux
+        .saturating_mul(nbas)
+        .saturating_mul(nbas)
+        .saturating_mul(DENSE_BYTES_PER_ELEM);
+    let metric_bytes = naux
+        .saturating_mul(naux)
+        .saturating_mul(2)
+        .saturating_mul(DENSE_BYTES_PER_ELEM);
     // Worst-case b_sparse: every entry retained, at SPARSE_BYTES_PER_NNZ each.
-    let sparse_worst_bytes = naux.saturating_mul(nbas).saturating_mul(nbas).saturating_mul(SPARSE_BYTES_PER_NNZ);
+    let sparse_worst_bytes = naux
+        .saturating_mul(nbas)
+        .saturating_mul(nbas)
+        .saturating_mul(SPARSE_BYTES_PER_NNZ);
     // Stage A (dressing): eri3_flat (== eri3_ao) + b_flat_ao (== b_ao), plus the metric.
     let dressing_stage = dense_bytes.saturating_mul(2).saturating_add(metric_bytes);
     // Stage B (sparsify): b_ao (dense_bytes) co-resident with b_sparse (up to
     // sparse_worst_bytes), plus the metric (v_inv_sqrt is still alive too).
-    let sparsify_stage = dense_bytes.saturating_add(sparse_worst_bytes).saturating_add(metric_bytes);
+    let sparsify_stage = dense_bytes
+        .saturating_add(sparse_worst_bytes)
+        .saturating_add(metric_bytes);
     dressing_stage.max(sparsify_stage)
 }
 
@@ -281,18 +296,20 @@ struct SparseBSlice {
 impl SparseBSlice {
     fn from_dense(b: &Array2<f64>, thresh: f64) -> Self {
         let nbas = b.nrows();
-        let rows = (0..nbas).map(|mu| {
-            let row = b.row(mu);
-            let mut cols = Vec::new();
-            let mut vals = Vec::new();
-            for (nu, &v) in row.iter().enumerate() {
-                if v.abs() > thresh {
-                    cols.push(nu as u16);
-                    vals.push(v);
+        let rows = (0..nbas)
+            .map(|mu| {
+                let row = b.row(mu);
+                let mut cols = Vec::new();
+                let mut vals = Vec::new();
+                for (nu, &v) in row.iter().enumerate() {
+                    if v.abs() > thresh {
+                        cols.push(nu as u16);
+                        vals.push(v);
+                    }
                 }
-            }
-            (cols, vals)
-        }).collect();
+                (cols, vals)
+            })
+            .collect();
         Self { rows, nbas }
     }
 
@@ -331,7 +348,9 @@ impl SparseBSlice {
         debug_assert_eq!(out.len(), (m1 - m0) * nbas);
         for mu in m0..m1 {
             let rhs_row = rhs.row(mu);
-            let rhs_row = rhs_row.as_slice().expect("pseudo-density rows are contiguous");
+            let rhs_row = rhs_row
+                .as_slice()
+                .expect("pseudo-density rows are contiguous");
             let out_row = &mut out[(mu - m0) * nbas..(mu - m0 + 1) * nbas];
             for (nu, o) in out_row.iter_mut().enumerate() {
                 let (cols, vals) = &self.rows[nu];
@@ -357,8 +376,11 @@ pub struct LaplaceMp2Result {
 
 impl std::fmt::Display for LaplaceMp2Result {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Laplace-MP2 total: {:.10} Ha (corr: {:.10})",
-            self.total_energy, self.mp2_corr)
+        write!(
+            f,
+            "Laplace-MP2 total: {:.10} Ha (corr: {:.10})",
+            self.total_energy, self.mp2_corr
+        )
     }
 }
 
@@ -428,8 +450,11 @@ pub struct SosMp2Result {
 
 impl std::fmt::Display for SosMp2Result {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SOS-MP2 total: {:.10} Ha (c_os={:.2}, n_quad={})",
-            self.total_energy, self.c_os, self.n_quad)
+        write!(
+            f,
+            "SOS-MP2 total: {:.10} Ha (c_os={:.2}, n_quad={})",
+            self.total_energy, self.c_os, self.n_quad
+        )
     }
 }
 
@@ -495,7 +520,9 @@ fn laplace_exchange_energy(
             // common C-order case, a copy only for the tiny nvir == 1 case.
             let mut e_blk = 0.0f64;
             let y_std = y_blk.as_standard_layout();
-            let ys = y_std.as_slice().expect("as_standard_layout is C-contiguous");
+            let ys = y_std
+                .as_slice()
+                .expect("as_standard_layout is C-contiguous");
             let ncol = naux * nocc;
             for pi_local in 0..(p_end - p0) {
                 for q in 0..naux {
@@ -551,8 +578,8 @@ fn laplace_ao_coulomb_energy(
     while m0 < nbas {
         let m1 = (m0 + block_mu).min(nbas);
         let pw = m1 - m0; // panel width in μ rows
-        // Panel buffers sized exactly pw·nbas so each Array2 row is contiguous
-        // (needed for as_slice_mut in the sparse fill methods).
+                          // Panel buffers sized exactly pw·nbas so each Array2 row is contiguous
+                          // (needed for as_slice_mut in the sparse fill methods).
         let mut m_panel = Array2::<f64>::zeros((naux, pw * nbas));
         let mut n_panel = Array2::<f64>::zeros((naux, pw * nbas));
         for p in 0..naux {
@@ -612,7 +639,13 @@ pub fn laplace_lmp2(
 ) -> Result<LaplaceMp2Result, FerricError> {
     let mut laplace = LaplaceMp2::new(n_quad);
     let (mp2_corr, e_os, e_ss) = laplace.compute_ao(
-        mol, obs, dfbs, op, rhf, frozen_core, Some(domain_cutoff_bohr),
+        mol,
+        obs,
+        dfbs,
+        op,
+        rhf,
+        frozen_core,
+        Some(domain_cutoff_bohr),
     )?;
     Ok(LaplaceMp2Result {
         total_energy: rhf.energy + mp2_corr,
@@ -683,7 +716,12 @@ impl LaplaceMp2 {
     /// via the Helmich-Paris laplace-minimax library.
     pub fn new(n_quad: usize) -> Self {
         // Default: will be reinitialized by compute() using actual orbital energies.
-        LaplaceMp2 { n_quad, points: vec![], weights: vec![], memory_budget_bytes: None }
+        LaplaceMp2 {
+            n_quad,
+            points: vec![],
+            weights: vec![],
+            memory_budget_bytes: None,
+        }
     }
 
     /// Initialize quadrature for orbital energy range [ymin, ymax].
@@ -736,7 +774,11 @@ impl LaplaceMp2 {
         let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
         let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
         let eri3_mo = crate::rimp2::eri3_mo_ov_blocked(
-            op, obs, dfbs, &c_occ, &c_vir,
+            op,
+            obs,
+            dfbs,
+            &c_occ,
+            &c_vir,
             crate::rimp2::eri3_budget_bytes(self.memory_budget_bytes),
         )?;
         let b_flat = v_inv_sqrt.dot(&eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap());
@@ -758,19 +800,24 @@ impl LaplaceMp2 {
         let k_budget = per_task_budget_bytes(self.memory_budget_bytes);
 
         // 2. Parallel quadrature over points
-        let e_corr: f64 = self.points.par_iter().zip(self.weights.par_iter()).map(|(&t, &w)| {
-            // Weighted amplitudes: B_ia(t) = B_ia * exp(-t * (eps_a - eps_i) / 2)
-            let b_t = weighted_b_mo(&b_flat, &occ_scale, &vir_scale, nocc, nvir, t);
+        let e_corr: f64 = self
+            .points
+            .par_iter()
+            .zip(self.weights.par_iter())
+            .map(|(&t, &w)| {
+                // Weighted amplitudes: B_ia(t) = B_ia * exp(-t * (eps_a - eps_i) / 2)
+                let b_t = weighted_b_mo(&b_flat, &occ_scale, &vir_scale, nocc, nvir, t);
 
-            // J_PQ = sum_{ia} B_ia^P B_ia^Q
-            let j_mat = b_t.dot(&b_t.t());
-            let e_coul = j_mat.iter().map(|&x| x * x).sum::<f64>();
+                // J_PQ = sum_{ia} B_ia^P B_ia^Q
+                let j_mat = b_t.dot(&b_t.t());
+                let e_coul = j_mat.iter().map(|&x| x * x).sum::<f64>();
 
-            // Exchange: single blocked wide GEMM instead of the dense (naux·nocc)² Gram.
-            let e_exch = laplace_exchange_energy(&b_t, naux, nocc, nvir, k_budget);
+                // Exchange: single blocked wide GEMM instead of the dense (naux·nocc)² Gram.
+                let e_exch = laplace_exchange_energy(&b_t, naux, nocc, nvir, k_budget);
 
-            -w * (2.0 * e_coul - e_exch)
-        }).sum();
+                -w * (2.0 * e_coul - e_exch)
+            })
+            .sum();
 
         Ok(e_corr)
     }
@@ -843,7 +890,8 @@ impl LaplaceMp2 {
                      b_ao co-resident with a worst-case-dense b_sparse during sparsification, \
                      plus the naux^2 metric) but the budget is {:.2} GB. Raise \
                      [memory] budget_gb / FERRIC_MEM_BUDGET_GB, or use compute_mo.",
-                    peak_bytes as f64 / 1e9, budget as f64 / 1e9,
+                    peak_bytes as f64 / 1e9,
+                    budget as f64 / 1e9,
                 )));
             }
         }
@@ -897,7 +945,9 @@ impl LaplaceMp2 {
         // sto-3g decane: ~32% fill at 1e-12 (14% at 1e-6 with <1e-6 Ha error).
         // True linear scaling requires sparse P(t)/Q(t), which needs localized MOs.
         let b_sparse: Vec<SparseBSlice> = (0..naux)
-            .map(|p| SparseBSlice::from_dense(&b_ao.slice(ndarray::s![p, .., ..]).to_owned(), 1e-12))
+            .map(|p| {
+                SparseBSlice::from_dense(&b_ao.slice(ndarray::s![p, .., ..]).to_owned(), 1e-12)
+            })
             .collect();
 
         // MO-basis integrals for K: b_mo[P, i*nvir+a] = (P|ia). Hoisted — constant
@@ -934,76 +984,80 @@ impl LaplaceMp2 {
         // BLAS-under-rayon — callers must run with OPENBLAS_NUM_THREADS=1 (or
         // an equivalent with_blas_threads(1, ..) scope) per the project's
         // rayon/BLAS threading convention; nothing here raises BLAS threads.
-        let e_terms: Vec<(f64, f64)> = self.points.par_iter().zip(self.weights.par_iter()).map(|(&t, &w)| {
-            // --- J term in AO basis ---
-            // Build pseudo-densities: sparse (domain-restricted) when Boys-localized,
-            // dense (canonical) otherwise.
-            let (pt, qt) = if let Some((ref domains, ref c_loc, ref f_loc)) = boys_domains {
-                let pt = build_pseudo_density_occ_sparse(c_loc, f_loc, t, domains);
-                let qt = build_pseudo_density_vir_sparse(&c_vir, eps, t, nocc_total, domains);
-                (pt, qt)
-            } else {
-                let pt = build_pseudo_density_occ(c, eps, t, nocc, frozen_core);
-                let qt = build_pseudo_density_vir(c, eps, t, nvir, nocc_total);
-                (pt, qt)
-            };
+        let e_terms: Vec<(f64, f64)> = self
+            .points
+            .par_iter()
+            .zip(self.weights.par_iter())
+            .map(|(&t, &w)| {
+                // --- J term in AO basis ---
+                // Build pseudo-densities: sparse (domain-restricted) when Boys-localized,
+                // dense (canonical) otherwise.
+                let (pt, qt) = if let Some((ref domains, ref c_loc, ref f_loc)) = boys_domains {
+                    let pt = build_pseudo_density_occ_sparse(c_loc, f_loc, t, domains);
+                    let qt = build_pseudo_density_vir_sparse(&c_vir, eps, t, nocc_total, domains);
+                    (pt, qt)
+                } else {
+                    let pt = build_pseudo_density_occ(c, eps, t, nocc, frozen_core);
+                    let qt = build_pseudo_density_vir(c, eps, t, nvir, nocc_total);
+                    (pt, qt)
+                };
 
-            // J[P,Q] = Tr(M^P·N^Q) = Σ_μ Σ_ν M^P_μν N^Q_νμ, with M^P = B^P·P(t),
-            // N^Q = B^Q·Q(t). Block the μ axis: for each μ-panel [m0,m1), build the
-            // (naux, pw·nbas) slabs
-            //   m_panel[P, μν] = M^P[μ, ν]          (rows of B^P·P)
-            //   n_panel[Q, μν] = N^Q[ν, μ]          (transposed slab, via Q(t)·B^Qᵀ
-            //                                        with Q(t) symmetric)
-            // and accumulate their Gram into j_mat — the shared μν column index then
-            // realizes exactly the μ↔ν-swapped trace pairing of the old full-width
-            // n_t_buf packing. This bounds the per-task footprint to
-            // block_mu·naux·nbas·8·2 instead of the old (naux, nbas²) full-width
-            // buffers (naux·nbas²·8 each — ~14 GB at nbf=900/naux=2200, ×2 ×threads
-            // inside the par_iter).
-            let e_os_k =
-                laplace_ao_coulomb_energy(&b_sparse, &pt, &qt, naux, nbas, block_mu);
+                // J[P,Q] = Tr(M^P·N^Q) = Σ_μ Σ_ν M^P_μν N^Q_νμ, with M^P = B^P·P(t),
+                // N^Q = B^Q·Q(t). Block the μ axis: for each μ-panel [m0,m1), build the
+                // (naux, pw·nbas) slabs
+                //   m_panel[P, μν] = M^P[μ, ν]          (rows of B^P·P)
+                //   n_panel[Q, μν] = N^Q[ν, μ]          (transposed slab, via Q(t)·B^Qᵀ
+                //                                        with Q(t) symmetric)
+                // and accumulate their Gram into j_mat — the shared μν column index then
+                // realizes exactly the μ↔ν-swapped trace pairing of the old full-width
+                // n_t_buf packing. This bounds the per-task footprint to
+                // block_mu·naux·nbas·8·2 instead of the old (naux, nbas²) full-width
+                // buffers (naux·nbas²·8 each — ~14 GB at nbf=900/naux=2200, ×2 ×threads
+                // inside the par_iter).
+                let e_os_k = laplace_ao_coulomb_energy(&b_sparse, &pt, &qt, naux, nbas, block_mu);
 
-            // --- K term in MO basis ---
-            // Apply Laplace weights B_ia(t) = B_ia·exp(-t(ε_a-ε_i)/2) to the
-            // hoisted amplitudes, then contract via one blocked wide GEMM
-            // (Y = X Xᵀ, X = b_t viewed as (naux·nocc)×nvir) instead of the
-            // naux² tiny nocc×nocc GEMMs the previous loop used.
-            let b_t = weighted_b_mo(&b_mo_flat, &occ_scale, &vir_scale, nocc, nvir, t);
-            let e_exch_k = laplace_exchange_energy(&b_t, naux, nocc, nvir, task_budget);
+                // --- K term in MO basis ---
+                // Apply Laplace weights B_ia(t) = B_ia·exp(-t(ε_a-ε_i)/2) to the
+                // hoisted amplitudes, then contract via one blocked wide GEMM
+                // (Y = X Xᵀ, X = b_t viewed as (naux·nocc)×nvir) instead of the
+                // naux² tiny nocc×nocc GEMMs the previous loop used.
+                let b_t = weighted_b_mo(&b_mo_flat, &occ_scale, &vir_scale, nocc, nvir, t);
+                let e_exch_k = laplace_exchange_energy(&b_t, naux, nocc, nvir, task_budget);
 
-            let e_ss_k = e_os_k - e_exch_k;
-            (-w * e_os_k, -w * e_ss_k)
-        // `collect` then fold in ASCENDING QUADRATURE-POINT ORDER, not
-        // `.reduce(|| (0.0,0.0), ..)`.
-        //
-        // rayon's `reduce` is a TREE fold: it combines partial results in
-        // whatever shape the work-splitting produced, so the association of
-        // this float sum depends on the worker count and on how rayon happened
-        // to split the point range. That made the returned energy vary with
-        // `RAYON_NUM_THREADS` independently of the panel-width defect fixed in
-        // `per_task_budget_bytes` — same config, different last digits.
-        //
-        // "Deterministic" is not "bit-identical": a tree fold IS deterministic
-        // for a fixed pool and split, and is still not reproducible across
-        // pools. Collecting into a Vec (indexed, so the order is the point
-        // order) and summing serially gives one fixed association for every
-        // worker count. n_quad is small — 3 to 9 — so the serial sum is free.
-        //
-        // HONESTY NOTE on the evidence for this half of the change. Mutating
-        // ONLY this fold back to `.par_iter().reduce(..)` — keeping the fixed
-        // divisor — leaves `laplace_energy_is_thread_independent.rs` GREEN at
-        // n_quad = 5 and 7 on benzene/cc-pVDZ across 1/2/3/12 workers. rayon
-        // does not split a range that short into a differently-shaped tree at
-        // those worker counts, so the reassociation never happens there.
-        //
-        // So this is a HARDENING change with no measured failure behind it, not
-        // a demonstrated bugfix — unlike the divisor above, whose mutant shifts
-        // the benzene correlation energy by 2.5e-13 Ha between 1 and 2 workers.
-        // It is kept because the property it buys is structural (the fold order
-        // is now a pure function of the point order, at any n_quad and any pool)
-        // and it costs nothing at n_quad ≤ 9, not because a test caught it.
-        // Do not cite this line as a fixed defect.
-        }).collect::<Vec<(f64, f64)>>();
+                let e_ss_k = e_os_k - e_exch_k;
+                (-w * e_os_k, -w * e_ss_k)
+                // `collect` then fold in ASCENDING QUADRATURE-POINT ORDER, not
+                // `.reduce(|| (0.0,0.0), ..)`.
+                //
+                // rayon's `reduce` is a TREE fold: it combines partial results in
+                // whatever shape the work-splitting produced, so the association of
+                // this float sum depends on the worker count and on how rayon happened
+                // to split the point range. That made the returned energy vary with
+                // `RAYON_NUM_THREADS` independently of the panel-width defect fixed in
+                // `per_task_budget_bytes` — same config, different last digits.
+                //
+                // "Deterministic" is not "bit-identical": a tree fold IS deterministic
+                // for a fixed pool and split, and is still not reproducible across
+                // pools. Collecting into a Vec (indexed, so the order is the point
+                // order) and summing serially gives one fixed association for every
+                // worker count. n_quad is small — 3 to 9 — so the serial sum is free.
+                //
+                // HONESTY NOTE on the evidence for this half of the change. Mutating
+                // ONLY this fold back to `.par_iter().reduce(..)` — keeping the fixed
+                // divisor — leaves `laplace_energy_is_thread_independent.rs` GREEN at
+                // n_quad = 5 and 7 on benzene/cc-pVDZ across 1/2/3/12 workers. rayon
+                // does not split a range that short into a differently-shaped tree at
+                // those worker counts, so the reassociation never happens there.
+                //
+                // So this is a HARDENING change with no measured failure behind it, not
+                // a demonstrated bugfix — unlike the divisor above, whose mutant shifts
+                // the benzene correlation energy by 2.5e-13 Ha between 1 and 2 workers.
+                // It is kept because the property it buys is structural (the fold order
+                // is now a pure function of the point order, at any n_quad and any pool)
+                // and it costs nothing at n_quad ≤ 9, not because a test caught it.
+                // Do not cite this line as a fixed defect.
+            })
+            .collect::<Vec<(f64, f64)>>();
         let (e_os, e_ss) = e_terms
             .iter()
             .fold((0.0f64, 0.0f64), |acc, &(os, ss)| (acc.0 + os, acc.1 + ss));
@@ -1085,7 +1139,11 @@ impl LaplaceMp2 {
         let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
         let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
         let eri3_mo = crate::rimp2::eri3_mo_ov_blocked(
-            op, obs, dfbs, &c_occ, &c_vir,
+            op,
+            obs,
+            dfbs,
+            &c_occ,
+            &c_vir,
             crate::rimp2::eri3_budget_bytes(self.memory_budget_bytes),
         )?;
         let b_flat = v_inv_sqrt.dot(&eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap());
@@ -1221,7 +1279,9 @@ impl LaplaceMp2 {
         };
 
         let b_sparse: Vec<SparseBSlice> = (0..naux)
-            .map(|p| SparseBSlice::from_dense(&b_ao.slice(ndarray::s![p, .., ..]).to_owned(), 1e-12))
+            .map(|p| {
+                SparseBSlice::from_dense(&b_ao.slice(ndarray::s![p, .., ..]).to_owned(), 1e-12)
+            })
             .collect();
         // b_ao's only consumer on this path is the sparse conversion above (the
         // SOS energy needs no MO transform at all — unlike compute_ao, which
@@ -1294,10 +1354,7 @@ impl SosFormulation {
     /// `cutoff` supplies the domain radius for `"ao-sparse"`, which is
     /// meaningless for the other two — passing it with `"mo"`/`"ao"` is an
     /// error rather than a silently-ignored knob.
-    pub fn parse_config_str(
-        s: Option<&str>,
-        cutoff: Option<f64>,
-    ) -> Result<Self, FerricError> {
+    pub fn parse_config_str(s: Option<&str>, cutoff: Option<f64>) -> Result<Self, FerricError> {
         let form = match s {
             None | Some("mo") => Self::Mo,
             Some("ao") => Self::Ao,
@@ -1372,15 +1429,9 @@ pub fn laplace_sos_mp2(
         SosFormulation::Ao => {
             laplace.compute_sos_ao(mol, obs, dfbs, op, rhf, config.frozen_core, None)?
         }
-        SosFormulation::AoSparse(cutoff) => laplace.compute_sos_ao(
-            mol,
-            obs,
-            dfbs,
-            op,
-            rhf,
-            config.frozen_core,
-            Some(cutoff),
-        )?,
+        SosFormulation::AoSparse(cutoff) => {
+            laplace.compute_sos_ao(mol, obs, dfbs, op, rhf, config.frozen_core, Some(cutoff))?
+        }
     };
     let sos_corr = config.c_os * e_os;
     Ok(SosMp2Result {
@@ -1436,15 +1487,14 @@ pub fn build_pseudo_density_vir(
     q
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
+    use ferric_integrals::operator::Operator;
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
-    use ferric_integrals::operator::Operator;
 
     #[test]
     fn test_laplace_mp2_mo_vs_ao() {
@@ -1465,17 +1515,22 @@ mod tests {
                 energy_conv: 1e-10,
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let mut laplace = LaplaceMp2::new(3);
         let e_mo = laplace.compute_mo(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
-        let (e_ao, _, _) = laplace.compute_ao(&mol, &obs, &dfbs, op, &rhf, 0, None).unwrap();
+        let (e_ao, _, _) = laplace
+            .compute_ao(&mol, &obs, &dfbs, op, &rhf, 0, None)
+            .unwrap();
 
         eprintln!("Laplace RI-MP2 MO: {e_mo:.10}");
         eprintln!("Laplace RI-MP2 AO: {e_ao:.10}");
 
-        assert!((e_mo - e_ao).abs() < 1e-8,
-            "MO and AO Laplace methods should give identical results: {e_mo} vs {e_ao}");
+        assert!(
+            (e_mo - e_ao).abs() < 1e-8,
+            "MO and AO Laplace methods should give identical results: {e_mo} vs {e_ao}"
+        );
     }
 
     #[test]
@@ -1498,11 +1553,14 @@ mod tests {
                 energy_conv: 1e-10,
                 ..Default::default()
             },
-        ).unwrap();
+        )
+        .unwrap();
 
         let mut laplace = LaplaceMp2::new(7);
         let e_mo = laplace.compute_mo(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
-        let (e_ao, _, _) = laplace.compute_ao(&mol, &obs, &dfbs, op, &rhf, 0, None).unwrap();
+        let (e_ao, _, _) = laplace
+            .compute_ao(&mol, &obs, &dfbs, op, &rhf, 0, None)
+            .unwrap();
 
         eprintln!("H2O Laplace RI-MP2 MO: {e_mo:.10}");
         eprintln!("H2O Laplace RI-MP2 AO: {e_ao:.10}");
@@ -1511,8 +1569,10 @@ mod tests {
 
         // Reference RI-MP2 for H2O/cc-pVDZ is -0.20403347
         let ri_mp2_ref = -0.20403347;
-        assert!((e_mo - ri_mp2_ref).abs() < 1e-3,
-            "Laplace RI-MP2 ({e_mo:.6}) should be close to RI-MP2 ({ri_mp2_ref:.6})");
+        assert!(
+            (e_mo - ri_mp2_ref).abs() < 1e-3,
+            "Laplace RI-MP2 ({e_mo:.6}) should be close to RI-MP2 ({ri_mp2_ref:.6})"
+        );
     }
 
     /// With a large domain cutoff (whole molecule), Boys LMP2 must reproduce
@@ -1535,13 +1595,21 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
-        ).unwrap();
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let mut laplace = LaplaceMp2::new(7);
-        let (e_canonical, _, _) = laplace.compute_ao(&mol, &obs, &dfbs, op, &rhf, 0, None).unwrap();
+        let (e_canonical, _, _) = laplace
+            .compute_ao(&mol, &obs, &dfbs, op, &rhf, 0, None)
+            .unwrap();
         // 20 Bohr (~10 Å) encompasses water entirely — Boys domains include all AOs
-        let (e_lmp2, _, _) = laplace.compute_ao(&mol, &obs, &dfbs, op, &rhf, 0, Some(20.0)).unwrap();
+        let (e_lmp2, _, _) = laplace
+            .compute_ao(&mol, &obs, &dfbs, op, &rhf, 0, Some(20.0))
+            .unwrap();
 
         eprintln!("H2O Laplace canonical: {e_canonical:.10}");
         eprintln!("H2O Laplace LMP2 (20 Bohr cutoff): {e_lmp2:.10}");
@@ -1565,8 +1633,12 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
-        ).unwrap();
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         // 3 points vs 5 points vs 7 points
         let mut lap3 = LaplaceMp2::new(3);
@@ -1611,21 +1683,38 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
-        ).unwrap();
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let mut laplace = LaplaceMp2::new(7);
         let e_mo = laplace.compute_mo(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
-        let (e_ao, _, _) = laplace.compute_ao(&mol, &obs, &dfbs, op, &rhf, 0, None).unwrap();
+        let (e_ao, _, _) = laplace
+            .compute_ao(&mol, &obs, &dfbs, op, &rhf, 0, None)
+            .unwrap();
 
         let ri = crate::rimp2::ri_mp2(
-            &mol, &obs, &dfbs, op, &rhf, &crate::rimp2::RiMp2Config::default(),
-        ).unwrap();
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &rhf,
+            &crate::rimp2::RiMp2Config::default(),
+        )
+        .unwrap();
 
-        eprintln!("CH4/cc-pVDZ Laplace MO: {e_mo:.10}  AO: {e_ao:.10}  live RI-MP2: {:.10}", ri.mp2_corr);
+        eprintln!(
+            "CH4/cc-pVDZ Laplace MO: {e_mo:.10}  AO: {e_ao:.10}  live RI-MP2: {:.10}",
+            ri.mp2_corr
+        );
 
-        assert!((e_mo - e_ao).abs() < 1e-8,
-            "MO and AO Laplace methods should agree on methane: {e_mo} vs {e_ao}");
+        assert!(
+            (e_mo - e_ao).abs() < 1e-8,
+            "MO and AO Laplace methods should agree on methane: {e_mo} vs {e_ao}"
+        );
         assert!((e_mo - ri.mp2_corr).abs() < 1e-3,
             "Laplace RI-MP2 ({e_mo:.6}) should be within 1e-3 Ha of live RI-MP2 ({:.6}) on methane/cc-pVDZ",
             ri.mp2_corr);
@@ -1651,21 +1740,38 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
-        ).unwrap();
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let mut laplace = LaplaceMp2::new(7);
         let e_mo = laplace.compute_mo(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
-        let (e_ao, _, _) = laplace.compute_ao(&mol, &obs, &dfbs, op, &rhf, 0, None).unwrap();
+        let (e_ao, _, _) = laplace
+            .compute_ao(&mol, &obs, &dfbs, op, &rhf, 0, None)
+            .unwrap();
 
         let ri = crate::rimp2::ri_mp2(
-            &mol, &obs, &dfbs, op, &rhf, &crate::rimp2::RiMp2Config::default(),
-        ).unwrap();
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &rhf,
+            &crate::rimp2::RiMp2Config::default(),
+        )
+        .unwrap();
 
-        eprintln!("H2O/aug-cc-pVDZ Laplace MO: {e_mo:.10}  AO: {e_ao:.10}  live RI-MP2: {:.10}", ri.mp2_corr);
+        eprintln!(
+            "H2O/aug-cc-pVDZ Laplace MO: {e_mo:.10}  AO: {e_ao:.10}  live RI-MP2: {:.10}",
+            ri.mp2_corr
+        );
 
-        assert!((e_mo - e_ao).abs() < 1e-8,
-            "MO and AO Laplace methods should agree on water/aug-cc-pVDZ: {e_mo} vs {e_ao}");
+        assert!(
+            (e_mo - e_ao).abs() < 1e-8,
+            "MO and AO Laplace methods should agree on water/aug-cc-pVDZ: {e_mo} vs {e_ao}"
+        );
         assert!((e_mo - ri.mp2_corr).abs() < 1e-3,
             "Laplace RI-MP2 ({e_mo:.6}) should be within 1e-3 Ha of live RI-MP2 ({:.6}) on water/aug-cc-pVDZ",
             ri.mp2_corr);
@@ -1700,7 +1806,10 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
         )
         .unwrap();
         (mol, obs, dfbs, rhf)
@@ -1716,10 +1825,18 @@ mod tests {
 
             // Reference: canonical-denominator opposite-spin MP2.
             let (sc, _) = crate::rimp2::ri_mp2_spin_components(
-                &mol, &obs, &dfbs, op, &rhf, &crate::rimp2::RiMp2Config::default(),
+                &mol,
+                &obs,
+                &dfbs,
+                op,
+                &rhf,
+                &crate::rimp2::RiMp2Config::default(),
             )
             .unwrap();
-            eprintln!("\n=== water/{basis_name}: reference E_OS = {:.12} ===", sc.e_os);
+            eprintln!(
+                "\n=== water/{basis_name}: reference E_OS = {:.12} ===",
+                sc.e_os
+            );
             assert!(
                 sc.e_os.abs() > 1e-4,
                 "reference E_OS is ~0 — the comparison below would be vacuous"
@@ -1727,15 +1844,15 @@ mod tests {
 
             let mut prev_mo = f64::INFINITY;
             for &n_quad in &[3usize, 5, 7] {
-                let cfg = SosMp2Config { c_os: 1.0, n_quad, ..Default::default() };
-                let mo = laplace_sos_mp2(
-                    &mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Mo,
-                )
-                .unwrap();
-                let ao = laplace_sos_mp2(
-                    &mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Ao,
-                )
-                .unwrap();
+                let cfg = SosMp2Config {
+                    c_os: 1.0,
+                    n_quad,
+                    ..Default::default()
+                };
+                let mo =
+                    laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Mo).unwrap();
+                let ao =
+                    laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Ao).unwrap();
 
                 let dev_mo = (mo.e_os - sc.e_os).abs();
                 let dev_ao = (ao.e_os - sc.e_os).abs();
@@ -1772,7 +1889,10 @@ mod tests {
                 prev_mo = dev_mo;
             }
             // The tightest grid must be tight.
-            assert!(prev_mo < 1e-5, "n_quad=7 deviation {prev_mo:.3e} is too large");
+            assert!(
+                prev_mo < 1e-5,
+                "n_quad=7 deviation {prev_mo:.3e} is too large"
+            );
         }
     }
 
@@ -1785,18 +1905,28 @@ mod tests {
         let (mol, obs, dfbs, rhf) = setup_sos("6-31g");
         let op = Operator::coulomb();
         let (sc, _) = crate::rimp2::ri_mp2_spin_components(
-            &mol, &obs, &dfbs, op, &rhf, &crate::rimp2::RiMp2Config::default(),
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &rhf,
+            &crate::rimp2::RiMp2Config::default(),
         )
         .unwrap();
-        let cfg = SosMp2Config { c_os: 1.0, ..Default::default() };
-        let got =
-            laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Mo).unwrap();
+        let cfg = SosMp2Config {
+            c_os: 1.0,
+            ..Default::default()
+        };
+        let got = laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Mo).unwrap();
 
         eprintln!(
             "water/6-31G: E_OS={:.12}, E_SS={:.12}, E_total={:.12}, Laplace SOS={:.12}",
             sc.e_os, sc.e_ss, sc.e_total, got.e_os
         );
-        assert!(sc.e_ss.abs() > 1e-4, "E_SS must be nonzero for this test to discriminate");
+        assert!(
+            sc.e_ss.abs() > 1e-4,
+            "E_SS must be nonzero for this test to discriminate"
+        );
         assert!(
             (got.e_os - sc.e_total).abs() > 1e-4,
             "SOS E_OS ({}) must NOT be the total MP2 correlation energy ({})",
@@ -1819,27 +1949,39 @@ mod tests {
     #[test]
     fn sos_config_scales_and_defaults_to_jung_head_gordon() {
         let d = SosMp2Config::default();
-        assert_eq!(d.c_os, 1.3, "SOS-MP2 default c_os must be 1.3 (Jung/Head-Gordon)");
+        assert_eq!(
+            d.c_os, 1.3,
+            "SOS-MP2 default c_os must be 1.3 (Jung/Head-Gordon)"
+        );
         assert_eq!(d.frozen_core, 0);
         assert_eq!(d.n_quad, 7);
 
         let (mol, obs, dfbs, rhf) = setup_sos("sto-3g");
         let op = Operator::coulomb();
         let unit = laplace_sos_mp2(
-            &mol, &obs, &dfbs, op, &rhf,
-            &SosMp2Config { c_os: 1.0, ..Default::default() },
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &rhf,
+            &SosMp2Config {
+                c_os: 1.0,
+                ..Default::default()
+            },
             SosFormulation::Mo,
         )
         .unwrap();
-        let scaled =
-            laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &d, SosFormulation::Mo).unwrap();
+        let scaled = laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &d, SosFormulation::Mo).unwrap();
 
         eprintln!(
             "water/STO-3G: E_OS={:.12}, c_os=1.3 -> sos_corr={:.12}",
             unit.e_os, scaled.sos_corr
         );
         // The UNSCALED component is the same regardless of c_os.
-        assert!((scaled.e_os - unit.e_os).abs() < 1e-14, "e_os must be reported unscaled");
+        assert!(
+            (scaled.e_os - unit.e_os).abs() < 1e-14,
+            "e_os must be reported unscaled"
+        );
         assert!(
             (scaled.sos_corr - 1.3 * unit.e_os).abs() < 1e-12,
             "sos_corr must be c_os * e_os"
@@ -1860,14 +2002,25 @@ mod tests {
         let (mol, obs, dfbs, rhf) = setup_sos("sto-3g");
         let op = Operator::coulomb();
         for bad in [0usize, 1, 4, 6, 9] {
-            let cfg = SosMp2Config { n_quad: bad, ..Default::default() };
+            let cfg = SosMp2Config {
+                n_quad: bad,
+                ..Default::default()
+            };
             let r = laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Mo);
-            assert!(r.is_err(), "n_quad={bad} must be rejected, not silently coerced");
+            assert!(
+                r.is_err(),
+                "n_quad={bad} must be rejected, not silently coerced"
+            );
         }
         // And a non-finite c_os is config, so it errors rather than producing NaN.
         for bad in [f64::NAN, f64::INFINITY] {
-            let cfg = SosMp2Config { c_os: bad, ..Default::default() };
-            assert!(laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Mo).is_err());
+            let cfg = SosMp2Config {
+                c_os: bad,
+                ..Default::default()
+            };
+            assert!(
+                laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Mo).is_err()
+            );
         }
     }
 
@@ -1891,15 +2044,25 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
-        ).unwrap();
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let mut laplace = LaplaceMp2::new(7);
         let e_laplace = laplace.compute_mo(&mol, &obs, &dfbs, op, &rhf, 0).unwrap();
 
         let ri = crate::rimp2::ri_mp2(
-            &mol, &obs, &dfbs, op, &rhf, &crate::rimp2::RiMp2Config::default(),
-        ).unwrap();
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &rhf,
+            &crate::rimp2::RiMp2Config::default(),
+        )
+        .unwrap();
         eprintln!("Laplace: {e_laplace:.10}  RI-MP2: {:.10}", ri.mp2_corr);
         assert!(
             (e_laplace - ri.mp2_corr).abs() < 1e-5,
@@ -1925,7 +2088,16 @@ mod tests {
             SosFormulation::AoSparse(8.0)
         );
 
-        for bad in ["MO", "AO", "Mo", "mo ", "", "molecular-orbital", "sos", "aosparse"] {
+        for bad in [
+            "MO",
+            "AO",
+            "Mo",
+            "mo ",
+            "",
+            "molecular-orbital",
+            "sos",
+            "aosparse",
+        ] {
             let msg = p(Some(bad), None).unwrap_err().to_string();
             assert!(
                 msg.contains("unknown SOS-MP2 formulation") && msg.contains(bad),
@@ -1987,7 +2159,10 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -1998,7 +2173,10 @@ mod tests {
                 &dfbs,
                 op,
                 &rhf,
-                &SosMp2Config { c_os: 1.0, ..Default::default() },
+                &SosMp2Config {
+                    c_os: 1.0,
+                    ..Default::default()
+                },
                 form,
             )
             .unwrap()
@@ -2007,11 +2185,16 @@ mod tests {
 
         let dense = sos(SosFormulation::Ao);
         let radii = [4.0, 6.0, 8.0, 12.0];
-        let devs: Vec<f64> =
-            radii.iter().map(|&r| (sos(SosFormulation::AoSparse(r)) - dense).abs()).collect();
+        let devs: Vec<f64> = radii
+            .iter()
+            .map(|&r| (sos(SosFormulation::AoSparse(r)) - dense).abs())
+            .collect();
         eprintln!("butane/STO-3G dense e_os = {dense:.12}");
         for (r, d) in radii.iter().zip(&devs) {
-            eprintln!("  cutoff {r:5.1} Bohr -> |d| = {d:.3e}  ({:.1}%)", 100.0 * d / dense.abs());
+            eprintln!(
+                "  cutoff {r:5.1} Bohr -> |d| = {d:.3e}  ({:.1}%)",
+                100.0 * d / dense.abs()
+            );
         }
 
         // Monotone: a larger domain can only ADD terms back.
@@ -2105,14 +2288,19 @@ mod tests {
                 &obs,
                 op,
                 &bounds,
-                &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+                &RhfConfig {
+                    energy_conv: 1e-10,
+                    ..Default::default()
+                },
             )
             .unwrap();
-            let cfg = SosMp2Config { c_os: 1.0, ..Default::default() };
-            let dense =
-                laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Ao)
-                    .unwrap()
-                    .e_os;
+            let cfg = SosMp2Config {
+                c_os: 1.0,
+                ..Default::default()
+            };
+            let dense = laplace_sos_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg, SosFormulation::Ao)
+                .unwrap()
+                .e_os;
             let sparse = laplace_sos_mp2(
                 &mol,
                 &obs,
@@ -2135,7 +2323,10 @@ mod tests {
         eprintln!(
             "cutoff 12 Bohr: butane rel err {rel_butane:.3e}, octane rel err {rel_octane:.3e}"
         );
-        assert!(rel_butane < 1e-9, "12 Bohr spans butane, expected exact: {rel_butane:.3e}");
+        assert!(
+            rel_butane < 1e-9,
+            "12 Bohr spans butane, expected exact: {rel_butane:.3e}"
+        );
         // THE CLAIM: the same radius transfers to a molecule ~2x the size.
         assert!(
             rel_octane < 1e-6,

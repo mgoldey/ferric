@@ -13,6 +13,7 @@ Prints one parseable line:  PYSCF <ip_g0w0_ev> <ip_koopmans_ev> <nelec> <e_rhf>
 
 Usage: pyscf_g0w0_ecp.py <file.xyz> [bundled_json] [auxbasis]
 """
+
 import json
 import sys
 
@@ -25,8 +26,7 @@ HARTREE2EV = 27.211386245988
 
 # Repo-relative default to the bundled basis ferric compiles in.
 DEFAULT_JSON = (
-    sys.path[0]
-    + "/../../crates/ferric-core/src/basis/bundled/aug-cc-pvdz-pp.json"
+    sys.path[0] + "/../../crates/ferric-core/src/basis/bundled/aug-cc-pvdz-pp.json"
 )
 
 
@@ -100,8 +100,11 @@ def main():
             ecp[s] = bse_to_pyscf_ecp(elem)
 
     mol = gto.M(
-        atom=atom, basis=basis, ecp=ecp if ecp else None,
-        unit="Angstrom", verbose=0,
+        atom=atom,
+        basis=basis,
+        ecp=ecp if ecp else None,
+        unit="Angstrom",
+        verbose=0,
     )
 
     # Correlation RI aux: load the bundled def2-tzvp-rifit JSON so PySCF and

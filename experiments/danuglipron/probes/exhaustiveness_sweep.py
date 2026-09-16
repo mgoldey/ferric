@@ -41,6 +41,7 @@ Usage:
     uv run --no-sync python experiments/danuglipron/probes/exhaustiveness_sweep.py \
         [--levels 4,8,16,32] [--repeats 3] [--n-poses 20]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -100,7 +101,7 @@ def main() -> int:
     size = tuple(float(x) for x in (ref.max(axis=0) - ref.min(axis=0) + 8.0))
 
     receptor = prepare_receptor(RECEPTOR_PDB, RECEPTOR_PDBQT)
-    print(f"receptor {Path(receptor).name}  box centre {np.round(center,1)}\n")
+    print(f"receptor {Path(receptor).name}  box centre {np.round(center, 1)}\n")
 
     rows = []
     for ex in levels:
@@ -109,8 +110,15 @@ def main() -> int:
             seed = 0xF00D + rep
             mol = _embed(seed)
             t0 = time.time()
-            res = dock_ligand(mol, receptor, center, size,
-                              exhaustiveness=ex, n_poses=args.n_poses, seed=seed)
+            res = dock_ligand(
+                mol,
+                receptor,
+                center,
+                size,
+                exhaustiveness=ex,
+                n_poses=args.n_poses,
+                seed=seed,
+            )
             dt = time.time() - t0
             if not res.ok:
                 print(f"  ex={ex:3d} seed={seed} FAILED: {res.error}", flush=True)
@@ -122,50 +130,79 @@ def main() -> int:
                 # orderings, so alignment must go through the SMILES and match
                 # by element+connectivity, never by index.
                 al = align_to_reference(
-                    DANUGLIPRON_SMILES, pose.symbols, pose.coords_angstrom,
-                    DANUGLIPRON_SMILES, ref_symbols,
-                    [tuple(float(x) for x in row) for row in ref])
+                    DANUGLIPRON_SMILES,
+                    pose.symbols,
+                    pose.coords_angstrom,
+                    DANUGLIPRON_SMILES,
+                    ref_symbols,
+                    [tuple(float(x) for x in row) for row in ref],
+                )
                 if al.ok:
                     rmsds.append(al.rmsd_angstrom)
             if not rmsds:
                 print(f"  ex={ex:3d} seed={seed}: no alignable pose", flush=True)
                 continue
-            per_seed.append({"seed": seed, "seconds": dt,
-                             "best_rmsd": min(rmsds), "top1_rmsd": rmsds[0],
-                             "n_aligned": len(rmsds),
-                             "top1_score": res.poses[0].vina_score})
-            print(f"  ex={ex:3d} seed={seed}  {dt:6.1f} s  "
-                  f"best {min(rmsds):.2f} A  top1 {rmsds[0]:.2f} A", flush=True)
+            per_seed.append(
+                {
+                    "seed": seed,
+                    "seconds": dt,
+                    "best_rmsd": min(rmsds),
+                    "top1_rmsd": rmsds[0],
+                    "n_aligned": len(rmsds),
+                    "top1_score": res.poses[0].vina_score,
+                }
+            )
+            print(
+                f"  ex={ex:3d} seed={seed}  {dt:6.1f} s  "
+                f"best {min(rmsds):.2f} A  top1 {rmsds[0]:.2f} A",
+                flush=True,
+            )
         if not per_seed:
             continue
         secs = [r["seconds"] for r in per_seed]
         best = [r["best_rmsd"] for r in per_seed]
         top1 = [r["top1_rmsd"] for r in per_seed]
-        rows.append({
-            "exhaustiveness": ex,
-            "n_seeds": len(per_seed),
-            "seconds_mean": statistics.mean(secs),
-            "best_rmsd_mean": statistics.mean(best),
-            "best_rmsd_max": max(best),
-            "top1_rmsd_mean": statistics.mean(top1),
-            "top1_rmsd_max": max(top1),
-            # SEM, not range: precision of a mean falls as 1/sqrt(n); a range
-            # GROWS with n (RESULTS.md M6).
-            "top1_rmsd_sem": (statistics.stdev(top1) / len(top1) ** 0.5
-                              if len(top1) > 1 else None),
-            "runs": per_seed,
-        })
+        rows.append(
+            {
+                "exhaustiveness": ex,
+                "n_seeds": len(per_seed),
+                "seconds_mean": statistics.mean(secs),
+                "best_rmsd_mean": statistics.mean(best),
+                "best_rmsd_max": max(best),
+                "top1_rmsd_mean": statistics.mean(top1),
+                "top1_rmsd_max": max(top1),
+                # SEM, not range: precision of a mean falls as 1/sqrt(n); a range
+                # GROWS with n (RESULTS.md M6).
+                "top1_rmsd_sem": (
+                    statistics.stdev(top1) / len(top1) ** 0.5 if len(top1) > 1 else None
+                ),
+                "runs": per_seed,
+            }
+        )
 
-    print(f"\n{'exhaust':>8s} {'s/dock':>8s} {'best RMSD':>10s} {'top1 RMSD':>10s} "
-          f"{'top1 SEM':>9s}")
+    print(
+        f"\n{'exhaust':>8s} {'s/dock':>8s} {'best RMSD':>10s} {'top1 RMSD':>10s} "
+        f"{'top1 SEM':>9s}"
+    )
     for r in rows:
         sem = "-" if r["top1_rmsd_sem"] is None else f"{r['top1_rmsd_sem']:.2f}"
-        print(f"{r['exhaustiveness']:8d} {r['seconds_mean']:8.1f} "
-              f"{r['best_rmsd_mean']:10.2f} {r['top1_rmsd_mean']:10.2f} {sem:>9s}")
+        print(
+            f"{r['exhaustiveness']:8d} {r['seconds_mean']:8.1f} "
+            f"{r['best_rmsd_mean']:10.2f} {r['top1_rmsd_mean']:10.2f} {sem:>9s}"
+        )
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps({"levels": levels, "repeats": args.repeats,
-                               "n_poses": args.n_poses, "rows": rows}, indent=1))
+    OUT.write_text(
+        json.dumps(
+            {
+                "levels": levels,
+                "repeats": args.repeats,
+                "n_poses": args.n_poses,
+                "rows": rows,
+            },
+            indent=1,
+        )
+    )
     print(f"\nwrote {OUT.relative_to(_root)}")
     return 0
 

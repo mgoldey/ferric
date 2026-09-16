@@ -13,14 +13,21 @@ use ferric_core::parallel::ParallelContext;
 use ferric_gw::{run_gw, run_u_gw, GwConfig, GwMethod};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_rpa::config::{Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig, QuadratureConfig, QuadratureScheme, SternheimerConfig};
+use ferric_rpa::config::{
+    Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig, QuadratureConfig, QuadratureScheme,
+    SternheimerConfig,
+};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::{solve_uhf, UhfConfig};
 
 fn pdep_cfg() -> PdepRpaConfig {
     PdepRpaConfig {
-        quadrature: QuadratureConfig { scheme: QuadratureScheme::GaussLegendre, n_points: 8, u0: 0.5 },
+        quadrature: QuadratureConfig {
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: 8,
+            u0: 0.5,
+        },
         eigensolver_conv_thresh: 1e-6,
         eigensolver_max_vecs: 0,
         trunc_thresh: 0.0,

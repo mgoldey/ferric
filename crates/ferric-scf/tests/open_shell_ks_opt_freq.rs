@@ -15,9 +15,7 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::operator::Operator;
 use ferric_scf::frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference};
-use ferric_scf::optimize::{
-    optimize_geometry_rohf, optimize_geometry_uhf, OptimizeConfig,
-};
+use ferric_scf::optimize::{optimize_geometry_rohf, optimize_geometry_uhf, OptimizeConfig};
 use ferric_scf::rhf::RhfConfig;
 
 /// OH radical — the standard small open-shell test system in this crate.
@@ -30,20 +28,19 @@ const OH: &str = "2\nOH doublet\nO 0.0 0.0 0.0\nH 0.0 0.0 0.98\n";
 /// `solve_rohf` directly: it guarantees the baseline comes from the identical
 /// SCF setup and config as the run under test, so the downhill comparison
 /// cannot be confounded by a setup difference.
-fn energy_at_start(
-    ctx: &ParallelContext,
-    mol: &Molecule,
-    cfg: &RhfConfig,
-    rohf: bool,
-) -> f64 {
-    let zero = OptimizeConfig { max_steps: 0, ..Default::default() };
+fn energy_at_start(ctx: &ParallelContext, mol: &Molecule, cfg: &RhfConfig, rohf: bool) -> f64 {
+    let zero = OptimizeConfig {
+        max_steps: 0,
+        ..Default::default()
+    };
     let op = Operator::coulomb();
     let r = if rohf {
         optimize_geometry_rohf(ctx, mol, "sto-3g", op, cfg, &zero)
     } else {
         optimize_geometry_uhf(ctx, mol, "sto-3g", op, cfg, &zero)
     };
-    r.expect("zero-step optimization is just an SCF and must succeed").energy
+    r.expect("zero-step optimization is just an SCF and must succeed")
+        .energy
 }
 
 /// Tighter SCF for the FD-Hessian path: differentiating a loosely-converged
@@ -83,7 +80,10 @@ fn uks_geometry_optimization_runs_and_lowers_the_energy() {
     let ctx = ParallelContext::default();
     let mol = Molecule::parse_xyz(OH, 0, 2).unwrap();
     let cfg = ks_config("LDA");
-    let opt = OptimizeConfig { max_steps: 6, ..Default::default() };
+    let opt = OptimizeConfig {
+        max_steps: 6,
+        ..Default::default()
+    };
 
     let e0 = energy_at_start(&ctx, &mol, &cfg, false);
     let res = optimize_geometry_uhf(&ctx, &mol, "sto-3g", Operator::coulomb(), &cfg, &opt)
@@ -115,7 +115,10 @@ fn uks_geometry_optimization_runs_and_lowers_the_energy() {
     // construction, 4/4 passing. What THIS test can honestly assert is that the
     // open-shell KS optimize path is wired and runs.
     assert!(res.steps > 0, "optimizer took no steps");
-    assert!(res.energy.is_finite(), "optimizer produced a non-finite energy");
+    assert!(
+        res.energy.is_finite(),
+        "optimizer produced a non-finite energy"
+    );
 }
 
 /// ROKS geometry optimization — the sibling guard, same reasoning.
@@ -124,7 +127,10 @@ fn roks_geometry_optimization_runs_and_lowers_the_energy() {
     let ctx = ParallelContext::default();
     let mol = Molecule::parse_xyz(OH, 0, 2).unwrap();
     let cfg = ks_config("LDA");
-    let opt = OptimizeConfig { max_steps: 6, ..Default::default() };
+    let opt = OptimizeConfig {
+        max_steps: 6,
+        ..Default::default()
+    };
 
     let e0 = energy_at_start(&ctx, &mol, &cfg, true);
     let res = optimize_geometry_rohf(&ctx, &mol, "sto-3g", Operator::coulomb(), &cfg, &opt)
@@ -156,7 +162,10 @@ fn roks_geometry_optimization_runs_and_lowers_the_energy() {
     // construction, 4/4 passing. What THIS test can honestly assert is that the
     // open-shell KS optimize path is wired and runs.
     assert!(res.steps > 0, "optimizer took no steps");
-    assert!(res.energy.is_finite(), "optimizer produced a non-finite energy");
+    assert!(
+        res.energy.is_finite(),
+        "optimizer produced a non-finite energy"
+    );
 }
 
 /// UKS harmonic frequencies — previously rejected by
@@ -191,7 +200,11 @@ fn uks_frequencies_run_and_give_one_vibrational_mode_for_a_diatomic() {
 
     // A linear diatomic has 3N-5 = 1 vibrational mode.
     assert!(res.is_linear, "a diatomic must be detected as linear");
-    assert_eq!(res.frequencies.len(), 1, "expected 3N-5 = 1 mode for a diatomic");
+    assert_eq!(
+        res.frequencies.len(),
+        1,
+        "expected 3N-5 = 1 mode for a diatomic"
+    );
 
     // TEETH: the O-H stretch is ~3700 cm^-1 at LDA/STO-3G. Bound it loosely
     // (minimal basis, crude functional) but require a physically real mode --

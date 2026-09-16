@@ -71,7 +71,10 @@ fn env_flag(name: &str) -> bool {
 }
 
 fn env_num<T: std::str::FromStr>(name: &str, default: T) -> T {
-    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 
 /// `full avg10` from /proc/pressure/memory, as a string ("n/a" if unreadable).
@@ -79,9 +82,11 @@ fn psi_full_avg10() -> String {
     std::fs::read_to_string("/proc/pressure/memory")
         .ok()
         .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("full"))
-                .and_then(|l| l.split_whitespace().nth(1).map(|kv| kv.trim_start_matches("avg10=").to_string()))
+            s.lines().find(|l| l.starts_with("full")).and_then(|l| {
+                l.split_whitespace()
+                    .nth(1)
+                    .map(|kv| kv.trim_start_matches("avg10=").to_string())
+            })
         })
         .unwrap_or_else(|| "n/a".to_string())
 }
@@ -109,7 +114,10 @@ fn timed<T>(label: &str, threads: usize, f: impl FnOnce() -> T + Send) -> (f64, 
 where
     T: Send,
 {
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().expect("rayon pool");
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .expect("rayon pool");
     let before = psi_full_avg10();
     let c0 = cpu_seconds();
     let t0 = Instant::now();
@@ -125,7 +133,10 @@ where
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0 >> 11
     }
 }
@@ -148,8 +159,17 @@ struct ACost {
     kept_frac: f64,
 }
 
-fn measure_a(prep: &PreparedBasis, pts: &[[f64; 3]], screen: CosxScreen, bounds: Option<&PairBounds>) -> ACost {
-    let label = if screen.is_vacuous() { "A-build unscreened" } else { "A-build screened" };
+fn measure_a(
+    prep: &PreparedBasis,
+    pts: &[[f64; 3]],
+    screen: CosxScreen,
+    bounds: Option<&PairBounds>,
+) -> ACost {
+    let label = if screen.is_vacuous() {
+        "A-build unscreened"
+    } else {
+        "A-build screened"
+    };
     let (secs, _cpu, (kept, total)) = timed(label, 1, || {
         let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14).expect("nuclear engine");
         let mut kept = 0usize;
@@ -161,7 +181,10 @@ fn measure_a(prep: &PreparedBasis, pts: &[[f64; 3]], screen: CosxScreen, bounds:
         }
         (kept, total)
     });
-    ACost { secs_per_point: secs / pts.len() as f64, kept_frac: kept as f64 / total as f64 }
+    ACost {
+        secs_per_point: secs / pts.len() as f64,
+        kept_frac: kept as f64 / total as f64,
+    }
 }
 
 /// Raw little-endian f64 dump: `D` (nbf*nbf) followed by `C_occ` (nbf*nocc).
@@ -178,18 +201,29 @@ fn load_density(path: &str, nbf: usize, nocc: usize) -> (Array2<f64>, Array2<f64
     let bytes = std::fs::read(path).expect("read density file");
     let n_d = nbf * nbf;
     let n_c = nbf * nocc;
-    assert_eq!(bytes.len(), (n_d + n_c) * 8, "density file length does not match nbf={nbf}, nocc={nocc}");
-    let vals: Vec<f64> = bytes.as_chunks::<8>().0.iter().map(|c| f64::from_le_bytes(*c)).collect();
+    assert_eq!(
+        bytes.len(),
+        (n_d + n_c) * 8,
+        "density file length does not match nbf={nbf}, nocc={nocc}"
+    );
+    let vals: Vec<f64> = bytes
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|c| f64::from_le_bytes(*c))
+        .collect();
     let d = Array2::from_shape_vec((nbf, nbf), vals[..n_d].to_vec()).expect("D shape");
     let c = Array2::from_shape_vec((nbf, nocc), vals[n_d..].to_vec()).expect("C_occ shape");
     (d, c)
 }
 
 fn fmt_opt(v: Option<f64>) -> String {
-    v.map(|x| format!("{x:.3}")).unwrap_or_else(|| "skip".into())
+    v.map(|x| format!("{x:.3}"))
+        .unwrap_or_else(|| "skip".into())
 }
 fn ratio_opt(num: f64, den: Option<f64>) -> String {
-    den.map(|x| format!("{:.2}", num / x)).unwrap_or_else(|| "skip".into())
+    den.map(|x| format!("{:.2}", num / x))
+        .unwrap_or_else(|| "skip".into())
 }
 
 #[test]
@@ -205,7 +239,8 @@ fn cosx_l_axis_cell() {
     let link_builds: usize = env_num("COSX_L_LINK_BUILDS", 2);
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(None);
 
-    let mol = Molecule::load_xyz(&testdata(&format!("testdata/molecules/{system}.xyz"))).expect("xyz");
+    let mol =
+        Molecule::load_xyz(&testdata(&format!("testdata/molecules/{system}.xyz"))).expect("xyz");
     let bs = bundled(&basis).expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("prep");
     let nbf = prep.nbasis();
@@ -221,18 +256,36 @@ fn cosx_l_axis_cell() {
         mol.atoms.len(), budget_bytes as f64 / 1e9, psi_full_avg10());
 
     // ---------- (1) A-build on a random sample of the (50,110) grid ----------
-    let cfg = AtomicGridConfig { n_radial: 50, n_angular: 110, ..Default::default() };
+    let cfg = AtomicGridConfig {
+        n_radial: 50,
+        n_angular: 110,
+        ..Default::default()
+    };
     let grid = build_atomic_grid(&mol, &cfg);
     let npts = grid.len();
     let idx = sample_indices(npts, N_SAMPLE, SEED);
     let pts: Vec<[f64; 3]> = idx.iter().map(|&i| grid[i].xyz).collect();
-    println!("grid (50,110): {npts} points; sampled {} at random (seed {SEED})", pts.len());
+    println!(
+        "grid (50,110): {npts} points; sampled {} at random (seed {SEED})",
+        pts.len()
+    );
 
     let bounds = PairBounds::build(&prep).expect("pair bounds");
     let (a_un, a_sc) = if env_flag("COSX_L_SKIP_A") {
-        println!("COSX_L_SKIP_A set: A-build not measured in this process (A columns below are NaN).");
-        let nan = ACost { secs_per_point: f64::NAN, kept_frac: f64::NAN };
-        (nan, ACost { secs_per_point: f64::NAN, kept_frac: f64::NAN })
+        println!(
+            "COSX_L_SKIP_A set: A-build not measured in this process (A columns below are NaN)."
+        );
+        let nan = ACost {
+            secs_per_point: f64::NAN,
+            kept_frac: f64::NAN,
+        };
+        (
+            nan,
+            ACost {
+                secs_per_point: f64::NAN,
+                kept_frac: f64::NAN,
+            },
+        )
     } else {
         (
             measure_a(&prep, &pts, CosxScreen::none(), None),
@@ -245,8 +298,13 @@ fn cosx_l_axis_cell() {
         "A-build/point: unscreened {:.4e} s, screened(1e-7) {:.4e} s (kept frac {:.4}); \
          per full K build (x{npts} pts): unscreened {:.1} s, screened {:.1} s; \
          A/pt/nbf^2: unscreened {:.3e}, screened {:.3e}",
-        a_un.secs_per_point, a_sc.secs_per_point, a_sc.kept_frac, a_full_un, a_full_sc,
-        a_un.secs_per_point / (nbf * nbf) as f64, a_sc.secs_per_point / (nbf * nbf) as f64
+        a_un.secs_per_point,
+        a_sc.secs_per_point,
+        a_sc.kept_frac,
+        a_full_un,
+        a_full_sc,
+        a_un.secs_per_point / (nbf * nbf) as f64,
+        a_sc.secs_per_point / (nbf * nbf) as f64
     );
 
     if skip_scf {
@@ -262,7 +320,9 @@ fn cosx_l_axis_cell() {
     let ctx = ParallelContext::default();
     let schwarz = SchwarzBounds::compute(op, &prep).expect("Schwarz bounds");
     let nocc = (mol.nelec() / 2) as usize;
-    let (d, c_occ): (Array2<f64>, Array2<f64>) = if let Ok(path) = std::env::var("COSX_L_DENSITY_IN") {
+    let (d, c_occ): (Array2<f64>, Array2<f64>) = if let Ok(path) =
+        std::env::var("COSX_L_DENSITY_IN")
+    {
         let (d, c) = load_density(&path, nbf, nocc);
         println!("density loaded from {path} (nbf={nbf}, nocc={nocc}); tr(DS) check skipped, provenance = earlier DF-JK SCF process");
         (d, c)
@@ -274,9 +334,17 @@ fn cosx_l_axis_cell() {
         };
         let t0 = Instant::now();
         let res = solve_rhf(&ctx, &mol, &prep, op, &schwarz, &scf_cfg).expect("DF-JK RHF");
-        println!("DF-JK RHF: E={:.8} converged={} iters={} in {:.1} s (default pool, not a timing)",
-            res.energy, res.converged, res.iterations, t0.elapsed().as_secs_f64());
-        assert!(res.converged, "refusing to time K builds on an unconverged density");
+        println!(
+            "DF-JK RHF: E={:.8} converged={} iters={} in {:.1} s (default pool, not a timing)",
+            res.energy,
+            res.converged,
+            res.iterations,
+            t0.elapsed().as_secs_f64()
+        );
+        assert!(
+            res.converged,
+            "refusing to time K builds on an unconverged density"
+        );
         let d = res.density_total.clone();
         let c_occ = res.mos_r().slice(ndarray::s![.., ..nocc]).to_owned();
         if let Ok(path) = std::env::var("COSX_L_DENSITY_OUT") {
@@ -298,7 +366,11 @@ fn cosx_l_axis_cell() {
         let mut k = Array2::<f64>::zeros((nbf, nbf));
         let mut link = LinkK::new(&ctx, &prep, &schwarz, op, LINK_THRESH, budget_bytes);
         for b in 0..link_builds.max(1) {
-            let label = if b == 0 { "LinK K build #1 (cold: engine pool + pairs + build)" } else { "LinK K build (warm: update_density + build)" };
+            let label = if b == 0 {
+                "LinK K build #1 (cold: engine pool + pairs + build)"
+            } else {
+                "LinK K build (warm: update_density + build)"
+            };
             let (wall, cpu, _) = timed(label, link_threads, || {
                 link.update_density(&d);
                 link.build(&d, &mut k).expect("LinK build")
@@ -320,10 +392,17 @@ fn cosx_l_axis_cell() {
     if env_flag("COSX_L_DIRECT_JK") {
         let mut j = Array2::<f64>::zeros((nbf, nbf));
         let mut k = Array2::<f64>::zeros((nbf, nbf));
-        let (wall, cpu, _) = timed("direct build_jk (J+K, default builder)", link_threads, || {
-            ferric_scf::rhf::build_jk(&ctx, &prep, &schwarz, LINK_THRESH, &d, &mut j, &mut k).expect("build_jk")
-        });
-        let dev = k_link.as_ref().map(|kl| (kl - &k).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v)));
+        let (wall, cpu, _) = timed(
+            "direct build_jk (J+K, default builder)",
+            link_threads,
+            || {
+                ferric_scf::rhf::build_jk(&ctx, &prep, &schwarz, LINK_THRESH, &d, &mut j, &mut k)
+                    .expect("build_jk")
+            },
+        );
+        let dev = k_link
+            .as_ref()
+            .map(|kl| (kl - &k).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v)));
         println!("direct J+K: wall {wall:.3} s cpu {cpu:.2} s ({link_threads} thr); max|K_link - K_direct| = {}",
             dev.map(|x| format!("{x:.3e}")).unwrap_or_else(|| "n/a".into()));
     }
@@ -340,22 +419,35 @@ fn cosx_l_axis_cell() {
         });
         let mut k_dfk = Array2::<f64>::zeros((nbf, nbf));
         let mut k_dfk_occ = Array2::<f64>::zeros((nbf, nbf));
-        let _ = timed("DF-K density-path build (warm-up)", 1, || dfk.build(&d, &mut k_dfk).expect("dfk build"));
-        let (t_dens, _, _) = timed("DF-K density-path build", 1, || dfk.build(&d, &mut k_dfk).expect("dfk build"));
+        let _ = timed("DF-K density-path build (warm-up)", 1, || {
+            dfk.build(&d, &mut k_dfk).expect("dfk build")
+        });
+        let (t_dens, _, _) = timed("DF-K density-path build", 1, || {
+            dfk.build(&d, &mut k_dfk).expect("dfk build")
+        });
         let _ = timed("DF-K occ-path build (warm-up)", 1, || {
-            dfk.build_from_occ(&c_occ, &mut k_dfk_occ).expect("dfk occ build")
+            dfk.build_from_occ(&c_occ, &mut k_dfk_occ)
+                .expect("dfk occ build")
         });
         let (t_occ, _, _) = timed("DF-K occ-path build", 1, || {
-            dfk.build_from_occ(&c_occ, &mut k_dfk_occ).expect("dfk occ build")
+            dfk.build_from_occ(&c_occ, &mut k_dfk_occ)
+                .expect("dfk occ build")
         });
         // Sanity: DF-K must agree with analytic K to fit accuracy (jkfit ~1e-3 abs on K),
         // and the occ path must equal the density path up to D vs 2*C_occ*C_occ^T
         // (they differ by the final SCF density-convergence residual ~1e-6).
-        let dev = k_link.as_ref().map(|kl| (kl - &k_dfk).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v)));
-        let dev_occ = (&k_dfk - &(&k_dfk_occ * 2.0)).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
-        println!("DF-K: setup {setup:.3} s; density-path {t_dens:.3} s; occ-path {t_occ:.3} s; \
+        let dev = k_link
+            .as_ref()
+            .map(|kl| (kl - &k_dfk).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v)));
+        let dev_occ = (&k_dfk - &(&k_dfk_occ * 2.0))
+            .mapv(f64::abs)
+            .fold(0.0_f64, |m, &v| m.max(v));
+        println!(
+            "DF-K: setup {setup:.3} s; density-path {t_dens:.3} s; occ-path {t_occ:.3} s; \
                   max|K_link - K_dfk| = {}; max|K_dfk - 2*K_occ| = {dev_occ:.3e}",
-            dev.map(|x| format!("{x:.3e}")).unwrap_or_else(|| "n/a".into()));
+            dev.map(|x| format!("{x:.3e}"))
+                .unwrap_or_else(|| "n/a".into())
+        );
         dfk_dens = Some(t_dens);
         dfk_occ = Some(t_occ);
         dfk_setup = Some(setup);

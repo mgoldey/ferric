@@ -35,7 +35,12 @@ use ferric_tddft::{run_tddft, TddftConfig, TddftMethod};
 /// starved ceiling below. Every test runs the SAME system; only the budget
 /// changes, so a difference in outcome is attributable to the guard and nothing
 /// else.
-fn fixture() -> (Molecule, PreparedBasis, PreparedBasis, ferric_scf::ScfResult) {
+fn fixture() -> (
+    Molecule,
+    PreparedBasis,
+    PreparedBasis,
+    ferric_scf::ScfResult,
+) {
     let xyz = "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n";
     let mol = Molecule::parse_xyz(xyz, 0, 1).expect("parse H2O");
     let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
@@ -73,7 +78,10 @@ fn ample_budget_still_runs_to_completion() {
         };
         let r = run_tddft(&mol, &obs, &dfbs, &rhf, &cfg, 1.0)
             .unwrap_or_else(|e| panic!("{method:?} refused an ample 1 GB budget: {e}"));
-        assert!(!r.excitation_energies.is_empty(), "{method:?}: no roots returned");
+        assert!(
+            !r.excitation_energies.is_empty(),
+            "{method:?}: no roots returned"
+        );
         assert!(
             r.excitation_energies[0] > 0.0 && r.excitation_energies[0] < 10.0,
             "{method:?}: unphysical excitation energy {:?}",
@@ -94,7 +102,10 @@ fn casida_over_budget_errors_and_names_the_largest_term() {
         .expect_err("a 1 kB budget must not be enough for the Casida dense matrices")
         .to_string();
     assert!(err.contains("TDDFT/Casida"), "must name the method: {err}");
-    assert!(err.contains("memory plan"), "must carry the plan breakdown: {err}");
+    assert!(
+        err.contains("memory plan"),
+        "must carry the plan breakdown: {err}"
+    );
     // The breakdown sorts largest-first, so the culprit is the first row. With
     // the RI tensors declared, `B(P|ab)` (naux·nvir²) is the biggest term at
     // this shape; whichever it is, SOME named reservation must appear — a bare
@@ -117,7 +128,10 @@ fn tda_over_budget_errors_and_names_the_largest_term() {
         .expect_err("a 1 kB budget must not be enough for the TDA dense matrices")
         .to_string();
     assert!(err.contains("TDDFT/TDA"), "must name the method: {err}");
-    assert!(err.contains("memory plan"), "must carry the plan breakdown: {err}");
+    assert!(
+        err.contains("memory plan"),
+        "must carry the plan breakdown: {err}"
+    );
     assert!(
         err.contains("B(P|ab) [b_vv]") || err.contains("A (ia,jb)"),
         "breakdown must name a reservation, not just a total: {err}"
@@ -133,15 +147,25 @@ fn caller_budget_is_honoured_not_discarded() {
     // was full of), both runs would resolve the same env/auto ceiling and both
     // would succeed, and this test would fail.
     let (mol, obs, dfbs, rhf) = fixture();
-    let base = TddftConfig { n_roots: 1, method: TddftMethod::Casida, ..Default::default() };
+    let base = TddftConfig {
+        n_roots: 1,
+        method: TddftMethod::Casida,
+        ..Default::default()
+    };
 
-    let ample = TddftConfig { memory_budget_bytes: Some(AMPLE), ..base.clone() };
+    let ample = TddftConfig {
+        memory_budget_bytes: Some(AMPLE),
+        ..base.clone()
+    };
     assert!(
         run_tddft(&mol, &obs, &dfbs, &rhf, &ample, 1.0).is_ok(),
         "the ample-budget run must succeed, or the comparison below proves nothing"
     );
 
-    let starved = TddftConfig { memory_budget_bytes: Some(STARVED), ..base };
+    let starved = TddftConfig {
+        memory_budget_bytes: Some(STARVED),
+        ..base
+    };
     assert!(
         run_tddft(&mol, &obs, &dfbs, &rhf, &starved, 1.0).is_err(),
         "a caller-supplied 1 kB ceiling was ignored — the budget is not reaching the \
@@ -166,13 +190,20 @@ fn caller_budget_is_honoured_not_discarded() {
 #[test]
 fn hybrid_c_hf_still_returns_a_result_despite_the_missing_xc_kernel() {
     let (mol, obs, dfbs, rhf) = fixture();
-    let cfg = TddftConfig { n_roots: 1, method: TddftMethod::Tda, memory_budget_bytes: Some(AMPLE) };
+    let cfg = TddftConfig {
+        n_roots: 1,
+        method: TddftMethod::Tda,
+        memory_budget_bytes: Some(AMPLE),
+    };
 
     // B3LYP-like exact-exchange fraction: exercises the c_hf != 1.0 branch.
     let r = run_tddft(&mol, &obs, &dfbs, &rhf, &cfg, 0.2)
         .expect("a hybrid c_hf must still run; the missing f_xc term is a warning, not an error");
 
-    assert!(!r.excitation_energies.is_empty(), "no roots returned for a hybrid reference");
+    assert!(
+        !r.excitation_energies.is_empty(),
+        "no roots returned for a hybrid reference"
+    );
     assert!(
         r.excitation_energies[0].is_finite(),
         "hybrid c_hf produced a non-finite excitation energy: {:?}",

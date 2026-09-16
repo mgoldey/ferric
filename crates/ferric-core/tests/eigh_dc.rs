@@ -18,7 +18,9 @@ use ferric_core::linalg::{eigh_dc, eigvalsh_dc, Uplo};
 fn sym_matrix(n: usize) -> Array2<f64> {
     let mut state: u64 = 0x9e3779b97f4a7c15;
     let mut next = || {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         // map to [-1, 1)
         ((state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
     };
@@ -80,7 +82,10 @@ fn eigh_dc_matches_ndarray_linalg_eigh_upper() {
         // Eigenvectors: same span, sign-aligned, bit-close.
         let ref_vecs_owned = ref_vecs.to_owned();
         let diff = max_vec_abs_diff(&ref_vecs_owned, &dc_vecs);
-        assert!(diff < 1e-9, "eigenvector max abs diff {diff:.3e} too large at n={n}");
+        assert!(
+            diff < 1e-9,
+            "eigenvector max abs diff {diff:.3e} too large at n={n}"
+        );
     }
 }
 
@@ -151,7 +156,10 @@ fn eigh_dc_lower_matches_upper_for_symmetric() {
     let (vu, _) = eigh_dc(&a, Uplo::Upper).unwrap();
     let (vl, _) = eigh_dc(&a, Uplo::Lower).unwrap();
     for k in 0..n {
-        assert!((vu[k] - vl[k]).abs() < 1e-10, "Upper/Lower eigenvalue {k} differ");
+        assert!(
+            (vu[k] - vl[k]).abs() < 1e-10,
+            "Upper/Lower eigenvalue {k} differ"
+        );
     }
 }
 
@@ -169,7 +177,9 @@ fn eigh_dc_lower_matches_upper_for_symmetric() {
 fn spd_matrix(n: usize, seed: u64) -> Array2<f64> {
     let mut state: u64 = seed;
     let mut next = || {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((state >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0
     };
     let mut m = Array2::<f64>::zeros((n, n));
@@ -193,7 +203,11 @@ fn logdet_lu_matches_sum_log_eigenvalues_spd() {
 
         let evals = eigvalsh_dc(&a, Uplo::Upper).expect("eigvalsh_dc failed");
         // Guard the premise of the test itself: this really is SPD.
-        assert!(evals[0] > 0.0, "n={n}: test matrix is not positive definite (λ_min={})", evals[0]);
+        assert!(
+            evals[0] > 0.0,
+            "n={n}: test matrix is not positive definite (λ_min={})",
+            evals[0]
+        );
         let sum_log: f64 = evals.iter().map(|&l| l.ln()).sum();
 
         let logdet = logdet_lu(&a).expect("logdet_lu failed");
@@ -221,7 +235,10 @@ fn logdet_lu_matches_the_full_rpa_trace_log_summand() {
         let lu_way = logdet_lu(&a).unwrap() + (n as f64 - trace);
 
         let rel = (lu_way - eig_way).abs() / eig_way.abs().max(1.0);
-        assert!(rel < 1e-10, "n={n}: LU={lu_way:.16} vs eig={eig_way:.16} (rel {rel:.3e})");
+        assert!(
+            rel < 1e-10,
+            "n={n}: LU={lu_way:.16} vs eig={eig_way:.16} (rel {rel:.3e})"
+        );
     }
 }
 
@@ -267,8 +284,12 @@ fn logdet_lu_sign_accounting_under_heavy_pivoting() {
         for i in 0..n {
             a[[i, n - 1 - i]] = 1.0;
         }
-        let ld = logdet_lu(&a).unwrap_or_else(|e| panic!("n={n} anti-diagonal should have det=+1: {e}"));
-        assert!(ld.abs() < 1e-13, "n={n}: expected ln det = 0 (det=+1), got {ld}");
+        let ld =
+            logdet_lu(&a).unwrap_or_else(|e| panic!("n={n} anti-diagonal should have det=+1: {e}"));
+        assert!(
+            ld.abs() < 1e-13,
+            "n={n}: expected ln det = 0 (det=+1), got {ld}"
+        );
     }
     // n=2 and n=3 reversals have odd parity → det = −1 → must be a clean Err,
     // proving the sign really is tracked (not silently dropped via abs()).
@@ -292,7 +313,10 @@ fn logdet_lu_matches_scaled_identity_closed_form() {
         let a = Array2::<f64>::eye(n) * c;
         let got = logdet_lu(&a).unwrap();
         let want = n as f64 * c.ln();
-        assert!((got - want).abs() < 1e-12, "n={n} c={c}: got {got}, want {want}");
+        assert!(
+            (got - want).abs() < 1e-12,
+            "n={n} c={c}: got {got}, want {want}"
+        );
     }
 }
 
@@ -302,13 +326,12 @@ fn logdet_lu_transpose_invariant() {
     // det(Aᵀ) = det(A) — this is exactly why `logdet_lu` may hand LAPACK the
     // row-major buffer without transposing. Checked on a NON-symmetric matrix
     // (for a symmetric one the property is vacuous).
-    let a = ndarray::array![
-        [4.0f64, 1.0, 0.5],
-        [0.2, 3.0, -1.0],
-        [0.1, 0.7, 5.0]
-    ];
+    let a = ndarray::array![[4.0f64, 1.0, 0.5], [0.2, 3.0, -1.0], [0.1, 0.7, 5.0]];
     let at = a.t().to_owned();
     let la = logdet_lu(&a).unwrap();
     let lat = logdet_lu(&at).unwrap();
-    assert!((la - lat).abs() < 1e-13, "logdet(A)={la} vs logdet(Aᵀ)={lat}");
+    assert!(
+        (la - lat).abs() < 1e-13,
+        "logdet(A)={la} vs logdet(Aᵀ)={lat}"
+    );
 }

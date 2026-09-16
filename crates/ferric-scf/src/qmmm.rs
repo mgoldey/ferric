@@ -130,7 +130,16 @@ impl QmmmAtom {
     /// (polarizability) is `0.0` (not polarizable) — use
     /// [`QmmmAtom::with_alpha`] to add one.
     pub fn new(symbol: impl Into<String>, z: i32, x: f64, y: f64, z_pos: f64, charge: f64) -> Self {
-        Self { symbol: symbol.into(), z, x, y, z_pos, charge, width: 0.0, alpha: 0.0 }
+        Self {
+            symbol: symbol.into(),
+            z,
+            x,
+            y,
+            z_pos,
+            charge,
+            width: 0.0,
+            alpha: 0.0,
+        }
     }
 
     /// Create a QM/MM atom whose MM charge is Gaussian-smeared with the given
@@ -148,7 +157,16 @@ impl QmmmAtom {
         charge: f64,
         width: f64,
     ) -> Self {
-        Self { symbol: symbol.into(), z, x, y, z_pos, charge, width, alpha: 0.0 }
+        Self {
+            symbol: symbol.into(),
+            z,
+            x,
+            y,
+            z_pos,
+            charge,
+            width,
+            alpha: 0.0,
+        }
     }
 
     /// Return a copy of this atom with its polarisability set (Bohr^3).
@@ -297,7 +315,11 @@ pub enum QmSelection {
     /// .. natoms` (every atom its own residue) makes this variant an exact
     /// no-op on top of [`QmSelection::WithinRadius`] — the same seeds/radius
     /// select the same QM/MM split, byte for byte.
-    WithinRadiusWholeResidues { seeds: Vec<usize>, radius: f64, residue_ids: Vec<usize> },
+    WithinRadiusWholeResidues {
+        seeds: Vec<usize>,
+        radius: f64,
+        residue_ids: Vec<usize>,
+    },
 }
 
 /// A partition of a full structure into a QM region (wavefunction) and an MM
@@ -411,7 +433,11 @@ impl QmmmSystem {
                 Self::validate_radius_selection(&seeds, radius, natoms)?;
                 Self::apply_within_radius(atoms, &seeds, radius, &mut is_qm);
             }
-            QmSelection::WithinRadiusWholeResidues { seeds, radius, residue_ids } => {
+            QmSelection::WithinRadiusWholeResidues {
+                seeds,
+                radius,
+                residue_ids,
+            } => {
                 Self::validate_radius_selection(&seeds, radius, natoms)?;
                 if residue_ids.len() != natoms {
                     return Err(FerricError::General(format!(
@@ -472,8 +498,7 @@ impl QmmmSystem {
     ) -> Result<(), FerricError> {
         if seeds.is_empty() {
             return Err(FerricError::General(
-                "QmmmSystem::new: WithinRadius selection needs at least one seed atom"
-                    .to_string(),
+                "QmmmSystem::new: WithinRadius selection needs at least one seed atom".to_string(),
             ));
         }
         // `is_finite` first, then a plain `<` — this rejects NaN via the
@@ -564,14 +589,16 @@ impl QmmmSystem {
                 _ => continue,
             };
 
-            let qm_atom_pos = self.qm_indices.iter().position(|&i| i == qm_full).ok_or_else(
-                || {
+            let qm_atom_pos = self
+                .qm_indices
+                .iter()
+                .position(|&i| i == qm_full)
+                .ok_or_else(|| {
                     FerricError::General(format!(
                         "with_link_atoms: internal inconsistency — QM atom {qm_full} not \
                          found in qm_indices"
                     ))
-                },
-            )?;
+                })?;
 
             let p = &self.atoms[qm_full];
             let q = &self.atoms[mm_full];
@@ -718,7 +745,11 @@ impl QmmmSystem {
                         } else {
                             q0
                         };
-                        self.boundary_charges.push(BoundaryCharge { q, position, hosts: (m1, m2) });
+                        self.boundary_charges.push(BoundaryCharge {
+                            q,
+                            position,
+                            hosts: (m1, m2),
+                        });
                     }
                 }
             }
@@ -825,7 +856,11 @@ impl QmmmSystem {
                 point_charges.push(PointCharge { q, x, y, z });
             }
         }
-        Some(ExternalPotential { point_charges, smeared_charges, field: None })
+        Some(ExternalPotential {
+            point_charges,
+            smeared_charges,
+            field: None,
+        })
     }
 
     /// Full-structure indices of every polarizable MM atom (`alpha > 0.0`),
@@ -834,7 +869,11 @@ impl QmmmSystem {
     /// two cannot drift (a `to_polarizable_sites()` row `i` always refers to
     /// `polarizable_site_full_indices()[i]`).
     fn polarizable_site_full_indices(&self) -> Vec<usize> {
-        self.mm_indices.iter().copied().filter(|&i| self.atoms[i].alpha > 0.0).collect()
+        self.mm_indices
+            .iter()
+            .copied()
+            .filter(|&i| self.atoms[i].alpha > 0.0)
+            .collect()
     }
 
     /// Every MM atom with a nonzero polarisability (`alpha > 0.0`), as
@@ -851,7 +890,12 @@ impl QmmmSystem {
             .into_iter()
             .map(|i| {
                 let a = &self.atoms[i];
-                crate::polarizable::PolarizableSite { x: a.x, y: a.y, z: a.z_pos, alpha: a.alpha }
+                crate::polarizable::PolarizableSite {
+                    x: a.x,
+                    y: a.y,
+                    z: a.z_pos,
+                    alpha: a.alpha,
+                }
             })
             .collect()
     }
@@ -871,7 +915,10 @@ impl QmmmSystem {
     /// `to_external_potential()`'s `point_charges` then `smeared_charges`
     /// unless every charge in this system happens to be one kind.
     pub fn mm_charge_positions(&self) -> Vec<[f64; 3]> {
-        self.active_charges().into_iter().map(|(_, p, _)| p).collect()
+        self.active_charges()
+            .into_iter()
+            .map(|(_, p, _)| p)
+            .collect()
     }
 
     /// Rebuild this partition at a new geometry: same QM/MM selection, same
@@ -1038,7 +1085,12 @@ pub fn electric_field_at_points(
                     })?;
 
                     // Unit positive probe charge at r.
-                    let probe = [CAtom { atomic_number: 1.0, x: r[0], y: r[1], z: r[2] }];
+                    let probe = [CAtom {
+                        atomic_number: 1.0,
+                        x: r[0],
+                        y: r[1],
+                        z: r[2],
+                    }];
                     // SAFETY: probe is a stack-local CAtom slice; handle_mut() is the live engine
                     // pointer; probe.len() fits in c_int. Shim catches C++ exceptions → negative rc.
                     let rc = unsafe {
@@ -1206,10 +1258,16 @@ pub fn mm_forces(
         return Ok(Vec::new());
     }
 
-    let point_positions: Vec<[f64; 3]> =
-        charges.iter().filter(|&&(_, _, w)| w <= 0.0).map(|&(_, p, _)| p).collect();
-    let point_qs: Vec<f64> =
-        charges.iter().filter(|&&(_, _, w)| w <= 0.0).map(|&(q, _, _)| q).collect();
+    let point_positions: Vec<[f64; 3]> = charges
+        .iter()
+        .filter(|&&(_, _, w)| w <= 0.0)
+        .map(|&(_, p, _)| p)
+        .collect();
+    let point_qs: Vec<f64> = charges
+        .iter()
+        .filter(|&&(_, _, w)| w <= 0.0)
+        .map(|&(q, _, _)| q)
+        .collect();
     let point_forces: Vec<[f64; 3]> = if point_positions.is_empty() {
         Vec::new()
     } else {
@@ -1224,7 +1282,15 @@ pub fn mm_forces(
     let smeared: Vec<ferric_core::external_potential::SmearedCharge> = charges
         .iter()
         .filter(|&&(_, _, w)| w > 0.0)
-        .map(|&(q, [x, y, z], width)| ferric_core::external_potential::SmearedCharge { q, x, y, z, width })
+        .map(
+            |&(q, [x, y, z], width)| ferric_core::external_potential::SmearedCharge {
+                q,
+                x,
+                y,
+                z,
+                width,
+            },
+        )
         .collect();
     let smeared_forces: Vec<[f64; 3]> = if smeared.is_empty() {
         Vec::new()
@@ -1240,7 +1306,13 @@ pub fn mm_forces(
     let mut smeared_it = smeared_forces.into_iter();
     Ok(charges
         .iter()
-        .map(|&(_, _, w)| if w > 0.0 { smeared_it.next().unwrap() } else { point_it.next().unwrap() })
+        .map(|&(_, _, w)| {
+            if w > 0.0 {
+                smeared_it.next().unwrap()
+            } else {
+                point_it.next().unwrap()
+            }
+        })
         .collect())
 }
 
@@ -1335,7 +1407,11 @@ pub fn full_gradient(
         .iter()
         .filter(|&&i| system.effective_charges[i] != 0.0)
         .count();
-    let atom_rows = system.mm_indices.iter().copied().filter(|&i| system.effective_charges[i] != 0.0);
+    let atom_rows = system
+        .mm_indices
+        .iter()
+        .copied()
+        .filter(|&i| system.effective_charges[i] != 0.0);
     for (i, f) in atom_rows.zip(mm_forces.iter()) {
         for k in 0..3 {
             full[(i, k)] -= f[k];
@@ -1428,7 +1504,8 @@ pub fn polarizable_charge_gradient_rows(
     if sites.sites.is_empty() {
         return Vec::new();
     }
-    let (point_dedr, smeared_dedr) = crate::polarizable::charge_gradient_contribution(ext, sites, dipoles);
+    let (point_dedr, smeared_dedr) =
+        crate::polarizable::charge_gradient_contribution(ext, sites, dipoles);
 
     // Re-derive, in active_charges() order, which of point_charges/
     // smeared_charges each active charge landed in (mirrors
@@ -1441,8 +1518,11 @@ pub fn polarizable_charge_gradient_rows(
         .copied()
         .filter(|&i| system.effective_charges[i] != 0.0)
         .map(BoundaryTarget::Atom);
-    let boundary_targets =
-        system.boundary_charges.iter().filter(|b| b.q != 0.0).map(|b| BoundaryTarget::Midpoint(b.hosts));
+    let boundary_targets = system
+        .boundary_charges
+        .iter()
+        .filter(|b| b.q != 0.0)
+        .map(|b| BoundaryTarget::Midpoint(b.hosts));
     let targets: Vec<BoundaryTarget> = atom_targets.chain(boundary_targets).collect();
     debug_assert_eq!(targets.len(), charges.len());
 
@@ -1450,7 +1530,11 @@ pub fn polarizable_charge_gradient_rows(
     let mut smeared_it = smeared_dedr.into_iter();
     let mut out = Vec::with_capacity(targets.len());
     for (&(_, _, w), target) in charges.iter().zip(targets) {
-        let dedr = if w > 0.0 { smeared_it.next().unwrap() } else { point_it.next().unwrap() };
+        let dedr = if w > 0.0 {
+            smeared_it.next().unwrap()
+        } else {
+            point_it.next().unwrap()
+        };
         match target {
             BoundaryTarget::Atom(i) => out.push((i, dedr)),
             BoundaryTarget::Midpoint((m1, m2)) => {
@@ -1603,9 +1687,18 @@ pub fn qmmm_mm_terms(
     //    Build a filtered sub-topology (bonds/angles/torsions only; charges
     //    and lj pass through unchanged since the MM-MM nonbonded and
     //    QM-MM LJ passes below need them for every atom).
-    let bonds: Vec<_> = top.bonds.iter().filter(|b| !is_qm[b.i] || !is_qm[b.j]).cloned().collect();
-    let angles: Vec<_> =
-        top.angles.iter().filter(|a| !is_qm[a.i] || !is_qm[a.j] || !is_qm[a.k]).cloned().collect();
+    let bonds: Vec<_> = top
+        .bonds
+        .iter()
+        .filter(|b| !is_qm[b.i] || !is_qm[b.j])
+        .cloned()
+        .collect();
+    let angles: Vec<_> = top
+        .angles
+        .iter()
+        .filter(|a| !is_qm[a.i] || !is_qm[a.j] || !is_qm[a.k])
+        .cloned()
+        .collect();
     let torsions: Vec<_> = top
         .torsions
         .iter()
@@ -1620,8 +1713,13 @@ pub fn qmmm_mm_terms(
     // longer excluded once their QM-QM bonds were dropped) contributes
     // nothing. Nonbonded terms are computed separately below, scoped
     // correctly (MM-MM only, and QM-MM LJ only).
-    let zero_lj: Vec<ferric_mm::LjParams> =
-        vec![ferric_mm::LjParams { sigma: 0.0, epsilon: 0.0 }; natoms];
+    let zero_lj: Vec<ferric_mm::LjParams> = vec![
+        ferric_mm::LjParams {
+            sigma: 0.0,
+            epsilon: 0.0
+        };
+        natoms
+    ];
     let bonded_only_top = MmTopology::new(vec![0.0; natoms], zero_lj, bonds, angles, torsions)
         .map_err(|e| FerricError::General(format!("qmmm_mm_terms: {e}")))?;
     let (e_bonded, mut g) = ferric_mm::gradient(&bonded_only_top, coords_full)
@@ -1632,10 +1730,20 @@ pub fn qmmm_mm_terms(
     //    exclusions/1-4 (an MM-MM pair that is 1-2/1-3/1-4 through a path
     //    that crosses the QM region is still a real bonded relationship in
     //    the topology and must still be excluded/scaled the same way).
-    let mm_only_charges: Vec<f64> =
-        (0..natoms).map(|i| if is_qm[i] { 0.0 } else { top.charges[i] }).collect();
+    let mm_only_charges: Vec<f64> = (0..natoms)
+        .map(|i| if is_qm[i] { 0.0 } else { top.charges[i] })
+        .collect();
     let mm_only_lj: Vec<ferric_mm::LjParams> = (0..natoms)
-        .map(|i| if is_qm[i] { ferric_mm::LjParams { sigma: 0.0, epsilon: 0.0 } } else { top.lj[i] })
+        .map(|i| {
+            if is_qm[i] {
+                ferric_mm::LjParams {
+                    sigma: 0.0,
+                    epsilon: 0.0,
+                }
+            } else {
+                top.lj[i]
+            }
+        })
         .collect();
     // The bond list here feeds ONLY MmTopology::new's exclusion/1-4 BFS
     // (over the ORIGINAL, unfiltered graph — see the doc comment above); it
@@ -1649,11 +1757,20 @@ pub fn qmmm_mm_terms(
     // BFS-derived graph shape is preserved but the harmonic term itself is
     // identically zero (0.0 * anything = 0.0 exactly in IEEE754,
     // regardless of r0 or floating-point noise in r).
-    let graph_only_bonds: Vec<ferric_mm::Bond> =
-        top.bonds.iter().map(|b| ferric_mm::Bond { k: 0.0, ..*b }).collect();
-    let mm_only_top = MmTopology::new(mm_only_charges, mm_only_lj, graph_only_bonds, vec![], vec![])
-        .map_err(|e| FerricError::General(format!("qmmm_mm_terms: {e}")))?
-        .with_scales(top.scale_lj_14, top.scale_coul_14);
+    let graph_only_bonds: Vec<ferric_mm::Bond> = top
+        .bonds
+        .iter()
+        .map(|b| ferric_mm::Bond { k: 0.0, ..*b })
+        .collect();
+    let mm_only_top = MmTopology::new(
+        mm_only_charges,
+        mm_only_lj,
+        graph_only_bonds,
+        vec![],
+        vec![],
+    )
+    .map_err(|e| FerricError::General(format!("qmmm_mm_terms: {e}")))?
+    .with_scales(top.scale_lj_14, top.scale_coul_14);
     let (e_mm_nb, g_mm_nb) = ferric_mm::gradient(&mm_only_top, coords_full)
         .map_err(|e| FerricError::General(format!("qmmm_mm_terms: {e}")))?;
 
@@ -1957,12 +2074,14 @@ pub fn optimize_qmmm(
             let (scf_energy, qm_grad, density_total) = match &cfg.method {
                 QmmmMethod::Rhf => {
                     let r = crate::rhf::solve_rhf(ctx, &mol, &prep, op, &bounds, &scf_cfg)?;
-                    let g = crate::gradient::rhf_gradient(&mol, &prep, op, &bounds, &r, ext.as_ref())?;
+                    let g =
+                        crate::gradient::rhf_gradient(&mol, &prep, op, &bounds, &r, ext.as_ref())?;
                     (r.energy, g, r.density_total().clone())
                 }
                 QmmmMethod::Uhf => {
                     let r = crate::uhf::solve_uhf(ctx, &mol, &prep, &bounds, &scf_cfg)?;
-                    let g = crate::gradient::uhf_gradient(&mol, &prep, op, &bounds, &r, ext.as_ref())?;
+                    let g =
+                        crate::gradient::uhf_gradient(&mol, &prep, op, &bounds, &r, ext.as_ref())?;
                     (r.energy, g, r.density_total().clone())
                 }
                 QmmmMethod::Rks(xc) => {
@@ -1971,7 +2090,14 @@ pub fn optimize_qmmm(
                     scf_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
                     let r = crate::rhf::solve_rhf(ctx, &mol, &prep, op, &bounds, &scf_cfg)?;
                     let g = crate::ks_gradient::ks_gradient_closed(
-                        &mol, &prep, &bs, op, &bounds, xc, &r, ext.as_ref(),
+                        &mol,
+                        &prep,
+                        &bs,
+                        op,
+                        &bounds,
+                        xc,
+                        &r,
+                        ext.as_ref(),
                     )?;
                     (r.energy, g, r.density_total().clone())
                 }
@@ -1981,7 +2107,14 @@ pub fn optimize_qmmm(
                     scf_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
                     let r = crate::uhf::solve_uhf(ctx, &mol, &prep, &bounds, &scf_cfg)?;
                     let g = crate::ks_gradient::ks_gradient_uks(
-                        &mol, &prep, &bs, op, &bounds, xc, &r, ext.as_ref(),
+                        &mol,
+                        &prep,
+                        &bs,
+                        op,
+                        &bounds,
+                        xc,
+                        &r,
+                        ext.as_ref(),
                     )?;
                     (r.energy, g, r.density_total().clone())
                 }
@@ -2020,7 +2153,9 @@ pub fn optimize_qmmm(
     let mut coords_final = coords0;
     unflatten_free(&x_final, &mut coords_final);
     let final_system = system.with_coordinates(&coords_final)?;
-    let final_energy = *energies.last().expect("at least one energy evaluation always occurs");
+    let final_energy = *energies
+        .last()
+        .expect("at least one energy evaluation always occurs");
 
     Ok(QmmmOptimizeResult {
         system: final_system,
@@ -2047,25 +2182,47 @@ mod tests {
     #[test]
     fn boundary_scheme_parse_is_strict() {
         use BoundaryChargeScheme::*;
-        assert_eq!(BoundaryChargeScheme::parse_config_str("keep").unwrap(), Keep);
-        assert_eq!(BoundaryChargeScheme::parse_config_str("delete-host").unwrap(), DeleteHost);
-        assert_eq!(BoundaryChargeScheme::parse_config_str("rc").unwrap(), RedistributedCharge);
-        assert_eq!(BoundaryChargeScheme::parse_config_str("rcd").unwrap(), RedistributedChargeDipole);
+        assert_eq!(
+            BoundaryChargeScheme::parse_config_str("keep").unwrap(),
+            Keep
+        );
+        assert_eq!(
+            BoundaryChargeScheme::parse_config_str("delete-host").unwrap(),
+            DeleteHost
+        );
+        assert_eq!(
+            BoundaryChargeScheme::parse_config_str("rc").unwrap(),
+            RedistributedCharge
+        );
+        assert_eq!(
+            BoundaryChargeScheme::parse_config_str("rcd").unwrap(),
+            RedistributedChargeDipole
+        );
         // Config honesty: unknown or differently-cased values error, never
         // silently default.
         for bad in ["Keep", "z1", "RCD", "", "redistributed"] {
-            assert!(BoundaryChargeScheme::parse_config_str(bad).is_err(), "{bad:?}");
+            assert!(
+                BoundaryChargeScheme::parse_config_str(bad).is_err(),
+                "{bad:?}"
+            );
         }
-        for s in [Keep, DeleteHost, RedistributedCharge, RedistributedChargeDipole] {
-            assert_eq!(BoundaryChargeScheme::parse_config_str(s.config_str()).unwrap(), s);
+        for s in [
+            Keep,
+            DeleteHost,
+            RedistributedCharge,
+            RedistributedChargeDipole,
+        ] {
+            assert_eq!(
+                BoundaryChargeScheme::parse_config_str(s.config_str()).unwrap(),
+                s
+            );
         }
     }
 
     #[test]
     fn indices_selection_partitions_disjointly() {
         let atoms = three_atoms();
-        let sys =
-            QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1]), 0, 1).unwrap();
+        let sys = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1]), 0, 1).unwrap();
         assert_eq!(sys.qm_indices, vec![0, 1]);
         assert_eq!(sys.mm_indices, vec![2]);
         assert_eq!(sys.qm_atom_count(), 2);
@@ -2077,7 +2234,10 @@ mod tests {
         // Seed on atom 0, radius 3 Bohr: catches atom 1 (2 Bohr) not atom 2 (10).
         let sys = QmmmSystem::new(
             &atoms,
-            QmSelection::WithinRadius { seeds: vec![0], radius: 3.0 },
+            QmSelection::WithinRadius {
+                seeds: vec![0],
+                radius: 3.0,
+            },
             0,
             1,
         )
@@ -2091,7 +2251,10 @@ mod tests {
         let atoms = three_atoms();
         let sys = QmmmSystem::new(
             &atoms,
-            QmSelection::WithinRadius { seeds: vec![1], radius: 0.0 },
+            QmSelection::WithinRadius {
+                seeds: vec![1],
+                radius: 0.0,
+            },
             0,
             1,
         )
@@ -2104,8 +2267,7 @@ mod tests {
     fn empty_mm_region_yields_no_external_potential() {
         // THE exactness contract: all-QM => None => literal gas-phase path.
         let atoms = three_atoms();
-        let sys =
-            QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2]), 0, 1).unwrap();
+        let sys = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2]), 0, 1).unwrap();
         assert!(sys.mm_indices.is_empty());
         assert!(sys.to_external_potential().is_none());
     }
@@ -2176,10 +2338,8 @@ mod tests {
             .unwrap();
         let link = &sys.link_atoms[0];
         // |R_link - R_qm| must be exactly scale * |bond|.
-        let d = (link.position[0].powi(2)
-            + link.position[1].powi(2)
-            + link.position[2].powi(2))
-        .sqrt();
+        let d =
+            (link.position[0].powi(2) + link.position[1].powi(2) + link.position[2].powi(2)).sqrt();
         assert!((d - DEFAULT_LINK_SCALE * 2.0).abs() < 1e-14, "got {d}");
     }
 
@@ -2201,8 +2361,7 @@ mod tests {
         assert!((p[1] - 3.6).abs() < 1e-14, "y = {}", p[1]);
         assert!((p[2] - 3.0).abs() < 1e-14, "z = {}", p[2]);
         // And it must be *between* the two hosts, not beyond either.
-        let d_from_qm =
-            ((p[0] - 1.0).powi(2) + (p[1] - 2.0).powi(2) + (p[2] - 3.0).powi(2)).sqrt();
+        let d_from_qm = ((p[0] - 1.0).powi(2) + (p[1] - 2.0).powi(2) + (p[2] - 3.0).powi(2)).sqrt();
         assert!((d_from_qm - 0.4 * 5.0).abs() < 1e-14);
     }
 
@@ -2261,8 +2420,27 @@ mod tests {
     fn whole_residue_selection_with_one_atom_per_residue_equals_by_atom() {
         // Exactness anchor: residue_ids = 0..n makes the new variant identical to WithinRadius.
         let atoms = three_atoms();
-        let by_atom = QmmmSystem::new(&atoms, QmSelection::WithinRadius { seeds: vec![0], radius: 3.0 }, 0, 1).unwrap();
-        let whole = QmmmSystem::new(&atoms, QmSelection::WithinRadiusWholeResidues { seeds: vec![0], radius: 3.0, residue_ids: vec![0, 1, 2] }, 0, 1).unwrap();
+        let by_atom = QmmmSystem::new(
+            &atoms,
+            QmSelection::WithinRadius {
+                seeds: vec![0],
+                radius: 3.0,
+            },
+            0,
+            1,
+        )
+        .unwrap();
+        let whole = QmmmSystem::new(
+            &atoms,
+            QmSelection::WithinRadiusWholeResidues {
+                seeds: vec![0],
+                radius: 3.0,
+                residue_ids: vec![0, 1, 2],
+            },
+            0,
+            1,
+        )
+        .unwrap();
         assert_eq!(by_atom.qm_indices, whole.qm_indices);
         assert_eq!(by_atom.mm_indices, whole.mm_indices);
         assert_eq!(whole.residue_ids, Some(vec![0, 1, 2]));
@@ -2274,7 +2452,17 @@ mod tests {
         // atoms 0,1 = residue 0 (2 Bohr apart); atom 2 = residue 1 at z=10, atom 3 = residue 1 at z=2.5.
         let mut atoms = three_atoms();
         atoms.push(QmmmAtom::new("N", 7, 0.0, 0.0, 2.5, 0.2));
-        let sys = QmmmSystem::new(&atoms, QmSelection::WithinRadiusWholeResidues { seeds: vec![0], radius: 3.0, residue_ids: vec![0, 0, 1, 1] }, 0, 1).unwrap();
+        let sys = QmmmSystem::new(
+            &atoms,
+            QmSelection::WithinRadiusWholeResidues {
+                seeds: vec![0],
+                radius: 3.0,
+                residue_ids: vec![0, 0, 1, 1],
+            },
+            0,
+            1,
+        )
+        .unwrap();
         // atom 3 is within 3 Bohr of the seed, so ALL of residue 1 (atoms 2 and 3) joins.
         assert_eq!(sys.qm_indices, vec![0, 1, 2, 3]);
         assert!(sys.mm_indices.is_empty());
@@ -2283,9 +2471,39 @@ mod tests {
     #[test]
     fn whole_residue_selection_rejects_bad_residue_ids() {
         let atoms = three_atoms();
-        assert!(QmmmSystem::new(&atoms, QmSelection::WithinRadiusWholeResidues { seeds: vec![0], radius: 1.0, residue_ids: vec![0, 0] }, 0, 1).is_err()); // length mismatch
-        assert!(QmmmSystem::new(&atoms, QmSelection::WithinRadiusWholeResidues { seeds: vec![], radius: 1.0, residue_ids: vec![0, 0, 0] }, 0, 1).is_err());
-        assert!(QmmmSystem::new(&atoms, QmSelection::WithinRadiusWholeResidues { seeds: vec![0], radius: f64::NAN, residue_ids: vec![0, 0, 0] }, 0, 1).is_err());
+        assert!(QmmmSystem::new(
+            &atoms,
+            QmSelection::WithinRadiusWholeResidues {
+                seeds: vec![0],
+                radius: 1.0,
+                residue_ids: vec![0, 0]
+            },
+            0,
+            1
+        )
+        .is_err()); // length mismatch
+        assert!(QmmmSystem::new(
+            &atoms,
+            QmSelection::WithinRadiusWholeResidues {
+                seeds: vec![],
+                radius: 1.0,
+                residue_ids: vec![0, 0, 0]
+            },
+            0,
+            1
+        )
+        .is_err());
+        assert!(QmmmSystem::new(
+            &atoms,
+            QmSelection::WithinRadiusWholeResidues {
+                seeds: vec![0],
+                radius: f64::NAN,
+                residue_ids: vec![0, 0, 0]
+            },
+            0,
+            1
+        )
+        .is_err());
     }
 
     #[test]
@@ -2302,21 +2520,30 @@ mod tests {
         // Bad seed index / negative radius.
         assert!(QmmmSystem::new(
             &atoms,
-            QmSelection::WithinRadius { seeds: vec![9], radius: 1.0 },
+            QmSelection::WithinRadius {
+                seeds: vec![9],
+                radius: 1.0
+            },
             0,
             1
         )
         .is_err());
         assert!(QmmmSystem::new(
             &atoms,
-            QmSelection::WithinRadius { seeds: vec![0], radius: -1.0 },
+            QmSelection::WithinRadius {
+                seeds: vec![0],
+                radius: -1.0
+            },
             0,
             1
         )
         .is_err());
         assert!(QmmmSystem::new(
             &atoms,
-            QmSelection::WithinRadius { seeds: vec![], radius: 1.0 },
+            QmSelection::WithinRadius {
+                seeds: vec![],
+                radius: 1.0
+            },
             0,
             1
         )
@@ -2329,7 +2556,10 @@ mod tests {
             assert!(
                 QmmmSystem::new(
                     &atoms,
-                    QmSelection::WithinRadius { seeds: vec![0], radius: bad },
+                    QmSelection::WithinRadius {
+                        seeds: vec![0],
+                        radius: bad
+                    },
                     0,
                     1
                 )
@@ -2362,8 +2592,22 @@ mod tests {
         ];
         for k in 0..3 {
             let phi = 2.0 * std::f64::consts::PI * (k as f64) / 3.0;
-            atoms.push(QmmmAtom::new("H", 1, ch * s * phi.cos(), ch * s * phi.sin(), ch * c, 0.033));
-            atoms.push(QmmmAtom::new("H", 1, ch * s * phi.cos(), ch * s * phi.sin(), cc - ch * c, 0.033));
+            atoms.push(QmmmAtom::new(
+                "H",
+                1,
+                ch * s * phi.cos(),
+                ch * s * phi.sin(),
+                ch * c,
+                0.033,
+            ));
+            atoms.push(QmmmAtom::new(
+                "H",
+                1,
+                ch * s * phi.cos(),
+                ch * s * phi.sin(),
+                cc - ch * c,
+                0.033,
+            ));
         }
         atoms
     }
@@ -2384,12 +2628,17 @@ mod tests {
 
     fn capped_rcd_ethane_test() -> QmmmSystem {
         let bonds = ethane_bonds_test();
-        QmmmSystem::new(&ethane_atoms_test(), QmSelection::Indices(vec![0, 2, 4, 6]), 0, 1)
-            .unwrap()
-            .with_link_atoms(&bonds, DEFAULT_LINK_SCALE)
-            .unwrap()
-            .with_boundary_charges(&bonds, BoundaryChargeScheme::RedistributedChargeDipole)
-            .unwrap()
+        QmmmSystem::new(
+            &ethane_atoms_test(),
+            QmSelection::Indices(vec![0, 2, 4, 6]),
+            0,
+            1,
+        )
+        .unwrap()
+        .with_link_atoms(&bonds, DEFAULT_LINK_SCALE)
+        .unwrap()
+        .with_boundary_charges(&bonds, BoundaryChargeScheme::RedistributedChargeDipole)
+        .unwrap()
     }
 
     /// EXACTNESS ANCHOR: `with_coordinates` given the SAME coordinates the

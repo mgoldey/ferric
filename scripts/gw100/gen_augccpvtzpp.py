@@ -15,17 +15,19 @@ BSE coefficients are used as-is.
 Run:  python3 scripts/gw100/gen_augccpvtzpp.py
 Writes: crates/ferric-core/src/basis/bundled/aug-cc-pvtz-pp.json
 """
+
 import json
 import os
 
 import basis_set_exchange as bse
 
-HEAVY = [47, 53, 54]        # Ag, I, Xe -- from aug-cc-pvtz-pp (with ECP)
-LIGHT = [1, 6, 13, 17]      # H, C, Al, Cl -- from plain aug-cc-pvtz (no ECP)
+HEAVY = [47, 53, 54]  # Ag, I, Xe -- from aug-cc-pvtz-pp (with ECP)
+LIGHT = [1, 6, 13, 17]  # H, C, Al, Cl -- from plain aug-cc-pvtz (no ECP)
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-OUT = os.path.join(REPO, "crates", "ferric-core", "src", "basis", "bundled",
-                   "aug-cc-pvtz-pp.json")
+OUT = os.path.join(
+    REPO, "crates", "ferric-core", "src", "basis", "bundled", "aug-cc-pvtz-pp.json"
+)
 
 
 def fetch_elements(name, zlist):
@@ -84,8 +86,7 @@ def main():
             "optri": "aug-cc-pvtz-pp-optri",
         },
         "name": (
-            "aug-cc-pVTZ-PP (heavy: I/Xe/Ag with ECP; "
-            "light: aug-cc-pVTZ for H/C/Al/Cl)"
+            "aug-cc-pVTZ-PP (heavy: I/Xe/Ag with ECP; light: aug-cc-pVTZ for H/C/Al/Cl)"
         ),
     }
 
@@ -95,9 +96,11 @@ def main():
     print(f"wrote {OUT}")
     for z in sorted(elements, key=int):
         el = elements[z]
-        print(f"  Z={z:>2}  nshells={len(el.get('electron_shells', [])):>2}  "
-              f"has_ecp={'ecp_potentials' in el}  "
-              f"ecp_electrons={el.get('ecp_electrons')}")
+        print(
+            f"  Z={z:>2}  nshells={len(el.get('electron_shells', [])):>2}  "
+            f"has_ecp={'ecp_potentials' in el}  "
+            f"ecp_electrons={el.get('ecp_electrons')}"
+        )
 
 
 if __name__ == "__main__":

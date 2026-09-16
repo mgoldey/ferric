@@ -111,7 +111,11 @@ fn interesting_quartets(prep: &PreparedBasis) -> Vec<[usize; 4]> {
         ds.sort_unstable();
         ds.dedup();
         // Prefer higher L too, so the solid-harmonic transform is exercised.
-        (std::cmp::Reverse(pairwise), std::cmp::Reverse(ds.len()), std::cmp::Reverse(d[0] + d[1] + d[2] + d[3]))
+        (
+            std::cmp::Reverse(pairwise),
+            std::cmp::Reverse(ds.len()),
+            std::cmp::Reverse(d[0] + d[1] + d[2] + d[3]),
+        )
     });
     out.truncate(64);
 

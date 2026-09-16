@@ -91,6 +91,7 @@ Env tunables:
   SCAN_SYSTEMS           (all 24)      -- comma A24 indices to restrict to
   SCAN_TABLE_DIR         (auto)        -- FERRIC_TERF_TABLE_DIR override
 """
+
 from pathlib import Path
 import math
 import os
@@ -111,7 +112,10 @@ K = 627.509474
 
 RAYON_NUM_THREADS = os.environ.get("SCAN_RAYON_THREADS", "12")
 _LD_LIBRARY_PATH = os.pathsep.join(
-    p for p in [os.path.expanduser("~/.local/lib"), os.environ.get("LD_LIBRARY_PATH", "")] if p)
+    p
+    for p in [os.path.expanduser("~/.local/lib"), os.environ.get("LD_LIBRARY_PATH", "")]
+    if p
+)
 
 _TERF_DIR = os.environ.get("SCAN_TABLE_DIR", "")
 if not _TERF_DIR or not os.path.exists(os.path.join(_TERF_DIR, "16_4_2.bin")):
@@ -120,9 +124,15 @@ if not _TERF_DIR or not os.path.exists(os.path.join(_TERF_DIR, "16_4_2.bin")):
             _TERF_DIR = cand
             break
 
-ENV = dict(os.environ, OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS=RAYON_NUM_THREADS,
-           OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", LD_LIBRARY_PATH=_LD_LIBRARY_PATH,
-           FERRIC_TERF_TABLE_DIR=_TERF_DIR)
+ENV = dict(
+    os.environ,
+    OPENBLAS_NUM_THREADS="1",
+    RAYON_NUM_THREADS=RAYON_NUM_THREADS,
+    OMP_NUM_THREADS="1",
+    MKL_NUM_THREADS="1",
+    LD_LIBRARY_PATH=_LD_LIBRARY_PATH,
+    FERRIC_TERF_TABLE_DIR=_TERF_DIR,
+)
 
 BASIS, AUX = "aug-cc-pvqz", "aug-cc-pvqz-rifit"
 
@@ -146,7 +156,8 @@ if R0_MIN <= 0.0:
         f"infinity and crashes ferric-cli (confirmed: 'internal error in "
         f"eri2: status -3'). Use a value > 0 (0.2 A is the known-safe floor; "
         f"lower values are untested -- probe with a single real run before "
-        f"trusting them, not a scan).")
+        f"trusting them, not a scan)."
+    )
 
 FORMS = {"B": "delta-lr", "T": "coupled-rings"}
 
@@ -172,9 +183,12 @@ def mem_available_gb():
 
 def load_refs():
     import json
+
     if not os.path.exists(REFS_JSON):
-        log(f"FATAL: {REFS_JSON} missing -- run benchmarks/grid/run_grid.py "
-            "once (even --dry-run triggers build_jobs()) to stage it.")
+        log(
+            f"FATAL: {REFS_JSON} missing -- run benchmarks/grid/run_grid.py "
+            "once (even --dry-run triggers build_jobs()) to stage it."
+        )
         sys.exit(1)
     refs = json.load(open(REFS_JSON))["a24"]
     return {int(k): v for k, v in refs.items()}
@@ -224,7 +238,7 @@ budget_gb = {MEMORY_BUDGET_GB}
 """
 
 
-TOT_RE = re.compile(r'Total energy\s*=\s*(-?[0-9.]+)')
+TOT_RE = re.compile(r"Total energy\s*=\s*(-?[0-9.]+)")
 
 
 def r0_key(r0_ang):
@@ -260,8 +274,14 @@ def run_one(key, toml):
     toml_path = f"{OUT.replace('/out', '/toml')}/{key}.toml"
     os.makedirs(os.path.dirname(toml_path), exist_ok=True)
     open(toml_path, "w").write(toml)
-    cmd = [FERRIC_LIMITED, f"--max={FERRIC_MAX_GB}G", f"--high={FERRIC_HIGH_GB}G",
-           "--", BIN, toml_path]
+    cmd = [
+        FERRIC_LIMITED,
+        f"--max={FERRIC_MAX_GB}G",
+        f"--high={FERRIC_HIGH_GB}G",
+        "--",
+        BIN,
+        toml_path,
+    ]
     t0 = time.monotonic()
     try:
         with open(op, "w") as f, open(op + ".err", "w") as e:
@@ -278,8 +298,10 @@ def preflight():
     smallest A24 system (idx 19, CH4-CH4)."""
     xyz = geom_path(19, "mA_cp")
     if not os.path.exists(xyz):
-        log(f"PREFLIGHT FAIL: geometry {xyz} missing -- run "
-            "benchmarks/grid/run_grid.py once first to stage A24 geometries.")
+        log(
+            f"PREFLIGHT FAIL: geometry {xyz} missing -- run "
+            "benchmarks/grid/run_grid.py once first to stage A24 geometries."
+        )
         return False
     if not _TERF_DIR:
         log("PREFLIGHT FAIL: terf-tables directory not found. Set SCAN_TABLE_DIR.")
@@ -287,9 +309,17 @@ def preflight():
     fc = fc_count(xyz)
     tp = f"{OUT.replace('/out', '/toml')}/_preflight_terf_a24-19.toml"
     os.makedirs(os.path.dirname(tp), exist_ok=True)
-    open(tp, "w").write(terf_toml(xyz, 1.0, "delta-lr", fc))  # 1.0 A, mid-scan-range probe
-    cmd = [FERRIC_LIMITED, f"--max={FERRIC_MAX_GB}G", f"--high={FERRIC_HIGH_GB}G",
-           "--", BIN, tp]
+    open(tp, "w").write(
+        terf_toml(xyz, 1.0, "delta-lr", fc)
+    )  # 1.0 A, mid-scan-range probe
+    cmd = [
+        FERRIC_LIMITED,
+        f"--max={FERRIC_MAX_GB}G",
+        f"--high={FERRIC_HIGH_GB}G",
+        "--",
+        BIN,
+        tp,
+    ]
     r = subprocess.run(cmd, capture_output=True, text=True, env=ENV, timeout=600)
     combined = (r.stdout or "") + (r.stderr or "")
     if r.returncode != 0 or "Total energy" not in combined:
@@ -299,17 +329,23 @@ def preflight():
         return False
     low = combined.lower()
     if "attenuator" in low and "terf" not in low.split("attenuator", 1)[1][:40]:
-        log("PREFLIGHT FAIL: binary ran but attenuator is not 'terf' -- likely "
-            "silent erf-fallback. Refusing to scan.")
+        log(
+            "PREFLIGHT FAIL: binary ran but attenuator is not 'terf' -- likely "
+            "silent erf-fallback. Refusing to scan."
+        )
         return False
-    log("PREFLIGHT OK: terf stanza accepted at aQZ, CH4-CH4 fragment ran to 'Total energy'.")
+    log(
+        "PREFLIGHT OK: terf stanza accepted at aQZ, CH4-CH4 fragment ran to 'Total energy'."
+    )
     return True
 
 
 def evaluate_system(idx, r0_ang, form, tag_suffix):
-    frags = {"dimer": geom_path(idx, "dimer"),
-             "mA_cp": geom_path(idx, "mA_cp"),
-             "mB_cp": geom_path(idx, "mB_cp")}
+    frags = {
+        "dimer": geom_path(idx, "dimer"),
+        "mA_cp": geom_path(idx, "mA_cp"),
+        "mB_cp": geom_path(idx, "mB_cp"),
+    }
     results = {}
     for fr, xyz in frags.items():
         if not os.path.exists(xyz):
@@ -351,7 +387,9 @@ def evaluate_r0_mae(r0_ang, form, tag_suffix, idxs, refs):
     for idx in idxs:
         e = evaluate_system(idx, r0_ang, form, tag_suffix)
         if e is None:
-            log(f"  A24-{idx}: FAILED at r0={r0_ang:.4f} -- this r0 point is incomplete.")
+            log(
+                f"  A24-{idx}: FAILED at r0={r0_ang:.4f} -- this r0 point is incomplete."
+            )
             return None
         errs[idx] = e - refs[idx]
     mae = sum(abs(v) for v in errs.values()) / len(errs)
@@ -380,11 +418,13 @@ def golden_section_min(f, a, b, tol, cache):
     comparison the moment any golden-section probe happens to land on an
     already-evaluated coarse/refine r0."""
     invphi = (math.sqrt(5) - 1) / 2  # 1/phi
+
     def cf(x):
         xr = round(x, 4)
         if xr not in cache:
             cache[xr] = f(xr)
         return cache[xr]
+
     c = b - invphi * (b - a)
     d = a + invphi * (b - a)
     fc_, fd_ = cf(c), cf(d)
@@ -410,8 +450,10 @@ def golden_section_min(f, a, b, tol, cache):
 
 def run_formulation(tag, idxs, refs, phases):
     form = FORMS[tag]
-    log(f"=== {tag} ({form}) A24-wide aQZ terf r0-scan: "
-        f"{len(idxs)} systems, r0 in [{R0_MIN}, {R0_MAX}] Angstrom ===")
+    log(
+        f"=== {tag} ({form}) A24-wide aQZ terf r0-scan: "
+        f"{len(idxs)} systems, r0 in [{R0_MIN}, {R0_MAX}] Angstrom ==="
+    )
 
     results = {}  # r0_ang -> (mae, per_system_errs)
 
@@ -419,8 +461,10 @@ def run_formulation(tag, idxs, refs, phases):
         r = evaluate_r0_mae(round(r0_ang, 4), form, tag, idxs, refs)
         if r is not None:
             results[round(r0_ang, 4)] = r
-            log(f"  r0={r0_ang:.4f} A -> MAE={r[0]:.4f} kcal/mol "
-                f"(vs {len(idxs)} A24 refs)")
+            log(
+                f"  r0={r0_ang:.4f} A -> MAE={r[0]:.4f} kcal/mol "
+                f"(vs {len(idxs)} A24 refs)"
+            )
         return r
 
     coarse_points = []
@@ -436,10 +480,14 @@ def run_formulation(tag, idxs, refs, phases):
             log(f"{tag}: coarse phase produced NO usable points -- aborting.")
             return
         best_coarse = min(coarse_points, key=lambda p: p[1])
-        log(f"{tag}: coarse minimum at r0={best_coarse[0]:.4f} A, "
-            f"MAE={best_coarse[1]:.4f} kcal/mol")
-        log(f"{tag}: coarse shape: " +
-            ", ".join(f"{r0:.2f}A={mae:.3f}" for r0, mae in coarse_points))
+        log(
+            f"{tag}: coarse minimum at r0={best_coarse[0]:.4f} A, "
+            f"MAE={best_coarse[1]:.4f} kcal/mol"
+        )
+        log(
+            f"{tag}: coarse shape: "
+            + ", ".join(f"{r0:.2f}A={mae:.3f}" for r0, mae in coarse_points)
+        )
 
     refine_points = []
     if "refine" in phases:
@@ -461,8 +509,10 @@ def run_formulation(tag, idxs, refs, phases):
         center = best_coarse[0]
         lo = max(R0_MIN, center - R0_REFINE_HALFWIDTH * R0_COARSE_STEP)
         hi = min(R0_MAX, center + R0_REFINE_HALFWIDTH * R0_COARSE_STEP)
-        log(f"--- Phase 2 (REFINE, step={R0_REFINE_STEP} A, window "
-            f"[{lo:.4f}, {hi:.4f}] around coarse min {center:.4f}) ---")
+        log(
+            f"--- Phase 2 (REFINE, step={R0_REFINE_STEP} A, window "
+            f"[{lo:.4f}, {hi:.4f}] around coarse min {center:.4f}) ---"
+        )
         n = round((hi - lo) / R0_REFINE_STEP)
         for i in range(n + 1):
             r0 = round(lo + i * R0_REFINE_STEP, 4)
@@ -470,17 +520,23 @@ def run_formulation(tag, idxs, refs, phases):
             if r is not None:
                 refine_points.append((r0, r[0]))
         if not refine_points:
-            log(f"{tag}: refine phase produced NO usable points -- skipping bisect phase.")
+            log(
+                f"{tag}: refine phase produced NO usable points -- skipping bisect phase."
+            )
         else:
             best_refine = min(refine_points, key=lambda p: p[1])
-            log(f"{tag}: refined minimum at r0={best_refine[0]:.4f} A, "
-                f"MAE={best_refine[1]:.4f} kcal/mol")
+            log(
+                f"{tag}: refined minimum at r0={best_refine[0]:.4f} A, "
+                f"MAE={best_refine[1]:.4f} kcal/mol"
+            )
 
     if "bisect" in phases:
         pts = refine_points or coarse_points
         if len(pts) < 3:
-            log(f"{tag}: not enough points ({len(pts)}) to bracket a bisection "
-                "-- skipping bisect phase.")
+            log(
+                f"{tag}: not enough points ({len(pts)}) to bracket a bisection "
+                "-- skipping bisect phase."
+            )
         else:
             pts_sorted = sorted(pts, key=lambda p: p[0])
             best_i = min(range(len(pts_sorted)), key=lambda i: pts_sorted[i][1])
@@ -497,19 +553,23 @@ def run_formulation(tag, idxs, refs, phases):
             if best_i == 0 or best_i == len(pts_sorted) - 1:
                 edge_r0 = pts_sorted[best_i][0]
                 edge = "lower" if best_i == 0 else "upper"
-                log(f"{tag}: WARNING -- best point (r0={edge_r0:.4f} A) is at "
+                log(
+                    f"{tag}: WARNING -- best point (r0={edge_r0:.4f} A) is at "
                     f"the {edge} edge of the scanned range "
                     f"[{pts_sorted[0][0]:.4f}, {pts_sorted[-1][0]:.4f}] A -- "
                     "the true minimum may lie OUTSIDE this range. Skipping "
                     "bisect phase (bracketing inside the edge interval would "
                     "silently understate this). Widen SCAN_R0_MIN/MAX (or "
                     "the refine window) and re-scan before trusting any "
-                    "reported minimum for this formulation.")
+                    "reported minimum for this formulation."
+                )
             else:
                 lo_i, hi_i = best_i - 1, best_i + 1
                 a, b = pts_sorted[lo_i][0], pts_sorted[hi_i][0]
-                log(f"--- Phase 3 (BISECT, golden-section, tol={R0_BISECT_TOL} A, "
-                    f"bracket [{a:.4f}, {b:.4f}]) ---")
+                log(
+                    f"--- Phase 3 (BISECT, golden-section, tol={R0_BISECT_TOL} A, "
+                    f"bracket [{a:.4f}, {b:.4f}]) ---"
+                )
                 # cache holds plain float MAEs (golden_section_min's cf()
                 # returns whatever f() returns, a float) -- seed it from
                 # `results`' (mae, errs) tuples by unwrapping to mae only.
@@ -527,8 +587,10 @@ def run_formulation(tag, idxs, refs, phases):
                 out = golden_section_min(f, a, b, R0_BISECT_TOL, cache)
                 if out is not None:
                     xm, mae_xm = out
-                    log(f"{tag}: BISECTED minimum r0={xm:.4f} A, "
-                        f"MAE={mae_xm:.4f} kcal/mol (tol {R0_BISECT_TOL} A)")
+                    log(
+                        f"{tag}: BISECTED minimum r0={xm:.4f} A, "
+                        f"MAE={mae_xm:.4f} kcal/mol (tol {R0_BISECT_TOL} A)"
+                    )
 
     log(f"{tag}: {len(results)} total (r0, MAE) points evaluated this run.")
 
@@ -544,11 +606,15 @@ def main():
     tags = [a for a in args if a in ("B", "T")] or ["B", "T"]
 
     refs = load_refs()
-    idx_env = [int(x) for x in os.environ.get("SCAN_SYSTEMS", "").split(",") if x.strip()]
+    idx_env = [
+        int(x) for x in os.environ.get("SCAN_SYSTEMS", "").split(",") if x.strip()
+    ]
     idxs = idx_env or sorted(refs)
 
-    log(f"A24-wide aQZ terf r0-scan: systems={idxs} ({len(idxs)}), "
-        f"forms={tags}, phases={phases}")
+    log(
+        f"A24-wide aQZ terf r0-scan: systems={idxs} ({len(idxs)}), "
+        f"forms={tags}, phases={phases}"
+    )
     if not preflight():
         log("ABORT: preflight failed.")
         return

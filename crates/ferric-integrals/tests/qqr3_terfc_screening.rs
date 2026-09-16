@@ -136,13 +136,19 @@ fn qqr3_accepts_terfc_now_that_new_2e_supports_it() {
     for p in 0..s.dfbs.nshells() {
         for s1 in 0..s.obs.nshells() {
             let e = bounds.estimate3(p, s1, s1);
-            assert!(e.is_finite(), "non-finite terfc QQR-3 bound at ({p},{s1},{s1})");
+            assert!(
+                e.is_finite(),
+                "non-finite terfc QQR-3 bound at ({p},{s1},{s1})"
+            );
             if e > 0.0 {
                 any_positive = true;
             }
         }
     }
-    assert!(any_positive, "every terfc QQR-3 bound was zero -- the table is inert");
+    assert!(
+        any_positive,
+        "every terfc QQR-3 bound was zero -- the table is inert"
+    );
 }
 
 /// The measurement. `#[ignore]`d because it builds several QQR-3 bound tables

@@ -317,10 +317,7 @@ impl CsbBounds {
     /// The two tables must share an operator, so this checks rather than
     /// trusts: `op` is taken from `schwarz.op`, never from a second parameter
     /// that could disagree with it.
-    pub fn from_schwarz(
-        schwarz: SchwarzBounds,
-        prep: &PreparedBasis,
-    ) -> Result<Self, FerricError> {
+    pub fn from_schwarz(schwarz: SchwarzBounds, prep: &PreparedBasis) -> Result<Self, FerricError> {
         let m = csb::csb_m_table(schwarz.op, prep)?;
         Ok(CsbBounds { schwarz, m })
     }
@@ -650,13 +647,7 @@ impl Bound for LinkBound<'_> {
 /// checked FIRST, so were both ever attached (only reachable by hand-mutating
 /// the struct), the RIGOROUS one would win — the safe direction.
 #[inline]
-fn schwarz_ref_estimate(
-    b: &SchwarzBounds,
-    sh1: usize,
-    sh2: usize,
-    sh3: usize,
-    sh4: usize,
-) -> f64 {
+fn schwarz_ref_estimate(b: &SchwarzBounds, sh1: usize, sh2: usize, sh3: usize, sh4: usize) -> f64 {
     let schwarz_est = b.q[(sh1, sh2)] * b.q[(sh3, sh4)];
     if let Some(m) = &b.csb_m {
         let eq6 = m[(sh1, sh3)] * m[(sh2, sh4)];
@@ -822,7 +813,10 @@ mod csb_unit_tests {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             CsamBounds::new(schwarz, wrong_shape)
         }));
-        assert!(result.is_err(), "CsamBounds::new must reject a mismatched X table shape");
+        assert!(
+            result.is_err(),
+            "CsamBounds::new must reject a mismatched X table shape"
+        );
     }
 }
 
@@ -855,6 +849,9 @@ mod tests {
         let bound: &dyn Bound = &bounds;
         let est = bound.estimate(0, 1, 2, 3);
         let direct = bounds.q[(0, 1)] * bounds.q[(2, 3)];
-        assert!((est - direct).abs() < 1e-15, "trait dispatch mismatch: {est} vs {direct}");
+        assert!(
+            (est - direct).abs() < 1e-15,
+            "trait dispatch mismatch: {est} vs {direct}"
+        );
     }
 }

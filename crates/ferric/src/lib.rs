@@ -15,19 +15,19 @@
 //! println!("{result}");
 //! ```
 
-pub use ferric_core as core;
-pub use ferric_integrals as integrals;
-pub use ferric_scf as scf;
-pub use ferric_dft as dft;
-pub use ferric_mp2 as mp2;
-pub use ferric_rpa as rpa;
-pub use ferric_gw as gw;
 pub use ferric_cc as cc;
 pub use ferric_ci as ci;
-pub use ferric_pcm as pcm;
+pub use ferric_core as core;
+pub use ferric_dft as dft;
 pub use ferric_export as export;
-pub use ferric_tensors as tensors;
+pub use ferric_gw as gw;
+pub use ferric_integrals as integrals;
+pub use ferric_mp2 as mp2;
+pub use ferric_pcm as pcm;
 pub use ferric_quadrature as quadrature;
+pub use ferric_rpa as rpa;
+pub use ferric_scf as scf;
+pub use ferric_tensors as tensors;
 
 /// Common imports for a typical ferric calculation.
 pub mod prelude {
@@ -39,8 +39,8 @@ pub mod prelude {
     pub use ferric_integrals::basis_bridge::PreparedBasis;
     pub use ferric_integrals::operator::Operator;
 
+    pub use ferric_scf::result::{ScfExit, ScfResult};
     pub use ferric_scf::rhf::{solve_rhf, RhfConfig};
-    pub use ferric_scf::uhf::{solve_uhf, UhfConfig};
     pub use ferric_scf::screening::SchwarzBounds;
-    pub use ferric_scf::result::{ScfResult, ScfExit};
+    pub use ferric_scf::uhf::{solve_uhf, UhfConfig};
 }

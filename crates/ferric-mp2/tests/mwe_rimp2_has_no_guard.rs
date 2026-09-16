@@ -28,12 +28,16 @@
 
 /// `b_flat`: the dressed `B^P_ia` output, `(naux, nocc·nvir)` f64.
 fn b_flat_bytes(naux: usize, nocc: usize, nvir: usize) -> usize {
-    naux.saturating_mul(nocc).saturating_mul(nvir).saturating_mul(8)
+    naux.saturating_mul(nocc)
+        .saturating_mul(nvir)
+        .saturating_mul(8)
 }
 
 /// `b_vv`: the vir-vir block, `(naux, nvir²)` f64.
 fn b_vv_bytes(naux: usize, nvir: usize) -> usize {
-    naux.saturating_mul(nvir).saturating_mul(nvir).saturating_mul(8)
+    naux.saturating_mul(nvir)
+        .saturating_mul(nvir)
+        .saturating_mul(8)
 }
 
 /// `g_i` at its widest (`i = 0`), held by EVERY rayon worker concurrently in the

@@ -45,12 +45,22 @@ fn setup(basis_name: &str) -> Fixture {
         &obs,
         Operator::coulomb(),
         &bounds,
-        &RhfConfig { density_conv: 1e-9, max_iter: 200, ..Default::default() },
+        &RhfConfig {
+            density_conv: 1e-9,
+            max_iter: 200,
+            ..Default::default()
+        },
     )
     .expect("ROHF on OH should converge");
     assert!(rohf.converged);
     let s = ferric_integrals::oneelectron::overlap(&obs);
-    Fixture { mol, obs, bounds, rohf, s }
+    Fixture {
+        mol,
+        obs,
+        bounds,
+        rohf,
+        s,
+    }
 }
 
 fn run(f: &Fixture) -> ferric_scf::semicanonical::SemicanonicalOrbitals {
@@ -83,7 +93,10 @@ fn preserves_orthonormality() {
             }
         }
         eprintln!("{label}: max |C^T S C - I| = {max_dev:.3e}");
-        assert!(max_dev < 1e-10, "{label} MOs are not orthonormal (dev {max_dev:.3e})");
+        assert!(
+            max_dev < 1e-10,
+            "{label} MOs are not orthonormal (dev {max_dev:.3e})"
+        );
     }
 }
 
@@ -110,8 +123,11 @@ fn preserves_the_occupied_span() {
     ] {
         let before = dens(c_rohf, nocc);
         let after = dens(c_new, nocc);
-        let max_dev =
-            before.iter().zip(after.iter()).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
+        let max_dev = before
+            .iter()
+            .zip(after.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
         eprintln!("{label}: max |D_before - D_after| = {max_dev:.3e}");
         assert!(
             max_dev < 1e-10,
@@ -139,8 +155,16 @@ fn fock_is_block_diagonal_but_ov_survives() {
     let ctx = ParallelContext::default();
 
     let (mut j_tot, mut scratch) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
-    ferric_scf::rhf::build_jk(&ctx, &f.obs, &f.bounds, 1e-12, &d_tot, &mut j_tot, &mut scratch)
-        .unwrap();
+    ferric_scf::rhf::build_jk(
+        &ctx,
+        &f.obs,
+        &f.bounds,
+        1e-12,
+        &d_tot,
+        &mut j_tot,
+        &mut scratch,
+    )
+    .unwrap();
     let (mut js, mut k_a) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
     ferric_scf::rhf::build_jk(&ctx, &f.obs, &f.bounds, 1e-12, d_a, &mut js, &mut k_a).unwrap();
     let mut k_b = Array2::zeros((n, n));
@@ -151,8 +175,22 @@ fn fock_is_block_diagonal_but_ov_survives() {
     let f_b = &h + &j_tot - &k_b;
 
     for (label, f_ao, c, eps, nocc, reported_ov) in [
-        ("alpha", &f_a, &sc.mos_alpha, &sc.eps_alpha, sc.nocc_alpha, sc.max_ov_alpha),
-        ("beta", &f_b, &sc.mos_beta, &sc.eps_beta, sc.nocc_beta, sc.max_ov_beta),
+        (
+            "alpha",
+            &f_a,
+            &sc.mos_alpha,
+            &sc.eps_alpha,
+            sc.nocc_alpha,
+            sc.max_ov_alpha,
+        ),
+        (
+            "beta",
+            &f_b,
+            &sc.mos_beta,
+            &sc.eps_beta,
+            sc.nocc_beta,
+            sc.max_ov_beta,
+        ),
     ] {
         let f_mo = c.t().dot(f_ao).dot(c);
         let nmo = f_mo.nrows();
@@ -222,9 +260,10 @@ fn orbital_energies_are_ordered_within_blocks() {
     let f = setup("cc-pvdz");
     let sc = run(&f);
 
-    for (label, eps, nocc) in
-        [("alpha", &sc.eps_alpha, sc.nocc_alpha), ("beta", &sc.eps_beta, sc.nocc_beta)]
-    {
+    for (label, eps, nocc) in [
+        ("alpha", &sc.eps_alpha, sc.nocc_alpha),
+        ("beta", &sc.eps_beta, sc.nocc_beta),
+    ] {
         for i in 1..nocc {
             assert!(
                 eps[i] >= eps[i - 1] - 1e-12,
@@ -243,7 +282,11 @@ fn orbital_energies_are_ordered_within_blocks() {
         }
         // The open shell makes alpha and beta genuinely different -- that is the whole
         // point of doing this per spin.
-        eprintln!("{label}: HOMO = {:.6}, LUMO = {:.6}", eps[nocc - 1], eps[nocc]);
+        eprintln!(
+            "{label}: HOMO = {:.6}, LUMO = {:.6}",
+            eps[nocc - 1],
+            eps[nocc]
+        );
     }
     assert!(
         sc.nocc_alpha > sc.nocc_beta,
@@ -281,7 +324,10 @@ fn invalid_references_are_rejected() {
         &obs_h2o,
         Operator::coulomb(),
         &bounds_h2o,
-        &RhfConfig { density_conv: 1e-9, ..Default::default() },
+        &RhfConfig {
+            density_conv: 1e-9,
+            ..Default::default()
+        },
     )
     .unwrap();
     assert!(
@@ -312,10 +358,17 @@ fn converts_to_a_usable_unrestricted_result() {
     assert!(matches!(u.spin, ferric_scf::result::Spin::Unrestricted));
     assert!(u.converged);
     assert!(u.mos_beta.is_some(), "converted result must carry beta MOs");
-    let eps_b = u.eps_beta.as_ref().expect("converted result must carry beta eigenvalues");
+    let eps_b = u
+        .eps_beta
+        .as_ref()
+        .expect("converted result must carry beta eigenvalues");
 
     // The whole point: eps_beta exists AND differs from eps_alpha.
-    let differ = u.eps_alpha.iter().zip(eps_b.iter()).any(|(a, b)| (a - b).abs() > 1e-6);
+    let differ = u
+        .eps_alpha
+        .iter()
+        .zip(eps_b.iter())
+        .any(|(a, b)| (a - b).abs() > 1e-6);
     assert!(
         differ,
         "eps_alpha and eps_beta are identical -- the ROHF fallback this conversion \
@@ -333,7 +386,11 @@ fn converts_to_a_usable_unrestricted_result() {
 
     // Total electron count must be preserved: tr(D S) = nelec.
     let n_elec: f64 = (0..u.density_total.nrows())
-        .map(|i| (0..u.density_total.ncols()).map(|j| u.density_total[[i, j]] * f.s[[j, i]]).sum::<f64>())
+        .map(|i| {
+            (0..u.density_total.ncols())
+                .map(|j| u.density_total[[i, j]] * f.s[[j, i]])
+                .sum::<f64>()
+        })
         .sum();
     let want = f.mol.nelec() as f64;
     eprintln!("tr(D S) = {n_elec:.10}  (expected {want})");
@@ -379,13 +436,19 @@ fn kohn_sham_fock_differs_from_hartree_fock() {
              is not reaching the Fock build"
         );
         // All the defining properties must still hold under XC.
-        assert!(ks.eps_alpha.iter().all(|v| v.is_finite()), "{name}: non-finite eps");
+        assert!(
+            ks.eps_alpha.iter().all(|v| v.is_finite()),
+            "{name}: non-finite eps"
+        );
         assert!(
             ks.max_ov_alpha > 1e-10,
             "{name}: occ-virt block vanished -- wrong Fock operator"
         );
-        let differ =
-            ks.eps_alpha.iter().zip(ks.eps_beta.iter()).any(|(a, b)| (a - b).abs() > 1e-6);
+        let differ = ks
+            .eps_alpha
+            .iter()
+            .zip(ks.eps_beta.iter())
+            .any(|(a, b)| (a - b).abs() > 1e-6);
         assert!(differ, "{name}: alpha and beta energies identical under XC");
     }
 }
@@ -412,10 +475,19 @@ fn range_separated_exchange_takes_its_own_path() {
     let pure = run_xc("PBE");
 
     let spread = |a: &[f64], b: &[f64]| {
-        a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0, f64::max)
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0, f64::max)
     };
-    eprintln!("|RSH - hybrid| = {:.3e}", spread(&rsh.eps_alpha, &hybrid.eps_alpha));
-    eprintln!("|RSH - pure|   = {:.3e}", spread(&rsh.eps_alpha, &pure.eps_alpha));
+    eprintln!(
+        "|RSH - hybrid| = {:.3e}",
+        spread(&rsh.eps_alpha, &hybrid.eps_alpha)
+    );
+    eprintln!(
+        "|RSH - pure|   = {:.3e}",
+        spread(&rsh.eps_alpha, &pure.eps_alpha)
+    );
 
     assert!(
         spread(&rsh.eps_alpha, &hybrid.eps_alpha) > 1e-3,

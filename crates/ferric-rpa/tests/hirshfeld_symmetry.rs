@@ -40,7 +40,10 @@ fn fccf_xyz(offset: f64) -> String {
     let z2 = z1 + cf;
     format!(
         "4\nFCCF\nF 0.0 0.0 {:.6}\nC 0.0 0.0 {:.6}\nC 0.0 0.0 {:.6}\nF 0.0 0.0 {:.6}\n",
-        -z2 + offset, -z1 + offset, z1 + offset, z2 + offset
+        -z2 + offset,
+        -z1 + offset,
+        z1 + offset,
+        z2 + offset
     )
 }
 
@@ -57,7 +60,11 @@ fn rotated(xyz: &str, theta: f64) -> String {
             continue;
         }
         let f: Vec<&str> = line.split_whitespace().collect();
-        let v: [f64; 3] = [f[1].parse().unwrap(), f[2].parse().unwrap(), f[3].parse().unwrap()];
+        let v: [f64; 3] = [
+            f[1].parse().unwrap(),
+            f[2].parse().unwrap(),
+            f[3].parse().unwrap(),
+        ];
         let dot = k[0] * v[0] + k[1] * v[1] + k[2] * v[2];
         let cross = [
             k[1] * v[2] - k[2] * v[1],
@@ -87,17 +94,31 @@ fn charges_scf_proatom(xyz: &str, basis_name: &str) -> Vec<f64> {
 
     // Match production (ferric-cli): radii out to 30 Bohr, not 15.
     let radii: Vec<f64> = (1..=600).map(|k| k as f64 * 0.05).collect();
-    let gs_mult = |z: i32| -> usize { match z { 1 => 2, 6 => 3, 7 => 4, 8 => 3, 9 => 2, _ => 1 } };
+    let gs_mult = |z: i32| -> usize {
+        match z {
+            1 => 2,
+            6 => 3,
+            7 => 4,
+            8 => 3,
+            9 => 2,
+            _ => 1,
+        }
+    };
     let bs = obs_bs.clone();
     let proatom = |z: i32, qi: i32| -> Option<RadialProatom> {
-        if qi != 0 { return None; }
+        if qi != 0 {
+            return None;
+        }
         let sym = z_to_symbol(z).unwrap_or("X");
         let amol = Molecule::parse_xyz(&format!("1\n{sym}\n{sym} 0 0 0\n"), 0, gs_mult(z)).ok()?;
         let aobs = PreparedBasis::new(&amol, &bs).ok()?;
         let abounds = SchwarzBounds::compute(op, &aobs).ok()?;
         let mut cfg = RhfConfig::default();
         let dens = if gs_mult(z) == 1 {
-            solve_rhf(&ctx, &amol, &aobs, op, &abounds, &cfg).ok()?.density_r().to_owned()
+            solve_rhf(&ctx, &amol, &aobs, op, &abounds, &cfg)
+                .ok()?
+                .density_r()
+                .to_owned()
         } else {
             cfg.mom_after_iter = 5;
             ferric_scf::uhf::solve_uhf(&ctx, &amol, &aobs, &abounds, &cfg)
@@ -117,8 +138,14 @@ fn equivalent_atoms_carry_equal_hirshfeld_charges() {
 
     let df = (q[0] - q[3]).abs();
     let dc = (q[1] - q[2]).abs();
-    assert!(df < 1e-6, "equivalent fluorines differ by {df:.3e} e (charges {q:?})");
-    assert!(dc < 1e-6, "equivalent carbons differ by {dc:.3e} e (charges {q:?})");
+    assert!(
+        df < 1e-6,
+        "equivalent fluorines differ by {df:.3e} e (charges {q:?})"
+    );
+    assert!(
+        dc < 1e-6,
+        "equivalent carbons differ by {dc:.3e} e (charges {q:?})"
+    );
 
     // Value pin. A symmetric but badly-scaled quadrature would still give equal
     // charges, so bound the magnitude against the known Hirshfeld character:
@@ -129,7 +156,10 @@ fn equivalent_atoms_carry_equal_hirshfeld_charges() {
          the old lattice gave -2.13 e on an equivalent fluorine",
         q[0]
     );
-    assert!(q.iter().all(|v| v.abs() < 0.5), "implausible Hirshfeld magnitudes: {q:?}");
+    assert!(
+        q.iter().all(|v| v.abs() < 0.5),
+        "implausible Hirshfeld magnitudes: {q:?}"
+    );
 }
 
 /// The grid is not reoriented to a standard frame and Lebedev rules are only
@@ -141,8 +171,14 @@ fn equivalent_atoms_are_equal_in_a_rotated_frame() {
     let q = charges_scf_proatom(&rotated(&fccf_xyz(0.0), 0.7), "cc-pvdz");
     let df = (q[0] - q[3]).abs();
     let dc = (q[1] - q[2]).abs();
-    assert!(df < 1e-3, "rotated frame: equivalent fluorines differ by {df:.3e} e ({q:?})");
-    assert!(dc < 1e-3, "rotated frame: equivalent carbons differ by {dc:.3e} e ({q:?})");
+    assert!(
+        df < 1e-3,
+        "rotated frame: equivalent fluorines differ by {df:.3e} e ({q:?})"
+    );
+    assert!(
+        dc < 1e-3,
+        "rotated frame: equivalent carbons differ by {dc:.3e} e ({q:?})"
+    );
 }
 
 /// Translating the molecule must not move charge between atoms. On the old
@@ -152,8 +188,15 @@ fn equivalent_atoms_are_equal_in_a_rotated_frame() {
 fn charges_are_invariant_to_translation() {
     let q0 = charges_scf_proatom(&fccf_xyz(0.0), "cc-pvdz");
     let q1 = charges_scf_proatom(&fccf_xyz(0.137), "cc-pvdz");
-    let worst = q0.iter().zip(&q1).map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
-    assert!(worst < 1e-3, "charges moved by {worst:.3e} e under a rigid translation: {q0:?} vs {q1:?}");
+    let worst = q0
+        .iter()
+        .zip(&q1)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        worst < 1e-3,
+        "charges moved by {worst:.3e} e under a rigid translation: {q0:?} vs {q1:?}"
+    );
 }
 
 /// QM9 `gdb_133454` (O=C1C(F)=NON=C1F), the molecule whose stored dataset entry
@@ -187,5 +230,8 @@ fn the_qm9_regression_molecule_has_equal_fluorines() {
 
     // The two fluorines (atoms 0 and 6) are near-equivalent by the ring mirror.
     let df = (q[0] - q[6]).abs();
-    assert!(df < 0.1, "the two fluorines differ by {df:.3} e (charges {q:?})");
+    assert!(
+        df < 0.1,
+        "the two fluorines differ by {df:.3} e (charges {q:?})"
+    );
 }

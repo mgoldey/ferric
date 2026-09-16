@@ -162,8 +162,11 @@ impl PairOverlaps {
     /// worst scaling in the crate, and the only unbounded allocation on the
     /// DLPNO path.
     pub fn plan_elements(basis: &PairPnoBasis) -> usize {
-        let total_pno: usize =
-            basis.pairs.iter().map(|p| p.transform.ncols()).fold(0usize, usize::saturating_add);
+        let total_pno: usize = basis
+            .pairs
+            .iter()
+            .map(|p| p.transform.ncols())
+            .fold(0usize, usize::saturating_add);
         total_pno.saturating_mul(total_pno)
     }
 
@@ -201,7 +204,11 @@ impl PairOverlaps {
             budget_bytes,
             format!("PairOverlaps S^(P,Q) cache ({n} pairs)"),
         );
-        plan.reserve("S^(P,Q) dense pair-pair overlap cache", Self::plan_elements(basis), Lifetime::Resident);
+        plan.reserve(
+            "S^(P,Q) dense pair-pair overlap cache",
+            Self::plan_elements(basis),
+            Lifetime::Resident,
+        );
         plan.check()?;
         Ok(Self::build(basis))
     }
@@ -655,7 +662,7 @@ pub fn pno_fvv_direct(
             let q = &basis.pairs[p].transform;
             let g = oriented_ovov(g_pno, basis, p, k, l); // ĝ[c̄,d̄]
             let t = oriented_amp(t2_pno, basis, p, k, l); // t̃[ā,d̄]
-            // M[c̄,ā] = Σ_d̄ ĝ[c̄,d̄] t̃[ā,d̄]
+                                                          // M[c̄,ā] = Σ_d̄ ĝ[c̄,d̄] t̃[ā,d̄]
             let m = g.dot(&t.t());
             a = a + q.dot(&m).dot(&q.t());
         }
@@ -717,16 +724,19 @@ pub fn pno_woooo_amp(
     let mut w = Array4::<f64>::zeros((nocc, nocc, nocc, nocc));
     for k in 0..nocc {
         for l in 0..nocc {
-            let Some(p_kl) = index.get(k, l) else { continue };
+            let Some(p_kl) = index.get(k, l) else {
+                continue;
+            };
             let g = oriented_ovov(g_pno, basis, p_kl, k, l);
             for i in 0..nocc {
                 for j in 0..nocc {
-                    let Some(p_ij) = index.get(i, j) else { continue };
+                    let Some(p_ij) = index.get(i, j) else {
+                        continue;
+                    };
                     let s = overlaps.get(p_kl, p_ij);
                     let t = oriented_amp(t2_pno, basis, p_ij, i, j);
                     let conv = s.dot(&t).dot(&s.t());
-                    w[[k, l, i, j]] =
-                        g.iter().zip(conv.iter()).map(|(x, y)| x * y).sum::<f64>();
+                    w[[k, l, i, j]] = g.iter().zip(conv.iter()).map(|(x, y)| x * y).sum::<f64>();
                 }
             }
         }
@@ -805,10 +815,10 @@ pub fn pno_wvoov_amp(
                 let g = oriented_ovov(g_pno, basis, p_lk, l, k);
                 let s = overlaps.get(p_lk, p_il); // [d̄, d̃]
                 let t = oriented_amp(t2_pno, basis, p_il, i, l); // [ā, d̃]
-                // M[c̄, ā] = Σ_{d̄,d̃} ĝ[d̄,c̄] S[d̄,d̃] t̃[ā,d̃]
+                                                                 // M[c̄, ā] = Σ_{d̄,d̃} ĝ[d̄,c̄] S[d̄,d̃] t̃[ā,d̃]
                 let sd = s.dot(&t.t()); // [d̄, ā]
                 let m = g.t().dot(&sd); // [c̄, ā]
-                // back-transform: Q_lk on c̄, Q_il on ā — DIFFERENT matrices.
+                                        // back-transform: Q_lk on c̄, Q_il on ā — DIFFERENT matrices.
                 let q_c = &basis.pairs[p_lk].transform;
                 let q_a = &basis.pairs[p_il].transform;
                 acc = acc + q_c.dot(&m).dot(&q_a.t());
@@ -881,13 +891,13 @@ pub fn pno_wvovo_amp(
                 // ĝ^{lk}[c̄,d̄] = (l c̄ | k d̄).
                 let g = oriented_ovov(g_pno, basis, p_lk, l, k);
                 let s = overlaps.get(p_lk, p_il); // [d̄, d̃]
-                // t̃[d̃, ā]. NOTE: NO transpose. `oriented_amp` returns the block
-                // indexed [first-virtual, second-virtual] of `t2[i,l,·,·]`, and
-                // this contraction wants `t2[i,l,d,a]` — the summed `d` IS the
-                // first slot here, unlike `pno_wvoov_amp`'s `t2[i,l,a,d]`. An
-                // erroneous `.t()` here was MEASURED at 9.1e-1 deviation against
-                // the dense oracle (scale 2.8) — it does not shrink the answer,
-                // it silently produces a different one.
+                                                  // t̃[d̃, ā]. NOTE: NO transpose. `oriented_amp` returns the block
+                                                  // indexed [first-virtual, second-virtual] of `t2[i,l,·,·]`, and
+                                                  // this contraction wants `t2[i,l,d,a]` — the summed `d` IS the
+                                                  // first slot here, unlike `pno_wvoov_amp`'s `t2[i,l,a,d]`. An
+                                                  // erroneous `.t()` here was MEASURED at 9.1e-1 deviation against
+                                                  // the dense oracle (scale 2.8) — it does not shrink the answer,
+                                                  // it silently produces a different one.
                 let t = oriented_amp(t2_pno, basis, p_il, i, l);
                 let sd = s.dot(&t); // [d̄, ā]
                 let m = g.dot(&sd); // [c̄, ā]
@@ -970,7 +980,9 @@ pub fn pno_loo_t2_term(
         let npno = pair.transform.ncols();
         let mut r = Array2::<f64>::zeros((npno, npno));
         for k in 0..nocc {
-            let Some(p_kj) = index.get(k, j) else { continue };
+            let Some(p_kj) = index.get(k, j) else {
+                continue;
+            };
             let s = overlaps.get(p_ij, p_kj);
             let t = oriented_amp(t2_pno, basis, p_kj, k, j);
             let conv = s.dot(&t).dot(&s.t());
@@ -1159,7 +1171,9 @@ mod tests {
     // ------------------------------------------------------------------
 
     fn lcg(seed: &mut u64) -> f64 {
-        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((*seed >> 33) as f64 / (1u64 << 31) as f64) - 1.0
     }
 
@@ -1196,7 +1210,10 @@ mod tests {
     }
 
     fn line_centers(nocc: usize, spacing: f64) -> Array2<f64> {
-        Array2::from_shape_fn((nocc, 3), |(i, ax)| if ax == 0 { i as f64 * spacing } else { 0.0 })
+        Array2::from_shape_fn(
+            (nocc, 3),
+            |(i, ax)| if ax == 0 { i as f64 * spacing } else { 0.0 },
+        )
     }
 
     struct Fixture {
@@ -1222,14 +1239,28 @@ mod tests {
         let index = PairIndex::new(&basis, nocc).unwrap();
         let g_pno = PairOvov::build(&ovov, &basis).unwrap();
         let t2_pno = t2_to_pno(&t2, &basis).unwrap();
-        Fixture { basis, overlaps, index, g_pno, t2_pno, t2, ovov }
+        Fixture {
+            basis,
+            overlaps,
+            index,
+            g_pno,
+            t2_pno,
+            t2,
+            ovov,
+        }
     }
 
     fn max_dev2(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-        a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0f64, f64::max)
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f64, f64::max)
     }
     fn max_dev4(a: &Array4<f64>, b: &Array4<f64>) -> f64 {
-        a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0f64, f64::max)
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f64, f64::max)
     }
     fn scale2(a: &Array2<f64>) -> f64 {
         a.iter().map(|v| v.abs()).fold(0.0f64, f64::max)
@@ -1252,11 +1283,17 @@ mod tests {
     fn stage_a_overlaps_are_orthogonal_at_zero_truncation() {
         let (nocc, nvir) = (4, 6);
         let f = fixture(nocc, nvir, 0.0);
-        assert!(f.basis.is_complete(), "t_cut_pno = 0 must keep every virtual");
+        assert!(
+            f.basis.is_complete(),
+            "t_cut_pno = 0 must keep every virtual"
+        );
 
         let worst = f.overlaps.max_nonorthogonality();
         eprintln!("stage A: max |S Sᵀ - 1| over all pair pairs = {worst:.3e}");
-        assert!(worst < 1e-10, "pair-pair overlaps are not orthogonal: {worst:.3e}");
+        assert!(
+            worst < 1e-10,
+            "pair-pair overlaps are not orthogonal: {worst:.3e}"
+        );
 
         // Every S must be square nvir × nvir at zero truncation.
         for p in 0..f.overlaps.n_pairs() {
@@ -1318,10 +1355,16 @@ mod tests {
     fn stage_a_truncation_breaks_overlap_orthogonality() {
         let (nocc, nvir) = (4, 6);
         let f = fixture(nocc, nvir, 1e-3);
-        assert!(!f.basis.is_complete(), "test premise: something must be truncated");
+        assert!(
+            !f.basis.is_complete(),
+            "test premise: something must be truncated"
+        );
         let worst = f.overlaps.max_nonorthogonality();
         eprintln!("stage A: truncated max |S Sᵀ - 1| = {worst:.3e}");
-        assert!(worst > 1e-10, "truncation left the overlaps orthogonal — the knob is inert");
+        assert!(
+            worst > 1e-10,
+            "truncation left the overlaps orthogonal — the knob is inert"
+        );
     }
 
     /// `PairIndex` must resolve both orientations to the same basis, and screened
@@ -1344,7 +1387,11 @@ mod tests {
         let idx = PairIndex::new(&basis, nocc).unwrap();
 
         for &(i, j) in &screened.pairs {
-            assert_eq!(idx.get(i, j), idx.get(j, i), "mirror ({j},{i}) resolves elsewhere");
+            assert_eq!(
+                idx.get(i, j),
+                idx.get(j, i),
+                "mirror ({j},{i}) resolves elsewhere"
+            );
             assert!(idx.get(i, j).is_some());
         }
         let mut n_missing = 0;
@@ -1352,7 +1399,10 @@ mod tests {
             for j in 0..nocc {
                 let kept = screened.pairs.contains(&(i.min(j), i.max(j)));
                 if !kept {
-                    assert!(idx.get(i, j).is_none(), "screened pair ({i},{j}) has an entry");
+                    assert!(
+                        idx.get(i, j).is_none(),
+                        "screened pair ({i},{j}) has an entry"
+                    );
                     n_missing += 1;
                 }
             }
@@ -1382,14 +1432,19 @@ mod tests {
         let f = fixture(nocc, nvir, 0.0);
 
         let dense = dense_foo_direct(&f.ovov, &f.t2).unwrap();
-        let pno =
-            pno_foo_direct(&f.t2_pno, &f.g_pno, &f.basis, &f.overlaps, &f.index).unwrap();
+        let pno = pno_foo_direct(&f.t2_pno, &f.g_pno, &f.basis, &f.overlaps, &f.index).unwrap();
 
         let worst = max_dev2(&dense, &pno);
         let scale = scale2(&dense);
         eprintln!("stage B: max |F_oo(dense) - F_oo(PNO)| = {worst:.3e} (scale {scale:.3e})");
-        assert!(scale > 1e-3, "F_oo is ~zero ({scale:.3e}) — the check is vacuous");
-        assert!(worst < 1e-12, "S-inserted F_oo is NOT exact: max deviation {worst:.3e}");
+        assert!(
+            scale > 1e-3,
+            "F_oo is ~zero ({scale:.3e}) — the check is vacuous"
+        );
+        assert!(
+            worst < 1e-12,
+            "S-inserted F_oo is NOT exact: max deviation {worst:.3e}"
+        );
     }
 
     /// Stage B's exactness must not depend on the amplitudes being the same MP2
@@ -1417,7 +1472,10 @@ mod tests {
         let pno = pno_foo_direct(&t2_pno, &f.g_pno, &f.basis, &f.overlaps, &f.index).unwrap();
         let worst = max_dev2(&dense, &pno);
         eprintln!("stage B (unrelated t2): max deviation = {worst:.3e}");
-        assert!(worst < 1e-12, "S-inserted F_oo failed on unrelated amplitudes: {worst:.3e}");
+        assert!(
+            worst < 1e-12,
+            "S-inserted F_oo failed on unrelated amplitudes: {worst:.3e}"
+        );
     }
 
     /// Truncation must actually change `F_oo` — otherwise the cost reduction
@@ -1430,10 +1488,8 @@ mod tests {
         let ft = fixture(nocc, nvir, 1e-3);
         assert!(!ft.basis.is_complete(), "test premise");
 
-        let e0 = pno_foo_direct(&f0.t2_pno, &f0.g_pno, &f0.basis, &f0.overlaps, &f0.index)
-            .unwrap();
-        let et = pno_foo_direct(&ft.t2_pno, &ft.g_pno, &ft.basis, &ft.overlaps, &ft.index)
-            .unwrap();
+        let e0 = pno_foo_direct(&f0.t2_pno, &f0.g_pno, &f0.basis, &f0.overlaps, &f0.index).unwrap();
+        let et = pno_foo_direct(&ft.t2_pno, &ft.g_pno, &ft.basis, &ft.overlaps, &ft.index).unwrap();
         let d = max_dev2(&e0, &et);
         eprintln!("stage B: truncated F_oo differs from exact by {d:.3e}");
         assert!(d > 1e-12, "truncation had no effect on F_oo");
@@ -1447,8 +1503,7 @@ mod tests {
         let (nocc, nvir) = (4, 6);
         let f = fixture(nocc, nvir, 0.0);
         let dense = dense_foo_exchange(&f.ovov, &f.t2).unwrap();
-        let pno =
-            pno_foo_exchange(&f.t2_pno, &f.g_pno, &f.basis, &f.overlaps, &f.index).unwrap();
+        let pno = pno_foo_exchange(&f.t2_pno, &f.g_pno, &f.basis, &f.overlaps, &f.index).unwrap();
         let worst = max_dev2(&dense, &pno);
         eprintln!("stage C: F_oo exchange max deviation = {worst:.3e}");
         assert!(scale2(&dense) > 1e-3, "vacuous: F_oo exchange is ~zero");
@@ -1468,7 +1523,10 @@ mod tests {
         let dense = dense_fvv_direct(&f.ovov, &f.t2).unwrap();
         let pno = pno_fvv_direct(&f.t2_pno, &f.g_pno, &f.basis, &f.index).unwrap();
         let worst = max_dev2(&dense, &pno);
-        eprintln!("stage C: F_vv max deviation = {worst:.3e} (scale {:.3e})", scale2(&dense));
+        eprintln!(
+            "stage C: F_vv max deviation = {worst:.3e} (scale {:.3e})",
+            scale2(&dense)
+        );
         assert!(scale2(&dense) > 1e-3, "vacuous: F_vv is ~zero");
         assert!(worst < 1e-12, "F_vv is not exact: {worst:.3e}");
     }
@@ -1482,7 +1540,10 @@ mod tests {
         let dense = dense_woooo_amp(&f.ovov, &f.t2).unwrap();
         let pno = pno_woooo_amp(&f.t2_pno, &f.g_pno, &f.basis, &f.overlaps, &f.index).unwrap();
         let worst = max_dev4(&dense, &pno);
-        eprintln!("stage C: W_oooo max deviation = {worst:.3e} (scale {:.3e})", scale4(&dense));
+        eprintln!(
+            "stage C: W_oooo max deviation = {worst:.3e} (scale {:.3e})",
+            scale4(&dense)
+        );
         assert!(scale4(&dense) > 1e-3, "vacuous: W_oooo is ~zero");
         assert!(worst < 1e-12, "W_oooo is not exact: {worst:.3e}");
     }
@@ -1501,7 +1562,10 @@ mod tests {
         let dense = dense_wvoov_amp(&f.ovov, &f.t2).unwrap();
         let pno = pno_wvoov_amp(&f.t2_pno, &f.g_pno, &f.basis, &f.overlaps, &f.index).unwrap();
         let worst = max_dev4(&dense, &pno);
-        eprintln!("stage C: W_voov max deviation = {worst:.3e} (scale {:.3e})", scale4(&dense));
+        eprintln!(
+            "stage C: W_voov max deviation = {worst:.3e} (scale {:.3e})",
+            scale4(&dense)
+        );
         assert!(scale4(&dense) > 1e-3, "vacuous: W_voov is ~zero");
         assert!(worst < 1e-12, "W_voov is not exact: {worst:.3e}");
     }
@@ -1515,7 +1579,10 @@ mod tests {
         let dense = dense_wvovo_amp(&f.ovov, &f.t2).unwrap();
         let pno = pno_wvovo_amp(&f.t2_pno, &f.g_pno, &f.basis, &f.overlaps, &f.index).unwrap();
         let worst = max_dev4(&dense, &pno);
-        eprintln!("stage C: W_vovo max deviation = {worst:.3e} (scale {:.3e})", scale4(&dense));
+        eprintln!(
+            "stage C: W_vovo max deviation = {worst:.3e} (scale {:.3e})",
+            scale4(&dense)
+        );
         assert!(scale4(&dense) > 1e-3, "vacuous: W_vovo is ~zero");
         assert!(worst < 1e-12, "W_vovo is not exact: {worst:.3e}");
     }
@@ -1552,7 +1619,10 @@ mod tests {
         assert!(worst < 1e-12, "L_oo T2 term is not exact: {worst:.3e}");
         // The output must be in the PNO basis, not the canonical one.
         for (p, pair) in f.basis.pairs.iter().enumerate() {
-            assert_eq!(pno[p].dim(), (pair.transform.ncols(), pair.transform.ncols()));
+            assert_eq!(
+                pno[p].dim(),
+                (pair.transform.ncols(), pair.transform.ncols())
+            );
         }
     }
 
@@ -1567,10 +1637,8 @@ mod tests {
         assert!(!ft.basis.is_complete(), "test premise");
 
         let d_ex = max_dev2(
-            &pno_foo_exchange(&f0.t2_pno, &f0.g_pno, &f0.basis, &f0.overlaps, &f0.index)
-                .unwrap(),
-            &pno_foo_exchange(&ft.t2_pno, &ft.g_pno, &ft.basis, &ft.overlaps, &ft.index)
-                .unwrap(),
+            &pno_foo_exchange(&f0.t2_pno, &f0.g_pno, &f0.basis, &f0.overlaps, &f0.index).unwrap(),
+            &pno_foo_exchange(&ft.t2_pno, &ft.g_pno, &ft.basis, &ft.overlaps, &ft.index).unwrap(),
         );
         let d_fvv = max_dev2(
             &pno_fvv_direct(&f0.t2_pno, &f0.g_pno, &f0.basis, &f0.index).unwrap(),
@@ -1592,9 +1660,13 @@ mod tests {
             "stage C truncation deltas: F_oo^x {d_ex:.3e}, F_vv {d_fvv:.3e}, \
              W_oooo {d_w:.3e}, W_voov {d_v:.3e}, W_vovo {d_o:.3e}"
         );
-        for (name, d) in
-            [("F_oo^x", d_ex), ("F_vv", d_fvv), ("W_oooo", d_w), ("W_voov", d_v), ("W_vovo", d_o)]
-        {
+        for (name, d) in [
+            ("F_oo^x", d_ex),
+            ("F_vv", d_fvv),
+            ("W_oooo", d_w),
+            ("W_voov", d_v),
+            ("W_vovo", d_o),
+        ] {
             assert!(d > 1e-12, "{name} is inert under truncation");
         }
     }
@@ -1675,9 +1747,7 @@ mod tests {
                 worst = worst.max((shortcut - f.basis.pairs[p].eps[a]).abs());
             }
         }
-        eprintln!(
-            "denominators: max |f_aa(diagonal shortcut) - eps(semicanonical)| = {worst:.3e}"
-        );
+        eprintln!("denominators: max |f_aa(diagonal shortcut) - eps(semicanonical)| = {worst:.3e}");
         assert!(
             worst > 1e-4,
             "premise failed: the diagonal shortcut agrees with the semicanonical energies \
@@ -1731,13 +1801,22 @@ mod tests {
             }
             prev = Some(c);
         }
-        assert!(any_decrease, "no threshold in the sweep reduced the F_oo flop count");
+        assert!(
+            any_decrease,
+            "no threshold in the sweep reduced the F_oo flop count"
+        );
 
         // At the loosest threshold every ratio must be genuinely below 1.
         let f = fixture(nocc, nvir, 1e-3);
         let c = FlopCount::of(&f.basis, nocc);
-        for (name, r) in ["amp", "integ", "F_oo", "W_oooo", "L_oo"].iter().zip(c.ratios()) {
-            assert!(r < 1.0, "{name} ratio {r:.4} is not below 1 at t_cut_pno = 1e-3");
+        for (name, r) in ["amp", "integ", "F_oo", "W_oooo", "L_oo"]
+            .iter()
+            .zip(c.ratios())
+        {
+            assert!(
+                r < 1.0,
+                "{name} ratio {r:.4} is not below 1 at t_cut_pno = 1e-3"
+            );
         }
     }
 
@@ -1753,7 +1832,10 @@ mod tests {
         let f = fixture(nocc, nvir, 0.0);
         let c = FlopCount::of(&f.basis, nocc);
         eprintln!("cost @ t_cut_pno = 0:\n{}", c.table());
-        for (name, r) in ["amp", "integ", "F_oo", "W_oooo", "L_oo"].iter().zip(c.ratios()) {
+        for (name, r) in ["amp", "integ", "F_oo", "W_oooo", "L_oo"]
+            .iter()
+            .zip(c.ratios())
+        {
             assert!(
                 (r - 1.0).abs() < 1e-12,
                 "{name} ratio is {r} at zero truncation — the PNO and dense counts are \
@@ -1775,8 +1857,14 @@ mod tests {
         let (p0, d0) = f0.g_pno.elements(nvir);
         let (pt, dt) = ft.g_pno.elements(nvir);
         eprintln!("integral storage: exact {p0}/{d0}, truncated {pt}/{dt}");
-        assert_eq!(p0, d0, "at zero truncation per-pair storage must equal dense");
-        assert!(pt < p0, "truncation did not shrink the per-pair integral storage");
+        assert_eq!(
+            p0, d0,
+            "at zero truncation per-pair storage must equal dense"
+        );
+        assert!(
+            pt < p0,
+            "truncation did not shrink the per-pair integral storage"
+        );
     }
 
     // =================== error handling ===================
@@ -1800,13 +1888,12 @@ mod tests {
         assert!(PairOvov::build(&bad_ovov, &f.basis).is_err());
 
         let bad_loo = Array2::<f64>::zeros((nocc + 1, nocc + 1));
-        assert!(
-            pno_loo_t2_term(&bad_loo, &f.t2_pno, &f.basis, &f.overlaps, &f.index).is_err()
-        );
+        assert!(pno_loo_t2_term(&bad_loo, &f.t2_pno, &f.basis, &f.overlaps, &f.index).is_err());
 
         assert!(pno_denominators(&f.basis, &eps_occ(nocc - 1)).is_err());
-        assert!(dense_foo_direct(&f.ovov, &Array4::zeros((nocc, nocc, nvir + 1, nvir + 1)))
-            .is_err());
+        assert!(
+            dense_foo_direct(&f.ovov, &Array4::zeros((nocc, nocc, nvir + 1, nvir + 1))).is_err()
+        );
     }
 
     // =================== REAL SYSTEM ===================
@@ -1850,7 +1937,10 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig { energy_conv: 1e-11, ..Default::default() },
+            &RhfConfig {
+                energy_conv: 1e-11,
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -1861,8 +1951,7 @@ mod tests {
             ..Default::default()
         };
         let cc =
-            crate::ccsd_closed_shell::ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg)
-                .unwrap();
+            crate::ccsd_closed_shell::ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
 
         let eps = rhf.eps_r();
         let nocc = eps.iter().filter(|&&e| e < 0.0).count();
@@ -1903,7 +1992,10 @@ mod tests {
         // Premise: the overlaps must be orthogonal AND non-trivial on the real
         // system too, else the S insertions below are untested.
         let orth = overlaps.max_nonorthogonality();
-        assert!(orth < 1e-10, "real-system overlaps are not orthogonal: {orth:.3e}");
+        assert!(
+            orth < 1e-10,
+            "real-system overlaps are not orthogonal: {orth:.3e}"
+        );
         let mut off = 0.0f64;
         for p in 0..overlaps.n_pairs() {
             for q in 0..overlaps.n_pairs() {
@@ -1924,7 +2016,10 @@ mod tests {
              max |S Sᵀ - 1| = {orth:.3e}, max |S^(P!=Q) - 1| = {off:.3e}",
             basis.pairs.len()
         );
-        assert!(off > 1e-2, "real-system pair overlaps are ~identity — S is untested");
+        assert!(
+            off > 1e-2,
+            "real-system pair overlaps are ~identity — S is untested"
+        );
 
         let checks: [(&str, f64, f64); 6] = [
             {
@@ -1960,8 +2055,14 @@ mod tests {
         ];
         for (name, dev, scale) in checks {
             eprintln!("real system: {name} max deviation {dev:.3e} (scale {scale:.3e})");
-            assert!(scale > 1e-4, "{name} is ~zero ({scale:.3e}) — the check is vacuous");
-            assert!(dev < 1e-10, "{name} is not exact on the real system: {dev:.3e}");
+            assert!(
+                scale > 1e-4,
+                "{name} is ~zero ({scale:.3e}) — the check is vacuous"
+            );
+            assert!(
+                dev < 1e-10,
+                "{name} is not exact on the real system: {dev:.3e}"
+            );
         }
 
         // And the structural cost table on the real system, at a live threshold.
@@ -1983,7 +2084,10 @@ mod tests {
             trunc.virtual_retention(),
             ct.table()
         );
-        assert_eq!(c0.foo_flops.1, ct.foo_flops.1, "dense count moved with the threshold");
+        assert_eq!(
+            c0.foo_flops.1, ct.foo_flops.1,
+            "dense count moved with the threshold"
+        );
         assert!(
             ct.foo_flops.0 <= c0.foo_flops.0,
             "truncation increased the F_oo flop count on the real system"
@@ -2023,9 +2127,17 @@ mod tests {
     #[test]
     fn build_within_budget_refuses_a_tiny_budget_and_names_the_term() {
         let f = fixture(4, 6, 0.0);
-        let err = PairOverlaps::build_within_budget(&f.basis, 8).unwrap_err().to_string();
-        assert!(err.contains("PairOverlaps"), "must name the allocation: {err}");
-        assert!(err.contains("overlap"), "breakdown must name the reservation: {err}");
+        let err = PairOverlaps::build_within_budget(&f.basis, 8)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("PairOverlaps"),
+            "must name the allocation: {err}"
+        );
+        assert!(
+            err.contains("overlap"),
+            "breakdown must name the reservation: {err}"
+        );
     }
 
     /// AN OVER-ESTIMATING GUARD IS ALSO A BUG: an ample budget must still build,
@@ -2052,7 +2164,10 @@ mod tests {
     fn a_budget_exactly_equal_to_the_requirement_fits() {
         let f = fixture(3, 5, 0.0);
         let need = PairOverlaps::plan_elements(&f.basis) * 8;
-        assert!(PairOverlaps::build_within_budget(&f.basis, need).is_ok(), "exact fit must pass");
+        assert!(
+            PairOverlaps::build_within_budget(&f.basis, need).is_ok(),
+            "exact fit must pass"
+        );
         assert!(
             PairOverlaps::build_within_budget(&f.basis, need - 1).is_err(),
             "one byte short must fail"

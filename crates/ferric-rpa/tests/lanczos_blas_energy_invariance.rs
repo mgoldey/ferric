@@ -47,12 +47,18 @@ fn rpa_energy_at(threads: Option<&str>) -> f64 {
     let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let scf = RhfConfig { density_conv: 1e-9, max_iter: 200, ..Default::default() };
+    let scf = RhfConfig {
+        density_conv: 1e-9,
+        max_iter: 200,
+        ..Default::default()
+    };
     let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf).unwrap();
     assert!(rhf.converged, "SCF must converge");
 
     let cfg = PdepRpaConfig::default();
-    let e = run_pdep_rpa(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &cfg).unwrap().e_rpa;
+    let e = run_pdep_rpa(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &cfg)
+        .unwrap()
+        .e_rpa;
 
     std::env::remove_var("FERRIC_LANCZOS_BLAS_THREADS");
     e

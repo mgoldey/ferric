@@ -72,7 +72,9 @@ fn seed_from_smaller_basis(
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let path = args.next().expect("usage: gw_xcheck_ecp <file.xyz> <obs> <ri-aux>");
+    let path = args
+        .next()
+        .expect("usage: gw_xcheck_ecp <file.xyz> <obs> <ri-aux>");
     let obs_name = args.next().unwrap_or_else(|| "aug-cc-pvdz-pp".to_string());
     let aux_name = args.next().unwrap_or_else(|| "def2-tzvp-rifit".to_string());
 
@@ -90,11 +92,19 @@ fn main() {
     let ctx = ParallelContext::default();
     // Level-shift RHF ladder (DIIS → ls=0.5 → ls=1.0), same as gw100_full.rs.
     let lr = ferric_scf::ladder::solve_rhf_ladder(
-        &ctx, &mol, &obs, op, &bounds, &ferric_scf::ladder::default_ladder(),
+        &ctx,
+        &mol,
+        &obs,
+        op,
+        &bounds,
+        &ferric_scf::ladder::default_ladder(),
     )
     .expect("RHF ladder");
     if !lr.converged {
-        eprintln!("  [!] RHF ladder did not converge (best rung {})", lr.rung_reached);
+        eprintln!(
+            "  [!] RHF ladder did not converge (best rung {})",
+            lr.rung_reached
+        );
     }
     let nocc = (mol.nelec() as usize) / 2;
     let homo_abs = nocc - 1;
@@ -185,7 +195,11 @@ fn main() {
     let ip = -res.eps_qp[homo_local] * HA_TO_EV;
     println!(
         "XCHECK {:.4} {:.4} {:.5} {:.4} {} {:.6}",
-        ip, ip_koop, res.sigma_c[homo_local], res.z_factor[homo_local],
-        mol.nelec(), rhf.energy
+        ip,
+        ip_koop,
+        res.sigma_c[homo_local],
+        res.z_factor[homo_local],
+        mol.nelec(),
+        rhf.energy
     );
 }

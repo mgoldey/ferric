@@ -122,10 +122,14 @@ pub fn sad_guess(
     let mut atom_density_cache: HashMap<i32, Array2<f64>> = HashMap::new();
 
     for (ai, atom) in mol.atoms.iter().enumerate() {
-        if atom.ghost { continue; }
+        if atom.ghost {
+            continue;
+        }
         let z = atom.z;
         let nao = atom_ao_count[ai];
-        if nao == 0 { continue; }
+        if nao == 0 {
+            continue;
+        }
 
         // Skip the SAD free-atom solve for atoms carrying high angular momentum
         // (g functions, l ≥ 4). The ⟨gg|gg⟩-class quartets in the free-atom direct
@@ -188,13 +192,13 @@ fn free_atom_density(
     z: i32,
     bs: &ferric_core::basis::BasisSet,
 ) -> Result<Array2<f64>, FerricError> {
-    use ferric_core::mol::Molecule;
-    use ferric_integrals::basis_bridge::PreparedBasis;
-    use ferric_core::parallel::ParallelContext;
-    use ferric_integrals::operator::Operator;
+    use crate::rhf::{solve_rhf, RhfConfig};
     use crate::screening::SchwarzBounds;
-    use crate::rhf::{RhfConfig, solve_rhf};
     use crate::uhf::solve_uhf;
+    use ferric_core::mol::Molecule;
+    use ferric_core::parallel::ParallelContext;
+    use ferric_integrals::basis_bridge::PreparedBasis;
+    use ferric_integrals::operator::Operator;
 
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
@@ -255,13 +259,10 @@ fn free_atom_density(
                 df_k_aux: Some(crate::fock_assembly::DEFAULT_JK_AUX.to_string()),
                 ..Default::default()
             };
-            solve_uhf(&ctx, &amol, &aprep, &abounds, &acfg)
-                .map(|r| r.density_total().to_owned())
+            solve_uhf(&ctx, &amol, &aprep, &abounds, &acfg).map(|r| r.density_total().to_owned())
         }
     })
-    .map_err(|e| FerricError::General(format!(
-        "SAD free-atom SCF failed for {sym} (Z={z}): {e:?}"
-    )))
+    .map_err(|e| FerricError::General(format!("SAD free-atom SCF failed for {sym} (Z={z}): {e:?}")))
 }
 
 /// Pick the small basis used to build a high-l atom's free-atom density block,
@@ -336,10 +337,14 @@ pub fn sad_guess_smallbasis(
     let mut atom_density_cache: HashMap<i32, Array2<f64>> = HashMap::new();
 
     for (ai, atom) in mol.atoms.iter().enumerate() {
-        if atom.ghost { continue; }
+        if atom.ghost {
+            continue;
+        }
         let z = atom.z;
         let nao = atom_ao_count[ai];
-        if nao == 0 { continue; }
+        if nao == 0 {
+            continue;
+        }
 
         let has_high_l = bs
             .for_element(z)
@@ -373,10 +378,7 @@ pub fn sad_guess_smallbasis(
                 Some(small_bs) => {
                     if crate::rhf::scf_trace() {
                         let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("?");
-                        eprintln!(
-                            "SAD-smallbasis: {sym} (Z={z}) via {}",
-                            small_bs.name
-                        );
+                        eprintln!("SAD-smallbasis: {sym} (Z={z}) via {}", small_bs.name);
                     }
                     // High-l atom: project the small-basis free-atom density
                     // into the target AO block via the S-metric.
@@ -426,19 +428,29 @@ fn project_smallbasis_density(
 
     let target_shells = target_bs
         .for_element(z)
-        .ok_or_else(|| FerricError::General(format!(
-            "project_smallbasis_density: target basis missing element Z={z}"
-        )))?
+        .ok_or_else(|| {
+            FerricError::General(format!(
+                "project_smallbasis_density: target basis missing element Z={z}"
+            ))
+        })?
         .to_vec();
     let small_shells = small_bs
         .for_element(z)
-        .ok_or_else(|| FerricError::General(format!(
-            "project_smallbasis_density: small basis missing element Z={z}"
-        )))?
+        .ok_or_else(|| {
+            FerricError::General(format!(
+                "project_smallbasis_density: small basis missing element Z={z}"
+            ))
+        })?
         .to_vec();
 
-    let n_t: usize = target_shells.iter().map(|sh| num_functions(sh.l, sh.pure)).sum();
-    let n_s: usize = small_shells.iter().map(|sh| num_functions(sh.l, sh.pure)).sum();
+    let n_t: usize = target_shells
+        .iter()
+        .map(|sh| num_functions(sh.l, sh.pure))
+        .sum();
+    let n_s: usize = small_shells
+        .iter()
+        .map(|sh| num_functions(sh.l, sh.pure))
+        .sum();
 
     // Combined single-atom basis: target shells first, then small shells,
     // for this element only.
@@ -471,11 +483,11 @@ fn project_smallbasis_density(
     let s_ts = s_full.slice(ndarray::s![0..n_t, n_t..n_t + n_s]).to_owned();
     let s_ss = s_full.slice(ndarray::s![n_t.., n_t..]).to_owned();
 
-    let s_ss_inv = s_ss
-        .inv()
-        .map_err(|e| FerricError::Lapack(format!(
+    let s_ss_inv = s_ss.inv().map_err(|e| {
+        FerricError::Lapack(format!(
             "project_smallbasis_density: S_ss singular for Z={z}: {e}"
-        )))?;
+        ))
+    })?;
     if s_ss_inv.iter().any(|v| !v.is_finite()) {
         return Err(FerricError::General(format!(
             "project_smallbasis_density: S_ss^-1 has non-finite entries for Z={z}"
@@ -644,7 +656,9 @@ fn atomic_hcore_density(
     let mut d = Array2::<f64>::zeros((nao, nao));
     // D = Σ_i occ_i · c_i c_iᵀ (spin-summed AO density).
     for (i, &f) in occ.iter().enumerate() {
-        if f == 0.0 { continue; }
+        if f == 0.0 {
+            continue;
+        }
         let ci = c.slice(ndarray::s![.., i]);
         // rank-1 update scaled by the occupation number
         let outer = ci.to_owned().insert_axis(ndarray::Axis(1));
@@ -720,9 +734,13 @@ pub fn minao_projection_guess(
     let mut seen: HashMap<i32, usize> = HashMap::new(); // z -> nao
     let mut unique_zs: Vec<i32> = Vec::new();
     for (ai, atom) in mol.atoms.iter().enumerate() {
-        if atom.ghost { continue; }
+        if atom.ghost {
+            continue;
+        }
         let nao = atom_ao_count[ai];
-        if nao == 0 { continue; }
+        if nao == 0 {
+            continue;
+        }
         seen.entry(atom.z).or_insert_with(|| {
             unique_zs.push(atom.z);
             nao
@@ -765,7 +783,11 @@ pub fn minao_projection_guess(
             Err(e) => {
                 if crate::rhf::scf_trace() {
                     let sym = ferric_core::elements::z_to_symbol(z).unwrap_or("?");
-                    let route = if use_no_scf { "GWH no-SCF" } else { "free-atom SCF" };
+                    let route = if use_no_scf {
+                        "GWH no-SCF"
+                    } else {
+                        "free-atom SCF"
+                    };
                     eprintln!("MINAO: {route} atomic density failed for {sym} (Z={z}): {e:?}; block left zero");
                 }
                 Array2::zeros((nao, nao))
@@ -789,10 +811,14 @@ pub fn minao_projection_guess(
     };
 
     for (ai, atom) in mol.atoms.iter().enumerate() {
-        if atom.ghost { continue; }
+        if atom.ghost {
+            continue;
+        }
         let z = atom.z;
         let nao = atom_ao_count[ai];
-        if nao == 0 { continue; }
+        if nao == 0 {
+            continue;
+        }
 
         let atom_d = &atom_density_cache[&z];
 
@@ -851,8 +877,13 @@ mod tests {
         let prep = PreparedBasis::new(&mol, &svp).unwrap();
         let s = oneelectron::overlap(&prep);
         let n = prep.nbasis();
-        let tr: f64 = (0..n).map(|i| (0..n).map(|j| p[(i, j)] * s[(i, j)]).sum::<f64>()).sum();
-        assert!((tr - 8.0).abs() < 1e-4, "same-basis projection must reproduce trace, got {tr}");
+        let tr: f64 = (0..n)
+            .map(|i| (0..n).map(|j| p[(i, j)] * s[(i, j)]).sum::<f64>())
+            .sum();
+        assert!(
+            (tr - 8.0).abs() < 1e-4,
+            "same-basis projection must reproduce trace, got {tr}"
+        );
     }
 
     #[test]
@@ -950,7 +981,10 @@ mod tests {
                 );
             }
         }
-        assert!(d.iter().all(|v| v.is_finite()), "MINAO D has non-finite entries");
+        assert!(
+            d.iter().all(|v| v.is_finite()),
+            "MINAO D has non-finite entries"
+        );
         let tr: f64 = (0..n)
             .map(|i| (0..n).map(|j| d[(i, j)] * s[(i, j)]).sum::<f64>())
             .sum();
@@ -969,7 +1003,10 @@ mod tests {
         // Cu in aug-cc-pVDZ is all-electron, maxL=3 (no g), so the density is
         // built directly in this basis (no small-basis projection).
         let d = atomic_hcore_density(29, &bs).unwrap();
-        assert!(d.iter().all(|v| v.is_finite()), "Cu atomic density non-finite");
+        assert!(
+            d.iter().all(|v| v.is_finite()),
+            "Cu atomic density non-finite"
+        );
         let n = d.nrows();
         for i in 0..n {
             for j in 0..n {
@@ -983,8 +1020,13 @@ mod tests {
         let mol = Molecule::parse_xyz("1\nCu\nCu 0 0 0\n", 0, 2).unwrap();
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let s = oneelectron::overlap(&prep);
-        let tr: f64 = (0..n).map(|i| (0..n).map(|j| d[(i, j)] * s[(i, j)]).sum::<f64>()).sum();
-        assert!((tr - 29.0).abs() < 1e-6, "Cu atomic tr(DS) = {tr}, expected 29");
+        let tr: f64 = (0..n)
+            .map(|i| (0..n).map(|j| d[(i, j)] * s[(i, j)]).sum::<f64>())
+            .sum();
+        assert!(
+            (tr - 29.0).abs() < 1e-6,
+            "Cu atomic tr(DS) = {tr}, expected 29"
+        );
     }
 
     /// MINAO for Cu/aug-cc-pVTZ (Cu has g functions, l=4). Because the guess
@@ -998,7 +1040,10 @@ mod tests {
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let s = oneelectron::overlap(&prep);
         let d = minao_projection_guess(&mol, &prep, &bs).unwrap();
-        assert!(d.iter().any(|&v| v.abs() > 1e-6), "Cu MINAO block must be nonzero");
+        assert!(
+            d.iter().any(|&v| v.abs() > 1e-6),
+            "Cu MINAO block must be nonzero"
+        );
         assert!(d.iter().all(|v| v.is_finite()), "Cu MINAO block non-finite");
         let n = prep.nbasis();
         for i in 0..n {
@@ -1009,9 +1054,14 @@ mod tests {
                 );
             }
         }
-        let tr: f64 = (0..n).map(|i| (0..n).map(|j| d[(i, j)] * s[(i, j)]).sum::<f64>()).sum();
+        let tr: f64 = (0..n)
+            .map(|i| (0..n).map(|j| d[(i, j)] * s[(i, j)]).sum::<f64>())
+            .sum();
         eprintln!("minao_cu_aug_cc_pvtz_no_scf: tr(D*S) = {tr}");
-        assert!((tr - 29.0).abs() < 1e-6, "Cu MINAO tr(DS)={tr}, expected 29 (trace-exact)");
+        assert!(
+            (tr - 29.0).abs() < 1e-6,
+            "Cu MINAO tr(DS)={tr}, expected 29 (trace-exact)"
+        );
     }
 
     /// End-to-end: Cu2 / aug-cc-pVDZ RKS-PBE from the default (MINAO) guess must
@@ -1033,11 +1083,11 @@ mod tests {
     }
 
     fn cu2_pbe_minao_body() {
-        use crate::rhf::{RhfConfig, solve_rhf};
+        use crate::rhf::{solve_rhf, RhfConfig};
         use crate::screening::SchwarzBounds;
         use ferric_core::parallel::ParallelContext;
-        use ferric_integrals::operator::Operator;
         use ferric_dft::grid::AtomicGridConfig;
+        use ferric_integrals::operator::Operator;
 
         // Cu2 at 2.2197 Å (task geometry).
         let xyz = "2\nCu2\nCu 0.0 0.0 0.0\nCu 0.0 0.0 2.2197\n";
@@ -1052,7 +1102,11 @@ mod tests {
         let cfg = RhfConfig {
             max_iter: 200,
             xc: Some("PBE".to_string()),
-            dft_grid: Some(AtomicGridConfig { n_radial: 75, n_angular: 110, ..Default::default() }),
+            dft_grid: Some(AtomicGridConfig {
+                n_radial: 75,
+                n_angular: 110,
+                ..Default::default()
+            }),
             ..Default::default() // use_sad_guess defaults true ⇒ MINAO
         };
         let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).expect("Cu2 RKS-PBE");
@@ -1067,7 +1121,11 @@ mod tests {
             r.energy, r.iterations, r.converged, homo, gap_ev, dt
         );
         assert!(r.converged, "Cu2 RKS-PBE did not converge from MINAO guess");
-        assert!((r.energy - (-3280.641)).abs() < 0.05, "Cu2 E={:.6}, expected ≈-3280.641", r.energy);
+        assert!(
+            (r.energy - (-3280.641)).abs() < 0.05,
+            "Cu2 E={:.6}, expected ≈-3280.641",
+            r.energy
+        );
     }
 
     /// MINAO must converge a light closed-shell DFT case (water/STO-3G/PBE) at the
@@ -1077,28 +1135,40 @@ mod tests {
     #[test]
     #[ignore]
     fn minao_water_pbe_converges() {
-        use crate::rhf::{RhfConfig, solve_rhf};
+        use crate::rhf::{solve_rhf, RhfConfig};
         use crate::screening::SchwarzBounds;
         use ferric_core::parallel::ParallelContext;
         use ferric_integrals::operator::Operator;
-        std::thread::Builder::new().stack_size(256 * 1024 * 1024).spawn(|| {
-            let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
-            let bs = basis::bundled("sto-3g").unwrap();
-            let prep = PreparedBasis::new(&mol, &bs).unwrap();
-            let op = Operator::coulomb();
-            let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-            let ctx = ParallelContext::default();
-            let cfg = RhfConfig {
-                xc: Some("PBE".into()),
-                df_j_aux: Some("def2-universal-jkfit".into()),
-                density_conv: 1e-6,
-                max_iter: 200,
-                ..Default::default() // MINAO (use_sad_guess defaults true)
-            };
-            let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
-            eprintln!("water MINAO/PBE: E={:.10} iters={} conv={}", r.energy, r.iterations, r.converged);
-            assert!(r.converged, "MINAO water/STO-3G PBE did not converge (exit={:?})", r.exit);
-        }).unwrap().join().unwrap();
+        std::thread::Builder::new()
+            .stack_size(256 * 1024 * 1024)
+            .spawn(|| {
+                let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+                let bs = basis::bundled("sto-3g").unwrap();
+                let prep = PreparedBasis::new(&mol, &bs).unwrap();
+                let op = Operator::coulomb();
+                let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+                let ctx = ParallelContext::default();
+                let cfg = RhfConfig {
+                    xc: Some("PBE".into()),
+                    df_j_aux: Some("def2-universal-jkfit".into()),
+                    density_conv: 1e-6,
+                    max_iter: 200,
+                    ..Default::default() // MINAO (use_sad_guess defaults true)
+                };
+                let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
+                eprintln!(
+                    "water MINAO/PBE: E={:.10} iters={} conv={}",
+                    r.energy, r.iterations, r.converged
+                );
+                assert!(
+                    r.converged,
+                    "MINAO water/STO-3G PBE did not converge (exit={:?})",
+                    r.exit
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     /// SAD guess + RHF on C2H3Br / aug-cc-pVDZ with NO level shift must converge
@@ -1112,7 +1182,7 @@ mod tests {
     #[test]
     #[ignore]
     fn rhf_sad_guess_c2h3br_aug_cc_pvdz_no_shift() {
-        use crate::rhf::{RhfConfig, solve_rhf};
+        use crate::rhf::{solve_rhf, RhfConfig};
         use crate::screening::SchwarzBounds;
         use ferric_core::parallel::ParallelContext;
         use ferric_integrals::operator::Operator;
@@ -1153,8 +1223,8 @@ mod tests {
     #[test]
     #[ignore] // ~10-30s release: builds a Cu/def2-tzvp free-atom SCF
     fn sad_smallbasis_cu_block_is_nonzero_and_traced() {
-        use ferric_core::mol::Molecule;
         use ferric_core::basis;
+        use ferric_core::mol::Molecule;
         use ferric_integrals::basis_bridge::PreparedBasis;
         use ferric_integrals::oneelectron;
 
@@ -1177,8 +1247,14 @@ mod tests {
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let s = oneelectron::overlap(&prep);
         let d = sad_guess_smallbasis(&mol, &prep, &bs).unwrap();
-        assert!(d.iter().any(|&v| v.abs() > 1e-6), "Cu block must be nonzero");
-        assert!(d.iter().all(|v| v.is_finite()), "Cu block has non-finite entries");
+        assert!(
+            d.iter().any(|&v| v.abs() > 1e-6),
+            "Cu block must be nonzero"
+        );
+        assert!(
+            d.iter().all(|v| v.is_finite()),
+            "Cu block has non-finite entries"
+        );
         let n = prep.nbasis();
         for i in 0..n {
             for j in 0..n {
@@ -1188,7 +1264,9 @@ mod tests {
                 );
             }
         }
-        let tr: f64 = (0..n).map(|i| (0..n).map(|j| d[(i, j)] * s[(i, j)]).sum::<f64>()).sum();
+        let tr: f64 = (0..n)
+            .map(|i| (0..n).map(|j| d[(i, j)] * s[(i, j)]).sum::<f64>())
+            .sum();
         eprintln!("sad_smallbasis_cu_block_is_nonzero_and_traced: tr(D*S) = {tr}");
         assert!(
             tr > 20.0 && tr < 80.0,

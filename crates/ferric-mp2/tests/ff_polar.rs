@@ -10,7 +10,14 @@ use ferric_mp2::rimp2::RiMp2Config;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
-fn h2o() -> (Molecule, PreparedBasis, PreparedBasis, Operator, SchwarzBounds, ParallelContext) {
+fn h2o() -> (
+    Molecule,
+    PreparedBasis,
+    PreparedBasis,
+    Operator,
+    SchwarzBounds,
+    ParallelContext,
+) {
     let xyz = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
     let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
     let obs_bs = basis::bundled("cc-pvdz").unwrap();
@@ -26,11 +33,27 @@ fn h2o() -> (Molecule, PreparedBasis, PreparedBasis, Operator, SchwarzBounds, Pa
 #[test]
 fn mp2_alpha_water_positive_and_sane() {
     let (mol, obs, dfbs, op, bounds, ctx) = h2o();
-    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
+    let scf_cfg = RhfConfig {
+        energy_conv: 1e-10,
+        ..Default::default()
+    };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: 0,
+        memory_budget_bytes: None,
+        ..Default::default()
+    };
 
     let alpha = mp2_polarizability_static(
-        &ctx, &mol, &obs, &dfbs, op, &bounds, &scf_cfg, &mp2_cfg, 1e-3, DensityMode::Relaxed,
+        &ctx,
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &bounds,
+        &scf_cfg,
+        &mp2_cfg,
+        1e-3,
+        DensityMode::Relaxed,
     )
     .unwrap();
 
@@ -38,13 +61,20 @@ fn mp2_alpha_water_positive_and_sane() {
     for row in &alpha.tensor {
         eprintln!("  [{:>10.5} {:>10.5} {:>10.5}]", row[0], row[1], row[2]);
     }
-    eprintln!("MP2 α_iso = {:.5} a.u. ; principal = {:?}", alpha.iso, alpha.principal);
+    eprintln!(
+        "MP2 α_iso = {:.5} a.u. ; principal = {:?}",
+        alpha.iso, alpha.principal
+    );
 
     // Polarizability must be positive-definite. cc-pVDZ (no diffuse) gives a
     // smaller-than-experiment water α — typically ~6-9 a.u. iso. We only assert
     // sign + a generous physical window here; tight cross-validation vs PySCF
     // is the #[ignore] high-quality-basis test below.
-    assert!(alpha.iso > 0.0, "MP2 α_iso must be positive, got {}", alpha.iso);
+    assert!(
+        alpha.iso > 0.0,
+        "MP2 α_iso must be positive, got {}",
+        alpha.iso
+    );
     for &p in &alpha.principal {
         assert!(p > 0.0, "MP2 α principal value must be positive, got {p}");
     }
@@ -62,13 +92,29 @@ fn mp2_alpha_water_positive_and_sane() {
 #[test]
 fn mp2_alpha_vs_rpa_alpha_water() {
     let (mol, obs, dfbs, op, bounds, ctx) = h2o();
-    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
+    let scf_cfg = RhfConfig {
+        energy_conv: 1e-10,
+        ..Default::default()
+    };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: 0,
+        memory_budget_bytes: None,
+        ..Default::default()
+    };
 
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
     let alpha_mp2 = mp2_polarizability_static(
-        &ctx, &mol, &obs, &dfbs, op, &bounds, &scf_cfg, &mp2_cfg, 1e-3, DensityMode::Relaxed,
+        &ctx,
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &bounds,
+        &scf_cfg,
+        &mp2_cfg,
+        1e-3,
+        DensityMode::Relaxed,
     )
     .unwrap();
 
@@ -87,17 +133,38 @@ fn mp2_alpha_vs_rpa_alpha_water() {
 #[ignore]
 fn mp2_alpha_attenuation_sweep_water() {
     let (mol, obs, dfbs, _op, bounds, ctx) = h2o();
-    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
+    let scf_cfg = RhfConfig {
+        energy_conv: 1e-10,
+        ..Default::default()
+    };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: 0,
+        memory_budget_bytes: None,
+        ..Default::default()
+    };
 
     println!("\n=== water cc-pVDZ : attenuated MP2 (relaxed) static α ===");
     println!("  baseline RPA α_iso (cc-pVDZ) = 3.111 a.u.\n");
     println!("  {:>10}  {:>12}", "ω(Bohr⁻¹)", "α_iso(a.u.)");
     for &w in &[0.0_f64, 0.2, 0.5, 1.0] {
-        let op = if w == 0.0 { Operator::coulomb() } else { Operator::erfc(w) };
+        let op = if w == 0.0 {
+            Operator::coulomb()
+        } else {
+            Operator::erfc(w)
+        };
         let a = mp2_polarizability_static(
-            &ctx, &mol, &obs, &dfbs, op, &bounds, &scf_cfg, &mp2_cfg, 1e-3, DensityMode::Unrelaxed,
-        ).unwrap();
+            &ctx,
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &bounds,
+            &scf_cfg,
+            &mp2_cfg,
+            1e-3,
+            DensityMode::Unrelaxed,
+        )
+        .unwrap();
         println!("  {:>10.3}  {:>12.5}", w, a.iso);
     }
     println!();
@@ -115,17 +182,38 @@ fn mp2_alpha_attenuation_sweep_water_augccpvdz() {
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
+    let scf_cfg = RhfConfig {
+        energy_conv: 1e-10,
+        ..Default::default()
+    };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: 0,
+        memory_budget_bytes: None,
+        ..Default::default()
+    };
 
     println!("\n=== water aug-cc-pVDZ : attenuated MP2 (relaxed) static α ===");
     println!("  ref: CRC α_iso ≈ 9.8 a.u. ; RPA α_iso (aug, Coulomb) ≈ 5.15\n");
     println!("  {:>10}  {:>12}", "ω(Bohr⁻¹)", "α_iso(a.u.)");
     for &w in &[0.0_f64, 0.2, 0.3, 0.5, 0.7, 1.0] {
-        let op = if w == 0.0 { Operator::coulomb() } else { Operator::erfc(w) };
+        let op = if w == 0.0 {
+            Operator::coulomb()
+        } else {
+            Operator::erfc(w)
+        };
         let a = mp2_polarizability_static(
-            &ctx, &mol, &obs, &dfbs, op, &bounds_for(&ctx, &obs), &scf_cfg, &mp2_cfg, 1e-3, DensityMode::Unrelaxed,
-        ).unwrap();
+            &ctx,
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &bounds_for(&ctx, &obs),
+            &scf_cfg,
+            &mp2_cfg,
+            1e-3,
+            DensityMode::Unrelaxed,
+        )
+        .unwrap();
         println!("  {:>10.3}  {:>12.5}", w, a.iso);
     }
     println!();
@@ -160,18 +248,25 @@ fn test_a_generalization() {
     // (name, xyz path, DOSD α_ref @ aug-cc-pVDZ from scripts/dosd/alpha.csv)
     let mols: &[(&str, &str, f64)] = &[
         ("water", "../../testdata/molecules/water.xyz", 9.64),
-        ("nh3",   "../../testdata/molecules/nh3.xyz",   14.56),
-        ("ch4",   "../../testdata/molecules/methane.xyz", 17.27),
-        ("n2",    "../../testdata/molecules/n2.xyz",    11.74),
-        ("co2",   "../../testdata/molecules/co2.xyz",   17.51),
+        ("nh3", "../../testdata/molecules/nh3.xyz", 14.56),
+        ("ch4", "../../testdata/molecules/methane.xyz", 17.27),
+        ("n2", "../../testdata/molecules/n2.xyz", 11.74),
+        ("co2", "../../testdata/molecules/co2.xyz", 17.51),
     ];
     let omegas: &[f64] = &[0.0, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.9];
 
     let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
     let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
+    let scf_cfg = RhfConfig {
+        energy_conv: 1e-10,
+        ..Default::default()
+    };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: 0,
+        memory_budget_bytes: None,
+        ..Default::default()
+    };
 
     println!("\n===================== TEST A: generalization =====================");
     println!("attenuated-MP2 α(ω) per molecule vs DOSD ref (aug-cc-pVDZ)\n");
@@ -197,13 +292,31 @@ fn test_a_generalization() {
         let mut best = (f64::INFINITY, 0.0_f64, 0.0_f64); // (|err|, omega, alpha)
         let mut alpha0 = 0.0; // Coulomb (ω=0) MP2 alpha
         for &w in omegas {
-            let op = if w == 0.0 { Operator::coulomb() } else { Operator::erfc(w) };
+            let op = if w == 0.0 {
+                Operator::coulomb()
+            } else {
+                Operator::erfc(w)
+            };
             let a = mp2_polarizability_static(
-                &ctx, &mol, &obs, &dfbs, op, &bounds, &scf_cfg, &mp2_cfg, 1e-3, DensityMode::Unrelaxed,
-            ).unwrap();
-            if w == 0.0 { alpha0 = a.iso; }
+                &ctx,
+                &mol,
+                &obs,
+                &dfbs,
+                op,
+                &bounds,
+                &scf_cfg,
+                &mp2_cfg,
+                1e-3,
+                DensityMode::Unrelaxed,
+            )
+            .unwrap();
+            if w == 0.0 {
+                alpha0 = a.iso;
+            }
             let err = (a.iso - aref).abs();
-            if err < best.0 { best = (err, w, a.iso); }
+            if err < best.0 {
+                best = (err, w, a.iso);
+            }
             print!("{:.2}", a.iso);
             print!("@{w:.1} ");
         }
@@ -219,7 +332,13 @@ fn test_a_generalization() {
     for (name, gap, ws, aws, aref, a0) in &summary {
         println!(
             "  {:>6}  {:>7.2}  {:>7.2}  {:>9.3}  {:>9.3}  {:>9.3}  {:>9.2}",
-            name, gap, ws, aws, a0, aref, 100.0 * (aws - aref) / aref
+            name,
+            gap,
+            ws,
+            aws,
+            a0,
+            aref,
+            100.0 * (aws - aref) / aref
         );
     }
 
@@ -232,13 +351,19 @@ fn test_a_generalization() {
         let n = ws.len() as f64;
         let mg = gaps.iter().sum::<f64>() / n;
         let mw = ws.iter().sum::<f64>() / n;
-        let mut sgw = 0.0; let mut sgg = 0.0; let mut sww = 0.0;
+        let mut sgw = 0.0;
+        let mut sgg = 0.0;
+        let mut sww = 0.0;
         for i in 0..ws.len() {
-            sgw += (gaps[i]-mg)*(ws[i]-mw);
-            sgg += (gaps[i]-mg).powi(2);
-            sww += (ws[i]-mw).powi(2);
+            sgw += (gaps[i] - mg) * (ws[i] - mw);
+            sgg += (gaps[i] - mg).powi(2);
+            sww += (ws[i] - mw).powi(2);
         }
-        if sgg > 0.0 && sww > 0.0 { sgw / (sgg.sqrt()*sww.sqrt()) } else { 0.0 }
+        if sgg > 0.0 && sww > 0.0 {
+            sgw / (sgg.sqrt() * sww.sqrt())
+        } else {
+            0.0
+        }
     };
     println!("\n  ω* spread: [{wmin:.2}, {wmax:.2}]  (tight ⇒ fixed-ω works)");
     println!("  Pearson(gap, ω*) = {pearson:+.3}  (strong ⇒ ω=f(gap) recipe works)");
@@ -259,24 +384,48 @@ fn diag_n2_field_scan() {
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
+    let scf_cfg = RhfConfig {
+        energy_conv: 1e-10,
+        ..Default::default()
+    };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: 0,
+        memory_budget_bytes: None,
+        ..Default::default()
+    };
 
     // (1) HOMO-LUMO gap and lowest few orbital-energy denominators (degeneracy?)
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
-    let nocc = (mol.nelec()/2) as usize;
+    let nocc = (mol.nelec() / 2) as usize;
     let eps = rhf.eps_r();
-    eprintln!("n2: nocc={nocc}, HOMO={:.5} LUMO={:.5} gap={:.5} Ha",
-        eps[nocc-1], eps[nocc], eps[nocc]-eps[nocc-1]);
-    eprintln!("    smallest occ-vir denom = {:.6} Ha",
-        eps[nocc] - eps[nocc-1]);
+    eprintln!(
+        "n2: nocc={nocc}, HOMO={:.5} LUMO={:.5} gap={:.5} Ha",
+        eps[nocc - 1],
+        eps[nocc],
+        eps[nocc] - eps[nocc - 1]
+    );
+    eprintln!(
+        "    smallest occ-vir denom = {:.6} Ha",
+        eps[nocc] - eps[nocc - 1]
+    );
 
     // (2) Field-strength scan at ω=0 (Coulomb). If α stabilizes at small h, it's
     // a field-too-large problem; if it's garbage at all h, it's the solver.
     eprintln!("\n  field-h scan (ω=0):");
     eprintln!("  {:>10}  {:>12}", "h(a.u.)", "α_iso");
     for &h in &[1e-2_f64, 5e-3, 2e-3, 1e-3, 5e-4, 2e-4] {
-        match mp2_polarizability_static(&ctx, &mol, &obs, &dfbs, op, &bounds, &scf_cfg, &mp2_cfg, h, DensityMode::Unrelaxed) {
+        match mp2_polarizability_static(
+            &ctx,
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &bounds,
+            &scf_cfg,
+            &mp2_cfg,
+            h,
+            DensityMode::Unrelaxed,
+        ) {
             Ok(a) => eprintln!("  {:>10.0e}  {:>12.4}", h, a.iso),
             Err(e) => eprintln!("  {:>10.0e}  ERR: {e}", h),
         }
@@ -288,27 +437,45 @@ fn diag_n2_field_scan() {
 #[test]
 #[ignore]
 fn diag_fieldscan_nh3_co2() {
-    let cases: &[(&str,&str,f64)] = &[
-        ("nh3","../../testdata/molecules/nh3.xyz",14.56),
-        ("co2","../../testdata/molecules/co2.xyz",17.51),
+    let cases: &[(&str, &str, f64)] = &[
+        ("nh3", "../../testdata/molecules/nh3.xyz", 14.56),
+        ("co2", "../../testdata/molecules/co2.xyz", 17.51),
     ];
     let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
     let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
-    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
-    for (name,path,aref) in cases {
+    let scf_cfg = RhfConfig {
+        energy_conv: 1e-10,
+        ..Default::default()
+    };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: 0,
+        memory_budget_bytes: None,
+        ..Default::default()
+    };
+    for (name, path, aref) in cases {
         let mol = Molecule::load_xyz(path).unwrap();
-        let obs = PreparedBasis::new(&mol,&obs_bs).unwrap();
-        let dfbs = PreparedBasis::new(&mol,&dfbs_bs).unwrap();
-        let bounds = SchwarzBounds::compute(op,&obs).unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
+        let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         eprintln!("\n  {name} (Coulomb, ref {aref}):");
-        eprintln!("  {:>10}  {:>12}","h","α_iso");
+        eprintln!("  {:>10}  {:>12}", "h", "α_iso");
         for &h in &[2e-2_f64, 1e-2, 5e-3, 2e-3, 1e-3] {
-            match mp2_polarizability_static(&ctx,&mol,&obs,&dfbs,op,&bounds,&scf_cfg,&mp2_cfg,h,DensityMode::Unrelaxed) {
-                Ok(a)=>eprintln!("  {:>10.0e}  {:>12.4}",h,a.iso),
-                Err(e)=>eprintln!("  {:>10.0e}  ERR {e}",h),
+            match mp2_polarizability_static(
+                &ctx,
+                &mol,
+                &obs,
+                &dfbs,
+                op,
+                &bounds,
+                &scf_cfg,
+                &mp2_cfg,
+                h,
+                DensityMode::Unrelaxed,
+            ) {
+                Ok(a) => eprintln!("  {:>10.0e}  {:>12.4}", h, a.iso),
+                Err(e) => eprintln!("  {:>10.0e}  ERR {e}", h),
             }
         }
     }
@@ -322,15 +489,34 @@ fn diag_nh3_zvec_trace() {
     let mol = Molecule::load_xyz("../../testdata/molecules/nh3.xyz").unwrap();
     let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
     let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
-    let obs = PreparedBasis::new(&mol,&obs_bs).unwrap();
-    let dfbs = PreparedBasis::new(&mol,&dfbs_bs).unwrap();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op,&obs).unwrap();
-    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let scf_cfg = RhfConfig {
+        energy_conv: 1e-10,
+        ..Default::default()
+    };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: 0,
+        memory_budget_bytes: None,
+        ..Default::default()
+    };
     eprintln!("nh3 MP2-α at h=5e-3 with Z-vector trace (expect 6 zvec solves):");
-    let a = mp2_polarizability_static(&ctx,&mol,&obs,&dfbs,op,&bounds,&scf_cfg,&mp2_cfg,5e-3,DensityMode::Unrelaxed).unwrap();
+    let a = mp2_polarizability_static(
+        &ctx,
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &bounds,
+        &scf_cfg,
+        &mp2_cfg,
+        5e-3,
+        DensityMode::Unrelaxed,
+    )
+    .unwrap();
     eprintln!("  → α_iso = {:.4}", a.iso);
 }
 
@@ -344,20 +530,39 @@ fn diag_nh3_tight_scf_scan() {
     let mol = Molecule::load_xyz("../../testdata/molecules/nh3.xyz").unwrap();
     let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
     let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
-    let obs = PreparedBasis::new(&mol,&obs_bs).unwrap();
-    let dfbs = PreparedBasis::new(&mol,&dfbs_bs).unwrap();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op,&obs).unwrap();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     // TIGHTENED field-SCF.
-    let scf_cfg = RhfConfig { energy_conv: 1e-12, density_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
+    let scf_cfg = RhfConfig {
+        energy_conv: 1e-12,
+        density_conv: 1e-10,
+        ..Default::default()
+    };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: 0,
+        memory_budget_bytes: None,
+        ..Default::default()
+    };
     eprintln!("nh3 tight-SCF (dconv 1e-10) field scan, ref 14.56:");
-    eprintln!("  {:>10}  {:>12}","h","α_iso");
+    eprintln!("  {:>10}  {:>12}", "h", "α_iso");
     for &h in &[2e-2_f64, 1e-2, 5e-3, 2e-3, 1e-3] {
-        match mp2_polarizability_static(&ctx,&mol,&obs,&dfbs,op,&bounds,&scf_cfg,&mp2_cfg,h,DensityMode::Unrelaxed) {
-            Ok(a)=>eprintln!("  {:>10.0e}  {:>12.4}",h,a.iso),
-            Err(e)=>eprintln!("  {:>10.0e}  ERR {e}",h),
+        match mp2_polarizability_static(
+            &ctx,
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &bounds,
+            &scf_cfg,
+            &mp2_cfg,
+            h,
+            DensityMode::Unrelaxed,
+        ) {
+            Ok(a) => eprintln!("  {:>10.0e}  {:>12.4}", h, a.iso),
+            Err(e) => eprintln!("  {:>10.0e}  ERR {e}", h),
         }
     }
 }
@@ -369,25 +574,34 @@ fn diag_nh3_tight_scf_scan() {
 #[test]
 #[ignore]
 fn diag_nh3_raw_dipoles() {
-    use ferric_mp2::ff_polar::{debug_perturbed_dipole_z};
+    use ferric_mp2::ff_polar::debug_perturbed_dipole_z;
     let mol = Molecule::load_xyz("../../testdata/molecules/nh3.xyz").unwrap();
     let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
     let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
-    let obs = PreparedBasis::new(&mol,&obs_bs).unwrap();
-    let dfbs = PreparedBasis::new(&mol,&dfbs_bs).unwrap();
+    let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+    let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op,&obs).unwrap();
-    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let scf_cfg = RhfConfig {
+        energy_conv: 1e-10,
+        ..Default::default()
+    };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: 0,
+        memory_budget_bytes: None,
+        ..Default::default()
+    };
     // nh3 C3v: z is the symmetry axis (the lone-pair direction). Probe field along z.
     eprintln!("nh3 raw μ_z(F_z) along the C3v axis:");
     eprintln!("  {:>10}  {:>16}  {:>16}", "F", "μz(+F)", "μz(-F)");
     for &h in &[2e-2_f64, 1e-2, 5e-3, 2e-3, 1e-3] {
-        let mp = debug_perturbed_dipole_z(&ctx,&mol,&obs,&dfbs,op,&bounds,&scf_cfg,&mp2_cfg, h);
-        let mm = debug_perturbed_dipole_z(&ctx,&mol,&obs,&dfbs,op,&bounds,&scf_cfg,&mp2_cfg,-h);
-        match (mp,mm) {
-            (Ok(p),Ok(m)) => eprintln!("  {:>10.0e}  {:>16.8}  {:>16.8}", h, p, m),
+        let mp =
+            debug_perturbed_dipole_z(&ctx, &mol, &obs, &dfbs, op, &bounds, &scf_cfg, &mp2_cfg, h);
+        let mm =
+            debug_perturbed_dipole_z(&ctx, &mol, &obs, &dfbs, op, &bounds, &scf_cfg, &mp2_cfg, -h);
+        match (mp, mm) {
+            (Ok(p), Ok(m)) => eprintln!("  {:>10.0e}  {:>16.8}  {:>16.8}", h, p, m),
             _ => eprintln!("  {:>10.0e}  ERR", h),
         }
     }
@@ -401,27 +615,62 @@ fn diag_nh3_raw_dipoles() {
 #[test]
 #[ignore]
 fn diag_relaxed_vs_unrelaxed_sweetspot() {
-    let cases: &[(&str,&str,f64)] = &[
-        ("water","../../testdata/molecules/water.xyz",9.64),
-        ("ch4","../../testdata/molecules/methane.xyz",17.27),
+    let cases: &[(&str, &str, f64)] = &[
+        ("water", "../../testdata/molecules/water.xyz", 9.64),
+        ("ch4", "../../testdata/molecules/methane.xyz", 17.27),
     ];
     let obs_bs = basis::bundled("aug-cc-pvdz").unwrap();
     let dfbs_bs = basis::bundled("cc-pvdz-ri").unwrap();
     let ctx = ParallelContext::default();
-    let scf_cfg = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-    let mp2_cfg = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
+    let scf_cfg = RhfConfig {
+        energy_conv: 1e-10,
+        ..Default::default()
+    };
+    let mp2_cfg = RiMp2Config {
+        frozen_core: 0,
+        memory_budget_bytes: None,
+        ..Default::default()
+    };
     let omegas = [0.0_f64, 0.3, 0.5, 0.7];
-    for (name,path,aref) in cases {
+    for (name, path, aref) in cases {
         let mol = Molecule::load_xyz(path).unwrap();
-        let obs = PreparedBasis::new(&mol,&obs_bs).unwrap();
-        let dfbs = PreparedBasis::new(&mol,&dfbs_bs).unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let op0 = Operator::coulomb();
-        let bounds = SchwarzBounds::compute(op0,&obs).unwrap();
+        let bounds = SchwarzBounds::compute(op0, &obs).unwrap();
         eprintln!("\n  {name} (ref {aref}):  Relaxed | Unrelaxed");
         for &w in &omegas {
-            let op = if w==0.0 { Operator::coulomb() } else { Operator::erfc(w) };
-            let r = mp2_polarizability_static(&ctx,&mol,&obs,&dfbs,op,&bounds,&scf_cfg,&mp2_cfg,1e-3,DensityMode::Relaxed).unwrap();
-            let u = mp2_polarizability_static(&ctx,&mol,&obs,&dfbs,op,&bounds,&scf_cfg,&mp2_cfg,1e-3,DensityMode::Unrelaxed).unwrap();
+            let op = if w == 0.0 {
+                Operator::coulomb()
+            } else {
+                Operator::erfc(w)
+            };
+            let r = mp2_polarizability_static(
+                &ctx,
+                &mol,
+                &obs,
+                &dfbs,
+                op,
+                &bounds,
+                &scf_cfg,
+                &mp2_cfg,
+                1e-3,
+                DensityMode::Relaxed,
+            )
+            .unwrap();
+            let u = mp2_polarizability_static(
+                &ctx,
+                &mol,
+                &obs,
+                &dfbs,
+                op,
+                &bounds,
+                &scf_cfg,
+                &mp2_cfg,
+                1e-3,
+                DensityMode::Unrelaxed,
+            )
+            .unwrap();
             eprintln!("    ω={:.1}:  R={:8.4}   U={:8.4}", w, r.iso, u.iso);
         }
     }

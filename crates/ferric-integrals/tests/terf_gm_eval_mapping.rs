@@ -38,7 +38,10 @@ fn terf_gm_eval_reproduces_terf_aux_bit_for_bit() {
             &mut worst,
         )
     };
-    assert!(compared > 0, "gate returned status {compared} (negative = error)");
+    assert!(
+        compared > 0,
+        "gate returned status {compared} (negative = error)"
+    );
     // Anti-inertness: the sweep must actually exercise the kernel. A mapping bug
     // that made every call fail would otherwise pass with compared == 0.
     assert!(

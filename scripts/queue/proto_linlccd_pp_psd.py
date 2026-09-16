@@ -77,6 +77,7 @@ Usage (PySCF may use several BLAS threads; long runs under ferric-limited):
       [--phase anchors|mutations|sweep|all] [--eps 1e-3,1e-4] \
       [--radii 1e6,12,10,8,6,4] [--cg] [--out scripts/queue/out/x.txt]
 """
+
 import argparse
 import os
 import sys
@@ -93,6 +94,7 @@ log = base.log
 
 
 # ---------------------------------------------------------------- setup
+
 
 def build_ri_all(mol, C_act, C_vloc, omega):
     """Same-kernel RI ingredients incl. the vv and oo 3-index blocks:
@@ -140,21 +142,35 @@ def setup(xyz, basis, omega):
     if w.min() <= 1e-10 * w.max():
         raise RuntimeError(f"RI metric near-singular: {w.min():.2e}")
     Vmsqrt = (u / np.sqrt(w)) @ u.T
-    Jg = np.einsum("iap,pq,jbq->iajb",
-                   Aov, (u / w) @ u.T, Aov, optimize=True)
-    Bvv = Avv.reshape(nv * nv, naux) @ Vmsqrt        # whitened, rows (a,c)
+    Jg = np.einsum("iap,pq,jbq->iajb", Aov, (u / w) @ u.T, Aov, optimize=True)
+    Bvv = Avv.reshape(nv * nv, naux) @ Vmsqrt  # whitened, rows (a,c)
     Boo = Aoo.reshape(no * no, naux) @ Vmsqrt
-    oo4 = (Boo @ Boo.T).reshape(no, no, no, no)      # (ik|jl), licensed hh
+    oo4 = (Boo @ Boo.T).reshape(no, no, no, no)  # (ik|jl), licensed hh
     occ_cen = base.boys_centroids(mol, C_act)
-    log(f"== {os.path.basename(xyz)} basis={basis} "
+    log(
+        f"== {os.path.basename(xyz)} basis={basis} "
         f"op={'coulomb' if omega is None else f'erfc{omega:g}'} "
-        f"no={no} nv={nv} naux={naux} nao={mol.nao} ({time.time()-t0:.1f}s)")
-    return dict(mol=mol, Jg=Jg, Foo=Foo, Fvv=Fvv, Avv=Avv, Bvv=Bvv, oo4=oo4,
-                V=V, aux_xyz=aux_xyz, occ_cen=occ_cen, no=no, nv=nv,
-                naux=naux)
+        f"no={no} nv={nv} naux={naux} nao={mol.nao} ({time.time() - t0:.1f}s)"
+    )
+    return dict(
+        mol=mol,
+        Jg=Jg,
+        Foo=Foo,
+        Fvv=Fvv,
+        Avv=Avv,
+        Bvv=Bvv,
+        oo4=oo4,
+        V=V,
+        aux_xyz=aux_xyz,
+        occ_cen=occ_cen,
+        no=no,
+        nv=nv,
+        naux=naux,
+    )
 
 
 # ------------------------------------------------- pattern + pair domains
+
 
 def eq8_mask(J, eps):
     if eps == 0.0:
@@ -170,18 +186,18 @@ def pattern_pairs(mask):
 
 def aux_domains(S, radius):
     """in_r[i, P] under the distance rule (same as ri_j_domain)."""
-    d = np.linalg.norm(S["aux_xyz"][None, :, :] - S["occ_cen"][:, None, :],
-                       axis=2)
+    d = np.linalg.norm(S["aux_xyz"][None, :, :] - S["occ_cen"][:, None, :], axis=2)
     return d <= radius
 
 
 # ------------------------------------------------- per-pair pp blocks
 
+
 def pp_block_licensed(S, da, db):
     """m_lic[(a,c),(b,d)] over a,c in da; b,d in db — full aux rows, ONE
     global whitening (exactly the current Rust Full-tier gather)."""
     nv = S["nv"]
-    ra = (da[:, None] * nv + da[None, :]).ravel()    # (a,c) flat ids
+    ra = (da[:, None] * nv + da[None, :]).ravel()  # (a,c) flat ids
     rb = (db[:, None] * nv + db[None, :]).ravel()
     return S["Bvv"][ra] @ S["Bvv"][rb].T
 
@@ -203,8 +219,7 @@ def pp_block_fitted(S, da, db, dom, mutate_m1=False):
 
 def as_operator(m, na, nb):
     """(a,c),(b,d) pairing -> operator O[(a,b),(c,d)] on vec(T[c,d])."""
-    return (m.reshape(na, na, nb, nb).transpose(0, 2, 1, 3)
-            .reshape(na * nb, na * nb))
+    return m.reshape(na, na, nb, nb).transpose(0, 2, 1, 3).reshape(na * nb, na * nb)
 
 
 def block_lambda_min(m, na, nb, pat=None, skip_full=False):
@@ -231,6 +246,7 @@ def block_lambda_min(m, na, nb, pat=None, skip_full=False):
 
 # ------------------------------------------------- dense masked solver
 
+
 def linlccd_matvec(S, t, mask, pp_apply):
     """A(t) = F(t) + hh(t) + pp(t), pattern-projected (dense layout)."""
     Foo, Fvv, oo4 = S["Foo"], S["Fvv"], S["oo4"]
@@ -247,13 +263,14 @@ def linlccd_matvec(S, t, mask, pp_apply):
 def make_pp_apply_global(S):
     """Licensed pp via one global operator GEMM (eps=0-capable)."""
     nv, no = S["nv"], S["no"]
-    M = S["Bvv"] @ S["Bvv"].T                        # (ac),(bd)
-    Mop = as_operator(M, nv, nv)                     # (ab),(cd)
+    M = S["Bvv"] @ S["Bvv"].T  # (ac),(bd)
+    Mop = as_operator(M, nv, nv)  # (ab),(cd)
 
     def apply(t):
         tt = t.transpose(1, 3, 0, 2).reshape(nv * nv, no * no)
         out = Mop @ tt
         return out.reshape(nv, nv, no, no).transpose(2, 0, 3, 1)
+
     return apply
 
 
@@ -266,10 +283,11 @@ def make_pp_apply_blocks(S, pairs, blocks):
     def apply(t):
         r = np.zeros_like(t)
         for (i, j, da, db, _), O in zip(pairs, blocks):
-            tb = t[i, :, j, :][np.ix_(da, db)]              # (|da|,|db|)
+            tb = t[i, :, j, :][np.ix_(da, db)]  # (|da|,|db|)
             out = (O @ tb.ravel()).reshape(len(da), len(db))
             r[i, :, j, :][np.ix_(da, db)] += out
         return r
+
     return apply
 
 
@@ -279,8 +297,12 @@ def solve_cg(S, mask, pp_apply, rtol=1e-11, maxiter=600):
     p^T A p <= 0 events (the in-solver indefiniteness witness)."""
     J, Foo, Fvv = S["Jg"], S["Foo"], S["Fvv"]
     fo, fv = np.diag(Foo), np.diag(Fvv)
-    D = (fv[None, :, None, None] + fv[None, None, None, :]
-         - fo[:, None, None, None] - fo[None, None, :, None])
+    D = (
+        fv[None, :, None, None]
+        + fv[None, None, None, :]
+        - fo[:, None, None, None]
+        - fo[None, None, :, None]
+    )
     assert D.min() > 0, "non-positive denominator: not a gapped system?"
     r = np.where(mask, -J, 0.0)
     bnorm = np.linalg.norm(r)
@@ -326,18 +348,17 @@ def direct_solve_energy(S, mask, pp_apply):
     for k, col in enumerate(idx):
         e[:] = 0.0
         e[col] = 1.0
-        A[:, k] = linlccd_matvec(
-            S, e.reshape(mask.shape), mask, pp_apply).ravel()[idx]
+        A[:, k] = linlccd_matvec(S, e.reshape(mask.shape), mask, pp_apply).ravel()[idx]
     rhs = -S["Jg"].ravel()[idx]
     tvec = np.linalg.solve(A, rhs)
     t = np.zeros(mask.size)
     t[idx] = tvec
     t = t.reshape(mask.shape)
-    return linlccd_energy(t, S["Jg"]), float(np.linalg.eigvalsh(
-        0.5 * (A + A.T))[0])
+    return linlccd_energy(t, S["Jg"]), float(np.linalg.eigvalsh(0.5 * (A + A.T))[0])
 
 
 # ------------------------------------------------- phases
+
 
 def phase_anchors(S):
     no, nv = S["no"], S["nv"]
@@ -360,21 +381,33 @@ def phase_anchors(S):
     ev = np.linalg.eigvalsh(0.5 * (Op + Op.T))
     scale = np.abs(np.diag(Op)).max()
     fo, fv = np.diag(S["Foo"]), np.diag(S["Fvv"])
-    dmin = float((fv[None, :, None, None] + fv[None, None, None, :]
-                  - fo[:, None, None, None] - fo[None, None, :, None]).min())
-    log(f"  A1 licensed global pp: lambda_min={ev[0]:+.3e} "
+    dmin = float(
+        (
+            fv[None, :, None, None]
+            + fv[None, None, None, :]
+            - fo[:, None, None, None]
+            - fo[None, None, :, None]
+        ).min()
+    )
+    log(
+        f"  A1 licensed global pp: lambda_min={ev[0]:+.3e} "
         f"lambda_max={ev[-1]:.3e} maxdiag={scale:.3e} asym={asym:.1e} "
-        f"rel_lmin={ev[0]/scale:+.3e} fock_floor={dmin:.3f}")
+        f"rel_lmin={ev[0] / scale:+.3e} fock_floor={dmin:.3f}"
+    )
     if ev[0] < -0.05 * dmin:
-        log("  A1 FAILED: licensed pp indefiniteness is at the scale of "
-            "the Fock floor — the CG license itself is at issue; STOP")
+        log(
+            "  A1 FAILED: licensed pp indefiniteness is at the scale of "
+            "the Fock floor — the CG license itself is at issue; STOP"
+        )
         ok = False
     elif ev[0] < -1e-10 * scale:
-        log(f"  A1 FINDING: licensed pp is slightly INDEFINITE "
-            f"(lambda_min={ev[0]:+.3e}, {abs(ev[0])/dmin:.2e} of the Fock "
+        log(
+            f"  A1 FINDING: licensed pp is slightly INDEFINITE "
+            f"(lambda_min={ev[0]:+.3e}, {abs(ev[0]) / dmin:.2e} of the Fock "
             f"floor) — the notebook-13 absolute-PSD claim is false for "
             f"this operator; operative license = Fock-floor margin; "
-            f"sweep proceeds to compare fitted vs licensed")
+            f"sweep proceeds to compare fitted vs licensed"
+        )
     else:
         log("  A1 PASSED (PSD at the numerical floor)")
     # A2: fitted at trivial domain == licensed (domain-independent of the
@@ -384,8 +417,10 @@ def phase_anchors(S):
     m_lic = pp_block_licensed(S, da, da)
     m_fit = pp_block_fitted(S, da, da, dom)
     dmax = float(np.abs(m_fit - m_lic).max())
-    log(f"  A2 fitted(trivial domain) vs licensed: max|dm|={dmax:.3e} "
-        f"{'PASSED' if dmax <= 1e-9 else 'FAILED'}")
+    log(
+        f"  A2 fitted(trivial domain) vs licensed: max|dm|={dmax:.3e} "
+        f"{'PASSED' if dmax <= 1e-9 else 'FAILED'}"
+    )
     ok &= dmax <= 1e-9
     # A3: CG vs direct solve, licensed pp, eps=0. The direct solve
     # materializes the (no.nv)^2-dim pattern operator — small systems only.
@@ -396,18 +431,22 @@ def phase_anchors(S):
         e_cg = linlccd_energy(t, S["Jg"])
         e_dir, lmin_a = direct_solve_energy(S, mask, pp)
         de = abs(e_cg - e_dir)
-        log(f"  A3 CG vs direct solve (eps=0, licensed): E_cg={e_cg:.10f} "
+        log(
+            f"  A3 CG vs direct solve (eps=0, licensed): E_cg={e_cg:.10f} "
             f"E_direct={e_dir:.10f} |dE|={de:.3e} cg={it} "
             f"lambda_min(P A P)={lmin_a:+.3e} "
-            f"{'PASSED' if de <= 1e-9 else 'FAILED'}")
+            f"{'PASSED' if de <= 1e-9 else 'FAILED'}"
+        )
         ok &= de <= 1e-9
     else:
-        log("  A3 skipped (system too large for direct solve; anchored on "
-            "the small system)")
+        log(
+            "  A3 skipped (system too large for direct solve; anchored on "
+            "the small system)"
+        )
     # A4: eps=0 trivial-radius fitted CG == licensed CG. At eps=0 every
     # pair has da = db = all virtuals and the trivial domain, so ONE block
     # is shared by every pair (memory: nv^4, guarded).
-    if nv ** 4 * 8 <= 1 << 30:
+    if nv**4 * 8 <= 1 << 30:
         mask = eq8_mask(S["Jg"], 0.0)
         pairs = pattern_pairs(mask)
         dom = np.arange(S["naux"])
@@ -421,9 +460,11 @@ def phase_anchors(S):
         tl, itl, _, _, _ = solve_cg(S, mask, ppl)
         e_lic = linlccd_energy(tl, S["Jg"])
         de = abs(e_fit - e_lic)
-        log(f"  A4 trivial-radius fitted vs licensed CG (eps=0): "
+        log(
+            f"  A4 trivial-radius fitted vs licensed CG (eps=0): "
             f"E_fit={e_fit:.10f} E_lic={e_lic:.10f} |dE|={de:.3e} "
-            f"{'PASSED' if de <= 1e-9 else 'FAILED'}")
+            f"{'PASSED' if de <= 1e-9 else 'FAILED'}"
+        )
         ok &= de <= 1e-9
     else:
         log("  A4 skipped at this size (anchored on the small system)")
@@ -440,8 +481,11 @@ def phase_mutations(S):
     m_lic = pp_block_licensed(S, da, da)
     m_fit = pp_block_fitted(S, da, da, dom, mutate_m1=True)
     dmax = float(np.abs(m_fit - m_lic).max())
-    v1 = "MUTATION-OK (A2 fails as required)" if dmax > 1e-6 else \
-         "MUTATION-BROKEN: gutted domain still matches!"
+    v1 = (
+        "MUTATION-OK (A2 fails as required)"
+        if dmax > 1e-6
+        else "MUTATION-BROKEN: gutted domain still matches!"
+    )
     log(f"  M1 {v1}  max|dm|={dmax:.3e}")
     # M2: injected indefiniteness must be SEEN by the eig detector
     m = pp_block_fitted(S, da, da, dom)
@@ -450,21 +494,29 @@ def phase_mutations(S):
     m2 = m - 2.0 * np.outer(Btld[:, k], Btld[:, k])
     lmin, _, _ = block_lambda_min(m2, nv, nv)
     scale = np.abs(np.diag(as_operator(m, nv, nv))).max()
-    v2 = "MUTATION-OK (indefiniteness detected)" if lmin < -1e-6 * scale \
+    v2 = (
+        "MUTATION-OK (indefiniteness detected)"
+        if lmin < -1e-6 * scale
         else "MUTATION-BROKEN: injected negative mode not seen!"
+    )
     log(f"  M2 {v2}  lambda_min={lmin:+.3e} (scale {scale:.3e})")
     if "BROKEN" in v1 or "BROKEN" in v2:
         raise SystemExit("mutation arm BROKEN; measurement not trusted")
 
 
-def phase_sweep(S, eps_list, radii, run_cg, out=None, tag="",
-                sample_full=0):
+def phase_sweep(S, eps_list, radii, run_cg, out=None, tag="", sample_full=0):
     """The measurement: per-pair fitted/licensed lambda_min vs radius/eps,
     Fock floor, CG behavior + energies."""
     no, nv = S["no"], S["nv"]
     fo, fv = np.diag(S["Foo"]), np.diag(S["Fvv"])
-    Dmin = float((fv[None, :, None, None] + fv[None, None, None, :]
-                  - fo[:, None, None, None] - fo[None, None, :, None]).min())
+    Dmin = float(
+        (
+            fv[None, :, None, None]
+            + fv[None, None, None, :]
+            - fo[:, None, None, None]
+            - fo[None, None, :, None]
+        ).min()
+    )
     log(f"  Fock denominator floor (min D) = {Dmin:.4f} Ha")
     e_lic0 = None
     if run_cg and (no * nv) ** 2 <= 2_000_000:
@@ -483,21 +535,22 @@ def phase_sweep(S, eps_list, radii, run_cg, out=None, tag="",
         if run_cg:
             plc = {}
             pl = []
-            for (_, _, da, db, _) in pairs:
+            for _, _, da, db, _ in pairs:
                 key = (da.tobytes(), db.tobytes())
                 if key not in plc:
-                    plc[key] = as_operator(pp_block_licensed(S, da, db),
-                                           len(da), len(db))
+                    plc[key] = as_operator(
+                        pp_block_licensed(S, da, db), len(da), len(db)
+                    )
                 pl.append(plc[key])
             tl, lic_it, rrl, convl, nindl = solve_cg(
-                S, mask, make_pp_apply_blocks(S, pairs, pl))
+                S, mask, make_pp_apply_blocks(S, pairs, pl)
+            )
             e_lic = linlccd_energy(tl, S["Jg"])
             del pl, plc
         # stratified pair sample for the full-block eighs on large systems
         # (0 = exhaustive); pattern-restricted eigs stay exhaustive always
         if sample_full and sample_full < len(pairs):
-            sel = set(np.linspace(0, len(pairs) - 1, sample_full,
-                                  dtype=int).tolist())
+            sel = set(np.linspace(0, len(pairs) - 1, sample_full, dtype=int).tolist())
         else:
             sel = set(range(len(pairs)))
         # licensed pattern-restricted lambda_min per pair — radius-free,
@@ -508,8 +561,9 @@ def phase_sweep(S, eps_list, radii, run_cg, out=None, tag="",
             key = (da.tobytes(), db.tobytes(), pat.tobytes())
             if key not in lic_cache:
                 ml = pp_block_licensed(S, da, db)
-                _, lpl, _ = block_lambda_min(ml, len(da), len(db), pat,
-                                             skip_full=px not in sel)
+                _, lpl, _ = block_lambda_min(
+                    ml, len(da), len(db), pat, skip_full=px not in sel
+                )
                 lic_cache[key] = lpl
             lmin_lic_pat.append(lic_cache[key])
         del lic_cache
@@ -527,12 +581,12 @@ def phase_sweep(S, eps_list, radii, run_cg, out=None, tag="",
                 if len(dom) == 0:
                     raise RuntimeError(f"empty aux domain pair ({i},{j})")
                 dsizes.append(len(dom))
-                key = (dom.tobytes(), da.tobytes(), db.tobytes(),
-                       pat.tobytes())
+                key = (dom.tobytes(), da.tobytes(), db.tobytes(), pat.tobytes())
                 if key not in fit_cache:
                     m = pp_block_fitted(S, da, db, dom)
                     lf, lp, asym = block_lambda_min(
-                        m, len(da), len(db), pat, skip_full=px not in sel)
+                        m, len(da), len(db), pat, skip_full=px not in sel
+                    )
                     O = as_operator(m, len(da), len(db)) if run_cg else None
                     fit_cache[key] = (lf, lp, asym, O)
                 lf, lp, asym, O = fit_cache[key]
@@ -546,26 +600,31 @@ def phase_sweep(S, eps_list, radii, run_cg, out=None, tag="",
             lmins_pat = np.array(lmins_pat)
             n_full = int(np.isfinite(lmins_full).sum())
             nneg = int((lmins_pat < -1e-10).sum())
-            row = (f"{tag} eps={eps:g} r={radius:g} pairs={len(pairs)} "
-                   f"dom(mean/max)={np.mean(dsizes):.0f}/{max(dsizes)} "
-                   f"keep={keep:.4f} "
-                   f"lmin_fit(full[{n_full}]/pat)="
-                   f"{np.nanmin(lmins_full):+.3e}/"
-                   f"{lmins_pat.min():+.3e} "
-                   f"lmin_lic(pat)={min(lmin_lic_pat):+.3e} "
-                   f"nneg={nneg}/{len(pairs)} "
-                   f"asym_max={max(asyms):.1e} Dmin={Dmin:.3f}")
+            row = (
+                f"{tag} eps={eps:g} r={radius:g} pairs={len(pairs)} "
+                f"dom(mean/max)={np.mean(dsizes):.0f}/{max(dsizes)} "
+                f"keep={keep:.4f} "
+                f"lmin_fit(full[{n_full}]/pat)="
+                f"{np.nanmin(lmins_full):+.3e}/"
+                f"{lmins_pat.min():+.3e} "
+                f"lmin_lic(pat)={min(lmin_lic_pat):+.3e} "
+                f"nneg={nneg}/{len(pairs)} "
+                f"asym_max={max(asyms):.1e} Dmin={Dmin:.3f}"
+            )
             if run_cg:
                 tf, itf, rrf, convf, nindf = solve_cg(
-                    S, mask, make_pp_apply_blocks(S, pairs, blocks))
+                    S, mask, make_pp_apply_blocks(S, pairs, blocks)
+                )
                 e_fit = linlccd_energy(tf, S["Jg"])
-                row += (f" | cg_fit={itf}{'' if convf else '!DIV'}"
-                        f" pAp_neg={nindf} E_fit={e_fit:.10f}"
-                        f" dE(fit-lic)={e_fit-e_lic:+.3e}")
+                row += (
+                    f" | cg_fit={itf}{'' if convf else '!DIV'}"
+                    f" pAp_neg={nindf} E_fit={e_fit:.10f}"
+                    f" dE(fit-lic)={e_fit - e_lic:+.3e}"
+                )
                 if e_lic0 is not None:
-                    row += f" dE_eps(lic-lic0)={e_lic-e_lic0:+.3e}"
+                    row += f" dE_eps(lic-lic0)={e_lic - e_lic0:+.3e}"
                 row += f" cg_lic={lic_it}"
-            row += f" ({time.time()-t0:.1f}s)"
+            row += f" ({time.time() - t0:.1f}s)"
             log("  " + row)
             rows.append(row)
             if out:
@@ -579,31 +638,40 @@ def main():
     ap.add_argument("--xyz", required=True)
     ap.add_argument("--basis", default="6-31g")
     ap.add_argument("--omega", type=float, default=None)
-    ap.add_argument("--phase", default="all",
-                    choices=["anchors", "mutations", "sweep", "all"])
+    ap.add_argument(
+        "--phase", default="all", choices=["anchors", "mutations", "sweep", "all"]
+    )
     ap.add_argument("--eps", default="1e-3,1e-4")
     ap.add_argument("--radii", default="1e6,12,10,8,6,4")
-    ap.add_argument("--cg", action="store_true",
-                    help="also run the masked CG + energies per row "
-                         "(skipped for large systems by default)")
-    ap.add_argument("--sample-full", type=int, default=0,
-                    help="full-block eighs only on N stratified pairs "
-                         "(0 = exhaustive); pattern-restricted eigs are "
-                         "always exhaustive")
+    ap.add_argument(
+        "--cg",
+        action="store_true",
+        help="also run the masked CG + energies per row "
+        "(skipped for large systems by default)",
+    )
+    ap.add_argument(
+        "--sample-full",
+        type=int,
+        default=0,
+        help="full-block eighs only on N stratified pairs "
+        "(0 = exhaustive); pattern-restricted eigs are "
+        "always exhaustive",
+    )
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
     S = setup(a.xyz, a.basis, a.omega)
     eps_list = [float(x) for x in a.eps.split(",") if x]
     radii = [float(x) for x in a.radii.split(",") if x]
-    tag = (f"{os.path.basename(a.xyz).removesuffix('.xyz')} "
-           f"{'coul' if a.omega is None else f'erfc{a.omega:g}'}")
+    tag = (
+        f"{os.path.basename(a.xyz).removesuffix('.xyz')} "
+        f"{'coul' if a.omega is None else f'erfc{a.omega:g}'}"
+    )
     if a.phase in ("anchors", "all"):
         phase_anchors(S)
     if a.phase in ("mutations", "all"):
         phase_mutations(S)
     if a.phase in ("sweep", "all"):
-        phase_sweep(S, eps_list, radii, a.cg, a.out, tag,
-                    sample_full=a.sample_full)
+        phase_sweep(S, eps_list, radii, a.cg, a.out, tag, sample_full=a.sample_full)
 
 
 if __name__ == "__main__":

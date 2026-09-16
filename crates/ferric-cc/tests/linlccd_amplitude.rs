@@ -41,10 +41,19 @@ fn setup(xyz: &str) -> Setup {
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
     )
     .unwrap();
-    Setup { mol, obs, obs_bs, dfbs, rhf }
+    Setup {
+        mol,
+        obs,
+        obs_bs,
+        dfbs,
+        rhf,
+    }
 }
 
 fn canonical(su: &Setup, variant: LadderVariant, fc: usize) -> f64 {
@@ -54,7 +63,12 @@ fn canonical(su: &Setup, variant: LadderVariant, fc: usize) -> f64 {
         &su.dfbs,
         Operator::coulomb(),
         &su.rhf,
-        &CcConfig { frozen_core: fc, energy_conv: 1e-11, max_iter: 200, ..Default::default() },
+        &CcConfig {
+            frozen_core: fc,
+            energy_conv: 1e-11,
+            max_iter: 200,
+            ..Default::default()
+        },
         variant,
     )
     .unwrap()
@@ -68,10 +82,25 @@ fn canonical(su: &Setup, variant: LadderVariant, fc: usize) -> f64 {
 #[test]
 fn eps_zero_matches_canonical_spin_orbital_all_variants() {
     let su = setup("water.xyz");
-    let cfg = AmplitudeLinLccdConfig { eps: 0.0, frozen_core: 1, ..Default::default() };
-    for variant in [LadderVariant::DriversOnly, LadderVariant::Hh, LadderVariant::Full] {
+    let cfg = AmplitudeLinLccdConfig {
+        eps: 0.0,
+        frozen_core: 1,
+        ..Default::default()
+    };
+    for variant in [
+        LadderVariant::DriversOnly,
+        LadderVariant::Hh,
+        LadderVariant::Full,
+    ] {
         let r = amplitude_linlccd(
-            &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg, variant,
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            Operator::coulomb(),
+            &su.rhf,
+            &cfg,
+            variant,
         )
         .unwrap();
         let e_can = canonical(&su, variant, 1);
@@ -81,7 +110,10 @@ fn eps_zero_matches_canonical_spin_orbital_all_variants() {
             r.e_corr, e_can, r.cg_iterations
         );
         assert!(r.cg_converged);
-        assert!(de.abs() < 5e-9, "{variant:?} eps=0 anchor FAILED: dE={de:+.3e}");
+        assert!(
+            de.abs() < 5e-9,
+            "{variant:?} eps=0 anchor FAILED: dE={de:+.3e}"
+        );
     }
 }
 
@@ -97,7 +129,11 @@ fn mutated_virtual_space_fails_the_anchor() {
         n_valence: vvhv.n_valence,
         n_hard: vvhv.n_hard - 1,
     };
-    let cfg = AmplitudeLinLccdConfig { eps: 0.0, frozen_core: 1, ..Default::default() };
+    let cfg = AmplitudeLinLccdConfig {
+        eps: 0.0,
+        frozen_core: 1,
+        ..Default::default()
+    };
     let r = amplitude_linlccd_with_virtuals(
         &su.mol,
         &su.obs,
@@ -121,15 +157,35 @@ fn mutated_virtual_space_fails_the_anchor() {
 #[test]
 fn masked_sweep_is_one_sided_hh() {
     let su = setup("water.xyz");
-    let full = AmplitudeLinLccdConfig { eps: 0.0, frozen_core: 1, ..Default::default() };
+    let full = AmplitudeLinLccdConfig {
+        eps: 0.0,
+        frozen_core: 1,
+        ..Default::default()
+    };
     let r0 = amplitude_linlccd(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &full,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &full,
         LadderVariant::Hh,
     )
     .unwrap();
-    let cfg = AmplitudeLinLccdConfig { eps: 1e-3, frozen_core: 1, ..Default::default() };
+    let cfg = AmplitudeLinLccdConfig {
+        eps: 1e-3,
+        frozen_core: 1,
+        ..Default::default()
+    };
     let r = amplitude_linlccd(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
         LadderVariant::Hh,
     )
     .unwrap();

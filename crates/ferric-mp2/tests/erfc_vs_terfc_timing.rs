@@ -66,7 +66,12 @@ fn setup(name: &str) -> Sys {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ferric_core::parallel::ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-    Sys { mol, obs, dfbs, rhf }
+    Sys {
+        mol,
+        obs,
+        dfbs,
+        rhf,
+    }
 }
 
 /// Time one ri_mp2 call, warm pass first. Returns (wall_s, cpu_s, energy).
@@ -103,8 +108,10 @@ fn erfc_vs_terfc_ri_mp2() {
 
     // erfc at the dissertation-default omega; terfc at a matched-ish r0.
     let (w_e, c_e, e_e) = timed(&s, Operator::erfc(0.222234));
-    eprintln!("erfc(w=0.222234)   wall {w_e:8.3}s  cpu {c_e:8.3}s  cpu/wall {:5.2}  E {e_e:.10}",
-              c_e / w_e.max(1e-9));
+    eprintln!(
+        "erfc(w=0.222234)   wall {w_e:8.3}s  cpu {c_e:8.3}s  cpu/wall {:5.2}  E {e_e:.10}",
+        c_e / w_e.max(1e-9)
+    );
 
     for r0 in [1.0_f64, 2.0] {
         let (w_t, c_t, e_t) = timed(&s, Operator::terfc(r0));

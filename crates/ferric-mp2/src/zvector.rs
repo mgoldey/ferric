@@ -13,8 +13,8 @@ use ferric_integrals::operator::Operator;
 use ferric_scf::diis::Diis;
 use ferric_scf::engine_pool::EnginePool;
 use ferric_scf::rhf::{build_jk, build_jk_with_pool};
-use ferric_scf::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::ScfResult;
 use ndarray::{Array2, Array3};
 
 /// `FERRIC_ZVEC_TRACE` descriptor: Z-vector CPHF residual trace (env-only debug
@@ -66,7 +66,12 @@ pub fn solve_zvector(
     budget_bytes: usize,
 ) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
     let orb = inter.orbital_space();
-    let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = orb;
+    let OrbitalSpace {
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+    } = orb;
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
     let nmo = c.ncols();
@@ -210,7 +215,12 @@ pub(crate) fn build_lagrangian(
     orb: &OrbitalSpace,
     b_full: &Array3<f64>,
 ) -> Array2<f64> {
-    let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = *orb;
+    let OrbitalSpace {
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+    } = *orb;
     let nov = nocc * nvir;
     let naux = b_full.shape()[0];
     let mut l = Array2::zeros((nvir, nocc));
@@ -243,7 +253,9 @@ pub(crate) fn build_lagrangian(
     // The orbital gradient g_{ck} = -4*F_{ck} - 2*grad_ck.
     // The Lagrangian integral part = grad_ck (same raw sum, no extra factor).
     let eri = |p: usize, q: usize, r: usize, s: usize| -> f64 {
-        (0..naux).map(|aux| b_full[(aux, p, q)] * b_full[(aux, r, s)]).sum()
+        (0..naux)
+            .map(|aux| b_full[(aux, p, q)] * b_full[(aux, r, s)])
+            .sum()
     };
 
     for c_idx in 0..nvir {
@@ -260,7 +272,8 @@ pub(crate) fn build_lagrangian(
                     for b in 0..nvir {
                         let b_mo = nocc_total + b;
                         let t_kj_ab = t2[(k * nvir + a) * nov + j * nvir + b];
-                        grad_ck += t_kj_ab * (2.0 * eri(c_mo, a_mo, j_mo, b_mo) - eri(c_mo, b_mo, j_mo, a_mo));
+                        grad_ck += t_kj_ab
+                            * (2.0 * eri(c_mo, a_mo, j_mo, b_mo) - eri(c_mo, b_mo, j_mo, a_mo));
                     }
                 }
             }
@@ -273,7 +286,8 @@ pub(crate) fn build_lagrangian(
                     for b in 0..nvir {
                         let b_mo = nocc_total + b;
                         let t_ik_ab = t2[(i * nvir + a) * nov + k * nvir + b];
-                        grad_ck += t_ik_ab * (2.0 * eri(i_mo, a_mo, c_mo, b_mo) - eri(i_mo, b_mo, c_mo, a_mo));
+                        grad_ck += t_ik_ab
+                            * (2.0 * eri(i_mo, a_mo, c_mo, b_mo) - eri(i_mo, b_mo, c_mo, a_mo));
                     }
                 }
             }
@@ -286,7 +300,8 @@ pub(crate) fn build_lagrangian(
                     for b in 0..nvir {
                         let b_mo = nocc_total + b;
                         let t_ij_cb = t2[(i * nvir + c_idx) * nov + j * nvir + b];
-                        grad_ck -= t_ij_cb * (2.0 * eri(i_mo, k_mo, j_mo, b_mo) - eri(i_mo, b_mo, j_mo, k_mo));
+                        grad_ck -= t_ij_cb
+                            * (2.0 * eri(i_mo, k_mo, j_mo, b_mo) - eri(i_mo, b_mo, j_mo, k_mo));
                     }
                 }
             }
@@ -299,7 +314,8 @@ pub(crate) fn build_lagrangian(
                     for a in 0..nvir {
                         let a_mo = nocc_total + a;
                         let t_ij_ac = t2[(i * nvir + a) * nov + j * nvir + c_idx];
-                        grad_ck -= t_ij_ac * (2.0 * eri(i_mo, a_mo, j_mo, k_mo) - eri(i_mo, k_mo, j_mo, a_mo));
+                        grad_ck -= t_ij_ac
+                            * (2.0 * eri(i_mo, a_mo, j_mo, k_mo) - eri(i_mo, k_mo, j_mo, a_mo));
                     }
                 }
             }
@@ -379,7 +395,12 @@ pub(crate) fn build_imat_ri(
     b_full: &Array3<f64>,
     orb: &OrbitalSpace,
 ) -> Array2<f64> {
-    let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = *orb;
+    let OrbitalSpace {
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+    } = *orb;
     let naux = b_full.shape()[0];
     let nmo = b_full.shape()[1];
     let mut imat = Array2::zeros((nmo, nmo));
@@ -442,7 +463,12 @@ pub(crate) fn compute_az_product(
     pool: &EnginePool,
     ooc_budget: usize,
 ) -> Result<Array2<f64>, FerricError> {
-    let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = *orb;
+    let OrbitalSpace {
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+    } = *orb;
     let n = c.nrows();
 
     let mut dz = Array2::zeros((n, n));
@@ -452,7 +478,8 @@ pub(crate) fn compute_az_product(
             let i_mo = first_occ + i;
             for mu in 0..n {
                 for nu in 0..n {
-                    let val = z[(a, i)] * (c[(mu, a_mo)] * c[(nu, i_mo)] + c[(mu, i_mo)] * c[(nu, a_mo)]);
+                    let val =
+                        z[(a, i)] * (c[(mu, a_mo)] * c[(nu, i_mo)] + c[(mu, i_mo)] * c[(nu, a_mo)]);
                     dz[(mu, nu)] += val;
                 }
             }
@@ -464,7 +491,9 @@ pub(crate) fn compute_az_product(
     let mut kz = Array2::zeros((n, n));
     let ctx = ferric_core::parallel::ParallelContext::default();
     let band_bytes = ferric_scf::reduce::resolve_band_bytes(ooc_budget);
-    build_jk_with_pool(&ctx, prep, bounds, 1e-12, &dz, &mut jz, &mut kz, pool, band_bytes)?;
+    build_jk_with_pool(
+        &ctx, prep, bounds, 1e-12, &dz, &mut jz, &mut kz, pool, band_bytes,
+    )?;
 
     // The A*z product in AO: A_AO = 4*J(D^z) - K(D^z) - K(D^z)^T
     let az_ao = 4.0 * &jz - &kz - &kz.t();
@@ -491,7 +520,12 @@ pub fn build_relaxed_density_ao(
     z: &Array2<f64>,
     orb: &OrbitalSpace,
 ) -> Array2<f64> {
-    let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = *orb;
+    let OrbitalSpace {
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+    } = *orb;
     let nmo = c.ncols();
 
     let mut p_mo = Array2::zeros((nmo, nmo));
@@ -538,7 +572,12 @@ pub fn build_relaxed_w_ao(
     l: &Array2<f64>,
     orb: &OrbitalSpace,
 ) -> Array2<f64> {
-    let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = *orb;
+    let OrbitalSpace {
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+    } = *orb;
     let nmo = c.ncols();
 
     let mut w_mo = Array2::zeros((nmo, nmo));
@@ -610,13 +649,30 @@ mod tests {
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
-        let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
+        let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default())
+            .unwrap();
 
         let orb = inter.orbital_space();
-        let OrbitalSpace { nocc, nvir, nocc_total, first_occ } = orb;
+        let OrbitalSpace {
+            nocc,
+            nvir,
+            nocc_total,
+            first_occ,
+        } = orb;
         let c = rhf.mos_r();
         let nao = c.nrows();
         let nmo = c.ncols();
@@ -649,8 +705,12 @@ mod tests {
             (0..naux).map(|p| b_ao[(p, mu, la)] * b_ao[(p, r, s)]).sum()
         };
 
-        let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
-        let c_vir = c.slice(ndarray::s![.., nocc_total..nocc_total + nvir]).to_owned();
+        let c_occ = c
+            .slice(ndarray::s![.., first_occ..first_occ + nocc])
+            .to_owned();
+        let c_vir = c
+            .slice(ndarray::s![.., nocc_total..nocc_total + nvir])
+            .to_owned();
 
         // Fully back-transformed AO 2-PDM `dm2buf`, matching PySCF part_dm2 →
         // dm2buf exactly (mp2_grad.py lines 58-90, no r↔s symmetrization needed for
@@ -668,10 +728,14 @@ mod tests {
                         let t_ab = t2[(i * nvir + a) * nov + j * nvir + b];
                         let t_ba = t2[(i * nvir + b) * nov + j * nvir + a];
                         let w = 4.0 * t_ab - 2.0 * t_ba;
-                        if w == 0.0 { continue; }
+                        if w == 0.0 {
+                            continue;
+                        }
                         for mu in 0..nao {
                             let cma = w * c_vir[(mu, a)];
-                            if cma == 0.0 { continue; }
+                            if cma == 0.0 {
+                                continue;
+                            }
                             for nu in 0..nao {
                                 part_dm2[((i * nao + mu) * nao + nu) * nocc + j] +=
                                     cma * c_vir[(nu, b)];
@@ -738,11 +802,21 @@ mod tests {
         eprintln!("=== RI Imat vs conventional (RI-factorized) reference ===");
         eprintln!("  max column diff = {max_diff:.3e}");
         // Spot-print a few
-        for &(q, col) in &[(0usize, first_occ), (nocc_total, first_occ), (0usize, nocc_total)] {
-            eprintln!("  Imat[{q},{col}]: ri={:+.8} ref={:+.8}", imat_ri[(q, col)], imat_mo_ref[(q, col)]);
+        for &(q, col) in &[
+            (0usize, first_occ),
+            (nocc_total, first_occ),
+            (0usize, nocc_total),
+        ] {
+            eprintln!(
+                "  Imat[{q},{col}]: ri={:+.8} ref={:+.8}",
+                imat_ri[(q, col)],
+                imat_mo_ref[(q, col)]
+            );
         }
-        assert!(max_diff < 1e-7,
-            "RI Imat disagrees with conventional reference: max diff = {max_diff:.3e}");
+        assert!(
+            max_diff < 1e-7,
+            "RI Imat disagrees with conventional reference: max diff = {max_diff:.3e}"
+        );
     }
 
     #[test]
@@ -752,17 +826,39 @@ mod tests {
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
-        let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
+        let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default())
+            .unwrap();
 
-        let (z, _l) = solve_zvector(&mol, &obs, &dfbs, Operator::coulomb(), &bounds, &rhf, &inter, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (z, _l) = solve_zvector(
+            &mol,
+            &obs,
+            &dfbs,
+            Operator::coulomb(),
+            &bounds,
+            &rhf,
+            &inter,
+            ferric_core::memory::resolve_budget_bytes(None),
+        )
+        .unwrap();
 
         // Z should be finite and small
         for a in 0..inter.nvir {
             for i in 0..inter.nocc {
-                assert!(z[(a,i)].is_finite(), "z[{},{}] not finite", a, i);
+                assert!(z[(a, i)].is_finite(), "z[{},{}] not finite", a, i);
             }
         }
     }
@@ -774,21 +870,53 @@ mod tests {
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
-        let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
+        let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default())
+            .unwrap();
 
-        let (z, _l) = solve_zvector(&mol, &obs, &dfbs, Operator::coulomb(), &bounds, &rhf, &inter, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (z, _l) = solve_zvector(
+            &mol,
+            &obs,
+            &dfbs,
+            Operator::coulomb(),
+            &bounds,
+            &rhf,
+            &inter,
+            ferric_core::memory::resolve_budget_bytes(None),
+        )
+        .unwrap();
         let p_ao = build_relaxed_density_ao(
-            rhf.mos_r(), &inter.p_oo, &inter.p_vv, &z, &inter.orbital_space(),
+            rhf.mos_r(),
+            &inter.p_oo,
+            &inter.p_vv,
+            &z,
+            &inter.orbital_space(),
         );
 
         let n = p_ao.nrows();
         for i in 0..n {
             for j in 0..n {
-                assert!((p_ao[(i,j)] - p_ao[(j,i)]).abs() < 1e-12,
-                    "P_relax_AO not symmetric at ({},{}): {} vs {}", i, j, p_ao[(i,j)], p_ao[(j,i)]);
+                assert!(
+                    (p_ao[(i, j)] - p_ao[(j, i)]).abs() < 1e-12,
+                    "P_relax_AO not symmetric at ({},{}): {} vs {}",
+                    i,
+                    j,
+                    p_ao[(i, j)],
+                    p_ao[(j, i)]
+                );
             }
         }
     }
@@ -800,12 +928,34 @@ mod tests {
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
-        let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default()).unwrap();
+        let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &RiMp2Config::default())
+            .unwrap();
 
-        let (z, l) = solve_zvector(&mol, &obs, &dfbs, Operator::coulomb(), &bounds, &rhf, &inter, ferric_core::memory::resolve_budget_bytes(None)).unwrap();
+        let (z, l) = solve_zvector(
+            &mol,
+            &obs,
+            &dfbs,
+            Operator::coulomb(),
+            &bounds,
+            &rhf,
+            &inter,
+            ferric_core::memory::resolve_budget_bytes(None),
+        )
+        .unwrap();
 
         let nmo = rhf.mos_r().ncols();
         let f_mo = rhf.mos_r().t().dot(rhf.fock_r()).dot(rhf.mos_r());
@@ -834,9 +984,7 @@ mod tests {
             }
         }
 
-        let w_ao = build_relaxed_w_ao(
-            rhf.mos_r(), &f_mo, &p_relax_mo, &l, &inter.orbital_space(),
-        );
+        let w_ao = build_relaxed_w_ao(rhf.mos_r(), &f_mo, &p_relax_mo, &l, &inter.orbital_space());
 
         let n = w_ao.nrows();
         for i in 0..n {
@@ -844,8 +992,14 @@ mod tests {
                 // W_relax has residual asymmetry from the ov/vo blocks of F*P_relax.
                 // This is a known limitation of the current W construction;
                 // the gradient is still correct because W is contracted with symmetric dS/dR.
-                assert!((w_ao[(i,j)] - w_ao[(j,i)]).abs() < 0.1,
-                    "W_relax_AO asymmetry too large at ({},{}): {:.6e} vs {:.6e}", i, j, w_ao[(i,j)], w_ao[(j,i)]);
+                assert!(
+                    (w_ao[(i, j)] - w_ao[(j, i)]).abs() < 0.1,
+                    "W_relax_AO asymmetry too large at ({},{}): {:.6e} vs {:.6e}",
+                    i,
+                    j,
+                    w_ao[(i, j)],
+                    w_ao[(j, i)]
+                );
             }
         }
     }

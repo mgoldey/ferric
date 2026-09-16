@@ -33,10 +33,11 @@ fn terf_dir() -> Option<String> {
     }
 }
 
-
 fn run(body: &str, name: &str, tdir: &str) -> String {
     let root = workspace_root();
-    let path = root.join("target").join(format!("r0_sweep_test_{name}.toml"));
+    let path = root
+        .join("target")
+        .join(format!("r0_sweep_test_{name}.toml"));
     std::fs::write(&path, body).expect("write temp toml");
     let out = Command::new(env!("CARGO_BIN_EXE_ferric-cli"))
         .arg(&path)
@@ -88,12 +89,12 @@ fn r0_sweep_matches_separate_single_r0_runs() {
         return;
     };
 
-    let swept = corr_energies(&run(
-        &toml_for("r0_sweep = [0.75, 1.0]"),
-        "sweep",
-        &tdir,
-    ));
-    assert_eq!(swept.len(), 2, "expected one result block per r0, got {swept:?}");
+    let swept = corr_energies(&run(&toml_for("r0_sweep = [0.75, 1.0]"), "sweep", &tdir));
+    assert_eq!(
+        swept.len(),
+        2,
+        "expected one result block per r0, got {swept:?}"
+    );
 
     let a = corr_energies(&run(&toml_for("r0 = 0.75"), "single_a", &tdir));
     let b = corr_energies(&run(&toml_for("r0 = 1.0"), "single_b", &tdir));
@@ -129,7 +130,9 @@ fn r0_sweep_rejects_erf_and_empty() {
         ("empty", toml_for("r0_sweep = []"), "empty"),
         ("negative", toml_for("r0_sweep = [0.5, -1.0]"), "> 0"),
     ] {
-        let path = root.join("target").join(format!("r0_sweep_bad_{name}.toml"));
+        let path = root
+            .join("target")
+            .join(format!("r0_sweep_bad_{name}.toml"));
         std::fs::write(&path, &body).unwrap();
         let out = Command::new(env!("CARGO_BIN_EXE_ferric-cli"))
             .arg(&path)

@@ -45,7 +45,11 @@ fn chain4() -> Array2<f64> {
     array![
         [0.0, 0.0, 0.0],
         [1.5, 0.0, 0.0],
-        [1.5 + 1.4 * (109.5_f64.to_radians()).cos(), 1.4 * (109.5_f64.to_radians()).sin(), 0.0],
+        [
+            1.5 + 1.4 * (109.5_f64.to_radians()).cos(),
+            1.4 * (109.5_f64.to_radians()).sin(),
+            0.0
+        ],
         [
             1.5 + 1.4 * (109.5_f64.to_radians()).cos() + 1.4 * (109.5_f64.to_radians()).cos(),
             1.4 * (109.5_f64.to_radians()).sin() - 1.4 * (109.5_f64.to_radians()).sin() * 0.4,
@@ -55,7 +59,13 @@ fn chain4() -> Array2<f64> {
 }
 
 fn lj_zero(n: usize) -> Vec<LjParams> {
-    vec![LjParams { sigma: 0.0, epsilon: 0.0 }; n]
+    vec![
+        LjParams {
+            sigma: 0.0,
+            epsilon: 0.0
+        };
+        n
+    ]
 }
 
 // ---------------------------------------------------------------------
@@ -66,7 +76,12 @@ fn lj_zero(n: usize) -> Vec<LjParams> {
 fn bond_energy_hand_computed_and_gradient_vs_fd() {
     // Two atoms 1.6 Bohr apart, r0 = 1.5 Bohr, k = 0.3 Ha/Bohr^2.
     // E = k (r - r0)^2 = 0.3 * (0.1)^2 = 0.003
-    let bonds = vec![Bond { i: 0, j: 1, k: 0.3, r0: 1.5 }];
+    let bonds = vec![Bond {
+        i: 0,
+        j: 1,
+        k: 0.3,
+        r0: 1.5,
+    }];
     let top = MmTopology::new(vec![0.0, 0.0], lj_zero(2), bonds, vec![], vec![]).unwrap();
     let coords = array![[0.0, 0.0, 0.0], [1.6, 0.0, 0.0]];
     let e = energy(&top, &coords).unwrap();
@@ -90,13 +105,24 @@ fn angle_energy_hand_computed_and_gradient_vs_fd() {
     // i at (1,0,0), j at origin, k at (0,1,0): angle i-j-k = 90 deg exactly.
     // theta0 = 100 deg, k_theta = 0.1 Ha/rad^2.
     let theta0 = 100.0_f64.to_radians();
-    let angles = vec![Angle { i: 0, j: 1, k: 2, k_theta: 0.1, theta0 }];
+    let angles = vec![Angle {
+        i: 0,
+        j: 1,
+        k: 2,
+        k_theta: 0.1,
+        theta0,
+    }];
     let top = MmTopology::new(vec![0.0; 3], lj_zero(3), vec![], angles, vec![]).unwrap();
     let coords = array![[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
     let e = energy(&top, &coords).unwrap();
     let dtheta = std::f64::consts::FRAC_PI_2 - theta0;
     let expected = 0.1 * dtheta * dtheta;
-    assert!((e.angle - expected).abs() < 1e-14, "got {} expected {}", e.angle, expected);
+    assert!(
+        (e.angle - expected).abs() < 1e-14,
+        "got {} expected {}",
+        e.angle,
+        expected
+    );
 
     assert_gradient_matches_fd(&top, &coords, "angle (right angle)");
 
@@ -119,7 +145,15 @@ fn torsion_energy_hand_computed_and_gradient_vs_fd() {
     let periodicity = 2;
     let k_phi = 0.05;
     let phase = 0.0_f64;
-    let torsions = vec![Torsion { i: 0, j: 1, k: 2, l: 3, periodicity, k_phi, phase }];
+    let torsions = vec![Torsion {
+        i: 0,
+        j: 1,
+        k: 2,
+        l: 3,
+        periodicity,
+        k_phi,
+        phase,
+    }];
     let top = MmTopology::new(vec![0.0; 4], lj_zero(4), vec![], vec![], torsions).unwrap();
 
     // Non-planar quartet: standard staggered-ish dihedral construction.
@@ -127,14 +161,19 @@ fn torsion_energy_hand_computed_and_gradient_vs_fd() {
     // about the j-k axis (the +z axis here), so phi is exactly known.
     let phi_target = 60.0_f64.to_radians();
     let coords = array![
-        [1.0, 0.0, -1.0], // i
-        [0.0, 0.0, 0.0],  // j
-        [0.0, 0.0, 1.0],  // k (j-k axis is +z)
+        [1.0, 0.0, -1.0],                          // i
+        [0.0, 0.0, 0.0],                           // j
+        [0.0, 0.0, 1.0],                           // k (j-k axis is +z)
         [phi_target.cos(), phi_target.sin(), 2.0], // l, rotated phi_target about z from i's projection
     ];
     let e = energy(&top, &coords).unwrap();
     let expected = k_phi * (1.0 + (periodicity as f64 * phi_target - phase).cos());
-    assert!((e.torsion - expected).abs() < 1e-8, "got {} expected {}", e.torsion, expected);
+    assert!(
+        (e.torsion - expected).abs() < 1e-8,
+        "got {} expected {}",
+        e.torsion,
+        expected
+    );
 
     assert_gradient_matches_fd(&top, &coords, "torsion (generic, phi=60deg)");
 
@@ -147,10 +186,20 @@ fn torsion_energy_hand_computed_and_gradient_vs_fd() {
     // not the m_sq/n_sq/kj_norm fallback guard in dihedral_and_gradient --
     // see collinear_valence_angle_torsion_gradient_is_finite_and_zero below
     // for a test that actually triggers that guard.
-    let coords_0 = array![[1.0, 0.0, -1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 2.0]];
+    let coords_0 = array![
+        [1.0, 0.0, -1.0],
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 2.0]
+    ];
     assert_gradient_matches_fd(&top, &coords_0, "torsion (phi ~ 0 deg)");
 
-    let coords_180 = array![[1.0, 0.0, -1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [-1.0, 0.0, 2.0]];
+    let coords_180 = array![
+        [1.0, 0.0, -1.0],
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [-1.0, 0.0, 2.0]
+    ];
     assert_gradient_matches_fd(&top, &coords_180, "torsion (phi ~ 180 deg)");
 }
 
@@ -164,13 +213,29 @@ fn torsion_energy_hand_computed_and_gradient_vs_fd() {
 /// clearly nonzero there; only the ACOS argument is at a branch point).
 #[test]
 fn collinear_valence_angle_torsion_gradient_is_finite_and_zero() {
-    let torsions = vec![Torsion { i: 0, j: 1, k: 2, l: 3, periodicity: 2, k_phi: 0.05, phase: 0.0 }];
+    let torsions = vec![Torsion {
+        i: 0,
+        j: 1,
+        k: 2,
+        l: 3,
+        periodicity: 2,
+        k_phi: 0.05,
+        phase: 0.0,
+    }];
     let top = MmTopology::new(vec![0.0; 4], lj_zero(4), vec![], vec![], torsions).unwrap();
     // i=(0,0,-1), j=(0,0,0), k=(0,0,1): exactly collinear on the z axis.
-    let coords = array![[0.0, 0.0, -1.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 2.0]];
+    let coords = array![
+        [0.0, 0.0, -1.0],
+        [0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [1.0, 0.0, 2.0]
+    ];
 
     let e = energy(&top, &coords).unwrap();
-    assert!(e.total.is_finite(), "energy must not be NaN/inf at a linear i-j-k valence angle");
+    assert!(
+        e.total.is_finite(),
+        "energy must not be NaN/inf at a linear i-j-k valence angle"
+    );
 
     let (e2, g) = gradient(&top, &coords).unwrap();
     assert_eq!(e2.total, e.total);
@@ -180,7 +245,10 @@ fn collinear_valence_angle_torsion_gradient_is_finite_and_zero() {
             assert!(v.is_finite(), "gradient[{row},{c}] = {v} is not finite");
             // Documented fallback: the guard leaves grad_i/j/k/l at their
             // zero-initialized values when m_sq/n_sq/kj_norm underflow.
-            assert_eq!(v, 0.0, "gradient[{row},{c}] should be exactly the zero fallback, got {v}");
+            assert_eq!(
+                v, 0.0,
+                "gradient[{row},{c}] should be exactly the zero fallback, got {v}"
+            );
         }
     }
 }
@@ -193,7 +261,13 @@ fn collinear_valence_angle_torsion_gradient_is_finite_and_zero() {
 fn nonbonded_hand_computed_and_gradient_vs_fd() {
     // Two unbonded atoms 3.0 Bohr apart, sigma=2.5, eps=0.002 each (mixed:
     // sigma_ij=2.5, eps_ij=0.002), charges +0.3/-0.3.
-    let lj = vec![LjParams { sigma: 2.5, epsilon: 0.002 }; 2];
+    let lj = vec![
+        LjParams {
+            sigma: 2.5,
+            epsilon: 0.002
+        };
+        2
+    ];
     let top = MmTopology::new(vec![0.3, -0.3], lj, vec![], vec![], vec![]).unwrap();
     let coords = array![[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]];
     let e = energy(&top, &coords).unwrap();
@@ -202,8 +276,18 @@ fn nonbonded_hand_computed_and_gradient_vs_fd() {
     let sr12 = sr6 * sr6;
     let e_lj_expected = 4.0 * 0.002 * (sr12 - sr6);
     let e_coul_expected = 0.3 * -0.3 / 3.0;
-    assert!((e.lj - e_lj_expected).abs() < 1e-14, "got {} expected {}", e.lj, e_lj_expected);
-    assert!((e.coulomb - e_coul_expected).abs() < 1e-14, "got {} expected {}", e.coulomb, e_coul_expected);
+    assert!(
+        (e.lj - e_lj_expected).abs() < 1e-14,
+        "got {} expected {}",
+        e.lj,
+        e_lj_expected
+    );
+    assert!(
+        (e.coulomb - e_coul_expected).abs() < 1e-14,
+        "got {} expected {}",
+        e.coulomb,
+        e_coul_expected
+    );
 
     assert_gradient_matches_fd(&top, &coords, "nonbonded (unbonded pair)");
 }
@@ -212,9 +296,28 @@ fn nonbonded_hand_computed_and_gradient_vs_fd() {
 fn bonded_chain_1_2_and_1_3_are_excluded_from_nonbonded() {
     // 3-atom bonded chain 0-1-2: pair (0,2) is 1-3, must be EXCLUDED (zero
     // LJ/Coulomb contribution), and (0,1)/(1,2) are 1-2 (also excluded).
-    let lj = vec![LjParams { sigma: 2.5, epsilon: 0.01 }; 3];
+    let lj = vec![
+        LjParams {
+            sigma: 2.5,
+            epsilon: 0.01
+        };
+        3
+    ];
     let charges = vec![0.5, 0.5, 0.5];
-    let bonds = vec![Bond { i: 0, j: 1, k: 0.1, r0: 1.5 }, Bond { i: 1, j: 2, k: 0.1, r0: 1.5 }];
+    let bonds = vec![
+        Bond {
+            i: 0,
+            j: 1,
+            k: 0.1,
+            r0: 1.5,
+        },
+        Bond {
+            i: 1,
+            j: 2,
+            k: 0.1,
+            r0: 1.5,
+        },
+    ];
     let top = MmTopology::new(charges, lj, bonds, vec![], vec![]).unwrap();
 
     assert!(top.exclusions().contains(&(0, 1)));
@@ -232,25 +335,59 @@ fn bonded_chain_1_2_and_1_3_are_excluded_from_nonbonded() {
 fn four_atom_chain_1_4_pair_is_scaled_and_mutation_sensitive() {
     // 4-atom chain 0-1-2-3: pair (0,3) is 1-4, scaled by scale_lj_14 /
     // scale_coul_14 (defaults 0.5, 1/1.2), NOT excluded.
-    let lj = vec![LjParams { sigma: 2.5, epsilon: 0.01 }; 4];
+    let lj = vec![
+        LjParams {
+            sigma: 2.5,
+            epsilon: 0.01
+        };
+        4
+    ];
     let charges = vec![0.4, 0.1, -0.1, 0.4];
     let bonds = vec![
-        Bond { i: 0, j: 1, k: 0.1, r0: 1.5 },
-        Bond { i: 1, j: 2, k: 0.1, r0: 1.5 },
-        Bond { i: 2, j: 3, k: 0.1, r0: 1.5 },
+        Bond {
+            i: 0,
+            j: 1,
+            k: 0.1,
+            r0: 1.5,
+        },
+        Bond {
+            i: 1,
+            j: 2,
+            k: 0.1,
+            r0: 1.5,
+        },
+        Bond {
+            i: 2,
+            j: 3,
+            k: 0.1,
+            r0: 1.5,
+        },
     ];
     let top = MmTopology::new(charges.clone(), lj.clone(), bonds.clone(), vec![], vec![]).unwrap();
     assert!(top.pairs14().contains(&(0, 3)));
     assert!(!top.exclusions().contains(&(0, 3)));
 
-    let coords = array![[0.0, 0.0, 0.0], [1.5, 0.0, 0.0], [3.0, 0.0, 0.0], [4.5, 0.0, 0.3]];
+    let coords = array![
+        [0.0, 0.0, 0.0],
+        [1.5, 0.0, 0.0],
+        [3.0, 0.0, 0.0],
+        [4.5, 0.0, 0.3]
+    ];
     let e_default = energy(&top, &coords).unwrap();
-    assert!(e_default.lj != 0.0, "1-4 LJ must be nonzero (scaled, not excluded)");
-    assert!(e_default.coulomb != 0.0, "1-4 Coulomb must be nonzero (scaled, not excluded)");
+    assert!(
+        e_default.lj != 0.0,
+        "1-4 LJ must be nonzero (scaled, not excluded)"
+    );
+    assert!(
+        e_default.coulomb != 0.0,
+        "1-4 Coulomb must be nonzero (scaled, not excluded)"
+    );
 
     // Mutation check: dropping the 1-4 scale (setting scale_lj_14 = 1) must
     // change the LJ energy, since scale_lj_14 default (0.5) != 1.
-    let top_unscaled = MmTopology::new(charges, lj, bonds, vec![], vec![]).unwrap().with_scales(1.0, 1.0 / 1.2);
+    let top_unscaled = MmTopology::new(charges, lj, bonds, vec![], vec![])
+        .unwrap()
+        .with_scales(1.0, 1.0 / 1.2);
     let e_unscaled = energy(&top_unscaled, &coords).unwrap();
     assert!(
         (e_default.lj - e_unscaled.lj).abs() > 1e-8,
@@ -283,8 +420,14 @@ fn empty_topology_gradient_is_exactly_zero() {
 
 #[test]
 fn qm_mm_lj_hand_computed_and_gradient_vs_fd() {
-    let lj_qm = vec![LjParams { sigma: 3.0, epsilon: 0.001 }];
-    let lj_mm = vec![LjParams { sigma: 2.0, epsilon: 0.004 }];
+    let lj_qm = vec![LjParams {
+        sigma: 3.0,
+        epsilon: 0.001,
+    }];
+    let lj_mm = vec![LjParams {
+        sigma: 2.0,
+        epsilon: 0.004,
+    }];
     let coords_qm = array![[0.0, 0.0, 0.0]];
     let coords_mm = array![[4.0, 0.0, 0.0]];
 
@@ -305,7 +448,11 @@ fn qm_mm_lj_hand_computed_and_gradient_vs_fd() {
         let mut minus = coords_qm.clone();
         minus[(0, c)] -= h;
         let fd = (f(&plus, &coords_mm) - f(&minus, &coords_mm)) / (2.0 * h);
-        assert!((fd - g_qm[(0, c)]).abs() < 1e-9, "qm axis {c}: fd={fd} analytic={}", g_qm[(0, c)]);
+        assert!(
+            (fd - g_qm[(0, c)]).abs() < 1e-9,
+            "qm axis {c}: fd={fd} analytic={}",
+            g_qm[(0, c)]
+        );
     }
     for c in 0..3 {
         let mut plus = coords_mm.clone();
@@ -313,7 +460,11 @@ fn qm_mm_lj_hand_computed_and_gradient_vs_fd() {
         let mut minus = coords_mm.clone();
         minus[(0, c)] -= h;
         let fd = (f(&coords_qm, &plus) - f(&coords_qm, &minus)) / (2.0 * h);
-        assert!((fd - g_mm[(0, c)]).abs() < 1e-9, "mm axis {c}: fd={fd} analytic={}", g_mm[(0, c)]);
+        assert!(
+            (fd - g_mm[(0, c)]).abs() < 1e-9,
+            "mm axis {c}: fd={fd} analytic={}",
+            g_mm[(0, c)]
+        );
     }
 }
 
@@ -331,15 +482,50 @@ fn combined_topology_all_terms_gradient_vs_fd() {
     // stretch with k=0.35" — a real but uninteresting numerical-analysis
     // question, not a formula bug. (r23 in chain4() is ~1.3812 Bohr.)
     let bonds = vec![
-        Bond { i: 0, j: 1, k: 0.35, r0: 1.5 },
-        Bond { i: 1, j: 2, k: 0.35, r0: 1.4 },
-        Bond { i: 2, j: 3, k: 0.35, r0: 1.3812139257671727 },
+        Bond {
+            i: 0,
+            j: 1,
+            k: 0.35,
+            r0: 1.5,
+        },
+        Bond {
+            i: 1,
+            j: 2,
+            k: 0.35,
+            r0: 1.4,
+        },
+        Bond {
+            i: 2,
+            j: 3,
+            k: 0.35,
+            r0: 1.3812139257671727,
+        },
     ];
     let angles = vec![
-        Angle { i: 0, j: 1, k: 2, k_theta: 0.08, theta0: 109.5_f64.to_radians() },
-        Angle { i: 1, j: 2, k: 3, k_theta: 0.08, theta0: 109.5_f64.to_radians() },
+        Angle {
+            i: 0,
+            j: 1,
+            k: 2,
+            k_theta: 0.08,
+            theta0: 109.5_f64.to_radians(),
+        },
+        Angle {
+            i: 1,
+            j: 2,
+            k: 3,
+            k_theta: 0.08,
+            theta0: 109.5_f64.to_radians(),
+        },
     ];
-    let torsions = vec![Torsion { i: 0, j: 1, k: 2, l: 3, periodicity: 3, k_phi: 0.02, phase: 0.0 }];
+    let torsions = vec![Torsion {
+        i: 0,
+        j: 1,
+        k: 2,
+        l: 3,
+        periodicity: 3,
+        k_phi: 0.02,
+        phase: 0.0,
+    }];
     // sigma is deliberately small (not the 3.0 Bohr used by the isolated
     // nonbonded test) because chain4()'s atoms sit at bonded-range distances
     // (1.3-1.5 Bohr neighbor spacing); a sigma comparable to those distances
@@ -348,10 +534,15 @@ fn combined_topology_all_terms_gradient_vs_fd() {
     // h=1e-5 for reasons that have nothing to do with gradient correctness
     // (the LJ term's own correctness is already covered, at an appropriate
     // separation, by nonbonded_hand_computed_and_gradient_vs_fd above).
-    let lj = vec![LjParams { sigma: 0.6, epsilon: 0.001 }; 4];
+    let lj = vec![
+        LjParams {
+            sigma: 0.6,
+            epsilon: 0.001
+        };
+        4
+    ];
     let charges = vec![0.2, -0.1, -0.1, 0.2];
     let top = MmTopology::new(charges, lj, bonds, angles, torsions).unwrap();
     let coords = chain4();
     assert_gradient_matches_fd(&top, &coords, "combined 4-atom chain");
 }
-

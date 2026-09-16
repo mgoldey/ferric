@@ -66,7 +66,8 @@ H  0.0000 -0.7572 -0.4692
     let mut d = Array2::<f64>::zeros((nbf, nbf));
     for i in 0..nbf {
         for j in 0..nbf {
-            d[(i, j)] = 0.1 * ((i * 7 + j * 13) % 11) as f64 + 0.01 * (i as f64) - 0.003 * (j as f64);
+            d[(i, j)] =
+                0.1 * ((i * 7 + j * 13) % 11) as f64 + 0.01 * (i as f64) - 0.003 * (j as f64);
         }
     }
     // esp_at_points assumes a symmetric density (it sweeps the lower triangle
@@ -168,7 +169,9 @@ fn cosx_a_anchor_fails_under_sign_mutation() {
         max_dev > 1e-6,
         "sign mutation did NOT break the anchor (max dev {max_dev:.3e}); the anchor is vacuous"
     );
-    println!("cosx_a mutation proof: wrong sign gives max deviation {max_dev:.3e} (anchor is live)");
+    println!(
+        "cosx_a mutation proof: wrong sign gives max deviation {max_dev:.3e} (anchor is live)"
+    );
 }
 
 /// Stage 2 anchor (i), written BEFORE the sweep: the screened A-matrix must
@@ -188,7 +191,9 @@ fn cosx_a_zero_threshold_matches_unscreened() {
             "point {i}: zero threshold dropped pairs ({} of {})",
             screened.pairs_kept, screened.pairs_total
         );
-        let dev = (&unscreened.a - &screened.a).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
+        let dev = (&unscreened.a - &screened.a)
+            .mapv(f64::abs)
+            .fold(0.0_f64, |m, &v| m.max(v));
         assert!(
             dev < 1e-14,
             "point {i}: zero-threshold screened A differs from unscreened by {dev:.3e}"
@@ -225,13 +230,19 @@ fn cosx_screen_actually_drops_pairs() {
     // Near the first water (Bohr), off every nucleus.
     let probe = [0.5, 0.2, 0.3];
 
-    let unscreened = a_matrix_at_point(&prep, &probe, None, CosxScreen::none()).expect("unscreened");
-    let screened = a_matrix_at_point(&prep, &probe, Some(&bounds), CosxScreen::at(t)).expect("screened");
+    let unscreened =
+        a_matrix_at_point(&prep, &probe, None, CosxScreen::none()).expect("unscreened");
+    let screened =
+        a_matrix_at_point(&prep, &probe, Some(&bounds), CosxScreen::at(t)).expect("screened");
 
     // Pin the pair-count convention so the intramolecular arithmetic below is
     // checked, not assumed: upper triangle including the diagonal.
     let nsh = bounds.nshells();
-    assert_eq!(screened.pairs_total, nsh * (nsh + 1) / 2, "pair-count convention changed");
+    assert_eq!(
+        screened.pairs_total,
+        nsh * (nsh + 1) / 2,
+        "pair-count convention changed"
+    );
     let nsh_per_water = nsh / 2;
     let intramolecular = 2 * (nsh_per_water * (nsh_per_water + 1) / 2);
 
@@ -245,7 +256,9 @@ fn cosx_screen_actually_drops_pairs() {
         "screen dropped an intramolecular pair: kept {} < {intramolecular}",
         screened.pairs_kept
     );
-    let dev = (&unscreened.a - &screened.a).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
+    let dev = (&unscreened.a - &screened.a)
+        .mapv(f64::abs)
+        .fold(0.0_f64, |m, &v| m.max(v));
     assert!(
         dev < t,
         "screen at {t:e} dropped pairs that mattered: max|A_unscr - A_scr| = {dev:.3e}"

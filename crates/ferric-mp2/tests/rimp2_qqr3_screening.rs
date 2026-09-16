@@ -41,7 +41,12 @@ fn setup(name: &str) -> Sys {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ferric_core::parallel::ParallelContext::default();
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-    Sys { mol, obs, dfbs, rhf }
+    Sys {
+        mol,
+        obs,
+        dfbs,
+        rhf,
+    }
 }
 
 fn energy(s: &Sys, op: Operator, thresh: Option<f64>) -> f64 {

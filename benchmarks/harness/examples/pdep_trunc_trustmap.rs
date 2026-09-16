@@ -77,8 +77,8 @@ fn geometry(name: &str) -> (&'static str, bool) {
 
 struct Row {
     thresh: f64,
-    m_kept: usize,    // retained PDEP eigenpotentials at this threshold
-    naux: usize,      // total aux functions (= M at thresh 0)
+    m_kept: usize, // retained PDEP eigenpotentials at this threshold
+    naux: usize,   // total aux functions (= M at thresh 0)
     e_rpa: f64,
     ip: f64,
     ea: f64,
@@ -120,14 +120,24 @@ fn main() {
         .expect("neutral RHF");
 
     // Cation / anion UHF, neutral-MO seeded (per gw100 best practice).
-    let uhf_cfg = UhfConfig { max_iter: 200, ..Default::default() };
+    let uhf_cfg = UhfConfig {
+        max_iter: 200,
+        ..Default::default()
+    };
     let seed = rhf_n.mos_alpha.clone();
 
     let obs_c = PreparedBasis::new(&cation, &obs_bs).unwrap();
     let dfbs_c = PreparedBasis::new(&cation, &dfbs_bs).unwrap();
     let bounds_c = SchwarzBounds::compute(op, &obs_c).unwrap();
-    let uhf_c = solve_uhf_with_guess(&ctx, &cation, &obs_c, &bounds_c, &uhf_cfg, Some((&seed, &seed)))
-        .expect("cation UHF");
+    let uhf_c = solve_uhf_with_guess(
+        &ctx,
+        &cation,
+        &obs_c,
+        &bounds_c,
+        &uhf_cfg,
+        Some((&seed, &seed)),
+    )
+    .expect("cation UHF");
 
     // Only solve the anion when it is (at least weakly) BOUND. For electropositive
     // species (Na4, K2, …) the extra electron is unbound: in a finite Gaussian
@@ -137,8 +147,15 @@ fn main() {
         let obs_a = PreparedBasis::new(&anion, &obs_bs).unwrap();
         let dfbs_a = PreparedBasis::new(&anion, &dfbs_bs).unwrap();
         let bounds_a = SchwarzBounds::compute(op, &obs_a).unwrap();
-        let uhf_a = solve_uhf_with_guess(&ctx, &anion, &obs_a, &bounds_a, &uhf_cfg, Some((&seed, &seed)))
-            .expect("anion UHF");
+        let uhf_a = solve_uhf_with_guess(
+            &ctx,
+            &anion,
+            &obs_a,
+            &bounds_a,
+            &uhf_cfg,
+            Some((&seed, &seed)),
+        )
+        .expect("anion UHF");
         Some((obs_a, dfbs_a, uhf_a))
     } else {
         eprintln!("[spike] {mol_name}: anion unbound (electropositive) — EA skipped");
@@ -191,7 +208,8 @@ fn main() {
         // EA only when the anion is bound (skipped for electropositive species).
         let ea = match anion_ctx.as_ref() {
             Some((obs_a, dfbs_a, uhf_a)) => {
-                let rpa_a = run_u_pdep_rpa(&anion, obs_a, dfbs_a, op, uhf_a, &cfg).expect("rpa anion");
+                let rpa_a =
+                    run_u_pdep_rpa(&anion, obs_a, dfbs_a, op, uhf_a, &cfg).expect("rpa anion");
                 (e_n - (uhf_a.energy + rpa_a.e_rpa)) * HA_TO_EV
             }
             None => f64::NAN,
@@ -209,7 +227,13 @@ fn main() {
         // ω=0 (lowest node) iso = Tr/3. Molecular C6 = (3/π) Σ_k w_k ᾱ(iω_k)²
         // (the DOSD-comparable c6_molecular_iso definition).
         let mol_alpha = molecular_dynamic_polarizability_pdep(
-            &rpa_n, &neutral, &obs_n, &dfbs_n, &rhf_n, op, cfg.memory_budget_bytes,
+            &rpa_n,
+            &neutral,
+            &obs_n,
+            &dfbs_n,
+            &rhf_n,
+            op,
+            cfg.memory_budget_bytes,
         )
         .expect("molecular pdep alpha");
         let a0 = &mol_alpha[0];
@@ -234,7 +258,12 @@ fn main() {
         let gw_methods: &[GwMethod] = if skip_gw {
             &[]
         } else {
-            &[GwMethod::G0W0, GwMethod::EvGw0, GwMethod::EvGw, GwMethod::Cohsex]
+            &[
+                GwMethod::G0W0,
+                GwMethod::EvGw0,
+                GwMethod::EvGw,
+                GwMethod::Cohsex,
+            ]
         };
         for (mi, &method) in gw_methods.iter().enumerate() {
             let gcfg = GwConfig {
@@ -245,9 +274,15 @@ fn main() {
                 ..Default::default()
             };
             if let Ok(res) = run_gw(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &cfg, &gcfg, None) {
-                let homo_qp = res.mo_indices.iter().position(|&i| i == homo_abs)
+                let homo_qp = res
+                    .mo_indices
+                    .iter()
+                    .position(|&i| i == homo_abs)
                     .map(|loc| res.eps_qp[loc]);
-                let lumo_qp = res.mo_indices.iter().position(|&i| i == lumo_abs)
+                let lumo_qp = res
+                    .mo_indices
+                    .iter()
+                    .position(|&i| i == lumo_abs)
                     .map(|loc| res.eps_qp[loc]);
                 if let Some(h) = homo_qp {
                     gw_ip[mi] = -h * HA_TO_EV;
@@ -267,7 +302,12 @@ fn main() {
             m_kept: rpa_n.n_eigenpotentials,
             naux: dfbs_n.nbasis(),
             e_rpa: rpa_n.e_rpa,
-            ip, ea, alpha, c6, gw_ip, gw_gap,
+            ip,
+            ea,
+            alpha,
+            c6,
+            gw_ip,
+            gw_gap,
         });
     }
 
@@ -287,8 +327,12 @@ fn main() {
         let d_ea = r.ea - r0.ea;
         let d_a = 100.0 * (r.alpha - r0.alpha) / r0.alpha;
         let d_c6 = 100.0 * (r.c6 - r0.c6) / r0.c6;
-        let frac = format!("{}/{} ({:.0}%)", r.m_kept, r.naux,
-                           100.0 * r.m_kept as f64 / r.naux as f64);
+        let frac = format!(
+            "{}/{} ({:.0}%)",
+            r.m_kept,
+            r.naux,
+            100.0 * r.m_kept as f64 / r.naux as f64
+        );
         println!(
             "{:>8.0e} {:>13} | {:>12.2e} {:>10.4} {:>10.4} {:>10.3} {:>10.3}",
             r.thresh, frac, d_e, d_ip, d_ea, d_a, d_c6
@@ -302,7 +346,10 @@ fn main() {
     // GW-family IP vs trunc_thresh (signed error vs thresh=0).
     let labels = ["G0W0", "evGW0", "evGW", "COHSEX"];
     println!("\n# GW-family HOMO IP (eV) vs trunc_thresh — signed error vs thresh=0");
-    println!("{:>8} | {:>10} {:>10} {:>10} {:>10}", "thresh", labels[0], labels[1], labels[2], labels[3]);
+    println!(
+        "{:>8} | {:>10} {:>10} {:>10} {:>10}",
+        "thresh", labels[0], labels[1], labels[2], labels[3]
+    );
     println!("{:-<58}", "");
     for r in &rows {
         print!("{:>8.0e} |", r.thresh);

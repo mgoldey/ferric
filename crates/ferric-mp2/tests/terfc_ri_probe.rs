@@ -4,9 +4,9 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::screening::SchwarzBounds;
 use ferric_mp2::rimp2::{ri_mp2_spin_components, RiMp2Config};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
+use ferric_scf::screening::SchwarzBounds;
 
 const A2B: f64 = 1.889_725_988_6;
 
@@ -31,7 +31,10 @@ fn probe_terfc_overshoot_vs_aux_basis() {
         &obs,
         opc,
         &bounds,
-        &RhfConfig { energy_conv: 1e-9, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-9,
+            ..Default::default()
+        },
     )
     .unwrap();
     let cfg = RiMp2Config::default();
@@ -49,8 +52,7 @@ fn probe_terfc_overshoot_vs_aux_basis() {
             }
         };
         let e = |op: Operator| {
-            ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &cfg)
-                .map(|r| r.0.e_total)
+            ri_mp2_spin_components(&mol, &obs, &dfbs, op, &rhf, &cfg).map(|r| r.0.e_total)
         };
         let ec = e(opc).unwrap();
         eprint!("aux={auxname:14} naux={:5} E_coul={ec:.8}", dfbs.nbasis());

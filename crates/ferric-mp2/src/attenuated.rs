@@ -180,8 +180,11 @@ pub struct AttenuatedMp2Result {
 
 impl std::fmt::Display for AttenuatedMp2Result {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "att-MP2 total: {:.10} Ha (corr: {:.10})",
-            self.total_energy, self.mp2_corr)
+        write!(
+            f,
+            "att-MP2 total: {:.10} Ha (corr: {:.10})",
+            self.total_energy, self.mp2_corr
+        )
     }
 }
 
@@ -216,7 +219,11 @@ pub fn attenuated_ri_mp2_long_range(
     config: &AttenuatedMp2Config,
 ) -> Result<AttenuatedMp2Result, FerricError> {
     let op = Operator::erf(config.omega);
-    let ri_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes, ..Default::default() };
+    let ri_config = RiMp2Config {
+        frozen_core: config.frozen_core,
+        memory_budget_bytes: config.memory_budget_bytes,
+        ..Default::default()
+    };
     let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?;
     let scaled_corr = config.scaling * sc.e_total;
     Ok(AttenuatedMp2Result {
@@ -243,7 +250,11 @@ pub fn attenuated_ri_mp2(
     let sc = if let Some(thresh) = config.screen_thresh {
         attenuated_spin_components_screened(mol, obs, dfbs, op, rhf, config.frozen_core, thresh)?
     } else {
-        let ri_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes, ..Default::default() };
+        let ri_config = RiMp2Config {
+            frozen_core: config.frozen_core,
+            memory_budget_bytes: config.memory_budget_bytes,
+            ..Default::default()
+        };
         ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?.0
     };
     let scaled_corr = config.scaling * sc.e_total;
@@ -279,7 +290,9 @@ fn attenuated_spin_components_screened(
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
 
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
     // 2-center metric (P|Q) and its inverse-square-root. The metric itself is
@@ -297,9 +310,7 @@ fn attenuated_spin_components_screened(
     );
 
     let eri3_mo = transform_3center_ov(&eri3_ao, &c_occ, &c_vir);
-    let eri3_flat = eri3_mo
-        .into_shape_with_order((naux, nocc * nvir))
-        .unwrap();
+    let eri3_flat = eri3_mo.into_shape_with_order((naux, nocc * nvir)).unwrap();
     // Match the canonical path (rimp2.rs, `b_flat = v_inv_sqrt.dot(&flat)`),
     // which wraps this exact dressing GEMM. NOTE this is a CONSISTENCY fix,
     // not a bug fix: `attenuated_ri_mp2` is only ever called from serial
@@ -333,7 +344,11 @@ pub fn rs_mp2_decomposition(
     let sr = erfc_attenuated_ri_mp2(mol, obs, dfbs, rhf, config)?.mp2_corr;
     let lr = attenuated_ri_mp2_long_range(mol, obs, dfbs, rhf, config)?.mp2_corr;
     let op = Operator::coulomb();
-    let ri_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes, ..Default::default() };
+    let ri_config = RiMp2Config {
+        frozen_core: config.frozen_core,
+        memory_budget_bytes: config.memory_budget_bytes,
+        ..Default::default()
+    };
     let (sc, _) = ri_mp2_spin_components(mol, obs, dfbs, op, rhf, &ri_config)?;
     Ok((sr, lr, sc.e_total))
 }
@@ -356,9 +371,16 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(
             &ferric_core::parallel::ParallelContext::default(),
-            &mol, &obs, op, &bounds,
-            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
-        ).unwrap();
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         (mol, obs, dfbs, rhf)
@@ -368,14 +390,25 @@ mod tests {
     fn test_attenuated_mp2_smaller_than_full() {
         let (mol, obs, dfbs, rhf) = setup_h2();
         let full = crate::rimp2::ri_mp2(
-            &mol, &obs, &dfbs, Operator::coulomb(), &rhf,
+            &mol,
+            &obs,
+            &dfbs,
+            Operator::coulomb(),
+            &rhf,
             &crate::rimp2::RiMp2Config::default(),
-        ).unwrap();
-        let att = attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &AttenuatedMp2Config::default()).unwrap();
-        eprintln!("Full RI-MP2 corr: {:.10}, Attenuated corr: {:.10}", full.mp2_corr, att.mp2_corr);
+        )
+        .unwrap();
+        let att =
+            attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &AttenuatedMp2Config::default()).unwrap();
+        eprintln!(
+            "Full RI-MP2 corr: {:.10}, Attenuated corr: {:.10}",
+            full.mp2_corr, att.mp2_corr
+        );
         assert!(
             att.mp2_corr.abs() < full.mp2_corr.abs(),
-            "attenuated |{}| should be < full |{}|", att.mp2_corr, full.mp2_corr
+            "attenuated |{}| should be < full |{}|",
+            att.mp2_corr,
+            full.mp2_corr
         );
     }
 
@@ -383,18 +416,30 @@ mod tests {
     fn test_attenuated_mp2_small_omega_approaches_full() {
         let (mol, obs, dfbs, rhf) = setup_h2();
         let full = crate::rimp2::ri_mp2(
-            &mol, &obs, &dfbs, Operator::coulomb(), &rhf,
+            &mol,
+            &obs,
+            &dfbs,
+            Operator::coulomb(),
+            &rhf,
             &crate::rimp2::RiMp2Config::default(),
-        ).unwrap();
-        let config = AttenuatedMp2Config { omega: 0.01, ..Default::default() };
+        )
+        .unwrap();
+        let config = AttenuatedMp2Config {
+            omega: 0.01,
+            ..Default::default()
+        };
         let att = attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &config).unwrap();
         eprintln!(
             "Full RI-MP2 corr: {:.10}, Small-omega attenuated corr: {:.10}, diff: {:.2e}",
-            full.mp2_corr, att.mp2_corr, (att.mp2_corr - full.mp2_corr).abs()
+            full.mp2_corr,
+            att.mp2_corr,
+            (att.mp2_corr - full.mp2_corr).abs()
         );
         assert!(
             (att.mp2_corr - full.mp2_corr).abs() < 1e-4,
-            "small omega attenuated ({}) should approach full ({})", att.mp2_corr, full.mp2_corr
+            "small omega attenuated ({}) should approach full ({})",
+            att.mp2_corr,
+            full.mp2_corr
         );
     }
 
@@ -409,7 +454,10 @@ mod tests {
         // This is exactly why rs_mp2_lr_rpa (ferric-rpa) uses the Δ-form
         // E_MP2[full] + (dRPA[erf] − dMP2[erf]) instead of a naive sum.
         let (mol, obs, dfbs, rhf) = setup_h2();
-        let config = AttenuatedMp2Config { omega: 0.5, ..Default::default() };
+        let config = AttenuatedMp2Config {
+            omega: 0.5,
+            ..Default::default()
+        };
         let (sr, lr, full) = rs_mp2_decomposition(&mol, &obs, &dfbs, &rhf, &config).unwrap();
         let sum = sr + lr;
         eprintln!(
@@ -432,7 +480,10 @@ mod tests {
         // triple to drop, but this verifies the new code path produces the
         // same tensor and the same energy assembly.
         let (mol, obs, dfbs, rhf) = setup_h2o();
-        let cfg_dense = AttenuatedMp2Config { omega: 0.222, ..Default::default() };
+        let cfg_dense = AttenuatedMp2Config {
+            omega: 0.222,
+            ..Default::default()
+        };
         let cfg_screened = AttenuatedMp2Config {
             omega: 0.222,
             screen_thresh: Some(1e-10),
@@ -445,9 +496,13 @@ mod tests {
             "water erfc(0.222) attenuated MP2: dense={:.10}, screened(1e-10)={:.10}, diff={:.2e}",
             dense.mp2_corr, screened.mp2_corr, diff
         );
-        assert!(diff < 1e-9,
+        assert!(
+            diff < 1e-9,
             "screened attenuated MP2 ({}) diverges from dense ({}): diff={:.2e}",
-            screened.mp2_corr, dense.mp2_corr, diff);
+            screened.mp2_corr,
+            dense.mp2_corr,
+            diff
+        );
     }
 
     fn setup_h2o() -> (Molecule, PreparedBasis, PreparedBasis, ScfResult) {
@@ -459,9 +514,16 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(
             &ferric_core::parallel::ParallelContext::default(),
-            &mol, &obs, op, &bounds,
-            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
-        ).unwrap();
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         (mol, obs, dfbs, rhf)
@@ -497,8 +559,14 @@ mod tests {
             "ferric mp2_corr={:.12}, pyscf ref={:.12}, diff={:.2e}",
             att.mp2_corr, ref_mp2_corr, d_mp2
         );
-        assert!(d_rhf < 1e-8, "RHF energy diverges from PySCF: diff={d_rhf:.2e}");
-        assert!(d_mp2 < 1e-6, "attenuated MP2 corr diverges from PySCF: diff={d_mp2:.2e}");
+        assert!(
+            d_rhf < 1e-8,
+            "RHF energy diverges from PySCF: diff={d_rhf:.2e}"
+        );
+        assert!(
+            d_mp2 < 1e-6,
+            "attenuated MP2 corr diverges from PySCF: diff={d_mp2:.2e}"
+        );
         assert!(d_os < 1e-6, "e_os diverges from PySCF: diff={d_os:.2e}");
         assert!(d_ss < 1e-6, "e_ss diverges from PySCF: diff={d_ss:.2e}");
     }
@@ -514,9 +582,16 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(
             &ferric_core::parallel::ParallelContext::default(),
-            &mol, &obs, op, &bounds,
-            &RhfConfig { energy_conv: 1e-10, ..Default::default() },
-        ).unwrap();
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         (mol, obs, dfbs, rhf)
@@ -546,8 +621,14 @@ mod tests {
             "ferric mp2_corr={:.12}, pyscf ref={:.12}, diff={:.2e}",
             att.mp2_corr, ref_mp2_corr, d_mp2
         );
-        assert!(d_rhf < 1e-8, "RHF energy diverges from PySCF: diff={d_rhf:.2e}");
-        assert!(d_mp2 < 1e-6, "attenuated MP2 corr diverges from PySCF: diff={d_mp2:.2e}");
+        assert!(
+            d_rhf < 1e-8,
+            "RHF energy diverges from PySCF: diff={d_rhf:.2e}"
+        );
+        assert!(
+            d_mp2 < 1e-6,
+            "attenuated MP2 corr diverges from PySCF: diff={d_mp2:.2e}"
+        );
         assert!(d_os < 1e-6, "e_os diverges from PySCF: diff={d_os:.2e}");
         assert!(d_ss < 1e-6, "e_ss diverges from PySCF: diff={d_ss:.2e}");
     }
@@ -556,7 +637,10 @@ mod tests {
     fn test_erfc_alias_matches_attenuated() {
         // The explicit erfc-named API must be bit-identical to attenuated_ri_mp2.
         let (mol, obs, dfbs, rhf) = setup_h2();
-        let config = AttenuatedMp2Config { omega: 0.3, ..Default::default() };
+        let config = AttenuatedMp2Config {
+            omega: 0.3,
+            ..Default::default()
+        };
         let a = attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &config).unwrap();
         let b = erfc_attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &config).unwrap();
         assert!((a.mp2_corr - b.mp2_corr).abs() < 1e-12);

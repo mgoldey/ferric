@@ -10,6 +10,7 @@ Columns per system: CP interaction energies (kcal/mol) for
 at aDZ, aTZ, and CBS (corr two-point 27/8/19 on aDZ/aTZ; HF@aTZ).
 Refs: A24 BIND (CCSD(T)/CBS), S22 BIND_S22B. Writes matrix.csv + matrix.md.
 """
+
 import csv
 import json
 import re
@@ -41,8 +42,13 @@ def parse_out(key):
         if tot is None or b is None:
             return None
         rhf = tot - b
-        return dict(rhf=rhf, mp2=grab(t, "E(MP2, Coulomb)"),
-                    a=grab(t, "E_corr naive (A)"), b=b, tot_b=tot)
+        return dict(
+            rhf=rhf,
+            mp2=grab(t, "E(MP2, Coulomb)"),
+            a=grab(t, "E_corr naive (A)"),
+            b=b,
+            tot_b=tot,
+        )
     # --- aTZ comparison gather (2026-07-26) -------------------------------
     # These four methods print `Total      =` (padded), NOT `Total energy =`,
     # and had NO branch here at all: parse_out returned None even for a
@@ -55,20 +61,36 @@ def parse_out(key):
         rhf, tot = grab(t, "RHF energy"), grab(t, "Total")
         if rhf is None or tot is None:
             return None
-        return dict(rhf=rhf, corr=grab(t, "attMP2corr"), e_os=grab(t, "E_OS"),
-                    e_ss=grab(t, "E_SS"), e_nl=grab(t, "VV10 E_nl"), tot=tot)
+        return dict(
+            rhf=rhf,
+            corr=grab(t, "attMP2corr"),
+            e_os=grab(t, "E_OS"),
+            e_ss=grab(t, "E_SS"),
+            e_nl=grab(t, "VV10 E_nl"),
+            tot=tot,
+        )
     if key.endswith("_atterfc"):
         rhf, tot = grab(t, "RHF energy"), grab(t, "Total")
         if rhf is None or tot is None:
             return None
-        return dict(rhf=rhf, corr=grab(t, "MP2 corr"), e_os=grab(t, "E_OS"),
-                    e_ss=grab(t, "E_SS"), tot=tot)
+        return dict(
+            rhf=rhf,
+            corr=grab(t, "MP2 corr"),
+            e_os=grab(t, "E_OS"),
+            e_ss=grab(t, "E_SS"),
+            tot=tot,
+        )
     if key.endswith("_scs2terfc"):
         rhf, tot = grab(t, "RHF energy"), grab(t, "Total")
         if rhf is None or tot is None:
             return None
-        return dict(rhf=rhf, corr=grab(t, "SCS corr"), e_os=grab(t, "E_OS"),
-                    e_ss=grab(t, "E_SS"), tot=tot)
+        return dict(
+            rhf=rhf,
+            corr=grab(t, "SCS corr"),
+            e_os=grab(t, "E_OS"),
+            e_ss=grab(t, "E_SS"),
+            tot=tot,
+        )
     if key.endswith("_mp2"):
         # Must come AFTER _scs2terfc/_atterfc/_mp2v: plain "_mp2" is a suffix
         # of none of them, but keep the ordering explicit so a future tag
@@ -81,8 +103,7 @@ def parse_out(key):
         tot, tc = grab(t, "Total energy"), grab(t, "E_corr coupled (T)")
         if tot is None or tc is None:
             return None
-        return dict(rhf=tot - tc, t=tc, tot_t=tot,
-                    drpa_c=grab(t, "E(ΔdRPA, Coulomb)"))
+        return dict(rhf=tot - tc, t=tc, tot_t=tot, drpa_c=grab(t, "E(ΔdRPA, Coulomb)"))
     return None
 
 
@@ -95,15 +116,20 @@ def frag_energies(sysname, frag, basis):
         return None
     rhfs = (scs["rhf"], dlr["rhf"], cr["rhf"])
     if max(rhfs) - min(rhfs) > RHF_TOL:
-        print(f"WARN: RHF mismatch {sysname} {frag} {basis}: spread "
-              f"{(max(rhfs)-min(rhfs)):.2e}", file=sys.stderr)
+        print(
+            f"WARN: RHF mismatch {sysname} {frag} {basis}: spread "
+            f"{(max(rhfs) - min(rhfs)):.2e}",
+            file=sys.stderr,
+        )
     rhf = dlr["rhf"]
-    return dict(RHF=rhf,
-                MP2=rhf + dlr["mp2"],
-                A=rhf + dlr["a"],
-                B=dlr["tot_b"],
-                T=cr["tot_t"],
-                dRPA=rhf + cr["drpa_c"] + 2 * scs["e_os"])
+    return dict(
+        RHF=rhf,
+        MP2=rhf + dlr["mp2"],
+        A=rhf + dlr["a"],
+        B=dlr["tot_b"],
+        T=cr["tot_t"],
+        dRPA=rhf + cr["drpa_c"] + 2 * scs["e_os"],
+    )
 
 
 def eint(frags_e, m):
@@ -140,45 +166,72 @@ def main():
             if "adz" in per_basis or "atz" in per_basis:
                 rows.append(row)
 
-    cols = ["system", "ref"] + [f"{m}_{b}" for b in ("adz", "atz", "cbs")
-                                for m in METHODS]
+    cols = ["system", "ref"] + [
+        f"{m}_{b}" for b in ("adz", "atz", "cbs") for m in METHODS
+    ]
     with open(ROOT / "matrix.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
         for r in rows:
-            w.writerow({c: (f"{r[c]:.4f}" if isinstance(r.get(c), float) else
-                            r.get(c, "")) for c in cols})
+            w.writerow(
+                {
+                    c: (f"{r[c]:.4f}" if isinstance(r.get(c), float) else r.get(c, ""))
+                    for c in cols
+                }
+            )
 
     # MAE summary
-    lines = ["# SR-MP2+LR-RPA production matrix", "",
-             "CP interaction energies (kcal/mol); ref = CCSD(T)/CBS "
-             "(A24: BIND; S22: BIND_S22B).",
-             "Errors = computed - ref; binding is negative, so MSE > 0 "
-             "means underbinding.", "",
-             "| set | basis | N | stat | " + " | ".join(METHODS) + " |",
-             "|---|---|---|---|" + "---|" * len(METHODS)]
-    for subset, pred in (("A24", lambda r: r["system"].startswith("a24")),
-                         ("S22", lambda r: r["system"].startswith("s22")),
-                         ("all", lambda r: True)):
+    lines = [
+        "# SR-MP2+LR-RPA production matrix",
+        "",
+        "CP interaction energies (kcal/mol); ref = CCSD(T)/CBS "
+        "(A24: BIND; S22: BIND_S22B).",
+        "Errors = computed - ref; binding is negative, so MSE > 0 means underbinding.",
+        "",
+        "| set | basis | N | stat | " + " | ".join(METHODS) + " |",
+        "|---|---|---|---|" + "---|" * len(METHODS),
+    ]
+    for subset, pred in (
+        ("A24", lambda r: r["system"].startswith("a24")),
+        ("S22", lambda r: r["system"].startswith("s22")),
+        ("all", lambda r: True),
+    ):
         for b in ("adz", "atz", "cbs"):
             sel = [r for r in rows if pred(r) and f"MP2_{b}" in r]
             if not sel:
                 continue
-            maes = [sum(abs(r[f"{m}_{b}"] - r["ref"]) for r in sel) / len(sel)
-                    for m in METHODS]
-            mses = [sum(r[f"{m}_{b}"] - r["ref"] for r in sel) / len(sel)
-                    for m in METHODS]
-            lines.append(f"| {subset} | {b} | {len(sel)} | MAE | "
-                         + " | ".join(f"{x:.3f}" for x in maes) + " |")
-            lines.append(f"| {subset} | {b} | {len(sel)} | MSE | "
-                         + " | ".join(f"{x:+.3f}" for x in mses) + " |")
-    lines += ["", "## Per-system", "",
-              "| system | ref | " + " | ".join(
-                  f"{m}({b})" for b in ("adz", "atz", "cbs") for m in METHODS) + " |",
-              "|---|---|" + "---|" * (3 * len(METHODS))]
+            maes = [
+                sum(abs(r[f"{m}_{b}"] - r["ref"]) for r in sel) / len(sel)
+                for m in METHODS
+            ]
+            mses = [
+                sum(r[f"{m}_{b}"] - r["ref"] for r in sel) / len(sel) for m in METHODS
+            ]
+            lines.append(
+                f"| {subset} | {b} | {len(sel)} | MAE | "
+                + " | ".join(f"{x:.3f}" for x in maes)
+                + " |"
+            )
+            lines.append(
+                f"| {subset} | {b} | {len(sel)} | MSE | "
+                + " | ".join(f"{x:+.3f}" for x in mses)
+                + " |"
+            )
+    lines += [
+        "",
+        "## Per-system",
+        "",
+        "| system | ref | "
+        + " | ".join(f"{m}({b})" for b in ("adz", "atz", "cbs") for m in METHODS)
+        + " |",
+        "|---|---|" + "---|" * (3 * len(METHODS)),
+    ]
     for r in rows:
-        cells = [f"{r[f'{m}_{b}']:.3f}" if f"{m}_{b}" in r else "—"
-                 for b in ("adz", "atz", "cbs") for m in METHODS]
+        cells = [
+            f"{r[f'{m}_{b}']:.3f}" if f"{m}_{b}" in r else "—"
+            for b in ("adz", "atz", "cbs")
+            for m in METHODS
+        ]
         lines.append(f"| {r['system']} | {r['ref']:.3f} | " + " | ".join(cells) + " |")
     (ROOT / "matrix.md").write_text("\n".join(lines) + "\n")
     print(f"{len(rows)} systems collected -> matrix.csv, matrix.md")

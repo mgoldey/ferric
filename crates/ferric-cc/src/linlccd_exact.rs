@@ -51,11 +51,13 @@ fn transform_4(
         let row = t1.row(p);
         let m = ArrayView2::from_shape(
             (nbas, nb2),
-            row.as_slice()
-                .ok_or_else(|| FerricError::General("exact LinLCCD: t1 row not contiguous".into()))?,
+            row.as_slice().ok_or_else(|| {
+                FerricError::General("exact LinLCCD: t1 row not contiguous".into())
+            })?,
         )
         .map_err(|e| FerricError::General(format!("exact LinLCCD t1 reshape: {e}")))?;
-        t2.slice_mut(ndarray::s![p * n2..(p + 1) * n2, ..]).assign(&c2.t().dot(&m));
+        t2.slice_mut(ndarray::s![p * n2..(p + 1) * n2, ..])
+            .assign(&c2.t().dot(&m));
     }
     drop(t1);
 
@@ -136,7 +138,11 @@ pub fn linlccd_exact(
         cfg.memory_budget_bytes,
         format!("exact LinLCCD {variant:?} (nbas={nbas}, no={no}, nv={nv})"),
     );
-    plan.reserve("dense AO eri (nbas^4)", nb2.saturating_mul(nb2), Lifetime::Transient);
+    plan.reserve(
+        "dense AO eri (nbas^4)",
+        nb2.saturating_mul(nb2),
+        Lifetime::Transient,
+    );
     // transform_4's own t1/t2/t3 working set, sized for the largest MO block
     // Every variant transforms OVOV; `Hh` and `Full` add OOOO; `Full` adds
     // VVVV. Charge the LARGEST of the calls this variant actually makes —
@@ -150,22 +156,38 @@ pub fn linlccd_exact(
     let transform4_peak = n1
         .saturating_mul(nbas.saturating_pow(3)) // t1: (n1, nu*lam*sig)
         .max(n1.saturating_mul(n2).saturating_mul(nb2)) // t2: (n1*n2, nb2)
-        .max(n1.saturating_mul(n2).saturating_mul(nbas).saturating_mul(n4)); // t3
-    plan.reserve("transform_4 t1/t2/t3 working set", transform4_peak, Lifetime::Transient);
+        .max(
+            n1.saturating_mul(n2)
+                .saturating_mul(nbas)
+                .saturating_mul(n4),
+        ); // t3
+    plan.reserve(
+        "transform_4 t1/t2/t3 working set",
+        transform4_peak,
+        Lifetime::Transient,
+    );
     plan.reserve(
         "v_oovv <ij||ab> + oovv_t clone",
-        no2.saturating_pow(2).saturating_mul(nv2.saturating_pow(2)).saturating_mul(2),
+        no2.saturating_pow(2)
+            .saturating_mul(nv2.saturating_pow(2))
+            .saturating_mul(2),
         Lifetime::Resident,
     );
     if matches!(variant, LadderVariant::Hh | LadderVariant::Full) {
         plan.reserve("oooo_t <ij||kl>", no2.saturating_pow(4), Lifetime::Resident);
     }
     if matches!(variant, LadderVariant::Full) {
-        plan.reserve("vvvv_t <ab||cd> (spin-orbital)", nv2.saturating_pow(4), Lifetime::Resident);
+        plan.reserve(
+            "vvvv_t <ab||cd> (spin-orbital)",
+            nv2.saturating_pow(4),
+            Lifetime::Resident,
+        );
     }
     plan.reserve(
         "d denominator + t/r/x amplitude working set",
-        no2.saturating_pow(2).saturating_mul(nv2.saturating_pow(2)).saturating_mul(3),
+        no2.saturating_pow(2)
+            .saturating_mul(nv2.saturating_pow(2))
+            .saturating_mul(3),
         Lifetime::Resident,
     );
     // DIIS ring on flattened t (no2*nv2, no2*nv2): `Diis::step` clones BOTH
@@ -174,14 +196,19 @@ pub fn linlccd_exact(
     // full-size copies of this tensor.
     plan.reserve(
         "DIIS amplitude + error history (2 x diis_subspace)",
-        crate::diis_history_elems(no2.saturating_pow(2).saturating_mul(nv2.saturating_pow(2)), cfg.diis_subspace),
+        crate::diis_history_elems(
+            no2.saturating_pow(2).saturating_mul(nv2.saturating_pow(2)),
+            cfg.diis_subspace,
+        ),
         Lifetime::Resident,
     );
     plan.check()?;
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + no]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + no])
+        .to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
     let ao = dense_ao_eri(obs, op)?;
@@ -193,13 +220,19 @@ pub fn linlccd_exact(
     };
     let oooo_t = if matches!(variant, LadderVariant::Hh | LadderVariant::Full) {
         let g_ijkl = transform_4(&ao, nbas, &c_occ, &c_occ, &c_occ, &c_occ)?;
-        Some(Tensor::new(asym_same(&g_ijkl, no), [Axis::O, Axis::O, Axis::O, Axis::O]))
+        Some(Tensor::new(
+            asym_same(&g_ijkl, no),
+            [Axis::O, Axis::O, Axis::O, Axis::O],
+        ))
     } else {
         None
     };
     let vvvv_t = if matches!(variant, LadderVariant::Full) {
         let g_abcd = transform_4(&ao, nbas, &c_vir, &c_vir, &c_vir, &c_vir)?;
-        Some(Tensor::new(asym_same(&g_abcd, nv), [Axis::V, Axis::V, Axis::V, Axis::V]))
+        Some(Tensor::new(
+            asym_same(&g_abcd, nv),
+            [Axis::V, Axis::V, Axis::V, Axis::V],
+        ))
     } else {
         None
     };
@@ -239,7 +272,11 @@ pub fn linlccd_exact(
         let e_corr: f64 = 0.25 * einsum!("ijab,ijab->", &oovv_t, &t_t);
         if iter > 0 && (e_corr - e_old).abs() < cfg.energy_conv {
             let t2 = t.clone().into_dimensionality::<ndarray::Ix4>().unwrap();
-            return Ok(CcResult { correlation_energy: e_corr, t1: None, t2 });
+            return Ok(CcResult {
+                correlation_energy: e_corr,
+                t1: None,
+                t2,
+            });
         }
         e_old = e_corr;
 
@@ -255,8 +292,16 @@ pub fn linlccd_exact(
 
         let t_new = &r / &d;
         let err = &t_new - &t;
-        let t_flat = t_new.view().into_shape_with_order((dim, dim)).unwrap().to_owned();
-        let err_flat = err.view().into_shape_with_order((dim, dim)).unwrap().to_owned();
+        let t_flat = t_new
+            .view()
+            .into_shape_with_order((dim, dim))
+            .unwrap()
+            .to_owned();
+        let err_flat = err
+            .view()
+            .into_shape_with_order((dim, dim))
+            .unwrap()
+            .to_owned();
         t = diis
             .step(&t_flat, &err_flat)
             .into_shape_with_order(IxDyn(&[no2, no2, nv2, nv2]))
@@ -295,7 +340,10 @@ mod tests {
             Ok(_) => panic!("exact LinLCCD should fail fast under tiny budget"),
         };
         let msg = err.to_string();
-        assert!(msg.contains("LinLCCD") && msg.contains("budget is"), "unexpected: {msg}");
+        assert!(
+            msg.contains("LinLCCD") && msg.contains("budget is"),
+            "unexpected: {msg}"
+        );
         assert!(msg.contains("memory plan"), "no plan breakdown: {msg}");
     }
 

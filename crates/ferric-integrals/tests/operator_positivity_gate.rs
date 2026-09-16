@@ -175,8 +175,7 @@ fn schwarz_and_csb_refuse_terf_as_invalid_not_unimplemented() {
     let dfbs = water();
     let terf = Operator::terf(2.0);
 
-    let e = ferric_integrals::schwarz::schwarz(terf, &dfbs)
-        .expect_err("Schwarz must refuse terf");
+    let e = ferric_integrals::schwarz::schwarz(terf, &dfbs).expect_err("Schwarz must refuse terf");
     let msg = format!("{e:?}").to_lowercase();
     assert!(
         msg.contains("invalid"),
@@ -185,8 +184,7 @@ fn schwarz_and_csb_refuse_terf_as_invalid_not_unimplemented() {
          Cauchy-Schwarz hold for an indefinite form. Got: {e:?}"
     );
 
-    let e2 = ferric_integrals::csb::csb_m_table(terf, &dfbs)
-        .expect_err("CSB must refuse terf");
+    let e2 = ferric_integrals::csb::csb_m_table(terf, &dfbs).expect_err("CSB must refuse terf");
     let msg2 = format!("{e2:?}").to_lowercase();
     assert!(
         msg2.contains("invalid"),

@@ -23,6 +23,7 @@ SMILES (PubChem):
 Run from repo root:
     python scripts/fetch_danuglipron.py
 """
+
 from __future__ import annotations
 
 import io
@@ -47,6 +48,7 @@ def fetch(url: str, timeout: int = 60) -> bytes:
 
 def write_xyz_from_rdkit(mol, conf_id: int, out_path: Path, comment: str):
     from rdkit.Chem import GetPeriodicTable
+
     conf = mol.GetConformer(conf_id)
     n = mol.GetNumAtoms()
     lines = [str(n), comment]
@@ -71,8 +73,11 @@ def conf_from_cryo_em() -> "tuple[bool, str]":
         return False, f"PDB download failed: {e}"
 
     # Extract HETATM lines for UK4
-    het_lines = [l for l in pdb_bytes.decode().splitlines()
-                 if l.startswith("HETATM") and " UK4 " in l]
+    het_lines = [
+        l
+        for l in pdb_bytes.decode().splitlines()
+        if l.startswith("HETATM") and " UK4 " in l
+    ]
     if not het_lines:
         return False, "no UK4 HETATM records in 7LCJ.pdb"
 
@@ -96,7 +101,8 @@ def conf_from_cryo_em() -> "tuple[bool, str]":
     # relax only the H positions with MMFF (heavy atoms frozen).
     try:
         ff = AllChem.MMFFGetMoleculeForceField(
-            mol, AllChem.MMFFGetMoleculeProperties(mol))
+            mol, AllChem.MMFFGetMoleculeProperties(mol)
+        )
         if ff is not None:
             # Freeze heavy atoms
             for atom in mol.GetAtoms():
@@ -108,9 +114,11 @@ def conf_from_cryo_em() -> "tuple[bool, str]":
 
     out_path = OUT_DIR / "conf_00_cryo_em.xyz"
     write_xyz_from_rdkit(
-        mol, 0, out_path,
+        mol,
+        0,
+        out_path,
         "danuglipron (UK4) bound conformer from PDB 7LCJ; heavy atoms from "
-        "cryo-EM, H from RDKit AddHs+MMFF (heavy frozen)"
+        "cryo-EM, H from RDKit AddHs+MMFF (heavy frozen)",
     )
     return True, str(out_path)
 
@@ -132,8 +140,7 @@ def conf_from_pubchem() -> "tuple[bool, str]":
         return False, "RDKit could not parse PubChem SDF"
     out_path = OUT_DIR / "conf_01_pubchem.xyz"
     write_xyz_from_rdkit(
-        mol, 0, out_path,
-        "danuglipron PubChem CID 134611040 precomputed 3D conformer"
+        mol, 0, out_path, "danuglipron PubChem CID 134611040 precomputed 3D conformer"
     )
     return True, str(out_path)
 
@@ -159,8 +166,9 @@ def confs_from_rdkit(n_target: int = 18, rms_thresh: float = 0.5) -> "tuple[int,
     results = AllChem.MMFFOptimizeMoleculeConfs(mol, maxIters=500)
     # Drop unconverged conformers
     cid_list = list(cids)
-    keep = [(cid, results[i][1]) for i, cid in enumerate(cid_list)
-            if results[i][0] == 0]
+    keep = [
+        (cid, results[i][1]) for i, cid in enumerate(cid_list) if results[i][0] == 0
+    ]
     keep.sort(key=lambda x: x[1])
     energy_by_cid = dict(keep)
     # Deduplicate by heavy-atom RMSD
@@ -177,11 +185,13 @@ def confs_from_rdkit(n_target: int = 18, rms_thresh: float = 0.5) -> "tuple[int,
         if len(chosen) >= n_target:
             break
     for i, cid in enumerate(chosen):
-        out_path = OUT_DIR / f"conf_{i+2:02d}_rdkit.xyz"
+        out_path = OUT_DIR / f"conf_{i + 2:02d}_rdkit.xyz"
         write_xyz_from_rdkit(
-            mol, cid, out_path,
+            mol,
+            cid,
+            out_path,
             f"danuglipron RDKit ETKDGv3+MMFF94 conformer {i} (cid={cid}, "
-            f"E_mmff={energy_by_cid.get(cid, 0.0):.2f} kcal/mol)"
+            f"E_mmff={energy_by_cid.get(cid, 0.0):.2f} kcal/mol)",
         )
     return len(chosen), f"{len(chosen)} RDKit conformers"
 
@@ -211,8 +221,7 @@ def main():
         readme.write_text(
             "# Danuglipron conformer sourcing\n\n"
             f"Generated {n_files} conformer XYZ files.\n\n"
-            "## Sourcing failures\n\n"
-            + "\n".join(f"- {f}" for f in failures) + "\n\n"
+            "## Sourcing failures\n\n" + "\n".join(f"- {f}" for f in failures) + "\n\n"
             "Re-run: `python scripts/fetch_danuglipron.py`\n"
         )
 

@@ -129,9 +129,17 @@ pub fn dielectric_matrix_screened(
         // so a per-i_loc (msub × msub) partial is cheap and the byte-budgeted
         // banding in `grouped_deterministic_sum` still applies if msub is ever
         // large.
-        ferric_scf::reduce::grouped_deterministic_sum(&mut out, n_groups, msub, ferric_scf::reduce::default_band_bytes(), |i_loc| {
-            Ok(dielectric_matrix_partial(v_mat, bov, eps_vir, omega, i_loc, msub))
-        })
+        ferric_scf::reduce::grouped_deterministic_sum(
+            &mut out,
+            n_groups,
+            msub,
+            ferric_scf::reduce::default_band_bytes(),
+            |i_loc| {
+                Ok(dielectric_matrix_partial(
+                    v_mat, bov, eps_vir, omega, i_loc, msub,
+                ))
+            },
+        )
         .expect("dielectric_matrix_screened: partial builder is infallible");
     });
 
@@ -171,7 +179,9 @@ fn dielectric_matrix_partial(
     // Gather rows of v_mat at p_list → v_gather shape (m_i, msub).
     let mut v_gather = Array2::<f64>::zeros((m_i, msub));
     for (slot, &p) in p_list.iter().enumerate() {
-        v_gather.slice_mut(s![slot, ..]).assign(&v_mat.slice(s![p, ..]));
+        v_gather
+            .slice_mut(s![slot, ..])
+            .assign(&v_mat.slice(s![p, ..]));
     }
 
     // rhs_i = v_gather.T @ tile  →  shape (msub, nvir).
@@ -234,9 +244,17 @@ pub fn dielectric_apply_screened(
         // approximates the true per-partial size instead of over/under-counting
         // by the naux/msub aspect ratio.
         let sq_equiv = ((naux as f64) * (msub as f64)).sqrt().ceil() as usize;
-        ferric_scf::reduce::grouped_deterministic_sum(&mut out, n_groups, sq_equiv, ferric_scf::reduce::default_band_bytes(), |i_loc| {
-            Ok(dielectric_apply_partial(v_mat, bov, eps_vir, omega, i_loc, naux, msub))
-        })
+        ferric_scf::reduce::grouped_deterministic_sum(
+            &mut out,
+            n_groups,
+            sq_equiv,
+            ferric_scf::reduce::default_band_bytes(),
+            |i_loc| {
+                Ok(dielectric_apply_partial(
+                    v_mat, bov, eps_vir, omega, i_loc, naux, msub,
+                ))
+            },
+        )
         .expect("dielectric_apply_screened: partial builder is infallible");
     });
 
@@ -269,7 +287,9 @@ fn dielectric_apply_partial(
     // Gather rows.
     let mut v_gather = Array2::<f64>::zeros((m_i, msub));
     for (slot, &p) in p_list.iter().enumerate() {
-        v_gather.slice_mut(s![slot, ..]).assign(&v_mat.slice(s![p, ..]));
+        v_gather
+            .slice_mut(s![slot, ..])
+            .assign(&v_mat.slice(s![p, ..]));
     }
 
     // y_i = v_gather.T @ tile  →  (msub, nvir)
@@ -370,12 +390,16 @@ mod tests {
             }
             let mut v_gather = Array2::<f64>::zeros((m_i, msub));
             for (slot, &p) in p_list.iter().enumerate() {
-                v_gather.slice_mut(s![slot, ..]).assign(&v_mat.slice(s![p, ..]));
+                v_gather
+                    .slice_mut(s![slot, ..])
+                    .assign(&v_mat.slice(s![p, ..]));
             }
             let mut y_i: Array2<f64> = v_gather.t().dot(tile);
             let scale = build_scale_for_iloc(bov.eps_loc[i_loc], eps_vir, omega);
             let scale_row = scale.view().insert_axis(Axis(0));
-            Zip::from(&mut y_i).and_broadcast(scale_row).for_each(|x, &s| *x *= s * s);
+            Zip::from(&mut y_i)
+                .and_broadcast(scale_row)
+                .for_each(|x, &s| *x *= s * s);
             let y_t = y_i.t().to_owned();
             let mut contrib = Array2::<f64>::zeros((m_i, msub));
             general_mat_mul(1.0, tile, &y_t, 0.0, &mut contrib);
@@ -407,12 +431,16 @@ mod tests {
             }
             let mut v_gather = Array2::<f64>::zeros((m_i, msub));
             for (slot, &p) in p_list.iter().enumerate() {
-                v_gather.slice_mut(s![slot, ..]).assign(&v_mat.slice(s![p, ..]));
+                v_gather
+                    .slice_mut(s![slot, ..])
+                    .assign(&v_mat.slice(s![p, ..]));
             }
             let mut rhs_i: Array2<f64> = v_gather.t().dot(tile);
             let scale = build_scale_for_iloc(bov.eps_loc[i_loc], eps_vir, omega);
             let scale_row = scale.view().insert_axis(Axis(0));
-            Zip::from(&mut rhs_i).and_broadcast(scale_row).for_each(|x, &s| *x *= s);
+            Zip::from(&mut rhs_i)
+                .and_broadcast(scale_row)
+                .for_each(|x, &s| *x *= s);
             let rhs_t = rhs_i.t().to_owned();
             general_mat_mul(1.0, &rhs_i, &rhs_t, 1.0, &mut out);
         }
@@ -442,7 +470,9 @@ mod tests {
         let expected = dielectric_apply_screened_serial_reference(&v_mat, &bov, &eps_vir, omega);
 
         assert_eq!(got.dim(), expected.dim());
-        let max_diff = (&got - &expected).iter().fold(0.0f64, |m, &x| m.max(x.abs()));
+        let max_diff = (&got - &expected)
+            .iter()
+            .fold(0.0f64, |m, &x| m.max(x.abs()));
         assert!(
             max_diff < 1e-12,
             "parallel apply diverges from serial reference by {max_diff:.3e}"
@@ -466,7 +496,9 @@ mod tests {
         let expected = dielectric_matrix_screened_serial_reference(&v_mat, &bov, &eps_vir, omega);
 
         assert_eq!(got.dim(), expected.dim());
-        let max_diff = (&got - &expected).iter().fold(0.0f64, |m, &x| m.max(x.abs()));
+        let max_diff = (&got - &expected)
+            .iter()
+            .fold(0.0f64, |m, &x| m.max(x.abs()));
         assert!(
             max_diff < 1e-12,
             "parallel matrix diverges from serial reference by {max_diff:.3e}"
@@ -492,15 +524,24 @@ mod tests {
         let omega = 0.4;
 
         let run = |n_threads: usize| -> Array2<f64> {
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(n_threads).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(n_threads)
+                .build()
+                .unwrap();
             pool.install(|| dielectric_apply_screened(&v_mat, &bov, &eps_vir, omega))
         };
 
         let r1 = run(1);
         let r2 = run(2);
         let r4 = run(4);
-        assert_eq!(r1, r2, "apply result must be bit-identical at 1 vs 2 rayon threads");
-        assert_eq!(r1, r4, "apply result must be bit-identical at 1 vs 4 rayon threads");
+        assert_eq!(
+            r1, r2,
+            "apply result must be bit-identical at 1 vs 2 rayon threads"
+        );
+        assert_eq!(
+            r1, r4,
+            "apply result must be bit-identical at 1 vs 4 rayon threads"
+        );
     }
 
     #[test]
@@ -517,14 +558,23 @@ mod tests {
         let omega = 0.4;
 
         let run = |n_threads: usize| -> Array2<f64> {
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(n_threads).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(n_threads)
+                .build()
+                .unwrap();
             pool.install(|| dielectric_matrix_screened(&v_mat, &bov, &eps_vir, omega))
         };
 
         let r1 = run(1);
         let r2 = run(2);
         let r4 = run(4);
-        assert_eq!(r1, r2, "matrix result must be bit-identical at 1 vs 2 rayon threads");
-        assert_eq!(r1, r4, "matrix result must be bit-identical at 1 vs 4 rayon threads");
+        assert_eq!(
+            r1, r2,
+            "matrix result must be bit-identical at 1 vs 2 rayon threads"
+        );
+        assert_eq!(
+            r1, r4,
+            "matrix result must be bit-identical at 1 vs 4 rayon threads"
+        );
     }
 }

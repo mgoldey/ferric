@@ -81,7 +81,11 @@ fn point_count_reduction_is_in_the_expected_range() {
     // Also exercise the finer 99x302 grid, where the region table snaps to
     // [26, 110, 302, 302, 302] -- the coarse core is a bigger relative win at
     // 302, hence the larger reduction.
-    let big = AtomicGridConfig { n_radial: 99, n_angular: 302, ..Default::default() };
+    let big = AtomicGridConfig {
+        n_radial: 99,
+        n_angular: 302,
+        ..Default::default()
+    };
     let mol = Molecule::parse_xyz(H2O, 0, 1).unwrap();
     let (flat, pruned) = point_counts(&mol, &big);
     let saved = 100.0 * (1.0 - pruned as f64 / flat as f64);
@@ -121,11 +125,19 @@ fn prepare(label: &'static str, xyz: &str, basis_name: &str, n_elec: f64) -> Cas
     }
     let pruned = out.pop().unwrap();
     let flat = out.pop().unwrap();
-    Case { label, n_elec, flat, pruned }
+    Case {
+        label,
+        n_elec,
+        flat,
+        pruned,
+    }
 }
 
 fn integrate_rho(grid: &[GridPoint], dens: &ferric_dft::density_on_grid::DensityGrid) -> f64 {
-    grid.iter().zip(dens.rho.iter()).map(|(g, &r)| g.weight * r).sum()
+    grid.iter()
+        .zip(dens.rho.iter())
+        .map(|(g, &r)| g.weight * r)
+        .sum()
 }
 
 #[test]

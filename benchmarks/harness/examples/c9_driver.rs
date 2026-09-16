@@ -60,13 +60,9 @@ const BOHR_TO_ANGSTROM: f64 = 0.529_177_210_92;
 /// (See `scripts/fetch_s66x8.py` for the extraction script.)
 const S66_FRAGA: [usize; 67] = [
     0, // padding so index = S66 dimer #
-    3, 3, 3, 3, 6, 6, 6, 6, 7, 7,
-    7, 7, 12, 12, 12, 12, 12, 3, 6, 8,
-    9, 8, 9, 12, 11, 12, 12, 12, 11, 12,
-    12, 12, 11, 17, 17, 17, 15, 15, 12, 12,
-    12, 12, 12, 6, 4, 12, 12, 11, 12, 12,
-    4, 12, 12, 12, 12, 12, 12, 11, 4, 4,
-    17, 17, 12, 12, 11, 7,
+    3, 3, 3, 3, 6, 6, 6, 6, 7, 7, 7, 7, 12, 12, 12, 12, 12, 3, 6, 8, 9, 8, 9, 12, 11, 12, 12, 12,
+    11, 12, 12, 12, 11, 17, 17, 17, 15, 15, 12, 12, 12, 12, 12, 6, 4, 12, 12, 11, 12, 12, 4, 12,
+    12, 12, 12, 12, 12, 11, 4, 4, 17, 17, 12, 12, 11, 7,
 ];
 
 /// Reference interaction energies in kcal/mol (CCSD(T)/CBS CP from BEGDB).
@@ -100,22 +96,42 @@ impl Csv {
         "name,n_atoms,n_ao,n_aux,e_rhf,e_rpa,t_rhf_s,t_rpa_s,e_int_kcalmol,e_int_ref_kcalmol,delta_kcalmol,e_int_cp_kcalmol,delta_cp_kcalmol,status".to_string()
     }
     fn line(&self) -> String {
-        let e_int = self.e_int_kcalmol.map(|v| format!("{v:.4}")).unwrap_or_default();
-        let e_int_ref = self.e_int_ref_kcalmol.map(|v| format!("{v:.4}")).unwrap_or_default();
+        let e_int = self
+            .e_int_kcalmol
+            .map(|v| format!("{v:.4}"))
+            .unwrap_or_default();
+        let e_int_ref = self
+            .e_int_ref_kcalmol
+            .map(|v| format!("{v:.4}"))
+            .unwrap_or_default();
         let delta = match (self.e_int_kcalmol, self.e_int_ref_kcalmol) {
             (Some(a), Some(b)) => format!("{:.4}", a - b),
             _ => String::new(),
         };
-        let e_int_cp = self.e_int_cp_kcalmol.map(|v| format!("{v:.4}")).unwrap_or_default();
+        let e_int_cp = self
+            .e_int_cp_kcalmol
+            .map(|v| format!("{v:.4}"))
+            .unwrap_or_default();
         let delta_cp = match (self.e_int_cp_kcalmol, self.e_int_ref_kcalmol) {
             (Some(a), Some(b)) => format!("{:.4}", a - b),
             _ => String::new(),
         };
         format!(
             "{},{},{},{},{:.10},{:.10},{:.3},{:.3},{},{},{},{},{},{}",
-            self.name, self.n_atoms, self.n_ao, self.n_aux,
-            self.e_rhf, self.e_rpa, self.t_rhf_s, self.t_rpa_s,
-            e_int, e_int_ref, delta, e_int_cp, delta_cp, self.status,
+            self.name,
+            self.n_atoms,
+            self.n_ao,
+            self.n_aux,
+            self.e_rhf,
+            self.e_rpa,
+            self.t_rhf_s,
+            self.t_rpa_s,
+            e_int,
+            e_int_ref,
+            delta,
+            e_int_cp,
+            delta_cp,
+            self.status,
         )
     }
 }
@@ -169,8 +185,10 @@ fn run_rhf_rpa(
     let t0 = Instant::now();
     let rhf = solve_rhf(ctx, mol, &obs, op, &bounds, &rhf_cfg)?;
     let t_rhf = t0.elapsed().as_secs_f64();
-    eprintln!("  [{label}] RHF: n_AO={n_ao} n_aux={n_aux} E={:.8} t={:.2}s",
-              rhf.energy, t_rhf);
+    eprintln!(
+        "  [{label}] RHF: n_AO={n_ao} n_aux={n_aux} E={:.8} t={:.2}s",
+        rhf.energy, t_rhf
+    );
 
     let pdep_cfg = PdepRpaConfig {
         frozen_core: frozen_core_for(mol),
@@ -183,8 +201,12 @@ fn run_rhf_rpa(
     let t1 = Instant::now();
     let rpa = run_pdep_rpa(mol, &obs, &dfbs, op, &rhf, &pdep_cfg)?;
     let t_rpa = t1.elapsed().as_secs_f64();
-    eprintln!("  [{label}] RPA: E_corr={:.8} E_tot={:.8} t={:.2}s",
-              rpa.e_rpa, rhf.energy + rpa.e_rpa, t_rpa);
+    eprintln!(
+        "  [{label}] RPA: E_corr={:.8} E_tot={:.8} t={:.2}s",
+        rpa.e_rpa,
+        rhf.energy + rpa.e_rpa,
+        t_rpa
+    );
 
     Ok(CalcResult {
         e_rhf: rhf.energy,
@@ -201,8 +223,16 @@ fn run_rhf_rpa(
 fn split_dimer(mol: &Molecule, a_size: usize) -> (Molecule, Molecule) {
     let atoms_a: Vec<Atom> = mol.atoms[..a_size].to_vec();
     let atoms_b: Vec<Atom> = mol.atoms[a_size..].to_vec();
-    let mol_a = Molecule { atoms: atoms_a, charge: 0, multiplicity: 1 };
-    let mol_b = Molecule { atoms: atoms_b, charge: 0, multiplicity: 1 };
+    let mol_a = Molecule {
+        atoms: atoms_a,
+        charge: 0,
+        multiplicity: 1,
+    };
+    let mol_b = Molecule {
+        atoms: atoms_b,
+        charge: 0,
+        multiplicity: 1,
+    };
     (mol_a, mol_b)
 }
 
@@ -216,10 +246,19 @@ fn split_dimer(mol: &Molecule, a_size: usize) -> (Molecule, Molecule) {
 /// this same index-list path (indices happen to be a contiguous range).
 /// Coordinates remain in Bohr; every index must appear in exactly one of the
 /// three lists and every atom of `mol` must be covered (checked by caller).
-fn split_trimer(mol: &Molecule, idx_a: &[usize], idx_b: &[usize], idx_c: &[usize]) -> (Molecule, Molecule, Molecule) {
+fn split_trimer(
+    mol: &Molecule,
+    idx_a: &[usize],
+    idx_b: &[usize],
+    idx_c: &[usize],
+) -> (Molecule, Molecule, Molecule) {
     let pick = |idxs: &[usize]| -> Molecule {
         let atoms: Vec<Atom> = idxs.iter().map(|&i| mol.atoms[i].clone()).collect();
-        Molecule { atoms, charge: 0, multiplicity: 1 }
+        Molecule {
+            atoms,
+            charge: 0,
+            multiplicity: 1,
+        }
     };
     (pick(idx_a), pick(idx_b), pick(idx_c))
 }
@@ -236,14 +275,26 @@ fn split_trimer(mol: &Molecule, idx_a: &[usize], idx_b: &[usize], idx_c: &[usize
 /// geometry, per the standard CP prescription: E(A, basis=AB).
 fn make_cp_fragment(mol: &Molecule, own_indices: &[usize]) -> Molecule {
     let own: HashSet<usize> = own_indices.iter().copied().collect();
-    let atoms: Vec<Atom> = mol.atoms.iter().enumerate().map(|(i, a)| {
-        if own.contains(&i) {
-            a.clone()
-        } else {
-            Atom { ghost: true, ..a.clone() }
-        }
-    }).collect();
-    Molecule { atoms, charge: 0, multiplicity: 1 }
+    let atoms: Vec<Atom> = mol
+        .atoms
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            if own.contains(&i) {
+                a.clone()
+            } else {
+                Atom {
+                    ghost: true,
+                    ..a.clone()
+                }
+            }
+        })
+        .collect();
+    Molecule {
+        atoms,
+        charge: 0,
+        multiplicity: 1,
+    }
 }
 
 fn parse_s66_dimer_index(name: &str) -> Option<usize> {
@@ -257,7 +308,8 @@ fn run_s66x8(ctx: &ParallelContext, only: &Option<HashSet<String>>, cp: bool) ->
     let mut rows = Vec::new();
     let entries: Vec<_> = match fs::read_dir(dir) {
         Ok(rd) => {
-            let mut v: Vec<_> = rd.flatten()
+            let mut v: Vec<_> = rd
+                .flatten()
                 .filter(|e| e.path().extension().map(|x| x == "xyz").unwrap_or(false))
                 .collect();
             v.sort_by_key(|e| e.file_name());
@@ -269,23 +321,38 @@ fn run_s66x8(ctx: &ParallelContext, only: &Option<HashSet<String>>, cp: bool) ->
         }
     };
     for entry in entries {
-        let stem = entry.path().file_stem().unwrap().to_string_lossy().to_string();
+        let stem = entry
+            .path()
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         if let Some(set) = only.as_ref() {
-            if !set.contains(&stem) { continue; }
+            if !set.contains(&stem) {
+                continue;
+            }
         }
         eprintln!("\n=== {stem} ===");
         let mol = match Molecule::load_xyz(entry.path().to_str().unwrap()) {
             Ok(m) => m,
-            Err(e) => { eprintln!("  load failed: {e}"); continue; }
+            Err(e) => {
+                eprintln!("  load failed: {e}");
+                continue;
+            }
         };
         let idx = match parse_s66_dimer_index(&stem) {
             Some(i) if (1..=66).contains(&i) => i,
-            _ => { eprintln!("  cannot parse S66 dimer index from {stem}"); continue; }
+            _ => {
+                eprintln!("  cannot parse S66 dimer index from {stem}");
+                continue;
+            }
         };
         let a_size = S66_FRAGA[idx];
         if a_size == 0 || a_size >= mol.atoms.len() {
-            eprintln!("  bad fragment-A size {a_size} for {stem} (total={})",
-                      mol.atoms.len());
+            eprintln!(
+                "  bad fragment-A size {a_size} for {stem} (total={})",
+                mol.atoms.len()
+            );
             continue;
         }
         rows.push(run_dimer(ctx, &stem, &mol, a_size, &refs, cp));
@@ -313,10 +380,10 @@ fn l7_fraga_size(name: &str) -> Option<usize> {
     // for a 2-body interaction energy — they need l7_trimer_indices below.
     match name {
         "C2C2PD" => Some(56),
-        "C3A"    => Some(72),  // circumcoronene fragment is first
-        "C3GC"   => Some(72),
-        "CBH"    => Some(36),
-        "GCGC"   => Some(29),
+        "C3A" => Some(72), // circumcoronene fragment is first
+        "C3GC" => Some(72),
+        "CBH" => Some(36),
+        "GCGC" => Some(29),
         _ => None, // GGG, PHE: 3-body — handled by l7_trimer_indices
     }
 }
@@ -350,12 +417,12 @@ fn l7_trimer_indices(name: &str) -> Option<(Vec<usize>, Vec<usize>, Vec<usize>)>
         "PHE" => Some((
             (0..29).collect(),
             vec![
-                29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 51, 52, 55, 56, 62, 63, 64, 76, 77,
-                78, 79, 80, 81, 82, 83, 84, 85, 86,
+                29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 51, 52, 55, 56, 62, 63, 64, 76, 77, 78,
+                79, 80, 81, 82, 83, 84, 85, 86,
             ],
             vec![
-                40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 53, 54, 57, 58, 59, 60, 61, 65, 66,
-                67, 68, 69, 70, 71, 72, 73, 74, 75,
+                40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 53, 54, 57, 58, 59, 60, 61, 65, 66, 67,
+                68, 69, 70, 71, 72, 73, 74, 75,
             ],
         )),
         _ => None,
@@ -368,23 +435,37 @@ fn run_l7(ctx: &ParallelContext, only: &Option<HashSet<String>>, cp: bool) -> Ve
     let mut rows = Vec::new();
     let entries: Vec<_> = match fs::read_dir(dir) {
         Ok(rd) => {
-            let mut v: Vec<_> = rd.flatten()
+            let mut v: Vec<_> = rd
+                .flatten()
                 .filter(|e| e.path().extension().map(|x| x == "xyz").unwrap_or(false))
                 .collect();
             v.sort_by_key(|e| e.file_name());
             v
         }
-        Err(e) => { eprintln!("l7 dir missing: {e}"); return rows; }
+        Err(e) => {
+            eprintln!("l7 dir missing: {e}");
+            return rows;
+        }
     };
     for entry in entries {
-        let stem = entry.path().file_stem().unwrap().to_string_lossy().to_string();
+        let stem = entry
+            .path()
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         if let Some(set) = only.as_ref() {
-            if !set.contains(&stem) { continue; }
+            if !set.contains(&stem) {
+                continue;
+            }
         }
         eprintln!("\n=== L7 {stem} ===");
         let mol = match Molecule::load_xyz(entry.path().to_str().unwrap()) {
             Ok(m) => m,
-            Err(e) => { eprintln!("  load failed: {e}"); continue; }
+            Err(e) => {
+                eprintln!("  load failed: {e}");
+                continue;
+            }
         };
         if let Some(a_size) = l7_fraga_size(&stem) {
             if a_size < mol.atoms.len() {
@@ -413,23 +494,37 @@ fn run_danuglipron(ctx: &ParallelContext, only: &Option<HashSet<String>>) -> Vec
     let mut rows = Vec::new();
     let entries: Vec<_> = match fs::read_dir(dir) {
         Ok(rd) => {
-            let mut v: Vec<_> = rd.flatten()
+            let mut v: Vec<_> = rd
+                .flatten()
                 .filter(|e| e.path().extension().map(|x| x == "xyz").unwrap_or(false))
                 .collect();
             v.sort_by_key(|e| e.file_name());
             v
         }
-        Err(e) => { eprintln!("danuglipron dir missing: {e}"); return rows; }
+        Err(e) => {
+            eprintln!("danuglipron dir missing: {e}");
+            return rows;
+        }
     };
     for entry in entries {
-        let stem = entry.path().file_stem().unwrap().to_string_lossy().to_string();
+        let stem = entry
+            .path()
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         if let Some(set) = only.as_ref() {
-            if !set.contains(&stem) { continue; }
+            if !set.contains(&stem) {
+                continue;
+            }
         }
         eprintln!("\n=== danuglipron {stem} ===");
         let mol = match Molecule::load_xyz(entry.path().to_str().unwrap()) {
             Ok(m) => m,
-            Err(e) => { eprintln!("  load failed: {e}"); continue; }
+            Err(e) => {
+                eprintln!("  load failed: {e}");
+                continue;
+            }
         };
         // No interaction energy for a single molecule — record total RHF+RPA.
         rows.push(run_complex_only(ctx, &stem, &mol, &HashMap::new()));
@@ -438,23 +533,38 @@ fn run_danuglipron(ctx: &ParallelContext, only: &Option<HashSet<String>>) -> Vec
 }
 
 fn run_complex_only(
-    ctx: &ParallelContext, name: &str, mol: &Molecule, refs: &HashMap<String, f64>,
+    ctx: &ParallelContext,
+    name: &str,
+    mol: &Molecule,
+    refs: &HashMap<String, f64>,
 ) -> Csv {
     let n = mol.atoms.len();
     match run_rhf_rpa(ctx, mol, "complex") {
         Ok(c) => Csv {
-            name: name.into(), n_atoms: n, n_ao: c.n_ao, n_aux: c.n_aux,
-            e_rhf: c.e_rhf, e_rpa: c.e_rpa, t_rhf_s: c.t_rhf, t_rpa_s: c.t_rpa,
+            name: name.into(),
+            n_atoms: n,
+            n_ao: c.n_ao,
+            n_aux: c.n_aux,
+            e_rhf: c.e_rhf,
+            e_rpa: c.e_rpa,
+            t_rhf_s: c.t_rhf,
+            t_rpa_s: c.t_rpa,
             e_int_kcalmol: None,
             e_int_ref_kcalmol: refs.get(name).copied(),
             status: "OK".into(),
-        e_int_cp_kcalmol: None,
+            e_int_cp_kcalmol: None,
         },
         Err(e) => {
             eprintln!("  FAIL: {e}");
             Csv {
-                name: name.into(), n_atoms: n, n_ao: 0, n_aux: 0,
-                e_rhf: 0.0, e_rpa: 0.0, t_rhf_s: 0.0, t_rpa_s: 0.0,
+                name: name.into(),
+                n_atoms: n,
+                n_ao: 0,
+                n_aux: 0,
+                e_rhf: 0.0,
+                e_rpa: 0.0,
+                t_rhf_s: 0.0,
+                t_rpa_s: 0.0,
                 e_int_kcalmol: None,
                 e_int_ref_kcalmol: refs.get(name).copied(),
                 status: format!("FAIL:{e}"),
@@ -465,21 +575,36 @@ fn run_complex_only(
 }
 
 fn run_dimer(
-    ctx: &ParallelContext, name: &str, mol: &Molecule, a_size: usize,
-    refs: &HashMap<String, f64>, cp: bool,
+    ctx: &ParallelContext,
+    name: &str,
+    mol: &Molecule,
+    a_size: usize,
+    refs: &HashMap<String, f64>,
+    cp: bool,
 ) -> Csv {
     let n = mol.atoms.len();
     let (mol_a, mol_b) = split_dimer(mol, a_size);
-    eprintln!("  fragments: A={} atoms, B={} atoms", mol_a.atoms.len(), mol_b.atoms.len());
+    eprintln!(
+        "  fragments: A={} atoms, B={} atoms",
+        mol_a.atoms.len(),
+        mol_b.atoms.len()
+    );
 
     let c = match run_rhf_rpa(ctx, mol, "complex") {
         Ok(r) => r,
         Err(e) => {
             eprintln!("  complex FAIL: {e}");
             return Csv {
-                name: name.into(), n_atoms: n, n_ao: 0, n_aux: 0,
-                e_rhf: 0.0, e_rpa: 0.0, t_rhf_s: 0.0, t_rpa_s: 0.0,
-                e_int_kcalmol: None, e_int_ref_kcalmol: refs.get(name).copied(),
+                name: name.into(),
+                n_atoms: n,
+                n_ao: 0,
+                n_aux: 0,
+                e_rhf: 0.0,
+                e_rpa: 0.0,
+                t_rhf_s: 0.0,
+                t_rpa_s: 0.0,
+                e_int_kcalmol: None,
+                e_int_ref_kcalmol: refs.get(name).copied(),
                 e_int_cp_kcalmol: None,
                 status: format!("FAIL_complex:{e}"),
             };
@@ -490,9 +615,16 @@ fn run_dimer(
         Err(e) => {
             eprintln!("  monA FAIL: {e}");
             return Csv {
-                name: name.into(), n_atoms: n, n_ao: c.n_ao, n_aux: c.n_aux,
-                e_rhf: c.e_rhf, e_rpa: c.e_rpa, t_rhf_s: c.t_rhf, t_rpa_s: c.t_rpa,
-                e_int_kcalmol: None, e_int_ref_kcalmol: refs.get(name).copied(),
+                name: name.into(),
+                n_atoms: n,
+                n_ao: c.n_ao,
+                n_aux: c.n_aux,
+                e_rhf: c.e_rhf,
+                e_rpa: c.e_rpa,
+                t_rhf_s: c.t_rhf,
+                t_rpa_s: c.t_rpa,
+                e_int_kcalmol: None,
+                e_int_ref_kcalmol: refs.get(name).copied(),
                 e_int_cp_kcalmol: None,
                 status: format!("FAIL_monA:{e}"),
             };
@@ -503,9 +635,16 @@ fn run_dimer(
         Err(e) => {
             eprintln!("  monB FAIL: {e}");
             return Csv {
-                name: name.into(), n_atoms: n, n_ao: c.n_ao, n_aux: c.n_aux,
-                e_rhf: c.e_rhf, e_rpa: c.e_rpa, t_rhf_s: c.t_rhf, t_rpa_s: c.t_rpa,
-                e_int_kcalmol: None, e_int_ref_kcalmol: refs.get(name).copied(),
+                name: name.into(),
+                n_atoms: n,
+                n_ao: c.n_ao,
+                n_aux: c.n_aux,
+                e_rhf: c.e_rhf,
+                e_rpa: c.e_rpa,
+                t_rhf_s: c.t_rhf,
+                t_rpa_s: c.t_rpa,
+                e_int_kcalmol: None,
+                e_int_ref_kcalmol: refs.get(name).copied(),
                 e_int_cp_kcalmol: None,
                 status: format!("FAIL_monB:{e}"),
             };
@@ -528,7 +667,10 @@ fn run_dimer(
         let idx_b: Vec<usize> = (a_size..n).collect();
         let mol_a_gh = make_cp_fragment(mol, &idx_a);
         let mol_b_gh = make_cp_fragment(mol, &idx_b);
-        match (run_rhf_rpa(ctx, &mol_a_gh, "monA+ghostB"), run_rhf_rpa(ctx, &mol_b_gh, "monB+ghostA")) {
+        match (
+            run_rhf_rpa(ctx, &mol_a_gh, "monA+ghostB"),
+            run_rhf_rpa(ctx, &mol_b_gh, "monB+ghostA"),
+        ) {
             (Ok(a_gh), Ok(b_gh)) => {
                 let e_int_cp_ha = c.e_rpa - a_gh.e_rpa - b_gh.e_rpa;
                 let e_int_cp_kcal = e_int_cp_ha * HA_TO_KCAL;
@@ -537,15 +679,26 @@ fn run_dimer(
                 t_rpa_s += a_gh.t_rpa + b_gh.t_rpa;
                 e_int_cp_kcalmol = Some(e_int_cp_kcal);
             }
-            (Err(e), _) => { eprintln!("  monA+ghostB FAIL: {e}"); status = format!("OK_FAIL_cpA:{e}"); }
-            (_, Err(e)) => { eprintln!("  monB+ghostA FAIL: {e}"); status = format!("OK_FAIL_cpB:{e}"); }
+            (Err(e), _) => {
+                eprintln!("  monA+ghostB FAIL: {e}");
+                status = format!("OK_FAIL_cpA:{e}");
+            }
+            (_, Err(e)) => {
+                eprintln!("  monB+ghostA FAIL: {e}");
+                status = format!("OK_FAIL_cpB:{e}");
+            }
         }
     }
 
     Csv {
-        name: name.into(), n_atoms: n, n_ao: c.n_ao, n_aux: c.n_aux,
-        e_rhf: c.e_rhf, e_rpa: c.e_rpa,
-        t_rhf_s, t_rpa_s,
+        name: name.into(),
+        n_atoms: n,
+        n_ao: c.n_ao,
+        n_aux: c.n_aux,
+        e_rhf: c.e_rhf,
+        e_rpa: c.e_rpa,
+        t_rhf_s,
+        t_rpa_s,
         e_int_kcalmol: Some(e_int_kcal),
         e_int_ref_kcalmol: refs.get(name).copied(),
         e_int_cp_kcalmol,
@@ -560,15 +713,21 @@ fn run_dimer(
 /// identical (GGG/PHE are chemically identical by construction, but nothing
 /// here assumes it).
 fn run_trimer(
-    ctx: &ParallelContext, name: &str, mol: &Molecule,
-    idx_a: &[usize], idx_b: &[usize], idx_c: &[usize],
+    ctx: &ParallelContext,
+    name: &str,
+    mol: &Molecule,
+    idx_a: &[usize],
+    idx_b: &[usize],
+    idx_c: &[usize],
     refs: &HashMap<String, f64>,
 ) -> Csv {
     let n = mol.atoms.len();
     let (mol_a, mol_b, mol_c) = split_trimer(mol, idx_a, idx_b, idx_c);
     eprintln!(
         "  fragments: A={} atoms, B={} atoms, C={} atoms",
-        mol_a.atoms.len(), mol_b.atoms.len(), mol_c.atoms.len()
+        mol_a.atoms.len(),
+        mol_b.atoms.len(),
+        mol_c.atoms.len()
     );
 
     let c = match run_rhf_rpa(ctx, mol, "complex") {
@@ -576,9 +735,16 @@ fn run_trimer(
         Err(e) => {
             eprintln!("  complex FAIL: {e}");
             return Csv {
-                name: name.into(), n_atoms: n, n_ao: 0, n_aux: 0,
-                e_rhf: 0.0, e_rpa: 0.0, t_rhf_s: 0.0, t_rpa_s: 0.0,
-                e_int_kcalmol: None, e_int_ref_kcalmol: refs.get(name).copied(),
+                name: name.into(),
+                n_atoms: n,
+                n_ao: 0,
+                n_aux: 0,
+                e_rhf: 0.0,
+                e_rpa: 0.0,
+                t_rhf_s: 0.0,
+                t_rpa_s: 0.0,
+                e_int_kcalmol: None,
+                e_int_ref_kcalmol: refs.get(name).copied(),
                 status: format!("FAIL_complex:{e}"),
                 e_int_cp_kcalmol: None,
             };
@@ -589,9 +755,16 @@ fn run_trimer(
         Err(e) => {
             eprintln!("  fragA FAIL: {e}");
             return Csv {
-                name: name.into(), n_atoms: n, n_ao: c.n_ao, n_aux: c.n_aux,
-                e_rhf: c.e_rhf, e_rpa: c.e_rpa, t_rhf_s: c.t_rhf, t_rpa_s: c.t_rpa,
-                e_int_kcalmol: None, e_int_ref_kcalmol: refs.get(name).copied(),
+                name: name.into(),
+                n_atoms: n,
+                n_ao: c.n_ao,
+                n_aux: c.n_aux,
+                e_rhf: c.e_rhf,
+                e_rpa: c.e_rpa,
+                t_rhf_s: c.t_rhf,
+                t_rpa_s: c.t_rpa,
+                e_int_kcalmol: None,
+                e_int_ref_kcalmol: refs.get(name).copied(),
                 status: format!("FAIL_fragA:{e}"),
                 e_int_cp_kcalmol: None,
             };
@@ -602,9 +775,16 @@ fn run_trimer(
         Err(e) => {
             eprintln!("  fragB FAIL: {e}");
             return Csv {
-                name: name.into(), n_atoms: n, n_ao: c.n_ao, n_aux: c.n_aux,
-                e_rhf: c.e_rhf, e_rpa: c.e_rpa, t_rhf_s: c.t_rhf, t_rpa_s: c.t_rpa,
-                e_int_kcalmol: None, e_int_ref_kcalmol: refs.get(name).copied(),
+                name: name.into(),
+                n_atoms: n,
+                n_ao: c.n_ao,
+                n_aux: c.n_aux,
+                e_rhf: c.e_rhf,
+                e_rpa: c.e_rpa,
+                t_rhf_s: c.t_rhf,
+                t_rpa_s: c.t_rpa,
+                e_int_kcalmol: None,
+                e_int_ref_kcalmol: refs.get(name).copied(),
                 status: format!("FAIL_fragB:{e}"),
                 e_int_cp_kcalmol: None,
             };
@@ -615,9 +795,16 @@ fn run_trimer(
         Err(e) => {
             eprintln!("  fragC FAIL: {e}");
             return Csv {
-                name: name.into(), n_atoms: n, n_ao: c.n_ao, n_aux: c.n_aux,
-                e_rhf: c.e_rhf, e_rpa: c.e_rpa, t_rhf_s: c.t_rhf, t_rpa_s: c.t_rpa,
-                e_int_kcalmol: None, e_int_ref_kcalmol: refs.get(name).copied(),
+                name: name.into(),
+                n_atoms: n,
+                n_ao: c.n_ao,
+                n_aux: c.n_aux,
+                e_rhf: c.e_rhf,
+                e_rpa: c.e_rpa,
+                t_rhf_s: c.t_rhf,
+                t_rpa_s: c.t_rpa,
+                e_int_kcalmol: None,
+                e_int_ref_kcalmol: refs.get(name).copied(),
                 status: format!("FAIL_fragC:{e}"),
                 e_int_cp_kcalmol: None,
             };
@@ -628,14 +815,18 @@ fn run_trimer(
     eprintln!("  E_int (3-body) = {:.4} kcal/mol", e_int_kcal);
 
     Csv {
-        name: name.into(), n_atoms: n, n_ao: c.n_ao, n_aux: c.n_aux,
-        e_rhf: c.e_rhf, e_rpa: c.e_rpa,
+        name: name.into(),
+        n_atoms: n,
+        n_ao: c.n_ao,
+        n_aux: c.n_aux,
+        e_rhf: c.e_rhf,
+        e_rpa: c.e_rpa,
         t_rhf_s: c.t_rhf + a.t_rhf + b.t_rhf + cc.t_rhf,
         t_rpa_s: c.t_rpa + a.t_rpa + b.t_rpa + cc.t_rpa,
         e_int_kcalmol: Some(e_int_kcal),
         e_int_ref_kcalmol: refs.get(name).copied(),
         status: "OK".into(),
-    e_int_cp_kcalmol: None,
+        e_int_cp_kcalmol: None,
     }
 }
 
@@ -668,7 +859,11 @@ fn main() {
     // CSV writer
     let csv_path = std::env::var("FERRIC_C9_OUTPUT_CSV").ok();
     let mut csv_file = csv_path.as_ref().map(|p| {
-        fs::OpenOptions::new().create(true).write(true).truncate(true).open(p)
+        fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(p)
             .expect("open CSV file")
     });
     let mut emit = |line: String| {

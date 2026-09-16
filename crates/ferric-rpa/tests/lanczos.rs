@@ -12,8 +12,8 @@ use ferric_integrals::operator::Operator;
 use ferric_rpa::config::{Eigensolver, QuadratureConfig, QuadratureScheme};
 use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::ScfResult;
 use std::time::Instant;
 
 fn setup(
@@ -49,8 +49,11 @@ fn pyscf_compat_config(n_quad: usize) -> PdepRpaConfig {
 
 #[test]
 fn h2o_cc_pvdz_lanczos_matches_davidson() {
-    let (mol, obs, dfbs, op, rhf) =
-        setup("../../testdata/molecules/water.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/water.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+    );
 
     // Davidson reference
     let mut cfg_dav = pyscf_compat_config(40);

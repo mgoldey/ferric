@@ -14,6 +14,7 @@ and writes them to testdata/reference/c9_refs/{s66x8_ccsdt_cbs.json,l7_qcisd_or_
 Run from repo root:
     python scripts/fetch_s66x8.py
 """
+
 from __future__ import annotations
 
 import io
@@ -56,19 +57,71 @@ def fetch_text(url: str, timeout: int = 60) -> str:
 #
 # Fragments use these monomer atom counts (A_size, B_size):
 S66_FRAGSIZE = {
-    1: (3, 3),    2: (3, 6),    3: (3, 7),    4: (3, 12),   5: (6, 6),
-    6: (6, 7),    7: (6, 12),   8: (6, 3),    9: (7, 6),    10: (7, 7),
-    11: (7, 12),  12: (7, 3),   13: (12, 6),  14: (12, 7),  15: (12, 12),
-    16: (12, 3),  17: (15, 15), 18: (15, 11), 19: (15, 9),  20: (15, 11),
-    21: (11, 11), 22: (11, 12), 23: (15, 7),  24: (12, 12), 25: (12, 11),
-    26: (15, 15), 27: (12, 6),  28: (12, 11), 29: (12, 9),  30: (8, 6),
-    31: (8, 7),   32: (8, 3),   33: (6, 6),   34: (6, 7),   35: (6, 3),
-    36: (8, 8),   37: (6, 7),   38: (6, 3),   39: (11, 11), 40: (11, 9),
-    41: (12, 11), 42: (12, 9),  43: (15, 11), 44: (8, 8),   45: (6, 6),
-    46: (11, 12), 47: (8, 12),  48: (12, 12), 49: (12, 12), 50: (8, 8),
-    51: (6, 6),   52: (15, 12), 53: (15, 8),  54: (15, 6),  55: (15, 11),
-    56: (15, 9),  57: (11, 11), 58: (11, 8),  59: (11, 6),  60: (12, 8),
-    61: (8, 8),   62: (12, 12), 63: (12, 8),  64: (12, 6),  65: (11, 8),
+    1: (3, 3),
+    2: (3, 6),
+    3: (3, 7),
+    4: (3, 12),
+    5: (6, 6),
+    6: (6, 7),
+    7: (6, 12),
+    8: (6, 3),
+    9: (7, 6),
+    10: (7, 7),
+    11: (7, 12),
+    12: (7, 3),
+    13: (12, 6),
+    14: (12, 7),
+    15: (12, 12),
+    16: (12, 3),
+    17: (15, 15),
+    18: (15, 11),
+    19: (15, 9),
+    20: (15, 11),
+    21: (11, 11),
+    22: (11, 12),
+    23: (15, 7),
+    24: (12, 12),
+    25: (12, 11),
+    26: (15, 15),
+    27: (12, 6),
+    28: (12, 11),
+    29: (12, 9),
+    30: (8, 6),
+    31: (8, 7),
+    32: (8, 3),
+    33: (6, 6),
+    34: (6, 7),
+    35: (6, 3),
+    36: (8, 8),
+    37: (6, 7),
+    38: (6, 3),
+    39: (11, 11),
+    40: (11, 9),
+    41: (12, 11),
+    42: (12, 9),
+    43: (15, 11),
+    44: (8, 8),
+    45: (6, 6),
+    46: (11, 12),
+    47: (8, 12),
+    48: (12, 12),
+    49: (12, 12),
+    50: (8, 8),
+    51: (6, 6),
+    52: (15, 12),
+    53: (15, 8),
+    54: (15, 6),
+    55: (15, 11),
+    56: (15, 9),
+    57: (11, 11),
+    58: (11, 8),
+    59: (11, 6),
+    60: (12, 8),
+    61: (8, 8),
+    62: (12, 12),
+    63: (12, 8),
+    64: (12, 6),
+    65: (11, 8),
     66: (6, 11),
 }
 # NOTE: These fragment-A sizes are *educated estimates* derived from molecule
@@ -165,12 +218,12 @@ def fetch_s66x8_references():
 # ---------- L7 ----------
 
 L7_NAMEMAP = {
-    "octadecanedimer": "C2C2PD",         # octadecane dimer (PD = parallel-displaced alkane)
+    "octadecanedimer": "C2C2PD",  # octadecane dimer (PD = parallel-displaced alkane)
     "guaninetrimer": "GGG",
-    "circumcoroneneadenine": "C3A",      # circumcoronene...adenine
+    "circumcoroneneadenine": "C3A",  # circumcoronene...adenine
     "circumcoroneneGCbasepair": "C3GC",
     "phenylalanineresiduestrimer": "PHE",
-    "coronenedimer": "CBH",              # coronene dimer ("Coronene benzene homo"? L7 calls it CBH)
+    "coronenedimer": "CBH",  # coronene dimer ("Coronene benzene homo"? L7 calls it CBH)
     "GCGCbasepairstack": "GCGC",
 }
 
@@ -204,13 +257,13 @@ def fetch_l7_geometries():
 # original Sedlak 2013 reference. These are the canonical L7 numbers used in
 # subsequent DLPNO-CCSD(T) cross-validation studies.
 L7_REFS = {
-    "C2C2PD": -11.06,   # octadecane dimer  (QCISD(T)/CBS, Sedlak 2013)
-    "C3A":    -18.19,   # circumcoronene...adenine
-    "C3GC":   -31.25,   # circumcoronene...GC base pair
-    "CBH":    -24.36,   # coronene dimer (sometimes labeled "C2H" or "CO-CO")
-    "GCGC":   -14.37,   # GCGC base pair stack
-    "GGG":     -2.40,   # guanine trimer
-    "PHE":   -25.76,    # phenylalanine residues trimer
+    "C2C2PD": -11.06,  # octadecane dimer  (QCISD(T)/CBS, Sedlak 2013)
+    "C3A": -18.19,  # circumcoronene...adenine
+    "C3GC": -31.25,  # circumcoronene...GC base pair
+    "CBH": -24.36,  # coronene dimer (sometimes labeled "C2H" or "CO-CO")
+    "GCGC": -14.37,  # GCGC base pair stack
+    "GGG": -2.40,  # guanine trimer
+    "PHE": -25.76,  # phenylalanine residues trimer
 }
 
 
@@ -223,6 +276,7 @@ def write_l7_refs():
 
 # ---------- main ----------
 
+
 def main():
     n_s66 = fetch_s66x8_geometries()
     n_s66_ref = fetch_s66x8_references()
@@ -234,7 +288,9 @@ def main():
         print(f"WARNING: expected 528 S66x8 refs, got {n_s66_ref}", file=sys.stderr)
     if n_l7 != 7:
         print(f"WARNING: expected 7 L7 geometries, got {n_l7}", file=sys.stderr)
-    print(f"DONE: S66x8={n_s66}/528 (refs {n_s66_ref}/528), L7={n_l7}/7", file=sys.stderr)
+    print(
+        f"DONE: S66x8={n_s66}/528 (refs {n_s66_ref}/528), L7={n_l7}/7", file=sys.stderr
+    )
 
 
 if __name__ == "__main__":

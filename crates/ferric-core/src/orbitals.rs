@@ -31,7 +31,12 @@ pub struct OrbitalSpace {
 impl OrbitalSpace {
     /// Construct an orbital-space partition.
     pub fn new(nocc: usize, nvir: usize, nocc_total: usize, first_occ: usize) -> Self {
-        Self { nocc, nvir, nocc_total, first_occ }
+        Self {
+            nocc,
+            nvir,
+            nocc_total,
+            first_occ,
+        }
     }
 
     /// Number of occupied-virtual pairs (`nocc * nvir`) — the dimension of the

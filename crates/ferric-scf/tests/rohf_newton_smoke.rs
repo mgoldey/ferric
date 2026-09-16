@@ -15,12 +15,12 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::operator::Operator;
 use ferric_integrals::oneelectron;
+use ferric_integrals::operator::Operator;
+use ferric_scf::rhf::build_jk;
 use ferric_scf::rohf::{solve_rohf, RohfConfig};
 use ferric_scf::rohf_newton::{rohf_newton_step, RohfNewtonInputs};
 use ferric_scf::screening::SchwarzBounds;
-use ferric_scf::rhf::build_jk;
 use ndarray::Array2;
 
 #[test]
@@ -49,7 +49,11 @@ fn rohf_newton_step_at_stationary_point_is_noop() {
     let h = oneelectron::hcore(&prep);
 
     let d_a = res.density_alpha.clone();
-    let d_b = res.density_beta.as_ref().expect("ROHF stores density_beta").clone();
+    let d_b = res
+        .density_beta
+        .as_ref()
+        .expect("ROHF stores density_beta")
+        .clone();
     let d_total = &d_a + &d_b;
 
     let mut j = Array2::<f64>::zeros((n, n));
@@ -114,9 +118,11 @@ fn rohf_newton_step_at_stationary_point_is_noop() {
 
     let (c_new, kmax) = rohf_newton_step(&ctx, &inputs, 0.0, 0.2, 20, 1e-9).unwrap();
     eprintln!("Newton step at stationary point: kmax = {:.3e}", kmax);
-    assert!(kmax < 1e-5,
+    assert!(
+        kmax < 1e-5,
         "At a converged stationary point, the Newton step should be ~0; got kmax = {:.3e}",
-        kmax);
+        kmax
+    );
 
     // C should be essentially unchanged.
     let diff = (&c_new - c).iter().fold(0.0f64, |m, &v| m.max(v.abs()));
@@ -150,8 +156,14 @@ fn rohf_newton_h2_triplet_lda_matches_diis() {
     };
     let r_diis = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_diis).unwrap();
     let r_newton = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_newton).unwrap();
-    eprintln!("H₂ triplet/LDA  DIIS:   E = {:.10}, iters = {}", r_diis.energy, r_diis.iterations);
-    eprintln!("H₂ triplet/LDA  Newton: E = {:.10}, iters = {}", r_newton.energy, r_newton.iterations);
+    eprintln!(
+        "H₂ triplet/LDA  DIIS:   E = {:.10}, iters = {}",
+        r_diis.energy, r_diis.iterations
+    );
+    eprintln!(
+        "H₂ triplet/LDA  Newton: E = {:.10}, iters = {}",
+        r_newton.energy, r_newton.iterations
+    );
 
     assert!(r_diis.converged && r_newton.converged);
     assert!(
@@ -190,8 +202,14 @@ fn rohf_newton_oh_hf_matches_diis_only() {
     let r_diis = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_diis).unwrap();
     let r_newton = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_newton).unwrap();
 
-    eprintln!("DIIS: E = {:.10}, iters = {}", r_diis.energy, r_diis.iterations);
-    eprintln!("Newton-aug: E = {:.10}, iters = {}", r_newton.energy, r_newton.iterations);
+    eprintln!(
+        "DIIS: E = {:.10}, iters = {}",
+        r_diis.energy, r_diis.iterations
+    );
+    eprintln!(
+        "Newton-aug: E = {:.10}, iters = {}",
+        r_newton.energy, r_newton.iterations
+    );
 
     assert!(r_diis.converged, "DIIS-only must converge");
     assert!(r_newton.converged, "Newton-aug must converge");
@@ -268,4 +286,3 @@ fn roks_h2_triplet_pbe_gga_fxc_newton_engages_and_matches_diis() {
         (r_diis.energy - r_newton.energy).abs()
     );
 }
-

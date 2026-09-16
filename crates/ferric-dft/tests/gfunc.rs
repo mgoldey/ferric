@@ -23,7 +23,11 @@ fn grid_vs_analytic_overlap(mol: &Molecule, bs: &BasisSet, tol: f64) -> f64 {
     let s_analytic = overlap(&obs);
 
     // Dense grid: g functions are high angular frequency, need many angular pts.
-    let cfg = AtomicGridConfig { n_radial: 120, n_angular: 302, ..Default::default() };
+    let cfg = AtomicGridConfig {
+        n_radial: 120,
+        n_angular: 302,
+        ..Default::default()
+    };
     let grid = build_atomic_grid(mol, &cfg);
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let chi = eval_basis_on_points(mol, bs, &pts).unwrap();
@@ -138,7 +142,10 @@ fn gradient_matches_central_difference_covers_g_shells() {
         }
     }
     eprintln!("[def2-qzvp] max |grad_ana - grad_FD| = {max_err:.2e}");
-    assert!(max_err < 1e-5, "def2-qzvp AO grad FD mismatch {max_err:.2e}");
+    assert!(
+        max_err < 1e-5,
+        "def2-qzvp AO grad FD mismatch {max_err:.2e}"
+    );
 }
 
 #[test]
@@ -203,7 +210,10 @@ fn hessian_matches_fd_covers_g_shells() {
         }
     }
     eprintln!("[def2-qzvp] max |Hess_ana - Hess_FD| = {max_diff:.2e}");
-    assert!(max_diff < 1e-5, "def2-qzvp Hessian FD mismatch {max_diff:.2e}");
+    assert!(
+        max_diff < 1e-5,
+        "def2-qzvp Hessian FD mismatch {max_diff:.2e}"
+    );
 }
 
 #[test]

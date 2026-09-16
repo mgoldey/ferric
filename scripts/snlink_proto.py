@@ -77,10 +77,10 @@ except ImportError:  # pragma: no cover
 # One thread everywhere: this harness is deliberately CPU-light.
 pyscf_lib.num_threads(1)
 
-BATCH_POINTS = 256          # matches ferric's COSX_SUB_BATCH_POINTS
-ROUNDING_SLACK = 1.0 + 1e-10   # cosx_screen.rs
-COARSE_SLACK = 1.0 + 1e-9      # cosx_screen.rs
-FERRIC_DEFAULT_T = 1e-7        # COSX_DEFAULT_SCREEN_THRESH
+BATCH_POINTS = 256  # matches ferric's COSX_SUB_BATCH_POINTS
+ROUNDING_SLACK = 1.0 + 1e-10  # cosx_screen.rs
+COARSE_SLACK = 1.0 + 1e-9  # cosx_screen.rs
+FERRIC_DEFAULT_T = 1e-7  # COSX_DEFAULT_SCREEN_THRESH
 
 # Active mutation (set by --mutate); consumed at the few named points below.
 MUTATION = None
@@ -123,10 +123,11 @@ def pure_factor(l: int, pure: bool, c2s: np.ndarray | None) -> float:
 @dataclass
 class PairBound:
     """Per-shell-pair Hoelder bound data (the `Coarse` struct of cosx_screen.rs)."""
-    mid: np.ndarray     # midpoint of A and B
-    half: float         # |A-B|/2
-    total: float        # sum(beta0+beta1): the bound at R=0, valid everywhere
-    sum_bg: float       # sum(beta0*g0 + beta1*g1): far-field numerator
+
+    mid: np.ndarray  # midpoint of A and B
+    half: float  # |A-B|/2
+    total: float  # sum(beta0+beta1): the bound at R=0, valid everywhere
+    sum_bg: float  # sum(beta0*g0 + beta1*g1): far-field numerator
 
 
 class Bounds:
@@ -167,13 +168,15 @@ class Bounds:
             # on-nucleus case the Rust module documents), which pins both the
             # normalization and the bound.
             coefs = np.max(np.abs(mol.bas_ctr_coeff(s)), axis=1)
-            sh.append(dict(
-                l=l,
-                center=np.asarray(mol.bas_coord(s), dtype=float),
-                exps=np.asarray(exps, dtype=float),
-                coefs=coefs,
-                sfac=pure_factor(l, mol.cart is False, c2s.get(l)),
-            ))
+            sh.append(
+                dict(
+                    l=l,
+                    center=np.asarray(mol.bas_coord(s), dtype=float),
+                    exps=np.asarray(exps, dtype=float),
+                    coefs=coefs,
+                    sfac=pure_factor(l, mol.cart is False, c2s.get(l)),
+                )
+            )
         self.sh = sh
         self.pairs: dict[tuple[int, int], PairBound] = {}
         for s1 in range(self.nsh):
@@ -245,6 +248,7 @@ class Bounds:
 # Grid, X, batches
 # ===========================================================================
 
+
 def build_grid(mol: gto.Mole, atom_grid=(50, 110)):
     """Becke grid matching ferric's COSX default, with pruning DISABLED.
 
@@ -269,13 +273,15 @@ def build_grid(mol: gto.Mole, atom_grid=(50, 110)):
     """
     g = dft.gen_grid.Grids(mol)
     g.prune = None
-    g.atom_grid = {a: tuple(atom_grid) for a in {mol.atom_symbol(i)
-                                                 for i in range(mol.natm)}}
+    g.atom_grid = {
+        a: tuple(atom_grid) for a in {mol.atom_symbol(i) for i in range(mol.natm)}
+    }
     g.build()
     if np.any(g.weights < 0.0):
         raise AssertionError(
             f"grid has {(g.weights < 0).sum()} negative weights; X = sqrt(w) chi "
-            "is undefined and abs() silently corrupts the quadrature")
+            "is undefined and abs() silently corrupts the quadrature"
+        )
     return g.coords, g.weights
 
 
@@ -290,10 +296,11 @@ def batch_sphere(pts: np.ndarray) -> tuple[np.ndarray, float]:
 # The two screens
 # ===========================================================================
 
+
 @dataclass
 class ShellInfo:
-    ao_slice: list[tuple[int, int]]   # (start, stop) AO range per shell
-    ncart: list[int]                  # cost weight per shell
+    ao_slice: list[tuple[int, int]]  # (start, stop) AO range per shell
+    ncart: list[int]  # cost weight per shell
 
 
 def shell_info(mol: gto.Mole) -> ShellInfo:
@@ -306,8 +313,9 @@ def shell_info(mol: gto.Mole) -> ShellInfo:
 
 def shell_max(mat: np.ndarray, info: ShellInfo) -> np.ndarray:
     """max |mat[mu, :]| over the AOs of each shell -- `fmax` / `xmax`."""
-    return np.array([np.max(np.abs(mat[a:b])) if b > a else 0.0
-                     for a, b in info.ao_slice])
+    return np.array(
+        [np.max(np.abs(mat[a:b])) if b > a else 0.0 for a, b in info.ao_slice]
+    )
 
 
 def shell_dmax(D: np.ndarray, info: ShellInfo) -> np.ndarray:
@@ -328,6 +336,7 @@ class ScreenFerric:
     One threshold; the density enters only through F = D X, collapsed to ONE
     SCALAR PER SHELL.  That collapse is exactly what this study puts under test.
     """
+
     name = "ferric"
 
     def __init__(self, t: float):
@@ -373,6 +382,7 @@ class ScreenSnLink:
     resolving the pair rather than from a tighter number.  That is a prediction
     this harness measures, not an assumption.
     """
+
     name = "snlink"
 
     def __init__(self, eps_e: float, eps_k: float):
@@ -394,13 +404,15 @@ class ScreenSnLink:
             # positive control.
             w = max(fmax[s1], fmax[s2])
         else:
-            w = max(float(np.max(dmax[:, s1] * xmax)),
-                    float(np.max(dmax[:, s2] * xmax)))
+            w = max(
+                float(np.max(dmax[:, s1] * xmax)), float(np.max(dmax[:, s2] * xmax))
+            )
         return est * w >= self.eps_k
 
 
 class ScreenNone:
     """The trivial limit: keep everything.  A1's reference."""
+
     name = "unscreened"
 
     def prepare(self, D, dmax, info):
@@ -414,17 +426,20 @@ class ScreenNone:
 # The K build
 # ===========================================================================
 
+
 @dataclass
 class BuildResult:
     K: np.ndarray
-    kept: int = 0            # (shell pair, batch) units reaching the kernel
-    total: int = 0           # the same, unscreened
-    kept_weighted: float = 0.0    # weighted by ncart(s1)*ncart(s2)*len(batch)
+    kept: int = 0  # (shell pair, batch) units reaching the kernel
+    total: int = 0  # the same, unscreened
+    kept_weighted: float = 0.0  # weighted by ncart(s1)*ncart(s2)*len(batch)
     total_weighted: float = 0.0
-    kept_set: set = field(default_factory=set)   # {(batch_idx, s1, s2)} for A4
+    kept_set: set = field(default_factory=set)  # {(batch_idx, s1, s2)} for A4
 
 
-def build_k(mol, coords, weights, D, bnd, screen, info, record_set=False) -> BuildResult:
+def build_k(
+    mol, coords, weights, D, bnd, screen, info, record_set=False
+) -> BuildResult:
     """Seminumerical K with `screen` deciding each (shell pair, batch).
 
     Structure follows cosx_k.rs: per batch, X and F are formed for the batch,
@@ -445,15 +460,15 @@ def build_k(mol, coords, weights, D, bnd, screen, info, record_set=False) -> Bui
         pts = coords[b0:b1]
         w = weights[b0:b1]
         nb = b1 - b0
-        ao = mol.eval_gto("GTOval", pts)            # (nb, nbf)
-        X = (ao * np.sqrt(w)[:, None]).T             # (nbf, nb)
+        ao = mol.eval_gto("GTOval", pts)  # (nb, nbf)
+        X = (ao * np.sqrt(w)[:, None]).T  # (nbf, nb)
         # NO abs(): build_grid() asserts w >= 0, because abs() would silently
         # flip the sign of a point's contribution (see build_grid's docstring).
-        F = D @ X                                    # (nbf, nb)
+        F = D @ X  # (nbf, nb)
         fmax = shell_max(F, info)
         xmax = shell_max(X, info)
         centre, radius = batch_sphere(pts)
-        A = mol.intor("int1e_grids", grids=pts)      # (nb, nbf, nbf), +1/|r-r_g|
+        A = mol.intor("int1e_grids", grids=pts)  # (nb, nbf, nbf), +1/|r-r_g|
         G = np.zeros((nbf, nb))
 
         for s1 in range(nsh):
@@ -469,12 +484,12 @@ def build_k(mol, coords, weights, D, bnd, screen, info, record_set=False) -> Bui
                 res.kept_weighted += unit_w
                 if record_set:
                     res.kept_set.add((b0, s1, s2))
-                blk = A[:, a0:a1, c0:c1]             # (nb, na, nc)
+                blk = A[:, a0:a1, c0:c1]  # (nb, na, nc)
                 # G[s1] += A[s1,s2] F[s2];  and the mirror G[s2] += A[s2,s1] F[s1].
                 # A is symmetric in (mu,nu) so A[s2,s1] = A[s1,s2]^T.
                 G[a0:a1] += np.einsum("gmn,ng->mg", blk, F[c0:c1], optimize=True)
                 if MUTATION == "drop_mirror":
-                    continue   # DELIBERATELY BROKEN: A1 must fail
+                    continue  # DELIBERATELY BROKEN: A1 must fail
                 if s1 != s2:
                     G[c0:c1] += np.einsum("gmn,mg->ng", blk, F[a0:a1], optimize=True)
 
@@ -504,15 +519,20 @@ def analytic_k(mol, D) -> np.ndarray:
 # ===========================================================================
 
 SYSTEMS = {
-    "water": ("O 0.0000 0.0000 0.1173; H 0.0000 0.7572 -0.4692; "
-              "H 0.0000 -0.7572 -0.4692"),
-    "methane": ("C 0.0000 0.0000 0.0000; H 0.6276 0.6276 0.6276; "
-                "H 0.6276 -0.6276 -0.6276; H -0.6276 0.6276 -0.6276; "
-                "H -0.6276 -0.6276 0.6276"),
-    "ethane": ("C 0.0000 0.0000 0.7680; C 0.0000 0.0000 -0.7680; "
-               "H 0.0000 1.0192 1.1573; H -0.8825 -0.5096 1.1573; "
-               "H 0.8825 -0.5096 1.1573; H 0.0000 -1.0192 -1.1573; "
-               "H 0.8825 0.5096 -1.1573; H -0.8825 0.5096 -1.1573"),
+    "water": (
+        "O 0.0000 0.0000 0.1173; H 0.0000 0.7572 -0.4692; H 0.0000 -0.7572 -0.4692"
+    ),
+    "methane": (
+        "C 0.0000 0.0000 0.0000; H 0.6276 0.6276 0.6276; "
+        "H 0.6276 -0.6276 -0.6276; H -0.6276 0.6276 -0.6276; "
+        "H -0.6276 -0.6276 0.6276"
+    ),
+    "ethane": (
+        "C 0.0000 0.0000 0.7680; C 0.0000 0.0000 -0.7680; "
+        "H 0.0000 1.0192 1.1573; H -0.8825 -0.5096 1.1573; "
+        "H 0.8825 -0.5096 1.1573; H 0.0000 -1.0192 -1.1573; "
+        "H 0.8825 0.5096 -1.1573; H -0.8825 0.5096 -1.1573"
+    ),
 }
 
 
@@ -520,11 +540,15 @@ def _atom_spec(name: str) -> str:
     """Geometry for `name`: a key of SYSTEMS, or `alkane_N` from testdata."""
     if name in SYSTEMS:
         return SYSTEMS[name]
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "testdata", "molecules", f"{name}.xyz")
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "testdata",
+        "molecules",
+        f"{name}.xyz",
+    )
     if not os.path.exists(path):
         raise KeyError(f"unknown system {name!r} (not in SYSTEMS and no {path})")
-    lines = open(path).read().splitlines()[2:]      # skip the xyz count + comment
+    lines = open(path).read().splitlines()[2:]  # skip the xyz count + comment
     return "; ".join(ln.strip() for ln in lines if ln.strip())
 
 
@@ -549,6 +573,7 @@ def prepare_system(name: str, basis: str, atom_grid=(50, 110)):
 # Anchors
 # ===========================================================================
 
+
 def anchor_bound_never_underestimates(mol, bnd, info, anchors, label):
     """A0 -- the bound must never UNDERestimate (whitepaper §4, layer 1).
 
@@ -562,9 +587,13 @@ def anchor_bound_never_underestimates(mol, bnd, info, anchors, label):
     Rust module's own convention.
     """
     rng = np.random.default_rng(0)
-    pts = np.vstack([rng.normal(0.0, 3.0, (60, 3)),
-                     mol.atom_coords(),                   # on-nucleus, T=0
-                     rng.normal(0.0, 20.0, (20, 3))])     # far field
+    pts = np.vstack(
+        [
+            rng.normal(0.0, 3.0, (60, 3)),
+            mol.atom_coords(),  # on-nucleus, T=0
+            rng.normal(0.0, 20.0, (20, 3)),
+        ]
+    )  # far field
     A = mol.intor("int1e_grids", grids=pts)
     viol = 0
     ratios = []
@@ -583,7 +612,7 @@ def anchor_bound_never_underestimates(mol, bnd, info, anchors, label):
     anchors.check(
         f"A0 bound never underestimates [{label}]",
         viol == 0,
-        f"violations={viol}/{len(pts)*mol.nbas*(mol.nbas+1)//2}, "
+        f"violations={viol}/{len(pts) * mol.nbas * (mol.nbas + 1) // 2}, "
         f"tightness true/bound: median {np.median(r):.2e} max {r.max():.2e}",
     )
 
@@ -608,15 +637,18 @@ class Anchors:
         return allok
 
 
-def run(system: str, basis: str, atom_grid, thresholds, anchors: Anchors,
-        sweep: bool = True):
-    print(f"\n{'='*110}")
+def run(
+    system: str, basis: str, atom_grid, thresholds, anchors: Anchors, sweep: bool = True
+):
+    print(f"\n{'=' * 110}")
     print(f"SYSTEM {system}/{basis}  grid {atom_grid[0]}x{atom_grid[1]} (unpruned)")
     print("=" * 110)
     mol, D, coords, weights, bnd, info = prepare_system(system, basis, atom_grid)
-    print(f"  nbf={mol.nao}  nsh={mol.nbas}  npts={len(weights)}  "
-          f"batches={math.ceil(len(weights)/BATCH_POINTS)}  "
-          f"pairs={mol.nbas*(mol.nbas+1)//2}")
+    print(
+        f"  nbf={mol.nao}  nsh={mol.nbas}  npts={len(weights)}  "
+        f"batches={math.ceil(len(weights) / BATCH_POINTS)}  "
+        f"pairs={mol.nbas * (mol.nbas + 1) // 2}"
+    )
 
     # ---- A0: the bound must never underestimate ---------------------------
     anchor_bound_never_underestimates(mol, bnd, info, anchors, system)
@@ -625,8 +657,10 @@ def run(system: str, basis: str, atom_grid, thresholds, anchors: Anchors,
     ref = build_k(mol, coords, weights, D, bnd, ScreenNone(), info)
     K_an = analytic_k(mol, D)
     e_grid = float(np.max(np.abs(ref.K - K_an)))
-    print(f"  grid error  max|K_grid - K_analytic| = {e_grid:.3e}   "
-          f"(max|K| = {np.max(np.abs(K_an)):.3e})")
+    print(
+        f"  grid error  max|K_grid - K_analytic| = {e_grid:.3e}   "
+        f"(max|K| = {np.max(np.abs(K_an)):.3e})"
+    )
 
     # ---- A1: trivial limit -------------------------------------------------
     #
@@ -640,11 +674,13 @@ def run(system: str, basis: str, atom_grid, thresholds, anchors: Anchors,
     anchors.check(
         f"A1a unscreened K reproduces analytic K to grid accuracy [{system}]",
         e_grid <= 1e-3 * scale,
-        f"E_grid={e_grid:.2e} vs 1e-3*max|K|={1e-3*scale:.2e} "
+        f"E_grid={e_grid:.2e} vs 1e-3*max|K|={1e-3 * scale:.2e} "
         f"(guards the accumulation itself, not just screen-vs-unscreened)",
     )
-    for scr, label in ((ScreenFerric(0.0), "ferric t=0"),
-                       (ScreenSnLink(0.0, 0.0), "snlink eps=0")):
+    for scr, label in (
+        (ScreenFerric(0.0), "ferric t=0"),
+        (ScreenSnLink(0.0, 0.0), "snlink eps=0"),
+    ):
         r = build_k(mol, coords, weights, D, bnd, scr, info)
         err = float(np.max(np.abs(r.K - ref.K)))
         anchors.check(
@@ -657,7 +693,9 @@ def run(system: str, basis: str, atom_grid, thresholds, anchors: Anchors,
     t = thresholds["ferric_t"]
     ee, ek = thresholds["eps_e"], thresholds["eps_k"]
     fe = build_k(mol, coords, weights, D, bnd, ScreenFerric(t), info, record_set=True)
-    sn = build_k(mol, coords, weights, D, bnd, ScreenSnLink(ee, ek), info, record_set=True)
+    sn = build_k(
+        mol, coords, weights, D, bnd, ScreenSnLink(ee, ek), info, record_set=True
+    )
 
     e_fe = float(np.max(np.abs(fe.K - ref.K)))
     e_sn = float(np.max(np.abs(sn.K - ref.K)))
@@ -681,7 +719,7 @@ def run(system: str, basis: str, atom_grid, thresholds, anchors: Anchors,
         anchors.check(
             f"A2 screen error <= 0.1*grid error [{system}] {lbl}",
             e <= 0.1 * e_grid,
-            f"E_scr={e:.2e}  E_grid={e_grid:.2e}  ratio={e/e_grid if e_grid else float('nan'):.2e}",
+            f"E_scr={e:.2e}  E_grid={e_grid:.2e}  ratio={e / e_grid if e_grid else float('nan'):.2e}",
         )
 
     # ---- A3: reachability --------------------------------------------------
@@ -689,15 +727,17 @@ def run(system: str, basis: str, atom_grid, thresholds, anchors: Anchors,
         anchors.check(
             f"A3 reachability: screen drops something [{system}] {lbl}",
             r.kept < r.total,
-            f"kept={r.kept}/{r.total} ({100.0*r.kept/r.total:.2f}%), "
-            f"weighted {100.0*r.kept_weighted/r.total_weighted:.2f}%",
+            f"kept={r.kept}/{r.total} ({100.0 * r.kept / r.total:.2f}%), "
+            f"weighted {100.0 * r.kept_weighted / r.total_weighted:.2f}%",
         )
 
     # ---- A4: the screens actually differ, and the difference-counter works --
     only_fe = fe.kept_set - sn.kept_set
     only_sn = sn.kept_set - fe.kept_set
-    print(f"  kept-set symmetric difference: |FE only|={len(only_fe)}  "
-          f"|SN only|={len(only_sn)}")
+    print(
+        f"  kept-set symmetric difference: |FE only|={len(only_fe)}  "
+        f"|SN only|={len(only_sn)}"
+    )
 
     # Positive control on the difference-counter itself.  Disable the E-branch
     # (eps_E = +inf, NOT 0 -- at 0 the branch fires unconditionally and the
@@ -709,8 +749,9 @@ def run(system: str, basis: str, atom_grid, thresholds, anchors: Anchors,
     global MUTATION
     saved = MUTATION
     MUTATION = "snlink_shell_scalar_density"
-    sn_as_fe = build_k(mol, coords, weights, D, bnd, ScreenSnLink(math.inf, t), info,
-                       record_set=True)
+    sn_as_fe = build_k(
+        mol, coords, weights, D, bnd, ScreenSnLink(math.inf, t), info, record_set=True
+    )
     MUTATION = saved
     anchors.check(
         f"A4 positive control: SN(eps_E=inf, dweight->fmax) == FE [{system}]",
@@ -721,19 +762,25 @@ def run(system: str, basis: str, atom_grid, thresholds, anchors: Anchors,
 
     # ---- density branch: does it ever fire beyond the geometric one? -------
     # SN with eps_K = +inf is the E-branch alone (density-free).
-    e_only = build_k(mol, coords, weights, D, bnd, ScreenSnLink(ee, math.inf), info,
-                     record_set=True)
-    k_only = build_k(mol, coords, weights, D, bnd, ScreenSnLink(math.inf, ek), info,
-                     record_set=True)
+    e_only = build_k(
+        mol, coords, weights, D, bnd, ScreenSnLink(ee, math.inf), info, record_set=True
+    )
+    k_only = build_k(
+        mol, coords, weights, D, bnd, ScreenSnLink(math.inf, ek), info, record_set=True
+    )
     added_by_k = len(sn.kept_set - e_only.kept_set)
-    print(f"  SN branch decomposition: E-branch alone keeps {e_only.kept}/{e_only.total}, "
-          f"K-branch alone keeps {k_only.kept}/{k_only.total}, "
-          f"K-branch adds {added_by_k} pair-batches the E-branch would have dropped")
+    print(
+        f"  SN branch decomposition: E-branch alone keeps {e_only.kept}/{e_only.total}, "
+        f"K-branch alone keeps {k_only.kept}/{k_only.total}, "
+        f"K-branch adds {added_by_k} pair-batches the E-branch would have dropped"
+    )
 
     # ---- the kept-work table ----------------------------------------------
     print()
-    print(f"  {'configuration':<28} {'kept/total':>16} {'kept %':>9} "
-          f"{'weighted %':>11} {'max|dK|':>11} {'vs E_grid':>11}")
+    print(
+        f"  {'configuration':<28} {'kept/total':>16} {'kept %':>9} "
+        f"{'weighted %':>11} {'max|dK|':>11} {'vs E_grid':>11}"
+    )
     for lbl, r, e in (
         ("unscreened", ref, 0.0),
         (f"ferric  t={t:g}", fe, e_fe),
@@ -741,28 +788,44 @@ def run(system: str, basis: str, atom_grid, thresholds, anchors: Anchors,
         (f"  sn-LinK E-branch only", e_only, float(np.max(np.abs(e_only.K - ref.K)))),
         (f"  sn-LinK K-branch only", k_only, float(np.max(np.abs(k_only.K - ref.K)))),
     ):
-        print(f"  {lbl:<28} {r.kept:>7}/{r.total:<8} "
-              f"{100.0*r.kept/r.total:>8.2f}% "
-              f"{100.0*r.kept_weighted/r.total_weighted:>10.2f}% "
-              f"{e:>11.2e} {(e/e_grid if e_grid else float('nan')):>11.2e}")
+        print(
+            f"  {lbl:<28} {r.kept:>7}/{r.total:<8} "
+            f"{100.0 * r.kept / r.total:>8.2f}% "
+            f"{100.0 * r.kept_weighted / r.total_weighted:>10.2f}% "
+            f"{e:>11.2e} {(e / e_grid if e_grid else float('nan')):>11.2e}"
+        )
 
     # ---- threshold sweep (reported, for the rescaling check of §3) ----------
     if sweep:
         print()
         print(f"  threshold sweep (kept %, max|dK|):")
-        print(f"  {'thresh':>9}  {'ferric kept%':>13} {'ferric dK':>11}  "
-              f"{'snlink kept%':>13} {'snlink dK':>11}")
+        print(
+            f"  {'thresh':>9}  {'ferric kept%':>13} {'ferric dK':>11}  "
+            f"{'snlink kept%':>13} {'snlink dK':>11}"
+        )
         for th in (1e-5, 1e-6, 1e-7, 1e-8, 1e-9, 1e-11):
             rf = build_k(mol, coords, weights, D, bnd, ScreenFerric(th), info)
             rs = build_k(mol, coords, weights, D, bnd, ScreenSnLink(th, th), info)
             ef = float(np.max(np.abs(rf.K - ref.K)))
             es = float(np.max(np.abs(rs.K - ref.K)))
-            print(f"  {th:>9.0e}  {100.0*rf.kept/rf.total:>12.2f}% {ef:>11.2e}  "
-                  f"{100.0*rs.kept/rs.total:>12.2f}% {es:>11.2e}")
+            print(
+                f"  {th:>9.0e}  {100.0 * rf.kept / rf.total:>12.2f}% {ef:>11.2e}  "
+                f"{100.0 * rs.kept / rs.total:>12.2f}% {es:>11.2e}"
+            )
 
-    return dict(system=system, nbf=mol.nao, e_grid=e_grid, fe=fe, sn=sn, ref=ref,
-                e_fe=e_fe, e_sn=e_sn, added_by_k=added_by_k,
-                only_fe=len(only_fe), only_sn=len(only_sn))
+    return dict(
+        system=system,
+        nbf=mol.nao,
+        e_grid=e_grid,
+        fe=fe,
+        sn=sn,
+        ref=ref,
+        e_fe=e_fe,
+        e_sn=e_sn,
+        added_by_k=added_by_k,
+        only_fe=len(only_fe),
+        only_sn=len(only_sn),
+    )
 
 
 def diagnostics(system: str, basis: str, atom_grid):
@@ -798,26 +861,49 @@ def diagnostics(system: str, basis: str, atom_grid):
                 bds.append(est)
                 fes.append(est * max(fmax[s1], fmax[s2]))
                 sne.append(est * max(xmax[s1], xmax[s2]))
-                snk.append(est * max(float(np.max(dmax[:, s1] * xmax)),
-                                     float(np.max(dmax[:, s2] * xmax))))
+                snk.append(
+                    est
+                    * max(
+                        float(np.max(dmax[:, s1] * xmax)),
+                        float(np.max(dmax[:, s2] * xmax)),
+                    )
+                )
     fes, sne, snk, bds = map(np.array, (fes, sne, snk, bds))
     radii = np.array(radii)
     ratio = snk / fes
     print(f"\n  DIAGNOSTICS [{system}/{basis}]")
-    print(f"    batch radius: median {np.median(radii):.2f}  max {radii.max():.2f} Bohr")
-    print(f"    sphere bound degenerates to its R=0 value (R_c<=0) for "
-          f"{100.0*nfall/ntot:.1f}% of pair-batches; min bound = {bds.min():.3e}")
+    print(
+        f"    batch radius: median {np.median(radii):.2f}  max {radii.max():.2f} Bohr"
+    )
+    print(
+        f"    sphere bound degenerates to its R=0 value (R_c<=0) for "
+        f"{100.0 * nfall / ntot:.1f}% of pair-batches; min bound = {bds.min():.3e}"
+    )
     print(f"    MIN screening product over all {len(fes)} pair-batches:")
-    print(f"       ferric  bound*fmax    = {fes.min():.3e}   "
-          f"({fes.min()/FERRIC_DEFAULT_T:.0f}x above the 1e-7 default)")
-    print(f"       sn-LinK bound*dweight = {snk.min():.3e}   "
-          f"({snk.min()/FERRIC_DEFAULT_T:.0f}x above)")
-    print(f"       sn-LinK bound*xmax    = {sne.min():.3e}   (E-branch; the only one that bites)")
-    print(f"    SN-K / FE product ratio: min {ratio.min():.3f} median {np.median(ratio):.3f} "
-          f"max {ratio.max():.3f}  (spread {ratio.max()/ratio.min():.1f}x)")
-    print(f"       SN tighter than FE on {100.0*(ratio<1).mean():.1f}% of pair-batches.")
-    print(f"       A spread of ~1.0 would mean SN is merely a THRESHOLD RESCALING of FE;")
-    print(f"       a large spread means the two orderings genuinely differ (the §3 artifact check).")
+    print(
+        f"       ferric  bound*fmax    = {fes.min():.3e}   "
+        f"({fes.min() / FERRIC_DEFAULT_T:.0f}x above the 1e-7 default)"
+    )
+    print(
+        f"       sn-LinK bound*dweight = {snk.min():.3e}   "
+        f"({snk.min() / FERRIC_DEFAULT_T:.0f}x above)"
+    )
+    print(
+        f"       sn-LinK bound*xmax    = {sne.min():.3e}   (E-branch; the only one that bites)"
+    )
+    print(
+        f"    SN-K / FE product ratio: min {ratio.min():.3f} median {np.median(ratio):.3f} "
+        f"max {ratio.max():.3f}  (spread {ratio.max() / ratio.min():.1f}x)"
+    )
+    print(
+        f"       SN tighter than FE on {100.0 * (ratio < 1).mean():.1f}% of pair-batches."
+    )
+    print(
+        f"       A spread of ~1.0 would mean SN is merely a THRESHOLD RESCALING of FE;"
+    )
+    print(
+        f"       a large spread means the two orderings genuinely differ (the §3 artifact check)."
+    )
 
 
 def size_sweep(systems, basis, atom_grid, thresholds=(1e-5, 1e-6, 1e-7, 1e-8)):
@@ -834,13 +920,17 @@ def size_sweep(systems, basis, atom_grid, thresholds=(1e-5, 1e-6, 1e-7, 1e-8)):
     independent sighting of the same effect (COSX's row mask, LinK's
     density-pair list, the #52 threshold sweep being the first three).
     """
-    print(f"\n{'='*118}")
-    print(f"SIZE SWEEP  basis={basis}  grid={atom_grid[0]}x{atom_grid[1]}  "
-          f"(counts only -- no K accumulation)")
+    print(f"\n{'=' * 118}")
+    print(
+        f"SIZE SWEEP  basis={basis}  grid={atom_grid[0]}x{atom_grid[1]}  "
+        f"(counts only -- no K accumulation)"
+    )
     print("=" * 118)
-    hdr = (f"{'system':>10} {'diam':>7} {'nbf':>5} {'pairxb':>8} {'thresh':>8} | "
-           f"{'FE kept%':>9} {'SN kept%':>9} {'SN-FE pp':>9} | "
-           f"{'geom-only%':>10} {'dens-only%':>10} {'dens adds':>9}")
+    hdr = (
+        f"{'system':>10} {'diam':>7} {'nbf':>5} {'pairxb':>8} {'thresh':>8} | "
+        f"{'FE kept%':>9} {'SN kept%':>9} {'SN-FE pp':>9} | "
+        f"{'geom-only%':>10} {'dens-only%':>10} {'dens adds':>9}"
+    )
     print(hdr)
     print("-" * 118)
     rows = []
@@ -864,8 +954,13 @@ def size_sweep(systems, basis, atom_grid, thresholds=(1e-5, 1e-6, 1e-7, 1e-8)):
                     est = bnd.sphere(s1, s2, c, r)
                     fe.append(est * max(fmax[s1], fmax[s2]))
                     sE.append(est * max(xmax[s1], xmax[s2]))
-                    sK.append(est * max(float(np.max(dmax[:, s1] * xmax)),
-                                        float(np.max(dmax[:, s2] * xmax))))
+                    sK.append(
+                        est
+                        * max(
+                            float(np.max(dmax[:, s1] * xmax)),
+                            float(np.max(dmax[:, s2] * xmax)),
+                        )
+                    )
                     # The purely GEOMETRIC estimate: the integral bound alone,
                     # with no density and no AO magnitude.  This is the control
                     # that says whether the density factors contribute anything.
@@ -875,21 +970,40 @@ def size_sweep(systems, basis, atom_grid, thresholds=(1e-5, 1e-6, 1e-7, 1e-8)):
         for th in thresholds:
             kfe = fe >= th
             ksn = (sE >= th) | (sK >= th)
-            kg = geom >= th        # geometry alone
-            kd = sK >= th          # density-weighted branch alone
+            kg = geom >= th  # geometry alone
+            kd = sK >= th  # density-weighted branch alone
             # Does the density branch drop anything the geometric bound keeps?
             dens_adds = int(np.sum(kg & ~kd))
-            print(f"{name:>10} {diam:7.2f} {mol.nao:5d} {len(fe):8d} {th:8.0e} | "
-                  f"{100*kfe.mean():8.3f}% {100*ksn.mean():8.3f}% "
-                  f"{100*(ksn.mean()-kfe.mean()):+8.3f} | "
-                  f"{100*kg.mean():9.3f}% {100*kd.mean():9.3f}% {dens_adds:9d}")
-            rows.append((name, diam, mol.nao, th, kfe.mean(), ksn.mean(),
-                         kg.mean(), kd.mean(), dens_adds))
+            print(
+                f"{name:>10} {diam:7.2f} {mol.nao:5d} {len(fe):8d} {th:8.0e} | "
+                f"{100 * kfe.mean():8.3f}% {100 * ksn.mean():8.3f}% "
+                f"{100 * (ksn.mean() - kfe.mean()):+8.3f} | "
+                f"{100 * kg.mean():9.3f}% {100 * kd.mean():9.3f}% {dens_adds:9d}"
+            )
+            rows.append(
+                (
+                    name,
+                    diam,
+                    mol.nao,
+                    th,
+                    kfe.mean(),
+                    ksn.mean(),
+                    kg.mean(),
+                    kd.mean(),
+                    dens_adds,
+                )
+            )
         print("-" * 118)
-    print("\n  'geom-only%'  = kept by the integral bound ALONE (no density, no AO magnitude)")
+    print(
+        "\n  'geom-only%'  = kept by the integral bound ALONE (no density, no AO magnitude)"
+    )
     print("  'dens-only%'  = kept by the density-weighted branch alone")
-    print("  'dens adds'   = pair-batches the GEOMETRIC bound keeps but the DENSITY branch drops")
-    print("                  -> this is the density's entire contribution. 0 means vacuous.")
+    print(
+        "  'dens adds'   = pair-batches the GEOMETRIC bound keeps but the DENSITY branch drops"
+    )
+    print(
+        "                  -> this is the density's entire contribution. 0 means vacuous."
+    )
     return rows
 
 
@@ -916,12 +1030,16 @@ def density_decomposition(systems, basis, atom_grid, t=FERRIC_DEFAULT_T):
     factor held fixed, and `geom -> flatD` is what the AO magnitude contributes
     through the same expression.
     """
-    print(f"\n{'='*112}")
-    print(f"DENSITY vs GEOMETRY decomposition  basis={basis}  t={t:.0e}  "
-          f"grid={atom_grid[0]}x{atom_grid[1]}")
+    print(f"\n{'=' * 112}")
+    print(
+        f"DENSITY vs GEOMETRY decomposition  basis={basis}  t={t:.0e}  "
+        f"grid={atom_grid[0]}x{atom_grid[1]}"
+    )
     print("=" * 112)
-    print(f"{'system':>10} {'diam':>6} {'nbf':>5} | {'geom':>8} {'+AO(X)':>8} "
-          f"{'flatD':>8} {'+realD':>8} | {'X does':>7} {'D does':>7} {'D share':>8}")
+    print(
+        f"{'system':>10} {'diam':>6} {'nbf':>5} | {'geom':>8} {'+AO(X)':>8} "
+        f"{'flatD':>8} {'+realD':>8} | {'X does':>7} {'D does':>7} {'D share':>8}"
+    )
     print("-" * 112)
     for name in systems:
         mol, D, coords, weights, bnd, info = prepare_system(name, basis, atom_grid)
@@ -941,10 +1059,20 @@ def density_decomposition(systems, basis, atom_grid, t=FERRIC_DEFAULT_T):
                     est = bnd.sphere(s1, s2, c, r)
                     est_l.append(est)
                     xo_l.append(est * max(xmax[s1], xmax[s2]))
-                    sK_l.append(est * max(float(np.max(dmax[:, s1] * xmax)),
-                                          float(np.max(dmax[:, s2] * xmax))))
-                    sKf_l.append(est * max(float(np.max(dmax_flat[:, s1] * xmax)),
-                                           float(np.max(dmax_flat[:, s2] * xmax))))
+                    sK_l.append(
+                        est
+                        * max(
+                            float(np.max(dmax[:, s1] * xmax)),
+                            float(np.max(dmax[:, s2] * xmax)),
+                        )
+                    )
+                    sKf_l.append(
+                        est
+                        * max(
+                            float(np.max(dmax_flat[:, s1] * xmax)),
+                            float(np.max(dmax_flat[:, s2] * xmax)),
+                        )
+                    )
         est, sK, sKf, xo = map(np.array, (est_l, sK_l, sKf_l, xo_l))
         g = 100 * (est >= t).mean()
         ax = 100 * (xo >= t).mean()
@@ -952,34 +1080,53 @@ def density_decomposition(systems, basis, atom_grid, t=FERRIC_DEFAULT_T):
         rd = 100 * (sK >= t).mean()
         xdoes, ddoes = f - g, rd - f
         tot = abs(xdoes) + abs(ddoes)
-        print(f"{name:>10} {diam:6.1f} {mol.nao:5d} | {g:7.2f}% {ax:7.2f}% "
-              f"{f:7.2f}% {rd:7.2f}% | {xdoes:+7.2f} {ddoes:+7.2f} "
-              f"{100*abs(ddoes)/tot if tot else 0.0:7.1f}%")
+        print(
+            f"{name:>10} {diam:6.1f} {mol.nao:5d} | {g:7.2f}% {ax:7.2f}% "
+            f"{f:7.2f}% {rd:7.2f}% | {xdoes:+7.2f} {ddoes:+7.2f} "
+            f"{100 * abs(ddoes) / tot if tot else 0.0:7.1f}%"
+        )
     print("-" * 112)
     print("  'X does'  = pp pruned by the AO magnitude through dweight (geometry)")
     print("  'D does'  = pp pruned by the DENSITY MATRIX with the AO factor held fixed")
-    print("  'D share' = |D does| / (|X does| + |D does|): the density's share of the pruning")
+    print(
+        "  'D share' = |D does| / (|X does| + |D does|): the density's share of the pruning"
+    )
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--systems", default="water,methane")
     ap.add_argument("--basis", default="cc-pvdz")
-    ap.add_argument("--grid", default="50,110",
-                    help="radial,angular atom grid (ferric's COSX default is 50,110)")
+    ap.add_argument(
+        "--grid",
+        default="50,110",
+        help="radial,angular atom grid (ferric's COSX default is 50,110)",
+    )
     ap.add_argument("--no-sweep", action="store_true")
-    ap.add_argument("--decompose", action="store_true",
-                    help="split the pruning into its geometry and density-matrix "
-                         "parts (the whitepaper 4.1 question at pair-batch granularity)")
-    ap.add_argument("--size-sweep", action="store_true",
-                    help="kept-work vs molecular diameter across the given systems "
-                         "(counts only; reaches sizes the anchor table cannot)")
-    ap.add_argument("--diagnostics", action="store_true",
-                    help="report the screening-product distribution instead of "
-                         "the anchor table (explains WHY a screen does/does not bite)")
-    ap.add_argument("--mutate", default=None,
-                    help="run a deliberately broken variant: drop_mirror | "
-                         "counter_only | strict_gt | bound_underestimate")
+    ap.add_argument(
+        "--decompose",
+        action="store_true",
+        help="split the pruning into its geometry and density-matrix "
+        "parts (the whitepaper 4.1 question at pair-batch granularity)",
+    )
+    ap.add_argument(
+        "--size-sweep",
+        action="store_true",
+        help="kept-work vs molecular diameter across the given systems "
+        "(counts only; reaches sizes the anchor table cannot)",
+    )
+    ap.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="report the screening-product distribution instead of "
+        "the anchor table (explains WHY a screen does/does not bite)",
+    )
+    ap.add_argument(
+        "--mutate",
+        default=None,
+        help="run a deliberately broken variant: drop_mirror | "
+        "counter_only | strict_gt | bound_underestimate",
+    )
     args = ap.parse_args()
 
     global MUTATION
@@ -994,15 +1141,18 @@ def main():
     if MUTATION == "strict_gt":
         # DELIBERATELY BROKEN: `>` instead of `>=`, so threshold 0 drops any
         # pair whose bound underflows to exactly 0.
-        ScreenFerric.keep = (lambda self, s1, s2, bnd, c, r, fmax, xmax, dmax, info:
-                             bnd.sphere(s1, s2, c, r) * max(fmax[s1], fmax[s2]) > self.t)
-        ScreenSnLink.keep = (lambda self, s1, s2, bnd, c, r, fmax, xmax, dmax, info:
-                             bnd.sphere(s1, s2, c, r) * max(xmax[s1], xmax[s2]) > self.eps_e)
+        ScreenFerric.keep = lambda self, s1, s2, bnd, c, r, fmax, xmax, dmax, info: (
+            bnd.sphere(s1, s2, c, r) * max(fmax[s1], fmax[s2]) > self.t
+        )
+        ScreenSnLink.keep = lambda self, s1, s2, bnd, c, r, fmax, xmax, dmax, info: (
+            bnd.sphere(s1, s2, c, r) * max(xmax[s1], xmax[s2]) > self.eps_e
+        )
 
     atom_grid = tuple(int(x) for x in args.grid.split(","))
     if args.decompose:
-        density_decomposition([x.strip() for x in args.systems.split(",")],
-                              args.basis, atom_grid)
+        density_decomposition(
+            [x.strip() for x in args.systems.split(",")], args.basis, atom_grid
+        )
         return 0
     if args.size_sweep:
         size_sweep([x.strip() for x in args.systems.split(",")], args.basis, atom_grid)
@@ -1011,17 +1161,26 @@ def main():
         for s_ in args.systems.split(","):
             diagnostics(s_.strip(), args.basis, atom_grid)
         return 0
-    thresholds = dict(ferric_t=FERRIC_DEFAULT_T, eps_e=FERRIC_DEFAULT_T,
-                      eps_k=FERRIC_DEFAULT_T)
+    thresholds = dict(
+        ferric_t=FERRIC_DEFAULT_T, eps_e=FERRIC_DEFAULT_T, eps_k=FERRIC_DEFAULT_T
+    )
     anchors = Anchors()
     for s in args.systems.split(","):
-        run(s.strip(), args.basis, atom_grid, thresholds, anchors,
-            sweep=not args.no_sweep)
+        run(
+            s.strip(),
+            args.basis,
+            atom_grid,
+            thresholds,
+            anchors,
+            sweep=not args.no_sweep,
+        )
 
     ok = anchors.report()
     if MUTATION:
-        print(f"\nMutation `{MUTATION}`: "
-              f"{'ANCHORS STILL PASSED -- the guard proves nothing' if ok else 'anchors failed as required'}")
+        print(
+            f"\nMutation `{MUTATION}`: "
+            f"{'ANCHORS STILL PASSED -- the guard proves nothing' if ok else 'anchors failed as required'}"
+        )
         return 0 if not ok else 1
     return 0 if ok else 1
 

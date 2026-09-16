@@ -11,9 +11,7 @@ use ndarray_linalg::Inverse;
 fn erf(x: f64) -> f64 {
     let t = 1.0 / (1.0 + 0.327_591_1 * x.abs());
     let y = 1.0
-        - (((((1.061_405_429 * t - 1.453_152_027) * t) + 1.421_413_741) * t
-            - 0.284_496_736)
-            * t
+        - (((((1.061_405_429 * t - 1.453_152_027) * t) + 1.421_413_741) * t - 0.284_496_736) * t
             + 0.254_829_592)
             * t
             * (-x * x).exp();
@@ -192,13 +190,8 @@ pub fn mbd_dynamic_polarizability(
     freqs: &[f64],
     weights: &[f64],
 ) -> Result<DynamicPolarizability, FerricError> {
-    let ts = crate::dispersion::ts_dynamic_polarizability(
-        z,
-        vol_ratio,
-        alpha_static,
-        freqs,
-        weights,
-    )?;
+    let ts =
+        crate::dispersion::ts_dynamic_polarizability(z, vol_ratio, alpha_static, freqs, weights)?;
     let params = ts_atom_params(z, vol_ratio, alpha_static)?;
     let alpha_eff: Vec<f64> = params.iter().map(|p| p.0).collect();
     let screened = mbd_screen(&ts.per_atom, positions, &alpha_eff, freqs)?;
@@ -281,11 +274,13 @@ mod tests {
     fn ts_atom_params_heavy_atom_errors() {
         let st = [[9.0, 0.0, 0.0], [0.0, 9.0, 0.0], [0.0, 0.0, 9.0]];
         // Two atoms: C (ok) then Cs (Z=55, out of table) — error must point at idx 1.
-        let err = ts_atom_params(&[6, 55], &[1.0, 1.0], &[st, st])
-            .expect_err("Z=55 must error");
+        let err = ts_atom_params(&[6, 55], &[1.0, 1.0], &[st, st]).expect_err("Z=55 must error");
         let msg = format!("{err}");
         assert!(msg.contains("Z=55"), "error must name Z: {msg}");
-        assert!(msg.contains("atom 1"), "error must name the atom index: {msg}");
+        assert!(
+            msg.contains("atom 1"),
+            "error must name the atom index: {msg}"
+        );
     }
 
     /// Z outside the table regression: the old code silently substituted the
@@ -303,17 +298,31 @@ mod tests {
         let err = ts_atom_params(&[1, 55], &[1.0, 1.0], &[[[0.0; 3]; 3]; 2])
             .unwrap_err()
             .to_string();
-        assert!(err.contains("Cs") || err.contains("55"), "error should name Cs: {err}");
+        assert!(
+            err.contains("Cs") || err.contains("55"),
+            "error should name Cs: {err}"
+        );
 
         let st = [[3.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 3.0]];
         let freqs = [0.0, 0.5];
         let weights = [0.5, 0.5];
         assert!(crate::dispersion::ts_dynamic_polarizability(
-            &[55], &[1.0], &[st], &freqs, &weights
-        ).is_err());
+            &[55],
+            &[1.0],
+            &[st],
+            &freqs,
+            &weights
+        )
+        .is_err());
         assert!(mbd_dynamic_polarizability(
-            &[[0.0, 0.0, 0.0]], &[55], &[1.0], &[st], &freqs, &weights
-        ).is_err());
+            &[[0.0, 0.0, 0.0]],
+            &[55],
+            &[1.0],
+            &[st],
+            &freqs,
+            &weights
+        )
+        .is_err());
     }
 
     #[test]
@@ -332,7 +341,10 @@ mod tests {
         }
         // zz component of the off-site block is O(1/R³) and nonzero (bond axis).
         let tzz = t[(2, 5)].abs();
-        assert!(tzz > 1e-4 && tzz < 1e-2, "off-site T_zz out of range: {tzz}");
+        assert!(
+            tzz > 1e-4 && tzz < 1e-2,
+            "off-site T_zz out of range: {tzz}"
+        );
     }
 
     #[test]
@@ -347,13 +359,11 @@ mod tests {
             let a = 1.38 / (1.0 + (w / omega).powi(2));
             [[a, 0.0, 0.0], [0.0, a, 0.0], [0.0, 0.0, a]]
         };
-        let input: Vec<Vec<[[f64; 3]; 3]>> =
-            (0..2).map(|_| (0..3).map(mk).collect()).collect();
+        let input: Vec<Vec<[[f64; 3]; 3]>> = (0..2).map(|_| (0..3).map(mk).collect()).collect();
         let scr = mbd_screen(&input, &pos, &alpha_eff, &freqs).unwrap();
         for a in 0..2 {
             for k in 0..3 {
-                let in_iso =
-                    (input[a][k][0][0] + input[a][k][1][1] + input[a][k][2][2]) / 3.0;
+                let in_iso = (input[a][k][0][0] + input[a][k][1][1] + input[a][k][2][2]) / 3.0;
                 let sc_iso = (scr[a][k][0][0] + scr[a][k][1][1] + scr[a][k][2][2]) / 3.0;
                 assert!(
                     (in_iso - sc_iso).abs() < 1e-3 * in_iso.max(1e-3),
@@ -382,8 +392,14 @@ mod tests {
             mbd_dynamic_polarizability(&pos, &z, &vr, &alpha_static, &freqs, &weights).unwrap();
         let c6_ts = casimir_polder_c6(&ts).c6_molecular_iso;
         let c6_mbd = casimir_polder_c6(&mbd).c6_molecular_iso;
-        assert!(c6_mbd.is_finite() && c6_mbd > 0.0, "MBD C6 not finite/positive: {c6_mbd}");
-        assert!((c6_mbd - c6_ts).abs() > 0.01 * c6_ts, "screening had no effect: {c6_ts} vs {c6_mbd}");
+        assert!(
+            c6_mbd.is_finite() && c6_mbd > 0.0,
+            "MBD C6 not finite/positive: {c6_mbd}"
+        );
+        assert!(
+            (c6_mbd - c6_ts).abs() > 0.01 * c6_ts,
+            "screening had no effect: {c6_ts} vs {c6_mbd}"
+        );
     }
 
     #[test]
@@ -402,8 +418,14 @@ mod tests {
         let scr = mbd_screen(&input, &pos, &alpha_eff, &freqs).unwrap();
         let xx = scr[0][0][0][0];
         let zz = scr[0][0][2][2];
-        assert!(zz > a0, "bond-parallel αzz should be enhanced: {zz} vs {a0}");
-        assert!(xx < a0, "perpendicular αxx should be screened: {xx} vs {a0}");
+        assert!(
+            zz > a0,
+            "bond-parallel αzz should be enhanced: {zz} vs {a0}"
+        );
+        assert!(
+            xx < a0,
+            "perpendicular αxx should be screened: {xx} vs {a0}"
+        );
     }
 
     #[test]
@@ -427,7 +449,11 @@ mod tests {
         let alpha = 11.1_f64;
         let omega = (4.0_f64 / 3.0) * 64.3 / (alpha * alpha);
         let r = 20.0_f64;
-        let e_mbd = mbd_energy(&[[0.0, 0.0, 0.0], [0.0, 0.0, r]], &[alpha, alpha], &[omega, omega]);
+        let e_mbd = mbd_energy(
+            &[[0.0, 0.0, 0.0], [0.0, 0.0, r]],
+            &[alpha, alpha],
+            &[omega, omega],
+        );
         let c6 = 0.75 * alpha * alpha * omega; // single-pole London C6
         let e_pair = -c6 / r.powi(6);
         let rel = (e_mbd - e_pair).abs() / e_pair.abs();

@@ -16,12 +16,13 @@ Builds the standard all-anti (zig-zag) conformer:
 
 Usage:  python3 scripts/gen_alkane_geometries.py [--check-only]
 """
+
 import argparse
 import math
 import os
 
-CC = 1.526          # C-C bond length (A)
-CH = 1.094          # C-H bond length (A)
+CC = 1.526  # C-C bond length (A)
+CH = 1.094  # C-H bond length (A)
 TET = math.radians(109.47)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -31,8 +32,8 @@ MOLDIR = os.path.join(HERE, "..", "testdata", "molecules")
 def backbone(n):
     """All-anti carbon backbone zig-zagging in the xy-plane."""
     half = TET / 2.0
-    dx = CC * math.sin(half)      # advance along the chain axis
-    dy = CC * math.cos(half)      # alternating transverse displacement
+    dx = CC * math.sin(half)  # advance along the chain axis
+    dy = CC * math.cos(half)  # alternating transverse displacement
     return [(i * dx, (i % 2) * dy, 0.0) for i in range(n)]
 
 
@@ -54,17 +55,19 @@ def scale(v, s):
 
 
 def cross(a, b):
-    return (a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0])
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
 
 
 def methylene_hydrogens(c_prev, c, c_next):
     """Two H on an interior carbon: bisector in-plane, H's out of plane (+/- z)."""
     b1 = unit(sub(c_prev, c))
     b2 = unit(sub(c_next, c))
-    bisect = unit(add(b1, b2))          # points "inward"; H's go opposite
-    perp = unit(cross(b1, b2))          # normal to the C-C-C plane
+    bisect = unit(add(b1, b2))  # points "inward"; H's go opposite
+    perp = unit(cross(b1, b2))  # normal to the C-C-C plane
     # H directions: -bisector tilted +/- out of plane by half the H-C-H angle.
     half = TET / 2.0
     d1 = unit(add(scale(bisect, -math.cos(half)), scale(perp, math.sin(half))))
@@ -74,14 +77,14 @@ def methylene_hydrogens(c_prev, c, c_next):
 
 def terminal_hydrogens(c, c_nbr, n_h=3):
     """n_h hydrogens on a terminal carbon, staggered about the C-C axis."""
-    axis = unit(sub(c, c_nbr))          # points away from the chain
+    axis = unit(sub(c, c_nbr))  # points away from the chain
     # Build an orthonormal frame perpendicular to `axis`.
     tmp = (0.0, 0.0, 1.0)
     if abs(axis[2]) > 0.9:
         tmp = (1.0, 0.0, 0.0)
     u = unit(cross(axis, tmp))
     v = cross(axis, u)
-    beta = math.pi - TET                # tilt from the axis
+    beta = math.pi - TET  # tilt from the axis
     out = []
     for k in range(n_h):
         phi = 2.0 * math.pi * k / n_h
@@ -115,12 +118,13 @@ def validate(n, atoms):
     nc = sum(1 for s, _ in atoms if s == "C")
     nh = sum(1 for s, _ in atoms if s == "H")
     assert nc == n, f"C{n}: got {nc} carbons"
-    assert nh == 2 * n + 2, f"C{n}: expected {2*n+2} H, got {nh}"
+    assert nh == 2 * n + 2, f"C{n}: expected {2 * n + 2} H, got {nh}"
     zs = [p[2] for _, p in atoms]
     nonplanar = max(zs) - min(zs)
     dmin = min(
         math.dist(atoms[i][1], atoms[j][1])
-        for i in range(len(atoms)) for j in range(i + 1, len(atoms))
+        for i in range(len(atoms))
+        for j in range(i + 1, len(atoms))
     )
     assert nonplanar > 0.5, f"C{n}: still planar (z-spread {nonplanar:.3f})"
     assert dmin > 1.0, f"C{n}: atoms too close ({dmin:.3f} A)"
@@ -129,8 +133,9 @@ def validate(n, atoms):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--check-only", action="store_true",
-                    help="validate without writing files")
+    ap.add_argument(
+        "--check-only", action="store_true", help="validate without writing files"
+    )
     args = ap.parse_args()
 
     for n in range(1, 21):
@@ -140,11 +145,15 @@ def main():
         if not args.check_only:
             with open(path, "w") as fh:
                 fh.write(f"{len(atoms)}\n")
-                fh.write(f"n-alkane C{n}H{2*n+2}, all-anti conformer "
-                         f"(C-C {CC} A, C-H {CH} A, tetrahedral)\n")
+                fh.write(
+                    f"n-alkane C{n}H{2 * n + 2}, all-anti conformer "
+                    f"(C-C {CC} A, C-H {CH} A, tetrahedral)\n"
+                )
                 for sym, (x, y, z) in atoms:
                     fh.write(f"{sym:<3}{x:>12.6f}{y:>12.6f}{z:>12.6f}\n")
-        print(f"C{n:<3} atoms={len(atoms):<3} z-spread={spread:.3f}  min-dist={dmin:.3f}")
+        print(
+            f"C{n:<3} atoms={len(atoms):<3} z-spread={spread:.3f}  min-dist={dmin:.3f}"
+        )
 
 
 if __name__ == "__main__":

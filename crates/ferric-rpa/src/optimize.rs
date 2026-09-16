@@ -62,7 +62,11 @@ pub fn optimize_geometry_rpa(
     while step_idx < opt_config.max_steps {
         let g_max = grad.iter().map(|g| g.abs()).fold(0.0f64, f64::max);
         let g_rms = (grad.iter().map(|g| g * g).sum::<f64>() / n_coord as f64).sqrt();
-        let de = if step_idx == 0 { 0.0 } else { energy - prev_energy };
+        let de = if step_idx == 0 {
+            0.0
+        } else {
+            energy - prev_energy
+        };
 
         println!(
             "{:4} | {:12.8} | {:+8.1e} | {:8.2e} | {:8.2e}",
@@ -109,8 +113,7 @@ pub fn optimize_geometry_rpa(
             let term1 = (ys + yhy) * rho * rho;
             for i in 0..n_coord {
                 for j in 0..n_coord {
-                    h_inv[(i, j)] +=
-                        term1 * s[i] * s[j] - rho * (hy[i] * s[j] + s[i] * hy[j]);
+                    h_inv[(i, j)] += term1 * s[i] * s[j] - rho * (hy[i] * s[j] + s[i] * hy[j]);
                 }
             }
         } else {

@@ -19,7 +19,10 @@ fn libint2_terf_matches_md_within_tolerance() {
         return;
     };
     let mol = Molecule::load_xyz(concat!(
-        env!("CARGO_MANIFEST_DIR"), "/../../testdata/molecules/water.xyz")).unwrap();
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../testdata/molecules/water.xyz"
+    ))
+    .unwrap();
     let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let cdir = CString::new(dir).unwrap();
@@ -37,12 +40,23 @@ fn libint2_terf_matches_md_within_tolerance() {
                 // SAFETY: valid bases, in-bounds shells, two live out-params.
                 let n = unsafe {
                     ffi::scf_terf_libint2_vs_md_eri3(
-                        obs.handle() as *const c_void, dfbs.handle() as *const c_void,
-                        p as c_int, s1 as c_int, s2 as c_int, r0, omega,
-                        cdir.as_ptr() as *const c_char, &mut ma, &mut mr)
+                        obs.handle() as *const c_void,
+                        dfbs.handle() as *const c_void,
+                        p as c_int,
+                        s1 as c_int,
+                        s2 as c_int,
+                        r0,
+                        omega,
+                        cdir.as_ptr() as *const c_char,
+                        &mut ma,
+                        &mut mr,
+                    )
                 };
                 assert!(n > 0, "gate status {n} at ({p},{s1},{s2})");
-                if mr > worst_rel { worst_rel = mr; worst_at = (p, s1, s2); }
+                if mr > worst_rel {
+                    worst_rel = mr;
+                    worst_at = (p, s1, s2);
+                }
                 checked += 1;
             }
         }
@@ -65,6 +79,8 @@ fn libint2_terf_matches_md_within_tolerance() {
     //      (pure noise) produced meaningless ratios. Every physically
     //      significant element already agreed to 11 digits, and (ss|ss) is
     //      exact at li/md = 1.000000. The shim now floors on block magnitude.
-    assert!(worst_rel < 1e-10,
-        "libint2 terf disagrees with MD by {worst_rel:.3e} at {worst_at:?}");
+    assert!(
+        worst_rel < 1e-10,
+        "libint2 terf disagrees with MD by {worst_rel:.3e} at {worst_at:?}"
+    );
 }

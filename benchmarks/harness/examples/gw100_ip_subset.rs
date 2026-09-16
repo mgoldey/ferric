@@ -23,15 +23,15 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::oo_rimp2::{oo_ri_mp2, OoRiMp2Config};
 use ferric_mp2::u_oo_rimp2::{u_oo_ri_mp2, UOoRiMp2Config};
 use ferric_rpa::config::{QuadratureConfig, QuadratureScheme};
 use ferric_rpa::{run_pdep_rpa, run_u_pdep_rpa, PdepRpaConfig};
-use ferric_integrals::oneelectron;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::rohf::{solve_rohf, RohfConfig};
+use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::{solve_uhf, solve_uhf_with_guess, UhfConfig};
 use ndarray::Array2;
 
@@ -121,10 +121,17 @@ impl MethodResult {
 }
 
 /// Compute ⟨S²⟩ for a UHF/ROHF result; returns 0 for restricted.
-fn s_squared(rhf: &ferric_scf::result::ScfResult, s_ao: &Array2<f64>, nocc_a: usize, nocc_b: usize) -> f64 {
+fn s_squared(
+    rhf: &ferric_scf::result::ScfResult,
+    s_ao: &Array2<f64>,
+    nocc_a: usize,
+    nocc_b: usize,
+) -> f64 {
     let s_true = 0.5 * (nocc_a as f64 - nocc_b as f64);
     let s_ideal = s_true * (s_true + 1.0);
-    if nocc_a == 0 || nocc_b == 0 { return s_ideal; }
+    if nocc_a == 0 || nocc_b == 0 {
+        return s_ideal;
+    }
     let c_a = &rhf.mos_alpha;
     let c_b = rhf.mos_beta.as_ref().unwrap_or(&rhf.mos_alpha);
     let c_a_occ = c_a.slice(ndarray::s![.., ..nocc_a]);
@@ -136,7 +143,7 @@ fn s_squared(rhf: &ferric_scf::result::ScfResult, s_ao: &Array2<f64>, nocc_a: us
 
 /// Diagnostic record from one cation SCF attempt.
 struct CationDiag {
-    method: &'static str,   // "UHF" or "ROHF"
+    method: &'static str, // "UHF" or "ROHF"
     iters: usize,
     converged: bool,
     s2: f64,
@@ -157,7 +164,11 @@ fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, f64, CationDiag)> {
     let neutral = Molecule::parse_xyz(case.xyz, 0, 1).ok()?;
     let cation_mult: usize = {
         let n = neutral.nelec() - 1;
-        if n % 2 == 1 { 2 } else { 3 }  // doublet if odd; triplet for even-1
+        if n % 2 == 1 {
+            2
+        } else {
+            3
+        } // doublet if odd; triplet for even-1
     };
     // Actually cation has nelec - 1; if neutral was singlet (even), cation
     // has odd electrons → doublet. If neutral was open-shell (rare in GW100
@@ -174,7 +185,10 @@ fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, f64, CationDiag)> {
     let bounds_c = SchwarzBounds::compute(op, &obs_c).ok()?;
 
     let rhf_cfg = RhfConfig::default();
-    let uhf_cfg = UhfConfig { max_iter: 200, ..Default::default() };
+    let uhf_cfg = UhfConfig {
+        max_iter: 200,
+        ..Default::default()
+    };
 
     // Neutral RHF + RPA
     let rhf_n = solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &rhf_cfg).ok()?;
@@ -184,7 +198,9 @@ fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, f64, CationDiag)> {
     let ip_koopmans_ev = -eps_n[nocc_neutral - 1] * HARTREE_TO_EV;
     let rpa_cfg = PdepRpaConfig {
         quadrature: QuadratureConfig {
-            scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5,
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: 20,
+            u0: 0.5,
         },
         trunc_thresh: 0.0,
         eigensolver_conv_thresh: 1e-9,
@@ -203,14 +219,24 @@ fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, f64, CationDiag)> {
     // ground at -75.6318 when starting from hcore).
     let c_seed = rhf_n.mos_alpha.clone();
     let (uhf_c, diag_method): (ferric_scf::result::ScfResult, &'static str) =
-        match solve_uhf_with_guess(&ctx, &cation, &obs_c, &bounds_c, &uhf_cfg, Some((&c_seed, &c_seed))) {
+        match solve_uhf_with_guess(
+            &ctx,
+            &cation,
+            &obs_c,
+            &bounds_c,
+            &uhf_cfg,
+            Some((&c_seed, &c_seed)),
+        ) {
             Ok(r) => (r, "UHF(neutral-seed)"),
             Err(_) => {
                 // Fall back to hcore-guess UHF, then ROHF if that also fails.
                 match solve_uhf(&ctx, &cation, &obs_c, &bounds_c, &uhf_cfg) {
                     Ok(r) => (r, "UHF(hcore)"),
                     Err(_) => {
-                        let rohf_cfg = RohfConfig { max_iter: 200, ..Default::default() };
+                        let rohf_cfg = RohfConfig {
+                            max_iter: 200,
+                            ..Default::default()
+                        };
                         let r = solve_rohf(&ctx, &cation, &obs_c, op, &bounds_c, &rohf_cfg).ok()?;
                         (r, "ROHF")
                     }
@@ -243,11 +269,27 @@ fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, f64, CationDiag)> {
 
     // Δ-OOMP2: closed-shell OO-MP2 on neutral, U-OO-MP2 on cation.
     let oo_n = oo_ri_mp2(
-        &neutral, &obs_n, &dfbs_n, op, &bounds_n, &rhf_n, &OoRiMp2Config::default(), None,
-    ).ok();
+        &neutral,
+        &obs_n,
+        &dfbs_n,
+        op,
+        &bounds_n,
+        &rhf_n,
+        &OoRiMp2Config::default(),
+        None,
+    )
+    .ok();
     let oo_c = u_oo_ri_mp2(
-        &cation, &obs_c, &dfbs_c, op, &bounds_c, &uhf_c, &UOoRiMp2Config::default(), None,
-    ).ok();
+        &cation,
+        &obs_c,
+        &dfbs_c,
+        op,
+        &bounds_c,
+        &uhf_c,
+        &UOoRiMp2Config::default(),
+        None,
+    )
+    .ok();
     let ip_doomp2_ev = match (oo_n.as_ref(), oo_c.as_ref()) {
         (Some(n), Some(c)) => (c.total_energy - n.total_energy) * HARTREE_TO_EV,
         _ => f64::NAN,
@@ -255,7 +297,6 @@ fn run_case_diag(case: &Case) -> Option<(f64, f64, f64, f64, CationDiag)> {
 
     Some((ip_koopmans_ev, ip_dscf_ev, ip_doomp2_ev, ip_drpa_ev, diag))
 }
-
 
 fn main() {
     let cases = gw100_subset();
@@ -296,19 +337,32 @@ fn main() {
         }
     }
     println!("\nCation SCF diagnostics:");
-    println!("{:<6} {:>6} {:>5} {:>6} {:>9} {:>9} {:>14}",
-        "mol", "method", "iter", "conv", "<S^2>", "ideal", "E_cation(Ha)");
+    println!(
+        "{:<6} {:>6} {:>5} {:>6} {:>9} {:>9} {:>14}",
+        "mol", "method", "iter", "conv", "<S^2>", "ideal", "E_cation(Ha)"
+    );
     for (name, d) in &diags {
-        println!("{:<6} {:>6} {:>5} {:>6} {:>9.4} {:>9.4} {:>14.6}",
-            name, d.method, d.iters, d.converged, d.s2, d.s2_ideal, d.energy);
+        println!(
+            "{:<6} {:>6} {:>5} {:>6} {:>9.4} {:>9.4} {:>14.6}",
+            name, d.method, d.iters, d.converged, d.s2, d.s2_ideal, d.energy
+        );
     }
     println!("{:-<64}", "");
     if n_ok > 0 {
         let n = n_ok as f64;
-        let mae_oo = if n_oomp2 > 0 { mae_doomp2 / n_oomp2 as f64 } else { f64::NAN };
+        let mae_oo = if n_oomp2 > 0 {
+            mae_doomp2 / n_oomp2 as f64
+        } else {
+            f64::NAN
+        };
         println!(
             "{:<6} {:>10} {:>10.3} {:>10.3} {:>10.3} {:>10.3}",
-            "MAE", "", mae_koop / n, mae_dscf / n, mae_oo, mae_drpa / n
+            "MAE",
+            "",
+            mae_koop / n,
+            mae_dscf / n,
+            mae_oo,
+            mae_drpa / n
         );
     }
     println!("\nKoopmans = -ε_HOMO from neutral RHF (no cation calc).");

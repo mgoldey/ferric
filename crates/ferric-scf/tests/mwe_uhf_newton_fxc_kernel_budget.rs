@@ -163,7 +163,11 @@ fn byte_count_scales_with_nbf_and_natoms() {
     let double_nbf = fxc_kernel_duplicate_bytes(200, 1, &cfg);
     let double_natoms = fxc_kernel_duplicate_bytes(100, 2, &cfg);
     assert_eq!(double_nbf, base * 2, "must scale linearly with nbf");
-    assert_eq!(double_natoms, base * 2, "must scale linearly with natoms (via npts)");
+    assert_eq!(
+        double_natoms,
+        base * 2,
+        "must scale linearly with natoms (via npts)"
+    );
 }
 
 /// CONTRACT 5: exactly 4 planes (chi + dchi_x/y/z) of `nbf*npts` `f64`s — not
@@ -174,7 +178,11 @@ fn byte_count_scales_with_nbf_and_natoms() {
 fn byte_count_is_exactly_four_planes() {
     let nbf = 10;
     let natoms = 1;
-    let cfg = AtomicGridConfig { n_radial: 5, n_angular: 6, ..AtomicGridConfig::default() };
+    let cfg = AtomicGridConfig {
+        n_radial: 5,
+        n_angular: 6,
+        ..AtomicGridConfig::default()
+    };
     let npts = natoms * cfg.n_radial * cfg.n_angular;
     let expected = 4 * nbf * npts * std::mem::size_of::<f64>();
     assert_eq!(fxc_kernel_duplicate_bytes(nbf, natoms, &cfg), expected);

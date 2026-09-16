@@ -67,7 +67,11 @@ pub fn resolve_band_bytes(mem_budget_bytes: usize) -> usize {
         env_name: "FERRIC_REDUCE_BAND_BYTES",
         default: DEFAULT_BAND_BYTES,
         parse: |s| s.parse::<usize>().map_err(|e| e.to_string()),
-        validate: |b| (*b > 0).then_some(()).ok_or_else(|| "must be > 0".to_string()),
+        validate: |b| {
+            (*b > 0)
+                .then_some(())
+                .ok_or_else(|| "must be > 0".to_string())
+        },
     };
     match BAND_BYTES.get() {
         Ok(r) if r.source == ferric_core::config::ConfigSource::Env => r.value,
@@ -316,7 +320,10 @@ mod tests {
     #[test]
     fn band_width_respects_budget_and_floors() {
         // Pin the worker count so any lingering thread-count dependence shows.
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
         pool.install(|| {
             // 100×100 f64 = 80_000 bytes/partial; 800_000 byte budget → 10.
             assert_eq!(band_width(100, 800_000), 10);
@@ -340,7 +347,10 @@ mod tests {
     fn band_width_never_exceeds_the_byte_budget() {
         let per_partial = 100 * 100 * std::mem::size_of::<f64>(); // 80_000
         for threads in [1usize, 2, 8, 32] {
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
             pool.install(|| {
                 // A budget affording exactly 3 partials must yield 3 at EVERY
                 // thread count — 32 workers must not widen it to 32.
@@ -380,7 +390,10 @@ mod tests {
             Ok(a)
         };
         let run = |threads: usize, band_bytes: usize| -> Array2<f64> {
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
             pool.install(|| {
                 let mut acc = Array2::<f64>::zeros((n, n));
                 grouped_deterministic_sum(&mut acc, n_groups, n, band_bytes, make).unwrap();
@@ -404,8 +417,14 @@ mod tests {
     fn group_size_is_thread_count_independent() {
         // Pure function of the item count — identical under any pool.
         let g = deterministic_group_size(1_000_000);
-        let pool1 = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
-        let pool8 = rayon::ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+        let pool1 = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap();
+        let pool8 = rayon::ThreadPoolBuilder::new()
+            .num_threads(8)
+            .build()
+            .unwrap();
         assert_eq!(pool1.install(|| deterministic_group_size(1_000_000)), g);
         assert_eq!(pool8.install(|| deterministic_group_size(1_000_000)), g);
         assert_eq!(deterministic_group_size(0), 1);
@@ -457,8 +476,14 @@ mod tests {
 
         // Bit-identical across thread counts AND equal to the flat serial fold.
         assert_eq!(r1, expected, "grouped sum must equal flat serial fold");
-        assert_eq!(r1, r4, "must be bit-identical across thread counts (1 vs 4)");
-        assert_eq!(r1, r8, "must be bit-identical across thread counts (1 vs 8)");
+        assert_eq!(
+            r1, r4,
+            "must be bit-identical across thread counts (1 vs 4)"
+        );
+        assert_eq!(
+            r1, r8,
+            "must be bit-identical across thread counts (1 vs 8)"
+        );
     }
 
     #[test]

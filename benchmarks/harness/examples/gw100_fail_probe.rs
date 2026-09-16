@@ -37,49 +37,94 @@ struct Case {
 
 fn cases() -> Vec<Case> {
     vec![
-Case { name: "CCuN", xyz: "3
+        Case {
+            name: "CCuN",
+            xyz: "3
 mol
 C 0.0000 0.0000 0.0000
 N 0.0000 0.0000 1.158
 Cu 0.0000 0.0000 -1.832
-", ip_ref: f64::NAN },
-Case { name: "Cu2", xyz: "2
+",
+            ip_ref: f64::NAN,
+        },
+        Case {
+            name: "Cu2",
+            xyz: "2
 mol
 Cu 0.0 0.0 0.0
 Cu 0.0 0.0 2.2197
-", ip_ref: 7.46 },
+",
+            ip_ref: 7.46,
+        },
     ]
 }
 
 fn probe(case: &Case, obs_name: &str, dfbs_name: &str) {
-    say!("\n========== {} (ref IP {:.2} eV) ==========", case.name, case.ip_ref);
+    say!(
+        "\n========== {} (ref IP {:.2} eV) ==========",
+        case.name,
+        case.ip_ref
+    );
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
 
     let neutral = match Molecule::parse_xyz(case.xyz, 0, 1) {
         Ok(m) => m,
-        Err(e) => { say!("  parse(neutral) ERR: {e:?}"); return; }
+        Err(e) => {
+            say!("  parse(neutral) ERR: {e:?}");
+            return;
+        }
     };
-    say!("  parsed: {} atoms, nelec={}, NRE={:.6}",
-        neutral.atoms.len(), neutral.nelec(), neutral.nuclear_repulsion());
+    say!(
+        "  parsed: {} atoms, nelec={}, NRE={:.6}",
+        neutral.atoms.len(),
+        neutral.nelec(),
+        neutral.nuclear_repulsion()
+    );
     for a in &neutral.atoms {
-        say!("    Z={:<3} {:>10.4} {:>10.4} {:>10.4}", a.z, a.x, a.y, a.zpos);
+        say!(
+            "    Z={:<3} {:>10.4} {:>10.4} {:>10.4}",
+            a.z,
+            a.x,
+            a.y,
+            a.zpos
+        );
     }
 
     let obs_bs = match basis::bundled(obs_name) {
-        Ok(b) => b, Err(e) => { say!("  basis({obs_name}) ERR: {e:?}"); return; }
+        Ok(b) => b,
+        Err(e) => {
+            say!("  basis({obs_name}) ERR: {e:?}");
+            return;
+        }
     };
     let dfbs_bs = match basis::bundled(dfbs_name) {
-        Ok(b) => b, Err(e) => { say!("  basis({dfbs_name}) ERR: {e:?}"); return; }
+        Ok(b) => b,
+        Err(e) => {
+            say!("  basis({dfbs_name}) ERR: {e:?}");
+            return;
+        }
     };
     let obs_n = match PreparedBasis::new(&neutral, &obs_bs) {
-        Ok(p) => p, Err(e) => { say!("  PreparedBasis(obs) ERR: {e:?}"); return; }
+        Ok(p) => p,
+        Err(e) => {
+            say!("  PreparedBasis(obs) ERR: {e:?}");
+            return;
+        }
     };
     let dfbs_n = match PreparedBasis::new(&neutral, &dfbs_bs) {
-        Ok(p) => p, Err(e) => { say!("  PreparedBasis(dfbs) ERR: {e:?}"); return; }
+        Ok(p) => p,
+        Err(e) => {
+            say!("  PreparedBasis(dfbs) ERR: {e:?}");
+            return;
+        }
     };
     let bounds_n = match SchwarzBounds::compute(op, &obs_n) {
-        Ok(b) => b, Err(e) => { say!("  SchwarzBounds ERR: {e:?}"); return; }
+        Ok(b) => b,
+        Err(e) => {
+            say!("  SchwarzBounds ERR: {e:?}");
+            return;
+        }
     };
 
     // Neutral RHF — the prime suspect. Solve once; report; then escalate iters
@@ -88,24 +133,55 @@ fn probe(case: &Case, obs_name: &str, dfbs_name: &str) {
     say!("  RHF(neutral, default {} iter)...", cfg.max_iter);
     let rhf_n = match solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &cfg) {
         Ok(r) => {
-            say!("  RHF OK conv={} iters={} E={:.8} HOMO_eps={:.6}",
-                r.converged, r.iterations, r.energy,
-                r.eps_r()[(neutral.nelec() as usize)/2 - 1]);
+            say!(
+                "  RHF OK conv={} iters={} E={:.8} HOMO_eps={:.6}",
+                r.converged,
+                r.iterations,
+                r.energy,
+                r.eps_r()[(neutral.nelec() as usize) / 2 - 1]
+            );
             r
         }
         Err(e) => {
             say!("  RHF ERR: {e:?}");
             // Driver uses level_shift=0.5; replicate it, then escalate to 1.0.
-            let cfg2 = RhfConfig { max_iter: 500, level_shift: 0.5, ..Default::default() };
+            let cfg2 = RhfConfig {
+                max_iter: 500,
+                level_shift: 0.5,
+                ..Default::default()
+            };
             say!("  retry RHF(500 iter, level_shift=0.5)...");
             match solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &cfg2) {
-                Ok(r) if r.converged => { say!("  retry OK conv={} iters={} E={:.8}", r.converged, r.iterations, r.energy); r }
+                Ok(r) if r.converged => {
+                    say!(
+                        "  retry OK conv={} iters={} E={:.8}",
+                        r.converged,
+                        r.iterations,
+                        r.energy
+                    );
+                    r
+                }
                 _ => {
-                    let cfg3 = RhfConfig { max_iter: 500, level_shift: 1.0, ..Default::default() };
+                    let cfg3 = RhfConfig {
+                        max_iter: 500,
+                        level_shift: 1.0,
+                        ..Default::default()
+                    };
                     say!("  retry2 RHF(500 iter, level_shift=1.0)...");
                     match solve_rhf(&ctx, &neutral, &obs_n, op, &bounds_n, &cfg3) {
-                        Ok(r) => { say!("  retry2 conv={} iters={} E={:.8}", r.converged, r.iterations, r.energy); r }
-                        Err(e) => { say!("  retry2 STILL ERR: {e:?} -> RHF is the failure point"); return; }
+                        Ok(r) => {
+                            say!(
+                                "  retry2 conv={} iters={} E={:.8}",
+                                r.converged,
+                                r.iterations,
+                                r.energy
+                            );
+                            r
+                        }
+                        Err(e) => {
+                            say!("  retry2 STILL ERR: {e:?} -> RHF is the failure point");
+                            return;
+                        }
                     }
                 }
             }
@@ -117,7 +193,11 @@ fn probe(case: &Case, obs_name: &str, dfbs_name: &str) {
     }
     let homo_abs = (neutral.nelec() as usize) / 2 - 1;
     let pdep_cfg = PdepRpaConfig {
-        quadrature: QuadratureConfig { scheme: QuadratureScheme::GaussLegendre, n_points: 16, u0: 0.5 },
+        quadrature: QuadratureConfig {
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: 16,
+            u0: 0.5,
+        },
         eigensolver_conv_thresh: 1e-7,
         eigensolver_max_vecs: 0,
         trunc_thresh: 1e-4,
@@ -134,9 +214,16 @@ fn probe(case: &Case, obs_name: &str, dfbs_name: &str) {
         need_eigenvalues_freq: true,
         verbose: false,
     };
-    let gcfg = GwConfig { method: GwMethod::G0W0, max_ev_iter: 8, ev_conv_thresh: 1e-4, ..Default::default() };
+    let gcfg = GwConfig {
+        method: GwMethod::G0W0,
+        max_ev_iter: 8,
+        ev_conv_thresh: 1e-4,
+        ..Default::default()
+    };
     say!("  G0W0@HF...");
-    match run_gw(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &pdep_cfg, &gcfg, None) {
+    match run_gw(
+        &neutral, &obs_n, &dfbs_n, op, &rhf_n, &pdep_cfg, &gcfg, None,
+    ) {
         Ok(res) => match res.mo_indices.iter().position(|&i| i == homo_abs) {
             Some(local) => say!("OK IP={:.3} eV", -res.eps_qp[local] * HA_TO_EV),
             None => say!("OK but HOMO not in mo_indices {:?}", res.mo_indices),
@@ -146,7 +233,9 @@ fn probe(case: &Case, obs_name: &str, dfbs_name: &str) {
 }
 
 fn main() {
-    let obs_name = std::env::args().nth(1).unwrap_or_else(|| "aug-cc-pvdz".to_string());
+    let obs_name = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "aug-cc-pvdz".to_string());
     let dfbs_name = format!("{obs_name}-rifit");
     for c in cases() {
         probe(&c, &obs_name, &dfbs_name);

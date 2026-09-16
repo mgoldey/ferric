@@ -30,16 +30,21 @@ fn testdata(rel: &str) -> String {
 }
 
 fn env_num<T: std::str::FromStr>(name: &str, default: T) -> T {
-    std::env::var(name).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 
 fn psi_full_avg10() -> String {
     std::fs::read_to_string("/proc/pressure/memory")
         .ok()
         .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("full"))
-                .and_then(|l| l.split_whitespace().nth(1).map(|kv| kv.trim_start_matches("avg10=").to_string()))
+            s.lines().find(|l| l.starts_with("full")).and_then(|l| {
+                l.split_whitespace()
+                    .nth(1)
+                    .map(|kv| kv.trim_start_matches("avg10=").to_string())
+            })
         })
         .unwrap_or_else(|| "n/a".to_string())
 }
@@ -47,7 +52,10 @@ fn psi_full_avg10() -> String {
 struct Lcg(u64);
 impl Lcg {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0 >> 11
     }
 }
@@ -106,9 +114,12 @@ fn cosx_screen_sparsity_cell() {
     let system = std::env::var("SCREEN_SYSTEM").unwrap_or_else(|_| "alkane_4".into());
     let basis = std::env::var("SCREEN_BASIS").unwrap_or_else(|_| "def2-svp".into());
     let npts: usize = env_num("SCREEN_NPTS", 2000);
-    let time_abuild = std::env::var("SCREEN_TIME_ABUILD").map(|v| v == "1").unwrap_or(false);
+    let time_abuild = std::env::var("SCREEN_TIME_ABUILD")
+        .map(|v| v == "1")
+        .unwrap_or(false);
 
-    let mol = Molecule::load_xyz(&testdata(&format!("testdata/molecules/{system}.xyz"))).expect("xyz");
+    let mol =
+        Molecule::load_xyz(&testdata(&format!("testdata/molecules/{system}.xyz"))).expect("xyz");
     let bs = bundled(&basis).expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("prep");
     let t0 = Instant::now();
@@ -205,9 +216,15 @@ fn cosx_screen_sparsity_cell() {
         let psi_b = psi_full_avg10();
         let t2 = Instant::now();
         let mut checksum = 0.0_f64;
-        kern.for_each_pair(chunk, None, CosxScreen::none(), &mut scr, |_s1, _s2, blk| {
-            checksum += blk[0] + blk[blk.len() - 1];
-        })
+        kern.for_each_pair(
+            chunk,
+            None,
+            CosxScreen::none(),
+            &mut scr,
+            |_s1, _s2, blk| {
+                checksum += blk[0] + blk[blk.len() - 1];
+            },
+        )
         .expect("md3c1e");
         let abuild = t2.elapsed().as_secs_f64() / chunk.len() as f64;
         let psi_a = psi_full_avg10();

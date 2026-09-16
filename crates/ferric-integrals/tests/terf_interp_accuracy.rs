@@ -11,15 +11,16 @@ use std::os::raw::{c_char, c_double};
 #[ignore = "diagnostic sweep; run with --ignored --nocapture"]
 fn interp_error_vs_exact_series() {
     let Ok(dir) = std::env::var("FERRIC_TERF_TABLE_DIR") else {
-        eprintln!("SKIP: FERRIC_TERF_TABLE_DIR unset"); return;
+        eprintln!("SKIP: FERRIC_TERF_TABLE_DIR unset");
+        return;
     };
     let cdir = CString::new(dir).unwrap();
     let mut worst: c_double = -1.0;
     // SAFETY: valid dir, live out-param; shim wraps in try/catch.
-    let n = unsafe {
-        ffi::scf_terf_interp_accuracy(cdir.as_ptr() as *const c_char, 8, &mut worst)
-    };
+    let n = unsafe { ffi::scf_terf_interp_accuracy(cdir.as_ptr() as *const c_char, 8, &mut worst) };
     assert!(n > 0, "probe status {n}");
-    eprintln!("K={}  samples={n}  worst rel err vs exact series = {worst:.3e}",
-              std::env::var("FERRIC_TERF_K").unwrap_or("10".into()));
+    eprintln!(
+        "K={}  samples={n}  worst rel err vs exact series = {worst:.3e}",
+        std::env::var("FERRIC_TERF_K").unwrap_or("10".into())
+    );
 }

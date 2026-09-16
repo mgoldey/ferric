@@ -63,6 +63,7 @@ Env tunables:
   ET_TIMEOUT         (7200) -- per-job subprocess timeout (seconds)
   ET_TABLE_DIR       (auto) -- FERRIC_TERF_TABLE_DIR override
 """
+
 from pathlib import Path
 import math
 import os
@@ -86,24 +87,47 @@ if not _TERF_DIR or not os.path.exists(os.path.join(_TERF_DIR, "16_4_2.bin")):
             break
 
 _LD_LIBRARY_PATH = os.pathsep.join(
-    p for p in [os.path.expanduser("~/.local/lib"), os.environ.get("LD_LIBRARY_PATH", "")] if p)
+    p
+    for p in [os.path.expanduser("~/.local/lib"), os.environ.get("LD_LIBRARY_PATH", "")]
+    if p
+)
 
-ENV = dict(os.environ, OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS=RAYON_NUM_THREADS,
-           OMP_NUM_THREADS="1", MKL_NUM_THREADS="1",
-           LD_LIBRARY_PATH=_LD_LIBRARY_PATH, FERRIC_TERF_TABLE_DIR=_TERF_DIR)
+ENV = dict(
+    os.environ,
+    OPENBLAS_NUM_THREADS="1",
+    RAYON_NUM_THREADS=RAYON_NUM_THREADS,
+    OMP_NUM_THREADS="1",
+    MKL_NUM_THREADS="1",
+    LD_LIBRARY_PATH=_LD_LIBRARY_PATH,
+    FERRIC_TERF_TABLE_DIR=_TERF_DIR,
+)
 
 # (xyz, basis, aux, frozen_core)
 SYSTEMS = {
-    "monomer": (f"{ROOT}/testdata/molecules/thiel_set/ethylene.xyz", "cc-pvdz", "cc-pvdz-ri", 2),
-    "dimer":   (f"{ROOT}/testdata/molecules/s22/ethylene_dimer.xyz", "cc-pvdz", "cc-pvdz-ri", 4),
+    "monomer": (
+        f"{ROOT}/testdata/molecules/thiel_set/ethylene.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+        2,
+    ),
+    "dimer": (
+        f"{ROOT}/testdata/molecules/s22/ethylene_dimer.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+        4,
+    ),
 }
 
 # Å values (2026-07-21: converted from the old Bohr-valued
 # [0.30, 1.00, 2.00, 3.18, 5.00, 12.0] by /1.8897259886 -- [mp2] r0 is now Å
 # at the CLI boundary, see crates/ferric-cli/src/config.rs's r0 doc).
 R0_DEFAULT = [0.1588, 0.5292, 1.0584, 1.6828, 2.6459, 6.3501]
-R0_LIST = [float(x) for x in os.environ.get("ET_R0_LIST", "").split(",") if x.strip()] or R0_DEFAULT
-SYS_KEYS = [s for s in os.environ.get("ET_SYSTEMS", "").split(",") if s.strip()] or list(SYSTEMS)
+R0_LIST = [
+    float(x) for x in os.environ.get("ET_R0_LIST", "").split(",") if x.strip()
+] or R0_DEFAULT
+SYS_KEYS = [
+    s for s in os.environ.get("ET_SYSTEMS", "").split(",") if s.strip()
+] or list(SYSTEMS)
 FORMS = [("B", "delta-lr"), ("T", "coupled-rings")]
 
 FERRIC_MAX_GB = os.environ.get("ET_FERRIC_MAX_GB", "6")
@@ -228,14 +252,24 @@ def preflight():
         log(f"PREFLIGHT FAIL: binary {BIN} missing -- build ferric-cli first.")
         return False
     if not _TERF_DIR:
-        log("PREFLIGHT FAIL: terf-tables directory not found (looked in "
-            "<repo>/terf-tables). Set ET_TABLE_DIR explicitly.")
+        log(
+            "PREFLIGHT FAIL: terf-tables directory not found (looked in "
+            "<repo>/terf-tables). Set ET_TABLE_DIR explicitly."
+        )
         return False
     xyz, basis, aux, fc = SYSTEMS["monomer"]
     tp = f"{OUT}/toml/_preflight_terf_ethylene.toml"
-    open(tp, "w").write(terf_toml(xyz, 1.6828, "delta-lr", basis, aux, fc))  # 3.18 Bohr in Å
-    cmd = [FERRIC_LIMITED, f"--max={FERRIC_MAX_GB}G", f"--high={FERRIC_HIGH_GB}G",
-           "--", BIN, tp]
+    open(tp, "w").write(
+        terf_toml(xyz, 1.6828, "delta-lr", basis, aux, fc)
+    )  # 3.18 Bohr in Å
+    cmd = [
+        FERRIC_LIMITED,
+        f"--max={FERRIC_MAX_GB}G",
+        f"--high={FERRIC_HIGH_GB}G",
+        "--",
+        BIN,
+        tp,
+    ]
     r = subprocess.run(cmd, capture_output=True, text=True, env=ENV, timeout=600)
     combined = (r.stdout or "") + (r.stderr or "")
     if r.returncode != 0 or "Total energy" not in combined:
@@ -245,11 +279,15 @@ def preflight():
         return False
     low = combined.lower()
     if "attenuator" in low and "terf" not in low.split("attenuator", 1)[1][:40]:
-        log("PREFLIGHT FAIL: binary ran but attenuator is not 'terf' -- likely "
-            "silent erf-fallback. Refusing to sweep.")
+        log(
+            "PREFLIGHT FAIL: binary ran but attenuator is not 'terf' -- likely "
+            "silent erf-fallback. Refusing to sweep."
+        )
         return False
-    log("PREFLIGHT OK: terf stanza accepted, ethylene monomer/cc-pVDZ terf-B "
-        "ran to 'Total energy'.")
+    log(
+        "PREFLIGHT OK: terf stanza accepted, ethylene monomer/cc-pVDZ terf-B "
+        "ran to 'Total energy'."
+    )
     return True
 
 
@@ -261,11 +299,21 @@ def enumerate_jobs():
             w = omega_of(r0)
             for tag, form in FORMS:
                 k = f"ethylene_{sk}_terf_r0{r0}_{tag}"
-                if not (os.path.exists(out_path(k)) and "Total energy" in open(out_path(k)).read()):
-                    jobs.append((k, terf_toml(xyz, r0, form, basis, aux, fc), "Total energy"))
+                if not (
+                    os.path.exists(out_path(k))
+                    and "Total energy" in open(out_path(k)).read()
+                ):
+                    jobs.append(
+                        (k, terf_toml(xyz, r0, form, basis, aux, fc), "Total energy")
+                    )
                 ke = f"ethylene_{sk}_erf_w{w:.4f}_{tag}"
-                if not (os.path.exists(out_path(ke)) and "Total energy" in open(out_path(ke)).read()):
-                    jobs.append((ke, erf_toml(xyz, w, form, basis, aux, fc), "Total energy"))
+                if not (
+                    os.path.exists(out_path(ke))
+                    and "Total energy" in open(out_path(ke)).read()
+                ):
+                    jobs.append(
+                        (ke, erf_toml(xyz, w, form, basis, aux, fc), "Total energy")
+                    )
     seen, uniq = set(), []
     for j in jobs:
         if j[0] in seen:
@@ -293,8 +341,14 @@ def run_one(job):
     toml_path = f"{OUT}/toml/{key}.toml"
     open(toml_path, "w").write(toml)
 
-    cmd = [FERRIC_LIMITED, f"--max={FERRIC_MAX_GB}G", f"--high={FERRIC_HIGH_GB}G",
-           "--", BIN, toml_path]
+    cmd = [
+        FERRIC_LIMITED,
+        f"--max={FERRIC_MAX_GB}G",
+        f"--high={FERRIC_HIGH_GB}G",
+        "--",
+        BIN,
+        toml_path,
+    ]
     t0 = time.monotonic()
     try:
         with open(op, "w") as f, open(op + ".err", "w") as e:
@@ -308,8 +362,10 @@ def run_one(job):
 def main():
     os.makedirs(f"{OUT}/toml", exist_ok=True)
     os.makedirs(f"{OUT}/out", exist_ok=True)
-    log(f"ethylene terfc sweep: systems={SYS_KEYS}, r0(A)={R0_LIST}, "
-        f"forms={[f[0] for f in FORMS]}")
+    log(
+        f"ethylene terfc sweep: systems={SYS_KEYS}, r0(A)={R0_LIST}, "
+        f"forms={[f[0] for f in FORMS]}"
+    )
     if not preflight():
         log("ABORT: preflight failed.")
         return
@@ -318,8 +374,10 @@ def main():
     if not jobs:
         log("nothing to do -- ethylene terfc sweep already complete.")
         return
-    log(f"{total} jobs to run, serial, ferric-limited max={FERRIC_MAX_GB}G "
-        f"high={FERRIC_HIGH_GB}G, budget_gb={MEMORY_BUDGET_GB}, gate={GATE_GB}GB")
+    log(
+        f"{total} jobs to run, serial, ferric-limited max={FERRIC_MAX_GB}G "
+        f"high={FERRIC_HIGH_GB}G, budget_gb={MEMORY_BUDGET_GB}, gate={GATE_GB}GB"
+    )
     done = 0
     for j in jobs:
         status, dt = run_one(j)

@@ -46,9 +46,20 @@ fn main() {
         ..Default::default()
     };
 
-    eprintln!("[setup] {mol_name}/{obs_name}, aux={aux_name}, nbasis={}", obs.nbasis());
+    eprintln!(
+        "[setup] {mol_name}/{obs_name}, aux={aux_name}, nbasis={}",
+        obs.nbasis()
+    );
     let t = Instant::now();
-    let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &rhf_cfg).unwrap();
+    let rhf = solve_rhf(
+        &ParallelContext::default(),
+        &mol,
+        &obs,
+        op,
+        &bounds,
+        &rhf_cfg,
+    )
+    .unwrap();
     eprintln!(
         "[setup] RHF converged={} iters={} E={:.10} ({:.2}s, not counted below)",
         rhf.converged,
@@ -68,7 +79,9 @@ fn main() {
     let nvir = nbas - nocc_total;
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
     eprintln!(
         "[dims] nbasis={nbas} naux={} nocc={nocc} nvir={nvir} (frozen={frozen})",
@@ -100,7 +113,10 @@ fn main() {
 
     let total = t_all.elapsed().as_secs_f64();
 
-    println!("\nMP2 corr = {:.10} Ha  (OS {:.10}, SS {:.10})", sc.e_total, sc.e_os, sc.e_ss);
+    println!(
+        "\nMP2 corr = {:.10} Ha  (OS {:.10}, SS {:.10})",
+        sc.e_total, sc.e_os, sc.e_ss
+    );
     println!("Total    = {:.10} Ha", rhf.energy + sc.e_total);
     println!("\n{:<34} {:>9} {:>7}", "stage", "sec", "%");
     let row = |n: &str, v: f64| println!("{:<34} {:>9.3} {:>6.1}%", n, v, 100.0 * v / total);

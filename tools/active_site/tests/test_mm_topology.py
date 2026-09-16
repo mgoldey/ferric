@@ -7,11 +7,15 @@ scripts/gen_openmm_mm_refs.py's module docstring for the install command).
 Skips itself with an actionable message if OpenMM is not importable, per the
 repo convention for optional-dependency test files.
 """
+
 from pathlib import Path
 
 import pytest
 
-openmm = pytest.importorskip("openmm", reason="OpenMM not installed — see scripts/gen_openmm_mm_refs.py docstring")
+openmm = pytest.importorskip(
+    "openmm",
+    reason="OpenMM not installed — see scripts/gen_openmm_mm_refs.py docstring",
+)
 
 from tools.active_site.mm_topology import topology_from_openmm
 
@@ -69,7 +73,9 @@ def test_topology_from_openmm_bond_k_r0_match_openmm_exactly():
     ff = app.ForceField("amber14-all.xml")
     system = ff.createSystem(pdb.topology, nonbondedMethod=app.NoCutoff)
 
-    bond_force = next(f for f in system.getForces() if isinstance(f, openmm.HarmonicBondForce))
+    bond_force = next(
+        f for f in system.getForces() if isinstance(f, openmm.HarmonicBondForce)
+    )
     expected_bonds = []
     for b in range(bond_force.getNumBonds()):
         i, j, r0, k = bond_force.getBondParameters(b)

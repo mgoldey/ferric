@@ -10,6 +10,9 @@ fn asymptotic_vs_series_cost_and_accuracy() {
     let ok = unsafe { ffi::scf_terf_asym_probe(4, 20_000, &mut ser, &mut asy, &mut worst) };
     assert_eq!(ok, 1, "probe failed with status {ok}");
     eprintln!("  exact series : {ser:8.1} ns/call");
-    eprintln!("  asymptotic   : {asy:8.1} ns/call   => {:.1}x faster", ser / asy.max(1e-9));
+    eprintln!(
+        "  asymptotic   : {asy:8.1} ns/call   => {:.1}x faster",
+        ser / asy.max(1e-9)
+    );
     eprintln!("  worst rel err over S in [25,400], s in [0.05,0.5]: {worst:.3e}");
 }

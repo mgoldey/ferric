@@ -17,6 +17,7 @@ Usage:
   run_sweep.py o2 augccpvdz    # only jobs matching ALL listed filters? no: ANY
   run_sweep.py --force         # recompute everything
 """
+
 import json, os, re, subprocess, sys, time
 from pathlib import Path
 
@@ -26,15 +27,15 @@ RUNS = HERE / "runs"
 RESULTS = HERE / "results.json"
 BIN = ROOT / "target" / "release" / "ferric-cli"
 
-MOLS = ["so2", "cs2", "cos", "n2o", "cl2", "hbr",
-        "sih4", "ccl4", "ch3oh", "ch3och3"]
-METHODS = ['rpa_pbe', 'rpa_hf', 'ts', 'mbd']
+MOLS = ["so2", "cs2", "cos", "n2o", "cl2", "hbr", "sih4", "ccl4", "ch3oh", "ch3och3"]
+METHODS = ["rpa_pbe", "rpa_hf", "ts", "mbd"]
 BASES = ["augccpvdz", "augccpvtz"]
 
 C6_RE = re.compile(r"molecular C6\s*=\s*([-+0-9.eE]+)\s*a\.u\.")
 
-ENV = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1",
-           RAYON_NUM_THREADS="8")
+ENV = dict(
+    os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", RAYON_NUM_THREADS="8"
+)
 
 
 def load_results():
@@ -46,7 +47,7 @@ def load_results():
 def save_results(d):
     tmp = RESULTS.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(d, indent=2, sort_keys=True))
-    tmp.replace(RESULTS)   # atomic; safe to Ctrl-C between jobs
+    tmp.replace(RESULTS)  # atomic; safe to Ctrl-C between jobs
 
 
 def key(mol, method, basis):
@@ -54,8 +55,12 @@ def key(mol, method, basis):
 
 
 def valid(entry):
-    return (entry is not None and isinstance(entry.get("c6"), (int, float))
-            and entry["c6"] == entry["c6"] and entry["c6"] > 0)
+    return (
+        entry is not None
+        and isinstance(entry.get("c6"), (int, float))
+        and entry["c6"] == entry["c6"]
+        and entry["c6"] > 0
+    )
 
 
 def run_one(mol, method, basis):
@@ -64,17 +69,29 @@ def run_one(mol, method, basis):
     if not toml.exists():
         return {"c6": None, "error": "missing TOML", "ok": False}
     t0 = time.time()
-    proc = subprocess.run([str(BIN), str(toml)], cwd=str(ROOT),
-                          env=ENV, capture_output=True, text=True)
+    proc = subprocess.run(
+        [str(BIN), str(toml)], cwd=str(ROOT), env=ENV, capture_output=True, text=True
+    )
     dt = time.time() - t0
     out = proc.stdout + "\n=== STDERR ===\n" + proc.stderr
     log.write_text(out)
     m = C6_RE.search(proc.stdout)
     if m:
-        return {"c6": float(m.group(1)), "ok": True, "seconds": round(dt, 1),
-                "method": method, "basis": basis, "mol": mol}
-    return {"c6": None, "ok": False, "seconds": round(dt, 1),
-            "error": "no C6 parsed; see log", "rc": proc.returncode}
+        return {
+            "c6": float(m.group(1)),
+            "ok": True,
+            "seconds": round(dt, 1),
+            "method": method,
+            "basis": basis,
+            "mol": mol,
+        }
+    return {
+        "c6": None,
+        "ok": False,
+        "seconds": round(dt, 1),
+        "error": "no C6 parsed; see log",
+        "rc": proc.returncode,
+    }
 
 
 def main():

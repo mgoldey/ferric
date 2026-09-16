@@ -54,7 +54,11 @@ const T_CUT_PNO: &[f64] = &[1e-7, 1e-8];
 const BIN_EDGES: &[f64] = &[1e-6, 4.0, 8.0, 12.0, 18.0, 30.0];
 
 fn frob_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y) * (x - y)).sum::<f64>().sqrt()
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y) * (x - y))
+        .sum::<f64>()
+        .sqrt()
 }
 
 fn gather_rows(full: &ndarray::ArrayView2<f64>, idx: &[usize]) -> Array2<f64> {
@@ -124,7 +128,9 @@ struct BinAgg {
 fn main() {
     println!("# ==========================================================================");
     println!("# PNO / prescreening sensitivity of union-domain-fitted pair blocks");
-    println!("# Basis: {OBS_NAME} / Aux: {AUX_NAME}  T_CutPairs={T_CUT_PAIRS:?}  T_CutPNO={T_CUT_PNO:?}");
+    println!(
+        "# Basis: {OBS_NAME} / Aux: {AUX_NAME}  T_CutPairs={T_CUT_PAIRS:?}  T_CutPNO={T_CUT_PNO:?}"
+    );
     println!("# ==========================================================================\n");
 
     for n_c in [4usize, 8, 12, 16] {
@@ -147,7 +153,10 @@ fn main() {
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let ctx = ParallelContext::default();
-        let scf_cfg = RhfConfig { density_conv: 1e-8, ..Default::default() };
+        let scf_cfg = RhfConfig {
+            density_conv: 1e-8,
+            ..Default::default()
+        };
         let rhf = match solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg) {
             Ok(r) => r,
             Err(e) => {
@@ -174,7 +183,11 @@ fn main() {
         assert!(ortho < 1e-8, "U not orthogonal: {ortho:.3e}");
         // Localized-occ diagonal Fock (semicanonical): F_ii = sum_k U[k,i]^2 eps_k.
         let f_loc: Vec<f64> = (0..nocc)
-            .map(|i| (0..nocc).map(|k| u_rot[(k, i)] * u_rot[(k, i)] * eps[k]).sum())
+            .map(|i| {
+                (0..nocc)
+                    .map(|k| u_rot[(k, i)] * u_rot[(k, i)] * eps[k])
+                    .sum()
+            })
             .collect();
 
         let v_global = threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
@@ -183,7 +196,8 @@ fn main() {
         // naux*nbas^2 AO tensor — ~13 GB at C32/cc-pVDZ); bit-identical to
         // the dense path, which small systems still take under the budget.
         let eri3_loc =
-            ferric_mp2::rimp2::eri3_mo_ov_blocked(op, &obs, &dfbs, &c_occ_loc, &c_vir_can, 2 << 30).unwrap();
+            ferric_mp2::rimp2::eri3_mo_ov_blocked(op, &obs, &dfbs, &c_occ_loc, &c_vir_can, 2 << 30)
+                .unwrap();
         let a2 = eri3_loc.to_shape((naux, nov)).unwrap().to_owned();
         drop(eri3_loc);
         let c_glob = v_global_inv.dot(&a2);
@@ -193,7 +207,11 @@ fn main() {
         let aux_shell_dims = dfbs.shell_dims();
 
         println!("### alkane_{n_c}  nocc={nocc}  nvir={nvir}  naux={naux}");
-        let radii: &[f64] = if n_c == 4 { &[6.0, 10.0, 50.0] } else { &[6.0, 10.0] };
+        let radii: &[f64] = if n_c == 4 {
+            &[6.0, 10.0, 50.0]
+        } else {
+            &[6.0, 10.0]
+        };
 
         for &r_cut in radii {
             let mut orb_domains: Vec<Vec<usize>> = Vec::with_capacity(nocc);
@@ -202,7 +220,8 @@ fn main() {
                 let mut fns = Vec::new();
                 for sh in 0..dfbs.nshells() {
                     let c = aux_shell_centers[sh];
-                    let d2 = (ci[0] - c[0]).powi(2) + (ci[1] - c[1]).powi(2) + (ci[2] - c[2]).powi(2);
+                    let d2 =
+                        (ci[0] - c[0]).powi(2) + (ci[1] - c[1]).powi(2) + (ci[2] - c[2]).powi(2);
                     if d2.sqrt() <= r_cut {
                         let f0 = aux_shell_offsets[sh];
                         fns.extend(f0..f0 + aux_shell_dims[sh]);
@@ -217,7 +236,11 @@ fn main() {
 
             for i in 0..nocc {
                 for j in i..nocc {
-                    let mut idx: Vec<usize> = orb_domains[i].iter().chain(orb_domains[j].iter()).copied().collect();
+                    let mut idx: Vec<usize> = orb_domains[i]
+                        .iter()
+                        .chain(orb_domains[j].iter())
+                        .copied()
+                        .collect();
                     idx.sort_unstable();
                     idx.dedup();
                     let m = idx.len();
@@ -240,8 +263,10 @@ fn main() {
                         .dot(&c_glob.slice(s![.., j * nvir..(j + 1) * nvir]));
 
                     let diag_pair = i == j;
-                    let (e_ex, occ_ex) = pair_quantities(&k_ex, f_loc[i], f_loc[j], &eps_vir, diag_pair);
-                    let (e_fit, occ_fit) = pair_quantities(&k_fit, f_loc[i], f_loc[j], &eps_vir, diag_pair);
+                    let (e_ex, occ_ex) =
+                        pair_quantities(&k_ex, f_loc[i], f_loc[j], &eps_vir, diag_pair);
+                    let (e_fit, occ_fit) =
+                        pair_quantities(&k_fit, f_loc[i], f_loc[j], &eps_vir, diag_pair);
                     e_sum_ex += e_ex;
 
                     let count = |occs: &[f64], t: f64| occs.iter().filter(|&&o| o > t).count();
@@ -262,13 +287,25 @@ fn main() {
             for &t in T_CUT_PAIRS {
                 let kept_ex = rows.iter().filter(|r| r.0.abs() > t).count();
                 let kept_fit = rows.iter().filter(|r| r.1.abs() > t).count();
-                let wrongly_dropped: Vec<&(f64, f64, f64, [usize; 2], [usize; 2])> =
-                    rows.iter().filter(|r| r.0.abs() > t && r.1.abs() <= t).collect();
-                let wrongly_kept = rows.iter().filter(|r| r.0.abs() <= t && r.1.abs() > t).count();
-                let boundary = rows.iter().filter(|r| r.0.abs() > 0.9 * t && r.0.abs() < 1.1 * t).count();
-                let max_wd = wrongly_dropped.iter().map(|r| r.0.abs()).fold(0.0f64, f64::max);
+                let wrongly_dropped: Vec<&(f64, f64, f64, [usize; 2], [usize; 2])> = rows
+                    .iter()
+                    .filter(|r| r.0.abs() > t && r.1.abs() <= t)
+                    .collect();
+                let wrongly_kept = rows
+                    .iter()
+                    .filter(|r| r.0.abs() <= t && r.1.abs() > t)
+                    .count();
+                let boundary = rows
+                    .iter()
+                    .filter(|r| r.0.abs() > 0.9 * t && r.0.abs() < 1.1 * t)
+                    .count();
+                let max_wd = wrongly_dropped
+                    .iter()
+                    .map(|r| r.0.abs())
+                    .fold(0.0f64, f64::max);
                 let dropped_e_ex: f64 = rows.iter().filter(|r| r.0.abs() <= t).map(|r| r.0).sum();
-                let dropped_e_fit_decision: f64 = rows.iter().filter(|r| r.1.abs() <= t).map(|r| r.0).sum();
+                let dropped_e_fit_decision: f64 =
+                    rows.iter().filter(|r| r.1.abs() <= t).map(|r| r.0).sum();
                 println!(
                     "   T={t:.0e}: kept ex/fit {kept_ex}/{kept_fit}  flips drop/keep {}/{}  (pairs within +-10% of T: {boundary})  max|e| wrongly dropped {max_wd:.2e}  screened-out e: ex {dropped_e_ex:.3e} vs fit-decision {dropped_e_fit_decision:.3e}",
                     wrongly_dropped.len(),
@@ -278,7 +315,13 @@ fn main() {
 
             // Pair-energy error and PNO count shifts by separation bin.
             let mut bins: Vec<BinAgg> = (0..=BIN_EDGES.len())
-                .map(|_| BinAgg { n: 0, max_rel_e: 0.0, max_abs_e: 0.0, sum_abs_e_ex: 0.0, max_dn_pno: [0, 0] })
+                .map(|_| BinAgg {
+                    n: 0,
+                    max_rel_e: 0.0,
+                    max_abs_e: 0.0,
+                    sum_abs_e_ex: 0.0,
+                    max_dn_pno: [0, 0],
+                })
                 .collect();
             for (e_ex, e_fit, r, n_ex, n_fit) in &rows {
                 let b = &mut bins[bin_index(*r)];
@@ -295,7 +338,13 @@ fn main() {
             }
             println!(
                 "   {:>6} {:>7} {:>13} {:>12} {:>12} {:>10} {:>10}",
-                "R bin", "npairs", "sum|e_ex|", "max abs dE", "max rel dE", "maxdN@1e-7", "maxdN@1e-8"
+                "R bin",
+                "npairs",
+                "sum|e_ex|",
+                "max abs dE",
+                "max rel dE",
+                "maxdN@1e-7",
+                "maxdN@1e-8"
             );
             for (k, b) in bins.iter().enumerate() {
                 if b.n == 0 {

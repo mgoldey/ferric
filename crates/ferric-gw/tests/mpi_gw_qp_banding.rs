@@ -125,8 +125,16 @@ fn assert_all_ranks_agree(ctx: &ParallelContext, label: &str, value: f64, tol: f
     if let Some(world) = ctx.world() {
         let mut v_max = 0.0f64;
         let mut v_min = 0.0f64;
-        world.all_reduce_into(std::slice::from_ref(&value), std::slice::from_mut(&mut v_max), SystemOperation::max());
-        world.all_reduce_into(std::slice::from_ref(&value), std::slice::from_mut(&mut v_min), SystemOperation::min());
+        world.all_reduce_into(
+            std::slice::from_ref(&value),
+            std::slice::from_mut(&mut v_max),
+            SystemOperation::max(),
+        );
+        world.all_reduce_into(
+            std::slice::from_ref(&value),
+            std::slice::from_mut(&mut v_min),
+            SystemOperation::min(),
+        );
         let spread = v_max - v_min;
         if ctx.is_root() {
             eprintln!(
@@ -165,12 +173,17 @@ fn prepare_h2o_gw_inputs() -> (
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &df_rhf_config()).unwrap();
-    assert!(rhf.converged, "water RHF must converge (energy={:.10})", rhf.energy);
+    assert!(
+        rhf.converged,
+        "water RHF must converge (energy={:.10})",
+        rhf.energy
+    );
 
     let pcfg = pdep_cfg();
     let pdep = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &pcfg).unwrap();
     let mo_b = mo_b::build_full_b(&mol, &obs, &dfbs, op, &rhf, 0, None).unwrap();
-    let (v_dressed, _dev) = w_pdep::redress_with_check(&mo_b.v_inv_sqrt, &pdep.eigenpotentials).unwrap();
+    let (v_dressed, _dev) =
+        w_pdep::redress_with_check(&mo_b.v_inv_sqrt, &pdep.eigenpotentials).unwrap();
 
     (mol, obs, dfbs, rhf, mo_b, v_dressed)
 }
@@ -196,10 +209,21 @@ fn mpi_gw_np1_matches_serial_water_g0w0() {
     let pdep_serial = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &pcfg).unwrap();
     let pdep_mpi = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &pcfg).unwrap();
 
-    let serial = run_g0w0(&mol, &rhf, &mo_b, &v_dressed, pdep_serial, qp_range.clone(), &gcfg, None)
-        .expect("serial G0W0 must run");
-    let mpi_res = run_g0w0_mpi(&ctx, &mol, &rhf, &mo_b, &v_dressed, pdep_mpi, qp_range, &gcfg, None)
-        .expect("MPI G0W0 must run");
+    let serial = run_g0w0(
+        &mol,
+        &rhf,
+        &mo_b,
+        &v_dressed,
+        pdep_serial,
+        qp_range.clone(),
+        &gcfg,
+        None,
+    )
+    .expect("serial G0W0 must run");
+    let mpi_res = run_g0w0_mpi(
+        &ctx, &mol, &rhf, &mo_b, &v_dressed, pdep_mpi, qp_range, &gcfg, None,
+    )
+    .expect("MPI G0W0 must run");
 
     assert_eq!(serial.mo_indices, mpi_res.mo_indices);
     let mut max_eps_diff = 0.0_f64;
@@ -211,7 +235,8 @@ fn mpi_gw_np1_matches_serial_water_g0w0() {
         max_z_diff = max_z_diff.max((serial.z_factor[i] - mpi_res.z_factor[i]).abs());
         assert_eq!(
             serial.qp_converged[i], mpi_res.qp_converged[i],
-            "MO {} converged-flag mismatch", serial.mo_indices[i]
+            "MO {} converged-flag mismatch",
+            serial.mo_indices[i]
         );
     }
     eprintln!(
@@ -221,10 +246,19 @@ fn mpi_gw_np1_matches_serial_water_g0w0() {
     assert!(max_sc_diff < 1e-12, "sigma_c mismatch: {max_sc_diff:.3e}");
     assert!(max_z_diff < 1e-12, "z_factor mismatch: {max_z_diff:.3e}");
 
-    let nocc_idx = serial.mo_indices.iter().position(|&i| i == nocc - 1).unwrap();
+    let nocc_idx = serial
+        .mo_indices
+        .iter()
+        .position(|&i| i == nocc - 1)
+        .unwrap();
     let ip_ev = -mpi_res.eps_qp[nocc_idx] * HA_TO_EV;
     eprintln!("[np1] G0W0@HF/cc-pVDZ H2O IP = {ip_ev:.3} eV (ref ~11.97 eV)");
-    assert_all_ranks_agree(&ctx, "water np1/np-N eps_qp[HOMO]", mpi_res.eps_qp[nocc_idx], 1e-12);
+    assert_all_ranks_agree(
+        &ctx,
+        "water np1/np-N eps_qp[HOMO]",
+        mpi_res.eps_qp[nocc_idx],
+        1e-12,
+    );
 }
 
 /// Cross-rank correctness at any rank count: every rank's `run_g0w0_mpi` must
@@ -243,18 +277,39 @@ fn mpi_gw_cross_rank_agreement_water_g0w0() {
     // small basis (24 MOs at cc-pVDZ).
     let qp_range = 0..nmo;
 
-    let mpi_res = run_g0w0_mpi(&ctx, &mol, &rhf, &mo_b, &v_dressed, pdep, qp_range, &gcfg, None)
-        .expect("MPI G0W0 must run");
+    let mpi_res = run_g0w0_mpi(
+        &ctx, &mol, &rhf, &mo_b, &v_dressed, pdep, qp_range, &gcfg, None,
+    )
+    .expect("MPI G0W0 must run");
 
     eprintln!(
         "[water] rank {}/{}: n_mo={}  eps_qp[0]={:.15}  bits=0x{:016x}",
-        ctx.rank, ctx.size, mpi_res.mo_indices.len(), mpi_res.eps_qp[0], mpi_res.eps_qp[0].to_bits()
+        ctx.rank,
+        ctx.size,
+        mpi_res.mo_indices.len(),
+        mpi_res.eps_qp[0],
+        mpi_res.eps_qp[0].to_bits()
     );
 
     for (idx, &mo_abs) in mpi_res.mo_indices.iter().enumerate() {
-        assert_all_ranks_agree(&ctx, &format!("water eps_qp[mo={mo_abs}]"), mpi_res.eps_qp[idx], 1e-12);
-        assert_all_ranks_agree(&ctx, &format!("water sigma_c[mo={mo_abs}]"), mpi_res.sigma_c[idx], 1e-12);
-        assert_all_ranks_agree(&ctx, &format!("water z_factor[mo={mo_abs}]"), mpi_res.z_factor[idx], 1e-12);
+        assert_all_ranks_agree(
+            &ctx,
+            &format!("water eps_qp[mo={mo_abs}]"),
+            mpi_res.eps_qp[idx],
+            1e-12,
+        );
+        assert_all_ranks_agree(
+            &ctx,
+            &format!("water sigma_c[mo={mo_abs}]"),
+            mpi_res.sigma_c[idx],
+            1e-12,
+        );
+        assert_all_ranks_agree(
+            &ctx,
+            &format!("water z_factor[mo={mo_abs}]"),
+            mpi_res.z_factor[idx],
+            1e-12,
+        );
     }
 
     // Loose sanity bound: every QP energy must be finite.
@@ -262,7 +317,12 @@ fn mpi_gw_cross_rank_agreement_water_g0w0() {
         assert!(e.is_finite(), "non-finite QP energy: {e}");
     }
 
-    eprintln!("[mem] rank {}/{}: peak RSS (VmHWM) = {:.1} MiB", ctx.rank, ctx.size, peak_rss_mib());
+    eprintln!(
+        "[mem] rank {}/{}: peak RSS (VmHWM) = {:.1} MiB",
+        ctx.rank,
+        ctx.size,
+        peak_rss_mib()
+    );
 }
 
 /// Compute-scaling probe (mirrors `mpi_rpa_freq_compute_probe`): reports each
@@ -315,23 +375,33 @@ fn mpi_gw_qp_compute_probe() {
     let pcfg = pdep_cfg();
     let pdep = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &pcfg).unwrap();
     let mo_b = mo_b::build_full_b(&mol, &obs, &dfbs, op, &rhf, 0, None).unwrap();
-    let (v_dressed, _dev) = w_pdep::redress_with_check(&mo_b.v_inv_sqrt, &pdep.eigenpotentials).unwrap();
+    let (v_dressed, _dev) =
+        w_pdep::redress_with_check(&mo_b.v_inv_sqrt, &pdep.eigenpotentials).unwrap();
     let setup_elapsed = t_setup0.elapsed();
 
     let gcfg = GwConfig::default();
     let nmo = rhf.eps_r().len();
     let qp_range = 0..nmo;
     let n_mo = qp_range.len();
-    let my_mos = (0..n_mo).filter(|i| i % ctx.size.max(1) == ctx.rank).count();
+    let my_mos = (0..n_mo)
+        .filter(|i| i % ctx.size.max(1) == ctx.rank)
+        .count();
 
     let t0 = std::time::Instant::now();
-    let mpi_res = run_g0w0_mpi(&ctx, &mol, &rhf, &mo_b, &v_dressed, pdep, qp_range, &gcfg, None)
-        .expect("MPI G0W0 must run");
+    let mpi_res = run_g0w0_mpi(
+        &ctx, &mol, &rhf, &mo_b, &v_dressed, pdep, qp_range, &gcfg, None,
+    )
+    .expect("MPI G0W0 must run");
     let qp_elapsed = t0.elapsed();
 
     eprintln!(
         "[qp-probe] rank {}/{}: n_mo={n_mo} this-rank-mos={my_mos}  setup={:.3}s  qp_loop={:.3}s  eps_qp[0]={:.10}",
         ctx.rank, ctx.size, setup_elapsed.as_secs_f64(), qp_elapsed.as_secs_f64(), mpi_res.eps_qp[0],
     );
-    eprintln!("[mem] rank {}/{}: peak RSS (VmHWM) = {:.1} MiB", ctx.rank, ctx.size, peak_rss_mib());
+    eprintln!(
+        "[mem] rank {}/{}: peak RSS (VmHWM) = {:.1} MiB",
+        ctx.rank,
+        ctx.size,
+        peak_rss_mib()
+    );
 }

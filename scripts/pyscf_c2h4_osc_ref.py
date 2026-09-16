@@ -8,6 +8,7 @@ Same geometry as testdata/molecules/c2h4.xyz / examples/c2h4-bse-tda.toml
 
 Run: OMP_NUM_THREADS=2 python3 scripts/pyscf_c2h4_osc_ref.py
 """
+
 import numpy as np
 from pyscf import gto, scf, df
 
@@ -22,7 +23,9 @@ mol = gto.M(
     H 0.000000 0.922832 -1.237695
     H 0.000000 -0.922832 -1.237695
     """,
-    basis="cc-pvdz", unit="Angstrom", verbose=0,
+    basis="cc-pvdz",
+    unit="Angstrom",
+    verbose=0,
 )
 mf = scf.RHF(mol)  # EXACT (non-DF) RHF -- matches ferric's RhfConfig::default()
 mf.kernel()
@@ -47,8 +50,10 @@ V_inv_sqrt = (U2 * w2inv_sqrt) @ U2.T
 B_ao = np.einsum("pqQ,QP->pqP", ints_3c, V_inv_sqrt)
 B_mo = np.einsum("pi,pqP,qj->ijP", mo_coeff, B_ao, mo_coeff)
 
+
 def bare(p, q, r, s):
     return np.dot(B_mo[p, q, :], B_mo[r, s, :])
+
 
 A = np.zeros((n, n))
 occ = range(nocc)
@@ -67,7 +72,7 @@ for i in occ:
 evals, evecs = np.linalg.eigh(A)
 print("# lowest 6 CIS-TDA (DF kernel, exact RHF) excitation energies (eV):")
 for k in range(6):
-    print(f"#   {k+1}  {evals[k]*HARTREE2EV:.6f}")
+    print(f"#   {k + 1}  {evals[k] * HARTREE2EV:.6f}")
 
 with mol.with_common_orig((0.0, 0.0, 0.0)):
     dip_ao = mol.intor_symmetric("int1e_r", comp=3)
@@ -80,14 +85,15 @@ for k in range(6):
     X = evecs[:, k].reshape(nocc, nvir)
     mu = np.sqrt(2.0) * np.einsum("ia,xia->x", X, dip_ia)
     f = (2.0 / 3.0) * evals[k] * np.dot(mu, mu)
-    print(f"#   {k+1}  E={evals[k]*HARTREE2EV:.6f} eV   f={f:.6e}")
+    print(f"#   {k + 1}  E={evals[k] * HARTREE2EV:.6f} eV   f={f:.6e}")
 
 # Also try pyscf's own built-in TDA for a second independent cross-check.
 from pyscf import tdscf
+
 td = tdscf.TDA(mf)
 td.nstates = 6
 td.kernel()
 print("# pyscf tdscf.TDA (built-in, exact RHF, exact 4-index ERIs, no DF):")
 osc = td.oscillator_strength()
 for k in range(6):
-    print(f"#   {k+1}  E={td.e[k]*HARTREE2EV:.6f} eV   f={osc[k]:.6e}")
+    print(f"#   {k + 1}  E={td.e[k] * HARTREE2EV:.6f} eV   f={osc[k]:.6e}")

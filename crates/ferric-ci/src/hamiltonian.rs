@@ -111,8 +111,7 @@ pub fn hamiltonian_diagonal(ints: &ActiveSpaceIntegrals, space: &DeterminantSpac
     let mut diag = vec![0.0f64; na * nb];
     for ia in 0..na {
         for ib in 0..nb {
-            diag[ia * nb + ib] =
-                ints.e_core + diagonal_element(ints, &a_occ[ia], &b_occ[ib]);
+            diag[ia * nb + ib] = ints.e_core + diagonal_element(ints, &a_occ[ia], &b_occ[ib]);
         }
     }
     diag
@@ -371,11 +370,7 @@ fn dense_hamiltonian_impl(
 /// Sigma-vector build `sigma = H c` over the determinant list, without forming
 /// H densely. Currently the naive O(N_det^2) pair loop (see module doc). `c`
 /// and the returned `sigma` are indexed `d = ia * n_beta + ib`.
-pub fn sigma(
-    ints: &ActiveSpaceIntegrals,
-    space: &DeterminantSpace,
-    c: &[f64],
-) -> Vec<f64> {
+pub fn sigma(ints: &ActiveSpaceIntegrals, space: &DeterminantSpace, c: &[f64]) -> Vec<f64> {
     let na = space.alpha_strings.len();
     let nb = space.beta_strings.len();
     let ndet = na * nb;

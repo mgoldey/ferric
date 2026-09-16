@@ -67,8 +67,15 @@ fn qqr3_screening_wall_time() {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let ctx = ferric_core::parallel::ParallelContext::default();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &RhfConfig::default())
-        .unwrap();
+    let rhf = solve_rhf(
+        &ctx,
+        &mol,
+        &obs,
+        Operator::coulomb(),
+        &bounds,
+        &RhfConfig::default(),
+    )
+    .unwrap();
 
     eprintln!(
         "\n=== {name} / cc-pVDZ + cc-pVDZ-RI: nbf={} naux={} ===",
@@ -83,7 +90,10 @@ fn qqr3_screening_wall_time() {
 
     for (label, op) in ops {
         let run = |thresh: Option<f64>| -> (f64, f64) {
-            let cfg = RiMp2Config { eri3_screen_thresh: thresh, ..Default::default() };
+            let cfg = RiMp2Config {
+                eri3_screen_thresh: thresh,
+                ..Default::default()
+            };
             // One warm pass, then time the second: the first touches allocator
             // and page-cache state the second does not pay for.
             let _ = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();

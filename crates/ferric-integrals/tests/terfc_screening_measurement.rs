@@ -206,7 +206,10 @@ fn terfc_schwarz_bound_holds_on_a_chain() {
         }
     }
 
-    assert!(checked > 50, "only {checked} quartets -- too few to mean anything");
+    assert!(
+        checked > 50,
+        "only {checked} quartets -- too few to mean anything"
+    );
     eprintln!("alkane_10 terfc(r0=2): {checked} quartets, worst ratio {worst:.9} at {worst_at:?}");
     assert!(
         worst <= 1.0 + 1e-9,

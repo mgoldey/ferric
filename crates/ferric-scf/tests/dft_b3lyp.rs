@@ -65,7 +65,11 @@ fn run_case_basis(label: &str, xyz: &str, basis_name: &str, expected_file: &str)
 
     let r: Ref =
         serde_json::from_str(&fs::read_to_string(ref_path(expected_file)).unwrap()).unwrap();
-    assert!(r.converged, "PySCF reference {} not converged", expected_file);
+    assert!(
+        r.converged,
+        "PySCF reference {} not converged",
+        expected_file
+    );
 
     let err = (res.energy - r.e_total).abs();
     eprintln!(
@@ -88,13 +92,18 @@ fn run_case_basis(label: &str, xyz: &str, basis_name: &str, expected_file: &str)
     assert!(
         err < TOL,
         "B3LYP E_total mismatch for {label}: err = {err:.2e} (ferric={:.10}, pyscf={:.10})",
-        res.energy, r.e_total
+        res.energy,
+        r.e_total
     );
 }
 
 #[test]
 fn b3lyp_h2() {
-    run_case("H2", "2\nH2\nH 0 0 0\nH 0 0 0.74\n", "h2_cc-pvdz_b3lyp.json");
+    run_case(
+        "H2",
+        "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
+        "h2_cc-pvdz_b3lyp.json",
+    );
 }
 
 #[test]
@@ -131,7 +140,12 @@ fn b3lyp_nh3() {
 /// Second basis (widens past cc-pVDZ-only) across all four molecules.
 #[test]
 fn b3lyp_h2_def2svp() {
-    run_case_basis("H2", "2\nH2\nH 0 0 0\nH 0 0 0.74\n", "def2-svp", "h2_def2-svp_b3lyp.json");
+    run_case_basis(
+        "H2",
+        "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
+        "def2-svp",
+        "h2_def2-svp_b3lyp.json",
+    );
 }
 
 #[test]

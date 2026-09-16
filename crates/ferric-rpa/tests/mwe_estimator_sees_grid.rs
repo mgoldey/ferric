@@ -91,7 +91,10 @@ fn grid_shape(npts: usize) -> GridEstimateShape {
 }
 
 fn incident_shape() -> PeakEstimateShape {
-    PeakEstimateShape { grid: Some(grid_shape(INCIDENT_NPTS)), ..energy_only_shape() }
+    PeakEstimateShape {
+        grid: Some(grid_shape(INCIDENT_NPTS)),
+        ..energy_only_shape()
+    }
 }
 
 /// CONTRACT 1: the estimate must cover the per-chunk `chi` buffers.

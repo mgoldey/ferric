@@ -104,7 +104,12 @@ fn main() {
         let dense_gemm = 2.0 * (naux as f64) * (naux as f64) * (nov as f64);
         println!(
             "{:>8}  {:>10.3}  {:>10.3}  {:>8}  {:>14.3e}  {:>10}",
-            "coulomb", d_vc, d_vci, bandwidth(&v_c), 2.0 * naux as f64 * rownnz_c * nov as f64, "1.00x"
+            "coulomb",
+            d_vc,
+            d_vci,
+            bandwidth(&v_c),
+            2.0 * naux as f64 * rownnz_c * nov as f64,
+            "1.00x"
         );
 
         for &w in OMEGA_M {
@@ -116,7 +121,10 @@ fn main() {
                 }
             };
             let Ok(v_inv) = v_w.inv() else {
-                println!("{w:>8.2}  {:>10}  {:>10}  {:>8}  {:>14}  {:>10}", "-", "-", "-", "-", "unusable");
+                println!(
+                    "{w:>8.2}  {:>10}  {:>10}  {:>8}  {:>14}  {:>10}",
+                    "-", "-", "-", "-", "unusable"
+                );
                 continue;
             };
             let (d_v, _) = density(&v_w);

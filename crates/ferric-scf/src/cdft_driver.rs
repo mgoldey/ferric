@@ -4,8 +4,8 @@
 //! outer iterations suffice. Written k-dimensional (k×k Jacobian) but exercised
 //! at k=1; the Jacobian is finite-difference.
 
-use crate::rhf::RhfConfig;
 use crate::result::ScfResult;
+use crate::rhf::RhfConfig;
 use crate::screening::SchwarzBounds;
 use crate::uhf::solve_uhf_fockmod;
 use ferric_core::basis::BasisSet;

@@ -22,8 +22,10 @@ fn asymptotic_matches_the_exact_series_at_the_crossover() {
     // asymptotic is NOT yet converged, so this bar also pins that we did not
     // set the threshold too low. Measured worst over that whole sweep: 2.5e-5,
     // dominated entirely by the S=25 row (S>=50 is ~1e-13).
-    eprintln!("asymptotic vs series: worst rel {worst:.3e} over the full sweep \
-               (series {ser:.0} ns/call, asymptotic {asy:.1} ns/call)");
+    eprintln!(
+        "asymptotic vs series: worst rel {worst:.3e} over the full sweep \
+               (series {ser:.0} ns/call, asymptotic {asy:.1} ns/call)"
+    );
     assert!(
         worst < 1e-4,
         "asymptotic/series disagreement {worst:.3e} exceeds the sweep bar -- \

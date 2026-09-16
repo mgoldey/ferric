@@ -156,20 +156,26 @@ where
     // Per-group partials are (natoms,3) — tiny — so the band budget in
     // grouped_deterministic_sum is effectively unbounded here; what we use it
     // for is the ascending-group-order fold (bit-identical across threads).
-    crate::reduce::grouped_deterministic_sum(&mut grad, n_groups, natoms.max(2), crate::reduce::default_band_bytes(), |g| {
-        let lo = g * group_size;
-        let hi = (lo + group_size).min(n_quads);
-        let mut local = Array2::<f64>::zeros((natoms, 3));
-        for &(s1, s2, s3, s4) in &quads[lo..hi] {
-            pool.with(|eng| {
-                if let Some(dq) = eng.compute_eri_deriv_quartet(prep, s1, s2, s3, s4) {
-                    let blk = QuartetBlock::new(dims, offs, sh2at, s1, s2, s3, s4);
-                    accum_2e_grad_gamma(&mut local, dq, &blk, &gamma);
-                }
-            });
-        }
-        Ok(local)
-    })?;
+    crate::reduce::grouped_deterministic_sum(
+        &mut grad,
+        n_groups,
+        natoms.max(2),
+        crate::reduce::default_band_bytes(),
+        |g| {
+            let lo = g * group_size;
+            let hi = (lo + group_size).min(n_quads);
+            let mut local = Array2::<f64>::zeros((natoms, 3));
+            for &(s1, s2, s3, s4) in &quads[lo..hi] {
+                pool.with(|eng| {
+                    if let Some(dq) = eng.compute_eri_deriv_quartet(prep, s1, s2, s3, s4) {
+                        let blk = QuartetBlock::new(dims, offs, sh2at, s1, s2, s3, s4);
+                        accum_2e_grad_gamma(&mut local, dq, &blk, &gamma);
+                    }
+                });
+            }
+            Ok(local)
+        },
+    )?;
     Ok(grad)
 }
 
@@ -208,15 +214,21 @@ where
     let pool = GradEnginePool::new(&mk_engine)?;
     let group_size = crate::reduce::deterministic_group_size(n_pairs);
     let n_groups = n_pairs.div_ceil(group_size);
-    crate::reduce::grouped_deterministic_sum(&mut grad, n_groups, natoms.max(2), crate::reduce::default_band_bytes(), |g| {
-        let lo = g * group_size;
-        let hi = (lo + group_size).min(n_pairs);
-        let mut local = Array2::<f64>::zeros((natoms, 3));
-        for &(s1, s2) in &pairs[lo..hi] {
-            pool.with(|eng| accum(&mut local, eng, s1, s2));
-        }
-        Ok(local)
-    })?;
+    crate::reduce::grouped_deterministic_sum(
+        &mut grad,
+        n_groups,
+        natoms.max(2),
+        crate::reduce::default_band_bytes(),
+        |g| {
+            let lo = g * group_size;
+            let hi = (lo + group_size).min(n_pairs);
+            let mut local = Array2::<f64>::zeros((natoms, 3));
+            for &(s1, s2) in &pairs[lo..hi] {
+                pool.with(|eng| accum(&mut local, eng, s1, s2));
+            }
+            Ok(local)
+        },
+    )?;
     Ok(grad)
 }
 
@@ -355,7 +367,13 @@ pub fn rhf_gradient_with_polarizable(
 ) -> Result<Array2<f64>, FerricError> {
     let mut grad = rhf_gradient(mol, prep, op, bounds, result, ext)?;
     if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
-        grad += &crate::polarizable::polarizable_gradient_term(mol, prep, sites, dipoles, result.density_r())?;
+        grad += &crate::polarizable::polarizable_gradient_term(
+            mol,
+            prep,
+            sites,
+            dipoles,
+            result.density_r(),
+        )?;
     }
     Ok(grad)
 }
@@ -386,7 +404,13 @@ pub fn uhf_gradient_with_polarizable(
 ) -> Result<Array2<f64>, FerricError> {
     let mut grad = uhf_gradient(mol, prep, op, bounds, result, ext)?;
     if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
-        grad += &crate::polarizable::polarizable_gradient_term(mol, prep, sites, dipoles, result.density_total())?;
+        grad += &crate::polarizable::polarizable_gradient_term(
+            mol,
+            prep,
+            sites,
+            dipoles,
+            result.density_total(),
+        )?;
     }
     Ok(grad)
 }
@@ -412,8 +436,7 @@ pub fn ecp_gradient(
     d: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
     let natoms = mol.atoms.len();
-    let Some(derivs) =
-        ferric_integrals::oneelectron::ecp_potential_deriv(mol, prep.basis_set())?
+    let Some(derivs) = ferric_integrals::oneelectron::ecp_potential_deriv(mol, prep.basis_set())?
     else {
         return Ok(Array2::zeros((natoms, 3)));
     };
@@ -506,9 +529,13 @@ pub fn oneelectron_gradient(
 
     // 1. Nuclear repulsion gradient (ghost atoms: zero charge, skip)
     for i in 0..natoms {
-        if mol.atoms[i].ghost { continue; }
+        if mol.atoms[i].ghost {
+            continue;
+        }
         for j in (i + 1)..natoms {
-            if mol.atoms[j].ghost { continue; }
+            if mol.atoms[j].ghost {
+                continue;
+            }
             let a = &mol.atoms[i];
             let b = &mol.atoms[j];
             let dx = a.x - b.x;
@@ -557,7 +584,11 @@ pub fn oneelectron_gradient(
                         let mu = offs[s1] + i;
                         let nu = offs[s2] + j;
                         let idx = i * n2 + j;
-                        let wval = if s1 == s2 { w[(mu, nu)] } else { 2.0 * w[(mu, nu)] };
+                        let wval = if s1 == s2 {
+                            w[(mu, nu)]
+                        } else {
+                            2.0 * w[(mu, nu)]
+                        };
                         for c in 0..3 {
                             // deriv layout: [dx1, dy1, dz1, dx2, dy2, dz2]
                             let d1 = deriv[c * block_sz + idx];
@@ -588,7 +619,11 @@ pub fn oneelectron_gradient(
                         let mu = offs[s1] + i;
                         let nu = offs[s2] + j;
                         let idx = i * n2 + j;
-                        let dval = if s1 == s2 { d[(mu, nu)] } else { 2.0 * d[(mu, nu)] };
+                        let dval = if s1 == s2 {
+                            d[(mu, nu)]
+                        } else {
+                            2.0 * d[(mu, nu)]
+                        };
                         for c in 0..3 {
                             let d1 = deriv[c * block_sz + idx];
                             let d2 = deriv[(3 + c) * block_sz + idx];
@@ -656,7 +691,11 @@ pub fn oneelectron_gradient(
                         let mu = offs[s1] + i;
                         let nu = offs[s2] + j;
                         let idx = i * n2 + j;
-                        let dval = if s1 == s2 { d[(mu, nu)] } else { 2.0 * d[(mu, nu)] };
+                        let dval = if s1 == s2 {
+                            d[(mu, nu)]
+                        } else {
+                            2.0 * d[(mu, nu)]
+                        };
                         // Shell center derivatives (first 6 blocks)
                         for c in 0..3 {
                             local[(a1, c)] += dval * deriv[c * block_sz + idx];
@@ -726,7 +765,13 @@ fn smeared_charge_qm_gradient(
     use ferric_integrals::operator::Operator;
     use ferric_integrals::site_basis::SiteBasis;
 
-    let natoms = prep.shell_to_atom().iter().copied().max().map(|m| m + 1).unwrap_or(0);
+    let natoms = prep
+        .shell_to_atom()
+        .iter()
+        .copied()
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0);
     let mut grad = Array2::<f64>::zeros((natoms, 3));
     if smeared.is_empty() {
         return Ok(grad);
@@ -749,7 +794,10 @@ fn smeared_charge_qm_gradient(
         let norm = site_basis.norm_int[i];
         for s1 in 0..nsh {
             for s2 in 0..nsh {
-                let Some(deriv) = eng.compute_eri3_deriv(prep, &site_basis.prep, sh_p, s1, s2) else { continue };
+                let Some(deriv) = eng.compute_eri3_deriv(prep, &site_basis.prep, sh_p, s1, s2)
+                else {
+                    continue;
+                };
                 let n1 = dims[s1];
                 let n2 = dims[s2];
                 let block_sz = n1 * n2;
@@ -826,7 +874,10 @@ pub fn smeared_site_forces(
         let mut site_grad = [0.0_f64; 3];
         for s1 in 0..nsh {
             for s2 in 0..nsh {
-                let Some(deriv) = eng.compute_eri3_deriv(prep, &site_basis.prep, sh_p, s1, s2) else { continue };
+                let Some(deriv) = eng.compute_eri3_deriv(prep, &site_basis.prep, sh_p, s1, s2)
+                else {
+                    continue;
+                };
                 let n1 = dims[s1];
                 let n2 = dims[s2];
                 let block_sz = n1 * n2;
@@ -890,9 +941,18 @@ fn field_density_gradient_fd(
             let mut mol_p = mol.clone();
             let mut mol_m = mol.clone();
             match c {
-                0 => { mol_p.atoms[a].x += h; mol_m.atoms[a].x -= h; }
-                1 => { mol_p.atoms[a].y += h; mol_m.atoms[a].y -= h; }
-                _ => { mol_p.atoms[a].zpos += h; mol_m.atoms[a].zpos -= h; }
+                0 => {
+                    mol_p.atoms[a].x += h;
+                    mol_m.atoms[a].x -= h;
+                }
+                1 => {
+                    mol_p.atoms[a].y += h;
+                    mol_m.atoms[a].y -= h;
+                }
+                _ => {
+                    mol_p.atoms[a].zpos += h;
+                    mol_m.atoms[a].zpos -= h;
+                }
             }
             let prep_p = match PreparedBasis::new(&mol_p, bs) {
                 Ok(p) => p,
@@ -902,8 +962,10 @@ fn field_density_gradient_fd(
                 Ok(p) => p,
                 Err(_) => continue,
             };
-            let e_p: f64 = (d * &ferric_integrals::oneelectron::field_hcore_term(&prep_p, field)?).sum();
-            let e_m: f64 = (d * &ferric_integrals::oneelectron::field_hcore_term(&prep_m, field)?).sum();
+            let e_p: f64 =
+                (d * &ferric_integrals::oneelectron::field_hcore_term(&prep_p, field)?).sum();
+            let e_m: f64 =
+                (d * &ferric_integrals::oneelectron::field_hcore_term(&prep_m, field)?).sum();
             grad[(a, c)] = (e_p - e_m) / (2.0 * h);
         }
     }
@@ -991,8 +1053,13 @@ impl QuartetBlock {
     /// Build the bundle for shell quartet (s1,s2,s3,s4) from the prepared-basis
     /// per-shell tables.
     fn new(
-        dims: &[usize], offs: &[usize], sh2at: &[usize],
-        s1: usize, s2: usize, s3: usize, s4: usize,
+        dims: &[usize],
+        offs: &[usize],
+        sh2at: &[usize],
+        s1: usize,
+        s2: usize,
+        s3: usize,
+        s4: usize,
     ) -> Self {
         let n = [dims[s1], dims[s2], dims[s3], dims[s4]];
         Self {
@@ -1026,7 +1093,14 @@ where
 {
     let [n1, n2, n3, n4] = blk.n;
     let [o1, o2, o3, o4] = blk.o;
-    let QuartetBlock { block_sz, atoms, sym12, sym34, sym1234, .. } = *blk;
+    let QuartetBlock {
+        block_sz,
+        atoms,
+        sym12,
+        sym34,
+        sym1234,
+        ..
+    } = *blk;
     for a in 0..n1 {
         for b in 0..n2 {
             for c in 0..n3 {
@@ -1140,7 +1214,10 @@ pub fn uhf_gradient(
             "uhf_gradient is not implemented for molecules containing ghost atoms".into(),
         ));
     }
-    assert!(matches!(result.spin, Spin::Unrestricted), "uhf_gradient: ScfResult.spin must be Unrestricted");
+    assert!(
+        matches!(result.spin, Spin::Unrestricted),
+        "uhf_gradient: ScfResult.spin must be Unrestricted"
+    );
     let nelec = mol.nelec() as i64;
     let two_s = mol.multiplicity as i64 - 1;
     let nocc_a = ((nelec + two_s) / 2) as usize;
@@ -1249,8 +1326,8 @@ mod tests {
     use crate::rhf::{solve_rhf, RhfConfig};
     use crate::screening::SchwarzBounds;
     use ferric_core::basis;
-    use ferric_core::mol::Molecule;
     use ferric_core::external_potential::{ExternalPotential, PointCharge};
+    use ferric_core::mol::Molecule;
     use ferric_integrals::basis_bridge::PreparedBasis;
 
     #[test]
@@ -1281,11 +1358,19 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
         let ctx = ferric_core::parallel::ParallelContext::default();
         let ext = ExternalPotential {
-            point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 15.0 }],
+            point_charges: vec![PointCharge {
+                q: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 15.0,
+            }],
             smeared_charges: Vec::new(),
             field: None,
         };
-        let config = RhfConfig { external_potential: Some(ext.clone()), ..Default::default() };
+        let config = RhfConfig {
+            external_potential: Some(ext.clone()),
+            ..Default::default()
+        };
 
         // Analytic gradient at the equilibrium geometry (converged SCF density/W).
         // NOTE: the finite difference below differentiates the *total* SCF
@@ -1301,7 +1386,8 @@ mod tests {
         let nocc = (mol.nelec() / 2) as usize;
         let w = build_energy_weighted_density(&result, nocc);
         let analytic =
-            hf_gradient_with_density(&mol, &prep, op, &bounds, result.density_r(), &w, Some(&ext)).unwrap();
+            hf_gradient_with_density(&mol, &prep, op, &bounds, result.density_r(), &w, Some(&ext))
+                .unwrap();
 
         // Finite-difference check on atom 0 (O), z-component: perturb the
         // molecule's geometry by +/- h and re-run solve_rhf + hcore/vnn.
@@ -1310,16 +1396,25 @@ mod tests {
         mol_plus.atoms[0].zpos += h;
         let prep_plus = PreparedBasis::new(&mol_plus, &bs).unwrap();
         let bounds_plus = SchwarzBounds::compute(op, &prep_plus).unwrap();
-        let e_plus = solve_rhf(&ctx, &mol_plus, &prep_plus, op, &bounds_plus, &config).unwrap().energy;
+        let e_plus = solve_rhf(&ctx, &mol_plus, &prep_plus, op, &bounds_plus, &config)
+            .unwrap()
+            .energy;
 
         let mut mol_minus = mol.clone();
         mol_minus.atoms[0].zpos -= h;
         let prep_minus = PreparedBasis::new(&mol_minus, &bs).unwrap();
         let bounds_minus = SchwarzBounds::compute(op, &prep_minus).unwrap();
-        let e_minus = solve_rhf(&ctx, &mol_minus, &prep_minus, op, &bounds_minus, &config).unwrap().energy;
+        let e_minus = solve_rhf(&ctx, &mol_minus, &prep_minus, op, &bounds_minus, &config)
+            .unwrap()
+            .energy;
 
         let fd = (e_plus - e_minus) / (2.0 * h);
-        assert!((analytic[(0, 2)] - fd).abs() < 1e-5, "analytic={}, fd={}", analytic[(0, 2)], fd);
+        assert!(
+            (analytic[(0, 2)] - fd).abs() < 1e-5,
+            "analytic={}, fd={}",
+            analytic[(0, 2)],
+            fd
+        );
     }
 
     #[test]
@@ -1338,29 +1433,42 @@ mod tests {
             smeared_charges: Vec::new(),
             field: Some([0.0, 0.0, 0.01]),
         };
-        let config = RhfConfig { external_potential: Some(ext.clone()), ..Default::default() };
+        let config = RhfConfig {
+            external_potential: Some(ext.clone()),
+            ..Default::default()
+        };
 
         let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &config).unwrap();
         let nocc = (mol.nelec() / 2) as usize;
         let w = build_energy_weighted_density(&result, nocc);
         let analytic =
-            hf_gradient_with_density(&mol, &prep, op, &bounds, result.density_r(), &w, Some(&ext)).unwrap();
+            hf_gradient_with_density(&mol, &prep, op, &bounds, result.density_r(), &w, Some(&ext))
+                .unwrap();
 
         let h = 1e-4;
         let mut mol_plus = mol.clone();
         mol_plus.atoms[0].zpos += h;
         let prep_plus = PreparedBasis::new(&mol_plus, &bs).unwrap();
         let bounds_plus = SchwarzBounds::compute(op, &prep_plus).unwrap();
-        let e_plus = solve_rhf(&ctx, &mol_plus, &prep_plus, op, &bounds_plus, &config).unwrap().energy;
+        let e_plus = solve_rhf(&ctx, &mol_plus, &prep_plus, op, &bounds_plus, &config)
+            .unwrap()
+            .energy;
 
         let mut mol_minus = mol.clone();
         mol_minus.atoms[0].zpos -= h;
         let prep_minus = PreparedBasis::new(&mol_minus, &bs).unwrap();
         let bounds_minus = SchwarzBounds::compute(op, &prep_minus).unwrap();
-        let e_minus = solve_rhf(&ctx, &mol_minus, &prep_minus, op, &bounds_minus, &config).unwrap().energy;
+        let e_minus = solve_rhf(&ctx, &mol_minus, &prep_minus, op, &bounds_minus, &config)
+            .unwrap()
+            .energy;
 
         let fd = (e_plus - e_minus) / (2.0 * h);
-        assert!((analytic[(0, 2)] - fd).abs() < 1e-5, "analytic={}, fd={}", analytic[(0, 2)], fd);
+        assert!(
+            (analytic[(0, 2)] - fd).abs() < 1e-5,
+            "analytic={}, fd={}",
+            analytic[(0, 2)],
+            fd
+        );
     }
 
     /// Compute individual gradient components for debugging.
@@ -1372,7 +1480,14 @@ mod tests {
         op: Operator,
         bounds: &SchwarzBounds,
         result: &ScfResult,
-    ) -> (Array2<f64>, Array2<f64>, Array2<f64>, Array2<f64>, Array2<f64>, Array2<f64>) {
+    ) -> (
+        Array2<f64>,
+        Array2<f64>,
+        Array2<f64>,
+        Array2<f64>,
+        Array2<f64>,
+        Array2<f64>,
+    ) {
         let natoms = mol.atoms.len();
         let n = prep.nbasis();
         let nsh = prep.nshells();
@@ -1402,9 +1517,13 @@ mod tests {
 
         // Vnn gradient (ghost atoms: zero charge, skip)
         for i in 0..natoms {
-            if mol.atoms[i].ghost { continue; }
+            if mol.atoms[i].ghost {
+                continue;
+            }
             for j in (i + 1)..natoms {
-                if mol.atoms[j].ghost { continue; }
+                if mol.atoms[j].ghost {
+                    continue;
+                }
                 let a = &mol.atoms[i];
                 let b = &mol.atoms[j];
                 let dx = a.x - b.x;
@@ -1440,7 +1559,11 @@ mod tests {
                                 let mu = offs[s1] + i;
                                 let nu = offs[s2] + j;
                                 let idx = i * n2 + j;
-                                let wval = if s1 == s2 { w[(mu, nu)] } else { 2.0 * w[(mu, nu)] };
+                                let wval = if s1 == s2 {
+                                    w[(mu, nu)]
+                                } else {
+                                    2.0 * w[(mu, nu)]
+                                };
                                 for cc in 0..3 {
                                     let d1 = deriv[cc * block_sz + idx];
                                     let d2 = deriv[(3 + cc) * block_sz + idx];
@@ -1470,7 +1593,11 @@ mod tests {
                                 let mu = offs[s1] + i;
                                 let nu = offs[s2] + j;
                                 let idx = i * n2 + j;
-                                let dval = if s1 == s2 { d[(mu, nu)] } else { 2.0 * d[(mu, nu)] };
+                                let dval = if s1 == s2 {
+                                    d[(mu, nu)]
+                                } else {
+                                    2.0 * d[(mu, nu)]
+                                };
                                 for cc in 0..3 {
                                     let d1 = deriv[cc * block_sz + idx];
                                     let d2 = deriv[(3 + cc) * block_sz + idx];
@@ -1498,18 +1625,24 @@ mod tests {
                     let n2 = dims[s2];
                     let block_sz = n1 * n2;
                     let total = nderiv_nuclear * block_sz;
-                    if nbuf.len() < total { nbuf.resize(total, 0.0); }
+                    if nbuf.len() < total {
+                        nbuf.resize(total, 0.0);
+                    }
                     // SAFETY: nbuf is pre-sized to nderiv_nuclear * block_sz; handle_mut()/handle()
                     // are live pointers; shell indices are in range. Shim returns written >= 0.
                     let written = unsafe {
                         ffi::scf_compute_1e_deriv_block(
-                            eng.handle_mut(), prep.handle(),
-                            s1 as std::os::raw::c_int, s2 as std::os::raw::c_int,
+                            eng.handle_mut(),
+                            prep.handle(),
+                            s1 as std::os::raw::c_int,
+                            s2 as std::os::raw::c_int,
                             nbuf.as_mut_ptr(),
                         )
                     };
                     assert!(written >= 0, "libint2 internal error in nuclear deriv block ({s1},{s2}): status {written}");
-                    if written == 0 { continue; }
+                    if written == 0 {
+                        continue;
+                    }
                     let a1 = sh2at[s1];
                     let a2 = sh2at[s2];
                     for i in 0..n1 {
@@ -1517,7 +1650,11 @@ mod tests {
                             let mu = offs[s1] + i;
                             let nu = offs[s2] + j;
                             let idx = i * n2 + j;
-                            let dval = if s1 == s2 { d[(mu, nu)] } else { 2.0 * d[(mu, nu)] };
+                            let dval = if s1 == s2 {
+                                d[(mu, nu)]
+                            } else {
+                                2.0 * d[(mu, nu)]
+                            };
                             for cc in 0..3 {
                                 nuclear_grad[(a1, cc)] += dval * nbuf[cc * block_sz + idx];
                                 nuclear_grad[(a2, cc)] += dval * nbuf[(3 + cc) * block_sz + idx];
@@ -1545,7 +1682,9 @@ mod tests {
                         let s4max = if s3 == s1 { s2 } else { s3 };
                         for s4 in 0..=s4max {
                             let b34 = bounds.q[(s3, s4)];
-                            if b12 * b34 * max_d < 1e-12 { continue; }
+                            if b12 * b34 * max_d < 1e-12 {
+                                continue;
+                            }
                             let deriv = eng.compute_eri_deriv_quartet(prep, s1, s2, s3, s4);
                             if let Some(dq) = deriv {
                                 let blk = QuartetBlock::new(dims, offs, sh2at, s1, s2, s3, s4);
@@ -1560,12 +1699,22 @@ mod tests {
         let mut total = Array2::zeros((natoms, 3));
         for i in 0..natoms {
             for c in 0..3 {
-                total[(i, c)] = vnn_grad[(i, c)] + overlap_grad[(i, c)]
-                    + kinetic_grad[(i, c)] + nuclear_grad[(i, c)] + twoelec_grad[(i, c)];
+                total[(i, c)] = vnn_grad[(i, c)]
+                    + overlap_grad[(i, c)]
+                    + kinetic_grad[(i, c)]
+                    + nuclear_grad[(i, c)]
+                    + twoelec_grad[(i, c)];
             }
         }
 
-        (vnn_grad, overlap_grad, kinetic_grad, nuclear_grad, twoelec_grad, total)
+        (
+            vnn_grad,
+            overlap_grad,
+            kinetic_grad,
+            nuclear_grad,
+            twoelec_grad,
+            total,
+        )
     }
 
     #[test]
@@ -1576,8 +1725,19 @@ mod tests {
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-        let config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-        let result = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &prep, op, &bounds, &config).unwrap();
+        let config = RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
+        let result = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &config,
+        )
+        .unwrap();
 
         let (vnn, overlap, kinetic, nuclear, twoelec, total) =
             gradient_components(&mol, &prep, op, &bounds, &result);
@@ -1587,26 +1747,55 @@ mod tests {
         let natoms = mol.atoms.len();
         let mut fd_vnn = Array2::<f64>::zeros((natoms, 3));
         let mut fd_total = Array2::<f64>::zeros((natoms, 3));
-        let config2 = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+        let config2 = RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
         for atom in 0..natoms {
             for coord in 0..3 {
                 let mut mol_p = mol.clone();
                 let mut mol_m = mol.clone();
                 match coord {
-                    0 => { mol_p.atoms[atom].x += delta; mol_m.atoms[atom].x -= delta; }
-                    1 => { mol_p.atoms[atom].y += delta; mol_m.atoms[atom].y -= delta; }
-                    _ => { mol_p.atoms[atom].zpos += delta; mol_m.atoms[atom].zpos -= delta; }
+                    0 => {
+                        mol_p.atoms[atom].x += delta;
+                        mol_m.atoms[atom].x -= delta;
+                    }
+                    1 => {
+                        mol_p.atoms[atom].y += delta;
+                        mol_m.atoms[atom].y -= delta;
+                    }
+                    _ => {
+                        mol_p.atoms[atom].zpos += delta;
+                        mol_m.atoms[atom].zpos -= delta;
+                    }
                 }
-                fd_vnn[(atom, coord)] = (mol_p.nuclear_repulsion() - mol_m.nuclear_repulsion()) / (2.0 * delta);
+                fd_vnn[(atom, coord)] =
+                    (mol_p.nuclear_repulsion() - mol_m.nuclear_repulsion()) / (2.0 * delta);
 
                 let bs2 = basis::bundled("sto-3g").unwrap();
                 let prep_p = PreparedBasis::new(&mol_p, &bs2).unwrap();
                 let bounds_p = SchwarzBounds::compute(Operator::coulomb(), &prep_p).unwrap();
-                let res_p = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol_p, &prep_p, Operator::coulomb(), &bounds_p, &config2).unwrap();
+                let res_p = solve_rhf(
+                    &ferric_core::parallel::ParallelContext::default(),
+                    &mol_p,
+                    &prep_p,
+                    Operator::coulomb(),
+                    &bounds_p,
+                    &config2,
+                )
+                .unwrap();
 
                 let prep_m = PreparedBasis::new(&mol_m, &bs2).unwrap();
                 let bounds_m = SchwarzBounds::compute(Operator::coulomb(), &prep_m).unwrap();
-                let res_m = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol_m, &prep_m, Operator::coulomb(), &bounds_m, &config2).unwrap();
+                let res_m = solve_rhf(
+                    &ferric_core::parallel::ParallelContext::default(),
+                    &mol_m,
+                    &prep_m,
+                    Operator::coulomb(),
+                    &bounds_m,
+                    &config2,
+                )
+                .unwrap();
 
                 fd_total[(atom, coord)] = (res_p.energy - res_m.energy) / (2.0 * delta);
             }
@@ -1627,9 +1816,13 @@ mod tests {
         for atom in 0..natoms {
             for c in 0..3 {
                 let diff = (total[(atom, c)] - fd_total[(atom, c)]).abs();
-                assert!(diff < 1e-5,
+                assert!(
+                    diff < 1e-5,
                     "atom={atom} coord={c}: total={:.8} fd={:.8} diff={:.2e}",
-                    total[(atom, c)], fd_total[(atom, c)], diff);
+                    total[(atom, c)],
+                    fd_total[(atom, c)],
+                    diff
+                );
             }
         }
     }
@@ -1638,25 +1831,53 @@ mod tests {
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let natoms = mol.atoms.len();
         let mut grad = Array2::zeros((natoms, 3));
-        let config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+        let config = RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
 
         for atom in 0..natoms {
             for coord in 0..3 {
                 let mut mol_plus = mol.clone();
                 let mut mol_minus = mol.clone();
                 match coord {
-                    0 => { mol_plus.atoms[atom].x += delta; mol_minus.atoms[atom].x -= delta; }
-                    1 => { mol_plus.atoms[atom].y += delta; mol_minus.atoms[atom].y -= delta; }
-                    _ => { mol_plus.atoms[atom].zpos += delta; mol_minus.atoms[atom].zpos -= delta; }
+                    0 => {
+                        mol_plus.atoms[atom].x += delta;
+                        mol_minus.atoms[atom].x -= delta;
+                    }
+                    1 => {
+                        mol_plus.atoms[atom].y += delta;
+                        mol_minus.atoms[atom].y -= delta;
+                    }
+                    _ => {
+                        mol_plus.atoms[atom].zpos += delta;
+                        mol_minus.atoms[atom].zpos -= delta;
+                    }
                 }
                 let bs = basis::bundled(basis_name).unwrap();
                 let prep_p = PreparedBasis::new(&mol_plus, &bs).unwrap();
                 let bounds_p = SchwarzBounds::compute(Operator::coulomb(), &prep_p).unwrap();
-                let res_p = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol_plus, &prep_p, Operator::coulomb(), &bounds_p, &config).unwrap();
+                let res_p = solve_rhf(
+                    &ferric_core::parallel::ParallelContext::default(),
+                    &mol_plus,
+                    &prep_p,
+                    Operator::coulomb(),
+                    &bounds_p,
+                    &config,
+                )
+                .unwrap();
 
                 let prep_m = PreparedBasis::new(&mol_minus, &bs).unwrap();
                 let bounds_m = SchwarzBounds::compute(Operator::coulomb(), &prep_m).unwrap();
-                let res_m = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol_minus, &prep_m, Operator::coulomb(), &bounds_m, &config).unwrap();
+                let res_m = solve_rhf(
+                    &ferric_core::parallel::ParallelContext::default(),
+                    &mol_minus,
+                    &prep_m,
+                    Operator::coulomb(),
+                    &bounds_m,
+                    &config,
+                )
+                .unwrap();
 
                 grad[(atom, coord)] = (res_p.energy - res_m.energy) / (2.0 * delta);
             }
@@ -1672,8 +1893,19 @@ mod tests {
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-        let config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-        let result = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &prep, op, &bounds, &config).unwrap();
+        let config = RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
+        let result = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &config,
+        )
+        .unwrap();
 
         let analytic = match rhf_gradient(&mol, &prep, op, &bounds, &result, None) {
             Ok(g) => g,
@@ -1689,12 +1921,18 @@ mod tests {
         for atom in 0..2 {
             for c in 0..3 {
                 let diff = (analytic[(atom, c)] - fd[(atom, c)]).abs();
-                eprintln!("atom={atom} coord={c}: analytic={:.8} fd={:.8} diff={:.2e}",
-                    analytic[(atom, c)], fd[(atom, c)], diff);
+                eprintln!(
+                    "atom={atom} coord={c}: analytic={:.8} fd={:.8} diff={:.2e}",
+                    analytic[(atom, c)],
+                    fd[(atom, c)],
+                    diff
+                );
                 assert!(
                     diff < 1e-5,
                     "atom={atom} coord={c}: analytic={:.8} fd={:.8} diff={:.2e}",
-                    analytic[(atom, c)], fd[(atom, c)], diff
+                    analytic[(atom, c)],
+                    fd[(atom, c)],
+                    diff
                 );
             }
         }
@@ -1713,17 +1951,27 @@ mod tests {
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-        let config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+        let config = RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
         // One SCF solve outside the pools: the same ScfResult feeds both
         // gradient evaluations, so any difference is the gradient's own.
         let result = solve_rhf(
             &ferric_core::parallel::ParallelContext::default(),
-            &mol, &prep, op, &bounds, &config,
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &config,
         )
         .unwrap();
 
         let run = |threads: usize| -> Array2<f64> {
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
             pool.install(|| rhf_gradient(&mol, &prep, op, &bounds, &result, None).unwrap())
         };
         let g1 = run(1);
@@ -1745,8 +1993,19 @@ mod tests {
         let prep = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-        let config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-        let result = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &prep, op, &bounds, &config).unwrap();
+        let config = RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
+        let result = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &config,
+        )
+        .unwrap();
 
         let analytic = match rhf_gradient(&mol, &prep, op, &bounds, &result, None) {
             Ok(g) => g,
@@ -1762,12 +2021,18 @@ mod tests {
         for atom in 0..3 {
             for c in 0..3 {
                 let diff = (analytic[(atom, c)] - fd[(atom, c)]).abs();
-                eprintln!("atom={atom} coord={c}: analytic={:.8} fd={:.8} diff={:.2e}",
-                    analytic[(atom, c)], fd[(atom, c)], diff);
+                eprintln!(
+                    "atom={atom} coord={c}: analytic={:.8} fd={:.8} diff={:.2e}",
+                    analytic[(atom, c)],
+                    fd[(atom, c)],
+                    diff
+                );
                 assert!(
                     diff < 1e-5,
                     "atom={atom} coord={c}: analytic={:.8} fd={:.8} diff={:.2e}",
-                    analytic[(atom, c)], fd[(atom, c)], diff
+                    analytic[(atom, c)],
+                    fd[(atom, c)],
+                    diff
                 );
             }
         }

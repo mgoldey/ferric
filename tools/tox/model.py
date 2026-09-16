@@ -5,6 +5,7 @@ treating "the service did not answer" as "the compound is safe". Both
 `ToxEndpoint.value` and `ToxAssessment.liability_score` are therefore
 `Optional`, and there is no default that means "fine".
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -24,6 +25,7 @@ class ToxEndpoint:
     default: a wrong polarity silently inverts a safety ranking, so the
     provider must state it.
     """
+
     name: str
     value: float | None
     higher_is_worse: bool
@@ -51,6 +53,7 @@ class ToxAssessment:
     endpoints are missing rather than infer safety from their absence — so the
     errors travel with the result instead of being logged and dropped.
     """
+
     smiles: str
     endpoints: list[ToxEndpoint] = field(default_factory=list)
     provider_errors: dict[str, str] = field(default_factory=dict)
@@ -114,5 +117,4 @@ class ToxProvider(Protocol):
 
     name: str
 
-    def fetch(self, smiles: str) -> list[ToxEndpoint]:
-        ...
+    def fetch(self, smiles: str) -> list[ToxEndpoint]: ...

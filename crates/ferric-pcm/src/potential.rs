@@ -54,8 +54,11 @@ pub fn solute_potential_at_tesserae(
     // PAR_SHELL_PAIR_THRESHOLD), and this routine is called once per SCF
     // iteration, so keeping it simple/serial avoids re-litigating the
     // engine-pool-per-worker plumbing for a first correct implementation.
-    let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14)
-        .map_err(|e| FerricError::General(format!("solute_potential_at_tesserae: engine init failed: {e}")))?;
+    let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14).map_err(|e| {
+        FerricError::General(format!(
+            "solute_potential_at_tesserae: engine init failed: {e}"
+        ))
+    })?;
 
     let mut out = Vec::with_capacity(tess.len());
     for t in tess {
@@ -68,7 +71,11 @@ pub fn solute_potential_at_tesserae(
         // SAFETY: probe is a stack-local [CAtom; 1] that outlives the FFI call;
         // eng is a valid Engine handle; len=1 matches the array.
         let rc = unsafe {
-            ffi::scf_engine_set_point_charges(eng.handle_mut(), probe.as_ptr(), probe.len() as c_int)
+            ffi::scf_engine_set_point_charges(
+                eng.handle_mut(),
+                probe.as_ptr(),
+                probe.len() as c_int,
+            )
         };
         if rc < 0 {
             return Err(FerricError::General(format!(
@@ -159,8 +166,11 @@ pub fn build_reaction_field_operator(
         })
         .collect();
 
-    let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14)
-        .map_err(|e| FerricError::General(format!("build_reaction_field_operator: engine init failed: {e}")))?;
+    let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14).map_err(|e| {
+        FerricError::General(format!(
+            "build_reaction_field_operator: engine init failed: {e}"
+        ))
+    })?;
     eng.set_point_charges_extra(prep, &point_charges)?;
 
     // Reuse the same "real atoms zeroed out, only extra charges active"
@@ -175,7 +185,12 @@ pub fn build_reaction_field_operator(
     let zeroed_atoms: Vec<CAtom> = prep
         .atoms()
         .iter()
-        .map(|a| CAtom { atomic_number: 0.0, x: a.x, y: a.y, z: a.z })
+        .map(|a| CAtom {
+            atomic_number: 0.0,
+            x: a.x,
+            y: a.y,
+            z: a.z,
+        })
         .collect();
     let mut all_atoms = zeroed_atoms;
     all_atoms.extend(point_charges.iter().map(|pc| CAtom {
@@ -187,7 +202,11 @@ pub fn build_reaction_field_operator(
     // SAFETY: all_atoms is a Vec<CAtom> that outlives the FFI call;
     // eng is a valid Engine handle; len matches the vec length.
     let rc = unsafe {
-        ffi::scf_engine_set_point_charges(eng.handle_mut(), all_atoms.as_ptr(), all_atoms.len() as c_int)
+        ffi::scf_engine_set_point_charges(
+            eng.handle_mut(),
+            all_atoms.as_ptr(),
+            all_atoms.len() as c_int,
+        )
     };
     if rc < 0 {
         return Err(FerricError::General(format!(
@@ -247,7 +266,12 @@ mod tests {
             let r = (dx * dx + dy * dy + dz * dz).sqrt();
             expected += atom.z as f64 / r;
         }
-        assert!((v[0] - expected).abs() < 1e-10, "got {}, expected {}", v[0], expected);
+        assert!(
+            (v[0] - expected).abs() < 1e-10,
+            "got {}, expected {}",
+            v[0],
+            expected
+        );
     }
 
     #[test]

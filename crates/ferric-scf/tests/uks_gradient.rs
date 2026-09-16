@@ -37,20 +37,39 @@ fn fd_gradient(xyz: &str, mult: usize, basis_name: &str, xc: &str, delta: f64) -
             let mut mol_p = mol.clone();
             let mut mol_m = mol.clone();
             match coord {
-                0 => { mol_p.atoms[atom].x += delta; mol_m.atoms[atom].x -= delta; }
-                1 => { mol_p.atoms[atom].y += delta; mol_m.atoms[atom].y -= delta; }
-                _ => { mol_p.atoms[atom].zpos += delta; mol_m.atoms[atom].zpos -= delta; }
+                0 => {
+                    mol_p.atoms[atom].x += delta;
+                    mol_m.atoms[atom].x -= delta;
+                }
+                1 => {
+                    mol_p.atoms[atom].y += delta;
+                    mol_m.atoms[atom].y -= delta;
+                }
+                _ => {
+                    mol_p.atoms[atom].zpos += delta;
+                    mol_m.atoms[atom].zpos -= delta;
+                }
             }
             let prep_p = PreparedBasis::new(&mol_p, &bs).unwrap();
             let bounds_p = SchwarzBounds::compute(Operator::coulomb(), &prep_p).unwrap();
             let res_p = solve_uhf(
-                &ParallelContext::default(), &mol_p, &prep_p, &bounds_p, &cfg,
-            ).unwrap();
+                &ParallelContext::default(),
+                &mol_p,
+                &prep_p,
+                &bounds_p,
+                &cfg,
+            )
+            .unwrap();
             let prep_m = PreparedBasis::new(&mol_m, &bs).unwrap();
             let bounds_m = SchwarzBounds::compute(Operator::coulomb(), &prep_m).unwrap();
             let res_m = solve_uhf(
-                &ParallelContext::default(), &mol_m, &prep_m, &bounds_m, &cfg,
-            ).unwrap();
+                &ParallelContext::default(),
+                &mol_m,
+                &prep_m,
+                &bounds_m,
+                &cfg,
+            )
+            .unwrap();
             grad[(atom, coord)] = (res_p.energy - res_m.energy) / (2.0 * delta);
         }
     }
@@ -73,10 +92,14 @@ fn run_case(label: &str, xc: &str, xyz: &str, mult: usize, basis_name: &str, tol
     for a in 0..mol.atoms.len() {
         for c in 0..3 {
             let diff = (g_ana[(a, c)] - g_fd[(a, c)]).abs();
-            if diff > max_diff { max_diff = diff; }
+            if diff > max_diff {
+                max_diff = diff;
+            }
             eprintln!(
                 "  atom={a} coord={c}: ana={:+.6e} fd={:+.6e} diff={:.2e}",
-                g_ana[(a, c)], g_fd[(a, c)], diff
+                g_ana[(a, c)],
+                g_fd[(a, c)],
+                diff
             );
         }
     }
@@ -97,18 +120,36 @@ fn uks_grad_h_atom_ccpvdz_lda() {
 
 #[test]
 fn uks_grad_oh_ccpvdz_lda() {
-    run_case("OH/cc-pVDZ", "LDA",
-             "2\nOH\nO 0 0 0\nH 0 0 1.10\n", 2, "cc-pvdz", 2e-3);
+    run_case(
+        "OH/cc-pVDZ",
+        "LDA",
+        "2\nOH\nO 0 0 0\nH 0 0 1.10\n",
+        2,
+        "cc-pvdz",
+        2e-3,
+    );
 }
 
 #[test]
 fn uks_grad_oh_ccpvdz_pbe() {
-    run_case("OH/cc-pVDZ", "PBE",
-             "2\nOH\nO 0 0 0\nH 0 0 1.10\n", 2, "cc-pvdz", 2e-3);
+    run_case(
+        "OH/cc-pVDZ",
+        "PBE",
+        "2\nOH\nO 0 0 0\nH 0 0 1.10\n",
+        2,
+        "cc-pvdz",
+        2e-3,
+    );
 }
 
 #[test]
 fn uks_grad_oh_ccpvdz_b3lyp() {
-    run_case("OH/cc-pVDZ", "B3LYP",
-             "2\nOH\nO 0 0 0\nH 0 0 1.10\n", 2, "cc-pvdz", 2e-3);
+    run_case(
+        "OH/cc-pVDZ",
+        "B3LYP",
+        "2\nOH\nO 0 0 0\nH 0 0 1.10\n",
+        2,
+        "cc-pvdz",
+        2e-3,
+    );
 }

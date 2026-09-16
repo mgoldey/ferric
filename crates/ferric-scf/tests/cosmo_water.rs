@@ -212,5 +212,8 @@ fn cosmo_charges_have_correct_sign_and_magnitude_for_polar_water() {
     // is screened oppositely from the H side).
     let n_pos = cr.charges.iter().filter(|&&q| q > 0.0).count();
     let n_neg = cr.charges.iter().filter(|&&q| q < 0.0).count();
-    assert!(n_pos > 0 && n_neg > 0, "expected both signs of surface charge for polar water");
+    assert!(
+        n_pos > 0 && n_neg > 0,
+        "expected both signs of surface charge for polar water"
+    );
 }

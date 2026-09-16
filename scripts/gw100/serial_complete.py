@@ -16,6 +16,7 @@ Usage: serial_complete.py [basis] [g0w0_only=1]
 Idempotent: skips already-converged molecules. A per-molecule watchdog
 (GW100_MOL_BUDGET secs, default 3600) kills a hung solve and marks it failed.
 """
+
 import json
 import os
 import re
@@ -113,8 +114,14 @@ def run_one(basis, mol):
         GW100_DONE=skip,
     )
     t0 = time.monotonic()
-    proc = subprocess.Popen([str(BIN), basis], env=env, text=True,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1)
+    proc = subprocess.Popen(
+        [str(BIN), basis],
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+    )
     got = False
 
     def watchdog():
@@ -123,6 +130,7 @@ def run_one(basis, mol):
             if time.monotonic() - t0 > MOL_BUDGET:
                 proc.kill()
                 return
+
     threading.Thread(target=watchdog, daemon=True).start()
 
     for line in proc.stdout:
@@ -149,7 +157,10 @@ def main():
     if not BIN.exists():
         sys.exit(f"binary missing: {BIN}")
     todo = remaining(basis)
-    print(f"[serial] {basis}: {len(todo)} molecules, RAYON={NCORES}, budget={MOL_BUDGET:.0f}s", flush=True)
+    print(
+        f"[serial] {basis}: {len(todo)} molecules, RAYON={NCORES}, budget={MOL_BUDGET:.0f}s",
+        flush=True,
+    )
     print(f"[serial] order: {todo}", flush=True)
     nconv = 0
     for mol in todo:
@@ -157,8 +168,11 @@ def main():
         if run_one(basis, mol):
             nconv += 1
     d = json.loads((HERE / f"results_{basis}.json").read_text())
-    print(f"[serial] DONE: +{nconv} this run; {basis} now {len(d['molecules'])} conv, "
-          f"{len(d.get('failed', []))} fail", flush=True)
+    print(
+        f"[serial] DONE: +{nconv} this run; {basis} now {len(d['molecules'])} conv, "
+        f"{len(d.get('failed', []))} fail",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

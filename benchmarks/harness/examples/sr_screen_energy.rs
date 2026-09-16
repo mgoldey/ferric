@@ -21,16 +21,31 @@ use ferric_scf::screening::SchwarzBounds;
 fn main() {
     for n in [6usize, 8] {
         let path = format!("../../testdata/molecules/alkane_{n}.xyz");
-        let mol = match Molecule::load_xyz(&path).or_else(|_| Molecule::load_xyz(&format!("testdata/molecules/alkane_{n}.xyz"))) {
+        let mol = match Molecule::load_xyz(&path)
+            .or_else(|_| Molecule::load_xyz(&format!("testdata/molecules/alkane_{n}.xyz")))
+        {
             Ok(m) => m,
-            Err(e) => { eprintln!("skip C{n}: {e}"); continue; }
+            Err(e) => {
+                eprintln!("skip C{n}: {e}");
+                continue;
+            }
         };
         let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let op_c = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op_c, &obs).unwrap();
-        let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op_c, &bounds,
-            &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(
+            &ParallelContext::default(),
+            &mol,
+            &obs,
+            op_c,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let op = Operator::erfc(0.222);
         let cfg = RiMp2Config::default();
@@ -51,8 +66,11 @@ fn main() {
         // Screened (production) b_ov via compute_rpa_intermediates.
         let inter = compute_rpa_intermediates(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
 
-        let bmax = dense.iter().zip(inter.b_ov.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max);
+        let bmax = dense
+            .iter()
+            .zip(inter.b_ov.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f64, f64::max);
         let eps = rhf.eps_r();
         let sc_d = spin_components_from_b_ov(&dense, eps, nocc, nvir, 0, nocc);
         let sc_s = spin_components_from_b_ov(&inter.b_ov, eps, nocc, nvir, 0, nocc);

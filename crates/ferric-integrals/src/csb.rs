@@ -537,14 +537,19 @@ mod tests {
             "alkane_8/cc-pVDZ should give 102 shells; the counts quoted in this test's doc \
              were measured on that decomposition"
         );
-        for op in [Operator::coulomb(), Operator::erfc(1.0), Operator::erfc(0.222)] {
+        for op in [
+            Operator::coulomb(),
+            Operator::erfc(1.0),
+            Operator::erfc(0.222),
+        ] {
             let m = csb_m_table(op, &prep).unwrap();
             let zeros = (0..nsh)
                 .flat_map(|i| (0..=i).map(move |j| (i, j)))
                 .filter(|&(i, j)| m[(i, j)] == 0.0)
                 .count();
             assert_eq!(
-                zeros, 0,
+                zeros,
+                0,
                 "op={op:?}: {zeros} of {} unique shell pairs store M == 0.0. Such an entry WINS \
                  the CSB min and drives the bound to zero for every quartet touching that pair — \
                  an unconditional underestimate. Check that csb_m_table still builds at \

@@ -219,18 +219,16 @@ where
 
     // Order by |λ − 1| descending (PDEP relevance metric), matching Lanczos/Davidson.
     let mut order: Vec<usize> = (0..theta.len()).collect();
-    order.sort_by(|&i, &j| {
-        (theta[j] - 1.0)
-            .abs()
-            .total_cmp(&(theta[i] - 1.0).abs())
-    });
+    order.sort_by(|&i, &j| (theta[j] - 1.0).abs().total_cmp(&(theta[i] - 1.0).abs()));
     let n_keep = n_desired.min(order.len());
     let picks = &order[..n_keep];
 
     let mut eigenvectors = Array2::<f64>::zeros((naux, n_keep));
     let mut eigenvalues = Vec::with_capacity(n_keep);
     for (slot, &c) in picks.iter().enumerate() {
-        eigenvectors.slice_mut(s![.., slot]).assign(&y.slice(s![.., c]));
+        eigenvectors
+            .slice_mut(s![.., slot])
+            .assign(&y.slice(s![.., c]));
         eigenvalues.push(theta[c]);
     }
 
@@ -564,11 +562,7 @@ where
 
         // Pick the top n_desired by |λ − 1| descending (PDEP relevance metric).
         let mut order: Vec<usize> = (0..theta.len()).collect();
-        order.sort_by(|&i, &j| {
-            (theta[j] - 1.0)
-                .abs()
-                .total_cmp(&(theta[i] - 1.0).abs())
-        });
+        order.sort_by(|&i, &j| (theta[j] - 1.0).abs().total_cmp(&(theta[i] - 1.0).abs()));
         let n_keep = n_desired.min(order.len());
         let picks = &order[..n_keep];
 
@@ -799,11 +793,7 @@ where
         let mut order: Vec<usize> = (0..theta.len())
             .filter(|&i| (theta[i] - 1.0).abs() > depart_thresh)
             .collect();
-        order.sort_by(|&i, &j| {
-            (theta[j] - 1.0)
-                .abs()
-                .total_cmp(&(theta[i] - 1.0).abs())
-        });
+        order.sort_by(|&i, &j| (theta[j] - 1.0).abs().total_cmp(&(theta[i] - 1.0).abs()));
         let n_keep = order.len();
 
         let mut y_pick = Array2::<f64>::zeros((tdim, n_keep.max(1)));
@@ -983,7 +973,10 @@ mod tests {
             res.eigenvalues[0]
         );
         for lam in &res.eigenvalues[1..] {
-            assert!((lam - 1.0).abs() < 1e-10, "remaining spectrum should be 1; got {lam}");
+            assert!(
+                (lam - 1.0).abs() < 1e-10,
+                "remaining spectrum should be 1; got {lam}"
+            );
         }
     }
 
@@ -1000,7 +993,11 @@ mod tests {
             "FERRIC_BLAS_THREADS" => Some("5".to_string()),
             _ => None,
         };
-        assert_eq!(solver_blas_threads_with(get), 2, "Lanczos-specific var must win over umbrella");
+        assert_eq!(
+            solver_blas_threads_with(get),
+            2,
+            "Lanczos-specific var must win over umbrella"
+        );
     }
 
     #[test]
@@ -1012,7 +1009,10 @@ mod tests {
             .build()
             .unwrap()
             .install(|| solver_blas_threads_with(get));
-        assert_eq!(inside, 1, "rayon-worker guard must force 1 even with own var set");
+        assert_eq!(
+            inside, 1,
+            "rayon-worker guard must force 1 even with own var set"
+        );
     }
 
     fn make_symmetric_with_spectrum(lambdas: &[f64], seed: u64) -> Array2<f64> {
@@ -1021,7 +1021,9 @@ mod tests {
         // Use a simple LCG so tests don't depend on rand crate.
         let mut state = seed.wrapping_add(0x9E3779B97F4A7C15);
         let mut next = || {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((state >> 33) as f64 / u32::MAX as f64) - 0.5
         };
         let mut g = Array2::<f64>::zeros((n, n));
@@ -1045,11 +1047,11 @@ mod tests {
     #[test]
     fn lanczos_recovers_dense_spectrum() {
         // Spectrum: extreme eigenvalues should be picked up first by |λ − 1|.
-        let mut lambdas = vec![0.01, 0.1, 0.5, 0.9, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-                               1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-                               1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-                               1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-                               1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.1, 2.0, 5.0, 10.0];
+        let mut lambdas = vec![
+            0.01, 0.1, 0.5, 0.9, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.1, 2.0, 5.0, 10.0,
+        ];
         // ensure length 50
         lambdas.truncate(50);
         let a = make_symmetric_with_spectrum(&lambdas, 42);
@@ -1063,14 +1065,7 @@ mod tests {
             }
         }
 
-        let result = run_lanczos_seeded(
-            seed,
-            |v| a.dot(v),
-            4,
-            100,
-            1e-10,
-            false,
-        ).unwrap();
+        let result = run_lanczos_seeded(seed, |v| a.dot(v), 4, 100, 1e-10, false).unwrap();
 
         // Expected top 4 by |λ − 1| descending: 10.0, 5.0, 0.01, 2.0 (|9|, |4|, |0.99|, |1|)
         // Sort recovered for stable comparison by |λ − 1| descending.
@@ -1079,7 +1074,10 @@ mod tests {
         let mut want: Vec<f64> = vec![10.0, 5.0, 2.0, 0.01];
         want.sort_by(|a, b| (b - 1.0f64).abs().total_cmp(&(a - 1.0f64).abs()));
         for (g, w) in got.iter().zip(want.iter()) {
-            assert!((g - w).abs() < 1e-8, "Lanczos eigenvalue mismatch: got {g}, want {w}");
+            assert!(
+                (g - w).abs() < 1e-8,
+                "Lanczos eigenvalue mismatch: got {g}, want {w}"
+            );
         }
 
         // Verify eigenvectors satisfy A·v ≈ λ·v.
@@ -1152,7 +1150,9 @@ mod tests {
         // FERRIC_LANCZOS_PANEL is process-global; serialize against every
         // other test in this crate that sets/reads a budget-family env var
         // (see TEST_BUDGET_ENV_LOCK's doc in lib.rs).
-        let _env_guard = crate::TEST_BUDGET_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env_guard = crate::TEST_BUDGET_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let naux = 60;
         let nov = 140;
         let (matvec, a) = make_dielectric_op(naux, nov, 7);
@@ -1209,8 +1209,14 @@ mod tests {
             }
 
             // Full-rank is a single exact dense eigh — always converged.
-            assert!(new_res.converged, "panel {panel}: full-rank must report converged=true");
-            assert_eq!(new_res.max_resid, 0.0, "panel {panel}: full-rank residual must be 0");
+            assert!(
+                new_res.converged,
+                "panel {panel}: full-rank must report converged=true"
+            );
+            assert_eq!(
+                new_res.max_resid, 0.0,
+                "panel {panel}: full-rank residual must be 0"
+            );
         }
     }
 
@@ -1232,7 +1238,10 @@ mod tests {
             false,
         )
         .unwrap();
-        assert!(res.converged, "expected convergence with a generous iteration budget");
+        assert!(
+            res.converged,
+            "expected convergence with a generous iteration budget"
+        );
         assert!(
             res.max_resid < 1e-8,
             "expected a small residual, got {}",
@@ -1305,7 +1314,9 @@ mod tests {
         // saw a stale env value from a concurrently-running test and failed
         // (observed twice under parallel `cargo test`). See
         // TEST_BUDGET_ENV_LOCK's doc in lib.rs.
-        let _env_guard = crate::TEST_BUDGET_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env_guard = crate::TEST_BUDGET_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let naux = 4000;
         let nov = 200_000;
 

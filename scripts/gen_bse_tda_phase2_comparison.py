@@ -14,6 +14,7 @@ Regenerate the logs this reads via:
         benchmarks/bse-tda-pilot/phase2-logs/${m}_bse.log
   done
 """
+
 import json, re
 
 with open("testdata/reference/thiel_set_subset.json") as f:
@@ -33,6 +34,7 @@ logs = {
 }
 logdir = "benchmarks/bse-tda-pilot/phase2-logs/"
 
+
 def parse_states(path, n=15):
     states = []
     with open(path) as f:
@@ -44,18 +46,23 @@ def parse_states(path, n=15):
                     break
     return states
 
-print(f"{'Molecule':14} {'RefLabel':10} {'RefE(eV)':>9} {'Reff':>7}  {'BestMatch':>10} {'MatchE':>8} {'Mattf':>7} {'dE':>7}")
+
+print(
+    f"{'Molecule':14} {'RefLabel':10} {'RefE(eV)':>9} {'Reff':>7}  {'BestMatch':>10} {'MatchE':>8} {'Mattf':>7} {'dE':>7}"
+)
 for m in ref["molecules"]:
     name = m["name"]
     computed = parse_states(logdir + logs[name])
     for s in m["states"]:
         ref_e = s["excitation_energy_eV"]
         ref_f = s.get("oscillator_strength")
-        ref_f_val = ref_f if isinstance(ref_f, (int,float)) else 0.0
+        ref_f_val = ref_f if isinstance(ref_f, (int, float)) else 0.0
         # nearest-neighbor match on energy alone (simple heuristic, documented limitation)
-        best = min(computed, key=lambda c: abs(c[1]-ref_e))
-        de = best[1]-ref_e
-        print(f"{name:14} {s['label']:10} {ref_e:9.3f} {ref_f_val:7.3f}  n={best[0]:<8} {best[1]:8.3f} {best[2]:7.3f} {de:+7.3f}")
+        best = min(computed, key=lambda c: abs(c[1] - ref_e))
+        de = best[1] - ref_e
+        print(
+            f"{name:14} {s['label']:10} {ref_e:9.3f} {ref_f_val:7.3f}  n={best[0]:<8} {best[1]:8.3f} {best[2]:7.3f} {de:+7.3f}"
+        )
 
 print()
 print("=== Aggregate (naive nearest-energy match, N=17 states) ===")
@@ -65,10 +72,11 @@ for m in ref["molecules"]:
     computed = parse_states(logdir + logs[name])
     for s in m["states"]:
         ref_e = s["excitation_energy_eV"]
-        best = min(computed, key=lambda c: abs(c[1]-ref_e))
-        diffs.append(best[1]-ref_e)
+        best = min(computed, key=lambda c: abs(c[1] - ref_e))
+        diffs.append(best[1] - ref_e)
 import statistics
+
 mae = statistics.mean(abs(d) for d in diffs)
 mse = statistics.mean(diffs)
 print(f"MAE = {mae:.3f} eV, MSE (signed mean) = {mse:+.3f} eV, N={len(diffs)}")
-print(f"positive (ferric too high): {sum(1 for d in diffs if d>0)}/{len(diffs)}")
+print(f"positive (ferric too high): {sum(1 for d in diffs if d > 0)}/{len(diffs)}")

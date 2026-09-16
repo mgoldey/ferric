@@ -16,6 +16,7 @@ raises npts by 2.19x, for a net 1.55x -- a bigger cache from a smaller basis.
 Numbers here are structural (grid dimensions read from the Rust source), not
 timings, so they carry no machine dependence.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -45,8 +46,9 @@ class DftSize:
     @property
     def ao_cache_bytes(self) -> int:
         """Resident chi + grad-chi cache: 4 * nbf * npts * 8."""
-        return (AO_CACHE_PLANES * self.n_basis_functions
-                * self.grid_points * BYTES_PER_F64)
+        return (
+            AO_CACHE_PLANES * self.n_basis_functions * self.grid_points * BYTES_PER_F64
+        )
 
     @property
     def ao_cache_gb(self) -> float:
@@ -93,9 +95,11 @@ class DftSize:
         the reference. Do not quote it as a promised wall time; use
         `PyDftResult.iterations` from a real run to calibrate a new chemistry.
         """
-        return (self.n_basis_functions ** 2) * self.grid_points
+        return (self.n_basis_functions**2) * self.grid_points
 
-    def predicted_seconds(self, reference: "DftSize", reference_seconds: float) -> float:
+    def predicted_seconds(
+        self, reference: "DftSize", reference_seconds: float
+    ) -> float:
         """Scale a measured runtime from `reference` to this system.
 
         Uses `xc_fock_work`, NOT atom count and NOT nbf alone -- both of those
@@ -109,8 +113,18 @@ class DftSize:
 
 # STO-3G contracted functions per atom, by row. Enough to compare two
 # molecules' XC work without building a basis; NOT a general basis-set model.
-_STO3G_NBF = {"H": 1, "He": 1,
-              "C": 5, "N": 5, "O": 5, "F": 5, "B": 5, "Be": 5, "Li": 5, "Ne": 5}
+_STO3G_NBF = {
+    "H": 1,
+    "He": 1,
+    "C": 5,
+    "N": 5,
+    "O": 5,
+    "F": 5,
+    "B": 5,
+    "Be": 5,
+    "Li": 5,
+    "Ne": 5,
+}
 
 
 def sto3g_basis_functions(symbols: list[str]) -> int:

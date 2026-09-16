@@ -2,9 +2,9 @@
 
 use crate::fock::JBuilder;
 use crate::screening::SchwarzBounds;
+use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_core::parallel::ParallelContext;
 use ndarray::Array2;
 
 /// Screened Coulomb (J) matrix builder.
@@ -44,14 +44,21 @@ impl<'a> DirectJ<'a> {
         thresh: f64,
         mem_budget: usize,
     ) -> Self {
-        DirectJ { ctx, prep, bounds, thresh, mem_budget, pool: None }
+        DirectJ {
+            ctx,
+            prep,
+            bounds,
+            thresh,
+            mem_budget,
+            pool: None,
+        }
     }
 }
 
 impl<'a> JBuilder for DirectJ<'a> {
     fn build(&mut self, d: &Array2<f64>, j: &mut Array2<f64>) -> Result<usize, FerricError> {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use crate::quartet_scatter::{scatter_bra_pair, DensityScreen, JkMode};
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let nsh = self.prep.nshells();
         let dims = self.prep.shell_dims();
@@ -129,8 +136,8 @@ impl<'a> JBuilder for DirectJ<'a> {
                 }
                 pool.with(|engine| {
                     local_count += scatter_bra_pair(
-                        engine, prep, dims, offs, q_table, m_table, x_table, &screen, thresh,
-                        d, s1, s2, &mut mode, true,
+                        engine, prep, dims, offs, q_table, m_table, x_table, &screen, thresh, d,
+                        s1, s2, &mut mode, true,
                     );
                 });
             }
@@ -146,7 +153,11 @@ impl<'a> JBuilder for DirectJ<'a> {
         if let Some(world) = self.ctx.world() {
             use mpi::traits::CommunicatorCollectives;
             let mut j_global = Array2::zeros(j.dim());
-            world.all_reduce_into(j.as_slice().unwrap(), j_global.as_slice_mut().unwrap(), mpi::collective::SystemOperation::sum());
+            world.all_reduce_into(
+                j.as_slice().unwrap(),
+                j_global.as_slice_mut().unwrap(),
+                mpi::collective::SystemOperation::sum(),
+            );
             *j = j_global;
         }
 

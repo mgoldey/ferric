@@ -30,10 +30,31 @@ struct SparsityCfg {
 
 fn cfgs() -> Vec<SparsityCfg> {
     vec![
-        SparsityCfg { label: "Dense", sparsity: Chi0Sparsity::Dense },
-        SparsityCfg { label: "Boys-1e-3", sparsity: Chi0Sparsity::BoysScreened { thresh: 1e-3, dist_cutoff: f64::INFINITY } },
-        SparsityCfg { label: "Boys-1e-4", sparsity: Chi0Sparsity::BoysScreened { thresh: 1e-4, dist_cutoff: f64::INFINITY } },
-        SparsityCfg { label: "Boys-1e-5", sparsity: Chi0Sparsity::BoysScreened { thresh: 1e-5, dist_cutoff: f64::INFINITY } },
+        SparsityCfg {
+            label: "Dense",
+            sparsity: Chi0Sparsity::Dense,
+        },
+        SparsityCfg {
+            label: "Boys-1e-3",
+            sparsity: Chi0Sparsity::BoysScreened {
+                thresh: 1e-3,
+                dist_cutoff: f64::INFINITY,
+            },
+        },
+        SparsityCfg {
+            label: "Boys-1e-4",
+            sparsity: Chi0Sparsity::BoysScreened {
+                thresh: 1e-4,
+                dist_cutoff: f64::INFINITY,
+            },
+        },
+        SparsityCfg {
+            label: "Boys-1e-5",
+            sparsity: Chi0Sparsity::BoysScreened {
+                thresh: 1e-5,
+                dist_cutoff: f64::INFINITY,
+            },
+        },
     ]
 }
 
@@ -46,13 +67,41 @@ struct System {
 
 fn systems() -> Vec<System> {
     vec![
-        System { name: "n-hexane",     path: "testdata/molecules/scaling/n-hexane.xyz",     frozen_core: 6  },
-        System { name: "naphthalene",  path: "testdata/molecules/scaling/naphthalene.xyz",  frozen_core: 10 },
-        System { name: "n-decane",     path: "testdata/molecules/scaling/n-decane.xyz",     frozen_core: 10 },
-        System { name: "adamantane",   path: "testdata/molecules/scaling/adamantane.xyz",   frozen_core: 10 },
-        System { name: "caffeine",     path: "testdata/molecules/scaling/caffeine.xyz",     frozen_core: 14 },
-        System { name: "n-hexadecane", path: "testdata/molecules/scaling/n-hexadecane.xyz", frozen_core: 16 },
-        System { name: "n-icosane",    path: "testdata/molecules/scaling/n-icosane.xyz",    frozen_core: 20 },
+        System {
+            name: "n-hexane",
+            path: "testdata/molecules/scaling/n-hexane.xyz",
+            frozen_core: 6,
+        },
+        System {
+            name: "naphthalene",
+            path: "testdata/molecules/scaling/naphthalene.xyz",
+            frozen_core: 10,
+        },
+        System {
+            name: "n-decane",
+            path: "testdata/molecules/scaling/n-decane.xyz",
+            frozen_core: 10,
+        },
+        System {
+            name: "adamantane",
+            path: "testdata/molecules/scaling/adamantane.xyz",
+            frozen_core: 10,
+        },
+        System {
+            name: "caffeine",
+            path: "testdata/molecules/scaling/caffeine.xyz",
+            frozen_core: 14,
+        },
+        System {
+            name: "n-hexadecane",
+            path: "testdata/molecules/scaling/n-hexadecane.xyz",
+            frozen_core: 16,
+        },
+        System {
+            name: "n-icosane",
+            path: "testdata/molecules/scaling/n-icosane.xyz",
+            frozen_core: 20,
+        },
     ]
 }
 
@@ -65,7 +114,10 @@ fn main() {
     let append = std::env::var("FERRIC_SCALING_APPEND").ok().as_deref() == Some("1");
     let mut csv_file: Option<std::fs::File> = csv_path.as_ref().map(|p| {
         std::fs::OpenOptions::new()
-            .create(true).write(true).append(append).truncate(!append)
+            .create(true)
+            .write(true)
+            .append(append)
+            .truncate(!append)
             .open(p)
             .expect("open CSV file")
     });
@@ -91,32 +143,54 @@ fn main() {
     }
 
     // Optional sparsity filter (csv of labels), e.g. "Dense,Boys-1e-4".
-    let cfg_filter: Option<std::collections::HashSet<String>> = std::env::var("FERRIC_SCALING_CFGS")
-        .ok()
-        .map(|s| s.split(',').map(|t| t.trim().to_string()).collect());
+    let cfg_filter: Option<std::collections::HashSet<String>> =
+        std::env::var("FERRIC_SCALING_CFGS")
+            .ok()
+            .map(|s| s.split(',').map(|t| t.trim().to_string()).collect());
 
     for sys in systems() {
         if let Some(set) = only.as_ref() {
-            if !set.contains(sys.name) { continue; }
+            if !set.contains(sys.name) {
+                continue;
+            }
         }
         eprintln!("\n=== {} ===", sys.name);
         let mol = match Molecule::load_xyz(sys.path) {
             Ok(m) => m,
-            Err(e) => { eprintln!("  load failed: {e}"); continue; }
+            Err(e) => {
+                eprintln!("  load failed: {e}");
+                continue;
+            }
         };
         let n_atoms = mol.atoms.len();
 
         let obs_set = match basis::bundled("cc-pvdz") {
-            Ok(b) => b, Err(e) => { eprintln!("  basis: {e}"); continue; }
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("  basis: {e}");
+                continue;
+            }
         };
         let dfbs_set = match basis::bundled("cc-pvdz-ri") {
-            Ok(b) => b, Err(e) => { eprintln!("  aux basis: {e}"); continue; }
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("  aux basis: {e}");
+                continue;
+            }
         };
         let obs = match PreparedBasis::new(&mol, &obs_set) {
-            Ok(b) => b, Err(e) => { eprintln!("  obs prep: {e}"); continue; }
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("  obs prep: {e}");
+                continue;
+            }
         };
         let dfbs = match PreparedBasis::new(&mol, &dfbs_set) {
-            Ok(b) => b, Err(e) => { eprintln!("  dfbs prep: {e}"); continue; }
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("  dfbs prep: {e}");
+                continue;
+            }
         };
         let n_ao = obs.nbasis();
         let n_aux = dfbs.nbasis();
@@ -125,7 +199,11 @@ fn main() {
         // -------- RHF (one solve reused across configs) --------
         let op = Operator::coulomb();
         let bounds = match SchwarzBounds::compute(op, &obs) {
-            Ok(b) => b, Err(e) => { eprintln!("  Schwarz: {e}"); continue; }
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("  Schwarz: {e}");
+                continue;
+            }
         };
         // Use DF-J for Coulomb (RPA's cc-pvdz-ri aux is reused) and LinkK for
         // exchange — direct K with linear-scaling Schwarz screening. DF-K is
@@ -159,7 +237,9 @@ fn main() {
         // -------- Sparsity sweep --------
         for cfg in cfgs() {
             if let Some(set) = cfg_filter.as_ref() {
-                if !set.contains(cfg.label) { continue; }
+                if !set.contains(cfg.label) {
+                    continue;
+                }
             }
             let pdep_cfg = PdepRpaConfig {
                 frozen_core: sys.frozen_core,
@@ -174,10 +254,25 @@ fn main() {
                 // Auto picks Dense/Boys by atom count at runtime; for this diagnostic
                 // we report it like Dense (no static screening stats to show).
                 Chi0Sparsity::Dense | Chi0Sparsity::Auto { .. } => (0usize, 0usize, 0.0_f64),
-                Chi0Sparsity::BoysScreened { thresh, dist_cutoff } => {
-                    match screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, sys.frozen_core, thresh, dist_cutoff) {
+                Chi0Sparsity::BoysScreened {
+                    thresh,
+                    dist_cutoff,
+                } => {
+                    match screen::build_screened_bov_boys(
+                        &mol,
+                        &obs,
+                        &dfbs,
+                        op,
+                        &rhf,
+                        sys.frozen_core,
+                        thresh,
+                        dist_cutoff,
+                    ) {
                         Ok((sb, _)) => (sb.total_retained, sb.n_occ_loc * sb.naux, thresh),
-                        Err(e) => { eprintln!("  screen failed ({}): {e}", cfg.label); (0, 0, thresh) }
+                        Err(e) => {
+                            eprintln!("  screen failed ({}): {e}", cfg.label);
+                            (0, 0, thresh)
+                        }
                     }
                 }
             };
@@ -190,9 +285,15 @@ fn main() {
 
             match r {
                 Ok(res) => {
-                    let frac = if total > 0 { retained as f64 / total as f64 } else { 1.0 };
-                    eprintln!("     E_RPA={:.8}  retained={}/{} ({:.3})  t_pdep={:.2}s",
-                        res.e_rpa, retained, total, frac, t_pdep);
+                    let frac = if total > 0 {
+                        retained as f64 / total as f64
+                    } else {
+                        1.0
+                    };
+                    eprintln!(
+                        "     E_RPA={:.8}  retained={}/{} ({:.3})  t_pdep={:.2}s",
+                        res.e_rpa, retained, total, frac, t_pdep
+                    );
                     // Per-stage breakdown is not exposed by run_pdep_rpa, so we
                     // report the whole t_pdep under t_intermediates and leave
                     // t_eigensolver=0 as a placeholder. The total is the

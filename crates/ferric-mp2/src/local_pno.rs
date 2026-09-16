@@ -43,8 +43,8 @@
 //! own retention, so the accuracy/cost curve is measurable.
 
 use crate::pair_domains::PairDomains;
-use ferric_core::FerricError;
 use ferric_core::linalg::{eigh_dc, Uplo};
+use ferric_core::FerricError;
 use ndarray::{Array1, Array2};
 
 /// Per-pair virtual transforms produced by [`build_pno_transforms`].
@@ -90,7 +90,10 @@ impl PnoTransforms {
     /// Largest per-pair discarded occupation weight — the worst-case truncation error
     /// indicator across pairs.
     pub fn max_discarded_weight(&self) -> f64 {
-        self.pairs.iter().map(|p| p.discarded_weight).fold(0.0, f64::max)
+        self.pairs
+            .iter()
+            .map(|p| p.discarded_weight)
+            .fold(0.0, f64::max)
     }
 
     /// True when nothing was truncated: every pair kept all `nvir` virtuals.
@@ -160,15 +163,30 @@ where
 
         // eigh returns ascending; we want the largest occupations first.
         let mut order: Vec<usize> = (0..nvir).collect();
-        order.sort_by(|&x, &y| eigs[y].partial_cmp(&eigs[x]).unwrap_or(std::cmp::Ordering::Equal));
+        order.sort_by(|&x, &y| {
+            eigs[y]
+                .partial_cmp(&eigs[x])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
-        let keep: Vec<usize> =
-            order.iter().copied().filter(|&k| eigs[k].abs() >= t_cut_pno).collect();
+        let keep: Vec<usize> = order
+            .iter()
+            .copied()
+            .filter(|&k| eigs[k].abs() >= t_cut_pno)
+            .collect();
         // Never empty a pair: an empty virtual space silently zeroes that pair's
         // correlation rather than approximating it.
-        let keep = if keep.is_empty() { vec![order[0]] } else { keep };
-        let discarded_weight: f64 =
-            order.iter().copied().filter(|k| !keep.contains(k)).map(|k| eigs[k].abs()).sum();
+        let keep = if keep.is_empty() {
+            vec![order[0]]
+        } else {
+            keep
+        };
+        let discarded_weight: f64 = order
+            .iter()
+            .copied()
+            .filter(|k| !keep.contains(k))
+            .map(|k| eigs[k].abs())
+            .sum();
 
         let mut transform = Array2::<f64>::zeros((nvir, keep.len()));
         let mut occupations = Array1::<f64>::zeros(keep.len());
@@ -179,10 +197,19 @@ where
             }
         }
 
-        pairs.push(PnoPair { ij: (i, j), transform, occupations, discarded_weight });
+        pairs.push(PnoPair {
+            ij: (i, j),
+            transform,
+            occupations,
+            discarded_weight,
+        });
     }
 
-    Ok(PnoTransforms { pairs, nvir, t_cut_pno })
+    Ok(PnoTransforms {
+        pairs,
+        nvir,
+        t_cut_pno,
+    })
 }
 
 #[cfg(test)]
@@ -199,10 +226,14 @@ mod tests {
     /// density (which would be wrong for i != j) is distinguishable.
     fn amp(nvir: usize, i: usize, j: usize) -> Array2<f64> {
         let mut t = Array2::<f64>::zeros((nvir, nvir));
-        let mut s = (i as u64 + 1).wrapping_mul(97).wrapping_add((j as u64 + 1).wrapping_mul(31));
+        let mut s = (i as u64 + 1)
+            .wrapping_mul(97)
+            .wrapping_add((j as u64 + 1).wrapping_mul(31));
         for a in 0..nvir {
             for b in 0..nvir {
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 t[(a, b)] = ((s >> 33) as f64 / (1u64 << 31) as f64) - 1.0;
             }
         }
@@ -262,7 +293,10 @@ mod tests {
         let nvir = 6;
         let loose = build_pno_transforms(&d, nvir, 1.0, |i, j| amp(nvir, i, j)).unwrap();
 
-        assert!(!loose.is_complete(), "a large threshold should truncate something");
+        assert!(
+            !loose.is_complete(),
+            "a large threshold should truncate something"
+        );
         assert!(
             loose.virtual_retention() < 1.0,
             "retention {} should be < 1",
@@ -299,7 +333,11 @@ mod tests {
         let nvir = 4;
         let p = build_pno_transforms(&d, nvir, 1e300, |i, j| amp(nvir, i, j)).unwrap();
         for pair in &p.pairs {
-            assert!(pair.transform.ncols() >= 1, "pair {:?} was emptied", pair.ij);
+            assert!(
+                pair.transform.ncols() >= 1,
+                "pair {:?} was emptied",
+                pair.ij
+            );
         }
     }
 

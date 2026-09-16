@@ -398,8 +398,8 @@ pub fn csam_x_table(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, F
     let mut x = Array2::<f64>::zeros((nsh, nsh));
     for p in 0..nsh {
         x[(p, p)] = 1.0; // exact Cauchy-Schwarz equality, set directly (no
-                          // engine roundoff risk on the value that anchors
-                          // the trivial limit).
+                         // engine roundoff risk on the value that anchors
+                         // the trivial limit).
         let np = dims[p];
         for q in 0..p {
             let nq = dims[q];

@@ -40,10 +40,19 @@ fn setup(xyz: &str, obs_name: &str, aux_name: &str) -> Setup {
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
     )
     .unwrap();
-    Setup { mol, obs, obs_bs, dfbs, rhf }
+    Setup {
+        mol,
+        obs,
+        obs_bs,
+        dfbs,
+        rhf,
+    }
 }
 
 /// H2/STO-3G with STO-3G aux is the EXACT setup of the proof notebook's
@@ -53,9 +62,20 @@ fn setup(xyz: &str, obs_name: &str, aux_name: &str) -> Setup {
 #[test]
 fn h2_single_pair_matches_the_proof_notebook() {
     let su = setup("h2.xyz", "sto-3g", "sto-3g");
-    let cfg = AmplitudeDrpaConfig { eps: 0.0, ..Default::default() };
-    let r = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg)
-        .unwrap();
+    let cfg = AmplitudeDrpaConfig {
+        eps: 0.0,
+        ..Default::default()
+    };
+    let r = amplitude_drpa(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+    )
+    .unwrap();
     let de = r.e_corr - r.e_corr_plasmon_canonical;
     eprintln!(
         "H2: E_corr={:.10} plasmon={:.10} dE={de:+.3e} notebook=-0.0126072623 (fp {} iters)",
@@ -76,9 +96,21 @@ fn h2_single_pair_matches_the_proof_notebook() {
 #[test]
 fn eps_zero_matches_canonical_plasmon_on_water() {
     let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
-    let cfg = AmplitudeDrpaConfig { eps: 0.0, frozen_core: 1, ..Default::default() };
-    let r = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg)
-        .unwrap();
+    let cfg = AmplitudeDrpaConfig {
+        eps: 0.0,
+        frozen_core: 1,
+        ..Default::default()
+    };
+    let r = amplitude_drpa(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+    )
+    .unwrap();
     let de = r.e_corr - r.e_corr_plasmon_canonical;
     eprintln!(
         "ANCHOR water: E_corr={:.10} plasmon={:.10} dE={de:+.3e} (fp {} iters)",
@@ -103,9 +135,19 @@ fn mutated_virtual_space_fails_the_anchor() {
         n_valence: vvhv.n_valence,
         n_hard: vvhv.n_hard - 1,
     };
-    let cfg = AmplitudeDrpaConfig { eps: 0.0, frozen_core: 1, ..Default::default() };
+    let cfg = AmplitudeDrpaConfig {
+        eps: 0.0,
+        frozen_core: 1,
+        ..Default::default()
+    };
     let r = amplitude_drpa_with_virtuals(
-        &su.mol, &su.obs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg, &broken,
+        &su.mol,
+        &su.obs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+        &broken,
     )
     .unwrap();
     let de = (r.e_corr - r.e_corr_plasmon_canonical).abs();
@@ -120,12 +162,36 @@ fn mutated_virtual_space_fails_the_anchor() {
 #[test]
 fn masked_sweep_is_one_sided_and_iterations_shrink() {
     let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
-    let full = AmplitudeDrpaConfig { eps: 0.0, frozen_core: 1, ..Default::default() };
-    let r0 = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &full)
-        .unwrap();
-    let cfg = AmplitudeDrpaConfig { eps: 1e-3, frozen_core: 1, ..Default::default() };
-    let r = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg)
-        .unwrap();
+    let full = AmplitudeDrpaConfig {
+        eps: 0.0,
+        frozen_core: 1,
+        ..Default::default()
+    };
+    let r0 = amplitude_drpa(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &full,
+    )
+    .unwrap();
+    let cfg = AmplitudeDrpaConfig {
+        eps: 1e-3,
+        frozen_core: 1,
+        ..Default::default()
+    };
+    let r = amplitude_drpa(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+    )
+    .unwrap();
     let de = r.e_corr - r0.e_corr;
     eprintln!(
         "water eps=1e-3: dE={de:+.3e} keep={:.4} iters {} (full-mask {})",
@@ -153,21 +219,55 @@ fn masked_sweep_is_one_sided_and_iterations_shrink() {
 fn ragged_variant_difference_is_subdominant_to_truncation() {
     use ferric_mp2::drpa_amplitude::amplitude_drpa_dense;
     let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
-    let full = AmplitudeDrpaConfig { eps: 0.0, frozen_core: 1, ..Default::default() };
-    let r_full = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &full)
-        .unwrap();
-    let cfg = AmplitudeDrpaConfig { eps: 1e-3, frozen_core: 1, ..Default::default() };
-    let vvhv = ferric_mp2::lmp2_amplitude::build_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf).unwrap();
-    let r_ragged = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg)
-        .unwrap();
-    let r_dense = amplitude_drpa_dense(&su.mol, &su.obs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg, &vvhv)
-        .unwrap();
+    let full = AmplitudeDrpaConfig {
+        eps: 0.0,
+        frozen_core: 1,
+        ..Default::default()
+    };
+    let r_full = amplitude_drpa(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &full,
+    )
+    .unwrap();
+    let cfg = AmplitudeDrpaConfig {
+        eps: 1e-3,
+        frozen_core: 1,
+        ..Default::default()
+    };
+    let vvhv =
+        ferric_mp2::lmp2_amplitude::build_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf).unwrap();
+    let r_ragged = amplitude_drpa(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+    )
+    .unwrap();
+    let r_dense = amplitude_drpa_dense(
+        &su.mol,
+        &su.obs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+        &vvhv,
+    )
+    .unwrap();
     let trunc = (r_dense.e_corr - r_full.e_corr).abs();
     let variant = (r_ragged.e_corr - r_dense.e_corr).abs();
-    eprintln!(
-        "eps=1e-3: truncation={trunc:.3e}, ragged-vs-dense variant diff={variant:.3e}"
+    eprintln!("eps=1e-3: truncation={trunc:.3e}, ragged-vs-dense variant diff={variant:.3e}");
+    assert!(
+        variant > 0.0,
+        "variant difference vanished — patterns identical? check the swap closure"
     );
-    assert!(variant > 0.0, "variant difference vanished — patterns identical? check the swap closure");
     assert!(
         variant < trunc,
         "variant difference ({variant:.3e}) DOMINATES truncation ({trunc:.3e}) — the port changed the method"
@@ -186,19 +286,45 @@ fn diis_matches_plain_fixed_point() {
     let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
 
     // eps = 0: identical root, tight bound.
-    let cfg0 = AmplitudeDrpaConfig { eps: 0.0, frozen_core: 1, ..Default::default() };
-    let r0_plain = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg0)
-        .unwrap();
-    let cfg0_diis = AmplitudeDrpaConfig { diis: Some(6), ..cfg0.clone() };
-    let r0_diis = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg0_diis)
-        .unwrap();
+    let cfg0 = AmplitudeDrpaConfig {
+        eps: 0.0,
+        frozen_core: 1,
+        ..Default::default()
+    };
+    let r0_plain = amplitude_drpa(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg0,
+    )
+    .unwrap();
+    let cfg0_diis = AmplitudeDrpaConfig {
+        diis: Some(6),
+        ..cfg0.clone()
+    };
+    let r0_diis = amplitude_drpa(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg0_diis,
+    )
+    .unwrap();
     let de0 = (r0_diis.e_corr - r0_plain.e_corr).abs();
     eprintln!(
         "eps=0: plain iters={} E={:.12} | DIIS iters={} E={:.12} dE={de0:.3e}",
         r0_plain.iterations, r0_plain.e_corr, r0_diis.iterations, r0_diis.e_corr
     );
     assert!(r0_diis.converged);
-    assert!(de0 < 1e-11, "DIIS root disagrees with the plain fixed point at eps=0: dE={de0:.3e}");
+    assert!(
+        de0 < 1e-11,
+        "DIIS root disagrees with the plain fixed point at eps=0: dE={de0:.3e}"
+    );
     assert!(
         r0_diis.iterations <= r0_plain.iterations,
         "DIIS should not need MORE iterations than the plain damped fixed point ({} > {})",
@@ -208,34 +334,80 @@ fn diis_matches_plain_fixed_point() {
 
     // finite eps: subdominant to the eps=1e-3 truncation error itself
     // (measured ~1e-3 scale on this system; require well inside it).
-    let cfg = AmplitudeDrpaConfig { eps: 1e-3, frozen_core: 1, ..Default::default() };
-    let r_plain = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg)
-        .unwrap();
-    let cfg_diis = AmplitudeDrpaConfig { diis: Some(6), ..cfg.clone() };
-    let r_diis = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg_diis)
-        .unwrap();
+    let cfg = AmplitudeDrpaConfig {
+        eps: 1e-3,
+        frozen_core: 1,
+        ..Default::default()
+    };
+    let r_plain = amplitude_drpa(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+    )
+    .unwrap();
+    let cfg_diis = AmplitudeDrpaConfig {
+        diis: Some(6),
+        ..cfg.clone()
+    };
+    let r_diis = amplitude_drpa(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg_diis,
+    )
+    .unwrap();
     let de = (r_diis.e_corr - r_plain.e_corr).abs();
     eprintln!(
         "eps=1e-3: plain iters={} E={:.12} | DIIS iters={} E={:.12} dE={de:.3e}",
         r_plain.iterations, r_plain.e_corr, r_diis.iterations, r_diis.e_corr
     );
     assert!(r_diis.converged);
-    assert!(de < 1e-9, "DIIS disagrees with the plain fixed point beyond fp_rtol noise: dE={de:.3e}");
+    assert!(
+        de < 1e-9,
+        "DIIS disagrees with the plain fixed point beyond fp_rtol noise: dE={de:.3e}"
+    );
 
     // dense path: same convention, same bound, independent construction.
     use ferric_mp2::drpa_amplitude::amplitude_drpa_dense;
-    let vvhv = ferric_mp2::lmp2_amplitude::build_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf).unwrap();
-    let rd_plain = amplitude_drpa_dense(&su.mol, &su.obs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg, &vvhv)
-        .unwrap();
-    let rd_diis = amplitude_drpa_dense(&su.mol, &su.obs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg_diis, &vvhv)
-        .unwrap();
+    let vvhv =
+        ferric_mp2::lmp2_amplitude::build_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf).unwrap();
+    let rd_plain = amplitude_drpa_dense(
+        &su.mol,
+        &su.obs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+        &vvhv,
+    )
+    .unwrap();
+    let rd_diis = amplitude_drpa_dense(
+        &su.mol,
+        &su.obs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg_diis,
+        &vvhv,
+    )
+    .unwrap();
     let de_dense = (rd_diis.e_corr - rd_plain.e_corr).abs();
     eprintln!(
         "dense eps=1e-3: plain iters={} E={:.12} | DIIS iters={} E={:.12} dE={de_dense:.3e}",
         rd_plain.iterations, rd_plain.e_corr, rd_diis.iterations, rd_diis.e_corr
     );
     assert!(rd_diis.converged);
-    assert!(de_dense < 1e-9, "dense DIIS disagrees with the plain fixed point: dE={de_dense:.3e}");
+    assert!(
+        de_dense < 1e-9,
+        "dense DIIS disagrees with the plain fixed point: dE={de_dense:.3e}"
+    );
 }
 
 /// ε-linked stopping tolerance: loosening the fixed-point rtol down to
@@ -246,9 +418,22 @@ fn diis_matches_plain_fixed_point() {
 #[test]
 fn eps_linked_rtol_is_subdominant_to_truncation() {
     let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
-    let tight = AmplitudeDrpaConfig { eps: 1e-3, frozen_core: 1, fp_rtol: 1e-12, ..Default::default() };
-    let r_tight = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &tight)
-        .unwrap();
+    let tight = AmplitudeDrpaConfig {
+        eps: 1e-3,
+        frozen_core: 1,
+        fp_rtol: 1e-12,
+        ..Default::default()
+    };
+    let r_tight = amplitude_drpa(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &tight,
+    )
+    .unwrap();
     // reference: canonical plasmon carries the "true" answer at this eps
     // (r_tight.e_corr_plasmon_canonical is the eps=0-class continuum
     // limit); the truncation error is what tightening rtol can never fix.
@@ -262,9 +447,20 @@ fn eps_linked_rtol_is_subdominant_to_truncation() {
     // ALL three systems measured (water/alkane_8/alkane_12), worst case
     // 8.2% on water/eps=1e-3.
     let c = 0.1;
-    let loose = AmplitudeDrpaConfig { eps_rtol_factor: Some(c), ..tight.clone() };
-    let r_loose = amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &loose)
-        .unwrap();
+    let loose = AmplitudeDrpaConfig {
+        eps_rtol_factor: Some(c),
+        ..tight.clone()
+    };
+    let r_loose = amplitude_drpa(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &loose,
+    )
+    .unwrap();
     let diff = (r_loose.e_corr - r_tight.e_corr).abs();
     eprintln!(
         "eps=1e-3 c={c:.0e}: tight iters={} loose iters={} diff={diff:.3e} trunc={trunc:.3e} frac={:.4}",
@@ -293,21 +489,46 @@ fn eps_linked_rtol_is_subdominant_to_truncation() {
 #[test]
 fn scan_matches_per_eps_single_calls() {
     let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
-    let base = AmplitudeDrpaConfig { frozen_core: 1, diis: Some(8), eps_rtol_factor: Some(0.1), ..Default::default() };
+    let base = AmplitudeDrpaConfig {
+        frozen_core: 1,
+        diis: Some(8),
+        eps_rtol_factor: Some(0.1),
+        ..Default::default()
+    };
     let eps_list = [0.0, 1e-3, 1e-4];
     let scanned = amplitude_drpa_scan(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &base, &eps_list,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &base,
+        &eps_list,
     )
     .unwrap();
     assert_eq!(scanned.len(), eps_list.len());
     for (&eps, r_scan) in eps_list.iter().zip(&scanned) {
-        let cfg = AmplitudeDrpaConfig { eps, ..base.clone() };
-        let r_single =
-            amplitude_drpa(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg)
-                .unwrap();
+        let cfg = AmplitudeDrpaConfig {
+            eps,
+            ..base.clone()
+        };
+        let r_single = amplitude_drpa(
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            Operator::coulomb(),
+            &su.rhf,
+            &cfg,
+        )
+        .unwrap();
         let de = (r_scan.e_corr - r_single.e_corr).abs();
         eprintln!("scan vs single eps={eps:.0e}: dE={de:.3e}");
-        assert!(de < 1e-12, "scan/single mismatch at eps={eps:.0e}: dE={de:.3e}");
+        assert!(
+            de < 1e-12,
+            "scan/single mismatch at eps={eps:.0e}: dE={de:.3e}"
+        );
         assert_eq!(r_scan.iterations, r_single.iterations);
         assert_eq!(r_scan.converged, r_single.converged);
     }

@@ -96,8 +96,13 @@ extern "C" {
         out: *mut c_double,
     ) -> c_int;
     // TEMP debug hooks (removed before Task 2).
-    fn scf_terfc_debug_interp_G(dir: *const c_char, s: c_double, ss: c_double, m: c_int, n: c_int)
-        -> c_double;
+    fn scf_terfc_debug_interp_G(
+        dir: *const c_char,
+        s: c_double,
+        ss: c_double,
+        m: c_int,
+        n: c_int,
+    ) -> c_double;
     fn scf_terfc_debug_coulomb_eri3(
         obs: *const c_void,
         dfbs: *const c_void,
@@ -159,13 +164,21 @@ fn m1_interp_g_matches_python_reference() {
     let mut worst = 0.0f64;
     for &(s, ss, m, n, py) in cases {
         let cpp = unsafe { scf_terfc_debug_interp_G(cdir.as_ptr(), s, ss, m, n) };
-        assert!(cpp.is_finite(), "interp_G returned NaN for S={s} s={ss} m={m} n={n}");
+        assert!(
+            cpp.is_finite(),
+            "interp_G returned NaN for S={s} s={ss} m={m} n={n}"
+        );
         let rel = (cpp - py).abs() / py.abs().max(1e-300);
-        eprintln!("M1 interp_G(S={s},s={ss},m={m},n={n}): cpp={cpp:.15e} py={py:.15e} rel={rel:.2e}");
+        eprintln!(
+            "M1 interp_G(S={s},s={ss},m={m},n={n}): cpp={cpp:.15e} py={py:.15e} rel={rel:.2e}"
+        );
         worst = worst.max(rel);
     }
     eprintln!("M1 worst rel diff = {worst:.2e}");
-    assert!(worst < 1e-12, "interp_G poly-10 mismatch vs Python: {worst:.2e}");
+    assert!(
+        worst < 1e-12,
+        "interp_G poly-10 mismatch vs Python: {worst:.2e}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -218,13 +231,22 @@ fn machinery_md_coulomb_matches_libint() {
                 let mut buf_li = vec![0.0f64; n];
                 let rmd = unsafe {
                     scf_terfc_debug_coulomb_eri3(
-                        obs_h, aux_h, shp as c_int, sh1 as c_int, sh2 as c_int,
+                        obs_h,
+                        aux_h,
+                        shp as c_int,
+                        sh1 as c_int,
+                        sh2 as c_int,
                         buf_md.as_mut_ptr(),
                     )
                 };
                 let rli = unsafe {
                     scf_compute_eri3(
-                        eng_coul, obs_h, aux_h, shp as c_int, sh1 as c_int, sh2 as c_int,
+                        eng_coul,
+                        obs_h,
+                        aux_h,
+                        shp as c_int,
+                        sh1 as c_int,
+                        sh2 as c_int,
                         buf_li.as_mut_ptr(),
                     )
                 };
@@ -253,7 +275,10 @@ fn machinery_md_coulomb_matches_libint() {
     let names = ["s", "p", "d", "f"];
     for l in 0..4 {
         if seen[l] {
-            eprintln!("MACH MD-Coulomb vs libint, aux {}: max rel {:.3e}", names[l], worst[l]);
+            eprintln!(
+                "MACH MD-Coulomb vs libint, aux {}: max rel {:.3e}",
+                names[l], worst[l]
+            );
         }
     }
     assert!(seen[0] && seen[1] && seen[2], "did not exercise s/p/d aux");
@@ -322,13 +347,23 @@ fn m2_terfc_over_coulomb_ratio_matches_oracle() {
             let mut bc = vec![0.0f64; 1];
             let rt = unsafe {
                 scf_compute_terfc_eri3(
-                    eng_t, obs_h, aux_h, s_aux as c_int, sh1 as c_int, sh2 as c_int,
+                    eng_t,
+                    obs_h,
+                    aux_h,
+                    s_aux as c_int,
+                    sh1 as c_int,
+                    sh2 as c_int,
                     bt.as_mut_ptr(),
                 )
             };
             let rc = unsafe {
                 scf_compute_eri3(
-                    eng_c, obs_h, aux_h, s_aux as c_int, sh1 as c_int, sh2 as c_int,
+                    eng_c,
+                    obs_h,
+                    aux_h,
+                    s_aux as c_int,
+                    sh1 as c_int,
+                    sh2 as c_int,
                     bc.as_mut_ptr(),
                 )
             };
@@ -370,7 +405,12 @@ fn m2_terfc_over_coulomb_ratio_matches_oracle() {
 fn single_s_basis(z: i32, exp: f64) -> (i32, Vec<Shell>) {
     (
         z,
-        vec![Shell { l: 0, pure: true, exponents: vec![exp], coefficients: vec![1.0] }],
+        vec![Shell {
+            l: 0,
+            pure: true,
+            exponents: vec![exp],
+            coefficients: vec![1.0],
+        }],
     )
 }
 
@@ -400,9 +440,9 @@ fn m2_abs_controlled_triple_matches_oracle() {
     // Controlled molecule (coords already in Bohr).
     let mol = Molecule {
         atoms: vec![
-            atom("Li", 3, 0.0, 0.0, 0.0),   // aux center P
-            atom("Be", 4, 0.5, 0.0, 0.0),   // obs center A
-            atom("B", 5, -0.4, 0.0, 0.3),   // obs center B
+            atom("Li", 3, 0.0, 0.0, 0.0), // aux center P
+            atom("Be", 4, 0.5, 0.0, 0.0), // obs center A
+            atom("B", 5, -0.4, 0.0, 0.3), // obs center B
         ],
         charge: 0,
         multiplicity: 1,
@@ -415,22 +455,36 @@ fn m2_abs_controlled_triple_matches_oracle() {
     obs_shells.insert(3, single_s_basis(3, 5.0).1);
     obs_shells.insert(4, single_s_basis(4, 0.9).1);
     obs_shells.insert(5, single_s_basis(5, 0.7).1);
-    let obs_bs = BasisSet { name: "custom-obs".into(), shells: obs_shells, ecps: HashMap::new() };
+    let obs_bs = BasisSet {
+        name: "custom-obs".into(),
+        shells: obs_shells,
+        ecps: HashMap::new(),
+    };
     // aux: Li gets p=1.5, Be and B get throwaways.
     let mut aux_shells: HashMap<i32, Vec<Shell>> = HashMap::new();
     aux_shells.insert(3, single_s_basis(3, 1.5).1);
     aux_shells.insert(4, single_s_basis(4, 7.0).1);
     aux_shells.insert(5, single_s_basis(5, 8.0).1);
-    let aux_bs = BasisSet { name: "custom-aux".into(), shells: aux_shells, ecps: HashMap::new() };
+    let aux_bs = BasisSet {
+        name: "custom-aux".into(),
+        shells: aux_shells,
+        ecps: HashMap::new(),
+    };
 
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let aux = PreparedBasis::new(&mol, &aux_bs).unwrap();
     assert_eq!(aux.nshells(), 3);
     assert_eq!(obs.nshells(), 3);
     // Locate the shells we want by atom: aux P on Li(atom0), obs a on Be(atom1), b on B(atom2).
-    let sh_p = (0..aux.nshells()).find(|&i| aux.shell_to_atom()[i] == 0).unwrap();
-    let sh_a = (0..obs.nshells()).find(|&i| obs.shell_to_atom()[i] == 1).unwrap();
-    let sh_b = (0..obs.nshells()).find(|&i| obs.shell_to_atom()[i] == 2).unwrap();
+    let sh_p = (0..aux.nshells())
+        .find(|&i| aux.shell_to_atom()[i] == 0)
+        .unwrap();
+    let sh_a = (0..obs.nshells())
+        .find(|&i| obs.shell_to_atom()[i] == 1)
+        .unwrap();
+    let sh_b = (0..obs.nshells())
+        .find(|&i| obs.shell_to_atom()[i] == 2)
+        .unwrap();
 
     let max_nprim = obs.max_nprim().max(aux.max_nprim());
     let max_l = obs.max_l().max(aux.max_l());
@@ -441,7 +495,10 @@ fn m2_abs_controlled_triple_matches_oracle() {
     let obs_h = obs.handle();
     let aux_h = aux.handle();
 
-    for &(r0_ang, oracle) in &[(1.05_f64, 0.753926499430_f64), (2.0_f64, 0.870145962411_f64)] {
+    for &(r0_ang, oracle) in &[
+        (1.05_f64, 0.753926499430_f64),
+        (2.0_f64, 0.870145962411_f64),
+    ] {
         let r0 = r0_ang * 1.8897259886_f64;
         let omega = 1.0 / (r0 * std::f64::consts::SQRT_2);
         let eng_t = unsafe {
@@ -453,15 +510,30 @@ fn m2_abs_controlled_triple_matches_oracle() {
         let mut bc = vec![0.0f64; 1];
         let rt = unsafe {
             scf_compute_terfc_eri3(
-                eng_t, obs_h, aux_h, sh_p as c_int, sh_a as c_int, sh_b as c_int, bt.as_mut_ptr(),
+                eng_t,
+                obs_h,
+                aux_h,
+                sh_p as c_int,
+                sh_a as c_int,
+                sh_b as c_int,
+                bt.as_mut_ptr(),
             )
         };
         let rc = unsafe {
             scf_compute_eri3(
-                eng_c, obs_h, aux_h, sh_p as c_int, sh_a as c_int, sh_b as c_int, bc.as_mut_ptr(),
+                eng_c,
+                obs_h,
+                aux_h,
+                sh_p as c_int,
+                sh_a as c_int,
+                sh_b as c_int,
+                bc.as_mut_ptr(),
             )
         };
-        assert!(rt == 1 && rc == 1, "expected scalar triples (rt={rt} rc={rc})");
+        assert!(
+            rt == 1 && rc == 1,
+            "expected scalar triples (rt={rt} rc={rc})"
+        );
         let ratio = bt[0] / bc[0];
         let rel = (ratio - oracle).abs() / oracle.abs();
         eprintln!(
@@ -469,7 +541,10 @@ fn m2_abs_controlled_triple_matches_oracle() {
             bc[0], bt[0]
         );
         unsafe { scf_engine_destroy(eng_t) };
-        assert!(rel < 1e-9, "terfc/coulomb ratio vs oracle rel {rel:.2e} exceeds 1e-9");
+        assert!(
+            rel < 1e-9,
+            "terfc/coulomb ratio vs oracle rel {rel:.2e} exceeds 1e-9"
+        );
     }
     unsafe { scf_engine_destroy(eng_c) };
 }
@@ -518,15 +593,28 @@ fn m3_p_and_d_aux_terfc_consistent_with_fd() {
         obs_shells.insert(3, single_s_basis(3, 5.0).1);
         obs_shells.insert(4, single_s_basis(4, 0.85).1);
         obs_shells.insert(5, single_s_basis(5, 0.65).1);
-        let obs_bs = BasisSet { name: "m3-obs".into(), shells: obs_shells, ecps: HashMap::new() };
+        let obs_bs = BasisSet {
+            name: "m3-obs".into(),
+            shells: obs_shells,
+            ecps: HashMap::new(),
+        };
         let mut aux_shells: HashMap<i32, Vec<Shell>> = HashMap::new();
         aux_shells.insert(
             3,
-            vec![Shell { l: aux_l, pure: true, exponents: vec![aux_exp], coefficients: vec![1.0] }],
+            vec![Shell {
+                l: aux_l,
+                pure: true,
+                exponents: vec![aux_exp],
+                coefficients: vec![1.0],
+            }],
         );
         aux_shells.insert(4, single_s_basis(4, 7.0).1);
         aux_shells.insert(5, single_s_basis(5, 8.0).1);
-        let aux_bs = BasisSet { name: "m3-aux".into(), shells: aux_shells, ecps: HashMap::new() };
+        let aux_bs = BasisSet {
+            name: "m3-aux".into(),
+            shells: aux_shells,
+            ecps: HashMap::new(),
+        };
         (mol, obs_bs, aux_bs)
     };
 
@@ -555,12 +643,20 @@ fn m3_p_and_d_aux_terfc_consistent_with_fd() {
         obs_shells.insert(3, single_s_basis(3, 5.0).1);
         obs_shells.insert(4, single_s_basis(4, 0.85).1);
         obs_shells.insert(5, single_s_basis(5, 0.65).1);
-        let obs_bs = BasisSet { name: "m3-obs".into(), shells: obs_shells, ecps: HashMap::new() };
+        let obs_bs = BasisSet {
+            name: "m3-obs".into(),
+            shells: obs_shells,
+            ecps: HashMap::new(),
+        };
         let mut aux_shells: HashMap<i32, Vec<Shell>> = HashMap::new();
         aux_shells.insert(3, single_s_basis(3, p_aux).1);
         aux_shells.insert(4, single_s_basis(4, 7.0).1);
         aux_shells.insert(5, single_s_basis(5, 8.0).1);
-        let aux_bs = BasisSet { name: "m3-aux".into(), shells: aux_shells, ecps: HashMap::new() };
+        let aux_bs = BasisSet {
+            name: "m3-aux".into(),
+            shells: aux_shells,
+            ecps: HashMap::new(),
+        };
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let aux = PreparedBasis::new(&mol, &aux_bs).unwrap();
         let max_nprim = obs.max_nprim().max(aux.max_nprim());
@@ -569,18 +665,34 @@ fn m3_p_and_d_aux_terfc_consistent_with_fd() {
             scf_engine_create_terfc_3center(r0, omega, max_nprim, max_l, 1e-16, cdir.as_ptr())
         };
         let eng_c = unsafe { scf_engine_create_3center(0, 0.0, max_nprim, max_l, 1e-16) };
-        let sh_p = (0..aux.nshells()).find(|&i| aux.shell_to_atom()[i] == 0).unwrap();
-        let sh_a = (0..obs.nshells()).find(|&i| obs.shell_to_atom()[i] == 1).unwrap();
-        let sh_b = (0..obs.nshells()).find(|&i| obs.shell_to_atom()[i] == 2).unwrap();
+        let sh_p = (0..aux.nshells())
+            .find(|&i| aux.shell_to_atom()[i] == 0)
+            .unwrap();
+        let sh_a = (0..obs.nshells())
+            .find(|&i| obs.shell_to_atom()[i] == 1)
+            .unwrap();
+        let sh_b = (0..obs.nshells())
+            .find(|&i| obs.shell_to_atom()[i] == 2)
+            .unwrap();
         let mut bt = vec![0.0f64; 1];
         let mut bc = vec![0.0f64; 1];
         unsafe {
             scf_compute_terfc_eri3(
-                eng_t, obs.handle(), aux.handle(), sh_p as c_int, sh_a as c_int, sh_b as c_int,
+                eng_t,
+                obs.handle(),
+                aux.handle(),
+                sh_p as c_int,
+                sh_a as c_int,
+                sh_b as c_int,
                 bt.as_mut_ptr(),
             );
             scf_compute_eri3(
-                eng_c, obs.handle(), aux.handle(), sh_p as c_int, sh_a as c_int, sh_b as c_int,
+                eng_c,
+                obs.handle(),
+                aux.handle(),
+                sh_p as c_int,
+                sh_a as c_int,
+                sh_b as c_int,
                 bc.as_mut_ptr(),
             );
             scf_engine_destroy(eng_t);
@@ -592,7 +704,13 @@ fn m3_p_and_d_aux_terfc_consistent_with_fd() {
     // FD gradient of the s-aux integral w.r.t. P (central difference), for both
     // operators.
     let fd_grad = |op_sel: usize| -> [f64; 3] {
-        let comp = |a: (f64, f64), b: (f64, f64)| if op_sel == 0 { (a.0 - b.0) } else { (a.1 - b.1) };
+        let comp = |a: (f64, f64), b: (f64, f64)| {
+            if op_sel == 0 {
+                (a.0 - b.0)
+            } else {
+                (a.1 - b.1)
+            }
+        };
         let gx = comp(s_aux_at(h, 0.0, 0.0), s_aux_at(-h, 0.0, 0.0)) / (2.0 * h);
         let gy = comp(s_aux_at(0.0, h, 0.0), s_aux_at(0.0, -h, 0.0)) / (2.0 * h);
         let gz = comp(s_aux_at(0.0, 0.0, h), s_aux_at(0.0, 0.0, -h)) / (2.0 * h);
@@ -617,19 +735,35 @@ fn m3_p_and_d_aux_terfc_consistent_with_fd() {
             scf_engine_create_terfc_3center(r0, omega, max_nprim, max_l, 1e-16, cdir.as_ptr())
         };
         let eng_c = unsafe { scf_engine_create_3center(0, 0.0, max_nprim, max_l, 1e-16) };
-        let sh_p = (0..aux.nshells()).find(|&i| aux.shell_to_atom()[i] == 0).unwrap();
-        let sh_a = (0..obs.nshells()).find(|&i| obs.shell_to_atom()[i] == 1).unwrap();
-        let sh_b = (0..obs.nshells()).find(|&i| obs.shell_to_atom()[i] == 2).unwrap();
+        let sh_p = (0..aux.nshells())
+            .find(|&i| aux.shell_to_atom()[i] == 0)
+            .unwrap();
+        let sh_a = (0..obs.nshells())
+            .find(|&i| obs.shell_to_atom()[i] == 1)
+            .unwrap();
+        let sh_b = (0..obs.nshells())
+            .find(|&i| obs.shell_to_atom()[i] == 2)
+            .unwrap();
         let nfun = 2 * aux_l as usize + 1;
         let mut bt = vec![0.0f64; nfun];
         let mut bc = vec![0.0f64; nfun];
         unsafe {
             scf_compute_terfc_eri3(
-                eng_t, obs.handle(), aux.handle(), sh_p as c_int, sh_a as c_int, sh_b as c_int,
+                eng_t,
+                obs.handle(),
+                aux.handle(),
+                sh_p as c_int,
+                sh_a as c_int,
+                sh_b as c_int,
                 bt.as_mut_ptr(),
             );
             scf_compute_eri3(
-                eng_c, obs.handle(), aux.handle(), sh_p as c_int, sh_a as c_int, sh_b as c_int,
+                eng_c,
+                obs.handle(),
+                aux.handle(),
+                sh_p as c_int,
+                sh_a as c_int,
+                sh_b as c_int,
                 bc.as_mut_ptr(),
             );
             scf_engine_destroy(eng_t);
@@ -647,7 +781,10 @@ fn m3_p_and_d_aux_terfc_consistent_with_fd() {
             // of the FD-based component ratios. We verify each shim component
             // ratio is within the FD ratio envelope and, for p, that the p ratios
             // reproduce the FD ratios as a multiset.
-            eprintln!("M3 {name}-aux comp {i}: coul={:.6e} terfc={:.6e} ratio={:.8}", bc[i], bt[i], shim_ratio);
+            eprintln!(
+                "M3 {name}-aux comp {i}: coul={:.6e} terfc={:.6e} ratio={:.8}",
+                bc[i], bt[i], shim_ratio
+            );
             worst = worst.max(shim_ratio);
         }
         // For p specifically, match the shim's 3 ratios to the 3 FD ratios.
@@ -663,9 +800,15 @@ fn m3_p_and_d_aux_terfc_consistent_with_fd() {
             eprintln!("M3 shim p ratios: {shim_ratios:?}");
             // Match each shim ratio to the nearest FD ratio; assert small residual.
             for &sr in &shim_ratios {
-                let best = fd_ratios.iter().map(|&f| (sr - f).abs()).fold(f64::INFINITY, f64::min);
+                let best = fd_ratios
+                    .iter()
+                    .map(|&f| (sr - f).abs())
+                    .fold(f64::INFINITY, f64::min);
                 eprintln!("M3 p match: shim_ratio={sr:.8} nearest FD residual={best:.2e}");
-                assert!(best < 1e-5, "p-aux terfc/coulomb ratio {sr:.8} not matched by FD (residual {best:.2e})");
+                assert!(
+                    best < 1e-5,
+                    "p-aux terfc/coulomb ratio {sr:.8} not matched by FD (residual {best:.2e})"
+                );
             }
         }
         let _ = worst;
@@ -692,21 +835,26 @@ fn m4_two_center_terfc_matches_oracle() {
     // Two aux centers only; obs unused for 2-center. Both atoms carry a single
     // s-prim aux shell.
     let mol = Molecule {
-        atoms: vec![
-            atom("Li", 3, 0.0, 0.0, 0.0),
-            atom("Be", 4, 0.7, 0.0, 0.0),
-        ],
+        atoms: vec![atom("Li", 3, 0.0, 0.0, 0.0), atom("Be", 4, 0.7, 0.0, 0.0)],
         charge: 0,
         multiplicity: 1,
     };
     let mut aux_shells: HashMap<i32, Vec<Shell>> = HashMap::new();
     aux_shells.insert(3, single_s_basis(3, 1.3).1);
     aux_shells.insert(4, single_s_basis(4, 0.8).1);
-    let aux_bs = BasisSet { name: "m4-aux".into(), shells: aux_shells, ecps: HashMap::new() };
+    let aux_bs = BasisSet {
+        name: "m4-aux".into(),
+        shells: aux_shells,
+        ecps: HashMap::new(),
+    };
     let aux = PreparedBasis::new(&mol, &aux_bs).unwrap();
     assert_eq!(aux.nshells(), 2);
-    let sh_p = (0..aux.nshells()).find(|&i| aux.shell_to_atom()[i] == 0).unwrap();
-    let sh_q = (0..aux.nshells()).find(|&i| aux.shell_to_atom()[i] == 1).unwrap();
+    let sh_p = (0..aux.nshells())
+        .find(|&i| aux.shell_to_atom()[i] == 0)
+        .unwrap();
+    let sh_q = (0..aux.nshells())
+        .find(|&i| aux.shell_to_atom()[i] == 1)
+        .unwrap();
 
     let max_nprim = aux.max_nprim();
     let max_l = aux.max_l();
@@ -715,7 +863,10 @@ fn m4_two_center_terfc_matches_oracle() {
     let eng_c = unsafe { scf_engine_create_2center(0, 0.0, max_nprim, max_l, 1e-16) };
     assert!(!eng_c.is_null());
 
-    for &(r0_ang, oracle) in &[(1.05_f64, 0.672962887775_f64), (2.0_f64, 0.825876172772_f64)] {
+    for &(r0_ang, oracle) in &[
+        (1.05_f64, 0.672962887775_f64),
+        (2.0_f64, 0.825876172772_f64),
+    ] {
         let r0 = r0_ang * 1.8897259886_f64;
         let omega = 1.0 / (r0 * std::f64::consts::SQRT_2);
         let eng_t = unsafe {
@@ -730,7 +881,10 @@ fn m4_two_center_terfc_matches_oracle() {
         let rc = unsafe {
             scf_compute_eri2(eng_c, aux_h, sh_p as c_int, sh_q as c_int, bc.as_mut_ptr())
         };
-        assert!(rt == 1 && rc == 1, "expected scalar 2-center (rt={rt} rc={rc})");
+        assert!(
+            rt == 1 && rc == 1,
+            "expected scalar 2-center (rt={rt} rc={rc})"
+        );
         let ratio = bt[0] / bc[0];
         let rel = (ratio - oracle).abs() / oracle.abs();
         eprintln!(
@@ -738,7 +892,10 @@ fn m4_two_center_terfc_matches_oracle() {
             bc[0], bt[0]
         );
         unsafe { scf_engine_destroy(eng_t) };
-        assert!(rel < 1e-9, "2-center terfc/coulomb vs oracle rel {rel:.2e} exceeds 1e-9");
+        assert!(
+            rel < 1e-9,
+            "2-center terfc/coulomb vs oracle rel {rel:.2e} exceeds 1e-9"
+        );
     }
     unsafe { scf_engine_destroy(eng_c) };
 }
@@ -752,22 +909,41 @@ fn ffi_error_paths_return_negative() {
     unsafe { scf_libint_init() };
     // terfc engine with a bogus table dir must fail creation (null).
     let bad = std::ffi::CString::new("/nonexistent/terf/dir").unwrap();
-    let eng = unsafe {
-        scf_engine_create_terfc_3center(2.0, 0.354, 8, 3, 1e-14, bad.as_ptr())
-    };
-    assert!(eng.is_null(), "terfc engine creation should fail with missing tables");
+    let eng = unsafe { scf_engine_create_terfc_3center(2.0, 0.354, 8, 3, 1e-14, bad.as_ptr()) };
+    assert!(
+        eng.is_null(),
+        "terfc engine creation should fail with missing tables"
+    );
     // Compute with a null engine must return a negative status, not crash.
     let mut out = [0.0f64; 8];
     let r = unsafe {
         scf_compute_terfc_eri3(
-            std::ptr::null_mut(), std::ptr::null(), std::ptr::null(), 0, 0, 0, out.as_mut_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            0,
+            0,
+            out.as_mut_ptr(),
         )
     };
-    assert!(r < 0, "null-engine terfc eri3 should return negative, got {r}");
+    assert!(
+        r < 0,
+        "null-engine terfc eri3 should return negative, got {r}"
+    );
     let r2 = unsafe {
-        scf_compute_terfc_eri2(std::ptr::null_mut(), std::ptr::null(), 0, 0, out.as_mut_ptr())
+        scf_compute_terfc_eri2(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            0,
+            0,
+            out.as_mut_ptr(),
+        )
     };
-    assert!(r2 < 0, "null-engine terfc eri2 should return negative, got {r2}");
+    assert!(
+        r2 < 0,
+        "null-engine terfc eri2 should return negative, got {r2}"
+    );
     eprintln!("FFI error paths: eri3={r} eri2={r2} (both negative, as required)");
 }
 
@@ -817,13 +993,23 @@ fn limit_terfc_approaches_coulomb_as_r0_grows() {
                     let mut bc = vec![0.0f64; n];
                     let rt = unsafe {
                         scf_compute_terfc_eri3(
-                            eng_t, obs_h, aux_h, shp as c_int, sh1 as c_int, sh2 as c_int,
+                            eng_t,
+                            obs_h,
+                            aux_h,
+                            shp as c_int,
+                            sh1 as c_int,
+                            sh2 as c_int,
                             bt.as_mut_ptr(),
                         )
                     };
                     let rc = unsafe {
                         scf_compute_eri3(
-                            eng_c, obs_h, aux_h, shp as c_int, sh1 as c_int, sh2 as c_int,
+                            eng_c,
+                            obs_h,
+                            aux_h,
+                            shp as c_int,
+                            sh1 as c_int,
+                            sh2 as c_int,
                             bc.as_mut_ptr(),
                         )
                     };
@@ -848,12 +1034,18 @@ fn limit_terfc_approaches_coulomb_as_r0_grows() {
         unsafe { scf_engine_destroy(eng_t) };
         eprintln!("LIMIT r0={r0}: max rel |terfc - coulomb| = {worst:.4e}");
         // Monotone shrink toward Coulomb as r0 grows.
-        assert!(worst < prev * 1.05 + 1e-12, "terfc not converging to Coulomb");
+        assert!(
+            worst < prev * 1.05 + 1e-12,
+            "terfc not converging to Coulomb"
+        );
         prev = worst;
     }
     unsafe { scf_engine_destroy(eng_c) };
     // At r0=100 the residual should be small (O(1/r0)); loose bound.
-    assert!(prev < 5e-2, "terfc(r0=100) too far from Coulomb: {prev:.3e}");
+    assert!(
+        prev < 5e-2,
+        "terfc(r0=100) too far from Coulomb: {prev:.3e}"
+    );
 }
 
 /// Free-(r0, omega) exactness anchor: terf + terfc = Coulomb holds for EVERY
@@ -893,12 +1085,23 @@ fn free_omega_terf_plus_terfc_is_coulomb() {
         let v_lr = coulomb_metric_2c(Operator::terf_with_omega(r0, omega), &dfbs).unwrap();
         let mut worst = 0.0f64;
         let mut scale = 0.0f64;
-        for (s, c) in v_sr.iter().zip(v_lr.iter()).map(|(a, b)| (a + b, ())).zip(v_c.iter()).map(|((s, _), c)| (s, c)) {
+        for (s, c) in v_sr
+            .iter()
+            .zip(v_lr.iter())
+            .map(|(a, b)| (a + b, ()))
+            .zip(v_c.iter())
+            .map(|((s, _), c)| (s, c))
+        {
             worst = worst.max((s - c).abs());
             scale = scale.max(c.abs());
         }
-        eprintln!("r0*omega = {r0w:.3}: max |terf+terfc-coulomb| = {worst:.3e} (scale {scale:.3e})");
-        assert!(worst / scale < 1e-9, "split identity broken at r0*omega={r0w}: {worst:.3e}");
+        eprintln!(
+            "r0*omega = {r0w:.3}: max |terf+terfc-coulomb| = {worst:.3e} (scale {scale:.3e})"
+        );
+        assert!(
+            worst / scale < 1e-9,
+            "split identity broken at r0*omega={r0w}: {worst:.3e}"
+        );
     }
 
     // Linked constructor == free constructor at the linked omega, bit-identical.
@@ -908,5 +1111,8 @@ fn free_omega_terf_plus_terfc_is_coulomb() {
         &dfbs,
     )
     .unwrap();
-    assert_eq!(linked, free, "linked vs free-at-linked-omega not bit-identical");
+    assert_eq!(
+        linked, free,
+        "linked vs free-at-linked-omega not bit-identical"
+    );
 }

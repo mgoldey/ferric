@@ -8,6 +8,7 @@ Run:
     LD_LIBRARY_PATH=$HOME/.local/lib/x86_64-linux-gnu:$HOME/.local/lib \
     OPENBLAS_NUM_THREADS=1 uv run --no-sync python experiments/danuglipron/run_arm_a_free.py
 """
+
 from __future__ import annotations
 
 import json
@@ -57,9 +58,7 @@ def main() -> int:
     )
 
     t0 = time.time()
-    ref = free_reference(
-        ens.symbols_per_conformer, ens.conformers, labels=ens.labels
-    )
+    ref = free_reference(ens.symbols_per_conformer, ens.conformers, labels=ens.labels)
     dt = time.time() - t0
 
     print(f"\nrelaxed {ref.n_converged}/{ref.n_considered} in {dt:.1f}s", flush=True)
@@ -71,44 +70,58 @@ def main() -> int:
     spread = ref.spread_kcal
     print(f"ensemble spread: {spread:.2f} kcal/mol" if spread else "spread: n/a")
 
-    print(f"\n{'conformer':22s} {'E_relaxed (Ha)':>16s} {'rel (kcal/mol)':>15s} {'conv':>5s}")
+    print(
+        f"\n{'conformer':22s} {'E_relaxed (Ha)':>16s} {'rel (kcal/mol)':>15s} {'conv':>5s}"
+    )
     rows = []
-    for c in sorted(ref.per_conformer, key=lambda c: (c.e_relaxed is None, c.e_relaxed)):
+    for c in sorted(
+        ref.per_conformer, key=lambda c: (c.e_relaxed is None, c.e_relaxed)
+    ):
         if c.ok:
             rel = (c.e_relaxed - ref.e_min) * HARTREE_TO_KCAL_MOL
-            print(f"{c.label:22s} {c.e_relaxed:16.8f} {rel:15.2f} {str(c.converged):>5s}")
+            print(
+                f"{c.label:22s} {c.e_relaxed:16.8f} {rel:15.2f} {str(c.converged):>5s}"
+            )
         else:
             rel = None
             print(f"{c.label:22s} {'FAILED':>16s} {'--':>15s} {'--':>5s}  {c.error}")
-        rows.append({
-            "label": c.label,
-            "e_singlepoint_ha": c.e_singlepoint,
-            "e_relaxed_ha": c.e_relaxed,
-            "rel_kcal_mol": rel,
-            "converged": c.converged,
-            "error": c.error,
-        })
+        rows.append(
+            {
+                "label": c.label,
+                "e_singlepoint_ha": c.e_singlepoint,
+                "e_relaxed_ha": c.e_relaxed,
+                "rel_kcal_mol": rel,
+                "converged": c.converged,
+                "error": c.error,
+            }
+        )
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps({
-        "method": ref.method,
-        "ensemble_dir": ENSEMBLE,
-        "formula": ens.formula,
-        "shared_atom_order": ens.shared_order,
-        "n_considered": ref.n_considered,
-        "n_converged": ref.n_converged,
-        "free_min_label": ref.label,
-        "free_min_energy_ha": ref.e_min,
-        "spread_kcal_mol": spread,
-        "wall_seconds": dt,
-        "conformers": rows,
-        "relaxed_coords": {
-            c.label: c.relaxed_coords for c in ref.per_conformer if c.ok
-        },
-        "symbols_per_conformer": {
-            lbl: syms for lbl, syms in zip(ens.labels, ens.symbols_per_conformer)
-        },
-    }, indent=2))
+    OUT.write_text(
+        json.dumps(
+            {
+                "method": ref.method,
+                "ensemble_dir": ENSEMBLE,
+                "formula": ens.formula,
+                "shared_atom_order": ens.shared_order,
+                "n_considered": ref.n_considered,
+                "n_converged": ref.n_converged,
+                "free_min_label": ref.label,
+                "free_min_energy_ha": ref.e_min,
+                "spread_kcal_mol": spread,
+                "wall_seconds": dt,
+                "conformers": rows,
+                "relaxed_coords": {
+                    c.label: c.relaxed_coords for c in ref.per_conformer if c.ok
+                },
+                "symbols_per_conformer": {
+                    lbl: syms
+                    for lbl, syms in zip(ens.labels, ens.symbols_per_conformer)
+                },
+            },
+            indent=2,
+        )
+    )
     print(f"\nwrote {OUT}")
     return 0
 

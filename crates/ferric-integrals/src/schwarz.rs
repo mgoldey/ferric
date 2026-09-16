@@ -278,7 +278,10 @@ pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, Ferric
     let blocks: Vec<Vec<(usize, usize, f64)>> = row_blocks
         .par_iter()
         .map_init(
-            || Engine::new_2e(op, prep, SCHWARZ_TABLE_PRECISION).expect("2e engine (pre-validated)"),
+            || {
+                Engine::new_2e(op, prep, SCHWARZ_TABLE_PRECISION)
+                    .expect("2e engine (pre-validated)")
+            },
             |eng, &(i0, i1)| {
                 let mut out = Vec::with_capacity((i1 - i0) * (i1 + 1));
                 for i in i0..i1 {
@@ -407,7 +410,8 @@ mod tests {
                 assert!(
                     q_e[(i, j)] <= q_c[(i, j)] + 1e-12,
                     "Q_erfc[{i},{j}]={} exceeds Q_Coulomb={}",
-                    q_e[(i, j)], q_c[(i, j)]
+                    q_e[(i, j)],
+                    q_c[(i, j)]
                 );
             }
         }
@@ -508,7 +512,8 @@ mod tests {
                 .filter(|&(i, j)| q[(i, j)] == 0.0)
                 .count();
             assert_eq!(
-                zeros, 0,
+                zeros,
+                0,
                 "op={op:?}: {zeros} of {} unique shell pairs store Q == 0.0. Such an entry \
                  UNDERestimates a nonzero (ij|ij) and, because SignificantPairs uses a strict \
                  `> threshold`, makes the pair unreachable even at threshold 0 — the bound is \
@@ -569,7 +574,10 @@ mod tests {
                 .zip(ser.iter())
                 .filter(|(a, b)| a.to_bits() != b.to_bits())
                 .count();
-            assert_eq!(n_diff, 0, "schwarz: {n_diff} elements differ bitwise (op={op:?})");
+            assert_eq!(
+                n_diff, 0,
+                "schwarz: {n_diff} elements differ bitwise (op={op:?})"
+            );
         }
     }
 
@@ -579,14 +587,24 @@ mod tests {
         let mol = Molecule::load_xyz("../../testdata/molecules/alkane_6.xyz").unwrap();
         let dfbs_set = basis::bundled("cc-pvdz-ri").unwrap();
         let dfbs = PreparedBasis::new(&mol, &dfbs_set).unwrap();
-        assert!(dfbs.nshells() >= 64,
-            "test aux basis too small to exercise the parallel path: {} shells", dfbs.nshells());
+        assert!(
+            dfbs.nshells() >= 64,
+            "test aux basis too small to exercise the parallel path: {} shells",
+            dfbs.nshells()
+        );
         for op in [Operator::coulomb(), Operator::erfc(0.222)] {
             let par = schwarz3_aux(op, &dfbs).unwrap();
             let ser = schwarz3_aux_serial(op, &dfbs);
             assert_eq!(par.len(), ser.len());
-            let n_diff = par.iter().zip(ser.iter()).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
-            assert_eq!(n_diff, 0, "schwarz3_aux: {n_diff} elements differ bitwise (op={op:?})");
+            let n_diff = par
+                .iter()
+                .zip(ser.iter())
+                .filter(|(a, b)| a.to_bits() != b.to_bits())
+                .count();
+            assert_eq!(
+                n_diff, 0,
+                "schwarz3_aux: {n_diff} elements differ bitwise (op={op:?})"
+            );
         }
     }
 }

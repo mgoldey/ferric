@@ -95,7 +95,12 @@ fn rimp2_gradient_in_field_matches_pyscf_canonical_mp2() {
         point_charges: r
             .mm_charges
             .iter()
-            .map(|c| PointCharge { q: c.q, x: c.xyz_bohr[0], y: c.xyz_bohr[1], z: c.xyz_bohr[2] })
+            .map(|c| PointCharge {
+                q: c.q,
+                x: c.xyz_bohr[0],
+                y: c.xyz_bohr[1],
+                z: c.xyz_bohr[2],
+            })
             .collect(),
         field: None,
         smeared_charges: Vec::new(),
@@ -107,13 +112,28 @@ fn rimp2_gradient_in_field_matches_pyscf_canonical_mp2() {
     let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig { external_potential: Some(ext.clone()), density_conv: 1e-10, energy_conv: 1e-11, ..Default::default() };
+    let cfg = RhfConfig {
+        external_potential: Some(ext.clone()),
+        density_conv: 1e-10,
+        energy_conv: 1e-11,
+        ..Default::default()
+    };
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(rhf.converged);
 
     let mp2_config = RiMp2Config::default();
     let mp2 = ri_mp2(&mol, &obs, &dfbs, op, &rhf, &mp2_config).unwrap();
-    let grad = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &mp2_config, Some(&ext)).unwrap();
+    let grad = rimp2_gradient_analytical(
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &bounds,
+        &rhf,
+        &mp2_config,
+        Some(&ext),
+    )
+    .unwrap();
 
     let de = (mp2.total_energy - r.mp2_energy).abs();
     eprintln!(
@@ -126,7 +146,10 @@ fn rimp2_gradient_in_field_matches_pyscf_canonical_mp2() {
     // in the external-potential threading itself (the vacuum RI-vs-canonical
     // floor on this basis/aux pair is already at this scale; the classical
     // charge-nuclear/charge-electron terms enter exactly, not approximately).
-    assert!(de < 8e-6, "RI-vs-canonical MP2 total energy shift {de:.3e} exceeds the ~5-8e-6 Ha RI-fitting floor");
+    assert!(
+        de < 8e-6,
+        "RI-vs-canonical MP2 total energy shift {de:.3e} exceeds the ~5-8e-6 Ha RI-fitting floor"
+    );
 
     assert_eq!(grad.nrows(), r.mp2_qm_gradient.len());
     let mut max_diff = 0.0f64;
@@ -136,7 +159,9 @@ fn rimp2_gradient_in_field_matches_pyscf_canonical_mp2() {
             max_diff = max_diff.max(d);
             eprintln!(
                 "  atom={a} coord={k}: ferric={:+.8} pyscf={:+.8} diff={:.2e}",
-                grad[(a, k)], g[k], d
+                grad[(a, k)],
+                g[k],
+                d
             );
         }
     }

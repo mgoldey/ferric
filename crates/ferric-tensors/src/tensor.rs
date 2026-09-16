@@ -68,16 +68,24 @@ pub trait MaybeLabeled {
 }
 
 impl<const N: usize> MaybeLabeled for Tensor<N> {
-    fn axis_label(&self, pos: usize) -> Option<Axis> { self.labels.get(pos).copied() }
+    fn axis_label(&self, pos: usize) -> Option<Axis> {
+        self.labels.get(pos).copied()
+    }
 }
 impl<const N: usize> MaybeLabeled for &Tensor<N> {
-    fn axis_label(&self, pos: usize) -> Option<Axis> { (**self).axis_label(pos) }
+    fn axis_label(&self, pos: usize) -> Option<Axis> {
+        (**self).axis_label(pos)
+    }
 }
 impl MaybeLabeled for ndarray::ArrayD<f64> {
-    fn axis_label(&self, _pos: usize) -> Option<Axis> { None }
+    fn axis_label(&self, _pos: usize) -> Option<Axis> {
+        None
+    }
 }
 impl MaybeLabeled for &ndarray::ArrayD<f64> {
-    fn axis_label(&self, _pos: usize) -> Option<Axis> { None }
+    fn axis_label(&self, _pos: usize) -> Option<Axis> {
+        None
+    }
 }
 
 #[cfg(test)]

@@ -51,7 +51,6 @@ class Molecule:
         """Element symbols in atom order."""
         ...
 
-
 class QmmmSystem:
     """A QM/MM partition: full structure split into a QM region and fixed MM point charges.
 
@@ -80,11 +79,15 @@ class QmmmSystem:
         thole_a. Both ignored for atoms in the QM region, like charges."""
         ...
 
-    def with_link_atoms(self, bonds: list[tuple[int, int]], scale: float | None = None) -> QmmmSystem:
+    def with_link_atoms(
+        self, bonds: list[tuple[int, int]], scale: float | None = None
+    ) -> QmmmSystem:
         """Cap each cut bond with a scaled-position link H (default scale 1.09/1.53). Returns a new system."""
         ...
 
-    def with_boundary_charges(self, bonds: list[tuple[int, int]], scheme: str) -> QmmmSystem:
+    def with_boundary_charges(
+        self, bonds: list[tuple[int, int]], scheme: str
+    ) -> QmmmSystem:
         """Boundary charge scheme for the MM host of each cut bond: "keep", "delete-host", "rc" or "rcd"."""
         ...
 
@@ -115,7 +118,6 @@ class QmmmSystem:
     def mm_indices(self) -> list[int]: ...
     def qm_atom_count(self) -> int: ...
     def natoms(self) -> int: ...
-
     def atom_coords_angstrom(self) -> list[tuple[float, float, float]]:
         """Every atom's current position in Angstrom, in full-structure index order
         (the same ordering qm_indices()/mm_indices() index into), regardless of QM/MM role.
@@ -131,7 +133,6 @@ class QmmmSystem:
         ...
 
     def boundary_scheme(self) -> str: ...
-
 
 class MmTopology:
     """Explicit-parameter AMBER-form MM force field topology (ferric-mm). Assigns no
@@ -157,7 +158,6 @@ class MmTopology:
         ...
 
     def n_atoms(self) -> int: ...
-
 
 class QmmmResult:
     """Result of run_qmmm. Gradients are dE/dR (Hartree/Bohr); mm_forces() is the FORCE on each charge."""
@@ -209,7 +209,6 @@ class QmmmResult:
         """
         ...
 
-
 def run_qmmm(
     system: QmmmSystem,
     basis_name: str,
@@ -248,7 +247,6 @@ def run_qmmm(
     """
     ...
 
-
 class QmmmOptimizeResult:
     """Result of run_optimize_qmmm."""
 
@@ -258,7 +256,6 @@ class QmmmOptimizeResult:
     def converged(self) -> bool: ...
     @property
     def steps(self) -> int: ...
-
     def system(self) -> QmmmSystem:
         """The partition at the final (optimized) geometry."""
         ...
@@ -266,7 +263,6 @@ class QmmmOptimizeResult:
     def energies(self) -> list[float]:
         """Total energy (Hartree) at every step, in order (length steps + 1)."""
         ...
-
 
 def run_optimize_qmmm(
     system: QmmmSystem,
@@ -291,7 +287,6 @@ def run_optimize_qmmm(
     """
     ...
 
-
 class BasisSet:
     """A Gaussian basis set (orbital or auxiliary/RI-fitting)."""
 
@@ -299,7 +294,6 @@ class BasisSet:
     def bundled(name: str) -> BasisSet:
         """Load a bundled basis set by name (e.g. 'sto-3g', 'cc-pvdz-ri')."""
         ...
-
 
 class RhfResult:
     """Result of a closed-shell RHF (or run_ksdft KS-DFT) calculation."""
@@ -335,7 +329,6 @@ class RhfResult:
     def mo_coefficients(self) -> NDArray[np.float64]:
         """MO coefficient matrix C (n_bf x n_mo), column k = MO k."""
         ...
-
 
 class UhfResult:
     """Result of an open-shell UHF or ROHF calculation."""
@@ -376,7 +369,6 @@ class UhfResult:
         """Beta-spin orbital energies (Hartree), ascending."""
         ...
 
-
 class OptimizeResult:
     """Result of a geometry optimization."""
 
@@ -398,7 +390,6 @@ class OptimizeResult:
     def mol(self) -> Molecule:
         """The optimized geometry as a new Molecule."""
         ...
-
 
 class FrequencyResult:
     """Result of a harmonic vibrational frequency calculation."""
@@ -433,7 +424,6 @@ class FrequencyResult:
         """Electronic energy at the undisplaced geometry."""
         ...
 
-
 class WeightedStats:
     """A weighted mean with its spread."""
 
@@ -457,13 +447,11 @@ class WeightedStats:
         """Largest value across conformers (unweighted)."""
         ...
 
-
 class EnsembleDiagnostics:
     """Population-structure readout for a Boltzmann-weighted ensemble."""
 
     @property
     def n_conformers(self) -> int: ...
-
     @property
     def n_within_kt(self) -> int:
         """Conformers within kT of the minimum."""
@@ -496,7 +484,6 @@ class EnsembleDiagnostics:
 
     @property
     def temperature_k(self) -> float: ...
-
     @property
     def verdict(self) -> str:
         """Plain-language verdict on whether the ensemble was needed."""
@@ -505,7 +492,6 @@ class EnsembleDiagnostics:
     def is_single_conformer_dominated(self, threshold: float = 0.95) -> bool:
         """True when one conformer carries at least threshold of the population."""
         ...
-
 
 class BoltzmannWeights:
     """Boltzmann populations of an ensemble at one temperature."""
@@ -522,7 +508,6 @@ class BoltzmannWeights:
 
     @property
     def temperature_k(self) -> float: ...
-
     @property
     def kt_hartree(self) -> float:
         """kT at that temperature, in Hartree."""
@@ -543,7 +528,6 @@ class BoltzmannWeights:
         ...
 
     def __len__(self) -> int: ...
-
 
 class ConformerEnsemble:
     """A set of conformers of one chemical species."""
@@ -570,7 +554,6 @@ class ConformerEnsemble:
         ...
 
     def __len__(self) -> int: ...
-
     def n_conformers(self) -> int:
         """Number of conformers (always >= 1)."""
         ...
@@ -631,7 +614,6 @@ class ConformerEnsemble:
         """Population-structure diagnostics at temperature_k."""
         ...
 
-
 class RiMp2Result:
     """Result of a run_rimp2 calculation."""
 
@@ -650,73 +632,55 @@ class RiMp2Result:
         """MP2 correlation energy (always negative), Hartree."""
         ...
 
-
 class OoRiMp2Result:
     """Result of an orbital-optimized RI-MP2 calculation."""
 
     @property
     def total_energy(self) -> float: ...
-
     @property
     def hf_energy(self) -> float: ...
-
     @property
     def mp2_corr(self) -> float: ...
-
     @property
     def converged(self) -> bool: ...
-
     @property
     def iterations(self) -> int: ...
-
     @property
     def grad_norm(self) -> float: ...
-
 
 class Mp3Result:
     """Result of an MP3 calculation."""
 
     @property
     def e_hf(self) -> float: ...
-
     @property
     def e_mp2(self) -> float: ...
-
     @property
     def e_mp3(self) -> float: ...
-
     @property
     def e_corr(self) -> float: ...
-
     @property
     def e_total(self) -> float: ...
-
 
 class LaplaceMp2Result:
     """Result of a Laplace RI-MP2 calculation."""
 
     @property
     def total_energy(self) -> float: ...
-
     @property
     def mp2_corr(self) -> float: ...
-
     @property
     def e_os(self) -> float: ...
-
     @property
     def e_ss(self) -> float: ...
-
 
 class SosMp2Result:
     """Result of a Laplace SOS-MP2 calculation."""
 
     @property
     def total_energy(self) -> float: ...
-
     @property
     def rhf_energy(self) -> float: ...
-
     @property
     def sos_corr(self) -> float:
         """The SCALED correlation energy, c_os * e_os."""
@@ -742,44 +706,33 @@ class SosMp2Result:
         """'mo' or 'ao', echoed for provenance."""
         ...
 
-
 class AttenuatedMp2Result:
     """Result of an attenuated RI-MP2 calculation."""
 
     @property
     def total_energy(self) -> float: ...
-
     @property
     def rhf_energy(self) -> float: ...
-
     @property
     def mp2_corr(self) -> float: ...
-
     @property
     def e_os(self) -> float: ...
-
     @property
     def e_ss(self) -> float: ...
-
 
 class ScsMp2Result:
     """Result of a spin-component-scaled MP2 calculation."""
 
     @property
     def total_energy(self) -> float: ...
-
     @property
     def rhf_energy(self) -> float: ...
-
     @property
     def scs_corr(self) -> float: ...
-
     @property
     def e_os(self) -> float: ...
-
     @property
     def e_ss(self) -> float: ...
-
 
 class Mp2VResult:
     """Result of an MP2-V (attenuated MP2 + VV10) calculation."""
@@ -791,7 +744,6 @@ class Mp2VResult:
 
     @property
     def rhf_energy(self) -> float: ...
-
     @property
     def att_mp2_corr(self) -> float:
         """Attenuated MP2 correlation energy."""
@@ -804,28 +756,22 @@ class Mp2VResult:
 
     @property
     def e_os(self) -> float: ...
-
     @property
     def e_ss(self) -> float: ...
-
     @property
     def n_nlc_points(self) -> int:
         """Grid points in the VV10 nonlocal integration."""
         ...
-
 
 class RsMp2RpaResult:
     """Result of an RS-MP2-RPA (SR-MP2 + LR-dRPA) calculation."""
 
     @property
     def total_energy(self) -> float: ...
-
     @property
     def rhf_energy(self) -> float: ...
-
     @property
     def e_corr(self) -> float: ...
-
     @property
     def e_corr_naive(self) -> float | None:
         """Diagnostic naive sum (delta-lr only; None for coupled-rings)."""
@@ -833,16 +779,12 @@ class RsMp2RpaResult:
 
     @property
     def e_mp2_full(self) -> float: ...
-
     @property
     def e_sr_mp2(self) -> float: ...
-
     @property
     def e_lr_mp2(self) -> float: ...
-
     @property
     def e_dmp2_lr(self) -> float: ...
-
     @property
     def e_drpa_lr(self) -> float | None:
         """E_dRPA[erf] (DeltaLr only; None for CoupledRings)."""
@@ -858,16 +800,13 @@ class RsMp2RpaResult:
         """Delta-dRPA[erfc] (CoupledRings only)."""
         ...
 
-
 class DftResult:
     """Result of a KS-DFT calculation."""
 
     @property
     def total_energy(self) -> float: ...
-
     @property
     def converged(self) -> bool: ...
-
     def vxc(self) -> NDArray[np.float64]:
         """Exchange-correlation potential matrix (n_bf x n_bf)."""
         ...
@@ -880,35 +819,27 @@ class DftResult:
         """Analytic nuclear gradient (natoms x 3) if with_gradient=True, else None."""
         ...
 
-
 class CcResult:
     """Result of a coupled-cluster calculation."""
 
     @property
     def correlation_energy(self) -> float: ...
-
     @property
     def t_correction(self) -> float | None: ...
-
 
 class PdepRpaResult:
     """Result of a PDEP-RPA calculation."""
 
     @property
     def rhf_energy(self) -> float: ...
-
     @property
     def e_rpa(self) -> float: ...
-
     @property
     def total_energy(self) -> float: ...
-
     @property
     def n_eigenpotentials(self) -> int: ...
-
     @property
     def e_rpa_dft_diag(self) -> float | None: ...
-
     @property
     def eigensolver_converged(self) -> bool:
         """Whether the static-dielectric eigensolve met its convergence tolerance."""
@@ -943,13 +874,11 @@ class PdepRpaResult:
         """Write a scree plot of static dielectric eigenvalues to path (PNG)."""
         ...
 
-
 class GwResult:
     """Result of a closed-shell GW calculation."""
 
     @property
     def ref_energy(self) -> float: ...
-
     @property
     def mo_indices(self) -> list[int]:
         """MO indices for which QP energies were computed."""
@@ -995,68 +924,49 @@ class GwResult:
         """Whether the outer eigenvalue self-consistency loop converged."""
         ...
 
-
 class UGwResult:
     """Result of an open-shell U-GW calculation."""
 
     @property
     def ref_energy(self) -> float: ...
-
     @property
     def mo_indices(self) -> list[int]: ...
-
     @property
     def eps_mf_a(self) -> NDArray[np.float64]: ...
-
     @property
     def eps_qp_a(self) -> NDArray[np.float64]: ...
-
     @property
     def sigma_x_a(self) -> NDArray[np.float64]: ...
-
     @property
     def sigma_c_a(self) -> NDArray[np.float64]: ...
-
     @property
     def z_factor_a(self) -> NDArray[np.float64]: ...
-
     @property
     def eps_mf_b(self) -> NDArray[np.float64]: ...
-
     @property
     def eps_qp_b(self) -> NDArray[np.float64]: ...
-
     @property
     def sigma_x_b(self) -> NDArray[np.float64]: ...
-
     @property
     def sigma_c_b(self) -> NDArray[np.float64]: ...
-
     @property
     def z_factor_b(self) -> NDArray[np.float64]: ...
-
     @property
     def qp_converged_a(self) -> list[bool]: ...
-
     @property
     def qp_converged_b(self) -> list[bool]: ...
-
     @property
     def n_ev_iter(self) -> int: ...
-
     @property
     def outer_converged(self) -> bool: ...
-
 
 class BseResult:
     """Result of a BSE-TDA calculation."""
 
     @property
     def nocc(self) -> int: ...
-
     @property
     def nvir(self) -> int: ...
-
     @property
     def omega(self) -> NDArray[np.float64]:
         """Singlet excitation energies (Hartree), ascending."""
@@ -1080,16 +990,13 @@ class BseResult:
         """Oscillator strength of the lowest singlet."""
         ...
 
-
 class TdhfStaticPolarizabilityResult:
     """Result of an RPAx@KS static polarizability calculation."""
 
     @property
     def nocc(self) -> int: ...
-
     @property
     def nvir(self) -> int: ...
-
     @property
     def iso(self) -> float:
         """Isotropic average (1/3) Tr(alpha), a.u."""
@@ -1100,16 +1007,13 @@ class TdhfStaticPolarizabilityResult:
         """Cartesian alpha_ij(0) tensor (3x3, a.u.)."""
         ...
 
-
 class BoysResult:
     """Result of Boys localization."""
 
     @property
     def converged(self) -> bool: ...
-
     @property
     def iterations(self) -> int: ...
-
     def c_loc(self) -> NDArray[np.float64]:
         """Localized MO coefficients (n_bf, n_orb)."""
         ...
@@ -1117,7 +1021,6 @@ class BoysResult:
     def centers(self) -> NDArray[np.float64]:
         """Boys centers <i|r|i> (n_orb, 3) in Bohr."""
         ...
-
 
 # ── Functions ──
 
@@ -1149,7 +1052,6 @@ def run_rhf(
     """
     ...
 
-
 def run_uhf(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1168,7 +1070,6 @@ def run_uhf(
 ) -> UhfResult:
     """Unrestricted Hartree-Fock (open-shell)."""
     ...
-
 
 def run_rohf(
     mol: Molecule,
@@ -1189,7 +1090,6 @@ def run_rohf(
     """Restricted Open-Shell Hartree-Fock."""
     ...
 
-
 def run_optimize(
     mol: Molecule,
     basis_name: str,
@@ -1200,7 +1100,6 @@ def run_optimize(
 ) -> OptimizeResult:
     """Geometry optimization (RHF)."""
     ...
-
 
 def run_frequencies(
     mol: Molecule,
@@ -1213,7 +1112,6 @@ def run_frequencies(
     """Harmonic vibrational frequencies via finite-difference of analytic gradients."""
     ...
 
-
 def run_rimp2(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1225,7 +1123,6 @@ def run_rimp2(
 ) -> RiMp2Result:
     """Resolution-of-identity (density-fitted) MP2 on a closed-shell RHF reference."""
     ...
-
 
 def run_oo_rimp2(
     mol: Molecule,
@@ -1242,7 +1139,6 @@ def run_oo_rimp2(
     """Orbital-optimized RI-MP2."""
     ...
 
-
 def run_mp3(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1252,7 +1148,6 @@ def run_mp3(
 ) -> Mp3Result:
     """Spin-orbital MP3 via einsum."""
     ...
-
 
 def run_laplace_mp2(
     mol: Molecule,
@@ -1264,7 +1159,6 @@ def run_laplace_mp2(
 ) -> LaplaceMp2Result:
     """Laplace-transform RI-MP2."""
     ...
-
 
 def run_laplace_sos_mp2(
     mol: Molecule,
@@ -1281,7 +1175,6 @@ def run_laplace_sos_mp2(
     """Laplace-transform SOS-MP2: E = c_os * E_OS."""
     ...
 
-
 def run_attenuated_rimp2(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1293,7 +1186,6 @@ def run_attenuated_rimp2(
 ) -> AttenuatedMp2Result:
     """Attenuated RI-MP2 (erfc(omega*r)/r). omega in Angstrom^-1."""
     ...
-
 
 def run_terfc_rimp2(
     mol: Molecule,
@@ -1307,7 +1199,6 @@ def run_terfc_rimp2(
     """MP2(terfc): RI-MP2 with exact tempered-erfc operator. r0 in Angstrom."""
     ...
 
-
 def run_scs_mp2(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1320,7 +1211,6 @@ def run_scs_mp2(
 ) -> ScsMp2Result:
     """Spin-component-scaled MP2."""
     ...
-
 
 def run_scs_mp2_2terfc(
     mol: Molecule,
@@ -1336,7 +1226,6 @@ def run_scs_mp2_2terfc(
 ) -> ScsMp2Result:
     """SCS-MP2(2terfc): dual-attenuated SCS-MP2 with exact terfc. r0 in Angstrom."""
     ...
-
 
 def run_mp2_v(
     mol: Molecule,
@@ -1355,7 +1244,6 @@ def run_mp2_v(
     """MP2-V: attenuated MP2 + Eq-11-damped VV10. r0 in Angstrom, omega in Angstrom^-1."""
     ...
 
-
 def run_rs_mp2_rpa(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1371,7 +1259,6 @@ def run_rs_mp2_rpa(
 ) -> RsMp2RpaResult:
     """SR-MP2 + LR-dRPA. omega/terf_omega in Angstrom^-1, r0 in Angstrom."""
     ...
-
 
 def run_dft(
     mol: Molecule,
@@ -1390,7 +1277,6 @@ def run_dft(
     """Kohn-Sham DFT (closed-shell)."""
     ...
 
-
 def run_ksdft(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1408,7 +1294,6 @@ def run_ksdft(
     """Kohn-Sham DFT (closed-shell). Alias of run_dft."""
     ...
 
-
 def run_ccd(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1419,7 +1304,6 @@ def run_ccd(
 ) -> CcResult:
     """Coupled-cluster doubles (CCD)."""
     ...
-
 
 def run_ccsd(
     mol: Molecule,
@@ -1432,7 +1316,6 @@ def run_ccsd(
     """Coupled-cluster singles and doubles (CCSD), spin-adapted."""
     ...
 
-
 def run_ccsd_t(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1443,7 +1326,6 @@ def run_ccsd_t(
 ) -> CcResult:
     """CCSD(T): CCSD plus perturbative triples correction, spin-adapted."""
     ...
-
 
 def run_pdep_rpa(
     mol: Molecule,
@@ -1462,7 +1344,6 @@ def run_pdep_rpa(
 ) -> PdepRpaResult:
     """PDEP-RPA (dielectric eigendecomposition RPA)."""
     ...
-
 
 def run_gw(
     mol: Molecule,
@@ -1487,7 +1368,6 @@ def run_gw(
 ) -> GwResult:
     """Closed-shell G0W0/COHSEX/evGW0/evGW on an RHF or RKS reference."""
     ...
-
 
 def run_u_gw(
     mol: Molecule,
@@ -1514,7 +1394,6 @@ def run_u_gw(
     """Open-shell U-G0W0/U-COHSEX/U-evGW0/U-evGW on a UHF/ROHF reference."""
     ...
 
-
 def run_bse_tda(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1531,7 +1410,6 @@ def run_bse_tda(
 ) -> BseResult:
     """BSE-TDA singlet excitation energies on a closed-shell RHF reference."""
     ...
-
 
 def run_tdhf_static_polarizability(
     mol: Molecule,
@@ -1552,7 +1430,6 @@ def run_tdhf_static_polarizability(
     """RPAx@KS static polarizability (omega=0). xc is REQUIRED."""
     ...
 
-
 def run_lmp2(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1565,7 +1442,6 @@ def run_lmp2(
 ) -> dict[str, object]:
     """Amplitude-threshold local MP2 (closed-shell). Returns a dict."""
     ...
-
 
 def run_drpa(
     mol: Molecule,
@@ -1582,7 +1458,6 @@ def run_drpa(
     """Amplitude-threshold direct RPA (closed-shell). Returns a dict."""
     ...
 
-
 def run_drpa_scan(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1598,7 +1473,6 @@ def run_drpa_scan(
     """Amplitude-threshold dRPA over a list of eps values. Returns list of dicts."""
     ...
 
-
 def run_linlccd_amplitude(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1612,7 +1486,6 @@ def run_linlccd_amplitude(
     """Amplitude-threshold LinLCCD (closed-shell). Returns a dict."""
     ...
 
-
 def tune_omega(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1625,7 +1498,6 @@ def tune_omega(
     """Optimal tuning of range-separation omega for an RSH functional."""
     ...
 
-
 def esp_at_atoms(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1633,7 +1505,6 @@ def esp_at_atoms(
 ) -> list[float]:
     """Electrostatic potential at each nucleus (Hartree atomic units)."""
     ...
-
 
 def esp_at_points(
     mol: Molecule,
@@ -1644,7 +1515,6 @@ def esp_at_points(
     """Electrostatic potential at arbitrary points (N,3) in Bohr."""
     ...
 
-
 def hirshfeld_charges(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1652,7 +1522,6 @@ def hirshfeld_charges(
 ) -> list[float]:
     """Hirshfeld partial charges (units of e)."""
     ...
-
 
 def lowdin_charges(
     mol: Molecule,
@@ -1662,7 +1531,6 @@ def lowdin_charges(
     """Lowdin (symmetric-orthogonalization) partial charges (units of e)."""
     ...
 
-
 def mulliken_charges(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1670,7 +1538,6 @@ def mulliken_charges(
 ) -> list[float]:
     """Mulliken partial charges (units of e)."""
     ...
-
 
 def chelpg_charges(
     mol: Molecule,
@@ -1680,7 +1547,6 @@ def chelpg_charges(
     """CHELPG (ESP-fitted) partial charges (units of e)."""
     ...
 
-
 def resp_charges(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1688,7 +1554,6 @@ def resp_charges(
 ) -> list[float]:
     """RESP (restrained ESP-fitted) partial charges (units of e)."""
     ...
-
 
 def hirshfeld_polarizability(
     mol: Molecule,
@@ -1700,7 +1565,6 @@ def hirshfeld_polarizability(
     """Per-atom Hirshfeld-partitioned static dipole polarizability (natoms, 3, 3) in Bohr^3."""
     ...
 
-
 def orbital_moments(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1708,7 +1572,6 @@ def orbital_moments(
 ) -> tuple[list[list[float]], list[float]]:
     """Per-orbital centroids and spatial spreads. Restricted only."""
     ...
-
 
 def density_second_moment(
     mol: Molecule,
@@ -1718,14 +1581,12 @@ def density_second_moment(
     """Density second-moment tensor (3x3, Bohr^2) about the origin."""
     ...
 
-
 def boltzmann_weights(
     energies: list[float],
     temperature_k: float = ...,
 ) -> BoltzmannWeights:
     """Boltzmann weights from energies (Hartree) at temperature_k (default 298.15 K)."""
     ...
-
 
 def weighted_stats(
     values: list[float],
@@ -1734,14 +1595,12 @@ def weighted_stats(
     """Weighted mean and standard deviation of a scalar property."""
     ...
 
-
 def weighted_stats_vector(
     values: list[list[float]],
     weights: list[float],
 ) -> list[WeightedStats]:
     """Weighted mean and standard deviation of a vector-valued property, per component."""
     ...
-
 
 def weighted_stats_tensor(
     values: list[list[list[float]]],
@@ -1750,7 +1609,6 @@ def weighted_stats_tensor(
     """Weighted mean and standard deviation of a rank-2 tensor property, per element."""
     ...
 
-
 def compute_eri3(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1758,7 +1616,6 @@ def compute_eri3(
 ) -> NDArray[np.float64]:
     """Raw 3-center Coulomb integrals (P|mu nu), shape (naux, n_bf, n_bf)."""
     ...
-
 
 def compute_eri3_mo(
     mol: Molecule,
@@ -1774,7 +1631,6 @@ def compute_eri3_mo(
     """Blocked MO-basis 3-center integrals (P|pq), shape (naux, n_left, n_right)."""
     ...
 
-
 def compute_metric_2c(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1786,7 +1642,6 @@ def compute_metric_2c(
     """2-center metric (P|w|Q) over the auxiliary basis (naux, naux)."""
     ...
 
-
 def boys_localize(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1795,7 +1650,6 @@ def boys_localize(
 ) -> BoysResult:
     """Boys (Foster-Boys) localization of given orbitals."""
     ...
-
 
 def shell_info(
     mol: Molecule,

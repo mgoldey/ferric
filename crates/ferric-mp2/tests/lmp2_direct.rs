@@ -40,10 +40,19 @@ fn setup(xyz: &str) -> Setup {
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
     )
     .unwrap();
-    Setup { mol, obs, obs_bs, dfbs, rhf }
+    Setup {
+        mol,
+        obs,
+        obs_bs,
+        dfbs,
+        rhf,
+    }
 }
 
 /// Trivial maps: every locality knob at its no-op limit.
@@ -65,14 +74,33 @@ fn trivial_maps() -> DirectConfig {
 #[test]
 fn trivial_limit_matches_global_domain_fit_and_canonical() {
     let su = setup("water.xyz");
-    let cfg = AmplitudeLmp2Config { eps: 0.0, frozen_core: 1, ..Default::default() };
-    let glob_cfg = AmplitudeLmp2Config { fit_radius_bohr: Some(1e6), ..cfg.clone() };
+    let cfg = AmplitudeLmp2Config {
+        eps: 0.0,
+        frozen_core: 1,
+        ..Default::default()
+    };
+    let glob_cfg = AmplitudeLmp2Config {
+        fit_radius_bohr: Some(1e6),
+        ..cfg.clone()
+    };
     let glob = amplitude_lmp2(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &glob_cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &glob_cfg,
     )
     .unwrap();
     let (dir, stats) = amplitude_lmp2_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
         &trivial_maps(),
     )
     .unwrap();
@@ -97,13 +125,27 @@ fn trivial_limit_matches_global_domain_fit_and_canonical() {
 fn trivial_limit_holds_for_erfc() {
     let su = setup("water.xyz");
     let op = Operator::erfc(1.0);
-    let cfg = AmplitudeLmp2Config { eps: 0.0, frozen_core: 0, ..Default::default() };
+    let cfg = AmplitudeLmp2Config {
+        eps: 0.0,
+        frozen_core: 0,
+        ..Default::default()
+    };
     let (dir, _) = amplitude_lmp2_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, &trivial_maps(),
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        op,
+        &su.rhf,
+        &cfg,
+        &trivial_maps(),
     )
     .unwrap();
     let de = (dir.e_corr - dir.e_corr_canonical_ri).abs();
-    eprintln!("DIRECT erfc trivial limit water: E={:.10} |vs canonical|={de:.3e}", dir.e_corr);
+    eprintln!(
+        "DIRECT erfc trivial limit water: E={:.10} |vs canonical|={de:.3e}",
+        dir.e_corr
+    );
     assert!(dir.e_corr < 0.0);
     assert!(de < 1e-9, "erfc trivial-limit anchor FAILED: {de:.3e}");
 }
@@ -115,14 +157,33 @@ fn trivial_limit_holds_for_erfc() {
 #[test]
 fn finite_eps_direct_matches_global_domain_fit() {
     let su = setup("alkane_4.xyz");
-    let cfg = AmplitudeLmp2Config { eps: 1e-3, frozen_core: 4, ..Default::default() };
-    let glob_cfg = AmplitudeLmp2Config { fit_radius_bohr: Some(1e6), ..cfg.clone() };
+    let cfg = AmplitudeLmp2Config {
+        eps: 1e-3,
+        frozen_core: 4,
+        ..Default::default()
+    };
+    let glob_cfg = AmplitudeLmp2Config {
+        fit_radius_bohr: Some(1e6),
+        ..cfg.clone()
+    };
     let glob = amplitude_lmp2(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &glob_cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &glob_cfg,
     )
     .unwrap();
     let (dir, _) = amplitude_lmp2_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
         &trivial_maps(),
     )
     .unwrap();
@@ -141,17 +202,36 @@ fn finite_eps_direct_matches_global_domain_fit() {
 #[test]
 fn each_map_gutted_is_loud() {
     let su = setup("alkane_4.xyz");
-    let cfg = AmplitudeLmp2Config { eps: 0.0, frozen_core: 4, ..Default::default() };
+    let cfg = AmplitudeLmp2Config {
+        eps: 0.0,
+        frozen_core: 4,
+        ..Default::default()
+    };
     let (base, _) = amplitude_lmp2_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
         &trivial_maps(),
     )
     .unwrap();
 
     // (a) virtual domains gutted: 2 Bohr around each occupied centroid
     let (mut_v, _) = amplitude_lmp2_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
-        &DirectConfig { virt_radius_bohr: Some(2.0), ..trivial_maps() },
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+        &DirectConfig {
+            virt_radius_bohr: Some(2.0),
+            ..trivial_maps()
+        },
     )
     .unwrap();
     let dv = (mut_v.e_corr - base.e_corr).abs();
@@ -160,8 +240,17 @@ fn each_map_gutted_is_loud() {
 
     // (b) AO support gutted: only shells with |C| >= 0.3 survive
     let (mut_a, _) = amplitude_lmp2_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
-        &DirectConfig { ao_tail: 0.3, ..trivial_maps() },
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+        &DirectConfig {
+            ao_tail: 0.3,
+            ..trivial_maps()
+        },
     )
     .unwrap();
     let da = (mut_a.e_corr - base.e_corr).abs();
@@ -171,18 +260,42 @@ fn each_map_gutted_is_loud() {
     // (d) Schwarz triple cut gutted: an absurd threshold must zero most of
     // the integral stream and wreck the energy
     let (mut_s, st_s) = amplitude_lmp2_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
-        &DirectConfig { schwarz_skip: 10.0, ..trivial_maps() },
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+        &DirectConfig {
+            schwarz_skip: 10.0,
+            ..trivial_maps()
+        },
     )
     .unwrap();
     let ds = (mut_s.e_corr - base.e_corr).abs();
-    eprintln!("MUTATION schwarz_skip=10: |dE|={ds:.3e} ({} triples skipped)", st_s.n_eri3_skipped);
-    assert!(ds > 1e-3 && st_s.n_eri3_skipped > 0, "Schwarz cut gutted silently: |dE|={ds:.3e}");
+    eprintln!(
+        "MUTATION schwarz_skip=10: |dE|={ds:.3e} ({} triples skipped)",
+        st_s.n_eri3_skipped
+    );
+    assert!(
+        ds > 1e-3 && st_s.n_eri3_skipped > 0,
+        "Schwarz cut gutted silently: |dE|={ds:.3e}"
+    );
 
     // (c) aux domains gutted: 4 Bohr fit domains
     let r_mut = amplitude_lmp2_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
-        &DirectConfig { aux_radius_bohr: 4.0, ..trivial_maps() },
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+        &DirectConfig {
+            aux_radius_bohr: 4.0,
+            ..trivial_maps()
+        },
     );
     match r_mut {
         Err(e) => eprintln!("MUTATION aux_radius=4: hard error (acceptable): {e}"),
@@ -214,9 +327,10 @@ fn bench_map_error_flatness() {
     for xyz in ["alkane_8.xyz", "alkane_12.xyz", "alkane_16.xyz"] {
         let su = setup(xyz);
         let nc = su.mol.atoms.iter().filter(|a| a.z == 6).count();
-        for (opname, op, cal) in
-            [("coul", Operator::coulomb(), 0.7), ("erfc1", Operator::erfc(1.0), 0.02)]
-        {
+        for (opname, op, cal) in [
+            ("coul", Operator::coulomb(), 0.7),
+            ("erfc1", Operator::erfc(1.0), 0.02),
+        ] {
             let cfg = AmplitudeLmp2Config {
                 eps: 1e-3,
                 frozen_core: nc,
@@ -224,12 +338,27 @@ fn bench_map_error_flatness() {
                 ..Default::default()
             };
             let (triv, _) = amplitude_lmp2_direct(
-                &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, &trivial_maps(),
+                &su.mol,
+                &su.obs,
+                &su.obs_bs,
+                &su.dfbs,
+                op,
+                &su.rhf,
+                &cfg,
+                &trivial_maps(),
             )
             .unwrap();
             let (pr, _) = amplitude_lmp2_direct(
-                &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf,
-                &AmplitudeLmp2Config { compute_reference: false, ..cfg },
+                &su.mol,
+                &su.obs,
+                &su.obs_bs,
+                &su.dfbs,
+                op,
+                &su.rhf,
+                &AmplitudeLmp2Config {
+                    compute_reference: false,
+                    ..cfg
+                },
                 &prod,
             )
             .unwrap();
@@ -272,11 +401,25 @@ fn batch_merge_matches_per_atom_and_saves_triples() {
         ..Default::default()
     };
     let (r1, s1) = amplitude_lmp2_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, &prod(1),
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        op,
+        &su.rhf,
+        &cfg,
+        &prod(1),
     )
     .unwrap();
     let (r4, s4) = amplitude_lmp2_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, &prod(4),
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        op,
+        &su.rhf,
+        &cfg,
+        &prod(4),
     )
     .unwrap();
     let dd = (r4.e_corr - r1.e_corr).abs();
@@ -309,7 +452,9 @@ fn schwarz_triple_cut_is_conservative() {
     let su = setup("alkane_4.xyz");
     let op = Operator::coulomb();
     let skip = 1e-5;
-    let q = ferric_scf::screening::SchwarzBounds::compute(op, &su.obs).unwrap().q;
+    let q = ferric_scf::screening::SchwarzBounds::compute(op, &su.obs)
+        .unwrap()
+        .q;
     let ddf = su.dfbs.shell_dims();
     let mut eng2 = Engine::new_2center(op, &su.dfbs, 1e-14).unwrap();
     let qp: Vec<f64> = (0..su.dfbs.nshells())
@@ -348,9 +493,18 @@ fn schwarz_triple_cut_is_conservative() {
         "schwarz conservativeness: {n_dropped} triples dropped, worst dropped \
          |(P|uv)| = {worst:.3e}, old-vs-new disagreements = {n_disagree}"
     );
-    assert!(n_dropped > 1000, "cut dropped only {n_dropped} triples — test too small");
-    assert!(worst <= skip, "cut dropped a triple with |(P|uv)| = {worst:.3e} > {skip:.0e}");
-    assert!(n_disagree > 0, "aux factor changed no decisions — fix vacuous on this system?");
+    assert!(
+        n_dropped > 1000,
+        "cut dropped only {n_dropped} triples — test too small"
+    );
+    assert!(
+        worst <= skip,
+        "cut dropped a triple with |(P|uv)| = {worst:.3e} > {skip:.0e}"
+    );
+    assert!(
+        n_disagree > 0,
+        "aux factor changed no decisions — fix vacuous on this system?"
+    );
 }
 
 /// TERFC PROBE — the Gate-0 reopen measurement. The 2026-07-09 kill of the
@@ -379,9 +533,19 @@ fn terfc_direct_probe() {
     let r0s = [1.4, 2.0, 3.8];
     for (xyz, fc) in [("water.xyz", 0usize), ("alkane_8.xyz", 8)] {
         let su = setup(xyz);
-        let cfg = AmplitudeLmp2Config { eps: 0.0, frozen_core: fc, ..Default::default() };
+        let cfg = AmplitudeLmp2Config {
+            eps: 0.0,
+            frozen_core: fc,
+            ..Default::default()
+        };
         let (coul, _) = amplitude_lmp2_direct(
-            &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            Operator::coulomb(),
+            &su.rhf,
+            &cfg,
             &trivial_maps(),
         )
         .unwrap();
@@ -389,7 +553,14 @@ fn terfc_direct_probe() {
         for &r0 in &r0s {
             let op = Operator::terfc(r0);
             let (dir, _) = amplitude_lmp2_direct(
-                &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, &trivial_maps(),
+                &su.mol,
+                &su.obs,
+                &su.obs_bs,
+                &su.dfbs,
+                op,
+                &su.rhf,
+                &cfg,
+                &trivial_maps(),
             )
             .unwrap();
             let de = (dir.e_corr - dir.e_corr_canonical_ri).abs();
@@ -397,7 +568,10 @@ fn terfc_direct_probe() {
                 "TERFC {xyz} r0={r0}: E={:.10} canonical={:.10} |dE|={de:.3e} (coul {:.10})",
                 dir.e_corr, dir.e_corr_canonical_ri, coul.e_corr
             );
-            assert!(de < 1e-9, "terfc trivial-limit anchor FAILED at {xyz} r0={r0}: {de:.3e}");
+            assert!(
+                de < 1e-9,
+                "terfc trivial-limit anchor FAILED at {xyz} r0={r0}: {de:.3e}"
+            );
             // Detection invariants per the 2026-07-09 record, WITH its stated
             // ~5% tolerance: the pointwise-kernel argument does not bind
             // tightly (measured: water r0=2 overshoots |E_coul| by 0.05%).
@@ -418,9 +592,20 @@ fn terfc_direct_probe() {
     // global breakdown) and the map error must stay sub-dominant.
     let su = setup("alkane_8.xyz");
     let op = Operator::terfc(2.0);
-    let eps_cfg = AmplitudeLmp2Config { eps: 1e-3, frozen_core: 8, ..Default::default() };
+    let eps_cfg = AmplitudeLmp2Config {
+        eps: 1e-3,
+        frozen_core: 8,
+        ..Default::default()
+    };
     let (triv, _) = amplitude_lmp2_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &eps_cfg, &trivial_maps(),
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        op,
+        &su.rhf,
+        &eps_cfg,
+        &trivial_maps(),
     )
     .unwrap();
     let prod = DirectConfig {
@@ -431,8 +616,16 @@ fn terfc_direct_probe() {
         ..Default::default()
     };
     let (pr, st) = amplitude_lmp2_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf,
-        &AmplitudeLmp2Config { compute_reference: false, ..eps_cfg },
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        op,
+        &su.rhf,
+        &AmplitudeLmp2Config {
+            compute_reference: false,
+            ..eps_cfg
+        },
         &prod,
     )
     .unwrap();
@@ -459,9 +652,10 @@ fn bench_schwarz_skip_sweep() {
     let su = setup("alkane_16.xyz");
     let nc = 16;
     println!("op     skip    E_corr         dE_vs_skip0  eval_Mtriples skipped_M t_eri3 t_asm");
-    for (opname, op, cal) in
-        [("coul", Operator::coulomb(), 0.7), ("erfc1", Operator::erfc(1.0), 0.02)]
-    {
+    for (opname, op, cal) in [
+        ("coul", Operator::coulomb(), 0.7),
+        ("erfc1", Operator::erfc(1.0), 0.02),
+    ] {
         let cfg = AmplitudeLmp2Config {
             eps: 1e-3,
             frozen_core: nc,
@@ -545,9 +739,10 @@ fn bench_direct_alkane_series() {
             break;
         }
         let su = setup(&format!("alkane_{nc}.xyz"));
-        for (opname, op, cal) in
-            [("coul", Operator::coulomb(), 0.7), ("erfc1", Operator::erfc(1.0), 0.02)]
-        {
+        for (opname, op, cal) in [
+            ("coul", Operator::coulomb(), 0.7),
+            ("erfc1", Operator::erfc(1.0), 0.02),
+        ] {
             let mut e_can = f64::NAN;
             for eps in [1e-3, 1e-4] {
                 let cfg = AmplitudeLmp2Config {
@@ -611,16 +806,39 @@ fn bench_direct_alkane_series() {
 fn production_maps_error_is_subdominant_to_eps_truncation() {
     let su = setup("alkane_8.xyz");
     let op = Operator::erfc(1.0);
-    let full_cfg = AmplitudeLmp2Config { eps: 0.0, frozen_core: 8, ..Default::default() };
-    let eps_cfg = AmplitudeLmp2Config { eps: 1e-3, frozen_core: 8, pair_gate_cal: Some(0.02), ..Default::default() };
+    let full_cfg = AmplitudeLmp2Config {
+        eps: 0.0,
+        frozen_core: 8,
+        ..Default::default()
+    };
+    let eps_cfg = AmplitudeLmp2Config {
+        eps: 1e-3,
+        frozen_core: 8,
+        pair_gate_cal: Some(0.02),
+        ..Default::default()
+    };
     // ε=0 with trivial maps = exact (anchored above)
     let (r_full, _) = amplitude_lmp2_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &full_cfg, &trivial_maps(),
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        op,
+        &su.rhf,
+        &full_cfg,
+        &trivial_maps(),
     )
     .unwrap();
     // ε truncation alone (trivial maps)
     let (r_eps, _) = amplitude_lmp2_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &eps_cfg, &trivial_maps(),
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        op,
+        &su.rhf,
+        &eps_cfg,
+        &trivial_maps(),
     )
     .unwrap();
     // ε + production locality maps
@@ -645,7 +863,10 @@ fn production_maps_error_is_subdominant_to_eps_truncation() {
         stats.strip_cols_max,
         stats.n_eri3_shell_triples
     );
-    assert!(map_err > 0.0, "maps changed nothing at production radii — vacuous?");
+    assert!(
+        map_err > 0.0,
+        "maps changed nothing at production radii — vacuous?"
+    );
     assert!(
         map_err < trunc_err,
         "locality-map error ({map_err:.3e}) dominates the eps truncation ({trunc_err:.3e})"
@@ -686,8 +907,17 @@ fn schwarz_virt_trivial_limit_is_a_noop() {
         )
         .unwrap();
         let (scr, st1) = amplitude_lmp2_direct(
-            &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg,
-            &DirectConfig { virt_schwarz_kappa: Some(1e-12), ..prod.clone() },
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            op,
+            &su.rhf,
+            &cfg,
+            &DirectConfig {
+                virt_schwarz_kappa: Some(1e-12),
+                ..prod.clone()
+            },
         )
         .unwrap();
         let dd = (scr.e_corr - base.e_corr).abs();
@@ -695,7 +925,10 @@ fn schwarz_virt_trivial_limit_is_a_noop() {
             "SCHWARZ trivial limit {:?}: |dE|={dd:.3e} cand mean/max {:.1}/{} vs {:.1}/{}",
             op.kind, st1.virt_cand_mean, st1.virt_cand_max, st0.virt_cand_mean, st0.virt_cand_max
         );
-        assert!(dd < 1e-12, "screen at all-pass threshold changed the energy: {dd:.3e}");
+        assert!(
+            dd < 1e-12,
+            "screen at all-pass threshold changed the energy: {dd:.3e}"
+        );
         assert_eq!(st0.virt_cand_max, st1.virt_cand_max);
         assert!(
             (st0.virt_cand_mean - st1.virt_cand_mean).abs() < 1e-12,
@@ -720,7 +953,11 @@ fn schwarz_virt_sub_dominant_and_trims() {
         ..Default::default()
     };
     for op in [Operator::coulomb(), Operator::erfc(1.0)] {
-        let cfg = AmplitudeLmp2Config { eps: 1e-3, frozen_core: 4, ..Default::default() };
+        let cfg = AmplitudeLmp2Config {
+            eps: 1e-3,
+            frozen_core: 4,
+            ..Default::default()
+        };
         let (base, st0) = amplitude_lmp2_direct(
             &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg, &prod,
         )
@@ -729,17 +966,27 @@ fn schwarz_virt_sub_dominant_and_trims() {
         let mut cand_k3 = f64::INFINITY;
         for kappa in [1.0, 3.0] {
             let (scr, st) = amplitude_lmp2_direct(
-                &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf,
-                &AmplitudeLmp2Config { compute_reference: false, ..cfg.clone() },
-                &DirectConfig { virt_schwarz_kappa: Some(kappa), ..prod.clone() },
+                &su.mol,
+                &su.obs,
+                &su.obs_bs,
+                &su.dfbs,
+                op,
+                &su.rhf,
+                &AmplitudeLmp2Config {
+                    compute_reference: false,
+                    ..cfg.clone()
+                },
+                &DirectConfig {
+                    virt_schwarz_kappa: Some(kappa),
+                    ..prod.clone()
+                },
             )
             .unwrap();
             let d_scr = (scr.e_corr - base.e_corr).abs();
             eprintln!(
                 "SCHWARZ {:?} kappa={kappa}: |dE|={d_scr:.3e} (eps err {d_eps:.3e}) \
                  cand mean/max {:.1}/{} (union {:.1}/{})",
-                op.kind, st.virt_cand_mean, st.virt_cand_max, st0.virt_cand_mean,
-                st0.virt_cand_max
+                op.kind, st.virt_cand_mean, st.virt_cand_max, st0.virt_cand_mean, st0.virt_cand_max
             );
             // measured: 0 at kappa=1 (both ops), 1.55e-5 vs 1.89e-3 (122x)
             // at kappa=3/erfc — 50x leaves drift headroom while a broken
@@ -775,13 +1022,28 @@ fn schwarz_virt_gutted_is_loud() {
         ..Default::default()
     };
     let (base, _) = amplitude_lmp2_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
         &trivial_maps(),
     )
     .unwrap();
     let r_mut = amplitude_lmp2_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
-        &DirectConfig { virt_schwarz_kappa: Some(100.0), ..trivial_maps() },
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+        &DirectConfig {
+            virt_schwarz_kappa: Some(100.0),
+            ..trivial_maps()
+        },
     );
     match r_mut {
         Err(e) => eprintln!("MUTATION virt_schwarz_kappa=100: hard error (acceptable): {e}"),

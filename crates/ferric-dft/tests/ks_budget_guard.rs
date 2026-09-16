@@ -22,8 +22,11 @@ use ferric_dft::ks::{KsXc, KsXcError, KsXcUks};
 
 fn h2o() -> Molecule {
     Molecule::parse_xyz(
-        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n", 0, 1,
-    ).unwrap()
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        0,
+        1,
+    )
+    .unwrap()
 }
 
 #[test]
@@ -38,7 +41,11 @@ fn over_budget_batches_instead_of_failing_and_under_budget_uses_full_cache() {
     let mol = h2o();
     let bs = basis::bundled("cc-pvdz").unwrap();
     let main = AtomicGridConfig::default();
-    let nlc = AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() };
+    let nlc = AtomicGridConfig {
+        n_radial: 50,
+        n_angular: 50,
+        ..Default::default()
+    };
 
     // Tiny budget: even H2O/cc-pVDZ's cache (a few MB) cannot fit 1e-6 GB.
     // A non-VV10 functional must NOT fail — it falls back to batching.
@@ -54,14 +61,24 @@ fn over_budget_batches_instead_of_failing_and_under_budget_uses_full_cache() {
     // VV10 functionals: the NLC grid's cache (not batchable — see vv10.rs's
     // O(npts²) pair sum) must still fit in the budget on its own, or this is
     // a hard failure with the message flagging VV10.
-    let err = KsXc::new(&mol, &bs, "wB97X-V", &main, &nlc)
-        .expect_err("VV10 KsXc::new must still fail under a 1 kB budget (NLC grid isn't batchable)");
+    let err = KsXc::new(&mol, &bs, "wB97X-V", &main, &nlc).expect_err(
+        "VV10 KsXc::new must still fail under a 1 kB budget (NLC grid isn't batchable)",
+    );
     match &err {
-        KsXcError::OverBudget { needed_gb, budget_gb, nbf, npts, .. } => {
+        KsXcError::OverBudget {
+            needed_gb,
+            budget_gb,
+            nbf,
+            npts,
+            ..
+        } => {
             assert!(*needed_gb > *budget_gb);
             assert!(*nbf > 0 && *npts > 0);
             let msg = format!("{err}");
-            assert!(msg.contains("GB"), "message should carry the numbers: {msg}");
+            assert!(
+                msg.contains("GB"),
+                "message should carry the numbers: {msg}"
+            );
         }
         other => panic!("expected OverBudget, got: {other:?}"),
     }

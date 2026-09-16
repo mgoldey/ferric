@@ -1,6 +1,6 @@
 //! RI-MP2 nuclear gradients: analytical and finite-difference reference.
 
-use crate::rimp2::{ri_mp2, compute_mp2_intermediates_ov_only, RiMp2Config};
+use crate::rimp2::{compute_mp2_intermediates_ov_only, ri_mp2, RiMp2Config};
 use crate::zvector::solve_zvector;
 use ferric_core::basis::BasisSet;
 use ferric_core::external_potential::ExternalPotential;
@@ -10,8 +10,8 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::ScfResult;
 use ndarray::Array2;
 
 /// Compute the total RI-MP2 energy (E_HF + E_MP2) for a given geometry.
@@ -36,7 +36,10 @@ fn total_energy(
     let ctx = ferric_core::parallel::ParallelContext::default();
     let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_config)?;
     if !rhf.converged {
-        return Err(FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy });
+        return Err(FerricError::ScfConvergence {
+            iterations: rhf.iterations,
+            last_energy: rhf.energy,
+        });
     }
     let dfbs = PreparedBasis::new(mol, aux_basis)?;
     let mp2 = ri_mp2(mol, &obs, &dfbs, op, &rhf, mp2_config)?;
@@ -141,7 +144,8 @@ pub fn rimp2_gradient_analytical(
     let inter = compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, config)?;
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
     let (z, imat) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes)?;
-    let mut grad = mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat, ext)?;
+    let mut grad =
+        mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat, ext)?;
     grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, rhf.mos_r())?;
     Ok(grad)
 }
@@ -172,7 +176,13 @@ fn mp2_relaxed_lagrangian_gradient(
     let c = rhf.mos_r();
     let eps = rhf.eps_r();
     let nmo = c.ncols();
-    let crate::rimp2::Mp2Intermediates { nocc, nvir, nocc_total, first_occ, .. } = *inter;
+    let crate::rimp2::Mp2Intermediates {
+        nocc,
+        nvir,
+        nocc_total,
+        first_occ,
+        ..
+    } = *inter;
 
     // --- dm1mo: full relaxed correlation 1-PDM (MO), no HF 2·I part. ---
     // occ-occ: doo+doo^T; vir-vir: dvv+dvv^T; occ-vir/vir-occ: z (PySCF lines
@@ -260,7 +270,7 @@ fn mp2_relaxed_lagrangian_gradient(
     let two_dm_corr = 2.0 * &dm1_corr_ao;
     ferric_scf::rhf::build_jk(&ctx, obs, bounds, 1e-12, &two_dm_corr, &mut jv, &mut kv)?;
     let veff_full = &jv - &(0.5 * &kv); // J[2dm] − ½K[2dm] == PySCF get_veff(dm1+dm1^T)
-    // P_occ = C_occ C_occ^T (HF-occupied AO projector).
+                                        // P_occ = C_occ C_occ^T (HF-occupied AO projector).
     let c_occ_hf = c.slice(ndarray::s![.., ..nocc_hf]);
     let p_occ = c_occ_hf.dot(&c_occ_hf.t());
     let vhf_s1occ = p_occ.dot(&veff_full).dot(&p_occ);
@@ -381,7 +391,9 @@ pub(crate) fn integral_response_gradient_3c2c(
     // contract it with that shell's derivative block. Peak g3c footprint is one
     // aux-shell slab (np, nbf, nbf) instead of the full (naux, nbf, nbf) tensor.
     let nbas = obs.nbasis();
-    let c_occ = c.slice(ndarray::s![.., inter.first_occ..inter.first_occ + nocc]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., inter.first_occ..inter.first_occ + nocc])
+        .to_owned();
     let c_vir = c.slice(ndarray::s![.., inter.nocc_total..]).to_owned();
     {
         use ferric_integrals::engine::Engine;
@@ -415,7 +427,10 @@ pub(crate) fn integral_response_gradient_3c2c(
         let partials: Vec<Array2<f64>> = (0..nsh_df)
             .into_par_iter()
             .map_init(
-                || Engine::new_3center_deriv(op, obs, dfbs, 1e-14).expect("3-center deriv engine (pre-validated)"),
+                || {
+                    Engine::new_3center_deriv(op, obs, dfbs, 1e-14)
+                        .expect("3-center deriv engine (pre-validated)")
+                },
                 |eng3d, sp| {
                     let np = dims_df[sp];
                     let pf0 = offs_df[sp];
@@ -523,7 +538,9 @@ pub(crate) fn integral_response_gradient_3c2c(
     // contracts symmetrically against the P and Q legs. Verified against PySCF's
     // `part_dm2·int2e_ip1` DF-metric response and the frozen-amplitude FD (H2 + H2O
     // analytic−FD ~1e-9; the pre-fix ×1 weight left H2O ~1e-2 off).
-    let c_fit = with_blas_threads(opt_in_blas_threads(), || inter.v_inv_sqrt.t().dot(&inter.b_ov));
+    let c_fit = with_blas_threads(opt_in_blas_threads(), || {
+        inter.v_inv_sqrt.t().dot(&inter.b_ov)
+    });
     let gamma_2c = with_blas_threads(opt_in_blas_threads(), || -2.0 * c_fit.dot(&y_ov.t()));
 
     {
@@ -544,7 +561,10 @@ pub(crate) fn integral_response_gradient_3c2c(
         let partials: Vec<Array2<f64>> = (0..nsh_df)
             .into_par_iter()
             .map_init(
-                || Engine::new_2center_deriv(op, dfbs, 1e-14).expect("2-center deriv engine (pre-validated)"),
+                || {
+                    Engine::new_2center_deriv(op, dfbs, 1e-14)
+                        .expect("2-center deriv engine (pre-validated)")
+                },
                 |eng2d, sp| {
                     let mut local_grad = Array2::<f64>::zeros((natoms, 3));
                     for sq in 0..=sp {
@@ -605,12 +625,17 @@ pub fn scs_mp2_gradient_analytical(
     config: &crate::scs::ScsMp2Config,
     ext: Option<&ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
-    let mp2_config = RiMp2Config { frozen_core: config.frozen_core, memory_budget_bytes: config.memory_budget_bytes, ..Default::default() };
+    let mp2_config = RiMp2Config {
+        frozen_core: config.frozen_core,
+        memory_budget_bytes: config.memory_budget_bytes,
+        ..Default::default()
+    };
     let inter = compute_mp2_intermediates_ov_only(mol, obs, dfbs, op, rhf, &mp2_config)?;
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(mp2_config.memory_budget_bytes);
     let (z, imat) = solve_zvector(mol, obs, dfbs, op, bounds, rhf, &inter, budget_bytes)?;
     // Full (unscaled) RI-MP2 relaxed-Lagrangian gradient + RI 3c/2c response.
-    let mut grad = mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat, ext)?;
+    let mut grad =
+        mp2_relaxed_lagrangian_gradient(mol, obs, op, bounds, rhf, &inter, &z, &imat, ext)?;
     grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, rhf.mos_r())?;
     // Approximate scaling: multiply MP2 part by average SCS scaling
     let scale = (config.c_os + config.c_ss) / 2.0;
@@ -653,7 +678,10 @@ pub fn total_rimp2_gradient(
     };
     let rhf = solve_rhf(&ctx, mol, &obs, op, &bounds, &rhf_cfg)?;
     if !rhf.converged {
-        return Err(FerricError::ScfConvergence { iterations: rhf.iterations, last_energy: rhf.energy });
+        return Err(FerricError::ScfConvergence {
+            iterations: rhf.iterations,
+            last_energy: rhf.energy,
+        });
     }
     let mp2 = ri_mp2(mol, &obs, &dfbs, op, &rhf, mp2_config)?;
     let grad = rimp2_gradient_analytical(mol, &obs, &dfbs, op, &bounds, &rhf, mp2_config, ext)?;
@@ -664,7 +692,9 @@ pub fn total_rimp2_gradient(
 mod tests {
     use super::*;
     use ferric_core::basis;
-    use ferric_scf::gradient::{hf_gradient_with_density, oneelectron_gradient, twoelectron_gradient};
+    use ferric_scf::gradient::{
+        hf_gradient_with_density, oneelectron_gradient, twoelectron_gradient,
+    };
 
     #[test]
     fn test_rimp2_gradient_fd_h2_symmetry() {
@@ -786,10 +816,22 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let config = RiMp2Config::default();
 
-        let analytical = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
+        let analytical =
+            rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
         let fd = rimp2_gradient_fd(&mol, &obs_bs, &aux_bs, op, &config, 1e-4).unwrap();
 
         eprintln!("=== H2/cc-pVDZ Analytical vs FD RI-MP2 gradient ===");
@@ -800,7 +842,11 @@ mod tests {
                 max_diff = max_diff.max(diff);
                 eprintln!(
                     "  atom={} coord={}: analytical={:+.8} fd={:+.8} diff={:.2e}",
-                    atom, c, analytical[(atom, c)], fd[(atom, c)], diff
+                    atom,
+                    c,
+                    analytical[(atom, c)],
+                    fd[(atom, c)],
+                    diff
                 );
             }
         }
@@ -808,8 +854,11 @@ mod tests {
         // Full multi-block Lagrangian (Imat/zeta/vhf_s1occ) + RI 3c/2c response.
         // Analytic == FD to ~1e-9 after the 3c/2c 2-PDM-factor fix; 1e-6 leaves
         // headroom over the delta=1e-4 central-difference reference's truncation floor.
-        assert!(max_diff < 1e-6,
-            "analytical vs FD max diff = {:.2e} (expected < 1e-6)", max_diff);
+        assert!(
+            max_diff < 1e-6,
+            "analytical vs FD max diff = {:.2e} (expected < 1e-6)",
+            max_diff
+        );
     }
 
     #[test]
@@ -821,15 +870,31 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let config = RiMp2Config::default();
 
-        let grad = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
+        let grad =
+            rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
 
         for c in 0..3 {
             let sum: f64 = (0..2).map(|a| grad[(a, c)]).sum();
-            assert!(sum.abs() < 1e-8,
-                "translational invariance: coord={} sum={:.2e}", c, sum);
+            assert!(
+                sum.abs() < 1e-8,
+                "translational invariance: coord={} sum={:.2e}",
+                c,
+                sum
+            );
         }
     }
 
@@ -837,7 +902,7 @@ mod tests {
     fn test_3c_density_numerical() {
         // Numerically verify dE/d(P|mu,nu) for a single element.
         // Perturb one raw 3-center integral and see how E_corr changes.
-        use crate::rimp2::{compute_mp2_intermediates, RiMp2Config, cholesky_inverse_sqrt};
+        use crate::rimp2::{cholesky_inverse_sqrt, compute_mp2_intermediates, RiMp2Config};
         use ferric_integrals::threeindex;
 
         let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
@@ -847,7 +912,18 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let config = RiMp2Config::default();
         let inter = compute_mp2_intermediates(&mol, &obs, &dfbs, op, &rhf, &config).unwrap();
 
@@ -862,7 +938,9 @@ mod tests {
         let eri3_ao = threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
         let v2c = threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
 
-        let c_occ = c.slice(ndarray::s![.., inter.first_occ..inter.first_occ + nocc]).to_owned();
+        let c_occ = c
+            .slice(ndarray::s![.., inter.first_occ..inter.first_occ + nocc])
+            .to_owned();
         let c_vir = c.slice(ndarray::s![.., inter.nocc_total..]).to_owned();
 
         let compute_ecorr_from_3c = |eri3: &ndarray::Array3<f64>| -> f64 {
@@ -877,7 +955,7 @@ mod tests {
                         for b in 0..nvir {
                             let jb = j * nvir + b;
                             let t_ij_ab = t2[ia * nov + jb];
-                            let t_ij_ba = t2[(i*nvir+b) * nov + (j*nvir+a)];
+                            let t_ij_ba = t2[(i * nvir + b) * nov + (j * nvir + a)];
                             let tt = 2.0 * t_ij_ab - t_ij_ba;
                             let eri: f64 = (0..naux).map(|p| b_ov[(p, ia)] * b_ov[(p, jb)]).sum();
                             e += tt * eri;
@@ -919,7 +997,7 @@ mod tests {
         let mut eri3_plus = eri3_ao.clone();
         let mut eri3_minus = eri3_ao.clone();
         eri3_plus[(test_p, test_mu, test_nu)] += delta;
-        eri3_plus[(test_p, test_nu, test_mu)] += delta;  // symmetrize
+        eri3_plus[(test_p, test_nu, test_mu)] += delta; // symmetrize
         eri3_minus[(test_p, test_mu, test_nu)] -= delta;
         eri3_minus[(test_p, test_nu, test_mu)] -= delta;
 
@@ -928,27 +1006,35 @@ mod tests {
         let fd_deriv = (e_plus - e_minus) / (2.0 * delta);
 
         // Analytical: dE/d(P|mu,nu) using x_ov (original code's formula)
-        let g3c_x_munu = (0..nocc).flat_map(|i| (0..nvir).map(move |a| (i, a)))
-            .map(|(i, a)| x_ov[(test_p, i * nvir + a)] * c_occ[(test_mu, i)] * c_vir[(test_nu, a)]
-                        + x_ov[(test_p, i * nvir + a)] * c_occ[(test_nu, i)] * c_vir[(test_mu, a)])
+        let g3c_x_munu = (0..nocc)
+            .flat_map(|i| (0..nvir).map(move |a| (i, a)))
+            .map(|(i, a)| {
+                x_ov[(test_p, i * nvir + a)] * c_occ[(test_mu, i)] * c_vir[(test_nu, a)]
+                    + x_ov[(test_p, i * nvir + a)] * c_occ[(test_nu, i)] * c_vir[(test_mu, a)]
+            })
             .sum::<f64>();
 
         // Analytical: dE/d(P|mu,nu) using y_ov (proposed fix)
-        let g3c_y_munu = (0..nocc).flat_map(|i| (0..nvir).map(move |a| (i, a)))
-            .map(|(i, a)| y_ov[(test_p, i * nvir + a)] * c_occ[(test_mu, i)] * c_vir[(test_nu, a)]
-                        + y_ov[(test_p, i * nvir + a)] * c_occ[(test_nu, i)] * c_vir[(test_mu, a)])
+        let g3c_y_munu = (0..nocc)
+            .flat_map(|i| (0..nvir).map(move |a| (i, a)))
+            .map(|(i, a)| {
+                y_ov[(test_p, i * nvir + a)] * c_occ[(test_mu, i)] * c_vir[(test_nu, a)]
+                    + y_ov[(test_p, i * nvir + a)] * c_occ[(test_nu, i)] * c_vir[(test_mu, a)]
+            })
             .sum::<f64>();
 
         eprintln!("=== dE/d(P={},mu={},nu={}) ===", test_p, test_mu, test_nu);
         eprintln!("FD:        {:.12}", fd_deriv);
-        eprintln!("x_ov:      {:.12}  (code's formula, no extra V^{{-1/2}})", g3c_x_munu);
+        eprintln!(
+            "x_ov:      {:.12}  (code's formula, no extra V^{{-1/2}})",
+            g3c_x_munu
+        );
         eprintln!("y_ov:      {:.12}  (with extra V^{{-1/2}})", g3c_y_munu);
         eprintln!("2*y_ov:    {:.12}  (with factor 2)", 2.0 * g3c_y_munu);
         eprintln!("diff(x):   {:.6e}", g3c_x_munu - fd_deriv);
         eprintln!("diff(y):   {:.6e}", g3c_y_munu - fd_deriv);
         eprintln!("diff(2y):  {:.6e}", 2.0 * g3c_y_munu - fd_deriv);
     }
-
 
     #[test]
     fn test_analytical_vs_fd_h2o() {
@@ -960,10 +1046,22 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let config = RiMp2Config::default();
 
-        let analytical = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
+        let analytical =
+            rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
         let fd = rimp2_gradient_fd(&mol, &obs_bs, &aux_bs, op, &config, 1e-4).unwrap();
 
         eprintln!("=== H2O/STO-3G Analytical vs FD RI-MP2 gradient ===");
@@ -972,8 +1070,14 @@ mod tests {
             for c in 0..3 {
                 let diff = (analytical[(atom, c)] - fd[(atom, c)]).abs();
                 max_diff = max_diff.max(diff);
-                eprintln!("  atom={} coord={}: analytical={:+.8} fd={:+.8} diff={:.2e}",
-                    atom, c, analytical[(atom, c)], fd[(atom, c)], diff);
+                eprintln!(
+                    "  atom={} coord={}: analytical={:+.8} fd={:+.8} diff={:.2e}",
+                    atom,
+                    c,
+                    analytical[(atom, c)],
+                    fd[(atom, c)],
+                    diff
+                );
             }
         }
         eprintln!("  max diff = {:.2e}", max_diff);
@@ -987,8 +1091,11 @@ mod tests {
         // nocc>1 they did not. Term-by-term cross-check vs PySCF conventional MP2
         // (hcore/im1/zeta/vhf_s1occ/bilinear-2e all already matched to ≤1e-4; only the
         // RI 2e-response `part_dm2·int2e_ip1` term was off) pinned it precisely.
-        assert!(max_diff < 1e-6,
-            "H2O analytical vs FD max diff = {:.2e} (expected < 1e-6)", max_diff);
+        assert!(
+            max_diff < 1e-6,
+            "H2O analytical vs FD max diff = {:.2e} (expected < 1e-6)",
+            max_diff
+        );
     }
 
     #[test]
@@ -1007,10 +1114,22 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let config = RiMp2Config::default();
 
-        let analytical = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
+        let analytical =
+            rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
         let fd = rimp2_gradient_fd(&mol, &obs_bs, &aux_bs, op, &config, 1e-4).unwrap();
 
         eprintln!("=== CH4/cc-pVDZ Analytical vs FD RI-MP2 gradient ===");
@@ -1019,13 +1138,22 @@ mod tests {
             for c in 0..3 {
                 let diff = (analytical[(atom, c)] - fd[(atom, c)]).abs();
                 max_diff = max_diff.max(diff);
-                eprintln!("  atom={} coord={}: analytical={:+.8} fd={:+.8} diff={:.2e}",
-                    atom, c, analytical[(atom, c)], fd[(atom, c)], diff);
+                eprintln!(
+                    "  atom={} coord={}: analytical={:+.8} fd={:+.8} diff={:.2e}",
+                    atom,
+                    c,
+                    analytical[(atom, c)],
+                    fd[(atom, c)],
+                    diff
+                );
             }
         }
         eprintln!("  max diff = {:.2e}", max_diff);
-        assert!(max_diff < 1e-6,
-            "CH4 analytical vs FD max diff = {:.2e} (expected < 1e-6)", max_diff);
+        assert!(
+            max_diff < 1e-6,
+            "CH4 analytical vs FD max diff = {:.2e} (expected < 1e-6)",
+            max_diff
+        );
     }
 
     #[test]
@@ -1047,15 +1175,30 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let config = RiMp2Config::default();
 
         // Precompute intermediates ONCE, outside any pinned pool, so both runs
         // see bit-identical inputs and only the P7 region is under test.
-        let inter = compute_mp2_intermediates_ov_only(&mol, &obs, &dfbs, op, &rhf, &config).unwrap();
+        let inter =
+            compute_mp2_intermediates_ov_only(&mol, &obs, &dfbs, op, &rhf, &config).unwrap();
 
         let run_with_threads = |n: usize| -> Array2<f64> {
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .build()
+                .unwrap();
             pool.install(|| {
                 integral_response_gradient_3c2c(&mol, &obs, &dfbs, op, &inter, rhf.mos_r()).unwrap()
             })
@@ -1087,23 +1230,48 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let config = RiMp2Config::default();
 
-        let grad = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
+        let grad =
+            rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
 
         // x,y components should be zero for H2 along z-axis
         for atom in 0..2 {
             for c in 0..2 {
-                assert!(grad[(atom, c)].abs() < 1e-12,
-                    "atom={} coord={}: {:.2e} should be ~0", atom, c, grad[(atom, c)]);
+                assert!(
+                    grad[(atom, c)].abs() < 1e-12,
+                    "atom={} coord={}: {:.2e} should be ~0",
+                    atom,
+                    c,
+                    grad[(atom, c)]
+                );
             }
         }
         // z components equal and opposite
-        assert!((grad[(0, 2)] + grad[(1, 2)]).abs() < 1e-10,
-            "z not equal/opposite: {} vs {}", grad[(0, 2)], grad[(1, 2)]);
+        assert!(
+            (grad[(0, 2)] + grad[(1, 2)]).abs() < 1e-10,
+            "z not equal/opposite: {} vs {}",
+            grad[(0, 2)],
+            grad[(1, 2)]
+        );
         // z should be nonzero
-        assert!(grad[(0, 2)].abs() > 1e-4, "z gradient too small: {}", grad[(0, 2)]);
+        assert!(
+            grad[(0, 2)].abs() > 1e-4,
+            "z gradient too small: {}",
+            grad[(0, 2)]
+        );
     }
 
     #[test]
@@ -1116,15 +1284,31 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let config = RiMp2Config::default();
 
-        let grad = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
+        let grad =
+            rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
 
         for c in 0..3 {
             let sum: f64 = (0..3).map(|a| grad[(a, c)]).sum();
-            assert!(sum.abs() < 1e-8,
-                "H2O translational invariance: coord={} sum={:.2e}", c, sum);
+            assert!(
+                sum.abs() < 1e-8,
+                "H2O translational invariance: coord={} sum={:.2e}",
+                c,
+                sum
+            );
         }
     }
 
@@ -1136,11 +1320,23 @@ mod tests {
         let obs = PreparedBasis::new(&mol, &bs).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-10, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let nocc = (mol.nelec() / 2) as usize;
         let w = ferric_scf::gradient::build_energy_weighted_density(&rhf, nocc);
 
-        let combined = hf_gradient_with_density(&mol, &obs, op, &bounds, rhf.density_r(), &w, None).unwrap();
+        let combined =
+            hf_gradient_with_density(&mol, &obs, op, &bounds, rhf.density_r(), &w, None).unwrap();
         let oe = oneelectron_gradient(&mol, &obs, rhf.density_r(), &w, None).unwrap();
         let te = twoelectron_gradient(&obs, op, &bounds, rhf.density_r()).unwrap();
         let split = &oe + &te;
@@ -1148,9 +1344,15 @@ mod tests {
         for atom in 0..2 {
             for c in 0..3 {
                 let diff = (combined[(atom, c)] - split[(atom, c)]).abs();
-                assert!(diff < 1e-12,
+                assert!(
+                    diff < 1e-12,
                     "split mismatch: atom={} coord={} combined={:.10} split={:.10} diff={:.2e}",
-                    atom, c, combined[(atom, c)], split[(atom, c)], diff);
+                    atom,
+                    c,
+                    combined[(atom, c)],
+                    split[(atom, c)],
+                    diff
+                );
             }
         }
     }

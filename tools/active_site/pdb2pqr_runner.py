@@ -1,4 +1,5 @@
 """Subprocess wrapper around the PDB2PQR CLI (pdb2pqr30)."""
+
 from __future__ import annotations
 
 import shutil
@@ -30,7 +31,8 @@ def run_pdb2pqr(pdb_path: str | Path, pqr_path: str | Path, ff: str = "AMBER") -
     pqr_path = Path(pqr_path)
     result = subprocess.run(
         [exe, f"--ff={ff}", str(pdb_path), str(pqr_path)],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if result.returncode != 0 or not pqr_path.exists():
         raise RuntimeError(

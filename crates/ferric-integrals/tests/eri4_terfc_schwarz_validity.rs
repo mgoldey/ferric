@@ -99,7 +99,10 @@ fn terfc_4center_diagonals_are_nonnegative() {
             }
         }
     }
-    assert!(checked > 10, "only {checked} pairs -- too few to mean anything");
+    assert!(
+        checked > 10,
+        "only {checked} pairs -- too few to mean anything"
+    );
     eprintln!("terfc 4-center: {checked} pairs, min diagonal {worst:.6e}");
     assert!(
         worst >= 0.0,
@@ -171,7 +174,10 @@ fn terfc_4center_schwarz_bound_holds_on_real_quartets() {
         }
     }
 
-    assert!(checked > 20, "only {checked} quartets -- too few to mean anything");
+    assert!(
+        checked > 20,
+        "only {checked} quartets -- too few to mean anything"
+    );
     eprintln!(
         "terfc Schwarz: {checked} quartets, worst |(ab|cd)|/(Q_ab Q_cd) = \
          {worst_ratio:.9} at {worst_at:?}"

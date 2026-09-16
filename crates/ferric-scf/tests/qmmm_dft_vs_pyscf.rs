@@ -113,11 +113,25 @@ fn system_from_ref(r: &QmmmDftRef) -> QmmmSystem {
         .iter()
         .map(|a| {
             let z = elements::symbol_to_z(&a.symbol).unwrap();
-            QmmmAtom::new(a.symbol.clone(), z, a.xyz_bohr[0], a.xyz_bohr[1], a.xyz_bohr[2], 99.0)
+            QmmmAtom::new(
+                a.symbol.clone(),
+                z,
+                a.xyz_bohr[0],
+                a.xyz_bohr[1],
+                a.xyz_bohr[2],
+                99.0,
+            )
         })
         .collect();
     for c in &r.mm_charges {
-        atoms.push(QmmmAtom::new("X", 0, c.xyz_bohr[0], c.xyz_bohr[1], c.xyz_bohr[2], c.q));
+        atoms.push(QmmmAtom::new(
+            "X",
+            0,
+            c.xyz_bohr[0],
+            c.xyz_bohr[1],
+            c.xyz_bohr[2],
+            c.q,
+        ));
     }
     let qm: Vec<usize> = (0..r.atoms.len()).collect();
     QmmmSystem::new(&atoms, QmSelection::Indices(qm), r.charge, r.multiplicity).unwrap()
@@ -135,7 +149,9 @@ fn run(r: &QmmmDftRef) -> Run {
     let sys = system_from_ref(r);
     let mol = sys.to_qm_molecule();
     assert_eq!(mol.atoms.len(), r.atoms.len());
-    let ep = sys.to_external_potential().expect("reference has MM charges");
+    let ep = sys
+        .to_external_potential()
+        .expect("reference has MM charges");
     assert_eq!(ep.point_charges.len(), r.mm_charges.len());
 
     let bs = basis::bundled(&r.basis).unwrap();
@@ -151,7 +167,10 @@ fn run(r: &QmmmDftRef) -> Run {
         density_conv: 1e-8,
         ..Default::default()
     };
-    let cfg = RhfConfig { external_potential: Some(ep), ..base_cfg.clone() };
+    let cfg = RhfConfig {
+        external_potential: Some(ep),
+        ..base_cfg.clone()
+    };
     let ext = cfg.external_potential.clone();
 
     let (energy, energy_gas, d_total, qm_gradient) = match r.method.as_str() {
@@ -198,7 +217,10 @@ fn check(name: &str, abs_tol: f64, grad_tol: f64, shift_tol: f64) {
     let out = run(&r);
 
     let de_gas = (out.energy_gas - r.e_gas_phase).abs();
-    assert!(de_gas < abs_tol, "{name}: gas-phase energy off by {de_gas:.3e} (tol {abs_tol:.0e})");
+    assert!(
+        de_gas < abs_tol,
+        "{name}: gas-phase energy off by {de_gas:.3e} (tol {abs_tol:.0e})"
+    );
     let de = (out.energy - r.e_total).abs();
     assert!(
         de < abs_tol,
@@ -219,7 +241,12 @@ fn check(name: &str, abs_tol: f64, grad_tol: f64, shift_tol: f64) {
 
     for k in 0..3 {
         let d = (out.dipole[k] - r.dipole[k]).abs();
-        assert!(d < 1e-5, "{name}: dipole[{k}] ferric {} vs PySCF {} (Δ {d:.3e})", out.dipole[k], r.dipole[k]);
+        assert!(
+            d < 1e-5,
+            "{name}: dipole[{k}] ferric {} vs PySCF {} (Δ {d:.3e})",
+            out.dipole[k],
+            r.dipole[k]
+        );
     }
 
     assert_eq!(out.mm_forces.len(), r.mm_gradient.len());
@@ -228,7 +255,12 @@ fn check(name: &str, abs_tol: f64, grad_tol: f64, shift_tol: f64) {
         for k in 0..3 {
             let d = (f[k] + g[k]).abs();
             max_mm = max_mm.max(d);
-            assert!(d < 1e-6, "{name}: MM force ferric {} vs PySCF −grad {} (Δ {d:.3e})", f[k], -g[k]);
+            assert!(
+                d < 1e-6,
+                "{name}: MM force ferric {} vs PySCF −grad {} (Δ {d:.3e})",
+                f[k],
+                -g[k]
+            );
         }
     }
 

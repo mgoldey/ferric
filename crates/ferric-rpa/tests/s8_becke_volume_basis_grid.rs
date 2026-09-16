@@ -161,7 +161,13 @@ fn h2o() -> Molecule {
 ///
 /// Columns, in ascending "quality" so the trend is legible:
 ///   6-31g  def2-svp  aug-cc-pvdz  def2-tzvp  aug-cc-pvtz(ref)
-const LADDER: &[&str] = &["6-31g", "def2-svp", "aug-cc-pvdz", "def2-tzvp", "aug-cc-pvtz"];
+const LADDER: &[&str] = &[
+    "6-31g",
+    "def2-svp",
+    "aug-cc-pvdz",
+    "def2-tzvp",
+    "aug-cc-pvtz",
+];
 
 /// H1 — basis sensitivity of the molecular Becke heavy-atom volume, production grid.
 #[test]
@@ -178,7 +184,9 @@ fn s8_h1_basis_sensitivity() {
     ];
     let cfg = AtomicGridConfig::default(); // production 75×110
 
-    println!("\n=== S8 H1: molecular Becke heavy-atom volume v_A [Bohr^5] vs basis (grid 75x110) ===");
+    println!(
+        "\n=== S8 H1: molecular Becke heavy-atom volume v_A [Bohr^5] vs basis (grid 75x110) ==="
+    );
     println!("ladder (ascending): 6-31g(DZ,no-diff) | def2-svp(DZ,no-diff) | aug-cc-pvdz(DZ,+diff) | def2-tzvp(TZ,no-diff) | aug-cc-pvtz(TZ,+diff=REF)");
     println!(
         "{:<12} {:>11} {:>11} {:>11} {:>11} {:>11}",
@@ -219,16 +227,37 @@ fn s8_h1_basis_sensitivity() {
             rationale as s8_h1_basis_sensitivity above"]
 fn s8_h2_grid_sensitivity() {
     let grids = [
-        ("50x50", AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() }),
-        ("75x110", AtomicGridConfig { n_radial: 75, n_angular: 110, ..Default::default() }),
-        ("99x302", AtomicGridConfig { n_radial: 99, n_angular: 302, ..Default::default() }),
+        (
+            "50x50",
+            AtomicGridConfig {
+                n_radial: 50,
+                n_angular: 50,
+                ..Default::default()
+            },
+        ),
+        (
+            "75x110",
+            AtomicGridConfig {
+                n_radial: 75,
+                n_angular: 110,
+                ..Default::default()
+            },
+        ),
+        (
+            "99x302",
+            AtomicGridConfig {
+                n_radial: 99,
+                n_angular: 302,
+                ..Default::default()
+            },
+        ),
     ];
-    let cases: &[(&str, fn() -> Molecule, usize)] = &[
-        ("SiH4 (Si)", sih4, 0),
-        ("H2S  (S) ", h2s, 0),
-    ];
+    let cases: &[(&str, fn() -> Molecule, usize)] =
+        &[("SiH4 (Si)", sih4, 0), ("H2S  (S) ", h2s, 0)];
 
-    println!("\n=== S8 H2: molecular Becke heavy-atom volume v_A [Bohr^5] vs GRID (fixed basis) ===");
+    println!(
+        "\n=== S8 H2: molecular Becke heavy-atom volume v_A [Bohr^5] vs GRID (fixed basis) ==="
+    );
     for basis_name in ["6-31g", "aug-cc-pvtz"] {
         println!("--- basis = {basis_name} ---");
         for (label, build, heavy_idx) in cases {

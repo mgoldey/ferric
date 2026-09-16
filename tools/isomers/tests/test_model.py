@@ -1,4 +1,5 @@
 """The Isomer record: canonical identity and honest failure."""
+
 from __future__ import annotations
 
 import pytest
@@ -30,8 +31,7 @@ def test_unparseable_smiles_raises_rather_than_returning_none():
 
 
 def test_transform_and_parent_travel_with_the_candidate():
-    i = Isomer("OC(=O)c1ccc(F)cc1", "substitutional", "[cH:1] -> F",
-               "OC(=O)c1ccccc1")
+    i = Isomer("OC(=O)c1ccc(F)cc1", "substitutional", "[cH:1] -> F", "OC(=O)c1ccccc1")
     assert i.transform == "[cH:1] -> F"
     assert i.parent_smiles == "OC(=O)c1ccccc1"
     assert i.kind == "substitutional"
@@ -46,11 +46,14 @@ def test_transform_and_parent_travel_with_the_candidate():
 # the SAME electron count as its acid -- asking for one more electron is asking
 # for something that does not exist.
 
+
 def _electron_count(smiles: str) -> int:
     from rdkit import Chem
+
     mol = Chem.MolFromSmiles(smiles)
-    return (sum(a.GetAtomicNum() for a in Chem.AddHs(mol).GetAtoms())
-            - Chem.GetFormalCharge(mol))
+    return sum(
+        a.GetAtomicNum() for a in Chem.AddHs(mol).GetAtoms()
+    ) - Chem.GetFormalCharge(mol)
 
 
 def test_deprotonation_conserves_electron_count():
@@ -77,9 +80,11 @@ def test_deprotonation_changes_the_structure_not_just_the_charge():
 def test_deprotonation_handles_every_supported_acid_type():
     from rdkit import Chem
 
-    for smi in ("OC(=O)c1ccccc1",               # carboxylic acid
-                "c1ccccc1c1nn[nH]n1",           # tetrazole
-                "CC(=O)NS(=O)(=O)C"):           # acylsulfonamide
+    for smi in (
+        "OC(=O)c1ccccc1",  # carboxylic acid
+        "c1ccccc1c1nn[nH]n1",  # tetrazole
+        "CC(=O)NS(=O)(=O)C",
+    ):  # acylsulfonamide
         iso = Isomer(smi, "p", "none", smi)
         anion = iso.deprotonated()
         assert anion is not None, f"no deprotonation found for {smi}"

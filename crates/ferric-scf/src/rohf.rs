@@ -126,13 +126,20 @@ impl FxcKernelStore {
             let kernel = ferric_dft::fxc::LdaFxcKernel::new(mol, prep.basis_set(), xc_def, cfg)
                 .map_err(|e| FerricError::General(format!("LdaFxcKernel: {e}")))?;
             let (rho_a0, rho_b0) = kernel.reference_density(d_a, d_b);
-            Ok(FxcKernelStore::Lda { kernel: Box::new(kernel), rho_a0, rho_b0 })
+            Ok(FxcKernelStore::Lda {
+                kernel: Box::new(kernel),
+                rho_a0,
+                rho_b0,
+            })
         } else {
             let kernel = ferric_dft::fxc::GgaFxcKernel::new(mol, prep.basis_set(), xc_def, cfg)
                 .map_err(|e| FerricError::General(format!("GgaFxcKernel: {e}")))?;
             let ref_dens = kernel.reference_density(d_a, d_b);
             GGA_FXC_KERNEL_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Ok(FxcKernelStore::Gga { kernel: Box::new(kernel), ref_dens: Box::new(ref_dens) })
+            Ok(FxcKernelStore::Gga {
+                kernel: Box::new(kernel),
+                ref_dens: Box::new(ref_dens),
+            })
         }
     }
 
@@ -142,16 +149,18 @@ impl FxcKernelStore {
         &self,
     ) -> Box<dyn Fn(&Array2<f64>, &Array2<f64>) -> (Array2<f64>, Array2<f64>) + Sync + '_> {
         match self {
-            FxcKernelStore::Lda { kernel, rho_a0, rho_b0 } => Box::new(
-                move |dd_a: &Array2<f64>, dd_b: &Array2<f64>| {
-                    kernel.apply_with_ref(rho_a0, rho_b0, dd_a, dd_b)
-                },
-            ),
-            FxcKernelStore::Gga { kernel, ref_dens } => Box::new(
-                move |dd_a: &Array2<f64>, dd_b: &Array2<f64>| {
+            FxcKernelStore::Lda {
+                kernel,
+                rho_a0,
+                rho_b0,
+            } => Box::new(move |dd_a: &Array2<f64>, dd_b: &Array2<f64>| {
+                kernel.apply_with_ref(rho_a0, rho_b0, dd_a, dd_b)
+            }),
+            FxcKernelStore::Gga { kernel, ref_dens } => {
+                Box::new(move |dd_a: &Array2<f64>, dd_b: &Array2<f64>| {
                     kernel.apply_with_ref(ref_dens, dd_a, dd_b)
-                },
-            ),
+                })
+            }
         }
     }
 }
@@ -174,7 +183,10 @@ pub fn solve_rohf(
     if r.converged {
         Ok(r)
     } else {
-        Err(FerricError::ScfConvergence { iterations: r.iterations, last_energy: r.energy })
+        Err(FerricError::ScfConvergence {
+            iterations: r.iterations,
+            last_energy: r.energy,
+        })
     }
 }
 
@@ -198,8 +210,14 @@ pub fn solve_rohf_best_effort(
     // Build UKS XC contribution once. None for pure ROHF.
     let xc_contrib: Option<Box<dyn UksXcContribution>> = if let Some(name) = config.xc.as_deref() {
         let main = config.dft_grid.clone().unwrap_or_default();
-        let nlc = config.nlc_grid.clone()
-            .unwrap_or(ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() });
+        let nlc = config
+            .nlc_grid
+            .clone()
+            .unwrap_or(ferric_dft::grid::AtomicGridConfig {
+                n_radial: 50,
+                n_angular: 50,
+                ..Default::default()
+            });
         // Thread the caller's `[memory] budget_gb` into the grid AO cache --
         // the largest single allocation in a DFT job. This used to call the
         // UNbudgeted `new_with_omega`, which resolves from env/auto-detect
@@ -211,10 +229,15 @@ pub fn solve_rohf_best_effort(
         // FERRIC_MEM_BUDGET_GB worked. 0 means unset, matching
         // `rhf::resolve_three_index_budget`.
         let ks = KsXcUks::new_with_omega_budgeted(
-            mol, prep.basis_set(), name, &main, &nlc, config.xc_omega,
+            mol,
+            prep.basis_set(),
+            name,
+            &main,
+            &nlc,
+            config.xc_omega,
             (config.three_index_budget_bytes != 0).then_some(config.three_index_budget_bytes),
         )
-            .map_err(|e| FerricError::General(format!("KsXcUks init for {name}: {e:?}")))?;
+        .map_err(|e| FerricError::General(format!("KsXcUks init for {name}: {e:?}")))?;
         Some(Box::new(ks) as Box<dyn UksXcContribution>)
     } else {
         None
@@ -237,8 +260,17 @@ pub fn solve_rohf_best_effort(
     // into hcore once, byte-identical to plain hcore for all-electron bases),
     // V_nn(+external), COSMO/PCM contexts, resolved memory budget, RSH
     // fitters. One construction serving all six SCF variants (crate::driver).
-    let crate::driver::ScfEnv { s, h, vnn, ooc_budget, cosmo_cavity, pcm_ctx, polarizable_site_basis, mut dfk_sr, mut dfk_lr } =
-        crate::driver::prepare(ctx, mol, prep, config, &k_mix)?;
+    let crate::driver::ScfEnv {
+        s,
+        h,
+        vnn,
+        ooc_budget,
+        cosmo_cavity,
+        pcm_ctx,
+        polarizable_site_basis,
+        mut dfk_sr,
+        mut dfk_lr,
+    } = crate::driver::prepare(ctx, mol, prep, config, &k_mix)?;
     let n = prep.nbasis();
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;
@@ -330,8 +362,16 @@ pub fn solve_rohf_best_effort(
     // loop-local builder would pay that construction every iteration.
     let need_k = c_k != 0.0 || k_mix.omega > 0.0;
     let coulomb_op = bounds.op;
-    let j_aux_eff = if k_mix.omega == 0.0 { config.df_j_aux.as_deref() } else { None };
-    let k_aux_eff = if need_k && k_mix.omega == 0.0 { config.df_k_aux.as_deref() } else { None };
+    let j_aux_eff = if k_mix.omega == 0.0 {
+        config.df_j_aux.as_deref()
+    } else {
+        None
+    };
+    let k_aux_eff = if need_k && k_mix.omega == 0.0 {
+        config.df_k_aux.as_deref()
+    } else {
+        None
+    };
     let (mut df_j, mut df_k) = crate::fock_assembly::build_df_jk(
         ctx, mol, coulomb_op, prep, j_aux_eff, k_aux_eff, ooc_budget,
     )?;
@@ -354,9 +394,8 @@ pub fn solve_rohf_best_effort(
         df_j.is_some() || df_k.is_some(),
         df_k.is_some(),
     )?;
-    let pluggable_k_kind = crate::fock_assembly::narrow_k_builder_to_supported(
-        pluggable_k_kind, need_k, k_mix.omega,
-    );
+    let pluggable_k_kind =
+        crate::fock_assembly::narrow_k_builder_to_supported(pluggable_k_kind, need_k, k_mix.omega);
     // Same `LinkBound::SchwarzRef` adapter and same rationale as `solve_uhf`'s
     // — see the comment there. No table on `bounds` (the default) makes this
     // byte-identical to passing `bounds` directly.
@@ -391,18 +430,32 @@ pub fn solve_rohf_best_effort(
         None
     };
     let mut direct_j: Option<DirectJ> = if df_j.is_none() && !combined_direct_jk {
-        Some(DirectJ::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
+        Some(DirectJ::new(
+            ctx,
+            prep,
+            bounds,
+            config.integral_thresh,
+            ooc_budget,
+        ))
     } else {
         None
     };
-    let mut direct_k: Option<DirectK> =
-        if need_k && k_mix.omega == 0.0 && df_k.is_none() && !combined_direct_jk
-            && pluggable_k.is_none()
-        {
-            Some(DirectK::new(ctx, prep, bounds, config.integral_thresh, ooc_budget))
-        } else {
-            None
-        };
+    let mut direct_k: Option<DirectK> = if need_k
+        && k_mix.omega == 0.0
+        && df_k.is_none()
+        && !combined_direct_jk
+        && pluggable_k.is_none()
+    {
+        Some(DirectK::new(
+            ctx,
+            prep,
+            bounds,
+            config.integral_thresh,
+            ooc_budget,
+        ))
+    } else {
+        None
+    };
     // NOTE: opt-IN (default off), unlike the closed-shell path. See
     // `direct_jk::open_shell_incremental_enabled` for the measurements behind
     // that choice — the scheme is correct but measured ~1.00-1.05x here.
@@ -436,8 +489,9 @@ pub fn solve_rohf_best_effort(
         // Combined single-pass J + K_α + K_β when enabled; otherwise J alone here.
         if let Some(djk) = direct_jk.as_mut() {
             if direct_incremental {
-                let (da_prev, db_prev) =
-                    d_last_fock.as_ref().expect("d_last_fock set on full rebuild");
+                let (da_prev, db_prev) = d_last_fock
+                    .as_ref()
+                    .expect("d_last_fock set on full rebuild");
                 let delta_a = &d_a - da_prev;
                 let delta_b = &d_b - db_prev;
                 let delta_total = &delta_a + &delta_b;
@@ -450,14 +504,8 @@ pub fn solve_rohf_best_effort(
                     &mut k_b_buf,
                 )?;
             } else {
-                total_quartets += djk.build_uhf(
-                    &d_total,
-                    &d_a,
-                    &d_b,
-                    &mut j_buf,
-                    &mut k_a_buf,
-                    &mut k_b_buf,
-                )?;
+                total_quartets +=
+                    djk.build_uhf(&d_total, &d_a, &d_b, &mut j_buf, &mut k_a_buf, &mut k_b_buf)?;
             }
             d_last_fock = Some((d_a.clone(), d_b.clone()));
         } else if let Some(dfj) = df_j.as_mut() {
@@ -495,7 +543,11 @@ pub fn solve_rohf_best_effort(
                 // Per-spin `update_density(D_σ)` + `build(D_σ)` from one shared
                 // instance (see fock_assembly::build_open_shell_pluggable_k).
                 total_quartets += crate::fock_assembly::build_open_shell_pluggable_k(
-                    kb.as_mut(), &d_a, &d_b, &mut k_a_buf, &mut k_b_buf,
+                    kb.as_mut(),
+                    &d_a,
+                    &d_b,
+                    &mut k_a_buf,
+                    &mut k_b_buf,
                 )?;
             } else if let Some(dfk) = df_k.as_mut() {
                 dfk.build(&d_a, &mut k_a_buf)?;
@@ -510,8 +562,7 @@ pub fn solve_rohf_best_effort(
         }
 
         // Pre-XC electronic energy.
-        let e_elec_no_xc: f64 =
-            0.5 * ((&(&h + &f_a) * &d_a).sum() + (&(&h + &f_b) * &d_b).sum());
+        let e_elec_no_xc: f64 = 0.5 * ((&(&h + &f_a) * &d_a).sum() + (&(&h + &f_b) * &d_b).sum());
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
             x.add_xc_uks(&d_a, &d_b, &mut f_a, &mut f_b)
         } else {
@@ -588,7 +639,8 @@ pub fn solve_rohf_best_effort(
 
         // Divergence / stall early exits (shared driver::ScfMonitor; both are
         // no-ops at the None defaults — ROHF previously ignored these knobs).
-        if mon.diverging(energy, config.divergence_tol) || mon.stalled(err_max, config.stall_window) {
+        if mon.diverging(energy, config.divergence_tol) || mon.stalled(err_max, config.stall_window)
+        {
             return Err(FerricError::ScfConvergence {
                 iterations: iter,
                 last_energy: mon.prev_e,
@@ -606,22 +658,34 @@ pub fn solve_rohf_best_effort(
             // nocc_a = nocc_double + nocc_open.
             let nlow = nocc_double.saturating_sub(2);
             let nhi = (nocc_a + 2).min(n);
-            let eps_window: Vec<String> = (nlow..nhi).map(|i| {
-                let tag = if i < nocc_double { " D " }
-                    else if i < nocc_a { " S " }
-                    else { " V " };
-                format!("[{i}{tag}{:.4}]", eps_now[i])
-            }).collect();
+            let eps_window: Vec<String> = (nlow..nhi)
+                .map(|i| {
+                    let tag = if i < nocc_double {
+                        " D "
+                    } else if i < nocc_a {
+                        " S "
+                    } else {
+                        " V "
+                    };
+                    format!("[{i}{tag}{:.4}]", eps_now[i])
+                })
+                .collect();
             // Per-block gradient maxima from g_mo (pre-antisymmetrize).
             let mut g_vc_max = 0.0f64;
             let mut g_vo_max = 0.0f64;
             let mut g_oc_max = 0.0f64;
             for p in nocc_a..n {
-                for q in 0..nocc_double { g_vc_max = g_vc_max.max(g_mo[(p, q)].abs()); }
-                for q in nocc_double..nocc_a { g_vo_max = g_vo_max.max(g_mo[(p, q)].abs()); }
+                for q in 0..nocc_double {
+                    g_vc_max = g_vc_max.max(g_mo[(p, q)].abs());
+                }
+                for q in nocc_double..nocc_a {
+                    g_vo_max = g_vo_max.max(g_mo[(p, q)].abs());
+                }
             }
             for p in nocc_double..nocc_a {
-                for q in 0..nocc_double { g_oc_max = g_oc_max.max(g_mo[(p, q)].abs()); }
+                for q in 0..nocc_double {
+                    g_oc_max = g_oc_max.max(g_mo[(p, q)].abs());
+                }
             }
             eprintln!(
                 "ROHFTRACE it={iter:>3} E={energy:.10} dE={de:.3e} err={err_max:.3e} |g|vc={g_vc_max:.3e} |g|vo={g_vo_max:.3e} |g|oc={g_oc_max:.3e}  eps:{}",
@@ -700,7 +764,10 @@ pub fn solve_rohf_best_effort(
 
             let fxc_store = if xc_supports_newton_fxc {
                 let main = config.dft_grid.clone().unwrap_or_default();
-                let name = config.xc.as_deref().expect("xc_supports_newton_fxc implies Some(xc)");
+                let name = config
+                    .xc
+                    .as_deref()
+                    .expect("xc_supports_newton_fxc implies Some(xc)");
                 Some(FxcKernelStore::build(mol, prep, &main, name, &d_a, &d_b)?)
             } else {
                 None
@@ -723,10 +790,8 @@ pub fn solve_rohf_best_effort(
             };
             let ah_inputs = crate::rohf_ah::RohfAhInputs { base: &inputs };
             let (c_new, _kmax) = crate::rohf_ah::rohf_ah_step(
-                ctx, &ah_inputs,
-                /*max_step=*/0.2,
-                /*davidson_conv=*/1e-7,
-                /*davidson_max_vecs=*/50,
+                ctx, &ah_inputs, /*max_step=*/ 0.2, /*davidson_conv=*/ 1e-7,
+                /*davidson_max_vecs=*/ 50,
             )?;
             c = c_new;
             let (da_n, db_n) = build_rohf_densities(&c, nocc_double, nocc_open);
@@ -748,7 +813,10 @@ pub fn solve_rohf_best_effort(
             // grid/AO evaluation happens once per Newton step, not per matvec.
             let fxc_store = if xc_supports_newton_fxc {
                 let main = config.dft_grid.clone().unwrap_or_default();
-                let name = config.xc.as_deref().expect("xc_supports_newton_fxc implies Some(xc)");
+                let name = config
+                    .xc
+                    .as_deref()
+                    .expect("xc_supports_newton_fxc implies Some(xc)");
                 Some(FxcKernelStore::build(mol, prep, &main, name, &d_a, &d_b)?)
             } else {
                 None
@@ -770,9 +838,10 @@ pub fn solve_rohf_best_effort(
                 ooc_budget,
             };
             let (c_new, _kmax) = crate::rohf_newton::rohf_newton_step(
-                ctx, &inputs,
+                ctx,
+                &inputs,
                 config.level_shift.max(1e-6),
-                0.1,  // trust radius (conservative — ROKS hessians are stiff)
+                0.1, // trust radius (conservative — ROKS hessians are stiff)
                 20,
                 1e-7,
             )?;
@@ -830,8 +899,8 @@ pub fn solve_rohf_best_effort(
     // Err contract (existing callers unwrap or `?` it), while
     // `solve_rohf_best_effort` returns the converged-so-far density and MOs so a
     // convergence LADDER can carry them into the next rung.
-    let (eps_last, c_last) = diagonalize(&f_eff_last, &s_inv_sqrt)
-        .unwrap_or_else(|_| (vec![0.0; c.ncols()], c.clone()));
+    let (eps_last, c_last) =
+        diagonalize(&f_eff_last, &s_inv_sqrt).unwrap_or_else(|_| (vec![0.0; c.ncols()], c.clone()));
     let density_total = &d_a + &d_b;
     Ok(ScfResult {
         spin: Spin::RestrictedOpen,

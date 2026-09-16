@@ -27,8 +27,9 @@ fn reference(
             b_i.t().dot(b_ov)
         })
         .collect();
-    let pairs: Vec<(usize, usize)> =
-        (0..nocc).flat_map(|i| (i..nocc).map(move |j| (i, j))).collect();
+    let pairs: Vec<(usize, usize)> = (0..nocc)
+        .flat_map(|i| (i..nocc).map(move |j| (i, j)))
+        .collect();
     let partials: Vec<(f64, f64)> = pairs
         .par_iter()
         .map(|&(i, j)| {
@@ -75,7 +76,9 @@ fn main() {
         let mut b_ov = Array2::<f64>::zeros((naux, width));
         let mut s: u64 = 0x243f_6a88_85a3_08d3;
         for v in b_ov.iter_mut() {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             *v = ((s >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 0.05;
         }
         let eps: Vec<f64> = (0..nocc_total + nvir)
@@ -94,14 +97,22 @@ fn main() {
         let d_os = (ref_os - got.e_os).abs();
         let d_ss = (ref_ss - got.e_ss).abs();
         let d_tot = (ref_os + ref_ss - got.e_total).abs();
-        let rel = if ref_os.abs() > 0.0 { d_tot / (ref_os + ref_ss).abs() } else { d_tot };
+        let rel = if ref_os.abs() > 0.0 {
+            d_tot / (ref_os + ref_ss).abs()
+        } else {
+            d_tot
+        };
         worst = worst.max(rel);
         println!(
             "naux={naux:4} nocc={nocc:3} nvir={nvir:4} fc={first_occ}:  \
              ref={:.17e}  new={:.17e}  |d_os|={d_os:.2e} |d_ss|={d_ss:.2e} rel={rel:.2e}{}",
             ref_os + ref_ss,
             got.e_total,
-            if d_tot == 0.0 { "  [BIT-IDENTICAL]" } else { "" }
+            if d_tot == 0.0 {
+                "  [BIT-IDENTICAL]"
+            } else {
+                ""
+            }
         );
     }
     println!("\nworst relative deviation: {worst:.3e}");

@@ -13,7 +13,13 @@ use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
 
-fn setup() -> (Molecule, basis::BasisSet, PreparedBasis, Operator, SchwarzBounds) {
+fn setup() -> (
+    Molecule,
+    basis::BasisSet,
+    PreparedBasis,
+    Operator,
+    SchwarzBounds,
+) {
     let mol = Molecule::parse_xyz("2\nLiH\nLi 0 0 0\nH 0 0 1.60\n", 0, 1).unwrap();
     let bs = basis::bundled("def2-svp").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -22,7 +28,13 @@ fn setup() -> (Molecule, basis::BasisSet, PreparedBasis, Operator, SchwarzBounds
     (mol, bs, prep, op, bounds)
 }
 
-fn setup_hf() -> (Molecule, basis::BasisSet, PreparedBasis, Operator, SchwarzBounds) {
+fn setup_hf() -> (
+    Molecule,
+    basis::BasisSet,
+    PreparedBasis,
+    Operator,
+    SchwarzBounds,
+) {
     let mol = Molecule::parse_xyz("2\nHF\nH 0 0 0\nF 0 0 0.917\n", 0, 1).unwrap();
     let bs = basis::bundled("def2-svp").unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -83,7 +95,10 @@ fn residual_is_monotonic_in_lambda() {
     // Strictly monotonic (one direction; sign depends on the convention above).
     let increasing = pops[0] < pops[1] && pops[1] < pops[2];
     let decreasing = pops[0] > pops[1] && pops[1] > pops[2];
-    assert!(increasing || decreasing, "N_Li not monotonic in λ: {pops:?}");
+    assert!(
+        increasing || decreasing,
+        "N_Li not monotonic in λ: {pops:?}"
+    );
 }
 
 /// The constraint is actually satisfied at convergence.

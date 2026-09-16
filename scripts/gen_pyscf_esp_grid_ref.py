@@ -34,6 +34,7 @@ Usage:
   python scripts/gen_pyscf_esp_grid_ref.py water cc-pvdz
   python scripts/gen_pyscf_esp_grid_ref.py methanol cc-pvdz
 """
+
 import json
 import os
 import sys
@@ -63,7 +64,9 @@ def load_ferric_basis(basis):
     path = os.path.join(ROOT, "crates/ferric-core/src/basis/bundled", f"{basis}.json")
     with open(path) as fh:
         d = json.load(fh)
-    return {ELEMENTS[int(z)]: _bse_elem_to_pyscf(elem) for z, elem in d["elements"].items()}
+    return {
+        ELEMENTS[int(z)]: _bse_elem_to_pyscf(elem) for z, elem in d["elements"].items()
+    }
 
 
 # Standard equilibrium-ish geometries (Angstrom), matching the inline

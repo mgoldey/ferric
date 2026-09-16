@@ -32,7 +32,9 @@ use ndarray::{Array2, Array4};
 /// `cfg.diis_subspace.max(1)`, so the charge must match what the code does
 /// rather than what the config literally says.
 pub fn diis_history_elems(per_tensor_elems: usize, subspace: usize) -> usize {
-    per_tensor_elems.saturating_mul(2).saturating_mul(subspace.max(1))
+    per_tensor_elems
+        .saturating_mul(2)
+        .saturating_mul(subspace.max(1))
 }
 
 pub mod ccd;
@@ -71,6 +73,7 @@ pub mod linlccd_exact;
 /// Unrestricted LinLCCD (α/β spin channels).
 pub mod linlccd_u;
 
+pub use ferric_mp2::local_pno as pno;
 /// Local-correlation machinery, re-exported from `ferric-mp2`.
 ///
 /// These live in `ferric-mp2` rather than here because MP2 and RPA need them too
@@ -78,7 +81,6 @@ pub mod linlccd_u;
 /// from either. Re-exported so `ferric_cc::pair_domains::…` keeps resolving.
 pub use ferric_mp2::pair_domains;
 pub use ferric_mp2::pair_energy_screen;
-pub use ferric_mp2::local_pno as pno;
 
 /// Configuration for coupled-cluster iterations (CCD, CCSD).
 #[derive(Debug, Clone, PartialEq)]
@@ -166,6 +168,10 @@ pub struct CcResult {
 impl std::fmt::Display for CcResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let method = if self.t1.is_some() { "CCSD" } else { "CCD" };
-        write!(f, "{} correlation: {:.10} Ha", method, self.correlation_energy)
+        write!(
+            f,
+            "{} correlation: {:.10} Ha",
+            method, self.correlation_energy
+        )
     }
 }

@@ -44,31 +44,81 @@ const CASES: [Case; 2] = [
     Case {
         name: "MGGA_X_SCAN",
         vals: [
-            [-6.5710158612955627e-1, -9.7421204848721643e-1, -6.5929790410911293e-1,
-              4.8260949522549682e-2, 5.1534253132780400e-2],
-            [-3.8885384001161238e-1, -5.1834436722163357e-1, -4.7995514557138069e-1,
-              5.1086020560353163e-2, 5.4436087200114953e-2],
-            [-1.0989214002799412e0, -1.5496883437928213e0, -1.4068329907227120e0,
-              2.5721338839697516e-2, 2.8751349155763172e-2],
-            [-2.9086805305390517e-1, -3.8281019326160365e-1, -8.0807573490160101e-2,
-              7.0064852605350073e-2, 1.8726775444683116e-1],
-            [-8.5464014618431405e-1, -1.1546356325890939e0, -1.1546356325890939e0,
-              3.4207265995712263e-2, 3.4207265995712263e-2],
+            [
+                -6.5710158612955627e-1,
+                -9.7421204848721643e-1,
+                -6.5929790410911293e-1,
+                4.8260949522549682e-2,
+                5.1534253132780400e-2,
+            ],
+            [
+                -3.8885384001161238e-1,
+                -5.1834436722163357e-1,
+                -4.7995514557138069e-1,
+                5.1086020560353163e-2,
+                5.4436087200114953e-2,
+            ],
+            [
+                -1.0989214002799412e0,
+                -1.5496883437928213e0,
+                -1.4068329907227120e0,
+                2.5721338839697516e-2,
+                2.8751349155763172e-2,
+            ],
+            [
+                -2.9086805305390517e-1,
+                -3.8281019326160365e-1,
+                -8.0807573490160101e-2,
+                7.0064852605350073e-2,
+                1.8726775444683116e-1,
+            ],
+            [
+                -8.5464014618431405e-1,
+                -1.1546356325890939e0,
+                -1.1546356325890939e0,
+                3.4207265995712263e-2,
+                3.4207265995712263e-2,
+            ],
         ],
     },
     Case {
         name: "MGGA_C_R2SCAN",
         vals: [
-            [-2.6871348592676380e-2, -1.5025159974549727e-2, -5.3154939053378480e-2,
-             -1.6840515249517348e-2, -1.6840515249517348e-2],
-            [-2.0564829783331080e-2, -3.0472610883333369e-2, -3.5301907032786753e-2,
-             -1.8457136993702196e-2, -1.8457136993702196e-2],
-            [-2.9917733817732550e-2, -2.1016104564960912e-2, -3.1078972541447585e-2,
-             -8.1746651206136400e-3, -8.1746651206136400e-3],
-            [-2.6616626666151871e-3, -6.0734945194064159e-3, -1.4818531314519098e-1,
-             -1.9917393442853155e-2, -1.9917393442853169e-2],
-            [-2.8840146712116571e-2, -2.6458840915514217e-2, -2.6458840915514217e-2,
-             -1.1796661666463744e-2, -1.1796661666463744e-2],
+            [
+                -2.6871348592676380e-2,
+                -1.5025159974549727e-2,
+                -5.3154939053378480e-2,
+                -1.6840515249517348e-2,
+                -1.6840515249517348e-2,
+            ],
+            [
+                -2.0564829783331080e-2,
+                -3.0472610883333369e-2,
+                -3.5301907032786753e-2,
+                -1.8457136993702196e-2,
+                -1.8457136993702196e-2,
+            ],
+            [
+                -2.9917733817732550e-2,
+                -2.1016104564960912e-2,
+                -3.1078972541447585e-2,
+                -8.1746651206136400e-3,
+                -8.1746651206136400e-3,
+            ],
+            [
+                -2.6616626666151871e-3,
+                -6.0734945194064159e-3,
+                -1.4818531314519098e-1,
+                -1.9917393442853155e-2,
+                -1.9917393442853169e-2,
+            ],
+            [
+                -2.8840146712116571e-2,
+                -2.6458840915514217e-2,
+                -2.6458840915514217e-2,
+                -1.1796661666463744e-2,
+                -1.1796661666463744e-2,
+            ],
         ],
     },
 ];
@@ -111,13 +161,22 @@ fn polarized_mgga_matches_pyscf_eval_xc() {
     for case in &CASES {
         let (exc, vrho, _, vtau) = eval(case.name);
         for (g, want) in case.vals.iter().enumerate() {
-            let got = [exc[g], vrho[2 * g], vrho[2 * g + 1], vtau[2 * g], vtau[2 * g + 1]];
+            let got = [
+                exc[g],
+                vrho[2 * g],
+                vrho[2 * g + 1],
+                vtau[2 * g],
+                vtau[2 * g + 1],
+            ];
             let labels = ["exc", "vrho_a", "vrho_b", "vtau_a", "vtau_b"];
             for k in 0..5 {
                 assert!(
                     close(got[k], want[k]),
                     "{} point {g} {}: ferric {:.17e} vs PySCF {:.17e}",
-                    case.name, labels[k], got[k], want[k]
+                    case.name,
+                    labels[k],
+                    got[k],
+                    want[k]
                 );
             }
         }
@@ -140,8 +199,11 @@ fn tau_alpha_and_beta_are_independent_channels() {
         );
     }
     // The degenerate control point MUST give equal channels.
-    assert_eq!(vtau[8].to_bits(), vtau[9].to_bits(),
-               "τ_α == τ_β point must yield v_τα == v_τβ");
+    assert_eq!(
+        vtau[8].to_bits(),
+        vtau[9].to_bits(),
+        "τ_α == τ_β point must yield v_τα == v_τβ"
+    );
 }
 
 /// The σ channel is 3-strided while ρ/τ are 2-strided. For a pure EXCHANGE
@@ -153,13 +215,16 @@ fn sigma_stride_is_honoured() {
     let (_, _, vsig, _) = eval("MGGA_X_SCAN");
     for g in 0..PTS.len() {
         assert_eq!(
-            vsig[3 * g + 1], 0.0,
+            vsig[3 * g + 1],
+            0.0,
             "point {g}: exchange-only v_σαβ must be exactly 0, got {:e} — \
              sigma is being read with the wrong stride",
             vsig[3 * g + 1]
         );
-        assert!(vsig[3 * g] < 0.0 && vsig[3 * g + 2] < 0.0,
-                "point {g}: v_σαα / v_σββ must both be negative for SCAN exchange");
+        assert!(
+            vsig[3 * g] < 0.0 && vsig[3 * g + 2] < 0.0,
+            "point {g}: v_σαα / v_σββ must both be negative for SCAN exchange"
+        );
     }
 }
 
@@ -173,7 +238,10 @@ fn chunked_path_is_bit_identical_to_serial() {
         let (mut rho, mut sig, mut tau) = (vec![0.0; 2 * n], vec![0.0; 3 * n], vec![0.0; 2 * n]);
         for g in 0..n {
             let t = (g as f64) * 1e-4;
-            let (ga, gb) = (0.3 + 0.5 * (2.0 * t).sin().abs(), 0.2 + 0.3 * (3.0 * t).cos().abs());
+            let (ga, gb) = (
+                0.3 + 0.5 * (2.0 * t).sin().abs(),
+                0.2 + 0.3 * (3.0 * t).cos().abs(),
+            );
             rho[2 * g] = 0.05 + 0.9 * t.sin().abs();
             rho[2 * g + 1] = 0.01 + 0.4 * t.cos().abs();
             sig[3 * g] = ga * ga;
@@ -184,7 +252,12 @@ fn chunked_path_is_bit_identical_to_serial() {
         }
         (rho, sig, tau)
     };
-    for name in ["MGGA_X_SCAN", "MGGA_C_SCAN", "MGGA_X_R2SCAN", "MGGA_C_R2SCAN"] {
+    for name in [
+        "MGGA_X_SCAN",
+        "MGGA_C_SCAN",
+        "MGGA_X_R2SCAN",
+        "MGGA_C_R2SCAN",
+    ] {
         let f = XcFunctional::new(name, 2).unwrap();
         let (rho, sig, tau) = build(n);
         let (mut exc, mut vrho) = (vec![0.0; n], vec![0.0; 2 * n]);
@@ -199,20 +272,42 @@ fn chunked_path_is_bit_identical_to_serial() {
             let (mut e, mut vr) = (vec![0.0; m], vec![0.0; 2 * m]);
             let (mut vs, mut vt) = (vec![0.0; 3 * m], vec![0.0; 2 * m]);
             f.eval_mgga_polarized(
-                &rho[2 * g0..2 * g1], &sig[3 * g0..3 * g1], &tau[2 * g0..2 * g1],
-                &mut e, &mut vr, &mut vs, &mut vt,
+                &rho[2 * g0..2 * g1],
+                &sig[3 * g0..3 * g1],
+                &tau[2 * g0..2 * g1],
+                &mut e,
+                &mut vr,
+                &mut vs,
+                &mut vt,
             );
             for k in 0..m {
-                assert_eq!(exc[g0 + k].to_bits(), e[k].to_bits(), "{name} exc at {}", g0 + k);
+                assert_eq!(
+                    exc[g0 + k].to_bits(),
+                    e[k].to_bits(),
+                    "{name} exc at {}",
+                    g0 + k
+                );
                 for s in 0..2 {
-                    assert_eq!(vrho[2 * (g0 + k) + s].to_bits(), vr[2 * k + s].to_bits(),
-                               "{name} vrho[{s}] at {}", g0 + k);
-                    assert_eq!(vtau[2 * (g0 + k) + s].to_bits(), vt[2 * k + s].to_bits(),
-                               "{name} vtau[{s}] at {}", g0 + k);
+                    assert_eq!(
+                        vrho[2 * (g0 + k) + s].to_bits(),
+                        vr[2 * k + s].to_bits(),
+                        "{name} vrho[{s}] at {}",
+                        g0 + k
+                    );
+                    assert_eq!(
+                        vtau[2 * (g0 + k) + s].to_bits(),
+                        vt[2 * k + s].to_bits(),
+                        "{name} vtau[{s}] at {}",
+                        g0 + k
+                    );
                 }
                 for s in 0..3 {
-                    assert_eq!(vsig[3 * (g0 + k) + s].to_bits(), vs[3 * k + s].to_bits(),
-                               "{name} vsigma[{s}] at {}", g0 + k);
+                    assert_eq!(
+                        vsig[3 * (g0 + k) + s].to_bits(),
+                        vs[3 * k + s].to_bits(),
+                        "{name} vsigma[{s}] at {}",
+                        g0 + k
+                    );
                 }
             }
             g0 = g1;

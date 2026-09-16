@@ -362,12 +362,8 @@ mod tests {
     // callers).
 
     fn water_setup() -> (PreparedBasis, PreparedBasis, Operator) {
-        let mol = Molecule::parse_xyz(
-            "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n",
-            0,
-            1,
-        )
-        .unwrap();
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         (obs, dfbs, Operator::coulomb())
@@ -399,7 +395,13 @@ mod tests {
         let mut src_full = ThreeIndexSource::build(op, &obs, &dfbs, usize::MAX).unwrap();
         assert_eq!(src_full.n_blocks(), 1);
         let full = build_mo_b_from_source(
-            &mut src_full, &v_inv_sqrt, &c, &eps, nocc_total, frozen_core, None,
+            &mut src_full,
+            &v_inv_sqrt,
+            &c,
+            &eps,
+            nocc_total,
+            frozen_core,
+            None,
         )
         .unwrap();
 
@@ -408,7 +410,13 @@ mod tests {
         let mut src_tiny = ThreeIndexSource::build(op, &obs, &dfbs, tiny).unwrap();
         assert!(src_tiny.n_blocks() > 1, "expected multi-block spill");
         let blocked = build_mo_b_from_source(
-            &mut src_tiny, &v_inv_sqrt, &c, &eps, nocc_total, frozen_core, None,
+            &mut src_tiny,
+            &v_inv_sqrt,
+            &c,
+            &eps,
+            nocc_total,
+            frozen_core,
+            None,
         )
         .unwrap();
 
@@ -464,8 +472,10 @@ mod tests {
     #[test]
     fn guard_b_full_honours_the_caller_budget_rather_than_discarding_it() {
         let err = guard_b_full(100, 50, "test", Some(1_000))
-            .expect_err("an explicit 1 kB ceiling was ignored — the budget is not reaching \
-                         the guard")
+            .expect_err(
+                "an explicit 1 kB ceiling was ignored — the budget is not reaching \
+                         the guard",
+            )
             .to_string();
         assert!(err.contains("b_full"), "must name the tensor: {err}");
         assert!(err.contains("100×50×50"), "must name the shape: {err}");
@@ -475,5 +485,4 @@ mod tests {
              guard is also a bug"
         );
     }
-
 }

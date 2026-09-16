@@ -131,8 +131,11 @@ pub struct LccdResult {
 
 impl std::fmt::Display for LccdResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "LCCD total: {:.10} Ha (corr: {:.10}, {} iters, converged: {})",
-            self.e_total, self.e_corr, self.iterations, self.converged)
+        write!(
+            f,
+            "LCCD total: {:.10} Ha (corr: {:.10}, {} iters, converged: {})",
+            self.e_total, self.e_corr, self.iterations, self.converged
+        )
     }
 }
 
@@ -229,8 +232,7 @@ fn denominators(bl: &LccdBlocks) -> Result<Array4<f64>, FerricError> {
         for a in 0..nv {
             for j in 0..no {
                 for b in 0..nv {
-                    d[[i, a, j, b]] =
-                        bl.e_vir[a] + bl.e_vir[b] - bl.e_occ[i] - bl.e_occ[j];
+                    d[[i, a, j, b]] = bl.e_vir[a] + bl.e_vir[b] - bl.e_occ[i] - bl.e_occ[j];
                 }
             }
         }
@@ -307,8 +309,7 @@ fn ring(t: &Array4<f64>, bl: &LccdBlocks) -> Array4<f64> {
             for jj in 0..no {
                 for b in 0..nv {
                     // t4 = t1 with i<->j, a<->b
-                    out[[i, a, jj, b]] = t1[[i, a, jj, b]] - t2[[i, a, jj, b]]
-                        - t3[[i, a, jj, b]]
+                    out[[i, a, jj, b]] = t1[[i, a, jj, b]] - t2[[i, a, jj, b]] - t3[[i, a, jj, b]]
                         + t1[[jj, b, i, a]];
                 }
             }
@@ -474,7 +475,11 @@ fn gmres(
             for j in (i + 1)..k_used {
                 s -= h[i][j] * y[j];
             }
-            y[i] = if h[i][i].abs() > 0.0 { s / h[i][i] } else { 0.0 };
+            y[i] = if h[i][i].abs() > 0.0 {
+                s / h[i][i]
+            } else {
+                0.0
+            };
         }
         let mut dx = Array4::<f64>::zeros(rhs.raw_dim());
         for (i, yi) in y.iter().enumerate().take(v.len()) {
@@ -502,8 +507,7 @@ fn lccd_energy(t: &Array4<f64>, bl: &LccdBlocks) -> f64 {
         for a in 0..nv {
             for j in 0..no {
                 for b in 0..nv {
-                    e += bl.j_ovov[[i, a, j, b]]
-                        * (2.0 * t[[i, a, j, b]] - t[[i, b, j, a]]);
+                    e += bl.j_ovov[[i, a, j, b]] * (2.0 * t[[i, a, j, b]] - t[[i, b, j, a]]);
                 }
             }
         }
@@ -544,7 +548,10 @@ pub fn lccd(
         let amp = no.saturating_pow(2).saturating_mul(nv.saturating_pow(2));
         let mut plan = MemoryPlan::resolve(
             cfg.memory_budget_bytes,
-            format!("LCCD/CEPA(0) (no={no}, nv={nv}, GMRES restart={})", cfg.restart),
+            format!(
+                "LCCD/CEPA(0) (no={no}, nv={nv}, GMRES restart={})",
+                cfg.restart
+            ),
         );
         plan.reserve("g_vvvv (ac|bd)", nv.saturating_pow(4), Lifetime::Resident);
         plan.reserve("g_oooo (ik|jl)", no.saturating_pow(4), Lifetime::Resident);

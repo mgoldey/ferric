@@ -168,7 +168,13 @@ fn time_shape(label: &str, xyz_rel: &str, obs_name: &str, aux_name: &str, reps: 
 #[test]
 #[ignore]
 fn hybrid_shape_water_qz() {
-    time_shape("water_def2qzvp", "water.xyz", "def2-qzvp", "def2-qzvp-rifit", 10);
+    time_shape(
+        "water_def2qzvp",
+        "water.xyz",
+        "def2-qzvp",
+        "def2-qzvp-rifit",
+        10,
+    );
 }
 
 /// **Control shape** that already threads well: a bigger molecule where `nocc`
@@ -181,5 +187,11 @@ fn hybrid_shape_water_qz() {
 #[test]
 #[ignore]
 fn hybrid_shape_alkane10() {
-    time_shape("alkane_10_ccpvdz", "alkane_10.xyz", "cc-pvdz", "cc-pvdz-ri", 2);
+    time_shape(
+        "alkane_10_ccpvdz",
+        "alkane_10.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+        2,
+    );
 }

@@ -201,11 +201,13 @@ def run_cosx_scf(mol, coords, weights, fitted=False, conv=1e-9):
     mf.max_cycle = 200
     bare_jk = scf.hf.get_jk
 
-    def get_jk(mol_=None, dm=None, hermi=1, with_j=True, with_k=True,
-               omega=None):
+    def get_jk(mol_=None, dm=None, hermi=1, with_j=True, with_k=True, omega=None):
         dm = np.asarray(dm)
-        vj = bare_jk(mol, dm, hermi=hermi, with_j=True,
-                     with_k=False)[0] if with_j else None
+        vj = (
+            bare_jk(mol, dm, hermi=hermi, with_j=True, with_k=False)[0]
+            if with_j
+            else None
+        )
         vk = builder(dm) if with_k else None
         return vj, vk
 
@@ -239,8 +241,10 @@ def anchor(basis="cc-pvdz"):
         dE = abs(e - e_ref)
         good = dE < 1e-7 and conv
         ok &= good
-        print(f"  fitted={str(fitted):5s} npts={len(weights)}  |dE|={dE:.3e} Ha"
-              f"  converged={conv}   {'PASS' if good else 'FAIL'}")
+        print(
+            f"  fitted={str(fitted):5s} npts={len(weights)}  |dE|={dE:.3e} Ha"
+            f"  converged={conv}   {'PASS' if good else 'FAIL'}"
+        )
     print(f"\nANCHOR {'PASS -- sweep may proceed' if ok else 'FAIL -- STOP'}")
     return ok
 
@@ -258,13 +262,13 @@ def sweep(systems, basis):
         mf.conv_tol = 1e-11
         e_ref = mf.kernel()
         print()
-        print(f"### {name}/{basis}  nbf={mol.nao}  natm={mol.natm}  "
-              f"E_ref={e_ref:.10f}")
-        print(f"{'grid':>11} {'npts':>8} {'dE unfit':>12} {'dE fit':>12} "
-              f"{'fit gain':>10}")
+        print(f"### {name}/{basis}  nbf={mol.nao}  natm={mol.natm}  E_ref={e_ref:.10f}")
+        print(
+            f"{'grid':>11} {'npts':>8} {'dE unfit':>12} {'dE fit':>12} {'fit gain':>10}"
+        )
         print("-" * 58)
         rows = {}
-        for (nr, na) in GRIDS:
+        for nr, na in GRIDS:
             coords, weights = build_grid(mol, nr, na)
             eu, cu = run_cosx_scf(mol, coords, weights, fitted=False)
             ef, cf = run_cosx_scf(mol, coords, weights, fitted=True)
@@ -273,8 +277,10 @@ def sweep(systems, basis):
             gain = du / df if df > 0 else float("inf")
             rows[(nr, na)] = (len(weights), du, df, eu, ef, e_ref)
             flag = "" if (cu and cf) else "  [NOT CONVERGED]"
-            print(f"{nr:4d}x{na:<5d} {len(weights):8d} {du:12.3e} {df:12.3e} "
-                  f"{gain:9.1f}x{flag}")
+            print(
+                f"{nr:4d}x{na:<5d} {len(weights):8d} {du:12.3e} {df:12.3e} "
+                f"{gain:9.1f}x{flag}"
+            )
             del coords, weights
         out[name] = rows
     return out
@@ -306,11 +312,11 @@ def main():
     print("=" * 72)
     hdr = f"{'grid':>11}" + "".join(f"{s:>12}" for s in systems)
     print(hdr)
-    for (nr, na) in GRIDS:
+    for nr, na in GRIDS:
         line = f"{nr:4d}x{na:<5d}"
         for s in systems:
             _, du, df, *_ = res[s][(nr, na)]
-            line += f"{du/df:11.1f}x"
+            line += f"{du / df:11.1f}x"
         print(line)
 
     # ---- Q2: does the gain survive coarsening (do (i) and (ii) compose)? ----
@@ -340,15 +346,16 @@ def main():
         for s in systems:
             for tag, idx in (("unfitted", 1), ("fitted", 2)):
                 hit = [g for g in GRIDS if res[s][g][idx] < bar]
-                got = f"{hit[0][0]}x{hit[0][1]} npts={res[s][hit[0]][0]}" \
-                    if hit else "none in series"
+                got = (
+                    f"{hit[0][0]}x{hit[0][1]} npts={res[s][hit[0]][0]}"
+                    if hit
+                    else "none in series"
+                )
                 print(f"    {s:10s} {tag:9s} -> {got}")
 
     # Deliberately no file dump: every number that matters is in the tables
     # above, and the repo's scripts/ hygiene convention keeps probe artifacts
     # out of the tree.
-
-
 
 
 # =====================================================================
@@ -380,14 +387,17 @@ def reaction(basis="cc-pvdz"):
         mf.conv_tol = 1e-11
         e_ref[n] = mf.kernel()
     rxn_ref = sum(c * e_ref[n] for n, c in stoich.items())
-    print(f"analytic-K dE_rxn = {rxn_ref:.10f} Ha "
-          f"= {rxn_ref*627.5095:.4f} kcal/mol\n")
+    print(
+        f"analytic-K dE_rxn = {rxn_ref:.10f} Ha = {rxn_ref * 627.5095:.4f} kcal/mol\n"
+    )
 
-    print(f"{'grid':>11} {'unfit err':>13} {'fit err':>13} "
-          f"{'unfit kcal':>11} {'fit kcal':>10}")
+    print(
+        f"{'grid':>11} {'unfit err':>13} {'fit err':>13} "
+        f"{'unfit kcal':>11} {'fit kcal':>10}"
+    )
     print("-" * 62)
     rows = {}
-    for (nr, na) in GRIDS:
+    for nr, na in GRIDS:
         tot = {}
         for fitted in (False, True):
             acc = 0.0
@@ -400,15 +410,19 @@ def reaction(basis="cc-pvdz"):
         du = abs(tot[False] - rxn_ref)
         df = abs(tot[True] - rxn_ref)
         rows[(nr, na)] = (du, df)
-        print(f"{nr:4d}x{na:<5d} {du:13.3e} {df:13.3e} "
-              f"{du*627.5095:11.4f} {df*627.5095:10.4f}")
+        print(
+            f"{nr:4d}x{na:<5d} {du:13.3e} {df:13.3e} "
+            f"{du * 627.5095:11.4f} {df * 627.5095:10.4f}"
+        )
 
     print()
     bar = 0.1 / 627.5095
     for tag, idx in (("unfitted", 0), ("fitted", 1)):
         hit = [g for g in GRIDS if rows[g][idx] < bar]
-        print(f"  coarsest grid meeting 0.1 kcal/mol, {tag:8s}: "
-              f"{hit[0] if hit else 'none in series'}")
+        print(
+            f"  coarsest grid meeting 0.1 kcal/mol, {tag:8s}: "
+            f"{hit[0] if hit else 'none in series'}"
+        )
     return rows
 
 

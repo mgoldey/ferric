@@ -97,8 +97,7 @@ def water_xyz_string():
     input.
     """
     rows = "\n".join(
-        f"{s} {r[0]!r} {r[1]!r} {r[2]!r}"
-        for s, r in zip(WATER_SYMBOLS, WATER_ANGSTROM)
+        f"{s} {r[0]!r} {r[1]!r} {r[2]!r}" for s, r in zip(WATER_SYMBOLS, WATER_ANGSTROM)
     )
     return f"{len(WATER_SYMBOLS)}\n\n{rows}\n"
 
@@ -106,9 +105,7 @@ def water_xyz_string():
 @pytest.fixture
 def water_ensemble():
     """A one-conformer water ensemble."""
-    return ferric.ConformerEnsemble.from_coordinates(
-        [WATER_ANGSTROM], WATER_SYMBOLS
-    )
+    return ferric.ConformerEnsemble.from_coordinates([WATER_ANGSTROM], WATER_SYMBOLS)
 
 
 @pytest.fixture

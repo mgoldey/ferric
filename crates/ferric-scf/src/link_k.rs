@@ -127,7 +127,9 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
         // runs once per work-chunk, so constructing an engine there storms the
         // global libint2 ctor mutex.
         if self.pool.is_none() {
-            self.pool = Some(crate::engine_pool::EnginePool::new(self.op, self.prep, 1e-14)?);
+            self.pool = Some(crate::engine_pool::EnginePool::new(
+                self.op, self.prep, 1e-14,
+            )?);
         }
         let pool = self.pool.as_ref().expect("pool initialized above");
 
@@ -184,7 +186,11 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
         // MPI rank striping (see `ParallelContext::stripe` doc).
         let all_pairs: Vec<(usize, usize)> = (0..nsh)
             .flat_map(|ish| {
-                self.sp.partners(ish).iter().filter(move |&&jsh| jsh <= ish).map(move |&jsh| (ish, jsh))
+                self.sp
+                    .partners(ish)
+                    .iter()
+                    .filter(move |&&jsh| jsh <= ish)
+                    .map(move |&jsh| (ish, jsh))
             })
             .collect();
         let ij_pairs: Vec<(usize, usize)> = self.ctx.stripe(all_pairs);
@@ -223,94 +229,135 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
                 let mut dirty: Vec<usize> = Vec::new();
                 let mut count = 0usize;
                 for &(ish, jsh) in &ij_pairs[lo..hi] {
-                    for &w in &dirty { seen[w] = 0; }
+                    for &w in &dirty {
+                        seen[w] = 0;
+                    }
                     dirty.clear();
 
                     pool.with(|engine| {
-                    // Ket shells driven by the density: the quartet (ij|kl)
-                    // feeds K through the four blocks D[i,k], D[i,l], D[j,k],
-                    // D[j,l] (see the 8-fold scatter below), so a ket shell
-                    // ksh is needed whenever D[ish,ksh] OR D[jsh,ksh] is
-                    // significant — the sorted-merge UNION dp(ish) ∪ dp(jsh),
-                    // no Vec allocation. The ket PAIR's own significance is
-                    // enforced by lsh ∈ sp(ksh). Both ket orderings are
-                    // visited (ksh may land as cs3 or cs4), which covers all
-                    // four blocks. The former `sp(ish) ∩ dp(jsh)` only ever
-                    // checked the D[jsh,·] blocks and additionally demanded a
-                    // Schwarz-significant BRA-KET pair (ish,ksh), which the
-                    // integral does not require: on butane/def2-SVP it lost
-                    // 8% of K at the SAD guess and drove the SCF non-variational
-                    // (tests/link_scf_anchor.rs).
-                    let dp_ish = dp.partners(ish);
-                    let dp_jsh = dp.partners(jsh);
-                    let mut ai = 0;
-                    let mut bi = 0;
-                    while ai < dp_ish.len() || bi < dp_jsh.len() {
-                        let ksh = match (dp_ish.get(ai), dp_jsh.get(bi)) {
-                            (Some(&a), Some(&b)) if a == b => { ai += 1; bi += 1; a }
-                            (Some(&a), Some(&b)) if a < b => { ai += 1; a }
-                            (Some(_), Some(&b)) => { bi += 1; b }
-                            (Some(&a), None) => { ai += 1; a }
-                            (None, Some(&b)) => { bi += 1; b }
-                            (None, None) => unreachable!("loop guard"),
-                        };
-
-                        for &lsh in self.sp.partners(ksh) {
-                            let (cs1, cs2) = if ish >= jsh { (ish, jsh) } else { (jsh, ish) };
-                            let (cs3, cs4) = if ksh >= lsh { (ksh, lsh) } else { (lsh, ksh) };
-                            let (cs1, cs2, cs3, cs4) = if (cs1, cs2) >= (cs3, cs4) {
-                                (cs1, cs2, cs3, cs4)
-                            } else {
-                                (cs3, cs4, cs1, cs2)
+                        // Ket shells driven by the density: the quartet (ij|kl)
+                        // feeds K through the four blocks D[i,k], D[i,l], D[j,k],
+                        // D[j,l] (see the 8-fold scatter below), so a ket shell
+                        // ksh is needed whenever D[ish,ksh] OR D[jsh,ksh] is
+                        // significant — the sorted-merge UNION dp(ish) ∪ dp(jsh),
+                        // no Vec allocation. The ket PAIR's own significance is
+                        // enforced by lsh ∈ sp(ksh). Both ket orderings are
+                        // visited (ksh may land as cs3 or cs4), which covers all
+                        // four blocks. The former `sp(ish) ∩ dp(jsh)` only ever
+                        // checked the D[jsh,·] blocks and additionally demanded a
+                        // Schwarz-significant BRA-KET pair (ish,ksh), which the
+                        // integral does not require: on butane/def2-SVP it lost
+                        // 8% of K at the SAD guess and drove the SCF non-variational
+                        // (tests/link_scf_anchor.rs).
+                        let dp_ish = dp.partners(ish);
+                        let dp_jsh = dp.partners(jsh);
+                        let mut ai = 0;
+                        let mut bi = 0;
+                        while ai < dp_ish.len() || bi < dp_jsh.len() {
+                            let ksh = match (dp_ish.get(ai), dp_jsh.get(bi)) {
+                                (Some(&a), Some(&b)) if a == b => {
+                                    ai += 1;
+                                    bi += 1;
+                                    a
+                                }
+                                (Some(&a), Some(&b)) if a < b => {
+                                    ai += 1;
+                                    a
+                                }
+                                (Some(_), Some(&b)) => {
+                                    bi += 1;
+                                    b
+                                }
+                                (Some(&a), None) => {
+                                    ai += 1;
+                                    a
+                                }
+                                (None, Some(&b)) => {
+                                    bi += 1;
+                                    b
+                                }
+                                (None, None) => unreachable!("loop guard"),
                             };
 
-                            // Canonical ownership: only the (ish,jsh) pair where ish==cs1 and
-                            // jsh==cs2 computes this quartet, avoiding double-counting across tasks.
-                            if cs1 != ish || cs2 != jsh { continue; }
+                            for &lsh in self.sp.partners(ksh) {
+                                let (cs1, cs2) = if ish >= jsh { (ish, jsh) } else { (jsh, ish) };
+                                let (cs3, cs4) = if ksh >= lsh { (ksh, lsh) } else { (lsh, ksh) };
+                                let (cs1, cs2, cs3, cs4) = if (cs1, cs2) >= (cs3, cs4) {
+                                    (cs1, cs2, cs3, cs4)
+                                } else {
+                                    (cs3, cs4, cs1, cs2)
+                                };
 
-                            // Bitvec dedup over (cs3, cs4) — ish==cs1 and jsh==cs2 are fixed.
-                            let bit = cs3 * nsh + cs4;
-                            let word = bit / 64;
-                            let mask = 1u64 << (bit % 64);
-                            if seen[word] & mask != 0 { continue; }
-                            if seen[word] == 0 { dirty.push(word); }
-                            seen[word] |= mask;
+                                // Canonical ownership: only the (ish,jsh) pair where ish==cs1 and
+                                // jsh==cs2 computes this quartet, avoiding double-counting across tasks.
+                                if cs1 != ish || cs2 != jsh {
+                                    continue;
+                                }
 
-                            if self.bound.estimate(cs1, cs2, cs3, cs4)
-                                * screen.dmax(cs1, cs2, cs3, cs4)
-                                < thresh
-                            {
-                                continue;
-                            }
+                                // Bitvec dedup over (cs3, cs4) — ish==cs1 and jsh==cs2 are fixed.
+                                let bit = cs3 * nsh + cs4;
+                                let word = bit / 64;
+                                let mask = 1u64 << (bit % 64);
+                                if seen[word] & mask != 0 {
+                                    continue;
+                                }
+                                if seen[word] == 0 {
+                                    dirty.push(word);
+                                }
+                                seen[word] |= mask;
 
-                            if let Some(q) = engine.compute_quartet(self.prep, cs1, cs2, cs3, cs4) {
-                                count += 1;
-                                let (n1, n2, n3, n4) = (dims[cs1], dims[cs2], dims[cs3], dims[cs4]);
-                                let (o1, o2, o3, o4) = (offs[cs1], offs[cs2], offs[cs3], offs[cs4]);
-                                let sym12 = cs1 != cs2;
-                                let sym34 = cs3 != cs4;
-                                let sym1234 = (cs1, cs2) != (cs3, cs4);
+                                if self.bound.estimate(cs1, cs2, cs3, cs4)
+                                    * screen.dmax(cs1, cs2, cs3, cs4)
+                                    < thresh
+                                {
+                                    continue;
+                                }
 
-                                for a in 0..n1 {
-                                    for b in 0..n2 {
-                                        for c in 0..n3 {
-                                            for dd in 0..n4 {
-                                                let v = q[((a * n2 + b) * n3 + c) * n4 + dd];
-                                                let mu = o1 + a;
-                                                let nu = o2 + b;
-                                                let la = o3 + c;
-                                                let sg = o4 + dd;
+                                if let Some(q) =
+                                    engine.compute_quartet(self.prep, cs1, cs2, cs3, cs4)
+                                {
+                                    count += 1;
+                                    let (n1, n2, n3, n4) =
+                                        (dims[cs1], dims[cs2], dims[cs3], dims[cs4]);
+                                    let (o1, o2, o3, o4) =
+                                        (offs[cs1], offs[cs2], offs[cs3], offs[cs4]);
+                                    let sym12 = cs1 != cs2;
+                                    let sym34 = cs3 != cs4;
+                                    let sym1234 = (cs1, cs2) != (cs3, cs4);
 
-                                                k_local[(mu, la)] += d[(nu, sg)] * v;
-                                                if sym12 { k_local[(nu, la)] += d[(mu, sg)] * v; }
-                                                if sym34 { k_local[(mu, sg)] += d[(nu, la)] * v; }
-                                                if sym12 && sym34 { k_local[(nu, sg)] += d[(mu, la)] * v; }
+                                    for a in 0..n1 {
+                                        for b in 0..n2 {
+                                            for c in 0..n3 {
+                                                for dd in 0..n4 {
+                                                    let v = q[((a * n2 + b) * n3 + c) * n4 + dd];
+                                                    let mu = o1 + a;
+                                                    let nu = o2 + b;
+                                                    let la = o3 + c;
+                                                    let sg = o4 + dd;
 
-                                                if sym1234 {
-                                                    k_local[(la, mu)] += d[(sg, nu)] * v;
-                                                    if sym34 { k_local[(sg, mu)] += d[(la, nu)] * v; }
-                                                    if sym12 { k_local[(la, nu)] += d[(sg, mu)] * v; }
-                                                    if sym12 && sym34 { k_local[(sg, nu)] += d[(la, mu)] * v; }
+                                                    k_local[(mu, la)] += d[(nu, sg)] * v;
+                                                    if sym12 {
+                                                        k_local[(nu, la)] += d[(mu, sg)] * v;
+                                                    }
+                                                    if sym34 {
+                                                        k_local[(mu, sg)] += d[(nu, la)] * v;
+                                                    }
+                                                    if sym12 && sym34 {
+                                                        k_local[(nu, sg)] += d[(mu, la)] * v;
+                                                    }
+
+                                                    if sym1234 {
+                                                        k_local[(la, mu)] += d[(sg, nu)] * v;
+                                                        if sym34 {
+                                                            k_local[(sg, mu)] += d[(la, nu)] * v;
+                                                        }
+                                                        if sym12 {
+                                                            k_local[(la, nu)] += d[(sg, mu)] * v;
+                                                        }
+                                                        if sym12 && sym34 {
+                                                            k_local[(sg, nu)] += d[(la, mu)] * v;
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -318,7 +365,6 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
                                 }
                             }
                         }
-                    }
                     });
                 }
                 count_acc.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
@@ -355,8 +401,8 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::qqr::QqrBounds;
     use crate::fock::KBuilder;
+    use crate::qqr::QqrBounds;
     use crate::rhf::{build_jk, solve_rhf, RhfConfig};
     use crate::screening::SchwarzBounds;
     use ferric_core::basis;
@@ -375,7 +421,15 @@ mod tests {
             integral_thresh: 1e-14,
             ..Default::default()
         };
-        let result = solve_rhf(&ferric_core::parallel::ParallelContext::default(), &mol, &prep, op, &bounds, &config).unwrap();
+        let result = solve_rhf(
+            &ferric_core::parallel::ParallelContext::default(),
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &config,
+        )
+        .unwrap();
         assert!(result.converged, "RHF did not converge");
         (result.density_total, mol)
     }
@@ -389,12 +443,26 @@ mod tests {
         let n = prep.nbasis();
         let mut j = Array2::zeros((n, n));
         let mut k = Array2::zeros((n, n));
-        build_jk(&ferric_core::parallel::ParallelContext::default(), &prep, &bounds, 1e-14, d, &mut j, &mut k).unwrap();
+        build_jk(
+            &ferric_core::parallel::ParallelContext::default(),
+            &prep,
+            &bounds,
+            1e-14,
+            d,
+            &mut j,
+            &mut k,
+        )
+        .unwrap();
         k
     }
 
     /// Build K using LinK with the given ParallelContext.
-    fn link_k_with_ctx(mol: &Molecule, basis_name: &str, d: &Array2<f64>, ctx: &ferric_core::parallel::ParallelContext) -> Array2<f64> {
+    fn link_k_with_ctx(
+        mol: &Molecule,
+        basis_name: &str,
+        d: &Array2<f64>,
+        ctx: &ferric_core::parallel::ParallelContext,
+    ) -> Array2<f64> {
         let bs = basis::bundled(basis_name).unwrap();
         let prep = PreparedBasis::new(mol, &bs).unwrap();
         let op = Operator::coulomb();
@@ -411,11 +479,22 @@ mod tests {
 
     /// Build K using LinK.
     fn link_k(mol: &Molecule, basis_name: &str, d: &Array2<f64>) -> Array2<f64> {
-        link_k_with_ctx(mol, basis_name, d, &ferric_core::parallel::ParallelContext::default())
+        link_k_with_ctx(
+            mol,
+            basis_name,
+            d,
+            &ferric_core::parallel::ParallelContext::default(),
+        )
     }
 
     /// Simulate MPI sharding: build K using rank r of size n, return raw (un-reduced) partial K.
-    fn link_k_rank(mol: &Molecule, basis_name: &str, d: &Array2<f64>, rank: usize, size: usize) -> Array2<f64> {
+    fn link_k_rank(
+        mol: &Molecule,
+        basis_name: &str,
+        d: &Array2<f64>,
+        rank: usize,
+        size: usize,
+    ) -> Array2<f64> {
         let ctx = ferric_core::parallel::ParallelContext::for_rank(rank, size);
         link_k_with_ctx(mol, basis_name, d, &ctx)
     }

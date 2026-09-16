@@ -10,8 +10,7 @@ use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_mp2::lmp2_amplitude::{
-    amplitude_lmp2, amplitude_lmp2_with_virtuals, build_vvhv, check_vvhv, AmplitudeLmp2Config,
-    VvHv,
+    amplitude_lmp2, amplitude_lmp2_with_virtuals, build_vvhv, check_vvhv, AmplitudeLmp2Config, VvHv,
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -42,10 +41,19 @@ fn setup(xyz: &str) -> Setup {
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
     )
     .unwrap();
-    Setup { mol, obs, obs_bs, dfbs, rhf }
+    Setup {
+        mol,
+        obs,
+        obs_bs,
+        dfbs,
+        rhf,
+    }
 }
 
 #[test]
@@ -62,9 +70,21 @@ fn vvhv_construction_is_orthonormal_and_spans_the_virtual_space() {
 #[test]
 fn eps_zero_matches_canonical_ri_mp2() {
     let su = setup("water.xyz");
-    let cfg = AmplitudeLmp2Config { eps: 0.0, frozen_core: 1, ..Default::default() };
-    let r = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg)
-        .unwrap();
+    let cfg = AmplitudeLmp2Config {
+        eps: 0.0,
+        frozen_core: 1,
+        ..Default::default()
+    };
+    let r = amplitude_lmp2(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+    )
+    .unwrap();
     let de = r.e_corr - r.e_corr_canonical_ri;
     eprintln!(
         "ANCHOR water/6-31G: E_corr={:.10} canonical={:.10} dE={de:+.3e} (cg {} iters)",
@@ -88,9 +108,19 @@ fn mutated_virtual_space_fails_the_anchor() {
         n_valence: vvhv.n_valence,
         n_hard: vvhv.n_hard - 1,
     };
-    let cfg = AmplitudeLmp2Config { eps: 0.0, frozen_core: 1, ..Default::default() };
+    let cfg = AmplitudeLmp2Config {
+        eps: 0.0,
+        frozen_core: 1,
+        ..Default::default()
+    };
     let r = amplitude_lmp2_with_virtuals(
-        &su.mol, &su.obs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg, &broken,
+        &su.mol,
+        &su.obs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+        &broken,
     )
     .unwrap();
     let de = (r.e_corr - r.e_corr_canonical_ri).abs();
@@ -105,9 +135,21 @@ fn mutated_virtual_space_fails_the_anchor() {
 #[test]
 fn eps_sweep_on_c4_is_one_sided_with_live_counters() {
     let su = setup("alkane_4.xyz");
-    let cfg = AmplitudeLmp2Config { eps: 1e-3, frozen_core: 4, ..Default::default() };
-    let r = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg)
-        .unwrap();
+    let cfg = AmplitudeLmp2Config {
+        eps: 1e-3,
+        frozen_core: 4,
+        ..Default::default()
+    };
+    let r = amplitude_lmp2(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+    )
+    .unwrap();
     eprintln!(
         "C4 eps=1e-3: dE={:+.3e} keep={:.4} pairs={:.3} dom(mean/max)={:.1}/{} cg={} raggedx={}",
         r.e_corr - r.e_corr_canonical_ri,
@@ -120,7 +162,10 @@ fn eps_sweep_on_c4_is_one_sided_with_live_counters() {
     );
     assert!(r.cg_converged);
     let de = r.e_corr - r.e_corr_canonical_ri;
-    assert!(de > 0.0, "threshold error must be one-sided (under-correlation), got {de:+.3e}");
+    assert!(
+        de > 0.0,
+        "threshold error must be one-sided (under-correlation), got {de:+.3e}"
+    );
     assert!(de < 5e-2, "eps=1e-3 error implausibly large: {de:+.3e}");
     assert!(
         r.keep_fraction > 0.03 && r.keep_fraction < 0.20,
@@ -130,7 +175,11 @@ fn eps_sweep_on_c4_is_one_sided_with_live_counters() {
     // C4 is BELOW the locality onset, so dom_max may touch the full virtual
     // space (Python measured the same); the mask biting shows in the MEAN.
     let nv = su.obs.nbasis() - (su.mol.nelec() as usize) / 2;
-    assert!(r.dom_mean < nv as f64, "dom mean {:.1} not below nv={nv}", r.dom_mean);
+    assert!(
+        r.dom_mean < nv as f64,
+        "dom mean {:.1} not below nv={nv}",
+        r.dom_mean
+    );
 }
 
 /// Operator threading + frozen_core=0 edge: the ε=0 anchor must also hold
@@ -143,7 +192,11 @@ fn eps_zero_anchor_holds_for_erfc_with_no_frozen_core() {
     let op = Operator::erfc(1.0); // omega in Bohr^-1
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &su.obs).unwrap();
     let _ = &bounds; // RHF reference is Coulomb-SCF (attenuated MP2 convention)
-    let cfg = AmplitudeLmp2Config { eps: 0.0, frozen_core: 0, ..Default::default() };
+    let cfg = AmplitudeLmp2Config {
+        eps: 0.0,
+        frozen_core: 0,
+        ..Default::default()
+    };
     let r = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg).unwrap();
     let de = r.e_corr - r.e_corr_canonical_ri;
     eprintln!(
@@ -164,12 +217,30 @@ fn eps_zero_anchor_holds_for_erfc_with_no_frozen_core() {
 fn ragged_masked_solve_matches_naive_dense_reference() {
     use ferric_mp2::lmp2_amplitude::assemble_localized;
     let su = setup("water.xyz");
-    let cfg = AmplitudeLmp2Config { eps: 1e-4, frozen_core: 1, ..Default::default() };
+    let cfg = AmplitudeLmp2Config {
+        eps: 1e-4,
+        frozen_core: 1,
+        ..Default::default()
+    };
     let vvhv = build_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf).unwrap();
-    let lp = assemble_localized(&su.mol, &su.obs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg, &vvhv)
-        .unwrap();
+    let lp = assemble_localized(
+        &su.mol,
+        &su.obs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+        &vvhv,
+    )
+    .unwrap();
     let r = amplitude_lmp2_with_virtuals(
-        &su.mol, &su.obs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg, &vvhv,
+        &su.mol,
+        &su.obs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+        &vvhv,
     )
     .unwrap();
 
@@ -184,7 +255,10 @@ fn ragged_masked_solve_matches_naive_dense_reference() {
     let e_broken = naive_masked_mp2(&lp.j_dense, &lp.f_oo, &lp.f_vv, lp.no, lp.nv, cfg.eps, 5e-2);
     let dxb = (r.e_corr - e_broken).abs();
     eprintln!("XCHECK mutation: |dE|={dxb:.3e} (must exceed 1e-10)");
-    assert!(dxb > 1e-10, "xcheck comparison is vacuous: mutation not detected");
+    assert!(
+        dxb > 1e-10,
+        "xcheck comparison is vacuous: mutation not detected"
+    );
 }
 
 /// Naive dense masked preconditioned CG — deliberately simple flat-matrix
@@ -308,9 +382,21 @@ fn naive_masked_mp2(
 #[test]
 fn c8_counters_land_in_the_python_measured_band() {
     let su = setup("alkane_8.xyz");
-    let cfg = AmplitudeLmp2Config { eps: 1e-3, frozen_core: 8, ..Default::default() };
-    let r = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg)
-        .unwrap();
+    let cfg = AmplitudeLmp2Config {
+        eps: 1e-3,
+        frozen_core: 8,
+        ..Default::default()
+    };
+    let r = amplitude_lmp2(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+    )
+    .unwrap();
     eprintln!(
         "C8 eps=1e-3: dE={:+.3e} keep={:.4} pairs={:.3} dom(mean/max)={:.1}/{} cg={} raggedx={}",
         r.e_corr - r.e_corr_canonical_ri,
@@ -323,7 +409,10 @@ fn c8_counters_land_in_the_python_measured_band() {
     );
     assert!(r.cg_converged);
     let de = r.e_corr - r.e_corr_canonical_ri;
-    assert!(de > 0.0 && de < 6e-2, "C8 eps=1e-3 dE out of band: {de:+.3e}");
+    assert!(
+        de > 0.0 && de < 6e-2,
+        "C8 eps=1e-3 dE out of band: {de:+.3e}"
+    );
     assert!(
         r.keep_fraction > 0.008 && r.keep_fraction < 0.022,
         "keep {:.4} outside Python band (0.0133 ±aux)",
@@ -348,18 +437,44 @@ fn c8_counters_land_in_the_python_measured_band() {
 #[test]
 fn domain_fit_trivial_limit_matches_global() {
     let su = setup("water.xyz");
-    let base = AmplitudeLmp2Config { eps: 0.0, frozen_core: 1, ..Default::default() };
-    let glob = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &base)
-        .unwrap();
-    let cfg = AmplitudeLmp2Config { fit_radius_bohr: Some(1e6), ..base };
-    let dom = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg)
-        .unwrap();
+    let base = AmplitudeLmp2Config {
+        eps: 0.0,
+        frozen_core: 1,
+        ..Default::default()
+    };
+    let glob = amplitude_lmp2(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &base,
+    )
+    .unwrap();
+    let cfg = AmplitudeLmp2Config {
+        fit_radius_bohr: Some(1e6),
+        ..base
+    };
+    let dom = amplitude_lmp2(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+    )
+    .unwrap();
     let dd = (dom.e_corr - glob.e_corr).abs();
     eprintln!("TRIVIAL LIMIT: |E(domain,inf) - E(global)| = {dd:.3e}");
     assert!(dd < 1e-10, "trivial-limit anchor FAILED: {dd:.3e}");
     // and the eps=0 canonical anchor must still hold through the domain path
     let de = (dom.e_corr - dom.e_corr_canonical_ri).abs();
-    assert!(de < 1e-9, "canonical anchor through domain path FAILED: {de:.3e}");
+    assert!(
+        de < 1e-9,
+        "canonical anchor through domain path FAILED: {de:.3e}"
+    );
 }
 
 /// Finite radius: µHa-class truncation, strictly nonzero (proves the domain
@@ -367,15 +482,41 @@ fn domain_fit_trivial_limit_matches_global() {
 #[test]
 fn domain_fit_finite_radius_truncation_is_microhartree_class() {
     let su = setup("alkane_4.xyz");
-    let base = AmplitudeLmp2Config { eps: 0.0, frozen_core: 4, ..Default::default() };
-    let glob = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &base)
-        .unwrap();
-    let cfg = AmplitudeLmp2Config { fit_radius_bohr: Some(8.0), ..base };
-    let dom = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg)
-        .unwrap();
+    let base = AmplitudeLmp2Config {
+        eps: 0.0,
+        frozen_core: 4,
+        ..Default::default()
+    };
+    let glob = amplitude_lmp2(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &base,
+    )
+    .unwrap();
+    let cfg = AmplitudeLmp2Config {
+        fit_radius_bohr: Some(8.0),
+        ..base
+    };
+    let dom = amplitude_lmp2(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+    )
+    .unwrap();
     let dd = (dom.e_corr - glob.e_corr).abs();
     eprintln!("C4 r=8 Bohr domain truncation: |dE| = {dd:.3e} Ha");
-    assert!(dd > 1e-12, "domain path identical to global at r=8 — truncation vacuous?");
+    assert!(
+        dd > 1e-12,
+        "domain path identical to global at r=8 — truncation vacuous?"
+    );
     assert!(dd < 5e-5, "domain truncation not µHa-class: {dd:.3e}");
 }
 
@@ -387,9 +528,17 @@ fn domain_fit_finite_radius_truncation_is_microhartree_class() {
 fn pair_gate_drops_pairs_with_bounded_cost_and_mutates_loudly() {
     let su = setup("alkane_8.xyz");
     let op = Operator::erfc(1.0);
-    let base = AmplitudeLmp2Config { eps: 1e-3, frozen_core: 8, ..Default::default() };
-    let ungated = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &base).unwrap();
-    let cfg = AmplitudeLmp2Config { pair_gate_cal: Some(0.02), ..base.clone() };
+    let base = AmplitudeLmp2Config {
+        eps: 1e-3,
+        frozen_core: 8,
+        ..Default::default()
+    };
+    let ungated =
+        amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &base).unwrap();
+    let cfg = AmplitudeLmp2Config {
+        pair_gate_cal: Some(0.02),
+        ..base.clone()
+    };
     let gated = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg).unwrap();
     let cost = (gated.e_corr - ungated.e_corr).abs();
     eprintln!(
@@ -397,11 +546,19 @@ fn pair_gate_drops_pairs_with_bounded_cost_and_mutates_loudly() {
         gated.n_pairs_gated,
         25 * 24 / 2
     );
-    assert!(gated.n_pairs_gated > 50, "gate dropped only {} pairs", gated.n_pairs_gated);
+    assert!(
+        gated.n_pairs_gated > 50,
+        "gate dropped only {} pairs",
+        gated.n_pairs_gated
+    );
     assert!(cost < 1e-3, "gate cost too large: {cost:.3e}");
     // mutation: absurd calibration must gate ~everything and move E a lot
-    let broken = AmplitudeLmp2Config { pair_gate_cal: Some(1e-12), ..base };
-    let wrecked = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &broken).unwrap();
+    let broken = AmplitudeLmp2Config {
+        pair_gate_cal: Some(1e-12),
+        ..base
+    };
+    let wrecked =
+        amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &broken).unwrap();
     let dwreck = (wrecked.e_corr - ungated.e_corr).abs();
     eprintln!(
         "gate MUTATION (cal=1e-12): dropped {} pairs, |dE| = {dwreck:.3e}",
@@ -437,9 +594,10 @@ fn bench_wall_clock_alkane_series() {
     for xyz in ["alkane_8.xyz", "alkane_12.xyz", "alkane_16.xyz"] {
         let su = setup(xyz);
         let nc = su.mol.atoms.iter().filter(|a| a.z == 6).count();
-        for (opname, op, cal) in
-            [("coul", Operator::coulomb(), 0.7), ("erfc1", Operator::erfc(1.0), 0.02)]
-        {
+        for (opname, op, cal) in [
+            ("coul", Operator::coulomb(), 0.7),
+            ("erfc1", Operator::erfc(1.0), 0.02),
+        ] {
             for eps in [1e-3, 1e-4] {
                 let cfg = AmplitudeLmp2Config {
                     eps,
@@ -449,10 +607,8 @@ fn bench_wall_clock_alkane_series() {
                     aux_tail_frac: Some(0.1),
                     ..Default::default()
                 };
-                let r = amplitude_lmp2(
-                    &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg,
-                )
-                .unwrap();
+                let r = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg)
+                    .unwrap();
                 println!(
                     "{:9} {:6.0e} {:6} {:.8} {:+.3e} {:.4} {:4}/{:<4} {:8.2} {:9.2} {:7.2} {:6} {:5} aux {:.0}/{}",
                     xyz.trim_end_matches(".xyz"),
@@ -485,9 +641,10 @@ fn bench_wall_clock_alkane_series_domain_fit() {
     for xyz in ["alkane_4.xyz", "alkane_8.xyz", "alkane_12.xyz"] {
         let su = setup(xyz);
         let nc = su.mol.atoms.iter().filter(|a| a.z == 6).count();
-        for (opname, op, cal) in
-            [("coul", Operator::coulomb(), 0.7), ("erfc1", Operator::erfc(1.0), 0.02)]
-        {
+        for (opname, op, cal) in [
+            ("coul", Operator::coulomb(), 0.7),
+            ("erfc1", Operator::erfc(1.0), 0.02),
+        ] {
             for eps in [1e-3, 1e-4] {
                 let cfg = AmplitudeLmp2Config {
                     eps,
@@ -497,10 +654,8 @@ fn bench_wall_clock_alkane_series_domain_fit() {
                     ..Default::default()
                 };
                 let t0 = Instant::now();
-                let r = amplitude_lmp2(
-                    &su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg,
-                )
-                .unwrap();
+                let r = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &cfg)
+                    .unwrap();
                 let _total = t0.elapsed().as_secs_f64();
                 println!(
                     "{:8} {:6.0e} {:6} {:.8} {:+.3e} {:.4} {:4}/{:<4} {:8.2} {:9.2} {:7.2} {:6} {:5}",
@@ -534,16 +689,36 @@ fn schwarz_candidates_cover_every_retained_element() {
     use ferric_mp2::rimp2::metric_inverse_sqrt;
     let su = setup("alkane_4.xyz");
     let eps = 1e-3;
-    let cfg = AmplitudeLmp2Config { eps, frozen_core: 4, ..Default::default() };
+    let cfg = AmplitudeLmp2Config {
+        eps,
+        frozen_core: 4,
+        ..Default::default()
+    };
     let vvhv = build_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf).unwrap();
-    let lb = assemble_basis(&su.mol, &su.obs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg, &vvhv)
-        .unwrap();
+    let lb = assemble_basis(
+        &su.mol,
+        &su.obs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+        &vvhv,
+    )
+    .unwrap();
     let (no, nv) = (lb.no, lb.nv);
     let vis = metric_inverse_sqrt(&lb.v2c, Operator::coulomb()).unwrap();
     let bt = vis.dot(&lb.b_flat);
-    let q: Vec<f64> = (0..no * nv).map(|c| bt.column(c).dot(&bt.column(c)).sqrt()).collect();
-    let qmax: Vec<f64> =
-        (0..no).map(|i| q[i * nv..(i + 1) * nv].iter().cloned().fold(0.0f64, f64::max)).collect();
+    let q: Vec<f64> = (0..no * nv)
+        .map(|c| bt.column(c).dot(&bt.column(c)).sqrt())
+        .collect();
+    let qmax: Vec<f64> = (0..no)
+        .map(|i| {
+            q[i * nv..(i + 1) * nv]
+                .iter()
+                .cloned()
+                .fold(0.0f64, f64::max)
+        })
+        .collect();
     let mut n_retained = 0usize;
     // adaptive mutation arm: the scale at which index x drops from the
     // candidate set is s_x = eps / max(q_ix qmax_j, q_jx qmax_i); an element
@@ -555,9 +730,7 @@ fn schwarz_candidates_cover_every_retained_element() {
             let bi = bt.slice(ndarray::s![.., i * nv..(i + 1) * nv]);
             let bj = bt.slice(ndarray::s![.., j * nv..(j + 1) * nv]);
             let g = bi.t().dot(&bj);
-            let s_of = |x: usize| {
-                eps / (q[i * nv + x] * qmax[j]).max(q[j * nv + x] * qmax[i])
-            };
+            let s_of = |x: usize| eps / (q[i * nv + x] * qmax[j]).max(q[j * nv + x] * qmax[i]);
             for a in 0..nv {
                 for b in 0..nv {
                     let retained = g[(a, b)].abs() > eps || g[(b, a)].abs() > eps;
@@ -584,9 +757,7 @@ fn schwarz_candidates_cover_every_retained_element() {
             let bi = bt.slice(ndarray::s![.., i * nv..(i + 1) * nv]);
             let bj = bt.slice(ndarray::s![.., j * nv..(j + 1) * nv]);
             let g = bi.t().dot(&bj);
-            let s_of = |x: usize| {
-                eps / (q[i * nv + x] * qmax[j]).max(q[j * nv + x] * qmax[i])
-            };
+            let s_of = |x: usize| eps / (q[i * nv + x] * qmax[j]).max(q[j * nv + x] * qmax[i]);
             for a in 0..nv {
                 for b in 0..nv {
                     if (g[(a, b)].abs() > eps || g[(b, a)].abs() > eps)
@@ -604,7 +775,10 @@ fn schwarz_candidates_cover_every_retained_element() {
     );
     assert!(n_retained > 1000, "test too small to be meaningful");
     assert!(crit > 0.0 && crit <= 1.0, "crit out of range: {crit}");
-    assert!(n_lost_mutated > 0, "mutation arm vacuous: shrunken bound loses nothing");
+    assert!(
+        n_lost_mutated > 0,
+        "mutation arm vacuous: shrunken bound loses nothing"
+    );
 }
 
 /// AUX-TRUNCATION ANCHORS: (a) trivial limit — a zero tail budget keeps
@@ -617,36 +791,100 @@ fn schwarz_candidates_cover_every_retained_element() {
 fn aux_truncation_trivial_limit_subdominance_and_mutation() {
     let su = setup("alkane_8.xyz");
     let op = Operator::erfc(1.0);
-    let base = AmplitudeLmp2Config { eps: 1e-3, frozen_core: 8, ..Default::default() };
-    let r_full = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf,
-        &AmplitudeLmp2Config { eps: 0.0, frozen_core: 8, ..Default::default() }).unwrap();
+    let base = AmplitudeLmp2Config {
+        eps: 1e-3,
+        frozen_core: 8,
+        ..Default::default()
+    };
+    let r_full = amplitude_lmp2(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        op,
+        &su.rhf,
+        &AmplitudeLmp2Config {
+            eps: 0.0,
+            frozen_core: 8,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let r_off = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf, &base).unwrap();
     // (a) trivial limit: frac = 0.0 (empty budget -> keep all)
-    let r_zero = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf,
-        &AmplitudeLmp2Config { aux_tail_frac: Some(0.0), ..base.clone() }).unwrap();
-    assert_eq!(r_zero.e_corr.to_bits(), r_off.e_corr.to_bits(), "trivial limit not bit-identical");
+    let r_zero = amplitude_lmp2(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        op,
+        &su.rhf,
+        &AmplitudeLmp2Config {
+            aux_tail_frac: Some(0.0),
+            ..base.clone()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        r_zero.e_corr.to_bits(),
+        r_off.e_corr.to_bits(),
+        "trivial limit not bit-identical"
+    );
     assert_eq!(r_zero.aux_dom_max, r_off.aux_dom_max);
     // (b) sub-dominance at frac = 0.1
-    let r_tr = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf,
-        &AmplitudeLmp2Config { aux_tail_frac: Some(0.1), ..base.clone() }).unwrap();
+    let r_tr = amplitude_lmp2(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        op,
+        &su.rhf,
+        &AmplitudeLmp2Config {
+            aux_tail_frac: Some(0.1),
+            ..base.clone()
+        },
+    )
+    .unwrap();
     let trunc_err = (r_off.e_corr - r_full.e_corr).abs();
     let aux_err = (r_tr.e_corr - r_off.e_corr).abs();
     eprintln!(
         "aux truncation: dom mean/max {:.1}/{} of {} | eps-trunc {trunc_err:.3e} aux-err {aux_err:.3e}",
         r_tr.aux_dom_mean, r_tr.aux_dom_max, r_off.aux_dom_max
     );
-    assert!(r_tr.aux_dom_max < r_off.aux_dom_max, "aux truncation did not drop any function");
-    assert!(aux_err > 0.0, "aux error vanished with rows dropped — vacuous?");
+    assert!(
+        r_tr.aux_dom_max < r_off.aux_dom_max,
+        "aux truncation did not drop any function"
+    );
+    assert!(
+        aux_err > 0.0,
+        "aux error vanished with rows dropped — vacuous?"
+    );
     assert!(
         aux_err < trunc_err,
         "aux error ({aux_err:.3e}) dominates the eps truncation ({trunc_err:.3e})"
     );
     // (c) mutation: absurd budget guts the domains and the energy
-    let r_mut = amplitude_lmp2(&su.mol, &su.obs, &su.obs_bs, &su.dfbs, op, &su.rhf,
-        &AmplitudeLmp2Config { aux_tail_frac: Some(1e6), ..base }).unwrap();
+    let r_mut = amplitude_lmp2(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        op,
+        &su.rhf,
+        &AmplitudeLmp2Config {
+            aux_tail_frac: Some(1e6),
+            ..base
+        },
+    )
+    .unwrap();
     let wreck = (r_mut.e_corr - r_off.e_corr).abs();
-    eprintln!("mutation (frac=1e6): dom max {} -> {}, |dE| = {wreck:.3e}",
-        r_off.aux_dom_max, r_mut.aux_dom_max);
-    assert!(r_mut.aux_dom_max < r_off.aux_dom_max / 2 && wreck > 1e-3,
-        "mutation not loud: dom {} |dE| {wreck:.3e}", r_mut.aux_dom_max);
+    eprintln!(
+        "mutation (frac=1e6): dom max {} -> {}, |dE| = {wreck:.3e}",
+        r_off.aux_dom_max, r_mut.aux_dom_max
+    );
+    assert!(
+        r_mut.aux_dom_max < r_off.aux_dom_max / 2 && wreck > 1e-3,
+        "mutation not loud: dom {} |dE| {wreck:.3e}",
+        r_mut.aux_dom_max
+    );
 }

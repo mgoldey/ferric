@@ -8,14 +8,14 @@
 //!
 //! Validated against PySCF spin-orbital references (`testdata/reference/*_mp3.json`).
 
+use crate::rimp2::active_occ;
+use crate::spinorbital::{asym_oovv, asym_ovvo, asym_same, build_b, transpose_b};
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::threeindex;
 use ferric_scf::ScfResult;
-use crate::rimp2::active_occ;
-use crate::spinorbital::{asym_oovv, asym_ovvo, asym_same, build_b, transpose_b};
 use ferric_tensors::{einsum, Axis, Tensor};
 use ndarray::{ArrayD, IxDyn};
 
@@ -37,8 +37,11 @@ pub struct Mp3Result {
 
 impl std::fmt::Display for Mp3Result {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "MP3 total: {:.10} Ha (MP2: {:.10}, MP3: {:.10})",
-            self.e_total, self.e_mp2, self.e_mp3)
+        write!(
+            f,
+            "MP3 total: {:.10} Ha (MP2: {:.10}, MP3: {:.10})",
+            self.e_total, self.e_mp2, self.e_mp3
+        )
     }
 }
 
@@ -63,7 +66,9 @@ pub fn mp3_energy(
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + no]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + no])
+        .to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..]).to_owned();
 
     // Fail-fast size guard: peak is the spin-orbital VVVV block v_vvvv (:96) —
@@ -260,13 +265,24 @@ mod tests {
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
+        let rhf = solve_rhf(
+            &ParallelContext::default(),
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig::default(),
+        )
+        .unwrap();
         std::env::set_var("FERRIC_MEM_BUDGET_GB", "0.000001");
         let res = mp3_energy(&mol, &obs, &dfbs, op, &rhf, 0, None);
         std::env::remove_var("FERRIC_MEM_BUDGET_GB");
         let err = res.unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("MP3") && msg.contains("budget is"), "unexpected: {msg}");
+        assert!(
+            msg.contains("MP3") && msg.contains("budget is"),
+            "unexpected: {msg}"
+        );
     }
 
     #[test]
@@ -289,7 +305,10 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
         let res = mp3_energy(&mol, &obs, &dfbs, op, &rhf, 2, None);
-        assert!(res.is_err(), "expected Err for frozen_core > nocc_total, got {res:?}");
+        assert!(
+            res.is_err(),
+            "expected Err for frozen_core > nocc_total, got {res:?}"
+        );
     }
 
     // Tolerances reflect the RI density-fitting error vs the exact-integral

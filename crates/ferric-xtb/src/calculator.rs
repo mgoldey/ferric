@@ -71,7 +71,12 @@ impl XtbMethod {
     /// Parse a config string. Unknown values are a hard error, never a silent
     /// default (repo config-honesty convention).
     pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
-        match s.trim().to_ascii_lowercase().replace(['_', ' '], "-").as_str() {
+        match s
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['_', ' '], "-")
+            .as_str()
+        {
             "gfn1" | "gfn1-xtb" => Ok(Self::Gfn1),
             "gfn2" | "gfn2-xtb" => Ok(Self::Gfn2),
             "gfnff" | "gfn-ff" => Ok(Self::GfnFf),
@@ -376,9 +381,15 @@ impl XtbCalculator {
         // SAFETY: env/mol/calc are live handles; NULL filename is documented.
         unsafe {
             match config.method {
-                XtbMethod::Gfn1 => ffi::xtb_loadGFN1xTB(env.0, mol_h.0, calc.0, std::ptr::null_mut()),
-                XtbMethod::Gfn2 => ffi::xtb_loadGFN2xTB(env.0, mol_h.0, calc.0, std::ptr::null_mut()),
-                XtbMethod::GfnFf => ffi::xtb_loadGFNFF(env.0, mol_h.0, calc.0, std::ptr::null_mut()),
+                XtbMethod::Gfn1 => {
+                    ffi::xtb_loadGFN1xTB(env.0, mol_h.0, calc.0, std::ptr::null_mut())
+                }
+                XtbMethod::Gfn2 => {
+                    ffi::xtb_loadGFN2xTB(env.0, mol_h.0, calc.0, std::ptr::null_mut())
+                }
+                XtbMethod::GfnFf => {
+                    ffi::xtb_loadGFNFF(env.0, mol_h.0, calc.0, std::ptr::null_mut())
+                }
             }
         }
         env.check(config.method.name())?;
@@ -459,9 +470,8 @@ impl XtbCalculator {
             None
         };
 
-        let gradient = Array2::from_shape_vec((self.natoms, 3), grad).map_err(|e| {
-            FerricError::General(format!("xtb gradient shape error: {e}"))
-        })?;
+        let gradient = Array2::from_shape_vec((self.natoms, 3), grad)
+            .map_err(|e| FerricError::General(format!("xtb gradient shape error: {e}")))?;
 
         Ok(XtbResult {
             energy,
@@ -590,6 +600,9 @@ mod send_sync_guard_selfcheck {
 
     #[test]
     fn probe_reports_true_for_a_send_type() {
-        assert!(IsSend::<u64>(PhantomData).probe(), "probe is broken: u64 IS Send");
+        assert!(
+            IsSend::<u64>(PhantomData).probe(),
+            "probe is broken: u64 IS Send"
+        );
     }
 }
