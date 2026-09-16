@@ -5,7 +5,7 @@
 //! approximation. Comparing approximations to each other would understate error.
 use ferric_integrals::ffi;
 use std::ffi::CString;
-use std::os::raw::{c_char, c_double, c_int};
+use std::os::raw::{c_char, c_double};
 
 #[test]
 #[ignore = "diagnostic sweep; run with --ignored --nocapture"]

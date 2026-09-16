@@ -110,7 +110,7 @@
 //! > five follow analogously, and the Schwarz inequality can be used with the
 //! > operator G. The condition F_G(k) > 0 for k > 0 is, according to Bochner's
 //! > theorem, equivalent to the statement that G is a positive-definite
-//! > [function].
+//! > \[function\].
 //!
 //! where `F_G` is the 3-D Fourier transform of `G`. Table VI of the paper
 //! ("Fourier transforms for some important operators in quantum chemical
@@ -294,10 +294,10 @@
 //!
 //! Three defences, applied from the start rather than retrofitted:
 //!
-//! 1. the table is built at [`SCHWARZ_TABLE_PRECISION`] (`0.0`, libint2's
+//! 1. the table is built at `SCHWARZ_TABLE_PRECISION` (`0.0`, libint2's
 //!    internal prescreening DISABLED) — the same constant, imported rather
 //!    than copied, so the two can never drift;
-//! 2. every stored entry is floored at [`SCHWARZ_Q_FLOOR`] (`1e-100`, again
+//! 2. every stored entry is floored at `SCHWARZ_Q_FLOOR` (`1e-100`, again
 //!    imported), so no entry is ever exactly zero even if the true `(µµ|λλ)`
 //!    underflows;
 //! 3. the `None` arm from the engine returns the floor rather than `0.0`, so a
@@ -334,8 +334,10 @@ use ferric_core::FerricError;
 use ndarray::Array2;
 
 /// Build the CSB `M` table: `M[P][Q] = sqrt( max_{µ∈P, λ∈Q} |(µµ|λλ)| )`,
-/// symmetric, floored at [`SCHWARZ_Q_FLOOR`], built at
-/// [`SCHWARZ_TABLE_PRECISION`].
+/// symmetric, floored at `SCHWARZ_Q_FLOOR`, built at
+/// `SCHWARZ_TABLE_PRECISION` (both private to `schwarz.rs`, so these are code
+/// spans rather than intra-doc links -- rustdoc rejects a public item linking
+/// to a private one).
 ///
 /// # Why a shell-block MAX is the right lift to shell granularity
 ///

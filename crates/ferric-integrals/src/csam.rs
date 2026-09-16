@@ -264,7 +264,7 @@
 //! to exactly zero regardless of the true integral — a silent, unconditional
 //! UNDERESTIMATE, which is fatal for a screening bound (see the long comment
 //! on `SCHWARZ_TABLE_PRECISION` for the measured alkane_8 fingerprint of this
-//! exact failure mode on the Schwarz table). So [`CSAM_TABLE_PRECISION`]
+//! exact failure mode on the Schwarz table). So `CSAM_TABLE_PRECISION`
 //! reuses [`crate::schwarz`]'s policy: build at precision `0.0` (libint2
 //! internal prescreening disabled for the table build only — the screening
 //! THRESHOLD applied downstream by the caller is unaffected), and floor the

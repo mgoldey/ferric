@@ -2224,10 +2224,10 @@ restart = true
         assert!(!cfg.scf.ladder[0].restart);
     }
 
-    /// (d) `[scf] df_guess` parses, defaults to `false`, and an explicit
-    /// `true` + `df_guess_aux` round-trips. Unknown keys in `[scf]` must
-    /// still hard-error (deny_unknown_fields is unaffected by the new
-    /// fields).
+    /// (d) `[scf] df_guess` parses, defaults to `true` (see
+    /// `default_df_guess`), and an explicit `true` + `df_guess_aux`
+    /// round-trips. Unknown keys in `[scf]` must still hard-error
+    /// (deny_unknown_fields is unaffected by the new fields).
     #[test]
     fn scf_df_guess_key_parses_and_defaults_off() {
         let toml_str = r#"
@@ -2239,7 +2239,7 @@ name = "sto-3g"
 kind = "rimp2"
 "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
-        assert!(!cfg.scf.df_guess, "df_guess must default to false");
+        assert!(cfg.scf.df_guess, "df_guess must default to true");
         assert!(cfg.scf.df_guess_aux.is_none());
 
         let toml_str = r#"
@@ -2294,8 +2294,12 @@ name = "sto-3g"
 [method]
 kind = "rimp2"
 [scf]
+df_guess = false
 df_guess_aux = "def2-universal-jkfit"
 "#;
+        // df_guess must be set FALSE explicitly here: it now defaults to true
+        // (default_df_guess), so omitting it would make df_guess_aux legal and
+        // the rejection under test unreachable.
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert!(!cfg.scf.df_guess);
         assert!(
@@ -2329,6 +2333,7 @@ name = "sto-3g"
 [method]
 kind = "rimp2"
 [scf]
+df_guess = false
 df_increments = true
 df_increments_aux = "def2-universal-jkfit"
 "#;

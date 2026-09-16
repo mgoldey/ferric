@@ -9,7 +9,6 @@
 //! This guard drives the crossover directly and compares against the exact
 //! series -- the reference the tables were generated from.
 use ferric_integrals::ffi;
-use std::os::raw::{c_double, c_int};
 
 #[test]
 fn asymptotic_matches_the_exact_series_at_the_crossover() {

@@ -47,12 +47,20 @@
 //! - PROOF B (s <= 0.5, the curvature-constrained regime, S up to 100, m up
 //!   to 12): worst relative error of the truncated tail form vs exact G_m,
 //!   by truncation length I:
-//!       I= 8 -> 1.4e-5   I=10 -> 1.4e-10  I=12 -> 5.8e-13
-//!       I=14 -> 6.3e-16  I=18 -> 4.5e-22
+//!
+//!   ```text
+//!   I= 8 -> 1.4e-5   I=10 -> 1.4e-10  I=12 -> 5.8e-13
+//!   I=14 -> 6.3e-16  I=18 -> 4.5e-22
+//!   ```
+//!
 //!   Smallest I reaching 1e-14: **I = 14**.
 //! - PROOF C (large s, the `terfc_with_omega` regime where s decouples from
 //!   r0 and can reach ~80): smallest I reaching 1e-14 relative error, by s:
-//!       s= 2  -> I=28     s=10 -> I=50     s=20 -> I=72     s=80 -> I=170
+//!
+//!   ```text
+//!   s= 2  -> I=28     s=10 -> I=50     s=20 -> I=72     s=80 -> I=170
+//!   ```
+//!
 //!   Linear fit: `I(1e-14) ~= 1.76*s + 30.7`. So a FIXED I (14-18) is only
 //!   safe for s <= 0.5; a probe that only tests small s could pass while an
 //!   implementation with a fixed small I silently loses precision at large s.

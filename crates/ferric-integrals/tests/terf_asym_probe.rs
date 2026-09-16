@@ -1,7 +1,6 @@
 //! Is the large-S asymptotic actually FASTER than the exact series, and by how
 //! much do we pay in accuracy? Both numbers, measured, before committing to it.
 use ferric_integrals::ffi;
-use std::os::raw::{c_double, c_int};
 
 #[test]
 #[ignore = "micro-benchmark; run with --ignored --nocapture"]

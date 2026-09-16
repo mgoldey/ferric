@@ -56,7 +56,16 @@ fn min_diagonal(op: Operator, dfbs: &PreparedBasis) -> f64 {
 #[test]
 fn positive_definite_operators_have_nonnegative_diagonals() {
     let dfbs = water();
-    for &omega in &[0.1_f64, 0.3536, 0.7071, 1.4142] {
+    // 1/(2*sqrt2), 1/sqrt2 and sqrt2 spelled from std consts rather than as
+    // decimal literals: clippy::approx_constant flags 0.7071/1.4142, and the
+    // exact values are what the curvature constraint r0*omega = 1/sqrt2
+    // actually means here.
+    for &omega in &[
+        0.1_f64,
+        std::f64::consts::FRAC_1_SQRT_2 / 2.0,
+        std::f64::consts::FRAC_1_SQRT_2,
+        std::f64::consts::SQRT_2,
+    ] {
         let erf = min_diagonal(Operator::erf(omega), &dfbs);
         assert!(
             erf >= 0.0,
