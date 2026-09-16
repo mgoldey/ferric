@@ -117,9 +117,14 @@ pub mod mom;
 pub mod rohf_ah;
 /// Newton-step ROHF solver with f_xc kernel acceleration.
 pub mod rohf_newton;
+/// Internal stability analysis: is a converged SCF solution a minimum or a saddle?
+pub mod stability;
 /// Newton-step UHF/UKS solver with coupled α/β orbital rotations.
 pub mod uhf_newton;
 pub use gradient::{rhf_gradient, rohf_gradient, uhf_gradient};
+pub use stability::{
+    rhf_internal_stability, uhf_internal_stability, StabilityConfig, StabilityKind, StabilityResult,
+};
 /// Analytical nuclear gradients for Kohn-Sham DFT (XC + grid response).
 pub mod ks_gradient;
 pub use ks_gradient::ks_gradient_closed;
