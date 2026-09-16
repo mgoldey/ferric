@@ -3585,9 +3585,19 @@ extern "C" int scf_terf_asym_probe(int mmax, int reps,
             for (double S : Ss) for (double sv : ss) terf_G_series(S, sv, mmax, gser);
         auto t1 = std::chrono::steady_clock::now();
         for (int r = 0; r < reps; ++r)
-            for (double S : Ss) for (double sv : ss) boys_upto(mmax, S, gasy);
+            // The s loop is deliberately kept on the asymptotic side even
+            // though boys_upto takes no s: the two paths must be timed over
+            // the SAME number of calls or the ns/call comparison is not
+            // like-for-like. `(void)sv` says "intentionally unused" rather
+            // than leaving a -Wunused-variable warning in every build.
+            for (double S : Ss) for (double sv : ss) { (void)sv; boys_upto(mmax, S, gasy); }
         auto t2 = std::chrono::steady_clock::now();
-        const double n = (double)reps * 15.0;
+        // Derived from the arrays, not hardcoded. This was `reps * 15.0`,
+        // which is right only while Ss and ss happen to be 5 x 3 -- editing
+        // either array would have silently scaled every reported ns/call.
+        const double n = (double)reps
+                       * (double)(sizeof(Ss) / sizeof(Ss[0]))
+                       * (double)(sizeof(ss) / sizeof(ss[0]));
         if (ser_ns)  *ser_ns  = std::chrono::duration<double,std::nano>(t1-t0).count()/n;
         if (asym_ns) *asym_ns = std::chrono::duration<double,std::nano>(t2-t1).count()/n;
         return 1;
