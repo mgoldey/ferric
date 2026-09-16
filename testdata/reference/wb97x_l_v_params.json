@@ -1,0 +1,64 @@
+{
+  "_comment": "Published ωB97X-L-V functional parameters, transcribed from the PRIMARY SOURCE. This is a LITERATURE reference, not a computed one: no other code was run to produce it. It pins ferric's WB97X_L_V_EXT_PARAMS / WB97X_L_V_LAMBDA / WB97X_L_V_VV10 against the paper that defines the functional, which is the only external check available for a functional whose absolute total energies are not published anywhere (see _no_total_energy_available below).",
+
+  "citation": {
+    "authors": "Ella R. Ransford and Kevin Carter-Fenk",
+    "title": "Improving robustness of fifth-rung functionals with linearized ladder correlation",
+    "journal": "Physical Chemistry Chemical Physics",
+    "volume": 28,
+    "issue": 24,
+    "pages": "14428-14441",
+    "year": 2026,
+    "doi": "10.1039/D6CP00232C",
+    "table": "Table 2, 'Optimized parameters for ωB97X-L-V', page 14433, 'Final' column",
+    "local_copy": "papers/wb97xlv.pdf"
+  },
+
+  "_sign_provenance": "The published PDF renders minus signs as glyph \\003 in font /T1_4, which plain `pdftotext` DROPS. Signs here were recovered by TWO INDEPENDENT methods that agree exactly: (1) `pdftotext -bbox-layout` x-offsets -- a negative number's digits start ~6.1pt (one minus-glyph width) further left than a positive one in the same column; (2) direct inspection of the decompressed PDF content stream, where each negative value is preceded by a literal `(\\003)Tj` in /T1_4 while positive values appear inside a bracketed `[(a) (b) (c)]TJ` array with no such glyph. Do NOT re-derive these signs with bare `pdftotext` -- it silently returns all-positive.",
+
+  "fixed_parameters": {
+    "_comment": "Paper Table 2, 'Fixed parameters' block. cx0 = 1 - lambda and css0 = cos0 = 1 - lambda^2 are CONSTRAINED (not fitted) to satisfy the uniform-electron-gas limit at lambda = 0.6.",
+    "b": 10.0,
+    "C": 0.01,
+    "omega": 0.1,
+    "omega_units": "Bohr^-1 (a0^-1)",
+    "lambda": 0.6,
+    "cx_0": 0.4,
+    "css_0": 0.64,
+    "cab_0": 0.64
+  },
+
+  "least_squares_optimized_parameters_final": {
+    "_comment": "Paper Table 2, 'Least-squares optimized parameters' block, 'Final' column (the 4th and last least-squares cycle). Signs as recovered per _sign_provenance.",
+    "cx_1": 0.154,
+    "cx_2": 3.884,
+    "cx_3": -11.300,
+    "cx_4": 8.425,
+    "css_1": -1.417,
+    "css_2": 4.716,
+    "css_3": -2.956,
+    "css_4": -0.861,
+    "cab_1": -1.194,
+    "cab_2": -1.348,
+    "cab_3": 11.869,
+    "cab_4": -9.571
+  },
+
+  "_earlier_cycles_for_cross_check": {
+    "_comment": "Table 2 also prints cycles 2 and 3. Each row keeps the SAME sign across all three columns, which is an internal consistency check on the sign recovery above.",
+    "cycle_2": { "cx_1": 0.136, "cx_2": 3.910, "cx_3": -11.362, "cx_4": 8.637,
+                 "css_1": -1.399, "css_2": 4.585, "css_3": -2.703, "css_4": -0.985,
+                 "cab_1": -1.151, "cab_2": -1.512, "cab_3": 12.659, "cab_4": -10.594 },
+    "cycle_3": { "cx_1": 0.152, "cx_2": 3.901, "cx_3": -11.357, "cx_4": 8.482,
+                 "css_1": -1.415, "css_2": 4.697, "css_3": -2.918, "css_4": -0.885,
+                 "cab_1": -1.194, "cab_2": -1.364, "cab_3": 11.964, "cab_4": -9.673 }
+  },
+
+  "exchange_mixing": {
+    "_comment": "Paper eqn (27): full long-range HF exchange plus lambda-scaled short-range HF exchange. Under libxc's CAM convention (c_sr = alpha + beta, c_lr = alpha) that is alpha = 1.0, beta = -(1 - lambda) = -0.4, giving c_lr = 1.0 and c_sr = 0.6 = lambda. These two are ferric's reading of eqn (27), NOT digits lifted from Table 2.",
+    "alpha": 1.0,
+    "beta": -0.4
+  },
+
+  "_no_total_energy_available": "As of 2026-09-16 NO absolute total energy for ωB97X-L-V is published in the article body: the paper contains no number with 6 or more decimal places anywhere (verified by regex over the full extracted text of papers/wb97xlv.pdf). It reports only relative quantities -- WTMAD-2, MADs, barrier heights and bond-dissociation curves. Absolute energies could only be in the ESI (an XLSX plus the H2/F2/HF dissociation PES of Fig. S1 and the ethylene torsion of Fig. S2), which is behind the RSC paywall; chemrxiv.org and pubs.rsc.org both return HTTP 403 to automated fetches. Paper's own conditions, for whoever obtains the ESI: Def2-ma-TZVPP basis, Euler-Maclaurin/Lebedev (99,590) XC grid, SCF converged to RMS 1e-8, Q-Chem v6.3 developer build, ROKS orbitals + one unrestricted KS Fock build + semi-canonicalization for open shell, counterpoise for all non-covalent interactions. Reproducing a PES point would additionally require the exact geometry from the ESI."
+}
