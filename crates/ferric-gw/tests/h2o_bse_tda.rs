@@ -290,10 +290,23 @@ fn rpax_pbe_c6_h2o_vs_dosd() {
 /// grid) and returning the full 3×3 tensor. The isotropic average must match
 /// `run_bse_c6_ks`'s `alpha_static` (= `alpha_iso[0]` at freq 0) — cross-check
 /// that the static-only fast path agrees with the dynamic path's ω=0 point.
+///
+/// SCISSOR = 0.36 Ha, not 0.0. This test previously ran at `scissor = 0.0` and
+/// asserted only on the ISOTROPIC average (9.47, a plausible-looking number
+/// next to DOSD's 9.64) — while the underlying tensor diagonal was
+/// (−2.68, +14.60, +16.49), i.e. UNPHYSICAL along x. That is precisely the
+/// hazard `check_alpha_diagonal_positive` now refuses, so `scissor = 0.0` here
+/// returns `Err` by design (see `tests/rpax_alpha_diagonal_guard.rs`, which
+/// pins that refusal deliberately). 0.36 Ha is the documented GW-gap-matching
+/// remedy from `docs/rpax-negative-diagonal-investigation.md`. The
+/// static-vs-dynamic identity this test exists to check is independent of the
+/// scissor value, as long as BOTH paths use the same one.
 #[test]
 #[ignore = "slow: PBE-KS + PDEP-RPA + RPAx static α(0); --release --ignored"]
 fn rpax_static_polarizability_h2o_matches_dynamic_omega0() {
     use ferric_gw::bse::{run_bse_c6_ks, run_rpax_static_polarizability};
+    // GW-gap-matching shift; 0.0 is the known-unstable default (see doc above).
+    const SCISSOR: f64 = 0.36;
     let xyz = "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n";
     let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
     let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
@@ -307,18 +320,31 @@ fn rpax_static_polarizability_h2o_matches_dynamic_omega0() {
     };
     let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds, &scf_cfg).unwrap();
 
-    let res = run_rpax_static_polarizability(&mol, &obs, &dfbs, op, &ks, &pdep_cfg(), 0, 0.0)
-        .expect("static RPAx@PBE polarizability runs");
+    let res = run_rpax_static_polarizability(&mol, &obs, &dfbs, op, &ks, &pdep_cfg(), 0, SCISSOR)
+        .expect("static RPAx@PBE polarizability runs at the healthy scissor");
     let dosd = 9.64;
-    eprintln!("\nRPAx@PBE static polarizability / cc-pVDZ H2O");
+    eprintln!("\nRPAx@PBE static polarizability / cc-pVDZ H2O (scissor = {SCISSOR})");
     eprintln!("  alpha_iso = {:.4} a.u.  (DOSD alpha0 = {dosd})", res.iso);
     eprintln!("  tensor = {:?}", res.tensor);
     assert!(
         res.iso.is_finite() && res.iso > 0.0,
         "static alpha must be finite positive"
     );
+    // Assert the FULL DIAGONAL, not just the isotropic average -- the average
+    // is what hid the unphysical x component at scissor = 0.0.
+    for (d, axis) in ["x", "y", "z"].iter().enumerate() {
+        assert!(
+            res.tensor[d][d] > 0.0,
+            "alpha_{axis}{axis} = {:+.6} is unphysical",
+            res.tensor[d][d]
+        );
+    }
+    // A nonzero scissor widens the gap and therefore REDUCES alpha, so this is
+    // deliberately a loose physicality band, not an accuracy claim against DOSD
+    // (the DOSD-matching 9.24 number is the scissor = 0.0 value, which this
+    // method can no longer return; see docs/VALIDATION.md).
     assert!(
-        (5.0..15.0).contains(&res.iso),
+        (0.5..15.0).contains(&res.iso),
         "static alpha {:.3} outside sane window for water",
         res.iso
     );
@@ -336,7 +362,7 @@ fn rpax_static_polarizability_h2o_matches_dynamic_omega0() {
         0,
         &freqs,
         &weights,
-        0.0,
+        SCISSOR,
     )
     .expect("dynamic RPAx@PBE (single freq) runs");
     let diff = (res.iso - dyn_res.alpha_static).abs();
