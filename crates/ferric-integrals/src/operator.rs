@@ -236,6 +236,27 @@ impl Operator {
 
     /// Spike implementation: Approximate terfc(r, r0) as a sum of 3 erfc operators.
     /// These are dummy coefficients to test the composite engine architecture.
+    ///
+    /// DO NOT try to turn these into a real fit. MEASURED 2026-09-15: fitting
+    /// terf(r,r0)/r as a sum of n erfc(w_i r)/r terms converges far too slowly
+    /// to be useful (worst relative error over r in [0.01, 25]):
+    ///
+    ///        r0      n=2       n=3       n=4
+    ///       1.05   5.6e-02   6.5e-04   3.3e-05
+    ///       2.00   3.8e-01   5.3e-02   6.8e-04
+    ///
+    /// Each erfc term costs ~1.46x Coulomb (libint2-native), so n<=3 is the
+    /// budget to beat the current table path at ~5.5x. At n=3 the error is
+    /// 6.5e-04 -- five orders short of the ~1e-9 the K=10 table delivers, and
+    /// each extra term buys only 1-2 orders, so ~1e-9 would need n ~ 8-12
+    /// (12-18x Coulomb). Strictly worse than the table.
+    ///
+    /// WHY it fails, and why the literature precedent does not transfer:
+    /// LC-wPBE(2Gau) (Song & Hirao, JCP 143, 144112 (2015)) fits the erf
+    /// operator with just 2 Gaussians for a 14x speedup, and STG-6G fits
+    /// Slater geminals with 6 -- but both targets are MONOTONIC. terf is a
+    /// SHELL (rises, plateaus, falls, set by the r0 shift), and a sum of
+    /// monotonic erfc terms cannot represent that shape cheaply.
     pub fn terfc_fit(r0: f64) -> Self {
         let base_omega = 1.0 / (r0 * std::f64::consts::SQRT_2);
         let mut op = Self::composite(&[

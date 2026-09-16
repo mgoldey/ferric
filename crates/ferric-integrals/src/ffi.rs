@@ -96,7 +96,17 @@ extern "C" {
     // for cross-checking the new contraction against libint2's own quartet.
     pub fn scf_debug_coulomb_eri4(obs: *const c_void, sh1: c_int, sh2: c_int, sh3: c_int, sh4: c_int, out: *mut c_double) -> c_int;
     // STEP 1 gate for the libint2 core-eval port: terf_gm_eval_impl vs terf_aux.
+    pub fn scf_terf_quad_cost(nodes: c_int, reps: c_int, ns_per_call: *mut c_double) -> c_int;
     pub fn scf_terf_asym_probe(mmax: c_int, reps: c_int, ser_ns: *mut c_double, asym_ns: *mut c_double, worst_rel: *mut c_double) -> c_int;
+    // Tail form G_m(S,s) = F_m(S) - Delta_m(S,s): exact rearrangement whose sum
+    // length is set by s, not S. `worst_rel` is measured on G over the
+    // curvature-constrained regime (s <= 0.5); `worst_rel_delta` is measured on
+    // Delta (== the terfc auxiliary F - G, the quantity production consumes)
+    // over the same sweep plus a large-s point exercising the adaptive index,
+    // which `worst_i` reports. Delta stays accurate where G cannot: at large s,
+    // Delta converges onto F and G = F - Delta is pure cancellation.
+    pub fn scf_terf_delta_split(mmax: c_int, reps: c_int, s_val: c_double, out: *mut c_double) -> c_int;
+    pub fn scf_terf_tail_probe(mmax: c_int, reps: c_int, tail_ns: *mut c_double, series_ns: *mut c_double, worst_rel: *mut c_double, worst_i: *mut c_int, worst_rel_delta: *mut c_double) -> c_int;
     pub fn scf_terf_series_counters(tab: *mut u64, ser: *mut u64);
     pub fn scf_terf_series_reset();
     pub fn scf_terf_interp_accuracy(table_dir: *const c_char, mmax: c_int, worst_rel: *mut c_double) -> c_int;
