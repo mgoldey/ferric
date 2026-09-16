@@ -677,3 +677,191 @@ jobs:
         continue-on-error: true
         run: uv run pytest tools/ experiments/ --cov=tools --cov=experiments --cov-report=term-missing -q
 
+  # ---------------------------------------------------------------------
+  # Nightly-only coverage. NON-BLOCKING (both steps below are
+  # continue-on-error) and restricted to schedule/workflow_dispatch, same
+  # `if:` as slow-tests -- see that job for why push/PR never runs it.
+  #
+  # Rust coverage is a SEPARATE job from build-and-test, not an extra step
+  # in it: `cargo llvm-cov` builds into its OWN instrumented target dir
+  # (target/llvm-cov-target) and, unlike a plain `cargo test`, this is by
+  # design a SECOND full build on top of whatever `cargo check`/`cargo test`
+  # already produced. build-and-test's uninstrumented target/ already runs
+  # ~9 GB against the runner's ~14 GB free (see the `CARGO_PROFILE_DEV_DEBUG`
+  # comment at the top of this file, and the two "No space left on device"
+  # incidents it cites) -- stacking a second full build into that SAME job's
+  # disk budget would reproduce that failure on purpose. A separate job
+  # starts from a fresh ~14 GB, so it only ever carries ONE instrumented
+  # build's worth of target/ at a time.
+  # ---------------------------------------------------------------------
+  coverage:
+    name: coverage (nightly, non-blocking)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Free runner disk space
+        # Same rationale as build-and-test's step of the same name.
+        run: |
+          echo "--- before"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY/CodeQL" 2>/dev/null || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          echo "--- after"; df -h / | tail -1
+
+      - name: Install system dependencies
+        run: |
+          # Same third-party-apt-source guard as build-and-test above, plus
+          # libboost-dev for the same shim/shim.cc reason (see that job's
+          # "Free runner disk space" step).
+          sudo grep -rlE 'dl\.google\.com' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null \
+            | xargs -r sudo rm -fv
+          sudo sed -i -E 's|^([^#].*dl\.google\.com.*)$|# \1|' /etc/apt/sources.list 2>/dev/null || true
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake g++ gfortran \
+            libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
+            libxc-dev libboost-dev
+
+      - name: Restore libint2 cache
+        id: cache-libint
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.LIBINT2_PREFIX }}
+          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
+
+      # RESTORE-only, same as build-and-test/slow-tests: this job never
+      # builds libint2 from a cache miss on its own account. In steady state
+      # build-and-test's own nightly run (the workflow's `schedule` trigger
+      # runs EVERY job with no `if:` excluding build-and-test) populates or
+      # refreshes this cache, which is what "libint2 is already cached" for
+      # this job relies on. A genuine cold cache still costs the same ~80
+      # min build described on build-and-test's "Build libint2" step.
+      - name: Build libint2
+        if: steps.cache-libint.outputs.cache-hit != 'true'
+        run: |
+          cd /tmp
+          wget -q https://github.com/evaleev/libint/releases/download/v${LIBINT_VERSION}/libint-${LIBINT_VERSION}-mpqc4.tgz
+          tar xzf libint-${LIBINT_VERSION}-mpqc4.tgz
+          cd libint-${LIBINT_VERSION}
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_INSTALL_PREFIX=$LIBINT2_PREFIX \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+          make install
+
+      - name: Save libint2 cache
+        if: success() && steps.cache-libint.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.LIBINT2_PREFIX }}
+          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
+
+      # Action-SHA-vs-Rust-version distinction: see build-and-test's
+      # toolchain step. `llvm-tools` (not `clippy`) is the component this
+      # job needs: `cargo llvm-cov` instruments via `llvm-tools`'s
+      # `llvm-profdata`/`llvm-cov` binaries, installed fastest through the
+      # pinned taiki-e/install-action below rather than a source build.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
+        with:
+          components: llvm-tools
+
+      - name: Restore cargo cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-v3-${{ runner.os }}-
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Rust coverage (lib-only scope)
+        # NON-BLOCKING (continue-on-error) and NO fail-under threshold, by
+        # design: a percentage measured against the FAST tier alone is
+        # computed on a partial suite -- 6 integration binaries are deferred
+        # to slow-tests and 239 tests are `#[ignore]`d workspace-wide -- so a
+        # blocking threshold would flap for reasons having nothing to do
+        # with code quality.
+        #
+        # SCOPE: `--lib` only, i.e. each crate's own `#[cfg(test)]` unit
+        # tests, NOT the ~190 `tests/*.rs` integration binaries build-and-
+        # test's fast tier runs. That exclusion is the disk-budget decision:
+        # those integration binaries are the 200-335 MB-each, disk-heavy part
+        # (see the `CARGO_PROFILE_DEV_DEBUG` comment at the top of this
+        # file), and `cargo llvm-cov`'s instrumented binaries run LARGER
+        # still than the line-tables-only debug binaries that comment
+        # measures. Building all of them a second time, instrumented, into a
+        # from-scratch ~14 GB budget risks the exact "No space left on
+        # device" failure that comment already cites twice for the
+        # UNINSTRUMENTED build. Unit tests exercise most of the workspace's
+        # numerical core directly (the integration binaries mostly drive
+        # that same code through a higher-level API), so `--lib` trades
+        # completeness for a coverage run that reliably finishes.
+        continue-on-error: true
+        run: |
+          cargo llvm-cov --workspace --lib --locked --no-fail-fast \
+            --lcov --output-path lcov.info
+          echo "## Rust coverage (--lib scope, informational)" >> "$GITHUB_STEP_SUMMARY"
+          cargo llvm-cov report --locked | tail -20 >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload Rust coverage artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-coverage-lcov
+          path: lcov.info
+          retention-days: 14
+
+      # Free the instrumented target dir before the release build below
+      # starts: `cargo llvm-cov` and a plain `cargo build --release` use
+      # DIFFERENT target subdirectories (target/llvm-cov-target vs.
+      # target/release), so without this they would coexist and stack their
+      # disk usage inside this job's single ~14 GB budget -- the same
+      # two-full-builds problem this job exists to keep OUT of build-and-
+      # test, recreated inside itself. The lcov.info this step's output feeds
+      # is already extracted and uploaded above, so nothing here is lost.
+      - name: Free instrumented coverage target dir
+        if: ${{ !cancelled() }}
+        run: rm -rf target/llvm-cov-target
+
+      # Everything below builds and exercises the compiled pyo3 extension,
+      # which needs the SAME libint2 this job already has cached above --
+      # the reason this lives in the nightly coverage job rather than the
+      # fast python-quality job.
+      - name: uv sync (dev + build extras)
+        run: uv sync --extra dev --extra build --no-install-project
+
+      - name: Build ferric-python extension (release)
+        # `maturin develop` invokes cargo underneath; --locked carries the
+        # same rationale as every other cargo invocation in this file (see
+        # build-and-test's "Check (all targets)" step).
+        run: uv run maturin develop --release --locked
+
+      - name: pytest -- Python bindings, with coverage
+        # PROVISIONAL, continue-on-error: this suite has never been run in
+        # CI before (see python-quality's tools/+experiments pytest step for
+        # the same caveat, which applies here identically) -- nobody has
+        # observed a green run yet, so this must not be asserted to pass.
+        # Flip to BLOCKING once a run has actually gone green here.
+        continue-on-error: true
+        run: |
+          uv run pytest crates/ferric-python/tests/ \
+            --cov=ferric --cov-report=lcov:python-ext-coverage.lcov -q
+
+      - name: Upload Python extension coverage artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: python-ext-coverage-lcov
+          path: python-ext-coverage.lcov
+          retention-days: 14
