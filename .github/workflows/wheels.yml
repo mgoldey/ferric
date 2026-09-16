@@ -26,6 +26,50 @@ on:
     tags:
       - 'v*'
   workflow_dispatch: {}
+  schedule:
+    # 10:53 UTC daily -- this workflow's header admits it has NEVER been
+    # validated by a green run; it was written by reading ci.yml, not by
+    # exercising it. Without a schedule, the wheel-build/native-deps/
+    # smoke-test pipeline gets its FIRST real execution at the moment of an
+    # actual release tag push -- the worst possible time to discover a
+    # manylinux_2_28-container issue, a maturin-action regression, or a
+    # native-deps cache problem. A nightly run makes tag day the Nth
+    # confirmed-green run, not the first.
+    #
+    # 10:53, not 04:17: ci.yml already owns 04:17 UTC for its own nightly
+    # (see that file's `schedule:` block), which runs the deferred slow test
+    # tier plus a libint2 cache rebuild on a miss. Picking a DIFFERENT hour,
+    # not just a different minute, leaves a multi-hour gap so the two
+    # nightlies are never fighting for the same 2 free ubuntu-22.04 runners
+    # or racing to write into the shared, already-tight 10 GB repo cache
+    # budget (see the "Restore/Save native deps cache" steps below for why
+    # that budget matters here too). Minute :53 (off-the-hour) matches this
+    # repo's existing convention of not scheduling on a round hour, where
+    # every other repo's cron also tends to land and GitHub's scheduler is
+    # documented to be busiest.
+    - cron: '53 10 * * *'
+
+# Prevents two wheel-build runs for the SAME ref from executing concurrently
+# (e.g. a workflow_dispatch fired by hand while last night's scheduled run is
+# still going, or two scheduled runs overlapping if one runs long) -- there is
+# no reason to burn two sets of runners rebuilding the identical thing twice.
+#
+# cancel-in-progress is conditional, NOT a flat `true`, and that condition is
+# the whole point of this block: `github.ref` for a tag push is the TAG
+# itself (refs/tags/vX.Y.Z, unique per release), so a tag build already gets
+# its own dedicated group that no nightly (`refs/heads/main`) or manual
+# dispatch run can ever share or collide with -- but if this workflow were
+# ever re-triggered for that same tag (a force-pushed/re-pushed tag, rare but
+# not impossible), a flat `cancel-in-progress: true` would cancel the FIRST
+# in-flight tag build the moment the second one starts queuing, mid-publish
+# if unlucky. That is a categorically worse outcome than the redundant
+# runner-minutes a flat `true` would save: a cancelled release build can
+# leave a partial/inconsistent PyPI upload, while a cancelled *nightly* run
+# has nothing depending on it finishing. So: cancel freely for every non-tag
+# ref (schedule, workflow_dispatch), never for a tag ref.
+concurrency:
+  group: wheels-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -129,6 +173,25 @@ jobs:
       # pre-#16 cache key (which was native-deps-${{ NATIVE_DEPS_CACHE_VERSION
       # == v1 }}-...), so a stale entry from before this job existed can never
       # get restored here by coincidence.
+      #
+      # This key's NAME never collides with ci.yml's (`libint-*`, `cargo-v3-*`
+      # -- disjoint prefixes), but GitHub Actions caches are budgeted PER
+      # REPOSITORY, not per workflow: ci.yml's own comments document this repo
+      # already running close to the 10 GB cap, to the point that evicting its
+      # libint2 cache costs ~80 min/run. Adding a nightly schedule here means
+      # this job's own cache entry (OpenBLAS+libxc+libint2+Eigen, a
+      # multi-hundred-MB-plus artifact) now competes for that SAME shared 10 GB
+      # pool every night, on top of ci.yml's 04:17 UTC nightly writing/
+      # refreshing its own entries a few hours earlier. Once the pinned
+      # versions above are stable this key stays constant across nights (a
+      # cache hit restores instead of re-saving), so this is a one-time budget
+      # addition rather than nightly churn against a fixed key -- but if the
+      # pinned versions ever bump, or GitHub's 7-day unused-cache eviction
+      # kicks this entry out between runs, that save DOES recur and DOES add
+      # fresh pressure to the same pool ci.yml depends on. Nobody has measured
+      # the actual combined size against the 10 GB cap post-schedule; if CI
+      # starts seeing libint2 cache misses that correlate with this workflow's
+      # nightly runs, this is the first place to look.
       - name: Restore native deps cache
         id: cache-native
         uses: actions/cache/restore@v4
@@ -456,9 +519,11 @@ jobs:
       # never drift, even though maturin itself doesn't consult the Cargo.toml
       # version when pyproject.toml has one).
       #
-      # Only runs on a tag push -- a workflow_dispatch run (no tag) leaves
-      # both files at their checked-in placeholder, since that path never
-      # reaches `publish` anyway (see its `if:` guard).
+      # Only runs on a tag push -- a workflow_dispatch run or a scheduled
+      # (nightly) run (neither has a tag) leaves both files at their
+      # checked-in placeholder, since neither path ever reaches `publish`
+      # anyway (see that job's `if:` guard, which cannot pass for either
+      # event type).
       - name: Stamp the version from the tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
@@ -833,6 +898,21 @@ jobs:
   # wheel -- consider turning that on before the first real release.
   publish:
     needs: [build-wheels, smoke-test]
+    # THIS GUARD IS THE ONLY THING STANDING BETWEEN A NIGHTLY CRON RUN AND A
+    # REAL PYPI UPLOAD -- treat any change near it as a publish-safety change,
+    # not a cosmetic one. On a `schedule` (or `workflow_dispatch`) event,
+    # `github.ref` is the ref the run was triggered against, which for both of
+    # those event types is always a BRANCH ref (`refs/heads/<default-branch>`,
+    # i.e. `refs/heads/main` here) -- GitHub does not run scheduled/dispatched
+    # workflows against a tag ref, only `push`-to-a-tag does that. So
+    # `startsWith(github.ref, 'refs/tags/v')` is false for every scheduled run
+    # by construction, with no code path in this workflow that can make it
+    # true: nothing here reassigns GITHUB_REF, and this job takes no `inputs`
+    # that could substitute a tag string in its place. Confirmed by reading
+    # this file end to end for this task (see the wheels.yml nightly-schedule
+    # change) -- if a future edit ever adds a workflow_dispatch `inputs:` block
+    # with something like a "publish anyway" ref override, it must NOT be
+    # allowed to reach this `if:` unchecked, or this invariant breaks.
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-22.04
     environment: pypi
