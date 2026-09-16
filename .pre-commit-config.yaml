@@ -26,7 +26,17 @@ repos:
         args: ["-ll", "-q"]  # medium+ severity only; Low (e.g. B101 assert) is pytest's bread and butter
         exclude: '^terf-tables/generate_interpolation_tables\.py$'  # frozen Python-2 dissertation artifact, kept as history
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.6
+    # Pinned to MATCH ci.yml's `python-quality` job exactly, not just to a
+    # recent release: `ruff format` output is not stable across versions,
+    # and the tree was reformatted with 0.15.8. Verified directly (2026-09-16):
+    # `uvx ruff@0.15.8 format --check .` is 0 diffs against this tree,
+    # `uvx ruff@0.16.6 format --check .` (the previous pin here) is 7 diffs,
+    # all *.md files, from a Markdown-code-block formatting change between
+    # those releases. This hook only runs the critical-subset `ruff-check`,
+    # not `ruff format` (see this file's header -- no formatters here), but
+    # the rev is kept identical to ci.yml's anyway so the two never silently
+    # diverge again the way this one just did.
+    rev: v0.15.8
     hooks:
       - id: ruff-check
         args: ["--select=E9,F63,F7,F82", "--no-fix"]  # critical subset only (syntax errors, undefined names); syntax diagnostics are unconditional, hence the exclude below
