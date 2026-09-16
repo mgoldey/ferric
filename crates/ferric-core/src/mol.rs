@@ -234,6 +234,53 @@ impl Molecule {
         z_sum - self.charge
     }
 
+    /// Number of core orbitals the standard small-core convention freezes for
+    /// this molecule: `Σ core_orbitals(z)` over the real atoms, minus the core
+    /// orbitals an ECP has already removed from the MO space.
+    ///
+    /// This is the value behind `frozen_core = "auto"` in the CLI's TOML. It is
+    /// a **convention**, not a derived quantity — see [`core_orbitals`] for the
+    /// shell-by-shell table and what it deliberately leaves correlated (the 3d
+    /// shell of Sc–Zn, for instance).
+    ///
+    /// Two details that make the count right rather than merely plausible:
+    ///
+    ///   * **Ghost atoms contribute 0.** A basis-only center carries no
+    ///     electrons, so it has no occupied orbitals to freeze; counting its
+    ///     element's core would freeze real valence orbitals of its partners.
+    ///   * **ECP atoms are counted on what is left.** An ECP with `n_core`
+    ///     electrons has already removed `n_core / 2` core orbitals from the MO
+    ///     space, so only the remainder can be frozen (for I under def2-ECP:
+    ///     23 − 28/2 = 9, i.e. 4s4p4d). This reads [`Atom::n_core_ecp`], which
+    ///     is zero until [`Molecule::apply_ecp`] has run — **call this after
+    ///     the basis is loaded and applied**, or an ECP run freezes orbitals
+    ///     that are not in the calculation.
+    ///
+    /// The result is not checked against the occupied count; that check needs
+    /// the electron count and multiplicity together and belongs at the config
+    /// boundary, where it can name the offending key.
+    ///
+    /// ```
+    /// use ferric_core::mol::Molecule;
+    /// // Water: 1s on O only (H has no core).
+    /// let mol: Molecule = "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.24\n".parse().unwrap();
+    /// assert_eq!(mol.auto_frozen_core(), 1);
+    /// ```
+    pub fn auto_frozen_core(&self) -> usize {
+        self.atoms
+            .iter()
+            .filter(|a| !a.ghost)
+            .map(|a| {
+                // n_core is an electron count and always even; the orbitals an
+                // ECP removed are n_core/2. `saturating_sub` guards a
+                // large-core ECP whose n_core exceeds the small-core
+                // convention (e.g. a valence-only ECP on a main-group atom):
+                // nothing is left to freeze, not a negative count.
+                core_orbitals(a.z).saturating_sub((a.n_core_ecp.max(0) / 2) as usize)
+            })
+            .sum()
+    }
+
     /// Populate each atom's `n_core_ecp` from an ECP-carrying basis set.
     ///
     /// For every atom whose element has an ECP definition in `bs.ecps`, set its
@@ -253,6 +300,69 @@ impl Molecule {
             }
         }
     }
+}
+
+/// Number of **core orbitals** for element `z` under the standard small-core
+/// frozen-core convention (the one Psi4, ORCA and Q-Chem apply when asked to
+/// freeze the core).
+///
+/// | Elements | Core orbitals | Shells frozen |
+/// |----------|---------------|---------------|
+/// | H–He     | 0             | — |
+/// | Li–Ne    | 1             | 1s |
+/// | Na–Ar    | 5             | +2s2p |
+/// | K–Zn     | 9             | +3s3p |
+/// | Ga–Kr    | 14            | +3d |
+/// | Rb–Cd    | 18            | +4s4p |
+/// | In–Xe    | 23            | +4d |
+/// | Cs–Hg    | 27            | +5s5p |
+/// | Tl–Rn    | 34            | +4f |
+/// | Fr–      | 38            | +6s6p |
+///
+/// The two entries that look irregular are the convention, not an oversight:
+/// the (n−1)d shell stays **correlated** across its own transition series and
+/// only becomes core once the following p-block starts (3d is valence for
+/// Sc–Zn, core from Ga on; 4d likewise for Y–Cd), because the d electrons of a
+/// transition metal are chemically active and freezing them is a large,
+/// uncontrolled error. Same reasoning puts 4f at Tl rather than at La.
+///
+/// Rows past Xe are unreachable through the XYZ parser today
+/// ([`crate::elements`] stops at Z = 54) and are listed so the rule is total
+/// rather than a lookup that can miss.
+///
+/// Note this counts ORBITALS, not electrons: `2 * core_orbitals(z)` electrons
+/// live in them. An ECP-treated atom needs the orbitals the potential already
+/// removed subtracted — [`Molecule::auto_frozen_core`] does that.
+pub fn core_orbitals(z: i32) -> usize {
+    let mut n = 0;
+    if z > 2 {
+        n += 1;
+    } // 1s
+    if z > 10 {
+        n += 4;
+    } // 2s 2p
+    if z > 18 {
+        n += 4;
+    } // 3s 3p
+    if z > 30 {
+        n += 5;
+    } // 3d
+    if z > 36 {
+        n += 4;
+    } // 4s 4p
+    if z > 48 {
+        n += 5;
+    } // 4d
+    if z > 54 {
+        n += 4;
+    } // 5s 5p
+    if z > 80 {
+        n += 7;
+    } // 4f
+    if z > 86 {
+        n += 4;
+    } // 6s 6p
+    n
 }
 
 /// Parse XYZ-format text into a neutral singlet [`Molecule`].
@@ -447,5 +557,91 @@ mod tests {
         assert!(Molecule::parse_xyz(xyz, 1, 1).is_err());
         let mol = Molecule::parse_xyz(xyz, 1, 2).unwrap();
         assert_eq!(mol.nelec(), 1);
+    }
+
+    #[test]
+    fn core_orbitals_matches_the_small_core_convention() {
+        // One representative per plateau, plus both sides of every step.
+        for (z, want) in [
+            (1, 0),
+            (2, 0), // H-He: nothing to freeze
+            (3, 1),
+            (6, 1),
+            (10, 1), // Li-Ne: 1s
+            (11, 5),
+            (14, 5),
+            (18, 5), // Na-Ar: +2s2p
+            (19, 9),
+            (26, 9),
+            (30, 9), // K-Zn: +3s3p (3d stays CORRELATED)
+            (31, 14),
+            (36, 14), // Ga-Kr: +3d
+            (37, 18),
+            (48, 18), // Rb-Cd: +4s4p (4d stays correlated)
+            (49, 23),
+            (54, 23), // In-Xe: +4d
+        ] {
+            assert_eq!(core_orbitals(z), want, "core_orbitals({z})");
+        }
+    }
+
+    #[test]
+    fn core_orbitals_is_monotone_in_z() {
+        // A step that ever went backwards would freeze more orbitals for a
+        // lighter element than a heavier one -- always a table typo.
+        for z in 1..118 {
+            assert!(
+                core_orbitals(z) <= core_orbitals(z + 1),
+                "core_orbitals is not monotone across z = {z}"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_frozen_core_sums_over_atoms() {
+        // Water: only O has a core. H contributes nothing.
+        let xyz =
+            "3\nwater\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n";
+        assert_eq!(
+            Molecule::parse_xyz(xyz, 0, 1).unwrap().auto_frozen_core(),
+            1
+        );
+
+        // Two heavy atoms, one 1s each; the third-row atom adds 2s2p as well.
+        let xyz = "2\nCS\nC 0.0 0.0 0.0\nS 0.0 0.0 1.54\n";
+        assert_eq!(
+            Molecule::parse_xyz(xyz, 0, 1).unwrap().auto_frozen_core(),
+            1 + 5
+        );
+    }
+
+    #[test]
+    fn auto_frozen_core_skips_ghost_centers() {
+        // A ghost O carries the basis but no electrons: freezing "its" 1s
+        // would freeze a real valence orbital of the rest of the system.
+        let xyz = "2\nghost\n@O 0.0 0.0 0.0\nO 0.0 0.0 2.8\n";
+        let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        assert_eq!(mol.auto_frozen_core(), 1);
+    }
+
+    #[test]
+    fn auto_frozen_core_discounts_ecp_removed_orbitals() {
+        // I under a def2-style ECP (n_core = 28 electrons = 14 orbitals):
+        // the small-core count is 23, so 9 orbitals (4s4p4d) remain to freeze.
+        let xyz = "1\niodine\nI 0.0 0.0 0.0\n";
+        let mut mol = Molecule::parse_xyz(xyz, 0, 2).unwrap();
+        assert_eq!(mol.auto_frozen_core(), 23);
+        mol.atoms[0].n_core_ecp = 28;
+        assert_eq!(mol.auto_frozen_core(), 23 - 14);
+    }
+
+    #[test]
+    fn auto_frozen_core_saturates_on_a_valence_only_ecp() {
+        // An ECP that removed MORE than the small-core convention would freeze
+        // leaves nothing to freeze -- never a wrapped/negative count.
+        let xyz = "1\ncarbon\nC 0.0 0.0 0.0\n";
+        let mut mol = Molecule::parse_xyz(xyz, 0, 3).unwrap();
+        mol.atoms[0].n_core_ecp = 2; // 1s replaced by the potential
+        assert_eq!(mol.auto_frozen_core(), 0);
     }
 }

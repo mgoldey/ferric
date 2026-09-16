@@ -1,3 +1,4 @@
+use ferric_core::mol::Molecule;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -36,6 +37,95 @@ pub struct Config {
     pub cosmo: Option<ferric_scf::cosmo::CosmoConfig>,
     #[serde(default)]
     pub tddft: TddftCfg,
+}
+
+impl Config {
+    /// Every `frozen_core` key in the file, as `(section name, spec)`.
+    ///
+    /// `[gw] frozen_core` is reported only when it was actually written: unset
+    /// means "follow `[rpa]`", and reporting it as a second, independent 0
+    /// would put a key in the audit line that the user never typed.
+    fn frozen_core_keys(&self) -> Vec<(&'static str, FrozenCore)> {
+        let mut keys = vec![
+            ("[mp2]", self.mp2.frozen_core),
+            ("[rpa]", self.rpa.frozen_core),
+        ];
+        if let Some(fc) = self.gw.frozen_core {
+            keys.push(("[gw]", fc));
+        }
+        keys
+    }
+
+    /// Reject a frozen core that would leave nothing to correlate, naming the
+    /// section that set it.
+    ///
+    /// This is the same condition `ferric_mp2::rimp2::active_occ` enforces deep
+    /// in the correlation kernels; catching it here turns "SCF converged, then
+    /// a bare error 40 seconds later" into an error before any integral is
+    /// computed, and lets the message name the TOML key (and whether the count
+    /// came from `"auto"`) instead of just a number.
+    ///
+    /// The bound is the **minority-spin** occupied count, which is the binding
+    /// one: freezing `n` orbitals freezes them in both spin channels, so an
+    /// open-shell system runs out of β occupieds first. For a closed-shell
+    /// molecule the two counts coincide.
+    ///
+    /// `frozen_core = 0` is always accepted (there is nothing to freeze, so
+    /// nothing can be over-frozen) — including for a molecule with no
+    /// electrons at all, which `n_frozen > 0` below would otherwise reject
+    /// with a confusing message.
+    ///
+    /// Every section is checked, not just the one the selected `method.kind`
+    /// consumes: a `frozen_core` that cannot be satisfied for this molecule is
+    /// a broken input whichever method runs, and a `[mp2]` key that is wrong
+    /// but silent today is a wrong number the day someone switches
+    /// `method.kind` to an MP2 variant.
+    ///
+    /// Unlike the checks in [`load_config`], this one needs the molecule, and
+    /// specifically the molecule after [`Molecule::apply_ecp`] — so it lives
+    /// here and is called from the CLI once both are in hand.
+    pub fn validate_frozen_core(&self, mol: &Molecule) -> Result<(), String> {
+        // n_beta = (nelec - (multiplicity - 1)) / 2. Molecule construction has
+        // already validated that this is a non-negative integer.
+        let two_s = mol.multiplicity as i32 - 1;
+        let n_occ_minority = ((mol.nelec() - two_s) / 2).max(0) as usize;
+        for (section, spec) in self.frozen_core_keys() {
+            let n_frozen = spec.resolve(mol);
+            if n_frozen > 0 && n_frozen >= n_occ_minority {
+                let source = if spec.is_auto() {
+                    " (from frozen_core = \"auto\")"
+                } else {
+                    ""
+                };
+                return Err(format!(
+                    "{section} frozen_core = {n_frozen}{source} freezes all {n_occ_minority} \
+                     occupied orbital(s) of the minority spin — nothing left to correlate"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// One `[ferric] ...` line per `frozen_core = "auto"` key, reporting the
+    /// number the convention picked.
+    ///
+    /// An auto count is a number the user did not write down, and it moves
+    /// with the molecule and the basis (an ECP changes it). Printing it keeps a
+    /// run's correlation space auditable from its log alone, the same way the
+    /// memory budget's resolution is. Explicit counts print nothing — they are
+    /// already in the input file.
+    pub fn frozen_core_audit_lines(&self, mol: &Molecule) -> Vec<String> {
+        self.frozen_core_keys()
+            .into_iter()
+            .filter(|(_, spec)| spec.is_auto())
+            .map(|(section, spec)| {
+                format!(
+                    "frozen core: {} orbital(s) frozen from {section} frozen_core = \"auto\"",
+                    spec.resolve(mol)
+                )
+            })
+            .collect()
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -255,12 +345,143 @@ pub struct FrequenciesCfg {
     pub delta: Option<f64>,
 }
 
+/// The `frozen_core` key of a correlation section (`[mp2]`, `[rpa]`, `[gw]`):
+/// either an explicit orbital count or `"auto"`.
+///
+/// ```toml
+/// [mp2]
+/// frozen_core = "auto"   # standard small-core count for THIS molecule
+/// frozen_core = 3        # exactly three orbitals, whatever the molecule is
+/// frozen_core = "none"   # correlate everything (the default, = 0)
+/// ```
+///
+/// `true`/`false` are accepted as synonyms of `"auto"`/`"none"`, for anyone
+/// coming from a program that spells the key `freeze_core = true`.
+///
+/// **Why a type rather than a `usize` the parser fills in.** `"auto"` cannot be
+/// turned into a number without the molecule, which the parser does not have —
+/// and the molecule is not final until the basis is loaded, because an ECP
+/// changes the answer ([`Molecule::auto_frozen_core`]). Resolving on demand at
+/// the use site, where `mol` is always in scope, means there is no window in
+/// which a stale `0` can be read as "the user asked for no frozen core": an
+/// unresolved value is not a number and does not compile into one.
+///
+/// Unknown spellings are a hard error, never a silent fall-through to 0 —
+/// `frozen_core = "fc"` that quietly correlated the core would change published
+/// energies with no diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrozenCore {
+    /// `"auto"` (or `true`): freeze the standard small-core count for the
+    /// molecule at hand, ECPs and ghost centers accounted for. See
+    /// [`ferric_core::mol::core_orbitals`] for the convention and its
+    /// deliberate exceptions (the 3d shell of Sc–Zn stays correlated).
+    Auto,
+    /// An explicit orbital count, exactly as written. `0` correlates
+    /// everything.
+    Count(usize),
+}
+
+impl Default for FrozenCore {
+    /// `Count(0)`: correlate every occupied orbital.
+    ///
+    /// The default is deliberately NOT `Auto` — every published ferric number
+    /// predating this key was computed all-electron, and flipping the default
+    /// would silently change them. Frozen core is opt-in.
+    fn default() -> Self {
+        FrozenCore::Count(0)
+    }
+}
+
+impl FrozenCore {
+    /// Number of orbitals to freeze for `mol`.
+    ///
+    /// `mol` must be the calculation's molecule AFTER
+    /// [`Molecule::apply_ecp`] — see that method for why an ECP changes the
+    /// count.
+    pub fn resolve(&self, mol: &Molecule) -> usize {
+        match *self {
+            FrozenCore::Auto => mol.auto_frozen_core(),
+            FrozenCore::Count(n) => n,
+        }
+    }
+
+    /// True when the count came from `"auto"` rather than the TOML naming a
+    /// number. Only used to label the audit line the run prints — an auto
+    /// count is a convention the user did not write down, so the run says
+    /// which number it picked.
+    pub fn is_auto(&self) -> bool {
+        matches!(*self, FrozenCore::Auto)
+    }
+}
+
+impl<'de> Deserialize<'de> for FrozenCore {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct FrozenCoreVisitor;
+
+        impl serde::de::Visitor<'_> for FrozenCoreVisitor {
+            type Value = FrozenCore;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a non-negative orbital count, \"auto\", or \"none\"")
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<FrozenCore, E> {
+                usize::try_from(v)
+                    .map(FrozenCore::Count)
+                    .map_err(|_| E::custom(format!("frozen_core = {v} does not fit in a usize")))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<FrozenCore, E> {
+                usize::try_from(v).map(FrozenCore::Count).map_err(|_| {
+                    E::custom(format!(
+                        "frozen_core must be >= 0 (got {v}); use 0 or \"none\" to correlate \
+                         every occupied orbital, or \"auto\" for the standard small core"
+                    ))
+                })
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<FrozenCore, E> {
+                // `freeze_core = true` is how several other programs spell it;
+                // accept it rather than make the user guess which word we want.
+                Ok(if v {
+                    FrozenCore::Auto
+                } else {
+                    FrozenCore::Count(0)
+                })
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<FrozenCore, E> {
+                match v.trim().to_ascii_lowercase().as_str() {
+                    "auto" => Ok(FrozenCore::Auto),
+                    "none" => Ok(FrozenCore::Count(0)),
+                    other => Err(E::custom(format!(
+                        "frozen_core: unknown value \"{other}\"; expected \"auto\" (standard \
+                         small core for this molecule), \"none\", or a non-negative integer \
+                         orbital count"
+                    ))),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(FrozenCoreVisitor)
+    }
+}
+
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Mp2Cfg {
     pub auxbasis: Option<String>,
+    /// Core orbitals excluded from the correlation treatment: an explicit
+    /// count, or `"auto"` for the standard small-core count of this molecule.
+    /// Default 0 (all-electron correlation). See [`FrozenCore`].
+    ///
+    /// Shared by the whole MP2 family AND by the CC/double-hybrid methods,
+    /// which read this key rather than defining one of their own.
     #[serde(default)]
-    pub frozen_core: usize,
+    pub frozen_core: FrozenCore,
     // NOTE: `orbital_optimize` used to live here behind `#[allow(dead_code)]`.
     // Nothing ever read it — orbital optimization is selected with
     // `method.kind = "oo-rimp2"`. Setting it did nothing, which silently gave
@@ -486,8 +707,11 @@ impl Mp2Cfg {
     ///
     /// `frozen_core` and `memory_budget_bytes` come from the shared `[mp2]
     /// frozen_core` key and `[memory]`, matching every other MP2-family method.
+    /// `mol` is needed only to resolve a `frozen_core = "auto"` against this
+    /// molecule (see [`FrozenCore::resolve`]).
     pub fn build_att_vv10_config(
         &self,
+        mol: &Molecule,
         budget_bytes: Option<usize>,
     ) -> Result<ferric_mp2::att_vv10::AttVv10Config, String> {
         use ferric_dft::grid::AtomicGridConfig;
@@ -595,7 +819,7 @@ impl Mp2Cfg {
             prune: None,
         };
 
-        cfg.frozen_core = self.frozen_core;
+        cfg.frozen_core = self.frozen_core.resolve(mol);
         cfg.memory_budget_bytes = budget_bytes;
         Ok(cfg)
     }
@@ -605,8 +829,11 @@ impl Mp2Cfg {
 #[serde(deny_unknown_fields)]
 pub struct RpaCfg {
     pub auxbasis: Option<String>,
+    /// Core orbitals excluded from the RPA correlation treatment: an explicit
+    /// count, or `"auto"` for the standard small-core count of this molecule.
+    /// Default 0 (all-electron). See [`FrozenCore`].
     #[serde(default)]
-    pub frozen_core: usize,
+    pub frozen_core: FrozenCore,
     /// Number of imaginary-frequency quadrature points.
     ///
     /// NOTE: the fallback when unset is surface-dependent (historical drift,
@@ -856,11 +1083,14 @@ pub struct GwCfg {
     pub pade_npts: Option<usize>,
     /// Newton-step damping for the QP solver.
     pub qp_newton_damp: Option<f64>,
-    /// Frozen core for the GW self-energy build. Must match `[rpa]
-    /// frozen_core` for self-consistency between W and Σ — the CLI passes
-    /// this value to both `GwConfig.frozen_core` and overrides the PDEP
-    /// config's frozen_core with it.
-    pub frozen_core: Option<usize>,
+    /// Frozen core for the GW self-energy build: an explicit count, or
+    /// `"auto"` for the standard small-core count of this molecule (see
+    /// [`FrozenCore`]). Must match `[rpa] frozen_core` for self-consistency
+    /// between W and Σ — the CLI passes this value to both
+    /// `GwConfig.frozen_core` and overrides the PDEP config's frozen_core
+    /// with it. Unset (not `"none"`) falls back to `[rpa] frozen_core`, which
+    /// is why this one key is an `Option` while the others are not.
+    pub frozen_core: Option<FrozenCore>,
     /// Scissor shift (Hartree) added to every virtual orbital energy before
     /// assembling the RPAx@KS diagonal. Only consumed by
     /// `method.kind = "tdhf-static-polarizability"`
@@ -1491,6 +1721,19 @@ pub fn load_config(path: &str) -> Result<Config, String> {
 mod tests {
     use super::*;
 
+    /// Water — the stand-in molecule for the config tests that only need
+    /// *some* molecule to resolve a `frozen_core` against. Two heavy-atom-free
+    /// hydrogens and one oxygen: 5 occupied orbitals, 1 core.
+    fn water() -> Molecule {
+        Molecule::parse_xyz(
+            "3\nwater\nO 0.000000 0.000000 0.117790\n\
+             H 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n",
+            0,
+            1,
+        )
+        .unwrap()
+    }
+
     /// Every shipped example must parse. With `deny_unknown_fields` on all
     /// config structs, this doubles as the guard that the strict parser never
     /// rejects a key the examples (and thus users' existing files) rely on.
@@ -1807,7 +2050,7 @@ mp2v_vv10_damping = "terfc"
         assert_eq!(cfg.mp2.mp2v_b, Some(11.0));
         assert_eq!(cfg.mp2.mp2v_c, Some(0.0089));
 
-        let att = cfg.mp2.build_att_vv10_config(None).unwrap();
+        let att = cfg.mp2.build_att_vv10_config(&water(), None).unwrap();
         assert!((att.r0_angstrom() - 1.00).abs() < 1e-12);
         // 1.00 A = 1.8897259886 Bohr; ~0.529 would mean the conversion inverted.
         assert!(
@@ -1837,7 +2080,9 @@ mp2v_vv10_damping = "terfc"
     #[test]
     fn mp2_v_defaults_are_the_published_parameters() {
         let published = ferric_mp2::att_vv10::AttVv10Config::mp2_v_terfc_atz();
-        let att = Mp2Cfg::default().build_att_vv10_config(None).unwrap();
+        let att = Mp2Cfg::default()
+            .build_att_vv10_config(&water(), None)
+            .unwrap();
         assert_eq!(att.r0_bohr, published.r0_bohr);
         assert_eq!(att.vv10.b, published.vv10.b);
         assert_eq!(att.vv10.c, published.vv10.c);
@@ -1858,7 +2103,7 @@ mp2v_vv10_damping = "terfc"
         let mut mp2 = Mp2Cfg::default();
         mp2.mp2v_r0 = Some(1.05);
         mp2.mp2v_b = Some(12.5); // the Table 1 valley partner for r0 = 1.05
-        let att = mp2.build_att_vv10_config(None).unwrap();
+        let att = mp2.build_att_vv10_config(&water(), None).unwrap();
         assert!((att.r0_angstrom() - 1.05).abs() < 1e-12);
         assert_eq!(att.vv10.b, 12.5);
         match att.vv10_damping {
@@ -1879,7 +2124,7 @@ mp2v_vv10_damping = "terfc"
             mp2v_omega: Some(4.0),
             ..Mp2Cfg::default()
         };
-        let att = mp2.build_att_vv10_config(None).unwrap();
+        let att = mp2.build_att_vv10_config(&water(), None).unwrap();
         let expect_bohr_inv = 4.0 * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV;
         assert_eq!(att.omega, Some(expect_bohr_inv));
         // ~2.117 Bohr⁻¹; 7.56 would mean the conversion inverted.
@@ -1903,7 +2148,9 @@ mp2v_vv10_damping = "terfc"
         }
         // Omitted omega = the linked width, in both halves (byte-identical
         // pre-decoupling behavior).
-        let linked = Mp2Cfg::default().build_att_vv10_config(None).unwrap();
+        let linked = Mp2Cfg::default()
+            .build_att_vv10_config(&water(), None)
+            .unwrap();
         assert_eq!(linked.omega, None);
         assert!(matches!(
             linked.effective_vv10_damping().unwrap(),
@@ -1924,7 +2171,7 @@ mp2v_vv10_damping = "terfc"
             mp2v_attenuator: Some("erfc".to_string()),
             ..Mp2Cfg::default()
         };
-        let err = mp2.build_att_vv10_config(None).unwrap_err();
+        let err = mp2.build_att_vv10_config(&water(), None).unwrap_err();
         assert!(err.contains("terfc attenuator only"), "got: {err}");
 
         for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
@@ -1932,7 +2179,7 @@ mp2v_vv10_damping = "terfc"
                 mp2v_omega: Some(bad),
                 ..Mp2Cfg::default()
             };
-            let err = mp2.build_att_vv10_config(None).unwrap_err();
+            let err = mp2.build_att_vv10_config(&water(), None).unwrap_err();
             assert!(err.contains("mp2v_omega"), "omega={bad}: {err}");
         }
     }
@@ -1945,7 +2192,7 @@ mp2v_vv10_damping = "terfc"
             let mut m = Mp2Cfg::default();
             m.mp2v_attenuator = att.map(|s| s.to_string());
             m.mp2v_vv10_damping = damp.map(|s| s.to_string());
-            m.build_att_vv10_config(None)
+            m.build_att_vv10_config(&water(), None)
         };
         use ferric_mp2::att_vv10::AttVv10Attenuator;
         assert_eq!(
@@ -1976,13 +2223,13 @@ mp2v_vv10_damping = "terfc"
             let mut m = Mp2Cfg::default();
             m.mp2v_r0 = Some(bad);
             assert!(
-                m.build_att_vv10_config(None).is_err(),
+                m.build_att_vv10_config(&water(), None).is_err(),
                 "mp2v_r0 = {bad} must be rejected"
             );
         }
         let mut m = Mp2Cfg::default();
         m.mp2v_nlc_n_radial = Some(0);
-        assert!(m.build_att_vv10_config(None).is_err());
+        assert!(m.build_att_vv10_config(&water(), None).is_err());
     }
 
     /// Typo'd `mp2v_*` keys must hard-error (deny_unknown_fields), not silently
@@ -2036,7 +2283,7 @@ frozen_core = 1
         assert_eq!(cfg.gw.max_ev_iter, Some(30));
         assert!((cfg.gw.ev_conv_thresh.unwrap() - 1e-5).abs() < 1e-12);
         assert!((cfg.gw.qp_newton_damp.unwrap() - 0.8).abs() < 1e-12);
-        assert_eq!(cfg.gw.frozen_core, Some(1));
+        assert_eq!(cfg.gw.frozen_core, Some(FrozenCore::Count(1)));
         assert_eq!(cfg.gw.parse_method().unwrap(), ferric_gw::GwMethod::EvGw0);
     }
 
@@ -2080,7 +2327,7 @@ frozen_core = 0
         assert_eq!(cfg.method.kind, "bse-tda");
         assert_eq!(cfg.rpa.auxbasis.as_deref(), Some("cc-pvdz-ri"));
         assert_eq!(cfg.rpa.n_quad, Some(16));
-        assert_eq!(cfg.gw.frozen_core, Some(0));
+        assert_eq!(cfg.gw.frozen_core, Some(FrozenCore::Count(0)));
     }
 
     #[test]
@@ -2127,7 +2374,7 @@ scissor = 0.1
         assert_eq!(cfg.method.kind, "tdhf-static-polarizability");
         assert_eq!(cfg.rpa.auxbasis.as_deref(), Some("cc-pvdz-ri"));
         assert_eq!(cfg.rpa.xc.as_deref(), Some("PBE"));
-        assert_eq!(cfg.gw.frozen_core, Some(0));
+        assert_eq!(cfg.gw.frozen_core, Some(FrozenCore::Count(0)));
         assert!((cfg.gw.scissor.unwrap() - 0.1).abs() < 1e-12);
     }
 
@@ -2180,7 +2427,7 @@ auxbasis = "cc-pvdz-ri"
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.method.kind, "mp3");
         assert_eq!(cfg.mp2.auxbasis.as_deref(), Some("cc-pvdz-ri"));
-        assert_eq!(cfg.mp2.frozen_core, 0);
+        assert_eq!(cfg.mp2.frozen_core, FrozenCore::Count(0));
     }
 
     #[test]
@@ -2970,5 +3217,230 @@ max_iter = 42
         assert_eq!(built[0].config.max_iter, 42);
         assert!(!built[0].config.use_sad_guess);
         assert!(!built[0].restart);
+    }
+
+    // ---- frozen_core: the `"auto"` surface -------------------------------
+
+    /// Minimal TOML with `body` appended, for the frozen-core cases.
+    fn cfg_with(body: &str) -> Result<Config, toml::de::Error> {
+        toml::from_str(&format!(
+            "[molecule]\nxyz = \"water.xyz\"\n[basis]\nname = \"cc-pvdz\"\n\
+             [method]\nkind = \"rimp2\"\n{body}"
+        ))
+    }
+
+    #[test]
+    fn frozen_core_accepts_auto_in_every_correlation_section() {
+        let cfg = cfg_with("[mp2]\nfrozen_core = \"auto\"\n[rpa]\nfrozen_core = \"auto\"\n[gw]\nfrozen_core = \"auto\"\n")
+            .unwrap();
+        assert_eq!(cfg.mp2.frozen_core, FrozenCore::Auto);
+        assert_eq!(cfg.rpa.frozen_core, FrozenCore::Auto);
+        assert_eq!(cfg.gw.frozen_core, Some(FrozenCore::Auto));
+    }
+
+    #[test]
+    fn frozen_core_still_accepts_a_plain_integer() {
+        // The pre-existing surface: every input file in the wild writes a
+        // number, and every one of them must keep parsing to that number.
+        let cfg =
+            cfg_with("[mp2]\nfrozen_core = 3\n[rpa]\nfrozen_core = 0\n[gw]\nfrozen_core = 5\n")
+                .unwrap();
+        assert_eq!(cfg.mp2.frozen_core, FrozenCore::Count(3));
+        assert_eq!(cfg.rpa.frozen_core, FrozenCore::Count(0));
+        assert_eq!(cfg.gw.frozen_core, Some(FrozenCore::Count(5)));
+        assert_eq!(cfg.mp2.frozen_core.resolve(&water()), 3);
+    }
+
+    #[test]
+    fn frozen_core_defaults_to_all_electron() {
+        // Frozen core is OPT-IN. Flipping this default would silently change
+        // every published ferric correlation energy, so it is a test, not a
+        // comment.
+        let cfg = cfg_with("").unwrap();
+        assert_eq!(cfg.mp2.frozen_core, FrozenCore::Count(0));
+        assert_eq!(cfg.rpa.frozen_core, FrozenCore::Count(0));
+        assert_eq!(cfg.gw.frozen_core, None);
+        assert_eq!(cfg.mp2.frozen_core.resolve(&water()), 0);
+        assert!(!cfg.mp2.frozen_core.is_auto());
+    }
+
+    #[test]
+    fn frozen_core_accepts_the_documented_spellings() {
+        for (body, want) in [
+            ("frozen_core = \"auto\"", FrozenCore::Auto),
+            ("frozen_core = \"AUTO\"", FrozenCore::Auto), // case-insensitive
+            ("frozen_core = \"  auto \"", FrozenCore::Auto), // trimmed
+            ("frozen_core = true", FrozenCore::Auto),     // freeze_core = true elsewhere
+            ("frozen_core = \"none\"", FrozenCore::Count(0)),
+            ("frozen_core = false", FrozenCore::Count(0)),
+        ] {
+            let cfg = cfg_with(&format!("[mp2]\n{body}\n")).unwrap();
+            assert_eq!(cfg.mp2.frozen_core, want, "[mp2] {body}");
+        }
+    }
+
+    /// The error text from a body the parser must REJECT.
+    ///
+    /// Spelled out rather than `unwrap_err()` because `Config` has no `Debug`
+    /// impl (and does not need one for its own sake).
+    fn cfg_err(body: &str) -> String {
+        match cfg_with(body) {
+            Ok(_) => panic!("expected the parser to reject: {body:?}"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    #[test]
+    fn frozen_core_rejects_an_unknown_spelling() {
+        // The whole point of a strict parse: `"fc"` that silently meant 0
+        // would correlate the core and change the energy with no diagnostic.
+        let err = cfg_err("[mp2]\nfrozen_core = \"fc\"\n");
+        assert!(err.contains("unknown value"), "{err}");
+        assert!(
+            err.contains("auto"),
+            "the error must name the spelling we DO accept: {err}"
+        );
+    }
+
+    #[test]
+    fn frozen_core_rejects_a_negative_count() {
+        let err = cfg_err("[mp2]\nfrozen_core = -1\n");
+        assert!(err.contains(">= 0"), "{err}");
+    }
+
+    #[test]
+    fn auto_frozen_core_resolves_against_the_molecule() {
+        let cfg = cfg_with("[mp2]\nfrozen_core = \"auto\"\n").unwrap();
+        // Water: O contributes its 1s, the two H nothing.
+        assert_eq!(cfg.mp2.frozen_core.resolve(&water()), 1);
+        // The same config on a different molecule gives a different count --
+        // that is the entire point of "auto".
+        let so2 = Molecule::parse_xyz(
+            "3\nSO2\nS 0.0 0.0 0.0\nO 0.0 1.24 0.72\nO 0.0 -1.24 0.72\n",
+            0,
+            1,
+        )
+        .unwrap();
+        assert_eq!(cfg.mp2.frozen_core.resolve(&so2), 5 + 1 + 1);
+    }
+
+    #[test]
+    fn auto_frozen_core_follows_the_ecp() {
+        // An ECP has already removed core orbitals from the MO space, so
+        // "auto" must freeze only what is left -- freezing the full
+        // small-core count would eat valence orbitals. Mirrors what
+        // Molecule::apply_ecp does before the CLI resolves the key.
+        let cfg = cfg_with("[mp2]\nfrozen_core = \"auto\"\n").unwrap();
+        let mut hi = Molecule::parse_xyz("2\nHI\nI 0.0 0.0 0.0\nH 0.0 0.0 1.61\n", 0, 1).unwrap();
+        assert_eq!(cfg.mp2.frozen_core.resolve(&hi), 23);
+        hi.atoms[0].n_core_ecp = 28; // def2-ECP on iodine: 14 orbitals gone
+        assert_eq!(cfg.mp2.frozen_core.resolve(&hi), 9);
+    }
+
+    #[test]
+    fn validate_frozen_core_rejects_an_over_large_count() {
+        // Water has 5 occupied orbitals; freezing 5 leaves nothing to
+        // correlate. Caught at the config boundary, naming the section.
+        let cfg = cfg_with("[mp2]\nfrozen_core = 5\n").unwrap();
+        let err = cfg.validate_frozen_core(&water()).unwrap_err();
+        assert!(err.contains("[mp2]"), "{err}");
+        assert!(err.contains("nothing left to correlate"), "{err}");
+
+        // ... and the same for the other two sections, so a stray key cannot
+        // sail through just because the method family differs.
+        let cfg = cfg_with("[rpa]\nfrozen_core = 9\n").unwrap();
+        assert!(cfg
+            .validate_frozen_core(&water())
+            .unwrap_err()
+            .contains("[rpa]"));
+        let cfg = cfg_with("[gw]\nfrozen_core = 9\n").unwrap();
+        assert!(cfg
+            .validate_frozen_core(&water())
+            .unwrap_err()
+            .contains("[gw]"));
+    }
+
+    #[test]
+    fn validate_frozen_core_names_auto_when_auto_is_at_fault() {
+        // Li+ (2 electrons, 1 occupied orbital): the small-core convention
+        // wants to freeze that one orbital. Better an error that says where
+        // the number came from than a zero correlation energy.
+        let cfg = cfg_with("[mp2]\nfrozen_core = \"auto\"\n").unwrap();
+        let li_cation = Molecule::parse_xyz("1\nLi+\nLi 0.0 0.0 0.0\n", 1, 1).unwrap();
+        let err = cfg.validate_frozen_core(&li_cation).unwrap_err();
+        assert!(err.contains("auto"), "{err}");
+    }
+
+    #[test]
+    fn validate_frozen_core_uses_the_minority_spin_count() {
+        // CH3 radical (doublet): 9 electrons, 5 alpha / 4 beta occupied.
+        // Freezing 4 leaves alpha with one correlated occupied but beta with
+        // none -- the beta channel is the binding one.
+        let ch3 = Molecule::parse_xyz(
+            "4\nCH3\nC 0.0 0.0 0.0\nH 0.0 1.08 0.0\nH 0.94 -0.54 0.0\nH -0.94 -0.54 0.0\n",
+            0,
+            2,
+        )
+        .unwrap();
+        assert!(cfg_with("[mp2]\nfrozen_core = 4\n")
+            .unwrap()
+            .validate_frozen_core(&ch3)
+            .is_err());
+        assert!(cfg_with("[mp2]\nfrozen_core = 1\n")
+            .unwrap()
+            .validate_frozen_core(&ch3)
+            .is_ok());
+    }
+
+    #[test]
+    fn validate_frozen_core_accepts_the_ordinary_cases() {
+        for body in [
+            "",
+            "[mp2]\nfrozen_core = 0\n",
+            "[mp2]\nfrozen_core = 1\n",
+            "[mp2]\nfrozen_core = \"auto\"\n",
+        ] {
+            assert!(
+                cfg_with(body)
+                    .unwrap()
+                    .validate_frozen_core(&water())
+                    .is_ok(),
+                "must accept: {body:?}"
+            );
+        }
+        // A molecule with no electrons to freeze at all (H2) still passes with
+        // the default, which is the `n_frozen > 0` guard doing its job.
+        let h2 = Molecule::parse_xyz("2\nH2\nH 0.0 0.0 0.0\nH 0.0 0.0 0.74\n", 0, 1).unwrap();
+        assert!(cfg_with("[mp2]\nfrozen_core = \"auto\"\n")
+            .unwrap()
+            .validate_frozen_core(&h2)
+            .is_ok());
+        assert_eq!(
+            cfg_with("[mp2]\nfrozen_core = \"auto\"\n")
+                .unwrap()
+                .mp2
+                .frozen_core
+                .resolve(&h2),
+            0
+        );
+    }
+
+    #[test]
+    fn frozen_core_audit_line_is_printed_only_for_auto() {
+        // An explicit count is already in the input file; an auto count is a
+        // number nobody wrote down, so the run must report it.
+        assert!(cfg_with("[mp2]\nfrozen_core = 1\n")
+            .unwrap()
+            .frozen_core_audit_lines(&water())
+            .is_empty());
+        let lines = cfg_with("[mp2]\nfrozen_core = \"auto\"\n[rpa]\nfrozen_core = \"auto\"\n")
+            .unwrap()
+            .frozen_core_audit_lines(&water());
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[0].contains("[mp2]") && lines[0].contains('1'),
+            "{lines:?}"
+        );
+        assert!(lines[1].contains("[rpa]"), "{lines:?}");
     }
 }
