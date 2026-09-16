@@ -1,0 +1,23 @@
+# RI-MP2 on water with the standard small-core frozen core.
+#
+# `frozen_core = "auto"` resolves to the small-core count for THIS molecule
+# (oxygen's 1s here, so 1 orbital; the hydrogens have no core). Write a number
+# instead to freeze exactly that many orbitals regardless of the molecule.
+# The default -- key omitted -- is 0, i.e. all-electron correlation, which is
+# what examples/water-rimp2.toml runs.
+#
+# The run prints what "auto" resolved to:
+#   [ferric] frozen core: 1 orbital(s) frozen from [mp2] frozen_core = "auto"
+
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "rimp2"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+frozen_core = "auto"
