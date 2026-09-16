@@ -350,14 +350,17 @@ jobs:
           # ...then those three with --lib plus every NON-deferred test target,
           # derived from what is on disk so a new test cannot silently drop out.
           for crate in ferric-scf ferric-cc ferric-mp2; do
-            args="-p $crate --lib --locked"
+            args="-p $crate --lib"
             for f in crates/$crate/tests/*.rs; do
               base="$(basename "$f" .rs)"
               case " $SLOW " in *" $base "*) continue ;; esac
               args="$args --test $base"
             done
             echo "== $crate: $(echo "$args" | grep -o -- '--test' | wc -l) test targets =="
-            cargo test --no-fail-fast $args || rc=1
+            # --locked literal here (not folded into $args above) so it stays
+            # visually consistent with every other cargo invocation in this
+            # file instead of being buried inside a built-up variable.
+            cargo test --no-fail-fast $args --locked || rc=1
           done
           if [ "$rc" -ne 0 ]; then
             echo "::error::one or more test commands failed -- see the FAILED lines above"
