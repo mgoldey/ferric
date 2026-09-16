@@ -638,6 +638,7 @@ dependencies = [
  "ferric-integrals",
  "ferric-mm",
  "ferric-pcm",
+ "ferric-quadrature",
  "mpi",
  "ndarray",
  "ndarray-linalg",
