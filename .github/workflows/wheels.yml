@@ -666,7 +666,15 @@ jobs:
           chmod +x native-deps-cache/prepare-container.sh
 
       - name: Build wheel (manylinux_2_28 container)
-        uses: PyO3/maturin-action@v1
+        # Pinned off v1 -- a moving major-version tag upstream repoints at
+        # every release -- to the commit v1.51.0 peels to (v1.51.0 itself is
+        # an ANNOTATED tag, so the SHA that matters is refs/tags/v1.51.0^{},
+        # not the tag-object SHA `git ls-remote` returns for it). This is a
+        # real behaviour freeze, not just a supply-chain pin: the release
+        # path no longer picks up maturin-action updates automatically, and
+        # someone must bump this SHA on purpose. That is the intended
+        # trade-off for a job that publishes to PyPI.
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           rust-toolchain: stable
           target: x86_64
@@ -963,6 +971,11 @@ jobs:
             esac
           done
 
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      # Was `@release/v1`, a BRANCH ref, not a tag -- pinned to the commit
+      # v1.14.2's (also annotated) tag peels to, which is confirmed to be the
+      # SAME commit `release/v1` currently points at. So this is a
+      # supply-chain pin only, not a publish-behaviour change: nothing this
+      # job does at upload time is different after this pin than before it.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/
