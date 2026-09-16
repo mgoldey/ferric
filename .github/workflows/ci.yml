@@ -106,7 +106,7 @@ jobs:
     # default. Once the cache below populates, runs skip the build entirely.
     timeout-minutes: 170
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # The ubuntu-22.04 image ships ~30 GB of toolchains this job never uses
       # (.NET, Android SDK, GHC, CodeQL, Swift). Deleting them is the standard
@@ -184,7 +184,7 @@ jobs:
       # build with if: always(), so the cache populates even on a red run.
       - name: Restore libint2 cache
         id: cache-libint
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.LIBINT2_PREFIX }}
           key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
@@ -215,7 +215,7 @@ jobs:
         # reported success and wrote an unusable entry, which is worse than
         # no cache because it poisons every later restore.
         if: success() && steps.cache-libint.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.LIBINT2_PREFIX }}
           key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
@@ -254,8 +254,21 @@ jobs:
       # crates/ferric-ci/src/strings.rs), and `clippy --workspace --all-targets
       # -- -D warnings` exits 0 on BOTH 1.95 and 1.98 locally, so the pin no
       # longer buys anything the fix does not.
+      #
+      # The SHA below pins the ACTION (dtolnay/rust-toolchain), not the Rust
+      # compiler. `stable` in that repo is a BRANCH, not a release tag, so
+      # the commit changes as dtolnay periodically bumps whatever it resolves
+      # to -- pinning to this commit freezes the toolchain-INSTALL logic
+      # (which channel/target it fetches, how it invokes rustup) for
+      # supply-chain reasons, but at run time the action still fetches
+      # whatever `rustup toolchain install stable` resolves to that day. That
+      # is NOT a contradiction of the "Back to @stable, deliberately" comment
+      # above: this pin and that one are answering different questions -- the
+      # action-SHA pin is about trusting the code that installs the
+      # toolchain, the @stable channel choice is about deliberately letting
+      # the Rust VERSION float.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
         with:
           components: clippy
 
@@ -271,7 +284,7 @@ jobs:
       # registry + git sources are a few hundred MB and are kept.
       - name: Restore cargo cache
         id: cache-cargo
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -391,7 +404,7 @@ jobs:
         # Consumed by docs.yml, which cannot build these itself. Retention is
         # short on purpose: this is a build-to-build handoff, not an archive.
         if: ${{ github.ref == 'refs/heads/main' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: api-docs
           path: target/doc
@@ -403,7 +416,7 @@ jobs:
         # previously wrote a 208-BYTE entry later runs would have restored.
         # No `target` here either -- see the restore step for why.
         if: ${{ !cancelled() }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -419,7 +432,7 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 170
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install system dependencies
         run: |
@@ -435,7 +448,7 @@ jobs:
 
       - name: Restore libint2 cache
         id: cache-libint
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.LIBINT2_PREFIX }}
           key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
@@ -457,16 +470,19 @@ jobs:
 
       - name: Save libint2 cache
         if: success() && steps.cache-libint.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ env.LIBINT2_PREFIX }}
           key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Same action-SHA-vs-Rust-version distinction as build-and-test's
+      # toolchain step above: this pins the INSTALLER commit, not the
+      # compiler, which is deliberately left floating on `stable`.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
 
       - name: Restore cargo cache
         # No target/ (see the push job's restore step); v3 key to match.
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
