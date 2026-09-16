@@ -30,6 +30,34 @@ on:
     - cron: '17 4 * * *'
   workflow_dispatch: {}
 
+concurrency:
+  # Cancel a SUPERSEDED run on the SAME pull request -- the job can run up to
+  # 170 minutes on a disk-constrained runner, and there is no reason to let a
+  # push-3-commits-ago build keep occupying a runner once push-4 has arrived.
+  #
+  # NEVER cancels a run on `main` or a `schedule` run:
+  #   - `cancel-in-progress` is gated on `github.event_name == 'pull_request'`,
+  #     so a `push` to main (event_name `push`) and the nightly `schedule` run
+  #     are never eligible for cancellation, regardless of the group key.
+  #   - The group key itself still separates main/schedule/dispatch runs from
+  #     PR runs (it falls back to `github.ref`, which differs across event
+  #     types), so even if the flag above were ever loosened, a main push and
+  #     a schedule run would still never group with each other.
+  #
+  # Interaction with the cache-poisoning guards below ("Save libint2 cache",
+  # "Save cargo cache"): a run GitHub cancels because a newer PR run
+  # superseded it is, from the cache-save step's point of view, identical to
+  # a run a human cancelled by hand -- both hit the job's cancellation path
+  # before the save step's `if:` is evaluated. The libint2 save already
+  # reads `if: success() && ...` (a cancelled run is never `success()`) and
+  # the cargo save reads `if: ${{ !cancelled() }}` (a cancelled run IS
+  # `cancelled()`), so both steps are skipped exactly as they already are for
+  # today's manual cancellation -- verified by inspection of those two `if:`
+  # expressions, not changed here. Auto-cancellation opens no new path to the
+  # truncated/208-byte-cache failure mode those guards exist to prevent.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   OPENBLAS_NUM_THREADS: "1"
