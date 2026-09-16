@@ -9,6 +9,7 @@ The bookkeeping is the point. A funnel that reports only its survivors cannot
 distinguish "this candidate was rejected on its merits" from "this candidate
 crashed and was quietly dropped" -- and those demand opposite responses.
 """
+
 from __future__ import annotations
 
 import time
@@ -26,6 +27,7 @@ TierFn = Callable[[Isomer, dict], TierResult]
 @dataclass
 class Stage:
     """One tier in the stack. `keep` is how many survivors pass downward."""
+
     tier: Tier
     fn: TierFn
     keep: int
@@ -60,34 +62,46 @@ class FunnelReport:
         return None
 
     def table(self) -> str:
-        lines = [f"{'tier':>4s}  {'stage':12s} {'in':>5s} {'out':>5s} {'failed':>7s} "
-                 f"{'secs':>8s} {'s/cand':>8s}  note",
-                 "-" * 96]
+        lines = [
+            f"{'tier':>4s}  {'stage':12s} {'in':>5s} {'out':>5s} {'failed':>7s} "
+            f"{'secs':>8s} {'s/cand':>8s}  note",
+            "-" * 96,
+        ]
         for o in self.outcomes:
             secs = "-" if o.seconds is None else f"{o.seconds:.1f}"
-            per = ("-" if o.seconds_per_candidate is None
-                   else f"{o.seconds_per_candidate:.2f}")
-            lines.append(f"{int(o.tier):>4d}  {o.note.split(':')[0]:12s} "
-                         f"{o.n_in:5d} {o.n_out:5d} {o.n_failed:7d} "
-                         f"{secs:>8s} {per:>8s}  {o.note}")
+            per = (
+                "-"
+                if o.seconds_per_candidate is None
+                else f"{o.seconds_per_candidate:.2f}"
+            )
+            lines.append(
+                f"{int(o.tier):>4d}  {o.note.split(':')[0]:12s} "
+                f"{o.n_in:5d} {o.n_out:5d} {o.n_failed:7d} "
+                f"{secs:>8s} {per:>8s}  {o.note}"
+            )
         total = sum(o.seconds for o in self.outcomes if o.seconds is not None)
         if total:
             lines.append("-" * 96)
-            lines.append(f"{'':4s}  {'TOTAL':12s} {'':5s} {'':5s} {'':7s} "
-                         f"{total:8.1f}")
+            lines.append(f"{'':4s}  {'TOTAL':12s} {'':5s} {'':5s} {'':7s} {total:8.1f}")
             # Which tier actually cost the run? That is the tuning question,
             # and the answer is routinely not the cost table's prediction.
-            worst = max((o for o in self.outcomes if o.seconds is not None),
-                        key=lambda o: o.seconds, default=None)
+            worst = max(
+                (o for o in self.outcomes if o.seconds is not None),
+                key=lambda o: o.seconds,
+                default=None,
+            )
             if worst is not None:
                 share = 100.0 * worst.seconds / total
-                lines.append(f"{'':4s}  dominant tier {int(worst.tier)} "
-                             f"({worst.note.split(':')[0]}) = {share:.0f}% of wall")
+                lines.append(
+                    f"{'':4s}  dominant tier {int(worst.tier)} "
+                    f"({worst.note.split(':')[0]}) = {share:.0f}% of wall"
+                )
         return "\n".join(lines)
 
 
-def _run_stage(stage: Stage, population: list[Isomer],
-               context: dict[str, Any]) -> list[TierResult]:
+def _run_stage(
+    stage: Stage, population: list[Isomer], context: dict[str, Any]
+) -> list[TierResult]:
     """Evaluate one tier over a population, serially or fanned out.
 
     The parallel path preserves INPUT ORDER (results are placed back by index),
@@ -112,18 +126,25 @@ def _run_stage(stage: Stage, population: list[Isomer],
 
     results: list[TierResult | None] = [None] * len(population)
     with ProcessPoolExecutor(max_workers=stage.workers) as pool:
-        futures = {pool.submit(_apply, (stage.fn, iso, context)): i
-                   for i, iso in enumerate(population)}
+        futures = {
+            pool.submit(_apply, (stage.fn, iso, context)): i
+            for i, iso in enumerate(population)
+        }
         for fut, i in futures.items():
             try:
                 results[i] = fut.result()
             except Exception as e:  # noqa: BLE001 -- incl. BrokenProcessPool
                 results[i] = TierResult(
-                    population[i].canonical, None,
-                    f"worker died: {type(e).__name__}: {e}")
-    return [r if r is not None else
-            TierResult(population[i].canonical, None, "no result from worker")
-            for i, r in enumerate(results)]
+                    population[i].canonical,
+                    None,
+                    f"worker died: {type(e).__name__}: {e}",
+                )
+    return [
+        r
+        if r is not None
+        else TierResult(population[i].canonical, None, "no result from worker")
+        for i, r in enumerate(results)
+    ]
 
 
 def _apply(args: tuple) -> TierResult:
@@ -132,8 +153,9 @@ def _apply(args: tuple) -> TierResult:
     return fn(iso, context)
 
 
-def run_funnel(candidates: list[Isomer], stages: list[Stage],
-               context: dict[str, Any]) -> FunnelReport:
+def run_funnel(
+    candidates: list[Isomer], stages: list[Stage], context: dict[str, Any]
+) -> FunnelReport:
     """Narrow `candidates` through `stages`, cheapest first.
 
     Ranking is ASCENDING by value at every tier, because every tier here reports
@@ -160,18 +182,25 @@ def run_funnel(candidates: list[Isomer], stages: list[Stage],
         rep.results[stage.name] = results
 
         by_id = {r.candidate_id: r for r in results}
-        ok = [iso for iso in population
-              if iso.canonical in by_id and by_id[iso.canonical].ok]
+        ok = [
+            iso
+            for iso in population
+            if iso.canonical in by_id and by_id[iso.canonical].ok
+        ]
         ok.sort(key=lambda iso: by_id[iso.canonical].value)
-        survivors = ok[:stage.keep]
+        survivors = ok[: stage.keep]
 
-        rep.outcomes.append(TierOutcome(
-            tier=stage.tier, n_in=len(population), n_out=len(survivors),
-            n_failed=len(population) - len(ok),
-            note=f"{stage.name}: kept {len(survivors)} of {len(ok)} scored",
-            errors=[r.error for r in results if r.error][:10],
-            seconds=elapsed,
-        ))
+        rep.outcomes.append(
+            TierOutcome(
+                tier=stage.tier,
+                n_in=len(population),
+                n_out=len(survivors),
+                n_failed=len(population) - len(ok),
+                note=f"{stage.name}: kept {len(survivors)} of {len(ok)} scored",
+                errors=[r.error for r in results if r.error][:10],
+                seconds=elapsed,
+            )
+        )
         population = survivors
 
     rep.survivors = population

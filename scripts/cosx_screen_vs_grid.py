@@ -45,7 +45,7 @@ is not tuned.
 import numpy as np
 from pyscf import gto, dft
 
-THRESH = 1e-7          # fixed before measuring; NOT tuned (Stage 2 value)
+THRESH = 1e-7  # fixed before measuring; NOT tuned (Stage 2 value)
 GRIDS = [(25, 50), (35, 86), (50, 110), (75, 194)]
 
 
@@ -77,11 +77,11 @@ def frac_kept(mol, nrad, nang, thresh=THRESH):
     chunk = 4000
     for lo in range(0, npts, chunk):
         hi = min(lo + chunk, npts)
-        ao = dft.numint.eval_ao(mol, coords[lo:hi])        # (nc, nbf)
+        ao = dft.numint.eval_ao(mol, coords[lo:hi])  # (nc, nbf)
         # shell magnitude: max over the AOs in that shell
         smag = np.empty((hi - lo, nsh))
         for s in range(nsh):
-            smag[:, s] = np.abs(ao[:, shell_lo[s]:shell_hi[s]]).max(axis=1)
+            smag[:, s] = np.abs(ao[:, shell_lo[s] : shell_hi[s]]).max(axis=1)
         # pair estimate = outer product per point; count upper triangle
         # without materializing (nc, nsh, nsh) for large nsh.
         for c in range(hi - lo):
@@ -96,6 +96,7 @@ def frac_kept(mol, nrad, nang, thresh=THRESH):
 
 def main():
     import sys
+
     base = "/home/matt/qc/ferric/.claude/worktrees/cosx/testdata/molecules"
     systems = sys.argv[1:] or ["alkane_4", "alkane_8", "alkane_12"]
     basis = "cc-pvdz"
@@ -103,19 +104,20 @@ def main():
     print("COMPOSITION CHECK: screening pair fraction vs GRID COARSENESS")
     print(f"threshold {THRESH:.0e} (fixed before measuring), basis {basis}")
     print()
-    print(f"{'system':>10} {'nsh':>5} " +
-          "".join(f"{f'{a}x{b}':>12}" for a, b in GRIDS))
+    print(
+        f"{'system':>10} {'nsh':>5} " + "".join(f"{f'{a}x{b}':>12}" for a, b in GRIDS)
+    )
     print("-" * (16 + 12 * len(GRIDS)))
 
     for name in systems:
-        mol = gto.M(atom=load_xyz(f"{base}/{name}.xyz"), basis=basis,
-                    unit="Angstrom", verbose=0)
+        mol = gto.M(
+            atom=load_xyz(f"{base}/{name}.xyz"), basis=basis, unit="Angstrom", verbose=0
+        )
         fr = []
-        for (nr, na) in GRIDS:
+        for nr, na in GRIDS:
             f, npts, nsh = frac_kept(mol, nr, na)
             fr.append(f)
-        print(f"{name:>10} {mol.nbas:5d} " +
-              "".join(f"{f:11.4f}" for f in fr))
+        print(f"{name:>10} {mol.nbas:5d} " + "".join(f"{f:11.4f}" for f in fr))
         # verdict per system
         coarse, fine = fr[0], fr[-1]
         rel = (coarse - fine) / fine * 100

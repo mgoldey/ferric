@@ -25,6 +25,7 @@ Two things this is careful about, because both silently corrupt the curve:
     and the value is NOT an answer — that is reported explicitly rather than
     quoted as an optimum.
 """
+
 import argparse
 import json
 import re
@@ -170,7 +171,7 @@ def natural_cubic_spline(xs, ys):
     def f(x):
         i = min(max(0, sum(1 for v in xs[1:-1] if v <= x)), n - 2)
         dx = x - xs[i]
-        return ys[i] + b[i] * dx + c[i] * dx * dx + d[i] * dx ** 3
+        return ys[i] + b[i] * dx + c[i] * dx * dx + d[i] * dx**3
 
     return f
 
@@ -202,8 +203,10 @@ def analyze(basis, form, want, verbose=True, metric="mae"):
 
     if verbose:
         print(f"basis={basis}  formulation={form}  systems={sorted(want)}")
-        print(f"r0 points with the full system set : {len(usable)} "
-              f"{[f'{r:.3f}' for r in usable]}")
+        print(
+            f"r0 points with the full system set : {len(usable)} "
+            f"{[f'{r:.3f}' for r in usable]}"
+        )
         missing = sorted(set(data) - set(usable))
         if missing:
             gaps = {f"{r:.3f}": sorted(want - complete[r]) for r in missing}
@@ -234,9 +237,11 @@ def analyze(basis, form, want, verbose=True, metric="mae"):
                     dropped.append(sysid)
                 surv = sorted(r for r in data if trial and trial <= complete[r])
                 if dropped and len(surv) >= 4:
-                    print(f"  DROPPING {['a24-%d' % d for d in dropped]} would give "
-                          f"{len(surv)} usable r0 on {len(trial)} systems: "
-                          f"--systems {','.join(str(x) for x in sorted(trial))}")
+                    print(
+                        f"  DROPPING {['a24-%d' % d for d in dropped]} would give "
+                        f"{len(surv)} usable r0 on {len(trial)} systems: "
+                        f"--systems {','.join(str(x) for x in sorted(trial))}"
+                    )
 
     # Keep SIGNED errors: RMSD, max error and the signed bias all need them,
     # and only the mean of |err| needs the absolute value. RMSD is the statistic
@@ -263,16 +268,22 @@ def analyze(basis, form, want, verbose=True, metric="mae"):
         pts.append((r0, mae if metric == "mae" else rmsd))
 
     if verbose and pts:
-        print(f"\n{'r0 (A)':>8}  {'MAE':>8}  {'RMSD':>8}  {'max|e|':>8}  {'bias':>8}   (kcal/mol)")
+        print(
+            f"\n{'r0 (A)':>8}  {'MAE':>8}  {'RMSD':>8}  {'max|e|':>8}  {'bias':>8}   (kcal/mol)"
+        )
         for r0, _m in pts:
             st = stats[r0]
-            print(f"{r0:8.4f}  {st['mae']:8.4f}  {st['rmsd']:8.4f}  "
-                  f"{st['max_abs']:8.4f}  {st['bias']:+8.4f}")
+            print(
+                f"{r0:8.4f}  {st['mae']:8.4f}  {st['rmsd']:8.4f}  "
+                f"{st['max_abs']:8.4f}  {st['bias']:+8.4f}"
+            )
 
     if len(pts) < 4:
         if verbose:
-            print("\nfewer than 4 usable r0 points -- cannot fit a cubic spline",
-                  file=sys.stderr)
+            print(
+                "\nfewer than 4 usable r0 points -- cannot fit a cubic spline",
+                file=sys.stderr,
+            )
         return None
 
     xs = [p[0] for p in pts]
@@ -289,16 +300,22 @@ def analyze(basis, form, want, verbose=True, metric="mae"):
     interior = xs[0] < best_x < xs[-1]
 
     if verbose:
-        print(f"\nspline minimum ({metric.upper()}) : r0 = {best_x:.4f} A   "
-              f"{metric.upper()} = {best_y:.4f} kcal/mol")
+        print(
+            f"\nspline minimum ({metric.upper()}) : r0 = {best_x:.4f} A   "
+            f"{metric.upper()} = {best_y:.4f} kcal/mol"
+        )
         if interior:
             gx, gy = min(pts, key=lambda p: p[1])
-            print(f"INTERIOR minimum -- resolved. best sampled r0={gx:.3f} "
-                  f"({metric.upper()} {gy:.4f}); spline is {gy - best_y:.4f} lower.")
+            print(
+                f"INTERIOR minimum -- resolved. best sampled r0={gx:.3f} "
+                f"({metric.upper()} {gy:.4f}); spline is {gy - best_y:.4f} lower."
+            )
         else:
-            print("BOUNDARY minimum -- the optimum lies OUTSIDE the sampled "
-                  f"range [{lo:.2f}, {hi:.2f}]. Extend the scan; do NOT quote "
-                  "this as the optimum.")
+            print(
+                "BOUNDARY minimum -- the optimum lies OUTSIDE the sampled "
+                f"range [{lo:.2f}, {hi:.2f}]. Extend the scan; do NOT quote "
+                "this as the optimum."
+            )
     return pts, best_x, best_y, interior
 
 
@@ -370,9 +387,11 @@ def aggregate_curve(basis, form, systems, verbose=True):
             errs.append(abs((f["dimer"] - f["mA_cp"] - f["mB_cp"]) * K - bind[s]))
         rows.append((r0, sum(errs) / len(errs)))
     if verbose and dropped:
-        print(f"  dropped {len(dropped)} r0 with partial coverage "
-              f"(never mix n): " +
-              ", ".join(f"{r:.2f}(missing {m})" for r, m in dropped[:6]))
+        print(
+            f"  dropped {len(dropped)} r0 with partial coverage "
+            f"(never mix n): "
+            + ", ".join(f"{r:.2f}(missing {m})" for r, m in dropped[:6])
+        )
     return rows
 
 
@@ -394,9 +413,12 @@ def dump_per_r0(basis, form, want, path):
     """
     bind = load_bind()
     data = collect(basis, form)
-    complete = {r0: {s for s, f in per.items() if len(f) == 3}
-                for r0, per in data.items()}
-    sysset = set(want) if want else set().union(*complete.values()) if complete else set()
+    complete = {
+        r0: {s for s, f in per.items() if len(f) == 3} for r0, per in data.items()
+    }
+    sysset = (
+        set(want) if want else set().union(*complete.values()) if complete else set()
+    )
 
     points = []
     for r0 in sorted(data):
@@ -408,59 +430,93 @@ def dump_per_r0(basis, form, want, path):
             f = data[r0][idx]
             e_int = (f["dimer"] - f["mA_cp"] - f["mB_cp"]) * K
             err = e_int - bind[idx]
-            per_sys[str(idx)] = {"e_int": round(e_int, 6),
-                                 "ref": bind[idx],
-                                 "err": round(err, 6)}
+            per_sys[str(idx)] = {
+                "e_int": round(e_int, 6),
+                "ref": bind[idx],
+                "err": round(err, 6),
+            }
             errs.append(abs(err))
-        points.append({"r0": round(r0, 4),
-                       "n_systems": len(have),
-                       "systems": have,
-                       "mae": round(sum(errs) / len(errs), 6),
-                       "per_system": per_sys})
+        points.append(
+            {
+                "r0": round(r0, 4),
+                "n_systems": len(have),
+                "systems": have,
+                "mae": round(sum(errs) / len(errs), 6),
+                "per_system": per_sys,
+            }
+        )
 
-    doc = {"basis": basis,
-           "formulation": form,
-           "formulation_label": FORM_LABEL[form],
-           "units": "kcal/mol",
-           "note": ("MAE is over the systems listed per point. Compare MAEs "
-                    "only at equal n_systems -- a method or r0 scored on a "
-                    "different subset is not comparable."),
-           "requested_systems": sorted(sysset),
-           "points": points}
+    doc = {
+        "basis": basis,
+        "formulation": form,
+        "formulation_label": FORM_LABEL[form],
+        "units": "kcal/mol",
+        "note": (
+            "MAE is over the systems listed per point. Compare MAEs "
+            "only at equal n_systems -- a method or r0 scored on a "
+            "different subset is not comparable."
+        ),
+        "requested_systems": sorted(sysset),
+        "points": points,
+    }
     Path(path).write_text(json.dumps(doc, indent=2) + "\n")
     return doc
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--form", choices=("B", "T"), default="B")
     ap.add_argument("--basis", default="aqz")
-    ap.add_argument("--systems", default="",
-                    help="comma A24 indices (default: all complete at some r0)")
-    ap.add_argument("--suggest", action="store_true",
-                    help="propose the next r0 points from the current spline")
+    ap.add_argument(
+        "--systems",
+        default="",
+        help="comma A24 indices (default: all complete at some r0)",
+    )
+    ap.add_argument(
+        "--suggest",
+        action="store_true",
+        help="propose the next r0 points from the current spline",
+    )
     ap.add_argument("--n-suggest", type=int, default=5)
-    ap.add_argument("--halfwidth", type=float, default=0.10,
-                    help="refinement window half-width in Angstrom (interior case)")
-    ap.add_argument("--toml", action="store_true",
-                    help="emit the suggestion as a [mp2] r0_sweep line")
-    ap.add_argument("--metric", choices=("mae", "rmsd"), default="mae",
-                    help="which error statistic the SPLINE is fitted to "
-                         "(both are always printed). RMSD is what the A24 "
-                         "literature reports and weights the worst systems "
-                         "more heavily.")
-    ap.add_argument("--dump", metavar="PATH", default=None,
-                    help="write per-r0/per-system results to PATH as JSON "
-                         "(default name: r0_scan_<basis>_<form>.json)")
+    ap.add_argument(
+        "--halfwidth",
+        type=float,
+        default=0.10,
+        help="refinement window half-width in Angstrom (interior case)",
+    )
+    ap.add_argument(
+        "--toml",
+        action="store_true",
+        help="emit the suggestion as a [mp2] r0_sweep line",
+    )
+    ap.add_argument(
+        "--metric",
+        choices=("mae", "rmsd"),
+        default="mae",
+        help="which error statistic the SPLINE is fitted to "
+        "(both are always printed). RMSD is what the A24 "
+        "literature reports and weights the worst systems "
+        "more heavily.",
+    )
+    ap.add_argument(
+        "--dump",
+        metavar="PATH",
+        default=None,
+        help="write per-r0/per-system results to PATH as JSON "
+        "(default name: r0_scan_<basis>_<form>.json)",
+    )
     a = ap.parse_args()
     want = [int(x) for x in a.systems.split(",") if x.strip()] if a.systems else None
     if a.dump is not None:
         path = a.dump or f"r0_scan_{a.basis}_{a.form}.json"
         doc = dump_per_r0(a.basis, a.form, want, path)
         if not a.toml:
-            print(f"wrote {path}: {len(doc['points'])} r0 points, "
-                  f"{len(doc['requested_systems'])} systems")
+            print(
+                f"wrote {path}: {len(doc['points'])} r0 points, "
+                f"{len(doc['requested_systems'])} systems"
+            )
     res = analyze(a.basis, a.form, want, verbose=not a.toml, metric=a.metric)
     if not res:
         return 1

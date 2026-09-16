@@ -17,6 +17,7 @@ Usage:
     python scripts/gen_pyscf_mgga_refs.py scan       # just SCAN
     python scripts/gen_pyscf_mgga_refs.py r2scan     # just r2SCAN
 """
+
 import json
 import sys
 from pathlib import Path
@@ -27,13 +28,17 @@ REFDIR = Path(__file__).resolve().parents[1] / "testdata" / "reference"
 
 # Same coords as the LDA/PBE reference set (Angstrom).
 MOLECULES = {
-    "h2":      ("H 0 0 0; H 0 0 0.74",                                 0, 1),
-    "h2o":     ("O 0 0 0; H 0 0.7572 0.5868; H 0 -0.7572 0.5868",      0, 1),
-    "methane": ("C 0 0 0;"
-                " H 0.6276 0.6276 0.6276;"
-                " H -0.6276 -0.6276 0.6276;"
-                " H -0.6276 0.6276 -0.6276;"
-                " H 0.6276 -0.6276 -0.6276",                            0, 1),
+    "h2": ("H 0 0 0; H 0 0 0.74", 0, 1),
+    "h2o": ("O 0 0 0; H 0 0.7572 0.5868; H 0 -0.7572 0.5868", 0, 1),
+    "methane": (
+        "C 0 0 0;"
+        " H 0.6276 0.6276 0.6276;"
+        " H -0.6276 -0.6276 0.6276;"
+        " H -0.6276 0.6276 -0.6276;"
+        " H 0.6276 -0.6276 -0.6276",
+        0,
+        1,
+    ),
     # Open shell (UKS), added 2026-07-27. These pin the SPIN-POLARIZED
     # meta-GGA energy — the path with ρ_α ≠ ρ_β and τ_α ≠ τ_β, which the
     # closed-shell cases above cannot exercise at all.
@@ -42,10 +47,9 @@ MOLECULES = {
     # so its SCF surface is near-flat and PySCF's own OH/SCAN energy shifts by
     # 1.9e-5 Ha for a conv_tol change alone. NH2 / CH3 / O2 are well-behaved
     # and reproduce ferric-vs-PySCF to ~1e-8.
-    "nh2": ("N 0 0 0.1414; H 0 0.8067 -0.4950; H 0 -0.8067 -0.4950",   0, 2),
-    "ch3": ("C 0 0 0; H 0 1.0790 0;"
-            " H 0.9344 -0.5395 0; H -0.9344 -0.5395 0",                 0, 2),
-    "o2":  ("O 0 0 0; O 0 0 1.2075",                                    0, 3),
+    "nh2": ("N 0 0 0.1414; H 0 0.8067 -0.4950; H 0 -0.8067 -0.4950", 0, 2),
+    "ch3": ("C 0 0 0; H 0 1.0790 0; H 0.9344 -0.5395 0; H -0.9344 -0.5395 0", 0, 2),
+    "o2": ("O 0 0 0; O 0 0 1.2075", 0, 3),
 }
 
 # Ferric default main grid: (75, 110). Match exactly with no pruning.
@@ -55,14 +59,15 @@ MAIN_GRID = (75, 110)
 # r2SCAN = MGGA_X_R2SCAN + MGGA_C_R2SCAN — the same component pairs ferric's
 # friendly-name resolver maps "SCAN" / "r2SCAN" to.
 PYSCF_XC = {
-    "scan":   "SCAN",
+    "scan": "SCAN",
     "r2scan": "R2SCAN",
 }
 
 
 def run_one(label, atom_spec, charge, spin, basis, xc):
-    mol = gto.M(atom=atom_spec, basis=basis, charge=charge,
-                spin=spin - 1, unit="Angstrom")
+    mol = gto.M(
+        atom=atom_spec, basis=basis, charge=charge, spin=spin - 1, unit="Angstrom"
+    )
     mf = (dft.RKS if spin == 1 else dft.UKS)(mol, xc=PYSCF_XC[xc])
     # Match ferric's RI-J for the Coulomb piece (ferric DFT uses DF-J).
     mf = mf.density_fit(auxbasis="def2-universal-jkfit")
@@ -98,8 +103,10 @@ def main(only_xc=None):
             fname = f"{label}_{basis}_{xc}.json"
             path = REFDIR / fname
             path.write_text(json.dumps(out, indent=2))
-            print(f"wrote {path}  E_total = {out['e_total']:.10f}  "
-                  f"converged={out['converged']}")
+            print(
+                f"wrote {path}  E_total = {out['e_total']:.10f}  "
+                f"converged={out['converged']}"
+            )
 
 
 if __name__ == "__main__":

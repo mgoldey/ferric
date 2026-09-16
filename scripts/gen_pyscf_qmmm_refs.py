@@ -24,6 +24,7 @@ Per case the reference records:
 Usage:
     OPENBLAS_NUM_THREADS=1 uv run --no-sync python scripts/gen_pyscf_qmmm_refs.py
 """
+
 import json
 import math
 from pathlib import Path
@@ -56,13 +57,23 @@ def oh_bohr():
 CASES = [
     ("water_sto-3g_qmmm_plus_lonepair", water_bohr(), 0, 0, [(1.0, 0.0, 0.0, -6.0)]),
     ("water_sto-3g_qmmm_plus_hside", water_bohr(), 0, 0, [(1.0, 0.0, 0.0, 6.0)]),
-    ("water_sto-3g_qmmm_two_charges", water_bohr(), 0, 0,
-     [(1.0, 0.0, 0.0, -6.0), (-1.0, 0.0, 0.0, 9.0)]),
+    (
+        "water_sto-3g_qmmm_two_charges",
+        water_bohr(),
+        0,
+        0,
+        [(1.0, 0.0, 0.0, -6.0), (-1.0, 0.0, 0.0, 9.0)],
+    ),
     # Off-axis fractional charges: breaks the C2v symmetry the on-axis cases
     # keep, so every gradient component is nonzero and a transposed or
     # sign-flipped component cannot hide behind a zero.
-    ("water_sto-3g_qmmm_offaxis", water_bohr(), 0, 0,
-     [(-0.834, 3.1, -2.2, 4.0), (0.417, -2.5, 3.3, -3.7), (0.417, 1.7, 2.9, -5.1)]),
+    (
+        "water_sto-3g_qmmm_offaxis",
+        water_bohr(),
+        0,
+        0,
+        [(-0.834, 3.1, -2.2, 4.0), (0.417, -2.5, 3.3, -3.7), (0.417, 1.7, 2.9, -5.1)],
+    ),
     ("oh_sto-3g_uqmmm_plus_lonepair", oh_bohr(), 0, 1, [(1.0, 0.0, 0.0, -6.0)]),
 ]
 
@@ -153,14 +164,25 @@ def run_case(tag, atoms, charge, spin, mm, with_mp2=False):
 # PySCF's `mm_charge(radii=)` uses zeta = 1/radius**2 -- the same convention
 # as ferric's `SmearedCharge.width` / `QmmmAtom.width`.
 SMEARED_CASES = [
-    ("water_sto-3g_qmmm_smeared_r1", water_bohr(), 0, 0,
-     [(1.0, 0.0, 0.0, -6.0)], [1.0]),
+    (
+        "water_sto-3g_qmmm_smeared_r1",
+        water_bohr(),
+        0,
+        0,
+        [(1.0, 0.0, 0.0, -6.0)],
+        [1.0],
+    ),
     # Off-axis, three distinct widths: breaks C2v symmetry (every gradient
     # component live) and exercises SiteBasis's distinct-zeta grouping
     # end-to-end (three different pseudo-elements, not one).
-    ("water_sto-3g_qmmm_smeared_offaxis", water_bohr(), 0, 0,
-     [(-0.834, 3.1, -2.2, 4.0), (0.417, -2.5, 3.3, -3.7), (0.417, 1.7, 2.9, -5.1)],
-     [0.5, 1.0, 2.0]),
+    (
+        "water_sto-3g_qmmm_smeared_offaxis",
+        water_bohr(),
+        0,
+        0,
+        [(-0.834, 3.1, -2.2, 4.0), (0.417, -2.5, 3.3, -3.7), (0.417, 1.7, 2.9, -5.1)],
+        [0.5, 1.0, 2.0],
+    ),
 ]
 
 
@@ -225,18 +247,24 @@ def main():
         ref = run_case(tag, atoms, charge, spin, mm, with_mp2=tag in mp2_tags)
         out = REFDIR / f"{tag}.json"
         out.write_text(json.dumps(ref, indent=2, sort_keys=True) + "\n")
-        msg = (f"{out.name}: E = {ref['energy']:.10f}  (gas {ref['energy_gas_phase']:.10f})  "
-               f"mu = {np.round(ref['dipole'], 6)}  F_mm = {np.round(-np.array(ref['mm_gradient']), 6).tolist()}")
+        msg = (
+            f"{out.name}: E = {ref['energy']:.10f}  (gas {ref['energy_gas_phase']:.10f})  "
+            f"mu = {np.round(ref['dipole'], 6)}  F_mm = {np.round(-np.array(ref['mm_gradient']), 6).tolist()}"
+        )
         if "mp2_energy" in ref:
-            msg += f"  MP2 total = {ref['mp2_energy']:.10f} (corr {ref['mp2_corr']:.10f})"
+            msg += (
+                f"  MP2 total = {ref['mp2_energy']:.10f} (corr {ref['mp2_corr']:.10f})"
+            )
         print(msg)
 
     for tag, atoms, charge, spin, mm, radii in SMEARED_CASES:
         ref = run_smeared_case(tag, atoms, charge, spin, mm, radii)
         out = REFDIR / f"{tag}.json"
         out.write_text(json.dumps(ref, indent=2, sort_keys=True) + "\n")
-        print(f"{out.name}: E = {ref['energy']:.10f}  (gas {ref['energy_gas_phase']:.10f})  "
-              f"mu = {np.round(ref['dipole'], 6)}  F_mm = {np.round(-np.array(ref['mm_gradient']), 6).tolist()}")
+        print(
+            f"{out.name}: E = {ref['energy']:.10f}  (gas {ref['energy_gas_phase']:.10f})  "
+            f"mu = {np.round(ref['dipole'], 6)}  F_mm = {np.round(-np.array(ref['mm_gradient']), 6).tolist()}"
+        )
 
 
 if __name__ == "__main__":

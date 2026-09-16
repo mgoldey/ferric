@@ -18,6 +18,7 @@ for speed, or swap `use_field`/`method` per call):
     e_field   = compute_energy(embedded, use_field=True)
     charges   = compute_charges(embedded, e_field)
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -41,7 +42,7 @@ def check_available_memory(min_available_gb: float) -> None:
     can be OOM-killed alongside unrelated concurrent jobs. This is a
     pre-flight guard, not a hard per-process memory cap.
     """
-    available_gb = psutil.virtual_memory().available / (1024 ** 3)
+    available_gb = psutil.virtual_memory().available / (1024**3)
     if available_gb < min_available_gb:
         raise MemoryError(
             f"Only {available_gb:.1f} GB available (need >= {min_available_gb:.1f} GB). "

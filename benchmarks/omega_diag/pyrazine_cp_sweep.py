@@ -24,6 +24,7 @@ Concurrency: memory-gated, at most 2 concurrent jobs; before each dispatch,
 require /proc/meminfo MemAvailable >= 6 GB, else sleep 60s and retry (the box
 is shared with other sessions' jobs). Per-job timeout 7200s.
 """
+
 from pathlib import Path
 import os
 import subprocess
@@ -35,8 +36,13 @@ os.chdir(ROOT)
 OUT = "benchmarks/omega_diag/derisk"
 GEO = "benchmarks/grid/geoms"
 BIN = "target/release/ferric-cli"
-ENV = dict(os.environ, OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS="1",
-           OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
+ENV = dict(
+    os.environ,
+    OPENBLAS_NUM_THREADS="1",
+    RAYON_NUM_THREADS="1",
+    OMP_NUM_THREADS="1",
+    MKL_NUM_THREADS="1",
+)
 
 SID, LABEL, BTAG = "12", "pyrazine_D", "adz"
 BASIS, AUX = "aug-cc-pvdz", "aug-cc-pvdz-rifit"
@@ -58,9 +64,9 @@ def fc_count(xyz):
         if not ln.strip():
             continue
         sym = ln.split()[0]
-        if sym.startswith('@'):
+        if sym.startswith("@"):
             continue
-        if sym.upper().startswith('H'):
+        if sym.upper().startswith("H"):
             continue
         n += 1
     return n
@@ -133,8 +139,9 @@ def enumerate_jobs():
             for form, ftag in FORMS:
                 key = f"{LABEL}_{SID}_{BTAG}_w{omega}_{ftag}_{fr}"
                 if needs_run(key, "Total energy"):
-                    jobs.append((key, rsmp2_toml(absxyz(xyz), omega, form, fc),
-                                 "Total energy"))
+                    jobs.append(
+                        (key, rsmp2_toml(absxyz(xyz), omega, form, fc), "Total energy")
+                    )
         key = f"{LABEL}_{SID}_{BTAG}_RHF_{fr}"
         if needs_run(key, "RHF energy"):
             jobs.append((key, scf_toml(absxyz(xyz), fc), "RHF energy"))
@@ -157,8 +164,11 @@ def _wait_for_memory(key):
     checks. The box is shared with other sessions' jobs (GW100 sweeps, cargo
     test); never launch a job into a box that can't hold it."""
     while _mem_available_gb() < MIN_AVAIL_GB:
-        print(f"[preflight] {key}: only {_mem_available_gb():.1f}GB free "
-              f"(<{MIN_AVAIL_GB}); waiting {MEM_WAIT_S}s", flush=True)
+        print(
+            f"[preflight] {key}: only {_mem_available_gb():.1f}GB free "
+            f"(<{MIN_AVAIL_GB}); waiting {MEM_WAIT_S}s",
+            flush=True,
+        )
         time.sleep(MEM_WAIT_S)
 
 
@@ -177,12 +187,18 @@ def run_one(job):
     if os.path.exists(op) and marker in open(op).read():
         return key, "skip", 0.0
     _wait_for_memory(key)
-    open(f"{OUT}/toml/{key}.toml", 'w').write(toml)
+    open(f"{OUT}/toml/{key}.toml", "w").write(toml)
     t0 = time.monotonic()
     try:
-        with open(op, 'w') as f, open(op + ".err", 'w') as e:
-            subprocess.run([BIN, f"{OUT}/toml/{key}.toml"], stdout=f, stderr=e,
-                           env=ENV, timeout=TIMEOUT, preexec_fn=_raise_oom_score)
+        with open(op, "w") as f, open(op + ".err", "w") as e:
+            subprocess.run(
+                [BIN, f"{OUT}/toml/{key}.toml"],
+                stdout=f,
+                stderr=e,
+                env=ENV,
+                timeout=TIMEOUT,
+                preexec_fn=_raise_oom_score,
+            )
     except subprocess.TimeoutExpired:
         return key, "TIMEOUT", time.monotonic() - t0
     dt = time.monotonic() - t0
@@ -195,10 +211,13 @@ def main():
     os.makedirs(f"{OUT}/out", exist_ok=True)
     jobs = enumerate_jobs()
     total_possible = 3 * (len(OMEGAS) * len(FORMS) + 1)  # 3 frags * (6*2 + RHF)
-    print(f"[pyrazine-cp] {len(jobs)} jobs to run (of {total_possible} total; "
-          f"{total_possible - len(jobs)} already complete), "
-          f"concurrency={MAX_CONCURRENCY}, min_avail_gb={MIN_AVAIL_GB}, "
-          f"timeout={TIMEOUT}s", flush=True)
+    print(
+        f"[pyrazine-cp] {len(jobs)} jobs to run (of {total_possible} total; "
+        f"{total_possible - len(jobs)} already complete), "
+        f"concurrency={MAX_CONCURRENCY}, min_avail_gb={MIN_AVAIL_GB}, "
+        f"timeout={TIMEOUT}s",
+        flush=True,
+    )
     if not jobs:
         print("[pyrazine-cp] nothing to do — all jobs complete.", flush=True)
         return
@@ -209,8 +228,7 @@ def main():
         for fut in as_completed(futs):
             key, status, dt = fut.result()
             done += 1
-            print(f"[{done}/{len(jobs)}] {status:8s} {dt:7.1f}s  {key}",
-                  flush=True)
+            print(f"[{done}/{len(jobs)}] {status:8s} {dt:7.1f}s  {key}", flush=True)
     print("PYRAZINE CP SWEEP DONE", flush=True)
 
 

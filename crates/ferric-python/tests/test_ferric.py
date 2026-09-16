@@ -65,8 +65,11 @@ def test_rimp2_water_ccpvdz():
 
 def _water_ccpvdz_sos():
     mol = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
-    return (mol, ferric.BasisSet.bundled("cc-pvdz"),
-            ferric.BasisSet.bundled("cc-pvdz-ri"))
+    return (
+        mol,
+        ferric.BasisSet.bundled("cc-pvdz"),
+        ferric.BasisSet.bundled("cc-pvdz-ri"),
+    )
 
 
 def test_laplace_sos_mp2_reproduces_opposite_spin_energy():
@@ -270,7 +273,9 @@ def test_run_ksdft_with_external_field():
     mol = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
     bs = ferric.BasisSet.bundled("sto-3g")
     base = ferric.run_ksdft(mol, bs, functional="LDA")
-    perturbed = ferric.run_ksdft(mol, bs, functional="LDA", external_field=(0.0, 0.0, 0.01))
+    perturbed = ferric.run_ksdft(
+        mol, bs, functional="LDA", external_field=(0.0, 0.0, 0.01)
+    )
     assert abs(perturbed.total_energy - base.total_energy) > 1e-8
 
 
@@ -280,7 +285,10 @@ def test_run_ksdft_gradient_with_external_field_runs():
     mol = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
     bs = ferric.BasisSet.bundled("sto-3g")
     res = ferric.run_ksdft(
-        mol, bs, functional="LDA", with_gradient=True,
+        mol,
+        bs,
+        functional="LDA",
+        with_gradient=True,
         external_field=(0.0, 0.0, 0.01),
     )
     grad = res.gradient()
@@ -307,6 +315,7 @@ def test_oversized_ccsd_t_raises_not_oom():
         assert "CCSD" in msg, msg
         return
     raise AssertionError("run_ccsd_t did not raise under a tiny memory budget")
+
 
 BOHR_PER_ANG = 1.0 / 0.52917721092
 
@@ -350,7 +359,6 @@ def test_esp_at_points_rejects_bad_shape():
         ferric.esp_at_points(mol, bs, r, np.zeros((3, 2)))
 
 
-
 def test_run_frequencies_water_matches_pyscf():
     """Harmonic frequencies through the Python surface, vs PySCF.
 
@@ -368,7 +376,9 @@ def test_run_frequencies_water_matches_pyscf():
 
     pyscf = [2043.1061, 4488.0531, 4790.2952]
     dev = max(abs(a - b) for a, b in zip(r.frequencies, pyscf))
-    assert dev < 15.0, f"max deviation {dev:.2f} cm^-1 vs PySCF {pyscf}: {r.frequencies}"
+    assert dev < 15.0, (
+        f"max deviation {dev:.2f} cm^-1 vs PySCF {pyscf}: {r.frequencies}"
+    )
 
     # The asymmetry is zero in exact arithmetic; a large value would mean the
     # displacement or SCF thresholds are wrong and would invalidate the

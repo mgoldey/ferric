@@ -13,6 +13,7 @@ For each {molecule, functional}, runs PySCF RKS with:
 
 Output: JSON {label, basis, xc, grad: [[gx, gy, gz], ...]} per atom.
 """
+
 import json
 import sys
 from pathlib import Path
@@ -23,24 +24,25 @@ from pyscf import dft, gto
 REFDIR = Path(__file__).resolve().parent.parent / "testdata" / "reference"
 
 MOLECULES = {
-    "h2":  ("H 0 0 0; H 0 0 0.74", 0, 1),
+    "h2": ("H 0 0 0; H 0 0 0.74", 0, 1),
     "h2o": ("O 0 0 0; H 0 0.7572 0.5868; H 0 -0.7572 0.5868", 0, 1),
 }
 
 PYSCF_XC = {
-    "lda":     "LDA,VWN",
-    "pbe":     "PBE,PBE",
-    "b3lyp":   "B3LYP",
+    "lda": "LDA,VWN",
+    "pbe": "PBE,PBE",
+    "b3lyp": "B3LYP",
     "wb97x-v": "wB97X_V",
 }
 
 MAIN_GRID = (75, 110)
-NLC_GRID  = (50, 50)   # matches ferric default
+NLC_GRID = (50, 50)  # matches ferric default
 
 
 def run_one(label, atom_spec, charge, spin, basis, xc):
-    mol = gto.M(atom=atom_spec, basis=basis, charge=charge,
-                spin=spin - 1, unit="Angstrom")
+    mol = gto.M(
+        atom=atom_spec, basis=basis, charge=charge, spin=spin - 1, unit="Angstrom"
+    )
     mf = dft.RKS(mol, xc=PYSCF_XC[xc])
     mf = mf.density_fit(auxbasis="def2-universal-jkfit")
     mf.grids.atom_grid = MAIN_GRID
@@ -59,7 +61,7 @@ def run_one(label, atom_spec, charge, spin, basis, xc):
     # ferric's Becke grid-response (P2.1) covers the semilocal LDA/GGA piece.
     # VV10 nonlocal correlation is NOT yet grid-response-aware in ferric, so
     # wB97X-V references stay at grid_response=False until that lands.
-    g.grid_response = (xc != "wb97x-v")
+    g.grid_response = xc != "wb97x-v"
     g_arr = g.kernel()  # shape (natoms, 3)
 
     return {
@@ -84,7 +86,9 @@ def main(only_xc=None):
             path = REFDIR / fname
             path.write_text(json.dumps(out, indent=2))
             gmax = max(abs(v) for row in out["grad"] for v in row)
-            print(f"wrote {path}  max|g|={gmax:.4e}  E={out['e_total']:.8f}  conv={out['converged']}")
+            print(
+                f"wrote {path}  max|g|={gmax:.4e}  E={out['e_total']:.8f}  conv={out['converged']}"
+            )
 
 
 if __name__ == "__main__":

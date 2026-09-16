@@ -25,6 +25,7 @@ NOTE: This script intentionally does NOT compute monomer energies (and hence
 no interaction energies). The point is to validate ferric *total* RPA energies
 against PySCF; CCSD(T)/CBS comparisons happen separately via the published refs.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -69,13 +70,17 @@ def run_one(xyz_str: str, basis: str = "cc-pvdz", auxbasis: str = "cc-pvdz-ri") 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tier", choices=["s66x8", "l7"], required=True)
-    ap.add_argument("--only", help="Comma-separated system names (basenames without .xyz)")
+    ap.add_argument(
+        "--only", help="Comma-separated system names (basenames without .xyz)"
+    )
     ap.add_argument("--output", help="JSON output path (default tier-specific)")
     args = ap.parse_args()
 
     sysroot = REPO_ROOT / "testdata/molecules/c9_systems" / args.tier
-    out_path = Path(args.output) if args.output else (
-        REPO_ROOT / "testdata/reference/c9_refs" / f"{args.tier}_pyscf_rpa.json"
+    out_path = (
+        Path(args.output)
+        if args.output
+        else (REPO_ROOT / "testdata/reference/c9_refs" / f"{args.tier}_pyscf_rpa.json")
     )
 
     only: set[str] | None = None
@@ -101,13 +106,16 @@ def main():
             print(f"[skip] {name} already in {out_path.name}", file=sys.stderr)
             continue
         atoms = read_xyz(xyz)
-        print(f"[run]  {name} (n_atoms={atoms.count(chr(10))+1})", file=sys.stderr)
+        print(f"[run]  {name} (n_atoms={atoms.count(chr(10)) + 1})", file=sys.stderr)
         t0 = time.time()
         try:
             rec = run_one(atoms)
             rec["t_wall_s"] = time.time() - t0
             out[name] = rec
-            print(f"       E_total = {rec['e_total']:.8f}  ({rec['t_wall_s']:.1f}s)", file=sys.stderr)
+            print(
+                f"       E_total = {rec['e_total']:.8f}  ({rec['t_wall_s']:.1f}s)",
+                file=sys.stderr,
+            )
         except Exception as e:
             print(f"       FAIL: {e}", file=sys.stderr)
             out[name] = {"error": str(e)}

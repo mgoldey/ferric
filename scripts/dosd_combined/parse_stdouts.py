@@ -36,6 +36,7 @@ section of docs/rpa-vs-ts-statistical-verdict.md for the exact loop and the
 worktree-path caveat), then run this script, then delete the `.stdout` files
 again before committing.
 """
+
 import json
 import re
 from pathlib import Path
@@ -57,7 +58,9 @@ def parse_stdout(path: Path):
 def main():
     out = {}
     for round_dir in ["dosd", "dosd2", "dosd3"]:
-        for stdout_path in sorted((ROOT / "scripts" / round_dir / "runs").glob("*/*_ts.stdout")):
+        for stdout_path in sorted(
+            (ROOT / "scripts" / round_dir / "runs").glob("*/*_ts.stdout")
+        ):
             basis = stdout_path.parent.name
             mol = stdout_path.stem.replace("_ts", "")
             val = parse_stdout(stdout_path)

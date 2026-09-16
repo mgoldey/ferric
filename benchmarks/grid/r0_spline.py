@@ -14,6 +14,7 @@ MAE by dropping a system from the average.
 
 Usage:  python3 benchmarks/grid/r0_spline.py
 """
+
 import re
 import sys
 from collections import defaultdict
@@ -24,6 +25,7 @@ OUT = ROOT / "out"
 K = 627.509474  # Hartree -> kcal/mol
 FRAGS = ("dimer", "mA_cp", "mB_cp")
 
+
 def load_bind():
     """A24 CCSD(T)/CBS reference values (kcal/mol) from `A24.py`.
 
@@ -33,7 +35,9 @@ def load_bind():
     """
     txt = (ROOT / "A24.py").read_text()
     out = {}
-    for m in re.finditer(r"BIND\['%s-%s'\s*%\s*\(dbse,\s*(\d+)\s*\)\]\s*=\s*(-?\d+\.\d+)", txt):
+    for m in re.finditer(
+        r"BIND\['%s-%s'\s*%\s*\(dbse,\s*(\d+)\s*\)\]\s*=\s*(-?\d+\.\d+)", txt
+    ):
         out[f"A24-{int(m.group(1))}"] = float(m.group(2))
     if not out:
         raise SystemExit("could not parse BIND from A24.py")
@@ -107,7 +111,7 @@ def natural_cubic_spline(xs, ys):
     def f(x):
         i = min(max(0, sum(1 for v in xs[1:-1] if v <= x)), n - 2)
         dx = x - xs[i]
-        return ys[i] + b[i] * dx + c[i] * dx * dx + d[i] * dx ** 3
+        return ys[i] + b[i] * dx + c[i] * dx * dx + d[i] * dx**3
 
     return f
 
@@ -130,8 +134,10 @@ def main():
     # r0 points where EVERY system in `all_sys` is complete.
     full_r0 = sorted(r0 for r0, ss in per_r0_complete.items() if set(all_sys) <= ss)
     print(f"r0 points found : {len(data)}   systems seen : {all_sys}")
-    print(f"r0 points with ALL {len(all_sys)} systems complete : "
-          f"{len(full_r0)}  {[f'{r:.3f}' for r in full_r0]}")
+    print(
+        f"r0 points with ALL {len(all_sys)} systems complete : "
+        f"{len(full_r0)}  {[f'{r:.3f}' for r in full_r0]}"
+    )
     partial = sorted(set(data) - set(full_r0))
     if partial:
         detail = {f"{r:.3f}": sorted(per_r0_complete[r]) for r in partial}
@@ -151,8 +157,10 @@ def main():
         print(f"{r0:8.4f}  {m:15.4f}")
 
     if len(pts) < 4:
-        print("\nfewer than 4 usable r0 points -- a cubic spline is not warranted",
-              file=sys.stderr)
+        print(
+            "\nfewer than 4 usable r0 points -- a cubic spline is not warranted",
+            file=sys.stderr,
+        )
         return 1
 
     xs = [p[0] for p in pts]
@@ -170,8 +178,10 @@ def main():
             best_x, best_y = x, y
     print(f"\ncubic-spline minimum : r0 = {best_x:.4f} A   MAE = {best_y:.4f} kcal/mol")
     interior = xs[0] < best_x < xs[-1]
-    print(f"interior minimum     : {interior}"
-          + ("" if interior else "  (at a scan boundary -- NOT a resolved optimum)"))
+    print(
+        f"interior minimum     : {interior}"
+        + ("" if interior else "  (at a scan boundary -- NOT a resolved optimum)")
+    )
     grid_x, grid_y = min(pts, key=lambda p: p[1])
     print(f"best sampled point   : r0 = {grid_x:.4f} A   MAE = {grid_y:.4f}")
     print(f"spline depth below best sample : {grid_y - best_y:.4f} kcal/mol")

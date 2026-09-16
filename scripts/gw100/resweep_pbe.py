@@ -12,6 +12,7 @@ Usage: resweep_pbe.py [basis]   (default: both aug-cc-pvdz and aug-cc-pvtz)
 Idempotent-ish: overwrites G0W0pbe for every molecule already in the results;
 skips molecules absent from the results (never converged) and the known-bad rows.
 """
+
 import json, math, os, re, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -33,9 +34,25 @@ SKIP = {"Rb2", "C4", "H12Si5", "CCuN"}
 # via GW100_PBE_ALL=1 is a slow, memory-hungry (~17 GB aTZ RPA) grind that
 # never enters the MAE — pure waste, and the aTZ OOM-killer bait. They are
 # large-gap organics the Padé fix barely moves anyway. Skip at aTZ only.
-SKIP_ATZ_NAN = {"C4H5N3O", "C5H5N", "C5H5N5", "C5H5N5O", "C5H6", "C5H6N2O2",
-                "C6F6", "C6H6", "C6H6O", "C6H7N", "C7H8", "C8H10", "C8H8", "Cu2"}
-ROW = re.compile(r"^(?P<mol>[A-Za-z0-9]+)\s+(?P<rest>[-+0-9.]+(?:\s+(?:[-+0-9.]+|NaN|nan)){8})")
+SKIP_ATZ_NAN = {
+    "C4H5N3O",
+    "C5H5N",
+    "C5H5N5",
+    "C5H5N5O",
+    "C5H6",
+    "C5H6N2O2",
+    "C6F6",
+    "C6H6",
+    "C6H6O",
+    "C6H7N",
+    "C7H8",
+    "C8H10",
+    "C8H8",
+    "Cu2",
+}
+ROW = re.compile(
+    r"^(?P<mol>[A-Za-z0-9]+)\s+(?P<rest>[-+0-9.]+(?:\s+(?:[-+0-9.]+|NaN|nan)){8})"
+)
 
 
 def all_cases():
@@ -59,11 +76,18 @@ def run_pbe(basis, mol):
     # BLAS=1 INSIDE the GW/RPA par_iters, so the rayon×OpenBLAS dgetrf crash
     # cannot fire. FERRIC_BLAS_THREADS must match (it drives the opt-in).
     job_blas = os.environ.get("RESWEEP_JOB_BLAS", "1")
-    env = dict(os.environ, OPENBLAS_NUM_THREADS=job_blas,
-               FERRIC_BLAS_THREADS=job_blas,
-               OMP_NUM_THREADS="1", MKL_NUM_THREADS="1", RAYON_NUM_THREADS=job_rayon,
-               GW100_TRUNC="1e-4", GW100_FULL_MAX_ATOMS="10",
-               GW100_PBE_ALL="1", GW100_DONE=skip)
+    env = dict(
+        os.environ,
+        OPENBLAS_NUM_THREADS=job_blas,
+        FERRIC_BLAS_THREADS=job_blas,
+        OMP_NUM_THREADS="1",
+        MKL_NUM_THREADS="1",
+        RAYON_NUM_THREADS=job_rayon,
+        GW100_TRUNC="1e-4",
+        GW100_FULL_MAX_ATOMS="10",
+        GW100_PBE_ALL="1",
+        GW100_DONE=skip,
+    )
     # Per-molecule wall budget (default 1200 s). A molecule exceeding it keeps its
     # existing @PBE value. This is safe for the aggregate because the Padé-node
     # fix only changes @PBE for SMALL-gap molecules (long AC extrapolation); the
@@ -72,8 +96,9 @@ def run_pbe(basis, mol):
     # the post-fix value. A uniform time rule, not a hand-picked skip.
     budget = float(os.environ.get("RESWEEP_MOL_BUDGET", "1200"))
     try:
-        out = subprocess.run([str(BIN), basis], env=env, capture_output=True,
-                             text=True, timeout=budget).stdout
+        out = subprocess.run(
+            [str(BIN), basis], env=env, capture_output=True, text=True, timeout=budget
+        ).stdout
     except subprocess.TimeoutExpired:
         return None
     for line in out.splitlines():
@@ -117,9 +142,11 @@ def main():
         if basis == "aug-cc-pvtz":
             skip |= SKIP_ATZ_NAN  # nan-banked large organics — unscoreable @PBE
         mols = [m for m in d["molecules"] if m not in skip and m not in done_set]
-        print(f"[{basis}] refreshing G0W0pbe for {len(mols)} molecules"
-              f" ({len(done_set)} already done, skipped) — {workers} workers",
-              flush=True)
+        print(
+            f"[{basis}] refreshing G0W0pbe for {len(mols)} molecules"
+            f" ({len(done_set)} already done, skipped) — {workers} workers",
+            flush=True,
+        )
         # Single writer-lock guards the results JSON + marker. Workers only run
         # the subprocess (no shared state) and hand back their result to be
         # committed under the lock — atomic write per molecule preserved, but
@@ -141,11 +168,17 @@ def main():
                 done_ct[0] += 1
                 i = done_ct[0]
             if new is not None:
-                print(f"  [{i}/{n}] {mol:8s} G0W0pbe {old} -> {new:.3f}  ({dt:.0f}s)", flush=True)
+                print(
+                    f"  [{i}/{n}] {mol:8s} G0W0pbe {old} -> {new:.3f}  ({dt:.0f}s)",
+                    flush=True,
+                )
             else:
                 # Timed out/failed: keep existing @PBE (unchanged by the fix for
                 # these large-gap heavies) and MARK DONE so resume won't retry.
-                print(f"  [{i}/{n}] {mol:8s} G0W0pbe TIMEOUT/kept {old}  ({dt:.0f}s)", flush=True)
+                print(
+                    f"  [{i}/{n}] {mol:8s} G0W0pbe TIMEOUT/kept {old}  ({dt:.0f}s)",
+                    flush=True,
+                )
 
         def work(mol):
             t0 = time.monotonic()

@@ -35,6 +35,7 @@ does not have and would introduce a second, larger source of error. A rigid
 scaffold overlay is the honest cheap answer, and it is the right one for a set
 of analogues designed specifically to preserve that scaffold.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -50,6 +51,7 @@ class AlignedPose:
     value means the analogue's scaffold genuinely cannot adopt the parent's
     placement, which is itself a fit finding -- so it is reported, not hidden.
     """
+
     symbols: list[str]
     coords_angstrom: list[tuple[float, float, float]]
     n_matched_atoms: int
@@ -67,7 +69,9 @@ class AlignedPose:
         return self.error is None and bool(self.coords_angstrom)
 
 
-def kabsch(mobile: np.ndarray, target: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+def kabsch(
+    mobile: np.ndarray, target: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, float]:
     """Optimal rigid-body rotation+translation taking `mobile` onto `target`.
 
     Both are (n, 3). Returns (R, t, rmsd) with `mobile @ R.T + t ~= target`.
@@ -76,7 +80,9 @@ def kabsch(mobile: np.ndarray, target: np.ndarray) -> tuple[np.ndarray, np.ndarr
     stereocentre while producing an excellent-looking RMSD.
     """
     if mobile.shape != target.shape or mobile.ndim != 2 or mobile.shape[1] != 3:
-        raise ValueError(f"expected matching (n,3) arrays, got {mobile.shape} and {target.shape}")
+        raise ValueError(
+            f"expected matching (n,3) arrays, got {mobile.shape} and {target.shape}"
+        )
     if len(mobile) < 3:
         raise ValueError(
             f"need at least 3 atom pairs to define a rigid orientation, got {len(mobile)}"
@@ -160,11 +166,16 @@ def align_by_index_map(
     """Align using an explicit (mobile_index, reference_index) pair list."""
     if len(index_pairs) < 3:
         return AlignedPose(
-            symbols, [], 0, float("nan"),
+            symbols,
+            [],
+            0,
+            float("nan"),
             error=f"only {len(index_pairs)} matched atom pairs; need >= 3",
         )
     mob = np.asarray([coords_angstrom[i] for i, _ in index_pairs], dtype=float)
-    ref = np.asarray([reference_coords_angstrom[j] for _, j in index_pairs], dtype=float)
+    ref = np.asarray(
+        [reference_coords_angstrom[j] for _, j in index_pairs], dtype=float
+    )
     R, t, rmsd = kabsch(mob, ref)
     moved = np.asarray(coords_angstrom, dtype=float) @ R.T + t
     return AlignedPose(
@@ -213,9 +224,7 @@ def align_to_reference(
         from rdkit.Chem import rdDetermineBonds
 
         if len(symbols) != len(coords):
-            return None, (
-                f"{len(symbols)} symbols but {len(coords)} coordinate rows"
-            )
+            return None, (f"{len(symbols)} symbols but {len(coords)} coordinate rows")
         block = [str(len(symbols)), "from_coords"]
         for sym, (x, y, z) in zip(symbols, coords):
             block.append(f"{sym} {float(x):.8f} {float(y):.8f} {float(z):.8f}")
@@ -249,10 +258,10 @@ def align_to_reference(
         # are not comparable), so the heavy-atom formula is the right identity
         # check: it still catches a geometry that is the wrong MOLECULE, which
         # is what this guard is for.
-        want = Counter(a.GetSymbol() for a in declared.GetAtoms()
-                       if a.GetSymbol() != "H")
-        got = Counter(a.GetSymbol() for a in mol.GetAtoms()
-                      if a.GetSymbol() != "H")
+        want = Counter(
+            a.GetSymbol() for a in declared.GetAtoms() if a.GetSymbol() != "H"
+        )
+        got = Counter(a.GetSymbol() for a in mol.GetAtoms() if a.GetSymbol() != "H")
         if want != got:
             return None, (
                 f"the geometry's heavy-atom formula {dict(sorted(got.items()))} "
@@ -261,16 +270,20 @@ def align_to_reference(
             )
         return mol, None
 
-    mob_mol, err = _mol_with_coords(mobile_smiles, mobile_symbols, mobile_coords_angstrom)
+    mob_mol, err = _mol_with_coords(
+        mobile_smiles, mobile_symbols, mobile_coords_angstrom
+    )
     if err:
-        return AlignedPose(mobile_symbols, [], 0, float("nan"),
-                           error=f"mobile molecule: {err}")
+        return AlignedPose(
+            mobile_symbols, [], 0, float("nan"), error=f"mobile molecule: {err}"
+        )
     ref_mol, err = _mol_with_coords(
         reference_smiles, reference_symbols, reference_coords_angstrom
     )
     if err:
-        return AlignedPose(mobile_symbols, [], 0, float("nan"),
-                           error=f"reference molecule: {err}")
+        return AlignedPose(
+            mobile_symbols, [], 0, float("nan"), error=f"reference molecule: {err}"
+        )
 
     # Heavy atoms only: hydrogens on the reference PDB pose were added by a
     # different tool than the analogue's, so their positions are not comparable
@@ -291,7 +304,10 @@ def align_to_reference(
     )
     if mcs.canceled or mcs.numAtoms < 3:
         return AlignedPose(
-            mobile_symbols, [], 0, float("nan"),
+            mobile_symbols,
+            [],
+            0,
+            float("nan"),
             error=(
                 f"MCS found only {mcs.numAtoms} common atoms"
                 + (" (search timed out)" if mcs.canceled else "")
@@ -301,13 +317,21 @@ def align_to_reference(
 
     patt = Chem.MolFromSmarts(mcs.smartsString)
     if patt is None:
-        return AlignedPose(mobile_symbols, [], 0, float("nan"),
-                           error=f"MCS produced unusable SMARTS {mcs.smartsString!r}")
+        return AlignedPose(
+            mobile_symbols,
+            [],
+            0,
+            float("nan"),
+            error=f"MCS produced unusable SMARTS {mcs.smartsString!r}",
+        )
     mob_match = mob_heavy.GetSubstructMatch(patt)
     ref_match = ref_heavy.GetSubstructMatch(patt)
     if not mob_match or not ref_match or len(mob_match) != len(ref_match):
         return AlignedPose(
-            mobile_symbols, [], 0, float("nan"),
+            mobile_symbols,
+            [],
+            0,
+            float("nan"),
             error="the MCS pattern did not map onto both molecules consistently",
         )
 
@@ -323,10 +347,16 @@ def align_to_reference(
         pairs = [(mob_map[i], ref_map[j]) for i, j in zip(mob_match, ref_match)]
     except IndexError:
         return AlignedPose(
-            mobile_symbols, [], 0, float("nan"),
+            mobile_symbols,
+            [],
+            0,
+            float("nan"),
             error="heavy-atom index map is inconsistent with the MCS match",
         )
 
     return align_by_index_map(
-        mobile_symbols, mobile_coords_angstrom, reference_coords_angstrom, pairs,
+        mobile_symbols,
+        mobile_coords_angstrom,
+        reference_coords_angstrom,
+        pairs,
     )

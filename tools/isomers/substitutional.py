@@ -9,6 +9,7 @@ acid gives exactly 3 products (ortho/meta/para) from 5 aryl hydrogens. Without
 the dedup it would give 5, silently triple-counting the two mirror pairs and
 inflating every downstream population count.
 """
+
 from __future__ import annotations
 
 from .model import Isomer
@@ -63,10 +64,13 @@ def substituent_scan(
             if canon in seen:
                 continue
             seen.add(canon)
-            out.append(Isomer(
-                smiles=canon, kind="substitutional",
-                transform=f"{site_smarts} -> {label}",
-                parent_smiles=parent_smiles,
-            ))
+            out.append(
+                Isomer(
+                    smiles=canon,
+                    kind="substitutional",
+                    transform=f"{site_smarts} -> {label}",
+                    parent_smiles=parent_smiles,
+                )
+            )
     out.sort(key=lambda i: (i.transform, i.canonical))
     return out

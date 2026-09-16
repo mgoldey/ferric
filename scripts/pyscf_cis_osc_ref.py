@@ -33,6 +33,7 @@ Run: OMP_NUM_THREADS=2 python3 scripts/pyscf_cis_osc_ref.py
 
 Measured 2026-07-19 with pyscf 2.13.0 (pip), numpy per pyscf's pinned dep.
 """
+
 import numpy as np
 from pyscf import gto, scf, df
 
@@ -40,7 +41,9 @@ HARTREE2EV = 27.211386245988
 
 mol = gto.M(
     atom="O 0.0 0.0 0.117790; H 0.0 0.755453 -0.471161; H 0.0 -0.755453 -0.471161",
-    basis="cc-pvdz", unit="Angstrom", verbose=0,
+    basis="cc-pvdz",
+    unit="Angstrom",
+    verbose=0,
 )
 mf = scf.RHF(mol)  # EXACT (non-DF) RHF -- matches ferric's RhfConfig::default()
 mf.kernel()
@@ -57,7 +60,7 @@ print(f"# nmo={nmo} nocc={nocc} nvir={nvir} n={n}")
 # ---- RI 3-index B_pq^P in MO basis (same convention as ferric's mo_b.rs) ----
 auxmol = df.addons.make_auxmol(mol, auxbasis="cc-pvdz-ri")
 ints_3c = df.incore.aux_e2(mol, auxmol, intor="int3c2e", aosym="s1")  # (nao,nao,naux)
-ints_2c = auxmol.intor("int2c2e", aosym="s1")                        # (naux,naux)
+ints_2c = auxmol.intor("int2c2e", aosym="s1")  # (naux,naux)
 w2, U2 = np.linalg.eigh(ints_2c)
 pos = w2 > 1e-10
 w2inv_sqrt = np.zeros_like(w2)
@@ -66,8 +69,10 @@ V_inv_sqrt = (U2 * w2inv_sqrt) @ U2.T
 B_ao = np.einsum("pqQ,QP->pqP", ints_3c, V_inv_sqrt)
 B_mo = np.einsum("pi,pqP,qj->ijP", mo_coeff, B_ao, mo_coeff)  # (nmo,nmo,naux)
 
+
 def bare(p, q, r, s):
     return np.dot(B_mo[p, q, :], B_mo[r, s, :])
+
 
 # ---- Assemble A_{ia,jb} = (eps_a-eps_i) d + 2(ia|jb) - (ab|ij) ----
 A = np.zeros((n, n))
@@ -87,7 +92,7 @@ for i in occ:
 evals, evecs = np.linalg.eigh(A)
 print("# lowest 6 CIS-TDA (DF kernel, exact RHF) excitation energies (eV):")
 for k in range(6):
-    print(f"#   {k+1}  {evals[k]*HARTREE2EV:.6f}")
+    print(f"#   {k + 1}  {evals[k] * HARTREE2EV:.6f}")
 
 # ---- Oscillator strengths: f_n = 2/3 * Omega_n * |<0|r|n>|^2 ----
 with mol.with_common_orig((0.0, 0.0, 0.0)):
@@ -101,7 +106,7 @@ for k in range(6):
     X = evecs[:, k].reshape(nocc, nvir)
     mu = np.sqrt(2.0) * np.einsum("ia,xia->x", X, dip_ia)
     f = (2.0 / 3.0) * evals[k] * np.dot(mu, mu)
-    print(f"#   {k+1}  E={evals[k]*HARTREE2EV:.6f} eV   f={f:.6e}")
+    print(f"#   {k + 1}  E={evals[k] * HARTREE2EV:.6f} eV   f={f:.6e}")
 
 # Also cross-check with a shifted dipole origin -> must be identical (origin
 # independence of occ-virt transition dipoles).
@@ -113,4 +118,4 @@ for k in range(6):
     X = evecs[:, k].reshape(nocc, nvir)
     mu = np.sqrt(2.0) * np.einsum("ia,xia->x", X, dip_ia2)
     f = (2.0 / 3.0) * evals[k] * np.dot(mu, mu)
-    print(f"#   {k+1}  f={f:.6e}")
+    print(f"#   {k + 1}  f={f:.6e}")

@@ -23,6 +23,7 @@ Usage:
     FERRIC_MEM_BUDGET_GB=9 scripts/ferric-limited -- uv run --no-sync python \
         experiments/danuglipron/probes/scf_iterations.py <xyz> <charge> [basis]
 """
+
 from __future__ import annotations
 
 import os
@@ -50,20 +51,27 @@ def main() -> int:
     # reporting a bare timing that cannot answer the question being asked.
     for attr in ("iterations", "exit_reason"):
         if not hasattr(res, attr):
-            print(f"ERROR: PyDftResult has no `{attr}` — rebuild with "
-                  f"`cargo build --release -p ferric-python`", file=sys.stderr)
+            print(
+                f"ERROR: PyDftResult has no `{attr}` — rebuild with "
+                f"`cargo build --release -p ferric-python`",
+                file=sys.stderr,
+            )
             return 1
 
     n = res.iterations
-    print(f"\n{os.path.basename(path)}  natoms={mol.natoms()}  "
-          f"nelec={mol.nelec()}  charge={charge}  basis={basis}")
+    print(
+        f"\n{os.path.basename(path)}  natoms={mol.natoms()}  "
+        f"nelec={mol.nelec()}  charge={charge}  basis={basis}"
+    )
     print(f"  wall       = {dt:8.1f} s")
     print(f"  iterations = {n:8d}   (final ladder rung)")
     print(f"  exit       = {res.exit_reason}")
     print(f"  converged  = {res.converged}")
     if n:
-        print(f"  ~ {dt / n:.1f} s per iteration (upper bound: includes "
-              f"one-time grid/AO setup and any earlier ladder rungs)")
+        print(
+            f"  ~ {dt / n:.1f} s per iteration (upper bound: includes "
+            f"one-time grid/AO setup and any earlier ladder rungs)"
+        )
     return 0
 
 

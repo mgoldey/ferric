@@ -15,6 +15,7 @@ Usage:
   xcheck_runner.py [basis]        # run all 18 (default def2-tzvp), store, print
   xcheck_runner.py --show         # print cached table only
 """
+
 import json
 import os
 import re
@@ -29,11 +30,34 @@ FERRIC = ROOT / "target" / "release" / "examples" / "gw_xcheck"
 PYSCF = HERE / "pyscf_g0w0.py"
 CACHE = HERE / "xcheck_results.json"
 
-MOLS = ["H2", "He", "H2O", "NH3", "CH4", "N2", "CO", "F2", "HF",
-        "C2H2", "C2H4", "C2H6", "CO2", "HCl", "H2S", "HCN", "H2CO", "CH3OH"]
+MOLS = [
+    "H2",
+    "He",
+    "H2O",
+    "NH3",
+    "CH4",
+    "N2",
+    "CO",
+    "F2",
+    "HF",
+    "C2H2",
+    "C2H4",
+    "C2H6",
+    "CO2",
+    "HCl",
+    "H2S",
+    "HCN",
+    "H2CO",
+    "CH3OH",
+]
 
-ENV = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1",
-           MKL_NUM_THREADS="1", RAYON_NUM_THREADS="1")
+ENV = dict(
+    os.environ,
+    OPENBLAS_NUM_THREADS="1",
+    OMP_NUM_THREADS="1",
+    MKL_NUM_THREADS="1",
+    RAYON_NUM_THREADS="1",
+)
 FER_RE = re.compile(r"XCHECK\s+([-+0-9.]+)\s+([-+0-9.]+)")
 PY_RE = re.compile(r"PYSCF\s+([-+0-9.]+)\s+([-+0-9.]+)")
 
@@ -54,6 +78,7 @@ def save(d):
     into one tmp.
     """
     import fcntl
+
     with open(CACHE.with_suffix(".lock"), "w") as lf:
         fcntl.flock(lf, fcntl.LOCK_EX)
         disk = json.loads(CACHE.read_text()) if CACHE.exists() else {}
@@ -70,15 +95,25 @@ def save(d):
 
 
 def run_ferric(xyz, basis, aux):
-    out = subprocess.run([str(FERRIC), str(xyz), basis, aux],
-                         env=ENV, capture_output=True, text=True, timeout=3600)
+    out = subprocess.run(
+        [str(FERRIC), str(xyz), basis, aux],
+        env=ENV,
+        capture_output=True,
+        text=True,
+        timeout=3600,
+    )
     m = FER_RE.search(out.stdout + out.stderr)
     return (float(m.group(1)), float(m.group(2))) if m else None
 
 
 def run_pyscf(xyz, basis):
-    out = subprocess.run([sys.executable, str(PYSCF), str(xyz), basis],
-                         env=ENV, capture_output=True, text=True, timeout=3600)
+    out = subprocess.run(
+        [sys.executable, str(PYSCF), str(xyz), basis],
+        env=ENV,
+        capture_output=True,
+        text=True,
+        timeout=3600,
+    )
     m = PY_RE.search(out.stdout + out.stderr)
     return (float(m.group(1)), float(m.group(2))) if m else None
 
@@ -102,23 +137,31 @@ def run_all(basis):
         if not fer or not pys:
             print(f"[FAIL] {mol}: ferric={fer} pyscf={pys}")
             continue
-        res[key][mol] = {"fer_g0w0": fer[0], "fer_koop": fer[1],
-                         "pys_g0w0": pys[0], "pys_koop": pys[1],
-                         "d_g0w0_mev": (fer[0] - pys[0]) * 1000.0,
-                         "d_koop_mev": (fer[1] - pys[1]) * 1000.0}
+        res[key][mol] = {
+            "fer_g0w0": fer[0],
+            "fer_koop": fer[1],
+            "pys_g0w0": pys[0],
+            "pys_koop": pys[1],
+            "d_g0w0_mev": (fer[0] - pys[0]) * 1000.0,
+            "d_koop_mev": (fer[1] - pys[1]) * 1000.0,
+        }
         save(res)
-        print(f"       ferric {fer[0]:.3f}  pyscf {pys[0]:.3f}  Δ {res[key][mol]['d_g0w0_mev']:+.1f} meV")
+        print(
+            f"       ferric {fer[0]:.3f}  pyscf {pys[0]:.3f}  Δ {res[key][mol]['d_g0w0_mev']:+.1f} meV"
+        )
     show(basis)
 
 
 def show(basis=None):
     res = load()
-    for key in ([basis] if basis else sorted(res)):
+    for key in [basis] if basis else sorted(res):
         rows = res.get(key, {})
         if not rows:
             continue
         print(f"\n# ferric vs PySCF G0W0@HF — IDENTICAL geometry+basis ({key})")
-        print(f"{'mol':6} {'ferric':>8} {'pyscf':>8} {'Δ(meV)':>8} | {'Δkoop(meV)':>11}")
+        print(
+            f"{'mol':6} {'ferric':>8} {'pyscf':>8} {'Δ(meV)':>8} | {'Δkoop(meV)':>11}"
+        )
         print("-" * 52)
         dg = []
         for mol in MOLS:
@@ -126,11 +169,15 @@ def show(basis=None):
             if not r:
                 continue
             dg.append(abs(r["d_g0w0_mev"]))
-            print(f"{mol:6} {r['fer_g0w0']:8.3f} {r['pys_g0w0']:8.3f} "
-                  f"{r['d_g0w0_mev']:+8.1f} | {r['d_koop_mev']:+11.2f}")
+            print(
+                f"{mol:6} {r['fer_g0w0']:8.3f} {r['pys_g0w0']:8.3f} "
+                f"{r['d_g0w0_mev']:+8.1f} | {r['d_koop_mev']:+11.2f}"
+            )
         if dg:
             print("-" * 52)
-            print(f"N={len(dg)}  MAD={sum(dg)/len(dg):.1f} meV  max={max(dg):.1f} meV")
+            print(
+                f"N={len(dg)}  MAD={sum(dg) / len(dg):.1f} meV  max={max(dg):.1f} meV"
+            )
 
 
 if __name__ == "__main__":

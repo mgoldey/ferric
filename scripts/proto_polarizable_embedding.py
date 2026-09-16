@@ -56,6 +56,7 @@ physics in Python first, and the prototype carries its OWN checks):
 Usage:
     OPENBLAS_NUM_THREADS=1 ~/qc/ferric/.venv/bin/python scripts/proto_polarizable_embedding.py
 """
+
 import json
 import math
 from pathlib import Path
@@ -96,6 +97,7 @@ def build_mol(atoms, charge=0, spin=0, basis="sto-3g"):
 # ---------------------------------------------------------------------------
 # Field integrals
 # ---------------------------------------------------------------------------
+
 
 def field_at_point_qm(mol, dm, point):
     """E^QM(point) = electronic + nuclear field of the QM region at `point`
@@ -154,6 +156,7 @@ def _verify_field_sign(mol, dm, point, h=1e-5):
     different integral, `int1e_rinv`), so it catches a sign error in either
     piece.
     """
+
     def v_elec(r):
         integral = potential_integral(mol, r)
         # Electrostatic potential energy of a unit +1 charge at r interacting
@@ -189,12 +192,15 @@ def dipole_potential_integral(mol, point):
     """
     with mol.with_rinv_origin(point):
         ip = mol.intor("int1e_iprinv", comp=3)
-    return ip + ip.transpose(0, 2, 1)  # shape (3, nao, nao); this IS <mu|(r-R)/|r-R|^3|nu>
+    return ip + ip.transpose(
+        0, 2, 1
+    )  # shape (3, nao, nao); this IS <mu|(r-R)/|r-R|^3|nu>
 
 
 # ---------------------------------------------------------------------------
 # Thole-damped induction
 # ---------------------------------------------------------------------------
+
 
 def thole_tensor(ri, rj, alpha_i, alpha_j, thole_a):
     """3x3 dipole-dipole interaction tensor T_ij (a.u.), Thole-damped if
@@ -270,7 +276,9 @@ def induce_dipoles(sites, alphas, e_ext, thole_a, site_exclusions):
             pair = (min(i, j), max(i, j))
             if pair in site_exclusions:
                 continue
-            t_ij = thole_tensor(sites[i][:3], sites[j][:3], alphas[i], alphas[j], thole_a)
+            t_ij = thole_tensor(
+                sites[i][:3], sites[j][:3], alphas[i], alphas[j], thole_a
+            )
             big_b[3 * i : 3 * i + 3, 3 * j : 3 * j + 3] = -t_ij
     rhs = e_ext.reshape(3 * n)
     mu_flat = np.linalg.solve(big_b, rhs)
@@ -280,6 +288,7 @@ def induce_dipoles(sites, alphas, e_ext, thole_a, site_exclusions):
 # ---------------------------------------------------------------------------
 # SCF with polarizable embedding (manual Roothaan loop, RHF only)
 # ---------------------------------------------------------------------------
+
 
 def run_polarizable_scf(
     mol,
@@ -334,10 +343,16 @@ def run_polarizable_scf(
     for it in range(max_iter):
         veff = mf.get_veff(mol, dm)
         # Induction: field at sites from the CURRENT density.
-        e_qm = np.array([field_at_point_qm(mol, dm, r) for r in site_xyz]) if n_sites else np.zeros((0, 3))
+        e_qm = (
+            np.array([field_at_point_qm(mol, dm, r) for r in site_xyz])
+            if n_sites
+            else np.zeros((0, 3))
+        )
         e_total_at_sites = e_qm + e_perm_nuc_mm
         if n_sites:
-            mu = induce_dipoles(sites, alphas, e_total_at_sites, thole_a, site_exclusions)
+            mu = induce_dipoles(
+                sites, alphas, e_total_at_sites, thole_a, site_exclusions
+            )
         else:
             mu = np.zeros((0, 3))
         e_qm_last = e_qm
@@ -408,6 +423,7 @@ def plain_embedding_energy(mol, mm_charges, conv_tol=1e-11):
 # Correctness checks
 # ---------------------------------------------------------------------------
 
+
 def stationarity_check(mol_atoms, sites, alphas, mm_charges, thole_a, h=1e-3):
     """FD of E_total wrt a QM nuclear coordinate (O_z) vs the analytic
     (re-converged-at-each-geometry) value. Because `run_polarizable_scf` is
@@ -422,8 +438,12 @@ def stationarity_check(mol_atoms, sites, alphas, mm_charges, thole_a, h=1e-3):
     percent (checking the FD itself has converged, not an implementation
     bug that would show up as an erratic, non-convergent FD).
     """
+
     def energy_at(dz):
-        atoms = [(s, (x, y, z + dz if i == 0 else z)) for i, (s, (x, y, z)) in enumerate(mol_atoms)]
+        atoms = [
+            (s, (x, y, z + dz if i == 0 else z))
+            for i, (s, (x, y, z)) in enumerate(mol_atoms)
+        ]
         mol = build_mol(atoms)
         res = run_polarizable_scf(mol, sites, alphas, mm_charges, thole_a=thole_a)
         return res["energy"]
@@ -453,7 +473,9 @@ def distant_site_limit_check(mol_atoms, alpha=1.0, distance=12.0):
     site = (0.0, 0.0, -distance)
     e_gas = field_at_point_qm(mol, dm_gas, site)
 
-    res = run_polarizable_scf(mol, [(*site, alpha)], [alpha], [], thole_a=THOLE_A_DEFAULT)
+    res = run_polarizable_scf(
+        mol, [(*site, alpha)], [alpha], [], thole_a=THOLE_A_DEFAULT
+    )
     mu = np.array(res["dipoles"][0])
     e_pol = res["e_pol"]
 
@@ -498,6 +520,7 @@ def alpha_zero_anchor_check(mol_atoms, mm_charges):
 # ---------------------------------------------------------------------------
 # Reference case generation
 # ---------------------------------------------------------------------------
+
 
 def make_case(tag, mol_atoms, sites_q_alpha, thole_a):
     """`sites_q_alpha`: list of (x, y, z, q, alpha) — q is a permanent MM
@@ -551,7 +574,9 @@ def main():
 
     # ---- one_site: single polarizable+charged site off-axis ----
     one_site = [(3.0, -2.0, 4.0, 0.5, 1.44)]
-    ref_one = make_case("water_sto-3g_pe_one_site", mol_atoms, one_site, THOLE_A_DEFAULT)
+    ref_one = make_case(
+        "water_sto-3g_pe_one_site", mol_atoms, one_site, THOLE_A_DEFAULT
+    )
 
     # ---- three_sites: three off-axis sites, damped (default a=2.1304).
     #
@@ -581,7 +606,9 @@ def main():
         (2.27725463, -1.59345573, 3.27725463, -0.3, 0.5),
         (1.7, 2.9, -5.1, -0.2, 1.10),
     ]
-    ref_three = make_case("water_sto-3g_pe_three_sites", mol_atoms, three_sites, THOLE_A_DEFAULT)
+    ref_three = make_case(
+        "water_sto-3g_pe_three_sites", mol_atoms, three_sites, THOLE_A_DEFAULT
+    )
 
     # ---- three_sites_nodamp: same geometry, damping disabled ----
     ref_three_nodamp = make_case(
@@ -617,9 +644,15 @@ def main():
         f"|diff|={alpha_zero['abs_diff']:.3e}  e_pol={alpha_zero['e_pol']:.3e}"
     )
 
-    assert distant["mu_rel_err"] < 0.01, f"distant-site mu limit failed: {distant['mu_rel_err']}"
-    assert distant["e_pol_rel_err"] < 0.02, f"distant-site e_pol limit failed: {distant['e_pol_rel_err']}"
-    assert alpha_zero["abs_diff"] < 1e-6, f"alpha->0 anchor failed: {alpha_zero['abs_diff']}"
+    assert distant["mu_rel_err"] < 0.01, (
+        f"distant-site mu limit failed: {distant['mu_rel_err']}"
+    )
+    assert distant["e_pol_rel_err"] < 0.02, (
+        f"distant-site e_pol limit failed: {distant['e_pol_rel_err']}"
+    )
+    assert alpha_zero["abs_diff"] < 1e-6, (
+        f"alpha->0 anchor failed: {alpha_zero['abs_diff']}"
+    )
     for ref in (ref_one, ref_three, ref_three_nodamp):
         assert ref["field_sign_check_max_err"] < 1e-6, "field sign check failed"
         assert ref["stationarity_check"]["rel_diff"] < 0.05, "FD has not converged"

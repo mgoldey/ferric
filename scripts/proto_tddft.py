@@ -110,7 +110,9 @@ def solve_casida(A, B, nstates):
         print(f"  Ground state may be unstable (triplet instability)")
 
     # (A-B)^{1/2}
-    sqrt_amb = eigvecs_amb @ np.diag(np.sqrt(np.maximum(eigvals_amb, 0.0))) @ eigvecs_amb.T
+    sqrt_amb = (
+        eigvecs_amb @ np.diag(np.sqrt(np.maximum(eigvals_amb, 0.0))) @ eigvecs_amb.T
+    )
 
     # Hermitian eigenvalue problem
     M = sqrt_amb @ ApB @ sqrt_amb
@@ -139,13 +141,17 @@ def ao_to_mo_eri(eri_ao, C):
 def print_comparison(label, hand, ref, nstates):
     """Print side-by-side comparison of excitation energies."""
     print(f"\n  {label}")
-    print(f"  {'State':>5}  {'Hand-built (Ha)':>16}  {'Reference (Ha)':>16}  {'Δ (Ha)':>12}  {'Δ (eV)':>10}")
-    print(f"  {'-'*5}  {'-'*16}  {'-'*16}  {'-'*12}  {'-'*10}")
+    print(
+        f"  {'State':>5}  {'Hand-built (Ha)':>16}  {'Reference (Ha)':>16}  {'Δ (Ha)':>12}  {'Δ (eV)':>10}"
+    )
+    print(f"  {'-' * 5}  {'-' * 16}  {'-' * 16}  {'-' * 12}  {'-' * 10}")
     max_err = 0.0
     for s in range(min(nstates, len(hand), len(ref))):
         delta = hand[s] - ref[s]
         max_err = max(max_err, abs(delta))
-        print(f"  {s+1:>5}  {hand[s]:>16.10f}  {ref[s]:>16.10f}  {delta:>12.2e}  {delta*27.2114:>10.4f}")
+        print(
+            f"  {s + 1:>5}  {hand[s]:>16.10f}  {ref[s]:>16.10f}  {delta:>12.2e}  {delta * 27.2114:>10.4f}"
+        )
     return max_err
 
 
@@ -167,7 +173,7 @@ eps_pyscf = mf.mo_energy
 nocc = mol_pyscf.nelectron // 2
 nmo = len(eps_pyscf)
 nvir = nmo - nocc
-print(f"nocc={nocc}, nvir={nvir}, nmo={nmo}, dim(ia)={nocc*nvir}")
+print(f"nocc={nocc}, nvir={nvir}, nmo={nmo}, dim(ia)={nocc * nvir}")
 
 # 4-index AO integrals → MO transform
 eri_ao = mol_pyscf.intor("int2e")
@@ -195,11 +201,15 @@ td_full.nstates = NSTATES
 td_full.kernel()
 pyscf_tddft = td_full.e
 
-err_tda = print_comparison("TDA (no f_xc) vs PySCF TDA", tda_energies, pyscf_tda, NSTATES)
-err_full = print_comparison("Full TDDFT (no f_xc) vs PySCF full TDDFT", casida_energies, pyscf_tddft, NSTATES)
+err_tda = print_comparison(
+    "TDA (no f_xc) vs PySCF TDA", tda_energies, pyscf_tda, NSTATES
+)
+err_full = print_comparison(
+    "Full TDDFT (no f_xc) vs PySCF full TDDFT", casida_energies, pyscf_tddft, NSTATES
+)
 
-print(f"\n  TDA max error:   {err_tda:.2e} Ha ({err_tda*27.2114:.4f} eV)")
-print(f"  TDDFT max error: {err_full:.2e} Ha ({err_full*27.2114:.4f} eV)")
+print(f"\n  TDA max error:   {err_tda:.2e} Ha ({err_tda * 27.2114:.4f} eV)")
+print(f"  TDDFT max error: {err_full:.2e} Ha ({err_full * 27.2114:.4f} eV)")
 print(f"  (Residual is the f_xc kernel contribution — expected to be nonzero for DFT)")
 
 
@@ -268,7 +278,10 @@ print("AO integrals. The Rust TDDFT will use ferric's own integral engine.")
 
 try:
     import ferric
-    mol_ferric = ferric.Molecule.from_xyz(os.path.join(TESTDATA, "molecules", "water.xyz"))
+
+    mol_ferric = ferric.Molecule.from_xyz(
+        os.path.join(TESTDATA, "molecules", "water.xyz")
+    )
     bs = ferric.BasisSet.bundled("cc-pvdz")
     rhf_ferric = ferric.run_rhf(mol_ferric, bs)
     print(f"\n  Ferric RHF energy: {rhf_ferric.energy:.10f} Ha")
@@ -289,8 +302,9 @@ try:
     # orbital energies only enter the diagonal of A
     A_mixed = build_tda_matrix(eri_mo_hf, eps_ferric, nocc, c_hf=1.0)
     tda_mixed, _ = solve_tda(A_mixed, NSTATES)
-    err_mixed = print_comparison("CIS (PySCF MOs, ferric eps) vs PySCF CIS",
-                                 tda_mixed, pyscf_cis, NSTATES)
+    err_mixed = print_comparison(
+        "CIS (PySCF MOs, ferric eps) vs PySCF CIS", tda_mixed, pyscf_cis, NSTATES
+    )
     print(f"\n  Max error: {err_mixed:.2e} Ha")
     if err_mixed < 1e-6:
         print("  ✓ Ferric orbital energies produce correct CIS (Rust TDDFT will work)")
@@ -332,10 +346,14 @@ td_full_b3 = tdscf.TDDFT(mf_b3)
 td_full_b3.nstates = NSTATES
 td_full_b3.kernel()
 
-err_b3_tda = print_comparison("B3LYP TDA (no f_xc) vs PySCF", tda_b3, td_tda_b3.e, NSTATES)
-err_b3_full = print_comparison("B3LYP TDDFT (no f_xc) vs PySCF", casida_b3, td_full_b3.e, NSTATES)
-print(f"\n  B3LYP TDA max error:   {err_b3_tda:.2e} Ha ({err_b3_tda*27.2114:.4f} eV)")
-print(f"  B3LYP TDDFT max error: {err_b3_full:.2e} Ha ({err_b3_full*27.2114:.4f} eV)")
+err_b3_tda = print_comparison(
+    "B3LYP TDA (no f_xc) vs PySCF", tda_b3, td_tda_b3.e, NSTATES
+)
+err_b3_full = print_comparison(
+    "B3LYP TDDFT (no f_xc) vs PySCF", casida_b3, td_full_b3.e, NSTATES
+)
+print(f"\n  B3LYP TDA max error:   {err_b3_tda:.2e} Ha ({err_b3_tda * 27.2114:.4f} eV)")
+print(f"  B3LYP TDDFT max error: {err_b3_full:.2e} Ha ({err_b3_full * 27.2114:.4f} eV)")
 print(f"  (Residual is the GGA f_xc kernel — expected nonzero)")
 
 

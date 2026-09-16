@@ -25,25 +25,31 @@ at c = 50 and Coulomb tail at c = 0.05.
 
 Usage: python scripts/terfc_pd_check.py   (single CPU, seconds)
 """
+
 import numpy as np
 
-C_GRID = np.concatenate([
-    np.linspace(0.2, 1.0, 17),
-    np.linspace(1.0, 4.0, 31),
-    np.linspace(4.0, 12.0, 17),
-    [2.0**-0.5, 2.06987, 50.0],
-])
-U_GRID = np.concatenate([
-    np.linspace(1e-3, 20.0, 2000),
-    np.linspace(20.0, 100.0, 1600),
-    np.geomspace(100.0, 400.0, 300),
-])
+C_GRID = np.concatenate(
+    [
+        np.linspace(0.2, 1.0, 17),
+        np.linspace(1.0, 4.0, 31),
+        np.linspace(4.0, 12.0, 17),
+        [2.0**-0.5, 2.06987, 50.0],
+    ]
+)
+U_GRID = np.concatenate(
+    [
+        np.linspace(1e-3, 20.0, 2000),
+        np.linspace(20.0, 100.0, 1600),
+        np.geomspace(100.0, 400.0, 300),
+    ]
+)
 PANEL_WIDTH = 0.05  # Bohr-free x units; ~3 sin periods per panel at u=400
 PANEL_NODES = 32
 
 
 def terfc(x, c):
     from scipy.special import erf
+
     return 1.0 - 0.5 * (erf(c * (x + 1.0)) + erf(c * (x - 1.0)))
 
 
@@ -71,14 +77,17 @@ def p_of_u(c, u_grid):
     # Chunk the u axis so the sin matrix stays ~100 MB even at the largest xmax.
     out = np.empty(len(u_grid))
     for lo in range(0, len(u_grid), 500):
-        blk = u_grid[lo:lo + 500]
-        out[lo:lo + 500] = np.sin(np.outer(blk, x)) @ f
+        blk = u_grid[lo : lo + 500]
+        out[lo : lo + 500] = np.sin(np.outer(blk, x)) @ f
     return out
 
 
 def main():
     print("# terfc kernel PD sweep off the linked family: P(u; c) >= 0 <=> PD")
-    print(f"# c = r0*omega grid: {C_GRID.min():.2f}..{C_GRID.max():.0f} ({len(C_GRID)} pts); u grid to {U_GRID.max():.0f} ({len(U_GRID)} pts); GL panels {PANEL_NODES}x{PANEL_WIDTH}-wide", flush=True)
+    print(
+        f"# c = r0*omega grid: {C_GRID.min():.2f}..{C_GRID.max():.0f} ({len(C_GRID)} pts); u grid to {U_GRID.max():.0f} ({len(U_GRID)} pts); GL panels {PANEL_NODES}x{PANEL_WIDTH}-wide",
+        flush=True,
+    )
 
     # Anchors.
     p_sharp = p_of_u(50.0, U_GRID)
@@ -99,10 +108,19 @@ def main():
         gm = float(p[i])
         global_min = min(global_min, gm)
         verdict = "PD" if gm >= -1e-12 else "NOT PD"
-        mark = "  <-- linked" if abs(c - 2**-0.5) < 1e-9 else ("  <-- Dutoi bound" if abs(c - 2.06987) < 1e-9 else "")
-        print(f"{c:>8.3f} {gm:>12.3e} {U_GRID[i]:>8.2f} {float(pu.min()):>10.3e}  {verdict}{mark}", flush=True)
+        mark = (
+            "  <-- linked"
+            if abs(c - 2**-0.5) < 1e-9
+            else ("  <-- Dutoi bound" if abs(c - 2.06987) < 1e-9 else "")
+        )
+        print(
+            f"{c:>8.3f} {gm:>12.3e} {U_GRID[i]:>8.2f} {float(pu.min()):>10.3e}  {verdict}{mark}",
+            flush=True,
+        )
 
-    print(f"\n# global min P over sweep: {global_min:.3e}  ({'ALL PD' if global_min >= -1e-12 else 'PD VIOLATED'})")
+    print(
+        f"\n# global min P over sweep: {global_min:.3e}  ({'ALL PD' if global_min >= -1e-12 else 'PD VIOLATED'})"
+    )
 
 
 if __name__ == "__main__":

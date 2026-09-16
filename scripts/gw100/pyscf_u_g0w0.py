@@ -19,6 +19,7 @@ Usage: pyscf_u_g0w0.py <file.xyz> <charge> <spin_2s> [orb.json] [aux.json|auxnam
 Note: reads geometry in Angstrom from an .xyz-style file (line 1 = natoms,
 line 2 = comment, remaining = element x y z).
 """
+
 import json
 import sys
 
@@ -28,9 +29,7 @@ from pyscf.gw.ugw_ac import UGWAC
 
 HARTREE2EV = 27.211386245988
 
-DEFAULT_ORB = (
-    sys.path[0] + "/../../crates/ferric-core/src/basis/bundled/cc-pvdz.json"
-)
+DEFAULT_ORB = sys.path[0] + "/../../crates/ferric-core/src/basis/bundled/cc-pvdz.json"
 DEFAULT_AUX = (
     sys.path[0] + "/../../crates/ferric-core/src/basis/bundled/cc-pvdz-ri.json"
 )
@@ -75,8 +74,12 @@ def main():
     basis = {s: bse_to_pyscf_basis(orb_bundle[str(sym2charge(s))]) for s in syms}
 
     mol = gto.M(
-        atom=atom, basis=basis, charge=charge, spin=spin,
-        unit="Angstrom", verbose=0,
+        atom=atom,
+        basis=basis,
+        charge=charge,
+        spin=spin,
+        unit="Angstrom",
+        verbose=0,
     )
 
     if aux_arg.endswith(".json"):
@@ -100,8 +103,10 @@ def main():
     ip_a = -gw.mo_energy[0][homo_a] * HARTREE2EV
     ip_b = -gw.mo_energy[1][homo_b] * HARTREE2EV
 
-    print(f"PYSCF {ip_a:.4f} {ip_b:.4f} {koop_a:.4f} {koop_b:.4f} "
-          f"{mol.nelectron} {mf.e_tot:.6f}")
+    print(
+        f"PYSCF {ip_a:.4f} {ip_b:.4f} {koop_a:.4f} {koop_b:.4f} "
+        f"{mol.nelectron} {mf.e_tot:.6f}"
+    )
 
 
 if __name__ == "__main__":

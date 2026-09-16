@@ -15,6 +15,7 @@ Usage:
   run_sweep.py --show           # print the aggregated cross-basis table
   run_sweep.py <basis> --force  # recompute even if present
 """
+
 import json
 import os
 import re
@@ -34,9 +35,8 @@ METHODS = ["Koop", "dSCF", "dRPA", "G0W0", "COHSEX", "evGW0", "evGW", "G0W0pbe"]
 # molecule was never recorded, so the relaunch loop re-ran it FOREVER (clean
 # exit + unchanged remaining-set = infinite relaunch).
 ROW = re.compile(
-    r"^(?P<mol>[A-Za-z0-9]+)\s+(?P<exp>[-+0-9.]+|NaN|nan)\s+" + r"\s+".join(
-        rf"(?P<{m}>[-+0-9.]+|NaN|nan)" for m in METHODS
-    )
+    r"^(?P<mol>[A-Za-z0-9]+)\s+(?P<exp>[-+0-9.]+|NaN|nan)\s+"
+    + r"\s+".join(rf"(?P<{m}>[-+0-9.]+|NaN|nan)" for m in METHODS)
 )
 MAE = re.compile(r"^MAE\s+(?P<vals>.+)$")
 
@@ -84,6 +84,7 @@ def save_basis(basis, slot):
     file is per-pid so two writers can never interleave into one tmp.
     """
     import fcntl
+
     p = _basis_path(basis)
     reasons = globals().get("FAILURE_REASONS", {})
     log = globals().get("FAILURE_LOG", {})
@@ -104,7 +105,9 @@ def save_basis(basis, slot):
         # rule as failed/molecules above.
         merged_log = dict(disk.get("failure_log", {}))
         merged_log.update({k: v for k, v in log.items() if k in failed})
-        out["failure_log"] = {k: merged_log[k] for k in out["failed"] if k in merged_log}
+        out["failure_log"] = {
+            k: merged_log[k] for k in out["failed"] if k in merged_log
+        }
         slot["failed"] = out["failed"]
         tmp = p.with_suffix(f".json.tmp.{os.getpid()}")
         tmp.write_text(json.dumps(out, indent=2, sort_keys=True))
@@ -118,7 +121,7 @@ def load():
     if RESULTS.exists():
         res.update(json.loads(RESULTS.read_text()))
     for p in HERE.glob("results_*.json"):
-        basis = p.stem[len("results_"):]
+        basis = p.stem[len("results_") :]
         res[basis] = json.loads(p.read_text())
     return res
 
@@ -162,17 +165,17 @@ FAILURE_LOG = {}
 # save (below) so it survives restarts and concurrent annotation. Keyed by mol.
 FAILURE_REASONS = {
     "BrK": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric; aux "
-           "rifit covers K but the orbital set does not. Genuine basis gap.",
-    "HK":  "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric. "
-           "Genuine basis gap.",
-    "K2":  "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric. "
-           "Genuine basis gap.",
+    "rifit covers K but the orbital set does not. Genuine basis gap.",
+    "HK": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric. "
+    "Genuine basis gap.",
+    "K2": "K (Z=19) has no aug-cc-pVDZ/TZ orbital basis bundled in ferric. "
+    "Genuine basis gap.",
     "Na4": "Na present in orbital + aux bases; the open-shell SCF on these floppy "
-           "sodium clusters does not converge (near-degenerate frontier states, "
-           "weakly-bound electrons). Physics/convergence, not a basis gap.",
+    "sodium clusters does not converge (near-degenerate frontier states, "
+    "weakly-bound electrons). Physics/convergence, not a basis gap.",
     "Na6": "Na present in orbital + aux bases; the open-shell SCF on these floppy "
-           "sodium clusters does not converge (near-degenerate frontier states, "
-           "weakly-bound electrons). Physics/convergence, not a basis gap.",
+    "sodium clusters does not converge (near-degenerate frontier states, "
+    "weakly-bound electrons). Physics/convergence, not a basis gap.",
 }
 
 # Case order as compiled into gw100_full.rs (the driver runs cases() in this
@@ -198,7 +201,10 @@ def _next_undone_case(mols, failed):
 
 
 def _indent(text, prefix="        "):
-    return "\n".join(prefix + line for line in text.splitlines()) or prefix + "(no output captured)"
+    return (
+        "\n".join(prefix + line for line in text.splitlines())
+        or prefix + "(no output captured)"
+    )
 
 
 def run_basis(basis, force=False):
@@ -221,6 +227,7 @@ def run_basis(basis, force=False):
     # bug). Loop until every case is accounted for (done or failed).
     mol_budget = float(os.environ.get("GW100_MOL_BUDGET", "1800"))  # 30 min default
     import threading
+
     all_names = set(_case_order())
 
     while True:
@@ -228,26 +235,38 @@ def run_basis(basis, force=False):
         if not remaining:
             break  # every case done or failed
         done = sorted(set(mols) | failed)
-        print(f"[run] gw100_full {basis} ({len(done)} skipped, {len(remaining)} to go, "
-              f"{mol_budget:.0f}s/mol budget) ...", flush=True)
+        print(
+            f"[run] gw100_full {basis} ({len(done)} skipped, {len(remaining)} to go, "
+            f"{mol_budget:.0f}s/mol budget) ...",
+            flush=True,
+        )
         env = dict(ENV, GW100_DONE=",".join(done))
-        proc = subprocess.Popen([str(BIN), basis], env=env, text=True,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1)
+        proc = subprocess.Popen(
+            [str(BIN), basis],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=1,
+        )
 
         last_progress = [__import__("time").monotonic()]
         stalled = [False]
         progressed = False  # any row/FAILED parsed from THIS launch
         import collections
+
         tail = collections.deque(maxlen=40)  # last N raw lines, for failure attribution
 
         def watchdog(p=proc, lp=last_progress, st=stalled):
             import time
+
             while p.poll() is None:
                 time.sleep(15)
                 if time.monotonic() - lp[0] > mol_budget:
                     st[0] = True
                     p.kill()
                     return
+
         wd = threading.Thread(target=watchdog, daemon=True)
         wd.start()
 
@@ -256,17 +275,19 @@ def run_basis(basis, force=False):
             tail.append(line)
             m = ROW.match(line.strip())
             if m:
-                d = m.groupdict(); name = d.pop("mol")
+                d = m.groupdict()
+                name = d.pop("mol")
                 mols[name] = {k: float(v) for k, v in d.items()}
                 slot["molecules"] = mols
-                save_basis(basis, slot)         # persist EACH molecule immediately
+                save_basis(basis, slot)  # persist EACH molecule immediately
                 last_progress[0] = __import__("time").monotonic()
                 progressed = True
                 print(f"  [+] {name} ({len(mols)} done)", flush=True)
                 continue
             fm = FAILED_RE.match(line.strip())
             if fm:
-                failed.add(fm.group(1)); slot["failed"] = sorted(failed)
+                failed.add(fm.group(1))
+                slot["failed"] = sorted(failed)
                 save_basis(basis, slot)
                 last_progress[0] = __import__("time").monotonic()
                 progressed = True
@@ -287,7 +308,8 @@ def run_basis(basis, force=False):
             # case. Mark it FAILED so the re-launch skips it and CONTINUES.
             nxt = _next_undone_case(mols, failed)
             if nxt:
-                failed.add(nxt); slot["failed"] = sorted(failed)
+                failed.add(nxt)
+                slot["failed"] = sorted(failed)
                 FAILURE_LOG[nxt] = {
                     "reason": "stall",
                     "mol_budget_s": mol_budget,
@@ -295,8 +317,13 @@ def run_basis(basis, force=False):
                     "tail": tail_text,
                 }
                 save_basis(basis, slot)
-                print(f"  [!] {nxt} exceeded {mol_budget:.0f}s/mol budget — FAILED, resuming past it", flush=True)
-                print(f"      last output before kill:\n{_indent(tail_text)}", flush=True)
+                print(
+                    f"  [!] {nxt} exceeded {mol_budget:.0f}s/mol budget — FAILED, resuming past it",
+                    flush=True,
+                )
+                print(
+                    f"      last output before kill:\n{_indent(tail_text)}", flush=True
+                )
             else:
                 break  # stalled but nothing left to attribute it to — stop
         elif proc.returncode not in (0, None):
@@ -304,24 +331,33 @@ def run_basis(basis, force=False):
             # molecule failed and resume, but guard against an infinite loop.
             nxt = _next_undone_case(mols, failed)
             if nxt:
-                failed.add(nxt); slot["failed"] = sorted(failed)
+                failed.add(nxt)
+                slot["failed"] = sorted(failed)
                 FAILURE_LOG[nxt] = {
                     "reason": "nonzero_exit",
                     "returncode": proc.returncode,
                     "tail": tail_text,
                 }
                 save_basis(basis, slot)
-                print(f"  [!] {nxt} — driver exited {proc.returncode}, FAILED, resuming past it", flush=True)
-                print(f"      last output before exit:\n{_indent(tail_text)}", flush=True)
+                print(
+                    f"  [!] {nxt} — driver exited {proc.returncode}, FAILED, resuming past it",
+                    flush=True,
+                )
+                print(
+                    f"      last output before exit:\n{_indent(tail_text)}", flush=True
+                )
             else:
                 break
         elif not progressed:
             # Clean exit, no stall, yet NOTHING parsed: relaunching with an
             # identical remaining-set would loop forever (this was the NaN-row
             # infinite relaunch before the regex fix above). Abort loudly.
-            print(f"  [!] driver exited cleanly but no row for {sorted(remaining)} "
-                  f"parsed — output format vs ROW regex mismatch? Aborting to "
-                  f"avoid an infinite relaunch loop.", flush=True)
+            print(
+                f"  [!] driver exited cleanly but no row for {sorted(remaining)} "
+                f"parsed — output format vs ROW regex mismatch? Aborting to "
+                f"avoid an infinite relaunch loop.",
+                flush=True,
+            )
             print(f"      last output:\n{_indent(tail_text)}", flush=True)
             break
         # clean exit with progress → loop re-checks `remaining`
@@ -329,7 +365,9 @@ def run_basis(basis, force=False):
     # Recompute MAE from the persisted molecule set (independent of run completion).
     _recompute_mae(slot)
     save_basis(basis, slot)
-    print(f"[done] {basis}: {len(mols)} converged, {len(failed)} FAILED {sorted(failed)}")
+    print(
+        f"[done] {basis}: {len(mols)} converged, {len(failed)} FAILED {sorted(failed)}"
+    )
     print(f"       evGW MAE = {slot.get('mae', {}).get('evGW', '?')} eV")
 
 
@@ -338,9 +376,14 @@ def _recompute_mae(slot):
     mols = slot.get("molecules", {})
     mae = {}
     for meth in METHODS:
-        errs = [abs(d[meth] - d["exp"]) for d in mols.values()
-                if d.get(meth) is not None and d.get("exp") is not None
-                and abs(d[meth]) < 1e6 and d[meth] == d[meth]]  # finite, not NaN
+        errs = [
+            abs(d[meth] - d["exp"])
+            for d in mols.values()
+            if d.get(meth) is not None
+            and d.get("exp") is not None
+            and abs(d[meth]) < 1e6
+            and d[meth] == d[meth]
+        ]  # finite, not NaN
         if errs:
             mae[meth] = round(sum(errs) / len(errs), 4)
     slot["mae"] = mae
@@ -364,8 +407,12 @@ def show():
         mae = slot.get("mae", {})
         n = slot.get("n_converged", len(slot.get("molecules", {})))
         nf = len(slot.get("failed", []))
-        print(f"{basis:14} " + " ".join(f"{mae.get(m, float('nan')):>7.3f}" for m in METHODS)
-              + f"  {n:>5}" + (f"  ({nf} fail)" if nf else ""))
+        print(
+            f"{basis:14} "
+            + " ".join(f"{mae.get(m, float('nan')):>7.3f}" for m in METHODS)
+            + f"  {n:>5}"
+            + (f"  ({nf} fail)" if nf else "")
+        )
 
 
 if __name__ == "__main__":

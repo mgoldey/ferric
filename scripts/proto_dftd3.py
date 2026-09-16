@@ -18,11 +18,29 @@ BOHR_PER_ANGSTROM = 1.8897259886
 
 # ── Parse water geometry for D3 ──
 
+
 def parse_xyz(path):
     """Parse XYZ file, return (atomic_numbers, coords_bohr)."""
-    symbol_to_z = {"H": 1, "He": 2, "Li": 3, "Be": 4, "B": 5, "C": 6,
-                   "N": 7, "O": 8, "F": 9, "Ne": 10, "Na": 11, "Mg": 12,
-                   "Al": 13, "Si": 14, "P": 15, "S": 16, "Cl": 17, "Ar": 18}
+    symbol_to_z = {
+        "H": 1,
+        "He": 2,
+        "Li": 3,
+        "Be": 4,
+        "B": 5,
+        "C": 6,
+        "N": 7,
+        "O": 8,
+        "F": 9,
+        "Ne": 10,
+        "Na": 11,
+        "Mg": 12,
+        "Al": 13,
+        "Si": 14,
+        "P": 15,
+        "S": 16,
+        "Cl": 17,
+        "Ar": 18,
+    }
     with open(path) as f:
         natom = int(f.readline().strip())
         f.readline()  # comment
@@ -56,6 +74,7 @@ def compute_d3bj(numbers, coords_bohr, method="pbe"):
 
 def main():
     import os
+
     os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
     import ferric
 
@@ -86,9 +105,11 @@ def main():
 
     mol_pyscf = gto.M(
         atom="O 0.000000 0.000000 0.117790; "
-             "H 0.000000 0.755453 -0.471161; "
-             "H 0.000000 -0.755453 -0.471161",
-        basis="cc-pvdz", unit="Angstrom", verbose=0,
+        "H 0.000000 0.755453 -0.471161; "
+        "H 0.000000 -0.755453 -0.471161",
+        basis="cc-pvdz",
+        unit="Angstrom",
+        verbose=0,
     )
     mf = dft.RKS(mol_pyscf)
     mf.xc = "pbe"
@@ -121,7 +142,9 @@ def main():
     print(f"  {'Atom':>4}  {'dE/dx':>12}  {'dE/dy':>12}  {'dE/dz':>12}")
     symbols = ["O", "H", "H"]
     for i, sym in enumerate(symbols):
-        print(f"  {sym:>4}  {grad_d3[i,0]:12.6e}  {grad_d3[i,1]:12.6e}  {grad_d3[i,2]:12.6e}")
+        print(
+            f"  {sym:>4}  {grad_d3[i, 0]:12.6e}  {grad_d3[i, 1]:12.6e}  {grad_d3[i, 2]:12.6e}"
+        )
 
     # Gradient should agree between the two geometry representations
     grad_max_diff = np.max(np.abs(grad_d3 - grad_d3_pyscf))
@@ -133,10 +156,22 @@ def main():
     print("  Functionals with D3(BJ) parameters:")
     print("=" * 60)
     supported = []
-    for name in ["pbe", "b3lyp", "pbe0", "blyp", "bp86", "scan", "r2scan",
-                 "wb97x-v", "tpss", "revpbe", "pw91"]:
+    for name in [
+        "pbe",
+        "b3lyp",
+        "pbe0",
+        "blyp",
+        "bp86",
+        "scan",
+        "r2scan",
+        "wb97x-v",
+        "tpss",
+        "revpbe",
+        "pw91",
+    ]:
         try:
             from dftd3.interface import RationalDampingParam
+
             RationalDampingParam(method=name)
             supported.append(name)
         except Exception:

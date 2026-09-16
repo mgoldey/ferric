@@ -39,6 +39,7 @@ Usage:
     OPENBLAS_NUM_THREADS=1 /home/matt/qc/ferric/.venv/bin/python \
         scripts/gen_openmm_mm_refs.py
 """
+
 from __future__ import annotations
 
 import json
@@ -88,8 +89,12 @@ def ethane_topology():
 
     bonds = [
         (0, 1, 310.0, cc),  # C-C
-        (0, 2, 340.0, ch), (0, 4, 340.0, ch), (0, 6, 340.0, ch),
-        (1, 3, 340.0, ch), (1, 5, 340.0, ch), (1, 7, 340.0, ch),
+        (0, 2, 340.0, ch),
+        (0, 4, 340.0, ch),
+        (0, 6, 340.0, ch),
+        (1, 3, 340.0, ch),
+        (1, 5, 340.0, ch),
+        (1, 7, 340.0, ch),
     ]
     # Angles: H-C-C (6) and H-C-H (3 per methyl x 2 = 6).
     angles = []
@@ -143,7 +148,11 @@ def _vscale(v, s):
 
 
 def _vcross(a, b):
-    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
 
 
 def _vdot(a, b):
@@ -212,7 +221,9 @@ def ethanol_topology():
     coords = [c0, c1, o, h_oh]
     for k in range(3):
         phi = 2.0 * math.pi * k / 3.0
-        coords.append((ch * s * math.cos(phi), ch * s * math.sin(phi), ch * c))  # H on C0
+        coords.append(
+            (ch * s * math.cos(phi), ch * s * math.sin(phi), ch * c)
+        )  # H on C0
 
     # Two H's on C1: the remaining two tetrahedral directions given C1's
     # bonds to C0 and O (exact 109.47 deg to both, and to each other).
@@ -226,41 +237,59 @@ def ethanol_topology():
     lj = [
         (3.4, 0.109),  # C0
         (3.4, 0.109),  # C1
-        (3.0, 0.21),   # O
-        (0.0, 0.0),    # H(OH) — zero LJ (typical AMBER polar H)
-        (2.6, 0.0157), (2.6, 0.0157), (2.6, 0.0157),  # H on C0
-        (2.5, 0.0157), (2.5, 0.0157),  # H on C1
+        (3.0, 0.21),  # O
+        (0.0, 0.0),  # H(OH) — zero LJ (typical AMBER polar H)
+        (2.6, 0.0157),
+        (2.6, 0.0157),
+        (2.6, 0.0157),  # H on C0
+        (2.5, 0.0157),
+        (2.5, 0.0157),  # H on C1
     ]
 
     bonds = [
-        (0, 1, 310.0, cc),   # C0-C1
-        (1, 2, 320.0, co),   # C1-O
-        (2, 3, 553.0, oh),   # O-H
-        (0, 4, 340.0, ch), (0, 5, 340.0, ch), (0, 6, 340.0, ch),
-        (1, 7, 340.0, ch), (1, 8, 340.0, ch),
+        (0, 1, 310.0, cc),  # C0-C1
+        (1, 2, 320.0, co),  # C1-O
+        (2, 3, 553.0, oh),  # O-H
+        (0, 4, 340.0, ch),
+        (0, 5, 340.0, ch),
+        (0, 6, 340.0, ch),
+        (1, 7, 340.0, ch),
+        (1, 8, 340.0, ch),
     ]
 
     angles = [
-        (1, 2, 3, 55.0, 108.5),   # C1-O-H
-        (0, 1, 2, 50.0, 109.5),   # C0-C1-O
-        (7, 1, 8, 33.0, 109.5),   # H-C1-H
-        (0, 1, 7, 50.0, 109.5), (0, 1, 8, 50.0, 109.5),  # C0-C1-H
-        (2, 1, 7, 50.0, 109.5), (2, 1, 8, 50.0, 109.5),  # O-C1-H
-        (1, 0, 4, 50.0, 109.5), (1, 0, 5, 50.0, 109.5), (1, 0, 6, 50.0, 109.5),  # C1-C0-H
-        (4, 0, 5, 35.0, 109.5), (4, 0, 6, 35.0, 109.5), (5, 0, 6, 35.0, 109.5),  # H-C0-H
+        (1, 2, 3, 55.0, 108.5),  # C1-O-H
+        (0, 1, 2, 50.0, 109.5),  # C0-C1-O
+        (7, 1, 8, 33.0, 109.5),  # H-C1-H
+        (0, 1, 7, 50.0, 109.5),
+        (0, 1, 8, 50.0, 109.5),  # C0-C1-H
+        (2, 1, 7, 50.0, 109.5),
+        (2, 1, 8, 50.0, 109.5),  # O-C1-H
+        (1, 0, 4, 50.0, 109.5),
+        (1, 0, 5, 50.0, 109.5),
+        (1, 0, 6, 50.0, 109.5),  # C1-C0-H
+        (4, 0, 5, 35.0, 109.5),
+        (4, 0, 6, 35.0, 109.5),
+        (5, 0, 6, 35.0, 109.5),  # H-C0-H
     ]
 
     torsions = [
         # H-C0-C1-O (methyl rotor about C0-C1)
-        (4, 0, 1, 2, 3, 0.16, 0.0), (5, 0, 1, 2, 3, 0.16, 0.0), (6, 0, 1, 2, 3, 0.16, 0.0),
+        (4, 0, 1, 2, 3, 0.16, 0.0),
+        (5, 0, 1, 2, 3, 0.16, 0.0),
+        (6, 0, 1, 2, 3, 0.16, 0.0),
         # H-C0-C1-H
-        (4, 0, 1, 7, 3, 0.16, 0.0), (4, 0, 1, 8, 3, 0.16, 0.0),
-        (5, 0, 1, 7, 3, 0.16, 0.0), (5, 0, 1, 8, 3, 0.16, 0.0),
-        (6, 0, 1, 7, 3, 0.16, 0.0), (6, 0, 1, 8, 3, 0.16, 0.0),
+        (4, 0, 1, 7, 3, 0.16, 0.0),
+        (4, 0, 1, 8, 3, 0.16, 0.0),
+        (5, 0, 1, 7, 3, 0.16, 0.0),
+        (5, 0, 1, 8, 3, 0.16, 0.0),
+        (6, 0, 1, 7, 3, 0.16, 0.0),
+        (6, 0, 1, 8, 3, 0.16, 0.0),
         # C0-C1-O-H (hydroxyl rotor)
         (0, 1, 2, 3, 3, 0.25, 0.0),
         # H-C1-O-H
-        (7, 1, 2, 3, 1, 0.30, 0.0), (8, 1, 2, 3, 1, 0.30, 0.0),
+        (7, 1, 2, 3, 1, 0.30, 0.0),
+        (8, 1, 2, 3, 1, 0.30, 0.0),
     ]
 
     return dict(
@@ -319,27 +348,48 @@ def build_system(topo):
     n = len(topo["coords"])
     system = openmm.System()
     for _ in range(n):
-        system.addParticle(1.0)  # mass is irrelevant for a single-point energy/force eval
+        system.addParticle(
+            1.0
+        )  # mass is irrelevant for a single-point energy/force eval
 
     bond_force = openmm.HarmonicBondForce()
     bond_force.setForceGroup(FG_BOND)
     for i, j, k_amber, r0 in topo["bonds"]:
-        k_openmm = 2.0 * k_amber * KCAL_TO_KJ / (ANGSTROM_TO_NM ** 2)
-        bond_force.addBond(i, j, r0 * ANGSTROM_TO_NM * unit.nanometer, k_openmm * unit.kilojoule_per_mole / unit.nanometer ** 2)
+        k_openmm = 2.0 * k_amber * KCAL_TO_KJ / (ANGSTROM_TO_NM**2)
+        bond_force.addBond(
+            i,
+            j,
+            r0 * ANGSTROM_TO_NM * unit.nanometer,
+            k_openmm * unit.kilojoule_per_mole / unit.nanometer**2,
+        )
     system.addForce(bond_force)
 
     angle_force = openmm.HarmonicAngleForce()
     angle_force.setForceGroup(FG_ANGLE)
     for i, j, k, k_amber, theta0_deg in topo["angles"]:
         k_openmm = 2.0 * k_amber * KCAL_TO_KJ
-        angle_force.addAngle(i, j, k, math.radians(theta0_deg) * unit.radian, k_openmm * unit.kilojoule_per_mole / unit.radian ** 2)
+        angle_force.addAngle(
+            i,
+            j,
+            k,
+            math.radians(theta0_deg) * unit.radian,
+            k_openmm * unit.kilojoule_per_mole / unit.radian**2,
+        )
     system.addForce(angle_force)
 
     torsion_force = openmm.PeriodicTorsionForce()
     torsion_force.setForceGroup(FG_TORSION)
     for i, j, k, l, periodicity, k_amber, phase_deg in topo["torsions"]:
         k_openmm = k_amber * KCAL_TO_KJ
-        torsion_force.addTorsion(i, j, k, l, periodicity, math.radians(phase_deg) * unit.radian, k_openmm * unit.kilojoule_per_mole)
+        torsion_force.addTorsion(
+            i,
+            j,
+            k,
+            l,
+            periodicity,
+            math.radians(phase_deg) * unit.radian,
+            k_openmm * unit.kilojoule_per_mole,
+        )
     system.addForce(torsion_force)
 
     nb_force = openmm.NonbondedForce()
@@ -348,18 +398,30 @@ def build_system(topo):
     for q, (sigma_a, eps_kcal) in zip(topo["charges"], topo["lj"]):
         sigma_nm = sigma_a * ANGSTROM_TO_NM
         eps_kj = eps_kcal * KCAL_TO_KJ
-        nb_force.addParticle(q * unit.elementary_charge, sigma_nm * unit.nanometer, eps_kj * unit.kilojoule_per_mole)
+        nb_force.addParticle(
+            q * unit.elementary_charge,
+            sigma_nm * unit.nanometer,
+            eps_kj * unit.kilojoule_per_mole,
+        )
 
     exclusions, pairs14 = _classify_pairs(n, _bond_pairs(topo["bonds"]))
-    for (i, j) in sorted(exclusions):
-        nb_force.addException(i, j, 0.0 * unit.elementary_charge ** 2, 1.0 * unit.nanometer, 0.0 * unit.kilojoule_per_mole)
-    for (i, j) in sorted(pairs14):
+    for i, j in sorted(exclusions):
+        nb_force.addException(
+            i,
+            j,
+            0.0 * unit.elementary_charge**2,
+            1.0 * unit.nanometer,
+            0.0 * unit.kilojoule_per_mole,
+        )
+    for i, j in sorted(pairs14):
         qi, qj = topo["charges"][i], topo["charges"][j]
         sigma_i, eps_i = topo["lj"][i]
         sigma_j, eps_j = topo["lj"][j]
         sigma_mix_nm = 0.5 * (sigma_i + sigma_j) * ANGSTROM_TO_NM
-        eps_mix_kj = math.sqrt(eps_i * eps_j) * KCAL_TO_KJ if eps_i > 0 and eps_j > 0 else 0.0
-        q_scaled = qi * qj * SCALE_COUL_14 * unit.elementary_charge ** 2
+        eps_mix_kj = (
+            math.sqrt(eps_i * eps_j) * KCAL_TO_KJ if eps_i > 0 and eps_j > 0 else 0.0
+        )
+        q_scaled = qi * qj * SCALE_COUL_14 * unit.elementary_charge**2
         eps_scaled = eps_mix_kj * SCALE_LJ_14 * unit.kilojoule_per_mole
         nb_force.addException(i, j, q_scaled, sigma_mix_nm * unit.nanometer, eps_scaled)
     system.addForce(nb_force)
@@ -370,7 +432,10 @@ def build_system(topo):
 def run_case(topo):
     system, exclusions, pairs14 = build_system(topo)
     n = len(topo["coords"])
-    positions = [(x * ANGSTROM_TO_NM, y * ANGSTROM_TO_NM, z * ANGSTROM_TO_NM) for x, y, z in topo["coords"]]
+    positions = [
+        (x * ANGSTROM_TO_NM, y * ANGSTROM_TO_NM, z * ANGSTROM_TO_NM)
+        for x, y, z in topo["coords"]
+    ]
 
     integrator = openmm.VerletIntegrator(1.0 * unit.femtosecond)
     platform = openmm.Platform.getPlatformByName("Reference")
@@ -379,18 +444,30 @@ def run_case(topo):
 
     components = {}
     forces = {}
-    for label, fg in (("bond", FG_BOND), ("angle", FG_ANGLE), ("torsion", FG_TORSION), ("nonbonded", FG_NONBONDED)):
+    for label, fg in (
+        ("bond", FG_BOND),
+        ("angle", FG_ANGLE),
+        ("torsion", FG_TORSION),
+        ("nonbonded", FG_NONBONDED),
+    ):
         state = context.getState(getEnergy=True, getForces=True, groups={fg})
         e_kcal = state.getPotentialEnergy().value_in_unit(unit.kilocalorie_per_mole)
         components[label] = e_kcal
-        f_kj_nm = state.getForces(asNumpy=True).value_in_unit(unit.kilojoule_per_mole / unit.nanometer)
+        f_kj_nm = state.getForces(asNumpy=True).value_in_unit(
+            unit.kilojoule_per_mole / unit.nanometer
+        )
         # kJ/mol/nm -> kcal/mol/Angstrom
         f_kcal_ang = (f_kj_nm / KCAL_TO_KJ) * ANGSTROM_TO_NM
         forces[label] = f_kcal_ang.tolist()
 
     state_all = context.getState(getEnergy=True, getForces=True)
     total_e = state_all.getPotentialEnergy().value_in_unit(unit.kilocalorie_per_mole)
-    total_f = (state_all.getForces(asNumpy=True).value_in_unit(unit.kilojoule_per_mole / unit.nanometer) / KCAL_TO_KJ) * ANGSTROM_TO_NM
+    total_f = (
+        state_all.getForces(asNumpy=True).value_in_unit(
+            unit.kilojoule_per_mole / unit.nanometer
+        )
+        / KCAL_TO_KJ
+    ) * ANGSTROM_TO_NM
 
     return dict(
         name=topo["name"],
@@ -435,7 +512,9 @@ def _sanity_check_geometry(topo):
     for i, j, _k, r0 in topo["bonds"]:
         r = math.dist(coords[i], coords[j])
         if abs(r - r0) > 1e-6:
-            raise AssertionError(f"{topo['name']}: bond ({i},{j}) built at r={r:.6f}, expected r0={r0:.6f}")
+            raise AssertionError(
+                f"{topo['name']}: bond ({i},{j}) built at r={r:.6f}, expected r0={r0:.6f}"
+            )
 
 
 def main():
@@ -445,7 +524,9 @@ def main():
         result = run_case(topo)
         out_path = REFDIR / f"mm_{topo['name']}_openmm.json"
         out_path.write_text(json.dumps(result, indent=2))
-        print(f"wrote {out_path} (total energy {result['energy_kcal']['total']:.6f} kcal/mol)")
+        print(
+            f"wrote {out_path} (total energy {result['energy_kcal']['total']:.6f} kcal/mol)"
+        )
 
 
 if __name__ == "__main__":

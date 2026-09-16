@@ -20,6 +20,7 @@ real workflow:
     for r in top_5:
         result = compute_binding_energy(r.ligand_xyz, pocket_pdb, ...)  # real QM
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -45,6 +46,7 @@ class PrescreenResult:
     reasonable," meant purely for ranking/filtering before QM, not for a
     final energy number.
     """
+
     field_at_atoms: np.ndarray  # (N, 4): [phi, Ex, Ey, Ez] per ligand atom, a.u.
     formal_charges: np.ndarray  # (N,) formal atomic charges used for `score`
     score: float  # Hartree; more negative = more electrostatically favorable
@@ -119,6 +121,7 @@ class BatchPrescreenEntry:
     returns (1-based, ascending score = most favorable first); entries with
     `error is not None` are sorted to the end with `rank = None`.
     """
+
     ligand_xyz: Path
     result: PrescreenResult | None
     error: str | None
@@ -162,16 +165,22 @@ def batch_prescreen(
         xyz_path = Path(xyz_path)
         try:
             embedded = embed_ligand(
-                xyz_path, pocket=pocket, basis=basis,
+                xyz_path,
+                pocket=pocket,
+                basis=basis,
                 overlap_cutoff_angstrom=overlap_cutoff_angstrom,
             )
             charges = charge_source(embedded)
             result = prescreen_pose(embedded, charges)
-            entries.append(BatchPrescreenEntry(ligand_xyz=xyz_path, result=result, error=None))
+            entries.append(
+                BatchPrescreenEntry(ligand_xyz=xyz_path, result=result, error=None)
+            )
         except Exception as e:  # noqa: BLE001 -- deliberately broad: one bad
             # conformer (malformed xyz, all pocket charges filtered out,
             # charge_source raising, ...) must not abort the whole batch.
-            entries.append(BatchPrescreenEntry(ligand_xyz=xyz_path, result=None, error=str(e)))
+            entries.append(
+                BatchPrescreenEntry(ligand_xyz=xyz_path, result=None, error=str(e))
+            )
 
     ok = sorted((e for e in entries if e.error is None), key=lambda e: e.result.score)
     failed = [e for e in entries if e.error is not None]

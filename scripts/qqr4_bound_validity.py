@@ -127,6 +127,7 @@ MOLDIR = os.path.join(REPO_ROOT, "testdata", "molecules")
 # molecule / shell metadata
 # ---------------------------------------------------------------------------
 
+
 def build_mol(name: str, basis: str) -> gto.Mole:
     path = os.path.join(MOLDIR, f"{name}.xyz")
     with open(path) as fh:
@@ -158,8 +159,8 @@ def shell_min_exponents_and_origins(mol: gto.Mole):
 def pair_centers_extents(min_exp: np.ndarray, origins: np.ndarray):
     """Dense nsh x nsh pair charge centers and extents, ferric's definition.
 
-        center_ij = (a_i R_i + a_j R_j) / (a_i + a_j)
-        ext_ij    = 1 / sqrt(a_i + a_j)
+    center_ij = (a_i R_i + a_j R_j) / (a_i + a_j)
+    ext_ij    = 1 / sqrt(a_i + a_j)
     """
     nsh = len(min_exp)
     asum = min_exp[:, None] + min_exp[None, :]
@@ -175,6 +176,7 @@ def pair_centers_extents(min_exp: np.ndarray, origins: np.ndarray):
 # Schwarz factors (from true integrals, at full precision -- no prescreening)
 # ---------------------------------------------------------------------------
 
+
 def schwarz_matrix(mol: gto.Mole, omega: float | None) -> np.ndarray:
     """Q(i,j) = sqrt(max_{ab} |(ab|ab)|) over the shell pair, per operator.
 
@@ -188,11 +190,19 @@ def schwarz_matrix(mol: gto.Mole, omega: float | None) -> np.ndarray:
     with ctx:
         for i in range(nsh):
             for j in range(i + 1):
-                blk = mol.intor("int2e_sph", shls_slice=(i, i + 1, j, j + 1, i, i + 1, j, j + 1))
+                blk = mol.intor(
+                    "int2e_sph", shls_slice=(i, i + 1, j, j + 1, i, i + 1, j, j + 1)
+                )
                 n1, n2 = blk.shape[0], blk.shape[1]
                 # generalized diagonal (ab|ab)
-                diag = np.abs(blk[np.arange(n1)[:, None], np.arange(n2)[None, :],
-                                  np.arange(n1)[:, None], np.arange(n2)[None, :]])
+                diag = np.abs(
+                    blk[
+                        np.arange(n1)[:, None],
+                        np.arange(n2)[None, :],
+                        np.arange(n1)[:, None],
+                        np.arange(n2)[None, :],
+                    ]
+                )
                 val = math.sqrt(diag.max()) if diag.size else 0.0
                 q[i, j] = q[j, i] = val
     return q
@@ -210,8 +220,14 @@ class _null_ctx:
 # quartet sampling
 # ---------------------------------------------------------------------------
 
-def enumerate_quartets(nsh: int, max_quartets: int, rng: np.random.Generator,
-                       centers: np.ndarray, extents: np.ndarray):
+
+def enumerate_quartets(
+    nsh: int,
+    max_quartets: int,
+    rng: np.random.Generator,
+    centers: np.ndarray,
+    extents: np.ndarray,
+):
     """Unique shell quartets (i>=j, k>=l, braket-symmetric), biased to far pairs.
 
     A uniform sample over a small molecule is dominated by near-field quartets
@@ -240,14 +256,14 @@ def enumerate_quartets(nsh: int, max_quartets: int, rng: np.random.Generator,
 
 
 def true_max_quartet(mol: gto.Mole, i, j, k, l) -> float:
-    blk = mol.intor("int2e_sph",
-                    shls_slice=(i, i + 1, j, j + 1, k, k + 1, l, l + 1))
+    blk = mol.intor("int2e_sph", shls_slice=(i, i + 1, j, j + 1, k, k + 1, l, l + 1))
     return float(np.abs(blk).max())
 
 
 # ---------------------------------------------------------------------------
 # the two candidate bound forms
 # ---------------------------------------------------------------------------
+
 
 def decay_current(centers, extents, i, j, k, l, omega):
     """Form A: ferric's CURRENT qqr.rs -- ext*ext / R center-to-center,
@@ -281,8 +297,16 @@ def decay_qqr3_style(centers, extents, i, j, k, l, safety):
 # driver
 # ---------------------------------------------------------------------------
 
-def run_system(name: str, basis: str, omega: float | None, max_quartets: int,
-               safety: float, seed: int, anchor: bool):
+
+def run_system(
+    name: str,
+    basis: str,
+    omega: float | None,
+    max_quartets: int,
+    safety: float,
+    seed: int,
+    anchor: bool,
+):
     mol = build_mol(name, basis)
     min_exp, origins = shell_min_exponents_and_origins(mol)
     centers, extents, nsh = pair_centers_extents(min_exp, origins)
@@ -292,8 +316,10 @@ def run_system(name: str, basis: str, omega: float | None, max_quartets: int,
     quartets = enumerate_quartets(nsh, max_quartets, rng, centers, extents)
 
     op_label = "Coulomb" if not omega else f"erfc(omega={omega})"
-    print(f"\n=== {name}/{basis}  {op_label}  nbas={mol.nao} nsh={nsh} "
-          f"quartets={len(quartets)} ===")
+    print(
+        f"\n=== {name}/{basis}  {op_label}  nbas={mol.nao} nsh={nsh} "
+        f"quartets={len(quartets)} ==="
+    )
 
     ctx = mol.with_range_coulomb(-omega) if omega else _null_ctx()
 
@@ -325,7 +351,7 @@ def _stats(name, rows, decay_idx, tol=VIOLATION_TOL):
     worst = 0.0
     worst_q = None
     ratios = []
-    for (i, j, k, l, tru, sch, dA, dB, dB1) in rows:
+    for i, j, k, l, tru, sch, dA, dB, dB1 in rows:
         d = (dA, dB, dB1)[decay_idx]
         bound = sch * d
         if tru <= 1e-15:
@@ -346,23 +372,37 @@ def report(name, basis, op_label, rows, safety, anchor):
     n = len(rows)
     # separated subset = where the CORRECTED form actually engages
     sep = [r for r in rows if r[7] < 1.0]
-    print(f"  separated quartets (corrected decay < 1): {len(sep)}/{n} "
-          f"({100.0*len(sep)/max(n,1):.1f}%)")
+    print(
+        f"  separated quartets (corrected decay < 1): {len(sep)}/{n} "
+        f"({100.0 * len(sep) / max(n, 1):.1f}%)"
+    )
 
     if anchor:
         # EXACTNESS ANCHOR: plain Schwarz (decay forced to 1) must itself be a
         # valid bound on this sample. If it is not, no envelope conclusion holds.
-        v, w, wq, _ = _stats(name, [(i, j, k, l, tru, sch, 1.0, 1.0, 1.0)
-                                    for (i, j, k, l, tru, sch, *_) in rows], 1)
+        v, w, wq, _ = _stats(
+            name,
+            [
+                (i, j, k, l, tru, sch, 1.0, 1.0, 1.0)
+                for (i, j, k, l, tru, sch, *_) in rows
+            ],
+            1,
+        )
         status = "OK" if not v else f"FAILED ({len(v)} violations)"
-        print(f"  [ANCHOR] plain Schwarz validity: {status}, worst true/Schwarz = {w:.4f}")
+        print(
+            f"  [ANCHOR] plain Schwarz validity: {status}, worst true/Schwarz = {w:.4f}"
+        )
         if v:
-            print("           anchor failure => the Schwarz table is the defect, "
-                  "not the distance envelope. Downstream numbers are meaningless.")
+            print(
+                "           anchor failure => the Schwarz table is the defect, "
+                "not the distance envelope. Downstream numbers are meaningless."
+            )
 
-    for label, idx in (("A current (ext*ext/R, c2c, +erfc gauss)", 0),
-                       (f"B qqr3-style (ext_sum/R_eff, safety={safety})", 1),
-                       ("B0 qqr3-style bare (safety=1.0)", 2)):
+    for label, idx in (
+        ("A current (ext*ext/R, c2c, +erfc gauss)", 0),
+        (f"B qqr3-style (ext_sum/R_eff, safety={safety})", 1),
+        ("B0 qqr3-style bare (safety=1.0)", 2),
+    ):
         viol, worst, wq, ratios = _stats(name, rows, idx)
         tighter = np.array([r[5] * (r[6], r[7], r[8])[idx] for r in rows])
         sch = np.array([r[5] for r in rows])
@@ -370,24 +410,34 @@ def report(name, basis, op_label, rows, safety, anchor):
         frac_tight = float(np.mean(tighter[nz] / sch[nz]))
         print(f"  [{label}]")
         print(f"      violations (true/bound > 1): {len(viol)} / {len(rows)}")
-        print(f"      WORST true/bound            : {worst:.4f}"
-              + ("  <-- INVALID" if worst > 1.0 else "  (valid)"))
+        print(
+            f"      WORST true/bound            : {worst:.4f}"
+            + ("  <-- INVALID" if worst > 1.0 else "  (valid)")
+        )
         print(f"      median true/bound           : {np.median(ratios):.4f}")
-        print(f"      mean bound / Schwarz        : {frac_tight:.4f} "
-              f"(1.0 = no tightening)")
+        print(
+            f"      mean bound / Schwarz        : {frac_tight:.4f} "
+            f"(1.0 = no tightening)"
+        )
         if sep:
             sepmask = np.array([r[7] < 1.0 for r in rows])
             if sepmask.any():
-                print(f"      mean bound/Schwarz on separated subset: "
-                      f"{float(np.mean(tighter[sepmask & nz] / sch[sepmask & nz])):.4f}")
+                print(
+                    f"      mean bound/Schwarz on separated subset: "
+                    f"{float(np.mean(tighter[sepmask & nz] / sch[sepmask & nz])):.4f}"
+                )
         if wq:
             i, j, k, l, tru, bound, d = wq
-            print(f"      worst quartet ({i},{j}|{k},{l}) true={tru:.4e} "
-                  f"bound={bound:.4e} decay={d:.4e}")
+            print(
+                f"      worst quartet ({i},{j}|{k},{l}) true={tru:.4e} "
+                f"bound={bound:.4e} decay={d:.4e}"
+            )
         if viol[:3]:
-            for (i, j, k, l, tru, bound, ratio) in viol[:3]:
-                print(f"        violation ({i},{j}|{k},{l}): true={tru:.4e} "
-                      f"bound={bound:.4e} ratio={ratio:.3f}")
+            for i, j, k, l, tru, bound, ratio in viol[:3]:
+                print(
+                    f"        violation ({i},{j}|{k},{l}): true={tru:.4e} "
+                    f"bound={bound:.4e} ratio={ratio:.3f}"
+                )
 
 
 def min_safety_factor(rows) -> float:
@@ -398,7 +448,7 @@ def min_safety_factor(rows) -> float:
     restricted to the clamped-below-1 set.
     """
     need = 1.0
-    for (i, j, k, l, tru, sch, dA, dB, dB1) in rows:
+    for i, j, k, l, tru, sch, dA, dB, dB1 in rows:
         if tru <= 1e-15 or sch <= 0.0 or dB1 >= 1.0:
             continue
         bound = sch * dB1
@@ -408,8 +458,9 @@ def min_safety_factor(rows) -> float:
     return need
 
 
-def screening_benefit(q, centers, extents, nsh, safety,
-                      thresh_list=(1e-8, 1e-10, 1e-12)):
+def screening_benefit(
+    q, centers, extents, nsh, safety, thresh_list=(1e-8, 1e-10, 1e-12)
+):
     """How many quartets does the corrected bound drop that Schwarz keeps?
 
     This is the only number that justifies wiring QQR into LinK at all.
@@ -427,18 +478,16 @@ def screening_benefit(q, centers, extents, nsh, safety,
     # pure-Python double loop is O(npair^2) and does not finish at alkane_20
     # (~10^8 iterations).
     ii, jj = np.tril_indices(nsh)
-    pq = q[ii, jj]                     # Schwarz per pair
-    pc = centers[ii, jj]               # pair centers
-    pe = extents[ii, jj]               # pair extents
+    pq = q[ii, jj]  # Schwarz per pair
+    pc = centers[ii, jj]  # pair centers
+    pe = extents[ii, jj]  # pair extents
 
     sch = np.outer(pq, pq)
     r = np.linalg.norm(pc[:, None, :] - pc[None, :, :], axis=-1)
     ext_sum = pe[:, None] + pe[None, :]
     r_eff = np.maximum(0.0, r - ext_sum)
     with np.errstate(divide="ignore", invalid="ignore"):
-        decay = np.where(r_eff > 0.0,
-                         np.minimum(1.0, safety * ext_sum / r_eff),
-                         1.0)
+        decay = np.where(r_eff > 0.0, np.minimum(1.0, safety * ext_sum / r_eff), 1.0)
     qqr = sch * decay
 
     # Keep only the unique (pairA >= pairB) combinations, matching the
@@ -459,11 +508,20 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--systems", nargs="+", default=["water", "benzene"])
     ap.add_argument("--basis", default="cc-pvdz")
-    ap.add_argument("--omegas", nargs="+", type=float, default=[0.0, 1.0],
-                    help="0.0 = Coulomb; positive = erfc(omega)")
+    ap.add_argument(
+        "--omegas",
+        nargs="+",
+        type=float,
+        default=[0.0, 1.0],
+        help="0.0 = Coulomb; positive = erfc(omega)",
+    )
     ap.add_argument("--max-quartets", type=int, default=20000)
-    ap.add_argument("--safety", type=float, default=1.10,
-                    help="qqr3's SAFETY_FACTOR, tested for sufficiency here")
+    ap.add_argument(
+        "--safety",
+        type=float,
+        default=1.10,
+        help="qqr3's SAFETY_FACTOR, tested for sufficiency here",
+    )
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-anchor", action="store_true")
     args = ap.parse_args()
@@ -473,31 +531,60 @@ def main():
         for om in args.omegas:
             omega = None if om == 0.0 else om
             rows, q, centers, extents, nsh = run_system(
-                name, args.basis, omega, args.max_quartets,
-                args.safety, args.seed, not args.no_anchor)
+                name,
+                args.basis,
+                omega,
+                args.max_quartets,
+                args.safety,
+                args.seed,
+                not args.no_anchor,
+            )
             need = min_safety_factor(rows)
-            print(f"  MINIMUM safety factor for form B validity: {need:.4f} "
-                  + ("(qqr3's 1.10 SUFFICES)" if need <= 1.10
-                     else "(qqr3's 1.10 IS NOT ENOUGH)"))
+            print(
+                f"  MINIMUM safety factor for form B validity: {need:.4f} "
+                + (
+                    "(qqr3's 1.10 SUFFICES)"
+                    if need <= 1.10
+                    else "(qqr3's 1.10 IS NOT ENOUGH)"
+                )
+            )
             bene, n_total = screening_benefit(q, centers, extents, nsh, args.safety)
-            print(f"  screening benefit vs plain Schwarz over ALL {n_total} "
-                  f"quartets (kept at threshold):")
-            for (t, n_s, n_q, extra, pct) in bene:
-                print(f"      thresh {t:.0e}: Schwarz keeps {n_s}, "
-                      f"QQR-B keeps {n_q}  ->  {extra} extra dropped ({pct:.1f}%)")
+            print(
+                f"  screening benefit vs plain Schwarz over ALL {n_total} "
+                f"quartets (kept at threshold):"
+            )
+            for t, n_s, n_q, extra, pct in bene:
+                print(
+                    f"      thresh {t:.0e}: Schwarz keeps {n_s}, "
+                    f"QQR-B keeps {n_q}  ->  {extra} extra dropped ({pct:.1f}%)"
+                )
             vA, wA, _, _ = _stats(name, rows, 0)
             vB, wB, _, _ = _stats(name, rows, 1)
-            summary.append((name, args.basis,
-                            "Coulomb" if omega is None else f"erfc({omega})",
-                            len(rows), len(vA), wA, len(vB), wB, need))
+            summary.append(
+                (
+                    name,
+                    args.basis,
+                    "Coulomb" if omega is None else f"erfc({omega})",
+                    len(rows),
+                    len(vA),
+                    wA,
+                    len(vB),
+                    wB,
+                    need,
+                )
+            )
 
     print("\n================ SUMMARY ================")
-    hdr = (f"{'system':<10} {'basis':<9} {'op':<12} {'n':>7} "
-           f"{'A viol':>7} {'A worst':>9} {'B viol':>7} {'B worst':>9} {'min s':>7}")
+    hdr = (
+        f"{'system':<10} {'basis':<9} {'op':<12} {'n':>7} "
+        f"{'A viol':>7} {'A worst':>9} {'B viol':>7} {'B worst':>9} {'min s':>7}"
+    )
     print(hdr)
     for row in summary:
-        print(f"{row[0]:<10} {row[1]:<9} {row[2]:<12} {row[3]:>7} "
-              f"{row[4]:>7} {row[5]:>9.3f} {row[6]:>7} {row[7]:>9.4f} {row[8]:>7.3f}")
+        print(
+            f"{row[0]:<10} {row[1]:<9} {row[2]:<12} {row[3]:>7} "
+            f"{row[4]:>7} {row[5]:>9.3f} {row[6]:>7} {row[7]:>9.4f} {row[8]:>7.3f}"
+        )
     print("(viol = quartets with true/bound > 1; a VALID bound has 0 and worst <= 1)")
 
 

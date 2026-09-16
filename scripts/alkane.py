@@ -5,14 +5,15 @@ from math import cos, sin, radians
 # Constants
 # ------------------------------------------------------------
 
-CC_BOND = 1.54      # Angstroms
-CH_BOND = 1.09      # Angstroms
+CC_BOND = 1.54  # Angstroms
+CH_BOND = 1.09  # Angstroms
 TETRA_ANGLE = 109.5
 
 
 # ------------------------------------------------------------
 # Vector helpers
 # ------------------------------------------------------------
+
 
 def normalize(v):
     v = np.array(v, dtype=float)
@@ -34,16 +35,19 @@ def rotation_matrix(axis, angle_deg):
     s = sin(angle)
     C = 1 - c
 
-    return np.array([
-        [x*x*C + c,   x*y*C - z*s, x*z*C + y*s],
-        [y*x*C + z*s, y*y*C + c,   y*z*C - x*s],
-        [z*x*C - y*s, z*y*C + x*s, z*z*C + c]
-    ])
+    return np.array(
+        [
+            [x * x * C + c, x * y * C - z * s, x * z * C + y * s],
+            [y * x * C + z * s, y * y * C + c, y * z * C - x * s],
+            [z * x * C - y * s, z * y * C + x * s, z * z * C + c],
+        ]
+    )
 
 
 # ------------------------------------------------------------
 # Build carbon backbone
 # ------------------------------------------------------------
+
 
 def build_alkane_backbone(n_carbons):
     """
@@ -70,7 +74,6 @@ def build_alkane_backbone(n_carbons):
     sign = 1
 
     for i in range(2, n_carbons):
-
         R = rotation_matrix(axis, sign * bend)
         new_dir = normalize(R @ prev_dir)
 
@@ -89,6 +92,7 @@ def build_alkane_backbone(n_carbons):
 # Generate hydrogens
 # ------------------------------------------------------------
 
+
 def perpendicular_vector(v):
     """
     Find arbitrary perpendicular vector.
@@ -104,7 +108,6 @@ def perpendicular_vector(v):
     return normalize(perp)
 
 
-
 def generate_hydrogens(carbons):
     """
     Approximate tetrahedral hydrogen placement.
@@ -116,7 +119,6 @@ def generate_hydrogens(carbons):
         atoms.append(("C", c))
 
     for i, c in enumerate(carbons):
-
         neighbors = []
 
         if i > 0:
@@ -139,12 +141,8 @@ def generate_hydrogens(carbons):
             for angle in [0, 120, 240]:
                 phi = radians(angle)
 
-                direction = (
-                    -cos(theta) * bond
-                    + sin(theta) * (
-                        cos(phi) * perp1 +
-                        sin(phi) * perp2
-                    )
+                direction = -cos(theta) * bond + sin(theta) * (
+                    cos(phi) * perp1 + sin(phi) * perp2
                 )
 
                 h = c + CH_BOND * normalize(direction)
@@ -176,6 +174,7 @@ def generate_hydrogens(carbons):
 # XYZ export
 # ------------------------------------------------------------
 
+
 def write_xyz(filename, atoms):
     with open(filename, "w") as f:
         f.write(f"{len(atoms)}\n")
@@ -190,6 +189,7 @@ def write_xyz(filename, atoms):
 # Main
 # ------------------------------------------------------------
 
+
 def main(n):
     carbons = build_alkane_backbone(n)
     atoms = generate_hydrogens(carbons)
@@ -199,6 +199,8 @@ def main(n):
 
     print(f"Wrote {outfile}")
 
+
 if __name__ == "__main__":
     from fire import Fire
+
     Fire(main)

@@ -1,14 +1,19 @@
 """Tier adapters: uniform signature, honest failure, and correct wiring."""
+
 from __future__ import annotations
 
 import pytest
 
 from tools.isomers.model import Isomer
 from tools.pipeline.tiers import (
-    TierResult, tier1_dock, tier2_forcefield, tier3_gfn2, tier4_dft,
+    TierResult,
+    tier1_dock,
+    tier2_forcefield,
+    tier3_gfn2,
+    tier4_dft,
 )
 
-SMALL = Isomer("CO", "parent", "none", "CO")          # methanol: cheap everywhere
+SMALL = Isomer("CO", "parent", "none", "CO")  # methanol: cheap everywhere
 BENZOIC = Isomer("OC(=O)c1ccccc1", "parent", "none", "OC(=O)c1ccccc1")
 
 
@@ -79,9 +84,14 @@ def test_tier4_reports_an_unknown_basis_rather_than_raising():
 
 
 def test_tier1_reports_a_missing_receptor_rather_than_raising():
-    r = tier1_dock(SMALL, {"receptor_pdbqt": "/nonexistent.pdbqt",
-                           "box_center": (0.0, 0.0, 0.0),
-                           "box_size": (10.0, 10.0, 10.0)})
+    r = tier1_dock(
+        SMALL,
+        {
+            "receptor_pdbqt": "/nonexistent.pdbqt",
+            "box_center": (0.0, 0.0, 0.0),
+            "box_size": (10.0, 10.0, 10.0),
+        },
+    )
     assert not r.ok
     assert r.value is None
     # vina/meeko are an optional extra, so on an install without them the
@@ -105,12 +115,19 @@ def test_tier1_names_the_missing_package_when_docking_is_not_installed(monkeypat
 
     monkeypatch.setattr(tiers, "dock_ligand", boom, raising=False)
     monkeypatch.setitem(
-        __import__("sys").modules, "tools.docking",
-        type("M", (), {"dock_ligand": staticmethod(boom)})())
+        __import__("sys").modules,
+        "tools.docking",
+        type("M", (), {"dock_ligand": staticmethod(boom)})(),
+    )
 
-    r = tiers.tier1_dock(SMALL, {"receptor_pdbqt": "/nonexistent.pdbqt",
-                                 "box_center": (0.0, 0.0, 0.0),
-                                 "box_size": (10.0, 10.0, 10.0)})
+    r = tiers.tier1_dock(
+        SMALL,
+        {
+            "receptor_pdbqt": "/nonexistent.pdbqt",
+            "box_center": (0.0, 0.0, 0.0),
+            "box_size": (10.0, 10.0, 10.0),
+        },
+    )
     assert not r.ok and r.value is None
     assert "docking unavailable" in (r.error or "").lower()
     assert "vina" in (r.error or "").lower()
@@ -148,8 +165,8 @@ def test_tier4_pins_the_memory_budget_and_restores_it(monkeypatch):
 
     r = tiers.tier4_dft(SMALL, {"mem_budget_gb": 8})
     assert r.ok
-    assert seen["budget"] == "8"                      # pinned during the call
-    assert "FERRIC_MEM_BUDGET_GB" not in os.environ   # and restored after
+    assert seen["budget"] == "8"  # pinned during the call
+    assert "FERRIC_MEM_BUDGET_GB" not in os.environ  # and restored after
 
 
 def test_tier4_without_a_budget_leaves_ferric_autodetect_alone(monkeypatch):
@@ -175,8 +192,9 @@ def test_tier4_restores_a_preexisting_budget(monkeypatch):
 
     import tools.pipeline.tiers as tiers
 
-    monkeypatch.setattr(tiers, "_tier4_dft_inner",
-                        lambda iso, ctx, f: TierResult(iso.canonical, -1.0))
+    monkeypatch.setattr(
+        tiers, "_tier4_dft_inner", lambda iso, ctx, f: TierResult(iso.canonical, -1.0)
+    )
     monkeypatch.setenv("FERRIC_MEM_BUDGET_GB", "3")
 
     tiers.tier4_dft(SMALL, {"mem_budget_gb": 8})
@@ -185,21 +203,32 @@ def test_tier4_restores_a_preexisting_budget(monkeypatch):
 
 # ── multi-seed docking (RESULTS.md M11) ──────────────────────────────────────
 
+
 def _fake_dock_factory(scores_by_seed):
     """Return a dock_ligand stand-in whose score depends on the seed."""
     from types import SimpleNamespace
 
     calls = []
 
-    def fake(mol, receptor, center, size=None, exhaustiveness=None,
-             n_poses=None, seed=None, cpu=None):
+    def fake(
+        mol,
+        receptor,
+        center,
+        size=None,
+        exhaustiveness=None,
+        n_poses=None,
+        seed=None,
+        cpu=None,
+    ):
         calls.append(seed)
         score = scores_by_seed.get(seed)
         if score is None:
-            return SimpleNamespace(ok=False, error=f"no pose for seed {seed}",
-                                   best=None, poses=[])
-        pose = SimpleNamespace(vina_score=score, symbols=["C"],
-                               coords_angstrom=[(0.0, 0.0, 0.0)])
+            return SimpleNamespace(
+                ok=False, error=f"no pose for seed {seed}", best=None, poses=[]
+            )
+        pose = SimpleNamespace(
+            vina_score=score, symbols=["C"], coords_angstrom=[(0.0, 0.0, 0.0)]
+        )
         return SimpleNamespace(ok=True, error=None, best=pose, poses=[pose])
 
     return fake, calls
@@ -216,12 +245,13 @@ def test_multi_seed_docks_each_seed_and_keeps_the_best(monkeypatch):
     fake, calls = _fake_dock_factory({0xF00D: -8.0, 0xF00E: -11.5, 0xF00F: -9.0})
     monkeypatch.setattr(docking, "dock_ligand", fake)
 
-    r = tier1_dock(BENZOIC, {"receptor_pdbqt": "r.pdbqt",
-                             "box_center": (0.0, 0.0, 0.0),
-                             "n_seeds": 3})
+    r = tier1_dock(
+        BENZOIC,
+        {"receptor_pdbqt": "r.pdbqt", "box_center": (0.0, 0.0, 0.0), "n_seeds": 3},
+    )
     assert r.ok
-    assert r.value == -11.5                       # the best of the three
-    assert calls == [0xF00D, 0xF00E, 0xF00F]      # each seed actually tried
+    assert r.value == -11.5  # the best of the three
+    assert calls == [0xF00D, 0xF00E, 0xF00F]  # each seed actually tried
     assert r.payload["winning_seed"] == 0xF00E
     assert r.payload["n_seeds"] == 3
 
@@ -233,8 +263,9 @@ def test_single_seed_is_the_old_behaviour(monkeypatch):
     fake, calls = _fake_dock_factory({0xF00D: -8.0})
     monkeypatch.setattr(docking, "dock_ligand", fake)
 
-    r = tier1_dock(BENZOIC, {"receptor_pdbqt": "r.pdbqt",
-                             "box_center": (0.0, 0.0, 0.0)})
+    r = tier1_dock(
+        BENZOIC, {"receptor_pdbqt": "r.pdbqt", "box_center": (0.0, 0.0, 0.0)}
+    )
     assert r.ok and r.value == -8.0
     assert calls == [0xF00D]
 
@@ -251,9 +282,10 @@ def test_multi_seed_survives_a_failing_seed(monkeypatch):
     fake, calls = _fake_dock_factory({0xF00D: -8.0, 0xF00F: -9.5})  # 0xF00E fails
     monkeypatch.setattr(docking, "dock_ligand", fake)
 
-    r = tier1_dock(BENZOIC, {"receptor_pdbqt": "r.pdbqt",
-                             "box_center": (0.0, 0.0, 0.0),
-                             "n_seeds": 3})
+    r = tier1_dock(
+        BENZOIC,
+        {"receptor_pdbqt": "r.pdbqt", "box_center": (0.0, 0.0, 0.0), "n_seeds": 3},
+    )
     assert r.ok
     assert r.value == -9.5
     assert len(calls) == 3
@@ -266,8 +298,9 @@ def test_all_seeds_failing_reports_every_reason(monkeypatch):
     fake, _ = _fake_dock_factory({})
     monkeypatch.setattr(docking, "dock_ligand", fake)
 
-    r = tier1_dock(BENZOIC, {"receptor_pdbqt": "r.pdbqt",
-                             "box_center": (0.0, 0.0, 0.0),
-                             "n_seeds": 2})
+    r = tier1_dock(
+        BENZOIC,
+        {"receptor_pdbqt": "r.pdbqt", "box_center": (0.0, 0.0, 0.0), "n_seeds": 2},
+    )
     assert not r.ok and r.value is None
     assert "no pose for seed" in r.error

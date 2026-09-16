@@ -77,11 +77,11 @@ from scipy.special import gammaincc, gamma as _gamma_fn
 # One thread everywhere: another agent is running CPU-heavy work.
 pyscf_lib.num_threads(1)
 
-BATCH_POINTS = 256             # matches ferric's COSX_SUB_BATCH_POINTS
-ROUNDING_SLACK = 1.0 + 1e-10   # cosx_screen.rs
-COARSE_SLACK = 1.0 + 1e-9      # cosx_screen.rs
+BATCH_POINTS = 256  # matches ferric's COSX_SUB_BATCH_POINTS
+ROUNDING_SLACK = 1.0 + 1e-10  # cosx_screen.rs
+COARSE_SLACK = 1.0 + 1e-9  # cosx_screen.rs
 
-MUTATION = None                # set by --mutate; consumed at named points below
+MUTATION = None  # set by --mutate; consumed at named points below
 
 DFACT = [1.0, 1.0, 3.0, 15.0, 105.0, 945.0]
 
@@ -107,6 +107,7 @@ def pure_factor(l: int, pure: bool, c2s) -> float:
 # Shared shell data
 # ===========================================================================
 
+
 def collect_shells(mol: gto.Mole) -> list[dict]:
     """Per-shell exponents, contraction magnitudes, centre and pure factor.
 
@@ -121,13 +122,15 @@ def collect_shells(mol: gto.Mole) -> list[dict]:
         l = mol.bas_angular(s)
         if l > 4:
             raise ValueError(f"shell {s} has l={l}; the bound tables stop at l=4")
-        out.append(dict(
-            l=l,
-            center=np.asarray(mol.bas_coord(s), dtype=float),
-            exps=np.asarray(mol.bas_exp(s), dtype=float),
-            coefs=np.max(np.abs(mol.bas_ctr_coeff(s)), axis=1),
-            sfac=pure_factor(l, mol.cart is False, c2s.get(l)),
-        ))
+        out.append(
+            dict(
+                l=l,
+                center=np.asarray(mol.bas_coord(s), dtype=float),
+                exps=np.asarray(mol.bas_exp(s), dtype=float),
+                coefs=np.max(np.abs(mol.bas_ctr_coeff(s)), axis=1),
+                sfac=pure_factor(l, mol.cart is False, c2s.get(l)),
+            )
+        )
     return out
 
 
@@ -135,12 +138,13 @@ def collect_shells(mol: gto.Mole) -> list[dict]:
 # Bound 1: ferric's Hoelder sphere bound (port of cosx_screen.rs)
 # ===========================================================================
 
+
 @dataclass
 class FerricPair:
     mid: np.ndarray
-    half: float          # |AB|/2 -- the term §6.2b identifies as the problem
-    total: float         # bound at R = 0, valid everywhere
-    sum_bg: float        # far-field numerator
+    half: float  # |AB|/2 -- the term §6.2b identifies as the problem
+    total: float  # bound at R = 0, valid everywhere
+    sum_bg: float  # far-field numerator
 
 
 class BoundsFerric:
@@ -157,6 +161,7 @@ class BoundsFerric:
     The sphere query takes R_c = max(0, |M - centre| - radius - |AB|/2): every
     product centre lies on the segment AB, so its own R >= R_c.
     """
+
     name = "ferric"
 
     def __init__(self, mol: gto.Mole):
@@ -192,16 +197,23 @@ class BoundsFerric:
                     for n in range(lb + 1):
                         qk[m + n] += cm * math.comb(lb, n) * db ** (lb - n)
                 beta0 = w * (2.0 * math.pi / p) * qk[0]
-                s1k = sum(qk[k] * (k / (p * math.e)) ** (0.5 * k)
-                          for k in range(1, len(qk)) if qk[k] != 0.0)
+                s1k = sum(
+                    qk[k] * (k / (p * math.e)) ** (0.5 * k)
+                    for k in range(1, len(qk))
+                    if qk[k] != 0.0
+                )
                 beta1 = w * (4.0 * math.pi / p) * s1k
                 g0 = 0.5 * math.sqrt(math.pi / p)
                 g1 = 0.5 * math.sqrt(2.0 * math.pi / p)
                 tot += beta0 + beta1
                 sum_bg += beta0 * g0 + beta1 * g1
         slack = ROUNDING_SLACK * COARSE_SLACK
-        return FerricPair(mid=0.5 * (sa["center"] + sb["center"]), half=0.5 * ab,
-                          total=tot * slack, sum_bg=sum_bg * slack)
+        return FerricPair(
+            mid=0.5 * (sa["center"] + sb["center"]),
+            half=0.5 * ab,
+            total=tot * slack,
+            sum_bg=sum_bg * slack,
+        )
 
     def sphere(self, s1, s2, centre, radius) -> float:
         if s1 < s2:
@@ -252,12 +264,13 @@ class BoundsFerric:
 # C_uv = P_min, the centre of the primitive pair with the smallest combined
 # exponent p (A9 text): the outer region is dominated by that primitive.
 
+
 @dataclass
 class IpbPrim:
     p: float
-    w: float            # N_a N_b |c_a c_b| K_ab * pure factor
-    F: np.ndarray       # radial polynomial coefficients F_k
-    off: float          # |P_ab - C_uv|, the (A10) shift
+    w: float  # N_a N_b |c_a c_b| K_ab * pure factor
+    F: np.ndarray  # radial polynomial coefficients F_k
+    off: float  # |P_ab - C_uv|, the (A10) shift
     s_tot: float = 0.0  # w * S^ab_0, the primitive's TOTAL absolute mass
     v_tot: float = 0.0  # w * V^ab_0, its R=0 maximal potential
 
@@ -275,6 +288,7 @@ class BoundsIPB:
     ``V(pair, 0.0)``       -- Eq (15) of sn-LinK: batch-independent, no distance.
     ``distance(pair, D)``  -- (*) of the pre-registration: min(V_0, S_0/D + V_D).
     """
+
     name = "ipb"
 
     def __init__(self, mol: gto.Mole):
@@ -321,7 +335,7 @@ class BoundsIPB:
                 prims.append(IpbPrim(p=p, w=w, F=F, off=0.0))
                 centers.append(P)
         for pr, P in zip(prims, centers):
-            pr.off = float(np.linalg.norm(P - cmin))    # Eq (A10)'s |P_ab - C_uv|
+            pr.off = float(np.linalg.norm(P - cmin))  # Eq (A10)'s |P_ab - C_uv|
             pr.s_tot = pr.w * BoundsIPB._prim_moment(pr, 0.0, 3.0)
             pr.v_tot = pr.w * BoundsIPB._prim_moment(pr, 0.0, 2.0)
         return IpbPair(center=cmin, prims=prims)
@@ -339,13 +353,15 @@ class BoundsIPB:
         """Absolute tail overlap S_R -- Eq (3.1) / (A14)."""
         return ROUNDING_SLACK * sum(
             pr.w * self._prim_moment(pr, pr.p * self._rab(pr, R) ** 2, 3.0)
-            for pr in pair.prims)
+            for pr in pair.prims
+        )
 
     def _V(self, pair: IpbPair, R: float) -> float:
         """Maximal tail potential V_R -- Eq (3.2) / (A16)."""
         return ROUNDING_SLACK * sum(
             pr.w * self._prim_moment(pr, pr.p * self._rab(pr, R) ** 2, 2.0)
-            for pr in pair.prims)
+            for pr in pair.prims
+        )
 
     # ---- the two public bounds ------------------------------------------
     def flat(self, s1, s2) -> float:
@@ -439,7 +455,7 @@ class BoundsIPB:
             if Fk == 0.0:
                 continue
             s = (power + k) / 2.0
-            acc += Fk * 2.0 * math.pi * upper_gamma(s, x) / pr.p ** s
+            acc += Fk * 2.0 * math.pi * upper_gamma(s, x) / pr.p**s
         return acc
 
     def degenerate(self, s1, s2, centre, radius) -> bool:
@@ -458,6 +474,7 @@ class BoundsIPB:
 # what isolates the BOUND, which is the question asked.  §6.2a already measured
 # the screening STRUCTURE with the bound held fixed and found it worth ~0 pp;
 # this study is the mirror experiment.
+
 
 class ScreenBase:
     def __init__(self, t: float):
@@ -504,6 +521,7 @@ class ScreenBest(ScreenBase):
     """min of ferric's and IPB-D: both are valid, so their min is valid.  This
     is what a production implementation would actually do, and it separates
     "IPB-D is better" from "IPB-D adds something ferric does not have"."""
+
     name = "min(ferric,ipb-dist)"
 
     def __init__(self, t, bnd_fe, bnd_ipb):
@@ -511,8 +529,10 @@ class ScreenBest(ScreenBase):
         self.fe, self.ipb = bnd_fe, bnd_ipb
 
     def est(self, s1, s2, centre, radius):
-        return min(self.fe.sphere(s1, s2, centre, radius),
-                   self.ipb.distance(s1, s2, centre, radius))
+        return min(
+            self.fe.sphere(s1, s2, centre, radius),
+            self.ipb.distance(s1, s2, centre, radius),
+        )
 
 
 class ScreenNone:
@@ -530,16 +550,19 @@ class ScreenNone:
 # negative-weight trap that forces prune=None)
 # ===========================================================================
 
+
 def build_grid(mol: gto.Mole, atom_grid=(50, 110)):
     g = dft.gen_grid.Grids(mol)
     g.prune = None
-    g.atom_grid = {a: tuple(atom_grid)
-                   for a in {mol.atom_symbol(i) for i in range(mol.natm)}}
+    g.atom_grid = {
+        a: tuple(atom_grid) for a in {mol.atom_symbol(i) for i in range(mol.natm)}
+    }
     g.build()
     if np.any(g.weights < 0.0):
         raise AssertionError(
             f"grid has {(g.weights < 0).sum()} negative weights; X = sqrt(w) chi "
-            "is undefined and abs() silently corrupts the quadrature")
+            "is undefined and abs() silently corrupts the quadrature"
+        )
     return g.coords, g.weights
 
 
@@ -556,18 +579,22 @@ class ShellInfo:
 
 def shell_info(mol: gto.Mole) -> ShellInfo:
     loc = mol.ao_loc_nr()
-    return ShellInfo(ao_slice=[(int(loc[s]), int(loc[s + 1])) for s in range(mol.nbas)],
-                     ncart=[int(loc[s + 1] - loc[s]) for s in range(mol.nbas)])
+    return ShellInfo(
+        ao_slice=[(int(loc[s]), int(loc[s + 1])) for s in range(mol.nbas)],
+        ncart=[int(loc[s + 1] - loc[s]) for s in range(mol.nbas)],
+    )
 
 
 def shell_max(mat, info) -> np.ndarray:
-    return np.array([np.max(np.abs(mat[a:b])) if b > a else 0.0
-                     for a, b in info.ao_slice])
+    return np.array(
+        [np.max(np.abs(mat[a:b])) if b > a else 0.0 for a, b in info.ao_slice]
+    )
 
 
 # ===========================================================================
 # The K build
 # ===========================================================================
+
 
 @dataclass
 class BuildResult:
@@ -608,7 +635,7 @@ def build_k(mol, coords, weights, D, screen, info, record_set=False) -> BuildRes
                 blk = A[:, a0:a1, c0:c1]
                 G[a0:a1] += np.einsum("gmn,ng->mg", blk, F[c0:c1], optimize=True)
                 if MUTATION == "drop_mirror":
-                    continue    # DELIBERATELY BROKEN: A1a must fail
+                    continue  # DELIBERATELY BROKEN: A1a must fail
                 if s1 != s2:
                     G[c0:c1] += np.einsum("gmn,mg->ng", blk, F[a0:a1], optimize=True)
         Ktilde += X @ G.T
@@ -625,15 +652,20 @@ def analytic_k(mol, D) -> np.ndarray:
 # ===========================================================================
 
 SYSTEMS = {
-    "water": ("O 0.0000 0.0000 0.1173; H 0.0000 0.7572 -0.4692; "
-              "H 0.0000 -0.7572 -0.4692"),
-    "methane": ("C 0.0000 0.0000 0.0000; H 0.6276 0.6276 0.6276; "
-                "H 0.6276 -0.6276 -0.6276; H -0.6276 0.6276 -0.6276; "
-                "H -0.6276 -0.6276 0.6276"),
-    "ethane": ("C 0.0000 0.0000 0.7680; C 0.0000 0.0000 -0.7680; "
-               "H 0.0000 1.0192 1.1573; H -0.8825 -0.5096 1.1573; "
-               "H 0.8825 -0.5096 1.1573; H 0.0000 -1.0192 -1.1573; "
-               "H 0.8825 0.5096 -1.1573; H -0.8825 0.5096 -1.1573"),
+    "water": (
+        "O 0.0000 0.0000 0.1173; H 0.0000 0.7572 -0.4692; H 0.0000 -0.7572 -0.4692"
+    ),
+    "methane": (
+        "C 0.0000 0.0000 0.0000; H 0.6276 0.6276 0.6276; "
+        "H 0.6276 -0.6276 -0.6276; H -0.6276 0.6276 -0.6276; "
+        "H -0.6276 -0.6276 0.6276"
+    ),
+    "ethane": (
+        "C 0.0000 0.0000 0.7680; C 0.0000 0.0000 -0.7680; "
+        "H 0.0000 1.0192 1.1573; H -0.8825 -0.5096 1.1573; "
+        "H 0.8825 -0.5096 1.1573; H 0.0000 -1.0192 -1.1573; "
+        "H 0.8825 0.5096 -1.1573; H -0.8825 0.5096 -1.1573"
+    ),
 }
 
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -670,6 +702,7 @@ def prepare_system(name, basis, atom_grid=(50, 110), do_scf=True):
 # Anchors
 # ===========================================================================
 
+
 class Anchors:
     """Two kinds of row, deliberately distinguished.
 
@@ -704,8 +737,10 @@ class Anchors:
                 tag = "MET" if ok else "CRIT"
             print(f"{name:<58} {tag:<5} {detail}")
         print("-" * 132)
-        print("PASS/FAIL = exactness anchors (a FAIL is a bug).  "
-              "MET/CRIT = pre-registered criteria (a CRIT is a result).")
+        print(
+            "PASS/FAIL = exactness anchors (a FAIL is a bug).  "
+            "MET/CRIT = pre-registered criteria (a CRIT is a result)."
+        )
         return allok
 
 
@@ -714,20 +749,28 @@ def probe_set(mol, seed=0, n_cloud=60, n_far=20):
     a cloud through the molecular volume, and shells at 50/100/200 Bohr."""
     rng = np.random.default_rng(seed)
     nuc = mol.atom_coords()
+
     def offset(eps):
         d = rng.normal(size=nuc.shape)
         d /= np.linalg.norm(d, axis=1)[:, None]
         return nuc + eps * d
+
     def shell(r, n):
         d = rng.normal(size=(n, 3))
         return d / np.linalg.norm(d, axis=1)[:, None] * r
-    return np.vstack([
-        nuc,                                  # exactly on-nucleus, T = 0
-        offset(1e-4), offset(1e-8),           # the near-singular regime
-        rng.normal(0.0, 3.0, (n_cloud, 3)),   # through the molecular volume
-        rng.normal(0.0, 20.0, (n_far, 3)),    # near field / mid field
-        shell(50.0, 20), shell(100.0, 20), shell(200.0, 20),   # far field
-    ])
+
+    return np.vstack(
+        [
+            nuc,  # exactly on-nucleus, T = 0
+            offset(1e-4),
+            offset(1e-8),  # the near-singular regime
+            rng.normal(0.0, 3.0, (n_cloud, 3)),  # through the molecular volume
+            rng.normal(0.0, 20.0, (n_far, 3)),  # near field / mid field
+            shell(50.0, 20),
+            shell(100.0, 20),
+            shell(200.0, 20),  # far field
+        ]
+    )
 
 
 def anchor_a0(mol, bnd_fe, bnd_ipb, info, anchors, label):
@@ -742,7 +785,7 @@ def anchor_a0(mol, bnd_fe, bnd_ipb, info, anchors, label):
     pts = probe_set(mol)
     A = mol.intor("int1e_grids", grids=pts)
     ctr = np.array([mol.bas_coord(s) for s in range(mol.nbas)])
-    stats = {}   # (bound, same_centre) -> [viol, ratios]
+    stats = {}  # (bound, same_centre) -> [viol, ratios]
     for g, p in enumerate(pts):
         for s1 in range(mol.nbas):
             a0, a1 = info.ao_slice[s1]
@@ -750,9 +793,11 @@ def anchor_a0(mol, bnd_fe, bnd_ipb, info, anchors, label):
                 c0, c1 = info.ao_slice[s2]
                 true = float(np.max(np.abs(A[g, a0:a1, c0:c1])))
                 same = bool(np.allclose(ctr[s1], ctr[s2]))
-                for nm, bd in (("ferric", bnd_fe.sphere(s1, s2, p, 0.0)),
-                               ("ipb-flat", bnd_ipb.flat(s1, s2)),
-                               ("ipb-dist", bnd_ipb.distance(s1, s2, p, 0.0))):
+                for nm, bd in (
+                    ("ferric", bnd_fe.sphere(s1, s2, p, 0.0)),
+                    ("ipb-flat", bnd_ipb.flat(s1, s2)),
+                    ("ipb-dist", bnd_ipb.distance(s1, s2, p, 0.0)),
+                ):
                     st = stats.setdefault((nm, same), [0, []])
                     if true > bd * (1.0 + 1e-12):
                         st[0] += 1
@@ -826,7 +871,7 @@ def anchor_non_inert(bnd_ipb, bnd_fe, mol, coords, weights, info, anchors, label
     deg_ipb = deg_fe = tot = 0
     gains = []
     for b0 in range(0, coords.shape[0], BATCH_POINTS):
-        pts = coords[b0:b0 + BATCH_POINTS]
+        pts = coords[b0 : b0 + BATCH_POINTS]
         centre, radius = batch_sphere(pts)
         for s1 in range(mol.nbas):
             for s2 in range(s1 + 1):
@@ -844,9 +889,9 @@ def anchor_non_inert(bnd_ipb, bnd_fe, mol, coords, weights, info, anchors, label
     anchors.criterion(
         f"A2 non-inert: IPB-D's distance factor bites [{label}]",
         frac < 0.45,
-        f"IPB-D degenerate on {100*frac:.2f}% of {tot} (pair,batch) decisions "
-        f"(ferric: {100*deg_fe/tot:.2f}%); tightening IPB-flat/IPB-D "
-        f"p50={np.median(g):.3g}x p90={np.percentile(g,90):.3g}x max={g.max():.3g}x",
+        f"IPB-D degenerate on {100 * frac:.2f}% of {tot} (pair,batch) decisions "
+        f"(ferric: {100 * deg_fe / tot:.2f}%); tightening IPB-flat/IPB-D "
+        f"p50={np.median(g):.3g}x p90={np.percentile(g, 90):.3g}x max={g.max():.3g}x",
     )
     return frac, deg_fe / tot, g
 
@@ -855,32 +900,42 @@ def anchor_non_inert(bnd_ipb, bnd_fe, mol, coords, weights, info, anchors, label
 # Driver
 # ===========================================================================
 
-SCREENS = {"ferric": ScreenFerric, "ipb-flat": ScreenIpbFlat,
-           "ipb-dist": ScreenIpbDist, "min(ferric,ipb-dist)": ScreenBest}
+SCREENS = {
+    "ferric": ScreenFerric,
+    "ipb-flat": ScreenIpbFlat,
+    "ipb-dist": ScreenIpbDist,
+    "min(ferric,ipb-dist)": ScreenBest,
+}
 
 
 def run(system, basis, atom_grid, anchors, thresholds, do_sweep=True):
-    print(f"\n{'='*132}")
+    print(f"\n{'=' * 132}")
     print(f"SYSTEM {system}/{basis}  grid {atom_grid[0]}x{atom_grid[1]} (unpruned)")
     print("=" * 132)
     mol, D, coords, weights, bfe, bipb, info = prepare_system(system, basis, atom_grid)
     nb = math.ceil(len(weights) / BATCH_POINTS)
-    print(f"  nbf={mol.nao} nsh={mol.nbas} npts={len(weights)} batches={nb} "
-          f"pairs={mol.nbas*(mol.nbas+1)//2} diameter={molecular_diameter(mol):.2f} Bohr")
+    print(
+        f"  nbf={mol.nao} nsh={mol.nbas} npts={len(weights)} batches={nb} "
+        f"pairs={mol.nbas * (mol.nbas + 1) // 2} diameter={molecular_diameter(mol):.2f} Bohr"
+    )
 
     anchor_a0(mol, bfe, bipb, info, anchors, f"{system}/{basis}")
     anchor_trivial_limit(bipb, mol, anchors, f"{system}/{basis}")
-    anchor_non_inert(bipb, bfe, mol, coords, weights, info, anchors, f"{system}/{basis}")
+    anchor_non_inert(
+        bipb, bfe, mol, coords, weights, info, anchors, f"{system}/{basis}"
+    )
 
     ref = build_k(mol, coords, weights, D, ScreenNone(), info)
     K_an = analytic_k(mol, D)
     e_grid = float(np.max(np.abs(ref.K - K_an)))
     scale = float(np.max(np.abs(K_an)))
-    print(f"  grid error max|K_grid - K_analytic| = {e_grid:.3e} (max|K| = {scale:.3e})")
+    print(
+        f"  grid error max|K_grid - K_analytic| = {e_grid:.3e} (max|K| = {scale:.3e})"
+    )
     anchors.check(
         f"A3 unscreened K reproduces analytic K [{system}/{basis}]",
         e_grid <= 1e-3 * scale,
-        f"E_grid={e_grid:.2e} vs 1e-3*max|K|={1e-3*scale:.2e} "
+        f"E_grid={e_grid:.2e} vs 1e-3*max|K|={1e-3 * scale:.2e} "
         f"(guards the accumulation, not just screen-vs-unscreened)",
     )
     for nm, cls in SCREENS.items():
@@ -896,8 +951,10 @@ def run(system, basis, atom_grid, anchors, thresholds, do_sweep=True):
         return
 
     # ---- threshold sweep: kept work AND K error, per bound ----------------
-    print(f"\n  {'bound':<22} {'thresh':>8} {'kept %':>9} {'kept-wt %':>10} "
-          f"{'K error':>11}   (E_grid = {e_grid:.2e})")
+    print(
+        f"\n  {'bound':<22} {'thresh':>8} {'kept %':>9} {'kept-wt %':>10} "
+        f"{'K error':>11}   (E_grid = {e_grid:.2e})"
+    )
     table = {}
     for nm, cls in SCREENS.items():
         table[nm] = []
@@ -939,23 +996,26 @@ def matched_error_report(table, targets):
 
 def size_axis(names, basis, atom_grid, thresholds):
     """Kept-work COUNTS vs system size -- deterministic, load-immune."""
-    print(f"\n{'='*132}")
+    print(f"\n{'=' * 132}")
     print(f"SIZE AXIS  basis={basis}  grid={atom_grid}  (kept-work %, weighted)")
     print("=" * 132)
-    print(f"  {'system':<12} {'diam':>7} {'nsh':>5} {'thresh':>8} "
-          + "".join(f"{n:>24}" for n in SCREENS)
-          + f"{'deg ipb':>9}{'deg fe':>9}")
+    print(
+        f"  {'system':<12} {'diam':>7} {'nsh':>5} {'thresh':>8} "
+        + "".join(f"{n:>24}" for n in SCREENS)
+        + f"{'deg ipb':>9}{'deg fe':>9}"
+    )
     for name in names:
         mol, D, coords, weights, bfe, bipb, info = prepare_system(
-            name, basis, atom_grid, do_scf=True)
+            name, basis, atom_grid, do_scf=True
+        )
         dia = molecular_diameter(mol)
         dfrac, ffrac, _ = _degeneracy(mol, coords, bfe, bipb)
         for t in thresholds:
             row = f"  {name:<12} {dia:7.2f} {mol.nbas:5d} {t:8.0e}"
             for nm, cls in SCREENS.items():
                 r = build_k(mol, coords, weights, D, cls(t, bfe, bipb), info)
-                row += f"{100.0*r.kept_weighted/r.total_weighted:24.3f}"
-            row += f"{100*dfrac:9.2f}{100*ffrac:9.2f}"
+                row += f"{100.0 * r.kept_weighted / r.total_weighted:24.3f}"
+            row += f"{100 * dfrac:9.2f}{100 * ffrac:9.2f}"
             print(row, flush=True)
 
 
@@ -963,7 +1023,7 @@ def _degeneracy(mol, coords, bfe, bipb):
     di = df = tot = 0
     gains = []
     for b0 in range(0, coords.shape[0], BATCH_POINTS):
-        centre, radius = batch_sphere(coords[b0:b0 + BATCH_POINTS])
+        centre, radius = batch_sphere(coords[b0 : b0 + BATCH_POINTS])
         for s1 in range(mol.nbas):
             for s2 in range(s1 + 1):
                 tot += 1
@@ -979,11 +1039,15 @@ def _degeneracy(mol, coords, bfe, bipb):
 def main():
     global MUTATION
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--mutate", default=None,
-                    help="run a deliberately broken variant: drop_inside_term, "
-                         "no_min_with_flat, rab_unclamped, drop_mirror")
-    ap.add_argument("--mode", default="anchors",
-                    choices=["anchors", "sweep", "size", "all"])
+    ap.add_argument(
+        "--mutate",
+        default=None,
+        help="run a deliberately broken variant: drop_inside_term, "
+        "no_min_with_flat, rab_unclamped, drop_mirror",
+    )
+    ap.add_argument(
+        "--mode", default="anchors", choices=["anchors", "sweep", "size", "all"]
+    )
     ap.add_argument("--systems", default=None)
     ap.add_argument("--basis", default=None)
     args = ap.parse_args()
@@ -995,30 +1059,40 @@ def main():
     thresholds = [1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9]
 
     if args.mode in ("anchors", "all"):
-        cases = [("water", "ccpvdz", (50, 110)),
-                 ("butane", "def2-svp", (35, 110)),
-                 ("butane", "def2-qzvp", (25, 50))]
+        cases = [
+            ("water", "ccpvdz", (50, 110)),
+            ("butane", "def2-svp", (35, 110)),
+            ("butane", "def2-qzvp", (25, 50)),
+        ]
         if args.systems:
-            cases = [(s, args.basis or "ccpvdz", (35, 110))
-                     for s in args.systems.split(",")]
+            cases = [
+                (s, args.basis or "ccpvdz", (35, 110)) for s in args.systems.split(",")
+            ]
         for sys_, bas, grid in cases:
             run(sys_, bas, grid, anchors, thresholds, do_sweep=False)
 
     if args.mode in ("sweep", "all"):
-        for sys_, bas, grid in [("water", "ccpvdz", (50, 110)),
-                                ("butane", "def2-svp", (35, 110))]:
+        for sys_, bas, grid in [
+            ("water", "ccpvdz", (50, 110)),
+            ("butane", "def2-svp", (35, 110)),
+        ]:
             tb = run(sys_, bas, grid, anchors, thresholds, do_sweep=True)
             if tb:
                 matched_error_report(tb, [1e-5, 1e-6, 1e-7])
 
     if args.mode in ("size", "all"):
-        names = args.systems.split(",") if args.systems else \
-            ["methane", "ethane", "alkane_4", "alkane_8", "alkane_12", "alkane_16"]
+        names = (
+            args.systems.split(",")
+            if args.systems
+            else ["methane", "ethane", "alkane_4", "alkane_8", "alkane_12", "alkane_16"]
+        )
         size_axis(names, args.basis or "sto-3g", (25, 50), [1e-6, 1e-8])
 
     ok = anchors.report()
     if MUTATION:
-        print(f"\nMUTATION {MUTATION}: anchors {'ALL PASSED (BAD -- the mutation was inert)' if ok else 'FAILED as required'}")
+        print(
+            f"\nMUTATION {MUTATION}: anchors {'ALL PASSED (BAD -- the mutation was inert)' if ok else 'FAILED as required'}"
+        )
         return 0 if not ok else 1
     print("\nALL ANCHORS PASS" if ok else "\nANCHOR FAILURE")
     return 0 if ok else 1

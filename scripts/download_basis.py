@@ -10,6 +10,7 @@ try:
     import requests
 except ImportError:
     import subprocess
+
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "requests"])
     import requests
 
@@ -18,7 +19,9 @@ def download_basis(basis_name: str) -> None:
     """Download basis set from BSE and save to bundled directory."""
     # Resolve paths
     script_dir = Path(__file__).resolve().parent
-    bundled_dir = script_dir.parent / "crates" / "ferric-core" / "src" / "basis" / "bundled"
+    bundled_dir = (
+        script_dir.parent / "crates" / "ferric-core" / "src" / "basis" / "bundled"
+    )
     output_file = bundled_dir / f"{basis_name}.json"
 
     # Fetch from BSE

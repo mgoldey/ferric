@@ -9,6 +9,7 @@ over N ligands leaves the machine partly idle N times. Screening wants
 These tests use a fake Vina so they cost nothing and run without the optional
 `docking` extra installed.
 """
+
 from __future__ import annotations
 
 import sys
@@ -27,10 +28,17 @@ class _FakeVina:
     def __init__(self, **kwargs):
         type(self).last_kwargs = dict(kwargs)
 
-    def set_receptor(self, *a, **k): pass
-    def set_ligand_from_string(self, *a, **k): pass
-    def compute_vina_maps(self, *a, **k): pass
-    def dock(self, *a, **k): pass
+    def set_receptor(self, *a, **k):
+        pass
+
+    def set_ligand_from_string(self, *a, **k):
+        pass
+
+    def compute_vina_maps(self, *a, **k):
+        pass
+
+    def dock(self, *a, **k):
+        pass
 
     def poses(self, n_poses=1):
         return (
@@ -47,8 +55,9 @@ def fake_vina(monkeypatch, tmp_path):
     mod = types.ModuleType("vina")
     mod.Vina = _FakeVina
     monkeypatch.setitem(sys.modules, "vina", mod)
-    monkeypatch.setattr(vina_dock, "_ligand_pdbqt_from_rdkit",
-                        lambda mol: "LIGAND PDBQT")
+    monkeypatch.setattr(
+        vina_dock, "_ligand_pdbqt_from_rdkit", lambda mol: "LIGAND PDBQT"
+    )
     receptor = tmp_path / "r.pdbqt"
     receptor.write_text("ATOM\n")
     return receptor
@@ -73,8 +82,7 @@ def test_seed_is_still_forwarded_alongside_cpu(fake_vina):
     thread count as well as seed. Pinning one without the other does not make
     a screen reproducible.
     """
-    vina_dock.dock_ligand(object(), fake_vina, (0.0, 0.0, 0.0),
-                          seed=1234, cpu=2)
+    vina_dock.dock_ligand(object(), fake_vina, (0.0, 0.0, 0.0), seed=1234, cpu=2)
     assert _FakeVina.last_kwargs["seed"] == 1234
     assert _FakeVina.last_kwargs["cpu"] == 2
 

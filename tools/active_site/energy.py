@@ -1,4 +1,5 @@
 """Single-point energy evaluation for an EmbeddedLigand: vacuum or field."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -35,20 +36,31 @@ def compute_energy(
     `**scf_kwargs` passes through to `ferric.run_rhf`/`run_dft` (e.g.
     `max_iter`, `k_builder`, `level_shift`) for convergence tuning.
     """
-    point_charges = embedded.point_charges if (use_field and embedded.point_charges) else None
+    point_charges = (
+        embedded.point_charges if (use_field and embedded.point_charges) else None
+    )
 
     if method == "rhf":
-        raw = ferric.run_rhf(embedded.mol, embedded.basis_set, point_charges=point_charges, **scf_kwargs)
+        raw = ferric.run_rhf(
+            embedded.mol, embedded.basis_set, point_charges=point_charges, **scf_kwargs
+        )
     elif method == "dft":
         if xc is None:
             raise ValueError("method='dft' requires xc=<functional name>")
-        raw = ferric.run_dft(embedded.mol, embedded.basis_set, functional=xc,
-                              point_charges=point_charges, **scf_kwargs)
+        raw = ferric.run_dft(
+            embedded.mol,
+            embedded.basis_set,
+            functional=xc,
+            point_charges=point_charges,
+            **scf_kwargs,
+        )
     else:
         raise ValueError(f"unknown method {method!r}; expected 'rhf' or 'dft'")
 
     return EnergyResult(
         energy=raw.energy if hasattr(raw, "energy") else raw.total_energy,
-        converged=raw.converged, raw=raw, method=method,
+        converged=raw.converged,
+        raw=raw,
+        method=method,
         field=point_charges is not None,
     )

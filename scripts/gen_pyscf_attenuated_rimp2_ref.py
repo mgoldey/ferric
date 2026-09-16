@@ -42,6 +42,7 @@ PySCF's `set_range_coulomb` omega is also in Bohr^-1 (atomic units
 throughout libcint), so we use the exact same converted value -- no
 independent re-derivation of the conversion factor.
 """
+
 import json
 import os
 import sys
@@ -98,7 +99,7 @@ def ri_mp2_spin_components(mol_geom, basis, auxbasis, omega_bohr_inv, frozen_cor
 
     eps = mf.mo_energy
     c = mf.mo_coeff
-    c_occ = c[:, first_occ:first_occ + nocc]
+    c_occ = c[:, first_occ : first_occ + nocc]
     c_vir = c[:, nocc_total:]
 
     # Switch on the short-range erfc operator for ALL subsequent 2e
@@ -139,8 +140,12 @@ def ri_mp2_spin_components(mol_geom, basis, auxbasis, omega_bohr_inv, frozen_cor
     e_ss = 0.0
     for i in range(nocc):
         for j in range(nocc):
-            g_ij = np.einsum("Pa,Pb->ab", b_ov[:, i, :], b_ov[:, j, :], optimize=True)  # (ia|jb) over a,b
-            g_ji = g_ij.T  # (ib|ja) = (ja|ib) symmetric relabel: g_ji[a,b] = (ja|ib) = (ib|ja)
+            g_ij = np.einsum(
+                "Pa,Pb->ab", b_ov[:, i, :], b_ov[:, j, :], optimize=True
+            )  # (ia|jb) over a,b
+            g_ji = (
+                g_ij.T
+            )  # (ib|ja) = (ja|ib) symmetric relabel: g_ji[a,b] = (ja|ib) = (ib|ja)
             e_ij = eps[first_occ + i] + eps[first_occ + j]
             denom = e_ij - eps[nocc_total:, None] - eps[None, nocc_total:]
             e_os += np.sum(g_ij * g_ij / denom)
@@ -160,8 +165,20 @@ def ri_mp2_spin_components(mol_geom, basis, auxbasis, omega_bohr_inv, frozen_cor
 
 
 CASES = [
-    ("h2o", WATER_XYZ, "cc-pvdz", "cc-pvdz-ri", "h2o_cc-pvdz_attenuated-rimp2-erfc0p420.json"),
-    ("ch4", METHANE_XYZ, "sto-3g", "cc-pvdz-ri", "ch4_sto-3g_attenuated-rimp2-erfc0p420.json"),
+    (
+        "h2o",
+        WATER_XYZ,
+        "cc-pvdz",
+        "cc-pvdz-ri",
+        "h2o_cc-pvdz_attenuated-rimp2-erfc0p420.json",
+    ),
+    (
+        "ch4",
+        METHANE_XYZ,
+        "sto-3g",
+        "cc-pvdz-ri",
+        "ch4_sto-3g_attenuated-rimp2-erfc0p420.json",
+    ),
 ]
 
 if __name__ == "__main__":

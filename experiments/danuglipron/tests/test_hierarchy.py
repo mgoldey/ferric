@@ -11,6 +11,7 @@ What is worth pinning is therefore structural, not numeric:
   - a tier with no ground-truth validation is REPORTED as unvalidated rather
     than silently trusted.
 """
+
 from __future__ import annotations
 
 from experiments.danuglipron.hierarchy import DANUGLIPRON_HIERARCHY
@@ -62,8 +63,9 @@ def test_quantum_tier_is_validated_with_a_converged_measurement():
     assert "612" in spec.validated_by or "18 iterations" in spec.validated_by, (
         "the validating measurement must stay attached to the claim"
     )
-    assert spec.method not in [t.method for t in
-                               unvalidated_tiers(DANUGLIPRON_HIERARCHY)]
+    assert spec.method not in [
+        t.method for t in unvalidated_tiers(DANUGLIPRON_HIERARCHY)
+    ]
 
 
 def test_every_validated_tier_states_its_evidence():
@@ -71,8 +73,7 @@ def test_every_validated_tier_states_its_evidence():
     for t in DANUGLIPRON_HIERARCHY:
         if t.validated:
             assert len(t.validated_by) > 30, (
-                f"tier {int(t.tier)} claims validation with a stub: "
-                f"{t.validated_by!r}"
+                f"tier {int(t.tier)} claims validation with a stub: {t.validated_by!r}"
             )
 
 
@@ -96,15 +97,27 @@ def test_unvalidated_tiers_is_reachable_in_both_directions():
     about the campaign. Now it tests the detector.
     """
     none_validated = tuple(
-        TierSpec(t.tier, t.method, t.seconds_per_pose, t.typical_poses, t.job,
-                 validated_by=None)
+        TierSpec(
+            t.tier,
+            t.method,
+            t.seconds_per_pose,
+            t.typical_poses,
+            t.job,
+            validated_by=None,
+        )
         for t in DANUGLIPRON_HIERARCHY
     )
     assert len(unvalidated_tiers(none_validated)) == len(DANUGLIPRON_HIERARCHY)
 
     all_validated = tuple(
-        TierSpec(t.tier, t.method, t.seconds_per_pose, t.typical_poses, t.job,
-                 validated_by=t.validated_by or "validated in this fixture " * 2)
+        TierSpec(
+            t.tier,
+            t.method,
+            t.seconds_per_pose,
+            t.typical_poses,
+            t.job,
+            validated_by=t.validated_by or "validated in this fixture " * 2,
+        )
         for t in DANUGLIPRON_HIERARCHY
     )
     assert unvalidated_tiers(all_validated) == []
@@ -122,8 +135,14 @@ def test_describe_flags_unvalidated_tiers_in_its_output():
     than the rendering.
     """
     unvalidated = tuple(
-        TierSpec(t.tier, t.method, t.seconds_per_pose, t.typical_poses, t.job,
-                 validated_by=None)
+        TierSpec(
+            t.tier,
+            t.method,
+            t.seconds_per_pose,
+            t.typical_poses,
+            t.job,
+            validated_by=None,
+        )
         for t in DANUGLIPRON_HIERARCHY
     )
     assert "NO" in describe(unvalidated), (
@@ -136,8 +155,9 @@ def test_describe_flags_unvalidated_tiers_in_its_output():
 
 
 def test_tier_outcome_reports_the_funnel_honestly():
-    o = TierOutcome(Tier.SEARCH, n_in=20, n_out=4, n_failed=0,
-                    note="4/20 poses under 2 A")
+    o = TierOutcome(
+        Tier.SEARCH, n_in=20, n_out=4, n_failed=0, note="4/20 poses under 2 A"
+    )
     assert o.retained_fraction == 0.2
     empty = TierOutcome(Tier.QUANTUM, n_in=0, n_out=0)
     assert empty.retained_fraction is None, (

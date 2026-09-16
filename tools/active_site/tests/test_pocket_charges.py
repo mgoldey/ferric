@@ -9,13 +9,18 @@ TWO_CHAIN_FIXTURE = Path(__file__).parent / "fixture_two_chain.pqr"
 
 
 def test_pocket_charges_n_charges_derived():
-    pc = PocketCharges(charges=[(0.1, 0.0, 0.0, 0.0), (-0.1, 1.0, 1.0, 1.0)],
-                        source_pdb=Path("fake.pdb"), ff="AMBER")
+    pc = PocketCharges(
+        charges=[(0.1, 0.0, 0.0, 0.0), (-0.1, 1.0, 1.0, 1.0)],
+        source_pdb=Path("fake.pdb"),
+        ff="AMBER",
+    )
     assert pc.n_charges == 2
 
 
 def test_pocket_charges_picklable():
-    pc = PocketCharges(charges=[(0.5, 1.0, 2.0, 3.0)], source_pdb=Path("fake.pdb"), ff="AMBER")
+    pc = PocketCharges(
+        charges=[(0.5, 1.0, 2.0, 3.0)], source_pdb=Path("fake.pdb"), ff="AMBER"
+    )
     pc2 = pickle.loads(pickle.dumps(pc))  # nosec B301 -- round-trips an object this test just built; nothing untrusted
     assert pc2.charges == pc.charges
     assert pc2.n_charges == pc.n_charges
@@ -25,7 +30,9 @@ def test_pocket_charges_picklable():
 def test_pocket_charges_residue_fields_default_to_none():
     # Exactness anchor: constructing PocketCharges the OLD way (no residue
     # kwargs) must be unaffected — all three new fields default to None.
-    pc = PocketCharges(charges=[(0.1, 0.0, 0.0, 0.0)], source_pdb=Path("fake.pdb"), ff="AMBER")
+    pc = PocketCharges(
+        charges=[(0.1, 0.0, 0.0, 0.0)], source_pdb=Path("fake.pdb"), ff="AMBER"
+    )
     assert pc.residue_ids is None
     assert pc.atom_names is None
     assert pc.res_names is None
@@ -33,8 +40,12 @@ def test_pocket_charges_residue_fields_default_to_none():
 
 def test_pocket_charges_residue_fields_are_settable():
     pc = PocketCharges(
-        charges=[(0.1, 0.0, 0.0, 0.0)], source_pdb=Path("fake.pdb"), ff="AMBER",
-        residue_ids=[0], atom_names=["N"], res_names=["THR"],
+        charges=[(0.1, 0.0, 0.0, 0.0)],
+        source_pdb=Path("fake.pdb"),
+        ff="AMBER",
+        residue_ids=[0],
+        atom_names=["N"],
+        res_names=["THR"],
     )
     assert pc.residue_ids == [0]
     assert pc.atom_names == ["N"]
@@ -48,7 +59,9 @@ def test_derive_pocket_charges_populates_residue_fields(monkeypatch, tmp_path):
         shutil.copy(FIXTURE, pqr_path)
         return Path(pqr_path)
 
-    monkeypatch.setattr("tools.active_site.pocket_charges.run_pdb2pqr", fake_run_pdb2pqr)
+    monkeypatch.setattr(
+        "tools.active_site.pocket_charges.run_pdb2pqr", fake_run_pdb2pqr
+    )
     fake_pdb = tmp_path / "fake.pdb"
     fake_pdb.write_text("")
 
@@ -63,7 +76,9 @@ def test_derive_pocket_charges_populates_residue_fields(monkeypatch, tmp_path):
     assert pc.residue_ids == [0, 0, 0, 0, 0]
 
 
-def test_derive_pocket_charges_does_not_merge_residues_across_chains(monkeypatch, tmp_path):
+def test_derive_pocket_charges_does_not_merge_residues_across_chains(
+    monkeypatch, tmp_path
+):
     # Regression for the res_seq-only keying bug: PQR has no chain column
     # and res_seq restarts per chain, so chain A's THR-1/ALA-2 and chain B's
     # THR-1/ALA-2 (identical res_name/res_seq, different chain) must NOT
@@ -73,7 +88,9 @@ def test_derive_pocket_charges_does_not_merge_residues_across_chains(monkeypatch
         shutil.copy(TWO_CHAIN_FIXTURE, pqr_path)
         return Path(pqr_path)
 
-    monkeypatch.setattr("tools.active_site.pocket_charges.run_pdb2pqr", fake_run_pdb2pqr)
+    monkeypatch.setattr(
+        "tools.active_site.pocket_charges.run_pdb2pqr", fake_run_pdb2pqr
+    )
     fake_pdb = tmp_path / "fake.pdb"
     fake_pdb.write_text("")
 

@@ -18,6 +18,7 @@ The PySCF side uses EXACT 4-index ERIs (no density fitting) and the PySCF
 default grid; ferric uses RI and its own Becke-Lebedev grid. Residual
 disagreement from those two choices is real and must be reported, not tuned away.
 """
+
 import json
 import sys
 import numpy as np
@@ -75,14 +76,16 @@ def run(basis, xc):
         f = (2.0 / 3.0) * w[k] * float(mu @ mu)
         idx = int(np.argmax(x * x))
         i, aa = divmod(idx, nvir)
-        states.append({
-            "omega_ev": float(w[k] * HARTREE2EV),
-            "omega_ha": float(w[k]),
-            "osc_length": f,
-            "transition_dipole": [float(t) for t in mu],
-            "dominant_ia": [i, aa],
-            "dominant_weight": float((x * x).ravel()[idx] / (x * x).sum()),
-        })
+        states.append(
+            {
+                "omega_ev": float(w[k] * HARTREE2EV),
+                "omega_ha": float(w[k]),
+                "osc_length": f,
+                "transition_dipole": [float(t) for t in mu],
+                "dominant_ia": [i, aa],
+                "dominant_weight": float((x * x).ravel()[idx] / (x * x).sum()),
+            }
+        )
 
     return {
         "basis": basis,
@@ -95,7 +98,7 @@ def run(basis, xc):
         "states": states,
         "pyscf_version": __import__("pyscf").__version__,
         "note": "DENSE get_ab A-matrix eigh (no Davidson); exact 4-index ERIs; "
-                "PySCF default grid; length-gauge oscillator strengths",
+        "PySCF default grid; length-gauge oscillator strengths",
     }
 
 
@@ -107,7 +110,9 @@ if __name__ == "__main__":
             print(f"running {key}", file=sys.stderr)
             out[key] = run(basis, xc)
             e = [f"{s['omega_ev']:.4f}" for s in out[key]["states"][:4]]
-            print(f"  E_scf={out[key]['e_scf']:.10f}  first 4 (eV): {e}", file=sys.stderr)
+            print(
+                f"  E_scf={out[key]['e_scf']:.10f}  first 4 (eV): {e}", file=sys.stderr
+            )
     path = sys.argv[1] if len(sys.argv) > 1 else "tda_refs.json"
     with open(path, "w") as fh:
         json.dump(out, fh, indent=2)

@@ -30,6 +30,7 @@ SERIAL by design: one calculation at a time, OPENBLAS_NUM_THREADS=1 assumed.
 Usage: python scripts/ne2_seam_test.py [basis] [auxbasis]
        (defaults aug-cc-pvdz / aug-cc-pvdz-rifit)
 """
+
 import os
 import sys
 import tempfile
@@ -48,8 +49,9 @@ HA_TO_UHA = 1e6
 def make_mol(r_ang, ghost_second):
     sym2 = "@Ne" if ghost_second else "Ne"
     xyz = f"2\nNe2 R={r_ang}\nNe 0.0 0.0 0.0\n{sym2} 0.0 0.0 {r_ang}\n"
-    with tempfile.NamedTemporaryFile("w", suffix=".xyz", delete=False,
-                                     dir=os.environ.get("TMPDIR", "/tmp")) as f:  # nosec B108 -- NamedTemporaryFile generates the name; /tmp is only the TMPDIR fallback dir
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".xyz", delete=False, dir=os.environ.get("TMPDIR", "/tmp")
+    ) as f:  # nosec B108 -- NamedTemporaryFile generates the name; /tmp is only the TMPDIR fallback dir
         f.write(xyz)
         path = f.name
     mol = ferric.Molecule.from_xyz(path)
@@ -62,22 +64,40 @@ def energies(mol, obs, aux):
     out = {}
     out["rimp2"] = ferric.run_rimp2(mol, basis_set=obs, auxbasis=aux).total_energy
     for w in ERF_OMEGAS:
-        r = ferric.run_rs_mp2_rpa(mol, basis_set=obs, auxbasis=aux,
-                                  omega=w, formulation="delta-lr", attenuator="erf")
+        r = ferric.run_rs_mp2_rpa(
+            mol,
+            basis_set=obs,
+            auxbasis=aux,
+            omega=w,
+            formulation="delta-lr",
+            attenuator="erf",
+        )
         out[f"B_erf_w{w}"] = r.total_energy
     # terf arm: linked baseline (r0*omega = 1/sqrt2, curvature-preserving) plus
     # DECOUPLED sharpness straddling Dutoi's hard bound r0*omega <= 2.07 —
     # the direct test the erf probe cannot express (erf locks radius to
     # sharpness). Requires FERRIC_TERF_TABLE_DIR (tables cover s <= 80).
     try:
-        r = ferric.run_rs_mp2_rpa(mol, basis_set=obs, auxbasis=aux,
-                                  formulation="delta-lr", attenuator="terf", r0=TERF_R0)
+        r = ferric.run_rs_mp2_rpa(
+            mol,
+            basis_set=obs,
+            auxbasis=aux,
+            formulation="delta-lr",
+            attenuator="terf",
+            r0=TERF_R0,
+        )
         out[f"B_terf_linked"] = r.total_energy
         for r0w in TERF_FREE_R0W:
             w_ang = r0w / TERF_R0  # dimensionless r0*omega with both in Angstrom units
-            r = ferric.run_rs_mp2_rpa(mol, basis_set=obs, auxbasis=aux,
-                                      formulation="delta-lr", attenuator="terf",
-                                      r0=TERF_R0, terf_omega=w_ang)
+            r = ferric.run_rs_mp2_rpa(
+                mol,
+                basis_set=obs,
+                auxbasis=aux,
+                formulation="delta-lr",
+                attenuator="terf",
+                r0=TERF_R0,
+                terf_omega=w_ang,
+            )
             out[f"B_terf_r0w{r0w}"] = r.total_energy
     except RuntimeError as e:
         if "terf" not in str(e):
@@ -110,7 +130,10 @@ def main():
             print(f"{'R(A)':>6} " + " ".join(f"{m:>16}" for m in methods))
         eint = {m: (dim[m] - 2.0 * mono[m]) * HA_TO_UHA for m in methods}
         rows[r_ang] = eint
-        print(f"{r_ang:>6.2f} " + " ".join(f"{eint[m]:>16.2f}" for m in methods), flush=True)
+        print(
+            f"{r_ang:>6.2f} " + " ".join(f"{eint[m]:>16.2f}" for m in methods),
+            flush=True,
+        )
 
     # Artifact detector: after the global minimum, E_int should rise
     # monotonically to ~0. Report any method with a second descent.
@@ -125,7 +148,9 @@ def main():
         ]
         tail = vals[-1]
         flag = f"SECOND DESCENT at R>{descents[0][0]}" if descents else "clean"
-        print(f"  {m:>16}: min {min(vals):8.2f} uHa at R={R_LIST[i_min]:.2f}; tail(8A) {tail:7.2f}; {flag}")
+        print(
+            f"  {m:>16}: min {min(vals):8.2f} uHa at R={R_LIST[i_min]:.2f}; tail(8A) {tail:7.2f}; {flag}"
+        )
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ Measured costs on this box (70-atom anion; def2-SVP/PBE for tier 4):
 Tier 4's cost is the reason the funnel must narrow to a handful before reaching
 it. See `tools/campaign/hierarchy.py` for the rules.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -32,6 +33,7 @@ class TierResult:
     reads as the best possible score and would promote a broken candidate to
     the top of the funnel.
     """
+
     candidate_id: str
     value: float | None
     error: str | None = None
@@ -65,13 +67,14 @@ def tier2_forcefield(iso: Isomer, context: dict) -> TierResult:
         res = AllChem.MMFFOptimizeMoleculeConfs(mol, maxIters=2000)
         energy = float(res[0][1])
     except Exception as e:  # noqa: BLE001 - RDKit raises RuntimeError on cages
-        return TierResult(iso.canonical, None,
-                          f"MMFF failed: {type(e).__name__}: {e}")
+        return TierResult(iso.canonical, None, f"MMFF failed: {type(e).__name__}: {e}")
     conf = mol.GetConformer()
     coords = [tuple(conf.GetAtomPosition(i)) for i in range(mol.GetNumAtoms())]
-    return TierResult(iso.canonical, energy,
-                      payload={"coords": coords,
-                               "symbols": [a.GetSymbol() for a in mol.GetAtoms()]})
+    return TierResult(
+        iso.canonical,
+        energy,
+        payload={"coords": coords, "symbols": [a.GetSymbol() for a in mol.GetAtoms()]},
+    )
 
 
 def _embedded(iso: Isomer, context: dict):
@@ -120,9 +123,12 @@ def tier1_dock(iso: Isomer, context: dict) -> TierResult:
     # and the resulting salt/fragment pair is not a dockable ligand. Rejected
     # here with a readable reason rather than 300 lines of Meeko traceback.
     if len(Chem.GetMolFrags(mol0)) > 1:
-        return TierResult(iso.canonical, None,
-                          f"not a single connected molecule "
-                          f"({len(Chem.GetMolFrags(mol0))} fragments)")
+        return TierResult(
+            iso.canonical,
+            None,
+            f"not a single connected molecule "
+            f"({len(Chem.GetMolFrags(mol0))} fragments)",
+        )
 
     base_seed = context.get("seed", 0xF00D)
     n_seeds = max(1, int(context.get("n_seeds", 1)))
@@ -145,17 +151,20 @@ def tier1_dock(iso: Isomer, context: dict) -> TierResult:
             continue
 
         try:
-            res = dock_ligand(mol, context["receptor_pdbqt"],
-                              context["box_center"],
-                              context.get("box_size", (24.0, 24.0, 24.0)),
-                              exhaustiveness=context.get("exhaustiveness", 16),
-                              n_poses=context.get("n_poses", 10),
-                              seed=seed,
-                              # Default 1, NOT Vina's 0: this tier runs inside a
-                              # funnel that fans out across ligands, and two
-                              # levels of parallelism oversubscribe the box.
-                              # See dock_ligand's `cpu` docs.
-                              cpu=context.get("vina_cpu", 1))
+            res = dock_ligand(
+                mol,
+                context["receptor_pdbqt"],
+                context["box_center"],
+                context.get("box_size", (24.0, 24.0, 24.0)),
+                exhaustiveness=context.get("exhaustiveness", 16),
+                n_poses=context.get("n_poses", 10),
+                seed=seed,
+                # Default 1, NOT Vina's 0: this tier runs inside a
+                # funnel that fans out across ligands, and two
+                # levels of parallelism oversubscribe the box.
+                # See dock_ligand's `cpu` docs.
+                cpu=context.get("vina_cpu", 1),
+            )
         except ImportError as e:
             # vina/meeko are an optional extra (`pip install ferric[docking]`),
             # because they are not installable on every Python the wheel
@@ -163,9 +172,12 @@ def tier1_dock(iso: Isomer, context: dict) -> TierResult:
             # reporting this as a docking failure would send the reader hunting
             # for a receptor or a bad ligand when the real answer is an
             # uninstalled package.
-            return TierResult(iso.canonical, None,
-                              f"docking unavailable ({e}); "
-                              f"install the 'docking' extra to enable tier 1")
+            return TierResult(
+                iso.canonical,
+                None,
+                f"docking unavailable ({e}); "
+                f"install the 'docking' extra to enable tier 1",
+            )
         if not res.ok:
             prep_errors.append(f"seed {seed}: {res.error}")
             continue
@@ -174,15 +186,21 @@ def tier1_dock(iso: Isomer, context: dict) -> TierResult:
             best_overall = (cand, len(res.poses), seed)
 
     if best_overall is None:
-        return TierResult(iso.canonical, None,
-                          "; ".join(prep_errors) or "docking produced no pose")
+        return TierResult(
+            iso.canonical, None, "; ".join(prep_errors) or "docking produced no pose"
+        )
     best, n_poses, winning_seed = best_overall
-    return TierResult(iso.canonical, best.vina_score,
-                      payload={"symbols": best.symbols,
-                               "coords": best.coords_angstrom,
-                               "n_poses": n_poses,
-                               "n_seeds": n_seeds,
-                               "winning_seed": winning_seed})
+    return TierResult(
+        iso.canonical,
+        best.vina_score,
+        payload={
+            "symbols": best.symbols,
+            "coords": best.coords_angstrom,
+            "n_poses": n_poses,
+            "n_seeds": n_seeds,
+            "winning_seed": winning_seed,
+        },
+    )
 
 
 def tier3_gfn2(iso: Isomer, context: dict) -> TierResult:
@@ -192,12 +210,17 @@ def tier3_gfn2(iso: Isomer, context: dict) -> TierResult:
     symbols, coords = _embedded(iso, context)
     if symbols is None:
         return TierResult(iso.canonical, None, "no geometry for GFN2")
-    run = singlepoint(symbols, coords, charge=iso.net_charge,
-                      point_charges=context.get("point_charges"))
+    run = singlepoint(
+        symbols,
+        coords,
+        charge=iso.net_charge,
+        point_charges=context.get("point_charges"),
+    )
     if not run.ok:
         return TierResult(iso.canonical, None, run.error)
-    return TierResult(iso.canonical, run.energy,
-                      payload={"symbols": symbols, "coords": coords})
+    return TierResult(
+        iso.canonical, run.energy, payload={"symbols": symbols, "coords": coords}
+    )
 
 
 def tier4_dft(iso: Isomer, context: dict) -> TierResult:
@@ -245,12 +268,18 @@ def _tier4_dft_inner(iso: Isomer, context: dict, ferric) -> TierResult:
     try:
         mol = ferric.Molecule.from_xyz_string("\n".join(xyz) + "\n", iso.net_charge, 1)
         bs = ferric.BasisSet.bundled(context.get("basis", "def2-svp"))
-        res = ferric.run_dft(mol, bs, functional=context.get("functional", "PBE"),
-                             point_charges=context.get("point_charges"))
+        res = ferric.run_dft(
+            mol,
+            bs,
+            functional=context.get("functional", "PBE"),
+            point_charges=context.get("point_charges"),
+        )
     except Exception as e:  # noqa: BLE001
-        return TierResult(iso.canonical, None,
-                          f"DFT failed: {type(e).__name__}: {e}")
+        return TierResult(iso.canonical, None, f"DFT failed: {type(e).__name__}: {e}")
     if not res.converged:
         return TierResult(iso.canonical, None, "DFT did not converge")
-    return TierResult(iso.canonical, res.total_energy,
-                      payload={"converged": True, "symbols": symbols, "coords": coords})
+    return TierResult(
+        iso.canonical,
+        res.total_energy,
+        payload={"converged": True, "symbols": symbols, "coords": coords},
+    )

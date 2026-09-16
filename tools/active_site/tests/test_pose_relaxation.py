@@ -4,12 +4,19 @@ import pytest
 
 from tools.active_site.ligand_embedding import embed_ligand_from_coords
 from tools.active_site.pocket_charges import ANGSTROM_TO_BOHR, PocketCharges
-from tools.active_site.pose_relaxation import relax_pose_in_pocket, relax_pose_in_pocket_field
+from tools.active_site.pose_relaxation import (
+    relax_pose_in_pocket,
+    relax_pose_in_pocket_field,
+)
 
 H2_SYMBOLS = ["H", "H"]
 H2_COORDS = [(0.0, 0.0, 0.0), (0.0, 0.0, 0.8)]  # slightly off equilibrium (~0.74 A)
 WATER_SYMBOLS = ["O", "H", "H"]
-WATER_COORDS = [(0.0, 0.0, 0.117790), (0.0, 0.755453, -0.471161), (0.0, -0.755453, -0.471161)]
+WATER_COORDS = [
+    (0.0, 0.0, 0.117790),
+    (0.0, 0.755453, -0.471161),
+    (0.0, -0.755453, -0.471161),
+]
 
 
 def test_relax_pose_no_pocket_raises():
@@ -24,10 +31,16 @@ def test_relax_pose_pocket_with_no_surviving_charges_raises():
     # empty list (pocket is not None, but nothing survives), which must be
     # treated the same as "no pocket" by relax_pose_in_pocket_field.
     pocket = PocketCharges(
-        charges=[(1.0, 0.0, 0.0, 0.0)], source_pdb=Path("fake.pdb"), ff="AMBER",
+        charges=[(1.0, 0.0, 0.0, 0.0)],
+        source_pdb=Path("fake.pdb"),
+        ff="AMBER",
     )
     embedded = embed_ligand_from_coords(
-        H2_SYMBOLS, H2_COORDS, pocket=pocket, basis="sto-3g", overlap_cutoff_angstrom=5.0,
+        H2_SYMBOLS,
+        H2_COORDS,
+        pocket=pocket,
+        basis="sto-3g",
+        overlap_cutoff_angstrom=5.0,
     )
     assert embedded.point_charges == []
     with pytest.raises(ValueError, match="point_charges"):
@@ -42,9 +55,12 @@ def test_relax_pose_h2_in_synthetic_pocket_field_real_optimization():
     r_angstrom = 6.0
     pocket = PocketCharges(
         charges=[(1.0, r_angstrom * ANGSTROM_TO_BOHR, 0.0, 0.0)],
-        source_pdb=Path("fake.pdb"), ff="AMBER",
+        source_pdb=Path("fake.pdb"),
+        ff="AMBER",
     )
-    embedded = embed_ligand_from_coords(H2_SYMBOLS, H2_COORDS, pocket=pocket, basis="sto-3g")
+    embedded = embed_ligand_from_coords(
+        H2_SYMBOLS, H2_COORDS, pocket=pocket, basis="sto-3g"
+    )
     assert embedded.point_charges == pocket.charges  # far away -> nothing filtered
 
     relaxed = relax_pose_in_pocket_field(embedded, max_steps=50)
@@ -76,9 +92,12 @@ def test_relax_pose_energy_lower_than_unrelaxed_start():
 
     pocket = PocketCharges(
         charges=[(1.0, 6.0 * ANGSTROM_TO_BOHR, 0.0, 0.0)],
-        source_pdb=Path("fake.pdb"), ff="AMBER",
+        source_pdb=Path("fake.pdb"),
+        ff="AMBER",
     )
-    embedded = embed_ligand_from_coords(H2_SYMBOLS, H2_COORDS, pocket=pocket, basis="sto-3g")
+    embedded = embed_ligand_from_coords(
+        H2_SYMBOLS, H2_COORDS, pocket=pocket, basis="sto-3g"
+    )
 
     unrelaxed = compute_energy(embedded, method="rhf", use_field=True)
     relaxed = relax_pose_in_pocket_field(embedded, max_steps=50)
@@ -98,10 +117,16 @@ def test_relax_pose_in_pocket_no_pocket_raises():
 
 def test_relax_pose_in_pocket_no_surviving_charges_raises():
     pocket = PocketCharges(
-        charges=[(1.0, 0.0, 0.0, 0.0)], source_pdb=Path("fake.pdb"), ff="AMBER",
+        charges=[(1.0, 0.0, 0.0, 0.0)],
+        source_pdb=Path("fake.pdb"),
+        ff="AMBER",
     )
     embedded = embed_ligand_from_coords(
-        H2_SYMBOLS, H2_COORDS, pocket=pocket, basis="sto-3g", overlap_cutoff_angstrom=5.0,
+        H2_SYMBOLS,
+        H2_COORDS,
+        pocket=pocket,
+        basis="sto-3g",
+        overlap_cutoff_angstrom=5.0,
     )
     assert embedded.point_charges == []
     with pytest.raises(ValueError, match="point_charges"):
@@ -118,9 +143,12 @@ def test_relax_pose_in_pocket_h2_matches_the_fixed_field_optimizer():
     r_angstrom = 6.0
     pocket = PocketCharges(
         charges=[(1.0, r_angstrom * ANGSTROM_TO_BOHR, 0.0, 0.0)],
-        source_pdb=Path("fake.pdb"), ff="AMBER",
+        source_pdb=Path("fake.pdb"),
+        ff="AMBER",
     )
-    embedded = embed_ligand_from_coords(H2_SYMBOLS, H2_COORDS, pocket=pocket, basis="sto-3g")
+    embedded = embed_ligand_from_coords(
+        H2_SYMBOLS, H2_COORDS, pocket=pocket, basis="sto-3g"
+    )
 
     via_field = relax_pose_in_pocket_field(embedded, max_steps=50)
     via_qmmm = relax_pose_in_pocket(embedded, max_steps=50)
@@ -144,9 +172,12 @@ def test_relax_pose_in_pocket_energy_lower_than_unrelaxed_start():
 
     pocket = PocketCharges(
         charges=[(1.0, 6.0 * ANGSTROM_TO_BOHR, 0.0, 0.0)],
-        source_pdb=Path("fake.pdb"), ff="AMBER",
+        source_pdb=Path("fake.pdb"),
+        ff="AMBER",
     )
-    embedded = embed_ligand_from_coords(H2_SYMBOLS, H2_COORDS, pocket=pocket, basis="sto-3g")
+    embedded = embed_ligand_from_coords(
+        H2_SYMBOLS, H2_COORDS, pocket=pocket, basis="sto-3g"
+    )
 
     unrelaxed = compute_energy(embedded, method="rhf", use_field=True)
     relaxed = relax_pose_in_pocket(embedded, max_steps=50)

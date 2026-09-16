@@ -45,16 +45,16 @@ import numpy as np
 # ---------------------------------------------------------------------------
 # Table parameters (match Q-Chem / dissertation values)
 # ---------------------------------------------------------------------------
-DIMI = 500    # Poisson series truncation (terms i=0..DIMI-1)
-DIMM = 24     # number of m-indices stored (S finite-difference depth)
-DIMN = 12     # number of n-indices stored (s finite-difference depth)
-MP_PREC = 256 # working precision in bits
+DIMI = 500  # Poisson series truncation (terms i=0..DIMI-1)
+DIMM = 24  # number of m-indices stored (S finite-difference depth)
+DIMN = 12  # number of n-indices stored (s finite-difference depth)
+MP_PREC = 256  # working precision in bits
 
 TABLES = [
-    (4,  2,  16),
-    (10, 5,   8),
-    (20, 20,  4),
-    (20, 80,  2),
+    (4, 2, 16),
+    (10, 5, 8),
+    (20, 20, 4),
+    (20, 80, 2),
 ]
 
 
@@ -62,9 +62,11 @@ TABLES = [
 # Core math (all in mpmath extended precision)
 # ---------------------------------------------------------------------------
 
+
 def _init_worker():
     """Initialise mpmath precision in each worker process."""
     import mpmath
+
     mpmath.mp.prec = MP_PREC
 
 
@@ -79,6 +81,7 @@ def _df_precompute(dimi):
       df(0) = 1,   df(2) = (2/3)*df(0),   df(2i) = (2i/(2i+1))*df(2(i-1))
     """
     import mpmath
+
     vals = [mpmath.mpf(1)]
     for i in range(1, dimi):
         vals.append(mpmath.mpf(2 * i) / mpmath.mpf(2 * i + 1) * vals[-1])
@@ -93,6 +96,7 @@ def _poisson_pmf(x, dimi):
     We stop early when terms are negligible (< 1e-70 in quad precision).
     """
     import mpmath
+
     x = mpmath.mpf(x)
     emx = mpmath.exp(-x)
     result = [mpmath.mpf(0)] * dimi
@@ -103,9 +107,10 @@ def _poisson_pmf(x, dimi):
         val = emx * xi
         result[i] = val
         # Adaptive truncation: once terms are negligible, remaining are zero.
-        if abs(val) < mpmath.mpf('1e-75') and i > int(x) + 30:
+        if abs(val) < mpmath.mpf("1e-75") and i > int(x) + 30:
             break
     return result
+
 
 def _build_fd_table(x, dimk, dimi):
     """
@@ -118,6 +123,7 @@ def _build_fd_table(x, dimk, dimi):
     Returns list-of-lists g[k][i], k in [0, dimk), i in [0, dimi).
     """
     import mpmath
+
     gs1v = _poisson_pmf(x, dimi)
 
     g = [[mpmath.mpf(0)] * dimi for _ in range(dimk)]
@@ -135,6 +141,7 @@ def _build_fd_table(x, dimk, dimi):
             g[k][i] = g[k - 1][i] - g[k - 1][i - 1]
     return g
 
+
 def _compute_Gmn(args):
     """
     Worker function: compute all G_{m,n}(S, s) for a single grid point.
@@ -147,6 +154,7 @@ def _compute_Gmn(args):
     the standard Boys function F_m(T) in the Obara-Saika recurrences.
     """
     import mpmath
+
     mpmath.mp.prec = MP_PREC
 
     iS, is_, S, s = args
@@ -173,6 +181,7 @@ def _compute_Gmn(args):
             Gmn_flat.append(float(total))
 
     return iS, is_, Gmn_flat
+
 
 # def _compute_Gmn(args):
 #     """
@@ -212,8 +221,10 @@ def _compute_Gmn(args):
 # Table generation
 # ---------------------------------------------------------------------------
 
-def generate_table(S_max: float, s_max: float, pts_per_unit: int,
-                   out_dir: str = ".") -> str:
+
+def generate_table(
+    S_max: float, s_max: float, pts_per_unit: int, out_dir: str = "."
+) -> str:
     """
     Generate one table file.
 
@@ -228,8 +239,9 @@ def generate_table(S_max: float, s_max: float, pts_per_unit: int,
     s_vals = np.linspace(0.0, s_max, ns)
 
     fname = os.path.join(out_dir, f"{pts_per_unit}_{S_max}_{s_max}.bin")
-    print(f"  Grid: {nS} × {ns} = {nS * ns} points, "
-          f"DIMM={DIMM}, DIMN={DIMN}, DIMI={DIMI}")
+    print(
+        f"  Grid: {nS} × {ns} = {nS * ns} points, DIMM={DIMM}, DIMN={DIMN}, DIMI={DIMI}"
+    )
     print(f"  Output: {fname}")
 
     # Build task list: (iS, is_, S, s)
@@ -249,20 +261,24 @@ def generate_table(S_max: float, s_max: float, pts_per_unit: int,
 
     with Pool(processes=ncpus, initializer=_init_worker) as pool:
         for iS, is_, Gmn_flat in pool.imap_unordered(
-                _compute_Gmn, tasks, chunksize=max(1, total // (ncpus * 8))):
+            _compute_Gmn, tasks, chunksize=max(1, total // (ncpus * 8))
+        ):
             G[iS, is_] = np.array(Gmn_flat, dtype=np.float64).reshape(DIMM, DIMN)
             done += 1
             if done % report_every == 0 or done == total:
                 elapsed = time.time() - t0
                 rate = done / elapsed
                 eta = (total - done) / rate if rate > 0 else 0
-                print(f"    {done}/{total} points  "
-                      f"({100*done/total:.1f}%)  "
-                      f"ETA {eta:.0f}s", flush=True)
+                print(
+                    f"    {done}/{total} points  "
+                    f"({100 * done / total:.1f}%)  "
+                    f"ETA {eta:.0f}s",
+                    flush=True,
+                )
 
     # Write binary: 4×int32 header + float64 data
-    with open(fname, 'wb') as f:
-        f.write(struct.pack('<iiii', nS, ns, DIMM, DIMN))
+    with open(fname, "wb") as f:
+        f.write(struct.pack("<iiii", nS, ns, DIMM, DIMN))
         G.tofile(f)
 
     elapsed = time.time() - t0
@@ -275,10 +291,11 @@ def generate_table(S_max: float, s_max: float, pts_per_unit: int,
 # Verification
 # ---------------------------------------------------------------------------
 
+
 def load_table(fname: str):
     """Load a binary table file. Returns (S_max, s_max, pts_per_unit, G)."""
-    with open(fname, 'rb') as f:
-        nS, ns, dimm, dimn = struct.unpack('<iiii', f.read(16))
+    with open(fname, "rb") as f:
+        nS, ns, dimm, dimn = struct.unpack("<iiii", f.read(16))
         data = np.frombuffer(f.read(), dtype=np.float64)
     G = data.reshape(nS, ns, dimm, dimn)
     return nS, ns, dimm, dimn, G
@@ -296,7 +313,7 @@ def load_table(fname: str):
 #             print(f"  MISSING: {fname}")
 #             continue
 #         nS, ns, dimm, dimn, G = load_table(fname)
-        
+
 #         # 1. At s=0 (r0=0), the operator vanishes completely.
 #         v00 = G[0, 0, 0, 0]
 #         ok = "✓" if abs(v00 - 0.0) < 1e-12 else f"✗ ({v00})"
@@ -313,11 +330,12 @@ def load_table(fname: str):
 def _boys(m, T):
     """Reference Boys function F_m(T) = int_0^1 t^{2m} e^{-T t^2} dt via mpmath."""
     import mpmath
+
     T = mpmath.mpf(T)
     if T == 0:
         return mpmath.mpf(1) / (2 * m + 1)
     a = mpmath.mpf(m) + mpmath.mpf("0.5")
-    return mpmath.gammainc(a, 0, T) / (2 * T ** a)
+    return mpmath.gammainc(a, 0, T) / (2 * T**a)
 
 
 def _Gmn_reference(S, s, mmax, nmax, dimi=DIMI):
@@ -328,6 +346,7 @@ def _Gmn_reference(S, s, mmax, nmax, dimi=DIMI):
     zeros that a break-on-zero would truncate on.
     """
     import mpmath
+
     df = _df_precompute(dimi)
     gS = _build_fd_table(mpmath.mpf(S), mmax + 2, dimi)
     gs = _build_fd_table(mpmath.mpf(s), nmax + 1, dimi)
@@ -351,6 +370,7 @@ def check_tables(out_dir: str = "."):
          catches the break-on-zero clobber of the m=1 row / n=2 column
     """
     import mpmath
+
     mpmath.mp.prec = MP_PREC
 
     print("Checking tables...")
@@ -370,31 +390,40 @@ def check_tables(out_dir: str = "."):
 
         iS = min(2 * pts, nS - 1)
         Sv = iS / pts
-        boys_err = max(abs(G[iS, 0, m, 0] - float(_boys(m, Sv)))
-                       for m in range(min(dimm, 10)))
+        boys_err = max(
+            abs(G[iS, 0, m, 0] - float(_boys(m, Sv))) for m in range(min(dimm, 10))
+        )
         ok2 = boys_err < 1e-9
-        print(f"    [2] max|G_(m,0)(S={Sv:.1f},0) - Boys F_m| = {boys_err:.2e}  "
-              f"{'PASS' if ok2 else 'FAIL'}")
+        print(
+            f"    [2] max|G_(m,0)(S={Sv:.1f},0) - Boys F_m| = {boys_err:.2e}  "
+            f"{'PASS' if ok2 else 'FAIL'}"
+        )
 
         iSn = min(1 * pts, nS - 1)
         isn = min(1 * pts, ns - 1)
         Sn, sn = iSn / pts, isn / pts
         ref = _Gmn_reference(Sn, sn, min(dimm, 8), min(dimn, 8))
-        slice_err = max(abs(G[iSn, isn, m, n] - ref[m][n])
-                        for m in range(min(dimm, 8))
-                        for n in range(min(dimn, 8)))
+        slice_err = max(
+            abs(G[iSn, isn, m, n] - ref[m][n])
+            for m in range(min(dimm, 8))
+            for n in range(min(dimn, 8))
+        )
         ok3 = slice_err < 1e-9
-        print(f"    [3] max|G_(m,n)(S={Sn:.1f},s={sn:.1f}) - ref| = {slice_err:.2e}  "
-              f"{'PASS' if ok3 else 'FAIL m=1 row / n=2 col clobber?'}")
+        print(
+            f"    [3] max|G_(m,n)(S={Sn:.1f},s={sn:.1f}) - ref| = {slice_err:.2e}  "
+            f"{'PASS' if ok3 else 'FAIL m=1 row / n=2 col clobber?'}"
+        )
 
         all_ok = all_ok and ok1 and ok2 and ok3
 
     print("All tables OK" if all_ok else "VALIDATION FAILED")
     return all_ok
 
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main():
     args = sys.argv[1:]

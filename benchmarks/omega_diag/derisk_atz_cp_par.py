@@ -21,6 +21,7 @@ find every job already complete and just write DERISK_ATZ_CP.md).
 
 Each child: OPENBLAS_NUM_THREADS=1 RAYON_NUM_THREADS=1.
 """
+
 from pathlib import Path
 import os, re, subprocess, sys, time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -30,11 +31,21 @@ os.chdir(ROOT)
 OUT = "benchmarks/omega_diag/derisk"
 GEO = "benchmarks/grid/geoms"
 BIN = "target/release/ferric-cli"
-ENV = dict(os.environ, OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS="1",
-           OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
+ENV = dict(
+    os.environ,
+    OPENBLAS_NUM_THREADS="1",
+    RAYON_NUM_THREADS="1",
+    OMP_NUM_THREADS="1",
+    MKL_NUM_THREADS="1",
+)
 
-ANCHORS = [("01", "ammonia_HB"), ("02", "water_HB"), ("08", "methane_D"),
-           ("09", "ethene_D"), ("11", "benzene_PD")]
+ANCHORS = [
+    ("01", "ammonia_HB"),
+    ("02", "water_HB"),
+    ("08", "methane_D"),
+    ("09", "ethene_D"),
+    ("11", "benzene_PD"),
+]
 OMEGAS = [0.30, 0.42, 0.55, 0.673, 0.80]
 FORMS = [("delta-lr", "B"), ("coupled-rings", "T")]
 BASIS, AUX, BT = "aug-cc-pvtz", "aug-cc-pvtz-rifit", "atz"
@@ -71,7 +82,7 @@ def fc_count(xyz):
         if not ln.strip():
             continue
         s = ln.split()[0]
-        if s.startswith('@') or s.upper().startswith('H'):
+        if s.startswith("@") or s.upper().startswith("H"):
             continue
         n += 1
     return n
@@ -134,9 +145,11 @@ def enumerate_jobs():
     """Build the full (key, toml, marker) work-list, then drop already-complete."""
     jobs = []
     for sid, label in ANCHORS:
-        frags = {"dimer": f"{GEO}/s22-{sid}_dimer.xyz",
-                 "cpA": f"{GEO}/s22-{sid}_mA_cp.xyz",
-                 "cpB": f"{GEO}/s22-{sid}_mB_cp.xyz"}
+        frags = {
+            "dimer": f"{GEO}/s22-{sid}_dimer.xyz",
+            "cpA": f"{GEO}/s22-{sid}_mA_cp.xyz",
+            "cpB": f"{GEO}/s22-{sid}_mB_cp.xyz",
+        }
         for fr, xyz in frags.items():
             fc = fc_count(xyz)
             # rs-mp2-rpa jobs
@@ -144,8 +157,13 @@ def enumerate_jobs():
                 for form, ftag in FORMS:
                     key = f"{label}_{sid}_{BT}_w{omega}_{ftag}_{fr}"
                     if needs_run(key, "Total energy"):
-                        jobs.append((key, rsmp2_toml(absxyz(xyz), omega, form, fc),
-                                     "Total energy"))
+                        jobs.append(
+                            (
+                                key,
+                                rsmp2_toml(absxyz(xyz), omega, form, fc),
+                                "Total energy",
+                            )
+                        )
             # per-fragment RHF (omega-independent)
             frtag = {"dimer": "dimer", "cpA": "cpA", "cpB": "cpB"}[fr]
             key = f"{label}_{sid}_{BT}_RHF_{frtag}"
@@ -181,11 +199,17 @@ def _wait_for_memory(key):
     waited = 0
     while _mem_available_gb() < PREFLIGHT_GB:
         if waited >= PREFLIGHT_MAX_WAIT_S:
-            print(f"[preflight] {key}: waited {waited}s, still <{PREFLIGHT_GB}GB "
-                  f"free — launching anyway (cap reached)", flush=True)
+            print(
+                f"[preflight] {key}: waited {waited}s, still <{PREFLIGHT_GB}GB "
+                f"free — launching anyway (cap reached)",
+                flush=True,
+            )
             return
-        print(f"[preflight] {key}: only {_mem_available_gb():.1f}GB free "
-              f"(<{PREFLIGHT_GB}); waiting {PREFLIGHT_WAIT_S}s", flush=True)
+        print(
+            f"[preflight] {key}: only {_mem_available_gb():.1f}GB free "
+            f"(<{PREFLIGHT_GB}); waiting {PREFLIGHT_WAIT_S}s",
+            flush=True,
+        )
         time.sleep(PREFLIGHT_WAIT_S)
         waited += PREFLIGHT_WAIT_S
 
@@ -203,8 +227,9 @@ def run_one(job):
     # heavy jobs: gate on real free memory right before launch
     if _is_heavy(key):
         _wait_for_memory(key)
-    open(f"{OUT}/toml/{key}.toml", 'w').write(toml)
+    open(f"{OUT}/toml/{key}.toml", "w").write(toml)
     t0 = time.monotonic()
+
     # Make the kernel OOM-killer prefer THIS ferric child over everything else
     # (esp. Claude Code): bump its oom_score_adj to the max after spawn.
     def _raise_oom_score():
@@ -213,10 +238,17 @@ def run_one(job):
                 f.write("1000")
         except Exception:
             pass
+
     try:
-        with open(op, 'w') as f, open(op + ".err", 'w') as e:
-            subprocess.run([BIN, f"{OUT}/toml/{key}.toml"], stdout=f, stderr=e,
-                           env=ENV, timeout=TIMEOUT, preexec_fn=_raise_oom_score)
+        with open(op, "w") as f, open(op + ".err", "w") as e:
+            subprocess.run(
+                [BIN, f"{OUT}/toml/{key}.toml"],
+                stdout=f,
+                stderr=e,
+                env=ENV,
+                timeout=TIMEOUT,
+                preexec_fn=_raise_oom_score,
+            )
     except subprocess.TimeoutExpired:
         return key, "TIMEOUT", time.monotonic() - t0
     dt = time.monotonic() - t0
@@ -234,8 +266,9 @@ def _run_pool(jobs, concurrency, tag):
         for fut in as_completed(futs):
             key, status, dt = fut.result()
             done += 1
-            print(f"[{tag} {done}/{len(jobs)}] {status:8s} {dt:7.1f}s  {key}",
-                  flush=True)
+            print(
+                f"[{tag} {done}/{len(jobs)}] {status:8s} {dt:7.1f}s  {key}", flush=True
+            )
 
 
 def main():
@@ -259,12 +292,16 @@ def main():
     heavy.sort(key=lambda j: order.get(j[0].rsplit("_", 1)[-1], 9))
 
     # light jobs are ≤~250 bf, <1.5 GB each → wide; heavy uses PER_JOB_GB(17).
-    light_conc = _mem_safe_jobs(int(os.environ.get("ATZ_CP_LIGHT_JOBS", "6")),
-                                per_job_gb=1.5)
+    light_conc = _mem_safe_jobs(
+        int(os.environ.get("ATZ_CP_LIGHT_JOBS", "6")), per_job_gb=1.5
+    )
     heavy_conc = _mem_safe_jobs(JOBS)
-    print(f"[par] {len(light)} light + {len(heavy)} heavy jobs; "
-          f"light_conc={light_conc}, heavy_conc={heavy_conc} "
-          f"(PER_JOB_GB={PER_JOB_GB}), 1 thread/job, {TIMEOUT}s/job", flush=True)
+    print(
+        f"[par] {len(light)} light + {len(heavy)} heavy jobs; "
+        f"light_conc={light_conc}, heavy_conc={heavy_conc} "
+        f"(PER_JOB_GB={PER_JOB_GB}), 1 thread/job, {TIMEOUT}s/job",
+        flush=True,
+    )
 
     _run_pool(light, light_conc, "light")
     # re-clamp heavy after light frees its memory

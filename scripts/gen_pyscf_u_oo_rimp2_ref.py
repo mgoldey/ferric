@@ -18,6 +18,7 @@ Workflow:
 
 Reference: Bozkaya, JCP 139, 154105 (2013).
 """
+
 import json
 import os
 import sys
@@ -37,16 +38,18 @@ os.makedirs(os.path.join(ROOT, "testdata/reference"), exist_ok=True)
 # Energy infrastructure
 # ----------------------------------------------------------------------------
 
+
 @dataclass
 class MolCache:
     """Pre-computed AO-basis quantities that don't depend on MO rotations."""
+
     mol: object
-    H: np.ndarray                 # core hamiltonian (nao, nao)
-    eri4: np.ndarray              # 4-index ERIs (nao,)*4
-    S: np.ndarray                 # overlap (nao, nao)
+    H: np.ndarray  # core hamiltonian (nao, nao)
+    eri4: np.ndarray  # 4-index ERIs (nao,)*4
+    S: np.ndarray  # overlap (nao, nao)
     auxmol: object
-    pmunu: np.ndarray             # (naux, nao, nao) RI 3-index (P|μν)
-    vinv: np.ndarray              # (naux, naux) V^{-1/2}
+    pmunu: np.ndarray  # (naux, nao, nao) RI 3-index (P|μν)
+    vinv: np.ndarray  # (naux, naux) V^{-1/2}
     nocc_a: int
     nocc_b: int
     e_nuc: float
@@ -54,7 +57,7 @@ class MolCache:
     @classmethod
     def from_mol(cls, mol, aux_name):
         H = mol.intor("int1e_kin") + mol.intor("int1e_nuc")
-        eri4 = mol.intor("int2e", aosym="s1").reshape((mol.nao,)*4)
+        eri4 = mol.intor("int2e", aosym="s1").reshape((mol.nao,) * 4)
         S = mol.intor("int1e_ovlp")
         auxmol = df.addons.make_auxmol(mol, auxbasis=aux_name)
         nao = mol.nao
@@ -63,28 +66,39 @@ class MolCache:
         pmunu = pmunu.reshape(nao, nao, naux).transpose(2, 0, 1)
         v2c = auxmol.intor("int2c2e")
         w, u = eigh(v2c)
-        vinv = u @ np.diag(1.0/np.sqrt(w)) @ u.T
+        vinv = u @ np.diag(1.0 / np.sqrt(w)) @ u.T
         nelec = mol.nelectron
         spin = mol.spin
         nocc_a = (nelec + spin) // 2
         nocc_b = (nelec - spin) // 2
-        return cls(mol=mol, H=H, eri4=eri4, S=S, auxmol=auxmol, pmunu=pmunu,
-                   vinv=vinv, nocc_a=nocc_a, nocc_b=nocc_b,
-                   e_nuc=mol.energy_nuc())
+        return cls(
+            mol=mol,
+            H=H,
+            eri4=eri4,
+            S=S,
+            auxmol=auxmol,
+            pmunu=pmunu,
+            vinv=vinv,
+            nocc_a=nocc_a,
+            nocc_b=nocc_b,
+            e_nuc=mol.energy_nuc(),
+        )
 
 
 def hf_energy_and_fock(cache, C_a, C_b):
     """UHF energy + α/β Fock in AO basis at given MOs."""
-    D_a = C_a[:, :cache.nocc_a] @ C_a[:, :cache.nocc_a].T
-    D_b = C_b[:, :cache.nocc_b] @ C_b[:, :cache.nocc_b].T
+    D_a = C_a[:, : cache.nocc_a] @ C_a[:, : cache.nocc_a].T
+    D_b = C_b[:, : cache.nocc_b] @ C_b[:, : cache.nocc_b].T
     D_tot = D_a + D_b
     J = np.einsum("mnls,ls->mn", cache.eri4, D_tot)
     K_a = np.einsum("mlns,ls->mn", cache.eri4, D_a)
     K_b = np.einsum("mlns,ls->mn", cache.eri4, D_b)
     F_a = cache.H + J - K_a
     F_b = cache.H + J - K_b
-    E = 0.5 * (np.einsum("mn,mn->", cache.H + F_a, D_a)
-               + np.einsum("mn,mn->", cache.H + F_b, D_b))
+    E = 0.5 * (
+        np.einsum("mn,mn->", cache.H + F_a, D_a)
+        + np.einsum("mn,mn->", cache.H + F_b, D_b)
+    )
     return E + cache.e_nuc, F_a, F_b
 
 
@@ -113,32 +127,50 @@ def umpt2_corr_and_amplitudes(b_full_a, b_full_b, eps_a, eps_b, nocc_a, nocc_b):
 
     # αα block
     iajb_aa = np.einsum("Pia,Pjb->iajb", b_a_ov, b_a_ov, optimize=True)
-    K_aa = iajb_aa - iajb_aa.transpose(0, 3, 2, 1)        # (ia|jb)-(ib|ja)
-    delta_aa = (eo_a[:, None, None, None] + eo_a[None, None, :, None]
-                - ev_a[None, :, None, None] - ev_a[None, None, None, :])
+    K_aa = iajb_aa - iajb_aa.transpose(0, 3, 2, 1)  # (ia|jb)-(ib|ja)
+    delta_aa = (
+        eo_a[:, None, None, None]
+        + eo_a[None, None, :, None]
+        - ev_a[None, :, None, None]
+        - ev_a[None, None, None, :]
+    )
     t_aa = K_aa / delta_aa
     e_aa = 0.25 * np.einsum("iajb,iajb->", t_aa, K_aa)
 
     # ββ block
     iajb_bb = np.einsum("PIA,PJB->IAJB", b_b_ov, b_b_ov, optimize=True)
     K_bb = iajb_bb - iajb_bb.transpose(0, 3, 2, 1)
-    delta_bb = (eo_b[:, None, None, None] + eo_b[None, None, :, None]
-                - ev_b[None, :, None, None] - ev_b[None, None, None, :])
+    delta_bb = (
+        eo_b[:, None, None, None]
+        + eo_b[None, None, :, None]
+        - ev_b[None, :, None, None]
+        - ev_b[None, None, None, :]
+    )
     t_bb = K_bb / delta_bb
     e_bb = 0.25 * np.einsum("iajb,iajb->", t_bb, K_bb)
 
     # αβ block (no antisymmetrization)
     iajb_ab = np.einsum("Pia,PJB->iaJB", b_a_ov, b_b_ov, optimize=True)
-    delta_ab = (eo_a[:, None, None, None] + eo_b[None, None, :, None]
-                - ev_a[None, :, None, None] - ev_b[None, None, None, :])
+    delta_ab = (
+        eo_a[:, None, None, None]
+        + eo_b[None, None, :, None]
+        - ev_a[None, :, None, None]
+        - ev_b[None, None, None, :]
+    )
     t_ab = iajb_ab / delta_ab
     e_ab = np.einsum("iajb,iajb->", t_ab, iajb_ab)
 
     return {
         "e_corr": e_aa + e_bb + e_ab,
-        "e_aa": e_aa, "e_bb": e_bb, "e_ab": e_ab,
-        "t_aa": t_aa, "t_bb": t_bb, "t_ab": t_ab,
-        "K_aa": K_aa, "K_bb": K_bb, "iajb_ab": iajb_ab,
+        "e_aa": e_aa,
+        "e_bb": e_bb,
+        "e_ab": e_ab,
+        "t_aa": t_aa,
+        "t_bb": t_bb,
+        "t_ab": t_ab,
+        "K_aa": K_aa,
+        "K_bb": K_bb,
+        "iajb_ab": iajb_ab,
     }
 
 
@@ -173,11 +205,12 @@ def total_energy_at_orbitals(cache, C_a, C_b):
 # Finite-difference gradient
 # ----------------------------------------------------------------------------
 
+
 def cayley(kappa):
     """Cayley transform of antisymmetric κ: U = (I - κ/2)^-1 (I + κ/2). Exactly unitary."""
     n = kappa.shape[0]
     I = np.eye(n)
-    return np.linalg.solve(I - 0.5*kappa, I + 0.5*kappa)
+    return np.linalg.solve(I - 0.5 * kappa, I + 0.5 * kappa)
 
 
 def rotate_mos(C, kappa):
@@ -203,7 +236,7 @@ def fd_gradient(cache, C_a, C_b, spin, h=1e-4):
     Returns shape (nvir_σ, nocc_σ).
     """
     nmo = C_a.shape[1]
-    if spin == 'a':
+    if spin == "a":
         nocc, nvir = cache.nocc_a, nmo - cache.nocc_a
     else:
         nocc, nvir = cache.nocc_b, nmo - cache.nocc_b
@@ -212,7 +245,7 @@ def fd_gradient(cache, C_a, C_b, spin, h=1e-4):
     for a in range(nvir):
         for i in range(nocc):
             K = make_kappa(nmo, nocc, (a, i), h)
-            if spin == 'a':
+            if spin == "a":
                 C_a_p = rotate_mos(C_a, K)
                 C_a_m = rotate_mos(C_a, -K)
                 E_p, *_ = total_energy_at_orbitals(cache, C_a_p, C_b)
@@ -222,7 +255,7 @@ def fd_gradient(cache, C_a, C_b, spin, h=1e-4):
                 C_b_m = rotate_mos(C_b, -K)
                 E_p, *_ = total_energy_at_orbitals(cache, C_a, C_b_p)
                 E_m, *_ = total_energy_at_orbitals(cache, C_a, C_b_m)
-            g[a, i] = (E_p - E_m) / (2*h)
+            g[a, i] = (E_p - E_m) / (2 * h)
     return g
 
 
@@ -238,7 +271,9 @@ def fd_gradient(cache, C_a, C_b, spin, h=1e-4):
 # truth — it doesn't need a Python analytic counterpart.
 #
 # Stashed but unused:
-def _stashed_analytic_gradient_DO_NOT_USE(cache, C_a, C_b, mp2_data, F_mo_a, F_mo_b, spin):
+def _stashed_analytic_gradient_DO_NOT_USE(
+    cache, C_a, C_b, mp2_data, F_mo_a, F_mo_b, spin
+):
     """Analytic orbital gradient g_σ[a, i] for U-OO-MP2.
 
     Bozkaya 2013: at a stationary point of the Hylleraas functional w.r.t.
@@ -261,13 +296,13 @@ def _stashed_analytic_gradient_DO_NOT_USE(cache, C_a, C_b, mp2_data, F_mo_a, F_m
 
     Returns shape (nvir_σ, nocc_σ).
     """
-    if spin == 'a':
+    if spin == "a":
         no_p, F_p, C_p = cache.nocc_a, F_mo_a, C_a
         no_q = cache.nocc_b
         b_full_p = build_b_full(cache, C_a)
         b_full_q = build_b_full(cache, C_b)
         t_ss = mp2_data["t_aa"]
-        t_os = mp2_data["t_ab"]               # (i_α, a_α, J_β, B_β)
+        t_os = mp2_data["t_ab"]  # (i_α, a_α, J_β, B_β)
     else:
         no_p, F_p, C_p = cache.nocc_b, F_mo_b, C_b
         no_q = cache.nocc_a
@@ -286,25 +321,31 @@ def _stashed_analytic_gradient_DO_NOT_USE(cache, C_a, C_b, mp2_data, F_mo_a, F_m
 
     # δ_ik term: Σ_{jab} t[k,a,j,b] · [(ca|jb) - (cb|ja)]
     eri_cajb = np.einsum("Pca,Pjb->cajb", B_vv, B_ov, optimize=True)
-    g_t1 = (np.einsum("kajb,cajb->ck", t_ss, eri_cajb, optimize=True)
-            - np.einsum("kbja,cajb->ck", t_ss, eri_cajb, optimize=True))
+    g_t1 = np.einsum("kajb,cajb->ck", t_ss, eri_cajb, optimize=True) - np.einsum(
+        "kbja,cajb->ck", t_ss, eri_cajb, optimize=True
+    )
 
     # δ_jk term: Σ_{iab} t[i,a,k,b] · [(ia|cb) - (ib|ca)]
     eri_iacb = np.einsum("Pia,Pcb->iacb", B_ov, B_vv, optimize=True)
-    g_t2 = (np.einsum("iakb,iacb->ck", t_ss, eri_iacb, optimize=True)
-            - np.einsum("ibka,iacb->ck", t_ss, eri_iacb, optimize=True))
+    g_t2 = np.einsum("iakb,iacb->ck", t_ss, eri_iacb, optimize=True) - np.einsum(
+        "ibka,iacb->ck", t_ss, eri_iacb, optimize=True
+    )
 
     # -δ_ac term: -Σ_{ijb} t[i,c,j,b] · [(ik|jb) - (ib|jk)]
     eri_ikjb = np.einsum("Pik,Pjb->ikjb", B_oo, B_ov, optimize=True)
     eri_ibjk = np.einsum("Pib,Pjk->ibjk", B_ov, B_oo, optimize=True)
-    g_t3 = -(np.einsum("icjb,ikjb->ck", t_ss, eri_ikjb, optimize=True)
-             - np.einsum("ibjc,ibjk->ck", t_ss, eri_ibjk, optimize=True))
+    g_t3 = -(
+        np.einsum("icjb,ikjb->ck", t_ss, eri_ikjb, optimize=True)
+        - np.einsum("ibjc,ibjk->ck", t_ss, eri_ibjk, optimize=True)
+    )
 
     # -δ_bc term: -Σ_{ija} t[i,a,j,c] · [(ia|jk) - (ik|ja)]
     eri_iajk = np.einsum("Pia,Pjk->iajk", B_ov, B_oo, optimize=True)
     eri_ikja = np.einsum("Pik,Pja->ikja", B_oo, B_ov, optimize=True)
-    g_t4 = -(np.einsum("iajc,iajk->ck", t_ss, eri_iajk, optimize=True)
-             - np.einsum("icja,ikja->ck", t_ss, eri_ikja, optimize=True))
+    g_t4 = -(
+        np.einsum("iajc,iajk->ck", t_ss, eri_iajk, optimize=True)
+        - np.einsum("icja,ikja->ck", t_ss, eri_ikja, optimize=True)
+    )
 
     g_ss = 0.5 * (g_t1 + g_t2 + g_t3 + g_t4)  # outer factor 1/2 from (1/4)·2 for t·∂K
 
@@ -314,8 +355,9 @@ def _stashed_analytic_gradient_DO_NOT_USE(cache, C_a, C_b, mp2_data, F_mo_a, F_m
     B_q_ov = b_full_q[:, :no_q, no_q:]
     eri_caJB = np.einsum("Pca,PJB->caJB", B_vv, B_q_ov, optimize=True)
     eri_ikJB = np.einsum("Pik,PJB->ikJB", B_oo, B_q_ov, optimize=True)
-    g_os = (np.einsum("kaJB,caJB->ck", t_os, eri_caJB, optimize=True)
-            - np.einsum("icJB,ikJB->ck", t_os, eri_ikJB, optimize=True))
+    g_os = np.einsum("kaJB,caJB->ck", t_os, eri_caJB, optimize=True) - np.einsum(
+        "icJB,ikJB->ck", t_os, eri_ikJB, optimize=True
+    )
 
     # Brillouin (HF orbital gradient): -2·F^σ_ck. The factor 2 comes from
     # the AO→MO chain when differentiating the HF energy.
@@ -327,6 +369,7 @@ def _stashed_analytic_gradient_DO_NOT_USE(cache, C_a, C_b, mp2_data, F_mo_a, F_m
 # ----------------------------------------------------------------------------
 # Validation
 # ----------------------------------------------------------------------------
+
 
 def mp2_energy_fixed_eps(cache, C_a, C_b, eps_a_fixed, eps_b_fixed, which="all"):
     """U-MP2 correlation energy with **fixed** denominators (orbital energies)
@@ -349,8 +392,12 @@ def mp2_energy_fixed_eps(cache, C_a, C_b, eps_a_fixed, eps_b_fixed, which="all")
     if which in ("aa", "all"):
         iajb_aa = np.einsum("Pia,Pjb->iajb", b_a_ov, b_a_ov, optimize=True)
         K_aa = iajb_aa - iajb_aa.transpose(0, 3, 2, 1)
-        d_aa = (eo_a[:, None, None, None] + eo_a[None, None, :, None]
-                - ev_a[None, :, None, None] - ev_a[None, None, None, :])
+        d_aa = (
+            eo_a[:, None, None, None]
+            + eo_a[None, None, :, None]
+            - ev_a[None, :, None, None]
+            - ev_a[None, None, None, :]
+        )
         t_aa = K_aa / d_aa
         e_aa = 0.25 * np.einsum("iajb,iajb->", t_aa, K_aa)
     else:
@@ -358,16 +405,24 @@ def mp2_energy_fixed_eps(cache, C_a, C_b, eps_a_fixed, eps_b_fixed, which="all")
     if which in ("bb", "all"):
         iajb_bb = np.einsum("PIA,PJB->IAJB", b_b_ov, b_b_ov, optimize=True)
         K_bb = iajb_bb - iajb_bb.transpose(0, 3, 2, 1)
-        d_bb = (eo_b[:, None, None, None] + eo_b[None, None, :, None]
-                - ev_b[None, :, None, None] - ev_b[None, None, None, :])
+        d_bb = (
+            eo_b[:, None, None, None]
+            + eo_b[None, None, :, None]
+            - ev_b[None, :, None, None]
+            - ev_b[None, None, None, :]
+        )
         t_bb = K_bb / d_bb
         e_bb = 0.25 * np.einsum("iajb,iajb->", t_bb, K_bb)
     else:
         e_bb = 0.0
     if which in ("ab", "all"):
         iajb_ab = np.einsum("Pia,PJB->iaJB", b_a_ov, b_b_ov, optimize=True)
-        d_ab = (eo_a[:, None, None, None] + eo_b[None, None, :, None]
-                - ev_a[None, :, None, None] - ev_b[None, None, None, :])
+        d_ab = (
+            eo_a[:, None, None, None]
+            + eo_b[None, None, :, None]
+            - ev_a[None, :, None, None]
+            - ev_b[None, None, None, :]
+        )
         t_ab = iajb_ab / d_ab
         e_ab = np.einsum("iajb,iajb->", t_ab, iajb_ab)
     else:
@@ -375,34 +430,46 @@ def mp2_energy_fixed_eps(cache, C_a, C_b, eps_a_fixed, eps_b_fixed, which="all")
     return e_aa + e_bb + e_ab
 
 
-def fd_gradient_fixed_eps(cache, C_a, C_b, eps_a_fixed, eps_b_fixed, spin, which, h=1e-4):
+def fd_gradient_fixed_eps(
+    cache, C_a, C_b, eps_a_fixed, eps_b_fixed, spin, which, h=1e-4
+):
     """FD gradient of `mp2_energy_fixed_eps[which]` with respect to κ^σ."""
     nmo = C_a.shape[1]
-    nocc = cache.nocc_a if spin == 'a' else cache.nocc_b
+    nocc = cache.nocc_a if spin == "a" else cache.nocc_b
     nvir = nmo - nocc
     g = np.zeros((nvir, nocc))
     for a in range(nvir):
         for i in range(nocc):
             K = make_kappa(nmo, nocc, (a, i), h)
-            if spin == 'a':
+            if spin == "a":
                 Cp = rotate_mos(C_a, K)
                 Cm = rotate_mos(C_a, -K)
-                Ep = mp2_energy_fixed_eps(cache, Cp, C_b, eps_a_fixed, eps_b_fixed, which)
-                Em = mp2_energy_fixed_eps(cache, Cm, C_b, eps_a_fixed, eps_b_fixed, which)
+                Ep = mp2_energy_fixed_eps(
+                    cache, Cp, C_b, eps_a_fixed, eps_b_fixed, which
+                )
+                Em = mp2_energy_fixed_eps(
+                    cache, Cm, C_b, eps_a_fixed, eps_b_fixed, which
+                )
             else:
                 Cp = rotate_mos(C_b, K)
                 Cm = rotate_mos(C_b, -K)
-                Ep = mp2_energy_fixed_eps(cache, C_a, Cp, eps_a_fixed, eps_b_fixed, which)
-                Em = mp2_energy_fixed_eps(cache, C_a, Cm, eps_a_fixed, eps_b_fixed, which)
+                Ep = mp2_energy_fixed_eps(
+                    cache, C_a, Cp, eps_a_fixed, eps_b_fixed, which
+                )
+                Em = mp2_energy_fixed_eps(
+                    cache, C_a, Cm, eps_a_fixed, eps_b_fixed, which
+                )
             g[a, i] = (Ep - Em) / (2 * h)
     return g
 
 
 def emit_fd_reference(atom, basis, aux, charge, spin, stub):
     """Write E_total + FD gradient at HF orbitals to JSON. Used by ferric tests."""
-    mol = gto.M(atom=atom, basis=basis, charge=charge, spin=spin,
-                unit="angstrom", verbose=0)
-    mf = scf.UHF(mol); mf.kernel()
+    mol = gto.M(
+        atom=atom, basis=basis, charge=charge, spin=spin, unit="angstrom", verbose=0
+    )
+    mf = scf.UHF(mol)
+    mf.kernel()
     assert mf.converged
     cache = MolCache.from_mol(mol, aux)
     F_ao = mf.get_fock()
@@ -410,17 +477,21 @@ def emit_fd_reference(atom, basis, aux, charge, spin, stub):
     _, C_b = eigh(F_ao[1], cache.S)
     E_tot, E_hf, mp2_data, F_mo_a, F_mo_b = total_energy_at_orbitals(cache, C_a, C_b)
     print(f"\n=== {stub}  atom={atom!r} basis={basis} ===")
-    print(f"E_hf = {E_hf:.10f},  E_corr = {mp2_data['e_corr']:.10f},  E_total = {E_tot:.10f}")
+    print(
+        f"E_hf = {E_hf:.10f},  E_corr = {mp2_data['e_corr']:.10f},  E_total = {E_tot:.10f}"
+    )
     print("Computing FD gradient (h=1e-4) — slow but exact...")
     grad = {}
-    for which in ['a', 'b']:
-        nocc = cache.nocc_a if which == 'a' else cache.nocc_b
+    for which in ["a", "b"]:
+        nocc = cache.nocc_a if which == "a" else cache.nocc_b
         if nocc == 0:
             print(f"[{which}] skipped (no occupied orbitals)")
             continue
         g_fd = fd_gradient(cache, C_a, C_b, which, h=1e-4)
         grad[which] = g_fd.tolist()
-        print(f"[{which}] ‖g_fd‖ = {np.linalg.norm(g_fd):.6e}  (max|elem| {np.max(np.abs(g_fd)):.3e})")
+        print(
+            f"[{which}] ‖g_fd‖ = {np.linalg.norm(g_fd):.6e}  (max|elem| {np.max(np.abs(g_fd)):.3e})"
+        )
 
     # Integral-only FD pieces (orbital energies fixed at HF eps).
     eps_a_fixed = np.diag(F_mo_a).copy()
@@ -429,45 +500,60 @@ def emit_fd_reference(atom, basis, aux, charge, spin, stub):
     # Per-spin per-block FD: for α rotation, the active blocks are αα and αβ;
     # for β rotation, the active blocks are ββ and αβ. Other blocks are 0.
     grad_int_same_spin = {}  # αα for α-rot, ββ for β-rot
-    grad_int_ab = {}         # αβ for both
-    for which in ['a', 'b']:
-        nocc = cache.nocc_a if which == 'a' else cache.nocc_b
+    grad_int_ab = {}  # αβ for both
+    for which in ["a", "b"]:
+        nocc = cache.nocc_a if which == "a" else cache.nocc_b
         if nocc == 0:
             continue
-        same_block = "aa" if which == 'a' else "bb"
+        same_block = "aa" if which == "a" else "bb"
         for block, dst, lbl in [
-            ("all",        grad_int,           "all"),
-            (same_block,   grad_int_same_spin, same_block),
-            ("ab",         grad_int_ab,        "ab"),
+            ("all", grad_int, "all"),
+            (same_block, grad_int_same_spin, same_block),
+            ("ab", grad_int_ab, "ab"),
         ]:
-            g = fd_gradient_fixed_eps(cache, C_a, C_b, eps_a_fixed, eps_b_fixed,
-                                      which, block, h=1e-4)
+            g = fd_gradient_fixed_eps(
+                cache, C_a, C_b, eps_a_fixed, eps_b_fixed, which, block, h=1e-4
+            )
             dst[which] = g.tolist()
-            print(f"[{which} int-only/{lbl}] ‖g‖ = {np.linalg.norm(g):.4e}  "
-                  f"max|elem| {np.max(np.abs(g)):.3e}")
+            print(
+                f"[{which} int-only/{lbl}] ‖g‖ = {np.linalg.norm(g):.4e}  "
+                f"max|elem| {np.max(np.abs(g)):.3e}"
+            )
 
     out = {
-        "atom": atom, "basis": basis, "aux_basis": aux,
-        "charge": charge, "spin_2s": spin,
-        "nocc_a": cache.nocc_a, "nocc_b": cache.nocc_b,
-        "e_hf": float(E_hf), "e_corr": float(mp2_data["e_corr"]),
+        "atom": atom,
+        "basis": basis,
+        "aux_basis": aux,
+        "charge": charge,
+        "spin_2s": spin,
+        "nocc_a": cache.nocc_a,
+        "nocc_b": cache.nocc_b,
+        "e_hf": float(E_hf),
+        "e_corr": float(mp2_data["e_corr"]),
         "e_total": float(E_tot),
-        "C_a": C_a.tolist(), "C_b": C_b.tolist(),
-        "eps_a": np.diag(F_mo_a).tolist(), "eps_b": np.diag(F_mo_b).tolist(),
-        "grad_fd_a": grad.get('a'), "grad_fd_b": grad.get('b'),
-        "grad_int_fd_a": grad_int.get('a'),     "grad_int_fd_b": grad_int.get('b'),
+        "C_a": C_a.tolist(),
+        "C_b": C_b.tolist(),
+        "eps_a": np.diag(F_mo_a).tolist(),
+        "eps_b": np.diag(F_mo_b).tolist(),
+        "grad_fd_a": grad.get("a"),
+        "grad_fd_b": grad.get("b"),
+        "grad_int_fd_a": grad_int.get("a"),
+        "grad_int_fd_b": grad_int.get("b"),
         # `same_spin` is αα for α-rotation, ββ for β-rotation.
-        "grad_int_same_fd_a": grad_int_same_spin.get('a'),
-        "grad_int_same_fd_b": grad_int_same_spin.get('b'),
-        "grad_int_ab_fd_a": grad_int_ab.get('a'), "grad_int_ab_fd_b": grad_int_ab.get('b'),
+        "grad_int_same_fd_a": grad_int_same_spin.get("a"),
+        "grad_int_same_fd_b": grad_int_same_spin.get("b"),
+        "grad_int_ab_fd_a": grad_int_ab.get("a"),
+        "grad_int_ab_fd_b": grad_int_ab.get("b"),
         "method": "u-oo-mp2-reference",
-        "note": ("E_total and grad at canonical UHF MOs. Use as ground truth "
-                 "for the analytic U-OO-MP2 gradient. grad_fd_* is full ∂E/∂κ "
-                 "(integral + eps response). grad_int_fd_* holds orbital "
-                 "energies fixed (integral response only) and is what the "
-                 "ferric scaffold currently captures. grad_int_aa_fd_* and "
-                 "grad_int_ab_fd_* are per-block FD gradients for term-by-term "
-                 "validation.")
+        "note": (
+            "E_total and grad at canonical UHF MOs. Use as ground truth "
+            "for the analytic U-OO-MP2 gradient. grad_fd_* is full ∂E/∂κ "
+            "(integral + eps response). grad_int_fd_* holds orbital "
+            "energies fixed (integral response only) and is what the "
+            "ferric scaffold currently captures. grad_int_aa_fd_* and "
+            "grad_int_ab_fd_* are per-block FD gradients for term-by-term "
+            "validation."
+        ),
     }
     path = os.path.join(ROOT, f"testdata/reference/{stub}.json")
     with open(path, "w") as f:
@@ -480,18 +566,25 @@ if __name__ == "__main__":
     for atom, basis, aux, charge, spin in [
         ("O 0 0 0; H 0 0 0.97", "cc-pvdz", "cc-pvdz-ri", 0, 1),
     ]:
-        mol = gto.M(atom=atom, basis=basis, charge=charge, spin=spin,
-                    unit="angstrom", verbose=0)
-        mf = scf.UHF(mol); mf.kernel()
+        mol = gto.M(
+            atom=atom, basis=basis, charge=charge, spin=spin, unit="angstrom", verbose=0
+        )
+        mf = scf.UHF(mol)
+        mf.kernel()
         cache = MolCache.from_mol(mol, aux)
         F_ao = mf.get_fock()
         _, C_a = eigh(F_ao[0], cache.S)
         _, C_b = eigh(F_ao[1], cache.S)
         E_tot, E_hf, mp2_data, *_ = total_energy_at_orbitals(cache, C_a, C_b)
-        pt = mp.UMP2(mf); pt.kernel()
-        print(f"smoke: E_corr (our) = {mp2_data['e_corr']:.10f}  "
-              f"PySCF UMP2 = {pt.e_corr:.10f}  diff = {abs(mp2_data['e_corr']-pt.e_corr):.2e}")
+        pt = mp.UMP2(mf)
+        pt.kernel()
+        print(
+            f"smoke: E_corr (our) = {mp2_data['e_corr']:.10f}  "
+            f"PySCF UMP2 = {pt.e_corr:.10f}  diff = {abs(mp2_data['e_corr'] - pt.e_corr):.2e}"
+        )
 
     # Write FD references to JSON for ferric tests to consume.
-    emit_fd_reference("H 0 0 0",            "cc-pvdz", "cc-pvdz-ri", 0, 1, "h_cc-pvdz_u-oomp2-fd")
-    emit_fd_reference("O 0 0 0; H 0 0 0.97","cc-pvdz", "cc-pvdz-ri", 0, 1, "oh_cc-pvdz_u-oomp2-fd")
+    emit_fd_reference("H 0 0 0", "cc-pvdz", "cc-pvdz-ri", 0, 1, "h_cc-pvdz_u-oomp2-fd")
+    emit_fd_reference(
+        "O 0 0 0; H 0 0 0.97", "cc-pvdz", "cc-pvdz-ri", 0, 1, "oh_cc-pvdz_u-oomp2-fd"
+    )

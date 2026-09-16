@@ -39,6 +39,7 @@ Usage (always under a memory cap):
     --basis 6-31g [--anchor-only] [--mutate] [--mutate-riccati] \
     [--eps 1e-3,1e-4,1e-5] [--omega 1.0]
 """
+
 import argparse
 import os
 import sys
@@ -55,9 +56,9 @@ import amplitude_lmp2_proto as lmp2  # shared machinery; NOT modified
 log = lmp2.log
 
 # Anchor bars (registered in wiki/amplitude-threshold-drpa.md Sec 4):
-BAR_RICCATI = 1e-9   # localized eps=0 Riccati vs canonical Riccati
-BAR_PLASMON = 1e-9   # canonical Riccati vs plasmon formula (same integrals)
-BAR_AC = 5e-5        # canonical Riccati vs PySCF AC dRPA (DF + quadrature)
+BAR_RICCATI = 1e-9  # localized eps=0 Riccati vs canonical Riccati
+BAR_PLASMON = 1e-9  # canonical Riccati vs plasmon formula (same integrals)
+BAR_AC = 5e-5  # canonical Riccati vs PySCF AC dRPA (DF + quadrature)
 
 
 def fock_superop(T, Foo, Fvv):
@@ -69,8 +70,7 @@ def fock_superop(T, Foo, Fvv):
     return r
 
 
-def solve_riccati_masked(B, Foo, Fvv, mask, damp=1.0, rtol=1e-12,
-                         maxiter=3000):
+def solve_riccati_masked(B, Foo, Fvv, mask, damp=1.0, rtol=1e-12, maxiter=3000):
     """Masked drCCD Riccati by damped fixed-point iteration.
 
     T <- T - damp * R(T)/D, with the mask applied to B once and to T/R
@@ -78,8 +78,12 @@ def solve_riccati_masked(B, Foo, Fvv, mask, damp=1.0, rtol=1e-12,
     Returns (T, niter, relres, diverged).
     """
     fo, fv = np.diag(Foo).copy(), np.diag(Fvv).copy()
-    D = (fv[None, :, None, None] + fv[None, None, None, :]
-         - fo[:, None, None, None] - fo[None, None, :, None])
+    D = (
+        fv[None, :, None, None]
+        + fv[None, None, None, :]
+        - fo[:, None, None, None]
+        - fo[None, None, :, None]
+    )
     assert D.min() > 0, "non-positive denominator: not a gapped system?"
     no, nv = B.shape[0], B.shape[1]
     nov = no * nv
@@ -88,7 +92,7 @@ def solve_riccati_masked(B, Foo, Fvv, mask, damp=1.0, rtol=1e-12,
     bnorm = np.linalg.norm(Bm)
     if bnorm == 0.0:
         return np.zeros_like(B), 0, 0.0, False
-    T = -Bm / D                                    # masked MP2-like start
+    T = -Bm / D  # masked MP2-like start
     best = np.inf
     relres = np.inf
     for it in range(1, maxiter + 1):
@@ -174,8 +178,10 @@ def canonical_drpa(mol, mf, ncore, omega, damp, mutate_riccati=False):
     del Ksc
     B = 2.0 * K
     if mutate_riccati:
-        log("  MUTATION(riccati): B[0,0,0,0] += 1e-3 in the Riccati path "
-            "only; plasmon/AC cross-checks must FAIL")
+        log(
+            "  MUTATION(riccati): B[0,0,0,0] += 1e-3 in the Riccati path "
+            "only; plasmon/AC cross-checks must FAIL"
+        )
         B = B.copy()
         B[0, 0, 0, 0] += 1e-3
     mask = np.ones(B.shape, dtype=bool)
@@ -200,8 +206,18 @@ def pyscf_ac_drpa(mol, mf, ncore, nw=100):
     return r.kernel(nw=nw)
 
 
-def run(xyz, basis, eps_list, anchor_only=False, mutate=False,
-        mutate_riccati=False, out=None, omega=None, damp=1.0, nw=100):
+def run(
+    xyz,
+    basis,
+    eps_list,
+    anchor_only=False,
+    mutate=False,
+    mutate_riccati=False,
+    out=None,
+    omega=None,
+    damp=1.0,
+    nw=100,
+):
     t0 = time.time()
     atom = lmp2.load_xyz(xyz)
     mol = gto.M(atom=atom, basis=basis, verbose=0, max_memory=300)
@@ -212,22 +228,25 @@ def run(xyz, basis, eps_list, anchor_only=False, mutate=False,
     mf.max_cycle = 200
     mf.kernel()
     assert mf.converged, "SCF not converged"
-    log(f"  E(RHF) = {mf.e_tot:.10f}  ({time.time()-t0:.1f}s)")
+    log(f"  E(RHF) = {mf.e_tot:.10f}  ({time.time() - t0:.1f}s)")
 
     # ---- canonical references (independent constructions) ----
-    e_can, e_pl, it_can = canonical_drpa(mol, mf, ncore, omega, damp,
-                                         mutate_riccati=mutate_riccati)
+    e_can, e_pl, it_can = canonical_drpa(
+        mol, mf, ncore, omega, damp, mutate_riccati=mutate_riccati
+    )
     wtag = "coulomb" if omega is None else f"w={omega:g}"
-    log(f"  E_corr(canonical Riccati, {wtag}) = {e_can:.10f}  "
-        f"(fp iters={it_can})")
-    log(f"  E_corr(plasmon formula,  {wtag}) = {e_pl:.10f}  "
-        f"|d|={abs(e_can-e_pl):.3e}")
+    log(f"  E_corr(canonical Riccati, {wtag}) = {e_can:.10f}  (fp iters={it_can})")
+    log(
+        f"  E_corr(plasmon formula,  {wtag}) = {e_pl:.10f}  |d|={abs(e_can - e_pl):.3e}"
+    )
     pl_ok = abs(e_can - e_pl) <= BAR_PLASMON
     if mutate_riccati:
-        verdict = ("MUTATION-OK (plasmon xcheck FAILED as required)"
-                   if not pl_ok else
-                   "MUTATION-BROKEN: plasmon xcheck still passes!")
-        log(f"  {verdict}  |d|={abs(e_can-e_pl):.3e}")
+        verdict = (
+            "MUTATION-OK (plasmon xcheck FAILED as required)"
+            if not pl_ok
+            else "MUTATION-BROKEN: plasmon xcheck still passes!"
+        )
+        log(f"  {verdict}  |d|={abs(e_can - e_pl):.3e}")
         return
     if not pl_ok:
         raise SystemExit("plasmon/Riccati cross-check FAILED; no sweep run")
@@ -236,12 +255,15 @@ def run(xyz, basis, eps_list, anchor_only=False, mutate=False,
     if omega is None:
         e_ac = pyscf_ac_drpa(mol, mf, ncore, nw=nw)
         gap = e_can - e_ac
-        log(f"  E_corr(PySCF AC dRPA, nw={nw}, aug-cc-pV5Z-RI DF) = "
+        log(
+            f"  E_corr(PySCF AC dRPA, nw={nw}, aug-cc-pV5Z-RI DF) = "
             f"{e_ac:.10f}  "
-            f"gap={gap:+.3e} (DF+quadrature)")
+            f"gap={gap:+.3e} (DF+quadrature)"
+        )
         if abs(gap) > BAR_AC:
-            raise SystemExit(f"AC anchor FAILED: |gap|={abs(gap):.3e} > "
-                             f"{BAR_AC:g}; no sweep run")
+            raise SystemExit(
+                f"AC anchor FAILED: |gap|={abs(gap):.3e} > {BAR_AC:g}; no sweep run"
+            )
         log(f"  ANCHOR Riccati-vs-AC PASSED (bar {BAR_AC:g})")
     else:
         # PySCF's AC-RPA has no SR kernel: the SR reference is the canonical
@@ -251,8 +273,10 @@ def run(xyz, basis, eps_list, anchor_only=False, mutate=False,
         e_full, e_pl_full, _ = canonical_drpa(mol, mf, ncore, None, damp)
         log(f"  E_corr(canonical Riccati, coulomb) = {e_full:.10f} (SR guard)")
         if not abs(e_can) < abs(e_full) - 1e-10:
-            raise SystemExit("SR guard FAILED: |E_sr| >= |E_coulomb| — "
-                             "with_range_coulomb no-op or sign error")
+            raise SystemExit(
+                "SR guard FAILED: |E_sr| >= |E_coulomb| — "
+                "with_range_coulomb no-op or sign error"
+            )
 
     # ---- localized basis (same machinery as the MP2 rig) ----
     nocc_tot = np.count_nonzero(mf.mo_occ > 0)
@@ -260,8 +284,7 @@ def run(xyz, basis, eps_list, anchor_only=False, mutate=False,
     C_act = mf.mo_coeff[:, ncore:nocc_tot]
     C_act = lo.Boys(mol, C_act).kernel()
     C_vloc, n_l, n_h = lmp2.build_vvhv(mol, mf, C_occ_all)
-    log(f"  VV-HV: n_valence_virt={n_l} n_hard_virt={n_h} "
-        f"nocc_act={C_act.shape[1]}")
+    log(f"  VV-HV: n_valence_virt={n_l} n_hard_virt={n_h} nocc_act={C_act.shape[1]}")
     if mutate:
         log("  MUTATION: dropping one hard virtual (span check bypassed)")
         C_vloc = C_vloc[:, :-1]
@@ -272,17 +295,18 @@ def run(xyz, basis, eps_list, anchor_only=False, mutate=False,
     F = mf.get_fock()
     Foo = C_act.T @ F @ C_act
     Fvv = C_vloc.T @ F @ C_vloc
-    log(f"  transforming (ia|jb): no={no} nv={nv} "
-        f"tensor {8*(no*nv)**2/1e6:.0f} MB")
+    log(
+        f"  transforming (ia|jb): no={no} nv={nv} "
+        f"tensor {8 * (no * nv) ** 2 / 1e6:.0f} MB"
+    )
     if omega is not None:
         with mol.with_range_coulomb(-omega):
-            K = ao2mo.general(mol, (C_act, C_vloc, C_act, C_vloc),
-                              compact=False)
+            K = ao2mo.general(mol, (C_act, C_vloc, C_act, C_vloc), compact=False)
     else:
         K = ao2mo.general(mol, (C_act, C_vloc, C_act, C_vloc), compact=False)
     B = 2.0 * K.reshape(no, nv, no, nv)
     del K
-    log(f"  integrals done ({time.time()-t0:.1f}s)")
+    log(f"  integrals done ({time.time() - t0:.1f}s)")
 
     e_loc0 = None
     eps_run = [0.0] + ([] if anchor_only or mutate else eps_list)
@@ -290,21 +314,22 @@ def run(xyz, basis, eps_list, anchor_only=False, mutate=False,
         if eps == 0.0:
             mask = np.ones(B.shape, dtype=bool)
         else:
-            mask = np.abs(B) > eps        # (ia)<->(jb)-symmetric already
+            mask = np.abs(B) > eps  # (ia)<->(jb)-symmetric already
         st = lmp2.domain_stats(mask)
         t1 = time.time()
-        T, niter, relres, div = solve_riccati_masked(B, Foo, Fvv, mask,
-                                                     damp=damp)
+        T, niter, relres, div = solve_riccati_masked(B, Foo, Fvv, mask, damp=damp)
         e = drpa_energy(T, B, mask)
         de_can = e - e_can
         de_loc = e - e_loc0 if e_loc0 is not None else 0.0
         tag = "ANCHOR" if eps == 0.0 else f"{eps:g}"
-        row = (f"{wtag:>8s} {tag:>8s}  E_corr={e:.10f}  dE_can={de_can:+.3e} "
-               f"dE_loc0={de_loc:+.3e}  keep={st['frac']:.4f} "
-               f"pairs={st['pair_frac']:.3f} "
-               f"dom(mean/max)={st['dom_mean']:.1f}/{st['dom_max']} of {nv}  "
-               f"fp={niter} relres={relres:.1e}"
-               f"{' DIVERGED' if div else ''} ({time.time()-t1:.1f}s)")
+        row = (
+            f"{wtag:>8s} {tag:>8s}  E_corr={e:.10f}  dE_can={de_can:+.3e} "
+            f"dE_loc0={de_loc:+.3e}  keep={st['frac']:.4f} "
+            f"pairs={st['pair_frac']:.3f} "
+            f"dom(mean/max)={st['dom_mean']:.1f}/{st['dom_max']} of {nv}  "
+            f"fp={niter} relres={relres:.1e}"
+            f"{' DIVERGED' if div else ''} ({time.time() - t1:.1f}s)"
+        )
         log("  " + row)
         if out:
             with open(out, "a") as f:
@@ -313,19 +338,23 @@ def run(xyz, basis, eps_list, anchor_only=False, mutate=False,
             e_loc0 = e
             ok = abs(de_can) < BAR_RICCATI and not div
             if mutate:
-                verdict = ("MUTATION-OK (anchor FAILED as required)"
-                           if abs(de_can) > 1e-6 else
-                           "MUTATION-BROKEN: anchor still passes!")
+                verdict = (
+                    "MUTATION-OK (anchor FAILED as required)"
+                    if abs(de_can) > 1e-6
+                    else "MUTATION-BROKEN: anchor still passes!"
+                )
                 log(f"  {verdict}  |dE|={abs(de_can):.3e}")
                 return
-            log(f"  ANCHOR localized-vs-canonical "
+            log(
+                f"  ANCHOR localized-vs-canonical "
                 f"{'PASSED' if ok else 'FAILED'} |dE|={abs(de_can):.3e} "
-                f"(bar {BAR_RICCATI:g})")
+                f"(bar {BAR_RICCATI:g})"
+            )
             if not ok:
                 raise SystemExit("exactness anchor failed; no sweep run")
             if anchor_only:
                 return
-    log(f"  total {time.time()-t0:.1f}s")
+    log(f"  total {time.time() - t0:.1f}s")
 
 
 def main():
@@ -334,24 +363,44 @@ def main():
     ap.add_argument("--basis", default="6-31g")
     ap.add_argument("--eps", default="1e-3,1e-4,1e-5")
     ap.add_argument("--anchor-only", action="store_true")
-    ap.add_argument("--mutate", action="store_true",
-                    help="drop one hard virtual; anchor must FAIL")
-    ap.add_argument("--mutate-riccati", action="store_true",
-                    help="corrupt B inside the canonical Riccati path only; "
-                         "the plasmon cross-check must then FAIL")
+    ap.add_argument(
+        "--mutate", action="store_true", help="drop one hard virtual; anchor must FAIL"
+    )
+    ap.add_argument(
+        "--mutate-riccati",
+        action="store_true",
+        help="corrupt B inside the canonical Riccati path only; "
+        "the plasmon cross-check must then FAIL",
+    )
     ap.add_argument("--out", default=None)
-    ap.add_argument("--omega", type=float, default=None,
-                    help="SR erfc attenuation of B, Bohr^-1 (sparsity-"
-                         "composition probe only — the physical role of RPA "
-                         "in this repo's compositions is the LR erf channel)")
-    ap.add_argument("--damp", type=float, default=1.0,
-                    help="fixed-point damping factor")
-    ap.add_argument("--nw", type=int, default=100,
-                    help="frequency grid for the PySCF AC reference")
+    ap.add_argument(
+        "--omega",
+        type=float,
+        default=None,
+        help="SR erfc attenuation of B, Bohr^-1 (sparsity-"
+        "composition probe only — the physical role of RPA "
+        "in this repo's compositions is the LR erf channel)",
+    )
+    ap.add_argument(
+        "--damp", type=float, default=1.0, help="fixed-point damping factor"
+    )
+    ap.add_argument(
+        "--nw", type=int, default=100, help="frequency grid for the PySCF AC reference"
+    )
     a = ap.parse_args()
     eps_list = [float(x) for x in a.eps.split(",") if x]
-    run(a.xyz, a.basis, eps_list, a.anchor_only, a.mutate, a.mutate_riccati,
-        a.out, omega=a.omega, damp=a.damp, nw=a.nw)
+    run(
+        a.xyz,
+        a.basis,
+        eps_list,
+        a.anchor_only,
+        a.mutate,
+        a.mutate_riccati,
+        a.out,
+        omega=a.omega,
+        damp=a.damp,
+        nw=a.nw,
+    )
 
 
 if __name__ == "__main__":
