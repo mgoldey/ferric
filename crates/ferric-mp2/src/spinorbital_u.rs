@@ -160,12 +160,7 @@ pub fn u_asym_same(blocks: &SpinBlocks<'_>, n_a: usize, n_b: usize) -> ArrayD<f6
 /// The interleaved layout (even = α, odd = β) needs `2·max(n_α, n_β)` slots per axis
 /// when the two spins differ in size; the surplus slots are padding that the builders
 /// leave at zero.
-pub fn interleaved_dims(
-    no_a: usize,
-    no_b: usize,
-    nv_a: usize,
-    nv_b: usize,
-) -> (usize, usize) {
+pub fn interleaved_dims(no_a: usize, no_b: usize, nv_a: usize, nv_b: usize) -> (usize, usize) {
     (2 * no_a.max(no_b), 2 * nv_a.max(nv_b))
 }
 
@@ -186,7 +181,9 @@ mod tests {
         let mut g = ArrayD::<f64>::zeros(IxDyn(&[no, nv, no, nv]));
         let mut seed = 1u64;
         let mut next = || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((seed >> 33) as f64 / (1u64 << 31) as f64) - 0.5
         };
         for i in 0..no {
@@ -212,12 +209,19 @@ mod tests {
         }
 
         let want = asym_oovv(&g, no, nv);
-        let blocks = SpinBlocks { aa: &g, ab: &g, bb: &g };
+        let blocks = SpinBlocks {
+            aa: &g,
+            ab: &g,
+            bb: &g,
+        };
         let got = u_asym_oovv(&blocks, no, no, nv, nv);
 
         assert_eq!(want.shape(), got.shape());
-        let max_dev =
-            want.iter().zip(got.iter()).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
+        let max_dev = want
+            .iter()
+            .zip(got.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
         assert!(
             max_dev < 1e-15,
             "u_asym_oovv disagrees with asym_oovv on a shared spatial set: {max_dev:.3e}"
@@ -230,7 +234,9 @@ mod tests {
         let mut g = ArrayD::<f64>::zeros(IxDyn(&[n, n, n, n]));
         let mut seed = 7u64;
         let mut next = || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((seed >> 33) as f64 / (1u64 << 31) as f64) - 0.5
         };
         for p in 0..n {
@@ -254,11 +260,20 @@ mod tests {
                 for r in 0..n {
                     for s in 0..n {
                         let orbit = [
-                            [p, q, r, s], [q, p, r, s], [p, q, s, r], [q, p, s, r],
-                            [r, s, p, q], [s, r, p, q], [r, s, q, p], [s, r, q, p],
+                            [p, q, r, s],
+                            [q, p, r, s],
+                            [p, q, s, r],
+                            [q, p, s, r],
+                            [r, s, p, q],
+                            [s, r, p, q],
+                            [r, s, q, p],
+                            [s, r, q, p],
                         ];
-                        let avg: f64 =
-                            orbit.iter().map(|ix| g[[ix[0], ix[1], ix[2], ix[3]]]).sum::<f64>() / 8.0;
+                        let avg: f64 = orbit
+                            .iter()
+                            .map(|ix| g[[ix[0], ix[1], ix[2], ix[3]]])
+                            .sum::<f64>()
+                            / 8.0;
                         sym[[p, q, r, s]] = avg;
                     }
                 }
@@ -267,10 +282,17 @@ mod tests {
         let g = sym;
 
         let want = asym_same(&g, n);
-        let blocks = SpinBlocks { aa: &g, ab: &g, bb: &g };
+        let blocks = SpinBlocks {
+            aa: &g,
+            ab: &g,
+            bb: &g,
+        };
         let got = u_asym_same(&blocks, n, n);
-        let max_dev =
-            want.iter().zip(got.iter()).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
+        let max_dev = want
+            .iter()
+            .zip(got.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
         assert!(
             max_dev < 1e-15,
             "u_asym_same disagrees with asym_same on a shared spatial set: {max_dev:.3e}"
@@ -311,7 +333,11 @@ mod tests {
             g
         };
         let (ga, gab, gb) = (mk(11), mk(29), mk(53));
-        let blocks = SpinBlocks { aa: &ga, ab: &gab, bb: &gb };
+        let blocks = SpinBlocks {
+            aa: &ga,
+            ab: &gab,
+            bb: &gb,
+        };
         let v = u_asym_oovv(&blocks, no, no, nv, nv);
 
         let (no2, nv2) = (2 * no, 2 * nv);
@@ -326,6 +352,9 @@ mod tests {
                 }
             }
         }
-        assert!(max_dev < 1e-15, "antisymmetry violated with distinct spin blocks: {max_dev:.3e}");
+        assert!(
+            max_dev < 1e-15,
+            "antisymmetry violated with distinct spin blocks: {max_dev:.3e}"
+        );
     }
 }

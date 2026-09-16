@@ -121,7 +121,9 @@ impl Reservation {
     /// multiplier. Saturating: a nonsense shape reports `usize::MAX` rather
     /// than wrapping to a small number that would pass a check.
     pub fn bytes(&self) -> usize {
-        self.elems.saturating_mul(self.elem_bytes).saturating_mul(self.workers)
+        self.elems
+            .saturating_mul(self.elem_bytes)
+            .saturating_mul(self.workers)
     }
 }
 
@@ -216,7 +218,8 @@ impl MemoryPlan {
         match self.index.get(label) {
             Some(&i) => self.reservations[i] = r,
             None => {
-                self.index.insert(label.to_string(), self.reservations.len());
+                self.index
+                    .insert(label.to_string(), self.reservations.len());
                 self.reservations.push(r);
             }
         }
@@ -231,9 +234,7 @@ impl MemoryPlan {
         let mut largest_transient: usize = 0;
         for r in &self.reservations {
             match r.lifetime {
-                Lifetime::Resident | Lifetime::PerWorker => {
-                    fixed = fixed.saturating_add(r.bytes())
-                }
+                Lifetime::Resident | Lifetime::PerWorker => fixed = fixed.saturating_add(r.bytes()),
                 Lifetime::Transient => largest_transient = largest_transient.max(r.bytes()),
             }
         }
@@ -261,7 +262,9 @@ impl MemoryPlan {
     /// [`check`](MemoryPlan::check), not silently looping forever on
     /// zero-width panels.
     pub fn fit_width(&self, per_unit_elems: usize, workers: usize) -> usize {
-        let per_unit = per_unit_elems.saturating_mul(F64_BYTES).saturating_mul(workers.max(1));
+        let per_unit = per_unit_elems
+            .saturating_mul(F64_BYTES)
+            .saturating_mul(workers.max(1));
         if per_unit == 0 {
             return 1;
         }
@@ -401,8 +404,11 @@ mod tests {
         p.reserve("resident_b", 2_000_000, Lifetime::Resident); // 16 MB
         p.reserve("scratch_small", 1_000_000, Lifetime::Transient); // 8 MB
         p.reserve("scratch_big", 5_000_000, Lifetime::Transient); // 40 MB
-        // 8 + 16 resident, plus only the LARGEST transient (40), not both.
-        assert_eq!(p.peak_bytes(), (1_000_000 + 2_000_000 + 5_000_000) * F64_BYTES);
+                                                                  // 8 + 16 resident, plus only the LARGEST transient (40), not both.
+        assert_eq!(
+            p.peak_bytes(),
+            (1_000_000 + 2_000_000 + 5_000_000) * F64_BYTES
+        );
     }
 
     #[test]
@@ -423,7 +429,10 @@ mod tests {
         p.reserve("the_huge_one", 500_000_000, Lifetime::Resident); // 4 GB
         let err = p.check().unwrap_err().to_string();
         assert!(err.contains("RI-MP2"), "{err}");
-        assert!(err.contains("the_huge_one"), "breakdown must name the term: {err}");
+        assert!(
+            err.contains("the_huge_one"),
+            "breakdown must name the term: {err}"
+        );
         // Largest first, so the culprit is the first row of the breakdown.
         let huge = err.find("the_huge_one").unwrap();
         let small = err.find("small").unwrap();
@@ -456,7 +465,7 @@ mod tests {
     fn fit_width_solves_the_panel_width() {
         let mut p = MemoryPlan::with_budget_bytes(GB, "t");
         p.reserve("resident", 100_000_000 / F64_BYTES, Lifetime::Resident); // 100 MB
-        // 900 MB left; each unit is 1000 f64 = 8000 bytes, 1 worker.
+                                                                            // 900 MB left; each unit is 1000 f64 = 8000 bytes, 1 worker.
         assert_eq!(p.fit_width(1000, 1), 900_000_000 / 8000);
         // Doubling the workers halves the width.
         assert_eq!(p.fit_width(1000, 2), 900_000_000 / 16000);
@@ -467,13 +476,20 @@ mod tests {
         let mut p = MemoryPlan::with_budget_bytes(1000, "t");
         p.reserve("hog", 10_000, Lifetime::Resident);
         assert_eq!(p.remaining(), 0);
-        assert_eq!(p.fit_width(1_000_000, 8), 1, "a zero width cannot make progress");
+        assert_eq!(
+            p.fit_width(1_000_000, 8),
+            1,
+            "a zero width cannot make progress"
+        );
     }
 
     #[test]
     fn alloc_rejects_an_undeclared_label() {
         let p = MemoryPlan::with_budget_bytes(GB, "t");
-        let err = p.alloc2("never_reserved", (10, 10)).unwrap_err().to_string();
+        let err = p
+            .alloc2("never_reserved", (10, 10))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("never reserved"), "{err}");
     }
 
@@ -485,7 +501,10 @@ mod tests {
         p.reserve("b_tensor", 100, Lifetime::Resident);
         let err = p.alloc2("b_tensor", (100, 100)).unwrap_err().to_string();
         assert!(err.contains("drifted"), "{err}");
-        assert!(err.contains("reserved 100 elements but allocated 10000"), "{err}");
+        assert!(
+            err.contains("reserved 100 elements but allocated 10000"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -541,7 +560,11 @@ mod tests {
     fn bytes_saturate_instead_of_wrapping_on_absurd_shapes() {
         let mut p = MemoryPlan::with_budget_bytes(GB, "t");
         p.reserve("absurd", usize::MAX / 2, Lifetime::Resident);
-        assert_eq!(p.peak_bytes(), usize::MAX, "must saturate, not wrap to something small");
+        assert_eq!(
+            p.peak_bytes(),
+            usize::MAX,
+            "must saturate, not wrap to something small"
+        );
         assert!(p.check().is_err());
     }
 

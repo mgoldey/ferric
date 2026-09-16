@@ -273,13 +273,16 @@ pub fn dlpno_mp2_spin_components(
         let mut f_pno = Array2::<f64>::zeros((npno, npno));
         for a in 0..npno {
             for b in 0..npno {
-                f_pno[(a, b)] =
-                    (0..nvir).map(|c| q[(c, a)] * q[(c, b)] * eps[nocc_total + c]).sum();
+                f_pno[(a, b)] = (0..nvir)
+                    .map(|c| q[(c, a)] * q[(c, b)] * eps[nocc_total + c])
+                    .sum();
             }
         }
         let (e_pno, u) = ferric_core::linalg::eigh_dc(&f_pno, ferric_core::linalg::Uplo::Upper)
             .map_err(|e| {
-                FerricError::General(format!("DLPNO semicanonicalization for pair ({i},{j}): {e}"))
+                FerricError::General(format!(
+                    "DLPNO semicanonicalization for pair ({i},{j}): {e}"
+                ))
             })?;
         // Carry the integrals into the semicanonical PNO basis too.
         let t_ij = u.t().dot(&t_ij).dot(&u);
@@ -302,7 +305,14 @@ pub fn dlpno_mp2_spin_components(
         max_discarded_weight: pnos.max_discarded_weight(),
         n_pairs: domains.pairs.len(),
     };
-    Ok((SpinComponents { e_os, e_ss, e_total: e_os + e_ss }, diag))
+    Ok((
+        SpinComponents {
+            e_os,
+            e_ss,
+            e_total: e_os + e_ss,
+        },
+        diag,
+    ))
 }
 
 #[cfg(test)]
@@ -319,7 +329,9 @@ mod tests {
         let mut g = Array2::<f64>::zeros((n, n));
         for p in 0..n {
             for q in p..n {
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 let v = ((s >> 33) as f64 / (1u64 << 31) as f64) - 1.0;
                 g[(p, q)] = v;
                 g[(q, p)] = v; // (ia|jb) is symmetric under (ia)<->(jb)
@@ -338,7 +350,10 @@ mod tests {
     }
 
     fn centers(nocc: usize, spacing: f64) -> Array2<f64> {
-        Array2::from_shape_fn((nocc, 3), |(i, ax)| if ax == 0 { i as f64 * spacing } else { 0.0 })
+        Array2::from_shape_fn(
+            (nocc, 3),
+            |(i, ax)| if ax == 0 { i as f64 * spacing } else { 0.0 },
+        )
     }
 
     /// THE EXACTNESS CONTRACT: no screening must reproduce the dense kernel.
@@ -354,17 +369,9 @@ mod tests {
         let dense = spin_components_from_g(&g, &eps, nocc, nvir, 0, nocc);
 
         let d = complete_pair_domains(&centers(nocc, 1.5)).unwrap();
-        let (got, diag) = dlpno_mp2_spin_components(
-            &g,
-            &eps,
-            nocc,
-            nvir,
-            0,
-            nocc,
-            &d,
-            &DlpnoConfig::default(),
-        )
-        .unwrap();
+        let (got, diag) =
+            dlpno_mp2_spin_components(&g, &eps, nocc, nvir, 0, nocc, &d, &DlpnoConfig::default())
+                .unwrap();
 
         eprintln!(
             "dense  e_os={:.12} e_ss={:.12}\ndlpno  e_os={:.12} e_ss={:.12}",
@@ -376,8 +383,14 @@ mod tests {
             got.e_total,
             dense.e_total
         );
-        assert!((got.e_os - dense.e_os).abs() < 1e-10, "OS component differs");
-        assert!((got.e_ss - dense.e_ss).abs() < 1e-10, "SS component differs");
+        assert!(
+            (got.e_os - dense.e_os).abs() < 1e-10,
+            "OS component differs"
+        );
+        assert!(
+            (got.e_ss - dense.e_ss).abs() < 1e-10,
+            "SS component differs"
+        );
         assert_eq!(diag.pair_retention, 1.0);
         assert_eq!(diag.virtual_retention, 1.0);
     }
@@ -407,7 +420,10 @@ mod tests {
         );
         // On this toy the pair energies are large, so 1e-5 may legitimately keep
         // everything -- assert the mechanism, not a particular retention.
-        let tight = DlpnoConfig { t_cut_pairs: 1e30, ..DlpnoConfig::default() };
+        let tight = DlpnoConfig {
+            t_cut_pairs: 1e30,
+            ..DlpnoConfig::default()
+        };
         let d_tight = build_domains_for(&centers, &pe, &tight).unwrap();
         assert!(
             d_tight.pairs.len() < d_exact.pairs.len(),
@@ -415,7 +431,10 @@ mod tests {
         );
         // ...and diagonals still survive it.
         for i in 0..nocc {
-            assert!(d_tight.pairs.contains(&(i, i)), "diagonal ({i},{i}) was screened");
+            assert!(
+                d_tight.pairs.contains(&(i, i)),
+                "diagonal ({i},{i}) was screened"
+            );
         }
     }
 
@@ -434,8 +453,14 @@ mod tests {
         assert_eq!(d.t_cut_pairs, DEFAULT_T_CUT_PAIRS);
         // The other two screens stay OFF: virtual truncation has a measured dead
         // zone and cliff, and the distance criterion is what this replaces.
-        assert_eq!(d.t_cut_pno, 0.0, "virtual truncation must stay off by default");
-        assert!(d.pair_cutoff.is_infinite(), "distance screening must stay off");
+        assert_eq!(
+            d.t_cut_pno, 0.0,
+            "virtual truncation must stay off by default"
+        );
+        assert!(
+            d.pair_cutoff.is_infinite(),
+            "distance screening must stay off"
+        );
 
         let e = DlpnoConfig::exact();
         assert!(e.is_exact(), "exact() must disable every screen");
@@ -452,7 +477,10 @@ mod tests {
 
         // Widely spaced centers so a 2 Bohr pair cutoff really separates them.
         let d = build_pair_domains(&centers(nocc, 10.0), 2.0, f64::INFINITY).unwrap();
-        assert!(d.pair_retention() < 1.0, "premise: pairs should be screened");
+        assert!(
+            d.pair_retention() < 1.0,
+            "premise: pairs should be screened"
+        );
 
         // Distance screening specifically, so t_cut_pairs is off: this test is
         // about the pair_cutoff path, not the new default.
@@ -511,7 +539,10 @@ mod tests {
 
         // exact() not default(): default() now enables pair-energy screening, which
         // would confound this test's isolation of PNO virtual truncation.
-        let cfg = DlpnoConfig { t_cut_pno: 1e-2, ..DlpnoConfig::exact() };
+        let cfg = DlpnoConfig {
+            t_cut_pno: 1e-2,
+            ..DlpnoConfig::exact()
+        };
         let (got, diag) =
             dlpno_mp2_spin_components(&g, &eps, nocc, nvir, 0, nocc, &d, &cfg).unwrap();
 
@@ -522,7 +553,10 @@ mod tests {
             got.e_total - dense.e_total
         );
         assert_eq!(diag.pair_retention, 1.0, "no pair screening in this test");
-        assert!(diag.virtual_retention < 1.0, "threshold should truncate virtuals");
+        assert!(
+            diag.virtual_retention < 1.0,
+            "threshold should truncate virtuals"
+        );
         assert!(diag.max_discarded_weight > 0.0);
     }
 

@@ -230,8 +230,9 @@ mod inner {
         let mut out = Vec::with_capacity(n_quad);
         for k in 0..n_quad {
             let row = flat_global.row(k).to_owned();
-            let mat = Array2::from_shape_vec((m, m), row.to_vec())
-                .map_err(|e| FerricError::General(format!("inv-dielectric unflatten failed: {e}")))?;
+            let mat = Array2::from_shape_vec((m, m), row.to_vec()).map_err(|e| {
+                FerricError::General(format!("inv-dielectric unflatten failed: {e}"))
+            })?;
             out.push(mat);
         }
         Ok(out)
@@ -325,7 +326,11 @@ mod inner {
         // rest of `run_pdep_rpa_from_intermediates`'s Step 8.
         let e_rpa_dft_diag = if config.run_diagnostics {
             Some(crate::diagnostics::ri_drpa_energy(
-                b_ov, &eps_occ, &eps_vir, &stage.quad_freqs, &stage.quad_weights,
+                b_ov,
+                &eps_occ,
+                &eps_vir,
+                &stage.quad_freqs,
+                &stage.quad_weights,
             )?)
         } else {
             None
@@ -348,4 +353,6 @@ mod inner {
 }
 
 #[cfg(feature = "mpi")]
-pub use inner::{eval_eigenvalues_at_frequencies_mpi, eval_inv_dielectric_matrices_mpi, run_pdep_rpa_mpi};
+pub use inner::{
+    eval_eigenvalues_at_frequencies_mpi, eval_inv_dielectric_matrices_mpi, run_pdep_rpa_mpi,
+};

@@ -82,7 +82,12 @@ fn force_vector(mol: &Molecule, thresh: f64, h: f64) -> (Vec<f64>, usize) {
             n_modes = nm;
             eprintln!(
                 "  thresh={:.0e}  atom={} dim={}  E+={:.10} E-={:.10}  F={:+.6e}",
-                thresh, a, d, ep, em, forces[3 * a + d]
+                thresh,
+                a,
+                d,
+                ep,
+                em,
+                forces[3 * a + d]
             );
         }
     }
@@ -147,7 +152,13 @@ fn main() {
         let max_rel = f
             .iter()
             .zip(baseline.iter())
-            .map(|(a, b)| if b.abs() > 1e-10 { (a - b).abs() / b.abs() } else { 0.0 })
+            .map(|(a, b)| {
+                if b.abs() > 1e-10 {
+                    (a - b).abs() / b.abs()
+                } else {
+                    0.0
+                }
+            })
             .fold(0.0f64, f64::max);
         let max_kcal = max_abs * HA_TO_KCAL;
         if (*t - 1e-4).abs() < 1e-12 {
@@ -174,7 +185,10 @@ fn main() {
     let u = [dx / nrm, dy / nrm, dz / nrm];
 
     println!("\n## O-H stretch probe");
-    println!("Unit vector (atom1 along OH bond): [{:+.4}, {:+.4}, {:+.4}]", u[0], u[1], u[2]);
+    println!(
+        "Unit vector (atom1 along OH bond): [{:+.4}, {:+.4}, {:+.4}]",
+        u[0], u[1], u[2]
+    );
     println!("Projecting -dE/ds along that direction (s = displacement of atom1).");
 
     let mut stretch_forces: Vec<(f64, f64, usize)> = Vec::new();
@@ -194,7 +208,11 @@ fn main() {
     let f0_stretch = stretch_forces[0].1;
     println!(
         "{:<12} | {:>7} | {:>18} | {:>24} | {:>22}",
-        "trunc_thresh", "n_modes", "F_stretch (Ha/Bohr)", "ΔF_stretch (Ha/Bohr)", "ΔF (kcal/mol/Bohr)"
+        "trunc_thresh",
+        "n_modes",
+        "F_stretch (Ha/Bohr)",
+        "ΔF_stretch (Ha/Bohr)",
+        "ΔF (kcal/mol/Bohr)"
     );
     println!("{}", "-".repeat(95));
     for (t, f, nm) in &stretch_forces {
@@ -212,9 +230,7 @@ fn main() {
     // Recommendation
     println!("\n## Recommendation");
     let prod_err = prod_err_kcal.unwrap_or(f64::NAN);
-    println!(
-        "Based on H2O/cc-pVDZ data at production trunc_thresh = 1e-4,",
-    );
+    println!("Based on H2O/cc-pVDZ data at production trunc_thresh = 1e-4,",);
     println!("max |ΔF| = {:.4e} kcal/mol/Bohr.", prod_err);
     println!("- If X < 0.01: projection-fixed gradient is sufficient.");
     println!("- If 0.01 < X < 0.05: borderline; choose based on scaling preference.");

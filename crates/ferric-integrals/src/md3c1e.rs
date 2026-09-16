@@ -286,7 +286,11 @@ fn hermite() -> &'static Hermite {
             count_le[s] = list.len();
         }
         debug_assert_eq!(list.len(), N_TUV);
-        Hermite { idx, list, count_le }
+        Hermite {
+            idx,
+            list,
+            count_le,
+        }
     })
 }
 
@@ -314,7 +318,11 @@ struct RProgram {
 static R_PROGRAMS: OnceLock<Vec<RProgram>> = OnceLock::new();
 
 fn r_programs() -> &'static [RProgram] {
-    R_PROGRAMS.get_or_init(|| (0..=MAX_LTOT).map(|l| build_r_program(l, hermite())).collect())
+    R_PROGRAMS.get_or_init(|| {
+        (0..=MAX_LTOT)
+            .map(|l| build_r_program(l, hermite()))
+            .collect()
+    })
 }
 
 fn build_r_program(l: usize, h: &Hermite) -> RProgram {
@@ -333,16 +341,34 @@ fn build_r_program(l: usize, h: &Hermite) -> RProgram {
                 let dst = (base[n] + h.index(t, u, v)) as u32;
                 let up = base[n + 1];
                 let (src, src2, coef, dir) = if t > 0 {
-                    let s2 = if t >= 2 { (up + h.index(t - 2, u, v)) as u32 } else { NONE };
+                    let s2 = if t >= 2 {
+                        (up + h.index(t - 2, u, v)) as u32
+                    } else {
+                        NONE
+                    };
                     ((up + h.index(t - 1, u, v)) as u32, s2, (t - 1) as f64, 0u8)
                 } else if u > 0 {
-                    let s2 = if u >= 2 { (up + h.index(t, u - 2, v)) as u32 } else { NONE };
+                    let s2 = if u >= 2 {
+                        (up + h.index(t, u - 2, v)) as u32
+                    } else {
+                        NONE
+                    };
                     ((up + h.index(t, u - 1, v)) as u32, s2, (u - 1) as f64, 1u8)
                 } else {
-                    let s2 = if v >= 2 { (up + h.index(t, u, v - 2)) as u32 } else { NONE };
+                    let s2 = if v >= 2 {
+                        (up + h.index(t, u, v - 2)) as u32
+                    } else {
+                        NONE
+                    };
                     ((up + h.index(t, u, v - 1)) as u32, s2, (v - 1) as f64, 2u8)
                 };
-                steps.push(RStep { dst, src, src2, coef, dir });
+                steps.push(RStep {
+                    dst,
+                    src,
+                    src2,
+                    coef,
+                    dir,
+                });
             }
         }
     }
@@ -571,7 +597,14 @@ fn tile_kernel<const FMA: bool>(
 /// tiles are copied to locals before the destination is borrowed, which is
 /// both borrow-clean and frees the vectorizer from alias proofs.
 #[inline(always)]
-fn build_r_tile<const FMA: bool>(prog: &RProgram, l: usize, p: f64, pc: &[[f64; TILE]; 3], boys: &[f64], r: &mut [f64]) {
+fn build_r_tile<const FMA: bool>(
+    prog: &RProgram,
+    l: usize,
+    p: f64,
+    pc: &[[f64; TILE]; 3],
+    boys: &[f64],
+    r: &mut [f64],
+) {
     let mut fac = 1.0_f64;
     for n in 0..=l {
         let dst = &mut r[prog.base[n] * TILE..prog.base[n] * TILE + TILE];
@@ -619,7 +652,9 @@ unsafe fn tile_kernel_avx2(
     tile_off: usize,
     gpad: usize,
 ) {
-    tile_kernel::<true>(prog, l, p, pc, boys, r, vals, idx, start, cart, tile_off, gpad)
+    tile_kernel::<true>(
+        prog, l, p, pc, boys, r, vals, idx, start, cart, tile_off, gpad,
+    )
 }
 
 fn detect_fma() -> bool {
@@ -664,9 +699,16 @@ impl Md3c1e {
                 )));
             }
             if sh.exponents.len() != sh.coefficients.len() {
-                return Err(FerricError::Basis(format!("md3c1e: shell {s} exponent/coefficient length mismatch")));
+                return Err(FerricError::Basis(format!(
+                    "md3c1e: shell {s} exponent/coefficient length mismatch"
+                )));
             }
-            let coefs = sh.exponents.iter().zip(sh.coefficients).map(|(&a, &c)| c * prim_norm(a, l)).collect();
+            let coefs = sh
+                .exponents
+                .iter()
+                .zip(sh.coefficients)
+                .map(|(&a, &c)| c * prim_norm(a, l))
+                .collect();
             shells.push(ShellData {
                 l,
                 pure,
@@ -680,7 +722,13 @@ impl Md3c1e {
         }
         let comps = (0..=MAX_L).map(cart_components).collect();
         let c2s = (0..=MAX_L).map(ferric_cart2sph).collect();
-        Ok(Self { shells, nbf: prep.nbasis(), comps, c2s, use_fma: detect_fma() })
+        Ok(Self {
+            shells,
+            nbf: prep.nbasis(),
+            comps,
+            c2s,
+            use_fma: detect_fma(),
+        })
     }
 
     /// Fresh work buffers for this kernel.
@@ -734,7 +782,11 @@ impl Md3c1e {
     ) -> Option<(f64, [f64; 3])> {
         let p = a + b;
         let pref = 2.0 * std::f64::consts::PI / p * ca * cb;
-        let q = [sa.center[0] - sb.center[0], sa.center[1] - sb.center[1], sa.center[2] - sb.center[2]];
+        let q = [
+            sa.center[0] - sb.center[0],
+            sa.center[1] - sb.center[1],
+            sa.center[2] - sb.center[2],
+        ];
         let kab = (-(a * b / p) * (q[0] * q[0] + q[1] * q[1] + q[2] * q[2])).exp();
         if (pref * kab).abs() < PRIM_SCREEN {
             return None;
@@ -811,7 +863,15 @@ impl Md3c1e {
                 let Some((p, pcen)) = self.prim_pair_setup(sa, sb, a, ca, b, cb, scr) else {
                     continue;
                 };
-                let Md3c1eScratch { r, boys, coef_vals, coef_idx, coef_start, cart, .. } = scr;
+                let Md3c1eScratch {
+                    r,
+                    boys,
+                    coef_vals,
+                    coef_idx,
+                    coef_start,
+                    cart,
+                    ..
+                } = scr;
                 for tile in 0..ntile {
                     let mut pc = [[0.0_f64; TILE]; 3];
                     let mut t = [0.0_f64; TILE];
@@ -822,7 +882,8 @@ impl Md3c1e {
                         pc[0][g] = pcen[0] - rg[0];
                         pc[1][g] = pcen[1] - rg[1];
                         pc[2][g] = pcen[2] - rg[2];
-                        t[g] = p * (pc[0][g] * pc[0][g] + pc[1][g] * pc[1][g] + pc[2][g] * pc[2][g]);
+                        t[g] =
+                            p * (pc[0][g] * pc[0][g] + pc[1][g] * pc[1][g] + pc[2][g] * pc[2][g]);
                     }
                     for g in 0..TILE {
                         boys_tabulated(tab, lt, t[g], &mut boys[g..], TILE);
@@ -833,10 +894,16 @@ impl Md3c1e {
                         // SAFETY: `use_fma` is only ever true when
                         // `detect_fma()` confirmed AVX2 and FMA at runtime.
                         unsafe {
-                            tile_kernel_avx2(prog, lt, p, &pc, boys, r, coef_vals, coef_idx, coef_start, cart, off, gpad);
+                            tile_kernel_avx2(
+                                prog, lt, p, &pc, boys, r, coef_vals, coef_idx, coef_start, cart,
+                                off, gpad,
+                            );
                         }
                     } else {
-                        tile_kernel::<false>(prog, lt, p, &pc, boys, r, coef_vals, coef_idx, coef_start, cart, off, gpad);
+                        tile_kernel::<false>(
+                            prog, lt, p, &pc, boys, r, coef_vals, coef_idx, coef_start, cart, off,
+                            gpad,
+                        );
                     }
                 }
             }
@@ -846,7 +913,15 @@ impl Md3c1e {
 
     /// Cartesian `[ncart_1][ncart_2][gpad]` → output `[nf_1][nf_2][npts]`,
     /// applying the cart→sph transform on whichever sides are pure.
-    fn cart_to_out(&self, s1: usize, s2: usize, npts: usize, gpad: usize, scr: &mut Md3c1eScratch, out: &mut [f64]) {
+    fn cart_to_out(
+        &self,
+        s1: usize,
+        s2: usize,
+        npts: usize,
+        gpad: usize,
+        scr: &mut Md3c1eScratch,
+        out: &mut [f64],
+    ) {
         let (sa, sb) = (&self.shells[s1], &self.shells[s2]);
         let (nca, ncb, nfa, nfb) = (sa.ncart, sb.ncart, sa.nfun, sb.nfun);
         // Right side: tmp[m][j][gpad] = Σ_n C_b[n][j] cart[m][n][gpad].
@@ -903,17 +978,29 @@ impl Md3c1e {
     /// This is the fundamental batched entry point; everything else is a
     /// wrapper. Cost per call is one primitive-pair setup plus
     /// `ceil(npts / TILE)` tiles, so amortization needs `npts >> TILE`.
-    pub fn pair_block(&self, s1: usize, s2: usize, pts: &[[f64; 3]], scr: &mut Md3c1eScratch, out: &mut [f64]) -> Result<(), FerricError> {
+    pub fn pair_block(
+        &self,
+        s1: usize,
+        s2: usize,
+        pts: &[[f64; 3]],
+        scr: &mut Md3c1eScratch,
+        out: &mut [f64],
+    ) -> Result<(), FerricError> {
         let nsh = self.shells.len();
         if s1 >= nsh || s2 >= nsh {
-            return Err(FerricError::General(format!("md3c1e::pair_block: shell index out of range ({s1}, {s2}) for {nsh} shells")));
+            return Err(FerricError::General(format!(
+                "md3c1e::pair_block: shell index out of range ({s1}, {s2}) for {nsh} shells"
+            )));
         }
         if pts.is_empty() {
             return Ok(());
         }
         let need = self.shells[s1].nfun * self.shells[s2].nfun * pts.len();
         if out.len() < need {
-            return Err(FerricError::General(format!("md3c1e::pair_block: out has {} elements, need {need}", out.len())));
+            return Err(FerricError::General(format!(
+                "md3c1e::pair_block: out has {} elements, need {need}",
+                out.len()
+            )));
         }
         let gpad = self.cart_block(s1, s2, pts, scr);
         self.cart_to_out(s1, s2, pts.len(), gpad, scr, out);
@@ -924,7 +1011,13 @@ impl Md3c1e {
     /// ANY point's estimate reaches the threshold (conservative), and always
     /// kept for a vacuous screen or absent bounds — the same rule as
     /// `cosx_a::a_matrix_at_point_with` when `pts.len() == 1`.
-    fn keep_pair(s1: usize, s2: usize, pts: &[[f64; 3]], bounds: Option<&PairBounds>, screen: CosxScreen) -> bool {
+    fn keep_pair(
+        s1: usize,
+        s2: usize,
+        pts: &[[f64; 3]],
+        bounds: Option<&PairBounds>,
+        screen: CosxScreen,
+    ) -> bool {
         if screen.is_vacuous() {
             return true;
         }
@@ -952,7 +1045,12 @@ impl Md3c1e {
     where
         F: FnMut(usize, usize, &[f64]),
     {
-        self.for_each_pair_where(pts, |s1, s2| Self::keep_pair(s1, s2, pts, bounds, screen), scr, f)
+        self.for_each_pair_where(
+            pts,
+            |s1, s2| Self::keep_pair(s1, s2, pts, bounds, screen),
+            scr,
+            f,
+        )
     }
 
     /// [`Md3c1e::for_each_pair`] with a caller-supplied keep rule: pair
@@ -1001,24 +1099,35 @@ impl Md3c1e {
     /// Dense `(npts, nbf, nbf)` matrices for the batch, symmetric fill.
     /// Memory is `npts * nbf² * 8` bytes — for large bases keep `npts` small
     /// or use [`Md3c1e::for_each_pair`].
-    pub fn a_matrices(&self, pts: &[[f64; 3]], bounds: Option<&PairBounds>, screen: CosxScreen, scr: &mut Md3c1eScratch) -> Result<Md3c1eBatch, FerricError> {
+    pub fn a_matrices(
+        &self,
+        pts: &[[f64; 3]],
+        bounds: Option<&PairBounds>,
+        screen: CosxScreen,
+        scr: &mut Md3c1eScratch,
+    ) -> Result<Md3c1eBatch, FerricError> {
         let npts = pts.len();
         let nbf = self.nbf;
         let mut a = Array3::<f64>::zeros((npts, nbf, nbf));
         let shells = &self.shells;
-        let (pairs_kept, pairs_total) = self.for_each_pair(pts, bounds, screen, scr, |s1, s2, blk| {
-            let (sa, sb) = (&shells[s1], &shells[s2]);
-            for i in 0..sa.nfun {
-                for j in 0..sb.nfun {
-                    let row = &blk[(i * sb.nfun + j) * npts..(i * sb.nfun + j + 1) * npts];
-                    for (g, &v) in row.iter().enumerate() {
-                        a[(g, sa.off + i, sb.off + j)] = v;
-                        a[(g, sb.off + j, sa.off + i)] = v;
+        let (pairs_kept, pairs_total) =
+            self.for_each_pair(pts, bounds, screen, scr, |s1, s2, blk| {
+                let (sa, sb) = (&shells[s1], &shells[s2]);
+                for i in 0..sa.nfun {
+                    for j in 0..sb.nfun {
+                        let row = &blk[(i * sb.nfun + j) * npts..(i * sb.nfun + j + 1) * npts];
+                        for (g, &v) in row.iter().enumerate() {
+                            a[(g, sa.off + i, sb.off + j)] = v;
+                            a[(g, sb.off + j, sa.off + i)] = v;
+                        }
                     }
                 }
-            }
-        })?;
-        Ok(Md3c1eBatch { a, pairs_kept, pairs_total })
+            })?;
+        Ok(Md3c1eBatch {
+            a,
+            pairs_kept,
+            pairs_total,
+        })
     }
 
     /// Operation count per grid point for the full unscreened sweep (see
@@ -1035,10 +1144,17 @@ impl Md3c1e {
                 let (sa, sb) = (&self.shells[s1], &self.shells[s2]);
                 let prog = &progs[sa.l + sb.l];
                 let r_flops: f64 = (sa.l as f64)
-                    + prog.steps.iter().map(|st| if st.src2 == NONE { 1.0 } else { 3.0 }).sum::<f64>();
+                    + prog
+                        .steps
+                        .iter()
+                        .map(|st| if st.src2 == NONE { 1.0 } else { 3.0 })
+                        .sum::<f64>();
                 for (&a, &ca) in sa.exps.iter().zip(&sa.coefs) {
                     for (&b, &cb) in sb.exps.iter().zip(&sb.coefs) {
-                        if self.prim_pair_setup(sa, sb, a, ca, b, cb, &mut scr).is_none() {
+                        if self
+                            .prim_pair_setup(sa, sb, a, ca, b, cb, &mut scr)
+                            .is_none()
+                        {
                             continue;
                         }
                         r_tensor += r_flops;
@@ -1048,7 +1164,11 @@ impl Md3c1e {
                 }
             }
         }
-        Md3c1eFlops { r_tensor, contraction, prim_pairs }
+        Md3c1eFlops {
+            r_tensor,
+            contraction,
+            prim_pairs,
+        }
     }
 }
 
@@ -1066,14 +1186,26 @@ pub fn a_matrix_at_point_with(
 ) -> Result<CosxPoint, FerricError> {
     let batch = kern.a_matrices(std::slice::from_ref(r), bounds, screen, scr)?;
     let nbf = kern.nbf;
-    let a: Array2<f64> = batch.a.into_shape_with_order((nbf, nbf)).map_err(|e| FerricError::General(format!("md3c1e: reshape: {e}")))?;
-    Ok(CosxPoint { a, pairs_kept: batch.pairs_kept, pairs_total: batch.pairs_total })
+    let a: Array2<f64> = batch
+        .a
+        .into_shape_with_order((nbf, nbf))
+        .map_err(|e| FerricError::General(format!("md3c1e: reshape: {e}")))?;
+    Ok(CosxPoint {
+        a,
+        pairs_kept: batch.pairs_kept,
+        pairs_total: batch.pairs_total,
+    })
 }
 
 /// Drop-in for `cosx_a::a_matrix_at_point`: same signature, same output
 /// (`+1/|r-r_g|`, `(nbf, nbf)`), same screening rule. Builds a throwaway
 /// [`Md3c1e`]; sweeps must build one kernel and use the batched API.
-pub fn a_matrix_at_point(prep: &PreparedBasis, r: &[f64; 3], bounds: Option<&PairBounds>, screen: CosxScreen) -> Result<CosxPoint, FerricError> {
+pub fn a_matrix_at_point(
+    prep: &PreparedBasis,
+    r: &[f64; 3],
+    bounds: Option<&PairBounds>,
+    screen: CosxScreen,
+) -> Result<CosxPoint, FerricError> {
     let kern = Md3c1e::new(prep)?;
     let mut scr = kern.scratch();
     a_matrix_at_point_with(&kern, &mut scr, r, bounds, screen)
@@ -1088,28 +1220,265 @@ mod tests {
     /// quadrature to 20 digits at `n=7, T=80`). Generated 2026-09-07 with
     /// mpmath 1.3.0; scipy `quad` is NOT an adequate oracle here (spec §4).
     const BOYS_ORACLE: &[(f64, [f64; 9])] = &[
-        (0.0, [1.0, 0.33333333333333333, 0.2, 0.14285714285714286, 0.11111111111111111, 0.090909090909090909, 0.076923076923076923, 0.066666666666666667, 0.058823529411764706]),
-        (1e-14, [0.99999999999999667, 0.33333333333333133, 0.19999999999999857, 0.14285714285714175, 0.1111111111111102, 0.09090909090909014, 0.076923076923076256, 0.066666666666666078, 0.05882352941176418]),
-        (1e-06, [0.99999966666676667, 0.33333313333340476, 0.1999998571429127, 0.1428570317460772, 0.11111102020205866, 0.090909013986047319, 0.076923010256439668, 0.066666607843163571, 0.058823476780209568]),
-        (0.001, [0.99966676664286177, 0.33313340474339003, 0.1998571983975501, 0.14274607718775947, 0.11102024047063182, 0.090832201155699437, 0.076856439659405016, 0.066607869445109679, 0.058770921635096437]),
-        (0.1, [0.96764331263559183, 0.31402947299816129, 0.18625500479262147, 0.13218802963573895, 0.10239394707106532, 0.083540528018141482, 0.070541950817983683, 0.061039712989141552, 0.053791384005818538]),
-        (0.7, [0.80849580691258348, 0.22279321651512426, 0.1227102469671166, 0.083547093602981055, 0.063031679592469896, 0.050499866100585381, 0.042080873796449753, 0.036047182544598041, 0.031516024555400769]),
-        (2.5, [0.54629197178514799, 0.092841394632249839, 0.039287837054570145, 0.022870837329790386, 0.015602172536926781, 0.011666910841688446, 0.0092502041269348226, 0.0076335310052507798, 0.0064835932909725804]),
-        (7.0, [0.33490105817655928, 0.023856369729357483, 0.0050469448016084238, 0.0017373458601776859, 0.00080353850397780609, 0.00045142604073183847, 0.00028955746303540764, 0.00020374036099327022, 0.00015315881781032408]),
-        (12.0, [0.25583143052938306, 0.010659386929876239, 0.0013321673573864745, 0.00027727885727412685, 8.0616991190231656e-5, 2.9975362848281529e-5, 1.3482699124073692e-5, 7.0471198441512411e-6, 4.1484410545391836e-6]),
-        (20.0, [0.19816636482997365, 0.0049541590692205008, 0.000371561878662697, 4.6445183303996564e-5, 8.1278555493588377e-6, 1.8287159697651775e-6, 5.0284536284486285e-7, 1.6337321408401946e-7, 6.1213426440946335e-8]),
-        (29.9, [0.16207250569912541, 0.0027102425702177592, 0.00013596534633026522, 1.136833999243994e-5, 1.3307421378538772e-6, 2.0027891533891585e-7, 3.6840601426594427e-8, 8.008824667692306e-9, 2.0089007792250321e-9]),
-        (34.99, [0.14982109588297675, 0.0021409130592022878, 9.1779639577110979e-5, 6.5575621303932269e-6, 6.5594362549465186e-7, 8.4359711757859646e-8, 1.3260314785647437e-8, 2.4633336892907723e-9, 5.2800806948432636e-10]),
-        (35.0, [0.14979969134027405, 0.0021399955905753346, 9.1714096738933905e-5, 6.5510069099148431e-6, 6.55100690982477e-7, 8.4227231688739733e-8, 1.3235707827794648e-8, 2.4580600161545536e-9, 5.2672713731152326e-10]),
-        (35.01, [0.14977829596898158, 0.0021390787770491426, 9.164861941083696e-5, 6.5444601121616765e-6, 6.5425908004152385e-7, 8.4094997425728035e-8, 1.3211153542684525e-8, 2.4527991349708777e-9, 5.2544967723971991e-10]),
-        (50.0, [0.12533141373155003, 0.0012533141373155003, 3.7599424119465008e-5, 1.8799712059732504e-6, 1.3159798441812752e-7, 1.1843818597631475e-8, 1.3028200457394603e-9, 1.6936660594612792e-10, 2.5404990891917259e-11]),
-        (80.0, [0.099083182440150275, 0.00061926989025093922, 1.161131044220511e-5, 3.628534513189097e-7, 1.5874838495202299e-8, 8.9295966535512934e-10, 6.1390976993165142e-11, 4.9880168806946678e-12, 4.6762658256512511e-13]),
-        (200.0, [0.062665706865775013, 0.00015666426716443753, 1.1749820037332815e-6, 1.4687275046666019e-8, 2.5702731331665532e-10, 5.7831145496247448e-12, 1.5903565011468048e-13, 5.1686586287271157e-15, 1.9382469857726684e-16]),
-        (10000.0, [0.0088622692545275801, 4.4311346272637901e-7, 6.6467019408956851e-11, 1.6616754852239213e-14, 5.8158641982837245e-18, 2.617138889227676e-21, 1.4394263890752218e-24, 9.3562715289889417e-28, 7.0172036467417063e-31]),
+        (
+            0.0,
+            [
+                1.0,
+                0.33333333333333333,
+                0.2,
+                0.14285714285714286,
+                0.11111111111111111,
+                0.090909090909090909,
+                0.076923076923076923,
+                0.066666666666666667,
+                0.058823529411764706,
+            ],
+        ),
+        (
+            1e-14,
+            [
+                0.99999999999999667,
+                0.33333333333333133,
+                0.19999999999999857,
+                0.14285714285714175,
+                0.1111111111111102,
+                0.09090909090909014,
+                0.076923076923076256,
+                0.066666666666666078,
+                0.05882352941176418,
+            ],
+        ),
+        (
+            1e-06,
+            [
+                0.99999966666676667,
+                0.33333313333340476,
+                0.1999998571429127,
+                0.1428570317460772,
+                0.11111102020205866,
+                0.090909013986047319,
+                0.076923010256439668,
+                0.066666607843163571,
+                0.058823476780209568,
+            ],
+        ),
+        (
+            0.001,
+            [
+                0.99966676664286177,
+                0.33313340474339003,
+                0.1998571983975501,
+                0.14274607718775947,
+                0.11102024047063182,
+                0.090832201155699437,
+                0.076856439659405016,
+                0.066607869445109679,
+                0.058770921635096437,
+            ],
+        ),
+        (
+            0.1,
+            [
+                0.96764331263559183,
+                0.31402947299816129,
+                0.18625500479262147,
+                0.13218802963573895,
+                0.10239394707106532,
+                0.083540528018141482,
+                0.070541950817983683,
+                0.061039712989141552,
+                0.053791384005818538,
+            ],
+        ),
+        (
+            0.7,
+            [
+                0.80849580691258348,
+                0.22279321651512426,
+                0.1227102469671166,
+                0.083547093602981055,
+                0.063031679592469896,
+                0.050499866100585381,
+                0.042080873796449753,
+                0.036047182544598041,
+                0.031516024555400769,
+            ],
+        ),
+        (
+            2.5,
+            [
+                0.54629197178514799,
+                0.092841394632249839,
+                0.039287837054570145,
+                0.022870837329790386,
+                0.015602172536926781,
+                0.011666910841688446,
+                0.0092502041269348226,
+                0.0076335310052507798,
+                0.0064835932909725804,
+            ],
+        ),
+        (
+            7.0,
+            [
+                0.33490105817655928,
+                0.023856369729357483,
+                0.0050469448016084238,
+                0.0017373458601776859,
+                0.00080353850397780609,
+                0.00045142604073183847,
+                0.00028955746303540764,
+                0.00020374036099327022,
+                0.00015315881781032408,
+            ],
+        ),
+        (
+            12.0,
+            [
+                0.25583143052938306,
+                0.010659386929876239,
+                0.0013321673573864745,
+                0.00027727885727412685,
+                8.0616991190231656e-5,
+                2.9975362848281529e-5,
+                1.3482699124073692e-5,
+                7.0471198441512411e-6,
+                4.1484410545391836e-6,
+            ],
+        ),
+        (
+            20.0,
+            [
+                0.19816636482997365,
+                0.0049541590692205008,
+                0.000371561878662697,
+                4.6445183303996564e-5,
+                8.1278555493588377e-6,
+                1.8287159697651775e-6,
+                5.0284536284486285e-7,
+                1.6337321408401946e-7,
+                6.1213426440946335e-8,
+            ],
+        ),
+        (
+            29.9,
+            [
+                0.16207250569912541,
+                0.0027102425702177592,
+                0.00013596534633026522,
+                1.136833999243994e-5,
+                1.3307421378538772e-6,
+                2.0027891533891585e-7,
+                3.6840601426594427e-8,
+                8.008824667692306e-9,
+                2.0089007792250321e-9,
+            ],
+        ),
+        (
+            34.99,
+            [
+                0.14982109588297675,
+                0.0021409130592022878,
+                9.1779639577110979e-5,
+                6.5575621303932269e-6,
+                6.5594362549465186e-7,
+                8.4359711757859646e-8,
+                1.3260314785647437e-8,
+                2.4633336892907723e-9,
+                5.2800806948432636e-10,
+            ],
+        ),
+        (
+            35.0,
+            [
+                0.14979969134027405,
+                0.0021399955905753346,
+                9.1714096738933905e-5,
+                6.5510069099148431e-6,
+                6.55100690982477e-7,
+                8.4227231688739733e-8,
+                1.3235707827794648e-8,
+                2.4580600161545536e-9,
+                5.2672713731152326e-10,
+            ],
+        ),
+        (
+            35.01,
+            [
+                0.14977829596898158,
+                0.0021390787770491426,
+                9.164861941083696e-5,
+                6.5444601121616765e-6,
+                6.5425908004152385e-7,
+                8.4094997425728035e-8,
+                1.3211153542684525e-8,
+                2.4527991349708777e-9,
+                5.2544967723971991e-10,
+            ],
+        ),
+        (
+            50.0,
+            [
+                0.12533141373155003,
+                0.0012533141373155003,
+                3.7599424119465008e-5,
+                1.8799712059732504e-6,
+                1.3159798441812752e-7,
+                1.1843818597631475e-8,
+                1.3028200457394603e-9,
+                1.6936660594612792e-10,
+                2.5404990891917259e-11,
+            ],
+        ),
+        (
+            80.0,
+            [
+                0.099083182440150275,
+                0.00061926989025093922,
+                1.161131044220511e-5,
+                3.628534513189097e-7,
+                1.5874838495202299e-8,
+                8.9295966535512934e-10,
+                6.1390976993165142e-11,
+                4.9880168806946678e-12,
+                4.6762658256512511e-13,
+            ],
+        ),
+        (
+            200.0,
+            [
+                0.062665706865775013,
+                0.00015666426716443753,
+                1.1749820037332815e-6,
+                1.4687275046666019e-8,
+                2.5702731331665532e-10,
+                5.7831145496247448e-12,
+                1.5903565011468048e-13,
+                5.1686586287271157e-15,
+                1.9382469857726684e-16,
+            ],
+        ),
+        (
+            10000.0,
+            [
+                0.0088622692545275801,
+                4.4311346272637901e-7,
+                6.6467019408956851e-11,
+                1.6616754852239213e-14,
+                5.8158641982837245e-18,
+                2.617138889227676e-21,
+                1.4394263890752218e-24,
+                9.3562715289889417e-28,
+                7.0172036467417063e-31,
+            ],
+        ),
     ];
 
     fn max_rel(a: &[f64], b: &[f64]) -> f64 {
-        a.iter().zip(b).map(|(x, y)| ((x - y) / y).abs()).fold(0.0, f64::max)
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| ((x - y) / y).abs())
+            .fold(0.0, f64::max)
     }
 
     #[test]
@@ -1142,7 +1511,17 @@ mod tests {
     fn boys_table_matches_series_on_dense_sweep() {
         let mut worst = 0.0_f64;
         let mut ts: Vec<f64> = (0..2600).map(|i| i as f64 * 0.013457).collect();
-        ts.extend([0.0, 1e-300, 1e-18, 1e-12, 1e-9, 3e-4, 34.999999, 34.9375, 35.0 - 1e-13]);
+        ts.extend([
+            0.0,
+            1e-300,
+            1e-18,
+            1e-12,
+            1e-9,
+            3e-4,
+            34.999999,
+            34.9375,
+            35.0 - 1e-13,
+        ]);
         for &t in &ts {
             let mut a = [0.0; 9];
             let mut b = [0.0; 9];
@@ -1170,12 +1549,18 @@ mod tests {
         boys_series(0, BOYS_T_SWITCH, &mut ex);
         let asym = 0.5 * (std::f64::consts::PI / BOYS_T_SWITCH).sqrt();
         let rel = ((asym - ex[0]) / ex[0]).abs();
-        assert!(rel < 1e-15, "asymptotic F_0 at the switch T={BOYS_T_SWITCH}: rel err {rel:.3e}");
+        assert!(
+            rel < 1e-15,
+            "asymptotic F_0 at the switch T={BOYS_T_SWITCH}: rel err {rel:.3e}"
+        );
         // Reachability: the same guard MUST fail at the common choice of 25,
         // otherwise it is arithmetic, not a measurement.
         boys_series(0, 25.0, &mut ex);
         let rel25 = ((0.5 * (std::f64::consts::PI / 25.0).sqrt() - ex[0]) / ex[0]).abs();
-        assert!(rel25 > 1e-13, "guard is not discriminating: rel err at T=25 is only {rel25:.3e}");
+        assert!(
+            rel25 > 1e-13,
+            "guard is not discriminating: rel err at T=25 is only {rel25:.3e}"
+        );
     }
 
     #[test]
@@ -1233,7 +1618,15 @@ mod tests {
         // ao_grid's S(2,0) = (2z² - x² - y²)/2).
         assert!((ferric_cart2sph(0)[0] - 1.0).abs() < 1e-15);
         let c2 = ferric_cart2sph(2);
-        assert!((c2[2] + 0.5).abs() < 1e-14, "xx -> m=0 coefficient {}", c2[2]);
-        assert!((c2[5 * 5 + 2] - 1.0).abs() < 1e-14, "zz -> m=0 coefficient {}", c2[5 * 5 + 2]);
+        assert!(
+            (c2[2] + 0.5).abs() < 1e-14,
+            "xx -> m=0 coefficient {}",
+            c2[2]
+        );
+        assert!(
+            (c2[5 * 5 + 2] - 1.0).abs() < 1e-14,
+            "zz -> m=0 coefficient {}",
+            c2[5 * 5 + 2]
+        );
     }
 }

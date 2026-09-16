@@ -230,7 +230,11 @@ mod tests {
         let sum_spin: f64 = sm.occupations.iter().sum();
         assert!((sum_spin - 3.0).abs() < 1e-8);
         // Entropy → 0 at the integer limit.
-        assert!(sm.entropy.abs() < 1e-4, "entropy {} should vanish", sm.entropy);
+        assert!(
+            sm.entropy.abs() < 1e-4,
+            "entropy {} should vanish",
+            sm.entropy
+        );
     }
 
     /// A near-degenerate frontier manifold (the case the feature targets): two
@@ -252,7 +256,11 @@ mod tests {
         assert!(sm.occupations[2] > 0.3 && sm.occupations[2] < 0.7);
         assert!(sm.occupations[3] > 0.3 && sm.occupations[3] < 0.7);
         // Entropy is strictly positive when occupations are fractional.
-        assert!(sm.entropy > 0.0, "entropy {} should be positive", sm.entropy);
+        assert!(
+            sm.entropy > 0.0,
+            "entropy {} should be positive",
+            sm.entropy
+        );
     }
 
     /// Direct μ-solve residual check across a range of widths: the returned μ

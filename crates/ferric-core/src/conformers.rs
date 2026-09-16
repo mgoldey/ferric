@@ -79,7 +79,11 @@ pub enum ConformerError {
     /// Fewer than one conformer supplied.
     Empty,
     /// Conformer `index` has a different atom count than the reference (index 0).
-    AtomCountMismatch { index: usize, expected: usize, found: usize },
+    AtomCountMismatch {
+        index: usize,
+        expected: usize,
+        found: usize,
+    },
     /// Conformer `index` disagrees with the reference on atom `atom`: element,
     /// ghost flag, or ECP core count. Averaging across these silently corrupts
     /// every property, so it is a hard error.
@@ -97,7 +101,10 @@ pub enum ConformerError {
         found: (i32, usize),
     },
     /// The number of energies does not match the number of conformers.
-    EnergyCountMismatch { n_conformers: usize, n_energies: usize },
+    EnergyCountMismatch {
+        n_conformers: usize,
+        n_energies: usize,
+    },
     /// A supplied energy is not finite (NaN/inf), typically an unconverged SCF
     /// that was not checked before being pushed into the ensemble.
     NonFiniteEnergy { index: usize },
@@ -180,12 +187,20 @@ pub struct Conformer {
 impl Conformer {
     /// A conformer with no energy yet.
     pub fn new(molecule: Molecule) -> Self {
-        Conformer { molecule, energy: None, label: None }
+        Conformer {
+            molecule,
+            energy: None,
+            label: None,
+        }
     }
 
     /// A conformer with a known total energy in Hartree.
     pub fn with_energy(molecule: Molecule, energy: f64) -> Self {
-        Conformer { molecule, energy: Some(energy), label: None }
+        Conformer {
+            molecule,
+            energy: Some(energy),
+            label: None,
+        }
     }
 
     /// Attach a label (builder style).
@@ -333,7 +348,10 @@ impl ConformerEnsemble {
     /// (order -10^2 Ha, `kT ≈ 9.4e-4` Ha) overflows to infinity immediately.
     /// With the shift the largest exponent is exactly 0, so the largest term is
     /// exactly 1 and `Z >= 1`.
-    pub fn boltzmann_weights(&self, temperature_k: f64) -> Result<BoltzmannWeights, ConformerError> {
+    pub fn boltzmann_weights(
+        &self,
+        temperature_k: f64,
+    ) -> Result<BoltzmannWeights, ConformerError> {
         let energies = self.energies()?;
         boltzmann_weights(&energies, temperature_k)
     }
@@ -409,7 +427,10 @@ impl BoltzmannWeights {
     pub fn diagnostics(&self) -> EnsembleDiagnostics {
         let kt = self.kt_hartree;
         let count_within = |mult: f64| -> usize {
-            self.relative_energies.iter().filter(|&&de| de <= mult * kt).count()
+            self.relative_energies
+                .iter()
+                .filter(|&&de| de <= mult * kt)
+                .count()
         };
         let (max_index, &max_weight) = self
             .weights
@@ -467,12 +488,18 @@ pub fn boltzmann_weights(
     // Shifted exponentials: the largest is exp(0) = 1, so no overflow is
     // possible and Z >= 1. Deep-lying conformers underflow to 0.0 gracefully
     // (exp(-746) -> 0), which is the correct physical answer, not an error.
-    let boltz: Vec<f64> = relative_energies.iter().map(|&de| (-de / kt).exp()).collect();
+    let boltz: Vec<f64> = relative_energies
+        .iter()
+        .map(|&de| (-de / kt).exp())
+        .collect();
     let z: f64 = boltz.iter().sum();
 
     // Z >= 1 by construction (the minimum contributes exactly 1), so this
     // division is always well-defined; the guard documents the invariant.
-    debug_assert!(z >= 1.0, "partition function must be >= 1 after the E_min shift, got {z}");
+    debug_assert!(
+        z >= 1.0,
+        "partition function must be >= 1 after the E_min shift, got {z}"
+    );
 
     let weights: Vec<f64> = boltz.iter().map(|&b| b / z).collect();
 
@@ -547,7 +574,11 @@ impl EnsembleDiagnostics {
 
 impl std::fmt::Display for EnsembleDiagnostics {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "Conformer ensemble diagnostics (T = {:.2} K):", self.temperature_k)?;
+        writeln!(
+            f,
+            "Conformer ensemble diagnostics (T = {:.2} K):",
+            self.temperature_k
+        )?;
         writeln!(f, "  conformers:                {}", self.n_conformers)?;
         writeln!(f, "  within  kT of minimum:     {}", self.n_within_kt)?;
         writeln!(f, "  within 2kT of minimum:     {}", self.n_within_2kt)?;
@@ -557,7 +588,11 @@ impl std::fmt::Display for EnsembleDiagnostics {
             "  max weight:                {:.6} (conformer {})",
             self.max_weight, self.max_weight_index
         )?;
-        writeln!(f, "  effective # conformers:    {:.3}", self.effective_n_conformers)?;
+        writeln!(
+            f,
+            "  effective # conformers:    {:.3}",
+            self.effective_n_conformers
+        )?;
         write!(f, "  verdict: {}", self.verdict())
     }
 }
@@ -626,7 +661,12 @@ pub fn weighted_stats(values: &[f64], weights: &[f64]) -> Result<WeightedStats, 
     let min = values.iter().cloned().fold(f64::INFINITY, f64::min);
     let max = values.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
 
-    Ok(WeightedStats { mean, std_dev: variance.sqrt(), min, max })
+    Ok(WeightedStats {
+        mean,
+        std_dev: variance.sqrt(),
+        min,
+        max,
+    })
 }
 
 /// Weighted mean and standard deviation of a **vector-valued** property
@@ -656,7 +696,10 @@ pub fn weighted_stats_vector(
     }
     let dim = values[0].len();
     if let Some(bad) = values.iter().find(|v| v.len() != dim) {
-        return Err(ConformerError::PropertyShapeMismatch { expected: dim, found: bad.len() });
+        return Err(ConformerError::PropertyShapeMismatch {
+            expected: dim,
+            found: bad.len(),
+        });
     }
 
     let mut out = Vec::with_capacity(dim);
@@ -692,7 +735,10 @@ pub fn weighted_stats_tensor(
     let ncol = if nrow > 0 { values[0][0].len() } else { 0 };
     for v in values {
         if v.len() != nrow {
-            return Err(ConformerError::PropertyShapeMismatch { expected: nrow, found: v.len() });
+            return Err(ConformerError::PropertyShapeMismatch {
+                expected: nrow,
+                found: v.len(),
+            });
         }
         for row in v {
             if row.len() != ncol {
@@ -752,9 +798,8 @@ pub fn parse_multi_xyz(
         .into_iter()
         .enumerate()
         .map(|(i, frame)| {
-            Molecule::parse_xyz(&frame, charge, multiplicity).map_err(|e| {
-                FerricError::XyzParse(format!("frame {i} of multi-frame XYZ: {e}"))
-            })
+            Molecule::parse_xyz(&frame, charge, multiplicity)
+                .map_err(|e| FerricError::XyzParse(format!("frame {i} of multi-frame XYZ: {e}")))
         })
         .collect()
 }
@@ -794,7 +839,9 @@ pub fn ensemble_from_multi_xyz(
     energies: &[f64],
 ) -> Result<ConformerEnsemble, FerricError> {
     let molecules = parse_multi_xyz(text, charge, multiplicity)?;
-    Ok(ConformerEnsemble::from_molecules_and_energies(molecules, energies)?)
+    Ok(ConformerEnsemble::from_molecules_and_energies(
+        molecules, energies,
+    )?)
 }
 
 /// Split a multi-frame XYZ into per-frame text blocks.
@@ -871,7 +918,10 @@ mod tests {
 
     #[test]
     fn empty_ensemble_is_rejected() {
-        assert_eq!(ConformerEnsemble::new(vec![]).unwrap_err(), ConformerError::Empty);
+        assert_eq!(
+            ConformerEnsemble::new(vec![]).unwrap_err(),
+            ConformerError::Empty
+        );
     }
 
     #[test]
@@ -892,7 +942,11 @@ mod tests {
         let err = ConformerEnsemble::from_molecules(vec![water(), h2]).unwrap_err();
         assert_eq!(
             err,
-            ConformerError::AtomCountMismatch { index: 1, expected: 3, found: 2 }
+            ConformerError::AtomCountMismatch {
+                index: 1,
+                expected: 3,
+                found: 2
+            }
         );
     }
 
@@ -901,7 +955,11 @@ mod tests {
         let cation = Molecule::parse_xyz(WATER, 1, 2).unwrap();
         let err = ConformerEnsemble::from_molecules(vec![water(), cation]).unwrap_err();
         match err {
-            ConformerError::StateMismatch { index, expected, found } => {
+            ConformerError::StateMismatch {
+                index,
+                expected,
+                found,
+            } => {
                 assert_eq!(index, 1);
                 assert_eq!(expected, (0, 1));
                 assert_eq!(found, (1, 2));
@@ -958,7 +1016,10 @@ mod tests {
         let ens = ConformerEnsemble::from_molecules_and_energies(vec![water()], &[-76.02]).unwrap();
         let w = ens.boltzmann_weights_default().unwrap();
         assert_eq!(w.weights.len(), 1);
-        assert_eq!(w.weights[0], 1.0, "single conformer must have weight EXACTLY 1.0");
+        assert_eq!(
+            w.weights[0], 1.0,
+            "single conformer must have weight EXACTLY 1.0"
+        );
         assert_eq!(w.partition_function, 1.0);
         assert_eq!(w.relative_energies[0], 0.0);
     }
@@ -967,7 +1028,8 @@ mod tests {
     fn single_conformer_reproduces_the_single_point_answer_exactly() {
         // The property of a one-conformer ensemble must be the single-point
         // value bit-for-bit, with a standard deviation of exactly zero.
-        let ens = ConformerEnsemble::from_molecules_and_energies(vec![water()], &[-76.026_760_1]).unwrap();
+        let ens = ConformerEnsemble::from_molecules_and_energies(vec![water()], &[-76.026_760_1])
+            .unwrap();
         let w = ens.boltzmann_weights_default().unwrap();
         let single_point_dipole = 0.812_345_678_901_23_f64;
         let stats = weighted_stats(&[single_point_dipole], &w.weights).unwrap();
@@ -975,16 +1037,21 @@ mod tests {
             stats.mean, single_point_dipole,
             "single-conformer mean must be bit-identical to the single-point value"
         );
-        assert_eq!(stats.std_dev, 0.0, "single-conformer std dev must be EXACTLY 0");
+        assert_eq!(
+            stats.std_dev, 0.0,
+            "single-conformer std dev must be EXACTLY 0"
+        );
         assert_eq!(stats.min, single_point_dipole);
         assert_eq!(stats.max, single_point_dipole);
     }
 
     #[test]
     fn two_degenerate_conformers_give_half_and_half() {
-        let ens =
-            ConformerEnsemble::from_molecules_and_energies(vec![water(), water()], &[-76.02, -76.02])
-                .unwrap();
+        let ens = ConformerEnsemble::from_molecules_and_energies(
+            vec![water(), water()],
+            &[-76.02, -76.02],
+        )
+        .unwrap();
         let w = ens.boltzmann_weights_default().unwrap();
         assert_eq!(w.weights[0], 0.5, "degenerate pair must be exactly 0.5");
         assert_eq!(w.weights[1], 0.5);
@@ -1058,13 +1125,29 @@ mod tests {
         let e2 = (-2.0f64).exp(); // 0.1353352832366127
         let z = 1.0 + e1 + e2; // 1.503214724408055
         assert!((w.partition_function - z).abs() < 1e-14);
-        assert!((w.weights[0] - 1.0 / z).abs() < 1e-14, "w0 should be 1/Z = {:.15}", 1.0 / z);
+        assert!(
+            (w.weights[0] - 1.0 / z).abs() < 1e-14,
+            "w0 should be 1/Z = {:.15}",
+            1.0 / z
+        );
         assert!((w.weights[1] - e1 / z).abs() < 1e-14);
         assert!((w.weights[2] - e2 / z).abs() < 1e-14);
         // Literal expected values, so a change in the constant is caught.
-        assert!((w.weights[0] - 0.665_240_955_774_042_2).abs() < 1e-12, "got {}", w.weights[0]);
-        assert!((w.weights[1] - 0.244_728_471_054_635_5).abs() < 1e-12, "got {}", w.weights[1]);
-        assert!((w.weights[2] - 0.090_030_573_171_322_3).abs() < 1e-12, "got {}", w.weights[2]);
+        assert!(
+            (w.weights[0] - 0.665_240_955_774_042_2).abs() < 1e-12,
+            "got {}",
+            w.weights[0]
+        );
+        assert!(
+            (w.weights[1] - 0.244_728_471_054_635_5).abs() < 1e-12,
+            "got {}",
+            w.weights[1]
+        );
+        assert!(
+            (w.weights[2] - 0.090_030_573_171_322_3).abs() < 1e-12,
+            "got {}",
+            w.weights[2]
+        );
     }
 
     #[test]
@@ -1080,7 +1163,10 @@ mod tests {
         ];
         let w = boltzmann_weights(&energies, DEFAULT_TEMPERATURE_K).unwrap();
         let sum: f64 = w.weights.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-12, "weights must sum to 1 to 1e-12, got {sum:.18}");
+        assert!(
+            (sum - 1.0).abs() < 1e-12,
+            "weights must sum to 1 to 1e-12, got {sum:.18}"
+        );
         assert_eq!(w.min_index, 2, "minimum is at index 2, not index 0");
         assert!(w.relative_energies.iter().all(|&d| d >= 0.0));
         assert_eq!(w.relative_energies[2], 0.0);
@@ -1107,7 +1193,10 @@ mod tests {
         let kt = BOLTZMANN_HARTREE_PER_K * DEFAULT_TEMPERATURE_K;
         let energies = [0.0, 5000.0 * kt];
         let w = boltzmann_weights(&energies, DEFAULT_TEMPERATURE_K).unwrap();
-        assert_eq!(w.weights[1], 0.0, "exp(-5000) underflows to exactly 0, not NaN");
+        assert_eq!(
+            w.weights[1], 0.0,
+            "exp(-5000) underflows to exactly 0, not NaN"
+        );
         assert_eq!(w.weights[0], 1.0);
         assert!(w.weights.iter().sum::<f64>() == 1.0);
     }
@@ -1171,7 +1260,10 @@ mod tests {
     fn weighted_std_is_zero_for_identical_values() {
         let stats = weighted_stats(&[2.5, 2.5, 2.5], &[0.2, 0.3, 0.5]).unwrap();
         assert_eq!(stats.mean, 2.5);
-        assert_eq!(stats.std_dev, 0.0, "identical values must give EXACTLY zero spread");
+        assert_eq!(
+            stats.std_dev, 0.0,
+            "identical values must give EXACTLY zero spread"
+        );
     }
 
     #[test]
@@ -1202,11 +1294,18 @@ mod tests {
             "got {:e}",
             stats.std_dev
         );
-        assert!(stats.std_dev > 0.0, "must not collapse to zero from cancellation");
+        assert!(
+            stats.std_dev > 0.0,
+            "must not collapse to zero from cancellation"
+        );
 
         // The naive E[x²] - E[x]² form on these same values is the trap this
         // guards against: it loses every significant digit of the variance.
-        let naive_var = values.iter().zip(&weights).map(|(&v, &w)| w * v * v).sum::<f64>()
+        let naive_var = values
+            .iter()
+            .zip(&weights)
+            .map(|(&v, &w)| w * v * v)
+            .sum::<f64>()
             - stats.mean * stats.mean;
         assert!(
             (naive_var.max(0.0).sqrt() - expected_std).abs() > 1e-8,
@@ -1232,7 +1331,10 @@ mod tests {
         let stats = weighted_stats_vector(&dipoles, &[0.5, 0.5]).unwrap();
         assert_eq!(stats.len(), 3);
         assert_eq!(stats[0].mean, 0.0, "x components cancel");
-        assert_eq!(stats[0].std_dev, 1.0, "but the spread is 1.0 -- the ensemble is NOT non-polar");
+        assert_eq!(
+            stats[0].std_dev, 1.0,
+            "but the spread is 1.0 -- the ensemble is NOT non-polar"
+        );
         assert_eq!(stats[2].mean, 0.5);
         assert_eq!(stats[2].std_dev, 0.0);
     }
@@ -1248,8 +1350,16 @@ mod tests {
 
     #[test]
     fn tensor_property_is_averaged_element_wise() {
-        let a = vec![vec![1.0, 0.0, 0.0], vec![0.0, 2.0, 0.0], vec![0.0, 0.0, 3.0]];
-        let b = vec![vec![3.0, 0.0, 0.0], vec![0.0, 2.0, 0.0], vec![0.0, 0.0, 1.0]];
+        let a = vec![
+            vec![1.0, 0.0, 0.0],
+            vec![0.0, 2.0, 0.0],
+            vec![0.0, 0.0, 3.0],
+        ];
+        let b = vec![
+            vec![3.0, 0.0, 0.0],
+            vec![0.0, 2.0, 0.0],
+            vec![0.0, 0.0, 1.0],
+        ];
         let stats = weighted_stats_tensor(&[a, b], &[0.5, 0.5]).unwrap();
         assert_eq!(stats.len(), 3);
         assert_eq!(stats[0][0].mean, 2.0);
@@ -1266,7 +1376,9 @@ mod tests {
         let kt = BOLTZMANN_HARTREE_PER_K * DEFAULT_TEMPERATURE_K;
         // One minimum, everything else 10 kT up: totally dominated.
         let energies = [0.0, 10.0 * kt, 11.0 * kt, 12.0 * kt];
-        let d = boltzmann_weights(&energies, DEFAULT_TEMPERATURE_K).unwrap().diagnostics();
+        let d = boltzmann_weights(&energies, DEFAULT_TEMPERATURE_K)
+            .unwrap()
+            .diagnostics();
         assert_eq!(d.n_conformers, 4);
         assert_eq!(d.n_within_kt, 1, "only the minimum itself is within kT");
         assert_eq!(d.n_within_2kt, 1);
@@ -1283,7 +1395,9 @@ mod tests {
         // Twenty conformers all within 0.5 kT: no single conformer is right.
         let kt = BOLTZMANN_HARTREE_PER_K * DEFAULT_TEMPERATURE_K;
         let energies: Vec<f64> = (0..20).map(|i| i as f64 * 0.025 * kt).collect();
-        let d = boltzmann_weights(&energies, DEFAULT_TEMPERATURE_K).unwrap().diagnostics();
+        let d = boltzmann_weights(&energies, DEFAULT_TEMPERATURE_K)
+            .unwrap()
+            .diagnostics();
         assert_eq!(d.n_within_kt, 20);
         assert!(d.max_weight < 0.1, "max weight {}", d.max_weight);
         assert!(!d.is_single_conformer_dominated(0.95));
@@ -1296,7 +1410,9 @@ mod tests {
         let kt = BOLTZMANN_HARTREE_PER_K * DEFAULT_TEMPERATURE_K;
         // ΔE / kT = 0, 0.5, 1.5, 3.0, 7.0
         let energies = [0.0, 0.5 * kt, 1.5 * kt, 3.0 * kt, 7.0 * kt];
-        let d = boltzmann_weights(&energies, DEFAULT_TEMPERATURE_K).unwrap().diagnostics();
+        let d = boltzmann_weights(&energies, DEFAULT_TEMPERATURE_K)
+            .unwrap()
+            .diagnostics();
         assert_eq!(d.n_within_kt, 2, "0 and 0.5 kT");
         assert_eq!(d.n_within_2kt, 3, "+ 1.5 kT");
         assert_eq!(d.n_within_5kt, 4, "+ 3.0 kT; 7 kT is outside");
@@ -1304,7 +1420,9 @@ mod tests {
 
     #[test]
     fn single_conformer_diagnostics_say_so() {
-        let d = boltzmann_weights(&[-76.0], DEFAULT_TEMPERATURE_K).unwrap().diagnostics();
+        let d = boltzmann_weights(&[-76.0], DEFAULT_TEMPERATURE_K)
+            .unwrap()
+            .diagnostics();
         assert_eq!(d.n_conformers, 1);
         assert_eq!(d.max_weight, 1.0);
         assert_eq!(d.effective_n_conformers, 1.0);
@@ -1313,7 +1431,9 @@ mod tests {
 
     #[test]
     fn diagnostics_display_is_readable() {
-        let d = boltzmann_weights(&[0.0, 1e-3], DEFAULT_TEMPERATURE_K).unwrap().diagnostics();
+        let d = boltzmann_weights(&[0.0, 1e-3], DEFAULT_TEMPERATURE_K)
+            .unwrap()
+            .diagnostics();
         let s = d.to_string();
         assert!(s.contains("max weight"));
         assert!(s.contains("verdict"));
@@ -1340,7 +1460,11 @@ H 0.000000 -0.900000 -0.500000
         // Documents WHY this reader is needed: Molecule::parse_xyz on a
         // multi-frame file returns frame 0 and ignores the rest, with no error.
         let mol = Molecule::parse_xyz(TWO_FRAME, 0, 1).unwrap();
-        assert_eq!(mol.atoms.len(), 3, "the single-frame parser sees only frame 0");
+        assert_eq!(
+            mol.atoms.len(),
+            3,
+            "the single-frame parser sees only frame 0"
+        );
     }
 
     #[test]
@@ -1424,14 +1548,20 @@ H 0.000000 -0.900000 -0.500000
 
     #[test]
     fn set_energy_fills_in_later() {
-        let mut ens = ConformerEnsemble::from_molecules(parse_multi_xyz(TWO_FRAME, 0, 1).unwrap())
-            .unwrap();
+        let mut ens =
+            ConformerEnsemble::from_molecules(parse_multi_xyz(TWO_FRAME, 0, 1).unwrap()).unwrap();
         assert!(ens.energies().is_err());
         ens.set_energy(0, -76.0).unwrap();
         ens.set_energy(1, -75.999).unwrap();
         assert_eq!(ens.energies().unwrap(), vec![-76.0, -75.999]);
-        assert!(ens.set_energy(2, -76.0).is_err(), "out-of-range index must error");
-        assert!(ens.set_energy(0, f64::NAN).is_err(), "non-finite energy must error");
+        assert!(
+            ens.set_energy(2, -76.0).is_err(),
+            "out-of-range index must error"
+        );
+        assert!(
+            ens.set_energy(0, f64::NAN).is_err(),
+            "non-finite energy must error"
+        );
     }
 
     #[test]

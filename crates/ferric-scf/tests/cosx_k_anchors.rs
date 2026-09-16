@@ -70,7 +70,13 @@ fn setup() -> Setup {
     let mut j = Array2::zeros((n, n));
     let mut k_direct = Array2::zeros((n, n));
     build_jk(&ctx, &prep, &bounds, 1e-14, &d, &mut j, &mut k_direct).expect("direct jk");
-    Setup { mol, prep, d, c_occ, k_direct }
+    Setup {
+        mol,
+        prep,
+        d,
+        c_occ,
+        k_direct,
+    }
 }
 
 fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
@@ -78,7 +84,11 @@ fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
 }
 
 fn grid(n_radial: usize, n_angular: usize) -> AtomicGridConfig {
-    AtomicGridConfig { n_radial, n_angular, ..Default::default() }
+    AtomicGridConfig {
+        n_radial,
+        n_angular,
+        ..Default::default()
+    }
 }
 
 /// `COSX_ANCHOR_HALF=dense` re-runs this whole suite on the DENSE half
@@ -96,7 +106,13 @@ fn half_transform() -> ferric_scf::cosx_k::CosxHalfTransform {
 }
 
 fn cosx_config(g: AtomicGridConfig, overlap_fit: bool, screen_thresh: Option<f64>) -> CosxConfig {
-    CosxConfig { grid: g, overlap_fit, screen_thresh, half_transform: half_transform(), ..CosxConfig::default() }
+    CosxConfig {
+        grid: g,
+        overlap_fit,
+        screen_thresh,
+        half_transform: half_transform(),
+        ..CosxConfig::default()
+    }
 }
 
 fn build_k(s: &Setup, ctx: &ParallelContext, cfg: CosxConfig, d: &Array2<f64>) -> Array2<f64> {
@@ -119,7 +135,10 @@ fn cosx_matches_direct_k_in_the_dense_grid_limit() {
     let grids = [(25usize, 50usize), (50, 110), (99, 302)];
 
     let k_norm = s.k_direct.mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
-    assert!(k_norm > 0.1, "reference K is ~0 ({k_norm:.3e}); the anchor would pass vacuously");
+    assert!(
+        k_norm > 0.1,
+        "reference K is ~0 ({k_norm:.3e}); the anchor would pass vacuously"
+    );
 
     let mut plain = Vec::new();
     let mut fitted = Vec::new();
@@ -136,27 +155,48 @@ fn cosx_matches_direct_k_in_the_dense_grid_limit() {
         // grid where the raw Ktilde asymmetry might already be < 1e-6.
         let asym_p = max_abs_diff(&kp, &kp.t().to_owned());
         let asym_f = max_abs_diff(&kf, &kf.t().to_owned());
-        assert!(asym_p <= 1e-15, "plain COSX K not symmetric at ({nr},{na}): {asym_p:.3e}");
-        assert!(asym_f <= 1e-15, "fitted COSX K not symmetric at ({nr},{na}): {asym_f:.3e}");
+        assert!(
+            asym_p <= 1e-15,
+            "plain COSX K not symmetric at ({nr},{na}): {asym_p:.3e}"
+        );
+        assert!(
+            asym_f <= 1e-15,
+            "fitted COSX K not symmetric at ({nr},{na}): {asym_f:.3e}"
+        );
         plain.push(dp);
         fitted.push(df);
         last_plain = Some(kp);
         last_fit = Some(kf);
     }
     for w in plain.windows(2) {
-        assert!(w[1] < w[0], "plain COSX K error did not fall monotonically: {plain:?}");
+        assert!(
+            w[1] < w[0],
+            "plain COSX K error did not fall monotonically: {plain:?}"
+        );
     }
     for w in fitted.windows(2) {
-        assert!(w[1] < w[0], "fitted COSX K error did not fall monotonically: {fitted:?}");
+        assert!(
+            w[1] < w[0],
+            "fitted COSX K error did not fall monotonically: {fitted:?}"
+        );
     }
     let fp = *plain.last().unwrap();
     let ff = *fitted.last().unwrap();
-    assert!(fp < 1e-6, "plain COSX K at (99,302): max|dK| = {fp:.3e} >= 1e-6");
-    assert!(ff < 1e-6, "fitted COSX K at (99,302): max|dK| = {ff:.3e} >= 1e-6");
+    assert!(
+        fp < 1e-6,
+        "plain COSX K at (99,302): max|dK| = {fp:.3e} >= 1e-6"
+    );
+    assert!(
+        ff < 1e-6,
+        "fitted COSX K at (99,302): max|dK| = {ff:.3e} >= 1e-6"
+    );
     // Fit trivial limit: Q -> I on the dense grid, both converge to the same K.
     let dpf = max_abs_diff(last_plain.as_ref().unwrap(), last_fit.as_ref().unwrap());
     println!("(99,302): max|K_fit - K_plain| = {dpf:.3e}");
-    assert!(dpf < 1e-6, "fitted and plain COSX K disagree at (99,302): {dpf:.3e}");
+    assert!(
+        dpf < 1e-6,
+        "fitted and plain COSX K disagree at (99,302): {dpf:.3e}"
+    );
     // Reachability: the fit must actually DO something on the coarse grid (it is
     // not an identity in disguise). Measured in the prototype: fitted beats plain.
     assert!(
@@ -177,7 +217,11 @@ fn cosx_k_md3c1e_matches_cosx_a_backend() {
     let s = setup();
     let ctx = ParallelContext::default();
     let n = s.prep.nbasis();
-    assert_eq!(CosxConfig::default().backend, CosxBackend::Md3c1e, "md3c1e must be the default backend");
+    assert_eq!(
+        CosxConfig::default().backend,
+        CosxBackend::Md3c1e,
+        "md3c1e must be the default backend"
+    );
     for fit in [true, false] {
         let mut cfg_md = cosx_config(grid(25, 50), fit, None);
         cfg_md.backend = CosxBackend::Md3c1e;
@@ -190,7 +234,10 @@ fn cosx_k_md3c1e_matches_cosx_a_backend() {
         assert!(scale > 0.05, "K ~ 0 ({scale:.3e}); vacuous");
         let dev = max_abs_diff(&k_md, &k_a);
         println!("backend anchor (fit={fit}, build): max|K_md3c1e - K_cosx_a| = {dev:.3e} (||K||max {scale:.3e})");
-        assert!(dev <= 1e-12, "md3c1e and cosx_a backends disagree (fit={fit}): {dev:.3e}");
+        assert!(
+            dev <= 1e-12,
+            "md3c1e and cosx_a backends disagree (fit={fit}): {dev:.3e}"
+        );
 
         // Same through the C_occ half transform.
         let mut kb_md = CosxK::new(&ctx, &s.mol, &s.prep, cfg_md, usize::MAX).expect("md");
@@ -198,15 +245,22 @@ fn cosx_k_md3c1e_matches_cosx_a_backend() {
         let mut kc_md = Array2::zeros((n, n));
         let mut kc_a = Array2::zeros((n, n));
         kb_md.build_from_occ(&s.c_occ, &mut kc_md).expect("md occ");
-        kb_a.build_from_occ(&s.c_occ, &mut kc_a).expect("cosx_a occ");
+        kb_a.build_from_occ(&s.c_occ, &mut kc_a)
+            .expect("cosx_a occ");
         let dev_c = max_abs_diff(&kc_md, &kc_a);
         println!("backend anchor (fit={fit}, build_from_occ): max|dK| = {dev_c:.3e}");
-        assert!(dev_c <= 1e-12, "backends disagree on build_from_occ (fit={fit}): {dev_c:.3e}");
+        assert!(
+            dev_c <= 1e-12,
+            "backends disagree on build_from_occ (fit={fit}): {dev_c:.3e}"
+        );
         // Both carry the same (grid) error against the analytic K — the backend
         // swap changed the kernel, not the quadrature.
         let e_md = max_abs_diff(&k_md, &s.k_direct);
         let e_a = max_abs_diff(&k_a, &s.k_direct);
-        assert!((e_md - e_a).abs() <= 1e-12, "grid errors differ: md {e_md:.3e} vs cosx_a {e_a:.3e}");
+        assert!(
+            (e_md - e_a).abs() <= 1e-12,
+            "grid errors differ: md {e_md:.3e} vs cosx_a {e_a:.3e}"
+        );
     }
 }
 
@@ -220,17 +274,35 @@ fn cosx_screen_zero_threshold_matches_unscreened() {
     let g = grid(25, 50);
     let k_un = build_k(&s, &ctx, cosx_config(g.clone(), true, None), &s.d);
     let n = s.prep.nbasis();
-    let mut kb = CosxK::new(&ctx, &s.mol, &s.prep, cosx_config(g, true, Some(0.0)), usize::MAX).expect("t=0");
+    let mut kb = CosxK::new(
+        &ctx,
+        &s.mol,
+        &s.prep,
+        cosx_config(g, true, Some(0.0)),
+        usize::MAX,
+    )
+    .expect("t=0");
     let mut k_z = Array2::zeros((n, n));
     kb.build(&s.d, &mut k_z).expect("t=0 build");
     let dev = max_abs_diff(&k_un, &k_z);
-    assert!(dev <= 1e-14, "screen at threshold 0 differs from unscreened by {dev:.3e}");
+    assert!(
+        dev <= 1e-14,
+        "screen at threshold 0 differs from unscreened by {dev:.3e}"
+    );
     // The counters must say the same thing (a silent floor on `t` that drops
     // nothing on water — e.g. 1e-9 — is invisible to `dev`; one at 1e-7 is not,
     // and the counters catch any dropped pair at all).
     let t = *kb.last_timings();
-    assert_eq!(t.pairs_kept, t.pairs_total, "t = 0 dropped {} pairs", t.pairs_total - t.pairs_kept);
-    assert_eq!(t.pairs_kept_geom, t.pairs_total, "t = 0: geometry-only counter is not the total");
+    assert_eq!(
+        t.pairs_kept,
+        t.pairs_total,
+        "t = 0 dropped {} pairs",
+        t.pairs_total - t.pairs_kept
+    );
+    assert_eq!(
+        t.pairs_kept_geom, t.pairs_total,
+        "t = 0: geometry-only counter is not the total"
+    );
     // Sharp detector for a silent floor on `t`: with D scaled by 1e-8, F is
     // ~1e-8 and ANY positive threshold drops most pairs (water at 1e-7 or even
     // 1e-9 drops nothing at full scale on this grid — measured, mutation M1).
@@ -238,10 +310,19 @@ fn cosx_screen_zero_threshold_matches_unscreened() {
     let d_small = &s.d * 1e-8;
     let k_un_small = build_k(&s, &ctx, cosx_config(grid(25, 50), true, None), &d_small);
     let mut k_z_small = Array2::zeros((n, n));
-    kb.build(&d_small, &mut k_z_small).expect("t=0 build, scaled D");
+    kb.build(&d_small, &mut k_z_small)
+        .expect("t=0 build, scaled D");
     let t = *kb.last_timings();
-    assert_eq!(t.pairs_kept, t.pairs_total, "t = 0 on 1e-8 D dropped {} pairs (a floor on t)", t.pairs_total - t.pairs_kept);
-    assert!(k_un_small == k_z_small, "t = 0 on 1e-8 D is not bitwise the unscreened K");
+    assert_eq!(
+        t.pairs_kept,
+        t.pairs_total,
+        "t = 0 on 1e-8 D dropped {} pairs (a floor on t)",
+        t.pairs_total - t.pairs_kept
+    );
+    assert!(
+        k_un_small == k_z_small,
+        "t = 0 on 1e-8 D is not bitwise the unscreened K"
+    );
 }
 
 /// Positive screen anchor, replacing the `cosx_a_screen_is_unsound_tripwire`
@@ -259,9 +340,22 @@ fn cosx_screen_zero_threshold_matches_unscreened() {
 fn cosx_screened_k_matches_unscreened_below_grid_error() {
     let s = setup();
     let r = screened_vs_unscreened(&s, "water/cc-pVDZ");
-    assert!(r.kept < r.total, "screen dropped nothing — the anchor would pass vacuously");
-    assert!(r.dev < 1e-6, "screened K differs from unscreened by {:.3e} (grid error {:.3e})", r.dev, r.grid_err);
-    assert!(r.dev < 0.1 * r.grid_err, "screen error {:.3e} is not well below the grid error {:.3e}", r.dev, r.grid_err);
+    assert!(
+        r.kept < r.total,
+        "screen dropped nothing — the anchor would pass vacuously"
+    );
+    assert!(
+        r.dev < 1e-6,
+        "screened K differs from unscreened by {:.3e} (grid error {:.3e})",
+        r.dev,
+        r.grid_err
+    );
+    assert!(
+        r.dev < 0.1 * r.grid_err,
+        "screen error {:.3e} is not well below the grid error {:.3e}",
+        r.dev,
+        r.grid_err
+    );
 }
 
 struct ScreenResult {
@@ -277,9 +371,18 @@ fn screened_vs_unscreened(s: &Setup, label: &str) -> ScreenResult {
     let ctx = ParallelContext::default();
     let n = s.prep.nbasis();
     let g = grid(50, 110);
-    let thresh = CosxConfig::default().screen_thresh.expect("density-driven screen is on by default");
+    let thresh = CosxConfig::default()
+        .screen_thresh
+        .expect("density-driven screen is on by default");
     let k_un = build_k(s, &ctx, cosx_config(g.clone(), true, None), &s.d);
-    let mut kb = CosxK::new(&ctx, &s.mol, &s.prep, cosx_config(g, true, Some(thresh)), usize::MAX).expect("screened");
+    let mut kb = CosxK::new(
+        &ctx,
+        &s.mol,
+        &s.prep,
+        cosx_config(g, true, Some(thresh)),
+        usize::MAX,
+    )
+    .expect("screened");
     let mut k_sc = Array2::zeros((n, n));
     kb.build(&s.d, &mut k_sc).expect("screened build");
     let t = *kb.last_timings();
@@ -293,19 +396,33 @@ fn screened_vs_unscreened(s: &Setup, label: &str) -> ScreenResult {
         t.pairs_kept as f64 / t.pairs_total as f64,
         t.pairs_kept_geom as f64 / t.pairs_total as f64
     );
-    ScreenResult { dev, grid_err, kept: t.pairs_kept, kept_geom: t.pairs_kept_geom, total: t.pairs_total }
+    ScreenResult {
+        dev,
+        grid_err,
+        kept: t.pairs_kept,
+        kept_geom: t.pairs_kept_geom,
+        total: t.pairs_total,
+    }
 }
 
 /// Converged RHF on butane (testdata alkane_4) / def2-SVP + its direct K.
 fn setup_butane() -> Setup {
-    let path = format!("{}/../../testdata/molecules/alkane_4.xyz", env!("CARGO_MANIFEST_DIR"));
+    let path = format!(
+        "{}/../../testdata/molecules/alkane_4.xyz",
+        env!("CARGO_MANIFEST_DIR")
+    );
     let mol = Molecule::load_xyz(&path).expect("alkane_4.xyz");
     let bs = bundled("def2-svp").expect("def2-svp");
     let prep = PreparedBasis::new(&mol, &bs).expect("prep");
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig { energy_conv: 1e-10, density_conv: 1e-8, integral_thresh: 1e-14, ..Default::default() };
+    let cfg = RhfConfig {
+        energy_conv: 1e-10,
+        density_conv: 1e-8,
+        integral_thresh: 1e-14,
+        ..Default::default()
+    };
     let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).expect("rhf");
     assert!(res.converged, "reference RHF did not converge");
     let nocc = (mol.nelec() / 2) as usize;
@@ -315,7 +432,13 @@ fn setup_butane() -> Setup {
     let mut j = Array2::zeros((n, n));
     let mut k_direct = Array2::zeros((n, n));
     build_jk(&ctx, &prep, &bounds, 1e-14, &d, &mut j, &mut k_direct).expect("direct jk");
-    Setup { mol, prep, d, c_occ, k_direct }
+    Setup {
+        mol,
+        prep,
+        d,
+        c_occ,
+        k_direct,
+    }
 }
 
 /// Anchor (b) on a molecule where the screen bites: butane/def2-SVP at the
@@ -334,11 +457,27 @@ fn cosx_density_driven_screen_butane_def2svp() {
     let r = screened_vs_unscreened(&s, "butane/def2-SVP");
     let kept = r.kept as f64 / r.total as f64;
     let geom = r.kept_geom as f64 / r.total as f64;
-    assert!(r.dev < 1e-6, "screened K differs from unscreened by {:.3e} (grid error {:.3e})", r.dev, r.grid_err);
-    assert!(r.dev < 0.1 * r.grid_err, "screen error {:.3e} is not well below the grid error {:.3e}", r.dev, r.grid_err);
-    assert!(kept < 0.85, "density-driven screen kept {kept:.4} of the work — expected < 0.85 (measured 0.79)");
+    assert!(
+        r.dev < 1e-6,
+        "screened K differs from unscreened by {:.3e} (grid error {:.3e})",
+        r.dev,
+        r.grid_err
+    );
+    assert!(
+        r.dev < 0.1 * r.grid_err,
+        "screen error {:.3e} is not well below the grid error {:.3e}",
+        r.dev,
+        r.grid_err
+    );
+    assert!(
+        kept < 0.85,
+        "density-driven screen kept {kept:.4} of the work — expected < 0.85 (measured 0.79)"
+    );
     assert!(geom > 0.90, "geometry-only bound kept only {geom:.4} — expected > 0.90 (measured 0.95); the bound changed");
-    assert!(r.kept < r.kept_geom, "density-driven screen must drop strictly more than the geometry-only bound");
+    assert!(
+        r.kept < r.kept_geom,
+        "density-driven screen must drop strictly more than the geometry-only bound"
+    );
 }
 
 /// Anchor (c): `build_from_occ(C)` and `build(C C^T)` are the same K.
@@ -348,12 +487,19 @@ fn cosx_build_from_occ_matches_build_from_density() {
     let ctx = ParallelContext::default();
     let n = s.prep.nbasis();
     let d1 = s.c_occ.dot(&s.c_occ.t());
-    let mut kb = CosxK::new(&ctx, &s.mol, &s.prep, cosx_config(grid(25, 50), true, None), usize::MAX)
-        .expect("CosxK::new");
+    let mut kb = CosxK::new(
+        &ctx,
+        &s.mol,
+        &s.prep,
+        cosx_config(grid(25, 50), true, None),
+        usize::MAX,
+    )
+    .expect("CosxK::new");
     let mut k_d = Array2::zeros((n, n));
     let mut k_c = Array2::zeros((n, n));
     kb.build(&d1, &mut k_d).expect("build");
-    kb.build_from_occ(&s.c_occ, &mut k_c).expect("build_from_occ");
+    kb.build_from_occ(&s.c_occ, &mut k_c)
+        .expect("build_from_occ");
     let dev = max_abs_diff(&k_d, &k_c);
     let scale = k_d.mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v));
     assert!(scale > 0.05, "K(C C^T) ~ 0 ({scale:.3e}); vacuous");
@@ -378,7 +524,10 @@ fn cosx_two_densities_no_leaked_state() {
             d2[(i, j)] += 0.01 * (((i + 1) * (j + 1)) as f64).sqrt() / n as f64;
         }
     }
-    assert!(max_abs_diff(&d1, &d2) > 0.1, "D1 and D2 are not different enough to test leakage");
+    assert!(
+        max_abs_diff(&d1, &d2) > 0.1,
+        "D1 and D2 are not different enough to test leakage"
+    );
 
     let mut shared = CosxK::new(&ctx, &s.mol, &s.prep, cfg.clone(), usize::MAX).expect("shared");
     let mut k1_shared = Array2::zeros((n, n));
@@ -393,8 +542,20 @@ fn cosx_two_densities_no_leaked_state() {
     let k1_fresh = build_k(&s, &ctx, cfg.clone(), &d1);
     let k2_fresh = build_k(&s, &ctx, cfg, &d2);
 
-    assert!(k1_shared == k1_fresh, "K(D1) from shared instance != fresh (bitwise)");
-    assert!(k2_shared == k2_fresh, "K(D2) after D1 from shared instance != fresh (bitwise)");
-    assert!(k1_again == k1_fresh, "K(D1) after D2 from shared instance != fresh (bitwise)");
-    assert!(max_abs_diff(&k1_fresh, &k2_fresh) > 1e-3, "K(D1) == K(D2): the two densities are not distinguishing");
+    assert!(
+        k1_shared == k1_fresh,
+        "K(D1) from shared instance != fresh (bitwise)"
+    );
+    assert!(
+        k2_shared == k2_fresh,
+        "K(D2) after D1 from shared instance != fresh (bitwise)"
+    );
+    assert!(
+        k1_again == k1_fresh,
+        "K(D1) after D2 from shared instance != fresh (bitwise)"
+    );
+    assert!(
+        max_abs_diff(&k1_fresh, &k2_fresh) > 1e-3,
+        "K(D1) == K(D2): the two densities are not distinguishing"
+    );
 }

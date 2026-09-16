@@ -17,7 +17,11 @@ fn rhf_cfg(xc: &str, hybrid: bool) -> RhfConfig {
     RhfConfig {
         xc: Some(xc.into()),
         df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: if hybrid { Some("def2-universal-jkfit".into()) } else { None },
+        df_k_aux: if hybrid {
+            Some("def2-universal-jkfit".into())
+        } else {
+            None
+        },
         // energy_conv follows rhf.rs's documented convergence philosophy
         // (RhfConfig::default doc comment): dp_rms is the real convergence
         // signal; ΔE floors with naux (DF-J/DF-K are in play here) and is
@@ -56,8 +60,14 @@ fn fd_gradient(xyz: &str, basis_name: &str, xc: &str, hybrid: bool, delta: f64) 
     let prep0 = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds0 = SchwarzBounds::compute(Operator::coulomb(), &prep0).unwrap();
     let res0 = solve_rhf(
-        &ParallelContext::default(), &mol, &prep0, Operator::coulomb(), &bounds0, &base_cfg,
-    ).unwrap();
+        &ParallelContext::default(),
+        &mol,
+        &prep0,
+        Operator::coulomb(),
+        &bounds0,
+        &base_cfg,
+    )
+    .unwrap();
     let cfg = RhfConfig {
         init_guess_density: Some(res0.density_r().clone()),
         use_sad_guess: false,
@@ -70,29 +80,60 @@ fn fd_gradient(xyz: &str, basis_name: &str, xc: &str, hybrid: bool, delta: f64) 
     // own BLAS internally, so nesting under this outer iterator is safe (the
     // same pattern the production code uses, e.g. rimp2.rs's per-pair
     // parallelism over per-i BLAS3 GEMMs).
-    let pairs: Vec<(usize, usize)> = (0..natoms).flat_map(|a| (0..3).map(move |c| (a, c))).collect();
+    let pairs: Vec<(usize, usize)> = (0..natoms)
+        .flat_map(|a| (0..3).map(move |c| (a, c)))
+        .collect();
     let results: Vec<((usize, usize), f64)> = pairs
         .par_iter()
         .map(|&(atom, coord)| {
             let mut mol_p = mol.clone();
             let mut mol_m = mol.clone();
             match coord {
-                0 => { mol_p.atoms[atom].x += delta; mol_m.atoms[atom].x -= delta; }
-                1 => { mol_p.atoms[atom].y += delta; mol_m.atoms[atom].y -= delta; }
-                _ => { mol_p.atoms[atom].zpos += delta; mol_m.atoms[atom].zpos -= delta; }
+                0 => {
+                    mol_p.atoms[atom].x += delta;
+                    mol_m.atoms[atom].x -= delta;
+                }
+                1 => {
+                    mol_p.atoms[atom].y += delta;
+                    mol_m.atoms[atom].y -= delta;
+                }
+                _ => {
+                    mol_p.atoms[atom].zpos += delta;
+                    mol_m.atoms[atom].zpos -= delta;
+                }
             }
             let prep_p = PreparedBasis::new(&mol_p, &bs).unwrap();
             let bounds_p = SchwarzBounds::compute(Operator::coulomb(), &prep_p).unwrap();
             let res_p = solve_rhf(
-                &ParallelContext::default(), &mol_p, &prep_p, Operator::coulomb(), &bounds_p, &cfg,
-            ).unwrap();
-            assert!(res_p.converged, "FD solve did not converge at atom={atom} coord={coord} (+): exit={:?}", res_p.exit);
+                &ParallelContext::default(),
+                &mol_p,
+                &prep_p,
+                Operator::coulomb(),
+                &bounds_p,
+                &cfg,
+            )
+            .unwrap();
+            assert!(
+                res_p.converged,
+                "FD solve did not converge at atom={atom} coord={coord} (+): exit={:?}",
+                res_p.exit
+            );
             let prep_m = PreparedBasis::new(&mol_m, &bs).unwrap();
             let bounds_m = SchwarzBounds::compute(Operator::coulomb(), &prep_m).unwrap();
             let res_m = solve_rhf(
-                &ParallelContext::default(), &mol_m, &prep_m, Operator::coulomb(), &bounds_m, &cfg,
-            ).unwrap();
-            assert!(res_m.converged, "FD solve did not converge at atom={atom} coord={coord} (-): exit={:?}", res_m.exit);
+                &ParallelContext::default(),
+                &mol_m,
+                &prep_m,
+                Operator::coulomb(),
+                &bounds_m,
+                &cfg,
+            )
+            .unwrap();
+            assert!(
+                res_m.converged,
+                "FD solve did not converge at atom={atom} coord={coord} (-): exit={:?}",
+                res_m.exit
+            );
             ((atom, coord), (res_p.energy - res_m.energy) / (2.0 * delta))
         })
         .collect();
@@ -122,7 +163,9 @@ fn run_fd_test(label: &str, xyz: &str, basis_name: &str, xc: &str, hybrid: bool,
             max_diff = max_diff.max(diff);
             eprintln!(
                 "  atom={a} coord={c}: ana={:+.6e} fd={:+.6e} diff={:.2e}",
-                g_ana[(a, c)], g_fd[(a, c)], diff
+                g_ana[(a, c)],
+                g_fd[(a, c)],
+                diff
             );
         }
     }
@@ -130,43 +173,82 @@ fn run_fd_test(label: &str, xyz: &str, basis_name: &str, xc: &str, hybrid: bool,
     for a in 0..mol.atoms.len() {
         for c in 0..3 {
             let diff = (g_ana[(a, c)] - g_fd[(a, c)]).abs();
-            assert!(diff < tol, "{label} {xc}: atom={a} coord={c} diff={diff:.2e}");
+            assert!(
+                diff < tol,
+                "{label} {xc}: atom={a} coord={c} diff={diff:.2e}"
+            );
         }
     }
 }
 
 #[test]
 fn pbe_gradient_h2_sto3g_vs_fd() {
-    run_fd_test("H2/sto-3g", "2\nH2\nH 0 0 0\nH 0 0 0.74\n", "sto-3g", "PBE", false, 1e-3);
+    run_fd_test(
+        "H2/sto-3g",
+        "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
+        "sto-3g",
+        "PBE",
+        false,
+        1e-3,
+    );
 }
 
 #[test]
 fn pbe_gradient_h2o_sto3g_vs_fd() {
-    run_fd_test("H2O/sto-3g",
-                "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
-                "sto-3g", "PBE", false, 2e-3);
+    run_fd_test(
+        "H2O/sto-3g",
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        "sto-3g",
+        "PBE",
+        false,
+        2e-3,
+    );
 }
 
 #[test]
 fn b3lyp_gradient_h2_sto3g_vs_fd() {
-    run_fd_test("H2/sto-3g", "2\nH2\nH 0 0 0\nH 0 0 0.74\n", "sto-3g", "B3LYP", true, 1e-3);
+    run_fd_test(
+        "H2/sto-3g",
+        "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
+        "sto-3g",
+        "B3LYP",
+        true,
+        1e-3,
+    );
 }
 
 #[test]
 fn pbe_gradient_h2_ccpvdz_vs_fd() {
-    run_fd_test("H2/cc-pVDZ", "2\nH2\nH 0 0 0\nH 0 0 0.74\n", "cc-pvdz", "PBE", false, 1e-3);
+    run_fd_test(
+        "H2/cc-pVDZ",
+        "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
+        "cc-pvdz",
+        "PBE",
+        false,
+        1e-3,
+    );
 }
 
 #[test]
 fn pbe_gradient_h2o_ccpvdz_vs_fd() {
-    run_fd_test("H2O/cc-pVDZ",
-                "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
-                "cc-pvdz", "PBE", false, 2e-3);
+    run_fd_test(
+        "H2O/cc-pVDZ",
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        "cc-pvdz",
+        "PBE",
+        false,
+        2e-3,
+    );
 }
 
 #[test]
 fn b3lyp_gradient_h2o_ccpvdz_vs_fd() {
-    run_fd_test("H2O/cc-pVDZ",
-                "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
-                "cc-pvdz", "B3LYP", true, 2e-3);
+    run_fd_test(
+        "H2O/cc-pVDZ",
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        "cc-pvdz",
+        "B3LYP",
+        true,
+        2e-3,
+    );
 }

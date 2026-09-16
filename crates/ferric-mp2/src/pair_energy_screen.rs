@@ -294,7 +294,9 @@ mod tests {
         let mut s = seed;
         let v: Vec<f64> = (0..n * n)
             .map(|_| {
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                s = s
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 ((s >> 33) as f64 / (1u64 << 31) as f64) - 1.0
             })
             .collect();
@@ -324,8 +326,15 @@ mod tests {
         let pe = estimate_pair_energies(g.view(), &eps, nocc, nvir, 0, nocc).unwrap();
         let d = build_pair_domains_by_energy(&centers3(), &pe, 0.0, f64::INFINITY).unwrap();
 
-        assert_eq!(d.pairs.len(), nocc * (nocc + 1) / 2, "must keep every i<=j pair");
-        assert!(d.is_complete(), "t_cut_pairs = 0 must produce complete domains");
+        assert_eq!(
+            d.pairs.len(),
+            nocc * (nocc + 1) / 2,
+            "must keep every i<=j pair"
+        );
+        assert!(
+            d.is_complete(),
+            "t_cut_pairs = 0 must produce complete domains"
+        );
         assert_eq!(d.pair_retention(), 1.0);
         assert_eq!(d.coupling_retention(), 1.0);
     }
@@ -359,9 +368,8 @@ mod tests {
         let g = fill(nocc_active * nvir, 0xBADF00D);
         let eps = vec![-3.0, -1.0, -0.8, -0.6, 0.4, 0.7, 1.1, 1.6];
 
-        let pe =
-            estimate_pair_energies(g.view(), &eps, nocc_active, nvir, first_occ, nocc_total)
-                .unwrap();
+        let pe = estimate_pair_energies(g.view(), &eps, nocc_active, nvir, first_occ, nocc_total)
+            .unwrap();
         let dense = spin_components_from_g(&g, &eps, nocc_active, nvir, first_occ, nocc_total);
         assert!((pe.total() - dense.e_total).abs() < 1e-12);
     }
@@ -377,12 +385,21 @@ mod tests {
         let mut last = usize::MAX;
         for t in [0.0, 1e-6, 1e-4, 1e-2, 1.0, 1e6] {
             let d = build_pair_domains_by_energy(&centers3(), &pe, t, f64::INFINITY).unwrap();
-            assert!(d.pairs.len() <= last, "retention rose when the threshold tightened");
+            assert!(
+                d.pairs.len() <= last,
+                "retention rose when the threshold tightened"
+            );
             last = d.pairs.len();
             // Hard floor: the diagonal is never screened.
-            assert!(d.pairs.len() >= nocc, "diagonal pairs were screened out at t={t}");
+            assert!(
+                d.pairs.len() >= nocc,
+                "diagonal pairs were screened out at t={t}"
+            );
         }
-        assert_eq!(last, nocc, "an absurd threshold must leave exactly the diagonal");
+        assert_eq!(
+            last, nocc,
+            "an absurd threshold must leave exactly the diagonal"
+        );
     }
 
     /// Diagonal pairs survive any threshold, however absurd.
@@ -393,7 +410,10 @@ mod tests {
         let d = build_pair_domains_by_energy(&centers3(), &pe, f64::MAX, f64::INFINITY).unwrap();
         assert_eq!(d.pairs.len(), nocc);
         for i in 0..nocc {
-            assert!(d.pairs.contains(&(i, i)), "diagonal ({i},{i}) was screened out");
+            assert!(
+                d.pairs.contains(&(i, i)),
+                "diagonal ({i},{i}) was screened out"
+            );
         }
         for row in &d.coupled {
             assert!(!row.is_empty(), "a pair must always couple to itself");
@@ -428,15 +448,23 @@ mod tests {
         let (g, eps, nocc, nvir) = synthetic();
         let pe = estimate_pair_energies(g.view(), &eps, nocc, nvir, 0, nocc).unwrap();
         // Pick a threshold between the smallest and largest off-diagonal magnitude.
-        let mut offs: Vec<f64> =
-            (0..nocc).flat_map(|i| ((i + 1)..nocc).map(move |j| (i, j))).map(|(i, j)| pe.e_ij(i, j).abs()).collect();
+        let mut offs: Vec<f64> = (0..nocc)
+            .flat_map(|i| ((i + 1)..nocc).map(move |j| (i, j)))
+            .map(|(i, j)| pe.e_ij(i, j).abs())
+            .collect();
         offs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        assert!(offs.len() >= 2, "test premise: need >= 2 off-diagonal pairs");
+        assert!(
+            offs.len() >= 2,
+            "test premise: need >= 2 off-diagonal pairs"
+        );
         let t = 0.5 * (offs[0] + offs[offs.len() - 1]);
 
         let d = build_pair_domains_by_energy(&centers3(), &pe, t, f64::INFINITY).unwrap();
         assert!(!d.is_complete(), "threshold {t} was inert");
-        assert!(d.pairs.len() > nocc, "threshold {t} dropped every off-diagonal");
+        assert!(
+            d.pairs.len() > nocc,
+            "threshold {t} dropped every off-diagonal"
+        );
     }
 
     /// Bad inputs are caller bugs and must error, not panic or silently proceed.

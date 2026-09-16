@@ -54,14 +54,23 @@ fn trace_oh_lda_plateau() {
     };
 
     run("DIIS-only", &base());
-    run("AH (trigger 1e-2)", &RhfConfig { ah_trigger: 1e-2, ..base() });
+    run(
+        "AH (trigger 1e-2)",
+        &RhfConfig {
+            ah_trigger: 1e-2,
+            ..base()
+        },
+    );
     // MOM: pin the SOMO identity by AO-overlap once DIIS has descended into a
     // basin. Sweep the activation iter — too early and MOM locks onto a bad
     // guess; too late and the oscillation has already set in.
     for after in [3usize, 5, 8, 12] {
         run(
             &format!("MOM (after iter {after})"),
-            &RhfConfig { mom_after_iter: after, ..base() },
+            &RhfConfig {
+                mom_after_iter: after,
+                ..base()
+            },
         );
     }
 }

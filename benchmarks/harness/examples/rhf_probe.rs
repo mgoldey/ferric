@@ -33,5 +33,9 @@ fn main() {
     let t0 = Instant::now();
     eprintln!("[probe] entering solve_rhf...");
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).expect("rhf");
-    eprintln!("[probe] RHF E={:.8} t={:.1}s", rhf.energy, t0.elapsed().as_secs_f64());
+    eprintln!(
+        "[probe] RHF E={:.8} t={:.1}s",
+        rhf.energy,
+        t0.elapsed().as_secs_f64()
+    );
 }

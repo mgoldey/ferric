@@ -10,16 +10,16 @@
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
+use ferric_gw::{run_u_gw, GwConfig, GwMethod};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_rpa::config::{
     Chi0Backend, Chi0Sparsity, Eigensolver, PdepRpaConfig, QuadratureConfig, QuadratureScheme,
     SternheimerConfig,
 };
+use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::uhf::solve_uhf;
-use ferric_scf::rhf::RhfConfig;
-use ferric_gw::{run_u_gw, GwConfig, GwMethod};
 
 const HA_TO_EV: f64 = 27.211386245988_f64;
 
@@ -33,7 +33,12 @@ H  0.0  0.0  0.9697
     Molecule::parse_xyz(xyz, 0, 2).expect("parse OH xyz")
 }
 
-fn prepare_oh() -> (Molecule, PreparedBasis, PreparedBasis, ferric_scf::ScfResult) {
+fn prepare_oh() -> (
+    Molecule,
+    PreparedBasis,
+    PreparedBasis,
+    ferric_scf::ScfResult,
+) {
     let mol = oh_mol();
     let obs_bs = basis::bundled("cc-pvdz").expect("cc-pvdz");
     let aux_bs = basis::bundled("cc-pvdz-ri").expect("cc-pvdz-ri");
@@ -87,11 +92,22 @@ fn oh_u_g0w0_first_ip_runs() {
     let homo_a = nocc_a - 1;
     let homo_b = nocc_b - 1;
 
-    let gcfg = GwConfig { method: GwMethod::G0W0, ..Default::default() };
+    let gcfg = GwConfig {
+        method: GwMethod::G0W0,
+        ..Default::default()
+    };
     let res = run_u_gw(&mol, &obs, &dfbs, op, &uhf, &pdep, &gcfg).expect("U-G0W0");
 
-    let idx_a = res.mo_indices.iter().position(|&i| i == homo_a).expect("HOMO_α in range");
-    let idx_b = res.mo_indices.iter().position(|&i| i == homo_b).expect("HOMO_β in range");
+    let idx_a = res
+        .mo_indices
+        .iter()
+        .position(|&i| i == homo_a)
+        .expect("HOMO_α in range");
+    let idx_b = res
+        .mo_indices
+        .iter()
+        .position(|&i| i == homo_b)
+        .expect("HOMO_β in range");
     let ip_a_qp = -res.eps_qp_a[idx_a] * HA_TO_EV;
     let ip_b_qp = -res.eps_qp_b[idx_b] * HA_TO_EV;
     let ip_a_mf = -res.eps_mf_a[idx_a] * HA_TO_EV;
@@ -100,16 +116,19 @@ fn oh_u_g0w0_first_ip_runs() {
     println!("OH/cc-pVDZ U-G0W0@UHF:");
     println!("  UHF Koopmans α-HOMO: {ip_a_mf:.3} eV    β-HOMO: {ip_b_mf:.3} eV");
     println!("  U-G0W0   α-HOMO QP: {ip_a_qp:.3} eV    β-HOMO QP: {ip_b_qp:.3} eV");
-    println!("  Σ_c(α): {:.4} Ha  Z(α): {:.3}", res.sigma_c_a[idx_a], res.z_factor_a[idx_a]);
-    println!("  Σ_c(β): {:.4} Ha  Z(β): {:.3}", res.sigma_c_b[idx_b], res.z_factor_b[idx_b]);
+    println!(
+        "  Σ_c(α): {:.4} Ha  Z(α): {:.3}",
+        res.sigma_c_a[idx_a], res.z_factor_a[idx_a]
+    );
+    println!(
+        "  Σ_c(β): {:.4} Ha  Z(β): {:.3}",
+        res.sigma_c_b[idx_b], res.z_factor_b[idx_b]
+    );
 
     // Sanity bounds: QP IPs should be finite, in the (UHF Koopmans − 5, UHF Koopmans + 1) eV window
     // and bracket experiment (~13.02 eV) on at least the right order.
     for (ip, ip_mf, label) in [(ip_a_qp, ip_a_mf, "α"), (ip_b_qp, ip_b_mf, "β")] {
-        assert!(
-            ip.is_finite(),
-            "{label}-HOMO QP IP is not finite"
-        );
+        assert!(ip.is_finite(), "{label}-HOMO QP IP is not finite");
         assert!(
             ip > 5.0 && ip < 20.0,
             "{label}-HOMO QP IP = {ip:.3} eV is wildly out of range"
@@ -130,7 +149,10 @@ fn oh_u_cohsex_runs() {
     let (mol, obs, dfbs, uhf) = prepare_oh();
     let op = Operator::coulomb();
     let pdep = pdep_cfg();
-    let gcfg = GwConfig { method: GwMethod::Cohsex, ..Default::default() };
+    let gcfg = GwConfig {
+        method: GwMethod::Cohsex,
+        ..Default::default()
+    };
     let res = run_u_gw(&mol, &obs, &dfbs, op, &uhf, &pdep, &gcfg).expect("U-COHSEX");
     let two_s = (mol.multiplicity as i32) - 1;
     let nocc_a = ((mol.nelec() + two_s) / 2) as usize;
@@ -139,7 +161,10 @@ fn oh_u_cohsex_runs() {
     let ip = -res.eps_qp_a[idx] * HA_TO_EV;
     println!("OH U-COHSEX α-HOMO IP: {ip:.3} eV");
     // COHSEX typically overshoots G0W0 IP by ~1 eV — generous bound.
-    assert!(ip > 8.0 && ip < 22.0, "U-COHSEX α-HOMO IP {ip:.3} out of bound");
+    assert!(
+        ip > 8.0 && ip < 22.0,
+        "U-COHSEX α-HOMO IP {ip:.3} out of bound"
+    );
 }
 
 #[test]

@@ -7,7 +7,10 @@ use ferric_dft::libxc::{xc_def_from_name, XcFunctional};
 fn wb97xv_carries_vv10() {
     let def = xc_def_from_name("wB97X-V").unwrap();
     let v = def.vv10.expect("wB97X-V must carry VV10");
-    eprintln!("wB97X-V vv10 (from libxc xc_nlc_coef): b={}, C={}", v.b, v.c);
+    eprintln!(
+        "wB97X-V vv10 (from libxc xc_nlc_coef): b={}, C={}",
+        v.b, v.c
+    );
     assert!((v.b - 6.0).abs() < 1e-10, "b should be 6.0, got {}", v.b);
     assert!((v.c - 0.01).abs() < 1e-10, "C should be 0.01, got {}", v.c);
 }
@@ -36,7 +39,10 @@ fn pbe_does_not_carry_vv10() {
 fn direct_xc_functional_query() {
     let f = XcFunctional::new("HYB_GGA_XC_WB97X_V", 1).unwrap();
     let v = f.vv10_coeffs().expect("wB97X-V should have VV10");
-    eprintln!("direct vv10 query on HYB_GGA_XC_WB97X_V: b={}, C={}", v.b, v.c);
+    eprintln!(
+        "direct vv10 query on HYB_GGA_XC_WB97X_V: b={}, C={}",
+        v.b, v.c
+    );
     assert!((v.b - 6.0).abs() < 1e-10);
     assert!((v.c - 0.01).abs() < 1e-10);
 }

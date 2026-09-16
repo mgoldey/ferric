@@ -79,12 +79,21 @@ fn run_rhf(xyz: &str, basis_name: &str) -> RhfSetup {
         &prep,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-12, density_conv: 1e-11, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-12,
+            density_conv: 1e-11,
+            ..Default::default()
+        },
     )
     .unwrap();
     let density = rhf.density_r().clone();
     let energy = rhf.energy;
-    RhfSetup { mol, prep, density, energy }
+    RhfSetup {
+        mol,
+        prep,
+        density,
+        energy,
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -199,7 +208,11 @@ fn fit_residual_rms(mol: &Molecule, prep: &PreparedBasis, density: &Array2<f64>,
     // Mirrors `chelpg_grid_esp`'s center-symmetric grid construction exactly
     // (see that function's comment for why: an origin-anchored, ceil-rounded
     // grid is not symmetric under a symmetric molecule's own point group).
-    let center = [0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2])];
+    let center = [
+        0.5 * (lo[0] + hi[0]),
+        0.5 * (lo[1] + hi[1]),
+        0.5 * (lo[2] + hi[2]),
+    ];
     let half_pts = [
         ((0.5 * (hi[0] - lo[0]) + margin) / spacing).ceil() as usize,
         ((0.5 * (hi[1] - lo[1]) + margin) / spacing).ceil() as usize,
@@ -210,7 +223,11 @@ fn fit_residual_rms(mol: &Molecule, prep: &PreparedBasis, density: &Array2<f64>,
         center[1] - half_pts[1] as f64 * spacing,
         center[2] - half_pts[2] as f64 * spacing,
     ];
-    let n = [2 * half_pts[0] + 1, 2 * half_pts[1] + 1, 2 * half_pts[2] + 1];
+    let n = [
+        2 * half_pts[0] + 1,
+        2 * half_pts[1] + 1,
+        2 * half_pts[2] + 1,
+    ];
 
     let mut kept: Vec<[f64; 3]> = Vec::new();
     for ix in 0..n[0] {
@@ -280,8 +297,16 @@ fn water_chelpg_sums_to_total_charge_and_fits_potential() {
     );
 
     // O should be negative, H positive (standard chemical sign for water).
-    assert!(q[0] < 0.0, "O CHELPG charge should be negative, got {}", q[0]);
-    assert!(q[1] > 0.0, "H CHELPG charge should be positive, got {}", q[1]);
+    assert!(
+        q[0] < 0.0,
+        "O CHELPG charge should be negative, got {}",
+        q[0]
+    );
+    assert!(
+        q[1] > 0.0,
+        "H CHELPG charge should be positive, got {}",
+        q[1]
+    );
 
     // The actual least-squares objective: does V_fit reproduce V_QM on the
     // fitted grid? A tight tolerance here is a real correctness check on
@@ -304,7 +329,10 @@ fn methanol_chelpg_sums_to_total_charge_and_fits_potential() {
     assert_eq!(q.len(), 6);
 
     let sum: f64 = q.iter().sum();
-    assert!(sum.abs() < 1e-7, "CHELPG charges must sum to 0 for neutral methanol: got {sum:.3e}");
+    assert!(
+        sum.abs() < 1e-7,
+        "CHELPG charges must sum to 0 for neutral methanol: got {sum:.3e}"
+    );
 
     // O should be the most negative atom (electronegativity), and the three
     // methyl H's should be roughly symmetry-equivalent (C-H bonds related
@@ -313,7 +341,10 @@ fn methanol_chelpg_sums_to_total_charge_and_fits_potential() {
     let (o_q, h_methyl) = (q[1], &q[2..5]);
     assert!(o_q < 0.0, "O CHELPG charge should be negative, got {o_q}");
     for &h in h_methyl {
-        assert!(h > -0.3 && h < 0.6, "methyl H CHELPG charge out of physical range: {h}");
+        assert!(
+            h > -0.3 && h < 0.6,
+            "methyl H CHELPG charge out of physical range: {h}"
+        );
     }
 
     let rms = fit_residual_rms(&setup.mol, &setup.prep, &setup.density, &q);
@@ -341,7 +372,10 @@ fn water_resp_sums_to_total_charge_and_fits_potential() {
     assert_eq!(q.len(), 3);
 
     let sum: f64 = q.iter().sum();
-    assert!(sum.abs() < 1e-6, "RESP charges must sum to 0 for neutral water: got {sum:.3e}");
+    assert!(
+        sum.abs() < 1e-6,
+        "RESP charges must sum to 0 for neutral water: got {sum:.3e}"
+    );
 
     assert!(
         (q[1] - q[2]).abs() < 1e-5,
@@ -389,7 +423,10 @@ fn methanol_resp_sums_to_total_charge_and_fits_potential() {
     assert_eq!(q.len(), 6);
 
     let sum: f64 = q.iter().sum();
-    assert!(sum.abs() < 1e-6, "RESP charges must sum to 0 for neutral methanol: got {sum:.3e}");
+    assert!(
+        sum.abs() < 1e-6,
+        "RESP charges must sum to 0 for neutral methanol: got {sum:.3e}"
+    );
 
     let rms = fit_residual_rms(&setup.mol, &setup.prep, &setup.density, &q);
     assert!(

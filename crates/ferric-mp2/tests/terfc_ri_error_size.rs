@@ -29,7 +29,10 @@ fn probe_ri_error_magnitude_on_coulomb() {
         &obs,
         opc,
         &bounds,
-        &RhfConfig { energy_conv: 1e-9, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-9,
+            ..Default::default()
+        },
     )
     .unwrap();
 

@@ -13,8 +13,8 @@ use ferric_integrals::operator::Operator;
 use ferric_rpa::config::{Chi0Sparsity, Eigensolver, QuadratureConfig, QuadratureScheme};
 use ferric_rpa::{run_pdep_rpa, screen, PdepRpaConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::ScfResult;
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::ScfResult;
 
 fn setup(
     xyz: &str,
@@ -51,14 +51,20 @@ fn base_cfg() -> PdepRpaConfig {
 fn h2o_cc_pvdz_screened_equivalence_thresh_zero() {
     // At thresh = 0 no aux rows are dropped; the screened tile representation
     // should match the dense path to high precision.
-    let (mol, obs, dfbs, op, rhf) =
-        setup("../../testdata/molecules/water.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/water.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+    );
 
     let cfg_dense = base_cfg();
     let r_dense = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_dense).unwrap();
 
     let mut cfg_screen = base_cfg();
-    cfg_screen.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh: 0.0, dist_cutoff: f64::INFINITY };
+    cfg_screen.chi0_sparsity = Chi0Sparsity::BoysScreened {
+        thresh: 0.0,
+        dist_cutoff: f64::INFINITY,
+    };
     let r_scr = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_screen).unwrap();
 
     let diff = (r_scr.e_rpa - r_dense.e_rpa).abs();
@@ -99,8 +105,11 @@ fn h2o_cc_pvdz_screened_equivalence_thresh_zero() {
 /// which the existing suite never independently covered.
 #[test]
 fn h2o_cc_pvdz_screened_davidson_equivalence_thresh_zero() {
-    let (mol, obs, dfbs, op, rhf) =
-        setup("../../testdata/molecules/water.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/water.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+    );
 
     let mut cfg_dense = base_cfg();
     cfg_dense.eigensolver = Eigensolver::Davidson;
@@ -108,7 +117,10 @@ fn h2o_cc_pvdz_screened_davidson_equivalence_thresh_zero() {
 
     let mut cfg_screen = base_cfg();
     cfg_screen.eigensolver = Eigensolver::Davidson;
-    cfg_screen.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh: 0.0, dist_cutoff: f64::INFINITY };
+    cfg_screen.chi0_sparsity = Chi0Sparsity::BoysScreened {
+        thresh: 0.0,
+        dist_cutoff: f64::INFINITY,
+    };
     let r_scr = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_screen).unwrap();
 
     let diff = (r_scr.e_rpa - r_dense.e_rpa).abs();
@@ -129,19 +141,26 @@ fn h2o_cc_pvdz_screened_davidson_equivalence_thresh_zero() {
 
 #[test]
 fn h2o_cc_pvdz_screened_production_thresh() {
-    let (mol, obs, dfbs, op, rhf) =
-        setup("../../testdata/molecules/water.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/water.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+    );
 
     let r_dense = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &base_cfg()).unwrap();
 
     let thresh = 1e-6;
     let mut cfg = base_cfg();
-    cfg.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh, dist_cutoff: f64::INFINITY };
+    cfg.chi0_sparsity = Chi0Sparsity::BoysScreened {
+        thresh,
+        dist_cutoff: f64::INFINITY,
+    };
     let r_scr = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
 
     // Diagnostic: pair retention.
     let (sb, _) =
-        screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, 0, thresh, f64::INFINITY).unwrap();
+        screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, 0, thresh, f64::INFINITY)
+            .unwrap();
     let total_possible = sb.n_occ_loc * sb.naux;
     println!(
         "H2O/cc-pVDZ thresh={:.0e}  retained {}/{} ({:.1}%)  ΔE={:.2e}",
@@ -156,7 +175,8 @@ fn h2o_cc_pvdz_screened_production_thresh() {
     assert!(
         diff < 1e-7,
         "screened-vs-dense diff at thresh={:.0e} = {:.2e}; expected <1e-7",
-        thresh, diff
+        thresh,
+        diff
     );
 }
 
@@ -182,8 +202,11 @@ fn h2o_cc_pvdz_screened_production_thresh() {
 /// screen.rs and must not be smuggled into this test's tolerance.
 #[test]
 fn h2o_cc_pvdz_dist_cutoff_large_radius_equivalence() {
-    let (mol, obs, dfbs, op, rhf) =
-        setup("../../testdata/molecules/water.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/water.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+    );
 
     let thresh = 1e-5;
     // Water spans < 4 Bohr; 1e6 Bohr is astronomically larger than any pair.
@@ -246,8 +269,11 @@ fn h2o_cc_pvdz_dist_cutoff_large_radius_equivalence() {
 #[test]
 #[ignore] // diagnostic: run explicitly with FERRIC_G6_PROBE=1 --nocapture
 fn n_hexane_g6_probe() {
-    let (mol, obs, dfbs, op, rhf) =
-        setup("../../testdata/molecules/scaling/n-hexane.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/scaling/n-hexane.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+    );
     let thresh = 1e-4;
     let frozen = 6;
     let (sb, _) =
@@ -269,8 +295,11 @@ fn n_hexane_g6_probe() {
 #[test]
 #[ignore] // diagnostic: run explicitly with FERRIC_G6_PROBE=1 --nocapture
 fn n_hexadecane_g6_probe() {
-    let (mol, obs, dfbs, op, rhf) =
-        setup("../../testdata/molecules/scaling/n-hexadecane.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/scaling/n-hexadecane.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+    );
     let thresh = 1e-4;
     let frozen = 16;
     let (sb, _) =
@@ -293,8 +322,11 @@ fn n_hexadecane_g6_probe() {
 #[test]
 #[ignore] // diagnostic: run explicitly with FERRIC_G6_PROBE=1 --nocapture
 fn n_hexadecane_sto3g_g6_probe() {
-    let (mol, obs, dfbs, op, rhf) =
-        setup("../../testdata/molecules/scaling/n-hexadecane.xyz", "sto-3g", "cc-pvdz-ri");
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/scaling/n-hexadecane.xyz",
+        "sto-3g",
+        "cc-pvdz-ri",
+    );
     let thresh = 1e-4;
     let frozen = 16;
     let (sb, _) =
@@ -311,8 +343,11 @@ fn n_hexadecane_sto3g_g6_probe() {
 #[test]
 #[ignore] // diagnostic: run explicitly with FERRIC_G6_PROBE=1 --nocapture
 fn naphthalene_g6_probe() {
-    let (mol, obs, dfbs, op, rhf) =
-        setup("../../testdata/molecules/scaling/naphthalene.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/scaling/naphthalene.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+    );
     let thresh = 1e-4;
     let frozen = 10; // 10 carbon 1s cores
     let (sb, _) =
@@ -351,8 +386,11 @@ fn naphthalene_g6_probe() {
 #[test]
 #[ignore] // moderately slow: n-hexane/cc-pVDZ SCF + two PDEP builds
 fn n_hexane_dist_cutoff_is_measured_noop_at_production_radius() {
-    let (mol, obs, dfbs, op, rhf) =
-        setup("../../testdata/molecules/scaling/n-hexane.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/scaling/n-hexane.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+    );
 
     let thresh = 1e-4;
     let frozen = 6; // 6 carbon 1s cores
@@ -362,7 +400,8 @@ fn n_hexane_dist_cutoff_is_measured_noop_at_production_radius() {
         screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, frozen, thresh, f64::INFINITY)
             .unwrap();
     let (sb_cut, _) =
-        screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, frozen, thresh, r_ref).unwrap();
+        screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, frozen, thresh, r_ref)
+            .unwrap();
 
     let poss = sb_inf.n_occ_loc * sb_inf.naux;
     println!(
@@ -389,12 +428,18 @@ fn n_hexane_dist_cutoff_is_measured_noop_at_production_radius() {
     // And the downstream RPA energy is therefore unchanged (byte-identical tiles).
     let mut cfg_inf = base_cfg();
     cfg_inf.frozen_core = frozen;
-    cfg_inf.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh, dist_cutoff: f64::INFINITY };
+    cfg_inf.chi0_sparsity = Chi0Sparsity::BoysScreened {
+        thresh,
+        dist_cutoff: f64::INFINITY,
+    };
     let r_inf = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_inf).unwrap();
 
     let mut cfg_cut = base_cfg();
     cfg_cut.frozen_core = frozen;
-    cfg_cut.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh, dist_cutoff: r_ref };
+    cfg_cut.chi0_sparsity = Chi0Sparsity::BoysScreened {
+        thresh,
+        dist_cutoff: r_ref,
+    };
     let r_cut = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_cut).unwrap();
 
     let diff = (r_inf.e_rpa - r_cut.e_rpa).abs();
@@ -409,8 +454,11 @@ fn n_hexane_dist_cutoff_is_measured_noop_at_production_radius() {
 #[test]
 #[ignore] // slow: benzene/cc-pVDZ is the scaling demonstration
 fn benzene_cc_pvdz_screened_scaling() {
-    let (mol, obs, dfbs, op, rhf) =
-        setup("../../testdata/molecules/benzene.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/benzene.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+    );
 
     use std::time::Instant;
 
@@ -428,13 +476,17 @@ fn benzene_cc_pvdz_screened_scaling() {
     let thresh = 5e-3;
     let mut cfg_scr = base_cfg();
     cfg_scr.frozen_core = 6;
-    cfg_scr.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh, dist_cutoff: f64::INFINITY };
+    cfg_scr.chi0_sparsity = Chi0Sparsity::BoysScreened {
+        thresh,
+        dist_cutoff: f64::INFINITY,
+    };
     let t0 = Instant::now();
     let r_scr = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg_scr).unwrap();
     let dt_scr = t0.elapsed().as_secs_f64();
 
     let (sb, _) =
-        screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, 6, thresh, f64::INFINITY).unwrap();
+        screen::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, 6, thresh, f64::INFINITY)
+            .unwrap();
     let total_possible = sb.n_occ_loc * sb.naux;
     let reduction = total_possible as f64 / sb.total_retained.max(1) as f64;
 
@@ -453,7 +505,8 @@ fn benzene_cc_pvdz_screened_scaling() {
     assert!(
         diff < 1e-3,
         "screened-vs-dense diff on benzene at thresh={:.0e} = {:.2e}; expected <1e-3",
-        thresh, diff
+        thresh,
+        diff
     );
     // Demonstrate non-trivial pair reduction.
     assert!(
@@ -469,8 +522,11 @@ fn benzene_cc_pvdz_screened_scaling() {
 #[test]
 #[ignore] // slow
 fn benzene_cc_pvdz_thresh_sweep() {
-    let (mol, obs, dfbs, op, rhf) =
-        setup("../../testdata/molecules/benzene.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/benzene.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+    );
 
     let mut cfg_dense = base_cfg();
     cfg_dense.frozen_core = 6;
@@ -488,7 +544,10 @@ fn benzene_cc_pvdz_thresh_sweep() {
 
         let mut cfg = base_cfg();
         cfg.frozen_core = 6;
-        cfg.chi0_sparsity = Chi0Sparsity::BoysScreened { thresh, dist_cutoff: f64::INFINITY };
+        cfg.chi0_sparsity = Chi0Sparsity::BoysScreened {
+            thresh,
+            dist_cutoff: f64::INFINITY,
+        };
         let t_run = Instant::now();
         let r = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         let dt_run = t_run.elapsed().as_secs_f64();
@@ -521,14 +580,16 @@ fn benzene_cc_pvdz_thresh_sweep() {
 /// to that block.
 #[test]
 fn screened_eps_loc_are_genuine_eigenvalues_not_a_diagonal() {
-    let (mol, obs, dfbs, op, rhf) =
-        setup("../../testdata/molecules/water.xyz", "cc-pvdz", "cc-pvdz-ri");
+    let (mol, obs, dfbs, op, rhf) = setup(
+        "../../testdata/molecules/water.xyz",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+    );
     let nocc = mol.nelec() as usize / 2;
 
-    let (sb, _boys) = ferric_rpa::build_screened_bov_boys(
-        &mol, &obs, &dfbs, op, &rhf, 0, 0.0, f64::INFINITY,
-    )
-    .unwrap();
+    let (sb, _boys) =
+        ferric_rpa::build_screened_bov_boys(&mol, &obs, &dfbs, op, &rhf, 0, 0.0, f64::INFINITY)
+            .unwrap();
 
     let mut got: Vec<f64> = sb.eps_loc.clone();
     got.sort_by(|a, b| a.partial_cmp(b).unwrap());

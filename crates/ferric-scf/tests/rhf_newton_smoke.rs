@@ -56,13 +56,22 @@ fn rhf_newton_water_matches_diis_only() {
         max_iter: 200,
         ..Default::default()
     };
-    let cfg_newton = RhfConfig { newton_trigger: 1e-2, ..cfg_diis.clone() };
+    let cfg_newton = RhfConfig {
+        newton_trigger: 1e-2,
+        ..cfg_diis.clone()
+    };
 
     let r_diis = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_diis).unwrap();
     let r_newton = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_newton).unwrap();
 
-    eprintln!("RHF/H2O  DIIS:   E = {:.10}, iters = {}", r_diis.energy, r_diis.iterations);
-    eprintln!("RHF/H2O  Newton: E = {:.10}, iters = {}", r_newton.energy, r_newton.iterations);
+    eprintln!(
+        "RHF/H2O  DIIS:   E = {:.10}, iters = {}",
+        r_diis.energy, r_diis.iterations
+    );
+    eprintln!(
+        "RHF/H2O  Newton: E = {:.10}, iters = {}",
+        r_newton.energy, r_newton.iterations
+    );
 
     assert!(r_diis.converged && r_newton.converged);
     assert!(
@@ -106,7 +115,10 @@ fn rks_pbe_newton_engages_gga_fxc_and_matches_diis() {
         level_shift: 0.2,
         ..Default::default()
     };
-    let cfg_newton = RhfConfig { newton_trigger: 1e-2, ..cfg_diis.clone() };
+    let cfg_newton = RhfConfig {
+        newton_trigger: 1e-2,
+        ..cfg_diis.clone()
+    };
 
     let r_diis = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg_diis).unwrap();
 
@@ -115,7 +127,10 @@ fn rks_pbe_newton_engages_gga_fxc_and_matches_diis() {
     let after = ferric_scf::rohf::GGA_FXC_KERNEL_BUILDS.load(Ordering::Relaxed);
     let gga_builds = after.saturating_sub(before);
 
-    eprintln!("RKS/H2O/PBE  DIIS:   E = {:.10}, iters = {}", r_diis.energy, r_diis.iterations);
+    eprintln!(
+        "RKS/H2O/PBE  DIIS:   E = {:.10}, iters = {}",
+        r_diis.energy, r_diis.iterations
+    );
     eprintln!(
         "RKS/H2O/PBE  Newton: E = {:.10}, iters = {}, GGA-fxc builds = {}",
         r_newton.energy, r_newton.iterations, gga_builds
@@ -143,8 +158,8 @@ fn rks_pbe_newton_engages_gga_fxc_and_matches_diis() {
 /// product `rhf_newton::hessian_matvec`.
 #[test]
 fn rhf_hessian_matvec_matches_finite_difference() {
-    use ferric_scf::rhf::build_jk;
     use ferric_integrals::oneelectron;
+    use ferric_scf::rhf::build_jk;
     use ndarray::Array2;
     use ndarray_linalg::Solve;
 
@@ -252,7 +267,11 @@ fn rhf_hessian_matvec_matches_finite_difference() {
 
     let fro = |a: &Array2<f64>| -> f64 { a.iter().map(|&x| x * x).sum::<f64>().sqrt() };
     let fro_diff = |a: &Array2<f64>, b: &Array2<f64>| -> f64 {
-        a.iter().zip(b.iter()).map(|(x, y)| (x - y) * (x - y)).sum::<f64>().sqrt()
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y) * (x - y))
+            .sum::<f64>()
+            .sqrt()
     };
     let scale = fro(&hk).max(1e-30);
 

@@ -65,9 +65,9 @@ fn build_symmetric(prep: &PreparedBasis, make_eng: impl Fn() -> Engine + Sync) -
     let out_ptr = out.as_mut_ptr() as usize;
     let stride = n; // row-major (n, n): element (r, c) at r*stride + c
 
-    (0..nsh).into_par_iter().for_each_init(
-        &make_eng,
-        |worker_eng, s1| {
+    (0..nsh)
+        .into_par_iter()
+        .for_each_init(&make_eng, |worker_eng, s1| {
             let n1 = dims[s1];
             let o1 = offs[s1];
             for s2 in 0..=s1 {
@@ -92,19 +92,22 @@ fn build_symmetric(prep: &PreparedBasis, make_eng: impl Fn() -> Engine + Sync) -
                     }
                 }
             }
-        },
-    );
+        });
     out
 }
 
 /// Compute the overlap matrix S, shape (nbasis, nbasis).
 pub fn overlap(prep: &PreparedBasis) -> Array2<f64> {
-    build_symmetric(prep, || Engine::new_1e(ffi::OP_OVERLAP, prep, 1e-14).unwrap())
+    build_symmetric(prep, || {
+        Engine::new_1e(ffi::OP_OVERLAP, prep, 1e-14).unwrap()
+    })
 }
 
 /// Compute the kinetic energy matrix T, shape (nbasis, nbasis).
 pub fn kinetic(prep: &PreparedBasis) -> Array2<f64> {
-    build_symmetric(prep, || Engine::new_1e(ffi::OP_KINETIC, prep, 1e-14).unwrap())
+    build_symmetric(prep, || {
+        Engine::new_1e(ffi::OP_KINETIC, prep, 1e-14).unwrap()
+    })
 }
 
 /// Compute the nuclear attraction matrix V, shape (nbasis, nbasis).
@@ -134,7 +137,8 @@ pub fn hcore(prep: &PreparedBasis) -> Array2<f64> {
 pub fn nuclear_with_external(prep: &PreparedBasis, ext: &ExternalPotential) -> Array2<f64> {
     build_symmetric(prep, || {
         let mut eng = Engine::new_1e(ffi::OP_NUCLEAR, prep, 1e-14).unwrap();
-        eng.set_point_charges_extra(prep, &ext.point_charges).unwrap();
+        eng.set_point_charges_extra(prep, &ext.point_charges)
+            .unwrap();
         eng
     })
 }
@@ -214,9 +218,14 @@ pub fn field_hcore_term(prep: &PreparedBasis, field: [f64; 3]) -> Result<Array2<
 /// Core Hamiltonian H = T + V, optionally including an external potential's
 /// point-charge nuclear-attraction term and uniform-field term. `ext = None`
 /// is byte-for-byte identical to `hcore(prep)`.
-pub fn hcore_with_external(prep: &PreparedBasis, ext: Option<&ExternalPotential>) -> Result<Array2<f64>, FerricError> {
+pub fn hcore_with_external(
+    prep: &PreparedBasis,
+    ext: Option<&ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
     let t = kinetic(prep);
-    let Some(ext) = ext else { return Ok(t + nuclear(prep)) };
+    let Some(ext) = ext else {
+        return Ok(t + nuclear(prep));
+    };
     if ext.is_empty() {
         return Ok(t + nuclear(prep));
     }
@@ -245,7 +254,13 @@ pub fn hcore_ecp_with_external(
 ) -> Result<Array2<f64>, FerricError> {
     let mut h = hcore_with_external(prep, ext)?;
     if let Some(vecp) = ecp_potential(mol, bs) {
-        assert_eq!(vecp.dim(), h.dim(), "V_ECP dimension {:?} != hcore dimension {:?}", vecp.dim(), h.dim());
+        assert_eq!(
+            vecp.dim(),
+            h.dim(),
+            "V_ECP dimension {:?} != hcore dimension {:?}",
+            vecp.dim(),
+            h.dim()
+        );
         h += &vecp;
     }
     Ok(h)
@@ -265,8 +280,8 @@ pub fn hcore_ecp_with_external(
 pub fn ecp_potential(mol: &Molecule, bs: &BasisSet) -> Option<Array2<f64>> {
     let (shells, ecps) = build_ecp_inputs(mol, bs)?;
     let n: usize = shells.iter().map(|s| (2 * s.l + 1) as usize).sum();
-    let flat = ecp_matrix_spherical(&shells, &ecps)
-        .expect("ecp_matrix_spherical failed building V_ECP");
+    let flat =
+        ecp_matrix_spherical(&shells, &ecps).expect("ecp_matrix_spherical failed building V_ECP");
     Some(Array2::from_shape_vec((n, n), flat).expect("V_ECP shape"))
 }
 
@@ -319,7 +334,13 @@ fn build_ecp_inputs(
                     coefficients.push(t.coef);
                 }
             }
-            ecps.push(EcpCenter { center, ams, ns, exponents, coefficients });
+            ecps.push(EcpCenter {
+                center,
+                ams,
+                ns,
+                exponents,
+                coefficients,
+            });
         }
     }
     if ecps.is_empty() {
@@ -434,13 +455,19 @@ pub fn dipole(prep: &PreparedBasis, origin: [f64; 3]) -> Result<[Array2<f64>; 3]
         )
     };
     if ret < 0 {
-        return Err(FerricError::Libint(format!("scf_compute_dipole failed: {ret}")));
+        return Err(FerricError::Libint(format!(
+            "scf_compute_dipole failed: {ret}"
+        )));
     }
     let make_mat = |offset: usize| {
         let slice = &flat[offset..offset + nbas * nbas];
         Array2::from_shape_vec((nbas, nbas), slice.to_vec()).unwrap()
     };
-    Ok([make_mat(0), make_mat(nbas * nbas), make_mat(2 * nbas * nbas)])
+    Ok([
+        make_mat(0),
+        make_mat(nbas * nbas),
+        make_mat(2 * nbas * nbas),
+    ])
 }
 
 /// Cartesian second-moment integrals ⟨μ|(r−O)_p (r−O)_q|ν⟩ about `origin`,
@@ -474,7 +501,14 @@ pub fn second_moment(
         let slice = &flat[k * nbas * nbas..(k + 1) * nbas * nbas];
         Array2::from_shape_vec((nbas, nbas), slice.to_vec()).unwrap()
     };
-    Ok([make_mat(0), make_mat(1), make_mat(2), make_mat(3), make_mat(4), make_mat(5)])
+    Ok([
+        make_mat(0),
+        make_mat(1),
+        make_mat(2),
+        make_mat(3),
+        make_mat(4),
+        make_mat(5),
+    ])
 }
 
 /// ⟨μ|(r−O)²|ν⟩ = xx + yy + zz about `origin` — the operator orbital
@@ -624,7 +658,10 @@ mod tests {
                 max_dev = max_dev.max((m2[p][q] - expect).abs());
             }
         }
-        assert!(max_dev < 1e-10, "density translational identity dev {max_dev:.2e}");
+        assert!(
+            max_dev < 1e-10,
+            "density translational identity dev {max_dev:.2e}"
+        );
     }
 
     /// Orbital moments: spreads strictly positive; centroid of a symmetric
@@ -666,7 +703,11 @@ mod tests {
         let m = second_moment(&prep, [0.0; 3]).unwrap();
         let r2 = r2_moment(&prep, [0.0; 3]).unwrap();
         for i in 0..n {
-            assert!(r2[(i, i)] > 0.0, "⟨{i}|r²|{i}⟩ = {} not positive", r2[(i, i)]);
+            assert!(
+                r2[(i, i)] > 0.0,
+                "⟨{i}|r²|{i}⟩ = {} not positive",
+                r2[(i, i)]
+            );
             for j in 0..n {
                 let expect = m[0][(i, j)] + m[3][(i, j)] + m[5][(i, j)];
                 assert!((r2[(i, j)] - expect).abs() < 1e-14);
@@ -767,7 +808,11 @@ mod tests {
 
     fn assert_bit_identical(a: &Array2<f64>, b: &Array2<f64>, what: &str) {
         assert_eq!(a.dim(), b.dim(), "{what}: shape mismatch");
-        let n_diff = a.iter().zip(b.iter()).filter(|(x, y)| x.to_bits() != y.to_bits()).count();
+        let n_diff = a
+            .iter()
+            .zip(b.iter())
+            .filter(|(x, y)| x.to_bits() != y.to_bits())
+            .count();
         assert_eq!(n_diff, 0, "{what}: {n_diff} elements differ bitwise");
     }
 
@@ -782,8 +827,11 @@ mod tests {
     #[test]
     fn test_build_symmetric_bitidentical_to_serial_overlap() {
         let prep = alkane6_cc_pvdz();
-        assert!(prep.nshells() >= PAR_SHELL_PAIR_THRESHOLD,
-            "test molecule too small to exercise the parallel path: {} shells", prep.nshells());
+        assert!(
+            prep.nshells() >= PAR_SHELL_PAIR_THRESHOLD,
+            "test molecule too small to exercise the parallel path: {} shells",
+            prep.nshells()
+        );
         let par = overlap(&prep);
         let eng_ref = Engine::new_1e(ffi::OP_OVERLAP, &prep, 1e-14).unwrap();
         let ser = build_symmetric_serial(&prep, eng_ref);
@@ -840,7 +888,12 @@ mod tests {
     fn hcore_with_external_empty_smeared_charges_matches_point_charge_only_path() {
         let prep = water_sto3g();
         let ext = ExternalPotential {
-            point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 10.0 }],
+            point_charges: vec![PointCharge {
+                q: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 10.0,
+            }],
             smeared_charges: Vec::new(),
             field: None,
         };
@@ -871,13 +924,24 @@ mod tests {
 
         let ext_smeared = ExternalPotential {
             point_charges: Vec::new(),
-            smeared_charges: vec![SmearedCharge { q, x, y, z, width: 1e-3 }],
+            smeared_charges: vec![SmearedCharge {
+                q,
+                x,
+                y,
+                z,
+                width: 1e-3,
+            }],
             field: None,
         };
         let h_smeared = hcore_with_external(&prep, Some(&ext_smeared)).unwrap();
 
-        let max_diff = (&h_point - &h_smeared).iter().fold(0.0_f64, |acc, &v| acc.max(v.abs()));
-        assert!(max_diff < 1e-9, "tiny-width smeared hcore vs point-charge hcore differ by {max_diff:.3e}");
+        let max_diff = (&h_point - &h_smeared)
+            .iter()
+            .fold(0.0_f64, |acc, &v| acc.max(v.abs()));
+        assert!(
+            max_diff < 1e-9,
+            "tiny-width smeared hcore vs point-charge hcore differ by {max_diff:.3e}"
+        );
     }
 
     #[test]
@@ -885,7 +949,12 @@ mod tests {
         let prep = water_sto3g();
         let v_orig = nuclear(&prep);
         let ext = ExternalPotential {
-            point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: 10.0 }],
+            point_charges: vec![PointCharge {
+                q: 1.0,
+                x: 0.0,
+                y: 0.0,
+                z: 10.0,
+            }],
             smeared_charges: Vec::new(),
             field: None,
         };

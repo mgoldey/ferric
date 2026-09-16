@@ -55,7 +55,13 @@ pub(crate) fn grid_response_plan(npts: usize, natoms: usize) -> MemoryPlan {
         Lifetime::Resident,
         1,
     );
-    plan.reserve_sized("grid points", npts, std::mem::size_of::<GridPoint>(), Lifetime::Resident, 1);
+    plan.reserve_sized(
+        "grid points",
+        npts,
+        std::mem::size_of::<GridPoint>(),
+        Lifetime::Resident,
+        1,
+    );
     // The payload: weight1[g][b][α], npts · natoms · 3 f64.
     plan.reserve(
         "weight1 dw/dR [point][atom][xyz]",
@@ -233,8 +239,10 @@ pub fn build_atomic_grid_pruned(
                 let (p, w) = lebedev(order);
                 cache.push((order, p, w));
             }
-            let (_, lebedev_pts, lebedev_w) =
-                cache.iter().find(|(o, _, _)| *o == order).expect("just inserted");
+            let (_, lebedev_pts, lebedev_w) = cache
+                .iter()
+                .find(|(o, _, _)| *o == order)
+                .expect("just inserted");
             for (pt, w_l) in lebedev_pts.iter().zip(lebedev_w.iter()) {
                 let xyz = [
                     atom.x + r * pt[0],
@@ -393,12 +401,11 @@ pub fn build_atomic_grid_with_response(
             (gp, row)
         };
 
-    let (grid, weight1): (Vec<GridPoint>, Vec<Vec<[f64; 3]>>) =
-        if pre.len() >= PAR_WORK_THRESHOLD {
-            pre.par_iter().map(build_point).unzip()
-        } else {
-            pre.iter().map(build_point).unzip()
-        };
+    let (grid, weight1): (Vec<GridPoint>, Vec<Vec<[f64; 3]>>) = if pre.len() >= PAR_WORK_THRESHOLD {
+        pre.par_iter().map(build_point).unzip()
+    } else {
+        pre.iter().map(build_point).unzip()
+    };
     Ok((grid, weight1))
 }
 
@@ -410,8 +417,24 @@ mod tests {
     fn h2() -> Molecule {
         Molecule {
             atoms: vec![
-                Atom { symbol: "H".into(), z: 1, x: 0.0, y: 0.0, zpos: 0.0, ghost: false, n_core_ecp: 0 },
-                Atom { symbol: "H".into(), z: 1, x: 0.0, y: 0.0, zpos: 1.4, ghost: false, n_core_ecp: 0 },
+                Atom {
+                    symbol: "H".into(),
+                    z: 1,
+                    x: 0.0,
+                    y: 0.0,
+                    zpos: 0.0,
+                    ghost: false,
+                    n_core_ecp: 0,
+                },
+                Atom {
+                    symbol: "H".into(),
+                    z: 1,
+                    x: 0.0,
+                    y: 0.0,
+                    zpos: 1.4,
+                    ghost: false,
+                    n_core_ecp: 0,
+                },
             ],
             charge: 0,
             multiplicity: 1,
@@ -424,24 +447,30 @@ mod tests {
         // Slater (ξ=1) localized on each atom averaged, just check that a
         // simple uniform-density-like test integrand integrates correctly.
         let mol = h2();
-        let grid = build_atomic_grid(&mol, &AtomicGridConfig {
-            n_radial: 75,
-            n_angular: 110,
-            ..Default::default()
-        });
+        let grid = build_atomic_grid(
+            &mol,
+            &AtomicGridConfig {
+                n_radial: 75,
+                n_angular: 110,
+                ..Default::default()
+            },
+        );
 
         // Total weight ≈ infinity for ∫ 1 dV (whole space), so check
         // something normalizable: ∫ exp(-α r²) at H2's bond midpoint
         // (Gaussian centered at midpoint).
         let alpha = 1.0_f64;
         let center = [0.0, 0.0, 0.7];
-        let approx: f64 = grid.iter().map(|g| {
-            let dx = g.xyz[0] - center[0];
-            let dy = g.xyz[1] - center[1];
-            let dz = g.xyz[2] - center[2];
-            let r2 = dx * dx + dy * dy + dz * dz;
-            g.weight * (-alpha * r2).exp()
-        }).sum();
+        let approx: f64 = grid
+            .iter()
+            .map(|g| {
+                let dx = g.xyz[0] - center[0];
+                let dy = g.xyz[1] - center[1];
+                let dz = g.xyz[2] - center[2];
+                let r2 = dx * dx + dy * dy + dz * dz;
+                g.weight * (-alpha * r2).exp()
+            })
+            .sum();
         let exact = (std::f64::consts::PI / alpha).powf(1.5);
         let err = (approx - exact).abs() / exact;
         eprintln!("H2 grid: ∫ Gaussian = {approx:.6}, exact = {exact:.6}, relerr={err:.2e}");
@@ -463,7 +492,11 @@ mod tests {
                     ];
                     let becke = becke_weights_all(mol, xyz);
                     let weight = w_r * w_l * becke[a_idx];
-                    grid.push(GridPoint { xyz, weight, home_atom: a_idx });
+                    grid.push(GridPoint {
+                        xyz,
+                        weight,
+                        home_atom: a_idx,
+                    });
                 }
             }
         }
@@ -524,7 +557,11 @@ mod tests {
                     ];
                     let (becke, dw_lab) = becke_weights_and_grad(&mol, xyz);
                     let weight = w_r * w_l * becke[a_idx];
-                    ser_grid.push(GridPoint { xyz, weight, home_atom: a_idx });
+                    ser_grid.push(GridPoint {
+                        xyz,
+                        weight,
+                        home_atom: a_idx,
+                    });
                     let scale = w_r * w_l;
                     let mut grad_r = [0.0_f64; 3];
                     for c in 0..natoms {
@@ -558,7 +595,11 @@ mod tests {
             for k in 0..3 {
                 assert_eq!(p.xyz[k].to_bits(), s.xyz[k].to_bits(), "xyz at point {g}");
             }
-            assert_eq!(p.weight.to_bits(), s.weight.to_bits(), "weight at point {g}");
+            assert_eq!(
+                p.weight.to_bits(),
+                s.weight.to_bits(),
+                "weight at point {g}"
+            );
         }
         for (g, (pr, sr)) in par_w1.iter().zip(ser_w1.iter()).enumerate() {
             assert_eq!(pr.len(), sr.len());
@@ -600,8 +641,7 @@ mod tests {
         let mol = h2();
         let cfg = AtomicGridConfig::default();
         let flat = build_atomic_grid(&mol, &cfg);
-        let pruned =
-            build_atomic_grid_pruned(&mol, &cfg, Some(PruneScheme::NwchemLike)).unwrap();
+        let pruned = build_atomic_grid_pruned(&mol, &cfg, Some(PruneScheme::NwchemLike)).unwrap();
         let frac = 1.0 - pruned.len() as f64 / flat.len() as f64;
         eprintln!(
             "H2 75x110: flat {} pts -> pruned {} pts ({:.1}% fewer)",
@@ -609,7 +649,10 @@ mod tests {
             pruned.len(),
             100.0 * frac
         );
-        assert!(pruned.len() < flat.len(), "pruning did not remove any points");
+        assert!(
+            pruned.len() < flat.len(),
+            "pruning did not remove any points"
+        );
         assert!(frac > 0.15, "pruning saved only {:.1}%", 100.0 * frac);
 
         let alpha = 1.0_f64;
@@ -663,7 +706,11 @@ mod tests {
         // n_angular = 50 has no useful pruned table on ferric's Lebedev set.
         // It must Err, not quietly return the flat grid.
         let mol = h2();
-        let cfg = AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() };
+        let cfg = AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 50,
+            ..Default::default()
+        };
         assert!(build_atomic_grid_pruned(&mol, &cfg, Some(PruneScheme::NwchemLike)).is_err());
         // ... but with pruning off, the same config still works.
         assert!(build_atomic_grid_pruned(&mol, &cfg, None).is_ok());
@@ -674,20 +721,26 @@ mod tests {
         // Σ_A ∫_A f dV = ∫ f dV — the Becke partition is exact at every
         // grid point.
         let mol = h2();
-        let grid = build_atomic_grid(&mol, &AtomicGridConfig {
-            n_radial: 50,
-            n_angular: 50,
-            ..Default::default()
-        });
+        let grid = build_atomic_grid(
+            &mol,
+            &AtomicGridConfig {
+                n_radial: 50,
+                n_angular: 50,
+                ..Default::default()
+            },
+        );
         let alpha = 0.5_f64;
         let center = [0.0, 0.0, 0.7];
-        let total: f64 = grid.iter().map(|g| {
-            let dx = g.xyz[0] - center[0];
-            let dy = g.xyz[1] - center[1];
-            let dz = g.xyz[2] - center[2];
-            let r2 = dx * dx + dy * dy + dz * dz;
-            g.weight * (-alpha * r2).exp()
-        }).sum();
+        let total: f64 = grid
+            .iter()
+            .map(|g| {
+                let dx = g.xyz[0] - center[0];
+                let dy = g.xyz[1] - center[1];
+                let dz = g.xyz[2] - center[2];
+                let r2 = dx * dx + dy * dy + dz * dz;
+                g.weight * (-alpha * r2).exp()
+            })
+            .sum();
         // Per-atom sum to check partition reproduces total.
         let mut per_atom = [0.0_f64; 2];
         for g in &grid {
@@ -698,7 +751,9 @@ mod tests {
             per_atom[g.home_atom] += g.weight * (-alpha * r2).exp();
         }
         let sum_atoms: f64 = per_atom.iter().sum();
-        assert!((sum_atoms - total).abs() < 1e-12,
-            "Becke partition sum mismatch: per-atom {sum_atoms}, total {total}");
+        assert!(
+            (sum_atoms - total).abs() < 1e-12,
+            "Becke partition sum mismatch: per-atom {sum_atoms}, total {total}"
+        );
     }
 }

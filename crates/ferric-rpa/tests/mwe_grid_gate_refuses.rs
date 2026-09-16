@@ -62,11 +62,13 @@ fn water_scf() -> WaterSetup {
 #[test]
 fn grid_path_refuses_a_starvation_budget() {
     let (mol, obs, obs_bs, dfbs, rhf) = water_scf();
-    let cfg = PdepRpaConfig { memory_budget_bytes: Some(1), ..PdepRpaConfig::default() };
+    let cfg = PdepRpaConfig {
+        memory_budget_bytes: Some(1),
+        ..PdepRpaConfig::default()
+    };
 
-    let got = pdep_polarizability_becke(
-        &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::coulomb(), &cfg,
-    );
+    let got =
+        pdep_polarizability_becke(&mol, &obs, &obs_bs, &dfbs, &rhf, Operator::coulomb(), &cfg);
 
     let err = got.expect_err(
         "a 1-byte budget must be REFUSED before allocating chi; Ok means the \
@@ -88,13 +90,15 @@ fn grid_path_refuses_a_starvation_budget() {
 #[test]
 fn refusal_message_identifies_path_and_shape() {
     let (mol, obs, obs_bs, dfbs, rhf) = water_scf();
-    let cfg = PdepRpaConfig { memory_budget_bytes: Some(1), ..PdepRpaConfig::default() };
+    let cfg = PdepRpaConfig {
+        memory_budget_bytes: Some(1),
+        ..PdepRpaConfig::default()
+    };
 
-    let msg = pdep_polarizability_becke(
-        &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::coulomb(), &cfg,
-    )
-    .expect_err("must refuse")
-    .to_string();
+    let msg =
+        pdep_polarizability_becke(&mol, &obs, &obs_bs, &dfbs, &rhf, Operator::coulomb(), &cfg)
+            .expect_err("must refuse")
+            .to_string();
 
     for needle in ["pdep_polarizability_becke", "natoms=", "npts=", "nbf="] {
         assert!(
@@ -118,10 +122,9 @@ fn grid_path_runs_under_an_ample_budget() {
         ..PdepRpaConfig::default()
     };
 
-    let alpha = pdep_polarizability_becke(
-        &mol, &obs, &obs_bs, &dfbs, &rhf, Operator::coulomb(), &cfg,
-    )
-    .expect("water/STO-3G must fit a 4 GiB budget comfortably");
+    let alpha =
+        pdep_polarizability_becke(&mol, &obs, &obs_bs, &dfbs, &rhf, Operator::coulomb(), &cfg)
+            .expect("water/STO-3G must fit a 4 GiB budget comfortably");
 
     assert_eq!(alpha.len(), mol.atoms.len(), "one 3x3 tensor per atom");
     // Sanity: a polarizability must be finite and its trace positive.

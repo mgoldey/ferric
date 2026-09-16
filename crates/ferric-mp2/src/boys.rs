@@ -31,11 +31,7 @@ pub struct BoysResult {
 /// `max_iter`: maximum number of sweeps over all pairs.
 ///
 /// Returns localized orbitals and Boys centers.
-pub fn boys_localize(
-    c_occ: &Array2<f64>,
-    dip: &[Array2<f64>; 3],
-    max_iter: usize,
-) -> BoysResult {
+pub fn boys_localize(c_occ: &Array2<f64>, dip: &[Array2<f64>; 3], max_iter: usize) -> BoysResult {
     let nbas = c_occ.nrows();
     let nocc = c_occ.ncols();
 
@@ -84,7 +80,7 @@ pub fn boys_localize(
                 let mut big_b = 0.0_f64;
                 for alpha in 0..3 {
                     let da = d[alpha][(i, i)] - d[alpha][(j, j)]; // q_ii - q_jj
-                    let oa = d[alpha][(i, j)];                     // q_ij
+                    let oa = d[alpha][(i, j)]; // q_ij
                     big_a += da * da / 4.0 - oa * oa;
                     big_b += oa * da;
                 }
@@ -200,7 +196,7 @@ pub fn build_domains(
             let dx = sc[0] - cx;
             let dy = sc[1] - cy;
             let dz = sc[2] - cz;
-            if dx*dx + dy*dy + dz*dz <= cutoff_sq {
+            if dx * dx + dy * dy + dz * dz <= cutoff_sq {
                 let start = shell_offsets[s];
                 let end = shell_offsets[s + 1];
                 for mu in start..end {
@@ -221,7 +217,11 @@ pub fn build_domains(
     }
     let active_aos: Vec<usize> = (0..nbas).filter(|&mu| ao_mask[mu]).collect();
 
-    LmpDomains { orbital_domains, ao_mask, active_aos }
+    LmpDomains {
+        orbital_domains,
+        ao_mask,
+        active_aos,
+    }
 }
 
 /// Build a sparse occupied pseudo-density restricted to the LMP2 domains.
@@ -438,8 +438,9 @@ mod tests {
         // bond orbitals must be genuinely displaced along ±y. Collapsed (delocalized)
         // centers all sit at y ≈ 0, which is precisely the failure the sign bug
         // produced — so this pins the geometry, not just the functional value.
-        let max_abs_y =
-            (0..nocc).map(|i| result.centers[(i, 1)].abs()).fold(0.0_f64, f64::max);
+        let max_abs_y = (0..nocc)
+            .map(|i| result.centers[(i, 1)].abs())
+            .fold(0.0_f64, f64::max);
         assert!(
             max_abs_y > 0.3,
             "no orbital is displaced along y (max |y| = {max_abs_y:.4} Bohr); the O–H \
@@ -502,8 +503,15 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
         let ctx = ParallelContext::default();
         let rhf = solve_rhf(
-            &ctx, &mol, &prep, op, &bounds,
-            &RhfConfig { density_conv: 1e-10, ..Default::default() },
+            &ctx,
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &RhfConfig {
+                density_conv: 1e-10,
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -519,8 +527,14 @@ mod tests {
 
         // TEETH: the localizer must actually have rotated, or "agreement" is
         // trivially true and this test proves nothing.
-        let dcoef = (&boys.c_loc - &c_occ).iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
-        assert!(dcoef > 0.05, "localizer barely moved the orbitals (max d = {dcoef:.3e})");
+        let dcoef = (&boys.c_loc - &c_occ)
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            dcoef > 0.05,
+            "localizer barely moved the orbitals (max d = {dcoef:.3e})"
+        );
         // TEETH: F_loc must be genuinely NON-diagonal, else exp(tF) degenerates
         // to the canonical scalar and the matrix exponential is untested.
         let offdiag = (0..nocc)
@@ -554,9 +568,15 @@ mod tests {
                     }
                 }
             }
-            let maxerr = (&p_loc - &p_can).iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+            let maxerr = (&p_loc - &p_can)
+                .iter()
+                .map(|v| v.abs())
+                .fold(0.0_f64, f64::max);
             let scale = p_can.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
-            eprintln!("t={t:.3}: |dP|max = {maxerr:.3e} (rel {:.3e})", maxerr / scale);
+            eprintln!(
+                "t={t:.3}: |dP|max = {maxerr:.3e} (rel {:.3e})",
+                maxerr / scale
+            );
             assert!(
                 maxerr / scale < 1e-10,
                 "localized exp(tF) form must reproduce the canonical pseudo-density \

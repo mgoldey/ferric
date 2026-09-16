@@ -32,9 +32,14 @@ fn water() -> Molecule {
 
 fn plus_charge_field() -> ExternalPotential {
     ExternalPotential {
-        point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: -6.0 }],
+        point_charges: vec![PointCharge {
+            q: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: -6.0,
+        }],
         field: None,
-    smeared_charges: Vec::new(),
+        smeared_charges: Vec::new(),
     }
 }
 
@@ -57,20 +62,26 @@ fn ext_none_matches_pre_change_gradient_bit_identical() {
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
     )
     .unwrap();
     assert!(rhf.converged);
     let config = RiMp2Config::default();
 
-    let g_none = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
+    let g_none =
+        rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
 
     // Pre-change reference values: `rimp2_gradient_analytical` on this exact
     // water/STO-3G geometry BEFORE the `ext` parameter existed (captured from
     // a run of the unmodified function; see test_analytical_vs_fd_h2o in
     // gradient.rs for the same molecule/basis pattern this pins).
     let empty = ExternalPotential::default();
-    let g_empty = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, Some(&empty)).unwrap();
+    let g_empty =
+        rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, Some(&empty))
+            .unwrap();
 
     assert_eq!(g_none.dim(), g_empty.dim());
     for atom in 0..3 {
@@ -99,13 +110,22 @@ fn gradient_has_natoms_rows_only_with_external_charge() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ext = plus_charge_field();
-    let cfg = RhfConfig { external_potential: Some(ext.clone()), density_conv: 1e-10, ..Default::default() };
+    let cfg = RhfConfig {
+        external_potential: Some(ext.clone()),
+        density_conv: 1e-10,
+        ..Default::default()
+    };
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(rhf.converged);
     let config = RiMp2Config::default();
 
-    let grad = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, Some(&ext)).unwrap();
-    assert_eq!(grad.dim(), (3, 3), "gradient must have exactly natoms=3 rows, not natoms+n_charges");
+    let grad = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, Some(&ext))
+        .unwrap();
+    assert_eq!(
+        grad.dim(),
+        (3, 3),
+        "gradient must have exactly natoms=3 rows, not natoms+n_charges"
+    );
 }
 
 /// (b) analytic vs central FD of the RI-MP2 TOTAL energy (E_HF + E_MP2) in a
@@ -125,7 +145,11 @@ fn analytic_gradient_matches_fd_of_total_energy_in_field() {
         let obs = PreparedBasis::new(m, &obs_bs).unwrap();
         let dfbs = PreparedBasis::new(m, &aux_bs).unwrap();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let cfg = RhfConfig { external_potential: Some(ext.clone()), density_conv: 1e-10, ..Default::default() };
+        let cfg = RhfConfig {
+            external_potential: Some(ext.clone()),
+            density_conv: 1e-10,
+            ..Default::default()
+        };
         let rhf = solve_rhf(&ParallelContext::default(), m, &obs, op, &bounds, &cfg).unwrap();
         assert!(rhf.converged);
         let mp2 = ri_mp2(m, &obs, &dfbs, op, &rhf, &config).unwrap();
@@ -136,10 +160,16 @@ fn analytic_gradient_matches_fd_of_total_energy_in_field() {
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
     let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-    let cfg = RhfConfig { external_potential: Some(ext.clone()), density_conv: 1e-10, ..Default::default() };
+    let cfg = RhfConfig {
+        external_potential: Some(ext.clone()),
+        density_conv: 1e-10,
+        ..Default::default()
+    };
     let rhf = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &cfg).unwrap();
     assert!(rhf.converged);
-    let analytic = rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, Some(&ext)).unwrap();
+    let analytic =
+        rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, Some(&ext))
+            .unwrap();
 
     let h = 1e-3;
     let mut fd = ndarray::Array2::<f64>::zeros((3, 3));
@@ -148,9 +178,18 @@ fn analytic_gradient_matches_fd_of_total_energy_in_field() {
             let mut mol_p = mol.clone();
             let mut mol_m = mol.clone();
             match c {
-                0 => { mol_p.atoms[atom].x += h; mol_m.atoms[atom].x -= h; }
-                1 => { mol_p.atoms[atom].y += h; mol_m.atoms[atom].y -= h; }
-                _ => { mol_p.atoms[atom].zpos += h; mol_m.atoms[atom].zpos -= h; }
+                0 => {
+                    mol_p.atoms[atom].x += h;
+                    mol_m.atoms[atom].x -= h;
+                }
+                1 => {
+                    mol_p.atoms[atom].y += h;
+                    mol_m.atoms[atom].y -= h;
+                }
+                _ => {
+                    mol_p.atoms[atom].zpos += h;
+                    mol_m.atoms[atom].zpos -= h;
+                }
             }
             let e_p = total_energy_in_field(&mol_p);
             let e_m = total_energy_in_field(&mol_m);
@@ -166,7 +205,9 @@ fn analytic_gradient_matches_fd_of_total_energy_in_field() {
             max_diff = max_diff.max(diff);
             eprintln!(
                 "  atom={atom} coord={c}: analytic={:+.8} fd={:+.8} diff={:.2e}",
-                analytic[(atom, c)], fd[(atom, c)], diff
+                analytic[(atom, c)],
+                fd[(atom, c)],
+                diff
             );
         }
     }
@@ -177,12 +218,19 @@ fn analytic_gradient_matches_fd_of_total_energy_in_field() {
     assert!(
         (analytic[(0, 2)] - fd[(0, 2)]).abs() < 1e-6,
         "O_z: analytic {:.8} vs FD {:.8}, diff {:.2e}",
-        analytic[(0, 2)], fd[(0, 2)], (analytic[(0, 2)] - fd[(0, 2)]).abs()
+        analytic[(0, 2)],
+        fd[(0, 2)],
+        (analytic[(0, 2)] - fd[(0, 2)]).abs()
     );
     assert!(
         (analytic[(1, 1)] - fd[(1, 1)]).abs() < 1e-6,
         "H1_y: analytic {:.8} vs FD {:.8}, diff {:.2e}",
-        analytic[(1, 1)], fd[(1, 1)], (analytic[(1, 1)] - fd[(1, 1)]).abs()
+        analytic[(1, 1)],
+        fd[(1, 1)],
+        (analytic[(1, 1)] - fd[(1, 1)]).abs()
     );
-    assert!(max_diff < 1e-6, "max analytic-vs-FD diff = {max_diff:.2e} (expected < 1e-6)");
+    assert!(
+        max_diff < 1e-6,
+        "max analytic-vs-FD diff = {max_diff:.2e} (expected < 1e-6)"
+    );
 }

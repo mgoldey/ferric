@@ -19,8 +19,8 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
 use ferric_scf::qmmm::{
-    electric_field_at_points, full_gradient, mm_forces, BoundaryChargeScheme, QmSelection, QmmmAtom,
-    QmmmSystem, DEFAULT_LINK_SCALE,
+    electric_field_at_points, full_gradient, mm_forces, BoundaryChargeScheme, QmSelection,
+    QmmmAtom, QmmmSystem, DEFAULT_LINK_SCALE,
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -72,7 +72,6 @@ fn dipole(mol: &Molecule, prep: &PreparedBasis, d_total: &Array2<f64>) -> [f64; 
     out
 }
 
-
 const ETHANE_CC: f64 = 1.53 * ANG2BOHR;
 
 /// Staggered ethane along z: C0 at the origin, C1 at z = 1.53 Å, three H on
@@ -93,9 +92,23 @@ fn ethane_atoms() -> Vec<QmmmAtom> {
     for k in 0..3 {
         let phi = 2.0 * std::f64::consts::PI * (k as f64) / 3.0;
         // Methyl on C0, pointing away from C1 (i.e. toward -z).
-        atoms.push(QmmmAtom::new("H", 1, ch * s * phi.cos(), ch * s * phi.sin(), ch * c, 0.033));
+        atoms.push(QmmmAtom::new(
+            "H",
+            1,
+            ch * s * phi.cos(),
+            ch * s * phi.sin(),
+            ch * c,
+            0.033,
+        ));
         // Methyl on C1, pointing away from C0 (toward +z).
-        atoms.push(QmmmAtom::new("H", 1, ch * s * phi.cos(), ch * s * phi.sin(), cc - ch * c, 0.033));
+        atoms.push(QmmmAtom::new(
+            "H",
+            1,
+            ch * s * phi.cos(),
+            ch * s * phi.sin(),
+            cc - ch * c,
+            0.033,
+        ));
     }
     atoms
 }
@@ -107,15 +120,22 @@ fn ethane_bonds() -> Vec<(usize, usize)> {
 
 /// The one-methyl QM partition of ethane with the C-C bond cut and capped.
 fn capped_ethane() -> QmmmSystem {
-    QmmmSystem::new(&ethane_atoms(), QmSelection::Indices(vec![0, 2, 4, 6]), 0, 1)
-        .unwrap()
-        .with_link_atoms(&ethane_bonds(), DEFAULT_LINK_SCALE)
-        .unwrap()
+    QmmmSystem::new(
+        &ethane_atoms(),
+        QmSelection::Indices(vec![0, 2, 4, 6]),
+        0,
+        1,
+    )
+    .unwrap()
+    .with_link_atoms(&ethane_bonds(), DEFAULT_LINK_SCALE)
+    .unwrap()
 }
 
 /// Σ q and Σ q·r of every charge in the embedding potential.
 fn total_charge_and_dipole(sys: &QmmmSystem) -> (f64, [f64; 3]) {
-    let Some(ep) = sys.to_external_potential() else { return (0.0, [0.0; 3]) };
+    let Some(ep) = sys.to_external_potential() else {
+        return (0.0, [0.0; 3]);
+    };
     let mut q = 0.0;
     let mut mu = [0.0_f64; 3];
     for pc in &ep.point_charges {
@@ -150,8 +170,10 @@ fn empty_mm_region_is_bit_identical_to_gas_phase() {
     let ctx = ParallelContext::default();
 
     let gas = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
-    let qmmm_config =
-        RhfConfig { external_potential: sys.to_external_potential(), ..Default::default() };
+    let qmmm_config = RhfConfig {
+        external_potential: sys.to_external_potential(),
+        ..Default::default()
+    };
     let embedded = solve_rhf(&ctx, &mol, &prep, op, &bounds, &qmmm_config).unwrap();
 
     assert!(gas.converged && embedded.converged);
@@ -177,15 +199,25 @@ fn zero_charge_mm_region_is_bit_identical_to_gas_phase() {
 
     let sys = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2]), 0, 1).unwrap();
     assert_eq!(sys.mm_indices, vec![3]);
-    assert!(sys.to_external_potential().is_none(), "all-zero MM charges must give None");
+    assert!(
+        sys.to_external_potential().is_none(),
+        "all-zero MM charges must give None"
+    );
 
     let mol = sys.to_qm_molecule();
-    assert_eq!(mol.atoms.len(), 3, "the MM atom must not enter the QM molecule");
+    assert_eq!(
+        mol.atoms.len(),
+        3,
+        "the MM atom must not enter the QM molecule"
+    );
     let (_bs, prep, op, bounds) = setup(&mol);
     let ctx = ParallelContext::default();
 
     let gas = solve_rhf(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
-    let cfg = RhfConfig { external_potential: sys.to_external_potential(), ..Default::default() };
+    let cfg = RhfConfig {
+        external_potential: sys.to_external_potential(),
+        ..Default::default()
+    };
     let embedded = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert_eq!(gas.energy, embedded.energy);
 }
@@ -248,9 +280,14 @@ fn positive_charge_near_oxygen_lone_pair_stabilizes_water() {
         let mut atoms = atoms_base.clone();
         atoms.push(QmmmAtom::new("Na", 11, 0.0, 0.0, z, 1.0));
         let sys = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2]), 0, 1).unwrap();
-        let ep = sys.to_external_potential().expect("MM charge must produce a potential");
+        let ep = sys
+            .to_external_potential()
+            .expect("MM charge must produce a potential");
         assert_eq!(ep.point_charges.len(), 1);
-        let cfg = RhfConfig { external_potential: Some(ep), ..Default::default() };
+        let cfg = RhfConfig {
+            external_potential: Some(ep),
+            ..Default::default()
+        };
         let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
         assert!(r.converged);
         r.energy
@@ -304,7 +341,10 @@ fn mm_charge_polarizes_the_qm_density() {
     let mut atoms = atoms_base.clone();
     atoms.push(QmmmAtom::new("Na", 11, 0.0, 0.0, -6.0, 1.0));
     let sys = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2]), 0, 1).unwrap();
-    let cfg = RhfConfig { external_potential: sys.to_external_potential(), ..Default::default() };
+    let cfg = RhfConfig {
+        external_potential: sys.to_external_potential(),
+        ..Default::default()
+    };
     let pol = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     let mu_pol = dipole(&mol, &prep, pol.density_total());
 
@@ -349,9 +389,13 @@ fn embedding_response_scales_with_mm_charge() {
         // Far enough (12 Bohr) that the response is dominated by the linear term.
         atoms.push(QmmmAtom::new("Na", 11, 0.0, 0.0, -12.0, q));
         let sys = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2]), 0, 1).unwrap();
-        let cfg =
-            RhfConfig { external_potential: sys.to_external_potential(), ..Default::default() };
-        solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap().energy
+        let cfg = RhfConfig {
+            external_potential: sys.to_external_potential(),
+            ..Default::default()
+        };
+        solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg)
+            .unwrap()
+            .energy
     };
 
     let d1 = energy_for_q(0.5) - gas.energy;
@@ -408,7 +452,10 @@ fn link_atom_caps_a_cut_cc_bond_with_verified_geometry() {
         v[0] * bond[1] - v[1] * bond[0],
     ];
     let cross_norm = (cross[0].powi(2) + cross[1].powi(2) + cross[2].powi(2)).sqrt();
-    assert!(cross_norm < 1e-12, "link H is off the bond vector (|v x b| = {cross_norm:.3e})");
+    assert!(
+        cross_norm < 1e-12,
+        "link H is off the bond vector (|v x b| = {cross_norm:.3e})"
+    );
 
     // (b) At exactly the requested fraction of the bond length.
     let d = (v[0].powi(2) + v[1].powi(2) + v[2].powi(2)).sqrt();
@@ -419,7 +466,10 @@ fn link_atom_caps_a_cut_cc_bond_with_verified_geometry() {
     );
     // Sanity: that fraction of a C-C bond is a physical C-H distance (~1.09 Å).
     let d_ang = d / ANG2BOHR;
-    assert!((d_ang - 1.09).abs() < 0.02, "capped C-H = {d_ang:.4} Å, expected ~1.09");
+    assert!(
+        (d_ang - 1.09).abs() < 0.02,
+        "capped C-H = {d_ang:.4} Å, expected ~1.09"
+    );
 
     // (c) The capped fragment is CH4-like (4 real QM atoms + 1 link H) and runs.
     let mol = sys.to_qm_molecule();
@@ -429,7 +479,10 @@ fn link_atom_caps_a_cut_cc_bond_with_verified_geometry() {
 
     let (_bs, prep, op, bounds) = setup(&mol);
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig { external_potential: sys.to_external_potential(), ..Default::default() };
+    let cfg = RhfConfig {
+        external_potential: sys.to_external_potential(),
+        ..Default::default()
+    };
     let r = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged, "capped QM fragment failed to converge");
 
@@ -515,7 +568,10 @@ fn mm_force_on_a_probe_charge_points_toward_the_electron_rich_side() {
     let mol = sys.to_qm_molecule();
     let (_bs, prep, op, bounds) = setup(&mol);
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig { external_potential: sys.to_external_potential(), ..Default::default() };
+    let cfg = RhfConfig {
+        external_potential: sys.to_external_potential(),
+        ..Default::default()
+    };
     let scf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(scf.converged);
 
@@ -536,8 +592,16 @@ fn mm_force_on_a_probe_charge_points_toward_the_electron_rich_side() {
         f[2]
     );
     // By C2v symmetry about the z axis, the transverse force must vanish.
-    assert!(f[0].abs() < 1e-8, "F_x = {:.3e} should vanish by symmetry", f[0]);
-    assert!(f[1].abs() < 1e-8, "F_y = {:.3e} should vanish by symmetry", f[1]);
+    assert!(
+        f[0].abs() < 1e-8,
+        "F_x = {:.3e} should vanish by symmetry",
+        f[0]
+    );
+    assert!(
+        f[1].abs() < 1e-8,
+        "F_y = {:.3e} should vanish by symmetry",
+        f[1]
+    );
 
     eprintln!("[qmmm] force on +1 MM charge at z=-6 Bohr: F = {f:?} a.u.");
 }
@@ -634,7 +698,10 @@ fn mm_force_rows_align_with_mm_charge_positions() {
     let mol = sys.to_qm_molecule();
     let (_bs, prep, op, bounds) = setup(&mol);
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig { external_potential: Some(ep), ..Default::default() };
+    let cfg = RhfConfig {
+        external_potential: Some(ep),
+        ..Default::default()
+    };
     let scf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
 
     let forces = mm_forces(&sys, &mol, &prep, scf.density_total()).unwrap();
@@ -667,10 +734,15 @@ fn mm_forces_empty_for_an_empty_mm_region() {
 #[test]
 fn boundary_scheme_keep_is_bit_identical_to_no_scheme() {
     let plain = capped_ethane();
-    let kept = capped_ethane().with_boundary_charges(&ethane_bonds(), BoundaryChargeScheme::Keep).unwrap();
+    let kept = capped_ethane()
+        .with_boundary_charges(&ethane_bonds(), BoundaryChargeScheme::Keep)
+        .unwrap();
     assert_eq!(plain.to_external_potential(), kept.to_external_potential());
     assert_eq!(plain.mm_charge_positions(), kept.mm_charge_positions());
-    assert_eq!(plain.min_link_to_charge_distance(), kept.min_link_to_charge_distance());
+    assert_eq!(
+        plain.min_link_to_charge_distance(),
+        kept.min_link_to_charge_distance()
+    );
 }
 
 /// Second anchor: every scheme is a no-op when the partition cuts no bond —
@@ -692,9 +764,20 @@ fn boundary_schemes_are_no_ops_without_a_cut_bond() {
         BoundaryChargeScheme::RedistributedCharge,
         BoundaryChargeScheme::RedistributedChargeDipole,
     ] {
-        let s = base.clone().with_boundary_charges(&ethane_bonds(), scheme).unwrap();
-        assert_eq!(base.to_external_potential(), s.to_external_potential(), "{scheme:?}");
-        assert_eq!(base.mm_charge_positions(), s.mm_charge_positions(), "{scheme:?}");
+        let s = base
+            .clone()
+            .with_boundary_charges(&ethane_bonds(), scheme)
+            .unwrap();
+        assert_eq!(
+            base.to_external_potential(),
+            s.to_external_potential(),
+            "{scheme:?}"
+        );
+        assert_eq!(
+            base.mm_charge_positions(),
+            s.mm_charge_positions(),
+            "{scheme:?}"
+        );
     }
 }
 
@@ -702,7 +785,9 @@ fn boundary_schemes_are_no_ops_without_a_cut_bond() {
 #[test]
 fn delete_host_removes_exactly_the_m1_charge() {
     let plain = capped_ethane();
-    let z1 = capped_ethane().with_boundary_charges(&ethane_bonds(), BoundaryChargeScheme::DeleteHost).unwrap();
+    let z1 = capped_ethane()
+        .with_boundary_charges(&ethane_bonds(), BoundaryChargeScheme::DeleteHost)
+        .unwrap();
 
     let ep_plain = plain.to_external_potential().unwrap();
     let ep_z1 = z1.to_external_potential().unwrap();
@@ -711,12 +796,18 @@ fn delete_host_removes_exactly_the_m1_charge() {
     assert_eq!(ep_z1.point_charges.len(), 3);
     for pc in &ep_z1.point_charges {
         assert_eq!(pc.q, 0.033, "only the H charges survive, unchanged");
-        assert!(ep_plain.point_charges.contains(pc), "surviving charges are untouched");
+        assert!(
+            ep_plain.point_charges.contains(pc),
+            "surviving charges are untouched"
+        );
     }
     // Total charge is NOT conserved under Z1 — that is the documented price.
     let (q_plain, _) = total_charge_and_dipole(&plain);
     let (q_z1, _) = total_charge_and_dipole(&z1);
-    assert!(((q_plain - q_z1) - (-0.1)).abs() < 1e-14, "Z1 drops exactly q(C1) = -0.1");
+    assert!(
+        ((q_plain - q_z1) - (-0.1)).abs() < 1e-14,
+        "Z1 drops exactly q(C1) = -0.1"
+    );
 }
 
 /// RC (Lin & Truhlar 2005): q(M1) is split evenly over the midpoints of the
@@ -732,27 +823,46 @@ fn redistributed_charge_conserves_total_charge_via_m1_m2_midpoints() {
 
     let (q_plain, _) = total_charge_and_dipole(&plain);
     let (q_rc, _) = total_charge_and_dipole(&rc);
-    assert!((q_plain - q_rc).abs() < 1e-14, "RC must conserve total MM charge");
+    assert!(
+        (q_plain - q_rc).abs() < 1e-14,
+        "RC must conserve total MM charge"
+    );
 
     let ep = rc.to_external_potential().unwrap();
     // Three H (unchanged) + three midpoint charges; C1's own charge is gone.
     assert_eq!(ep.point_charges.len(), 6);
     let c1 = &atoms[1];
     assert!(
-        !ep.point_charges.iter().any(|pc| pc.x == c1.x && pc.y == c1.y && pc.z == c1.z_pos),
+        !ep.point_charges
+            .iter()
+            .any(|pc| pc.x == c1.x && pc.y == c1.y && pc.z == c1.z_pos),
         "no charge may remain on the M1 site"
     );
     let mut n_mid = 0;
     for &h in &[3usize, 5, 7] {
-        let mid = [(c1.x + atoms[h].x) / 2.0, (c1.y + atoms[h].y) / 2.0, (c1.z_pos + atoms[h].z_pos) / 2.0];
-        let found = ep.point_charges.iter().find(|pc| (pc.x - mid[0]).abs() < 1e-14 && (pc.y - mid[1]).abs() < 1e-14 && (pc.z - mid[2]).abs() < 1e-14);
+        let mid = [
+            (c1.x + atoms[h].x) / 2.0,
+            (c1.y + atoms[h].y) / 2.0,
+            (c1.z_pos + atoms[h].z_pos) / 2.0,
+        ];
+        let found = ep.point_charges.iter().find(|pc| {
+            (pc.x - mid[0]).abs() < 1e-14
+                && (pc.y - mid[1]).abs() < 1e-14
+                && (pc.z - mid[2]).abs() < 1e-14
+        });
         let pc = found.expect("a charge at each M1-M2 midpoint");
-        assert!((pc.q - (-0.1 / 3.0)).abs() < 1e-14, "q(M1)/n_M2 at each midpoint");
+        assert!(
+            (pc.q - (-0.1 / 3.0)).abs() < 1e-14,
+            "q(M1)/n_M2 at each midpoint"
+        );
         n_mid += 1;
     }
     assert_eq!(n_mid, 3);
     // The M2 hydrogens keep their own charge under RC.
-    assert_eq!(ep.point_charges.iter().filter(|pc| pc.q == 0.033).count(), 3);
+    assert_eq!(
+        ep.point_charges.iter().filter(|pc| pc.q == 0.033).count(),
+        3
+    );
 }
 
 /// RCD: as RC, but each midpoint gets 2·q0 and each M2 loses q0, which keeps
@@ -761,12 +871,18 @@ fn redistributed_charge_conserves_total_charge_via_m1_m2_midpoints() {
 fn redistributed_charge_dipole_conserves_charge_and_dipole() {
     let plain = capped_ethane();
     let rcd = capped_ethane()
-        .with_boundary_charges(&ethane_bonds(), BoundaryChargeScheme::RedistributedChargeDipole)
+        .with_boundary_charges(
+            &ethane_bonds(),
+            BoundaryChargeScheme::RedistributedChargeDipole,
+        )
         .unwrap();
 
     let (q_plain, mu_plain) = total_charge_and_dipole(&plain);
     let (q_rcd, mu_rcd) = total_charge_and_dipole(&rcd);
-    assert!((q_plain - q_rcd).abs() < 1e-14, "RCD must conserve total MM charge");
+    assert!(
+        (q_plain - q_rcd).abs() < 1e-14,
+        "RCD must conserve total MM charge"
+    );
     for k in 0..3 {
         assert!(
             (mu_plain[k] - mu_rcd[k]).abs() < 1e-13,
@@ -779,8 +895,22 @@ fn redistributed_charge_dipole_conserves_charge_and_dipole() {
     let ep = rcd.to_external_potential().unwrap();
     assert_eq!(ep.point_charges.len(), 6);
     let q0 = -0.1 / 3.0;
-    assert_eq!(ep.point_charges.iter().filter(|pc| (pc.q - 2.0 * q0).abs() < 1e-14).count(), 3, "midpoints carry 2q0");
-    assert_eq!(ep.point_charges.iter().filter(|pc| (pc.q - (0.033 - q0)).abs() < 1e-14).count(), 3, "M2 carry q_M2 - q0");
+    assert_eq!(
+        ep.point_charges
+            .iter()
+            .filter(|pc| (pc.q - 2.0 * q0).abs() < 1e-14)
+            .count(),
+        3,
+        "midpoints carry 2q0"
+    );
+    assert_eq!(
+        ep.point_charges
+            .iter()
+            .filter(|pc| (pc.q - (0.033 - q0)).abs() < 1e-14)
+            .count(),
+        3,
+        "M2 carry q_M2 - q0"
+    );
 }
 
 /// The whole point: under RC/RCD the nearest MM charge to the link hydrogen
@@ -794,9 +924,14 @@ fn redistribution_moves_the_nearest_charge_away_from_the_link_atom() {
         BoundaryChargeScheme::RedistributedCharge,
         BoundaryChargeScheme::RedistributedChargeDipole,
     ] {
-        let s = capped_ethane().with_boundary_charges(&ethane_bonds(), scheme).unwrap();
+        let s = capped_ethane()
+            .with_boundary_charges(&ethane_bonds(), scheme)
+            .unwrap();
         let d = s.min_link_to_charge_distance().unwrap();
-        assert!(d > d_plain, "{scheme:?}: nearest charge {d:.4} should be farther than {d_plain:.4}");
+        assert!(
+            d > d_plain,
+            "{scheme:?}: nearest charge {d:.4} should be farther than {d_plain:.4}"
+        );
     }
 }
 
@@ -805,7 +940,10 @@ fn redistribution_moves_the_nearest_charge_away_from_the_link_atom() {
 #[test]
 fn mm_forces_cover_redistributed_midpoint_charges() {
     let sys = capped_ethane()
-        .with_boundary_charges(&ethane_bonds(), BoundaryChargeScheme::RedistributedChargeDipole)
+        .with_boundary_charges(
+            &ethane_bonds(),
+            BoundaryChargeScheme::RedistributedChargeDipole,
+        )
         .unwrap();
     let positions = sys.mm_charge_positions();
     let ep = sys.to_external_potential().unwrap();
@@ -817,7 +955,10 @@ fn mm_forces_cover_redistributed_midpoint_charges() {
     let mol = sys.to_qm_molecule();
     let (_bs, prep, op, bounds) = setup(&mol);
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig { external_potential: Some(ep), ..Default::default() };
+    let cfg = RhfConfig {
+        external_potential: Some(ep),
+        ..Default::default()
+    };
     let scf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(scf.converged);
     let f = mm_forces(&sys, &mol, &prep, scf.density_total()).unwrap();
@@ -830,14 +971,27 @@ fn mm_forces_cover_redistributed_midpoint_charges() {
 #[test]
 fn redistribution_errors_when_the_host_has_no_mm_neighbours() {
     // Only the cut bond is known; C1's C-H bonds are not in the list.
-    let sys = QmmmSystem::new(&ethane_atoms(), QmSelection::Indices(vec![0, 2, 4, 6]), 0, 1)
-        .unwrap()
-        .with_link_atoms(&[(0, 1)], DEFAULT_LINK_SCALE)
-        .unwrap();
-    assert!(sys.clone().with_boundary_charges(&[(0, 1)], BoundaryChargeScheme::RedistributedCharge).is_err());
-    assert!(sys.clone().with_boundary_charges(&[(0, 1)], BoundaryChargeScheme::RedistributedChargeDipole).is_err());
+    let sys = QmmmSystem::new(
+        &ethane_atoms(),
+        QmSelection::Indices(vec![0, 2, 4, 6]),
+        0,
+        1,
+    )
+    .unwrap()
+    .with_link_atoms(&[(0, 1)], DEFAULT_LINK_SCALE)
+    .unwrap();
+    assert!(sys
+        .clone()
+        .with_boundary_charges(&[(0, 1)], BoundaryChargeScheme::RedistributedCharge)
+        .is_err());
+    assert!(sys
+        .clone()
+        .with_boundary_charges(&[(0, 1)], BoundaryChargeScheme::RedistributedChargeDipole)
+        .is_err());
     // Deletion needs no neighbours and still works.
-    assert!(sys.with_boundary_charges(&[(0, 1)], BoundaryChargeScheme::DeleteHost).is_ok());
+    assert!(sys
+        .with_boundary_charges(&[(0, 1)], BoundaryChargeScheme::DeleteHost)
+        .is_ok());
 }
 
 // ---------------------------------------------------------------------------
@@ -865,7 +1019,10 @@ fn full_gradient_projects_the_link_atom_row_onto_its_two_hosts() {
     // Frontier C0 is full index 0; M1 host C1 is full index 1.
     for k in 0..3 {
         let v = (k + 1) as f64;
-        assert!((full[(0, k)] - (1.0 - g) * v).abs() < 1e-15, "frontier row axis {k}");
+        assert!(
+            (full[(0, k)] - (1.0 - g) * v).abs() < 1e-15,
+            "frontier row axis {k}"
+        );
         assert!((full[(1, k)] - g * v).abs() < 1e-15, "host row axis {k}");
     }
     // Nothing anywhere else, and the column sums are preserved (a rigid
@@ -907,7 +1064,10 @@ fn full_gradient_maps_qm_rows_and_atom_centred_mm_forces() {
 #[test]
 fn full_gradient_splits_midpoint_charge_forces_between_hosts() {
     let sys = capped_ethane()
-        .with_boundary_charges(&ethane_bonds(), BoundaryChargeScheme::RedistributedChargeDipole)
+        .with_boundary_charges(
+            &ethane_bonds(),
+            BoundaryChargeScheme::RedistributedChargeDipole,
+        )
         .unwrap();
     let n_qm = sys.qm_atom_count();
     let qm_grad = Array2::<f64>::zeros((n_qm + 1, 3));
@@ -930,8 +1090,14 @@ fn full_gradient_rejects_mismatched_inputs() {
     let n_qm = sys.qm_atom_count();
     let ok_qm = Array2::<f64>::zeros((n_qm + 1, 3));
     let ok_mm = vec![[0.0; 3]; sys.mm_charge_positions().len()];
-    assert!(full_gradient(&sys, &Array2::<f64>::zeros((n_qm, 3)), &ok_mm).is_err(), "missing link row");
-    assert!(full_gradient(&sys, &ok_qm, &ok_mm[..2]).is_err(), "wrong MM row count");
+    assert!(
+        full_gradient(&sys, &Array2::<f64>::zeros((n_qm, 3)), &ok_mm).is_err(),
+        "missing link row"
+    );
+    assert!(
+        full_gradient(&sys, &ok_qm, &ok_mm[..2]).is_err(),
+        "wrong MM row count"
+    );
 }
 
 /// THE correctness check: the projected full gradient must match a central
@@ -980,7 +1146,15 @@ fn full_gradient_matches_finite_difference_across_the_boundary() {
         ..Default::default()
     };
     let scf = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
-    let qm_grad = rhf_gradient(&mol, &prep, op, &bounds, &scf, cfg.external_potential.as_ref()).unwrap();
+    let qm_grad = rhf_gradient(
+        &mol,
+        &prep,
+        op,
+        &bounds,
+        &scf,
+        cfg.external_potential.as_ref(),
+    )
+    .unwrap();
     let mm_f = mm_forces(&sys, &mol, &prep, scf.density_total()).unwrap();
     let full = full_gradient(&sys, &qm_grad, &mm_f).unwrap();
 

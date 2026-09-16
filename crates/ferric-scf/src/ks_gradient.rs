@@ -39,8 +39,7 @@
 //! agreement with PySCF. That defect is in the energy path, not here.
 
 use crate::gradient::{
-    build_energy_weighted_density, build_energy_weighted_density_uhf,
-    oneelectron_gradient,
+    build_energy_weighted_density, build_energy_weighted_density_uhf, oneelectron_gradient,
 };
 use crate::result::{ScfResult, Spin};
 use crate::screening::SchwarzBounds;
@@ -97,14 +96,16 @@ pub fn ks_gradient_closed(
     // are supported (semilocal piece). VV10 nonlocal correlation is NOT
     // included in the gradient — wB97X-V gradients drop the VV10 term and
     // therefore have an extra ~mHa/Bohr error vs the full PySCF gradient.
-    let xc = xc_def_from_name(xc_name).map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
+    let xc =
+        xc_def_from_name(xc_name).map_err(|e| FerricError::General(format!("libxc: {e:?}")))?;
     let mut needs_gga = false;
     let mut needs_mgga = false;
     for f in &xc.funcs {
         match f.family() {
             FunctionalFamily::Lda => {}
-            FunctionalFamily::Gga | FunctionalFamily::HybridGga
-            | FunctionalFamily::RangeSepGga => needs_gga = true,
+            FunctionalFamily::Gga | FunctionalFamily::HybridGga | FunctionalFamily::RangeSepGga => {
+                needs_gga = true
+            }
             // Meta-GGA: the τ-dependent AO-derivative + grid-response terms are
             // handled by `xc_gradient_closed_mgga_from_density`.
             FunctionalFamily::MetaGga => {
@@ -129,13 +130,9 @@ pub fn ks_gradient_closed(
         // J piece (Coulomb, no K).
         grad += &twoelectron_gradient_scaled_k(prep, op, bounds, &d, 0.0)?;
         // K_SR (erfc(ω)) scaled by c_SR.
-        grad += &twoelectron_k_gradient(
-            prep, Operator::erfc(k_mix.omega), bounds, &d, k_mix.sr,
-        )?;
+        grad += &twoelectron_k_gradient(prep, Operator::erfc(k_mix.omega), bounds, &d, k_mix.sr)?;
         // K_LR (erf(ω)) scaled by c_LR.
-        grad += &twoelectron_k_gradient(
-            prep, Operator::erf(k_mix.omega), bounds, &d, k_mix.lr,
-        )?;
+        grad += &twoelectron_k_gradient(prep, Operator::erf(k_mix.omega), bounds, &d, k_mix.lr)?;
     } else {
         // Plain hybrid or pure DFT: single Γ = 0.5·D·D − (c_K/4)·D·D.
         grad += &twoelectron_gradient_scaled_k(prep, op, bounds, &d, k_mix.sr)?;
@@ -145,18 +142,36 @@ pub fn ks_gradient_closed(
     let grid_cfg = AtomicGridConfig::default();
     let xc_grad = if needs_mgga {
         xc_gradient_closed_mgga_from_density(
-            mol, bs, &d, xc_name, &grid_cfg,
-            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+            mol,
+            bs,
+            &d,
+            xc_name,
+            &grid_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
         )
     } else if needs_gga {
         xc_gradient_closed_gga_from_density(
-            mol, bs, &d, xc_name, &grid_cfg,
-            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+            mol,
+            bs,
+            &d,
+            xc_name,
+            &grid_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
         )
     } else {
         xc_gradient_closed_lda_from_density(
-            mol, bs, &d, xc_name, &grid_cfg,
-            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+            mol,
+            bs,
+            &d,
+            xc_name,
+            &grid_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
         )
     }
     .map_err(|e| FerricError::General(format!("xc gradient: {e:?}")))?;
@@ -164,10 +179,20 @@ pub fn ks_gradient_closed(
 
     // VV10 nonlocal-correlation gradient (only if the functional advertises it).
     if let Some(vv10_params) = xc.vv10 {
-        let nlc_cfg = ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() };
+        let nlc_cfg = ferric_dft::grid::AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 50,
+            ..Default::default()
+        };
         let vv10_grad = ferric_dft::gradient::vv10_gradient_from_density(
-            mol, bs, &d, &vv10_params, &nlc_cfg,
-            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+            mol,
+            bs,
+            &d,
+            &vv10_params,
+            &nlc_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
         )
         .map_err(|e| FerricError::General(format!("vv10 gradient: {e:?}")))?;
         grad += &vv10_grad;
@@ -206,7 +231,13 @@ pub fn ks_gradient_closed_with_polarizable(
 ) -> Result<Array2<f64>, FerricError> {
     let mut grad = ks_gradient_closed(mol, prep, bs, op, bounds, xc_name, result, ext)?;
     if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
-        grad += &crate::polarizable::polarizable_gradient_term(mol, prep, sites, dipoles, result.density_total())?;
+        grad += &crate::polarizable::polarizable_gradient_term(
+            mol,
+            prep,
+            sites,
+            dipoles,
+            result.density_total(),
+        )?;
     }
     Ok(grad)
 }
@@ -306,10 +337,20 @@ pub fn ks_gradient_uks(
     if k_mix.omega > 0.0 {
         grad += &twoelectron_gradient_uhf_scaled_k(prep, op, bounds, &d_total, d_a, d_b, 0.0)?;
         grad += &twoelectron_k_gradient_uhf(
-            prep, Operator::erfc(k_mix.omega), bounds, d_a, d_b, k_mix.sr,
+            prep,
+            Operator::erfc(k_mix.omega),
+            bounds,
+            d_a,
+            d_b,
+            k_mix.sr,
         )?;
         grad += &twoelectron_k_gradient_uhf(
-            prep, Operator::erf(k_mix.omega), bounds, d_a, d_b, k_mix.lr,
+            prep,
+            Operator::erf(k_mix.omega),
+            bounds,
+            d_a,
+            d_b,
+            k_mix.lr,
         )?;
     } else {
         grad += &twoelectron_gradient_uhf_scaled_k(prep, op, bounds, &d_total, d_a, d_b, c_k)?;
@@ -319,13 +360,27 @@ pub fn ks_gradient_uks(
     let grid_cfg = AtomicGridConfig::default();
     let xc_grad = if needs_mgga {
         xc_gradient_uks_mgga_from_density(
-            mol, bs, d_a, d_b, xc_name, &grid_cfg,
-            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+            mol,
+            bs,
+            d_a,
+            d_b,
+            xc_name,
+            &grid_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
         )
     } else {
         xc_gradient_uks_from_density(
-            mol, bs, d_a, d_b, xc_name, &grid_cfg,
-            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+            mol,
+            bs,
+            d_a,
+            d_b,
+            xc_name,
+            &grid_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
         )
     }
     .map_err(|e| FerricError::General(format!("uks xc gradient: {e:?}")))?;
@@ -333,10 +388,20 @@ pub fn ks_gradient_uks(
 
     // VV10: function of ρ_tot, identical to the closed-shell formula.
     if let Some(vv10_params) = xc.vv10 {
-        let nlc_cfg = ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() };
+        let nlc_cfg = ferric_dft::grid::AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 50,
+            ..Default::default()
+        };
         let vv10_grad = ferric_dft::gradient::vv10_gradient_from_density(
-            mol, bs, &d_total, &vv10_params, &nlc_cfg,
-            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+            mol,
+            bs,
+            &d_total,
+            &vv10_params,
+            &nlc_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
         )
         .map_err(|e| FerricError::General(format!("vv10 gradient: {e:?}")))?;
         grad += &vv10_grad;
@@ -366,7 +431,13 @@ pub fn ks_gradient_uks_with_polarizable(
 ) -> Result<Array2<f64>, FerricError> {
     let mut grad = ks_gradient_uks(mol, prep, bs, op, bounds, xc_name, result, ext)?;
     if let (Some(sites), Some(dipoles)) = (sites, dipoles) {
-        grad += &crate::polarizable::polarizable_gradient_term(mol, prep, sites, dipoles, result.density_total())?;
+        grad += &crate::polarizable::polarizable_gradient_term(
+            mol,
+            prep,
+            sites,
+            dipoles,
+            result.density_total(),
+        )?;
     }
     Ok(grad)
 }
@@ -387,8 +458,9 @@ pub fn twoelectron_gradient_uhf_scaled_k(
     let max_d = d_total.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     crate::gradient::par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
         0.5 * d_total[(mu, nu)] * d_total[(la, sg)]
-            - 0.5 * c_k * (d_alpha[(mu, la)] * d_alpha[(nu, sg)]
-                         + d_beta[(mu, la)]  * d_beta[(nu, sg)])
+            - 0.5
+                * c_k
+                * (d_alpha[(mu, la)] * d_alpha[(nu, sg)] + d_beta[(mu, la)] * d_beta[(nu, sg)])
     })
 }
 
@@ -463,10 +535,20 @@ pub fn ks_gradient_roks(
     if k_mix.omega > 0.0 {
         grad += &twoelectron_gradient_uhf_scaled_k(prep, op, bounds, &d_total, d_a, d_b, 0.0)?;
         grad += &twoelectron_k_gradient_uhf(
-            prep, Operator::erfc(k_mix.omega), bounds, d_a, d_b, k_mix.sr,
+            prep,
+            Operator::erfc(k_mix.omega),
+            bounds,
+            d_a,
+            d_b,
+            k_mix.sr,
         )?;
         grad += &twoelectron_k_gradient_uhf(
-            prep, Operator::erf(k_mix.omega), bounds, d_a, d_b, k_mix.lr,
+            prep,
+            Operator::erf(k_mix.omega),
+            bounds,
+            d_a,
+            d_b,
+            k_mix.lr,
         )?;
     } else {
         grad += &twoelectron_gradient_uhf_scaled_k(prep, op, bounds, &d_total, d_a, d_b, c_k)?;
@@ -477,13 +559,27 @@ pub fn ks_gradient_roks(
     let grid_cfg = AtomicGridConfig::default();
     let xc_grad = if needs_mgga {
         xc_gradient_uks_mgga_from_density(
-            mol, bs, d_a, d_b, xc_name, &grid_cfg,
-            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+            mol,
+            bs,
+            d_a,
+            d_b,
+            xc_name,
+            &grid_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
         )
     } else {
         xc_gradient_uks_from_density(
-            mol, bs, d_a, d_b, xc_name, &grid_cfg,
-            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+            mol,
+            bs,
+            d_a,
+            d_b,
+            xc_name,
+            &grid_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
         )
     }
     .map_err(|e| FerricError::General(format!("roks xc gradient: {e:?}")))?;
@@ -491,10 +587,20 @@ pub fn ks_gradient_roks(
 
     // VV10 (closed-shell-friendly, on total ρ).
     if let Some(vv10_params) = xc.vv10 {
-        let nlc_cfg = ferric_dft::grid::AtomicGridConfig { n_radial: 50, n_angular: 50, ..Default::default() };
+        let nlc_cfg = ferric_dft::grid::AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 50,
+            ..Default::default()
+        };
         let vv10_grad = ferric_dft::gradient::vv10_gradient_from_density(
-            mol, bs, &d_total, &vv10_params, &nlc_cfg,
-            prep.shell_to_atom(), prep.shell_offsets(), prep.shell_dims(),
+            mol,
+            bs,
+            &d_total,
+            &vv10_params,
+            &nlc_cfg,
+            prep.shell_to_atom(),
+            prep.shell_offsets(),
+            prep.shell_dims(),
         )
         .map_err(|e| FerricError::General(format!("vv10 gradient: {e:?}")))?;
         grad += &vv10_grad;
@@ -517,7 +623,6 @@ pub fn twoelectron_k_gradient_uhf(
     let d_total: Array2<f64> = d_alpha + d_beta;
     let max_d = d_total.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
     crate::gradient::par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
-        -0.5 * c_k * (d_alpha[(mu, la)] * d_alpha[(nu, sg)]
-                    + d_beta[(mu, la)]  * d_beta[(nu, sg)])
+        -0.5 * c_k * (d_alpha[(mu, la)] * d_alpha[(nu, sg)] + d_beta[(mu, la)] * d_beta[(nu, sg)])
     })
 }

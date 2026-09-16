@@ -39,14 +39,19 @@ fn worst_ratio(path: &str, op: Operator) -> f64 {
                 for pp in 0..dims_aux[p] {
                     for ii in 0..dims_obs[s1] {
                         for jj in 0..dims_obs[s2] {
-                            let v = dense[(offs_aux[p] + pp, offs_obs[s1] + ii, offs_obs[s2] + jj)].abs();
-                            if v > t { t = v; }
+                            let v = dense[(offs_aux[p] + pp, offs_obs[s1] + ii, offs_obs[s2] + jj)]
+                                .abs();
+                            if v > t {
+                                t = v;
+                            }
                         }
                     }
                 }
                 if t > 1e-14 {
                     let r = t / bound.max(1e-300);
-                    if r > worst { worst = r; }
+                    if r > worst {
+                        worst = r;
+                    }
                 }
             }
         }
@@ -55,11 +60,20 @@ fn worst_ratio(path: &str, op: Operator) -> f64 {
 }
 
 fn main() {
-    for path in ["testdata/molecules/water.xyz", "testdata/molecules/alkane_6.xyz"] {
+    for path in [
+        "testdata/molecules/water.xyz",
+        "testdata/molecules/alkane_6.xyz",
+    ] {
         let c = worst_ratio(path, Operator::coulomb());
         let e = worst_ratio(path, Operator::erfc(0.222));
         println!("{path}");
-        println!("  Coulomb worst |true|/bound = {c:.6}  ({})", if c <= 1.0 + 1e-9 { "VALID" } else { "INVALID" });
-        println!("  erfc    worst |true|/bound = {e:.6}  ({})", if e <= 1.0 + 1e-9 { "VALID" } else { "INVALID" });
+        println!(
+            "  Coulomb worst |true|/bound = {c:.6}  ({})",
+            if c <= 1.0 + 1e-9 { "VALID" } else { "INVALID" }
+        );
+        println!(
+            "  erfc    worst |true|/bound = {e:.6}  ({})",
+            if e <= 1.0 + 1e-9 { "VALID" } else { "INVALID" }
+        );
     }
 }

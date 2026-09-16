@@ -27,7 +27,11 @@ use ferric_scf::rhf::RhfConfig;
 use ferric_scf::screening::SchwarzBounds;
 
 fn mol_path(name: &str) -> String {
-    format!("{}/../../testdata/molecules/{}", env!("CARGO_MANIFEST_DIR"), name)
+    format!(
+        "{}/../../testdata/molecules/{}",
+        env!("CARGO_MANIFEST_DIR"),
+        name
+    )
 }
 
 /// The full chain: name -> KS ladder -> converged density -> SR correlation -> total.
@@ -64,7 +68,11 @@ fn water_end_to_end() {
         dh.total_energy
     );
     // Correlation must be negative and a small fraction of the total.
-    assert!(dh.e_c_wft < 0.0, "WFT correlation must be negative, got {:.10}", dh.e_c_wft);
+    assert!(
+        dh.e_c_wft < 0.0,
+        "WFT correlation must be negative, got {:.10}",
+        dh.e_c_wft
+    );
     assert!(
         dh.e_c_wft.abs() < 1.0,
         "SR correlation {:.10} is implausibly large",
@@ -134,7 +142,10 @@ fn omega_reaches_the_operator_and_zero_recovers_coulomb() {
             &obs,
             &dfbs,
             &lr.result,
-            &DoubleHybridConfig { omega, ..Default::default() },
+            &DoubleHybridConfig {
+                omega,
+                ..Default::default()
+            },
         )
         .unwrap()
         .e_c_wft
@@ -159,8 +170,14 @@ fn omega_reaches_the_operator_and_zero_recovers_coulomb() {
 
     eprintln!("E_c (true Coulomb)     = {coulomb:.10}");
     eprintln!("E_c (omega = 1e-6)     = {near_zero:.10}");
-    eprintln!("E_c (omega = 0.1)      = {paper:.10}   ratio {:.4}", paper / coulomb);
-    eprintln!("E_c (omega = 1.0)      = {strong:.10}   ratio {:.4}", strong / coulomb);
+    eprintln!(
+        "E_c (omega = 0.1)      = {paper:.10}   ratio {:.4}",
+        paper / coulomb
+    );
+    eprintln!(
+        "E_c (omega = 1.0)      = {strong:.10}   ratio {:.4}",
+        strong / coulomb
+    );
 
     assert!(
         (near_zero - coulomb).abs() < 1e-6,
@@ -213,7 +230,10 @@ fn lambda_scales_correlation_and_zero_recovers_the_hybrid() {
             &obs,
             &dfbs,
             &lr.result,
-            &DoubleHybridConfig { lambda, ..Default::default() },
+            &DoubleHybridConfig {
+                lambda,
+                ..Default::default()
+            },
         )
         .unwrap()
     };
@@ -230,12 +250,18 @@ fn lambda_scales_correlation_and_zero_recovers_the_hybrid() {
     let (a, b, c) = (at(0.2), at(0.4), at(0.6));
     let d1 = b.total_energy - a.total_energy;
     let d2 = c.total_energy - b.total_energy;
-    eprintln!("E(0.2) = {:.10}  E(0.4) = {:.10}  E(0.6) = {:.10}", a.total_energy, b.total_energy, c.total_energy);
+    eprintln!(
+        "E(0.2) = {:.10}  E(0.4) = {:.10}  E(0.6) = {:.10}",
+        a.total_energy, b.total_energy, c.total_energy
+    );
     assert!(
         (d1 - d2).abs() < 1e-12,
         "lambda scaling must be linear at fixed amplitudes: {d1:.3e} vs {d2:.3e}"
     );
-    assert!(d1.abs() > 1e-6, "lambda had no effect -- correlation is not being added");
+    assert!(
+        d1.abs() > 1e-6,
+        "lambda had no effect -- correlation is not being added"
+    );
 }
 
 /// An unconverged reference must be REFUSED, not silently used.
@@ -251,7 +277,11 @@ fn unconverged_reference_is_refused() {
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
 
-    let scf = RhfConfig { max_iter: 1, density_conv: 1e-14, ..Default::default() };
+    let scf = RhfConfig {
+        max_iter: 1,
+        density_conv: 1e-14,
+        ..Default::default()
+    };
     let stuck = ferric_scf::rhf::solve_rhf(
         &ParallelContext::default(),
         &mol,
@@ -261,7 +291,10 @@ fn unconverged_reference_is_refused() {
         &scf,
     )
     .expect("solve_rhf returns Ok even when it does not converge");
-    assert!(!stuck.converged, "test premise: this SCF must NOT have converged");
+    assert!(
+        !stuck.converged,
+        "test premise: this SCF must NOT have converged"
+    );
 
     let err = solve_wb97x_l_v(&mol, &obs, &dfbs, &stuck, &DoubleHybridConfig::default());
     assert!(
@@ -283,17 +316,44 @@ fn invalid_parameters_are_rejected() {
         &obs,
         Operator::coulomb(),
         &bounds,
-        &RhfConfig { density_conv: 1e-8, ..Default::default() },
+        &RhfConfig {
+            density_conv: 1e-8,
+            ..Default::default()
+        },
     )
     .unwrap();
     assert!(rhf.converged);
 
     let bad = |cfg: DoubleHybridConfig| solve_wb97x_l_v(&mol, &obs, &dfbs, &rhf, &cfg).is_err();
 
-    assert!(bad(DoubleHybridConfig { lambda: -0.1, ..Default::default() }), "negative lambda");
-    assert!(bad(DoubleHybridConfig { lambda: 1.5, ..Default::default() }), "lambda > 1");
-    assert!(bad(DoubleHybridConfig { omega: 0.0, ..Default::default() }), "omega = 0");
-    assert!(bad(DoubleHybridConfig { omega: -0.1, ..Default::default() }), "negative omega");
+    assert!(
+        bad(DoubleHybridConfig {
+            lambda: -0.1,
+            ..Default::default()
+        }),
+        "negative lambda"
+    );
+    assert!(
+        bad(DoubleHybridConfig {
+            lambda: 1.5,
+            ..Default::default()
+        }),
+        "lambda > 1"
+    );
+    assert!(
+        bad(DoubleHybridConfig {
+            omega: 0.0,
+            ..Default::default()
+        }),
+        "omega = 0"
+    );
+    assert!(
+        bad(DoubleHybridConfig {
+            omega: -0.1,
+            ..Default::default()
+        }),
+        "negative omega"
+    );
 }
 
 /// The `Full` LinLCCD variant is reachable through the double-hybrid config.
@@ -312,18 +372,29 @@ fn ladder_variant_is_honored() {
         &obs,
         Operator::coulomb(),
         &bounds,
-        &RhfConfig { density_conv: 1e-8, ..Default::default() },
+        &RhfConfig {
+            density_conv: 1e-8,
+            ..Default::default()
+        },
     )
     .unwrap();
 
-    let cc = CcConfig { energy_conv: 1e-10, max_iter: 100, ..Default::default() };
+    let cc = CcConfig {
+        energy_conv: 1e-10,
+        max_iter: 100,
+        ..Default::default()
+    };
     let run = |variant: LadderVariant| {
         solve_wb97x_l_v(
             &mol,
             &obs,
             &dfbs,
             &rhf,
-            &DoubleHybridConfig { variant, cc: cc.clone(), ..Default::default() },
+            &DoubleHybridConfig {
+                variant,
+                cc: cc.clone(),
+                ..Default::default()
+            },
         )
         .unwrap()
         .e_c_wft
@@ -367,7 +438,11 @@ fn open_shell_end_to_end_via_semicanonicalization() {
     let ctx = ParallelContext::default();
 
     // 1. Converge the open-shell reference.
-    let scf = RhfConfig { density_conv: 1e-9, max_iter: 200, ..Default::default() };
+    let scf = RhfConfig {
+        density_conv: 1e-9,
+        max_iter: 200,
+        ..Default::default()
+    };
     let rohf =
         ferric_scf::rohf::solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf).unwrap();
     assert!(rohf.converged, "ROHF reference must converge");
@@ -385,10 +460,17 @@ fn open_shell_end_to_end_via_semicanonicalization() {
     eprintln!("E_c,LinLCCD(hh) SR  = {:.10}", dh.e_c_wft);
     eprintln!("lambda * E_c        = {:.10}", dh.e_c_scaled);
     eprintln!("E_total             = {:.10}", dh.total_energy);
-    eprintln!("max |F_ia|          = {:.3e} (a), {:.3e} (b)", sc.max_ov_alpha, sc.max_ov_beta);
+    eprintln!(
+        "max |F_ia|          = {:.3e} (a), {:.3e} (b)",
+        sc.max_ov_alpha, sc.max_ov_beta
+    );
 
     assert!(dh.total_energy.is_finite());
-    assert!(dh.e_c_wft < 0.0, "correlation must be negative, got {:.10}", dh.e_c_wft);
+    assert!(
+        dh.e_c_wft < 0.0,
+        "correlation must be negative, got {:.10}",
+        dh.e_c_wft
+    );
     assert!(
         (dh.total_energy - (dh.e_ks + dh.e_c_scaled)).abs() < 1e-12,
         "reported components must sum to the reported total"
@@ -428,12 +510,23 @@ fn open_shell_end_to_end_via_roks() {
     let ctx = ParallelContext::default();
 
     // 1. Converge the open-shell KOHN-SHAM reference with the custom functional.
-    let mut scf = RhfConfig { density_conv: 1e-8, max_iter: 200, ..Default::default() };
+    let mut scf = RhfConfig {
+        density_conv: 1e-8,
+        max_iter: 200,
+        ..Default::default()
+    };
     scf.xc = Some(WB97X_L_V_NAME.to_string());
     let roks = ferric_scf::rohf::solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf)
         .expect("ROKS/wB97X-L-V should solve");
-    eprintln!("ROKS/wB97X-L-V: converged={} iters={}", roks.converged, roks.iterations);
-    assert!(roks.converged, "ROKS reference must converge (took {})", roks.iterations);
+    eprintln!(
+        "ROKS/wB97X-L-V: converged={} iters={}",
+        roks.converged, roks.iterations
+    );
+    assert!(
+        roks.converged,
+        "ROKS reference must converge (took {})",
+        roks.iterations
+    );
 
     // 2. Semi-canonicalize against the KS Fock -- Some(&XcSpec), not None.
     let spec = XcSpec::new(WB97X_L_V_NAME);
@@ -449,7 +542,11 @@ fn open_shell_end_to_end_via_roks() {
     eprintln!("E_total             = {:.10}", dh.total_energy);
 
     assert!(dh.total_energy.is_finite());
-    assert!(dh.e_c_wft < 0.0, "correlation must be negative, got {:.10}", dh.e_c_wft);
+    assert!(
+        dh.e_c_wft < 0.0,
+        "correlation must be negative, got {:.10}",
+        dh.e_c_wft
+    );
     assert!(
         (dh.total_energy - (dh.e_ks + dh.e_c_scaled)).abs() < 1e-12,
         "reported components must sum to the reported total"
@@ -462,7 +559,11 @@ fn open_shell_end_to_end_via_roks() {
 
     // The KS reference must differ from the HF-referenced sibling above: same molecule and
     // basis, different Fock, so a coincidence here would mean the XcSpec was ignored.
-    let scf_hf = RhfConfig { density_conv: 1e-9, max_iter: 200, ..Default::default() };
+    let scf_hf = RhfConfig {
+        density_conv: 1e-9,
+        max_iter: 200,
+        ..Default::default()
+    };
     let rohf =
         ferric_scf::rohf::solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf_hf)
             .unwrap();

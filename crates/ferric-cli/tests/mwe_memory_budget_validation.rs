@@ -46,7 +46,9 @@ fn workspace_root() -> PathBuf {
 /// would pass a library-level test and still leave the inversion reachable.
 fn run_with_memory(tag: &str, section: &str) -> std::process::Output {
     let root = workspace_root();
-    let path = root.join("target").join(format!("mwe_budget_validation_{tag}.toml"));
+    let path = root
+        .join("target")
+        .join(format!("mwe_budget_validation_{tag}.toml"));
     std::fs::write(
         &path,
         format!(
@@ -149,7 +151,11 @@ fn a_budget_that_rounds_to_zero_bytes_is_rejected() {
 /// CONTRACT 4: NaN is rejected.
 #[test]
 fn a_nan_budget_is_rejected() {
-    expect_rejected("nan", "budget_gb = nan", "gib_to_bytes maps NaN to 0 bytes.");
+    expect_rejected(
+        "nan",
+        "budget_gb = nan",
+        "gib_to_bytes maps NaN to 0 bytes.",
+    );
 }
 
 /// CONTRACT 5: the deprecated alias is validated too.
@@ -177,7 +183,10 @@ fn the_deprecated_alias_is_validated_too() {
 /// `gib_to_bytes`'s own answer.
 #[test]
 fn every_valid_budget_still_loads_and_resolves_identically() {
-    for (i, gb) in ["0.5", "1.0", "2", "4.0", "12.5", "1024.0"].iter().enumerate() {
+    for (i, gb) in ["0.5", "1.0", "2", "4.0", "12.5", "1024.0"]
+        .iter()
+        .enumerate()
+    {
         expect_accepted(&format!("valid{i}"), &format!("budget_gb = {gb}"));
     }
     // And the resolved value is untouched: the same expression as before the

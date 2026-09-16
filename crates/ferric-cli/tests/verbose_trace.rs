@@ -48,9 +48,18 @@ fn default_run_has_no_per_iteration_trace_on_stdout() {
          per-iteration trace; got stdout:\n{stdout}"
     );
     // The existing post-hoc summary must still be present, unchanged.
-    assert!(stdout.contains("iterations ="), "missing post-hoc summary:\n{stdout}");
-    assert!(stdout.contains("converged  ="), "missing post-hoc summary:\n{stdout}");
-    assert!(stdout.contains("energy     ="), "missing post-hoc summary:\n{stdout}");
+    assert!(
+        stdout.contains("iterations ="),
+        "missing post-hoc summary:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("converged  ="),
+        "missing post-hoc summary:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("energy     ="),
+        "missing post-hoc summary:\n{stdout}"
+    );
 }
 
 #[test]
@@ -63,8 +72,10 @@ fn cli_verbose_flag_prints_per_iteration_trace_on_stdout() {
             String::from_utf8_lossy(&output.stderr)
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let trace_lines: Vec<&str> =
-            stdout.lines().filter(|l| l.starts_with("SCF iter=")).collect();
+        let trace_lines: Vec<&str> = stdout
+            .lines()
+            .filter(|l| l.starts_with("SCF iter="))
+            .collect();
         assert!(
             trace_lines.len() >= 2,
             "{flag} should print at least 2 SCF iteration trace lines, got {}:\n{stdout}",
@@ -72,7 +83,10 @@ fn cli_verbose_flag_prints_per_iteration_trace_on_stdout() {
         );
         // Format sanity: iter 1's line has the expected fields, parseable.
         let first = trace_lines[0];
-        assert!(first.contains("iter=   1"), "unexpected iter field: {first}");
+        assert!(
+            first.contains("iter=   1"),
+            "unexpected iter field: {first}"
+        );
         assert!(first.contains("E="), "missing energy field: {first}");
         assert!(first.contains("dE="), "missing dE field: {first}");
         assert!(first.contains("dp_rms="), "missing dp_rms field: {first}");

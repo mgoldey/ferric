@@ -67,8 +67,16 @@ fn bounding_sphere(pts: &[[f64; 3]]) -> ([f64; 3], f64) {
 
 /// The REAL COSX grid, in the REAL order the builder consumes it.
 fn cosx_grid(mol: &Molecule) -> Vec<[f64; 3]> {
-    let cfg = AtomicGridConfig { n_radial: 50, n_angular: 110, ..Default::default() };
-    build_atomic_grid_pruned(mol, &cfg, cfg.prune).expect("grid").iter().map(|p| p.xyz).collect()
+    let cfg = AtomicGridConfig {
+        n_radial: 50,
+        n_angular: 110,
+        ..Default::default()
+    };
+    build_atomic_grid_pruned(mol, &cfg, cfg.prune)
+        .expect("grid")
+        .iter()
+        .map(|p| p.xyz)
+        .collect()
 }
 
 struct Sys {
@@ -84,12 +92,21 @@ fn systems() -> Vec<Sys> {
         1,
     )
     .expect("water");
-    let butane = Molecule::load_xyz(&testdata("testdata/molecules/alkane_4.xyz")).expect("alkane_4");
+    let butane =
+        Molecule::load_xyz(&testdata("testdata/molecules/alkane_4.xyz")).expect("alkane_4");
     let bw = bundled("cc-pvdz").expect("cc-pvdz");
     let bb = bundled("def2-svp").expect("def2-svp");
     vec![
-        Sys { label: "water/cc-pVDZ", prep: PreparedBasis::new(&water, &bw).expect("prep"), mol: water },
-        Sys { label: "butane/def2-SVP", prep: PreparedBasis::new(&butane, &bb).expect("prep"), mol: butane },
+        Sys {
+            label: "water/cc-pVDZ",
+            prep: PreparedBasis::new(&water, &bw).expect("prep"),
+            mol: water,
+        },
+        Sys {
+            label: "butane/def2-SVP",
+            prep: PreparedBasis::new(&butane, &bb).expect("prep"),
+            mol: butane,
+        },
     ]
 }
 
@@ -102,7 +119,8 @@ fn alkanes() -> Vec<(&'static str, Molecule, PreparedBasis)> {
     ["alkane_4", "alkane_8", "alkane_12", "alkane_16"]
         .iter()
         .map(|n| {
-            let mol = Molecule::load_xyz(&testdata(&format!("testdata/molecules/{n}.xyz"))).expect("alkane");
+            let mol = Molecule::load_xyz(&testdata(&format!("testdata/molecules/{n}.xyz")))
+                .expect("alkane");
             let prep = PreparedBasis::new(&mol, &bs).expect("prep");
             (*n, mol, prep)
         })
@@ -130,8 +148,16 @@ fn degenerate_fraction_vs_group_size_and_volume() {
         let pb = PairBounds::build(&s.prep).expect("bounds");
         let nsh = pb.nshells();
         let pts = cosx_grid(&s.mol);
-        println!("\n=== {} ({} shells, {} grid points) ===", s.label, nsh, pts.len());
-        println!("{:>6}  {:>10}  {:>10}  {:>10}  {:>12}", "group", "sphere", "box", "min", "queries");
+        println!(
+            "\n=== {} ({} shells, {} grid points) ===",
+            s.label,
+            nsh,
+            pts.len()
+        );
+        println!(
+            "{:>6}  {:>10}  {:>10}  {:>10}  {:>12}",
+            "group", "sphere", "box", "min", "queries"
+        );
         // Only a stride of sub-batches, so the diagnostic stays cheap; the
         // fractions are stable to <0.3% against the full sweep (checked once).
         let subs: Vec<&[[f64; 3]]> = pts.chunks(256).step_by(7).collect();
@@ -161,7 +187,12 @@ fn degenerate_fraction_vs_group_size_and_volume() {
                 }
             }
             let f = |x: usize| x as f64 / n as f64;
-            println!("{g:>6}  {:>10.4}  {:>10.4}  {:>10.4}  {n:>12}", f(ds), f(db), f(dm));
+            println!(
+                "{g:>6}  {:>10.4}  {:>10.4}  {:>10.4}  {n:>12}",
+                f(ds),
+                f(db),
+                f(dm)
+            );
         }
     }
 }
@@ -205,7 +236,11 @@ fn cause_split_vs_molecular_size_across_the_locality_onset() {
         let n_sub = pts.len().div_ceil(256);
         let stride = (n_sub / 24).max(1);
         let subs: Vec<&[[f64; 3]]> = pts.chunks(256).step_by(stride).collect();
-        assert!(subs.len() >= 8, "{name}: only {} sub-batches sampled — too thin to read", subs.len());
+        assert!(
+            subs.len() >= 8,
+            "{name}: only {} sub-batches sampled — too thin to read",
+            subs.len()
+        );
         for g in [256usize, 32, 8] {
             let (mut deg, mut by_region, mut by_half, mut n) = (0usize, 0usize, 0usize, 0usize);
             for sub in &subs {
@@ -240,11 +275,24 @@ fn cause_split_vs_molecular_size_across_the_locality_onset() {
     }
     // Artifact guard: the size axis must actually vary, and the sample must
     // stay a real sample at every size (not collapse to one sub-batch at C16).
-    assert!(seen.len() == 4, "expected 4 alkane sizes, got {}", seen.len());
+    assert!(
+        seen.len() == 4,
+        "expected 4 alkane sizes, got {}",
+        seen.len()
+    );
     let (d0, d3) = (seen[0].1, seen[3].1);
-    assert!(d3 > 3.0 * d0, "size axis did not span: {d0:.1} -> {d3:.1} Bohr");
-    assert!(d3 > 30.0, "largest system is {d3:.1} Bohr — below the ~30 Bohr onset this test exists to cross");
-    assert!(seen.iter().all(|s| s.3 >= 8), "a size sampled fewer than 8 sub-batches: {seen:?}");
+    assert!(
+        d3 > 3.0 * d0,
+        "size axis did not span: {d0:.1} -> {d3:.1} Bohr"
+    );
+    assert!(
+        d3 > 30.0,
+        "largest system is {d3:.1} Bohr — below the ~30 Bohr onset this test exists to cross"
+    );
+    assert!(
+        seen.iter().all(|s| s.3 >= 8),
+        "a size sampled fewer than 8 sub-batches: {seen:?}"
+    );
     println!(
         "\nRead the last two columns DOWN each group block: if `region reaches` grows with size \
          relative to `|AB|/2 eats it`, grouping starts to matter past the onset and the \
@@ -264,7 +312,10 @@ fn degeneracy_cause_split_region_vs_pair_extent() {
         let nsh = pb.nshells();
         let pts = cosx_grid(&s.mol);
         println!("\n=== {} : cause of degeneracy (box volume) ===", s.label);
-        println!("{:>6}  {:>12}  {:>14}  {:>14}", "group", "degenerate", "region reaches", "|AB|/2 eats it");
+        println!(
+            "{:>6}  {:>12}  {:>14}  {:>14}",
+            "group", "degenerate", "region reaches", "|AB|/2 eats it"
+        );
         let subs: Vec<&[[f64; 3]]> = pts.chunks(256).step_by(11).collect();
         for g in [256usize, 32, 8] {
             let (mut deg, mut by_region, mut by_half, mut n) = (0usize, 0usize, 0usize, 0usize);
@@ -317,7 +368,10 @@ fn degeneracy_cause_split_region_vs_pair_extent() {
 /// pairs whose degeneracy (when it happens) is a `|AB|/2` effect.
 #[test]
 fn subbatch_region_extent_is_size_independent() {
-    println!("\n{:>10}  {:>7}  {:>5}  {:>10}  {:>10}  {:>10}", "system", "diam", "subs", "med extent", "p90", "max");
+    println!(
+        "\n{:>10}  {:>7}  {:>5}  {:>10}  {:>10}  {:>10}",
+        "system", "diam", "subs", "med extent", "p90", "max"
+    );
     let mut medians = Vec::new();
     for (name, mol, _prep) in alkanes() {
         let pts = cosx_grid(&mol);
@@ -326,14 +380,18 @@ fn subbatch_region_extent_is_size_independent() {
             .chunks(256)
             .map(|sub| {
                 let (lo, hi) = aabb(sub);
-                0.5 * ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2)).sqrt()
+                0.5 * ((hi[0] - lo[0]).powi(2) + (hi[1] - lo[1]).powi(2) + (hi[2] - lo[2]).powi(2))
+                    .sqrt()
             })
             .collect();
         ext.sort_by(|a, b| a.partial_cmp(b).expect("finite extents"));
         let med = ext[ext.len() / 2];
         let p90 = ext[(ext.len() * 9 / 10).min(ext.len() - 1)];
         let mx = *ext.last().expect("non-empty grid");
-        println!("{name:>10}  {diam:>7.1}  {:>5}  {med:>10.3}  {p90:>10.3}  {mx:>10.3}", ext.len());
+        println!(
+            "{name:>10}  {diam:>7.1}  {:>5}  {med:>10.3}  {p90:>10.3}  {mx:>10.3}",
+            ext.len()
+        );
         medians.push((name, diam, med));
     }
     // THE POINT: the median sub-batch extent must NOT track the diameter. If it

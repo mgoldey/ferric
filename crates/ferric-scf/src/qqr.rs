@@ -249,8 +249,7 @@ impl QqrBounds {
         prep: &PreparedBasis,
         op: Operator,
     ) -> Self {
-        Self::try_new(schwarz, mol, bs, prep, op)
-            .unwrap_or_else(|e| panic!("QqrBounds::new: {e}"))
+        Self::try_new(schwarz, mol, bs, prep, op).unwrap_or_else(|e| panic!("QqrBounds::new: {e}"))
     }
 
     /// Fallible constructor: refuses up front when the dense `nshells²` pair
@@ -565,10 +564,7 @@ mod tests {
                     for l in 0..nsh {
                         let s = qqr.schwarz().estimate(i, j, k, l);
                         let q = qqr.estimate(i, j, k, l);
-                        assert!(
-                            q <= s + 1e-15,
-                            "QQR({i},{j},{k},{l}) = {q} > Schwarz = {s}"
-                        );
+                        assert!(q <= s + 1e-15, "QQR({i},{j},{k},{l}) = {q} > Schwarz = {s}");
                     }
                 }
             }
@@ -613,7 +609,10 @@ mod tests {
                 }
             }
         }
-        assert!(found_tighter, "QQR should be strictly tighter than Schwarz for some distant pairs");
+        assert!(
+            found_tighter,
+            "QQR should be strictly tighter than Schwarz for some distant pairs"
+        );
     }
 
     #[test]
@@ -668,14 +667,29 @@ mod tests {
         let op_c = Operator::coulomb();
         let op_e = Operator::erfc(0.5);
         let qqr_c = QqrBounds::new(
-            SchwarzBounds::compute(op_c, &prep).unwrap(), &mol, &bs, &prep, op_c);
+            SchwarzBounds::compute(op_c, &prep).unwrap(),
+            &mol,
+            &bs,
+            &prep,
+            op_c,
+        );
         let qqr_e = QqrBounds::new(
-            SchwarzBounds::compute(op_e, &prep).unwrap(), &mol, &bs, &prep, op_e);
+            SchwarzBounds::compute(op_e, &prep).unwrap(),
+            &mol,
+            &bs,
+            &prep,
+            op_e,
+        );
 
         // (b) Same Schwarz table, differing only in operator => identical
         // bounds, proving no operator-dependent distance factor survives.
         let qqr_e_on_c_schwarz = QqrBounds::new(
-            SchwarzBounds::compute(op_c, &prep).unwrap(), &mol, &bs, &prep, op_e);
+            SchwarzBounds::compute(op_c, &prep).unwrap(),
+            &mol,
+            &bs,
+            &prep,
+            op_e,
+        );
 
         let nsh = prep.nshells();
         let mut found_tighter = false;

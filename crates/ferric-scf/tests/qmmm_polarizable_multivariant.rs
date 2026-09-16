@@ -95,8 +95,18 @@ fn sto3g_prep(mol: &Molecule) -> PreparedBasis {
 fn close_polarizable_sites() -> (PolarizableSites, ExternalPotential) {
     let sites = PolarizableSites {
         sites: vec![
-            PolarizableSite { x: 4.0, y: -1.0, z: 2.0, alpha: 8.0 },
-            PolarizableSite { x: -3.5, y: 2.0, z: -2.5, alpha: 6.0 },
+            PolarizableSite {
+                x: 4.0,
+                y: -1.0,
+                z: 2.0,
+                alpha: 8.0,
+            },
+            PolarizableSite {
+                x: -3.5,
+                y: 2.0,
+                z: -2.5,
+                alpha: 6.0,
+            },
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
@@ -105,8 +115,18 @@ fn close_polarizable_sites() -> (PolarizableSites, ExternalPotential) {
     };
     let ext = ExternalPotential {
         point_charges: vec![
-            PointCharge { q: 0.5, x: 4.0, y: -1.0, z: 2.0 },
-            PointCharge { q: -0.3, x: -3.5, y: 2.0, z: -2.5 },
+            PointCharge {
+                q: 0.5,
+                x: 4.0,
+                y: -1.0,
+                z: 2.0,
+            },
+            PointCharge {
+                q: -0.3,
+                x: -3.5,
+                y: 2.0,
+                z: -2.5,
+            },
         ],
         smeared_charges: vec![],
         field: None,
@@ -127,8 +147,18 @@ fn close_polarizable_sites() -> (PolarizableSites, ExternalPotential) {
 fn close_polarizable_sites_uks() -> (PolarizableSites, ExternalPotential) {
     let sites = PolarizableSites {
         sites: vec![
-            PolarizableSite { x: 4.0, y: -1.0, z: 2.0, alpha: 4.0 },
-            PolarizableSite { x: -3.5, y: 2.0, z: -2.5, alpha: 3.0 },
+            PolarizableSite {
+                x: 4.0,
+                y: -1.0,
+                z: 2.0,
+                alpha: 4.0,
+            },
+            PolarizableSite {
+                x: -3.5,
+                y: 2.0,
+                z: -2.5,
+                alpha: 3.0,
+            },
         ],
         thole_a: Some(2.1304),
         exclusions: vec![],
@@ -137,8 +167,18 @@ fn close_polarizable_sites_uks() -> (PolarizableSites, ExternalPotential) {
     };
     let ext = ExternalPotential {
         point_charges: vec![
-            PointCharge { q: 0.5, x: 4.0, y: -1.0, z: 2.0 },
-            PointCharge { q: -0.3, x: -3.5, y: 2.0, z: -2.5 },
+            PointCharge {
+                q: 0.5,
+                x: 4.0,
+                y: -1.0,
+                z: 2.0,
+            },
+            PointCharge {
+                q: -0.3,
+                x: -3.5,
+                y: 2.0,
+                z: -2.5,
+            },
         ],
         smeared_charges: vec![],
         field: None,
@@ -161,7 +201,11 @@ fn rhf_polarizable_cfg(sites: &PolarizableSites, ext: &ExternalPotential) -> Rhf
 // (a) UHF FD test
 // ---------------------------------------------------------------------------
 
-fn uhf_scf_energy_polarizable(mol: &Molecule, sites: &PolarizableSites, ext: &ExternalPotential) -> f64 {
+fn uhf_scf_energy_polarizable(
+    mol: &Molecule,
+    sites: &PolarizableSites,
+    ext: &ExternalPotential,
+) -> f64 {
     let prep = sto3g_prep(mol);
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
     let ctx = ParallelContext::default();
@@ -184,7 +228,14 @@ fn uhf_gradient_with_polarizable_matches_finite_difference() {
     assert!(result.converged);
 
     let analytic = uhf_gradient_with_polarizable(
-        &mol, &prep, op, &bounds, &result, Some(&ext), Some(&sites), result.induced_dipoles.as_ref(),
+        &mol,
+        &prep,
+        op,
+        &bounds,
+        &result,
+        Some(&ext),
+        Some(&sites),
+        result.induced_dipoles.as_ref(),
     )
     .unwrap();
 
@@ -196,9 +247,18 @@ fn uhf_gradient_with_polarizable_matches_finite_difference() {
             let mut mol_p = mol.clone();
             let mut mol_m = mol.clone();
             match c {
-                0 => { mol_p.atoms[a].x += h; mol_m.atoms[a].x -= h; }
-                1 => { mol_p.atoms[a].y += h; mol_m.atoms[a].y -= h; }
-                _ => { mol_p.atoms[a].zpos += h; mol_m.atoms[a].zpos -= h; }
+                0 => {
+                    mol_p.atoms[a].x += h;
+                    mol_m.atoms[a].x -= h;
+                }
+                1 => {
+                    mol_p.atoms[a].y += h;
+                    mol_m.atoms[a].y -= h;
+                }
+                _ => {
+                    mol_p.atoms[a].zpos += h;
+                    mol_m.atoms[a].zpos -= h;
+                }
             }
             let e_p = uhf_scf_energy_polarizable(&mol_p, &sites, &ext);
             let e_m = uhf_scf_energy_polarizable(&mol_m, &sites, &ext);
@@ -232,7 +292,14 @@ fn uhf_polarizable_term_is_not_negligible() {
 
     let plain = uhf_gradient(&mol, &prep, op, &bounds, &result, Some(&ext)).unwrap();
     let with_pol = uhf_gradient_with_polarizable(
-        &mol, &prep, op, &bounds, &result, Some(&ext), Some(&sites), result.induced_dipoles.as_ref(),
+        &mol,
+        &prep,
+        op,
+        &bounds,
+        &result,
+        Some(&ext),
+        Some(&sites),
+        result.induced_dipoles.as_ref(),
     )
     .unwrap();
 
@@ -260,13 +327,21 @@ fn uhf_gradient_with_polarizable_none_matches_plain_uhf_gradient() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig { density_conv: 1e-10, max_iter: 300, ..Default::default() };
+    let cfg = RhfConfig {
+        density_conv: 1e-10,
+        max_iter: 300,
+        ..Default::default()
+    };
     let result = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     assert!(result.converged);
 
     let plain = uhf_gradient(&mol, &prep, op, &bounds, &result, None).unwrap();
-    let wrapped = uhf_gradient_with_polarizable(&mol, &prep, op, &bounds, &result, None, None, None).unwrap();
-    assert_eq!(plain, wrapped, "None sites/dipoles must be bit-identical to plain uhf_gradient");
+    let wrapped =
+        uhf_gradient_with_polarizable(&mol, &prep, op, &bounds, &result, None, None, None).unwrap();
+    assert_eq!(
+        plain, wrapped,
+        "None sites/dipoles must be bit-identical to plain uhf_gradient"
+    );
 }
 
 #[test]
@@ -277,14 +352,24 @@ fn ks_gradient_closed_with_polarizable_none_matches_plain() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig { xc: Some("PBE".into()), density_conv: 1e-9, max_iter: 300, ..Default::default() };
+    let cfg = RhfConfig {
+        xc: Some("PBE".into()),
+        density_conv: 1e-9,
+        max_iter: 300,
+        ..Default::default()
+    };
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(result.converged);
 
     let plain = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, "PBE", &result, None).unwrap();
-    let wrapped =
-        ks_gradient_closed_with_polarizable(&mol, &prep, &bs, op, &bounds, "PBE", &result, None, None, None).unwrap();
-    assert_eq!(plain, wrapped, "None sites/dipoles must be bit-identical to plain ks_gradient_closed");
+    let wrapped = ks_gradient_closed_with_polarizable(
+        &mol, &prep, &bs, op, &bounds, "PBE", &result, None, None, None,
+    )
+    .unwrap();
+    assert_eq!(
+        plain, wrapped,
+        "None sites/dipoles must be bit-identical to plain ks_gradient_closed"
+    );
 }
 
 #[test]
@@ -295,14 +380,24 @@ fn ks_gradient_uks_with_polarizable_none_matches_plain() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig { xc: Some("PBE".into()), density_conv: 1e-9, max_iter: 300, ..Default::default() };
+    let cfg = RhfConfig {
+        xc: Some("PBE".into()),
+        density_conv: 1e-9,
+        max_iter: 300,
+        ..Default::default()
+    };
     let result = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg).unwrap();
     assert!(result.converged);
 
     let plain = ks_gradient_uks(&mol, &prep, &bs, op, &bounds, "PBE", &result, None).unwrap();
-    let wrapped =
-        ks_gradient_uks_with_polarizable(&mol, &prep, &bs, op, &bounds, "PBE", &result, None, None, None).unwrap();
-    assert_eq!(plain, wrapped, "None sites/dipoles must be bit-identical to plain ks_gradient_uks");
+    let wrapped = ks_gradient_uks_with_polarizable(
+        &mol, &prep, &bs, op, &bounds, "PBE", &result, None, None, None,
+    )
+    .unwrap();
+    assert_eq!(
+        plain, wrapped,
+        "None sites/dipoles must be bit-identical to plain ks_gradient_uks"
+    );
 }
 
 /// Pins `polarizable_gradient_term` against the OLD inline construction
@@ -324,27 +419,47 @@ fn polarizable_gradient_term_matches_old_inline_construction() {
 
     // OLD inline path (byte-for-byte as `rhf_gradient_with_polarizable` did
     // pre-refactor).
-    let site_xyz: Vec<[f64; 4]> = sites.sites.iter().map(|s| [s.x, s.y, s.z, sites.dipole_zeta]).collect();
+    let site_xyz: Vec<[f64; 4]> = sites
+        .sites
+        .iter()
+        .map(|s| [s.x, s.y, s.z, sites.dipole_zeta])
+        .collect();
     let site_basis_p = ferric_integrals::site_basis::SiteBasis::new(&site_xyz, 1).unwrap();
     let old = ferric_scf::polarizable::qm_gradient_contribution(
-        &mol, &prep, &sites, &site_basis_p, &dipoles, result.density_r(),
+        &mol,
+        &prep,
+        &sites,
+        &site_basis_p,
+        &dipoles,
+        result.density_r(),
     )
     .unwrap();
 
     let new = polarizable_gradient_term(&mol, &prep, &sites, &dipoles, result.density_r()).unwrap();
-    assert_eq!(old, new, "polarizable_gradient_term must reproduce the old inline construction exactly");
+    assert_eq!(
+        old, new,
+        "polarizable_gradient_term must reproduce the old inline construction exactly"
+    );
 }
 
 // ---------------------------------------------------------------------------
 // (b) RKS/PBE closed-shell FD test
 // ---------------------------------------------------------------------------
 
-fn rks_scf_energy_polarizable(mol: &Molecule, sites: &PolarizableSites, ext: &ExternalPotential, xc: &str) -> f64 {
+fn rks_scf_energy_polarizable(
+    mol: &Molecule,
+    sites: &PolarizableSites,
+    ext: &ExternalPotential,
+    xc: &str,
+) -> f64 {
     let prep = sto3g_prep(mol);
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig { xc: Some(xc.into()), ..rhf_polarizable_cfg(sites, ext) };
+    let cfg = RhfConfig {
+        xc: Some(xc.into()),
+        ..rhf_polarizable_cfg(sites, ext)
+    };
     let r = solve_rhf(&ctx, mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged, "RKS+polarizable FD point failed to converge");
     r.energy
@@ -360,12 +475,24 @@ fn ks_gradient_closed_with_polarizable_matches_finite_difference() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig { xc: Some(xc.into()), ..rhf_polarizable_cfg(&sites, &ext) };
+    let cfg = RhfConfig {
+        xc: Some(xc.into()),
+        ..rhf_polarizable_cfg(&sites, &ext)
+    };
     let result = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(result.converged);
 
     let analytic = ks_gradient_closed_with_polarizable(
-        &mol, &prep, &bs, op, &bounds, xc, &result, Some(&ext), Some(&sites), result.induced_dipoles.as_ref(),
+        &mol,
+        &prep,
+        &bs,
+        op,
+        &bounds,
+        xc,
+        &result,
+        Some(&ext),
+        Some(&sites),
+        result.induced_dipoles.as_ref(),
     )
     .unwrap();
 
@@ -382,9 +509,18 @@ fn ks_gradient_closed_with_polarizable_matches_finite_difference() {
             let mut mol_p = mol.clone();
             let mut mol_m = mol.clone();
             match c {
-                0 => { mol_p.atoms[a].x += h; mol_m.atoms[a].x -= h; }
-                1 => { mol_p.atoms[a].y += h; mol_m.atoms[a].y -= h; }
-                _ => { mol_p.atoms[a].zpos += h; mol_m.atoms[a].zpos -= h; }
+                0 => {
+                    mol_p.atoms[a].x += h;
+                    mol_m.atoms[a].x -= h;
+                }
+                1 => {
+                    mol_p.atoms[a].y += h;
+                    mol_m.atoms[a].y -= h;
+                }
+                _ => {
+                    mol_p.atoms[a].zpos += h;
+                    mol_m.atoms[a].zpos -= h;
+                }
             }
             let e_p = rks_scf_energy_polarizable(&mol_p, &sites, &ext, xc);
             let e_m = rks_scf_energy_polarizable(&mol_m, &sites, &ext, xc);
@@ -470,7 +606,16 @@ fn ks_gradient_uks_with_polarizable_matches_finite_difference() {
     assert!(result.converged);
 
     let analytic = ks_gradient_uks_with_polarizable(
-        &mol, &prep, &bs, op, &bounds, xc, &result, Some(&ext), Some(&sites), result.induced_dipoles.as_ref(),
+        &mol,
+        &prep,
+        &bs,
+        op,
+        &bounds,
+        xc,
+        &result,
+        Some(&ext),
+        Some(&sites),
+        result.induced_dipoles.as_ref(),
     )
     .unwrap();
 
@@ -482,15 +627,32 @@ fn ks_gradient_uks_with_polarizable_matches_finite_difference() {
             let mut mol_p = mol.clone();
             let mut mol_m = mol.clone();
             match c {
-                0 => { mol_p.atoms[a].x += h; mol_m.atoms[a].x -= h; }
-                1 => { mol_p.atoms[a].y += h; mol_m.atoms[a].y -= h; }
-                _ => { mol_p.atoms[a].zpos += h; mol_m.atoms[a].zpos -= h; }
+                0 => {
+                    mol_p.atoms[a].x += h;
+                    mol_m.atoms[a].x -= h;
+                }
+                1 => {
+                    mol_p.atoms[a].y += h;
+                    mol_m.atoms[a].y -= h;
+                }
+                _ => {
+                    mol_p.atoms[a].zpos += h;
+                    mol_m.atoms[a].zpos -= h;
+                }
             }
             let e_p = uks_scf_energy_polarizable_seeded(
-                &mol_p, &sites, &ext, xc, (&result.mos_alpha, result.mos_beta.as_ref().unwrap()),
+                &mol_p,
+                &sites,
+                &ext,
+                xc,
+                (&result.mos_alpha, result.mos_beta.as_ref().unwrap()),
             );
             let e_m = uks_scf_energy_polarizable_seeded(
-                &mol_m, &sites, &ext, xc, (&result.mos_alpha, result.mos_beta.as_ref().unwrap()),
+                &mol_m,
+                &sites,
+                &ext,
+                xc,
+                (&result.mos_alpha, result.mos_beta.as_ref().unwrap()),
             );
             let fd = (e_p - e_m) / (2.0 * h);
             let err = (analytic[(a, c)] - fd).abs();
@@ -523,7 +685,16 @@ fn uks_polarizable_term_is_not_negligible() {
 
     let plain = ks_gradient_uks(&mol, &prep, &bs, op, &bounds, xc, &result, Some(&ext)).unwrap();
     let with_pol = ks_gradient_uks_with_polarizable(
-        &mol, &prep, &bs, op, &bounds, xc, &result, Some(&ext), Some(&sites), result.induced_dipoles.as_ref(),
+        &mol,
+        &prep,
+        &bs,
+        op,
+        &bounds,
+        xc,
+        &result,
+        Some(&ext),
+        Some(&sites),
+        result.induced_dipoles.as_ref(),
     )
     .unwrap();
 

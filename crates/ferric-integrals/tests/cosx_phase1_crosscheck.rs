@@ -35,7 +35,11 @@ fn testdata(rel: &str) -> String {
 
 fn set_charges(eng: &mut Engine, charges: &[CAtom]) {
     let rc = unsafe {
-        ffi::scf_engine_set_point_charges(eng.handle_mut(), charges.as_ptr(), charges.len() as c_int)
+        ffi::scf_engine_set_point_charges(
+            eng.handle_mut(),
+            charges.as_ptr(),
+            charges.len() as c_int,
+        )
     };
     assert!(rc >= 0, "set_point_charges failed: {rc}");
 }
@@ -123,7 +127,11 @@ fn run_case(label: &str, xyz: &str, basis: &str) {
     let measured_ceiling = t_serial / t_batch;
     let setup_frac = t_setup / per_pt_serial;
 
-    println!("=== {label} / {basis}: nbf={} nsh={} ===", prep.nbasis(), prep.nshells());
+    println!(
+        "=== {label} / {basis}: nbf={} nsh={} ===",
+        prep.nbasis(),
+        prep.nshells()
+    );
     println!("  probe1  set_params alone      = {t_setup:.6e} s");
     println!("  probe2a serial  K={K} pts      = {t_serial:.6e} s  ({per_pt_serial:.6e} s/pt)");
     println!("  probe2b batched K={K} charges  = {t_batch:.6e} s  ({per_pt_batch:.6e} s/pt)");

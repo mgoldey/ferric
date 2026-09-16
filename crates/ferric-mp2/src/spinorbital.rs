@@ -9,7 +9,12 @@ use ndarray::{Array2, ArrayD, IxDyn};
 /// Build a dressed RI 3-index MO tensor `B^P_{pq}` for a spatial block.
 ///
 /// Delegates to [`dress_3index`] for the metric dressing, then wraps in a labeled `Tensor<3>`.
-pub fn build_b(eri3_mo: &ndarray::Array3<f64>, v_inv_sqrt: &Array2<f64>, l1: Axis, l2: Axis) -> Tensor<3> {
+pub fn build_b(
+    eri3_mo: &ndarray::Array3<f64>,
+    v_inv_sqrt: &Array2<f64>,
+    l1: Axis,
+    l2: Axis,
+) -> Tensor<3> {
     let b = dress_3index(eri3_mo, v_inv_sqrt);
     Tensor::new(b.into_dyn(), [Axis::Aux, l1, l2])
 }

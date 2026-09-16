@@ -67,7 +67,8 @@ fn materialize(src: &mut ThreeIndexSource, naux: usize, nao: usize) -> Array3<f6
     let mut out = Array3::<f64>::zeros((naux, nao, nao));
     src.for_each_block(&mut |blk: AuxBlock| {
         let n = blk.data.shape()[0];
-        out.slice_mut(ndarray::s![blk.p0..blk.p0 + n, .., ..]).assign(&blk.data);
+        out.slice_mut(ndarray::s![blk.p0..blk.p0 + n, .., ..])
+            .assign(&blk.data);
         Ok(())
     })
     .unwrap();
@@ -99,10 +100,14 @@ fn the_spilled_tensor_is_bit_identical_to_the_in_core_one() {
     let mut spilled = ThreeIndexSource::build(op, &obs, &dfbs, full_bytes / 8).unwrap();
     let got = materialize(&mut spilled, naux, nao);
 
-    let differing =
-        reference.iter().zip(got.iter()).filter(|(a, b)| a.to_bits() != b.to_bits()).count();
+    let differing = reference
+        .iter()
+        .zip(got.iter())
+        .filter(|(a, b)| a.to_bits() != b.to_bits())
+        .count();
     assert_eq!(
-        differing, 0,
+        differing,
+        0,
         "the spilled tensor differs from in-core at {differing} of {} elements. Packing the \
          μν triangle on disk must be a pure STORAGE change — unpacking on read has to \
          reproduce the exact same (b, nao, nao) block the consumer saw before.",

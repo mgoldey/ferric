@@ -167,7 +167,11 @@ pub fn ccsd_closed_shell(
     );
     plan.reserve("vvvv (ab|cd)", nv4, Lifetime::Resident);
     plan.reserve("ovvv (ia|bc)", no.saturating_mul(nv3), Lifetime::Resident);
-    plan.reserve("ovvv_t clone (ia|bc)", no.saturating_mul(nv3), Lifetime::Resident);
+    plan.reserve(
+        "ovvv_t clone (ia|bc)",
+        no.saturating_mul(nv3),
+        Lifetime::Resident,
+    );
     plan.reserve(
         "oooo/ovov/oovv/ovvo/ovoo chemist blocks",
         no2.saturating_mul(no2)
@@ -200,7 +204,8 @@ pub fn ccsd_closed_shell(
     plan.reserve(
         "DIIS packed (t1,t2) amplitude + error history (2 x diis_subspace)",
         crate::diis_history_elems(
-            no.saturating_mul(nv).saturating_add(no2.saturating_mul(nv2)),
+            no.saturating_mul(nv)
+                .saturating_add(no2.saturating_mul(nv2)),
             cfg.diis_subspace,
         ),
         Lifetime::Resident,
@@ -213,7 +218,12 @@ pub fn ccsd_closed_shell(
     let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
 
     use Axis::{O, V};
-    let b_ov = build_b(&transform_3center_ov(&eri3_ao, &c_occ, &c_vir), &v_inv_sqrt, O, V);
+    let b_ov = build_b(
+        &transform_3center_ov(&eri3_ao, &c_occ, &c_vir),
+        &v_inv_sqrt,
+        O,
+        V,
+    );
     let b_oo = build_b(&transform_3center_oo(&eri3_ao, &c_occ), &v_inv_sqrt, O, O);
     let b_vv = build_b(&transform_3center_vv(&eri3_ao, &c_vir), &v_inv_sqrt, V, V);
     let b_vo = transpose_b(&b_ov);
@@ -430,7 +440,7 @@ pub fn ccsd_closed_shell(
             let x1_t = lbl2(x1, [O, O]);
             let z1: ArrayD<f64> = einsum!("ki,ka->ia", &x1_t, &t1_t);
             let x2: ArrayD<f64> = einsum!("kcli,lc->ki", &ovoo_t, &t1_t); // contract k? careful
-            // 'kcli,lc->': contract l,c. free: k (from kc..) and i. output order (k,i).
+                                                                          // 'kcli,lc->': contract l,c. free: k (from kc..) and i. output order (k,i).
             let x2_t = lbl2(x2, [O, O]);
             let z2: ArrayD<f64> = einsum!("ki,ka->ia", &x2_t, &t1_t);
             r1 = r1 - &(2.0 * &z1) + &z2;
@@ -442,8 +452,11 @@ pub fn ccsd_closed_shell(
         let woooo: ArrayD<f64> = {
             // (lc|ki) t1_jc -> 'lcki,jc->klij'
             let ovoo_lcki_t = lbl4(ovoo.clone(), [O, V, O, O]); // 'lcki'
-            // left-free (l,k,i)->'lkij'; permute [l,k,i,j]->[k,l,i,j] = axes [1,0,2,3].
-            let a1: ArrayD<f64> = perm(&einsum!("lcki,jc->lkij", &ovoo_lcki_t, &t1_t), &[1, 0, 2, 3]);
+                                                                // left-free (l,k,i)->'lkij'; permute [l,k,i,j]->[k,l,i,j] = axes [1,0,2,3].
+            let a1: ArrayD<f64> = perm(
+                &einsum!("lcki,jc->lkij", &ovoo_lcki_t, &t1_t),
+                &[1, 0, 2, 3],
+            );
             // (kc|lj) t1_ic: left-free (k,l,j)->'klji'; permute [k,l,j,i]->[k,l,i,j]=axes[0,1,3,2].
             let a2: ArrayD<f64> = perm(&einsum!("kclj,ic->klji", &ovoo_t, &t1_t), &[0, 1, 3, 2]);
             // (kc|ld) t2[ij,cd] -> 'kcld,ijcd->klij'
@@ -464,11 +477,17 @@ pub fn ccsd_closed_shell(
         let wvvvv: ArrayD<f64> = {
             // -(kd|ac) t1_kb -> 'kdac,kb->abcd' with minus: build then negate.
             let ovvv_kdac_t = lbl4(ovvv.clone(), [O, V, V, V]); // 'kdac'
-            // left-free (d,a,c)->'dacb'; permute to (a,b,c,d) = axes [1,3,2,0].
-            let a1: ArrayD<f64> = perm(&einsum!("kdac,kb->dacb", &ovvv_kdac_t, &t1_t), &[1, 3, 2, 0]);
+                                                                // left-free (d,a,c)->'dacb'; permute to (a,b,c,d) = axes [1,3,2,0].
+            let a1: ArrayD<f64> = perm(
+                &einsum!("kdac,kb->dacb", &ovvv_kdac_t, &t1_t),
+                &[1, 3, 2, 0],
+            );
             // -(kc|bd) t1_ka: left-free (c,b,d)->'cbda'; permute to (a,b,c,d)=axes[3,1,0,2].
             let ovvv_kcbd_t = lbl4(ovvv.clone(), [O, V, V, V]); // 'kcbd'
-            let a2: ArrayD<f64> = perm(&einsum!("kcbd,ka->cbda", &ovvv_kcbd_t, &t1_t), &[3, 1, 0, 2]);
+            let a2: ArrayD<f64> = perm(
+                &einsum!("kcbd,ka->cbda", &ovvv_kcbd_t, &t1_t),
+                &[3, 1, 0, 2],
+            );
             // (ac|bd) = vvvv.transpose(0,2,1,3): vvvv=(ab|cd) so [a,c,b,d]=vvvv[a,b,c,d]->perm
             let a3 = perm(&vvvv, &[0, 2, 1, 3]);
             &a3 - &a1 - &a2
@@ -488,16 +507,22 @@ pub fn ccsd_closed_shell(
             let a3 = perm(&ovvo, &[2, 0, 3, 1]);
             // -0.5 (ld|kc) t2[il,da]: left-free (k,c)->'kcia'; perm [3,0,2,1].
             let ovldkc_t = lbl4(ovov.clone(), [O, V, O, V]); // 'ldkc' == ovov[l,d,k,c]=(ld|kc)
-            let a4: ArrayD<f64> = perm(&einsum!("ldkc,ilda->kcia", &ovldkc_t, &t2_t), &[3, 0, 2, 1]);
+            let a4: ArrayD<f64> =
+                perm(&einsum!("ldkc,ilda->kcia", &ovldkc_t, &t2_t), &[3, 0, 2, 1]);
             // -0.5 (lc|kd) t2[il,ad]: left-free (c,k)->'ckia'; perm [3,1,2,0].
             let ovlckd_t = lbl4(ovov.clone(), [O, V, O, V]); // 'lckd' == ovov[l,c,k,d]=(lc|kd)
-            let a5: ArrayD<f64> = perm(&einsum!("lckd,ilad->ckia", &ovlckd_t, &t2_t), &[3, 1, 2, 0]);
+            let a5: ArrayD<f64> =
+                perm(&einsum!("lckd,ilad->ckia", &ovlckd_t, &t2_t), &[3, 1, 2, 0]);
             // -(ld|kc) t1_id t1_la : tau2[i,l,d,a]=t1_id t1_la ; left-free (k,c)->'kcia'.
             let tau2 = tau_t1t1(&t1); // [i,l,d,a]=t1_id t1_la
             let tau2_t = lbl4(tau2, [O, O, V, V]);
-            let a6: ArrayD<f64> = perm(&einsum!("ldkc,ilda->kcia", &ovldkc_t, &tau2_t), &[3, 0, 2, 1]);
+            let a6: ArrayD<f64> = perm(
+                &einsum!("ldkc,ilda->kcia", &ovldkc_t, &tau2_t),
+                &[3, 0, 2, 1],
+            );
             // +(ld|kc) t2[il,ad]: left-free (k,c)->'kcia'; perm [3,0,2,1].
-            let a7: ArrayD<f64> = perm(&einsum!("ldkc,ilad->kcia", &ovldkc_t, &t2_t), &[3, 0, 2, 1]);
+            let a7: ArrayD<f64> =
+                perm(&einsum!("ldkc,ilad->kcia", &ovldkc_t, &t2_t), &[3, 0, 2, 1]);
             &a1 - &a2 + &a3 - &(0.5 * &a4) - &(0.5 * &a5) - &a6 + &a7
         };
         let wvoov_t = lbl4(wvoov, [V, O, O, V]);
@@ -508,19 +533,29 @@ pub fn ccsd_closed_shell(
         let wvovo: ArrayD<f64> = {
             // (kd|ac) t1_id: left-free (k,a,c)->'kaci'; perm to (a,k,c,i)=axes[1,0,2,3].
             let ovvv_kdac_t = lbl4(ovvv.clone(), [O, V, V, V]); // 'kdac'
-            let a1: ArrayD<f64> = perm(&einsum!("kdac,id->kaci", &ovvv_kdac_t, &t1_t), &[1, 0, 2, 3]);
+            let a1: ArrayD<f64> = perm(
+                &einsum!("kdac,id->kaci", &ovvv_kdac_t, &t1_t),
+                &[1, 0, 2, 3],
+            );
             // -(lc|ki) t1_la: left-free (c,k,i)->'ckia'; perm to (a,k,c,i)=axes[3,1,0,2].
             let ovoo_lcki_t = lbl4(ovoo.clone(), [O, V, O, O]); // 'lcki'
-            let a2: ArrayD<f64> = perm(&einsum!("lcki,la->ckia", &ovoo_lcki_t, &t1_t), &[3, 1, 0, 2]);
+            let a2: ArrayD<f64> = perm(
+                &einsum!("lcki,la->ckia", &ovoo_lcki_t, &t1_t),
+                &[3, 1, 0, 2],
+            );
             // (ki|ac) via oovv.transpose(2,0,3,1): oovv=(k,i,a,c)->(a,k,c,i).
             let a3 = perm(&oovv, &[2, 0, 3, 1]);
             // -0.5 (lc|kd) t2[il,da]: left-free (c,k)->'ckia'; perm [3,1,0,2].
             let ovlckd_t = lbl4(ovov.clone(), [O, V, O, V]); // 'lckd' == ovov[l,c,k,d]=(lc|kd)
-            let a4: ArrayD<f64> = perm(&einsum!("lckd,ilda->ckia", &ovlckd_t, &t2_t), &[3, 1, 0, 2]);
+            let a4: ArrayD<f64> =
+                perm(&einsum!("lckd,ilda->ckia", &ovlckd_t, &t2_t), &[3, 1, 0, 2]);
             // -(lc|kd) t1_id t1_la : tau2[i,l,d,a]=t1_id t1_la ; left-free (c,k)->'ckia'.
             let tau2 = tau_t1t1(&t1);
             let tau2_t = lbl4(tau2, [O, O, V, V]);
-            let a5: ArrayD<f64> = perm(&einsum!("lckd,ilda->ckia", &ovlckd_t, &tau2_t), &[3, 1, 0, 2]);
+            let a5: ArrayD<f64> = perm(
+                &einsum!("lckd,ilda->ckia", &ovlckd_t, &tau2_t),
+                &[3, 1, 0, 2],
+            );
             &a1 - &a2 + &a3 - &(0.5 * &a4) - &a5
         };
         let wvovo_t = lbl4(wvovo, [V, O, V, O]);
@@ -545,7 +580,10 @@ pub fn ccsd_closed_shell(
             // tmp2[a,b,i,c] = ovvv.transpose(1,3,0,2) - (ki|bc) t1_ka.
             //   einsum('kibc,ka->ibca') then perm [3,1,0,2] gives (a,b,i,c).
             let oovv_kibc_t = lbl4(oovv.clone(), [O, O, V, V]); // 'kibc'
-            let tmp2a: ArrayD<f64> = perm(&einsum!("kibc,ka->ibca", &oovv_kibc_t, &t1_t), &[3, 1, 0, 2]);
+            let tmp2a: ArrayD<f64> = perm(
+                &einsum!("kibc,ka->ibca", &oovv_kibc_t, &t1_t),
+                &[3, 1, 0, 2],
+            );
             let ovvv_perm = perm(&ovvv, &[1, 3, 0, 2]); // (a,b,i,c)
             let tmp2 = &ovvv_perm - &tmp2a;
             let tmp2_t = lbl4(tmp2, [V, V, O, V]);
@@ -559,7 +597,10 @@ pub fn ccsd_closed_shell(
             // tmp2[a,k,i,j] = (kc|ai) t1_jc + ovoo.transpose(1,3,0,2).
             //   einsum('kcai,jc->kaij') then perm [1,0,2,3] gives (a,k,i,j).
             let ovvo_kcai_t = lbl4(ovvo.clone(), [O, V, V, O]); // 'kcai'
-            let tmp2a: ArrayD<f64> = perm(&einsum!("kcai,jc->kaij", &ovvo_kcai_t, &t1_t), &[1, 0, 2, 3]);
+            let tmp2a: ArrayD<f64> = perm(
+                &einsum!("kcai,jc->kaij", &ovvo_kcai_t, &t1_t),
+                &[1, 0, 2, 3],
+            );
             let ovoo_perm = perm(&ovoo, &[1, 3, 0, 2]); // (a,k,i,j)
             let tmp2 = &tmp2a + &ovoo_perm;
             let tmp2_t = lbl4(tmp2, [V, O, O, O]);
@@ -581,7 +622,8 @@ pub fn ccsd_closed_shell(
             let a1: ArrayD<f64> = einsum!("klij,klab->ijab", &woooo_t, &tau_t);
             r2 = &r2 + &a1;
             // + einsum('abcd,ijcd->ijab', Wvvvv, tau): legal='abij'; perm [2,3,0,1].
-            let a2: ArrayD<f64> = perm(&einsum!("abcd,ijcd->abij", &wvvvv_t, &tau_t), &[2, 3, 0, 1]);
+            let a2: ArrayD<f64> =
+                perm(&einsum!("abcd,ijcd->abij", &wvvvv_t, &tau_t), &[2, 3, 0, 1]);
             r2 = &r2 + &a2;
         }
         {
@@ -599,10 +641,12 @@ pub fn ccsd_closed_shell(
             let tmp = &(2.0 * &a1) - &a2;
             r2 = &r2 + &tmp + &t_ijab(&tmp);
             // tmp = einsum('akic,kjbc->ijab'): legal='aijb'; perm [1,2,0,3].
-            let tmp: ArrayD<f64> = perm(&einsum!("akic,kjbc->aijb", &wvoov_t, &t2_t), &[1, 2, 0, 3]);
+            let tmp: ArrayD<f64> =
+                perm(&einsum!("akic,kjbc->aijb", &wvoov_t, &t2_t), &[1, 2, 0, 3]);
             r2 = &r2 - &tmp - &t_ijab(&tmp);
             // tmp = einsum('bkci,kjac->ijab'): legal='bija'; perm [1,2,3,0].
-            let tmp: ArrayD<f64> = perm(&einsum!("bkci,kjac->bija", &wvovo_t, &t2_t), &[1, 2, 3, 0]);
+            let tmp: ArrayD<f64> =
+                perm(&einsum!("bkci,kjac->bija", &wvovo_t, &t2_t), &[1, 2, 3, 0]);
             r2 = &r2 - &tmp - &t_ijab(&tmp);
         }
 
@@ -641,12 +685,18 @@ pub fn ccsd_closed_shell(
                 "closed-shell CCSD converged in {} iterations. E_corr = {:.10}",
                 iter, e_corr
             );
-            return Ok(CcResult { correlation_energy: e_corr, t1: Some(t1_out), t2: t2_out });
+            return Ok(CcResult {
+                correlation_energy: e_corr,
+                t1: Some(t1_out),
+                t2: t2_out,
+            });
         }
         e_old = e_corr;
     }
 
-    Err(FerricError::Convergence("closed-shell CCSD did not converge".into()))
+    Err(FerricError::Convergence(
+        "closed-shell CCSD did not converge".into(),
+    ))
 }
 
 /// Build the outer-product `tau1[p,q,r,s] = t1[p,r] * t1[q,s]` in the axis order
@@ -787,14 +837,29 @@ mod tests {
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
 
-    fn setup(xyz: &str, obs_name: &str, dfbs_name: &str) -> (Molecule, PreparedBasis, PreparedBasis, Operator, ScfResult) {
+    fn setup(
+        xyz: &str,
+        obs_name: &str,
+        dfbs_name: &str,
+    ) -> (Molecule, PreparedBasis, PreparedBasis, Operator, ScfResult) {
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled(obs_name).unwrap()).unwrap();
         let dfbs = PreparedBasis::new(&mol, &basis::bundled(dfbs_name).unwrap()).unwrap();
         let op = Operator::coulomb();
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig { energy_conv: 1e-11, ..Default::default() }).unwrap();
+        let rhf = solve_rhf(
+            &ctx,
+            &mol,
+            &obs,
+            op,
+            &bounds,
+            &RhfConfig {
+                energy_conv: 1e-11,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         (mol, obs, dfbs, op, rhf)
     }
 
@@ -815,9 +880,11 @@ mod tests {
     /// neither copy, accepted it.
     #[test]
     fn cs_ccsd_guard_charges_ovvv_and_its_clone() {
-        let (mol, obs, dfbs, op, rhf) =
-            setup("3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
-                  "cc-pvdz", "cc-pvdz-ri");
+        let (mol, obs, dfbs, op, rhf) = setup(
+            "3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+            "cc-pvdz",
+            "cc-pvdz-ri",
+        );
 
         let accepts = |bytes: usize| -> bool {
             let cfg = CcConfig {
@@ -851,9 +918,11 @@ mod tests {
     /// `MemoryPlan` rather than a bare `check_alloc`.
     #[test]
     fn cs_ccsd_refusal_names_the_terms() {
-        let (mol, obs, dfbs, op, rhf) =
-            setup("3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
-                  "cc-pvdz", "cc-pvdz-ri");
+        let (mol, obs, dfbs, op, rhf) = setup(
+            "3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+            "cc-pvdz",
+            "cc-pvdz-ri",
+        );
         let cfg = CcConfig {
             frozen_core: 0,
             max_iter: 1,
@@ -877,11 +946,19 @@ mod tests {
     fn cs_ccsd_ample_budget_runs_and_energy_is_unchanged() {
         let (mol, obs, dfbs, op, rhf) =
             setup("2\nH2\nH 0 0 0\nH 0 0 0.74\n", "sto-3g", "def2-qzvpp-rifit");
-        let base = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-10,
-                              ..Default::default() };
+        let base = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
         let unbudgeted = ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &base).unwrap();
         let budgeted = ccsd_closed_shell(
-            &mol, &obs, &dfbs, op, &rhf,
+            &mol,
+            &obs,
+            &dfbs,
+            op,
+            &rhf,
             &CcConfig {
                 memory_budget_bytes: Some(ferric_core::memory::gib_to_bytes(4.0)),
                 ..base
@@ -908,9 +985,11 @@ mod tests {
     /// and "also holds the ring".
     #[test]
     fn cs_ccsd_guard_charges_diis_history() {
-        let (mol, obs, dfbs, op, rhf) =
-            setup("3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
-                  "cc-pvdz", "cc-pvdz-ri");
+        let (mol, obs, dfbs, op, rhf) = setup(
+            "3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n",
+            "cc-pvdz",
+            "cc-pvdz-ri",
+        );
 
         let nbas = obs.nbasis();
         let naux = dfbs.nbasis();
@@ -927,8 +1006,13 @@ mod tests {
         let t2_working_set = no2 * nv2 * 8;
         let wvvvv_transient = nv4 * 3;
         let largest_transient = eri3_ao.max(wvvvv_transient);
-        let non_diis_elems = b_blocks + vvvv + ovvv_pair + chemist_blocks
-            + ovov_ovoo_clones + t2_working_set + largest_transient;
+        let non_diis_elems = b_blocks
+            + vvvv
+            + ovvv_pair
+            + chemist_blocks
+            + ovov_ovoo_clones
+            + t2_working_set
+            + largest_transient;
         let non_diis_bytes = non_diis_elems * 8;
 
         let diis_subspace = 4;
@@ -975,8 +1059,12 @@ mod tests {
     fn expanded_amplitudes_match_spin_orbital_solver() {
         let (mol, obs, dfbs, op, rhf) =
             setup("2\nH2\nH 0 0 0\nH 0 0 0.74\n", "sto-3g", "def2-qzvpp-rifit");
-        let cfg =
-            CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-10, ..Default::default() };
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
 
         let r_cs = ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         let r_so = crate::ccsd::ccsd(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
@@ -988,8 +1076,16 @@ mod tests {
         let t1_ref = r_so.t1.as_ref().unwrap();
         let t2_ref = &r_so.t2;
 
-        assert_eq!(t1_x.shape(), t1_ref.shape(), "expanded t1 shape must match spin-orbital");
-        assert_eq!(t2_x.shape(), t2_ref.shape(), "expanded t2 shape must match spin-orbital");
+        assert_eq!(
+            t1_x.shape(),
+            t1_ref.shape(),
+            "expanded t1 shape must match spin-orbital"
+        );
+        assert_eq!(
+            t2_x.shape(),
+            t2_ref.shape(),
+            "expanded t2 shape must match spin-orbital"
+        );
 
         let d1 = t1_x
             .iter()
@@ -1002,15 +1098,24 @@ mod tests {
             .map(|(x, y)| (x - y).abs())
             .fold(0.0f64, f64::max);
         println!("expanded-vs-spin-orbital amplitudes: max|dt1|={d1:.3e} max|dt2|={d2:.3e}");
-        assert!(d1 < 1e-9, "expanded t1 differs from the spin-orbital solver by {d1:.3e}");
-        assert!(d2 < 1e-9, "expanded t2 differs from the spin-orbital solver by {d2:.3e}");
+        assert!(
+            d1 < 1e-9,
+            "expanded t1 differs from the spin-orbital solver by {d1:.3e}"
+        );
+        assert!(
+            d2 < 1e-9,
+            "expanded t2 differs from the spin-orbital solver by {d2:.3e}"
+        );
 
         // Guard against a degenerate pass: t2 must actually carry signal, and
         // both spin cases must be populated (an all-zero or αα-only expansion
         // would sail through a pure difference check if the reference were
         // also empty).
         let nrm = t2_x.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
-        assert!(nrm > 1e-6, "expanded t2 is ~zero ({nrm:.3e}) — the check is vacuous");
+        assert!(
+            nrm > 1e-6,
+            "expanded t2 is ~zero ({nrm:.3e}) — the check is vacuous"
+        );
         let (no2, nv2) = (t2_x.shape()[0], t2_x.shape()[2]);
         let mut have_same_spin = false;
         let mut have_mixed_spin = false;
@@ -1029,7 +1134,10 @@ mod tests {
                 }
             }
         }
-        assert!(have_mixed_spin, "expanded t2 has no αβ block — conversion dropped a spin case");
+        assert!(
+            have_mixed_spin,
+            "expanded t2 has no αβ block — conversion dropped a spin case"
+        );
         // NOTE: no αα/ββ assertion here. H2/STO-3G has a single occupied
         // spatial orbital, so there is no same-spin occupied PAIR at all and
         // that block is legitimately zero — asserting it would be a test bug,
@@ -1062,7 +1170,9 @@ mod tests {
         let (no, nv) = (3usize, 4usize); // ≥2 occupied: exercises αα/ββ AND αβ
         let mut seed: u64 = 0x51ed_270b_1349_9d29;
         let mut rnd = || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5
         };
         let t1s = ArrayD::from_shape_fn(IxDyn(&[no, nv]), |_| rnd());
@@ -1081,11 +1191,18 @@ mod tests {
         let mut worst1 = 0.0f64;
         for i in 0..no2 {
             for a in 0..nv2 {
-                let want = if sp(i) == sp(a) { t1s[[sa(i), sa(a)]] } else { 0.0 };
+                let want = if sp(i) == sp(a) {
+                    t1s[[sa(i), sa(a)]]
+                } else {
+                    0.0
+                };
                 worst1 = worst1.max((t1_so[[i, a]] - want).abs());
             }
         }
-        assert!(worst1 == 0.0, "t1 expansion deviates from the identity by {worst1:.3e}");
+        assert!(
+            worst1 == 0.0,
+            "t1 expansion deviates from the identity by {worst1:.3e}"
+        );
 
         let mut worst2 = 0.0f64;
         let mut n_direct = 0usize;
@@ -1108,10 +1225,16 @@ mod tests {
                 }
             }
         }
-        assert!(worst2 == 0.0, "t2 expansion deviates from the identity by {worst2:.3e}");
+        assert!(
+            worst2 == 0.0,
+            "t2 expansion deviates from the identity by {worst2:.3e}"
+        );
         // The reference itself must have exercised both branches, or the
         // comparison above proves nothing about either.
-        assert!(n_direct > 0 && n_exchange > 0, "test data did not exercise both t2 branches");
+        assert!(
+            n_direct > 0 && n_exchange > 0,
+            "test data did not exercise both t2 branches"
+        );
     }
 
     /// End-to-end: `(T)` computed from the EXPANDED spin-adapted amplitudes vs
@@ -1144,8 +1267,12 @@ mod tests {
             "sto-3g",
             "def2-qzvpp-rifit",
         );
-        let cfg =
-            CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-10, ..Default::default() };
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
 
         let r_so = crate::ccsd::ccsd(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         let e_t_so = crate::ccsd_t::ccsd_t(&mol, &obs, &dfbs, op, &rhf, &r_so, &cfg).unwrap();
@@ -1190,12 +1317,21 @@ mod tests {
         // def2-qzvpp-rifit drives RI error < 1e-6.
         let (mol, obs, dfbs, op, rhf) =
             setup("2\nH2\nH 0 0 0\nH 0 0 0.74\n", "sto-3g", "def2-qzvpp-rifit");
-        let cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-10, ..Default::default() };
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
         let r = ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
-        println!("closed-shell CCSD H2/STO-3G E_corr = {:.10}", r.correlation_energy);
+        println!(
+            "closed-shell CCSD H2/STO-3G E_corr = {:.10}",
+            r.correlation_energy
+        );
         assert!(
             (r.correlation_energy - (-0.02052452711141417)).abs() < 1e-6,
-            "got {:.10}", r.correlation_energy
+            "got {:.10}",
+            r.correlation_energy
         );
     }
 
@@ -1212,12 +1348,21 @@ mod tests {
             "cc-pvdz",
             "def2-qzvpp-rifit",
         );
-        let cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-10, ..Default::default() };
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
         let r = ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
-        println!("closed-shell CCSD H2O/cc-pVDZ E_corr = {:.10}", r.correlation_energy);
+        println!(
+            "closed-shell CCSD H2O/cc-pVDZ E_corr = {:.10}",
+            r.correlation_energy
+        );
         assert!(
             (r.correlation_energy - (-0.21332742733684396)).abs() < 1e-4,
-            "got {:.10}", r.correlation_energy
+            "got {:.10}",
+            r.correlation_energy
         );
     }
 
@@ -1234,12 +1379,21 @@ mod tests {
             "sto-3g",
             "def2-qzvpp-rifit",
         );
-        let cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-10, ..Default::default() };
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
         let r = ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
-        println!("closed-shell CCSD CH4/STO-3G E_corr = {:.10}", r.correlation_energy);
+        println!(
+            "closed-shell CCSD CH4/STO-3G E_corr = {:.10}",
+            r.correlation_energy
+        );
         assert!(
             (r.correlation_energy - (-0.07904929458457828)).abs() < 1e-4,
-            "got {:.10}", r.correlation_energy
+            "got {:.10}",
+            r.correlation_energy
         );
     }
 
@@ -1256,7 +1410,12 @@ mod tests {
             "cc-pvdz",
             "def2-qzvpp-rifit",
         );
-        let cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-9, ..Default::default() };
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-9,
+            ..Default::default()
+        };
         let t0 = Instant::now();
         let r_cs = ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         let dt_cs = t0.elapsed();
@@ -1281,8 +1440,14 @@ mod tests {
         // H2/STO-3G with a large RI-fit basis makes the RI error negligible, so
         // the two independent formulations agree to <1e-8 Ha — the spin-summation
         // is exact, not approximate.
-        let (mol, obs, dfbs, op, rhf) = setup("2\nH2\nH 0 0 0\nH 0 0 0.74\n", "sto-3g", "def2-qzvpp-rifit");
-        let cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-10, ..Default::default() };
+        let (mol, obs, dfbs, op, rhf) =
+            setup("2\nH2\nH 0 0 0\nH 0 0 0.74\n", "sto-3g", "def2-qzvpp-rifit");
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
         let r_cs = ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         let r_so = crate::ccsd::ccsd(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         println!(
@@ -1293,7 +1458,9 @@ mod tests {
         );
         assert!(
             (r_cs.correlation_energy - r_so.correlation_energy).abs() < 1e-8,
-            "cs={:.12} so={:.12}", r_cs.correlation_energy, r_so.correlation_energy
+            "cs={:.12} so={:.12}",
+            r_cs.correlation_energy,
+            r_so.correlation_energy
         );
     }
 
@@ -1312,7 +1479,12 @@ mod tests {
             "cc-pvdz",
             "def2-qzvpp-rifit",
         );
-        let cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-10, ..Default::default() };
+        let cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
         let r_cs = ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         let r_so = crate::ccsd::ccsd(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
         println!(
@@ -1323,7 +1495,9 @@ mod tests {
         );
         assert!(
             (r_cs.correlation_energy - r_so.correlation_energy).abs() < 5e-5,
-            "cs={:.12} so={:.12}", r_cs.correlation_energy, r_so.correlation_energy
+            "cs={:.12} so={:.12}",
+            r_cs.correlation_energy,
+            r_so.correlation_energy
         );
     }
 }

@@ -65,7 +65,11 @@ fn run_lowdin(xyz: &str, basis_name: &str) -> (f64, Vec<f64>) {
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-12, density_conv: 1e-11, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-12,
+            density_conv: 1e-11,
+            ..Default::default()
+        },
     )
     .unwrap();
     let charges = lowdin_charges(&mol, &obs, rhf.density_r()).unwrap();
@@ -85,10 +89,16 @@ const LOWDIN_TOL: f64 = 1e-7;
 fn h2_lowdin_matches_pyscf() {
     // PySCF reference (testdata/reference/h2_cc-pvdz_lowdin.json): [0, ~0].
     let (e, q) = run_lowdin("2\nh2\nH 0 0 0\nH 0 0 0.740830\n", "cc-pvdz");
-    assert!((e - (-1.128709260618651)).abs() < 1e-8, "SCF energy mismatch: {e}");
+    assert!(
+        (e - (-1.128709260618651)).abs() < 1e-8,
+        "SCF energy mismatch: {e}"
+    );
     assert_eq!(q.len(), 2);
     for &qi in &q {
-        assert!(qi.abs() < LOWDIN_TOL, "expected ~0 by symmetry, got {qi:.3e}");
+        assert!(
+            qi.abs() < LOWDIN_TOL,
+            "expected ~0 by symmetry, got {qi:.3e}"
+        );
     }
     assert!((q[0] + q[1]).abs() < 1e-10, "charges must sum to 0");
 }
@@ -101,9 +111,15 @@ fn h2_lowdin_matches_pyscf() {
 fn h2o_lowdin_matches_pyscf() {
     let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
     let (e, q) = run_lowdin(xyz, "cc-pvdz");
-    assert!((e - (-76.02676799737671)).abs() < 1e-8, "SCF energy mismatch: {e}");
+    assert!(
+        (e - (-76.02676799737671)).abs() < 1e-8,
+        "SCF energy mismatch: {e}"
+    );
     assert_eq!(q.len(), 3);
-    assert!((q.iter().sum::<f64>()).abs() < 1e-8, "charges must sum to 0");
+    assert!(
+        (q.iter().sum::<f64>()).abs() < 1e-8,
+        "charges must sum to 0"
+    );
 
     let pyscf_o = -0.48084935437182175_f64;
     let pyscf_h = 0.24042467718591243_f64;
@@ -134,9 +150,15 @@ fn h2o_lowdin_matches_pyscf() {
 fn ch4_lowdin_matches_pyscf() {
     let xyz = "5\nmethane\nC 0.000000 0.000000 0.000000\nH 0.629118 0.629118 0.629118\nH -0.629118 -0.629118 0.629118\nH -0.629118 0.629118 -0.629118\nH 0.629118 -0.629118 -0.629118\n";
     let (e, q) = run_lowdin(xyz, "cc-pvdz");
-    assert!((e - (-40.19870854248165)).abs() < 1e-8, "SCF energy mismatch: {e}");
+    assert!(
+        (e - (-40.19870854248165)).abs() < 1e-8,
+        "SCF energy mismatch: {e}"
+    );
     assert_eq!(q.len(), 5);
-    assert!((q.iter().sum::<f64>()).abs() < 1e-8, "charges must sum to 0");
+    assert!(
+        (q.iter().sum::<f64>()).abs() < 1e-8,
+        "charges must sum to 0"
+    );
 
     let pyscf_c = -0.5659965387523984_f64;
     let pyscf_h = 0.14149913468809794_f64;

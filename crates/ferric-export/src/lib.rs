@@ -42,8 +42,10 @@ pub fn export_basis_function_cube(
     if coeffs.len() != nbf {
         return Err(format!(
             "coefficient length {} does not match basis size {}",
-            coeffs.len(), nbf
-        ).into());
+            coeffs.len(),
+            nbf
+        )
+        .into());
     }
     // f[g] = Σ_P c_P · χ[P, g]
     let coeff_arr = ndarray::ArrayView1::from(coeffs);

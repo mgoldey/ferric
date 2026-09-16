@@ -288,7 +288,10 @@ mod tests {
         // handful of tens of Bohr² (roughly consistent with vdW surface area
         // of water, ~150 Ų ≈ 53 Bohr²... loosely bounded here, not an exact
         // literature match, just a sanity range).
-        assert!(total_area > 10.0 && total_area < 500.0, "total_area={total_area}");
+        assert!(
+            total_area > 10.0 && total_area < 500.0,
+            "total_area={total_area}"
+        );
     }
 
     #[test]
@@ -297,7 +300,8 @@ mod tests {
         let cfg = CavityConfig::default();
         let tess = build_cavity(&mol, &cfg).unwrap();
         for t in &tess {
-            let n2 = t.normal[0] * t.normal[0] + t.normal[1] * t.normal[1] + t.normal[2] * t.normal[2];
+            let n2 =
+                t.normal[0] * t.normal[0] + t.normal[1] * t.normal[1] + t.normal[2] * t.normal[2];
             assert!((n2 - 1.0).abs() < 1e-10, "normal not unit length: {n2}");
         }
     }
@@ -310,7 +314,11 @@ mod tests {
             ..CavityConfig::default()
         };
         let tess = build_cavity(&mol, &cfg).unwrap();
-        assert_eq!(tess.len(), 110, "single atom: no neighbor to bury any point");
+        assert_eq!(
+            tess.len(),
+            110,
+            "single atom: no neighbor to bury any point"
+        );
         let r = crate::radii::bondi_radius_bohr(2) * cfg.vdw_scale;
         let total_area: f64 = tess.iter().map(|t| t.area).sum();
         let expected = 4.0 * std::f64::consts::PI * r * r;
@@ -324,7 +332,10 @@ mod tests {
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let cfg = CavityConfig::default();
         let tess = build_cavity(&mol, &cfg).unwrap();
-        assert!(tess.iter().all(|t| t.atom_index != 3), "ghost atom (index 3) must not own tesserae");
+        assert!(
+            tess.iter().all(|t| t.atom_index != 3),
+            "ghost atom (index 3) must not own tesserae"
+        );
     }
 
     #[test]

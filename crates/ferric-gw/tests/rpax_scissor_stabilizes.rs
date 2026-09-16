@@ -30,7 +30,11 @@ const HA_TO_EV: f64 = 27.211_386_245_988;
 
 fn pdep_cfg() -> PdepRpaConfig {
     PdepRpaConfig {
-        quadrature: QuadratureConfig { scheme: QuadratureScheme::GaussLegendre, n_points: 16, u0: 0.5 },
+        quadrature: QuadratureConfig {
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: 16,
+            u0: 0.5,
+        },
         eigensolver_conv_thresh: 1e-7,
         eigensolver_max_vecs: 0,
         trunc_thresh: 0.0,
@@ -58,7 +62,9 @@ fn min_eigs_at_scissor(
     let nmo = ks.eps_r().len();
     let nocc_total = (mol.nelec() as usize) / 2;
     let mut eps = ks.eps_r().to_vec();
-    for p in nocc_total..nmo { eps[p] += scissor; }
+    for p in nocc_total..nmo {
+        eps[p] += scissor;
+    }
     let gap_ev = (eps[nocc_total] - eps[nocc_total - 1]) * HA_TO_EV;
     let nocc = nocc_total;
     let nvir = nmo - nocc_total;
@@ -66,20 +72,29 @@ fn min_eigs_at_scissor(
 
     let pdep = ferric_rpa::run_pdep_rpa(mol, obs, dfbs, op, ks, &pdep_cfg()).unwrap();
     let mob = mo_b::build_full_b(mol, obs, dfbs, op, ks, 0, None).unwrap();
-    let (v_dressed, _dev) = w_pdep::redress_with_check(&mob.v_inv_sqrt, &pdep.eigenpotentials).unwrap();
+    let (v_dressed, _dev) =
+        w_pdep::redress_with_check(&mob.v_inv_sqrt, &pdep.eigenpotentials).unwrap();
     let m_proj = ferric_gw::cohsex::project_b_into_pdep(&mob, &v_dressed, None).unwrap();
     let m_modes = m_proj.shape()[0];
-    let w_red: Vec<f64> = pdep.eigenvalues_static.iter().map(|&l| 1.0 / l - 1.0).collect();
+    let w_red: Vec<f64> = pdep
+        .eigenvalues_static
+        .iter()
+        .map(|&l| 1.0 / l - 1.0)
+        .collect();
     let b = &mob.b_full;
     let naux = mob.naux;
     let bare = |p: usize, q: usize, r: usize, s: usize| -> f64 {
         let mut acc = 0.0;
-        for pp in 0..naux { acc += b[(pp, p, q)] * b[(pp, r, s)]; }
+        for pp in 0..naux {
+            acc += b[(pp, p, q)] * b[(pp, r, s)];
+        }
         acc
     };
     let screened = |p: usize, q: usize, r: usize, s: usize| -> f64 {
         let mut acc = bare(p, q, r, s);
-        for alpha in 0..m_modes { acc += w_red[alpha] * m_proj[(alpha, p, q)] * m_proj[(alpha, r, s)]; }
+        for alpha in 0..m_modes {
+            acc += w_red[alpha] * m_proj[(alpha, p, q)] * m_proj[(alpha, r, s)];
+        }
         acc
     };
 
@@ -131,11 +146,24 @@ fn scissor_scan_min_eigs_water() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
-    let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds,
-        &RhfConfig { xc: Some("PBE".to_string()), ..Default::default() }).unwrap();
+    let ks = solve_rhf(
+        &ctx,
+        &mol,
+        &obs,
+        op,
+        &bounds,
+        &RhfConfig {
+            xc: Some("PBE".to_string()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     eprintln!("water/cc-pVDZ RPAx@PBE, scissor scan (KS gap 7.05eV -> GW gap ~16.86eV at scissor~0.36 Ha):");
-    eprintln!("{:>8}  {:>9}  {:>12}  {:>12}  {:>12}", "scissor", "gap(eV)", "min_eig(A)", "min_eig(A+B)", "min_eig(A-B)");
+    eprintln!(
+        "{:>8}  {:>9}  {:>12}  {:>12}  {:>12}",
+        "scissor", "gap(eV)", "min_eig(A)", "min_eig(A+B)", "min_eig(A-B)"
+    );
     for &sc in &[0.0, 0.05, 0.10, 0.20, 0.30, 0.36, 0.50, 0.80] {
         let (gap, ea, eapb, eamb) = min_eigs_at_scissor(&mol, &obs, &dfbs, op, &ks, sc);
         eprintln!("{sc:>8.2}  {gap:>9.3}  {ea:>+12.6}  {eapb:>+12.6}  {eamb:>+12.6}");

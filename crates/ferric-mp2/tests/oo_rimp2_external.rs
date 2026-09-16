@@ -40,17 +40,24 @@ fn water() -> Molecule {
     let half = (104.52_f64).to_radians() / 2.0;
     let xyz = format!(
         "3\nwater\nO 0.0 0.0 0.0\nH 0.0 {:.10} {:.10}\nH 0.0 {:.10} {:.10}\n",
-        r * half.sin(), r * half.cos(),
-        -r * half.sin(), r * half.cos(),
+        r * half.sin(),
+        r * half.cos(),
+        -r * half.sin(),
+        r * half.cos(),
     );
     Molecule::parse_xyz(&xyz, 0, 1).unwrap()
 }
 
 fn plus_charge_field() -> ExternalPotential {
     ExternalPotential {
-        point_charges: vec![PointCharge { q: 1.0, x: 0.0, y: 0.0, z: -6.0 }],
+        point_charges: vec![PointCharge {
+            q: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: -6.0,
+        }],
         field: None,
-    smeared_charges: Vec::new(),
+        smeared_charges: Vec::new(),
     }
 }
 
@@ -84,9 +91,18 @@ fn oo_mp2_energy_shift_tracks_rhf_shift() {
 
     // Vacuum.
     let rhf_vac = solve_rhf(
-        &ParallelContext::default(), &mol, &obs, op, &bounds,
-        &RhfConfig { energy_conv: 1e-11, density_conv: 1e-10, ..Default::default() },
-    ).unwrap();
+        &ParallelContext::default(),
+        &mol,
+        &obs,
+        op,
+        &bounds,
+        &RhfConfig {
+            energy_conv: 1e-11,
+            density_conv: 1e-10,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert!(rhf_vac.converged);
     let oo_vac = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf_vac, &oo_config, None).unwrap();
     assert!(oo_vac.converged, "vacuum OO-MP2 must converge");
@@ -98,9 +114,27 @@ fn oo_mp2_energy_shift_tracks_rhf_shift() {
         density_conv: 1e-10,
         ..Default::default()
     };
-    let rhf_field = solve_rhf(&ParallelContext::default(), &mol, &obs, op, &bounds, &field_cfg).unwrap();
+    let rhf_field = solve_rhf(
+        &ParallelContext::default(),
+        &mol,
+        &obs,
+        op,
+        &bounds,
+        &field_cfg,
+    )
+    .unwrap();
     assert!(rhf_field.converged);
-    let oo_field = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf_field, &oo_config, Some(&ext)).unwrap();
+    let oo_field = oo_ri_mp2(
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &bounds,
+        &rhf_field,
+        &oo_config,
+        Some(&ext),
+    )
+    .unwrap();
     assert!(oo_field.converged, "OO-MP2 in the field must converge");
 
     let oo_shift = oo_field.total_energy - oo_vac.total_energy;
@@ -110,7 +144,10 @@ fn oo_mp2_energy_shift_tracks_rhf_shift() {
     eprintln!("  RHF shift (measured here):  {rhf_shift_measured:.10} Ha");
     eprintln!("  RHF shift (PySCF ref):      {RHF_SHIFT:.10} Ha");
     eprintln!("  OO-MP2 shift:               {oo_shift:.10} Ha");
-    eprintln!("  |OO-MP2 shift - RHF shift (PySCF ref)| = {:.3e}", (oo_shift - RHF_SHIFT).abs());
+    eprintln!(
+        "  |OO-MP2 shift - RHF shift (PySCF ref)| = {:.3e}",
+        (oo_shift - RHF_SHIFT).abs()
+    );
 
     // The bug: pre-fix, oo_shift was exactly 0.0 (ext silently dropped inside
     // oo_ri_mp2's internal hcore rebuild) regardless of how large RHF_SHIFT is.
@@ -142,21 +179,41 @@ fn oo_mp2_ext_none_matches_vacuum() {
     let oo_config = tight_oo_config();
 
     let rhf = solve_rhf(
-        &ParallelContext::default(), &mol, &obs, op, &bounds,
-        &RhfConfig { energy_conv: 1e-11, density_conv: 1e-10, ..Default::default() },
-    ).unwrap();
+        &ParallelContext::default(),
+        &mol,
+        &obs,
+        op,
+        &bounds,
+        &RhfConfig {
+            energy_conv: 1e-11,
+            density_conv: 1e-10,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert!(rhf.converged);
 
     let oo_none = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &oo_config, None).unwrap();
     let empty = ExternalPotential::default();
-    let oo_empty = oo_ri_mp2(&mol, &obs, &dfbs, op, &bounds, &rhf, &oo_config, Some(&empty)).unwrap();
+    let oo_empty = oo_ri_mp2(
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &bounds,
+        &rhf,
+        &oo_config,
+        Some(&empty),
+    )
+    .unwrap();
 
     assert!(oo_none.converged && oo_empty.converged);
     assert_eq!(
         oo_none.total_energy.to_bits(),
         oo_empty.total_energy.to_bits(),
         "None vs Some(default) total_energy not bit-identical: {:.17e} vs {:.17e}",
-        oo_none.total_energy, oo_empty.total_energy,
+        oo_none.total_energy,
+        oo_empty.total_energy,
     );
 }
 
@@ -185,7 +242,10 @@ fn oo_mp2_gradient_matches_fd_in_field() {
         let rhf = solve_rhf(&ParallelContext::default(), m, &obs, op, &bounds, &cfg).unwrap();
         assert!(rhf.converged);
         let oo = oo_ri_mp2(m, &obs, &dfbs, op, &bounds, &rhf, &oo_config, Some(&ext)).unwrap();
-        assert!(oo.converged, "OO-MP2 must converge at every displaced geometry");
+        assert!(
+            oo.converged,
+            "OO-MP2 must converge at every displaced geometry"
+        );
         oo.total_energy
     };
 
@@ -212,9 +272,18 @@ fn oo_mp2_gradient_matches_fd_in_field() {
             let mut mol_p = mol.clone();
             let mut mol_m = mol.clone();
             match c {
-                0 => { mol_p.atoms[atom].x += h; mol_m.atoms[atom].x -= h; }
-                1 => { mol_p.atoms[atom].y += h; mol_m.atoms[atom].y -= h; }
-                _ => { mol_p.atoms[atom].zpos += h; mol_m.atoms[atom].zpos -= h; }
+                0 => {
+                    mol_p.atoms[atom].x += h;
+                    mol_m.atoms[atom].x -= h;
+                }
+                1 => {
+                    mol_p.atoms[atom].y += h;
+                    mol_m.atoms[atom].y -= h;
+                }
+                _ => {
+                    mol_p.atoms[atom].zpos += h;
+                    mol_m.atoms[atom].zpos -= h;
+                }
             }
             let e_p = oo_total_energy_in_field(&mol_p);
             let e_m = oo_total_energy_in_field(&mol_m);
@@ -230,7 +299,9 @@ fn oo_mp2_gradient_matches_fd_in_field() {
             max_diff = max_diff.max(diff);
             eprintln!(
                 "  atom={atom} coord={c}: analytic={:+.8} fd={:+.8} diff={:.2e}",
-                analytic[(atom, c)], fd[(atom, c)], diff
+                analytic[(atom, c)],
+                fd[(atom, c)],
+                diff
             );
         }
     }

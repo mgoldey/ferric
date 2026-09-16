@@ -25,7 +25,11 @@ use ndarray_linalg::{Eigh, UPLO};
 
 fn pdep_cfg() -> PdepRpaConfig {
     PdepRpaConfig {
-        quadrature: QuadratureConfig { scheme: QuadratureScheme::GaussLegendre, n_points: 16, u0: 0.5 },
+        quadrature: QuadratureConfig {
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: 16,
+            u0: 0.5,
+        },
         eigensolver_conv_thresh: 1e-7,
         eigensolver_max_vecs: 0,
         trunc_thresh: 0.0,
@@ -52,8 +56,18 @@ fn screened_a_minus_b_vs_direct_amb() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let ctx = ParallelContext::default();
-    let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds,
-        &RhfConfig { xc: Some("PBE".to_string()), ..Default::default() }).unwrap();
+    let ks = solve_rhf(
+        &ctx,
+        &mol,
+        &obs,
+        op,
+        &bounds,
+        &RhfConfig {
+            xc: Some("PBE".to_string()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let nmo = ks.eps_r().len();
     let nocc_total = (mol.nelec() as usize) / 2;
@@ -64,20 +78,29 @@ fn screened_a_minus_b_vs_direct_amb() {
 
     let pdep = ferric_rpa::run_pdep_rpa(&mol, &obs, &dfbs, op, &ks, &pdep_cfg()).unwrap();
     let mob = mo_b::build_full_b(&mol, &obs, &dfbs, op, &ks, 0, None).unwrap();
-    let (v_dressed, _dev) = w_pdep::redress_with_check(&mob.v_inv_sqrt, &pdep.eigenpotentials).unwrap();
+    let (v_dressed, _dev) =
+        w_pdep::redress_with_check(&mob.v_inv_sqrt, &pdep.eigenpotentials).unwrap();
     let m_proj = ferric_gw::cohsex::project_b_into_pdep(&mob, &v_dressed, None).unwrap();
     let m_modes = m_proj.shape()[0];
-    let w_red: Vec<f64> = pdep.eigenvalues_static.iter().map(|&l| 1.0 / l - 1.0).collect();
+    let w_red: Vec<f64> = pdep
+        .eigenvalues_static
+        .iter()
+        .map(|&l| 1.0 / l - 1.0)
+        .collect();
     let b = &mob.b_full;
     let naux = mob.naux;
     let bare = |p: usize, q: usize, r: usize, s: usize| -> f64 {
         let mut acc = 0.0;
-        for pp in 0..naux { acc += b[(pp, p, q)] * b[(pp, r, s)]; }
+        for pp in 0..naux {
+            acc += b[(pp, p, q)] * b[(pp, r, s)];
+        }
         acc
     };
     let screened = |p: usize, q: usize, r: usize, s: usize| -> f64 {
         let mut acc = bare(p, q, r, s);
-        for alpha in 0..m_modes { acc += w_red[alpha] * m_proj[(alpha, p, q)] * m_proj[(alpha, r, s)]; }
+        for alpha in 0..m_modes {
+            acc += w_red[alpha] * m_proj[(alpha, p, q)] * m_proj[(alpha, r, s)];
+        }
         acc
     };
 
@@ -116,10 +139,23 @@ fn screened_a_minus_b_vs_direct_amb() {
     let (eb, _) = b_sym.eigh(UPLO::Upper).unwrap();
     let (eamb, _) = amb_external.eigh(UPLO::Upper).unwrap();
     let (eapb, _) = apb_external.eigh(UPLO::Upper).unwrap();
-    eprintln!("Separately-built A: min eig = {:+.6}", ea.iter().cloned().fold(f64::MAX, f64::min));
-    eprintln!("Separately-built B: min eig = {:+.6}  max eig = {:+.6}", eb.iter().cloned().fold(f64::MAX, f64::min), eb.iter().cloned().fold(f64::MIN, f64::max));
-    eprintln!("External (A-B): min eig = {:+.6}", eamb.iter().cloned().fold(f64::MAX, f64::min));
-    eprintln!("External (A+B): min eig = {:+.6}", eapb.iter().cloned().fold(f64::MAX, f64::min));
+    eprintln!(
+        "Separately-built A: min eig = {:+.6}",
+        ea.iter().cloned().fold(f64::MAX, f64::min)
+    );
+    eprintln!(
+        "Separately-built B: min eig = {:+.6}  max eig = {:+.6}",
+        eb.iter().cloned().fold(f64::MAX, f64::min),
+        eb.iter().cloned().fold(f64::MIN, f64::max)
+    );
+    eprintln!(
+        "External (A-B): min eig = {:+.6}",
+        eamb.iter().cloned().fold(f64::MAX, f64::min)
+    );
+    eprintln!(
+        "External (A+B): min eig = {:+.6}",
+        eapb.iter().cloned().fold(f64::MAX, f64::min)
+    );
 
     // Now build amb/apb the SAME way bse.rs does in-place (fused loop),
     // to check whether that path agrees with the externally-formed A-B.
@@ -146,8 +182,14 @@ fn screened_a_minus_b_vs_direct_amb() {
             amb2[(ia, ia)] += eps_a - eps_i;
         }
     }
-    let diff_amb = (&amb2 - &amb_external).mapv(f64::abs).into_iter().fold(0.0, f64::max);
-    let diff_apb = (&apb2 - &apb_external).mapv(f64::abs).into_iter().fold(0.0, f64::max);
+    let diff_amb = (&amb2 - &amb_external)
+        .mapv(f64::abs)
+        .into_iter()
+        .fold(0.0, f64::max);
+    let diff_apb = (&apb2 - &apb_external)
+        .mapv(f64::abs)
+        .into_iter()
+        .fold(0.0, f64::max);
     eprintln!("max|amb2 - amb_external| = {diff_amb:e}");
     eprintln!("max|apb2 - apb_external| = {diff_apb:e}");
 }

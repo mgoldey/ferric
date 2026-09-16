@@ -93,31 +93,63 @@ fn converged(label: &'static str, mol: Molecule, basis: &str) -> Setup {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).expect("schwarz");
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig { energy_conv: 1e-10, density_conv: 1e-8, integral_thresh: 1e-14, ..Default::default() };
+    let cfg = RhfConfig {
+        energy_conv: 1e-10,
+        density_conv: 1e-8,
+        integral_thresh: 1e-14,
+        ..Default::default()
+    };
     let res = solve_rhf(&ctx, &mol, &prep, op, &bounds, &cfg).expect("rhf");
     assert!(res.converged, "{label}: reference RHF did not converge");
     let d = res.density_total.clone();
     let n = prep.nbasis();
     let (mut j, mut k_direct) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
     build_jk(&ctx, &prep, &bounds, 1e-14, &d, &mut j, &mut k_direct).expect("direct jk");
-    Setup { label, mol, prep, d, k_direct }
+    Setup {
+        label,
+        mol,
+        prep,
+        d,
+        k_direct,
+    }
 }
 
 fn water() -> Setup {
-    converged("water/cc-pVDZ", Molecule::parse_xyz(WATER, 0, 1).expect("water"), "cc-pvdz")
+    converged(
+        "water/cc-pVDZ",
+        Molecule::parse_xyz(WATER, 0, 1).expect("water"),
+        "cc-pvdz",
+    )
 }
 
 fn butane() -> Setup {
-    let path = format!("{}/../../testdata/molecules/alkane_4.xyz", env!("CARGO_MANIFEST_DIR"));
-    converged("butane/def2-SVP", Molecule::load_xyz(&path).expect("alkane_4"), "def2-svp")
+    let path = format!(
+        "{}/../../testdata/molecules/alkane_4.xyz",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    converged(
+        "butane/def2-SVP",
+        Molecule::load_xyz(&path).expect("alkane_4"),
+        "def2-svp",
+    )
 }
 
 fn grid(n_radial: usize, n_angular: usize) -> AtomicGridConfig {
-    AtomicGridConfig { n_radial, n_angular, ..Default::default() }
+    AtomicGridConfig {
+        n_radial,
+        n_angular,
+        ..Default::default()
+    }
 }
 
 fn cfg_at(screen_thresh: Option<f64>, screen_group: usize) -> CosxConfig {
-    CosxConfig { grid: grid(50, 110), overlap_fit: true, screen_thresh, screen_group, ..CosxConfig::default() }
+    CosxConfig {
+        grid: grid(50, 110),
+        overlap_fit: true,
+        screen_thresh,
+        screen_group,
+        ..CosxConfig::default()
+    }
 }
 
 fn build(s: &Setup, cfg: CosxConfig) -> (Array2<f64>, CosxTimings) {
@@ -134,7 +166,9 @@ fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
 }
 
 fn thresh() -> f64 {
-    CosxConfig::default().screen_thresh.expect("the density-driven screen is on by default")
+    CosxConfig::default()
+        .screen_thresh
+        .expect("the density-driven screen is on by default")
 }
 
 /// Group sizes swept by the reachability anchor and the results table. 0 is
@@ -154,16 +188,36 @@ fn group_size_whole_subbatch_is_bitwise_todays_screen() {
         let (k0, t0) = build(&s, cfg_at(Some(thresh()), 0));
         for g in [COSX_SUB_BATCH_POINTS, 2 * COSX_SUB_BATCH_POINTS] {
             let (k, t) = build(&s, cfg_at(Some(thresh()), g));
-            assert!(k == k0, "{}: screen_group = {g} is not BITWISE the unsplit screen", s.label);
-            assert_eq!(t.pairs_kept, t0.pairs_kept, "{}: screen_group = {g} changed pairs_kept", s.label);
-            assert_eq!(t.pairs_total, t0.pairs_total, "{}: screen_group = {g} changed pairs_total", s.label);
+            assert!(
+                k == k0,
+                "{}: screen_group = {g} is not BITWISE the unsplit screen",
+                s.label
+            );
+            assert_eq!(
+                t.pairs_kept, t0.pairs_kept,
+                "{}: screen_group = {g} changed pairs_kept",
+                s.label
+            );
+            assert_eq!(
+                t.pairs_total, t0.pairs_total,
+                "{}: screen_group = {g} changed pairs_total",
+                s.label
+            );
         }
         // And the screen's own trivial limit still holds with grouping on:
         // t = 0 keeps everything regardless of how the points are grouped.
         let (k_un, _) = build(&s, cfg_at(None, 0));
         let (k_z, tz) = build(&s, cfg_at(Some(0.0), 16));
-        assert!(k_z == k_un, "{}: grouped screen at t = 0 is not bitwise the unscreened K", s.label);
-        assert_eq!(tz.pairs_kept, tz.pairs_total, "{}: grouped screen at t = 0 dropped pairs", s.label);
+        assert!(
+            k_z == k_un,
+            "{}: grouped screen at t = 0 is not bitwise the unscreened K",
+            s.label
+        );
+        assert_eq!(
+            tz.pairs_kept, tz.pairs_total,
+            "{}: grouped screen at t = 0 dropped pairs",
+            s.label
+        );
     }
 }
 
@@ -202,7 +256,11 @@ fn grouped_screen_k_matches_unscreened_below_grid_error() {
                 s.label,
                 t.pairs_kept as f64 / t.pairs_total as f64
             );
-            assert!(dev < 1e-6, "{}: group {g} gives max|dK| = {dev:.3e} (grid err {grid_err:.3e})", s.label);
+            assert!(
+                dev < 1e-6,
+                "{}: group {g} gives max|dK| = {dev:.3e} (grid err {grid_err:.3e})",
+                s.label
+            );
             assert!(
                 dev < 0.1 * grid_err,
                 "{}: group {g} screen error {dev:.3e} is not well below the grid error {grid_err:.3e}",
@@ -316,7 +374,11 @@ fn grouped_screen_never_drops_what_the_unsplit_screen_keeps() {
         let (_, t0) = build(&s, cfg_at(Some(thresh()), 0));
         for g in [64usize, 32, 16, 8] {
             let (_, t) = build(&s, cfg_at(Some(thresh()), g));
-            assert_eq!(t.pairs_total, t0.pairs_total, "{}: group {g} changed the denominator", s.label);
+            assert_eq!(
+                t.pairs_total, t0.pairs_total,
+                "{}: group {g} changed the denominator",
+                s.label
+            );
             assert!(
                 t.pairs_kept <= t0.pairs_kept,
                 "{}: group {g} kept MORE work ({} > {}) — the group bound is looser than the batch bound",
@@ -358,7 +420,10 @@ fn kept_work_vs_group_size_across_the_locality_onset() {
         "system", "group", "degenerate", "kept frac", "kept pairs", "bound evals", "vs G=0"
     );
     for name in ["alkane_4", "alkane_8", "alkane_12", "alkane_16"] {
-        let path = format!("{}/../../testdata/molecules/{name}.xyz", env!("CARGO_MANIFEST_DIR"));
+        let path = format!(
+            "{}/../../testdata/molecules/{name}.xyz",
+            env!("CARGO_MANIFEST_DIR")
+        );
         let mol = Molecule::load_xyz(&path).expect("alkane");
         let s = converged("alkane/def2-SVP", mol, "def2-svp");
         let mut base_kept = 0.0_f64;
@@ -380,10 +445,11 @@ fn kept_work_vs_group_size_across_the_locality_onset() {
         }
         println!(
             "{name:>10}  --> kept fell {:.4} pp from G=0 to G=8\n",
-            100.0 * (base_kept - {
-                let (_, t) = build(&s, cfg_at(Some(thresh()), 8));
-                t.pairs_kept as f64 / t.pairs_total as f64
-            })
+            100.0
+                * (base_kept - {
+                    let (_, t) = build(&s, cfg_at(Some(thresh()), 8));
+                    t.pairs_kept as f64 / t.pairs_total as f64
+                })
         );
     }
 }

@@ -34,14 +34,22 @@ fn probe_terfc_spin_components() {
         &obs,
         opc,
         &bounds,
-        &RhfConfig { energy_conv: 1e-9, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-9,
+            ..Default::default()
+        },
     )
     .unwrap();
     let cfg = RiMp2Config::default();
 
-    let sc = ri_mp2_spin_components(&mol, &obs, &dfbs, opc, &rhf, &cfg).unwrap().0;
+    let sc = ri_mp2_spin_components(&mol, &obs, &dfbs, opc, &rhf, &cfg)
+        .unwrap()
+        .0;
     let (os_c, ss_c) = (sc.e_os, sc.e_ss);
-    eprintln!("Coulomb: e_os={os_c:.10}  e_ss={ss_c:.10}  tot={:.10}", sc.e_total);
+    eprintln!(
+        "Coulomb: e_os={os_c:.10}  e_ss={ss_c:.10}  tot={:.10}",
+        sc.e_total
+    );
     eprintln!("   r0        e_os        os/os_c        e_ss        ss/ss_c");
     for &r0a in &[0.75_f64, 1.05, 1.5, 2.0, 3.0, 6.0, 12.0] {
         let s = ri_mp2_spin_components(&mol, &obs, &dfbs, Operator::terfc(r0a * A2B), &rhf, &cfg)

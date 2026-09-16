@@ -18,9 +18,7 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_mp2::drpa_amplitude::{
-    amplitude_drpa, amplitude_drpa_direct, AmplitudeDrpaConfig,
-};
+use ferric_mp2::drpa_amplitude::{amplitude_drpa, amplitude_drpa_direct, AmplitudeDrpaConfig};
 use ferric_mp2::lmp2_direct::DirectConfig;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -50,10 +48,19 @@ fn setup(xyz: &str, obs_name: &str, aux_name: &str) -> Setup {
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
     )
     .unwrap();
-    Setup { mol, obs, obs_bs, dfbs, rhf }
+    Setup {
+        mol,
+        obs,
+        obs_bs,
+        dfbs,
+        rhf,
+    }
 }
 
 /// Trivial maps: every locality knob at its no-op limit (aux_radius 1e6,
@@ -74,9 +81,18 @@ fn trivial_maps() -> DirectConfig {
 #[test]
 fn h2_direct_matches_the_proof_notebook() {
     let su = setup("h2.xyz", "sto-3g", "sto-3g");
-    let cfg = AmplitudeDrpaConfig { eps: 0.0, ..Default::default() };
+    let cfg = AmplitudeDrpaConfig {
+        eps: 0.0,
+        ..Default::default()
+    };
     let (r, stats) = amplitude_drpa_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
         &trivial_maps(),
     )
     .unwrap();
@@ -105,13 +121,29 @@ fn h2_direct_matches_the_proof_notebook() {
 #[test]
 fn eps_zero_trivial_maps_matches_plasmon_and_global_path() {
     let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
-    let cfg = AmplitudeDrpaConfig { eps: 0.0, frozen_core: 1, ..Default::default() };
+    let cfg = AmplitudeDrpaConfig {
+        eps: 0.0,
+        frozen_core: 1,
+        ..Default::default()
+    };
     let r_glob = amplitude_drpa(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
     )
     .unwrap();
     let (r_dir, stats) = amplitude_drpa_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
         &trivial_maps(),
     )
     .unwrap();
@@ -131,8 +163,14 @@ fn eps_zero_trivial_maps_matches_plasmon_and_global_path() {
     );
     assert!(r_dir.converged);
     assert!(r_dir.keep_fraction == 1.0 && r_dir.pair_fraction == 1.0);
-    assert!(de_plasmon.abs() < 1e-9, "eps=0 plasmon anchor FAILED: {de_plasmon:+.3e}");
-    assert!(de_global.abs() < 1e-9, "eps=0 global-path anchor FAILED: {de_global:+.3e}");
+    assert!(
+        de_plasmon.abs() < 1e-9,
+        "eps=0 plasmon anchor FAILED: {de_plasmon:+.3e}"
+    );
+    assert!(
+        de_global.abs() < 1e-9,
+        "eps=0 global-path anchor FAILED: {de_global:+.3e}"
+    );
     // trivial maps must actually be trivial: strips span everything
     assert_eq!(stats.strip_rows_max, su.dfbs.nbasis());
 }
@@ -154,11 +192,23 @@ fn finite_eps_trivial_maps_matches_global_path() {
         ..Default::default()
     };
     let r_glob = amplitude_drpa(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
     )
     .unwrap();
     let (r_dir, _) = amplitude_drpa_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
         &trivial_maps(),
     )
     .unwrap();
@@ -189,7 +239,13 @@ fn production_maps_error_is_subdominant_to_eps_truncation() {
     };
     // ε truncation alone (trivial maps) + the canonical plasmon reference
     let (r_eps, _) = amplitude_drpa_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
         &trivial_maps(),
     )
     .unwrap();
@@ -201,8 +257,16 @@ fn production_maps_error_is_subdominant_to_eps_truncation() {
         ..Default::default()
     };
     let (r_prod, stats) = amplitude_drpa_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf,
-        &AmplitudeDrpaConfig { compute_reference: false, ..cfg },
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &AmplitudeDrpaConfig {
+            compute_reference: false,
+            ..cfg
+        },
         &prod,
     )
     .unwrap();
@@ -217,7 +281,10 @@ fn production_maps_error_is_subdominant_to_eps_truncation() {
         stats.strip_cols_max,
         r_prod.keep_fraction
     );
-    assert!(map_err > 0.0, "maps changed nothing at production radii — vacuous?");
+    assert!(
+        map_err > 0.0,
+        "maps changed nothing at production radii — vacuous?"
+    );
     assert!(
         map_err < trunc_err,
         "locality-map error ({map_err:.3e}) dominates the eps truncation ({trunc_err:.3e})"
@@ -239,19 +306,34 @@ fn each_map_gutted_is_loud() {
     };
     let run = |dcfg: &DirectConfig| {
         amplitude_drpa_direct(
-            &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg, dcfg,
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            Operator::coulomb(),
+            &su.rhf,
+            &cfg,
+            dcfg,
         )
     };
     let (base, _) = run(&trivial_maps()).unwrap();
 
     // (a) virtual domains gutted: 2 Bohr around each occupied centroid
-    let (mut_v, _) = run(&DirectConfig { virt_radius_bohr: Some(2.0), ..trivial_maps() }).unwrap();
+    let (mut_v, _) = run(&DirectConfig {
+        virt_radius_bohr: Some(2.0),
+        ..trivial_maps()
+    })
+    .unwrap();
     let dv = (mut_v.e_corr - base.e_corr).abs();
     eprintln!("MUTATION virt_radius=2: |dE|={dv:.3e}");
     assert!(dv > 1e-3, "virt-domain map gutted silently: |dE|={dv:.3e}");
 
     // (b) AO support gutted: only shells with |C| >= 0.3 survive
-    let (mut_a, _) = run(&DirectConfig { ao_tail: 0.3, ..trivial_maps() }).unwrap();
+    let (mut_a, _) = run(&DirectConfig {
+        ao_tail: 0.3,
+        ..trivial_maps()
+    })
+    .unwrap();
     let da = (mut_a.e_corr - base.e_corr).abs();
     eprintln!("MUTATION ao_tail=0.3: |dE|={da:.3e}");
     assert!(da > 1e-3, "AO-support map gutted silently: |dE|={da:.3e}");
@@ -261,10 +343,22 @@ fn each_map_gutted_is_loud() {
     // Riccati fixed point to a NaN residual and a hard non-convergence
     // error — a LOUD failure (never a silent zero), accepted here; cap the
     // iterations so the diverging arm doesn't spin the full 500.
-    let cfg_s = AmplitudeDrpaConfig { fp_max_iter: 60, ..cfg.clone() };
+    let cfg_s = AmplitudeDrpaConfig {
+        fp_max_iter: 60,
+        ..cfg.clone()
+    };
     match amplitude_drpa_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg_s,
-        &DirectConfig { schwarz_skip: 10.0, ..trivial_maps() },
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg_s,
+        &DirectConfig {
+            schwarz_skip: 10.0,
+            ..trivial_maps()
+        },
     ) {
         Err(e) => eprintln!("MUTATION schwarz_skip=10: hard error (loud, acceptable): {e}"),
         Ok((mut_s, st_s)) => {
@@ -282,7 +376,10 @@ fn each_map_gutted_is_loud() {
 
     // (d) aux domains gutted: 4 Bohr fit domains (hard error acceptable —
     // an empty/singular local fit must be loud, never a silent zero)
-    match run(&DirectConfig { aux_radius_bohr: 4.0, ..trivial_maps() }) {
+    match run(&DirectConfig {
+        aux_radius_bohr: 4.0,
+        ..trivial_maps()
+    }) {
         Err(e) => eprintln!("MUTATION aux_radius=4: hard error (acceptable): {e}"),
         Ok((mut_x, _)) => {
             let dx = (mut_x.e_corr - base.e_corr).abs();
@@ -331,13 +428,25 @@ fn bench_drpa_direct_vs_global() {
             };
             let t0 = Instant::now();
             let r_glob = amplitude_drpa(
-                &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+                &su.mol,
+                &su.obs,
+                &su.obs_bs,
+                &su.dfbs,
+                Operator::coulomb(),
+                &su.rhf,
+                &cfg,
             )
             .unwrap();
             let t_glob = t0.elapsed().as_secs_f64();
             let t0 = Instant::now();
             let (r_dir, _) = amplitude_drpa_direct(
-                &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+                &su.mol,
+                &su.obs,
+                &su.obs_bs,
+                &su.dfbs,
+                Operator::coulomb(),
+                &su.rhf,
+                &cfg,
                 &prod,
             )
             .unwrap();

@@ -39,7 +39,14 @@ where
 {
     // Seed: identity subspace (unit vectors in aux space)
     let seed = Array2::eye(m0);
-    run_davidson_seeded(seed, dielectric_fn, conv_thresh, max_vecs, n_desired, find_lowest)
+    run_davidson_seeded(
+        seed,
+        dielectric_fn,
+        conv_thresh,
+        max_vecs,
+        n_desired,
+        find_lowest,
+    )
 }
 
 /// Run Davidson with an explicit seed matrix.
@@ -78,7 +85,8 @@ where
         let eps_proj = dielectric_fn(&v_mat, 0.0);
 
         // Diagonalize (symmetric)
-        let (evals, evecs) = eps_proj.eigh(UPLO::Upper)
+        let (evals, evecs) = eps_proj
+            .eigh(UPLO::Upper)
             .map_err(|e| FerricError::General(format!("Davidson diagonalization failed: {e}")))?;
 
         // Ritz vectors in original space: V @ evecs (naux, m)
@@ -119,17 +127,26 @@ where
                 let n_keep = n_desired.min(m);
                 let (eigenvalues, eigenvectors) = if find_lowest {
                     // eigh returns ascending order, so first n_keep are smallest.
-                    let eigenvalues: Vec<f64> = evals.slice(ndarray::s![..n_keep]).iter().copied().collect();
+                    let eigenvalues: Vec<f64> =
+                        evals.slice(ndarray::s![..n_keep]).iter().copied().collect();
                     let eigenvectors = ritz.slice(ndarray::s![.., ..n_keep]).to_owned();
                     (eigenvalues, eigenvectors)
                 } else {
                     let start = m - n_keep;
-                    let eigenvalues: Vec<f64> = evals.slice(ndarray::s![start..]).iter().copied().rev().collect();
+                    let eigenvalues: Vec<f64> = evals
+                        .slice(ndarray::s![start..])
+                        .iter()
+                        .copied()
+                        .rev()
+                        .collect();
                     let eigenvectors = ritz.slice(ndarray::s![.., start..]).to_owned();
                     let eigenvectors = eigenvectors.slice(ndarray::s![.., ..;-1]).to_owned();
                     (eigenvalues, eigenvectors)
                 };
-                return Ok(DavidsonResult { eigenvalues, eigenvectors });
+                return Ok(DavidsonResult {
+                    eigenvalues,
+                    eigenvectors,
+                });
             }
 
             // m < n_desired: current Ritz vectors all converged, but subspace is too small.
@@ -148,7 +165,10 @@ where
                     let eigenvectors = ritz.slice(ndarray::s![.., ..;-1]).to_owned();
                     (eigenvalues, eigenvectors)
                 };
-                return Ok(DavidsonResult { eigenvalues, eigenvectors });
+                return Ok(DavidsonResult {
+                    eigenvalues,
+                    eigenvectors,
+                });
             }
             // Add a batch of orthogonal unit vectors to bootstrap coverage of the missing space.
             let n_to_add = (n_desired - m).min(budget).min(naux - m);
@@ -156,7 +176,9 @@ where
             expanded.slice_mut(ndarray::s![.., ..m]).assign(&v_mat);
             let mut added = 0;
             for ei in 0..naux {
-                if added >= n_to_add { break; }
+                if added >= n_to_add {
+                    break;
+                }
                 // Gram-Schmidt: project unit vector against all current columns
                 let mut e = Array1::zeros(naux);
                 e[ei] = 1.0;
@@ -190,9 +212,13 @@ where
             let naux = v_mat.nrows();
             let n_new = new_vecs.len();
             let mut expanded = Array2::zeros((naux, v_mat.ncols() + n_new));
-            expanded.slice_mut(ndarray::s![.., ..v_mat.ncols()]).assign(&v_mat);
+            expanded
+                .slice_mut(ndarray::s![.., ..v_mat.ncols()])
+                .assign(&v_mat);
             for (j, t) in new_vecs.iter().enumerate() {
-                expanded.slice_mut(ndarray::s![.., v_mat.ncols() + j]).assign(t);
+                expanded
+                    .slice_mut(ndarray::s![.., v_mat.ncols() + j])
+                    .assign(t);
             }
             v_mat = expanded;
         }
@@ -206,7 +232,8 @@ where
 
 /// Orthonormalize columns of mat via QR decomposition.
 fn qr_orthonormalize(mat: Array2<f64>) -> Result<Array2<f64>, FerricError> {
-    let (q, _r) = mat.qr()
+    let (q, _r) = mat
+        .qr()
         .map_err(|e| FerricError::General(format!("QR failed: {e}")))?;
     Ok(q)
 }
@@ -223,7 +250,7 @@ mod tests {
         use ndarray::array;
 
         let result = run_davidson_static(
-            2,      // naux = m0
+            2, // naux = m0
             |v_mat: &Array2<f64>, _omega: f64| -> Array2<f64> {
                 let fixed = array![[2.0f64, 0.5], [0.5, 3.0]];
                 v_mat.t().dot(&fixed.dot(v_mat))
@@ -232,7 +259,8 @@ mod tests {
             20,    // max_vecs
             2,     // n_desired
             false, // find_lowest
-        ).unwrap();
+        )
+        .unwrap();
 
         let mut evals = result.eigenvalues.clone();
         evals.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -240,10 +268,18 @@ mod tests {
         // λ = (5 ± sqrt(2)) / 2
         let expected_lo = (5.0 - 2.0f64.sqrt()) / 2.0;
         let expected_hi = (5.0 + 2.0f64.sqrt()) / 2.0;
-        assert!((evals[0] - expected_lo).abs() < 1e-4,
-            "λ_0={} expected {}", evals[0], expected_lo);
-        assert!((evals[1] - expected_hi).abs() < 1e-4,
-            "λ_1={} expected {}", evals[1], expected_hi);
+        assert!(
+            (evals[0] - expected_lo).abs() < 1e-4,
+            "λ_0={} expected {}",
+            evals[0],
+            expected_lo
+        );
+        assert!(
+            (evals[1] - expected_hi).abs() < 1e-4,
+            "λ_1={} expected {}",
+            evals[1],
+            expected_hi
+        );
     }
 
     #[test]
@@ -259,13 +295,15 @@ mod tests {
             20,
             1,
             true,
-        ).unwrap();
+        )
+        .unwrap();
         let expected_lo = (5.0 - 2.0f64.sqrt()) / 2.0;
         assert_eq!(result.eigenvalues.len(), 1);
         assert!(
             (result.eigenvalues[0] - expected_lo).abs() < 1e-6,
             "find_lowest returned {} expected {}",
-            result.eigenvalues[0], expected_lo,
+            result.eigenvalues[0],
+            expected_lo,
         );
     }
 }

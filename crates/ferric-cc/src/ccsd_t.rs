@@ -99,12 +99,12 @@ use ferric_mp2::mo_transform::{transform_3center_oo, transform_3center_ov, trans
 use ferric_mp2::rimp2::{active_occ, cholesky_inverse_sqrt};
 use ferric_mp2::spinorbital::{asym_phys, build_b, transpose_b};
 use ferric_scf::ScfResult;
-use ferric_tensors::{einsum, Axis};
-use ndarray::{Array2, Array3, ArrayD, Axis as NdAxis};
 #[cfg(test)]
 use ferric_tensors::permute_to_owned;
+use ferric_tensors::{einsum, Axis};
 #[cfg(test)]
 use ndarray::IxDyn;
+use ndarray::{Array2, Array3, ArrayD, Axis as NdAxis};
 use rayon::prelude::*;
 
 /// P(a/bc) on the (…,a,b,c) axes 3,4,5: x − x.swap(a,b) − x.swap(a,c).
@@ -247,15 +247,22 @@ fn raw_w_block(
         .to_shape((nv2 * nv2, nv2))
         .expect("bcei_i reshape")
         .to_owned();
-    let t2_jk = t2.index_axis(NdAxis(0), j).index_axis(NdAxis(0), k).to_owned(); // [nv2,nv2] (a,e)
+    let t2_jk = t2
+        .index_axis(NdAxis(0), j)
+        .index_axis(NdAxis(0), k)
+        .to_owned(); // [nv2,nv2] (a,e)
     let t2_jk: Array2<f64> = t2_jk.into_dimensionality().expect("t2_jk 2D");
     let term1_flat = bcei_i_flat.dot(&t2_jk.t()); // (bc, a)
-    // reshape (nv2*nv2, nv2) [bc,a] -> [b,c,a] -> permute to [a,b,c]
+                                                  // reshape (nv2*nv2, nv2) [bc,a] -> [b,c,a] -> permute to [a,b,c]
     let term1_bca = term1_flat
         .to_shape((nv2, nv2, nv2))
         .expect("term1 reshape")
         .to_owned(); // [b,c,a]
-    let mut term1 = term1_bca.view().permuted_axes([2, 0, 1]).as_standard_layout().into_owned(); // [a,b,c]
+    let mut term1 = term1_bca
+        .view()
+        .permuted_axes([2, 0, 1])
+        .as_standard_layout()
+        .into_owned(); // [a,b,c]
 
     // Term 2: Σ_m t2[i,m,b,c]·majk[m,a,j,k]
     //   t2_i[m,(b,c)] = t2[i,m,b,c], shape (no2, nv2*nv2)
@@ -311,11 +318,17 @@ fn raw_v_block(
 
 /// Swap axes 0,1 of a `[nv2,nv2,nv2]` block: out[a,b,c] = x[b,a,c].
 fn swap01(x: &Array3<f64>) -> Array3<f64> {
-    x.view().permuted_axes([1, 0, 2]).as_standard_layout().into_owned()
+    x.view()
+        .permuted_axes([1, 0, 2])
+        .as_standard_layout()
+        .into_owned()
 }
 /// Swap axes 0,2 of a `[nv2,nv2,nv2]` block: out[a,b,c] = x[c,b,a].
 fn swap02(x: &Array3<f64>) -> Array3<f64> {
-    x.view().permuted_axes([2, 1, 0]).as_standard_layout().into_owned()
+    x.view()
+        .permuted_axes([2, 1, 0])
+        .as_standard_layout()
+        .into_owned()
 }
 
 /// P(a/bc) applied to an already-materialized `[nv2,nv2,nv2]` block.
@@ -414,9 +427,24 @@ pub fn ccsd_t(
     let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
     let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
-    let b_ov = build_b(&transform_3center_ov(&eri3_ao, &c_occ, &c_vir), &v_inv_sqrt, Axis::O, Axis::V);
-    let b_oo = build_b(&transform_3center_oo(&eri3_ao, &c_occ), &v_inv_sqrt, Axis::O, Axis::O);
-    let b_vv = build_b(&transform_3center_vv(&eri3_ao, &c_vir), &v_inv_sqrt, Axis::V, Axis::V);
+    let b_ov = build_b(
+        &transform_3center_ov(&eri3_ao, &c_occ, &c_vir),
+        &v_inv_sqrt,
+        Axis::O,
+        Axis::V,
+    );
+    let b_oo = build_b(
+        &transform_3center_oo(&eri3_ao, &c_occ),
+        &v_inv_sqrt,
+        Axis::O,
+        Axis::O,
+    );
+    let b_vv = build_b(
+        &transform_3center_vv(&eri3_ao, &c_vir),
+        &v_inv_sqrt,
+        Axis::V,
+        Axis::V,
+    );
     let b_vo = transpose_b(&b_ov);
 
     // --- Spin-orbital integral blocks needed by (T) — same construction as
@@ -543,12 +571,8 @@ pub fn ccsd_t(
                         j0,
                         k0,
                     );
-                    let v_block = triple_block(
-                        |i, j, k| raw_v_block(&t1, &bcjk, nv2, i, j, k),
-                        i0,
-                        j0,
-                        k0,
-                    );
+                    let v_block =
+                        triple_block(|i, j, k| raw_v_block(&t1, &bcjk, nv2, i, j, k), i0, j0, k0);
                     let e_i = eo[i0] + eo[j0] + eo[k0];
                     let mut partial = 0.0f64;
                     for a in 0..nv2 {
@@ -620,7 +644,12 @@ mod tests {
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        let cc_cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-9, ..Default::default() };
+        let cc_cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-9,
+            ..Default::default()
+        };
         let ccsd_res = ccsd(&mol, &obs, &dfbs, op, &rhf, &cc_cfg).unwrap();
         let t_corr = ccsd_t(&mol, &obs, &dfbs, op, &rhf, &ccsd_res, &cc_cfg).unwrap();
         assert!(t_corr.abs() < 1e-10, "H2 (T) should be 0, got {t_corr}");
@@ -646,7 +675,12 @@ mod tests {
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        let cc_cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-9, ..Default::default() };
+        let cc_cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-9,
+            ..Default::default()
+        };
         let ccsd_res = ccsd(&mol, &obs, &dfbs, op, &rhf, &cc_cfg).unwrap();
         let t_corr = ccsd_t(&mol, &obs, &dfbs, op, &rhf, &ccsd_res, &cc_cfg).unwrap();
         println!("CCSD(T) H2O/cc-pVDZ (T) = {t_corr:.10}");
@@ -671,7 +705,10 @@ mod tests {
         // through. Run under `/usr/bin/time -v` (or an equivalent RSS
         // sampler) for the peak-RSS number quoted in the task report.
         use std::time::Instant;
-        let xyz_path = format!("{}/../../testdata/molecules/alkane_4.xyz", env!("CARGO_MANIFEST_DIR"));
+        let xyz_path = format!(
+            "{}/../../testdata/molecules/alkane_4.xyz",
+            env!("CARGO_MANIFEST_DIR")
+        );
         let mol = Molecule::load_xyz(&xyz_path).unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-qzvpp-rifit").unwrap()).unwrap();
@@ -680,11 +717,20 @@ mod tests {
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
         assert!(rhf.converged, "butane/STO-3G RHF must converge");
-        let cc_cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-8, ..Default::default() };
+        let cc_cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-8,
+            ..Default::default()
+        };
         let t0 = Instant::now();
         let ccsd_res = ccsd(&mol, &obs, &dfbs, op, &rhf, &cc_cfg).unwrap();
         let dt_ccsd = t0.elapsed();
-        println!("butane/STO-3G CCSD E_corr = {:.10} ({:.1}s)", ccsd_res.correlation_energy, dt_ccsd.as_secs_f64());
+        println!(
+            "butane/STO-3G CCSD E_corr = {:.10} ({:.1}s)",
+            ccsd_res.correlation_energy,
+            dt_ccsd.as_secs_f64()
+        );
         let t1 = Instant::now();
         let t_corr = ccsd_t(&mol, &obs, &dfbs, op, &rhf, &ccsd_res, &cc_cfg).unwrap();
         let dt_t = t1.elapsed();
@@ -693,7 +739,10 @@ mod tests {
             t_corr,
             dt_t.as_secs_f64()
         );
-        assert!(t_corr.is_finite() && t_corr < 0.0, "(T) should be a finite negative correction, got {t_corr}");
+        assert!(
+            t_corr.is_finite() && t_corr < 0.0,
+            "(T) should be a finite negative correction, got {t_corr}"
+        );
     }
 
     #[test]
@@ -759,7 +808,12 @@ mod tests {
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        let cc_cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-9, ..Default::default() };
+        let cc_cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-9,
+            ..Default::default()
+        };
         let ccsd_res = ccsd(&mol, &obs, &dfbs, op, &rhf, &cc_cfg).unwrap();
 
         // Streaming result (the production path).
@@ -780,9 +834,24 @@ mod tests {
         let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
         let v_inv_sqrt = cholesky_inverse_sqrt(&v2c).unwrap();
         let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, &obs, &dfbs).unwrap();
-        let b_ov = build_b(&transform_3center_ov(&eri3_ao, &c_occ, &c_vir), &v_inv_sqrt, Axis::O, Axis::V);
-        let b_oo = build_b(&transform_3center_oo(&eri3_ao, &c_occ), &v_inv_sqrt, Axis::O, Axis::O);
-        let b_vv = build_b(&transform_3center_vv(&eri3_ao, &c_vir), &v_inv_sqrt, Axis::V, Axis::V);
+        let b_ov = build_b(
+            &transform_3center_ov(&eri3_ao, &c_occ, &c_vir),
+            &v_inv_sqrt,
+            Axis::O,
+            Axis::V,
+        );
+        let b_oo = build_b(
+            &transform_3center_oo(&eri3_ao, &c_occ),
+            &v_inv_sqrt,
+            Axis::O,
+            Axis::O,
+        );
+        let b_vv = build_b(
+            &transform_3center_vv(&eri3_ao, &c_vir),
+            &v_inv_sqrt,
+            Axis::V,
+            Axis::V,
+        );
         let b_vo = transpose_b(&b_ov);
         use Axis::{O, V};
 
@@ -822,7 +891,8 @@ mod tests {
                     for a in 0..nv2 {
                         for b in 0..nv2 {
                             for cc_ in 0..nv2 {
-                                d3[[i, j, k, a, b, cc_]] = eo[i] + eo[j] + eo[k] - ev[a] - ev[b] - ev[cc_];
+                                d3[[i, j, k, a, b, cc_]] =
+                                    eo[i] + eo[j] + eo[k] - ev[a] - ev[b] - ev[cc_];
                             }
                         }
                     }
@@ -855,7 +925,10 @@ mod tests {
         let weighted = &sum * &d3;
         let t_dense: f64 = (&weighted * &t3c).sum() / 36.0;
 
-        println!("dense = {t_dense:.12}, streaming = {t_streaming:.12}, diff = {:.3e}", (t_dense - t_streaming).abs());
+        println!(
+            "dense = {t_dense:.12}, streaming = {t_streaming:.12}, diff = {:.3e}",
+            (t_dense - t_streaming).abs()
+        );
         assert!(
             (t_dense - t_streaming).abs() < 1e-10,
             "streaming (T) = {t_streaming:.12} disagrees with dense (T) = {t_dense:.12}"
@@ -883,7 +956,12 @@ mod tests {
         let ctx = ParallelContext::default();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-        let cc_cfg = CcConfig { frozen_core: 0, max_iter: 100, energy_conv: 1e-9, ..Default::default() };
+        let cc_cfg = CcConfig {
+            frozen_core: 0,
+            max_iter: 100,
+            energy_conv: 1e-9,
+            ..Default::default()
+        };
         let ccsd_res = ccsd(&mol, &obs, &dfbs, op, &rhf, &cc_cfg).unwrap();
 
         let run_with_pool = |n_threads: usize| -> f64 {

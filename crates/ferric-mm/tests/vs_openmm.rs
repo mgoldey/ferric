@@ -68,7 +68,8 @@ fn load(name: &str) -> OpenMmRef {
         .join(format!("mm_{name}_openmm.json"));
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    serde_json::from_str(&text).unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()))
+    serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()))
 }
 
 /// Convert OpenMM's force convention (`F = -dE/dR`) to ferric's gradient
@@ -92,7 +93,10 @@ fn build_topology(r: &OpenMmRef) -> MmTopology {
         .lj_sigma_angstrom
         .iter()
         .zip(r.lj_epsilon_kcal.iter())
-        .map(|(&sigma, &eps)| LjParams { sigma: sigma * ANGSTROM_TO_BOHR, epsilon: eps * KCAL_PER_MOL_TO_HARTREE })
+        .map(|(&sigma, &eps)| LjParams {
+            sigma: sigma * ANGSTROM_TO_BOHR,
+            epsilon: eps * KCAL_PER_MOL_TO_HARTREE,
+        })
         .collect();
     let bonds: Vec<Bond> = r
         .bonds
@@ -153,7 +157,11 @@ fn check_case(name: &str) {
     let coords = coords_bohr(&r);
 
     let (e, g) = gradient(&top, &coords).unwrap();
-    assert_eq!(e, energy(&top, &coords).unwrap(), "{name}: energy()/gradient() must agree");
+    assert_eq!(
+        e,
+        energy(&top, &coords).unwrap(),
+        "{name}: energy()/gradient() must agree"
+    );
 
     let e_bond_ha = r.energy_kcal.bond * KCAL_PER_MOL_TO_HARTREE;
     let e_angle_ha = r.energy_kcal.angle * KCAL_PER_MOL_TO_HARTREE;
@@ -161,8 +169,18 @@ fn check_case(name: &str) {
     let e_nonbonded_ha = r.energy_kcal.nonbonded * KCAL_PER_MOL_TO_HARTREE;
     let e_total_ha = r.energy_kcal.total * KCAL_PER_MOL_TO_HARTREE;
 
-    assert!((e.bond - e_bond_ha).abs() < ENERGY_TOL_HARTREE, "{name}: bond {} vs OpenMM {}", e.bond, e_bond_ha);
-    assert!((e.angle - e_angle_ha).abs() < ENERGY_TOL_HARTREE, "{name}: angle {} vs OpenMM {}", e.angle, e_angle_ha);
+    assert!(
+        (e.bond - e_bond_ha).abs() < ENERGY_TOL_HARTREE,
+        "{name}: bond {} vs OpenMM {}",
+        e.bond,
+        e_bond_ha
+    );
+    assert!(
+        (e.angle - e_angle_ha).abs() < ENERGY_TOL_HARTREE,
+        "{name}: angle {} vs OpenMM {}",
+        e.angle,
+        e_angle_ha
+    );
     assert!(
         (e.torsion - e_torsion_ha).abs() < ENERGY_TOL_HARTREE,
         "{name}: torsion {} vs OpenMM {}",
@@ -194,7 +212,10 @@ fn check_case(name: &str) {
             max_err = max_err.max((g[(i, c)] - g_ref[(i, c)]).abs());
         }
     }
-    assert!(max_err < FORCE_TOL_HARTREE_BOHR, "{name}: max gradient err {max_err:.3e} Ha/Bohr vs OpenMM");
+    assert!(
+        max_err < FORCE_TOL_HARTREE_BOHR,
+        "{name}: max gradient err {max_err:.3e} Ha/Bohr vs OpenMM"
+    );
 }
 
 #[test]

@@ -35,11 +35,22 @@ fn run_one(xyz_path: &str, label: &str) {
     let t0 = Instant::now();
     let rhf = solve_rhf(
         &ParallelContext::default(),
-        &mol, &obs, op_c, &bounds,
-        &RhfConfig { energy_conv: 1e-9, ..Default::default() },
-    ).unwrap();
+        &mol,
+        &obs,
+        op_c,
+        &bounds,
+        &RhfConfig {
+            energy_conv: 1e-9,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let t_scf = t0.elapsed();
-    println!("  RHF: E = {:.10} Ha ({:.2}s)", rhf.energy, t_scf.as_secs_f64());
+    println!(
+        "  RHF: E = {:.10} Ha ({:.2}s)",
+        rhf.energy,
+        t_scf.as_secs_f64()
+    );
 
     let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
     let dfbs = PreparedBasis::new(&mol, &aux_bs).unwrap();
@@ -47,7 +58,7 @@ fn run_one(xyz_path: &str, label: &str) {
 
     // Dense (unscreened) attenuated MP2 — reference.
     let cfg_dense = AttenuatedMp2Config {
-        omega: 0.222,           // 0.420 Å⁻¹ — dissertation erfc optimum
+        omega: 0.222, // 0.420 Å⁻¹ — dissertation erfc optimum
         scaling: 1.0,
         frozen_core: 0,
         screen_thresh: None,
@@ -56,8 +67,11 @@ fn run_one(xyz_path: &str, label: &str) {
     let t0 = Instant::now();
     let r_dense = attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &cfg_dense).unwrap();
     let t_dense = t0.elapsed();
-    println!("  ─ dense (unscreened):   E_corr = {:.10} Ha, t = {:.2}s",
-        r_dense.mp2_corr, t_dense.as_secs_f64());
+    println!(
+        "  ─ dense (unscreened):   E_corr = {:.10} Ha, t = {:.2}s",
+        r_dense.mp2_corr,
+        t_dense.as_secs_f64()
+    );
 
     // Screened sweep.
     for &thresh in &[1e-12, 1e-10, 1e-8, 1e-6] {
@@ -67,7 +81,7 @@ fn run_one(xyz_path: &str, label: &str) {
             frozen_core: 0,
             screen_thresh: Some(thresh),
             memory_budget_bytes: None,
-            };
+        };
         let t0 = Instant::now();
         let r = attenuated_ri_mp2(&mol, &obs, &dfbs, &rhf, &cfg).unwrap();
         let t = t0.elapsed();

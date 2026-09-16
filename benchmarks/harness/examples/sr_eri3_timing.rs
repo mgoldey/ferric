@@ -45,8 +45,14 @@ fn main() {
     // C-range: start at C8 (screening barely fires) through C20 (asymptote).
     // Default 8..=20; override with an env var if a shorter sweep is wanted.
     let (lo, hi): (usize, usize) = {
-        let lo = std::env::var("SR_LO").ok().and_then(|s| s.parse().ok()).unwrap_or(8);
-        let hi = std::env::var("SR_HI").ok().and_then(|s| s.parse().ok()).unwrap_or(20);
+        let lo = std::env::var("SR_LO")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(8);
+        let hi = std::env::var("SR_HI")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(20);
         (lo, hi)
     };
 
@@ -56,8 +62,7 @@ fn main() {
     );
     println!(
         "{:>4} {:>5} {:>5} | {:>10} {:>10} | {:>10} {:>10} | {:>9} {:>9}",
-        "C", "nbas", "naux", "qqr_kept", "qqr_pct",
-        "dense_coul", "dense_erfc", "qqr_erfc", "—",
+        "C", "nbas", "naux", "qqr_kept", "qqr_pct", "dense_coul", "dense_erfc", "qqr_erfc", "—",
     );
     println!(
         "{:>4} {:>5} {:>5} | {:>10} {:>10} | {:>10} {:>10} | {:>9} {:>9}",
@@ -104,15 +109,19 @@ fn main() {
 
         println!(
             "{:>4} {:>5} {:>5} | {:>10} {:>9.1}% | {:>10.3} {:>10.3} | {:>9.3} {:>9.2}",
-            n, nbas, naux, n_kept, 100.0 * n_kept as f64 / n_total as f64,
-            t_coul, t_erfc, t_qqr, spdup_vs_erfc,
+            n,
+            nbas,
+            naux,
+            n_kept,
+            100.0 * n_kept as f64 / n_total as f64,
+            t_coul,
+            t_erfc,
+            t_qqr,
+            spdup_vs_erfc,
         );
         // spdup* in the table = dense_erfc / qqr_erfc (the real Task-2 swap).
         // Also print the dense_coul/qqr_erfc number on a trailing comment line.
-        println!(
-            "{:>59}coul/qqr = {:.2}x",
-            "", spdup_vs_coul,
-        );
+        println!("{:>59}coul/qqr = {:.2}x", "", spdup_vs_coul,);
     }
 
     println!(

@@ -7,13 +7,13 @@ use crate::gradient::{rhf_gradient, rohf_gradient, uhf_gradient};
 use crate::ks_gradient::{ks_gradient_closed, ks_gradient_roks, ks_gradient_uks};
 use crate::rhf::{solve_rhf, RhfConfig};
 use crate::rohf::solve_rohf;
-use crate::uhf::solve_uhf;
 use crate::screening::SchwarzBounds;
+use crate::uhf::solve_uhf;
 use ferric_core::mol::Molecule;
+use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_core::parallel::ParallelContext;
 use ndarray::{Array1, Array2};
 
 /// Configuration for geometry optimization.
@@ -55,8 +55,11 @@ pub struct OptimizeResult {
 
 impl std::fmt::Display for OptimizeResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Optimized energy: {:.10} Ha ({} steps, converged: {})",
-            self.energy, self.steps, self.converged)
+        write!(
+            f,
+            "Optimized energy: {:.10} Ha ({} steps, converged: {})",
+            self.energy, self.steps, self.converged
+        )
     }
 }
 
@@ -122,18 +125,22 @@ fn run_bfgs(
     let x0 = flatten_molecule_coords(mol);
     let mol_template = mol.clone();
 
-    let (x_final, energy, steps, converged) =
-        optimize_coordinates(&x0, opt_config, |x| {
-            let mut m = mol_template.clone();
-            set_molecule_coords(&mut m, x);
-            let (e, grad_arr) = energy_and_gradient(&m)?;
-            Ok((e, flatten_gradient(&grad_arr).to_vec()))
-        })?;
+    let (x_final, energy, steps, converged) = optimize_coordinates(&x0, opt_config, |x| {
+        let mut m = mol_template.clone();
+        set_molecule_coords(&mut m, x);
+        let (e, grad_arr) = energy_and_gradient(&m)?;
+        Ok((e, flatten_gradient(&grad_arr).to_vec()))
+    })?;
 
     let mut current_mol = mol_template;
     set_molecule_coords(&mut current_mol, &x_final);
 
-    Ok(OptimizeResult { mol: current_mol, energy, steps, converged })
+    Ok(OptimizeResult {
+        mol: current_mol,
+        energy,
+        steps,
+        converged,
+    })
 }
 
 /// Coordinate-vector core of the BFGS driver: minimizes `f(x)` over a flat
@@ -175,11 +182,23 @@ pub fn optimize_coordinates(
 
         println!(
             "{:4} | {:11.8} | {:7.1e} | {:8.2e} | {:8.2e}",
-            step_idx, energy, if step_idx == 0 { 0.0 } else { energy - prev_energy }, g_max, g_rms
+            step_idx,
+            energy,
+            if step_idx == 0 {
+                0.0
+            } else {
+                energy - prev_energy
+            },
+            g_max,
+            g_rms
         );
 
         // Check convergence
-        if step_idx > 0 && e_diff < opt_config.e_conv && g_max < opt_config.g_max_thresh && g_rms < opt_config.g_rms_thresh {
+        if step_idx > 0
+            && e_diff < opt_config.e_conv
+            && g_max < opt_config.g_max_thresh
+            && g_rms < opt_config.g_rms_thresh
+        {
             converged = true;
             break;
         }
@@ -246,9 +265,25 @@ fn compute_energy_and_gradient(
     let bounds = SchwarzBounds::compute(op, &prep)?;
     let res = solve_rhf(ctx, mol, &prep, op, &bounds, rhf_config)?;
     let grad = if let Some(xc_name) = rhf_config.xc.as_deref() {
-        ks_gradient_closed(mol, &prep, &bs, op, &bounds, xc_name, &res, rhf_config.external_potential.as_ref())?
+        ks_gradient_closed(
+            mol,
+            &prep,
+            &bs,
+            op,
+            &bounds,
+            xc_name,
+            &res,
+            rhf_config.external_potential.as_ref(),
+        )?
     } else {
-        rhf_gradient(mol, &prep, op, &bounds, &res, rhf_config.external_potential.as_ref())?
+        rhf_gradient(
+            mol,
+            &prep,
+            op,
+            &bounds,
+            &res,
+            rhf_config.external_potential.as_ref(),
+        )?
     };
     Ok((res.energy, grad))
 }
@@ -347,7 +382,10 @@ mod tests {
         // Start from a stretched bond: 1.0 Angstrom = 1.89 Bohr
         let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 1.0\n", 0, 1).unwrap();
         let op = Operator::coulomb();
-        let rhf_config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+        let rhf_config = RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
         let opt_config = OptimizeConfig {
             trust_radius: 0.1,
             ..Default::default()
@@ -360,7 +398,10 @@ mod tests {
         let dist = (result.mol.atoms[0].zpos - result.mol.atoms[1].zpos).abs();
         eprintln!("H2/STO-3G optimized distance: {:.6} Bohr", dist);
         // STO-3G H2 bond length is ~1.346 Bohr
-        assert!((dist - 1.346).abs() < 1e-2, "dist = {dist}, expected ~1.346");
+        assert!(
+            (dist - 1.346).abs() < 1e-2,
+            "dist = {dist}, expected ~1.346"
+        );
     }
 
     /// F2-1 EXACTNESS ANCHOR. Pins the exact per-step energy trajectory
@@ -374,8 +415,14 @@ mod tests {
     fn test_optimize_h2_sto3g_step_energy_anchor() {
         let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 1.0\n", 0, 1).unwrap();
         let op = Operator::coulomb();
-        let rhf_config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
-        let opt_config = OptimizeConfig { trust_radius: 0.1, ..Default::default() };
+        let rhf_config = RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
+        let opt_config = OptimizeConfig {
+            trust_radius: 0.1,
+            ..Default::default()
+        };
         let ctx = ParallelContext::default();
 
         let result = optimize_geometry(&ctx, &mol, "sto-3g", op, &rhf_config, &opt_config).unwrap();
@@ -419,11 +466,12 @@ mod tests {
         //   O-H bond lengths (Bohr): 1.869732, 1.869731
         //   H-O-H angle (deg): 100.0258
         //   E_final = -74.9659011921 Ha
-        let mol = Molecule::parse_xyz(
-            "3\nH2O\nO 0 0 0\nH 0 0.9 0\nH 0 -0.3 0.85\n", 0, 1,
-        ).unwrap();
+        let mol = Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0.9 0\nH 0 -0.3 0.85\n", 0, 1).unwrap();
         let op = Operator::coulomb();
-        let rhf_config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+        let rhf_config = RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
         let opt_config = OptimizeConfig {
             trust_radius: 0.1,
             ..Default::default()
@@ -439,8 +487,14 @@ mod tests {
         let r1 = ((o.x - h1.x).powi(2) + (o.y - h1.y).powi(2) + (o.zpos - h1.zpos).powi(2)).sqrt();
         let r2 = ((o.x - h2.x).powi(2) + (o.y - h2.y).powi(2) + (o.zpos - h2.zpos).powi(2)).sqrt();
         eprintln!("H2O/STO-3G optimized O-H distances: {r1:.6}, {r2:.6} Bohr (ref 1.869732)");
-        assert!((r1 - 1.869732).abs() < 1e-2, "r1 = {r1}, expected ~1.869732");
-        assert!((r2 - 1.869732).abs() < 1e-2, "r2 = {r2}, expected ~1.869732");
+        assert!(
+            (r1 - 1.869732).abs() < 1e-2,
+            "r1 = {r1}, expected ~1.869732"
+        );
+        assert!(
+            (r2 - 1.869732).abs() < 1e-2,
+            "r2 = {r2}, expected ~1.869732"
+        );
     }
 
     #[test]
@@ -454,7 +508,10 @@ mod tests {
         // reasonable minimum.
         let mol = Molecule::parse_xyz("2\nH2+\nH 0 0 0\nH 0 0 1.5\n", 1, 2).unwrap();
         let op = Operator::coulomb();
-        let uhf_config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+        let uhf_config = RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
         let opt_config = OptimizeConfig {
             trust_radius: 0.1,
             ..Default::default()
@@ -465,10 +522,18 @@ mod tests {
             .unwrap()
             .0;
 
-        let result = optimize_geometry_uhf(&ctx, &mol, "sto-3g", op, &uhf_config, &opt_config).unwrap();
+        let result =
+            optimize_geometry_uhf(&ctx, &mol, "sto-3g", op, &uhf_config, &opt_config).unwrap();
 
-        assert!(result.converged, "UHF H2+ optimization did not converge in {} steps", result.steps);
-        assert!(result.steps > 0, "optimizer should take at least one step from a stretched start");
+        assert!(
+            result.converged,
+            "UHF H2+ optimization did not converge in {} steps",
+            result.steps
+        );
+        assert!(
+            result.steps > 0,
+            "optimizer should take at least one step from a stretched start"
+        );
         assert!(
             result.energy < e0,
             "optimized energy {} should be lower than initial energy {}",
@@ -477,14 +542,20 @@ mod tests {
         );
 
         let dist = (result.mol.atoms[0].zpos - result.mol.atoms[1].zpos).abs();
-        eprintln!("H2+/UHF/STO-3G optimized distance: {:.6} Bohr, energy: {:.10} Ha", dist, result.energy);
+        eprintln!(
+            "H2+/UHF/STO-3G optimized distance: {:.6} Bohr, energy: {:.10} Ha",
+            dist, result.energy
+        );
         // Independent PySCF UHF/STO-3G geomeTRIC-optimizer reference (2026-07-21):
         //   dist = 2.004215 Bohr, E = -0.5826966474 Ha
         // ferric matches to ~1e-9 Ha / <1e-6 Bohr -- tightened from the old
         // loose +-0.3 Bohr sanity band now that a real reference exists.
         const PYSCF_DIST: f64 = 2.004215;
         const PYSCF_E: f64 = -0.5826966474;
-        assert!((dist - PYSCF_DIST).abs() < 1e-3, "dist = {dist}, expected {PYSCF_DIST} (PySCF)");
+        assert!(
+            (dist - PYSCF_DIST).abs() < 1e-3,
+            "dist = {dist}, expected {PYSCF_DIST} (PySCF)"
+        );
         assert!(
             (result.energy - PYSCF_E).abs() < 1e-5,
             "energy = {}, expected {PYSCF_E} (PySCF)",
@@ -498,7 +569,10 @@ mod tests {
             compute_energy_and_gradient_uhf(&ctx, &result.mol, "sto-3g", op, &uhf_config).unwrap();
         let grad = flatten_gradient(&grad_arr);
         let g_max = grad.iter().map(|g| g.abs()).fold(0.0f64, f64::max);
-        assert!(g_max < opt_config.g_max_thresh, "final |g|_max = {g_max:.3e} not converged");
+        assert!(
+            g_max < opt_config.g_max_thresh,
+            "final |g|_max = {g_max:.3e} not converged"
+        );
     }
 
     #[test]
@@ -508,7 +582,10 @@ mod tests {
         // optimized with ROHF/STO-3G analytical gradients.
         let mol = Molecule::parse_xyz("2\nOH\nO 0 0 0\nH 0 0 1.3\n", 0, 2).unwrap();
         let op = Operator::coulomb();
-        let rohf_config = RhfConfig { energy_conv: 1e-10, ..Default::default() };
+        let rohf_config = RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        };
         let opt_config = OptimizeConfig {
             trust_radius: 0.1,
             ..Default::default()
@@ -519,10 +596,18 @@ mod tests {
             .unwrap()
             .0;
 
-        let result = optimize_geometry_rohf(&ctx, &mol, "sto-3g", op, &rohf_config, &opt_config).unwrap();
+        let result =
+            optimize_geometry_rohf(&ctx, &mol, "sto-3g", op, &rohf_config, &opt_config).unwrap();
 
-        assert!(result.converged, "ROHF OH optimization did not converge in {} steps", result.steps);
-        assert!(result.steps > 0, "optimizer should take at least one step from a stretched start");
+        assert!(
+            result.converged,
+            "ROHF OH optimization did not converge in {} steps",
+            result.steps
+        );
+        assert!(
+            result.steps > 0,
+            "optimizer should take at least one step from a stretched start"
+        );
         assert!(
             result.energy < e0,
             "optimized energy {} should be lower than initial energy {}",
@@ -564,9 +649,13 @@ mod tests {
         );
 
         let (_, grad_arr) =
-            compute_energy_and_gradient_rohf(&ctx, &result.mol, "sto-3g", op, &rohf_config).unwrap();
+            compute_energy_and_gradient_rohf(&ctx, &result.mol, "sto-3g", op, &rohf_config)
+                .unwrap();
         let grad = flatten_gradient(&grad_arr);
         let g_max = grad.iter().map(|g| g.abs()).fold(0.0f64, f64::max);
-        assert!(g_max < opt_config.g_max_thresh, "final |g|_max = {g_max:.3e} not converged");
+        assert!(
+            g_max < opt_config.g_max_thresh,
+            "final |g|_max = {g_max:.3e} not converged"
+        );
     }
 }

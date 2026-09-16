@@ -83,7 +83,10 @@ fn amplitude_linlccd_fails_fast_under_tiny_budget() {
         Ok(_) => panic!("amplitude LinLCCD should fail fast under tiny budget"),
     };
     let msg = err.to_string();
-    assert!(msg.contains("LinLCCD") && msg.contains("budget is"), "unexpected: {msg}");
+    assert!(
+        msg.contains("LinLCCD") && msg.contains("budget is"),
+        "unexpected: {msg}"
+    );
     assert!(msg.contains("memory plan"), "no plan breakdown: {msg}");
 }
 
@@ -122,7 +125,10 @@ fn amplitude_linlccd_full_charges_bvv_t() {
     let bvv_bytes = naux * nv * nv * 8;
     let budget = eri3_bytes + bvv_bytes / 2; // between "just eri3_ao" and "eri3_ao + bvv_t"
 
-    let cfg = AmplitudeLinLccdConfig { eri3_budget_bytes: Some(budget), ..Default::default() };
+    let cfg = AmplitudeLinLccdConfig {
+        eri3_budget_bytes: Some(budget),
+        ..Default::default()
+    };
 
     let refused_full = match amplitude_linlccd_with_virtuals(
         &mol,
@@ -160,7 +166,10 @@ fn amplitude_linlccd_ample_budget_still_runs() {
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
     )
     .unwrap();
     let vvhv = build_vvhv(&mol, &obs, &obs_bs, &rhf).unwrap();
@@ -170,7 +179,9 @@ fn amplitude_linlccd_ample_budget_still_runs() {
     };
     for variant in [LadderVariant::Hh, LadderVariant::Full] {
         let r = amplitude_linlccd_with_virtuals(&mol, &obs, &dfbs, op, &rhf, &cfg, variant, &vvhv)
-            .unwrap_or_else(|e| panic!("an ample 4 GiB budget must not be refused ({variant:?}): {e}"));
+            .unwrap_or_else(|e| {
+                panic!("an ample 4 GiB budget must not be refused ({variant:?}): {e}")
+            });
         assert!(r.e_corr.is_finite());
     }
 }

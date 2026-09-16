@@ -36,7 +36,10 @@ fn probe_aux_convergence_absolute() {
         &obs,
         opc,
         &bounds,
-        &RhfConfig { energy_conv: 1e-9, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-9,
+            ..Default::default()
+        },
     )
     .unwrap();
     let cfg = RiMp2Config::default();

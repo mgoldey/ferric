@@ -40,14 +40,23 @@ fn testdata(rel: &str) -> String {
 }
 
 fn env_flag(name: &str) -> bool {
-    matches!(std::env::var(name).ok().as_deref(), Some("1") | Some("true") | Some("yes"))
+    matches!(
+        std::env::var(name).ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    )
 }
 
 fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     (a - b).mapv(f64::abs).fold(0.0_f64, |m, &v| m.max(v))
 }
 
-fn build_k(ctx: &ParallelContext, mol: &Molecule, prep: &PreparedBasis, cfg: CosxConfig, d: &Array2<f64>) -> (Array2<f64>, ferric_scf::cosx_k::CosxTimings, f64) {
+fn build_k(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    cfg: CosxConfig,
+    d: &Array2<f64>,
+) -> (Array2<f64>, ferric_scf::cosx_k::CosxTimings, f64) {
     let n = prep.nbasis();
     let mut kb = CosxK::new(ctx, mol, prep, cfg, usize::MAX).expect("CosxK::new");
     let mut k = Array2::zeros((n, n));
@@ -77,7 +86,10 @@ fn cosx_screen_sweep_cell() {
     let op = Operator::coulomb();
     let ctx = ParallelContext::default();
     let schwarz = SchwarzBounds::compute(op, &prep).expect("schwarz");
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("pool");
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .expect("pool");
 
     // DF-JK: the default convergence (energy_conv is a sanity bound; a tight
     // one is unreachable on the RI noise floor). Direct: tighter is cheap.
@@ -88,12 +100,21 @@ fn cosx_screen_sweep_cell() {
             ..Default::default()
         }
     } else {
-        RhfConfig { energy_conv: 1e-10, density_conv: 1e-8, ..Default::default() }
+        RhfConfig {
+            energy_conv: 1e-10,
+            density_conv: 1e-8,
+            ..Default::default()
+        }
     };
     let res = solve_rhf(&ctx, &mol, &prep, op, &schwarz, &scf_cfg).expect("rhf");
     assert!(res.converged, "reference RHF did not converge");
     let d = res.density_total.clone();
-    println!("\n=== COSX screen sweep: {system} / {basis}  natoms={} nsh={} nbf={nbf}  E={:.8} ===", mol.atoms.len(), prep.nshells(), res.energy);
+    println!(
+        "\n=== COSX screen sweep: {system} / {basis}  natoms={} nsh={} nbf={nbf}  E={:.8} ===",
+        mol.atoms.len(),
+        prep.nshells(),
+        res.energy
+    );
 
     let k_direct = env_flag("COSX_SS_DIRECT").then(|| {
         let mut j = Array2::zeros((nbf, nbf));
@@ -102,7 +123,18 @@ fn cosx_screen_sweep_cell() {
         k
     });
 
-    let (k_un, t_un, w_un) = pool.install(|| build_k(&ctx, &mol, &prep, CosxConfig { screen_thresh: None, ..CosxConfig::default() }, &d));
+    let (k_un, t_un, w_un) = pool.install(|| {
+        build_k(
+            &ctx,
+            &mol,
+            &prep,
+            CosxConfig {
+                screen_thresh: None,
+                ..CosxConfig::default()
+            },
+            &d,
+        )
+    });
     let grid_err = k_direct.as_ref().map(|kd| max_abs_diff(&k_un, kd));
     println!(
         "unscreened: wall {w_un:.3} s (A-build {:.3} s = {:.1}%), pairs {}/{}; grid error vs direct K = {}",
@@ -114,7 +146,18 @@ fn cosx_screen_sweep_cell() {
     );
     println!("ROWHDR | system | basis | t | max|dK| | dK/grid_err | kept_dd | kept_geom | wall_s | A_build_s | speedup");
     for &t in &threshes {
-        let (k_sc, ts, w_sc) = pool.install(|| build_k(&ctx, &mol, &prep, CosxConfig { screen_thresh: Some(t), ..CosxConfig::default() }, &d));
+        let (k_sc, ts, w_sc) = pool.install(|| {
+            build_k(
+                &ctx,
+                &mol,
+                &prep,
+                CosxConfig {
+                    screen_thresh: Some(t),
+                    ..CosxConfig::default()
+                },
+                &d,
+            )
+        });
         let dev = max_abs_diff(&k_un, &k_sc);
         let kept = ts.pairs_kept as f64 / ts.pairs_total as f64;
         let geom = ts.pairs_kept_geom as f64 / ts.pairs_total as f64;

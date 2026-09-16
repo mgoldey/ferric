@@ -65,19 +65,26 @@ impl PreparedBasis {
         // ECP table so it is correct even if the caller did not call
         // `Molecule::apply_ecp`. The basis-set SHELL lookup below still uses the
         // REAL `atom.z`, so ghost/ECP atoms keep their full basis.
-        let c_atoms: Vec<CAtom> = mol.atoms.iter().map(|a| {
-            let z_eff = if a.ghost {
-                0
-            } else {
-                match bs.ecp_for_element(a.z) {
-                    Some(def) => a.z - def.n_core,
-                    None => a.z,
+        let c_atoms: Vec<CAtom> = mol
+            .atoms
+            .iter()
+            .map(|a| {
+                let z_eff = if a.ghost {
+                    0
+                } else {
+                    match bs.ecp_for_element(a.z) {
+                        Some(def) => a.z - def.n_core,
+                        None => a.z,
+                    }
+                };
+                CAtom {
+                    atomic_number: z_eff as f64,
+                    x: a.x,
+                    y: a.y,
+                    z: a.zpos,
                 }
-            };
-            CAtom {
-                atomic_number: z_eff as f64, x: a.x, y: a.y, z: a.zpos,
-            }
-        }).collect();
+            })
+            .collect();
 
         let mut c_shells = Vec::new();
         let mut shell_to_atom = Vec::new();
@@ -173,33 +180,58 @@ impl PreparedBasis {
     }
 
     /// Get the underlying basis set used to build this prepared basis.
-    pub fn basis_set(&self) -> &BasisSet { &self.basis_set }
+    pub fn basis_set(&self) -> &BasisSet {
+        &self.basis_set
+    }
     /// Raw pointer to the C++ basis handle (for FFI calls).
-    pub fn handle(&self) -> *const c_void { self.handle }
+    pub fn handle(&self) -> *const c_void {
+        self.handle
+    }
     /// Atom array passed to libint2.
-    pub fn atoms(&self) -> &[CAtom] { &self.atoms }
+    pub fn atoms(&self) -> &[CAtom] {
+        &self.atoms
+    }
     /// Total number of basis functions.
-    pub fn nbasis(&self) -> usize { self.nbasis }
+    pub fn nbasis(&self) -> usize {
+        self.nbasis
+    }
     /// Number of shells.
-    pub fn nshells(&self) -> usize { self.nshells }
+    pub fn nshells(&self) -> usize {
+        self.nshells
+    }
     /// Number of basis functions per shell.
-    pub fn shell_dims(&self) -> &[usize] { &self.shell_dims }
+    pub fn shell_dims(&self) -> &[usize] {
+        &self.shell_dims
+    }
     /// Cumulative offset of each shell into the full basis (length nshells+1).
-    pub fn shell_offsets(&self) -> &[usize] { &self.shell_offsets }
+    pub fn shell_offsets(&self) -> &[usize] {
+        &self.shell_offsets
+    }
     /// Atom index that each shell belongs to.
-    pub fn shell_to_atom(&self) -> &[usize] { &self.shell_to_atom }
+    pub fn shell_to_atom(&self) -> &[usize] {
+        &self.shell_to_atom
+    }
     /// Number of atoms.
-    pub fn natoms(&self) -> usize { self.atoms.len() }
+    pub fn natoms(&self) -> usize {
+        self.atoms.len()
+    }
     /// Maximum number of primitives across all shells.
-    pub fn max_nprim(&self) -> i32 { self.max_nprim }
+    pub fn max_nprim(&self) -> i32 {
+        self.max_nprim
+    }
     /// Maximum angular momentum across all shells.
-    pub fn max_l(&self) -> i32 { self.max_l }
+    pub fn max_l(&self) -> i32 {
+        self.max_l
+    }
     /// Cartesian center of each shell (from its atom).
     pub fn shell_centers(&self) -> Vec<[f64; 3]> {
-        self.shell_to_atom.iter().map(|&ai| {
-            let a = &self.atoms[ai];
-            [a.x, a.y, a.z]
-        }).collect()
+        self.shell_to_atom
+            .iter()
+            .map(|&ai| {
+                let a = &self.atoms[ai];
+                [a.x, a.y, a.z]
+            })
+            .collect()
     }
     /// The shells of this basis, in `PreparedBasis` shell order, as located
     /// shells (angular momentum, pure flag, primitive exponents and the

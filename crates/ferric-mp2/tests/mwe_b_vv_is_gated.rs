@@ -90,8 +90,8 @@ fn the_b_vv_flag_changes_the_charge() {
 /// amount would satisfy CONTRACT 1 while still admitting an 8 GB allocation.
 #[test]
 fn the_b_vv_charge_is_the_full_block() {
-    let delta = mo_side_alloc_bytes(NAUX, NOCC, NVIR, true)
-        - mo_side_alloc_bytes(NAUX, NOCC, NVIR, false);
+    let delta =
+        mo_side_alloc_bytes(NAUX, NOCC, NVIR, true) - mo_side_alloc_bytes(NAUX, NOCC, NVIR, false);
     assert_eq!(
         delta,
         NAUX * NVIR * NVIR * F64,
@@ -123,10 +123,10 @@ fn b_vv_dominates_the_occupied_block() {
 /// cannot distinguish.
 #[test]
 fn the_b_vv_charge_is_quadratic_in_nvir() {
-    let base = mo_side_alloc_bytes(NAUX, NOCC, 100, true)
-        - mo_side_alloc_bytes(NAUX, NOCC, 100, false);
-    let doubled = mo_side_alloc_bytes(NAUX, NOCC, 200, true)
-        - mo_side_alloc_bytes(NAUX, NOCC, 200, false);
+    let base =
+        mo_side_alloc_bytes(NAUX, NOCC, 100, true) - mo_side_alloc_bytes(NAUX, NOCC, 100, false);
+    let doubled =
+        mo_side_alloc_bytes(NAUX, NOCC, 200, true) - mo_side_alloc_bytes(NAUX, NOCC, 200, false);
     assert_eq!(
         doubled,
         4 * base,

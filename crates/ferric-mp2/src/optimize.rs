@@ -64,7 +64,11 @@ pub fn optimize_geometry_rimp2(
     while step_idx < opt_config.max_steps {
         let g_max = grad.iter().map(|g| g.abs()).fold(0.0f64, f64::max);
         let g_rms = (grad.iter().map(|g| g * g).sum::<f64>() / n_coord as f64).sqrt();
-        let de = if step_idx == 0 { 0.0 } else { energy - prev_energy };
+        let de = if step_idx == 0 {
+            0.0
+        } else {
+            energy - prev_energy
+        };
 
         println!(
             "{:4} | {:12.8} | {:+8.1e} | {:8.2e} | {:8.2e}",
@@ -111,8 +115,7 @@ pub fn optimize_geometry_rimp2(
             let term1 = (ys + yhy) * rho * rho;
             for i in 0..n_coord {
                 for j in 0..n_coord {
-                    h_inv[(i, j)] +=
-                        term1 * s[i] * s[j] - rho * (hy[i] * s[j] + s[i] * hy[j]);
+                    h_inv[(i, j)] += term1 * s[i] * s[j] - rho * (hy[i] * s[j] + s[i] * hy[j]);
                 }
             }
         } else {
@@ -164,15 +167,26 @@ mod tests {
         let op = Operator::coulomb();
         let obs_basis = basis::bundled("sto-3g").unwrap();
         let aux_basis = basis::bundled("cc-pvdz-ri").unwrap();
-        let mp2_config = RiMp2Config { frozen_core: 0, memory_budget_bytes: None, ..Default::default() };
+        let mp2_config = RiMp2Config {
+            frozen_core: 0,
+            memory_budget_bytes: None,
+            ..Default::default()
+        };
         let opt_config = OptimizeConfig {
             trust_radius: 0.1,
             ..Default::default()
         };
 
-        let result =
-            optimize_geometry_rimp2(&mol, &obs_basis, &aux_basis, op, &mp2_config, &opt_config, None)
-                .unwrap();
+        let result = optimize_geometry_rimp2(
+            &mol,
+            &obs_basis,
+            &aux_basis,
+            op,
+            &mp2_config,
+            &opt_config,
+            None,
+        )
+        .unwrap();
 
         assert!(result.converged);
         let dist = (result.mol.atoms[0].zpos - result.mol.atoms[1].zpos).abs();
@@ -181,6 +195,9 @@ mod tests {
         // modestly (H2/STO-3G has only one virtual so MP2 correlation is small,
         // but the geometry must still be physically reasonable, not NaN/wild).
         assert!(dist.is_finite());
-        assert!((0.8..2.5).contains(&dist), "dist = {dist}, expected a reasonable H2 bond length");
+        assert!(
+            (0.8..2.5).contains(&dist),
+            "dist = {dist}, expected a reasonable H2 bond length"
+        );
     }
 }

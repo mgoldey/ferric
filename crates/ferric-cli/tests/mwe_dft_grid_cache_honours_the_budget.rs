@@ -65,7 +65,9 @@ fn workspace_root() -> PathBuf {
 /// unfixed tree.
 fn run_dft(tag: &str, budget_gb: &str) -> (bool, String, String) {
     let root = workspace_root();
-    let path = root.join("target").join(format!("mwe_dft_grid_budget_{tag}.toml"));
+    let path = root
+        .join("target")
+        .join(format!("mwe_dft_grid_budget_{tag}.toml"));
     std::fs::write(
         &path,
         format!(

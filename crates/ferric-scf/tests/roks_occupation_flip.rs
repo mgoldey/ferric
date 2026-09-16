@@ -63,9 +63,16 @@ fn roks_pbe_converges_with_mom() {
 
     let res = solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg)
         .expect("ROKS/PBE with MOM must converge");
-    eprintln!("ROKS/PBE + MOM: converged={} iters={} E={:.10}", res.converged, res.iterations, res.energy);
+    eprintln!(
+        "ROKS/PBE + MOM: converged={} iters={} E={:.10}",
+        res.converged, res.iterations, res.energy
+    );
 
-    assert!(res.converged, "ROKS/PBE with MOM did not converge in {} iterations", res.iterations);
+    assert!(
+        res.converged,
+        "ROKS/PBE with MOM did not converge in {} iterations",
+        res.iterations
+    );
     // STATE DISCRIMINATION, not reference reproduction.
     //
     // Per the module doc: a broken fix converges happily at the SPURIOUS state
@@ -100,7 +107,11 @@ fn roks_pbe_converges_with_mom() {
          {OH_PBE_ENERGY:.10} (d={d_ground:.3e}) to be that state at all",
         res.energy
     );
-    assert!(res.iterations < 30, "took {} iterations; MOM should settle quickly", res.iterations);
+    assert!(
+        res.iterations < 30,
+        "took {} iterations; MOM should settle quickly",
+        res.iterations
+    );
 }
 
 /// Hybrid and range-separated ROKS converge WITHOUT MOM.
@@ -123,9 +134,20 @@ fn roks_hybrids_converge_without_mom() {
         };
         let res = solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg)
             .unwrap_or_else(|e| panic!("ROKS/{xc} errored: {e:?}"));
-        eprintln!("ROKS/{xc}: converged={} iters={} E={:.10}", res.converged, res.iterations, res.energy);
-        assert!(res.converged, "ROKS/{xc} must converge without MOM (took {})", res.iterations);
-        assert!(res.iterations < 30, "ROKS/{xc} took {} iterations", res.iterations);
+        eprintln!(
+            "ROKS/{xc}: converged={} iters={} E={:.10}",
+            res.converged, res.iterations, res.energy
+        );
+        assert!(
+            res.converged,
+            "ROKS/{xc} must converge without MOM (took {})",
+            res.iterations
+        );
+        assert!(
+            res.iterations < 30,
+            "ROKS/{xc} took {} iterations",
+            res.iterations
+        );
     }
 }
 
@@ -134,10 +156,21 @@ fn roks_hybrids_converge_without_mom() {
 fn plain_rohf_converges() {
     let (mol, obs, bounds) = oh_doublet();
     let ctx = ParallelContext::default();
-    let cfg = RhfConfig { density_conv: 1e-8, max_iter: 100, ..Default::default() };
+    let cfg = RhfConfig {
+        density_conv: 1e-8,
+        max_iter: 100,
+        ..Default::default()
+    };
 
     let res = solve_rohf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &cfg).unwrap();
-    eprintln!("ROHF: converged={} iters={} E={:.10}", res.converged, res.iterations, res.energy);
+    eprintln!(
+        "ROHF: converged={} iters={} E={:.10}",
+        res.converged, res.iterations, res.energy
+    );
     assert!(res.converged, "plain ROHF must converge");
-    assert!(res.iterations < 20, "ROHF took {} iterations", res.iterations);
+    assert!(
+        res.iterations < 20,
+        "ROHF took {} iterations",
+        res.iterations
+    );
 }

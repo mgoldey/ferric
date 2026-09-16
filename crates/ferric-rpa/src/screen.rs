@@ -56,9 +56,10 @@
 
 use crate::boys_localize::boys_localize_occupied;
 use ferric_core::linalg::{eigh_dc, Uplo};
-use ferric_core::FerricError;
 use ferric_core::mol::Molecule;
+use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
+use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::engine::Engine;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::schwarz;
@@ -66,7 +67,6 @@ use ferric_integrals::threeindex;
 use ferric_scf::ScfResult;
 use ndarray::{s, Array2};
 use ndarray_linalg::{Cholesky, UPLO};
-use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 
 /// Sparse representation of (P | i_loc, a) integrals on Boys-localized
 /// occupied orbitals.
@@ -184,7 +184,10 @@ pub fn build_screened_bov(
     let naux = dfbs.nbasis();
     let nvir = nbas - nocc_total;
     let nocc_loc = c_occ_loc.ncols();
-    assert_eq!(nocc_loc, nocc_active, "c_occ_loc must have nocc_active columns");
+    assert_eq!(
+        nocc_loc, nocc_active,
+        "c_occ_loc must have nocc_active columns"
+    );
     let _ = first_occ;
 
     // V^{-1/2} dressing.
@@ -411,7 +414,11 @@ pub fn build_screened_bov(
             .iter()
             .map(|&(s_mu, s_nu, b_munu)| {
                 let base = b_munu * q_obs[(s_mu, s_nu)];
-                if s_mu != s_nu { 2.0 * base } else { base }
+                if s_mu != s_nu {
+                    2.0 * base
+                } else {
+                    base
+                }
             })
             .sum();
 

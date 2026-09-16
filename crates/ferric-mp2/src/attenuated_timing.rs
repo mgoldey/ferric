@@ -8,6 +8,9 @@
 mod tests {
     use std::time::Instant;
 
+    use crate::attenuated::BOHR_INV_PER_ANG_INV;
+    use crate::mo_transform::transform_3center_ov;
+    use crate::rimp2::{cholesky_inverse_sqrt, SpinComponents};
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
     use ferric_core::parallel::ParallelContext;
@@ -17,22 +20,19 @@ mod tests {
     use ferric_integrals::threeindex;
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
-    use crate::attenuated::BOHR_INV_PER_ANG_INV;
-    use crate::mo_transform::transform_3center_ov;
-    use crate::rimp2::{cholesky_inverse_sqrt, SpinComponents};
 
     fn run_decane(obs_name: &str, aux_name: &str) {
         let mol = Molecule::load_xyz("../../testdata/molecules/alkane_10.xyz").unwrap();
-        let obs_bs  = basis::bundled(obs_name).unwrap();
+        let obs_bs = basis::bundled(obs_name).unwrap();
         let dfbs_bs = basis::bundled(aux_name).unwrap();
         let op_c = Operator::coulomb();
         let omega = 0.420 * BOHR_INV_PER_ANG_INV; // 0.420 Å⁻¹
         let op_e = Operator::erfc(omega);
 
-        let obs  = PreparedBasis::new(&mol, &obs_bs).unwrap();
+        let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
 
-        let nbf  = obs.nbasis();
+        let nbf = obs.nbasis();
         let naux = dfbs.nbasis();
         let nocc_total = mol.nelec() as usize / 2;
         let nvir = nbf - nocc_total;
@@ -42,9 +42,14 @@ mod tests {
         let t = Instant::now();
         let bounds_rhf = SchwarzBounds::compute(op_c, &obs).unwrap();
         let rhf = solve_rhf(
-            &ParallelContext::default(), &mol, &obs, op_c, &bounds_rhf,
+            &ParallelContext::default(),
+            &mol,
+            &obs,
+            op_c,
+            &bounds_rhf,
             &RhfConfig::default(),
-        ).unwrap();
+        )
+        .unwrap();
         let t_rhf = t.elapsed();
         let c = rhf.mos_r();
         let c_occ = c.slice(ndarray::s![.., ..nocc]).to_owned();
@@ -52,9 +57,15 @@ mod tests {
         let eps = rhf.eps_r();
 
         println!("\n{obs_name}/{aux_name}  nbf={nbf} naux={naux} nocc={nocc} nvir={nvir}");
-        println!("Step 0  RHF:                    {:>8.1} ms", t_rhf.as_secs_f64()*1e3);
+        println!(
+            "Step 0  RHF:                    {:>8.1} ms",
+            t_rhf.as_secs_f64() * 1e3
+        );
         println!();
-        println!("{:<30} {:>12} {:>12} {:>12}", "Step", "Coulomb", "erfc(dense)", "erfc(screen)");
+        println!(
+            "{:<30} {:>12} {:>12} {:>12}",
+            "Step", "Coulomb", "erfc(dense)", "erfc(screen)"
+        );
         println!("{}", "-".repeat(68));
 
         // Helper: run all 5 steps for one operator and screening choice.
@@ -99,19 +110,27 @@ mod tests {
                 for j in 0..nocc {
                     for a in 0..nvir {
                         for b in 0..nvir {
-                            let ia = i*nvir+a; let jb = j*nvir+b;
-                            let ib = i*nvir+b; let ja = j*nvir+a;
-                            let iajb: f64 = (0..naux).map(|p| b_flat[(p,ia)]*b_flat[(p,jb)]).sum();
-                            let ibja: f64 = (0..naux).map(|p| b_flat[(p,ib)]*b_flat[(p,ja)]).sum();
-                            let d = eps[i]+eps[j]-eps[nocc_total+a]-eps[nocc_total+b];
-                            e_os += iajb*iajb/d;
-                            e_ss += iajb*(iajb-ibja)/d;
+                            let ia = i * nvir + a;
+                            let jb = j * nvir + b;
+                            let ib = i * nvir + b;
+                            let ja = j * nvir + a;
+                            let iajb: f64 =
+                                (0..naux).map(|p| b_flat[(p, ia)] * b_flat[(p, jb)]).sum();
+                            let ibja: f64 =
+                                (0..naux).map(|p| b_flat[(p, ib)] * b_flat[(p, ja)]).sum();
+                            let d = eps[i] + eps[j] - eps[nocc_total + a] - eps[nocc_total + b];
+                            e_os += iajb * iajb / d;
+                            e_ss += iajb * (iajb - ibja) / d;
                         }
                     }
                 }
             }
             ts[4] = t5.elapsed().as_secs_f64() * 1e3;
-            let _ = SpinComponents { e_os, e_ss, e_total: e_os+e_ss };
+            let _ = SpinComponents {
+                e_os,
+                e_ss,
+                e_total: e_os + e_ss,
+            };
 
             if screen_thresh.is_some() {
                 eprintln!("  3-center kept {n_kept}/{n_total} ({pct:.0}%)");
@@ -131,17 +150,25 @@ mod tests {
             "Step 5  Energy assembly",
         ];
         for (i, lbl) in labels.iter().enumerate() {
-            println!("{:<30} {:>10.1}ms {:>10.1}ms {:>10.1}ms",
-                lbl, tc[i], te[i], ts[i]);
+            println!(
+                "{:<30} {:>10.1}ms {:>10.1}ms {:>10.1}ms",
+                lbl, tc[i], te[i], ts[i]
+            );
         }
         let sum_c: f64 = tc.iter().sum();
         let sum_e: f64 = te.iter().sum();
         let sum_s: f64 = ts.iter().sum();
-        println!("{:<30} {:>10.1}ms {:>10.1}ms {:>10.1}ms",
-            "TOTAL (post-RHF)", sum_c, sum_e, sum_s);
-        println!("{:<30} {:>10}    {:>10.2}x {:>10.2}x",
-            "Speedup vs Coulomb", "1.00x",
-            sum_c/sum_e, sum_c/sum_s);
+        println!(
+            "{:<30} {:>10.1}ms {:>10.1}ms {:>10.1}ms",
+            "TOTAL (post-RHF)", sum_c, sum_e, sum_s
+        );
+        println!(
+            "{:<30} {:>10}    {:>10.2}x {:>10.2}x",
+            "Speedup vs Coulomb",
+            "1.00x",
+            sum_c / sum_e,
+            sum_c / sum_s
+        );
     }
 
     #[test]

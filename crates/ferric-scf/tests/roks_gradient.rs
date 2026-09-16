@@ -37,11 +37,21 @@ fn cfg(xc: &str) -> RhfConfig {
 /// doublet OH at FD-displaced geometries — MOM pins the SOMO identity and
 /// breaks the DIIS oscillation that used to keep those two cases above
 /// density_conv (see mom-fixes-oh-lda-plateau).
-fn run_one(mol: &Molecule, prep: &PreparedBasis, bounds: &SchwarzBounds, cfg: &RhfConfig)
-    -> ferric_scf::result::ScfResult
-{
-    solve_rohf(&ParallelContext::default(), mol, prep, Operator::coulomb(), bounds, cfg)
-        .unwrap_or_else(|e| panic!("ROKS unexpected error: {e:?}"))
+fn run_one(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    cfg: &RhfConfig,
+) -> ferric_scf::result::ScfResult {
+    solve_rohf(
+        &ParallelContext::default(),
+        mol,
+        prep,
+        Operator::coulomb(),
+        bounds,
+        cfg,
+    )
+    .unwrap_or_else(|e| panic!("ROKS unexpected error: {e:?}"))
 }
 
 fn fd_gradient(xyz: &str, mult: usize, basis_name: &str, xc: &str, delta: f64) -> Array2<f64> {
@@ -55,9 +65,18 @@ fn fd_gradient(xyz: &str, mult: usize, basis_name: &str, xc: &str, delta: f64) -
             let mut mol_p = mol.clone();
             let mut mol_m = mol.clone();
             match coord {
-                0 => { mol_p.atoms[atom].x += delta; mol_m.atoms[atom].x -= delta; }
-                1 => { mol_p.atoms[atom].y += delta; mol_m.atoms[atom].y -= delta; }
-                _ => { mol_p.atoms[atom].zpos += delta; mol_m.atoms[atom].zpos -= delta; }
+                0 => {
+                    mol_p.atoms[atom].x += delta;
+                    mol_m.atoms[atom].x -= delta;
+                }
+                1 => {
+                    mol_p.atoms[atom].y += delta;
+                    mol_m.atoms[atom].y -= delta;
+                }
+                _ => {
+                    mol_p.atoms[atom].zpos += delta;
+                    mol_m.atoms[atom].zpos -= delta;
+                }
             }
             let prep_p = PreparedBasis::new(&mol_p, &bs).unwrap();
             let bounds_p = SchwarzBounds::compute(Operator::coulomb(), &prep_p).unwrap();
@@ -87,10 +106,14 @@ fn run_case(label: &str, xc: &str, xyz: &str, mult: usize, basis_name: &str, tol
     for a in 0..mol.atoms.len() {
         for c in 0..3 {
             let diff = (g_ana[(a, c)] - g_fd[(a, c)]).abs();
-            if diff > max_diff { max_diff = diff; }
+            if diff > max_diff {
+                max_diff = diff;
+            }
             eprintln!(
                 "  atom={a} coord={c}: ana={:+.6e} fd={:+.6e} diff={:.2e}",
-                g_ana[(a, c)], g_fd[(a, c)], diff
+                g_ana[(a, c)],
+                g_fd[(a, c)],
+                diff
             );
         }
     }
@@ -106,8 +129,14 @@ fn run_case(label: &str, xc: &str, xyz: &str, mult: usize, basis_name: &str, tol
 // OH stretched to 1.10 Å so the gradient is well above FD noise.
 #[test]
 fn roks_grad_oh_ccpvdz_b3lyp() {
-    run_case("OH/cc-pVDZ", "B3LYP",
-             "2\nOH\nO 0 0 0\nH 0 0 1.10\n", 2, "cc-pvdz", 5e-3);
+    run_case(
+        "OH/cc-pVDZ",
+        "B3LYP",
+        "2\nOH\nO 0 0 0\nH 0 0 1.10\n",
+        2,
+        "cc-pvdz",
+        5e-3,
+    );
 }
 
 // LDA / PBE ROKS on doublet OH used to plateau at err_max ~ 1e-3 and were
@@ -115,18 +144,36 @@ fn roks_grad_oh_ccpvdz_b3lyp() {
 // analytic-vs-FD agrees to ~1.1e-3 Ha/Bohr, well under the 5e-3 tol.
 #[test]
 fn roks_grad_oh_ccpvdz_pbe() {
-    run_case("OH/cc-pVDZ", "PBE",
-             "2\nOH\nO 0 0 0\nH 0 0 1.10\n", 2, "cc-pvdz", 5e-3);
+    run_case(
+        "OH/cc-pVDZ",
+        "PBE",
+        "2\nOH\nO 0 0 0\nH 0 0 1.10\n",
+        2,
+        "cc-pvdz",
+        5e-3,
+    );
 }
 
 #[test]
 fn roks_grad_oh_ccpvdz_lda() {
-    run_case("OH/cc-pVDZ", "LDA",
-             "2\nOH\nO 0 0 0\nH 0 0 1.10\n", 2, "cc-pvdz", 5e-3);
+    run_case(
+        "OH/cc-pVDZ",
+        "LDA",
+        "2\nOH\nO 0 0 0\nH 0 0 1.10\n",
+        2,
+        "cc-pvdz",
+        5e-3,
+    );
 }
 
 #[test]
 fn roks_rsh_grad_oh_ccpvdz_wb97x_v() {
-    run_case("OH/cc-pVDZ", "wB97X-V",
-             "2\nOH\nO 0 0 0\nH 0 0 1.10\n", 2, "cc-pvdz", 5e-3);
+    run_case(
+        "OH/cc-pVDZ",
+        "wB97X-V",
+        "2\nOH\nO 0 0 0\nH 0 0 1.10\n",
+        2,
+        "cc-pvdz",
+        5e-3,
+    );
 }

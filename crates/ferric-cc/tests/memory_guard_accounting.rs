@@ -45,8 +45,8 @@ use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::result::ScfResult;
+use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
 const H2O: &str = "3\n\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n";
@@ -74,7 +74,13 @@ fn setup(xyz: &str, obs_name: &str, aux_name: &str) -> Setup {
         &RhfConfig::default(),
     )
     .unwrap();
-    Setup { mol, obs, dfbs, op, rhf }
+    Setup {
+        mol,
+        obs,
+        dfbs,
+        op,
+        rhf,
+    }
 }
 
 /// `eri3_ao`'s own size, from the basis dimensions. NOT a restatement of the
@@ -106,7 +112,11 @@ fn linlccd_guard_charges_eri3_ao_for_every_variant() {
     // A large aux basis makes eri3_ao the dominant term.
     let s = setup(H2O, "sto-3g", "def2-qzvpp-rifit");
     let probe = eri3_ao_bytes(&s);
-    for variant in [LadderVariant::DriversOnly, LadderVariant::Hh, LadderVariant::Full] {
+    for variant in [
+        LadderVariant::DriversOnly,
+        LadderVariant::Hh,
+        LadderVariant::Full,
+    ] {
         assert!(
             refused(&s, variant, probe),
             "LinLCCD {variant:?} accepted a budget of exactly eri3_ao's own size \
@@ -127,12 +137,26 @@ fn linlccd_refusal_names_the_terms() {
         memory_budget_bytes: Some(1024),
         ..Default::default()
     };
-    let err = linlccd(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &cfg, LadderVariant::Full)
-        .expect_err("a 1 KB budget must be refused");
+    let err = linlccd(
+        &s.mol,
+        &s.obs,
+        &s.dfbs,
+        s.op,
+        &s.rhf,
+        &cfg,
+        LadderVariant::Full,
+    )
+    .expect_err("a 1 KB budget must be refused");
     let msg = err.to_string();
     assert!(msg.contains("memory plan"), "no plan breakdown: {msg}");
-    assert!(msg.contains("eri3_ao"), "breakdown must name eri3_ao: {msg}");
-    assert!(msg.contains("LinLCCD"), "breakdown must name the method: {msg}");
+    assert!(
+        msg.contains("eri3_ao"),
+        "breakdown must name eri3_ao: {msg}"
+    );
+    assert!(
+        msg.contains("LinLCCD"),
+        "breakdown must name the method: {msg}"
+    );
 }
 
 /// The variant conditioning must be PRESERVED: `DriversOnly` and `Hh` never
@@ -168,8 +192,14 @@ fn linlccd_does_not_charge_blocks_the_variant_never_builds() {
     );
 
     let full = refusal(LadderVariant::Full);
-    assert!(full.contains("v_vvvv"), "Full DOES build the pp ladder: {full}");
-    assert!(full.contains("v_oooo"), "Full DOES build the hh ladder: {full}");
+    assert!(
+        full.contains("v_vvvv"),
+        "Full DOES build the pp ladder: {full}"
+    );
+    assert!(
+        full.contains("v_oooo"),
+        "Full DOES build the hh ladder: {full}"
+    );
 }
 
 /// An ample budget must still run AND give the identical energy. This pass only
@@ -178,10 +208,18 @@ fn linlccd_does_not_charge_blocks_the_variant_never_builds() {
 #[test]
 fn linlccd_ample_budget_runs_and_energy_is_unchanged() {
     let s = setup(H2O, "sto-3g", "cc-pvdz-ri");
-    let base = CcConfig { frozen_core: 0, max_iter: 60, energy_conv: 1e-9, ..Default::default() };
-    for variant in [LadderVariant::DriversOnly, LadderVariant::Hh, LadderVariant::Full] {
-        let unbudgeted =
-            linlccd(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &base, variant).unwrap();
+    let base = CcConfig {
+        frozen_core: 0,
+        max_iter: 60,
+        energy_conv: 1e-9,
+        ..Default::default()
+    };
+    for variant in [
+        LadderVariant::DriversOnly,
+        LadderVariant::Hh,
+        LadderVariant::Full,
+    ] {
+        let unbudgeted = linlccd(&s.mol, &s.obs, &s.dfbs, s.op, &s.rhf, &base, variant).unwrap();
         let budgeted = linlccd(
             &s.mol,
             &s.obs,

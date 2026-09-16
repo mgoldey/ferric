@@ -68,7 +68,8 @@ fn dist(a: &[f64; 3], b: &[f64; 3]) -> f64 {
 fn decay_envelope(m: &Array2<f64>, centers: &[[f64; 3]]) -> Vec<(f64, f64, f64, usize)> {
     let n = m.dim().0;
     let bin_w = 1.0_f64; // Bohr
-    let mut sums: std::collections::BTreeMap<i64, (f64, f64, usize)> = std::collections::BTreeMap::new();
+    let mut sums: std::collections::BTreeMap<i64, (f64, f64, usize)> =
+        std::collections::BTreeMap::new();
     let mut peak = 0.0_f64;
     for mu in 0..n {
         for nu in 0..n {
@@ -115,7 +116,10 @@ fn main() {
     for &(label, path, _ncarb) in SYSTEMS {
         let mol = match Molecule::load_xyz(path) {
             Ok(m) => m,
-            Err(e) => { eprintln!("skip {label}: {e}"); continue; }
+            Err(e) => {
+                eprintln!("skip {label}: {e}");
+                continue;
+            }
         };
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let n = obs.nbasis();
@@ -132,7 +136,10 @@ fn main() {
         };
         let rhf = match solve_rhf(&ctx, &mol, &obs, op, &bounds, &rhf_cfg) {
             Ok(r) => r,
-            Err(e) => { eprintln!("skip {label}: SCF {e}"); continue; }
+            Err(e) => {
+                eprintln!("skip {label}: SCF {e}");
+                continue;
+            }
         };
 
         let nocc = mol.nelec() as usize / 2;
@@ -147,7 +154,11 @@ fn main() {
         let s = oneelectron::overlap(&obs);
         // F = S C diag(ε) Cᵀ S (reconstruct AO Fock from MOs; Cᵀ S C = I).
         let eps_all: Vec<f64> = eps.to_vec();
-        let f_ao = s.dot(c).dot(&Array2::from_diag(&ndarray::arr1(&eps_all))).dot(&c.t()).dot(&s);
+        let f_ao = s
+            .dot(c)
+            .dot(&Array2::from_diag(&ndarray::arr1(&eps_all)))
+            .dot(&c.t())
+            .dot(&s);
 
         let centers = ao_atom_centers(&mol, &obs);
 
@@ -158,8 +169,11 @@ fn main() {
             let q_proj = pseudo_density_vir_projector(&f_ao, &s, &c_occ, tau);
 
             // Sanity: projector ≡ explicit (should be ~1e-9).
-            let agree = q_expl.iter().zip(q_proj.iter())
-                .map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
+            let agree = q_expl
+                .iter()
+                .zip(q_proj.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f64, f64::max);
 
             let env_q = decay_envelope(&q_proj, &centers);
             // DIRECT truncatability: relative Frobenius mass of Q̃ beyond r_cut.
@@ -173,13 +187,17 @@ fn main() {
                  P̃ massbeyond5={p_tail_5:.3} | Q̃ massbeyond5={q_tail_5:.3} massbeyond8={q_tail_8:.3}"
             );
             // Q̃ MAX-entry envelope (peak-normalized max |Q̃_μν| per distance bin).
-            let curve: Vec<String> = env_q.iter()
-                .map(|(r, _mean, mx, _)| format!("{r:.0}:{mx:.2}")).collect();
+            let curve: Vec<String> = env_q
+                .iter()
+                .map(|(r, _mean, mx, _)| format!("{r:.0}:{mx:.2}"))
+                .collect();
             println!("    Q̃ max-env  {}", curve.join(" "));
         }
         println!();
     }
     println!("# READ: if Q̃ envelope DROPS toward 0 at large r ⇒ projector Q̃ is atom-pair-local");
     println!("#       ⇒ distance-truncated build is sparse ⇒ cubic non-RS RPA reachable.");
-    println!("#       if it FLATTENS at a finite rel value ⇒ same dense problem reformulated ⇒ park.");
+    println!(
+        "#       if it FLATTENS at a finite rel value ⇒ same dense problem reformulated ⇒ park."
+    );
 }

@@ -54,10 +54,19 @@ fn setup(xyz: &str) -> Setup {
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
     )
     .unwrap();
-    Setup { mol, obs, obs_bs, dfbs, rhf }
+    Setup {
+        mol,
+        obs,
+        obs_bs,
+        dfbs,
+        rhf,
+    }
 }
 
 /// Trivial maps: every locality knob at its no-op limit.
@@ -77,7 +86,12 @@ fn canonical(su: &Setup, variant: LadderVariant, fc: usize) -> f64 {
         &su.dfbs,
         Operator::coulomb(),
         &su.rhf,
-        &CcConfig { frozen_core: fc, energy_conv: 1e-11, max_iter: 200, ..Default::default() },
+        &CcConfig {
+            frozen_core: fc,
+            energy_conv: 1e-11,
+            max_iter: 200,
+            ..Default::default()
+        },
         variant,
     )
     .unwrap()
@@ -88,9 +102,18 @@ fn canonical(su: &Setup, variant: LadderVariant, fc: usize) -> f64 {
 fn oo_direct(su: &Setup, fc: usize, ao_tail: f64, gate: Option<f64>, eps: f64) -> (OoGram, usize) {
     let vvhv = build_vvhv(&su.mol, &su.obs, &su.obs_bs, &su.rhf).unwrap();
     let spaces = localized_spaces(&su.mol, &su.obs, &su.rhf, fc, &vvhv).unwrap();
-    let dcfg = DirectConfig { ao_tail, ..trivial_maps() };
+    let dcfg = DirectConfig {
+        ao_tail,
+        ..trivial_maps()
+    };
     let oo = assemble_boo_direct(
-        &su.obs, &su.dfbs, Operator::coulomb(), &spaces, eps, gate, &dcfg,
+        &su.obs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &spaces,
+        eps,
+        gate,
+        &dcfg,
     )
     .unwrap();
     (oo, spaces.no)
@@ -134,9 +157,19 @@ fn oo_gram_trivial_matches_global_object() {
             }
         }
     }
-    eprintln!("OO-GRAM ANCHOR water: max|direct - global| = {dmax:.3e} (ncols {})", oo.ncols());
-    assert_eq!(oo.ncols(), no * (no + 1) / 2, "trivial gate must keep every column");
-    assert!(dmax < 1e-10, "occ-occ direct Gram anchor FAILED: {dmax:.3e}");
+    eprintln!(
+        "OO-GRAM ANCHOR water: max|direct - global| = {dmax:.3e} (ncols {})",
+        oo.ncols()
+    );
+    assert_eq!(
+        oo.ncols(),
+        no * (no + 1) / 2,
+        "trivial gate must keep every column"
+    );
+    assert!(
+        dmax < 1e-10,
+        "occ-occ direct Gram anchor FAILED: {dmax:.3e}"
+    );
 }
 
 /// MUTATION ARMS on the occ-occ pass — each map, gutted, must move the
@@ -185,15 +218,33 @@ fn oo_gram_gutted_maps_are_loud() {
 #[test]
 fn eps_zero_trivial_maps_matches_canonical_and_global() {
     let su = setup("water.xyz");
-    let cfg = AmplitudeLinLccdConfig { eps: 0.0, frozen_core: 1, ..Default::default() };
+    let cfg = AmplitudeLinLccdConfig {
+        eps: 0.0,
+        frozen_core: 1,
+        ..Default::default()
+    };
     for variant in [LadderVariant::DriversOnly, LadderVariant::Hh] {
         let r_glob = amplitude_linlccd(
-            &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg, variant,
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            Operator::coulomb(),
+            &su.rhf,
+            &cfg,
+            variant,
         )
         .unwrap();
         let (r_dir, stats) = amplitude_linlccd_direct(
-            &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
-            &trivial_maps(), variant,
+            &su.mol,
+            &su.obs,
+            &su.obs_bs,
+            &su.dfbs,
+            Operator::coulomb(),
+            &su.rhf,
+            &cfg,
+            &trivial_maps(),
+            variant,
         )
         .unwrap();
         let e_can = canonical(&su, variant, 1);
@@ -209,8 +260,14 @@ fn eps_zero_trivial_maps_matches_canonical_and_global() {
             stats.strip_cols_max
         );
         assert!(r_dir.cg_converged);
-        assert!(de_can.abs() < 5e-9, "{variant:?} canonical anchor FAILED: {de_can:+.3e}");
-        assert!(de_glob.abs() < 1e-9, "{variant:?} global-path anchor FAILED: {de_glob:+.3e}");
+        assert!(
+            de_can.abs() < 5e-9,
+            "{variant:?} canonical anchor FAILED: {de_can:+.3e}"
+        );
+        assert!(
+            de_glob.abs() < 1e-9,
+            "{variant:?} global-path anchor FAILED: {de_glob:+.3e}"
+        );
         // trivial maps must actually be trivial
         assert_eq!(stats.strip_rows_max, su.dfbs.nbasis());
     }
@@ -222,15 +279,32 @@ fn eps_zero_trivial_maps_matches_canonical_and_global() {
 #[test]
 fn finite_eps_trivial_maps_matches_global_path() {
     let su = setup("alkane_4.xyz");
-    let cfg = AmplitudeLinLccdConfig { eps: 1e-3, frozen_core: 4, ..Default::default() };
+    let cfg = AmplitudeLinLccdConfig {
+        eps: 1e-3,
+        frozen_core: 4,
+        ..Default::default()
+    };
     let r_glob = amplitude_linlccd(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
         LadderVariant::Hh,
     )
     .unwrap();
     let (r_dir, _) = amplitude_linlccd_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
-        &trivial_maps(), LadderVariant::Hh,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+        &trivial_maps(),
+        LadderVariant::Hh,
     )
     .unwrap();
     let dd = (r_dir.e_corr - r_glob.e_corr).abs();
@@ -251,16 +325,36 @@ fn finite_eps_trivial_maps_matches_global_path() {
 #[test]
 fn production_maps_error_is_subdominant_to_eps_truncation() {
     let su = setup("alkane_8.xyz");
-    let base = AmplitudeLinLccdConfig { eps: 1e-3, frozen_core: 8, ..Default::default() };
+    let base = AmplitudeLinLccdConfig {
+        eps: 1e-3,
+        frozen_core: 8,
+        ..Default::default()
+    };
     let (r_eps, _) = amplitude_linlccd_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &base,
-        &trivial_maps(), LadderVariant::Hh,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &base,
+        &trivial_maps(),
+        LadderVariant::Hh,
     )
     .unwrap();
     let (r_eps4, _) = amplitude_linlccd_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf,
-        &AmplitudeLinLccdConfig { eps: 1e-4, ..base.clone() },
-        &trivial_maps(), LadderVariant::Hh,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &AmplitudeLinLccdConfig {
+            eps: 1e-4,
+            ..base.clone()
+        },
+        &trivial_maps(),
+        LadderVariant::Hh,
     )
     .unwrap();
     let prod = DirectConfig {
@@ -270,9 +364,18 @@ fn production_maps_error_is_subdominant_to_eps_truncation() {
         ..Default::default()
     };
     let (r_prod, stats) = amplitude_linlccd_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf,
-        &AmplitudeLinLccdConfig { pair_gate_cal: Some(0.7), ..base.clone() },
-        &prod, LadderVariant::Hh,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &AmplitudeLinLccdConfig {
+            pair_gate_cal: Some(0.7),
+            ..base.clone()
+        },
+        &prod,
+        LadderVariant::Hh,
     )
     .unwrap();
     let trunc_err = (r_eps.e_corr - r_eps4.e_corr).abs();
@@ -285,7 +388,10 @@ fn production_maps_error_is_subdominant_to_eps_truncation() {
         stats.strip_cols_max,
         r_prod.keep_fraction
     );
-    assert!(map_err > 0.0, "maps changed nothing at production radii — vacuous?");
+    assert!(
+        map_err > 0.0,
+        "maps changed nothing at production radii — vacuous?"
+    );
     assert!(
         map_err < trunc_err,
         "locality-map error ({map_err:.3e}) dominates the eps truncation ({trunc_err:.3e})"
@@ -301,15 +407,32 @@ fn production_maps_error_is_subdominant_to_eps_truncation() {
 #[test]
 fn full_tier_trivial_maps_matches_canonical_and_global() {
     let su = setup("water.xyz");
-    let cfg = AmplitudeLinLccdConfig { eps: 0.0, frozen_core: 1, ..Default::default() };
+    let cfg = AmplitudeLinLccdConfig {
+        eps: 0.0,
+        frozen_core: 1,
+        ..Default::default()
+    };
     let r_glob = amplitude_linlccd(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
         LadderVariant::Full,
     )
     .unwrap();
     let (r_dir, _) = amplitude_linlccd_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
-        &trivial_maps(), LadderVariant::Full,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+        &trivial_maps(),
+        LadderVariant::Full,
     )
     .unwrap();
     let e_can = canonical(&su, LadderVariant::Full, 1);
@@ -323,8 +446,14 @@ fn full_tier_trivial_maps_matches_canonical_and_global() {
         r_dir.cg_iterations
     );
     assert!(r_dir.cg_converged);
-    assert!(de_can.abs() < 5e-9, "Full canonical anchor FAILED: {de_can:+.3e}");
-    assert!(de_glob.abs() < 1e-9, "Full global-path anchor FAILED: {de_glob:+.3e}");
+    assert!(
+        de_can.abs() < 5e-9,
+        "Full canonical anchor FAILED: {de_can:+.3e}"
+    );
+    assert!(
+        de_glob.abs() < 1e-9,
+        "Full global-path anchor FAILED: {de_glob:+.3e}"
+    );
 }
 
 /// FULL-TIER FINITE-ε ANCHOR: alkane_4 ε=1e-3 trivial maps — fitted pp at
@@ -332,15 +461,32 @@ fn full_tier_trivial_maps_matches_canonical_and_global() {
 #[test]
 fn full_tier_finite_eps_trivial_maps_matches_global_path() {
     let su = setup("alkane_4.xyz");
-    let cfg = AmplitudeLinLccdConfig { eps: 1e-3, frozen_core: 4, ..Default::default() };
+    let cfg = AmplitudeLinLccdConfig {
+        eps: 1e-3,
+        frozen_core: 4,
+        ..Default::default()
+    };
     let r_glob = amplitude_linlccd(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
         LadderVariant::Full,
     )
     .unwrap();
     let (r_dir, _) = amplitude_linlccd_direct(
-        &su.mol, &su.obs, &su.obs_bs, &su.dfbs, Operator::coulomb(), &su.rhf, &cfg,
-        &trivial_maps(), LadderVariant::Full,
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+        &trivial_maps(),
+        LadderVariant::Full,
     )
     .unwrap();
     let dd = (r_dir.e_corr - r_glob.e_corr).abs();
@@ -349,7 +495,10 @@ fn full_tier_finite_eps_trivial_maps_matches_global_path() {
         r_dir.e_corr, r_glob.e_corr
     );
     assert!(r_dir.cg_converged);
-    assert!(dd < 1e-8, "Full finite-eps direct vs global FAILED: {dd:.3e}");
+    assert!(
+        dd < 1e-8,
+        "Full finite-eps direct vs global FAILED: {dd:.3e}"
+    );
 }
 
 /// pp-FIT MUTATION ARM (value level): shrinking the fit domain must change
@@ -363,16 +512,38 @@ fn pp_fitted_domain_gutted_is_loud() {
     let spaces = localized_spaces(&su.mol, &su.obs, &su.rhf, 1, &vvhv).unwrap();
     let op = Operator::coulomb();
     let (rg, _, _) = assemble_ragged_direct_local(
-        &su.mol, &su.obs, &su.dfbs, op, &spaces, 1e-3, 1.0, None, &trivial_maps(),
+        &su.mol,
+        &su.obs,
+        &su.dfbs,
+        op,
+        &spaces,
+        1e-3,
+        1.0,
+        None,
+        &trivial_maps(),
     )
     .unwrap();
     let base = assemble_pp_fitted_direct(
-        &su.mol, &su.obs, &su.dfbs, op, &spaces, &rg, &trivial_maps(),
+        &su.mol,
+        &su.obs,
+        &su.dfbs,
+        op,
+        &spaces,
+        &rg,
+        &trivial_maps(),
     )
     .unwrap();
     let gutted = assemble_pp_fitted_direct(
-        &su.mol, &su.obs, &su.dfbs, op, &spaces, &rg,
-        &DirectConfig { aux_radius_bohr: 1.0, ..trivial_maps() },
+        &su.mol,
+        &su.obs,
+        &su.dfbs,
+        op,
+        &spaces,
+        &rg,
+        &DirectConfig {
+            aux_radius_bohr: 1.0,
+            ..trivial_maps()
+        },
     )
     .unwrap();
     let mut dmax = 0.0f64;
@@ -384,5 +555,8 @@ fn pp_fitted_domain_gutted_is_loud() {
         }
     }
     eprintln!("PP-FIT MUTATION water: aux_radius 1e6 -> 1.0 max|dm|={dmax:.3e}");
-    assert!(dmax > 1e-3, "pp fit domain gutting not detected: {dmax:.3e}");
+    assert!(
+        dmax > 1e-3,
+        "pp fit domain gutting not detected: {dmax:.3e}"
+    );
 }

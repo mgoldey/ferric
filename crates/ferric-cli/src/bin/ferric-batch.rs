@@ -24,9 +24,7 @@ struct JobResult {
 }
 
 fn print_usage() {
-    eprintln!(
-        "Usage: ferric-batch [--jobs N] <template.toml> <xyz_dir> <output_dir>"
-    );
+    eprintln!("Usage: ferric-batch [--jobs N] <template.toml> <xyz_dir> <output_dir>");
 }
 
 /// Extract `(file_stem, full_path)` as UTF-8 strings, or `None` if either is
@@ -57,7 +55,10 @@ fn main() {
                 std::process::exit(1);
             });
             jobs_n = val.parse::<usize>().unwrap_or_else(|_| {
-                eprintln!("Error: --jobs value must be a positive integer, got '{}'", val);
+                eprintln!(
+                    "Error: --jobs value must be a positive integer, got '{}'",
+                    val
+                );
                 print_usage();
                 std::process::exit(1);
             });
@@ -68,7 +69,10 @@ fn main() {
             i += 2;
         } else if let Some(val) = arg.strip_prefix("--jobs=") {
             jobs_n = val.parse::<usize>().unwrap_or_else(|_| {
-                eprintln!("Error: --jobs value must be a positive integer, got '{}'", val);
+                eprintln!(
+                    "Error: --jobs value must be a positive integer, got '{}'",
+                    val
+                );
                 print_usage();
                 std::process::exit(1);
             });
@@ -230,7 +234,10 @@ fn main() {
                 println!("{}: Success.", result.file_stem);
                 success_count += 1;
             } else {
-                println!("{}: Failed. Check {}.err", result.file_stem, result.file_stem);
+                println!(
+                    "{}: Failed. Check {}.err",
+                    result.file_stem, result.file_stem
+                );
                 fail_count += 1;
                 failures.push(result.file_stem);
             }
@@ -399,8 +406,10 @@ fn resolve_per_child_budget_gib(njobs_effective: usize) -> Option<f64> {
             "ferric-batch WARNING: {} concurrent jobs divide the {:.2} GiB resolved budget down \
              to {:.4} GiB each; clamping to the {:.4} GiB floor. Expect heavy disk spilling — \
              lower --jobs or raise the budget.",
-            njobs_effective, total_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
-            per_child_gib, MIN_PER_CHILD_BUDGET_GIB,
+            njobs_effective,
+            total_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+            per_child_gib,
+            MIN_PER_CHILD_BUDGET_GIB,
         );
         return Some(MIN_PER_CHILD_BUDGET_GIB);
     }
@@ -651,7 +660,10 @@ kind = \"rimp2\"
         let (out, notices) = apply(template, 3.0);
         let out = out.expect("a template WITH [memory] budget_gb must be rewritten");
         assert!(out.contains("budget_gb = 3"), "got:\n{out}");
-        assert!(!out.contains("24.0"), "the template's 24.0 GiB must be gone:\n{out}");
+        assert!(
+            !out.contains("24.0"),
+            "the template's 24.0 GiB must be gone:\n{out}"
+        );
         // The user must be TOLD their config was overridden, with both numbers.
         assert_eq!(notices, vec![("24.0".to_string(), "budget_gb".to_string())]);
         // Nothing outside [memory] may be disturbed.
@@ -671,7 +683,10 @@ kind = \"rimp2\"
         let template = "[memory]\nthree_index_budget_gb = 16.0\n";
         let (out, notices) = apply(template, 2.5);
         let out = out.expect("the deprecated alias must be rewritten too");
-        assert_eq!(notices, vec![("16.0".to_string(), "three_index_budget_gb".to_string())]);
+        assert_eq!(
+            notices,
+            vec![("16.0".to_string(), "three_index_budget_gb".to_string())]
+        );
         // Rewritten as the canonical key, and the stale alias must not survive
         // (`budget_gb` wins over it, but leaving 16.0 in the file would be a
         // misleading artifact in a config a user may read while debugging).
@@ -687,7 +702,10 @@ kind = \"rimp2\"
     fn template_without_memory_section_is_left_alone() {
         let template = "[molecule]\nxyz_file = \"/tmp/a.xyz\"\n\n[method]\nkind = \"rhf\"\n";
         let (out, notices) = apply(template, 3.0);
-        assert!(out.is_none(), "a template with no [memory] budget must not be rewritten");
+        assert!(
+            out.is_none(),
+            "a template with no [memory] budget must not be rewritten"
+        );
         assert!(notices.is_empty(), "and must produce no override notice");
     }
 
@@ -770,12 +788,18 @@ three_index_budget_gb = 8.0
     fn trailing_newline_behaviour_is_preserved() {
         let (out, _) = apply("[memory]\nbudget_gb = 9.0", 1.0);
         let out = out.unwrap();
-        assert!(!out.ends_with('\n'), "input had no trailing newline: {out:?}");
+        assert!(
+            !out.ends_with('\n'),
+            "input had no trailing newline: {out:?}"
+        );
 
         let (out, _) = apply("[memory]\nbudget_gb = 9.0\n", 1.0);
         let out = out.unwrap();
         assert!(out.ends_with('\n'));
-        assert!(!out.ends_with("\n\n"), "must not gain a blank line: {out:?}");
+        assert!(
+            !out.ends_with("\n\n"),
+            "must not gain a blank line: {out:?}"
+        );
     }
 
     /// REGRESSION: the emitted value must be a TOML *float*, not an integer.
@@ -785,10 +809,17 @@ three_index_budget_gb = 8.0
     /// came out a whole number (16 GiB over 2 jobs being the obvious case).
     #[test]
     fn whole_number_budget_is_written_as_a_toml_float() {
-        for (share, want) in [(8.0f64, "8.0"), (1.0, "1.0"), (MIN_PER_CHILD_BUDGET_GIB, "0.0625")] {
+        for (share, want) in [
+            (8.0f64, "8.0"),
+            (1.0, "1.0"),
+            (MIN_PER_CHILD_BUDGET_GIB, "0.0625"),
+        ] {
             let (out, _) = apply("[memory]\nbudget_gb = 99.0\n", share);
             let out = out.unwrap();
-            assert!(out.contains(&format!("budget_gb = {want}")), "share {share}, got:\n{out}");
+            assert!(
+                out.contains(&format!("budget_gb = {want}")),
+                "share {share}, got:\n{out}"
+            );
             // And it must deserialize into the real `Option<f64>` config field.
             #[derive(serde::Deserialize)]
             struct Mem {

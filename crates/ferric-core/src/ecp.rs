@@ -17,7 +17,7 @@
 //! per-channel `angular_momentum` tag so the integral shim can map them to
 //! libecpint without re-deriving which channel is local.
 
-use crate::basis_util::{parse_float_list, canonical_name};
+use crate::basis_util::{canonical_name, parse_float_list};
 use crate::FerricError;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -57,7 +57,11 @@ pub struct EcpDef {
 impl EcpDef {
     /// The largest angular momentum among the channels — the local term `l`.
     pub fn max_angular_momentum(&self) -> i32 {
-        self.shells.iter().map(|s| s.angular_momentum).max().unwrap_or(0)
+        self.shells
+            .iter()
+            .map(|s| s.angular_momentum)
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -155,11 +159,17 @@ pub fn parse_ecp_json(text: &str, name: &str) -> Result<EcpSet, FerricError> {
                     gexp: gexps[k],
                 })
                 .collect();
-            shells.push(EcpShell { angular_momentum: l, terms });
+            shells.push(EcpShell {
+                angular_momentum: l,
+                terms,
+            });
         }
         defs.insert(z, EcpDef { n_core, shells });
     }
-    Ok(EcpSet { name: set_name, defs })
+    Ok(EcpSet {
+        name: set_name,
+        defs,
+    })
 }
 
 // --- Bundled ECP sets ---
@@ -258,7 +268,14 @@ mod tests {
         assert!(set.for_element(1).is_none());
         let i = set.for_element(53).unwrap();
         assert_eq!(i.n_core, 28);
-        assert_eq!(i.shells[0].terms[0], EcpTerm { coef: 3.0, r_exp: 2, gexp: 1.5 });
+        assert_eq!(
+            i.shells[0].terms[0],
+            EcpTerm {
+                coef: 3.0,
+                r_exp: 2,
+                gexp: 1.5
+            }
+        );
     }
 
     #[test]

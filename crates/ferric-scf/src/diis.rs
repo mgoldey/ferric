@@ -70,7 +70,9 @@ impl<T> RingHistory<T> {
             (0..m).collect()
         } else {
             // Wrapped: oldest is next_slot, then wrap around to next_slot-1.
-            (0..m).map(|k| (self.next_slot + k) % self.capacity).collect()
+            (0..m)
+                .map(|k| (self.next_slot + k) % self.capacity)
+                .collect()
         }
     }
 
@@ -108,7 +110,13 @@ impl GramCache {
 
     /// Recompute the row/column for `new_slot` against all currently-live slots
     /// (including itself), using `vecs` to look up stored vectors by slot.
-    fn update_slot<T>(&mut self, new_slot: usize, live_slots: &[usize], vecs: &RingHistory<T>, dot_fn: impl Fn(&T, &T) -> f64) {
+    fn update_slot<T>(
+        &mut self,
+        new_slot: usize,
+        live_slots: &[usize],
+        vecs: &RingHistory<T>,
+        dot_fn: impl Fn(&T, &T) -> f64,
+    ) {
         let cap = self.capacity;
         let new_vec = vecs.get(new_slot);
         for &other in live_slots {
@@ -258,19 +266,25 @@ impl Diis {
     /// to block-diagonal err vectors.
     pub fn step_pair(
         &mut self,
-        f_a: &Array2<f64>, f_b: &Array2<f64>,
-        err_a: &Array2<f64>, err_b: &Array2<f64>,
+        f_a: &Array2<f64>,
+        f_b: &Array2<f64>,
+        err_a: &Array2<f64>,
+        err_b: &Array2<f64>,
     ) -> (Array2<f64>, Array2<f64>) {
         // Reuse fock_hist/err_hist for α; keep β in parallel ring buffers.
         self.fock_hist.push(f_a.clone());
         let new_slot = self.err_hist.push(err_a.clone());
         self.fock_hist_b.push(f_b.clone());
         let new_slot_b = self.err_hist_b.push(err_b.clone());
-        debug_assert_eq!(new_slot, new_slot_b, "α/β ring buffers must stay in lockstep");
+        debug_assert_eq!(
+            new_slot, new_slot_b,
+            "α/β ring buffers must stay in lockstep"
+        );
 
         let live = self.err_hist.logical_order();
         self.gram.update_slot(new_slot, &live, &self.err_hist, dot);
-        self.gram_b.update_slot(new_slot_b, &live, &self.err_hist_b, dot);
+        self.gram_b
+            .update_slot(new_slot_b, &live, &self.err_hist_b, dot);
 
         if live.len() < 2 {
             return (f_a.clone(), f_b.clone());
@@ -281,7 +295,10 @@ impl Diis {
             self.gram.get(si, sj) + self.gram_b.get(si, sj)
         });
         let Some((c, kept)) = solved else {
-            return (self.fock_hist.last().clone(), self.fock_hist_b.last().clone());
+            return (
+                self.fock_hist.last().clone(),
+                self.fock_hist_b.last().clone(),
+            );
         };
         let mut out_a = Array2::zeros(f_a.dim());
         let mut out_b = Array2::zeros(f_b.dim());
@@ -291,7 +308,7 @@ impl Diis {
         }
         (out_a, out_b)
     }
-}  // impl Diis
+} // impl Diis
 
 fn dot(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
     (a * b).sum()
@@ -595,7 +612,11 @@ impl DiisDriver {
         DiisDriver {
             pulay: Diis::new(max_subspace),
             energy: EnergyDiis::new(energy_flavor, max_subspace),
-            switch_thresh: if flavor == DiisFlavor::Pulay { 0.0 } else { switch_thresh },
+            switch_thresh: if flavor == DiisFlavor::Pulay {
+                0.0
+            } else {
+                switch_thresh
+            },
         }
     }
 
@@ -823,11 +844,7 @@ mod tests {
     fn solve_linear_is_scale_invariant() {
         let n = 3;
         // Well-conditioned, symmetric-positive-definite-ish system.
-        let a = vec![
-            4.0, 1.0, 0.5,
-            1.0, 3.0, 0.25,
-            0.5, 0.25, 2.0,
-        ];
+        let a = vec![4.0, 1.0, 0.5, 1.0, 3.0, 0.25, 0.5, 0.25, 2.0];
         let b = vec![1.0, 2.0, 3.0];
 
         let base = solve_linear(a.clone(), b.clone(), n).expect("well-conditioned solve");
@@ -852,13 +869,12 @@ mod tests {
     fn solve_linear_still_rejects_singular() {
         // Row 2 is exactly 2× row 0: rank-deficient at any scale.
         let n = 3;
-        let a = vec![
-            1.0, 2.0, 3.0,
-            0.0, 1.0, 1.0,
-            2.0, 4.0, 6.0,
-        ];
+        let a = vec![1.0, 2.0, 3.0, 0.0, 1.0, 1.0, 2.0, 4.0, 6.0];
         let b = vec![1.0, 1.0, 2.0];
-        assert!(solve_linear(a.clone(), b.clone(), n).is_none(), "singular system accepted");
+        assert!(
+            solve_linear(a.clone(), b.clone(), n).is_none(),
+            "singular system accepted"
+        );
 
         // ...and the same holds after rescaling, in both directions.
         for scale in [1e-12, 1e8] {
@@ -890,10 +906,16 @@ mod tests {
             .expect("must fall back to a smaller subspace, not give up");
 
         assert!(kept.len() >= 2, "kept subspace too small: {kept:?}");
-        assert!(kept.len() < 3, "full degenerate subspace should not have solved: {kept:?}");
+        assert!(
+            kept.len() < 3,
+            "full degenerate subspace should not have solved: {kept:?}"
+        );
         // DIIS coefficients over the kept vectors always sum to 1.
         let sum: f64 = c[..kept.len()].iter().sum();
-        assert!((sum - 1.0).abs() < 1e-8, "coefficients sum to {sum}, expected 1");
+        assert!(
+            (sum - 1.0).abs() < 1e-8,
+            "coefficients sum to {sum}, expected 1"
+        );
         // The retained slots must be the NEWEST ones (a suffix of the input).
         assert_eq!(kept, vec![1, 2], "must keep the newest vectors");
     }
@@ -979,8 +1001,10 @@ mod tests {
 
         fn step_pair(
             &mut self,
-            f_a: &Array2<f64>, f_b: &Array2<f64>,
-            err_a: &Array2<f64>, err_b: &Array2<f64>,
+            f_a: &Array2<f64>,
+            f_b: &Array2<f64>,
+            err_a: &Array2<f64>,
+            err_b: &Array2<f64>,
         ) -> ((Array2<f64>, Array2<f64>), Vec<f64>) {
             self.fock_hist.push(f_a.clone());
             self.err_hist.push(err_a.clone());
@@ -1001,8 +1025,7 @@ mod tests {
             let mut rhs = vec![0.0f64; dim];
             for i in 0..m {
                 for j in 0..m {
-                    a[i * dim + j] =
-                        dot(&self.err_hist[i], &self.err_hist[j])
+                    a[i * dim + j] = dot(&self.err_hist[i], &self.err_hist[j])
                         + dot(&self.err_hist_b[i], &self.err_hist_b[j]);
                 }
                 a[i * dim + m] = 1.0;
@@ -1012,10 +1035,15 @@ mod tests {
             let b_flat = a.clone();
             let c = match solve_linear(a, rhs, dim) {
                 Some(c) => c,
-                None => return (
-                    (self.fock_hist.last().unwrap().clone(), self.fock_hist_b.last().unwrap().clone()),
-                    b_flat,
-                ),
+                None => {
+                    return (
+                        (
+                            self.fock_hist.last().unwrap().clone(),
+                            self.fock_hist_b.last().unwrap().clone(),
+                        ),
+                        b_flat,
+                    )
+                }
             };
             let mut out_a = Array2::zeros(f_a.dim());
             let mut out_b = Array2::zeros(f_b.dim());
@@ -1099,7 +1127,8 @@ mod tests {
             let b_new = assembled_b_from_new(&d_new);
 
             assert_eq!(
-                b_ref.len(), b_new.len(),
+                b_ref.len(),
+                b_new.len(),
                 "B dimension mismatch at iter {iter}"
             );
             for (k, (br, bn)) in b_ref.iter().zip(b_new.iter()).enumerate() {
@@ -1138,7 +1167,11 @@ mod tests {
             let (out_a_new, out_b_new) = d_new.step_pair(&f_a, &f_b, &err_a, &err_b);
             let b_new = assembled_b_pair_from_new(&d_new);
 
-            assert_eq!(b_ref.len(), b_new.len(), "B dimension mismatch at iter {iter}");
+            assert_eq!(
+                b_ref.len(),
+                b_new.len(),
+                "B dimension mismatch at iter {iter}"
+            );
             for (k, (br, bn)) in b_ref.iter().zip(b_new.iter()).enumerate() {
                 assert!(
                     (br - bn).abs() < 1e-15,
@@ -1184,10 +1217,7 @@ mod tests {
         // Non-symmetric H with mixed signs, arbitrary g.
         let g = vec![0.3, -1.2, 0.7, 0.1];
         let h = vec![
-            0.0, -0.5, 0.2, 0.1,
-            0.4, 0.0, -0.3, 0.6,
-            -0.1, 0.2, 0.0, -0.4,
-            0.3, -0.2, 0.5, 0.0,
+            0.0, -0.5, 0.2, 0.1, 0.4, 0.0, -0.3, 0.6, -0.1, 0.2, 0.0, -0.4, 0.3, -0.2, 0.5, 0.0,
         ];
         let c = minimize_on_simplex(&g, &h, m);
         assert_eq!(c.len(), m);
@@ -1208,7 +1238,10 @@ mod tests {
         let c = minimize_on_simplex(&g, &h, m);
         let sum: f64 = c.iter().sum();
         assert!((sum - 1.0).abs() < 1e-10);
-        assert!(c[1] > 0.99, "weight should collapse onto min-g vertex; c={c:?}");
+        assert!(
+            c[1] > 0.99,
+            "weight should collapse onto min-g vertex; c={c:?}"
+        );
         assert!(c[0] < 1e-2 && c[2] < 1e-2, "other vertices ~0; c={c:?}");
     }
 
@@ -1229,9 +1262,15 @@ mod tests {
         let (_f, c) = ed.step(&f1, &d1, -5.0); // second is much lower
         assert_eq!(c.len(), 2);
         let sum: f64 = c.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-10, "EDIIS coeffs sum to 1, got {sum}");
+        assert!(
+            (sum - 1.0).abs() < 1e-10,
+            "EDIIS coeffs sum to 1, got {sum}"
+        );
         assert!(c[0] >= -1e-12 && c[1] >= -1e-12, "EDIIS coeffs ≥ 0: {c:?}");
-        assert!(c[1] > c[0], "lower-energy point should carry more weight: {c:?}");
+        assert!(
+            c[1] > c[0],
+            "lower-energy point should carry more weight: {c:?}"
+        );
     }
 
     /// ADIIS coefficients over a synthetic history must also form a valid convex
@@ -1247,7 +1286,10 @@ mod tests {
             let e = synthetic(&mut seed);
             let (_f, c) = ad.step(&f, &d, e);
             let sum: f64 = c.iter().sum();
-            assert!((sum - 1.0).abs() < 1e-10, "ADIIS coeffs sum to 1, got {sum}");
+            assert!(
+                (sum - 1.0).abs() < 1e-10,
+                "ADIIS coeffs sum to 1, got {sum}"
+            );
             for &ci in &c {
                 assert!(ci >= -1e-12, "ADIIS coeff ≥ 0: {c:?}");
             }
@@ -1295,7 +1337,10 @@ mod tests {
             let out_plain = plain.step(&f, &err);
             let out_driver = driver.step(&f, &err, &d, energy, err_max);
             for (a, b) in out_plain.iter().zip(out_driver.iter()) {
-                assert!((a - b).abs() < 1e-15, "driver(Pulay) ≠ plain DIIS: {a} vs {b}");
+                assert!(
+                    (a - b).abs() < 1e-15,
+                    "driver(Pulay) ≠ plain DIIS: {a} vs {b}"
+                );
             }
         }
     }
@@ -1331,7 +1376,10 @@ mod tests {
             }
             let expect = if err_max >= 1e-2 { &ref_e } else { &ref_p };
             for (a, b) in out.iter().zip(expect.iter()) {
-                assert!((a - b).abs() < 1e-12, "wrong branch at iter {iter}: {a} vs {b}");
+                assert!(
+                    (a - b).abs() < 1e-12,
+                    "wrong branch at iter {iter}: {a} vs {b}"
+                );
             }
         }
     }

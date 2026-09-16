@@ -157,13 +157,21 @@ fn rimp2_gradient_analytical_consistent_across_blas_thread_counts() {
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let rhf = solve_rhf(
-        &ctx, &mol, &obs, op, &bounds,
-        &RhfConfig { energy_conv: 1e-10, ..Default::default() },
+        &ctx,
+        &mol,
+        &obs,
+        op,
+        &bounds,
+        &RhfConfig {
+            energy_conv: 1e-10,
+            ..Default::default()
+        },
     )
     .unwrap();
     let config = RiMp2Config::default();
 
-    let run = || rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
+    let run =
+        || rimp2_gradient_analytical(&mol, &obs, &dfbs, op, &bounds, &rhf, &config, None).unwrap();
 
     let baseline = run();
 

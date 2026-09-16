@@ -41,7 +41,11 @@ fn run_mulliken(xyz: &str, basis_name: &str) -> (f64, Vec<f64>) {
         &obs,
         op,
         &bounds,
-        &RhfConfig { energy_conv: 1e-12, density_conv: 1e-11, ..Default::default() },
+        &RhfConfig {
+            energy_conv: 1e-12,
+            density_conv: 1e-11,
+            ..Default::default()
+        },
     )
     .unwrap();
     let charges = mulliken_charges(&mol, &obs, rhf.density_r()).unwrap();
@@ -61,10 +65,16 @@ const MULLIKEN_TOL: f64 = 1e-7;
 fn h2_mulliken_matches_pyscf() {
     // PySCF reference (testdata/reference/h2_cc-pvdz_mulliken.json): [~0, ~0].
     let (e, q) = run_mulliken("2\nh2\nH 0 0 0\nH 0 0 0.740830\n", "cc-pvdz");
-    assert!((e - (-1.128709260618651)).abs() < 1e-8, "SCF energy mismatch: {e}");
+    assert!(
+        (e - (-1.128709260618651)).abs() < 1e-8,
+        "SCF energy mismatch: {e}"
+    );
     assert_eq!(q.len(), 2);
     for &qi in &q {
-        assert!(qi.abs() < MULLIKEN_TOL, "expected ~0 by symmetry, got {qi:.3e}");
+        assert!(
+            qi.abs() < MULLIKEN_TOL,
+            "expected ~0 by symmetry, got {qi:.3e}"
+        );
     }
     assert!((q[0] + q[1]).abs() < 1e-10, "charges must sum to 0");
 }
@@ -77,9 +87,15 @@ fn h2_mulliken_matches_pyscf() {
 fn h2o_mulliken_matches_pyscf() {
     let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
     let (e, q) = run_mulliken(xyz, "cc-pvdz");
-    assert!((e - (-76.02676799737671)).abs() < 1e-8, "SCF energy mismatch: {e}");
+    assert!(
+        (e - (-76.02676799737671)).abs() < 1e-8,
+        "SCF energy mismatch: {e}"
+    );
     assert_eq!(q.len(), 3);
-    assert!((q.iter().sum::<f64>()).abs() < 1e-8, "charges must sum to 0");
+    assert!(
+        (q.iter().sum::<f64>()).abs() < 1e-8,
+        "charges must sum to 0"
+    );
 
     let pyscf_o = -0.30538662807075667_f64;
     let pyscf_h = 0.15269331403537867_f64;
@@ -110,9 +126,15 @@ fn h2o_mulliken_matches_pyscf() {
 fn ch4_mulliken_matches_pyscf() {
     let xyz = "5\nmethane\nC 0.000000 0.000000 0.000000\nH 0.629118 0.629118 0.629118\nH -0.629118 -0.629118 0.629118\nH -0.629118 0.629118 -0.629118\nH 0.629118 -0.629118 -0.629118\n";
     let (e, q) = run_mulliken(xyz, "cc-pvdz");
-    assert!((e - (-40.19870854248165)).abs() < 1e-8, "SCF energy mismatch: {e}");
+    assert!(
+        (e - (-40.19870854248165)).abs() < 1e-8,
+        "SCF energy mismatch: {e}"
+    );
     assert_eq!(q.len(), 5);
-    assert!((q.iter().sum::<f64>()).abs() < 1e-8, "charges must sum to 0");
+    assert!(
+        (q.iter().sum::<f64>()).abs() < 1e-8,
+        "charges must sum to 0"
+    );
 
     let pyscf_c = -0.142067780409584_f64;
     let pyscf_h = 0.03551694510239434_f64;

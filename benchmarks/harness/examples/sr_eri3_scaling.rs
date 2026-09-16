@@ -90,9 +90,15 @@ fn main() {
 
         println!(
             "{:>4} {:>5} {:>6} | {:>11} {:>8.1} {:>6.1}% | {:>11} {:>8.1} {:>6.1}%",
-            n, nsh_aux, nsh_obs,
-            ck, ck as f64 / nsh_aux as f64, 100.0 * ck as f64 / ct as f64,
-            ek, ek as f64 / nsh_aux as f64, 100.0 * ek as f64 / ct as f64,
+            n,
+            nsh_aux,
+            nsh_obs,
+            ck,
+            ck as f64 / nsh_aux as f64,
+            100.0 * ck as f64 / ct as f64,
+            ek,
+            ek as f64 / nsh_aux as f64,
+            100.0 * ek as f64 / ct as f64,
         );
     }
 

@@ -156,10 +156,16 @@ fn df_increments_converges_to_same_energy_as_plain_scf() {
     };
 
     let plain = solve_rhf(&ctx, &mol, &prep, op, &bounds, &base).unwrap();
-    assert!(plain.converged, "plain SCF must converge for this comparison to mean anything");
+    assert!(
+        plain.converged,
+        "plain SCF must converge for this comparison to mean anything"
+    );
 
     let dfi = solve_rhf_with_df_increments(&ctx, &mol, &prep, op, &bounds, &base, None).unwrap();
-    assert!(dfi.result.converged, "DF-increments final exact stage must converge");
+    assert!(
+        dfi.result.converged,
+        "DF-increments final exact stage must converge"
+    );
 
     let de = (plain.energy - dfi.result.energy).abs();
     assert!(
@@ -168,7 +174,9 @@ fn df_increments_converges_to_same_energy_as_plain_scf() {
          the DF-corrected inner loop must only change convergence SPEED (and exact-build count), \
          never the converged fixed point (the final exact confirmation/cleanup stage must always \
          correct for any residual DF bias)",
-        dfi.result.energy, plain.energy, de
+        dfi.result.energy,
+        plain.energy,
+        de
     );
 }
 
@@ -209,20 +217,23 @@ fn df_increments_computes_far_fewer_exact_quartets() {
         dfi.result.computed_quartets < plain.computed_quartets,
         "DF-increments computed_quartets ({}) must be less than plain SCF's ({}) -- \
          if this fails the mechanism is not actually reducing exact work",
-        dfi.result.computed_quartets, plain.computed_quartets
+        dfi.result.computed_quartets,
+        plain.computed_quartets
     );
     assert!(
         (dfi.result.computed_quartets as f64) < 0.6 * (plain.computed_quartets as f64),
         "DF-increments computed_quartets ({}) should be MUCH lower than plain SCF's ({}) -- \
          a test that only checks '< plain' could pass on a trivial 1-iteration saving; \
          this system needs several plain-SCF iterations so the reduction should be substantial",
-        dfi.result.computed_quartets, plain.computed_quartets
+        dfi.result.computed_quartets,
+        plain.computed_quartets
     );
     // And directly: exact_builds should be small and bounded, independent of
     // how many total (inner + cleanup) SCF iterations ran.
     assert!(
         dfi.exact_builds <= 2 + ferric_scf::df_increments::DF_INCREMENTS_CLEANUP_MAX_ITER,
-        "exact_builds ({}) exceeds the documented cap", dfi.exact_builds
+        "exact_builds ({}) exceeds the documented cap",
+        dfi.exact_builds
     );
 }
 
@@ -262,7 +273,9 @@ fn df_increments_final_state_satisfies_exact_residual() {
     let mut direct_jk = DirectJK::new(&ctx, &prep, &bounds, base.integral_thresh, usize::MAX);
     let mut j = ndarray::Array2::<f64>::zeros((n, n));
     let mut k = ndarray::Array2::<f64>::zeros((n, n));
-    direct_jk.build(dfi.result.density_r(), &mut j, &mut k).unwrap();
+    direct_jk
+        .build(dfi.result.density_r(), &mut j, &mut k)
+        .unwrap();
     let mut f_exact = h.clone();
     f_exact += &j;
     f_exact.scaled_add(-0.5, &k);
@@ -274,7 +287,9 @@ fn df_increments_final_state_satisfies_exact_residual() {
         "reported energy {:.12} must match an independently-rebuilt EXACT energy at the reported \
          density ({:.12}, Δ={:.3e}) to near machine precision -- a DF-corrected energy at this \
          density would differ by RI fitting error (~1e-4-1e-5 Ha), which this rules out",
-        dfi.result.energy, exact_energy, de
+        dfi.result.energy,
+        exact_energy,
+        de
     );
 
     // One more EXACT Roothaan step from the reported density must move the
@@ -312,7 +327,8 @@ fn df_increments_final_state_satisfies_exact_residual() {
         dp_rms < 10.0 * base.density_conv,
         "one more EXACT Roothaan step from the reported density moved it by dp_rms={:.3e}, \
          which should be at/below the density_conv gate ({:.3e}) the result claims to satisfy",
-        dp_rms, base.density_conv
+        dp_rms,
+        base.density_conv
     );
 }
 
@@ -329,15 +345,22 @@ fn df_increments_pre_stage_actually_runs_fitted_scf() {
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
-    let dfi = solve_rhf_with_df_increments(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default(), None).unwrap();
+    let dfi =
+        solve_rhf_with_df_increments(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default(), None)
+            .unwrap();
 
-    assert!(dfi.df_guess_iterations > 0, "DF-guess pre-stage must run at least one SCF iteration");
+    assert!(
+        dfi.df_guess_iterations > 0,
+        "DF-guess pre-stage must run at least one SCF iteration"
+    );
     let delta = (dfi.df_guess_energy - dfi.result.energy).abs();
     assert!(
         delta > 1e-7,
         "DF-guess pre-stage energy {:.12} is suspiciously close to the final exact energy {:.12} \
          (Δ={:.3e} Ha) -- the pre-stage may not actually be running density-fitted J/K",
-        dfi.df_guess_energy, dfi.result.energy, delta
+        dfi.df_guess_energy,
+        dfi.result.energy,
+        delta
     );
 }
 
@@ -351,7 +374,9 @@ fn df_increments_result_type_is_used() {
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
-    let dfi = solve_rhf_with_df_increments(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default(), None).unwrap();
+    let dfi =
+        solve_rhf_with_df_increments(&ctx, &mol, &prep, op, &bounds, &RhfConfig::default(), None)
+            .unwrap();
     let _: bool = dfi.df_guess_converged;
     let _: usize = dfi.df_guess_iterations;
     let _: f64 = dfi.df_guess_energy;

@@ -24,8 +24,7 @@ use std::fs;
 /// The function name and this test's own doc comment stay accurate to WHAT
 /// is being guarded; only the file path underneath changed.
 fn main_rs() -> String {
-    fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
-        .expect("read lib.rs")
+    fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs")).expect("read lib.rs")
 }
 
 /// The five rs-mp2-rpa component lines must interpolate `{sr_name}`/`{lr_name}`,

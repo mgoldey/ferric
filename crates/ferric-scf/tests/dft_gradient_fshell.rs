@@ -55,8 +55,14 @@ fn fd_gradient(xyz: &str, basis_name: &str, delta: f64) -> Array2<f64> {
     let prep0 = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds0 = SchwarzBounds::compute(Operator::coulomb(), &prep0).unwrap();
     let res0 = solve_rhf(
-        &ParallelContext::default(), &mol, &prep0, Operator::coulomb(), &bounds0, &base_cfg,
-    ).unwrap();
+        &ParallelContext::default(),
+        &mol,
+        &prep0,
+        Operator::coulomb(),
+        &bounds0,
+        &base_cfg,
+    )
+    .unwrap();
     let cfg = RhfConfig {
         init_guess_density: Some(res0.density_r().clone()),
         use_sad_guess: false,
@@ -69,29 +75,60 @@ fn fd_gradient(xyz: &str, basis_name: &str, delta: f64) -> Array2<f64> {
     // own BLAS internally, so nesting under this outer iterator is safe (the
     // same pattern the production code uses, e.g. rimp2.rs's per-pair
     // parallelism over per-i BLAS3 GEMMs).
-    let pairs: Vec<(usize, usize)> = (0..natoms).flat_map(|a| (0..3).map(move |c| (a, c))).collect();
+    let pairs: Vec<(usize, usize)> = (0..natoms)
+        .flat_map(|a| (0..3).map(move |c| (a, c)))
+        .collect();
     let results: Vec<((usize, usize), f64)> = pairs
         .par_iter()
         .map(|&(atom, coord)| {
             let mut mol_p = mol.clone();
             let mut mol_m = mol.clone();
             match coord {
-                0 => { mol_p.atoms[atom].x += delta; mol_m.atoms[atom].x -= delta; }
-                1 => { mol_p.atoms[atom].y += delta; mol_m.atoms[atom].y -= delta; }
-                _ => { mol_p.atoms[atom].zpos += delta; mol_m.atoms[atom].zpos -= delta; }
+                0 => {
+                    mol_p.atoms[atom].x += delta;
+                    mol_m.atoms[atom].x -= delta;
+                }
+                1 => {
+                    mol_p.atoms[atom].y += delta;
+                    mol_m.atoms[atom].y -= delta;
+                }
+                _ => {
+                    mol_p.atoms[atom].zpos += delta;
+                    mol_m.atoms[atom].zpos -= delta;
+                }
             }
             let prep_p = PreparedBasis::new(&mol_p, &bs).unwrap();
             let bounds_p = SchwarzBounds::compute(Operator::coulomb(), &prep_p).unwrap();
             let res_p = solve_rhf(
-                &ParallelContext::default(), &mol_p, &prep_p, Operator::coulomb(), &bounds_p, &cfg,
-            ).unwrap();
-            assert!(res_p.converged, "FD solve did not converge at atom={atom} coord={coord} (+): exit={:?}", res_p.exit);
+                &ParallelContext::default(),
+                &mol_p,
+                &prep_p,
+                Operator::coulomb(),
+                &bounds_p,
+                &cfg,
+            )
+            .unwrap();
+            assert!(
+                res_p.converged,
+                "FD solve did not converge at atom={atom} coord={coord} (+): exit={:?}",
+                res_p.exit
+            );
             let prep_m = PreparedBasis::new(&mol_m, &bs).unwrap();
             let bounds_m = SchwarzBounds::compute(Operator::coulomb(), &prep_m).unwrap();
             let res_m = solve_rhf(
-                &ParallelContext::default(), &mol_m, &prep_m, Operator::coulomb(), &bounds_m, &cfg,
-            ).unwrap();
-            assert!(res_m.converged, "FD solve did not converge at atom={atom} coord={coord} (-): exit={:?}", res_m.exit);
+                &ParallelContext::default(),
+                &mol_m,
+                &prep_m,
+                Operator::coulomb(),
+                &bounds_m,
+                &cfg,
+            )
+            .unwrap();
+            assert!(
+                res_m.converged,
+                "FD solve did not converge at atom={atom} coord={coord} (-): exit={:?}",
+                res_m.exit
+            );
             ((atom, coord), (res_p.energy - res_m.energy) / (2.0 * delta))
         })
         .collect();
@@ -117,10 +154,14 @@ fn run_case(label: &str, xyz: &str, basis_name: &str, tol: f64) {
     for a in 0..mol.atoms.len() {
         for c in 0..3 {
             let diff = (g_ana[(a, c)] - g_fd[(a, c)]).abs();
-            if diff > max_diff { max_diff = diff; }
+            if diff > max_diff {
+                max_diff = diff;
+            }
             eprintln!(
                 "  atom={a} coord={c}: ana={:+.6e} fd={:+.6e} diff={:.2e}",
-                g_ana[(a, c)], g_fd[(a, c)], diff
+                g_ana[(a, c)],
+                g_fd[(a, c)],
+                diff
             );
         }
     }

@@ -82,7 +82,12 @@ use ferric_scf::screening::SchwarzBounds;
 
 const HA_TO_EV: f64 = 27.211386245988_f64;
 
-fn prepare_h2o() -> (Molecule, PreparedBasis, PreparedBasis, ferric_scf::ScfResult) {
+fn prepare_h2o() -> (
+    Molecule,
+    PreparedBasis,
+    PreparedBasis,
+    ferric_scf::ScfResult,
+) {
     let xyz = "3\nH2O\nO 0.0 0.0 0.117790\nH 0.0 0.755453 -0.471161\nH 0.0 -0.755453 -0.471161\n";
     let mol = Molecule::parse_xyz(xyz, 0, 1).expect("parse H2O");
     let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
@@ -96,7 +101,11 @@ fn prepare_h2o() -> (Molecule, PreparedBasis, PreparedBasis, ferric_scf::ScfResu
 
 fn pdep_cfg() -> PdepRpaConfig {
     PdepRpaConfig {
-        quadrature: QuadratureConfig { scheme: QuadratureScheme::GaussLegendre, n_points: 16, u0: 0.5 },
+        quadrature: QuadratureConfig {
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: 16,
+            u0: 0.5,
+        },
         eigensolver_conv_thresh: 1e-7,
         eigensolver_max_vecs: 0,
         trunc_thresh: 0.0,
@@ -133,12 +142,26 @@ fn cis_tda_oscillator_strengths_match_pyscf_df_kernel() {
     ];
 
     eprintln!("\nCIS-TDA (DF kernel) / cc-pVDZ H2O -- oscillator strengths vs PySCF");
-    eprintln!("  {:>4} {:>12} {:>12}  {:>12} {:>12}", "n", "E ferric", "E pyscf", "f ferric", "f pyscf");
-    for (n, ((&om, &f), &(e_ref, f_ref))) in
-        res.omega.iter().zip(res.oscillator_strength.iter()).zip(pyscf_ref.iter()).enumerate()
+    eprintln!(
+        "  {:>4} {:>12} {:>12}  {:>12} {:>12}",
+        "n", "E ferric", "E pyscf", "f ferric", "f pyscf"
+    );
+    for (n, ((&om, &f), &(e_ref, f_ref))) in res
+        .omega
+        .iter()
+        .zip(res.oscillator_strength.iter())
+        .zip(pyscf_ref.iter())
+        .enumerate()
     {
         let e_ev = om * HA_TO_EV;
-        eprintln!("  {:>4} {:>12.6} {:>12.6}  {:>12.6e} {:>12.6e}", n + 1, e_ev, e_ref, f, f_ref);
+        eprintln!(
+            "  {:>4} {:>12.6} {:>12.6}  {:>12.6e} {:>12.6e}",
+            n + 1,
+            e_ev,
+            e_ref,
+            f,
+            f_ref
+        );
 
         // Energies: same DF kernel, same exact-RHF reference -- expect
         // near-exact agreement (ferric uses ndarray-linalg/LAPACK, PySCF
@@ -161,7 +184,11 @@ fn cis_tda_oscillator_strengths_match_pyscf_df_kernel() {
         // treats "both effectively zero" as a pass without demanding
         // matching noise floors.
         if f_ref.max(f) < 1e-10 {
-            assert!(f < 1e-8, "state {}: expected ~0 oscillator strength, got {f:.3e}", n + 1);
+            assert!(
+                f < 1e-8,
+                "state {}: expected ~0 oscillator strength, got {f:.3e}",
+                n + 1
+            );
         } else {
             let rel_err = (f - f_ref).abs() / f_ref;
             assert!(
@@ -190,13 +217,36 @@ fn bse_tda_oscillator_strengths_are_sane() {
     assert!(!res.oscillator_strength.is_empty());
 
     eprintln!("\nBSE-TDA@G0W0@HF / cc-pVDZ H2O -- lowest 5 states + oscillator strengths");
-    for (n, (&om, &f)) in res.omega.iter().zip(res.oscillator_strength.iter()).take(5).enumerate() {
-        eprintln!("  Omega_{:<2} = {:8.4} eV   f = {:10.6}", n + 1, om * HA_TO_EV, f);
-        assert!(f.is_finite(), "state {}: oscillator strength must be finite, got {f}", n + 1);
-        assert!(f >= -1e-8, "state {}: oscillator strength must be non-negative, got {f}", n + 1);
+    for (n, (&om, &f)) in res
+        .omega
+        .iter()
+        .zip(res.oscillator_strength.iter())
+        .take(5)
+        .enumerate()
+    {
+        eprintln!(
+            "  Omega_{:<2} = {:8.4} eV   f = {:10.6}",
+            n + 1,
+            om * HA_TO_EV,
+            f
+        );
+        assert!(
+            f.is_finite(),
+            "state {}: oscillator strength must be finite, got {f}",
+            n + 1
+        );
+        assert!(
+            f >= -1e-8,
+            "state {}: oscillator strength must be non-negative, got {f}",
+            n + 1
+        );
     }
 
     let f_lowest = res.lowest_oscillator_strength();
-    eprintln!("  lowest singlet: {:.4} eV, f = {:.6}", res.lowest_ev(), f_lowest);
+    eprintln!(
+        "  lowest singlet: {:.4} eV, f = {:.6}",
+        res.lowest_ev(),
+        f_lowest
+    );
     assert!(f_lowest.is_finite() && f_lowest >= -1e-8);
 }

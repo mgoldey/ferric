@@ -181,10 +181,17 @@ struct Ips {
     g0w0_pbe: f64,
 }
 
-fn s_squared(uhf: &ferric_scf::result::ScfResult, s_ao: &Array2<f64>, nocc_a: usize, nocc_b: usize) -> f64 {
+fn s_squared(
+    uhf: &ferric_scf::result::ScfResult,
+    s_ao: &Array2<f64>,
+    nocc_a: usize,
+    nocc_b: usize,
+) -> f64 {
     let c_a = &uhf.mos_alpha;
     let c_b = uhf.mos_beta.as_ref().unwrap_or(&uhf.mos_alpha);
-    let s_mo_ab = c_a.slice(ndarray::s![.., ..nocc_a]).t()
+    let s_mo_ab = c_a
+        .slice(ndarray::s![.., ..nocc_a])
+        .t()
         .dot(s_ao)
         .dot(&c_b.slice(ndarray::s![.., ..nocc_b]));
     let ov2: f64 = s_mo_ab.iter().map(|x| x * x).sum();
@@ -208,7 +215,7 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
     let op = Operator::coulomb();
 
     let neutral = Molecule::parse_xyz(case.xyz, 0, 1).ok()?;
-    let mut cation  = Molecule::parse_xyz(case.xyz, 1, 2).ok()?;
+    let mut cation = Molecule::parse_xyz(case.xyz, 1, 2).ok()?;
     let mut neutral = neutral;
 
     // Basis routing for elements with no correlation-consistent aug-cc-pV*Z set.
@@ -229,7 +236,10 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
     // in the aDZ column would over-resolve these few molecules relative to the
     // rest of the double-ζ sweep. def2-svp.json carries K/Rb (Rb with its 28-core
     // ECP) + a Br block sourced from BSE for BrK.
-    let needs_def2 = neutral.atoms.iter().any(|a| a.z == 19 || a.z == 20 || a.z == 37);
+    let needs_def2 = neutral
+        .atoms
+        .iter()
+        .any(|a| a.z == 19 || a.z == 20 || a.z == 37);
     let is_dz = obs_name.contains("pvdz");
     let (obs_name, dfbs_name): (&str, &str) = if needs_def2 {
         if is_dz {
@@ -267,16 +277,23 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
     // Configurable SCF convergence ladder (DF-JK default, stall/divergence abort,
     // density carried forward). Replaces the old hardcoded default->ls0.5->ls1.0
     // escalation. DF-JK makes g-function atoms (Cu/aTZ) ~28x cheaper per iter.
-    use ferric_scf::ladder::{solve_rhf_ladder, default_ladder};
+    use ferric_scf::ladder::{default_ladder, solve_rhf_ladder};
     let _t_rhf = ferric_rpa::timing::Stage::start("phase:neutral_RHF");
     let rhf_n = match solve_rhf_ladder(&ctx, &neutral, &obs_n, op, &bounds_n, &default_ladder()) {
         Ok(lr) if lr.converged => lr.result,
         Ok(lr) => {
-            eprintln!("  [!] {} neutral RHF did not converge (best rung {}, exit {:?})",
-                case.name, lr.rung_reached, lr.rung_outcomes.last().map(|o| o.exit));
+            eprintln!(
+                "  [!] {} neutral RHF did not converge (best rung {}, exit {:?})",
+                case.name,
+                lr.rung_reached,
+                lr.rung_outcomes.last().map(|o| o.exit)
+            );
             return None;
         }
-        Err(e) => { eprintln!("  [!] {} neutral RHF ladder error: {e:?}", case.name); return None; }
+        Err(e) => {
+            eprintln!("  [!] {} neutral RHF ladder error: {e:?}", case.name);
+            return None;
+        }
     };
     _t_rhf.end();
     let nocc_n = (neutral.nelec() as usize) / 2;
@@ -285,7 +302,9 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
 
     let rpa_cfg = PdepRpaConfig {
         quadrature: QuadratureConfig {
-            scheme: QuadratureScheme::GaussLegendre, n_points: 20, u0: 0.5,
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: 20,
+            u0: 0.5,
         },
         trunc_thresh: trunc_thresh(),
         eigensolver_conv_thresh: 1e-9,
@@ -296,13 +315,19 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
     // for the slow tail. Only RHF(neutral) → Koopmans → G0W0@HF(+@PBE) remain
     // (the PySCF-validated columns). ΔSCF/ΔRPA/cation-diag stay NaN, which the
     // table already renders honestly as "not computed at this depth".
-    let g0w0_only = std::env::var("GW100_G0W0_ONLY").map(|s| s == "1").unwrap_or(false);
+    let g0w0_only = std::env::var("GW100_G0W0_ONLY")
+        .map(|s| s == "1")
+        .unwrap_or(false);
 
     let mut ip_dscf = f64::NAN;
     let mut ip_drpa = f64::NAN;
     let mut diag = CationDiag {
-        method: "skipped(G0W0-only)", iters: 0, converged: true,
-        s2: f64::NAN, s2_ideal: f64::NAN, energy: f64::NAN,
+        method: "skipped(G0W0-only)",
+        iters: 0,
+        converged: true,
+        s2: f64::NAN,
+        s2_ideal: f64::NAN,
+        energy: f64::NAN,
     };
     if !g0w0_only {
         let _t_rpan = ferric_rpa::timing::Stage::start("phase:neutral_PDEP_RPA");
@@ -320,12 +345,21 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
         };
         let c_seed = rhf_n.mos_alpha.clone();
         let _t_uhf = ferric_rpa::timing::Stage::start("phase:cation_UHF");
-        let (uhf_c, diag_method) = match solve_uhf_with_guess(&ctx, &cation, &obs_c, &bounds_c, &uhf_cfg, Some((&c_seed, &c_seed))) {
+        let (uhf_c, diag_method) = match solve_uhf_with_guess(
+            &ctx,
+            &cation,
+            &obs_c,
+            &bounds_c,
+            &uhf_cfg,
+            Some((&c_seed, &c_seed)),
+        ) {
             Ok(r) => (r, "UHF(neutral-seed)"),
             Err(_) => match solve_uhf(&ctx, &cation, &obs_c, &bounds_c, &uhf_cfg) {
                 Ok(r) => (r, "UHF(hcore)"),
                 Err(_) => {
-                    let r = solve_rohf(&ctx, &cation, &obs_c, op, &bounds_c, &RohfConfig::default()).ok()?;
+                    let r =
+                        solve_rohf(&ctx, &cation, &obs_c, op, &bounds_c, &RohfConfig::default())
+                            .ok()?;
                     (r, "ROHF")
                 }
             },
@@ -359,7 +393,9 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
 
     let pdep_cfg_gw = PdepRpaConfig {
         quadrature: QuadratureConfig {
-            scheme: QuadratureScheme::GaussLegendre, n_points: 16, u0: 0.5,
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: 16,
+            u0: 0.5,
         },
         eigensolver_conv_thresh: 1e-7,
         eigensolver_max_vecs: 0,
@@ -387,7 +423,9 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
     // GW100_FULL_MAX_ATOMS (default 10). The other columns stay NaN for big mols
     // (honestly: "not computed at this depth", not a failure).
     let full_max_atoms: usize = std::env::var("GW100_FULL_MAX_ATOMS")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(10);
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
     let full_depth = neutral.atoms.len() <= full_max_atoms;
 
     let mut ip_g0w0 = f64::NAN;
@@ -396,10 +434,10 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
     let mut ip_evgw = f64::NAN;
     let methods: Vec<(GwMethod, &mut f64)> = if full_depth {
         vec![
-            (GwMethod::G0W0,   &mut ip_g0w0),
+            (GwMethod::G0W0, &mut ip_g0w0),
             (GwMethod::Cohsex, &mut ip_cohsex),
-            (GwMethod::EvGw0,  &mut ip_evgw0),
-            (GwMethod::EvGw,   &mut ip_evgw),
+            (GwMethod::EvGw0, &mut ip_evgw0),
+            (GwMethod::EvGw, &mut ip_evgw),
         ]
     } else {
         // big molecule: G0W0@HF only (the PySCF-validated core number)
@@ -410,12 +448,28 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
     // banked (e.g. filling a single Cu2.G0W0pbe gap without repeating the ~15-20
     // min neutral @HF G0W0). The @HF slots stay NaN and are NOT merged back — the
     // caller must merge only the G0W0pbe cell.
-    let pbe_only = std::env::var("GW100_PBE_ONLY").map(|s| s == "1").unwrap_or(false);
+    let pbe_only = std::env::var("GW100_PBE_ONLY")
+        .map(|s| s == "1")
+        .unwrap_or(false);
     if !pbe_only {
         let _t_gw = ferric_rpa::timing::Stage::start("phase:GW_columns@HF");
         for (method, slot) in methods {
-            let gcfg = GwConfig { method, max_ev_iter: 8, ev_conv_thresh: 1e-4, ..Default::default() };
-            if let Ok(res) = run_gw(&neutral, &obs_n, &dfbs_n, op, &rhf_n, &pdep_cfg_gw, &gcfg, None) {
+            let gcfg = GwConfig {
+                method,
+                max_ev_iter: 8,
+                ev_conv_thresh: 1e-4,
+                ..Default::default()
+            };
+            if let Ok(res) = run_gw(
+                &neutral,
+                &obs_n,
+                &dfbs_n,
+                op,
+                &rhf_n,
+                &pdep_cfg_gw,
+                &gcfg,
+                None,
+            ) {
                 if let Some(local) = res.mo_indices.iter().position(|&i| i == homo_abs) {
                     *slot = -res.eps_qp[local] * HA_TO_EV;
                 }
@@ -428,19 +482,37 @@ fn run_case(case: &Case, obs_name: &str, dfbs_name: &str) -> Option<(Ips, Cation
     // GW100_PBE_ALL=1 forces it for every molecule too (used when the rest of the
     // ladder is dropped for the slow tail — G0W0@HF + G0W0@PBE are the two
     // PySCF-validated columns the whitepaper judges).
-    let pbe_all = std::env::var("GW100_PBE_ALL").map(|s| s == "1").unwrap_or(false);
+    let pbe_all = std::env::var("GW100_PBE_ALL")
+        .map(|s| s == "1")
+        .unwrap_or(false);
     let ip_g0w0_pbe = if full_depth || pbe_all {
-        run_g0w0_pbe(&ctx, &neutral, &obs_n, &dfbs_n, &obs_bs, op,
-                     &bounds_n, &pdep_cfg_gw, homo_abs)
-            .unwrap_or(f64::NAN)
+        run_g0w0_pbe(
+            &ctx,
+            &neutral,
+            &obs_n,
+            &dfbs_n,
+            &obs_bs,
+            op,
+            &bounds_n,
+            &pdep_cfg_gw,
+            homo_abs,
+        )
+        .unwrap_or(f64::NAN)
     } else {
         f64::NAN
     };
 
     Some((
-        Ips { koop: ip_koop, dscf: ip_dscf, drpa: ip_drpa,
-              g0w0: ip_g0w0, cohsex: ip_cohsex, evgw0: ip_evgw0, evgw: ip_evgw,
-              g0w0_pbe: ip_g0w0_pbe },
+        Ips {
+            koop: ip_koop,
+            dscf: ip_dscf,
+            drpa: ip_drpa,
+            g0w0: ip_g0w0,
+            cohsex: ip_cohsex,
+            evgw0: ip_evgw0,
+            evgw: ip_evgw,
+            g0w0_pbe: ip_g0w0_pbe,
+        },
         diag,
     ))
 }
@@ -460,7 +532,10 @@ fn run_g0w0_pbe(
     pdep_cfg_gw: &PdepRpaConfig,
     homo_abs: usize,
 ) -> Option<f64> {
-    let cfg = RhfConfig { xc: Some("pbe".into()), ..Default::default() };
+    let cfg = RhfConfig {
+        xc: Some("pbe".into()),
+        ..Default::default()
+    };
     // Physicality test for a closed-shell RKS reference: a bound HOMO and a real
     // gap. `converged = true` is NOT sufficient — a homonuclear transition-metal
     // dimer's closed-shell RKS-PBE can CONVERGE to an unphysical state (Cu2:
@@ -475,8 +550,14 @@ fn run_g0w0_pbe(
         eprintln!(
             "ferric-gw @PBE: reference = RKS(closed-shell), spin = restricted, \
              ⟨S²⟩ = 0.000 (converged = {}, ε_HOMO = {:.4} Ha, gap = {:.4} Ha → {})",
-            ks.converged, eps[homo_abs], eps[homo_abs + 1] - eps[homo_abs],
-            if is_physical(&ks) { "physical, using RKS" } else { "UNPHYSICAL → level-shift ladder" }
+            ks.converged,
+            eps[homo_abs],
+            eps[homo_abs + 1] - eps[homo_abs],
+            if is_physical(&ks) {
+                "physical, using RKS"
+            } else {
+                "UNPHYSICAL → level-shift ladder"
+            }
         );
         // LEVEL-SHIFT LADDER RESCUE (the default ksdft_ladder idea, extended with
         // a physicality criterion). ferric's ladder walk stops at the first
@@ -502,7 +583,8 @@ fn run_g0w0_pbe(
                         eprintln!(
                             "ferric-gw @PBE: level-shift ls={shift} → PHYSICAL RKS \
                              (ε_HOMO = {:.4} Ha, gap = {:.4} Ha)",
-                            eps[homo_abs], eps[homo_abs + 1] - eps[homo_abs]
+                            eps[homo_abs],
+                            eps[homo_abs + 1] - eps[homo_abs]
                         );
                         ks = r;
                         break;
@@ -523,7 +605,17 @@ fn run_g0w0_pbe(
         // broken-symmetry UKS path (last resort; may itself return NaN).
         if !is_physical(&ks) {
             eprintln!("ferric-gw @PBE: RKS level-shift ladder exhausted → UKS-BS fallback");
-            return run_u_g0w0_pbe(ctx, neutral, obs_n, dfbs_n, obs_bs, op, bounds_n, pdep_cfg_gw, homo_abs);
+            return run_u_g0w0_pbe(
+                ctx,
+                neutral,
+                obs_n,
+                dfbs_n,
+                obs_bs,
+                op,
+                bounds_n,
+                pdep_cfg_gw,
+                homo_abs,
+            );
         }
         // Diagnostic: mean-field HOMO by ENERGY vs Aufbau index. If PBE reorders
         // the occupied manifold (Cu d-band), the energy-max occupied MO ≠ index
@@ -536,12 +628,26 @@ fn run_g0w0_pbe(
             eprintln!(
                 "ferric-gw @PBE: mean-field HOMO — Aufbau idx {homo_abs} (ε={:.4} Ha), \
                  energy-max-occ idx {e_by_energy} (ε={:.4} Ha), LUMO ε={:.4} Ha",
-                eps[homo_abs], eps[e_by_energy], eps[homo_abs + 1]
+                eps[homo_abs],
+                eps[e_by_energy],
+                eps[homo_abs + 1]
             );
         }
         if let Ok((vxc, _)) = ferric_gw::vxc_mo::vxc_diagonal_mo(neutral, obs_bs, "pbe", &ks) {
-            let gcfg = GwConfig { method: GwMethod::G0W0, ..Default::default() };
-            if let Ok(res) = run_gw(neutral, obs_n, dfbs_n, op, &ks, pdep_cfg_gw, &gcfg, Some(&vxc)) {
+            let gcfg = GwConfig {
+                method: GwMethod::G0W0,
+                ..Default::default()
+            };
+            if let Ok(res) = run_gw(
+                neutral,
+                obs_n,
+                dfbs_n,
+                op,
+                &ks,
+                pdep_cfg_gw,
+                &gcfg,
+                Some(&vxc),
+            ) {
                 if let Some(local) = res.mo_indices.iter().position(|&i| i == homo_abs) {
                     let ip = -res.eps_qp[local] * HA_TO_EV;
                     eprintln!(
@@ -560,7 +666,17 @@ fn run_g0w0_pbe(
     // spatial orbitals (β HOMO↔LUMO swapped) lets UKS relax into the
     // symmetry-broken singlet, then run_u_gw carries the open-shell Σ. The
     // neutral is a singlet, so nocc_α = nocc_β = nelec/2.
-    run_u_g0w0_pbe(ctx, neutral, obs_n, dfbs_n, obs_bs, op, bounds_n, pdep_cfg_gw, homo_abs)
+    run_u_g0w0_pbe(
+        ctx,
+        neutral,
+        obs_n,
+        dfbs_n,
+        obs_bs,
+        op,
+        bounds_n,
+        pdep_cfg_gw,
+        homo_abs,
+    )
 }
 
 /// Broken-symmetry UKS-PBE → open-shell G0W0@PBE. Used when the closed-shell
@@ -598,7 +714,10 @@ fn run_u_g0w0_pbe(
     // HOMO↔LUMO column swap does NOT produce (the swap keeps both spins
     // delocalized, so UKS relaxes straight back to ⟨S²⟩=0, as observed).
     let (homo, lumo) = (nocc - 1, nocc);
-    let (c, s) = (std::f64::consts::FRAC_1_SQRT_2, std::f64::consts::FRAC_1_SQRT_2);
+    let (c, s) = (
+        std::f64::consts::FRAC_1_SQRT_2,
+        std::f64::consts::FRAC_1_SQRT_2,
+    );
     let mut c_a = rhf_n.mos_alpha.clone();
     let mut c_b = rhf_n.mos_alpha.clone();
     for mu in 0..c_a.nrows() {
@@ -617,7 +736,8 @@ fn run_u_g0w0_pbe(
         df_k_aux: Some("def2-universal-jkfit".to_string()),
         ..Default::default()
     };
-    let uks = solve_uhf_with_guess(ctx, neutral, obs_n, bounds_n, &uks_cfg, Some((&c_a, &c_b))).ok()?;
+    let uks =
+        solve_uhf_with_guess(ctx, neutral, obs_n, bounds_n, &uks_cfg, Some((&c_a, &c_b))).ok()?;
     // Always print the spin state of the @PBE reference actually used. ⟨S²⟩ ≈ 0
     // means UKS relaxed back to the closed-shell singlet (no symmetry broke — the
     // BS seed didn't stick); ⟨S²⟩ > 0 means a genuine broken-symmetry solution.
@@ -642,7 +762,10 @@ fn run_u_g0w0_pbe(
     // Per-spin v_xc diagonals (absolute-MO-indexed) for the Σ_x − v_xc KS
     // correction — run_u_gw does NOT auto-apply it (see its docstring).
     let (vxc_a, vxc_b) = ferric_gw::vxc_mo::vxc_diagonal_mo(neutral, obs_bs, "pbe", &uks).ok()?;
-    let gcfg = GwConfig { method: GwMethod::G0W0, ..Default::default() };
+    let gcfg = GwConfig {
+        method: GwMethod::G0W0,
+        ..Default::default()
+    };
     let mut res = ferric_gw::run_u_gw(neutral, obs_n, dfbs_n, op, &uks, pdep_cfg_gw, &gcfg).ok()?;
     res.apply_kohn_sham_correction(&vxc_a, &vxc_b);
     // Singlet neutral: α-HOMO IP is the ionization energy (β is degenerate at a
@@ -654,8 +777,13 @@ fn run_u_g0w0_pbe(
     eprintln!(
         "ferric-gw @PBE: UKS α-HOMO (abs MO {homo_abs}) QP IP = {ip:.3} eV \
          (α-HOMO ε_qp = {:.4} Ha, QP-converged = {}) → {}",
-        res.eps_qp_a[local], res.qp_converged_a[local],
-        if ok { "accepted" } else { "REJECTED (unphysical) → NaN" }
+        res.eps_qp_a[local],
+        res.qp_converged_a[local],
+        if ok {
+            "accepted"
+        } else {
+            "REJECTED (unphysical) → NaN"
+        }
     );
     // Don't bank a spurious IP: return None (→ NaN) rather than a wrong number.
     ok.then_some(ip)
@@ -663,7 +791,9 @@ fn run_u_g0w0_pbe(
 
 fn main() {
     // Basis from CLI: `gw100_full [aug-cc-pvdz|aug-cc-pvtz]` (default aTZ).
-    let obs_name = std::env::args().nth(1).unwrap_or_else(|| "aug-cc-pvtz".to_string());
+    let obs_name = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "aug-cc-pvtz".to_string());
     let dfbs_name = format!("{obs_name}-rifit");
     // Resumability: GW100_DONE=mol1,mol2,... skips already-computed molecules so a
     // restarted run continues instead of recomputing from scratch.
@@ -673,10 +803,19 @@ fn main() {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .collect();
-    let mut cases: Vec<Case> = cases().into_iter().filter(|c| !done.contains(c.name)).collect();
+    let mut cases: Vec<Case> = cases()
+        .into_iter()
+        .filter(|c| !done.contains(c.name))
+        .collect();
     // Smaller molecules FIRST — they bank fast (full-depth) so the table fills
     // quickly; the big organics (G0W0-only) come last. Atom count = xyz line 0.
-    cases.sort_by_key(|c| c.xyz.split('\n').next().and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(999));
+    cases.sort_by_key(|c| {
+        c.xyz
+            .split('\n')
+            .next()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(999)
+    });
     println!("# GW100 subset — basis {obs_name} / {dfbs_name}");
     println!(
         "{:<6} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
@@ -693,12 +832,30 @@ fn main() {
             Some((ips, diag)) => {
                 println!(
                     "{:<6} {:>8.2} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3}",
-                    case.name, case.ip_ref,
-                    ips.koop, ips.dscf, ips.drpa,
-                    ips.g0w0, ips.cohsex, ips.evgw0, ips.evgw, ips.g0w0_pbe
+                    case.name,
+                    case.ip_ref,
+                    ips.koop,
+                    ips.dscf,
+                    ips.drpa,
+                    ips.g0w0,
+                    ips.cohsex,
+                    ips.evgw0,
+                    ips.evgw,
+                    ips.g0w0_pbe
                 );
-                for (k, v) in [ips.koop, ips.dscf, ips.drpa,
-                               ips.g0w0, ips.cohsex, ips.evgw0, ips.evgw, ips.g0w0_pbe].iter().enumerate() {
+                for (k, v) in [
+                    ips.koop,
+                    ips.dscf,
+                    ips.drpa,
+                    ips.g0w0,
+                    ips.cohsex,
+                    ips.evgw0,
+                    ips.evgw,
+                    ips.g0w0_pbe,
+                ]
+                .iter()
+                .enumerate()
+                {
                     if v.is_finite() {
                         sum_abs[k] += (v - case.ip_ref).abs();
                         n_ok[k] += 1;
@@ -715,21 +872,32 @@ fn main() {
     }
 
     println!("{:-<82}", "");
-    let mae: Vec<String> = sum_abs.iter().zip(n_ok.iter()).map(|(s, n)| {
-        if *n > 0 { format!("{:>8.3}", s / *n as f64) } else { "     n/a".to_string() }
-    }).collect();
+    let mae: Vec<String> = sum_abs
+        .iter()
+        .zip(n_ok.iter())
+        .map(|(s, n)| {
+            if *n > 0 {
+                format!("{:>8.3}", s / *n as f64)
+            } else {
+                "     n/a".to_string()
+            }
+        })
+        .collect();
     println!(
         "{:<6} {:>8} {} {} {} {} {} {} {} {}",
-        "MAE", "",
-        mae[0], mae[1], mae[2], mae[3], mae[4], mae[5], mae[6], mae[7],
+        "MAE", "", mae[0], mae[1], mae[2], mae[3], mae[4], mae[5], mae[6], mae[7],
     );
 
     println!("\nCation SCF diagnostics:");
-    println!("{:<6} {:>18} {:>5} {:>5} {:>9} {:>9} {:>14}",
-        "mol", "method", "iter", "conv", "<S^2>", "ideal", "E_cation(Ha)");
+    println!(
+        "{:<6} {:>18} {:>5} {:>5} {:>9} {:>9} {:>14}",
+        "mol", "method", "iter", "conv", "<S^2>", "ideal", "E_cation(Ha)"
+    );
     for (name, d) in &diags {
-        println!("{:<6} {:>18} {:>5} {:>5} {:>9.4} {:>9.4} {:>14.6}",
-            name, d.method, d.iters, d.converged, d.s2, d.s2_ideal, d.energy);
+        println!(
+            "{:<6} {:>18} {:>5} {:>5} {:>9.4} {:>9.4} {:>14.6}",
+            name, d.method, d.iters, d.converged, d.s2, d.s2_ideal, d.energy
+        );
     }
 
     println!("\nKoopmans, G0W0/COHSEX/evGW(0): direct QP energies on neutral RHF/HF.");

@@ -174,7 +174,10 @@ mod tests {
     #[test]
     fn invalid_epsilon_is_rejected_at_context_build() {
         let (mol, _prep) = water_sto3g();
-        let cfg = PcmConfig { epsilon: 1.0, ..PcmConfig::water() };
+        let cfg = PcmConfig {
+            epsilon: 1.0,
+            ..PcmConfig::water()
+        };
         assert!(PcmContext::new(&mol, &cfg).is_err());
     }
 }

@@ -84,7 +84,9 @@ pub fn chebyshev_tan_nodes(n: usize, u0: f64) -> (Vec<f64>, Vec<f64>) {
 pub fn gauss_legendre_nodes(n: usize, u0: f64) -> (Vec<f64>, Vec<f64>) {
     let (x, w) = gl_nodes_weights(n);
     let freqs: Vec<f64> = x.iter().map(|&xi| u0 * (1.0 + xi) / (1.0 - xi)).collect();
-    let weights: Vec<f64> = x.iter().zip(w.iter())
+    let weights: Vec<f64> = x
+        .iter()
+        .zip(w.iter())
         .map(|(&xi, &wi)| wi * 2.0 * u0 / (1.0 - xi).powi(2))
         .collect();
     (freqs, weights)
@@ -93,9 +95,9 @@ pub fn gauss_legendre_nodes(n: usize, u0: f64) -> (Vec<f64>, Vec<f64>) {
 /// Literature-optimized u₀ scale parameters (Furche, JCP 122, 164106, 2005).
 fn optimized_u0(n: usize) -> f64 {
     match n {
-        1..=8   => 0.3,
-        9..=16  => 0.4,
-        _       => 0.5,
+        1..=8 => 0.3,
+        9..=16 => 0.4,
+        _ => 0.5,
     }
 }
 
@@ -112,7 +114,9 @@ fn gl_nodes_weights(n: usize) -> (Vec<f64>, Vec<f64>) {
             let (p, dp) = legendre_and_deriv(n, xi);
             let dx = -p / dp;
             xi += dx;
-            if dx.abs() < 1e-15 { break; }
+            if dx.abs() < 1e-15 {
+                break;
+            }
         }
         let (_, dp) = legendre_and_deriv(n, xi);
         let wi = 2.0 / ((1.0 - xi * xi) * dp * dp);
@@ -131,8 +135,12 @@ fn gl_nodes_weights(n: usize) -> (Vec<f64>, Vec<f64>) {
 
 /// Legendre polynomial P_n(x) and its derivative P_n'(x) via recurrence.
 fn legendre_and_deriv(n: usize, x: f64) -> (f64, f64) {
-    if n == 0 { return (1.0, 0.0); }
-    if n == 1 { return (x, 1.0); }
+    if n == 0 {
+        return (1.0, 0.0);
+    }
+    if n == 1 {
+        return (x, 1.0);
+    }
     let mut p_prev = 1.0f64;
     let mut p_curr = x;
     for k in 2..=n {
@@ -152,25 +160,35 @@ mod tests {
     fn gl_weights_sum_to_pi_over_2() {
         // For f(ω) = 1/(1+ω²), ∫₀^∞ dω = π/2.
         let (freqs, weights) = gauss_legendre_nodes(20, 0.5);
-        let sum: f64 = freqs.iter().zip(weights.iter())
+        let sum: f64 = freqs
+            .iter()
+            .zip(weights.iter())
             .map(|(w, wt)| wt / (1.0 + w * w))
             .sum();
-        assert!((sum - std::f64::consts::FRAC_PI_2).abs() < 1e-4,
-            "GL quadrature error: |sum - π/2| = {}", (sum - std::f64::consts::FRAC_PI_2).abs());
+        assert!(
+            (sum - std::f64::consts::FRAC_PI_2).abs() < 1e-4,
+            "GL quadrature error: |sum - π/2| = {}",
+            (sum - std::f64::consts::FRAC_PI_2).abs()
+        );
     }
 
     #[test]
     fn chebyshev_tan_weights_sum_to_pi_over_2() {
         // Same target as GL — must integrate 1/(1+ω²) to π/2 on [0,∞).
         let (freqs, weights) = chebyshev_tan_nodes(20, 0.5);
-        let sum: f64 = freqs.iter().zip(weights.iter())
+        let sum: f64 = freqs
+            .iter()
+            .zip(weights.iter())
             .map(|(w, wt)| wt / (1.0 + w * w))
             .sum();
         // Cheb-2 + tan-map convergence is slower than GL for this integrand
         // at n=20 (~4e-3); main use case is the RPA trace-log integrand
         // where Eshuis et al show <0.1 mHa at n=14-20.
-        assert!((sum - std::f64::consts::FRAC_PI_2).abs() < 1e-2,
-            "Cheb-tan: |sum - π/2| = {}", (sum - std::f64::consts::FRAC_PI_2).abs());
+        assert!(
+            (sum - std::f64::consts::FRAC_PI_2).abs() < 1e-2,
+            "Cheb-tan: |sum - π/2| = {}",
+            (sum - std::f64::consts::FRAC_PI_2).abs()
+        );
     }
 
     #[test]
@@ -183,7 +201,11 @@ mod tests {
         // bounds it ~3× tighter (still ~57 at n=20). Loose check — main
         // point is that the *integrand mass* concentrates at low ω, not
         // a strict cap.
-        assert!(omega_max < 100.0, "Cheb-tan max ω = {}, should be tighter than GL (~145)", omega_max);
+        assert!(
+            omega_max < 100.0,
+            "Cheb-tan max ω = {}, should be tighter than GL (~145)",
+            omega_max
+        );
     }
 
     #[test]

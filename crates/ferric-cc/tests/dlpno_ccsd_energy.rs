@@ -35,11 +35,19 @@ fn water_ccsd() -> Case {
     let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
     let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &obs).unwrap();
-    let scf = RhfConfig { density_conv: 1e-10, max_iter: 200, ..Default::default() };
+    let scf = RhfConfig {
+        density_conv: 1e-10,
+        max_iter: 200,
+        ..Default::default()
+    };
     let rhf = solve_rhf(&ctx, &mol, &obs, Operator::coulomb(), &bounds, &scf).unwrap();
     assert!(rhf.converged, "SCF must converge");
 
-    let cfg = CcConfig { energy_conv: 1e-10, max_iter: 100, ..Default::default() };
+    let cfg = CcConfig {
+        energy_conv: 1e-10,
+        max_iter: 100,
+        ..Default::default()
+    };
     let cc = ccsd_closed_shell(&mol, &obs, &dfbs, Operator::coulomb(), &rhf, &cfg).unwrap();
     let t2 = cc.t2.clone().into_dimensionality::<ndarray::Ix4>().unwrap();
 
@@ -60,7 +68,9 @@ fn water_ccsd() -> Case {
         let b = &inter.b_ov; // (naux, nocc*nvir)
         let naux = b.nrows();
         Array4::from_shape_fn((nocc, nvir, nocc, nvir), |(i, a, j, bb)| {
-            (0..naux).map(|p| b[(p, i * nvir + a)] * b[(p, j * nvir + bb)]).sum()
+            (0..naux)
+                .map(|p| b[(p, i * nvir + a)] * b[(p, j * nvir + bb)])
+                .sum()
         })
     };
 
@@ -138,9 +148,7 @@ fn tighter_cutoffs_lose_more_correlation_monotonically() {
         let err = (e - e_ref).abs();
         let ret = pair_mask_retention(&d);
 
-        eprintln!(
-            "  cutoff {cutoff:>5} Bohr: retention {ret:.3}  E = {e:.10}  |dE| = {err:.3e}"
-        );
+        eprintln!("  cutoff {cutoff:>5} Bohr: retention {ret:.3}  E = {e:.10}  |dE| = {err:.3e}");
         assert!(
             ret <= last_ret + 1e-12,
             "retention rose when the cutoff tightened ({ret} > {last_ret})"
@@ -172,8 +180,14 @@ fn screening_is_not_inert() {
         pair_mask_retention(&d),
         e - e_ref
     );
-    assert!(zeroed > 0, "a 0.5 Bohr cutoff should screen something on water");
-    assert!((e - e_ref).abs() > 1e-12, "screening changed no energy -- the mask is inert");
+    assert!(
+        zeroed > 0,
+        "a 0.5 Bohr cutoff should screen something on water"
+    );
+    assert!(
+        (e - e_ref).abs() > 1e-12,
+        "screening changed no energy -- the mask is inert"
+    );
     // Dropping amplitude blocks removes (negative) correlation, so E_corr rises.
     assert!(
         e > e_ref,

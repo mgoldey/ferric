@@ -15,12 +15,19 @@ fn main() {
     let n = prep.nbasis();
     let (s_evals, s_evecs) = s.eigh(ndarray_linalg::UPLO::Upper).unwrap();
     let mut u = s_evecs.clone();
-    for i in 0..n { let sc = 1.0/s_evals[i].sqrt(); for mu in 0..n { u[(mu,i)] *= sc; } }
+    for i in 0..n {
+        let sc = 1.0 / s_evals[i].sqrt();
+        for mu in 0..n {
+            u[(mu, i)] *= sc;
+        }
+    }
     let s_inv_sqrt = u.dot(&s_evecs.t());
     let h_prime = s_inv_sqrt.dot(&h).dot(&s_inv_sqrt);
     let (eps, _) = h_prime.eigh(ndarray_linalg::UPLO::Upper).unwrap();
     println!("ferric hcore eigenvalues (Hartree):");
-    for i in 0..10.min(eps.len()) { println!("  {}: {:+.6}", i, eps[i]); }
+    for i in 0..10.min(eps.len()) {
+        println!("  {}: {:+.6}", i, eps[i]);
+    }
     println!("\nPySCF reference:");
     println!("   0: -33.056104");
     println!("   1: -8.937147");

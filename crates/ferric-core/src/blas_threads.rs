@@ -131,14 +131,13 @@ pub fn opt_in_blas_threads() -> usize {
 /// the resolved value. The `validate` here is therefore `accept_any` and the
 /// `parse` maps garbage to the default (an `Err` here would only be swallowed
 /// by the wrapper anyway).
-pub(crate) const BLAS_THREADS: crate::config::ConfigVar<usize> =
-    crate::config::ConfigVar {
-        env_name: "FERRIC_BLAS_THREADS",
-        default: 1,
-        // Garbage → default; the wrapper floors the result at 1 regardless.
-        parse: |s| Ok(s.trim().parse::<usize>().unwrap_or(1)),
-        validate: crate::config::accept_any,
-    };
+pub(crate) const BLAS_THREADS: crate::config::ConfigVar<usize> = crate::config::ConfigVar {
+    env_name: "FERRIC_BLAS_THREADS",
+    default: 1,
+    // Garbage → default; the wrapper floors the result at 1 regardless.
+    parse: |s| Ok(s.trim().parse::<usize>().unwrap_or(1)),
+    validate: crate::config::accept_any,
+};
 
 /// [`opt_in_blas_threads`] with an injected env lookup — the testable core.
 ///
@@ -200,7 +199,9 @@ mod tests {
 
     #[test]
     fn sets_and_restores() {
-        let _g = GLOBAL_THREAD_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = GLOBAL_THREAD_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let outer = unsafe { openblas_get_num_threads() };
         let inside = with_blas_threads(1, || unsafe { openblas_get_num_threads() });
         assert_eq!(inside, 1, "guard should set BLAS threads to 1 inside");
@@ -210,7 +211,9 @@ mod tests {
 
     #[test]
     fn init_threading_pins_to_one_by_default() {
-        let _g = GLOBAL_THREAD_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = GLOBAL_THREAD_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // No explicit override → baseline pinned to 1.
         std::env::remove_var("OPENBLAS_NUM_THREADS");
         init_threading();
@@ -220,7 +223,9 @@ mod tests {
 
     #[test]
     fn init_threading_respects_explicit_override() {
-        let _g = GLOBAL_THREAD_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = GLOBAL_THREAD_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Explicit OPENBLAS_NUM_THREADS is honored, not clobbered to 1.
         std::env::set_var("OPENBLAS_NUM_THREADS", "3");
         init_threading();
@@ -269,12 +274,17 @@ mod tests {
             .build()
             .unwrap()
             .install(|| opt_in_blas_threads_with(get));
-        assert_eq!(inside, 1, "rayon-worker guard must force 1 regardless of env");
+        assert_eq!(
+            inside, 1,
+            "rayon-worker guard must force 1 regardless of env"
+        );
     }
 
     #[test]
     fn nested_compose() {
-        let _g = GLOBAL_THREAD_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = GLOBAL_THREAD_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         with_blas_threads(4, || {
             let n4 = unsafe { openblas_get_num_threads() };
             assert_eq!(n4, 4);

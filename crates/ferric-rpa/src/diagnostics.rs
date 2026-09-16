@@ -3,9 +3,9 @@
 //! The RI-dRPA approximation evaluates RPA on the full RI-auxiliary basis without
 //! eigenpotential truncation. Used as a sanity check against PDEP-RPA.
 
+use ferric_core::FerricError;
 use ndarray::{Array2, Axis, Zip};
 use rayon::prelude::*;
-use ferric_core::FerricError;
 
 use crate::channel::RpaChannel;
 use crate::sternheimer::build_scale_factors;
@@ -22,7 +22,10 @@ use crate::sternheimer::build_scale_factors;
 /// one worker, never spawns more than there are frequencies. `~0.9 GB × active
 /// workers` was the hidden peak this bounds (M9).
 fn diag_worker_budget(naux: usize, nov: usize, n_spin: usize, nfreq: usize) -> usize {
-    let bscaled = naux.saturating_mul(nov).saturating_mul(8).saturating_mul(n_spin.max(1));
+    let bscaled = naux
+        .saturating_mul(nov)
+        .saturating_mul(8)
+        .saturating_mul(n_spin.max(1));
     let eps = naux.saturating_mul(naux).saturating_mul(8);
     // eigh eigenvectors + workspace: treat as ~3× the dielectric matrix.
     let footprint = bscaled.saturating_add(eps.saturating_mul(4)).max(1);
@@ -60,7 +63,10 @@ where
                 .collect::<Result<Vec<f64>, FerricError>>()
         })
     };
-    match rayon::ThreadPoolBuilder::new().num_threads(max_workers).build() {
+    match rayon::ThreadPoolBuilder::new()
+        .num_threads(max_workers)
+        .build()
+    {
         Ok(pool) => pool.install(run),
         Err(_) => run(),
     }
@@ -146,8 +152,15 @@ pub fn u_ri_drpa_energy(
 
     let contribs = par_map_capped(quad_freqs, quad_weights, max_workers, |omega, wk| {
         let mut eps_mat = Array2::<f64>::zeros((naux, naux));
-        for p in 0..naux { eps_mat[(p, p)] = 1.0; }
-        for RpaChannel { b_ov: b, eps_occ: eo, eps_vir: ev } in [*chan_a, *chan_b] {
+        for p in 0..naux {
+            eps_mat[(p, p)] = 1.0;
+        }
+        for RpaChannel {
+            b_ov: b,
+            eps_occ: eo,
+            eps_vir: ev,
+        } in [*chan_a, *chan_b]
+        {
             if eo.is_empty() {
                 continue; // empty spin channel adds nothing
             }
@@ -188,10 +201,7 @@ pub fn ri_drpa_energy(
         let evals = ri_drpa_eigenvalues(b_ov, eps_occ, eps_vir, omega)?;
         // ln det(I + Π) − tr(Π) where Π = −χ₀ ≥ 0
         // = Σ_α [ln(λ_α) + (1 − λ_α)] with λ_α = 1 + μ_α ≥ 1
-        let contrib: f64 = evals
-            .iter()
-            .map(|&lam| lam.ln() + (1.0 - lam))
-            .sum();
+        let contrib: f64 = evals.iter().map(|&lam| lam.ln() + (1.0 - lam)).sum();
         Ok(wk * contrib)
     })?;
     let e_c: f64 = contribs.iter().sum();

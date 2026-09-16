@@ -31,5 +31,9 @@ fn lda_h2_converges_and_is_lower_than_hf() {
     // For H2/cc-pVDZ: HF ≈ -1.129, LDA ≈ -1.137.
     assert!(ks.converged, "LDA SCF did not converge");
     assert!(ks.energy < rhf_only.energy, "LDA E should be < HF E");
-    assert!(ks.energy > -1.50 && ks.energy < -1.00, "H2 LDA energy out of range: {}", ks.energy);
+    assert!(
+        ks.energy > -1.50 && ks.energy < -1.00,
+        "H2 LDA energy out of range: {}",
+        ks.energy
+    );
 }

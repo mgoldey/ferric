@@ -34,10 +34,10 @@
 //! AO sparsity (the real scaling win) is the C9 follow-up after this
 //! module proves the conceptual machinery works.
 
+use crate::quadrature::MinimaxJointQuadrature;
 use ferric_core::FerricError;
 use ferric_quadrature::LaplaceQuadrature;
 use ndarray::{Array2, Array3};
-use crate::quadrature::MinimaxJointQuadrature;
 
 /// Build the imaginary-time τ-quadrature for the energy-gap range.
 ///
@@ -119,7 +119,9 @@ pub fn pi_via_imag_time(
         let factor: Vec<f64> = e_ia.iter().map(|&e| (-0.5 * t_l * e).exp()).collect();
         let factor_arr = ndarray::Array1::from(factor);
         let factor_row = factor_arr.view().insert_axis(Axis(0));
-        Zip::from(&mut x_l).and_broadcast(factor_row).for_each(|x, &f| *x *= f);
+        Zip::from(&mut x_l)
+            .and_broadcast(factor_row)
+            .for_each(|x, &f| *x *= f);
 
         // Π(ω) += 4 · w_l cos(ω t_l) · X^l (X^l)^T
         let coeff = 4.0 * w_l * (omega * t_l).cos();
@@ -306,9 +308,15 @@ pub fn pseudo_density_vir_projector(
     use ndarray_linalg::{Eigh, UPLO};
     let n = s.dim().0;
     // S = U d Uᵀ ⇒ X = S^{1/2} = U d^{1/2} Uᵀ, X⁻¹ = U d^{-1/2} Uᵀ.
-    let (sd, su) = s.eigh(UPLO::Upper).expect("overlap eigendecomposition failed");
-    let x = su.dot(&Array2::from_diag(&sd.mapv(|v| v.sqrt()))).dot(&su.t());
-    let x_inv = su.dot(&Array2::from_diag(&sd.mapv(|v| 1.0 / v.sqrt()))).dot(&su.t());
+    let (sd, su) = s
+        .eigh(UPLO::Upper)
+        .expect("overlap eigendecomposition failed");
+    let x = su
+        .dot(&Array2::from_diag(&sd.mapv(|v| v.sqrt())))
+        .dot(&su.t());
+    let x_inv = su
+        .dot(&Array2::from_diag(&sd.mapv(|v| 1.0 / v.sqrt())))
+        .dot(&su.t());
 
     // Symmetric Fock in the orthonormal basis: F̄ = X⁻¹ F X⁻¹ (X symmetric).
     let f_bar = x_inv.dot(f_ao).dot(&x_inv);
@@ -325,7 +333,9 @@ pub fn pseudo_density_vir_projector(
     // space is F̄-invariant so the result is exact. The right-multiply by Π̄_v then
     // strips the residual occupied identity, leaving exactly C̄_vir exp(−ε_vir τ) C̄_virᵀ.
     let f_bar_v = pi_v.dot(&f_bar).dot(&pi_v);
-    let (lambda, w) = f_bar_v.eigh(UPLO::Upper).expect("Fock-bar_v eigendecomposition failed");
+    let (lambda, w) = f_bar_v
+        .eigh(UPLO::Upper)
+        .expect("Fock-bar_v eigendecomposition failed");
     let e_mat = {
         let scaled = w.dot(&Array2::from_diag(&lambda.mapv(|l| (-l * tau).exp())));
         scaled.dot(&w.t())
@@ -404,7 +414,7 @@ pub fn chi0_ao_at_tau(
     let mut n_flat = Array2::<f64>::zeros((naux, nbasis_sq));
 
     // p_occ_t[λ, μ] view, so the first GEMM is p_occ_t · E_P
-    let p_occ_t = p_occ.t();  // (nbasis, nbasis)
+    let p_occ_t = p_occ.t(); // (nbasis, nbasis)
 
     for p in 0..naux {
         // E_P[μ, ν] = eri3[p, :, :]
@@ -424,9 +434,10 @@ pub fn chi0_ao_at_tau(
 
     // eri3_flat[Q, λσ] view: same memory, reshape (naux, nbasis, nbasis) → (naux, nbasis²).
     // eri3 is owned and row-major; this reshape is a zero-copy view.
-    let eri3_flat = eri3.view().into_shape_with_order((naux, nbasis_sq)).map_err(|e| {
-        FerricError::General(format!("chi0_ao_at_tau: eri3 reshape failed: {e}"))
-    })?;
+    let eri3_flat = eri3
+        .view()
+        .into_shape_with_order((naux, nbasis_sq))
+        .map_err(|e| FerricError::General(format!("chi0_ao_at_tau: eri3 reshape failed: {e}")))?;
 
     // χ⁰[P, Q] = -2 · n_flat[P, λσ] · eri3_flat[Q, λσ]^T
     //         = -2 · n_flat · eri3_flat^T
@@ -470,15 +481,17 @@ pub fn chi0_ao_full_time(
 ///
 /// Shapes: `eri3` (naux, nbasis, nbasis), `v_inv_sqrt` (naux, naux),
 /// returns (naux, nbasis, nbasis).
-pub fn dress_eri3_with_metric(
-    eri3: &Array3<f64>,
-    v_inv_sqrt: &Array2<f64>,
-) -> Array3<f64> {
+pub fn dress_eri3_with_metric(eri3: &Array3<f64>, v_inv_sqrt: &Array2<f64>) -> Array3<f64> {
     let (naux, nbasis, _) = eri3.dim();
     // Reshape eri3 (naux, nbasis²) so the dressing is a single naux²·nbasis² GEMM.
-    let eri3_flat = eri3.view().into_shape_with_order((naux, nbasis * nbasis)).unwrap();
+    let eri3_flat = eri3
+        .view()
+        .into_shape_with_order((naux, nbasis * nbasis))
+        .unwrap();
     let dressed_flat = v_inv_sqrt.dot(&eri3_flat);
-    dressed_flat.into_shape_with_order((naux, nbasis, nbasis)).unwrap()
+    dressed_flat
+        .into_shape_with_order((naux, nbasis, nbasis))
+        .unwrap()
 }
 
 /// Cosine-Fourier transform Π_PQ(iω) = Σ_l (-2·w_l·cos(ω·τ_l)) · χ⁰_PQ(τ_l).
@@ -525,11 +538,11 @@ pub fn pi_ao_at_omega_minimax(
 ) -> Array2<f64> {
     let (n_tau, naux, _) = chi0_tau_stack.dim();
     assert_eq!(n_tau, joint.tau_points.len());
-    
+
     let mut pi = Array2::<f64>::zeros((naux, naux));
     let offset = k_omega * n_tau;
     let w_k_row = &joint.w_transform[offset..offset + n_tau];
-    
+
     for l in 0..n_tau {
         let coeff = -2.0 * w_k_row[l];
         let slab = chi0_tau_stack.slice(ndarray::s![l, .., ..]);
@@ -554,7 +567,9 @@ pub fn pi_mo_dressed(
     let scale = build_scale_factors(eps_occ, eps_vir, omega);
     let mut bs = b_ov.to_owned();
     let scale_row = scale.view().insert_axis(Axis(0));
-    Zip::from(&mut bs).and_broadcast(scale_row).for_each(|x, &s| *x *= s);
+    Zip::from(&mut bs)
+        .and_broadcast(scale_row)
+        .for_each(|x, &s| *x *= s);
     bs.dot(&bs.t())
 }
 
@@ -642,9 +657,7 @@ pub fn ao_rpa_correlation_energy(
 
     // Step 2: AO-basis χ⁰(τ) stack on minimax grid.
     let laplace = build_tau_quadrature(eps_occ, eps_vir, n_tau)?;
-    let chi0_stack = chi0_ao_full_time(
-        &eri3_dressed, c_occ, c_vir, eps_occ, eps_vir, &laplace,
-    )?;
+    let chi0_stack = chi0_ao_full_time(&eri3_dressed, c_occ, c_vir, eps_occ, eps_vir, &laplace)?;
     let t_max = laplace.points.iter().cloned().fold(0.0_f64, f64::max);
     let omega_cutoff = std::f64::consts::FRAC_PI_2 / t_max;
 
@@ -672,8 +685,11 @@ pub fn ao_rpa_correlation_energy(
                     pi_ao_at_omega(&chi0_stack, &laplace, omega)
                 };
                 let mut eps_mat = pi;
-                for p in 0..naux { eps_mat[(p, p)] += 1.0; }
-                let (evals, _) = eps_mat.eigh(UPLO::Upper)
+                for p in 0..naux {
+                    eps_mat[(p, p)] += 1.0;
+                }
+                let (evals, _) = eps_mat
+                    .eigh(UPLO::Upper)
                     .map_err(|e| FerricError::General(format!("AO-RPA eigh: {e}")))?;
                 let contrib: f64 = evals.iter().map(|&lam| lam.ln() + (1.0 - lam)).sum();
                 Ok(wk * contrib)
@@ -687,7 +703,7 @@ pub fn ao_rpa_correlation_energy(
 }
 
 /// True AO-basis RI-dRPA using Joint Minimax weights.
-/// 
+///
 /// This eliminates the dense MO-basis fallback entirely because
 /// the pre-computed joint weights guarantee microhartree precision
 /// for all relevant frequencies without oscillatory aliasing.
@@ -712,8 +728,14 @@ pub fn ao_rpa_correlation_energy_minimax(
     // dress + full-time build.
     let (naux, nbf1, nbf2) = eri3.dim();
     let n_tau = joint_grids.tau_points.len();
-    let eri3_bytes = naux.saturating_mul(nbf1).saturating_mul(nbf2).saturating_mul(8);
-    let chi0_stack_bytes = n_tau.saturating_mul(naux).saturating_mul(naux).saturating_mul(8);
+    let eri3_bytes = naux
+        .saturating_mul(nbf1)
+        .saturating_mul(nbf2)
+        .saturating_mul(8);
+    let chi0_stack_bytes = n_tau
+        .saturating_mul(naux)
+        .saturating_mul(naux)
+        .saturating_mul(8);
     let peak = eri3_bytes
         .saturating_mul(2) // input eri3 + dressed copy
         .saturating_add(chi0_stack_bytes);
@@ -731,10 +753,8 @@ pub fn ao_rpa_correlation_energy_minimax(
         weights: vec![0.0; joint_grids.tau_points.len()], // Not used in chi0_ao
         n_quad: joint_grids.tau_points.len(),
     };
-    
-    let chi0_stack = chi0_ao_full_time(
-        &eri3_dressed, c_occ, c_vir, eps_occ, eps_vir, &laplace,
-    )?;
+
+    let chi0_stack = chi0_ao_full_time(&eri3_dressed, c_occ, c_vir, eps_occ, eps_vir, &laplace)?;
 
     let naux = eri3.dim().0;
 
@@ -743,7 +763,8 @@ pub fn ao_rpa_correlation_energy_minimax(
     // under rayon workers — nested OpenBLAS threads oversubscribe and can
     // overflow the 2 MB rayon worker stack (openblas-rayon-dgetrf-crash).
     let contribs: Result<Vec<f64>, FerricError> = with_blas_threads(1, || {
-        joint_grids.omega_points
+        joint_grids
+            .omega_points
             .par_iter()
             .zip(joint_grids.omega_weights.par_iter())
             .enumerate()
@@ -751,9 +772,12 @@ pub fn ao_rpa_correlation_energy_minimax(
                 let pi = pi_ao_at_omega_minimax(&chi0_stack, joint_grids, k);
 
                 let mut eps_mat = pi;
-                for p in 0..naux { eps_mat[(p, p)] += 1.0; }
+                for p in 0..naux {
+                    eps_mat[(p, p)] += 1.0;
+                }
 
-                let (evals, _) = eps_mat.eigh(UPLO::Upper)
+                let (evals, _) = eps_mat
+                    .eigh(UPLO::Upper)
                     .map_err(|e| FerricError::General(format!("AO-RPA minimax eigh: {e}")))?;
 
                 let contrib: f64 = evals.iter().map(|&lam| lam.ln() + (1.0 - lam)).sum();
@@ -763,7 +787,11 @@ pub fn ao_rpa_correlation_energy_minimax(
     });
 
     let e_c: f64 = contribs?.iter().sum::<f64>() / (2.0 * std::f64::consts::PI);
-    Ok((e_c, joint_grids.tau_points.len(), joint_grids.omega_points.len()))
+    Ok((
+        e_c,
+        joint_grids.tau_points.len(),
+        joint_grids.omega_points.len(),
+    ))
 }
 
 #[cfg(test)]
@@ -798,12 +826,21 @@ mod tests {
         // 1e-7 GiB ≈ 107 bytes; even this tiny synthetic tensor set exceeds it.
         std::env::set_var("FERRIC_MEM_BUDGET_GB", "0.0000001");
         let res = ao_rpa_correlation_energy_minimax(
-            &eri3, &v_inv_sqrt, &c_occ, &c_vir, &eps_occ, &eps_vir, &joint,
+            &eri3,
+            &v_inv_sqrt,
+            &c_occ,
+            &c_vir,
+            &eps_occ,
+            &eps_vir,
+            &joint,
         );
         std::env::remove_var("FERRIC_MEM_BUDGET_GB");
         let err = res.unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("AO-RPA") && msg.contains("budget is"), "unexpected: {msg}");
+        assert!(
+            msg.contains("AO-RPA") && msg.contains("budget is"),
+            "unexpected: {msg}"
+        );
     }
 
     /// Build B^P_ia = Σ_{μν} C_{μi} (P|μν) C_{νa} for synthetic test below.
@@ -817,7 +854,7 @@ mod tests {
             // T[i, ν] = C^T[i, μ] · E_P[μ, ν]
             let t = c_occ.t().dot(&e_p);
             // B[P, ia] = T[i, ν] · C_vir[ν, a]
-            let b_pia = t.dot(c_vir);  // (nocc, nvir)
+            let b_pia = t.dot(c_vir); // (nocc, nvir)
             for i in 0..nocc {
                 for a in 0..nvir {
                     b[(p, i * nvir + a)] = b_pia[(i, a)];
@@ -839,12 +876,10 @@ mod tests {
         // identity (the AO-basis χ⁰ formula doesn't assume orthonormal MOs —
         // it's just a sum over occ/vir spaces).
         let c_occ = Array2::from_shape_fn((nbasis, nocc), |(mu, i)| {
-            0.2 + 0.05 * mu as f64 + 0.07 * i as f64
-                - 0.01 * (mu as f64 * i as f64)
+            0.2 + 0.05 * mu as f64 + 0.07 * i as f64 - 0.01 * (mu as f64 * i as f64)
         });
         let c_vir = Array2::from_shape_fn((nbasis, nvir), |(mu, a)| {
-            0.1 - 0.04 * mu as f64 + 0.06 * a as f64
-                + 0.02 * (mu as f64 - a as f64)
+            0.1 - 0.04 * mu as f64 + 0.06 * a as f64 + 0.02 * (mu as f64 - a as f64)
         });
         let eps_occ = vec![-0.5_f64, -0.3];
         let eps_vir = vec![0.2_f64, 0.6, 1.1, 1.8];
@@ -895,12 +930,17 @@ mod tests {
             let mut chi0_mo = b_scaled.dot(&b_scaled.t());
             chi0_mo *= -2.0;
 
-            let max_err = chi0_ao.iter().zip(chi0_mo.iter())
-                .map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
+            let max_err = chi0_ao
+                .iter()
+                .zip(chi0_mo.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f64, f64::max);
             let max_ref = chi0_mo.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
             eprintln!("τ={tau:.2}: AO-vs-MO χ⁰ max_err={max_err:.3e} (|χ⁰|max={max_ref:.3e})");
-            assert!(max_err < 1e-10,
-                "AO χ⁰(τ={tau}) should match MO route: max_err={max_err:.3e}");
+            assert!(
+                max_err < 1e-10,
+                "AO χ⁰(τ={tau}) should match MO route: max_err={max_err:.3e}"
+            );
         }
 
         // Full-time stack sanity: shape and first slice match a direct call.
@@ -910,10 +950,16 @@ mod tests {
         let p0 = pseudo_density_occ(&c_occ, &eps_occ, tau0);
         let q0 = pseudo_density_vir(&c_vir, &eps_vir, tau0);
         let chi0_direct = chi0_ao_at_tau(&eri3, &p0, &q0).unwrap();
-        let max_err = stack.slice(ndarray::s![0, .., ..]).iter()
+        let max_err = stack
+            .slice(ndarray::s![0, .., ..])
+            .iter()
             .zip(chi0_direct.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
-        assert!(max_err < 1e-14, "full-time stack slice should match direct call");
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_err < 1e-14,
+            "full-time stack slice should match direct call"
+        );
     }
 
     #[test]
@@ -937,14 +983,21 @@ mod tests {
         // on the old silent fallback.
         let n_quad = ferric_quadrature::minimax::nearest_supported_n_quad(8);
         let laplace = build_tau_quadrature(&eps_occ, &eps_vir, n_quad).unwrap();
-        let eps_imag = dielectric_matrix_imag_time(&v_mat, &b_ov, &eps_occ, &eps_vir, omega, &laplace).unwrap();
+        let eps_imag =
+            dielectric_matrix_imag_time(&v_mat, &b_ov, &eps_occ, &eps_vir, omega, &laplace)
+                .unwrap();
         let eps_dense = dielectric_matrix(&v_mat, &b_ov, &eps_occ, &eps_vir, omega);
 
-        let max_err = eps_imag.iter().zip(eps_dense.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max);
+        let max_err = eps_imag
+            .iter()
+            .zip(eps_dense.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f64, f64::max);
         eprintln!("imag-time vs dense max elementwise error: {max_err:.3e}");
-        assert!(max_err < 5e-3,
-            "imag-time τ-route should match dense at low ω: max_err={max_err:.3e}");
+        assert!(
+            max_err < 5e-3,
+            "imag-time τ-route should match dense at low ω: max_err={max_err:.3e}"
+        );
     }
 
     /// GATE: the Fock-matrix pseudo-density must reproduce the canonical scalar
@@ -963,10 +1016,15 @@ mod tests {
         for &tau in &[0.05_f64, 0.4, 1.3, 5.0] {
             let p_scalar = pseudo_density_occ(&c_occ, &eps_occ, tau);
             let p_fock = pseudo_density_occ_fock(&c_occ, &f_diag, tau);
-            let max_err = p_scalar.iter().zip(p_fock.iter())
-                .map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
-            assert!(max_err < 1e-12,
-                "occ Fock path must match canonical scalar path at τ={tau}: max_err={max_err:.3e}");
+            let max_err = p_scalar
+                .iter()
+                .zip(p_fock.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f64, f64::max);
+            assert!(
+                max_err < 1e-12,
+                "occ Fock path must match canonical scalar path at τ={tau}: max_err={max_err:.3e}"
+            );
         }
     }
 
@@ -983,10 +1041,15 @@ mod tests {
         for &tau in &[0.05_f64, 0.4, 1.3, 5.0] {
             let q_scalar = pseudo_density_vir(&c_vir, &eps_vir, tau);
             let q_fock = pseudo_density_vir_fock(&c_vir, &f_diag, tau);
-            let max_err = q_scalar.iter().zip(q_fock.iter())
-                .map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
-            assert!(max_err < 1e-12,
-                "vir Fock path must match canonical scalar path at τ={tau}: max_err={max_err:.3e}");
+            let max_err = q_scalar
+                .iter()
+                .zip(q_fock.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f64, f64::max);
+            assert!(
+                max_err < 1e-12,
+                "vir Fock path must match canonical scalar path at τ={tau}: max_err={max_err:.3e}"
+            );
         }
     }
 
@@ -1012,7 +1075,9 @@ mod tests {
         let eps_vir: Vec<f64> = eps_all[nocc..].to_vec();
 
         // AO Fock with S = I: F = C diag(ε) Cᵀ.
-        let f_ao = c_all.dot(&Array2::from_diag(&ndarray::arr1(&eps_all))).dot(&c_all.t());
+        let f_ao = c_all
+            .dot(&Array2::from_diag(&ndarray::arr1(&eps_all)))
+            .dot(&c_all.t());
         // Identity overlap.
         let s = Array2::<f64>::eye(n);
 
@@ -1022,10 +1087,15 @@ mod tests {
         for &tau in &[0.05_f64, 0.4, 1.3, 3.0, 8.0, 15.0] {
             let q_explicit = pseudo_density_vir(&c_vir, &eps_vir, tau);
             let q_proj = pseudo_density_vir_projector(&f_ao, &s, &c_occ, tau);
-            let max_err = q_explicit.iter().zip(q_proj.iter())
-                .map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
-            assert!(max_err < 1e-10,
-                "projector Q̃ must match explicit-virtual Q̃ (S=I) at τ={tau}: max_err={max_err:.3e}");
+            let max_err = q_explicit
+                .iter()
+                .zip(q_proj.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f64, f64::max);
+            assert!(
+                max_err < 1e-10,
+                "projector Q̃ must match explicit-virtual Q̃ (S=I) at τ={tau}: max_err={max_err:.3e}"
+            );
         }
     }
 
@@ -1041,10 +1111,12 @@ mod tests {
             0.2 * ((i + 1) as f64 / (j + 1) as f64).min((j + 1) as f64 / (i + 1) as f64)
         });
         let s = a.dot(&a.t()) + Array2::<f64>::eye(n); // SPD
-        // Build S-orthonormal MOs: C with Cᵀ S C = I. Take eigh of S = U d Uᵀ,
-        // S^{-1/2} = U d^{-1/2} Uᵀ, then any orthogonal R gives C = S^{-1/2} R.
+                                                       // Build S-orthonormal MOs: C with Cᵀ S C = I. Take eigh of S = U d Uᵀ,
+                                                       // S^{-1/2} = U d^{-1/2} Uᵀ, then any orthogonal R gives C = S^{-1/2} R.
         let (sd, su) = s.eigh(ndarray_linalg::UPLO::Upper).unwrap();
-        let s_inv_sqrt = su.dot(&Array2::from_diag(&sd.mapv(|x| 1.0 / x.sqrt()))).dot(&su.t());
+        let s_inv_sqrt = su
+            .dot(&Array2::from_diag(&sd.mapv(|x| 1.0 / x.sqrt())))
+            .dot(&su.t());
         let sym = Array2::from_shape_fn((n, n), |(i, j)| {
             0.3 * ((i + 2) as f64).cos() * ((j + 1) as f64).sin() + if i == j { 2.0 } else { 0.1 }
         });
@@ -1055,16 +1127,24 @@ mod tests {
         let c_vir = c_all.slice(ndarray::s![.., nocc..]).to_owned();
         let eps_vir: Vec<f64> = eps_all[nocc..].to_vec();
         // AO Fock: F = S C diag(ε) Cᵀ S (so that Cᵀ F C = diag(ε)).
-        let f_ao = s.dot(&c_all).dot(&Array2::from_diag(&ndarray::arr1(&eps_all)))
-            .dot(&c_all.t()).dot(&s);
+        let f_ao = s
+            .dot(&c_all)
+            .dot(&Array2::from_diag(&ndarray::arr1(&eps_all)))
+            .dot(&c_all.t())
+            .dot(&s);
 
         for &tau in &[0.05_f64, 0.4, 1.3, 3.0] {
             let q_explicit = pseudo_density_vir(&c_vir, &eps_vir, tau);
             let q_proj = pseudo_density_vir_projector(&f_ao, &s, &c_occ, tau);
-            let max_err = q_explicit.iter().zip(q_proj.iter())
-                .map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
-            assert!(max_err < 1e-9,
-                "projector Q̃ must match explicit-virtual Q̃ (S≠I) at τ={tau}: max_err={max_err:.3e}");
+            let max_err = q_explicit
+                .iter()
+                .zip(q_proj.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f64, f64::max);
+            assert!(
+                max_err < 1e-9,
+                "projector Q̃ must match explicit-virtual Q̃ (S≠I) at τ={tau}: max_err={max_err:.3e}"
+            );
         }
     }
 
@@ -1096,8 +1176,11 @@ mod tests {
         for &tau in &[0.05_f64, 0.4, 1.3, 5.0] {
             let p_canon = pseudo_density_occ_fock(&c_occ, &f_canon, tau);
             let p_rot = pseudo_density_occ_fock(&c_rot, &f_rot, tau);
-            let max_err = p_canon.iter().zip(p_rot.iter())
-                .map(|(a, b)| (a - b).abs()).fold(0.0_f64, f64::max);
+            let max_err = p_canon
+                .iter()
+                .zip(p_rot.iter())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f64, f64::max);
             assert!(max_err < 1e-11,
                 "occ Fock pseudo-density must be rotation-invariant at τ={tau}: max_err={max_err:.3e}");
         }

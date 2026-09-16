@@ -56,7 +56,17 @@ fn make_system(
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &RhfConfig::default()).unwrap();
-    System { name, mol, obs, obs_bs, dfbs, op, rhf, pairs, thresholds }
+    System {
+        name,
+        mol,
+        obs,
+        obs_bs,
+        dfbs,
+        op,
+        rhf,
+        pairs,
+        thresholds,
+    }
 }
 
 fn run_system(sys: &System) {
@@ -69,16 +79,27 @@ fn run_system(sys: &System) {
 
     let t0 = Instant::now();
     let dp_full = pdep_dynamic_polarizability(
-        &sys.mol, &sys.obs, &sys.obs_bs, &sys.dfbs, &sys.rhf, sys.op,
-        &cfg_full, DispersionPartition::Becke, None,
-    ).unwrap();
+        &sys.mol,
+        &sys.obs,
+        &sys.obs_bs,
+        &sys.dfbs,
+        &sys.rhf,
+        sys.op,
+        &cfg_full,
+        DispersionPartition::Becke,
+        None,
+    )
+    .unwrap();
     let t_full = t0.elapsed();
     let res_full = casimir_polder_c6(&dp_full);
     let naux = sys.dfbs.nbasis();
     let nfreq = dp_full.freqs.len();
 
     println!("\n=== {} ===", sys.name);
-    println!("naux={naux}  n_quad={nfreq}  t_full={:.1}ms", t_full.as_secs_f64()*1e3);
+    println!(
+        "naux={naux}  n_quad={nfreq}  t_full={:.1}ms",
+        t_full.as_secs_f64() * 1e3
+    );
     print!("Full-rank: ");
     for &(lbl, i, j) in &sys.pairs {
         print!("  C6({lbl})={:.4}", res_full.c6_iso_pair[(i, j)]);
@@ -87,14 +108,26 @@ fn run_system(sys: &System) {
     println!();
 
     // Header
-    let pair_hdrs: String = sys.pairs.iter()
+    let pair_hdrs: String = sys
+        .pairs
+        .iter()
         .map(|(lbl, ..)| format!("{:>10}", format!("C6({lbl})")))
-        .collect::<Vec<_>>().join("");
-    let err_hdrs: String = sys.pairs.iter()
+        .collect::<Vec<_>>()
+        .join("");
+    let err_hdrs: String = sys
+        .pairs
+        .iter()
         .map(|(lbl, ..)| format!("{:>11}", format!("err%({lbl})")))
-        .collect::<Vec<_>>().join("");
-    println!("{:>12} {:>6}{}{:>13}{}", "thresh", "M", pair_hdrs, "t_trunc+rpa", err_hdrs);
-    println!("{}", "-".repeat(12 + 6 + sys.pairs.len()*10 + 13 + sys.pairs.len()*11 + 4));
+        .collect::<Vec<_>>()
+        .join("");
+    println!(
+        "{:>12} {:>6}{}{:>13}{}",
+        "thresh", "M", pair_hdrs, "t_trunc+rpa", err_hdrs
+    );
+    println!(
+        "{}",
+        "-".repeat(12 + 6 + sys.pairs.len() * 10 + 13 + sys.pairs.len() * 11 + 4)
+    );
 
     for &thresh in &sys.thresholds {
         let cfg = PdepRpaConfig {
@@ -110,36 +143,63 @@ fn run_system(sys: &System) {
 
         let t2 = Instant::now();
         let dp = pdep_dynamic_polarizability_truncated(
-            &rpa, &sys.mol, &sys.obs, &sys.obs_bs, &sys.dfbs, &sys.rhf, sys.op,
-            &cfg, DispersionPartition::Becke,
-        ).unwrap();
+            &rpa,
+            &sys.mol,
+            &sys.obs,
+            &sys.obs_bs,
+            &sys.dfbs,
+            &sys.rhf,
+            sys.op,
+            &cfg,
+            DispersionPartition::Becke,
+        )
+        .unwrap();
         let t_trunc = t2.elapsed();
         let res = casimir_polder_c6(&dp);
 
-        let vals: String = sys.pairs.iter()
+        let vals: String = sys
+            .pairs
+            .iter()
             .map(|&(_, i, j)| format!("{:>10.4}", res.c6_iso_pair[(i, j)]))
-            .collect::<Vec<_>>().join("");
-        let errs: String = sys.pairs.iter()
+            .collect::<Vec<_>>()
+            .join("");
+        let errs: String = sys
+            .pairs
+            .iter()
             .map(|&(_, i, j)| {
                 let full = res_full.c6_iso_pair[(i, j)];
-                let got  = res.c6_iso_pair[(i, j)];
-                let pct  = if full.abs() > 1e-10 { (got - full).abs() / full * 100.0 } else { 0.0 };
+                let got = res.c6_iso_pair[(i, j)];
+                let pct = if full.abs() > 1e-10 {
+                    (got - full).abs() / full * 100.0
+                } else {
+                    0.0
+                };
                 format!("{:>11.2}%", pct)
             })
-            .collect::<Vec<_>>().join("");
+            .collect::<Vec<_>>()
+            .join("");
 
-        println!("{:>12.0e} {:>6}{}  {:>8.1}+{:<5.0}{}",
-            thresh, m, vals,
-            t_trunc.as_secs_f64()*1e3, t_rpa.as_secs_f64()*1e3, errs);
+        println!(
+            "{:>12.0e} {:>6}{}  {:>8.1}+{:<5.0}{}",
+            thresh,
+            m,
+            vals,
+            t_trunc.as_secs_f64() * 1e3,
+            t_rpa.as_secs_f64() * 1e3,
+            errs
+        );
 
         if thresh == 0.0 {
             for &(lbl, i, j) in &sys.pairs {
                 let full = res_full.c6_iso_pair[(i, j)];
-                let got  = res.c6_iso_pair[(i, j)];
+                let got = res.c6_iso_pair[(i, j)];
                 if full.abs() > 1e-10 {
                     let err = (got - full).abs() / full * 100.0;
-                    assert!(err < 20.0,
-                        "{} C6({lbl}) thresh=0 err={err:.1}% (should be <20%)", sys.name);
+                    assert!(
+                        err < 20.0,
+                        "{} C6({lbl}) thresh=0 err={err:.1}% (should be <20%)",
+                        sys.name
+                    );
                 }
             }
         }
@@ -155,7 +215,9 @@ fn pdep_truncation_sweep() {
     // System 1: water / cc-pVDZ-RI  (small naux, baseline)
     let water_xyz = include_str!("../../../testdata/molecules/water.xyz");
     let water = make_system(
-        water_xyz, "cc-pvdz", "cc-pvdz-ri",
+        water_xyz,
+        "cc-pvdz",
+        "cc-pvdz-ri",
         "water / cc-pVDZ / cc-pVDZ-RI",
         vec![("O-O", 0, 0), ("H-H", 1, 1), ("O-H", 0, 1)],
         vec![0.0, 1e-4, 1e-3, 1e-2, 5e-2, 0.1, 0.2],
@@ -164,7 +226,9 @@ fn pdep_truncation_sweep() {
     // System 2: methane / aug-cc-pVTZ / aug-cc-pVTZ-RI  (large naux, interesting regime)
     let methane_xyz = include_str!("../../../testdata/molecules/methane.xyz");
     let methane = make_system(
-        methane_xyz, "aug-cc-pvtz", "aug-cc-pvtz-rifit",
+        methane_xyz,
+        "aug-cc-pvtz",
+        "aug-cc-pvtz-rifit",
         "methane / aug-cc-pVTZ / aug-cc-pVTZ-RI",
         vec![("C-C", 0, 0), ("H-H", 1, 1), ("C-H", 0, 1)],
         vec![0.0, 1e-4, 1e-3, 1e-2, 5e-2, 0.1, 0.2],

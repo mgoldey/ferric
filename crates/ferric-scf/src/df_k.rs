@@ -250,7 +250,11 @@ impl<'a> DfK<'a> {
         // The caller owns `raw`; DfK retains only the dressed tensor.
 
         let ctx = ctx.filter(|c| c.size > 1);
-        Ok(DfK { dressed, ctx, budget_bytes })
+        Ok(DfK {
+            dressed,
+            ctx,
+            budget_bytes,
+        })
     }
 }
 
@@ -364,7 +368,7 @@ impl DfK<'_> {
     /// as in [`build`] (the grouped ascending-chunk fold pins the fold order
     /// across thread counts; the outer-product `M Mᵀ` is symmetric by
     /// construction).
-#[allow(clippy::manual_c_str_literals)] // b"R\0" byte literals match dsymm_'s *const u8 args; c".." would be *const i8
+    #[allow(clippy::manual_c_str_literals)] // b"R\0" byte literals match dsymm_'s *const u8 args; c".." would be *const i8
     fn build_from_occ_impl(
         &mut self,
         c_occ: &Array2<f64>,
@@ -587,12 +591,8 @@ mod tests {
 
     #[test]
     fn df_k_matches_direct_k_with_jkfit() {
-        let mol = Molecule::parse_xyz(
-            "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n",
-            0,
-            1,
-        )
-        .unwrap();
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
         let obs_set = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &obs_set).unwrap();
         let dfbs_set = basis::bundled("def2-universal-jkfit").unwrap();
@@ -617,9 +617,16 @@ mod tests {
         let mut dfk = DfK::new(op, &obs, &dfbs, usize::MAX).unwrap();
         dfk.build(&d, &mut k_df).unwrap();
 
-        let max_diff: f64 = (&k_df - &k_direct).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        let max_diff: f64 = (&k_df - &k_direct)
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0, f64::max);
         // JK-fit basis should give K accurate to ~1e-3 for this small system.
-        assert!(max_diff < 5e-3, "DF-K vs direct-K max diff = {} too large", max_diff);
+        assert!(
+            max_diff < 5e-3,
+            "DF-K vs direct-K max diff = {} too large",
+            max_diff
+        );
     }
 
     #[test]
@@ -630,14 +637,11 @@ mod tests {
         // (and hence the SCF energy) drifted ~µHa between thread counts. The
         // collect-then-serial-sum fix pins the order. Uses several heavy atoms so
         // the aux dimension spans multiple chunks (making order actually matter).
-        let mol = Molecule::parse_xyz(
-            "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n",
-            0,
-            1,
-        )
-        .unwrap();
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
-        let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
         let op = Operator::coulomb();
         let n = obs.nbasis();
 
@@ -678,8 +682,8 @@ mod tests {
         // budget so the two-level grouped_deterministic_sum path actually splits
         // the aux chunks across several bands. The banding must not perturb the
         // ascending-chunk fold order, so K stays bit-identical at 1/2/8 threads.
-        let mol = Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1)
-            .unwrap();
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
         let dfbs =
             PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
@@ -713,8 +717,14 @@ mod tests {
         let k2 = build_k(2);
         let k8 = build_k(8);
         std::env::remove_var("FERRIC_REDUCE_BAND_BYTES");
-        assert_eq!(k1, k2, "narrow-band DfK must be bit-identical at 1 vs 2 threads");
-        assert_eq!(k1, k8, "narrow-band DfK must be bit-identical at 1 vs 8 threads");
+        assert_eq!(
+            k1, k2,
+            "narrow-band DfK must be bit-identical at 1 vs 2 threads"
+        );
+        assert_eq!(
+            k1, k8,
+            "narrow-band DfK must be bit-identical at 1 vs 8 threads"
+        );
     }
 
     #[test]
@@ -725,14 +735,11 @@ mod tests {
         // A dense symmetric density exercises every (P,σ) coupling, unlike the
         // diagonal-D accuracy test above (which measures RI fitting error vs
         // direct K and cannot separate algebra bugs from fitting error).
-        let mol = Molecule::parse_xyz(
-            "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n",
-            0,
-            1,
-        )
-        .unwrap();
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
-        let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
         let op = Operator::coulomb();
         let n = obs.nbasis();
 
@@ -786,12 +793,8 @@ mod tests {
     #[ignore]
     fn df_k_scf_energy_determinism_demo() {
         use crate::rhf::{solve_rhf, RhfConfig};
-        let mol = Molecule::parse_xyz(
-            "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n",
-            0,
-            1,
-        )
-        .unwrap();
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
@@ -819,8 +822,8 @@ mod tests {
         // reproduce build(D) with D = C·Cᵀ to machine precision — they contract
         // the SAME dressed B tensor, just in a different (mathematically
         // identical) order, so the residual is pure floating-point reassociation.
-        let mol = Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1)
-            .unwrap();
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
         let dfbs =
             PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
@@ -846,7 +849,10 @@ mod tests {
         let mut k_occ = Array2::zeros((n, n));
         dfk.build_from_occ(&c_occ, &mut k_occ).unwrap();
 
-        let max_diff: f64 = (&k_occ - &k_density).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        let max_diff: f64 = (&k_occ - &k_density)
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0, f64::max);
         assert!(
             max_diff < 1e-10,
             "build_from_occ vs build(D=C·Cᵀ) max diff = {max_diff} too large"
@@ -857,8 +863,8 @@ mod tests {
     fn df_k_build_from_occ_bit_identical_across_thread_counts() {
         // The C_occ path must inherit the same deterministic-fold guarantee as
         // `build`: bit-identical K regardless of RAYON_NUM_THREADS.
-        let mol = Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1)
-            .unwrap();
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
         let dfbs =
             PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
@@ -896,8 +902,8 @@ mod tests {
     #[test]
     fn df_k_build_from_occ_zero_nocc_is_zero() {
         // Empty channel (e.g. UHF β with zero β electrons): K must be exactly zero.
-        let mol = Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1)
-            .unwrap();
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
         let dfbs =
             PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
@@ -907,19 +913,19 @@ mod tests {
         let mut dfk = DfK::new(op, &obs, &dfbs, usize::MAX).unwrap();
         let mut k = Array2::from_elem((n, n), 1.0);
         dfk.build_from_occ(&c_occ, &mut k).unwrap();
-        assert!(k.iter().all(|&v| v == 0.0), "K must be exactly zero for nocc=0");
+        assert!(
+            k.iter().all(|&v| v == 0.0),
+            "K must be exactly zero for nocc=0"
+        );
     }
 
     #[test]
     fn df_k_source_backed_matches_incore() {
-        let mol = Molecule::parse_xyz(
-            "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n",
-            0,
-            1,
-        )
-        .unwrap();
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
-        let dfbs = PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
         let op = Operator::coulomb();
         let n = obs.nbasis();
 
@@ -939,7 +945,10 @@ mod tests {
         let mut dfk_small = DfK::new(op, &obs, &dfbs, tiny).unwrap();
         dfk_small.build(&d, &mut k_small).unwrap();
 
-        let maxdiff = (&k_big - &k_small).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        let maxdiff = (&k_big - &k_small)
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0, f64::max);
         assert!(maxdiff < 1e-10, "spill K != in-core K, maxdiff={maxdiff}");
     }
 }

@@ -21,7 +21,11 @@ fn surface_esp_is_not_a_nuclear_charge_readout() {
     let d = rhf.density_r().to_owned();
 
     let (pts, esp) = esp_on_surface(&mol, &obs, &d, 1.4, 110).unwrap();
-    assert!(pts.len() == esp.len() && pts.len() > 50, "got {} points", pts.len());
+    assert!(
+        pts.len() == esp.len() && pts.len() > 50,
+        "got {} points",
+        pts.len()
+    );
 
     // At the nuclei the potential is dominated by the local nuclear cusp and
     // runs to tens of Hartree; on the surface it is the small, chemically

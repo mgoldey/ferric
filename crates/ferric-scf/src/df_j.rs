@@ -35,8 +35,8 @@ use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
-use ferric_integrals::threeindex::coulomb_metric_2c;
 use ferric_integrals::three_index_source::ThreeIndexSource;
+use ferric_integrals::threeindex::coulomb_metric_2c;
 use ndarray::Array2;
 use ndarray_linalg::Inverse;
 use rayon::prelude::*;
@@ -150,11 +150,18 @@ impl<'a> DfJ<'a> {
         // crash, so this is specific to the LU/getri path, not a general BLAS
         // thread-count issue. Stays at the OPENBLAS_NUM_THREADS=1 process
         // default (correct, safe, and identical to pre-B6 behavior).
-        let v_inv = v.inv().map_err(|e| FerricError::Lapack(format!("V^-1 in DfJ: {e}")))?;
+        let v_inv = v
+            .inv()
+            .map_err(|e| FerricError::Lapack(format!("V^-1 in DfJ: {e}")))?;
         // Store ctx only when it actually implies a reduction (>1 rank); a size-1
         // ctx behaves exactly like None (full band, no all_reduce).
         let ctx = ctx.filter(|c| c.size > 1);
-        Ok(DfJ { source, v_inv, ctx, budget_bytes })
+        Ok(DfJ {
+            source,
+            v_inv,
+            ctx,
+            budget_bytes,
+        })
     }
 }
 
@@ -201,7 +208,8 @@ impl JBuilder for DfJ<'_> {
                 })
                 .collect::<Result<Vec<_>, FerricError>>()?;
             for (q0, q1, part) in parts {
-                d_p.slice_mut(ndarray::s![blk.p0 + q0..blk.p0 + q1]).assign(&part);
+                d_p.slice_mut(ndarray::s![blk.p0 + q0..blk.p0 + q1])
+                    .assign(&part);
             }
             Ok(())
         })?;
@@ -296,12 +304,8 @@ mod tests {
 
     #[test]
     fn df_j_matches_direct_j_within_fit_error() {
-        let mol = Molecule::parse_xyz(
-            "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n",
-            0,
-            1,
-        )
-        .unwrap();
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
         let obs_set = basis::bundled("cc-pvdz").unwrap();
         let obs = PreparedBasis::new(&mol, &obs_set).unwrap();
         let dfbs_set = basis::bundled("cc-pvdz-ri").unwrap();
@@ -326,19 +330,22 @@ mod tests {
         let mut dfj = DfJ::new(op, &obs, &dfbs, usize::MAX).unwrap();
         dfj.build(&d, &mut j_df).unwrap();
 
-        let max_diff: f64 = (&j_df - &j_direct).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        let max_diff: f64 = (&j_df - &j_direct)
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0, f64::max);
         // RI-fit basis is tuned for correlation, not J — accept ~1e-3 Ha-scale error.
-        assert!(max_diff < 5e-3, "DF-J vs direct-J max diff = {} too large", max_diff);
+        assert!(
+            max_diff < 5e-3,
+            "DF-J vs direct-J max diff = {} too large",
+            max_diff
+        );
     }
 
     #[test]
     fn df_j_source_backed_matches_incore() {
-        let mol = Molecule::parse_xyz(
-            "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n",
-            0,
-            1,
-        )
-        .unwrap();
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let op = Operator::coulomb();
@@ -359,7 +366,10 @@ mod tests {
         let mut dfj_small = DfJ::new(op, &obs, &dfbs, tiny).unwrap();
         dfj_small.build(&d, &mut j_small).unwrap();
 
-        let maxdiff = (&j_big - &j_small).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        let maxdiff = (&j_big - &j_small)
+            .iter()
+            .map(|v| v.abs())
+            .fold(0.0, f64::max);
         assert!(maxdiff < 1e-10, "spill J != in-core J, maxdiff={maxdiff}");
     }
 
@@ -373,12 +383,8 @@ mod tests {
         // test above (which measures RI fitting error vs direct J and cannot
         // separate algebra bugs from fitting error). Mirrors
         // `df_k_wide_gemm_matches_naive_contraction`.
-        let mol = Molecule::parse_xyz(
-            "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n",
-            0,
-            1,
-        )
-        .unwrap();
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let op = Operator::coulomb();
@@ -404,7 +410,9 @@ mod tests {
                 let b = blk.data.shape()[0];
                 let flat = blk.data.into_shape_with_order((b, n * n)).unwrap();
                 let part = flat.dot(&d_flat);
-                d_p_ref.slice_mut(ndarray::s![blk.p0..blk.p0 + b]).assign(&part);
+                d_p_ref
+                    .slice_mut(ndarray::s![blk.p0..blk.p0 + b])
+                    .assign(&part);
                 Ok(())
             })
             .unwrap();
@@ -444,12 +452,8 @@ mod tests {
         // energy) must be bit-identical regardless of RAYON_NUM_THREADS.
         // Uses several heavy atoms so the aux dimension spans multiple
         // chunks (making order actually matter).
-        let mol = Molecule::parse_xyz(
-            "3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n",
-            0,
-            1,
-        )
-        .unwrap();
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let op = Operator::coulomb();
@@ -493,8 +497,8 @@ mod tests {
         // splits the aux chunks across several bands in Pass 2. The banding
         // must not perturb the ascending-chunk fold order, so J stays
         // bit-identical at 1/2/8 threads.
-        let mol = Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1)
-            .unwrap();
+        let mol =
+            Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0 0.96\nH 0.93 0 -0.26\n", 0, 1).unwrap();
         let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
         let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
         let op = Operator::coulomb();
@@ -525,8 +529,14 @@ mod tests {
         let j2 = build_j(2);
         let j8 = build_j(8);
         std::env::remove_var("FERRIC_REDUCE_BAND_BYTES");
-        assert_eq!(j1, j2, "narrow-band DfJ must be bit-identical at 1 vs 2 threads");
-        assert_eq!(j1, j8, "narrow-band DfJ must be bit-identical at 1 vs 8 threads");
+        assert_eq!(
+            j1, j2,
+            "narrow-band DfJ must be bit-identical at 1 vs 2 threads"
+        );
+        assert_eq!(
+            j1, j8,
+            "narrow-band DfJ must be bit-identical at 1 vs 8 threads"
+        );
     }
 
     /// Timing demo, run explicitly:
@@ -582,7 +592,9 @@ mod tests {
                     let b = blk.data.shape()[0];
                     let flat = blk.data.into_shape_with_order((b, n * n)).unwrap();
                     let part = flat.dot(&d_flat);
-                    d_p_ref.slice_mut(ndarray::s![blk.p0..blk.p0 + b]).assign(&part);
+                    d_p_ref
+                        .slice_mut(ndarray::s![blk.p0..blk.p0 + b])
+                        .assign(&part);
                     Ok(())
                 })
                 .unwrap();

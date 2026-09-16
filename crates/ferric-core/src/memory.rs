@@ -137,12 +137,18 @@ pub fn resolve_budget(explicit: Option<usize>) -> BudgetResolution {
     // 1. Explicit config / kwarg (0 is treated as "unset" — a real budget is >0).
     if let Some(b) = explicit {
         if b > 0 {
-            return BudgetResolution { bytes: b, source: BudgetSource::Explicit };
+            return BudgetResolution {
+                bytes: b,
+                source: BudgetSource::Explicit,
+            };
         }
     }
     // 2. Unified env var.
     if let Some(b) = env_gib_bytes(ENV_UNIFIED) {
-        return BudgetResolution { bytes: b, source: BudgetSource::UnifiedEnv };
+        return BudgetResolution {
+            bytes: b,
+            source: BudgetSource::UnifiedEnv,
+        };
     }
     // 3. Legacy env vars — if both set, the more conservative (smaller) wins.
     let legacy_ooc = env_gib_bytes(ENV_LEGACY_OOC);
@@ -157,10 +163,16 @@ pub fn resolve_budget(explicit: Option<usize>) -> BudgetResolution {
             return BudgetResolution { bytes, source };
         }
         (Some(o), None) => {
-            return BudgetResolution { bytes: o, source: BudgetSource::LegacyOocEnv }
+            return BudgetResolution {
+                bytes: o,
+                source: BudgetSource::LegacyOocEnv,
+            }
         }
         (None, Some(e)) => {
-            return BudgetResolution { bytes: e, source: BudgetSource::LegacyEri3Env }
+            return BudgetResolution {
+                bytes: e,
+                source: BudgetSource::LegacyEri3Env,
+            }
         }
         (None, None) => {}
     }
@@ -168,11 +180,17 @@ pub fn resolve_budget(explicit: Option<usize>) -> BudgetResolution {
     if let Some(avail) = detect_available_bytes() {
         let budget = (avail as f64 * AUTO_FRACTION) as usize;
         if budget > 0 {
-            return BudgetResolution { bytes: budget, source: BudgetSource::AutoDetected };
+            return BudgetResolution {
+                bytes: budget,
+                source: BudgetSource::AutoDetected,
+            };
         }
     }
     // 5. Final fallback.
-    BudgetResolution { bytes: DEFAULT_BUDGET_BYTES, source: BudgetSource::Fallback }
+    BudgetResolution {
+        bytes: DEFAULT_BUDGET_BYTES,
+        source: BudgetSource::Fallback,
+    }
 }
 
 /// Resolve the memory budget in bytes. Thin wrapper over [`resolve_budget`] that
@@ -359,7 +377,9 @@ pub fn available_budget_now(budget_bytes: usize) -> usize {
 /// `over_factor` is typically ~1.1 (warn at 10% over budget) — see call sites
 /// in `ferric-rpa` for the production convention.
 pub fn warn_if_rss_over(label: &str, budget_bytes: usize, over_factor: f64) {
-    let Some(rss) = read_own_rss_bytes() else { return };
+    let Some(rss) = read_own_rss_bytes() else {
+        return;
+    };
     let threshold = (budget_bytes as f64 * over_factor) as usize;
     if rss > threshold {
         eprintln!(
@@ -595,7 +615,10 @@ mod tests {
         // Missing field → None.
         assert_eq!(parse_meminfo_available("MemTotal: 32000000 kB\n"), None);
         // Malformed value → None.
-        assert_eq!(parse_meminfo_available("MemAvailable: notanumber kB\n"), None);
+        assert_eq!(
+            parse_meminfo_available("MemAvailable: notanumber kB\n"),
+            None
+        );
     }
 
     #[test]
@@ -783,7 +806,10 @@ mod tests {
             .lines()
             .find_map(|l| l.strip_prefix("0::"))
             .map(|r| r.trim().to_string());
-        assert_eq!(got.as_deref(), Some("/user.slice/user-1000.slice/run-rABC.scope"));
+        assert_eq!(
+            got.as_deref(),
+            Some("/user.slice/user-1000.slice/run-rABC.scope")
+        );
     }
 
     /// REGRESSION: the effective v2 limit is the MINIMUM over the ancestry.
@@ -796,12 +822,20 @@ mod tests {
     #[test]
     fn ancestry_minimum_is_the_effective_limit() {
         // leaf 5 GiB inside a 12 GiB parent inside an unlimited root.
-        let levels = [Some(5 * (1024usize * 1024 * 1024)), Some(12 * (1024usize * 1024 * 1024)), None];
+        let levels = [
+            Some(5 * (1024usize * 1024 * 1024)),
+            Some(12 * (1024usize * 1024 * 1024)),
+            None,
+        ];
         let mut best: Option<usize> = None;
         for b in levels.into_iter().flatten() {
             best = Some(best.map_or(b, |c: usize| c.min(b)));
         }
-        assert_eq!(best, Some(5 * (1024usize * 1024 * 1024)), "the tightest ancestor must win");
+        assert_eq!(
+            best,
+            Some(5 * (1024usize * 1024 * 1024)),
+            "the tightest ancestor must win"
+        );
 
         // An unlimited leaf under a limited parent still inherits the parent.
         let levels = [None, Some(8 * (1024usize * 1024 * 1024)), None];

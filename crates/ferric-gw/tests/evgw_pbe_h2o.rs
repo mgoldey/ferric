@@ -43,13 +43,20 @@ fn evgw0_pbe_h2o_homo_ip_is_sane_and_ks_shifted() {
     let (mol, obs, dfbs, op) = h2o_setup();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
 
-    let cfg = RhfConfig { xc: Some("pbe".into()), ..Default::default() };
+    let cfg = RhfConfig {
+        xc: Some("pbe".into()),
+        ..Default::default()
+    };
     let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
     let nocc = (mol.nelec() as usize) / 2;
     let homo_abs = nocc - 1;
 
     let pdep_cfg = PdepRpaConfig {
-        quadrature: QuadratureConfig { scheme: QuadratureScheme::GaussLegendre, n_points: 16, u0: 0.5 },
+        quadrature: QuadratureConfig {
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: 16,
+            u0: 0.5,
+        },
         eigensolver_conv_thresh: 1e-7,
         trunc_thresh: 0.0,
         ..Default::default()
@@ -62,15 +69,36 @@ fn evgw0_pbe_h2o_homo_ip_is_sane_and_ks_shifted() {
         ..Default::default()
     };
 
-    let (vxc_diag, _) = vxc_diagonal_mo(&mol, &basis::bundled("cc-pvdz").unwrap(), "pbe", &scf).unwrap();
+    let (vxc_diag, _) =
+        vxc_diagonal_mo(&mol, &basis::bundled("cc-pvdz").unwrap(), "pbe", &scf).unwrap();
 
     // KS-referenced evGW0.
-    let res_ks = run_gw(&mol, &obs, &dfbs, op, &scf, &pdep_cfg, &gcfg, Some(&vxc_diag)).unwrap();
-    let loc = res_ks.mo_indices.iter().position(|&i| i == homo_abs).unwrap();
+    let res_ks = run_gw(
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &scf,
+        &pdep_cfg,
+        &gcfg,
+        Some(&vxc_diag),
+    )
+    .unwrap();
+    let loc = res_ks
+        .mo_indices
+        .iter()
+        .position(|&i| i == homo_abs)
+        .unwrap();
     let ip_ks = -res_ks.eps_qp[loc] * HA;
 
-    assert!(res_ks.outer_converged, "evGW0@PBE outer loop must converge within max_ev_iter");
-    assert!(res_ks.qp_converged[loc], "evGW0@PBE HOMO Newton QP solve must converge");
+    assert!(
+        res_ks.outer_converged,
+        "evGW0@PBE outer loop must converge within max_ev_iter"
+    );
+    assert!(
+        res_ks.qp_converged[loc],
+        "evGW0@PBE HOMO Newton QP solve must converge"
+    );
     assert!(
         ip_ks > 3.0 && ip_ks < 25.0,
         "evGW0@PBE HOMO IP {ip_ks:.3} eV is outside a physically sane window for H2O"
@@ -91,8 +119,22 @@ fn evgw0_pbe_h2o_homo_ip_is_sane_and_ks_shifted() {
     // Sanity vs. the already-validated G0W0@PBE starting point (see
     // g0w0_pbe_h2o.rs, PySCF-anchored to <0.1 eV): evGW0 self-consistency
     // should move the HOMO IP by a modest amount, not diverge wildly.
-    let gcfg_g0w0 = GwConfig { method: GwMethod::G0W0, qp_mos: Some(homo_abs..homo_abs + 1), ..Default::default() };
-    let res_g0w0 = run_gw(&mol, &obs, &dfbs, op, &scf, &pdep_cfg, &gcfg_g0w0, Some(&vxc_diag)).unwrap();
+    let gcfg_g0w0 = GwConfig {
+        method: GwMethod::G0W0,
+        qp_mos: Some(homo_abs..homo_abs + 1),
+        ..Default::default()
+    };
+    let res_g0w0 = run_gw(
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &scf,
+        &pdep_cfg,
+        &gcfg_g0w0,
+        Some(&vxc_diag),
+    )
+    .unwrap();
     let ip_g0w0 = -res_g0w0.eps_qp[loc] * HA;
     assert!(
         (ip_ks - ip_g0w0).abs() < 2.0,
@@ -110,13 +152,20 @@ fn evgw_pbe_h2o_homo_ip_is_sane_and_ks_shifted() {
     let (mol, obs, dfbs, op) = h2o_setup();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
 
-    let cfg = RhfConfig { xc: Some("pbe".into()), ..Default::default() };
+    let cfg = RhfConfig {
+        xc: Some("pbe".into()),
+        ..Default::default()
+    };
     let scf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &cfg).unwrap();
     let nocc = (mol.nelec() as usize) / 2;
     let homo_abs = nocc - 1;
 
     let pdep_cfg = PdepRpaConfig {
-        quadrature: QuadratureConfig { scheme: QuadratureScheme::GaussLegendre, n_points: 16, u0: 0.5 },
+        quadrature: QuadratureConfig {
+            scheme: QuadratureScheme::GaussLegendre,
+            n_points: 16,
+            u0: 0.5,
+        },
         eigensolver_conv_thresh: 1e-7,
         trunc_thresh: 0.0,
         ..Default::default()
@@ -129,13 +178,31 @@ fn evgw_pbe_h2o_homo_ip_is_sane_and_ks_shifted() {
         ..Default::default()
     };
 
-    let (vxc_diag, _) = vxc_diagonal_mo(&mol, &basis::bundled("cc-pvdz").unwrap(), "pbe", &scf).unwrap();
+    let (vxc_diag, _) =
+        vxc_diagonal_mo(&mol, &basis::bundled("cc-pvdz").unwrap(), "pbe", &scf).unwrap();
 
-    let res_ks = run_gw(&mol, &obs, &dfbs, op, &scf, &pdep_cfg, &gcfg, Some(&vxc_diag)).unwrap();
-    let loc = res_ks.mo_indices.iter().position(|&i| i == homo_abs).unwrap();
+    let res_ks = run_gw(
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &scf,
+        &pdep_cfg,
+        &gcfg,
+        Some(&vxc_diag),
+    )
+    .unwrap();
+    let loc = res_ks
+        .mo_indices
+        .iter()
+        .position(|&i| i == homo_abs)
+        .unwrap();
     let ip_ks = -res_ks.eps_qp[loc] * HA;
 
-    assert!(res_ks.qp_converged[loc], "evGW@PBE HOMO Newton QP solve must converge");
+    assert!(
+        res_ks.qp_converged[loc],
+        "evGW@PBE HOMO Newton QP solve must converge"
+    );
     assert!(
         ip_ks > 3.0 && ip_ks < 25.0,
         "evGW@PBE HOMO IP {ip_ks:.3} eV is outside a physically sane window for H2O"
@@ -150,8 +217,22 @@ fn evgw_pbe_h2o_homo_ip_is_sane_and_ks_shifted() {
          (~several eV); a near-zero difference would mean vxc_diag is not being applied"
     );
 
-    let gcfg_g0w0 = GwConfig { method: GwMethod::G0W0, qp_mos: Some(homo_abs..homo_abs + 1), ..Default::default() };
-    let res_g0w0 = run_gw(&mol, &obs, &dfbs, op, &scf, &pdep_cfg, &gcfg_g0w0, Some(&vxc_diag)).unwrap();
+    let gcfg_g0w0 = GwConfig {
+        method: GwMethod::G0W0,
+        qp_mos: Some(homo_abs..homo_abs + 1),
+        ..Default::default()
+    };
+    let res_g0w0 = run_gw(
+        &mol,
+        &obs,
+        &dfbs,
+        op,
+        &scf,
+        &pdep_cfg,
+        &gcfg_g0w0,
+        Some(&vxc_diag),
+    )
+    .unwrap();
     let ip_g0w0 = -res_g0w0.eps_qp[loc] * HA;
     assert!(
         (ip_ks - ip_g0w0).abs() < 2.0,

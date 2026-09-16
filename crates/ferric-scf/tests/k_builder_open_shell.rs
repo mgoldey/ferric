@@ -80,8 +80,13 @@ const COSX_OPEN_SHELL_E_BAR: f64 = 2e-4;
 /// seminumerical K on a (50,110) grid never lands this close.
 const COSX_MUST_DIFFER_FLOOR: f64 = 1e-12;
 
-
-fn setup(xyz: &str, charge: i32, mult: usize, bas: &str, op: Operator) -> (Molecule, PreparedBasis, SchwarzBounds) {
+fn setup(
+    xyz: &str,
+    charge: i32,
+    mult: usize,
+    bas: &str,
+    op: Operator,
+) -> (Molecule, PreparedBasis, SchwarzBounds) {
     let mol = Molecule::parse_xyz(xyz, charge, mult).expect("xyz");
     let bs = basis::bundled(bas).expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("prep");
@@ -106,7 +111,15 @@ fn run_uhf_ch3(kb: Option<&str>) -> ScfResult {
 
 fn run_rohf_ch3(kb: Option<&str>) -> ScfResult {
     let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "cc-pvdz", Operator::coulomb());
-    solve_rohf(&ParallelContext::default(), &mol, &prep, Operator::coulomb(), &bounds, &cfg(kb)).expect("rohf")
+    solve_rohf(
+        &ParallelContext::default(),
+        &mol,
+        &prep,
+        Operator::coulomb(),
+        &bounds,
+        &cfg(kb),
+    )
+    .expect("rohf")
 }
 
 fn report(label: &str, direct: &ScfResult, other: &ScfResult) -> (f64, i64) {
@@ -119,7 +132,11 @@ fn report(label: &str, direct: &ScfResult, other: &ScfResult) -> (f64, i64) {
         other.energy, other.iterations, other.converged, other.computed_quartets
     );
     assert!(direct.converged, "{label}: direct SCF did not converge");
-    assert!(other.converged, "{label}: k_builder SCF did not converge ({} iters)", other.iterations);
+    assert!(
+        other.converged,
+        "{label}: k_builder SCF did not converge ({} iters)",
+        other.iterations
+    );
     (de, di)
 }
 
@@ -127,8 +144,16 @@ fn report(label: &str, direct: &ScfResult, other: &ScfResult) -> (f64, i64) {
 /// quartet count than the combined direct pass (the "was it used" tell).
 fn check_link(label: &str, direct: &ScfResult, link: &ScfResult) {
     let (de, di) = report(label, direct, link);
-    assert!(de.abs() <= 1e-9, "{label}: LinK energy differs from direct by {de:+.3e} Ha (bar 1e-9)");
-    assert!(di.abs() <= 2, "{label}: LinK iterations {} vs direct {} (more than 2 apart)", link.iterations, direct.iterations);
+    assert!(
+        de.abs() <= 1e-9,
+        "{label}: LinK energy differs from direct by {de:+.3e} Ha (bar 1e-9)"
+    );
+    assert!(
+        di.abs() <= 2,
+        "{label}: LinK iterations {} vs direct {} (more than 2 apart)",
+        link.iterations,
+        direct.iterations
+    );
     assert_ne!(
         link.computed_quartets, direct.computed_quartets,
         "{label}: LinK run walked exactly the direct path's quartet count — k_builder was NOT consumed"
@@ -147,7 +172,12 @@ fn check_cosx(label: &str, direct: &ScfResult, cosx: &ScfResult) {
         de.abs() > COSX_MUST_DIFFER_FLOOR,
         "{label}: COSX energy is bit-for-bit the direct energy ({de:+.3e}) — k_builder was NOT consumed"
     );
-    assert!(di.abs() <= 3, "{label}: COSX iterations {} vs direct {} (more than 3 apart)", cosx.iterations, direct.iterations);
+    assert!(
+        di.abs() <= 3,
+        "{label}: COSX iterations {} vs direct {} (more than 3 apart)",
+        cosx.iterations,
+        direct.iterations
+    );
 }
 
 // ── (a) UHF ──────────────────────────────────────────────────────────────────
@@ -206,55 +236,105 @@ fn rhf_closed_shell_matches_direct_across_builders() {
     let (mol, prep, bounds) = setup(WATER_XYZ, 0, 1, "cc-pvdz", Operator::coulomb());
     let ctx = ParallelContext::default();
 
-    let direct = solve_rhf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &cfg(None)).expect("rhf");
+    let direct =
+        solve_rhf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &cfg(None)).expect("rhf");
     assert!(direct.converged);
     println!(
         "RHF water/cc-pVDZ direct: E={:.12} bits={:016x} iters={}",
-        direct.energy, direct.energy.to_bits(), direct.iterations
+        direct.energy,
+        direct.energy.to_bits(),
+        direct.iterations
     );
 
     // LinK is EXACT to the screening threshold, so it must agree with direct to
     // accumulation noise. Measured 5.1e-13 (CI) / 6.1e-13 (dev box); 1e-11 leaves
     // ~20x headroom for other BLAS kernels without admitting a real defect.
-    let link = solve_rhf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &cfg(Some("link"))).expect("rhf link");
+    let link = solve_rhf(
+        &ctx,
+        &mol,
+        &prep,
+        Operator::coulomb(),
+        &bounds,
+        &cfg(Some("link")),
+    )
+    .expect("rhf link");
     assert!(link.converged);
     let d_link = (link.energy - direct.energy).abs();
     println!(
         "RHF link: E={:.12} bits={:016x} iters={} dE_vs_direct={:.3e}",
-        link.energy, link.energy.to_bits(), link.iterations, d_link
+        link.energy,
+        link.energy.to_bits(),
+        link.iterations,
+        d_link
     );
-    assert!(d_link < 1e-11, "LinK RHF moved vs direct: {d_link:.3e} Ha (expected accumulation noise ~1e-13)");
-    assert_eq!(link.iterations, direct.iterations, "LinK changed the RHF iteration count");
+    assert!(
+        d_link < 1e-11,
+        "LinK RHF moved vs direct: {d_link:.3e} Ha (expected accumulation noise ~1e-13)"
+    );
+    assert_eq!(
+        link.iterations, direct.iterations,
+        "LinK changed the RHF iteration count"
+    );
 
     // COSX carries a GRID error, not accumulation noise: 4.862e-06 Ha on both
     // machines at (50,110)+fit. Bracket it — a value far below would mean the
     // builder silently fell back to direct, far above means the grid path broke.
-    let cosx = solve_rhf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &cfg(Some("cosx"))).expect("rhf cosx");
+    let cosx = solve_rhf(
+        &ctx,
+        &mol,
+        &prep,
+        Operator::coulomb(),
+        &bounds,
+        &cfg(Some("cosx")),
+    )
+    .expect("rhf cosx");
     assert!(cosx.converged);
     let d_cosx = (cosx.energy - direct.energy).abs();
     println!(
         "RHF cosx: E={:.12} bits={:016x} iters={} dE_vs_direct={:.3e}",
-        cosx.energy, cosx.energy.to_bits(), cosx.iterations, d_cosx
+        cosx.energy,
+        cosx.energy.to_bits(),
+        cosx.iterations,
+        d_cosx
     );
     assert!(
         (1e-7..1e-4).contains(&d_cosx),
         "COSX RHF grid error {d_cosx:.3e} Ha outside [1e-7, 1e-4] — too small means it fell back to direct, too large means the grid path broke"
     );
-    assert_eq!(cosx.iterations, direct.iterations, "COSX changed the RHF iteration count");
+    assert_eq!(
+        cosx.iterations, direct.iterations,
+        "COSX changed the RHF iteration count"
+    );
 }
 
 // ── (d) α/β independence from ONE builder instance ───────────────────────────
 
-fn converged_uhf_spin_densities() -> (Molecule, PreparedBasis, SchwarzBounds, Array2<f64>, Array2<f64>) {
+fn converged_uhf_spin_densities() -> (
+    Molecule,
+    PreparedBasis,
+    SchwarzBounds,
+    Array2<f64>,
+    Array2<f64>,
+) {
     let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "cc-pvdz", Operator::coulomb());
-    let r = solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &cfg(None)).expect("uhf");
+    let r = solve_uhf(
+        &ParallelContext::default(),
+        &mol,
+        &prep,
+        &bounds,
+        &cfg(None),
+    )
+    .expect("uhf");
     assert!(r.converged);
     let d_b = r.density_beta.clone().expect("UHF carries D_beta");
     (mol, prep, bounds, r.density_alpha, d_b)
 }
 
 fn bits_equal(a: &Array2<f64>, b: &Array2<f64>) -> bool {
-    a.dim() == b.dim() && a.iter().zip(b.iter()).all(|(x, y)| x.to_bits() == y.to_bits())
+    a.dim() == b.dim()
+        && a.iter()
+            .zip(b.iter())
+            .all(|(x, y)| x.to_bits() == y.to_bits())
 }
 
 fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
@@ -265,8 +345,12 @@ fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
 /// and each equals a FRESH instance's build. `update_density` is called with
 /// the matching spin density before every build — the contract the solvers
 /// must honour (the LinK pair lists are density-dependent).
-fn check_alpha_beta_independence<'b, F>(label: &str, d_a: &Array2<f64>, d_b: &Array2<f64>, mut fresh: F)
-where
+fn check_alpha_beta_independence<'b, F>(
+    label: &str,
+    d_a: &Array2<f64>,
+    d_b: &Array2<f64>,
+    mut fresh: F,
+) where
     F: FnMut() -> Box<dyn KBuilder + 'b>,
 {
     let n = d_a.nrows();
@@ -287,11 +371,23 @@ where
         "{label}: max|K_a1-K_a2|={:.3e} max|K_a1-K_a_fresh|={:.3e} max|K_b1-K_b_fresh|={:.3e} max|K_a-K_b|={:.3e}",
         max_abs_diff(&ka1, &ka2), max_abs_diff(&ka1, &ka_fresh), max_abs_diff(&kb1, &kb_fresh), max_abs_diff(&ka1, &kb1)
     );
-    assert!(bits_equal(&ka1, &ka2), "{label}: K(D_a) after a K(D_b) build is not bitwise the first K(D_a)");
-    assert!(bits_equal(&ka1, &ka_fresh), "{label}: shared-instance K(D_a) != fresh-instance K(D_a)");
-    assert!(bits_equal(&kb1, &kb_fresh), "{label}: shared-instance K(D_b) != fresh-instance K(D_b)");
+    assert!(
+        bits_equal(&ka1, &ka2),
+        "{label}: K(D_a) after a K(D_b) build is not bitwise the first K(D_a)"
+    );
+    assert!(
+        bits_equal(&ka1, &ka_fresh),
+        "{label}: shared-instance K(D_a) != fresh-instance K(D_a)"
+    );
+    assert!(
+        bits_equal(&kb1, &kb_fresh),
+        "{label}: shared-instance K(D_b) != fresh-instance K(D_b)"
+    );
     // Non-vacuity: a doublet's α and β exchange matrices must differ.
-    assert!(max_abs_diff(&ka1, &kb1) > 1e-3, "{label}: K(D_a) == K(D_b) — the two densities are not distinct");
+    assert!(
+        max_abs_diff(&ka1, &kb1) > 1e-3,
+        "{label}: K(D_a) == K(D_b) — the two densities are not distinct"
+    );
 }
 
 #[test]
@@ -309,8 +405,9 @@ fn cosx_k_alpha_beta_independent_from_one_instance() {
     let (mol, prep, _bounds, d_a, d_b) = converged_uhf_spin_densities();
     let ctx = ParallelContext::default();
     check_alpha_beta_independence("CosxK CH3/cc-pVDZ", &d_a, &d_b, || {
-        Box::new(CosxK::new(&ctx, &mol, &prep, CosxConfig::default(), usize::MAX).expect("CosxK::new"))
-            as Box<dyn KBuilder + '_>
+        Box::new(
+            CosxK::new(&ctx, &mol, &prep, CosxConfig::default(), usize::MAX).expect("CosxK::new"),
+        ) as Box<dyn KBuilder + '_>
     });
 }
 
@@ -361,9 +458,14 @@ fn probe_child_uhf_df_k_with_link_builder() {
     let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "cc-pvdz", Operator::coulomb());
     let ctx = ParallelContext::default();
     let plain = solve_uhf(&ctx, &mol, &prep, &bounds, &df_cfg(None)).expect("uhf df");
-    let with_kb = solve_uhf(&ctx, &mol, &prep, &bounds, &df_cfg(Some("link"))).expect("uhf df+link");
+    let with_kb =
+        solve_uhf(&ctx, &mol, &prep, &bounds, &df_cfg(Some("link"))).expect("uhf df+link");
     assert!(plain.converged && with_kb.converged);
-    assert_eq!(plain.energy.to_bits(), with_kb.energy.to_bits(), "DF-JK + k_builder=link must be bitwise the DF-JK run");
+    assert_eq!(
+        plain.energy.to_bits(),
+        with_kb.energy.to_bits(),
+        "DF-JK + k_builder=link must be bitwise the DF-JK run"
+    );
     assert_eq!(plain.iterations, with_kb.iterations);
 }
 
@@ -374,10 +476,30 @@ fn probe_child_rohf_df_k_with_link_builder() {
     }
     let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "cc-pvdz", Operator::coulomb());
     let ctx = ParallelContext::default();
-    let plain = solve_rohf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &df_cfg(None)).expect("rohf df");
-    let with_kb = solve_rohf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &df_cfg(Some("link"))).expect("rohf df+link");
+    let plain = solve_rohf(
+        &ctx,
+        &mol,
+        &prep,
+        Operator::coulomb(),
+        &bounds,
+        &df_cfg(None),
+    )
+    .expect("rohf df");
+    let with_kb = solve_rohf(
+        &ctx,
+        &mol,
+        &prep,
+        Operator::coulomb(),
+        &bounds,
+        &df_cfg(Some("link")),
+    )
+    .expect("rohf df+link");
     assert!(plain.converged && with_kb.converged);
-    assert_eq!(plain.energy.to_bits(), with_kb.energy.to_bits(), "DF-JK + k_builder=link must be bitwise the DF-JK run");
+    assert_eq!(
+        plain.energy.to_bits(),
+        with_kb.energy.to_bits(),
+        "DF-JK + k_builder=link must be bitwise the DF-JK run"
+    );
     assert_eq!(plain.iterations, with_kb.iterations);
 }
 
@@ -385,14 +507,20 @@ fn probe_child_rohf_df_k_with_link_builder() {
 fn uhf_df_k_with_link_builder_warns_and_skips() {
     let (ok, stderr) = run_probe("probe_child_uhf_df_k_with_link_builder");
     assert!(ok, "child probe failed (see its output above)");
-    assert!(stderr.contains(DF_WARN_LINK), "UHF: DF-K + k_builder=link did not print the IGNORED warning");
+    assert!(
+        stderr.contains(DF_WARN_LINK),
+        "UHF: DF-K + k_builder=link did not print the IGNORED warning"
+    );
 }
 
 #[test]
 fn rohf_df_k_with_link_builder_warns_and_skips() {
     let (ok, stderr) = run_probe("probe_child_rohf_df_k_with_link_builder");
     assert!(ok, "child probe failed (see its output above)");
-    assert!(stderr.contains(DF_WARN_LINK), "ROHF: DF-K + k_builder=link did not print the IGNORED warning");
+    assert!(
+        stderr.contains(DF_WARN_LINK),
+        "ROHF: DF-K + k_builder=link did not print the IGNORED warning"
+    );
 }
 
 // ── (f) hard errors preserved at the open-shell entry points ─────────────────
@@ -403,13 +531,18 @@ fn unknown_k_builder_errors_from_open_shell_entry_points() {
     let ctx = ParallelContext::default();
     let bad = cfg(Some("bogus"));
     let eu = solve_uhf(&ctx, &mol, &prep, &bounds, &bad)
-        .map(|_| ()).expect_err("UHF must reject an unknown k_builder");
+        .map(|_| ())
+        .expect_err("UHF must reject an unknown k_builder");
     let er = solve_rohf(&ctx, &mol, &prep, Operator::coulomb(), &bounds, &bad)
-        .map(|_| ()).expect_err("ROHF must reject an unknown k_builder");
+        .map(|_| ())
+        .expect_err("ROHF must reject an unknown k_builder");
     for (label, e) in [("UHF", eu), ("ROHF", er)] {
         let msg = e.to_string();
         println!("{label}: {msg}");
-        assert!(msg.contains("unknown k_builder 'bogus'"), "{label}: wrong error text: {msg}");
+        assert!(
+            msg.contains("unknown k_builder 'bogus'"),
+            "{label}: wrong error text: {msg}"
+        );
     }
 }
 
@@ -422,20 +555,29 @@ fn cosx_refused_for_non_coulomb_operator_open_shell() {
     let ctx = ParallelContext::default();
     let cosx = cfg(Some("cosx"));
     let eu = solve_uhf(&ctx, &mol, &prep, &bounds, &cosx)
-        .map(|_| ()).expect_err("UHF must refuse cosx + erfc");
+        .map(|_| ())
+        .expect_err("UHF must refuse cosx + erfc");
     let er = solve_rohf(&ctx, &mol, &prep, Operator::erfc(0.3), &bounds, &cosx)
-        .map(|_| ()).expect_err("ROHF must refuse cosx + erfc");
+        .map(|_| ())
+        .expect_err("ROHF must refuse cosx + erfc");
     for (label, e) in [("UHF", eu), ("ROHF", er)] {
         let msg = e.to_string();
         println!("{label}: {msg}");
-        assert!(msg.contains("Coulomb operator only"), "{label}: wrong error text: {msg}");
+        assert!(
+            msg.contains("Coulomb operator only"),
+            "{label}: wrong error text: {msg}"
+        );
     }
 }
 
 fn rsh_cfg(kb: Option<&str>) -> RhfConfig {
     RhfConfig {
         xc: Some("HYB_GGA_XC_WB97X".into()),
-        dft_grid: Some(ferric_dft::grid::AtomicGridConfig { n_radial: 25, n_angular: 50, ..Default::default() }),
+        dft_grid: Some(ferric_dft::grid::AtomicGridConfig {
+            n_radial: 25,
+            n_angular: 50,
+            ..Default::default()
+        }),
         ..cfg(kb)
     }
 }
@@ -452,16 +594,24 @@ fn probe_child_uks_rsh_with_cosx_builder() {
     let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "sto-3g", Operator::coulomb());
     let ctx = ParallelContext::default();
     let plain = solve_uhf(&ctx, &mol, &prep, &bounds, &rsh_cfg(None)).expect("uks rsh");
-    let with_kb = solve_uhf(&ctx, &mol, &prep, &bounds, &rsh_cfg(Some("cosx"))).expect("uks rsh+cosx");
+    let with_kb =
+        solve_uhf(&ctx, &mol, &prep, &bounds, &rsh_cfg(Some("cosx"))).expect("uks rsh+cosx");
     assert!(plain.converged && with_kb.converged);
-    assert_eq!(plain.energy.to_bits(), with_kb.energy.to_bits(), "RSH + k_builder=cosx must be bitwise the RSH run");
+    assert_eq!(
+        plain.energy.to_bits(),
+        with_kb.energy.to_bits(),
+        "RSH + k_builder=cosx must be bitwise the RSH run"
+    );
 }
 
 #[test]
 fn uks_rsh_with_cosx_builder_warns_and_skips() {
     let (ok, stderr) = run_probe("probe_child_uks_rsh_with_cosx_builder");
     assert!(ok, "child probe failed (see its output above)");
-    assert!(stderr.contains(RSH_WARN_COSX), "UKS RSH: k_builder=cosx did not print the IGNORED warning");
+    assert!(
+        stderr.contains(RSH_WARN_COSX),
+        "UKS RSH: k_builder=cosx did not print the IGNORED warning"
+    );
 }
 
 // ── (d2) LinK per-spin pair lists: where it IS observable ───────────────────
@@ -507,7 +657,10 @@ fn link_per_spin_pair_lists_recorded_and_beta_matches_fresh_instance() {
     let ctx = ParallelContext::default();
     let r = solve_uhf(&ctx, &mol, &prep, &bounds, &cfg(None)).expect("uhf");
     assert!(r.converged);
-    let (d_a, d_b) = (r.density_alpha.clone(), r.density_beta.clone().expect("D_beta"));
+    let (d_a, d_b) = (
+        r.density_alpha.clone(),
+        r.density_beta.clone().expect("D_beta"),
+    );
     let n = prep.nbasis();
     let nsh = prep.nshells();
 
@@ -518,7 +671,10 @@ fn link_per_spin_pair_lists_recorded_and_beta_matches_fresh_instance() {
         let dp_b = ferric_scf::pairs::DensityPairs::build(&d_b, &bounds, &prep, t);
         println!(
             "butyl/def2-SVP thresh={t:.0e}: dp_pairs(D_a)={}/{} dp_pairs(D_b)={}/{}",
-            dp_a.total_pairs(), nsh * nsh, dp_b.total_pairs(), nsh * nsh
+            dp_a.total_pairs(),
+            nsh * nsh,
+            dp_b.total_pairs(),
+            nsh * nsh
         );
     }
 
@@ -541,16 +697,26 @@ fn link_per_spin_pair_lists_recorded_and_beta_matches_fresh_instance() {
 
     println!(
         "butyl/def2-SVP: max|K_b(shared, per-spin) - K_b(fresh)| = {:.3e}; max|K_a - K_b| = {:.3e}",
-        max_abs_diff(&kb_shared, &kb_fresh), max_abs_diff(&ka, &kb_shared)
+        max_abs_diff(&kb_shared, &kb_fresh),
+        max_abs_diff(&ka, &kb_shared)
     );
-    assert!(bits_equal(&kb_shared, &kb_fresh), "shared-instance per-spin K_b != fresh-instance K_b");
-    assert!(max_abs_diff(&ka, &kb_shared) > 1e-3, "K_a == K_b: the two spin densities are not distinct");
+    assert!(
+        bits_equal(&kb_shared, &kb_fresh),
+        "shared-instance per-spin K_b != fresh-instance K_b"
+    );
+    assert!(
+        max_abs_diff(&ka, &kb_shared) > 1e-3,
+        "K_a == K_b: the two spin densities are not distinct"
+    );
 }
 
 /// Drop the last H from an alkane xyz to make an open-shell radical.
 fn strip_last_h(xyz: &str) -> String {
     let mut lines: Vec<&str> = xyz.lines().collect();
-    let last_h = lines.iter().rposition(|l| l.trim_start().starts_with('H')).expect("an H");
+    let last_h = lines
+        .iter()
+        .rposition(|l| l.trim_start().starts_with('H'))
+        .expect("an H");
     lines.remove(last_h);
     let natoms: usize = lines[0].trim().parse::<usize>().expect("count") - 1;
     format!("{natoms}\n{}\n", lines[1..].join("\n"))

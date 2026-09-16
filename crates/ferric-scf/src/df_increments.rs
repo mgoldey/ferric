@@ -81,7 +81,10 @@ use crate::driver::{density_change, diagonalize_rect};
 use crate::fock::{JBuilder, KBuilder};
 use crate::ladder::{run_df_guess_pre_stage, DF_GUESS_DEFAULT_AUX};
 use crate::result::{ScfExit, ScfResult, Spin};
-use crate::rhf::{canonical_orthogonalizer, resolve_three_index_budget, scf_converged, ConvergenceSignals, RhfConfig};
+use crate::rhf::{
+    canonical_orthogonalizer, resolve_three_index_budget, scf_converged, ConvergenceSignals,
+    RhfConfig,
+};
 use crate::screening::SchwarzBounds;
 
 /// Outcome of [`solve_rhf_with_df_increments`]: the final exact-integral
@@ -259,7 +262,10 @@ pub fn solve_rhf_with_df_increments(
     let n = prep.nbasis();
     let nelec = mol.nelec();
     if nelec % 2 != 0 {
-        return Err(FerricError::ScfConvergence { iterations: 0, last_energy: 0.0 });
+        return Err(FerricError::ScfConvergence {
+            iterations: 0,
+            last_energy: 0.0,
+        });
     }
     let nocc = (nelec / 2) as usize;
 
@@ -271,7 +277,10 @@ pub fn solve_rhf_with_df_increments(
     // "What this does NOT support" above.
     let s = ferric_integrals::oneelectron::overlap(prep);
     let h = ferric_integrals::oneelectron::hcore_ecp_with_external(
-        prep, mol, prep.basis_set(), base.external_potential.as_ref(),
+        prep,
+        mol,
+        prep.basis_set(),
+        base.external_potential.as_ref(),
     )?;
     let vnn = mol.nuclear_repulsion()
         + base.external_potential.as_ref().map_or(0.0, |ext| {
@@ -297,14 +306,17 @@ pub fn solve_rhf_with_df_increments(
     // DENSITY path only (`JBuilder::build`/`KBuilder::build`) — `D - D0` is
     // not a rank-nocc C.Cᵀ product, so `DfK::build_from_occ` cannot represent
     // it (see that method's doc); we never call it here.
-    let (df_j_opt, df_k_opt) = crate::fock_assembly::build_df_jk(
-        ctx, mol, op, prep, Some(aux), Some(aux), ooc_budget,
-    )?;
+    let (df_j_opt, df_k_opt) =
+        crate::fock_assembly::build_df_jk(ctx, mol, op, prep, Some(aux), Some(aux), ooc_budget)?;
     let mut df_j = df_j_opt.ok_or_else(|| {
-        FerricError::General("solve_rhf_with_df_increments: DF-J builder failed to construct".into())
+        FerricError::General(
+            "solve_rhf_with_df_increments: DF-J builder failed to construct".into(),
+        )
     })?;
     let mut df_k = df_k_opt.ok_or_else(|| {
-        FerricError::General("solve_rhf_with_df_increments: DF-K builder failed to construct".into())
+        FerricError::General(
+            "solve_rhf_with_df_increments: DF-K builder failed to construct".into(),
+        )
     })?;
 
     let mut diis = DiisDriver::new(base.diis_flavor, base.diis_size, base.diis_switch_thresh);
@@ -339,7 +351,10 @@ pub fn solve_rhf_with_df_increments(
 
         chained_mat_mul3(&f, &d, &s, &mut fd_tmp, &mut fds);
         chained_mat_mul3(&s, &d, &f, &mut fd_tmp, &mut sdf);
-        ndarray::Zip::from(&mut err).and(&fds).and(&sdf).for_each(|e, &a, &b| *e = a - b);
+        ndarray::Zip::from(&mut err)
+            .and(&fds)
+            .and(&sdf)
+            .for_each(|e, &a, &b| *e = a - b);
         let err_max = err.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
         let de = (energy - prev_energy).abs();
 
@@ -359,7 +374,13 @@ pub fn solve_rhf_with_df_increments(
         // on iteration 1 (prev_energy seeded at 0.0).
         if iter > 1 {
             let sig = ConvergenceSignals { de, dp_rms, dp_max };
-            if scf_converged(sig, DF_INCREMENTS_INNER_ENERGY_CONV, DF_INCREMENTS_INNER_DENSITY_CONV).is_some() {
+            if scf_converged(
+                sig,
+                DF_INCREMENTS_INNER_ENERGY_CONV,
+                DF_INCREMENTS_INNER_DENSITY_CONV,
+            )
+            .is_some()
+            {
                 inner_converged = true;
                 break;
             }
@@ -398,7 +419,10 @@ pub fn solve_rhf_with_df_increments(
 
         chained_mat_mul3(&f_e, &d_cur, &s, &mut fd_tmp, &mut fds);
         chained_mat_mul3(&s, &d_cur, &f_e, &mut fd_tmp, &mut sdf);
-        ndarray::Zip::from(&mut err).and(&fds).and(&sdf).for_each(|e, &a, &b| *e = a - b);
+        ndarray::Zip::from(&mut err)
+            .and(&fds)
+            .and(&sdf)
+            .for_each(|e, &a, &b| *e = a - b);
         let err_max = err.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
 
         let (eps, c) = diagonalize_rect(&f_e, &x)?;

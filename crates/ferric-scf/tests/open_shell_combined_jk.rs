@@ -45,7 +45,12 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 const CH3_XYZ: &str = "4\nCH3 doublet\nC 0.0000 0.0000 0.0000\nH 1.0790 0.0000 0.0000\n\
                        H -0.5395 0.9345 0.0000\nH -0.5395 -0.9345 0.0000\n";
 
-fn setup(xyz: &str, charge: i32, mult: usize, bas: &str) -> (Molecule, PreparedBasis, SchwarzBounds) {
+fn setup(
+    xyz: &str,
+    charge: i32,
+    mult: usize,
+    bas: &str,
+) -> (Molecule, PreparedBasis, SchwarzBounds) {
     let mol = Molecule::parse_xyz(xyz, charge, mult).unwrap();
     let bs = basis::bundled(bas).unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -53,7 +58,12 @@ fn setup(xyz: &str, charge: i32, mult: usize, bas: &str) -> (Molecule, PreparedB
     (mol, prep, bounds)
 }
 
-fn setup_file(path: &str, charge: i32, mult: usize, bas: &str) -> (Molecule, PreparedBasis, SchwarzBounds) {
+fn setup_file(
+    path: &str,
+    charge: i32,
+    mult: usize,
+    bas: &str,
+) -> (Molecule, PreparedBasis, SchwarzBounds) {
     let mol = Molecule::load_xyz_with_charge(path, charge, mult).unwrap();
     let bs = basis::bundled(bas).unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
@@ -62,7 +72,10 @@ fn setup_file(path: &str, charge: i32, mult: usize, bas: &str) -> (Molecule, Pre
 }
 
 fn tight_config() -> RhfConfig {
-    RhfConfig { max_iter: 200, ..Default::default() }
+    RhfConfig {
+        max_iter: 200,
+        ..Default::default()
+    }
 }
 
 /// Set the two kill-switches, run `f`, restore. Caller holds ENV_LOCK.
@@ -72,7 +85,10 @@ fn with_switches<T>(combined: bool, incremental: bool, f: impl FnOnce() -> T) ->
         std::env::set_var("FERRIC_SCF_COMBINED_JK", if combined { "1" } else { "0" });
         // Open-shell incremental is opt-IN (default off) — see
         // `direct_jk::open_shell_incremental_enabled` for the measurements.
-        std::env::set_var("FERRIC_SCF_UHF_INCREMENTAL", if incremental { "1" } else { "0" });
+        std::env::set_var(
+            "FERRIC_SCF_UHF_INCREMENTAL",
+            if incremental { "1" } else { "0" },
+        );
     }
     let out = f();
     unsafe {
@@ -89,8 +105,15 @@ fn run_uhf(mol: &Molecule, prep: &PreparedBasis, bounds: &SchwarzBounds) -> ScfR
 
 fn run_rohf(mol: &Molecule, prep: &PreparedBasis, bounds: &SchwarzBounds) -> ScfResult {
     let ctx = ParallelContext::default();
-    ferric_scf::rohf::solve_rohf(&ctx, mol, prep, Operator::coulomb(), bounds, &tight_config())
-        .unwrap()
+    ferric_scf::rohf::solve_rohf(
+        &ctx,
+        mol,
+        prep,
+        Operator::coulomb(),
+        bounds,
+        &tight_config(),
+    )
+    .unwrap()
 }
 
 /// The three configurations under test, for one open-shell system:
@@ -101,14 +124,13 @@ struct Arms {
     incremental: ScfResult,
 }
 
-fn run_arms(
-    mol: &Molecule,
-    prep: &PreparedBasis,
-    bounds: &SchwarzBounds,
-    rohf: bool,
-) -> Arms {
+fn run_arms(mol: &Molecule, prep: &PreparedBasis, bounds: &SchwarzBounds, rohf: bool) -> Arms {
     let run = |m: &Molecule, p: &PreparedBasis, b: &SchwarzBounds| {
-        if rohf { run_rohf(m, p, b) } else { run_uhf(m, p, b) }
+        if rohf {
+            run_rohf(m, p, b)
+        } else {
+            run_uhf(m, p, b)
+        }
     };
     Arms {
         baseline: with_switches(false, false, || run(mol, prep, bounds)),
@@ -126,9 +148,18 @@ fn run_arms(
 /// quartet set — a tighter one — so exact bit agreement is not expected and
 /// would in fact indicate the screen had not changed at all).
 fn assert_arms(label: &str, a: &Arms) {
-    assert!(a.baseline.converged, "{label}: three-pass baseline did not converge");
-    assert!(a.combined.converged, "{label}: combined build did not converge");
-    assert!(a.incremental.converged, "{label}: incremental build did not converge");
+    assert!(
+        a.baseline.converged,
+        "{label}: three-pass baseline did not converge"
+    );
+    assert!(
+        a.combined.converged,
+        "{label}: combined build did not converge"
+    );
+    assert!(
+        a.incremental.converged,
+        "{label}: incremental build did not converge"
+    );
 
     let d_comb = (a.combined.energy - a.baseline.energy).abs();
     let d_incr = (a.incremental.energy - a.baseline.energy).abs();
@@ -280,7 +311,10 @@ fn open_shell_energy_bit_identical_across_thread_counts() {
     let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (mol, prep, bounds) = setup(CH3_XYZ, 0, 2, "cc-pvdz");
     let run = |threads: usize| -> f64 {
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
         pool.install(|| with_switches(true, true, || run_uhf(&mol, &prep, &bounds).energy))
     };
     let e1 = run(1);

@@ -57,7 +57,12 @@ fn fd_gradient_closed(xyz: &str, basis_name: &str, xc: &str, delta: f64) -> Arra
     let prep0 = PreparedBasis::new(&mol, &bs).unwrap();
     let bounds0 = SchwarzBounds::compute(Operator::coulomb(), &prep0).unwrap();
     let res0 = solve_rhf(
-        &ParallelContext::default(), &mol, &prep0, Operator::coulomb(), &bounds0, &base_cfg,
+        &ParallelContext::default(),
+        &mol,
+        &prep0,
+        Operator::coulomb(),
+        &bounds0,
+        &base_cfg,
     )
     .unwrap();
     let cfg = RhfConfig {
@@ -66,27 +71,45 @@ fn fd_gradient_closed(xyz: &str, basis_name: &str, xc: &str, delta: f64) -> Arra
         ..base_cfg
     };
 
-    let pairs: Vec<(usize, usize)> =
-        (0..natoms).flat_map(|a| (0..3).map(move |c| (a, c))).collect();
+    let pairs: Vec<(usize, usize)> = (0..natoms)
+        .flat_map(|a| (0..3).map(move |c| (a, c)))
+        .collect();
     let results: Vec<((usize, usize), f64)> = pairs
         .par_iter()
         .map(|&(atom, coord)| {
             let mut mol_p = mol.clone();
             let mut mol_m = mol.clone();
             match coord {
-                0 => { mol_p.atoms[atom].x += delta; mol_m.atoms[atom].x -= delta; }
-                1 => { mol_p.atoms[atom].y += delta; mol_m.atoms[atom].y -= delta; }
-                _ => { mol_p.atoms[atom].zpos += delta; mol_m.atoms[atom].zpos -= delta; }
+                0 => {
+                    mol_p.atoms[atom].x += delta;
+                    mol_m.atoms[atom].x -= delta;
+                }
+                1 => {
+                    mol_p.atoms[atom].y += delta;
+                    mol_m.atoms[atom].y -= delta;
+                }
+                _ => {
+                    mol_p.atoms[atom].zpos += delta;
+                    mol_m.atoms[atom].zpos -= delta;
+                }
             }
             let mut e = [0.0_f64; 2];
             for (i, m) in [mol_p, mol_m].iter().enumerate() {
                 let prep = PreparedBasis::new(m, &bs).unwrap();
                 let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
                 let r = solve_rhf(
-                    &ParallelContext::default(), m, &prep, Operator::coulomb(), &bounds, &cfg,
+                    &ParallelContext::default(),
+                    m,
+                    &prep,
+                    Operator::coulomb(),
+                    &bounds,
+                    &cfg,
                 )
                 .unwrap();
-                assert!(r.converged, "FD solve diverged at atom={atom} coord={coord} sign={i}");
+                assert!(
+                    r.converged,
+                    "FD solve diverged at atom={atom} coord={coord} sign={i}"
+                );
                 e[i] = r.energy;
             }
             ((atom, coord), (e[0] - e[1]) / (2.0 * delta))
@@ -106,9 +129,19 @@ fn run_closed(label: &str, xyz: &str, basis_name: &str, xc: &str, tol: f64) {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg_for(xc))
-        .unwrap();
-    assert!(res.converged, "{label} {xc}: reference SCF did not converge");
+    let res = solve_rhf(
+        &ParallelContext::default(),
+        &mol,
+        &prep,
+        op,
+        &bounds,
+        &cfg_for(xc),
+    )
+    .unwrap();
+    assert!(
+        res.converged,
+        "{label} {xc}: reference SCF did not converge"
+    );
 
     let g_ana = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, xc, &res, None).unwrap();
     let g_fd = fd_gradient_closed(xyz, basis_name, xc, 1e-3);
@@ -121,19 +154,30 @@ fn run_closed(label: &str, xyz: &str, basis_name: &str, xc: &str, tol: f64) {
             max_diff = max_diff.max(diff);
             eprintln!(
                 "  atom={a} coord={c}: ana={:+.6e} fd={:+.6e} diff={:.2e}",
-                g_ana[(a, c)], g_fd[(a, c)], diff
+                g_ana[(a, c)],
+                g_fd[(a, c)],
+                diff
             );
         }
     }
     eprintln!("  max diff: {max_diff:.2e}, tol: {tol:.0e}");
-    assert!(max_diff < tol, "{label} {xc}: max |ana-fd| = {max_diff:.3e} exceeds {tol:.0e}");
+    assert!(
+        max_diff < tol,
+        "{label} {xc}: max |ana-fd| = {max_diff:.3e} exceeds {tol:.0e}"
+    );
 }
 
 // ── Closed shell (RKS) ────────────────────────────────────────────────────
 
 #[test]
 fn scan_gradient_h2_sto3g_vs_fd() {
-    run_closed("H2/sto-3g", "2\nH2\nH 0 0 0\nH 0 0 0.74\n", "sto-3g", "SCAN", 1e-4);
+    run_closed(
+        "H2/sto-3g",
+        "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
+        "sto-3g",
+        "SCAN",
+        1e-4,
+    );
 }
 
 #[test]
@@ -141,7 +185,9 @@ fn scan_gradient_h2o_sto3g_vs_fd() {
     run_closed(
         "H2O/sto-3g",
         "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
-        "sto-3g", "SCAN", 3e-4,
+        "sto-3g",
+        "SCAN",
+        3e-4,
     );
 }
 
@@ -150,7 +196,9 @@ fn r2scan_gradient_h2o_sto3g_vs_fd() {
     run_closed(
         "H2O/sto-3g",
         "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
-        "sto-3g", "r2SCAN", 3e-4,
+        "sto-3g",
+        "r2SCAN",
+        3e-4,
     );
 }
 
@@ -159,7 +207,9 @@ fn scan_gradient_h2o_631g_vs_fd() {
     run_closed(
         "H2O/6-31G",
         "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
-        "6-31g", "SCAN", 3e-4,
+        "6-31g",
+        "SCAN",
+        3e-4,
     );
 }
 
@@ -185,9 +235,12 @@ fn ref_path(name: &str) -> PathBuf {
 }
 
 fn load_ref(name: &str) -> GradRef {
-    let txt = fs::read_to_string(ref_path(name))
-        .unwrap_or_else(|e| panic!("missing reference {name}: {e} — regenerate with \
-                                    scripts/gen_pyscf_mgga_grad_refs.py"));
+    let txt = fs::read_to_string(ref_path(name)).unwrap_or_else(|e| {
+        panic!(
+            "missing reference {name}: {e} — regenerate with \
+                                    scripts/gen_pyscf_mgga_grad_refs.py"
+        )
+    });
     let r: GradRef = serde_json::from_str(&txt).unwrap();
     assert!(r.converged, "reference {name} did not converge in PySCF");
     r
@@ -199,16 +252,27 @@ fn run_vs_pyscf(label: &str, xyz: &str, basis_name: &str, xc: &str, ref_file: &s
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg_for(xc))
-        .unwrap();
+    let res = solve_rhf(
+        &ParallelContext::default(),
+        &mol,
+        &prep,
+        op,
+        &bounds,
+        &cfg_for(xc),
+    )
+    .unwrap();
     assert!(res.converged, "{label} {xc}: SCF did not converge");
 
     let g_ana = ks_gradient_closed(&mol, &prep, &bs, op, &bounds, xc, &res, None).unwrap();
     let r = load_ref(ref_file);
 
     eprintln!("=== {label} {xc} RKS gradient (ferric vs PySCF) ===");
-    eprintln!("  E: ferric={:.10} pyscf={:.10} diff={:.2e}",
-              res.energy, r.e_total, (res.energy - r.e_total).abs());
+    eprintln!(
+        "  E: ferric={:.10} pyscf={:.10} diff={:.2e}",
+        res.energy,
+        r.e_total,
+        (res.energy - r.e_total).abs()
+    );
     let mut max_diff = 0.0_f64;
     for a in 0..mol.atoms.len() {
         for c in 0..3 {
@@ -216,39 +280,65 @@ fn run_vs_pyscf(label: &str, xyz: &str, basis_name: &str, xc: &str, ref_file: &s
             max_diff = max_diff.max(diff);
             eprintln!(
                 "  atom={a} coord={c}: ferric={:+.6e} pyscf={:+.6e} diff={:.2e}",
-                g_ana[(a, c)], r.grad[a][c], diff
+                g_ana[(a, c)],
+                r.grad[a][c],
+                diff
             );
         }
     }
     eprintln!("  max diff: {max_diff:.2e}, tol: {tol:.0e}");
-    assert!(max_diff < tol, "{label} {xc}: max |ferric-pyscf| = {max_diff:.3e} exceeds {tol:.0e}");
+    assert!(
+        max_diff < tol,
+        "{label} {xc}: max |ferric-pyscf| = {max_diff:.3e} exceeds {tol:.0e}"
+    );
 }
 
 #[test]
 fn scan_gradient_h2_sto3g_vs_pyscf() {
-    run_vs_pyscf("H2/sto-3g", "2\nH2\nH 0 0 0\nH 0 0 0.74\n", "sto-3g", "SCAN",
-                 "h2_sto-3g_scan_grad.json", 1e-4);
+    run_vs_pyscf(
+        "H2/sto-3g",
+        "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
+        "sto-3g",
+        "SCAN",
+        "h2_sto-3g_scan_grad.json",
+        1e-4,
+    );
 }
 
 #[test]
 fn scan_gradient_h2o_sto3g_vs_pyscf() {
-    run_vs_pyscf("H2O/sto-3g",
-                 "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
-                 "sto-3g", "SCAN", "h2o_sto-3g_scan_grad.json", 1e-4);
+    run_vs_pyscf(
+        "H2O/sto-3g",
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        "sto-3g",
+        "SCAN",
+        "h2o_sto-3g_scan_grad.json",
+        1e-4,
+    );
 }
 
 #[test]
 fn r2scan_gradient_h2o_sto3g_vs_pyscf() {
-    run_vs_pyscf("H2O/sto-3g",
-                 "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
-                 "sto-3g", "r2SCAN", "h2o_sto-3g_r2scan_grad.json", 1e-4);
+    run_vs_pyscf(
+        "H2O/sto-3g",
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        "sto-3g",
+        "r2SCAN",
+        "h2o_sto-3g_r2scan_grad.json",
+        1e-4,
+    );
 }
 
 #[test]
 fn scan_gradient_h2o_631g_vs_pyscf() {
-    run_vs_pyscf("H2O/6-31G",
-                 "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
-                 "6-31g", "SCAN", "h2o_6-31g_scan_grad.json", 1e-4);
+    run_vs_pyscf(
+        "H2O/6-31G",
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        "6-31g",
+        "SCAN",
+        "h2o_6-31g_scan_grad.json",
+        1e-4,
+    );
 }
 
 // ── Open shell (UKS) ──────────────────────────────────────────────────────
@@ -317,24 +407,40 @@ fn uhf_cfg(xc: &str) -> RhfConfig {
 }
 
 fn run_uks_vs_pyscf(
-    label: &str, xyz: &str, charge: i32, mult: usize, basis_name: &str,
-    xc: &str, ref_file: &str, tol: f64,
+    label: &str,
+    xyz: &str,
+    charge: i32,
+    mult: usize,
+    basis_name: &str,
+    xc: &str,
+    ref_file: &str,
+    tol: f64,
 ) {
     let mol = Molecule::parse_xyz(xyz, charge, mult).unwrap();
     let bs = basis::bundled(basis_name).unwrap();
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let res =
-        solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &uhf_cfg(xc)).unwrap();
+    let res = solve_uhf(
+        &ParallelContext::default(),
+        &mol,
+        &prep,
+        &bounds,
+        &uhf_cfg(xc),
+    )
+    .unwrap();
     assert!(res.converged, "{label} {xc}: UKS did not converge");
 
     let g_ana = ks_gradient_uks(&mol, &prep, &bs, op, &bounds, xc, &res, None).unwrap();
     let r = load_ref(ref_file);
 
     eprintln!("=== {label} {xc} UKS gradient (ferric vs PySCF) ===");
-    eprintln!("  E: ferric={:.10} pyscf={:.10} diff={:.2e}",
-              res.energy, r.e_total, (res.energy - r.e_total).abs());
+    eprintln!(
+        "  E: ferric={:.10} pyscf={:.10} diff={:.2e}",
+        res.energy,
+        r.e_total,
+        (res.energy - r.e_total).abs()
+    );
     let mut max_diff = 0.0_f64;
     for a in 0..mol.atoms.len() {
         for c in 0..3 {
@@ -342,12 +448,17 @@ fn run_uks_vs_pyscf(
             max_diff = max_diff.max(diff);
             eprintln!(
                 "  atom={a} coord={c}: ferric={:+.6e} pyscf={:+.6e} diff={:.2e}",
-                g_ana[(a, c)], r.grad[a][c], diff
+                g_ana[(a, c)],
+                r.grad[a][c],
+                diff
             );
         }
     }
     eprintln!("  max diff: {max_diff:.2e}, tol: {tol:.0e}");
-    assert!(max_diff < tol, "{label} {xc}: max |ferric-pyscf| = {max_diff:.3e} exceeds {tol:.0e}");
+    assert!(
+        max_diff < tol,
+        "{label} {xc}: max |ferric-pyscf| = {max_diff:.3e} exceeds {tol:.0e}"
+    );
 }
 
 /// Control: the SAME UKS meta-GGA-capable driver on a GGA functional agrees with
@@ -362,8 +473,14 @@ fn pbe_gradient_oh_sto3g_uks_vs_pyscf() {
     let prep = PreparedBasis::new(&mol, &bs).unwrap();
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-    let res =
-        solve_uhf(&ParallelContext::default(), &mol, &prep, &bounds, &uhf_cfg("PBE")).unwrap();
+    let res = solve_uhf(
+        &ParallelContext::default(),
+        &mol,
+        &prep,
+        &bounds,
+        &uhf_cfg("PBE"),
+    )
+    .unwrap();
     assert!(res.converged);
     let g = ks_gradient_uks(&mol, &prep, &bs, op, &bounds, "PBE", &res, None).unwrap();
     let e_diff = (res.energy - (-74.5726577938)).abs();
@@ -388,8 +505,16 @@ fn pbe_gradient_oh_sto3g_uks_vs_pyscf() {
 /// guard on the τ gradient assembly only. The real bar is `nh2_*` / `ch3_*`.
 #[test]
 fn scan_gradient_oh_sto3g_uks_vs_pyscf() {
-    run_uks_vs_pyscf("OH/sto-3g", "2\nOH\nO 0 0 0\nH 0 0 0.97\n", 0, 2, "sto-3g",
-                     "SCAN", "oh_sto-3g_scan_grad.json", 1e-3);
+    run_uks_vs_pyscf(
+        "OH/sto-3g",
+        "2\nOH\nO 0 0 0\nH 0 0 0.97\n",
+        0,
+        2,
+        "sto-3g",
+        "SCAN",
+        "oh_sto-3g_scan_grad.json",
+        1e-3,
+    );
 }
 
 const NH2: &str = "3\nNH2\nN 0 0 0.1414\nH 0 0.8067 -0.4950\nH 0 -0.8067 -0.4950\n";
@@ -401,22 +526,46 @@ const CH3: &str = "4\nCH3\nC 0 0 0\nH 0 1.0790 0\n\
 /// uses — so this case CAN carry the closed-shell 1e-4 bar.
 #[test]
 fn scan_gradient_nh2_sto3g_uks_vs_pyscf() {
-    run_uks_vs_pyscf("NH2/sto-3g", NH2, 0, 2, "sto-3g",
-                     "SCAN", "nh2_sto-3g_scan_grad.json", 1e-4);
+    run_uks_vs_pyscf(
+        "NH2/sto-3g",
+        NH2,
+        0,
+        2,
+        "sto-3g",
+        "SCAN",
+        "nh2_sto-3g_scan_grad.json",
+        1e-4,
+    );
 }
 
 /// r2SCAN sibling of the NH2 case: exercises the same polarized τ assembly with
 /// a different v_τ magnitude, which is what would expose a τ scaling error.
 #[test]
 fn r2scan_gradient_nh2_sto3g_uks_vs_pyscf() {
-    run_uks_vs_pyscf("NH2/sto-3g", NH2, 0, 2, "sto-3g",
-                     "R2SCAN", "nh2_sto-3g_r2scan_grad.json", 1e-4);
+    run_uks_vs_pyscf(
+        "NH2/sto-3g",
+        NH2,
+        0,
+        2,
+        "sto-3g",
+        "R2SCAN",
+        "nh2_sto-3g_r2scan_grad.json",
+        1e-4,
+    );
 }
 
 /// CH3 doublet — a second well-behaved polarized system, with the spin density
 /// on carbon rather than on the electronegative centre.
 #[test]
 fn scan_gradient_ch3_sto3g_uks_vs_pyscf() {
-    run_uks_vs_pyscf("CH3/sto-3g", CH3, 0, 2, "sto-3g",
-                     "SCAN", "ch3_sto-3g_scan_grad.json", 1e-4);
+    run_uks_vs_pyscf(
+        "CH3/sto-3g",
+        CH3,
+        0,
+        2,
+        "sto-3g",
+        "SCAN",
+        "ch3_sto-3g_scan_grad.json",
+        1e-4,
+    );
 }

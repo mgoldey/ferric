@@ -181,7 +181,11 @@ impl PairPnoBasis {
                 discarded_weight: p.discarded_weight,
             });
         }
-        Ok(Self { pairs, nvir, t_cut_pno })
+        Ok(Self {
+            pairs,
+            nvir,
+            t_cut_pno,
+        })
     }
 
     /// True when nothing was truncated: every pair kept all `nvir` virtuals.
@@ -201,7 +205,10 @@ impl PairPnoBasis {
 
     /// Largest per-pair discarded occupation weight across pairs.
     pub fn max_discarded_weight(&self) -> f64 {
-        self.pairs.iter().map(|p| p.discarded_weight).fold(0.0, f64::max)
+        self.pairs
+            .iter()
+            .map(|p| p.discarded_weight)
+            .fold(0.0, f64::max)
     }
 
     /// Total number of PNO amplitude elements `Σ_pairs npno²`, versus the dense
@@ -226,10 +233,7 @@ impl PairPnoBasis {
 ///
 /// [`FerricError::General`] when `t2`'s virtual dimensions disagree with
 /// `basis.nvir`, or an occupied index of a pair is out of range for `t2`.
-pub fn t2_to_pno(
-    t2: &Array4<f64>,
-    basis: &PairPnoBasis,
-) -> Result<Vec<Array2<f64>>, FerricError> {
+pub fn t2_to_pno(t2: &Array4<f64>, basis: &PairPnoBasis) -> Result<Vec<Array2<f64>>, FerricError> {
     let (no_i, no_j, nv_a, nv_b) = t2.dim();
     if nv_a != basis.nvir || nv_b != basis.nvir {
         return Err(FerricError::General(format!(
@@ -453,7 +457,9 @@ mod tests {
     // ---------------------------------------------------------------------
 
     fn lcg(seed: &mut u64) -> f64 {
-        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((*seed >> 33) as f64 / (1u64 << 31) as f64) - 1.0
     }
 
@@ -493,7 +499,10 @@ mod tests {
     }
 
     fn line_centers(nocc: usize, spacing: f64) -> Arr2<f64> {
-        Arr2::from_shape_fn((nocc, 3), |(i, ax)| if ax == 0 { i as f64 * spacing } else { 0.0 })
+        Arr2::from_shape_fn(
+            (nocc, 3),
+            |(i, ax)| if ax == 0 { i as f64 * spacing } else { 0.0 },
+        )
     }
 
     fn toy_basis(nocc: usize, nvir: usize, t_cut: f64) -> (PairPnoBasis, Array4<f64>, Array4<f64>) {
@@ -535,7 +544,10 @@ mod tests {
             }
         }
         eprintln!("stage 1: max |Q^T Q - I| = {worst:.3e}");
-        assert!(worst < 1e-10, "transforms are not orthogonal: max deviation {worst:.3e}");
+        assert!(
+            worst < 1e-10,
+            "transforms are not orthogonal: max deviation {worst:.3e}"
+        );
     }
 
     /// SEMICANONICALIZATION, pinned directly: the virtual Fock matrix in the
@@ -555,7 +567,9 @@ mod tests {
             let q = &p.transform;
             let npno = q.ncols();
             let f = Arr2::from_shape_fn((npno, npno), |(a, b)| {
-                (0..nvir).map(|c| q[(c, a)] * q[(c, b)] * ev[c]).sum::<f64>()
+                (0..nvir)
+                    .map(|c| q[(c, a)] * q[(c, b)] * ev[c])
+                    .sum::<f64>()
             });
             for a in 0..npno {
                 for b in 0..npno {
@@ -567,9 +581,17 @@ mod tests {
                 }
             }
         }
-        eprintln!("stage 1: max off-diag F_pno = {worst_off:.3e}, max |F_aa - eps_a| = {worst_diag:.3e}");
-        assert!(worst_off < 1e-10, "Fock is not diagonal in the stored basis: {worst_off:.3e}");
-        assert!(worst_diag < 1e-10, "stored eps disagree with F_aa: {worst_diag:.3e}");
+        eprintln!(
+            "stage 1: max off-diag F_pno = {worst_off:.3e}, max |F_aa - eps_a| = {worst_diag:.3e}"
+        );
+        assert!(
+            worst_off < 1e-10,
+            "Fock is not diagonal in the stored basis: {worst_off:.3e}"
+        );
+        assert!(
+            worst_diag < 1e-10,
+            "stored eps disagree with F_aa: {worst_diag:.3e}"
+        );
     }
 
     /// The PREMISE of the previous test: without rediagonalization the Fock
@@ -599,8 +621,7 @@ mod tests {
             for a in 0..nvir {
                 for b in 0..nvir {
                     if a != b {
-                        let f_ab: f64 =
-                            (0..nvir).map(|c| q[(c, a)] * q[(c, b)] * ev[c]).sum();
+                        let f_ab: f64 = (0..nvir).map(|c| q[(c, a)] * q[(c, b)] * ev[c]).sum();
                         worst_off = worst_off.max(f_ab.abs());
                     }
                 }
@@ -625,11 +646,17 @@ mod tests {
             basis.virtual_retention(),
             basis.max_discarded_weight()
         );
-        assert!(!basis.is_complete(), "a loose threshold should truncate something");
+        assert!(
+            !basis.is_complete(),
+            "a loose threshold should truncate something"
+        );
         assert!(basis.virtual_retention() < 1.0);
         assert!(basis.max_discarded_weight() > 0.0);
         let (pno_el, dense_el) = basis.amplitude_elements();
-        assert!(pno_el < dense_el, "PNO amplitude count {pno_el} not below dense {dense_el}");
+        assert!(
+            pno_el < dense_el,
+            "PNO amplitude count {pno_el} not below dense {dense_el}"
+        );
     }
 
     /// The pair screen composes: dropping pairs drops PNO blocks.
@@ -639,8 +666,7 @@ mod tests {
         let ev = eps_vir(nvir);
         let ovov = ovov_block(nocc, nvir);
         let t2 = mp2_t2(&ovov, &eps_occ(nocc), &ev);
-        let amp =
-            |i: usize, j: usize| Arr2::from_shape_fn((nvir, nvir), |(a, b)| t2[[i, j, a, b]]);
+        let amp = |i: usize, j: usize| Arr2::from_shape_fn((nvir, nvir), |(a, b)| t2[[i, j, a, b]]);
 
         let all = complete_pair_domains(&line_centers(nocc, 10.0)).unwrap();
         let screened = build_pair_domains(&line_centers(nocc, 10.0), 15.0, f64::INFINITY).unwrap();
@@ -681,7 +707,12 @@ mod tests {
         let blocks = t2_to_pno(&t2, &basis).unwrap();
         assert_eq!(blocks.len(), basis.pairs.len());
         for (blk, p) in blocks.iter().zip(basis.pairs.iter()) {
-            assert_eq!(blk.dim(), (nvir, nvir), "pair {:?} block is truncated", p.ij);
+            assert_eq!(
+                blk.dim(),
+                (nvir, nvir),
+                "pair {:?} block is truncated",
+                p.ij
+            );
         }
         let back = t2_from_pno(&blocks, &basis, nocc).unwrap();
 
@@ -693,8 +724,14 @@ mod tests {
         // Guard against a vacuous pass: t2 must carry real signal.
         let scale = t2.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
         eprintln!("stage 2: max |t2 - roundtrip(t2)| = {worst:.3e} (max |t2| = {scale:.3e})");
-        assert!(scale > 1e-3, "t2 is ~zero ({scale:.3e}) — the round-trip check is vacuous");
-        assert!(worst < 1e-10, "t2 round trip is not exact: max deviation {worst:.3e}");
+        assert!(
+            scale > 1e-3,
+            "t2 is ~zero ({scale:.3e}) — the round-trip check is vacuous"
+        );
+        assert!(
+            worst < 1e-10,
+            "t2 round trip is not exact: max deviation {worst:.3e}"
+        );
     }
 
     /// The round trip must survive the `t1 ⊗ t1` part of `tau` too — a general
@@ -715,10 +752,16 @@ mod tests {
         });
 
         let back = t2_from_pno(&t2_to_pno(&sym, &basis).unwrap(), &basis, nocc).unwrap();
-        let worst =
-            sym.iter().zip(back.iter()).map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max);
+        let worst = sym
+            .iter()
+            .zip(back.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f64, f64::max);
         eprintln!("stage 2: unrelated-tensor round trip max deviation = {worst:.3e}");
-        assert!(worst < 1e-10, "round trip failed on an unrelated tensor: {worst:.3e}");
+        assert!(
+            worst < 1e-10,
+            "round trip failed on an unrelated tensor: {worst:.3e}"
+        );
     }
 
     /// Truncation must make the round trip LOSSY — otherwise the threshold is
@@ -727,11 +770,17 @@ mod tests {
     fn stage2_truncation_makes_the_round_trip_lossy() {
         let (nocc, nvir) = (4, 6);
         let (basis, t2, _) = toy_basis(nocc, nvir, 1e-3);
-        assert!(!basis.is_complete(), "test premise: something must be truncated");
+        assert!(
+            !basis.is_complete(),
+            "test premise: something must be truncated"
+        );
 
         let back = t2_from_pno(&t2_to_pno(&t2, &basis).unwrap(), &basis, nocc).unwrap();
-        let worst =
-            t2.iter().zip(back.iter()).map(|(a, b)| (a - b).abs()).fold(0.0f64, f64::max);
+        let worst = t2
+            .iter()
+            .zip(back.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f64, f64::max);
         eprintln!("stage 2: truncated round-trip max deviation = {worst:.3e}");
         assert!(worst > 1e-12, "truncation had no effect on the round trip");
     }
@@ -763,7 +812,10 @@ mod tests {
                 if !keep[i * nocc + j] {
                     n_zeroed += 1;
                     let blk = back.slice(ndarray::s![i, j, .., ..]);
-                    assert!(blk.iter().all(|&v| v == 0.0), "screened pair ({i},{j}) is nonzero");
+                    assert!(
+                        blk.iter().all(|&v| v == 0.0),
+                        "screened pair ({i},{j}) is nonzero"
+                    );
                 }
             }
         }
@@ -804,8 +856,14 @@ mod tests {
 
         let dense = dense_ccsd_energy(&t2, &ovov).unwrap();
         let pno = pno_ccsd_energy(&t2, &ovov, &basis).unwrap();
-        eprintln!("stage 3: dense E = {dense:.14}, PNO E = {pno:.14}, dE = {:.3e}", pno - dense);
-        assert!(dense.abs() > 1e-3, "energy is ~zero ({dense:.3e}) — the check is vacuous");
+        eprintln!(
+            "stage 3: dense E = {dense:.14}, PNO E = {pno:.14}, dE = {:.3e}",
+            pno - dense
+        );
+        assert!(
+            dense.abs() > 1e-3,
+            "energy is ~zero ({dense:.3e}) — the check is vacuous"
+        );
         assert!(
             (pno - dense).abs() < 1e-10,
             "untruncated PNO energy must reproduce dense: {pno:.14} vs {dense:.14}"
@@ -830,7 +888,11 @@ mod tests {
         let dense = dense_ccsd_energy(&tau, &ovov).unwrap();
         let pno = pno_ccsd_energy(&tau, &ovov, &basis).unwrap();
         eprintln!("stage 3 (tau with t1): dense = {dense:.14}, PNO = {pno:.14}");
-        assert!((pno - dense).abs() < 1e-10, "PNO energy differs by {:.3e}", pno - dense);
+        assert!(
+            (pno - dense).abs() < 1e-10,
+            "PNO energy differs by {:.3e}",
+            pno - dense
+        );
     }
 
     /// Truncation must actually change the energy, and the direction must be
@@ -852,7 +914,10 @@ mod tests {
             basis_t.virtual_retention(),
             et - e0
         );
-        assert!((et - e0).abs() > 1e-12, "truncation had no effect on the energy");
+        assert!(
+            (et - e0).abs() > 1e-12,
+            "truncation had no effect on the energy"
+        );
         assert!(
             et.abs() < e0.abs(),
             "truncation must REDUCE |E_corr|: |{et:.10}| vs |{e0:.10}|"
@@ -875,8 +940,7 @@ mod tests {
         for i in 0..nocc {
             for a in 0..nvir {
                 for b in 0..nvir {
-                    diag_only +=
-                        t2[[i, i, a, b]] * (2.0 * ovov[[i, a, i, b]] - ovov[[i, b, i, a]]);
+                    diag_only += t2[[i, i, a, b]] * (2.0 * ovov[[i, a, i, b]] - ovov[[i, b, i, a]]);
                 }
             }
         }
@@ -886,7 +950,10 @@ mod tests {
             "test premise: off-diagonal pairs must carry real weight"
         );
         let pno = pno_ccsd_energy(&t2, &ovov, &basis).unwrap();
-        assert!((pno - total).abs() < 1e-10, "mirrors mis-counted: {pno:.12} vs {total:.12}");
+        assert!(
+            (pno - total).abs() < 1e-10,
+            "mirrors mis-counted: {pno:.12} vs {total:.12}"
+        );
     }
 
     // ---- STAGE 3 on a REAL system: water/STO-3G, converged CCSD amplitudes ----
@@ -932,7 +999,10 @@ mod tests {
             &obs,
             op,
             &bounds,
-            &RhfConfig { energy_conv: 1e-11, ..Default::default() },
+            &RhfConfig {
+                energy_conv: 1e-11,
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -942,8 +1012,8 @@ mod tests {
             energy_conv: 1e-10,
             ..Default::default()
         };
-        let cc = crate::ccsd_closed_shell::ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg)
-            .unwrap();
+        let cc =
+            crate::ccsd_closed_shell::ccsd_closed_shell(&mol, &obs, &dfbs, op, &rhf, &cfg).unwrap();
 
         let nbas = obs.nbasis();
         let eps = rhf.eps_r();

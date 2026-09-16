@@ -33,7 +33,14 @@ fn rhf_cfg() -> RhfConfig {
 /// (opt_in_blas_threads' rayon-worker self-guard), so nesting this under an
 /// outer rayon iterator is the same safe pattern the production code already
 /// uses (e.g. rimp2.rs's per-pair parallelism over per-i BLAS3 GEMMs).
-fn displaced_energy(mol: &Molecule, bs: &ferric_core::basis::BasisSet, cfg: &RhfConfig, atom: usize, coord: usize, delta: f64) -> f64 {
+fn displaced_energy(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    cfg: &RhfConfig,
+    atom: usize,
+    coord: usize,
+    delta: f64,
+) -> f64 {
     let mut mol_d = mol.clone();
     match coord {
         0 => mol_d.atoms[atom].x += delta,
@@ -42,9 +49,16 @@ fn displaced_energy(mol: &Molecule, bs: &ferric_core::basis::BasisSet, cfg: &Rhf
     }
     let prep = PreparedBasis::new(&mol_d, bs).unwrap();
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &prep).unwrap();
-    solve_rhf(&ParallelContext::default(), &mol_d, &prep, Operator::coulomb(), &bounds, cfg)
-        .unwrap()
-        .energy
+    solve_rhf(
+        &ParallelContext::default(),
+        &mol_d,
+        &prep,
+        Operator::coulomb(),
+        &bounds,
+        cfg,
+    )
+    .unwrap()
+    .energy
 }
 
 fn fd_gradient(xyz: &str, basis_name: &str, delta: f64) -> Array2<f64> {
@@ -55,7 +69,9 @@ fn fd_gradient(xyz: &str, basis_name: &str, delta: f64) -> Array2<f64> {
 
     // Flatten to (atom, coord) pairs and run both displacements for each in
     // parallel -- 2*natoms*3 independent RHF solves total, previously serial.
-    let pairs: Vec<(usize, usize)> = (0..natoms).flat_map(|a| (0..3).map(move |c| (a, c))).collect();
+    let pairs: Vec<(usize, usize)> = (0..natoms)
+        .flat_map(|a| (0..3).map(move |c| (a, c)))
+        .collect();
     let results: Vec<((usize, usize), f64)> = pairs
         .par_iter()
         .map(|&(atom, coord)| {
@@ -92,7 +108,9 @@ fn run_fd_test(label: &str, xyz: &str, basis_name: &str, tol: f64) {
             max_diff = max_diff.max(diff);
             eprintln!(
                 "  atom={a} coord={c}: ana={:+.6e} fd={:+.6e} diff={:.2e}",
-                g_ana[(a, c)], g_fd[(a, c)], diff
+                g_ana[(a, c)],
+                g_fd[(a, c)],
+                diff
             );
         }
     }
@@ -103,7 +121,9 @@ fn run_fd_test(label: &str, xyz: &str, basis_name: &str, tol: f64) {
             assert!(
                 diff < tol,
                 "{label} atom={a} coord={c}: ana={:+.6e} fd={:+.6e} diff={:.2e}",
-                g_ana[(a, c)], g_fd[(a, c)], diff
+                g_ana[(a, c)],
+                g_fd[(a, c)],
+                diff
             );
         }
     }
@@ -111,21 +131,25 @@ fn run_fd_test(label: &str, xyz: &str, basis_name: &str, tol: f64) {
 
 #[test]
 fn lda_gradient_h2_sto3g_vs_fd() {
-    run_fd_test("H2/sto-3g",
-                "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
-                "sto-3g", 5e-4);
+    run_fd_test("H2/sto-3g", "2\nH2\nH 0 0 0\nH 0 0 0.74\n", "sto-3g", 5e-4);
 }
 
 #[test]
 fn lda_gradient_h2o_sto3g_vs_fd() {
-    run_fd_test("H2O/sto-3g",
-                "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
-                "sto-3g", 1e-3);
+    run_fd_test(
+        "H2O/sto-3g",
+        "3\nH2O\nO 0 0 0\nH 0 0.7572 0.5868\nH 0 -0.7572 0.5868\n",
+        "sto-3g",
+        1e-3,
+    );
 }
 
 #[test]
 fn lda_gradient_h2_ccpvdz_vs_fd() {
-    run_fd_test("H2/cc-pVDZ",
-                "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
-                "cc-pvdz", 1e-3);
+    run_fd_test(
+        "H2/cc-pVDZ",
+        "2\nH2\nH 0 0 0\nH 0 0 0.74\n",
+        "cc-pvdz",
+        1e-3,
+    );
 }

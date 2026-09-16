@@ -28,7 +28,11 @@ fn rhf_cfg_for(xc: &str, hybrid: bool) -> RhfConfig {
     RhfConfig {
         xc: Some(xc.into()),
         df_j_aux: Some("def2-universal-jkfit".into()),
-        df_k_aux: if hybrid { Some("def2-universal-jkfit".into()) } else { None },
+        df_k_aux: if hybrid {
+            Some("def2-universal-jkfit".into())
+        } else {
+            None
+        },
         energy_conv: 1e-9,
         density_conv: 1e-7,
         ..Default::default()
@@ -48,18 +52,28 @@ fn run_h2_opt(xc: &str, hybrid: bool, r_lo: f64, r_hi: f64) {
         result.converged, result.steps, result.energy, r_hh,
     );
     assert!(result.converged, "[{xc}] H2 opt did not converge");
-    assert!(r_lo <= r_hh && r_hh <= r_hi,
-            "[{xc}] H2 r_HH = {r_hh:.4} Bohr outside expected [{r_lo}, {r_hi}]");
+    assert!(
+        r_lo <= r_hh && r_hh <= r_hi,
+        "[{xc}] H2 r_HH = {r_hh:.4} Bohr outside expected [{r_lo}, {r_hi}]"
+    );
 }
 
 #[test]
-fn h2_lda_opt() { run_h2_opt("LDA",   false, 1.30, 1.50); }
+fn h2_lda_opt() {
+    run_h2_opt("LDA", false, 1.30, 1.50);
+}
 
 #[test]
-fn h2_pbe_opt() { run_h2_opt("PBE",   false, 1.30, 1.50); }
+fn h2_pbe_opt() {
+    run_h2_opt("PBE", false, 1.30, 1.50);
+}
 
 #[test]
-fn h2_b3lyp_opt() { run_h2_opt("B3LYP", true, 1.30, 1.50); }
+fn h2_b3lyp_opt() {
+    run_h2_opt("B3LYP", true, 1.30, 1.50);
+}
 
 #[test]
-fn h2_wb97xv_opt() { run_h2_opt("wB97X-V", true, 1.25, 1.50); }
+fn h2_wb97xv_opt() {
+    run_h2_opt("wB97X-V", true, 1.25, 1.50);
+}

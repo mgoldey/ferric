@@ -85,7 +85,10 @@ fn second_intermediate_bov_bytes_matches_one_bov_buffer() {
     let want = NAUX * NOCC * NVIR * F64_BYTES;
     assert_eq!(got, want);
     // Not a rounding artifact: at this shape it's ~0.1 GB, not a few bytes.
-    assert!(got > 50_000_000, "expected a real tensor-sized term, got {got} bytes");
+    assert!(
+        got > 50_000_000,
+        "expected a real tensor-sized term, got {got} bytes"
+    );
 }
 
 /// THE DEFECT, pinned via the composition the call site actually performs:

@@ -170,8 +170,15 @@ impl Default for TdaDftConfig {
 /// — an over-estimating guard is also a bug: it refuses jobs that would fit.
 fn check_tda_alloc(n: usize, include_fxc: bool, budget: Option<usize>) -> Result<(), FerricError> {
     let matrices = if include_fxc { 3 } else { 2 };
-    let bytes = n.saturating_mul(n).saturating_mul(8).saturating_mul(matrices);
-    let what = if include_fxc { ", + f_xc block, + eigh output" } else { ", + eigh output" };
+    let bytes = n
+        .saturating_mul(n)
+        .saturating_mul(8)
+        .saturating_mul(matrices);
+    let what = if include_fxc {
+        ", + f_xc block, + eigh output"
+    } else {
+        ", + eigh output"
+    };
     ferric_core::memory::check_alloc(
         &format!("TDA-DFT dense (ia) matrix (n = nocc*nvir = {n}{what})"),
         bytes,
@@ -253,7 +260,9 @@ fn build_fxc_block(
 ) -> (Array2<f64>, f64) {
     let n = nocc * nvir;
     let orbo = mo_coeff.slice(s![.., first_act..nocc_total]).to_owned();
-    let orbv = mo_coeff.slice(s![.., nocc_total..(nocc_total + nvir)]).to_owned();
+    let orbv = mo_coeff
+        .slice(s![.., nocc_total..(nocc_total + nvir)])
+        .to_owned();
 
     let mut k = Array2::<f64>::zeros((n, n));
     for j in 0..nocc {
@@ -361,7 +370,11 @@ pub fn run_tda_dft(
     if n == 0 {
         return Err(FerricError::General("run_tda_dft: empty (ia) space".into()));
     }
-    check_tda_alloc(n, cfg.include_fxc && xc_name.is_some(), cfg.memory_budget_bytes)?;
+    check_tda_alloc(
+        n,
+        cfg.include_fxc && xc_name.is_some(),
+        cfg.memory_budget_bytes,
+    )?;
 
     // ── Exact-exchange fraction, and the f_xc kernel (if any) ───────────────
     //
@@ -431,8 +444,15 @@ pub fn run_tda_dft(
     let c_hf = cfg.c_hf_override.unwrap_or(c_hf_from_xc);
 
     // ── RI integrals over the active MO square (same tensor BSE/CIS uses) ───
-    let mob =
-        mo_b::build_full_b(mol, obs, dfbs, op, ks, cfg.frozen_core, cfg.memory_budget_bytes)?;
+    let mob = mo_b::build_full_b(
+        mol,
+        obs,
+        dfbs,
+        op,
+        ks,
+        cfg.frozen_core,
+        cfg.memory_budget_bytes,
+    )?;
     let b = &mob.b_full;
     let naux = mob.naux;
     let bare = |p: usize, q: usize, r: usize, s: usize| -> f64 {
@@ -526,9 +546,8 @@ pub fn run_tda_dft(
     let omega: Vec<f64> = evals.to_vec();
 
     let mu_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
-    let oscillator_strength = tda_oscillator_strengths(
-        &omega, &evecs, &mu_ao, c, first_act, nocc_total, nocc, nvir,
-    );
+    let oscillator_strength =
+        tda_oscillator_strengths(&omega, &evecs, &mu_ao, c, first_act, nocc_total, nocc, nvir);
 
     Ok(TdaDftResult {
         omega,

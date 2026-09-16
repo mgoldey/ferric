@@ -72,20 +72,37 @@ fn new(b: &Array2<f64>, eps: &[f64], nocc: usize, nvir: usize, fo: usize, nt: us
 
 fn main() {
     // Open-shell alpha channel at roughly benzene-cation/aTZ scale.
-    let naux: usize = std::env::var("NAUX").ok().and_then(|s| s.parse().ok()).unwrap_or(912);
-    let nocc: usize = std::env::var("NOCC").ok().and_then(|s| s.parse().ok()).unwrap_or(21);
-    let nvir: usize = std::env::var("NVIR").ok().and_then(|s| s.parse().ok()).unwrap_or(393);
+    let naux: usize = std::env::var("NAUX")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(912);
+    let nocc: usize = std::env::var("NOCC")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(21);
+    let nvir: usize = std::env::var("NVIR")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(393);
     let width = nocc * nvir;
     let (fo, nt) = (0usize, nocc);
 
     let mut b = Array2::<f64>::zeros((naux, width));
     let mut s: u64 = 0x243f_6a88_85a3_08d3;
     for v in b.iter_mut() {
-        s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         *v = ((s >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 0.01;
     }
     let eps: Vec<f64> = (0..nocc + nvir)
-        .map(|i| if i < nocc { -0.9 - 0.05 * i as f64 } else { 0.15 + 0.01 * i as f64 })
+        .map(|i| {
+            if i < nocc {
+                -0.9 - 0.05 * i as f64
+            } else {
+                0.15 + 0.01 * i as f64
+            }
+        })
         .collect();
 
     println!("naux={naux} nocc={nocc} nvir={nvir}");

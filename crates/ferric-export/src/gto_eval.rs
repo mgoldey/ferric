@@ -1,7 +1,7 @@
 //! Re-exports from `ferric_integrals::ao_grid`.
 
 pub use ferric_integrals::ao_grid::{
-    eval_basis_on_grid, eval_basis_on_points, grid_index, nbasis, GtoEvalError, GridSpec,
+    eval_basis_on_grid, eval_basis_on_points, grid_index, nbasis, GridSpec, GtoEvalError,
 };
 
 #[cfg(test)]
@@ -23,7 +23,9 @@ mod tests {
         let bs = basis::bundled("sto-3g").unwrap();
         let grid = GridSpec {
             origin: [0.0, 0.0, 0.0],
-            n_x: 1, n_y: 1, n_z: 1,
+            n_x: 1,
+            n_y: 1,
+            n_z: 1,
             step_x: [1.0, 0.0, 0.0],
             step_y: [0.0, 1.0, 0.0],
             step_z: [0.0, 0.0, 1.0],
@@ -43,7 +45,9 @@ mod tests {
         let bs = basis::bundled("sto-3g").unwrap();
         let grid = GridSpec {
             origin: [0.0, 0.0, 0.0],
-            n_x: 50, n_y: 50, n_z: 50,
+            n_x: 50,
+            n_y: 50,
+            n_z: 50,
             step_x: [0.1, 0.0, 0.0],
             step_y: [0.0, 0.1, 0.0],
             step_z: [0.0, 0.0, 0.1],
@@ -67,14 +71,19 @@ mod tests {
         let bs = basis::bundled("cc-pvdz").unwrap();
         let grid = GridSpec {
             origin: [-3.0, -3.0, -3.0],
-            n_x: 12, n_y: 12, n_z: 12,
+            n_x: 12,
+            n_y: 12,
+            n_z: 12,
             step_x: [0.5, 0.0, 0.0],
             step_y: [0.0, 0.5, 0.0],
             step_z: [0.0, 0.0, 0.5],
         };
 
         let run = |threads: usize| -> ndarray::Array2<f64> {
-            let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
             pool.install(|| eval_basis_on_grid(&mol, &bs, &grid).unwrap())
         };
         let chi1 = run(1);
@@ -98,14 +107,18 @@ mod tests {
 
         let small = GridSpec {
             origin: [-1.0, -1.0, -1.0],
-            n_x: 5, n_y: 5, n_z: 5,
+            n_x: 5,
+            n_y: 5,
+            n_z: 5,
             step_x: [0.5, 0.0, 0.0],
             step_y: [0.0, 0.5, 0.0],
             step_z: [0.0, 0.0, 0.5],
         };
         let large = GridSpec {
             origin: [-1.0, -1.0, -1.0],
-            n_x: 5, n_y: 5, n_z: 25,
+            n_x: 5,
+            n_y: 5,
+            n_z: 25,
             step_x: [0.5, 0.0, 0.0],
             step_y: [0.0, 0.5, 0.0],
             step_z: [0.0, 0.0, 0.5],

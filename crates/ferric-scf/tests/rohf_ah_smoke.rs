@@ -11,8 +11,8 @@ use ferric_core::basis;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
-use ferric_integrals::operator::Operator;
 use ferric_integrals::oneelectron;
+use ferric_integrals::operator::Operator;
 use ferric_scf::rhf::{build_jk, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
 use ferric_scf::rohf_ah::{rohf_ah_step, RohfAhInputs};
@@ -76,10 +76,16 @@ fn rohf_ah_step_at_stationary_point_is_noop() {
     };
     let ah_inputs = RohfAhInputs { base: &inputs };
 
-    let (c_new, kmax) = rohf_ah_step(&ctx, &ah_inputs, /*max_step=*/0.2,
-                                    /*davidson_conv=*/1e-7, /*davidson_max_vecs=*/50).unwrap();
+    let (c_new, kmax) = rohf_ah_step(
+        &ctx, &ah_inputs, /*max_step=*/ 0.2, /*davidson_conv=*/ 1e-7,
+        /*davidson_max_vecs=*/ 50,
+    )
+    .unwrap();
     eprintln!("AH stationary-point kmax = {:.3e}", kmax);
-    assert!(kmax < 1e-5, "AH at stationary point should be a no-op: kmax = {kmax:.3e}");
+    assert!(
+        kmax < 1e-5,
+        "AH at stationary point should be a no-op: kmax = {kmax:.3e}"
+    );
 
     let diff = (&c_new - c).iter().fold(0.0f64, |m, &v| m.max(v.abs()));
     assert!(diff < 1e-5);
@@ -108,8 +114,14 @@ fn rohf_ah_h2_triplet_lda_matches_diis() {
     let r_diis = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_diis).unwrap();
     let r_ah = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_ah).unwrap();
 
-    eprintln!("H₂ triplet/LDA  DIIS: E={:.10}, iters={}", r_diis.energy, r_diis.iterations);
-    eprintln!("H₂ triplet/LDA  AH:   E={:.10}, iters={}", r_ah.energy, r_ah.iterations);
+    eprintln!(
+        "H₂ triplet/LDA  DIIS: E={:.10}, iters={}",
+        r_diis.energy, r_diis.iterations
+    );
+    eprintln!(
+        "H₂ triplet/LDA  AH:   E={:.10}, iters={}",
+        r_ah.energy, r_ah.iterations
+    );
     assert!(r_diis.converged && r_ah.converged);
     assert!(
         (r_diis.energy - r_ah.energy).abs() < 1e-6,
@@ -144,22 +156,32 @@ fn rohf_ah_oh_lda_diagnostic() {
         ..cfg_diis.clone()
     };
     let r_diis = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_diis);
-    let r_ah   = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_ah);
+    let r_ah = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg_ah);
 
     let (e_diis, conv_diis, iters_diis) = match r_diis {
         Ok(r) => (r.energy, r.converged, r.iterations),
-        Err(ferric_core::FerricError::ScfConvergence { last_energy, iterations }) =>
-            (last_energy, false, iterations),
+        Err(ferric_core::FerricError::ScfConvergence {
+            last_energy,
+            iterations,
+        }) => (last_energy, false, iterations),
         Err(e) => panic!("Unexpected DIIS error: {e:?}"),
     };
     let (e_ah, conv_ah, iters_ah) = match r_ah {
         Ok(r) => (r.energy, r.converged, r.iterations),
-        Err(ferric_core::FerricError::ScfConvergence { last_energy, iterations }) =>
-            (last_energy, false, iterations),
+        Err(ferric_core::FerricError::ScfConvergence {
+            last_energy,
+            iterations,
+        }) => (last_energy, false, iterations),
         Err(e) => panic!("Unexpected AH error: {e:?}"),
     };
-    eprintln!("OH/LDA  DIIS: E={:.10} conv={} iters={}", e_diis, conv_diis, iters_diis);
-    eprintln!("OH/LDA  AH:   E={:.10} conv={} iters={}", e_ah, conv_ah, iters_ah);
+    eprintln!(
+        "OH/LDA  DIIS: E={:.10} conv={} iters={}",
+        e_diis, conv_diis, iters_diis
+    );
+    eprintln!(
+        "OH/LDA  AH:   E={:.10} conv={} iters={}",
+        e_ah, conv_ah, iters_ah
+    );
     eprintln!("OH/LDA  ΔE (AH − DIIS) = {:.3e} Ha", e_ah - e_diis);
     // No assertion — informative only.
 }
@@ -182,6 +204,9 @@ fn rohf_ah_disabled_still_works() {
     };
     let r = solve_rohf(&ctx, &mol, &prep, op, &bounds, &cfg).unwrap();
     assert!(r.converged);
-    assert!((r.energy - (-75.3745595033)).abs() < 1e-5,
-            "DIIS regression: E = {:.10}", r.energy);
+    assert!(
+        (r.energy - (-75.3745595033)).abs() < 1e-5,
+        "DIIS regression: E = {:.10}",
+        r.energy
+    );
 }

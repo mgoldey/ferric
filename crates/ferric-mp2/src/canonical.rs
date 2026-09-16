@@ -126,8 +126,9 @@ pub fn dense_ao_eri(prep: &PreparedBasis, op: Operator) -> Result<Vec<f64>, Ferr
     let pool = EnginePool::new(op, prep, 1e-14)?;
     let mut ao = vec![0.0f64; nb2 * nb2];
 
-    let pairs: Vec<(usize, usize)> =
-        (0..nsh).flat_map(|s1| (0..=s1).map(move |s2| (s1, s2))).collect();
+    let pairs: Vec<(usize, usize)> = (0..nsh)
+        .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
+        .collect();
 
     struct AoPtr(*mut f64);
     // SAFETY: tasks write disjoint element sets (each AO element is produced by
@@ -138,49 +139,52 @@ pub fn dense_ao_eri(prep: &PreparedBasis, op: Operator) -> Result<Vec<f64>, Ferr
 
     let ao_ptr = &ao_ptr;
     let pair_list = &pairs;
-    pair_list.par_iter().enumerate().for_each(move |(p12, &(s1, s2))| {
-        let ao_base = ao_ptr.0;
-        pool.with(|eng| {
-            for (p34, &(s3, s4)) in pair_list.iter().enumerate() {
-                if p34 > p12 {
-                    break;
-                }
-                let Some(q) = eng.compute_quartet(prep, s1, s2, s3, s4) else {
-                    continue;
-                };
-                let (n1, n2, n3, n4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
-                let (o1, o2, o3, o4) = (offs[s1], offs[s2], offs[s3], offs[s4]);
-                for a in 0..n1 {
-                    let mu = o1 + a;
-                    for b in 0..n2 {
-                        let nu = o2 + b;
-                        for cc in 0..n3 {
-                            let la = o3 + cc;
-                            for dd in 0..n4 {
-                                let sg = o4 + dd;
-                                let val = q[((a * n2 + b) * n3 + cc) * n4 + dd];
-                                let idx = [
-                                    ((mu * nbas + nu) * nbas + la) * nbas + sg,
-                                    ((nu * nbas + mu) * nbas + la) * nbas + sg,
-                                    ((mu * nbas + nu) * nbas + sg) * nbas + la,
-                                    ((nu * nbas + mu) * nbas + sg) * nbas + la,
-                                    ((la * nbas + sg) * nbas + mu) * nbas + nu,
-                                    ((sg * nbas + la) * nbas + mu) * nbas + nu,
-                                    ((la * nbas + sg) * nbas + nu) * nbas + mu,
-                                    ((sg * nbas + la) * nbas + nu) * nbas + mu,
-                                ];
-                                for &k in &idx {
-                                    // SAFETY: k < nb2*nb2 by construction; this task's
-                                    // write set is disjoint from every other task's.
-                                    unsafe { *ao_base.add(k) = val };
+    pair_list
+        .par_iter()
+        .enumerate()
+        .for_each(move |(p12, &(s1, s2))| {
+            let ao_base = ao_ptr.0;
+            pool.with(|eng| {
+                for (p34, &(s3, s4)) in pair_list.iter().enumerate() {
+                    if p34 > p12 {
+                        break;
+                    }
+                    let Some(q) = eng.compute_quartet(prep, s1, s2, s3, s4) else {
+                        continue;
+                    };
+                    let (n1, n2, n3, n4) = (dims[s1], dims[s2], dims[s3], dims[s4]);
+                    let (o1, o2, o3, o4) = (offs[s1], offs[s2], offs[s3], offs[s4]);
+                    for a in 0..n1 {
+                        let mu = o1 + a;
+                        for b in 0..n2 {
+                            let nu = o2 + b;
+                            for cc in 0..n3 {
+                                let la = o3 + cc;
+                                for dd in 0..n4 {
+                                    let sg = o4 + dd;
+                                    let val = q[((a * n2 + b) * n3 + cc) * n4 + dd];
+                                    let idx = [
+                                        ((mu * nbas + nu) * nbas + la) * nbas + sg,
+                                        ((nu * nbas + mu) * nbas + la) * nbas + sg,
+                                        ((mu * nbas + nu) * nbas + sg) * nbas + la,
+                                        ((nu * nbas + mu) * nbas + sg) * nbas + la,
+                                        ((la * nbas + sg) * nbas + mu) * nbas + nu,
+                                        ((sg * nbas + la) * nbas + mu) * nbas + nu,
+                                        ((la * nbas + sg) * nbas + nu) * nbas + mu,
+                                        ((sg * nbas + la) * nbas + nu) * nbas + mu,
+                                    ];
+                                    for &k in &idx {
+                                        // SAFETY: k < nb2*nb2 by construction; this task's
+                                        // write set is disjoint from every other task's.
+                                        unsafe { *ao_base.add(k) = val };
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
+            });
         });
-    });
     Ok(ao)
 }
 
@@ -234,7 +238,9 @@ pub fn canonical_mp2(
 
     // ---- Steps 2-5: four quarter transforms, one GEMM each. ----------------
     // C_occ is columns [first_occ, first_occ+nocc); C_vir is [nocc_total, nbas).
-    let c_occ = c.slice(ndarray::s![.., first_occ..first_occ + nocc]).to_owned();
+    let c_occ = c
+        .slice(ndarray::s![.., first_occ..first_occ + nocc])
+        .to_owned();
     let c_vir = c.slice(ndarray::s![.., nocc_total..nbas]).to_owned();
 
     // (mu, nu la sg) -> (i, nu la sg):  C_occ^T * ao
@@ -248,12 +254,16 @@ pub fn canonical_mp2(
     let mut t2 = Array2::<f64>::zeros((nocc * nvir, nb2)); // (i a, la sg)
     for i in 0..nocc {
         let row = t1.row(i);
-        let m = ArrayView2::from_shape((nbas, nb2), row.as_slice().ok_or_else(|| {
-            FerricError::General("canonical MP2: t1 row not contiguous".into())
-        })?)
+        let m = ArrayView2::from_shape(
+            (nbas, nb2),
+            row.as_slice().ok_or_else(|| {
+                FerricError::General("canonical MP2: t1 row not contiguous".into())
+            })?,
+        )
         .map_err(|e| FerricError::General(format!("canonical MP2 t1 reshape: {e}")))?;
         let ia = c_vir.t().dot(&m); // (nvir, la sg)
-        t2.slice_mut(ndarray::s![i * nvir..(i + 1) * nvir, ..]).assign(&ia);
+        t2.slice_mut(ndarray::s![i * nvir..(i + 1) * nvir, ..])
+            .assign(&ia);
     }
     drop(t1);
 
@@ -262,26 +272,31 @@ pub fn canonical_mp2(
     // per-row GEMM, but we can instead do it as one GEMM by viewing the
     // trailing index: reshape to (ia*nbas, nbas) is (ia la, sg) -- contract sg
     // with C_vir first (one big GEMM), then la with C_occ.
-    let t2_m = ArrayView2::from_shape((nov * nbas, nbas), t2.as_slice().ok_or_else(|| {
-        FerricError::General("canonical MP2: t2 not contiguous".into())
-    })?)
+    let t2_m = ArrayView2::from_shape(
+        (nov * nbas, nbas),
+        t2.as_slice()
+            .ok_or_else(|| FerricError::General("canonical MP2: t2 not contiguous".into()))?,
+    )
     .map_err(|e| FerricError::General(format!("canonical MP2 t2 reshape: {e}")))?;
     let t3 = t2_m.dot(&c_vir); // (ia la, b)
     drop(t2);
 
     // (ia la, b) -> (ia, j b): contract la with C_occ, per ia row.
     let mut mo = Array2::<f64>::zeros((nov, nocc * nvir)); // (ia, j b)
-    let t3_s = t3.as_slice().ok_or_else(|| {
-        FerricError::General("canonical MP2: t3 not contiguous".into())
-    })?;
+    let t3_s = t3
+        .as_slice()
+        .ok_or_else(|| FerricError::General("canonical MP2: t3 not contiguous".into()))?;
     for ia in 0..nov {
-        let m = ArrayView2::from_shape((nbas, nvir), &t3_s[ia * nbas * nvir..(ia + 1) * nbas * nvir])
-            .map_err(|e| FerricError::General(format!("canonical MP2 t3 reshape: {e}")))?;
+        let m = ArrayView2::from_shape(
+            (nbas, nvir),
+            &t3_s[ia * nbas * nvir..(ia + 1) * nbas * nvir],
+        )
+        .map_err(|e| FerricError::General(format!("canonical MP2 t3 reshape: {e}")))?;
         let jb = c_occ.t().dot(&m); // (nocc, nvir)
-        mo.slice_mut(ndarray::s![ia, ..])
-            .assign(&jb.into_shape_with_order(nocc * nvir).map_err(|e| {
-                FerricError::General(format!("canonical MP2 jb reshape: {e}"))
-            })?);
+        mo.slice_mut(ndarray::s![ia, ..]).assign(
+            &jb.into_shape_with_order(nocc * nvir)
+                .map_err(|e| FerricError::General(format!("canonical MP2 jb reshape: {e}")))?,
+        );
     }
     drop(t3);
 
@@ -291,9 +306,9 @@ pub fn canonical_mp2(
     // axis permutations, 2V, and t) purely to feed an elementwise `ijab,ijab->`
     // contraction that reduces to a scalar. That is pure memory traffic; fold
     // it into one pass with no intermediates.
-    let mo_s = mo.as_slice().ok_or_else(|| {
-        FerricError::General("canonical MP2: mo not contiguous".into())
-    })?;
+    let mo_s = mo
+        .as_slice()
+        .ok_or_else(|| FerricError::General("canonical MP2: mo not contiguous".into()))?;
     // Per-i partials are collected in index order and summed serially, so the
     // result is bit-identical run to run regardless of how rayon schedules the
     // work (a bare `.sum()` on a parallel iterator reduces in completion order
@@ -351,14 +366,25 @@ mod tests {
         let prep = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
         let op = Operator::coulomb();
         let bounds = SchwarzBounds::compute(op, &prep).unwrap();
-        let rhf = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &RhfConfig::default()).unwrap();
+        let rhf = solve_rhf(
+            &ParallelContext::default(),
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &RhfConfig::default(),
+        )
+        .unwrap();
         // Tiny env budget → the guard (which resolves via None) must fire.
         std::env::set_var("FERRIC_MEM_BUDGET_GB", "0.000001");
         let res = canonical_mp2(&mol, &prep, op, &rhf, 0);
         std::env::remove_var("FERRIC_MEM_BUDGET_GB");
         let err = res.unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("canonical MP2") && msg.contains("budget is"), "unexpected: {msg}");
+        assert!(
+            msg.contains("canonical MP2") && msg.contains("budget is"),
+            "unexpected: {msg}"
+        );
     }
 
     #[test]

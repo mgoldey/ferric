@@ -16,10 +16,10 @@
 //! one contribution; when ν ∈ A the symmetric one. D is symmetric, so these
 //! are equal — hence the 2.)
 
+use crate::ao_grid::AoGridKind;
 use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 use ferric_core::mol::Molecule;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
-use crate::ao_grid::AoGridKind;
 use ndarray::{Array2, Array3, ArrayView1, ArrayView2, Axis, Zip};
 use rayon::prelude::*;
 
@@ -53,7 +53,9 @@ fn row_dot(a: &ArrayView2<'_, f64>, b: &ArrayView2<'_, f64>) -> ndarray::Array1<
     let reduce = |mu: usize| -> f64 {
         let ar = a.row(mu);
         let br = b.row(mu);
-        Zip::from(ar).and(br).fold(0.0_f64, |acc, &x, &y| acc + x * y)
+        Zip::from(ar)
+            .and(br)
+            .fold(0.0_f64, |acc, &x, &y| acc + x * y)
     };
     let out: Vec<f64> = if nbf.saturating_mul(npts) >= PAR_MIN_ELEMS {
         (0..nbf).into_par_iter().map(reduce).collect()
@@ -405,13 +407,21 @@ fn xc_gradient_plan(
     // m = D·chi (1) and mdchi = D·dchi (3), per spin.
     let spins: usize = if is_uks { 2 } else { 1 };
     plan.reserve(
-        if is_uks { "M = D_s·chi and Mdchi = D_s·dchi (both spins)" } else { "M = D·chi and Mdchi = D·dchi" },
+        if is_uks {
+            "M = D_s·chi and Mdchi = D_s·dchi (both spins)"
+        } else {
+            "M = D·chi and Mdchi = D·dchi"
+        },
         spins.saturating_mul(4).saturating_mul(plane),
         Lifetime::Resident,
     );
 
     // Largest transient stage — see the census above.
-    plan.reserve("AO-partial scratch (scale_cols / psi)", 3usize.saturating_mul(plane), Lifetime::Transient);
+    plan.reserve(
+        "AO-partial scratch (scale_cols / psi)",
+        3usize.saturating_mul(plane),
+        Lifetime::Transient,
+    );
 
     // O(npts) companion vectors: the libxc in/out buffers, the pre-scaled
     // per-point coefficients, ρ/∇ρ/σ (and τ), the GGA weight columns, and the
@@ -428,13 +438,21 @@ fn xc_gradient_plan(
     plan
 }
 
-impl From<LibxcError> for KsGradError { fn from(e: LibxcError) -> Self { Self::Libxc(e) } }
+impl From<LibxcError> for KsGradError {
+    fn from(e: LibxcError) -> Self {
+        Self::Libxc(e)
+    }
+}
 impl From<crate::ao_grid::GtoEvalError> for KsGradError {
-    fn from(e: crate::ao_grid::GtoEvalError) -> Self { Self::AoEval(e) }
+    fn from(e: crate::ao_grid::GtoEvalError) -> Self {
+        Self::AoEval(e)
+    }
 }
 
 impl From<KsGradError> for ferric_core::error::FerricError {
-    fn from(e: KsGradError) -> Self { Self::General(e.to_string()) }
+    fn from(e: KsGradError) -> Self {
+        Self::General(e.to_string())
+    }
 }
 
 /// Compute the AO-basis index → atom index map.
@@ -545,9 +563,8 @@ pub fn xc_gradient_closed_lda(
     // three axes): mt[μ,g] = m[μ,g] · t[g]. Then each axis is a row-wise
     // contraction Σ_g mt[μ,g] · ∂_axis χ[μ,g].
     let mt = scale_cols(&m.view(), &ArrayView1::from(&t[..]));
-    let partials: [ndarray::Array1<f64>; 3] = std::array::from_fn(|axis| {
-        row_dot(&mt.view(), &dchi.index_axis(Axis(0), axis))
-    });
+    let partials: [ndarray::Array1<f64>; 3] =
+        std::array::from_fn(|axis| row_dot(&mt.view(), &dchi.index_axis(Axis(0), axis)));
     scatter_partials(&partials, bf_to_atom_map, &mut grad);
 
     Ok(grad)
@@ -591,8 +608,7 @@ pub fn xc_gradient_closed_lda_from_density(
     let (chi, dchi) = crate::ao_grid::eval_basis_and_grad_on_points(mol, bs, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
     let map = bf_to_atom(shell_to_atom, shell_offsets, shell_dims, nbf);
-    let mut grad =
-        xc_gradient_closed_lda(mol, d_total, xc_name, &map, &chi, &dchi, &weights)?;
+    let mut grad = xc_gradient_closed_lda(mol, d_total, xc_name, &map, &chi, &dchi, &weights)?;
 
     // Grid-response correction (PySCF grids_response_cc convention). Two
     // pieces sum to translational invariance against the existing AO-derivative
@@ -664,7 +680,7 @@ pub fn gga_gradient_from_potentials(
     chi: &Array2<f64>,
     dchi: &Array3<f64>,
     ddchi: &ndarray::Array4<f64>,
-    grad_rho: &Array2<f64>,        // shape (3, npts) — ∇ρ on the grid
+    grad_rho: &Array2<f64>, // shape (3, npts) — ∇ρ on the grid
     weights: &[f64],
     vrho: &[f64],
     vsig: &[f64],
@@ -699,8 +715,7 @@ pub fn gga_gradient_from_potentials(
     let mut mdchi = ndarray::Array3::<f64>::zeros((3, nbf, npts));
     for b in 0..3 {
         let slice = dchi.index_axis(ndarray::Axis(0), b);
-        let prod: Array2<f64> =
-            with_blas_threads(opt_in_blas_threads(), || d_total.dot(&slice));
+        let prod: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_total.dot(&slice));
         mdchi.index_axis_mut(ndarray::Axis(0), b).assign(&prod);
     }
 
@@ -761,10 +776,13 @@ pub fn vv10_gradient_from_density(
     let grad = gga_gradient_from_potentials(
         mol.atoms.len(),
         d_total,
-        &chi, &dchi, &ddchi,
+        &chi,
+        &dchi,
+        &ddchi,
         &dens.grad,
         &weights,
-        &vrho, &vsig,
+        &vrho,
+        &vsig,
         &map,
         1e-10,
         &rho_slice,
@@ -872,12 +890,11 @@ pub fn xc_gradient_closed_gga_from_density(
     // via matrix products. Both run before the rayon-gated ao-partial
     // reductions below start. Opt-in BLAS raise via FERRIC_BLAS_THREADS
     // (default 1, unchanged behavior).
-    let m: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_total.dot(&chi));   // (nbf, npts)
+    let m: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_total.dot(&chi)); // (nbf, npts)
     let mut mdchi = ndarray::Array3::<f64>::zeros((3, nbf, npts));
     for b in 0..3 {
-        let slice = dchi.index_axis(ndarray::Axis(0), b);   // (nbf, npts)
-        let prod: Array2<f64> =
-            with_blas_threads(opt_in_blas_threads(), || d_total.dot(&slice));
+        let slice = dchi.index_axis(ndarray::Axis(0), b); // (nbf, npts)
+        let prod: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_total.dot(&slice));
         mdchi.index_axis_mut(ndarray::Axis(0), b).assign(&prod);
     }
 
@@ -1024,8 +1041,13 @@ pub fn xc_gradient_closed_mgga_from_density(
                 let mut vsigma = vec![0.0_f64; npts];
                 let mut vtau = vec![0.0_f64; npts];
                 func.eval_mgga_unpolarized(
-                    rho_slice, sigma_slice, tau_slice,
-                    &mut exc, &mut vrho, &mut vsigma, &mut vtau,
+                    rho_slice,
+                    sigma_slice,
+                    tau_slice,
+                    &mut exc,
+                    &mut vrho,
+                    &mut vsigma,
+                    &mut vtau,
                 );
                 for g in 0..npts {
                     vsigma_total[g] += w_i * vsigma[g];
@@ -1199,10 +1221,7 @@ pub fn xc_gradient_uks_from_density(
             }
             _ => {
                 let mut vsig = vec![0.0_f64; 3 * npts];
-                func.eval_gga_polarized(
-                    &rho_in, &sigma_in,
-                    &mut exc, &mut vrho, &mut vsig,
-                );
+                func.eval_gga_polarized(&rho_in, &sigma_in, &mut exc, &mut vrho, &mut vsig);
                 for g in 0..npts {
                     vsig_aa[g] += w_i * vsig[3 * g + 0];
                     vsig_ab[g] += w_i * vsig[3 * g + 1];
@@ -1223,13 +1242,13 @@ pub fn xc_gradient_uks_from_density(
 
     // Inner kernel per spin σ.
     let add_spin_contribution = |d_sigma: &Array2<f64>,
-                                     vrho_sigma: &[f64],
-                                     vsig_same: &[f64],
-                                     vsig_cross: &[f64],
-                                     grad_same: &Array2<f64>,
-                                     grad_cross: &Array2<f64>,
-                                     rho_sigma: &ndarray::Array1<f64>,
-                                     grad_out: &mut Array2<f64>| {
+                                 vrho_sigma: &[f64],
+                                 vsig_same: &[f64],
+                                 vsig_cross: &[f64],
+                                 grad_same: &Array2<f64>,
+                                 grad_cross: &Array2<f64>,
+                                 rho_sigma: &ndarray::Array1<f64>,
+                                 grad_out: &mut Array2<f64>| {
         let mut t_rho = vec![0.0_f64; npts];
         // c[b,g] = G^σ_b(g) = w_g · (2 v_σ(σσ) · ∇ρ_σ_b + v_σ(αβ) · ∇ρ_other_b).
         // (For UKS the weight w and the factor 2 are folded into c directly, so
@@ -1240,10 +1259,9 @@ pub fn xc_gradient_uks_from_density(
                 t_rho[g] = weights[g] * vrho_sigma[g];
                 let w = weights[g];
                 for b in 0..3 {
-                    c[(b, g)] = w * (
-                          2.0 * vsig_same[g] * grad_same[(b, g)]
-                        +       vsig_cross[g] * grad_cross[(b, g)]
-                    );
+                    c[(b, g)] = w
+                        * (2.0 * vsig_same[g] * grad_same[(b, g)]
+                            + vsig_cross[g] * grad_cross[(b, g)]);
                 }
             }
         }
@@ -1264,13 +1282,23 @@ pub fn xc_gradient_uks_from_density(
     };
 
     add_spin_contribution(
-        d_a, &vrho_a, &vsig_aa, &vsig_ab,
-        &dens.grad_a, &dens.grad_b, &dens.rho_a,
+        d_a,
+        &vrho_a,
+        &vsig_aa,
+        &vsig_ab,
+        &dens.grad_a,
+        &dens.grad_b,
+        &dens.rho_a,
         &mut grad,
     );
     add_spin_contribution(
-        d_b, &vrho_b, &vsig_bb, &vsig_ab,
-        &dens.grad_b, &dens.grad_a, &dens.rho_b,
+        d_b,
+        &vrho_b,
+        &vsig_bb,
+        &vsig_ab,
+        &dens.grad_b,
+        &dens.grad_a,
+        &dens.rho_b,
         &mut grad,
     );
 
@@ -1461,8 +1489,7 @@ pub fn xc_gradient_uks_mgga_from_density(
                 let mut vsig = vec![0.0_f64; 3 * npts];
                 let mut vtau = vec![0.0_f64; 2 * npts];
                 func.eval_mgga_polarized(
-                    &rho_in, &sigma_in, &tau_in,
-                    &mut exc, &mut vrho, &mut vsig, &mut vtau,
+                    &rho_in, &sigma_in, &tau_in, &mut exc, &mut vrho, &mut vsig, &mut vtau,
                 );
                 for g in 0..npts {
                     vsig_aa[g] += w_i * vsig[3 * g];
@@ -1502,15 +1529,15 @@ pub fn xc_gradient_uks_mgga_from_density(
 
     // ── AO-derivative term, per spin ──
     let add_spin = |m_s: &Array2<f64>,
-                        mdchi_s: &Array3<f64>,
-                        vrho_sigma: &[f64],
-                        vsig_same: &[f64],
-                        vsig_cross: &[f64],
-                        vtau_sigma: &[f64],
-                        grad_same: &Array2<f64>,
-                        grad_cross: &Array2<f64>,
-                        rho_sigma: &ndarray::Array1<f64>,
-                        grad_out: &mut Array2<f64>| {
+                    mdchi_s: &Array3<f64>,
+                    vrho_sigma: &[f64],
+                    vsig_same: &[f64],
+                    vsig_cross: &[f64],
+                    vtau_sigma: &[f64],
+                    grad_same: &Array2<f64>,
+                    grad_cross: &Array2<f64>,
+                    rho_sigma: &ndarray::Array1<f64>,
+                    grad_out: &mut Array2<f64>| {
         let mut t_rho = vec![0.0_f64; npts];
         let mut t_tau = vec![0.0_f64; npts];
         let mut c = Array2::<f64>::zeros((3, npts));
@@ -1533,12 +1560,28 @@ pub fn xc_gradient_uks_mgga_from_density(
     };
 
     add_spin(
-        &m_a, &mdchi_a, &vrho_a, &vsig_aa, &vsig_ab, &vtau_a,
-        &dens.grad_a, &dens.grad_b, &dens.rho_a, &mut grad,
+        &m_a,
+        &mdchi_a,
+        &vrho_a,
+        &vsig_aa,
+        &vsig_ab,
+        &vtau_a,
+        &dens.grad_a,
+        &dens.grad_b,
+        &dens.rho_a,
+        &mut grad,
     );
     add_spin(
-        &m_b, &mdchi_b, &vrho_b, &vsig_bb, &vsig_ab, &vtau_b,
-        &dens.grad_b, &dens.grad_a, &dens.rho_b, &mut grad,
+        &m_b,
+        &mdchi_b,
+        &vrho_b,
+        &vsig_bb,
+        &vsig_ab,
+        &vtau_b,
+        &dens.grad_b,
+        &dens.grad_a,
+        &dens.rho_b,
+        &mut grad,
     );
 
     // ── Grid-response correction ──
@@ -1639,7 +1682,10 @@ mod budget_tests {
         std::env::remove_var(VAR);
 
         assert!(err.contains("KS-DFT UKS meta-GGA XC gradient"), "{err}");
-        assert!(err.contains("chi + dchi + ddchi"), "breakdown must name the AO term: {err}");
+        assert!(
+            err.contains("chi + dchi + ddchi"),
+            "breakdown must name the AO term: {err}"
+        );
         // Largest contributor sorts first, so it is the first row of the table.
         let ao = err.find("chi + dchi + ddchi").expect("AO term present");
         let md = err.find("Mdchi").expect("m/mdchi term present");
@@ -1658,10 +1704,24 @@ mod budget_tests {
         let plane_bytes = nbf * npts * 8;
         let ao_only = AoGridKind::ValueGradHess.planes() * plane_bytes;
 
-        let closed =
-            xc_gradient_plan("closed", nbf, npts, natoms, AoGridKind::ValueGradHess, false, true);
-        let uks =
-            xc_gradient_plan("uks", nbf, npts, natoms, AoGridKind::ValueGradHess, true, true);
+        let closed = xc_gradient_plan(
+            "closed",
+            nbf,
+            npts,
+            natoms,
+            AoGridKind::ValueGradHess,
+            false,
+            true,
+        );
+        let uks = xc_gradient_plan(
+            "uks",
+            nbf,
+            npts,
+            natoms,
+            AoGridKind::ValueGradHess,
+            true,
+            true,
+        );
         std::env::remove_var(VAR);
 
         // Closed shell: 13 AO + 4 (m, mdchi) resident + 3 transient = 20 planes.
@@ -1678,7 +1738,10 @@ mod budget_tests {
             uks.peak_bytes(),
             ao_only,
         );
-        assert!(uks.peak_bytes() > closed.peak_bytes(), "UKS holds two spins' m/mdchi");
+        assert!(
+            uks.peak_bytes() > closed.peak_bytes(),
+            "UKS holds two spins' m/mdchi"
+        );
     }
 
     /// An over-estimating guard is also a bug: a budget that genuinely fits the
@@ -1706,10 +1769,17 @@ mod budget_tests {
         // And a mid-size one: 300 functions, 200k points, 20 atoms — 24 planes
         // is ~11.5 GB, so it must NOT fit 8 GiB, but must fit 32.
         let plan = xc_gradient_plan("t", 300, 200_000, 20, AoGridKind::ValueGradHess, true, true);
-        assert!(plan.check().is_err(), "24 planes of 300x200k does not fit 8 GiB");
+        assert!(
+            plan.check().is_err(),
+            "24 planes of 300x200k does not fit 8 GiB"
+        );
         std::env::set_var(VAR, "32");
         let plan = xc_gradient_plan("t", 300, 200_000, 20, AoGridKind::ValueGradHess, true, true);
-        assert!(plan.check().is_ok(), "...but it does fit 32 GiB:\n{}", plan.report());
+        assert!(
+            plan.check().is_ok(),
+            "...but it does fit 32 GiB:\n{}",
+            plan.report()
+        );
 
         std::env::remove_var(VAR);
     }

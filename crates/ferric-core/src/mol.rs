@@ -41,7 +41,11 @@ impl Atom {
     /// energy must use.
     #[inline]
     pub fn effective_z(&self) -> i32 {
-        if self.ghost { 0 } else { self.z - self.n_core_ecp }
+        if self.ghost {
+            0
+        } else {
+            self.z - self.n_core_ecp
+        }
     }
 }
 
@@ -62,7 +66,10 @@ impl Atom {
 /// molecule declared as a closed-shell singlet) sails through molecule
 /// construction and only fails deep in the SCF loop as a misleading
 /// `"SCF did not converge after 0 iterations"` error.
-fn validate_electron_multiplicity_parity(nelec: i32, multiplicity: usize) -> Result<(), FerricError> {
+fn validate_electron_multiplicity_parity(
+    nelec: i32,
+    multiplicity: usize,
+) -> Result<(), FerricError> {
     let two_s = multiplicity as i64 - 1; // multiplicity - 1 = 2S = n_alpha - n_beta
     let numerator = nelec as i64 + two_s;
     // n_alpha = numerator / 2 must be a non-negative integer, AND the implied
@@ -165,9 +172,15 @@ impl Molecule {
             let z = symbol_to_z(sym).ok_or_else(|| {
                 FerricError::XyzParse(format!("unknown element {raw_sym:?} at atom {i}"))
             })?;
-            let x: f64 = fields[1].parse().map_err(|e| FerricError::XyzParse(format!("atom {i} x: {e}")))?;
-            let y: f64 = fields[2].parse().map_err(|e| FerricError::XyzParse(format!("atom {i} y: {e}")))?;
-            let zpos: f64 = fields[3].parse().map_err(|e| FerricError::XyzParse(format!("atom {i} z: {e}")))?;
+            let x: f64 = fields[1]
+                .parse()
+                .map_err(|e| FerricError::XyzParse(format!("atom {i} x: {e}")))?;
+            let y: f64 = fields[2]
+                .parse()
+                .map_err(|e| FerricError::XyzParse(format!("atom {i} y: {e}")))?;
+            let zpos: f64 = fields[3]
+                .parse()
+                .map_err(|e| FerricError::XyzParse(format!("atom {i} z: {e}")))?;
             atoms.push(Atom {
                 symbol: sym.to_string(),
                 z,
@@ -178,7 +191,11 @@ impl Molecule {
                 n_core_ecp: 0,
             });
         }
-        let mol = Molecule { atoms, charge, multiplicity };
+        let mol = Molecule {
+            atoms,
+            charge,
+            multiplicity,
+        };
         validate_electron_multiplicity_parity(mol.nelec(), multiplicity)?;
         Ok(mol)
     }
@@ -189,9 +206,13 @@ impl Molecule {
     pub fn nuclear_repulsion(&self) -> f64 {
         let mut v = 0.0;
         for i in 0..self.atoms.len() {
-            if self.atoms[i].ghost { continue; }
+            if self.atoms[i].ghost {
+                continue;
+            }
             for j in (i + 1)..self.atoms.len() {
-                if self.atoms[j].ghost { continue; }
+                if self.atoms[j].ghost {
+                    continue;
+                }
                 let a = &self.atoms[i];
                 let b = &self.atoms[j];
                 let dx = a.x - b.x;
@@ -269,7 +290,10 @@ mod tests {
         let xyz = "3\nwater optimized HF/cc-pVDZ\nO   0.000000   0.000000   0.117790\nH   0.000000   0.755453  -0.471161\nH   0.000000  -0.755453  -0.471161\n";
         let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         let vnn = mol.nuclear_repulsion();
-        assert!((vnn - 9.189193229309746).abs() < 1e-6, "Vnn = {vnn}, expected 9.189193...");
+        assert!(
+            (vnn - 9.189193229309746).abs() < 1e-6,
+            "Vnn = {vnn}, expected 9.189193..."
+        );
     }
 
     #[test]
@@ -292,7 +316,10 @@ mod tests {
         // Ghost atom properties
         let ghost = &mol.atoms[3];
         assert!(ghost.ghost, "last atom should be a ghost");
-        assert_eq!(ghost.z, 8, "ghost O should still have z=8 for basis assignment");
+        assert_eq!(
+            ghost.z, 8,
+            "ghost O should still have z=8 for basis assignment"
+        );
         assert_eq!(ghost.symbol, "O");
 
         // Real atoms are not ghosts
@@ -303,7 +330,11 @@ mod tests {
         // nelec: ghost O contributes no electrons
         let water_xyz = "3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
         let water = Molecule::parse_xyz(water_xyz, 0, 1).unwrap();
-        assert_eq!(mol.nelec(), water.nelec(), "nelec should equal water alone (ghost contributes 0 electrons)");
+        assert_eq!(
+            mol.nelec(),
+            water.nelec(),
+            "nelec should equal water alone (ghost contributes 0 electrons)"
+        );
 
         // nuclear_repulsion: ghost O at 100 Å contributes zero
         let vnn_ghost = mol.nuclear_repulsion();

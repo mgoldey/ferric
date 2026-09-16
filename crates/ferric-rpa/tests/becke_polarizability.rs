@@ -35,8 +35,14 @@ use ferric_rpa::PdepRpaConfig;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
-fn setup_h2o() -> (Molecule, PreparedBasis, ferric_core::basis::BasisSet, PreparedBasis,
-                   Operator, ferric_scf::ScfResult) {
+fn setup_h2o() -> (
+    Molecule,
+    PreparedBasis,
+    ferric_core::basis::BasisSet,
+    PreparedBasis,
+    Operator,
+    ferric_scf::ScfResult,
+) {
     let xyz = "3\nh2o\nO 0 0 0.117790\nH 0 0.755453 -0.471161\nH 0 -0.755453 -0.471161\n";
     let mol = Molecule::parse_xyz(xyz, 0, 1).unwrap();
     let obs_bs = basis::bundled("cc-pvdz").unwrap();
@@ -75,7 +81,10 @@ fn becke_h2o_origin_independent_with_external_point_charge() {
         }
         let ext = ExternalPotential {
             point_charges: vec![PointCharge {
-                q: 0.5, x: charge_pos[0], y: charge_pos[1], z: charge_pos[2],
+                q: 0.5,
+                x: charge_pos[0],
+                y: charge_pos[1],
+                z: charge_pos[2],
             }],
             smeared_charges: Vec::new(),
             field: None,
@@ -83,7 +92,10 @@ fn becke_h2o_origin_independent_with_external_point_charge() {
         let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
         let dfbs = PreparedBasis::new(&mol, &dfbs_bs).unwrap();
         let bounds = SchwarzBounds::compute(op, &obs).unwrap();
-        let rhf_cfg = RhfConfig { external_potential: Some(ext), ..Default::default() };
+        let rhf_cfg = RhfConfig {
+            external_potential: Some(ext),
+            ..Default::default()
+        };
         let rhf = solve_rhf(&ctx, &mol, &obs, op, &bounds, &rhf_cfg).unwrap();
 
         let alpha_mol = pdep_polarizability_static(&mol, &obs, &dfbs, &rhf, op, &cfg).unwrap();
@@ -129,7 +141,10 @@ fn becke_h2o_bit_identical_across_thread_counts() {
     let cfg = PdepRpaConfig::default();
 
     let run_at = |threads: usize| -> Vec<[[f64; 3]; 3]> {
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
         pool.install(|| {
             pdep_polarizability_becke(&mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg).unwrap()
         })
@@ -153,14 +168,33 @@ fn becke_h2o_oxygen_dominant() {
     let (mol, obs, obs_bs, dfbs, op, rhf) = setup_h2o();
     let cfg = PdepRpaConfig::default();
     let alphas = pdep_polarizability_becke(&mol, &obs, &obs_bs, &dfbs, &rhf, op, &cfg).unwrap();
-    let isos: Vec<f64> = alphas.iter()
-        .map(|t| (t[0][0] + t[1][1] + t[2][2]) / 3.0).collect();
-    eprintln!("H2O Becke per-atom α_iso: O={:.4}, H={:.4}, H={:.4}", isos[0], isos[1], isos[2]);
+    let isos: Vec<f64> = alphas
+        .iter()
+        .map(|t| (t[0][0] + t[1][1] + t[2][2]) / 3.0)
+        .collect();
+    eprintln!(
+        "H2O Becke per-atom α_iso: O={:.4}, H={:.4}, H={:.4}",
+        isos[0], isos[1], isos[2]
+    );
 
     // O is index 0 (per setup_h2o ordering).
-    assert!(isos[0] > isos[1], "O α should exceed H α: O={}, H1={}", isos[0], isos[1]);
-    assert!(isos[0] > isos[2], "O α should exceed H α: O={}, H2={}", isos[0], isos[2]);
+    assert!(
+        isos[0] > isos[1],
+        "O α should exceed H α: O={}, H1={}",
+        isos[0],
+        isos[1]
+    );
+    assert!(
+        isos[0] > isos[2],
+        "O α should exceed H α: O={}, H2={}",
+        isos[0],
+        isos[2]
+    );
     // H atoms equivalent (within grid noise).
-    assert!((isos[1] - isos[2]).abs() < 0.05,
-        "H atoms should have equivalent α: H1={}, H2={}", isos[1], isos[2]);
+    assert!(
+        (isos[1] - isos[2]).abs() < 0.05,
+        "H atoms should have equivalent α: H1={}, H2={}",
+        isos[1],
+        isos[2]
+    );
 }
