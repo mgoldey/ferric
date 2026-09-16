@@ -294,7 +294,20 @@ jobs:
 
       - name: Check (all targets)
         timeout-minutes: 60
-        run: cargo check --workspace --all-targets
+        # --locked from here on every cargo invocation in this workflow.
+        # Without it, a Cargo.lock that has drifted from the manifests is
+        # silently REPAIRED in-job and the drift is never reported: exactly
+        # what happened when crates/ferric-scf/Cargo.toml gained a dependency
+        # on ferric-quadrature in 9a0b955 but the lockfile was never
+        # regenerated to match -- no cargo command here passed --locked, so
+        # every job quietly fixed it up and discarded the fix. Caught and the
+        # lockfile regenerated in c022aad; --locked is what stops it
+        # recurring silently. If a FUTURE manifest change trips this
+        # ("error: the lock file ... needs to be updated"), the fix is
+        # `cargo update -p <crate>` (or a plain `cargo build`/`cargo check`)
+        # run locally, with the resulting Cargo.lock diff committed -- not
+        # dropping --locked.
+        run: cargo check --workspace --all-targets --locked
 
       # FAST TIER, mirroring scripts/ci-gate.sh's CI_GATE_SLOW_TESTS. The six
       # slowest integration binaries are 583s of ~1300s of test time (45%), and
@@ -333,11 +346,11 @@ jobs:
           set +e
           rc=0
           # Everything except the three crates owning a deferred binary...
-          cargo test --no-fail-fast --workspace --exclude ferric-scf --exclude ferric-cc --exclude ferric-mp2 || rc=1
+          cargo test --no-fail-fast --workspace --exclude ferric-scf --exclude ferric-cc --exclude ferric-mp2 --locked || rc=1
           # ...then those three with --lib plus every NON-deferred test target,
           # derived from what is on disk so a new test cannot silently drop out.
           for crate in ferric-scf ferric-cc ferric-mp2; do
-            args="-p $crate --lib"
+            args="-p $crate --lib --locked"
             for f in crates/$crate/tests/*.rs; do
               base="$(basename "$f" .rs)"
               case " $SLOW " in *" $base "*) continue ;; esac
@@ -353,7 +366,7 @@ jobs:
           exit $rc
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       # rustdoc is built HERE, not in docs.yml, and the reason is structural:
       # `cargo doc` does not link, but it DOES run build scripts, and
@@ -389,7 +402,7 @@ jobs:
         env:
           RUSTDOCFLAGS: '-D warnings'
         run: |
-          cargo doc --workspace --no-deps --exclude ferric-python
+          cargo doc --workspace --no-deps --exclude ferric-python --locked
           # A workspace has no single root crate, so rustdoc writes no top-level
           # redirect. Point /api at the facade crate explicitly.
           cat > target/doc/index.html <<'HTML'
@@ -491,7 +504,8 @@ jobs:
           restore-keys: cargo-v3-${{ runner.os }}-
 
       - name: Test (the deferred six)
+        # --locked: see build-and-test's "Check (all targets)" step for why.
         run: |
-          cargo test -p ferric-scf --test dft_wb97xv --test mpi_dfjk_banding --test dft_pbe
-          cargo test -p ferric-cc --test pair_screen_criteria --test attenuation_plus_dlpno
-          cargo test -p ferric-mp2 --test lmp2_amplitude
+          cargo test -p ferric-scf --test dft_wb97xv --test mpi_dfjk_banding --test dft_pbe --locked
+          cargo test -p ferric-cc --test pair_screen_criteria --test attenuation_plus_dlpno --locked
+          cargo test -p ferric-mp2 --test lmp2_amplitude --locked
