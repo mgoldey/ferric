@@ -149,7 +149,7 @@ jobs:
       # restore and save, below).
       NATIVE_DEPS_CACHE_VERSION: v2
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Persist the BUILT native deps across separate runs (different tag
       # pushes, or a workflow_dispatch rerun days later).
@@ -194,7 +194,7 @@ jobs:
       # nightly runs, this is the first place to look.
       - name: Restore native deps cache
         id: cache-native
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ github.workspace }}/native-deps-cache
           key: native-deps-${{ env.NATIVE_DEPS_CACHE_VERSION }}-manylinux_2_28-openblas${{ env.OPENBLAS_VERSION }}-libxc${{ env.LIBXC_VERSION }}-libint${{ env.LIBINT_VERSION }}-eigen${{ env.EIGEN_VERSION }}
@@ -429,7 +429,7 @@ jobs:
       # poison every later restore with a tree missing .done or a library.
       - name: Save native deps cache
         if: success() && steps.cache-native.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ github.workspace }}/native-deps-cache
           key: native-deps-${{ env.NATIVE_DEPS_CACHE_VERSION }}-manylinux_2_28-openblas${{ env.OPENBLAS_VERSION }}-libxc${{ env.LIBXC_VERSION }}-libint${{ env.LIBINT_VERSION }}-eigen${{ env.EIGEN_VERSION }}
@@ -471,7 +471,7 @@ jobs:
       # exactly those four and nothing under share/), so excluding share/
       # entirely costs nothing downstream and removes the only source of
       # asterisk-bearing filenames in this tree.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: native-deps
           path: |
@@ -505,7 +505,7 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # The tag IS the version -- pyproject.toml's checked-in "0.1.0" is a
       # dev placeholder, never the version actually published. maturin has no
@@ -607,7 +607,7 @@ jobs:
       # ordering to reason about, and a missing artifact is a hard failure
       # here rather than a silent "start the ~75 min build over" cache miss.
       - name: Download native deps
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: native-deps
           path: native-deps-cache
@@ -716,7 +716,7 @@ jobs:
             python3 -m zipfile -l "$whl" | grep -iE '\.so$|openblas|libxc' || true
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wheels-cp${{ matrix.python-version }}
           path: dist/*.whl
@@ -738,11 +738,11 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: wheels-cp${{ matrix.python-version }}
           path: dist
@@ -923,7 +923,7 @@ jobs:
       # pattern + merge-multiple: pulls all four wheels-cp3.NN artifacts
       # (built separately per Python version above) into one flat dist/ --
       # gh-action-pypi-publish uploads everything it finds there in one go.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: wheels-*
           path: dist
