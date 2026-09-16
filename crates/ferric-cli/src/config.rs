@@ -1322,13 +1322,13 @@ impl ScfCfg {
     }
 }
 
-/// `[scf] df_guess` default. MUST stay in sync with `ScfCfg::default()`'s
-/// `df_guess` field: serde uses THIS for an omitted key, while the struct
-/// `Default` covers programmatic construction. A plain `#[serde(default)]`
-/// would yield `bool::default()` == false and silently disable the feature for
-/// every TOML that omits the key — i.e. almost all of them — so the flip to
-/// `true` has to be expressed here too, not just in `Default`.
-fn default_df_guess() -> bool { true }
+// `default_df_guess()` lived here. Removed 2026-09-16: `df_guess` is now
+// `Option<bool>` with a plain `#[serde(default)]` (None = user said nothing),
+// and the ON default is carried by `ScfCfg::df_guess_enabled()` instead. That
+// is what lets `df_increments` take precedence over a DEFAULTED df_guess while
+// an EXPLICIT `df_guess = true` alongside it stays a hard error -- a
+// distinction a bare `bool` cannot express. A serde default that materialised
+// `true` would erase it.
 
 fn default_max_iter() -> usize { 100 }
 // Match the library convergence gate (rhf::scf_converged): density_conv is the

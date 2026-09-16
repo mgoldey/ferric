@@ -29,7 +29,9 @@ pub trait Bound: Sync + Send {
 /// Optionally carries ONE refinement table — the CSB `M` table (see
 /// [`SchwarzBounds::csb_m`]) or the CSAM `X` table (see
 /// [`SchwarzBounds::csam_x`]) — which upgrades the screen in
-/// [`crate::quartet_scatter::scatter_bra_pair`] from plain Schwarz to Eq. (8)
+/// `quartet_scatter::scatter_bra_pair` (a code span, not an intra-doc link:
+/// the fn is `pub(crate)`, so a public item cannot link to it) from plain
+/// Schwarz to Eq. (8)
 /// or Eq. (9)/(11)/(12) respectively, without changing any builder's
 /// signature. At most one is ever attached: they come from a single
 /// three-way `match` in [`SchwarzBounds::compute_for_screening`].
