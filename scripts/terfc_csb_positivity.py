@@ -128,9 +128,12 @@ def check_convention():
         print(f"   {r:>8.3g}{a:>16.6e}{b:>16.6e}")
         if b < -1e-12:
             bad = True
-    assert not np.any([t_shipped(r, r0, w) < -1e-12 for r in np.linspace(0, 30, 3000)]), \
-        "shipped form went negative — it is not a valid short-range attenuator"
-    assert bad, "un-halved form did NOT go negative; the two forms are not distinguishable here"
+    assert not np.any(
+        [t_shipped(r, r0, w) < -1e-12 for r in np.linspace(0, 30, 3000)]
+    ), "shipped form went negative — it is not a valid short-range attenuator"
+    assert bad, (
+        "un-halved form did NOT go negative; the two forms are not distinguishable here"
+    )
     print("\n   -> the /2 form is the shipped kernel; the un-halved docstring form")
     print("      goes negative past r~r0 and is a DOC BUG in base_terfc_closed.py.\n")
 
@@ -143,7 +146,9 @@ def check_parity():
         for c in C_REFERENCE:
             w = c / r0
             for r in [0.3, 1.0, 2.0, 4.5]:
-                worst = max(worst, abs(t_shipped(r, r0, w) + t_shipped(-r, r0, w) - 2.0))
+                worst = max(
+                    worst, abs(t_shipped(r, r0, w) + t_shipped(-r, r0, w) - 2.0)
+                )
     print(f"   max |t(r) + t(-r) - 2| over the reference grid = {worst:.3e}")
     assert worst < 1e-12, "t-1 is not odd; the closed-form derivation does not apply"
     print("   -> odd. int_0^inf t sin = 1/k - (1/2) int_{-inf}^{inf} (t-1) sin.\n")

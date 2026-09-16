@@ -56,6 +56,7 @@ the other; nothing here shares state with the C++ implementation under test.
 Run with the mpmath-enabled interpreter:
     /home/matt/qc/ferric/.venv/bin/python terf-tables/terf_tail_reference.py
 """
+
 import sys
 import time
 
@@ -78,8 +79,8 @@ def boys(m, T):
     m = int(m)
     if T == 0:
         return mp.mpf(1) / (2 * m + 1)
-    a = mp.mpf(m) + mp.mpf('0.5')
-    return mp.gammainc(a, 0, T) / (2 * T ** a)
+    a = mp.mpf(m) + mp.mpf("0.5")
+    return mp.gammainc(a, 0, T) / (2 * T**a)
 
 
 def boys_via_quad(m, T):
@@ -277,8 +278,9 @@ def proof_a():
     print("so the series needs materially more padding at large S than '+60'.")
     print("This reference now uses S + 20*sqrt(S) + 200, verified to reach the")
     print("~1e-60 (200-bit) floor at every S tested up to 300.")
-    S_values = [mp.mpf(x) for x in
-                ['0.0', '0.01', '0.1', '1', '5', '20', '50', '100', '300']]
+    S_values = [
+        mp.mpf(x) for x in ["0.0", "0.01", "0.1", "1", "5", "20", "50", "100", "300"]
+    ]
     m_values = list(range(0, 9))
     worst = mp.mpf(0)
     worst_case = None
@@ -302,12 +304,14 @@ def proof_a():
     print(f"    {mp.nstr(worst, 6)}")
     if worst_case is not None:
         print(f"    (worst at S={float(worst_case[0])}, m={worst_case[1]})")
-    ok = worst < mp.mpf('1e-55')
+    ok = worst < mp.mpf("1e-55")
     if ok:
         print("PROOF A: PASS (<= 1e-55, i.e. full 200-bit precision)")
     else:
-        print("PROOF A: *** FAIL *** -- the identity as stated is WRONG. "
-              "Everything downstream is moot until this is fixed.")
+        print(
+            "PROOF A: *** FAIL *** -- the identity as stated is WRONG. "
+            "Everything downstream is moot until this is fixed."
+        )
     print()
     return ok, worst
 
@@ -318,8 +322,8 @@ def proof_b():
     print("         vs exact G_m, over S in {0.01,0.1,1,5,20,50,100},")
     print("         s in {0.01,0.1,0.5}, m in 0..12, for I in {8,10,12,14,18}")
     print("=" * 78)
-    S_grid = [mp.mpf(x) for x in ['0.01', '0.1', '1', '5', '20', '50', '100']]
-    s_grid = [mp.mpf(x) for x in ['0.01', '0.1', '0.5']]
+    S_grid = [mp.mpf(x) for x in ["0.01", "0.1", "1", "5", "20", "50", "100"]]
+    s_grid = [mp.mpf(x) for x in ["0.01", "0.1", "0.5"]]
     m_grid = list(range(0, 13))
     I_grid = [8, 10, 12, 14, 18]
 
@@ -339,7 +343,7 @@ def proof_b():
                 for m in m_grid:
                     exact = exact_cache[(S, s, m)]
                     approx = G_tail_form(S, s, m, I)
-                    denom = abs(exact) if abs(exact) > mp.mpf('1e-60') else mp.mpf(1)
+                    denom = abs(exact) if abs(exact) > mp.mpf("1e-60") else mp.mpf(1)
                     rel = abs(exact - approx) / denom
                     if rel > worst_rel:
                         worst_rel = rel
@@ -351,9 +355,11 @@ def proof_b():
     for I in I_grid:
         worst_rel, worst_case = results[I]
         S_w, s_w, m_w = worst_case
-        print(f"{I:>4}  {mp.nstr(worst_rel, 4):>16}   "
-              f"(S={float(S_w)}, s={float(s_w)}, m={m_w})")
-        if worst_rel <= mp.mpf('1e-14') and smallest_I_1e14 is None:
+        print(
+            f"{I:>4}  {mp.nstr(worst_rel, 4):>16}   "
+            f"(S={float(S_w)}, s={float(s_w)}, m={m_w})"
+        )
+        if worst_rel <= mp.mpf("1e-14") and smallest_I_1e14 is None:
             smallest_I_1e14 = I
     if smallest_I_1e14 is not None:
         print(f"\nSmallest I reaching 1e-14 over this grid: I = {smallest_I_1e14}")
@@ -368,16 +374,16 @@ def proof_c():
     print("PROOF C: large-s case, s in {2, 10, 20, 80}")
     print("         (terfc_with_omega decouples omega from r0; s can reach ~80)")
     print("=" * 78)
-    S_grid = [mp.mpf(x) for x in ['0.01', '0.1', '1', '5', '20', '50', '100']]
-    s_grid = [mp.mpf(x) for x in ['2', '10', '20', '80']]
+    S_grid = [mp.mpf(x) for x in ["0.01", "0.1", "1", "5", "20", "50", "100"]]
+    s_grid = [mp.mpf(x) for x in ["2", "10", "20", "80"]]
     m_grid = list(range(0, 13))
     # s can be much larger here, so tail_s(i) needs i to reach out past the
     # Poisson(s) mean before it starts decaying -- I must scale with s.
     I_grid_by_s = {
-        mp.mpf('2'): [10, 14, 18, 22, 28, 34],
-        mp.mpf('10'): [16, 22, 28, 34, 42, 50, 60],
-        mp.mpf('20'): [26, 34, 42, 50, 60, 72, 84],
-        mp.mpf('80'): [70, 90, 110, 130, 150, 170, 190, 210],
+        mp.mpf("2"): [10, 14, 18, 22, 28, 34],
+        mp.mpf("10"): [16, 22, 28, 34, 42, 50, 60],
+        mp.mpf("20"): [26, 34, 42, 50, 60, 72, 84],
+        mp.mpf("80"): [70, 90, 110, 130, 150, 170, 190, 210],
     }
 
     exact_cache = {}
@@ -398,21 +404,25 @@ def proof_c():
                 for m in m_grid:
                     exact = exact_cache[(S, s, m)]
                     approx = G_tail_form(S, s, m, I)
-                    denom = abs(exact) if abs(exact) > mp.mpf('1e-60') else mp.mpf(1)
+                    denom = abs(exact) if abs(exact) > mp.mpf("1e-60") else mp.mpf(1)
                     rel = abs(exact - approx) / denom
                     if rel > worst_rel:
                         worst_rel = rel
                         worst_case = (S, m)
-            print(f"{I:>5}  {mp.nstr(worst_rel, 4):>16}   "
-                  f"(S={float(worst_case[0])}, m={worst_case[1]})")
-            if worst_rel <= mp.mpf('1e-14') and found is None:
+            print(
+                f"{I:>5}  {mp.nstr(worst_rel, 4):>16}   "
+                f"(S={float(worst_case[0])}, m={worst_case[1]})"
+            )
+            if worst_rel <= mp.mpf("1e-14") and found is None:
                 found = I
         needed_I[float(s)] = found
         if found is not None:
             print(f"  => smallest I reaching 1e-14 at s={float(s)}: {found}")
         else:
-            print(f"  => did NOT reach 1e-14 in the tested I grid at s={float(s)}; "
-                  f"see raw table above (grid may need to extend further)")
+            print(
+                f"  => did NOT reach 1e-14 in the tested I grid at s={float(s)}; "
+                f"see raw table above (grid may need to extend further)"
+            )
 
     print("\nSummary: s -> smallest I reaching 1e-14:")
     for s in s_grid:
@@ -420,7 +430,9 @@ def proof_c():
 
     # Empirical relationship: fit I(1e-14) ~ a*s + b over the points where we
     # found a crossing.
-    pts = [(float(s), needed_I[float(s)]) for s in s_grid if needed_I[float(s)] is not None]
+    pts = [
+        (float(s), needed_I[float(s)]) for s in s_grid if needed_I[float(s)] is not None
+    ]
     if len(pts) >= 2:
         xs = [p[0] for p in pts]
         ys = [p[1] for p in pts]
@@ -429,14 +441,18 @@ def proof_c():
         mean_y = sum(ys) / n
         num = sum((x - mean_x) * (y - mean_y) for x, y in pts)
         den = sum((x - mean_x) ** 2 for x, y in pts)
-        slope = num / den if den != 0 else float('nan')
+        slope = num / den if den != 0 else float("nan")
         intercept = mean_y - slope * mean_x
-        print(f"\nLinear fit I(1e-14) ~= {slope:.3f} * s + {intercept:.3f} "
-              f"(least squares over {n} points)")
-        print("Interpretation: required I grows ~linearly with s once s is not "
-              "tiny -- an adaptive bound like I = ceil(a*s + b) (with margin) "
-              "is a reasonable C++ policy; a FIXED small I (e.g. 14-18) is only "
-              "safe for the s<=0.5 curvature-constrained regime of PROOF B.")
+        print(
+            f"\nLinear fit I(1e-14) ~= {slope:.3f} * s + {intercept:.3f} "
+            f"(least squares over {n} points)"
+        )
+        print(
+            "Interpretation: required I grows ~linearly with s once s is not "
+            "tiny -- an adaptive bound like I = ceil(a*s + b) (with margin) "
+            "is a reasonable C++ policy; a FIXED small I (e.g. 14-18) is only "
+            "safe for the s<=0.5 curvature-constrained regime of PROOF B."
+        )
     print()
     return needed_I
 
@@ -445,23 +461,25 @@ def emit_gate_values():
     print("=== GATE VALUES BEGIN ===")
     print("# (S, s, m, G_m(S,s))  -- exact via G_direct, 17 significant digits")
     points = [
-        (mp.mpf('0.0'), mp.mpf('0.0'), 0),
-        (mp.mpf('1.0'), mp.mpf('0.0'), 2),
-        (mp.mpf('0.01'), mp.mpf('0.01'), 0),
-        (mp.mpf('0.5'), mp.mpf('0.25'), 1),
-        (mp.mpf('5.0'), mp.mpf('0.5'), 3),
-        (mp.mpf('20.0'), mp.mpf('0.1'), 4),
-        (mp.mpf('50.0'), mp.mpf('0.5'), 2),
-        (mp.mpf('100.0'), mp.mpf('0.01'), 6),
-        (mp.mpf('200.0'), mp.mpf('2.0'), 3),
-        (mp.mpf('75.0'), mp.mpf('10.0'), 5),
-        (mp.mpf('30.0'), mp.mpf('20.0'), 2),
-        (mp.mpf('10.0'), mp.mpf('80.0'), 4),
+        (mp.mpf("0.0"), mp.mpf("0.0"), 0),
+        (mp.mpf("1.0"), mp.mpf("0.0"), 2),
+        (mp.mpf("0.01"), mp.mpf("0.01"), 0),
+        (mp.mpf("0.5"), mp.mpf("0.25"), 1),
+        (mp.mpf("5.0"), mp.mpf("0.5"), 3),
+        (mp.mpf("20.0"), mp.mpf("0.1"), 4),
+        (mp.mpf("50.0"), mp.mpf("0.5"), 2),
+        (mp.mpf("100.0"), mp.mpf("0.01"), 6),
+        (mp.mpf("200.0"), mp.mpf("2.0"), 3),
+        (mp.mpf("75.0"), mp.mpf("10.0"), 5),
+        (mp.mpf("30.0"), mp.mpf("20.0"), 2),
+        (mp.mpf("10.0"), mp.mpf("80.0"), 4),
     ]
     for S, s, m in points:
         g = G_direct(S, s, m)
-        print(f"{mp.nstr(float(S), 6):>10} {mp.nstr(float(s), 6):>10} {m:>3}   "
-              f"{mp.nstr(g, 17)}")
+        print(
+            f"{mp.nstr(float(S), 6):>10} {mp.nstr(float(s), 6):>10} {m:>3}   "
+            f"{mp.nstr(g, 17)}"
+        )
     print("=== GATE VALUES END ===")
 
 
@@ -471,11 +489,11 @@ if __name__ == "__main__":
     # Sanity: cross-check boys() closed form vs direct quadrature once,
     # independent of the G_m machinery.
     for m in [0, 1, 4]:
-        for T in [mp.mpf('0.0'), mp.mpf('1.3'), mp.mpf('50.0')]:
+        for T in [mp.mpf("0.0"), mp.mpf("1.3"), mp.mpf("50.0")]:
             a = boys(m, T)
             b = boys_via_quad(m, T)
             d = abs(a - b)
-            assert d < mp.mpf('1e-40'), f"boys() mismatch at m={m},T={T}: {d}"
+            assert d < mp.mpf("1e-40"), f"boys() mismatch at m={m},T={T}: {d}"
     print("boys() closed-form cross-checked vs mp.quad: OK (< 1e-40)\n")
 
     ok_a, worst_a = proof_a()
