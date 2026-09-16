@@ -50,8 +50,11 @@ def make_mol(r_ang, ghost_second):
     sym2 = "@Ne" if ghost_second else "Ne"
     xyz = f"2\nNe2 R={r_ang}\nNe 0.0 0.0 0.0\n{sym2} 0.0 0.0 {r_ang}\n"
     with tempfile.NamedTemporaryFile(
-        "w", suffix=".xyz", delete=False, dir=os.environ.get("TMPDIR", "/tmp")
-    ) as f:  # nosec B108 -- NamedTemporaryFile generates the name; /tmp is only the TMPDIR fallback dir
+        "w",
+        suffix=".xyz",
+        delete=False,
+        dir=os.environ.get("TMPDIR", "/tmp"),  # nosec B108 -- NamedTemporaryFile generates the name; /tmp is only the TMPDIR fallback dir
+    ) as f:
         f.write(xyz)
         path = f.name
     mol = ferric.Molecule.from_xyz(path)

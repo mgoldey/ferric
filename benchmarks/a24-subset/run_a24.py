@@ -16,10 +16,10 @@ BIN = os.path.join(
     "ferric-cli",
 )
 SRC = (
-    open("/tmp/a24/A24.py").read()
-    if os.path.exists("/tmp/a24/A24.py")
-    else open("/tmp/wd/A24.py").read()
-)  # nosec B108 -- fixed scratch layout of a local benchmark harness, single-user box
+    open("/tmp/a24/A24.py").read()  # nosec B108 -- fixed scratch layout of a local benchmark harness, single-user box
+    if os.path.exists("/tmp/a24/A24.py")  # nosec B108 -- fixed scratch layout of a local benchmark harness, single-user box
+    else open("/tmp/wd/A24.py").read()  # nosec B108 -- fixed scratch layout of a local benchmark harness, single-user box
+)
 REFS = {2: -5.014, 5: -3.157, 14: -1.110, 19: -0.538}
 NAMES = {2: "H2O-H2O", 5: "NH3-NH3", 14: "C2H4-C2H4", 19: "CH4-CH4"}
 OMEGAS = ["0.1", "0.2", "0.3", "0.42", "0.6"]
@@ -141,6 +141,6 @@ for w in OMEGAS:
     print(f"{w:>5s} {mae('mp2'):7.3f} {mae('A'):7.3f} {mae('B'):7.3f}")
 json.dump(
     {f"{k[0]}|{k[1]}|{k[2]}": v for k, v in results.items()},
-    open("/tmp/a24/results.json", "w"),
+    open("/tmp/a24/results.json", "w"),  # nosec B108 -- same local benchmark scratch layout
     indent=1,
-)  # nosec B108 -- same local benchmark scratch layout
+)
