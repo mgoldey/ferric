@@ -423,7 +423,9 @@ impl FullFixture {
     /// Every `Option` field set to `Some`. Nothing is left `None`, which is
     /// what makes the key-set test able to detect a dropped field.
     fn bundle(&self) -> NpzBundle<'_> {
-        use ferric_export::ml::{ChargeSchemes, DispersionBundle, PolarizabilityBundle};
+        use ferric_export::ml::{
+            C6Export, C6Provenance, ChargeSchemes, DispersionBundle, PolarizabilityBundle,
+        };
         NpzBundle {
             mo_coeffs: Some(&self.mo_coeffs),
             orbital_energies: Some(&self.orbital_energies),
@@ -452,15 +454,42 @@ impl FullFixture {
                 alpha_atomic: Some(&self.alpha_atomic),
             },
             dispersion: DispersionBundle {
-                c6_freqs: Some(&self.c6_freqs),
-                c6_weights: Some(&self.c6_weights),
-                alpha_atomic_dynamic: Some(&self.alpha_atomic_dynamic),
-                c6_iso: Some(&self.c6_iso),
-                c6_aniso: Some(&self.c6_aniso),
+                c6: Some(C6Export {
+                    // Provenance is NOT an Option inside C6Export — the
+                    // per-atom arrays cannot be supplied without it. The two
+                    // labels are DIFFERENT strings of DIFFERENT lengths so a
+                    // writer that swapped them fails on shape, not just value
+                    // (same rule as the numeric fixtures above).
+                    provenance: C6Provenance {
+                        partition: C6_PARTITION_FIXTURE,
+                        source: C6_SOURCE_FIXTURE,
+                    },
+                    c6_freqs: &self.c6_freqs,
+                    c6_weights: &self.c6_weights,
+                    alpha_atomic_dynamic: &self.alpha_atomic_dynamic,
+                    c6_iso: &self.c6_iso,
+                    c6_aniso: &self.c6_aniso,
+                    c6_molecular_iso: C6_MOLECULAR_ISO_FIXTURE,
+                }),
             },
         }
     }
 }
+
+/// C6 provenance fixture values. Deliberately the NON-default partition
+/// (`DispersionPartition::default()` is Becke) and the NON-default source
+/// (`C6Source::default()` is TS), so a writer that hardcoded, dropped, or
+/// defaulted the tag produces "becke"/"ts" and FAILS the value assertion
+/// instead of accidentally matching. They are also different lengths (9 vs 4
+/// bytes), so a writer that swapped the two keys fails on shape.
+const C6_PARTITION_FIXTURE: &str = "hirshfeld";
+const C6_SOURCE_FIXTURE: &str = "pdep";
+
+/// Molecular C6 fixture, in its own decade (1e2) like every other field, and
+/// deliberately NOT equal to `c6_iso.sum()` — see
+/// `molecular_c6_is_not_the_naive_c6_iso_sum` for why that distinction is
+/// itself asserted.
+const C6_MOLECULAR_ISO_FIXTURE: f64 = 137.913_57;
 
 /// The complete set of NPZ keys a fully-populated `NpzBundle` must produce.
 ///
@@ -472,7 +501,7 @@ impl FullFixture {
 ///     assertion — the omission cannot pass silently as the struct grows;
 ///   * a writer branch that stops firing (a silent-None passthrough at a call
 ///     site, the originating bug class) FAILS ("missing key").
-const EXPECTED_NPZ_KEYS: [&str; 27] = [
+const EXPECTED_NPZ_KEYS: [&str; 30] = [
     "mo_coeffs",
     "orbital_energies",
     "pdep_eigenvectors",
@@ -499,6 +528,14 @@ const EXPECTED_NPZ_KEYS: [&str; 27] = [
     "alpha_atomic_dynamic",
     "c6_iso",
     "c6_aniso",
+    // Added 2026-09-16 with the C6 provenance tag. `c6_partition`/`c6_source`
+    // are UTF-8 byte arrays (`|u1`); `c6_molecular_iso` is the length-1 f64
+    // OBSERVABLE that consumers should read instead of summing `c6_iso`.
+    // These three are written from the SAME `Option<C6Export>` as the five
+    // per-atom keys above, so they cannot appear or disappear independently.
+    "c6_partition",
+    "c6_source",
+    "c6_molecular_iso",
     "dipole",
 ];
 
@@ -707,6 +744,106 @@ fn npz_export_round_trips_every_bundle_field() {
             }
         }
     }
+
+    // --- C6 provenance: UTF-8 byte arrays (`|u1`), NOT f64. Reading them as
+    // u8 and decoding is the exact contract a numpy consumer relies on:
+    //     np.load(f)["c6_partition"].tobytes().decode() -> "hirshfeld"
+    // Asserting the DECODED string (not the raw bytes) is what makes a
+    // consumer-visible encoding change fail here.
+    for (key, want) in [
+        ("c6_partition", C6_PARTITION_FIXTURE),
+        ("c6_source", C6_SOURCE_FIXTURE),
+    ] {
+        let raw: Array1<u8> = r.by_name(key).unwrap_or_else(|e| {
+            panic!("{key}: not readable as (n,) u8 — the NPZ tag must be a UTF-8 byte array: {e}")
+        });
+        assert_eq!(
+            raw.len(),
+            want.len(),
+            "{key}: byte-length mismatch (tags swapped?)"
+        );
+        let got = String::from_utf8(raw.to_vec())
+            .unwrap_or_else(|e| panic!("{key}: not valid UTF-8: {e}"));
+        assert_eq!(
+            got, want,
+            "{key}: provenance tag round-trip mismatch — an untagged or \
+             MIS-tagged per-atom C6 is exactly the silent-wrong this key exists \
+             to prevent"
+        );
+    }
+
+    // --- c6_molecular_iso: the length-1 f64 OBSERVABLE.
+    let mol: Array1<f64> = r
+        .by_name("c6_molecular_iso")
+        .expect("c6_molecular_iso must be readable as (1,) f64");
+    assert_eq!(mol.len(), 1, "c6_molecular_iso: must be a length-1 array");
+    assert_eq!(
+        mol[0], C6_MOLECULAR_ISO_FIXTURE,
+        "c6_molecular_iso: value round-trip mismatch"
+    );
+
+    fs::remove_file(path).ok();
+}
+
+/// THE COUNTER-TEST the CONSUMER WARNING on `DispersionBundle` has, until now,
+/// only asserted in PROSE: `c6_iso.sum()` is NOT the molecular C6.
+///
+/// `ml.rs`'s doc comment and the CLI's stdout note both tell consumers not to
+/// sum `c6_iso`. Prose does not fail a build. This test pins the distinction
+/// structurally, at the EXPORT boundary, with no SCF required:
+///
+///   1. the two keys are written SEPARATELY and are NOT equal, so a future
+///      "simplification" that derives `c6_molecular_iso` from `c6_iso.sum()`
+///      (the wrong construction) fails here rather than silently becoming the
+///      convention; and
+///   2. the value a consumer reads back from `c6_molecular_iso` is the one
+///      the producer supplied, NOT the pair sum.
+///
+/// The PHYSICAL size of the gap on a real molecule is a separate question,
+/// already measured and bounded by
+/// `ferric-rpa/tests/s9_per_atom_c6_consistency.rs::bounded_divergence_pair_sum_vs_molecular_c6_water`
+/// (water/aug-cc-pVDZ/RPA@PBE: Becke -57.6%, Hirshfeld -19.5%). This test is
+/// the cheap, always-run structural half of that pair — it needs no SCF, so it
+/// runs in the default `cargo test` where the physics test is `#[ignore]`d.
+#[test]
+fn molecular_c6_is_not_the_naive_c6_iso_sum() {
+    let fx = FullFixture::new();
+    let path = "test_npz_c6_pair_sum_vs_molecular.npz";
+    export_npz(path, &fx.bundle()).unwrap();
+
+    let mut r = NpzReader::new(fs::File::open(path).unwrap()).unwrap();
+    let iso: Array2<f64> = r.by_name("c6_iso").unwrap();
+    let mol: Array1<f64> = r.by_name("c6_molecular_iso").unwrap();
+
+    let naive = iso.sum();
+    let correct = mol[0];
+
+    // REACHABILITY: the fixture must actually be able to tell these apart. If
+    // the fixture were built so that sum == molecular, everything below would
+    // be vacuously "passing" arithmetic rather than a measurement.
+    assert!(
+        (naive - correct).abs() > 1.0,
+        "fixture is INERT: c6_iso.sum()={naive} and c6_molecular_iso={correct} are \
+         indistinguishable, so this test could not detect the naive construction"
+    );
+
+    // 1. The naive construction is WRONG: it must not be what the molecular
+    //    key contains.
+    assert_ne!(
+        naive, correct,
+        "c6_iso.sum() ({naive}) equals c6_molecular_iso ({correct}) — the molecular \
+         C6 has been (re)derived from the per-atom PAIR sum. That is the \
+         construction the CONSUMER WARNING on ml.rs::DispersionBundle forbids: \
+         the per-atom pair tensors use an atom-centred operator that omits \
+         inter-atomic coupling, measured -20% to -58% on water."
+    );
+
+    // 2. The CORRECT construction is the one that round-trips: the exported
+    //    molecular C6 is exactly the producer's `C6Result::c6_molecular_iso`.
+    assert_eq!(
+        correct, C6_MOLECULAR_ISO_FIXTURE,
+        "c6_molecular_iso must carry the producer's molecular total verbatim"
+    );
 
     fs::remove_file(path).ok();
 }

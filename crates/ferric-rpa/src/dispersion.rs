@@ -108,6 +108,21 @@ impl DispersionPartition {
             )),
         }
     }
+
+    /// The canonical config spelling of this partition — the exact inverse of
+    /// [`Self::parse_config_str`] (round-trip pinned by
+    /// `partition_and_source_labels_round_trip_through_the_strict_parsers`).
+    ///
+    /// Exists so downstream consumers (notably the NPZ `c6_partition` tag)
+    /// label a per-atom decomposition with a string that parses back to the
+    /// same variant, instead of each call site hand-rolling a `match` that
+    /// can silently drift from the parser.
+    pub fn as_config_str(&self) -> &'static str {
+        match self {
+            DispersionPartition::Becke => "becke",
+            DispersionPartition::Hirshfeld => "hirshfeld",
+        }
+    }
 }
 
 /// Source of the dynamic polarizability α(iω) that feeds the Casimir-Polder C6.
@@ -137,6 +152,19 @@ impl C6Source {
             Some(other) => Err(format!(
                 "unknown c6_source {other:?}; expected \"ts\", \"pdep\", or \"mbd\""
             )),
+        }
+    }
+
+    /// The canonical config spelling of this source — the exact inverse of
+    /// [`Self::parse_config_str`] (round-trip pinned by
+    /// `partition_and_source_labels_round_trip_through_the_strict_parsers`).
+    /// See [`DispersionPartition::as_config_str`] for why this lives here
+    /// rather than at each call site.
+    pub fn as_config_str(&self) -> &'static str {
+        match self {
+            C6Source::Ts => "ts",
+            C6Source::Pdep => "pdep",
+            C6Source::Mbd => "mbd",
         }
     }
 

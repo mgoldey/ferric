@@ -2330,7 +2330,10 @@ fn run_pdep_rpa_arm(
     // NPZ feature bundle for diffusion-model export.
     if let Some(npz_path) = cfg.rpa.export_npz.as_deref() {
         use ferric_export::export_npz;
-        use ferric_export::ml::{ChargeSchemes, DispersionBundle, NpzBundle, PolarizabilityBundle};
+        use ferric_export::ml::{
+            C6Export, C6Provenance, ChargeSchemes, DispersionBundle, NpzBundle,
+            PolarizabilityBundle,
+        };
         use ferric_rpa::properties::{
             chelpg_and_resp_charges, chelpg_charges, electric_field_at_atoms, esp_at_atoms,
             hirshfeld_charges, lowdin_charges, mulliken_charges, pdep_polarizability_becke,
@@ -2615,6 +2618,14 @@ fn run_pdep_rpa_arm(
         let mut alpha_dyn_v: Vec<Vec<[[f64; 3]; 3]>> = Vec::new();
         let mut c6_iso_opt: Option<ndarray::Array2<f64>> = None;
         let mut c6_aniso_v: Vec<Vec<[[f64; 3]; 3]>> = Vec::new();
+        // Provenance for the per-atom C6 arrays, carried to the NPZ so an
+        // untagged per-atom number never leaves ferric (a per-atom C6 is a
+        // partition CONVENTION, not an observable — Becke vs Hirshfeld differ
+        // by up to ~10x). Populated from the SAME `partition`/`c6_source`
+        // values the computation actually ran with, below — never defaulted.
+        let mut c6_partition_s: Option<&'static str> = None;
+        let mut c6_source_s: Option<&'static str> = None;
+        let mut c6_molecular_iso_v: f64 = 0.0;
         if compute_c6 {
             use ferric_rpa::dispersion::{
                 casimir_polder_c6, pdep_dynamic_polarizability, ts_dynamic_polarizability,
@@ -2910,6 +2921,12 @@ fn run_pdep_rpa_arm(
                 alpha_dyn_v = res.per_atom_dynamic.per_atom.clone();
                 c6_iso_opt = Some(res.c6_iso_pair.clone());
                 c6_aniso_v = res.c6_aniso_pair.clone();
+                // Tag with the partition/source this run ACTUALLY used (the
+                // strictly-parsed locals above, after the source-dependent
+                // default was applied), not a literal.
+                c6_partition_s = Some(partition.as_config_str());
+                c6_source_s = Some(c6_source.as_config_str());
+                c6_molecular_iso_v = res.c6_molecular_iso;
             } else {
                 // Recorded HERE rather than in the arms above because the
                 // TS branch computes inside a closure (which cannot also
@@ -2976,26 +2993,22 @@ fn run_pdep_rpa_arm(
                 alpha_atomic: alpha_atomic_vec.as_deref(),
             },
             dispersion: DispersionBundle {
-                c6_freqs: if c6_freqs_v.is_empty() {
-                    None
-                } else {
-                    Some(c6_freqs_v.as_slice())
-                },
-                c6_weights: if c6_weights_v.is_empty() {
-                    None
-                } else {
-                    Some(c6_weights_v.as_slice())
-                },
-                alpha_atomic_dynamic: if alpha_dyn_v.is_empty() {
-                    None
-                } else {
-                    Some(alpha_dyn_v.as_slice())
-                },
-                c6_iso: c6_iso_opt.as_ref(),
-                c6_aniso: if c6_aniso_v.is_empty() {
-                    None
-                } else {
-                    Some(c6_aniso_v.as_slice())
+                // All-or-nothing, and the provenance is non-Option inside
+                // `C6Export` — so this arm either supplies the per-atom
+                // arrays WITH their partition/source, or writes no C6 at all.
+                // `zip` here is the enforcement: provenance is only ever
+                // `Some` on the same path that populated the arrays.
+                c6: match (c6_iso_opt.as_ref(), c6_partition_s.zip(c6_source_s)) {
+                    (Some(iso), Some((partition, source))) => Some(C6Export {
+                        provenance: C6Provenance { partition, source },
+                        c6_freqs: c6_freqs_v.as_slice(),
+                        c6_weights: c6_weights_v.as_slice(),
+                        alpha_atomic_dynamic: alpha_dyn_v.as_slice(),
+                        c6_iso: iso,
+                        c6_aniso: c6_aniso_v.as_slice(),
+                        c6_molecular_iso: c6_molecular_iso_v,
+                    }),
+                    _ => None,
                 },
             },
         };
@@ -3012,8 +3025,11 @@ fn run_pdep_rpa_arm(
                 println!(
                     "note: NPZ c6_iso/c6_aniso are per-atom PAIR tensors, not the \
                          molecular C6 total — do not sum them to approximate it (can be \
-                         20-58% off; see the \"molecular C6 = ... a.u.\" line above for the \
-                         correct DOSD-comparable value, or docs/dosd-c6-rpa-vs-ts.md)."
+                         20-58% off). Read the NPZ key \"c6_molecular_iso\" for the \
+                         correct DOSD-comparable value (see docs/dosd-c6-rpa-vs-ts.md). \
+                         The per-atom arrays are a PARTITION CONVENTION, not an \
+                         observable; the NPZ keys \"c6_partition\"/\"c6_source\" record \
+                         which one produced them (decode with .tobytes().decode())."
                 );
             }
         }
