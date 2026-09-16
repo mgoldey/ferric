@@ -105,7 +105,9 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::pairs::SignificantPairs;
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
-use ferric_scf::screening::{Bound, CsamBounds, ScreeningKind, SchwarzBounds};
+// No `Bound` import: `CsamBounds` deliberately does NOT implement that trait
+// (it underestimates -- see the header and the note at the call site below).
+use ferric_scf::screening::{CsamBounds, ScreeningKind, SchwarzBounds};
 
 fn load_mol(stem: &str) -> Molecule {
     Molecule::load_xyz(&format!("../../testdata/molecules/{stem}.xyz"))
