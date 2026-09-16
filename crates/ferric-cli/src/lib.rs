@@ -91,7 +91,11 @@ const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
         "method.kind = \"tdhf-static-polarizability\" is Smoke-grade (see docs/VALIDATION.md): \
          static alpha at RPAx@KS matches DOSD water closely in the one case checked, but the \
          same dense TDHF/RPAx kernel gives C6 ~63% low regardless of gap -- do not extrapolate \
-         this method's accuracy beyond static alpha on a KS reference.",
+         this method's accuracy beyond static alpha on a KS reference. Note also that at the \
+         default scissor = 0.0 this kernel is prone to a genuine excitonic instability that \
+         yields a NEGATIVE alpha diagonal; that is now ENFORCED in code (the run hard-errors \
+         instead of returning it), so if the job aborts on an unphysical alpha diagonal, set \
+         [gw] scissor to ~0.3-0.4 Ha rather than treating it as a crash.",
     ),
     (
         "rs-mp2-rpa",
