@@ -9,33 +9,34 @@ Methods reported: MP2, LRC[kappa] (B), LRC[E] (T), dRPA.
 Columns are absolute CP interaction energies (kcal/mol), not errors.
 MAE footer rows show |method - ref|.
 """
+
 import csv
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-OUT  = ROOT / "tex_tables"
+OUT = ROOT / "tex_tables"
 OUT.mkdir(exist_ok=True)
 
 rows = list(csv.DictReader((ROOT / "matrix.csv").open()))
 
 METHODS = ["MP2", "B", "T", "dRPA"]
 METHOD_LABELS = {
-    "MP2":  r"\textrm{MP2}",
-    "B":    r"\lrckshort{}",
-    "T":    r"\lrceshort{}",
+    "MP2": r"\textrm{MP2}",
+    "B": r"\lrckshort{}",
+    "T": r"\lrceshort{}",
     "dRPA": r"\textrm{dRPA}",
 }
 
 LABELS = {
-    1:  r"H$_2$O$\cdot$NH$_3$",
-    2:  r"H$_2$O$\cdot$H$_2$O",
-    3:  r"HCN$\cdot$HCN",
-    4:  r"HF$\cdot$HF",
-    5:  r"NH$_3\cdot$NH$_3$",
-    6:  r"CH$_4\cdot$HF",
-    7:  r"NH$_3\cdot$CH$_4$",
-    8:  r"CH$_4\cdot$H$_2$O",
-    9:  r"(HCHO)$_2$",
+    1: r"H$_2$O$\cdot$NH$_3$",
+    2: r"H$_2$O$\cdot$H$_2$O",
+    3: r"HCN$\cdot$HCN",
+    4: r"HF$\cdot$HF",
+    5: r"NH$_3\cdot$NH$_3$",
+    6: r"CH$_4\cdot$HF",
+    7: r"NH$_3\cdot$CH$_4$",
+    8: r"CH$_4\cdot$H$_2$O",
+    9: r"(HCHO)$_2$",
     10: r"C$_2$H$_4\cdot$H$_2$O",
     11: r"C$_2$H$_4\cdot$HCHO",
     12: r"C$_2$H$_2\cdot$C$_2$H$_2$ (T)",
@@ -54,19 +55,19 @@ LABELS = {
 }
 
 GROUPS = [
-    (r"\textit{Hydrogen bonds}",                 [1, 2, 3, 4, 5]),
-    (r"\textit{Mixed/dipole}",                   [6, 7, 8, 9, 10, 11, 12, 13]),
-    (r"\textit{$\pi$-stacked}",                  [14]),
-    (r"\textit{Dispersion-bound}",               [15, 16, 17, 18, 19, 20]),
+    (r"\textit{Hydrogen bonds}", [1, 2, 3, 4, 5]),
+    (r"\textit{Mixed/dipole}", [6, 7, 8, 9, 10, 11, 12, 13]),
+    (r"\textit{$\pi$-stacked}", [14]),
+    (r"\textit{Dispersion-bound}", [15, 16, 17, 18, 19, 20]),
     (r"\textit{$\pi$-contacts (repulsive wall)}", [22, 23, 24]),
 ]
 
 MAE_GROUPS = [
-    ("H-bond (1--5)",        [1, 2, 3, 4, 5]),
+    ("H-bond (1--5)", [1, 2, 3, 4, 5]),
     (r"$\pi$/saddle (14,22--24)", [14, 22, 23, 24]),
     ("Mixed/dipole (6--13)", [6, 7, 8, 9, 10, 11, 12, 13]),
     (r"Dispersion (15--21)", [15, 16, 17, 18, 19, 20, 21]),
-    (r"All A24",             list(range(1, 25))),
+    (r"All A24", list(range(1, 25))),
 ]
 
 
@@ -114,7 +115,7 @@ def make_mae_table():
     ]
 
     for b, blabel in (("adz", "aDZ"), ("atz", "aTZ"), ("cbs", "CBS")):
-        lines.append(rf"\multicolumn{{{ncol+3}}}{{l}}{{\textit{{{blabel}}}}} \\")
+        lines.append(rf"\multicolumn{{{ncol + 3}}}{{l}}{{\textit{{{blabel}}}}} \\")
         for name, ids in MAE_GROUPS:
             errs = {m: [] for m in METHODS}
             for i in ids:
@@ -129,13 +130,25 @@ def make_mae_table():
             n = len(errs["MP2"])
             if not n:
                 continue
-            mae = {m: sum(abs(e) for e in errs[m]) / len(errs[m]) for m in METHODS if errs[m]}
+            mae = {
+                m: sum(abs(e) for e in errs[m]) / len(errs[m])
+                for m in METHODS
+                if errs[m]
+            }
             mse = {m: sum(errs[m]) / len(errs[m]) for m in METHODS if errs[m]}
             best = min(mae, key=mae.get)
-            mae_cells = [rf"$\mathbf{{{mae[m]:.3f}}}$" if m == best else f"${mae[m]:.3f}$"
-                         if m in mae else "---" for m in METHODS]
+            mae_cells = [
+                rf"$\mathbf{{{mae[m]:.3f}}}$"
+                if m == best
+                else f"${mae[m]:.3f}$"
+                if m in mae
+                else "---"
+                for m in METHODS
+            ]
             mse_cells = [f"${mse[m]:+.3f}$" if m in mse else "---" for m in METHODS]
-            lines.append(rf"\quad {name} & MAE & {n} & " + " & ".join(mae_cells) + r" \\")
+            lines.append(
+                rf"\quad {name} & MAE & {n} & " + " & ".join(mae_cells) + r" \\"
+            )
             lines.append(rf"\quad & MSE & & " + " & ".join(mse_cells) + r" \\")
         lines.append(r"\addlinespace[3pt]")
 
@@ -148,7 +161,7 @@ def make_mae_table():
 # ──────────────────────────────────────────────────────────────────────────────
 def make_persys_table():
     # 9 data columns: ref | MP2 B T dRPA (adz) | MP2 B T dRPA (atz)
-    ncols_data = 1 + 4 + 4   # ref + 4 methods × 2 bases
+    ncols_data = 1 + 4 + 4  # ref + 4 methods × 2 bases
     col_spec = "@{}llr" + "r" * 4 + "r" * 4 + "@{}"
     hdr_m = " & ".join(METHOD_LABELS[m] for m in METHODS)
 
@@ -223,10 +236,10 @@ def make_persys_table():
             if not n:
                 row_cells.extend(["---"] * 4)
                 continue
-            mae = {m: (sum(errs[m]) / len(errs[m]) if errs[m] else None)
-                   for m in METHODS}
-            bm = min((m for m in METHODS if mae[m] is not None),
-                     key=lambda m: mae[m])
+            mae = {
+                m: (sum(errs[m]) / len(errs[m]) if errs[m] else None) for m in METHODS
+            }
+            bm = min((m for m in METHODS if mae[m] is not None), key=lambda m: mae[m])
             for m in METHODS:
                 if mae[m] is None:
                     row_cells.append("---")

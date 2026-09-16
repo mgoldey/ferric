@@ -6,6 +6,7 @@ opposite fixes (cheaper grid/basis vs. a better guess, level shift, damping).
 Diagnosing the danuglipron tier-4 cost anomaly required exactly that split,
 and `converged: bool` could not provide it.
 """
+
 from __future__ import annotations
 
 import ferric
@@ -16,8 +17,7 @@ def _water():
 
 
 def test_iterations_is_positive_for_a_converged_run():
-    res = ferric.run_dft(_water(), ferric.BasisSet.bundled("sto-3g"),
-                         functional="PBE")
+    res = ferric.run_dft(_water(), ferric.BasisSet.bundled("sto-3g"), functional="PBE")
     assert res.converged
     # A converged SCF must have taken at least one iteration; a zero here
     # would mean the field is not wired to the solver at all.
@@ -26,8 +26,7 @@ def test_iterations_is_positive_for_a_converged_run():
 
 
 def test_exit_reason_is_converged_when_converged():
-    res = ferric.run_dft(_water(), ferric.BasisSet.bundled("sto-3g"),
-                         functional="PBE")
+    res = ferric.run_dft(_water(), ferric.BasisSet.bundled("sto-3g"), functional="PBE")
     assert res.converged
     assert res.exit_reason == "Converged"
 
@@ -40,10 +39,10 @@ def test_exit_reason_distinguishes_failure_modes():
     a level-shift ladder and which rung reports first is an implementation
     detail -- but it must name a real failure mode rather than claim success.
     """
-    res = ferric.run_dft(_water(), ferric.BasisSet.bundled("sto-3g"),
-                         functional="PBE", max_iter=1)
-    assert res.exit_reason in {"Plateau", "Stalled", "Diverged", "MaxIter",
-                               "Converged"}
+    res = ferric.run_dft(
+        _water(), ferric.BasisSet.bundled("sto-3g"), functional="PBE", max_iter=1
+    )
+    assert res.exit_reason in {"Plateau", "Stalled", "Diverged", "MaxIter", "Converged"}
     if not res.converged:
         assert res.exit_reason != "Converged"
 
@@ -82,5 +81,7 @@ def test_iterations_varies_with_the_problem():
     water = ferric.run_dft(_water(), bs, functional="PBE")
     methane = ferric.run_dft(
         ferric.Molecule.from_xyz("testdata/molecules/methane.xyz", 0, 1),
-        bs, functional="PBE")
+        bs,
+        functional="PBE",
+    )
     assert water.iterations >= 1 and methane.iterations >= 1

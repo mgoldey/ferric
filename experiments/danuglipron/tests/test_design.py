@@ -16,6 +16,7 @@ decoration. The negative controls exist for exactly this reason, and
 break the feature they claim to and no other -- otherwise a control that broke
 three features would not isolate anything.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -78,6 +79,7 @@ def test_parent_smiles_matches_the_committed_conformer_ensemble():
 
 # ── THE EXACTNESS ANCHOR ──
 
+
 def test_zero_modification_analogue_is_identical_to_parent():
     """The trivial limit: an analogue that changes nothing must be
     indistinguishable from the parent on every measured axis.
@@ -112,6 +114,7 @@ def test_zero_modification_analogue_is_identical_to_parent():
 
 
 # ── the constraint must be able to fail ──
+
 
 def test_all_real_candidates_retain_the_pharmacophore():
     for a in danuglipron_analogues():
@@ -156,7 +159,9 @@ def test_acid_bioisostere_feature_accepts_bioisosteres_not_just_acids():
         "acylsulfonamide": "c1ccccc1C(=O)NS(=O)(=O)C",
         "oxadiazolone": "c1ccccc1c1nc(=O)o[nH]1",
     }
-    feature = next(f for f in GLP1R_PHARMACOPHORE.features if f[0] == "acid_or_bioisostere")
+    feature = next(
+        f for f in GLP1R_PHARMACOPHORE.features if f[0] == "acid_or_bioisostere"
+    )
     patt = Chem.MolFromSmarts(feature[1])
     assert patt is not None
     for name, smi in cases.items():
@@ -177,18 +182,28 @@ def test_invalid_smarts_in_a_spec_raises():
 
 
 def test_unparseable_analogue_smiles_raises_on_check():
-    a = Analogue(label="bad", smiles="C1CC(((", hypothesis="h", rationale="r",
-                 pharmacophore=GLP1R_PHARMACOPHORE)
+    a = Analogue(
+        label="bad",
+        smiles="C1CC(((",
+        hypothesis="h",
+        rationale="r",
+        pharmacophore=GLP1R_PHARMACOPHORE,
+    )
     with pytest.raises(ValueError, match="unparseable SMILES"):
         a.check_pharmacophore()
 
 
 # ── the design set must actually span its hypotheses ──
 
+
 def test_every_hypothesis_arm_is_populated():
     arms = {a.hypothesis for a in danuglipron_analogues()}
-    for required in ("H1-size-lipophilicity", "H2-metabolic-soft-spot",
-                     "H3-acid-bioisostere", "negative-control"):
+    for required in (
+        "H1-size-lipophilicity",
+        "H2-metabolic-soft-spot",
+        "H3-acid-bioisostere",
+        "negative-control",
+    ):
         assert required in arms, f"no analogue for {required}"
 
 
@@ -200,12 +215,14 @@ def test_h1_arm_actually_reduces_size():
     assert h1
     for a in h1:
         mw = Descriptors.MolWt(Chem.MolFromSmiles(a.smiles))
-        assert mw < parent_mw, f"{a.label!r} is H1 but MW {mw:.1f} >= parent {parent_mw:.1f}"
+        assert mw < parent_mw, (
+            f"{a.label!r} is H1 but MW {mw:.1f} >= parent {parent_mw:.1f}"
+        )
     # At least one must clear the rule-of-5 MW cut, or the arm cannot test its
     # own hypothesis.
-    assert any(
-        Descriptors.MolWt(Chem.MolFromSmiles(a.smiles)) < 500 for a in h1
-    ), "no H1 analogue gets under MW 500"
+    assert any(Descriptors.MolWt(Chem.MolFromSmiles(a.smiles)) < 500 for a in h1), (
+        "no H1 analogue gets under MW 500"
+    )
 
 
 def test_every_analogue_documents_a_hypothesis_and_rationale():
@@ -224,6 +241,7 @@ def test_every_analogue_documents_a_hypothesis_and_rationale():
 # −22.86 kcal/mol, anion −165.81 kcal/mol. Modelling everything as neutral
 # omitted ~143 kcal/mol of precisely the interaction under study, and made the
 # methyl-ester negative control look equivalent to the parent.
+
 
 def test_declared_net_charge_matches_the_scoring_species():
     """A declared charge that disagrees with the SMILES would be handed to the
@@ -272,10 +290,15 @@ def test_ionized_and_neutral_forms_differ_by_exactly_one_proton():
             f"{a.label!r}: ionized form has {a_h} hydrogens vs {n_h} neutral; "
             "expected exactly one fewer"
         )
+
         # Heavy-atom composition must be identical.
         def heavy(m):
             from collections import Counter
-            return Counter(at.GetSymbol() for at in m.GetAtoms() if at.GetSymbol() != "H")
+
+            return Counter(
+                at.GetSymbol() for at in m.GetAtoms() if at.GetSymbol() != "H"
+            )
+
         assert heavy(neutral) == heavy(anion), (
             f"{a.label!r}: ionized form changed the heavy-atom composition "
             f"({dict(heavy(neutral))} -> {dict(heavy(anion))})"

@@ -21,6 +21,7 @@ if the service returns, `AdmetlabProvider` starts contributing with no code
 change. Do not delete it on the assumption it never worked -- and do not
 "fix" it by inventing a new path without re-probing first.
 """
+
 from __future__ import annotations
 
 import json
@@ -52,7 +53,8 @@ _ADMETLAB_TOX_KEYS: dict[str, tuple[str, bool]] = {
 def _post_json(url: str, payload: dict, timeout: float) -> dict:
     body = json.dumps(payload).encode()
     req = urllib.request.Request(
-        url, data=body,
+        url,
+        data=body,
         headers={"Content-Type": "application/json", "User-Agent": _UA},
         method="POST",
     )
@@ -115,8 +117,7 @@ class AdmetlabProvider:
             rows = data
         if not isinstance(rows, list) or not rows or not isinstance(rows[0], dict):
             self.last_error = (
-                f"unexpected response shape from {self.url}: "
-                f"{str(data)[:200]}"
+                f"unexpected response shape from {self.url}: {str(data)[:200]}"
             )
             return []
 

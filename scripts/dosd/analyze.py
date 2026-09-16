@@ -11,12 +11,14 @@ The molecular C6 is read from results.json (parsed from the CLI's printed
 `molecular C6 = X a.u.`, the global-origin c6_molecular_iso). The static alpha
 is read from each NPZ's `alpha_tensor` (iso = trace/3).
 """
+
 import json
 import os
 from pathlib import Path
 
 import numpy as np
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -27,10 +29,23 @@ REF = json.loads((ROOT / "testdata" / "reference" / "dosd_c6.json").read_text())
 DOSD = REF["molecular_c6_aa"]
 ALPHA_REF = REF["molecular_alpha0"]
 
-DOSD_KEY = {"h2": "H2", "n2": "N2", "co": "CO", "water": "H2O", "nh3": "NH3",
-            "ch4": "CH4", "co2": "CO2", "c2h2": "C2H2", "c2h4": "C2H4",
-            "c2h6": "C2H6", "hf": "HF", "hcl": "HCl", "h2s": "H2S",
-            "benzene": "C6H6", "o2": "O2"}
+DOSD_KEY = {
+    "h2": "H2",
+    "n2": "N2",
+    "co": "CO",
+    "water": "H2O",
+    "nh3": "NH3",
+    "ch4": "CH4",
+    "co2": "CO2",
+    "c2h2": "C2H2",
+    "c2h4": "C2H4",
+    "c2h6": "C2H6",
+    "hf": "HF",
+    "hcl": "HCl",
+    "h2s": "H2S",
+    "benzene": "C6H6",
+    "o2": "O2",
+}
 MOLS = list(DOSD_KEY)
 METHODS = ["rpa_pbe", "rpa_hf", "ts"]
 BASES = ["augccpvdz", "augccpvtz"]
@@ -81,20 +96,34 @@ def main():
         for mol in MOLS:
             r = c6_ref(mol)
             vals = {m: c6_get(mol, m, basis) for m in METHODS}
-            errs = {m: (100.0 * (vals[m] - r) / r if vals[m] and r else None)
-                    for m in METHODS}
+            errs = {
+                m: (100.0 * (vals[m] - r) / r if vals[m] and r else None)
+                for m in METHODS
+            }
 
             def f(x):
                 return "" if x is None else f"{x:.2f}"
-            rows.append(",".join([mol, basis, f(r), f(vals["rpa_pbe"]),
-                                  f(vals["rpa_hf"]), f(vals["ts"]),
-                                  f(errs["rpa_pbe"]), f(errs["rpa_hf"]),
-                                  f(errs["ts"]), "yes" if mol in APPROX else ""]))
+
+            rows.append(
+                ",".join(
+                    [
+                        mol,
+                        basis,
+                        f(r),
+                        f(vals["rpa_pbe"]),
+                        f(vals["rpa_hf"]),
+                        f(vals["ts"]),
+                        f(errs["rpa_pbe"]),
+                        f(errs["rpa_hf"]),
+                        f(errs["ts"]),
+                        "yes" if mol in APPROX else "",
+                    ]
+                )
+            )
     (HERE / "results.csv").write_text("\n".join(rows) + "\n")
 
     # ---------- alpha CSV ----------
-    arows = ["molecule,basis,alpha_ref,alpha_rpa_pbe,alpha_rpa_hf,"
-             "err_pbe_%,err_hf_%"]
+    arows = ["molecule,basis,alpha_ref,alpha_rpa_pbe,alpha_rpa_hf,err_pbe_%,err_hf_%"]
     for basis in BASES:
         for mol in MOLS:
             ar = alpha_ref(mol)
@@ -105,8 +134,8 @@ def main():
 
             def f(x):
                 return "" if x is None else f"{x:.2f}"
-            arows.append(",".join([mol, basis, f(ar), f(ap), f(ah),
-                                   f(ep), f(eh)]))
+
+            arows.append(",".join([mol, basis, f(ar), f(ap), f(ah), f(ep), f(eh)]))
     (HERE / "alpha.csv").write_text("\n".join(arows) + "\n")
 
     # ---------- MARE tables ----------
@@ -114,8 +143,12 @@ def main():
     print(f"{'basis':<12}{'method':<10}{'MARE %':>8}{'MSE %':>8}{'n':>4}")
     for basis in BASES:
         for m in METHODS:
-            errs = [100.0 * (c6_get(mol, m, basis) - c6_ref(mol)) / c6_ref(mol)
-                    if c6_get(mol, m, basis) else None for mol in MOLS]
+            errs = [
+                100.0 * (c6_get(mol, m, basis) - c6_ref(mol)) / c6_ref(mol)
+                if c6_get(mol, m, basis)
+                else None
+                for mol in MOLS
+            ]
             ma, ms = mare(errs), mse(errs)
             n = sum(1 for e in errs if e is not None)
             if ma is not None:
@@ -125,8 +158,12 @@ def main():
     print(f"{'basis':<12}{'method':<10}{'MARE %':>8}{'MSE %':>8}{'n':>4}")
     for basis in BASES:
         for m in ["rpa_pbe", "rpa_hf"]:
-            errs = [100.0 * (alpha_iso(mol, m, basis) - alpha_ref(mol)) / alpha_ref(mol)
-                    if alpha_iso(mol, m, basis) else None for mol in MOLS]
+            errs = [
+                100.0 * (alpha_iso(mol, m, basis) - alpha_ref(mol)) / alpha_ref(mol)
+                if alpha_iso(mol, m, basis)
+                else None
+                for mol in MOLS
+            ]
             ma, ms = mare(errs), mse(errs)
             n = sum(1 for e in errs if e is not None)
             if ma is not None:
@@ -149,13 +186,17 @@ def main():
             ys = [c6_get(mol, m, basis) for mol in MOLS if c6_get(mol, m, basis)]
             if xs:
                 ax.scatter(xs, ys, c=colors[m], label=labels[m], s=40, alpha=0.8)
-        ax.set_xscale("log"); ax.set_yscale("log")
-        ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_xlim(lo, hi)
+        ax.set_ylim(lo, hi)
         ax.set_xlabel("DOSD reference C6 (a.u.)")
         ax.set_ylabel("Computed C6 (a.u.)")
         ax.set_title(f"Molecular C6 vs DOSD — {basis}")
-        ax.legend(); ax.grid(True, which="both", alpha=0.2)
-        fig.tight_layout(); fig.savefig(plotdir / f"scatter_c6_{basis}.png", dpi=130)
+        ax.legend()
+        ax.grid(True, which="both", alpha=0.2)
+        fig.tight_layout()
+        fig.savefig(plotdir / f"scatter_c6_{basis}.png", dpi=130)
         plt.close(fig)
 
         # --- alpha scatter ---
@@ -167,43 +208,59 @@ def main():
             ys = [alpha_iso(mol, m, basis) for mol in MOLS if alpha_iso(mol, m, basis)]
             if xs:
                 ax.scatter(xs, ys, c=colors[m], label=labels[m], s=40, alpha=0.8)
-        ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
+        ax.set_xlim(lo, hi)
+        ax.set_ylim(lo, hi)
         ax.set_xlabel("Reference static α₀ (a.u.)")
         ax.set_ylabel("Computed static α₀ (a.u.)")
         ax.set_title(f"Static polarizability vs CRC/DOSD — {basis}")
-        ax.legend(); ax.grid(True, alpha=0.2)
-        fig.tight_layout(); fig.savefig(plotdir / f"scatter_alpha_{basis}.png", dpi=130)
+        ax.legend()
+        ax.grid(True, alpha=0.2)
+        fig.tight_layout()
+        fig.savefig(plotdir / f"scatter_alpha_{basis}.png", dpi=130)
         plt.close(fig)
 
         # --- C6 signed-error bars ---
         fig, ax = plt.subplots(figsize=(11, 5))
-        x = np.arange(len(MOLS)); w = 0.26
+        x = np.arange(len(MOLS))
+        w = 0.26
         for i, m in enumerate(METHODS):
-            es = [100.0 * (c6_get(mol, m, basis) - c6_ref(mol)) / c6_ref(mol)
-                  if c6_get(mol, m, basis) else np.nan for mol in MOLS]
+            es = [
+                100.0 * (c6_get(mol, m, basis) - c6_ref(mol)) / c6_ref(mol)
+                if c6_get(mol, m, basis)
+                else np.nan
+                for mol in MOLS
+            ]
             ax.bar(x + (i - 1) * w, es, w, color=colors[m], label=labels[m])
         ax.axhline(0, color="k", lw=0.8)
-        ax.set_xticks(x); ax.set_xticklabels([DOSD_KEY[m] for m in MOLS],
-                                             rotation=45, ha="right")
+        ax.set_xticks(x)
+        ax.set_xticklabels([DOSD_KEY[m] for m in MOLS], rotation=45, ha="right")
         ax.set_ylabel("Signed C6 error vs DOSD (%)")
         ax.set_title(f"Per-molecule C6 error — {basis}")
-        ax.legend(); ax.grid(True, axis="y", alpha=0.2)
-        fig.tight_layout(); fig.savefig(plotdir / f"signed_error_c6_{basis}.png", dpi=130)
+        ax.legend()
+        ax.grid(True, axis="y", alpha=0.2)
+        fig.tight_layout()
+        fig.savefig(plotdir / f"signed_error_c6_{basis}.png", dpi=130)
         plt.close(fig)
 
         # --- alpha signed-error bars ---
         fig, ax = plt.subplots(figsize=(11, 5))
         for i, m in enumerate(["rpa_pbe", "rpa_hf"]):
-            es = [100.0 * (alpha_iso(mol, m, basis) - alpha_ref(mol)) / alpha_ref(mol)
-                  if alpha_iso(mol, m, basis) else np.nan for mol in MOLS]
+            es = [
+                100.0 * (alpha_iso(mol, m, basis) - alpha_ref(mol)) / alpha_ref(mol)
+                if alpha_iso(mol, m, basis)
+                else np.nan
+                for mol in MOLS
+            ]
             ax.bar(x + (i - 0.5) * w, es, w, color=colors[m], label=labels[m])
         ax.axhline(0, color="k", lw=0.8)
-        ax.set_xticks(x); ax.set_xticklabels([DOSD_KEY[m] for m in MOLS],
-                                             rotation=45, ha="right")
+        ax.set_xticks(x)
+        ax.set_xticklabels([DOSD_KEY[m] for m in MOLS], rotation=45, ha="right")
         ax.set_ylabel("Signed α₀ error vs ref (%)")
         ax.set_title(f"Per-molecule static-α error — {basis}")
-        ax.legend(); ax.grid(True, axis="y", alpha=0.2)
-        fig.tight_layout(); fig.savefig(plotdir / f"signed_error_alpha_{basis}.png", dpi=130)
+        ax.legend()
+        ax.grid(True, axis="y", alpha=0.2)
+        fig.tight_layout()
+        fig.savefig(plotdir / f"signed_error_alpha_{basis}.png", dpi=130)
         plt.close(fig)
 
     print(f"wrote results.csv, alpha.csv, and plots to {plotdir}")

@@ -28,6 +28,7 @@ THREE CAVEATS, all of which change how the number may be quoted:
 
 Usage:  python3 attmp2_from_scans.py [--basis aqz] [--systems 12,15,20,...]
 """
+
 import argparse
 import re
 import sys
@@ -102,8 +103,10 @@ def main():
         b = min(full, key=lambda t: t[1])
         print(f"\nbest sampled (full coverage): r0 = {b[0]:.2f} A, MAE {b[1]:.4f}")
         if b[0] == max(r for r, _ in full):
-            print("BOUNDARY — still falling at the edge; the minimum is beyond "
-                  "the sampled range. Do NOT quote this as the optimum.")
+            print(
+                "BOUNDARY — still falling at the edge; the minimum is beyond "
+                "the sampled range. Do NOT quote this as the optimum."
+            )
     print("\nNOTE: terfc (same operator as published attMP2), but aQZ/CP on this")
     print("      scan's r0 grid — published aQZ r0 is 1.50 A and is NO-CP.")
 

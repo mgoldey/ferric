@@ -40,6 +40,7 @@ Usage:
 Exit code: 0 = no regression, 1 = regression found, 2 = tool not installed
 (soft-skip; see ci-gate.sh's handling).
 """
+
 import json
 import os
 import shutil
@@ -86,11 +87,15 @@ def scan() -> dict:
     with tempfile.TemporaryDirectory() as tmp:
         cmd = [
             "rust-code-analysis-cli",
-            "-p", CRATES_DIR,
+            "-p",
+            CRATES_DIR,
             "-m",
-            "-O", "json",
-            "-I", "**/*.rs",
-            "-o", tmp,
+            "-O",
+            "json",
+            "-I",
+            "**/*.rs",
+            "-o",
+            tmp,
         ]
         for g in EXCLUDE_GLOBS:
             cmd += ["-X", g]
@@ -119,7 +124,13 @@ def scan() -> dict:
                         start = node.get("start_line")
                         qualified = f"{rel}::{name}@{start}"
                         if cc is not None:
-                            results[qualified] = {"cc": cc, "mi": mi, "path": rel, "name": name, "line": start}
+                            results[qualified] = {
+                                "cc": cc,
+                                "mi": mi,
+                                "path": rel,
+                                "name": name,
+                                "line": start,
+                            }
                     for child in node.get("spaces", []):
                         walk(child)
 
@@ -136,13 +147,14 @@ def main():
     if update:
         # Store a stable, sorted, minimal snapshot -- diffable in review.
         snapshot = {
-            k: {"cc": v["cc"], "mi": v["mi"]}
-            for k, v in sorted(current.items())
+            k: {"cc": v["cc"], "mi": v["mi"]} for k, v in sorted(current.items())
         }
         with open(BASELINE_PATH, "w") as fh:
             json.dump(snapshot, fh, indent=2, sort_keys=True)
             fh.write("\n")
-        print(f"complexity_gate.py: baseline updated -> {BASELINE_PATH} ({len(snapshot)} functions)")
+        print(
+            f"complexity_gate.py: baseline updated -> {BASELINE_PATH} ({len(snapshot)} functions)"
+        )
         return 0
 
     if not os.path.exists(BASELINE_PATH):
@@ -199,7 +211,9 @@ def main():
         )
         return 1
 
-    print(f"complexity_gate.py: PASS -- {len(current)} functions checked, no regressions vs baseline")
+    print(
+        f"complexity_gate.py: PASS -- {len(current)} functions checked, no regressions vs baseline"
+    )
     return 0
 
 

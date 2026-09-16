@@ -11,6 +11,7 @@ Prints one parseable line:  PYSCF <ip_g0w0_ev> <ip_koopmans_ev>
 
 Usage: pyscf_g0w0.py <file.xyz> [basis]   (basis default def2-tzvp)
 """
+
 import sys
 
 import numpy as np

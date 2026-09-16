@@ -1,4 +1,5 @@
 """One enumerated isomer, with the provenance that makes it reproducible."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ class Isomer:
     `kind` is "substitutional" (decorates a fixed scaffold), "structural"
     (changes the scaffold), or "parent".
     """
+
     smiles: str
     kind: str
     transform: str
@@ -65,15 +67,15 @@ class Isomer:
         # which needs a valid SMILES for the product fragment and silently
         # fails if the replacement string is SMARTS rather than SMILES.
         acidic_sites = (
-            "[OX2H1][CX3]=O",                    # carboxylic acid O-H
+            "[OX2H1][CX3]=O",  # carboxylic acid O-H
             # Tetrazole N-H. Matched via the aromatic-N-in-a-tetrazole-ring
             # pattern with the acidic N FIRST, because a ring-closure SMARTS
             # written from the wrong atom does not match at all (verified:
             # "[nX3H1]1nnnc1" matches nothing on c1ccccc1c1nn[nH]n1).
             "[nX3H1]:n:n:n:c",
             "[nX3H1]:n:n:c:n",
-            "[NX3H1]([SX4](=O)=O)[CX3]=O",       # acylsulfonamide N-H
-            "[OX2H1][SX4](=O)=O",                # sulfonic acid O-H
+            "[NX3H1]([SX4](=O)=O)[CX3]=O",  # acylsulfonamide N-H
+            "[OX2H1][SX4](=O)=O",  # sulfonic acid O-H
         )
         for smarts in acidic_sites:
             patt = Chem.MolFromSmarts(smarts)
@@ -97,9 +99,11 @@ class Isomer:
             if Chem.GetFormalCharge(prod) != -1:
                 continue
             return Isomer(
-                smiles=Chem.MolToSmiles(prod), kind=self.kind,
+                smiles=Chem.MolToSmiles(prod),
+                kind=self.kind,
                 transform=f"{self.transform} (deprotonated)",
-                parent_smiles=self.parent_smiles, net_charge=-1,
+                parent_smiles=self.parent_smiles,
+                net_charge=-1,
                 notes=[*self.notes, "pH-7.4 anion"],
             )
         return None

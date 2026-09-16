@@ -30,6 +30,7 @@ so `RelaxedPose.coords_angstrom` is the settled pose, ready for
 `embed_ligand_from_coords`/further tooling. Atom order is preserved by the
 optimizer, so `symbols` is taken from the input `EmbeddedLigand`.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -56,6 +57,7 @@ class RelaxedPose:
     non-convergence. It also never fabricates a "done" result: `converged`
     reports exactly what `ferric.run_optimize` reported, unmodified.
     """
+
     energy: float  # Hartree, in-field, at the (attempted) relaxed geometry
     converged: bool
     steps: int
@@ -129,6 +131,7 @@ class RelaxedPoseQmmm:
     converged -- check `converged` before treating it as settled, same
     contract as `RelaxedPose`.
     """
+
     energy: float  # Hartree, at the (attempted) relaxed geometry
     converged: bool
     steps: int
@@ -198,14 +201,19 @@ def relax_pose_in_pocket(
     # `relax_pose_in_pocket_field`'s ferric.run_optimize call makes
     # implicitly via embedded.mol.
     system = ferric.QmmmSystem(
-        all_symbols, all_coords_angstrom, all_charges,
+        all_symbols,
+        all_coords_angstrom,
+        all_charges,
         qm_indices=list(range(n_ligand)),
     )
 
     result = ferric.run_optimize_qmmm(
-        system, embedded.basis_name,
-        move_mm=move_mm, mm_topology=mm_topology,
-        max_steps=max_steps, e_conv=e_conv,
+        system,
+        embedded.basis_name,
+        move_mm=move_mm,
+        mm_topology=mm_topology,
+        max_steps=max_steps,
+        e_conv=e_conv,
     )
     relaxed_system = result.system()
     relaxed_coords = relaxed_system.qm_molecule().coords()[:n_ligand]

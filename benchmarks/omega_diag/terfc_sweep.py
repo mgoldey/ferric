@@ -38,6 +38,7 @@ Tunables (env): TERFC_CONC (1), TERFC_R0_LIST (comma Bohr), TERFC_SYSTEMS
   (comma keys from SYSTEMS), TERFC_HEARTBEAT_S (120), TERFC_TIMEOUT (7200),
   TERFC_PER_JOB_GB (2.0).
 """
+
 from pathlib import Path
 import math
 import os
@@ -57,30 +58,38 @@ BIN = "target/release/ferric-cli"
 # it, so `terf` runs don't silently fail engine creation.
 _TERF_DIR = os.environ.get("FERRIC_TERF_TABLE_DIR", "")
 if not _TERF_DIR or not os.path.exists(os.path.join(_TERF_DIR, "16_4_2.bin")):
-    for cand in (
-                 f"{ROOT}/terf-tables"):
+    for cand in f"{ROOT}/terf-tables":
         if os.path.exists(os.path.join(cand, "16_4_2.bin")):
             _TERF_DIR = cand
             break
-ENV = dict(os.environ, OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS="1",
-           OMP_NUM_THREADS="1", MKL_NUM_THREADS="1",
-           FERRIC_TERF_TABLE_DIR=_TERF_DIR)
+ENV = dict(
+    os.environ,
+    OPENBLAS_NUM_THREADS="1",
+    RAYON_NUM_THREADS="1",
+    OMP_NUM_THREADS="1",
+    MKL_NUM_THREADS="1",
+    FERRIC_TERF_TABLE_DIR=_TERF_DIR,
+)
 
 # Small test systems: (key, xyz, basis, aux, frozen_core). cc-pVDZ keeps each
 # job <1.5 GB. Geometries live in testdata/molecules; dimers reuse S22 CP geoms.
 GEO = f"{ROOT}/benchmarks/grid/geoms"
 SYSTEMS = {
-    "water":       (f"{ROOT}/testdata/molecules/water.xyz",   "cc-pvdz", "cc-pvdz-ri", 1),
-    "water_dimer": (f"{GEO}/s22-02_dimer.xyz",                "cc-pvdz", "cc-pvdz-ri", 2),
-    "ethene_dimer":(f"{GEO}/s22-09_dimer.xyz",                "cc-pvdz", "cc-pvdz-ri", 4),
+    "water": (f"{ROOT}/testdata/molecules/water.xyz", "cc-pvdz", "cc-pvdz-ri", 1),
+    "water_dimer": (f"{GEO}/s22-02_dimer.xyz", "cc-pvdz", "cc-pvdz-ri", 2),
+    "ethene_dimer": (f"{GEO}/s22-09_dimer.xyz", "cc-pvdz", "cc-pvdz-ri", 4),
 }
 
 # r0 sweep in BOHR. Chosen to bracket the limits and pass through the erf arm's
 # operating point (erf omega=0.42 Ang^-1 = 0.2223 Bohr^-1 -> matching terf r0 via
 # r0 = 1/(omega*sqrt2) = 1/(0.2223*1.41421) = 3.18 Bohr). Extremes probe limits.
 R0_DEFAULT = [0.30, 1.00, 2.00, 3.18, 5.00, 12.0]
-R0_LIST = [float(x) for x in os.environ.get("TERFC_R0_LIST", "").split(",") if x.strip()] or R0_DEFAULT
-SYS_KEYS = [s for s in os.environ.get("TERFC_SYSTEMS", "").split(",") if s.strip()] or list(SYSTEMS)
+R0_LIST = [
+    float(x) for x in os.environ.get("TERFC_R0_LIST", "").split(",") if x.strip()
+] or R0_DEFAULT
+SYS_KEYS = [
+    s for s in os.environ.get("TERFC_SYSTEMS", "").split(",") if s.strip()
+] or list(SYSTEMS)
 
 FORMS = [("B", "delta-lr"), ("T", "coupled-rings")]
 
@@ -190,12 +199,13 @@ def preflight():
     xyz, basis, aux, fc = SYSTEMS["water"]
     tp = f"{OUT}/toml/_preflight_terf.toml"
     open(tp, "w").write(terf_toml(xyz, 3.18, "delta-lr", basis, aux, fc))
-    r = subprocess.run([BIN, tp], capture_output=True, text=True, env=ENV,
-                       timeout=600)
+    r = subprocess.run([BIN, tp], capture_output=True, text=True, env=ENV, timeout=600)
     combined = (r.stdout or "") + (r.stderr or "")
     if r.returncode != 0 or "Total energy" not in combined:
-        log("PREFLIGHT FAIL: terf stanza rejected or job errored. The terf arm "
-            "is not wired into the CLI yet (task #20). Output tail:")
+        log(
+            "PREFLIGHT FAIL: terf stanza rejected or job errored. The terf arm "
+            "is not wired into the CLI yet (task #20). Output tail:"
+        )
         for ln in combined.strip().splitlines()[-15:]:
             log(f"    | {ln}")
         return False
@@ -203,11 +213,15 @@ def preflight():
     # the erf default. If the binary echoes the attenuator, confirm it says terf.
     low = combined.lower()
     if "attenuator" in low and "terf" not in low.split("attenuator", 1)[1][:40]:
-        log("PREFLIGHT FAIL: binary ran but attenuator is not 'terf' — likely "
-            "silent erf-fallback (unknown-key tolerance). Refusing to sweep.")
+        log(
+            "PREFLIGHT FAIL: binary ran but attenuator is not 'terf' — likely "
+            "silent erf-fallback (unknown-key tolerance). Refusing to sweep."
+        )
         return False
-    log("PREFLIGHT OK: terf stanza accepted, water/cc-pVDZ terf-B ran to "
-        "'Total energy'.")
+    log(
+        "PREFLIGHT OK: terf stanza accepted, water/cc-pVDZ terf-B ran to "
+        "'Total energy'."
+    )
     return True
 
 
@@ -215,9 +229,12 @@ def heartbeat():
     while True:
         time.sleep(HEARTBEAT_S)
         with _lock:
-            r = sorted(_state["running"]); d, t = _state["done"], _state["total"]
-        log(f"[hb] {d}/{t} done, avail={mem_available_gb():.1f}GB, "
-            f"running={r or '(none)'}")
+            r = sorted(_state["running"])
+            d, t = _state["done"], _state["total"]
+        log(
+            f"[hb] {d}/{t} done, avail={mem_available_gb():.1f}GB, "
+            f"running={r or '(none)'}"
+        )
 
 
 def admit(key):
@@ -246,8 +263,14 @@ def run_one(job):
     status = "FAIL"
     try:
         with open(op, "w") as f, open(op + ".err", "w") as e:
-            subprocess.run([BIN, f"{OUT}/toml/{key}.toml"], stdout=f, stderr=e,
-                           env=ENV, timeout=TIMEOUT, preexec_fn=_oom)
+            subprocess.run(
+                [BIN, f"{OUT}/toml/{key}.toml"],
+                stdout=f,
+                stderr=e,
+                env=ENV,
+                timeout=TIMEOUT,
+                preexec_fn=_oom,
+            )
         ok = os.path.exists(op) and marker in open(op).read()
         status = "ok" if ok else "FAIL"
     except subprocess.TimeoutExpired:
@@ -267,26 +290,31 @@ def enumerate_jobs():
             for tag, form in FORMS:
                 # terf arm (swept on r0)
                 k = f"{sk}_terf_r0{r0}_{tag}"
-                jobs.append((k, terf_toml(xyz, r0, form, basis, aux, fc),
-                             "Total energy"))
+                jobs.append(
+                    (k, terf_toml(xyz, r0, form, basis, aux, fc), "Total energy")
+                )
                 # matched erf/erfc arm at the same derived omega (comparison)
                 ke = f"{sk}_erf_w{w:.4f}_{tag}"
-                jobs.append((ke, erf_toml(xyz, w, form, basis, aux, fc),
-                             "Total energy"))
+                jobs.append(
+                    (ke, erf_toml(xyz, w, form, basis, aux, fc), "Total energy")
+                )
     # de-dup erf jobs that repeat across r0 within a system (same omega only if
     # r0 repeats — it won't here, but keep idempotent by key)
     seen, uniq = set(), []
     for j in jobs:
         if j[0] in seen:
             continue
-        seen.add(j[0]); uniq.append(j)
+        seen.add(j[0])
+        uniq.append(j)
     return uniq
 
 
 def main():
     os.makedirs(f"{OUT}/toml", exist_ok=True)
     os.makedirs(f"{OUT}/out", exist_ok=True)
-    log(f"terfc sweep: systems={SYS_KEYS}, r0(Bohr)={R0_LIST}, forms={[f[0] for f in FORMS]}")
+    log(
+        f"terfc sweep: systems={SYS_KEYS}, r0(Bohr)={R0_LIST}, forms={[f[0] for f in FORMS]}"
+    )
     if not preflight():
         log("ABORT: preflight failed. Wire the terf arm (task #20), rebuild, retry.")
         return
@@ -294,8 +322,11 @@ def main():
         log("PREFLIGHT_ONLY set — stopping after preflight.")
         return
     jobs = enumerate_jobs()
-    todo = [j for j in jobs if not (os.path.exists(out(j[0]))
-                                    and j[2] in open(out(j[0])).read())]
+    todo = [
+        j
+        for j in jobs
+        if not (os.path.exists(out(j[0])) and j[2] in open(out(j[0])).read())
+    ]
     _state["total"] = len(todo)
     log(f"{len(jobs)} total job keys, {len(todo)} to run, CONC={CONC}")
     if not todo:
@@ -303,6 +334,7 @@ def main():
     else:
         threading.Thread(target=heartbeat, daemon=True).start()
         from concurrent.futures import ThreadPoolExecutor, as_completed
+
         with ThreadPoolExecutor(max_workers=CONC) as ex:
             futs = {ex.submit(run_one, j): j for j in todo}
             for fut in as_completed(futs):

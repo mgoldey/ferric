@@ -6,6 +6,7 @@ carry an explanatory `error`. If it instead came back with zero conformers and
 no error, a downstream ranking would treat it as evaluated-and-unremarkable
 rather than not-evaluated -- the same fabrication class as `tools/tox`'s 0.0.
 """
+
 from __future__ import annotations
 
 import math
@@ -18,9 +19,7 @@ from tools.morph.embed import embed_analogue
 # Small and fast: embedding the 71-atom parent many times over would dominate
 # the suite's runtime for no extra coverage of the code paths here.
 # A minimal spec: the library must not depend on any campaign's pharmacophore.
-CARBOXYLIC_ACID = PharmacophoreSpec(
-    features=(("acid", "[CX3](=O)[OX2H1]", 1),)
-)
+CARBOXYLIC_ACID = PharmacophoreSpec(features=(("acid", "[CX3](=O)[OX2H1]", 1),))
 
 SMALL = Analogue(
     label="ibuprofen-like",
@@ -88,18 +87,20 @@ def test_different_seeds_can_give_different_geometries():
     a = embed_analogue(SMALL, n_conformers=6, random_seed=1)
     b = embed_analogue(SMALL, n_conformers=6, random_seed=999_983)
     same = a.n_conformers == b.n_conformers and all(
-        all(
-            all(abs(x - y) < 1e-6 for x, y in zip(pa, pb))
-            for pa, pb in zip(ca, cb)
-        )
+        all(all(abs(x - y) < 1e-6 for x, y in zip(pa, pb)) for pa, pb in zip(ca, cb))
         for ca, cb in zip(a.conformers, b.conformers)
     )
     assert not same, "seed has no effect -- the reproducibility test is vacuous"
 
 
 def test_unparseable_smiles_is_reported_not_raised():
-    bad = Analogue(label="bad", smiles="C1CC(((", hypothesis="h", rationale="r",
-                   pharmacophore=CARBOXYLIC_ACID)
+    bad = Analogue(
+        label="bad",
+        smiles="C1CC(((",
+        hypothesis="h",
+        rationale="r",
+        pharmacophore=CARBOXYLIC_ACID,
+    )
     e = embed_analogue(bad)
     assert not e.usable
     assert e.error is not None and "unparseable" in e.error

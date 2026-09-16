@@ -1,5 +1,6 @@
 """Electronic properties (Hirshfeld/Löwdin charges, Hirshfeld polarizability)
 for a converged EnergyResult."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -28,7 +29,9 @@ def compute_charges(embedded: EmbeddedLigand, energy: EnergyResult) -> dict:
     accept either result type).
     """
     return {
-        "hirshfeld": ferric.hirshfeld_charges(embedded.mol, embedded.basis_set, energy.raw),
+        "hirshfeld": ferric.hirshfeld_charges(
+            embedded.mol, embedded.basis_set, energy.raw
+        ),
         "lowdin": ferric.lowdin_charges(embedded.mol, embedded.basis_set, energy.raw),
     }
 
@@ -59,6 +62,9 @@ def compute_alpha_atomic(
             )
     auxbasis_set = ferric.BasisSet.bundled(auxbasis)
     return ferric.hirshfeld_polarizability(
-        embedded.mol, embedded.basis_set, auxbasis_set, energy.raw,
+        embedded.mol,
+        embedded.basis_set,
+        auxbasis_set,
+        energy.raw,
         memory_budget_gb=memory_budget_gb,
     )

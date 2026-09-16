@@ -41,6 +41,7 @@ Per case the reference records:
 Usage:
     OPENBLAS_NUM_THREADS=1 ~/qc/ferric/.venv/bin/python scripts/gen_pyscf_qmmm_dft_refs.py
 """
+
 import json
 import math
 from pathlib import Path
@@ -140,7 +141,11 @@ def run_case(tag, atoms, charge, spin, basis, xc, mm):
     # Gas-phase energy of the same QM atoms/basis/xc, for the shift.
     mol0 = gto.M(
         atom=[(s, xyz) for s, xyz in atoms],
-        basis=basis, unit="Bohr", charge=charge, spin=spin, verbose=0,
+        basis=basis,
+        unit="Bohr",
+        charge=charge,
+        spin=spin,
+        verbose=0,
     )
     mf0 = _build_mf(mol0, xc)
     e0 = mf0.kernel()

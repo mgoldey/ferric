@@ -19,6 +19,7 @@ measurable here: n_distinct pair domains per rule — if magnitude selection
 at atom granularity still shares domains comparably to distance, the
 grouping objection dissolves; if not, the cost model decides.
 """
+
 import argparse
 import os
 import sys
@@ -54,8 +55,7 @@ def doms_from_atomsets(atomsets, f2a):
 def atomsets_dist(ctx, r):
     axyz = ctx["mol"].atom_coords()
     d = np.linalg.norm(axyz[None, :, :] - ctx["occ_cen"][:, None, :], axis=2)
-    return [frozenset(np.nonzero(d[i] <= r)[0].tolist())
-            for i in range(ctx["no"])]
+    return [frozenset(np.nonzero(d[i] <= r)[0].tolist()) for i in range(ctx["no"])]
 
 
 def atomsets_mag(ctx, tau, f2a, mode="thresh"):
@@ -93,12 +93,16 @@ def stage5_cost(atomsets, f2a, no, nv):
             union_sizes.setdefault(u, d)
             pair_costs += 2.0 * d * d * nv + 2.0 * d * nv * nv
             npairs += 1
-    chol = sum(d ** 3 / 3.0 for d in union_sizes.values())
+    chol = sum(d**3 / 3.0 for d in union_sizes.values())
     sizes = np.array(sorted(union_sizes.values()))
-    return dict(n_pairs=npairs, n_distinct=len(union_sizes),
-                chol_gf=chol / 1e9, gemm_gf=pair_costs / 1e9,
-                total_gf=(chol + pair_costs) / 1e9,
-                dmean_distinct=float(sizes.mean()))
+    return dict(
+        n_pairs=npairs,
+        n_distinct=len(union_sizes),
+        chol_gf=chol / 1e9,
+        gemm_gf=pair_costs / 1e9,
+        total_gf=(chol + pair_costs) / 1e9,
+        dmean_distinct=float(sizes.mean()),
+    )
 
 
 def c2_domain_conservativeness(ctx, tag, outfh, r_aux=10.0, qloc_radius=10.0):
@@ -118,9 +122,11 @@ def c2_domain_conservativeness(ctx, tag, outfh, r_aux=10.0, qloc_radius=10.0):
             esc = mask8 & ~allow
             n_esc = int(esc.sum())
             worst = float(np.abs(Jd[esc]).max()) if n_esc else 0.0
-            row = (f"{tag} c2dom eps={eps:g} kappa={kappa:g} r_aux={r_aux:g} "
-                   f"escapes={n_esc} worst|Jdom|esc={worst:.2e} "
-                   f"worst/eps={worst / eps:.2f}")
+            row = (
+                f"{tag} c2dom eps={eps:g} kappa={kappa:g} r_aux={r_aux:g} "
+                f"escapes={n_esc} worst|Jdom|esc={worst:.2e} "
+                f"worst/eps={worst / eps:.2f}"
+            )
             log("    " + row)
             outfh.write(row + "\n")
     outfh.flush()
@@ -136,12 +142,20 @@ def run(ctx, tag, outfh):
     log(f"    atom-granular trivial limit: max|dJ|={d0:.3e} solvefail={nf}")
     if d0 > 1e-10 or nf:
         raise SystemExit("atom-granular trivial-limit anchor FAILED")
-    sweeps = ([("dist", r, lambda r=r: atomsets_dist(ctx, r))
-               for r in (4.0, 5.0, 6.0, 7.0, 8.0, 10.0, 12.0)]
-              + [("magt", t, lambda t=t: atomsets_mag(ctx, t, f2a, "thresh"))
-                 for t in (3e-2, 1e-2, 3e-3, 1e-3, 3e-4, 1e-4)]
-              + [("tail", b, lambda b=b: atomsets_mag(ctx, b, f2a, "tail"))
-                 for b in (3e-1, 1e-1, 3e-2, 1e-2, 3e-3, 1e-3)])
+    sweeps = (
+        [
+            ("dist", r, lambda r=r: atomsets_dist(ctx, r))
+            for r in (4.0, 5.0, 6.0, 7.0, 8.0, 10.0, 12.0)
+        ]
+        + [
+            ("magt", t, lambda t=t: atomsets_mag(ctx, t, f2a, "thresh"))
+            for t in (3e-2, 1e-2, 3e-3, 1e-3, 3e-4, 1e-4)
+        ]
+        + [
+            ("tail", b, lambda b=b: atomsets_mag(ctx, b, f2a, "tail"))
+            for b in (3e-1, 1e-1, 3e-2, 1e-2, 3e-3, 1e-3)
+        ]
+    )
     for rule, knob, mk in sweeps:
         t0 = time.time()
         atomsets = mk()
@@ -152,12 +166,14 @@ def run(ctx, tag, outfh):
         Jd, dmean, dmax, nfail = P.fit_domains(ctx["A"], ctx["V"], doms)
         e = P.solve_full_mp2_closed(Jd, ctx["Foo"], ctx["Fvv"])
         cost = stage5_cost(atomsets, f2a, ctx["no"], ctx["nv"])
-        row = (f"{tag} auxatom {rule:>4s} knob={knob:<7g} "
-               f"pairdom={dmean:7.1f}/{dmax:4d} of {ctx['naux']} "
-               f"dE={e - e_ref:+.3e} distinct={cost['n_distinct']}/"
-               f"{cost['n_pairs']} chol={cost['chol_gf']:.2f}GF "
-               f"gemm={cost['gemm_gf']:.2f}GF tot={cost['total_gf']:.2f}GF "
-               f"solvefail={nfail} ({time.time()-t0:.1f}s)")
+        row = (
+            f"{tag} auxatom {rule:>4s} knob={knob:<7g} "
+            f"pairdom={dmean:7.1f}/{dmax:4d} of {ctx['naux']} "
+            f"dE={e - e_ref:+.3e} distinct={cost['n_distinct']}/"
+            f"{cost['n_pairs']} chol={cost['chol_gf']:.2f}GF "
+            f"gemm={cost['gemm_gf']:.2f}GF tot={cost['total_gf']:.2f}GF "
+            f"solvefail={nfail} ({time.time() - t0:.1f}s)"
+        )
         log("    " + row)
         outfh.write(row + "\n")
         outfh.flush()
@@ -170,10 +186,13 @@ def main():
     ap.add_argument("--omega", type=float, default=None)
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
-    tag = (f"{os.path.basename(a.xyz).replace('.xyz','')} {a.basis} "
-           f"{'coul' if a.omega is None else f'erfc{a.omega:g}'}")
-    outpath = a.out or os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                    "out", "eps_linked_maps_atom.txt")
+    tag = (
+        f"{os.path.basename(a.xyz).replace('.xyz', '')} {a.basis} "
+        f"{'coul' if a.omega is None else f'erfc{a.omega:g}'}"
+    )
+    outpath = a.out or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "out", "eps_linked_maps_atom.txt"
+    )
     os.makedirs(os.path.dirname(outpath), exist_ok=True)
     ctx = P.setup(a.xyz, a.basis, a.omega)
     with open(outpath, "a") as outfh:

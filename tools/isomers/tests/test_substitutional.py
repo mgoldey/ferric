@@ -1,4 +1,5 @@
 """Substituent scans: symmetry dedup, provenance, and determinism."""
+
 from __future__ import annotations
 
 import pytest

@@ -94,9 +94,18 @@ def test_run_drpa_diis_defaults_on_and_disableable(water_631g):
     eps_rtol_factor=0.1); diis=0 / eps_rtol_factor=0.0 must map back to the
     legacy unaccelerated solve. All three land on the same root."""
     mol, obs, aux = water_631g
-    d_default = ferric.run_drpa(mol, obs, aux, eps=1e-3, frozen_core=1, compute_reference=False)
+    d_default = ferric.run_drpa(
+        mol, obs, aux, eps=1e-3, frozen_core=1, compute_reference=False
+    )
     d_legacy = ferric.run_drpa(
-        mol, obs, aux, eps=1e-3, frozen_core=1, compute_reference=False, diis=0, eps_rtol_factor=0.0
+        mol,
+        obs,
+        aux,
+        eps=1e-3,
+        frozen_core=1,
+        compute_reference=False,
+        diis=0,
+        eps_rtol_factor=0.0,
     )
     assert d_default["converged"] and d_legacy["converged"]
     # defaults reach convergence in fewer iterations than the legacy path
@@ -130,7 +139,9 @@ def test_run_linlccd_amplitude_variants_ordered():
     obs = ferric.BasisSet.bundled("6-31g")
     aux = ferric.BasisSet.bundled("cc-pvdz-ri")
     e = {
-        v: ferric.run_linlccd_amplitude(mol, obs, aux, variant=v, eps=0.0, frozen_core=1)["e_corr"]
+        v: ferric.run_linlccd_amplitude(
+            mol, obs, aux, variant=v, eps=0.0, frozen_core=1
+        )["e_corr"]
         for v in ("drivers", "hh", "full")
     }
     # drivers == RI-MP2; hh regularizes (|E| shrinks); full restores pp
@@ -156,8 +167,9 @@ def test_run_rimp2_kappa_limits():
 def test_tune_omega_h2_smoke():
     mol = ferric.Molecule.from_xyz("testdata/molecules/h2.xyz")
     obs = ferric.BasisSet.bundled("6-31g")
-    t = ferric.tune_omega(mol, obs, "wB97X-V", omega_lo=0.3, omega_hi=1.2,
-                          omega_tol=0.1, max_evals=10)
+    t = ferric.tune_omega(
+        mol, obs, "wB97X-V", omega_lo=0.3, omega_hi=1.2, omega_tol=0.1, max_evals=10
+    )
     assert 0.3 < t["omega"] < 1.2
     assert abs(t["j"]) < 5e-3  # Koopmans residual driven down from ~1e-2
     assert len(t["evals"]) >= 2
@@ -169,9 +181,16 @@ def test_run_lmp2_direct_trivial_maps_match_canonical(water_631g):
     # here we pin the kwarg plumbing at the same identity)
     mol, obs, aux = water_631g
     r = ferric.run_lmp2_direct(
-        mol, obs, aux, eps=0.0, frozen_core=1,
-        aux_radius_bohr=1e6, virt_radius_bohr=1e6, ao_tail=0.0,
-        schwarz_skip=0.0, batch_merge=1,
+        mol,
+        obs,
+        aux,
+        eps=0.0,
+        frozen_core=1,
+        aux_radius_bohr=1e6,
+        virt_radius_bohr=1e6,
+        ao_tail=0.0,
+        schwarz_skip=0.0,
+        batch_merge=1,
     )
     assert abs(r["e_corr"] - r["e_corr_canonical_ri"]) < 1e-9
     assert r["strip_rows_max"] > 0 and r["n_eri3_shell_triples"] > 0

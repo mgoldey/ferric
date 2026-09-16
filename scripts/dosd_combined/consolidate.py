@@ -34,6 +34,7 @@ geometries.py molecule-key lists. dosd3's only C6-comparable molecule (SiH4)
 is not an independent run -- it is a citation of dosd2's SiH4 number (see
 dosd3/results.md's own note), so it is NOT double counted.
 """
+
 import csv
 import json
 from pathlib import Path
@@ -68,15 +69,17 @@ def load_dosd():
                 # with current code, dropped rather than trusting the stale
                 # CSV number. benzene (TZ): still pending re-run at write time.
                 continue
-            rows.append({
-                "molecule": mol,
-                "round": "dosd",
-                "class": "first-row",
-                "ref_c6": float(r["dosd"]),
-                "rpa_pbe_c6": float(r["rpa_pbe"]),
-                "ts_c6": ts_fresh,
-                "source": "Meath-school DOSD (docs/dosd-c6-rpa-vs-ts.md)",
-            })
+            rows.append(
+                {
+                    "molecule": mol,
+                    "round": "dosd",
+                    "class": "first-row",
+                    "ref_c6": float(r["dosd"]),
+                    "rpa_pbe_c6": float(r["rpa_pbe"]),
+                    "ts_c6": ts_fresh,
+                    "source": "Meath-school DOSD (docs/dosd-c6-rpa-vs-ts.md)",
+                }
+            )
     return rows
 
 
@@ -93,15 +96,17 @@ def load_dosd2():
             ts_fresh = fresh.get(mol)
             if ts_fresh is None:
                 continue
-            rows.append({
-                "molecule": mol,
-                "round": "dosd2",
-                "class": r["class"],  # probe / control
-                "ref_c6": float(r["ref"]),
-                "rpa_pbe_c6": float(r["rpa_pbe"]),
-                "ts_c6": ts_fresh,
-                "source": "Toulouse et al. arXiv:1305.0107 Table III (docs/ts-failure-modes.md)",
-            })
+            rows.append(
+                {
+                    "molecule": mol,
+                    "round": "dosd2",
+                    "class": r["class"],  # probe / control
+                    "ref_c6": float(r["ref"]),
+                    "rpa_pbe_c6": float(r["rpa_pbe"]),
+                    "ts_c6": ts_fresh,
+                    "source": "Toulouse et al. arXiv:1305.0107 Table III (docs/ts-failure-modes.md)",
+                }
+            )
     return rows
 
 
@@ -118,9 +123,19 @@ def main():
         r["abs_err_ts_pct"] = abs(r["err_ts_pct"])
 
     out_csv = HERE / "consolidated_c6.csv"
-    fields = ["molecule", "round", "class", "ref_c6", "rpa_pbe_c6", "ts_c6",
-              "err_pbe_pct", "err_ts_pct", "abs_err_pbe_pct", "abs_err_ts_pct",
-              "source"]
+    fields = [
+        "molecule",
+        "round",
+        "class",
+        "ref_c6",
+        "rpa_pbe_c6",
+        "ts_c6",
+        "err_pbe_pct",
+        "err_ts_pct",
+        "abs_err_pbe_pct",
+        "abs_err_ts_pct",
+        "source",
+    ]
     with open(out_csv, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
@@ -185,18 +200,28 @@ def main():
 
     print(f"N = {n} molecules (aug-cc-pVTZ, real literature C6 references only)")
     print()
-    print(f"Wilcoxon signed-rank (|err_PBE| vs |err_TS|): "
-          f"W={wilcoxon.statistic:.1f}, p={wilcoxon.pvalue:.4g}")
-    print(f"Paired t-test        (|err_PBE| vs |err_TS|): "
-          f"t={ttest.statistic:.3f}, p={ttest.pvalue:.4g}")
+    print(
+        f"Wilcoxon signed-rank (|err_PBE| vs |err_TS|): "
+        f"W={wilcoxon.statistic:.1f}, p={wilcoxon.pvalue:.4g}"
+    )
+    print(
+        f"Paired t-test        (|err_PBE| vs |err_TS|): "
+        f"t={ttest.statistic:.3f}, p={ttest.pvalue:.4g}"
+    )
     print()
     print(f"Mean |rel err|:   RPA@PBE = {mean_pbe:.2f}%   TS = {mean_ts:.2f}%")
     print(f"Median |rel err|: RPA@PBE = {median_pbe:.2f}%   TS = {median_ts:.2f}%")
-    print(f"Mean signed err:  RPA@PBE = {mean_signed_pbe:+.2f}%   TS = {mean_signed_ts:+.2f}%")
+    print(
+        f"Mean signed err:  RPA@PBE = {mean_signed_pbe:+.2f}%   TS = {mean_signed_ts:+.2f}%"
+    )
     print()
-    print(f"Win rate: RPA@PBE closer on {pbe_wins}/{n}, TS closer on {ts_wins}/{n}, ties {ties}")
-    print(f"Worst case: RPA@PBE {worst_pbe:.1f}% ({worst_pbe_mol}), "
-          f"TS {worst_ts:.1f}% ({worst_ts_mol})")
+    print(
+        f"Win rate: RPA@PBE closer on {pbe_wins}/{n}, TS closer on {ts_wins}/{n}, ties {ties}"
+    )
+    print(
+        f"Worst case: RPA@PBE {worst_pbe:.1f}% ({worst_pbe_mol}), "
+        f"TS {worst_ts:.1f}% ({worst_ts_mol})"
+    )
 
 
 if __name__ == "__main__":

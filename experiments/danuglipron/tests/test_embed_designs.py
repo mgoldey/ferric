@@ -9,6 +9,7 @@ Every conformer generated here misses the experimentally determined bound pose b
 2.2-4.1 A, against a 2.0 A docking-success bar, so these geometries are usable
 for strain but NOT for pocket fit. See `tools.campaign.align.pose_quality_gate`.
 """
+
 from __future__ import annotations
 
 from experiments.danuglipron.design import danuglipron_analogues

@@ -28,6 +28,7 @@ Usage:
   python scripts/gen_pyscf_mulliken_ref.py methane cc-pvdz
   python scripts/gen_pyscf_mulliken_ref.py h2 cc-pvdz
 """
+
 import json
 import os
 import sys
@@ -60,14 +61,11 @@ def load_ferric_basis(basis):
     element symbol -- same crux as the Lowdin reference script: the Mulliken
     reference MUST be generated from the identical basis functions ferric
     uses, not PySCF's internal (segmented) table for the same name."""
-    path = os.path.join(
-        ROOT, "crates/ferric-core/src/basis/bundled", f"{basis}.json"
-    )
+    path = os.path.join(ROOT, "crates/ferric-core/src/basis/bundled", f"{basis}.json")
     with open(path) as fh:
         d = json.load(fh)
     return {
-        ELEMENTS[int(z)]: _bse_elem_to_pyscf(elem)
-        for z, elem in d["elements"].items()
+        ELEMENTS[int(z)]: _bse_elem_to_pyscf(elem) for z, elem in d["elements"].items()
     }
 
 
@@ -82,9 +80,7 @@ def build_mol(label, basis):
         body = "; ".join(lines[2:])
         atom = body
     ferric_basis = load_ferric_basis(basis)
-    return gto.M(
-        atom=atom, basis=ferric_basis, unit="Angstrom", charge=0, spin=0
-    )
+    return gto.M(atom=atom, basis=ferric_basis, unit="Angstrom", charge=0, spin=0)
 
 
 def mulliken_charges_direct(mol, dm):

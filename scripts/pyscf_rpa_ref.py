@@ -9,11 +9,14 @@ uses the same RI decomposition as ferric, producing matching results.
 
 Run: python3 scripts/pyscf_rpa_ref.py
 """
+
 import json
 import os
 import sys
 
-sys.path.insert(0, os.environ.get("PYSCF_PATH", os.path.expanduser("~/qc/pyscf")))  # local checkout
+sys.path.insert(
+    0, os.environ.get("PYSCF_PATH", os.path.expanduser("~/qc/pyscf"))
+)  # local checkout
 
 from pyscf import df, gto, scf
 from pyscf.gw.rpa import RPA
@@ -31,14 +34,28 @@ def run_rpa(atom: str, basis: str, aux: str) -> float:
 
 
 cases = [
-    ("H2",  "H 0 0 0; H 0 0 0.7414",
-     "sto-3g",      "sto-3g",      "h2_sto-3g_rpa.json"),
-    ("H2O", "O 0 0 0.117790; H 0 0.755453 -0.471161; H 0 -0.755453 -0.471161",
-     "cc-pvdz",     "cc-pvdz-ri",  "h2o_cc-pvdz_rpa.json"),
-    ("H2O", "O 0 0 0.117790; H 0 0.755453 -0.471161; H 0 -0.755453 -0.471161",
-     "aug-cc-pvdz", "aug-cc-pvdz-rifit",  "h2o_aug-cc-pvdz_rpa.json"),
-    ("H2O", "O 0 0 0.117790; H 0 0.755453 -0.471161; H 0 -0.755453 -0.471161",
-     "aug-cc-pvtz", "aug-cc-pvtz-rifit",  "h2o_aug-cc-pvtz_rpa.json"),
+    ("H2", "H 0 0 0; H 0 0 0.7414", "sto-3g", "sto-3g", "h2_sto-3g_rpa.json"),
+    (
+        "H2O",
+        "O 0 0 0.117790; H 0 0.755453 -0.471161; H 0 -0.755453 -0.471161",
+        "cc-pvdz",
+        "cc-pvdz-ri",
+        "h2o_cc-pvdz_rpa.json",
+    ),
+    (
+        "H2O",
+        "O 0 0 0.117790; H 0 0.755453 -0.471161; H 0 -0.755453 -0.471161",
+        "aug-cc-pvdz",
+        "aug-cc-pvdz-rifit",
+        "h2o_aug-cc-pvdz_rpa.json",
+    ),
+    (
+        "H2O",
+        "O 0 0 0.117790; H 0 0.755453 -0.471161; H 0 -0.755453 -0.471161",
+        "aug-cc-pvtz",
+        "aug-cc-pvtz-rifit",
+        "h2o_aug-cc-pvtz_rpa.json",
+    ),
 ]
 
 for name, atom, basis, aux, fname in cases:
@@ -46,9 +63,15 @@ for name, atom, basis, aux, fname in cases:
     print(f"{name}/{basis:15s} (aux={aux:25s}) E_c(RPA) = {e:.10f} Ha")
     with open(f"testdata/reference/{fname}", "w") as f:
         json.dump(
-            {"molecule": name, "basis": basis, "aux": aux,
-             "method": "rpa", "e_corr": e},
-            f, indent=2,
+            {
+                "molecule": name,
+                "basis": basis,
+                "aux": aux,
+                "method": "rpa",
+                "e_corr": e,
+            },
+            f,
+            indent=2,
         )
 
 print("Reference files written to testdata/reference/")

@@ -32,6 +32,7 @@ Two traps, both of which produce a plausible-looking number:
 Strain is reported in kcal/mol because that is the scale of the effect (a few
 kcal/mol matters) and Hartree hides it.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -43,6 +44,7 @@ from .xtb_engine import HARTREE_TO_KCAL_MOL, XtbRun, relax, singlepoint
 @dataclass
 class ConformerEnergy:
     """One conformer's vacuum energetics."""
+
     label: str
     e_singlepoint: float | None
     e_relaxed: float | None
@@ -63,6 +65,7 @@ class FreeReference:
     one-conformer stand-in. `e_min` is `None` if nothing converged, which makes
     every strain built on it `None` rather than silently zero.
     """
+
     e_min: float | None
     label: str | None
     n_considered: int
@@ -88,6 +91,7 @@ class FreeReference:
 @dataclass
 class StrainResult:
     """Strain penalty for one pose against a free reference."""
+
     label: str
     e_pose_in_field: float | None
     e_pose_relaxed_in_field: float | None
@@ -181,14 +185,22 @@ def pose_strain(
     """
     if reference.e_min is None:
         return StrainResult(
-            label, None, None, None, None,
+            label,
+            None,
+            None,
+            None,
+            None,
             error="free reference has no converged conformer; strain undefined",
         )
 
     in_field = relax(symbols, pose_coords, charge=charge, point_charges=point_charges)
     if not in_field.ok:
         return StrainResult(
-            label, None, None, None, reference.label,
+            label,
+            None,
+            None,
+            None,
+            reference.label,
             error=f"pose relaxation failed: {in_field.error}",
         )
 
@@ -203,7 +215,11 @@ def pose_strain(
     vac_at_pose = singlepoint(symbols, geom, charge=charge)
     if not vac_at_pose.ok:
         return StrainResult(
-            label, sp_in_field.energy, in_field.energy, None, reference.label,
+            label,
+            sp_in_field.energy,
+            in_field.energy,
+            None,
+            reference.label,
             error=f"vacuum single point at the relaxed pose failed: {vac_at_pose.error}",
         )
 
@@ -234,6 +250,7 @@ class XyzEnsemble:
     ensemble, and consumers that need per-atom correspondence (per-atom charges,
     RMSD, prescreen charge tables) must check it and re-map if it is False.
     """
+
     symbols_per_conformer: list[list[str]]
     conformers: list[list[tuple[float, float, float]]]
     labels: list[str]
@@ -267,7 +284,9 @@ def _formula(symbols: list[str]) -> str:
     return "".join(f"{el}{c[el]}" for el in sorted(c))
 
 
-def load_xyz_ensemble(directory: str | Path, pattern: str = "conf_*.xyz") -> XyzEnsemble:
+def load_xyz_ensemble(
+    directory: str | Path, pattern: str = "conf_*.xyz"
+) -> XyzEnsemble:
     """Read a directory of xyz conformers.
 
     Raises if the conformers are not the same MOLECULE (differing formula or

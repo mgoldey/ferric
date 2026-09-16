@@ -29,6 +29,7 @@ Launch (detached):
 Tunables (env): BZ_GATE_GB (18), BZ_HEARTBEAT_S (300), BZ_YIELD_TO
   (comma pgrep patterns to wait out; default "run_aconf_cli"), BZ_TIMEOUT (21600).
 """
+
 from pathlib import Path
 import os
 import subprocess
@@ -40,8 +41,13 @@ os.chdir(ROOT)
 OUT = "benchmarks/omega_diag/derisk"
 GEO = "benchmarks/grid/geoms"
 BIN = "target/release/ferric-cli"
-ENV = dict(os.environ, OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS="1",
-           OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
+ENV = dict(
+    os.environ,
+    OPENBLAS_NUM_THREADS="1",
+    RAYON_NUM_THREADS="1",
+    OMP_NUM_THREADS="1",
+    MKL_NUM_THREADS="1",
+)
 
 SID, LABEL, BT = "11", "benzene_PD", "atz"
 BASIS, AUX = "aug-cc-pvtz", "aug-cc-pvtz-rifit"
@@ -99,8 +105,10 @@ def heartbeat():
         with _lock:
             r, d, t = _state["running"], _state["done"], _state["total"]
         mi = meminfo()
-        log(f"[hb] {d}/{t} done, avail={mi.get('MemAvailable', 0):.1f}GB "
-            f"cache={mi.get('Cached', 0):.1f}GB, running={r or '(waiting)'}")
+        log(
+            f"[hb] {d}/{t} done, avail={mi.get('MemAvailable', 0):.1f}GB "
+            f"cache={mi.get('Cached', 0):.1f}GB, running={r or '(waiting)'}"
+        )
 
 
 def fc_count(xyz):
@@ -109,7 +117,7 @@ def fc_count(xyz):
         if not ln.strip():
             continue
         s = ln.split()[0]
-        if s.startswith('@') or s.upper().startswith('H'):
+        if s.startswith("@") or s.upper().startswith("H"):
             continue
         n += 1
     return n
@@ -169,22 +177,30 @@ def needs(key, marker):
 
 
 def enumerate_jobs():
-    frags = {"dimer": f"{GEO}/s22-{SID}_dimer.xyz",
-             "cpA": f"{GEO}/s22-{SID}_mA_cp.xyz",
-             "cpB": f"{GEO}/s22-{SID}_mB_cp.xyz"}
+    frags = {
+        "dimer": f"{GEO}/s22-{SID}_dimer.xyz",
+        "cpA": f"{GEO}/s22-{SID}_mA_cp.xyz",
+        "cpB": f"{GEO}/s22-{SID}_mB_cp.xyz",
+    }
     jobs = []
     for fr, xyz in frags.items():
         fc = fc_count(xyz)
         for omega in B_OMEGAS:
             k = f"{LABEL}_{SID}_{BT}_w{omega}_B_{fr}"
             if needs(k, "Total energy"):
-                jobs.append((k, rsmp2_toml(absxyz(xyz), omega, "delta-lr", fc),
-                             "Total energy"))
+                jobs.append(
+                    (k, rsmp2_toml(absxyz(xyz), omega, "delta-lr", fc), "Total energy")
+                )
         for omega in T_OMEGAS:
             k = f"{LABEL}_{SID}_{BT}_w{omega}_T_{fr}"
             if needs(k, "Total energy"):
-                jobs.append((k, rsmp2_toml(absxyz(xyz), omega, "coupled-rings", fc),
-                             "Total energy"))
+                jobs.append(
+                    (
+                        k,
+                        rsmp2_toml(absxyz(xyz), omega, "coupled-rings", fc),
+                        "Total energy",
+                    )
+                )
         k = f"{LABEL}_{SID}_{BT}_RHF_{fr}"
         if needs(k, "RHF energy"):
             jobs.append((k, scf_toml(absxyz(xyz), fc), "RHF energy"))
@@ -230,8 +246,14 @@ def run_one(job):
     t0 = time.monotonic()
     try:
         with open(op, "w") as f, open(op + ".err", "w") as e:
-            subprocess.run([BIN, f"{OUT}/toml/{key}.toml"], stdout=f, stderr=e,
-                           env=ENV, timeout=TIMEOUT, preexec_fn=_oom)
+            subprocess.run(
+                [BIN, f"{OUT}/toml/{key}.toml"],
+                stdout=f,
+                stderr=e,
+                env=ENV,
+                timeout=TIMEOUT,
+                preexec_fn=_oom,
+            )
     except subprocess.TimeoutExpired:
         with _lock:
             _state["running"] = None
@@ -250,8 +272,10 @@ def main():
     if not jobs:
         log("nothing to do — benzene aTZ tail already complete.")
     else:
-        log(f"benzene aTZ tail: {len(jobs)} jobs, serial, gate={GATE_GB}GB, "
-            f"yield-to={YIELD_TO or '(none)'}")
+        log(
+            f"benzene aTZ tail: {len(jobs)} jobs, serial, gate={GATE_GB}GB, "
+            f"yield-to={YIELD_TO or '(none)'}"
+        )
         threading.Thread(target=heartbeat, daemon=True).start()
         for j in jobs:
             status, dt = run_one(j)

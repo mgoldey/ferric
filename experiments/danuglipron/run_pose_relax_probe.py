@@ -34,6 +34,7 @@ Run:
     OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 \
     uv run --no-sync python experiments/danuglipron/run_pose_relax_probe.py
 """
+
 from __future__ import annotations
 
 import json
@@ -137,36 +138,52 @@ def main() -> int:
         t0 = time.time()
         for k, coords in enumerate(emb.conformers):
             al = align_to_reference(
-                ana.scoring_smiles, emb.symbols, coords,
-                DANUGLIPRON_SMILES, ref_symbols, ref_coords,
+                ana.scoring_smiles,
+                emb.symbols,
+                coords,
+                DANUGLIPRON_SMILES,
+                ref_symbols,
+                ref_coords,
             )
             if not al.ok:
                 continue
 
-            fr = pose_fit(al.symbols, al.coords_angstrom, pocket.charges,
-                          charge=ana.net_charge)
+            fr = pose_fit(
+                al.symbols, al.coords_angstrom, pocket.charges, charge=ana.net_charge
+            )
             if not fr.ok:
                 continue
             rigid_fits.append(fr.interaction_kcal)
             rigid_geoms.append(al.coords_angstrom)
 
             # Relax IN the field, then score at the relaxed geometry.
-            lig_bohr = [(x * ANGSTROM_TO_BOHR, y * ANGSTROM_TO_BOHR, z * ANGSTROM_TO_BOHR)
-                        for x, y, z in al.coords_angstrom]
+            lig_bohr = [
+                (x * ANGSTROM_TO_BOHR, y * ANGSTROM_TO_BOHR, z * ANGSTROM_TO_BOHR)
+                for x, y, z in al.coords_angstrom
+            ]
             near = _trim_charges(pocket.charges, lig_bohr, DEFAULT_FIELD_CUTOFF_BOHR)
-            rx = relax(al.symbols, al.coords_angstrom, charge=ana.net_charge,
-                       point_charges=near, skip_build_check=True)
+            rx = relax(
+                al.symbols,
+                al.coords_angstrom,
+                charge=ana.net_charge,
+                point_charges=near,
+                skip_build_check=True,
+            )
             if not rx.ok or rx.coords_angstrom is None:
                 print(f"  pose {k:02d}: relax failed ({rx.error})", flush=True)
                 continue
-            fr2 = pose_fit(al.symbols, rx.coords_angstrom, pocket.charges,
-                           charge=ana.net_charge)
+            fr2 = pose_fit(
+                al.symbols, rx.coords_angstrom, pocket.charges, charge=ana.net_charge
+            )
             if fr2.ok:
                 relaxed_fits.append(fr2.interaction_kcal)
                 relaxed_geoms.append(rx.coords_angstrom)
             if fr2.ok:
-                print(f"  pose {k:02d}: rigid {fr.interaction_kcal:+8.2f} -> "
-                      f"relaxed {fr2.interaction_kcal:+8.2f} kcal/mol", flush=True)
+                print(
+                    f"  pose {k:02d}: rigid {fr.interaction_kcal:+8.2f} -> "
+                    f"relaxed {fr2.interaction_kcal:+8.2f} kcal/mol",
+                    flush=True,
+                )
             else:
                 # Print the REASON. The first run swallowed it and reported a
                 # bare "rescoring failed" for 3 of 12 poses, which made a 25%
@@ -177,10 +194,16 @@ def main() -> int:
                 print(f"  pose {k:02d}: rescoring failed -- {fr2.error}", flush=True)
 
         dt = time.time() - t0
-        rec = {"n_rigid": len(rigid_fits), "n_relaxed": len(relaxed_fits),
-               "wall_seconds": dt, "net_charge": ana.net_charge}
-        for tag, fits, geoms in (("rigid", rigid_fits, rigid_geoms),
-                                 ("relaxed", relaxed_fits, relaxed_geoms)):
+        rec = {
+            "n_rigid": len(rigid_fits),
+            "n_relaxed": len(relaxed_fits),
+            "wall_seconds": dt,
+            "net_charge": ana.net_charge,
+        }
+        for tag, fits, geoms in (
+            ("rigid", rigid_fits, rigid_geoms),
+            ("relaxed", relaxed_fits, relaxed_geoms),
+        ):
             if len(fits) > 1:
                 rec[f"{tag}_mean"] = st.mean(fits)
                 rec[f"{tag}_sd"] = st.stdev(fits)
@@ -190,15 +213,22 @@ def main() -> int:
         out["candidates"][label] = rec
 
         if "rigid_sd" in rec and "relaxed_sd" in rec:
-            print(f"  -> rigid   mean {rec['rigid_mean']:+8.2f}  sd {rec['rigid_sd']:6.2f}  "
-                  f"geom spread {rec['rigid_rmsd_spread_angstrom']:.2f} A")
-            print(f"  -> relaxed mean {rec['relaxed_mean']:+8.2f}  sd {rec['relaxed_sd']:6.2f}  "
-                  f"geom spread {rec['relaxed_rmsd_spread_angstrom']:.2f} A")
+            print(
+                f"  -> rigid   mean {rec['rigid_mean']:+8.2f}  sd {rec['rigid_sd']:6.2f}  "
+                f"geom spread {rec['rigid_rmsd_spread_angstrom']:.2f} A"
+            )
+            print(
+                f"  -> relaxed mean {rec['relaxed_mean']:+8.2f}  sd {rec['relaxed_sd']:6.2f}  "
+                f"geom spread {rec['relaxed_rmsd_spread_angstrom']:.2f} A"
+            )
             print(f"  ({dt:.0f}s)")
 
     # The verdict, with the artifact check attached.
-    both = [l for l in LABELS if l in out["candidates"]
-            and "relaxed_sd" in out["candidates"][l]]
+    both = [
+        l
+        for l in LABELS
+        if l in out["candidates"] and "relaxed_sd" in out["candidates"][l]
+    ]
     if len(both) == 2:
         p, n = (out["candidates"][l] for l in both)
         for tag in ("rigid", "relaxed"):
@@ -207,14 +237,20 @@ def main() -> int:
             out[f"{tag}_gap_kcal"] = gap
             out[f"{tag}_se_diff_kcal"] = se
             out[f"{tag}_resolved_2sigma"] = bool(gap >= 2 * se)
-            print(f"\n{tag:8s}: gap {gap:6.2f}  se_diff {se:5.2f}  "
-                  f"2-sigma resolved: {gap >= 2 * se}")
-        collapse = min(p["relaxed_rmsd_spread_angstrom"], n["relaxed_rmsd_spread_angstrom"])
+            print(
+                f"\n{tag:8s}: gap {gap:6.2f}  se_diff {se:5.2f}  "
+                f"2-sigma resolved: {gap >= 2 * se}"
+            )
+        collapse = min(
+            p["relaxed_rmsd_spread_angstrom"], n["relaxed_rmsd_spread_angstrom"]
+        )
         out["geometric_collapse_warning"] = bool(collapse < 0.5)
         if collapse < 0.5:
-            print("\nWARNING: relaxed poses collapsed to nearly one geometry "
-                  f"(mean pairwise RMSD {collapse:.2f} A). Any precision gain is "
-                  "then an artifact -- we are re-finding one minimum, not sampling.")
+            print(
+                "\nWARNING: relaxed poses collapsed to nearly one geometry "
+                f"(mean pairwise RMSD {collapse:.2f} A). Any precision gain is "
+                "then an artifact -- we are re-finding one minimum, not sampling."
+            )
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(out, indent=2))

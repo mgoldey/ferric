@@ -8,6 +8,7 @@ physics above it.
 This runs the real enumerate -> force-field -> GFN2 path on a small parent, so
 it is a genuine end-to-end check rather than a stub.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -21,9 +22,13 @@ PARENT = "OC(=O)c1ccccc1"
 
 
 def _run():
-    cands = enumerate_isomers(PARENT, substituents={"F": "F"},
-                              include_stereo=False, include_rings=False,
-                              include_bioisosteres=False)
+    cands = enumerate_isomers(
+        PARENT,
+        substituents={"F": "F"},
+        include_stereo=False,
+        include_rings=False,
+        include_bioisosteres=False,
+    )
     stages = [
         Stage(Tier.FORCE_FIELD, tier2_forcefield, keep=3, name="ff"),
         Stage(Tier.SEMIEMPIRICAL, tier3_gfn2, keep=2, name="gfn2"),
@@ -61,14 +66,26 @@ def test_the_funnel_actually_narrows(two_runs):
 
 
 def test_the_enumeration_feeding_it_is_reproducible():
-    a = [i.canonical for i in enumerate_isomers(PARENT, substituents={"F": "F"},
-                                                include_stereo=False,
-                                                include_rings=False,
-                                                include_bioisosteres=False)]
-    b = [i.canonical for i in enumerate_isomers(PARENT, substituents={"F": "F"},
-                                                include_stereo=False,
-                                                include_rings=False,
-                                                include_bioisosteres=False)]
+    a = [
+        i.canonical
+        for i in enumerate_isomers(
+            PARENT,
+            substituents={"F": "F"},
+            include_stereo=False,
+            include_rings=False,
+            include_bioisosteres=False,
+        )
+    ]
+    b = [
+        i.canonical
+        for i in enumerate_isomers(
+            PARENT,
+            substituents={"F": "F"},
+            include_stereo=False,
+            include_rings=False,
+            include_bioisosteres=False,
+        )
+    ]
     assert a == b
 
 

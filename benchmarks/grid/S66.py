@@ -43,12 +43,13 @@
   - ``'DD'`` dispersion-dominated systems
 
 """
+
 import re
 
 import qcdb
 
 # <<< S66 Database Module >>>
-dbse = 'S66'
+dbse = "S66"
 
 # <<< Database Members >>>
 HRXN = range(1, 67)
@@ -59,500 +60,553 @@ MX = range(47, 67)
 DD = range(24, 47)
 
 # <<< Chemical Systems Involved >>>
-RXNM = {}     # reaction matrix of reagent contributions per reaction
-ACTV = {}     # order of active reagents per reaction
+RXNM = {}  # reaction matrix of reagent contributions per reaction
+ACTV = {}  # order of active reagents per reaction
 ACTV_CP = {}  # order of active reagents per counterpoise-corrected reaction
 ACTV_SA = {}  # order of active reagents for non-supermolecular calculations
 for rxn in HRXN:
+    RXNM["%s-%s" % (dbse, rxn)] = {
+        "%s-%s-dimer" % (dbse, rxn): +1,
+        "%s-%s-monoA-CP" % (dbse, rxn): -1,
+        "%s-%s-monoB-CP" % (dbse, rxn): -1,
+        "%s-%s-monoA-unCP" % (dbse, rxn): -1,
+        "%s-%s-monoB-unCP" % (dbse, rxn): -1,
+    }
 
-    RXNM[   '%s-%s' % (dbse, rxn)] = {'%s-%s-dimer'      % (dbse, rxn) : +1,
-                                      '%s-%s-monoA-CP'   % (dbse, rxn) : -1,
-                                      '%s-%s-monoB-CP'   % (dbse, rxn) : -1,
-                                      '%s-%s-monoA-unCP' % (dbse, rxn) : -1,
-                                      '%s-%s-monoB-unCP' % (dbse, rxn) : -1 }
+    ACTV_SA["%s-%s" % (dbse, rxn)] = ["%s-%s-dimer" % (dbse, rxn)]
 
-    ACTV_SA['%s-%s' % (dbse, rxn)] = ['%s-%s-dimer'      % (dbse, rxn) ]
+    ACTV_CP["%s-%s" % (dbse, rxn)] = [
+        "%s-%s-dimer" % (dbse, rxn),
+        "%s-%s-monoA-CP" % (dbse, rxn),
+        "%s-%s-monoB-CP" % (dbse, rxn),
+    ]
 
-    ACTV_CP['%s-%s' % (dbse, rxn)] = ['%s-%s-dimer'      % (dbse, rxn),
-                                      '%s-%s-monoA-CP'   % (dbse, rxn),
-                                      '%s-%s-monoB-CP'   % (dbse, rxn) ]
-
-    ACTV[   '%s-%s' % (dbse, rxn)] = ['%s-%s-dimer'      % (dbse, rxn),
-                                      '%s-%s-monoA-unCP' % (dbse, rxn),
-                                      '%s-%s-monoB-unCP' % (dbse, rxn) ]
+    ACTV["%s-%s" % (dbse, rxn)] = [
+        "%s-%s-dimer" % (dbse, rxn),
+        "%s-%s-monoA-unCP" % (dbse, rxn),
+        "%s-%s-monoB-unCP" % (dbse, rxn),
+    ]
 
 # <<< Reference Values [kcal/mol] >>>
 BIND = {}
-BIND['%s-%s'            % (dbse, '1'                     )] =   -4.918
-BIND['%s-%s'            % (dbse, '2'                     )] =   -5.592
-BIND['%s-%s'            % (dbse, '3'                     )] =   -6.908
-BIND['%s-%s'            % (dbse, '4'                     )] =   -8.103
-BIND['%s-%s'            % (dbse, '5'                     )] =   -5.757
-BIND['%s-%s'            % (dbse, '6'                     )] =   -7.554
-BIND['%s-%s'            % (dbse, '7'                     )] =   -8.230
-BIND['%s-%s'            % (dbse, '8'                     )] =   -5.009
-BIND['%s-%s'            % (dbse, '9'                     )] =   -3.059
-BIND['%s-%s'            % (dbse, '10'                    )] =   -4.160
-BIND['%s-%s'            % (dbse, '11'                    )] =   -5.419
-BIND['%s-%s'            % (dbse, '12'                    )] =   -7.266
-BIND['%s-%s'            % (dbse, '13'                    )] =   -6.187
-BIND['%s-%s'            % (dbse, '14'                    )] =   -7.454
-BIND['%s-%s'            % (dbse, '15'                    )] =   -8.630
-BIND['%s-%s'            % (dbse, '16'                    )] =   -5.124
-BIND['%s-%s'            % (dbse, '17'                    )] =  -17.182
-BIND['%s-%s'            % (dbse, '18'                    )] =   -6.857
-BIND['%s-%s'            % (dbse, '19'                    )] =   -7.410
-BIND['%s-%s'            % (dbse, '20'                    )] =  -19.093
-BIND['%s-%s'            % (dbse, '21'                    )] =  -16.265
-BIND['%s-%s'            % (dbse, '22'                    )] =  -19.491
-BIND['%s-%s'            % (dbse, '23'                    )] =  -19.189
-BIND['%s-%s'            % (dbse, '24'                    )] =   -2.822
-BIND['%s-%s'            % (dbse, '25'                    )] =   -3.895
-BIND['%s-%s'            % (dbse, '26'                    )] =   -9.829
-BIND['%s-%s'            % (dbse, '27'                    )] =   -3.439
-BIND['%s-%s'            % (dbse, '28'                    )] =   -5.713
-BIND['%s-%s'            % (dbse, '29'                    )] =   -6.819
-BIND['%s-%s'            % (dbse, '30'                    )] =   -1.432
-BIND['%s-%s'            % (dbse, '31'                    )] =   -3.380
-BIND['%s-%s'            % (dbse, '32'                    )] =   -3.738
-BIND['%s-%s'            % (dbse, '33'                    )] =   -1.872
-BIND['%s-%s'            % (dbse, '34'                    )] =   -3.776
-BIND['%s-%s'            % (dbse, '35'                    )] =   -2.613
-BIND['%s-%s'            % (dbse, '36'                    )] =   -1.777
-BIND['%s-%s'            % (dbse, '37'                    )] =   -2.404
-BIND['%s-%s'            % (dbse, '38'                    )] =   -2.997
-BIND['%s-%s'            % (dbse, '39'                    )] =   -3.575
-BIND['%s-%s'            % (dbse, '40'                    )] =   -2.895
-BIND['%s-%s'            % (dbse, '41'                    )] =   -4.848
-BIND['%s-%s'            % (dbse, '42'                    )] =   -4.138
-BIND['%s-%s'            % (dbse, '43'                    )] =   -3.712
-BIND['%s-%s'            % (dbse, '44'                    )] =   -2.005
-BIND['%s-%s'            % (dbse, '45'                    )] =   -1.748
-BIND['%s-%s'            % (dbse, '46'                    )] =   -4.264
-BIND['%s-%s'            % (dbse, '47'                    )] =   -2.876
-BIND['%s-%s'            % (dbse, '48'                    )] =   -3.535
-BIND['%s-%s'            % (dbse, '49'                    )] =   -3.331
-BIND['%s-%s'            % (dbse, '50'                    )] =   -2.867
-BIND['%s-%s'            % (dbse, '51'                    )] =   -1.524
-BIND['%s-%s'            % (dbse, '52'                    )] =   -4.707
-BIND['%s-%s'            % (dbse, '53'                    )] =   -4.361
-BIND['%s-%s'            % (dbse, '54'                    )] =   -3.277
-BIND['%s-%s'            % (dbse, '55'                    )] =   -4.188
-BIND['%s-%s'            % (dbse, '56'                    )] =   -3.231
-BIND['%s-%s'            % (dbse, '57'                    )] =   -5.282
-BIND['%s-%s'            % (dbse, '58'                    )] =   -4.146
-BIND['%s-%s'            % (dbse, '59'                    )] =   -2.850
-BIND['%s-%s'            % (dbse, '60'                    )] =   -4.868
-BIND['%s-%s'            % (dbse, '61'                    )] =   -2.912
-BIND['%s-%s'            % (dbse, '62'                    )] =   -3.534
-BIND['%s-%s'            % (dbse, '63'                    )] =   -3.801
-BIND['%s-%s'            % (dbse, '64'                    )] =   -2.999
-BIND['%s-%s'            % (dbse, '65'                    )] =   -3.991
-BIND['%s-%s'            % (dbse, '66'                    )] =   -3.968
+BIND["%s-%s" % (dbse, "1")] = -4.918
+BIND["%s-%s" % (dbse, "2")] = -5.592
+BIND["%s-%s" % (dbse, "3")] = -6.908
+BIND["%s-%s" % (dbse, "4")] = -8.103
+BIND["%s-%s" % (dbse, "5")] = -5.757
+BIND["%s-%s" % (dbse, "6")] = -7.554
+BIND["%s-%s" % (dbse, "7")] = -8.230
+BIND["%s-%s" % (dbse, "8")] = -5.009
+BIND["%s-%s" % (dbse, "9")] = -3.059
+BIND["%s-%s" % (dbse, "10")] = -4.160
+BIND["%s-%s" % (dbse, "11")] = -5.419
+BIND["%s-%s" % (dbse, "12")] = -7.266
+BIND["%s-%s" % (dbse, "13")] = -6.187
+BIND["%s-%s" % (dbse, "14")] = -7.454
+BIND["%s-%s" % (dbse, "15")] = -8.630
+BIND["%s-%s" % (dbse, "16")] = -5.124
+BIND["%s-%s" % (dbse, "17")] = -17.182
+BIND["%s-%s" % (dbse, "18")] = -6.857
+BIND["%s-%s" % (dbse, "19")] = -7.410
+BIND["%s-%s" % (dbse, "20")] = -19.093
+BIND["%s-%s" % (dbse, "21")] = -16.265
+BIND["%s-%s" % (dbse, "22")] = -19.491
+BIND["%s-%s" % (dbse, "23")] = -19.189
+BIND["%s-%s" % (dbse, "24")] = -2.822
+BIND["%s-%s" % (dbse, "25")] = -3.895
+BIND["%s-%s" % (dbse, "26")] = -9.829
+BIND["%s-%s" % (dbse, "27")] = -3.439
+BIND["%s-%s" % (dbse, "28")] = -5.713
+BIND["%s-%s" % (dbse, "29")] = -6.819
+BIND["%s-%s" % (dbse, "30")] = -1.432
+BIND["%s-%s" % (dbse, "31")] = -3.380
+BIND["%s-%s" % (dbse, "32")] = -3.738
+BIND["%s-%s" % (dbse, "33")] = -1.872
+BIND["%s-%s" % (dbse, "34")] = -3.776
+BIND["%s-%s" % (dbse, "35")] = -2.613
+BIND["%s-%s" % (dbse, "36")] = -1.777
+BIND["%s-%s" % (dbse, "37")] = -2.404
+BIND["%s-%s" % (dbse, "38")] = -2.997
+BIND["%s-%s" % (dbse, "39")] = -3.575
+BIND["%s-%s" % (dbse, "40")] = -2.895
+BIND["%s-%s" % (dbse, "41")] = -4.848
+BIND["%s-%s" % (dbse, "42")] = -4.138
+BIND["%s-%s" % (dbse, "43")] = -3.712
+BIND["%s-%s" % (dbse, "44")] = -2.005
+BIND["%s-%s" % (dbse, "45")] = -1.748
+BIND["%s-%s" % (dbse, "46")] = -4.264
+BIND["%s-%s" % (dbse, "47")] = -2.876
+BIND["%s-%s" % (dbse, "48")] = -3.535
+BIND["%s-%s" % (dbse, "49")] = -3.331
+BIND["%s-%s" % (dbse, "50")] = -2.867
+BIND["%s-%s" % (dbse, "51")] = -1.524
+BIND["%s-%s" % (dbse, "52")] = -4.707
+BIND["%s-%s" % (dbse, "53")] = -4.361
+BIND["%s-%s" % (dbse, "54")] = -3.277
+BIND["%s-%s" % (dbse, "55")] = -4.188
+BIND["%s-%s" % (dbse, "56")] = -3.231
+BIND["%s-%s" % (dbse, "57")] = -5.282
+BIND["%s-%s" % (dbse, "58")] = -4.146
+BIND["%s-%s" % (dbse, "59")] = -2.850
+BIND["%s-%s" % (dbse, "60")] = -4.868
+BIND["%s-%s" % (dbse, "61")] = -2.912
+BIND["%s-%s" % (dbse, "62")] = -3.534
+BIND["%s-%s" % (dbse, "63")] = -3.801
+BIND["%s-%s" % (dbse, "64")] = -2.999
+BIND["%s-%s" % (dbse, "65")] = -3.991
+BIND["%s-%s" % (dbse, "66")] = -3.968
 
 # <<< Comment Lines >>>
 TAGL = {}
-TAGL['%s-%s'            % (dbse, '1'                     )] = """Water Dimer """
-TAGL['%s-%s-dimer'      % (dbse, '1'                     )] = """Dimer from Water Dimer """
-TAGL['%s-%s-monoA-CP'   % (dbse, '1'                     )] = """Monomer A from Water Dimer """
-TAGL['%s-%s-monoB-CP'   % (dbse, '1'                     )] = """Monomer B from Water Dimer """
-TAGL['%s-%s-monoA-unCP' % (dbse, '1'                     )] = """Monomer A from Water Dimer """
-TAGL['%s-%s-monoB-unCP' % (dbse, '1'                     )] = """Monomer B from Water Dimer """
-TAGL['%s-%s'            % (dbse, '2'                     )] = """Water-Methanol """
-TAGL['%s-%s-dimer'      % (dbse, '2'                     )] = """Dimer from Water-Methanol """
-TAGL['%s-%s-monoA-CP'   % (dbse, '2'                     )] = """Monomer A from Water-Methanol """
-TAGL['%s-%s-monoB-CP'   % (dbse, '2'                     )] = """Monomer B from Water-Methanol """
-TAGL['%s-%s-monoA-unCP' % (dbse, '2'                     )] = """Monomer A from Water-Methanol """
-TAGL['%s-%s-monoB-unCP' % (dbse, '2'                     )] = """Monomer B from Water-Methanol """
-TAGL['%s-%s'            % (dbse, '3'                     )] = """Water-Methylamine """
-TAGL['%s-%s-dimer'      % (dbse, '3'                     )] = """Dimer from Water-Methylamine """
-TAGL['%s-%s-monoA-CP'   % (dbse, '3'                     )] = """Monomer A from Water-Methylamine """
-TAGL['%s-%s-monoB-CP'   % (dbse, '3'                     )] = """Monomer B from Water-Methylamine """
-TAGL['%s-%s-monoA-unCP' % (dbse, '3'                     )] = """Monomer A from Water-Methylamine """
-TAGL['%s-%s-monoB-unCP' % (dbse, '3'                     )] = """Monomer B from Water-Methylamine """
-TAGL['%s-%s'            % (dbse, '4'                     )] = """Water-N-methylacetamide """
-TAGL['%s-%s-dimer'      % (dbse, '4'                     )] = """Dimer from Water-N-methylacetamide """
-TAGL['%s-%s-monoA-CP'   % (dbse, '4'                     )] = """Monomer A from Water-N-methylacetamide """
-TAGL['%s-%s-monoB-CP'   % (dbse, '4'                     )] = """Monomer B from Water-N-methylacetamide """
-TAGL['%s-%s-monoA-unCP' % (dbse, '4'                     )] = """Monomer A from Water-N-methylacetamide """
-TAGL['%s-%s-monoB-unCP' % (dbse, '4'                     )] = """Monomer B from Water-N-methylacetamide """
-TAGL['%s-%s'            % (dbse, '5'                     )] = """Methanol Dimer """
-TAGL['%s-%s-dimer'      % (dbse, '5'                     )] = """Dimer from Methanol Dimer """
-TAGL['%s-%s-monoA-CP'   % (dbse, '5'                     )] = """Monomer A from Methanol Dimer """
-TAGL['%s-%s-monoB-CP'   % (dbse, '5'                     )] = """Monomer B from Methanol Dimer """
-TAGL['%s-%s-monoA-unCP' % (dbse, '5'                     )] = """Monomer A from Methanol Dimer """
-TAGL['%s-%s-monoB-unCP' % (dbse, '5'                     )] = """Monomer B from Methanol Dimer """
-TAGL['%s-%s'            % (dbse, '6'                     )] = """Methanol-Methylamine """
-TAGL['%s-%s-dimer'      % (dbse, '6'                     )] = """Dimer from Methanol-Methylamine """
-TAGL['%s-%s-monoA-CP'   % (dbse, '6'                     )] = """Monomer A from Methanol-Methylamine """
-TAGL['%s-%s-monoB-CP'   % (dbse, '6'                     )] = """Monomer B from Methanol-Methylamine """
-TAGL['%s-%s-monoA-unCP' % (dbse, '6'                     )] = """Monomer A from Methanol-Methylamine """
-TAGL['%s-%s-monoB-unCP' % (dbse, '6'                     )] = """Monomer B from Methanol-Methylamine """
-TAGL['%s-%s'            % (dbse, '7'                     )] = """Methanol-N-methylacetamide """
-TAGL['%s-%s-dimer'      % (dbse, '7'                     )] = """Dimer from Methanol-N-methylacetamide """
-TAGL['%s-%s-monoA-CP'   % (dbse, '7'                     )] = """Monomer A from Methanol-N-methylacetamide """
-TAGL['%s-%s-monoB-CP'   % (dbse, '7'                     )] = """Monomer B from Methanol-N-methylacetamide """
-TAGL['%s-%s-monoA-unCP' % (dbse, '7'                     )] = """Monomer A from Methanol-N-methylacetamide """
-TAGL['%s-%s-monoB-unCP' % (dbse, '7'                     )] = """Monomer B from Methanol-N-methylacetamide """
-TAGL['%s-%s'            % (dbse, '8'                     )] = """Methanol-Water """
-TAGL['%s-%s-dimer'      % (dbse, '8'                     )] = """Dimer from Methanol-Water """
-TAGL['%s-%s-monoA-CP'   % (dbse, '8'                     )] = """Monomer A from Methanol-Water """
-TAGL['%s-%s-monoB-CP'   % (dbse, '8'                     )] = """Monomer B from Methanol-Water """
-TAGL['%s-%s-monoA-unCP' % (dbse, '8'                     )] = """Monomer A from Methanol-Water """
-TAGL['%s-%s-monoB-unCP' % (dbse, '8'                     )] = """Monomer B from Methanol-Water """
-TAGL['%s-%s'            % (dbse, '9'                     )] = """Methylamine-Methanol """
-TAGL['%s-%s-dimer'      % (dbse, '9'                     )] = """Dimer from Methylamine-Methanol """
-TAGL['%s-%s-monoA-CP'   % (dbse, '9'                     )] = """Monomer A from Methylamine-Methanol """
-TAGL['%s-%s-monoB-CP'   % (dbse, '9'                     )] = """Monomer B from Methylamine-Methanol """
-TAGL['%s-%s-monoA-unCP' % (dbse, '9'                     )] = """Monomer A from Methylamine-Methanol """
-TAGL['%s-%s-monoB-unCP' % (dbse, '9'                     )] = """Monomer B from Methylamine-Methanol """
-TAGL['%s-%s'            % (dbse, '10'                    )] = """Methylamine Dimer """
-TAGL['%s-%s-dimer'      % (dbse, '10'                    )] = """Dimer from Methylamine Dimer """
-TAGL['%s-%s-monoA-CP'   % (dbse, '10'                    )] = """Monomer A from Methylamine Dimer """
-TAGL['%s-%s-monoB-CP'   % (dbse, '10'                    )] = """Monomer B from Methylamine Dimer """
-TAGL['%s-%s-monoA-unCP' % (dbse, '10'                    )] = """Monomer A from Methylamine Dimer """
-TAGL['%s-%s-monoB-unCP' % (dbse, '10'                    )] = """Monomer B from Methylamine Dimer """
-TAGL['%s-%s'            % (dbse, '11'                    )] = """Methylamine-N-methylacetamide """
-TAGL['%s-%s-dimer'      % (dbse, '11'                    )] = """Dimer from Methylamine-N-methylacetamide """
-TAGL['%s-%s-monoA-CP'   % (dbse, '11'                    )] = """Monomer A from Methylamine-N-methylacetamide """
-TAGL['%s-%s-monoB-CP'   % (dbse, '11'                    )] = """Monomer B from Methylamine-N-methylacetamide """
-TAGL['%s-%s-monoA-unCP' % (dbse, '11'                    )] = """Monomer A from Methylamine-N-methylacetamide """
-TAGL['%s-%s-monoB-unCP' % (dbse, '11'                    )] = """Monomer B from Methylamine-N-methylacetamide """
-TAGL['%s-%s'            % (dbse, '12'                    )] = """Methylamine-Water """
-TAGL['%s-%s-dimer'      % (dbse, '12'                    )] = """Dimer from Methylamine-Water """
-TAGL['%s-%s-monoA-CP'   % (dbse, '12'                    )] = """Monomer A from Methylamine-Water """
-TAGL['%s-%s-monoB-CP'   % (dbse, '12'                    )] = """Monomer B from Methylamine-Water """
-TAGL['%s-%s-monoA-unCP' % (dbse, '12'                    )] = """Monomer A from Methylamine-Water """
-TAGL['%s-%s-monoB-unCP' % (dbse, '12'                    )] = """Monomer B from Methylamine-Water """
-TAGL['%s-%s'            % (dbse, '13'                    )] = """N-methylacetamide-Methanol """
-TAGL['%s-%s-dimer'      % (dbse, '13'                    )] = """Dimer from N-methylacetamide-Methanol """
-TAGL['%s-%s-monoA-CP'   % (dbse, '13'                    )] = """Monomer A from N-methylacetamide-Methanol """
-TAGL['%s-%s-monoB-CP'   % (dbse, '13'                    )] = """Monomer B from N-methylacetamide-Methanol """
-TAGL['%s-%s-monoA-unCP' % (dbse, '13'                    )] = """Monomer A from N-methylacetamide-Methanol """
-TAGL['%s-%s-monoB-unCP' % (dbse, '13'                    )] = """Monomer B from N-methylacetamide-Methanol """
-TAGL['%s-%s'            % (dbse, '14'                    )] = """N-methylacetamide-Methylamine """
-TAGL['%s-%s-dimer'      % (dbse, '14'                    )] = """Dimer from N-methylacetamide-Methylamine """
-TAGL['%s-%s-monoA-CP'   % (dbse, '14'                    )] = """Monomer A from N-methylacetamide-Methylamine """
-TAGL['%s-%s-monoB-CP'   % (dbse, '14'                    )] = """Monomer B from N-methylacetamide-Methylamine """
-TAGL['%s-%s-monoA-unCP' % (dbse, '14'                    )] = """Monomer A from N-methylacetamide-Methylamine """
-TAGL['%s-%s-monoB-unCP' % (dbse, '14'                    )] = """Monomer B from N-methylacetamide-Methylamine """
-TAGL['%s-%s'            % (dbse, '15'                    )] = """N-methylacetamide Dimer """
-TAGL['%s-%s-dimer'      % (dbse, '15'                    )] = """Dimer from N-methylacetamide Dimer """
-TAGL['%s-%s-monoA-CP'   % (dbse, '15'                    )] = """Monomer A from N-methylacetamide Dimer """
-TAGL['%s-%s-monoB-CP'   % (dbse, '15'                    )] = """Monomer B from N-methylacetamide Dimer """
-TAGL['%s-%s-monoA-unCP' % (dbse, '15'                    )] = """Monomer A from N-methylacetamide Dimer """
-TAGL['%s-%s-monoB-unCP' % (dbse, '15'                    )] = """Monomer B from N-methylacetamide Dimer """
-TAGL['%s-%s'            % (dbse, '16'                    )] = """N-methylacetamide-Water """
-TAGL['%s-%s-dimer'      % (dbse, '16'                    )] = """Dimer from N-methylacetamide-Water """
-TAGL['%s-%s-monoA-CP'   % (dbse, '16'                    )] = """Monomer A from N-methylacetamide-Water """
-TAGL['%s-%s-monoB-CP'   % (dbse, '16'                    )] = """Monomer B from N-methylacetamide-Water """
-TAGL['%s-%s-monoA-unCP' % (dbse, '16'                    )] = """Monomer A from N-methylacetamide-Water """
-TAGL['%s-%s-monoB-unCP' % (dbse, '16'                    )] = """Monomer B from N-methylacetamide-Water """
-TAGL['%s-%s'            % (dbse, '17'                    )] = """Uracil Dimer, HB """
-TAGL['%s-%s-dimer'      % (dbse, '17'                    )] = """Dimer from Uracil Dimer, HB """
-TAGL['%s-%s-monoA-CP'   % (dbse, '17'                    )] = """Monomer A from Uracil Dimer, HB """
-TAGL['%s-%s-monoB-CP'   % (dbse, '17'                    )] = """Monomer B from Uracil Dimer, HB """
-TAGL['%s-%s-monoA-unCP' % (dbse, '17'                    )] = """Monomer A from Uracil Dimer, HB """
-TAGL['%s-%s-monoB-unCP' % (dbse, '17'                    )] = """Monomer B from Uracil Dimer, HB """
-TAGL['%s-%s'            % (dbse, '18'                    )] = """Water-Pyridine """
-TAGL['%s-%s-dimer'      % (dbse, '18'                    )] = """Dimer from Water-Pyridine """
-TAGL['%s-%s-monoA-CP'   % (dbse, '18'                    )] = """Monomer A from Water-Pyridine """
-TAGL['%s-%s-monoB-CP'   % (dbse, '18'                    )] = """Monomer B from Water-Pyridine """
-TAGL['%s-%s-monoA-unCP' % (dbse, '18'                    )] = """Monomer A from Water-Pyridine """
-TAGL['%s-%s-monoB-unCP' % (dbse, '18'                    )] = """Monomer B from Water-Pyridine """
-TAGL['%s-%s'            % (dbse, '19'                    )] = """Methanol-Pyridine """
-TAGL['%s-%s-dimer'      % (dbse, '19'                    )] = """Dimer from Methanol-Pyridine """
-TAGL['%s-%s-monoA-CP'   % (dbse, '19'                    )] = """Monomer A from Methanol-Pyridine """
-TAGL['%s-%s-monoB-CP'   % (dbse, '19'                    )] = """Monomer B from Methanol-Pyridine """
-TAGL['%s-%s-monoA-unCP' % (dbse, '19'                    )] = """Monomer A from Methanol-Pyridine """
-TAGL['%s-%s-monoB-unCP' % (dbse, '19'                    )] = """Monomer B from Methanol-Pyridine """
-TAGL['%s-%s'            % (dbse, '20'                    )] = """Acetic Acid Dimer """
-TAGL['%s-%s-dimer'      % (dbse, '20'                    )] = """Dimer from Acetic Acid Dimer """
-TAGL['%s-%s-monoA-CP'   % (dbse, '20'                    )] = """Monomer A from Acetic Acid Dimer """
-TAGL['%s-%s-monoB-CP'   % (dbse, '20'                    )] = """Monomer B from Acetic Acid Dimer """
-TAGL['%s-%s-monoA-unCP' % (dbse, '20'                    )] = """Monomer A from Acetic Acid Dimer """
-TAGL['%s-%s-monoB-unCP' % (dbse, '20'                    )] = """Monomer B from Acetic Acid Dimer """
-TAGL['%s-%s'            % (dbse, '21'                    )] = """Acetamide Dimer """
-TAGL['%s-%s-dimer'      % (dbse, '21'                    )] = """Dimer from Acetamide Dimer """
-TAGL['%s-%s-monoA-CP'   % (dbse, '21'                    )] = """Monomer A from Acetamide Dimer """
-TAGL['%s-%s-monoB-CP'   % (dbse, '21'                    )] = """Monomer B from Acetamide Dimer """
-TAGL['%s-%s-monoA-unCP' % (dbse, '21'                    )] = """Monomer A from Acetamide Dimer """
-TAGL['%s-%s-monoB-unCP' % (dbse, '21'                    )] = """Monomer B from Acetamide Dimer """
-TAGL['%s-%s'            % (dbse, '22'                    )] = """Acetic Acid-Uracil """
-TAGL['%s-%s-dimer'      % (dbse, '22'                    )] = """Dimer from Acetic Acid-Uracil """
-TAGL['%s-%s-monoA-CP'   % (dbse, '22'                    )] = """Monomer A from Acetic Acid-Uracil """
-TAGL['%s-%s-monoB-CP'   % (dbse, '22'                    )] = """Monomer B from Acetic Acid-Uracil """
-TAGL['%s-%s-monoA-unCP' % (dbse, '22'                    )] = """Monomer A from Acetic Acid-Uracil """
-TAGL['%s-%s-monoB-unCP' % (dbse, '22'                    )] = """Monomer B from Acetic Acid-Uracil """
-TAGL['%s-%s'            % (dbse, '23'                    )] = """Acetamide-Uracil """
-TAGL['%s-%s-dimer'      % (dbse, '23'                    )] = """Dimer from Acetamide-Uracil """
-TAGL['%s-%s-monoA-CP'   % (dbse, '23'                    )] = """Monomer A from Acetamide-Uracil """
-TAGL['%s-%s-monoB-CP'   % (dbse, '23'                    )] = """Monomer B from Acetamide-Uracil """
-TAGL['%s-%s-monoA-unCP' % (dbse, '23'                    )] = """Monomer A from Acetamide-Uracil """
-TAGL['%s-%s-monoB-unCP' % (dbse, '23'                    )] = """Monomer B from Acetamide-Uracil """
-TAGL['%s-%s'            % (dbse, '24'                    )] = """Benzene Dimer, pi-pi """
-TAGL['%s-%s-dimer'      % (dbse, '24'                    )] = """Dimer from Benzene Dimer, pi-pi """
-TAGL['%s-%s-monoA-CP'   % (dbse, '24'                    )] = """Monomer A from Benzene Dimer, pi-pi """
-TAGL['%s-%s-monoB-CP'   % (dbse, '24'                    )] = """Monomer B from Benzene Dimer, pi-pi """
-TAGL['%s-%s-monoA-unCP' % (dbse, '24'                    )] = """Monomer A from Benzene Dimer, pi-pi """
-TAGL['%s-%s-monoB-unCP' % (dbse, '24'                    )] = """Monomer B from Benzene Dimer, pi-pi """
-TAGL['%s-%s'            % (dbse, '25'                    )] = """Pyridine Dimer, pi-pi """
-TAGL['%s-%s-dimer'      % (dbse, '25'                    )] = """Dimer from Pyridine Dimer, pi-pi """
-TAGL['%s-%s-monoA-CP'   % (dbse, '25'                    )] = """Monomer A from Pyridine Dimer, pi-pi """
-TAGL['%s-%s-monoB-CP'   % (dbse, '25'                    )] = """Monomer B from Pyridine Dimer, pi-pi """
-TAGL['%s-%s-monoA-unCP' % (dbse, '25'                    )] = """Monomer A from Pyridine Dimer, pi-pi """
-TAGL['%s-%s-monoB-unCP' % (dbse, '25'                    )] = """Monomer B from Pyridine Dimer, pi-pi """
-TAGL['%s-%s'            % (dbse, '26'                    )] = """Uracil Dimer, pi-pi """
-TAGL['%s-%s-dimer'      % (dbse, '26'                    )] = """Dimer from Uracil Dimer, pi-pi """
-TAGL['%s-%s-monoA-CP'   % (dbse, '26'                    )] = """Monomer A from Uracil Dimer, pi-pi """
-TAGL['%s-%s-monoB-CP'   % (dbse, '26'                    )] = """Monomer B from Uracil Dimer, pi-pi """
-TAGL['%s-%s-monoA-unCP' % (dbse, '26'                    )] = """Monomer A from Uracil Dimer, pi-pi """
-TAGL['%s-%s-monoB-unCP' % (dbse, '26'                    )] = """Monomer B from Uracil Dimer, pi-pi """
-TAGL['%s-%s'            % (dbse, '27'                    )] = """Benzene-Pyridine, pi-pi """
-TAGL['%s-%s-dimer'      % (dbse, '27'                    )] = """Dimer from Benzene-Pyridine, pi-pi """
-TAGL['%s-%s-monoA-CP'   % (dbse, '27'                    )] = """Monomer A from Benzene-Pyridine, pi-pi """
-TAGL['%s-%s-monoB-CP'   % (dbse, '27'                    )] = """Monomer B from Benzene-Pyridine, pi-pi """
-TAGL['%s-%s-monoA-unCP' % (dbse, '27'                    )] = """Monomer A from Benzene-Pyridine, pi-pi """
-TAGL['%s-%s-monoB-unCP' % (dbse, '27'                    )] = """Monomer B from Benzene-Pyridine, pi-pi """
-TAGL['%s-%s'            % (dbse, '28'                    )] = """Benzene-Uracil, pi-pi """
-TAGL['%s-%s-dimer'      % (dbse, '28'                    )] = """Dimer from Benzene-Uracil, pi-pi """
-TAGL['%s-%s-monoA-CP'   % (dbse, '28'                    )] = """Monomer A from Benzene-Uracil, pi-pi """
-TAGL['%s-%s-monoB-CP'   % (dbse, '28'                    )] = """Monomer B from Benzene-Uracil, pi-pi """
-TAGL['%s-%s-monoA-unCP' % (dbse, '28'                    )] = """Monomer A from Benzene-Uracil, pi-pi """
-TAGL['%s-%s-monoB-unCP' % (dbse, '28'                    )] = """Monomer B from Benzene-Uracil, pi-pi """
-TAGL['%s-%s'            % (dbse, '29'                    )] = """Pyridine-Uracil, pi-pi """
-TAGL['%s-%s-dimer'      % (dbse, '29'                    )] = """Dimer from Pyridine-Uracil, pi-pi """
-TAGL['%s-%s-monoA-CP'   % (dbse, '29'                    )] = """Monomer A from Pyridine-Uracil, pi-pi """
-TAGL['%s-%s-monoB-CP'   % (dbse, '29'                    )] = """Monomer B from Pyridine-Uracil, pi-pi """
-TAGL['%s-%s-monoA-unCP' % (dbse, '29'                    )] = """Monomer A from Pyridine-Uracil, pi-pi """
-TAGL['%s-%s-monoB-unCP' % (dbse, '29'                    )] = """Monomer B from Pyridine-Uracil, pi-pi """
-TAGL['%s-%s'            % (dbse, '30'                    )] = """Benzene-Ethene """
-TAGL['%s-%s-dimer'      % (dbse, '30'                    )] = """Dimer from Benzene-Ethene """
-TAGL['%s-%s-monoA-CP'   % (dbse, '30'                    )] = """Monomer A from Benzene-Ethene """
-TAGL['%s-%s-monoB-CP'   % (dbse, '30'                    )] = """Monomer B from Benzene-Ethene """
-TAGL['%s-%s-monoA-unCP' % (dbse, '30'                    )] = """Monomer A from Benzene-Ethene """
-TAGL['%s-%s-monoB-unCP' % (dbse, '30'                    )] = """Monomer B from Benzene-Ethene """
-TAGL['%s-%s'            % (dbse, '31'                    )] = """Uracil-Ethene """
-TAGL['%s-%s-dimer'      % (dbse, '31'                    )] = """Dimer from Uracil-Ethene """
-TAGL['%s-%s-monoA-CP'   % (dbse, '31'                    )] = """Monomer A from Uracil-Ethene """
-TAGL['%s-%s-monoB-CP'   % (dbse, '31'                    )] = """Monomer B from Uracil-Ethene """
-TAGL['%s-%s-monoA-unCP' % (dbse, '31'                    )] = """Monomer A from Uracil-Ethene """
-TAGL['%s-%s-monoB-unCP' % (dbse, '31'                    )] = """Monomer B from Uracil-Ethene """
-TAGL['%s-%s'            % (dbse, '32'                    )] = """Uracil-Ethyne """
-TAGL['%s-%s-dimer'      % (dbse, '32'                    )] = """Dimer from Uracil-Ethyne """
-TAGL['%s-%s-monoA-CP'   % (dbse, '32'                    )] = """Monomer A from Uracil-Ethyne """
-TAGL['%s-%s-monoB-CP'   % (dbse, '32'                    )] = """Monomer B from Uracil-Ethyne """
-TAGL['%s-%s-monoA-unCP' % (dbse, '32'                    )] = """Monomer A from Uracil-Ethyne """
-TAGL['%s-%s-monoB-unCP' % (dbse, '32'                    )] = """Monomer B from Uracil-Ethyne """
-TAGL['%s-%s'            % (dbse, '33'                    )] = """Pyridine-Ethene """
-TAGL['%s-%s-dimer'      % (dbse, '33'                    )] = """Dimer from Pyridine-Ethene """
-TAGL['%s-%s-monoA-CP'   % (dbse, '33'                    )] = """Monomer A from Pyridine-Ethene """
-TAGL['%s-%s-monoB-CP'   % (dbse, '33'                    )] = """Monomer B from Pyridine-Ethene """
-TAGL['%s-%s-monoA-unCP' % (dbse, '33'                    )] = """Monomer A from Pyridine-Ethene """
-TAGL['%s-%s-monoB-unCP' % (dbse, '33'                    )] = """Monomer B from Pyridine-Ethene """
-TAGL['%s-%s'            % (dbse, '34'                    )] = """Pentane Dimer """
-TAGL['%s-%s-dimer'      % (dbse, '34'                    )] = """Dimer from Pentane Dimer """
-TAGL['%s-%s-monoA-CP'   % (dbse, '34'                    )] = """Monomer A from Pentane Dimer """
-TAGL['%s-%s-monoB-CP'   % (dbse, '34'                    )] = """Monomer B from Pentane Dimer """
-TAGL['%s-%s-monoA-unCP' % (dbse, '34'                    )] = """Monomer A from Pentane Dimer """
-TAGL['%s-%s-monoB-unCP' % (dbse, '34'                    )] = """Monomer B from Pentane Dimer """
-TAGL['%s-%s'            % (dbse, '35'                    )] = """Neopentane-Pentane """
-TAGL['%s-%s-dimer'      % (dbse, '35'                    )] = """Dimer from Neopentane-Pentane """
-TAGL['%s-%s-monoA-CP'   % (dbse, '35'                    )] = """Monomer A from Neopentane-Pentane """
-TAGL['%s-%s-monoB-CP'   % (dbse, '35'                    )] = """Monomer B from Neopentane-Pentane """
-TAGL['%s-%s-monoA-unCP' % (dbse, '35'                    )] = """Monomer A from Neopentane-Pentane """
-TAGL['%s-%s-monoB-unCP' % (dbse, '35'                    )] = """Monomer B from Neopentane-Pentane """
-TAGL['%s-%s'            % (dbse, '36'                    )] = """Neopentane Dimer """
-TAGL['%s-%s-dimer'      % (dbse, '36'                    )] = """Dimer from Neopentane Dimer """
-TAGL['%s-%s-monoA-CP'   % (dbse, '36'                    )] = """Monomer A from Neopentane Dimer """
-TAGL['%s-%s-monoB-CP'   % (dbse, '36'                    )] = """Monomer B from Neopentane Dimer """
-TAGL['%s-%s-monoA-unCP' % (dbse, '36'                    )] = """Monomer A from Neopentane Dimer """
-TAGL['%s-%s-monoB-unCP' % (dbse, '36'                    )] = """Monomer B from Neopentane Dimer """
-TAGL['%s-%s'            % (dbse, '37'                    )] = """Cyclopentane-Neopentane """
-TAGL['%s-%s-dimer'      % (dbse, '37'                    )] = """Dimer from Cyclopentane-Neopentane """
-TAGL['%s-%s-monoA-CP'   % (dbse, '37'                    )] = """Monomer A from Cyclopentane-Neopentane """
-TAGL['%s-%s-monoB-CP'   % (dbse, '37'                    )] = """Monomer B from Cyclopentane-Neopentane """
-TAGL['%s-%s-monoA-unCP' % (dbse, '37'                    )] = """Monomer A from Cyclopentane-Neopentane """
-TAGL['%s-%s-monoB-unCP' % (dbse, '37'                    )] = """Monomer B from Cyclopentane-Neopentane """
-TAGL['%s-%s'            % (dbse, '38'                    )] = """Cyclopentane Dimer """
-TAGL['%s-%s-dimer'      % (dbse, '38'                    )] = """Dimer from Cyclopentane Dimer """
-TAGL['%s-%s-monoA-CP'   % (dbse, '38'                    )] = """Monomer A from Cyclopentane Dimer """
-TAGL['%s-%s-monoB-CP'   % (dbse, '38'                    )] = """Monomer B from Cyclopentane Dimer """
-TAGL['%s-%s-monoA-unCP' % (dbse, '38'                    )] = """Monomer A from Cyclopentane Dimer """
-TAGL['%s-%s-monoB-unCP' % (dbse, '38'                    )] = """Monomer B from Cyclopentane Dimer """
-TAGL['%s-%s'            % (dbse, '39'                    )] = """Benzene-Cyclopentane """
-TAGL['%s-%s-dimer'      % (dbse, '39'                    )] = """Dimer from Benzene-Cyclopentane """
-TAGL['%s-%s-monoA-CP'   % (dbse, '39'                    )] = """Monomer A from Benzene-Cyclopentane """
-TAGL['%s-%s-monoB-CP'   % (dbse, '39'                    )] = """Monomer B from Benzene-Cyclopentane """
-TAGL['%s-%s-monoA-unCP' % (dbse, '39'                    )] = """Monomer A from Benzene-Cyclopentane """
-TAGL['%s-%s-monoB-unCP' % (dbse, '39'                    )] = """Monomer B from Benzene-Cyclopentane """
-TAGL['%s-%s'            % (dbse, '40'                    )] = """Benzene-Neopentane """
-TAGL['%s-%s-dimer'      % (dbse, '40'                    )] = """Dimer from Benzene-Neopentane """
-TAGL['%s-%s-monoA-CP'   % (dbse, '40'                    )] = """Monomer A from Benzene-Neopentane """
-TAGL['%s-%s-monoB-CP'   % (dbse, '40'                    )] = """Monomer B from Benzene-Neopentane """
-TAGL['%s-%s-monoA-unCP' % (dbse, '40'                    )] = """Monomer A from Benzene-Neopentane """
-TAGL['%s-%s-monoB-unCP' % (dbse, '40'                    )] = """Monomer B from Benzene-Neopentane """
-TAGL['%s-%s'            % (dbse, '41'                    )] = """Uracil-Pentane """
-TAGL['%s-%s-dimer'      % (dbse, '41'                    )] = """Dimer from Uracil-Pentane """
-TAGL['%s-%s-monoA-CP'   % (dbse, '41'                    )] = """Monomer A from Uracil-Pentane """
-TAGL['%s-%s-monoB-CP'   % (dbse, '41'                    )] = """Monomer B from Uracil-Pentane """
-TAGL['%s-%s-monoA-unCP' % (dbse, '41'                    )] = """Monomer A from Uracil-Pentane """
-TAGL['%s-%s-monoB-unCP' % (dbse, '41'                    )] = """Monomer B from Uracil-Pentane """
-TAGL['%s-%s'            % (dbse, '42'                    )] = """Uracil-Cyclopentane """
-TAGL['%s-%s-dimer'      % (dbse, '42'                    )] = """Dimer from Uracil-Cyclopentane """
-TAGL['%s-%s-monoA-CP'   % (dbse, '42'                    )] = """Monomer A from Uracil-Cyclopentane """
-TAGL['%s-%s-monoB-CP'   % (dbse, '42'                    )] = """Monomer B from Uracil-Cyclopentane """
-TAGL['%s-%s-monoA-unCP' % (dbse, '42'                    )] = """Monomer A from Uracil-Cyclopentane """
-TAGL['%s-%s-monoB-unCP' % (dbse, '42'                    )] = """Monomer B from Uracil-Cyclopentane """
-TAGL['%s-%s'            % (dbse, '43'                    )] = """Uracil-Neopentane """
-TAGL['%s-%s-dimer'      % (dbse, '43'                    )] = """Dimer from Uracil-Neopentane """
-TAGL['%s-%s-monoA-CP'   % (dbse, '43'                    )] = """Monomer A from Uracil-Neopentane """
-TAGL['%s-%s-monoB-CP'   % (dbse, '43'                    )] = """Monomer B from Uracil-Neopentane """
-TAGL['%s-%s-monoA-unCP' % (dbse, '43'                    )] = """Monomer A from Uracil-Neopentane """
-TAGL['%s-%s-monoB-unCP' % (dbse, '43'                    )] = """Monomer B from Uracil-Neopentane """
-TAGL['%s-%s'            % (dbse, '44'                    )] = """Ethene-Pentane """
-TAGL['%s-%s-dimer'      % (dbse, '44'                    )] = """Dimer from Ethene-Pentane """
-TAGL['%s-%s-monoA-CP'   % (dbse, '44'                    )] = """Monomer A from Ethene-Pentane """
-TAGL['%s-%s-monoB-CP'   % (dbse, '44'                    )] = """Monomer B from Ethene-Pentane """
-TAGL['%s-%s-monoA-unCP' % (dbse, '44'                    )] = """Monomer A from Ethene-Pentane """
-TAGL['%s-%s-monoB-unCP' % (dbse, '44'                    )] = """Monomer B from Ethene-Pentane """
-TAGL['%s-%s'            % (dbse, '45'                    )] = """Ethyne-Pentane """
-TAGL['%s-%s-dimer'      % (dbse, '45'                    )] = """Dimer from Ethyne-Pentane """
-TAGL['%s-%s-monoA-CP'   % (dbse, '45'                    )] = """Monomer A from Ethyne-Pentane """
-TAGL['%s-%s-monoB-CP'   % (dbse, '45'                    )] = """Monomer B from Ethyne-Pentane """
-TAGL['%s-%s-monoA-unCP' % (dbse, '45'                    )] = """Monomer A from Ethyne-Pentane """
-TAGL['%s-%s-monoB-unCP' % (dbse, '45'                    )] = """Monomer B from Ethyne-Pentane """
-TAGL['%s-%s'            % (dbse, '46'                    )] = """N-methylacetamide-Pentane """
-TAGL['%s-%s-dimer'      % (dbse, '46'                    )] = """Dimer from N-methylacetamide-Pentane """
-TAGL['%s-%s-monoA-CP'   % (dbse, '46'                    )] = """Monomer A from N-methylacetamide-Pentane """
-TAGL['%s-%s-monoB-CP'   % (dbse, '46'                    )] = """Monomer B from N-methylacetamide-Pentane """
-TAGL['%s-%s-monoA-unCP' % (dbse, '46'                    )] = """Monomer A from N-methylacetamide-Pentane """
-TAGL['%s-%s-monoB-unCP' % (dbse, '46'                    )] = """Monomer B from N-methylacetamide-Pentane """
-TAGL['%s-%s'            % (dbse, '47'                    )] = """Benzene Dimer, CH-pi """
-TAGL['%s-%s-dimer'      % (dbse, '47'                    )] = """Dimer from Benzene Dimer, CH-pi """
-TAGL['%s-%s-monoA-CP'   % (dbse, '47'                    )] = """Monomer A from Benzene Dimer, CH-pi """
-TAGL['%s-%s-monoB-CP'   % (dbse, '47'                    )] = """Monomer B from Benzene Dimer, CH-pi """
-TAGL['%s-%s-monoA-unCP' % (dbse, '47'                    )] = """Monomer A from Benzene Dimer, CH-pi """
-TAGL['%s-%s-monoB-unCP' % (dbse, '47'                    )] = """Monomer B from Benzene Dimer, CH-pi """
-TAGL['%s-%s'            % (dbse, '48'                    )] = """Pyridine Dimer, CH-pi """
-TAGL['%s-%s-dimer'      % (dbse, '48'                    )] = """Dimer from Pyridine Dimer, CH-pi """
-TAGL['%s-%s-monoA-CP'   % (dbse, '48'                    )] = """Monomer A from Pyridine Dimer, CH-pi """
-TAGL['%s-%s-monoB-CP'   % (dbse, '48'                    )] = """Monomer B from Pyridine Dimer, CH-pi """
-TAGL['%s-%s-monoA-unCP' % (dbse, '48'                    )] = """Monomer A from Pyridine Dimer, CH-pi """
-TAGL['%s-%s-monoB-unCP' % (dbse, '48'                    )] = """Monomer B from Pyridine Dimer, CH-pi """
-TAGL['%s-%s'            % (dbse, '49'                    )] = """Benzene-Pyridine, CH-pi """
-TAGL['%s-%s-dimer'      % (dbse, '49'                    )] = """Dimer from Benzene-Pyridine, CH-pi """
-TAGL['%s-%s-monoA-CP'   % (dbse, '49'                    )] = """Monomer A from Benzene-Pyridine, CH-pi """
-TAGL['%s-%s-monoB-CP'   % (dbse, '49'                    )] = """Monomer B from Benzene-Pyridine, CH-pi """
-TAGL['%s-%s-monoA-unCP' % (dbse, '49'                    )] = """Monomer A from Benzene-Pyridine, CH-pi """
-TAGL['%s-%s-monoB-unCP' % (dbse, '49'                    )] = """Monomer B from Benzene-Pyridine, CH-pi """
-TAGL['%s-%s'            % (dbse, '50'                    )] = """Benzene-Ethyne, CH-pi """
-TAGL['%s-%s-dimer'      % (dbse, '50'                    )] = """Dimer from Benzene-Ethyne, CH-pi """
-TAGL['%s-%s-monoA-CP'   % (dbse, '50'                    )] = """Monomer A from Benzene-Ethyne, CH-pi """
-TAGL['%s-%s-monoB-CP'   % (dbse, '50'                    )] = """Monomer B from Benzene-Ethyne, CH-pi """
-TAGL['%s-%s-monoA-unCP' % (dbse, '50'                    )] = """Monomer A from Benzene-Ethyne, CH-pi """
-TAGL['%s-%s-monoB-unCP' % (dbse, '50'                    )] = """Monomer B from Benzene-Ethyne, CH-pi """
-TAGL['%s-%s'            % (dbse, '51'                    )] = """Ethyne Dimer, CH-pi """
-TAGL['%s-%s-dimer'      % (dbse, '51'                    )] = """Dimer from Ethyne Dimer, CH-pi """
-TAGL['%s-%s-monoA-CP'   % (dbse, '51'                    )] = """Monomer A from Ethyne Dimer, CH-pi """
-TAGL['%s-%s-monoB-CP'   % (dbse, '51'                    )] = """Monomer B from Ethyne Dimer, CH-pi """
-TAGL['%s-%s-monoA-unCP' % (dbse, '51'                    )] = """Monomer A from Ethyne Dimer, CH-pi """
-TAGL['%s-%s-monoB-unCP' % (dbse, '51'                    )] = """Monomer B from Ethyne Dimer, CH-pi """
-TAGL['%s-%s'            % (dbse, '52'                    )] = """Benzene-Acetic Acid, OH-pi """
-TAGL['%s-%s-dimer'      % (dbse, '52'                    )] = """Dimer from Benzene-Acetic Acid, OH-pi """
-TAGL['%s-%s-monoA-CP'   % (dbse, '52'                    )] = """Monomer A from Benzene-Acetic Acid, OH-pi """
-TAGL['%s-%s-monoB-CP'   % (dbse, '52'                    )] = """Monomer B from Benzene-Acetic Acid, OH-pi """
-TAGL['%s-%s-monoA-unCP' % (dbse, '52'                    )] = """Monomer A from Benzene-Acetic Acid, OH-pi """
-TAGL['%s-%s-monoB-unCP' % (dbse, '52'                    )] = """Monomer B from Benzene-Acetic Acid, OH-pi """
-TAGL['%s-%s'            % (dbse, '53'                    )] = """Benzene-Acetamide, NH-pi """
-TAGL['%s-%s-dimer'      % (dbse, '53'                    )] = """Dimer from Benzene-Acetamide, NH-pi """
-TAGL['%s-%s-monoA-CP'   % (dbse, '53'                    )] = """Monomer A from Benzene-Acetamide, NH-pi """
-TAGL['%s-%s-monoB-CP'   % (dbse, '53'                    )] = """Monomer B from Benzene-Acetamide, NH-pi """
-TAGL['%s-%s-monoA-unCP' % (dbse, '53'                    )] = """Monomer A from Benzene-Acetamide, NH-pi """
-TAGL['%s-%s-monoB-unCP' % (dbse, '53'                    )] = """Monomer B from Benzene-Acetamide, NH-pi """
-TAGL['%s-%s'            % (dbse, '54'                    )] = """Benzene-Water, OH-pi """
-TAGL['%s-%s-dimer'      % (dbse, '54'                    )] = """Dimer from Benzene-Water, OH-pi """
-TAGL['%s-%s-monoA-CP'   % (dbse, '54'                    )] = """Monomer A from Benzene-Water, OH-pi """
-TAGL['%s-%s-monoB-CP'   % (dbse, '54'                    )] = """Monomer B from Benzene-Water, OH-pi """
-TAGL['%s-%s-monoA-unCP' % (dbse, '54'                    )] = """Monomer A from Benzene-Water, OH-pi """
-TAGL['%s-%s-monoB-unCP' % (dbse, '54'                    )] = """Monomer B from Benzene-Water, OH-pi """
-TAGL['%s-%s'            % (dbse, '55'                    )] = """Benzene-Methanol, OH-pi """
-TAGL['%s-%s-dimer'      % (dbse, '55'                    )] = """Dimer from Benzene-Methanol, OH-pi """
-TAGL['%s-%s-monoA-CP'   % (dbse, '55'                    )] = """Monomer A from Benzene-Methanol, OH-pi """
-TAGL['%s-%s-monoB-CP'   % (dbse, '55'                    )] = """Monomer B from Benzene-Methanol, OH-pi """
-TAGL['%s-%s-monoA-unCP' % (dbse, '55'                    )] = """Monomer A from Benzene-Methanol, OH-pi """
-TAGL['%s-%s-monoB-unCP' % (dbse, '55'                    )] = """Monomer B from Benzene-Methanol, OH-pi """
-TAGL['%s-%s'            % (dbse, '56'                    )] = """Benzene-Methylamine, NH-pi """
-TAGL['%s-%s-dimer'      % (dbse, '56'                    )] = """Dimer from Benzene-Methylamine, NH-pi """
-TAGL['%s-%s-monoA-CP'   % (dbse, '56'                    )] = """Monomer A from Benzene-Methylamine, NH-pi """
-TAGL['%s-%s-monoB-CP'   % (dbse, '56'                    )] = """Monomer B from Benzene-Methylamine, NH-pi """
-TAGL['%s-%s-monoA-unCP' % (dbse, '56'                    )] = """Monomer A from Benzene-Methylamine, NH-pi """
-TAGL['%s-%s-monoB-unCP' % (dbse, '56'                    )] = """Monomer B from Benzene-Methylamine, NH-pi """
-TAGL['%s-%s'            % (dbse, '57'                    )] = """Benzene-N-methylacetamide, NH-pi """
-TAGL['%s-%s-dimer'      % (dbse, '57'                    )] = """Dimer from Benzene-N-methylacetamide, NH-pi """
-TAGL['%s-%s-monoA-CP'   % (dbse, '57'                    )] = """Monomer A from Benzene-N-methylacetamide, NH-pi """
-TAGL['%s-%s-monoB-CP'   % (dbse, '57'                    )] = """Monomer B from Benzene-N-methylacetamide, NH-pi """
-TAGL['%s-%s-monoA-unCP' % (dbse, '57'                    )] = """Monomer A from Benzene-N-methylacetamide, NH-pi """
-TAGL['%s-%s-monoB-unCP' % (dbse, '57'                    )] = """Monomer B from Benzene-N-methylacetamide, NH-pi """
-TAGL['%s-%s'            % (dbse, '58'                    )] = """Pyridine Dimer, CH-N """
-TAGL['%s-%s-dimer'      % (dbse, '58'                    )] = """Dimer from Pyridine Dimer, CH-N """
-TAGL['%s-%s-monoA-CP'   % (dbse, '58'                    )] = """Monomer A from Pyridine Dimer, CH-N """
-TAGL['%s-%s-monoB-CP'   % (dbse, '58'                    )] = """Monomer B from Pyridine Dimer, CH-N """
-TAGL['%s-%s-monoA-unCP' % (dbse, '58'                    )] = """Monomer A from Pyridine Dimer, CH-N """
-TAGL['%s-%s-monoB-unCP' % (dbse, '58'                    )] = """Monomer B from Pyridine Dimer, CH-N """
-TAGL['%s-%s'            % (dbse, '59'                    )] = """Ethyne-Water, CH-O """
-TAGL['%s-%s-dimer'      % (dbse, '59'                    )] = """Dimer from Ethyne-Water, CH-O """
-TAGL['%s-%s-monoA-CP'   % (dbse, '59'                    )] = """Monomer A from Ethyne-Water, CH-O """
-TAGL['%s-%s-monoB-CP'   % (dbse, '59'                    )] = """Monomer B from Ethyne-Water, CH-O """
-TAGL['%s-%s-monoA-unCP' % (dbse, '59'                    )] = """Monomer A from Ethyne-Water, CH-O """
-TAGL['%s-%s-monoB-unCP' % (dbse, '59'                    )] = """Monomer B from Ethyne-Water, CH-O """
-TAGL['%s-%s'            % (dbse, '60'                    )] = """Ethyne-Acetic Acid, OH-pi """
-TAGL['%s-%s-dimer'      % (dbse, '60'                    )] = """Dimer from Ethyne-Acetic Acid, OH-pi """
-TAGL['%s-%s-monoA-CP'   % (dbse, '60'                    )] = """Monomer A from Ethyne-Acetic Acid, OH-pi """
-TAGL['%s-%s-monoB-CP'   % (dbse, '60'                    )] = """Monomer B from Ethyne-Acetic Acid, OH-pi """
-TAGL['%s-%s-monoA-unCP' % (dbse, '60'                    )] = """Monomer A from Ethyne-Acetic Acid, OH-pi """
-TAGL['%s-%s-monoB-unCP' % (dbse, '60'                    )] = """Monomer B from Ethyne-Acetic Acid, OH-pi """
-TAGL['%s-%s'            % (dbse, '61'                    )] = """Pentane-Acetic Acid """
-TAGL['%s-%s-dimer'      % (dbse, '61'                    )] = """Dimer from Pentane-Acetic Acid """
-TAGL['%s-%s-monoA-CP'   % (dbse, '61'                    )] = """Monomer A from Pentane-Acetic Acid """
-TAGL['%s-%s-monoB-CP'   % (dbse, '61'                    )] = """Monomer B from Pentane-Acetic Acid """
-TAGL['%s-%s-monoA-unCP' % (dbse, '61'                    )] = """Monomer A from Pentane-Acetic Acid """
-TAGL['%s-%s-monoB-unCP' % (dbse, '61'                    )] = """Monomer B from Pentane-Acetic Acid """
-TAGL['%s-%s'            % (dbse, '62'                    )] = """Pentane-Acetamide """
-TAGL['%s-%s-dimer'      % (dbse, '62'                    )] = """Dimer from Pentane-Acetamide """
-TAGL['%s-%s-monoA-CP'   % (dbse, '62'                    )] = """Monomer A from Pentane-Acetamide """
-TAGL['%s-%s-monoB-CP'   % (dbse, '62'                    )] = """Monomer B from Pentane-Acetamide """
-TAGL['%s-%s-monoA-unCP' % (dbse, '62'                    )] = """Monomer A from Pentane-Acetamide """
-TAGL['%s-%s-monoB-unCP' % (dbse, '62'                    )] = """Monomer B from Pentane-Acetamide """
-TAGL['%s-%s'            % (dbse, '63'                    )] = """Benzene-Acetic Acid """
-TAGL['%s-%s-dimer'      % (dbse, '63'                    )] = """Dimer from Benzene-Acetic Acid """
-TAGL['%s-%s-monoA-CP'   % (dbse, '63'                    )] = """Monomer A from Benzene-Acetic Acid """
-TAGL['%s-%s-monoB-CP'   % (dbse, '63'                    )] = """Monomer B from Benzene-Acetic Acid """
-TAGL['%s-%s-monoA-unCP' % (dbse, '63'                    )] = """Monomer A from Benzene-Acetic Acid """
-TAGL['%s-%s-monoB-unCP' % (dbse, '63'                    )] = """Monomer B from Benzene-Acetic Acid """
-TAGL['%s-%s'            % (dbse, '64'                    )] = """N-methylacetamide-Ethene """
-TAGL['%s-%s-dimer'      % (dbse, '64'                    )] = """Dimer from N-methylacetamide-Ethene """
-TAGL['%s-%s-monoA-CP'   % (dbse, '64'                    )] = """Monomer A from N-methylacetamide-Ethene """
-TAGL['%s-%s-monoB-CP'   % (dbse, '64'                    )] = """Monomer B from N-methylacetamide-Ethene """
-TAGL['%s-%s-monoA-unCP' % (dbse, '64'                    )] = """Monomer A from N-methylacetamide-Ethene """
-TAGL['%s-%s-monoB-unCP' % (dbse, '64'                    )] = """Monomer B from N-methylacetamide-Ethene """
-TAGL['%s-%s'            % (dbse, '65'                    )] = """Pyridine-Ethyne """
-TAGL['%s-%s-dimer'      % (dbse, '65'                    )] = """Dimer from Pyridine-Ethyne """
-TAGL['%s-%s-monoA-CP'   % (dbse, '65'                    )] = """Monomer A from Pyridine-Ethyne """
-TAGL['%s-%s-monoB-CP'   % (dbse, '65'                    )] = """Monomer B from Pyridine-Ethyne """
-TAGL['%s-%s-monoA-unCP' % (dbse, '65'                    )] = """Monomer A from Pyridine-Ethyne """
-TAGL['%s-%s-monoB-unCP' % (dbse, '65'                    )] = """Monomer B from Pyridine-Ethyne """
-TAGL['%s-%s'            % (dbse, '66'                    )] = """Methylamine-Pyridine """
-TAGL['%s-%s-dimer'      % (dbse, '66'                    )] = """Dimer from Methylamine-Pyridine """
-TAGL['%s-%s-monoA-CP'   % (dbse, '66'                    )] = """Monomer A from Methylamine-Pyridine """
-TAGL['%s-%s-monoB-CP'   % (dbse, '66'                    )] = """Monomer B from Methylamine-Pyridine """
-TAGL['%s-%s-monoA-unCP' % (dbse, '66'                    )] = """Monomer A from Methylamine-Pyridine """
-TAGL['%s-%s-monoB-unCP' % (dbse, '66'                    )] = """Monomer B from Methylamine-Pyridine """
+TAGL["%s-%s" % (dbse, "1")] = """Water Dimer """
+TAGL["%s-%s-dimer" % (dbse, "1")] = """Dimer from Water Dimer """
+TAGL["%s-%s-monoA-CP" % (dbse, "1")] = """Monomer A from Water Dimer """
+TAGL["%s-%s-monoB-CP" % (dbse, "1")] = """Monomer B from Water Dimer """
+TAGL["%s-%s-monoA-unCP" % (dbse, "1")] = """Monomer A from Water Dimer """
+TAGL["%s-%s-monoB-unCP" % (dbse, "1")] = """Monomer B from Water Dimer """
+TAGL["%s-%s" % (dbse, "2")] = """Water-Methanol """
+TAGL["%s-%s-dimer" % (dbse, "2")] = """Dimer from Water-Methanol """
+TAGL["%s-%s-monoA-CP" % (dbse, "2")] = """Monomer A from Water-Methanol """
+TAGL["%s-%s-monoB-CP" % (dbse, "2")] = """Monomer B from Water-Methanol """
+TAGL["%s-%s-monoA-unCP" % (dbse, "2")] = """Monomer A from Water-Methanol """
+TAGL["%s-%s-monoB-unCP" % (dbse, "2")] = """Monomer B from Water-Methanol """
+TAGL["%s-%s" % (dbse, "3")] = """Water-Methylamine """
+TAGL["%s-%s-dimer" % (dbse, "3")] = """Dimer from Water-Methylamine """
+TAGL["%s-%s-monoA-CP" % (dbse, "3")] = """Monomer A from Water-Methylamine """
+TAGL["%s-%s-monoB-CP" % (dbse, "3")] = """Monomer B from Water-Methylamine """
+TAGL["%s-%s-monoA-unCP" % (dbse, "3")] = """Monomer A from Water-Methylamine """
+TAGL["%s-%s-monoB-unCP" % (dbse, "3")] = """Monomer B from Water-Methylamine """
+TAGL["%s-%s" % (dbse, "4")] = """Water-N-methylacetamide """
+TAGL["%s-%s-dimer" % (dbse, "4")] = """Dimer from Water-N-methylacetamide """
+TAGL["%s-%s-monoA-CP" % (dbse, "4")] = """Monomer A from Water-N-methylacetamide """
+TAGL["%s-%s-monoB-CP" % (dbse, "4")] = """Monomer B from Water-N-methylacetamide """
+TAGL["%s-%s-monoA-unCP" % (dbse, "4")] = """Monomer A from Water-N-methylacetamide """
+TAGL["%s-%s-monoB-unCP" % (dbse, "4")] = """Monomer B from Water-N-methylacetamide """
+TAGL["%s-%s" % (dbse, "5")] = """Methanol Dimer """
+TAGL["%s-%s-dimer" % (dbse, "5")] = """Dimer from Methanol Dimer """
+TAGL["%s-%s-monoA-CP" % (dbse, "5")] = """Monomer A from Methanol Dimer """
+TAGL["%s-%s-monoB-CP" % (dbse, "5")] = """Monomer B from Methanol Dimer """
+TAGL["%s-%s-monoA-unCP" % (dbse, "5")] = """Monomer A from Methanol Dimer """
+TAGL["%s-%s-monoB-unCP" % (dbse, "5")] = """Monomer B from Methanol Dimer """
+TAGL["%s-%s" % (dbse, "6")] = """Methanol-Methylamine """
+TAGL["%s-%s-dimer" % (dbse, "6")] = """Dimer from Methanol-Methylamine """
+TAGL["%s-%s-monoA-CP" % (dbse, "6")] = """Monomer A from Methanol-Methylamine """
+TAGL["%s-%s-monoB-CP" % (dbse, "6")] = """Monomer B from Methanol-Methylamine """
+TAGL["%s-%s-monoA-unCP" % (dbse, "6")] = """Monomer A from Methanol-Methylamine """
+TAGL["%s-%s-monoB-unCP" % (dbse, "6")] = """Monomer B from Methanol-Methylamine """
+TAGL["%s-%s" % (dbse, "7")] = """Methanol-N-methylacetamide """
+TAGL["%s-%s-dimer" % (dbse, "7")] = """Dimer from Methanol-N-methylacetamide """
+TAGL["%s-%s-monoA-CP" % (dbse, "7")] = """Monomer A from Methanol-N-methylacetamide """
+TAGL["%s-%s-monoB-CP" % (dbse, "7")] = """Monomer B from Methanol-N-methylacetamide """
+TAGL["%s-%s-monoA-unCP" % (dbse, "7")] = (
+    """Monomer A from Methanol-N-methylacetamide """
+)
+TAGL["%s-%s-monoB-unCP" % (dbse, "7")] = (
+    """Monomer B from Methanol-N-methylacetamide """
+)
+TAGL["%s-%s" % (dbse, "8")] = """Methanol-Water """
+TAGL["%s-%s-dimer" % (dbse, "8")] = """Dimer from Methanol-Water """
+TAGL["%s-%s-monoA-CP" % (dbse, "8")] = """Monomer A from Methanol-Water """
+TAGL["%s-%s-monoB-CP" % (dbse, "8")] = """Monomer B from Methanol-Water """
+TAGL["%s-%s-monoA-unCP" % (dbse, "8")] = """Monomer A from Methanol-Water """
+TAGL["%s-%s-monoB-unCP" % (dbse, "8")] = """Monomer B from Methanol-Water """
+TAGL["%s-%s" % (dbse, "9")] = """Methylamine-Methanol """
+TAGL["%s-%s-dimer" % (dbse, "9")] = """Dimer from Methylamine-Methanol """
+TAGL["%s-%s-monoA-CP" % (dbse, "9")] = """Monomer A from Methylamine-Methanol """
+TAGL["%s-%s-monoB-CP" % (dbse, "9")] = """Monomer B from Methylamine-Methanol """
+TAGL["%s-%s-monoA-unCP" % (dbse, "9")] = """Monomer A from Methylamine-Methanol """
+TAGL["%s-%s-monoB-unCP" % (dbse, "9")] = """Monomer B from Methylamine-Methanol """
+TAGL["%s-%s" % (dbse, "10")] = """Methylamine Dimer """
+TAGL["%s-%s-dimer" % (dbse, "10")] = """Dimer from Methylamine Dimer """
+TAGL["%s-%s-monoA-CP" % (dbse, "10")] = """Monomer A from Methylamine Dimer """
+TAGL["%s-%s-monoB-CP" % (dbse, "10")] = """Monomer B from Methylamine Dimer """
+TAGL["%s-%s-monoA-unCP" % (dbse, "10")] = """Monomer A from Methylamine Dimer """
+TAGL["%s-%s-monoB-unCP" % (dbse, "10")] = """Monomer B from Methylamine Dimer """
+TAGL["%s-%s" % (dbse, "11")] = """Methylamine-N-methylacetamide """
+TAGL["%s-%s-dimer" % (dbse, "11")] = """Dimer from Methylamine-N-methylacetamide """
+TAGL["%s-%s-monoA-CP" % (dbse, "11")] = (
+    """Monomer A from Methylamine-N-methylacetamide """
+)
+TAGL["%s-%s-monoB-CP" % (dbse, "11")] = (
+    """Monomer B from Methylamine-N-methylacetamide """
+)
+TAGL["%s-%s-monoA-unCP" % (dbse, "11")] = (
+    """Monomer A from Methylamine-N-methylacetamide """
+)
+TAGL["%s-%s-monoB-unCP" % (dbse, "11")] = (
+    """Monomer B from Methylamine-N-methylacetamide """
+)
+TAGL["%s-%s" % (dbse, "12")] = """Methylamine-Water """
+TAGL["%s-%s-dimer" % (dbse, "12")] = """Dimer from Methylamine-Water """
+TAGL["%s-%s-monoA-CP" % (dbse, "12")] = """Monomer A from Methylamine-Water """
+TAGL["%s-%s-monoB-CP" % (dbse, "12")] = """Monomer B from Methylamine-Water """
+TAGL["%s-%s-monoA-unCP" % (dbse, "12")] = """Monomer A from Methylamine-Water """
+TAGL["%s-%s-monoB-unCP" % (dbse, "12")] = """Monomer B from Methylamine-Water """
+TAGL["%s-%s" % (dbse, "13")] = """N-methylacetamide-Methanol """
+TAGL["%s-%s-dimer" % (dbse, "13")] = """Dimer from N-methylacetamide-Methanol """
+TAGL["%s-%s-monoA-CP" % (dbse, "13")] = """Monomer A from N-methylacetamide-Methanol """
+TAGL["%s-%s-monoB-CP" % (dbse, "13")] = """Monomer B from N-methylacetamide-Methanol """
+TAGL["%s-%s-monoA-unCP" % (dbse, "13")] = (
+    """Monomer A from N-methylacetamide-Methanol """
+)
+TAGL["%s-%s-monoB-unCP" % (dbse, "13")] = (
+    """Monomer B from N-methylacetamide-Methanol """
+)
+TAGL["%s-%s" % (dbse, "14")] = """N-methylacetamide-Methylamine """
+TAGL["%s-%s-dimer" % (dbse, "14")] = """Dimer from N-methylacetamide-Methylamine """
+TAGL["%s-%s-monoA-CP" % (dbse, "14")] = (
+    """Monomer A from N-methylacetamide-Methylamine """
+)
+TAGL["%s-%s-monoB-CP" % (dbse, "14")] = (
+    """Monomer B from N-methylacetamide-Methylamine """
+)
+TAGL["%s-%s-monoA-unCP" % (dbse, "14")] = (
+    """Monomer A from N-methylacetamide-Methylamine """
+)
+TAGL["%s-%s-monoB-unCP" % (dbse, "14")] = (
+    """Monomer B from N-methylacetamide-Methylamine """
+)
+TAGL["%s-%s" % (dbse, "15")] = """N-methylacetamide Dimer """
+TAGL["%s-%s-dimer" % (dbse, "15")] = """Dimer from N-methylacetamide Dimer """
+TAGL["%s-%s-monoA-CP" % (dbse, "15")] = """Monomer A from N-methylacetamide Dimer """
+TAGL["%s-%s-monoB-CP" % (dbse, "15")] = """Monomer B from N-methylacetamide Dimer """
+TAGL["%s-%s-monoA-unCP" % (dbse, "15")] = """Monomer A from N-methylacetamide Dimer """
+TAGL["%s-%s-monoB-unCP" % (dbse, "15")] = """Monomer B from N-methylacetamide Dimer """
+TAGL["%s-%s" % (dbse, "16")] = """N-methylacetamide-Water """
+TAGL["%s-%s-dimer" % (dbse, "16")] = """Dimer from N-methylacetamide-Water """
+TAGL["%s-%s-monoA-CP" % (dbse, "16")] = """Monomer A from N-methylacetamide-Water """
+TAGL["%s-%s-monoB-CP" % (dbse, "16")] = """Monomer B from N-methylacetamide-Water """
+TAGL["%s-%s-monoA-unCP" % (dbse, "16")] = """Monomer A from N-methylacetamide-Water """
+TAGL["%s-%s-monoB-unCP" % (dbse, "16")] = """Monomer B from N-methylacetamide-Water """
+TAGL["%s-%s" % (dbse, "17")] = """Uracil Dimer, HB """
+TAGL["%s-%s-dimer" % (dbse, "17")] = """Dimer from Uracil Dimer, HB """
+TAGL["%s-%s-monoA-CP" % (dbse, "17")] = """Monomer A from Uracil Dimer, HB """
+TAGL["%s-%s-monoB-CP" % (dbse, "17")] = """Monomer B from Uracil Dimer, HB """
+TAGL["%s-%s-monoA-unCP" % (dbse, "17")] = """Monomer A from Uracil Dimer, HB """
+TAGL["%s-%s-monoB-unCP" % (dbse, "17")] = """Monomer B from Uracil Dimer, HB """
+TAGL["%s-%s" % (dbse, "18")] = """Water-Pyridine """
+TAGL["%s-%s-dimer" % (dbse, "18")] = """Dimer from Water-Pyridine """
+TAGL["%s-%s-monoA-CP" % (dbse, "18")] = """Monomer A from Water-Pyridine """
+TAGL["%s-%s-monoB-CP" % (dbse, "18")] = """Monomer B from Water-Pyridine """
+TAGL["%s-%s-monoA-unCP" % (dbse, "18")] = """Monomer A from Water-Pyridine """
+TAGL["%s-%s-monoB-unCP" % (dbse, "18")] = """Monomer B from Water-Pyridine """
+TAGL["%s-%s" % (dbse, "19")] = """Methanol-Pyridine """
+TAGL["%s-%s-dimer" % (dbse, "19")] = """Dimer from Methanol-Pyridine """
+TAGL["%s-%s-monoA-CP" % (dbse, "19")] = """Monomer A from Methanol-Pyridine """
+TAGL["%s-%s-monoB-CP" % (dbse, "19")] = """Monomer B from Methanol-Pyridine """
+TAGL["%s-%s-monoA-unCP" % (dbse, "19")] = """Monomer A from Methanol-Pyridine """
+TAGL["%s-%s-monoB-unCP" % (dbse, "19")] = """Monomer B from Methanol-Pyridine """
+TAGL["%s-%s" % (dbse, "20")] = """Acetic Acid Dimer """
+TAGL["%s-%s-dimer" % (dbse, "20")] = """Dimer from Acetic Acid Dimer """
+TAGL["%s-%s-monoA-CP" % (dbse, "20")] = """Monomer A from Acetic Acid Dimer """
+TAGL["%s-%s-monoB-CP" % (dbse, "20")] = """Monomer B from Acetic Acid Dimer """
+TAGL["%s-%s-monoA-unCP" % (dbse, "20")] = """Monomer A from Acetic Acid Dimer """
+TAGL["%s-%s-monoB-unCP" % (dbse, "20")] = """Monomer B from Acetic Acid Dimer """
+TAGL["%s-%s" % (dbse, "21")] = """Acetamide Dimer """
+TAGL["%s-%s-dimer" % (dbse, "21")] = """Dimer from Acetamide Dimer """
+TAGL["%s-%s-monoA-CP" % (dbse, "21")] = """Monomer A from Acetamide Dimer """
+TAGL["%s-%s-monoB-CP" % (dbse, "21")] = """Monomer B from Acetamide Dimer """
+TAGL["%s-%s-monoA-unCP" % (dbse, "21")] = """Monomer A from Acetamide Dimer """
+TAGL["%s-%s-monoB-unCP" % (dbse, "21")] = """Monomer B from Acetamide Dimer """
+TAGL["%s-%s" % (dbse, "22")] = """Acetic Acid-Uracil """
+TAGL["%s-%s-dimer" % (dbse, "22")] = """Dimer from Acetic Acid-Uracil """
+TAGL["%s-%s-monoA-CP" % (dbse, "22")] = """Monomer A from Acetic Acid-Uracil """
+TAGL["%s-%s-monoB-CP" % (dbse, "22")] = """Monomer B from Acetic Acid-Uracil """
+TAGL["%s-%s-monoA-unCP" % (dbse, "22")] = """Monomer A from Acetic Acid-Uracil """
+TAGL["%s-%s-monoB-unCP" % (dbse, "22")] = """Monomer B from Acetic Acid-Uracil """
+TAGL["%s-%s" % (dbse, "23")] = """Acetamide-Uracil """
+TAGL["%s-%s-dimer" % (dbse, "23")] = """Dimer from Acetamide-Uracil """
+TAGL["%s-%s-monoA-CP" % (dbse, "23")] = """Monomer A from Acetamide-Uracil """
+TAGL["%s-%s-monoB-CP" % (dbse, "23")] = """Monomer B from Acetamide-Uracil """
+TAGL["%s-%s-monoA-unCP" % (dbse, "23")] = """Monomer A from Acetamide-Uracil """
+TAGL["%s-%s-monoB-unCP" % (dbse, "23")] = """Monomer B from Acetamide-Uracil """
+TAGL["%s-%s" % (dbse, "24")] = """Benzene Dimer, pi-pi """
+TAGL["%s-%s-dimer" % (dbse, "24")] = """Dimer from Benzene Dimer, pi-pi """
+TAGL["%s-%s-monoA-CP" % (dbse, "24")] = """Monomer A from Benzene Dimer, pi-pi """
+TAGL["%s-%s-monoB-CP" % (dbse, "24")] = """Monomer B from Benzene Dimer, pi-pi """
+TAGL["%s-%s-monoA-unCP" % (dbse, "24")] = """Monomer A from Benzene Dimer, pi-pi """
+TAGL["%s-%s-monoB-unCP" % (dbse, "24")] = """Monomer B from Benzene Dimer, pi-pi """
+TAGL["%s-%s" % (dbse, "25")] = """Pyridine Dimer, pi-pi """
+TAGL["%s-%s-dimer" % (dbse, "25")] = """Dimer from Pyridine Dimer, pi-pi """
+TAGL["%s-%s-monoA-CP" % (dbse, "25")] = """Monomer A from Pyridine Dimer, pi-pi """
+TAGL["%s-%s-monoB-CP" % (dbse, "25")] = """Monomer B from Pyridine Dimer, pi-pi """
+TAGL["%s-%s-monoA-unCP" % (dbse, "25")] = """Monomer A from Pyridine Dimer, pi-pi """
+TAGL["%s-%s-monoB-unCP" % (dbse, "25")] = """Monomer B from Pyridine Dimer, pi-pi """
+TAGL["%s-%s" % (dbse, "26")] = """Uracil Dimer, pi-pi """
+TAGL["%s-%s-dimer" % (dbse, "26")] = """Dimer from Uracil Dimer, pi-pi """
+TAGL["%s-%s-monoA-CP" % (dbse, "26")] = """Monomer A from Uracil Dimer, pi-pi """
+TAGL["%s-%s-monoB-CP" % (dbse, "26")] = """Monomer B from Uracil Dimer, pi-pi """
+TAGL["%s-%s-monoA-unCP" % (dbse, "26")] = """Monomer A from Uracil Dimer, pi-pi """
+TAGL["%s-%s-monoB-unCP" % (dbse, "26")] = """Monomer B from Uracil Dimer, pi-pi """
+TAGL["%s-%s" % (dbse, "27")] = """Benzene-Pyridine, pi-pi """
+TAGL["%s-%s-dimer" % (dbse, "27")] = """Dimer from Benzene-Pyridine, pi-pi """
+TAGL["%s-%s-monoA-CP" % (dbse, "27")] = """Monomer A from Benzene-Pyridine, pi-pi """
+TAGL["%s-%s-monoB-CP" % (dbse, "27")] = """Monomer B from Benzene-Pyridine, pi-pi """
+TAGL["%s-%s-monoA-unCP" % (dbse, "27")] = """Monomer A from Benzene-Pyridine, pi-pi """
+TAGL["%s-%s-monoB-unCP" % (dbse, "27")] = """Monomer B from Benzene-Pyridine, pi-pi """
+TAGL["%s-%s" % (dbse, "28")] = """Benzene-Uracil, pi-pi """
+TAGL["%s-%s-dimer" % (dbse, "28")] = """Dimer from Benzene-Uracil, pi-pi """
+TAGL["%s-%s-monoA-CP" % (dbse, "28")] = """Monomer A from Benzene-Uracil, pi-pi """
+TAGL["%s-%s-monoB-CP" % (dbse, "28")] = """Monomer B from Benzene-Uracil, pi-pi """
+TAGL["%s-%s-monoA-unCP" % (dbse, "28")] = """Monomer A from Benzene-Uracil, pi-pi """
+TAGL["%s-%s-monoB-unCP" % (dbse, "28")] = """Monomer B from Benzene-Uracil, pi-pi """
+TAGL["%s-%s" % (dbse, "29")] = """Pyridine-Uracil, pi-pi """
+TAGL["%s-%s-dimer" % (dbse, "29")] = """Dimer from Pyridine-Uracil, pi-pi """
+TAGL["%s-%s-monoA-CP" % (dbse, "29")] = """Monomer A from Pyridine-Uracil, pi-pi """
+TAGL["%s-%s-monoB-CP" % (dbse, "29")] = """Monomer B from Pyridine-Uracil, pi-pi """
+TAGL["%s-%s-monoA-unCP" % (dbse, "29")] = """Monomer A from Pyridine-Uracil, pi-pi """
+TAGL["%s-%s-monoB-unCP" % (dbse, "29")] = """Monomer B from Pyridine-Uracil, pi-pi """
+TAGL["%s-%s" % (dbse, "30")] = """Benzene-Ethene """
+TAGL["%s-%s-dimer" % (dbse, "30")] = """Dimer from Benzene-Ethene """
+TAGL["%s-%s-monoA-CP" % (dbse, "30")] = """Monomer A from Benzene-Ethene """
+TAGL["%s-%s-monoB-CP" % (dbse, "30")] = """Monomer B from Benzene-Ethene """
+TAGL["%s-%s-monoA-unCP" % (dbse, "30")] = """Monomer A from Benzene-Ethene """
+TAGL["%s-%s-monoB-unCP" % (dbse, "30")] = """Monomer B from Benzene-Ethene """
+TAGL["%s-%s" % (dbse, "31")] = """Uracil-Ethene """
+TAGL["%s-%s-dimer" % (dbse, "31")] = """Dimer from Uracil-Ethene """
+TAGL["%s-%s-monoA-CP" % (dbse, "31")] = """Monomer A from Uracil-Ethene """
+TAGL["%s-%s-monoB-CP" % (dbse, "31")] = """Monomer B from Uracil-Ethene """
+TAGL["%s-%s-monoA-unCP" % (dbse, "31")] = """Monomer A from Uracil-Ethene """
+TAGL["%s-%s-monoB-unCP" % (dbse, "31")] = """Monomer B from Uracil-Ethene """
+TAGL["%s-%s" % (dbse, "32")] = """Uracil-Ethyne """
+TAGL["%s-%s-dimer" % (dbse, "32")] = """Dimer from Uracil-Ethyne """
+TAGL["%s-%s-monoA-CP" % (dbse, "32")] = """Monomer A from Uracil-Ethyne """
+TAGL["%s-%s-monoB-CP" % (dbse, "32")] = """Monomer B from Uracil-Ethyne """
+TAGL["%s-%s-monoA-unCP" % (dbse, "32")] = """Monomer A from Uracil-Ethyne """
+TAGL["%s-%s-monoB-unCP" % (dbse, "32")] = """Monomer B from Uracil-Ethyne """
+TAGL["%s-%s" % (dbse, "33")] = """Pyridine-Ethene """
+TAGL["%s-%s-dimer" % (dbse, "33")] = """Dimer from Pyridine-Ethene """
+TAGL["%s-%s-monoA-CP" % (dbse, "33")] = """Monomer A from Pyridine-Ethene """
+TAGL["%s-%s-monoB-CP" % (dbse, "33")] = """Monomer B from Pyridine-Ethene """
+TAGL["%s-%s-monoA-unCP" % (dbse, "33")] = """Monomer A from Pyridine-Ethene """
+TAGL["%s-%s-monoB-unCP" % (dbse, "33")] = """Monomer B from Pyridine-Ethene """
+TAGL["%s-%s" % (dbse, "34")] = """Pentane Dimer """
+TAGL["%s-%s-dimer" % (dbse, "34")] = """Dimer from Pentane Dimer """
+TAGL["%s-%s-monoA-CP" % (dbse, "34")] = """Monomer A from Pentane Dimer """
+TAGL["%s-%s-monoB-CP" % (dbse, "34")] = """Monomer B from Pentane Dimer """
+TAGL["%s-%s-monoA-unCP" % (dbse, "34")] = """Monomer A from Pentane Dimer """
+TAGL["%s-%s-monoB-unCP" % (dbse, "34")] = """Monomer B from Pentane Dimer """
+TAGL["%s-%s" % (dbse, "35")] = """Neopentane-Pentane """
+TAGL["%s-%s-dimer" % (dbse, "35")] = """Dimer from Neopentane-Pentane """
+TAGL["%s-%s-monoA-CP" % (dbse, "35")] = """Monomer A from Neopentane-Pentane """
+TAGL["%s-%s-monoB-CP" % (dbse, "35")] = """Monomer B from Neopentane-Pentane """
+TAGL["%s-%s-monoA-unCP" % (dbse, "35")] = """Monomer A from Neopentane-Pentane """
+TAGL["%s-%s-monoB-unCP" % (dbse, "35")] = """Monomer B from Neopentane-Pentane """
+TAGL["%s-%s" % (dbse, "36")] = """Neopentane Dimer """
+TAGL["%s-%s-dimer" % (dbse, "36")] = """Dimer from Neopentane Dimer """
+TAGL["%s-%s-monoA-CP" % (dbse, "36")] = """Monomer A from Neopentane Dimer """
+TAGL["%s-%s-monoB-CP" % (dbse, "36")] = """Monomer B from Neopentane Dimer """
+TAGL["%s-%s-monoA-unCP" % (dbse, "36")] = """Monomer A from Neopentane Dimer """
+TAGL["%s-%s-monoB-unCP" % (dbse, "36")] = """Monomer B from Neopentane Dimer """
+TAGL["%s-%s" % (dbse, "37")] = """Cyclopentane-Neopentane """
+TAGL["%s-%s-dimer" % (dbse, "37")] = """Dimer from Cyclopentane-Neopentane """
+TAGL["%s-%s-monoA-CP" % (dbse, "37")] = """Monomer A from Cyclopentane-Neopentane """
+TAGL["%s-%s-monoB-CP" % (dbse, "37")] = """Monomer B from Cyclopentane-Neopentane """
+TAGL["%s-%s-monoA-unCP" % (dbse, "37")] = """Monomer A from Cyclopentane-Neopentane """
+TAGL["%s-%s-monoB-unCP" % (dbse, "37")] = """Monomer B from Cyclopentane-Neopentane """
+TAGL["%s-%s" % (dbse, "38")] = """Cyclopentane Dimer """
+TAGL["%s-%s-dimer" % (dbse, "38")] = """Dimer from Cyclopentane Dimer """
+TAGL["%s-%s-monoA-CP" % (dbse, "38")] = """Monomer A from Cyclopentane Dimer """
+TAGL["%s-%s-monoB-CP" % (dbse, "38")] = """Monomer B from Cyclopentane Dimer """
+TAGL["%s-%s-monoA-unCP" % (dbse, "38")] = """Monomer A from Cyclopentane Dimer """
+TAGL["%s-%s-monoB-unCP" % (dbse, "38")] = """Monomer B from Cyclopentane Dimer """
+TAGL["%s-%s" % (dbse, "39")] = """Benzene-Cyclopentane """
+TAGL["%s-%s-dimer" % (dbse, "39")] = """Dimer from Benzene-Cyclopentane """
+TAGL["%s-%s-monoA-CP" % (dbse, "39")] = """Monomer A from Benzene-Cyclopentane """
+TAGL["%s-%s-monoB-CP" % (dbse, "39")] = """Monomer B from Benzene-Cyclopentane """
+TAGL["%s-%s-monoA-unCP" % (dbse, "39")] = """Monomer A from Benzene-Cyclopentane """
+TAGL["%s-%s-monoB-unCP" % (dbse, "39")] = """Monomer B from Benzene-Cyclopentane """
+TAGL["%s-%s" % (dbse, "40")] = """Benzene-Neopentane """
+TAGL["%s-%s-dimer" % (dbse, "40")] = """Dimer from Benzene-Neopentane """
+TAGL["%s-%s-monoA-CP" % (dbse, "40")] = """Monomer A from Benzene-Neopentane """
+TAGL["%s-%s-monoB-CP" % (dbse, "40")] = """Monomer B from Benzene-Neopentane """
+TAGL["%s-%s-monoA-unCP" % (dbse, "40")] = """Monomer A from Benzene-Neopentane """
+TAGL["%s-%s-monoB-unCP" % (dbse, "40")] = """Monomer B from Benzene-Neopentane """
+TAGL["%s-%s" % (dbse, "41")] = """Uracil-Pentane """
+TAGL["%s-%s-dimer" % (dbse, "41")] = """Dimer from Uracil-Pentane """
+TAGL["%s-%s-monoA-CP" % (dbse, "41")] = """Monomer A from Uracil-Pentane """
+TAGL["%s-%s-monoB-CP" % (dbse, "41")] = """Monomer B from Uracil-Pentane """
+TAGL["%s-%s-monoA-unCP" % (dbse, "41")] = """Monomer A from Uracil-Pentane """
+TAGL["%s-%s-monoB-unCP" % (dbse, "41")] = """Monomer B from Uracil-Pentane """
+TAGL["%s-%s" % (dbse, "42")] = """Uracil-Cyclopentane """
+TAGL["%s-%s-dimer" % (dbse, "42")] = """Dimer from Uracil-Cyclopentane """
+TAGL["%s-%s-monoA-CP" % (dbse, "42")] = """Monomer A from Uracil-Cyclopentane """
+TAGL["%s-%s-monoB-CP" % (dbse, "42")] = """Monomer B from Uracil-Cyclopentane """
+TAGL["%s-%s-monoA-unCP" % (dbse, "42")] = """Monomer A from Uracil-Cyclopentane """
+TAGL["%s-%s-monoB-unCP" % (dbse, "42")] = """Monomer B from Uracil-Cyclopentane """
+TAGL["%s-%s" % (dbse, "43")] = """Uracil-Neopentane """
+TAGL["%s-%s-dimer" % (dbse, "43")] = """Dimer from Uracil-Neopentane """
+TAGL["%s-%s-monoA-CP" % (dbse, "43")] = """Monomer A from Uracil-Neopentane """
+TAGL["%s-%s-monoB-CP" % (dbse, "43")] = """Monomer B from Uracil-Neopentane """
+TAGL["%s-%s-monoA-unCP" % (dbse, "43")] = """Monomer A from Uracil-Neopentane """
+TAGL["%s-%s-monoB-unCP" % (dbse, "43")] = """Monomer B from Uracil-Neopentane """
+TAGL["%s-%s" % (dbse, "44")] = """Ethene-Pentane """
+TAGL["%s-%s-dimer" % (dbse, "44")] = """Dimer from Ethene-Pentane """
+TAGL["%s-%s-monoA-CP" % (dbse, "44")] = """Monomer A from Ethene-Pentane """
+TAGL["%s-%s-monoB-CP" % (dbse, "44")] = """Monomer B from Ethene-Pentane """
+TAGL["%s-%s-monoA-unCP" % (dbse, "44")] = """Monomer A from Ethene-Pentane """
+TAGL["%s-%s-monoB-unCP" % (dbse, "44")] = """Monomer B from Ethene-Pentane """
+TAGL["%s-%s" % (dbse, "45")] = """Ethyne-Pentane """
+TAGL["%s-%s-dimer" % (dbse, "45")] = """Dimer from Ethyne-Pentane """
+TAGL["%s-%s-monoA-CP" % (dbse, "45")] = """Monomer A from Ethyne-Pentane """
+TAGL["%s-%s-monoB-CP" % (dbse, "45")] = """Monomer B from Ethyne-Pentane """
+TAGL["%s-%s-monoA-unCP" % (dbse, "45")] = """Monomer A from Ethyne-Pentane """
+TAGL["%s-%s-monoB-unCP" % (dbse, "45")] = """Monomer B from Ethyne-Pentane """
+TAGL["%s-%s" % (dbse, "46")] = """N-methylacetamide-Pentane """
+TAGL["%s-%s-dimer" % (dbse, "46")] = """Dimer from N-methylacetamide-Pentane """
+TAGL["%s-%s-monoA-CP" % (dbse, "46")] = """Monomer A from N-methylacetamide-Pentane """
+TAGL["%s-%s-monoB-CP" % (dbse, "46")] = """Monomer B from N-methylacetamide-Pentane """
+TAGL["%s-%s-monoA-unCP" % (dbse, "46")] = (
+    """Monomer A from N-methylacetamide-Pentane """
+)
+TAGL["%s-%s-monoB-unCP" % (dbse, "46")] = (
+    """Monomer B from N-methylacetamide-Pentane """
+)
+TAGL["%s-%s" % (dbse, "47")] = """Benzene Dimer, CH-pi """
+TAGL["%s-%s-dimer" % (dbse, "47")] = """Dimer from Benzene Dimer, CH-pi """
+TAGL["%s-%s-monoA-CP" % (dbse, "47")] = """Monomer A from Benzene Dimer, CH-pi """
+TAGL["%s-%s-monoB-CP" % (dbse, "47")] = """Monomer B from Benzene Dimer, CH-pi """
+TAGL["%s-%s-monoA-unCP" % (dbse, "47")] = """Monomer A from Benzene Dimer, CH-pi """
+TAGL["%s-%s-monoB-unCP" % (dbse, "47")] = """Monomer B from Benzene Dimer, CH-pi """
+TAGL["%s-%s" % (dbse, "48")] = """Pyridine Dimer, CH-pi """
+TAGL["%s-%s-dimer" % (dbse, "48")] = """Dimer from Pyridine Dimer, CH-pi """
+TAGL["%s-%s-monoA-CP" % (dbse, "48")] = """Monomer A from Pyridine Dimer, CH-pi """
+TAGL["%s-%s-monoB-CP" % (dbse, "48")] = """Monomer B from Pyridine Dimer, CH-pi """
+TAGL["%s-%s-monoA-unCP" % (dbse, "48")] = """Monomer A from Pyridine Dimer, CH-pi """
+TAGL["%s-%s-monoB-unCP" % (dbse, "48")] = """Monomer B from Pyridine Dimer, CH-pi """
+TAGL["%s-%s" % (dbse, "49")] = """Benzene-Pyridine, CH-pi """
+TAGL["%s-%s-dimer" % (dbse, "49")] = """Dimer from Benzene-Pyridine, CH-pi """
+TAGL["%s-%s-monoA-CP" % (dbse, "49")] = """Monomer A from Benzene-Pyridine, CH-pi """
+TAGL["%s-%s-monoB-CP" % (dbse, "49")] = """Monomer B from Benzene-Pyridine, CH-pi """
+TAGL["%s-%s-monoA-unCP" % (dbse, "49")] = """Monomer A from Benzene-Pyridine, CH-pi """
+TAGL["%s-%s-monoB-unCP" % (dbse, "49")] = """Monomer B from Benzene-Pyridine, CH-pi """
+TAGL["%s-%s" % (dbse, "50")] = """Benzene-Ethyne, CH-pi """
+TAGL["%s-%s-dimer" % (dbse, "50")] = """Dimer from Benzene-Ethyne, CH-pi """
+TAGL["%s-%s-monoA-CP" % (dbse, "50")] = """Monomer A from Benzene-Ethyne, CH-pi """
+TAGL["%s-%s-monoB-CP" % (dbse, "50")] = """Monomer B from Benzene-Ethyne, CH-pi """
+TAGL["%s-%s-monoA-unCP" % (dbse, "50")] = """Monomer A from Benzene-Ethyne, CH-pi """
+TAGL["%s-%s-monoB-unCP" % (dbse, "50")] = """Monomer B from Benzene-Ethyne, CH-pi """
+TAGL["%s-%s" % (dbse, "51")] = """Ethyne Dimer, CH-pi """
+TAGL["%s-%s-dimer" % (dbse, "51")] = """Dimer from Ethyne Dimer, CH-pi """
+TAGL["%s-%s-monoA-CP" % (dbse, "51")] = """Monomer A from Ethyne Dimer, CH-pi """
+TAGL["%s-%s-monoB-CP" % (dbse, "51")] = """Monomer B from Ethyne Dimer, CH-pi """
+TAGL["%s-%s-monoA-unCP" % (dbse, "51")] = """Monomer A from Ethyne Dimer, CH-pi """
+TAGL["%s-%s-monoB-unCP" % (dbse, "51")] = """Monomer B from Ethyne Dimer, CH-pi """
+TAGL["%s-%s" % (dbse, "52")] = """Benzene-Acetic Acid, OH-pi """
+TAGL["%s-%s-dimer" % (dbse, "52")] = """Dimer from Benzene-Acetic Acid, OH-pi """
+TAGL["%s-%s-monoA-CP" % (dbse, "52")] = """Monomer A from Benzene-Acetic Acid, OH-pi """
+TAGL["%s-%s-monoB-CP" % (dbse, "52")] = """Monomer B from Benzene-Acetic Acid, OH-pi """
+TAGL["%s-%s-monoA-unCP" % (dbse, "52")] = (
+    """Monomer A from Benzene-Acetic Acid, OH-pi """
+)
+TAGL["%s-%s-monoB-unCP" % (dbse, "52")] = (
+    """Monomer B from Benzene-Acetic Acid, OH-pi """
+)
+TAGL["%s-%s" % (dbse, "53")] = """Benzene-Acetamide, NH-pi """
+TAGL["%s-%s-dimer" % (dbse, "53")] = """Dimer from Benzene-Acetamide, NH-pi """
+TAGL["%s-%s-monoA-CP" % (dbse, "53")] = """Monomer A from Benzene-Acetamide, NH-pi """
+TAGL["%s-%s-monoB-CP" % (dbse, "53")] = """Monomer B from Benzene-Acetamide, NH-pi """
+TAGL["%s-%s-monoA-unCP" % (dbse, "53")] = """Monomer A from Benzene-Acetamide, NH-pi """
+TAGL["%s-%s-monoB-unCP" % (dbse, "53")] = """Monomer B from Benzene-Acetamide, NH-pi """
+TAGL["%s-%s" % (dbse, "54")] = """Benzene-Water, OH-pi """
+TAGL["%s-%s-dimer" % (dbse, "54")] = """Dimer from Benzene-Water, OH-pi """
+TAGL["%s-%s-monoA-CP" % (dbse, "54")] = """Monomer A from Benzene-Water, OH-pi """
+TAGL["%s-%s-monoB-CP" % (dbse, "54")] = """Monomer B from Benzene-Water, OH-pi """
+TAGL["%s-%s-monoA-unCP" % (dbse, "54")] = """Monomer A from Benzene-Water, OH-pi """
+TAGL["%s-%s-monoB-unCP" % (dbse, "54")] = """Monomer B from Benzene-Water, OH-pi """
+TAGL["%s-%s" % (dbse, "55")] = """Benzene-Methanol, OH-pi """
+TAGL["%s-%s-dimer" % (dbse, "55")] = """Dimer from Benzene-Methanol, OH-pi """
+TAGL["%s-%s-monoA-CP" % (dbse, "55")] = """Monomer A from Benzene-Methanol, OH-pi """
+TAGL["%s-%s-monoB-CP" % (dbse, "55")] = """Monomer B from Benzene-Methanol, OH-pi """
+TAGL["%s-%s-monoA-unCP" % (dbse, "55")] = """Monomer A from Benzene-Methanol, OH-pi """
+TAGL["%s-%s-monoB-unCP" % (dbse, "55")] = """Monomer B from Benzene-Methanol, OH-pi """
+TAGL["%s-%s" % (dbse, "56")] = """Benzene-Methylamine, NH-pi """
+TAGL["%s-%s-dimer" % (dbse, "56")] = """Dimer from Benzene-Methylamine, NH-pi """
+TAGL["%s-%s-monoA-CP" % (dbse, "56")] = """Monomer A from Benzene-Methylamine, NH-pi """
+TAGL["%s-%s-monoB-CP" % (dbse, "56")] = """Monomer B from Benzene-Methylamine, NH-pi """
+TAGL["%s-%s-monoA-unCP" % (dbse, "56")] = (
+    """Monomer A from Benzene-Methylamine, NH-pi """
+)
+TAGL["%s-%s-monoB-unCP" % (dbse, "56")] = (
+    """Monomer B from Benzene-Methylamine, NH-pi """
+)
+TAGL["%s-%s" % (dbse, "57")] = """Benzene-N-methylacetamide, NH-pi """
+TAGL["%s-%s-dimer" % (dbse, "57")] = """Dimer from Benzene-N-methylacetamide, NH-pi """
+TAGL["%s-%s-monoA-CP" % (dbse, "57")] = (
+    """Monomer A from Benzene-N-methylacetamide, NH-pi """
+)
+TAGL["%s-%s-monoB-CP" % (dbse, "57")] = (
+    """Monomer B from Benzene-N-methylacetamide, NH-pi """
+)
+TAGL["%s-%s-monoA-unCP" % (dbse, "57")] = (
+    """Monomer A from Benzene-N-methylacetamide, NH-pi """
+)
+TAGL["%s-%s-monoB-unCP" % (dbse, "57")] = (
+    """Monomer B from Benzene-N-methylacetamide, NH-pi """
+)
+TAGL["%s-%s" % (dbse, "58")] = """Pyridine Dimer, CH-N """
+TAGL["%s-%s-dimer" % (dbse, "58")] = """Dimer from Pyridine Dimer, CH-N """
+TAGL["%s-%s-monoA-CP" % (dbse, "58")] = """Monomer A from Pyridine Dimer, CH-N """
+TAGL["%s-%s-monoB-CP" % (dbse, "58")] = """Monomer B from Pyridine Dimer, CH-N """
+TAGL["%s-%s-monoA-unCP" % (dbse, "58")] = """Monomer A from Pyridine Dimer, CH-N """
+TAGL["%s-%s-monoB-unCP" % (dbse, "58")] = """Monomer B from Pyridine Dimer, CH-N """
+TAGL["%s-%s" % (dbse, "59")] = """Ethyne-Water, CH-O """
+TAGL["%s-%s-dimer" % (dbse, "59")] = """Dimer from Ethyne-Water, CH-O """
+TAGL["%s-%s-monoA-CP" % (dbse, "59")] = """Monomer A from Ethyne-Water, CH-O """
+TAGL["%s-%s-monoB-CP" % (dbse, "59")] = """Monomer B from Ethyne-Water, CH-O """
+TAGL["%s-%s-monoA-unCP" % (dbse, "59")] = """Monomer A from Ethyne-Water, CH-O """
+TAGL["%s-%s-monoB-unCP" % (dbse, "59")] = """Monomer B from Ethyne-Water, CH-O """
+TAGL["%s-%s" % (dbse, "60")] = """Ethyne-Acetic Acid, OH-pi """
+TAGL["%s-%s-dimer" % (dbse, "60")] = """Dimer from Ethyne-Acetic Acid, OH-pi """
+TAGL["%s-%s-monoA-CP" % (dbse, "60")] = """Monomer A from Ethyne-Acetic Acid, OH-pi """
+TAGL["%s-%s-monoB-CP" % (dbse, "60")] = """Monomer B from Ethyne-Acetic Acid, OH-pi """
+TAGL["%s-%s-monoA-unCP" % (dbse, "60")] = (
+    """Monomer A from Ethyne-Acetic Acid, OH-pi """
+)
+TAGL["%s-%s-monoB-unCP" % (dbse, "60")] = (
+    """Monomer B from Ethyne-Acetic Acid, OH-pi """
+)
+TAGL["%s-%s" % (dbse, "61")] = """Pentane-Acetic Acid """
+TAGL["%s-%s-dimer" % (dbse, "61")] = """Dimer from Pentane-Acetic Acid """
+TAGL["%s-%s-monoA-CP" % (dbse, "61")] = """Monomer A from Pentane-Acetic Acid """
+TAGL["%s-%s-monoB-CP" % (dbse, "61")] = """Monomer B from Pentane-Acetic Acid """
+TAGL["%s-%s-monoA-unCP" % (dbse, "61")] = """Monomer A from Pentane-Acetic Acid """
+TAGL["%s-%s-monoB-unCP" % (dbse, "61")] = """Monomer B from Pentane-Acetic Acid """
+TAGL["%s-%s" % (dbse, "62")] = """Pentane-Acetamide """
+TAGL["%s-%s-dimer" % (dbse, "62")] = """Dimer from Pentane-Acetamide """
+TAGL["%s-%s-monoA-CP" % (dbse, "62")] = """Monomer A from Pentane-Acetamide """
+TAGL["%s-%s-monoB-CP" % (dbse, "62")] = """Monomer B from Pentane-Acetamide """
+TAGL["%s-%s-monoA-unCP" % (dbse, "62")] = """Monomer A from Pentane-Acetamide """
+TAGL["%s-%s-monoB-unCP" % (dbse, "62")] = """Monomer B from Pentane-Acetamide """
+TAGL["%s-%s" % (dbse, "63")] = """Benzene-Acetic Acid """
+TAGL["%s-%s-dimer" % (dbse, "63")] = """Dimer from Benzene-Acetic Acid """
+TAGL["%s-%s-monoA-CP" % (dbse, "63")] = """Monomer A from Benzene-Acetic Acid """
+TAGL["%s-%s-monoB-CP" % (dbse, "63")] = """Monomer B from Benzene-Acetic Acid """
+TAGL["%s-%s-monoA-unCP" % (dbse, "63")] = """Monomer A from Benzene-Acetic Acid """
+TAGL["%s-%s-monoB-unCP" % (dbse, "63")] = """Monomer B from Benzene-Acetic Acid """
+TAGL["%s-%s" % (dbse, "64")] = """N-methylacetamide-Ethene """
+TAGL["%s-%s-dimer" % (dbse, "64")] = """Dimer from N-methylacetamide-Ethene """
+TAGL["%s-%s-monoA-CP" % (dbse, "64")] = """Monomer A from N-methylacetamide-Ethene """
+TAGL["%s-%s-monoB-CP" % (dbse, "64")] = """Monomer B from N-methylacetamide-Ethene """
+TAGL["%s-%s-monoA-unCP" % (dbse, "64")] = """Monomer A from N-methylacetamide-Ethene """
+TAGL["%s-%s-monoB-unCP" % (dbse, "64")] = """Monomer B from N-methylacetamide-Ethene """
+TAGL["%s-%s" % (dbse, "65")] = """Pyridine-Ethyne """
+TAGL["%s-%s-dimer" % (dbse, "65")] = """Dimer from Pyridine-Ethyne """
+TAGL["%s-%s-monoA-CP" % (dbse, "65")] = """Monomer A from Pyridine-Ethyne """
+TAGL["%s-%s-monoB-CP" % (dbse, "65")] = """Monomer B from Pyridine-Ethyne """
+TAGL["%s-%s-monoA-unCP" % (dbse, "65")] = """Monomer A from Pyridine-Ethyne """
+TAGL["%s-%s-monoB-unCP" % (dbse, "65")] = """Monomer B from Pyridine-Ethyne """
+TAGL["%s-%s" % (dbse, "66")] = """Methylamine-Pyridine """
+TAGL["%s-%s-dimer" % (dbse, "66")] = """Dimer from Methylamine-Pyridine """
+TAGL["%s-%s-monoA-CP" % (dbse, "66")] = """Monomer A from Methylamine-Pyridine """
+TAGL["%s-%s-monoB-CP" % (dbse, "66")] = """Monomer B from Methylamine-Pyridine """
+TAGL["%s-%s-monoA-unCP" % (dbse, "66")] = """Monomer A from Methylamine-Pyridine """
+TAGL["%s-%s-monoB-unCP" % (dbse, "66")] = """Monomer B from Methylamine-Pyridine """
 
 # <<< Geometry Specification Strings >>>
 GEOS = {}
 
-GEOS['%s-%s-dimer' % (dbse, '1')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "1")] = qcdb.Molecule("""
 0 1
 O       -0.70219605    -0.05606026     0.00994226
 H       -1.02219322     0.84677578    -0.01148871
@@ -565,7 +619,7 @@ H        2.59313538    -0.44949618    -0.74478203
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '2')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "2")] = qcdb.Molecule("""
 0 1
 O       -0.52532979    -0.05097108    -0.31451686
 H       -0.94200663     0.74790163     0.01125282
@@ -581,7 +635,7 @@ H        2.45329574    -1.44599856    -1.38938136
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '3')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "3")] = qcdb.Molecule("""
 0 1
 O       -0.68746490    -0.11174433    -0.01962547
 H       -1.04612154     0.77593821     0.01270684
@@ -598,7 +652,7 @@ H        2.56659917     1.94746403    -0.92221177
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '4')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "4")] = qcdb.Molecule("""
 0 1
 O       -0.39201845    -0.38471874     0.07607132
 H       -0.91146085     0.41381204     0.17764877
@@ -620,7 +674,7 @@ H        5.76577825     0.23649765    -0.95515382
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '5')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "5")] = qcdb.Molecule("""
 0 1
 O       -0.63613493    -0.02328241     0.28059932
 H        0.30809737    -0.04707875     0.07646369
@@ -639,7 +693,7 @@ H        2.56681356     1.04559122     1.68750717
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '6')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "6")] = qcdb.Molecule("""
 0 1
 O       -0.70692019     0.04583037     0.00638610
 H        0.26562361     0.07171014     0.00133929
@@ -659,7 +713,7 @@ H        2.28689798    -1.90918449     0.92375496
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '7')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "7")] = qcdb.Molecule("""
 0 1
 O       -0.20877739    -0.21687067    -1.03240597
 H        0.71112593    -0.38689175    -0.77396240
@@ -684,7 +738,7 @@ H        5.35717393    -0.63462872     0.84491605
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '8')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "8")] = qcdb.Molecule("""
 0 1
 O       -0.78656202     0.04516844    -0.00718912
 H        0.17770677     0.01269590    -0.00683539
@@ -700,7 +754,7 @@ H        2.56676744     0.35126768     0.74834860
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '9')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "9")] = qcdb.Molecule("""
 0 1
 N       -0.89345122    -0.04384432    -0.04299745
 H        0.09694826    -0.25605945    -0.07106993
@@ -720,7 +774,7 @@ H        2.19189882     1.83770561     0.93208484
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '10')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "10")] = qcdb.Molecule("""
 0 1
 N       -0.63864138     0.47091637     0.04456848
 H        0.18995436    -0.11393716    -0.00577361
@@ -741,7 +795,7 @@ H        1.86658307     1.46546492     0.81806258
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '11')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "11")] = qcdb.Molecule("""
 0 1
 N       -0.56970824     0.81437245     0.10109775
 H        0.13087774     0.56141065    -0.58761455
@@ -767,7 +821,7 @@ H        4.83846506    -0.43618886     1.78273654
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '12')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "12")] = qcdb.Molecule("""
 0 1
 N       -0.53346397    -0.27959351     0.10699576
 H       -0.62915138    -1.24842455     0.38284867
@@ -784,7 +838,7 @@ H        2.67516986     0.65881349    -0.50364884
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '13')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "13")] = qcdb.Molecule("""
 0 1
 C       -0.84931672    -0.33949876     2.49171664
 H        0.18434396    -0.01104732     2.41618542
@@ -809,7 +863,7 @@ H        3.06424691    -1.15479748     1.69323508
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '14')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "14")] = qcdb.Molecule("""
 0 1
 C       -0.77857334    -0.46332064     2.49038768
 H        0.22474462    -0.05095294     2.41348355
@@ -835,7 +889,7 @@ H        2.17611849    -1.54101555     1.35610799
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '15')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "15")] = qcdb.Molecule("""
 0 1
 C       -0.70150294    -0.29062770     2.40688440
 H       -1.18329596     0.39564777     3.09887422
@@ -866,7 +920,7 @@ H        5.54839755    -0.31961545    -1.09167796
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '16')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "16")] = qcdb.Molecule("""
 0 1
 C       -0.72430464    -0.70493582     2.28386786
 H        0.33531828    -0.62994325     2.05318235
@@ -888,7 +942,7 @@ H        2.68252869     0.70578659    -0.13117819
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '17')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "17")] = qcdb.Molecule("""
 0 1
 N       -0.72999913     0.02276763     0.00091465
 H        0.29842255     0.07400447     0.00162304
@@ -919,7 +973,7 @@ O        2.11994847    -0.02954883     0.00269255
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '18')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "18")] = qcdb.Molecule("""
 0 1
 O       -0.55283102    -0.10169749    -0.00049879
 H       -0.87175963     0.80179220     0.00014440
@@ -940,7 +994,7 @@ H        2.47500717     0.08619845    -2.05546803
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '19')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "19")] = qcdb.Molecule("""
 0 1
 O       -0.62765177     0.08746727     0.00147128
 H        0.34360203     0.12230333    -0.00060045
@@ -964,7 +1018,7 @@ H        2.38090845     0.01398671     2.05428579
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '20')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "20")] = qcdb.Molecule("""
 0 1
 C       -1.06170920     1.29714057     0.29206000
 O       -0.35816112     2.27045861     0.53181267
@@ -987,7 +1041,7 @@ H        4.65757721     1.36521101     1.24527472
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '21')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "21")] = qcdb.Molecule("""
 0 1
 C       -1.30974974     1.18017617    -0.02517034
 O       -0.72530044     2.15514767     0.45271335
@@ -1012,7 +1066,7 @@ H        4.61437977     0.21759516     0.78176266
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '22')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "22")] = qcdb.Molecule("""
 0 1
 C       -1.11362611     1.32702009     0.27516705
 O       -0.46708264     2.34938778     0.46153746
@@ -1039,7 +1093,7 @@ O        2.10824430     0.16511187     0.03627464
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '23')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "23")] = qcdb.Molecule("""
 0 1
 C       -1.23272700     1.21163896    -0.14162406
 O       -0.57127667     2.24201573     0.02561679
@@ -1067,7 +1121,7 @@ O        2.22570515    -0.02675243    -0.27022634
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '24')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "24")] = qcdb.Molecule("""
 0 1
 C        0.71264532     1.12099570     0.06054078
 H        1.35784165     1.98639917     0.12773717
@@ -1098,7 +1152,7 @@ H        0.18785474     2.26805957     3.51420832
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '25')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "25")] = qcdb.Molecule("""
 0 1
 N        1.57248145     0.25454916    -0.25648131
 C        0.96935990    -0.90316032     0.04452614
@@ -1127,7 +1181,7 @@ H        1.45616936    -1.90851301     3.49173001
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '26')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "26")] = qcdb.Molecule("""
 0 1
 N        1.37690111     0.83974747     0.73462494
 H        1.05181240     1.38622385     1.52335563
@@ -1158,7 +1212,7 @@ O       -1.53967580     0.97551791     2.12980905
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '27')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "27")] = qcdb.Molecule("""
 0 1
 C        0.81874699     0.86417234     0.18828612
 H        1.46611361     1.71666767     0.34472141
@@ -1188,7 +1242,7 @@ H       -2.12029887    -1.83146918     3.08848079
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '28')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "28")] = qcdb.Molecule("""
 0 1
 C        0.82576911     1.23652484    -0.04025044
 H        1.52101317     2.06312520    -0.08247145
@@ -1219,7 +1273,7 @@ O       -2.40102568    -0.18920215     3.18336680
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '29')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "29")] = qcdb.Molecule("""
 0 1
 N        1.21075533     0.02867578     0.32971111
 C        0.61193497    -1.15844901     0.15345176
@@ -1249,7 +1303,7 @@ O        0.26581032    -2.35569425     3.21710180
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '30')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "30")] = qcdb.Molecule("""
 0 1
 C        0.83551718     1.11516693     0.02140131
 H        1.48432398     1.98060858     0.01953430
@@ -1274,7 +1328,7 @@ H       -1.04723903     1.12391105     3.52630243
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '31')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "31")] = qcdb.Molecule("""
 0 1
 N       -0.05087365    -0.98008127     0.03396219
 H       -0.05322205    -1.99069374     0.04982167
@@ -1299,7 +1353,7 @@ H       -1.11459423     0.99671353     3.73294327
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '32')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "32")] = qcdb.Molecule("""
 0 1
 N       -0.05545357    -0.94799090     0.01001028
 H       -0.05731609    -1.95771330     0.05505287
@@ -1322,7 +1376,7 @@ H       -1.44163480     0.54285582     3.48290737
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '33')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "33")] = qcdb.Molecule("""
 0 1
 N        1.38138219    -0.00023348     0.13146374
 C        0.67935079    -1.14023946     0.09207966
@@ -1346,7 +1400,7 @@ H       -0.88935083    -1.22907273     3.64449367
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '34')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "34")] = qcdb.Molecule("""
 0 1
 C       -2.53330865    -0.29487907     0.71314876
 H       -2.56362682    -0.97708181    -0.13642264
@@ -1387,7 +1441,7 @@ H       -2.56406349     0.97772373     5.36234289
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '35')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "35")] = qcdb.Molecule("""
 0 1
 C       -2.53038287    -0.41757533     0.68130643
 H       -2.55988603    -0.98278998    -0.25015619
@@ -1428,7 +1482,7 @@ H       -0.90287503     2.03709750     5.26447319
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '36')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "36")] = qcdb.Molecule("""
 0 1
 C        0.38252221    -0.07060697     0.76689582
 C       -1.04063947     0.39681125     1.06093593
@@ -1469,7 +1523,7 @@ H       -1.23678678    -0.94543842     4.25176527
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '37')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "37")] = qcdb.Molecule("""
 0 1
 C        0.79991408    -1.02205164     0.68773696
 H        0.85355588    -1.12205101    -0.39801435
@@ -1508,7 +1562,7 @@ H        1.84246405    -1.11668194     5.46268763
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '38')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "38")] = qcdb.Molecule("""
 0 1
 C        0.95688019    -0.89184563     1.14195000
 H        1.50456597    -1.27835762     0.28342019
@@ -1545,7 +1599,7 @@ H       -0.60124939     0.71879862     6.83302881
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '39')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "39")] = qcdb.Molecule("""
 0 1
 C        0.76554546     0.86824433     0.82099095
 H        1.43747647     1.68000664     1.06510281
@@ -1579,7 +1633,7 @@ H       -1.13201859     0.35432067     5.88796657
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '40')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "40")] = qcdb.Molecule("""
 0 1
 C        0.31195353     0.56102334     0.49669886
 H        0.74213608     1.55336911     0.48156571
@@ -1615,7 +1669,7 @@ H       -0.29525222     2.62139813     4.70059546
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '41')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "41")] = qcdb.Molecule("""
 0 1
 N       -0.20890478    -0.96458262     0.53476104
 H       -0.22415099    -1.97310940     0.60508386
@@ -1651,7 +1705,7 @@ H       -2.15131302    -1.65421986     4.64687465
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '42')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "42")] = qcdb.Molecule("""
 0 1
 N        0.19572959    -0.84468925     0.82384642
 H        0.45039753    -1.79675294     1.04976794
@@ -1685,7 +1739,7 @@ H       -0.76532935    -1.71626599     5.23468007
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '43')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "43")] = qcdb.Molecule("""
 0 1
 N        0.62608128    -0.85091265     0.80591569
 H        0.40918989    -1.81150056     1.03440142
@@ -1721,7 +1775,7 @@ H       -1.55552720    -1.97156632     4.49170918
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '44')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "44")] = qcdb.Molecule("""
 0 1
 C        0.66640038     0.18381078     0.41973683
 H        1.22888182    -0.32988301     1.18625971
@@ -1751,7 +1805,7 @@ H        2.56854094    -1.06813554     5.00130328
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '45')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "45")] = qcdb.Molecule("""
 0 1
 C       -0.60618936     0.05587406     0.58900491
 H       -1.66803667     0.05577624     0.58901162
@@ -1779,7 +1833,7 @@ H        2.58228512    -0.97366153     5.10935743
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '46')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "46")] = qcdb.Molecule("""
 0 1
 C        1.37219093     1.01247736     0.97082468
 H        0.95217623     2.01404955     1.03311725
@@ -1815,7 +1869,7 @@ H       -2.51169538     0.98413919     5.13671852
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '47')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "47")] = qcdb.Molecule("""
 0 1
 C        0.72918867     1.11310122     0.32672825
 H        1.30321590     2.01422234     0.15916027
@@ -1846,7 +1900,7 @@ H        1.93585412     1.19958163     4.68588434
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '48')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "48")] = qcdb.Molecule("""
 0 1
 N        1.32276272    -0.01037598     1.01918373
 C        0.65128601    -1.14899203     0.79680119
@@ -1875,7 +1929,7 @@ H       -1.54333433     0.00442229     7.29462282
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '49')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "49")] = qcdb.Molecule("""
 0 1
 C        0.84507720     1.05791869     0.69945490
 H        1.50640601     1.90322178     0.83338235
@@ -1905,7 +1959,7 @@ H       -0.27698904    -1.65414849     7.12392749
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '50')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "50")] = qcdb.Molecule("""
 0 1
 C        0.83661195     1.11485600     0.23100790
 H        1.48545250     1.97968049     0.21470491
@@ -1928,7 +1982,7 @@ H        0.01262752     0.11190396     6.05302473
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '51')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "51")] = qcdb.Molecule("""
 0 1
 C       -0.60172996    -0.02857012     0.38493492
 H       -1.66373543    -0.02852657     0.37901431
@@ -1943,7 +1997,7 @@ H       -0.01456263     0.17200329     6.41518870
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '52')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "52")] = qcdb.Molecule("""
 0 1
 C        0.96408039     0.87509331     0.37801364
 H        1.65982961     1.69993082     0.44604227
@@ -1970,7 +2024,7 @@ H        1.13859655    -0.09872978     5.95650555
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '53')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "53")] = qcdb.Molecule("""
 0 1
 C        0.85556074     0.35853244     1.04975426
 H        1.51382550     0.90267956     1.71276582
@@ -1998,7 +2052,7 @@ H       -0.44469059     1.24648520     6.71991660
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '54')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "54")] = qcdb.Molecule("""
 0 1
 C        0.78014717    -0.60991473    -1.20755689
 H        0.89619160    -1.13763959    -2.14414463
@@ -2020,7 +2074,7 @@ H       -1.85653027     0.10232776     0.00000000
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '55')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "55")] = qcdb.Molecule("""
 0 1
 C        0.75974918     1.03127506     0.37377239
 H        1.43501626     1.87566427     0.37470462
@@ -2045,7 +2099,7 @@ H       -0.48267133    -1.71446977     3.60525680
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '56')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "56")] = qcdb.Molecule("""
 0 1
 C        0.69231523     1.08829204     0.32484124
 H        1.28194880     1.99194678     0.25251578
@@ -2071,7 +2125,7 @@ H       -1.25572667    -1.63866846     3.76072118
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '57')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "57")] = qcdb.Molecule("""
 0 1
 C        0.40877989     1.05102502     0.37553605
 H        1.01193875     1.94854570     0.36807788
@@ -2102,7 +2156,7 @@ H        0.62871378    -2.29287426     3.41385278
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '58')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "58")] = qcdb.Molecule("""
 0 1
 N       -0.94121124     0.79004136     0.01171891
 C       -0.92275524    -0.55237814     0.03537875
@@ -2131,7 +2185,7 @@ H        1.53510443     0.85599657     0.01390336
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '59')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "59")] = qcdb.Molecule("""
 0 1
 C       -1.00686722    -0.03056821    -0.02477285
 H        0.05900333    -0.06093974    -0.04936562
@@ -2145,7 +2199,7 @@ H        2.83590044     0.20541797    -0.80084297
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '60')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "60")] = qcdb.Molecule("""
 0 1
 C       -0.61056257     0.22750310    -0.17060207
 H        0.10738506     0.86143603    -0.63420924
@@ -2164,7 +2218,7 @@ H        4.33236190    -2.15072575     0.48285261
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '61')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "61")] = qcdb.Molecule("""
 0 1
 C       -2.27534498    -0.13507494     0.83133387
 H       -2.49071776    -0.72792669    -0.05756635
@@ -2196,7 +2250,7 @@ H        1.19401682     0.59110388     5.09025931
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '62')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "62")] = qcdb.Molecule("""
 0 1
 C       -2.58777605    -0.32310566     0.46945828
 H       -2.61038910    -0.87636604    -0.46961946
@@ -2229,7 +2283,7 @@ H       -1.88600271     0.08954102     4.99623387
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '63')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "63")] = qcdb.Molecule("""
 0 1
 C        0.60678496     1.33042185     0.31643451
 H        1.24649846     2.20226434     0.33035231
@@ -2256,7 +2310,7 @@ H       -1.38774836     0.76671618     4.45679527
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '64')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "64")] = qcdb.Molecule("""
 0 1
 C        1.62971482     0.50301252     0.27011189
 H        1.64157338     1.45923792    -0.24808286
@@ -2281,7 +2335,7 @@ H        0.71764224    -1.30416499     3.05371698
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '65')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "65")] = qcdb.Molecule("""
 0 1
 N       -0.08303249     0.00071459     1.05519999
 C       -0.20285376    -1.14172585     0.36493369
@@ -2303,7 +2357,7 @@ H        0.22161814    -0.00634549     3.27096619
 units angstrom
 """)
 
-GEOS['%s-%s-dimer' % (dbse, '66')] = qcdb.Molecule("""
+GEOS["%s-%s-dimer" % (dbse, "66")] = qcdb.Molecule("""
 0 1
 N       -0.54105920     0.02957620    -0.20899508
 H        0.05555335    -0.78611810    -0.13029335
@@ -2330,344 +2384,352 @@ units angstrom
 
 # <<< Derived Geometry Strings >>>
 for rxn in HRXN:
-    GEOS['%s-%s-monoA-unCP' % (dbse, rxn)] = GEOS['%s-%s-dimer' % (dbse, rxn)].extract_fragments(1)
-    GEOS['%s-%s-monoB-unCP' % (dbse, rxn)] = GEOS['%s-%s-dimer' % (dbse, rxn)].extract_fragments(2)
-    GEOS['%s-%s-monoA-CP'   % (dbse, rxn)] = GEOS['%s-%s-dimer' % (dbse, rxn)].extract_fragments(1, 2)
-    GEOS['%s-%s-monoB-CP'   % (dbse, rxn)] = GEOS['%s-%s-dimer' % (dbse, rxn)].extract_fragments(2, 1)
+    GEOS["%s-%s-monoA-unCP" % (dbse, rxn)] = GEOS[
+        "%s-%s-dimer" % (dbse, rxn)
+    ].extract_fragments(1)
+    GEOS["%s-%s-monoB-unCP" % (dbse, rxn)] = GEOS[
+        "%s-%s-dimer" % (dbse, rxn)
+    ].extract_fragments(2)
+    GEOS["%s-%s-monoA-CP" % (dbse, rxn)] = GEOS[
+        "%s-%s-dimer" % (dbse, rxn)
+    ].extract_fragments(1, 2)
+    GEOS["%s-%s-monoB-CP" % (dbse, rxn)] = GEOS[
+        "%s-%s-dimer" % (dbse, rxn)
+    ].extract_fragments(2, 1)
 
 #########################################################################
 
 # <<< Supplementary Quantum Chemical Results >>>
 DATA = {}
 
-DATA['NUCLEAR REPULSION ENERGY'] = {}
-DATA['NUCLEAR REPULSION ENERGY']['S66-1-dimer'                    ] =      36.51369349
-DATA['NUCLEAR REPULSION ENERGY']['S66-1-monoA-unCP'               ] =       9.15671411
-DATA['NUCLEAR REPULSION ENERGY']['S66-1-monoB-unCP'               ] =       9.17259114
-DATA['NUCLEAR REPULSION ENERGY']['S66-2-dimer'                    ] =      79.98338083
-DATA['NUCLEAR REPULSION ENERGY']['S66-2-monoA-unCP'               ] =       9.14996836
-DATA['NUCLEAR REPULSION ENERGY']['S66-2-monoB-unCP'               ] =      40.29463192
-DATA['NUCLEAR REPULSION ENERGY']['S66-3-dimer'                    ] =      79.77996002
-DATA['NUCLEAR REPULSION ENERGY']['S66-3-monoA-unCP'               ] =       9.12565570
-DATA['NUCLEAR REPULSION ENERGY']['S66-3-monoB-unCP'               ] =      42.06267577
-DATA['NUCLEAR REPULSION ENERGY']['S66-4-dimer'                    ] =     246.86074225
-DATA['NUCLEAR REPULSION ENERGY']['S66-4-monoA-unCP'               ] =       9.13184124
-DATA['NUCLEAR REPULSION ENERGY']['S66-4-monoB-unCP'               ] =     180.56084030
-DATA['NUCLEAR REPULSION ENERGY']['S66-5-dimer'                    ] =     129.52156842
-DATA['NUCLEAR REPULSION ENERGY']['S66-5-monoA-unCP'               ] =      40.41731272
-DATA['NUCLEAR REPULSION ENERGY']['S66-5-monoB-unCP'               ] =      40.29806380
-DATA['NUCLEAR REPULSION ENERGY']['S66-6-dimer'                    ] =     131.81617640
-DATA['NUCLEAR REPULSION ENERGY']['S66-6-monoA-unCP'               ] =      40.42467073
-DATA['NUCLEAR REPULSION ENERGY']['S66-6-monoB-unCP'               ] =      42.05202847
-DATA['NUCLEAR REPULSION ENERGY']['S66-7-dimer'                    ] =     313.95975412
-DATA['NUCLEAR REPULSION ENERGY']['S66-7-monoA-unCP'               ] =      40.41876218
-DATA['NUCLEAR REPULSION ENERGY']['S66-7-monoB-unCP'               ] =     180.73873695
-DATA['NUCLEAR REPULSION ENERGY']['S66-8-dimer'                    ] =      78.74537406
-DATA['NUCLEAR REPULSION ENERGY']['S66-8-monoA-unCP'               ] =      40.42326344
-DATA['NUCLEAR REPULSION ENERGY']['S66-8-monoB-unCP'               ] =       9.17236900
-DATA['NUCLEAR REPULSION ENERGY']['S66-9-dimer'                    ] =     129.31867271
-DATA['NUCLEAR REPULSION ENERGY']['S66-9-monoA-unCP'               ] =      42.10593235
-DATA['NUCLEAR REPULSION ENERGY']['S66-9-monoB-unCP'               ] =      40.34710761
-DATA['NUCLEAR REPULSION ENERGY']['S66-10-dimer'                   ] =     131.71717765
-DATA['NUCLEAR REPULSION ENERGY']['S66-10-monoA-unCP'              ] =      42.09217552
-DATA['NUCLEAR REPULSION ENERGY']['S66-10-monoB-unCP'              ] =      42.05982938
-DATA['NUCLEAR REPULSION ENERGY']['S66-11-dimer'                   ] =     320.50976921
-DATA['NUCLEAR REPULSION ENERGY']['S66-11-monoA-unCP'              ] =      42.09328618
-DATA['NUCLEAR REPULSION ENERGY']['S66-11-monoB-unCP'              ] =     180.72211450
-DATA['NUCLEAR REPULSION ENERGY']['S66-12-dimer'                   ] =      81.87844165
-DATA['NUCLEAR REPULSION ENERGY']['S66-12-monoA-unCP'              ] =      42.04336531
-DATA['NUCLEAR REPULSION ENERGY']['S66-12-monoB-unCP'              ] =       9.12312499
-DATA['NUCLEAR REPULSION ENERGY']['S66-13-dimer'                   ] =     314.84789007
-DATA['NUCLEAR REPULSION ENERGY']['S66-13-monoA-unCP'              ] =     180.80545988
-DATA['NUCLEAR REPULSION ENERGY']['S66-13-monoB-unCP'              ] =      40.30378877
-DATA['NUCLEAR REPULSION ENERGY']['S66-14-dimer'                   ] =     315.64348724
-DATA['NUCLEAR REPULSION ENERGY']['S66-14-monoA-unCP'              ] =     180.81499576
-DATA['NUCLEAR REPULSION ENERGY']['S66-14-monoB-unCP'              ] =      42.03791353
-DATA['NUCLEAR REPULSION ENERGY']['S66-15-dimer'                   ] =     540.42243680
-DATA['NUCLEAR REPULSION ENERGY']['S66-15-monoA-unCP'              ] =     180.53794513
-DATA['NUCLEAR REPULSION ENERGY']['S66-15-monoB-unCP'              ] =     180.54327910
-DATA['NUCLEAR REPULSION ENERGY']['S66-16-dimer'                   ] =     243.51194018
-DATA['NUCLEAR REPULSION ENERGY']['S66-16-monoA-unCP'              ] =     180.57089645
-DATA['NUCLEAR REPULSION ENERGY']['S66-16-monoB-unCP'              ] =       9.17374713
-DATA['NUCLEAR REPULSION ENERGY']['S66-17-dimer'                   ] =    1040.55250335
-DATA['NUCLEAR REPULSION ENERGY']['S66-17-monoA-unCP'              ] =     357.25263911
-DATA['NUCLEAR REPULSION ENERGY']['S66-17-monoB-unCP'              ] =     357.22824169
-DATA['NUCLEAR REPULSION ENERGY']['S66-18-dimer'                   ] =     269.39653929
-DATA['NUCLEAR REPULSION ENERGY']['S66-18-monoA-unCP'              ] =       9.12915636
-DATA['NUCLEAR REPULSION ENERGY']['S66-18-monoB-unCP'              ] =     206.28546361
-DATA['NUCLEAR REPULSION ENERGY']['S66-19-dimer'                   ] =     337.49486033
-DATA['NUCLEAR REPULSION ENERGY']['S66-19-monoA-unCP'              ] =      40.42190801
-DATA['NUCLEAR REPULSION ENERGY']['S66-19-monoB-unCP'              ] =     206.28426737
-DATA['NUCLEAR REPULSION ENERGY']['S66-20-dimer'                   ] =     381.47467603
-DATA['NUCLEAR REPULSION ENERGY']['S66-20-monoA-unCP'              ] =     121.35354216
-DATA['NUCLEAR REPULSION ENERGY']['S66-20-monoB-unCP'              ] =     121.35037507
-DATA['NUCLEAR REPULSION ENERGY']['S66-21-dimer'                   ] =     373.66110820
-DATA['NUCLEAR REPULSION ENERGY']['S66-21-monoA-unCP'              ] =     121.85534909
-DATA['NUCLEAR REPULSION ENERGY']['S66-21-monoB-unCP'              ] =     121.85562743
-DATA['NUCLEAR REPULSION ENERGY']['S66-22-dimer'                   ] =     685.96293615
-DATA['NUCLEAR REPULSION ENERGY']['S66-22-monoA-unCP'              ] =     121.30606379
-DATA['NUCLEAR REPULSION ENERGY']['S66-22-monoB-unCP'              ] =     357.30242624
-DATA['NUCLEAR REPULSION ENERGY']['S66-23-dimer'                   ] =     682.46450694
-DATA['NUCLEAR REPULSION ENERGY']['S66-23-monoA-unCP'              ] =     121.91206440
-DATA['NUCLEAR REPULSION ENERGY']['S66-23-monoB-unCP'              ] =     357.16987646
-DATA['NUCLEAR REPULSION ENERGY']['S66-24-dimer'                   ] =     623.71187998
-DATA['NUCLEAR REPULSION ENERGY']['S66-24-monoA-unCP'              ] =     203.71200257
-DATA['NUCLEAR REPULSION ENERGY']['S66-24-monoB-unCP'              ] =     203.71172379
-DATA['NUCLEAR REPULSION ENERGY']['S66-25-dimer'                   ] =     637.14156863
-DATA['NUCLEAR REPULSION ENERGY']['S66-25-monoA-unCP'              ] =     206.22564193
-DATA['NUCLEAR REPULSION ENERGY']['S66-25-monoB-unCP'              ] =     206.22748415
-DATA['NUCLEAR REPULSION ENERGY']['S66-26-dimer'                   ] =    1163.54572871
-DATA['NUCLEAR REPULSION ENERGY']['S66-26-monoA-unCP'              ] =     357.16027337
-DATA['NUCLEAR REPULSION ENERGY']['S66-26-monoB-unCP'              ] =     357.16027370
-DATA['NUCLEAR REPULSION ENERGY']['S66-27-dimer'                   ] =     630.67443466
-DATA['NUCLEAR REPULSION ENERGY']['S66-27-monoA-unCP'              ] =     203.68422363
-DATA['NUCLEAR REPULSION ENERGY']['S66-27-monoB-unCP'              ] =     206.25955744
-DATA['NUCLEAR REPULSION ENERGY']['S66-28-dimer'                   ] =     878.32907732
-DATA['NUCLEAR REPULSION ENERGY']['S66-28-monoA-unCP'              ] =     203.65134501
-DATA['NUCLEAR REPULSION ENERGY']['S66-28-monoB-unCP'              ] =     357.16948119
-DATA['NUCLEAR REPULSION ENERGY']['S66-29-dimer'                   ] =     885.28192562
-DATA['NUCLEAR REPULSION ENERGY']['S66-29-monoA-unCP'              ] =     206.16040036
-DATA['NUCLEAR REPULSION ENERGY']['S66-29-monoB-unCP'              ] =     357.23565563
-DATA['NUCLEAR REPULSION ENERGY']['S66-30-dimer'                   ] =     327.62509332
-DATA['NUCLEAR REPULSION ENERGY']['S66-30-monoA-unCP'              ] =     203.74228045
-DATA['NUCLEAR REPULSION ENERGY']['S66-30-monoB-unCP'              ] =      33.43000301
-DATA['NUCLEAR REPULSION ENERGY']['S66-31-dimer'                   ] =     518.26358403
-DATA['NUCLEAR REPULSION ENERGY']['S66-31-monoA-unCP'              ] =     357.18726739
-DATA['NUCLEAR REPULSION ENERGY']['S66-31-monoB-unCP'              ] =      33.40409180
-DATA['NUCLEAR REPULSION ENERGY']['S66-32-dimer'                   ] =     495.33117294
-DATA['NUCLEAR REPULSION ENERGY']['S66-32-monoA-unCP'              ] =     357.24995067
-DATA['NUCLEAR REPULSION ENERGY']['S66-32-monoB-unCP'              ] =      24.63459975
-DATA['NUCLEAR REPULSION ENERGY']['S66-33-dimer'                   ] =     332.11307535
-DATA['NUCLEAR REPULSION ENERGY']['S66-33-monoA-unCP'              ] =     206.29228895
-DATA['NUCLEAR REPULSION ENERGY']['S66-33-monoB-unCP'              ] =      33.42391806
-DATA['NUCLEAR REPULSION ENERGY']['S66-34-dimer'                   ] =     577.94330068
-DATA['NUCLEAR REPULSION ENERGY']['S66-34-monoA-unCP'              ] =     185.63664994
-DATA['NUCLEAR REPULSION ENERGY']['S66-34-monoB-unCP'              ] =     185.63558546
-DATA['NUCLEAR REPULSION ENERGY']['S66-35-dimer'                   ] =     574.13141612
-DATA['NUCLEAR REPULSION ENERGY']['S66-35-monoA-unCP'              ] =     185.63471242
-DATA['NUCLEAR REPULSION ENERGY']['S66-35-monoB-unCP'              ] =     199.36895747
-DATA['NUCLEAR REPULSION ENERGY']['S66-36-dimer'                   ] =     573.01241887
-DATA['NUCLEAR REPULSION ENERGY']['S66-36-monoA-unCP'              ] =     199.35493735
-DATA['NUCLEAR REPULSION ENERGY']['S66-36-monoB-unCP'              ] =     199.35496470
-DATA['NUCLEAR REPULSION ENERGY']['S66-37-dimer'                   ] =     569.42803611
-DATA['NUCLEAR REPULSION ENERGY']['S66-37-monoA-unCP'              ] =     188.28929834
-DATA['NUCLEAR REPULSION ENERGY']['S66-37-monoB-unCP'              ] =     199.34481507
-DATA['NUCLEAR REPULSION ENERGY']['S66-38-dimer'                   ] =     562.36494675
-DATA['NUCLEAR REPULSION ENERGY']['S66-38-monoA-unCP'              ] =     188.38358820
-DATA['NUCLEAR REPULSION ENERGY']['S66-38-monoB-unCP'              ] =     188.37865241
-DATA['NUCLEAR REPULSION ENERGY']['S66-39-dimer'                   ] =     594.82529945
-DATA['NUCLEAR REPULSION ENERGY']['S66-39-monoA-unCP'              ] =     203.67735882
-DATA['NUCLEAR REPULSION ENERGY']['S66-39-monoB-unCP'              ] =     188.40454306
-DATA['NUCLEAR REPULSION ENERGY']['S66-40-dimer'                   ] =     598.08168004
-DATA['NUCLEAR REPULSION ENERGY']['S66-40-monoA-unCP'              ] =     203.68538784
-DATA['NUCLEAR REPULSION ENERGY']['S66-40-monoB-unCP'              ] =     199.37329650
-DATA['NUCLEAR REPULSION ENERGY']['S66-41-dimer'                   ] =     843.32242800
-DATA['NUCLEAR REPULSION ENERGY']['S66-41-monoA-unCP'              ] =     357.06617642
-DATA['NUCLEAR REPULSION ENERGY']['S66-41-monoB-unCP'              ] =     185.61673585
-DATA['NUCLEAR REPULSION ENERGY']['S66-42-dimer'                   ] =     830.51659591
-DATA['NUCLEAR REPULSION ENERGY']['S66-42-monoA-unCP'              ] =     357.04169352
-DATA['NUCLEAR REPULSION ENERGY']['S66-42-monoB-unCP'              ] =     188.33728572
-DATA['NUCLEAR REPULSION ENERGY']['S66-43-dimer'                   ] =     830.36688604
-DATA['NUCLEAR REPULSION ENERGY']['S66-43-monoA-unCP'              ] =     357.12713115
-DATA['NUCLEAR REPULSION ENERGY']['S66-43-monoB-unCP'              ] =     199.36153551
-DATA['NUCLEAR REPULSION ENERGY']['S66-44-dimer'                   ] =     303.64951312
-DATA['NUCLEAR REPULSION ENERGY']['S66-44-monoA-unCP'              ] =      33.42556566
-DATA['NUCLEAR REPULSION ENERGY']['S66-44-monoB-unCP'              ] =     185.65594848
-DATA['NUCLEAR REPULSION ENERGY']['S66-45-dimer'                   ] =     285.69697355
-DATA['NUCLEAR REPULSION ENERGY']['S66-45-monoA-unCP'              ] =      24.64923587
-DATA['NUCLEAR REPULSION ENERGY']['S66-45-monoB-unCP'              ] =     185.73197134
-DATA['NUCLEAR REPULSION ENERGY']['S66-46-dimer'                   ] =     576.36980953
-DATA['NUCLEAR REPULSION ENERGY']['S66-46-monoA-unCP'              ] =     180.49044991
-DATA['NUCLEAR REPULSION ENERGY']['S66-46-monoB-unCP'              ] =     185.67687994
-DATA['NUCLEAR REPULSION ENERGY']['S66-47-dimer'                   ] =     592.90348525
-DATA['NUCLEAR REPULSION ENERGY']['S66-47-monoA-unCP'              ] =     203.66921988
-DATA['NUCLEAR REPULSION ENERGY']['S66-47-monoB-unCP'              ] =     203.67694204
-DATA['NUCLEAR REPULSION ENERGY']['S66-48-dimer'                   ] =     601.34387795
-DATA['NUCLEAR REPULSION ENERGY']['S66-48-monoA-unCP'              ] =     206.19608668
-DATA['NUCLEAR REPULSION ENERGY']['S66-48-monoB-unCP'              ] =     206.19869697
-DATA['NUCLEAR REPULSION ENERGY']['S66-49-dimer'                   ] =     596.54644729
-DATA['NUCLEAR REPULSION ENERGY']['S66-49-monoA-unCP'              ] =     203.65045916
-DATA['NUCLEAR REPULSION ENERGY']['S66-49-monoB-unCP'              ] =     206.22459403
-DATA['NUCLEAR REPULSION ENERGY']['S66-50-dimer'                   ] =     300.96547874
-DATA['NUCLEAR REPULSION ENERGY']['S66-50-monoA-unCP'              ] =     203.65156163
-DATA['NUCLEAR REPULSION ENERGY']['S66-50-monoB-unCP'              ] =      24.63554547
-DATA['NUCLEAR REPULSION ENERGY']['S66-51-dimer'                   ] =      73.51391626
-DATA['NUCLEAR REPULSION ENERGY']['S66-51-monoA-unCP'              ] =      24.65072244
-DATA['NUCLEAR REPULSION ENERGY']['S66-51-monoB-unCP'              ] =      24.64312912
-DATA['NUCLEAR REPULSION ENERGY']['S66-52-dimer'                   ] =     488.72204285
-DATA['NUCLEAR REPULSION ENERGY']['S66-52-monoA-unCP'              ] =     203.60587521
-DATA['NUCLEAR REPULSION ENERGY']['S66-52-monoB-unCP'              ] =     121.22680816
-DATA['NUCLEAR REPULSION ENERGY']['S66-53-dimer'                   ] =     475.54833273
-DATA['NUCLEAR REPULSION ENERGY']['S66-53-monoA-unCP'              ] =     203.61290966
-DATA['NUCLEAR REPULSION ENERGY']['S66-53-monoB-unCP'              ] =     121.83743933
-DATA['NUCLEAR REPULSION ENERGY']['S66-54-dimer'                   ] =     274.02041197
-DATA['NUCLEAR REPULSION ENERGY']['S66-54-monoA-unCP'              ] =     203.63390042
-DATA['NUCLEAR REPULSION ENERGY']['S66-54-monoB-unCP'              ] =       9.16766818
-DATA['NUCLEAR REPULSION ENERGY']['S66-55-dimer'                   ] =     349.34385129
-DATA['NUCLEAR REPULSION ENERGY']['S66-55-monoA-unCP'              ] =     203.62143957
-DATA['NUCLEAR REPULSION ENERGY']['S66-55-monoB-unCP'              ] =      40.41522246
-DATA['NUCLEAR REPULSION ENERGY']['S66-56-dimer'                   ] =     347.25412940
-DATA['NUCLEAR REPULSION ENERGY']['S66-56-monoA-unCP'              ] =     203.65859480
-DATA['NUCLEAR REPULSION ENERGY']['S66-56-monoB-unCP'              ] =      42.10725315
-DATA['NUCLEAR REPULSION ENERGY']['S66-57-dimer'                   ] =     584.88796485
-DATA['NUCLEAR REPULSION ENERGY']['S66-57-monoA-unCP'              ] =     203.60060155
-DATA['NUCLEAR REPULSION ENERGY']['S66-57-monoB-unCP'              ] =     180.55180987
-DATA['NUCLEAR REPULSION ENERGY']['S66-58-dimer'                   ] =     577.23538658
-DATA['NUCLEAR REPULSION ENERGY']['S66-58-monoA-unCP'              ] =     206.16864626
-DATA['NUCLEAR REPULSION ENERGY']['S66-58-monoB-unCP'              ] =     206.16860003
-DATA['NUCLEAR REPULSION ENERGY']['S66-59-dimer'                   ] =      53.29797952
-DATA['NUCLEAR REPULSION ENERGY']['S66-59-monoA-unCP'              ] =      24.62604423
-DATA['NUCLEAR REPULSION ENERGY']['S66-59-monoB-unCP'              ] =       9.17684034
-DATA['NUCLEAR REPULSION ENERGY']['S66-60-dimer'                   ] =     206.60195669
-DATA['NUCLEAR REPULSION ENERGY']['S66-60-monoA-unCP'              ] =      24.62574637
-DATA['NUCLEAR REPULSION ENERGY']['S66-60-monoB-unCP'              ] =     121.22795347
-DATA['NUCLEAR REPULSION ENERGY']['S66-61-dimer'                   ] =     475.00612950
-DATA['NUCLEAR REPULSION ENERGY']['S66-61-monoA-unCP'              ] =     185.62492607
-DATA['NUCLEAR REPULSION ENERGY']['S66-61-monoB-unCP'              ] =     121.23972648
-DATA['NUCLEAR REPULSION ENERGY']['S66-62-dimer'                   ] =     478.48168724
-DATA['NUCLEAR REPULSION ENERGY']['S66-62-monoA-unCP'              ] =     185.65184859
-DATA['NUCLEAR REPULSION ENERGY']['S66-62-monoB-unCP'              ] =     121.86597939
-DATA['NUCLEAR REPULSION ENERGY']['S66-63-dimer'                   ] =     496.78090588
-DATA['NUCLEAR REPULSION ENERGY']['S66-63-monoA-unCP'              ] =     203.66095658
-DATA['NUCLEAR REPULSION ENERGY']['S66-63-monoB-unCP'              ] =     121.23566219
-DATA['NUCLEAR REPULSION ENERGY']['S66-64-dimer'                   ] =     300.38789564
-DATA['NUCLEAR REPULSION ENERGY']['S66-64-monoA-unCP'              ] =     180.56185111
-DATA['NUCLEAR REPULSION ENERGY']['S66-64-monoB-unCP'              ] =      33.41895147
-DATA['NUCLEAR REPULSION ENERGY']['S66-65-dimer'                   ] =     292.14525417
-DATA['NUCLEAR REPULSION ENERGY']['S66-65-monoA-unCP'              ] =     206.26607138
-DATA['NUCLEAR REPULSION ENERGY']['S66-65-monoB-unCP'              ] =      24.59915901
-DATA['NUCLEAR REPULSION ENERGY']['S66-66-dimer'                   ] =     349.09867633
-DATA['NUCLEAR REPULSION ENERGY']['S66-66-monoA-unCP'              ] =      42.09376472
-DATA['NUCLEAR REPULSION ENERGY']['S66-66-monoB-unCP'              ] =     206.23491680
-DATA['NUCLEAR REPULSION ENERGY']['S66-1-monoA-CP'                 ] =       9.15671411
-DATA['NUCLEAR REPULSION ENERGY']['S66-1-monoB-CP'                 ] =       9.17259114
-DATA['NUCLEAR REPULSION ENERGY']['S66-2-monoA-CP'                 ] =       9.14996836
-DATA['NUCLEAR REPULSION ENERGY']['S66-2-monoB-CP'                 ] =      40.29463192
-DATA['NUCLEAR REPULSION ENERGY']['S66-3-monoA-CP'                 ] =       9.12565570
-DATA['NUCLEAR REPULSION ENERGY']['S66-3-monoB-CP'                 ] =      42.06267577
-DATA['NUCLEAR REPULSION ENERGY']['S66-4-monoA-CP'                 ] =       9.13184124
-DATA['NUCLEAR REPULSION ENERGY']['S66-4-monoB-CP'                 ] =     180.56084030
-DATA['NUCLEAR REPULSION ENERGY']['S66-5-monoA-CP'                 ] =      40.41731272
-DATA['NUCLEAR REPULSION ENERGY']['S66-5-monoB-CP'                 ] =      40.29806380
-DATA['NUCLEAR REPULSION ENERGY']['S66-6-monoA-CP'                 ] =      40.42467073
-DATA['NUCLEAR REPULSION ENERGY']['S66-6-monoB-CP'                 ] =      42.05202847
-DATA['NUCLEAR REPULSION ENERGY']['S66-7-monoA-CP'                 ] =      40.41876218
-DATA['NUCLEAR REPULSION ENERGY']['S66-7-monoB-CP'                 ] =     180.73873695
-DATA['NUCLEAR REPULSION ENERGY']['S66-8-monoA-CP'                 ] =      40.42326344
-DATA['NUCLEAR REPULSION ENERGY']['S66-8-monoB-CP'                 ] =       9.17236900
-DATA['NUCLEAR REPULSION ENERGY']['S66-9-monoA-CP'                 ] =      42.10593235
-DATA['NUCLEAR REPULSION ENERGY']['S66-9-monoB-CP'                 ] =      40.34710761
-DATA['NUCLEAR REPULSION ENERGY']['S66-10-monoA-CP'                ] =      42.09217552
-DATA['NUCLEAR REPULSION ENERGY']['S66-10-monoB-CP'                ] =      42.05982938
-DATA['NUCLEAR REPULSION ENERGY']['S66-11-monoA-CP'                ] =      42.09328618
-DATA['NUCLEAR REPULSION ENERGY']['S66-11-monoB-CP'                ] =     180.72211450
-DATA['NUCLEAR REPULSION ENERGY']['S66-12-monoA-CP'                ] =      42.04336531
-DATA['NUCLEAR REPULSION ENERGY']['S66-12-monoB-CP'                ] =       9.12312499
-DATA['NUCLEAR REPULSION ENERGY']['S66-13-monoA-CP'                ] =     180.80545988
-DATA['NUCLEAR REPULSION ENERGY']['S66-13-monoB-CP'                ] =      40.30378877
-DATA['NUCLEAR REPULSION ENERGY']['S66-14-monoA-CP'                ] =     180.81499576
-DATA['NUCLEAR REPULSION ENERGY']['S66-14-monoB-CP'                ] =      42.03791353
-DATA['NUCLEAR REPULSION ENERGY']['S66-15-monoA-CP'                ] =     180.53794513
-DATA['NUCLEAR REPULSION ENERGY']['S66-15-monoB-CP'                ] =     180.54327910
-DATA['NUCLEAR REPULSION ENERGY']['S66-16-monoA-CP'                ] =     180.57089645
-DATA['NUCLEAR REPULSION ENERGY']['S66-16-monoB-CP'                ] =       9.17374713
-DATA['NUCLEAR REPULSION ENERGY']['S66-17-monoA-CP'                ] =     357.25263911
-DATA['NUCLEAR REPULSION ENERGY']['S66-17-monoB-CP'                ] =     357.22824169
-DATA['NUCLEAR REPULSION ENERGY']['S66-18-monoA-CP'                ] =       9.12915636
-DATA['NUCLEAR REPULSION ENERGY']['S66-18-monoB-CP'                ] =     206.28546361
-DATA['NUCLEAR REPULSION ENERGY']['S66-19-monoA-CP'                ] =      40.42190801
-DATA['NUCLEAR REPULSION ENERGY']['S66-19-monoB-CP'                ] =     206.28426737
-DATA['NUCLEAR REPULSION ENERGY']['S66-20-monoA-CP'                ] =     121.35354216
-DATA['NUCLEAR REPULSION ENERGY']['S66-20-monoB-CP'                ] =     121.35037507
-DATA['NUCLEAR REPULSION ENERGY']['S66-21-monoA-CP'                ] =     121.85534909
-DATA['NUCLEAR REPULSION ENERGY']['S66-21-monoB-CP'                ] =     121.85562743
-DATA['NUCLEAR REPULSION ENERGY']['S66-22-monoA-CP'                ] =     121.30606379
-DATA['NUCLEAR REPULSION ENERGY']['S66-22-monoB-CP'                ] =     357.30242624
-DATA['NUCLEAR REPULSION ENERGY']['S66-23-monoA-CP'                ] =     121.91206440
-DATA['NUCLEAR REPULSION ENERGY']['S66-23-monoB-CP'                ] =     357.16987646
-DATA['NUCLEAR REPULSION ENERGY']['S66-24-monoA-CP'                ] =     203.71200257
-DATA['NUCLEAR REPULSION ENERGY']['S66-24-monoB-CP'                ] =     203.71172379
-DATA['NUCLEAR REPULSION ENERGY']['S66-25-monoA-CP'                ] =     206.22564193
-DATA['NUCLEAR REPULSION ENERGY']['S66-25-monoB-CP'                ] =     206.22748415
-DATA['NUCLEAR REPULSION ENERGY']['S66-26-monoA-CP'                ] =     357.16027337
-DATA['NUCLEAR REPULSION ENERGY']['S66-26-monoB-CP'                ] =     357.16027370
-DATA['NUCLEAR REPULSION ENERGY']['S66-27-monoA-CP'                ] =     203.68422363
-DATA['NUCLEAR REPULSION ENERGY']['S66-27-monoB-CP'                ] =     206.25955744
-DATA['NUCLEAR REPULSION ENERGY']['S66-28-monoA-CP'                ] =     203.65134501
-DATA['NUCLEAR REPULSION ENERGY']['S66-28-monoB-CP'                ] =     357.16948119
-DATA['NUCLEAR REPULSION ENERGY']['S66-29-monoA-CP'                ] =     206.16040036
-DATA['NUCLEAR REPULSION ENERGY']['S66-29-monoB-CP'                ] =     357.23565563
-DATA['NUCLEAR REPULSION ENERGY']['S66-30-monoA-CP'                ] =     203.74228045
-DATA['NUCLEAR REPULSION ENERGY']['S66-30-monoB-CP'                ] =      33.43000301
-DATA['NUCLEAR REPULSION ENERGY']['S66-31-monoA-CP'                ] =     357.18726739
-DATA['NUCLEAR REPULSION ENERGY']['S66-31-monoB-CP'                ] =      33.40409180
-DATA['NUCLEAR REPULSION ENERGY']['S66-32-monoA-CP'                ] =     357.24995067
-DATA['NUCLEAR REPULSION ENERGY']['S66-32-monoB-CP'                ] =      24.63459975
-DATA['NUCLEAR REPULSION ENERGY']['S66-33-monoA-CP'                ] =     206.29228895
-DATA['NUCLEAR REPULSION ENERGY']['S66-33-monoB-CP'                ] =      33.42391806
-DATA['NUCLEAR REPULSION ENERGY']['S66-34-monoA-CP'                ] =     185.63664994
-DATA['NUCLEAR REPULSION ENERGY']['S66-34-monoB-CP'                ] =     185.63558546
-DATA['NUCLEAR REPULSION ENERGY']['S66-35-monoA-CP'                ] =     185.63471242
-DATA['NUCLEAR REPULSION ENERGY']['S66-35-monoB-CP'                ] =     199.36895747
-DATA['NUCLEAR REPULSION ENERGY']['S66-36-monoA-CP'                ] =     199.35493735
-DATA['NUCLEAR REPULSION ENERGY']['S66-36-monoB-CP'                ] =     199.35496470
-DATA['NUCLEAR REPULSION ENERGY']['S66-37-monoA-CP'                ] =     188.28929834
-DATA['NUCLEAR REPULSION ENERGY']['S66-37-monoB-CP'                ] =     199.34481507
-DATA['NUCLEAR REPULSION ENERGY']['S66-38-monoA-CP'                ] =     188.38358820
-DATA['NUCLEAR REPULSION ENERGY']['S66-38-monoB-CP'                ] =     188.37865241
-DATA['NUCLEAR REPULSION ENERGY']['S66-39-monoA-CP'                ] =     203.67735882
-DATA['NUCLEAR REPULSION ENERGY']['S66-39-monoB-CP'                ] =     188.40454306
-DATA['NUCLEAR REPULSION ENERGY']['S66-40-monoA-CP'                ] =     203.68538784
-DATA['NUCLEAR REPULSION ENERGY']['S66-40-monoB-CP'                ] =     199.37329650
-DATA['NUCLEAR REPULSION ENERGY']['S66-41-monoA-CP'                ] =     357.06617642
-DATA['NUCLEAR REPULSION ENERGY']['S66-41-monoB-CP'                ] =     185.61673585
-DATA['NUCLEAR REPULSION ENERGY']['S66-42-monoA-CP'                ] =     357.04169352
-DATA['NUCLEAR REPULSION ENERGY']['S66-42-monoB-CP'                ] =     188.33728572
-DATA['NUCLEAR REPULSION ENERGY']['S66-43-monoA-CP'                ] =     357.12713115
-DATA['NUCLEAR REPULSION ENERGY']['S66-43-monoB-CP'                ] =     199.36153551
-DATA['NUCLEAR REPULSION ENERGY']['S66-44-monoA-CP'                ] =      33.42556566
-DATA['NUCLEAR REPULSION ENERGY']['S66-44-monoB-CP'                ] =     185.65594848
-DATA['NUCLEAR REPULSION ENERGY']['S66-45-monoA-CP'                ] =      24.64923587
-DATA['NUCLEAR REPULSION ENERGY']['S66-45-monoB-CP'                ] =     185.73197134
-DATA['NUCLEAR REPULSION ENERGY']['S66-46-monoA-CP'                ] =     180.49044991
-DATA['NUCLEAR REPULSION ENERGY']['S66-46-monoB-CP'                ] =     185.67687994
-DATA['NUCLEAR REPULSION ENERGY']['S66-47-monoA-CP'                ] =     203.66921988
-DATA['NUCLEAR REPULSION ENERGY']['S66-47-monoB-CP'                ] =     203.67694204
-DATA['NUCLEAR REPULSION ENERGY']['S66-48-monoA-CP'                ] =     206.19608668
-DATA['NUCLEAR REPULSION ENERGY']['S66-48-monoB-CP'                ] =     206.19869697
-DATA['NUCLEAR REPULSION ENERGY']['S66-49-monoA-CP'                ] =     203.65045916
-DATA['NUCLEAR REPULSION ENERGY']['S66-49-monoB-CP'                ] =     206.22459403
-DATA['NUCLEAR REPULSION ENERGY']['S66-50-monoA-CP'                ] =     203.65156163
-DATA['NUCLEAR REPULSION ENERGY']['S66-50-monoB-CP'                ] =      24.63554547
-DATA['NUCLEAR REPULSION ENERGY']['S66-51-monoA-CP'                ] =      24.65072244
-DATA['NUCLEAR REPULSION ENERGY']['S66-51-monoB-CP'                ] =      24.64312912
-DATA['NUCLEAR REPULSION ENERGY']['S66-52-monoA-CP'                ] =     203.60587521
-DATA['NUCLEAR REPULSION ENERGY']['S66-52-monoB-CP'                ] =     121.22680816
-DATA['NUCLEAR REPULSION ENERGY']['S66-53-monoA-CP'                ] =     203.61290966
-DATA['NUCLEAR REPULSION ENERGY']['S66-53-monoB-CP'                ] =     121.83743933
-DATA['NUCLEAR REPULSION ENERGY']['S66-54-monoA-CP'                ] =     203.63390042
-DATA['NUCLEAR REPULSION ENERGY']['S66-54-monoB-CP'                ] =       9.16766818
-DATA['NUCLEAR REPULSION ENERGY']['S66-55-monoA-CP'                ] =     203.62143957
-DATA['NUCLEAR REPULSION ENERGY']['S66-55-monoB-CP'                ] =      40.41522246
-DATA['NUCLEAR REPULSION ENERGY']['S66-56-monoA-CP'                ] =     203.65859480
-DATA['NUCLEAR REPULSION ENERGY']['S66-56-monoB-CP'                ] =      42.10725315
-DATA['NUCLEAR REPULSION ENERGY']['S66-57-monoA-CP'                ] =     203.60060155
-DATA['NUCLEAR REPULSION ENERGY']['S66-57-monoB-CP'                ] =     180.55180987
-DATA['NUCLEAR REPULSION ENERGY']['S66-58-monoA-CP'                ] =     206.16864626
-DATA['NUCLEAR REPULSION ENERGY']['S66-58-monoB-CP'                ] =     206.16860003
-DATA['NUCLEAR REPULSION ENERGY']['S66-59-monoA-CP'                ] =      24.62604423
-DATA['NUCLEAR REPULSION ENERGY']['S66-59-monoB-CP'                ] =       9.17684034
-DATA['NUCLEAR REPULSION ENERGY']['S66-60-monoA-CP'                ] =      24.62574637
-DATA['NUCLEAR REPULSION ENERGY']['S66-60-monoB-CP'                ] =     121.22795347
-DATA['NUCLEAR REPULSION ENERGY']['S66-61-monoA-CP'                ] =     185.62492607
-DATA['NUCLEAR REPULSION ENERGY']['S66-61-monoB-CP'                ] =     121.23972648
-DATA['NUCLEAR REPULSION ENERGY']['S66-62-monoA-CP'                ] =     185.65184859
-DATA['NUCLEAR REPULSION ENERGY']['S66-62-monoB-CP'                ] =     121.86597939
-DATA['NUCLEAR REPULSION ENERGY']['S66-63-monoA-CP'                ] =     203.66095658
-DATA['NUCLEAR REPULSION ENERGY']['S66-63-monoB-CP'                ] =     121.23566219
-DATA['NUCLEAR REPULSION ENERGY']['S66-64-monoA-CP'                ] =     180.56185111
-DATA['NUCLEAR REPULSION ENERGY']['S66-64-monoB-CP'                ] =      33.41895147
-DATA['NUCLEAR REPULSION ENERGY']['S66-65-monoA-CP'                ] =     206.26607138
-DATA['NUCLEAR REPULSION ENERGY']['S66-65-monoB-CP'                ] =      24.59915901
-DATA['NUCLEAR REPULSION ENERGY']['S66-66-monoA-CP'                ] =      42.09376472
-DATA['NUCLEAR REPULSION ENERGY']['S66-66-monoB-CP'                ] =     206.23491680
+DATA["NUCLEAR REPULSION ENERGY"] = {}
+DATA["NUCLEAR REPULSION ENERGY"]["S66-1-dimer"] = 36.51369349
+DATA["NUCLEAR REPULSION ENERGY"]["S66-1-monoA-unCP"] = 9.15671411
+DATA["NUCLEAR REPULSION ENERGY"]["S66-1-monoB-unCP"] = 9.17259114
+DATA["NUCLEAR REPULSION ENERGY"]["S66-2-dimer"] = 79.98338083
+DATA["NUCLEAR REPULSION ENERGY"]["S66-2-monoA-unCP"] = 9.14996836
+DATA["NUCLEAR REPULSION ENERGY"]["S66-2-monoB-unCP"] = 40.29463192
+DATA["NUCLEAR REPULSION ENERGY"]["S66-3-dimer"] = 79.77996002
+DATA["NUCLEAR REPULSION ENERGY"]["S66-3-monoA-unCP"] = 9.12565570
+DATA["NUCLEAR REPULSION ENERGY"]["S66-3-monoB-unCP"] = 42.06267577
+DATA["NUCLEAR REPULSION ENERGY"]["S66-4-dimer"] = 246.86074225
+DATA["NUCLEAR REPULSION ENERGY"]["S66-4-monoA-unCP"] = 9.13184124
+DATA["NUCLEAR REPULSION ENERGY"]["S66-4-monoB-unCP"] = 180.56084030
+DATA["NUCLEAR REPULSION ENERGY"]["S66-5-dimer"] = 129.52156842
+DATA["NUCLEAR REPULSION ENERGY"]["S66-5-monoA-unCP"] = 40.41731272
+DATA["NUCLEAR REPULSION ENERGY"]["S66-5-monoB-unCP"] = 40.29806380
+DATA["NUCLEAR REPULSION ENERGY"]["S66-6-dimer"] = 131.81617640
+DATA["NUCLEAR REPULSION ENERGY"]["S66-6-monoA-unCP"] = 40.42467073
+DATA["NUCLEAR REPULSION ENERGY"]["S66-6-monoB-unCP"] = 42.05202847
+DATA["NUCLEAR REPULSION ENERGY"]["S66-7-dimer"] = 313.95975412
+DATA["NUCLEAR REPULSION ENERGY"]["S66-7-monoA-unCP"] = 40.41876218
+DATA["NUCLEAR REPULSION ENERGY"]["S66-7-monoB-unCP"] = 180.73873695
+DATA["NUCLEAR REPULSION ENERGY"]["S66-8-dimer"] = 78.74537406
+DATA["NUCLEAR REPULSION ENERGY"]["S66-8-monoA-unCP"] = 40.42326344
+DATA["NUCLEAR REPULSION ENERGY"]["S66-8-monoB-unCP"] = 9.17236900
+DATA["NUCLEAR REPULSION ENERGY"]["S66-9-dimer"] = 129.31867271
+DATA["NUCLEAR REPULSION ENERGY"]["S66-9-monoA-unCP"] = 42.10593235
+DATA["NUCLEAR REPULSION ENERGY"]["S66-9-monoB-unCP"] = 40.34710761
+DATA["NUCLEAR REPULSION ENERGY"]["S66-10-dimer"] = 131.71717765
+DATA["NUCLEAR REPULSION ENERGY"]["S66-10-monoA-unCP"] = 42.09217552
+DATA["NUCLEAR REPULSION ENERGY"]["S66-10-monoB-unCP"] = 42.05982938
+DATA["NUCLEAR REPULSION ENERGY"]["S66-11-dimer"] = 320.50976921
+DATA["NUCLEAR REPULSION ENERGY"]["S66-11-monoA-unCP"] = 42.09328618
+DATA["NUCLEAR REPULSION ENERGY"]["S66-11-monoB-unCP"] = 180.72211450
+DATA["NUCLEAR REPULSION ENERGY"]["S66-12-dimer"] = 81.87844165
+DATA["NUCLEAR REPULSION ENERGY"]["S66-12-monoA-unCP"] = 42.04336531
+DATA["NUCLEAR REPULSION ENERGY"]["S66-12-monoB-unCP"] = 9.12312499
+DATA["NUCLEAR REPULSION ENERGY"]["S66-13-dimer"] = 314.84789007
+DATA["NUCLEAR REPULSION ENERGY"]["S66-13-monoA-unCP"] = 180.80545988
+DATA["NUCLEAR REPULSION ENERGY"]["S66-13-monoB-unCP"] = 40.30378877
+DATA["NUCLEAR REPULSION ENERGY"]["S66-14-dimer"] = 315.64348724
+DATA["NUCLEAR REPULSION ENERGY"]["S66-14-monoA-unCP"] = 180.81499576
+DATA["NUCLEAR REPULSION ENERGY"]["S66-14-monoB-unCP"] = 42.03791353
+DATA["NUCLEAR REPULSION ENERGY"]["S66-15-dimer"] = 540.42243680
+DATA["NUCLEAR REPULSION ENERGY"]["S66-15-monoA-unCP"] = 180.53794513
+DATA["NUCLEAR REPULSION ENERGY"]["S66-15-monoB-unCP"] = 180.54327910
+DATA["NUCLEAR REPULSION ENERGY"]["S66-16-dimer"] = 243.51194018
+DATA["NUCLEAR REPULSION ENERGY"]["S66-16-monoA-unCP"] = 180.57089645
+DATA["NUCLEAR REPULSION ENERGY"]["S66-16-monoB-unCP"] = 9.17374713
+DATA["NUCLEAR REPULSION ENERGY"]["S66-17-dimer"] = 1040.55250335
+DATA["NUCLEAR REPULSION ENERGY"]["S66-17-monoA-unCP"] = 357.25263911
+DATA["NUCLEAR REPULSION ENERGY"]["S66-17-monoB-unCP"] = 357.22824169
+DATA["NUCLEAR REPULSION ENERGY"]["S66-18-dimer"] = 269.39653929
+DATA["NUCLEAR REPULSION ENERGY"]["S66-18-monoA-unCP"] = 9.12915636
+DATA["NUCLEAR REPULSION ENERGY"]["S66-18-monoB-unCP"] = 206.28546361
+DATA["NUCLEAR REPULSION ENERGY"]["S66-19-dimer"] = 337.49486033
+DATA["NUCLEAR REPULSION ENERGY"]["S66-19-monoA-unCP"] = 40.42190801
+DATA["NUCLEAR REPULSION ENERGY"]["S66-19-monoB-unCP"] = 206.28426737
+DATA["NUCLEAR REPULSION ENERGY"]["S66-20-dimer"] = 381.47467603
+DATA["NUCLEAR REPULSION ENERGY"]["S66-20-monoA-unCP"] = 121.35354216
+DATA["NUCLEAR REPULSION ENERGY"]["S66-20-monoB-unCP"] = 121.35037507
+DATA["NUCLEAR REPULSION ENERGY"]["S66-21-dimer"] = 373.66110820
+DATA["NUCLEAR REPULSION ENERGY"]["S66-21-monoA-unCP"] = 121.85534909
+DATA["NUCLEAR REPULSION ENERGY"]["S66-21-monoB-unCP"] = 121.85562743
+DATA["NUCLEAR REPULSION ENERGY"]["S66-22-dimer"] = 685.96293615
+DATA["NUCLEAR REPULSION ENERGY"]["S66-22-monoA-unCP"] = 121.30606379
+DATA["NUCLEAR REPULSION ENERGY"]["S66-22-monoB-unCP"] = 357.30242624
+DATA["NUCLEAR REPULSION ENERGY"]["S66-23-dimer"] = 682.46450694
+DATA["NUCLEAR REPULSION ENERGY"]["S66-23-monoA-unCP"] = 121.91206440
+DATA["NUCLEAR REPULSION ENERGY"]["S66-23-monoB-unCP"] = 357.16987646
+DATA["NUCLEAR REPULSION ENERGY"]["S66-24-dimer"] = 623.71187998
+DATA["NUCLEAR REPULSION ENERGY"]["S66-24-monoA-unCP"] = 203.71200257
+DATA["NUCLEAR REPULSION ENERGY"]["S66-24-monoB-unCP"] = 203.71172379
+DATA["NUCLEAR REPULSION ENERGY"]["S66-25-dimer"] = 637.14156863
+DATA["NUCLEAR REPULSION ENERGY"]["S66-25-monoA-unCP"] = 206.22564193
+DATA["NUCLEAR REPULSION ENERGY"]["S66-25-monoB-unCP"] = 206.22748415
+DATA["NUCLEAR REPULSION ENERGY"]["S66-26-dimer"] = 1163.54572871
+DATA["NUCLEAR REPULSION ENERGY"]["S66-26-monoA-unCP"] = 357.16027337
+DATA["NUCLEAR REPULSION ENERGY"]["S66-26-monoB-unCP"] = 357.16027370
+DATA["NUCLEAR REPULSION ENERGY"]["S66-27-dimer"] = 630.67443466
+DATA["NUCLEAR REPULSION ENERGY"]["S66-27-monoA-unCP"] = 203.68422363
+DATA["NUCLEAR REPULSION ENERGY"]["S66-27-monoB-unCP"] = 206.25955744
+DATA["NUCLEAR REPULSION ENERGY"]["S66-28-dimer"] = 878.32907732
+DATA["NUCLEAR REPULSION ENERGY"]["S66-28-monoA-unCP"] = 203.65134501
+DATA["NUCLEAR REPULSION ENERGY"]["S66-28-monoB-unCP"] = 357.16948119
+DATA["NUCLEAR REPULSION ENERGY"]["S66-29-dimer"] = 885.28192562
+DATA["NUCLEAR REPULSION ENERGY"]["S66-29-monoA-unCP"] = 206.16040036
+DATA["NUCLEAR REPULSION ENERGY"]["S66-29-monoB-unCP"] = 357.23565563
+DATA["NUCLEAR REPULSION ENERGY"]["S66-30-dimer"] = 327.62509332
+DATA["NUCLEAR REPULSION ENERGY"]["S66-30-monoA-unCP"] = 203.74228045
+DATA["NUCLEAR REPULSION ENERGY"]["S66-30-monoB-unCP"] = 33.43000301
+DATA["NUCLEAR REPULSION ENERGY"]["S66-31-dimer"] = 518.26358403
+DATA["NUCLEAR REPULSION ENERGY"]["S66-31-monoA-unCP"] = 357.18726739
+DATA["NUCLEAR REPULSION ENERGY"]["S66-31-monoB-unCP"] = 33.40409180
+DATA["NUCLEAR REPULSION ENERGY"]["S66-32-dimer"] = 495.33117294
+DATA["NUCLEAR REPULSION ENERGY"]["S66-32-monoA-unCP"] = 357.24995067
+DATA["NUCLEAR REPULSION ENERGY"]["S66-32-monoB-unCP"] = 24.63459975
+DATA["NUCLEAR REPULSION ENERGY"]["S66-33-dimer"] = 332.11307535
+DATA["NUCLEAR REPULSION ENERGY"]["S66-33-monoA-unCP"] = 206.29228895
+DATA["NUCLEAR REPULSION ENERGY"]["S66-33-monoB-unCP"] = 33.42391806
+DATA["NUCLEAR REPULSION ENERGY"]["S66-34-dimer"] = 577.94330068
+DATA["NUCLEAR REPULSION ENERGY"]["S66-34-monoA-unCP"] = 185.63664994
+DATA["NUCLEAR REPULSION ENERGY"]["S66-34-monoB-unCP"] = 185.63558546
+DATA["NUCLEAR REPULSION ENERGY"]["S66-35-dimer"] = 574.13141612
+DATA["NUCLEAR REPULSION ENERGY"]["S66-35-monoA-unCP"] = 185.63471242
+DATA["NUCLEAR REPULSION ENERGY"]["S66-35-monoB-unCP"] = 199.36895747
+DATA["NUCLEAR REPULSION ENERGY"]["S66-36-dimer"] = 573.01241887
+DATA["NUCLEAR REPULSION ENERGY"]["S66-36-monoA-unCP"] = 199.35493735
+DATA["NUCLEAR REPULSION ENERGY"]["S66-36-monoB-unCP"] = 199.35496470
+DATA["NUCLEAR REPULSION ENERGY"]["S66-37-dimer"] = 569.42803611
+DATA["NUCLEAR REPULSION ENERGY"]["S66-37-monoA-unCP"] = 188.28929834
+DATA["NUCLEAR REPULSION ENERGY"]["S66-37-monoB-unCP"] = 199.34481507
+DATA["NUCLEAR REPULSION ENERGY"]["S66-38-dimer"] = 562.36494675
+DATA["NUCLEAR REPULSION ENERGY"]["S66-38-monoA-unCP"] = 188.38358820
+DATA["NUCLEAR REPULSION ENERGY"]["S66-38-monoB-unCP"] = 188.37865241
+DATA["NUCLEAR REPULSION ENERGY"]["S66-39-dimer"] = 594.82529945
+DATA["NUCLEAR REPULSION ENERGY"]["S66-39-monoA-unCP"] = 203.67735882
+DATA["NUCLEAR REPULSION ENERGY"]["S66-39-monoB-unCP"] = 188.40454306
+DATA["NUCLEAR REPULSION ENERGY"]["S66-40-dimer"] = 598.08168004
+DATA["NUCLEAR REPULSION ENERGY"]["S66-40-monoA-unCP"] = 203.68538784
+DATA["NUCLEAR REPULSION ENERGY"]["S66-40-monoB-unCP"] = 199.37329650
+DATA["NUCLEAR REPULSION ENERGY"]["S66-41-dimer"] = 843.32242800
+DATA["NUCLEAR REPULSION ENERGY"]["S66-41-monoA-unCP"] = 357.06617642
+DATA["NUCLEAR REPULSION ENERGY"]["S66-41-monoB-unCP"] = 185.61673585
+DATA["NUCLEAR REPULSION ENERGY"]["S66-42-dimer"] = 830.51659591
+DATA["NUCLEAR REPULSION ENERGY"]["S66-42-monoA-unCP"] = 357.04169352
+DATA["NUCLEAR REPULSION ENERGY"]["S66-42-monoB-unCP"] = 188.33728572
+DATA["NUCLEAR REPULSION ENERGY"]["S66-43-dimer"] = 830.36688604
+DATA["NUCLEAR REPULSION ENERGY"]["S66-43-monoA-unCP"] = 357.12713115
+DATA["NUCLEAR REPULSION ENERGY"]["S66-43-monoB-unCP"] = 199.36153551
+DATA["NUCLEAR REPULSION ENERGY"]["S66-44-dimer"] = 303.64951312
+DATA["NUCLEAR REPULSION ENERGY"]["S66-44-monoA-unCP"] = 33.42556566
+DATA["NUCLEAR REPULSION ENERGY"]["S66-44-monoB-unCP"] = 185.65594848
+DATA["NUCLEAR REPULSION ENERGY"]["S66-45-dimer"] = 285.69697355
+DATA["NUCLEAR REPULSION ENERGY"]["S66-45-monoA-unCP"] = 24.64923587
+DATA["NUCLEAR REPULSION ENERGY"]["S66-45-monoB-unCP"] = 185.73197134
+DATA["NUCLEAR REPULSION ENERGY"]["S66-46-dimer"] = 576.36980953
+DATA["NUCLEAR REPULSION ENERGY"]["S66-46-monoA-unCP"] = 180.49044991
+DATA["NUCLEAR REPULSION ENERGY"]["S66-46-monoB-unCP"] = 185.67687994
+DATA["NUCLEAR REPULSION ENERGY"]["S66-47-dimer"] = 592.90348525
+DATA["NUCLEAR REPULSION ENERGY"]["S66-47-monoA-unCP"] = 203.66921988
+DATA["NUCLEAR REPULSION ENERGY"]["S66-47-monoB-unCP"] = 203.67694204
+DATA["NUCLEAR REPULSION ENERGY"]["S66-48-dimer"] = 601.34387795
+DATA["NUCLEAR REPULSION ENERGY"]["S66-48-monoA-unCP"] = 206.19608668
+DATA["NUCLEAR REPULSION ENERGY"]["S66-48-monoB-unCP"] = 206.19869697
+DATA["NUCLEAR REPULSION ENERGY"]["S66-49-dimer"] = 596.54644729
+DATA["NUCLEAR REPULSION ENERGY"]["S66-49-monoA-unCP"] = 203.65045916
+DATA["NUCLEAR REPULSION ENERGY"]["S66-49-monoB-unCP"] = 206.22459403
+DATA["NUCLEAR REPULSION ENERGY"]["S66-50-dimer"] = 300.96547874
+DATA["NUCLEAR REPULSION ENERGY"]["S66-50-monoA-unCP"] = 203.65156163
+DATA["NUCLEAR REPULSION ENERGY"]["S66-50-monoB-unCP"] = 24.63554547
+DATA["NUCLEAR REPULSION ENERGY"]["S66-51-dimer"] = 73.51391626
+DATA["NUCLEAR REPULSION ENERGY"]["S66-51-monoA-unCP"] = 24.65072244
+DATA["NUCLEAR REPULSION ENERGY"]["S66-51-monoB-unCP"] = 24.64312912
+DATA["NUCLEAR REPULSION ENERGY"]["S66-52-dimer"] = 488.72204285
+DATA["NUCLEAR REPULSION ENERGY"]["S66-52-monoA-unCP"] = 203.60587521
+DATA["NUCLEAR REPULSION ENERGY"]["S66-52-monoB-unCP"] = 121.22680816
+DATA["NUCLEAR REPULSION ENERGY"]["S66-53-dimer"] = 475.54833273
+DATA["NUCLEAR REPULSION ENERGY"]["S66-53-monoA-unCP"] = 203.61290966
+DATA["NUCLEAR REPULSION ENERGY"]["S66-53-monoB-unCP"] = 121.83743933
+DATA["NUCLEAR REPULSION ENERGY"]["S66-54-dimer"] = 274.02041197
+DATA["NUCLEAR REPULSION ENERGY"]["S66-54-monoA-unCP"] = 203.63390042
+DATA["NUCLEAR REPULSION ENERGY"]["S66-54-monoB-unCP"] = 9.16766818
+DATA["NUCLEAR REPULSION ENERGY"]["S66-55-dimer"] = 349.34385129
+DATA["NUCLEAR REPULSION ENERGY"]["S66-55-monoA-unCP"] = 203.62143957
+DATA["NUCLEAR REPULSION ENERGY"]["S66-55-monoB-unCP"] = 40.41522246
+DATA["NUCLEAR REPULSION ENERGY"]["S66-56-dimer"] = 347.25412940
+DATA["NUCLEAR REPULSION ENERGY"]["S66-56-monoA-unCP"] = 203.65859480
+DATA["NUCLEAR REPULSION ENERGY"]["S66-56-monoB-unCP"] = 42.10725315
+DATA["NUCLEAR REPULSION ENERGY"]["S66-57-dimer"] = 584.88796485
+DATA["NUCLEAR REPULSION ENERGY"]["S66-57-monoA-unCP"] = 203.60060155
+DATA["NUCLEAR REPULSION ENERGY"]["S66-57-monoB-unCP"] = 180.55180987
+DATA["NUCLEAR REPULSION ENERGY"]["S66-58-dimer"] = 577.23538658
+DATA["NUCLEAR REPULSION ENERGY"]["S66-58-monoA-unCP"] = 206.16864626
+DATA["NUCLEAR REPULSION ENERGY"]["S66-58-monoB-unCP"] = 206.16860003
+DATA["NUCLEAR REPULSION ENERGY"]["S66-59-dimer"] = 53.29797952
+DATA["NUCLEAR REPULSION ENERGY"]["S66-59-monoA-unCP"] = 24.62604423
+DATA["NUCLEAR REPULSION ENERGY"]["S66-59-monoB-unCP"] = 9.17684034
+DATA["NUCLEAR REPULSION ENERGY"]["S66-60-dimer"] = 206.60195669
+DATA["NUCLEAR REPULSION ENERGY"]["S66-60-monoA-unCP"] = 24.62574637
+DATA["NUCLEAR REPULSION ENERGY"]["S66-60-monoB-unCP"] = 121.22795347
+DATA["NUCLEAR REPULSION ENERGY"]["S66-61-dimer"] = 475.00612950
+DATA["NUCLEAR REPULSION ENERGY"]["S66-61-monoA-unCP"] = 185.62492607
+DATA["NUCLEAR REPULSION ENERGY"]["S66-61-monoB-unCP"] = 121.23972648
+DATA["NUCLEAR REPULSION ENERGY"]["S66-62-dimer"] = 478.48168724
+DATA["NUCLEAR REPULSION ENERGY"]["S66-62-monoA-unCP"] = 185.65184859
+DATA["NUCLEAR REPULSION ENERGY"]["S66-62-monoB-unCP"] = 121.86597939
+DATA["NUCLEAR REPULSION ENERGY"]["S66-63-dimer"] = 496.78090588
+DATA["NUCLEAR REPULSION ENERGY"]["S66-63-monoA-unCP"] = 203.66095658
+DATA["NUCLEAR REPULSION ENERGY"]["S66-63-monoB-unCP"] = 121.23566219
+DATA["NUCLEAR REPULSION ENERGY"]["S66-64-dimer"] = 300.38789564
+DATA["NUCLEAR REPULSION ENERGY"]["S66-64-monoA-unCP"] = 180.56185111
+DATA["NUCLEAR REPULSION ENERGY"]["S66-64-monoB-unCP"] = 33.41895147
+DATA["NUCLEAR REPULSION ENERGY"]["S66-65-dimer"] = 292.14525417
+DATA["NUCLEAR REPULSION ENERGY"]["S66-65-monoA-unCP"] = 206.26607138
+DATA["NUCLEAR REPULSION ENERGY"]["S66-65-monoB-unCP"] = 24.59915901
+DATA["NUCLEAR REPULSION ENERGY"]["S66-66-dimer"] = 349.09867633
+DATA["NUCLEAR REPULSION ENERGY"]["S66-66-monoA-unCP"] = 42.09376472
+DATA["NUCLEAR REPULSION ENERGY"]["S66-66-monoB-unCP"] = 206.23491680
+DATA["NUCLEAR REPULSION ENERGY"]["S66-1-monoA-CP"] = 9.15671411
+DATA["NUCLEAR REPULSION ENERGY"]["S66-1-monoB-CP"] = 9.17259114
+DATA["NUCLEAR REPULSION ENERGY"]["S66-2-monoA-CP"] = 9.14996836
+DATA["NUCLEAR REPULSION ENERGY"]["S66-2-monoB-CP"] = 40.29463192
+DATA["NUCLEAR REPULSION ENERGY"]["S66-3-monoA-CP"] = 9.12565570
+DATA["NUCLEAR REPULSION ENERGY"]["S66-3-monoB-CP"] = 42.06267577
+DATA["NUCLEAR REPULSION ENERGY"]["S66-4-monoA-CP"] = 9.13184124
+DATA["NUCLEAR REPULSION ENERGY"]["S66-4-monoB-CP"] = 180.56084030
+DATA["NUCLEAR REPULSION ENERGY"]["S66-5-monoA-CP"] = 40.41731272
+DATA["NUCLEAR REPULSION ENERGY"]["S66-5-monoB-CP"] = 40.29806380
+DATA["NUCLEAR REPULSION ENERGY"]["S66-6-monoA-CP"] = 40.42467073
+DATA["NUCLEAR REPULSION ENERGY"]["S66-6-monoB-CP"] = 42.05202847
+DATA["NUCLEAR REPULSION ENERGY"]["S66-7-monoA-CP"] = 40.41876218
+DATA["NUCLEAR REPULSION ENERGY"]["S66-7-monoB-CP"] = 180.73873695
+DATA["NUCLEAR REPULSION ENERGY"]["S66-8-monoA-CP"] = 40.42326344
+DATA["NUCLEAR REPULSION ENERGY"]["S66-8-monoB-CP"] = 9.17236900
+DATA["NUCLEAR REPULSION ENERGY"]["S66-9-monoA-CP"] = 42.10593235
+DATA["NUCLEAR REPULSION ENERGY"]["S66-9-monoB-CP"] = 40.34710761
+DATA["NUCLEAR REPULSION ENERGY"]["S66-10-monoA-CP"] = 42.09217552
+DATA["NUCLEAR REPULSION ENERGY"]["S66-10-monoB-CP"] = 42.05982938
+DATA["NUCLEAR REPULSION ENERGY"]["S66-11-monoA-CP"] = 42.09328618
+DATA["NUCLEAR REPULSION ENERGY"]["S66-11-monoB-CP"] = 180.72211450
+DATA["NUCLEAR REPULSION ENERGY"]["S66-12-monoA-CP"] = 42.04336531
+DATA["NUCLEAR REPULSION ENERGY"]["S66-12-monoB-CP"] = 9.12312499
+DATA["NUCLEAR REPULSION ENERGY"]["S66-13-monoA-CP"] = 180.80545988
+DATA["NUCLEAR REPULSION ENERGY"]["S66-13-monoB-CP"] = 40.30378877
+DATA["NUCLEAR REPULSION ENERGY"]["S66-14-monoA-CP"] = 180.81499576
+DATA["NUCLEAR REPULSION ENERGY"]["S66-14-monoB-CP"] = 42.03791353
+DATA["NUCLEAR REPULSION ENERGY"]["S66-15-monoA-CP"] = 180.53794513
+DATA["NUCLEAR REPULSION ENERGY"]["S66-15-monoB-CP"] = 180.54327910
+DATA["NUCLEAR REPULSION ENERGY"]["S66-16-monoA-CP"] = 180.57089645
+DATA["NUCLEAR REPULSION ENERGY"]["S66-16-monoB-CP"] = 9.17374713
+DATA["NUCLEAR REPULSION ENERGY"]["S66-17-monoA-CP"] = 357.25263911
+DATA["NUCLEAR REPULSION ENERGY"]["S66-17-monoB-CP"] = 357.22824169
+DATA["NUCLEAR REPULSION ENERGY"]["S66-18-monoA-CP"] = 9.12915636
+DATA["NUCLEAR REPULSION ENERGY"]["S66-18-monoB-CP"] = 206.28546361
+DATA["NUCLEAR REPULSION ENERGY"]["S66-19-monoA-CP"] = 40.42190801
+DATA["NUCLEAR REPULSION ENERGY"]["S66-19-monoB-CP"] = 206.28426737
+DATA["NUCLEAR REPULSION ENERGY"]["S66-20-monoA-CP"] = 121.35354216
+DATA["NUCLEAR REPULSION ENERGY"]["S66-20-monoB-CP"] = 121.35037507
+DATA["NUCLEAR REPULSION ENERGY"]["S66-21-monoA-CP"] = 121.85534909
+DATA["NUCLEAR REPULSION ENERGY"]["S66-21-monoB-CP"] = 121.85562743
+DATA["NUCLEAR REPULSION ENERGY"]["S66-22-monoA-CP"] = 121.30606379
+DATA["NUCLEAR REPULSION ENERGY"]["S66-22-monoB-CP"] = 357.30242624
+DATA["NUCLEAR REPULSION ENERGY"]["S66-23-monoA-CP"] = 121.91206440
+DATA["NUCLEAR REPULSION ENERGY"]["S66-23-monoB-CP"] = 357.16987646
+DATA["NUCLEAR REPULSION ENERGY"]["S66-24-monoA-CP"] = 203.71200257
+DATA["NUCLEAR REPULSION ENERGY"]["S66-24-monoB-CP"] = 203.71172379
+DATA["NUCLEAR REPULSION ENERGY"]["S66-25-monoA-CP"] = 206.22564193
+DATA["NUCLEAR REPULSION ENERGY"]["S66-25-monoB-CP"] = 206.22748415
+DATA["NUCLEAR REPULSION ENERGY"]["S66-26-monoA-CP"] = 357.16027337
+DATA["NUCLEAR REPULSION ENERGY"]["S66-26-monoB-CP"] = 357.16027370
+DATA["NUCLEAR REPULSION ENERGY"]["S66-27-monoA-CP"] = 203.68422363
+DATA["NUCLEAR REPULSION ENERGY"]["S66-27-monoB-CP"] = 206.25955744
+DATA["NUCLEAR REPULSION ENERGY"]["S66-28-monoA-CP"] = 203.65134501
+DATA["NUCLEAR REPULSION ENERGY"]["S66-28-monoB-CP"] = 357.16948119
+DATA["NUCLEAR REPULSION ENERGY"]["S66-29-monoA-CP"] = 206.16040036
+DATA["NUCLEAR REPULSION ENERGY"]["S66-29-monoB-CP"] = 357.23565563
+DATA["NUCLEAR REPULSION ENERGY"]["S66-30-monoA-CP"] = 203.74228045
+DATA["NUCLEAR REPULSION ENERGY"]["S66-30-monoB-CP"] = 33.43000301
+DATA["NUCLEAR REPULSION ENERGY"]["S66-31-monoA-CP"] = 357.18726739
+DATA["NUCLEAR REPULSION ENERGY"]["S66-31-monoB-CP"] = 33.40409180
+DATA["NUCLEAR REPULSION ENERGY"]["S66-32-monoA-CP"] = 357.24995067
+DATA["NUCLEAR REPULSION ENERGY"]["S66-32-monoB-CP"] = 24.63459975
+DATA["NUCLEAR REPULSION ENERGY"]["S66-33-monoA-CP"] = 206.29228895
+DATA["NUCLEAR REPULSION ENERGY"]["S66-33-monoB-CP"] = 33.42391806
+DATA["NUCLEAR REPULSION ENERGY"]["S66-34-monoA-CP"] = 185.63664994
+DATA["NUCLEAR REPULSION ENERGY"]["S66-34-monoB-CP"] = 185.63558546
+DATA["NUCLEAR REPULSION ENERGY"]["S66-35-monoA-CP"] = 185.63471242
+DATA["NUCLEAR REPULSION ENERGY"]["S66-35-monoB-CP"] = 199.36895747
+DATA["NUCLEAR REPULSION ENERGY"]["S66-36-monoA-CP"] = 199.35493735
+DATA["NUCLEAR REPULSION ENERGY"]["S66-36-monoB-CP"] = 199.35496470
+DATA["NUCLEAR REPULSION ENERGY"]["S66-37-monoA-CP"] = 188.28929834
+DATA["NUCLEAR REPULSION ENERGY"]["S66-37-monoB-CP"] = 199.34481507
+DATA["NUCLEAR REPULSION ENERGY"]["S66-38-monoA-CP"] = 188.38358820
+DATA["NUCLEAR REPULSION ENERGY"]["S66-38-monoB-CP"] = 188.37865241
+DATA["NUCLEAR REPULSION ENERGY"]["S66-39-monoA-CP"] = 203.67735882
+DATA["NUCLEAR REPULSION ENERGY"]["S66-39-monoB-CP"] = 188.40454306
+DATA["NUCLEAR REPULSION ENERGY"]["S66-40-monoA-CP"] = 203.68538784
+DATA["NUCLEAR REPULSION ENERGY"]["S66-40-monoB-CP"] = 199.37329650
+DATA["NUCLEAR REPULSION ENERGY"]["S66-41-monoA-CP"] = 357.06617642
+DATA["NUCLEAR REPULSION ENERGY"]["S66-41-monoB-CP"] = 185.61673585
+DATA["NUCLEAR REPULSION ENERGY"]["S66-42-monoA-CP"] = 357.04169352
+DATA["NUCLEAR REPULSION ENERGY"]["S66-42-monoB-CP"] = 188.33728572
+DATA["NUCLEAR REPULSION ENERGY"]["S66-43-monoA-CP"] = 357.12713115
+DATA["NUCLEAR REPULSION ENERGY"]["S66-43-monoB-CP"] = 199.36153551
+DATA["NUCLEAR REPULSION ENERGY"]["S66-44-monoA-CP"] = 33.42556566
+DATA["NUCLEAR REPULSION ENERGY"]["S66-44-monoB-CP"] = 185.65594848
+DATA["NUCLEAR REPULSION ENERGY"]["S66-45-monoA-CP"] = 24.64923587
+DATA["NUCLEAR REPULSION ENERGY"]["S66-45-monoB-CP"] = 185.73197134
+DATA["NUCLEAR REPULSION ENERGY"]["S66-46-monoA-CP"] = 180.49044991
+DATA["NUCLEAR REPULSION ENERGY"]["S66-46-monoB-CP"] = 185.67687994
+DATA["NUCLEAR REPULSION ENERGY"]["S66-47-monoA-CP"] = 203.66921988
+DATA["NUCLEAR REPULSION ENERGY"]["S66-47-monoB-CP"] = 203.67694204
+DATA["NUCLEAR REPULSION ENERGY"]["S66-48-monoA-CP"] = 206.19608668
+DATA["NUCLEAR REPULSION ENERGY"]["S66-48-monoB-CP"] = 206.19869697
+DATA["NUCLEAR REPULSION ENERGY"]["S66-49-monoA-CP"] = 203.65045916
+DATA["NUCLEAR REPULSION ENERGY"]["S66-49-monoB-CP"] = 206.22459403
+DATA["NUCLEAR REPULSION ENERGY"]["S66-50-monoA-CP"] = 203.65156163
+DATA["NUCLEAR REPULSION ENERGY"]["S66-50-monoB-CP"] = 24.63554547
+DATA["NUCLEAR REPULSION ENERGY"]["S66-51-monoA-CP"] = 24.65072244
+DATA["NUCLEAR REPULSION ENERGY"]["S66-51-monoB-CP"] = 24.64312912
+DATA["NUCLEAR REPULSION ENERGY"]["S66-52-monoA-CP"] = 203.60587521
+DATA["NUCLEAR REPULSION ENERGY"]["S66-52-monoB-CP"] = 121.22680816
+DATA["NUCLEAR REPULSION ENERGY"]["S66-53-monoA-CP"] = 203.61290966
+DATA["NUCLEAR REPULSION ENERGY"]["S66-53-monoB-CP"] = 121.83743933
+DATA["NUCLEAR REPULSION ENERGY"]["S66-54-monoA-CP"] = 203.63390042
+DATA["NUCLEAR REPULSION ENERGY"]["S66-54-monoB-CP"] = 9.16766818
+DATA["NUCLEAR REPULSION ENERGY"]["S66-55-monoA-CP"] = 203.62143957
+DATA["NUCLEAR REPULSION ENERGY"]["S66-55-monoB-CP"] = 40.41522246
+DATA["NUCLEAR REPULSION ENERGY"]["S66-56-monoA-CP"] = 203.65859480
+DATA["NUCLEAR REPULSION ENERGY"]["S66-56-monoB-CP"] = 42.10725315
+DATA["NUCLEAR REPULSION ENERGY"]["S66-57-monoA-CP"] = 203.60060155
+DATA["NUCLEAR REPULSION ENERGY"]["S66-57-monoB-CP"] = 180.55180987
+DATA["NUCLEAR REPULSION ENERGY"]["S66-58-monoA-CP"] = 206.16864626
+DATA["NUCLEAR REPULSION ENERGY"]["S66-58-monoB-CP"] = 206.16860003
+DATA["NUCLEAR REPULSION ENERGY"]["S66-59-monoA-CP"] = 24.62604423
+DATA["NUCLEAR REPULSION ENERGY"]["S66-59-monoB-CP"] = 9.17684034
+DATA["NUCLEAR REPULSION ENERGY"]["S66-60-monoA-CP"] = 24.62574637
+DATA["NUCLEAR REPULSION ENERGY"]["S66-60-monoB-CP"] = 121.22795347
+DATA["NUCLEAR REPULSION ENERGY"]["S66-61-monoA-CP"] = 185.62492607
+DATA["NUCLEAR REPULSION ENERGY"]["S66-61-monoB-CP"] = 121.23972648
+DATA["NUCLEAR REPULSION ENERGY"]["S66-62-monoA-CP"] = 185.65184859
+DATA["NUCLEAR REPULSION ENERGY"]["S66-62-monoB-CP"] = 121.86597939
+DATA["NUCLEAR REPULSION ENERGY"]["S66-63-monoA-CP"] = 203.66095658
+DATA["NUCLEAR REPULSION ENERGY"]["S66-63-monoB-CP"] = 121.23566219
+DATA["NUCLEAR REPULSION ENERGY"]["S66-64-monoA-CP"] = 180.56185111
+DATA["NUCLEAR REPULSION ENERGY"]["S66-64-monoB-CP"] = 33.41895147
+DATA["NUCLEAR REPULSION ENERGY"]["S66-65-monoA-CP"] = 206.26607138
+DATA["NUCLEAR REPULSION ENERGY"]["S66-65-monoB-CP"] = 24.59915901
+DATA["NUCLEAR REPULSION ENERGY"]["S66-66-monoA-CP"] = 42.09376472
+DATA["NUCLEAR REPULSION ENERGY"]["S66-66-monoB-CP"] = 206.23491680

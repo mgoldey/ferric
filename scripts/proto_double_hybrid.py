@@ -24,7 +24,9 @@ from pyscf import gto, dft, mp as pyscf_mp, ao2mo
 def water_pyscf(basis="cc-pvdz"):
     return gto.M(
         atom="O 0.0 0.0 0.117176; H 0.0 0.75695 -0.468706; H 0.0 -0.75695 -0.468706",
-        basis=basis, unit="Angstrom", verbose=0,
+        basis=basis,
+        unit="Angstrom",
+        verbose=0,
     )
 
 
@@ -46,8 +48,12 @@ def mp2_spin_components(mf, mol):
     eri_mo = ao2mo.restore(1, eri_mo, nmo)
     g = eri_mo[:nocc, nocc:, :nocc, nocc:]  # (ia|jb)
 
-    D = (eo[:, None, None, None] + eo[None, None, :, None]
-         - ev[None, :, None, None] - ev[None, None, None, :])
+    D = (
+        eo[:, None, None, None]
+        + eo[None, None, :, None]
+        - ev[None, :, None, None]
+        - ev[None, None, None, :]
+    )
 
     t2 = g / D
 
@@ -149,6 +155,6 @@ The double-hybrid pattern exists in ferric via wB97X-L-V
 3. No new integrals or operators needed — everything exists.
 
 Reference values (water/cc-pVDZ):
-  B2PLYP:     E_KS = {e_ks:.10f}  E_corr = {c_pt2*(e_os+e_ss):.10f}  E_total = {e_b2plyp:.10f}
+  B2PLYP:     E_KS = {e_ks:.10f}  E_corr = {c_pt2 * (e_os + e_ss):.10f}  E_total = {e_b2plyp:.10f}
   DSD-PBEP86: E_KS = {e_ks2:.10f}  E_corr = {e_corr_dsd:.10f}  E_total = {e_dsd:.10f}
 """)

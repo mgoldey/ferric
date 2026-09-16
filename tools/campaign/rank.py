@@ -46,6 +46,7 @@ here, and inventing one would silently encode the conclusion. So the output is
 the **non-dominated set**: candidates that no other candidate beats on every
 axis simultaneously. That is a claim the data can support.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -59,6 +60,7 @@ class Candidate:
     it is excluded from Pareto comparison on that axis and flagged, because a
     filled-in default would let an unmeasured candidate dominate a measured one.
     """
+
     label: str
     smiles: str = ""
     hypothesis: str = ""
@@ -155,7 +157,8 @@ def fit_discriminates_controls(
         return GateResult(
             False,
             f"cannot gate: controls {unmeasured} have no fit measurement",
-            parent.fit_kcal, measured,
+            parent.fit_kcal,
+            measured,
         )
 
     failures = []
@@ -167,7 +170,7 @@ def fit_discriminates_controls(
         # estimator can measure would fail every metric regardless of merit.
         bar = margin_kcal
         if c.fit_sem_kcal is not None and parent.fit_sem_kcal is not None:
-            se_diff = (c.fit_sem_kcal ** 2 + parent.fit_sem_kcal ** 2) ** 0.5
+            se_diff = (c.fit_sem_kcal**2 + parent.fit_sem_kcal**2) ** 0.5
             bar = max(margin_kcal, SIGNIFICANCE_SIGMA * se_diff)
         if c.fit_kcal < parent.fit_kcal + bar:
             failures.append(
@@ -204,14 +207,16 @@ def fit_discriminates_controls(
             + "; ".join(failures)
             + ". No candidate fit ranking derived from this metric should be "
             "reported. " + diagnosis,
-            parent.fit_kcal, measured,
+            parent.fit_kcal,
+            measured,
         )
 
     return GateResult(
         True,
         "fit metric penalizes every pharmacophore-breaking control by at least "
         f"{margin_kcal:.1f} kcal/mol relative to the parent",
-        parent.fit_kcal, measured,
+        parent.fit_kcal,
+        measured,
     )
 
 
@@ -240,8 +245,7 @@ def noise_exceeds_signal(candidates: list[Candidate]) -> GateResult:
     `passed=True` means the estimator can resolve the spread of candidates.
     """
     usable = [
-        c for c in candidates
-        if c.fit_kcal is not None and c.fit_sem_kcal is not None
+        c for c in candidates if c.fit_kcal is not None and c.fit_sem_kcal is not None
     ]
     if len(usable) < 2:
         return GateResult(
@@ -254,7 +258,7 @@ def noise_exceeds_signal(candidates: list[Candidate]) -> GateResult:
     signal = max(fits) - min(fits)
     sem = sum(c.fit_sem_kcal for c in usable) / len(usable)
     # Standard error of a DIFFERENCE of two independent means.
-    resolvable = SIGNIFICANCE_SIGMA * sem * (2 ** 0.5)
+    resolvable = SIGNIFICANCE_SIGMA * sem * (2**0.5)
 
     if signal < resolvable:
         return GateResult(
@@ -312,9 +316,11 @@ def charge_confound(candidates: list[Candidate]) -> GateResult:
 
     means = {q: sum(v) / len(v) for q, v in by_q.items()}
     between = max(means.values()) - min(means.values())
-    within = max(
-        (max(v) - min(v)) for v in by_q.values() if len(v) > 1
-    ) if any(len(v) > 1 for v in by_q.values()) else 0.0
+    within = (
+        max((max(v) - min(v)) for v in by_q.values() if len(v) > 1)
+        if any(len(v) > 1 for v in by_q.values())
+        else 0.0
+    )
 
     detail_groups = ", ".join(
         f"q={q:+d}: n={len(by_q[q])}, mean {means[q]:.1f}" for q in sorted(by_q)
@@ -346,10 +352,14 @@ def significant_difference(
     apart with 7 kcal/mol standard errors are not distinguishable even in a set
     whose overall range is comfortably resolvable.
     """
-    if (a.fit_kcal is None or b.fit_kcal is None
-            or a.fit_sem_kcal is None or b.fit_sem_kcal is None):
+    if (
+        a.fit_kcal is None
+        or b.fit_kcal is None
+        or a.fit_sem_kcal is None
+        or b.fit_sem_kcal is None
+    ):
         return None
-    se_diff = (a.fit_sem_kcal ** 2 + b.fit_sem_kcal ** 2) ** 0.5
+    se_diff = (a.fit_sem_kcal**2 + b.fit_sem_kcal**2) ** 0.5
     return abs(a.fit_kcal - b.fit_kcal) >= sigma * se_diff
 
 
@@ -391,9 +401,7 @@ def pareto_front(
     return front
 
 
-def format_table(
-    candidates: list[Candidate], parent_label: str = "parent"
-) -> str:
+def format_table(candidates: list[Candidate], parent_label: str = "parent") -> str:
     """Human-readable summary. Missing axes print as `--`, never as 0."""
     by_label = {c.label: c for c in candidates}
     parent = by_label.get(parent_label)
@@ -439,10 +447,13 @@ def tier_agreement(cheap: dict[str, float], expensive: dict[str, float]) -> dict
     """
     common = [k for k in cheap if k in expensive]
     if len(common) < 2:
-        return {"n_common": len(common), "reordered": None,
-                "kendall_tau": None,
-                "note": "fewer than 2 candidates scored by both tiers; "
-                        "agreement is untestable, not confirmed"}
+        return {
+            "n_common": len(common),
+            "reordered": None,
+            "kendall_tau": None,
+            "note": "fewer than 2 candidates scored by both tiers; "
+            "agreement is untestable, not confirmed",
+        }
 
     cheap_order = sorted(common, key=lambda k: cheap[k])
     exp_order = sorted(common, key=lambda k: expensive[k])
@@ -461,8 +472,15 @@ def tier_agreement(cheap: dict[str, float], expensive: dict[str, float]) -> dict
     total = concordant + discordant
     tau = (concordant - discordant) / total if total else None
 
-    return {"n_common": n, "reordered": cheap_order != exp_order,
-            "cheap_order": cheap_order, "expensive_order": exp_order,
-            "kendall_tau": tau,
-            "note": (f"{n} candidates scored by both tiers; "
-                     f"tau={tau:.3f}" if tau is not None else "")}
+    return {
+        "n_common": n,
+        "reordered": cheap_order != exp_order,
+        "cheap_order": cheap_order,
+        "expensive_order": exp_order,
+        "kendall_tau": tau,
+        "note": (
+            f"{n} candidates scored by both tiers; tau={tau:.3f}"
+            if tau is not None
+            else ""
+        ),
+    }

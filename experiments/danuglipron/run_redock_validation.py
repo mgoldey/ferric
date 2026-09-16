@@ -37,6 +37,7 @@ Run:
     OPENBLAS_NUM_THREADS=1 uv run --no-sync python \
       experiments/danuglipron/run_redock_validation.py
 """
+
 from __future__ import annotations
 
 import json
@@ -77,8 +78,8 @@ def main() -> int:
     # Box: ligand extent plus 8 A of headroom per axis, so the search has room
     # to place the ligand differently rather than being forced onto the answer.
     size = tuple(float(x) for x in (extent + 8.0))
-    print(f"bound-pose centroid : {np.round(center,2)}")
-    print(f"search box size     : {np.round(size,1)} A", flush=True)
+    print(f"bound-pose centroid : {np.round(center, 2)}")
+    print(f"search box size     : {np.round(size, 1)} A", flush=True)
 
     print(f"\npreparing receptor from {RECEPTOR_PDB.name} ...", flush=True)
     try:
@@ -99,8 +100,10 @@ def main() -> int:
         print("ABORT: could not embed the ligand")
         return 1
     AllChem.MMFFOptimizeMolecule(mol)
-    print(f"ligand: {mol.GetNumAtoms()} atoms, "
-          f"charge {Chem.GetFormalCharge(mol):+d}", flush=True)
+    print(
+        f"ligand: {mol.GetNumAtoms()} atoms, charge {Chem.GetFormalCharge(mol):+d}",
+        flush=True,
+    )
 
     print("\ndocking ...", flush=True)
     res = dock_ligand(mol, rec, center, size, exhaustiveness=32, n_poses=20)
@@ -112,17 +115,34 @@ def main() -> int:
     rows = []
     print(f"\n{'rank':>4s} {'vina':>7s} {'RMSD':>7s} {'centroid dev':>13s}")
     for p in res.poses:
-        al = align_to_reference(smi, p.symbols, p.coords_angstrom,
-                                DANUGLIPRON_SMILES, ref_symbols, ref_coords)
+        al = align_to_reference(
+            smi,
+            p.symbols,
+            p.coords_angstrom,
+            DANUGLIPRON_SMILES,
+            ref_symbols,
+            ref_coords,
+        )
         rmsd = al.rmsd_angstrom if al.ok else None
-        dev = float(np.linalg.norm(np.asarray(p.coords_angstrom).mean(axis=0)
-                                   - ref.mean(axis=0)))
-        rows.append({"rank": p.rank, "vina_score": p.vina_score,
-                     "rmsd_to_bound": rmsd, "centroid_dev": dev,
-                     "align_error": None if al.ok else al.error})
-        print(f"{p.rank:4d} {p.vina_score:7.2f} "
-              f"{(f'{rmsd:7.2f}' if rmsd is not None else '    n/a')} "
-              f"{dev:13.2f}")
+        dev = float(
+            np.linalg.norm(
+                np.asarray(p.coords_angstrom).mean(axis=0) - ref.mean(axis=0)
+            )
+        )
+        rows.append(
+            {
+                "rank": p.rank,
+                "vina_score": p.vina_score,
+                "rmsd_to_bound": rmsd,
+                "centroid_dev": dev,
+                "align_error": None if al.ok else al.error,
+            }
+        )
+        print(
+            f"{p.rank:4d} {p.vina_score:7.2f} "
+            f"{(f'{rmsd:7.2f}' if rmsd is not None else '    n/a')} "
+            f"{dev:13.2f}"
+        )
 
     good = [r for r in rows if r["rmsd_to_bound"] is not None]
     best = min((r["rmsd_to_bound"] for r in good), default=None)
@@ -137,24 +157,38 @@ def main() -> int:
         verdict = "MARGINAL"
     else:
         verdict = "FAIL"
-    print(f"best-of-{len(res.poses)} RMSD : {best if best is None else round(best,2)} A")
-    print(f"top-ranked pose RMSD: {top1 if top1 is None else round(top1,2)} A")
+    print(
+        f"best-of-{len(res.poses)} RMSD : {best if best is None else round(best, 2)} A"
+    )
+    print(f"top-ranked pose RMSD: {top1 if top1 is None else round(top1, 2)} A")
     print(f"VERDICT: {verdict}   (pass <{BAR_PASS}, marginal <{BAR_MARGINAL} A)")
     if good:
         near = sum(1 for r in good if r["centroid_dev"] < 5.0)
-        print(f"poses within 5 A of the known site: {near}/{len(good)}"
-              + ("" if near else "   <- SETUP ERROR: box or receptor is wrong"))
+        print(
+            f"poses within 5 A of the known site: {near}/{len(good)}"
+            + ("" if near else "   <- SETUP ERROR: box or receptor is wrong")
+        )
     print("=" * 66)
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps({
-        "receptor": str(RECEPTOR_PDB.relative_to(_root)),
-        "box_center": center, "box_size": size,
-        "exhaustiveness": 32, "n_poses": len(res.poses),
-        "best_rmsd": best, "top1_rmsd": top1, "verdict": verdict,
-        "bar_pass": BAR_PASS, "bar_marginal": BAR_MARGINAL,
-        "poses": rows,
-    }, indent=2))
+    OUT.write_text(
+        json.dumps(
+            {
+                "receptor": str(RECEPTOR_PDB.relative_to(_root)),
+                "box_center": center,
+                "box_size": size,
+                "exhaustiveness": 32,
+                "n_poses": len(res.poses),
+                "best_rmsd": best,
+                "top1_rmsd": top1,
+                "verdict": verdict,
+                "bar_pass": BAR_PASS,
+                "bar_marginal": BAR_MARGINAL,
+                "poses": rows,
+            },
+            indent=2,
+        )
+    )
     print(f"\nwrote {OUT}")
     return 0
 

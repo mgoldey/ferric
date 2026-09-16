@@ -20,22 +20,33 @@ ECPscalar to ~1e-17 (see commit message / report).
 Run:  python3 scripts/gw100/gen_ecp_ref.py
 Out:  testdata/reference/iodine_def2svp_ecpscalar.json
 """
+
 import json
 import os
 import numpy as np
 from pyscf import gto
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.normpath(os.path.join(HERE, "..", "..", "testdata", "reference",
-                                    "iodine_def2svp_ecpscalar.json"))
+OUT = os.path.normpath(
+    os.path.join(
+        HERE, "..", "..", "testdata", "reference", "iodine_def2svp_ecpscalar.json"
+    )
+)
 
 
 def main():
     # Spherical reference (production convention). The Gaussian shells we hand the
     # shim are Cartesian (libecpint emits Cartesian), and the per-shell c2s
     # transform maps them to this spherical reference.
-    mol = gto.M(atom="I 0.0 0.0 0.0", basis="def2-svp", ecp="def2-svp",
-                spin=1, charge=0, unit="Bohr", cart=False)
+    mol = gto.M(
+        atom="I 0.0 0.0 0.0",
+        basis="def2-svp",
+        ecp="def2-svp",
+        spin=1,
+        charge=0,
+        unit="Bohr",
+        cart=False,
+    )
 
     shells = []
     for ib in range(mol.nbas):
@@ -46,12 +57,14 @@ def main():
         # back in so libecpint (which does no internal normalization) produces the
         # same bare-Cartesian integrals libcint uses under cart=True.
         full = [float(c * gto.gto_norm(l, a)) for a, c in zip(es, cs)]
-        shells.append({
-            "l": l,
-            "center": [0.0, 0.0, 0.0],
-            "exps": [float(x) for x in es],
-            "coefs": full,
-        })
+        shells.append(
+            {
+                "l": l,
+                "center": [0.0, 0.0, 0.0],
+                "exps": [float(x) for x in es],
+                "coefs": full,
+            }
+        )
 
     # ECP semilocal expansion, flattened per primitive.
     # gto.basis.load_ecp returns [n_core, [ [l, [ [], [], terms_for_n=2, ... ]], ... ]].
@@ -59,9 +72,11 @@ def main():
     n_core = int(ecp_raw[0])
     ams, ns, exps, coefs = [], [], [], []
     for l_block in ecp_raw[1]:
-        l = int(l_block[0])  # -1 means local; libecpint wants the actual max-l, see below
+        l = int(
+            l_block[0]
+        )  # -1 means local; libecpint wants the actual max-l, see below
         for n_power, terms in enumerate(l_block[1]):
-            for (zeta, d) in terms:
+            for zeta, d in terms:
                 ams.append(l)
                 ns.append(int(n_power))
                 exps.append(float(zeta))
@@ -97,8 +112,12 @@ def main():
     with open(OUT, "w") as f:
         json.dump(ref, f)
     print(f"wrote {OUT}")
-    print(f"  nsph={nsph} ncart={ncart}  n_core={n_core}  necp_terms={len(ams)}  local_l={local_l}")
-    print(f"  trace(ECPscalar)={np.trace(vecp):.10f}  max|V|={np.max(np.abs(vecp)):.10f}")
+    print(
+        f"  nsph={nsph} ncart={ncart}  n_core={n_core}  necp_terms={len(ams)}  local_l={local_l}"
+    )
+    print(
+        f"  trace(ECPscalar)={np.trace(vecp):.10f}  max|V|={np.max(np.abs(vecp)):.10f}"
+    )
 
 
 if __name__ == "__main__":

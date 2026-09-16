@@ -114,12 +114,12 @@ def cosx_k(mol, D, coords, weights, S=None, fitted=False, chunk=2000):
     npts = len(weights)
 
     # X_{mu,g} = sqrt(w_g) chi_mu(r_g)
-    ao = dft.numint.eval_ao(mol, coords)          # (npts, nbf)
+    ao = dft.numint.eval_ao(mol, coords)  # (npts, nbf)
     sw = np.sqrt(np.abs(weights))
-    X = (ao * sw[:, None]).T                       # (nbf, npts)
+    X = (ao * sw[:, None]).T  # (nbf, npts)
 
     # F_{lam,g} = (D X)_{lam,g}
-    F = D @ X                                      # (nbf, npts)
+    F = D @ X  # (nbf, npts)
 
     # G_{nu,g} = sum_lam A^g_{nu,lam} F_{lam,g}, chunked over grid points.
     G = np.empty((nbf, npts))
@@ -128,11 +128,11 @@ def cosx_k(mol, D, coords, weights, S=None, fitted=False, chunk=2000):
         # int1e_grids -> (nchunk, nbf, nbf), already the POSITIVE +1/|r-r_g|
         # kernel COSX wants (verified against brute-force quadrature; see the
         # module docstring). No negation.
-        Achunk = mol.intor('int1e_grids', grids=coords[lo:hi])
+        Achunk = mol.intor("int1e_grids", grids=coords[lo:hi])
         # einsum over lam for each g in the chunk
-        G[:, lo:hi] = np.einsum('gnl,lg->ng', Achunk, F[:, lo:hi], optimize=True)
+        G[:, lo:hi] = np.einsum("gnl,lg->ng", Achunk, F[:, lo:hi], optimize=True)
 
-    Ktilde = X @ G.T                               # (nbf, nbf)
+    Ktilde = X @ G.T  # (nbf, nbf)
     asym = np.abs(Ktilde - Ktilde.T).max()
 
     if not fitted:
@@ -159,16 +159,19 @@ def main():
     np.set_printoptions(precision=6, suppress=True)
 
     mol = gto.M(
-        atom='''O  0.0000  0.0000  0.1173
+        atom="""O  0.0000  0.0000  0.1173
                 H  0.0000  0.7572 -0.4692
-                H  0.0000 -0.7572 -0.4692''',
-        basis='cc-pvdz', unit='Angstrom', verbose=0)
+                H  0.0000 -0.7572 -0.4692""",
+        basis="cc-pvdz",
+        unit="Angstrom",
+        verbose=0,
+    )
 
     mf = scf.RHF(mol)
     mf.kernel()
     D = mf.make_rdm1()
     K_ref = mf.get_k(mol, D)
-    S = mol.intor('int1e_ovlp')
+    S = mol.intor("int1e_ovlp")
 
     print(f"molecule: water/cc-pVDZ  nbf={mol.nao}  E(RHF)={mf.e_tot:.10f}")
     print(f"||K_analytic||_max = {np.abs(K_ref).max():.6e}")
@@ -178,20 +181,23 @@ def main():
     # the GO bar; we include one grid past it to show the trend continues.
     grids = [(25, 50), (35, 86), (50, 110), (75, 194), (99, 302)]
 
-    print(f"{'grid':>12} {'npts':>8} {'max|dK| plain':>15} {'max|dK| fit':>15} "
-          f"{'||Kt-Kt^T||':>14}")
+    print(
+        f"{'grid':>12} {'npts':>8} {'max|dK| plain':>15} {'max|dK| fit':>15} "
+        f"{'||Kt-Kt^T||':>14}"
+    )
     print("-" * 70)
 
     rows = []
-    for (nrad, nang) in grids:
+    for nrad, nang in grids:
         coords, weights = build_grid(mol, nrad, nang)
         Kp, asym = cosx_k(mol, D, coords, weights, S=S, fitted=False)
         Kf, _ = cosx_k(mol, D, coords, weights, S=S, fitted=True)
         dp = np.abs(Kp - K_ref).max()
-        df = np.abs(Kf - K_ref).max() if Kf is not None else float('nan')
+        df = np.abs(Kf - K_ref).max() if Kf is not None else float("nan")
         rows.append((nrad, nang, len(weights), dp, df, asym))
-        print(f"{nrad:5d}x{nang:<6d} {len(weights):8d} {dp:15.6e} {df:15.6e} "
-              f"{asym:14.6e}")
+        print(
+            f"{nrad:5d}x{nang:<6d} {len(weights):8d} {dp:15.6e} {df:15.6e} {asym:14.6e}"
+        )
 
     print()
     # ---- Evaluate the pre-registered bars ----
@@ -206,8 +212,10 @@ def main():
 
     # BAR 1
     bar1 = mono_p and dps[-1] < 1e-6
-    print(f"BAR 1 (plain < 1e-6 by 99x302, monotone): "
-          f"{'PASS' if bar1 else 'FAIL'}  (final {dps[-1]:.3e})")
+    print(
+        f"BAR 1 (plain < 1e-6 by 99x302, monotone): "
+        f"{'PASS' if bar1 else 'FAIL'}  (final {dps[-1]:.3e})"
+    )
 
     # BAR 2: coarsest grid where each variant crosses 1e-6
     def first_cross(vals):
@@ -227,19 +235,21 @@ def main():
         ang_p, ang_f = grids[ip][1], grids[ifit][1]
         ratio = ang_p / ang_f
         bar2 = ratio >= 2.0
-        print(f"BAR 2: plain crosses at {grids[ip]}, fitted at {grids[ifit]}; "
-              f"angular ratio {ratio:.2f}x -> {'PASS' if bar2 else 'FAIL'}")
+        print(
+            f"BAR 2: plain crosses at {grids[ip]}, fitted at {grids[ifit]}; "
+            f"angular ratio {ratio:.2f}x -> {'PASS' if bar2 else 'FAIL'}"
+        )
 
     # Artifact discriminator: lockstep vs decoupling (X vs Y1).
     print()
     print("artifact check (X: lockstep; Y1: decoupled):")
-    for (nr, na, np_, dp, df, asym) in rows:
-        ratio = dp / asym if asym > 0 else float('inf')
+    for nr, na, np_, dp, df, asym in rows:
+        ratio = dp / asym if asym > 0 else float("inf")
         print(f"  {nr:3d}x{na:<4d} max|dK|/||Kt-Kt^T|| = {ratio:9.3f}")
 
     print()
     print(f"STAGE 0 VERDICT: {'GO' if (bar1 and bar2) else 'NO-GO'}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

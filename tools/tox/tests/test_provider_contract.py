@@ -14,6 +14,7 @@ it, and both look reasonable in review.
 The second invariant: providers must not RAISE for a service failure. A batch
 over 20 analogues must not abort because one HTTP call timed out.
 """
+
 from __future__ import annotations
 
 import json
@@ -38,6 +39,7 @@ UNREACHABLE = "http://127.0.0.1:9"
 
 
 # ── the core invariant, per provider ──
+
 
 def test_offline_provider_never_returns_none_score_for_valid_input():
     """The baseline must always produce a usable score -- it is the reason the
@@ -65,7 +67,9 @@ def test_unreachable_admetlab_gives_none_score_not_zero():
     """THE fabrication test. With only a dead provider configured, the
     aggregate must be None -- NOT 0.0, which would mean 'maximally safe'.
     """
-    a = assess_smiles(ETHANOL, providers=[AdmetlabProvider(base_url=UNREACHABLE, timeout=2.0)])
+    a = assess_smiles(
+        ETHANOL, providers=[AdmetlabProvider(base_url=UNREACHABLE, timeout=2.0)]
+    )
     assert a.liability_score is None, (
         "a molecule no provider could score must be UNRANKED (None); a 0.0 here "
         "would rank it as the safest compound in the set"
@@ -90,8 +94,10 @@ def test_protox_reports_its_limitation_rather_than_scraping():
 
 # ── malformed-response handling, via a local mock server ──
 
+
 class _MockHandler(BaseHTTPRequestHandler):
     """Serves whatever `payload`/`status` the test class attribute holds."""
+
     payload: object = {}
     status: int = 200
 
@@ -101,7 +107,8 @@ class _MockHandler(BaseHTTPRequestHandler):
         self.send_response(self.status)
         self.send_header("Content-Type", "application/json")
         body = (
-            self.payload if isinstance(self.payload, (bytes, bytearray))
+            self.payload
+            if isinstance(self.payload, (bytes, bytearray))
             else json.dumps(self.payload).encode()
         )
         self.send_header("Content-Length", str(len(body)))
@@ -187,11 +194,12 @@ def test_admetlab_response_without_tox_columns_is_flagged():
 
 # ── aggregation semantics ──
 
+
 def test_liability_score_respects_polarity():
     """`higher_is_worse=False` endpoints must be inverted before averaging; a
     dropped inversion would rank high-bioavailability compounds as toxic."""
     good = ToxEndpoint("bioavailability_20pct", 0.9, False, "t")  # good -> 0.1
-    bad = ToxEndpoint("dili", 0.9, True, "t")                     # bad  -> 0.9
+    bad = ToxEndpoint("dili", 0.9, True, "t")  # bad  -> 0.9
     assert ToxAssessment("X", [good]).liability_score == pytest.approx(0.1)
     assert ToxAssessment("X", [bad]).liability_score == pytest.approx(0.9)
     assert ToxAssessment("X", [good, bad]).liability_score == pytest.approx(0.5)
@@ -215,6 +223,7 @@ def test_assessment_with_no_endpoints_at_all_is_none():
 
 def test_provider_that_raises_is_recorded_as_contract_violation():
     """The driver must survive a misbehaving provider and say what happened."""
+
     class Exploding:
         name = "exploding"
 

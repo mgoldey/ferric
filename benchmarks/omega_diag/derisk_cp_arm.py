@@ -11,39 +11,52 @@ CP binding  = E(dimer) - E(ghost-A) - E(ghost-B)   [BSSE-corrected]
 non-CP bind = E(dimer) - E(plain-A) - E(plain-B)    [already in the other sweep]
 Both reuse the identical dimer output key  {label}_{sid}_{btag}_w{omega}_{ftag}_dimer.
 """
+
 from pathlib import Path
 import os, subprocess
 
 ROOT = str(Path(__file__).resolve().parents[2])
 os.chdir(ROOT)
-OUT="benchmarks/omega_diag/derisk"; os.makedirs(OUT+"/toml",exist_ok=True); os.makedirs(OUT+"/out",exist_ok=True)
-GEO="benchmarks/grid/geoms"
-BIN="target/release/ferric-cli"
-env=dict(os.environ, OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS="1")
+OUT = "benchmarks/omega_diag/derisk"
+os.makedirs(OUT + "/toml", exist_ok=True)
+os.makedirs(OUT + "/out", exist_ok=True)
+GEO = "benchmarks/grid/geoms"
+BIN = "target/release/ferric-cli"
+env = dict(os.environ, OPENBLAS_NUM_THREADS="1", RAYON_NUM_THREADS="1")
 
-ANCHORS=[("01","ammonia_HB"),("02","water_HB"),("08","methane_D"),
-         ("09","ethene_D"),("11","benzene_PD")]
-BASES=[("aug-cc-pvdz","aug-cc-pvdz-rifit","adz")]  # aTZ gated separately
+ANCHORS = [
+    ("01", "ammonia_HB"),
+    ("02", "water_HB"),
+    ("08", "methane_D"),
+    ("09", "ethene_D"),
+    ("11", "benzene_PD"),
+]
+BASES = [("aug-cc-pvdz", "aug-cc-pvdz-rifit", "adz")]  # aTZ gated separately
 if os.environ.get("DERISK_ATZ"):
-    BASES.append(("aug-cc-pvtz","aug-cc-pvtz-rifit","atz"))
-OMEGAS=[0.30,0.42,0.55,0.673,0.80]
-FORMS=[("delta-lr","B"),("coupled-rings","T")]
+    BASES.append(("aug-cc-pvtz", "aug-cc-pvtz-rifit", "atz"))
+OMEGAS = [0.30, 0.42, 0.55, 0.673, 0.80]
+FORMS = [("delta-lr", "B"), ("coupled-rings", "T")]
+
 
 def fc_count(xyz):
     """Frozen core = # of REAL (non-ghost, non-H) atoms. Ghosts (@) have zero
     electrons → contribute zero frozen core."""
-    n=0
+    n = 0
     for ln in open(xyz).read().splitlines()[2:]:
-        if not ln.strip(): continue
-        sym=ln.split()[0]
-        if sym.startswith('@'): continue           # ghost: no electrons
-        if sym.upper().startswith('H'): continue    # H: no core
-        n+=1
+        if not ln.strip():
+            continue
+        sym = ln.split()[0]
+        if sym.startswith("@"):
+            continue  # ghost: no electrons
+        if sym.upper().startswith("H"):
+            continue  # H: no core
+        n += 1
     return n
+
 
 def run(xyz, basis, aux, omega, form, fc, key):
     xyzabs = xyz if xyz.startswith("/") else f"{ROOT}/{xyz}"
-    toml=f"""[molecule]
+    toml = f"""[molecule]
 xyz = "{xyzabs}"
 [basis]
 name = "{basis}"
@@ -63,24 +76,26 @@ trunc_thresh = 0.0
 [quadrature]
 n_points = 12
 """
-    tp=f"{OUT}/toml/{key}.toml"; op=f"{OUT}/out/{key}.out"
+    tp = f"{OUT}/toml/{key}.toml"
+    op = f"{OUT}/out/{key}.out"
     if os.path.exists(op) and "Total energy" in open(op).read():
         return  # idempotent: never clobber a completed run
-    open(tp,'w').write(toml)
-    with open(op,'w') as f, open(op+".err",'w') as e:
-        subprocess.run([BIN,tp],stdout=f,stderr=e,env=env,timeout=7200)
+    open(tp, "w").write(toml)
+    with open(op, "w") as f, open(op + ".err", "w") as e:
+        subprocess.run([BIN, tp], stdout=f, stderr=e, env=env, timeout=7200)
 
-for sid,label in ANCHORS:
+
+for sid, label in ANCHORS:
     # CP ghost monomers (real A + ghost B  /  ghost A + real B)
-    ghostA=f"{GEO}/s22-{sid}_mA_cp.xyz"
-    ghostB=f"{GEO}/s22-{sid}_mB_cp.xyz"
-    cp_frags={"cpA":ghostA,"cpB":ghostB}
-    fcs={k:fc_count(v) for k,v in cp_frags.items()}
-    for (basis,aux,btag) in BASES:
+    ghostA = f"{GEO}/s22-{sid}_mA_cp.xyz"
+    ghostB = f"{GEO}/s22-{sid}_mB_cp.xyz"
+    cp_frags = {"cpA": ghostA, "cpB": ghostB}
+    fcs = {k: fc_count(v) for k, v in cp_frags.items()}
+    for basis, aux, btag in BASES:
         for omega in OMEGAS:
-            for form,ftag in FORMS:
-                for fr,xyz in cp_frags.items():
-                    key=f"{label}_{sid}_{btag}_w{omega}_{ftag}_{fr}"
-                    print(f"[cp-run] {key} (fc={fcs[fr]})",flush=True)
-                    run(xyz,basis,aux,omega,form,fcs[fr],key)
-print("DERISK CP-ARM DONE",flush=True)
+            for form, ftag in FORMS:
+                for fr, xyz in cp_frags.items():
+                    key = f"{label}_{sid}_{btag}_w{omega}_{ftag}_{fr}"
+                    print(f"[cp-run] {key} (fc={fcs[fr]})", flush=True)
+                    run(xyz, basis, aux, omega, form, fcs[fr], key)
+print("DERISK CP-ARM DONE", flush=True)

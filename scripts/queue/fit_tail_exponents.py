@@ -8,6 +8,7 @@ and eri3 Mtriples vs N. Protocol: fit the TAIL, never the whole series.
 
 Usage: fit_tail_exponents.py <logfile> [minN]
 """
+
 import math
 import re
 import sys
@@ -40,6 +41,7 @@ for line in open(log):
         "t_ref": float(m.group(22)),
     }
 
+
 def exp_fit(ns, ys):
     """least-squares slope of log y vs log n"""
     pts = [(math.log(n), math.log(y)) for n, y in zip(ns, ys) if y > 0]
@@ -50,6 +52,7 @@ def exp_fit(ns, ys):
     num = sum((x - mx) * (y - my) for x, y in pts)
     den = sum((x - mx) ** 2 for x, y in pts)
     return num / den if den else float("nan")
+
 
 series = {}
 for (op, eps, n), d in rows.items():
@@ -70,11 +73,15 @@ for (op, eps), pts in sorted(series.items()):
             e_tot = exp_fit(ns[-3:], ys_tot[-3:])
             method_note = f"   [method=asm+solve tail-3 exp {e_tot:.2f}]"
         pair_exps = [
-            f"{ns[i]}->{ns[i+1]}:{exp_fit(ns[i:i+2], ys[i:i+2]):.2f}"
+            f"{ns[i]}->{ns[i + 1]}:{exp_fit(ns[i : i + 2], ys[i : i + 2]):.2f}"
             for i in range(len(ns) - 1)
         ]
         tail3 = exp_fit(ns[-3:], ys[-3:])
-        print(f"  {key:8} {['%.2f' % y for y in ys]}  pair[{' '.join(pair_exps)}] tail3={tail3:.2f}{method_note}")
+        print(
+            f"  {key:8} {['%.2f' % y for y in ys]}  pair[{' '.join(pair_exps)}] tail3={tail3:.2f}{method_note}"
+        )
     des = [d["dE"] for _, d in pts]
     per_c = [de / n for (n, _), de in zip(pts, des)]
-    print(f"  dE       {['%+.3e' % d for d in des]}  per-C {['%+.2e' % p for p in per_c]}")
+    print(
+        f"  dE       {['%+.3e' % d for d in des]}  per-C {['%+.2e' % p for p in per_c]}"
+    )

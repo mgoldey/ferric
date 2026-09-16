@@ -1,4 +1,5 @@
 """Structural isomers: scaffold changes, and their honest no-ops."""
+
 from __future__ import annotations
 
 import pytest
@@ -30,7 +31,7 @@ def test_molecule_with_no_unassigned_centres_gives_itself():
 
 
 def test_ring_contraction_shrinks_a_saturated_ring():
-    out = ring_contractions("C1CCNCC1")          # piperidine
+    out = ring_contractions("C1CCNCC1")  # piperidine
     assert out, "no contraction produced from piperidine"
     canon = {i.canonical for i in out}
     assert any(c in ("C1CNC1", "C1CCNC1") for c in canon), canon

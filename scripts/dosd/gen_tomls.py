@@ -2,6 +2,7 @@
 """Deterministically emit ferric-cli TOMLs for the DOSD C6 sweep.
 One TOML per (molecule, method, basis). TS is computed in the same run config
 family but with c6_source='ts' on the PBE reference (see run_sweep)."""
+
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -9,13 +10,21 @@ RUNS = Path(__file__).resolve().parent / "runs"
 
 # molecule key -> (xyz filename, charge, multiplicity)
 MOLS = {
-    "h2": ("h2.xyz", 0, 1), "n2": ("n2.xyz", 0, 1), "co": ("co.xyz", 0, 1),
-    "water": ("water.xyz", 0, 1), "nh3": ("nh3.xyz", 0, 1),
-    "ch4": ("methane.xyz", 0, 1), "co2": ("co2.xyz", 0, 1),
-    "c2h2": ("c2h2.xyz", 0, 1), "c2h4": ("c2h4.xyz", 0, 1),
-    "c2h6": ("c2h6.xyz", 0, 1), "hf": ("hf.xyz", 0, 1),
-    "hcl": ("hcl.xyz", 0, 1), "h2s": ("h2s.xyz", 0, 1),
-    "benzene": ("benzene.xyz", 0, 1), "o2": ("o2.xyz", 0, 3),
+    "h2": ("h2.xyz", 0, 1),
+    "n2": ("n2.xyz", 0, 1),
+    "co": ("co.xyz", 0, 1),
+    "water": ("water.xyz", 0, 1),
+    "nh3": ("nh3.xyz", 0, 1),
+    "ch4": ("methane.xyz", 0, 1),
+    "co2": ("co2.xyz", 0, 1),
+    "c2h2": ("c2h2.xyz", 0, 1),
+    "c2h4": ("c2h4.xyz", 0, 1),
+    "c2h6": ("c2h6.xyz", 0, 1),
+    "hf": ("hf.xyz", 0, 1),
+    "hcl": ("hcl.xyz", 0, 1),
+    "h2s": ("h2s.xyz", 0, 1),
+    "benzene": ("benzene.xyz", 0, 1),
+    "o2": ("o2.xyz", 0, 3),
 }
 BASES = {  # basis key -> (orbital basis, rifit aux)
     "augccpvdz": ("aug-cc-pvdz", "aug-cc-pvdz-rifit"),
@@ -24,8 +33,8 @@ BASES = {  # basis key -> (orbital basis, rifit aux)
 # method key -> (xc or None, c6_source)
 METHODS = {
     "rpa_pbe": ("PBE", "pdep"),
-    "rpa_hf":  (None,  "pdep"),
-    "ts":      ("PBE", "ts"),   # TS from the PBE reference
+    "rpa_hf": (None, "pdep"),
+    "ts": ("PBE", "ts"),  # TS from the PBE reference
 }
 
 
