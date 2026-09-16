@@ -333,10 +333,30 @@ pub fn run(args: Vec<String>) {
         std::process::exit(1);
     });
     let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
+    // Resolved ONCE, here, so the SAME kind governs BOTH mechanisms:
+    //   * this `bounds` value, whose `csb_m` table (attached by
+    //     `compute_for_screening`) is what carries CSB into the default
+    //     `DirectJ`/`DirectK`/`DirectJK`/`build_jk` path for RHF, UHF and
+    //     ROHF — none of whose signatures change;
+    //   * `RhfConfig::screening` below, which governs the separate LinK path.
+    // Parsing it twice would risk the two silently disagreeing after a future
+    // edit touched only one site.
+    let screening_kind = cfg
+        .scf
+        .screening
+        .as_deref()
+        .map_or(Ok(ferric_scf::screening::ScreeningKind::default()), |s| {
+            ferric_scf::screening::ScreeningKind::parse_config_str(s)
+        })
+        .unwrap_or_else(|e| {
+            eprintln!("error: [scf] screening: {e}");
+            std::process::exit(1);
+        });
+    let bounds =
+        SchwarzBounds::compute_for_screening(op, &prep, screening_kind).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
     // For ksdft, default RI-J/RI-K to def2-universal-jkfit (required for hybrids
     // and RSH; harmless for pure DFT). User can still override via [scf].
     let (xc, df_j_default, df_k_default) = if method == "ksdft" {
@@ -462,6 +482,9 @@ pub fn run(args: Vec<String>) {
         // (QmmmSystem(polarizabilities_angstrom3=) + run_qmmm) only.
         polarizable: None,
         verbose: cfg.scf.verbose,
+        // Same resolved kind that already selected `bounds`'s CSB table
+        // above; see the comment there for why it is parsed once.
+        screening: screening_kind,
     };
 
     // Resolve/validate [scf] df_guess_aux up front (config-honesty: a knob

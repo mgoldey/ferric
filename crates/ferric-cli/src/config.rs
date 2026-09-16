@@ -983,6 +983,66 @@ pub struct ScfCfg {
     /// when DF-J/DF-K is active, when the functional uses no exact exchange, or
     /// for a range-separated functional.
     pub k_builder: Option<String>,
+    /// Shell-quartet screening bound: `"schwarz"` (default), `"csb"`, or
+    /// `"csam"`. Unknown values are a hard error (strict parse, matching every
+    /// other string knob in this file — see CLAUDE.md's "config honesty"
+    /// section).
+    ///
+    /// ```text
+    ///   "schwarz"  RIGOROUS      Q_µν Q_λσ                                (default)
+    ///   "csb"      RIGOROUS      min{ Q_µν Q_λσ, M_µλ M_νσ, M_µσ M_νλ }    Eq. (8)
+    ///   "csam"     NON-RIGOROUS  Q_µν Q_λσ · sqrt(max(X_µλ X_νσ, X_µσ X_νλ))
+    ///                                                                 Eq. (9)/(11)/(12)
+    /// ```
+    ///
+    /// All three are from Thompson & Ochsenfeld, J. Chem. Phys. 147, 144101
+    /// (2017), with `M_µλ = sqrt(|(µµ|λλ)|)` and `X_µλ` the normalised ratio
+    /// `max|(µµ|λλ)| / sqrt(|(µµ|µµ)||(λλ|λλ)|)`.
+    ///
+    /// `"schwarz"` and `"csb"` ARE RIGOROUS UPPER BOUNDS, so choosing between
+    /// THEM is NOT an accuracy tradeoff — it is speed-vs-setup-cost. Because
+    /// CSB is a `min` that INCLUDES the plain Schwarz product, it can never be
+    /// looser than `"schwarz"`, so selecting it cannot discard a quartet that
+    /// `"schwarz"` would have kept above threshold. It costs one extra
+    /// `nshells²` table (one `(PP|QQ)` quartet per shell pair, geometry-only,
+    /// built once per bound construction — NOT per SCF iteration).
+    ///
+    /// `"csam"` IS NOT A BOUND. The authors explicitly call Eqs. (9)/(11)/(12)
+    /// "non-rigorous" in their own voice, and the estimate CAN fall below the
+    /// true integral magnitude — so it can discard a quartet carrying real
+    /// weight. That makes it an ACCURACY-VS-THRESHOLD TRADEOFF: its error is
+    /// controlled by `integral_thresh`, and it grows LINEARLY with system size
+    /// at fixed threshold (the paper's Fig. 2). Measured energy errors are
+    /// nonetheless small — −0.20 … +1.80 nanohartree at ϑ = 1e-12 (Table V),
+    /// 0.05–9.35 µH at ϑ = 1e-10 (Table III) — which is why Psi4 ships CSAM as
+    /// its own default (`SCREENING=CSAM`). ferric does NOT: `"schwarz"` remains
+    /// the default here, and `"csam"` must be asked for explicitly.
+    ///
+    /// `"csam"` is refused for SHORT-RANGE (`erfc`) operators with a typed
+    /// error naming `"csb"` — the paper's own recommendation for those kernels
+    /// (Conclusion, p. 144101-8/9), where the rigorous bound is both available
+    /// and excellent. A range-separated functional therefore fails loudly under
+    /// `screening = "csam"` rather than silently substituting a different
+    /// screen.
+    ///
+    /// WHERE IT PAYS: the paper states that for the long-range Coulomb
+    /// operator "the CSB estimate is no more useful than the QQ estimate for
+    /// currently tractable systems" (its Table I reports F_min = 1.000 for CSB
+    /// under `1/r12`), and that the win appears for strongly distance-decaying
+    /// kernels — `e^(-r12)`, `erfc(ω r12)/r12`. ferric's CLI runs Coulomb, so
+    /// expect a small or null win on ordinary HF/hybrid jobs. That is the
+    /// literature's own prediction, recorded here before any measurement;
+    /// nothing in this feature has been benchmarked.
+    ///
+    /// SCOPE: this CLI resolves `screening` ONCE and uses the SAME resolved
+    /// kind both to build its `SchwarzBounds` (via
+    /// `SchwarzBounds::compute_for_screening`, which attaches the CSB `M` or
+    /// CSAM `X` table to that value and thereby governs the default
+    /// `DirectJ`/`DirectK`/`DirectJK`/`build_jk` path for RHF, UHF and ROHF)
+    /// and to populate `RhfConfig::screening` (which governs the LinK path).
+    /// `k_builder = "cosx"` consumes no Schwarz table at all, so `screening`
+    /// has no effect there — a property of COSX, not a gap in this wiring.
+    pub screening: Option<String>,
     /// COSX exchange grid, `cosx_grid = { radial = 50, angular = 110 }`.
     /// Omitted = (50,110), the measured operating point (coarser grids fail the
     /// 0.1 kcal/mol isodesmic reaction-energy bar in the composed-budget audit).
@@ -1120,6 +1180,7 @@ impl Default for ScfCfg {
             soscf: false,
             integral_thresh: 1e-12,
             k_builder: None,
+            screening: None,
             cosx_grid: None,
             cosx_overlap_fit: None,
             cosx_backend: None,
@@ -1272,6 +1333,14 @@ impl ScfCfg {
         Ok(self.df_increments_aux.clone())
     }
 }
+
+// `default_df_guess()` lived here. Removed 2026-09-16: `df_guess` is now
+// `Option<bool>` with a plain `#[serde(default)]` (None = user said nothing),
+// and the ON default is carried by `ScfCfg::df_guess_enabled()` instead. That
+// is what lets `df_increments` take precedence over a DEFAULTED df_guess while
+// an EXPLICIT `df_guess = true` alongside it stays a hard error -- a
+// distinction a bare `bool` cannot express. A serde default that materialised
+// `true` would erase it.
 
 fn default_max_iter() -> usize {
     100
