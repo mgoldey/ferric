@@ -1031,10 +1031,25 @@ fn constraint_jacobian_does_not_collapse_at_the_integer_target() {
          ratio = {:.4}",
         jac_int / jac_nat
     );
+    // MEASURED ratio is 15.43 — dc/dλ GROWS toward the integer target, the
+    // OPPOSITE of saturation.
+    //
+    // The bar is `> 2.0`, not the original `> 0.1`, and that is a CORRECTION
+    // rather than a tightening-for-its-own-sake. Mutation 10 replaced
+    // `jacobians.last()` with `jacobians.first()` and the test STILL PASSED, at
+    // a ratio of exactly 1.0000 — because the FIRST outer step is always taken
+    // from λ = 0 and therefore measures the same quantity at every target,
+    // carrying no information about the target at all. A pass condition that a
+    // target-INDEPENDENT constant clears is not measuring the target. `> 2.0`
+    // rejects that constant (and any ratio consistent with saturation) while
+    // sitting 7.7x below the measured 15.43.
     assert!(
-        jac_int / jac_nat > 0.1,
-        "H-SATURATE would predict dc/dλ collapsing at the integer target; measured \
-         ratio {:.4e} (natural {jac_nat:.3e} → integer {jac_int:.3e})",
+        jac_int / jac_nat > 2.0,
+        "H-SATURATE predicts dc/dλ COLLAPSING at the integer target; it was measured \
+         GROWING 15.43x. A ratio of {:.4e} (natural {jac_nat:.3e} → integer \
+         {jac_int:.3e}) is neither — note that a ratio near 1.0 is the signature of \
+         reading a target-INDEPENDENT Jacobian (e.g. the first outer step, always \
+         taken from λ = 0) rather than the one nearest the solution.",
         jac_int / jac_nat
     );
 }
