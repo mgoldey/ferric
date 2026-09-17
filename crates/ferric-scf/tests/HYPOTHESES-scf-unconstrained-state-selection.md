@@ -214,3 +214,22 @@ stop condition. Audited rather than written up: it traced to OH/6-31G having
 been solved at a saddle 4.22 eV above the minimum, so the "improvement" is a
 finite-difference check finally being evaluated at a correct density. That audit
 is what found the fourth wrong system.
+
+## PROCESS FINDING: a truncated suite reports nothing, not "no failures"
+
+`cargo test -p ferric-scf --tests` builds 91 test binaries, several of the
+`cosx_*` ones taking 8–10 minutes each on a loaded box. Under a 7000 s timeout
+it completed **10 of 91** and printed `0 failed` for those ten — which reads
+exactly like a green suite.
+
+Five more premise-moved tests (3 in `scf_stability.rs`, 2 in
+`scf_stability_wiring.rs`, including
+`both_verdicts_are_reachable_through_the_config_flag`, whose entire purpose is
+that both verdicts BE reachable) were sitting in the unreached 81 and were found
+only by running the suites individually.
+
+**The rule this lane adds**: when a change touches a core path, sweep the test
+binaries ONE AT A TIME and count how many produced a result. A run that stops
+early is missing data, not passing. `grep -c "test result"` against the number
+of test files is the check; anything less than the file count means the sweep is
+incomplete and its silence is not evidence.
