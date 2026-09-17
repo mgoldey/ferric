@@ -307,13 +307,71 @@ pub fn solve_rohf_best_effort(
     }
     let s_inv_sqrt = u_scaled.dot(&s_evecs.t());
 
-    // hcore guess MOs
-    let _ = hcore_guess(&s, &h, nocc_a.max(1))?;
-    let h_prime = s_inv_sqrt.dot(&h).dot(&s_inv_sqrt);
-    let (_, c_prime) = h_prime
-        .eigh(ndarray_linalg::UPLO::Upper)
-        .map_err(|e| FerricError::Lapack(format!("H' diag: {e}")))?;
-    let mut c = s_inv_sqrt.dot(&c_prime);
+    // Initial guess MOs: the CONFIGURED density guess (MINAO by default), else
+    // hcore.
+    //
+    // # Why this is not just hcore any more
+    //
+    // Until 2026-09-17 this block ALWAYS used hcore: it called `hcore_guess`
+    // purely as a "sanity check it succeeds", threw the density away with
+    // `let _ =`, and diagonalized bare `h`. `RhfConfig::init_guess_density` and
+    // `use_sad_guess` — which `rhf.rs` honours, and which default to the MINAO
+    // projection — were referenced NOWHERE in this file, so a caller who
+    // explicitly asked for a better open-shell guess silently got hcore. This
+    // is the ROHF half of the defect fixed for UHF at `b687c394`; the two
+    // solvers carried the identical pattern.
+    //
+    // MEASURED, `tests/rohf_state_selection.rs`, against PySCF 2.13.0 ROHF at
+    // the same geometry and basis (each reference cross-checked across five
+    // PySCF `init_guess` settings, so a guess-dependent reference is not
+    // mistaken for a converged one). From hcore, ROHF landed ABOVE the
+    // reference on 2 of 15 rows —
+    //
+    //   OH/6-31G        +4.3027 eV      HeNe⁺/def2-SVP  +0.1303 eV
+    //
+    // and FAILED TO CONVERGE on a third (HeNe⁺/6-31G, 400 iterations). From
+    // the MINAO density all three are repaired. The remaining rows are
+    // unchanged, several of them BIT-identically, because those systems have
+    // one basin and the guess cannot matter.
+    //
+    // # No stability descent here, deliberately
+    //
+    // The UHF fix has a SECOND half: an opt-in `scf_stability_descent` that
+    // follows a downhill orbital-Hessian eigenvector when the guess is not
+    // enough. That is UNAVAILABLE to ROHF and this function does not fake it.
+    // `crate::stability` implements exactly two operators (UHF and RHF), and
+    // [`crate::stability::StabilitySkip::Rohf`] exists specifically to record
+    // that the Roothaan open-shell Hessian is a THIRD one — one MO set with
+    // closed/open/virtual blocks and Roothaan coupling, not a special case of
+    // either. Running a UHF descent on ROHF MOs would follow an eigenvector of
+    // an operator these orbitals are not a stationary point of. The convergence
+    // exit below prints that skip reason when `check_stability` is set, so a
+    // ROHF solution that this guess does not repair is DETECTABLE rather than
+    // silently reported as the ground state.
+    let mut c = match rohf_guess_mos(
+        ctx,
+        mol,
+        prep,
+        bounds,
+        config,
+        &h,
+        &s,
+        &s_inv_sqrt,
+        nocc_double,
+        nocc_open,
+    )? {
+        Some(c_guess) => c_guess,
+        None => {
+            // hcore guess: diagonalize bare h, exactly as this path did
+            // unconditionally before.
+            let _ = hcore_guess(&s, &h, nocc_a.max(1))?; // sanity check it succeeds
+            let h_prime = s_inv_sqrt.dot(&h).dot(&s_inv_sqrt);
+            let (_, c_prime) = h_prime
+                .eigh(ndarray_linalg::UPLO::Upper)
+                .map_err(|e| FerricError::Lapack(format!("H' diag: {e}")))?;
+            s_inv_sqrt.dot(&c_prime)
+        }
+    };
 
     // ROHF densities (AO):
     //   D_c (closed/doubly-occupied) = 2 Σ_i C_i C_i^T  (i = 0..nocc_double)
@@ -963,6 +1021,159 @@ fn build_rohf_densities(
 
 /// Roothaan effective Fock (Guest-Saunders coupling).
 /// Mirrors `pyscf.scf.rohf.get_roothaan_fock`.
+/// Build the ROHF initial MOs from the CONFIGURED density guess.
+///
+/// Returns `Ok(None)` — meaning "use hcore" — when the caller asked for the bare
+/// hcore guess (`use_sad_guess = false` with no explicit density), and also
+/// whenever the configured guess cannot be built. A guess that fails is never
+/// fatal: hcore is what this path did unconditionally until 2026-09-17, so
+/// falling back to it can only reproduce the old behavior, never break a system
+/// that used to work. Mirrors `uhf::uhf_guess_mos`.
+///
+/// # How a density becomes ROHF MOs
+///
+/// The SCF is MO-driven, so a guess DENSITY has to become occupied orbitals.
+/// That is done the only way it can be: build the Fock AT the guess density and
+/// diagonalize it. Two details are ROHF-specific and are the reason this is not
+/// simply a call to `uhf_guess_mos`:
+///
+/// 1. **The spin split is by OCCUPATION, not in half.** Both `sad_guess` and the
+///    MINAO projection return a spin-summed `D_total`. UHF splits it evenly
+///    (`D_α = D_β = D/2`), which is right for UHF because the α/β asymmetry is
+///    reintroduced by the occupation a few lines later. ROHF has `nocc_α ≠
+///    nocc_β` by construction, so an even split would hand the guess Fock a
+///    *closed-shell* density and the open-shell character of the guess would be
+///    thrown away before it was used. Here `D_σ = D_total · nocc_σ / nelec`,
+///    which preserves both `tr(D_α S) = nocc_α` and `tr(D_β S) = nocc_β` and
+///    reduces to the UHF even split exactly when `nocc_α == nocc_β`.
+/// 2. **The matrix diagonalized is the ROOTHAAN EFFECTIVE Fock**, not a spin
+///    Fock. ROHF has ONE MO set, obtained from `roothaan_fock(F_α, F_β, D_α,
+///    D_β, S)` — the same function the SCF loop uses. Diagonalizing `F_α` (or
+///    `F_β`) instead would produce orbitals from a different operator than the
+///    one the iteration goes on to use, which is the class of error this whole
+///    lane exists to remove.
+///
+/// # Why the guess Fock is built with plain Coulomb J/K even under RSH/DFT
+///
+/// This is a GUESS. `build_jk` uses `bounds.op`, the operator the whole SCF was
+/// set up with, and adds no XC. Under a range-separated or DFT reference the
+/// guess Fock is therefore not the converged Fock — which is fine and is what
+/// every SAD-style guess in every code does — but it means this function must
+/// never be mistaken for a converged-Fock builder.
+#[allow(clippy::too_many_arguments)]
+fn rohf_guess_mos(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &RohfConfig,
+    h: &Array2<f64>,
+    s: &Array2<f64>,
+    s_inv_sqrt: &Array2<f64>,
+    nocc_double: usize,
+    nocc_open: usize,
+) -> Result<Option<Array2<f64>>, FerricError> {
+    let n = prep.nbasis();
+
+    // Which density? An explicit one wins; otherwise the MINAO projection,
+    // which is exactly what `rhf.rs` and `uhf.rs` resolve for the same two
+    // config fields.
+    let d_total = if let Some(d0) = config.init_guess_density.as_ref() {
+        if d0.dim() != (n, n) {
+            return Err(FerricError::General(format!(
+                "ROHF: init_guess_density shape {:?} != ({n},{n})",
+                d0.dim()
+            )));
+        }
+        d0.clone()
+    } else if config.use_sad_guess {
+        match crate::guess::minao_projection_guess(mol, prep, prep.basis_set()) {
+            Ok(d) => d,
+            Err(e) => {
+                if crate::rhf::scf_trace() {
+                    eprintln!("ROHF guess: MINAO projection failed ({e:?}); falling back to hcore");
+                }
+                return Ok(None);
+            }
+        }
+    } else {
+        return Ok(None);
+    };
+
+    // Split the spin-summed guess density BY OCCUPATION (see the doc above).
+    let nocc_a = nocc_double + nocc_open;
+    let nocc_b = nocc_double;
+    let nelec = nocc_a + nocc_b;
+    if nelec == 0 {
+        return Ok(None);
+    }
+    let d_a = &d_total * (nocc_a as f64 / nelec as f64);
+    let d_b = &d_total * (nocc_b as f64 / nelec as f64);
+
+    // F_σ = h + J[D_α + D_β] − K[D_σ], matching this file's own assembly.
+    let mut j = Array2::<f64>::zeros((n, n));
+    let mut k_scratch = Array2::<f64>::zeros((n, n));
+    if let Err(e) = crate::rhf::build_jk(
+        ctx,
+        prep,
+        bounds,
+        config.integral_thresh,
+        &d_total,
+        &mut j,
+        &mut k_scratch,
+    ) {
+        if crate::rhf::scf_trace() {
+            eprintln!("ROHF guess: J build at the guess density failed ({e:?}); using hcore");
+        }
+        return Ok(None);
+    }
+    let mut k_a = Array2::<f64>::zeros((n, n));
+    if let Err(e) = crate::rhf::build_jk(
+        ctx,
+        prep,
+        bounds,
+        config.integral_thresh,
+        &d_a,
+        &mut j.clone(),
+        &mut k_a,
+    ) {
+        if crate::rhf::scf_trace() {
+            eprintln!("ROHF guess: K_alpha build failed ({e:?}); using hcore");
+        }
+        return Ok(None);
+    }
+    let mut k_b = Array2::<f64>::zeros((n, n));
+    if let Err(e) = crate::rhf::build_jk(
+        ctx,
+        prep,
+        bounds,
+        config.integral_thresh,
+        &d_b,
+        &mut j.clone(),
+        &mut k_b,
+    ) {
+        if crate::rhf::scf_trace() {
+            eprintln!("ROHF guess: K_beta build failed ({e:?}); using hcore");
+        }
+        return Ok(None);
+    }
+    let f_a = h + &j - &k_a;
+    let f_b = h + &j - &k_b;
+
+    // ONE MO set, from the Roothaan effective Fock — the same combination the
+    // SCF loop below uses.
+    let f_eff = roothaan_fock(&f_a, &f_b, &d_a, &d_b, s);
+    match diagonalize(&f_eff, s_inv_sqrt) {
+        Ok((_, c)) => Ok(Some(c)),
+        Err(e) => {
+            if crate::rhf::scf_trace() {
+                eprintln!("ROHF guess: diagonalizing the guess Fock failed ({e:?}); using hcore");
+            }
+            Ok(None)
+        }
+    }
+}
+
 fn roothaan_fock(
     f_a: &Array2<f64>,
     f_b: &Array2<f64>,
