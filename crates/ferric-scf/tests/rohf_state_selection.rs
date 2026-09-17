@@ -861,3 +861,69 @@ fn the_df_path_reaches_one_state_from_both_guesses() {
         }
     }
 }
+
+/// **How far the "hcore is the culprit" explanation actually reaches — PARTIAL,
+/// and the limit is pinned here rather than left implied.**
+///
+/// The natural story for this lane is "the hcore guess selects a higher basin,
+/// in ferric and in PySCF alike". Checked against PySCF 2.13.0 ROHF run with
+/// `init_guess="hcore"`, it holds on HALF the repaired set:
+///
+/// | system | PySCF hcore | ferric hcore (pre-fix) | same state? |
+/// |---|---|---|---|
+/// | F₂⁺/6-31G | −197.9252084757 | −197.9252084757 | **yes, 7.3e-12** |
+/// | HeNe⁺/def2-SVP | −130.4965141207 | −130.4965141210 | **yes, 3.1e-10** |
+/// | OH/6-31G | −75.3618462925 | −75.2037249529 | **no, 1.6e-1** |
+/// | NH₂/6-31G | −55.5304322187 | −55.4649516177 | **no, 6.6e-2** |
+///
+/// On F₂⁺ and HeNe⁺ the two codes' hcore runs land on the SAME higher
+/// stationary point, which is strong evidence the GUESS selects it independent
+/// of ferric's solver. On OH and NH₂, **PySCF's hcore run reaches the correct
+/// state and ferric's did not** — so those repairs are empirical: the MINAO
+/// guess fixes them, but "hcore is a bad guess" does not by itself explain why
+/// ferric diverged from PySCF there. The difference must live in the SCF path
+/// (DIIS history, level shifting, Roothaan-combination convergence), which this
+/// lane did NOT investigate.
+///
+/// This test pins the two rows that DO agree, because those are the load-bearing
+/// evidence, and its doc records the two that do not, because a first draft of
+/// the write-up claimed all four were bit-equal and that was false.
+#[test]
+fn ferrics_pre_fix_state_matches_pyscfs_hcore_state_on_two_of_four_systems() {
+    /// PySCF 2.13.0 ROHF, `init_guess="hcore"`, conv_tol 1e-12.
+    const F2P_PYSCF_HCORE: f64 = -197.925_208_475_7;
+    const HENE_SVP_PYSCF_HCORE: f64 = -130.496_514_120_7;
+
+    for (name, sys, pyscf_hcore) in [
+        (
+            "F2+/6-31G",
+            diatomic("F", "F", 1.3220, 1, 2, "6-31g"),
+            F2P_PYSCF_HCORE,
+        ),
+        (
+            "HeNe+/def2-SVP",
+            diatomic("He", "Ne", 2.0, 1, 2, "def2-svp"),
+            HENE_SVP_PYSCF_HCORE,
+        ),
+    ] {
+        let e = run(&sys, &hcore_cfg()).unwrap_or_else(|m| panic!("{name} hcore: {m}"));
+        println!(
+            "{name:16} ferric-hcore {e:.10}  pyscf-hcore {pyscf_hcore:.10}  diff {:.2e}",
+            (e - pyscf_hcore).abs()
+        );
+        assert!(
+            (e - pyscf_hcore).abs() < 1e-8,
+            "{name}: ferric's pre-fix hcore answer should match PySCF's hcore \
+             answer (SAME wrong state, which is what makes this the guess's \
+             doing and not ferric's solver's); got {e:.10} vs {pyscf_hcore:.10}"
+        );
+        // And it must still be the WRONG state, or the row proves nothing.
+        // Mutation-verified reachable: substituting the hcore run here fails
+        // with "nothing to corroborate", so this is not a tautology.
+        assert!(
+            run(&sys, &minao_cfg()).expect("minao") < e - 1e-4,
+            "{name}: the MINAO run must be LOWER than this shared hcore state, \
+             otherwise there was nothing to corroborate"
+        );
+    }
+}
