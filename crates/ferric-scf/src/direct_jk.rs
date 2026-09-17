@@ -321,23 +321,19 @@ impl<'a> DirectJK<'a> {
             },
         )?;
 
+        // MPI: reduce the rank-LOCAL partials, THEN accumulate. Reducing `j`/`k_a`/
+        // `k_b` instead would also sum the caller's pre-existing contents, which on
+        // the incremental path (`build_uhf_incremental`) hold the previous
+        // iteration's already-global J/K — identical on every rank, so an output-
+        // buffer Allreduce would multiply them by the world size every iteration.
+        // See `reduce::reduce_partial_across_ranks` for the measured failure.
+        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_j);
+        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_k_a);
+        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_k_b);
+
         *j += &total_j;
         *k_a += &total_k_a;
         *k_b += &total_k_b;
-
-        #[cfg(feature = "mpi")]
-        if let Some(world) = self.ctx.world() {
-            use mpi::traits::CommunicatorCollectives;
-            for m in [&mut *j, &mut *k_a, &mut *k_b] {
-                let mut global = Array2::zeros(m.dim());
-                world.all_reduce_into(
-                    m.as_slice().unwrap(),
-                    global.as_slice_mut().unwrap(),
-                    mpi::collective::SystemOperation::sum(),
-                );
-                *m = global;
-            }
-        }
 
         Ok(computed_quartets.load(Ordering::SeqCst))
     }
@@ -501,27 +497,16 @@ impl<'a> DirectJK<'a> {
             },
         )?;
 
+        // MPI: reduce the rank-LOCAL partials, THEN accumulate — NOT the other way
+        // round. `build_incremental` delegates here with `j`/`k` already holding
+        // the previous iteration's global `J(D_last)`/`K(D_last)`, so Allreducing
+        // the output buffers would return `N·J(D_last) + Σ_r ΔJ_r`. See
+        // `reduce::reduce_partial_across_ranks`.
+        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_j);
+        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_k);
+
         *j += &total_j;
         *k += &total_k;
-
-        #[cfg(feature = "mpi")]
-        if let Some(world) = self.ctx.world() {
-            use mpi::traits::CommunicatorCollectives;
-            let mut j_global = Array2::zeros(j.dim());
-            let mut k_global = Array2::zeros(k.dim());
-            world.all_reduce_into(
-                j.as_slice().unwrap(),
-                j_global.as_slice_mut().unwrap(),
-                mpi::collective::SystemOperation::sum(),
-            );
-            world.all_reduce_into(
-                k.as_slice().unwrap(),
-                k_global.as_slice_mut().unwrap(),
-                mpi::collective::SystemOperation::sum(),
-            );
-            *j = j_global;
-            *k = k_global;
-        }
 
         Ok(computed_quartets.load(Ordering::SeqCst))
     }
