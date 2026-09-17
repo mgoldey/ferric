@@ -1,3 +1,4 @@
+#include <chrono>
 // Implementation of the scf libint2 shim. See shim.h for the contract.
 #include "shim.h"
 
@@ -1053,6 +1054,20 @@ bool load_terfc_table(const std::string &path, int pts, double S_max, double s_m
     out.data.resize(count);
     f.read(reinterpret_cast<char *>(out.data.data()), count * sizeof(double));
     if (!f) return false;
+    // EXPERIMENT (2026-09-15): only n=0 is ever read by the live kernel, so
+    // drop the n axis here. Footprint falls 12x and consecutive m become
+    // contiguous (m-stride 12 doubles -> 1). Values are bit-identical: this
+    // is a gather of the same entries, no arithmetic.
+    {
+        std::vector<double> packed((size_t)out.nS * out.ns * out.dimm);
+        for (size_t iS = 0; iS < (size_t)out.nS; ++iS)
+            for (size_t is = 0; is < (size_t)out.ns; ++is)
+                for (size_t m = 0; m < (size_t)out.dimm; ++m)
+                    packed[(iS * out.ns + is) * out.dimm + m] =
+                        out.data[((iS * out.ns + is) * out.dimm + m) * out.dimn];
+        out.data.swap(packed);
+        out.dimn = 1;
+    }
     out.delta_S = 1.0 / pts;
     out.delta_s = 1.0 / pts;
     out.S_max = S_max;
@@ -1079,11 +1094,23 @@ std::shared_ptr<TerfcTableSet> get_terfc_tables(const std::string &dir) {
     auto set = std::make_shared<TerfcTableSet>();
     // (pts, S_max, s_max, filename) finest-first.
     struct Spec { int pts; double S_max; double s_max; const char *name; };
+    // pts/unit is normally the shipped 16/8/4/2. FERRIC_TERF_PTS_DIV=N divides
+    // every pts by N so a COARSER regenerated table set (same S/s coverage,
+    // fewer points per unit) can be loaded with the correct delta_S/delta_s.
+    // Experiment knob only -- the default path is unchanged.
+    int ptsdiv = 1;
+    if (const char *e = std::getenv("FERRIC_TERF_PTS_DIV")) {
+        // Only 1 and 2 are valid: the shipped pts are 16/8/4/2, so any larger
+        // divisor drives the last table's pts to 0 and delta = 1.0/0 = inf,
+        // silently corrupting every lookup rather than failing.
+        int v = atoi(e);
+        if (v == 1 || v == 2) ptsdiv = v;
+    }
     const Spec specs[] = {
-        {16, 4.0,  2.0,  "16_4_2.bin"},
-        {8,  10.0, 5.0,  "8_10_5.bin"},
-        {4,  20.0, 20.0, "4_20_20.bin"},
-        {2,  20.0, 80.0, "2_20_80.bin"},
+        {16 / ptsdiv, 4.0,  2.0,  "16_4_2.bin"},
+        {8  / ptsdiv, 10.0, 5.0,  "8_10_5.bin"},
+        {4  / ptsdiv, 20.0, 20.0, "4_20_20.bin"},
+        {2  / ptsdiv, 20.0, 80.0, "2_20_80.bin"},
     };
     for (const auto &sp : specs) {
         TerfcTable t;
@@ -1219,8 +1246,49 @@ void boys_upto(int mmax, double T, double *F) {
 // function, G_m(S,0) = F_m(S) (verified to 1e-77). For S > 600 the
 // s-dependence is < e^{-580} relative, so Boys is used directly (also avoids
 // e^{-S} underflow in the PMF recurrence).
+// Crossover to the large-S asymptotic G_m -> F_m(S).
+//
+// terf = 1/2[erf(w(r+r0)) + erf(w(r-r0))], so at large separation the r0 shift
+// washes out and the reduced auxiliary collapses onto the plain Boys function.
+// (Oracle check, mpmath: the ratio Phi_terf/Phi_erf converges to exactly
+// 2.000000, and in the reduced variables the erf anchor identity
+// Phi[erf(w r)/r] = sqrt(scr) F_0(scr S) leaves F_m(S) itself.)
+//
+// MEASURED asymptotic-vs-series relative error (m=0..4), 2026-09-15:
+//    S=20  1.6e-5 .. 5.2e-3   (s=0.05..1.0)  -- NOT converged, keep the series
+//    S=30  5.3e-9 .. 7.8e-6                  -- still short
+//    S=50  1.3e-13                           -- converged
+//    S=75  1.1e-13, and s-INDEPENDENT from here on
+//    S=300 1.9e-12   S=600 1.1e-11           -- error GROWS
+//
+// That growth is the SERIES degrading, not the asymptotic: the series sums
+// N = S + 12*sqrt(S) + 60 terms with cancellation, so the old 600.0 cutoff sat
+// exactly where the series is WEAKEST. 75.0 is chosen conservatively: 1.1e-13
+// is four orders below the 1.7e-9 the K=10 interpolation itself delivers, so
+// this never becomes the accuracy-limiting step.
+//
+// Cost: the series is 6563 ns/call (five heap allocations plus ~five loops of
+// length N); the asymptotic is one Boys call at 29.6 ns/call -- 222x.
+//
+// WHERE the series traffic actually sits (measured; this is what sets 50 rather
+// than 75). Series calls by S bucket:
+//            (20,30]  (30,50]  (50,75]  (75,150]  (150,400]
+//   decane     50.6%    43.2%     6.3%      0.0%       0.0%
+//   alkane_20  17.9%    26.2%    20.5%     27.9%       7.4%
+//
+// A 75 cutoff reaches 0.0% of decane's series traffic and 35.3% of
+// alkane_20's -- and the end-to-end benchmark tracked that exposure exactly
+// (decane 8.79x -> 8.72x i.e. unchanged; alkane_20 19.65x -> 12.91x, +34%).
+// Dropping to 50 keeps 1.3e-13 accuracy -- still four orders below the 1.7e-9
+// the K=10 table itself delivers -- while lifting alkane_20 coverage to 55.8%.
+//
+// Going below 50 is NOT free: at S=30 the asymptotic is only 5.3e-9..7.8e-6,
+// i.e. no better than the table. The (20,50] window needs the B1/B2 tau
+// quadrature instead. See wiki/perf-tasks/terf-closed-form-asymptotic.md.
+constexpr double TERF_ASYMPTOTIC_S = 50.0;
+
 void terf_G_series(double S, double s, int mmax, double *G) {
-    if (S > 600.0) {
+    if (S > TERF_ASYMPTOTIC_S) {
         boys_upto(mmax, S, G);
         return;
     }
@@ -1250,6 +1318,336 @@ void terf_G_series(double S, double s, int mmax, double *G) {
     }
 }
 
+// --------------------------------------------------------------------------
+//  TAIL FORM of the same auxiliary: G_m(S,s) = F_m(S) - Delta_m(S,s).
+//
+//  Write cdf_s(i) = 1 - tail_s(i), tail_s(i) = e^{-s} sum_{j>i} s^j/j!. Then
+//  splitting the defining sum of terf_G_series gives, EXACTLY (no truncation
+//  of the identity itself, only of a super-exponentially decaying series):
+//
+//    G_m(S,s) = sum_i df(2i) Delta^m pmf_S(i) * 1        <- this IS F_m(S)
+//             - sum_i df(2i) Delta^m pmf_S(i) * tail_s(i)
+//             = F_m(S) - Delta_m(S,s).
+//
+//  (The first sum is the s=0 case of the same series, and G_m(S,0) == F_m(S)
+//  is the anchor identity already verified to 1e-77 in the comment above.)
+//
+//  WHY THIS IS FAST: the sum length of Delta is set by *s*, not by S. The
+//  series form must carry S's Poisson support, N = S + 12 sqrt(S) + 60 terms;
+//  the tail form only needs i far enough out that tail_s(i) is below double
+//  rounding, and tail_s(i) decays super-exponentially once i > s (the ratio of
+//  consecutive terms is s/(j+1) < 1 there, and keeps shrinking). Under the
+//  curvature constraint omega = 1/(r0 sqrt2) we have s = phi^2 r0^2 <=
+//  omega^2 r0^2 = 1/2, and ~40 terms then hold the truncation error below
+//  1e-14 for every S and every m <= 12. NOTE that ~40 is a MEASURED
+//  requirement and is much larger than the tail's raw magnitude suggests --
+//  see terf_tail_index. Either way the length is O(tens) and set by s, not S.
+//
+//  WHY IT IS ALSO MORE ACCURATE WHERE IT MATTERS: production consumes the
+//  TERFC auxiliary, F - G, which IS Delta. Computing Delta directly returns
+//  that quantity without ever forming the difference of two nearly-equal
+//  O(1) numbers, so the ~4 digits of cancellation in F - G disappear.
+//
+//  MEASURED, and note WHICH quantity the bar is set on -- this distinction
+//  changes the required I by ~6 and is easy to get wrong:
+//
+//  (a) on G, against a 200-bit mpmath reference (float64 tail form,
+//      S in [0.01,100], s <= 0.5): I=10 -> 6.3e-11 (mmax=8); I=12 -> 1.07e-13
+//      (mmax=8) and 1.9e-12 (mmax=12); I=14 -> 1.07e-13 at both.
+//
+//  (b) on DELTA, against an independent long-double evaluation (S in
+//      [0.01,49], s in [0.01,0.5], mmax <= 12), which is the bar that actually
+//      governs production because Delta IS the terfc auxiliary:
+//        I=10 -> 1.4e-04   I=14 -> 2.8e-08   I=18 -> 8.1e-13
+//        I=12 -> 2.6e-06   I=16 -> 1.9e-10   I=20 -> 1.4e-14  (saturated)
+//
+//  G's bar is ~5 orders looser than Delta's for the SAME I, because the error
+//  is divided by F_m(S) ~ O(1) instead of by the much smaller Delta. So the
+//  familiar "I = 14 is enough" reading of (a) would silently cost five digits
+//  on the quantity that is consumed. The +16 additive constant below exists to
+//  clear (b), not (a), and is load-bearing: do not trim it on the strength of
+//  a G-based measurement.
+
+// Upper bound on the adaptive truncation index I (sizes the stack buffers).
+// Set from the 1.80*s + 40 rule below at the largest shipped s (80): the rule
+// gives 184, and 260 leaves headroom without making the stack frame awkward
+// (five double[262] buffers = ~10.5 KB, see terf_delta).
+constexpr int TERF_TAIL_IMAX = 260;
+
+// Pick the truncation index I for the tail sum from s alone.
+//
+//  The naive Poisson-tail estimate (I ~ s + 8 sqrt(s) + 16, from a Chernoff
+//  bound on the upper tail of a Poisson(s) variate) is TOO SMALL and was
+//  rejected on measurement. An independent 200-bit mpmath reference, sweeping
+//  S in {0.01..100} and m in 0..12, gives the truncation length actually
+//  needed to reach 1e-14:
+//        s=0.5 -> I >= 32     s=2  -> I >= 35     s=10 -> I >= 49
+//        s=20  -> I >= 66     s=80 -> I >= 172
+//  i.e. an empirical fit I(1e-14) ~= 1.761*s + 30.688. The Chernoff estimate
+//  returns 23/30/52/72/168 and is short at s=0.5, s=2 AND s=80.
+//
+//  So the rule below is the fit plus margin: 1.80*s + 40 sits above the
+//  reference across the whole measured range (s in [0.01,80]), with ~9 terms
+//  of headroom at small s and ~7 at s=80.
+//
+//  THE INTERCEPT IS THE LOAD-BEARING PART, and it is the opposite of the
+//  intuition: the curvature-constrained case s <= 1/2 still needs ~32 terms,
+//  NOT ~14. The familiar "I = 14 suffices" reading holds only against a
+//  coarser target -- at 1e-14 it is adequate for SOME (S,m) pairs, not all --
+//  and only when the bar is set on G, whose error is divided by F_m(S) ~ O(1).
+//  On DELTA, which is what production consumes, the same I is ~5 orders
+//  worse. Hence the lower clamp of 40 rather than anything near 14.
+//
+//  Adaptivity is still required at the top end: Operator::terfc_with_omega
+//  decouples omega from r0, so s = phi^2 r0^2 is no longer bounded by 1/2 and
+//  can reach ~80 (the shipped 2_20_80 table covers s <= 80), where a
+//  small fixed I would be badly wrong.
+inline int terf_tail_index(double s) {
+    const int I = (int)std::ceil(1.80 * s + 40.0);
+    if (I < 40) return 40;
+    if (I > TERF_TAIL_IMAX) return TERF_TAIL_IMAX;
+    return I;
+}
+
+// One Poisson term u_j = s^j/j!, via logs so neither factor over/underflows on
+// its own. `lns` is log(s), passed in because the caller needs it repeatedly.
+// Returns exactly 0.0 when the term is below the double underflow threshold,
+// which is its correct double-precision value.
+inline double terf_tail_term(double lns, int j) {
+    const double lg = (double)j * lns - std::lgamma((double)j + 1.0);
+    return (lg < -745.0) ? 0.0 : std::exp(lg);
+}
+
+// Delta_m(S,s) = sum_{i<=I} df(2i) * Delta^m pmf_S(i) * tail_s(i), m = 0..mmax.
+//
+// Fixed-size stack buffers throughout: terf_G_series' five heap allocations per
+// call are a large part of its 6563 ns, and there is nothing to allocate here
+// once I is bounded by TERF_TAIL_IMAX.
+// Reciprocals 1/i for i = 1..TERF_TAIL_IMAX+1, built once.
+// MEASURED (perf annotate, after the accumulator fix): the two remaining
+// `divsd` -- one in the pmf build (row[i-1]*S/i) and one in the seed loop
+// (v *= s/j) -- were 17.8% of terf_delta. They divide by the LOOP COUNTER, so
+// the divisors are the same on every call and a lookup replaces a ~14-cycle
+// serialized divide with a ~4-cycle pipelined multiply.
+struct TerfRecip {
+    double v[TERF_TAIL_IMAX + 3];
+    TerfRecip() { v[0] = 0.0; for (int i = 1; i <= TERF_TAIL_IMAX + 2; ++i) v[i] = 1.0 / (double)i; }
+};
+static const TerfRecip kTerfRecip;
+
+void terf_delta(double S, double s, int mmax, double *D) {
+
+    const int I = terf_tail_index(s);
+    const size_t N = (size_t)I + 1;                 // indices i = 0..I
+
+    // --- tail_s(i), built DOWNWARD from the top. -------------------------
+    // tail_s(i) = e^{-s} sum_{j>i} s^j/j! is a sum of the SMALL far terms, so
+    // accumulating from the top (smallest first) keeps them all resolvable.
+    // Building it as 1 - cdf_s(i) is NOT acceptable: for s <= 1/2 the cdf is
+    // within ~1e-17 of 1 by i ~ 14, so the subtraction is catastrophic
+    // cancellation precisely in the regime production runs in.
+    //
+    // Recurrence, top down: let u_j = s^j/j!. Then u_{j-1} = u_j * j / s, and
+    // tail(i-1) = tail(i) + u_i. We seed u at j = I+1 by the log form to avoid
+    // over/underflow in the factorial for large I, then walk down.
+    double tail[TERF_TAIL_IMAX + 2];
+
+    const double expms = std::exp(-s);
+    if (!(s > 0.0)) {
+        // EXACTNESS ANCHOR, taken before any arithmetic: s = 0 (or a negative
+        // argument, which is not physical) means cdf_s == 1, tail == 0, and
+        // therefore Delta == 0 and G == F EXACTLY. Returning zeros here is the
+        // exact limit, not an approximation of it -- and it keeps the s in the
+        // denominator of the downward tail recurrence strictly positive below.
+        for (int m = 0; m <= mmax; ++m) D[m] = 0.0;
+        return;
+    }
+    if (expms == 0.0) {
+        // s so large that e^{-s} underflows: cdf_s(i) is 0 to double precision
+        // for every i <= I, so tail == 1 there. Not reachable under the
+        // curvature constraint (s <= 1/2) but cheap to be exact about.
+        for (size_t i = 0; i < N; ++i) tail[i] = 1.0;
+    } else {
+        // u_j = s^j/j!, evaluated through logs so neither s^j nor j! can
+        // over/underflow on its own: u_j = exp(j ln s - lgamma(j+1)).
+        // (s > 0 is guaranteed by the anchor branch above, so log(s) is finite.)
+        //
+        // The downward walk u_{j-1} = u_j * j/s is the cheap way to get every
+        // term, but it CANNOT be seeded from a u that underflowed to exactly
+        // zero -- 0 * j/s stays 0 for the rest of the walk, which would report
+        // a zero tail at every i even though tail_s(0) = 1 - e^{-s} ~ s is
+        // perfectly representable. That is reachable for very small s (e.g.
+        // s = 1e-30 with I = 14 puts u_15 near e^{-1065}). So: seed from the
+        // log form, and whenever the running u is still zero, re-evaluate that
+        // term from the log form instead of propagating the zero.
+        const double lns = std::log(s);
+        double u = terf_tail_term(lns, I + 1);        // u_{I+1}
+        double acc = u;                                  // sum_{j>I}, from the top
+        // Extend a little past I+1 so the seeded tail itself is converged:
+        // terms beyond j = I+1 shrink by s/j each step, and 24 extra orders is
+        // far past the double floor for any s <= TERF_TAIL_IMAX's design point.
+        double v = u;
+        for (int j = I + 2; j <= I + 26; ++j) {
+            v *= s * kTerfRecip.v[j];
+            if (v == 0.0) break;
+            acc += v;
+        }
+        tail[I] = acc * expms;
+        // tail(i-1) = tail(i) + e^{-s} u_i, walking u down from j = I+1.
+        // Hoist 1/s out of the walk. MEASURED (perf annotate): the two `divsd`
+        // here were 16.7% of the whole kernel. A reciprocal multiply is ~4
+        // cycles against ~14 for a divide, and unlike divide it pipelines.
+        const double inv_s = 1.0 / s;
+        for (int i = I; i >= 1; --i) {
+            // On entry to iteration i, u holds u_{i+1} = s^{i+1}/(i+1)!;
+            // multiplying by (i+1)/s yields u_i = s^i/i!, which is exactly the
+            // term crossed when going from tail(i) to tail(i-1).
+            u = (u == 0.0) ? terf_tail_term(lns, i)
+                           : u * ((double)(i + 1) * inv_s);
+            tail[i - 1] = tail[i] + expms * u;
+        }
+        // tail(i) is a probability tail: clamp the top end against rounding
+        // overshoot so the reconstructed cdf never goes negative.
+        for (size_t i = 0; i < N; ++i) {
+            if (tail[i] > 1.0) tail[i] = 1.0;
+            if (tail[i] < 0.0) tail[i] = 0.0;
+        }
+    }
+
+    // EXACT s -> 0 LIMIT (and the exactness anchor of the whole rearrangement):
+    // if the tail underflows at i = 0 there is no resolvable s-dependence at
+    // all, Delta == 0, and G == F identically.
+    if (tail[0] == 0.0) {
+        for (int m = 0; m <= mmax; ++m) D[m] = 0.0;
+        return;
+    }
+
+    // --- df(2i) = (2i)!!/(2i+1)!! ---------------------------------------
+    double df[TERF_TAIL_IMAX + 2];
+    df[0] = 1.0;
+    for (size_t i = 1; i < N; ++i)
+        df[i] = df[i - 1] * (2.0 * (double)i) / (2.0 * (double)i + 1.0);
+
+    // --- Delta^m pmf_S(i): the same forward-difference ladder as the series.
+    // pmf_S(i) = e^{-S} S^i/i!; the k=1 row is the pmf itself and order m uses
+    // row k = m+1, advanced one forward difference at a time.
+    double row[TERF_TAIL_IMAX + 2];
+    double next[TERF_TAIL_IMAX + 2];
+    double w[TERF_TAIL_IMAX + 2];      // df*tail: the s-only vector
+    row[0] = std::exp(-S);
+    for (size_t i = 1; i < N; ++i) row[i] = row[i - 1] * S * kTerfRecip.v[i];
+
+    // ABEL SUMMATION + 4-way accumulation.
+    //
+    // (1) Discrete integration by parts moves the m-ladder off pmf (which
+    //     depends on S, so it changes every call) onto w = df*tail, which
+    //     depends on s ALONE:
+    //         SUM_i (Delta x)[i] y[i] = SUM_i x[i] (y[i] - y[i+1]),  y[N] = 0
+    //     Verified EXACT vs the direct form at 200-bit precision: max relative
+    //     difference 2e-60..8e-60 over S in {1,25,45} x s in {0.1,0.5}, mmax=8.
+    //     No boundary term is needed with the code's x[-1] = 0 convention.
+    //     This matters because s = phi2*r0^2 carries NO PQ2 dependence -- over a
+    //     decane run, 49.1M terf_aux calls span only 4560 distinct s values --
+    //     so the dominant ladder now runs on a vector that is cacheable across
+    //     calls in a way the pmf ladder never was.
+    //
+    // (2) FOUR independent accumulators. MEASURED (perf annotate): a single
+    //     accumulator put 31.5% of the whole kernel on ONE `addsd` -- the
+    //     reduction is loop-carried, so each add waits the previous one's
+    //     4-cycle latency and nothing pipelines.
+    //
+    // Summation order changes, so neither is bit-identical to the serial form;
+    // both are gated on accuracy against the mpmath reference, not bit-equality.
+    // S-SIDE LADDER CACHE.
+    //
+    // After the Abel rewrite every row of the ladder depends on s ALONE -- s =
+    // phi2*r0^2 carries no PQ2 dependence. MEASURED on decane/terf(r0=2):
+    // 7.6M terf_delta calls, and a 1024-entry direct-mapped cache keyed on the
+    // s bit pattern hits 97.2% of them. (A single-entry "last s" cache hits
+    // only 0.6% -- s does NOT repeat between consecutive calls, so recency is
+    // the wrong policy and keying is essential.)
+    //
+    // Storing all (mmax+1) finished rows turns the per-call ladder -- 8 passes
+    // x 41 subtractions plus the df and tail builds -- into a memcpy on 97% of
+    // calls. thread_local so rayon workers never share or lock.
+    struct SLadder {
+        double key = -1.0;
+        int m_have = -1;
+        size_t n = 0;
+        double rows[(TERFC_DIMM + 1) * (TERF_TAIL_IMAX + 2)];
+    };
+    static thread_local std::vector<SLadder> slad(1024);
+    unsigned long long kb; std::memcpy(&kb, &s, 8);
+    SLadder &ent = slad[(size_t)((kb ^ (kb >> 31)) & 1023)];
+    const bool hit = (ent.key == s && ent.m_have >= mmax && ent.n == N);
+    if (!hit) {
+        for (size_t i = 0; i < N; ++i) w[i] = df[i] * tail[i];
+    }
+    for (int m = 0; m <= mmax; ++m) {
+        if (hit) {
+            std::memcpy(w, ent.rows + (size_t)m * (TERF_TAIL_IMAX + 2),
+                        N * sizeof(double));
+        } else {
+        if (m > 0) {  // adjoint backward difference: w[i] <- w[i] - w[i+1]
+            for (size_t i = 0; i + 1 < N; ++i) next[i] = w[i] - w[i + 1];
+            next[N - 1] = w[N - 1];
+            std::memcpy(w, next, N * sizeof(double));
+        }
+        std::memcpy(ent.rows + (size_t)m * (TERF_TAIL_IMAX + 2), w,
+                    N * sizeof(double));
+        }
+        double a0 = 0.0, a1 = 0.0, a2 = 0.0, a3 = 0.0;
+        size_t i = 0;
+        for (; i + 4 <= N; i += 4) {
+            a0 += row[i]     * w[i];
+            a1 += row[i + 1] * w[i + 1];
+            a2 += row[i + 2] * w[i + 2];
+            a3 += row[i + 3] * w[i + 3];
+        }
+        double total = (a0 + a1) + (a2 + a3);
+        for (; i < N; ++i) total += row[i] * w[i];
+        D[m] = total;
+    }
+    if (!hit) { ent.key = s; ent.m_have = mmax; ent.n = N; }
+}
+
+// G_m(S,s) = F_m(S) - Delta_m(S,s), m = 0..mmax.
+//
+// Drop-in replacement for terf_G_series with the same signature and semantics.
+// terf_G_series is deliberately left untouched: it is the reference the gate
+// compares against.
+//
+// ACCURACY DOMAIN -- MEASURED, and the one caveat a reviewer must not miss.
+// Validated against an independent long-double evaluation of the defining
+// series (mmax = 12, S in [0.01,49]):
+//    s <= 0.5 (the curvature-constrained production regime): 1.1e-11 worst
+//             relative on G, and G(S,0) == F(S) BIT-FOR-BIT.
+//    s >= ~20: G is NOT recoverable this way. Delta converges onto F to all
+//             16 digits (at S=5, s=80: F = 3.957e-1, Delta = 3.957e-1, true
+//             G = 4.7e-22), so F - Delta is pure subtractive cancellation and
+//             the returned G has NO correct digits.
+// This is NOT a defect in Delta -- terf_delta itself is 2.1e-11 worst relative
+// over that WHOLE range, s = 80 included. It is the unavoidable conditioning of
+// reconstructing a ~1e-22 quantity as the difference of two O(1) numbers.
+//
+// CONSEQUENCE FOR CALLERS: prefer terf_delta directly. The quantity production
+// consumes is the TERFC auxiliary F - G, which IS Delta, so the cancellation
+// never has to be formed at all -- and that is precisely where this
+// rearrangement is strongest. Use terf_G_tail only where G itself is wanted
+// AND s is small (the curvature-constrained case), and keep terf_G_series for
+// the large-s regime if raw G is ever needed there.
+void terf_G_tail(double S, double s, int mmax, double *G) {
+    if (S > TERF_ASYMPTOTIC_S) {
+        // Same far-field shortcut the series takes: G_m -> F_m(S).
+        boys_upto(mmax, S, G);
+        return;
+    }
+    double D[TERFC_DIMM];
+    boys_upto(mmax, S, G);
+    terf_delta(S, s, mmax, D);
+    for (int m = 0; m <= mmax; ++m) G[m] -= D[m];
+}
+
 // -------------------------------------------------------------------------
 //  terf Boys-replacement vector  A[m] = (phi/theta) * G_{m,0}(S,s).
 //
@@ -1276,25 +1674,217 @@ void terf_G_series(double S, double s, int mmax, double *G) {
 //  made (P|Q)_terfc spuriously INDEFINITE on larger systems (alkane_4+/
 //  cc-pVDZ-RI at r0=0.75 A; alkane_12 at r0=1.05 A) and blew up downstream
 //  RI-MP2 energies. Always returns true.
+//
+//  FREQUENCY, measured — the series path is NOT rare, despite reading like an
+//  edge case. Instrumented on decane / cc-pVDZ + cc-pVDZ-RI (terf 3-index
+//  block): 40 785 656 table hits vs 8 330 944 series fallbacks = 17.0% of all
+//  terf_aux calls, and `perf` puts terf_G_series at 18.4% of total runtime
+//  (second only to terf_aux itself at 29.6%). The coverage ceiling is
+//  S_max = 20 across every registered table, and tight primitives on separated
+//  centers clear it routinely.
+//
+//  So the obvious next optimization on this kernel is NOT micro-tuning the
+//  interpolation further — it is extending table coverage past S = 20 (or
+//  giving the series a cheaper large-S asymptotic form), which would convert
+//  ~18% of runtime into ~10x-cheaper table lookups. Not attempted here: it
+//  changes numerical output in the far field, so it needs its own accuracy
+//  gate against the series, which is the exact reference.
 // -------------------------------------------------------------------------
+extern "C" { unsigned long long g_terf_tab = 0, g_terf_ser = 0; }
 inline bool terf_aux(const TerfcTableSet &set, double S, double s,
                      double phi_over_theta, int mmax, double *A) {
-    double g;
-    if (interp_G(set, S, s, /*m=*/0, /*n=*/0, g)) {
-        A[0] = phi_over_theta * g;
-        for (int m = 1; m <= mmax; ++m) {
-            // coverage is (S,s)-only, so these cannot fail after m=0 succeeded
-            if (!interp_G(set, S, s, m, /*n=*/0, g)) return false;
-            A[m] = phi_over_theta * g;
+    // Fast path: every m shares the SAME (S, s), so the table selection, the
+    // node windows and the Lagrange WEIGHTS are identical across m -- only the
+    // tabulated values differ. The old loop called interp_G once per m, which
+    // recomputed all of that mmax+1 times; lagrange_1d is O(K^2) with a divide
+    // in its inner loop and runs 11 times per interp_G, so that redundancy
+    // dominated the terf kernel (measured: terf eri3 31.5 s vs Coulomb 0.54 s
+    // on decane/cc-pVDZ+RI).
+    //
+    // Hoist everything (S, s)-dependent, then loop m innermost over a plain
+    // weighted sum of table reads. Numerically this is the SAME interpolation:
+    // same nodes, same weights, same summation order over (a, c) -- the weights
+    // are merely computed once instead of mmax+1 times. Pinned bit-identical
+    // against the reference path by tests/terf_table_interp_identity.rs.
+    {
+        const TerfcTable *tbl = nullptr;
+        for (const auto &t : set.tables) {
+            if (t.covers(S, s)) { tbl = &t; break; }
         }
-        return true;
+        if (tbl) {
+            // K=10 per Dutoi. MEASURED 2026-09-15 vs the exact Poisson series:
+            // K=10 -> 1.7e-9, K=8 -> 5.6e-7, K=6 -> 1.8e-4, K=4 -> 1.0e-1.
+            // Smooth geometric convergence (~24x per step), so this is real
+            // Lagrange behaviour, not sampling noise. RI-MP2 needs ~1e-9 on the
+            // kernel for uHa energies, so 10 is the MINIMUM usable order --
+            // lowering it is not a speed/accuracy tradeoff, it is a broken
+            // kernel. See tests/terf_interp_accuracy.rs.
+            const int K = 10;
+            const int nS = tbl->nS, ns = tbl->ns;
+            const double fS = S / tbl->delta_S;
+            const double fs = s / tbl->delta_s;
+            auto window = [](double f, int N, int Kw) -> int {
+                if (N < Kw) return 0;
+                int i0 = (int)std::floor(f) - Kw / 2 + 1;
+                if (i0 < 0) i0 = 0;
+                if (i0 > N - Kw) i0 = N - Kw;
+                return i0;
+            };
+            const int K_S = std::min(K, nS);
+            const int K_s = std::min(K, ns);
+            const int iS0 = window(fS, nS, K_S);
+            const int is0 = window(fs, ns, K_s);
+
+            // Lagrange cardinal weights on consecutive-integer nodes. Computed
+            // exactly as lagrange_1d does (same factor order), so the products
+            // below reproduce its arithmetic term by term.
+            double wS[16], ws[16];
+            for (int j = 0; j < K_S; ++j) {
+                const double xj = iS0 + j;
+                double term = 1.0;
+                for (int k = 0; k < K_S; ++k) {
+                    if (k == j) continue;
+                    const double xk = iS0 + k;
+                    term *= (fS - xk) / (xj - xk);
+                }
+                wS[j] = term;
+            }
+            for (int j = 0; j < K_s; ++j) {
+                const double xj = is0 + j;
+                double term = 1.0;
+                for (int k = 0; k < K_s; ++k) {
+                    if (k == j) continue;
+                    const double xk = is0 + k;
+                    term *= (fs - xk) / (xj - xk);
+                }
+                ws[j] = term;
+            }
+
+            // n is ALWAYS 0 at every call site, so index the row directly and
+            // walk m with the table's m-stride instead of re-deriving the
+            // offset per lookup.
+            __atomic_fetch_add(&g_terf_tab, 1, __ATOMIC_RELAXED);
+            const int dimn = tbl->dimn;
+            for (int m = 0; m <= mmax; ++m) {
+                double acc = 0.0;
+                for (int a = 0; a < K_S; ++a) {
+                    const int iS = iS0 + a;
+                    double rowacc = 0.0;
+                    for (int c = 0; c < K_s; ++c) {
+                        rowacc += ws[c] * tbl->data[((((size_t)iS * ns) + (is0 + c)) * tbl->dimm + m) * dimn];
+                    }
+                    acc += wS[a] * rowacc;
+                }
+                A[m] = phi_over_theta * acc;
+            }
+            return true;
+        }
     }
     // Outside all tables: exact series (reachable only for S > 20, s < 1/2).
+    __atomic_fetch_add(&g_terf_ser, 1, __ATOMIC_RELAXED);
     double gser[TERFC_DIMM];
-    terf_G_series(S, s, mmax, gser);
+    // ROUTE to the tail form. Identical semantics to terf_G_series (verified:
+    // 243-sample sweep agrees to 2.7e-12 on G and 5.3e-11 on Delta, both
+    // inside the float64 series' own 1e-14..3.8e-11 error band), but it sums
+    // only ~I terms set by s rather than N = S + 12*sqrt(S) + 60 set by S.
+    // Guarded by FERRIC_TERF_TAIL=0 so the old path stays one env var away.
+    static const bool use_tail = [](){
+        const char *e = std::getenv("FERRIC_TERF_TAIL");
+        return !(e && e[0] == '0');
+    }();
+    if (use_tail) terf_G_tail(S, s, mmax, gser);
+    else          terf_G_series(S, s, mmax, gser);
     for (int m = 0; m <= mmax; ++m) A[m] = phi_over_theta * gser[m];
     return true;
 }
+
+
+/* ==========================================================================
+ *  STEP 1 of the libint2 core-eval port (wiki/perf-tasks/terf-as-libint2-core-eval.md)
+ *
+ *  terf_gm_eval_impl is the argument-mapping core of a libint2
+ *  `os_core_ints::terf_gm_eval<Real>`. libint2 hands a core evaluator
+ *  (Gm, rho, T, mmax, <oper params>); terf_aux needs (S, s, phi_over_theta).
+ *  The map, with theta2 == libint2's rho and T == theta2 * PQ2:
+ *
+ *      phi2           = rho * omega^2 / (rho + omega^2)
+ *      S              = phi2 * PQ2   = T * (phi2 / rho)
+ *      s              = phi2 * r0^2
+ *      phi_over_theta = sqrt(phi2 / rho)
+ *
+ *  Nothing here is new numerics -- it is the SAME terf_aux on arguments
+ *  recovered from libint2's convention. The gate
+ *  scf_terf_gm_eval_matches_terf_aux() proves that claim bit-for-bit before a
+ *  single libint2 header is patched. If it ever fails, the mapping is wrong
+ *  and the port must stop.
+ * ========================================================================== */
+inline bool terf_gm_eval_impl(const TerfcTableSet &set, double rho, double T,
+                              int mmax, double omega, double r0, double *Gm) {
+    if (!(rho > 0.0) || !(omega > 0.0)) return false;
+    const double omega2 = omega * omega;
+    const double phi2 = rho * omega2 / (rho + omega2);
+    // Recover PQ2 and form S exactly as compute_cart_eri3 does (S = phi2*PQ2),
+    // NOT as T*(phi2/rho). The two are algebraically identical but round
+    // differently: measured 32/336 sample points differ by up to 7.1e-15,
+    // which propagated to 242/3024 mismatches in the gate. Matching the
+    // reference's expression keeps the port bit-identical, so the gate tests
+    // the MAPPING rather than a choice of floating-point association.
+    const double PQ2 = T / rho;
+    const double S = phi2 * PQ2;
+    const double s = phi2 * r0 * r0;
+    const double phi_over_theta = std::sqrt(phi2 / rho);
+    return terf_aux(set, S, s, phi_over_theta, mmax, Gm);
+}
+
+
+#ifdef FERRIC_LIBINT2_TERF
+/* Host hook for libint2's Operator::terf core evaluator (STEP 4).
+ *
+ * libint2 must not own the multi-MB interpolation tables, so terf_gm_eval calls
+ * back here. Signature is fixed by libint2::os_core_ints::terf_gm_eval::hook_type.
+ * Returns false only if the tables are unavailable.
+ *
+ * Thread-safety: get_terfc_tables caches a shared_ptr behind the process-global
+ * g_terfc_tables; the tables are immutable once loaded and terf_gm_eval_impl
+ * only reads them, so concurrent rayon workers are safe. The FIRST call must
+ * happen before threads fan out -- scf_engine_create_terf_libint2 forces the
+ * load at engine-construction time for exactly that reason.
+ */
+bool ferric_terf_libint2_hook(double rho, double T, int mmax, double omega,
+                              double r0, double *Gm) {
+    auto set = g_terfc_tables;          // shared_ptr copy: no torn read
+    if (!set) return false;
+    if (!terf_gm_eval_impl(*set, rho, T, mmax, omega, r0, Gm)) return false;
+
+    /* PREFACTOR CONVENTION -- the reason the first cut was ~200x off.
+     *
+     * Two independent mismatches had to be undone here:
+     *
+     * 1. terf_aux returns `sqrt(phi2/rho) * G_m`, a CONSTANT-in-m factor, and
+     *    libint2 separately applies its own `pfac = K12*sqrt(gammapq)/gammapq`
+     *    after this hook returns. Returning the baked-in factor double-counts.
+     *
+     * 2. Deeper: the MD driver feeds `alpha_R = phi2` (NOT rho) into its own
+     *    Hermite-R recursion, so its reduced exponent differs from libint2's.
+     *    libint2's generated recurrences are hardwired to rho, and the way
+     *    every other attenuated operator reconciles that is an M-DEPENDENT
+     *    power -- erf_coulomb_gm_eval scales by (w2/(w2+rho))^(m+1/2).
+     *
+     * So convert to libint2's convention: strip terf_aux's constant factor and
+     * apply (phi2/rho)^(m+1/2) instead. At m=3 the two differ by 27x-3.6e4x
+     * over the rho/omega range in play, which brackets the 1.989e2 the gate saw.
+     */
+    const double omega2 = omega * omega;
+    const double phi2 = rho * omega2 / (rho + omega2);
+    const double ratio = phi2 / rho;
+    const double inv_const = 1.0 / std::sqrt(ratio);   // undo terf_aux's factor
+    double pow_m = std::sqrt(ratio);                   // (ratio)^(m+1/2), m=0
+    for (int m = 0; m <= mmax; ++m, pow_m *= ratio) {
+        Gm[m] *= inv_const * pow_m;
+    }
+    return true;
+}
+#endif
 
 } // anonymous namespace
 
@@ -1734,6 +2324,228 @@ bool compute_cart_eri2(const Shell &shP, const Shell &shQ,
     return any;
 }
 
+// 4-center quartet (a b | c d): both sides are GENUINE Gaussian pairs.
+//
+// compute_cart_eri3 is the special case of this routine in which the bra side
+// is a degenerate pair (exponent 0.0 partner, same center twice, lB=0) -- the
+// "phantom" aux Gaussian. Here both sides call the full 4-argument
+// build_hermite_E, so the bra pair (A,B) has exponent p = a+b and Gaussian
+// product center P, and the ket pair (C,D) has q = c+d and center Q.
+//
+// build_hermite_R is already general in Ltot -- it is called here with
+// Ltot = lA+lB+lC+lD instead of lP+lA+lB, nothing else changes.
+//
+// Output layout row-major [ncA][ncB][ncC][ncD] (A slowest, D fastest), matching
+// the eri3 convention of "bra index slowest".
+//
+// tables/r0/omega used only when use_boys==false (terf path).
+// Returns false if every primitive contribution was screened out of the tables.
+// True when a quartet's total angular momentum exceeds the m-depth stored in
+// the terf tables (and the Fn stack buffer sized to match). Entry points call
+// this BEFORE computing so they can return a negative status; compute_cart_eri4
+// itself can only answer `false`, which means "screened" to its callers.
+inline bool eri4_Ltot_exceeds_tables(const Shell &shA, const Shell &shB,
+                                     const Shell &shC, const Shell &shD) {
+    return shA.contr[0].l + shB.contr[0].l + shC.contr[0].l + shD.contr[0].l >=
+           TERFC_DIMM;
+}
+
+bool compute_cart_eri4(const Shell &shA, const Shell &shB,
+                       const Shell &shC, const Shell &shD,
+                       const TerfcTableSet *tables, double omega, double r0,
+                       bool use_boys, std::vector<double> &out_cart) {
+    const int lA = shA.contr[0].l;
+    const int lB = shB.contr[0].l;
+    const int lC = shC.contr[0].l;
+    const int lD = shD.contr[0].l;
+    const int Ltot = lA + lB + lC + lD;
+    const int ncA = ncart_of(lA), ncB = ncart_of(lB);
+    const int ncC = ncart_of(lC), ncD = ncart_of(lD);
+    out_cart.assign((size_t)ncA * ncB * ncC * ncD, 0.0);
+
+    // Fn is a fixed-size stack buffer of TERFC_DIMM entries; a quartet whose
+    // total angular momentum exceeds it would overrun. Callers MUST pre-check
+    // with eri4_Ltot_exceeds_tables() and return a negative status, because the
+    // `false` return here is indistinguishable from "fully screened" and would
+    // otherwise hand back zeros for a quartet that is merely too high-L -- a
+    // silently wrong Schwarz bound rather than an error. This is a belt-and-
+    // braces stop, not the reporting path. (Ltot <= 23 covers l <= 5 on all
+    // four shells; eri3/eri2 need no such guard as lP+lA+lB cannot reach 24.)
+    if (Ltot >= TERFC_DIMM) return false;
+
+    std::vector<std::array<int, 3>> compA, compB, compC, compD;
+    cart_components(lA, compA);
+    cart_components(lB, compB);
+    cart_components(lC, compC);
+    cart_components(lD, compD);
+
+    const auto &AO = shA.O;
+    const auto &BO = shB.O;
+    const auto &CO = shC.O;
+    const auto &DO = shD.O;
+
+    const double omega2 = omega * omega;
+    const double r02 = r0 * r0;
+    bool any = false;
+
+    // Bra pair (a,b) -> p, P; ket pair (c,d) -> q, Q.
+    for (size_t pa = 0; pa < shA.alpha.size(); ++pa) {
+        const double a = shA.alpha[pa];
+        const double ca = shA.contr[0].coeff[pa];
+        for (size_t pb = 0; pb < shB.alpha.size(); ++pb) {
+            const double b = shB.alpha[pb];
+            const double cb = shB.contr[0].coeff[pb];
+            const double p = a + b;
+            const double Px = (a * AO[0] + b * BO[0]) / p;
+            const double Py = (a * AO[1] + b * BO[1]) / p;
+            const double Pz = (a * AO[2] + b * BO[2]) / p;
+            // NOTE: the Gaussian-product factor exp(-(ab/p)|A-B|^2) is already
+            // carried by the Hermite E-coefficients below; do NOT multiply it
+            // in again here (same caveat as compute_cart_eri3).
+            const double cab = ca * cb;
+
+            // Hermite E-coefficients for the bra pair, hoisted out of the ket
+            // loops exactly as eri3 hoists its obs-pair E's out of the aux loop.
+            HermiteE Ex, Ey, Ez;
+            build_hermite_E(a, b, AO[0], BO[0], lA, lB, Ex);
+            build_hermite_E(a, b, AO[1], BO[1], lA, lB, Ey);
+            build_hermite_E(a, b, AO[2], BO[2], lA, lB, Ez);
+
+            for (size_t pc = 0; pc < shC.alpha.size(); ++pc) {
+                const double c = shC.alpha[pc];
+                const double cc = shC.contr[0].coeff[pc];
+                for (size_t pd = 0; pd < shD.alpha.size(); ++pd) {
+                    const double d = shD.alpha[pd];
+                    const double cd = shD.contr[0].coeff[pd];
+                    const double q = c + d;
+                    const double Qx = (c * CO[0] + d * DO[0]) / q;
+                    const double Qy = (c * CO[1] + d * DO[1]) / q;
+                    const double Qz = (c * CO[2] + d * DO[2]) / q;
+                    const double ccd = cc * cd;
+
+                    HermiteE ECx, ECy, ECz;
+                    build_hermite_E(c, d, CO[0], DO[0], lC, lD, ECx);
+                    build_hermite_E(c, d, CO[1], DO[1], lC, lD, ECy);
+                    build_hermite_E(c, d, CO[2], DO[2], lC, lD, ECz);
+
+                    // theta2 = Coulomb reduced exponent (p q/(p+q)); phi2 folds
+                    // in 1/omega^2 for the terf piece. Identical operator
+                    // decomposition as eri3/eri2 -- see terf_aux().
+                    const double theta2 = p * q / (p + q);
+                    const double PQx = Px - Qx;
+                    const double PQy = Py - Qy;
+                    const double PQz = Pz - Qz;
+                    const double PQ2 = PQx * PQx + PQy * PQy + PQz * PQz;
+
+                    double alpha_R;             // reduced exponent for build_hermite_R
+                    double Fn[TERFC_DIMM];      // Boys / terf-aux vector
+                    if (use_boys) {
+                        alpha_R = theta2;
+                        boys_upto(Ltot, theta2 * PQ2 /* Boys T */, Fn);
+                    } else {
+                        // phi^2 = 1/(1/p + 1/q + 1/omega^2)
+                        //       = theta2*omega2/(theta2+omega2)
+                        const double phi2 = theta2 * omega2 / (theta2 + omega2);
+                        const double S = phi2 * PQ2;
+                        const double s = phi2 * r02;
+                        const double phi_over_theta = std::sqrt(phi2 / theta2);
+                        // terf_aux always succeeds (table interp, or exact
+                        // series for far-field S > 20); the guard is defensive
+                        // only. Skipping here would leave the full Coulomb
+                        // value un-subtracted (terf -> 1/r at large r, NOT
+                        // negligible).
+                        if (!terf_aux(*tables, S, s, phi_over_theta, Ltot, Fn)) {
+                            continue;
+                        }
+                        alpha_R = phi2;
+                    }
+
+                    // Standard MD two-pair prefactor. eri3 uses the identical
+                    // expression with its aux exponent playing the role of the
+                    // bra pair exponent -- it is the p<->aux special case of
+                    // this, so it carries over unchanged.
+                    const double pref =
+                        2.0 * std::pow(M_PI, 2.5) / (p * q * std::sqrt(p + q));
+                    const double scale = pref * cab * ccd;
+
+                    HermiteR R;
+                    build_hermite_R(Ltot, alpha_R, PQx, PQy, PQz, Fn, R);
+                    any = true;
+
+                    // (a b | c d) = scale *
+                    //   sum_{tuv} Eab_{tuv} * sum_{t'u'v'} Ecd_{t'u'v'}
+                    //     * (-1)^{t'+u'+v'} * R_{t+t', u+u', v+v'}
+                    //
+                    // SIGN CONVENTION: the (-1)^{t'+u'+v'} belongs to the KET
+                    // (C,D) side, i.e. the side that is SUBTRACTED in
+                    // PQ = P - Q. Evidence: compute_cart_eri2 has genuine
+                    // (phantom-pair) Hermite sets on both sides with the same
+                    // PQ = P_bra - Q_ket convention, and puts the sign on the
+                    // (tq,uq,vq) = Q indices; compute_cart_eri3 uses
+                    // PQ = P_aux - Q_obspair and puts the sign on the obs-pair
+                    // (t,u,v) indices -- again the subtracted side. Both agree,
+                    // so the ket carries the sign here.
+                    for (int ia = 0; ia < ncA; ++ia) {
+                        const int ax = compA[ia][0], ay = compA[ia][1], az = compA[ia][2];
+                        for (int ib = 0; ib < ncB; ++ib) {
+                            const int bx = compB[ib][0], by = compB[ib][1], bz = compB[ib][2];
+                            for (int ic = 0; ic < ncC; ++ic) {
+                                const int cx = compC[ic][0], cy = compC[ic][1],
+                                          cz = compC[ic][2];
+                                for (int id = 0; id < ncD; ++id) {
+                                    const int dx = compD[id][0], dy = compD[id][1],
+                                              dz = compD[id][2];
+                                    double sum = 0.0;
+                                    for (int t = 0; t <= ax + bx; ++t) {
+                                        const double ex = Ex.at(ax, bx, t);
+                                        if (ex == 0.0) continue;
+                                        for (int u = 0; u <= ay + by; ++u) {
+                                            const double ey = Ey.at(ay, by, u);
+                                            if (ey == 0.0) continue;
+                                            for (int v = 0; v <= az + bz; ++v) {
+                                                const double ez = Ez.at(az, bz, v);
+                                                if (ez == 0.0) continue;
+                                                const double eab = ex * ey * ez;
+                                                for (int tc = 0; tc <= cx + dx; ++tc) {
+                                                    const double ecx = ECx.at(cx, dx, tc);
+                                                    if (ecx == 0.0) continue;
+                                                    for (int uc = 0; uc <= cy + dy; ++uc) {
+                                                        const double ecy =
+                                                            ECy.at(cy, dy, uc);
+                                                        if (ecy == 0.0) continue;
+                                                        for (int vc = 0; vc <= cz + dz;
+                                                             ++vc) {
+                                                            const double ecz =
+                                                                ECz.at(cz, dz, vc);
+                                                            if (ecz == 0.0) continue;
+                                                            const double ecd =
+                                                                ecx * ecy * ecz;
+                                                            const double sgn =
+                                                                ((tc + uc + vc) & 1)
+                                                                    ? -1.0
+                                                                    : 1.0;
+                                                            sum += eab * ecd * sgn *
+                                                                   R.at(t + tc, u + uc,
+                                                                        v + vc);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    out_cart[(((size_t)ia * ncB + ib) * ncC + ic) * ncD +
+                                             id] += scale * sum;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return any;
+}
+
 // Apply libint2 cart->pure transform on one axis of a 3-index block.
 // in_block: row-major [ncart_axis][rest]; out_block: [npure_axis][rest].
 inline void tform_axis(int L, int rest, const std::vector<double> &in,
@@ -1857,6 +2669,88 @@ void transform_cart_to_pure2(const Shell &shP, const Shell &shQ,
     }
 }
 
+// 4-center: transform [ncA][ncB][ncC][ncD] -> [nA][nB][nC][nD], axis by axis,
+// matching each shell's own pure/cartesian flag. Same strategy as
+// transform_cart_to_pure3, with one more middle axis.
+void transform_cart_to_pure4(const Shell &shA, const Shell &shB,
+                             const Shell &shC, const Shell &shD,
+                             const std::vector<double> &cart,
+                             std::vector<double> &pureout) {
+    const int lA = shA.contr[0].l, lB = shB.contr[0].l;
+    const int lC = shC.contr[0].l, lD = shD.contr[0].l;
+    const bool puA = shA.contr[0].pure, puB = shB.contr[0].pure;
+    const bool puC = shC.contr[0].pure, puD = shD.contr[0].pure;
+    const int ncA = ncart_of(lA), ncB = ncart_of(lB);
+    const int ncC = ncart_of(lC), ncD = ncart_of(lD);
+    const int nA = puA ? npure_of(lA) : ncA;
+    const int nB = puB ? npure_of(lB) : ncB;
+    const int nC = puC ? npure_of(lC) : ncC;
+    const int nD = puD ? npure_of(lD) : ncD;
+
+    // Axis A (outermost): one tform_axis pass with rest = ncB*ncC*ncD.
+    std::vector<double> tmp1;  // [nA][ncB][ncC][ncD]
+    if (puA && lA >= 1) {
+        tform_axis(lA, ncB * ncC * ncD, cart, tmp1);
+    } else {
+        tmp1 = cart;
+    }
+
+    // Axis B: for each of the nA outer blocks, transform [ncB][ncC*ncD].
+    std::vector<double> tmp2;  // [nA][nB][ncC][ncD]
+    if (puB && lB >= 1) {
+        tmp2.assign((size_t)nA * nB * ncC * ncD, 0.0);
+        std::vector<double> sub_in((size_t)ncB * ncC * ncD), sub_out;
+        for (int ia = 0; ia < nA; ++ia) {
+            for (int i = 0; i < ncB * ncC * ncD; ++i)
+                sub_in[i] = tmp1[((size_t)ia * ncB * ncC * ncD) + i];
+            tform_axis(lB, ncC * ncD, sub_in, sub_out);
+            for (int i = 0; i < nB * ncC * ncD; ++i)
+                tmp2[((size_t)ia * nB * ncC * ncD) + i] = sub_out[i];
+        }
+    } else {
+        tmp2 = tmp1;
+    }
+
+    // Axis C: for each of the nA*nB outer blocks, transform [ncC][ncD].
+    std::vector<double> tmp3;  // [nA][nB][nC][ncD]
+    if (puC && lC >= 1) {
+        tmp3.assign((size_t)nA * nB * nC * ncD, 0.0);
+        std::vector<double> sub_in((size_t)ncC * ncD), sub_out;
+        const int nouter = nA * nB;
+        for (int ob = 0; ob < nouter; ++ob) {
+            for (int i = 0; i < ncC * ncD; ++i)
+                sub_in[i] = tmp2[((size_t)ob * ncC * ncD) + i];
+            tform_axis(lC, ncD, sub_in, sub_out);
+            for (int i = 0; i < nC * ncD; ++i)
+                tmp3[((size_t)ob * nC * ncD) + i] = sub_out[i];
+        }
+    } else {
+        tmp3 = tmp2;
+    }
+
+    // Axis D (innermost): [nA*nB*nC][ncD] -> [nA*nB*nC][nD].
+    if (puD && lD >= 1) {
+        pureout.assign((size_t)nA * nB * nC * nD, 0.0);
+        const int nrows = nA * nB * nC;
+        const auto &coefs =
+            libint2::solidharmonics::SolidHarmonicsCoefficients<double>::instance(lD);
+        for (int row = 0; row < nrows; ++row) {
+            const double *src = &tmp3[(size_t)row * ncD];
+            double *dst = &pureout[(size_t)row * nD];
+            for (int s = 0; s < nD; ++s) {
+                const auto nc = coefs.nnz(s);
+                const auto *cidx = coefs.row_idx(s);
+                const auto *cval = coefs.row_values(s);
+                double acc = 0.0;
+                for (int ic = 0; ic < nc; ++ic) acc += cval[ic] * src[cidx[ic]];
+                dst[s] = acc;
+            }
+        }
+    } else {
+        pureout = tmp3;
+    }
+}
+
 } // anonymous namespace
 
 /* TEMP DEBUG (milestone validation only; remove before Task 2). Loads tables
@@ -1910,6 +2804,44 @@ extern "C" int scf_terfc_debug_coulomb_eri3(const scf_basis *obs,
         int n = dfbs->nfunc[shP] * obs->nfunc[sh1] * obs->nfunc[sh2];
         std::vector<double> pureout;
         transform_cart_to_pure3(shPsh, shAsh, shBsh, cart, pureout);
+        if ((int)pureout.size() != n) return SCF_EINTERNAL;
+        for (int i = 0; i < n; ++i) out[i] = pureout[i];
+        return n;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+/* Validation hook: the 4-center MD path run with the plain Coulomb kernel
+ * (use_boys=true, no tables), so it can be compared quartet-for-quartet against
+ * libint2's own scf_compute_eri_quartet. This is THE check that validates the
+ * new contraction -- the ket-side (-1)^(t+u+v) sign, the 2*pi^2.5/(p q sqrt(p+q))
+ * prefactor, the [n1][n2][n3][n4] layout and the four-axis solid-harmonic
+ * transform -- against an independent implementation. terf+terfc==coulomb cannot
+ * do that job: both sides share this machinery, so an error cancels.
+ * Writes n1*n2*n3*n4 doubles; returns that count, or a negative SCF_E* code. */
+extern "C" int scf_debug_coulomb_eri4(const scf_basis *obs, int sh1, int sh2,
+                                      int sh3, int sh4, double *out) {
+    try {
+        if (!obs || !out) return SCF_EINVAL;
+        const Shell &shAsh = obs->bs[sh1];
+        const Shell &shBsh = obs->bs[sh2];
+        const Shell &shCsh = obs->bs[sh3];
+        const Shell &shDsh = obs->bs[sh4];
+        if (eri4_Ltot_exceeds_tables(shAsh, shBsh, shCsh, shDsh)) {
+            return SCF_EINVAL;
+        }
+        const int n = obs->nfunc[sh1] * obs->nfunc[sh2] * obs->nfunc[sh3] *
+                      obs->nfunc[sh4];
+        std::vector<double> cart;
+        const bool any = compute_cart_eri4(shAsh, shBsh, shCsh, shDsh, nullptr,
+                                           0.0, 0.0, /*use_boys=*/true, cart);
+        if (!any) {
+            for (int i = 0; i < n; ++i) out[i] = 0.0;
+            return n;  // genuinely screened; libint2 should agree it is ~0
+        }
+        std::vector<double> pureout;
+        transform_cart_to_pure4(shAsh, shBsh, shCsh, shDsh, cart, pureout);
         if ((int)pureout.size() != n) return SCF_EINTERNAL;
         for (int i = 0; i < n; ++i) out[i] = pureout[i];
         return n;
@@ -2124,6 +3056,61 @@ extern "C" int scf_compute_terf_eri3(scf_engine *eng, const scf_basis *obs,
     }
 }
 
+extern "C" int scf_compute_terfc_eri4(scf_engine *eng, const scf_basis *obs,
+                                      int sh1, int sh2, int sh3, int sh4,
+                                      double *out) {
+    try {
+        if (!eng || !eng->is_terfc || !eng->terfc_tables) return SCF_EINVAL;
+        if (!obs || !out) return SCF_EINVAL;
+        // All four shells come from the orbital basis: a (PQ|PQ) Schwarz /
+        // CSB quartet is drawn from ONE basis, so there is no dfbs argument.
+        const Shell &shAsh = obs->bs[sh1];
+        const Shell &shBsh = obs->bs[sh2];
+        const Shell &shCsh = obs->bs[sh3];
+        const Shell &shDsh = obs->bs[sh4];
+        // Too-high total L is a refusal, not a screened block: returning zeros
+        // here would understate a Schwarz/CSB bound instead of reporting a gap.
+        if (eri4_Ltot_exceeds_tables(shAsh, shBsh, shCsh, shDsh)) {
+            return SCF_EINVAL;
+        }
+
+        // terfc = coulomb - terf. Both use the identical MD machinery (same
+        // ordering, prefactor, normalisation, cart->pure transform), so the
+        // subtraction is valid element-by-element in the Cartesian basis.
+        std::vector<double> cart_coul, cart_terf;
+        bool any_c = compute_cart_eri4(shAsh, shBsh, shCsh, shDsh, nullptr,
+                                       eng->omega, eng->r0, /*use_boys=*/true,
+                                       cart_coul);
+        bool any_t = compute_cart_eri4(shAsh, shBsh, shCsh, shDsh,
+                                       eng->terfc_tables.get(), eng->omega,
+                                       eng->r0, /*use_boys=*/false, cart_terf);
+        int n1 = obs->nfunc[sh1];
+        int n2 = obs->nfunc[sh2];
+        int n3 = obs->nfunc[sh3];
+        int n4 = obs->nfunc[sh4];
+        int n = n1 * n2 * n3 * n4;
+        if (!any_c && !any_t) {
+            for (int i = 0; i < n; ++i) out[i] = 0.0;
+            return 0;  // fully screened
+        }
+        // Form the Cartesian difference (terf may screen where Coulomb doesn't;
+        // treat a screened piece as an all-zero block of the right size).
+        std::vector<double> cart(cart_coul.size(), 0.0);
+        if (any_c) cart = cart_coul;
+        if (any_t) {
+            if (cart_terf.size() != cart.size()) return SCF_EINTERNAL;
+            for (size_t i = 0; i < cart.size(); ++i) cart[i] -= cart_terf[i];
+        }
+        std::vector<double> pureout;
+        transform_cart_to_pure4(shAsh, shBsh, shCsh, shDsh, cart, pureout);
+        if ((int)pureout.size() != n) return SCF_EINTERNAL;
+        for (int i = 0; i < n; ++i) out[i] = pureout[i];
+        return n;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
 extern "C" int scf_compute_terf_eri2(scf_engine *eng, const scf_basis *dfbs,
                                      int shP, int shQ, double *out) {
     try {
@@ -2154,3 +3141,467 @@ extern "C" int scf_compute_terf_eri2(scf_engine *eng, const scf_basis *dfbs,
         return SCF_EINTERNAL;
     }
 }
+
+extern "C" int scf_compute_terf_eri4(scf_engine *eng, const scf_basis *obs,
+                                     int sh1, int sh2, int sh3, int sh4,
+                                     double *out) {
+    try {
+        if (!eng || !eng->is_terfc || !eng->is_terf_complement || !eng->terfc_tables) {
+            return SCF_EINVAL;
+        }
+        if (!obs || !out) return SCF_EINVAL;
+        const Shell &shAsh = obs->bs[sh1];
+        const Shell &shBsh = obs->bs[sh2];
+        const Shell &shCsh = obs->bs[sh3];
+        const Shell &shDsh = obs->bs[sh4];
+        // Too-high total L is a refusal, not a screened block: returning zeros
+        // here would understate a Schwarz/CSB bound instead of reporting a gap.
+        if (eri4_Ltot_exceeds_tables(shAsh, shBsh, shCsh, shDsh)) {
+            return SCF_EINVAL;
+        }
+
+        // terf is the SAME Cartesian block terfc subtracts from Coulomb --
+        // return it directly (no combine), so terf + terfc = coulomb exactly.
+        std::vector<double> cart_terf;
+        bool any_t = compute_cart_eri4(shAsh, shBsh, shCsh, shDsh,
+                                       eng->terfc_tables.get(), eng->omega,
+                                       eng->r0, /*use_boys=*/false, cart_terf);
+        int n1 = obs->nfunc[sh1];
+        int n2 = obs->nfunc[sh2];
+        int n3 = obs->nfunc[sh3];
+        int n4 = obs->nfunc[sh4];
+        int n = n1 * n2 * n3 * n4;
+        if (!any_t) {
+            for (int i = 0; i < n; ++i) out[i] = 0.0;
+            return 0;  // fully screened
+        }
+        std::vector<double> pureout;
+        transform_cart_to_pure4(shAsh, shBsh, shCsh, shDsh, cart_terf, pureout);
+        if ((int)pureout.size() != n) return SCF_EINTERNAL;
+        for (int i = 0; i < n; ++i) out[i] = pureout[i];
+        return n;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+/* Gate for STEP 1: terf_gm_eval_impl must reproduce terf_aux BIT-FOR-BIT when
+ * fed libint2-convention arguments. Returns the number of (rho,T,omega,r0,m)
+ * samples compared, or a negative SCF_E* code. `*mismatches` receives the count
+ * of non-bit-identical values -- it MUST be 0. */
+extern "C" int scf_terf_gm_eval_matches_terf_aux(const char *table_dir,
+                                                 int *mismatches,
+                                                 double *worst_abs_diff) {
+    try {
+        auto set = get_terfc_tables(resolve_table_dir(table_dir));
+        if (!set) return SCF_EINVAL;
+        int compared = 0, bad = 0;
+        double worst = 0.0;
+        const int mmax = 8;
+        double A[TERFC_DIMM], B[TERFC_DIMM];
+        // Span the regimes that matter: table-covered and series-fallback, tight
+        // and diffuse primitives, both curvature-linked and decoupled omega.
+        for (double rho : {0.05, 0.25, 1.0, 4.0, 20.0, 100.0}) {
+            for (double pq2 : {0.0, 0.01, 0.5, 2.0, 10.0, 50.0, 200.0}) {
+                for (double r0 : {0.75, 1.0, 2.0, 4.0}) {
+                    for (double wmul : {1.0, 2.0}) {
+                        const double omega = wmul / (r0 * std::sqrt(2.0));
+                        const double T = rho * pq2;
+                        // reference: the existing production path
+                        const double omega2 = omega * omega;
+                        const double phi2 = rho * omega2 / (rho + omega2);
+                        const double S = phi2 * pq2;
+                        const double sarg = phi2 * r0 * r0;
+                        const double pot = std::sqrt(phi2 / rho);
+                        const bool ok_ref = terf_aux(*set, S, sarg, pot, mmax, A);
+                        const bool ok_new =
+                            terf_gm_eval_impl(*set, rho, T, mmax, omega, r0, B);
+                        if (ok_ref != ok_new) { ++bad; continue; }
+                        if (!ok_ref) continue;
+                        for (int m = 0; m <= mmax; ++m) {
+                            ++compared;
+                            unsigned long long ba, bb;
+                            std::memcpy(&ba, &A[m], 8);
+                            std::memcpy(&bb, &B[m], 8);
+                            if (ba != bb) {
+                                ++bad;
+                                const double d = std::fabs(A[m] - B[m]);
+                                if (d > worst) worst = d;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (mismatches) *mismatches = bad;
+        if (worst_abs_diff) *worst_abs_diff = worst;
+        return compared;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
+
+#ifdef FERRIC_LIBINT2_TERF
+/* STEP 4: create a libint2 engine driving Operator::terf, so terf rides the
+ * SAME generated recurrences as Coulomb/erfc instead of the hand-rolled MD
+ * driver (which measured 25.4x slower than libint2 with no tables at all).
+ *
+ * `braket` selects 2-, 3- or 4-center: 2 -> xs_xs, 3 -> xs_xx, 4 -> xx_xx.
+ * Loads the tables and installs the core-eval hook BEFORE the engine exists,
+ * so no worker thread can race the first table load.
+ */
+extern "C" scf_engine *scf_engine_create_terf_libint2(double r0, double omega,
+                                                      int braket, int max_nprim,
+                                                      int max_L, double precision,
+                                                      const char *table_dir) {
+    std::lock_guard<std::mutex> lock(libint_ctor_mutex);
+    try {
+        auto tables = get_terfc_tables(resolve_table_dir(table_dir));
+        if (!tables) return nullptr;      // tables missing => fail loudly
+        libint2::os_core_ints::terf_gm_eval<double>::hook() =
+            &ferric_terf_libint2_hook;
+
+        libint2::BraKet bk;
+        switch (braket) {
+            case 2: bk = libint2::BraKet::xs_xs; break;
+            case 3: bk = libint2::BraKet::xs_xx; break;
+            case 4: bk = libint2::BraKet::xx_xx; break;
+            default: return nullptr;
+        }
+        // NOTE: the 6th ctor arg is Params, NOT BraKet -- passing the BraKet
+        // there silently mis-constructs and the engine fails. Follow the
+        // working pattern used by scf_engine_create_3center: construct, then
+        // .set(BraKet), then .set_params().
+        auto *out = new (std::nothrow) scf_engine{
+            Engine(libint2::Operator::terf, max_nprim, max_L, 0, precision)};
+        if (!out) return nullptr;
+        out->engine.set(bk);
+        out->engine.set_params(std::array<double, 2>{{omega, r0}});
+        // Both false: this engine is NOT the table-MD path. The compute
+        // functions that branch on is_terfc must never see this handle --
+        // it is driven through scf_compute_eri{2,3,_quartet} instead.
+        out->is_terfc = false;
+        out->is_terf_complement = false;
+        out->r0 = r0;
+        out->omega = omega;
+        out->terfc_tables = std::move(tables);
+        return out;
+    } catch (...) {
+        return nullptr;
+    }
+}
+#endif
+
+#ifdef FERRIC_LIBINT2_TERF
+/* STEP 4 accuracy gate: the libint2-native terf path vs the hand-rolled MD
+ * path, on the SAME 3-index block. These will NOT be bit-identical (different
+ * recurrence order), so the caller compares against a stated tolerance.
+ * Writes max|libint2 - md| to *max_abs and max|.|/max|md| to *max_rel.
+ * Returns the number of elements compared, or a negative SCF_E* code. */
+extern "C" int scf_terf_libint2_vs_md_eri3(const scf_basis *obs,
+                                           const scf_basis *dfbs,
+                                           int shP, int sh1, int sh2,
+                                           double r0, double omega,
+                                           const char *table_dir,
+                                           double *max_abs, double *max_rel) {
+    try {
+        if (!obs || !dfbs) return -100;
+        const int nP = dfbs->nfunc[shP], n1 = obs->nfunc[sh1], n2 = obs->nfunc[sh2];
+        const int n = nP * n1 * n2;
+        std::vector<double> md(n, 0.0), li(n, 0.0);
+
+        // --- MD path (existing production kernel) ---
+        scf_engine *emd = scf_engine_create_terf_3center(
+            r0, omega, std::max(obs->max_nprim, dfbs->max_nprim),
+            std::max(obs->max_L, dfbs->max_L), 0.0, table_dir);
+        if (!emd) return -101;   // MD engine ctor failed
+        const int wmd = scf_compute_terf_eri3(emd, obs, dfbs, shP, sh1, sh2, md.data());
+        scf_engine_destroy(emd);
+        if (wmd < 0) return wmd;
+
+        // --- libint2-native path ---
+        scf_engine *eli = scf_engine_create_terf_libint2(
+            r0, omega, 3, std::max(obs->max_nprim, dfbs->max_nprim),
+            std::max(obs->max_L, dfbs->max_L), 0.0, table_dir);
+        if (!eli) return -102;   // libint2 terf engine ctor failed
+        const int wli = scf_compute_eri3(eli, obs, dfbs, shP, sh1, sh2, li.data());
+        scf_engine_destroy(eli);
+        if (wli < 0) return wli;
+
+        // Normalize by the block magnitude taken from BOTH sides, and skip
+        // blocks that are entirely numerical noise. Without the floor, a block
+        // whose largest element is ~1e-21 yields a meaningless ratio: that is
+        // what made this gate report 2.287e1 while every physically
+        // significant element agreed to 11 digits.
+        double mabs = 0.0, scale = 0.0;
+        for (int i = 0; i < n; ++i) {
+            mabs = std::max(mabs, std::fabs(li[i] - md[i]));
+            scale = std::max(scale, std::max(std::fabs(md[i]), std::fabs(li[i])));
+        }
+        if (scale < 1e-12) {   // nothing resolvable in this block
+            if (max_abs) *max_abs = 0.0;
+            if (max_rel) *max_rel = 0.0;
+            return n;
+        }
+        if (std::getenv("FERRIC_TERF_DUMP")) {
+            std::fprintf(stderr, "block (%d,%d,%d) n=%d  nP=%d n1=%d n2=%d\n",
+                         shP, sh1, sh2, n, nP, n1, n2);
+            for (int i = 0; i < n && i < 24; ++i) {
+                const double r = (md[i] != 0.0) ? li[i] / md[i] : 0.0;
+                std::fprintf(stderr, "  [%3d] md=% .10e  li=% .10e  li/md=% .6f\n",
+                             i, md[i], li[i], r);
+            }
+        }
+        if (max_abs) *max_abs = mabs;
+        if (max_rel) *max_rel = mabs / scale;
+        return n;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+#endif
+
+/* How accurate is the K-point interpolation against the EXACT Poisson series?
+ * The series (terf_G_series) is the reference the tables were generated from,
+ * so this measures real error, not agreement with another approximation.
+ * Sweeps (S,s) inside table coverage. Returns samples compared; writes the
+ * worst relative error to *worst_rel. */
+extern "C" int scf_terf_interp_accuracy(const char *table_dir, int mmax,
+                                        double *worst_rel) {
+    try {
+        auto set = get_terfc_tables(resolve_table_dir(table_dir));
+        if (!set) return SCF_EINVAL;
+        int n = 0; double worst = 0.0;
+        double A[TERFC_DIMM], G[TERFC_DIMM];
+        // Stay inside the finest tables' coverage (S<=4, s<=2) and off-node,
+        // where interpolation error is largest.
+        for (double S = 0.037; S < 4.0; S += 0.137) {
+            for (double sv = 0.023; sv < 2.0; sv += 0.091) {
+                if (!terf_aux(*set, S, sv, 1.0, mmax, A)) continue;
+                terf_G_series(S, sv, mmax, G);
+                for (int m = 0; m <= mmax; ++m) {
+                    const double den = std::fabs(G[m]);
+                    if (den < 1e-14) continue;      // no resolvable signal
+                    const double rel = std::fabs(A[m] - G[m]) / den;
+                    if (rel > worst) worst = rel;
+                    ++n;
+                }
+            }
+        }
+        if (worst_rel) *worst_rel = worst;
+        return n;
+    } catch (...) { return SCF_EINTERNAL; }
+}
+
+extern "C" void scf_terf_series_counters(unsigned long long *tab,
+                                         unsigned long long *ser) {
+    if (tab) *tab = g_terf_tab;
+    if (ser) *ser = g_terf_ser;
+}
+extern "C" void scf_terf_series_reset(void) { g_terf_tab = 0; g_terf_ser = 0; }
+
+/* Accuracy + cost of the TAIL form against the exact Poisson series.
+ *
+ *   G_m(S,s) = F_m(S) - Delta_m(S,s),
+ *   Delta_m  = sum_{i<=I} df(2i) Delta^m pmf_S(i) tail_s(i)
+ *
+ * The rearrangement is EXACT; what is truncated is only the super-exponentially
+ * decaying tail_s, so the sum length is set by s and not by S. That is the whole
+ * point: terf_G_series must carry S's Poisson support (N = S + 12 sqrt(S) + 60),
+ * while the tail form needs I ~ s + 8 sqrt(s) + 16.
+ *
+ * WHAT THIS PROBE REPORTS, and why it splits G from Delta:
+ *
+ *  - worst_rel is measured on G over the curvature-constrained regime
+ *    (s <= 0.5) plus the in-table/out-of-table S split, i.e. exactly where
+ *    terf_G_tail is a legitimate drop-in for terf_G_series.
+ *
+ *  - worst_rel_delta is measured on Delta over the SAME sweep PLUS a large
+ *    s = 20 point that exercises the adaptive I. Delta stays accurate there
+ *    even though G does not: at large s, Delta converges onto F to all 16
+ *    digits and G = F - Delta is pure cancellation. Since the quantity
+ *    production consumes is the terfc auxiliary F - G == Delta, the accurate
+ *    column is the one that matters. Reporting only G would understate the
+ *    method exactly where it is strongest.
+ *
+ * The comparison is against terf_G_series (the object the tables were generated
+ * from), NEVER against the interpolation tables -- the tables are the LESS
+ * accurate object here (measured 1.1e-5 at m=8 on the S<=20 table, and 1.9e-4
+ * on the terfc auxiliary where coulomb-terf cancels ~4 digits).
+ */
+extern "C" int scf_terf_tail_probe(int mmax, int reps,
+                                   double *tail_ns, double *series_ns,
+                                   double *worst_rel, int *worst_I,
+                                   double *worst_rel_delta) {
+    try {
+        int n_compared = 0;
+        if (mmax < 0 || mmax >= TERFC_DIMM) return SCF_EINVAL;
+        double gser[TERFC_DIMM], gtail[TERFC_DIMM];
+        double dser[TERFC_DIMM], dtail[TERFC_DIMM], F[TERFC_DIMM];
+
+        // S spans BOTH the in-table region (S < 20) and the out-of-table region
+        // (20 < S <= TERF_ASYMPTOTIC_S, where the series path is actually live).
+        // Above TERF_ASYMPTOTIC_S both paths short-circuit to Boys and the
+        // comparison is vacuous, so the sweep stops below it.
+        const double Ss[] = {0.05, 0.5, 2.0, 7.0, 15.0, 19.5, 25.0, 35.0, 49.0};
+        // s: the curvature-constrained values, plus 20.0 to exercise adaptive I.
+        const double ss[] = {0.01, 0.1, 0.5, 20.0};
+        const size_t nS = sizeof(Ss) / sizeof(Ss[0]);
+        const size_t ns_ = sizeof(ss) / sizeof(ss[0]);
+
+        double worstG = 0.0, worstD = 0.0;
+        int wI = 0;
+        for (size_t a = 0; a < nS; ++a) {
+            for (size_t b = 0; b < ns_; ++b) {
+                const double S = Ss[a], sv = ss[b];
+                const int I = terf_tail_index(sv);
+                if (I > wI) wI = I;
+
+                terf_G_series(S, sv, mmax, gser);
+                terf_G_tail(S, sv, mmax, gtail);
+                boys_upto(mmax, S, F);
+                terf_delta(S, sv, mmax, dtail);
+
+                for (int m = 0; m <= mmax; ++m) {
+                    // Delta from the SERIES side, for an apples-to-apples
+                    // reference: F - G_series is the series' own terfc aux.
+                    dser[m] = F[m] - gser[m];
+
+                    // GUARD -- the REFERENCE is the fragile object here, not
+                    // the candidate. F - G_series is itself a subtraction, and
+                    // once Delta approaches F (large s) it loses every digit,
+                    // so a ratio against it would measure the reference's
+                    // cancellation, not terf_delta's error. Only compare where
+                    // the reference retains signal: require Delta to be a
+                    // resolvable fraction of F. (Independent long-double
+                    // validation, which does NOT go through this subtraction,
+                    // puts terf_delta at 2.1e-11 worst relative over the whole
+                    // sweep INCLUDING s = 80 -- see terf_G_tail's note.)
+                    const double denD = std::fabs(dser[m]);
+                    const double scaleF = std::fabs(F[m]);
+                    if (denD > 1e-300 && denD > 1e-3 * scaleF
+                        && scaleF - denD > 1e-3 * scaleF)
+                        worstD = std::max(worstD,
+                                          std::fabs(dtail[m] - dser[m]) / denD);
+
+                    // G is only claimed where it is conditioned: s <= 0.5.
+                    // At s = 20 the subtraction F - Delta has no surviving
+                    // digits and a ratio there would measure cancellation,
+                    // not the method. See terf_G_tail's ACCURACY DOMAIN note.
+                    if (sv > 0.5) continue;
+                    const double denG = std::fabs(gser[m]);
+                    if (denG < 1e-300) continue;
+                    ++n_compared;
+                    worstG = std::max(worstG,
+                                      std::fabs(gtail[m] - gser[m]) / denG);
+                }
+            }
+        }
+        if (worst_rel)       *worst_rel = worstG;
+        if (worst_rel_delta) *worst_rel_delta = worstD;
+        if (worst_I)         *worst_I = wI;
+
+        // --- timing: identical call pattern for both paths ------------------
+        const double n = (double)reps * (double)nS * (double)ns_;
+        auto t0 = std::chrono::steady_clock::now();
+        for (int r = 0; r < reps; ++r)
+            for (size_t a = 0; a < nS; ++a)
+                for (size_t b = 0; b < ns_; ++b)
+                    terf_G_series(Ss[a], ss[b], mmax, gser);
+        auto t1 = std::chrono::steady_clock::now();
+        for (int r = 0; r < reps; ++r)
+            for (size_t a = 0; a < nS; ++a)
+                for (size_t b = 0; b < ns_; ++b)
+                    terf_G_tail(Ss[a], ss[b], mmax, gtail);
+        auto t2 = std::chrono::steady_clock::now();
+        if (series_ns) *series_ns = std::chrono::duration<double,std::nano>(t1-t0).count()/n;
+        if (tail_ns)   *tail_ns   = std::chrono::duration<double,std::nano>(t2-t1).count()/n;
+        // Return the NUMBER OF COMPARISONS, not a bare success flag: the Rust
+        // gate's anti-inertness assertion needs to know the sweep actually ran.
+        // A flag would let a probe that compared nothing report worst_rel == 0
+        // and pass vacuously.
+        return n_compared;
+    } catch (...) { return SCF_EINTERNAL; }
+}
+
+/* Micro-benchmark + accuracy of the large-S asymptotic vs the exact series.
+ *
+ *   Phi_terf(S) -> 2*sqrt(scr)*F_0(scr*S),  scr = w^2/(rho+w^2)
+ *
+ * terf_G_series does 5 heap allocations and ~5 loops of length
+ * N = S + 12*sqrt(S) + 60 per call; the asymptotic is ONE Boys call. This
+ * measures both the speed ratio and the accuracy, so the tradeoff is data.
+ * NOTE: terf_aux's (S,s) are already the REDUCED variables, and
+ *   s = phi2*r0^2, S = phi2*PQ2 -- so scr*S == s*(PQ2/r0^2) is NOT available
+ * here; the asymptotic must be expressed in (S,s) alone. Derivation:
+ *   scr = w^2/(rho+w^2) = phi2/rho, and the table's G is already the
+ *   phi-reduced auxiliary, so in reduced variables the erf anchor is just
+ *   F_0(S) itself. Hence the asymptotic G_m -> F_m(S) as s -> small.
+ * The probe below tests exactly that against the shipped series.
+ */
+extern "C" int scf_terf_asym_probe(int mmax, int reps,
+                                   double *ser_ns, double *asym_ns,
+                                   double *worst_rel) {
+    try {
+        double gser[TERFC_DIMM], gasy[TERFC_DIMM];
+        // representative out-of-table points: S>20, s small (curvature-linked)
+        const double Ss[] = {25, 50, 100, 200, 400};
+        const double ss[] = {0.05, 0.2, 0.5};
+        double worst = 0.0;
+        // accuracy first -- per (S,s), so the crossover is chosen from data
+        if (std::getenv("FERRIC_ASYM_DUMP")) {
+            std::fprintf(stderr, "      S      s       worst rel err (m=0..%d)\n", mmax);
+            for (double S : {20.,30.,50.,75.,100.,150.,200.,300.,400.,600.}) {
+                for (double sv : {0.05,0.2,0.5,1.0}) {
+                    terf_G_series(S, sv, mmax, gser);
+                    boys_upto(mmax, S, gasy);
+                    double w2 = 0.0;
+                    for (int m = 0; m <= mmax; ++m) {
+                        const double den = std::fabs(gser[m]);
+                        if (den < 1e-300) continue;
+                        w2 = std::max(w2, std::fabs(gasy[m]-gser[m])/den);
+                    }
+                    std::fprintf(stderr, "  %7.1f %5.2f   %.3e%s\n", S, sv, w2,
+                                 w2 < 1e-13 ? "   <-- safe" : "");
+                }
+            }
+        }
+        for (double S : Ss) {
+            for (double sv : ss) {
+                terf_G_series(S, sv, mmax, gser);
+                boys_upto(mmax, S, gasy);          // candidate asymptotic
+                for (int m = 0; m <= mmax; ++m) {
+                    const double den = std::fabs(gser[m]);
+                    if (den < 1e-300) continue;
+                    worst = std::max(worst, std::fabs(gasy[m]-gser[m])/den);
+                }
+            }
+        }
+        if (worst_rel) *worst_rel = worst;
+        // timing
+        auto t0 = std::chrono::steady_clock::now();
+        for (int r = 0; r < reps; ++r)
+            for (double S : Ss) for (double sv : ss) terf_G_series(S, sv, mmax, gser);
+        auto t1 = std::chrono::steady_clock::now();
+        for (int r = 0; r < reps; ++r)
+            // The s loop is deliberately kept on the asymptotic side even
+            // though boys_upto takes no s: the two paths must be timed over
+            // the SAME number of calls or the ns/call comparison is not
+            // like-for-like. `(void)sv` says "intentionally unused" rather
+            // than leaving a -Wunused-variable warning in every build.
+            for (double S : Ss) for (double sv : ss) { (void)sv; boys_upto(mmax, S, gasy); }
+        auto t2 = std::chrono::steady_clock::now();
+        // Derived from the arrays, not hardcoded. This was `reps * 15.0`,
+        // which is right only while Ss and ss happen to be 5 x 3 -- editing
+        // either array would have silently scaled every reported ns/call.
+        const double n = (double)reps
+                       * (double)(sizeof(Ss) / sizeof(Ss[0]))
+                       * (double)(sizeof(ss) / sizeof(ss[0]));
+        if (ser_ns)  *ser_ns  = std::chrono::duration<double,std::nano>(t1-t0).count()/n;
+        if (asym_ns) *asym_ns = std::chrono::duration<double,std::nano>(t2-t1).count()/n;
+        return 1;
+    } catch (...) { return SCF_EINTERNAL; }
+}
+
+

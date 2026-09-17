@@ -23,6 +23,18 @@ fn main() {
         .include("/usr/local/include")
         .include("/usr/local/include/libint2")
         .include("/usr/include/eigen3")
+        // STEP 4: opt in to the libint2-native terf operator. Requires a
+        // libint2 patched with Operator::terf (see
+        // wiki/perf-tasks/patches/libint2-terf-*.patch) selected via
+        // LIBINT2_PREFIX. Off by default so stock libint2 still builds.
+        .define(
+            if std::env::var("FERRIC_LIBINT2_TERF").is_ok() {
+                "FERRIC_LIBINT2_TERF"
+            } else {
+                "FERRIC_UNUSED_TERF"
+            },
+            None,
+        )
         .flag("-std=c++17")
         .flag("-O2")
         .flag("-Wno-deprecated-declarations")
