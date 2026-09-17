@@ -1217,3 +1217,55 @@ fn the_descent_skips_a_reference_it_cannot_analyse() {
         ),
     }
 }
+
+/// **The cost side of the guess change: iteration counts, hcore vs MINAO.**
+///
+/// A better guess that converged more slowly, or that destabilized a system
+/// which previously worked, would be a real regression even while fixing the
+/// state. This prints both counts for every system in the sweep so the trade is
+/// visible rather than assumed, and asserts only the thing that would be a
+/// genuine regression: that no system which converged from hcore FAILS to
+/// converge from MINAO.
+///
+/// It deliberately does NOT assert that MINAO is always fewer iterations. It is
+/// not — on some systems it costs a few more, because it starts in a different
+/// (and correct) basin. Asserting a speedup would be asserting something the
+/// data does not support.
+#[test]
+fn the_guess_change_costs_iterations_but_never_convergence() {
+    let cases: Vec<(&str, Sys)> = vec![
+        (
+            "HeNe+/def2-SVP",
+            diatomic("He", "Ne", 2.0, 1, 2, "def2-svp"),
+        ),
+        ("HeNe+/6-31G", diatomic("He", "Ne", 2.0, 1, 2, "6-31g")),
+        ("O2/6-31G", diatomic("O", "O", 1.2075, 0, 3, "6-31g")),
+        ("NO/6-31G", diatomic("N", "O", 1.1508, 0, 2, "6-31g")),
+        ("N2+/6-31G", diatomic("N", "N", 1.1160, 1, 2, "6-31g")),
+        ("CO+/6-31G", diatomic("C", "O", 1.1150, 1, 2, "6-31g")),
+        ("OH/6-31G", diatomic("O", "H", 0.97, 0, 2, "6-31g")),
+    ];
+    println!("\n=== SCF iterations: hcore (pre-fix) vs MINAO (fixed) ===");
+    let mut regressions = Vec::new();
+    for (name, sys) in &cases {
+        let h = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &hcore_cfg());
+        let m = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &tight_cfg());
+        let (hi, hc) = match &h {
+            Ok(r) => (r.iterations as i64, r.converged),
+            Err(_) => (-1, false),
+        };
+        let (mi, mc) = match &m {
+            Ok(r) => (r.iterations as i64, r.converged),
+            Err(_) => (-1, false),
+        };
+        println!("{name:16} hcore: {hi:3} iters (conv {hc})   minao: {mi:3} iters (conv {mc})");
+        if hc && !mc {
+            regressions.push(format!("{name}: converged from hcore but NOT from MINAO"));
+        }
+    }
+    assert!(
+        regressions.is_empty(),
+        "the guess change broke convergence somewhere:\n  {}",
+        regressions.join("\n  ")
+    );
+}
