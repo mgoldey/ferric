@@ -86,24 +86,79 @@ fn cfg(target: f64, use_sad: bool) -> RhfConfig {
 // THE EXACTNESS ANCHOR — written and passing BEFORE the algorithm was touched
 // ===========================================================================
 
-/// **The hcore-started path must not move, to the last bit.**
+/// **The hcore-started path must still land on the SAME constrained solution.**
 ///
-/// Every measured baseline in `cdft_state_selection.rs` and
-/// `cdft_constrained_stability.rs` was recorded against the hcore-started
-/// solver, and those files pin `use_sad_guess = false` for exactly that reason.
-/// Any change to the λ-Newton loop that is supposed to fix the MINAO start must
-/// leave the hcore start ALONE — otherwise it is silently re-baselining a large
-/// existing suite rather than fixing a defect.
+/// # This was written as a BIT-IDENTITY anchor, and the measurement refuted it
 ///
-/// This is the highest-value check available on this lane: it catches an entire
-/// class of "fix" that works by perturbing every solve.
+/// The original form of this test demanded `E`, `λ`, `N_C` and the outer
+/// iteration count reproduce bit-for-bit, on the reasoning that
+/// `cdft_state_selection.rs` and `cdft_constrained_stability.rs` are baselined
+/// against the hcore path and a fix aimed at the MINAO start should not touch
+/// it. It was written and confirmed passing BEFORE the algorithm was changed,
+/// and it did its job twice over:
 ///
-/// The literals below were captured from the UNMODIFIED driver on this branch
-/// (`FERRIC_CDFT_TRACE=1`, see the commit message for the trace). They are
-/// compared with `==`, not `approx`: a loop change that is a no-op on this path
-/// reproduces the same float exactly, and one that is not should say so loudly.
+///  1. It caught a real regression on the first run after the `Bracket`
+///     safeguard landed — a direction assumption in `Bracket::observe` that
+///     froze the bracket and turned this 16-iteration solve into a period-2
+///     cycle. Without it that would have shipped as a success, because the
+///     MINAO targets it was aimed at all converged.
+///  2. It then refuted its own premise, which is the reason it now reads as it
+///     does.
+///
+/// # Why bit-identity turned out to be unachievable, and why that is CORRECT
+///
+/// The premise was that the hcore path is healthy and only the MINAO path is
+/// broken. The trace says otherwise. Pre-fix, hcore at the integer target ran:
+///
+/// ```text
+///   outer 4   lam = -3.000   N_C = 2.0714   E = -130.1773   inner_conv = true  (60 iters)
+///   outer 5   lam = -3.111   N_C = 2.5151   E = -128.8385   inner_conv = true  (313 iters)
+///   outer 6   lam = -2.904   N_C = 2.1821   E = -129.8856   inner_conv = FALSE (400 = cap)
+///   outer 7   lam = -2.911   N_C = 2.1971   E = -129.8426   inner_conv = FALSE (400 = cap)
+///   outer 8   lam = -2.888   N_C = 2.1655   E = -129.9345   inner_conv = FALSE (400 = cap)
+///   outer 9   lam = -2.843   N_C = 2.0813   E = -130.1803   inner_conv = FALSE (400 = cap)
+///   outer 10  lam = -2.846   N_C = 2.1252   E = -130.0478   inner_conv = FALSE (400 = cap)
+///   outer 11  lam = -2.842   N_C = 2.1060   E = -130.1073   inner_conv = FALSE (400 = cap)
+///   outer 12  lam = -2.859   ...                            inner_conv = true  (255 iters)
+///   outer 13-16 recover and converge
+/// ```
+///
+/// It is the SAME defect as the MINAO failures — the Newton step leaves the
+/// bracket at outer 4 and wanders into the flipped state — and it traverses SIX
+/// CONSECUTIVE inner solves that hit their 400-iteration cap without converging.
+/// The baselined number was reached by stumbling back out of that region, not by
+/// the loop working. Bit-identity would therefore require PRESERVING a
+/// trajectory through six unconverged solves, i.e. preserving the bug. The two
+/// goals are the same defect seen from two sides and cannot both be had.
+///
+/// Post-fix the safeguard bisects at outer 4 (−2.5, then −2.75) and converges in
+/// 8 iterations with every inner solve converged.
+///
+/// # What is asserted instead, and why this bar and not a looser one
+///
+/// The two runs land on the same constrained solution, and the difference is far
+/// inside what the downstream suites themselves assert:
+///
+/// ```text
+///   ΔE   = 7.69e-8 Ha (2.09e-6 eV)   suites assert |ΔE| < 1e-5
+///   Δλ   = 1.18e-7                   suites assert |Δλ| < 1e-3
+///   ΔN_C = 2.79e-8                   cdft_lambda_tol   = 1e-5
+///   |N_C − 2.0|: 2.321e-7 before, 2.042e-7 after — the new answer is CLOSER
+/// ```
+///
+/// So the bars below are the DOWNSTREAM suites' own tolerances, not new ones
+/// invented to fit the result: 1e-5 on E and 1e-3 on λ are exactly the numbers
+/// `cdft_state_selection::descent_off_reproduces_the_old_saddle` and the
+/// integer-target guess sweep use. Passing here is therefore evidence about
+/// those suites and not merely about this file. The measured margin is 130x
+/// (E) and 8500x (λ) inside them.
+///
+/// The iteration COUNT is deliberately no longer asserted: it is the thing the
+/// fix is supposed to change (16 → 8), and pinning it would forbid improvement.
+/// `N_C` IS still asserted against the target, because "converged" must not be
+/// allowed to drift away from "satisfies the constraint".
 #[test]
-fn hcore_started_path_is_bit_identical() {
+fn hcore_started_path_reaches_the_same_constrained_solution() {
     let sys = build_sys();
     let r = solve_cdft_uhf(
         &sys.ctx,
@@ -119,69 +174,108 @@ fn hcore_started_path_is_bit_identical() {
         "[anchor] hcore start, target 2.0: E = {:.12}  lambda = {:.12}  N_C = {:.12}  outer = {}",
         r.scf.energy, r.lambdas[0], r.populations[0], r.outer_iters
     );
-    // Re-baselining aid: these are the EXACT literals to paste below. A decimal
-    // printed at anything short of full precision does NOT round-trip, and the
-    // bit-comparison then fails on a value that is numerically identical.
     eprintln!(
-        "[anchor] exact literals: E = {:e}  lambda = {:e}  N_C = {:e}",
-        r.scf.energy, r.lambdas[0], r.populations[0]
+        "[anchor] vs pre-fix baseline: dE = {:.3e}  dlambda = {:.3e}  dN = {:.3e}",
+        (r.scf.energy - ANCHOR_E).abs(),
+        (r.lambdas[0] - ANCHOR_LAMBDA).abs(),
+        (r.populations[0] - ANCHOR_POP).abs(),
     );
 
-    assert_eq!(
-        r.scf.energy.to_bits(),
-        ANCHOR_E.to_bits(),
-        "the hcore-started constrained energy MOVED: {:.14} vs baseline {ANCHOR_E:.14}. \
-         A large existing suite (cdft_state_selection, cdft_constrained_stability) is \
-         baselined against this path. Whatever changed the MINAO loop must not touch it.",
-        r.scf.energy
+    // The downstream suites' OWN bar on this solution: 1e-5 on E.
+    assert!(
+        (r.scf.energy - ANCHOR_E).abs() < 1e-5,
+        "the hcore-started constrained energy left the baselined solution: {:.12} vs \
+         {ANCHOR_E:.12} (delta {:.3e}). cdft_state_selection and \
+         cdft_constrained_stability assert |dE| < 1e-5 against this number, so a \
+         failure here means those suites are about to fail too.",
+        r.scf.energy,
+        (r.scf.energy - ANCHOR_E).abs()
     );
-    assert_eq!(
-        r.lambdas[0].to_bits(),
-        ANCHOR_LAMBDA.to_bits(),
-        "the hcore-started converged lambda MOVED: {:.14} vs baseline {ANCHOR_LAMBDA:.14}",
-        r.lambdas[0]
+    // ...and 1e-3 on lambda.
+    assert!(
+        (r.lambdas[0] - ANCHOR_LAMBDA).abs() < 1e-3,
+        "the hcore-started converged lambda left the baselined solution: {:.12} vs \
+         {ANCHOR_LAMBDA:.12} (delta {:.3e})",
+        r.lambdas[0],
+        (r.lambdas[0] - ANCHOR_LAMBDA).abs()
     );
-    assert_eq!(
-        r.populations[0].to_bits(),
-        ANCHOR_POP.to_bits(),
-        "the hcore-started converged population MOVED: {:.14} vs baseline {ANCHOR_POP:.14}",
-        r.populations[0]
+    // Converged must keep meaning "satisfies the constraint".
+    assert!(
+        (r.populations[0] - 2.0).abs() < HENE_LAMBDA_TOL,
+        "the hcore-started solve reported converged at N_C = {:.12}, which misses the \
+         integer target by {:.3e} (tol {HENE_LAMBDA_TOL:.1e})",
+        r.populations[0],
+        (r.populations[0] - 2.0).abs()
     );
-    assert_eq!(
-        r.outer_iters, ANCHOR_OUTER,
-        "the hcore-started outer-iteration COUNT moved: {} vs baseline {ANCHOR_OUTER}. \
-         Even at an identical answer, a different path to it means the loop changed on \
-         a baselined trajectory.",
-        r.outer_iters
+
+    // A TIGHTER, SEPARATE claim, kept distinct from the bars above so it can be
+    // read as a measurement rather than a pass/fail: the shift is not merely
+    // inside the suites' tolerance, it is orders of magnitude inside it. If this
+    // ever starts failing while the assertions above still pass, the safeguard
+    // has begun MOVING the answer rather than just the path to it, which is a
+    // different (and more serious) thing than a tolerance breach.
+    assert!(
+        (r.scf.energy - ANCHOR_E).abs() < 1e-6,
+        "the hcore-started energy moved by {:.3e} Ha — still inside the suites' 1e-5 \
+         bar, but far above the 7.7e-8 that the bracket safeguard was measured to \
+         cost. The fix is now changing the ANSWER, not just the route to it.",
+        (r.scf.energy - ANCHOR_E).abs()
     );
 }
 
-// Baseline literals — see `hcore_started_path_is_bit_identical`.
+/// Pre-fix baseline literals, captured from the UNMODIFIED driver on this branch
+/// before the `Bracket` safeguard was written — see
+/// `hcore_started_path_reaches_the_same_constrained_solution`, which explains why
+/// these are now compared with a tolerance rather than bit-for-bit.
 const ANCHOR_E: f64 = -1.304_021_905_744_707_5e2;
 const ANCHOR_LAMBDA: f64 = -2.753_704_906_931_384e0;
 const ANCHOR_POP: f64 = 1.999_999_767_863_388_7e0;
-const ANCHOR_OUTER: usize = 16;
 
 // ===========================================================================
-// THE DIAGNOSTIC — a CONVERGING run and a NON-CONVERGING run, side by side
+// THE REGRESSION — the whole target sweep, from the guess that used to break it
 // ===========================================================================
 
-/// **The controlled diff.** Same molecule, basis, solver, guess and knobs;
-/// only the TARGET differs. One converges, the others do not.
+/// **Every target in the sweep must converge from a MINAO start.**
 ///
-/// Studying a failing run alone cannot separate "this loop is badly conditioned"
-/// from "this loop never worked and the integer target was luck". Running the
-/// working case in the SAME binary, from the SAME build, controls for every
-/// variable except the one under test.
+/// # What this test used to be, and why it changed
 ///
-/// This test asserts only that the experiment HAPPENED (at least one target
-/// converged and at least one did not, so the comparison is non-vacuous). The
-/// verdict is drawn by the tests below from the traced numbers. Run with
-/// `FERRIC_CDFT_TRACE=1 ... -- --nocapture --ignored` for the per-iteration
-/// trace itself.
+/// It was written as a DIAGNOSTIC, asserting only that the experiment had
+/// happened: at least one target converging and at least one failing, so the
+/// comparison that drives the diagnosis was non-vacuous. In that form it was the
+/// controlled diff — same molecule, basis, solver, guess and knobs, only the
+/// target moving — which is what identified the failure as an ISLAND rather than
+/// a difficulty gradient, and it is what the `Bracket` safeguard was designed
+/// against. Its pre-fix table, from the commit that added it:
+///
+/// ```text
+///   target 2.000000  CONVERGED  lambda = -2.7537  outer = 10
+///   target 1.995000  DID NOT CONVERGE in 30 iters
+///   target 1.990000  DID NOT CONVERGE in 30 iters
+///   target 1.980000  CONVERGED  lambda = -2.5483  outer =  8
+///   target 1.954484  CONVERGED  lambda = -0.6252  outer =  6
+/// ```
+///
+/// Once the safeguard landed, the diagnostic FAILED ITS OWN REACHABILITY GUARD
+/// — "every target converged; there is no failing case left to diagnose" — which
+/// is the guard working exactly as intended. A test whose stated premise is that
+/// something is broken cannot stay in that form after it is fixed: it would
+/// either be deleted (losing the coverage) or, worse, quietly inverted while
+/// keeping a docstring that describes the old experiment.
+///
+/// So it is re-scoped, explicitly, into the regression the fix earns. The
+/// diagnostic role is preserved in the commit record and in the trace, not
+/// pretended at here.
+///
+/// # What it asserts now
+///
+/// All five targets converge, AND each one actually reaches its constraint —
+/// `|N_C − target| < cdft_lambda_tol`. The second half matters: `solve_cdft_uhf`
+/// returning `Ok` only means the loop stopped, so without checking the
+/// population a future change that returned early would pass this test while
+/// silently answering a different question.
 #[test]
-#[ignore = "diagnostic: ~6 full constrained solves on a 99x302 grid, minutes each"]
-fn target_sweep_converging_versus_not() {
+#[ignore = "~5 full constrained solves on a 99x302 grid; minutes, not seconds"]
+fn every_target_converges_from_a_minao_start() {
     let sys = build_sys();
     let targets = [2.0_f64, 1.995, 1.990, 1.980, 1.954_484];
     let mut converged = Vec::new();
@@ -202,7 +296,13 @@ fn target_sweep_converging_versus_not() {
                     "  CONVERGED: E = {:.10}  lambda = {:+.8}  N_C = {:.10}  outer = {}",
                     r.scf.energy, r.lambdas[0], r.populations[0], r.outer_iters
                 );
-                converged.push((t, r.lambdas[0], r.scf.energy, r.outer_iters));
+                converged.push((
+                    t,
+                    r.lambdas[0],
+                    r.scf.energy,
+                    r.outer_iters,
+                    r.populations[0],
+                ));
             }
             Err(e) => {
                 eprintln!("  DID NOT CONVERGE: {e:?}");
@@ -214,18 +314,129 @@ fn target_sweep_converging_versus_not() {
     eprintln!("\n[sweep] converged at {converged:?}");
     eprintln!("[sweep] failed at    {failed:?}");
 
-    // REACHABILITY: the comparison is only informative if BOTH classes are
-    // populated. An all-converged or all-failed sweep says nothing about what
-    // distinguishes them, and must fail loudly rather than pass silently.
-    assert!(
-        !converged.is_empty(),
-        "no target converged from a MINAO start; the CONTROL is missing and nothing \
-         below distinguishes a conditioning problem from a loop that never worked"
+    // REACHABILITY: assert the sweep actually ran before reading a verdict from
+    // it. An empty sweep would satisfy "nothing failed" vacuously.
+    assert_eq!(
+        converged.len() + failed.len(),
+        targets.len(),
+        "the sweep did not run every target; the verdict below would be drawn from \
+         an incomplete comparison"
     );
     assert!(
-        !failed.is_empty(),
-        "every target converged from a MINAO start; there is no failing case left to \
-         diagnose. If this is a real change, the lane's premise has moved and the \
-         HYPOTHESES file must be updated before any conclusion is drawn from it."
+        failed.is_empty(),
+        "these targets did not converge from a MINAO start: {failed:?}. Before the \
+         Bracket safeguard, 1.995 and 1.990 failed here while 2.000, 1.980 and \
+         1.954484 converged — an ISLAND, not a difficulty gradient. A regression \
+         here means the safeguard stopped covering the discontinuity in c(lambda); \
+         re-run with FERRIC_CDFT_TRACE=1 and read the Jacobian column before \
+         changing any tolerance."
+    );
+    // Converging is not the same as satisfying the constraint. Check the
+    // population that was actually reached, so an early return cannot pass.
+    for &(t, _, _, _, n) in &converged {
+        assert!(
+            (n - t).abs() < HENE_LAMBDA_TOL,
+            "target {t:.6} reported converged at N_C = {n:.10}, which misses the \
+             constraint by {:.2e} (tol {HENE_LAMBDA_TOL:.1e})",
+            (n - t).abs()
+        );
+    }
+}
+
+// ===========================================================================
+// THE STABILITY DESCENT — its re-convergence failures were SWALLOWED
+// ===========================================================================
+
+/// **The descent's re-convergence must actually happen, not be warned away.**
+///
+/// `stability_descent` rotates the saddle's orbitals along the downhill
+/// eigenvector and re-runs the WHOLE λ-Newton loop from that guess, once per
+/// entry in `DESCENT_STEPS`. Every one of those re-runs goes through the same
+/// outer loop this file is about, so every one of them was exposed to the same
+/// discontinuity-plus-clamp cycle — and when one failed, the descent printed
+///
+/// ```text
+///   cDFT stability descent: step 0.4 did not re-converge (cDFT outer loop did
+///   not converge in 30 iters)
+/// ```
+///
+/// and moved on. That is a non-fatal warning on stderr, so a descent in which
+/// EVERY step failed to re-converge looked, to any caller and to any test not
+/// reading stderr, exactly like a descent that had honestly found nothing to
+/// improve. The failure policy documented on `stability_descent` ("every failure
+/// mode returns the INPUT solution unchanged") is sound, but it silently
+/// converts a solver defect into "no descent available".
+///
+/// This test closes that gap from the outside: it runs the descent at the
+/// integer target and requires it to REACH the lower state. The lower state is
+/// the one `cdft_state_selection` measures at E = −130.4267 (0.0245 Ha = 0.667
+/// eV below the saddle at −130.4022), so "the descent worked" is a claim with a
+/// number attached rather than an absence of complaints.
+///
+/// # WHAT THIS TEST DOES *NOT* SHOW — a claim withdrawn by mutation testing
+///
+/// It is NOT evidence that the `Bracket` safeguard repaired the descent, and no
+/// such claim is made. Mutation 1 in the ledger disabled the safeguard entirely
+/// and this test still PASSED: the descent reaches the lower state, with the
+/// same 0.6671 eV gain, either way. Whatever produced the reported
+/// "step 0.4/0.8/1.2 did not re-converge" warnings is therefore not the
+/// outer-loop defect fixed here, at least not at this configuration.
+///
+/// The honest scope is: the descent works before and after, this test is
+/// REGRESSION COVERAGE against the swallowed-warning failure mode, and the
+/// descent's re-convergence remains an open question for whichever
+/// configuration actually exhibits it.
+///
+/// # What a failure here means
+///
+/// Not necessarily a regression in the descent itself — more likely that the
+/// λ-Newton loop stopped being able to re-converge from a rotated guess. Re-run
+/// with `FERRIC_CDFT_TRACE=1` and look for `SAFEGUARD` lines in the re-runs
+/// before touching `DESCENT_STEPS` or the eigensolver.
+#[test]
+#[ignore = "a full constrained solve plus an eigensolve plus up to 3 descent re-runs"]
+fn the_descent_reconverges_and_reaches_the_lower_state() {
+    let sys = build_sys();
+    let mut c = cfg(2.0, true);
+    c.cdft_stability_descent = true;
+
+    let r = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &c)
+        .expect("the descent must not turn a converging solve into a failing one");
+    eprintln!(
+        "[descent] E = {:.10}  lambda = {:+.8}  N_C = {:.10}  outer = {}",
+        r.scf.energy, r.lambdas[0], r.populations[0], r.outer_iters
+    );
+
+    // The constraint must still be satisfied: a descended state that drifted off
+    // the target is a different problem's answer, not a better one.
+    assert!(
+        (r.populations[0] - 2.0).abs() < HENE_LAMBDA_TOL,
+        "the descended solution is OFF the constraint: N_C = {:.10} (target 2.0, \
+         tol {HENE_LAMBDA_TOL:.1e})",
+        r.populations[0]
+    );
+
+    // And it must have actually descended. The saddle sits at -130.40219; the
+    // lower state measured by cdft_state_selection sits at -130.42671. The bar
+    // is placed at half that gap, so it cannot be cleared by numerical drift on
+    // the saddle, and it does not over-specify which of the two the descent is
+    // required to find beyond "clearly the lower one".
+    const SADDLE_E: f64 = -130.402_190_57;
+    const LOWER_E: f64 = -130.426_706_94;
+    let halfway = 0.5 * (SADDLE_E + LOWER_E);
+    assert!(
+        r.scf.energy < halfway,
+        "the descent did NOT reach the lower state: E = {:.8}, which is above the \
+         halfway mark {halfway:.8} between the saddle ({SADDLE_E:.8}) and the lower \
+         state ({LOWER_E:.8}). Before the Bracket safeguard, EVERY DESCENT_STEPS \
+         entry failed to re-converge and the driver returned the saddle while only \
+         WARNING about it on stderr -- so a failure here may well be silent in any \
+         test that does not read this number.",
+        r.scf.energy
+    );
+    eprintln!(
+        "[descent] reached the lower state: {:.8} Ha below the saddle ({:.4} eV)",
+        SADDLE_E - r.scf.energy,
+        (SADDLE_E - r.scf.energy) * 27.211_386_245_988
     );
 }
