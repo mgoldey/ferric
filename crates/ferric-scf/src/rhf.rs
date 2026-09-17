@@ -135,6 +135,49 @@ pub struct RhfConfig {
     /// MARGINAL solution the descent is not taken and only the eigensolve is
     /// paid.
     pub cdft_stability_descent: bool,
+    /// UNCONSTRAINED open-shell **state selection**: after a UHF solve
+    /// converges, check the orbital Hessian and, if the solution is a SADDLE,
+    /// follow the downhill eigenvector and re-converge from there — keeping the
+    /// lower-energy solution. Default **`false`**.
+    ///
+    /// # Why this defaults OFF, unlike `cdft_stability_descent`
+    ///
+    /// The two knobs look alike and the defaults differ deliberately.
+    ///
+    /// `cdft_stability_descent` defaults ON because a cDFT diabat energy is the
+    /// entire output of that run, the pre-fix answer was known-wrong on the
+    /// lane's own system, and cDFT is a narrow, opt-in code path — nothing else
+    /// in the repo pays for it.
+    ///
+    /// This knob is different on both counts. `solve_uhf` is on the hot path of
+    /// every open-shell energy, gradient, geometry step, MP2/CC/RPA reference
+    /// and free-atom SAD solve in the workspace, and a geometry optimization or
+    /// a frequency job runs it hundreds of times. The descent costs a Davidson
+    /// eigensolve on EVERY converged solve — paid even when the answer is
+    /// already right, which after the guess fix it is on 5 of the 6 measured
+    /// systems — plus a full re-converge whenever a saddle is found.
+    ///
+    /// The measured case for defaulting it OFF: the GUESS fix in the same
+    /// commit (`uhf_guess_mos`) already moves 3-of-6-wrong to 1-of-6-wrong, and
+    /// the two systems it repairs (HeNe⁺ at def2-SVP and 6-31G) land on the
+    /// external reference to ~1e-10 Ha and report STABLE. The one residue,
+    /// N₂⁺/6-31G, is a system PySCF 2.13.0 ALSO gets wrong from its own default
+    /// guess and only fixes by running its own `stability()` — i.e. it is a
+    /// known-hard case where the reference implementation likewise requires an
+    /// explicit, opt-in step. Making every SCF in the repo pay a Davidson to
+    /// auto-repair that class is a worse trade than telling the caller the knob
+    /// exists.
+    ///
+    /// **What makes OFF safe is that the default is no longer silent.** With
+    /// `check_stability` set, an unstable solution already prints an explicit
+    /// UNSTABLE warning naming the remedy, and `ScfResult::stability` carries
+    /// the verdict for a caller to branch on. A user who wants the repair
+    /// applied automatically sets this to `true`; a user who does not is not
+    /// left believing a saddle is a minimum.
+    ///
+    /// Setting it `true` costs one Davidson per converged solve plus one extra
+    /// full SCF per descent actually taken.
+    pub scf_stability_descent: bool,
     /// Fractional (ensemble) occupation of a degenerate frontier shell. When
     /// `true` (UHF/UKS only), if the per-spin HOMO sits inside a group of
     /// near-degenerate orbitals that straddle the occupation boundary, the
@@ -282,6 +325,7 @@ impl Default for RhfConfig {
             constraints: Vec::new(),
             cdft_lambda_tol: 1e-5,
             cdft_stability_descent: true,
+            scf_stability_descent: false,
             fractional_occ: false,
             // 0 = "unset" → resolve_three_index_budget auto-detects (0.8×RAM).
             three_index_budget_bytes: 0,

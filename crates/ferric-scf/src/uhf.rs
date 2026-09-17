@@ -97,7 +97,250 @@ pub fn solve_uhf_best_effort(
     config: &UhfConfig,
     initial_mos: Option<(&Array2<f64>, &Array2<f64>)>,
 ) -> Result<ScfResult, FerricError> {
-    solve_uhf_fockmod(ctx, mol, prep, bounds, config, initial_mos, None)
+    let first = solve_uhf_fockmod(ctx, mol, prep, bounds, config, initial_mos, None)?;
+    if !config.scf_stability_descent {
+        return Ok(first);
+    }
+    Ok(stability_descent(ctx, mol, prep, bounds, config, first))
+}
+
+/// Step sizes tried when following a downhill eigenvector, in radians.
+///
+/// NOT a guess. Measured in the sibling cDFT lane on
+/// `test/cdft-constrained-stability`: steps ε ≤ 0.5 rad fall straight back into
+/// the saddle's own DIIS basin even though those rotations demonstrably LOWER
+/// the energy, and only ~1 rad escapes. A ladder probing only small steps would
+/// wrongly conclude the eigenvector is useless. The smaller entries are kept so
+/// a system where a gentler step suffices is not over-rotated past its minimum,
+/// and the sweep takes the LOWEST result rather than the first success.
+const DESCENT_STEPS: [f64; 3] = [0.4, 0.8, 1.2];
+
+/// Maximum descent rounds. Each round is one Davidson eigensolve plus up to
+/// `DESCENT_STEPS.len()` full SCF re-converges, bounding the worst case at a
+/// small multiple of the undescended solve.
+const MAX_DESCENT_ROUNDS: usize = 3;
+
+/// **Unconstrained UHF state selection.** Given a converged UHF solution, check
+/// whether it is a SADDLE of the orbital Hessian and, if so, follow the
+/// downhill eigenvector and re-converge from there, keeping the lowest result.
+///
+/// Gated by [`crate::rhf::RhfConfig::scf_stability_descent`], which defaults
+/// **off** — see that field's doc for why this default differs from
+/// `cdft_stability_descent`'s.
+///
+/// # Failure policy
+///
+/// Every failure mode returns the INPUT solution unchanged, after printing why.
+/// A descent that cannot be computed, does not re-converge, or lands HIGHER
+/// must never make the answer worse than not having tried, so this function can
+/// only ever improve on `first` or leave it exactly alone.
+fn stability_descent(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &UhfConfig,
+    first: ScfResult,
+) -> ScfResult {
+    if !first.converged {
+        eprintln!(
+            "SCF stability descent: SKIPPED — the SCF did not converge, so the orbital \
+             Hessian would be evaluated at a non-stationary point and its eigenvalues \
+             would not be a stability verdict at all."
+        );
+        return first;
+    }
+    // The descent needs a stability verdict, and the verdict is only computed
+    // when `check_stability` is set. Rather than silently computing one behind
+    // the user's back (which would make the cost of this knob invisible), say
+    // so: the two knobs are meant to be set together.
+    let mut best = first;
+    for round in 1..=MAX_DESCENT_ROUNDS {
+        let Some(st) = best.stability.as_ref() else {
+            eprintln!(
+                "SCF stability descent: SKIPPED — no stability verdict is available \
+                 (RhfConfig::check_stability is off, or the analysis was skipped for a \
+                 stated reason). Set check_stability = true alongside \
+                 scf_stability_descent. The solution is returned as converged, which does \
+                 NOT mean it is the lowest state."
+            );
+            return best;
+        };
+        let verdict = st.verdict();
+        let lmin = st.lowest_eigenvalue;
+        if verdict != crate::stability::StabilityVerdict::Unstable {
+            if round == 1 && config.verbose {
+                eprintln!(
+                    "SCF stability descent: the converged solution is {} (lambda_min = \
+                     {lmin:+.4e}); no descent taken.",
+                    verdict.label()
+                );
+            }
+            return best;
+        }
+        let va = st.eigenvector_alpha.clone();
+        let Some(vb) = st.eigenvector_beta.clone() else {
+            eprintln!(
+                "SCF stability descent: the verdict is UNSTABLE (lambda_min = {lmin:+.4e}) \
+                 but carries no beta eigenvector block, so the UHF rotation cannot be \
+                 built. Returning the saddle."
+            );
+            return best;
+        };
+        eprintln!(
+            "SCF stability descent (round {round}): the converged solution at E = {:.8} is \
+             a SADDLE (lambda_min = {lmin:+.4e}); following the downhill eigenvector.",
+            best.energy
+        );
+
+        let (nocc_a, nocc_b) = match nocc_ab(mol) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("SCF stability descent: cannot resolve occupations ({e:?})");
+                return best;
+            }
+        };
+        let Some(cb0) = best.mos_beta.clone() else {
+            eprintln!("SCF stability descent: the solution carries no beta MOs; returning it.");
+            return best;
+        };
+
+        let mut improved: Option<ScfResult> = None;
+        for &step in &DESCENT_STEPS {
+            let g_a = rotate_mos(&best.mos_alpha, &va, nocc_a, step);
+            let g_b = rotate_mos(&cb0, &vb, nocc_b, step);
+            let cand =
+                match solve_uhf_fockmod(ctx, mol, prep, bounds, config, Some((&g_a, &g_b)), None) {
+                    Ok(c) if c.converged => c,
+                    Ok(c) => {
+                        eprintln!(
+                            "SCF stability descent: step {step} did not converge (E = {:.8}); \
+                         discarded.",
+                            c.energy
+                        );
+                        continue;
+                    }
+                    Err(e) => {
+                        eprintln!("SCF stability descent: step {step} failed ({e:?}); discarded.");
+                        continue;
+                    }
+                };
+            if accepts_candidate(
+                cand.energy,
+                best.energy,
+                improved.as_ref().map(|b| b.energy),
+            ) {
+                improved = Some(cand);
+            }
+        }
+
+        match improved {
+            Some(c) => {
+                eprintln!(
+                    "SCF stability descent (round {round}): reached a LOWER state, \
+                     E = {:.8} (was {:.8}, dE = {:.8} Ha = {:.4} eV)",
+                    c.energy,
+                    best.energy,
+                    best.energy - c.energy,
+                    (best.energy - c.energy) * 27.211_386_245_988
+                );
+                best = c;
+            }
+            None => {
+                eprintln!(
+                    "SCF stability descent (round {round}): the solution is a saddle \
+                     (lambda_min = {lmin:+.4e}) but NO step reached a lower state. Returning \
+                     the saddle, which is therefore NOT established as the lowest state."
+                );
+                return best;
+            }
+        }
+    }
+    eprintln!(
+        "SCF stability descent: still descending after {MAX_DESCENT_ROUNDS} rounds; \
+         returning the lowest found (E = {:.8}). It is NOT established as the bottom.",
+        best.energy
+    );
+    best
+}
+
+/// Should a descended candidate replace the best-so-far?
+///
+/// Only if it is strictly BELOW both the incumbent and any better candidate
+/// already found this round. Strict `<` throughout, so an exactly equal energy
+/// does not churn the answer.
+///
+/// Extracted rather than inlined for the reason the sibling cDFT lane
+/// documented: inline, this guard is UNREACHABLE by the suite, because on the
+/// systems tested every descended candidate happens to be lower — so deleting
+/// it leaves everything GREEN. It is the entire reason the descent cannot make
+/// an answer worse than not having tried, so it is tested directly. See
+/// `descent_never_accepts_a_higher_state`.
+fn accepts_candidate(cand_e: f64, best_e: f64, improved_e: Option<f64>) -> bool {
+    cand_e < best_e && improved_e.is_none_or(|b| cand_e < b)
+}
+
+/// Test-visible alias for [`accepts_candidate`], so the guard can be exercised
+/// from an integration test rather than only through a path that never reaches
+/// its `false` branch. Behaviour is the function itself, not a copy of it.
+#[doc(hidden)]
+pub fn accepts_candidate_for_test(cand_e: f64, best_e: f64, improved_e: Option<f64>) -> bool {
+    accepts_candidate(cand_e, best_e, improved_e)
+}
+
+/// (nocc_α, nocc_β) from the molecule's charge and multiplicity.
+fn nocc_ab(mol: &Molecule) -> Result<(usize, usize), FerricError> {
+    let nelec = mol.nelec() as i64;
+    let two_s = mol.multiplicity as i64 - 1;
+    if two_s < 0 || nelec < two_s || (nelec - two_s) % 2 != 0 {
+        return Err(FerricError::General(format!(
+            "UHF descent: incompatible nelec={nelec} and multiplicity={}",
+            mol.multiplicity
+        )));
+    }
+    Ok((
+        ((nelec + two_s) / 2) as usize,
+        ((nelec - two_s) / 2) as usize,
+    ))
+}
+
+/// Rotate MOs by `exp(κ)` for the antisymmetric κ built from the occ→virt
+/// block `k_ov` scaled by `eps`, via the Cayley transform
+/// `(I − κ/2)⁻¹ (I + κ/2)` — orthogonality-preserving to machine precision.
+fn rotate_mos(c: &Array2<f64>, k_ov: &Array2<f64>, nocc: usize, eps: f64) -> Array2<f64> {
+    use ndarray_linalg::Solve;
+    let n = c.nrows();
+    let mut kappa = Array2::<f64>::zeros((n, n));
+    for (ir, a) in (nocc..n).enumerate() {
+        for i in 0..nocc {
+            if ir >= k_ov.nrows() || i >= k_ov.ncols() {
+                continue;
+            }
+            let v = eps * k_ov[(ir, i)];
+            kappa[(a, i)] = v;
+            kappa[(i, a)] = -v;
+        }
+    }
+    let half = 0.5 * &kappa;
+    let eye = Array2::<f64>::eye(n);
+    let am = &eye - &half;
+    let bm = &eye + &half;
+    let mut u = Array2::<f64>::zeros((n, n));
+    for col in 0..n {
+        match am.solve(&bm.column(col).to_owned()) {
+            Ok(sol) => {
+                for row in 0..n {
+                    u[(row, col)] = sol[row];
+                }
+            }
+            // A singular (I − κ/2) cannot happen for antisymmetric κ (its
+            // eigenvalues are 1 ± i·imag), but the solve is fallible, so fall
+            // back to the identity column rather than panicking inside a
+            // best-effort descent.
+            Err(_) => u[(col, col)] = 1.0,
+        }
+    }
+    c.dot(&u)
 }
 
 /// UHF with an optional per-iteration Fock modifier.
@@ -220,7 +463,32 @@ pub fn solve_uhf_fockmod(
     // aug-cc-pVDZ). m == n for well-conditioned S. See crate::rhf for details.
     let x = crate::rhf::canonical_orthogonalizer(&s)?;
 
-    // Initial guess: caller-supplied MOs if provided, else hcore.
+    // Initial guess: caller-supplied MOs if provided, else the configured
+    // density guess (MINAO/SAD by default), else hcore.
+    //
+    // # Why this is not just hcore any more
+    //
+    // Until 2026-09-16 this branch ALWAYS used hcore: it called `hcore_guess`
+    // purely as a "sanity check it succeeds" and threw the density away, then
+    // diagonalized bare `h`. `RhfConfig::init_guess_density` and
+    // `use_sad_guess` — which `rhf.rs` honours, and which default to the MINAO
+    // projection — were referenced NOWHERE in `uhf.rs` or `rohf.rs`, so a
+    // caller who explicitly asked for a better open-shell guess silently got
+    // hcore.
+    //
+    // That is not cosmetic. MEASURED on the systems in
+    // `tests/scf_state_selection.rs`, against PySCF 2.13.0 / ORCA 6.1.1 /
+    // NWChem 7.2.2 at the same geometry and basis: from hcore, UHF converged to
+    // a state ABOVE the reference on 3 of 6 open-shell diatomics — HeNe⁺ by
+    // 0.136 eV (def2-SVP) and 0.126 eV (6-31G), N₂⁺ by 10.37 eV — every one of
+    // them flagged UNSTABLE by ferric's own stability check. From the MINAO
+    // density both HeNe⁺ rows reach the external reference to ~1e-10 Ha and
+    // report STABLE, and N₂⁺ improves by 9.58 eV.
+    //
+    // The guess is NOT sufficient on its own: N₂⁺/6-31G from MINAO still lands
+    // 0.79 eV high and UNSTABLE — on exactly the state PySCF's OWN default
+    // guess finds before it follows its own instability. That residue is what
+    // `config.scf_stability_descent` exists for; see `stability_descent` below.
     let (mut c_a, mut c_b) = if let Some((ca0, cb0)) = initial_mos {
         if ca0.dim() != (n, n) || cb0.dim() != (n, n) {
             return Err(FerricError::General(format!(
@@ -230,6 +498,10 @@ pub fn solve_uhf_fockmod(
             )));
         }
         (ca0.clone(), cb0.clone())
+    } else if let Some((ga, gb)) =
+        uhf_guess_mos(ctx, mol, prep, bounds, config, &s, &h, &x, nocc_a, nocc_b)?
+    {
+        (ga, gb)
     } else {
         // hcore guess: get MO coefficients from H' = Xᵀ H X (canonical-orthog).
         // diagonalize() pads to (n × n), keeping the guess shape historical.
@@ -1176,6 +1448,122 @@ fn density_fractional(c: &Array2<f64>, eps: &[f64], nocc: usize) -> Array2<f64> 
 /// the shape/padding rationale.
 fn diagonalize(f: &Array2<f64>, x: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64>), FerricError> {
     crate::driver::diagonalize_rect(f, x)
+}
+
+/// Build the open-shell initial MOs from the CONFIGURED density guess.
+///
+/// Returns `Ok(None)` — meaning "use hcore" — when the caller asked for the
+/// bare hcore guess (`use_sad_guess = false` with no explicit density), and
+/// also whenever the configured guess cannot be built. A guess that fails is
+/// never fatal: hcore is what this path did unconditionally until 2026-09-16,
+/// so falling back to it can only reproduce the old behavior, never break a
+/// system that used to work.
+///
+/// # How a density becomes MOs
+///
+/// The SCF is MO-driven, so a guess DENSITY has to be turned into occupied
+/// orbitals. That is done the only way it can be: build the Fock AT the guess
+/// density and diagonalize it. The guess density is spin-summed (both `SAD`
+/// and the MINAO projection return `D_total`), so it is split evenly between
+/// the spins — `D_α = D_β = D/2` — and the resulting `F_α = F_β` are
+/// diagonalized to give the same starting MOs for both spins. The α/β symmetry
+/// is then broken exactly as before by the occupation itself (`nocc_α >
+/// nocc_β`) or, for a forced-UHF closed shell, by the HOMO/LUMO mixing a few
+/// lines below the call site — that code is untouched.
+///
+/// # Why the guess Fock is built with plain Coulomb J/K even under RSH/DFT
+///
+/// This is a GUESS. `build_jk` uses `bounds.op`, which is the operator the
+/// whole SCF was set up with, and adds no XC. Under a range-separated or DFT
+/// reference the guess Fock is therefore not the converged Fock — which is
+/// fine and is what every SAD-style guess in every code does — but it means
+/// this function must never be mistaken for a converged-Fock builder.
+#[allow(clippy::too_many_arguments)]
+fn uhf_guess_mos(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &UhfConfig,
+    s: &Array2<f64>,
+    h: &Array2<f64>,
+    x: &Array2<f64>,
+    nocc_a: usize,
+    nocc_b: usize,
+) -> Result<Option<(Array2<f64>, Array2<f64>)>, FerricError> {
+    let _ = (s, nocc_a, nocc_b);
+    let n = prep.nbasis();
+
+    // Which density? An explicit one wins; otherwise the MINAO projection,
+    // which is exactly what `rhf.rs` resolves for the same two config fields.
+    let d_total = if let Some(d0) = config.init_guess_density.as_ref() {
+        if d0.dim() != (n, n) {
+            return Err(FerricError::General(format!(
+                "UHF: init_guess_density shape {:?} != ({n},{n})",
+                d0.dim()
+            )));
+        }
+        d0.clone()
+    } else if config.use_sad_guess {
+        match crate::guess::minao_projection_guess(mol, prep, prep.basis_set()) {
+            Ok(d) => d,
+            Err(e) => {
+                if crate::rhf::scf_trace() {
+                    eprintln!("UHF guess: MINAO projection failed ({e:?}); falling back to hcore");
+                }
+                return Ok(None);
+            }
+        }
+    } else {
+        return Ok(None);
+    };
+
+    // Split the spin-summed guess density evenly and build F_α = F_β at it.
+    let d_spin = &d_total * 0.5;
+    let mut j = Array2::<f64>::zeros((n, n));
+    let mut k = Array2::<f64>::zeros((n, n));
+    if let Err(e) = crate::rhf::build_jk(
+        ctx,
+        prep,
+        bounds,
+        config.integral_thresh,
+        &d_total,
+        &mut j,
+        &mut k,
+    ) {
+        if crate::rhf::scf_trace() {
+            eprintln!("UHF guess: J build at the guess density failed ({e:?}); using hcore");
+        }
+        return Ok(None);
+    }
+    let mut k_spin = Array2::<f64>::zeros((n, n));
+    if let Err(e) = crate::rhf::build_jk(
+        ctx,
+        prep,
+        bounds,
+        config.integral_thresh,
+        &d_spin,
+        &mut j.clone(),
+        &mut k_spin,
+    ) {
+        if crate::rhf::scf_trace() {
+            eprintln!("UHF guess: K build at the guess density failed ({e:?}); using hcore");
+        }
+        return Ok(None);
+    }
+
+    // The UHF Fock convention, matching this file's own assembly below:
+    //   F_σ = h + J[D_α + D_β] − K[D_σ].
+    let f_guess = h + &j - &k_spin;
+    match diagonalize(&f_guess, x) {
+        Ok((_, c)) => Ok(Some((c.clone(), c))),
+        Err(e) => {
+            if crate::rhf::scf_trace() {
+                eprintln!("UHF guess: diagonalizing the guess Fock failed ({e:?}); using hcore");
+            }
+            Ok(None)
+        }
+    }
 }
 
 /// ⟨S²⟩ for a UHF determinant:

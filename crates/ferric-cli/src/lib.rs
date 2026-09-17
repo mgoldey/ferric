@@ -448,6 +448,7 @@ pub fn run(args: Vec<String>) {
         // field is how a new knob gets noticed here instead of silently
         // acquiring whatever the Default impl says.
         cdft_stability_descent: true,
+        scf_stability_descent: false,
         fractional_occ: false,
         // 0 = "unset" → the SCF resolver auto-detects (0.8×RAM). An explicit
         // [memory] budget (incl. a deliberate 2 GiB) is passed through and honored.

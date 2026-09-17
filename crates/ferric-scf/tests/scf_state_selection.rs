@@ -116,6 +116,16 @@ pub fn tight_cfg() -> RhfConfig {
     }
 }
 
+/// The PRE-FIX config: the bare hcore guess, which is what `solve_uhf` did
+/// unconditionally until the guess fix. `use_sad_guess = false` with no
+/// explicit density is the documented way to ask for it.
+pub fn hcore_cfg() -> RhfConfig {
+    RhfConfig {
+        use_sad_guess: false,
+        ..tight_cfg()
+    }
+}
+
 /// Number of occupied α / β orbitals for a molecule.
 pub fn nocc_ab(mol: &Molecule) -> (usize, usize) {
     let nelec = mol.nelec() as usize;
@@ -451,7 +461,10 @@ fn the_hole_classifier_separates_the_two_hene_states() {
     let cfg = tight_cfg();
     let (_, nb) = nocc_ab(&sys.mol);
 
-    let pi_state = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg).unwrap();
+    // The ²Π state is what the BARE HCORE guess reaches. Before the fix that
+    // was also what `solve_uhf` did by default; it no longer is, so this test
+    // asks for hcore explicitly rather than relying on the default.
+    let pi_state = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &hcore_cfg()).unwrap();
     let d = ferric_scf::guess::minao_projection_guess(&sys.mol, &sys.prep, &sys.bs).unwrap();
     let (ca, cb) = mos_from_density(&sys, &cfg, &(0.5 * &d), &(0.5 * &d));
     let sigma_state = solve_uhf_with_guess(
@@ -689,5 +702,373 @@ fn n2_cation_is_multi_valued_in_pyscf_as_well() {
     assert!(
         gap > 0.5,
         "the recorded N2+ pi/sigma gap collapsed to {gap:.4} eV; the reference pair is wrong"
+    );
+}
+
+/// **Does a better GUESS alone fix all three failing systems?** This decides
+/// whether the fix is "fix the guess" (cheap, helps everything) or "fix the
+/// guess AND keep a stability net" (the guess is necessary but not sufficient).
+///
+/// Runs MINAO on every system in the sweep and reports whether it reaches the
+/// PySCF reference AND whether its own stability check calls it stable.
+/// Printing only — this is the measurement the Part-2 decision rests on.
+#[test]
+fn does_minao_alone_reach_the_reference_everywhere() {
+    let cases: Vec<(&str, Sys, f64)> = vec![
+        (
+            "HeNe+/def2-SVP",
+            diatomic("He", "Ne", 2.0, 1, 2, "def2-svp"),
+            HENE_SVP_SIGMA,
+        ),
+        (
+            "HeNe+/6-31G",
+            diatomic("He", "Ne", 2.0, 1, 2, "6-31g"),
+            HENE_631G_SIGMA,
+        ),
+        (
+            "O2/6-31G",
+            diatomic("O", "O", 1.2075, 0, 3, "6-31g"),
+            O2_631G,
+        ),
+        (
+            "NO/6-31G",
+            diatomic("N", "O", 1.1508, 0, 2, "6-31g"),
+            NO_631G,
+        ),
+        (
+            "N2+/6-31G",
+            diatomic("N", "N", 1.1160, 1, 2, "6-31g"),
+            N2P_631G_SIGMA,
+        ),
+        (
+            "CO+/6-31G",
+            diatomic("C", "O", 1.1150, 1, 2, "6-31g"),
+            COP_631G,
+        ),
+    ];
+    let cfg = tight_cfg();
+    println!("\n=== MINAO guess vs PySCF reference ===");
+    for (name, sys, e_ref) in &cases {
+        let d = ferric_scf::guess::minao_projection_guess(&sys.mol, &sys.prep, &sys.bs).unwrap();
+        let (ca, cb) = mos_from_density(sys, &cfg, &(0.5 * &d), &(0.5 * &d));
+        match solve_uhf_with_guess(
+            &sys.ctx,
+            &sys.mol,
+            &sys.prep,
+            &sys.bounds,
+            &cfg,
+            Some((&ca, &cb)),
+        ) {
+            Ok(r) => {
+                let d_ev = (r.energy - e_ref) * 27.211_386_245_988;
+                let v = r
+                    .stability
+                    .as_ref()
+                    .map(|s| s.verdict().label())
+                    .unwrap_or("not checked");
+                let lmin = r
+                    .stability
+                    .as_ref()
+                    .map(|s| format!("{:+.4e}", s.lowest_eigenvalue))
+                    .unwrap_or_else(|| "n/a".into());
+                println!(
+                    "{name:16} minao = {:.10}  ref = {e_ref:.10}  dE = {d_ev:+.4} eV  \
+                     iters = {:3}  lambda_min = {lmin}  {v}{}",
+                    r.energy,
+                    r.iterations,
+                    if d_ev > 1e-4 { "  <== STILL ABOVE" } else { "" }
+                );
+            }
+            Err(e) => println!("{name:16} minao FAILED: {e:?}"),
+        }
+    }
+}
+
+/// Config with BOTH the stability check and the descent on. The two knobs are
+/// meant to be set together: the descent reads the verdict the check produces.
+pub fn descent_cfg() -> RhfConfig {
+    RhfConfig {
+        scf_stability_descent: true,
+        ..tight_cfg()
+    }
+}
+
+/// **Part 3 — proof the fix reaches the reference.** Every system in the sweep,
+/// run through the FIXED default path (MINAO guess) plus the opt-in descent,
+/// against its PySCF 2.13.0 reference.
+///
+/// # Why this is asserted at TWO bases and SIX systems
+///
+/// Pre-registered blind spot: *a reference comparison at a SINGLE input is
+/// unfalsifiable regardless of tolerance* — measured in this lane, where a ΔIP
+/// anchor matched PySCF to 3e-13 Ha with ferric's solver deleted. A constant
+/// cannot satisfy −130.5053405386 and −130.6043266127 and −149.5455745334 and
+/// −108.3186843228 simultaneously, so this assertion responds to inputs a
+/// fabricator does not read.
+#[test]
+fn the_fixed_path_reaches_every_reference() {
+    let cases: Vec<(&str, Sys, f64, f64)> = vec![
+        // (name, system, reference, tolerance in Ha)
+        (
+            "HeNe+/def2-SVP",
+            diatomic("He", "Ne", 2.0, 1, 2, "def2-svp"),
+            HENE_SVP_SIGMA,
+            1e-8,
+        ),
+        (
+            "HeNe+/6-31G",
+            diatomic("He", "Ne", 2.0, 1, 2, "6-31g"),
+            HENE_631G_SIGMA,
+            1e-8,
+        ),
+        (
+            "O2/6-31G",
+            diatomic("O", "O", 1.2075, 0, 3, "6-31g"),
+            O2_631G,
+            1e-7,
+        ),
+        (
+            "NO/6-31G",
+            diatomic("N", "O", 1.1508, 0, 2, "6-31g"),
+            NO_631G,
+            1e-7,
+        ),
+        (
+            "N2+/6-31G",
+            diatomic("N", "N", 1.1160, 1, 2, "6-31g"),
+            N2P_631G_SIGMA,
+            1e-6,
+        ),
+        (
+            "CO+/6-31G",
+            diatomic("C", "O", 1.1150, 1, 2, "6-31g"),
+            COP_631G,
+            1e-7,
+        ),
+    ];
+    let cfg = descent_cfg();
+    println!("\n=== FIXED PATH (MINAO guess + descent) vs PySCF 2.13.0 ===");
+    let mut failures = Vec::new();
+    for (name, sys, e_ref, tol) in &cases {
+        let (_na, nb) = nocc_ab(&sys.mol);
+        let r = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg).unwrap();
+        let hole = r
+            .mos_beta
+            .as_ref()
+            .map(|cb| hole_label(&sys.prep, cb, nb))
+            .unwrap_or("n/a");
+        let d = r.energy - e_ref;
+        let v = r
+            .stability
+            .as_ref()
+            .map(|s| s.verdict())
+            .unwrap_or(StabilityVerdict::Indeterminate);
+        println!(
+            "{name:16} ferric = {:.10} ({hole:>5})  ref = {e_ref:.10}  dE = {:+.2e} Ha \
+             ({:+.4} eV)  {}",
+            r.energy,
+            d,
+            d * 27.211_386_245_988,
+            v.label()
+        );
+        if d.abs() > *tol {
+            failures.push(format!("{name}: |dE| = {:.2e} > {tol:.0e} Ha", d.abs()));
+        }
+        // A solution ABOVE the reference that its own check calls UNSTABLE is
+        // the exact defect this lane exists to remove.
+        if d > *tol && v == StabilityVerdict::Unstable {
+            failures.push(format!("{name}: UNSTABLE and above the reference"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "the fixed path did not reach every reference:\n  {}",
+        failures.join("\n  ")
+    );
+}
+
+/// **HeNe⁺ specifically reaches the σ state and reports STABLE**, at BOTH
+/// bases, from the DEFAULT config (no descent) — i.e. the guess fix alone
+/// suffices here, which is what makes the descent an opt-in net rather than a
+/// requirement.
+#[test]
+fn hene_reaches_sigma_and_is_stable_at_the_default() {
+    for (basis, e_ref) in [("def2-svp", HENE_SVP_SIGMA), ("6-31g", HENE_631G_SIGMA)] {
+        let sys = diatomic("He", "Ne", 2.0, 1, 2, basis);
+        let cfg = tight_cfg(); // check_stability on, descent OFF
+        let (_na, nb) = nocc_ab(&sys.mol);
+        let r = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg).unwrap();
+        let cb = r.mos_beta.as_ref().unwrap();
+        let st = r.stability.as_ref().expect("check_stability was set");
+        println!(
+            "HeNe+/{basis}: E = {:.10} (ref {e_ref:.10}), hole = {}, lambda_min = {:+.4e}, {}",
+            r.energy,
+            hole_label(&sys.prep, cb, nb),
+            st.lowest_eigenvalue,
+            st.verdict().label()
+        );
+        assert!(
+            (r.energy - e_ref).abs() < 1e-8,
+            "HeNe+/{basis}: E = {:.10} != reference {e_ref:.10} (|dE| = {:.2e})",
+            r.energy,
+            (r.energy - e_ref).abs()
+        );
+        assert_eq!(
+            st.verdict(),
+            StabilityVerdict::Stable,
+            "HeNe+/{basis}: reached the reference energy but the verdict is {} \
+             (lambda_min = {:+.4e})",
+            st.verdict().label(),
+            st.lowest_eigenvalue
+        );
+        assert_eq!(
+            hole_label(&sys.prep, cb, nb),
+            "sigma",
+            "HeNe+/{basis}: reached the reference energy with a pi hole"
+        );
+    }
+}
+
+/// **The descent's acceptance guard, tested DIRECTLY.**
+///
+/// Inline in the descent loop this predicate is unreachable by the suite: on
+/// every system measured here each descended candidate is lower, so replacing
+/// it with `true` — i.e. accepting a strictly HIGHER state — leaves everything
+/// green. It is the entire reason the descent cannot make an answer worse than
+/// not having tried, so it is exercised as a function.
+#[test]
+fn descent_never_accepts_a_higher_state() {
+    use ferric_scf::uhf::accepts_candidate_for_test as accepts;
+    // strictly lower than the incumbent, nothing better yet -> accept
+    assert!(accepts(-1.5, -1.0, None));
+    // HIGHER than the incumbent -> reject, whatever else happened
+    assert!(!accepts(-0.5, -1.0, None));
+    assert!(!accepts(-0.5, -1.0, Some(-1.2)));
+    // exactly equal -> reject (strict <, so the answer does not churn)
+    assert!(!accepts(-1.0, -1.0, None));
+    // lower than the incumbent but NOT better than an earlier candidate -> reject
+    assert!(!accepts(-1.1, -1.0, Some(-1.3)));
+    // lower than both -> accept
+    assert!(accepts(-1.4, -1.0, Some(-1.3)));
+}
+
+/// **`scf_stability_descent = false` must reproduce the pre-descent answer
+/// EXACTLY**, not approximately: the descent block is skipped entirely, so the
+/// two runs are the same arithmetic. Bit-identity is asserted, because anything
+/// looser would hide a descent that ran and returned something "close".
+#[test]
+fn descent_off_is_bit_identical_to_no_descent() {
+    for (name, sys) in [
+        (
+            "HeNe+/def2-SVP",
+            diatomic("He", "Ne", 2.0, 1, 2, "def2-svp"),
+        ),
+        ("O2/6-31G", diatomic("O", "O", 1.2075, 0, 3, "6-31g")),
+    ] {
+        let off = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &tight_cfg()).unwrap();
+        let on = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &descent_cfg()).unwrap();
+        println!(
+            "{name}: descent off E = {:.12}, on E = {:.12}, delta = {:.3e}",
+            off.energy,
+            on.energy,
+            (on.energy - off.energy).abs()
+        );
+        // These two systems are STABLE after the guess fix, so the descent is
+        // not taken and the energies must agree to the LAST BIT.
+        assert_eq!(
+            off.energy.to_bits(),
+            on.energy.to_bits(),
+            "{name}: the descent changed a STABLE solution's energy ({:.12} -> {:.12}); \
+             on a stable point it must do nothing at all",
+            off.energy,
+            on.energy
+        );
+    }
+}
+
+/// **`use_sad_guess = false` restores the pre-fix behaviour EXACTLY.** The
+/// escape hatch is a real escape hatch: it reproduces the ²Π saddle the hcore
+/// guess always found, bit-for-bit against an explicitly-injected hcore
+/// density. Without this, "you can turn the new guess off" would be a claim
+/// with no evidence.
+#[test]
+fn hcore_config_reproduces_the_old_pi_saddle() {
+    let sys = diatomic("He", "Ne", 2.0, 1, 2, "def2-svp");
+    let (_na, nb) = nocc_ab(&sys.mol);
+    let cfg = hcore_cfg();
+    let r = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg).unwrap();
+    let st = r.stability.as_ref().expect("check_stability was set");
+    println!(
+        "use_sad_guess = false: E = {:.12}, hole = {}, lambda_min = {:+.4e}, {}",
+        r.energy,
+        hole_label(&sys.prep, r.mos_beta.as_ref().unwrap(), nb),
+        st.lowest_eigenvalue,
+        st.verdict().label()
+    );
+    assert!(
+        (r.energy - HENE_SVP_PI).abs() < 1e-7,
+        "use_sad_guess = false gave E = {:.10}, not the pre-fix pi state {HENE_SVP_PI:.8}; \
+         the escape hatch does not restore the old behaviour",
+        r.energy
+    );
+    assert_eq!(
+        st.verdict(),
+        StabilityVerdict::Unstable,
+        "the pre-fix state should still be reported UNSTABLE (lambda_min = {:+.4e})",
+        st.lowest_eigenvalue
+    );
+}
+
+/// **The descent, not the guess, is what fixes N₂⁺.** Pins the split so a later
+/// reader cannot attribute the whole repair to either half alone:
+///   * guess alone (descent off): 0.7931 eV ABOVE the reference, UNSTABLE;
+///   * guess + descent:            at the reference, STABLE.
+#[test]
+fn n2_cation_needs_the_descent_not_just_the_guess() {
+    let sys = diatomic("N", "N", 1.1160, 1, 2, "6-31g");
+    let no_descent = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &tight_cfg()).unwrap();
+    let with_descent =
+        solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &descent_cfg()).unwrap();
+    let gap = (no_descent.energy - with_descent.energy) * 27.211_386_245_988;
+    println!(
+        "N2+/6-31G: guess only = {:.10} ({}), guess + descent = {:.10} ({}), \
+         descent recovered {gap:.4} eV",
+        no_descent.energy,
+        no_descent
+            .stability
+            .as_ref()
+            .map(|s| s.verdict().label())
+            .unwrap_or("?"),
+        with_descent.energy,
+        with_descent
+            .stability
+            .as_ref()
+            .map(|s| s.verdict().label())
+            .unwrap_or("?"),
+    );
+    assert!(
+        no_descent.energy - N2P_631G_SIGMA > 1e-3,
+        "N2+ no longer needs the descent (guess-only E = {:.10} is already at the \
+         reference); this test's premise is gone and the descent's justification with it",
+        no_descent.energy
+    );
+    assert_eq!(
+        no_descent.stability.as_ref().map(|s| s.verdict()).unwrap(),
+        StabilityVerdict::Unstable,
+        "the guess-only N2+ solution is no longer UNSTABLE"
+    );
+    assert!(
+        (with_descent.energy - N2P_631G_SIGMA).abs() < 1e-6,
+        "the descent did not reach the N2+ reference: E = {:.10} vs {N2P_631G_SIGMA:.10}",
+        with_descent.energy
+    );
+    assert_eq!(
+        with_descent
+            .stability
+            .as_ref()
+            .map(|s| s.verdict())
+            .unwrap(),
+        StabilityVerdict::Stable,
+        "the descended N2+ solution is not STABLE"
     );
 }
