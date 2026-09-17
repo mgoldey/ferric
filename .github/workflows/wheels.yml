@@ -101,6 +101,18 @@ env:
   OPENBLAS_VERSION: "0.3.27"
   LIBXC_VERSION: "6.2.2"
   EIGEN_VERSION: "3.4.0"
+  # SHA-pinned manylinux image for the mpi-wheel job's own `docker run`
+  # auditwheel-repair step (maturin-action pulls its own copy by tag for the
+  # build itself; this pin governs only the repair container). Pinned by
+  # digest rather than `:latest` for the same reason every `uses:` in this
+  # repo is pinned to a commit SHA: the repair step's --exclude sonames are
+  # tied to the AlmaLinux 8 OpenMPI packaged in THIS image, so a silently
+  # moving tag could change libevent's soname out from under the exclusion
+  # list. Resolved 2026-09-16 from quay.io/pypa/manylinux_2_28_x86_64:latest.
+  # The trailing pragma is for detect-secrets, which flags this as a "Hex High
+  # Entropy String" purely on shape. It is a PUBLIC container image digest,
+  # not a credential -- being published is the entire point of it.
+  MANYLINUX_DIGEST: "531d7aa844bbb0c131d4ab011d3db741c4abc8d498cd5ccc86121046f62303b4"  # pragma: allowlist secret
 
 jobs:
   # Builds OpenBLAS + libxc + libint2 + Eigen ONCE, inside the SAME
@@ -932,19 +944,50 @@ jobs:
   #    constraint is visible at `pip install` time rather than as an
   #    unexplained symbol error at import.
   #
-  # 3. VENDORING CAVEAT -- THE BIGGEST PRACTICAL LIMITATION, MEASURED.
+  # 3. THE WHEEL REQUIRES A SYSTEM OpenMPI 4.x. IT DELIBERATELY BUNDLES NONE.
   #    libmpi is NOT on auditwheel's manylinux_2_28 whitelist (verified
-  #    directly in quay.io/pypa/manylinux_2_28_x86_64:latest: the policy's
+  #    directly in quay.io/pypa/manylinux_2_28_x86_64: the policy's
   #    lib_whitelist is libc/libm/libstdc++/libgcc_s/libX11/... and contains
-  #    no MPI entry). auditwheel therefore COPIES libmpi.so.40 and its
-  #    runtime stack -- libopen-rte, libopen-pal, libhwloc, libevent -- INTO
-  #    the wheel and rewrites the RPATH. A vendored OpenMPI runtime is not
-  #    guaranteed to interoperate with the `mpirun`/PMIx/launcher on the
-  #    user's cluster, which is the usual reason MPI packages are built
-  #    against the site MPI rather than shipped with one. This job therefore
-  #    builds and ARTIFACTS the wheel for inspection and testing; it is
-  #    deliberately NOT wired to publish, and nobody should wire it up
-  #    without first testing it against a real multi-node launcher.
+  #    no MPI entry). A DEFAULT auditwheel repair therefore COPIES
+  #    libmpi.so.40 and its runtime stack -- libopen-rte, libopen-pal,
+  #    libhwloc, libevent -- into the wheel and rewrites the RPATH.
+  #
+  #    THAT VENDORED BUILD IS A DEAD END, and this job no longer produces
+  #    one. Every project that ships working MPI wheels links the SYSTEM MPI
+  #    instead: mpi4py, the reference binding, has used
+  #    `auditwheel --exclude libmpi...` since 4.1.0 (2025-06-25);
+  #    NWChemEx/ParallelZone moved to `--exclude` + system MPI only AFTER
+  #    trying to vendor and failing; petsc4py/slepc4py ship sdists only;
+  #    h5py/PyTorch/horovod/Firedrake put no MPI in the wheel at all; and the
+  #    per-flavour `mpi4py-mpich` variant was abandoned. Three concrete
+  #    failure modes of vendoring, all of which THIS job would have hit:
+  #      (i)   MCA PLUGINS. auditwheel bundles only DT_NEEDED dependencies it
+  #            finds via the loader -- NEVER the dlopen'd MCA component .so
+  #            files. AlmaLinux 8's openmpi (exactly what this job links)
+  #            uses dlopen'd components, so the vendored copy fails at
+  #            startup with `opal_shmem_base_select failed`.
+  #      (ii)  orted. auditwheel and delocate bundle shared libraries only,
+  #            never the accompanying bin/ executables, and OpenMPI's
+  #            launcher needs `orted`. This fails even at -np 1.
+  #      (iii) TWO libmpi IMAGES -- the dangerous one, because it is
+  #            SILENT-WRONG rather than a clean error. With a vendored libmpi
+  #            loaded alongside the launcher's own, MPI_Init returns
+  #            MPI_SUCCESS while `ompi_mpi_comm_world` stays zero-filled, and
+  #            the process segfaults later, far from the cause.
+  #
+  #    So: `maturin build --auditwheel skip`, then an explicit
+  #    `auditwheel repair --exclude <exact sonames>`, leaving the whole
+  #    OpenMPI stack external. The resulting wheel NEEDS a system OpenMPI 4.x
+  #    (soname libmpi.so.40) at run time and says so in its metadata; without
+  #    one the user gets a clean, greppable loader error:
+  #      ImportError: libmpi.so.40: cannot open shared object file:
+  #      No such file or directory
+  #    (that exact string was reproduced against a real repaired wheel, not
+  #    guessed). This is the CORRECT behaviour -- it lets a cluster's own
+  #    hardware-optimized OpenMPI and its own mpirun/PMIx drive the library.
+  #
+  #    The job still does not publish (see 4 below): the end-to-end
+  #    multi-node story is unproven here, and PyPI uploads cannot be undone.
   #
   # 4. HOW THE PLAIN WHEEL STAYS UNAFFECTED. This job shares build-native-deps
   #    but is otherwise disjoint from build-wheels: different package name,
@@ -1089,7 +1132,19 @@ jobs:
           rust-toolchain: stable
           target: x86_64
           manylinux: 2_28
-          args: --release --out dist-mpi -i python${{ matrix.python-version }}
+          # `--auditwheel skip` is LOAD-BEARING, not a shortcut. maturin does
+          # NOT shell out to the auditwheel CLI -- it carries its own
+          # reimplementation, and `maturin build --help` exposes only
+          # `--auditwheel <repair|check|skip>` with NO `--exclude`
+          # passthrough (verified against maturin 1.15.0 in
+          # quay.io/pypa/manylinux_2_28_x86_64). There is therefore no way to
+          # ask maturin for a repair that leaves libmpi external. So this
+          # step produces an UNREPAIRED linux_x86_64 wheel and the next step
+          # runs the real `auditwheel repair --exclude` over it. Do not
+          # "restore" the default repair here: it would silently vendor
+          # libmpi again and re-create every failure mode documented in this
+          # job's header.
+          args: --release --out dist-mpi-raw -i python${{ matrix.python-version }} --auditwheel skip
           # Same inline-export rule build-wheels documents: maturin-action
           # concatenates this with the build command into ONE shell script, so
           # `export` reaches the build, while $GITHUB_ENV would not (it lives
@@ -1113,33 +1168,134 @@ jobs:
             export LIBCLANG_PATH="$(dirname "$(find /usr/lib64 -name 'libclang.so*' | head -1)")"
             export BINDGEN_EXTRA_CLANG_ARGS="-I/usr/include/openmpi-x86_64"
 
-      # Proves the wheel actually LINKED MPI rather than silently building the
-      # serial extension under an MPI-sounding name -- the exact failure this
-      # deliverable is most at risk of, since a missing feature flag produces
-      # a perfectly working non-MPI wheel with no error anywhere.
-      - name: Verify the wheel is genuinely MPI-linked
+      # Repair the wheel OURSELVES, with the MPI stack held EXTERNAL.
+      #
+      # This runs in the same manylinux_2_28 image the build used, because the
+      # repair has to see the same libmpi/libopen-*/libhwloc/libevent the
+      # extension linked against -- auditwheel resolves DT_NEEDED through the
+      # loader, so the AlmaLinux 8 OpenMPI must be installed and on
+      # LD_LIBRARY_PATH for it to be *recognised* and therefore excludable.
+      #
+      # WHY EXACT SONAMES, AND WHY WE DO NOT TRUST THE FLAG.
+      # auditwheel 6.1.0 had a bug where `--exclude 'libmpi*'` was matched by
+      # set membership rather than as a glob, so the flag parsed, the build
+      # went green, and the library was bundled anyway. That failure is
+      # invisible unless you inspect the artifact. Two defences: (1) exact
+      # sonames, as mpi4py's own cibw/repair-wheel.sh uses
+      # (`--exclude libmpi.so.40` etc.), which are correct under BOTH the
+      # buggy set-membership path and the fixed glob path; (2) the next step
+      # asserts on the RESULTING WHEEL, never on this command succeeding.
+      #
+      # WHY THE SATELLITES ARE EXCLUDED TOO -- this is the subtle one.
+      # libopen-rte / libopen-pal / libhwloc / libevent are OpenMPI's OWN
+      # internals, not neutral third-party libraries. Excluding libmpi while
+      # vendoring them is the WORST of the three options, because the process
+      # would then hold TWO OpenMPI runtimes: the system libmpi.so.40 resolved
+      # via DT_NEEDED, and a private libopen-pal/libopen-rte pair loaded from
+      # the wheel's RPATH. That is exactly NWChemEx's documented "two libmpi
+      # images" failure -- MPI_Init returns MPI_SUCCESS while the other image's
+      # globals (ompi_mpi_comm_world) stay zero-filled, and the crash lands far
+      # from the cause. An MPI runtime must be ONE coherent set of libraries
+      # from ONE install, so every member of the stack goes external together.
+      # libevent/libhwloc are excluded for the same reason: OpenMPI's own
+      # libopen-pal is built against the system copies, and PMIx/ORTE share
+      # state through them with `orted`.
+      - name: Repair with the MPI stack held external (auditwheel --exclude)
         run: |
           set -euo pipefail
+          mkdir -p dist-mpi
+          docker run --rm \
+            -v "$PWD:/io" -w /io \
+            quay.io/pypa/manylinux_2_28_x86_64@sha256:${{ env.MANYLINUX_DIGEST }} \
+            bash -euo pipefail -c '
+              dnf install -y openmpi >/dev/null
+              export LD_LIBRARY_PATH=/usr/lib64/openmpi/lib:${LD_LIBRARY_PATH:-}
+              # Sonames READ OFF THE CONTAINER, not guessed. Verified by
+              # `readelf -d /usr/lib64/openmpi/lib/libmpi.so.40` after
+              # `dnf install -y openmpi` in this exact image (AlmaLinux 8.10,
+              # OpenMPI 4.1.1):
+              #   libopen-rte.so.40, libopen-pal.so.40,
+              #   libopen-orted-mpir.so (UNVERSIONED -- note the missing
+              #   .so.N; writing libopen-orted-mpir.so.40 by analogy would
+              #   match nothing and silently vendor it),
+              #   libhwloc.so.15, libevent_core-2.1.so.6,
+              #   libevent_pthreads-2.1.so.6.
+              # libevent is .so.6 on AlmaLinux 8, NOT the .so.7 that newer
+              # distros carry. A soname guessed from a different distro is
+              # precisely how an --exclude turns into a silent no-op, which
+              # is why the verification step below inspects the artifact.
+              auditwheel repair \
+                --plat manylinux_2_28_x86_64 \
+                --exclude libmpi.so.40 \
+                --exclude libopen-rte.so.40 \
+                --exclude libopen-pal.so.40 \
+                --exclude libopen-orted-mpir.so \
+                --exclude libhwloc.so.15 \
+                --exclude libevent_core-2.1.so.6 \
+                --exclude libevent_pthreads-2.1.so.6 \
+                -w /io/dist-mpi /io/dist-mpi-raw/*.whl
+            '
           ls -lh dist-mpi/
+
+      # INVERTED verification. Under the vendoring strategy the assertion was
+      # "libmpi IS in the wheel"; under system-MPI linkage the two things that
+      # must hold are the exact opposite plus a liveness check:
+      #
+      #   (a) NO libmpi/libopen-*/libhwloc/libevent is bundled -- proving the
+      #       --exclude actually took effect rather than merely parsing;
+      #   (b) the extension's DT_NEEDED STILL names libmpi.so.40 -- proving the
+      #       wheel is genuinely MPI-linked and will resolve against the
+      #       system MPI at load time.
+      #
+      # (b) is not redundant with (a). Dropping the `mpi` feature would ALSO
+      # produce a wheel with no bundled libmpi -- a serial build wearing an MPI
+      # name, which is the failure the previous (vendoring-era) version of this
+      # step was written to catch. (a) alone would pass for it; (a)+(b)
+      # together cannot. Both are checked against the artifact with readelf and
+      # unzip, not inferred from the repair command's exit status.
+      - name: Verify MPI is EXTERNAL but still linked
+        run: |
+          set -euo pipefail
           WHL=$(ls dist-mpi/*.whl | head -1)
           echo "--- $WHL ---"
-          # Name must carry the MPI distribution name, not `ferric`.
           case "$(basename "$WHL")" in
             ferric_mpi-*) echo "OK: distribution name is ferric_mpi" ;;
             *) echo "::error::wheel is not named ferric_mpi: $WHL"; exit 1 ;;
           esac
-          python3 -m zipfile -l "$WHL" | grep -iE '\.so|libmpi' || true
-          mkdir -p /tmp/whlx && python3 -m zipfile -e "$WHL" /tmp/whlx
-          # auditwheel vendors libmpi (it is NOT whitelisted -- see this job's
-          # header), so a correctly-built MPI wheel CONTAINS an libmpi .so.
-          # Its absence means the mpi feature never reached the build.
-          if ! find /tmp/whlx -name 'libmpi*' | grep -q .; then
-            echo "::error::no libmpi in the wheel -- the `mpi` feature did not reach this build, so this is a SERIAL wheel wearing an MPI name"
-            find /tmp/whlx -name '*.so*' | head -20
+
+          rm -rf /tmp/whlx && mkdir -p /tmp/whlx
+          python3 -m zipfile -e "$WHL" /tmp/whlx
+          echo "--- shared objects in the wheel ---"
+          find /tmp/whlx -name '*.so*' | sort
+
+          # (a) The MPI stack must NOT be bundled. A hit here means --exclude
+          # silently did nothing (the auditwheel 6.1.0 wildcard bug, or a
+          # soname that changed with the distro's OpenMPI version).
+          if find /tmp/whlx \( -name 'libmpi*' -o -name 'libopen-rte*' \
+               -o -name 'libopen-pal*' -o -name 'libhwloc*' \
+               -o -name 'libevent*' \) | grep -q .; then
+            echo "::error::an OpenMPI library was VENDORED into the wheel despite --exclude. auditwheel did not honour the exclusion (check the sonames against the container's actual OpenMPI), and this wheel would carry the two-libmpi-images failure."
+            find /tmp/whlx \( -name 'libmpi*' -o -name 'libopen-*' \
+              -o -name 'libhwloc*' -o -name 'libevent*' \)
             exit 1
           fi
-          echo "vendored MPI libraries:"
-          find /tmp/whlx -name 'libmpi*' -o -name 'libopen-*' | head
+          echo "OK: no OpenMPI library is bundled"
+
+          # (b) ...but the extension must still NEED it.
+          # The extension is `ferric/ferric.cpython-3XX-x86_64-linux-gnu.so`.
+          # Search under ferric/ specifically so a vendored library in
+          # ferric_mpi.libs/ can never be mistaken for the extension itself
+          # (which would make the DT_NEEDED assertion below test the wrong
+          # file, and libopenblas DOES legitimately live in that sibling dir).
+          EXT=$(find /tmp/whlx/ferric -maxdepth 1 -name 'ferric*.so' | head -1)
+          test -n "$EXT" || { echo "::error::no ferric extension module in the wheel"; find /tmp/whlx -maxdepth 2; exit 1; }
+          echo "--- DT_NEEDED of $EXT ---"
+          readelf -d "$EXT" | grep -E 'NEEDED|RUNPATH|RPATH'
+          if ! readelf -d "$EXT" | grep -q 'libmpi\.so\.40'; then
+            echo "::error::the extension does not NEED libmpi.so.40, so this is a SERIAL wheel wearing an MPI name -- the mpi feature did not reach the build."
+            exit 1
+          fi
+          echo "OK: extension DT_NEEDED names libmpi.so.40 (resolves against the system OpenMPI 4.x at load time)"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -1216,7 +1372,7 @@ jobs:
           # an OpenMPI-ABI-locked, libmpi-vendoring build under the portable
           # `ferric` name, which cannot be un-published, only yanked.
           if ls dist/ | grep -qiE 'mpi'; then
-            echo "::error::an MPI-variant wheel reached the publish staging dir. The ferric-mpi wheel is NEVER published from this workflow (OpenMPI ABI lock-in + vendored libmpi); refusing to upload."
+            echo "::error::an MPI-variant wheel reached the publish staging dir. The ferric-mpi wheel is NEVER published from this workflow (OpenMPI 4.x ABI lock-in + an unbundled system-MPI runtime requirement); refusing to upload."
             ls -la dist/
             exit 1
           fi

@@ -85,8 +85,55 @@ See [Python bindings](./python.md).
 
 ## Optional: MPI
 
-The `mpi` feature additionally needs an MPI implementation (OpenMPI or MPICH)
-**and** libclang (`libclang-dev`, for `mpi-sys`'s bindgen step).
+Building the `mpi` feature from source additionally needs an MPI implementation
+(OpenMPI or MPICH) **and** libclang (`libclang-dev`, for `mpi-sys`'s bindgen
+step).
+
+### Prebuilt MPI wheel
+
+A prebuilt MPI build ships as a **separate distribution** named `ferric-mpi`
+(the import name stays `ferric`). It requires a **system OpenMPI 4.x**, which
+must be installed first:
+
+```bash
+sudo apt-get install -y libopenmpi-dev openmpi-bin   # Debian/Ubuntu
+# sudo dnf install -y openmpi                        # RHEL/Alma/Rocky/Fedora
+
+pip install ferric-mpi
+mpirun -np 4 -x OPENBLAS_NUM_THREADS=1 ferric examples/water-rhf.toml
+```
+
+Install `ferric` **or** `ferric-mpi`, never both into one environment — they
+both own the `ferric/` import package.
+
+### The CLI is the MPI entry point; the Python API is not
+
+`pip install` puts a `ferric` executable on `PATH` that runs the CLI inside the
+same extension module, so `mpirun -np N ferric input.toml` runs one rank per
+process with MPI initialized from that library. The CLI is SPMD by design.
+
+`mpirun -np N python script.py` is **not supported**. The bindings expose no
+rank or world-size accessor, so `if rank == 0` cannot be written: every rank
+runs the whole script, prints N times, and races on the same output files. See
+[Python bindings](./python.md).
+
+### The wheel bundles no MPI
+
+The extension links soname `libmpi.so.40` and resolves it from the system at
+load time. Without a system OpenMPI 4.x, import fails with:
+
+```
+ImportError: libmpi.so.40: cannot open shared object file: No such file or directory
+```
+
+MPICH and Intel MPI do **not** work — their soname is `libmpi.so.12` and the
+ABI is incompatible.
+
+Vendoring an MPI runtime into a wheel is a dead end: `auditwheel` bundles only
+`DT_NEEDED` libraries, never OpenMPI's `dlopen`'d MCA component plugins and
+never the `orted` launcher binary. Linking the system MPI is what mpi4py and
+NWChemEx/ParallelZone both use, and it lets a cluster's own OpenMPI and
+`mpirun` drive the library.
 
 ## Threading
 

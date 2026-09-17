@@ -47,6 +47,18 @@ default = []
 # `ferric-mpi` wheel variant (.github/workflows/wheels.yml). The default
 # `pip install ferric` wheel does NOT enable this and links no MPI at all.
 #
+# THE CLI, NOT THE PYTHON API, IS THE SUPPORTED MPI ENTRY POINT.
+# `pyproject.toml` declares `ferric = "ferric:_cli_main"`, and `_cli_main`
+# (src/lib.rs) reads sys.argv and calls `ferric_cli::run(argv)` inside THIS
+# SAME .so. So `pip install ferric-mpi` puts a `ferric` executable on PATH and
+#
+#     mpirun -np N ferric input.toml
+#
+# runs the whole CLI once per rank with MPI initialized from this library.
+# That is the shape MPI wants -- the CLI is SPMD by construction and already
+# handles rank-aware output -- and it sidesteps the Python rank problem below
+# entirely. Point users at the CLI; do not advertise the Python API for MPI.
+#
 # READ THIS BEFORE ASSUMING THE MPI WHEEL EXPOSES AN MPI API -- IT DOES NOT.
 # There is no `run_mpi_ri_mp2` binding, and nothing in src/lib.rs names a
 # rank, a world size, or a communicator. What the feature actually changes is
@@ -63,6 +75,19 @@ default = []
 #   real per-rank memory savings, from an unchanged Python script.
 #
 # The caveats are equally real, which is why this is NOT the default wheel:
+#   * ONLY THE DF/RI-JK PATH IS CORRECT UNDER MPI. The exact 4-index
+#     (`DirectJK`) path is SILENTLY WRONG at np >= 2 -- MEASURED 2026-09-16,
+#     OpenMPI 4.1.6, water/STO-3G: np=1 gives -74.9631468000 Ha converged,
+#     np=2 gives +156.3238081949 Ha with converged=false, from BOTH the wheel
+#     and a native `--features mpi` binary (so it is a library bug, not a
+#     packaging artifact). Cause: `DirectJK::build`/`build_uhf` do
+#     `*j += &total_j` and THEN Allreduce `*j` itself, but rhf.rs's
+#     incremental Fock path may hand in a buffer already holding the previous
+#     iteration's J/K -- so that carried-over content is summed across ranks
+#     too and multiplied by the world size each iteration. The DF path is
+#     unaffected and verified: water/cc-pVDZ RI-JK gives -76.0278457869 Ha on
+#     np=1 AND bit-identically on both ranks at np=2. Set `df_j_aux`/`df_k_aux`
+#     for any multi-rank run until this is fixed.
 #   * It is SPMD, not a parallel API. Every rank runs the WHOLE script
 #     independently -- all N ranks read the same input, print the same
 #     output, and write the same files (N processes racing on one path).

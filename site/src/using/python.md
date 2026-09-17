@@ -81,6 +81,22 @@ Set `OPENBLAS_NUM_THREADS=1`. `ferric` uses rayon for outer parallelism and pins
 BLAS to one thread inside rayon workers; for throughput across many jobs, prefer
 many single-threaded processes over one wide job.
 
+### These bindings are not the MPI entry point
+
+Do not run a Python script under `mpirun`. This API exposes no rank or
+world-size accessor, so `if rank == 0` is inexpressible: under
+`mpirun -np N python script.py` every rank executes the whole script, prints
+its output N times, and races the other ranks writing the same output files.
+
+Distributed-memory runs go through the **CLI**, which is SPMD by design:
+
+```bash
+mpirun -np 4 -x OPENBLAS_NUM_THREADS=1 ferric input.toml
+```
+
+That requires the separate `ferric-mpi` distribution and a system OpenMPI 4.x —
+see [Installation](./installation.md#optional-mpi).
+
 ## Property export
 
 ESP at nuclei, electric fields, static and atom-partitioned polarizabilities,
