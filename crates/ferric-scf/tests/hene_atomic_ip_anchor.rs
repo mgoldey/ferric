@@ -793,8 +793,11 @@ fn promolecule_diabat_b_population_matches_the_quoted_value() {
 ///
 /// # SCOPE: this is a statement about R = 2.0 Å ONLY
 ///
-/// The claim is **separation-specific and false at large R**. The
-/// `hene_promolecule_probe` example sweeps R and finds (def2-SVP, (99,302)):
+/// The claim is **separation-specific and false at large R**. Measured by
+/// sweeping R with the (now-deleted) `hene_promolecule_probe` example at
+/// commit 794a1551, def2-SVP, (99,302) grid — the table is reproduced here
+/// because it is the evidence for the scope limit and the probe that produced
+/// it no longer exists:
 ///
 /// ```text
 ///   R/Å    N_He^promol_B   N_He^unconstrained
