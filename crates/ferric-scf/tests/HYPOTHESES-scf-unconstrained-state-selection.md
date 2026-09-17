@@ -139,3 +139,78 @@ planned mutations:
 If every guess agrees to machine precision on every system, that is the
 H-ARTIFACT observable, not a physics result, and the task stops to audit the
 harness. Real multi-solution landscapes have basins with edges.
+
+---
+
+# OUTCOME (appended 2026-09-17, after the work — the text above is unchanged)
+
+## Verdicts on the pre-registered hypotheses
+
+**H-GUESS: CONFIRMED.** On the UNCONSTRAINED HeNe⁺ solve,
+E is multi-valued across guesses (spread 4.99e-3 Ha, not bit-identical), MINAO
+and SAD reach −130.5053405386 (the NWChem/ORCA/PySCF σ state) and report STABLE,
+while hcore reaches −130.5003466413 and reports UNSTABLE.
+
+**H-DEGEN: REFUTED.** Its observable was "E single-valued at ²Π across ALL
+guesses, including one built from the converged σ density". Not observed. Given
+a decent guess ferric's aufbau fill picks σ correctly, so there is no
+degeneracy-ordering bug. Claiming one would have been the lane's seventh
+retraction; it was not claimed.
+
+**H-ARTIFACT: REFUTED.** The rows are not bit-identical and the guesses
+demonstrably reach different basins.
+
+## Is it HeNe⁺-specific or systemic? — SYSTEMIC
+
+Pre-committed split: wrong on ≥2 systems ⇒ systemic. Measured **4 of 7** wrong
+(HeNe⁺ at def2-SVP and 6-31G, OH/6-31G, N₂⁺/6-31G), every one flagged UNSTABLE
+by ferric's own check, with errors from 0.126 eV to 10.37 eV. OH was found by
+`ferric-dft`'s own f_xc FD test failing, not by looking — so the sweep in
+`scf_state_selection.rs` was an UNDER-count, not an over-count.
+
+## The anchor's blind spots, as handled
+
+1. *Trivial-limit blindness.* The self-guess anchor does ~zero SCF work. Handled
+   by printing iteration counts: the "self" row's 2 iters against 14–16 for
+   every far guess is what that blind spot looks like when made visible.
+2. *Single-input unfalsifiability.* Handled as pre-committed:
+   `the_fixed_path_reaches_every_reference` asserts against SIX references at
+   TWO bases. No constant satisfies −130.5053405386, −130.6043266127,
+   −149.5455745334 and −108.3186843228 at once.
+
+## Where the pre-registration was WRONG, recorded rather than quietly fixed
+
+The hypotheses above assumed the σ/π hole could be read off the α SOMO. It
+cannot: for HeNe⁺ the α SOMO is He-1s/2s dominated in BOTH states, so that
+classifier labelled the ²Π state "sigma" and carried no information. The hole is
+the β LUMO. Caught by `the_hole_classifier_separates_the_two_hene_states`, which
+pins the classifier against both states so a non-discriminating label fails
+rather than decorating a table.
+
+## MUTATION LEDGER — every new guard, seen to fail
+
+| # | mutation | guard | observed |
+|---|---|---|---|
+| 1 | `use_sad_guess` branch disabled (`false &&`) | `hene_reaches_sigma_and_is_stable_at_the_default` | FAILED — ²Π resurrected at −130.5003466413, UNSTABLE |
+| 2 | descend on STABLE points too (`false &&` on the verdict gate) | `descent_off_is_bit_identical_to_no_descent` | FAILED — energies print identically at 12 digits yet differ in the last bits, which is why bit-identity and not a tolerance is asserted |
+| 3 | `accepts_candidate` → `true` (accept a HIGHER state) | `descent_never_accepts_a_higher_state` | FAILED — and every OTHER test stayed green, confirming the guard is unreachable through the SCF path and must be unit-tested |
+| 4 | σ/σ counterexample threshold 1e-4 → 1e-30 | `a_sigma_sigma_hole_pair_still_has_tiny_overlap` | FAILED — "the sigma/sigma counterexample is GONE" |
+| 5 | `S_ab` product over α only | `s_ab_is_carried_by_a_single_beta_singular_value` | FAILED — 4.146e-7 vs 9.804e-1, rel 2.36e6 |
+| 6 | He₂⁺ `S_ab` forced non-monotone | `he2_plus_s_ab_is_monotone_and_unchanged` | FAILED — reproduces the exact 0.0135/0.0038/0.0076 signature a real basin artifact would show |
+| 7 | `FD_FLOOR` 1e-7 → 1e-30 (order checks never skip) | `gga_fxc_matches_finite_difference_of_vxc` | FAILED — proves the new gate is live, not a no-op |
+| 8 | descent fabricates an `Unstable` verdict when none exists | `the_descent_skips_a_reference_it_cannot_analyse` | **SURVIVED first**, then FAILED after the test was strengthened — see below |
+
+**Mutation 8 is the ledger's most useful entry.** The test originally asserted
+only `stability.is_none()`, which the mutation leaves true, so it passed a
+descent that fabricates verdicts. The assertion was changed to a BEHAVIOURAL one
+— turning the descent on must leave the energy bit-identical on a reference
+whose stability was never computed — and the mutation then failed. A test that
+checks a precondition is not a test of the behaviour that reads it.
+
+## TOO CLEAN was triggered once, and audited rather than reported
+
+The f_xc FD residual improved from 6.1e-4 to 1.1e-9 — six orders, which is the
+stop condition. Audited rather than written up: it traced to OH/6-31G having
+been solved at a saddle 4.22 eV above the minimum, so the "improvement" is a
+finite-difference check finally being evaluated at a correct density. That audit
+is what found the fourth wrong system.
