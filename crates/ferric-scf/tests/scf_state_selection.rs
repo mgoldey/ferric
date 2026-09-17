@@ -1072,3 +1072,74 @@ fn n2_cation_needs_the_descent_not_just_the_guess() {
         "the descended N2+ solution is not STABLE"
     );
 }
+
+/// **OH/6-31G: a SEVENTH system, found by a test in another crate.**
+///
+/// `ferric-dft`'s `fxc::tests::gga_fxc_matches_finite_difference_of_vxc` builds
+/// its finite-difference reference density by calling `solve_uhf` on OH/6-31G.
+/// After the guess fix that test began failing — which traced not to the f_xc
+/// kernel but to the DENSITY it was differentiating:
+///
+/// ```text
+///   hcore guess : E = -75.207996974998   UNSTABLE
+///   MINAO guess : E = -75.363168246116   MARGINAL
+///   PySCF 2.13.0: E = -75.363168249577   (stable at its own default guess)
+/// ```
+///
+/// The pre-fix answer was **0.155 Ha = 4.22 eV above** the reference and its own
+/// stability check called it a saddle. The fixed path agrees with PySCF to
+/// 3.5e-9 Ha. So OH joins HeNe⁺ (two bases) and N₂⁺: **four of the seven
+/// open-shell systems now measured were landing on the wrong state**, and this
+/// one was found by an unrelated crate's test rather than by looking.
+///
+/// It is also why that f_xc test's residual improved by ~6 orders of magnitude
+/// (6.1e-4 → 1.1e-9 at ε = 1e-2): a finite-difference check of an analytic
+/// kernel agrees far better when both sides are evaluated at a density that is
+/// actually a minimum. See that test for the guard that had to be relaxed as a
+/// consequence.
+#[test]
+fn oh_reaches_the_pyscf_reference_after_the_fix() {
+    /// PySCF 2.13.0 UHF, OH/6-31G at r(OH) = 0.97 A, stable at its own default
+    /// guess (0 stability-following rounds).
+    const OH_631G_PYSCF: f64 = -75.363_168_249_577;
+    /// What ferric returned from the bare hcore guess before the fix.
+    const OH_631G_HCORE: f64 = -75.207_996_974_998;
+
+    let sys = diatomic("O", "H", 0.97, 0, 2, "6-31g");
+    let fixed = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &tight_cfg()).unwrap();
+    let old = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &hcore_cfg()).unwrap();
+    println!(
+        "OH/6-31G: hcore = {:.12} ({}), fixed = {:.12} ({}), pyscf = {OH_631G_PYSCF:.12}, \
+         recovered {:.4} eV",
+        old.energy,
+        old.stability
+            .as_ref()
+            .map(|s| s.verdict().label())
+            .unwrap_or("?"),
+        fixed.energy,
+        fixed
+            .stability
+            .as_ref()
+            .map(|s| s.verdict().label())
+            .unwrap_or("?"),
+        (old.energy - fixed.energy) * 27.211_386_245_988
+    );
+    assert!(
+        (fixed.energy - OH_631G_PYSCF).abs() < 1e-7,
+        "OH/6-31G: the fixed path gives {:.12}, not the PySCF reference \
+         {OH_631G_PYSCF:.12} (|dE| = {:.2e})",
+        fixed.energy,
+        (fixed.energy - OH_631G_PYSCF).abs()
+    );
+    assert!(
+        (old.energy - OH_631G_HCORE).abs() < 1e-7,
+        "the hcore guess no longer reproduces the pre-fix OH state {OH_631G_HCORE:.12} \
+         (got {:.12}); this test's before/after premise is gone",
+        old.energy
+    );
+    assert_eq!(
+        old.stability.as_ref().map(|s| s.verdict()),
+        Some(StabilityVerdict::Unstable),
+        "the pre-fix OH state should still be reported UNSTABLE"
+    );
+}
