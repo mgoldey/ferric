@@ -1,0 +1,21 @@
+  [baseline run 1] MPI_ERR_TRUNCATE
+[baseline] np=4 run  1/10: FAIL  (pass 0 / fail 1)
+  [baseline run 2] MPI_ERR_TRUNCATE
+[baseline] np=4 run  2/10: FAIL  (pass 0 / fail 2)
+  [baseline run 3] MPI_ERR_TRUNCATE
+[baseline] np=4 run  3/10: FAIL  (pass 0 / fail 3)
+  [baseline run 4] MPI_ERR_TRUNCATE
+[baseline] np=4 run  4/10: FAIL  (pass 0 / fail 4)
+  [baseline run 5] MPI_ERR_TRUNCATE
+[baseline] np=4 run  5/10: FAIL  (pass 0 / fail 5)
+  [baseline run 6] MPI_ERR_TRUNCATE
+[baseline] np=4 run  6/10: FAIL  (pass 0 / fail 6)
+  [baseline run 7] MPI_ERR_TRUNCATE
+[baseline] np=4 run  7/10: FAIL  (pass 0 / fail 7)
+  [baseline run 8] MPI_ERR_TRUNCATE
+[baseline] np=4 run  8/10: FAIL  (pass 0 / fail 8)
+  [baseline run 9] MPI_ERR_TRUNCATE
+[baseline] np=4 run  9/10: FAIL  (pass 0 / fail 9)
+  [baseline run 10] MPI_ERR_TRUNCATE
+[baseline] np=4 run 10/10: FAIL  (pass 0 / fail 10)
+SUMMARY baseline np=4: 0 passed, 10 failed of 10
