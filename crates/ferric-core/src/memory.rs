@@ -38,6 +38,11 @@
 /// account for, rather than a ceiling every call site re-reads independently.
 pub mod plan;
 
+/// `MemoryPool` (`pool::MemoryPool`): the process-global ledger that
+/// reservations DEBIT and release, so two subsystems cannot each be handed the
+/// whole ceiling. `plan` describes; `pool` accounts.
+pub mod pool;
+
 /// Final fallback budget when nothing else resolves: 2 GiB.
 pub const DEFAULT_BUDGET_BYTES: usize = 2 * 1024 * 1024 * 1024;
 
