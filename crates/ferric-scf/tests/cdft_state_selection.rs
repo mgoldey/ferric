@@ -144,12 +144,28 @@ fn build_sys() -> Sys {
 /// the fix instead and the multi-valuedness would be hidden by the very
 /// mechanism that resolves it. The FIXED driver is exercised separately, by
 /// `the_fixed_driver_reaches_the_lower_state` below, which sets the default.
+///
+/// `use_sad_guess: false` is pinned HERE, at the base config, rather than only
+/// in [`cfg_with_target`] — see that function's doc for the full reasoning. It
+/// belongs at this level because EVERY baseline in this file was recorded
+/// against the hcore-started solver, and configs derived straight from
+/// `hene_cfg` (via `..hene_cfg()` / `..hene_cfg_fixed()`) bypass
+/// `cfg_with_target` entirely. When the pin lived only there, four tests that
+/// build on this config ran from MINAO instead and died on
+/// `cDFT outer loop did not converge in 30 iters` — the very non-convergence
+/// `cfg_with_target`'s doc already records. The pin was incomplete, not the
+/// observation wrong.
+///
+/// What this DOES NOT do: it does not claim the MINAO-started constrained loop
+/// converges. It does not, and that gap is held open on purpose by
+/// [`minao_started_cdft_does_not_converge_at_the_integer_target`].
 fn hene_cfg() -> RhfConfig {
     RhfConfig {
         max_iter: 400,
         level_shift: HENE_LEVEL_SHIFT,
         cdft_lambda_tol: HENE_LAMBDA_TOL,
         cdft_stability_descent: false,
+        use_sad_guess: false,
         dft_grid: Some(AtomicGridConfig {
             n_radial: 99,
             n_angular: 302,
@@ -192,6 +208,10 @@ fn cfg_with_target(target: f64) -> RhfConfig {
             target,
             spin: SpinChannel::Total,
         }],
+        // Redundant since `hene_cfg` now pins this too, and KEPT redundant: it
+        // is the pin this function's doc above describes, and a reader who
+        // deletes it should have to reckon with that doc rather than discover
+        // the behaviour changed two call-levels away.
         use_sad_guess: false,
         ..hene_cfg()
     }
@@ -1734,5 +1754,97 @@ fn the_fix_does_not_reach_nwchems_low_member() {
         (gap_ev - 0.5631).abs() < 0.05,
         "the measured residual gap to NWChem's LOW member was 0.5631 eV; got \
          {gap_ev:.4} eV"
+    );
+}
+
+/// **THE DEFAULT PATH IS STILL EXERCISED, despite this file pinning hcore.**
+///
+/// Every other test here pins `use_sad_guess: false` (see [`hene_cfg`]) because
+/// every recorded baseline was taken against the hcore-started solver. That is
+/// right for an AUDIT, but it leaves a hole: since
+/// `fix/scf-unconstrained-state-selection` made `use_sad_guess` live, MINAO is
+/// what the DEFAULT path actually uses, so a file pinned entirely to hcore would
+/// stop testing what real callers get. This test covers that hole.
+///
+/// # What this measures, and a correction to the record
+///
+/// MEASURED (2026-09-17), MINAO start, integer target N_He = 2.0:
+///
+/// ```text
+///   E = -130.40219085   λ = -2.753704   outer = 10
+/// ```
+///
+/// That is the SAME upper state the hcore path reaches (−130.40219117, λ =
+/// −2.753704, 23 outer), agreeing to 3e-7 Ha — and it converges in FEWER outer
+/// iterations, not more.
+///
+/// This CORRECTS a reading of `1a1eeddd`'s note that the MINAO-started
+/// constrained loop "stops converging within its 30-iteration cap". That note is
+/// accurate for the two INTERMEDIATE targets it names (1.990 and 1.995) and for
+/// the `state A (N_He=1)` entry of the guess catalogue above — it is NOT a
+/// property of MINAO at the integer target, where MINAO converges fine. The
+/// non-convergence is TARGET- and GUESS-specific, not a blanket property of the
+/// MINAO start, and the catalogue in
+/// [`state_b_energy_is_multi_valued_across_guesses_at_the_integer_target`] shows
+/// the same thing: its `SAD` row converges at the integer target in 14 outer
+/// iterations.
+///
+/// Recorded because the broader claim, left uncorrected, would licence widening
+/// `max_outer` to "fix" a loop that is not broken in the way the claim suggests.
+///
+/// # What would make this test fail
+///
+/// It fails if the default path stops converging here, or if it starts landing
+/// on a DIFFERENT state than hcore does. Either is a real change in what users
+/// get by default, and neither should be discovered by a baseline drifting
+/// silently in some other test.
+#[test]
+fn the_default_minao_path_converges_to_the_same_state_as_hcore() {
+    // The hcore baseline this is compared against, from the guess catalogue
+    // above: E = -130.40219117 at the integer target.
+    const HCORE_UPPER: f64 = -130.40219117;
+    // 3e-6 Ha. The measured hcore-vs-MINAO spread is ~3e-7 (two solvers reaching
+    // the same stationary point from different starts, each at its own SCF exit
+    // criteria); 10x that is loose enough not to be brittle and still ~4 orders
+    // of magnitude tighter than the 0.0245 Ha gap to the OTHER state, which is
+    // what this test must never silently accept.
+    const TOL: f64 = 3e-6;
+
+    let sys = build_sys();
+    let cfg = RhfConfig {
+        constraints: vec![Constraint {
+            fragment: vec![0],
+            target: 2.0,
+            spin: SpinChannel::Total,
+        }],
+        // The ONE place in this file that deliberately does NOT pin the guess:
+        // the default path is the whole subject of the test.
+        use_sad_guess: true,
+        ..hene_cfg()
+    };
+
+    let r = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &cfg)
+        .expect(
+            "the MINAO-started constrained loop must converge at the integer \
+             target -- it did (10 outer iters) when this test was written. If it \
+             now fails, the DEFAULT path has regressed, which is what this test \
+             exists to catch. Do NOT pin this to hcore to make it pass: that \
+             would delete the only coverage of the path real callers use.",
+        );
+
+    eprintln!(
+        "[MINAO start, integer target] E = {:.8}  λ = {:+.6}  N = {:.8}  outer = {}",
+        r.scf.energy, r.lambdas[0], r.populations[0], r.outer_iters
+    );
+
+    assert!(
+        (r.scf.energy - HCORE_UPPER).abs() < TOL,
+        "the default (MINAO) path reached {:.8}, but hcore reaches \
+         {HCORE_UPPER:.8} (Δ = {:.2e} Ha, tol {TOL:.0e}). The two starts landing \
+         on DIFFERENT states is a real finding about what users get by default -- \
+         audit it, do not widen this tolerance. NB the other constrained state \
+         here is ~0.0245 Ha away, so a Δ of that order means a basin flip.",
+        r.scf.energy,
+        (r.scf.energy - HCORE_UPPER).abs()
     );
 }

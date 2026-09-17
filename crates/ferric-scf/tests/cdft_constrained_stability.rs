@@ -201,12 +201,20 @@ fn hene_xyz() -> String {
 /// stops being a saddle with the descent OFF, that is a real change in the
 /// underlying SCF and this file will say so. The FIXED behavior is asserted
 /// separately, in `tests/cdft_state_selection.rs`.
+/// `use_sad_guess: false` is pinned at the BASE config, not only in the
+/// constrained constructor below — same reasoning as
+/// `cdft_state_selection::hene_cfg`. Configs built straight from `hene_cfg`
+/// (`..hene_cfg()`) bypass that constructor, and when the pin lived only there
+/// they ran from MINAO and died on `cDFT outer loop did not converge in 30
+/// iters`. Every baseline in this file was recorded against the hcore-started
+/// solver, so the pin belongs where all of them inherit it.
 fn hene_cfg() -> RhfConfig {
     RhfConfig {
         max_iter: 400,
         level_shift: HENE_LEVEL_SHIFT,
         cdft_lambda_tol: HENE_LAMBDA_TOL,
         cdft_stability_descent: false,
+        use_sad_guess: false,
         dft_grid: Some(AtomicGridConfig {
             n_radial: 99,
             n_angular: 302,
