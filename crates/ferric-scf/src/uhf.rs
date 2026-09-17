@@ -498,9 +498,7 @@ pub fn solve_uhf_fockmod(
             )));
         }
         (ca0.clone(), cb0.clone())
-    } else if let Some((ga, gb)) =
-        uhf_guess_mos(ctx, mol, prep, bounds, config, &s, &h, &x, nocc_a, nocc_b)?
-    {
+    } else if let Some((ga, gb)) = uhf_guess_mos(ctx, mol, prep, bounds, config, &h, &x)? {
         (ga, gb)
     } else {
         // hcore guess: get MO coefficients from H' = Xᵀ H X (canonical-orthog).
@@ -1478,20 +1476,15 @@ fn diagonalize(f: &Array2<f64>, x: &Array2<f64>) -> Result<(Vec<f64>, Array2<f64
 /// reference the guess Fock is therefore not the converged Fock — which is
 /// fine and is what every SAD-style guess in every code does — but it means
 /// this function must never be mistaken for a converged-Fock builder.
-#[allow(clippy::too_many_arguments)]
 fn uhf_guess_mos(
     ctx: &ParallelContext,
     mol: &Molecule,
     prep: &PreparedBasis,
     bounds: &SchwarzBounds,
     config: &UhfConfig,
-    s: &Array2<f64>,
     h: &Array2<f64>,
     x: &Array2<f64>,
-    nocc_a: usize,
-    nocc_b: usize,
 ) -> Result<Option<(Array2<f64>, Array2<f64>)>, FerricError> {
-    let _ = (s, nocc_a, nocc_b);
     let n = prep.nbasis();
 
     // Which density? An explicit one wins; otherwise the MINAO projection,
