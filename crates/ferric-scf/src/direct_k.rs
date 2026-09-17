@@ -119,6 +119,8 @@ impl<'a> KBuilder for DirectK<'a> {
                         dims,
                         offs,
                         &self.bounds.q,
+                        self.bounds.csb_m.as_ref(),
+                        self.bounds.csam_x.as_ref(),
                         &screen,
                         self.thresh,
                         d,

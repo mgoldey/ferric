@@ -88,7 +88,20 @@ CI_GATE_SLOW_TESTS=(
     pair_screen_criteria      # ferric-cc,   49.0s
     attenuation_plus_dlpno    # ferric-cc,   39.4s
     lmp2_amplitude            # ferric-mp2,  36.0s
+    # Added 2026-09-16. Timings are from GitHub run 35050103626 on a 4-vCPU
+    # runner -- NOT local wall time, which does not transfer. That run timed
+    # out at the 100-minute fast-tier cap with 89.3 min of test time and every
+    # test passing. These six were 74% of it.
+    screening_exactness       # ferric-scf, 1428s (23.8 min)
+    csam_screening            # ferric-scf,  834s (13.9 min)
+    link_scf_anchor           # ferric-scf,  570s ( 9.5 min)
+    link_screen_reachability  # ferric-scf,  492s ( 8.2 min)
+    grid_prune_live_scf       # ferric-dft,  366s ( 6.1 min)
+    hirshfeld_symmetry        # ferric-rpa,  300s ( 5.0 min)
 )
+# These are DEFERRED, not shrunk: screening is inert on small molecules, so
+# the large-alkane sizes are what makes the exactness anchors meaningful.
+# Keep this list in sync with SLOW in .github/workflows/ci.yml.
 # NOTE: terfc_vs_exact (35.5s) was formerly listed here; it is now #[ignore]d
 # at source (it has NO assertions -- an earlier audit miscounted the word
 # "assertion" in its doc comment as a real one), so the gate tier no longer

@@ -185,6 +185,42 @@ pub fn eri3_block(
     p0: usize,
     p1: usize,
 ) -> Result<Array3<f64>, FerricError> {
+    eri3_block_screened(op, obs, dfbs, p0, p1, None)
+}
+
+/// [`eri3_block`] with optional QQR-3 distance screening.
+///
+/// `screen = Some((bounds, thresh))` skips any shell triple `(P|s1 s2)` whose
+/// QQR-3 estimate falls below `thresh`; skipped blocks stay zero. `None` is the
+/// unscreened path and is byte-identical to it.
+///
+/// # Purity contract (load-bearing — do not break)
+///
+/// `ThreeIndexSource`'s Recompute backend rebuilds a block on every read and
+/// requires the result to be BIT-IDENTICAL to the in-core build
+/// (`tests/mwe_recompute_backend_avoids_disk.rs`). This stays true with
+/// screening on because `QqrBounds3::estimate3` is a deterministic function of
+/// `(op, mol, obs, dfbs)` and the threshold is fixed for the source's lifetime:
+/// the same triples are skipped on every rebuild. Do NOT make the skip
+/// criterion depend on anything that varies per call (a density, an iteration
+/// count, ambient thread count), or Recompute silently diverges from in-core.
+///
+/// # What this screening does and does not exploit
+///
+/// QQR-3's envelope is the Coulomb monopole `min(1, 1.10·ext_sum/r_eff)`;
+/// `estimate3` never reads `op.omega`. The win is therefore GEOMETRIC — far
+/// aux/pair separations — and is essentially the same for Coulomb, erfc and
+/// terfc (measured on decane: 79.1% / 78.5% / 77.9% kept at 1e-8). Do not
+/// expect an attenuated operator to screen better here; see
+/// `tests/qqr3_terfc_screening.rs`.
+pub fn eri3_block_screened(
+    op: Operator,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    p0: usize,
+    p1: usize,
+    screen: Option<(&crate::qqr3::QqrBounds3, f64)>,
+) -> Result<Array3<f64>, FerricError> {
     use rayon::prelude::*;
 
     let nbas = obs.nbasis();
@@ -223,6 +259,15 @@ pub fn eri3_block(
                 let n1 = dims_obs[s1];
                 let m0 = offs_obs[s1];
                 for s2 in 0..=s1 {
+                    // QQR-3 distance screen. Evaluated per (sp, s1, s2) from a
+                    // bound that is deterministic in (op, obs, dfbs), so the
+                    // skipped set is identical on every rebuild — see the
+                    // purity contract on this function.
+                    if let Some((bounds, thresh)) = screen {
+                        if bounds.estimate3(sp, s1, s2) < thresh {
+                            continue;
+                        }
+                    }
                     if let Some(block) = eng.compute_eri3(obs, dfbs, sp, s1, s2) {
                         let n2 = dims_obs[s2];
                         let n0 = offs_obs[s2];

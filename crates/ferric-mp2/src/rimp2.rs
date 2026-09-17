@@ -52,6 +52,22 @@ pub struct RiMp2Config {
     /// finite and > 0 (κ → ∞ recovers MP2, κ → 0 turns correlation off —
     /// both are tested limits). Units: inverse Hartree.
     pub kappa: Option<f64>,
+    /// QQR-3 distance screening threshold for the 3-index `(P|μν)` build.
+    /// `None` (default) → dense, byte-identical to the pre-existing path.
+    ///
+    /// The win is GEOMETRIC — far aux/pair separations — not operator-specific:
+    /// `qqr3::estimate3`'s envelope is the Coulomb monopole term and it never
+    /// reads `op.omega`. Measured on decane / cc-pVDZ + cc-pVDZ-RI at 1e-8, the
+    /// kept fraction is 79.1% (Coulomb) / 78.5% (erfc) / 77.9% (terfc r₀=1), so
+    /// an attenuated operator buys about one point over Coulomb here. Do NOT
+    /// enable this expecting attenuation to screen; see
+    /// `ferric-integrals/tests/qqr3_terfc_screening.rs`.
+    ///
+    /// This is an APPROXIMATION: skipped triples are dropped from the tensor,
+    /// so the energy shifts. `1e-10` is the conservative setting measured to
+    /// cost well under a microhartree; `0.0` keeps everything and is the
+    /// exactness anchor.
+    pub eri3_screen_thresh: Option<f64>,
 }
 
 impl RiMp2Config {
@@ -918,7 +934,21 @@ pub fn ri_mp2_spin_components(
     // inside ThreeIndexSource::build covers naux*nao^2 only, so without this
     // the peak always exceeded the budget by construction.
     check_mo_side_alloc("RI-MP2", dfbs.nbasis(), nocc, nvir, false, budget_bytes)?;
-    let mut src = ThreeIndexSource::build(op, obs, dfbs, budget_bytes)?;
+    // QQR-3 distance screen on the 3-index build. `None` -> dense, and the
+    // `build_band_screened(.., None)` call is byte-identical to the old
+    // `ThreeIndexSource::build`. The bound is constructed ONCE and handed to the
+    // source for its whole lifetime, which is what keeps a rebuilt block
+    // bit-identical to the original (see eri3_block_screened's purity note).
+    let qqr_bounds = match config.eri3_screen_thresh {
+        Some(t) if t > 0.0 => Some(ferric_integrals::qqr3::QqrBounds3::new(op, mol, obs, dfbs)?),
+        _ => None,
+    };
+    let screen = qqr_bounds
+        .as_ref()
+        .map(|b| (b, config.eri3_screen_thresh.unwrap_or(0.0)));
+    let naux_all = dfbs.nbasis();
+    let mut src =
+        ThreeIndexSource::build_band_screened(op, obs, dfbs, budget_bytes, 0, naux_all, screen)?;
     // Budgeted: on a tight budget this narrows the chunk (and, as documented
     // on mo_stream_chunk_for, shifts the last digits); at an ample budget it
     // resolves to the historical 256 and is bit-identical.

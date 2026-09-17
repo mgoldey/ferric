@@ -328,15 +328,51 @@ pub fn run(args: Vec<String>) {
     // from bs.ecps, so this must happen before any nelec()-derived occupation.
     mol.apply_ecp(&bs);
 
+    // `frozen_core = "auto"` becomes a number HERE and nowhere earlier: the
+    // count depends on the molecule AND on the basis, because an ECP has
+    // already removed some core orbitals from the MO space (apply_ecp, just
+    // above, is what puts those counts on the atoms). Validate every
+    // correlation section's key up front so an over-large frozen core is an
+    // error before the SCF runs, not a bare message from inside the
+    // correlation kernel 40 seconds later, and print what "auto" resolved to
+    // so the run's correlation space is auditable from its log alone.
+    if let Err(e) = cfg.validate_frozen_core(&mol) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+    for line in cfg.frozen_core_audit_lines(&mol) {
+        eprintln!("[ferric] {line}");
+    }
+
     let prep = PreparedBasis::new(&mol, &bs).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
     });
     let op = Operator::coulomb();
-    let bounds = SchwarzBounds::compute(op, &prep).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(1);
-    });
+    // Resolved ONCE, here, so the SAME kind governs BOTH mechanisms:
+    //   * this `bounds` value, whose `csb_m` table (attached by
+    //     `compute_for_screening`) is what carries CSB into the default
+    //     `DirectJ`/`DirectK`/`DirectJK`/`build_jk` path for RHF, UHF and
+    //     ROHF — none of whose signatures change;
+    //   * `RhfConfig::screening` below, which governs the separate LinK path.
+    // Parsing it twice would risk the two silently disagreeing after a future
+    // edit touched only one site.
+    let screening_kind = cfg
+        .scf
+        .screening
+        .as_deref()
+        .map_or(Ok(ferric_scf::screening::ScreeningKind::default()), |s| {
+            ferric_scf::screening::ScreeningKind::parse_config_str(s)
+        })
+        .unwrap_or_else(|e| {
+            eprintln!("error: [scf] screening: {e}");
+            std::process::exit(1);
+        });
+    let bounds =
+        SchwarzBounds::compute_for_screening(op, &prep, screening_kind).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
     // For ksdft, default RI-J/RI-K to def2-universal-jkfit (required for hybrids
     // and RSH; harmless for pure DFT). User can still override via [scf].
     let (xc, df_j_default, df_k_default) = if method == "ksdft" {
@@ -470,6 +506,9 @@ pub fn run(args: Vec<String>) {
         polarizable: None,
         verbose: cfg.scf.verbose,
         check_stability: cfg.scf.check_stability,
+        // Same resolved kind that already selected `bounds`'s CSB table
+        // above; see the comment there for why it is parsed once.
+        screening: screening_kind,
     };
 
     // Resolve/validate [scf] df_guess_aux up front (config-honesty: a knob
@@ -915,7 +954,7 @@ fn run_lmp2(
         result,
         &AmplitudeLmp2Config {
             eps,
-            frozen_core: cfg.mp2.frozen_core,
+            frozen_core: cfg.mp2.frozen_core.resolve(mol),
             eri3_budget_bytes: budget_bytes,
             ..Default::default()
         },
@@ -989,7 +1028,7 @@ fn run_lmp2_direct(
         result,
         &AmplitudeLmp2Config {
             eps,
-            frozen_core: cfg.mp2.frozen_core,
+            frozen_core: cfg.mp2.frozen_core.resolve(mol),
             eri3_budget_bytes: budget_bytes,
             pair_gate_cal: cfg.mp2.direct_gate_cal,
             ..Default::default()
@@ -1077,7 +1116,7 @@ fn run_rimp2(
         op,
         result,
         &RiMp2Config {
-            frozen_core: cfg.mp2.frozen_core,
+            frozen_core: cfg.mp2.frozen_core.resolve(mol),
             memory_budget_bytes: budget_bytes,
             kappa: cfg.mp2.kappa,
             ..Default::default()
@@ -1149,7 +1188,7 @@ fn run_mp3(
         &dfbs,
         op,
         result,
-        cfg.mp2.frozen_core,
+        cfg.mp2.frozen_core.resolve(mol),
         budget_bytes,
     )
     .unwrap_or_else(|e| {
@@ -1192,7 +1231,7 @@ fn run_oo_rimp2(
         std::process::exit(1);
     });
     let oo_config = OoRiMp2Config {
-        frozen_core: cfg.mp2.frozen_core,
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
         memory_budget_bytes: budget_bytes,
         verbose: cfg.scf.verbose,
         ..Default::default()
@@ -1238,7 +1277,7 @@ fn run_att_rimp2(
     let att_config = AttenuatedMp2Config {
         omega: omega_ang_inv * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
         scaling: 1.0,
-        frozen_core: cfg.mp2.frozen_core,
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
         screen_thresh: None,
         memory_budget_bytes: budget_bytes,
     };
@@ -1360,7 +1399,7 @@ fn run_rs_mp2_rpa(
         omega: omega_ang_inv * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
         attenuator,
         r0,
-        frozen_core: cfg.mp2.frozen_core,
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
         formulation,
         ..Default::default()
     };
@@ -1520,7 +1559,7 @@ fn run_scs_mp2(
     let scs_config = ScsMp2Config {
         c_os: cfg.mp2.c_os.unwrap_or(6.0 / 5.0),
         c_ss: cfg.mp2.c_ss.unwrap_or(1.0 / 3.0),
-        frozen_core: cfg.mp2.frozen_core,
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
         memory_budget_bytes: budget_bytes,
     };
     let scs_result = scs_mp2(mol, prep, &dfbs, result, &scs_config).unwrap_or_else(|e| {
@@ -1568,7 +1607,7 @@ fn run_scs_mp2_2terfc(
         r0_nonbonded: r0_nonbonded_ang * ANG2BOHR,
         c_os: cfg.mp2.c_os.unwrap_or(1.27),
         c_ss: cfg.mp2.c_ss.unwrap_or(4.05),
-        frozen_core: cfg.mp2.frozen_core,
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
         memory_budget_bytes: budget_bytes,
     };
     if scs_config.r0_nonbonded <= scs_config.r0_bonded {
@@ -1635,7 +1674,7 @@ fn run_mp2_v(
     });
     let att_cfg = cfg
         .mp2
-        .build_att_vv10_config(budget_bytes)
+        .build_att_vv10_config(mol, budget_bytes)
         .unwrap_or_else(|e| {
             eprintln!("error: {e}");
             std::process::exit(1);
@@ -1740,7 +1779,7 @@ fn run_ccsd(
         std::process::exit(1);
     });
     let cc_config = CcConfig {
-        frozen_core: cfg.mp2.frozen_core,
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
         memory_budget_bytes: budget_bytes,
         ..Default::default()
     };
@@ -1815,7 +1854,7 @@ fn run_linlccd(
         std::process::exit(1);
     });
     let cc_config = CcConfig {
-        frozen_core: cfg.mp2.frozen_core,
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
         memory_budget_bytes: budget_bytes,
         ..Default::default()
     };
@@ -1888,7 +1927,7 @@ fn run_wb97x_l_v_arm(
     // a zero from a `..Default::default()`-less struct literal.
     let mut dh_cfg = DoubleHybridConfig {
         cc: CcConfig {
-            frozen_core: cfg.mp2.frozen_core,
+            frozen_core: cfg.mp2.frozen_core.resolve(mol),
             memory_budget_bytes: budget_bytes,
             ..DoubleHybridConfig::default().cc
         },
@@ -1984,7 +2023,7 @@ fn run_mp2_double_hybrid_arm(
     }
 
     let mut mp2_cfg = dh_kind.mp2_config();
-    mp2_cfg.frozen_core = cfg.mp2.frozen_core;
+    mp2_cfg.frozen_core = cfg.mp2.frozen_core.resolve(mol);
     mp2_cfg.memory_budget_bytes = budget_bytes;
 
     let r = mp2_double_hybrid(mol, prep, &dfbs, &ks, &mp2_cfg).unwrap_or_else(|e| {
@@ -2038,7 +2077,7 @@ fn run_laplace_mp2(
         op,
         result,
         n_quad,
-        cfg.mp2.frozen_core,
+        cfg.mp2.frozen_core.resolve(mol),
         budget_bytes,
     )
     .unwrap_or_else(|e| {
@@ -2104,7 +2143,7 @@ fn run_laplace_sos_mp2(
     }
     let sos_cfg = SosMp2Config {
         c_os: cfg.mp2.c_os.unwrap_or(1.3),
-        frozen_core: cfg.mp2.frozen_core,
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
         n_quad: cfg.mp2.n_quad.unwrap_or(7),
         memory_budget_bytes: budget_bytes,
         domain_cutoff_bohr: cfg.mp2.domain_cutoff_bohr,
@@ -2174,7 +2213,7 @@ fn run_pdep_rpa_arm(
         std::process::exit(1);
     });
     let rpa_cfg = PdepRpaConfig {
-        frozen_core: cfg.rpa.frozen_core,
+        frozen_core: cfg.rpa.frozen_core.resolve(mol),
         trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
         eigensolver_max_vecs: 0,
         eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-6),
@@ -3060,7 +3099,11 @@ fn run_gw(
     // energy (Σ) build for self-consistency (see GwConfig::frozen_core
     // doc). [gw].frozen_core is the source of truth when set; otherwise
     // fall back to [rpa].frozen_core so a plain [rpa] block still works.
-    let gw_frozen_core = cfg.gw.frozen_core.unwrap_or(cfg.rpa.frozen_core);
+    let gw_frozen_core = cfg
+        .gw
+        .frozen_core
+        .unwrap_or(cfg.rpa.frozen_core)
+        .resolve(mol);
     let rpa_cfg = PdepRpaConfig {
         frozen_core: gw_frozen_core,
         trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
@@ -3369,7 +3412,11 @@ fn run_bse_tda(
     // self-energy build for self-consistency, same as the "gw" arm.
     // [gw].frozen_core is the source of truth when set; otherwise fall
     // back to [rpa].frozen_core.
-    let bse_frozen_core = cfg.gw.frozen_core.unwrap_or(cfg.rpa.frozen_core);
+    let bse_frozen_core = cfg
+        .gw
+        .frozen_core
+        .unwrap_or(cfg.rpa.frozen_core)
+        .resolve(mol);
     let rpa_cfg = PdepRpaConfig {
         frozen_core: bse_frozen_core,
         trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
@@ -3482,7 +3529,11 @@ fn run_tdhf_static_polarizability(
         eprintln!("config error: {e}");
         std::process::exit(1);
     });
-    let frozen_core = cfg.gw.frozen_core.unwrap_or(cfg.rpa.frozen_core);
+    let frozen_core = cfg
+        .gw
+        .frozen_core
+        .unwrap_or(cfg.rpa.frozen_core)
+        .resolve(mol);
     let scissor = cfg.gw.scissor.unwrap_or(0.0);
     let rpa_cfg = PdepRpaConfig {
         frozen_core,
@@ -3750,7 +3801,7 @@ fn run_optimize(
                 std::process::exit(1);
             });
             let rpa_cfg = PdepRpaConfig {
-                frozen_core: cfg.rpa.frozen_core,
+                frozen_core: cfg.rpa.frozen_core.resolve(mol),
                 trunc_thresh: cfg.rpa.trunc_thresh.unwrap_or(1e-4),
                 eigensolver_max_vecs: 0,
                 eigensolver_conv_thresh: cfg.rpa.eigensolver_conv_thresh.unwrap_or(1e-8),
@@ -3812,7 +3863,7 @@ fn run_optimize(
                 std::process::exit(1);
             });
             let mp2_config = RiMp2Config {
-                frozen_core: cfg.mp2.frozen_core,
+                frozen_core: cfg.mp2.frozen_core.resolve(mol),
                 memory_budget_bytes: budget_bytes,
                 ..Default::default()
             };

@@ -26,6 +26,17 @@ pub mod cosx_a;
 /// Shell-pair screening bound shared by `cosx_a` and `md3c1e` (Hölder bound on
 /// the primitive expansion; never underestimates, decays as `K_AB / R`).
 pub mod cosx_screen;
+/// CSAM (combined Schwarz approximation) integral screening: the
+/// NON-RIGOROUS multiplicative estimate of Eqs. (9)/(11)/(12) of the same
+/// paper, ported from Psi4's `shell_significant_csam()`. Tighter than plain
+/// Schwarz, but it can UNDERESTIMATE the true integral — an opt-in
+/// accuracy-vs-threshold tradeoff, not a free speedup. Contrast [`csb`] below,
+/// which is the rigorous member of the family.
+pub mod csam;
+/// CSB (combined Schwarz bound) integral screening: the RIGOROUS
+/// `min{Q_uv Q_ls, M_ul M_vs, M_us M_vl}` bound of Thompson & Ochsenfeld,
+/// JCP 147, 144101 (2017), Eq. (8). Never looser than plain Schwarz.
+pub mod csb;
 /// Effective core potential integral evaluation.
 pub mod ecp;
 /// Raw C-ABI bindings to the ECP shim (`shim/ecp_shim.cc`).

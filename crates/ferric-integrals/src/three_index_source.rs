@@ -447,6 +447,12 @@ enum Backend {
         obs: std::sync::Arc<PreparedBasis>,
         dfbs: std::sync::Arc<PreparedBasis>,
         scratch: Array3<f64>,
+        /// QQR-3 screen, carried so a rebuilt block skips exactly the triples
+        /// the original build skipped. Held by `Arc` for the same reason the
+        /// bases are: the backend must outlive any borrow of the caller's
+        /// bounds. Purity depends on this being the SAME bounds+threshold for
+        /// the source's whole lifetime — see `eri3_block_screened`.
+        screen: Option<(std::sync::Arc<crate::qqr3::QqrBounds3>, f64)>,
     },
 }
 
@@ -546,11 +552,15 @@ impl ThreeIndexSource {
             block_naux,
             band_p0: 0,
             band_p1: naux,
+            // No screen: `build_recompute` has no screened entry point yet.
+            // If one is added it MUST store the same bounds+threshold here that
+            // the original build used, or rebuilt blocks diverge from in-core.
             backend: Backend::Recompute {
                 op,
                 obs,
                 dfbs,
                 scratch,
+                screen: None,
             },
         })
     }
@@ -581,6 +591,25 @@ impl ThreeIndexSource {
         band_p0: usize,
         band_p1: usize,
     ) -> Result<Self, FerricError> {
+        Self::build_band_screened(op, obs, dfbs, budget_bytes, band_p0, band_p1, None)
+    }
+
+    /// [`Self::build_band`] with an optional QQR-3 distance screen applied to
+    /// every 3-index block this source builds (in-core AND spilled).
+    ///
+    /// The screen must stay FIXED for the source's lifetime: `for_each_block`
+    /// may rebuild a block, and a rebuilt block must skip exactly the triples
+    /// the original skipped. See `threeindex::eri3_block_screened`'s purity
+    /// contract.
+    pub fn build_band_screened(
+        op: Operator,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        budget_bytes: usize,
+        band_p0: usize,
+        band_p1: usize,
+        screen: Option<(&crate::qqr3::QqrBounds3, f64)>,
+    ) -> Result<Self, FerricError> {
         let naux = dfbs.nbasis();
         let nao = obs.nbasis();
         assert!(
@@ -602,7 +631,8 @@ impl ThreeIndexSource {
         if needed <= budget_bytes {
             // In-core: build exactly the band (global rows [band_p0, band_p1)).
             // eri3_block returns a (band, nao, nao) tensor indexed band-locally.
-            let eri = crate::threeindex::eri3_block(op, obs, dfbs, band_p0, band_p1)?;
+            let eri =
+                crate::threeindex::eri3_block_screened(op, obs, dfbs, band_p0, band_p1, screen)?;
             Ok(Self {
                 naux,
                 nao,
@@ -653,7 +683,8 @@ impl ThreeIndexSource {
                     let mut p0 = band_p0;
                     while p0 < band_p1 {
                         let p1 = (p0 + block_naux).min(band_p1);
-                        let blk = crate::threeindex::eri3_block(op, obs, dfbs, p0, p1);
+                        let blk =
+                            crate::threeindex::eri3_block_screened(op, obs, dfbs, p0, p1, screen);
                         let is_err = blk.is_err();
                         // If the receiver hung up (writer hit an I/O error and
                         // returned early), stop producing.
@@ -1152,6 +1183,7 @@ impl ThreeIndexSource {
                 obs,
                 dfbs,
                 scratch,
+                screen,
             } => {
                 // Rebuild each block from the bases rather than reading it back.
                 //
@@ -1166,7 +1198,11 @@ impl ThreeIndexSource {
                     let l1 = (l0 + self.block_naux).min(band);
                     let p0 = band_p0 + l0;
                     let p1 = band_p0 + l1;
-                    let blk = crate::threeindex::eri3_block(*op, obs, dfbs, p0, p1)?;
+                    // Same screen the source was built with -- see the purity
+                    // contract on eri3_block_screened. A rebuilt block must skip
+                    // exactly the triples the original build skipped.
+                    let scr = screen.as_ref().map(|(b, t)| (b.as_ref(), *t));
+                    let blk = crate::threeindex::eri3_block_screened(*op, obs, dfbs, p0, p1, scr)?;
                     let b = l1 - l0;
                     scratch.slice_mut(ndarray::s![0..b, .., ..]).assign(&blk);
                     let view = scratch.slice(ndarray::s![0..b, .., ..]);

@@ -253,6 +253,97 @@ extern "C" {
         shQ: c_int,
         out: *mut c_double,
     ) -> c_int;
+    // 4-center terfc/terf quartets (sh1 sh2|op|sh3 sh4), all four shells from `obs`.
+    // These are what Schwarz/CSB need to build a (PQ|PQ) table for terfc.
+    pub fn scf_compute_terfc_eri4(
+        eng: *mut c_void,
+        obs: *const c_void,
+        sh1: c_int,
+        sh2: c_int,
+        sh3: c_int,
+        sh4: c_int,
+        out: *mut c_double,
+    ) -> c_int;
+    pub fn scf_compute_terf_eri4(
+        eng: *mut c_void,
+        obs: *const c_void,
+        sh1: c_int,
+        sh2: c_int,
+        sh3: c_int,
+        sh4: c_int,
+        out: *mut c_double,
+    ) -> c_int;
+    // Validation hook: the same 4-center MD path with the plain Coulomb kernel,
+    // for cross-checking the new contraction against libint2's own quartet.
+    pub fn scf_debug_coulomb_eri4(
+        obs: *const c_void,
+        sh1: c_int,
+        sh2: c_int,
+        sh3: c_int,
+        sh4: c_int,
+        out: *mut c_double,
+    ) -> c_int;
+    // STEP 1 gate for the libint2 core-eval port: terf_gm_eval_impl vs terf_aux.
+    pub fn scf_terf_asym_probe(
+        mmax: c_int,
+        reps: c_int,
+        ser_ns: *mut c_double,
+        asym_ns: *mut c_double,
+        worst_rel: *mut c_double,
+    ) -> c_int;
+    // Tail form G_m(S,s) = F_m(S) - Delta_m(S,s): exact rearrangement whose sum
+    // length is set by s, not S. `worst_rel` is measured on G over the
+    // curvature-constrained regime (s <= 0.5); `worst_rel_delta` is measured on
+    // Delta (== the terfc auxiliary F - G, the quantity production consumes)
+    // over the same sweep plus a large-s point exercising the adaptive index,
+    // which `worst_i` reports. Delta stays accurate where G cannot: at large s,
+    // Delta converges onto F and G = F - Delta is pure cancellation.
+    pub fn scf_terf_tail_probe(
+        mmax: c_int,
+        reps: c_int,
+        tail_ns: *mut c_double,
+        series_ns: *mut c_double,
+        worst_rel: *mut c_double,
+        worst_i: *mut c_int,
+        worst_rel_delta: *mut c_double,
+    ) -> c_int;
+    pub fn scf_terf_series_counters(tab: *mut u64, ser: *mut u64);
+    pub fn scf_terf_series_reset();
+    pub fn scf_terf_interp_accuracy(
+        table_dir: *const c_char,
+        mmax: c_int,
+        worst_rel: *mut c_double,
+    ) -> c_int;
+    pub fn scf_terf_gm_eval_matches_terf_aux(
+        table_dir: *const c_char,
+        mismatches: *mut c_int,
+        worst: *mut c_double,
+    ) -> c_int;
+    // STEP 4 gate: libint2-native terf vs the hand-rolled MD path (feature-gated
+    // build only; the symbol is absent without FERRIC_LIBINT2_TERF).
+    // STEP 4/5: libint2-native terf engine (feature-gated build only).
+    // braket: 2 -> xs_xs, 3 -> xs_xx, 4 -> xx_xx. Params are {omega, r0}.
+    pub fn scf_engine_create_terf_libint2(
+        r0: c_double,
+        omega: c_double,
+        braket: c_int,
+        max_nprim: c_int,
+        max_l: c_int,
+        precision: c_double,
+        table_dir: *const c_char,
+    ) -> *mut c_void;
+    pub fn scf_terf_libint2_vs_md_eri3(
+        obs: *const c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        sh1: c_int,
+        sh2: c_int,
+        r0: c_double,
+        omega: c_double,
+        table_dir: *const c_char,
+        max_abs: *mut c_double,
+        max_rel: *mut c_double,
+    ) -> c_int;
     pub fn scf_compute_dipole(
         bs: *const c_void,
         origin: *const c_double,
