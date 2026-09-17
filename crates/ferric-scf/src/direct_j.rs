@@ -125,7 +125,23 @@ impl<'a> JBuilder for DirectJ<'a> {
 
         let band_bytes = crate::reduce::resolve_band_bytes(self.mem_budget);
         let screen = DensityScreen::Global(max_d);
-        crate::reduce::grouped_deterministic_sum(j, n_groups, nbf, band_bytes, |g| {
+        // Accumulate into a rank-LOCAL partial rather than straight onto `j`, so
+        // the MPI reduction below acts only on this rank's contribution. `j` is
+        // an ACCUMULATE-onto buffer (`grouped_deterministic_sum` adds to prior
+        // contents), so Allreducing `j` itself would multiply anything the caller
+        // already had in it by the world size — the bug that WAS live in the
+        // sibling `DirectJK` path. See `reduce::reduce_partial_across_ranks`.
+        //
+        // HONESTY NOTE: this change is DEFENSIVE, and it is UNTESTED. `DirectJ`
+        // is reached only when DF-J/LinK routing selects it, and every such
+        // caller in `rhf.rs`/`uhf.rs`/`rohf.rs` zeroes `j` first, so the
+        // carry-over term is zero and `N*0 == 0`. Mutation-tested: reverting this
+        // to the old accumulate-then-reduce order leaves the whole MPI suite
+        // GREEN at -np 2. So there is no regression test standing behind this
+        // ordering here — it is correct-by-construction only. Do not "simplify"
+        // it back on the grounds that the tests still pass; they cannot see it.
+        let mut total_j = Array2::<f64>::zeros((nbf, nbf));
+        crate::reduce::grouped_deterministic_sum(&mut total_j, n_groups, nbf, band_bytes, |g| {
             let lo = g * group_size;
             let hi = (lo + group_size).min(n_pairs);
             let mut mode = JkMode::new_j(nbf);
@@ -149,17 +165,8 @@ impl<'a> JBuilder for DirectJ<'a> {
             Ok(local_j)
         })?;
 
-        #[cfg(feature = "mpi")]
-        if let Some(world) = self.ctx.world() {
-            use mpi::traits::CommunicatorCollectives;
-            let mut j_global = Array2::zeros(j.dim());
-            world.all_reduce_into(
-                j.as_slice().unwrap(),
-                j_global.as_slice_mut().unwrap(),
-                mpi::collective::SystemOperation::sum(),
-            );
-            *j = j_global;
-        }
+        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_j);
+        *j += &total_j;
 
         Ok(computed_quartets.load(Ordering::SeqCst))
     }

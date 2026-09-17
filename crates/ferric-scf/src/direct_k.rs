@@ -103,7 +103,17 @@ impl<'a> KBuilder for DirectK<'a> {
 
         let band_bytes = crate::reduce::resolve_band_bytes(self.mem_budget);
         let screen = DensityScreen::Global(max_d);
-        crate::reduce::grouped_deterministic_sum(k, n_groups, nbf, band_bytes, |g| {
+        // Rank-LOCAL partial, reduced below before it reaches `k`. `k` is an
+        // ACCUMULATE-onto buffer, so Allreducing `k` itself would multiply any
+        // pre-existing caller contents by the world size — the bug that WAS live
+        // in `DirectJK`. See `reduce::reduce_partial_across_ranks`.
+        //
+        // HONESTY NOTE: defensive and UNTESTED, exactly as in `direct_j.rs`.
+        // Every in-tree caller zeroes `k` first, so the carry-over is zero;
+        // mutation-testing confirmed that reverting this ordering leaves the MPI
+        // suite GREEN at -np 2. Correct-by-construction only — no test covers it.
+        let mut total_k = Array2::<f64>::zeros((nbf, nbf));
+        crate::reduce::grouped_deterministic_sum(&mut total_k, n_groups, nbf, band_bytes, |g| {
             let lo = g * group_size;
             let hi = (lo + group_size).min(n_pairs);
             let mut mode = JkMode::new_k(nbf);
@@ -139,17 +149,8 @@ impl<'a> KBuilder for DirectK<'a> {
             Ok(local_k)
         })?;
 
-        #[cfg(feature = "mpi")]
-        if let Some(world) = self.ctx.world() {
-            use mpi::traits::CommunicatorCollectives;
-            let mut k_global = Array2::zeros(k.dim());
-            world.all_reduce_into(
-                k.as_slice().unwrap(),
-                k_global.as_slice_mut().unwrap(),
-                mpi::collective::SystemOperation::sum(),
-            );
-            *k = k_global;
-        }
+        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_k);
+        *k += &total_k;
 
         Ok(computed_quartets.load(Ordering::SeqCst))
     }

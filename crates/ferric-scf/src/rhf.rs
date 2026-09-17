@@ -1548,27 +1548,15 @@ pub fn build_jk_with_pool(
         },
     )?;
 
+    // MPI: reduce the rank-LOCAL partials, THEN accumulate. This function
+    // ACCUMULATES onto `j`/`k` without zeroing them, so an Allreduce of the
+    // output buffers would also multiply any pre-existing caller contents by the
+    // world size. See `reduce::reduce_partial_across_ranks`.
+    crate::reduce::reduce_partial_across_ranks(ctx, &mut total_j);
+    crate::reduce::reduce_partial_across_ranks(ctx, &mut total_k);
+
     *j += &total_j;
     *k += &total_k;
-
-    #[cfg(feature = "mpi")]
-    if let Some(world) = ctx.world() {
-        use mpi::traits::CommunicatorCollectives;
-        let mut j_global = Array2::zeros(j.dim());
-        let mut k_global = Array2::zeros(k.dim());
-        world.all_reduce_into(
-            j.as_slice().unwrap(),
-            j_global.as_slice_mut().unwrap(),
-            mpi::collective::SystemOperation::sum(),
-        );
-        world.all_reduce_into(
-            k.as_slice().unwrap(),
-            k_global.as_slice_mut().unwrap(),
-            mpi::collective::SystemOperation::sum(),
-        );
-        *j = j_global;
-        *k = k_global;
-    }
 
     Ok(computed_quartets.load(Ordering::SeqCst))
 }
