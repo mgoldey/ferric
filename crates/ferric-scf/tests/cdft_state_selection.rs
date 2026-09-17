@@ -1823,14 +1823,13 @@ fn the_default_minao_path_converges_to_the_same_state_as_hcore() {
         ..hene_cfg()
     };
 
-    let r = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &cfg)
-        .expect(
-            "the MINAO-started constrained loop must converge at the integer \
+    let r = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &cfg).expect(
+        "the MINAO-started constrained loop must converge at the integer \
              target -- it did (10 outer iters) when this test was written. If it \
              now fails, the DEFAULT path has regressed, which is what this test \
              exists to catch. Do NOT pin this to hcore to make it pass: that \
              would delete the only coverage of the path real callers use.",
-        );
+    );
 
     eprintln!(
         "[MINAO start, integer target] E = {:.8}  λ = {:+.6}  N = {:.8}  outer = {}",
