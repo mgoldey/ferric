@@ -13,6 +13,17 @@
 //! non-positive-definite" from "kernel is fine but the alpha contraction has
 //! a sign/indexing bug".
 //!
+//! HISTORICAL NOTE (guard landed after this file was written):
+//! `run_rpax_static_polarizability` now REFUSES a non-positive alpha diagonal
+//! (`ferric_gw::bse::check_alpha_diagonal_positive`), so the systems this sweep
+//! was written to expose now come back as `Err` and land in the
+//! "run_rpax_static_polarizability ERRORED: ..." arm below rather than printing
+//! a "<<< NEGATIVE DIAGONAL" line. That is the guard working, not a regression
+//! of this sweep -- the offending diagonal values are still visible, in the
+//! error message. The `ab_min_eigs` min-eigenvalue columns, which are rebuilt
+//! inline here and do not go through the guarded entry point, are unaffected.
+//! The enforced fires/stays-quiet pair lives in `rpax_alpha_diagonal_guard.rs`.
+//!
 //! Run: cargo test -p ferric-gw --release --test rpax_negative_diagonal_sweep -- --ignored --nocapture
 
 use ferric_core::basis;

@@ -1047,6 +1047,101 @@ pub fn run_bse_c6_ks(
     })
 }
 
+/// Acceptance floor (a.u.) for a α diagonal element: `α_dd` must exceed this,
+/// not merely be `> 0.0`.
+///
+/// A diagonal element of the static polarizability is a physical response
+/// magnitude, strictly positive for any bound electronic system. Anything in
+/// `(-∞, ALPHA_DIAGONAL_ZERO_TOL]` is REJECTED. The window around zero is not a
+/// slack band — it is *extra* strictness: a diagonal of, say, `+1e-12` a.u. is
+/// not a small polarizability, it is a degenerate solve, and accepting it just
+/// because it clears a bare sign test would put the guard's pass condition at
+/// the mercy of rounding. The sign of such a value is arbitrary.
+///
+/// The error message still distinguishes "vanishing" from "negative", because
+/// the two have different likely causes (a collapsed/zero-response axis vs. the
+/// known excitonic instability), but both are refusals.
+///
+/// Scale rationale: measured α diagonals on the systems this path is used for
+/// are O(0.05)–O(20) a.u. (water/cc-pVDZ (−2.68, +14.60, +16.49); water/STO-3G
+/// at scissor=0.36 has an α_xx of +0.051), and the dense ω=0 solve's own
+/// residual is ~1e-10. 1e-8 a.u. sits many orders below the smallest physical
+/// value observed and above solver noise.
+pub const ALPHA_DIAGONAL_ZERO_TOL: f64 = 1e-8;
+
+/// Honest-failure guard on a static polarizability tensor: every Cartesian
+/// diagonal element must be strictly positive.
+///
+/// A negative α_dd says the molecule polarizes *against* an applied field along
+/// axis d, which is physically impossible for a bound closed-shell system. On
+/// the RPAx@KS path it is a real, understood signal about the INPUT — a genuine
+/// BSE/TDDFT excitonic instability caused by pairing a strongly static-screened
+/// exchange kernel with the SAME narrow, GW-uncorrected KS gap on the response
+/// diagonal, which drives `(A−B)` (and sometimes even the TDA `A`) non-positive
+/// -definite. It is NOT an assembly bug: the kernel was independently
+/// re-derived and matches PySCF TDHF to 3e-4 in the bare-exchange limit (see
+/// `crates/ferric-gw/tests/rpax_bare_ab_check.rs`), and the full root-cause
+/// investigation is in `docs/rpax-negative-diagonal-investigation.md`.
+///
+/// Following the workspace "honest failure over silent-wrong" convention (see
+/// CLAUDE.md Reliability Conventions: solver honesty, TS/MBD honesty), this
+/// REFUSES rather than warning, clamping, or taking an absolute value: the
+/// isotropic average can look perfectly reasonable while hiding an unphysical
+/// tensor (water/cc-pVDZ: iso +9.47 a.u., within 2% of the DOSD reference,
+/// while α_xx is −2.68), so a warning on stderr would be trivially missed by
+/// any programmatic consumer and the number would be used as if valid.
+///
+/// The error message names the known remedies because they are established, not
+/// speculative: a nonzero `scissor` (~0.3–0.4 Ha for small molecules) or a
+/// diagonal sourced from real `run_gw` G0W0 QP energies both restore
+/// positive-definiteness on every previously-failing system.
+///
+/// `context` is prefixed to the message so callers of different entry points
+/// are distinguishable in a log.
+pub fn check_alpha_diagonal_positive(
+    context: &str,
+    tensor: &[[f64; 3]; 3],
+) -> Result<(), FerricError> {
+    const AXES: [&str; 3] = ["x", "y", "z"];
+    // `!(x > tol)` rather than `x <= tol` so NaN is REJECTED (NaN fails every
+    // ordered comparison, so `x <= tol` would silently let it through).
+    let bad: Vec<usize> = (0..3)
+        .filter(|&d| !(tensor[d][d] > ALPHA_DIAGONAL_ZERO_TOL))
+        .collect();
+    if bad.is_empty() {
+        return Ok(());
+    }
+    let detail = bad
+        .iter()
+        .map(|&d| {
+            let v = tensor[d][d];
+            let kind = if v.is_nan() {
+                "NaN"
+            } else if v.abs() < ALPHA_DIAGONAL_ZERO_TOL {
+                "vanishing (|a| < 1e-8)"
+            } else {
+                "negative"
+            };
+            format!("alpha_{0}{0} = {v:+.6e} ({kind})", AXES[d])
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(FerricError::General(format!(
+        "{context}: unphysical static polarizability -- every Cartesian diagonal element must be \
+         strictly positive, but {detail}. A non-positive alpha_dd means the system responds \
+         against the applied field along that axis, which cannot happen for a bound closed-shell \
+         molecule. On the RPAx@KS path this is a genuine BSE/TDDFT excitonic instability from \
+         pairing a static-screened exchange kernel with the same GW-uncorrected KS gap on the \
+         response diagonal (NOT an assembly bug -- the kernel matches PySCF TDHF to 3e-4 in the \
+         bare-exchange limit). REMEDY: re-run with a nonzero scissor (~0.3-0.4 Ha for small \
+         molecules; [gw] scissor in the CLI TOML, scissor= in Python) to widen the diagonal \
+         toward the true GW gap, or source the diagonal from real G0W0 quasiparticle energies. \
+         Full diagonal: ({:+.6e}, {:+.6e}, {:+.6e}). Root cause: \
+         docs/rpax-negative-diagonal-investigation.md",
+        tensor[0][0], tensor[1][1], tensor[2][2]
+    )))
+}
+
 /// Result of a static-only RPAx@KS polarizability calculation.
 ///
 /// **Scope: static (ω=0) polarizability only.** This is deliberately narrow —
@@ -1099,6 +1194,18 @@ pub struct RpaxStaticPolarizabilityResult {
 /// `scissor` (Hartree) is added to every virtual orbital energy before
 /// assembling the diagonal, matching `run_bse_c6_ks`'s knob (a cheap proxy
 /// for widening the KS gap toward the true GW gap). Pass 0.0 for plain KS.
+///
+/// # Errors — unphysical α diagonal at `scissor = 0.0`
+///
+/// At the default `scissor = 0.0` this kernel can produce an α tensor with a
+/// **negative diagonal element** even for small closed-shell molecules at
+/// equilibrium geometry (water/cc-pVDZ, water/STO-3G, LiH/cc-pVDZ all do). That
+/// is a real excitonic instability, not an assembly bug, and this function now
+/// **returns `Err`** rather than handing the caller a physically impossible
+/// tensor — see [`check_alpha_diagonal_positive`] for the full rationale and
+/// the remedies (a nonzero `scissor` ~0.3–0.4 Ha, or a GW-corrected diagonal).
+/// The refusal is deliberate: the isotropic average can look accurate while the
+/// tensor is unphysical, so a silent return would be used as if valid.
 #[allow(clippy::too_many_arguments)]
 pub fn run_rpax_static_polarizability(
     mol: &Molecule,
@@ -1256,6 +1363,12 @@ pub fn run_rpax_static_polarizability(
             tensor[i][j] = 4.0 * mu[i].dot(&t[j]);
         }
     }
+    // HONEST FAILURE: refuse to hand back a physically impossible tensor. This
+    // sits in the LIBRARY function, not in the CLI arm, so the CLI, the Python
+    // binding (`run_tdhf_static_polarizability`) and any direct Rust caller are
+    // all covered by the one check -- a CLI-only guard would leave the other
+    // two silently wrong. See `check_alpha_diagonal_positive`.
+    check_alpha_diagonal_positive("run_rpax_static_polarizability", &tensor)?;
     let iso = (tensor[0][0] + tensor[1][1] + tensor[2][2]) / 3.0;
     Ok(RpaxStaticPolarizabilityResult {
         tensor,
@@ -1276,6 +1389,151 @@ mod tests {
     // FERRIC_MEM_BUDGET_GB is process-global; serialize env-mutating tests
     // (blas_threads.rs / ferric-core memory.rs pattern).
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    // ── alpha-diagonal positivity guard (unit level) ──────────────────────
+    //
+    // These are the CHEAP half of the guard's evidence. The expensive half --
+    // that the guard actually fires on a real SCF-derived negative diagonal at
+    // scissor=0.0 and stays quiet at scissor=0.36 -- lives in
+    // tests/rpax_alpha_diagonal_guard.rs, which runs the full RPAx path.
+
+    /// The guard must stay QUIET on a healthy tensor. Uses the MEASURED
+    /// scissor-corrected water/cc-pVDZ diagonal, not a made-up one, so this
+    /// pass condition is reachable for the right reason. Off-diagonals are
+    /// deliberately nonzero and one is large+negative: an off-diagonal element
+    /// of alpha is NOT sign-constrained and must not trip the guard.
+    #[test]
+    fn alpha_diagonal_guard_quiet_on_healthy_tensor() {
+        let t = [
+            [7.2461, -0.5, 0.1],
+            [-0.5, 9.8842, -3.0],
+            [0.1, -3.0, 8.6013],
+        ];
+        assert!(
+            check_alpha_diagonal_positive("unit", &t).is_ok(),
+            "guard fired on a physically fine tensor -- an always-firing guard is useless"
+        );
+    }
+
+    /// The guard must FIRE on the measured water/cc-pVDZ scissor=0.0 diagonal,
+    /// and the message must name the axis, the value AND the remedy.
+    #[test]
+    fn alpha_diagonal_guard_fires_on_measured_negative_water_tensor() {
+        // Measured, docs/rpax-negative-diagonal-investigation.md step 1:
+        // water/cc-pVDZ/PBE at scissor=0.0 -> diag (-2.6828, +14.5994, +16.4902),
+        // iso +9.4690 (which on its own looks like a GOOD answer vs DOSD 9.64 --
+        // exactly why a warning is not enough).
+        let t = [
+            [-2.6828, 0.0, 0.0],
+            [0.0, 14.5994, 0.0],
+            [0.0, 0.0, 16.4902],
+        ];
+        let err = check_alpha_diagonal_positive("unit-water", &t)
+            .expect_err("guard failed to fire on a measured negative diagonal");
+        let msg = err.to_string();
+        assert!(msg.contains("unit-water"), "context missing: {msg}");
+        assert!(msg.contains("alpha_xx"), "offending axis not named: {msg}");
+        assert!(msg.contains("negative"), "not classified negative: {msg}");
+        assert!(
+            msg.contains("scissor"),
+            "message must name the known remedy: {msg}"
+        );
+        // The healthy axes must NOT be reported as offenders.
+        assert!(!msg.contains("alpha_yy"), "false positive on yy: {msg}");
+        assert!(!msg.contains("alpha_zz"), "false positive on zz: {msg}");
+    }
+
+    /// Exactly-zero and near-zero diagonals are REJECTED too (strict
+    /// positivity), but classified distinctly from clearly-negative ones.
+    #[test]
+    fn alpha_diagonal_guard_rejects_zero_and_near_zero() {
+        for v in [0.0, 1e-12, -1e-12] {
+            let t = [[v, 0.0, 0.0], [0.0, 9.0, 0.0], [0.0, 0.0, 9.0]];
+            let msg = check_alpha_diagonal_positive("unit-zero", &t)
+                .expect_err("near-zero diagonal must be rejected, not accepted")
+                .to_string();
+            assert!(
+                msg.contains("vanishing"),
+                "near-zero should be classified 'vanishing', got: {msg}"
+            );
+        }
+        // Clearly below the floor on the negative side is classified "negative".
+        let neg = [
+            [-1.0 * (ALPHA_DIAGONAL_ZERO_TOL * 10.0), 0.0, 0.0],
+            [0.0, 9.0, 0.0],
+            [0.0, 0.0, 9.0],
+        ];
+        assert!(check_alpha_diagonal_positive("unit", &neg)
+            .unwrap_err()
+            .to_string()
+            .contains("negative"));
+        // ALPHA_DIAGONAL_ZERO_TOL is an ACCEPTANCE FLOOR, not just a message
+        // split: a tiny POSITIVE diagonal is rejected too. A degenerate solve
+        // must not pass merely by landing on the lucky side of zero.
+        let tiny_pos = [
+            [ALPHA_DIAGONAL_ZERO_TOL * 0.01, 0.0, 0.0],
+            [0.0, 9.0, 0.0],
+            [0.0, 0.0, 9.0],
+        ];
+        assert!(
+            check_alpha_diagonal_positive("unit", &tiny_pos).is_err(),
+            "a +1e-10 a.u. diagonal is a degenerate solve, not a small polarizability"
+        );
+        // Just ABOVE the floor is accepted -- the floor must be crossable, or
+        // the guard would reject everything and prove nothing.
+        let just_above = [
+            [ALPHA_DIAGONAL_ZERO_TOL * 100.0, 0.0, 0.0],
+            [0.0, 9.0, 0.0],
+            [0.0, 0.0, 9.0],
+        ];
+        assert!(
+            check_alpha_diagonal_positive("unit", &just_above).is_ok(),
+            "values above the acceptance floor must pass"
+        );
+    }
+
+    /// A NaN diagonal must be caught, not silently pass. `!(x > 0.0)` is used
+    /// precisely so NaN is rejected; `x <= 0.0` would let it through.
+    #[test]
+    fn alpha_diagonal_guard_rejects_nan() {
+        let t = [
+            [f64::NAN, 0.0, 0.0],
+            [0.0, 9.0, 0.0],
+            [0.0, 0.0, f64::NEG_INFINITY],
+        ];
+        let msg = check_alpha_diagonal_positive("unit-nan", &t)
+            .expect_err("NaN diagonal must be rejected")
+            .to_string();
+        assert!(msg.contains("NaN"), "NaN not classified: {msg}");
+        assert!(msg.contains("alpha_zz"), "-inf axis not caught: {msg}");
+        // The NaN axis must be named EXPLICITLY. Without this, a comparison
+        // written as `x <= tol` (which NaN fails, so NaN would slip through)
+        // still passes the asserts above via the -inf axis alone -- a mutation
+        // that survived exactly once during development.
+        assert!(
+            msg.contains("alpha_xx"),
+            "NaN axis leaked through the comparison: {msg}"
+        );
+        // And NaN alone, with both other axes healthy, must still be refused.
+        let only_nan = [[f64::NAN, 0.0, 0.0], [0.0, 9.0, 0.0], [0.0, 0.0, 9.0]];
+        let m2 = check_alpha_diagonal_positive("unit-nan-only", &only_nan)
+            .expect_err("a lone NaN diagonal must be rejected")
+            .to_string();
+        assert!(m2.contains("alpha_xx") && m2.contains("NaN"), "{m2}");
+    }
+
+    /// All three axes bad -> all three reported (not just the first).
+    #[test]
+    fn alpha_diagonal_guard_reports_every_offending_axis() {
+        // Measured LiH/cc-pVDZ/PBE scissor=0.0: (-452.46, -452.46, -14.16).
+        let t = [[-452.46, 0.0, 0.0], [0.0, -452.46, 0.0], [0.0, 0.0, -14.16]];
+        let msg = check_alpha_diagonal_positive("unit-lih", &t)
+            .unwrap_err()
+            .to_string();
+        for axis in ["alpha_xx", "alpha_yy", "alpha_zz"] {
+            assert!(msg.contains(axis), "{axis} not reported: {msg}");
+        }
+    }
 
     #[test]
     fn cis_tda_fails_fast_under_tiny_env_budget() {

@@ -570,6 +570,298 @@ jobs:
             exit 1
           fi
 
+  # The ONLY job that builds the `mpi` cargo feature at all. Nothing else in
+  # this workflow does: every other job builds default features, under which
+  # `crates/ferric-mp2/src/mpi_rimp2.rs` is an EMPTY module (its whole body is
+  # one `#[cfg(feature = "mpi")] mod inner`, re-exported by a second cfg'd
+  # `pub use`), so the entire MPI code path -- the aux-band striping in
+  # ferric-scf's DfJ/DfK and the Allreduces that reduce it -- is invisible to
+  # CI today. A `cargo build --features mpi` regression would reach `main`
+  # unnoticed.
+  #
+  # DELIBERATELY STANDALONE: no `needs:`. build-and-test runs up to 170 min on
+  # a cold libint2 build, and there is no reason an MPI link error should wait
+  # behind it. This job builds its own libint2 (sharing build-and-test's cache
+  # KEY, so on the common path it restores in seconds rather than rebuilding).
+  #
+  # WHY A CORRECTNESS RUN AND NOT JUST A COMPILE. `cargo build --features mpi`
+  # exiting 0 proves almost nothing about MPI: the failure mode this repo
+  # actually hit is a partial feature set that COMPILES CLEANLY and then
+  # produces a different wrong energy on each rank (ferric-core/mpi on,
+  # ferric-scf/mpi off => ParallelContext reports a multi-rank world so DF-J/K
+  # stripe the aux band, while the cross-rank Allreduce that sums the bands
+  # back is cfg'd out; measured -np 2 water RHF gave ~+108111 Ha and ~+108176
+  # Ha on two ranks). That exact combination is now caught at COMPILE time by
+  # a const-assert in crates/ferric-scf/src/lib.rs, and the "Partial-feature
+  # guard" step below asserts that guard still fires -- but a guard only
+  # covers the one combination someone thought of. The multi-rank run below
+  # is the general check: it is what would catch a NEW reduction that gets
+  # striped but never summed, which no compile-time assert can anticipate.
+  mpi:
+    name: mpi (OpenMPI, 2-rank correctness)
+    runs-on: ubuntu-22.04
+    # Well under build-and-test's 170. The cargo build here is a subset of the
+    # workspace (ferric-scf + ferric-mp2 and their deps, not --all-targets),
+    # and the test systems are water/cc-pVDZ -- seconds of compute. The
+    # headroom is almost entirely for a cold libint2 build on a cache miss.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Free runner disk space
+        run: |
+          echo "--- before"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY/CodeQL" 2>/dev/null || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          echo "--- after"; df -h / | tail -1
+
+      - name: Install system dependencies
+        run: |
+          # Same third-party-apt-source guard as build-and-test above (see
+          # that step for why matching on CONTENT rather than filename).
+          sudo grep -rlE 'dl\.google\.com' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null \
+            | xargs -r sudo rm -fv
+          sudo sed -i -E 's|^([^#].*dl\.google\.com.*)$|# \1|' /etc/apt/sources.list 2>/dev/null || true
+          sudo apt-get update
+          # Beyond build-and-test's list, THREE extra packages, all required:
+          #   libopenmpi-dev  -- the MPI implementation itself. HARDCODED to
+          #     OpenMPI by deliberate choice (see the ABI note in
+          #     .github/workflows/wheels.yml): OpenMPI and MPICH/Intel MPI are
+          #     NOT ABI-compatible, so this pins which one ferric's MPI path
+          #     is built and tested against.
+          #   clang / libclang-dev -- the `mpi` crate (rsmpi 0.7) runs bindgen
+          #     over <mpi.h> in its build script, and bindgen dlopen's
+          #     libclang at build time. Without these the build fails inside
+          #     the `mpi` crate, BEFORE any ferric code compiles, with a
+          #     "Unable to find libclang" message that looks nothing like an
+          #     MPI problem.
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake g++ gfortran \
+            libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
+            libxc-dev libboost-dev \
+            libopenmpi-dev openmpi-bin clang libclang-dev
+
+      - name: MPI toolchain identification
+        # Printed, not asserted. Which OpenMPI minor the runner image ships is
+        # not something this repo pins, but when a future MPI failure IS
+        # version-dependent, the version has to be in the log to find out.
+        run: |
+          mpirun --version | head -1
+          mpicc -show 2>/dev/null || true
+          echo "libclang: $(dpkg -l | awk '/^ii +libclang-[0-9]/ {print $2, $3}' | head -1)"
+
+      # Same key as build-and-test's, ON PURPOSE. libint2 is built from the
+      # identical tarball at the identical version on the identical runner
+      # image, so the artifact is byte-for-byte interchangeable and there is
+      # no reason to spend a second entry out of the repo's already-tight
+      # ~10 GB cache budget (see build-native-deps in wheels.yml for how
+      # close that budget runs). RESTORE-ONLY here: build-and-test owns the
+      # save. If this job misses, it rebuilds locally and simply does not
+      # cache -- costing this job time but never evicting build-and-test's
+      # entry, which is the expensive one to lose.
+      - name: Restore libint2 cache
+        id: cache-libint
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.LIBINT2_PREFIX }}
+          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
+
+      - name: Build libint2
+        if: steps.cache-libint.outputs.cache-hit != 'true'
+        run: |
+          cd /tmp
+          wget -q https://github.com/evaleev/libint/releases/download/v${LIBINT_VERSION}/libint-${LIBINT_VERSION}-mpqc4.tgz
+          tar xzf libint-${LIBINT_VERSION}-mpqc4.tgz
+          cd libint-${LIBINT_VERSION}
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_INSTALL_PREFIX=$LIBINT2_PREFIX \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+          make install
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
+
+      - name: Restore cargo cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-v3-${{ runner.os }}-
+
+      # Both crates that define an `mpi` feature reachable from the SCF/MP2
+      # path. ferric-scf first: it owns the DfJ/DfK Allreduces, so if the
+      # feature edge is broken this is where it surfaces, with a smaller
+      # build to read the error out of.
+      - name: Build with the mpi feature
+        run: |
+          set -euo pipefail
+          cargo build -p ferric-scf --features mpi --locked
+          cargo build -p ferric-mp2 --features mpi --locked
+
+      # Asserts the const-assert in crates/ferric-scf/src/lib.rs still FAILS
+      # the build for the one silently-wrong feature combination. This is a
+      # MUTATION TEST of that guard: a guard nobody has watched fail is an
+      # assumption, and this one is load-bearing (it is the only thing
+      # standing between `--features ferric-core/mpi` and per-rank garbage
+      # energies). Inverted logic on purpose -- the build MUST fail, and a
+      # SUCCESS here is the failure being reported.
+      - name: Partial-feature guard still fires
+        run: |
+          set -euo pipefail
+          if cargo check -p ferric-scf --features ferric-core/mpi --locked 2>/tmp/guard.log; then
+            echo "::error::ferric-core/mpi WITHOUT ferric-scf/mpi compiled successfully. The const-assert in crates/ferric-scf/src/lib.rs is no longer firing; that combination silently produces per-rank WRONG energies."
+            exit 1
+          fi
+          if ! grep -q 'ferric-core/mpi is enabled but ferric-scf/mpi is not' /tmp/guard.log; then
+            echo "::error::build failed, but NOT with the partial-feature guard's message -- the guard may have been replaced by an unrelated build error, which would hide a real regression"
+            sed -n '1,40p' /tmp/guard.log
+            exit 1
+          fi
+          echo "OK: partial-feature combination is rejected at compile time by the documented guard"
+
+      - name: Build the MPI correctness test binary
+        run: cargo test -p ferric-mp2 --features mpi --locked --test mpi_rimp2_banding --no-run
+
+      # THE POINT OF THIS JOB. Runs the SAME test binary under 1 and 2 ranks
+      # and requires both to pass. At -np 2 the aux band is genuinely split
+      # (measured locally: rank 0 owns [0,42), rank 1 owns [42,84) of an
+      # 84-function cc-pVDZ-RI water aux basis), and
+      # `assert_all_ranks_agree` MPI-Allreduces (max - min) of the
+      # correlation energy across the world and fails above 1e-12 Ha. If a
+      # band were ever striped without being summed back, the ranks would
+      # hold different numbers and that assert is what catches it.
+      #
+      # Measured locally (OpenMPI 4.1.6, this exact binary): both ranks
+      # reported RI-MP2 corr = -0.204008549668735 Ha, bit-identical
+      # (0xbfca1cf3c0773ef0 on both), cross-rank spread 0.000e0.
+      #
+      # WHY THE EXIT CODE IS PARSED FROM OUTPUT INSTEAD OF TRUSTED.
+      # ferric parks the MPI Universe process-globally and never calls
+      # MPI_Finalize (crates/ferric-core/src/parallel.rs: the Universe is
+      # held in a OnceLock until process exit, deliberately, so it can never
+      # be finalized while a later rayon region still wants a communicator).
+      # mpirun treats a process that called MPI_Init and exited without
+      # MPI_Finalize as an ABNORMAL TERMINATION and returns non-zero EVEN
+      # WHEN EVERY TEST PASSED -- reproduced locally: `test result: ok. 1
+      # passed` on both ranks, `mpirun` exit code 1. Trusting `$?` here would
+      # make this job permanently red; ignoring `$?` would make it permanently
+      # green, which is worse. So: require libtest's own summary line from
+      # EVERY rank, and require zero failures. `--test-threads=1` keeps that
+      # output parseable, and `--oversubscribe` lets 2 ranks onto a runner
+      # that may advertise fewer slots than that.
+      - name: 2-rank correctness check
+        env:
+          # BLAS>1 under rayon segfaults/miscomputes in this repo (see the
+          # workflow-level env and docs/reliability-audit). Per-rank, this
+          # matters MORE under MPI, not less: 2 ranks each spawning a full
+          # BLAS thread pool oversubscribes the runner outright.
+          OPENBLAS_NUM_THREADS: "1"
+          # NO `OMPI_MCA_btl` OVERRIDE, deliberately -- do not "helpfully" add
+          # one back. The obvious-looking `OMPI_MCA_btl=self,tcp` (the usual
+          # advice for containers lacking shared-memory/CMA permissions) was
+          # tried here and MEASURED to HANG this exact test: with the stock
+          # BTL selection the 2-rank water run finishes in 0.50 s with both
+          # ranks reporting `test result: ok.`, and with `self,tcp` it spun
+          # two ranks at ~99% CPU for over 10 minutes producing ZERO test
+          # summaries (killed at a 90 s timeout, exit 124). OpenMPI's default
+          # BTL selection is correct on the plain ubuntu-22.04 runner, which
+          # is not a container and has working shared memory.
+          #
+          # Likewise no OMPI_ALLOW_RUN_AS_ROOT: the GitHub runner does not run
+          # as root, so it would be dead config, and setting it would quietly
+          # license running this as root somewhere else.
+        run: |
+          set -euo pipefail
+          BIN=$(find target/debug/deps -name 'mpi_rimp2_banding-*' -type f -executable | head -1)
+          if [ -z "$BIN" ]; then
+            echo "::error::could not locate the mpi_rimp2_banding test binary"
+            exit 1
+          fi
+          echo "test binary: $BIN"
+
+          # $1 = rank count, $2 = test-name filter.
+          run_ranks() {
+            local np="$1" filter="$2" log="/tmp/mpi-np$1-$2.log"
+            echo "=== mpirun -np $np ($filter) ==="
+            # `timeout 300`: an MPI misconfiguration does not fail, it HANGS
+            # (measured: a bad BTL selection spun both ranks at 99% CPU
+            # indefinitely). Without a bound, that burns this job's entire
+            # 120-minute budget and gets killed by the JOB timeout, which
+            # CANCELS the job and purges the log -- the failure mode
+            # build-and-test's own comments document. 300 s is ~600x the 0.50 s
+            # this run actually takes, so it can only fire on a genuine hang.
+            # A timeout produces no `test result: ok.` lines, so the summary
+            # assertions below turn it into a clean, loud failure.
+            #
+            # `|| true`: see the block comment above -- mpirun's exit code is
+            # not a usable signal for a process that never finalizes. The
+            # assertions below are the real gate.
+            timeout 300 mpirun -np "$np" --oversubscribe "$BIN" --nocapture --test-threads=1 "$filter" \
+              > "$log" 2>&1 || true
+            # Show the physics/banding lines and the libtest summaries.
+            grep -E 'rank [0-9]+/[0-9]+|cross-rank spread|^test result:' "$log" || true
+
+            # Every rank must print its own libtest summary. A rank that
+            # died before running (MPI startup failure, missing .so) prints
+            # none, and without this check its silence would read as success.
+            local oks
+            oks=$(grep -c '^test result: ok\.' "$log" || true)
+            if [ "$oks" -ne "$np" ]; then
+              echo "::error::expected $np passing 'test result: ok.' summaries (one per rank), found $oks -- a rank failed or never started"
+              sed -n '1,120p' "$log"
+              exit 1
+            fi
+            # Belt-and-braces: no rank may report a failure or a panic.
+            if grep -qE '^test result: FAILED|panicked at|[1-9][0-9]* failed' "$log"; then
+              echo "::error::a rank reported a test failure or panic under -np $np"
+              sed -n '1,120p' "$log"
+              exit 1
+            fi
+            echo "-- np=$np OK ($oks/$np ranks passed)"
+          }
+
+          # -np 1: run_mpi_ri_mp2 against the SERIAL ri_mp2_spin_components
+          # path. This is the EXACTNESS ANCHOR -- the trivial limit where the
+          # band is the full aux range and the distribution does nothing.
+          # Without it, a 2-rank agreement check proves only that the ranks
+          # agree with EACH OTHER, which a uniformly-wrong result also
+          # satisfies.
+          #
+          # NOTE: this filter selects the two cross-rank tests, NOT
+          # mpi_rimp2_np1_matches_serial_water, which asserts
+          # `rhf.converged` at energy_conv 1e-10 -- a bar DF-JK water
+          # plateaus just above (measured locally: energy -76.026735427522,
+          # correct to 1e-9, converged=false). That is a pre-existing
+          # test-strictness issue unrelated to MPI (ferric-scf's own
+          # mpi_dfjk_banding deliberately does NOT assert converged, for
+          # exactly this reason), and this job must not be red on account of
+          # it. The anchor is preserved because
+          # mpi_rimp2_cross_rank_agreement_water ALSO cross-checks the
+          # correlation energy against a pinned serial reference value.
+          #
+          # WATER ONLY, not the whole `mpi_rimp2_cross_rank_agreement` prefix.
+          # That prefix also selects ..._benzene, which is a DEBUG-profile
+          # benzene/cc-pVDZ RI-MP2: measured locally it completes in ~9 s at
+          # -np 1 but had not finished after 20 minutes of 2 ranks each
+          # pinned at 99% CPU at -np 2 (the per-occupied-index Allreduce in
+          # run_mpi_ri_mp2 is one collective per `i`, so rank count adds
+          # synchronization to a build with no optimization). Water/cc-pVDZ
+          # exercises the identical striping-and-reduction code path -- the
+          # aux band really is split [0,42)/[42,84) -- in seconds. Scaling
+          # behaviour is not what this job is for; correctness is.
+          run_ranks 1 mpi_rimp2_cross_rank_agreement_water
+          # -np 2: the real distributed run. Bands are disjoint and the
+          # Allreduce is what must put them back together.
+          run_ranks 2 mpi_rimp2_cross_rank_agreement_water
+
+          echo "MPI 2-rank correctness check passed"
+
   # ---------------------------------------------------------------------
   # FAST jobs below. None of these `needs: build-and-test` and none touch
   # libint2 -- the point is a red run in well under a minute instead of

@@ -1097,6 +1097,16 @@ pub struct GwCfg {
     /// (`ferric_gw::bse::run_rpax_static_polarizability`'s `scissor` arg) — a
     /// cheap proxy for widening a KS gap toward a GW-level gap. Unset → 0.0
     /// (plain KS). Ignored by the other `[gw]`-consuming method kinds.
+    ///
+    /// NOTE: the 0.0 default is the setting that triggers the known excitonic
+    /// instability (a negative α diagonal) on several small closed-shell
+    /// molecules. That is now REFUSED in the library rather than returned, so a
+    /// `scissor = 0.0` run on an affected system aborts with an actionable
+    /// error naming ~0.3–0.4 Ha as the remedy — see
+    /// `ferric_gw::bse::check_alpha_diagonal_positive` and
+    /// `docs/rpax-negative-diagonal-investigation.md`. The default is left at
+    /// 0.0 deliberately: silently substituting a nonzero scissor would change
+    /// the physics behind the user's back.
     pub scissor: Option<f64>,
 }
 

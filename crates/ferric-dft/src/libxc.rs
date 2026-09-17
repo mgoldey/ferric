@@ -1233,6 +1233,13 @@ pub fn xc_def_from_name_nspin_omega(
 /// Source: Ransford & Carter-Fenk, *Phys. Chem. Chem. Phys.* **2026**, 28, 14428,
 /// Table 2 ("Final" column). `papers/wb97xlv.pdf`.
 ///
+/// SIGNS: do **not** re-derive these from the PDF with plain `pdftotext` — it drops
+/// the paper's minus glyph and reports every fitted coefficient as positive. Seven of
+/// the twelve were wrong here for exactly that reason until 2026-09-16. The signs are
+/// pinned against the paper by
+/// `tests/wb97x_l_v_published_params.rs::fitted_coefficients_match_the_published_table`,
+/// and the recovery method is recorded in `testdata/reference/wb97x_l_v_params.json`.
+///
 /// The functional is stock ωB97X-V's *form* with re-fitted coefficients, which is
 /// exactly what libxc's external-parameter interface exposes — so no hand-written
 /// B97 kernel is needed and libxc supplies the analytic vrho/vsigma derivatives.
@@ -1253,19 +1260,19 @@ pub fn xc_def_from_name_nspin_omega(
 pub const WB97X_L_V_EXT_PARAMS: [(&str, f64); 18] = [
     ("_cx0", 0.4),
     ("_cx1", 0.154),
-    ("_cx2", -3.884),
-    ("_cx3", 11.300),
-    ("_cx4", -8.425),
+    ("_cx2", 3.884),
+    ("_cx3", -11.300),
+    ("_cx4", 8.425),
     ("_css0", 0.64),
     ("_css1", -1.417),
     ("_css2", 4.716),
     ("_css3", -2.956),
-    ("_css4", 0.861),
+    ("_css4", -0.861),
     ("_cos0", 0.64),
     ("_cos1", -1.194),
-    ("_cos2", 1.348),
-    ("_cos3", -11.869),
-    ("_cos4", 9.571),
+    ("_cos2", -1.348),
+    ("_cos3", 11.869),
+    ("_cos4", -9.571),
     ("_alpha", 1.0),
     ("_beta", -0.4),
     ("_omega", 0.1),
