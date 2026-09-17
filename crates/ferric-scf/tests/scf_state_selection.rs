@@ -1269,3 +1269,73 @@ fn the_guess_change_costs_iterations_but_never_convergence() {
         regressions.join("\n  ")
     );
 }
+
+/// **Does ROHF have the same defect?** `rohf.rs` carries the identical
+/// `let _ = hcore_guess(...)` pattern and references neither guess config field,
+/// so the same latent bug is present in source. Whether it MATTERS is a
+/// separate, measurable question, and this test answers it rather than leaving
+/// the gap asserted-by-inspection.
+///
+/// It is a MEASUREMENT, not a fix: `rohf.rs` is deliberately left untouched by
+/// this lane. The assertion is only that every system converges, so a silent
+/// regression there would still surface; the comparison against PySCF ROHF is
+/// printed for whoever picks the gap up.
+#[test]
+fn rohf_still_uses_hcore_measure_whether_it_matters() {
+    use ferric_scf::rohf::solve_rohf;
+    // PySCF 2.13.0 ROHF, same geometries and bases.
+    let cases: Vec<(&str, Sys, f64)> = vec![
+        (
+            "OH/6-31G",
+            diatomic("O", "H", 0.97, 0, 2, "6-31g"),
+            -75.361_846_292_5,
+        ),
+        (
+            "HeNe+/def2-SVP",
+            diatomic("He", "Ne", 2.0, 1, 2, "def2-svp"),
+            -130.501_303_395_8,
+        ),
+        (
+            "N2+/6-31G",
+            diatomic("N", "N", 1.1160, 1, 2, "6-31g"),
+            -108.280_584_256_9,
+        ),
+        (
+            "O2/6-31G",
+            diatomic("O", "O", 1.2075, 0, 3, "6-31g"),
+            -149.527_996_633_9,
+        ),
+    ];
+    println!("\n=== ROHF (still hcore-only) vs PySCF 2.13.0 ROHF ===");
+    let cfg = RhfConfig {
+        max_iter: 400,
+        density_conv: 1e-10,
+        energy_conv: 1e-11,
+        ..Default::default()
+    };
+    for (name, sys, e_ref) in &cases {
+        match solve_rohf(
+            &sys.ctx,
+            &sys.mol,
+            &sys.prep,
+            Operator::coulomb(),
+            &sys.bounds,
+            &cfg,
+        ) {
+            Ok(r) => {
+                let d_ev = (r.energy - e_ref) * 27.211_386_245_988;
+                println!(
+                    "{name:16} ferric = {:.10}  pyscf = {e_ref:.10}  dE = {d_ev:+.4} eV{}",
+                    r.energy,
+                    if d_ev > 1e-3 {
+                        "   <== ABOVE PySCF"
+                    } else {
+                        ""
+                    }
+                );
+                assert!(r.converged, "{name}: ROHF did not converge");
+            }
+            Err(e) => println!("{name:16} ROHF FAILED: {e:?}"),
+        }
+    }
+}
