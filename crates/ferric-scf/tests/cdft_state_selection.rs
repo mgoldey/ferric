@@ -1517,3 +1517,87 @@ fn state_a_is_untouched_by_the_descent() {
     assert!((on.lambdas[0] - off.lambdas[0]).abs() < 1e-8);
     assert!((on.scf.energy - (-130.361_859_5)).abs() < 1e-5);
 }
+
+/// **THE LIMITATION, ASSERTED SO IT CANNOT BE FORGOTTEN.** The fix does NOT
+/// reach NWChem's LOW member, and this test exists to keep that on the record
+/// rather than let the 0.667 eV improvement read as "solved".
+///
+/// External reference (NWChem 7.2.2, same Becke coordinate, same integer target
+/// N_He = 2.000):
+/// ```text
+///   NWChem LOW  (default atomic guess)  E = -130.447402218  λ = -2.2808
+///   NWChem HIGH (hcore guess + swap)    E = -130.423435597  λ = -2.6662
+///   ferric BEFORE this fix              E = -130.40219057   λ = -2.753705
+///   ferric AFTER  this fix              E = -130.42670694   λ = -2.439011
+/// ```
+///
+/// So the fix moves ferric 0.6671 eV down, past NWChem's HIGH member (by 0.089
+/// eV) and toward — but NOT to — its LOW member, which remains 0.563 eV below.
+/// The λ ordering moves the same way: −2.7537 → −2.4390, heading for NWChem's
+/// LOW λ = −2.2808.
+///
+/// **That is consistent with, and corroborated by, the MARGINAL verdict.** The
+/// descended state's λ_min = −1.32e-10 sits AT the noise floor, which is
+/// precisely the report "no downhill direction is resolvable from here" and NOT
+/// "this is the global minimum". A third, lower constrained solution very
+/// likely exists and this fix does not find it: the λ-augmented Hessian is a
+/// LOCAL object, and a saddle-following descent can only reach what is
+/// connected to the current point by a single negative mode.
+///
+/// TOO-CLEAN CHECK: if this ever starts agreeing with NWChem's LOW member to
+/// within a few tenths of a meV, that is a reason to AUDIT before celebrating —
+/// nothing in the current construction earns that agreement.
+#[test]
+fn the_fix_does_not_reach_nwchems_low_member() {
+    const NWCHEM_LOW: f64 = -130.447_402_218;
+    const NWCHEM_HIGH: f64 = -130.423_435_597;
+    let sys = build_sys();
+    let cfg = RhfConfig {
+        constraints: vec![Constraint {
+            fragment: vec![0],
+            target: 2.0,
+            spin: SpinChannel::Total,
+        }],
+        ..hene_cfg_fixed()
+    };
+    let r = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &cfg).unwrap();
+    let ev = 27.211_386_245_988;
+    eprintln!(
+        "[vs NWChem] ferric (fixed) E = {:.8}  λ = {:+.6}\n\
+         [vs NWChem]   vs HIGH {NWCHEM_HIGH:.9}: {:+.6} Ha = {:+.4} eV\n\
+         [vs NWChem]   vs LOW  {NWCHEM_LOW:.9}: {:+.6} Ha = {:+.4} eV",
+        r.scf.energy,
+        r.lambdas[0],
+        r.scf.energy - NWCHEM_HIGH,
+        (r.scf.energy - NWCHEM_HIGH) * ev,
+        r.scf.energy - NWCHEM_LOW,
+        (r.scf.energy - NWCHEM_LOW) * ev
+    );
+
+    // It IS below NWChem's HIGH member — the fix is a real improvement measured
+    // against an INDEPENDENT code, not only against ferric's own baseline.
+    assert!(
+        r.scf.energy < NWCHEM_HIGH,
+        "the fixed state was measured 0.089 eV BELOW NWChem's HIGH member; it is \
+         now {:.8} vs {NWCHEM_HIGH:.9}",
+        r.scf.energy
+    );
+    // And it is still ABOVE NWChem's LOW member. This assertion is the POINT of
+    // the test: it FAILS if ferric ever reaches the low member, which would be
+    // a NEW RESULT requiring its own audit rather than a quiet pass.
+    assert!(
+        r.scf.energy > NWCHEM_LOW,
+        "ferric now reaches or passes NWChem's LOW member ({:.8} vs \
+         {NWCHEM_LOW:.9}). That is a NEW RESULT, not a pass — the current \
+         construction (a single-negative-mode descent from the hcore basin) does \
+         not earn it, so AUDIT before believing it.",
+        r.scf.energy
+    );
+    // The measured gap, pinned so a drift in either direction is visible.
+    let gap_ev = (r.scf.energy - NWCHEM_LOW) * ev;
+    assert!(
+        (gap_ev - 0.5631).abs() < 0.05,
+        "the measured residual gap to NWChem's LOW member was 0.5631 eV; got \
+         {gap_ev:.4} eV"
+    );
+}
