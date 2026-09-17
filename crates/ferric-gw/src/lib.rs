@@ -13,8 +13,13 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 
-/// One-to-one (energy, oscillator-strength) assignment of computed excited
-/// states to literature reference states.
+// NOTE: no `///` summary here on purpose. `assign.rs` carries its own `//!`
+// module docs, and those are the only module docs in this crate that use
+// intra-doc links. When a `pub mod` has BOTH an outer `///` here and inner
+// `//!` docs in the file, rustdoc merges them and resolves the merged block in
+// THIS (crate-root) scope, where `assign_states` / `Assignment` do not exist —
+// which made `-D warnings` rustdoc fail with three unresolved links and no
+// source span. The summary line lives at the top of assign.rs instead.
 pub mod assign;
 /// Bethe-Salpeter equation (BSE-TDA) for optical excitations.
 pub mod bse;
