@@ -798,7 +798,30 @@ pub fn minao_projection_guess(
     // Guard: skip the parallel machinery entirely for the (very common)
     // single-unique-Z case — nothing to parallelize, and it avoids spinning
     // up rayon's fan-out for a single item.
-    let atom_density_cache: HashMap<i32, Array2<f64>> = if unique_zs.len() <= 1 {
+    //
+    // MPI guard (the second condition): under a real multi-rank world the
+    // per-element builds MUST run serially, in an order every rank agrees on.
+    // `build_one` is not a pure local computation — for a light main-group
+    // element it runs `free_atom_density`, i.e. a full `solve_rhf` against a
+    // live MPI `ParallelContext` with DF-J/DF-K aux bases set, so it drives
+    // `DfJ`/`DfK`'s `all_reduce_into` on MPI_COMM_WORLD. Issuing those from
+    // rayon workers means two elements' collectives are in flight at once in
+    // an order no two ranks agree on, and MPI matches collectives positionally
+    // per communicator: rank A's H reduce (naux 18) gets matched against rank
+    // B's O reduce (naux 77) and the job dies with MPI_ERR_TRUNCATE. Measured
+    // on water/cc-pVDZ DF-B3LYP at np=2/3/4: 9/10, 8/10, 8/10 runs aborted
+    // before the fix; a one-element system (H2, which took the `<= 1` branch
+    // and so never hit the par_iter) was 0/10 — that contrast is what isolated
+    // this site. `unique_zs` is built in deterministic first-encountered order
+    // above, identical on every rank, so the serial branch is also a
+    // rank-agreed order.
+    //
+    // NOTE this is a correctness constraint, not a perf tradeoff: rayon's
+    // `install`/scope cannot help, because the problem is cross-RANK ordering,
+    // not intra-process data races. The single-rank (and non-MPI) path keeps
+    // the parallel build untouched, so ordinary serial runs lose nothing.
+    let mpi_multi_rank = ferric_core::parallel::ParallelContext::default().size > 1;
+    let atom_density_cache: HashMap<i32, Array2<f64>> = if unique_zs.len() <= 1 || mpi_multi_rank {
         unique_zs.iter().map(|&z| (z, build_one(z))).collect()
     } else {
         use rayon::prelude::*;
