@@ -330,11 +330,7 @@ fn stability_descent(
             };
             // The candidate must satisfy the SAME constraint, else it is a
             // different problem's answer and not a better B.
-            let off = cand
-                .populations
-                .iter()
-                .zip(config.constraints.iter())
-                .fold(0.0_f64, |m, (&n, c)| m.max((n - c.target).abs()));
+            let off = constraint_offset(&cand.populations, &config.constraints);
             if off >= config.cdft_lambda_tol {
                 eprintln!(
                     "cDFT stability descent: step {step} re-converged at E = {:.8} but \
@@ -343,11 +339,11 @@ fn stability_descent(
                 );
                 continue;
             }
-            let lower_than_best = cand.scf.energy < best.scf.energy;
-            let lower_than_improved = improved
-                .as_ref()
-                .is_none_or(|b| cand.scf.energy < b.scf.energy);
-            if lower_than_best && lower_than_improved {
+            if accepts_candidate(
+                cand.scf.energy,
+                best.scf.energy,
+                improved.as_ref().map(|b| b.scf.energy),
+            ) {
                 improved = Some(cand);
             }
         }
@@ -384,6 +380,46 @@ fn stability_descent(
         best.scf.energy
     );
     best
+}
+
+/// Should a descended candidate replace the best-so-far?
+///
+/// Only if it is BELOW both the incumbent (`best_e`) and any better candidate
+/// already found this round (`improved_e`). Strict `<` throughout, so an exactly
+/// equal energy does not churn the answer.
+///
+/// Extracted for the same reason as [`constraint_offset`]: inline it was
+/// UNREACHABLE. Replacing `cand < best` with `true` — i.e. accepting a strictly
+/// HIGHER state — left the whole cDFT suite GREEN, because on HeNe⁺ every
+/// descended candidate happens to be lower. That guard is the entire reason the
+/// descent cannot make an answer worse than not having tried, so it must be
+/// tested rather than assumed. See `descent_never_accepts_a_higher_state`.
+fn accepts_candidate(cand_e: f64, best_e: f64, improved_e: Option<f64>) -> bool {
+    cand_e < best_e && improved_e.is_none_or(|b| cand_e < b)
+}
+
+/// How far a candidate solution sits from its constraint targets, as the max
+/// over constraints of `|N_C − target_C|`.
+///
+/// Extracted from the descent loop so it can be tested DIRECTLY. Inline, it was
+/// unreachable: on HeNe⁺ every descended candidate satisfies the constraint, so
+/// deleting the check entirely (`if false && off >= tol`) left the whole cDFT
+/// suite GREEN. A guard no test has ever been seen to exercise is an
+/// assumption, and this one decides whether a lower-energy state is accepted —
+/// exactly the decision the fix exists to make. See
+/// `constraint_offset_rejects_a_candidate_that_missed_the_target`.
+///
+/// A candidate with FEWER populations than constraints (which cannot happen —
+/// the λ-Newton loop fills one per constraint — but is representable) would
+/// have its missing constraints silently ignored by a plain `zip`, so the
+/// length mismatch is treated as infinitely far off rather than as agreement.
+fn constraint_offset(pops: &[f64], cons: &[ferric_dft::cdft::Constraint]) -> f64 {
+    if pops.len() != cons.len() {
+        return f64::INFINITY;
+    }
+    pops.iter()
+        .zip(cons.iter())
+        .fold(0.0_f64, |m, (&n, c)| m.max((n - c.target).abs()))
 }
 
 fn verdict_label(v: crate::stability::StabilityVerdict) -> &'static str {
@@ -558,4 +594,81 @@ fn solve_linear(j: &Array2<f64>, b: &[f64]) -> Result<Vec<f64>, FerricError> {
         x[col] = s / a[(col, col)];
     }
     Ok(x)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ferric_dft::cdft::{Constraint, SpinChannel};
+
+    fn con(target: f64) -> Constraint {
+        Constraint {
+            fragment: vec![0],
+            target,
+            spin: SpinChannel::Total,
+        }
+    }
+
+    /// The descent's constraint-satisfaction guard, tested directly because it
+    /// is UNREACHABLE through the driver on the systems in the suite.
+    ///
+    /// MEASURED 2026-09-16: deleting the guard inline (`if false && off >=
+    /// tol`) left every cDFT test GREEN, because on HeNe⁺ every descended
+    /// candidate happens to land on the target. That makes the inline check an
+    /// assumption; this makes it a test. The guard matters because without it
+    /// the descent would accept a LOWER-energy state that solves a DIFFERENT
+    /// constraint — which is not a better diabat, just a different one.
+    #[test]
+    fn constraint_offset_rejects_a_candidate_that_missed_the_target() {
+        // On target: offset is the residual, below any sane tolerance.
+        assert!(constraint_offset(&[2.000_000_02], &[con(2.0)]) < 1e-5);
+        // Off target by 0.05 e: far above the 1e-5 default tolerance, so the
+        // descent discards it however low its energy is.
+        let off = constraint_offset(&[1.95], &[con(2.0)]);
+        assert!(
+            off > 1e-5,
+            "a candidate 0.05 e off the target must be rejected; offset = {off:.3e}"
+        );
+        assert!((off - 0.05).abs() < 1e-12, "offset = {off}");
+        // MAX over constraints, not sum or first: one satisfied constraint must
+        // not mask a violated one.
+        let both = constraint_offset(&[2.0, 1.0], &[con(2.0), con(1.5)]);
+        assert!(
+            (both - 0.5).abs() < 1e-12,
+            "the offset must be the MAX over constraints, so a satisfied one \
+             cannot hide a violated one; got {both}"
+        );
+        // A length mismatch is infinitely far off, not silently truncated.
+        assert!(constraint_offset(&[2.0], &[con(2.0), con(1.0)]).is_infinite());
+        assert!(constraint_offset(&[], &[con(2.0)]).is_infinite());
+    }
+
+    /// The descent's "never make it worse" guarantee, tested directly because
+    /// it is UNREACHABLE through the driver on the systems in the suite.
+    ///
+    /// MEASURED 2026-09-16: replacing the `cand < best` test with `true` — so
+    /// the descent would accept a strictly HIGHER state — left every cDFT test
+    /// GREEN, because on HeNe⁺ every descended candidate is lower anyway. This
+    /// is the guard that makes the fix safe to default ON: without it, a
+    /// descent that overshoots into a worse basin would silently replace a good
+    /// answer with a bad one.
+    #[test]
+    fn descent_never_accepts_a_higher_state() {
+        // Lower than the incumbent, nothing better found yet: ACCEPT.
+        assert!(accepts_candidate(-130.42, -130.40, None));
+        // HIGHER than the incumbent: REJECT, however tempting.
+        assert!(
+            !accepts_candidate(-130.38, -130.40, None),
+            "a descended state ABOVE the incumbent must never be accepted — that \
+             would make the fix capable of making an answer worse"
+        );
+        // Equal to the incumbent: REJECT (strict <), so an equal-energy result
+        // does not churn which solution is returned.
+        assert!(!accepts_candidate(-130.40, -130.40, None));
+        // Lower than the incumbent but ABOVE a better candidate already found
+        // this round: REJECT, so the sweep keeps the LOWEST step, not the last.
+        assert!(!accepts_candidate(-130.41, -130.40, Some(-130.43)));
+        // Lower than both: ACCEPT.
+        assert!(accepts_candidate(-130.45, -130.40, Some(-130.43)));
+    }
 }
