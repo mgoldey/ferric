@@ -439,10 +439,43 @@ fn probe_armed() -> bool {
     std::env::var(PROBE_ENV).as_deref() == Ok("1")
 }
 
+/// The DF variant of [`cfg`], with a RAISED iteration cap.
+///
+/// # Why `max_iter` is 400 here and 200 in `cfg`
+///
+/// These tests assert that a `k_builder` setting is IGNORED under DF-K — i.e.
+/// that two runs are BITWISE identical. The cap only has to let both runs
+/// finish; this is not a convergence-speed assertion and must not become one.
+///
+/// It was raised from 200 on 2026-09-17, when the ROHF guess fix (`rohf.rs` now
+/// honours `use_sad_guess`) pushed `probe_child_rohf_df_k_with_link_builder`
+/// past 200 iterations. **The obvious explanation — "the MINAO guess converges
+/// more slowly on the DF path" — was measured and is FALSE as a general claim.**
+/// `rohf_state_selection.rs::the_df_path_reaches_one_state_from_both_guesses`
+/// records the full table; CH3/cc-pVDZ ROHF + DF-JK, iterations:
+///
+/// | geometry | thresholds | hcore | MINAO |
+/// |---|---|---|---|
+/// | this file's (H y = ±0.9345) | 1e-8 / 1e-10 | 37 | **262** |
+/// | this file's | 1e-10 / 1e-11 | 37 | **811** |
+/// | ±0.934441 (6e-5 Å away) | 1e-8 / 1e-10 | 121 | **48** |
+/// | ±0.934441 | 1e-10 / 1e-11 | 154 | **48** |
+///
+/// The ordering REVERSES on a 6e-5 Å geometry change. So the iteration count
+/// here is DIIS-path chaos on a near-degenerate system, not a cost of the
+/// guess — MINAO is the faster guess at the neighbouring geometry, at both
+/// threshold settings.
+///
+/// What is stable across every row is the PHYSICS: both guesses reach the same
+/// DF-ROHF state to within DF fitting error (≤7e-9 Ha), and under DIRECT J/K
+/// the same molecule converges in 12–13 iterations from either guess. The cap
+/// is therefore a tolerance for path variance, and this test still measures
+/// exactly what it was written to measure.
 fn df_cfg(kb: Option<&str>) -> RhfConfig {
     RhfConfig {
         df_j_aux: Some("def2-universal-jkfit".into()),
         df_k_aux: Some("def2-universal-jkfit".into()),
+        max_iter: 400,
         ..cfg(kb)
     }
 }
