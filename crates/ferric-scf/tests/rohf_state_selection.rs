@@ -927,3 +927,92 @@ fn ferrics_pre_fix_state_matches_pyscfs_hcore_state_on_two_of_four_systems() {
         );
     }
 }
+
+/// **Is there a DEGENERACY-ORDERING defect in ROHF?** (H-DEGEN, pre-registered.)
+///
+/// The UHF lane found none — given a decent guess, aufbau picks correctly. ROHF
+/// does not inherit that finding, because its effective Fock is a different
+/// operator (Roothaan coupling of closed/open/virtual blocks), so it is tested
+/// here rather than assumed.
+///
+/// The near-decisive experiment for H-DEGEN is a guess density that is ALREADY
+/// AT a correct answer: if ROHF walked away from it, the occupation would be
+/// being fixed by something other than basin selection. This feeds each
+/// system's own converged-correct density straight back in via
+/// `init_guess_density` and checks ROHF stays there.
+///
+/// Run on the two systems where the guess demonstrably matters (OH/6-31G,
+/// +4.30 eV pre-fix; F₂⁺/6-31G, +3.02 eV) plus CN/6-31G, the one system the
+/// fix makes WORSE — CN is the sharpest test, because if ROHF could not hold
+/// its own correct density there, the CN regression would be an ordering bug
+/// rather than basin selection, and the conclusion of this lane would change.
+///
+/// RESULT: all three hold their correct density to <1e-9 Ha. **H-DEGEN is
+/// REFUTED for ROHF**, on the same evidence that refuted it for UHF, and the CN
+/// cost is confirmed as basin selection rather than an ordering defect.
+#[test]
+fn rohf_holds_a_correct_guess_density_so_h_degen_is_refuted() {
+    for (name, sys, e_ref, converge_cfg) in [
+        (
+            "OH/6-31G",
+            diatomic("O", "H", 0.97, 0, 2, "6-31g"),
+            OH_631G,
+            minao_cfg(),
+        ),
+        (
+            "F2+/6-31G",
+            diatomic("F", "F", 1.3220, 1, 2, "6-31g"),
+            F2P_631G_STANDARD,
+            minao_cfg(),
+        ),
+        (
+            // CN reaches its reference from HCORE, not MINAO — so the correct
+            // density has to come from the hcore run here.
+            "CN/6-31G",
+            diatomic("C", "N", 1.1718, 0, 2, "6-31g"),
+            CN_631G,
+            hcore_cfg(),
+        ),
+    ] {
+        // 1. Converge to the correct state and take its density.
+        let r = solve_rohf(
+            &sys.ctx,
+            &sys.mol,
+            &sys.prep,
+            Operator::coulomb(),
+            &sys.bounds,
+            &converge_cfg,
+        )
+        .unwrap_or_else(|e| panic!("{name}: reference run failed: {e:?}"));
+        assert!(
+            (r.energy - e_ref).abs() < 1e-6,
+            "{name}: the run used to SOURCE the correct density is not at the \
+             reference ({:.10} vs {e_ref:.10}) — this test's premise is broken",
+            r.energy
+        );
+
+        // 2. Hand that density straight back in as the guess. `use_sad_guess`
+        //    is off so nothing else can supply a guess: if the field were
+        //    ignored we would fall through to hcore.
+        let cfg = RhfConfig {
+            use_sad_guess: false,
+            init_guess_density: Some(r.density_total.clone()),
+            ..tight_cfg()
+        };
+        let back = run(&sys, &cfg).unwrap_or_else(|m| panic!("{name} re-run: {m}"));
+        println!(
+            "{name:12} converged {:.10} -> fed back as guess -> {back:.10}  (delta {:.2e})",
+            r.energy,
+            (back - r.energy).abs()
+        );
+
+        // 3. H-DEGEN predicts ROHF walks AWAY from a correct density. It does not.
+        assert!(
+            (back - r.energy).abs() < 1e-9,
+            "{name}: ROHF did NOT stay at a density that was already correct \
+             ({:.10} -> {back:.10}). That would be an ORDERING defect (H-DEGEN), \
+             not basin selection, and would change this lane's conclusion.",
+            r.energy
+        );
+    }
+}
