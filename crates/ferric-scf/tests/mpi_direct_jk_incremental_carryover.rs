@@ -82,12 +82,40 @@ fn water_cation() -> Molecule {
 /// `df_j_aux`/`df_k_aux` deliberately unset so `solve_rhf`/`solve_uhf` route the
 /// per-iteration Fock build through `DirectJK` (the exact 4-index builder), not
 /// the DF/RI path.
+///
+/// # Why `use_sad_guess: false` is pinned (2026-09-17)
+///
+/// This test's subject is the J/K REDUCTION — whether `DirectJK` accumulating
+/// into the caller's buffer before an `Allreduce` carries rank-local partials
+/// over. Its serial anchor was recorded when `solve_uhf` ALWAYS started from
+/// hcore, because `uhf.rs` ignored `RhfConfig::use_sad_guess` entirely.
+///
+/// `fix/scf-unconstrained-state-selection` made that field live, and its
+/// default is MINAO. Left unpinned, the two UHF rows then converge to a
+/// DIFFERENT STATE from the one the anchor describes — measured on CI at
+/// E = −74.575868306235549 Ha against the anchor's −74.658102589567676 Ha, a
+/// gap of 8.2e-2 Ha. That is four orders of magnitude above this test's 1e-9
+/// correctness bar, so it reads as a catastrophic reduction defect when it is
+/// nothing of the kind: the RHF rows, whose path always honoured the guess,
+/// are unaffected and still agree to ~1e-14.
+///
+/// So the pin keeps this test measuring ITS OWN subject rather than silently
+/// becoming a second, much blunter test of open-shell state selection (which
+/// `cdft_state_selection` and `rohf_state_selection` cover properly, with
+/// references). This is the same remedy `1a1eeddd` applied to three other
+/// tests whose PREMISE moved while their SUBJECT did not.
+///
+/// RECORDED, NOT TUNED AWAY: that the MINAO-started open-shell path reaches a
+/// different constrained state here is a real observation about the guess
+/// change, not an artefact of this test. It is not this file's job to
+/// adjudicate it.
 fn direct_config() -> RhfConfig {
     RhfConfig {
         df_j_aux: None,
         df_k_aux: None,
         energy_conv: 1e-10,
         density_conv: 1e-9,
+        use_sad_guess: false,
         ..Default::default()
     }
 }
