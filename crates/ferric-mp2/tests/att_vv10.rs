@@ -89,27 +89,6 @@ fn build_uhf_case(xyz: &str, charge: i32, mult: usize, basis_name: &str) -> Open
         &bounds,
         &ferric_scf::uhf::UhfConfig {
             energy_conv: 1e-10,
-            // Pinned 2026-09-17, same reason as
-            // `mpi_direct_jk_incremental_carryover::direct_config`: every
-            // baseline in this file was recorded when `solve_uhf` ALWAYS
-            // started from hcore, because `uhf.rs` ignored `use_sad_guess`.
-            // `fix/scf-unconstrained-state-selection` made it live (default
-            // MINAO), which moves the converged UHF density slightly — enough
-            // that `vv10_is_spin_agnostic_on_a_collapsed_singlet` fails its
-            // 1e-10 bar at a MEASURED 1.5e-10 locally / 1.6e-10 on CI.
-            //
-            // That is NOT a VV10 defect and not a wrong state: the test first
-            // asserts the UHF energy collapsed onto the RHF one to 1e-8, then
-            // demands the two VV10 energies agree to 1e-10 — two orders
-            // TIGHTER than the state agreement it just accepted. A guess
-            // change that perturbs the density within that 1e-8 window can
-            // therefore break the 1e-10 assertion without anything being
-            // wrong. Pinning keeps this file measuring VV10's spin agnosticism
-            // rather than the guess's effect on where UHF lands.
-            //
-            // Verified causally, not assumed: with this line the test passes;
-            // with the MINAO default it fails at 1.510e-10.
-            use_sad_guess: false,
             ..Default::default()
         },
     )
