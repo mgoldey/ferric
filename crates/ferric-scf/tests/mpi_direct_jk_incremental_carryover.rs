@@ -83,39 +83,30 @@ fn water_cation() -> Molecule {
 /// per-iteration Fock build through `DirectJK` (the exact 4-index builder), not
 /// the DF/RI path.
 ///
-/// # Why `use_sad_guess: false` is pinned (2026-09-17)
+/// # Guess: deliberately NOT pinned
 ///
-/// This test's subject is the J/K REDUCTION — whether `DirectJK` accumulating
-/// into the caller's buffer before an `Allreduce` carries rank-local partials
-/// over. Its serial anchor was recorded when `solve_uhf` ALWAYS started from
-/// hcore, because `uhf.rs` ignored `RhfConfig::use_sad_guess` entirely.
+/// An earlier revision of this branch pinned `use_sad_guess: false` here,
+/// because the MINAO-started UHF rows converged 8.2e-2 Ha away from the serial
+/// anchor while the RHF rows stayed at ~1e-14. That pin was WRONG — it silenced
+/// a real defect rather than isolating this test's subject.
 ///
-/// `fix/scf-unconstrained-state-selection` made that field live, and its
-/// default is MINAO. Left unpinned, the two UHF rows then converge to a
-/// DIFFERENT STATE from the one the anchor describes — measured on CI at
-/// E = −74.575868306235549 Ha against the anchor's −74.658102589567676 Ha, a
-/// gap of 8.2e-2 Ha. That is four orders of magnitude above this test's 1e-9
-/// correctness bar, so it reads as a catastrophic reduction defect when it is
-/// nothing of the kind: the RHF rows, whose path always honoured the guess,
-/// are unaffected and still agree to ~1e-14.
+/// The actual cause was in `guess::free_atom_density`: it returned the raw
+/// converged open-shell atomic density, whose degenerate frontier shell is
+/// oriented in the LAB FRAME, so the molecular state depended on the input
+/// file's orientation. Fixed by projecting the atomic block onto its
+/// spherically symmetric part; see
+/// `rotational_invariance::uhf_open_shell_rotational_invariance_on_the_default_guess`.
 ///
-/// So the pin keeps this test measuring ITS OWN subject rather than silently
-/// becoming a second, much blunter test of open-shell state selection (which
-/// `cdft_state_selection` and `rohf_state_selection` cover properly, with
-/// references). This is the same remedy `1a1eeddd` applied to three other
-/// tests whose PREMISE moved while their SUBJECT did not.
-///
-/// RECORDED, NOT TUNED AWAY: that the MINAO-started open-shell path reaches a
-/// different constrained state here is a real observation about the guess
-/// change, not an artefact of this test. It is not this file's job to
-/// adjudicate it.
+/// With that fixed, MINAO reaches the anchor to 2.8e-13 and the pin is
+/// unnecessary, so this config exercises the DEFAULT guess — the path real
+/// callers use. Do not re-pin it without first checking whether the atomic
+/// guess has regressed.
 fn direct_config() -> RhfConfig {
     RhfConfig {
         df_j_aux: None,
         df_k_aux: None,
         energy_conv: 1e-10,
         density_conv: 1e-9,
-        use_sad_guess: false,
         ..Default::default()
     }
 }
