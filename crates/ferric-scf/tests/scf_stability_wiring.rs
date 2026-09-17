@@ -73,12 +73,33 @@ const WATER_UHF_LAMBDA_MIN: f64 = 3.6256168663e-1;
 /// the HeNe⁺ value is 4.9e-3, so a 1e-6 bar is ~5000x below the signal.
 const LAMBDA_TOL: f64 = 1e-6;
 
+/// Tight UHF config for the wiring tests, pinned to the BARE HCORE guess.
+///
+/// # Why `use_sad_guess: false` (2026-09-16)
+///
+/// These tests check that a stability VERDICT is correctly carried through the
+/// SCF path onto `ScfResult::stability`, and two of them need a converged state
+/// whose verdict is known to be UNSTABLE — on HeNe⁺/def2-SVP the ²Π state
+/// (E = −130.5003466400, λ_min = −4.87e-3).
+///
+/// Until 2026-09-16 that is what `solve_uhf` returned, because the open-shell
+/// path ignored `RhfConfig::use_sad_guess`. `fix/scf-unconstrained-state-
+/// selection` made UHF honour it (default MINAO), and HeNe⁺ now converges to
+/// the σ state at −130.5053405386, which is STABLE — so an UNSTABLE verdict
+/// stopped being reachable here and these tests failed.
+///
+/// The PREMISE moved, not the SUBJECT: what is tested is the PLUMBING (is the
+/// verdict computed when the flag is set, is it `None` when it is not, does it
+/// reach the result struct), and that is unchanged. Pinning the guess keeps
+/// both verdicts reachable, which `both_verdicts_are_reachable_through_the_
+/// config_flag` exists specifically to demonstrate.
 fn tight(check_stability: bool) -> RhfConfig {
     RhfConfig {
         energy_conv: 1e-11,
         density_conv: 1e-9,
         max_iter: 400,
         check_stability,
+        use_sad_guess: false,
         ..Default::default()
     }
 }

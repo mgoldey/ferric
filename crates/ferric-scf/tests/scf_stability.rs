@@ -104,10 +104,32 @@ fn converge_uhf_from(
     let bounds = SchwarzBounds::compute(op, &prep).unwrap();
     let ctx = ParallelContext::default();
 
+    // `use_sad_guess: false` pins the BARE HCORE guess (2026-09-16).
+    //
+    // This file validates the stability ANALYSIS, and several of its tests need
+    // a converged state that is KNOWN to be internally unstable to check the
+    // machinery against — on HeNe⁺/def2-SVP that is the ²Π state
+    // (E = −130.5003466400, λ_min = −4.87e-3), which is also the state PySCF
+    // reaches under a MOM-forced π occupation and which the verdict comparisons
+    // here are written around.
+    //
+    // Until 2026-09-16 that is simply what `solve_uhf` returned, because the
+    // open-shell path ignored `RhfConfig::use_sad_guess` entirely.
+    // `fix/scf-unconstrained-state-selection` made UHF honour that field
+    // (default MINAO), and from the MINAO density HeNe⁺ converges instead to
+    // the σ state at −130.5053405386, which is STABLE (λ_min = +5.09e-3).
+    //
+    // That is the fix working: this file's PREMISE moved, not its SUBJECT. The
+    // subject — "does the analysis return the right verdict, with the right
+    // sign, on states whose character is known?" — is unchanged, and so are all
+    // the eigenvalues, tolerances and dense cross-checks. Pinning the guess
+    // keeps the known-unstable reference reachable instead of silently
+    // re-baselining these tests onto a different state.
     let cfg = RhfConfig {
         energy_conv: 1e-11,
         density_conv: 1e-9,
         max_iter: 400,
+        use_sad_guess: false,
         ..Default::default()
     };
     let res = match guess.as_ref() {
