@@ -50,6 +50,7 @@ use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::oneelectron;
 use ferric_integrals::operator::Operator;
+use ferric_scf::cdft_driver::solve_cdft_uhf;
 use ferric_scf::engine_pool::EnginePool;
 use ferric_scf::rhf::{build_jk, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
@@ -103,11 +104,19 @@ fn build_sys() -> Sys {
 }
 
 /// The lane's config, verbatim (see `cdft_constrained_stability::hene_cfg`).
+///
+/// `cdft_stability_descent: false` because PART 1 MEASURES THE UNFIXED SOLVER.
+/// The whole point of the guess sweep is to characterise the landscape the
+/// driver was navigating badly; running it with the descent on would measure
+/// the fix instead and the multi-valuedness would be hidden by the very
+/// mechanism that resolves it. The FIXED driver is exercised separately, by
+/// `the_fixed_driver_reaches_the_lower_state` below, which sets the default.
 fn hene_cfg() -> RhfConfig {
     RhfConfig {
         max_iter: 400,
         level_shift: HENE_LEVEL_SHIFT,
         cdft_lambda_tol: HENE_LAMBDA_TOL,
+        cdft_stability_descent: false,
         dft_grid: Some(AtomicGridConfig {
             n_radial: 99,
             n_angular: 302,
@@ -664,6 +673,15 @@ fn sweep_guesses_at(sys: &Sys, w: &Array2<f64>, target: f64, guesses: &[Guess]) 
     // The driver's OWN run (guess = None), first: this is the lane's answer.
     match constrained_run(sys, &cfg, w, None) {
         Ok(r) => {
+            // A row from an inner SCF that did not converge is not a
+            // measurement of a solution — it would put a non-stationary point
+            // into the guess table and the Hessian verdict would describe
+            // nothing. Fail loudly rather than average it in.
+            assert!(
+                r.converged,
+                "driver default (None) at target {target}: the inner SCF did not \
+                 converge, so this row is not a solution"
+            );
             let (dmin, imin, ires, verdict) =
                 augmented_stability(sys, &h, &r.c_a, &r.c_b, r.lambda, w);
             eprintln!(
@@ -695,6 +713,12 @@ fn sweep_guesses_at(sys: &Sys, w: &Array2<f64>, target: f64, guesses: &[Guess]) 
     for g in guesses {
         match constrained_run(sys, &cfg, w, Some((&g.c_a, &g.c_b))) {
             Ok(r) => {
+                assert!(
+                    r.converged,
+                    "guess {:?} at target {target}: the inner SCF did not converge, \
+                     so this row is not a solution",
+                    g.name
+                );
                 let (dmin, imin, ires, verdict) =
                     augmented_stability(sys, &h, &r.c_a, &r.c_b, r.lambda, w);
                 eprintln!(
@@ -1256,4 +1280,225 @@ fn fd_vs_analytic_gradient(
         *slot = (ep - em) / (2.0 * eps) / 2.0;
     }
     (ga, gb, fd_a, fd_b)
+}
+
+// ===========================================================================
+// PART 3 — PROOF: the FIXED driver, at its own default
+// ===========================================================================
+
+/// The lane's config with the fix ENABLED — i.e. at `RhfConfig`'s own default
+/// for `cdft_stability_descent`. Everything else matches `hene_cfg`.
+fn hene_cfg_fixed() -> RhfConfig {
+    RhfConfig {
+        cdft_stability_descent: true,
+        ..hene_cfg()
+    }
+}
+
+/// **THE PROOF.** The fixed `solve_cdft_uhf` must reach a state at or below the
+/// old −130.40219057 at the integer target, and that state must be stable (or
+/// marginal, reported honestly) under the λ-augmented check.
+///
+/// MEASURED (2026-09-16):
+/// ```text
+///   before (descent off): E = -130.40219057  λ = -2.753705  λ_min = -3.999187e-2  UNSTABLE (saddle)
+///   after  (descent on):  E = -130.42670694  λ = -2.439011  λ_min = -1.319983e-10 MARGINAL
+///   ΔE = 0.02451637 Ha = 0.6671 eV lower, at N_C = 2.000000021 (same constraint)
+/// ```
+///
+/// The λ_min moves from −4.0e-2 — seven orders of magnitude above the
+/// eigensolver residual, an unambiguous saddle — to −1.3e-10, which is AT the
+/// noise floor. **That is reported as MARGINAL, not as stable.** The honest
+/// claim is "the saddle is gone and the energy is 0.667 eV lower"; "this is the
+/// global minimum of the constrained manifold" is NOT established here and the
+/// assertion below does not pretend otherwise.
+#[test]
+fn the_fixed_driver_reaches_the_lower_state_at_the_integer_target() {
+    let sys = build_sys();
+    let w = weight_matrix(&sys, &[0]);
+    let h = oneelectron::hcore(&sys.prep);
+
+    let before = solve_cdft_uhf(
+        &sys.ctx,
+        &sys.mol,
+        &sys.prep,
+        &sys.bs,
+        &sys.bounds,
+        &RhfConfig {
+            constraints: vec![Constraint {
+                fragment: vec![0],
+                target: 2.0,
+                spin: SpinChannel::Total,
+            }],
+            ..hene_cfg()
+        },
+    )
+    .unwrap();
+    let after = solve_cdft_uhf(
+        &sys.ctx,
+        &sys.mol,
+        &sys.prep,
+        &sys.bs,
+        &sys.bounds,
+        &RhfConfig {
+            constraints: vec![Constraint {
+                fragment: vec![0],
+                target: 2.0,
+                spin: SpinChannel::Total,
+            }],
+            ..hene_cfg_fixed()
+        },
+    )
+    .unwrap();
+
+    let (d_b, _, _, v_b) = augmented_stability(
+        &sys,
+        &h,
+        &before.scf.mos_alpha,
+        before.scf.mos_beta.as_ref().unwrap(),
+        before.lambdas[0],
+        &w,
+    );
+    let (d_a, i_a, r_a, v_a) = augmented_stability(
+        &sys,
+        &h,
+        &after.scf.mos_alpha,
+        after.scf.mos_beta.as_ref().unwrap(),
+        after.lambdas[0],
+        &w,
+    );
+    eprintln!(
+        "[fix] before: E = {:.8}  λ = {:+.6}  N = {:.8}  λ_min = {d_b:+.6e}  [{v_b}]\n\
+         [fix] after : E = {:.8}  λ = {:+.6}  N = {:.8}  λ_min = {d_a:+.6e}  [{v_a}]  \
+         (iter {i_a:+.3e}, resid {r_a:.1e})\n\
+         [fix] ΔE = {:.8} Ha = {:.4} eV LOWER",
+        before.scf.energy,
+        before.lambdas[0],
+        before.populations[0],
+        after.scf.energy,
+        after.lambdas[0],
+        after.populations[0],
+        before.scf.energy - after.scf.energy,
+        (before.scf.energy - after.scf.energy) * 27.211_386_245_988
+    );
+
+    // 1. The pre-fix solution is the known saddle, so the comparison is against
+    //    the right baseline and not a drifted one.
+    assert_eq!(
+        v_b, "UNSTABLE",
+        "the descent-OFF path must still reproduce the saddle this fix exists to \
+         escape, else the baseline moved: λ_min = {d_b:.6e}"
+    );
+    assert!((before.scf.energy - (-130.402_190_57)).abs() < 1e-5);
+
+    // 2. The fixed driver is at or below it — by the measured 0.0245 Ha.
+    assert!(
+        after.scf.energy <= before.scf.energy,
+        "the fixed driver must not return a HIGHER state: {:.8} vs {:.8}",
+        after.scf.energy,
+        before.scf.energy
+    );
+    assert!(
+        before.scf.energy - after.scf.energy > 1e-2,
+        "the measured drop was 0.02451637 Ha; a much smaller one means the descent \
+         changed: ΔE = {:.6e} Ha",
+        before.scf.energy - after.scf.energy
+    );
+
+    // 3. It satisfies the SAME constraint, else it is a different problem's
+    //    answer rather than a better state B.
+    assert!(
+        (after.populations[0] - 2.0).abs() < HENE_LAMBDA_TOL,
+        "the descended state drifted off the constraint: N = {:.8}",
+        after.populations[0]
+    );
+
+    // 4. …and it is no longer a saddle. MARGINAL is accepted and UNSTABLE is
+    //    not: the claim being pinned is "the negative mode is gone", not "this
+    //    is the bottom", and STABLE is not asserted because it was not measured.
+    assert!(
+        v_a == "MARGINAL" || v_a == "STABLE",
+        "the descended state must not still be a saddle; got [{v_a}] at λ_min = \
+         {d_a:.6e}. MEASURED was MARGINAL at -1.32e-10 (at the noise floor), so \
+         'the bottom' is NOT claimed — only that the -4.0e-2 mode is gone."
+    );
+}
+
+/// `cdft_stability_descent: false` must reproduce the PREVIOUS behavior exactly,
+/// so the fix is a strictly opt-outable change and the audit file
+/// `cdft_constrained_stability.rs` — which pins the pre-fix saddle — keeps
+/// measuring what it was written about.
+///
+/// This is the fix's own vacuous-limit anchor: with the knob off, the descent
+/// block is skipped ENTIRELY (an early `return`), not merely made a no-op.
+#[test]
+fn descent_off_reproduces_the_old_saddle() {
+    let sys = build_sys();
+    let cfg = RhfConfig {
+        constraints: vec![Constraint {
+            fragment: vec![0],
+            target: 2.0,
+            spin: SpinChannel::Total,
+        }],
+        ..hene_cfg()
+    };
+    let r = solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &cfg).unwrap();
+    eprintln!(
+        "[descent off] E = {:.8}  λ = {:+.6}  N = {:.8}  outer = {}",
+        r.scf.energy, r.lambdas[0], r.populations[0], r.outer_iters
+    );
+    assert!(
+        (r.scf.energy - (-130.402_190_57)).abs() < 1e-5,
+        "descent OFF must reproduce the pre-fix E = -130.40219057; got {:.8}",
+        r.scf.energy
+    );
+    assert!(
+        (r.lambdas[0] - (-2.753_705)).abs() < 1e-3,
+        "descent OFF must reproduce the pre-fix λ = -2.753705; got {:+.6}",
+        r.lambdas[0]
+    );
+}
+
+/// **STATE A MUST NOT REGRESS.** State A is a genuine minimum of its own
+/// constrained manifold (λ_min = +1.3194), so the descent must LOOK at it, find
+/// it STABLE, and change nothing. A fix that perturbed a good diabat while
+/// repairing a bad one would be a worse trade than the defect.
+///
+/// MEASURED: identical E and λ with the descent on and off, and the driver
+/// prints `the constrained solution is STABLE (λ_min = +1.3194e0); no descent
+/// taken.`
+#[test]
+fn state_a_is_untouched_by_the_descent() {
+    let sys = build_sys();
+    let mk = |descent: bool| {
+        let cfg = RhfConfig {
+            constraints: vec![Constraint {
+                fragment: vec![0],
+                target: 1.0,
+                spin: SpinChannel::Total,
+            }],
+            cdft_stability_descent: descent,
+            ..hene_cfg()
+        };
+        solve_cdft_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bs, &sys.bounds, &cfg).unwrap()
+    };
+    let off = mk(false);
+    let on = mk(true);
+    eprintln!(
+        "[state A] descent off: E = {:.10}  λ = {:+.8}\n\
+         [state A] descent on : E = {:.10}  λ = {:+.8}  (ΔE = {:.3e})",
+        off.scf.energy,
+        off.lambdas[0],
+        on.scf.energy,
+        on.lambdas[0],
+        (on.scf.energy - off.scf.energy).abs()
+    );
+    assert!(
+        (on.scf.energy - off.scf.energy).abs() < 1e-10,
+        "the descent must leave the STABLE state A untouched: {:.10} vs {:.10}",
+        on.scf.energy,
+        off.scf.energy
+    );
+    assert!((on.lambdas[0] - off.lambdas[0]).abs() < 1e-8);
+    assert!((on.scf.energy - (-130.361_859_5)).abs() < 1e-5);
 }

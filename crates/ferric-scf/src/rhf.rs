@@ -109,6 +109,32 @@ pub struct RhfConfig {
     /// cDFT outer-loop convergence: stop when max_C |N_C − target_C| is below
     /// this (electrons). Default 1e-5.
     pub cdft_lambda_tol: f64,
+    /// cDFT **state selection**: after the λ-Newton loop converges, check the
+    /// λ-augmented orbital Hessian and, if the constrained solution is a
+    /// SADDLE, follow the downhill eigenvector and re-converge the whole λ
+    /// loop from there — keeping the lower-energy solution. Default `true`.
+    ///
+    /// # Why this defaults ON, unlike `check_stability`
+    ///
+    /// Without it the constrained solve returns WHICHEVER solution the hcore
+    /// guess happens to fall into, and on HeNe⁺/def2-SVP at the integer Becke
+    /// target that is a saddle 0.667 eV ABOVE another solution satisfying the
+    /// SAME constraint to 8e-8 electrons (measured across six independent
+    /// guesses in `tests/cdft_state_selection.rs`). That is not a diagnostic —
+    /// it is a wrong answer, and a diabat energy is the whole output of a cDFT
+    /// run. `check_stability` can default off because it only reports; this
+    /// changes which state is returned, so leaving it off would mean shipping
+    /// the known-wrong one by default.
+    ///
+    /// Setting it `false` restores the previous behavior EXACTLY (the descent
+    /// block is skipped entirely, not merely made a no-op) — pinned by
+    /// `descent_off_reproduces_the_old_saddle` in `tests/cdft_state_selection.rs`.
+    ///
+    /// Cost: one λ-augmented Davidson per converged constrained solve, plus one
+    /// extra full λ-Newton solve per descent actually taken. On a STABLE or
+    /// MARGINAL solution the descent is not taken and only the eigensolve is
+    /// paid.
+    pub cdft_stability_descent: bool,
     /// Fractional (ensemble) occupation of a degenerate frontier shell. When
     /// `true` (UHF/UKS only), if the per-spin HOMO sits inside a group of
     /// near-degenerate orbitals that straddle the occupation boundary, the
@@ -255,6 +281,7 @@ impl Default for RhfConfig {
             mom_after_iter: 0,
             constraints: Vec::new(),
             cdft_lambda_tol: 1e-5,
+            cdft_stability_descent: true,
             fractional_occ: false,
             // 0 = "unset" → resolve_three_index_budget auto-detects (0.8×RAM).
             three_index_budget_bytes: 0,

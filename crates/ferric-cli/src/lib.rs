@@ -442,6 +442,12 @@ pub fn run(args: Vec<String>) {
         mom_after_iter: cfg.scf.mom_after_iter,
         constraints: Vec::new(),
         cdft_lambda_tol: 1e-5,
+        // Inert on this path (`constraints` is empty, so `solve_cdft_uhf` is
+        // never reached), but spelled out rather than left to a `..default()`
+        // that this literal does not use — a struct literal that lists every
+        // field is how a new knob gets noticed here instead of silently
+        // acquiring whatever the Default impl says.
+        cdft_stability_descent: true,
         fractional_occ: false,
         // 0 = "unset" → the SCF resolver auto-detects (0.8×RAM). An explicit
         // [memory] budget (incl. a deliberate 2 GiB) is passed through and honored.

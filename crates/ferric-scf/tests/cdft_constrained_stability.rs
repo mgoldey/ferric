@@ -184,11 +184,29 @@ fn hene_xyz() -> String {
 /// them to 1e-11/1e-9 changes the λ-Newton path enough that state B's outer
 /// loop no longer converges in its 30-iteration budget. The states audited here
 /// must be the lane's states, so the lane's knobs are used verbatim.
+///
+/// # `cdft_stability_descent: false` — why this file OPTS OUT of the fix
+///
+/// ADDED 2026-09-16 on `fix/cdft-state-selection`, when the driver gained a
+/// stability-guided descent that DEFAULTS ON. This file is the AUDIT of the
+/// pre-fix state: every verdict in it is a measurement OF the saddle that
+/// descent now escapes. Leaving the descent enabled here would make the file
+/// silently re-measure the post-descent state and its documented λ_min values
+/// (−3.999e-2 for B, the 0.6671 eV drop, the natural-vs-integer comparison)
+/// would evaporate — not because the defect was understood differently, but
+/// because the thing being audited would no longer be running.
+///
+/// So the audit is pinned to the UNFIXED solver deliberately. That keeps it a
+/// historical record AND keeps it live as a regression test: if the saddle ever
+/// stops being a saddle with the descent OFF, that is a real change in the
+/// underlying SCF and this file will say so. The FIXED behavior is asserted
+/// separately, in `tests/cdft_state_selection.rs`.
 fn hene_cfg() -> RhfConfig {
     RhfConfig {
         max_iter: 400,
         level_shift: HENE_LEVEL_SHIFT,
         cdft_lambda_tol: HENE_LAMBDA_TOL,
+        cdft_stability_descent: false,
         dft_grid: Some(AtomicGridConfig {
             n_radial: 99,
             n_angular: 302,
