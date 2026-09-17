@@ -123,8 +123,37 @@ fn uks_pbe_newton_engages_gga_fxc_and_matches_diis() {
         "UKS Newton must engage the GGA f_xc kernel for PBE (got {gga_builds}); \
          it must not silently fall back to DIIS"
     );
+    // 1e-5 Ha, raised from 1e-6 on 2026-09-17. The old bar sat just above a
+    // COINCIDENCE, not a measured margin: before a268fc3c the two solvers
+    // happened to land on the identical value to all 10 printed digits, so
+    // nothing ever pressured the constant and it was never calibrated.
+    //
+    // MEASURED, UKS/OH/PBE, pre- vs post-a268fc3c (the atomic-guess fix):
+    //
+    //     pre-fix,  DIIS:   -75.6449102540  (39 iters)
+    //     pre-fix,  Newton: -75.6449102540  (14 iters)   <- IDENTICAL
+    //     post-fix, DIIS:   -75.6449096325  (34 iters)   +0.62 microHa
+    //     post-fix, Newton: -75.6449107465  (13 iters)   -0.49 microHa
+    //
+    // Both solvers moved, in OPPOSITE directions, by comparable amounts --
+    // they STRADDLE the old value. That rules out a one-sided Newton or f_xc
+    // defect, which would have moved Newton while leaving DIIS put. Both also
+    // converged FASTER, not worse.
+    //
+    // The residual 1.114e-6 Ha spread is 0.030 meV on a near-degenerate system
+    // (OH's beta-HOMO is ~-4e-4 Ha) at the TIGHTEST REACHABLE density:
+    // density_conv 1e-8, 1e-9 and 1e-10 were each measured to hit the 200-iter
+    // cap without converging, so 1e-7 is the floor here and the disagreement
+    // cannot be converged away. PySCF's own OH energies move ~1.9e-5 Ha on a
+    // conv_tol change alone, so this scale of spread is a property of the
+    // system, not of either solver.
+    //
+    // WHAT THIS STILL CATCHES, which is why it is 1e-5 and not looser: the two
+    // constrained states of this system are ~0.02 Ha apart, four orders above
+    // this bar. A solver landing in the wrong basin, or an f_xc kernel that
+    // silently fell back to DIIS, still fails loudly.
     assert!(
-        (r_diis.energy - r_newton.energy).abs() < 1e-6,
+        (r_diis.energy - r_newton.energy).abs() < 1e-5,
         "UKS Newton+GGA-fxc must match DIIS energy: ΔE = {:.3e}",
         (r_diis.energy - r_newton.energy).abs()
     );
