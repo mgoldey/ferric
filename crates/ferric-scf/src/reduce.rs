@@ -313,6 +313,59 @@ where
     Ok(())
 }
 
+/// Sum a rank-LOCAL matrix partial across the MPI world, in place.
+///
+/// # The contract, and why it is not "Allreduce the output buffer"
+///
+/// Every exact-ERI Fock builder here computes a rank-local partial (its slice of
+/// the rank-striped shell-pair list) and then ACCUMULATES it onto a caller-owned
+/// buffer — `*j += &total_j`. That buffer is not always zero on entry: the
+/// incremental-Fock path (`DirectJK::build_incremental`, and the `build`/
+/// `build_uhf` calls it delegates to) deliberately hands in a buffer that
+/// already holds `J(D_last)`/`K(D_last)` and relies on linearity to land on
+/// `J(D_new)`.
+///
+/// That carry-over is IDENTICAL on every rank — it is the previous iteration's
+/// already-reduced global matrix. So an `Allreduce` applied to the OUTPUT buffer
+/// sums `J(D_last) + ΔJ_local` over N ranks and returns
+/// `N·J(D_last) + Σ_r ΔJ_r`: the rank-local contribution reduces correctly, the
+/// carry-over is multiplied by the world size, every iteration. Measured on
+/// water/STO-3G RHF: `-74.9631468` Ha at `-np 1` vs `+156.3238082` Ha
+/// (non-convergent) at `-np 2`.
+///
+/// The reduction must therefore act on the rank-local CONTRIBUTION, before it
+/// touches the caller's buffer. This helper is that operation, and callers must
+/// use it as `reduce_partial_across_ranks(ctx, &mut total)?; *out += &total;` —
+/// never the reverse order.
+///
+/// A from-scratch build whose caller zeroed the buffer is accidentally immune
+/// (the carry-over is 0, and `N·0 == 0`), but the two orderings are NOT
+/// interchangeable in general and the from-scratch entry points share this
+/// code with the incremental ones. No-op without the `mpi` feature, and a no-op
+/// at a single rank (`ParallelContext::world()` is `None` when `size == 1`).
+pub fn reduce_partial_across_ranks(
+    ctx: &ferric_core::parallel::ParallelContext,
+    partial: &mut Array2<f64>,
+) {
+    #[cfg(feature = "mpi")]
+    if let Some(world) = ctx.world() {
+        use mpi::traits::CommunicatorCollectives;
+        let mut global = Array2::<f64>::zeros(partial.dim());
+        world.all_reduce_into(
+            partial.as_slice().expect("partial is standard layout"),
+            global
+                .as_slice_mut()
+                .expect("freshly allocated Array2 is standard layout"),
+            mpi::collective::SystemOperation::sum(),
+        );
+        *partial = global;
+    }
+    #[cfg(not(feature = "mpi"))]
+    {
+        let _ = (ctx, partial);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

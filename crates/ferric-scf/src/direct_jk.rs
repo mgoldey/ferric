@@ -253,6 +253,26 @@ impl<'a> DirectJK<'a> {
         let shell_pairs = self.screened_bra_pairs(&d_max_shell)?;
 
         let q_table = &self.bounds.q;
+        // CSB `M` table when `[scf] screening = "csb"` selected it; `None`
+        // (the default) leaves the hot loop on plain Schwarz, byte-identical.
+        //
+        // NOT applied to the BRA-PAIR prefilter above, and that is not an
+        // omission: the prefilter screens the DIAGONAL quartet (s1,s2|s1,s2),
+        // where plain Schwarz is EXACT — Cauchy-Schwarz is an equality there,
+        // so Q(s1,s2)^2 == max |(s1 s2|s1 s2)| — and no valid upper bound can
+        // be smaller than an exact one. CSB's `min` therefore selects the
+        // Schwarz term at every diagonal quartet, making it provably inert on
+        // this loop. Same structural fact `qqr.rs` records for QQR (see
+        // `tests/qqr_diagonal_noop.rs`), and the same consequence: CSB acts
+        // only on the innermost per-quartet test, never on a pair list.
+        let m_table = self.bounds.csb_m.as_ref();
+        // CSAM `X` table when `[scf] screening = "csam"` selected it. Mutually
+        // exclusive with `m_table` by construction; `None` for both is the
+        // byte-identical plain-Schwarz default. Like CSB it is NOT applied to the
+        // bra-pair prefilter — but for a different reason: CSAM's diagonal
+        // refinement factor is exactly 1 (X's diagonal is 1.0 by Cauchy-Schwarz
+        // equality), so it too is provably inert on `(s1,s2|s1,s2)`.
+        let x_table = self.bounds.csam_x.as_ref();
         let prep = self.prep;
         let nbf = prep.nbasis();
         let pool = self
@@ -287,8 +307,8 @@ impl<'a> DirectJK<'a> {
                     }
                     pool.with(|engine| {
                         local_count += scatter_bra_pair(
-                            engine, prep, dims, offs, q_table, &screen, thresh, d_total, s1, s2,
-                            &mut mode, true,
+                            engine, prep, dims, offs, q_table, m_table, x_table, &screen, thresh,
+                            d_total, s1, s2, &mut mode, true,
                         );
                     });
                 }
@@ -301,23 +321,19 @@ impl<'a> DirectJK<'a> {
             },
         )?;
 
+        // MPI: reduce the rank-LOCAL partials, THEN accumulate. Reducing `j`/`k_a`/
+        // `k_b` instead would also sum the caller's pre-existing contents, which on
+        // the incremental path (`build_uhf_incremental`) hold the previous
+        // iteration's already-global J/K — identical on every rank, so an output-
+        // buffer Allreduce would multiply them by the world size every iteration.
+        // See `reduce::reduce_partial_across_ranks` for the measured failure.
+        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_j);
+        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_k_a);
+        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_k_b);
+
         *j += &total_j;
         *k_a += &total_k_a;
         *k_b += &total_k_b;
-
-        #[cfg(feature = "mpi")]
-        if let Some(world) = self.ctx.world() {
-            use mpi::traits::CommunicatorCollectives;
-            for m in [&mut *j, &mut *k_a, &mut *k_b] {
-                let mut global = Array2::zeros(m.dim());
-                world.all_reduce_into(
-                    m.as_slice().unwrap(),
-                    global.as_slice_mut().unwrap(),
-                    mpi::collective::SystemOperation::sum(),
-                );
-                *m = global;
-            }
-        }
 
         Ok(computed_quartets.load(Ordering::SeqCst))
     }
@@ -404,6 +420,26 @@ impl<'a> DirectJK<'a> {
         let shell_pairs = self.screened_bra_pairs(&d_max_shell)?;
 
         let q_table = &self.bounds.q;
+        // CSB `M` table when `[scf] screening = "csb"` selected it; `None`
+        // (the default) leaves the hot loop on plain Schwarz, byte-identical.
+        //
+        // NOT applied to the BRA-PAIR prefilter above, and that is not an
+        // omission: the prefilter screens the DIAGONAL quartet (s1,s2|s1,s2),
+        // where plain Schwarz is EXACT — Cauchy-Schwarz is an equality there,
+        // so Q(s1,s2)^2 == max |(s1 s2|s1 s2)| — and no valid upper bound can
+        // be smaller than an exact one. CSB's `min` therefore selects the
+        // Schwarz term at every diagonal quartet, making it provably inert on
+        // this loop. Same structural fact `qqr.rs` records for QQR (see
+        // `tests/qqr_diagonal_noop.rs`), and the same consequence: CSB acts
+        // only on the innermost per-quartet test, never on a pair list.
+        let m_table = self.bounds.csb_m.as_ref();
+        // CSAM `X` table when `[scf] screening = "csam"` selected it. Mutually
+        // exclusive with `m_table` by construction; `None` for both is the
+        // byte-identical plain-Schwarz default. Like CSB it is NOT applied to the
+        // bra-pair prefilter — but for a different reason: CSAM's diagonal
+        // refinement factor is exactly 1 (X's diagonal is 1.0 by Cauchy-Schwarz
+        // equality), so it too is provably inert on `(s1,s2|s1,s2)`.
+        let x_table = self.bounds.csam_x.as_ref();
         let prep = self.prep;
         let nbf = prep.nbasis();
         let pool = self
@@ -447,8 +483,8 @@ impl<'a> DirectJK<'a> {
                     }
                     pool.with(|engine| {
                         local_count += scatter_bra_pair(
-                            engine, prep, dims, offs, q_table, &screen, thresh, d, s1, s2,
-                            &mut mode, true,
+                            engine, prep, dims, offs, q_table, m_table, x_table, &screen, thresh,
+                            d, s1, s2, &mut mode, true,
                         );
                     });
                 }
@@ -461,27 +497,16 @@ impl<'a> DirectJK<'a> {
             },
         )?;
 
+        // MPI: reduce the rank-LOCAL partials, THEN accumulate — NOT the other way
+        // round. `build_incremental` delegates here with `j`/`k` already holding
+        // the previous iteration's global `J(D_last)`/`K(D_last)`, so Allreducing
+        // the output buffers would return `N·J(D_last) + Σ_r ΔJ_r`. See
+        // `reduce::reduce_partial_across_ranks`.
+        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_j);
+        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut total_k);
+
         *j += &total_j;
         *k += &total_k;
-
-        #[cfg(feature = "mpi")]
-        if let Some(world) = self.ctx.world() {
-            use mpi::traits::CommunicatorCollectives;
-            let mut j_global = Array2::zeros(j.dim());
-            let mut k_global = Array2::zeros(k.dim());
-            world.all_reduce_into(
-                j.as_slice().unwrap(),
-                j_global.as_slice_mut().unwrap(),
-                mpi::collective::SystemOperation::sum(),
-            );
-            world.all_reduce_into(
-                k.as_slice().unwrap(),
-                k_global.as_slice_mut().unwrap(),
-                mpi::collective::SystemOperation::sum(),
-            );
-            *j = j_global;
-            *k = k_global;
-        }
 
         Ok(computed_quartets.load(Ordering::SeqCst))
     }

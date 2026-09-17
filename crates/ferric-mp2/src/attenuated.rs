@@ -51,16 +51,31 @@
 //! | 13       | 0.037       | half-chain (C1 to C7)        |
 //! | 26       | 1.4×10⁻³   | full chain end-to-end        |
 //!
-//! At a production threshold of 1 × 10⁻¹⁰, the QQR-3 bound drops every shell
-//! triple (P, μ, ν) where aux shell P is more than ~10–12 Bohr from the (μν)
-//! pair center, because the Schwarz pre-factor is typically 10⁻³–10⁻¹ a.u. and
-//! the exponential brings the product below threshold.  On decane with cc-pVDZ /
-//! cc-pVDZ-RI, about 48% of shell triples are screened away (48/100 kept = 52%).
+//! **STALE — the table and the two paragraphs below describe a bound that no
+//! longer exists.** `f28f3044` ("VALID 3-index distance bound") REMOVED the
+//! `erfc(ω̃·R)` factor because it made the bound INVALID: it under-estimated
+//! real `(P|μν)` integrals and silently dropped them (worst |true|/bound
+//! 1.7–5.3). `qqr3::estimate3` never reads `op.omega` today; the live envelope
+//! is the Coulomb monopole term `min(1, 1.10·ext_sum/r_eff)`, and ALL operator
+//! dependence enters through the Schwarz seeds `Q3[P]`, `Q(μν)`.
 //!
-//! For the Coulomb operator ω = 0, the exponential is identically 1 and QQR-3
-//! collapses to the standard 1/R Schwarz+distance estimate — still useful but
-//! much less aggressive than erfc.  The operator-specific decay is what makes
-//! attenuated MP2 intrinsically more screenable than full Coulomb MP2.
+//! The "48% screened" figure was measured against that pre-fix, invalid bound
+//! and does NOT describe current behaviour. RE-MEASURED 2026-09-14 on decane /
+//! cc-pVDZ + cc-pVDZ-RI (2 496 312 shell triples, thresh 1e-8), kept fraction:
+//!
+//! ```text
+//!   coulomb 79.1%   erfc(w=0.222) 78.5%   erfc(w=0.5) 77.8%   terfc(r0=1) 77.9%
+//! ```
+//!
+//! i.e. ~21% dropped, and erfc beats Coulomb by well under one point. The claim
+//! that "operator-specific decay is what makes attenuated MP2 intrinsically
+//! more screenable" is therefore FALSE for the bound as implemented: the seeds
+//! are self-interactions `(P|P)` and `(μν|μν)` where r₁₂ → 0, so attenuation
+//! never engages there, exactly as this module's own Schwarz analysis above
+//! explains. Screening here is geometric, not operator-specific.
+//!
+//! The step timings further down were taken under the same pre-fix bound and
+//! should be re-measured before being quoted.
 //!
 //! ## All five steps: measured on decane/cc-pVDZ (OPENBLAS_NUM_THREADS=1, release)
 //!

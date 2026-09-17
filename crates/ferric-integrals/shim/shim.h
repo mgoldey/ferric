@@ -219,6 +219,14 @@ int scf_compute_terfc_eri3(scf_engine *eng, const scf_basis *obs,
 int scf_compute_terfc_eri2(scf_engine *eng, const scf_basis *dfbs,
                               int shP, int shQ, double *out);
 
+/* Compute the 4-center quartet (sh1 sh2|terfc|sh3 sh4). All four shells are
+ * drawn from `obs` (a Schwarz/CSB (PQ|PQ) quartet lives in ONE basis), so there
+ * is no dfbs argument. Output is row-major [n1][n2][n3][n4] (sh1 slowest,
+ * sh4 fastest), spherical where the shell is pure. Returns n1*n2*n3*n4, 0 if
+ * fully screened, or a negative SCF_E* code on error. */
+int scf_compute_terfc_eri4(scf_engine *eng, const scf_basis *obs,
+                              int sh1, int sh2, int sh3, int sh4, double *out);
+
 /* --- terf(r,r0)/r = tempered LONG-RANGE complement of terfc, via the SAME
  * 2D interpolation tables --- *
  *
@@ -248,6 +256,20 @@ int scf_compute_terf_eri3(scf_engine *eng, const scf_basis *obs,
 /* Compute (shP|terf|shQ). Returns nP*nQ or SCF_EINTERNAL on error. */
 int scf_compute_terf_eri2(scf_engine *eng, const scf_basis *dfbs,
                              int shP, int shQ, double *out);
+
+/* Compute the 4-center quartet (sh1 sh2|terf|sh3 sh4). All four shells are
+ * drawn from `obs`, as for scf_compute_terfc_eri4. Output is row-major
+ * [n1][n2][n3][n4] (sh1 slowest, sh4 fastest), spherical where the shell is
+ * pure. Returns n1*n2*n3*n4, 0 if fully screened, or a negative SCF_E* code on
+ * error. terf_eri4 + terfc_eri4 = the Coulomb quartet, element-wise. */
+int scf_compute_terf_eri4(scf_engine *eng, const scf_basis *obs,
+                             int sh1, int sh2, int sh3, int sh4, double *out);
+
+/* Validation hook: the 4-center MD path with the plain Coulomb kernel, for
+ * cross-checking against libint2's scf_compute_eri_quartet. Needs no engine.
+ * Same [n1][n2][n3][n4] layout and return contract as the eri4 entry points. */
+int scf_debug_coulomb_eri4(const scf_basis *obs, int sh1, int sh2, int sh3,
+                           int sh4, double *out);
 
 #ifdef __cplusplus
 }
