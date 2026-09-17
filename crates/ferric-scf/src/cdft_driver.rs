@@ -18,6 +18,19 @@ use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::Array2;
 
+/// Is the λ-Newton per-iteration trace switched on?
+///
+/// Diagnosing an outer loop that fails to converge needs the ITERATE, not just
+/// the final error: "monotone but slow", "limit cycle" and "the residual
+/// function is discontinuous because the inner SCF changed basin" all present
+/// as the same `Convergence` error and have different fixes. The trace is
+/// behind an env var rather than a config field because it is a debugging aid,
+/// not a physics knob — adding it to `RhfConfig` would put it in the CLI's
+/// `deny_unknown_fields` TOML surface and in every struct literal.
+fn trace_enabled() -> bool {
+    std::env::var("FERRIC_CDFT_TRACE").is_ok_and(|v| v != "0" && !v.is_empty())
+}
+
 /// Result of a constrained SCF.
 #[derive(Debug, Clone)]
 #[must_use]
@@ -146,10 +159,19 @@ pub fn solve_cdft_uhf(
             let mut lam = vec![0.0_f64; k];
             let max_outer = 30usize;
             let fd = 1e-3_f64; // λ finite-difference step for the Jacobian
+            let trace = trace_enabled();
 
             for outer in 1..=max_outer {
                 let (scf, resid, pops) = run_inner(&lam)?;
                 let max_resid = resid.iter().fold(0.0_f64, |m, &r| m.max(r.abs()));
+                if trace {
+                    eprintln!(
+                        "[cdft-trace] outer={outer:2}  lam={lam:?}  N_C={pops:?}  \
+                         resid={resid:?}  max|r|={max_resid:.6e}  \
+                         E={:.10}  inner_conv={}  inner_iters={}",
+                        scf.energy, scf.converged, scf.iterations
+                    );
+                }
                 if max_resid < config.cdft_lambda_tol {
                     return Ok(CdftResult {
                         scf,
@@ -164,7 +186,17 @@ pub fn solve_cdft_uhf(
                 for j in 0..k {
                     let mut lam_p = lam.clone();
                     lam_p[j] += fd;
-                    let (_, resid_p, _) = run_inner(&lam_p)?;
+                    let (scf_p, resid_p, _) = run_inner(&lam_p)?;
+                    if trace {
+                        eprintln!(
+                            "[cdft-trace]   fd j={j} lam+={:.6}  resid+={resid_p:?}  \
+                             E+={:.10}  dE={:.3e}  inner_conv={}",
+                            lam_p[j],
+                            scf_p.energy,
+                            scf_p.energy - scf.energy,
+                            scf_p.converged
+                        );
+                    }
                     for i in 0..k {
                         jac[(i, j)] = (resid_p[i] - resid[i]) / fd;
                     }
@@ -172,6 +204,9 @@ pub fn solve_cdft_uhf(
 
                 // Solve J · Δλ = c, then λ ← λ − Δλ.
                 let mut delta = solve_linear(&jac, &resid)?;
+                if trace {
+                    eprintln!("[cdft-trace]   jac={jac:?}  raw_step={delta:?}");
+                }
                 // Damp/clamp the Newton step to keep the outer loop from overshooting
                 // into a basin where the inner SCF stalls.
                 for d in delta.iter_mut() {
