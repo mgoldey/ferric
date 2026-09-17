@@ -767,3 +767,97 @@ fn a_misshaped_init_guess_density_is_rejected() {
         "the error should name the offending field; got: {err}"
     );
 }
+
+/// **The DF-path iteration cost is THRESHOLD-DEPENDENT, not a property of the
+/// guess** — measured, after an assertion written the other way round failed.
+///
+/// This test exists because `k_builder_open_shell.rs` needed its `max_iter`
+/// raised from 200 to 400 when the ROHF guess fix landed, and the obvious
+/// explanation ("MINAO converges more slowly on the DF path") turned out to be
+/// true only at that suite's convergence thresholds. Measured on CH₃/cc-pVDZ
+/// ROHF with DF-J/DF-K:
+///
+/// | thresholds | hcore | MINAO |
+/// |---|---|---|
+/// | `density_conv 1e-8`, `energy_conv 1e-10` (the other suite's) | 37 | **262** |
+/// | `density_conv 1e-10`, `energy_conv 1e-11` (this suite's) | 154 | **48** |
+///
+/// The ordering REVERSES. So "the guess fix costs DF iterations" is not a
+/// finding about the guess; it is a finding about one convergence-threshold
+/// setting on one system, and the raised cap in the other suite is a tolerance
+/// for DIIS-path variance, not a documented regression.
+///
+/// The first version of this test asserted `it_minao > it_hcore` and FAILED
+/// (48 vs 154), which is how the threshold dependence was discovered. It is
+/// recorded here rather than quietly deleted, because the wrong version is the
+/// evidence for why the right one asserts what it does.
+///
+/// What IS robust, and is what this test now pins, is the PHYSICS: both guesses
+/// reach the same DF-ROHF state to within DF fitting error, at both threshold
+/// settings.
+#[test]
+fn the_df_path_reaches_one_state_from_both_guesses() {
+    // The OTHER suite's CH3 geometry, to the digit (H y = ±0.9345, not
+    // ±0.934441). The two differ by 6e-5 A and that is enough to move the DF
+    // iteration count by >200 on this near-degenerate system, which is the
+    // whole point of the note below.
+    let sys_kb = sys_from_xyz(
+        "4\nCH3 doublet\nC 0.0000 0.0000 0.0000\nH 1.0790 0.0000 0.0000\n\
+         H -0.5395 0.9345 0.0000\nH -0.5395 -0.9345 0.0000\n",
+        0,
+        2,
+        "cc-pvdz",
+    );
+    let sys = ch3("cc-pvdz");
+    let df = |sad: bool, dconv: f64, econv: f64| RhfConfig {
+        df_j_aux: Some("def2-universal-jkfit".into()),
+        df_k_aux: Some("def2-universal-jkfit".into()),
+        max_iter: 2000,
+        use_sad_guess: sad,
+        density_conv: dconv,
+        energy_conv: econv,
+        ..tight_cfg()
+    };
+    // BOTH threshold settings, because one of them is what made the earlier
+    // assertion look like a property of the guess.
+    for (geom, sys) in [("ref-geom", &sys), ("kb-geom", &sys_kb)] {
+        for (tag, dconv, econv) in [("loose(1e-8)", 1e-8, 1e-10), ("tight(1e-10)", 1e-10, 1e-11)] {
+            let mut seen = Vec::new();
+            for (label, sad) in [("hcore", false), ("minao", true)] {
+                let r = ferric_scf::rohf::solve_rohf(
+                    &sys.ctx,
+                    &sys.mol,
+                    &sys.prep,
+                    Operator::coulomb(),
+                    &sys.bounds,
+                    &df(sad, dconv, econv),
+                )
+                .unwrap_or_else(|e| panic!("CH3/cc-pVDZ DF-ROHF {geom} {tag} {label}: {e:?}"));
+                println!(
+                    "CH3/cc-pVDZ DF-ROHF {geom:9} {tag:12} {label:6}: E = {:.10}  iters = {}",
+                    r.energy, r.iterations
+                );
+                seen.push((label, r.energy, r.iterations));
+            }
+            let (_, e_h, it_h) = seen[0];
+            let (_, e_m, it_m) = seen[1];
+            // THE PHYSICS, which holds at both settings: same state, to within the
+            // DF fitting error. This is the assertion that would catch the guess
+            // fix sending the DF path to a different basin.
+            assert!(
+                (e_h - e_m).abs() < 1e-7,
+                "{geom}/{tag}: the two guesses must reach the SAME DF-ROHF state; \
+             got {e_h:.10} vs {e_m:.10} (delta {:.3e} Ha)",
+                e_h - e_m
+            );
+            // A bound, NOT a direction — because the direction is threshold
+            // dependent and asserting it once produced a false claim.
+            assert!(
+                it_h < 1500 && it_m < 1500,
+                "{geom}/{tag}: DF iteration counts ({it_h} hcore, {it_m} minao) are \
+             far beyond anything measured on 2026-09-17. Something other than \
+             DIIS-path variance is at work."
+            );
+        }
+    }
+}
