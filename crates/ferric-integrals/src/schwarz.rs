@@ -60,7 +60,13 @@ const PAR_SCHWARZ_SHELL_THRESHOLD: usize = 64;
 /// the invariant and would scale better; `0.0` is chosen because the measured
 /// cost is small enough that the extra knob is not worth its failure modes —
 /// notably that it re-couples the table to a threshold the caller can change.
-const SCHWARZ_TABLE_PRECISION: f64 = 0.0;
+///
+/// `pub(crate)` (not private) so [`crate::csb`] builds its `M` table at the
+/// IDENTICAL precision rather than carrying a second copy of the literal that
+/// could silently drift. The underestimation hazard this constant exists to
+/// defeat applies verbatim to the `(PP|QQ)` table, and the remedy must not be
+/// allowed to diverge between the two.
+pub(crate) const SCHWARZ_TABLE_PRECISION: f64 = 0.0;
 
 /// Floor applied to every stored Q so that no table entry is ever exactly zero.
 ///
@@ -72,7 +78,13 @@ const SCHWARZ_TABLE_PRECISION: f64 = 0.0;
 /// survive a real screen — but it makes `estimate(..) > 0.0` true everywhere,
 /// which is precisely the trivial-limit guarantee. Same value and same
 /// rationale as PySCF's `q_cond` floor.
-const SCHWARZ_Q_FLOOR: f64 = 1e-100;
+///
+/// `pub(crate)` (not private) so [`crate::csb`] floors its `M` table with the
+/// IDENTICAL value rather than a second, silently-drifting copy. A stored
+/// `M = 0.0` is exactly as fatal there as a stored `Q = 0.0` is here — worse,
+/// in fact, because CSB takes a `min` and a zero `M` would win that `min` at
+/// every quartet touching the affected shell.
+pub(crate) const SCHWARZ_Q_FLOOR: f64 = 1e-100;
 
 /// Q(i,j) = sqrt(max_{a,b} |(ab|ab)|) over the functions of shell pair (i,j),
 /// from one computed (ij|ij) quartet block, floored at [`SCHWARZ_Q_FLOOR`] so
@@ -119,9 +131,96 @@ fn schwarz_pair(eng: &mut Engine, prep: &PreparedBasis, i: usize, j: usize) -> f
 /// `scf_compute_eri_quartet` kernel with unit coefficient as the serial loop,
 /// and each (i, j) is written exactly once, so the result is bit-identical to
 /// the serial loop regardless of thread count or block size.
+///
+/// # Why the operator set is `{Coulomb, ErfCoulomb, ErfcCoulomb}`
+///
+/// Two independent gates, and it is worth knowing which one a given operator
+/// fails, because they have different remedies:
+///
+/// 1. **Positive-definiteness.** Schwarz requires `G` to be a positive-definite
+///    function (Thompson & Ochsenfeld, JCP 147, 144101 (2017), Appendix B;
+///    Bochner's theorem on `F_G(k) > 0`). Their Table VI discharges this for
+///    all three accepted kinds, and also for `Yukawa`, `SlaterGeminal` and the
+///    Gaussian geminal. See [`crate::csb`]'s header, which extends the same
+///    recipe to ferric's own kernels and finds `Terfc` positive-definite (with
+///    a closed form, `F(k) = (1 - cos(k r0) e^{-k²/4ω²})/(2π²k²)`) but `Terf`
+///    NOT — `F_terf(k) = cos(k r0) e^{-k²/4ω²}/(2π²k²)` changes sign, so a
+///    "Schwarz bound" for `Terf` could be violated outright. No engine work
+///    would ever make `Terf` admissible here.
+/// 2. **An available 4-centre engine.** `Engine::new_2e` must be able to build
+///    the operator at all, and this pass needs `(ij|ij)` QUARTETS. `Terfc`
+///    fails only this second gate: the shim exposes `scf_compute_terfc_eri3` /
+///    `_eri2` but no quartet kernel (`shim.h:201,206`). If one is ever written,
+///    `Terfc` becomes admissible with no new theory — subject to bounding the
+///    interpolation-table error, since a `Q` computed slightly LOW by table
+///    error breaks the bound exactly as a precision-cliff zero would.
 pub fn schwarz(op: Operator, prep: &PreparedBasis) -> Result<Array2<f64>, FerricError> {
     match op.kind {
         OperatorKind::Coulomb | OperatorKind::ErfCoulomb | OperatorKind::ErfcCoulomb => {}
+        // INVALID BY CONSTRUCTION, not merely unimplemented. Schwarz screening
+        // IS the Cauchy-Schwarz inequality, which needs the two-electron form
+        // to be an inner product — i.e. the kernel positive-definite. terf is
+        // not: its Fourier transform
+        //     F_terf(k) = cos(k*r0) * exp(-k^2/4w^2) / (2 pi^2 k^2)
+        // changes sign at k*r0 = pi (Bochner), so the form is indefinite,
+        // `(ij|ij)` can be NEGATIVE, and `Q = sqrt((ij|ij))` is not even real.
+        //
+        // MEASURED, not merely derived — water/cc-pVDZ 2-center diagonals:
+        //   r0=2: min (P|P)_terf = -7.543e-3    r0=4: -4.439e-4
+        // with plain erf (same omegas) and terfc both staying >= 0 on the same
+        // basis and engine. See tests/terf_positivity_probe.rs. The cause is
+        // the FINITE SHELL RADIUS r0 (the cos factor), NOT long-rangedness:
+        // plain erf is long-range and positive-definite.
+        //
+        // No tightening will fix this and no future implementation should
+        // "add terf support" here. Long-range terf work relies on its own lack
+        // of sparsity instead (the integrals approach 1/R and do not decay, so
+        // there is little for a distance screen to discard) plus RI/DF, which
+        // is what production RSH codes do for the long-range piece.
+        OperatorKind::Terf => {
+            return Err(FerricError::Libint(
+                "Schwarz screening is INVALID for the Terf operator, not merely unimplemented: \
+                 terf's kernel is not positive-definite (its Fourier transform cos(k*r0) \
+                 exp(-k^2/4w^2)/(2 pi^2 k^2) changes sign at k*r0 = pi), so the two-electron \
+                 form is indefinite, (ij|ij) can be negative, and Q = sqrt((ij|ij)) is not real. \
+                 Measured: min (P|P)_terf = -7.543e-3 on water/cc-pVDZ at r0=2. Use RI/DF for \
+                 the long-range piece; terf integrals do not decay with separation, so there is \
+                 little for a distance screen to discard in any case."
+                    .to_string(),
+            ))
+        }
+        // Positive-definite (proven: F_terfc(k) = (1 - cos(k*r0) exp(-k^2/4w^2))
+        // / (2 pi^2 k^2) >= (1 - exp(-k^2/4w^2)) / (2 pi^2 k^2) > 0 for all
+        // (r0, omega); verified against quadrature to 5.67e-15, and r0 -> 0
+        // reproduces the published erfc transform). So Schwarz and CSB are both
+        // VALID here — this is an ENGINE gap, not a validity one: the shim
+        // exposes only `scf_compute_terfc_eri3`/`_eri2`, and a screening table
+        // needs 4-center (PQ|PQ) quartets.
+        //
+        // UPDATE: the 4-center engine now EXISTS (shim.cc compute_cart_eri4 /
+        // scf_compute_terfc_eri4, validated against libint2 in
+        // tests/eri4_vs_libint.rs). The caveat below has also been measured
+        // rather than assumed — see tests/eri4_terfc_schwarz_validity.rs:
+        // water/cc-pVDZ at r0=2 gives a min (PQ|PQ) diagonal of +8.40e-5 and a
+        // worst |(ab|cd)|/(Q_ab Q_cd) of 1 + 8.88e-16 (one ulp, at a
+        // diagonal-type quartet where Cauchy-Schwarz is an equality).
+        //
+        // It is still refused here, deliberately. What is measured is that the
+        // bound EXISTS on one molecule at one r0; what a production screen needs
+        // is an error budget across r0 and basis, since the proof is for the
+        // EXACT kernel while this engine is INTERPOLATED — a table entry
+        // computed slightly LOW breaks the bound by that much, so table error
+        // must be folded in as a relative inflation of Q/M, not merely floored.
+        // Flipping this gate is a separate, evidence-bearing change.
+        OperatorKind::Terfc => {
+            return Err(FerricError::Libint(
+                "Schwarz screening is valid for Terfc (the kernel is positive-definite) and the \
+                 4-center engine now exists, but it is not yet enabled: the bound has been \
+                 measured on one molecule at one r0 (see tests/eri4_terfc_schwarz_validity.rs), \
+                 not budgeted for interpolation error across r0 and basis."
+                    .to_string(),
+            ))
+        }
         _ => {
             return Err(FerricError::Libint(format!(
                 "operator {:?} not implemented",

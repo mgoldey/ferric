@@ -26,3 +26,6 @@ serde_json = { workspace = true }
 # rebuilt without a ferric-dft dependency); ferric-quadrature depends only
 # on ferric-core, so no cycle.
 ferric-quadrature = { path = "../ferric-quadrature" }
+
+[features]
+libint2_terf = []
