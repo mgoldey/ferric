@@ -479,11 +479,18 @@ pub fn solve_uhf_fockmod(
     // That is not cosmetic. MEASURED on the systems in
     // `tests/scf_state_selection.rs`, against PySCF 2.13.0 / ORCA 6.1.1 /
     // NWChem 7.2.2 at the same geometry and basis: from hcore, UHF converged to
-    // a state ABOVE the reference on 3 of 6 open-shell diatomics — HeNe⁺ by
-    // 0.136 eV (def2-SVP) and 0.126 eV (6-31G), N₂⁺ by 10.37 eV — every one of
-    // them flagged UNSTABLE by ferric's own stability check. From the MINAO
-    // density both HeNe⁺ rows reach the external reference to ~1e-10 Ha and
-    // report STABLE, and N₂⁺ improves by 9.58 eV.
+    // a state ABOVE the reference on 4 of 7 open-shell diatomics, every one of
+    // them flagged UNSTABLE by ferric's own stability check —
+    //
+    //   HeNe⁺/def2-SVP  0.136 eV     HeNe⁺/6-31G  0.126 eV
+    //   OH/6-31G        4.222 eV     N₂⁺/6-31G   10.373 eV
+    //
+    // From the MINAO density both HeNe⁺ rows and OH reach the external
+    // reference (~1e-10 Ha for HeNe⁺, 3.5e-9 Ha for OH) and HeNe⁺ reports
+    // STABLE; N₂⁺ improves by 9.58 eV. OH was not in the original sweep — it
+    // surfaced because `ferric-dft`'s own f_xc finite-difference test builds
+    // its reference density with `solve_uhf` on OH/6-31G and began failing, so
+    // the sweep in `scf_state_selection.rs` was an UNDER-count.
     //
     // The guess is NOT sufficient on its own: N₂⁺/6-31G from MINAO still lands
     // 0.79 eV high and UNSTABLE — on exactly the state PySCF's OWN default
