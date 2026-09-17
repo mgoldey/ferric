@@ -1030,24 +1030,43 @@ fn build_rohf_densities(
 ///
 /// The SCF is MO-driven, so a guess DENSITY has to become occupied orbitals.
 /// That is done the only way it can be: build the Fock AT the guess density and
-/// diagonalize it. Two details are ROHF-specific and are the reason this is not
-/// simply a call to `uhf_guess_mos`:
+/// diagonalize it. Two choices here are ROHF-flavoured rather than copied from
+/// `uhf_guess_mos`, and BOTH are recorded below with what measurement actually
+/// supports them — which is less than the obvious argument would suggest.
 ///
-/// 1. **The spin split is by OCCUPATION, not in half.** Both `sad_guess` and the
-///    MINAO projection return a spin-summed `D_total`. UHF splits it evenly
-///    (`D_α = D_β = D/2`), which is right for UHF because the α/β asymmetry is
-///    reintroduced by the occupation a few lines later. ROHF has `nocc_α ≠
-///    nocc_β` by construction, so an even split would hand the guess Fock a
-///    *closed-shell* density and the open-shell character of the guess would be
-///    thrown away before it was used. Here `D_σ = D_total · nocc_σ / nelec`,
-///    which preserves both `tr(D_α S) = nocc_α` and `tr(D_β S) = nocc_β` and
-///    reduces to the UHF even split exactly when `nocc_α == nocc_β`.
+/// 1. **The spin split is by OCCUPATION.** Both `sad_guess` and the MINAO
+///    projection return a spin-summed `D_total`. UHF splits it evenly
+///    (`D_α = D_β = D/2`); ROHF has `nocc_α ≠ nocc_β` by construction, so
+///    here `D_σ = D_total · nocc_σ / nelec`, which preserves both
+///    `tr(D_α S) = nocc_α` and `tr(D_β S) = nocc_β` and reduces to the UHF
+///    even split exactly when `nocc_α == nocc_β`.
 /// 2. **The matrix diagonalized is the ROOTHAAN EFFECTIVE Fock**, not a spin
-///    Fock. ROHF has ONE MO set, obtained from `roothaan_fock(F_α, F_β, D_α,
-///    D_β, S)` — the same function the SCF loop uses. Diagonalizing `F_α` (or
-///    `F_β`) instead would produce orbitals from a different operator than the
-///    one the iteration goes on to use, which is the class of error this whole
-///    lane exists to remove.
+///    Fock — `roothaan_fock(F_α, F_β, D_α, D_β, S)`, the same function the
+///    SCF loop uses. ROHF has ONE MO set, so this is the operator the iteration
+///    goes on to use.
+///
+/// ## MEASURED: neither choice changes any converged state in the test suite
+///
+/// This is stated because the plausible argument for each ("an even split
+/// throws the open-shell character away"; "diagonalizing `F_α` is a different
+/// operator") is NOT what the data shows, and an unverified justification in a
+/// docstring is worse than none. Both were mutation-tested in the foreground
+/// against the full 28-row sweep in `tests/rohf_state_selection.rs`:
+///
+/// * Replacing the occupation split with UHF's `D/2` — **all 8 tests pass**.
+///   Every converged energy is identical to 1–2 ulp (e.g. HeNe⁺/6-31G
+///   −130.60332290752973 vs …967).
+/// * Replacing the Roothaan effective Fock with a bare `F_α` — **all 8 tests
+///   pass**, same states throughout.
+///
+/// So on every system measured, what selects the basin is the guess DENSITY;
+/// the details of how that density is turned into orbitals do not matter. Both
+/// choices are kept because they are the internally consistent ones — they
+/// match this file's own occupation convention and its own Fock combination,
+/// so a reader is not left wondering why the guess uses a different operator
+/// from the loop — but NO accuracy claim rests on either, and a future change
+/// to either is a refactor, not a correctness fix. If a system is ever found
+/// where they DO differ, that system belongs in the sweep.
 ///
 /// # Why the guess Fock is built with plain Coulomb J/K even under RSH/DFT
 ///
