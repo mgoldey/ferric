@@ -883,11 +883,33 @@ fn lambda_zero_augmented_hessian_is_bit_identical_to_unconstrained() {
 /// Passing this validates the SIGN CONVENTION as well as the reduction: a
 /// Hessian with a flipped sign would report this known-unstable state as
 /// stable.
+///
+/// # Why this pins `use_sad_guess = false` (2026-09-16)
+///
+/// This test needs a KNOWN-UNSTABLE converged state to check the sign against,
+/// and the ²Π state is the one it was written around. Until 2026-09-16 that is
+/// simply what `solve_uhf` returned, because the open-shell path ignored the
+/// configured guess and always used hcore. `fix/scf-unconstrained-state-
+/// selection` made UHF honour `RhfConfig::use_sad_guess` (default MINAO), and
+/// from the MINAO density HeNe⁺ converges instead to the σ state at
+/// −130.5053405386 — which is STABLE (λ_min = +5.09e-3), so this assertion
+/// began failing.
+///
+/// That failure was the fix working, not a defect: the test's PREMISE moved,
+/// not its SUBJECT. The subject — "on a state that is known to be unstable, is
+/// λ_min clearly negative?" — is unchanged and is still exactly what is
+/// asserted. So the test now asks for the hcore guess explicitly, which still
+/// reaches the ²Π saddle, rather than silently relying on a default that no
+/// longer produces one. Nothing about the Hessian, the eigensolver or the
+/// tolerance is touched.
 #[test]
 fn unconstrained_hene_is_unstable_known_reference() {
     let sys = build_sys(&hene_xyz(), 1, 2, "def2-svp");
     let h = oneelectron::hcore(&sys.prep);
-    let cfg = hene_cfg_tight();
+    let cfg = RhfConfig {
+        use_sad_guess: false,
+        ..hene_cfg_tight()
+    };
     let res = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg).unwrap();
     assert!(res.converged, "the reference state must be a CONVERGED one");
     let c_a = res.mos_alpha.clone();

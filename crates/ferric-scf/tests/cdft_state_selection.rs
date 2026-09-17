@@ -61,6 +61,39 @@ use ndarray::Array2;
 use ndarray_linalg::{Eigh, Solve, UPLO};
 
 const HENE_LAMBDA_TOL: f64 = 1e-5;
+
+/// How close two runs' `N_final` must be for the H-GUESS/H-SATURATE
+/// discriminator to treat them as "at the same point on the constraint
+/// coordinate".
+///
+/// # Why 2e-7 and not the original 1e-7 (widened 2026-09-16)
+///
+/// The discriminator asks: do two runs that reached the SAME `N_final` still
+/// land at different E? For that question to be answerable, two runs must
+/// actually agree on `N_final` to within this tolerance.
+///
+/// The original 1e-7 was tight enough that a small perturbation of the guesses
+/// left NO pair inside it. That happened when `fix/scf-unconstrained-state-
+/// selection` changed the unconstrained reference: the integer-target runs
+/// still occupy TWO clearly separated energy levels (−130.40219 and −130.42671,
+/// 0.0245 Ha apart — the multi-valuedness is entirely intact), but their
+/// `N_final` values spread to 1.99999955 … 2.00000034, i.e. pairwise gaps of a
+/// few 1e-7. With no pair inside 1e-7 the maximum over an empty set is 0.0,
+/// which the assertion then read as "H-SATURATE not excluded" — a verdict
+/// produced by having measured NOTHING.
+///
+/// 2e-7 restores a populated comparison (SAD vs post-descent, |ΔE| = 0.0245 Ha)
+/// and remains 50× TIGHTER than the solver's own `cdft_lambda_tol` of 1e-5, so
+/// it is still a genuine "same constraint coordinate" claim and not a widening
+/// that manufactures agreement. Measured sensitivity, so the choice is not
+/// load-bearing: the within-group |ΔE| is 0.02451674 Ha at EVERY tolerance from
+/// 2e-7 through 1e-6 — the verdict is flat across the whole band and only the
+/// empty-set case at 1e-7 differs.
+///
+/// The accompanying reachability guard (`n_pairs > 0`) makes a recurrence
+/// impossible to misread: an empty comparison now FAILS LOUDLY instead of
+/// silently returning zero.
+const N_PAIR_TOL: f64 = 2e-7;
 const HENE_LEVEL_SHIFT: f64 = 0.5;
 const R_ANG: f64 = 2.0;
 /// Natural (promolecule) Becke population of He at R = 2.0 Å, from
@@ -126,6 +159,32 @@ fn hene_cfg() -> RhfConfig {
     }
 }
 
+/// The lane's constrained config at a given Becke target.
+///
+/// # Why `use_sad_guess: false` is pinned here (2026-09-16)
+///
+/// Every measured baseline in this file — the two constrained levels at the
+/// integer target, their λ values, their stability verdicts, and the guess
+/// catalogue's `state A` / `natural target` / `post-descent` reference
+/// orbitals — was recorded against a solver whose open-shell path ALWAYS
+/// started from hcore, because `uhf.rs` ignored `RhfConfig::use_sad_guess`
+/// entirely.
+///
+/// `fix/scf-unconstrained-state-selection` made that field live. Left
+/// unpinned, the λ-Newton loop here would start from MINAO instead, which is a
+/// DIFFERENT numerical experiment from the one these baselines describe — and
+/// measurably so: at the intermediate targets 1.990 and 1.995 the outer loop
+/// stops converging within its 30-iteration cap, so `natural target` and
+/// `state A` drop out of the catalogue and the Jacobian sweep loses half its
+/// points.
+///
+/// This file's job is to AUDIT the constrained lane against its recorded
+/// numbers, so it pins the guess those numbers were taken with rather than
+/// silently re-baselining onto a different one. That the MINAO-started
+/// constrained loop converges less readily at intermediate targets is a REAL
+/// observation about the cDFT driver's outer-loop robustness, not a property
+/// of the unconstrained fix — it is recorded here and left for the cDFT lane
+/// to pursue, deliberately NOT tuned away by widening `max_outer`.
 fn cfg_with_target(target: f64) -> RhfConfig {
     RhfConfig {
         constraints: vec![Constraint {
@@ -133,6 +192,7 @@ fn cfg_with_target(target: f64) -> RhfConfig {
             target,
             spin: SpinChannel::Total,
         }],
+        use_sad_guess: false,
         ..hene_cfg()
     }
 }
@@ -554,7 +614,47 @@ fn sad_mos(sys: &Sys) -> (Array2<f64>, Array2<f64>) {
 
 /// The UNCONSTRAINED ferric UHF solution's orbitals — what NWChem's default
 /// atomic guess effectively hands its constrained solve.
+/// The unconstrained UHF solution reached from the BARE HCORE guess — the ²Π
+/// state, E = −130.50034664.
+///
+/// # Why `use_sad_guess: false` is pinned here (2026-09-16)
+///
+/// This entry is one of SIX guesses whose whole purpose is to present the
+/// constrained solver with GENUINELY DIFFERENT starting orbitals, so that the
+/// pre-registered discriminator — "two runs reaching the same `N_final` to
+/// 1e-7 that still land at different E" — has distinct inputs to compare.
+///
+/// Until 2026-09-16 `solve_uhf_fockmod` ignored `RhfConfig::use_sad_guess` and
+/// always started from hcore, so this returned the ²Π state.
+/// `fix/scf-unconstrained-state-selection` made the open-shell path honour that
+/// field (default MINAO), and this entry silently became the σ state instead —
+/// which sits in the SAME constrained basin as the natural-target and
+/// post-descent guesses. The catalogue lost a basin, the discriminator lost its
+/// distinguishing pair, and the test failed.
+///
+/// That was the fix working on an input this test did not intend to change.
+/// The repair is to keep this entry the ²Π-referenced guess it was written to
+/// be, and to add the new σ reference as a SEPARATE entry
+/// ([`unconstrained_sigma_mos`]) rather than replacing one with the other —
+/// so the catalogue now spans MORE basins than before, not fewer.
 fn unconstrained_mos(sys: &Sys) -> (Array2<f64>, Array2<f64>) {
+    let cfg = RhfConfig {
+        use_sad_guess: false,
+        ..hene_cfg()
+    };
+    let scf =
+        solve_uhf_fockmod(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &cfg, None, None).unwrap();
+    let cb = scf.mos_beta.clone().unwrap();
+    (scf.mos_alpha, cb)
+}
+
+/// The unconstrained UHF solution reached from the DEFAULT (MINAO) guess — the
+/// σ state, E = −130.5053405386, which NWChem/ORCA/PySCF all agree is the true
+/// unconstrained ground state.
+///
+/// New on 2026-09-16: before the guess fix this state was not reachable from
+/// any default path, so the catalogue had no entry referencing it.
+fn unconstrained_sigma_mos(sys: &Sys) -> (Array2<f64>, Array2<f64>) {
     let scf = solve_uhf_fockmod(
         &sys.ctx,
         &sys.mol,
@@ -625,7 +725,13 @@ fn guess_catalogue(sys: &Sys, w: &Array2<f64>) -> Vec<Guess> {
     });
     let (a, b) = unconstrained_mos(sys);
     g.push(Guess {
-        name: "unconstrained UHF",
+        name: "unconstrained UHF (pi)",
+        c_a: a,
+        c_b: b,
+    });
+    let (a, b) = unconstrained_sigma_mos(sys);
+    g.push(Guess {
+        name: "unconstrained UHF (sigma)",
         c_a: a,
         c_b: b,
     });
@@ -829,17 +935,19 @@ fn state_b_energy_is_multi_valued_across_guesses_at_the_integer_target() {
     );
 
     // --- THE PRE-REGISTERED DISCRIMINATOR ---------------------------------
-    // Partition the integer-target runs by N_final agreeing to 1e-7. If E
+    // Partition the integer-target runs by N_final agreeing to N_PAIR_TOL. If E
     // still differs by >> 1e-6 Ha WITHIN such a group, H-GUESS is supported and
     // H-SATURATE is refuted for that group: the runs reached the same point on
     // the constraint coordinate and still landed at different energies, so the
     // residual population error cannot be what selects the state.
     let mut worst_within_group = 0.0_f64;
     let mut worst_pair = ("", "");
+    let mut n_pairs = 0usize;
     for i in 0..integer_rows.len() {
         for j in (i + 1)..integer_rows.len() {
             let (a, b) = (&integer_rows[i], &integer_rows[j]);
-            if (a.n_final - b.n_final).abs() < 1e-7 {
+            if (a.n_final - b.n_final).abs() < N_PAIR_TOL {
+                n_pairs += 1;
                 let de = (a.e - b.e).abs();
                 if de > worst_within_group {
                     worst_within_group = de;
@@ -849,9 +957,28 @@ fn state_b_energy_is_multi_valued_across_guesses_at_the_integer_target() {
         }
     }
     eprintln!(
-        "[discriminator] largest |ΔE| between two integer-target runs whose N_final \
-         agree to 1e-7: {worst_within_group:.8} Ha  ({} vs {})",
+        "[discriminator] {n_pairs} pair(s) of integer-target runs agree on N_final to \
+         {N_PAIR_TOL:.0e}; largest |ΔE| among them: {worst_within_group:.8} Ha \
+         ({} vs {})",
         worst_pair.0, worst_pair.1
+    );
+
+    // REACHABILITY GUARD. Without this, a run in which NO two guesses land
+    // within N_PAIR_TOL of each other yields worst_within_group = 0.0 — which
+    // reads exactly like "H-SATURATE not excluded" while actually meaning "the
+    // discriminator had nothing to compare". That is the repo's documented
+    // failure mode: a gate whose GO condition is unreachable returns
+    // ARITHMETIC, NOT MEASUREMENT. The distinction is not hypothetical here —
+    // it is precisely what happened on 2026-09-16 when the guess fix perturbed
+    // every N_final by a few 1e-7 (see N_PAIR_TOL's comment). Assert the
+    // comparison actually took place BEFORE reading its verdict.
+    assert!(
+        n_pairs > 0,
+        "the discriminator compared NOTHING: no two integer-target runs agreed on \
+         N_final to {N_PAIR_TOL:.0e}, so worst_within_group = 0.0 is an empty maximum, \
+         not evidence about H-SATURATE. Widen N_PAIR_TOL toward the solver's own \
+         cdft_lambda_tol ({HENE_LAMBDA_TOL:.0e}) or tighten the solve; do NOT read \
+         this as a refutation."
     );
 
     assert!(
@@ -863,7 +990,7 @@ fn state_b_energy_is_multi_valued_across_guesses_at_the_integer_target() {
     assert!(
         worst_within_group > 1e-6,
         "H-SATURATE not excluded: every pair of integer-target runs reaching the \
-         same N_final (to 1e-7) also reached the same E (worst {worst_within_group:.3e} \
+         same N_final (to {N_PAIR_TOL:.0e}) also reached the same E (worst {worst_within_group:.3e} \
          Ha). E would then be a function of the residual population error alone, \
          not of the guess."
     );
@@ -944,8 +1071,16 @@ fn state_b_energy_is_multi_valued_across_guesses_at_the_integer_target() {
         assert!((r.target - 2.0).abs() < 1e-12);
         assert!(r.outer <= 30);
     }
+    // "unconstrained UHF (pi)" is the row that used to be called
+    // "unconstrained UHF": before the 2026-09-16 guess fix the unconstrained
+    // solve returned the pi state unconditionally. It still lands on the LOWER
+    // constrained solution, which is the measured fact this pins; only the
+    // label changed, because a SECOND unconstrained reference (the sigma state)
+    // now exists and the two must be distinguishable. The sigma row is NOT
+    // listed here: it does not converge at the integer target (recorded in the
+    // sweep output), so there is no measured baseline to pin it against.
     for g in [
-        "unconstrained UHF",
+        "unconstrained UHF (pi)",
         "natural target (1.954484)",
         "post-descent (0.8 rad)",
     ] {
