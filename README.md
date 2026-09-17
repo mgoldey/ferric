@@ -355,6 +355,72 @@ before running `mpirun` (both for `target/release/ferric` and for any
 `mpi_dfjk_banding`). Not needed for a distro-packaged
 `/usr/lib/.../libopenmpi` install, where the loader already knows the path.
 
+#### Installing the prebuilt MPI wheel (`ferric-mpi`)
+
+Everything above builds from source. There is also a prebuilt wheel that skips
+the ~30 min libint2 build, published as a **separate distribution** named
+`ferric-mpi` (the import name stays `ferric`):
+
+```bash
+# Requires a system OpenMPI 4.x -- see below. Install it FIRST.
+sudo apt-get install -y libopenmpi-dev openmpi-bin   # Debian/Ubuntu/Mint
+# sudo dnf install -y openmpi                        # RHEL/Alma/Rocky/Fedora
+#
+# Only the runtime (libmpi.so.40 + mpirun) is needed, not the headers, but the
+# runtime package's name moves between releases -- Ubuntu 24.04 calls it
+# `libopenmpi3t64`, earlier ones `libopenmpi3`. `libopenmpi-dev` pulls the
+# right one in on every release, and is what you need anyway if you also build
+# from source, so it is the safe thing to name here.
+
+pip install ferric-mpi
+mpirun -np 4 -x OPENBLAS_NUM_THREADS=1 ferric examples/water-rhf.toml
+```
+
+`ferric-mpi` and the portable `ferric` wheel both own the `ferric/` import
+package — install **one or the other** into an environment, never both.
+
+> **Use the DF/RI-JK path for any run with `-np` > 1.** The exact 4-index J/K
+> path is currently **silently wrong** at two or more ranks — it does not error,
+> it returns a converged-looking wrong number. Measured 2026-09-16 (OpenMPI
+> 4.1.6, water/STO-3G): `-np 1` gives `-74.9631468000 Ha, converged=true`, while
+> `-np 2` gives `+156.3238081949 Ha, converged=false`. Setting `df_j_aux` and
+> `df_k_aux` in `[scf]` selects the DF path, which is correct and rank-invariant
+> (water/cc-pVDZ RI-JK: `-76.0278457869 Ha` at `-np 1` and bit-identically on
+> both ranks at `-np 2`). This is a library bug, not a packaging one — a native
+> `cargo build --features mpi` binary reproduces it exactly.
+
+**The CLI is the supported MPI entry point. The Python API is not.**
+`pip install` puts a `ferric` executable on `PATH`, and it runs the full CLI
+inside the same extension module, so `mpirun -np N ferric input.toml` runs one
+rank per process with MPI initialized from that shared library. That works
+because the CLI is SPMD by design and already handles rank-aware output.
+
+Running `mpirun -np N python your_script.py` is **not supported**: the bindings
+expose no rank or world-size accessor, so `if rank == 0` cannot be written.
+Every rank executes the whole script, prints its output N times, and races the
+other ranks writing the same output files. Use the CLI, or drive ferric from a
+single-rank process.
+
+**A system OpenMPI 4.x is required — the wheel bundles no MPI at all.** The
+extension is linked against soname `libmpi.so.40` and resolves it from the
+system at load time. Without one, both entry points fail at import with:
+
+```
+ImportError: libmpi.so.40: cannot open shared object file: No such file or directory
+```
+
+MPICH and Intel MPI will **not** work: their soname is `libmpi.so.12` and the
+ABI is incompatible with OpenMPI's, so neither satisfies that link.
+
+This is deliberate, not an oversight. Vendoring an MPI runtime into a wheel is
+a documented dead end — `auditwheel` copies only `DT_NEEDED` libraries, never
+OpenMPI's `dlopen`'d MCA component plugins and never the `orted` launcher
+binary, so a self-contained MPI wheel fails at startup (or, worse, silently
+runs with a zero-filled `MPI_COMM_WORLD` when two libmpi images end up in one
+process). Linking the system MPI is what mpi4py and NWChemEx/ParallelZone both
+settled on, and it is also what lets a cluster's own hardware-optimized OpenMPI
+and its own `mpirun` drive the library.
+
 ### Python Bindings
 
 ```bash
