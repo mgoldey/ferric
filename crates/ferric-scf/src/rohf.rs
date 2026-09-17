@@ -321,18 +321,30 @@ pub fn solve_rohf_best_effort(
     // is the ROHF half of the defect fixed for UHF at `b687c394`; the two
     // solvers carried the identical pattern.
     //
-    // MEASURED, `tests/rohf_state_selection.rs`, against PySCF 2.13.0 ROHF at
-    // the same geometry and basis (each reference cross-checked across five
-    // PySCF `init_guess` settings, so a guess-dependent reference is not
-    // mistaken for a converged one). From hcore, ROHF landed ABOVE the
-    // reference on 2 of 15 rows —
+    // MEASURED, `tests/rohf_state_selection.rs`, over 28 rows (15 chemical
+    // systems, 13 of them at two bases; charged and neutral, doublet and
+    // triplet, diatomic and polyatomic) against PySCF 2.13.0 ROHF at the same
+    // geometry and basis. Each reference was cross-checked across five PySCF
+    // `init_guess` settings and, for the wider sweep, 24 randomized starts, so
+    // a guess-dependent reference is not mistaken for a converged one.
     //
-    //   OH/6-31G        +4.3027 eV      HeNe⁺/def2-SVP  +0.1303 eV
+    //                      above ref by >1e-3 eV    did not converge
+    //   hcore  (pre-fix)        4 / 28                  2 / 28
+    //   MINAO  (post-fix)       1 / 28                  0 / 28
     //
-    // and FAILED TO CONVERGE on a third (HeNe⁺/6-31G, 400 iterations). From
-    // the MINAO density all three are repaired. The remaining rows are
-    // unchanged, several of them BIT-identically, because those systems have
-    // one basin and the guess cannot matter.
+    // Repaired: OH/6-31G +4.3027 → 0, F₂⁺/6-31G +3.0201 → 0, NH₂/6-31G
+    // +1.7818 → 0, HeNe⁺/def2-SVP +0.1303 → 0, plus HeNe⁺/6-31G and
+    // CN/cc-pVDZ, which previously exhausted 400 iterations without converging.
+    //
+    // NOT FREE: CN is made WORSE at both bases — CN/6-31G +0.5753 eV (it
+    // reached the reference from hcore) and CN/cc-pVDZ +0.3865 eV (which trades
+    // a non-answer for a high answer). Those are genuine ROHF stationary points
+    // of the same operator, not wrong energies: PySCF itself converges to
+    // ferric's −92.1186236 from 5 of 40 randomized starts. See
+    // `cn_is_the_system_the_guess_fix_costs`, which pins both magnitudes.
+    //
+    // The remaining rows are unchanged, several of them BIT-identically,
+    // because those systems have one basin and the guess cannot matter.
     //
     // # No stability descent here, deliberately
     //
