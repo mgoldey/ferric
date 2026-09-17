@@ -1143,3 +1143,77 @@ fn oh_reaches_the_pyscf_reference_after_the_fix() {
         "the pre-fix OH state should still be reported UNSTABLE"
     );
 }
+
+/// **The descent must SKIP, not guess, on a reference it cannot analyse.**
+///
+/// `stability_uhf` already sets `ScfResult::stability` to `None` for a KS
+/// reference whose f_xc response kernel cannot be built (range-separated,
+/// meta-GGA) — analysing the HF Hessian at a KS density instead would be a
+/// wrong-operator verdict. The descent reads that same field, so it inherits
+/// the gate; this test pins that it actually does.
+///
+/// # Why it asserts the ENERGY and not just `stability.is_none()`
+///
+/// The first version of this test asserted only that the verdict field is
+/// `None`, and a mutation that made the descent FABRICATE an `Unstable`
+/// verdict whenever the field was `None` left it GREEN — the field really is
+/// `None` either way, so checking it says nothing about what the descent then
+/// does with it. The behavioural assertion is that turning the descent ON
+/// changes NOTHING on such a reference: same energy, to the last bit. A
+/// fabricating descent would rotate and re-converge, and could not be
+/// bit-identical.
+///
+/// A range-separated functional is used because `ks_reference_is_analysable`
+/// rejects it outright, so the skip is reached deterministically rather than
+/// depending on a kernel build happening to fail.
+#[test]
+fn the_descent_skips_a_reference_it_cannot_analyse() {
+    let sys = diatomic("O", "H", 0.97, 0, 2, "6-31g");
+    let base = RhfConfig {
+        xc: Some("wB97X-V".into()),
+        ..tight_cfg()
+    };
+    let with_descent = RhfConfig {
+        scf_stability_descent: true,
+        ..base.clone()
+    };
+    let off = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &base);
+    let on = solve_uhf(&sys.ctx, &sys.mol, &sys.prep, &sys.bounds, &with_descent);
+    match (off, on) {
+        (Ok(a), Ok(b)) => {
+            println!(
+                "RSH UKS OH/6-31G: descent off E = {:.12} (stability = {:?}), \
+                 on E = {:.12} (stability = {:?})",
+                a.energy,
+                a.stability.as_ref().map(|s| s.verdict()),
+                b.energy,
+                b.stability.as_ref().map(|s| s.verdict())
+            );
+            assert!(
+                a.stability.is_none(),
+                "the RSH reference produced a stability verdict ({:?}); it should be \
+                 None (not checked), because analysing the HF Hessian at a KS density \
+                 would be a wrong-operator verdict",
+                a.stability.as_ref().map(|s| s.verdict())
+            );
+            // THE BEHAVIOURAL ASSERTION: with no verdict to act on, the descent
+            // must do nothing at all -- bit-identically, not approximately.
+            assert_eq!(
+                a.energy.to_bits(),
+                b.energy.to_bits(),
+                "turning on scf_stability_descent changed the energy of a reference \
+                 whose stability was NEVER COMPUTED ({:.12} -> {:.12}). The descent is \
+                 acting on a verdict it does not have.",
+                a.energy,
+                b.energy
+            );
+        }
+        // Not converging is acceptable -- the point is that the descent does
+        // not fabricate a verdict, and an Err never reaches it at all.
+        (off, on) => println!(
+            "RSH UKS OH/6-31G did not converge (off: {:?}, on: {:?}); descent unreachable",
+            off.err(),
+            on.err()
+        ),
+    }
+}
