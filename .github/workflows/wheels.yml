@@ -900,6 +900,258 @@ jobs:
   #      all four (cp310-cp313) measured ~65.5 MiB, not the 100-200 MB this
   #      job's placeholder comment once guessed.
   #
+  # =====================================================================
+  # OpenMPI-linked wheel variant. SEPARATE PACKAGE, NEVER PUBLISHED HERE.
+  # =====================================================================
+  #
+  # READ THIS BEFORE USING OR EXTENDING THIS JOB.
+  #
+  # 1. WHAT THE MPI WHEEL ACTUALLY BUYS, AND WHAT IT DOES NOT.
+  #    `crates/ferric-python/src/lib.rs` exposes NO MPI entry point: there is
+  #    no run_mpi_ri_mp2 binding, no rank/size accessor, no communicator. The
+  #    genuinely MPI-parallel kernels (ferric_mp2::mpi_rimp2,
+  #    ferric_rpa::mpi_rpa, ferric_gw::mpi_gw) are UNREACHABLE from Python.
+  #    What the `mpi` feature does change is real but INDIRECT: every binding
+  #    builds `ParallelContext::default()`, which under the feature calls
+  #    mpi::initialize() and reads the true MPI_COMM_WORLD, and `run_rhf`
+  #    passes it into solve_rhf -> fock_assembly::build_df_jk ->
+  #    DfJ/DfK::new_banded(Some(ctx)). So `mpirun -np N python script.py` DOES
+  #    stripe the DF-J/DF-K aux band across ranks with a real Allreduce.
+  #    But it is SPMD: every rank runs the whole script, prints the same
+  #    output, and races on the same output files, and Python cannot tell the
+  #    ranks apart because no rank/size is exposed. Treat this wheel as an
+  #    SCF-memory-scaling build for people who already know that, not as a
+  #    parallel Python API. See crates/ferric-python/Cargo.toml's `mpi`
+  #    feature comment for the same caveats next to the code.
+  #
+  # 2. OPENMPI ABI LOCK-IN. THIS IS NOT FIXABLE HERE, ONLY DISCLOSED.
+  #    OpenMPI and MPICH/Intel MPI/Cray MPI are NOT ABI-compatible. This wheel
+  #    links OpenMPI 4.x (AlmaLinux 8's openmpi-devel, soname libmpi.so.40).
+  #    It will NOT run against an MPICH-family MPI. That is an accepted,
+  #    deliberate trade -- hence the distinct package NAME below, so the
+  #    constraint is visible at `pip install` time rather than as an
+  #    unexplained symbol error at import.
+  #
+  # 3. VENDORING CAVEAT -- THE BIGGEST PRACTICAL LIMITATION, MEASURED.
+  #    libmpi is NOT on auditwheel's manylinux_2_28 whitelist (verified
+  #    directly in quay.io/pypa/manylinux_2_28_x86_64:latest: the policy's
+  #    lib_whitelist is libc/libm/libstdc++/libgcc_s/libX11/... and contains
+  #    no MPI entry). auditwheel therefore COPIES libmpi.so.40 and its
+  #    runtime stack -- libopen-rte, libopen-pal, libhwloc, libevent -- INTO
+  #    the wheel and rewrites the RPATH. A vendored OpenMPI runtime is not
+  #    guaranteed to interoperate with the `mpirun`/PMIx/launcher on the
+  #    user's cluster, which is the usual reason MPI packages are built
+  #    against the site MPI rather than shipped with one. This job therefore
+  #    builds and ARTIFACTS the wheel for inspection and testing; it is
+  #    deliberately NOT wired to publish, and nobody should wire it up
+  #    without first testing it against a real multi-node launcher.
+  #
+  # 4. HOW THE PLAIN WHEEL STAYS UNAFFECTED. This job shares build-native-deps
+  #    but is otherwise disjoint from build-wheels: different package name,
+  #    different artifact name prefix (mpi-wheels-*, NOT wheels-*), no
+  #    `needs:` edge from smoke-test or publish. It cannot change what
+  #    `pip install ferric` resolves to. The artifact-name choice is
+  #    load-bearing, not cosmetic -- see the publish job's
+  #    `pattern: wheels-*` + `merge-multiple: true` download, which would
+  #    otherwise SWEEP AN MPI WHEEL INTO A PYPI UPLOAD of the `ferric`
+  #    package and also break its `wheel count == 4` assertion.
+  mpi-wheel:
+    needs: build-native-deps
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # ONE interpreter, not the four build-wheels covers. This artifact is
+        # not published, so a full matrix would quadruple runner time for a
+        # build nobody installs from an index. 3.11 matches the version the
+        # repo develops against (see CLAUDE.md's pytest invocation).
+        python-version: ["3.11"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Free runner disk space
+        run: |
+          echo "--- before"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY/CodeQL" 2>/dev/null || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          echo "--- after"; df -h / | tail -1
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: native-deps
+          path: native-deps-cache
+
+      - name: Restore native deps permissions
+        run: chmod -R u+rwX native-deps-cache || true
+
+      # RENAME THE PACKAGE, do not just tag the version. A local version label
+      # (ferric-0.1.0+mpi) would still be the SAME distribution name `ferric`,
+      # so it could satisfy a `ferric` requirement and shadow the portable
+      # build in a resolver or a lockfile. A distinct name cannot: nothing
+      # that asks for `ferric` ever resolves to `ferric-mpi`, and anyone
+      # installing it has typed the MPI name on purpose. The name also
+      # carries the ABI constraint into `pip list` output, which a build tag
+      # would not.
+      #
+      # `module-name` keeps the IMPORT name `ferric`, so an existing script
+      # runs unchanged under the MPI build -- only the DISTRIBUTION name
+      # differs. That is deliberate: the two wheels are alternatives, and
+      # installing both into one environment is a mistake (both own
+      # `ferric/`). The Summary line below is what a user sees in
+      # `pip show`, so the OpenMPI constraint is stated there too.
+      - name: Rewrite package identity to ferric-mpi
+        run: |
+          set -euo pipefail
+          python3 - << 'PYEOF'
+          import re, pathlib
+          p = pathlib.Path("pyproject.toml")
+          s = p.read_text()
+          s2, n = re.subn(r'(?m)^name = "ferric"$', 'name = "ferric-mpi"', s, count=1)
+          if n != 1:
+              raise SystemExit(
+                  "::error::expected exactly one `name = \"ferric\"` line in "
+                  f"pyproject.toml, substituted {n}. Refusing to build an "
+                  "MPI wheel that might still claim the `ferric` name."
+              )
+          # maturin needs module-name once the distribution name stops
+          # matching the extension module's name, or the wheel installs a
+          # top-level `ferric_mpi` nobody imports.
+          if "[tool.maturin]" not in s2:
+              raise SystemExit("::error::no [tool.maturin] section to pin module-name in")
+          s2 = s2.replace(
+              "[tool.maturin]",
+              "[tool.maturin]\nmodule-name = \"ferric\"",
+              1,
+          )
+          # Build the MPI feature ON TOP of the extension-module feature the
+          # default build already uses -- replacing that list would drop
+          # pyo3/extension-module and produce a wheel that cannot import.
+          s2, n = re.subn(
+              r'(?m)^features = \["pyo3/extension-module"\]$',
+              'features = ["pyo3/extension-module", "ferric-python/mpi"]',
+              s2,
+              count=1,
+          )
+          if n != 1:
+              raise SystemExit(
+                  "::error::could not extend [tool.maturin] features with "
+                  f"ferric-python/mpi (substituted {n}); the MPI feature would "
+                  "be silently absent from a wheel named ferric-mpi."
+              )
+          p.write_text(s2)
+          PYEOF
+          grep -E '^name|module-name|^features' pyproject.toml
+
+      - name: Prepare container script (Eigen + OpenMPI)
+        run: |
+          set -euo pipefail
+          cat > native-deps-cache/prepare-container-mpi.sh << 'SCRIPT_EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          EIGEN_VERSION="$1"
+          cd /tmp
+          # curl not wget -- the manylinux_2_28 image ships curl, not wget
+          # (same finding as build-wheels' prepare-container.sh).
+          curl -sSLo eigen-${EIGEN_VERSION}.tar.gz https://gitlab.com/libeigen/eigen/-/archive/${EIGEN_VERSION}/eigen-${EIGEN_VERSION}.tar.gz
+          tar xzf eigen-${EIGEN_VERSION}.tar.gz
+          mkdir -p /usr/include/eigen3
+          cp -r eigen-${EIGEN_VERSION}/Eigen /usr/include/eigen3/
+          cp -r eigen-${EIGEN_VERSION}/unsupported /usr/include/eigen3/
+
+          # OpenMPI + clang, the two things the MPI wheel needs that the plain
+          # one does not. Verified live against
+          # quay.io/pypa/manylinux_2_28_x86_64:latest (AlmaLinux 8.10):
+          # `dnf install -y openmpi-devel` resolves and installs OpenMPI 4.1.1,
+          # landing mpicc under /usr/lib64/openmpi/bin and mpi.h under
+          # /usr/include/openmpi-x86_64 -- NOT on the default PATH or include
+          # path, which is why the env exports below are required rather than
+          # optional.
+          #
+          # clang/llvm-devel: rsmpi 0.7's build script runs bindgen over
+          # mpi.h, and bindgen needs libclang at build time. Without it the
+          # build fails inside the `mpi` crate before any ferric code
+          # compiles.
+          dnf install -y openmpi-devel clang llvm-devel
+          test -x /usr/lib64/openmpi/bin/mpicc || {
+            echo "::error::openmpi-devel installed but /usr/lib64/openmpi/bin/mpicc is missing"
+            exit 1
+          }
+          /usr/lib64/openmpi/bin/mpirun --version | head -1
+          SCRIPT_EOF
+          chmod +x native-deps-cache/prepare-container-mpi.sh
+
+      - name: Build MPI wheel (manylinux_2_28 container)
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          rust-toolchain: stable
+          target: x86_64
+          manylinux: 2_28
+          args: --release --out dist-mpi -i python${{ matrix.python-version }}
+          # Same inline-export rule build-wheels documents: maturin-action
+          # concatenates this with the build command into ONE shell script, so
+          # `export` reaches the build, while $GITHUB_ENV would not (it lives
+          # on the host, and only an allowlist of env prefixes is forwarded).
+          before-script-linux: |
+            set -euo pipefail
+            NATIVE_PREFIX="$(pwd)/native-deps-cache"
+            bash "$NATIVE_PREFIX/prepare-container-mpi.sh" "${{ env.EIGEN_VERSION }}"
+            export LIBINT2_PREFIX="$NATIVE_PREFIX"
+            export PKG_CONFIG_PATH="$NATIVE_PREFIX/lib/pkgconfig:$NATIVE_PREFIX/lib64/pkgconfig:/usr/lib64/openmpi/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+            export LD_LIBRARY_PATH="$NATIVE_PREFIX/lib:$NATIVE_PREFIX/lib64:/usr/lib64/openmpi/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export LIBRARY_PATH="$NATIVE_PREFIX/lib:$NATIVE_PREFIX/lib64:/usr/lib64/openmpi/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+            export CPATH="$NATIVE_PREFIX/include${CPATH:+:$CPATH}"
+            # OpenMPI on RHEL8 is NOT on the default PATH/include path (see
+            # the prepare script). rsmpi finds the implementation through
+            # mpicc, so PATH must reach it and MPICC must name it explicitly.
+            export PATH="/usr/lib64/openmpi/bin:$PATH"
+            export MPICC=/usr/lib64/openmpi/bin/mpicc
+            # bindgen (rsmpi's build script) needs both libclang itself and
+            # the MPI headers, which live in a versioned, arch-suffixed dir.
+            export LIBCLANG_PATH="$(dirname "$(find /usr/lib64 -name 'libclang.so*' | head -1)")"
+            export BINDGEN_EXTRA_CLANG_ARGS="-I/usr/include/openmpi-x86_64"
+
+      # Proves the wheel actually LINKED MPI rather than silently building the
+      # serial extension under an MPI-sounding name -- the exact failure this
+      # deliverable is most at risk of, since a missing feature flag produces
+      # a perfectly working non-MPI wheel with no error anywhere.
+      - name: Verify the wheel is genuinely MPI-linked
+        run: |
+          set -euo pipefail
+          ls -lh dist-mpi/
+          WHL=$(ls dist-mpi/*.whl | head -1)
+          echo "--- $WHL ---"
+          # Name must carry the MPI distribution name, not `ferric`.
+          case "$(basename "$WHL")" in
+            ferric_mpi-*) echo "OK: distribution name is ferric_mpi" ;;
+            *) echo "::error::wheel is not named ferric_mpi: $WHL"; exit 1 ;;
+          esac
+          python3 -m zipfile -l "$WHL" | grep -iE '\.so|libmpi' || true
+          mkdir -p /tmp/whlx && python3 -m zipfile -e "$WHL" /tmp/whlx
+          # auditwheel vendors libmpi (it is NOT whitelisted -- see this job's
+          # header), so a correctly-built MPI wheel CONTAINS an libmpi .so.
+          # Its absence means the mpi feature never reached the build.
+          if ! find /tmp/whlx -name 'libmpi*' | grep -q .; then
+            echo "::error::no libmpi in the wheel -- the `mpi` feature did not reach this build, so this is a SERIAL wheel wearing an MPI name"
+            find /tmp/whlx -name '*.so*' | head -20
+            exit 1
+          fi
+          echo "vendored MPI libraries:"
+          find /tmp/whlx -name 'libmpi*' -o -name 'libopen-*' | head
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          # `mpi-wheels-`, NOT `wheels-`. The publish job below globs
+          # `pattern: wheels-*` with merge-multiple, so a `wheels-`-prefixed
+          # name here would put this wheel into a PyPI upload of the `ferric`
+          # package. This prefix is a publish-safety control; do not "tidy" it
+          # into the other jobs' naming convention.
+          name: mpi-wheels-cp${{ matrix.python-version }}
+          path: dist-mpi/*.whl
+          if-no-files-found: error
+
   # The `pypi` GitHub Environment referenced below does not need protection
   # rules to make this job WORK, but adding a required reviewer there is the
   # cheapest available brake on an accidental tag push publishing a bad
@@ -955,6 +1207,19 @@ jobs:
           # version that already exists cannot be overwritten or deleted,
           # only yanked.
           tag_version="${GITHUB_REF#refs/tags/v}"
+          # DEFENCE IN DEPTH against the OpenMPI wheel variant reaching PyPI.
+          # The mpi-wheel job already cannot land here: it uploads under
+          # `mpi-wheels-cp*`, the download above globs `wheels-*`, and this
+          # job does not `needs:` it. This check exists because that safety
+          # rests entirely on an artifact NAME, and a future rename ("tidy the
+          # artifact names up") would silently re-open the path -- publishing
+          # an OpenMPI-ABI-locked, libmpi-vendoring build under the portable
+          # `ferric` name, which cannot be un-published, only yanked.
+          if ls dist/ | grep -qiE 'mpi'; then
+            echo "::error::an MPI-variant wheel reached the publish staging dir. The ferric-mpi wheel is NEVER published from this workflow (OpenMPI ABI lock-in + vendored libmpi); refusing to upload."
+            ls -la dist/
+            exit 1
+          fi
           count=$(ls dist/*.whl | wc -l)
           echo "wheel count: $count (expect 4: cp310, cp311, cp312, cp313)"
           if [[ "$count" -ne 4 ]]; then
