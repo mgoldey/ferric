@@ -635,21 +635,35 @@ jobs:
         # exists, keeps this step's output identical to a bare-checkout run.
         run: uvx bandit@1.9.4 -ll -q -r . -x terf-tables/generate_interpolation_tables.py
 
-      # Populates .venv from the `dev` extra (numpy/scipy/pytest/pytest-cov/
-      # ipython...). `--no-install-project`: this project's build backend is
-      # maturin (see pyproject.toml `[build-system]`), and building it needs
-      # a Rust toolchain, libint2 and the same shim headers build-and-test
-      # installs -- none of which this fast, libint2-free job has. Every
-      # tool below either needs only the dependency set (pytest) or nothing
-      # from the venv at all (ruff/ty run standalone via uvx).
-      - name: uv sync (dev extra, dependencies only)
-        run: uv sync --extra dev --no-install-project
+      # Populates .venv from the `dev` + `docking` extras (numpy/scipy/
+      # pytest/pytest-cov/ipython/... plus vina/meeko/rdkit/scipy).
+      # `--no-install-project`: this project's build backend is maturin (see
+      # pyproject.toml `[build-system]`), and building it needs a Rust
+      # toolchain, libint2 and the same shim headers build-and-test installs
+      # -- none of which this fast, libint2-free job has. Every tool below
+      # either needs only the dependency set (pytest) or nothing from the
+      # venv at all (ruff/ty run standalone via uvx).
+      #
+      # `docking` is included (added here, not just in the pytest step
+      # below) because several tools/ modules import rdkit at MODULE scope
+      # (tools/isomers/model.py and its callers) rather than lazily: without
+      # it, collecting tools/pipeline/tests/test_funnel.py and
+      # experiments/danuglipron/tests/test_design.py raised
+      # `ModuleNotFoundError: No module named 'rdkit'` and ABORTED THE WHOLE
+      # pytest run below (a collection error stops the entire session, not
+      # just that file) -- verified 2026-09-17. docking's packages are all
+      # prebuilt wheels for cp311 (no native build, ~1s to install), so this
+      # costs nothing this job was designed to avoid.
+      - name: uv sync (dev + docking extras, dependencies only)
+        run: uv sync --extra dev --extra docking --no-install-project
 
       - name: ty check (report-only)
-        # NON-BLOCKING. 392 diagnostics measured 2026-09-16 in this same
-        # container: `--exclude` applied for terf-tables' frozen Python-2
-        # file (ty has no `[tool.ty]` config in this repo yet, hence the CLI
-        # flag rather than picking up ruff's `extend-exclude`), and run AFTER
+        # NON-BLOCKING. 389 diagnostics measured 2026-09-17 in this same
+        # container (was 392 on 2026-09-16, before the `docking` extra was
+        # added to the sync step above -- resolving rdkit's types shifted a
+        # few): `--exclude` applied for terf-tables' frozen Python-2 file (ty
+        # has no `[tool.ty]` config in this repo yet, hence the CLI flag
+        # rather than picking up ruff's `extend-exclude`), and run AFTER
         # `uv sync` above so imports resolve against a populated .venv -- an
         # EMPTY venv inflates this to 561 (339 of them bare
         # `unresolved-import`), per the measurement that motivated this
@@ -662,23 +676,53 @@ jobs:
           uvx ty@0.0.81 check --exclude 'terf-tables/generate_interpolation_tables.py' 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
 
       - name: pytest -- tools/ and experiments/ (no compiled extension needed), with coverage
-        # PROVISIONAL, continue-on-error. These suites run in NO workflow at
-        # all today (CI is Rust-only), so simply executing them here is
-        # worth more than the coverage number. But nobody has watched a full
-        # run go green in CI yet: this job installs only the `dev` extra, and
-        # several tools/ modules import rdkit at MODULE scope rather than
-        # lazily, so -- verified 2026-09-16 -- tools/active_site/tests/*,
-        # tools/pipeline/tests/test_funnel.py and
-        # experiments/danuglipron/tests/test_design.py fail at COLLECTION
-        # with `ModuleNotFoundError: No module named 'rdkit'` rather than
-        # skipping cleanly (224 of 232 collected tests were unaffected).
-        # Exit criterion to flip to BLOCKING: either install the `docking`
-        # extra here too, or fix those modules to import their optional
-        # dependency lazily (matching the suites that already do, per
-        # scripts/ci-gate.sh's "skip themselves" comment) -- AND a run has
-        # actually been observed green in CI.
+        # PROVISIONAL, continue-on-error -- and this step previously did NOT
+        # earn even that: a bare `uv run` (unlike the `--no-sync` below)
+        # implicitly re-syncs AND BUILDS the root project, whose build
+        # backend is maturin and which needs libint2 -- neither of which
+        # this deliberately libint2-free, Rust-toolchain-free job has. Every
+        # invocation failed at `Building ferric ... ModuleNotFoundError: No
+        # module named 'maturin'` before pytest collected a single test (run
+        # 35119939961), yet `continue-on-error: true` reported the step
+        # green regardless -- a gate that was decorative, not provisional.
+        # `--no-sync` fixes that: it reuses the `dev`+`docking` env the `uv
+        # sync` step above already populated instead of re-triggering the
+        # root build (same pattern CONTRIBUTING.md documents for
+        # crates/ferric-python/tests/).
+        #
+        # Verified 2026-09-17, in this container, with the fix applied:
+        # pytest now actually collects and runs. `docking` (added to the
+        # sync step above) eliminated the rdkit-at-collection failures this
+        # comment used to name. What remains is a SEPARATE, structural gap:
+        # tools/active_site/* imports the compiled `ferric` extension at
+        # module scope, and code that calls into it transitively
+        # (tools/campaign/strain.py's `load_xyz_ensemble`, consumed by
+        # test_align.py's `ensemble` fixture and 4 of
+        # test_strain_and_fit.py's tests; tools/pipeline/tiers.py's
+        # `tier4_dft`; one test in tools/morph/tests/test_embed.py) fails
+        # the same way. This job has no Rust toolchain and no libint2 by
+        # design (see this job's header comment), so it cannot build that
+        # extension -- only the nightly `coverage` job does, via `maturin
+        # develop --release`. `--ignore=tools/active_site/tests` stops that
+        # 100%-broken directory from aborting collection of everything else
+        # (unlike the scattered failures above, every file in it fails at
+        # collection); the rest surface as ordinary test failures/errors
+        # instead of killing the run.
+        #
+        # Result of that run: 193-194 passed, 32 skipped, 9 errors
+        # (test_align.py, all via the `ensemble` fixture), 10-11 failed (4
+        # test_strain_and_fit.py + 5 test_tiers.py tier4 tests + 1
+        # test_embed.py, all on the same `ModuleNotFoundError: No module
+        # named 'ferric'; the 11th, test_funnel.py's
+        # test_a_dead_worker_costs_one_candidate_not_the_run, is flaky --
+        # passed standalone 3/3 -- and unrelated to either dependency gap).
+        # Exit criterion to flip to BLOCKING: the tools/ modules above need
+        # to import `ferric` lazily/guarded (matching the pattern the tests
+        # that already skip cleanly on a missing optional dependency use),
+        # so a missing compiled extension degrades to a skip here instead of
+        # a failure -- AND a run has actually been observed green in CI.
         continue-on-error: true
-        run: uv run pytest tools/ experiments/ --cov=tools --cov=experiments --cov-report=term-missing -q
+        run: uv run --no-sync pytest tools/ experiments/ --ignore=tools/active_site/tests --cov=tools --cov=experiments --cov-report=term-missing -q
 
   # ---------------------------------------------------------------------
   # Nightly-only coverage. NON-BLOCKING (both steps below are
@@ -848,7 +892,21 @@ jobs:
         # `maturin develop` invokes cargo underneath; --locked carries the
         # same rationale as every other cargo invocation in this file (see
         # build-and-test's "Check (all targets)" step).
-        run: uv run maturin develop --release --locked
+        #
+        # `--no-sync`: the preceding step already synced `dev`+`build` with
+        # `--no-install-project`, so the project itself is deliberately NOT
+        # installed yet. A bare `uv run` here would, before running this
+        # command at all, implicitly re-sync the environment -- which, with
+        # the project no longer excluded, means uv installs it itself via
+        # the standard maturin build backend (a plain, non-`--release`
+        # build) BEFORE the explicit `--release` build below even starts,
+        # per CONTRIBUTING.md's Testing section: "a bare `uv run` rebuilds
+        # and reinstalls the wheel, replacing the site-packages symlink."
+        # That is a real, wasted second compile of the same crate on every
+        # run, not merely a style nit -- `--no-sync` makes this step the
+        # ONLY thing that builds the extension, using the env the previous
+        # step already prepared.
+        run: uv run --no-sync maturin develop --release --locked
 
       - name: pytest -- Python bindings, with coverage
         # PROVISIONAL, continue-on-error: this suite has never been run in
@@ -856,9 +914,27 @@ jobs:
         # the same caveat, which applies here identically) -- nobody has
         # observed a green run yet, so this must not be asserted to pass.
         # Flip to BLOCKING once a run has actually gone green here.
+        #
+        # `--no-sync` is REQUIRED, not optional, and its absence would be
+        # the identical bug fixed in python-quality's pytest step (see that
+        # step's comment for the run that exposed it there): a bare `uv run`
+        # implicitly re-syncs first, which -- per CONTRIBUTING.md's Testing
+        # section -- "rebuilds and reinstalls the wheel, replacing the
+        # site-packages symlink" the previous step just built in `--release`
+        # mode. Unlike python-quality's job, this one DOES have maturin, a
+        # Rust toolchain and libint2, so that implicit rebuild would likely
+        # succeed rather than hard-fail -- but "likely succeed" silently
+        # discards the `--release` build above and replaces it with
+        # whatever `uv run`'s default (non-release) build produces, which
+        # this step's `continue-on-error: true` would still report as green
+        # even if that rebuild DID fail for some other reason (a stale
+        # lockfile, disk exhausted by the freed-then-reused target dir).
+        # `--no-sync` removes that risk entirely by reusing the extension
+        # the previous step already built, exactly as CONTRIBUTING.md
+        # documents for this same test path.
         continue-on-error: true
         run: |
-          uv run pytest crates/ferric-python/tests/ \
+          uv run --no-sync pytest crates/ferric-python/tests/ \
             --cov=ferric --cov-report=lcov:python-ext-coverage.lcov -q
 
       - name: Upload Python extension coverage artifact
