@@ -22,11 +22,11 @@
 //!
 //! # Two entry points, and which one to use
 //!
-//! [`dlpno_mp2_from_b_ov`] is the one to build on. It is **pair-driven**: it
+//! [`dlpno_mp2_from_b_ov`](crate::dlpno_mp2::dlpno_mp2_from_b_ov) is the one to build on. It is **pair-driven**: it
 //! screens the occupied pair list first, then materializes only each retained
 //! pair's `nvir × nvir` block from the dressed RI tensor `b_ov`, one at a time.
 //!
-//! [`dlpno_mp2_spin_components`] is the original, and it takes the dense
+//! [`dlpno_mp2_spin_components`](crate::dlpno_mp2::dlpno_mp2_spin_components) is the original, and it takes the dense
 //! `(nocc·nvir) × (nocc·nvir)` matrix `g` as its **input**. That is a structural
 //! defect, not a tuning issue: production [`crate::rimp2::ri_mp2`] never forms
 //! `g` — [`crate::rimp2::spin_components_from_b_ov`] streams i-blocked wide
@@ -580,7 +580,7 @@ pub fn dense_g_bytes(nocc: usize, nvir: usize) -> usize {
 ///
 /// With [`DlpnoConfig::exact`] and complete domains this reproduces
 /// [`dlpno_mp2_spin_components`] on the same system BIT FOR BIT — not to a
-/// tolerance. Both call the identical [`pair_energy_in_pno_basis`] kernel in the
+/// tolerance. Both call the identical `pair_energy_in_pno_basis` kernel in the
 /// identical pair order; only the source of each block differs, and
 /// `(ia|jb) = B_i^T B_j` is exactly what `g` stores. `pair_driven_matches_dense_bitwise`
 /// pins that, and `pair_driven_exact_at_zero_truncation` pins the further step
