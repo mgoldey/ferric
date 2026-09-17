@@ -40,3 +40,42 @@ pyo3 = { workspace = true }
 numpy = { workspace = true }
 ndarray = { workspace = true }
 ctrlc = { workspace = true }
+
+[features]
+default = []
+# Opt-in MPI build of the Python extension, used ONLY by the separate
+# `ferric-mpi` wheel variant (.github/workflows/wheels.yml). The default
+# `pip install ferric` wheel does NOT enable this and links no MPI at all.
+#
+# READ THIS BEFORE ASSUMING THE MPI WHEEL EXPOSES AN MPI API -- IT DOES NOT.
+# There is no `run_mpi_ri_mp2` binding, and nothing in src/lib.rs names a
+# rank, a world size, or a communicator. What the feature actually changes is
+# INDIRECT and worth understanding before relying on it:
+#
+#   Every binding builds its context with `ParallelContext::default()`
+#   (= `ParallelContext::new()`). With `mpi` ON that constructor calls
+#   `mpi::initialize()` and reads the REAL MPI_COMM_WORLD rank/size; with it
+#   OFF it hardcodes rank=0/size=1. `run_rhf` and friends pass that context
+#   into `solve_rhf`, which reaches `fock_assembly::build_df_jk` ->
+#   `DfJ/DfK::new_banded(Some(ctx))`. So under `mpirun -np N python x.py` an
+#   MPI-enabled extension genuinely stripes the DF-J/DF-K aux band across
+#   ranks and Allreduces the partial J/K back -- real distributed SCF, with
+#   real per-rank memory savings, from an unchanged Python script.
+#
+# The caveats are equally real, which is why this is NOT the default wheel:
+#   * It is SPMD, not a parallel API. Every rank runs the WHOLE script
+#     independently -- all N ranks read the same input, print the same
+#     output, and write the same files (N processes racing on one path).
+#   * Python sees NO rank or size. There is no exposed `rank()`/`size()`, so
+#     a script cannot guard its own I/O with `if rank == 0`. Callers who need
+#     that must get it from mpi4py, whose MPI runtime must then be the SAME
+#     OpenMPI this extension links (see the ABI note in wheels.yml).
+#   * Only the DF-J/DF-K SCF path is distributed this way. The genuinely
+#     MPI-parallel correlation kernels (ferric_mp2::mpi_rimp2::run_mpi_ri_mp2,
+#     ferric_rpa::mpi_rpa, ferric_gw::mpi_gw) have NO Python binding at all
+#     and remain unreachable from this wheel.
+#
+# ferric-mp2/mpi is what chains ferric-scf/mpi and ferric-core/mpi. Enabling
+# ferric-core/mpi alone is the silently-wrong combination a const-assert in
+# ferric-scf/src/lib.rs now rejects at compile time; do not shortcut it here.
+mpi = ["ferric-mp2/mpi", "ferric-scf/mpi", "ferric-core/mpi"]
