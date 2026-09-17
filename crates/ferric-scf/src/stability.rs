@@ -83,9 +83,10 @@
 //! Newton solver drives inside its PCG loop — already validated
 //! analytic-vs-finite-difference to ~3e-10 in `uhf_newton_smoke.rs` — is
 //! driven instead by a **Davidson extremal-eigenvalue solver**
-//! ([`crate::stability::davidson_lowest`]). Stability analysis and a Newton
-//! step are the same operator asked two different questions: Newton does a
-//! linear solve `Hκ = −g`, stability takes the lowest eigenpair of `H`.
+//! ([`davidson_lowest`](crate::stability::davidson_lowest)). Stability
+//! analysis and a Newton step are the same
+//! operator asked two different questions: Newton does a linear solve `Hκ =
+//! −g`, stability takes the lowest eigenpair of `H`.
 //!
 //! Davidson rather than Lanczos because the orbital Hessian is strongly
 //! diagonally dominant — its diagonal is the orbital-energy gap

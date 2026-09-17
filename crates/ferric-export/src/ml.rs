@@ -44,7 +44,33 @@ pub struct PolarizabilityBundle<'a> {
     pub alpha_atomic: Option<&'a [[[f64; 3]; 3]]>,
 }
 
-/// Dispersion (C6) outputs.
+/// How a per-atom C6/α decomposition was produced: which α(iω) source, and
+/// which atomic partition carved the molecular density into atoms.
+///
+/// This is NOT decoration. A per-atom C6 is a **partition convention**, not a
+/// physical observable — Becke and Hirshfeld decompositions of the SAME
+/// molecule disagree by up to ~10× on the per-atom magnitudes (see
+/// `crates/ferric-rpa/tests/s9_per_atom_c6_consistency.rs`'s
+/// `partition_dependence_becke_vs_hirshfeld_water`). A bare per-atom number
+/// with no partition attached is therefore not interpretable, which is why
+/// [`C6Export`] carries this as a non-`Option` field: the writer cannot emit
+/// `c6_iso`/`c6_aniso`/`alpha_atomic_dynamic` without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct C6Provenance<'a> {
+    /// Atomic partition, e.g. `"becke"` or `"hirshfeld"`. Mirrors
+    /// `ferric_rpa::dispersion::DispersionPartition`; kept as a `&str` here so
+    /// `ferric-export` does not take a dependency on `ferric-rpa` (the
+    /// dependency runs the other way).
+    pub partition: &'a str,
+    /// α(iω) source, e.g. `"ts"`, `"pdep"` or `"mbd"`. Mirrors
+    /// `ferric_rpa::dispersion::C6Source`. Equally load-bearing: a TS
+    /// single-pole per-atom α and a PDEP-RPA one are different objects even
+    /// at the same partition.
+    pub source: &'a str,
+}
+
+/// Dispersion (C6) outputs — per-atom arrays plus the provenance that makes
+/// them interpretable and the molecular total that is actually observable.
 ///
 /// CONSUMER WARNING — `c6_iso`/`c6_aniso` (open-work-triage item #9 / S9
 /// spike, 2026-07-17): these two arrays are the per-atom PAIR Casimir-Polder
@@ -57,21 +83,47 @@ pub struct PolarizabilityBundle<'a> {
 /// `crates/ferric-rpa/tests/s9_per_atom_c6_consistency.rs` and the
 /// CONSUMER WARNING on `dispersion::C6Result` for why: the per-atom pair
 /// tensors use an atom-centred operator that excludes inter-atomic
-/// charge-transfer/coupling that the molecular response includes). The
-/// correct DOSD-comparable molecular C6 is `C6Result::c6_molecular_iso`,
-/// which the CLI prints to stdout as `molecular C6 = X a.u.` but is
-/// currently NOT itself written to this NPZ file — a consumer who wants
-/// "the" molecular C6 must read it from CLI stdout (or call
-/// `casimir_polder_c6` directly), not sum this array. See also
-/// `docs/dosd-c6-rpa-vs-ts.md`'s "Numerical notes" for the analogous H2 case
-/// (6.88 pair-sum vs 9.22 correct).
+/// charge-transfer/coupling that the molecular response includes).
+///
+/// The correct DOSD-comparable molecular C6 is [`Self::c6_molecular_iso`],
+/// which is now written to the NPZ as the `c6_molecular_iso` scalar — a
+/// consumer wanting "the" molecular C6 reads THAT key, and never sums
+/// `c6_iso`. See also `docs/dosd-c6-rpa-vs-ts.md`'s "Numerical notes" for the
+/// analogous H2 case (6.88 pair-sum vs 9.22 correct).
+///
+/// STRUCTURAL NOTE (2026-09-16): the per-atom arrays and their
+/// [`C6Provenance`] are grouped in ONE struct behind ONE `Option` precisely
+/// so a caller cannot supply the arrays and leave the provenance out. An
+/// `Option<partition>` sitting beside `Option<c6_iso>` would recreate the
+/// untagged-export problem this grouping exists to prevent.
+#[derive(Debug, Clone, Copy)]
+pub struct C6Export<'a> {
+    /// Which partition/source produced the per-atom arrays. MANDATORY.
+    pub provenance: C6Provenance<'a>,
+    /// Imaginary-frequency quadrature nodes ω_k, a.u.
+    pub c6_freqs: &'a [f64],
+    /// Casimir-Polder quadrature weights w_k.
+    pub c6_weights: &'a [f64],
+    /// Per-atom dynamic polarizability α^A_{ij}(iω_k), `[natoms][nfreq]` 3×3.
+    /// PARTITION-DEPENDENT — see [`C6Provenance`].
+    pub alpha_atomic_dynamic: &'a [Vec<[[f64; 3]; 3]>],
+    /// Per-atom-PAIR isotropic C6^{AB}, (N, N). PARTITION-DEPENDENT, and
+    /// `c6_iso.sum()` is NOT the molecular C6 — see the struct warning.
+    pub c6_iso: &'a Array2<f64>,
+    /// Per-atom-PAIR anisotropic C6^{AB}_{ij}, `[N][N]` 3×3.
+    /// PARTITION-DEPENDENT.
+    pub c6_aniso: &'a [Vec<[[f64; 3]; 3]>],
+    /// The molecular isotropic C6 (`C6Result::c6_molecular_iso`), a.u. This
+    /// is the DOSD-comparable OBSERVABLE, computed from the global-origin
+    /// molecular response — partition-INDEPENDENT, unlike everything else in
+    /// this struct.
+    pub c6_molecular_iso: f64,
+}
+
+/// Dispersion (C6) outputs. All-or-nothing: see [`C6Export`].
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DispersionBundle<'a> {
-    pub c6_freqs: Option<&'a [f64]>,
-    pub c6_weights: Option<&'a [f64]>,
-    pub alpha_atomic_dynamic: Option<&'a [Vec<[[f64; 3]; 3]>]>,
-    pub c6_iso: Option<&'a Array2<f64>>,
-    pub c6_aniso: Option<&'a [Vec<[[f64; 3]; 3]>]>,
+    pub c6: Option<C6Export<'a>>,
 }
 
 /// Everything `export_npz` can write, grouped by category. See
@@ -280,21 +332,40 @@ pub fn export_npz(path: &str, bundle: &NpzBundle) -> Result<(), ExportError> {
             .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 
-    if let Some(f) = bundle.dispersion.c6_freqs {
-        let a = Array1::from_vec(f.to_vec());
+    // Dispersion: ALL-OR-NOTHING. The per-atom arrays and the provenance that
+    // makes them interpretable are written from one `Option`, so an NPZ can
+    // never contain an untagged per-atom C6 (see `C6Export`/`C6Provenance`).
+    if let Some(c6) = bundle.dispersion.c6 {
+        // Provenance strings as UTF-8 byte arrays (`|u1`). `ndarray-npy` 0.9
+        // implements `WritableElement` only for numeric primitives and
+        // `bool` — there is no numpy-string element type available — so a
+        // `u8` array is the one encoding that (a) actually round-trips
+        // through this writer and (b) is trivially decodable by the intended
+        // Python/numpy consumer:
+        //     np.load(f)["c6_partition"].tobytes().decode()  -> "hirshfeld"
+        // The alternative (an integer enum code) would require the consumer
+        // to carry ferric's discriminant table out-of-band, which is exactly
+        // the kind of undocumented convention this tagging exists to remove.
+        let part = Array1::from_vec(c6.provenance.partition.as_bytes().to_vec());
+        writer
+            .add_array("c6_partition", &part)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
+        let src = Array1::from_vec(c6.provenance.source.as_bytes().to_vec());
+        writer
+            .add_array("c6_source", &src)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
+
+        let a = Array1::from_vec(c6.c6_freqs.to_vec());
         writer
             .add_array("c6_freqs", &a)
             .map_err(|e| ExportError::Other(e.to_string()))?;
-    }
 
-    if let Some(w) = bundle.dispersion.c6_weights {
-        let a = Array1::from_vec(w.to_vec());
+        let a = Array1::from_vec(c6.c6_weights.to_vec());
         writer
             .add_array("c6_weights", &a)
             .map_err(|e| ExportError::Other(e.to_string()))?;
-    }
 
-    if let Some(ad) = bundle.dispersion.alpha_atomic_dynamic {
+        let ad = c6.alpha_atomic_dynamic;
         let natoms = ad.len();
         let nfreq = if natoms > 0 { ad[0].len() } else { 0 };
         let mut flat: Vec<f64> = Vec::with_capacity(natoms * nfreq * 9);
@@ -307,19 +378,17 @@ pub fn export_npz(path: &str, bundle: &NpzBundle) -> Result<(), ExportError> {
                 }
             }
         }
-        let arr = Array4::from_shape_vec((natoms, nfreq, 3, 3), flat).unwrap();
+        let arr = Array4::from_shape_vec((natoms, nfreq, 3, 3), flat)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
         writer
             .add_array("alpha_atomic_dynamic", &arr)
             .map_err(|e| ExportError::Other(e.to_string()))?;
-    }
 
-    if let Some(c) = bundle.dispersion.c6_iso {
         writer
-            .add_array("c6_iso", c)
+            .add_array("c6_iso", c6.c6_iso)
             .map_err(|e| ExportError::Other(e.to_string()))?;
-    }
 
-    if let Some(ca) = bundle.dispersion.c6_aniso {
+        let ca = c6.c6_aniso;
         let n = ca.len();
         let mut flat: Vec<f64> = Vec::with_capacity(n * n * 9);
         for row in ca {
@@ -331,9 +400,18 @@ pub fn export_npz(path: &str, bundle: &NpzBundle) -> Result<(), ExportError> {
                 }
             }
         }
-        let arr = Array4::from_shape_vec((n, n, 3, 3), flat).unwrap();
+        let arr = Array4::from_shape_vec((n, n, 3, 3), flat)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
         writer
             .add_array("c6_aniso", &arr)
+            .map_err(|e| ExportError::Other(e.to_string()))?;
+
+        // The OBSERVABLE. Written as a length-1 f64 array (npz has no scalar
+        // type); `np.load(f)["c6_molecular_iso"][0]` is the molecular C6.
+        // This is the key a consumer should read instead of `c6_iso.sum()`.
+        let mol_c6 = Array1::from_vec(vec![c6.c6_molecular_iso]);
+        writer
+            .add_array("c6_molecular_iso", &mol_c6)
             .map_err(|e| ExportError::Other(e.to_string()))?;
     }
 

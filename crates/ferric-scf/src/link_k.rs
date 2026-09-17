@@ -372,19 +372,22 @@ impl<'a, B: Bound + Sync> KBuilder for LinkK<'a, B> {
             },
         )?;
 
+        // `k_out` is a freshly zeroed rank-LOCAL accumulator and `k` is OVERWRITTEN
+        // (`assign`, not `+=`), so LinK was never exposed to the carry-over bug
+        // that hit the accumulate-onto `DirectJK`/`DirectJ`/`DirectK` builders: any
+        // pre-existing caller contents are discarded here rather than folded into
+        // the Allreduce. Reducing `k_out` before the assign keeps that immunity a
+        // stated invariant instead of a coincidence of statement order.
+        //
+        // This reordering is a PROVABLE no-op, not merely an untested one: after
+        // `assign`, `k` and `k_out` hold bit-identical contents, so reducing
+        // either is the same operation on the same values. Mutation-testing
+        // agrees — moving the reduce back after the assign leaves the MPI suite
+        // green. That is a stronger statement than the `direct_j`/`direct_k`
+        // hardening, where the ordering genuinely matters but no caller exercises
+        // it.
+        crate::reduce::reduce_partial_across_ranks(self.ctx, &mut k_out);
         k.assign(&k_out);
-
-        #[cfg(feature = "mpi")]
-        if let Some(world) = self.ctx.world() {
-            use mpi::traits::CommunicatorCollectives;
-            let mut k_global = Array2::zeros(k.dim());
-            world.all_reduce_into(
-                k.as_slice().unwrap(),
-                k_global.as_slice_mut().unwrap(),
-                mpi::collective::SystemOperation::sum(),
-            );
-            *k = k_global;
-        }
 
         Ok(count_acc.load(std::sync::atomic::Ordering::Relaxed))
     }
