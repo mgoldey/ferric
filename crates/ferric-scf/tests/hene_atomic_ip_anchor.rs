@@ -61,6 +61,34 @@
 //!    have been applied to both sides and cancelled. `DIP_PYSCF` below is now
 //!    the value PySCF itself printed, so the formula is under test too.
 //!
+//! ## Measured: which of those four actually hold the line
+//!
+//! The stub was re-run in the foreground against this file and progressively
+//! hardened, because "the suite fails" is worth much less than "and here is
+//! exactly how far a determined stub gets".
+//!
+//! | stub | result |
+//! |---|---|
+//! | constants + arbitrary `eps_alpha` | 3 of 7 fail |
+//! | + ascending, occupied-negative `eps_alpha` | 3 of 7 fail |
+//! | + `eps[0] == energy` for He⁺ only (self-consistent everywhere) | **2 of 7 fail** |
+//!
+//! So the honest floor is **two** tests, and both are mechanism (1):
+//! `atomic_energies_respond_to_the_basis_set` and
+//! `atomic_energy_tolerance_is_violable_by_a_real_input_change`. Mechanisms
+//! (2) and (3) — the solver metadata and the He⁺ identity — DO catch a naive
+//! stub, and they are worth keeping as a second line and as genuine solver
+//! postconditions, but a sufficiently careful fabricator satisfies all of
+//! them: `iterations`, `computed_quartets`, `nbasis` and an ascending negative
+//! spectrum are all just numbers, and the one-electron identity is one more
+//! number to line up.
+//!
+//! What a stub provably cannot do is make the energy RESPOND to an input it
+//! does not read. That is why the basis perturbation is mechanism (1) and not
+//! a nice-to-have: **if this file is ever reduced back to a single-basis
+//! reference comparison, it returns to being unfalsifiable**, no matter how
+//! much metadata it asserts.
+//!
 //! # Reference data
 //!
 //! PySCF 2.13.0, `scf.UHF`, bases `def2-svp` and `def2-tzvp`,
@@ -260,10 +288,30 @@ fn hene_plus_atomic_ip_difference_anchor() {
         dip - DIP_PYSCF
     );
 
-    // Magnitude sanity: O(3-4 eV). This is a loose bracket, not a precision
-    // claim — it exists so that a sign-preserving but grossly wrong dIP (e.g.
-    // from a mis-assigned multiplicity) still fails rather than sliding past
-    // the `> 0` check above.
+    // Magnitude sanity: O(3-4 eV).
+    //
+    // HONESTY NOTE (found while auditing this file; NOT flagged by the review
+    // that produced the other fixes). This bracket and the `dip > 0.0` check
+    // above are both **dominated** by the PySCF comparison between them, and
+    // are therefore UNREACHABLE as independent failures. `|dip - DIP_PYSCF| <
+    // 1e-6` with DIP_PYSCF = 0.133418 already confines dip to
+    // [0.133417, 0.133419] Ha = 3.63049..3.63050 eV, which is positive and
+    // inside (3, 4) by construction. There is no value of `dip` that passes
+    // the PySCF bar and fails either of these.
+    //
+    // They are kept deliberately, for two reasons, and a reader should not
+    // mistake them for evidence:
+    //   * they are ORDERING devices. A sign-flipped or grossly wrong dIP hits
+    //     `dip > 0.0` first and reports "He must be harder to ionize than Ne"
+    //     rather than a bare 12-digit numeric mismatch, which is the more
+    //     useful failure for someone who has just changed the lane's physics.
+    //   * they state the physical content of the anchor in the source, where
+    //     a maintainer relaxing TOL_HA will see them. If TOL_HA is ever
+    //     loosened past ~0.02 Ha they stop being dominated and start doing
+    //     real work.
+    // What they are NOT is independent corroboration of the anchor: the whole
+    // of this test's external force comes from the DIP_PYSCF comparison and
+    // from `atomic_energies_respond_to_the_basis_set`.
     let dip_ev = dip * HA2EV;
     assert!(
         (3.0..4.0).contains(&dip_ev),
