@@ -8,7 +8,27 @@
 //! the cDFT lane picking that up.
 //!
 //! Hypotheses were pre-registered in `tests/HYPOTHESES-cdft-outer-loop.md`
-//! BEFORE any number here was measured. Read that first.
+//! BEFORE any number here was measured. Read that first: it carries the
+//! adjudication (F-CYCLE and F-DISCONTINUOUS, jointly), the artifact hypotheses
+//! that were refuted, the full mutation ledger including two guards that
+//! survived their first mutation, and what is explicitly NOT established.
+//!
+//! # The diagnosis, in one paragraph
+//!
+//! `c(λ)` is discontinuous, because every inner solve restarts from the same
+//! fixed guess and may pick a different basin at each λ. The FD Jacobian is
+//! then computed across the jump — measured values across one run:
+//! `−0.137, −0.018, −0.009, −0.031, +0.204, −148.3, +240.5, −247.5` — and
+//! `clamp(−1, 1)` turns the resulting divergence into an exact period-2 cycle
+//! (λ alternating between −3.3266069180979265 and −2.3266069180979265, a gap of
+//! exactly the clamp width, with bit-identical residuals for twenty
+//! iterations). `cdft_driver::Bracket` fixes it by safeguarding the Newton step
+//! against a sign-change bracket and bisecting when it steps outside.
+//!
+//! **The failure was an ISLAND, not a difficulty gradient** — 2.000 converged
+//! while its two EASIER neighbours did not — which is what the controlled
+//! target sweep established and what rules out every "these targets are harder"
+//! explanation.
 //!
 //! # Scope
 //!

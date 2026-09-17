@@ -175,6 +175,29 @@ doc comments" rule failing exactly as advertised. `hcore_started_path_is_bit_
 identical` failed on the first run after the change and is the only reason this
 was caught before the result was reported as a success.
 
+**AND THEN THE ANCHOR REFUTED ITS OWN PREMISE.** The design constraint recorded
+above assumed the hcore path was healthy and only the MINAO path was broken, so
+a fix could be judged by whether it left hcore bit-identical. The trace says
+otherwise: pre-fix, hcore at the integer target also left the bracket at outer 4
+and ran SIX CONSECUTIVE inner solves that hit their 400-iteration cap
+(`inner_conv = false`, outers 6–11) before stumbling back out at outer 12. It
+reached the baselined number by luck, not by the loop working. Bit-identity
+there would mean preserving a trajectory through six unconverged solves, i.e.
+preserving the defect — the two goals are the same defect seen from two sides.
+
+The anchor was therefore RE-SCOPED, in its own docstring, from bit-identity to
+"lands on the same constrained solution, inside the DOWNSTREAM SUITES' OWN
+tolerances" (1e-5 on E, 1e-3 on λ — the numbers those suites already assert,
+not new ones chosen to fit). Measured shift: 7.69e-8 Ha, 1.18e-7 in λ, 2.79e-8
+in N_C, with |N_C − 2.0| slightly SMALLER than before, in 8 outer iterations
+instead of 16 with every inner solve converged. A separate, tighter 1e-6
+assertion is kept so that "the safeguard began moving the ANSWER rather than the
+route to it" fails distinctly from a tolerance breach.
+
+This is the anchor earning its keep twice over and then correctly narrowing.
+Re-scoping an anchor is exactly the move that can hide a defect, so the
+reasoning is written down at the assertion rather than only here.
+
 **Not established.** That the safeguard is sufficient on any system other than
 HeNe⁺, that the bracket always exists (a target outside the reachable range of
 c(λ) would never produce a sign change, and the loop would then behave exactly as
