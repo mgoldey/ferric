@@ -752,11 +752,7 @@ impl KsXc {
             // batched path below uses `_unchecked`.
             let shells = collect_shells(mol, bs)?;
             let (chi, dchi) = eval_basis_and_grad_on_points_unchecked(&shells, nbf, &pts)?;
-            GridCache::Full {
-                chi,
-                dchi,
-                _charge,
-            }
+            GridCache::Full { chi, dchi, _charge }
         } else {
             let batch_pts = resolve_batch_size(nbf, grid.len(), budget, false, is_mgga);
             GridCache::Batched { batch_pts }
@@ -1023,11 +1019,7 @@ impl KsXcUks {
             // batched path below uses `_unchecked`.
             let shells = collect_shells(mol, bs)?;
             let (chi, dchi) = eval_basis_and_grad_on_points_unchecked(&shells, nbf, &pts)?;
-            GridCache::Full {
-                chi,
-                dchi,
-                _charge,
-            }
+            GridCache::Full { chi, dchi, _charge }
         } else {
             let batch_pts = resolve_batch_size(nbf, grid.len(), budget, true, is_mgga);
             GridCache::Batched { batch_pts }

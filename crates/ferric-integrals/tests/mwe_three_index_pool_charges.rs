@@ -62,10 +62,9 @@ fn water() -> Molecule {
 
 fn bases() -> (Molecule, PreparedBasis, PreparedBasis) {
     let mol = water();
-    let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").expect("cc-pvdz"))
-        .expect("obs");
-    let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").expect("cc-pvdz-ri"))
-        .expect("dfbs");
+    let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").expect("cc-pvdz")).expect("obs");
+    let dfbs =
+        PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").expect("cc-pvdz-ri")).expect("dfbs");
     (mol, obs, dfbs)
 }
 
@@ -98,7 +97,10 @@ fn a_spilled_source_charges_only_its_resident_block_not_the_whole_band() {
 
     let src = ThreeIndexSource::build(op, &obs, &dfbs, tiny_budget)
         .expect("a spilled source must NOT be refused by a pool that cannot hold the band");
-    assert!(!src.is_spilled_for_test() || !src.is_incore(), "budget must have spilled");
+    assert!(
+        !src.is_spilled_for_test() || !src.is_incore(),
+        "budget must have spilled"
+    );
     assert!(!src.is_incore(), "tiny budget must have spilled");
 
     let held = pool.outstanding_bytes();
@@ -113,7 +115,11 @@ fn a_spilled_source_charges_only_its_resident_block_not_the_whole_band() {
     // happen is the build failing, which the `expect` above pins.
 
     drop(src);
-    assert_eq!(pool.outstanding_bytes(), 0, "drop must credit the block back");
+    assert_eq!(
+        pool.outstanding_bytes(),
+        0,
+        "drop must credit the block back"
+    );
     clear_global();
 }
 

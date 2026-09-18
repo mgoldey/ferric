@@ -155,7 +155,9 @@ pub fn check_ao_grid_budget_reserved(
             budget_gb = budget as f64 / 1e9,
         )));
     }
-    Ok(ferric_core::memory::pool::Reservation::inert("KS grid AO cache"))
+    Ok(ferric_core::memory::pool::Reservation::inert(
+        "KS grid AO cache",
+    ))
 }
 
 /// One contracted GTO shell located in space (centered on its parent atom).

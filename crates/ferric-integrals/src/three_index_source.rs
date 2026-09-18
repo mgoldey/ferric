@@ -633,7 +633,10 @@ impl ThreeIndexSource {
         // tensor, which it never materialises.
         let _charge = charge_three_index_soft(
             "DF 3-index (P|mn) recompute block",
-            block_naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(8),
+            block_naux
+                .saturating_mul(nao)
+                .saturating_mul(nao)
+                .saturating_mul(8),
         );
         let scratch = Array3::<f64>::zeros((block_naux, nao, nao));
         Ok(Self {
@@ -817,7 +820,10 @@ impl ThreeIndexSource {
             // read-back scratch block, so that is what is charged.
             let _charge = charge_three_index_soft(
                 "DF 3-index (P|mn) spill scratch",
-                block_naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(8),
+                block_naux
+                    .saturating_mul(nao)
+                    .saturating_mul(nao)
+                    .saturating_mul(8),
             );
             let scratch = Array3::<f64>::zeros((block_naux, nao, nao));
             Ok(Self {
