@@ -179,14 +179,28 @@ fn h2o_cc_pvdz_screened_davidson_equivalence_thresh_zero() {
 /// 1e-4     386/420    4.996e-16
 /// ```
 ///
-/// So the bar below is 1e-12, not 1e-7: five orders tighter than before and
-/// still four orders of headroom over the measured value. The sibling
+/// So the bar below is 1e-9, not 1e-7. The sibling
 /// `h2o_cc_pvdz_screened_davidson_equivalence_thresh_zero` pins the same
 /// solver at `thresh = 0`; this one pins it where rows are actually dropped.
 ///
 /// Discovered 2026-09-17 when `a268fc3c` (spherical MINAO atomic blocks)
 /// perturbed the reference density and moved the Lanczos noise from 2.31e-8
 /// to 7.59e-7, tripping a bar that had never been measuring screening.
+///
+/// # Why 1e-9 and not 1e-12
+///
+/// The first version of this fix asserted `< 1e-12`, calibrated against the
+/// 4.16e-16 measured on one developer box -- which repeated, on the very same
+/// day, the mistake this test exists to document: pinning a tolerance to one
+/// machine's arithmetic. CI's Davidson converges the same case to 6.96e-11,
+/// five orders better than the Lanczos noise it replaced but four orders
+/// looser than that box.
+///
+/// Davidson stops on a residual, and where it stops is machine-dependent even
+/// though the screening is not. 1e-9 clears BOTH measurements (4.16e-16 here,
+/// 6.96e-11 on CI) with well over an order of margin, and still fails the
+/// mutation below by six orders -- so it remains a live measurement of
+/// screening rather than of the eigensolver.
 #[test]
 fn h2o_cc_pvdz_screened_production_thresh() {
     let (mol, obs, dfbs, op, rhf) = setup(
@@ -226,11 +240,12 @@ fn h2o_cc_pvdz_screened_production_thresh() {
 
     let diff = (r_scr.e_rpa - r_dense.e_rpa).abs();
     assert!(
-        diff < 1e-12,
-        "screened-vs-dense diff at thresh={:.0e} = {:.2e}; expected <1e-12 \
-         (measured 4.16e-16 on a converged eigensolve -- a value in the 1e-7 \
-         range means the eigensolver stopped early, NOT that screening is \
-         lossy; see this test's doc comment)",
+        diff < 1e-9,
+        "screened-vs-dense diff at thresh={:.0e} = {:.2e}; expected <1e-9 \
+         (measured 4.16e-16 locally and 6.96e-11 on CI, both on a CONVERGED \
+         Davidson eigensolve -- a value in the 1e-7 range means the \
+         eigensolver stopped early, NOT that screening is lossy; see this \
+         test's doc comment)",
         thresh,
         diff
     );

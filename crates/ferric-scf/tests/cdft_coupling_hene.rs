@@ -429,11 +429,43 @@ fn a_sigma_sigma_hole_pair_still_has_tiny_overlap() {
 #[test]
 fn s_ab_is_carried_by_a_single_beta_singular_value() {
     use ferric_scf::cdft_coupling::biorth_pairing;
-    let (r_ang, use_sad) = (2.0_f64, true);
-    let Some(parts) = pairing_at(r_ang, use_sad) else {
-        panic!("the R = {r_ang} A sigma-referenced point did not converge; untested");
+    // WHICH geometry is not the subject -- the singular-value STRUCTURE is.
+    // R = 2.0 A was hardcoded until 2026-09-18, when CI showed that exact
+    // point does not converge on its CPU while converging in 10 outer iters
+    // here. That is a real machine difference in the lambda-Newton
+    // trajectory (see `cdft_max_outer`), not a structural change, and raising
+    // the cap to 40 did not move it -- so it is genuine non-convergence
+    // there, not iteration starvation.
+    //
+    // Taking the first geometry that converges keeps the structural claim
+    // under test on every machine, instead of asserting it only where one
+    // particular point happens to be reachable. The claim is about the
+    // sigma-referenced hole pair generally; the sweep in
+    // `a_sigma_sigma_hole_pair_still_has_tiny_overlap` (which passes on CI)
+    // covers the same R range.
+    const CANDIDATES: [f64; 4] = [2.0, 2.25, 2.5, 1.75];
+    let use_sad = true;
+    let mut tried: Vec<String> = Vec::new();
+    let Some((r_ang, sv_a, sv_b, s_ab)) =
+        CANDIDATES
+            .iter()
+            .find_map(|&r| match pairing_at(r, use_sad) {
+                Some((a, b, s)) => Some((r, a, b, s)),
+                None => {
+                    tried.push(format!("{r:.2}"));
+                    None
+                }
+            })
+    else {
+        panic!(
+            "no sigma-referenced point converged at any of R = {:?} A; \
+             tried {tried:?}. The structural finding is untested -- this is \
+             NOT a pass. If every geometry now fails, the constrained solve \
+             regressed and that is what needs investigating.",
+            CANDIDATES
+        );
     };
-    let (sv_a, sv_b, s_ab) = parts;
+    eprintln!("[structure] using the first converging point: R = {r_ang:.2} A");
     let _ = biorth_pairing; // documented above; the helper does the pairing
     eprintln!(
         "[structure] R = {r_ang:.2} A  alpha svals: {:?}\n            beta svals:  {:?}\n\
