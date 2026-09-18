@@ -576,7 +576,70 @@ pub struct KsXc {
     nlc_scratch: Mutex<VxcScratch>,
 }
 
+/// The working budget the grid cache sizes itself against.
+///
+/// # Why this is not `available_budget_now`
+///
+/// It used to be, and that made the SCF ENERGY depend on transient resident
+/// memory. `available_budget_now` subtracts this process's LIVE RSS, and the
+/// figure feeds `resolve_batch_size`, which sets the grid batch boundaries.
+/// Batch boundaries fix the floating-point accumulation order of the
+/// V_xc/E_xc sums, so a drifting budget silently moves the energy.
+/// `resolve_batch_size`'s own doc already makes this argument about thread
+/// counts ("NEVER of thread count -- so batch boundaries ... are identical no
+/// matter how many rayon workers are configured"); RSS is strictly worse,
+/// because it is not even a configuration.
+///
+/// MEASURED, water/cc-pVDZ/PBE at a 50 MB budget:
+///
+/// ```text
+///   RSS   8.5 MB -> Full cache   (available_budget_now = 36 MB)
+///   RSS  351   MB -> batched, 1 point per batch (available_budget_now = 0)
+/// ```
+///
+/// Nothing but resident memory changed, and the code path flipped. On the
+/// 27-atom terpinyl cation (6-31G/PBE/RI-JK, budget_gb = 0.30) two runs of
+/// the same binary on the same input gave -390.3794192830 Ha (20 iters) and
+/// -390.3794263686 Ha (35 iters) -- a 7.1e-6 Ha spread, the same order as the
+/// 2.9e-6 Ha benzene/aTZ thread-count perturbation this codebase already
+/// treats as a bug.
+///
+/// # What it is instead
+///
+/// When a pool is installed, what is ALREADY SPENT is exactly what the pool's
+/// ledger says -- a deterministic number that depends only on which planes
+/// this job has reserved, not on allocator behaviour or what ran earlier in
+/// the process. That is the composition figure the RSS subtraction was
+/// reaching for, without the nondeterminism: the DF tensor's reservation is
+/// visible here precisely because it is still held.
+///
+/// With no pool installed there is nothing better available, so the historical
+/// `available_budget_now` reading is kept -- that path is unchanged, which is
+/// what keeps the unbudgeted limit bit-identical.
+fn grid_working_budget(memory_budget_bytes: Option<usize>) -> usize {
+    let ceiling = ferric_core::memory::resolve_budget_bytes(memory_budget_bytes);
+    match ferric_core::memory::pool::global() {
+        // Deterministic: capacity minus what THIS job has reserved.
+        Some(pool) => pool.available_bytes().min(ceiling),
+        // Unbudgeted: unchanged historical behaviour.
+        None => ferric_core::memory::available_budget_now(ceiling),
+    }
+}
+
 impl KsXc {
+    /// The grid batch width, or `None` on the `Full` (non-batched) path.
+    ///
+    /// Test hook. A test that cannot see WHICH width it got cannot tell a
+    /// stable batch boundary from a drifting one, and batch boundaries fix
+    /// the V_xc summation order -- so they are load-bearing for the energy.
+    #[doc(hidden)]
+    pub fn batch_pts_for_test(&self) -> Option<usize> {
+        match &self.cache {
+            GridCache::Batched { batch_pts } => Some(*batch_pts),
+            GridCache::Full { .. } => None,
+        }
+    }
+
     /// Build a closed-shell XC evaluator: resolve the functional, construct the Becke-Lebedev grid, and cache AO values.
     pub fn new(
         mol: &Molecule,
@@ -659,9 +722,7 @@ impl KsXc {
         // for BOTH the Full-vs-Batched decision and `resolve_batch_size`'s
         // sizing. The doc's warning is against resolving more than once, not
         // against which figure is resolved.
-        let budget = ferric_core::memory::available_budget_now(
-            ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
-        );
+        let budget = grid_working_budget(memory_budget_bytes);
         // The plane count depends on the functional rung, so `is_mgga` has to
         // be known *before* the Full-vs-Batched decision and the batch sizing
         // — not just before the Fock builds that consume it.
@@ -679,7 +740,18 @@ impl KsXc {
             check_grid_budget_reserved(nbf, grid.len(), xc.vv10.is_some(), budget, false, is_mgga)?;
         let cache = if let Some(_charge) = charge {
             let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
-            let (chi, dchi) = eval_basis_and_grad_on_points(mol, bs, &pts)?;
+            // `_unchecked`: `check_grid_budget_reserved` above has ALREADY
+            // charged the pool for these exact buffers -- and for MORE than
+            // them, since `full_cache_bytes` covers the per-iteration V_xc
+            // chain on top of chi/dchi. Calling the checked entry point here
+            // charges the same AO planes a SECOND time against a pool that is
+            // already holding the first charge, which self-refuses: measured
+            // as `KS grid AO cache (ValueAndGrad) needs 0.019 GB but only
+            // 0.018 GB ... is free` while the 0.032 GB incumbent in the
+            // breakdown was this very cache. This is the same reason the
+            // batched path below uses `_unchecked`.
+            let shells = collect_shells(mol, bs)?;
+            let (chi, dchi) = eval_basis_and_grad_on_points_unchecked(&shells, nbf, &pts)?;
             GridCache::Full {
                 chi,
                 dchi,
@@ -922,9 +994,7 @@ impl KsXcUks {
         // for BOTH the Full-vs-Batched decision and `resolve_batch_size`'s
         // sizing. The doc's warning is against resolving more than once, not
         // against which figure is resolved.
-        let budget = ferric_core::memory::available_budget_now(
-            ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
-        );
+        let budget = grid_working_budget(memory_budget_bytes);
         // See `KsXc::new_with_omega` — the rung feeds the plane count, so it
         // must be known before the budget decision, not after it.
         let is_mgga = xc
@@ -941,7 +1011,18 @@ impl KsXcUks {
             check_grid_budget_reserved(nbf, grid.len(), xc.vv10.is_some(), budget, true, is_mgga)?;
         let cache = if let Some(_charge) = charge {
             let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
-            let (chi, dchi) = eval_basis_and_grad_on_points(mol, bs, &pts)?;
+            // `_unchecked`: `check_grid_budget_reserved` above has ALREADY
+            // charged the pool for these exact buffers -- and for MORE than
+            // them, since `full_cache_bytes` covers the per-iteration V_xc
+            // chain on top of chi/dchi. Calling the checked entry point here
+            // charges the same AO planes a SECOND time against a pool that is
+            // already holding the first charge, which self-refuses: measured
+            // as `KS grid AO cache (ValueAndGrad) needs 0.019 GB but only
+            // 0.018 GB ... is free` while the 0.032 GB incumbent in the
+            // breakdown was this very cache. This is the same reason the
+            // batched path below uses `_unchecked`.
+            let shells = collect_shells(mol, bs)?;
+            let (chi, dchi) = eval_basis_and_grad_on_points_unchecked(&shells, nbf, &pts)?;
             GridCache::Full {
                 chi,
                 dchi,
