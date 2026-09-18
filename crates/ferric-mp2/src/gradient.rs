@@ -381,6 +381,22 @@ pub(crate) fn integral_response_gradient_3c2c(
     //   tt_i    (nvir, nov)  in the x_ov build
     //   g3c_sp  (max_np, nbf, nbf) in the 3-centre block
     // The two loops do not overlap, so the larger of the two is the peak.
+    //
+    // # Why this soft charge cannot starve a downstream hard plane
+    //
+    // A bare `try_reserve` is GREEDY -- it takes bytes whenever they happen to
+    // fit, with no regard for a MANDATORY allocation that asks next, which is
+    // how a soft gate can refuse a job that would otherwise have run (see the
+    // measured table in `ferric_rpa::run_pdep_rpa`, where an optional
+    // quadrature scratch starved the DF 3-index tensor).
+    //
+    // That cannot happen here, for a structural reason rather than a lucky
+    // one: this is the LAST pool reservation the function takes. The hard
+    // MO-side charge above is already held, and everything after this point
+    // allocates either libint2 derivative engines (not on the ledger at all)
+    // or `(natoms, 3)` partials. There is no later hard plane for a greedy
+    // soft charge to starve. If one is ever added below, this charge must
+    // become `soft + downstream_hard <= available` instead.
     let _worker_charge = {
         let workers = rayon::current_num_threads().max(1);
         let tt_i = nvir.saturating_mul(nov).saturating_mul(8);
