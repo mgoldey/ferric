@@ -135,39 +135,57 @@ fn qp_per_spin_g0w0(
     let mut z_out = Array1::<f64>::ones(mo_indices.len());
     let mut qp_converged = vec![true; mo_indices.len()];
     // Independent per-state QP solves (scalar math only) — parallelize.
-    let qp_rows = mo_indices
-        .par_iter()
-        .map(|&mo_abs| {
-            if mo_abs < first_act {
-                return Err(FerricError::General(format!(
-                    "qp_mos index {mo_abs} is in the frozen-core block"
-                )));
-            }
-            let m_loc = mo_abs - first_act;
-            let eps_m = mo_b.eps_act[m_loc];
-            let (eps_qp_m, sc_final, z_renorm, converged) = solve_qp_for_mo(
-                m_loc,
-                eps_m,
-                m_proj,
-                inv_diel_freq,
-                quad_weights,
-                quad_freqs,
-                &mo_b.eps_act,
-                gw_cfg.pade_npts,
-                gw_cfg.qp_newton_damp,
-                ef,
-                0.0,
-            )?;
-            Ok((
-                eps_m,
-                sigma_x_all[m_loc],
-                eps_qp_m,
-                sc_final,
-                z_renorm,
-                converged,
-            ))
-        })
-        .collect::<Result<Vec<_>, FerricError>>()?;
+    let solve_one = |&mo_abs: &usize| {
+        if mo_abs < first_act {
+            return Err(FerricError::General(format!(
+                "qp_mos index {mo_abs} is in the frozen-core block"
+            )));
+        }
+        let m_loc = mo_abs - first_act;
+        let eps_m = mo_b.eps_act[m_loc];
+        let (eps_qp_m, sc_final, z_renorm, converged) = solve_qp_for_mo(
+            m_loc,
+            eps_m,
+            m_proj,
+            inv_diel_freq,
+            quad_weights,
+            quad_freqs,
+            &mo_b.eps_act,
+            gw_cfg.pade_npts,
+            gw_cfg.qp_newton_damp,
+            ef,
+            0.0,
+        )?;
+        Ok((
+            eps_m,
+            sigma_x_all[m_loc],
+            eps_qp_m,
+            sc_final,
+            z_renorm,
+            converged,
+        ))
+    };
+    // Soft gate with the same serial fallback as the closed-shell drivers --
+    // see `crate::sigma::charge_qp_sweep_scratch`. `downstream_hard = 0`:
+    // BOTH spins' `m_proj` are built and charged before either sweep runs
+    // (u_sigma.rs builds `m_proj_a` then `m_proj_b`, then calls this helper
+    // twice), so nothing mandatory asks after this gate and reserving
+    // headroom would only refuse jobs that fit.
+    let qp_rows = match crate::sigma::charge_qp_sweep_scratch(
+        m_proj.shape()[0],
+        mo_b.n_act,
+        quad_freqs.len(),
+        0,
+    ) {
+        Some(_scratch) => mo_indices
+            .par_iter()
+            .map(solve_one)
+            .collect::<Result<Vec<_>, FerricError>>()?,
+        None => mo_indices
+            .iter()
+            .map(solve_one)
+            .collect::<Result<Vec<_>, FerricError>>()?,
+    };
     for (idx, &(eps_m, sx, eps_qp_m, sc_final, z_renorm, converged)) in qp_rows.iter().enumerate() {
         eps_mf[idx] = eps_m;
         sx_out[idx] = sx;
@@ -253,40 +271,61 @@ pub fn run_u_evgw0(
         }
         let mut max_dev = 0.0_f64;
         // Frozen per-iteration eps_prop snapshots ⇒ independent per-state solves.
-        let qp_new: Vec<((f64, f64, f64, bool), (f64, f64, f64, bool))> = mo_indices
-            .par_iter()
-            .map(|&mo_abs| {
-                let mla = mo_abs - first_act_a;
-                let mlb = mo_abs - first_act_b;
-                let ra = solve_qp_for_mo(
-                    mla,
-                    mo_b_a.eps_act[mla],
-                    &m_proj_a,
-                    inv_diel_freq,
-                    &pdep.quad_weights,
-                    &pdep.quad_freqs,
-                    &eps_prop_a,
-                    gw_cfg.pade_npts,
-                    gw_cfg.qp_newton_damp,
-                    ef_a,
-                    0.0,
-                )?;
-                let rb = solve_qp_for_mo(
-                    mlb,
-                    mo_b_b.eps_act[mlb],
-                    &m_proj_b,
-                    inv_diel_freq,
-                    &pdep.quad_weights,
-                    &pdep.quad_freqs,
-                    &eps_prop_b,
-                    gw_cfg.pade_npts,
-                    gw_cfg.qp_newton_damp,
-                    ef_b,
-                    0.0,
-                )?;
-                Ok((ra, rb))
-            })
-            .collect::<Result<Vec<_>, FerricError>>()?;
+        let solve_one = |&mo_abs: &usize| {
+            let mla = mo_abs - first_act_a;
+            let mlb = mo_abs - first_act_b;
+            let ra = solve_qp_for_mo(
+                mla,
+                mo_b_a.eps_act[mla],
+                &m_proj_a,
+                inv_diel_freq,
+                &pdep.quad_weights,
+                &pdep.quad_freqs,
+                &eps_prop_a,
+                gw_cfg.pade_npts,
+                gw_cfg.qp_newton_damp,
+                ef_a,
+                0.0,
+            )?;
+            let rb = solve_qp_for_mo(
+                mlb,
+                mo_b_b.eps_act[mlb],
+                &m_proj_b,
+                inv_diel_freq,
+                &pdep.quad_weights,
+                &pdep.quad_freqs,
+                &eps_prop_b,
+                gw_cfg.pade_npts,
+                gw_cfg.qp_newton_damp,
+                ef_b,
+                0.0,
+            )?;
+            Ok((ra, rb))
+        };
+        // BOTH spins are solved inside ONE closure here, so a worker holds two
+        // `sigma_c_at_z` scratch sets at once -- hence `n_channels = 2`, which
+        // `charge_qp_sweep_scratch_n` takes and the closed-shell wrapper does
+        // not. Widths taken from the ALPHA channel; the two `n_act` differ only
+        // when the spin channels have different active sizes, and the charge is
+        // then the wider one twice, which is the conservative direction at the
+        // one place where being wrong low would OOM.
+        let qp_new: Vec<((f64, f64, f64, bool), (f64, f64, f64, bool))> =
+            match crate::sigma::charge_qp_sweep_scratch_n(
+                m_proj_a.shape()[0],
+                mo_b_a.n_act.max(mo_b_b.n_act),
+                pdep.quad_freqs.len(),
+                2,
+                0,
+            ) {
+                Some(_scratch) => mo_indices
+                    .par_iter()
+                    .map(solve_one)
+                    .collect::<Result<Vec<_>, FerricError>>()?,
+                None => mo_indices
+                    .iter()
+                    .map(solve_one)
+                    .collect::<Result<Vec<_>, FerricError>>()?,
+            };
         for (idx, &((ena, sca, za, cona), (enb, scb, zb, conb))) in qp_new.iter().enumerate() {
             max_dev = max_dev
                 .max((ena - eps_qp_a[idx]).abs())
@@ -440,40 +479,59 @@ pub fn run_u_evgw(
         }
         let mut max_dev = 0.0_f64;
         // Frozen (m_proj, W, eps_prop) snapshot ⇒ independent per-state solves.
-        let qp_new: Vec<((f64, f64, f64, bool), (f64, f64, f64, bool))> = mo_indices
-            .par_iter()
-            .map(|&mo_abs| {
-                let mla = mo_abs - first_act_a;
-                let mlb = mo_abs - first_act_b;
-                let ra = solve_qp_for_mo(
-                    mla,
-                    mo_b_a.eps_act[mla],
-                    &m_proj_a,
-                    inv_diel_freq,
-                    &current_pdep.quad_weights,
-                    &current_pdep.quad_freqs,
-                    &eps_prop_a,
-                    gw_cfg.pade_npts,
-                    gw_cfg.qp_newton_damp,
-                    ef_a,
-                    0.0,
-                )?;
-                let rb = solve_qp_for_mo(
-                    mlb,
-                    mo_b_b.eps_act[mlb],
-                    &m_proj_b,
-                    inv_diel_freq,
-                    &current_pdep.quad_weights,
-                    &current_pdep.quad_freqs,
-                    &eps_prop_b,
-                    gw_cfg.pade_npts,
-                    gw_cfg.qp_newton_damp,
-                    ef_b,
-                    0.0,
-                )?;
-                Ok((ra, rb))
-            })
-            .collect::<Result<Vec<_>, FerricError>>()?;
+        let solve_one = |&mo_abs: &usize| {
+            let mla = mo_abs - first_act_a;
+            let mlb = mo_abs - first_act_b;
+            let ra = solve_qp_for_mo(
+                mla,
+                mo_b_a.eps_act[mla],
+                &m_proj_a,
+                inv_diel_freq,
+                &current_pdep.quad_weights,
+                &current_pdep.quad_freqs,
+                &eps_prop_a,
+                gw_cfg.pade_npts,
+                gw_cfg.qp_newton_damp,
+                ef_a,
+                0.0,
+            )?;
+            let rb = solve_qp_for_mo(
+                mlb,
+                mo_b_b.eps_act[mlb],
+                &m_proj_b,
+                inv_diel_freq,
+                &current_pdep.quad_weights,
+                &current_pdep.quad_freqs,
+                &eps_prop_b,
+                gw_cfg.pade_npts,
+                gw_cfg.qp_newton_damp,
+                ef_b,
+                0.0,
+            )?;
+            Ok((ra, rb))
+        };
+        // Two channels per worker (see the identical gate in `run_u_evgw0`).
+        // `downstream_hard = 0`: the next iteration's `run_u_pdep_rpa` and
+        // rebuilt `m_proj` pair are allocated only after this scratch, both
+        // `m_proj`s and the match arm have all gone out of scope, so they never
+        // co-reside with it.
+        let qp_new: Vec<((f64, f64, f64, bool), (f64, f64, f64, bool))> =
+            match crate::sigma::charge_qp_sweep_scratch_n(
+                m_proj_a.shape()[0],
+                mo_b_a.n_act.max(mo_b_b.n_act),
+                current_pdep.quad_freqs.len(),
+                2,
+                0,
+            ) {
+                Some(_scratch) => mo_indices
+                    .par_iter()
+                    .map(solve_one)
+                    .collect::<Result<Vec<_>, FerricError>>()?,
+                None => mo_indices
+                    .iter()
+                    .map(solve_one)
+                    .collect::<Result<Vec<_>, FerricError>>()?,
+            };
         for (idx, &((ena, sca, za, cona), (enb, scb, zb, conb))) in qp_new.iter().enumerate() {
             max_dev = max_dev
                 .max((ena - eps_qp_a[idx]).abs())
