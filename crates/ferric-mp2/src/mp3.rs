@@ -83,6 +83,39 @@ pub fn mp3_energy(
         peak_vvvv,
         ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
     )?;
+    // DEBIT the shared pool for the LARGER of MP3's two competing peaks.
+    //
+    // The `check_alloc` above charges only the VVVV pair. That is not
+    // necessarily the peak: the amplitude section below holds FIVE
+    // (2no)^2(2nv)^2 tensors simultaneously in `e_ph` -- `t`, `t_t` (an
+    // explicit `t.clone()`), `v_ovvo`, the `z` einsum result, and the
+    // `t_iakc` permuted copy -- and nothing charged any of them. Which peak
+    // dominates depends on no/nv: the VVVV pair wins when nv >> no, the
+    // amplitude set wins otherwise, and a guard that only ever sees one of
+    // them passes a job that dies in the other.
+    //
+    // `max`, not the sum: the two stages do not coexist. `v_vvvv` is moved
+    // into `vvvv_t` and dropped at the end of the `e_pp` scope, well before
+    // `e_ph` allocates `z`. Charging the sum would be the over-estimating
+    // guard this migration is also meant to avoid.
+    //
+    // HARD: these are dense spin-orbital tensors with no blocked or streaming
+    // alternative anywhere in this file. An over-budget MP3 has no fallback to
+    // fall back TO, so refusing up front with an occupancy breakdown beats
+    // being OOM-killed inside `einsum!`.
+    let no2 = 2 * no;
+    let amp_tensor_bytes = no2
+        .saturating_mul(no2)
+        .saturating_mul(nv2)
+        .saturating_mul(nv2)
+        .saturating_mul(8);
+    let peak_amplitudes = amp_tensor_bytes.saturating_mul(5);
+    let _mp3_charge = crate::rimp2::charge_mo_side(
+        &format!(
+            "MP3 peak (no={no}, nv={nv}; max of 2x(2nv)^4 VVVV and 5x(2no)^2(2nv)^2 amplitudes)"
+        ),
+        peak_vvvv.max(peak_amplitudes),
+    )?;
 
     // V^{-1/2} metric and AO 3-center integrals.
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;

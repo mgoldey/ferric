@@ -233,21 +233,23 @@ pub fn oo_ri_mp2_gradient(
     // packaging OO-MP2's own t2/b_ov/v_inv_sqrt into an Mp2Intermediates.
     let v2c = threeindex::coulomb_metric_2c(op, dfbs)?;
     let v_inv_sqrt = cholesky_inverse_sqrt(&v2c)?;
-    let inter = Mp2Intermediates {
+    // `uncharged`, not a struct literal: these buffers were built by the
+    // OO-MP2 driver above and (where charged at all) are charged by it, so
+    // taking a second reservation here would double-debit the shared pool for
+    // one allocation. `b_oo`/`b_vv` -- the only planes large enough for the
+    // distinction to matter -- are `None` on this path.
+    let inter = Mp2Intermediates::uncharged(
         t2,
         b_ov,
-        b_oo: None,
-        b_vv: None,
+        None,
+        None,
         v_inv_sqrt,
         p_oo,
         p_vv,
-        nocc,
-        nvir,
-        nocc_total,
-        first_occ,
+        ferric_core::orbitals::OrbitalSpace::new(nocc, nvir, nocc_total, first_occ),
         naux,
-        e_mp2: result.mp2_corr,
-    };
+        result.mp2_corr,
+    );
     grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, c)?;
 
     Ok(grad)

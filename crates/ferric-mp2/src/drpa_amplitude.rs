@@ -670,6 +670,41 @@ pub fn amplitude_drpa_dense(
     let lp = assemble_localized(mol, obs, dfbs, op, rhf, &lcfg, vvhv)?;
     let (no, nv) = (lp.no, lp.nv);
     let n = no * nv;
+    // DEBIT the shared pool for this solver's TRUE peak, before the first of
+    // its many n x n matrices allocates.
+    //
+    // `drpa_amplitude.rs` had ZERO memory guards before the pool migration --
+    // `eri3_budget_bytes` reached only the optional canonical reference, which
+    // this path does not take. Meanwhile the dense fixed point holds an
+    // extraordinary number of (no*nv)^2 matrices at once:
+    //
+    //   persistent across the whole solve : lp.j_dense, b2, d2, b_masked, t2
+    //   live inside ONE fixed-point step  : t4, f_t, bt, tbt, r, t2.dot(&b2)
+    //
+    // i.e. ELEVEN n x n f64 matrices at the iteration peak, plus the n x n
+    // byte `mask`. At no=20/nv=100 (n=2000) that is 11 x 32 MB = 0.35 GB; at
+    // no=60/nv=400 (n=24000) it is 11 x 4.6 GB = 50 GB, none of it previously
+    // visible to any budget.
+    //
+    // `lp.j_dense` is charged by `assemble_localized`'s own guard, which is
+    // still outstanding (we hold `lp`), so it is NOT counted again here --
+    // double-charging one allocation is as wrong as not charging it. Ten
+    // matrices plus the mask, then.
+    //
+    // HARD: this is `amplitude_drpa_DENSE`; the blocked alternative is the
+    // ragged entry point (`amplitude_drpa_direct`), which is a different
+    // function the caller chooses, not a fallback available here. Refusing
+    // with a breakdown naming the plane is how a caller learns to use it.
+    let nn_bytes = n.saturating_mul(n).saturating_mul(8);
+    let _dense_charge = crate::rimp2::charge_mo_side(
+        &format!(
+            "dRPA dense fixed point (no={no}, nv={nv}, n={n}; 10 co-resident n^2 matrices \
+             + mask, j_dense charged by assemble_localized)"
+        ),
+        nn_bytes
+            .saturating_mul(10)
+            .saturating_add(n.saturating_mul(n)),
+    )?;
     let b2 = lp.j_dense.mapv(|x| 2.0 * x); // B = 2 (ia|jb)
     let mask: Vec<bool> = b2
         .iter()

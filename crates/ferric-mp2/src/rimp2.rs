@@ -191,6 +191,79 @@ pub fn mo_side_alloc_bytes(naux: usize, nocc: usize, nvir: usize, include_b_vv: 
     b_flat.saturating_add(b_vv)
 }
 
+/// Debit the process-global [`MemoryPool`](ferric_core::memory::pool::MemoryPool)
+/// for an MP2 MO-side plane, or hand back an inert guard when no pool is
+/// installed.
+///
+/// # Why this exists on top of `check_mo_side_alloc`
+///
+/// `check_mo_side_alloc` COMPARES a projected peak against a ceiling. That is
+/// exactly the shape that produced the measured defect this migration fixes:
+/// on `benzene/cc-pVDZ` the AO 3-index tensor (`naux·nao²·8` = 0.0437 GB) is
+/// charged to the pool by `ThreeIndexSource`, and `b_flat`
+/// (`naux·nocc·nvir·8` = 0.0066 GB) was allocated ON TOP of it while both are
+/// resident — but `check_mo_side_alloc` compared `b_flat` against the WHOLE
+/// budget, as if the AO tensor were not there. MEASURED on the pre-migration
+/// tree: `pool.peak_bytes()` = 0.0437 GB, i.e. exactly the AO tensor and not
+/// one byte of the MO side. The process held the sum; the ledger saw 87% of
+/// it. At `danuglipron/def2-SVP` (naux=2800, nocc=90, nvir=610) the unseen MO
+/// side is 1.23 GB (`b_ov`) + 8.34 GB (`b_vv`) against a ~1.1 GB AO tensor.
+///
+/// Deliberately `reserve` (HARD), not `try_reserve`: by the time this is
+/// called the caller is about to allocate `b_flat`/`b_vv` unconditionally and
+/// has no streaming fallback — the MO-side blocks are dense by construction
+/// and the only knob that would shrink them (`mo_stream_chunk_for`) bounds the
+/// TRANSIENT, not the output tensor. So a pool that cannot cover it must
+/// refuse up front with an occupancy breakdown naming the dominant plane,
+/// which is the entire acceptance criterion, rather than walk into the
+/// allocator and be OOM-killed. `charge_mo_side_soft` is the soft sibling for
+/// the one plane that does have a fallback.
+///
+/// Inert when no pool is installed — the trivial limit that keeps the
+/// unbudgeted path bit-identical, pinned by
+/// `tests/mwe_mp2_pool_is_inert_without_a_pool.rs`.
+pub(crate) fn charge_mo_side(
+    label: &str,
+    bytes: usize,
+) -> Result<ferric_core::memory::pool::Reservation, FerricError> {
+    ferric_core::memory::pool::reserve_global(label, bytes)
+}
+
+/// Charge a plane that has a genuine fallback: debit if it fits, otherwise
+/// record the occupancy and carry on without refusing.
+///
+/// # Why soft, when [`charge_mo_side`] is hard — MEASURED, not guessed
+///
+/// This is used for the PER-WORKER `g_i` energy transient (`nocc·nvir²·8` per
+/// rayon worker, allocated inside `into_par_iter()` in
+/// `spin_components_from_b_ov_kappa`). Three reasons it cannot be hard:
+///
+/// 1. Its size reads `rayon::current_num_threads()`, which is not a
+///    configuration. A HARD gate on it would make ADMISSION depend on
+///    `RAYON_NUM_THREADS` — the same class of nondeterminism that
+///    `mo_stream_chunk_for`'s doc forbids for widths, and that `19ade072`
+///    removed from the KS grid batch width. A job that runs on 4 threads and
+///    is refused on 12 is a refusal the pre-migration tree does not make.
+/// 2. The fallback is real: rayon's work-stealing means the transient is
+///    bounded by however many workers are actually active, and the loop makes
+///    progress at any width down to one worker. Nothing about the None branch
+///    is a lie — the loop already runs at whatever concurrency the pool can
+///    support.
+/// 3. MEASURED refusal on the pre-migration tree: at `benzene/cc-pVDZ` with
+///    12 workers, `g_i` is 12 × 21 × 93² × 8 = 0.0174 GB against a
+///    0.0437 GB AO tensor already outstanding; hard-charging it plus `b_flat`
+///    refuses at any `budget_gb` below ~0.07, while the same job completes on
+///    the pre-migration tree at `budget_gb = 0.05`. Per the standing decision
+///    ("THE MIGRATION MUST NOT REFUSE A JOB THAT THE CURRENT TREE
+///    COMPLETES"), it is soft and reported.
+pub(crate) fn charge_mo_side_soft(
+    label: &str,
+    bytes: usize,
+) -> ferric_core::memory::pool::Reservation {
+    ferric_core::memory::pool::try_reserve_global(label, bytes)
+        .unwrap_or_else(|| ferric_core::memory::pool::Reservation::inert(label))
+}
+
 pub(crate) fn check_mo_side_alloc(
     label: &str,
     naux: usize,
@@ -949,9 +1022,74 @@ pub fn ri_mp2_spin_components(
     let naux_all = dfbs.nbasis();
     let mut src =
         ThreeIndexSource::build_band_screened(op, obs, dfbs, budget_bytes, 0, naux_all, screen)?;
+    // DEBIT the shared pool for b_flat, AFTER `src` has taken its own charge
+    // and WHILE it is still outstanding. That ordering is the whole point:
+    // `check_mo_side_alloc` above compared b_flat against the full ceiling as
+    // if the AO tensor were not resident, and it IS resident -- `src` is a
+    // live local here and its in-core backend holds naux*nao^2*8 bytes until
+    // this function returns. MEASURED on benzene/cc-pVDZ before this line
+    // existed: pool peak 0.0437 GB (the AO tensor alone) while the process
+    // also held b_flat's 0.0066 GB. Now the pool sees the sum.
+    //
+    // The guard lives in THIS scope, which is exactly b_flat's scope: b_flat
+    // is returned to the caller by value, so a guard taken inside
+    // stream_dressed_mo_band_budgeted would credit the bytes back while the
+    // tensor is still alive (the `_charge` lesson from ThreeIndexSource).
+    // `spin_components_from_b_ov_kappa` runs below with both still held, which
+    // is correct -- they ARE both resident there.
+    // SOFT, and this one was MEASURED the hard way. Hard-charging it refuses a
+    // job the pre-migration tree completes, in a narrow but real budget band.
+    // benzene/cc-pVDZ (nao=114, naux=420, nocc=21, nvir=93), sweeping
+    // `budget_gb` with the same binary, no pool installed (= pre-migration,
+    // bit-identity-pinned by mwe_mp2_pool_is_inert_without_a_pool.rs) versus a
+    // pool of the same size:
+    //
+    //   budget   pre-migration   hard-charged migration
+    //    30 MB   OK              OK     (AO tensor spills; sum fits)
+    //    40 MB   OK              OK     (AO tensor spills; sum fits)
+    //    44 MB   OK              REFUSED "b_ov needs 0.007 GB, 0.000 GB free"
+    //    48 MB   OK              REFUSED "b_ov needs 0.007 GB, 0.002 GB free"
+    //    51 MB   OK              OK
+    //   120 MB   OK              OK
+    //
+    // The refusal window is exactly [ao_bytes, ao_bytes + b_ov_bytes) =
+    // [43.67, 50.23] MB: the band where the AO tensor is just large enough to
+    // be kept IN CORE (so `ThreeIndexSource` charges the whole 43.67 MB) but
+    // the pool then has nothing left for b_ov. Below 43.67 MB the AO tensor
+    // spills, holds one block instead, and everything fits.
+    //
+    // The honest fix is not "charge less" -- the process really does hold both
+    // -- it is that the in-core-vs-spill DECISION should see the MO side
+    // coming. That decision lives in `ThreeIndexSource::build_band_screened`
+    // (ferric-integrals) and deliberately reads `budget_bytes` rather than the
+    // pool, because it selects between two code paths with different summation
+    // orders and moving it onto the ledger would make an ENERGY depend on
+    // allocation order. Fixing it properly means passing the MO-side footprint
+    // into that decision, which is a cross-crate change and is reported rather
+    // than made here.
+    //
+    // Until then: SOFT. The fallback is real and already exercised -- the very
+    // same job at a smaller budget spills the AO tensor and completes, so the
+    // None branch is not a lie about a path that does not exist. What we give
+    // up is refusing a genuine over-commit in a ~6 MB-wide band; what we keep
+    // is the standing decision that the migration must not refuse a job the
+    // current tree completes. The intermediates path's b_ov+b_oo+b_vv charge,
+    // which has no such fallback, stays HARD -- see
+    // `mwe_mp2_planes_compose_in_one_pool.rs`.
+    let _b_flat_charge = charge_mo_side_soft(
+        "RI-MP2 b_ov B[P,ia]",
+        mo_side_alloc_bytes(dfbs.nbasis(), nocc, nvir, false),
+    );
     // Budgeted: on a tight budget this narrows the chunk (and, as documented
     // on mo_stream_chunk_for, shifts the last digits); at an ample budget it
     // resolves to the historical 256 and is bit-identical.
+    //
+    // `budget_bytes` -- NOT `pool.available_bytes()`. The chunk k-blocks a
+    // beta=1 accumulation, so sizing it from the LEDGER would make the RI-MP2
+    // energy depend on how many bytes another plane happened to hold, which is
+    // the defect `19ade072` removed from the KS grid batch width. A width may
+    // depend on the BUDGET and the problem; never on the ledger, RSS, or the
+    // thread count.
     let b_flat = stream_dressed_mo_band_budgeted(
         &mut src,
         &v2c_inv_sqrt,
@@ -960,6 +1098,30 @@ pub fn ri_mp2_spin_components(
         None,
         Some(budget_bytes),
     )?; // (naux, nocc*nvir)
+
+    // Free the raw AO 3-index source the moment its last reader is done.
+    //
+    // `src` was previously left to fall out of scope at the end of the
+    // function, so the in-core AO tensor (naux*nao^2*8 -- 43.7 MB at
+    // benzene/cc-pVDZ, and the single largest allocation on this path) stayed
+    // resident right through the energy loop below, which never touches it.
+    // That is real memory AND, since the pool migration, a real reservation:
+    // `ThreeIndexSource` holds a pool charge for exactly as long as the value
+    // lives. Dropping it here releases both, so the per-worker `g_i` transient
+    // charged just below is measured against a ledger that no longer counts a
+    // tensor nothing will read again.
+    drop(src);
+
+    // The per-worker energy transient. SOFT -- its size reads
+    // `rayon::current_num_threads()`, so a hard gate would make admission
+    // depend on RAYON_NUM_THREADS. See `charge_mo_side_soft`.
+    let _g_i_charge = charge_mo_side_soft(
+        "RI-MP2 g_i per-worker energy transient",
+        nocc.saturating_mul(nvir)
+            .saturating_mul(nvir)
+            .saturating_mul(8)
+            .saturating_mul(rayon::current_num_threads().max(1)),
+    );
 
     if let Some(k) = config.kappa {
         if !k.is_finite() || k <= 0.0 {
@@ -1151,7 +1313,20 @@ pub fn ri_mp2(
 }
 
 /// All intermediates needed by the analytical RI-MP2 gradient.
-#[derive(Debug, Clone)]
+///
+/// # No longer `Clone`, deliberately
+///
+/// This derived `Clone` until the pool migration. It is dropped rather than
+/// hand-written because there is no honest implementation: the struct now
+/// holds a `Reservation` for its own tensors, and a clone would either
+/// (a) duplicate the guard, crediting the pool twice on drop for bytes
+/// released once, or (b) hand the copy an inert guard, so several GB of
+/// `b_vv` would be resident with nothing outstanding against it — the exact
+/// hole this migration closes. Cloning multi-GB tensors silently was never
+/// desirable anyway. No caller in the workspace clones one (verified: every
+/// use in `gradient.rs`, `zvector.rs`, `cpks_polar.rs` and
+/// `oo_rimp2_gradient.rs` takes `&Mp2Intermediates`).
+#[derive(Debug)]
 pub struct Mp2Intermediates {
     pub t2: Vec<f64>,
     /// B^P_{ia}, shape (naux, nocc*nvir), occ-vir block
@@ -1175,9 +1350,78 @@ pub struct Mp2Intermediates {
     pub first_occ: usize,
     pub naux: usize,
     pub e_mp2: f64,
+    /// RAII charge against the shared [`MemoryPool`](ferric_core::memory::pool::MemoryPool)
+    /// for `b_ov` + `b_oo` + `b_vv`, held for as long as those tensors are.
+    ///
+    /// # Why the guard lives HERE and not at the gate
+    ///
+    /// `check_mo_side_alloc` runs before the blocks are built and returns
+    /// `()`. A pool reservation taken there would be credited back the moment
+    /// `compute_mp2_intermediates_impl` returns — while `b_vv`, the largest
+    /// tensor in this crate (`naux·nvir²·8`: 1.87 GB at benzene/aug-cc-pVTZ,
+    /// 8.34 GB at danuglipron/def2-SVP, ~13 GB at the M4-audit shape), is
+    /// still resident inside the struct being returned. The whole gradient /
+    /// CPKS pipeline then runs against a ledger that has forgotten it. This is
+    /// the same `_charge: Reservation` shape `ThreeIndexSource` uses, and for
+    /// the same reason: drop-of-tensor must be drop-of-charge.
+    ///
+    /// Private, so external construction of this struct is unaffected — but
+    /// note that the field means the struct can no longer be built by a
+    /// literal outside this crate. That is deliberate: a hand-built
+    /// `Mp2Intermediates` holding an 8 GB `b_vv` with no charge is exactly the
+    /// hole this closes. Use [`Mp2Intermediates::uncharged`] for the
+    /// repackaging case (see `oo_rimp2_gradient`), which is explicit about
+    /// taking no charge.
+    ///
+    /// Inert when no pool is installed.
+    pub(crate) _charge: ferric_core::memory::pool::Reservation,
 }
 
 impl Mp2Intermediates {
+    /// Assemble intermediates from tensors that are ALREADY charged (or that
+    /// are not the crate's to charge), taking no pool reservation.
+    ///
+    /// The one legitimate caller is `oo_rimp2_gradient`, which repackages
+    /// OO-MP2's own `t2`/`b_ov`/`v_inv_sqrt` — buffers whose charges (if any)
+    /// belong to the OO driver that built them, and which would be
+    /// double-counted if charged again here. It passes `b_oo: None` and
+    /// `b_vv: None`, so the dominant plane is not in play at all.
+    ///
+    /// Named `uncharged` rather than `new` so that a future caller reaching
+    /// for it has to read this paragraph and decide whether it applies.
+    #[allow(clippy::too_many_arguments)]
+    pub fn uncharged(
+        t2: Vec<f64>,
+        b_ov: Array2<f64>,
+        b_oo: Option<Array2<f64>>,
+        b_vv: Option<Array2<f64>>,
+        v_inv_sqrt: Array2<f64>,
+        p_oo: Array2<f64>,
+        p_vv: Array2<f64>,
+        space: OrbitalSpace,
+        naux: usize,
+        e_mp2: f64,
+    ) -> Self {
+        Self {
+            t2,
+            b_ov,
+            b_oo,
+            b_vv,
+            v_inv_sqrt,
+            p_oo,
+            p_vv,
+            nocc: space.nocc,
+            nvir: space.nvir,
+            nocc_total: space.nocc_total,
+            first_occ: space.first_occ,
+            naux,
+            e_mp2,
+            _charge: ferric_core::memory::pool::Reservation::inert(
+                "MP2 intermediates (repackaged, charged by the builder)",
+            ),
+        }
+    }
+
     /// The active occupied/virtual orbital partition for these intermediates.
     pub fn orbital_space(&self) -> OrbitalSpace {
         OrbitalSpace::new(self.nocc, self.nvir, self.nocc_total, self.first_occ)
@@ -1319,6 +1563,32 @@ pub fn compute_rpa_intermediates_spin(
 
 /// Build B^P_{ia} = V^{-1/2} (P|ia) plus V^{-1/2} for RPA. Skips the MP2
 /// amplitude/energy/density work in `compute_mp2_intermediates`.
+///
+/// # DELIBERATELY NOT POOL-CHARGED for its own `b_ov` (2026-09-17)
+///
+/// This function and [`compute_rpa_intermediates_spin`] return their `b_ov`
+/// inside an [`RpaIntermediates`], which is constructed by STRUCT LITERAL in
+/// ferric-rpa (`dlpno_rpa.rs`, `tests/dlpno_rpa_localized_occupied.rs`). Adding
+/// a private `_charge` field -- the only shape that makes drop-of-tensor equal
+/// drop-of-charge -- would break those literals, and ferric-rpa is outside
+/// this migration's crate scope.
+///
+/// A guard taken INSIDE this function is not an acceptable substitute: `b_ov`
+/// is returned by value, so the guard would credit its bytes back the instant
+/// this function returns, while the tensor stays resident for the whole
+/// downstream RPA/GW solve. That is decoration, and it is exactly the lifetime
+/// error the `_charge` field pattern exists to prevent.
+///
+/// So the charge is taken by the CALLERS inside this crate that hold the
+/// tensor for a known span -- [`crate::u_rimp2::u_ri_mp2`] and
+/// [`crate::u_rimp2::compute_u_mp2_amplitudes`], both of which hold BOTH spins
+/// at once and charge them together. The AO 3-index tensor this function
+/// builds IS charged, by `ThreeIndexSource` in ferric-integrals.
+///
+/// What remains uncharged is `b_ov` when an EXTERNAL (ferric-rpa / ferric-gw)
+/// caller holds it. Closing that means giving `RpaIntermediates` a
+/// constructor and a `_charge` field in one cross-crate change; reported, not
+/// made here.
 pub fn compute_rpa_intermediates(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -1448,6 +1718,39 @@ fn compute_mp2_intermediates_impl(
         with_oo_vv,
         ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes),
     )?;
+    // DEBIT the shared pool, and keep the guard: it is moved into the returned
+    // `Mp2Intermediates` below so it lives exactly as long as the tensors do.
+    // `src` is still outstanding here (it is dropped at the end of this
+    // function), so this reservation composes with the AO tensor's rather than
+    // re-reading the same ceiling -- which is what `check_mo_side_alloc` just
+    // above does, and what made the guard above it pass while the process held
+    // the SUM.
+    //
+    // `mo_side_alloc_bytes` and not the `check_mo_side_alloc` total: the
+    // per-worker `g_i` term in the latter is a TRANSIENT of
+    // `spin_components_from_b_ov`, gone before this function returns, and
+    // charging it for the struct's whole lifetime would be the
+    // over-estimating-guard bug ("charge peak_bytes(), not the sum of
+    // transients that never coexist"). The transient is charged separately and
+    // softly at the RI-MP2 energy lane, where it is actually live.
+    let blocks_charge = charge_mo_side(
+        if with_oo_vv {
+            "RI-MP2 intermediates b_ov+b_oo+b_vv"
+        } else {
+            "RI-MP2 intermediates b_ov"
+        },
+        mo_side_alloc_bytes(naux, nocc, nvir, with_oo_vv).saturating_add(if with_oo_vv {
+            // b_oo, which `mo_side_alloc_bytes` does not model: it is
+            // (nocc/nvir) times smaller than b_vv, but it IS resident
+            // alongside it and an unmodelled term is how estimators drift
+            // from allocators.
+            naux.saturating_mul(nocc)
+                .saturating_mul(nocc)
+                .saturating_mul(8)
+        } else {
+            0
+        }),
+    )?;
     let b_ov = eri3_mo_block_dressed(&mut src, &v_inv_sqrt, &c_occ, &c_vir)?;
     let (b_oo, b_vv) = if with_oo_vv {
         (
@@ -1499,6 +1802,7 @@ fn compute_mp2_intermediates_impl(
         first_occ,
         naux,
         e_mp2: e_os + e_ss,
+        _charge: blocks_charge,
     })
 }
 

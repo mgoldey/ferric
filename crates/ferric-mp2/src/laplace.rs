@@ -895,6 +895,28 @@ impl LaplaceMp2 {
                 )));
             }
         }
+        // DEBIT the shared pool for the AO dressing/sparsify peak, BEFORE the
+        // first of the two co-resident naux*nbas^2 tensors is allocated.
+        //
+        // The `peak_bytes > budget` check just above already refuses an
+        // over-budget job, so this is not a new refusal -- it is the same
+        // decision taken against the LEDGER instead of the ceiling. That is
+        // the whole difference: the check compares against `budget`, which is
+        // the full ceiling every other plane in the process is also comparing
+        // against. `eri3_tensor` below does NOT go through `ThreeIndexSource`
+        // (it is the unblocked dense builder), so nothing else charges these
+        // bytes and the pool would otherwise never see the largest allocation
+        // on this path.
+        //
+        // HARD: there is no fallback here. `compute_ao` is the dense AO
+        // formulation by construction, and its own error message already
+        // directs an over-budget caller to `compute_mo`. Charging the SAME
+        // `laplace_dressing_peak_bytes` the pre-flight uses keeps the estimate
+        // and the charge from drifting apart.
+        let _dressing_charge = crate::rimp2::charge_mo_side(
+            "Laplace-MP2 AO dressing peak (b_ao + eri3 + metric)",
+            laplace_dressing_peak_bytes(naux, nbas),
+        )?;
         let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
         let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
         let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;
@@ -967,6 +989,30 @@ impl LaplaceMp2 {
         // divided by that count in per_task_budget_bytes().
         warn_if_task_workers_exceed_nominal(self.memory_budget_bytes, "AO quadrature");
         let task_budget = per_task_budget_bytes(self.memory_budget_bytes);
+        // DEBIT the shared pool for the AGGREGATE per-worker panel set, i.e.
+        // the thing `warn_if_task_workers_exceed_nominal` warns about but
+        // cannot act on.
+        //
+        // SOFT, for the reason that function's doc gives: the aggregate is
+        // `task_budget x live worker count`, and the live worker count is not
+        // a configuration. A HARD gate here would refuse a job purely because
+        // RAYON_NUM_THREADS was larger, which the pre-migration tree completes
+        // -- it prints the warning and runs. Per the standing decision, that
+        // stays a warning, and the pool now also RECORDS it so the occupancy
+        // report names the plane instead of the process just being larger than
+        // its ledger.
+        //
+        // The None branch genuinely streams: nothing below reads this guard,
+        // and the quadrature loop already makes progress at whatever
+        // concurrency rayon supplies. Critically, `task_budget` itself is
+        // computed from `per_task_budget_bytes` -- the configured budget over
+        // a COMPILE-TIME `NOMINAL_TASK_WORKERS`, never from the ledger -- so
+        // charging here cannot feed back into `block_mu` or `block_p` and move
+        // an energy.
+        let _panel_charge = crate::rimp2::charge_mo_side_soft(
+            "Laplace-MP2 AO per-worker quadrature panels",
+            task_budget.saturating_mul(rayon::current_num_threads().max(1)),
+        );
         // J-term panel width over the μ (leading AO) axis. Each open μ-row of the
         // M and N panels is (naux · nbas · 8) bytes; hold two panels (M, N), so
         //   block_mu · naux · nbas · 8 · 2 ≤ task_budget.
@@ -1243,6 +1289,13 @@ impl LaplaceMp2 {
             }
         }
 
+        // Same charge, same reasoning as `compute_ao` above: the pre-flight
+        // just above refuses against the ceiling, this debits the shared
+        // ledger so the peak composes with whatever else the process holds.
+        let _dressing_charge = crate::rimp2::charge_mo_side(
+            "Laplace-SOS-MP2 AO dressing peak (b_ao + eri3 + metric)",
+            laplace_dressing_peak_bytes(naux, nbas),
+        )?;
         let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
         let v_inv_sqrt = crate::rimp2::cholesky_inverse_sqrt(&v2c)?;
         let eri3_ao = ferric_integrals::threeindex::eri3_tensor(op, obs, dfbs)?;

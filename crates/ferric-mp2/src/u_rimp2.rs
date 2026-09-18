@@ -57,7 +57,17 @@ impl std::fmt::Display for URiMp2Result {
 /// Index conventions: `i,j` ∈ occ_α, `I,J` ∈ occ_β, `a,b` ∈ vir_α,
 /// `A,B` ∈ vir_β. The αβ tensor's first two axes are α-occ × β-occ, last
 /// two are α-vir × β-vir.
-#[derive(Debug, Clone)]
+///
+/// # Not `Clone` since the pool migration
+///
+/// This derived `Clone`. It now holds an RAII `Reservation` covering all three
+/// amplitude tensors, and there is no honest way to clone that: duplicating
+/// the guard credits the pool twice for bytes released once, and handing the
+/// copy an inert guard leaves several GB resident with nothing outstanding.
+/// Nothing in the workspace clones one (verified: `build_u_mp2_density`,
+/// `compute_u_mp2_orbital_gradient` and `_blocks` all take
+/// `&UMp2Amplitudes`, and it is constructed at exactly one site).
+#[derive(Debug)]
 pub struct UMp2Amplitudes {
     pub inter_a: RpaIntermediates,
     pub inter_b: RpaIntermediates,
@@ -67,6 +77,32 @@ pub struct UMp2Amplitudes {
     pub t_bb: Array4<f64>,
     pub t_ab: Array4<f64>,
     pub components: URiMp2Components,
+    /// RAII charges against the shared memory pool for everything this struct
+    /// owns, held for as long as the struct is.
+    ///
+    /// A PAIR, because the two groups have different hardness: `.0` is the
+    /// SOFT charge for both spins' `b_ov` (the AO 3-index tensor spilling is
+    /// its real fallback -- see the measured window at the reservation site),
+    /// and `.1` is the HARD charge for the three amplitude tensors, which have
+    /// no fallback at all.
+    ///
+    /// The three amplitude tensors are the dominant planes on this path and
+    /// they are ALL live simultaneously (`check_u_mo_side_alloc`'s own doc
+    /// says so and charges `n_amplitude_sets = 3`). They escape into this
+    /// struct, so a guard dropped when `compute_u_mp2_amplitudes` returns
+    /// would credit the pool back while the tensors are resident for the whole
+    /// downstream gradient / orbital-optimization pipeline.
+    ///
+    /// The two `b_ov` tensors in `inter_a`/`inter_b` are charged separately by
+    /// the caller's own guard, which outlives this one, because
+    /// `RpaIntermediates` is constructed by struct literal in ferric-rpa and
+    /// so cannot carry a field of its own.
+    ///
+    /// Inert when no pool is installed.
+    pub(crate) _charge: (
+        ferric_core::memory::pool::Reservation,
+        ferric_core::memory::pool::Reservation,
+    ),
 }
 
 /// The `(naux, nocc_α, nvir_α, nocc_β, nvir_β)` shapes
@@ -152,6 +188,67 @@ pub fn u_ri_mp2(
     let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, scf, config, true)?;
     let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, scf, config, false)?;
 
+    // DEBIT the shared pool for BOTH spins' b_ov, held for the rest of this
+    // function -- which is exactly how long they are resident.
+    //
+    // Taken AFTER the two `compute_rpa_intermediates_spin` calls return, not
+    // before, and that ordering is the fix for a MEASURED regression rather
+    // than a style choice.
+    //
+    // Each of those calls builds an AO 3-index tensor through
+    // `ferric_integrals::ThreeIndexSource`, which takes its OWN hard pool
+    // charge for it and releases that charge when the source drops at the end
+    // of the call. A b_ov reservation held ACROSS the call is therefore
+    // outstanding at the moment the integrals layer asks for the AO tensor,
+    // and the pool refuses THAT allocation -- naming the AO tensor as the
+    // plane that failed and this charge as the incumbent. The gate refuses the
+    // allocation it reserved for. Benzene cation / cc-pVDZ (nao=114, naux=420,
+    // alpha 21o/93v, beta 20o/94v), same binary, no pool (= pre-migration) vs
+    // a pool of the same size, with the charge taken BEFORE:
+    //
+    //   budget   pre-migration   charge-taken-before
+    //    32 MB   OK              OK       (AO tensor spills)
+    //    43 MB   OK              REFUSED  "DF 3-index (P|mn) in-core needs
+    //                                      0.044 GB but only 0.031 GB free"
+    //    50 MB   OK              REFUSED  "... only 0.037 GB free"
+    //    54 MB   OK              REFUSED  "... only 0.042 GB free"
+    //    56 MB   OK              OK
+    //
+    // The window is exactly [ao, ao + b_ov_a + b_ov_b) = [43.67, 56.55] MB.
+    // Making the charge SOFT does NOT fix this: the soft charge SUCCEEDS
+    // (12.88 MB fits), so it is held, and the subsequent hard AO charge is the
+    // one that fails. Only moving the reservation past the AO build removes
+    // the false overlap -- which is correct on the facts, because the AO
+    // tensor and b_ov are NOT co-resident here: the source is dropped inside
+    // `compute_rpa_intermediates_spin` before it returns b_ov.
+    //
+    // It stays SOFT nonetheless. The two spins' b_ov ARE co-resident with each
+    // other, and this reservation covers both; if a future caller reintroduces
+    // an overlap the soft branch degrades to a warning rather than a refusal,
+    // per the standing decision that the migration must not refuse a job the
+    // current tree completes.
+    let b_ov_bytes =
+        |no: usize, nv: usize| naux.saturating_mul(no).saturating_mul(nv).saturating_mul(8);
+    let _both_spins_charge = crate::rimp2::charge_mo_side_soft(
+        "U-RI-MP2 b_ov (alpha + beta)",
+        b_ov_bytes(no_a, nv_a).saturating_add(b_ov_bytes(no_b, nv_b)),
+    );
+
+    // The per-worker energy transient of the pair-energy loops below, charged
+    // for the LARGER spin only: `same_spin_pair_energy` runs sequentially for
+    // alpha then beta, so the two fan-outs do not coexist. SOFT, because the
+    // size reads `rayon::current_num_threads()` -- see `charge_mo_side_soft`.
+    let g_i = |no: usize, nv: usize| {
+        no.saturating_mul(nv)
+            .saturating_mul(nv)
+            .saturating_mul(8)
+            .saturating_mul(rayon::current_num_threads().max(1))
+    };
+    let _g_i_charge = crate::rimp2::charge_mo_side_soft(
+        "U-RI-MP2 g_i per-worker energy transient",
+        g_i(no_a, nv_a).max(g_i(no_b, nv_b)),
+    );
+
     // Stage-seam RSS safety net: both spin intermediates are now resident, so
     // this is the first point where the pre-flight estimate above can be
     // compared against reality. Observational only, never an error.
@@ -220,8 +317,64 @@ pub fn compute_u_mp2_amplitudes(
         crate::rimp2::eri3_budget_bytes(config.memory_budget_bytes),
     )?;
 
+    // DEBIT the shared pool for everything this function's RESULT will hold:
+    // both spins' `b_ov` and all three amplitude tensors.
+    //
+    // Taken HERE -- before `compute_rpa_intermediates_spin` allocates the
+    // first byte -- because the point of a gate is to answer "does this fit?"
+    // BEFORE the allocation, not to observe an OOM afterwards. And held in ONE
+    // guard that moves into the returned `UMp2Amplitudes` below, because every
+    // tensor it covers escapes into that struct: a guard scoped to this
+    // function body would credit the bytes back at `return` while the caller
+    // still holds all five tensors, which is precisely the lifetime bug the
+    // `_charge` field pattern exists to prevent.
+    //
+    // `t_ab` is charged at its REAL shape (nocc_a*nocc_b*nvir_a*nvir_b) rather
+    // than `check_u_mo_side_alloc`'s `max(no)^2 * max(nv)^2` upper bound: an
+    // over-estimating guard refuses jobs that would have fit, and on a
+    // spin-polarized system that bound overshoots by (max/min)^2 per axis.
+    //
+    // SPLIT into two charges with different hardness, because the two groups
+    // have different fallbacks:
+    //
+    //   b_ov x2   SOFT. Taken before `compute_rpa_intermediates_spin`, it is
+    //             outstanding when that function asks `ThreeIndexSource` for
+    //             the AO 3-index tensor, and a HARD charge then refuses THAT
+    //             allocation with this one as the incumbent -- the gate
+    //             refusing the allocation it reserved for. Measured on the
+    //             sibling `u_ri_mp2` path (benzene cation / cc-pVDZ): the
+    //             refusal window is [ao, ao + b_ov_a + b_ov_b) =
+    //             [43.67, 56.55] MB, a band the pre-migration tree completes.
+    //             The AO tensor spilling IS the fallback, and it is already
+    //             exercised below that window. See `u_ri_mp2`'s note.
+    //
+    //   t_aa/t_bb/t_ab  HARD. Dense by construction, no blocked or streaming
+    //             alternative anywhere on this path, and they escape into the
+    //             returned struct. Charged AFTER the intermediates are built,
+    //             so the AO tensor's own charge has already been released and
+    //             this cannot refuse it.
+    let b_ov_bytes =
+        |no: usize, nv: usize| naux.saturating_mul(no).saturating_mul(nv).saturating_mul(8);
+    let t_bytes = |no1: usize, no2: usize, nv1: usize, nv2: usize| {
+        no1.saturating_mul(no2)
+            .saturating_mul(nv1)
+            .saturating_mul(nv2)
+            .saturating_mul(8)
+    };
     let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, scf, config, true)?;
     let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, scf, config, false)?;
+
+    // Taken AFTER the two builds, for the reason spelled out in `u_ri_mp2`:
+    // a b_ov reservation held ACROSS `compute_rpa_intermediates_spin` is
+    // outstanding when `ThreeIndexSource` asks for its AO tensor, and the pool
+    // then refuses THAT allocation with this charge as the incumbent. The two
+    // are not actually co-resident -- the source drops before b_ov is
+    // returned -- so charging after is both correct and free of the false
+    // overlap. SOFT, per `u_ri_mp2`'s note.
+    let b_ov_charge = crate::rimp2::charge_mo_side_soft(
+        "U-MP2 amplitudes b_ov (alpha + beta)",
+        b_ov_bytes(no_a, nv_a).saturating_add(b_ov_bytes(no_b, nv_b)),
+    );
 
     // Stage-seam RSS safety net: both spin intermediates resident, amplitudes
     // not yet built. Observational only, never an error.
@@ -236,6 +389,19 @@ pub fn compute_u_mp2_amplitudes(
         Some(v) => v.clone(),
         None => scf.eps_alpha.clone(),
     };
+
+    // HARD charge for the three amplitude tensors, taken here -- after the AO
+    // 3-index tensor's own charge has been released by
+    // `compute_rpa_intermediates_spin` returning, and before the first
+    // amplitude byte is allocated. Both halves of that placement matter: any
+    // earlier and it would refuse the AO tensor it does not overlap with; any
+    // later and it would be observing an OOM rather than preventing one.
+    let amplitudes_charge = crate::rimp2::charge_mo_side(
+        "U-MP2 amplitudes t_aa + t_bb + t_ab",
+        t_bytes(no_a, no_a, nv_a, nv_a)
+            .saturating_add(t_bytes(no_b, no_b, nv_b, nv_b))
+            .saturating_add(t_bytes(no_a, no_b, nv_a, nv_b)),
+    )?;
 
     let (t_aa, e_aa) = build_same_spin_amplitudes(&inter_a, &eps_a_vec);
     let (t_bb, e_bb) = build_same_spin_amplitudes(&inter_b, &eps_b_vec);
@@ -256,6 +422,7 @@ pub fn compute_u_mp2_amplitudes(
             e_ab,
             e_total,
         },
+        _charge: (b_ov_charge, amplitudes_charge),
     })
 }
 
