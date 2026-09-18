@@ -518,7 +518,17 @@ pub fn dlpno_linlccd_hh(
         crate::diis_history_elems(oovv_elems, cfg.diis_subspace),
         ferric_core::memory::plan::Lifetime::Resident,
     );
-    plan.check()?;
+    // COMMIT against the process-global pool rather than merely CHECK against
+    // a ceiling every other subsystem may re-read in full. With no pool
+    // installed this is exactly the old `check()` plus an inert guard.
+    //
+    // HARD: the dominant reservations here are dense `oovv`-shaped tensors and
+    // the DIIS ring, none of which this driver streams. `_charge` is held to
+    // the end of the function, where they die.
+    if let Some(pool) = ferric_core::memory::pool::global() {
+        plan = plan.with_pool(&pool);
+    }
+    let _charge = plan.commit()?;
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();

@@ -625,7 +625,16 @@ pub fn ao_rpa_correlation_energy(
     // closure below builds `eps_mat` (an `naux x naux` from `pi`) and hands it
     // to `eigh`, whose eigenvector output is a second `naux²` — all inside a
     // `par_iter`, so both scale with the rayon worker count.
-    {
+    //
+    // POOL LIFETIME: `_charge` is bound at FUNCTION scope, not inside the
+    // block that builds the plan. The planes it covers (`eri3_dressed`,
+    // `chi0_stack`, the per-worker eigh scratch) are live from the
+    // `dress_eri3_with_metric` call below all the way to the trace-log fold at
+    // the end, so crediting the bytes back at the end of a `{ .. }` block —
+    // which is what a block-scoped guard would do — would let a concurrent or
+    // subsequent plane be admitted against bytes this function is still
+    // holding. That is precisely the double-spend the pool exists to stop.
+    let _charge = {
         let (naux_g, nbf1, nbf2) = eri3.dim();
         let n_workers = rayon::current_num_threads().max(1);
         let mut plan = MemoryPlan::with_budget_bytes(
@@ -649,8 +658,15 @@ pub fn ao_rpa_correlation_energy(
             naux_g.saturating_mul(naux_g).saturating_mul(2),
             n_workers,
         );
-        plan.check()?;
-    }
+        // `with_pool` re-bases the plan's ceiling on what the pool has LEFT,
+        // so a second caller sees only the headroom the first did not take.
+        // With no pool installed this is `check()` plus an inert guard, which
+        // is exactly the pre-migration behaviour.
+        match ferric_core::memory::pool::global() {
+            Some(pool) => plan.with_pool(&pool).commit()?,
+            None => plan.commit()?,
+        }
+    };
 
     // Step 1: dress ERI.
     let eri3_dressed = dress_eri3_with_metric(eri3, v_inv_sqrt);
@@ -739,11 +755,20 @@ pub fn ao_rpa_correlation_energy_minimax(
     let peak = eri3_bytes
         .saturating_mul(2) // input eri3 + dressed copy
         .saturating_add(chi0_stack_bytes);
+    let label =
+        format!("AO-RPA minimax (naux={naux}, nbf={nbf1}, n_tau={n_tau}; dense eri3 + χ⁰ stack)");
     ferric_core::memory::check_alloc(
-        &format!("AO-RPA minimax (naux={naux}, nbf={nbf1}, n_tau={n_tau}; dense eri3 + χ⁰ stack)"),
+        &label,
         peak,
         ferric_core::memory::resolve_budget_bytes(None),
     )?;
+    // HARD charge, held to FUNCTION scope. `eri3_dressed` and `chi0_stack`
+    // below are both resident until the trace-log fold returns, so the bytes
+    // must stay debited that long. There is no streaming fallback on this
+    // reference path -- `chi0_ao_full_time` materializes the whole n_tau stack
+    // in one call -- so `reserve` (refuse) rather than `try_reserve` is the
+    // honest gate: a `None` branch here would have nothing to fall back TO.
+    let _charge = ferric_core::memory::pool::reserve_global(&label, peak)?;
 
     let eri3_dressed = dress_eri3_with_metric(eri3, v_inv_sqrt);
 

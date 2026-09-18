@@ -36,6 +36,140 @@ use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_rpa::PdepRpaResult;
 use ferric_scf::ScfResult;
 
+/// Whether the QP sweep may fan out across rayon, and the charge for its
+/// per-worker scratch if so.
+///
+/// # What is being charged
+///
+/// `sigma_c_at_z` allocates `v_owned` + one `wv` of `(m_modes, n_act)` and a
+/// `w_nk` of `(n_act, n_quad)` on every call, and it is called from INSIDE the
+/// `mo_indices.par_iter()` below. So the resident peak of the sweep is
+/// `n_workers ×` that, which scales with `RAYON_NUM_THREADS` and with no budget
+/// knob at all -- the same shape as the per-worker frequency scratch behind
+/// `ferric_rpa`'s 2026-07-13 over-budget incident.
+///
+/// # Why this one is SOFT, when `b_full` and `m_proj` are hard
+///
+/// Because a real fallback exists and it does not touch the numerics. Every
+/// QP state's solve is independent and its row is written exactly once
+/// (`par_iter().map().collect()`, no reduction), so running the same closure in
+/// a plain serial `map` produces the SAME values in the SAME order while
+/// holding exactly ONE worker's scratch instead of `n_workers`. That is a
+/// genuine stream, not a pretend one: a soft gate whose `None` branch does not
+/// actually stream is a lie, and this one's does.
+///
+/// MEASURED, not assumed: `tests/mwe_gw_pool_is_inert_without_a_pool.rs`
+/// asserts the same frozen QP bits at `RAYON_NUM_THREADS` 1, 2, 4 and 12 --
+/// and 1 worker IS the serial path's width, so the fallback's numerics are
+/// pinned against the same constants the parallel path is. The gate's own
+/// decision is pinned separately by
+/// `the_soft_qp_gate_panels_when_its_scratch_does_not_fit`, on the counter
+/// below rather than on completion; see that counter's doc for why completion
+/// is not an observable here.
+///
+/// # And why it checks `available_bytes()` rather than just try-reserving
+///
+/// A bare `try_reserve` is GREEDY: it takes the scratch whenever it fits AT
+/// THAT INSTANT. Here there is no ferric-integrals plane left to starve --
+/// `ThreeIndexSource` was built and dropped before the Σ drivers run -- but
+/// `run_evgw` REBUILDS `m_proj` (hard, no fallback) at the top of every outer
+/// iteration, and `run_u_*` builds a SECOND spin's `m_proj` after the alpha
+/// sweep. Those are the downstream hard planes in this crate, and the soft
+/// gate must leave them their bytes rather than squeeze in ahead of them.
+/// `downstream_hard` is computed from the same `budget::m_proj_bytes` the hard
+/// charge uses, so the two cannot drift.
+pub(crate) fn charge_qp_sweep_scratch(
+    m_modes: usize,
+    n_act: usize,
+    n_quad: usize,
+    downstream_hard: usize,
+) -> Option<ferric_core::memory::pool::Reservation> {
+    charge_qp_sweep_scratch_n(m_modes, n_act, n_quad, 1, downstream_hard)
+}
+
+/// `charge_qp_sweep_scratch` for a sweep whose ONE closure solves
+/// `n_channels` spin channels, so each worker holds `n_channels` scratch sets.
+///
+/// `u_sigma::run_u_evgw0` / `run_u_evgw` are the callers: their `par_iter`
+/// closure calls `solve_qp_for_mo` once for alpha and once for beta.
+pub(crate) fn charge_qp_sweep_scratch_n(
+    m_modes: usize,
+    n_act: usize,
+    n_quad: usize,
+    n_channels: usize,
+    downstream_hard: usize,
+) -> Option<ferric_core::memory::pool::Reservation> {
+    let n_workers = rayon::current_num_threads().max(1);
+    let want =
+        crate::budget::qp_worker_scratch_bytes(m_modes, n_act, n_quad, n_workers, n_channels);
+    let label = format!("GW QP sweep per-worker scratch ({n_workers} workers)");
+    let taken = match ferric_core::memory::pool::global() {
+        // Unbudgeted: `Some(inert)` -- exactly the parallel path as before.
+        // This is the trivial limit and it is what makes the anchor test pass.
+        None => Some(ferric_core::memory::pool::Reservation::inert(label)),
+        Some(pool) => {
+            // Take the scratch only if the downstream hard planes still fit.
+            if want.saturating_add(downstream_hard) <= pool.available_bytes() {
+                pool.try_reserve(&label, want)
+            } else {
+                None
+            }
+        }
+    };
+    if taken.is_none() {
+        QP_SWEEP_PANELLED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    taken
+}
+
+/// How many times a QP sweep has taken its SERIAL fallback since the process
+/// started.
+///
+/// # Why an observable counter and not "the run still completed"
+///
+/// Because the run completes either way -- that is the whole point of a soft
+/// gate. "It completed" therefore cannot distinguish "the gate declined and
+/// panelled" from "the gate never had to decline", and a test written on that
+/// signal is INERT for the very mutation it exists to catch.
+///
+/// MEASURED: turning this gate hard (mutation M3) left all five tests in
+/// `tests/mwe_gw_pool_is_inert_without_a_pool.rs` green at 2, 4 AND 12 workers.
+/// The reason is specific and worth recording -- at the binary-searched
+/// smallest completing capacity the scratch STILL FITS in the headroom
+/// available at the instant this gate asks, because ferric-rpa's much larger
+/// preflight charge (the term that sets that floor) has already been released
+/// by then. So the floor is not inside the observable window, and there is no
+/// capacity-only signal to write a test on at that shape.
+///
+/// A counter makes the branch directly observable at any capacity, rather than
+/// requiring a test to locate a window that may be narrow or empty.
+static QP_SWEEP_PANELLED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Read the panel counter. Test-facing observability, not a control knob.
+pub fn qp_sweep_panelled_count() -> usize {
+    QP_SWEEP_PANELLED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// `charge_qp_sweep_scratch` exposed for the gate tests.
+///
+/// The decision this function makes is not observable from a whole-run test at
+/// small shapes: ferric-rpa's much larger preflight charge sets the capacity
+/// floor and is RELEASED before the Σ driver runs, so any capacity low enough
+/// to squeeze this gate is too low for that preflight and the run dies on a
+/// mandatory plane first. Measured at 840_672 B of free headroom against a
+/// 19_712..118_272 B scratch (2..12 workers) on water/STO-3G.
+///
+/// Exposing the gate lets the test exercise the same decision with that
+/// confounder removed, rather than with a capacity window that does not exist.
+pub fn charge_qp_sweep_scratch_for_test(
+    m_modes: usize,
+    n_act: usize,
+    n_quad: usize,
+    downstream_hard: usize,
+) -> Option<ferric_core::memory::pool::Reservation> {
+    charge_qp_sweep_scratch(m_modes, n_act, n_quad, downstream_hard)
+}
+
 /// Sub-sample `npts` node indices from an `nw`-point evaluation grid with a
 /// *decreasing* step size — a direct port of PySCF `gw_ac._get_ac_idx`
 /// (pyscf/gw/utils/ac_grid.py). `steps = linspace(1, step_ratio, npts)`,
@@ -359,44 +493,60 @@ pub fn run_g0w0(
     // is a sequential FP accumulation (`inner += ...`, then `sigma += ...`)
     // feeding a Newton root-find that is fragile near Σc poles, so reordering
     // the summation would perturb eps_qp in a thread-count-dependent way.
-    let qp_rows = mo_indices
-        .par_iter()
-        .map(|&mo_abs| {
-            if mo_abs < first_act {
-                return Err(FerricError::General(format!(
-                    "qp_mos index {mo_abs} is in the frozen-core block"
-                )));
-            }
-            let m_loc = mo_abs - first_act;
-            let eps_m = mo_b.eps_act[m_loc];
+    let solve_one = |&mo_abs: &usize| {
+        if mo_abs < first_act {
+            return Err(FerricError::General(format!(
+                "qp_mos index {mo_abs} is in the frozen-core block"
+            )));
+        }
+        let m_loc = mo_abs - first_act;
+        let eps_m = mo_b.eps_act[m_loc];
 
-            // KS reference: shift = Σ_x − v_xc (inside the QP self-consistency).
-            let shift = vxc_diag
-                .map(|v| sigma_x_all[m_loc] - v[mo_abs])
-                .unwrap_or(0.0);
-            let (eps_qp_m, sc_final, z_renorm, converged) = solve_qp_for_mo(
-                m_loc,
-                eps_m,
-                &m_proj,
-                inv_diel_freq,
-                &quad_weights,
-                &quad_freqs,
-                &mo_b.eps_act,
-                gw_cfg.pade_npts,
-                gw_cfg.qp_newton_damp,
-                ef,
-                shift,
-            )?;
-            Ok((
-                eps_m,
-                sigma_x_all[m_loc],
-                eps_qp_m,
-                sc_final,
-                z_renorm,
-                converged,
-            ))
-        })
-        .collect::<Result<Vec<_>, FerricError>>()?;
+        // KS reference: shift = Σ_x − v_xc (inside the QP self-consistency).
+        let shift = vxc_diag
+            .map(|v| sigma_x_all[m_loc] - v[mo_abs])
+            .unwrap_or(0.0);
+        let (eps_qp_m, sc_final, z_renorm, converged) = solve_qp_for_mo(
+            m_loc,
+            eps_m,
+            &m_proj,
+            inv_diel_freq,
+            &quad_weights,
+            &quad_freqs,
+            &mo_b.eps_act,
+            gw_cfg.pade_npts,
+            gw_cfg.qp_newton_damp,
+            ef,
+            shift,
+        )?;
+        Ok((
+            eps_m,
+            sigma_x_all[m_loc],
+            eps_qp_m,
+            sc_final,
+            z_renorm,
+            converged,
+        ))
+    };
+    // G0W0 has no downstream hard plane of its own (`m_proj` is already
+    // charged and held above, and nothing else is built after this sweep), so
+    // the soft gate's only job here is to decline when the scratch itself does
+    // not fit. `run_evgw` passes a non-zero `downstream_hard`.
+    let qp_rows = match charge_qp_sweep_scratch(m_modes, mo_b.n_act, quad_freqs.len(), 0) {
+        Some(_scratch) => mo_indices
+            .par_iter()
+            .map(solve_one)
+            .collect::<Result<Vec<_>, FerricError>>()?,
+        // Panelled: one worker's scratch, same closure, same order, same
+        // values. `map` on a slice iterator is the serial twin of the
+        // order-preserving `par_iter().map().collect()` above -- each row is
+        // still written exactly once and nothing is reduced across rows, so
+        // this is bit-identical, not merely close.
+        None => mo_indices
+            .iter()
+            .map(solve_one)
+            .collect::<Result<Vec<_>, FerricError>>()?,
+    };
     for (idx, &(eps_m, sx, eps_qp_m, sc_final, z_renorm, converged)) in qp_rows.iter().enumerate() {
         eps_mf[idx] = eps_m;
         sx_out[idx] = sx;
@@ -510,27 +660,42 @@ pub fn run_evgw0(
         }
         // eps_prop is a frozen snapshot for this iteration (Jacobi-style
         // update), so each QP state's solve is independent — parallelize.
-        let qp_new: Vec<(f64, f64, f64, bool)> = mo_indices
-            .par_iter()
-            .zip(static_shifts.par_iter())
-            .map(|(&mo_abs, &shift)| {
-                let m_loc = mo_abs - first_act;
-                let eps_m_mf = mo_b.eps_act[m_loc];
-                solve_qp_for_mo(
-                    m_loc,
-                    eps_m_mf,
-                    &m_proj,
-                    inv_diel_freq,
-                    &quad_weights,
-                    &quad_freqs,
-                    &eps_prop,
-                    gw_cfg.pade_npts,
-                    gw_cfg.qp_newton_damp,
-                    ef,
-                    shift,
-                )
-            })
-            .collect::<Result<Vec<_>, FerricError>>()?;
+        let solve_one = |(&mo_abs, &shift): (&usize, &f64)| {
+            let m_loc = mo_abs - first_act;
+            let eps_m_mf = mo_b.eps_act[m_loc];
+            solve_qp_for_mo(
+                m_loc,
+                eps_m_mf,
+                &m_proj,
+                inv_diel_freq,
+                &quad_weights,
+                &quad_freqs,
+                &eps_prop,
+                gw_cfg.pade_npts,
+                gw_cfg.qp_newton_damp,
+                ef,
+                shift,
+            )
+        };
+        // evGW0 keeps ONE `m_proj` for the whole outer loop (W is frozen --
+        // that is what distinguishes evGW0 from evGW), so like G0W0 there is
+        // no downstream hard plane for the scratch to starve. The charge is
+        // taken and released PER ITERATION, which is the point of the RAII
+        // guard: an 80-iteration loop must not exhaust the pool on scratch
+        // that was freed at the end of iteration two.
+        let qp_new: Vec<(f64, f64, f64, bool)> =
+            match charge_qp_sweep_scratch(m_modes, mo_b.n_act, quad_freqs.len(), 0) {
+                Some(_scratch) => mo_indices
+                    .par_iter()
+                    .zip(static_shifts.par_iter())
+                    .map(solve_one)
+                    .collect::<Result<Vec<_>, FerricError>>()?,
+                None => mo_indices
+                    .iter()
+                    .zip(static_shifts.iter())
+                    .map(solve_one)
+                    .collect::<Result<Vec<_>, FerricError>>()?,
+            };
         for (idx, &(eps_new, sc_new, z_new, converged)) in qp_new.iter().enumerate() {
             max_dev = max_dev.max((eps_new - eps_qp[idx]).abs());
             eps_qp[idx] = eps_new;
@@ -679,26 +844,47 @@ pub fn run_evgw(
         }
         let mut max_dev = 0.0_f64;
         // Frozen (m_proj, W, eps_prop) snapshot ⇒ independent per-state solves.
-        let qp_new: Vec<(f64, f64, f64, bool)> = mo_indices
-            .par_iter()
-            .zip(static_shifts.par_iter())
-            .map(|(&mo_abs, &shift)| {
-                let m_loc = mo_abs - first_act;
-                solve_qp_for_mo(
-                    m_loc,
-                    mo_b.eps_act[m_loc],
-                    &m_proj,
-                    inv_diel_freq,
-                    &current_pdep.quad_weights,
-                    &current_pdep.quad_freqs,
-                    &eps_prop,
-                    gw_cfg.pade_npts,
-                    gw_cfg.qp_newton_damp,
-                    ef,
-                    shift,
-                )
-            })
-            .collect::<Result<Vec<_>, FerricError>>()?;
+        let solve_one = |(&mo_abs, &shift): (&usize, &f64)| {
+            let m_loc = mo_abs - first_act;
+            solve_qp_for_mo(
+                m_loc,
+                mo_b.eps_act[m_loc],
+                &m_proj,
+                inv_diel_freq,
+                &current_pdep.quad_weights,
+                &current_pdep.quad_freqs,
+                &eps_prop,
+                gw_cfg.pade_npts,
+                gw_cfg.qp_newton_damp,
+                ef,
+                shift,
+            )
+        };
+        // `downstream_hard = 0` here, and that is a claim about SCOPE, not an
+        // omission. evGW's mandatory planes for the NEXT outer iteration --
+        // the rebuilt PDEP and the rebuilt `m_proj` -- are allocated after
+        // `m_proj` and this scratch have both gone out of scope at the end of
+        // this loop body, so they are not co-resident with the scratch and
+        // reserving headroom for them here would refuse a job that fits.
+        // Within THIS iteration, `m_proj` was charged above (hard) and is
+        // already outstanding, so `available_bytes()` already reflects it.
+        let qp_new: Vec<(f64, f64, f64, bool)> = match charge_qp_sweep_scratch(
+            current_v_dressed.ncols(),
+            mo_b.n_act,
+            current_pdep.quad_freqs.len(),
+            0,
+        ) {
+            Some(_scratch) => mo_indices
+                .par_iter()
+                .zip(static_shifts.par_iter())
+                .map(solve_one)
+                .collect::<Result<Vec<_>, FerricError>>()?,
+            None => mo_indices
+                .iter()
+                .zip(static_shifts.iter())
+                .map(solve_one)
+                .collect::<Result<Vec<_>, FerricError>>()?,
+        };
         for (idx, &(eps_new, sc_new, z_new, converged)) in qp_new.iter().enumerate() {
             max_dev = max_dev.max((eps_new - eps_qp[idx]).abs());
             eps_qp[idx] = eps_new;

@@ -17,7 +17,18 @@ use ndarray::{s, Array2, Array3};
 use ndarray_linalg::{Cholesky, Diag, SolveTriangular, UPLO};
 
 /// Dressed RI integrals over the full active-MO square.
-#[derive(Debug, Clone)]
+///
+/// # Why this is no longer `Clone`
+///
+/// It carries a [`ferric_core::memory::pool::Reservation`] for `b_full`'s
+/// bytes (see the `_charge` field). A `Clone` would either duplicate the
+/// tensor without duplicating the charge -- letting the pool hand out the same
+/// bytes twice, which is the exact non-composition defect the pool exists to
+/// fix -- or silently re-reserve and be able to fail, which `Clone` cannot
+/// express. `MoB::clone()` had no callers anywhere in the tree (only field
+/// clones: `mo_b.eps_act.clone()`), and the type is not used outside this
+/// crate, so dropping the derive costs nothing.
+#[derive(Debug)]
 pub struct MoB {
     /// Shape (naux, n_act, n_act). `b_full[(P, m, n)] = Σ_Q V^{-1/2}_{PQ} (Q|mn)`.
     pub b_full: Array3<f64>,
@@ -32,6 +43,86 @@ pub struct MoB {
     pub n_occ_act: usize,
     /// Mean-field orbital energies on the active block, length n_act.
     pub eps_act: Vec<f64>,
+    /// The pool charge for `b_full`, held for exactly the tensor's lifetime.
+    ///
+    /// Storing the RAII guard IN the struct that owns the buffer is what turns
+    /// drop-of-tensor into drop-of-charge with no signature churn -- the
+    /// `_charge: Reservation` pattern
+    /// `ferric_integrals::three_index_source::ThreeIndexSource` uses. An evGW
+    /// run builds one `MoB` and holds it across every outer iteration, so the
+    /// charge must live that long and no longer; a guard released at the end of
+    /// `build_mo_b_from_source` would credit ~12.5 GB back to the pool while
+    /// the tensor was still resident, and `m_proj` would then be admitted
+    /// against bytes that are not there.
+    ///
+    /// Inert when no pool is installed -- the trivial limit that keeps the
+    /// unbudgeted path bit-identical (`tests/mwe_gw_pool_is_inert_without_a_pool.rs`).
+    _charge: ferric_core::memory::pool::Reservation,
+}
+
+/// Debit the shared pool for one `b_full` plane.
+///
+/// One function so the production path and the test fixtures charge the SAME
+/// label and the SAME bytes; two open-coded `reserve_global` calls would drift,
+/// which is the estimator-vs-allocator divergence `MemoryPlan`'s module doc
+/// spends three paragraphs on.
+///
+/// HARD (`reserve_global`), not soft: there is no fallback. `b_full` is one
+/// dense `(naux, n_act, n_act)` buffer that the whole crate indexes directly
+/// (`mo_b.b_full[(p, m, i)]` in `sigma_x_diag`, reshaped for the projection
+/// GEMM), and the only way to make it smaller is to shrink the active space or
+/// truncate the rank -- both of which change the ANSWER, not the blocking. A
+/// soft gate whose `None` branch cannot stream is a lie, so this one says what
+/// it is: if the pool cannot cover it the job is refused up front, with the
+/// occupancy breakdown naming whatever is holding the bytes, rather than
+/// walking into the allocator.
+fn charge_b_full(
+    naux: usize,
+    n_act: usize,
+) -> Result<ferric_core::memory::pool::Reservation, FerricError> {
+    ferric_core::memory::pool::reserve_global(
+        &format!("GW dressed MO tensor b_full ({naux}x{n_act}x{n_act})"),
+        crate::budget::b_full_bytes(naux, n_act),
+    )
+}
+
+impl MoB {
+    /// Assemble a `MoB` around an already-built `b_full`, charging its bytes
+    /// against the shared pool.
+    ///
+    /// The `_charge` field is private precisely so that no caller can own a
+    /// `b_full` without owning its charge, which means struct-literal
+    /// construction is no longer possible — including in tests, which built
+    /// synthetic fixtures that way at three sites. This is the supported
+    /// replacement: it takes the same fields and does the one thing the
+    /// literal cannot, so a fixture is charged exactly as a real build is.
+    /// That is deliberate, not a convenience: a fixture that skipped the
+    /// charge would make the pool tests measure a different object from the
+    /// one production uses.
+    ///
+    /// HARD, for the reason `build_mo_b_from_source` documents at length:
+    /// `b_full` has no streamed alternative.
+    pub fn from_parts(
+        b_full: Array3<f64>,
+        v_inv_sqrt: Array2<f64>,
+        naux: usize,
+        n_act: usize,
+        first_act: usize,
+        n_occ_act: usize,
+        eps_act: Vec<f64>,
+    ) -> Result<Self, FerricError> {
+        let _charge = charge_b_full(naux, n_act)?;
+        Ok(Self {
+            b_full,
+            v_inv_sqrt,
+            naux,
+            n_act,
+            first_act,
+            n_occ_act,
+            eps_act,
+            _charge,
+        })
+    }
 }
 
 /// Peak resident bytes of a dressed MO tensor `b_full` of shape
@@ -263,7 +354,31 @@ fn build_mo_b_from_source(
 
     // Guard the (single) b_full allocation against the byte budget before we
     // allocate it. The AO source is already budget-bounded (streamed).
+    //
+    // The ceiling check is kept UNCHANGED and runs first: it is what decides
+    // whether the job is admissible at all, and it is the only gate on the
+    // unbudgeted path, where the pool below is inert. Deleting it in favour of
+    // the pool would RELAX the guard for every caller that does not install a
+    // pool -- which today is every caller except the CLI.
     guard_b_full(naux, n_act, "build_full_b", memory_budget_bytes)?;
+
+    // Now debit the SHARED ledger, BEFORE the allocation below (brief rule 5:
+    // answer "does this fit?" before walking into the allocator, not after).
+    // See `charge_b_full` for why it is hard.
+    //
+    // The AO source's bytes are ALREADY outstanding by the time we get here
+    // (`ThreeIndexSource::build` hard-charges the in-core tensor, at
+    // three_index_source.rs:616) and that source is live across the
+    // `stream_dressed_mo_band` call below -- so `available_bytes()` already
+    // reflects the co-residency and must NOT have the AO bytes subtracted from
+    // it a second time. `build_full_b_both_spins` makes that concrete: it
+    // builds ONE source and streams it twice, so at the beta pass the pool
+    // holds the AO source AND alpha's `b_full`, and a gate that re-subtracted
+    // `ao_source_bytes` there would refuse a job that fits. That is the
+    // orientation difference from the ferric-rpa starvation bug, where the
+    // mandatory integrals plane asked AFTER an optional one; here it asks
+    // FIRST, so the correct action is to subtract nothing.
+    let charge = charge_b_full(naux, n_act)?;
 
     let c_act = c.slice(s![.., frozen_core..nmo]).to_owned();
 
@@ -284,6 +399,7 @@ fn build_mo_b_from_source(
         first_act: frozen_core,
         n_occ_act,
         eps_act,
+        _charge: charge,
     })
 }
 

@@ -601,7 +601,7 @@ pub fn pdep_dynamic_polarizability_truncated(
     // (nbf, npts) block (its accumulation is a standalone serial loop, not the
     // fused banded one in properties.rs), so the gate is the only thing
     // standing between an over-budget job and the OOM killer here.
-    crate::properties::preflight_grid_path(
+    let (_budget, _charge) = crate::properties::preflight_grid_path(
         &format!(
             "pdep_dynamic_polarizability_truncated (natoms={natoms}, nbf={}, npts={npts}, naux={})",
             obs.nbasis(),

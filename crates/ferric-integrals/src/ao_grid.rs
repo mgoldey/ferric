@@ -83,12 +83,70 @@ impl AoGridKind {
 /// legacy env vars > 0.8×RAM, same precedence as every other unconfigured
 /// budget check in the workspace).
 pub fn check_ao_grid_budget(kind: AoGridKind, nbf: usize, npts: usize) -> Result<(), GtoEvalError> {
-    let budget = ferric_core::memory::resolve_budget_bytes(None);
+    check_ao_grid_budget_reserved(kind, nbf, npts).map(|_| ())
+}
+
+/// [`check_ao_grid_budget`], but hands back the
+/// [`Reservation`](ferric_core::memory::pool::Reservation) that admitted
+/// the buffer so a caller which OWNS the buffer can hold the charge for the
+/// buffer's whole LIFETIME.
+///
+/// This is the difference between accounting and decoration. `check_*` on its
+/// own debits the pool, returns, and the guard drops at the end of the
+/// statement — so the bytes are credited back while the array it approved is
+/// still resident, and the next plane to ask sees a pool that looks empty.
+/// That is precisely the composition failure the pool exists to fix, so the
+/// long-lived owner (`ferric_dft::ks::GridCache::Full`) must store the guard
+/// in the same struct field as the arrays.
+///
+/// Callers whose buffer really is transient (dropped before the next plane
+/// allocates — the DFT analytic-gradient and f_xc paths, which allocate,
+/// contract, and free within one call) can use `check_ao_grid_budget` and let
+/// the guard drop: for them the charge is a genuine admission test, and
+/// holding it longer would over-charge the pool.
+///
+/// # Why this DEBITS rather than re-reading a ceiling
+///
+/// The old body resolved `resolve_budget_bytes(None)` — the WHOLE ceiling —
+/// on every call, so the grid cache's question was "do I fit in 4.72 GiB?"
+/// while the DF 3-index tensor asked the identical question against the
+/// identical number. Both passed; the process held the sum and was OOM-killed
+/// at 6.04 GiB. Against a pool the second asker sees only what the first
+/// left.
+///
+/// With NO pool installed this is EXACTLY the old behaviour: the reservation
+/// is inert and the comparison falls back to the resolved ceiling, so the
+/// unbudgeted path is bit-identical (pinned by
+/// `ferric-scf/tests/mwe_ksdft_pool_is_inert_without_a_pool.rs`).
+pub fn check_ao_grid_budget_reserved(
+    kind: AoGridKind,
+    nbf: usize,
+    npts: usize,
+) -> Result<ferric_core::memory::pool::Reservation, GtoEvalError> {
     let needed = kind
         .planes()
         .saturating_mul(nbf)
         .saturating_mul(npts)
         .saturating_mul(8);
+    // Pool installed: DEBIT it, so this plane's bytes are no longer available
+    // to the next plane that asks. Refusal carries the pool's own occupancy
+    // breakdown, which names the dominant incumbent plane.
+    if let Some(pool) = ferric_core::memory::pool::global() {
+        return pool
+            .reserve(&format!("KS grid AO cache ({kind:?})"), needed)
+            .map_err(|e| {
+                GtoEvalError::OutOfBudget(format!(
+                    "DFT AO-grid buffer ({kind:?}) needs {needed_gb:.2} GB (nbf={nbf}, \
+                     npts={npts}) and the shared memory pool cannot cover it — use a smaller \
+                     grid, a smaller basis, or raise [memory] budget_gb / \
+                     FERRIC_MEM_BUDGET_GB\n{e}",
+                    needed_gb = needed as f64 / 1e9,
+                ))
+            });
+    }
+    // No pool: the historical ceiling comparison, unchanged. This is the
+    // trivial limit.
+    let budget = ferric_core::memory::resolve_budget_bytes(None);
     if needed > budget {
         return Err(GtoEvalError::OutOfBudget(format!(
             "DFT AO-grid buffer ({kind:?}) needs {needed_gb:.2} GB (nbf={nbf}, npts={npts}) \
@@ -98,7 +156,9 @@ pub fn check_ao_grid_budget(kind: AoGridKind, nbf: usize, npts: usize) -> Result
             budget_gb = budget as f64 / 1e9,
         )));
     }
-    Ok(())
+    Ok(ferric_core::memory::pool::Reservation::inert(
+        "KS grid AO cache",
+    ))
 }
 
 /// One contracted GTO shell located in space (centered on its parent atom).

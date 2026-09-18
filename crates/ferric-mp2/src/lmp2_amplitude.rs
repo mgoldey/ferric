@@ -607,6 +607,23 @@ pub struct LocalizedProblem {
     pub occ_centers: Array2<f64>,
     /// Orbital spreads σᵢ = sqrt(⟨r²⟩ − |⟨r⟩|²), Bohr.
     pub occ_spreads: Vec<f64>,
+    /// RAII charge against the shared memory pool for `j_dense`, held for as
+    /// long as this struct is.
+    ///
+    /// Before the pool migration, `lmp2_amplitude.rs` had ZERO memory guards
+    /// of any kind: the config's `eri3_budget_bytes` reached exactly one
+    /// consumer (`eri3_mo_ov_blocked`), and `j_dense` -- an `(no·nv)²` dense
+    /// matrix, the largest object on this path and the one every downstream
+    /// LinLCCD / dRPA consumer iterates against -- was allocated with no
+    /// check, no warning and no log line.
+    ///
+    /// The guard is a struct field rather than a scoped local because
+    /// `j_dense` escapes into this struct and outlives its builder; a scoped
+    /// guard would credit the pool back while the matrix is resident for the
+    /// whole amplitude solve.
+    ///
+    /// Inert when no pool is installed.
+    pub(crate) _charge: ferric_core::memory::pool::Reservation,
 }
 
 /// The basis-stage products (everything BEFORE any 4-index work): localized
@@ -751,6 +768,28 @@ pub fn assemble_localized(
 ) -> Result<LocalizedProblem, FerricError> {
     let lb = assemble_basis(mol, obs, dfbs, op, rhf, cfg, vvhv)?;
     let (no, nv) = (lb.no, lb.nv);
+    // DEBIT the shared pool for `j_dense` BEFORE building it -- the point of a
+    // gate is to answer "does this fit?" before the allocation, not after.
+    //
+    // Charged for `j_dense` alone and not for the `btilde` transient below:
+    // `btilde` is (naux, no*nv), which is naux/(no*nv) times SMALLER, and it
+    // dies at the end of the match arm. Charging a transient for the struct's
+    // lifetime is the over-estimating-guard bug. `lb.b_flat` is charged by
+    // `eri3_mo_ov_blocked`'s own path inside `assemble_basis`.
+    //
+    // HARD: `j_dense` is dense by construction on this path -- the ragged /
+    // domain-blocked alternative is a DIFFERENT entry point
+    // (`assemble_ragged_direct`), chosen by the caller, not a fallback this
+    // function can take. A caller who cannot afford the dense matrix has a
+    // real alternative, and refusing here with an occupancy breakdown naming
+    // the plane is how they find out, rather than being OOM-killed.
+    let _j_dense_charge = crate::rimp2::charge_mo_side(
+        &format!("LMP2 j_dense (no={no}, nv={nv}; dense (no*nv)^2 localized ERI)"),
+        no.saturating_mul(nv)
+            .saturating_mul(no)
+            .saturating_mul(nv)
+            .saturating_mul(8),
+    )?;
     let j_dense = match cfg.fit_radius_bohr {
         None => {
             let vis = metric_inverse_sqrt(&lb.v2c, op)?;
@@ -768,6 +807,7 @@ pub fn assemble_localized(
         c_locc: lb.c_locc,
         occ_centers: lb.occ_centers,
         occ_spreads: lb.occ_spreads,
+        _charge: _j_dense_charge,
     })
 }
 

@@ -62,15 +62,16 @@ fn one_tensor_bytes() -> usize {
 
 /// Minimal `MoB` carrying a full-rank `b_full`.
 fn mo_b() -> MoB {
-    MoB {
-        b_full: Array3::<f64>::zeros((NAUX, N_ACT, N_ACT)),
-        v_inv_sqrt: Array2::<f64>::zeros((NAUX, NAUX)),
-        naux: NAUX,
-        n_act: N_ACT,
-        first_act: 0,
-        n_occ_act: N_ACT / 2,
-        eps_act: vec![0.0; N_ACT],
-    }
+    MoB::from_parts(
+        Array3::<f64>::zeros((NAUX, N_ACT, N_ACT)),
+        Array2::<f64>::zeros((NAUX, NAUX)),
+        NAUX,
+        N_ACT,
+        0,
+        N_ACT / 2,
+        vec![0.0; N_ACT],
+    )
+    .expect("synthetic MoB charge (no pool installed in this test binary)")
 }
 
 /// Full rank: `m_modes == naux`, the default (`trunc_thresh = 0`).

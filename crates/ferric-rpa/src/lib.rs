@@ -289,6 +289,31 @@ impl std::fmt::Display for PdepRpaResult {
     }
 }
 
+/// RAII guards holding this run's pool charge for the RPA planes.
+///
+/// Two separate guards because the two halves are charged differently and the
+/// soft one may be absent:
+///
+/// * `_hard` covers the planes with NO streaming alternative (metric buffers,
+///   the full `b_ov`, the resident `(naux, nao, nao)` AO tensor, the assembled
+///   Lanczos matrix + eigenvectors, the `y` projection, the retained
+///   inverse-dielectric stack). Over budget, these REFUSE.
+/// * `_soft` covers the per-worker frequency-quadrature scratch, which
+///   `energy::quad_panel_width` already narrows and re-routes through
+///   `dielectric_matrix_from_projection_into_panelled` when it does not fit.
+///   `None` here means exactly that: the run proceeds panelled, which is what
+///   the pre-migration tree does on the same input. Hard-charging it would
+///   refuse jobs the current tree completes -- see this crate's migration
+///   report for the measured shapes.
+///
+/// Both are held by the CALLER for the whole solve. Dropping them at the end
+/// of the preflight would credit the bytes back before a single plane was
+/// allocated, which makes the gate decoration.
+pub(crate) struct RpaPoolCharge {
+    _hard: ferric_core::memory::pool::Reservation,
+    _soft: Option<ferric_core::memory::pool::Reservation>,
+}
+
 /// Pre-flight peak-memory gate shared by [`run_pdep_rpa`] and the eigensolve
 /// entry points. Cheap shape values only (nelec/nbasis accessors, no
 /// ERI/GEMM work) so this runs before ANY large allocation. See `budget.rs`
@@ -300,7 +325,7 @@ fn preflight_check_closed_shell(
     dfbs: &PreparedBasis,
     config: &PdepRpaConfig,
     label_prefix: &str,
-) -> Result<(), FerricError> {
+) -> Result<RpaPoolCharge, FerricError> {
     use ferric_mp2::rimp2::active_occ;
     let naux = dfbs.nbasis();
     let nbas = obs.nbasis();
@@ -309,7 +334,7 @@ fn preflight_check_closed_shell(
     let nvir = nbas.saturating_sub(nocc_total);
     let n_workers = rayon::current_num_threads().max(1);
     let n_keep = naux; // trunc_thresh unknown pre-eigensolve; conservative upper bound
-    let est = budget::estimate_peak_bytes(budget::PeakEstimateShape {
+    let shape = budget::PeakEstimateShape {
         naux,
         nocc,
         nvir,
@@ -325,15 +350,76 @@ fn preflight_check_closed_shell(
         // inverse-dielectric stack is RETAINED, so n_quad multiplies peak bytes
         // instead of only wall time. ferric_gw sets this for every GW method.
         need_inv_dielectric: config.need_inv_dielectric_freq,
-    });
+    };
+    let est = budget::estimate_peak_bytes(shape);
     let budget_bytes = ferric_core::memory::resolve_budget_bytes(config.memory_budget_bytes);
-    ferric_core::memory::check_alloc(
-        &format!(
-            "{label_prefix} preflight (naux={naux}, nocc={nocc}, nvir={nvir}, n_workers={n_workers})"
-        ),
-        est,
-        budget_bytes,
-    )
+    let label = format!(
+        "{label_prefix} preflight (naux={naux}, nocc={nocc}, nvir={nvir}, n_workers={n_workers})"
+    );
+    // The historical ceiling check, unchanged: it is what decides whether the
+    // job is admissible AT ALL, and removing it would relax the gate on the
+    // unbudgeted path (where the pool is inert).
+    ferric_core::memory::check_alloc(&label, est, budget_bytes)?;
+
+    // Now debit the SHARED ledger, split hard/soft. Charging `est` as one
+    // hard lump would refuse a job the pre-migration tree completes: the
+    // soft half is the per-worker quadrature scratch, which
+    // `quad_panel_width` already narrows rather than failing on. See
+    // `budget::estimate_peak_split`.
+    let (hard, soft) = budget::estimate_peak_split(shape);
+    let _hard = ferric_core::memory::pool::reserve_global(&format!("{label} [in-core]"), hard)?;
+    // The soft charge must LEAVE ROOM for the downstream hard planes.
+    //
+    // # The defect this avoids (measured, 2026-09-18)
+    //
+    // A bare `try_reserve_global(soft)` is GREEDY: it takes the scratch
+    // whenever it happens to fit at that instant, with no regard for the
+    // mandatory allocation that asks next. Right after this preflight,
+    // `compute_rpa_intermediates` builds a `ThreeIndexSource`, which HARD-
+    // charges the `(naux, nao, nao)` AO tensor. So an optional plane could
+    // starve a mandatory one that has no fallback -- the run then dies on
+    // `"DF 3-index (P|mn) in-core"` at a capacity where the panelled path
+    // would have completed fine.
+    //
+    // Measured on water/cc-pVDZ (hard 522_816 B, AO tensor 387_072 B,
+    // per-worker scratch 120_288 B) with a bare `try_reserve`, binary-
+    // searching the smallest capacity that completes:
+    //
+    //   workers   soft       hard+AO   hard+soft+AO   measured minimum
+    //   2          240_576   909_888      1_150_464   1_150_834  (no fallback)
+    //   4          481_152   909_888      1_391_040   1_391_076  (no fallback)
+    //   12       1_443_456   909_888      2_353_344     910_380  (panelled)
+    //
+    // At 12 workers the scratch is big enough to fail on its own, the
+    // fallback engages, and the floor is `hard + AO` as intended. At 2 and 4
+    // the scratch is SMALL enough to succeed -- and then the AO tensor is
+    // refused. The soft gate stopped protecting the run precisely where the
+    // run was cheapest. That is an over-charge in the shared brief's sense:
+    // it refuses a job that fits.
+    //
+    // Reserving the AO-tensor headroom makes the floor `hard + AO` at EVERY
+    // worker count (verified 2, 4, 12), which is the honest soft-gate
+    // contract: take the scratch only when doing so still leaves the
+    // mandatory planes their bytes.
+    //
+    // `downstream_hard` uses the same `budget::ao_tensor_bytes` the split
+    // subtracts, so the two cannot drift: whatever this crate declines to
+    // charge because ferric-integrals charges it, it also declines to spend.
+    let downstream_hard = budget::ao_tensor_bytes(shape);
+    let soft_label = format!("{label} [freq scratch]");
+    let _soft = match ferric_core::memory::pool::global() {
+        // Unbudgeted: `Some(inert)`, exactly as before -- the trivial limit.
+        None => Some(ferric_core::memory::pool::Reservation::inert(soft_label)),
+        Some(pool) => {
+            // Take the scratch only if the AO tensor still fits afterwards.
+            if soft.saturating_add(downstream_hard) <= pool.available_bytes() {
+                pool.try_reserve(&soft_label, soft)
+            } else {
+                None
+            }
+        }
+    };
+    Ok(RpaPoolCharge { _hard, _soft })
 }
 
 /// Default Davidson subspace cap, derived from the memory budget.
@@ -368,7 +454,10 @@ pub fn run_pdep_rpa(
     rhf: &ScfResult,
     config: &PdepRpaConfig,
 ) -> Result<PdepRpaResult, FerricError> {
-    preflight_check_closed_shell(mol, obs, dfbs, config, "PDEP-RPA")?;
+    // Bound at FUNCTION scope: the planes stay resident through
+    // `compute_rpa_intermediates` and the whole
+    // `run_pdep_rpa_from_intermediates` solve below.
+    let _pool_charge = preflight_check_closed_shell(mol, obs, dfbs, config, "PDEP-RPA")?;
     // Step 1: Build RI-MO B^P_ia tensor and V^{-1/2}. RPA only needs the
     // occ-vir block; skip the full-MP2 amplitudes/density that the gradient
     // path requires.

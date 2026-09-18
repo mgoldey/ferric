@@ -57,6 +57,35 @@ where
 
 /// Run Davidson with an explicit seed matrix.
 ///
+/// # DELIBERATELY NOT CHARGED against the shared `MemoryPool`
+///
+/// The iteratively-grown subspace here (`naux x m`, expanded at lines ~238 and
+/// ~277) is the one allocation in this crate whose size is not knowable before
+/// the solve. Charging it correctly would mean re-reserving on every expansion
+/// and releasing on every restart -- a charge that tracks the ACTUAL subspace,
+/// per the migration brief's eigensolver caution -- and an approximate charge
+/// would be strictly worse than none: over-charge it and the pool refuses jobs
+/// that fit; under-charge it and the gate is decoration with extra cost.
+///
+/// It is left uncharged because it is already BOUNDED by construction and by a
+/// budget-derived cap that composes with the pool today:
+///
+/// * `max_vecs` comes from `lib.rs::davidson_default_max_vecs`, which divides a
+///   quarter of the resolved budget by `4 * naux * 8` and then caps at the
+///   historical `3 * naux`. So the subspace can never exceed `3 * naux^2 * 8`
+///   bytes, and on a tight budget it is smaller than that.
+/// * `lib.rs::preflight_check_closed_shell` HARD-charges `2 * naux^2 * 8` for
+///   the assembled dielectric plus its eigenvectors, which is the same order.
+///   A job whose Davidson subspace would be a problem has already been
+///   refused at that gate.
+/// * Shrinking `max_vecs` does NOT change the converged eigenvalues (Davidson
+///   restarts from the current Ritz vectors), so unlike a panel width this
+///   knob is bit-safe to narrow -- which is why the budget-derived cap is a
+///   real fallback rather than a numerics change.
+///
+/// If this is ever charged, the charge must be re-taken on each expansion and
+/// released when the solve returns, not held for the caller's lifetime.
+///
 /// `seed`: initial trial subspace, shape (naux, n_seed). Columns are orthonormal
 ///   trial vectors in the dressed aux basis. Davidson will grow this subspace
 ///   as needed until `n_desired` eigenpairs converge.

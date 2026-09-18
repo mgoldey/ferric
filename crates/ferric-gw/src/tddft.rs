@@ -168,22 +168,40 @@ impl Default for TdaDftConfig {
 /// With `include_fxc = false` the kernel is never constructed and the old
 /// `2n²` is correct, so the charge is conditional rather than uniformly raised
 /// — an over-estimating guard is also a bug: it refuses jobs that would fit.
-fn check_tda_alloc(n: usize, include_fxc: bool, budget: Option<usize>) -> Result<(), FerricError> {
+///
+/// # Pool charge and its lifetime
+///
+/// Returns the RAII guard for these matrices' bytes. The caller binds it
+/// (`let _dense = ...?;`) at the top of `run_tda_dft`, which is BEFORE the
+/// `MoB` build that follows -- deliberately, because the dense `(n, n)` block
+/// and `b_full` really are co-resident: `a_mat` is filled from `mob.b_full`
+/// at tddft.rs:471 and `mob` is still borrowed there. Charging them both is
+/// the accounting the ceiling check cannot do, since each `check_alloc` sees
+/// only its own plane.
+///
+/// HARD (`reserve_global`), not soft: `a_mat` is handed whole to LAPACK
+/// `dsyev` and there is no iterative TDA solver in this crate to fall back to.
+fn check_tda_alloc(
+    n: usize,
+    include_fxc: bool,
+    budget: Option<usize>,
+) -> Result<ferric_core::memory::pool::Reservation, FerricError> {
     let matrices = if include_fxc { 3 } else { 2 };
-    let bytes = n
-        .saturating_mul(n)
-        .saturating_mul(8)
-        .saturating_mul(matrices);
+    let bytes = crate::budget::dense_ab_bytes(n, matrices);
     let what = if include_fxc {
         ", + f_xc block, + eigh output"
     } else {
         ", + eigh output"
     };
+    let label = format!("TDA-DFT dense (ia) matrix (n = nocc*nvir = {n}{what})");
+    // The historical ceiling check, unchanged and first: it is the only gate
+    // on the unbudgeted path, where the pool charge below is inert.
     ferric_core::memory::check_alloc(
-        &format!("TDA-DFT dense (ia) matrix (n = nocc*nvir = {n}{what})"),
+        &label,
         bytes,
         ferric_core::memory::resolve_budget_bytes(budget),
-    )
+    )?;
+    ferric_core::memory::pool::reserve_global(&label, bytes)
 }
 
 /// Length-gauge singlet TDA oscillator strengths.
@@ -370,7 +388,11 @@ pub fn run_tda_dft(
     if n == 0 {
         return Err(FerricError::General("run_tda_dft: empty (ia) space".into()));
     }
-    check_tda_alloc(
+    // Bind the guard (not `_`): the charge must live as long as the matrices
+    // it accounts for, and `let _ = ..` would credit the bytes back at this
+    // semicolon -- before the `MoB` build below, let alone the `a_mat`
+    // allocation at :471 that it exists to cover.
+    let _dense = check_tda_alloc(
         n,
         cfg.include_fxc && xc_name.is_some(),
         cfg.memory_budget_bytes,

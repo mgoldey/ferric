@@ -227,6 +227,41 @@ pub fn canonical_mp2(
         peak,
         ferric_core::memory::resolve_budget_bytes(None),
     )?;
+    // DEBIT the shared pool, before the nbas^4 buffer allocates.
+    //
+    // Charged on the TRUE co-resident peak, not on `peak` above. `peak` sums
+    // three buffers that do not all coexist: `ao` (nbas^4) is co-resident with
+    // `t1` (nbas^3*nocc) only across the first quarter transform and is
+    // `drop`ped immediately after, while `mo` (nov^2) is allocated several
+    // stages later. Charging their sum would be the over-estimating-guard bug
+    // -- it refuses jobs that would have fit -- so this takes the max of the
+    // two genuine stages instead:
+    //   stage 1: ao + t1        = nbas^4 + nbas^3*nocc
+    //   stage 2: t2 + t3        = nocc*nvir*nbas^2 + nov*nbas*nvir
+    // and `mo` (nov^2), which is the smallest of the three and is live with
+    // neither, is folded into stage 2 where it first appears.
+    //
+    // `peak` itself is left untouched: it is an EXISTING pre-flight whose
+    // conservatism has been in the tree and changing what it refuses is a
+    // behaviour change outside this migration's scope. The pool charge is
+    // strictly the more accurate of the two, so it never refuses something
+    // `check_alloc` admits.
+    //
+    // HARD: this is the dense reference path by construction ("Callers must
+    // apply their own memory guard" per `dense_ao_eri`'s doc); it has no
+    // blocked or streaming alternative to fall back to.
+    let stage1 = nb2
+        .saturating_mul(nb2)
+        .saturating_add(nb2.saturating_mul(nbas).saturating_mul(nocc));
+    let stage2 = nocc
+        .saturating_mul(nvir)
+        .saturating_mul(nb2)
+        .saturating_add(nov.saturating_mul(nbas).saturating_mul(nvir))
+        .saturating_add(nov.saturating_mul(nov));
+    let _canonical_charge = crate::rimp2::charge_mo_side(
+        &format!("canonical MP2 peak (nbas={nbas}, nocc={nocc}, nvir={nvir}; dense AO ERI nbas^4)"),
+        stage1.max(stage2).saturating_mul(8),
+    )?;
 
     // ---- Step 1: dense AO ERI (mu nu|la sg), 8-fold permutational symmetry. ----
     // Shared with the exact-integral reference paths via `dense_ao_eri` so there is

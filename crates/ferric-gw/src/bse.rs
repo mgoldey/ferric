@@ -307,7 +307,9 @@ pub fn run_bse_tda(
     // copies, no reduction — bit-identical by construction). The `bare`/
     // `screened` closures are scalar contractions (no BLAS), so no
     // with_blas_threads guard is needed. Serial below PAR_ROWS_THRESHOLD.
-    check_dense_response_alloc("BSE/TDA", n, 1, None)?;
+    // Bind the guard (not `_`): the charge must live as long as the matrices,
+    // and `let _ = ..` would credit the bytes back at this semicolon.
+    let _dense = check_dense_response_alloc("BSE/TDA", n, 1, None)?;
     let mut a_mat = Array2::<f64>::zeros((n, n));
     let fill_row = |ia: usize, row: &mut [f64]| {
         let i = ia / nvir;
@@ -418,20 +420,39 @@ pub fn run_bse_tda(
 /// `(nocc·nvir)²`, i.e. the fourth power of system size, so the headroom
 /// disappears quickly. `dense O(nmo⁴)` is exactly what the module docs already
 /// warn about; this makes the warning enforced.
+/// # Pool charge and its lifetime
+///
+/// Returns the RAII guard for these matrices' bytes. It is bound in the caller
+/// (`let _dense = check_dense_response_alloc(..)?;`) immediately before the
+/// `Array2::zeros` calls it accounts for, so the charge is released at the end
+/// of the driver — which is where the matrices themselves are dropped. Binding
+/// it to `_` instead of `_dense` would drop it AT THE SEMICOLON, crediting the
+/// bytes back before a single one was allocated; the mutation ledger records
+/// that exact change (M4) and which test catches it.
+///
+/// HARD (`reserve_global`), not soft. There is no fallback: `run_bse_tda` and
+/// the C6 drivers fill a dense `(n, n)` matrix row-by-row and hand it to
+/// LAPACK `dsyev`, which needs the whole matrix. The crate has no iterative or
+/// blocked BSE solver to fall back to, so a `None` branch could only pretend.
 fn check_dense_response_alloc(
     label: &str,
     n: usize,
     n_mats: usize,
     memory_budget_bytes: Option<usize>,
-) -> Result<(), ferric_core::FerricError> {
-    let per_mat = n.saturating_mul(n).saturating_mul(8);
+) -> Result<ferric_core::memory::pool::Reservation, ferric_core::FerricError> {
     // +1 for the eigh eigenvector output, which is co-resident with the input.
-    let bytes = per_mat.saturating_mul(n_mats.saturating_add(1));
+    let bytes = crate::budget::dense_ab_bytes(n, n_mats.saturating_add(1));
+    let label = format!(
+        "{label} dense response matrices (n = nocc*nvir = {n}, {n_mats} matrices + eigh output)"
+    );
+    // The historical ceiling check, unchanged and first: it is the only gate on
+    // the unbudgeted path, where the pool below is inert.
     ferric_core::memory::check_alloc(
-        &format!("{label} dense response matrices (n = nocc*nvir = {n}, {n_mats} matrices + eigh output)"),
+        &label,
         bytes,
         ferric_core::memory::resolve_budget_bytes(memory_budget_bytes),
-    )
+    )?;
+    ferric_core::memory::pool::reserve_global(&label, bytes)
 }
 
 /// any `run_bse_tda` discrepancy is attributable to the screening / GW gap, not
@@ -480,7 +501,9 @@ pub fn run_cis_tda(
     // over the flat `ia` axis with order-preserving `par_chunks_mut` into the
     // SAME preallocated matrix. No BLAS inside `bare`, so no
     // with_blas_threads guard needed. Serial below PAR_ROWS_THRESHOLD.
-    check_dense_response_alloc("BSE/TDA", n, 1, None)?;
+    // Bind the guard (not `_`): the charge must live as long as the matrices,
+    // and `let _ = ..` would credit the bytes back at this semicolon.
+    let _dense = check_dense_response_alloc("BSE/TDA", n, 1, None)?;
     let mut a_mat = Array2::<f64>::zeros((n, n));
     let fill_row = |ia: usize, row: &mut [f64]| {
         let i = ia / nvir;
@@ -677,7 +700,9 @@ pub fn run_bse_c6(
     // matrices (order-preserving, no reduction, bit-identical by
     // construction). No BLAS inside `bare`/`screened`. Serial below
     // PAR_ROWS_THRESHOLD.
-    check_dense_response_alloc("BSE/TDHF", n, 2, None)?;
+    // Bind the guard (not `_`): the charge must live as long as the matrices,
+    // and `let _ = ..` would credit the bytes back at this semicolon.
+    let _dense = check_dense_response_alloc("BSE/TDHF", n, 2, None)?;
     let mut apb = Array2::<f64>::zeros((n, n));
     let mut amb = Array2::<f64>::zeros((n, n));
     let fill_row = |ia: usize, apb_row: &mut [f64], amb_row: &mut [f64]| {
@@ -936,7 +961,9 @@ pub fn run_bse_c6_ks(
 
     // Same row-independent structure as `run_bse_c6` (see the comment there):
     // row `ia` of both apb/amb written exactly once by a single (i,a) pair.
-    check_dense_response_alloc("BSE/TDHF", n, 2, None)?;
+    // Bind the guard (not `_`): the charge must live as long as the matrices,
+    // and `let _ = ..` would credit the bytes back at this semicolon.
+    let _dense = check_dense_response_alloc("BSE/TDHF", n, 2, None)?;
     let mut apb = Array2::<f64>::zeros((n, n));
     let mut amb = Array2::<f64>::zeros((n, n));
     let fill_row = |ia: usize, apb_row: &mut [f64], amb_row: &mut [f64]| {
@@ -1281,7 +1308,9 @@ pub fn run_rpax_static_polarizability(
         acc
     };
 
-    check_dense_response_alloc("BSE/TDHF", n, 2, None)?;
+    // Bind the guard (not `_`): the charge must live as long as the matrices,
+    // and `let _ = ..` would credit the bytes back at this semicolon.
+    let _dense = check_dense_response_alloc("BSE/TDHF", n, 2, None)?;
     let mut apb = Array2::<f64>::zeros((n, n));
     let mut amb = Array2::<f64>::zeros((n, n));
     let fill_row = |ia: usize, apb_row: &mut [f64], amb_row: &mut [f64]| {

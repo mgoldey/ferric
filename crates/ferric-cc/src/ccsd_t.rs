@@ -225,6 +225,73 @@ fn triple_chunk_len(nv2: usize, band_budget_bytes: usize) -> usize {
     (band_budget_bytes / per_triple).max(1)
 }
 
+/// The band width [`ccsd_t`] will actually use, as one named function of
+/// `(no2, nv2, budget_bytes)`.
+///
+/// This exists so the width the driver runs at and the width a test reasons
+/// about are the SAME expression. The composition (subtract the precomputed
+/// blocks, take half of what is left, divide by the per-triple footprint) used
+/// to be open-coded inline, so a test could only reconstruct it by hand — a
+/// second implementation, and therefore a drift surface of exactly the kind
+/// `MemoryPlan` exists to retire.
+///
+/// It is a pure function of the problem shape and a BYTE COUNT. It reads no
+/// thread count, no live RSS and no wall clock. `mwe_t_band_width_is_not_an_
+/// energy_knob.rs` pins that varying it does not move `et` by one bit, which
+/// is what licenses sizing it from the pool ledger rather than from a re-read
+/// ceiling.
+pub fn t_band_width(no2: usize, nv2: usize, budget_bytes: usize) -> usize {
+    let remaining = budget_bytes.saturating_sub(precomputed_block_bytes(no2, nv2));
+    triple_chunk_len(
+        nv2,
+        ferric_core::memory::transient_share(remaining, ferric_core::memory::Share::Half),
+    )
+}
+
+/// The band width [`ccsd_t`] will use RIGHT NOW, given the process-global
+/// pool's current state -- the exact expression the driver evaluates.
+///
+/// Two branches, and the split is the whole point:
+///
+/// * **A pool is installed.** The width comes from `available_bytes()`: the
+///   capacity minus what LIVE RESERVATIONS hold. That is a deterministic
+///   function of what this job has reserved. It is emphatically NOT
+///   `available_budget_now`, which subtracts live RSS -- sizing a width from
+///   the OS is the KS-DFT grid batch-width defect, where the same input gave
+///   -390.3794282913 and -390.3794337741 Ha because batch width set
+///   accumulation order.
+/// * **No pool.** Exactly what this code did before the pool existed:
+///   [`t_band_width`] against the resolved ceiling.
+///
+/// The driver CALLS this rather than inlining it so that
+/// `the_pooled_band_width_is_a_pure_function_of_the_ledger` observes the real
+/// expression. An inline copy would be a second implementation, and a test
+/// against the copy could not see a defect in the original -- mutation M7
+/// (swap the ledger for live RSS) survived every test in this crate while the
+/// expression was inline.
+pub fn t_band_width_now(no2: usize, nv2: usize, budget_bytes: usize) -> usize {
+    match ferric_core::memory::pool::global_available_bytes() {
+        Some(free) => triple_chunk_len(nv2, free),
+        None => t_band_width(no2, nv2, budget_bytes),
+    }
+}
+
+/// The floor [`ccsd_t`] charges before it allocates: the precomputed
+/// spin-orbital blocks plus one per-triple working set.
+///
+/// Exposed so a test can pick a pool capacity relative to the real number
+/// rather than guessing one -- a gate whose test guesses its own threshold is
+/// arithmetic, not measurement.
+pub fn t_floor_bytes(no2: usize, nv2: usize) -> usize {
+    precomputed_block_bytes(no2, nv2).saturating_add(peak_triple_block_bytes(nv2))
+}
+
+/// Bytes one per-triple `[nv2,nv2,nv2]` working set holds. The band width
+/// multiplies this.
+pub fn t_per_triple_bytes(nv2: usize) -> usize {
+    peak_triple_block_bytes(nv2)
+}
+
 /// `raw_w[a,b,c] = Σ_e t2[j,k,a,e]·bcei[b,c,e,i]  −  Σ_m t2[i,m,b,c]·majk[m,a,j,k]`
 /// for a FIXED (possibly unordered) occupied triple `(i,j,k)`. Both
 /// contractions are BLAS3 GEMMs on `nv2`-scale reshapes.
@@ -417,6 +484,29 @@ pub fn ccsd_t(
         floor,
         budget,
     )?;
+    // HARD charge, held for the whole (T) step.
+    //
+    // `check_alloc` above answers "does this fit in the ceiling?" against a
+    // number that every other subsystem is free to re-read in full. That is
+    // the non-composition defect: a CCSD driver holding its VVVV blocks and a
+    // (T) step holding bcei/majk/bcjk both pass, and the process holds the
+    // sum. Charging the floor against the shared pool makes whichever asks
+    // second see only what the first left.
+    //
+    // HARD (`reserve_global`, not `try_reserve_global`) because there is no
+    // fallback for these blocks: bcei is `(2nv)^3(2no)` and is either built or
+    // the method cannot run. A soft gate whose None branch does not actually
+    // stream is a lie, and nothing here streams the precomputed blocks --
+    // only the per-triple band streams, and that is charged separately and
+    // softly below.
+    //
+    // The guard is bound to `_floor_charge` and lives to the end of the
+    // function, which is where bcei/majk/bcjk/t1/t2 die. Charging across only
+    // the gate would be decoration.
+    let _floor_charge = ferric_core::memory::pool::reserve_global(
+        &format!("CCSD(T) precomputed blocks (no2={no2}, nv2={nv2})"),
+        floor,
+    )?;
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
@@ -540,11 +630,96 @@ pub fn ccsd_t(
     // reclaim memory that is not actually free. The pre-flight above proved
     // `precomputed + one per-triple set` fits, so the remainder is >= 0 and the
     // chunk length still floors at 1 (slow, never stuck).
+    //
+    // WHERE THE BYTE NUMBER COMES FROM, and why that is safe.
+    //
+    // Unbudgeted (no pool installed) this is the resolved ceiling, exactly as
+    // before -- `global_available_bytes()` returns `None` and the `budget`
+    // branch is taken unchanged. That is the trivial limit, pinned by
+    // `mwe_cc_pool_is_inert_without_a_pool.rs`.
+    //
+    // With a pool installed it is the LEDGER: `available_bytes()` = capacity
+    // minus what live reservations hold, which by this point includes this
+    // function's own `_floor_charge` for the precomputed blocks. So the band
+    // is sized against memory that is genuinely free rather than against a
+    // ceiling another subsystem is already occupying. The `_floor_charge` has
+    // already subtracted `precomputed`, hence the `saturating_sub` is not
+    // repeated on that branch -- doing it twice would under-size the band.
+    //
+    // This is a LEDGER quantity, not an RSS quantity. That distinction is the
+    // whole lesson of the KS grid batch-width defect: a width sized from
+    // "what the OS says is free right now" made an SCF energy depend on
+    // transient allocator state (-390.3794282913 vs -390.3794337741 Ha on the
+    // same input). `available_bytes()` is a deterministic function of what
+    // THIS job has reserved, so two runs of the same input with the same pool
+    // capacity get the same width. And `mwe_t_band_width_is_not_an_energy_
+    // knob.rs` independently pins that even a DIFFERENT width does not move
+    // `et` by one bit, so the width cannot carry an energy either way.
+    // NOTE on the `Share::Half` that appears only on the UNPOOLED branch.
+    //
+    // Halving is a heuristic for a ceiling that has ALREADY been handed out in
+    // full to every other subsystem: take half and hope the rest is enough for
+    // them. On the pooled branch that heuristic is not merely unnecessary, it
+    // is actively harmful in two ways. It narrows the band for no reason --
+    // `available_bytes()` is already net of every live reservation, including
+    // this function's own `_floor_charge` -- and, more seriously, it makes the
+    // soft gate below UNFALSIFIABLE: a width derived from `available/2` and
+    // then charged at `width * per_triple` can never exceed `available`, so
+    // the `None` branch is unreachable by construction.
+    //
+    // That is the "GO conditions are mutually exclusive" trap. It was found by
+    // mutation: turning this gate HARD (M3) survived every test, because a
+    // hard reserve that can never fail behaves exactly like a soft one. So the
+    // halving is dropped on the pooled branch, and the soft branch below is
+    // now genuinely reachable -- a concurrent reserver can take bytes between
+    // the sizing and the charge, and the `.max(1)` floor can ask for one
+    // triple that does not fit.
     let remaining = budget.saturating_sub(precomputed);
-    let chunk_len = triple_chunk_len(
-        nv2,
-        ferric_core::memory::transient_share(remaining, ferric_core::memory::Share::Half),
-    );
+    // The None branch calls [`t_band_width`] rather than re-deriving the
+    // width inline. That is deliberate: a test can only observe the
+    // unbudgeted width through a function it can call, and an inline copy
+    // would be a second implementation -- the exact drift surface
+    // `MemoryPlan` exists to retire. `the_unbudgeted_band_width_is_the_budget_
+    // width_not_a_collapsed_one` asserts on this function, so it is live only
+    // while the driver actually uses it.
+    let chunk_len = t_band_width_now(no2, nv2, budget);
+    // SOFT charge on the band actually chosen. The band is the one plane here
+    // that has a genuine fallback -- narrow it -- so it must never turn a
+    // runnable job into a refusal. `try_reserve_global` returning `None` means
+    // "the ledger cannot fund this band"; the None branch then really does
+    // stream, by re-sizing the band to what the pool can fund and, in the
+    // worst case, running one triple at a time. That is a real fallback, not
+    // a decorative one.
+    //
+    // The narrowed width must not move the energy, and it does not:
+    // `mwe_t_band_width_is_not_an_energy_knob.rs` pins bit-identity of `et`
+    // across widths from 1 to the whole triple list.
+    let (chunk_len, _band_charge) = match ferric_core::memory::pool::try_reserve_global(
+        &format!("CCSD(T) triple band (width {chunk_len}, nv2={nv2})"),
+        chunk_len.saturating_mul(peak_triple),
+    ) {
+        Some(g) => (chunk_len, g),
+        None => {
+            // Narrow to what the pool can actually fund, floored at 1. A
+            // width-1 band may itself not fit (another subsystem may have
+            // taken everything since `_floor_charge` was granted); in that
+            // case run uncharged at width 1 rather than refusing, because
+            // `_floor_charge` already proved one per-triple set was covered
+            // and refusing here would reject a job the pre-pool tree runs.
+            let narrowed = match ferric_core::memory::pool::global() {
+                Some(p) => p.fit_units(peak_triple.max(1)).min(chunk_len).max(1),
+                None => 1,
+            };
+            let g = ferric_core::memory::pool::try_reserve_global(
+                &format!("CCSD(T) triple band (narrowed to {narrowed}, nv2={nv2})"),
+                narrowed.saturating_mul(peak_triple),
+            )
+            .unwrap_or_else(|| {
+                ferric_core::memory::pool::Reservation::inert("CCSD(T) triple band (width 1)")
+            });
+            (narrowed, g)
+        }
+    };
     // A floored chunk (width 1) means the memory budget could not fund even a
     // two-triple band: correct but effectively serial across triples, so the
     // (T) step will be slow for a reason the user can act on (raise

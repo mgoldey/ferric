@@ -189,15 +189,73 @@ pub fn guard_m_proj_both_spins(
     )))
 }
 
+/// The projected tensor `M[(α, m, n)]` together with the pool charge for its
+/// bytes.
+///
+/// # Why a wrapper and not a bare `Array3`
+///
+/// The charge has to be released when the TENSOR is, not when
+/// `project_b_into_pdep` returns. An evGW iteration builds `m_proj`, runs the
+/// whole per-MO frequency sweep against it, and drops it at the end of the
+/// iteration; a guard scoped to the constructor would credit ~12.5 GB back
+/// while the tensor was still resident, and the next plane would be admitted
+/// against bytes that are not there. Storing the guard beside the buffer -- the
+/// `_charge: Reservation` pattern from
+/// `ferric_integrals::three_index_source::ThreeIndexSource` -- makes
+/// drop-of-tensor drop-of-charge.
+///
+/// `Deref<Target = Array3<f64>>` keeps all fourteen call sites unchanged:
+/// `&m_proj` still coerces to `&Array3<f64>`, and `m_proj[(a, m, n)]` still
+/// indexes. There is deliberately no `DerefMut` and no `into_inner`: handing
+/// the buffer out without the guard is exactly the leak this type prevents.
+#[derive(Debug)]
+pub struct MProj {
+    tensor: ndarray::Array3<f64>,
+    _charge: ferric_core::memory::pool::Reservation,
+}
+
+impl std::ops::Deref for MProj {
+    type Target = ndarray::Array3<f64>;
+    fn deref(&self) -> &Self::Target {
+        &self.tensor
+    }
+}
+
 pub fn project_b_into_pdep(
     mo_b: &MoB,
     v_dressed: &Array2<f64>,
     memory_budget_bytes: Option<usize>,
-) -> Result<ndarray::Array3<f64>, FerricError> {
+) -> Result<MProj, FerricError> {
     let naux = mo_b.naux;
     let n_act = mo_b.n_act;
     let m_modes = v_dressed.ncols();
+    // The historical ceiling check, UNCHANGED and first: it is the only gate on
+    // the unbudgeted path, where the pool charge below is inert.
     guard_m_proj(m_modes, n_act, naux, memory_budget_bytes)?;
+    // Debit the SHARED ledger for `m_proj` ALONE -- not `m_proj + b_full`,
+    // which is what the ceiling check above compares.
+    //
+    // # Why only half of what the guard checks
+    //
+    // `b_full`'s bytes are ALREADY outstanding: `mo_b.rs` charges them into
+    // this same pool and holds the guard inside the `MoB` the caller is passing
+    // us by reference, so the `MoB` cannot have been dropped. Charging the sum
+    // here would debit `b_full` a SECOND time -- an over-charge, which the
+    // brief's rule 4 calls out as a bug in its own right because it refuses
+    // jobs that would have fit. The pool's whole point is that the co-residency
+    // is expressed by two live reservations, not by one gate summing what
+    // another gate also counts.
+    //
+    // HARD (`reserve_global`), not soft. There is no fallback: this is a single
+    // dense buffer produced by one GEMM and then indexed elementwise by
+    // `cohsex_pieces` and `sigma_c_at_z`. The only way to shrink it is
+    // `trunc_thresh > 0`, which changes the answer rather than the blocking, so
+    // a `None` branch here could not stream anything -- and a soft gate whose
+    // `None` branch does not actually stream is a lie.
+    let charge = ferric_core::memory::pool::reserve_global(
+        &format!("GW projected M tensor ({m_modes}x{n_act}x{n_act})"),
+        crate::budget::m_proj_bytes(m_modes, n_act),
+    )?;
     // Reshape b_full (naux, n_act, n_act) → (naux, n_act*n_act) for one GEMM.
     let b_flat = mo_b
         .b_full
@@ -227,9 +285,12 @@ pub fn project_b_into_pdep(
     // assumption.
     let m_flat: Array2<f64> =
         with_blas_threads(opt_in_blas_threads(), || v_dressed.t().dot(&b_flat));
-    Ok(m_flat
-        .into_shape_with_order((m_modes, n_act, n_act))
-        .expect("reshape M"))
+    Ok(MProj {
+        tensor: m_flat
+            .into_shape_with_order((m_modes, n_act, n_act))
+            .expect("reshape M"),
+        _charge: charge,
+    })
 }
 
 /// Per-MO static COHSEX pieces from a projected M tensor (one spin channel;
@@ -386,15 +447,16 @@ mod tests {
                 }
             }
         }
-        MoB {
+        MoB::from_parts(
             b_full,
-            v_inv_sqrt: Array2::<f64>::eye(naux),
+            Array2::<f64>::eye(naux),
             naux,
             n_act,
-            first_act: 0,
+            0,
             n_occ_act,
-            eps_act: (0..n_act).map(|i| i as f64 * 0.1).collect(),
-        }
+            (0..n_act).map(|i| i as f64 * 0.1).collect(),
+        )
+        .expect("synthetic MoB charge (no pool installed in these unit tests)")
     }
 
     #[test]

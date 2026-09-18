@@ -320,6 +320,15 @@ impl TripleTnoBasis {
             .map(|p| p.transform.len())
             .fold(0usize, usize::saturating_add);
         plan.reserve("pair PNO transforms Q^(ij)", pno_elems, Lifetime::Resident);
+        // DELIBERATELY NOT POOL-CHARGED -- see the note in
+        // `dlpno_ccsd_kernel.rs`. Same reasons (explicit caller budget, not a
+        // dominant plane), plus one specific to this site: the sibling check
+        // inside the triples loop below is a REFINING one, re-run as the
+        // running total grows. A pool charge there would have to drop and
+        // re-reserve every iteration, which is a different lifetime shape from
+        // `MemoryPlan::commit`'s single RAII guard and would need the loop
+        // restructured. Charging something that requires restructuring a loop
+        // is out of scope; left uncharged and reported.
         plan.check()?;
 
         let mut triples = Vec::with_capacity(domains.triples.len());
