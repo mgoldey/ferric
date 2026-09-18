@@ -41,46 +41,6 @@ pub struct LadderResult {
 /// Walk the ladder: run each rung, carry density forward unless `restart`, stop
 /// at the first converged rung; else return the best-effort (lowest-energy)
 /// non-converged result.
-
-/// The convergence tricks a rung actually turns on, as a short human-readable
-/// list. Used by the ladder's progress log.
-///
-/// # Why this exists
-///
-/// Until 2026-09-18 the ladder logged NOTHING. A hard case reported only
-/// `best rung 4, exit MaxIter` at the end, which does not say which
-/// accelerators were tried, whether each one helped, or why the loop gave up.
-/// Diagnosing a non-converging job meant re-running under
-/// `FERRIC_SCF_TRACE=1` and reading per-iteration output -- if you still had
-/// the input. Naming the tricks per rung turns an opaque failure into a
-/// record of what was attempted.
-pub fn rung_tricks(c: &RhfConfig) -> String {
-    let mut v: Vec<String> = Vec::new();
-    v.push(match c.diis_flavor {
-        crate::diis::DiisFlavor::Pulay => "DIIS(Pulay)".to_string(),
-        crate::diis::DiisFlavor::Adiis => "ADIIS->DIIS".to_string(),
-        crate::diis::DiisFlavor::Ediis => "EDIIS->DIIS".to_string(),
-    });
-    if c.level_shift != 0.0 {
-        v.push(format!("level-shift {:.2}", c.level_shift));
-    }
-    if c.newton_trigger > 0.0 {
-        v.push(format!("SOSCF@{:.0e}", c.newton_trigger));
-    }
-    if let Some(s) = c.smearing_sigma {
-        v.push(format!("smearing s={s:.3}"));
-    }
-    if c.mom_after_iter > 0 {
-        v.push(format!("MOM@{}", c.mom_after_iter));
-    }
-    if c.use_sad_guess {
-        v.push("MINAO guess".into());
-    } else {
-        v.push("hcore guess".into());
-    }
-    v.join(" + ")
-}
-
 pub fn solve_rhf_ladder(
     ctx: &ParallelContext,
     mol: &Molecule,
@@ -160,6 +120,45 @@ pub fn solve_rhf_ladder(
         rung_reached: best_rung,
         rung_outcomes: outcomes,
     })
+}
+
+/// The convergence tricks a rung actually turns on, as a short human-readable
+/// list. Used by the ladder's progress log.
+///
+/// # Why this exists
+///
+/// Until 2026-09-18 the ladder logged NOTHING. A hard case reported only
+/// `best rung 4, exit MaxIter` at the end, which does not say which
+/// accelerators were tried, whether each one helped, or why the loop gave up.
+/// Diagnosing a non-converging job meant re-running under
+/// `FERRIC_SCF_TRACE=1` and reading per-iteration output -- if you still had
+/// the input. Naming the tricks per rung turns an opaque failure into a
+/// record of what was attempted.
+pub fn rung_tricks(c: &RhfConfig) -> String {
+    let mut v: Vec<String> = Vec::new();
+    v.push(match c.diis_flavor {
+        crate::diis::DiisFlavor::Pulay => "DIIS(Pulay)".to_string(),
+        crate::diis::DiisFlavor::Adiis => "ADIIS->DIIS".to_string(),
+        crate::diis::DiisFlavor::Ediis => "EDIIS->DIIS".to_string(),
+    });
+    if c.level_shift != 0.0 {
+        v.push(format!("level-shift {:.2}", c.level_shift));
+    }
+    if c.newton_trigger > 0.0 {
+        v.push(format!("SOSCF@{:.0e}", c.newton_trigger));
+    }
+    if let Some(s) = c.smearing_sigma {
+        v.push(format!("smearing s={s:.3}"));
+    }
+    if c.mom_after_iter > 0 {
+        v.push(format!("MOM@{}", c.mom_after_iter));
+    }
+    if c.use_sad_guess {
+        v.push("MINAO guess".into());
+    } else {
+        v.push("hcore guess".into());
+    }
+    v.join(" + ")
 }
 
 /// Default auxiliary basis for the DF-guess pre-stage: a JK-fit set (NOT an

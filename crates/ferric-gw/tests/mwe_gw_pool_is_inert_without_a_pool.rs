@@ -118,39 +118,87 @@ pub fn run(method: GwMethod) -> Vec<f64> {
     res.eps_qp.to_vec()
 }
 
-/// Frozen G0W0 QP energies (Ha), captured on the pre-migration tree at
-/// `72883be0`:
+/// Frozen G0W0 QP energies (Ha), re-recorded 2026-09-18 on main-after-#83.
+///
+/// # Why these moved, and why they are now only a SANITY BAND
+///
+/// These were captured at `72883be0`, a pre-migration commit on the old base.
+/// Integrating the five pool branches REBASED the stack onto main after PR #83
+/// (`a268fc3c`, spherical MINAO atomic blocks), which changes the converged SCF
+/// reference density -- and GW is built on that density, so every QP energy
+/// moved by ~1e-10.
+///
+/// Worse for a hardcoded bit pattern: the result is **not bit-reproducible
+/// across machines**. Measured for QP[0] on the SAME tree:
+///
+/// ```text
+///   frozen (old base)   0xBFE3B2C267EC725D
+///   CI runner           0xBFE3B2C267F37B92   delta -5.119e-11
+///   dev box             0xBFE3B2C267F39884   delta -5.202e-11
+/// ```
+///
+/// Bit-stable WITHIN a machine (3/3 identical runs here) and different
+/// BETWEEN machines -- the same per-machine-deterministic BLAS dispatch that
+/// bit this repo's cDFT iteration counts. So a hardcoded `u64` can only ever
+/// be right on one box, and asserting it on CI is asserting a property of that
+/// runner's arithmetic.
+///
+/// The `to_bits()` reasoning in the module doc is still correct: a tolerance
+/// cannot tell "no-op" from "re-associated by a few ulp". The fix is to apply
+/// it where it is meaningful -- **live pool-off vs live pool-on, in the same
+/// process, on the same machine** (see `an_ample_pool_gives_the_same_bits_as_no_pool`,
+/// which is the assertion that actually tests the migration). These constants
+/// are demoted to a loose absolute sanity band that catches a gross regression
+/// without pinning one box's last three digits.
+///
+/// Values below are this box's; the band tolerates 1e-8, four orders above the
+/// observed cross-machine spread.
 ///   -6.15571215606518174e-1  -4.18041879665428884e-1  -3.30966250586579025e-1
 ///    6.09356792132542346e-1   7.42858606124310539e-1
 const G0W0_QP_BITS: [u64; 5] = [
-    0xBFE3B2C267EC725D,
-    0xBFDAC132BA615E5D,
-    0xBFD52E8D1196579E,
-    0x3FE37FD9D0B9C06D,
-    0x3FE7C57F695B64D6,
+    0xBFE3B2C267F39884,
+    0xBFDAC132BA75CAC3,
+    0xBFD52E8D11B7456A,
+    0x3FE37FD9D0B61903,
+    0x3FE7C57F69532283,
 ];
 
 /// Frozen COHSEX QP energies (Ha), same shape, same tree:
 ///   -6.29599329764241822e-1  -4.22570898390289329e-1  -3.27295802184455642e-1
 ///    6.26889454649354971e-1   7.64533208860053715e-1
 const COHSEX_QP_BITS: [u64; 5] = [
-    0xBFE425AD7E5D7853,
-    0xBFDB0B66CF34F7EB,
-    0xBFD4F26A17A00548,
-    0x3FE40F7A793DA3E1,
-    0x3FE8770E591850D7,
+    0xBFE425AD7E65099E,
+    0xBFDB0B66CF49163D,
+    0xBFD4F26A17C0C438,
+    0x3FE40F7A793A10AD,
+    0x3FE8770E590F3772,
 ];
 
+/// Absolute band for the recorded-value check. The observed cross-machine
+/// spread is ~1e-10 (CI runner vs dev box, same tree); 1e-8 is four orders
+/// above that, so this catches a gross regression while tolerating the BLAS
+/// dispatch difference a hardcoded `u64` cannot.
+const QP_SANITY_BAND: f64 = 1e-8;
+
+/// Compare against the RECORDED values as a sanity band, not bit-for-bit.
+///
+/// Bit equality against a frozen literal is the wrong instrument here: the
+/// value is bit-stable within a machine but differs between machines, so the
+/// literal can only be right on the box that produced it. The bit-level claim
+/// this file actually needs -- that the migration is a no-op -- is asserted
+/// live-vs-live in `an_ample_pool_gives_the_same_bits_as_no_pool`, where both
+/// sides run in the SAME process on the SAME machine and `to_bits()` is
+/// meaningful.
 fn assert_bits(got: &[f64], want: &[u64], what: &str) {
     assert_eq!(got.len(), want.len(), "{what}: QP count changed");
     let mismatch: Vec<String> = got
         .iter()
         .zip(want)
         .enumerate()
-        .filter(|(_, (g, w))| g.to_bits() != **w)
+        .filter(|(_, (g, w))| (**g - f64::from_bits(**w)).abs() >= QP_SANITY_BAND)
         .map(|(i, (g, w))| {
             format!(
-                "  [{i}] got {g:.17e} (0x{:016X}) want 0x{w:016X} (delta {:.3e})",
+                "  [{i}] got {g:.17e} (0x{:016X}) recorded 0x{w:016X} (delta {:.3e})",
                 g.to_bits(),
                 g - f64::from_bits(*w)
             )
@@ -158,10 +206,11 @@ fn assert_bits(got: &[f64], want: &[u64], what: &str) {
         .collect();
     assert!(
         mismatch.is_empty(),
-        "{what}: the unbudgeted path is NOT bit-identical to the pre-migration tree.\n\
-         Every ferric-gw gate must return an INERT reservation when no pool is installed; \
-         a non-inert one that shrank a buffer or re-blocked a GEMM would show up exactly \
-         here.\n{}",
+        "{what}: a QP energy left the {QP_SANITY_BAND:e} Ha sanity band around the \
+         recorded values.\nThat is far larger than the ~1e-10 cross-machine spread, so \
+         it is a real change in what GW computes -- not BLAS dispatch. If a gate stopped \
+         returning an INERT reservation without a pool and shrank a buffer or re-blocked \
+         a GEMM, it shows up here.\n{}",
         mismatch.join("\n")
     );
 }
@@ -266,16 +315,57 @@ fn try_run(method: GwMethod) -> Result<Vec<f64>, ferric_core::FerricError> {
 #[test]
 fn an_ample_pool_gives_the_same_bits_as_no_pool() {
     let _g = pool_lock();
+
+    // LIVE vs LIVE, strict `to_bits()`. This is the assertion that actually
+    // tests the migration, and it is the one place bit equality is the right
+    // instrument: both sides run in the SAME process on the SAME machine with
+    // the SAME BLAS dispatch, so the ONLY difference is whether a pool is
+    // installed. Any surviving difference is the migration perturbing the
+    // answer -- which is exactly the defect this file exists to catch.
+    //
+    // It deliberately does NOT compare against the frozen constants. Those are
+    // machine-specific (see `G0W0_QP_BITS`) and checking pool-on against them
+    // would conflate "the migration moved the answer" with "this is a
+    // different CPU" -- the conflation that made this test fail on CI.
+    assert!(
+        ferric_core::memory::pool::global().is_none(),
+        "baseline leg must run with NO pool installed"
+    );
+    let without = run(GwMethod::G0W0);
+
     ferric_core::memory::pool::install_global(
         ferric_core::memory::pool::MemoryPool::with_capacity_bytes(64 * 1_000_000_000),
     );
-    let got = try_run(GwMethod::G0W0);
+    let with = try_run(GwMethod::G0W0);
     ferric_core::memory::pool::clear_global();
-    assert_bits(
-        &got.expect("a 64 GB pool must admit every plane"),
-        &G0W0_QP_BITS,
-        "G0W0 under an ample pool",
+    let with = with.expect("a 64 GB pool must admit every plane");
+
+    let mismatch: Vec<String> = without
+        .iter()
+        .zip(with.iter())
+        .enumerate()
+        .filter(|(_, (a, b))| a.to_bits() != b.to_bits())
+        .map(|(i, (a, b))| {
+            format!(
+                "  [{i}] no-pool {a:.17e} (0x{:016X})  pooled {b:.17e} (0x{:016X})  delta {:.3e}",
+                a.to_bits(),
+                b.to_bits(),
+                b - a
+            )
+        })
+        .collect();
+    assert!(
+        mismatch.is_empty(),
+        "G0W0: installing an AMPLE pool changed the answer. Every gate must be a \
+         no-op when nothing is scarce; a gate that shrank a buffer or re-blocked a \
+         GEMM under an ample pool has moved the defect behind a flag rather than \
+         fixing it.\n{}",
+        mismatch.join("\n")
     );
+
+    // And the absolute values are still in the recorded band, so this cannot
+    // pass by both legs being equally wrong.
+    assert_bits(&with, &G0W0_QP_BITS, "G0W0 under an ample pool");
 }
 
 /// The soft QP-sweep gate must actually DECLINE when its scratch does not fit,
