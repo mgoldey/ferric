@@ -14,6 +14,7 @@
 - [Python bindings](./using/python.md)
 - [Recipes](./using/recipes.md)
 - [Applications](./using/applications.md)
+- [QM/MM](./using/qmmm.md)
 - [For agents](./using/agents.md)
 
 # Methods
