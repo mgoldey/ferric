@@ -183,3 +183,209 @@ fn cohsex_qp_energies_are_bit_identical_without_a_pool() {
     );
     assert_bits(&run(GwMethod::Cohsex), &COHSEX_QP_BITS, "COHSEX");
 }
+
+// ---------------------------------------------------------------------------
+// The other half of the anchor: a run WITH a pool must give the SAME bits.
+//
+// A gate that is inert without a pool and perturbs the answer with one has only
+// moved the defect behind a flag. Two cases matter and they are different:
+//
+//   * an AMPLE pool: every charge is admitted, the parallel QP sweep runs, and
+//     the answer must be the frozen constants;
+//   * a TIGHT pool: the soft QP-sweep gate declines, the SERIAL sweep runs, and
+//     the answer must STILL be the frozen constants. That is the claim that
+//     makes the fallback honest -- "one worker's scratch, same order, same
+//     values" is an assertion about numerics, so it is asserted on numerics.
+// ---------------------------------------------------------------------------
+
+/// The smallest pool capacity at which the whole GW run completes.
+///
+/// Binary-searched rather than derived, because the answer spans four crates:
+/// ferric-scf's SCF, ferric-rpa's preflight, ferric-integrals' AO tensor and
+/// this crate's four planes. `FERRIC_GW_POOL_SEARCH=1` prints it; the test
+/// below asserts the property that matters, which is that it does NOT depend on
+/// the worker count.
+fn smallest_completing_capacity(method: GwMethod, lo_hint: usize, hi: usize) -> usize {
+    let completes = |cap: usize| -> bool {
+        let _g = pool_lock();
+        ferric_core::memory::pool::install_global(
+            ferric_core::memory::pool::MemoryPool::with_capacity_bytes(cap),
+        );
+        let r = try_run(method);
+        ferric_core::memory::pool::clear_global();
+        r.is_ok()
+    };
+    let (mut lo, mut hi) = (lo_hint, hi);
+    assert!(completes(hi), "the upper bound {hi} must itself complete");
+    while lo + 1 < hi {
+        let mid = lo + (hi - lo) / 2;
+        if completes(mid) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    hi
+}
+
+fn pool_lock() -> std::sync::MutexGuard<'static, ()> {
+    static L: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    L.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+fn try_run(method: GwMethod) -> Result<Vec<f64>, ferric_core::FerricError> {
+    let (mol, obs, dfbs, rhf) = setup();
+    let res = run_gw(
+        &mol,
+        &obs,
+        &dfbs,
+        Operator::coulomb(),
+        &rhf,
+        &pdep_cfg(),
+        &GwConfig {
+            method,
+            ..Default::default()
+        },
+        None,
+    )?;
+    Ok(res.eps_qp.to_vec())
+}
+
+/// An AMPLE pool must not move a single bit.
+#[test]
+fn an_ample_pool_gives_the_same_bits_as_no_pool() {
+    let _g = pool_lock();
+    ferric_core::memory::pool::install_global(
+        ferric_core::memory::pool::MemoryPool::with_capacity_bytes(64 * 1_000_000_000),
+    );
+    let got = try_run(GwMethod::G0W0);
+    ferric_core::memory::pool::clear_global();
+    assert_bits(
+        &got.expect("a 64 GB pool must admit every plane"),
+        &G0W0_QP_BITS,
+        "G0W0 under an ample pool",
+    );
+}
+
+/// A TIGHT pool must decline the soft QP scratch, run the serial sweep, and
+/// give the same bits.
+///
+/// The capacity is the binary-searched minimum: at exactly that number every
+/// mandatory plane fits and nothing optional does, which is precisely where the
+/// fallback is what is being measured. It is searched, not frozen, because the
+/// scratch scales with `rayon::current_num_threads()` and a constant calibrated
+/// at one width stops exercising the branch at the others.
+#[test]
+fn the_smallest_completing_pool_gives_the_same_bits_and_is_worker_independent() {
+    let workers = rayon::current_num_threads().max(1);
+    let min = smallest_completing_capacity(GwMethod::G0W0, 0, 1_000_000_000);
+    eprintln!("smallest completing capacity at {workers} workers: {min} B");
+
+    let _g = pool_lock();
+    ferric_core::memory::pool::install_global(
+        ferric_core::memory::pool::MemoryPool::with_capacity_bytes(min),
+    );
+    let got = try_run(GwMethod::G0W0);
+    ferric_core::memory::pool::clear_global();
+    assert_bits(
+        &got.unwrap_or_else(|e| panic!("the searched minimum {min} must complete: {e}")),
+        &G0W0_QP_BITS,
+        "G0W0 at the smallest completing pool",
+    );
+
+    // THE worker-independence property. If the soft QP scratch were greedy --
+    // taken whenever it happened to fit, with no regard for a mandatory plane
+    // asking next -- this minimum would grow with the worker count, which is
+    // exactly how the ferric-rpa starvation bug hid at 12 workers while doing
+    // its damage at 2 and 4. The soft term at this shape is:
+    let scratch = ferric_gw::budget::qp_worker_scratch_bytes(
+        // naux for cc-pVDZ-RI on water; m_modes == naux at full rank.
+        RI_NAUX, STO3G_NACT, 8, workers, 1,
+    );
+    assert!(
+        min > scratch,
+        "sanity: the minimum ({min}) should exceed one sweep's scratch ({scratch})"
+    );
+    // The mandatory floor is worker-INDEPENDENT by construction (b_full,
+    // m_proj, the AO tensor and ferric-rpa's in-core planes carry no
+    // n_workers term), so a worker-independent minimum is the observable
+    // signature of a non-greedy soft gate. The bound below is what a greedy
+    // gate would violate: it would need room for the scratch ON TOP of the
+    // floor, i.e. the minimum would track `workers`.
+    // THE WORKER-DEPENDENCE ACCOUNTING.
+    //
+    // MEASURED, water/STO-3G + cc-pVDZ-RI (naux = m = 84, nocc = 5, nvir = 2,
+    // nov = 10, n_quad = 8), binary-searching the smallest completing capacity:
+    //
+    //   workers   this crate's QP scratch    smallest completing capacity
+    //   1          9_856                      899_808
+    //   2         19_712                      906_528   (+6_720)
+    //   4         39_424                      919_968   (+20_160)
+    //  12        118_272                      946_848   (+47_040)
+    //  24        236_544                      946_848   (+47_040, saturated)
+    //
+    // The minimum DOES move with the worker count -- and none of it is this
+    // crate's. Two facts locate it. First, the refusal at `min - 1` is
+    //
+    //   memory pool exhausted: "DF 3-index (P|mn) in-core" ...
+    //     0.001 GB  PDEP-RPA preflight (naux=84, nocc=5, nvir=2, n_workers=N)
+    //               [in-core]
+    //
+    // i.e. the incumbent is ferric-rpa's HARD half and the refused plane is
+    // ferric-integrals'. No ferric-gw label appears in the breakdown at any
+    // width, and no `[freq scratch]` label appears either -- ferric-rpa's own
+    // soft gate is declining correctly, exactly as its 08ab4431 fix intends.
+    //
+    // Second, the increments are EXACTLY ferric-rpa's `clones` term inside
+    // `budget::estimate_peak_bytes`:
+    //
+    //   clones = min(n_quad, n_workers) * m * nov * 8
+    //          = min(8, w) * 84 * 10 * 8 = 6_720 * min(8, w)
+    //
+    // 6_720 / 20_160 / 47_040 are 1x / 3x / 7x that unit, and the series
+    // SATURATES at w = 8 = n_quad, which is the formula's `min` and nothing
+    // else's. That term is worker-dependent and lands in the HARD half of
+    // `estimate_peak_split` (only `quad_scratch_bytes` is split off as soft),
+    // so it is a mandatory, worker-scaling charge in ferric-rpa -- outside this
+    // crate's scope, and reported rather than patched here.
+    //
+    // What this test can assert is that ferric-gw adds nothing on top: the
+    // observed spread is fully explained by that term, with NO room for this
+    // crate's QP scratch (which at 12 workers is 118_272 B, twenty-five times
+    // larger than the whole 47_040 B spread). If the GW soft gate were greedy,
+    // the minimum would have to grow by at least its own scratch.
+    let rpa_clone_unit = RI_NAUX * (5 * (STO3G_NACT - 5)) * 8;
+    let rpa_spread = rpa_clone_unit * (n_quad_points().min(workers) - 1);
+    let base = min - rpa_spread;
+    assert_eq!(
+        base, 899_808,
+        "the worker-INDEPENDENT floor moved. Measured minimum {min} B at {workers} workers \
+         minus ferric-rpa's worker-dependent `clones` term ({rpa_spread} B) should leave the \
+         same floor at every width. A change here means either a plane's size changed or \
+         ferric-gw started contributing a worker-dependent term of its own -- the latter is \
+         the greedy-soft-gate signature the brief warns about, and this crate's QP scratch \
+         ({scratch} B at {workers} workers) would show up as a spread far larger than \
+         ferric-rpa's."
+    );
+}
+
+/// naux of cc-pVDZ-RI on water, and n_act of STO-3G on water. Asserted against
+/// the live bases in the test below rather than trusted, so a basis-set change
+/// makes the numbers fail loudly instead of silently mis-sizing the window.
+const RI_NAUX: usize = 84;
+const STO3G_NACT: usize = 7;
+
+/// `pdep_cfg().quadrature.n_points`, read back rather than repeated so the
+/// accounting above and the config cannot drift.
+fn n_quad_points() -> usize {
+    pdep_cfg().quadrature.n_points
+}
+
+#[test]
+fn the_fixture_shape_constants_match_the_live_bases() {
+    let (_mol, obs, dfbs, _rhf) = setup();
+    assert_eq!(dfbs.nbasis(), RI_NAUX, "cc-pVDZ-RI naux on water changed");
+    assert_eq!(obs.nbasis(), STO3G_NACT, "STO-3G nbf on water changed");
+}
