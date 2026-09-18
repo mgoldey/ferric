@@ -48,3 +48,18 @@ also destroyed the (uncommitted) test that mutation was checking. Re-added from
 the transcript and committed immediately. The lesson the task stated is real:
 **commit before mutating**, and prefer a targeted revert of the mutated lines
 over `git checkout <file>`.
+
+## ADDENDUM 2026-09-18 — row 8's quoted MINAO energy is now historical
+
+Row 8 quotes CN/6-31G MINAO at `-92.1186235242`, the +0.575 eV penalised
+value that held when this ledger was recorded. PR #83 (`a268fc3c`,
+spherically symmetrizing the MINAO atomic block) removed that penalty:
+MINAO now reaches `-92.1397654895`, the same state as hcore, +0.0000 eV
+against the reference. CN/cc-pVDZ's +0.386 eV penalty is gone the same way.
+
+The mutation itself still stands — feeding back a wrong density still trips
+the premise check. Only the specific number it produced has moved, because
+the defect that produced it was fixed. The table above is left as recorded;
+`cn_is_the_system_the_guess_fix_costs` carries the current figures and now
+asserts the REPAIRED behaviour, so a regression re-introducing the penalty
+fails there.

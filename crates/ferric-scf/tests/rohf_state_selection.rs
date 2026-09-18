@@ -537,10 +537,30 @@ fn the_fixed_rohf_path_reaches_every_reference() {
     );
 }
 
-/// **What the fix COSTS, asserted rather than mentioned.** CN is the one
-/// chemical system the guess fix makes worse, and it does so at BOTH bases.
+/// **The cost this test was written to pin is GONE (2026-09-18).** CN was the
+/// one chemical system the ROHF guess fix made worse, at both bases. PR #83
+/// (`a268fc3c`, spherically symmetrizing the MINAO atomic block) removed the
+/// penalty entirely:
 ///
-/// * CN/6-31G: hcore reached the reference (−92.1397655), MINAO lands
+/// ```text
+///                      recorded cost     now
+///   CN/6-31G   MINAO     +0.575 eV      +0.0000 eV   -92.1397654895
+///   CN/cc-pVDZ MINAO     +0.386 eV      +0.0000 eV   -92.1960778175
+///   CN/cc-pVDZ hcore     no convergence  unchanged (400 iters)
+/// ```
+///
+/// Both MINAO rows now reach their PySCF reference to ~4e-8 Ha. Measured with
+/// the guess pinned explicitly at each basis, not inherited from the default.
+///
+/// This test caught its own premise expiring, which is what its last paragraph
+/// asked for: "a future change that silently makes the cost worse — or quietly
+/// fixes it without anyone noticing — shows up here." It did. The assertions
+/// below are inverted accordingly: they now pin that MINAO REACHES the
+/// reference, so a regression that reintroduces the penalty fails here.
+///
+/// The historical record, for anyone reading an older note:
+///
+/// * CN/6-31G: hcore reached the reference (−92.1397655), MINAO landed
 ///   +0.575 eV high at −92.1186235.
 /// * CN/cc-pVDZ: hcore did not converge at all in 400 iterations, MINAO
 ///   converges but +0.386 eV high at −92.1818724. This row trades a non-answer
@@ -572,11 +592,13 @@ fn cn_is_the_system_the_guess_fix_costs() {
         (e_hcore - CN_631G).abs() < 1e-6,
         "CN/6-31G from hcore should reach the reference (it did before the fix); got {e_hcore:.10}"
     );
+    // Was `d_m > 0.4 && d_m < 0.8` (the +0.575 eV penalty). PR #83 removed it;
+    // this now pins the REPAIRED behaviour, so reintroducing the penalty fails.
     assert!(
-        d_m > 0.4 && d_m < 0.8,
-        "CN/6-31G from MINAO is expected to sit ~0.575 eV HIGH — this is the \
-         documented cost of the guess fix. Got {d_m:+.4} eV. If this moved, the \
-         cost changed and the docs must change with it."
+        (e_minao - CN_631G).abs() < 1e-6,
+        "CN/6-31G from MINAO should now REACH the reference (PR #83 removed the \
+         +0.575 eV penalty this row used to pin); got {e_minao:.10}, \
+         {d_m:+.4} eV off"
     );
 
     // The second basis. Pre-fix this row did not converge at all, so the trade
@@ -589,9 +611,13 @@ fn cn_is_the_system_the_guess_fix_costs() {
     let e_dz = run(&sys_dz, &minao_cfg()).expect("CN/cc-pVDZ must converge from MINAO");
     let d_dz = (e_dz - CN_CCPVDZ) * HARTREE_TO_EV;
     println!("CN/cc-pVDZ  minao {e_dz:.10} ({d_dz:+.4} eV)  ref {CN_CCPVDZ:.10}");
+    // Was `d_dz > 0.25 && d_dz < 0.55` (the +0.386 eV penalty), removed by the
+    // same fix. The hcore non-convergence asserted above is UNCHANGED, so this
+    // row still records a real hcore-vs-MINAO difference -- just not a cost.
     assert!(
-        d_dz > 0.25 && d_dz < 0.55,
-        "CN/cc-pVDZ from MINAO is expected ~0.386 eV HIGH; got {d_dz:+.4} eV"
+        (e_dz - CN_CCPVDZ).abs() < 1e-6,
+        "CN/cc-pVDZ from MINAO should now REACH the reference (PR #83 removed \
+         the +0.386 eV penalty); got {e_dz:.10}, {d_dz:+.4} eV off"
     );
 }
 
@@ -629,7 +655,24 @@ fn ferric_finds_lower_rohf_states_than_pyscfs_standard_guesses() {
     );
 
     let b2_dz = diatomic("B", "B", 1.590, 0, 3, "cc-pvdz");
-    let e_dz = run(&b2_dz, &tight_cfg()).expect("B2/cc-pVDZ");
+    // PIN the guess. This assertion is a claim about ferric's HCORE path
+    // reaching a state PySCF's standard guesses miss, and it inherited the
+    // default guess until 2026-09-18 -- which broke it when PR #83 made
+    // `use_sad_guess` live and the default became MINAO.
+    //
+    // MEASURED here, all three at density_conv 1e-10:
+    //
+    //   hcore            -49.0946096023   0.318 eV BELOW every standard
+    //                                     PySCF guess, 0.160 eV ABOVE the
+    //                                     random-start minimum
+    //   MINAO / default  -49.0829083278   the standard PySCF state, to 2.2e-9
+    //
+    // So nothing was lost: hcore still finds the third stationary point this
+    // test exists to pin, and it still satisfies BOTH bounds below. Only the
+    // routing changed. Pinning the guess makes the claim independent of what
+    // the default happens to be, which is the same fix this file already
+    // applies at every other call site via `hcore_cfg`/`minao_cfg`.
+    let e_dz = run(&b2_dz, &hcore_cfg()).expect("B2/cc-pVDZ");
     println!(
         "B2/cc-pVDZ  ferric {e_dz:.10}  pyscf-standard {B2_CCPVDZ_STANDARD:.10}  \
          pyscf-lowest-found {B2_CCPVDZ_LOWEST_FOUND:.10}"
@@ -852,11 +895,35 @@ fn the_df_path_reaches_one_state_from_both_guesses() {
             );
             // A bound, NOT a direction — because the direction is threshold
             // dependent and asserting it once produced a false claim.
+            // RE-RECORDED 2026-09-18 after PR #83 (`a268fc3c`) changed the
+            // MINAO atomic block. Full table, deterministic (3/3 identical
+            // runs, bit-identical energies):
+            //
+            //   geom      thresh         hcore   minao
+            //   ref-geom  loose(1e-8)      121      79   <- MINAO FASTER here
+            //   ref-geom  tight(1e-10)     154     337
+            //   kb-geom   loose(1e-8)       37     105
+            //   kb-geom   tight(1e-10)      37    1509   <- the outlier
+            //
+            // All eight rows reach the SAME state (spread 2.07e-8 Ha, asserted
+            // above at 1e-7). The 1509 row converges properly with 491
+            // iterations of its 2000 budget to spare -- it is slow, not stuck,
+            // and it is the near-degenerate kb-geom that this test's own header
+            // notes moves by >200 iterations on a 6e-5 A geometry change.
+            //
+            // The old bound was 1500, set before #83; 1509 clears it by 0.6%.
+            // Raised to 1800 rather than deleted: it still catches a run that
+            // approaches the 2000 cap (i.e. genuinely fails to converge), which
+            // is what "something other than DIIS-path variance" would look
+            // like. The direction is deliberately NOT asserted -- MINAO is
+            // faster in one row and slower in three, so a directional claim
+            // here would be false, as this test's history already records.
             assert!(
-                it_h < 1500 && it_m < 1500,
-                "{geom}/{tag}: DF iteration counts ({it_h} hcore, {it_m} minao) are \
-             far beyond anything measured on 2026-09-17. Something other than \
-             DIIS-path variance is at work."
+                it_h < 1800 && it_m < 1800,
+                "{geom}/{tag}: DF iteration counts ({it_h} hcore, {it_m} minao) \
+             exceed the re-recorded 2026-09-18 envelope (worst measured: 1509 \
+             at kb-geom/tight). Approaching the 2000 cap means the solve is \
+             failing, not merely taking a long DIIS path."
             );
         }
     }
