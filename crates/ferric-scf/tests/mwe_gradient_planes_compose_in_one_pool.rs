@@ -12,13 +12,20 @@
 //!    Before the migration the gradient path took no reservation at all, so
 //!    the peak stayed at whatever the SCF left and the gradient was invisible
 //!    to the ledger.
-//! 2. A pool too small for the gradient's declared working set REFUSES, with
-//!    an error naming the plane — rather than proceeding to an OOM kill.
+//! 2. A pool too small for the gradient's NON-BATCHABLE working set (the grid
+//!    and its `weight1` response array) REFUSES, with an error naming the
+//!    plane — rather than proceeding to an OOM kill.
 //! 3. A charge held by one subsystem NARROWS what the gradient may take. This
 //!    is the composition property: two planes that each fit the whole ceiling
 //!    must not both be admitted when their sum does not fit. It is the entire
 //!    reason the pool exists, and the reason a re-readable ceiling
 //!    (`MemoryPlan::resolve`) is not good enough.
+//!
+//!    Since the XC gradient began batching the DFT grid, "narrows" is literal:
+//!    a crowded pool makes it take NARROWER BATCHES and still finish, rather
+//!    than refuse. The assertion follows the property, not the old proxy — see
+//!    `an_incumbent_charge_narrows_what_the_gradient_may_take` for why the
+//!    refusal it used to require would now pin the worse behaviour.
 //!
 //! ## Reachability of the pass condition (per CLAUDE.md)
 //!
@@ -291,12 +298,46 @@ fn a_pool_too_small_refuses_the_ks_gradient_by_name() {
     );
 }
 
+/// THE COMPOSITION PROPERTY, as the batched XC gradient now expresses it.
+///
+/// # What changed, and why the assertion moved
+///
+/// This test used to require that a crowded pool make the KS gradient
+/// **refuse**. That was the right property when the XC gradient evaluated the
+/// whole DFT grid at once: with no way to shrink its working set, "does not
+/// fit" and "must not run" were the same statement, and a refusal was the only
+/// observable that distinguished composing against the ledger from double-
+/// spending a ceiling.
+///
+/// The XC gradient now batches the grid (`ferric_dft::gradient`'s
+/// `resolve_grad_batch_size`), so it has the same always-available fallback
+/// `ks.rs`'s SCF grid gate has had all along: when the full working set does
+/// not fit, take NARROWER BATCHES rather than error. `ks.rs` makes exactly this
+/// argument at `check_grid_budget_reserved` — "a gate whose over-budget answer
+/// is 'batch it' must keep answering 'batch it' against a pool, NOT start
+/// erroring". Keeping the refusal here would have pinned the gradient to the
+/// worse of the two behaviours: refusing a drug-sized optimization it can
+/// actually complete.
+///
+/// So the property is unchanged — an incumbent charge must NARROW what the
+/// gradient takes — and what is asserted is the narrowing itself rather than
+/// its old proxy. A gradient that ignored the ledger would keep the SAME wide
+/// batch and charge the SAME peak no matter who else is holding the pool;
+/// that is the failure this catches, and it is a strictly sharper observable
+/// than `is_err()` (which one over-wide batch could also produce, for the
+/// wrong reason).
+///
+/// What still REFUSES is the non-batchable part: the grid and its `weight1`
+/// response array are built before any AO plane exists and are indexed by
+/// absolute grid index, so batching cannot shrink them —
+/// `a_pool_too_small_refuses_the_ks_gradient_by_name` covers that, and it is
+/// what keeps a truly hopeless pool from proceeding to an OOM kill.
 #[test]
 fn an_incumbent_charge_narrows_what_the_gradient_may_take() {
     let _s = CleanSlot::acquire();
     let fx = fixture(Some("PBE"));
 
-    // Size a pool that fits the KS gradient exactly once, by measuring it.
+    // Measure what the gradient takes with the pool to itself.
     install_global(MemoryPool::with_capacity_bytes(8_000_000_000));
     fx.ks_gradient().expect("ample pool must admit");
     let needed = global().expect("pool").peak_bytes();
@@ -306,35 +347,57 @@ fn an_incumbent_charge_narrows_what_the_gradient_may_take() {
         "nothing was charged; cannot size the tight pool"
     );
 
-    // A pool with just enough room: admits. This is the reachability control.
+    // Reachability control: a pool sized for the gradient alone admits it, and
+    // the peak it records is the uncrowded baseline.
     install_global(MemoryPool::with_capacity_bytes(needed * 2));
     let alone = fx.ks_gradient();
+    let alone_peak = global().expect("pool").peak_bytes();
     clear_global();
     assert!(
         alone.is_ok(),
         "reachability control failed: the gradient must fit a pool sized for \
-         it, else the refusal below is not about composition. Got {alone:?}"
+         it, else the narrowing below is not about composition. Got {alone:?}"
     );
 
-    // THE COMPOSITION PROPERTY: the same pool, but another subsystem is
-    // already holding most of it. Against a re-readable ceiling
-    // (`MemoryPlan::resolve`) the gradient would see the full capacity and
-    // sail through, because a ceiling does not know what is outstanding.
-    // Against the pool it must see only what is left, and refuse.
+    // The same pool, but another subsystem is already holding most of it.
+    // Against a re-readable ceiling (`MemoryPlan::resolve`) the gradient would
+    // see the full capacity and take its full-width batch, because a ceiling
+    // does not know what is outstanding. Against the pool it must see only
+    // what is left and narrow accordingly.
     let pool = MemoryPool::with_capacity_bytes(needed * 2);
     install_global(pool.clone());
+    let incumbent_bytes = needed * 2 - needed / 2;
     let _incumbent = pool
-        .reserve("pretend DF 3-index tensor", needed * 2 - needed / 2)
+        .reserve("pretend DF 3-index tensor", incumbent_bytes)
         .expect("incumbent fits");
+    let incumbent_only_peak = pool.peak_bytes();
     let crowded = fx.ks_gradient();
+    let crowded_peak = pool.peak_bytes();
     drop(_incumbent);
     clear_global();
 
+    // It must still produce an answer — that is the whole point of batching.
+    let crowded = crowded.expect(
+        "the batched XC gradient must COMPLETE under a crowded pool by taking \
+         narrower batches, not refuse. A refusal here means the batch sizing \
+         is not reaching the over-budget case it exists to serve.",
+    );
     assert!(
-        crowded.is_err(),
-        "COMPOSITION FAILED: the gradient was admitted against a pool whose \
-         free space was already spoken for. This is the exact double-spend the \
-         pool exists to prevent -- two planes that each 'fit the budget' while \
-         their sum does not."
+        crowded.iter().all(|v| v.is_finite()),
+        "the crowded run must return a real gradient, not NaNs"
+    );
+
+    // THE COMPOSITION PROPERTY: what the gradient itself added to the ledger
+    // must be SMALLER when someone else is holding the pool. Subtracting the
+    // incumbent's own charge isolates the gradient's contribution, so this
+    // cannot pass merely because the incumbent inflated the total.
+    let crowded_added = crowded_peak.saturating_sub(incumbent_only_peak);
+    assert!(
+        crowded_added < alone_peak,
+        "COMPOSITION FAILED: with {incumbent_bytes} B already spoken for, the \
+         gradient still charged {crowded_added} B of its own -- as much as the \
+         {alone_peak} B it takes with the pool to itself. It is sizing against \
+         the CAPACITY rather than against what is left, which is the exact \
+         double-spend the pool exists to prevent."
     );
 }
