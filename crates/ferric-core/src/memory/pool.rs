@@ -150,7 +150,7 @@ impl MemoryPool {
     pub fn available_bytes(&self) -> usize {
         self.inner
             .capacity
-            .saturating_sub(self.outstanding_bytes())
+            .saturating_sub(self.inner.outstanding.load(Ordering::Acquire))
     }
 
     /// Debit `bytes` under `label`, returning an RAII guard that credits them
@@ -164,16 +164,19 @@ impl MemoryPool {
     /// workers each asking for 3 GiB of a 4.72 GiB pool cannot both succeed.
     pub fn reserve(&self, label: &str, bytes: usize) -> Result<Reservation, FerricError> {
         let cap = self.inner.capacity;
+        // REFUSE when the request would exceed the ceiling. `Some(next)`
+        // unconditionally (the shape this had while it was being written)
+        // makes `fetch_update` always succeed, which makes the `Err` arm below
+        // dead code and the pool purely advisory -- the exact defect this type
+        // exists to fix. The CAS loop is what makes the check atomic against
+        // concurrent reservations from rayon workers: two threads that each
+        // fit individually cannot both commit past the ceiling.
         let outcome = self.inner.outstanding.fetch_update(
             Ordering::AcqRel,
             Ordering::Acquire,
             |cur| {
                 let next = cur.saturating_add(bytes);
-                if next > cap {
-                    None
-                } else {
-                    Some(next)
-                }
+                (next <= cap).then_some(next)
             },
         );
         match outcome {
@@ -304,8 +307,48 @@ impl Reservation {
 }
 
 impl Drop for Reservation {
+    /// Credit the reservation back to THE POOL IT CAME FROM.
+    ///
+    /// `self.pool` is a clone holding its own `Arc<PoolInner>`, so this
+    /// releases into the originating pool even if the process-global slot has
+    /// since been cleared or replaced. That is the semantics
+    /// `an_installed_pool_does_not_leak_capacity_across_clears` asserts: a
+    /// guard must never credit an unrelated pool.
+    ///
+    /// An `inert` reservation (no pool installed) has `pool: None` and is a
+    /// no-op here, which is what keeps the no-budget path bit-identical.
+    ///
+    /// This body was EMPTY while the type was being written, so nothing was
+    /// ever credited back: `outstanding` only ever grew, and a long SCF loop
+    /// would exhaust the pool on transient buffers that had already been
+    /// freed. Measured by its own test -- dropping a 3 GB guard left
+    /// `outstanding_bytes()` at 3_000_000_000 instead of 0.
     fn drop(&mut self) {
-        self.release_now();
+        let Some(pool) = self.pool.take() else {
+            return;
+        };
+        let bytes = self.bytes;
+        // saturating_sub, not wrapping: a double-release would otherwise wrap
+        // to a huge outstanding value and lock the pool out permanently.
+        let _ = pool.inner.outstanding.fetch_update(
+            Ordering::AcqRel,
+            Ordering::Acquire,
+            |cur| Some(cur.saturating_sub(bytes)),
+        );
+        // Scoped so the MutexGuard is released before `pool` goes out of
+        // scope at the end of this body.
+        if let Ok(mut m) = pool.inner.by_label.lock() {
+            if let Some(slot) = m.get_mut(&self.label) {
+                *slot = slot.saturating_sub(bytes);
+                if *slot == 0 {
+                    m.remove(&self.label);
+                }
+            }
+            drop(m);
+        }
+        // `peak` is deliberately NOT decremented: it is a high-water mark for
+        // the end-of-run report, not a live gauge.
+        drop(pool);
     }
 }
 

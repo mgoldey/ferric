@@ -70,6 +70,7 @@ use std::collections::HashMap;
 
 use ndarray::{Array1, Array2, Array3};
 
+use super::pool::{MemoryPool, Reservation as PoolReservation};
 use crate::FerricError;
 
 /// Bytes per `f64` — the element type of every large ferric tensor.
@@ -138,6 +139,15 @@ pub struct MemoryPlan {
     label: String,
     reservations: Vec<Reservation>,
     index: HashMap<String, usize>,
+    /// The shared ledger this plan's peak is charged against, if any.
+    ///
+    /// `None` is the historical behaviour exactly: `check()` compares the
+    /// projected peak against `budget_bytes` and nothing is debited anywhere.
+    /// `Some(pool)` makes [`MemoryPlan::commit`] available, which debits the
+    /// peak from the pool and hands back an RAII guard — so a second plan
+    /// built elsewhere in the process sees a smaller pool, which is the
+    /// non-composition defect this whole module exists to fix.
+    pool: Option<MemoryPool>,
 }
 
 impl MemoryPlan {
@@ -150,6 +160,7 @@ impl MemoryPlan {
             label: label.into(),
             reservations: Vec::new(),
             index: HashMap::new(),
+            pool: None,
         }
     }
 
@@ -162,6 +173,63 @@ impl MemoryPlan {
     /// the ambient-state defect this type exists to retire.
     pub fn resolve(explicit: Option<usize>, label: impl Into<String>) -> Self {
         Self::with_budget_bytes(super::resolve_budget_bytes(explicit), label)
+    }
+
+    /// A plan whose ceiling is what `pool` currently has LEFT, and whose
+    /// [`commit`](MemoryPlan::commit) debits that pool.
+    ///
+    /// This is the composing constructor. Two plans built this way against the
+    /// same pool cannot both be committed if their peaks sum past the
+    /// capacity — the property a bare `resolve` cannot provide, because it
+    /// hands each caller the whole ceiling.
+    pub fn from_pool(pool: &MemoryPool, label: impl Into<String>) -> Self {
+        let mut p = Self::with_budget_bytes(pool.available_bytes(), label);
+        p.pool = Some(pool.clone());
+        p
+    }
+
+    /// A plan against the process-global pool if one is installed, else
+    /// against the resolved ceiling exactly as [`resolve`](MemoryPlan::resolve)
+    /// would give it.
+    ///
+    /// The `None` branch is the trivial limit: unbudgeted behaviour is
+    /// unchanged.
+    pub fn from_global_pool(explicit: Option<usize>, label: impl Into<String>) -> Self {
+        match super::pool::global() {
+            Some(pool) => Self::from_pool(&pool, label),
+            None => Self::resolve(explicit, label),
+        }
+    }
+
+    /// Attach a pool to an existing plan, re-basing the ceiling on what that
+    /// pool has left.
+    pub fn with_pool(mut self, pool: &MemoryPool) -> Self {
+        self.budget_bytes = pool.available_bytes();
+        self.pool = Some(pool.clone());
+        self
+    }
+
+    /// The pool this plan charges, if any.
+    pub fn pool(&self) -> Option<&MemoryPool> {
+        self.pool.as_ref()
+    }
+
+    /// [`check`](MemoryPlan::check), then DEBIT the projected peak from the
+    /// attached pool, returning an RAII guard that credits it back on drop.
+    ///
+    /// With no pool attached this is `check()` plus an inert guard — so a
+    /// migrated call site behaves exactly as it did before whenever the budget
+    /// is unconfigured.
+    ///
+    /// Charging `peak_bytes()` (not the sum of every reservation) is
+    /// deliberate: transients do not coexist, and an over-estimating guard is
+    /// also a bug — it refuses jobs that would have fit.
+    pub fn commit(&self) -> Result<PoolReservation, FerricError> {
+        self.check()?;
+        match &self.pool {
+            Some(pool) => pool.reserve(&self.label, self.peak_bytes()),
+            None => Ok(PoolReservation::inert(self.label.clone())),
+        }
     }
 
     /// The ceiling, in bytes.
@@ -335,7 +403,9 @@ impl MemoryPlan {
     /// This is how nested methods compose (SCF inside a gradient, RI-MP2 inside
     /// a double hybrid) without each one assuming it owns the whole box.
     pub fn sub_plan(&self, label: impl Into<String>) -> Self {
-        Self::with_budget_bytes(self.remaining(), label)
+        let mut child = Self::with_budget_bytes(self.remaining(), label);
+        child.pool = self.pool.clone();
+        child
     }
 
     /// Look up a declared reservation and verify `elems` matches it.
@@ -394,6 +464,7 @@ impl MemoryPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::pool::MemoryPool;
 
     const GB: usize = 1_000_000_000;
 
@@ -573,6 +644,93 @@ mod tests {
         let mut p = MemoryPlan::with_budget_bytes(GB, "t");
         p.reserve_sized("idx", 1_000, 4, Lifetime::Resident, 1);
         assert_eq!(p.peak_bytes(), 4_000);
+    }
+
+    #[test]
+    fn commit_without_a_pool_is_check_plus_an_inert_guard() {
+        // TRIVIAL LIMIT: a plan with no pool behaves exactly as before.
+        let mut p = MemoryPlan::with_budget_bytes(GB, "t");
+        p.reserve("a", 1_000, Lifetime::Resident);
+        let g = p.commit().expect("fits");
+        assert!(g.is_inert());
+        assert_eq!(g.bytes(), 0);
+
+        let mut over = MemoryPlan::with_budget_bytes(1_000, "t");
+        over.reserve("hog", 1_000_000, Lifetime::Resident);
+        assert!(over.commit().is_err(), "commit must still enforce check()");
+    }
+
+    #[test]
+    fn two_plans_against_one_pool_cannot_both_commit() {
+        // THE property the pre-pool tree lacked. Two subsystems, one 4 GB
+        // pool, 3 GB each: both `check()` (each was handed the whole ceiling)
+        // but only one may `commit()`.
+        let pool = MemoryPool::with_capacity_bytes(4 * GB);
+        let mut a = MemoryPlan::from_pool(&pool, "DF 3-index");
+        a.reserve("B(P|mn)", 3 * GB / F64_BYTES, Lifetime::Resident);
+        let held = a.commit().expect("the first 3 GB fits a 4 GB pool");
+
+        let mut b = MemoryPlan::from_pool(&pool, "KS grid AO cache");
+        b.reserve("chi+dchi", 3 * GB / F64_BYTES, Lifetime::Resident);
+        // from_pool already re-based b's ceiling on what is LEFT, so even
+        // check() now refuses it.
+        let err = b.commit().unwrap_err().to_string();
+        assert!(err.contains("KS grid AO cache"), "{err}");
+
+        // ...and once the first plane releases, the second fits.
+        drop(held);
+        let mut b2 = MemoryPlan::from_pool(&pool, "KS grid AO cache");
+        b2.reserve("chi+dchi", 3 * GB / F64_BYTES, Lifetime::Resident);
+        assert!(b2.commit().is_ok());
+    }
+
+    #[test]
+    fn a_committed_plan_releases_its_bytes_on_drop() {
+        let pool = MemoryPool::with_capacity_bytes(4 * GB);
+        {
+            let mut p = MemoryPlan::from_pool(&pool, "transient stage");
+            p.reserve("scratch", 3 * GB / F64_BYTES, Lifetime::Transient);
+            let _g = p.commit().unwrap();
+            assert_eq!(pool.outstanding_bytes(), 3 * GB);
+        }
+        assert_eq!(pool.outstanding_bytes(), 0);
+    }
+
+    #[test]
+    fn commit_charges_the_peak_not_the_sum_of_every_reservation() {
+        // Transients do not coexist; charging their sum would be an
+        // over-estimating guard, which is also a bug.
+        let pool = MemoryPool::with_capacity_bytes(10 * GB);
+        let mut p = MemoryPlan::from_pool(&pool, "t");
+        p.reserve("resident", GB / F64_BYTES, Lifetime::Resident);
+        p.reserve("scratch_a", 2 * GB / F64_BYTES, Lifetime::Transient);
+        p.reserve("scratch_b", 3 * GB / F64_BYTES, Lifetime::Transient);
+        let _g = p.commit().unwrap();
+        assert_eq!(
+            pool.outstanding_bytes(),
+            4 * GB,
+            "1 resident + largest transient (3), not 1+2+3"
+        );
+    }
+
+    #[test]
+    fn from_pool_bases_the_ceiling_on_what_is_left_not_the_capacity() {
+        let pool = MemoryPool::with_capacity_bytes(10 * GB);
+        let _held = pool.reserve("incumbent", 7 * GB).unwrap();
+        let p = MemoryPlan::from_pool(&pool, "latecomer");
+        assert_eq!(p.budget_bytes(), 3 * GB);
+    }
+
+    #[test]
+    fn sub_plan_inherits_the_pool_so_a_child_commit_still_debits() {
+        let pool = MemoryPool::with_capacity_bytes(10 * GB);
+        let mut parent = MemoryPlan::from_pool(&pool, "outer");
+        parent.reserve("resident", GB / F64_BYTES, Lifetime::Resident);
+        let mut child = parent.sub_plan("inner");
+        assert!(child.pool().is_some(), "the pool must survive sub_plan");
+        child.reserve("scratch", 2 * GB / F64_BYTES, Lifetime::Resident);
+        let _g = child.commit().unwrap();
+        assert_eq!(pool.outstanding_bytes(), 2 * GB);
     }
 
     #[test]
