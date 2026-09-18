@@ -59,10 +59,13 @@ use ferric_scf::ScfResult;
 /// actually stream is a lie, and this one's does.
 ///
 /// MEASURED, not assumed: `tests/mwe_gw_pool_is_inert_without_a_pool.rs`
-/// asserts the same frozen QP bits at `RAYON_NUM_THREADS` 1, 2, 4 and 12, and
-/// `tests/mwe_gw_planes_compose_in_one_pool.rs` asserts the panelled (serial)
-/// sweep reproduces them bit-for-bit under a capacity that forces this gate to
-/// decline.
+/// asserts the same frozen QP bits at `RAYON_NUM_THREADS` 1, 2, 4 and 12 --
+/// and 1 worker IS the serial path's width, so the fallback's numerics are
+/// pinned against the same constants the parallel path is. The gate's own
+/// decision is pinned separately by
+/// `the_soft_qp_gate_panels_when_its_scratch_does_not_fit`, on the counter
+/// below rather than on completion; see that counter's doc for why completion
+/// is not an observable here.
 ///
 /// # And why it checks `available_bytes()` rather than just try-reserving
 ///
@@ -100,18 +103,71 @@ pub(crate) fn charge_qp_sweep_scratch_n(
     let want =
         crate::budget::qp_worker_scratch_bytes(m_modes, n_act, n_quad, n_workers, n_channels);
     let label = format!("GW QP sweep per-worker scratch ({n_workers} workers)");
-    match ferric_core::memory::pool::global() {
+    let taken = match ferric_core::memory::pool::global() {
         // Unbudgeted: `Some(inert)` -- exactly the parallel path as before.
         // This is the trivial limit and it is what makes the anchor test pass.
         None => Some(ferric_core::memory::pool::Reservation::inert(label)),
         Some(pool) => {
+            // Take the scratch only if the downstream hard planes still fit.
             if want.saturating_add(downstream_hard) <= pool.available_bytes() {
                 pool.try_reserve(&label, want)
             } else {
                 None
             }
         }
+    };
+    if taken.is_none() {
+        QP_SWEEP_PANELLED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
+    taken
+}
+
+/// How many times a QP sweep has taken its SERIAL fallback since the process
+/// started.
+///
+/// # Why an observable counter and not "the run still completed"
+///
+/// Because the run completes either way -- that is the whole point of a soft
+/// gate. "It completed" therefore cannot distinguish "the gate declined and
+/// panelled" from "the gate never had to decline", and a test written on that
+/// signal is INERT for the very mutation it exists to catch.
+///
+/// MEASURED: turning this gate hard (mutation M3) left all five tests in
+/// `tests/mwe_gw_pool_is_inert_without_a_pool.rs` green at 2, 4 AND 12 workers.
+/// The reason is specific and worth recording -- at the binary-searched
+/// smallest completing capacity the scratch STILL FITS in the headroom
+/// available at the instant this gate asks, because ferric-rpa's much larger
+/// preflight charge (the term that sets that floor) has already been released
+/// by then. So the floor is not inside the observable window, and there is no
+/// capacity-only signal to write a test on at that shape.
+///
+/// A counter makes the branch directly observable at any capacity, rather than
+/// requiring a test to locate a window that may be narrow or empty.
+static QP_SWEEP_PANELLED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Read the panel counter. Test-facing observability, not a control knob.
+pub fn qp_sweep_panelled_count() -> usize {
+    QP_SWEEP_PANELLED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// [`charge_qp_sweep_scratch`] exposed for the gate tests.
+///
+/// The decision this function makes is not observable from a whole-run test at
+/// small shapes: ferric-rpa's much larger preflight charge sets the capacity
+/// floor and is RELEASED before the Σ driver runs, so any capacity low enough
+/// to squeeze this gate is too low for that preflight and the run dies on a
+/// mandatory plane first. Measured at 840_672 B of free headroom against a
+/// 19_712..118_272 B scratch (2..12 workers) on water/STO-3G.
+///
+/// Exposing the gate lets the test exercise the same decision with that
+/// confounder removed, rather than with a capacity window that does not exist.
+pub fn charge_qp_sweep_scratch_for_test(
+    m_modes: usize,
+    n_act: usize,
+    n_quad: usize,
+    downstream_hard: usize,
+) -> Option<ferric_core::memory::pool::Reservation> {
+    charge_qp_sweep_scratch(m_modes, n_act, n_quad, downstream_hard)
 }
 
 /// Sub-sample `npts` node indices from an `nw`-point evaluation grid with a

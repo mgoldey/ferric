@@ -251,13 +251,26 @@ fn the_soft_qp_scratch_declines_instead_of_refusing() {
     let mo_b = make_mo_b().expect("b_full is mandatory and must fit inside the window");
     let m = project_b_into_pdep(&mo_b, &v_dressed(), Some(usize::MAX))
         .expect("m_proj is mandatory and must fit inside the window");
-    // With both mandatory planes outstanding, the scratch cannot fit -- so the
-    // gate must hand back None (panel) rather than an error.
+    // With both mandatory planes outstanding, the scratch cannot fit.
     let avail = pool::global_available_bytes().expect("pool");
     assert!(
         scratch > avail,
         "fixture is wrong: the scratch ({scratch} B) fits in what is left ({avail} B) at \
          {workers} workers, so the soft branch is never exercised"
+    );
+    // ACTUALLY CALL THE GATE. Setting up the condition and not invoking the
+    // decision would make this contract a statement about arithmetic; the
+    // claim under test is that the gate hands back `None` (panel) rather than
+    // an error, which only calling it can show.
+    let before = ferric_gw::sigma::qp_sweep_panelled_count();
+    let taken = ferric_gw::sigma::charge_qp_sweep_scratch_for_test(NAUX, N_ACT, n_quad, 0);
+    let panelled = ferric_gw::sigma::qp_sweep_panelled_count() - before;
+    assert!(
+        taken.is_none() && panelled == 1,
+        "the gate took the {scratch} B scratch (or errored) with only {avail} B free, \
+         behind two mandatory planes. It must DECLINE: a hard charge here would refuse a \
+         job the pre-migration tree completes, and a greedy take would leave nothing for \
+         whatever asks next."
     );
     drop(m);
 }
