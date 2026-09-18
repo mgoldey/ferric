@@ -14,6 +14,27 @@ use ferric_scf::aurora::{target_jk_builds, AuroraConfig};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::screening::SchwarzBounds;
 
+/// Serializes every test in this file.
+///
+/// `target_jk_builds()` is a PROCESS-GLOBAL counter and `run` reads it as a
+/// before/after delta. Under the default parallel test runner a sibling test's
+/// Fock builds land between those two reads, so the delta counts both runs:
+/// measured 22 where 12 and 10 were expected, i.e. each test saw the other's
+/// builds. The tests passed only under `--test-threads=1`.
+///
+/// This is the "a passing test may be measuring the wrong thing" trap, and it
+/// is why the lock is here rather than a note telling people to serialize by
+/// hand -- CI runs the default runner.
+fn counter_lock() -> std::sync::MutexGuard<'static, ()> {
+    static L: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    match L.get_or_init(|| std::sync::Mutex::new(())).lock() {
+        Ok(g) => g,
+        // A poisoned lock means a sibling panicked; the counter delta is still
+        // well-defined for us because we re-read it below.
+        Err(e) => e.into_inner(),
+    }
+}
+
 fn run(aurora: bool) -> (usize, usize, f64) {
     let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
     let bs = basis::bundled("cc-pvdz").unwrap();
@@ -49,6 +70,7 @@ fn run(aurora: bool) -> (usize, usize, f64) {
 /// counter is process-global.
 #[test]
 fn target_jk_counter_tracks_iterations_exactly() {
+    let _serial = counter_lock();
     let (jk_d, it_d, e_d) = run(false);
     eprintln!("DIIS:   {jk_d} J/K builds, {it_d} iterations, E = {e_d:.10}");
     assert!(jk_d > 0, "the counter must actually tick (got {jk_d})");
@@ -91,6 +113,7 @@ fn target_jk_counter_tracks_iterations_exactly() {
 /// intent survives a refactor.
 #[test]
 fn auxiliary_work_is_not_charged_to_the_target_build_count() {
+    let _serial = counter_lock();
     let (jk, iters, _e) = run(true);
     assert_eq!(
         jk, iters,
