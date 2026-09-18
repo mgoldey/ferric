@@ -1528,6 +1528,10 @@ pub fn solve_rhf(
             }
         }
         mon.note_energy(energy);
+        if std::env::var("FERRIC_TRAH_RHO_TRACE").is_ok() {
+            let dnorm = d.iter().map(|x| x * x).sum::<f64>().sqrt();
+            eprintln!("TRAH-ITER-TRACE: iter={iter} E={energy:.12} |D|={dnorm:.12} err_max={err_max:.3e}");
+        }
 
         // ── Trust-region augmented-Hessian (TRAH) update, RHF/RKS ────────────
         //
@@ -1685,6 +1689,20 @@ pub fn solve_rhf(
                 }
 
                 // Save the pre-step point so a rejection can undo it exactly.
+                if std::env::var("FERRIC_TRAH_RHO_TRACE").is_ok() {
+                    let dnorm = d.iter().map(|x| x * x).sum::<f64>().sqrt();
+                    let cnorm = c_cur.iter().map(|x| x * x).sum::<f64>().sqrt();
+                    let gnorm = {
+                        let gm = f_mo.slice(ndarray::s![nocc.., ..nocc]);
+                        gm.iter().map(|x| x * x).sum::<f64>().sqrt()
+                    };
+                    eprintln!(
+                        "TRAH-STEP-TRACE: iter={iter} E_at_step={energy:.12} \
+                         |D|={dnorm:.12} |C|={cnorm:.12} |g_ov|={gnorm:.6e} \
+                         |kappa|={:.6e} pred={:.6e} mu={:.6e} alpha={:.1}",
+                        step.norm, step.predicted, step.level_shift, step.alpha
+                    );
+                }
                 trah_undo = Some((c_cur, d.clone()));
                 if let Some(st) = trah_state.as_mut() {
                     st.record_step(energy, &step);

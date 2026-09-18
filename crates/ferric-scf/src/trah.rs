@@ -606,6 +606,17 @@ impl TrahState {
     pub fn assess(&mut self, energy_now: f64) -> Option<TrahVerdict> {
         let pending = self.pending.take()?;
         let actual = energy_now - pending.energy_before;
+        if std::env::var("FERRIC_TRAH_RHO_TRACE").is_ok() {
+            eprintln!(
+                "TRAH-RHO-TRACE: E_before={:.12} E_now={:.12} actual={:.6e} \
+                 predicted={:.6e} rho={:.6e}",
+                pending.energy_before,
+                energy_now,
+                actual,
+                pending.predicted,
+                if pending.predicted < 0.0 { actual / pending.predicted } else { f64::NEG_INFINITY },
+            );
+        }
 
         // A non-negative prediction means the quadratic model never promised
         // descent, so ρ carries no information (and a zero prediction would be
