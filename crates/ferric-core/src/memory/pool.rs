@@ -171,14 +171,13 @@ impl MemoryPool {
         // exists to fix. The CAS loop is what makes the check atomic against
         // concurrent reservations from rayon workers: two threads that each
         // fit individually cannot both commit past the ceiling.
-        let outcome = self.inner.outstanding.fetch_update(
-            Ordering::AcqRel,
-            Ordering::Acquire,
-            |cur| {
-                let next = cur.saturating_add(bytes);
-                (next <= cap).then_some(next)
-            },
-        );
+        let outcome =
+            self.inner
+                .outstanding
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
+                    let next = cur.saturating_add(bytes);
+                    (next <= cap).then_some(next)
+                });
         match outcome {
             Ok(prev) => {
                 let now = prev.saturating_add(bytes);
@@ -330,11 +329,12 @@ impl Drop for Reservation {
         let bytes = self.bytes;
         // saturating_sub, not wrapping: a double-release would otherwise wrap
         // to a huge outstanding value and lock the pool out permanently.
-        let _ = pool.inner.outstanding.fetch_update(
-            Ordering::AcqRel,
-            Ordering::Acquire,
-            |cur| Some(cur.saturating_sub(bytes)),
-        );
+        let _ = pool
+            .inner
+            .outstanding
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
+                Some(cur.saturating_sub(bytes))
+            });
         // Scoped so the MutexGuard is released before `pool` goes out of
         // scope at the end of this body.
         if let Ok(mut m) = pool.inner.by_label.lock() {
@@ -549,7 +549,11 @@ mod tests {
         let pool = MemoryPool::with_capacity_bytes(GB);
         let err = pool.reserve("absurd", usize::MAX).unwrap_err().to_string();
         assert!(err.contains("absurd"), "{err}");
-        assert_eq!(pool.outstanding_bytes(), 0, "a failed reserve debits nothing");
+        assert_eq!(
+            pool.outstanding_bytes(),
+            0,
+            "a failed reserve debits nothing"
+        );
     }
 
     #[test]

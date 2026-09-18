@@ -196,15 +196,43 @@ impl MemoryPlan {
     /// unchanged.
     pub fn from_global_pool(explicit: Option<usize>, label: impl Into<String>) -> Self {
         match super::pool::global() {
-            Some(pool) => Self::from_pool(&pool, label),
+            // An EXPLICIT caller budget still binds: see `with_pool` for why a
+            // pool may only ever narrow a ceiling, never widen one.
+            Some(pool) => {
+                let label = label.into();
+                match explicit {
+                    Some(_) => Self::resolve(explicit, label).with_pool(&pool),
+                    None => Self::from_pool(&pool, label),
+                }
+            }
             None => Self::resolve(explicit, label),
         }
     }
 
     /// Attach a pool to an existing plan, re-basing the ceiling on what that
-    /// pool has left.
+    /// pool has left -- but never RAISING it.
+    ///
+    /// # Why this is a `min` and not an assignment
+    ///
+    /// Until 2026-09-18 this was `self.budget_bytes = pool.available_bytes()`,
+    /// which silently discarded a caller's deliberately narrow budget. A user
+    /// who set `[memory] budget_gb = 1` on a box whose pool had 20 GB free got
+    /// 20 GB of headroom: their explicit limit was ignored precisely when it
+    /// mattered. A budget a caller sets is a CEILING they are asking to be held
+    /// to, and a pool is a second, independent ceiling; the plan has to respect
+    /// whichever binds harder.
+    ///
+    /// This direction is also the safe one for the pool's purpose. The pool
+    /// exists so co-resident planes cannot each re-read the same headroom;
+    /// taking the min can only ever refuse EARLIER than the old code, never
+    /// later, so it cannot reintroduce the overcommit this module was built to
+    /// stop.
+    ///
+    /// Found while reviewing the ferric-cc migration, whose author flagged the
+    /// override as a behaviour change rather than letting it pass silently.
+    /// Eight call sites in that crate alone go through this method.
     pub fn with_pool(mut self, pool: &MemoryPool) -> Self {
-        self.budget_bytes = pool.available_bytes();
+        self.budget_bytes = self.budget_bytes.min(pool.available_bytes());
         self.pool = Some(pool.clone());
         self
     }
