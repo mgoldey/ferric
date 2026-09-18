@@ -550,12 +550,11 @@ fn hene_coupling(r_ang: f64, use_sad: bool) -> Option<Point> {
 /// unchanged; only the search is cheap.
 const PROBE_MAX_OUTER: usize = 15;
 
-fn pairing_at(r_ang: f64, use_sad: bool) -> Option<(Vec<f64>, Vec<f64>, f64)> {
-    let p = hene_coupling(r_ang, use_sad)?;
-    Some((p.sv_a.clone(), p.sv_b.clone(), p.s_ab))
-}
-
-/// [`pairing_at`] at an explicit outer cap, for the candidate search.
+/// Singular-value pairing at an explicit outer cap, for the candidate search.
+///
+/// An uncapped `pairing_at` sibling existed until the candidate loop was added;
+/// every call site now passes a cap, so it was removed rather than left as dead
+/// code behind an `#[allow]`.
 fn pairing_at_capped(
     r_ang: f64,
     use_sad: bool,
