@@ -49,7 +49,7 @@ pub fn m_proj_bytes(m_modes: usize, n_act: usize) -> usize {
 /// hard-charges it itself, inside `ThreeIndexSource::build`, and charging it
 /// twice would double-count. But ferric-gw must still SUBTRACT it when
 /// deciding whether one of its own charges may be taken, which is what
-/// [`b_full_fits_beside_the_ao_source`] is for. The rule from the ferric-rpa
+/// `b_full_fits_beside_the_ao_source` is for. The rule from the ferric-rpa
 /// migration, verbatim: whatever you decline to CHARGE because another crate
 /// charges it, you must also decline to SPEND.
 pub fn ao_source_bytes(naux: usize, nao: usize) -> usize {

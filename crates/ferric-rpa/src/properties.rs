@@ -862,7 +862,7 @@ pub fn preflight_grid_path_for_test(
 
 /// Returns the resolved budget so callers can reuse it for banding decisions
 /// rather than resolving twice (and possibly inconsistently), and an RAII
-/// [`Reservation`] debiting the shared pool for the projected peak.
+/// [`Reservation`](ferric_core::memory::pool::Reservation) debiting the shared pool for the projected peak.
 ///
 /// # Why the guard is returned rather than dropped here
 ///
@@ -3386,7 +3386,7 @@ pub fn preflight_hirshfeld_grid_scan(
     preflight_hirshfeld_grid_scan_reserved(label, nbf, npts, natoms).map(|_| ())
 }
 
-/// [`preflight_hirshfeld_grid_scan`], but hands back the [`Reservation`] that
+/// [`preflight_hirshfeld_grid_scan`], but hands back the [`Reservation`](ferric_core::memory::pool::Reservation) that
 /// admitted the buffers so the OWNER can hold the charge for their whole
 /// lifetime.
 ///

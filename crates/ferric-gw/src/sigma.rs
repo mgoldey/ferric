@@ -87,7 +87,7 @@ pub(crate) fn charge_qp_sweep_scratch(
     charge_qp_sweep_scratch_n(m_modes, n_act, n_quad, 1, downstream_hard)
 }
 
-/// [`charge_qp_sweep_scratch`] for a sweep whose ONE closure solves
+/// `charge_qp_sweep_scratch` for a sweep whose ONE closure solves
 /// `n_channels` spin channels, so each worker holds `n_channels` scratch sets.
 ///
 /// `u_sigma::run_u_evgw0` / `run_u_evgw` are the callers: their `par_iter`
@@ -150,7 +150,7 @@ pub fn qp_sweep_panelled_count() -> usize {
     QP_SWEEP_PANELLED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// [`charge_qp_sweep_scratch`] exposed for the gate tests.
+/// `charge_qp_sweep_scratch` exposed for the gate tests.
 ///
 /// The decision this function makes is not observable from a whole-run test at
 /// small shapes: ferric-rpa's much larger preflight charge sets the capacity
