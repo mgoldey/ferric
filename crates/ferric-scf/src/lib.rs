@@ -77,6 +77,8 @@ pub mod reduce;
 /// down to `ferric-integrals` so integral-level code (schwarz, 3-index) can use
 /// it too. Kept here so existing `ferric_scf::engine_pool::…` paths still work.
 pub use ferric_integrals::engine_pool;
+/// Closed-shell restricted Hartree-Fock solver.
+pub mod aurora;
 /// COSX seminumerical exchange builder (grid-based K, overlap-fitted).
 pub mod cosx_k;
 /// Density-fitted Coulomb (J) matrix builder (RI-J).
@@ -89,7 +91,7 @@ pub mod diis;
 pub mod guess;
 /// LinK exchange builder: linear-scaling K via Schwarz-screened column lists.
 pub mod link_k;
-/// Closed-shell restricted Hartree-Fock solver.
+
 pub mod rhf;
 /// Newton-step RHF solver with exact orbital Hessian.
 pub mod rhf_newton;
