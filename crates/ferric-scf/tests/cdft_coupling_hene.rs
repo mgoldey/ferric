@@ -191,7 +191,7 @@ fn pi_weight(prep: &PreparedBasis, c_b: &ndarray::Array2<f64>, nocc_b: usize) ->
 /// the constrained solve starts from, which is exactly the variable under test:
 /// `false` reproduces the pre-fix hcore path (²Π-referenced), `true` is the
 /// fixed default (σ-referenced).
-fn hene_coupling(r_ang: f64, use_sad: bool) -> Option<Point> {
+fn hene_coupling_capped(r_ang: f64, use_sad: bool, max_outer: usize) -> Option<Point> {
     let xyz = format!("2\nHeNe+\nHe 0 0 0\nNe 0 0 {r_ang}\n");
     let mol = Molecule::parse_xyz(&xyz, 1, 2).unwrap();
     let bs = basis::bundled("def2-svp").unwrap();
@@ -229,7 +229,7 @@ fn hene_coupling(r_ang: f64, use_sad: bool) -> Option<Point> {
         // by paths that NEVER converge (each wasted outer iteration runs a
         // full inner SCF). At 64 this file took 462 s; the non-convergent
         // R = 2.5/3.0 sigma points burn the whole cap before failing.
-        cdft_max_outer: 40,
+        cdft_max_outer: max_outer,
         fractional_occ: false,
         dft_grid: Some(gcfg.clone()),
         level_shift: 0.5,
@@ -449,7 +449,7 @@ fn s_ab_is_carried_by_a_single_beta_singular_value() {
     let Some((r_ang, sv_a, sv_b, s_ab)) =
         CANDIDATES
             .iter()
-            .find_map(|&r| match pairing_at(r, use_sad) {
+            .find_map(|&r| match pairing_at_capped(r, use_sad, PROBE_MAX_OUTER) {
                 Some((a, b, s)) => Some((r, a, b, s)),
                 None => {
                     tried.push(format!("{r:.2}"));
@@ -529,8 +529,39 @@ fn s_ab_is_carried_by_a_single_beta_singular_value() {
 /// Löwdin singular values and `S_ab` at one geometry, or `None` if it did not
 /// converge. Factored out so the structural test reads one number set rather
 /// than re-running the whole series.
+/// Full-budget solve, for callers that already know their geometry converges.
+fn hene_coupling(r_ang: f64, use_sad: bool) -> Option<Point> {
+    hene_coupling_capped(r_ang, use_sad, 40)
+}
+
+/// PROBE budget for the candidate search: fail fast on a geometry that is not
+/// going to converge cheaply.
+///
+/// Each candidate runs two `solve_cdft_uhf` calls on a 99x302 grid, so a
+/// candidate that burns the full 40-iteration cap twice before being skipped
+/// costs ~80 outer iterations of pure waste. Every geometry that DOES converge
+/// in this test does so in <= 11 outer iterations (measured: 3, 3, 10, 11, 6,
+/// 8, 5, 2, 4), so 15 accepts every real candidate with margin while cutting a
+/// dead one to under half the cost.
+///
+/// This made `cdft_coupling_hene` the single slowest binary in CI at 817 s --
+/// 38% of the top-12 total -- after the candidate loop was added. The accepted
+/// geometry is re-solved at FULL budget below, so the assertion itself is
+/// unchanged; only the search is cheap.
+const PROBE_MAX_OUTER: usize = 15;
+
 fn pairing_at(r_ang: f64, use_sad: bool) -> Option<(Vec<f64>, Vec<f64>, f64)> {
     let p = hene_coupling(r_ang, use_sad)?;
+    Some((p.sv_a.clone(), p.sv_b.clone(), p.s_ab))
+}
+
+/// [`pairing_at`] at an explicit outer cap, for the candidate search.
+fn pairing_at_capped(
+    r_ang: f64,
+    use_sad: bool,
+    max_outer: usize,
+) -> Option<(Vec<f64>, Vec<f64>, f64)> {
+    let p = hene_coupling_capped(r_ang, use_sad, max_outer)?;
     Some((p.sv_a.clone(), p.sv_b.clone(), p.s_ab))
 }
 
