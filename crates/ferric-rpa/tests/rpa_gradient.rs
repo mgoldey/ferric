@@ -218,6 +218,7 @@ fn rpa_optimize_h2_ccpvdz() {
         g_rms_thresh: 1e-3,
         e_conv: 1e-7,
         trust_radius: 0.1,
+        ..Default::default()
     };
 
     let res = optimize_geometry_rpa(&mol, &obs_bs, &aux_bs, op, &cfg, &opt_cfg, 5e-4).unwrap();

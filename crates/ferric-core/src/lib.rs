@@ -27,6 +27,9 @@ pub mod elements;
 pub mod error;
 /// Classical external potentials: fixed point charges and uniform electric fields.
 pub mod external_potential;
+/// Redundant internal coordinates: bond perception, the Wilson B-matrix, and
+/// the internal↔Cartesian step transformations used by the geometry optimizer.
+pub mod internal_coords;
 /// Dense linear algebra helpers (Cholesky, eigenvalue, matrix utilities).
 pub mod linalg;
 /// Memory budget discovery and enforcement.
