@@ -10,6 +10,7 @@ Tests that need the compiled `ferric` extension skip cleanly when it is absent;
 the format layer itself is tested through `read_structure`, which never imports
 it, so a missing extension does not silently delete coverage of the parsers.
 """
+
 from __future__ import annotations
 
 import math
@@ -23,7 +24,6 @@ from tools.structure import (
     StructureError,
     read_structure,
 )
-
 
 
 def _have_ferric() -> bool:
