@@ -12,6 +12,9 @@
 - [Installation](./using/installation.md)
 - [Quick start](./using/quickstart.md)
 - [Python bindings](./using/python.md)
+- [Recipes](./using/recipes.md)
+- [Applications](./using/applications.md)
+- [For agents](./using/agents.md)
 
 # Methods
 
