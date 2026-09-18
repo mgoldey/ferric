@@ -368,11 +368,57 @@ fn preflight_check_closed_shell(
     // `budget::estimate_peak_split`.
     let (hard, soft) = budget::estimate_peak_split(shape);
     let _hard = ferric_core::memory::pool::reserve_global(&format!("{label} [in-core]"), hard)?;
-    // `try_reserve_global` returns `Some(inert)` when NO pool is installed, so
-    // the unbudgeted path is unchanged; `None` only when a pool is installed
-    // and the scratch does not fit, in which case the run proceeds panelled.
-    let _soft =
-        ferric_core::memory::pool::try_reserve_global(&format!("{label} [freq scratch]"), soft);
+    // The soft charge must LEAVE ROOM for the downstream hard planes.
+    //
+    // # The defect this avoids (measured, 2026-09-18)
+    //
+    // A bare `try_reserve_global(soft)` is GREEDY: it takes the scratch
+    // whenever it happens to fit at that instant, with no regard for the
+    // mandatory allocation that asks next. Right after this preflight,
+    // `compute_rpa_intermediates` builds a `ThreeIndexSource`, which HARD-
+    // charges the `(naux, nao, nao)` AO tensor. So an optional plane could
+    // starve a mandatory one that has no fallback -- the run then dies on
+    // `"DF 3-index (P|mn) in-core"` at a capacity where the panelled path
+    // would have completed fine.
+    //
+    // Measured on water/cc-pVDZ (hard 522_816 B, AO tensor 387_072 B,
+    // per-worker scratch 120_288 B) with a bare `try_reserve`, binary-
+    // searching the smallest capacity that completes:
+    //
+    //   workers   soft       hard+AO   hard+soft+AO   measured minimum
+    //   2          240_576   909_888      1_150_464   1_150_834  (no fallback)
+    //   4          481_152   909_888      1_391_040   1_391_076  (no fallback)
+    //   12       1_443_456   909_888      2_353_344     910_380  (panelled)
+    //
+    // At 12 workers the scratch is big enough to fail on its own, the
+    // fallback engages, and the floor is `hard + AO` as intended. At 2 and 4
+    // the scratch is SMALL enough to succeed -- and then the AO tensor is
+    // refused. The soft gate stopped protecting the run precisely where the
+    // run was cheapest. That is an over-charge in the shared brief's sense:
+    // it refuses a job that fits.
+    //
+    // Reserving the AO-tensor headroom makes the floor `hard + AO` at EVERY
+    // worker count (verified 2, 4, 12), which is the honest soft-gate
+    // contract: take the scratch only when doing so still leaves the
+    // mandatory planes their bytes.
+    //
+    // `downstream_hard` uses the same `budget::ao_tensor_bytes` the split
+    // subtracts, so the two cannot drift: whatever this crate declines to
+    // charge because ferric-integrals charges it, it also declines to spend.
+    let downstream_hard = budget::ao_tensor_bytes(shape);
+    let soft_label = format!("{label} [freq scratch]");
+    let _soft = match ferric_core::memory::pool::global() {
+        // Unbudgeted: `Some(inert)`, exactly as before -- the trivial limit.
+        None => Some(ferric_core::memory::pool::Reservation::inert(soft_label)),
+        Some(pool) => {
+            // Take the scratch only if the AO tensor still fits afterwards.
+            if soft.saturating_add(downstream_hard) <= pool.available_bytes() {
+                pool.try_reserve(&soft_label, soft)
+            } else {
+                None
+            }
+        }
+    };
     Ok(RpaPoolCharge { _hard, _soft })
 }
 

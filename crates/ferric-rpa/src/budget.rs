@@ -305,9 +305,35 @@ pub fn estimate_grid_bytes(g: GridEstimateShape) -> usize {
 /// if they do not fit, failing fast with an occupancy breakdown is strictly
 /// better than walking into the allocator.
 ///
-/// `hard + soft == estimate_peak_bytes(shape)` exactly, which
-/// `hard_plus_soft_reconstructs_the_total` pins — a drift between the split
-/// and the total would silently change what the gate admits.
+/// `hard + soft + ao_tensor_bytes == estimate_peak_bytes(shape)` exactly,
+/// which `hard_plus_soft_reconstructs_the_total` pins — a drift between the
+/// split and the total would silently change what the gate admits.
+///
+/// # A soft charge must not starve the plane that asks next
+///
+/// Splitting hard from soft is necessary but not sufficient. The SOFT charge
+/// also has to leave headroom for the HARD allocations that follow it, or an
+/// optional plane can kill a mandatory one. `preflight_check_closed_shell`
+/// returns, and then `compute_rpa_intermediates` hard-charges the AO tensor;
+/// a bare `try_reserve(soft)` takes the scratch whenever it fits at that
+/// instant and can leave nothing for it.
+///
+/// This is worker-dependent, so it hides on wide machines: the soft term
+/// scales with `n_workers`, so at HIGH widths it fails on its own and the
+/// fallback engages correctly, while at LOW widths it squeezes in and starves
+/// the tensor. Measured (binary search for the smallest completing capacity,
+/// water/cc-pVDZ) before the fix:
+///
+/// ```text
+///   workers   soft       hard+AO   hard+soft+AO   measured minimum
+///   2          240_576   909_888      1_150_464   1_150_834  (starved)
+///   4          481_152   909_888      1_391_040   1_391_076  (starved)
+///   12       1_443_456   909_888      2_353_344     910_380  (panelled, OK)
+/// ```
+///
+/// After the fix the minimum is `hard + AO` at all three. See the soft-charge
+/// branch in `lib.rs::preflight_check_closed_shell` and the regression test
+/// `the_soft_charge_leaves_room_for_the_mandatory_plane_that_asks_next`.
 pub fn estimate_peak_split(shape: PeakEstimateShape) -> (usize, usize) {
     let total = estimate_peak_bytes(shape);
     let soft = quad_scratch_bytes(shape);
