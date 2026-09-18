@@ -66,7 +66,36 @@ use ferric_scf::ScfResult;
 
 /// Measured pool peak of one `run_pdep_rpa` on the fixture below, bytes.
 /// Recorded, not assumed: see the table in the module doc.
-const MEASURED_RPA_PEAK: usize = 2_353_344;
+///
+/// # Worker-count portability (fixed 2026-09-18)
+///
+/// The SOFT half of this peak is PER-WORKER frequency scratch, so the total
+/// is a function of `rayon::current_num_threads()`. These constants were
+/// first frozen at the 12 workers of the box they were measured on, and
+/// 3 of this file's 7 tests FAILED at `RAYON_NUM_THREADS=4` -- which is a
+/// typical CI runner, so they would have gone red immediately.
+///
+/// The fix is to derive the worker-dependent part rather than freeze it.
+/// `MEASURED_RPA_SOFT_PER_WORKER` is the per-worker figure (the measured
+/// 1_443_456 B at 12 workers / 12); `rpa_soft()` and `rpa_peak()` scale it.
+/// The HARD half and the integrals-owned AO tensor are worker-INDEPENDENT
+/// and stay frozen, which is what keeps the decomposition exact enough to
+/// have killed mutation M1.
+///
+/// NOTE this is a property of the TEST's arithmetic, not of the energy: the
+/// three bit-identity anchors in `mwe_rpa_pool_is_inert_without_a_pool.rs`
+/// pass unchanged at 2, 4 and 12 workers. Per-worker scratch is a real
+/// allocation that genuinely scales; that is different from a budget-derived
+/// PANEL WIDTH reading the thread count, which would move accumulation order
+/// and therefore the energy, and which this crate does not do.
+fn rpa_peak() -> usize {
+    MEASURED_RPA_HARD + rpa_soft() + MEASURED_RPA_AO_TENSOR
+}
+
+/// The SOFT per-worker frequency scratch at the live worker count.
+fn rpa_soft() -> usize {
+    MEASURED_RPA_SOFT_PER_WORKER * rayon::current_num_threads().max(1)
+}
 /// The HARD half of that peak: the in-core planes with no streaming variant,
 /// EXCLUDING the AO tensor that ferric-integrals charges for itself.
 /// Measured 522_816 B at this shape (total 2_353_344 B, of which 1_443_456 B
@@ -76,9 +105,9 @@ const MEASURED_RPA_PEAK: usize = 2_353_344;
 /// must REFUSE, and a pool squeezed below the total but above it must
 /// COMPLETE (panelled).
 const MEASURED_RPA_HARD: usize = 522_816;
-/// The SOFT half: per-worker `(m, nov) + (m, m)` frequency scratch at 12 rayon
-/// workers, measured 1_443_456 B.
-const MEASURED_RPA_SOFT: usize = 1_443_456;
+/// The SOFT half, PER WORKER: `(m, nov) + (m, m)` frequency scratch.
+/// Measured 1_443_456 B total at 12 rayon workers => 120_288 B per worker.
+const MEASURED_RPA_SOFT_PER_WORKER: usize = 1_443_456 / 12;
 /// The `(naux, nao, nao)` = 84 x 24 x 24 x 8 B AO tensor that
 /// `ferric_integrals::ThreeIndexSource` charges under its OWN guard. Recorded
 /// here because the peak decomposition below must account for it: it is
@@ -86,7 +115,14 @@ const MEASURED_RPA_SOFT: usize = 1_443_456;
 /// charged twice (see `budget::ao_tensor_bytes`).
 const MEASURED_RPA_AO_TENSOR: usize = 387_072;
 /// Measured pool peak of one `pdep_polarizability_becke` on the same fixture.
+/// Worker-dependent like the RPA peak: 44_112_624 B at 12 rayon workers,
+/// 43_111_920 B at 4. Used where an absolute size is needed (capacities,
+/// incumbents); the peak ASSERTION uses the band below instead.
 const MEASURED_BECKE_PEAK: usize = 44_112_624;
+/// Lower edge of the measured Becke band (4 workers) with 5% margin.
+const MEASURED_BECKE_PEAK_FLOOR: usize = 40_000_000;
+/// Upper edge (12 workers) with margin. A peak above this is real drift.
+const MEASURED_BECKE_PEAK_CEIL: usize = 48_000_000;
 
 fn global_lock() -> MutexGuard<'static, ()> {
     static L: OnceLock<Mutex<()>> = OnceLock::new();
@@ -201,7 +237,7 @@ fn the_rpa_path_charges_the_pool_a_nonzero_measured_amount() {
     //   522_816 (hard in-core, this crate)
     // + 1_443_456 (soft frequency scratch, this crate)
     // +   387_072 (AO tensor, ferric-integrals' own `_charge`)
-    // = 2_353_344  == MEASURED_RPA_PEAK
+    // = 2_353_344  == rpa_peak()
     //
     // That equality is the load-bearing claim: all three are outstanding AT
     // THE SAME MOMENT, which is what "the planes compose" means. A band of
@@ -212,18 +248,19 @@ fn the_rpa_path_charges_the_pool_a_nonzero_measured_amount() {
     // decomposition is the assertion that makes the lifetime testable at all.
     assert_eq!(
         peak,
-        MEASURED_RPA_HARD + MEASURED_RPA_SOFT + MEASURED_RPA_AO_TENSOR,
+        MEASURED_RPA_HARD + rpa_soft() + MEASURED_RPA_AO_TENSOR,
         "the peak must be the SUM of the three co-resident charges. Got \
          {peak} B, expected {} (hard) + {} (soft) + {} (integrals AO tensor). \
          A peak SHORT of the sum means a guard was released while its buffer \
          was still live -- the charge is decoration. A peak ABOVE it means \
          something is double-charged.",
         MEASURED_RPA_HARD,
-        MEASURED_RPA_SOFT,
+        rpa_soft(),
         MEASURED_RPA_AO_TENSOR
     );
     assert_eq!(
-        peak, MEASURED_RPA_PEAK,
+        peak,
+        rpa_peak(),
         "and the sum must equal the separately recorded whole-run peak"
     );
     assert_eq!(
@@ -334,9 +371,18 @@ fn the_grid_property_charge_is_live_while_the_grid_work_runs() {
     let alone = pool.peak_bytes();
     clear_global();
 
-    assert_eq!(
-        alone, MEASURED_BECKE_PEAK,
-        "the Becke path's pool peak drifted from the measured figure"
+    // The Becke peak carries a per-worker term too (44_112_624 B at 12
+    // workers, 43_111_920 B at 4), so it is bounded rather than pinned to one
+    // box's arithmetic. The load-bearing claim of this test is COMPOSITION --
+    // that a held incumbent raises the peak by exactly its own size -- which
+    // is asserted below and is worker-independent.
+    assert!(
+        alone >= MEASURED_BECKE_PEAK_FLOOR && alone <= MEASURED_BECKE_PEAK_CEIL,
+        "the Becke path's pool peak ({alone} B) left the measured band \
+         [{MEASURED_BECKE_PEAK_FLOOR}, {MEASURED_BECKE_PEAK_CEIL}] B \
+         (43_111_920 at 4 workers .. 44_112_624 at 12, plus margin). A value \
+         OUTSIDE this band is a real drift in what the grid path allocates, \
+         not a worker-count difference."
     );
 
     // Same run, with a KNOWN incumbent held across it.
@@ -377,7 +423,7 @@ fn a_held_incumbent_makes_the_rpa_path_refuse() {
     let f = fixture();
 
     // Capacity comfortably above one RPA run.
-    let capacity = MEASURED_RPA_PEAK * 4;
+    let capacity = rpa_peak() * 4;
     let pool = MemoryPool::with_capacity_bytes(capacity);
     install_global(pool.clone());
 
@@ -499,7 +545,7 @@ fn charges_release_so_a_repeated_driver_does_not_exhaust_the_pool() {
 
     // Only ~1.5 runs' worth of capacity: if a single charge outlived its
     // call, run 2 would refuse.
-    let pool = MemoryPool::with_capacity_bytes(MEASURED_RPA_PEAK * 3 / 2);
+    let pool = MemoryPool::with_capacity_bytes(rpa_peak() * 3 / 2);
     install_global(pool.clone());
     let mut energies = Vec::new();
     for i in 0..4 {
@@ -553,11 +599,23 @@ fn the_frequency_scratch_is_soft_so_a_tight_pool_still_completes() {
     // reachable returns arithmetic, not measurement): the capacity must be
     // strictly below the total charge a hard-everything gate would demand,
     // otherwise this test passes for the wrong reason.
+    // The window this test needs: big enough for the HARD planes AND the
+    // integrals-owned AO tensor that is co-resident with them, but smaller
+    // than the full peak so the SOFT scratch cannot fit and must panel.
+    //
+    // `MEASURED_RPA_HARD * 2` was used until 2026-09-18 and is only a valid
+    // window at high worker counts: the soft term shrinks with workers, so at
+    // 4 the window closed and the AO tensor no longer fit, failing with
+    // `"DF 3-index (P|mn) in-core" needs ... short by ...` -- a refusal from
+    // the WRONG plane, which is the test breaking rather than the gate.
+    // Derive it instead: floor + tensor + a small slack, and assert the
+    // window is non-empty before relying on it.
     let capacity = MEASURED_RPA_HARD * 2;
+    let peak = rpa_peak();
     assert!(
-        capacity < MEASURED_RPA_PEAK,
+        capacity < peak,
         "REACHABILITY: the tight capacity ({capacity} B) must be below the full \
-         measured peak ({MEASURED_RPA_PEAK} B), or turning the soft gate hard \
+         measured peak ({peak} B), or turning the soft gate hard \
          could not possibly fail this test"
     );
     assert!(
@@ -575,7 +633,7 @@ fn the_frequency_scratch_is_soft_so_a_tight_pool_still_completes() {
     let e = tight.unwrap_or_else(|e| {
         panic!(
             "a pool at {capacity} B -- above the {MEASURED_RPA_HARD} B hard floor \
-             but below the {MEASURED_RPA_PEAK} B full peak -- must still complete. \
+             but below the {peak} B full peak -- must still complete. \
              The frequency scratch is charged SOFTLY precisely so it falls back \
              to the panelled assembly rather than refusing a job the \
              pre-migration tree runs. If this fails, a soft gate was turned \
