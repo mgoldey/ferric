@@ -233,6 +233,13 @@ fn full_cache_bytes(nbf: usize, npts: usize, is_uks: bool, needs_tau: bool) -> u
 /// always-resident VV10 NLC cache alone cannot fit (nothing left to fall back
 /// to — batching only ever shrinks the *main*-grid working set, so an
 /// over-budget NLC grid by itself is still a hard failure).
+///
+/// Retained as the boolean-valued view of
+/// [`check_grid_budget_reserved`] that the unit tests below assert on: they
+/// care only about the Full-vs-Batched DECISION, not about who holds the
+/// resulting pool charge. Production goes through the `_reserved` form,
+/// because dropping the guard is what makes a charge decoration.
+#[cfg(test)]
 fn check_grid_budget(
     nbf: usize,
     npts: usize,
@@ -241,14 +248,63 @@ fn check_grid_budget(
     is_uks: bool,
     needs_tau: bool,
 ) -> Result<bool, KsXcError> {
+    check_grid_budget_reserved(nbf, npts, has_vv10, budget, is_uks, needs_tau).map(|r| r.is_some())
+}
+
+/// [`check_grid_budget`] that hands back the pool charge on the `Full`
+/// decision, so the caller can hold it for the cache's lifetime.
+///
+/// `Ok(Some(guard))` = the full working set fits, take the `Full` cache and
+/// KEEP this guard alive beside `chi`/`dchi`. `Ok(None)` = batch the main grid.
+/// `Err` = even the non-batchable VV10 NLC cache cannot fit.
+///
+/// # Why `try_reserve` and not `reserve`
+///
+/// This gate has a legitimate, always-available fallback: batching shrinks
+/// the main-grid working set arbitrarily far (down to one point at a time).
+/// A gate whose over-budget answer is "batch it" must keep answering "batch
+/// it" against a pool, NOT start erroring -- so an over-budget ask here takes
+/// the same `Ok(false)`/`Ok(None)` branch it always took. Only the
+/// non-batchable VV10 NLC case is a hard error, exactly as before.
+fn check_grid_budget_reserved(
+    nbf: usize,
+    npts: usize,
+    has_vv10: bool,
+    budget: usize,
+    is_uks: bool,
+    needs_tau: bool,
+) -> Result<Option<ferric_core::memory::pool::Reservation>, KsXcError> {
     let base = full_cache_bytes(nbf, npts, is_uks, needs_tau);
     let needed = if has_vv10 {
         base.saturating_mul(2)
     } else {
         base
     };
+    // Pool installed: DEBIT it rather than compare against a ceiling that
+    // another plane may already have spent. `try_reserve` because batching is
+    // a real fallback -- see this function's doc.
+    if let Some(pool) = ferric_core::memory::pool::global() {
+        if let Some(guard) = pool.try_reserve("KS-DFT grid AO cache (chi + grad chi)", needed) {
+            return Ok(Some(guard));
+        }
+        // Did not fit the pool. The VV10 NLC cache is not batchable, so if it
+        // alone cannot be covered there is nothing to fall back to.
+        if has_vv10 && pool.try_reserve("KS-DFT VV10 NLC probe", base).is_none() {
+            return Err(KsXcError::OverBudget {
+                needed_gb: needed as f64 / 1e9,
+                budget_gb: pool.available_bytes() as f64 / 1e9,
+                nbf,
+                npts,
+                vv10: ", +VV10 NLC grid (not batchable, and does not fit alone)",
+            });
+        }
+        return Ok(None);
+    }
+    // No pool: the historical ceiling comparison, unchanged (trivial limit).
     if needed <= budget {
-        return Ok(true);
+        return Ok(Some(ferric_core::memory::pool::Reservation::inert(
+            "KS-DFT grid AO cache",
+        )));
     }
     // Full working set (main + NLC, if any) doesn't fit. If there's no VV10,
     // the main grid alone is the whole ask, and batching can always shrink it
@@ -268,7 +324,7 @@ fn check_grid_budget(
             vv10: ", +VV10 NLC grid (not batchable, and does not fit alone)",
         });
     }
-    Ok(false)
+    Ok(None)
 }
 
 /// Resolve the batch size (points per batch) for the batched semilocal V_xc
@@ -456,8 +512,29 @@ fn batched_add_xc_uks(
 /// the intra-batch parallel work.
 #[derive(Debug)]
 enum GridCache {
-    Full { chi: Array2<f64>, dchi: Array3<f64> },
-    Batched { batch_pts: usize },
+    Full {
+        chi: Array2<f64>,
+        dchi: Array3<f64>,
+        /// The pool charge for `chi`/`dchi`, held for exactly as long as they
+        /// are resident.
+        ///
+        /// This field is the whole point of charging this plane. A
+        /// reservation taken inside `check_grid_budget` and dropped when that
+        /// function returns credits the bytes back while the arrays it
+        /// approved are still live, so the DF 3-index tensor asking next sees
+        /// a pool that looks empty -- which reproduces the exact
+        /// non-composing-gates defect the pool exists to fix. Storing the
+        /// guard beside the arrays makes the charge last the cache's
+        /// lifetime, and `KsXc`'s `Drop` (derived, via this field) credits it
+        /// back when the SCF is done with the cache.
+        ///
+        /// Inert when no pool is installed, which is what keeps the
+        /// unbudgeted path bit-identical.
+        _charge: ferric_core::memory::pool::Reservation,
+    },
+    Batched {
+        batch_pts: usize,
+    },
 }
 
 /// Caches everything needed to compute V_xc and V_nl per SCF iteration:
@@ -592,11 +669,22 @@ impl KsXc {
             .funcs
             .iter()
             .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
-        let fits = check_grid_budget(nbf, grid.len(), xc.vv10.is_some(), budget, false, is_mgga)?;
-        let cache = if fits {
+        // Hold the grid cache's pool charge in the cache itself, so the bytes
+        // stay debited for as long as chi/dchi are resident. Dropping the
+        // guard here (as a bare `check_grid_budget` would) would credit the
+        // bytes back while the arrays are still live and let the DF 3-index
+        // tensor be admitted against them a second time -- the very
+        // double-spend that OOM-killed the 27-atom def2-SVP case.
+        let charge =
+            check_grid_budget_reserved(nbf, grid.len(), xc.vv10.is_some(), budget, false, is_mgga)?;
+        let cache = if let Some(_charge) = charge {
             let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
             let (chi, dchi) = eval_basis_and_grad_on_points(mol, bs, &pts)?;
-            GridCache::Full { chi, dchi }
+            GridCache::Full {
+                chi,
+                dchi,
+                _charge,
+            }
         } else {
             let batch_pts = resolve_batch_size(nbf, grid.len(), budget, false, is_mgga);
             GridCache::Batched { batch_pts }
@@ -644,7 +732,7 @@ impl XcContribution for KsXc {
         // idiom the test locks at the bottom of this file already use.
         let mut scratch = self.scratch.lock().unwrap_or_else(|e| e.into_inner());
         let e_xc = match &self.cache {
-            GridCache::Full { chi, dchi } => {
+            GridCache::Full { chi, dchi, .. } => {
                 let dens = eval_density_closed(d, chi, dchi);
                 // τ (kinetic-energy density) is only needed by meta-GGA
                 // functionals. Compute it from D and ∇χ (no explicit occupied
@@ -843,11 +931,22 @@ impl KsXcUks {
             .funcs
             .iter()
             .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
-        let fits = check_grid_budget(nbf, grid.len(), xc.vv10.is_some(), budget, true, is_mgga)?;
-        let cache = if fits {
+        // Hold the grid cache's pool charge in the cache itself, so the bytes
+        // stay debited for as long as chi/dchi are resident. Dropping the
+        // guard here (as a bare `check_grid_budget` would) would credit the
+        // bytes back while the arrays are still live and let the DF 3-index
+        // tensor be admitted against them a second time -- the very
+        // double-spend that OOM-killed the 27-atom def2-SVP case.
+        let charge =
+            check_grid_budget_reserved(nbf, grid.len(), xc.vv10.is_some(), budget, true, is_mgga)?;
+        let cache = if let Some(_charge) = charge {
             let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
             let (chi, dchi) = eval_basis_and_grad_on_points(mol, bs, &pts)?;
-            GridCache::Full { chi, dchi }
+            GridCache::Full {
+                chi,
+                dchi,
+                _charge,
+            }
         } else {
             let batch_pts = resolve_batch_size(nbf, grid.len(), budget, true, is_mgga);
             GridCache::Batched { batch_pts }
@@ -894,7 +993,7 @@ impl UksXcContribution for KsXcUks {
         // then call the polarized libxc path.
         let mut scratch = self.scratch.lock().unwrap_or_else(|e| e.into_inner());
         let e_xc = match &self.cache {
-            GridCache::Full { chi, dchi } => {
+            GridCache::Full { chi, dchi, .. } => {
                 let dens = eval_density_uks(d_a, d_b, chi, dchi);
                 // Per-spin τ only for meta-GGA (from the two spin density matrices).
                 let tau = if self.is_mgga {
