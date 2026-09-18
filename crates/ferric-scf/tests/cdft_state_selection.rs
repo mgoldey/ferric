@@ -175,14 +175,19 @@ fn hene_cfg() -> RhfConfig {
         //   driver/none  16 | target 1.99 14 | target 1.995 20 | hcore 23
         //
         // CI needed >30 for SAD where this box needs 14, so the old
-        // hardcoded 30 failed the build on a machine difference. 64 is ~2.8x
-        // the worst LOCAL count and comfortably clear of CI's spread.
+        // hardcoded 30 failed the build on a machine difference. 40 is ~1.7x
+        // the worst LOCAL count (23) and clear of CI's observed spread.
+        //
+        // Not higher: the cap is ALSO the price paid by paths that never
+        // converge, since each wasted outer iteration runs a full inner SCF.
+        // At 64 `cdft_coupling_hene` took 462 s vs 17 s at 30, because its
+        // non-convergent sigma points burn the entire cap before failing.
         //
         // This is NOT a "make it converge eventually" cap: `state A (N_He=1)`
         // still does not converge at 200 (verified 2026-09-17), and the
         // catalogue documents it as a genuine non-converger at lines 893/902.
         // Raising the cap does not rescue it and is not meant to.
-        cdft_max_outer: 64,
+        cdft_max_outer: 40,
         cdft_stability_descent: false,
         use_sad_guess: false,
         dft_grid: Some(AtomicGridConfig {
@@ -905,7 +910,7 @@ fn sweep_guesses_at(sys: &Sys, w: &Array2<f64>, target: f64, guesses: &[Guess]) 
 /// converge in 30 outer iters" because 30 was the hardcoded cap when the
 /// table was recorded. Re-running at `cdft_max_outer = 200` leaves them
 /// UNCONVERGED, so `state A` is a genuine non-converger, not an
-/// iteration-starved one. The cap is now a config knob pinned to 64 in
+/// iteration-starved one. The cap is now a config knob pinned to 40 in
 /// `hene_cfg()`; every other row's `outer` count below is unchanged by it.
 ///
 /// ```text
