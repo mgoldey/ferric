@@ -253,9 +253,7 @@ fn an_undersized_pool_refuses_the_job_and_names_the_dominant_plane() {
     // but not a shared ledger), scaled down to a test-sized system.
     install_global(MemoryPool::with_capacity_bytes(200_000));
 
-    let err = try_ksdft("cc-pvdz")
-        .err()
-        .expect("an undersized pool must REFUSE, not OOM-kill");
+    let err = try_ksdft("cc-pvdz").expect_err("an undersized pool must REFUSE, not OOM-kill");
     assert!(
         err.contains("memory pool exhausted") || err.contains("pool cannot cover"),
         "the refusal must come from the pool, not a downstream panic:\n{err}"
@@ -295,15 +293,31 @@ fn a_pool_too_small_for_the_full_grid_cache_still_runs_by_batching() {
     // within the batched-vs-Full accumulation difference -- the fallback is a
     // memory strategy, not an approximation.
     //
-    // MEASURED on water/6-31G/PBE: Full -76.29805950374167,
-    // batched -76.29805950776793, i.e. 4.0e-9 Ha. That is a genuine
-    // re-association of the V_xc grid sum (different batch boundaries sum the
-    // same terms in a different order), not a regression, so the bar is set
-    // just above it rather than at bit-identity. `ks.rs`'s own batched-vs-
-    // cached regression uses 1e-10 on a smaller grid for the same reason.
-    const BATCHED_VS_FULL_TOL: f64 = 1e-8;
+    // MEASURED on water/6-31G/PBE, re-recorded 2026-09-18 against main AFTER
+    // PR #83 (`a268fc3c`, spherical MINAO atomic blocks):
+    //
+    //     Full     -76.29805950044016
+    //     batched  -76.29805948773445
+    //     diff       1.271e-8 Ha
+    //
+    // The ORIGINAL recording, taken before #83 merged, was Full
+    // -76.29805950374167 / batched -76.29805950776793, a 4.0e-9 spread. The
+    // guess fix changed the converged reference density, which moved BOTH
+    // values by ~1.6e-8 and widened the batched-vs-Full gap ~3x.
+    //
+    // This is still a re-association of the V_xc grid sum -- different batch
+    // boundaries sum the same terms in a different order -- not an
+    // approximation and not a regression. It is re-recorded rather than
+    // loosened-and-forgotten: the bar tracks the measured spread with about
+    // 4x headroom, so a real batching defect still fails it. The SAME ksdft
+    // commit passes on the pre-#83 base and fails here, which is how the
+    // cause was identified (bisect, not guesswork).
+    //
+    // `ks.rs`'s own batched-vs-cached regression uses 1e-10 on a smaller grid
+    // where the re-association is correspondingly smaller.
+    const BATCHED_VS_FULL_TOL: f64 = 5e-8;
     assert!(
-        (e - -76.298_059_503_741_67f64).abs() < BATCHED_VS_FULL_TOL,
+        (e - -76.298_059_500_440_16f64).abs() < BATCHED_VS_FULL_TOL,
         "the batched grid path must agree with the Full path to \
          {BATCHED_VS_FULL_TOL:e} Ha; got {e}"
     );
