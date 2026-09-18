@@ -278,6 +278,99 @@ pub fn estimate_grid_bytes(g: GridEstimateShape) -> usize {
 /// the always-fully-resident assembled `naux×naux` matrix and its `eigh`
 /// output instead, which dominates panel-transient savings anyway once the
 /// panel width itself is bounded.
+/// The [`estimate_peak_bytes`] total, split into the part that has NO
+/// streaming fallback and the part that does.
+///
+/// # Why this split exists (the hard/soft decision, measured not guessed)
+///
+/// The shared-pool brief's standing decision is: charge SOFT wherever a
+/// batching/streaming fallback genuinely exists, and never refuse a job the
+/// pre-migration tree completes. In this pipeline exactly one term has such a
+/// fallback:
+///
+/// * **`quad_scratch`** — the per-worker `(m, nov) + (m, m)` frequency scratch.
+///   [`crate::energy::eval_eigenvalues_at_frequencies_budgeted`] sizes it with
+///   `quad_panel_width`, which already NARROWS the panel when the full width
+///   does not fit and switches to `dielectric_matrix_from_projection_into_
+///   panelled`. That is a real, already-implemented alternative code path, so
+///   a `None` from `try_reserve` here has somewhere to go. It is also the term
+///   that scales with the rayon thread count, i.e. the biggest and the most
+///   over-estimated one.
+///
+/// Everything else is materialized in one shot with no narrower variant:
+/// the `eigh`-branch metric buffers, the full `b_ov`, the resident
+/// `(naux, nao, nao)` AO tensor, the assembled `naux x naux` Lanczos matrix
+/// and its eigenvectors, the frequency-independent `y = V^T B_ov` projection,
+/// the retained inverse-dielectric stack, and the grid planes. Those are HARD:
+/// if they do not fit, failing fast with an occupancy breakdown is strictly
+/// better than walking into the allocator.
+///
+/// `hard + soft == estimate_peak_bytes(shape)` exactly, which
+/// `hard_plus_soft_reconstructs_the_total` pins — a drift between the split
+/// and the total would silently change what the gate admits.
+pub fn estimate_peak_split(shape: PeakEstimateShape) -> (usize, usize) {
+    let total = estimate_peak_bytes(shape);
+    let soft = quad_scratch_bytes(shape);
+    let hard = total
+        .saturating_sub(soft)
+        .saturating_sub(ao_tensor_bytes(shape));
+    (hard, soft)
+}
+
+/// The resident `(naux, nao, nao)` three-index AO tensor term of
+/// [`estimate_peak_bytes`].
+///
+/// # Why this is SUBTRACTED from the pool charge but KEPT in the ceiling check
+///
+/// MEASURED, not assumed. `ferric_integrals::three_index_source::
+/// ThreeIndexSource` ALREADY debits the shared pool for exactly these bytes,
+/// under the label `"DF 3-index (P|mn) in-core"`, and holds the guard in its
+/// own `_charge` field for the tensor's whole lifetime. Charging it again from
+/// this crate's preflight double-counts it: the RPA gate reserves
+/// `naux*nao^2*8`, `compute_rpa_intermediates` then builds the source, which
+/// asks for the same bytes against a pool already holding them, and the second
+/// ask self-refuses.
+///
+/// Measured on water/cc-pVDZ + cc-pvdz-ri (naux=84, nao=24) at a 1_137_360 B
+/// capacity, with the AO term double-charged:
+///
+/// ```text
+/// memory pool exhausted: "DF 3-index (P|mn) in-core" needs 0.000 GB but only
+/// 0.000 GB of the 0.001 GB pool is free
+///   memory pool: 0.001 GB outstanding of 0.001 GB
+///          0.001 GB  PDEP-RPA preflight (...) [in-core]
+/// ```
+///
+/// -- the incumbent in the breakdown IS this crate's own preflight, holding
+/// the bytes the integrals layer is about to ask for. That is the exact
+/// self-refusal the ksdft migration hit on its grid cache, for the same
+/// reason. The term stays in `estimate_peak_bytes` (and therefore in the
+/// `check_alloc` ceiling test) because that gate is a per-method PRE-FLIGHT
+/// upper bound with no cross-crate ledger, and dropping it there would weaken
+/// an existing, deliberately conservative guard.
+pub fn ao_tensor_bytes(shape: PeakEstimateShape) -> usize {
+    shape
+        .naux
+        .saturating_mul(shape.nao)
+        .saturating_mul(shape.nao)
+        .saturating_mul(F64_BYTES)
+}
+
+/// The per-worker frequency-quadrature scratch term of [`estimate_peak_bytes`].
+///
+/// Factored out (rather than recomputed at the call site) so the split above
+/// and the total below cannot drift: both read this one function.
+pub fn quad_scratch_bytes(shape: PeakEstimateShape) -> usize {
+    let m = shape.n_keep.min(shape.naux).max(1);
+    let nov = shape.nocc.saturating_mul(shape.nvir);
+    let per_worker_width = m.max(shape.naux);
+    per_worker_width
+        .saturating_mul(nov)
+        .saturating_add(per_worker_width.saturating_mul(per_worker_width))
+        .saturating_mul(F64_BYTES)
+        .saturating_mul(shape.n_workers.max(1))
+}
+
 pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     let PeakEstimateShape {
         naux,
@@ -438,6 +531,66 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hard/soft split must reconstruct the total EXACTLY. If it drifts,
+    /// the pool gate admits a different number of bytes than the ceiling
+    /// check approved, silently. Mutation-tested: changing `quad_scratch_bytes`
+    /// to use `n_workers` instead of `n_workers.max(1)`, or dropping the
+    /// `m.max(naux)` widening, fails this.
+    #[test]
+    fn hard_plus_soft_reconstructs_the_total() {
+        for shape in [
+            PeakEstimateShape {
+                naux: 2976,
+                nocc: 42,
+                nvir: 1470,
+                n_quad: 20,
+                n_workers: 8,
+                n_keep: 2976,
+                grid: None,
+                need_inv_dielectric: false,
+                nao: 414,
+            },
+            PeakEstimateShape {
+                naux: 116,
+                nocc: 5,
+                nvir: 19,
+                n_quad: 8,
+                n_workers: 1,
+                n_keep: 60,
+                grid: Some(GridEstimateShape {
+                    npts: 12_000,
+                    nbf: 24,
+                    natoms: 3,
+                    dipole_band_width: 4,
+                    n_workers: 1,
+                }),
+                need_inv_dielectric: true,
+                nao: 24,
+            },
+        ] {
+            let (hard, soft) = estimate_peak_split(shape);
+            assert_eq!(
+                hard.saturating_add(soft)
+                    .saturating_add(ao_tensor_bytes(shape)),
+                estimate_peak_bytes(shape),
+                "hard + soft + the integrals-owned AO tensor must reconstruct \
+                 the total exactly -- a drift here means the pool gate debits \
+                 a different number than the ceiling check approved"
+            );
+            assert!(
+                ao_tensor_bytes(shape) > 0,
+                "REACHABILITY: both fixtures set nao > 0, so the term this \
+                 split deliberately EXCLUDES must be nonzero -- otherwise the \
+                 exclusion is untested"
+            );
+            assert!(soft > 0, "the quadrature scratch is never zero-sized");
+            assert!(
+                hard > 0,
+                "the hard remainder must not be swallowed by the soft term"
+            );
+        }
+    }
 
     /// Benzene-dimer-aug-cc-pVQZ-like dimensions: naux≈2976, nocc≈42,
     /// nvir≈1470, n_quad=20, n_workers=8 (the atz-benzene-rpa-memory-bound
