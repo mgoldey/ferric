@@ -377,7 +377,7 @@ fn the_grid_property_charge_is_live_while_the_grid_work_runs() {
     // that a held incumbent raises the peak by exactly its own size -- which
     // is asserted below and is worker-independent.
     assert!(
-        alone >= MEASURED_BECKE_PEAK_FLOOR && alone <= MEASURED_BECKE_PEAK_CEIL,
+        (MEASURED_BECKE_PEAK_FLOOR..=MEASURED_BECKE_PEAK_CEIL).contains(&alone),
         "the Becke path's pool peak ({alone} B) left the measured band \
          [{MEASURED_BECKE_PEAK_FLOOR}, {MEASURED_BECKE_PEAK_CEIL}] B \
          (43_111_920 at 4 workers .. 44_112_624 at 12, plus margin). A value \
@@ -577,52 +577,196 @@ fn charges_release_so_a_repeated_driver_does_not_exhaust_the_pool() {
     }
 }
 
-/// The SOFT half must actually be soft. The per-worker frequency-quadrature
-/// scratch is charged with `try_reserve_global` because
-/// `energy::quad_panel_width` already narrows the panel instead of failing.
+/// AN OPTIONAL PLANE MUST NOT STARVE A MANDATORY ONE.
 ///
-/// Pin that: a pool whose headroom covers the HARD half but NOT the soft half
-/// must still COMPLETE the run. If the soft charge were hard (mutation M3),
-/// this refuses -- which is exactly a job the pre-migration tree completes.
+/// This is the regression test for the gate bug the worker-count sweep
+/// exposed on 2026-09-18, and it is the property that makes the window in
+/// the test below worker-INDEPENDENT.
+///
+/// `preflight_check_closed_shell` takes the HARD charge, then the SOFT
+/// frequency scratch. Immediately afterwards -- OUTSIDE this crate --
+/// `compute_rpa_intermediates` builds a `ThreeIndexSource`, which HARD-charges
+/// the `(naux, nao, nao)` AO tensor. A bare `try_reserve(soft)` is greedy: it
+/// takes the scratch whenever it happens to fit right then, and can leave the
+/// mandatory AO tensor with nothing.
+///
+/// The failure is WORKER-DEPENDENT and therefore easy to miss, which is why
+/// it is pinned here rather than left to the capacity arithmetic. The soft
+/// term scales with worker count, so at LOW widths it is small enough to
+/// squeeze in and do the damage, while at high widths it fails on its own and
+/// the fallback engages correctly. Measured minima (binary search) before the
+/// fix:
+///
+/// ```text
+///   workers   soft       hard+AO   hard+soft+AO   measured minimum
+///   2          240_576   909_888      1_150_464   1_150_834  (starved)
+///   4          481_152   909_888      1_391_040   1_391_076  (starved)
+///   12       1_443_456   909_888      2_353_344     910_380  (panelled, OK)
+/// ```
+///
+/// After the fix the minimum is `hard + AO` at all three -- 910_066..910_380 B,
+/// the excess being binary-search granularity.
+///
+/// The assertion: at a capacity that fits BOTH hard planes but not the soft
+/// scratch, the run must complete. This is genuinely distinct from the soft
+/// test below -- that one can pass on a greedy gate whenever the soft term is
+/// large (as it did at 12 workers), while this one is written to state the
+/// contract directly.
+#[test]
+fn the_soft_charge_leaves_room_for_the_mandatory_plane_that_asks_next() {
+    let _s = CleanSlot::acquire();
+    let f = fixture();
+
+    // # Deriving the capacity that EXPOSES greediness at any worker count
+    //
+    // A capacity pinned near the floor does not work, and finding that out is
+    // the whole reason this test is written the way it is. A greedy gate only
+    // starves the AO tensor when it actually TAKES the scratch, i.e. when
+    // `soft <= capacity - hard`. At a fixed near-floor capacity that is true
+    // only for small `soft`, so the mutation is caught at 1-2 workers and
+    // SURVIVES from 4 up -- measured: restoring the greedy `try_reserve`
+    // (mutation M6) failed this test at 2 workers and passed it at 4 and 12.
+    // A test that only fails on narrow machines is the same worker-dependence
+    // that hid the bug in the first place.
+    //
+    // So scale the capacity with the scratch. Greediness is observable when
+    // BOTH hold:
+    //
+    //   soft <= capacity - hard          (the greedy gate takes the scratch)
+    //   AO   >  capacity - hard - soft   (and the AO tensor then does not fit)
+    //
+    // i.e. `hard + soft <= capacity < hard + soft + AO`, non-empty for any
+    // `AO > 0`. The midpoint `capacity = hard + soft + AO/2` sits inside it at
+    // every worker count.
+    //
+    // The CORRECT gate declines the scratch here and needs only `hard + AO`,
+    // so it completes -- which is the assertion. Verified: M6 now fails at 2,
+    // 4 and 12.
+    let hard = MEASURED_RPA_HARD;
+    let soft = rpa_soft();
+    let ao = MEASURED_RPA_AO_TENSOR;
+    let capacity = hard + soft + ao / 2;
+    let floor = hard + ao;
+
+    // REACHABILITY. At very narrow widths `soft` is small enough that the
+    // greedy-exposing window falls BELOW the floor, and no capacity both
+    // exposes greediness and obliges the run to succeed. Skip loudly rather
+    // than pass vacuously -- a test that cannot fail is an assumption
+    // (CLAUDE.md). Measured: this bites at 1 worker (capacity 836_640 B vs
+    // floor 909_888 B) and is satisfied from 2 workers up.
+    if capacity < floor {
+        eprintln!(
+            "SKIP the_soft_charge_leaves_room_...: at {} worker(s) the soft \
+             term ({soft} B) is too small for the greedy-exposing window \
+             [{}, {}) to reach the {floor} B floor. No capacity here can \
+             distinguish a greedy gate from a correct one, so this test is \
+             inert at this width and says so rather than passing silently.",
+            rayon::current_num_threads().max(1),
+            hard + soft,
+            hard + soft + ao
+        );
+        return;
+    }
+
+    let pool = MemoryPool::with_capacity_bytes(capacity);
+    install_global(pool.clone());
+    let r = run_rpa(&f);
+    clear_global();
+
+    let e = r.unwrap_or_else(|e| {
+        panic!(
+            "at {capacity} B -- enough for the hard planes ({hard} B) AND the \
+             downstream AO tensor ({ao} B), floor {floor} B -- the run must \
+             complete. This width is {} workers (soft {soft} B). A refusal \
+             naming \"DF 3-index\" means the soft frequency scratch was \
+             admitted greedily and starved a plane that has no fallback: an \
+             OPTIONAL allocation killed a MANDATORY one. {e}",
+            rayon::current_num_threads().max(1)
+        )
+    });
+    assert!(e < 0.0, "sanity: correlation energy is negative, got {e}");
+}
+
+/// The SOFT half must actually be soft. The per-worker frequency-quadrature
+/// scratch is charged softly because `energy::quad_panel_width` already
+/// narrows the panel instead of failing.
+///
+/// # What the capacity has to satisfy (derived, not tuned)
+///
+/// Three planes are charged, in this order, across one `run_pdep_rpa`:
+///
+/// 1. `MEASURED_RPA_HARD` -- the in-core planes. HARD, no fallback.
+/// 2. `rpa_soft()` -- per-worker frequency scratch. SOFT; declining it makes
+///    the run use the panelled assembly instead.
+/// 3. `MEASURED_RPA_AO_TENSOR` -- charged by `ferric_integrals::
+///    ThreeIndexSource` *after* this crate's preflight returns, inside
+///    `compute_rpa_intermediates`. HARD, no fallback.
+///
+/// For the FALLBACK to be what is under test, the capacity must satisfy BOTH:
+///
+/// * `capacity >= MEASURED_RPA_HARD + MEASURED_RPA_AO_TENSOR`
+///   -- otherwise the run dies on a mandatory plane and the test is measuring
+///   nothing about softness. This bound is worker-INDEPENDENT.
+/// * `capacity < MEASURED_RPA_HARD + rpa_soft() + MEASURED_RPA_AO_TENSOR`
+///   -- otherwise everything fits, the fallback never engages, and turning
+///   the soft gate hard (mutation M3) would not fail. This bound SHRINKS with
+///   worker count, because the soft term does.
+///
+/// The window is therefore `[hard + AO, hard + soft + AO)`, non-empty for any
+/// `soft > 0`, i.e. at every worker count.
+///
+/// # Why the old constant broke, and the gate bug it exposed
+///
+/// This test used a frozen `MEASURED_RPA_HARD * 2` = 1_045_632 B, which is
+/// BELOW `hard + AO` = 909_888 B... no: it is above it. The constant was not
+/// the whole problem. Binary-searching the smallest completing capacity with
+/// the ORIGINAL greedy `try_reserve` gave:
+///
+/// ```text
+///   workers   soft        hard+AO    hard+soft+AO   measured minimum
+///   2          240_576    909_888       1_150_464   1_150_834  (no fallback!)
+///   4          481_152    909_888       1_391_040   1_391_076  (no fallback!)
+///   12       1_443_456    909_888       2_353_344     910_380  (panelled)
+/// ```
+///
+/// The fallback only engaged at 12 workers. At 2 and 4 the scratch was SMALL
+/// enough to fit, so `try_reserve` took it -- and then starved the AO tensor,
+/// which has no fallback. An optional plane was killing a mandatory one, and
+/// the run died at a capacity where the panelled path would have completed.
+/// That is a real over-charge, fixed in `preflight_check_closed_shell` by
+/// making the soft charge reserve the downstream hard plane's headroom. After
+/// the fix the measured minimum is `hard + AO` at 2, 4 AND 12 workers
+/// (910_066..910_380 B, the excess being search granularity), so the window
+/// below is valid everywhere.
 #[test]
 fn the_frequency_scratch_is_soft_so_a_tight_pool_still_completes() {
     let _s = CleanSlot::acquire();
     let f = fixture();
 
-    // A capacity strictly BETWEEN the hard floor and the full peak: it cannot
-    // hold the soft frequency scratch, and it can hold the hard in-core
-    // planes. Measured at this shape: hard = 522_816 B, total = 2_353_344 B.
-    // 2x the hard figure sits squarely in that window, and is also above the
-    // integrals-owned AO tensor (387_072 B) that must ALSO fit alongside.
-    //
-    // First prove the window is REACHABLE (a pass condition that is not
-    // reachable returns arithmetic, not measurement): the capacity must be
-    // strictly below the total charge a hard-everything gate would demand,
-    // otherwise this test passes for the wrong reason.
-    // The window this test needs: big enough for the HARD planes AND the
-    // integrals-owned AO tensor that is co-resident with them, but smaller
-    // than the full peak so the SOFT scratch cannot fit and must panel.
-    //
-    // `MEASURED_RPA_HARD * 2` was used until 2026-09-18 and is only a valid
-    // window at high worker counts: the soft term shrinks with workers, so at
-    // 4 the window closed and the AO tensor no longer fit, failing with
-    // `"DF 3-index (P|mn) in-core" needs ... short by ...` -- a refusal from
-    // the WRONG plane, which is the test breaking rather than the gate.
-    // Derive it instead: floor + tensor + a small slack, and assert the
-    // window is non-empty before relying on it.
-    let capacity = MEASURED_RPA_HARD * 2;
+    // The floor: both HARD planes must fit, or the test measures nothing.
+    // Worker-independent by construction.
+    let floor = MEASURED_RPA_HARD + MEASURED_RPA_AO_TENSOR;
     let peak = rpa_peak();
+
+    // REACHABILITY, checked before the run: the window must be non-empty, or
+    // the pass condition is arithmetic rather than measurement (CLAUDE.md).
     assert!(
-        capacity < peak,
-        "REACHABILITY: the tight capacity ({capacity} B) must be below the full \
-         measured peak ({peak} B), or turning the soft gate hard \
-         could not possibly fail this test"
+        floor < peak,
+        "REACHABILITY: the window [{floor}, {peak}) is empty at \
+         {} workers -- there is no capacity that admits the mandatory planes \
+         while excluding the soft scratch, so this test cannot distinguish a \
+         soft gate from a hard one and must not be trusted as if it could.",
+        rayon::current_num_threads().max(1)
     );
+
+    // Sit just inside the floor. Taking the LOW end (rather than the midpoint)
+    // is deliberate: it is the furthest point from `peak`, so it maximises the
+    // margin by which mutation M3 (soft -> hard) must fail, at every worker
+    // count including the smallest soft term.
+    let capacity = floor + (peak - floor) / 4;
     assert!(
-        capacity > MEASURED_RPA_HARD,
-        "REACHABILITY: the tight capacity must still clear the hard floor, or \
-         this test would fail for the unrelated reason that the in-core planes \
-         do not fit"
+        capacity >= floor && capacity < peak,
+        "the derived capacity {capacity} must lie in [{floor}, {peak})"
     );
 
     let pool = MemoryPool::with_capacity_bytes(capacity);
@@ -632,12 +776,15 @@ fn the_frequency_scratch_is_soft_so_a_tight_pool_still_completes() {
 
     let e = tight.unwrap_or_else(|e| {
         panic!(
-            "a pool at {capacity} B -- above the {MEASURED_RPA_HARD} B hard floor \
-             but below the {peak} B full peak -- must still complete. \
-             The frequency scratch is charged SOFTLY precisely so it falls back \
-             to the panelled assembly rather than refusing a job the \
-             pre-migration tree runs. If this fails, a soft gate was turned \
-             hard. {e}"
+            "a pool at {capacity} B -- at or above the {floor} B floor (hard \
+             {MEASURED_RPA_HARD} + AO tensor {MEASURED_RPA_AO_TENSOR}) but \
+             below the {peak} B full peak -- must still complete. The \
+             frequency scratch is charged SOFTLY precisely so it falls back to \
+             the panelled assembly rather than refusing a job the \
+             pre-migration tree runs. A refusal naming \"[freq scratch]\" \
+             means the soft gate was turned hard; a refusal naming \
+             \"DF 3-index\" means the soft charge is greedy again and is \
+             starving a mandatory plane. {e}"
         )
     });
     assert!(
