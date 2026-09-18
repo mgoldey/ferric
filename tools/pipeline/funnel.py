@@ -153,6 +153,40 @@ def _apply(args: tuple) -> TierResult:
     return fn(iso, context)
 
 
+def _harvest_geometry(results: list[TierResult], context: dict[str, Any]) -> None:
+    """Carry a geometry a tier produced into `context` for the tiers after it.
+
+    `tiers._embedded` reads `context["geometry"][canonical]` so that tiers 3
+    and 4 score the pose an earlier tier generated instead of re-embedding from
+    SMILES. Nothing wrote that key until this function existed: `tier1_dock`
+    returned the docked pose in its payload, `_embedded` looked for it, and the
+    two were never connected -- so every docked pose (~2 min/ligand) was
+    discarded and the quantum tiers scored a free-solution conformer that had
+    never seen the pocket.
+
+    **This must run in the driver, not inside a tier.** `_run_stage` dispatches
+    through a `ProcessPoolExecutor`; a tier that mutates `context` mutates a
+    per-worker COPY, so the write is lost under the parallel path while
+    appearing to work under the serial one. Harvesting from the returned
+    `results` is the only place that holds for both.
+
+    Only SUCCESSFUL results contribute. Caching a failed candidate's geometry
+    would hand a later tier a pose from a candidate the earlier tier rejected,
+    which is worse than re-embedding because it looks like it worked.
+    """
+    for r in results:
+        if not r.ok or not r.payload:
+            continue
+        coords = r.payload.get("coords")
+        symbols = r.payload.get("symbols")
+        if coords is None or symbols is None:
+            continue
+        context.setdefault("geometry", {})[r.candidate_id] = {
+            "symbols": symbols,
+            "coords": coords,
+        }
+
+
 def run_funnel(
     candidates: list[Isomer], stages: list[Stage], context: dict[str, Any]
 ) -> FunnelReport:
@@ -180,6 +214,7 @@ def run_funnel(
         results = _run_stage(stage, population, context)
         elapsed = time.time() - t0
         rep.results[stage.name] = results
+        _harvest_geometry(results, context)
 
         by_id = {r.candidate_id: r for r in results}
         ok = [

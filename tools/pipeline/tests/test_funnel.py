@@ -254,3 +254,163 @@ def test_results_stay_positionally_aligned_when_a_worker_dies():
         cands, [Stage(Tier.SEARCH, _suicidal_scorer, 3, "s", workers=3)], {}
     )
     assert [r.candidate_id for r in rep.results["s"]] == [i.canonical for i in cands]
+
+
+# ── geometry harvesting ──────────────────────────────────────────────────
+#
+# `tiers._embedded` reads `context["geometry"][canonical]` to reuse a pose a
+# previous tier produced. Before these tests, NOTHING in the repository ever
+# wrote that key (verified: one read, zero writes), so tier 1 docked a pose at
+# ~2 min/ligand and tiers 3-4 then re-embedded from SMILES in free solution and
+# scored a conformer that had never seen the pocket.
+#
+# `_harvest_geometry` must run in the DRIVER, not inside a tier: `_run_stage`
+# dispatches through a ProcessPoolExecutor, so a tier mutating `context`
+# mutates a copy and the write is lost -- while appearing to work under the
+# serial path. That asymmetry is why this is tested at the `run_funnel` level.
+
+
+def _geom_fn(score_by_canonical, coords):
+    """Stub tier that returns a geometry payload, as tier1_dock does."""
+
+    def fn(iso, ctx):
+        v = score_by_canonical.get(iso.canonical)
+        if v is None:
+            return TierResult(iso.canonical, None, "no value")
+        return TierResult(
+            iso.canonical, v, payload={"symbols": ["C", "O"], "coords": coords}
+        )
+
+    return fn
+
+
+def test_a_funnel_with_no_geometry_producer_leaves_context_untouched():
+    """EXACTNESS ANCHOR -- write this before the harvesting, not after.
+
+    The trivial limit of geometry harvesting is a funnel whose tiers produce no
+    geometry at all. In that limit the behaviour must be byte-identical to the
+    pre-harvest funnel: no `geometry` key appears, and nothing else in
+    `context` moves. If this fails, the harvest is inventing state.
+    """
+    ctx = {"seed": 7}
+    stages = [Stage(name="a", tier=Tier.SEARCH, keep=2, fn=_fake(ALL))]
+    run_funnel(candidates=CANDS, stages=stages, context=ctx)
+    assert ctx == {"seed": 7}, (
+        f"a funnel with no geometry-producing tier must not touch context; got {ctx}"
+    )
+
+
+def test_a_produced_geometry_reaches_the_next_tier():
+    """MUTATION KILLED: dropping the harvest (the pre-existing defect).
+
+    Asserts the OBSERVABLE a later tier actually depends on -- that the
+    downstream tier is handed the coordinates the upstream one produced --
+    rather than merely that a dict key exists.
+    """
+    coords = [(0.0, 0.0, 0.0), (0.0, 0.0, 1.2)]
+    seen: dict[str, object] = {}
+
+    def downstream(iso, ctx):
+        cached = ctx.get("geometry", {}).get(iso.canonical)
+        seen[iso.canonical] = cached["coords"] if cached else None
+        return TierResult(iso.canonical, 0.0)
+
+    ctx: dict = {}
+    run_funnel(
+        candidates=CANDS,
+        stages=[
+            Stage(name="dock", tier=Tier.SEARCH, keep=3, fn=_geom_fn(ALL, coords)),
+            Stage(name="qm", tier=Tier.QUANTUM, keep=1, fn=downstream),
+        ],
+        context=ctx,
+    )
+    assert seen, "the downstream tier never ran"
+    for canonical, got in seen.items():
+        assert got == coords, (
+            f"{canonical}: downstream tier saw {got}, not the docked pose "
+            f"{coords} -- the geometry was dropped between stages"
+        )
+
+
+def test_a_failed_candidate_contributes_no_geometry():
+    """A tier that FAILED has no pose to hand on.
+
+    Caching one would feed a later tier a geometry from a candidate the
+    upstream tier rejected -- worse than re-embedding, because it looks
+    successful.
+    """
+    good = CANDS[0].canonical
+
+    def half_failing(iso, ctx):
+        # A FAILED result that still carries a payload. This is the realistic
+        # shape -- a tier can generate a pose and then reject it (clash,
+        # strain, score cut) -- and it is the only shape that distinguishes
+        # filtering on `r.ok` from filtering on `r.payload`. An earlier
+        # version of this test used payload=None on failure, which made it
+        # pass with the `r.ok` check DELETED: mutation-verified vacuous.
+        payload = {"symbols": ["C"], "coords": [(0.0, 0.0, 0.0)]}
+        if iso.canonical == good:
+            return TierResult(iso.canonical, -3.0, payload=payload)
+        return TierResult(iso.canonical, None, "rejected", payload=payload)
+
+    ctx: dict = {}
+    run_funnel(
+        candidates=CANDS,
+        stages=[Stage(name="dock", tier=Tier.SEARCH, keep=3, fn=half_failing)],
+        context=ctx,
+    )
+    assert set(ctx.get("geometry", {})) == {good}, (
+        "only the candidate that SUCCEEDED may contribute a geometry; got "
+        f"{set(ctx.get('geometry', {}))}"
+    )
+
+
+# A ProcessPoolExecutor pickles the tier callable, so a closure cannot cross
+# the boundary -- `_geom_fn` returns one and is serial-only. The parallel test
+# needs a module-level function; these constants stand in for its closed-over
+# state.
+PAR_COORDS = [(0.3, 0.2, 0.1), (1.3, 1.0, -0.5)]
+
+
+def _par_geom_fn(iso, ctx):
+    """Picklable geometry-producing tier, for the parallel path."""
+    return TierResult(
+        iso.canonical,
+        ALL[iso.canonical],
+        payload={"symbols": ["C", "O"], "coords": PAR_COORDS},
+    )
+
+
+def test_geometry_survives_the_parallel_path():
+    """THE reason `_harvest_geometry` lives in the driver, not in a tier.
+
+    `_run_stage` dispatches through a `ProcessPoolExecutor` when `workers > 1`.
+    A tier that wrote `context["geometry"]` itself would mutate a per-worker
+    COPY: the write would vanish here while still passing every serial test
+    above. Harvesting from the returned `results` is what makes both paths
+    agree, and this asserts that agreement rather than assuming it.
+    """
+    ctx_par: dict = {}
+    ctx_ser: dict = {}
+    for ctx, workers in ((ctx_par, 3), (ctx_ser, 1)):
+        run_funnel(
+            candidates=CANDS,
+            stages=[
+                Stage(
+                    name="dock",
+                    tier=Tier.SEARCH,
+                    keep=3,
+                    fn=_par_geom_fn,
+                    workers=workers,
+                )
+            ],
+            context=ctx,
+        )
+    assert ctx_par.get("geometry"), (
+        "the parallel path harvested NO geometry -- the write is being lost "
+        "in the worker process, which is exactly what harvesting in the "
+        "driver exists to prevent"
+    )
+    assert ctx_par == ctx_ser, (
+        f"parallel and serial disagree:\n  par={ctx_par}\n  ser={ctx_ser}"
+    )
