@@ -87,6 +87,12 @@ pub struct RhfConfig {
     /// reasonable default for OH-doublet LDA/PBE plateaus. A value of 0
     /// disables Newton entirely (DIIS-only).
     pub newton_trigger: f64,
+
+    /// AURORA auxiliary-curvature accelerator (arXiv:2608.07354).
+    ///
+    /// Disabled by default; see [`crate::aurora::AuroraConfig`]. When disabled,
+    /// every SCF path behaves exactly as it did before this field existed.
+    pub aurora: crate::aurora::AuroraConfig,
     /// If > 0 in ROHF/ROKS: switch from DIIS / damped-Newton to an
     /// augmented-Hessian Newton step once err_max drops below this trigger.
     /// AH handles vanishing Hessian eigenvalues that trip up PCG. A value
@@ -394,6 +400,7 @@ impl Default for RhfConfig {
             nlc_grid: None,
             level_shift: 0.0,
             newton_trigger: 0.0,
+            aurora: crate::aurora::AuroraConfig::default(),
             ah_trigger: 0.0,
             mom_after_iter: 0,
             constraints: Vec::new(),
@@ -999,6 +1006,12 @@ pub fn solve_rhf(
     // iterations so a max_iter exit can still report eps/MOs for the final density.
     let mut last_eps: Vec<f64> = Vec::new();
     let mut last_c: Array2<f64> = Array2::zeros((n, n));
+    // AURORA accelerator state. Built lazily at the first accelerated step (it
+    // needs converged-enough MOs and costs an auxiliary integral build), and
+    // never constructed at all when `config.aurora.enabled` is false.
+    let mut aurora_state: Option<crate::aurora::AuroraState> = None;
+    let mut aurora_first_step = true;
+    let mut aurora_last_energy = f64::NAN;
     // Bare occupied MO coefficients (C_occ, the lowest `nocc` columns) that
     // produced the CURRENT `d`, used to drive the O(naux·n²·nocc) DF-K
     // half-transform instead of the O(naux·n³) density contraction. Since
@@ -1140,6 +1153,12 @@ pub fn solve_rhf(
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
+        // One target-Hamiltonian J/K build happens below, unconditionally, on
+        // every pass of this loop. Ticking here (rather than at each of the four
+        // builder branches) keeps the count builder-independent, which is what
+        // makes it comparable across DIIS and AURORA runs. Auxiliary-curvature
+        // work is deliberately NOT counted here.
+        crate::aurora::TARGET_JK_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Build J and K using selected builder (reuse pre-allocated buffers).
         //
         // The DirectJK path may accumulate INCREMENTALLY onto the previous
@@ -1475,6 +1494,76 @@ pub fn solve_rhf(
             }
         }
         mon.note_energy(energy);
+
+        // ── AURORA auxiliary-curvature update, RHF/RKS ───────────────────────
+        // Opt-in (config.aurora.enabled, default false). Replaces the DIIS
+        // extrapolation with a quasi-Newton orbital rotation whose curvature
+        // comes from an independent STO-3G auxiliary model, corrected by a
+        // transported L-BFGS history of exact target secants (arXiv:2608.07354).
+        //
+        // Placed BEFORE the Newton branch so the two are mutually exclusive and
+        // the precedence is explicit; with `enabled: false` the condition is a
+        // single bool test and every existing code path is unchanged.
+        //
+        // Like the Newton branch below, this `continue`s — bypassing DIIS and the
+        // Fock diagonalization — so it must itself update `d`, `d_occ`, `last_c`
+        // and record the density change for the next iteration's convergence test.
+        // The auxiliary model carries Coulomb + exact-exchange curvature but no
+        // exchange-correlation curvature (the paper's `D_k^xc` is named but never
+        // defined). On references with little or no exact exchange the model
+        // therefore understates the curvature and the step overshoots, so those
+        // stay on DIIS unless explicitly opted in. See `aurora::AuroraConfig`.
+        let aurora_ax = if xc_contrib.is_some() { k_mix.sr } else { 1.0 };
+        let aurora_exchange_ok = config.aurora.allow_low_exchange_ks
+            || aurora_ax >= crate::aurora::MIN_VALIDATED_EXCHANGE_FRACTION;
+        let use_aurora = config.aurora.enabled
+            && iter > 1
+            && nocc > 0
+            && nocc < prep.nbasis()
+            && aurora_exchange_ok
+            && (config.aurora.trigger <= 0.0 || err_max < config.aurora.trigger);
+        if use_aurora {
+            // `last_c` holds the MOs that produced the current density `d`; it is
+            // zeros before iter 2, hence the `iter > 1` gate above.
+            let c_cur = &last_c;
+            let f_mo = c_cur.t().dot(&f).dot(c_cur);
+
+            // Lazily construct the accelerator at the first accelerated step.
+            if aurora_state.is_none() {
+                // The curvature model's exchange fraction: full exact exchange
+                // for HF, the hybrid's mixing fraction otherwise. This enters the
+                // CURVATURE only and can never move the converged answer.
+                aurora_state = Some(crate::aurora::AuroraState::new(
+                    mol,
+                    prep,
+                    c_cur.view(),
+                    nocc,
+                    aurora_ax,
+                    &config.aurora,
+                )?);
+            }
+            let state = aurora_state.as_mut().expect("aurora_state just set");
+
+            // Close the previous macro step's secant pair with the target-level
+            // gradient now available at these orbitals.
+            let de = energy - aurora_last_energy;
+            state.observe(&f_mo, nocc, de);
+            aurora_last_energy = energy;
+
+            let c_new = state.step(c_cur.view(), &f_mo, nocc, aurora_first_step)?;
+            aurora_first_step = false;
+
+            let c_occ = c_new.slice(ndarray::s![.., ..nocc]);
+            d_occ = Some(c_occ.to_owned());
+            let d_new = with_blas_threads(opt_in_blas_threads(), || 2.0 * c_occ.dot(&c_occ.t()));
+            mon.record_density_change(&d_new, &d);
+            d.assign(&d_new);
+            last_c = c_new;
+            if effective_level_shift > 0.0 {
+                c_prev = Some(last_c.clone());
+            }
+            continue;
+        }
 
         // ── Second-order (Newton) update, RHF/RKS ────────────────────────────
         // When enabled (newton_trigger > 0) and err_max has dropped below the
