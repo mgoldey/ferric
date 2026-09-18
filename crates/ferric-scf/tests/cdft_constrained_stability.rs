@@ -213,6 +213,10 @@ fn hene_cfg() -> RhfConfig {
         max_iter: 400,
         level_shift: HENE_LEVEL_SHIFT,
         cdft_lambda_tol: HENE_LAMBDA_TOL,
+        // Pinned so "this path converges" is not also an assertion about
+        // how many outer iterations a particular CPU needs -- CI and this
+        // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+        cdft_max_outer: 64,
         cdft_stability_descent: false,
         use_sad_guess: false,
         dft_grid: Some(AtomicGridConfig {

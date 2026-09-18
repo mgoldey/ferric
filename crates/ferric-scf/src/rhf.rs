@@ -109,6 +109,33 @@ pub struct RhfConfig {
     /// cDFT outer-loop convergence: stop when max_C |N_C − target_C| is below
     /// this (electrons). Default 1e-5.
     pub cdft_lambda_tol: f64,
+    /// cDFT outer-loop iteration cap: the λ-Newton loop errors with
+    /// `Convergence` after this many outer iterations. Default 30.
+    ///
+    /// # Why this is a knob and not a constant
+    ///
+    /// It was `let max_outer = 30usize;` inside `solve_cdft_uhf` until
+    /// 2026-09-17, when the SAME test converged in a DIFFERENT number of
+    /// outer iterations on two machines:
+    ///
+    /// ```text
+    ///                          CI      this box
+    ///   driver default (None)  18      16
+    ///   hcore                   9      23
+    ///   SAD                    >30     14    <- CI exhausted the cap
+    /// ```
+    ///
+    /// The converged energies agree to ~1e-6 Ha, so this is not a physics
+    /// difference: it is BLAS kernel dispatch (CI's runner vs this Zen4 box)
+    /// perturbing the λ-Newton trajectory. Iteration counts are bit-stable
+    /// within a machine (3/3 identical local runs) and NOT portable across
+    /// machines, so a hardcoded cap turns a machine difference into a red
+    /// build on a test that is otherwise measuring the right thing.
+    ///
+    /// Tests that assert "this path converges" should PIN this explicitly
+    /// rather than inherit the default, so the assertion is about convergence
+    /// and not about how many iterations one particular CPU happened to need.
+    pub cdft_max_outer: usize,
     /// cDFT **state selection**: after the λ-Newton loop converges, check the
     /// λ-augmented orbital Hessian and, if the constrained solution is a
     /// SADDLE, follow the downhill eigenvector and re-converge the whole λ
@@ -371,6 +398,7 @@ impl Default for RhfConfig {
             mom_after_iter: 0,
             constraints: Vec::new(),
             cdft_lambda_tol: 1e-5,
+            cdft_max_outer: 30,
             cdft_stability_descent: true,
             scf_stability_descent: false,
             fractional_occ: false,

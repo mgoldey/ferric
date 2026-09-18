@@ -342,7 +342,7 @@ pub fn solve_cdft_uhf(
 
             // Outer Newton on λ (start at 0).
             let mut lam = vec![0.0_f64; k];
-            let max_outer = 30usize;
+            let max_outer = config.cdft_max_outer;
             let fd = 1e-3_f64; // λ finite-difference step for the Jacobian
             let trace = trace_enabled();
             // Safeguarding state for the k = 1 case: the tightest sign-change

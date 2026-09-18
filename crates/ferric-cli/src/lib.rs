@@ -482,6 +482,9 @@ pub fn run(args: Vec<String>) {
         mom_after_iter: cfg.scf.mom_after_iter,
         constraints: Vec::new(),
         cdft_lambda_tol: 1e-5,
+        // cDFT is not CLI-wired (constraints above are always empty), so this
+        // is inert here; it is listed only because the literal is exhaustive.
+        cdft_max_outer: 30,
         // Inert on this path (`constraints` is empty, so `solve_cdft_uhf` is
         // never reached), but spelled out rather than left to a `..default()`
         // that this literal does not use — a struct literal that lists every

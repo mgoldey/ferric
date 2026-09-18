@@ -220,6 +220,10 @@ fn hene_coupling(r_ang: f64, use_sad: bool) -> Option<Point> {
             target,
         }],
         cdft_lambda_tol: 1e-2,
+        // Pinned so "this path converges" is not also an assertion about
+        // how many outer iterations a particular CPU needs -- CI and this
+        // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+        cdft_max_outer: 64,
         fractional_occ: false,
         dft_grid: Some(gcfg.clone()),
         level_shift: 0.5,
@@ -549,6 +553,10 @@ fn he2_plus_s_ab_is_monotone_and_unchanged() {
                 target: 1.0,
             }],
             cdft_lambda_tol: 1e-2,
+            // Pinned so "this path converges" is not also an assertion about
+            // how many outer iterations a particular CPU needs -- CI and this
+            // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+            cdft_max_outer: 64,
             fractional_occ: false,
             dft_grid: Some(gcfg.clone()),
             level_shift: 0.2,

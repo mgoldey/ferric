@@ -164,6 +164,25 @@ fn hene_cfg() -> RhfConfig {
         max_iter: 400,
         level_shift: HENE_LEVEL_SHIFT,
         cdft_lambda_tol: HENE_LAMBDA_TOL,
+        // PINNED, not inherited: this file asserts "the constrained path
+        // converges", and that assertion must not double as an assertion
+        // about how many outer iterations one particular CPU needs.
+        //
+        // Measured requirement for every guess that converges at all
+        // (this box; CI's counts differ -- that is the whole point):
+        //
+        //   post-descent  7 | MINAO 10 | target 1.98  12 | SAD        14
+        //   driver/none  16 | target 1.99 14 | target 1.995 20 | hcore 23
+        //
+        // CI needed >30 for SAD where this box needs 14, so the old
+        // hardcoded 30 failed the build on a machine difference. 64 is ~2.8x
+        // the worst LOCAL count and comfortably clear of CI's spread.
+        //
+        // This is NOT a "make it converge eventually" cap: `state A (N_He=1)`
+        // still does not converge at 200 (verified 2026-09-17), and the
+        // catalogue documents it as a genuine non-converger at lines 893/902.
+        // Raising the cap does not rescue it and is not meant to.
+        cdft_max_outer: 64,
         cdft_stability_descent: false,
         use_sad_guess: false,
         dft_grid: Some(AtomicGridConfig {
@@ -510,7 +529,12 @@ fn constrained_run(
     let mut lam = 0.0_f64;
     let fd = 1e-3_f64;
     let mut jacobians = Vec::new();
-    for outer in 1..=30usize {
+    // Read the SAME cap the library driver reads, so this hand-rolled mirror
+    // of the λ-Newton loop cannot diverge from `solve_cdft_uhf` on the one
+    // axis this file's tests are most sensitive to. (It was a hardcoded 30
+    // until 2026-09-17, which is why CI reported "SAD DID NOT CONVERGE in 30"
+    // on a path that needs 14 iterations locally -- see `cdft_max_outer`.)
+    for outer in 1..=cfg.cdft_max_outer {
         let (e, resid, n_c, conv, ca, cb) = run(lam)?;
         if resid.abs() < cfg.cdft_lambda_tol {
             return Ok(Run {
@@ -534,9 +558,10 @@ fn constrained_run(
         }
         lam -= (resid / jac).clamp(-1.0, 1.0);
     }
-    Err(ferric_core::FerricError::Convergence(
-        "state-selection outer loop did not converge in 30 iters".into(),
-    ))
+    Err(ferric_core::FerricError::Convergence(format!(
+        "state-selection outer loop did not converge in {} iters",
+        cfg.cdft_max_outer
+    )))
 }
 
 // ===========================================================================
@@ -875,6 +900,13 @@ fn sweep_guesses_at(sys: &Sys, w: &Array2<f64>, target: f64, guesses: &[Guess]) 
 ///
 /// MEASURED (2026-09-16), full table on stderr. **H-GUESS CONFIRMED,
 /// H-SATURATE REFUTED.** Every run below reached its target to ≤ 6e-7.
+///
+/// **ADDENDUM 2026-09-17.** The two `state A` rows below read "did not
+/// converge in 30 outer iters" because 30 was the hardcoded cap when the
+/// table was recorded. Re-running at `cdft_max_outer = 200` leaves them
+/// UNCONVERGED, so `state A` is a genuine non-converger, not an
+/// iteration-starved one. The cap is now a config knob pinned to 64 in
+/// `hene_cfg()`; every other row's `outer` count below is unchanged by it.
 ///
 /// ```text
 /// target = 2.000000 (INTEGER)

@@ -29,9 +29,39 @@ fn run(cfg: RhfConfig) -> ScfResult {
     solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).expect("rhf")
 }
 
+/// The lane's converged config.
+///
+/// # Why `energy_conv` is 1e-7 and not 1e-10 (2026-09-17)
+///
+/// In ferric `density_conv` is the TIGHT primary criterion and `energy_conv`
+/// is a LOOSE "the energy is no longer descending" sanity bound — the
+/// inverse of the PySCF convention. `scf_converged` requires BOTH, so an
+/// `energy_conv` below the energy's own noise floor makes convergence a
+/// coin flip no matter how well the density has converged.
+///
+/// That is what 1e-10 did here. Traced on water/cc-pVDZ + DF-JK, `dp_rms`
+/// is 1e-13 (five orders inside the 1e-8 bar) by iteration 53, while `dE`
+/// random-walks on the DF-JK noise floor and never descends:
+///
+/// ```text
+///   iters 40-69:  min dE 2.48e-10   median 9.08e-9   max 2.71e-8
+///                 iterations with dE < 1e-10:  0 / 60
+/// ```
+///
+/// The run that "passed" locally did so because iteration 70 happened to
+/// land at 7.01e-11 by chance. CI lost that coin flip and reported
+/// `assertion failed: df.converged && df_cosx.converged` on a solve whose
+/// density had been converged for seventeen iterations.
+///
+/// 1e-7 sits above the measured median noise (9.08e-9) with an order of
+/// margin, so the gate now fires on the density -- which is what this file
+/// actually tests -- instead of on a lucky floating-point coincidence. The
+/// same solve now converges in 12 iterations instead of 70, to the SAME
+/// energy (-76.026739578782). `density_conv` is UNCHANGED at 1e-8: nothing
+/// here got looser in the criterion that governs the answer.
 fn tight() -> RhfConfig {
     RhfConfig {
-        energy_conv: 1e-10,
+        energy_conv: 1e-7,
         density_conv: 1e-8,
         cosx: cosx_default(),
         ..Default::default()
