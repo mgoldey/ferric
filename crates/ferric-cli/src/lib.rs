@@ -508,6 +508,22 @@ pub fn run(args: Vec<String>) {
         // cDFT is not CLI-wired (constraints above are always empty), so this
         // is inert here; it is listed only because the literal is exhaustive.
         cdft_max_outer: 30,
+        // SCF accelerators, both opt-in and OFF here. Neither is CLI-wired
+        // yet; these are listed only because the literal is exhaustive.
+        //
+        // AURORA is measured to win on closed-shell RHF (-24.2% J/K builds,
+        // growing with size) but is NOT defaulted on: its evidence is
+        // closed-shell RHF only, pure functionals are known-weak, open shell
+        // is unimplemented, and the paper's D_k^xc term -- the reason pure
+        // functionals fail -- is named but never defined.
+        //
+        // TRAH wins ITERATIONS everywhere measured but loses WALL TIME
+        // everywhere (45x DIIS on benzene/cc-pVDZ), because each step pays a
+        // Davidson of Fock builds. Its value is convergence RESCUE, not
+        // throughput.
+        aurora: Default::default(),
+        trah: Default::default(),
+        trah_trigger: None,
         // Inert on this path (`constraints` is empty, so `solve_cdft_uhf` is
         // never reached), but spelled out rather than left to a `..default()`
         // that this literal does not use — a struct literal that lists every
