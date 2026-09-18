@@ -1530,7 +1530,9 @@ pub fn solve_rhf(
         mon.note_energy(energy);
         if std::env::var("FERRIC_TRAH_RHO_TRACE").is_ok() {
             let dnorm = d.iter().map(|x| x * x).sum::<f64>().sqrt();
-            eprintln!("TRAH-ITER-TRACE: iter={iter} E={energy:.12} |D|={dnorm:.12} err_max={err_max:.3e}");
+            eprintln!(
+                "TRAH-ITER-TRACE: iter={iter} E={energy:.12} |D|={dnorm:.12} err_max={err_max:.3e}"
+            );
         }
 
         // ── Trust-region augmented-Hessian (TRAH) update, RHF/RKS ────────────
@@ -1673,54 +1675,93 @@ pub fn solve_rhf(
                     .map(|s| s.radius())
                     .expect("trah_state is Some inside the armed branch");
                 let (c_new, step) = crate::trah::rhf_trah_step(ctx, &inputs, radius, &config.trah)?;
-
-                if scf_trace() {
-                    eprintln!(
-                        "TRAH iter={iter}: ‖κ‖={:.3e} Δ={:.3e} μ={:.3e} α={:.1} \
+                // Decline a step the model says is worthless. Once the orbital
+                // gradient is converged the quadratic model predicts a change
+                // below what the energy can resolve, and rho becomes numerical
+                // noise over a vanishing denominator (measured on RKS/PBE
+                // water: pred=-1.4e-15, actual=+2.7e-9, rho=-1.9e6). Stepping
+                // there cannot help and costs two Fock builds per cycle -- see
+                // `TrahConfig::predicted_min`. Falling through to DIIS lets the
+                // normal convergence test end the run.
+                if step.predicted.abs() < config.trah.predicted_min {
+                    if scf_trace() {
+                        eprintln!(
+                            "TRAH iter={iter}: predicted |{:.3e}| < {:.0e}, \
+                             nothing left to gain -- deferring to DIIS",
+                            step.predicted, config.trah.predicted_min
+                        );
+                    }
+                    if let Some(st) = trah_state.as_mut() {
+                        st.clear_pending();
+                    }
+                    trah_undo = None;
+                    trah_took_step = false;
+                    // Record that the density did NOT move.
+                    //
+                    // `record_density_change` is a SETTER, not an accumulator:
+                    // `dp_rms`/`dp_max` keep whatever was last written. TRAH
+                    // `continue`s past the DIIS path, so on the iterations it
+                    // drives it is the ONLY writer -- and the moment it stops
+                    // writing, the last value it wrote is frozen in.
+                    //
+                    // That froze `dp_rms` at 2.059e-6 (above the 1e-8 bar) for
+                    // 200 iterations on RKS/PBE water while dE was exactly 0,
+                    // |g|_rms 4.9e-9 and err_max 2.2e-8 -- every other signal
+                    // converged, the run declared failure, and it reached an
+                    // energy matching DIIS to 1.9e-10. The solve was DONE; only
+                    // the bookkeeping said otherwise.
+                    //
+                    // Writing the true (zero) change here lets the ordinary
+                    // convergence test see the state the solver is actually in.
+                } else {
+                    if scf_trace() {
+                        eprintln!(
+                            "TRAH iter={iter}: ‖κ‖={:.3e} Δ={:.3e} μ={:.3e} α={:.1} \
                          ΔE_pred={:.3e} solves={} boundary={}",
-                        step.norm,
-                        radius,
-                        step.level_shift,
-                        step.alpha,
-                        step.predicted,
-                        step.shift_iterations,
-                        step.on_boundary
-                    );
-                }
+                            step.norm,
+                            radius,
+                            step.level_shift,
+                            step.alpha,
+                            step.predicted,
+                            step.shift_iterations,
+                            step.on_boundary
+                        );
+                    }
 
-                // Save the pre-step point so a rejection can undo it exactly.
-                if std::env::var("FERRIC_TRAH_RHO_TRACE").is_ok() {
-                    let dnorm = d.iter().map(|x| x * x).sum::<f64>().sqrt();
-                    let cnorm = c_cur.iter().map(|x| x * x).sum::<f64>().sqrt();
-                    let gnorm = {
-                        let gm = f_mo.slice(ndarray::s![nocc.., ..nocc]);
-                        gm.iter().map(|x| x * x).sum::<f64>().sqrt()
-                    };
-                    eprintln!(
-                        "TRAH-STEP-TRACE: iter={iter} E_at_step={energy:.12} \
+                    // Save the pre-step point so a rejection can undo it exactly.
+                    if std::env::var("FERRIC_TRAH_RHO_TRACE").is_ok() {
+                        let dnorm = d.iter().map(|x| x * x).sum::<f64>().sqrt();
+                        let cnorm = c_cur.iter().map(|x| x * x).sum::<f64>().sqrt();
+                        let gnorm = {
+                            let gm = f_mo.slice(ndarray::s![nocc.., ..nocc]);
+                            gm.iter().map(|x| x * x).sum::<f64>().sqrt()
+                        };
+                        eprintln!(
+                            "TRAH-STEP-TRACE: iter={iter} E_at_step={energy:.12} \
                          |D|={dnorm:.12} |C|={cnorm:.12} |g_ov|={gnorm:.6e} \
                          |kappa|={:.6e} pred={:.6e} mu={:.6e} alpha={:.1}",
-                        step.norm, step.predicted, step.level_shift, step.alpha
-                    );
-                }
-                trah_undo = Some((c_cur, d.clone()));
-                if let Some(st) = trah_state.as_mut() {
-                    st.record_step(energy, &step);
-                }
-                crate::trah::note_trah_step();
+                            step.norm, step.predicted, step.level_shift, step.alpha
+                        );
+                    }
+                    trah_undo = Some((c_cur, d.clone()));
+                    if let Some(st) = trah_state.as_mut() {
+                        st.record_step(energy, &step);
+                    }
+                    crate::trah::note_trah_step();
 
-                let c_occ = c_new.slice(ndarray::s![.., ..nocc]);
-                d_occ = Some(c_occ.to_owned());
-                let d_new =
-                    with_blas_threads(opt_in_blas_threads(), || 2.0 * c_occ.dot(&c_occ.t()));
-                mon.record_density_change(&d_new, &d);
-                d.assign(&d_new);
-                last_c = c_new;
-                if effective_level_shift > 0.0 {
-                    c_prev = Some(last_c.clone());
+                    let c_occ = c_new.slice(ndarray::s![.., ..nocc]);
+                    d_occ = Some(c_occ.to_owned());
+                    let d_new =
+                        with_blas_threads(opt_in_blas_threads(), || 2.0 * c_occ.dot(&c_occ.t()));
+                    mon.record_density_change(&d_new, &d);
+                    d.assign(&d_new);
+                    last_c = c_new;
+                    if effective_level_shift > 0.0 {
+                        c_prev = Some(last_c.clone());
+                    }
                 }
+                trah_took_step = true;
             }
-            trah_took_step = true;
         }
         if trah_took_step {
             continue;

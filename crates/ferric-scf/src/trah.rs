@@ -236,6 +236,42 @@ pub struct TrahConfig {
     /// the paper; it bounds unlimited 1.2× growth once the constraint goes
     /// inactive.
     pub radius_max: f64,
+    /// Smallest |predicted energy change| worth stepping for. Default 1e-12 Ha.
+    ///
+    /// # Why this exists (added 2026-09-18, fixes the RKS stall)
+    ///
+    /// TRAH's arming condition is `err_max < trah_trigger` -- an UPPER bound
+    /// with no lower one. Once the orbital gradient is converged there is
+    /// nothing left to optimize, but TRAH kept stepping anyway. Traced on
+    /// RKS/PBE water/cc-pVDZ:
+    ///
+    /// ```text
+    ///   |g_ov| = 2.716839e-8     the gradient is ALREADY converged
+    ///   pred   = -1.402617e-15   the model predicts essentially nothing
+    ///   actual = +2.698314e-9    the energy moves by numerical noise
+    ///   rho    = -1.9e6          noise divided by ~zero
+    /// ```
+    ///
+    /// ρ is then meaningless: it is floating-point noise over a
+    /// vanishing denominator, so it is hugely negative, the step is rejected,
+    /// the orbitals are restored to the point they never really left, and the
+    /// next iteration recomputes the IDENTICAL step. Every cycle reproduces ρ
+    /// to the last digit -- a fingerprint of arithmetic, not of measurement --
+    /// burning two Fock builds per iteration until the radius floor collapses
+    /// and the run falls back to DIIS. That cost 123 iterations / 98 s versus
+    /// DIIS's 69 / 1.5 s.
+    ///
+    /// NOTE this REFUTES the mechanism originally recorded here, which
+    /// supposed ρ was formed across a Fock rebuild and prescribed re-running
+    /// micro-iterations from the restored orbitals. The trace shows the ρ
+    /// bookkeeping is correct; the defect is that TRAH steps at all when the
+    /// predicted gain is below what the energy can resolve. Re-stepping would
+    /// not have helped -- it would have recomputed the same null step faster.
+    ///
+    /// 1e-12 Ha sits well above f64 noise on a total energy of order 1e2 Ha
+    /// (~1e-14 relative) and far below any convergence threshold anyone would
+    /// set, so it only ever fires when the step is genuinely pointless.
+    pub predicted_min: f64,
     /// ρ below this ⇒ the step is **rejected**. Default 0.0 (paper: ρ < 0).
     pub rho_reject: f64,
     /// ρ at or below this (but above `rho_reject`) ⇒ accept but contract.
@@ -263,6 +299,7 @@ impl Default for TrahConfig {
     fn default() -> Self {
         Self {
             radius0: 0.4,
+            predicted_min: 1e-12,
             radius_min: 1e-4,
             radius_max: 2.0,
             rho_reject: 0.0,
@@ -614,7 +651,11 @@ impl TrahState {
                 energy_now,
                 actual,
                 pending.predicted,
-                if pending.predicted < 0.0 { actual / pending.predicted } else { f64::NEG_INFINITY },
+                if pending.predicted < 0.0 {
+                    actual / pending.predicted
+                } else {
+                    f64::NEG_INFINITY
+                },
             );
         }
 
