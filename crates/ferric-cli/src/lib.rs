@@ -446,6 +446,29 @@ pub fn run(args: Vec<String>) {
     let budget_bytes: Option<usize> = cfg.memory.budget_bytes();
     {
         let resolution = ferric_core::memory::resolve_budget(budget_bytes);
+        // Install ONE process-global pool from the SAME resolution that the
+        // audit line reports, so the printed ceiling and the enforced ledger
+        // can never disagree.
+        //
+        // Why a pool and not just this number: before this, every gate
+        // compared its own plane against 100% of this figure and they all
+        // passed, so the process held the SUM. The measured case was a
+        // 27-atom def2-SVP B3LYP RI-JK single point that printed
+        // `memory budget: 4.72 GiB` and then died at MAXRSS 6.04 GiB to a
+        // global OOM kill without one gate failing: the DF 3-index tensor
+        // asked "do I fit in 4.72 GiB?" (yes), the grid AO cache asked the
+        // same question against the same full number (yes). A pool is
+        // DEBITED, so whichever asks second sees only what the first left.
+        //
+        // Installed unconditionally (auto-detected budgets included) because
+        // the composition defect is not specific to an explicit budget — the
+        // OOM above happened on an auto-detected one. Every gate's no-pool
+        // behaviour is still the trivial limit for library callers that never
+        // install one (pinned by
+        // ferric-core/tests/mwe_pool_no_budget_is_a_noop.rs and
+        // ferric-scf/tests/mwe_ksdft_pool_is_inert_without_a_pool.rs).
+        let pool = ferric_core::memory::pool::MemoryPool::with_capacity_bytes(resolution.bytes);
+        ferric_core::memory::pool::install_global(pool);
         eprintln!("[ferric] {}", resolution.audit_line());
     }
     let rhf_config = RhfConfig {

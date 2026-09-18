@@ -483,6 +483,88 @@ pub struct ThreeIndexSource {
     band_p0: usize,
     band_p1: usize,
     backend: Backend,
+    /// The shared-memory-pool charge for whatever this source actually holds
+    /// resident, held for the source's whole LIFETIME.
+    ///
+    /// This is the DF 3-index plane -- one of the two planes that together
+    /// OOM-killed the 27-atom def2-SVP B3LYP RI-JK case at MAXRSS 6.04 GiB
+    /// under a 4.72 GiB budget without a single gate failing. It is charged
+    /// HERE, on the owner, rather than at the gate, because an SCF holds this
+    /// tensor across every iteration: a guard dropped when the build function
+    /// returns would credit the bytes back while the tensor is still resident
+    /// and let the grid AO cache be admitted against the same bytes a second
+    /// time. `DfJ`/`DfK` own the source and the SCF owns them, so this field's
+    /// drop is the tensor's drop.
+    ///
+    /// Charged on the bytes RESIDENT, not the bytes the full tensor would
+    /// need: in-core charges the whole band, while the spill and recompute
+    /// backends charge only their one/two live blocks, which is what they
+    /// actually hold.
+    ///
+    /// Inert when no pool is installed -- the trivial limit that keeps the
+    /// unbudgeted path bit-identical.
+    _charge: ferric_core::memory::pool::Reservation,
+}
+
+/// Debit the process-global pool for a 3-index plane, or hand back an inert
+/// guard when no pool is installed.
+///
+/// Deliberately `reserve` (hard error), not `try_reserve`: by the time this is
+/// called the in-core-vs-spill decision has ALREADY been made from
+/// `budget_bytes`, and the storage is about to be (or has just been)
+/// allocated. There is no fallback left to take, so a pool that cannot cover
+/// it must refuse the job up front with an occupancy breakdown naming the
+/// dominant plane -- which is the entire acceptance criterion -- rather than
+/// let the process proceed to an OOM kill.
+///
+/// Leaving the in-core decision on `budget_bytes` is deliberate: that decision
+/// selects a code path whose summation order differs (in-core GEMM vs blocked
+/// accumulation), so moving it onto the pool's live `available_bytes()` would
+/// make an ENERGY depend on how much of the pool another plane happened to
+/// hold. That is a numerics change disguised as a budgeting change, and it is
+/// exactly what `CLAUDE.md`'s "do not perturb numerics" rule forbids. The pool
+/// therefore ADMITS-or-REFUSES here; it does not re-decide.
+fn charge_three_index(
+    label: &str,
+    bytes: usize,
+) -> Result<ferric_core::memory::pool::Reservation, FerricError> {
+    ferric_core::memory::pool::reserve_global(label, bytes)
+}
+
+/// Charge a plane that has NO fallback left and whose size is fixed by
+/// numerics: debit if it fits, and if it does not, record the occupancy
+/// without refusing.
+///
+/// # Why this one is soft, when `charge_three_index` is hard
+///
+/// MEASURED, not assumed. The spill path holds TWO sources co-resident by
+/// construction: `DfK::from_raw` borrows `raw` (whose scratch block is live)
+/// while `build_dressed*` allocates the dressed source's own scratch block,
+/// and each block is sized by `spill_block_naux_for`/`block_naux_for` to
+/// (a fraction of) the WHOLE budget. So the honest co-resident total is
+/// ~2x budget whenever a job spills at all.
+///
+/// Hard-charging that refused jobs that run correctly today: the 27-atom
+/// terpinyl cation at `budget_gb = 0.10` (6-31G/PBE/RI-JK) errored with
+/// `memory pool exhausted: "DF 3-index dressed B[P,mn] spill scratch" needs
+/// 0.107 GB but only 0.054 GB ... is free`, while the same job on the
+/// pre-migration tree runs. Refusing a job that would have completed is as
+/// much a bug as admitting one that OOMs (`CLAUDE.md`: "an over-estimating
+/// guard is also a bug").
+///
+/// The only way to MAKE it fit is to shrink `block_naux` -- which is the
+/// dressing GEMM's m dimension, so it sets BLAS's internal blocking, the
+/// summation order, and hence the dressed tensor and the SCF energy. This
+/// file already refuses to shrink it for exactly that reason (see
+/// `blocked_dressing_overshoot_report`, whose warning says so verbatim), and
+/// `CLAUDE.md`'s "do not perturb numerics" rule forbids doing it silently.
+///
+/// So: REPORTED, not enforced -- the same verdict this file already reached
+/// for the two live dressing blocks. The in-core planes, which is where the
+/// measured 27-atom OOM actually came from, stay hard-gated.
+fn charge_three_index_soft(label: &str, bytes: usize) -> ferric_core::memory::pool::Reservation {
+    ferric_core::memory::pool::try_reserve_global(label, bytes)
+        .unwrap_or_else(|| ferric_core::memory::pool::Reservation::inert(label))
 }
 
 impl ThreeIndexSource {
@@ -531,6 +613,7 @@ impl ThreeIndexSource {
             .saturating_mul(8);
         if needed <= budget_bytes {
             // Fits: identical to `build`'s in-core branch.
+            let _charge = charge_three_index("DF 3-index (P|mn) in-core", needed)?;
             let eri = crate::threeindex::eri3_block(op, &obs, &dfbs, 0, naux)?;
             return Ok(Self {
                 naux,
@@ -539,12 +622,19 @@ impl ThreeIndexSource {
                 band_p0: 0,
                 band_p1: naux,
                 backend: Backend::InCore(eri),
+                _charge,
             });
         }
         // Over budget: one resident block, rebuilt per pass. `spill_block_naux_for`
         // is reused for the width; only ONE block is live here (versus two on the
         // spill pipeline), so that sizing is conservative for this backend.
         let block_naux = spill_block_naux_for(budget_bytes, nao).min(naux.max(1));
+        // Charge only the ONE live block this backend holds -- not the full
+        // tensor, which it never materialises.
+        let _charge = charge_three_index_soft(
+            "DF 3-index (P|mn) recompute block",
+            block_naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(8),
+        );
         let scratch = Array3::<f64>::zeros((block_naux, nao, nao));
         Ok(Self {
             naux,
@@ -562,6 +652,7 @@ impl ThreeIndexSource {
                 scratch,
                 screen: None,
             },
+            _charge,
         })
     }
 
@@ -631,6 +722,7 @@ impl ThreeIndexSource {
         if needed <= budget_bytes {
             // In-core: build exactly the band (global rows [band_p0, band_p1)).
             // eri3_block returns a (band, nao, nao) tensor indexed band-locally.
+            let _charge = charge_three_index("DF 3-index (P|mn) in-core", needed)?;
             let eri =
                 crate::threeindex::eri3_block_screened(op, obs, dfbs, band_p0, band_p1, screen)?;
             Ok(Self {
@@ -640,6 +732,7 @@ impl ThreeIndexSource {
                 band_p0,
                 band_p1,
                 backend: Backend::InCore(eri),
+                _charge,
             })
         } else {
             // Double-buffered spill: a producer thread computes block N+1 (via the
@@ -720,6 +813,12 @@ impl ThreeIndexSource {
 
             file.flush().ok();
             drop_page_cache(&file);
+            // The spilled tensor lives on DISK; what is RESIDENT is the one
+            // read-back scratch block, so that is what is charged.
+            let _charge = charge_three_index_soft(
+                "DF 3-index (P|mn) spill scratch",
+                block_naux.saturating_mul(nao).saturating_mul(nao).saturating_mul(8),
+            );
             let scratch = Array3::<f64>::zeros((block_naux, nao, nao));
             Ok(Self {
                 naux,
@@ -728,6 +827,7 @@ impl ThreeIndexSource {
                 band_p0,
                 band_p1,
                 backend: Backend::DiskSpill { file, scratch },
+                _charge,
             })
         }
     }
@@ -947,6 +1047,7 @@ impl ThreeIndexSource {
                 band_p0,
                 band_p1,
                 backend: Backend::InCore(out_incore.expect("in_core implies Some")),
+                _charge: charge_three_index("DF 3-index dressed B[P,mn] in-core", needed)?,
             });
         }
 
@@ -1068,6 +1169,35 @@ impl ThreeIndexSource {
             band_p0,
             band_p1,
             backend,
+            // In-core: the whole dressed band is resident, charge it. Spilled:
+            // the band is on disk and only the read-back scratch block is
+            // resident.
+            //
+            // DELIBERATELY UNCHARGED here: the two live `accum`/`contrib`
+            // dressing blocks this path holds per iteration. They are a real
+            // ~2x-of-budget overshoot, and this file already reports them
+            // (`blocked_dressing_overshoot_report`, printed unconditionally
+            // just above). They are NOT converted into a pool reservation
+            // because the only way to make them fit is to shrink
+            // `block_naux`, which is the GEMM's m dimension -- it sets BLAS's
+            // internal blocking, hence the summation order, hence the dressed
+            // tensor and the SCF energy. Charging them would therefore either
+            // move an energy or hard-refuse jobs that run correctly today.
+            // Reported, not enforced: see the WARNING above.
+            _charge: if in_core {
+                // In-core: the whole dressed band is resident and there is no
+                // fallback -- hard-gate it. This is the plane the measured
+                // 27-atom OOM came from.
+                charge_three_index("DF 3-index dressed B[P,mn] in-core", needed)?
+            } else {
+                charge_three_index_soft(
+                    "DF 3-index dressed B[P,mn] spill scratch",
+                    block_naux
+                        .saturating_mul(nao)
+                        .saturating_mul(nao)
+                        .saturating_mul(8),
+                )
+            },
         })
     }
 
@@ -2018,6 +2148,114 @@ mod tests {
             .filter(|(a, b)| a.to_bits() != b.to_bits())
             .count();
         assert_eq!(n_diff, 0, "a legitimate spill must still be bit-exact");
+    }
+
+    /// A SPILLED source must charge the pool only for what it holds RESIDENT
+    /// (one read-back scratch block), never for the full band that lives on
+    /// disk.
+    ///
+    /// "An over-estimating guard is also a bug": charging the whole band for a
+    /// tensor that is on disk would refuse jobs the spill path exists to make
+    /// possible -- the spill is chosen precisely BECAUSE the band does not
+    /// fit, so charging the band would make every spill self-refusing.
+    ///
+    /// This test caught mutation M6, which every other test in this module
+    /// survived (they all assert on VALUES, and over-charging changes only
+    /// admission).
+    #[test]
+    fn a_spilled_source_charges_only_its_resident_block_not_the_whole_band() {
+        use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
+        let (mol,) = water();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let naux = dfbs.nbasis();
+        let nao = obs.nbasis();
+        let full_band = naux * nao * nao * 8;
+
+        // A budget that forces a spill (a few blocks' worth), and a POOL that
+        // can hold several scratch blocks but NOT the full band. If the spill
+        // path charged the band, this build would be refused.
+        let tiny_budget = nao * nao * 8 * 3;
+        let pool = MemoryPool::with_capacity_bytes(full_band / 2);
+        clear_global();
+        install_global(pool.clone());
+
+        let src = ThreeIndexSource::build(op, &obs, &dfbs, tiny_budget)
+            .expect("a spilled source must NOT be refused by a pool that cannot hold the band");
+        assert!(!src.is_incore(), "tiny budget must have spilled");
+        let held = pool.outstanding_bytes();
+        assert!(
+            held < full_band / 2,
+            "a spilled source must never charge the {full_band}-byte band that \
+             lives on disk (charged {held}) -- over-charging makes every spill \
+             self-refusing"
+        );
+        // The charge is SOFT (`charge_three_index_soft`): a spill has no
+        // fallback left and its block size is fixed by numerics, so an
+        // over-budget scratch block is RECORDED if it fits and skipped if it
+        // does not -- never a refusal. Both outcomes are correct here; what
+        // must never happen is the build failing, which the `expect` above
+        // pins.
+
+        drop(src);
+        assert_eq!(pool.outstanding_bytes(), 0, "drop must credit the block back");
+        clear_global();
+    }
+
+    /// TWO co-resident spilled sources must not refuse each other.
+    ///
+    /// REGRESSION for an over-enforcement defect found by the end-to-end
+    /// acceptance run, not by any unit test. `DfK::from_raw` borrows the raw
+    /// source (its scratch block live) while `build_dressed*` allocates the
+    /// dressed source's own scratch block, and `spill_block_naux_for` /
+    /// `block_naux_for` size each block against the WHOLE budget -- so the
+    /// honest co-resident total is ~2x budget whenever anything spills.
+    ///
+    /// Hard-charging both refused the 27-atom terpinyl cation at
+    /// `budget_gb = 0.10`, a job the pre-migration tree completes:
+    ///
+    /// ```text
+    /// error: memory pool exhausted: "DF 3-index dressed B[P,mn] spill scratch"
+    ///        needs 0.107 GB but only 0.054 GB of the 0.107 GB pool is free
+    /// ```
+    ///
+    /// Refusing a job that would have finished is as much a bug as admitting
+    /// one that OOMs, and the only way to make it fit -- shrinking
+    /// `block_naux` -- would move the SCF energy. Hence the spill charges are
+    /// soft. This test fails if anyone makes them hard again.
+    #[test]
+    fn two_co_resident_spilled_sources_do_not_refuse_each_other() {
+        use ferric_core::memory::pool::{clear_global, install_global, MemoryPool};
+        let (mol,) = water();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz").unwrap()).unwrap();
+        let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let naux = dfbs.nbasis();
+        let nao = obs.nbasis();
+
+        // A budget that forces a spill, and a pool of the SAME size -- which
+        // is the production shape (the CLI installs the pool at the budget).
+        // One scratch block is sized to ~that budget, so a second co-resident
+        // one cannot possibly fit; it must be skipped, not refused.
+        let budget = nao * nao * 8 * 3;
+        clear_global();
+        install_global(MemoryPool::with_capacity_bytes(budget));
+
+        let mut raw = ThreeIndexSource::build(op, &obs, &dfbs, budget)
+            .expect("raw spill must not be refused");
+        assert!(!raw.is_incore(), "budget must have forced a spill");
+
+        // Now dress it while `raw` is still alive -- exactly DfK::from_raw's
+        // shape. Before the fix this returned `memory pool exhausted`.
+        let m = ndarray::Array2::<f64>::eye(naux);
+        let dressed = ThreeIndexSource::build_dressed(&mut raw, &m, budget)
+            .expect("a co-resident dressed spill must NOT be refused by the pool");
+        assert!(!dressed.is_incore(), "dressed must have spilled too");
+
+        drop(dressed);
+        drop(raw);
+        clear_global();
     }
 
     /// The free-space probe must return a plausible answer for a real directory
