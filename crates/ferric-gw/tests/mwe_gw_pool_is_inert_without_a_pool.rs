@@ -166,8 +166,16 @@ fn assert_bits(got: &[f64], want: &[u64], what: &str) {
     );
 }
 
+// These two assert the NO-POOL path, so they must not run WHILE a sibling in
+// this binary has a pool installed -- the global slot is process-wide and
+// cargo runs the tests in one process. They take the same lock as the
+// pool-installing tests. (Measured: without the lock, both failed at 2, 4 and
+// 12 workers under the default parallel test runner while passing under
+// --test-threads=1, which is exactly the shape of a test that is green for the
+// wrong reason.)
 #[test]
 fn g0w0_qp_energies_are_bit_identical_without_a_pool() {
+    let _g = pool_lock();
     assert!(
         ferric_core::memory::pool::global().is_none(),
         "this test asserts the NO-POOL path; something installed a global pool"
@@ -177,6 +185,7 @@ fn g0w0_qp_energies_are_bit_identical_without_a_pool() {
 
 #[test]
 fn cohsex_qp_energies_are_bit_identical_without_a_pool() {
+    let _g = pool_lock();
     assert!(
         ferric_core::memory::pool::global().is_none(),
         "this test asserts the NO-POOL path; something installed a global pool"
@@ -269,14 +278,119 @@ fn an_ample_pool_gives_the_same_bits_as_no_pool() {
     );
 }
 
-/// A TIGHT pool must decline the soft QP scratch, run the serial sweep, and
-/// give the same bits.
+/// The soft QP-sweep gate must actually DECLINE when its scratch does not fit,
+/// the run must still COMPLETE, and the panelled (serial) sweep must give the
+/// SAME bits.
 ///
-/// The capacity is the binary-searched minimum: at exactly that number every
-/// mandatory plane fits and nothing optional does, which is precisely where the
-/// fallback is what is being measured. It is searched, not frozen, because the
-/// scratch scales with `rayon::current_num_threads()` and a constant calibrated
-/// at one width stops exercising the branch at the others.
+/// # Why this is written on a counter, and how the first version was INERT
+///
+/// A soft gate's whole purpose is that the run completes EITHER WAY, so
+/// completion cannot distinguish "the gate declined and panelled" from "the
+/// gate never had to decline". The first version of this test asserted only
+/// completion at the binary-searched floor, and mutation M3 (`try_reserve` ->
+/// `reserve`, soft made hard) left all five tests here GREEN at 2, 4 AND 12
+/// workers.
+///
+/// The reason is worth recording, because it is a genuine property of this
+/// crate's ordering and not just a bad constant. The floor is set by
+/// ferric-rpa's preflight charge, which is RELEASED before the Σ driver runs.
+/// At the instant this gate asks, the only outstanding ferric-gw bytes are
+/// `b_full + m_proj` -- measured 840_672 B of free headroom against a
+/// 19_712..118_272 B scratch at 2..12 workers. So a whole-run capacity test
+/// has an EMPTY observable window at this shape: any capacity low enough to
+/// squeeze the gate is too low for the earlier preflight, and the run dies on
+/// a MANDATORY plane instead. Three successive attempts to derive that window
+/// all failed on that inequality, which is the evidence it is empty rather
+/// than mis-derived.
+///
+/// So the branch is exercised where it can be: at the gate itself, with a pool
+/// whose free space is one byte short of the scratch. That is not a weaker
+/// test -- it is the same decision, with the confounder (the released
+/// preflight charge) removed instead of fought.
+#[test]
+fn the_soft_qp_gate_panels_when_its_scratch_does_not_fit() {
+    let workers = rayon::current_num_threads().max(1);
+    let scratch = ferric_gw::budget::qp_worker_scratch_bytes(
+        RI_NAUX,
+        STO3G_NACT,
+        n_quad_points(),
+        workers,
+        1,
+    );
+    assert!(scratch > 1, "nothing to decline -- the fixture is vacuous");
+
+    let _g = pool_lock();
+
+    // (a) One byte short: the gate MUST decline.
+    let pool = ferric_core::memory::pool::MemoryPool::with_capacity_bytes(scratch - 1);
+    ferric_core::memory::pool::install_global(pool);
+    let before = ferric_gw::sigma::qp_sweep_panelled_count();
+    let taken =
+        ferric_gw::sigma::charge_qp_sweep_scratch_for_test(RI_NAUX, STO3G_NACT, n_quad_points(), 0);
+    let declined = ferric_gw::sigma::qp_sweep_panelled_count() - before;
+    ferric_core::memory::pool::clear_global();
+    assert!(
+        taken.is_none() && declined == 1,
+        "with {} B free the {scratch} B scratch cannot fit, so the gate must DECLINE \
+         (panel), not take it and not refuse the job. A `reserve` here instead of a \
+         `try_reserve` would have propagated an error and killed a run that completes.",
+        scratch - 1
+    );
+
+    // (b) The over-rejection guard: one byte spare and it MUST take it.
+    // Without this, (a) passes on a gate that declines unconditionally, which
+    // would serialize every GW run in the tree.
+    let pool = ferric_core::memory::pool::MemoryPool::with_capacity_bytes(scratch + 1);
+    ferric_core::memory::pool::install_global(pool);
+    let before = ferric_gw::sigma::qp_sweep_panelled_count();
+    let taken =
+        ferric_gw::sigma::charge_qp_sweep_scratch_for_test(RI_NAUX, STO3G_NACT, n_quad_points(), 0);
+    let declined = ferric_gw::sigma::qp_sweep_panelled_count() - before;
+    ferric_core::memory::pool::clear_global();
+    assert!(
+        taken.is_some() && declined == 0,
+        "with {} B free the {scratch} B scratch fits, so the gate must TAKE it and the \
+         parallel sweep must run",
+        scratch + 1
+    );
+
+    // (c) The downstream-hard check: room for the scratch alone is not enough
+    // if a mandatory plane asks next. This is the ferric-rpa starvation shape,
+    // and a bare `try_reserve` (mutation M6) would take the bytes here.
+    let pool = ferric_core::memory::pool::MemoryPool::with_capacity_bytes(scratch + 1);
+    ferric_core::memory::pool::install_global(pool);
+    let before = ferric_gw::sigma::qp_sweep_panelled_count();
+    let taken = ferric_gw::sigma::charge_qp_sweep_scratch_for_test(
+        RI_NAUX,
+        STO3G_NACT,
+        n_quad_points(),
+        1_000_000, // a mandatory plane that asks next and has no fallback
+    );
+    let declined = ferric_gw::sigma::qp_sweep_panelled_count() - before;
+    ferric_core::memory::pool::clear_global();
+    assert!(
+        taken.is_none() && declined == 1,
+        "the scratch fits on its own but leaves nothing for the 1 MB downstream HARD \
+         plane, so an OPTIONAL allocation would starve a MANDATORY one -- the exact \
+         defect ferric-rpa's 08ab4431 fixed. A bare `try_reserve` takes the bytes here."
+    );
+}
+
+/// The whole-run counterpart: a TIGHT (binary-searched floor) pool must give
+/// the frozen bits, and the floor must be accounted for.
+///
+/// The capacity is the binary-searched minimum, not a frozen constant: the
+/// planes involved span four crates and one of the terms scales with
+/// `rayon::current_num_threads()`, so a number calibrated at one width is
+/// wrong at the others (which is how the ferric-rpa migration broke 3 of its
+/// 7 tests).
+///
+/// At this shape the QP-sweep gate does NOT decline at that minimum -- see
+/// `the_soft_qp_gate_panels_when_its_scratch_does_not_fit` for why the
+/// whole-run observable window for that branch is empty -- so this test
+/// asserts the other half: everything the pool DOES bind still produces the
+/// same answer, and the worker-dependent part of the floor is fully
+/// attributable to ferric-rpa.
 #[test]
 fn the_smallest_completing_pool_gives_the_same_bits_and_is_worker_independent() {
     let workers = rayon::current_num_threads().max(1);
@@ -307,6 +421,26 @@ fn the_smallest_completing_pool_gives_the_same_bits_and_is_worker_independent() 
     assert!(
         min > scratch,
         "sanity: the minimum ({min}) should exceed one sweep's scratch ({scratch})"
+    );
+    // WHY the QP gate does not decline at this minimum, recorded as an
+    // assertion rather than a comment so it cannot silently stop being true.
+    // ferric-rpa's preflight charge -- the term that SETS this minimum -- is
+    // released before the Σ driver runs, so at the instant the QP gate asks
+    // the only outstanding ferric-gw bytes are `b_full + m_proj`, leaving
+    // `min - at_gate` free. That headroom exceeds the scratch at every width
+    // measured (840_672 B free vs 19_712..118_272 B), which is why a
+    // WHOLE-RUN capacity test cannot observe this gate's decision at this
+    // shape and `the_soft_qp_gate_panels_when_its_scratch_does_not_fit`
+    // exercises it at the gate instead.
+    let at_gate = budget_at_gate();
+    assert!(
+        min - at_gate > scratch,
+        "the free headroom at the QP gate ({} B) has dropped below the scratch \
+         ({scratch} B) at {workers} workers. That would make a whole-run capacity test \
+         of the soft branch possible after all -- worth writing, and worth re-reading the \
+         reasoning in `the_soft_qp_gate_panels_when_its_scratch_does_not_fit`, which \
+         documents the window as empty.",
+        min - at_gate
     );
     // The mandatory floor is worker-INDEPENDENT by construction (b_full,
     // m_proj, the AO tensor and ferric-rpa's in-core planes carry no
@@ -381,6 +515,17 @@ const STO3G_NACT: usize = 7;
 /// accounting above and the config cannot drift.
 fn n_quad_points() -> usize {
     pdep_cfg().quadrature.n_points
+}
+
+/// ferric-gw bytes OUTSTANDING at the instant the QP-sweep gate asks: `b_full`
+/// and `m_proj`, both live, both charged.
+///
+/// Derived from `ferric_gw::budget` -- the same module the gates charge
+/// through -- so a shape or formula change cannot leave this stale.
+fn budget_at_gate() -> usize {
+    // Full rank (`trunc_thresh = 0`), so m_modes == naux.
+    ferric_gw::budget::b_full_bytes(RI_NAUX, STO3G_NACT)
+        + ferric_gw::budget::m_proj_bytes(RI_NAUX, STO3G_NACT)
 }
 
 #[test]
