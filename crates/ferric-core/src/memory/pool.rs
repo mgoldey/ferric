@@ -1,9 +1,9 @@
-//! [`MemoryPool`]: one process-global pool of bytes that allocations are
+//! [`crate::memory::pool::MemoryPool`]: one process-global pool of bytes that allocations are
 //! **debited** against, rather than a ceiling every call site re-reads.
 //!
 //! # Why this is not just `MemoryPlan`
 //!
-//! [`super::plan::MemoryPlan`] is the right *description* of a method's
+//! [`crate::memory::plan::MemoryPlan`] is the right *description* of a method's
 //! allocations — named reservations, lifetimes, a breakdown report — and this
 //! module deliberately does not reinvent any of that. But a plan is inert,
 //! per-method, `Clone`, and mutated through `&mut self`. Three things it
@@ -21,9 +21,9 @@
 //!
 //! So the pool is the *ledger* (atomic, shared, RAII) and the plan stays the
 //! *description*. A `MemoryPlan` gains an optional handle to a pool
-//! ([`super::plan::MemoryPlan::with_pool`]); when it has one, `check()` debits
+//! ([`crate::memory::plan::MemoryPlan::with_pool`]); when it has one, `check()` debits
 //! the pool for the plan's projected peak and hands back a
-//! [`Reservation`] guard. When it has none, behaviour is exactly what it is
+//! [`crate::memory::pool::Reservation`] guard. When it has none, behaviour is exactly what it is
 //! today — that is the trivial limit, and it is pinned by
 //! `tests/mwe_pool_no_budget_is_a_noop.rs`.
 //!
@@ -50,7 +50,7 @@
 //!
 //! The pool is threaded explicitly wherever a config already carries a budget,
 //! and is *additionally* installed in a process-global slot
-//! ([`install_global`]) by the CLI entry point. The global is what lets leaf
+//! ([`crate::memory::pool::install_global`]) by the CLI entry point. The global is what lets leaf
 //! gates like `ferric_integrals::ao_grid::check_ao_grid_budget` — which take
 //! no budget argument and are called from five crates — debit the same ledger
 //! without threading a parameter through every intermediate signature. That is
@@ -86,7 +86,7 @@ struct PoolInner {
     by_label: Mutex<HashMap<String, usize>>,
 }
 
-/// An RAII handle to bytes debited from a [`MemoryPool`].
+/// An RAII handle to bytes debited from a [`crate::memory::pool::MemoryPool`].
 ///
 /// Dropping it returns the bytes to the pool. This is the property a plain
 /// ceiling check cannot have: a transient buffer inside an SCF iteration
@@ -121,7 +121,7 @@ impl MemoryPool {
     /// auto-detect → 2 GiB fallback). See [`super::resolve_budget`].
     ///
     /// Call this **once**, at a process entry point, and
-    /// [`install_global`] it.
+    /// [`crate::memory::pool::install_global`] it.
     pub fn resolve(explicit: Option<usize>) -> Self {
         Self::with_capacity_bytes(super::resolve_budget_bytes(explicit))
     }

@@ -86,7 +86,8 @@ pub fn check_ao_grid_budget(kind: AoGridKind, nbf: usize, npts: usize) -> Result
     check_ao_grid_budget_reserved(kind, nbf, npts).map(|_| ())
 }
 
-/// [`check_ao_grid_budget`], but hands back the [`Reservation`] that admitted
+/// [`check_ao_grid_budget`], but hands back the
+/// [`Reservation`](ferric_core::memory::pool::Reservation) that admitted
 /// the buffer so a caller which OWNS the buffer can hold the charge for the
 /// buffer's whole LIFETIME.
 ///
