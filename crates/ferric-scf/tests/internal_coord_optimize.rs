@@ -8,13 +8,42 @@
 //! [`CoordSystem::Cartesian`](ferric_scf::optimize::CoordSystem::Cartesian) —
 //! the pre-existing BFGS path, and still the default. With the
 //! internal-coordinate machinery merged but *not selected*, the Cartesian
-//! optimizer must produce **bit-identical** results: same final energy bits,
-//! same step count, same final coordinate bits. Anything else means the change
+//! optimizer must produce the pre-change trajectory: same step count, same
+//! final energy, same final coordinates. Anything else means the change
 //! altered the existing algorithm rather than extending it.
 //!
-//! The constants at the bottom of this file were captured from `origin/main`
-//! (b58556c0) with `ferric_core::internal_coords` absent entirely; see
-//! [`cartesian_path_is_bit_identical`] for the re-capture recipe.
+//! # Why the bit-level leg is LIVE-vs-LIVE and the frozen constants are a band
+//!
+//! A hardcoded `u64` can only ever be right on the box that produced it. The
+//! constants at the bottom of this file were captured on the development box;
+//! CI's H2 final energy is `0xbff1e14dd9dd63b2` against this box's
+//! `0xbff1e14dd9dd63b7` — **5 ulp, 1.1e-15 Ha**, bit-stable *within* each
+//! machine and different *between* them. That is the same per-machine BLAS
+//! dispatch that moved this repo's GW QP energies and cDFT iteration counts;
+//! see `ferric-gw/tests/mwe_gw_pool_is_inert_without_a_pool.rs`, which carries
+//! the worked example and the measured dev-box-vs-CI bit patterns.
+//!
+//! Re-recording would only move the failure to the next machine, so the bits
+//! are asserted where they are meaningful — between two runs in the SAME
+//! process on the SAME CPU:
+//!
+//! * [`cartesian_path_is_reproducible_and_matches_the_recorded_path`] runs the
+//!   Cartesian optimizer **twice** and requires `to_bits()` equality. This is
+//!   the determinism leg: it fails if the optimizer picked up any run-to-run
+//!   nondeterminism (thread-order reduction, uninitialised scratch, iteration
+//!   over a hashed container) that a frozen literal captured once would hide.
+//! * [`selecting_internals_does_not_perturb_the_cartesian_path`] is the leg
+//!   that actually tests *this change*: Cartesian-selected and
+//!   internals-selected runs in one process, asserting the Cartesian leg is
+//!   bit-identical to a Cartesian run made while the internal machinery has
+//!   also been exercised. This is STRICTER than the frozen literal was, because
+//!   the only difference between the two legs is the thing under test.
+//! * The frozen constants are kept as a LOOSE SANITY BAND
+//!   ([`ENERGY_SANITY_BAND`] / [`COORD_SANITY_BAND`]), orders above the
+//!   measured ~1e-15 cross-machine spread. They catch a gross regression
+//!   (a different stationary point, a different step count) without pinning
+//!   one box's last hex digit, and they stop the live-vs-live legs from passing
+//!   by both being equally wrong.
 
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -112,70 +141,202 @@ fn fingerprint(tag: &str, r: &OptimizeResult) {
 // EXACTNESS ANCHOR: the Cartesian path is untouched
 // ---------------------------------------------------------------------------
 
-/// **THE exactness anchor.** With the internal-coordinate machinery present but
-/// `CoordSystem::Cartesian` selected (the default), the optimizer must
-/// reproduce the pre-change trajectory bit-for-bit on all three systems.
+/// **THE exactness anchor, determinism leg.** The Cartesian path must be
+/// reproducible bit-for-bit within one process, and must land inside the
+/// recorded sanity band.
 ///
-/// # Re-capture recipe
+/// # What each leg buys
+///
+/// The `to_bits()` comparison is LIVE-vs-LIVE — two runs of the *same*
+/// configuration, back to back on the same CPU with the same BLAS dispatch.
+/// The only thing it can catch is genuine run-to-run nondeterminism, and that
+/// is precisely what it is for: a thread-order-dependent reduction or an
+/// iteration over a hashed container would make the optimizer's trajectory
+/// irreproducible, and a literal captured in a single run cannot see it.
+///
+/// The band comparison catches a real change in what the optimizer computes.
+/// It is deliberately loose relative to the ~1e-15 Ha cross-machine spread
+/// (see the module doc), and the **step count is still asserted exactly** —
+/// that is an integer, unaffected by BLAS dispatch, and a change in it is a
+/// change in the algorithm.
+///
+/// # Re-recording the band constants
 ///
 /// ```text
 /// OPENBLAS_NUM_THREADS=1 cargo test -p ferric-scf \
-///   --test internal_coord_optimize cartesian_path_is_bit_identical -- --nocapture
+///   --test internal_coord_optimize \
+///   cartesian_path_is_reproducible_and_matches_the_recorded_path -- --nocapture
 /// ```
-/// and read the `[anchor ...]` lines.
-///
-/// # Why `to_bits()` and not a tolerance
-///
-/// A tolerance cannot distinguish "the change is a no-op" from "the change
-/// altered the arithmetic by less than the tolerance". Only bit equality pins
-/// the trivial limit. Cross-machine BLAS reduction-order noise is a known
-/// caveat (see the F2-1 anchor note in `optimize.rs`): a few-ulp difference on
-/// a *different* CPU/OpenBLAS kernel set is GEMM noise, not a regression. On
-/// the capture machine it must be exact, which is what makes it useful here.
+/// and read the `[anchor ...]` lines. Re-record only when a change to the
+/// numerics is deliberate — the band is wide enough that BLAS noise never
+/// requires it.
 #[test]
-fn cartesian_path_is_bit_identical() {
+fn cartesian_path_is_reproducible_and_matches_the_recorded_path() {
     let cfg = cartesian_cfg();
 
-    let h2 = run(&h2_stretched(), &cfg);
-    fingerprint("h2", &h2);
-    assert!(h2.converged);
-    assert_bits("h2", &h2, H2_STEPS, H2_ENERGY_BITS, H2_COORD_BITS);
+    for (tag, mol, steps, energy_bits, coords) in [
+        (
+            "h2",
+            h2_stretched(),
+            H2_STEPS,
+            H2_ENERGY_BITS,
+            H2_COORD_BITS,
+        ),
+        (
+            "h2o",
+            water_distorted(),
+            H2O_STEPS,
+            H2O_ENERGY_BITS,
+            H2O_COORD_BITS,
+        ),
+        (
+            "h2o2",
+            h2o2_distorted(),
+            H2O2_STEPS,
+            H2O2_ENERGY_BITS,
+            H2O2_COORD_BITS,
+        ),
+    ] {
+        let first = run(&mol, &cfg);
+        fingerprint(tag, &first);
+        assert!(first.converged, "{tag}: the Cartesian run must converge");
 
-    let w = run(&water_distorted(), &cfg);
-    fingerprint("h2o", &w);
-    assert!(w.converged);
-    assert_bits("h2o", &w, H2O_STEPS, H2O_ENERGY_BITS, H2O_COORD_BITS);
+        // LIVE vs LIVE: same config, same process, same CPU. Bits are
+        // meaningful here because nothing differs but the run itself.
+        let again = run(&mol, &cfg);
+        assert_same_path_bits(tag, &first, &again);
 
-    let p = run(&h2o2_distorted(), &cfg);
-    fingerprint("h2o2", &p);
-    assert!(p.converged);
-    assert_bits("h2o2", &p, H2O2_STEPS, H2O2_ENERGY_BITS, H2O2_COORD_BITS);
+        // Recorded values, as a band.
+        assert_within_band(tag, &first, steps, energy_bits, coords);
+    }
 }
 
-fn assert_bits(tag: &str, r: &OptimizeResult, steps: usize, energy_bits: u64, coords: &[[u64; 3]]) {
-    assert_eq!(r.steps, steps, "{tag}: step count drifted");
+/// Strict `to_bits()` equality between two runs made in the SAME process.
+///
+/// This is the only place in this file where bit equality is asserted, and it
+/// is sound because both sides share a CPU, a BLAS dispatch and a thread pool.
+fn assert_same_path_bits(tag: &str, a: &OptimizeResult, b: &OptimizeResult) {
     assert_eq!(
-        r.energy.to_bits(),
-        energy_bits,
-        "{tag}: final energy is not bit-identical: got {:#018x} ({:.17}), want {:#018x} ({:.17})",
+        a.steps, b.steps,
+        "{tag}: the Cartesian optimizer is not reproducible — two identical runs \
+         in one process took {} and {} steps",
+        a.steps, b.steps
+    );
+    assert_eq!(
+        a.energy.to_bits(),
+        b.energy.to_bits(),
+        "{tag}: the Cartesian optimizer is not reproducible — two identical runs \
+         in one process gave {:#018x} ({:.17}) and {:#018x} ({:.17}). \
+         Same CPU, same BLAS, so this is real nondeterminism, not dispatch.",
+        a.energy.to_bits(),
+        a.energy,
+        b.energy.to_bits(),
+        b.energy,
+    );
+    assert_eq!(a.mol.atoms.len(), b.mol.atoms.len(), "{tag}: atom count");
+    for (i, (x, y)) in a.mol.atoms.iter().zip(&b.mol.atoms).enumerate() {
+        for (c, (p, q)) in [x.x, x.y, x.zpos]
+            .iter()
+            .zip([y.x, y.y, y.zpos].iter())
+            .enumerate()
+        {
+            assert_eq!(
+                p.to_bits(),
+                q.to_bits(),
+                "{tag}: atom {i} coord {c} is not reproducible across two runs \
+                 in one process: {:#018x} vs {:#018x}",
+                p.to_bits(),
+                q.to_bits(),
+            );
+        }
+    }
+}
+
+/// Absolute band on the final energy. The measured cross-machine spread on the
+/// H2 anchor is 5 ulp ≈ 1.1e-15 Ha; 1e-9 Ha is six orders above that and still
+/// far below the 1e-4 Ha that separates distinct stationary points.
+const ENERGY_SANITY_BAND: f64 = 1e-9;
+
+/// Absolute band on each final coordinate, in Bohr. Same reasoning: many orders
+/// above BLAS noise, far below the 0.3 Bohr that distinguishes basins.
+const COORD_SANITY_BAND: f64 = 1e-6;
+
+/// Compare against the RECORDED path as a band, with the step count exact.
+fn assert_within_band(
+    tag: &str,
+    r: &OptimizeResult,
+    steps: usize,
+    energy_bits: u64,
+    coords: &[[u64; 3]],
+) {
+    // An integer is not subject to BLAS dispatch: a drift here is algorithmic.
+    assert_eq!(r.steps, steps, "{tag}: step count drifted");
+
+    let want_e = f64::from_bits(energy_bits);
+    let de = (r.energy - want_e).abs();
+    assert!(
+        de < ENERGY_SANITY_BAND,
+        "{tag}: final energy left the {ENERGY_SANITY_BAND:e} Ha band around the \
+         recorded value: got {:#018x} ({:.17}), recorded {:#018x} ({:.17}), \
+         delta {de:.3e}. That is far beyond the ~1e-15 cross-machine spread, so it \
+         is a real change in the Cartesian path, not BLAS dispatch.",
         r.energy.to_bits(),
         r.energy,
         energy_bits,
-        f64::from_bits(energy_bits),
+        want_e,
     );
+
     assert_eq!(r.mol.atoms.len(), coords.len(), "{tag}: atom count changed");
     for (i, (a, w)) in r.mol.atoms.iter().zip(coords).enumerate() {
         for (c, (got, expect)) in [a.x, a.y, a.zpos].iter().zip(w).enumerate() {
-            assert_eq!(
-                got.to_bits(),
-                *expect,
-                "{tag}: atom {i} coord {c} not bit-identical: {:#018x} ({:.17}) vs {:#018x} ({:.17})",
-                got.to_bits(),
+            let want = f64::from_bits(*expect);
+            let dr = (got - want).abs();
+            assert!(
+                dr < COORD_SANITY_BAND,
+                "{tag}: atom {i} coord {c} left the {COORD_SANITY_BAND:e} Bohr band: \
+                 got {:.17} ({:#018x}), recorded {want:.17} ({:#018x}), delta {dr:.3e}",
                 got,
+                got.to_bits(),
                 expect,
-                f64::from_bits(*expect),
             );
         }
+    }
+}
+
+/// **THE exactness anchor, no-op leg.** Selecting internals must not perturb
+/// the Cartesian path.
+///
+/// This is the assertion that actually tests *this change*, and it is the one
+/// the frozen constants were reaching for. Both legs run in the SAME process:
+/// a Cartesian run made before the internal-coordinate machinery is touched,
+/// and a Cartesian run made after an internals run has driven it. If selecting
+/// internals left any state behind — a cached B-matrix, a mutated config, a
+/// perturbed global — the second Cartesian run would differ, and `to_bits()`
+/// sees it. Sharing a CPU makes bit equality the right instrument here.
+#[test]
+fn selecting_internals_does_not_perturb_the_cartesian_path() {
+    let cart = cartesian_cfg();
+    let int = internal_cfg();
+
+    for (tag, mol) in [
+        ("h2", h2_stretched()),
+        ("h2o", water_distorted()),
+        ("h2o2", h2o2_distorted()),
+    ] {
+        let before = run(&mol, &cart);
+        assert!(before.converged, "{tag}: Cartesian must converge");
+
+        // Exercise the internal-coordinate path in between.
+        let via_internals = run(&mol, &int);
+        assert!(via_internals.converged, "{tag}: internal must converge");
+
+        let after = run(&mol, &cart);
+        eprintln!(
+            "[no-op {tag}] cartesian {} steps E = {:.17} | internals {} steps | \
+             cartesian again {} steps E = {:.17}",
+            before.steps, before.energy, via_internals.steps, after.steps, after.energy
+        );
+        assert_same_path_bits(tag, &before, &after);
     }
 }
 
@@ -557,13 +718,20 @@ fn floppy_system_iteration_ledger() {
 }
 
 // ---------------------------------------------------------------------------
-// Anchor constants
+// Anchor constants — a SANITY BAND, not a bit pin
 // ---------------------------------------------------------------------------
 
 // Captured 2026-09-18 on the development box from origin/main b58556c0
 // ("fix(gw): a bit-identity anchor cannot be pinned to one machine's bits"),
 // with `ferric_core::internal_coords` absent entirely and `OptimizeConfig`
 // carrying no `coord_system` field.
+//
+// These are stored as `u64` so the recorded value is exact and re-recording is
+// mechanical, but they are COMPARED as floats inside ENERGY_SANITY_BAND /
+// COORD_SANITY_BAND. The measured cross-machine spread on H2 is 5 ulp: this box
+// gives 0xbff1e14dd9dd63b7, CI gives 0xbff1e14dd9dd63b2. Bit-pinning them made
+// CI red for a difference of 1.1e-15 Ha. The step counts below ARE asserted
+// exactly — they are integers and do not move with BLAS dispatch.
 const H2_STEPS: usize = 7;
 const H2_ENERGY_BITS: u64 = 0xbff1_e14d_d9dd_63b7; // -1.11750588515699945
 const H2_COORD_BITS: &[[u64; 3]] = &[
