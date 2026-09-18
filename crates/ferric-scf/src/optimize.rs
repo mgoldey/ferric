@@ -25,9 +25,11 @@ use ndarray::{Array1, Array2};
 ///
 /// # Why Cartesian is the default
 ///
-/// Cartesian is the pre-existing, long-validated path and is bit-for-bit
-/// unchanged by the addition of internals (pinned by
-/// `tests/internal_coord_optimize.rs::cartesian_path_is_bit_identical`).
+/// Cartesian is the pre-existing, long-validated path and is unchanged by the
+/// addition of internals (pinned by
+/// `tests/internal_coord_optimize.rs::selecting_internals_does_not_perturb_the_cartesian_path`,
+/// which compares the two live in one process, and by
+/// `cartesian_path_is_reproducible_and_matches_the_recorded_path`).
 /// Internals are opt-in because they add machinery that can fail in ways
 /// Cartesians cannot — bond perception can mis-assign connectivity on an
 /// unusual geometry, and the back-transformation can fail to converge — and
