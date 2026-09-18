@@ -216,7 +216,9 @@ pub fn pdep_polarizability_static(
     // point with no ceiling of any kind until now: it is not a grid path, so
     // it fell outside the 2026-07-13 sweep, but it still builds a full
     // `naux x nov` scaled copy plus an `naux x naux` dielectric.
-    preflight_molecular_path(
+    // `_charge` is bound at FUNCTION scope: the planes it covers (`b_scaled`,
+    // `eps_mat`) are allocated below and live to the end of this call.
+    let (_budget, _charge) = preflight_molecular_path(
         &format!("pdep_polarizability_static (naux={naux}, nocc={nocc}, nvir={nvir})"),
         cfg.memory_budget_bytes,
         naux,
@@ -430,7 +432,7 @@ pub fn dielectric_spectrum_static(
     // buffer co-resident with the input — charged here as the `n_spin = 2`
     // arm's second dielectric-sized term is not, so this is deliberately the
     // conservative side of the estimate.
-    preflight_molecular_path(
+    let (_budget, _charge) = preflight_molecular_path(
         &format!("dielectric_spectrum_static (naux={naux}, nocc={nocc}, nvir={nvir})"),
         memory_budget_bytes,
         naux,
@@ -529,7 +531,7 @@ pub fn pdep_polarizability_static_unrestricted(
     // `eps_mat` allocate. Ungated until now, and the heaviest of the three
     // molecular entry points: it holds BOTH spin channels' intermediates
     // resident simultaneously, so every `naux x nov` term counts twice.
-    preflight_molecular_path(
+    let (_budget, _charge) = preflight_molecular_path(
         &format!(
             "pdep_polarizability_static_unrestricted (naux={naux}, nov_a={}, nov_b={})",
             inter_a.nocc * inter_a.nvir,
@@ -818,8 +820,67 @@ pub fn open_shell_dynamic_extra_bytes(naux: usize, nov_min: usize, n_workers: us
     extra_bov.saturating_add(extra_per_worker.saturating_mul(n_workers))
 }
 
+/// Test-only re-export of [`preflight_grid_path`].
+///
+/// `pub(crate)` is right for production -- no other crate has business
+/// building this gate -- but the guard's LIFETIME contract (that the returned
+/// `Reservation` keeps the bytes debited until the CALLER drops it) is not
+/// observable through any end-to-end path: on `pdep_polarizability_becke` the
+/// RI intermediates are built BEFORE this gate runs, so nothing asks the pool
+/// again while the guard is held, and dropping the guard early leaves the
+/// high-water mark unchanged. Measured: mutation M4b (release early) left all
+/// six end-to-end pool tests green.
+///
+/// A contract no test can see is an assumption, so expose the gate and assert
+/// the contract directly: hold the guard, ask for the rest of the pool, and
+/// require the refusal. See
+/// `tests/mwe_rpa_planes_compose_in_one_pool.rs::
+/// the_grid_preflight_guard_keeps_its_bytes_debited_until_the_caller_drops_it`.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn preflight_grid_path_for_test(
+    label: &str,
+    memory_budget_bytes: Option<usize>,
+    naux: usize,
+    nocc: usize,
+    nvir: usize,
+    npts: usize,
+    nbf: usize,
+    natoms: usize,
+) -> Result<(usize, ferric_core::memory::pool::Reservation), FerricError> {
+    preflight_grid_path(
+        label,
+        memory_budget_bytes,
+        naux,
+        nocc,
+        nvir,
+        npts,
+        nbf,
+        natoms,
+    )
+}
+
 /// Returns the resolved budget so callers can reuse it for banding decisions
-/// rather than resolving twice (and possibly inconsistently).
+/// rather than resolving twice (and possibly inconsistently), and an RAII
+/// [`Reservation`] debiting the shared pool for the projected peak.
+///
+/// # Why the guard is returned rather than dropped here
+///
+/// The planes this gate covers (`chi`, the per-atom dipole band partials, the
+/// resident `b_ov`) are live in the CALLER, for the whole accumulation — not
+/// across this function. A guard dropped at the end of `preflight_grid_path`
+/// would credit the bytes back before a single one of them was allocated,
+/// which makes the gate decoration: a second plane would then be admitted
+/// against bytes this job is about to spend. Callers MUST bind the guard for
+/// as long as the grid work runs. `mutation M4` in the migration report is the
+/// test that pins this.
+///
+/// # Hard, not soft
+///
+/// There is no streaming fallback on this path: `accumulate_atom_centred_
+/// dipoles` already chunks the grid, and the width it chunks at is derived
+/// from this same budget. A `try_reserve` whose `None` branch cannot narrow
+/// anything would be a lie (see the shared brief), so this refuses.
 pub(crate) fn preflight_grid_path(
     label: &str,
     memory_budget_bytes: Option<usize>,
@@ -829,7 +890,7 @@ pub(crate) fn preflight_grid_path(
     npts: usize,
     nbf: usize,
     natoms: usize,
-) -> Result<usize, FerricError> {
+) -> Result<(usize, ferric_core::memory::pool::Reservation), FerricError> {
     let budget = ferric_core::memory::resolve_budget_bytes(memory_budget_bytes);
     // Clamp to the chunk count: the accumulation caps each band at `n_chunks`,
     // so a nominally huge width cannot materialize more partials than there are
@@ -870,7 +931,12 @@ pub(crate) fn preflight_grid_path(
         nao: 0,
     });
     ferric_core::memory::check_alloc(label, est, budget)?;
-    Ok(budget)
+    // Debit the shared ledger for the same `est` the ceiling check just
+    // approved. With no pool installed this is an inert guard and the whole
+    // call is byte-for-byte what it was before -- the trivial limit pinned by
+    // `mwe_rpa_pool_is_inert_without_a_pool.rs`.
+    let charge = ferric_core::memory::pool::reserve_global(label, est)?;
+    Ok((budget, charge))
 }
 
 /// Pre-flight gate for the **Hirshfeld** per-atom property paths.
@@ -921,7 +987,7 @@ pub(crate) fn preflight_hirshfeld_path(
     nbf: usize,
     natoms: usize,
     n_workers: usize,
-) -> Result<usize, FerricError> {
+) -> Result<(usize, ferric_core::memory::pool::Reservation), FerricError> {
     use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 
     let budget = ferric_core::memory::resolve_budget_bytes(memory_budget_bytes);
@@ -978,8 +1044,21 @@ pub(crate) fn preflight_hirshfeld_path(
         );
     }
 
-    plan.check()?;
-    Ok(budget)
+    // `with_pool` re-bases the ceiling on the pool's REMAINING headroom, so a
+    // Hirshfeld grid asked for after the RPA intermediates are already charged
+    // sees only what those left. `commit` = `check` + debit + RAII guard; with
+    // no pool installed it is `check()` plus an inert guard, i.e. exactly the
+    // pre-migration behaviour.
+    //
+    // HARD: `chi` and `combined` are monolithic `(nbf, npts)` blocks that this
+    // path genuinely reads point-by-point for the whole method (see the table
+    // above). There is no chunked variant to fall back to, so a soft gate's
+    // `None` branch would have nothing to do -- a lie, per the shared brief.
+    let charge = match ferric_core::memory::pool::global() {
+        Some(pool) => plan.with_pool(&pool).commit()?,
+        None => plan.commit()?,
+    };
+    Ok((budget, charge))
 }
 
 /// Pre-flight gate for the **molecular** (non-grid) static property paths:
@@ -1000,7 +1079,7 @@ pub(crate) fn preflight_molecular_path(
     naux: usize,
     nov: usize,
     n_spin: usize,
-) -> Result<usize, FerricError> {
+) -> Result<(usize, ferric_core::memory::pool::Reservation), FerricError> {
     use ferric_core::memory::plan::{Lifetime, MemoryPlan};
 
     let budget = ferric_core::memory::resolve_budget_bytes(memory_budget_bytes);
@@ -1025,8 +1104,14 @@ pub(crate) fn preflight_molecular_path(
         Lifetime::Resident,
     );
 
-    plan.check()?;
-    Ok(budget)
+    // HARD, guard returned to the caller: `b_ov` / `b_scaled` / `eps_mat` live
+    // in the CALLER for the whole solve, and none of them has a streamed
+    // variant (the scaling cannot be in place -- `b_ov` is read again).
+    let charge = match ferric_core::memory::pool::global() {
+        Some(pool) => plan.with_pool(&pool).commit()?,
+        None => plan.commit()?,
+    };
+    Ok((budget, charge))
 }
 
 /// Test-only re-export of [`dipole_band_width_with_threads`] so the
@@ -1360,7 +1445,7 @@ pub fn pdep_polarizability_becke(
     // Pre-flight BEFORE chi allocates: chi is one contiguous nbf*npts*8 block,
     // so a gate placed after it has already lost. npts comes from the grid we
     // just built, never from an assumed 75x110.
-    let budget = preflight_grid_path(
+    let (budget, _charge) = preflight_grid_path(
         &format!(
             "pdep_polarizability_becke (natoms={natoms}, nbf={}, npts={npts}, naux={naux})",
             obs.nbasis()
@@ -1628,7 +1713,7 @@ pub fn pdep_polarizability_becke_dynamic(
         let nov_b = inter_b.nocc.saturating_mul(inter_b.nvir);
         let nov_min = nov_a.min(nov_b);
         let n_workers = rayon::current_num_threads().max(1);
-        let grid_budget = preflight_grid_path(
+        let (grid_budget, _charge) = preflight_grid_path(
             &format!(
                 "pdep_polarizability_becke_dynamic (U) (natoms={natoms}, nbf={}, npts={npts}, naux={naux})",
                 obs.nbasis()
@@ -1903,7 +1988,7 @@ pub fn pdep_polarizability_becke_dynamic(
     let npts = points.len();
     // Pre-flight before the grid work: npts comes from the grid just built,
     // never an assumed 75x110.
-    preflight_grid_path(
+    let (_budget, _charge) = preflight_grid_path(
         &format!(
             "pdep_polarizability_becke_dynamic (natoms={natoms}, nbf={}, npts={npts}, naux={naux})",
             obs.nbasis()
@@ -2210,7 +2295,7 @@ pub fn pdep_polarizability_hirshfeld(
     // atom count as on the Becke path), so this is the larger of the two grid
     // paths and the one that most needed a ceiling. It had none.
     let nbf = obs.nbasis();
-    preflight_hirshfeld_path(
+    let (_budget, _charge) = preflight_hirshfeld_path(
         &format!(
             "pdep_polarizability_hirshfeld (natoms={natoms}, nbf={nbf}, npts={npts}, naux={naux})"
         ),
@@ -2789,7 +2874,7 @@ pub fn molecular_dynamic_polarizability(
         // naux² buffer the helper does not model.
         let nov_a = inter_a.nocc.saturating_mul(inter_a.nvir);
         let nov_b = inter_b.nocc.saturating_mul(inter_b.nvir);
-        let mol_budget = preflight_molecular_path(
+        let (mol_budget, _charge) = preflight_molecular_path(
             &format!(
                 "molecular_dynamic_polarizability (U) (naux={naux}, nov_a={nov_a}, nov_b={nov_b})"
             ),
@@ -2984,7 +3069,7 @@ pub fn molecular_dynamic_polarizability(
     // of any kind until now — it is not a grid path, so the 2026-07-13 sweep
     // (which only covered `properties.rs`'s grid-based per-atom paths) missed
     // it, same as its open-shell sibling above.
-    preflight_molecular_path(
+    let (_budget, _charge) = preflight_molecular_path(
         &format!("molecular_dynamic_polarizability (naux={naux}, nocc={nocc}, nvir={nvir})"),
         cfg.memory_budget_bytes,
         naux,
@@ -3298,9 +3383,38 @@ pub fn preflight_hirshfeld_grid_scan(
     npts: usize,
     natoms: usize,
 ) -> Result<(), FerricError> {
+    preflight_hirshfeld_grid_scan_reserved(label, nbf, npts, natoms).map(|_| ())
+}
+
+/// [`preflight_hirshfeld_grid_scan`], but hands back the [`Reservation`] that
+/// admitted the buffers so the OWNER can hold the charge for their whole
+/// lifetime.
+///
+/// Mirrors `ferric_integrals::ao_grid::check_ao_grid_budget_reserved`, and for
+/// the same reason: `check_*` on its own debits the pool, returns, and the
+/// guard drops at the end of the statement -- so the bytes are credited back
+/// while `chi` and `d_chi` are still resident, and the next plane to ask sees
+/// a pool that looks empty. That is decoration, not accounting.
+///
+/// # Hard, not soft
+///
+/// `chi` is a single contiguous `(nbf, npts)` block built by one
+/// `eval_basis_on_grid` call, and `d_chi = density.dot(&chi)` is a full GEMM
+/// against it. Neither has a chunked variant on this path, so a `try_reserve`
+/// whose `None` branch could only shrug would be a lie. This refuses.
+///
+/// The measured shape from this function's own doc (nbf=200, npts≈5.6e6,
+/// natoms=20): ~18.9 GB, against a callee gate that approved 9.0 GB.
+pub fn preflight_hirshfeld_grid_scan_reserved(
+    label: &str,
+    nbf: usize,
+    npts: usize,
+    natoms: usize,
+) -> Result<ferric_core::memory::pool::Reservation, FerricError> {
     let budget = ferric_core::memory::resolve_budget_bytes(None);
     let est = estimate_hirshfeld_grid_scan_bytes(nbf, npts, natoms);
-    ferric_core::memory::check_alloc(label, est, budget)
+    ferric_core::memory::check_alloc(label, est, budget)?;
+    ferric_core::memory::pool::reserve_global(label, est)
 }
 
 /// Per-atom effective volume via Hirshfeld (Slater proatom) partitioning:
@@ -3332,7 +3446,9 @@ pub fn atomic_effective_volumes_hirshfeld(
     // without materializing the grid tensor (see `nbf_for_basis`'s doc for
     // why the callee's own gate is not enough here).
     let nbf_pre = nbf_for_basis(mol, obs_bs)?;
-    preflight_hirshfeld_grid_scan(
+    // `_charge` bound at FUNCTION scope: `chi`, `d_chi` and `rho_free` below
+    // are all live to the end of this call.
+    let _charge = preflight_hirshfeld_grid_scan_reserved(
         &format!(
             "atomic_effective_volumes_hirshfeld (nbf={nbf_pre}, npts={npts}, natoms={natoms})"
         ),
@@ -3456,7 +3572,7 @@ pub fn hirshfeld_i_charges(
     // `chi` and misses the co-resident `d_chi`/`rho_free`/side vectors built
     // right after it returns.
     let nbf_pre = nbf_for_basis(mol, obs_bs)?;
-    preflight_hirshfeld_grid_scan(
+    let _charge = preflight_hirshfeld_grid_scan_reserved(
         &format!("hirshfeld_i_charges (nbf={nbf_pre}, npts={npts}, natoms={natoms})"),
         nbf_pre,
         npts,
