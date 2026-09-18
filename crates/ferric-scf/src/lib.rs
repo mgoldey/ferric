@@ -119,6 +119,8 @@ pub mod rohf_ah;
 pub mod rohf_newton;
 /// Internal stability analysis: is a converged SCF solution a minimum or a saddle?
 pub mod stability;
+/// Trust-region augmented-Hessian (TRAH) orbital optimization.
+pub mod trah;
 /// Newton-step UHF/UKS solver with coupled α/β orbital rotations.
 pub mod uhf_newton;
 pub use gradient::{rhf_gradient, rohf_gradient, uhf_gradient};
