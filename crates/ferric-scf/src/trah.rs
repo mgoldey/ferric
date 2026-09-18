@@ -91,6 +91,40 @@
 //! | 0.25 < ρ ≤ 0.75 | accepted | unchanged |
 //! | ρ > 0.75     | accepted | Δ ← 1.2 Δ  |
 //!
+//! # KNOWN DEFECT: the rejection loop can stall (measured, not fixed)
+//!
+//! On RKS/PBE water/cc-pVDZ, TRAH enters a repeating cycle after its first
+//! rejection. Traced with `FERRIC_SCF_TRACE=1`:
+//!
+//! ```text
+//!   iter  6: rho= 1.001722  Accepted  Delta=4.800e-1
+//!   iter  7: rho=-60.519638 Rejected  Delta=3.360e-1  (restore)
+//!   iter  9: rho=-60.519638 Rejected  Delta=2.352e-1  (restore)
+//!   iter 11: rho=-60.519638 Rejected  Delta=1.646e-1  (restore)
+//!   ... radius contracts 0.7x per cycle until it collapses ...
+//! ```
+//!
+//! ρ is IDENTICAL to six decimals every cycle. A repeated exact value is a
+//! fingerprint of arithmetic, not of measurement: the restore returns to the
+//! same point, the same step is recomputed, and only the radius changes — but
+//! the radius is not yet binding (the step is interior, α = α_min), so
+//! contracting it does not change the step either. The cycle therefore burns
+//! two Fock builds per iteration until the radius collapses and the run falls
+//! back to DIIS.
+//!
+//! This is why TRAH is a REGRESSION on that case: 123 iterations / 98 s versus
+//! DIIS's 69 / 1.5 s. It is also why the radius floor and
+//! [`crate::trah::TrahState::collapsed`] exist — without them the cycle would not terminate.
+//!
+//! The likely cause is that ρ is being formed across a Fock rebuild rather than
+//! at a fixed reference point, so a large negative ρ reflects the DIIS-era
+//! energy change rather than the step's. The fix is to re-step immediately at
+//! the contracted radius from the restored point (as Helmich-Paris specifies:
+//! "the micro iterations are repeated from the previous set of orbitals")
+//! instead of yielding to the next macro iteration. That restructuring is not
+//! done here; TRAH is opt-in and off by default, so the defect is inert unless
+//! deliberately enabled.
+//!
 //! # Scope
 //!
 //! The solver here is deliberately method-agnostic: it works on a flat
@@ -196,7 +230,7 @@ pub struct TrahConfig {
     /// The paper publishes **no** h_min (Table I bounds α but not h); without
     /// a floor, repeated 0.7× contractions underflow into a stalled state
     /// taking vanishing steps forever. This floor is ferric's addition and is
-    /// the reason [`TrahState::collapsed`] exists.
+    /// the reason [`crate::trah::TrahState::collapsed`] exists.
     pub radius_min: f64,
     /// Largest radius the expansion rule may reach. Default 2.0. Also not in
     /// the paper; it bounds unlimited 1.2× growth once the constraint goes
@@ -1254,6 +1288,48 @@ mod tests {
         assert!(solve_trust_region(&[0.1], &mv, &[1.0], 0.0, &TrahConfig::default()).is_err());
         assert!(solve_trust_region(&[0.1], &mv, &[1.0], -1.0, &TrahConfig::default()).is_err());
         assert!(solve_trust_region(&[], &mv, &[], 1.0, &TrahConfig::default()).is_err());
+    }
+
+    /// `assess` must report "nothing pending" DISTINCTLY from "accepted", and a
+    /// caller must not read `last_rho` without checking that Option.
+    ///
+    /// # The bug this pins
+    ///
+    /// The SCF loop originally wrote `.unwrap_or(TrahVerdict::Accepted)` and
+    /// then traced `last_rho`, which PERSISTS across assessments. On RKS/PBE
+    /// water that printed a frozen `rho = -60.519638` repeated across a
+    /// reject/"accept" alternation that was not happening — the "accept" lines
+    /// were iterations with nothing pending at all. A ρ repeating to the last
+    /// digit is arithmetic, not measurement, and it disguised a real
+    /// convergence defect as a different one.
+    #[test]
+    fn a_consumed_step_is_not_reassessable_and_none_is_not_acceptance() {
+        let mut st = TrahState::new(TrahConfig::default());
+        st.record_step(-100.0, &mk_step(-1e-3));
+        let first = st.assess(-100.001);
+        assert_eq!(first, Some(TrahVerdict::Accepted));
+        let rho_after_first = st.last_rho;
+        assert!(rho_after_first.is_some());
+
+        // Second call with nothing pending: NOT a verdict.
+        assert_eq!(
+            st.assess(-99.0),
+            None,
+            "a second assess with nothing pending must return None, not a verdict \
+             synthesised from a step that was already consumed"
+        );
+        // `last_rho` deliberately still holds the previous value — which is
+        // precisely why callers must gate on the Option and never on last_rho.
+        assert_eq!(
+            st.last_rho.map(f64::to_bits),
+            rho_after_first.map(f64::to_bits),
+            "last_rho persists by design; the None above is the signal it is stale"
+        );
+        assert_eq!(
+            st.accepted, 1,
+            "the no-op assess must not count an acceptance"
+        );
+        assert_eq!(st.rejected, 0);
     }
 
     fn mk_step(predicted: f64) -> TrahStep {

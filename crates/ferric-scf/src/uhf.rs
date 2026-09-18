@@ -1054,17 +1054,24 @@ pub fn solve_uhf_fockmod(
         let mut trah_took_step = false;
         if trah_runs {
             // Phase 1: score the pending step against the energy just computed.
-            let verdict = trah_state
-                .as_mut()
-                .and_then(|st| st.assess(energy))
-                .unwrap_or(crate::trah::TrahVerdict::Accepted);
-            if let Some(rho) = trah_state.as_ref().and_then(|s| s.last_rho) {
+            // `assess` returns None when NOTHING was pending — the first armed
+            // iteration, and the iteration right after a rejection (which
+            // consumed its pending step and skipped Phase 2). That is not an
+            // acceptance: treating it as one and then printing the PERSISTENT
+            // `last_rho` made the trace show a frozen ρ repeated across a
+            // reject/"accept" alternation that was not happening. Keep the
+            // Option so "no verdict" stays distinguishable from "accepted".
+            let verdict: Option<crate::trah::TrahVerdict> =
+                trah_state.as_mut().and_then(|st| st.assess(energy));
+            if let (Some(_), Some(rho)) = (verdict, trah_state.as_ref().and_then(|s| s.last_rho)) {
                 crate::trah::note_rho_uhf(rho);
             }
             if crate::rhf::scf_trace() {
-                if let Some(rho) = trah_state.as_ref().and_then(|s| s.last_rho) {
+                if let (Some(v), Some(rho)) =
+                    (verdict, trah_state.as_ref().and_then(|s| s.last_rho))
+                {
                     eprintln!(
-                        "TRAH iter={iter}: rho={rho:.6} verdict={verdict:?} \
+                        "TRAH iter={iter}: rho={rho:.6} verdict={v:?} \
                          Delta={:.3e} acc={} rej={}",
                         trah_state.as_ref().map(|s| s.radius()).unwrap_or(0.0),
                         trah_state.as_ref().map(|s| s.accepted).unwrap_or(0),
@@ -1072,7 +1079,7 @@ pub fn solve_uhf_fockmod(
                     );
                 }
             }
-            if verdict == crate::trah::TrahVerdict::Rejected {
+            if verdict == Some(crate::trah::TrahVerdict::Rejected) {
                 crate::trah::note_trah_rejection();
                 if let Some((ca_undo, cb_undo)) = trah_undo.take() {
                     if crate::rhf::scf_trace() {
@@ -1095,10 +1102,19 @@ pub fn solve_uhf_fockmod(
                 }
             }
 
-            // Phase 2: step from the (possibly restored) point. After a restore
-            // the Fock in hand belongs to the discarded density, so we skip
-            // stepping this iteration and let the loop rebuild F first.
-            if verdict != crate::trah::TrahVerdict::Rejected {
+            // Phase 2: step from the (possibly restored) point.
+            //
+            // After a REJECTION we do not step this iteration: `f` was built
+            // from the density we just discarded, so an MO-basis Fock formed
+            // from it would be a gradient at the wrong point. The loop
+            // `continue`s, rebuilds F from the restored density, and steps on
+            // the NEXT iteration at the already-contracted radius. That costs
+            // one Fock build per rejection and is why rejection is not free.
+            //
+            // The pending assessment was consumed by `assess` above, so the
+            // skipped iteration records nothing and the next ρ is formed from a
+            // matched (energy_before, predicted) pair — not from a stale one.
+            if verdict != Some(crate::trah::TrahVerdict::Rejected) {
                 let f_a_mo = c_a.t().dot(&f_a).dot(&c_a);
                 let f_b_mo = c_b.t().dot(&f_b).dot(&c_b);
 
