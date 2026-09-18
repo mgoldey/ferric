@@ -130,15 +130,16 @@ fn synthetic_mo_b(naux: usize, n_act: usize, n_occ_act: usize) -> MoB {
             }
         }
     }
-    MoB {
+    MoB::from_parts(
         b_full,
-        v_inv_sqrt: Array2::<f64>::eye(naux),
+        Array2::<f64>::eye(naux),
         naux,
         n_act,
-        first_act: 0,
+        0,
         n_occ_act,
-        eps_act: (0..n_act).map(|i| i as f64 * 0.1).collect(),
-    }
+        (0..n_act).map(|i| i as f64 * 0.1).collect(),
+    )
+    .expect("synthetic MoB charge (no pool installed in this test binary)")
 }
 
 /// B1: FERRIC_BLAS_THREADS=2 must reproduce the projected M tensor of
@@ -175,9 +176,13 @@ fn project_b_into_pdep_consistent_across_blas_thread_counts() {
     std::env::remove_var("FERRIC_BLAS_THREADS");
 
     assert_eq!(baseline.dim(), raised.dim());
-    let maxdiff = (&baseline - &raised)
+    // `project_b_into_pdep` returns an `MProj` (the tensor plus its pool
+    // charge). It `Deref`s to `Array3<f64>`, but `Sub` is not defined on the
+    // wrapper, so compare elementwise through the deref rather than with `-`.
+    let maxdiff = baseline
         .iter()
-        .map(|v| v.abs())
+        .zip(raised.iter())
+        .map(|(a, b)| (a - b).abs())
         .fold(0.0f64, f64::max);
     assert!(
         maxdiff <= 1e-12,

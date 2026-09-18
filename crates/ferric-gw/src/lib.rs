@@ -23,6 +23,9 @@
 pub mod assign;
 /// Bethe-Salpeter equation (BSE-TDA) for optical excitations.
 pub mod bse;
+/// Plane sizes for ferric-gw's large tensors, shared by the pool gates and
+/// their tests so the two cannot drift.
+pub mod budget;
 /// Closed-shell COHSEX (static screened exchange + Coulomb hole).
 pub mod cohsex;
 /// GW method variants: G0W0, evGW0, evGW, COHSEX, sc-COHSEX.
