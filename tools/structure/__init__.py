@@ -99,6 +99,7 @@ geometry*, not an optimized one -- tier 2 of the cost hierarchy in
 it through xtb first (`tools/campaign/xtb_engine.py`); see
 `wiki/golden-path-iteration-1.md` for the measured tier costs.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -184,7 +185,9 @@ class Structure:
                 )
             for v in row:
                 if v != v or v in (float("inf"), float("-inf")):
-                    raise StructureError(f"{self.source}: atom {i} has a non-finite coordinate")
+                    raise StructureError(
+                        f"{self.source}: atom {i} has a non-finite coordinate"
+                    )
         if self.multiplicity < 1:
             raise StructureError(
                 f"{self.source}: multiplicity is the spin multiplicity 2S+1 and "
@@ -230,6 +233,7 @@ def _require(module: str, fmt: str, extra: str):
 
 # ── readers: each returns a Structure, none of them touch ferric ──
 
+
 def _read_xyz(path: Path, charge: int, multiplicity: int) -> Structure:
     lines = path.read_text().splitlines()
     if not lines:
@@ -237,15 +241,19 @@ def _read_xyz(path: Path, charge: int, multiplicity: int) -> Structure:
     try:
         n = int(lines[0].strip())
     except ValueError as exc:
-        raise StructureError(f"{path}: first line is not an atom count: {lines[0]!r}") from exc
-    body = lines[2:2 + n]
+        raise StructureError(
+            f"{path}: first line is not an atom count: {lines[0]!r}"
+        ) from exc
+    body = lines[2 : 2 + n]
     if len(body) != n:
         raise StructureError(f"{path}: header says {n} atoms, file has {len(body)}")
     symbols, coords = [], []
     for i, line in enumerate(body):
         parts = line.split()
         if len(parts) < 4:
-            raise StructureError(f"{path}: atom {i}: expected 4 fields, got {len(parts)}")
+            raise StructureError(
+                f"{path}: atom {i}: expected 4 fields, got {len(parts)}"
+            )
         symbols.append(parts[0])
         coords.append(tuple(float(v) for v in parts[1:4]))
     return Structure(tuple(symbols), tuple(coords), charge, multiplicity, str(path))
@@ -317,20 +325,26 @@ def _read_pqr(path: Path, charge: int, multiplicity: int) -> Structure:
         # on hydrogens (1HB). This is the standard PDB convention, but it is a
         # heuristic on a format that does not carry an element column.
         raw = a.name.lstrip("0123456789")
-        sym = raw[0].upper() + (raw[1:2].lower() if len(raw) > 1 and raw[:2].isalpha() else "")
+        sym = raw[0].upper() + (
+            raw[1:2].lower() if len(raw) > 1 and raw[:2].isalpha() else ""
+        )
         # Two-letter guesses are wrong far more often than right in PDB naming
         # (CA is carbon-alpha, not calcium), so only trust the first letter
         # unless the name is exactly a known two-letter element.
         if sym not in _TWO_LETTER_OK:
             sym = raw[0].upper()
         symbols.append(sym)
-        coords.append((a.x * BOHR_TO_ANGSTROM, a.y * BOHR_TO_ANGSTROM, a.z * BOHR_TO_ANGSTROM))
+        coords.append(
+            (a.x * BOHR_TO_ANGSTROM, a.y * BOHR_TO_ANGSTROM, a.z * BOHR_TO_ANGSTROM)
+        )
     return Structure(tuple(symbols), tuple(coords), charge, multiplicity, str(path))
 
 
 # Two-letter element symbols that appear in PDB atom names meaning the element
 # itself rather than a carbon position. Kept short and explicit on purpose.
-_TWO_LETTER_OK = frozenset({"CL", "BR", "ZN", "FE", "MG", "MN", "NA", "CU", "SE", "NI", "CO", "CA"})
+_TWO_LETTER_OK = frozenset(
+    {"CL", "BR", "ZN", "FE", "MG", "MN", "NA", "CU", "SE", "NI", "CO", "CA"}
+)
 
 
 def _read_rdkit(path: Path, charge: int, multiplicity: int, fmt: str) -> Structure:
@@ -360,7 +374,9 @@ def _read_rdkit(path: Path, charge: int, multiplicity: int, fmt: str) -> Structu
     return _from_rdkit_mol(mol, charge, multiplicity, str(path))
 
 
-def _from_rdkit_mol(mol, charge: int | None, multiplicity: int, source: str) -> Structure:
+def _from_rdkit_mol(
+    mol, charge: int | None, multiplicity: int, source: str
+) -> Structure:
     conf = mol.GetConformer()
     symbols, coords = [], []
     for i, atom in enumerate(mol.GetAtoms()):
