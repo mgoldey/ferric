@@ -371,7 +371,18 @@ fn xc_gradient_plan(
     with_grid_response: bool,
 ) -> MemoryPlan {
     let plane = nbf.saturating_mul(npts);
-    let mut plan = MemoryPlan::resolve(None, label);
+    // `from_global_pool`, not `resolve`: `resolve` hands this plan the WHOLE
+    // ceiling no matter what else the process is already holding, which is
+    // precisely the double-spend `memory::pool` exists to stop. A geometry
+    // optimization runs this path with a DF 3-index tensor and an SCF grid
+    // cache still resident from the energy step; against `resolve` every one
+    // of them independently "fits" the same bytes. Against the pool, whichever
+    // asks second sees only what the first left.
+    //
+    // With no pool installed this is exactly `MemoryPlan::resolve(None, label)`
+    // — the trivial limit, pinned by
+    // `mwe_gradient_pool_is_inert_without_a_pool.rs`.
+    let mut plan = MemoryPlan::from_global_pool(None, label);
 
     // Already allocated by the time this runs (the grid is built first, since
     // it is what determines `npts`) — declared so the AO tensors are sized
@@ -594,7 +605,18 @@ pub fn xc_gradient_closed_lda_from_density(
     // what the grid + weight1 already left resident — see `xc_gradient_plan`.
     // The LDA path needs only χ + ∇χ, and never builds `mdchi`, but declaring
     // the shared shape keeps one census for the whole module.
-    xc_gradient_plan(
+    // `commit()`, not `check()`: `check()` only compares the projected peak
+    // against a ceiling and then FORGETS, so two gradient paths (or a gradient
+    // and the DF tensor an optimizer still holds) each see the same headroom.
+    // `commit()` checks AND DEBITS, handing back an RAII guard.
+    //
+    // The guard is bound to a named local, NOT dropped as a temporary: the
+    // bytes must stay debited for as long as chi/dchi/ddchi are resident, and
+    // a `let _ = ...` (or a bare `;`) would credit them back immediately —
+    // the exact defect the `_charge` field pattern exists to prevent. `_charge`
+    // rather than `charge` because nothing reads it; dropping at end of scope
+    // IS its only job.
+    let _charge = xc_gradient_plan(
         "KS-DFT LDA XC gradient",
         nbf,
         grid.len(),
@@ -603,7 +625,7 @@ pub fn xc_gradient_closed_lda_from_density(
         false,
         true,
     )
-    .check()?;
+    .commit()?;
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi) = crate::ao_grid::eval_basis_and_grad_on_points(mol, bs, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
@@ -750,7 +772,9 @@ pub fn vv10_gradient_from_density(
     // No grid response on this path (`build_atomic_grid`, not
     // `_with_response`), so no `weight1` term — but the AO Hessian and the
     // `m`/`mdchi` planes inside `gga_gradient_from_potentials` are the same.
-    xc_gradient_plan(
+    // Held for the life of the AO tensors — see the LDA path for why this is
+    // a bound local and not a temporary.
+    let _charge = xc_gradient_plan(
         "VV10 nonlocal gradient",
         nbf,
         grid.len(),
@@ -759,7 +783,7 @@ pub fn vv10_gradient_from_density(
         false,
         false,
     )
-    .check()?;
+    .commit()?;
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
 
@@ -823,7 +847,8 @@ pub fn xc_gradient_closed_gga_from_density(
     // Gate the whole working set — the 13 AO planes AND the m/mdchi planes
     // allocated after `check_ao_grid_budget` has already returned — against
     // what the grid + weight1 left resident. See `xc_gradient_plan`.
-    xc_gradient_plan(
+    // Held for the life of the AO tensors — see the LDA path.
+    let _charge = xc_gradient_plan(
         "KS-DFT GGA XC gradient",
         nbf,
         grid.len(),
@@ -832,7 +857,7 @@ pub fn xc_gradient_closed_gga_from_density(
         false,
         true,
     )
-    .check()?;
+    .commit()?;
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
@@ -997,7 +1022,8 @@ pub fn xc_gradient_closed_mgga_from_density(
     // Gate the whole working set — the 13 AO planes AND the m/mdchi planes
     // allocated after `check_ao_grid_budget` has already returned — against
     // what the grid + weight1 left resident. See `xc_gradient_plan`.
-    xc_gradient_plan(
+    // Held for the life of the AO tensors — see the LDA path.
+    let _charge = xc_gradient_plan(
         "KS-DFT meta-GGA XC gradient",
         nbf,
         grid.len(),
@@ -1006,7 +1032,7 @@ pub fn xc_gradient_closed_mgga_from_density(
         false,
         true,
     )
-    .check()?;
+    .commit()?;
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
@@ -1174,7 +1200,8 @@ pub fn xc_gradient_uks_from_density(
     // Gate the whole working set — the 13 AO planes AND the m/mdchi planes
     // allocated after `check_ao_grid_budget` has already returned — against
     // what the grid + weight1 left resident. See `xc_gradient_plan`.
-    xc_gradient_plan(
+    // Held for the life of the AO tensors — see the LDA path.
+    let _charge = xc_gradient_plan(
         "KS-DFT UKS GGA XC gradient",
         nbf,
         grid.len(),
@@ -1183,7 +1210,7 @@ pub fn xc_gradient_uks_from_density(
         true,
         true,
     )
-    .check()?;
+    .commit()?;
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
@@ -1435,7 +1462,8 @@ pub fn xc_gradient_uks_mgga_from_density(
     // Gate the whole working set — the 13 AO planes AND the m/mdchi planes
     // allocated after `check_ao_grid_budget` has already returned — against
     // what the grid + weight1 left resident. See `xc_gradient_plan`.
-    xc_gradient_plan(
+    // Held for the life of the AO tensors — see the LDA path.
+    let _charge = xc_gradient_plan(
         "KS-DFT UKS meta-GGA XC gradient",
         nbf,
         grid.len(),
@@ -1444,7 +1472,7 @@ pub fn xc_gradient_uks_mgga_from_density(
         true,
         true,
     )
-    .check()?;
+    .commit()?;
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
