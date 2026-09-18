@@ -202,7 +202,20 @@ pub fn linlccd(
         crate::diis_history_elems(oovv_elems, cfg.diis_subspace),
         Lifetime::Resident,
     );
-    plan.check()?;
+    // COMMIT against the process-global pool rather than merely CHECK against
+    // a ceiling every other subsystem may re-read in full. `commit()` is
+    // `check()` plus a DEBIT plus an RAII guard; with no pool installed it
+    // degenerates to exactly the old `check()` plus an inert guard, which is
+    // the trivial limit pinned by `mwe_cc_pool_is_inert_without_a_pool.rs`.
+    //
+    // HARD: every reservation on this plan is a dense tensor with no streaming
+    // fallback in this driver, so there is no None branch to take and a soft
+    // gate would be decoration. `_charge` is held to the end of the function,
+    // which is where those tensors die.
+    if let Some(pool) = ferric_core::memory::pool::global() {
+        plan = plan.with_pool(&pool);
+    }
+    let _charge = plan.commit()?;
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();

@@ -209,6 +209,20 @@ impl PairOverlaps {
             Self::plan_elements(basis),
             Lifetime::Resident,
         );
+        // DELIBERATELY NOT POOL-CHARGED.
+        //
+        // This is a CONSTRUCTOR taking an explicit `budget_bytes` argument,
+        // not a driver resolving a ceiling, so there is no "re-read the same
+        // global number" defect here to fix -- the caller already decided how
+        // much of its own allowance this cache may have. Attaching the
+        // process-global pool would instead REPLACE that caller's decision
+        // with `pool.available_bytes()` (that is what `with_pool` does), which
+        // silently widens a budget the caller deliberately narrowed.
+        //
+        // It is also not a dominant plane: DLPNO is the LOW-memory path, and
+        // its per-pair transforms are orders of magnitude below the dense
+        // `(2nv)^4` blocks the CCSD/CCD drivers charge. Charging it would add
+        // ledger traffic without moving the number that OOMs a job.
         plan.check()?;
         Ok(Self::build(basis))
     }

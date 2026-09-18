@@ -234,6 +234,41 @@ fn triple_chunk_len(nv: usize, band_budget_bytes: usize) -> usize {
     (band_budget_bytes / per_triple).max(1)
 }
 
+/// The band width [`ccsd_t_closed_shell`] uses on the UNBUDGETED path, as one
+/// named function of `(no, nv, budget_bytes)`.
+///
+/// Spatial analogue of `ccsd_t::t_band_width`; see that function for why the
+/// composition is named rather than open-coded.
+pub fn t_band_width(no: usize, nv: usize, budget_bytes: usize) -> usize {
+    let remaining = budget_bytes.saturating_sub(precomputed_block_bytes(no, nv));
+    triple_chunk_len(
+        nv,
+        ferric_core::memory::transient_share(remaining, ferric_core::memory::Share::Half),
+    )
+}
+
+/// The band width [`ccsd_t_closed_shell`] will use RIGHT NOW, given the
+/// process-global pool's current state -- the exact expression the driver
+/// evaluates. Spatial analogue of `ccsd_t::t_band_width_now`; see that
+/// function for why the pooled branch reads the LEDGER and never live RSS,
+/// and why the driver calls this instead of inlining it.
+pub fn t_band_width_now(no: usize, nv: usize, budget_bytes: usize) -> usize {
+    match ferric_core::memory::pool::global_available_bytes() {
+        Some(free) => triple_chunk_len(nv, free),
+        None => t_band_width(no, nv, budget_bytes),
+    }
+}
+
+/// The floor [`ccsd_t_closed_shell`] charges before it allocates.
+pub fn t_floor_bytes(no: usize, nv: usize) -> usize {
+    precomputed_block_bytes(no, nv).saturating_add(peak_triple_block_bytes(nv))
+}
+
+/// Bytes one per-triple `[nv,nv,nv]` working set holds.
+pub fn t_per_triple_bytes(nv: usize) -> usize {
+    peak_triple_block_bytes(nv)
+}
+
 /// Precomputed chemist-notation integral blocks the per-triple kernel slices.
 ///
 /// All are `O(no·nv³)`-class or smaller — the same size class the CCSD driver
@@ -433,6 +468,15 @@ pub fn ccsd_t_closed_shell(
         floor,
         budget,
     )?;
+    // HARD charge, held to the end of the function -- which is where
+    // ovvv/ovoo/ovov/t1/t2 die. See the spin-orbital sibling in ccsd_t.rs for
+    // why this is hard rather than soft: nothing streams these blocks, so a
+    // soft gate's None branch would have no fallback to take, and a soft gate
+    // whose None branch does not stream is a lie.
+    let _floor_charge = ferric_core::memory::pool::reserve_global(
+        &format!("closed-shell CCSD(T) precomputed blocks (no={no}, nv={nv})"),
+        floor,
+    )?;
 
     let eps = rhf.eps_r();
     let c = rhf.mos_r();
@@ -481,11 +525,51 @@ pub fn ccsd_t_closed_shell(
     let triples = occ_triples_with_repeats(no);
     // Band from what is LEFT after the precomputed blocks, not the full budget
     // (they are already resident here). Mirrors the spin-orbital sibling.
+    //
+    // The byte number is the pool LEDGER when a pool is installed (capacity
+    // minus live reservations, which already includes this function's own
+    // `_floor_charge`), and the resolved ceiling minus the precomputed blocks
+    // otherwise -- the latter branch being byte-for-byte what this code did
+    // before the pool existed. A ledger quantity is deterministic given the
+    // pool capacity; an RSS quantity would not be, and that distinction is the
+    // KS grid batch-width defect. See the spin-orbital sibling for the full
+    // argument, and `mwe_t_band_width_is_not_an_energy_knob.rs` for the pin
+    // that the width does not move `et` either way.
+    // The `Share::Half` appears only on the UNPOOLED branch. On the pooled
+    // branch `available_bytes()` is already net of every live reservation,
+    // including this function's own `_floor_charge`, so halving it would both
+    // narrow the band for no reason AND make the soft gate below unreachable
+    // by construction (a width derived from `available/2` can never fail to
+    // fit in `available`). Mutation M3 -- turning the gate hard -- survived
+    // every test while the halving was there. See the spin-orbital sibling.
     let remaining = budget.saturating_sub(precomputed);
-    let chunk_len = triple_chunk_len(
-        nv,
-        ferric_core::memory::transient_share(remaining, ferric_core::memory::Share::Half),
-    );
+    // The None branch calls [`t_band_width`], not an inline copy -- see the
+    // spin-orbital sibling for why the single implementation matters.
+    let chunk_len = t_band_width_now(no, nv, budget);
+    // SOFT charge: narrowing the band is a real fallback (the None branch
+    // below actually re-sizes and runs), so this must never refuse a job.
+    let (chunk_len, _band_charge) = match ferric_core::memory::pool::try_reserve_global(
+        &format!("closed-shell CCSD(T) triple band (width {chunk_len}, nv={nv})"),
+        chunk_len.saturating_mul(peak_triple),
+    ) {
+        Some(g) => (chunk_len, g),
+        None => {
+            let narrowed = match ferric_core::memory::pool::global() {
+                Some(p) => p.fit_units(peak_triple.max(1)).min(chunk_len).max(1),
+                None => 1,
+            };
+            let g = ferric_core::memory::pool::try_reserve_global(
+                &format!("closed-shell CCSD(T) triple band (narrowed to {narrowed}, nv={nv})"),
+                narrowed.saturating_mul(peak_triple),
+            )
+            .unwrap_or_else(|| {
+                ferric_core::memory::pool::Reservation::inert(
+                    "closed-shell CCSD(T) triple band (width 1)",
+                )
+            });
+            (narrowed, g)
+        }
+    };
     // Same floored-band warning as the spin-orbital sibling: width 1 means the
     // budget could not fund a two-triple band, so the loop is effectively
     // serial — actionable (raise [memory] budget_gb), not a hang.

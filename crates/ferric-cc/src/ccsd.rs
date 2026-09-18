@@ -186,7 +186,37 @@ pub fn ccsd(
         },
         cfg.memory_budget_bytes,
     );
-    plan.check()?;
+    // COMMIT, not merely CHECK, against the process-global pool.
+    //
+    // `check()` asks "does my peak fit in the ceiling?" -- a question every
+    // other subsystem in the process is free to ask of the same full number.
+    // That is the measured non-composition defect: two planes each fit, and
+    // the process holds the sum. `commit()` is `check()` plus a DEBIT plus an
+    // RAII guard, so a second plan built elsewhere sees only what this one
+    // left.
+    //
+    // HARD, deliberately. The peak this charges is dominated by the two
+    // co-resident `(2nv)^4` blocks (`vvvv`, loop-invariant, and `wabef`,
+    // rebuilt each iteration and live alongside it) plus the DIIS ring. None
+    // of those have a streaming fallback in this driver: the ladder term reads
+    // the whole `wabef` in one `einsum!`. A soft gate here would have no None
+    // branch to take, and a soft gate whose None branch does not actually
+    // stream is a lie. The refusal it produces is the same refusal `check()`
+    // already produced, just against a ledger instead of a ceiling.
+    //
+    // `_charge` lives to the end of this function, which is where `vvvv`,
+    // `wabef` and the DIIS history die. Charging across only the gate would be
+    // decoration -- the whole point is that the (T) step called afterwards, or
+    // a concurrent subsystem, sees these bytes as taken while they are held.
+    //
+    // With no pool installed `with_pool` is never reached and `commit()`
+    // degenerates to `check()` plus an inert guard: byte-for-byte the old
+    // behaviour. Pinned by `mwe_cc_pool_is_inert_without_a_pool.rs`.
+    let plan = match ferric_core::memory::pool::global() {
+        Some(pool) => plan.with_pool(&pool),
+        None => plan,
+    };
+    let _charge = plan.commit()?;
 
     // V^{-1/2} metric and AO 3-center integrals.
     let v2c = ferric_integrals::threeindex::coulomb_metric_2c(op, dfbs)?;
