@@ -452,6 +452,7 @@ pub fn solve_rhf_with_df_increments(
                 iterations: inner_iterations + exact_cleanup_iterations,
                 computed_quartets: exact_quartets,
                 induced_dipoles: None,
+                stability: None,
             };
             return Ok(DfIncrementsResult {
                 result,
@@ -485,6 +486,7 @@ pub fn solve_rhf_with_df_increments(
                 iterations: inner_iterations + exact_cleanup_iterations,
                 computed_quartets: exact_quartets,
                 induced_dipoles: None,
+                stability: None,
             };
             return Ok(DfIncrementsResult {
                 result,

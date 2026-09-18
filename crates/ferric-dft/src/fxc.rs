@@ -930,25 +930,61 @@ mod tests {
             "GGA f_xc analytic vs FD: best relative error {best:e} (want < 5e-6). \
              ladder={rel_errs:?}"
         );
-        // Clean convergence into the floor: the sequence must be monotonically
-        // decreasing, and the FIRST halving (still firmly truncation-dominated)
-        // must shrink the residual super-linearly (> 4×, i.e. ≥ O(ε²)). Later
-        // steps naturally flatten as they approach the round-off floor, so we
-        // only require monotonicity there.
-        assert!(
-            rel_errs[1] < rel_errs[0] && rel_errs[0] / rel_errs[1] > 4.0,
-            "GGA f_xc FD residual must fall ≥ quadratically on the first halving: \
-             {:.3e} → {:.3e} (want ratio > 4). ladder={rel_errs:?}",
-            rel_errs[0],
-            rel_errs[1]
-        );
-        for w in rel_errs.windows(2) {
+        // Clean convergence into the floor: while the ladder is still
+        // TRUNCATION-DOMINATED the first halving must shrink the residual
+        // super-linearly (> 4×, i.e. ≥ O(ε²)), and the sequence must be
+        // monotonically decreasing.
+        //
+        // # Why both checks are gated on `rel_errs[0] > FD_FLOOR` (2026-09-16)
+        //
+        // Both were written when this test's reference density came from an
+        // OH/6-31G UHF solve that landed on a SADDLE 4.22 eV above the true
+        // minimum (E = −75.207997 versus PySCF's −75.363168; see
+        // `ferric-scf`'s `oh_reaches_the_pyscf_reference_after_the_fix`). At
+        // that wrong density the ladder started at 6.1e-4 — comfortably
+        // truncation-dominated — and the O(ε²) trend was real and measurable.
+        //
+        // `fix/scf-unconstrained-state-selection` made `solve_uhf` honour the
+        // configured guess, so this test now differentiates the CORRECT OH
+        // density, and the analytic kernel agrees with the finite difference
+        // about a million times better: the ladder is
+        // 1.077e-9 → 3.051e-10 → 2.438e-10 → 4.809e-10, entirely AT the
+        // central-difference round-off floor. At that level the residual is
+        // ulp noise divided by ε, so it neither falls quadratically nor stays
+        // monotone, and demanding that it do so is asking arithmetic noise to
+        // obey a truncation law — a guard whose pass condition is unreachable.
+        //
+        // Note the ACCURACY bar above (`best < 5e-6`) is untouched and is now
+        // met by four orders of magnitude rather than three-fold. The order
+        // checks below still run in full whenever the ladder starts above the
+        // floor, which is what they were written to police; they are skipped —
+        // loudly — only when there is no truncation error left to measure.
+        const FD_FLOOR: f64 = 1e-7;
+        if rel_errs[0] > FD_FLOOR {
             assert!(
-                w[1] <= w[0] * 1.0000001,
-                "GGA f_xc FD residual must be monotonically non-increasing: \
-                 {:.3e} → {:.3e}. ladder={rel_errs:?}",
-                w[0],
-                w[1]
+                rel_errs[1] < rel_errs[0] && rel_errs[0] / rel_errs[1] > 4.0,
+                "GGA f_xc FD residual must fall ≥ quadratically on the first halving: \
+                 {:.3e} → {:.3e} (want ratio > 4). ladder={rel_errs:?}",
+                rel_errs[0],
+                rel_errs[1]
+            );
+            for w in rel_errs.windows(2) {
+                assert!(
+                    w[1] <= w[0] * 1.0000001,
+                    "GGA f_xc FD residual must be monotonically non-increasing: \
+                     {:.3e} → {:.3e}. ladder={rel_errs:?}",
+                    w[0],
+                    w[1]
+                );
+            }
+        } else {
+            eprintln!(
+                "GGA-fxc FD check: the whole ladder is at the round-off floor \
+                 (first residual {:.3e} <= {FD_FLOOR:.0e}), so the O(eps^2) trend and \
+                 monotonicity checks are SKIPPED -- there is no truncation error left \
+                 to measure. The accuracy bar (best = {best:.3e} < 5e-6) still applies \
+                 and is what proves the kernel here. ladder={rel_errs:?}",
+                rel_errs[0]
             );
         }
     }

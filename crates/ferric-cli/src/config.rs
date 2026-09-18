@@ -1400,6 +1400,22 @@ pub struct ScfCfg {
     /// `ferric_scf::ladder::DF_GUESS_DEFAULT_AUX` ("def2-universal-jkfit").
     /// Ignored (with a hard error) when `df_increments = false`.
     pub df_increments_aux: Option<String>,
+    /// Run an internal stability analysis after the SCF converges, and report
+    /// whether the converged solution is a minimum or a SADDLE POINT. Default
+    /// `false` — the check costs a Davidson eigensolve whose every matvec is a
+    /// J/K build, and with it off the SCF path is bit-identical to a build with
+    /// no stability support at all.
+    ///
+    /// DIAGNOSTIC ONLY: an instability prints a warning naming λ_min and the
+    /// remedy, and never makes the run fail — a deliberately-unstable state (a
+    /// cDFT diabat, a MOM excited state) is a legitimate thing to compute.
+    ///
+    /// SCOPE: honoured for RHF/RKS (singlet channel) and UHF/UKS (independent
+    /// α/β rotations). ROHF/ROKS, range-separated functionals and meta-GGAs
+    /// are SKIPPED with a printed reason rather than analysed with the wrong
+    /// operator. See `ferric_scf::stability`.
+    #[serde(default)]
+    pub check_stability: bool,
 }
 
 impl Default for ScfCfg {
@@ -1436,6 +1452,7 @@ impl Default for ScfCfg {
             df_guess_aux: None,
             df_increments: false,
             df_increments_aux: None,
+            check_stability: false,
         }
     }
 }
@@ -2806,6 +2823,45 @@ df_guess_aux = "def2-universal-jkfit"
     }
 
     /// `[scf] df_increments` parses, defaults to `false`, and an explicit
+    /// `[scf] check_stability` must parse, default OFF, and round-trip `true`.
+    ///
+    /// `deny_unknown_fields` means a key that exists in `RhfConfig` but not in
+    /// `ScfCfg` is unreachable from TOML while a key present in neither is a
+    /// hard error, so a new config field needs BOTH halves and a test that the
+    /// halves meet. The default matters as much as the parse: the check costs
+    /// a Davidson eigensolve of J/K builds, so defaulting it ON would silently
+    /// slow every shipped example.
+    #[test]
+    fn scf_check_stability_key_parses_and_defaults_off() {
+        let base = r#"
+[molecule]
+xyz = "water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rhf"
+"#;
+        let cfg: Config = toml::from_str(base).unwrap();
+        assert!(
+            !cfg.scf.check_stability,
+            "check_stability must default to false -- it costs extra J/K builds"
+        );
+
+        let with_key = format!("{base}[scf]\ncheck_stability = true\n");
+        let cfg: Config = toml::from_str(&with_key).unwrap();
+        assert!(
+            cfg.scf.check_stability,
+            "[scf] check_stability = true must round-trip"
+        );
+
+        // And the key must genuinely reach the solver config, not just parse.
+        // (A field that parses into ScfCfg and is never copied into RhfConfig
+        // is exactly as useless as one that does not parse.)
+        let with_key = format!("{base}[scf]\ncheck_stability = false\n");
+        let cfg: Config = toml::from_str(&with_key).unwrap();
+        assert!(!cfg.scf.check_stability);
+    }
+
     /// `true` + `df_increments_aux` round-trips. Mirrors
     /// `scf_df_guess_key_parses_and_defaults_off`.
     #[test]

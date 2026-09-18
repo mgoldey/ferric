@@ -231,6 +231,7 @@ fn make_scf_view(
         iterations: 0,
         computed_quartets: 0,
         induced_dipoles: None,
+        stability: None,
     }
 }
 

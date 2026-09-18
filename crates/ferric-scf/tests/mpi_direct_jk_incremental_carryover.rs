@@ -82,6 +82,25 @@ fn water_cation() -> Molecule {
 /// `df_j_aux`/`df_k_aux` deliberately unset so `solve_rhf`/`solve_uhf` route the
 /// per-iteration Fock build through `DirectJK` (the exact 4-index builder), not
 /// the DF/RI path.
+///
+/// # Guess: deliberately NOT pinned
+///
+/// An earlier revision of this branch pinned `use_sad_guess: false` here,
+/// because the MINAO-started UHF rows converged 8.2e-2 Ha away from the serial
+/// anchor while the RHF rows stayed at ~1e-14. That pin was WRONG — it silenced
+/// a real defect rather than isolating this test's subject.
+///
+/// The actual cause was in `guess::free_atom_density`: it returned the raw
+/// converged open-shell atomic density, whose degenerate frontier shell is
+/// oriented in the LAB FRAME, so the molecular state depended on the input
+/// file's orientation. Fixed by projecting the atomic block onto its
+/// spherically symmetric part; see
+/// `rotational_invariance::uhf_open_shell_rotational_invariance_on_the_default_guess`.
+///
+/// With that fixed, MINAO reaches the anchor to 2.8e-13 and the pin is
+/// unnecessary, so this config exercises the DEFAULT guess — the path real
+/// callers use. Do not re-pin it without first checking whether the atomic
+/// guess has regressed.
 fn direct_config() -> RhfConfig {
     RhfConfig {
         df_j_aux: None,

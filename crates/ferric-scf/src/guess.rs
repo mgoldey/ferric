@@ -188,6 +188,77 @@ pub fn sad_guess(
 ///
 /// Shared by `sad_guess` (same-basis SAD) and `sad_guess_smallbasis` (which
 /// calls this with `def2-svp` for high-l atoms before projecting up).
+/// Project a converged FREE-ATOM density onto its spherically symmetric part.
+///
+/// # What it does
+///
+/// A free atom's exact density is isotropic, so in the AO basis every
+/// same-shell sub-block must be proportional to the identity: the `2l+1`
+/// components of one shell are related by rotation, so they must carry equal
+/// weight, and any off-diagonal between two components of the same shell (or
+/// between the `m` components of two different shells of the same `l`) is a
+/// lab-frame artefact. This routine enforces exactly that:
+///
+/// * for every pair of shells `(A, B)` with the same angular momentum, the
+///   `(2l+1) x (2l+1)` sub-block is replaced by `mean(diagonal) * I`;
+/// * sub-blocks between shells of DIFFERENT angular momentum are ZEROED —
+///   an s-p cross term is odd under inversion and cannot appear in a spherical
+///   atomic density.
+///
+/// # Why not average occupations instead
+///
+/// [`atomic_hcore_density`] spreads the frontier electrons over degenerate
+/// orbitals, which is the right move THERE because it acts on hcore
+/// eigenvalues that are degenerate by construction. It does not transplant to
+/// a CONVERGED UHF solve: the SCF has already broken the degeneracy and
+/// oriented the orbitals, so no degeneracy window finds the partners, and
+/// redistributing occupations merely selects a different arbitrary
+/// orientation. That was measured — drift 8.460e-2 -> 2.851e-1, worse.
+/// Working on the AO block sidesteps eigenvalues altogether.
+///
+/// # Invariants
+///
+/// * **Trace is preserved exactly** per shell-pair block (the mean of the
+///   diagonal times `2l+1` is the original diagonal sum), so `tr(D·S)` and
+///   therefore the electron count are unchanged to rounding.
+/// * **Symmetry is preserved**: the result is symmetric because the input is
+///   and both operations (diagonal mean, zeroing) respect that.
+/// * **Trivial limit**: an all-s-shell atom (H, He, Li...) has only 1x1
+///   blocks, for which `mean(diagonal) * I` IS the original block, so the
+///   transformation is a no-op exactly where there is no anisotropy to remove.
+fn spherically_symmetrize_atomic_block(
+    d: &Array2<f64>,
+    prep: &ferric_integrals::basis_bridge::PreparedBasis,
+) -> Array2<f64> {
+    let dims = prep.shell_dims();
+    let offs = prep.shell_offsets();
+    let nsh = prep.nshells();
+    let mut out = Array2::<f64>::zeros(d.raw_dim());
+
+    for a in 0..nsh {
+        let (oa, da) = (offs[a], dims[a]);
+        for b in 0..nsh {
+            let (ob, db) = (offs[b], dims[b]);
+            if da != db {
+                // Different angular momentum: no spherically symmetric
+                // contribution exists, so this block is pure lab-frame
+                // artefact. Leave it zero.
+                continue;
+            }
+            // Same l: keep only the isotropic part, mean(diag) * I.
+            let mut tr = 0.0;
+            for k in 0..da {
+                tr += d[(oa + k, ob + k)];
+            }
+            let avg = tr / da as f64;
+            for k in 0..da {
+                out[(oa + k, ob + k)] = avg;
+            }
+        }
+    }
+    out
+}
+
 fn free_atom_density(
     z: i32,
     bs: &ferric_core::basis::BasisSet,
@@ -259,7 +330,34 @@ fn free_atom_density(
                 df_k_aux: Some(crate::fock_assembly::DEFAULT_JK_AUX.to_string()),
                 ..Default::default()
             };
-            solve_uhf(&ctx, &amol, &aprep, &abounds, &acfg).map(|r| r.density_total().to_owned())
+            // SPHERICALLY SYMMETRIZE the converged block before returning it.
+            //
+            // Returning `density_total()` raw was a live defect until
+            // 2026-09-17. A free open-shell p-block atom has an exactly
+            // degenerate frontier shell, so which 2p orbital carries the hole
+            // is decided by rounding in the eigensolver and then pinned by
+            // MOM. The block is therefore non-spherical and oriented in the
+            // LAB FRAME, and the molecular guess — hence the state the
+            // molecular SCF converges to — inherits the orientation of the
+            // input file's coordinates.
+            //
+            // MEASURED, H2O+/STO-3G UHF, pure x<->y swap of the SAME molecule:
+            // -74.6581025896 vs -74.5758683062, both CONVERGED. The second is
+            // the 2A1 excited state, 2.24 eV high. CH3 quartet/STO-3G failed
+            // to converge at all in one of four orientations.
+            //
+            // WHY NOT the occupation-averaging that `atomic_hcore_density`
+            // uses: that works on HCORE eigenvalues, which are degenerate by
+            // construction, so there are genuine partners to spread over.
+            // Applied to a CONVERGED UHF solve it does not work and is not a
+            // no-op — the SCF has already broken the degeneracy and oriented
+            // the orbitals, so the EPS_DEGEN window finds no partners and the
+            // redistribution just picks a different arbitrary orientation.
+            // Measured: drift went from 8.460e-2 to 2.851e-1, i.e. WORSE.
+            // Symmetrizing the AO block directly avoids the eigenvalues
+            // entirely.
+            solve_uhf(&ctx, &amol, &aprep, &abounds, &acfg)
+                .map(|r| spherically_symmetrize_atomic_block(r.density_total(), &aprep))
         }
     })
     .map_err(|e| FerricError::General(format!("SAD free-atom SCF failed for {sym} (Z={z}): {e:?}")))

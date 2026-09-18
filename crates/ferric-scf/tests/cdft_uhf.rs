@@ -114,6 +114,16 @@ fn charge_constraint_is_satisfied() {
             target,
         }],
         cdft_lambda_tol: 1e-5,
+        // Pinned so "this path converges" is not also an assertion about
+        // how many outer iterations a particular CPU needs -- CI and this
+        // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+        //
+        // 40, not higher: every path in this repo that converges at all does
+        // so in <= 23 outer iters locally, and the cap is also the price paid
+        // by paths that NEVER converge (each wasted outer iteration runs a
+        // full inner SCF). At 64 this file took 462 s; the non-convergent
+        // R = 2.5/3.0 sigma points burn the whole cap before failing.
+        cdft_max_outer: 40,
         fractional_occ: false,
         ..Default::default()
     };
@@ -145,6 +155,16 @@ fn charge_constraint_is_satisfied_hf_molecule() {
             target,
         }],
         cdft_lambda_tol: 1e-5,
+        // Pinned so "this path converges" is not also an assertion about
+        // how many outer iterations a particular CPU needs -- CI and this
+        // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+        //
+        // 40, not higher: every path in this repo that converges at all does
+        // so in <= 23 outer iters locally, and the cap is also the price paid
+        // by paths that NEVER converge (each wasted outer iteration runs a
+        // full inner SCF). At 64 this file took 462 s; the non-convergent
+        // R = 2.5/3.0 sigma points burn the whole cap before failing.
+        cdft_max_outer: 40,
         fractional_occ: false,
         ..Default::default()
     };
@@ -193,6 +213,16 @@ fn spin_constraint_is_satisfied_lih_plus() {
             target,
         }],
         cdft_lambda_tol: 1e-5,
+        // Pinned so "this path converges" is not also an assertion about
+        // how many outer iterations a particular CPU needs -- CI and this
+        // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+        //
+        // 40, not higher: every path in this repo that converges at all does
+        // so in <= 23 outer iters locally, and the cap is also the price paid
+        // by paths that NEVER converge (each wasted outer iteration runs a
+        // full inner SCF). At 64 this file took 462 s; the non-convergent
+        // R = 2.5/3.0 sigma points burn the whole cap before failing.
+        cdft_max_outer: 40,
         fractional_occ: false,
         ..Default::default()
     };
@@ -241,6 +271,16 @@ fn cdft_composes_with_external_point_charge() {
             target,
         }],
         cdft_lambda_tol: 1e-5,
+        // Pinned so "this path converges" is not also an assertion about
+        // how many outer iterations a particular CPU needs -- CI and this
+        // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+        //
+        // 40, not higher: every path in this repo that converges at all does
+        // so in <= 23 outer iters locally, and the cap is also the price paid
+        // by paths that NEVER converge (each wasted outer iteration runs a
+        // full inner SCF). At 64 this file took 462 s; the non-convergent
+        // R = 2.5/3.0 sigma points burn the whole cap before failing.
+        cdft_max_outer: 40,
         fractional_occ: false,
         external_potential: None,
         ..Default::default()
@@ -270,6 +310,16 @@ fn cdft_composes_with_external_point_charge() {
             target,
         }],
         cdft_lambda_tol: 1e-5,
+        // Pinned so "this path converges" is not also an assertion about
+        // how many outer iterations a particular CPU needs -- CI and this
+        // box differ by more than the old hardcoded 30. See `cdft_max_outer`.
+        //
+        // 40, not higher: every path in this repo that converges at all does
+        // so in <= 23 outer iters locally, and the cap is also the price paid
+        // by paths that NEVER converge (each wasted outer iteration runs a
+        // full inner SCF). At 64 this file took 462 s; the non-convergent
+        // R = 2.5/3.0 sigma points burn the whole cap before failing.
+        cdft_max_outer: 40,
         fractional_occ: false,
         external_potential: Some(ext),
         ..Default::default()

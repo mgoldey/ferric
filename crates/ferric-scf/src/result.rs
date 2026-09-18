@@ -69,6 +69,24 @@ pub struct ScfResult {
     /// existing constructor of `ScfResult` must set this to `None` to stay
     /// bit-identical (see `polarizable_none_is_bit_identical_to_plain_scf`).
     pub induced_dipoles: Option<Array2<f64>>,
+    /// Post-convergence internal stability verdict, when
+    /// `RhfConfig::check_stability` was set AND the reference was analysable.
+    ///
+    /// Follows the crate's solver-honesty convention (`converged`,
+    /// `GwResult::outer_converged`, `LanczosResult::converged`): the verdict
+    /// and the evidence for trusting it travel together on the result.
+    ///
+    /// **`None` means NOT CHECKED — it does NOT mean stable.** Three distinct
+    /// situations all produce `None`: the flag was off (the default); the
+    /// reference was skipped as un-analysable (ROHF/ROKS, range-separated,
+    /// meta-GGA — each printed with its reason); or the eigensolve itself
+    /// errored (also printed). A verdict of "stable" is only ever
+    /// `Some(r)` with `r.converged && r.is_stable && !r.is_marginal()`, and
+    /// even then it means "stable against the rotations
+    /// `r.kind` covers" — see [`crate::stability`].
+    ///
+    /// Purely diagnostic: an instability never makes the SCF return `Err`.
+    pub stability: Option<crate::stability::StabilityResult>,
 }
 
 impl ScfResult {

@@ -482,6 +482,16 @@ pub fn run(args: Vec<String>) {
         mom_after_iter: cfg.scf.mom_after_iter,
         constraints: Vec::new(),
         cdft_lambda_tol: 1e-5,
+        // cDFT is not CLI-wired (constraints above are always empty), so this
+        // is inert here; it is listed only because the literal is exhaustive.
+        cdft_max_outer: 30,
+        // Inert on this path (`constraints` is empty, so `solve_cdft_uhf` is
+        // never reached), but spelled out rather than left to a `..default()`
+        // that this literal does not use — a struct literal that lists every
+        // field is how a new knob gets noticed here instead of silently
+        // acquiring whatever the Default impl says.
+        cdft_stability_descent: true,
+        scf_stability_descent: false,
         fractional_occ: false,
         // 0 = "unset" → the SCF resolver auto-detects (0.8×RAM). An explicit
         // [memory] budget (incl. a deliberate 2 GiB) is passed through and honored.
@@ -502,6 +512,7 @@ pub fn run(args: Vec<String>) {
         // (QmmmSystem(polarizabilities_angstrom3=) + run_qmmm) only.
         polarizable: None,
         verbose: cfg.scf.verbose,
+        check_stability: cfg.scf.check_stability,
         // Same resolved kind that already selected `bounds`'s CSB table
         // above; see the comment there for why it is parsed once.
         screening: screening_kind,

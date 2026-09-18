@@ -139,6 +139,68 @@ fn h2o_cc_pvdz_screened_davidson_equivalence_thresh_zero() {
     );
 }
 
+/// Production-threshold screening must not move the RPA energy.
+///
+/// ## Why this runs on Davidson, not the default Lanczos
+///
+/// This test differences two PDEP-RPA energies. That is only a measurement of
+/// SCREENING if both sides solve their eigenproblem to better than the effect
+/// being measured. The default `Eigensolver::Lanczos` does not: at
+/// `max_iter = 50` it stops with a worst Ritz residual around 2e-7 and warns
+/// that the returned pairs "are the best available, not verified eigenpairs".
+///
+/// Differencing two best-effort answers made this assertion measure solver
+/// noise. The tell is unmissable once you sweep the threshold on Lanczos:
+///
+/// ```text
+/// thresh   retained   |dE|      <- Lanczos, max_iter 50
+/// 1e-8     420/420    1.405e-7  <- NOTHING screened, yet dE != 0
+/// 1e-7     420/420    1.405e-7
+/// 1e-6     391/420    7.585e-7
+/// 1e-5     386/420    6.243e-7  <- error FALLS as screening gets coarser
+/// 1e-4     386/420    6.009e-7
+/// ```
+///
+/// A screen that discards nothing (420/420) is the identity, so its `dE` must
+/// be zero; 1.405e-7 is therefore a pure noise floor, and the old `1e-7` bar
+/// sat BELOW it — the assertion could only ever pass by luck. The
+/// non-monotonicity in the threshold is the same story: real approximation
+/// error grows when you screen harder, it does not shrink.
+///
+/// On Davidson (converged) the same sweep is machine epsilon throughout,
+/// which is what the screening actually deserves to be held to:
+///
+/// ```text
+/// thresh   retained   |dE|      <- Davidson
+/// 1e-8     420/420    1.388e-16
+/// 1e-7     420/420    1.388e-16
+/// 1e-6     391/420    4.163e-16
+/// 1e-5     386/420    8.327e-17
+/// 1e-4     386/420    4.996e-16
+/// ```
+///
+/// So the bar below is 1e-9, not 1e-7. The sibling
+/// `h2o_cc_pvdz_screened_davidson_equivalence_thresh_zero` pins the same
+/// solver at `thresh = 0`; this one pins it where rows are actually dropped.
+///
+/// Discovered 2026-09-17 when `a268fc3c` (spherical MINAO atomic blocks)
+/// perturbed the reference density and moved the Lanczos noise from 2.31e-8
+/// to 7.59e-7, tripping a bar that had never been measuring screening.
+///
+/// # Why 1e-9 and not 1e-12
+///
+/// The first version of this fix asserted `< 1e-12`, calibrated against the
+/// 4.16e-16 measured on one developer box -- which repeated, on the very same
+/// day, the mistake this test exists to document: pinning a tolerance to one
+/// machine's arithmetic. CI's Davidson converges the same case to 6.96e-11,
+/// five orders better than the Lanczos noise it replaced but four orders
+/// looser than that box.
+///
+/// Davidson stops on a residual, and where it stops is machine-dependent even
+/// though the screening is not. 1e-9 clears BOTH measurements (4.16e-16 here,
+/// 6.96e-11 on CI) with well over an order of margin, and still fails the
+/// mutation below by six orders -- so it remains a live measurement of
+/// screening rather than of the eigensolver.
 #[test]
 fn h2o_cc_pvdz_screened_production_thresh() {
     let (mol, obs, dfbs, op, rhf) = setup(
@@ -147,10 +209,15 @@ fn h2o_cc_pvdz_screened_production_thresh() {
         "cc-pvdz-ri",
     );
 
-    let r_dense = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &base_cfg()).unwrap();
+    let converged_cfg = || PdepRpaConfig {
+        eigensolver: Eigensolver::Davidson,
+        ..base_cfg()
+    };
+
+    let r_dense = run_pdep_rpa(&mol, &obs, &dfbs, op, &rhf, &converged_cfg()).unwrap();
 
     let thresh = 1e-6;
-    let mut cfg = base_cfg();
+    let mut cfg = converged_cfg();
     cfg.chi0_sparsity = Chi0Sparsity::BoysScreened {
         thresh,
         dist_cutoff: f64::INFINITY,
@@ -173,8 +240,12 @@ fn h2o_cc_pvdz_screened_production_thresh() {
 
     let diff = (r_scr.e_rpa - r_dense.e_rpa).abs();
     assert!(
-        diff < 1e-7,
-        "screened-vs-dense diff at thresh={:.0e} = {:.2e}; expected <1e-7",
+        diff < 1e-9,
+        "screened-vs-dense diff at thresh={:.0e} = {:.2e}; expected <1e-9 \
+         (measured 4.16e-16 locally and 6.96e-11 on CI, both on a CONVERGED \
+         Davidson eigensolve -- a value in the 1e-7 range means the \
+         eigensolver stopped early, NOT that screening is lossy; see this \
+         test's doc comment)",
         thresh,
         diff
     );

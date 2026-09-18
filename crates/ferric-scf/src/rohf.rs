@@ -709,6 +709,21 @@ pub fn solve_rohf_best_effort(
             let (eps, c_f) = diagonalize(&f_eff, &s_inv_sqrt)?;
             let (d_a_f, d_b_f) = build_rohf_densities(&c_f, nocc_double, nocc_open);
             let density_total = &d_a_f + &d_b_f;
+            // Stability analysis is NOT available for a ROHF/ROKS reference:
+            // the Roothaan orbital Hessian is a third operator (one MO set with
+            // closed/open/virtual blocks and Roothaan coupling), not a special
+            // case of either implemented one, so running `uhf_internal_stability`
+            // or `rhf_internal_stability` here would analyse a Hessian these MOs
+            // are not a stationary point of. Skipped with a printed reason
+            // rather than silently returning a wrong-operator verdict; the
+            // result field stays `None`, which is documented as "not checked".
+            if config.check_stability {
+                eprintln!(
+                    "SCF stability: check requested but SKIPPED — {}. \
+                     ScfResult::stability is None (not checked), which does NOT mean stable.",
+                    crate::stability::StabilitySkip::Rohf.reason()
+                );
+            }
             return Ok(ScfResult {
                 spin: Spin::RestrictedOpen,
                 energy,
@@ -726,6 +741,7 @@ pub fn solve_rohf_best_effort(
                 iterations: iter,
                 computed_quartets: total_quartets,
                 induced_dipoles: last_induced_dipoles,
+                stability: None,
             });
         }
         mon.note_energy(energy);
@@ -919,6 +935,7 @@ pub fn solve_rohf_best_effort(
         iterations: config.max_iter,
         computed_quartets: total_quartets,
         induced_dipoles: last_induced_dipoles,
+        stability: None,
     })
 }
 

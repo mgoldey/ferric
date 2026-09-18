@@ -109,6 +109,102 @@ pub struct RhfConfig {
     /// cDFT outer-loop convergence: stop when max_C |N_C − target_C| is below
     /// this (electrons). Default 1e-5.
     pub cdft_lambda_tol: f64,
+    /// cDFT outer-loop iteration cap: the λ-Newton loop errors with
+    /// `Convergence` after this many outer iterations. Default 30.
+    ///
+    /// # Why this is a knob and not a constant
+    ///
+    /// It was `let max_outer = 30usize;` inside `solve_cdft_uhf` until
+    /// 2026-09-17, when the SAME test converged in a DIFFERENT number of
+    /// outer iterations on two machines:
+    ///
+    /// ```text
+    ///                          CI      this box
+    ///   driver default (None)  18      16
+    ///   hcore                   9      23
+    ///   SAD                    >30     14    <- CI exhausted the cap
+    /// ```
+    ///
+    /// The converged energies agree to ~1e-6 Ha, so this is not a physics
+    /// difference: it is BLAS kernel dispatch (CI's runner vs this Zen4 box)
+    /// perturbing the λ-Newton trajectory. Iteration counts are bit-stable
+    /// within a machine (3/3 identical local runs) and NOT portable across
+    /// machines, so a hardcoded cap turns a machine difference into a red
+    /// build on a test that is otherwise measuring the right thing.
+    ///
+    /// Tests that assert "this path converges" should PIN this explicitly
+    /// rather than inherit the default, so the assertion is about convergence
+    /// and not about how many iterations one particular CPU happened to need.
+    pub cdft_max_outer: usize,
+    /// cDFT **state selection**: after the λ-Newton loop converges, check the
+    /// λ-augmented orbital Hessian and, if the constrained solution is a
+    /// SADDLE, follow the downhill eigenvector and re-converge the whole λ
+    /// loop from there — keeping the lower-energy solution. Default `true`.
+    ///
+    /// # Why this defaults ON, unlike `check_stability`
+    ///
+    /// Without it the constrained solve returns WHICHEVER solution the hcore
+    /// guess happens to fall into, and on HeNe⁺/def2-SVP at the integer Becke
+    /// target that is a saddle 0.667 eV ABOVE another solution satisfying the
+    /// SAME constraint to 8e-8 electrons (measured across six independent
+    /// guesses in `tests/cdft_state_selection.rs`). That is not a diagnostic —
+    /// it is a wrong answer, and a diabat energy is the whole output of a cDFT
+    /// run. `check_stability` can default off because it only reports; this
+    /// changes which state is returned, so leaving it off would mean shipping
+    /// the known-wrong one by default.
+    ///
+    /// Setting it `false` restores the previous behavior EXACTLY (the descent
+    /// block is skipped entirely, not merely made a no-op) — pinned by
+    /// `descent_off_reproduces_the_old_saddle` in `tests/cdft_state_selection.rs`.
+    ///
+    /// Cost: one λ-augmented Davidson per converged constrained solve, plus one
+    /// extra full λ-Newton solve per descent actually taken. On a STABLE or
+    /// MARGINAL solution the descent is not taken and only the eigensolve is
+    /// paid.
+    pub cdft_stability_descent: bool,
+    /// UNCONSTRAINED open-shell **state selection**: after a UHF solve
+    /// converges, check the orbital Hessian and, if the solution is a SADDLE,
+    /// follow the downhill eigenvector and re-converge from there — keeping the
+    /// lower-energy solution. Default **`false`**.
+    ///
+    /// # Why this defaults OFF, unlike `cdft_stability_descent`
+    ///
+    /// The two knobs look alike and the defaults differ deliberately.
+    ///
+    /// `cdft_stability_descent` defaults ON because a cDFT diabat energy is the
+    /// entire output of that run, the pre-fix answer was known-wrong on the
+    /// lane's own system, and cDFT is a narrow, opt-in code path — nothing else
+    /// in the repo pays for it.
+    ///
+    /// This knob is different on both counts. `solve_uhf` is on the hot path of
+    /// every open-shell energy, gradient, geometry step, MP2/CC/RPA reference
+    /// and free-atom SAD solve in the workspace, and a geometry optimization or
+    /// a frequency job runs it hundreds of times. The descent costs a Davidson
+    /// eigensolve on EVERY converged solve — paid even when the answer is
+    /// already right, which after the guess fix it is on 5 of the 6 measured
+    /// systems — plus a full re-converge whenever a saddle is found.
+    ///
+    /// The measured case for defaulting it OFF: the GUESS fix in the same
+    /// commit (`uhf_guess_mos`) already moves 3-of-6-wrong to 1-of-6-wrong, and
+    /// the two systems it repairs (HeNe⁺ at def2-SVP and 6-31G) land on the
+    /// external reference to ~1e-10 Ha and report STABLE. The one residue,
+    /// N₂⁺/6-31G, is a system PySCF 2.13.0 ALSO gets wrong from its own default
+    /// guess and only fixes by running its own `stability()` — i.e. it is a
+    /// known-hard case where the reference implementation likewise requires an
+    /// explicit, opt-in step. Making every SCF in the repo pay a Davidson to
+    /// auto-repair that class is a worse trade than telling the caller the knob
+    /// exists.
+    ///
+    /// **What makes OFF safe is that the default is no longer silent.** With
+    /// `check_stability` set, an unstable solution already prints an explicit
+    /// UNSTABLE warning naming the remedy, and `ScfResult::stability` carries
+    /// the verdict for a caller to branch on. A user who wants the repair
+    /// applied automatically sets this to `true`; a user who does not is not
+    /// left believing a saddle is a minimum.
+    ///
+    /// Setting it `true` costs one Davidson per converged solve plus one extra
+    /// full SCF per descent actually taken.
+    pub scf_stability_descent: bool,
     /// Fractional (ensemble) occupation of a degenerate frontier shell. When
     /// `true` (UHF/UKS only), if the per-spin HOMO sits inside a group of
     /// near-degenerate orbitals that straddle the occupation boundary, the
@@ -193,6 +289,29 @@ pub struct RhfConfig {
     /// field. Under MPI, only rank 0 prints (see `ctx.is_root()` at the print
     /// site) so ranks > 0 never duplicate the trace.
     pub verbose: bool,
+    /// Opt-in post-convergence **internal stability analysis**: after the SCF
+    /// converges, take the lowest eigenvalue of the electronic orbital Hessian
+    /// and report whether the solution is a minimum or a SADDLE POINT (see
+    /// [`crate::stability`]). Default `false` — it costs a Davidson eigensolve
+    /// whose every matvec is a J/K build, and with it off nothing is
+    /// constructed at all, so the SCF path is bit-identical to a build with no
+    /// stability support (regression-guarded by
+    /// `stability_off_is_bit_identical_*` in `tests/scf_stability_wiring.rs`).
+    ///
+    /// The verdict lands on [`crate::result::ScfResult::stability`] as
+    /// `Some(..)`; `None` there means "not checked", never "checked and
+    /// stable". An instability is DIAGNOSTIC: it warns on stderr and never
+    /// makes the SCF return `Err`, because a deliberately-unstable state (a
+    /// cDFT diabat, a MOM excited state) is a legitimate thing to compute.
+    ///
+    /// Honoured by `solve_rhf`/`solve_rks` (RHF-internal, singlet channel) and
+    /// `solve_uhf`/`solve_uks` (UHF-internal, independent α/β rotations).
+    /// `solve_rohf`/`solve_roks` SKIP it with a printed reason — the Roothaan
+    /// Hessian is a third operator, and analysing a UHF or RHF one there would
+    /// be a wrong-operator verdict. Range-separated and meta-GGA functionals
+    /// are likewise skipped with a reason (see
+    /// [`crate::stability::ks_reference_is_analysable`]).
+    pub check_stability: bool,
     /// Which screening bound to build for the LinK-specific pair list when
     /// `k_builder == Some("link")`. Default
     /// [`crate::screening::ScreeningKind::Schwarz`] — byte-identical to every
@@ -279,6 +398,9 @@ impl Default for RhfConfig {
             mom_after_iter: 0,
             constraints: Vec::new(),
             cdft_lambda_tol: 1e-5,
+            cdft_max_outer: 30,
+            cdft_stability_descent: true,
+            scf_stability_descent: false,
             fractional_occ: false,
             // 0 = "unset" → resolve_three_index_budget auto-detects (0.8×RAM).
             three_index_budget_bytes: 0,
@@ -291,6 +413,7 @@ impl Default for RhfConfig {
             pcm: None,
             polarizable: None,
             verbose: false,
+            check_stability: false,
             screening: crate::screening::ScreeningKind::default(),
         }
     }
@@ -341,6 +464,113 @@ impl RhfConfig {
     pub fn with_verbose(mut self, verbose: bool) -> Self {
         self.verbose = verbose;
         self
+    }
+    /// Enable the opt-in post-convergence internal stability analysis.
+    pub fn with_check_stability(mut self, check: bool) -> Self {
+        self.check_stability = check;
+        self
+    }
+}
+
+/// Post-convergence internal stability analysis for an RHF/RKS solution.
+///
+/// Called ONLY from `solve_rhf`'s converged exit and ONLY when
+/// `config.check_stability` is set. Returns `None` — meaning "not checked", per
+/// [`crate::result::ScfResult::stability`] — whenever the reference is not
+/// analysable with the operator that exists, ALWAYS after printing why.
+///
+/// # The KS trap this function exists to avoid
+///
+/// [`crate::rhf_newton::hessian_matvec`] takes an OPTIONAL `fxc` response
+/// closure. Passing `None` on a KS reference does not fail; it silently
+/// analyses the **HF** orbital Hessian at the **KS** density, producing a
+/// λ_min for an operator nobody asked about, presented with the same
+/// confidence as a correct one. So for `xc.is_some()` this function builds the
+/// SAME [`crate::rohf::FxcKernelStore`] the RKS Newton path builds at the same
+/// restricted reference (`d_α = d_β = ½·D`), and where that kernel cannot be
+/// built — range-separated (the matvec's K is plain-Coulomb) or meta-GGA (no τ
+/// f_xc kernel exists in this workspace) — it SKIPS with a printed reason
+/// rather than checking the wrong operator. Those are exactly the gates
+/// `solve_rhf`'s own Newton branch uses. Proven, not asserted, by
+/// `ks_reference_is_analysed_with_the_xc_kernel_not_the_hf_hessian`.
+#[allow(clippy::too_many_arguments)]
+fn stability_rhf(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &RhfConfig,
+    c: &Array2<f64>,
+    f: &Array2<f64>,
+    d: &Array2<f64>,
+    nocc: usize,
+    has_xc: bool,
+    k_mix: ferric_dft::xc_trait::KMix,
+    ooc_budget: usize,
+) -> Option<crate::stability::StabilityResult> {
+    if let Err(skip) =
+        crate::stability::ks_reference_is_analysable(config.xc.as_deref(), k_mix.omega)
+    {
+        eprintln!(
+            "SCF stability: check requested but SKIPPED — {}. \
+             ScfResult::stability is None (not checked), which does NOT mean stable.",
+            skip.reason()
+        );
+        return None;
+    }
+
+    // The f_xc response kernel, at the same restricted reference the RKS Newton
+    // path uses (d_α = d_β = ½·D). `None` only for pure HF.
+    let fxc_store = if has_xc {
+        let grid = config.dft_grid.clone().unwrap_or_default();
+        let name = config.xc.as_deref().expect("has_xc implies Some(xc)");
+        let d_half = 0.5 * d;
+        match crate::rohf::FxcKernelStore::build(mol, prep, &grid, name, &d_half, &d_half) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                eprintln!(
+                    "SCF stability: check requested but SKIPPED — the f_xc response kernel could \
+                     not be built ({e}), and analysing the HF Hessian at a KS density instead \
+                     would be a wrong-operator verdict. ScfResult::stability is None."
+                );
+                return None;
+            }
+        }
+    } else {
+        None
+    };
+    let fxc_storage = fxc_store.as_ref().map(|s| s.response());
+    let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
+
+    let f_mo = c.t().dot(f).dot(c);
+    let inputs = crate::rhf_newton::RhfNewtonInputs {
+        prep,
+        bounds,
+        c,
+        f_mo: &f_mo,
+        nocc,
+        k_mix_sr: if has_xc { k_mix.sr } else { 1.0 },
+        fxc: fxc_ref,
+        thresh: config.integral_thresh,
+        ooc_budget,
+    };
+    match crate::stability::rhf_internal_stability(
+        ctx,
+        &inputs,
+        &crate::stability::StabilityConfig::default(),
+    ) {
+        Ok(res) => {
+            crate::stability::report_stability(&res, config.verbose);
+            Some(res)
+        }
+        Err(e) => {
+            eprintln!(
+                "SCF stability: check requested but FAILED — {}: {e}. ScfResult::stability is \
+                 None (not checked). The SCF result itself is unaffected.",
+                crate::stability::StabilitySkip::AnalysisFailed.reason()
+            );
+            None
+        }
     }
 }
 
@@ -815,6 +1045,10 @@ pub fn solve_rhf(
             exit,
             computed_quartets: cq,
             induced_dipoles,
+            // Non-converged exits (MaxIter/Stalled/Diverged) are never checked:
+            // stability is a property of a STATIONARY point, and these are not
+            // stationary. `None` = not checked, as documented on the field.
+            stability: None,
         }
     };
 
@@ -1195,6 +1429,30 @@ pub fn solve_rhf(
                 let (orb_e, c) = diagonalize(&f, &x)?;
                 let density_alpha = 0.5 * &d;
                 crate::driver::warn_if_rss_over_at_stage("RHF", "converged", ooc_budget);
+
+                // ── Opt-in internal stability analysis (RHF/RKS singlet) ─────
+                // Runs ONLY at a converged exit and ONLY when the flag is set;
+                // with `check_stability = false` (the default) nothing below is
+                // constructed, so this branch is bit-identical to a build with
+                // no stability support. Diagnostic: it warns, it never Errs.
+                let stability = if config.check_stability {
+                    stability_rhf(
+                        ctx,
+                        mol,
+                        prep,
+                        bounds,
+                        config,
+                        &c,
+                        &f,
+                        &d,
+                        nocc,
+                        xc_contrib.is_some(),
+                        k_mix,
+                        ooc_budget,
+                    )
+                } else {
+                    None
+                };
                 return Ok(ScfResult {
                     spin: Spin::Restricted,
                     energy,
@@ -1212,6 +1470,7 @@ pub fn solve_rhf(
                     iterations: iter,
                     computed_quartets: total_quartets,
                     induced_dipoles: last_induced_dipoles,
+                    stability,
                 });
             }
         }

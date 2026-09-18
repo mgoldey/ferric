@@ -50,6 +50,20 @@ fn build_case(xyz: &str, basis_name: &str) -> Case {
         &bounds,
         &RhfConfig {
             energy_conv: 1e-10,
+            // density_conv tightened 2026-09-17. It was left at the default
+            // while energy_conv was 1e-10, so the SCF exited on the ENERGY
+            // criterion with the DENSITY converged only loosely. E_HF is
+            // variational -- second order in the density error, hence stable
+            // at 1e-10 -- but E_c^attMP2 depends on the MO coefficients
+            // LINEARLY, so it inherits the full first-order density error.
+            // Any change to the initial guess then moves E_c at ~1e-9 while
+            // E_HF and E_nl hold to all 10 printed digits, which is exactly
+            // what a268fc3c's atomic-guess fix produced here.
+            //
+            // That is a loose test, not a physics change: the pinned E_c digits
+            // were only ever reproducible because nothing upstream of them had
+            // moved. Converging the density makes the pin mean what it claims.
+            density_conv: 1e-9,
             ..Default::default()
         },
     )
@@ -1038,8 +1052,25 @@ fn decoupled_omega_lockstep_guards() {
 /// for the erfc control on water/cc-pVDZ (commit be4404c). Refactoring the
 /// entry point to share `assemble` with the open-shell path must not move the
 /// closed-shell number by a single bit.
+///
+/// `E_C` RE-RECORDED 2026-09-17, from -0.1806640950 to -0.1806640933.
+///
+/// The original digits were taken from an UNDER-CONVERGED density. `build_case`
+/// set `energy_conv: 1e-10` but left `density_conv` at the default, so the SCF
+/// exited on the ENERGY criterion with the density still loose. E_HF is
+/// variational -- second order in the density error -- so it was stable; E_c
+/// depends on the MO coefficients LINEARLY and carried the full first-order
+/// error. The pinned E_c digits were therefore reproducible only for as long as
+/// nothing upstream of the density moved.
+///
+/// a268fc3c (spherically symmetrizing the MINAO atomic block) moved it, which
+/// is how this surfaced. The fix was to converge the density, not to accept the
+/// drift: with `density_conv: 1e-9` the value is -0.1806640933242712, and
+/// tightening ten thousand-fold further to 1e-11 gives -0.1806640933242712 --
+/// IDENTICAL, so this is the converged number and the old constant was not.
+/// E_HF and E_NL were unaffected throughout and are unchanged here.
 const PHASE_A_WATER_CCPVDZ_ERFC_E_HF: f64 = -76.0267833623;
-const PHASE_A_WATER_CCPVDZ_ERFC_E_C: f64 = -0.1806640950;
+const PHASE_A_WATER_CCPVDZ_ERFC_E_C: f64 = -0.1806640933;
 const PHASE_A_WATER_CCPVDZ_ERFC_E_NL: f64 = 0.0186722266;
 
 #[test]
