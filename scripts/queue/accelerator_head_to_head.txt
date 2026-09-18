@@ -1,0 +1,26 @@
+   Compiling ferric-integrals v0.1.0 (/tmp/claude-1000/accel/crates/ferric-integrals)
+   Compiling ferric-dft v0.1.0 (/tmp/claude-1000/accel/crates/ferric-dft)
+   Compiling ferric-pcm v0.1.0 (/tmp/claude-1000/accel/crates/ferric-pcm)
+   Compiling ferric-scf v0.1.0 (/tmp/claude-1000/accel/crates/ferric-scf)
+    Finished `release` profile [optimized] target(s) in 34.36s
+     Running tests/accelerator_head_to_head.rs (target/release/deps/accelerator_head_to_head-e42308fb8d08d6f2)
+
+running 1 test
+test diis_vs_aurora_vs_trah ... 
+system                    it_D    JK_D     t_D      it_A    JK_A     t_A      it_T    JK_T     t_T   same E?
+----------------------------------------------------------------------------------------------------------------------
+water/cc-pVDZ   RHF         12      12    0.63        10      10    0.26         8       8    1.29       yes
+                      conv true/true/true   dE(A)=0.00e0  dE(T)=1.56e-13
+water/cc-pVDZ   PBE         87      87    3.30        87      87    1.86         7       7    7.96       yes
+                      conv true/true/true   dE(A)=0.00e0  dE(T)=1.88e-10
+benzene/STO-3G  RHF         10      10    0.24         8       8    0.18         6       6    4.16       yes
+                      conv true/true/true   dE(A)=2.46e-11  dE(T)=2.90e-12
+benzene/cc-pVDZ RHF         12      12   11.08        10      10   10.76         7       7  497.09       yes
+                      conv true/true/true   dE(A)=1.57e-11  dE(T)=3.46e-11
+
+ITERATIONS and J/K are load-immune and are the comparison; wall time is only meaningful on a quiet box.
+
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 539.02s
+

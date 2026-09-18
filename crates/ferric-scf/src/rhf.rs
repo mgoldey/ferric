@@ -1695,7 +1695,9 @@ pub fn solve_rhf(
                         st.clear_pending();
                     }
                     trah_undo = None;
-                    trah_took_step = false;
+                    // `trah_took_step` is already false here -- it is only set true in
+                    // the else-branch below -- so leaving it is what makes the loop
+                    // fall through to DIIS.
                     // Record that the density did NOT move.
                     //
                     // `record_density_change` is a SETTER, not an accumulator:
@@ -1713,6 +1715,7 @@ pub fn solve_rhf(
                     //
                     // Writing the true (zero) change here lets the ordinary
                     // convergence test see the state the solver is actually in.
+                    mon.record_density_change(&d, &d);
                 } else {
                     if scf_trace() {
                         eprintln!(
