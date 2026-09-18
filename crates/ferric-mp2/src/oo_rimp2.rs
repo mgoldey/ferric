@@ -838,10 +838,45 @@ fn compute_orbital_gradient(
         nmo,
         budget_bytes,
     )?;
+    // DEBIT the shared pool for the same dense intermediates the guard above
+    // projects, held for this function's body -- which is exactly how long
+    // they are resident (they are locals of `compute_orbital_gradient_panelled`
+    // and die with it).
+    //
+    // This is the plane whose charge MATTERS most for composition: the caller
+    // is still holding `b_full` (naux*nmo^2, ~16 GB at the audit shape) and
+    // the t2 pair when this runs, and its own guard compared THOSE against the
+    // whole ceiling. Now the two sum in one ledger.
+    //
+    // HARD: the buffers below are allocated unconditionally by
+    // `compute_orbital_gradient_panelled` and the pre-flight immediately above
+    // already errors on the same bytes. The one plane on this path that IS
+    // blocked -- the VVOV c-panel -- is sized separately from `budget_bytes`
+    // just below and is not part of this charge.
+    let nov = nocc * nvir;
+    let aux_elems = naux.saturating_mul(
+        nov.saturating_add(nvir.saturating_mul(nvir))
+            .saturating_add(nocc.saturating_mul(nocc))
+            .saturating_add(nmo),
+    );
+    let mo_elems = nocc
+        .saturating_mul(nocc)
+        .saturating_mul(nov)
+        .saturating_add(nov.saturating_mul(nov).saturating_mul(2));
+    let _grad_charge = crate::rimp2::charge_mo_side(
+        "OO-RI-MP2 gradient intermediates (b_ov/b_vv/b_oo/b_diag + ooov + ovov + s_mat)",
+        aux_elems.saturating_add(mo_elems).saturating_mul(8),
+    )?;
     // VVOV panel width from the resident-bytes budget: one c-value costs
     // nvir·nocc·nvir·8 bytes of VVOV rows. Unset budget = one full-width panel
     // (bit-identical to the former unblocked path).
-    let nov = nocc * nvir;
+    //
+    // `budget_bytes`, NOT the pool's `available_bytes()`. The panel loop is
+    // exact for any width (panels change memory shape, never the contraction),
+    // so this one is numerically safe either way -- but sizing it from the
+    // ledger would still make the shape of a run depend on allocation order,
+    // and the crate's rule (see `rimp2::mo_stream_chunk_for`) is that a width
+    // may depend on the budget and the problem, never on the ledger.
     let row_bytes = nvir.saturating_mul(nov).saturating_mul(8).max(1);
     let panel_c = (budget_bytes / row_bytes).max(1).min(nvir.max(1));
     Ok(compute_orbital_gradient_panelled(
@@ -1251,6 +1286,40 @@ pub fn oo_ri_mp2(
             naux,
             nmo,
             budget_bytes,
+        )?;
+
+        // DEBIT the shared pool for b_full + the t2 pair, before b_full
+        // allocates.
+        //
+        // The two `check_*_alloc` guards on this path cover DISJOINT subsets
+        // and their sum is never charged: this one takes `b_full + t2 +
+        // eri_ov`, and `check_gradient_intermediates_alloc` (inside
+        // `compute_orbital_gradient`, called below) takes `b_ov + b_vv + b_oo
+        // + b_diag + ooov + ovov + s_mat`. The second runs while every buffer
+        // the first covers is STILL RESIDENT -- `b_full` and `t2` are passed
+        // into it by reference -- and compares its own subset against the full
+        // ceiling as if they were not. That is exactly the composition defect
+        // the pool exists to close: whichever asks second now sees only what
+        // the first left.
+        //
+        // The guard is scoped to ONE macro-iteration of the enclosing `loop`,
+        // which is correct and is the property a plain ceiling check cannot
+        // have: `b_full` is rebuilt every iteration, so a charge that did not
+        // release would exhaust the pool on iteration two of an 80-iteration
+        // optimization.
+        //
+        // HARD: `compute_b_full_mo_with` builds a dense (naux, nmo^2) tensor
+        // with no blocked alternative on this path, and the pre-flight
+        // immediately above already refuses the same bytes against the
+        // ceiling. This changes WHAT it is measured against, not whether it
+        // can refuse.
+        let nov_iter = nocc.saturating_mul(nvir);
+        let _b_full_charge = crate::rimp2::charge_mo_side(
+            "OO-RI-MP2 b_full + t2 + eri_ov",
+            naux.saturating_mul(nmo)
+                .saturating_mul(nmo)
+                .saturating_add(nov_iter.saturating_mul(nov_iter).saturating_mul(2))
+                .saturating_mul(8),
         )?;
 
         // Compute full-MO B tensor for gradient evaluation

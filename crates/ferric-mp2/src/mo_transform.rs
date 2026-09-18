@@ -1,4 +1,34 @@
 //! AO-to-MO integral transformation for 3-center integrals.
+//!
+//! # DELIBERATELY NOT POOL-CHARGED (2026-09-17 memory-pool migration)
+//!
+//! Every function here is infallible (`-> Array3<f64>`, no `Result`) and
+//! allocates a full `(naux, nleft, nright)` output while the caller's
+//! `(naux, nao, nao)` AO tensor is a live `&` borrow -- i.e. two large tensors
+//! co-resident, unbudgeted. `dress_3index` is worse: `v_inv_sqrt.dot(&flat)`
+//! materialises a SECOND full copy alongside the input, so its peak is
+//! `2 x naux*d1*d2*8`.
+//!
+//! Those are real, uncharged planes, and they were left uncharged on purpose:
+//!
+//! 1. **Charging them means changing the signatures to `Result`**, because a
+//!    hard charge has to be able to refuse. That ripples to `ferric-cc`
+//!    (`ccsd_t.rs`, `ccsd_t_closed_shell.rs` call all three transforms), which
+//!    is outside this migration's crate scope.
+//! 2. **The callers that matter are already charged at a better place.** The
+//!    RI-MP2 energy lane does not come through here at all -- it uses
+//!    `rimp2::stream_dressed_mo_band_budgeted`, which streams aux-blocks and
+//!    never materialises the dense AO tensor, and whose output IS charged.
+//!    `mp3.rs` and `canonical.rs` do call these, and both now take a pool
+//!    charge at their own call sites covering the transform's output.
+//! 3. **A charge here would double-count those.** `mp3::mp3_energy` charges
+//!    `b_ov + b_oo + b_vv` as part of its peak; adding a second reservation
+//!    inside `transform_3center` for the same bytes would refuse jobs that fit.
+//!
+//! What remains genuinely uncharged is `dress_3index`'s transient second copy
+//! and any EXTERNAL caller (ferric-cc). Closing that properly means making
+//! this module fallible in one cross-crate change, which is reported rather
+//! than made here.
 
 use ndarray::{Array2, Array3, Axis};
 use rayon::prelude::*;
