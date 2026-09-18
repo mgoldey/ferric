@@ -516,6 +516,33 @@ pub fn estimate_peak_bytes(shape: PeakEstimateShape) -> usize {
     //     worker — saturating at n_workers, since rayon runs at most
     //     that many closures at once                               (11.76 GB)
     //
+    // WHY `clones` STAYS IN THE **HARD** HALF (checked 2026-09-18).
+    //
+    // The ferric-gw migration binary-searched the smallest completing pool
+    // capacity and found it worker-DEPENDENT, with the whole spread traceable
+    // to this term and none of it to ferric-gw:
+    //
+    //     workers   min completing   delta vs w=1   min(n_quad,w) x 6_720
+    //     1             899_808              0            6_720 x 1
+    //     2             906_528          6_720           13_440 (+1 unit)
+    //     4             919_968         20_160           26_880 (+3 units)
+    //     12            946_848         47_040           53_760 (+7 units)
+    //     24            946_848         47_040          saturated at w=8
+    //
+    // It saturates at w = 8 = n_quad, which is this expression's `min` and
+    // nothing else's. The natural reaction is "per-worker scratch belongs in
+    // the SOFT half" -- and that would be WRONG here. A soft charge is only
+    // honest if its `None` branch really streams. The in-place
+    // `dielectric_matrix_from_projection_into` exists, but every call site is
+    // inside `#[cfg(test)]`; the production `eval_inv_dielectric_matrices`
+    // path still clones. Softening this would declare a fallback that does
+    // not exist, and the run would allocate the bytes anyway after the gate
+    // waved it through -- the exact overcommit the pool was built to stop.
+    //
+    // So: HARD until the in-place variant is actually wired into the
+    // production path. Wiring it is the real fix and would shrink the term
+    // rather than reclassify it.
+    //
     // The clone term is the larger of the two and is charged rather than
     // designed away here on purpose: a scratch-reusing
     // `dielectric_matrix_from_projection_into` already exists beside the
