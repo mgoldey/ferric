@@ -1894,12 +1894,41 @@ pub fn eval_basis_grad_hess_on_points(
     bs: &ferric_core::basis::BasisSet,
     points: &[[f64; 3]],
 ) -> Result<(Array2<f64>, Array3<f64>, ndarray::Array4<f64>), GtoEvalError> {
-    use rayon::prelude::*;
-
     let shells = collect_shells(mol, bs)?;
     let nbf: usize = shells.iter().map(|s| num_functions(s.l, s.pure)).sum();
+    check_ao_grid_budget(AoGridKind::ValueGradHess, nbf, points.len())?;
+    eval_basis_grad_hess_on_points_unchecked(&shells, nbf, points)
+}
+
+/// Same evaluation as [`eval_basis_grad_hess_on_points`], but WITHOUT its own
+/// `check_ao_grid_budget` re-resolution — the caller has already sized this
+/// exact call against a budget it resolved itself.
+///
+/// The `ValueGradHess` twin of [`eval_basis_and_grad_on_points_unchecked`],
+/// and it exists for the same reason: `ferric_dft::gradient`'s batched XC
+/// gradient resolves the budget ONCE (from the pool ledger) and sizes
+/// `batch_pts` so that a batch of exactly that many points is guaranteed to
+/// fit. Re-resolving inside the per-batch loop would read a budget that has
+/// drifted since the sizing ran, which protects nothing and can spuriously
+/// reject a batch the caller already accounted for correctly.
+///
+/// The 13 `(nbf, npts)` planes this allocates are the gradient's dominant
+/// cost (9 of them are `ddchi` alone), so the whole point of the batched
+/// caller is that `npts` here is `batch_pts`, not the full grid.
+///
+/// Still returns `Result`: a genuine per-shell `UnsupportedL` still
+/// propagates — only the *budget* re-check is skipped.
+// Returns (values, gradients, hessians) as rank-2/3/4 arrays; the tuple is
+// self-documenting and used twice, so a type alias would only add indirection.
+#[allow(clippy::type_complexity)]
+pub fn eval_basis_grad_hess_on_points_unchecked(
+    shells: &[LocatedShell<'_>],
+    nbf: usize,
+    points: &[[f64; 3]],
+) -> Result<(Array2<f64>, Array3<f64>, ndarray::Array4<f64>), GtoEvalError> {
+    use rayon::prelude::*;
+
     let npts = points.len();
-    check_ao_grid_budget(AoGridKind::ValueGradHess, nbf, npts)?;
 
     // Output arrays, allocated once; each grid point scatters into its own
     // column `g` of every plane, so writes of distinct points are disjoint —
@@ -1923,7 +1952,7 @@ pub fn eval_basis_grad_hess_on_points(
         let mut hessbuf: [[f64; 15]; 9] = [[0.0; 15]; 9];
 
         let mut row_offset = 0usize;
-        for sh in &shells {
+        for sh in shells {
             buf.fill(0.0);
             for row in gradbuf.iter_mut() {
                 row.fill(0.0);
