@@ -208,8 +208,17 @@ from this would be reporting noise.
   rankings**, and size n from this table rather than from intuition.
 * **Tier 4 unvalidated** -- M10 recorded it does not fit the funnel as
   configured. Dispersion (#99) not yet merged.
-* **No ranking validated end to end**, and there is no held-out set with known
-  relative affinities in this campaign to validate one against.
+* **No ranking validated end to end.** VERIFIED 2026-09-19 that the repo
+  contains no experimental affinity data at all (grepped `experiments/` and
+  `testdata/` for IC50/Ki/Kd/pChEMBL: zero hits), so this is blocked on DATA
+  ACQUISITION, not on analysis. No further measurement inside this campaign can
+  move it, which is why the question "how do we make this pipeline" is answered
+  and "is its ranking right" is not.
+
+  What it would take: a congeneric series with measured relative affinities on
+  this target, ~10+ compounds spanning >2 kcal/mol. Until then the pipeline's
+  output is a HYPOTHESIS GENERATOR, and the measured noise floors above say how
+  far to trust it.
 
 ## Honest status line
 
