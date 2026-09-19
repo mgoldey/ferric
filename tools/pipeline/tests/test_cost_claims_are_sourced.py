@@ -201,12 +201,27 @@ def test_the_quickstart_names_functions_that_return_what_it_claims():
     # The claim the block makes about itself.
     assert "-> a ferric Molecule" in block
 
-    # `read_structure` may be MENTIONED (the note explaining the difference is
-    # useful), but it must not be the call bound to `mol`.
-    for line in block.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("mol = ") or stripped.startswith("mol="):
-            assert "read_structure(" not in stripped, (
-                f"the quickstart binds `mol` to read_structure, which returns a "
-                f"Structure and not a Molecule: {stripped!r}. Use `read`."
-            )
+    # REQUIRE the documented binding, do not merely blacklist the wrong one.
+    #
+    # An earlier version only rejected `read_structure(`, so swapping in any
+    # other reader -- one that returns a Structure, a dict, anything -- passed
+    # silently. A guard that forbids one known-bad name does not enforce a
+    # contract; it enforces the absence of one mistake.
+    assert "from tools.structure import" in block and "read" in block
+    bindings = [
+        line.strip()
+        for line in block.splitlines()
+        if line.strip().startswith(("mol = ", "mol="))
+    ]
+    assert bindings, "the quickstart must bind `mol` somewhere"
+    readers = {"from_smiles(", "read("}
+    for stripped in bindings:
+        assert any(r in stripped for r in readers), (
+            f"`mol` is bound by something other than the documented readers: "
+            f"{stripped!r}. Only `read` and `from_smiles` return a Molecule; "
+            "`read_structure` returns a Structure, whose `symbols` is a field "
+            "rather than a method."
+        )
+        assert "read_structure(" not in stripped, (
+            f"the quickstart binds `mol` to read_structure: {stripped!r}"
+        )
