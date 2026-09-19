@@ -295,8 +295,20 @@ not a defect to fix -- it is the empirical reason tiers 2-4 exist.
 
 | tier | method | cost | source |
 |---|---|---|---|
+| 1 | Vina, **exhaustiveness 4** (the RECOMMENDED setting) | **26.4 s/ligand** @ cpu=0 (12 cores); 109.0 s @ cpu=1 | RESULTS.md M11 |
 | 1 | Vina, exhaustiveness 32 | ~2 min/ligand | `tools/pipeline/tiers.py:11` |
 | 1 | Vina, per pose | ~10 us | `tools/docking/vina_dock.py:7` |
+
+**Budget from the ex=4 row, not the ex=32 one.** M11 measured that across an
+8x range of exhaustiveness the mean redock RMSD moved 0.097 A -- SMALLER than
+the 0.131 A between-seed SEM -- and ex=32 had the WORST mean of the four levels
+tried. So ex=32 costs 6.8x for no accuracy, and the ~2 min row is kept only
+because `tiers.py:11` still documents it.
+
+Note the parallel efficiency while you are here: giving up 11 of 12 cores costs
+4.1x, so Vina's internal parallelism runs at **34%**. Fan-out across ligands
+only wins above ~4 workers, which is a narrower claim than "the machine sits
+idle at low exhaustiveness".
 | 2 | MMFF94 | ~1 ms/pose | `tiers.py:12` |
 | 3 | GFN2-xTB single point | ~0.5 s | `tiers.py:13` |
 | 4 | ferric DFT | 96.1 s @ 32 atoms, **def2-SVP** (~450 bf) | `tiers.py:14` |
@@ -423,8 +435,17 @@ Composing the measured per-stage numbers over a 10x-per-tier funnel
 | 100 | 0.4 min | 0.6 h | 0.0 h | 0.2 h | **0.8 h** |
 | 1000 | 3.8 min | 5.6 h | 0.3 h | 1.7 h | **7.6 h** |
 
-Shares are scale-invariant at this funnel ratio: **cheap 0.8%, dock 73%,
-xtb 4%, DFT 22%**.
+Shares are scale-invariant at this funnel ratio. Recomputed 2026-09-19 with
+M11's MEASURED 26.4 s/ligand for tier 1 rather than the ~20 s estimate used
+first:
+
+| | cheap | dock | xtb | DFT | total (N=1000) |
+|---|---|---|---|---|---|
+| with the ~20 s estimate | 0.8% | 73% | 4% | 22% | 7.6 h |
+| with MEASURED 26.4 s | **0.7%** | **79%** | **3%** | **18%** | **9.3 h** |
+
+The correction STRENGTHENS the conclusion rather than softening it: docking is
+79% of the campaign, DFT 18%. Quote the measured row.
 
 **That inverts the intuition this pipeline was designed around.** DFT is the
 most expensive thing PER CALL by five orders of magnitude (6e+2 s vs 1e-5 s),
