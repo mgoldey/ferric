@@ -980,3 +980,108 @@ def test_run_qmmm_full_gradient_colocated_charge_and_alpha_matches_finite_differ
         assert an == pytest.approx(fd, abs=1e-5), (
             f"Cl row, {label}: analytic {an} vs FD {fd}"
         )
+
+
+# --- the frontier is where an embedded catalyst setup goes wrong -------------
+
+
+def test_keeping_the_host_charge_puts_it_INSIDE_the_link_bond():
+    """C1 is not optional, and `keep` is not a safe default.
+
+    Cutting a covalent bond and leaving the host's MM charge in place puts a
+    bare point charge 0.443 A from the link hydrogen -- closer than a bond
+    length. It becomes an unphysical attractor, the link atom is dragged onto
+    it, and a geometry optimization in that field DIVERGES rather than failing
+    loudly. `delete-host` (Z1) removes it and the same optimization converges.
+    """
+    symbols = ["C", "H", "H", "H", "C", "H", "H", "H"]
+    coords = [
+        (0.000, 0.000, 0.000),
+        (-0.363, 1.027, 0.000),
+        (-0.363, -0.513, 0.889),
+        (-0.363, -0.513, -0.889),
+        (1.540, 0.000, 0.000),
+        (1.903, -1.027, 0.000),
+        (1.903, 0.513, -0.889),
+        (1.903, 0.513, 0.889),
+    ]
+    charges = [0.0, 0.0, 0.0, 0.0, -0.27, 0.09, 0.09, 0.09]
+
+    base = ferric.QmmmSystem(
+        symbols, coords, charges, qm_indices=[0, 1, 2, 3]
+    ).with_link_atoms([(0, 4)])
+
+    kept = base.min_link_to_charge_distance()
+    assert kept < 0.6, (
+        f"expected the kept host charge to sit inside the link bond, got "
+        f"{kept:.3f} A -- if this has grown, the worked example in the golden "
+        "path no longer demonstrates the trap it describes"
+    )
+
+    z1 = base.with_boundary_charges([(0, 4)], "delete-host")
+    assert len(z1.point_charges()) == len(base.point_charges()) - 1
+    moved = z1.min_link_to_charge_distance()
+    assert moved > 1.0, f"delete-host left a charge at {moved:.3f} A"
+    assert moved > kept * 2, (
+        "delete-host must move the nearest charge substantially further out; "
+        f"{kept:.3f} -> {moved:.3f} A"
+    )
+
+
+def test_delete_host_makes_the_embedded_optimization_converge():
+    """The behavioural half: the distance matters because the optimizer fails.
+
+    Asserting the distance alone would pass even if the field no longer
+    affected the optimization at all.
+    """
+    symbols = ["C", "H", "H", "H", "C", "H", "H", "H"]
+    coords = [
+        (0.000, 0.000, 0.000),
+        (-0.363, 1.027, 0.000),
+        (-0.363, -0.513, 0.889),
+        (-0.363, -0.513, -0.889),
+        (1.540, 0.000, 0.000),
+        (1.903, -1.027, 0.000),
+        (1.903, 0.513, -0.889),
+        (1.903, 0.513, 0.889),
+    ]
+    charges = [0.0, 0.0, 0.0, 0.0, -0.27, 0.09, 0.09, 0.09]
+    base = ferric.QmmmSystem(
+        symbols, coords, charges, qm_indices=[0, 1, 2, 3]
+    ).with_link_atoms([(0, 4)])
+    z1 = base.with_boundary_charges([(0, 4)], "delete-host")
+
+    opt = ferric.run_optimize(
+        z1.qm_molecule(), "sto-3g", point_charges=z1.point_charges(), max_steps=120
+    )
+    assert opt.converged, "Z1-embedded methyl failed to relax"
+    freq = ferric.run_frequencies(opt.mol(), "sto-3g", point_charges=z1.point_charges())
+    n_imag = sum(1 for f in freq.frequencies if f < 0)
+    assert n_imag == 0, (
+        f"a relaxed methyl in a Z1 field is a MINIMUM; got {n_imag} imaginary "
+        "mode(s), so either the relaxation or the embedding is wrong"
+    )
+
+
+def test_rc_and_rcd_refuse_when_the_host_has_no_mm_neighbour():
+    """A refusal with a reason beats silently redistributing nothing."""
+    import pytest
+
+    symbols = ["C", "H", "H", "H", "C", "H", "H", "H"]
+    coords = [
+        (0.000, 0.000, 0.000),
+        (-0.363, 1.027, 0.000),
+        (-0.363, -0.513, 0.889),
+        (-0.363, -0.513, -0.889),
+        (1.540, 0.000, 0.000),
+        (1.903, -1.027, 0.000),
+        (1.903, 0.513, -0.889),
+        (1.903, 0.513, 0.889),
+    ]
+    charges = [0.0, 0.0, 0.0, 0.0, -0.27, 0.09, 0.09, 0.09]
+    base = ferric.QmmmSystem(
+        symbols, coords, charges, qm_indices=[0, 1, 2, 3]
+    ).with_link_atoms([(0, 4)])
+    for scheme in ("rc", "rcd"):
+        with pytest.raises(Exception, match="no MM neighbour"):
+            base.with_boundary_charges([(0, 4)], scheme)
