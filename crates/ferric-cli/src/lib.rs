@@ -1090,6 +1090,12 @@ pub fn run(args: Vec<String>) {
         "scs-mp2",
         "scs-mp2-2terfc",
         "mp3",
+        "ccsd",
+        "linlccd",
+        "lmp2",
+        "lmp2-direct",
+        "mp2-v",
+        "rs-mp2-rpa",
     ];
     let scf_only = matches!(method, "rhf" | "uhf" | "rohf" | "ksdft");
     if !scf_only && !RESULT_LOGGED.contains(&method) {
@@ -1271,6 +1277,18 @@ fn run_lmp2(
         r.e_corr - r.e_corr_canonical_ri
     );
     println!("  total energy          = {:.10} Ha", r.e_total);
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "lmp2",
+            r.e_total,
+            serde_json::json!({
+                "e_corr": r.e_corr,
+                "e_corr_canonical_ri": r.e_corr_canonical_ri,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
     println!(
         "  keep {:.4}  pairs {:.3}  dom(mean/max) {:.1}/{}  cg {}",
         r.keep_fraction, r.pair_fraction, r.dom_mean, r.dom_max, r.cg_iterations
@@ -1361,6 +1379,18 @@ fn run_lmp2_direct(
         r.e_corr - r.e_corr_canonical_ri
     );
     println!("  total energy          = {:.10} Ha", r.e_total);
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "lmp2-direct",
+            r.e_total,
+            serde_json::json!({
+                "e_corr": r.e_corr,
+                "e_corr_canonical_ri": r.e_corr_canonical_ri,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
     println!(
         "  keep {:.4}  pairs {:.3}  gated {}  dom(mean/max) {:.1}/{}  \
          cand(mean/max) {:.1}/{}  cg {}",
@@ -1888,6 +1918,19 @@ fn emit_rs_mp2_rpa_point(
         }
     }
     println!("  Total energy         = {:>16.10} Hartree", r.total_energy);
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "rs-mp2-rpa",
+            r.total_energy,
+            serde_json::json!({
+                "e_mp2_full": r.e_mp2_full,
+                "e_sr_mp2": r.e_sr_mp2,
+                "e_lr_mp2": r.e_lr_mp2,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
 }
 
 /// `method.kind = "scs-mp2"`. Extracted verbatim from the former `main()`
@@ -2135,6 +2178,17 @@ fn run_mp2_v(
     println!("  VV10 E_nl  = {:.10} Hartree", mp2v.e_nl_vv10);
     println!("  NLC grid   = {} points", mp2v.n_nlc_points);
     println!("  Total      = {:.10} Hartree", mp2v.total);
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "mp2-v",
+            mp2v.total,
+            serde_json::json!({
+                "e_corr": mp2v.total - result.energy,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
 }
 
 /// `method.kind = "ccsd"`. Extracted verbatim from the former `main()`
@@ -2204,6 +2258,17 @@ fn run_ccsd(
         "  Total      = {:.10} Hartree",
         result.energy + cc_result.correlation_energy
     );
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "ccsd",
+            result.energy + cc_result.correlation_energy,
+            serde_json::json!({
+                "e_corr": cc_result.correlation_energy,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
 }
 
 /// `method.kind = "linlccd"`. Linearized hole-hole ladder CCD on the converged
@@ -2266,6 +2331,17 @@ fn run_linlccd(
         "  Total      = {:.10} Hartree",
         result.energy + cc_result.correlation_energy
     );
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "linlccd",
+            result.energy + cc_result.correlation_energy,
+            serde_json::json!({
+                "e_corr": cc_result.correlation_energy,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
 }
 
 /// `method.kind = "wb97x-l-v"`. The ωB97X-L-V double hybrid.
