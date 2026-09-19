@@ -16,6 +16,7 @@
 - [Applications](./using/applications.md)
 - [QM/MM](./using/qmmm.md)
 - [For agents](./using/agents.md)
+- [Run logs](./using/run-logs.md)
 
 # Methods
 

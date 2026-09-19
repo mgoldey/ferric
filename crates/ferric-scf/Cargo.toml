@@ -19,6 +19,7 @@ ndarray-linalg = { workspace = true }
 openblas-src = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 mpi = { workspace = true, optional = true }
 
 [features]
