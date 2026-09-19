@@ -267,3 +267,81 @@ fn heavy_elements_are_covered() {
         assert!(e < 0.0, "Z={z} dimer must be attractive, got {e:e}");
     }
 }
+
+/// Naming a functional and passing its parameters explicitly must give the
+/// SAME energy, bit for bit.
+///
+/// This is what the reference file's former `param_crosscheck_water` block
+/// claimed to record, and it did not: its three `abs_diff` entries were
+/// bit-identical (2.3256504914134085e-10) across pbe/b3lyp/blyp, which cannot
+/// happen for three functionals with different s8/a1/a2 unless the two sides
+/// were not actually the two things being compared. Those numbers were also
+/// dead -- no test read them. Computing the comparison live is both honest and
+/// stronger: a stale recorded difference cannot detect a lookup that starts
+/// returning the wrong functional's parameters, whereas this does.
+///
+/// The bar is EXACT equality, not a tolerance. Both paths run the identical
+/// arithmetic on identical inputs; the only difference is where the four
+/// numbers came from. Any difference at all is a lookup defect.
+#[test]
+fn lookup_by_name_matches_explicit_parameters_exactly() {
+    let text = reference_text();
+    let systems = json::parse(&text);
+    let (_, water) = systems
+        .iter()
+        .find(|(n, _)| n == "water")
+        .expect("reference must carry water");
+
+    let mut checked = 0usize;
+    for (fname, s6, s8, a1, a2) in [
+        ("pbe", 1.0, 0.7875, 0.4289, 4.4407),
+        ("b3lyp", 1.0, 1.9889, 0.3981, 4.4211),
+        ("blyp", 1.0, 2.6996, 0.4298, 4.2359),
+        ("pbe0", 1.0, 1.2177, 0.4145, 4.8593),
+    ] {
+        let by_name = d3bj_energy(
+            &water.numbers,
+            &water.coords,
+            &d3bj_params_for_functional(fname).unwrap(),
+        )
+        .unwrap();
+        let by_params = d3bj_energy(
+            &water.numbers,
+            &water.coords,
+            &D3Params { s6, s8, a1, a2 },
+        )
+        .unwrap();
+        assert_eq!(
+            by_name.to_bits(),
+            by_params.to_bits(),
+            "{fname}: lookup-by-name gave {by_name:.17e} but the same parameters \
+             passed explicitly gave {by_params:.17e}; the name -> parameter \
+             lookup is returning something other than the published fit"
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 4);
+
+    // A reachability check, so the equality above is not vacuous: DIFFERENT
+    // functionals must give DIFFERENT energies on this same molecule. Without
+    // this, a lookup that returned one constant set for every name would pass
+    // the loop above four times over.
+    let e_pbe = d3bj_energy(
+        &water.numbers,
+        &water.coords,
+        &d3bj_params_for_functional("pbe").unwrap(),
+    )
+    .unwrap();
+    let e_blyp = d3bj_energy(
+        &water.numbers,
+        &water.coords,
+        &d3bj_params_for_functional("blyp").unwrap(),
+    )
+    .unwrap();
+    assert!(
+        (e_pbe - e_blyp).abs() > 1e-9,
+        "pbe and blyp gave indistinguishable D3(BJ) energies ({e_pbe:.6e} vs \
+         {e_blyp:.6e}); the per-functional lookup is not discriminating and \
+         the equality assertions above are vacuous"
+    );
+}

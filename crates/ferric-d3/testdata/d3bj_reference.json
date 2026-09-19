@@ -494,27 +494,5 @@
     }
    }
   }
- },
- "param_crosscheck_water": {
-  "pbe": {
-   "by_method_name": -0.0003594727990530312,
-   "by_explicit_params": -0.00035947256648798207,
-   "abs_diff": 2.3256504914134085e-10
-  },
-  "b3lyp": {
-   "by_method_name": -0.0005738818452895569,
-   "by_explicit_params": -0.0005738816127245078,
-   "abs_diff": 2.3256504914134085e-10
-  },
-  "blyp": {
-   "by_method_name": -0.0007192290093556996,
-   "by_explicit_params": -0.0007192287767906505,
-   "abs_diff": 2.3256504914134085e-10
-  },
-  "pbe0": {
-   "by_method_name": -0.0002768677601478597,
-   "by_explicit_params": -0.0002768675275828105,
-   "abs_diff": 2.3256504919555096e-10
-  }
  }
 }

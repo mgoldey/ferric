@@ -281,6 +281,23 @@ pub fn run(args: Vec<String>) {
         eprintln!("error: unsupported method.task = \"{task}\"; expected energy, optimize, or frequencies");
         std::process::exit(1);
     }
+    // [dft] dispersion — same task guard as grid_prune below, for the same
+    // reason. The correction is applied inside `run_ksdft`, which only the
+    // "energy" task reaches: `optimize` and `frequencies` return above. A
+    // configured correction would therefore be silently DROPPED, and the run
+    // would report a plain KS-DFT geometry or Hessian as though it were
+    // dispersion-corrected. D3(BJ) nuclear derivatives are not implemented, so
+    // there is no correct answer to give here either -- refuse up front.
+    if cfg.dft.dispersion.is_some() && task != "energy" {
+        eprintln!(
+            "error: [dft] dispersion is only supported with method.task = \"energy\"; \
+             got task = \"{task}\". The D3(BJ) nuclear gradient is not implemented, so \
+             an optimization or frequency run would follow the UNCORRECTED KS-DFT \
+             surface while appearing to be dispersion-corrected. Remove the \
+             dispersion key, or use task = \"energy\"."
+        );
+        std::process::exit(1);
+    }
     // [dft] grid_prune — main-DFT-grid angular pruning. Strict parse (unknown
     // values are a hard error, never a silent default), then a task guard:
     // the XC gradient's grid-response term is only built for the unpruned
