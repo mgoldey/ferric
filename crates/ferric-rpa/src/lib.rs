@@ -106,6 +106,50 @@ pub use screen::{build_screened_bov, build_screened_bov_boys, ScreenedBov};
 #[cfg(test)]
 pub(crate) static TEST_BUDGET_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Clear the budget-family env vars for a test's lifetime, restoring them on
+/// drop.
+///
+/// [`TEST_BUDGET_ENV_LOCK`] is NOT sufficient on its own: a `Mutex` serialises
+/// threads within ONE PROCESS, and `cargo nextest` runs every test in its own
+/// process. It also cannot help when the value comes from the ENVIRONMENT
+/// rather than a sibling test -- ci.yml sets `FERRIC_MEM_BUDGET_GB: "3"`
+/// workflow-wide, which is what broke
+/// `lanczos_panel_width_honors_explicit_budget_argument` (got 986, expected
+/// 256) the moment the test tier was sharded into separate processes.
+///
+/// A test whose precondition is "no budget env var" must ENFORCE it. Take the
+/// lock AND this guard.
+#[cfg(test)]
+pub(crate) struct BudgetEnvCleared(Vec<(&'static str, Option<String>)>);
+
+#[cfg(test)]
+impl BudgetEnvCleared {
+    pub(crate) fn new() -> Self {
+        Self(
+            ["FERRIC_MEM_BUDGET_GB", "FERRIC_LANCZOS_PANEL"]
+                .into_iter()
+                .map(|k| {
+                    let prev = std::env::var(k).ok();
+                    std::env::remove_var(k);
+                    (k, prev)
+                })
+                .collect(),
+        )
+    }
+}
+
+#[cfg(test)]
+impl Drop for BudgetEnvCleared {
+    fn drop(&mut self) {
+        for (k, v) in &self.0 {
+            match v {
+                Some(val) => std::env::set_var(k, val),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+}
+
 /// Allocating wrapper that dispatches the χ₀ kernel (Dense vs Laplace) based on
 /// whether a `LaplaceQuadrature` is supplied.
 ///
