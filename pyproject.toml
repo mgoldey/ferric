@@ -83,6 +83,15 @@ docking = [
     "rdkit>=2024.3",
     "scipy>=1.11",
 ]
+# Figures for pipeline outputs (tools/viz). matplotlib renders the energy
+# plots; RDKit renders the 2-D structure depictions and arrives via `docking`,
+# which is why that extra is not duplicated here -- `pip install
+# 'ferric[viz,docking]'` gets both halves. `tools.viz.molecules` raises an
+# actionable ImportError naming the docking extra when RDKit is absent, and its
+# tests skip rather than fail, so `viz` on its own is a usable install.
+viz = [
+    "matplotlib>=3.8",
+]
 dev = [
     # Was ">=9.13.0". ipython 9.x requires Python>=3.11 (PyPI's own
     # requires_python metadata for every 9.x release, checked directly:
