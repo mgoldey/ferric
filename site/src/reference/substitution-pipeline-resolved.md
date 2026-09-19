@@ -222,11 +222,24 @@ from this would be reporting noise.
     contractions that SEVER a ring produced fragment pairs; now rejected at
     enumeration (`enumerate.py:82`) and again at tier 1 (`tiers.py:125`).
 
-  What remains is narrower and worth stating as itself: tier 4 has never
-  produced a survivor list end to end SINCE those fixes, so "it works" rests on
-  the per-bug tests rather than on a completed funnel run. Dispersion (#99) is
-  also still unmerged, so a halogen/CF3 scan would be missing its dominant
-  attractive term.
+  - **End to end since the fixes**: DONE 2026-09-19. The full FF -> xtb -> DFT
+    stack now runs in `tools/pipeline/tests/test_golden_path_smoke.py`:
+
+        FORCE_FIELD    3 -> 3   failed 0
+        SEMIEMPIRICAL  3 -> 2   failed 0
+        QUANTUM        2 -> 1   failed 0     <- used to be 0 out
+        survivor: CC(=O)O  dft = -225.757 Ha
+
+    ~1.7 s, so it belongs in the fast tier, and it is mutation-tested against
+    the exact M10 failure mode (making tier 4 fail every candidate fails the
+    test).
+
+  So tier 4 is validated as far as COMPOSITION goes. What is genuinely left:
+  dispersion (#99) is unmerged, so a halogen/CF3 scan would still be missing
+  its dominant attractive term, and no tier-4 number has been checked against
+  an external reference IN THIS PIPELINE (ferric's DFT is separately validated
+  against PySCF to ~2e-8 Ha, but that is the solver, not the funnel's use of
+  it).
 * **No ranking validated end to end.** VERIFIED 2026-09-19 that the repo
   contains no experimental affinity data at all (grepped `experiments/` and
   `testdata/` for IC50/Ki/Kd/pChEMBL: zero hits), so this is blocked on DATA
