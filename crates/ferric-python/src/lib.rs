@@ -1667,6 +1667,13 @@ struct PyOptimizeResult {
     converged: bool,
     #[pyo3(get)]
     steps: usize,
+    /// Energy at every point the optimizer EVALUATED, in order.
+    ///
+    /// `energy`/`steps`/`converged` cannot tell "ran out of steps near a
+    /// minimum" from "walked uphill and oscillated". Feed this to
+    /// `tools.viz.energy_plots.optimization_trace`, which flags a climb.
+    #[pyo3(get)]
+    energy_trace: Vec<f64>,
     mol_data: Molecule,
 }
 
@@ -1724,6 +1731,7 @@ fn run_optimize(
         energy: r.energy,
         converged: r.converged,
         steps: r.steps,
+        energy_trace: r.energy_trace,
         mol_data: r.mol,
     })
 }

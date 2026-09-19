@@ -114,6 +114,18 @@ pub struct OptimizeResult {
     pub energy: f64,
     pub steps: usize,
     pub converged: bool,
+    /// Energy at every point the optimizer EVALUATED, in order.
+    ///
+    /// `energy`, `steps` and `converged` cannot distinguish "ran out of steps
+    /// near a minimum" from "walked uphill and oscillated" -- a run that climbs
+    /// -39.82 -> -39.53 Ha over 200 steps reports the same three fields as a
+    /// slow approach. The trace is what makes that visible, and it is what
+    /// `tools.viz.energy_plots.optimization_trace` plots.
+    ///
+    /// This is every EVALUATION, not every accepted step, so it is at least as
+    /// long as `steps` and includes any line-search probes. That is deliberate:
+    /// a rejected uphill probe is exactly the thing worth seeing.
+    pub energy_trace: Vec<f64>,
 }
 
 impl std::fmt::Display for OptimizeResult {
@@ -275,10 +287,16 @@ fn run_bfgs(
     let x0 = flatten_molecule_coords(mol);
     let mol_template = mol.clone();
 
+    // Record every evaluation as it happens. The closure is the only place
+    // that sees them all, and threading a callback through
+    // `optimize_coordinates` would change a signature two callers share for
+    // no gain over this.
+    let mut energy_trace: Vec<f64> = Vec::new();
     let (x_final, energy, steps, converged) = optimize_coordinates(&x0, opt_config, |x| {
         let mut m = mol_template.clone();
         set_molecule_coords(&mut m, x);
         let (e, grad_arr) = energy_and_gradient(&m)?;
+        energy_trace.push(e);
         Ok((e, flatten_gradient(&grad_arr).to_vec()))
     })?;
 
@@ -290,6 +308,7 @@ fn run_bfgs(
         energy,
         steps,
         converged,
+        energy_trace,
     })
 }
 
@@ -326,6 +345,8 @@ fn run_bfgs_internal(
     let mut current = mol.clone();
 
     let (mut energy, grad_arr) = energy_and_gradient(&current)?;
+    // Same trace the Cartesian path records -- see `OptimizeResult::energy_trace`.
+    let mut energy_trace: Vec<f64> = vec![energy];
     let mut grad_cart = flatten_gradient(&grad_arr);
 
     // Inverse Hessian in internals, seeded from the empirical diagonal. BFGS
@@ -457,6 +478,7 @@ fn run_bfgs_internal(
         prev_energy = energy;
 
         let (e_new, grad_arr_new) = energy_and_gradient(&current)?;
+        energy_trace.push(e_new);
         energy = e_new;
         grad_cart = flatten_gradient(&grad_arr_new);
 
@@ -506,6 +528,7 @@ fn run_bfgs_internal(
         energy,
         steps: step_idx,
         converged,
+        energy_trace,
     })
 }
 

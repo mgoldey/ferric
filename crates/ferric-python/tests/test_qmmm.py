@@ -1108,3 +1108,63 @@ def test_rc_and_rcd_refuse_when_the_host_has_no_mm_neighbour():
     for scheme in ("rc", "rcd"):
         with pytest.raises(Exception, match="no MM neighbour"):
             base.with_boundary_charges([(0, 4)], scheme)
+
+
+def test_the_energy_trace_exposes_a_divergence_the_scalars_hide():
+    """`converged`/`steps`/`energy` cannot tell a slow approach from a climb.
+
+    MEASURED on the retained-host case: the optimizer walks UP 0.2045 Ha above
+    its best value, and the three scalars report the same shape as a run that
+    simply needed more steps. Without the trace there is nothing to look at --
+    which is how the wrong diagnosis got written into the golden path.
+    """
+    symbols = ["C", "H", "H", "H", "C", "H", "H", "H"]
+    coords = [
+        (0.000, 0.000, 0.000),
+        (-0.363, 1.027, 0.000),
+        (-0.363, -0.513, 0.889),
+        (-0.363, -0.513, -0.889),
+        (1.540, 0.000, 0.000),
+        (1.903, -1.027, 0.000),
+        (1.903, 0.513, -0.889),
+        (1.903, 0.513, 0.889),
+    ]
+    charges = [0.0, 0.0, 0.0, 0.0, -0.27, 0.09, 0.09, 0.09]
+    base = ferric.QmmmSystem(
+        symbols, coords, charges, qm_indices=[0, 1, 2, 3]
+    ).with_link_atoms([(0, 4)])
+    z1 = base.with_boundary_charges([(0, 4)], "delete-host")
+
+    bad = ferric.run_optimize(
+        base.qm_molecule(), "sto-3g", point_charges=base.point_charges(), max_steps=60
+    )
+    good = ferric.run_optimize(
+        z1.qm_molecule(), "sto-3g", point_charges=z1.point_charges(), max_steps=60
+    )
+
+    assert len(bad.energy_trace) >= bad.steps, (
+        "the trace must cover at least every step; it records every EVALUATION"
+    )
+    assert len(good.energy_trace) >= good.steps
+
+    rose_bad = bad.energy_trace[-1] - min(bad.energy_trace)
+    rose_good = good.energy_trace[-1] - min(good.energy_trace)
+    assert rose_bad > 0.05, (
+        f"the diverging case rose only {rose_bad:.4f} Ha above its best; the "
+        "trace is not capturing the climb it exists to show"
+    )
+    assert rose_good < 1e-6, (
+        f"the converged case rose {rose_good:.2e} Ha above its best, which a "
+        "healthy minimization should not do"
+    )
+
+
+def test_the_trace_is_present_even_for_a_plain_gas_phase_run():
+    """A field is not required for the trace to exist."""
+    mol = ferric.Molecule.from_xyz_string("2\nH2\nH 0 0 0\nH 0 0 0.80\n")
+    r = ferric.run_optimize(mol, "sto-3g", max_steps=30)
+    assert r.energy_trace, "no trace on a plain optimization"
+    assert r.energy_trace[-1] == pytest.approx(r.energy, abs=1e-10), (
+        "the last traced energy must be the reported one, or the two describe "
+        "different geometries"
+    )

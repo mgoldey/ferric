@@ -390,6 +390,18 @@ class OptimizeResult:
     def mol(self) -> Molecule:
         """The optimized geometry as a new Molecule."""
         ...
+    @property
+    def energy_trace(self) -> list[float]:
+        """Energy at every point the optimizer EVALUATED, in order.
+
+        `energy`, `steps` and `converged` cannot distinguish "ran out of steps
+        near a minimum" from "walked uphill and oscillated". MEASURED: a
+        diverging embedded optimization shows +0.2045 Ha above its best here
+        while reporting the same three scalars as a healthy run. Feed it to
+        `tools.viz.energy_plots.optimization_trace`.
+        """
+        ...
+
 
 class FrequencyResult:
     """Result of a harmonic vibrational frequency calculation."""
