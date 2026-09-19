@@ -461,8 +461,29 @@ def _tier4_dft_inner(iso: Isomer, context: dict, ferric) -> TierResult:
             # Flagged rather than refused: the QM-internal correction is still
             # correct and still worth having for conformer comparisons within
             # one ligand. What must not happen is a caller reading this as a
-            # fully dispersion-corrected embedded energy. Closing the gap needs
-            # LJ terms on the MM sites (`ferric-mm`), which do not exist yet.
+            # fully dispersion-corrected embedded energy.
+            #
+            # WHY THE GAP IS OPEN -- corrected 2026-09-19. This comment
+            # previously said "closing the gap needs LJ terms on the MM sites
+            # (`ferric-mm`)", declaring them absent. THAT WAS FALSE:
+            # `ferric_mm::qm_mm_lj_energy_gradient` has existed since
+            # 2026-08-27 (4a930a0f), does the full N x M 12-6 sum with analytic
+            # gradients under Lorentz-Berthelot mixing, and is already called
+            # by `ferric_scf::qmmm::qmmm_mm_terms`. The comment was written
+            # three weeks AFTER the code it declared missing, and it generated
+            # a ticket to rebuild what the repo already had.
+            #
+            # The real reason is an UNUSED CODE PATH, not absent arithmetic:
+            # this tier calls `ferric.run_dft(..., point_charges=...)`, and
+            # `run_dft` takes no topology or LJ argument -- the LJ machinery
+            # lives on the separate `run_qmmm`/`QmmmSystem` path.
+            #
+            # And closing it end to end needs a third thing neither supplies:
+            # `ferric-mm` ASSIGNS NO PARAMETERS. It is arithmetic only,
+            # caller-supplies-everything. Tier 4's context carries point
+            # charges but no sigma/epsilon, and nothing in this pipeline types
+            # atoms against a force field. That PARAMETER-ASSIGNMENT problem,
+            # not the 12-6 sum, is the actual remaining work.
             "dispersion_covers_qm_only": (
                 res.e_dispersion is not None and bool(context.get("point_charges"))
             ),
