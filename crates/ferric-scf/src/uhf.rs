@@ -937,6 +937,28 @@ pub fn solve_uhf_fockmod(
             );
         }
 
+        // Machine-readable per-iteration record, streamed and flushed NOW. See
+        // the identical block in `solve_rhf` for the full rationale; every
+        // value is one the loop already computed. `grad_rms` is `None`: unlike
+        // `solve_rhf`, this loop forms only the per-spin commutator MAXIMA
+        // (err_max_a/err_max_b), never an RMS — reporting a fabricated 0 would
+        // be worse than reporting "not measured here".
+        if ctx.is_root() {
+            if let Some(rl) = crate::runlog::log() {
+                rl.scf_iter(
+                    if xc_contrib.is_some() { "uks" } else { "uhf" },
+                    crate::runlog::current_rung(),
+                    iter,
+                    energy,
+                    de,
+                    mon.dp_rms,
+                    mon.dp_max,
+                    err_max,
+                    None,
+                );
+            }
+        }
+
         // Live per-iteration progress (see solve_rhf's identical block for the
         // full rationale). STDOUT, opt-in via `config.verbose`, rank-0-only.
         if config.verbose && ctx.is_root() {

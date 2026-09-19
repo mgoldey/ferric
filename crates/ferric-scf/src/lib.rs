@@ -176,6 +176,8 @@ pub mod qmmm;
 pub use qmmm::{BoundaryChargeScheme, QmSelection, QmmmAtom, QmmmSystem};
 /// Jacob's ladder solver: run a sequence of methods (HF→DFT→MP2→…) reusing orbitals.
 pub mod ladder;
+/// Machine-readable JSON Lines run logs, streamed per record.
+pub mod runlog;
 pub use ladder::{default_ladder, ksdft_ladder, solve_rhf_ladder, LadderResult, Rung, RungOutcome};
 
 pub mod df_increments;

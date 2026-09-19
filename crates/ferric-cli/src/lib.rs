@@ -54,7 +54,7 @@ where
 }
 
 fn print_usage() {
-    eprintln!("usage: ferric [--verbose|-v] <input.toml>");
+    eprintln!("usage: ferric [--verbose|-v] [--json <path>|--no-json] <input.toml>");
     eprintln!();
     eprintln!("Run a ferric quantum-chemistry calculation from a TOML input file.");
     eprintln!("See examples/*.toml for sample inputs and docs/quickstart.md for a walkthrough.");
@@ -62,6 +62,10 @@ fn print_usage() {
     eprintln!("  --verbose, -v   Print one line per SCF iteration to stdout (energy, dE,");
     eprintln!("                  density/DIIS error) as the job runs. Same effect as setting");
     eprintln!("                  `verbose = true` in the [scf] TOML section.");
+    eprintln!("  --json <path>   Write the machine-readable JSON Lines run log here.");
+    eprintln!("                  Overrides `[output] json`. A run log is written BY");
+    eprintln!("                  DEFAULT to <input-stem>.ferric.jsonl beside the input.");
+    eprintln!("  --no-json       Do not write a run log. Same as `[output] json = false`.");
 }
 
 /// Epistemic-status warnings for `method.kind` values that are graded Smoke
@@ -220,15 +224,30 @@ pub fn run(args: Vec<String>) {
     // in the TOML — either one turns it on.
     let mut toml_path: Option<&str> = None;
     let mut cli_verbose = false;
+    // JSON run-log overrides from the command line. `None` = defer to
+    // `[output] json` in the TOML (which itself defaults to ON).
+    let mut cli_json: Option<Option<String>> = None;
+    let mut expect_json_path = false;
     for arg in &args[1..] {
+        if expect_json_path {
+            expect_json_path = false;
+            cli_json = Some(Some(arg.clone()));
+            continue;
+        }
         match arg.as_str() {
             "--verbose" | "-v" => cli_verbose = true,
+            "--json" => expect_json_path = true,
+            "--no-json" => cli_json = Some(None),
             other if toml_path.is_none() => toml_path = Some(other),
             _ => {
-                eprintln!("usage: ferric [--verbose|-v] <input.toml>");
+                print_usage();
                 std::process::exit(2);
             }
         }
+    }
+    if expect_json_path {
+        eprintln!("error: --json requires a path (use --no-json to disable the run log)");
+        std::process::exit(2);
     }
     let Some(toml_path) = toml_path else {
         eprintln!("usage: ferric [--verbose|-v] <input.toml>");
@@ -242,6 +261,34 @@ pub fn run(args: Vec<String>) {
         }
     };
     cfg.scf.verbose = cfg.scf.verbose || cli_verbose;
+
+    // Machine-readable JSON run log. ON BY DEFAULT (see `config::OutputCfg`):
+    // a result whose run left no artifact cannot be checked afterwards, and
+    // this repo has already lost a load-bearing SCF measurement exactly that
+    // way. `--json`/`--no-json` override `[output] json`; a path that cannot
+    // be opened warns and the run continues without a log, never failing the
+    // calculation.
+    //
+    // Installed HERE -- after the config parses, before anything expensive --
+    // so the `run_start` record can carry the resolved config and so every
+    // downstream SCF iteration is covered.
+    let json_path = match &cli_json {
+        Some(explicit) => explicit.as_ref().map(std::path::PathBuf::from),
+        None => cfg
+            .output
+            .resolve_json_path(std::path::Path::new(toml_path)),
+    };
+    match json_path {
+        Some(p) => {
+            if ferric_scf::runlog::init(&p) {
+                eprintln!("[ferric] JSON run log: {}", p.display());
+            }
+        }
+        // Explicitly poison the sink so a later library call cannot install
+        // one the user asked not to have.
+        None => ferric_scf::runlog::disable(),
+    }
+
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
     if !matches!(
@@ -601,6 +648,43 @@ pub fn run(args: Vec<String>) {
         screening: screening_kind,
     };
 
+    // Header record for the JSON run log: everything needed to reproduce this
+    // run, written before any expensive work so it survives even a job killed
+    // in the first SCF iteration. No-op when no log is installed.
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.run_start(
+            serde_json::json!({
+                "method": method,
+                "task": task,
+                "basis": bs.name,
+                "functional": cfg.dft.functional,
+                "xc": rhf_config.xc,
+                "max_iter": cfg.scf.max_iter,
+                "energy_conv": cfg.scf.energy_conv,
+                "density_conv": cfg.scf.density_conv,
+                "df_j_aux": rhf_config.df_j_aux,
+                "df_k_aux": rhf_config.df_k_aux,
+                "level_shift": rhf_config.level_shift,
+                // The RESOLVED budget in bytes, not the raw `[memory]` key:
+                // an omitted budget auto-detects, and the number actually used
+                // is the one a post-mortem reader needs.
+                "memory_budget_bytes": ferric_core::memory::resolve_budget_bytes(budget_bytes),
+                "openblas_num_threads": std::env::var("OPENBLAS_NUM_THREADS").ok(),
+                "rayon_num_threads": rayon::current_num_threads(),
+                "mpi_ranks": ctx.size,
+            }),
+            serde_json::json!({
+                "path": cfg.molecule.xyz,
+                "n_atoms": mol.atoms.len(),
+                "formula": molecular_formula(&mol),
+                "charge": cfg.molecule.charge,
+                "multiplicity": cfg.molecule.multiplicity,
+                "n_electrons": mol.nelec(),
+                "n_basis": prep.nbasis(),
+            }),
+        );
+    }
+
     // Resolve/validate [scf] df_guess_aux up front (config-honesty: a knob
     // that would silently do nothing under df_guess = false is a hard error)
     // so a typo'd TOML fails fast instead of after an expensive SCF.
@@ -913,6 +997,16 @@ pub fn run(args: Vec<String>) {
         ferric_rpa::properties::spherically_averaged_proatom(z, &bs, &adens, &proatom_radii).ok()
     };
 
+    // Snapshot the scalars the terminal log record needs BEFORE the dispatch:
+    // one arm (`run_pdep_rpa_arm`) takes `result` by value. Three `Copy`
+    // fields, so this is free -- cloning the whole `ScfResult` (several dense
+    // nbasis x nbasis matrices) to satisfy the borrow checker would be a real
+    // allocation added by logging, which is exactly what must not happen.
+    let scf_energy = result.energy;
+    let scf_converged = result.converged;
+    let scf_exit = result.exit;
+    let scf_iterations = result.iterations;
+
     match method {
         "rhf" => run_rhf(&cfg, &bs, &prep, &result),
         "ksdft" => run_ksdft(&cfg, &mol, &bs, &prep, &result),
@@ -973,6 +1067,80 @@ pub fn run(args: Vec<String>) {
         "tda" | "tddft" => run_tddft_arm(&cfg, &mol, &bs, &prep, &result, budget_bytes, method),
         _ => unreachable!(),
     }
+
+    // Terminal record: the SCF result plus wall/cpu time and peak RSS.
+    //
+    // The energy reported here is the SCF energy, which for a post-SCF method
+    // (MP2/RPA/CC/GW) is the REFERENCE, not the method's total -- and the
+    // record says so via `energy_is`, rather than labelling a reference energy
+    // as the run's answer. The method's OWN total goes in a separate `result`
+    // record emitted by that method's branch.
+    //
+    // Methods not yet wired emit `result_unlogged` instead of nothing, so a
+    // consumer can distinguish "this method does not log its result yet" from
+    // "this run died before producing one". Keep RESULT_LOGGED in step with
+    // the `rl.result(...)` call sites; a name here that has no matching call
+    // site would claim coverage that does not exist.
+    const RESULT_LOGGED: &[&str] = &[
+        "rimp2",
+        "oo-rimp2",
+        "att-rimp2",
+        "laplace-mp2",
+        "laplace-sos-mp2",
+        "scs-mp2",
+        "scs-mp2-2terfc",
+    ];
+    let scf_only = matches!(method, "rhf" | "uhf" | "rohf" | "ksdft");
+    if !scf_only && !RESULT_LOGGED.contains(&method) {
+        if let Some(rl) = ferric_scf::runlog::log() {
+            rl.result_unlogged(method);
+        }
+    }
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.run_end(
+            scf_energy,
+            scf_converged,
+            &format!("{scf_exit:?}"),
+            serde_json::json!({
+                "method": method,
+                "task": task,
+                "scf_iterations": scf_iterations,
+                "energy_is": if method == "rhf" || method == "uhf" || method == "rohf" || method == "ksdft" {
+                    "total"
+                } else {
+                    "scf_reference_only"
+                },
+            }),
+        );
+    }
+}
+
+/// Hill-notation molecular formula (C first, then H, then the rest
+/// alphabetically), for the run log's molecule record.
+///
+/// A count of atoms alone does not identify a molecule; a formula plus the
+/// input path does, well enough to tell two runs apart in a directory of logs.
+fn molecular_formula(mol: &Molecule) -> String {
+    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for a in &mol.atoms {
+        *counts.entry(a.symbol.as_str()).or_insert(0) += 1;
+    }
+    let mut out = String::new();
+    let mut push = |sym: &str, n: usize| {
+        out.push_str(sym);
+        if n > 1 {
+            out.push_str(&n.to_string());
+        }
+    };
+    for sym in ["C", "H"] {
+        if let Some(n) = counts.remove(sym) {
+            push(sym, n);
+        }
+    }
+    for (sym, n) in counts {
+        push(sym, n);
+    }
+    out
 }
 
 /// `method.kind = "rhf"`. Extracted verbatim from the former `main()`
@@ -1284,6 +1452,21 @@ fn run_rimp2(
     );
     println!("  MP2 corr   = {:.10} Hartree", mp2_result.mp2_corr);
     println!("  Total      = {:.10} Hartree", mp2_result.total_energy);
+    if let Some(rl) = ferric_scf::runlog::log() {
+        // The ANSWER, not the SCF reference `run_end` carries. `scf_converged`
+        // travels with it because an MP2 number built on an unconverged
+        // reference must not be quoted -- the warning below says so on stderr,
+        // and a machine reading the log needs the same signal.
+        rl.result(
+            "rimp2",
+            mp2_result.total_energy,
+            serde_json::json!({
+                "e_corr": mp2_result.mp2_corr,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
     if !result.converged {
         eprintln!(
             "warning: SCF did not converge (exit {:?} after {} iterations) — the correlation \
@@ -1383,6 +1566,17 @@ fn run_oo_rimp2(
     println!("  HF energy  = {:.10} Hartree", oo_result.hf_energy);
     println!("  MP2 corr   = {:.10} Hartree", oo_result.mp2_corr);
     println!("  Total      = {:.10} Hartree", oo_result.total_energy);
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "oo-rimp2",
+            oo_result.total_energy,
+            serde_json::json!({
+                "e_corr": oo_result.mp2_corr,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
 }
 
 /// `method.kind = "att-rimp2"`. Extracted verbatim from the former `main()`
@@ -1438,6 +1632,17 @@ fn run_att_rimp2(
         att_result.spin_components.e_ss
     );
     println!("  Total      = {:.10} Hartree", att_result.total_energy);
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "att-rimp2",
+            att_result.total_energy,
+            serde_json::json!({
+                "e_corr": att_result.mp2_corr,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
 }
 
 /// `method.kind = "rs-mp2-rpa"`. Extracted verbatim from the former `main()`
@@ -1707,6 +1912,19 @@ fn run_scs_mp2(
     println!("  E_OS       = {:.10} Hartree", scs_result.e_os);
     println!("  E_SS       = {:.10} Hartree", scs_result.e_ss);
     println!("  Total      = {:.10} Hartree", scs_result.total_energy);
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "scs-mp2",
+            scs_result.total_energy,
+            serde_json::json!({
+                "e_corr": scs_result.scs_corr,
+                "e_os": scs_result.e_os,
+                "e_ss": scs_result.e_ss,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
 }
 
 /// `method.kind = "scs-mp2-2terfc"`. Extracted verbatim from the former
@@ -1765,6 +1983,19 @@ fn run_scs_mp2_2terfc(
     println!("  E_OS       = {:.10} Hartree", scs_result.e_os);
     println!("  E_SS       = {:.10} Hartree", scs_result.e_ss);
     println!("  Total      = {:.10} Hartree", scs_result.total_energy);
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "scs-mp2-2terfc",
+            scs_result.total_energy,
+            serde_json::json!({
+                "e_corr": scs_result.scs_corr,
+                "e_os": scs_result.e_os,
+                "e_ss": scs_result.e_ss,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
 }
 
 /// `method.kind = "mp2-v"`: attenuated MP2 + long-range VV10 dispersion
@@ -2225,6 +2456,17 @@ fn run_laplace_mp2(
     println!("  E_OS       = {:.10} Hartree", lap_result.e_os);
     println!("  E_SS       = {:.10} Hartree", lap_result.e_ss);
     println!("  Total      = {:.10} Hartree", lap_result.total_energy);
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "laplace-mp2",
+            lap_result.total_energy,
+            serde_json::json!({
+                "e_corr": lap_result.mp2_corr,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
 }
 
 /// `method.kind = "laplace-sos-mp2"`.
@@ -2308,6 +2550,17 @@ fn run_laplace_sos_mp2(
     println!("  c_os       = {:.4}", sos.c_os);
     println!("  SOS corr   = {:.10} Hartree", sos.sos_corr);
     println!("  Total      = {:.10} Hartree", sos.total_energy);
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "laplace-sos-mp2",
+            sos.total_energy,
+            serde_json::json!({
+                "e_corr": sos.sos_corr,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
 }
 
 /// `method.kind = "pdep-rpa"`. Extracted verbatim from the former `main()`
