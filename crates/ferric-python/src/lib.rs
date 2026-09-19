@@ -1837,31 +1837,10 @@ fn run_frequencies(
     if let Some(mult) = multiplicity {
         m.multiplicity = mult as usize;
     }
-    // BOTH callbacks below are RESTRICTED -- `solve_rhf` plus either
-    // `rhf_gradient` or `ks_gradient_closed`, and `FrequencyReference::Rhf`.
-    // Accepting a multiplicity > 1 would run a doublet through a closed-shell
-    // reference and return a confident answer for a state that does not exist.
-    // Refuse rather than silently choosing the wrong physics.
-    if m.multiplicity != 1 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "run_saddle currently supports closed-shell (multiplicity = 1) \
-             references only; got multiplicity = {}. Both the gradient and the \
-             Hessian callbacks are restricted, so an open-shell request would \
-             be answered with a closed-shell reference rather than refused.",
-            m.multiplicity
-        )));
-    }
     let scf_cfg = RhfConfig {
         xc: xc.map(|s| s.to_string()),
         ..Default::default()
     };
-    // ECP must be applied BEFORE the first SCF: it changes the electron count,
-    // so a search started without it optimizes a different molecule than the
-    // one the caller asked about.
-    {
-        let bs = ferric_core::basis::bundled(basis_name).map_err(make_err)?;
-        m.apply_ecp(&bs);
-    }
     let mut fcfg = FrequencyConfig {
         reference: refr,
         ..Default::default()
@@ -6741,6 +6720,27 @@ fn run_saddle(
     let mut m = mol.inner.clone();
     if let Some(mult) = multiplicity {
         m.multiplicity = mult as usize;
+    }
+    // BOTH callbacks below are RESTRICTED -- `solve_rhf` plus either
+    // `rhf_gradient` or `ks_gradient_closed`, and `FrequencyReference::Rhf`.
+    // Accepting a multiplicity > 1 would run a doublet through a closed-shell
+    // reference and return a confident answer for a state that does not exist.
+    // Refuse rather than silently choosing the wrong physics.
+    if m.multiplicity != 1 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "run_saddle currently supports closed-shell (multiplicity = 1) \
+             references only; got multiplicity = {}. Both the gradient and the \
+             Hessian callbacks are restricted, so an open-shell request would \
+             be answered with a closed-shell reference rather than refused.",
+            m.multiplicity
+        )));
+    }
+    // ECP must be applied BEFORE the first SCF: it changes the electron count,
+    // so a search started without it optimizes a different molecule than the
+    // one the caller asked about.
+    {
+        let bs = ferric_core::basis::bundled(basis_name).map_err(make_err)?;
+        m.apply_ecp(&bs);
     }
     let scf_cfg = RhfConfig {
         xc: xc.map(|s| s.to_string()),
