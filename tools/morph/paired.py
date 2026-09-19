@@ -107,8 +107,21 @@ class PairedResult:
 
     @property
     def variance_reduction(self) -> float:
-        """How many times smaller the paired SEM is. 1.0 = pairing bought nothing."""
-        if not (self.sem_paired > 0) or not math.isfinite(self.sem_unpaired):
+        """How many times smaller the paired SEM is. 1.0 = pairing bought nothing.
+
+        `inf` when the paired SEM is exactly zero: the pairing removed ALL the
+        variance, which is a result rather than a failure to compute one.
+        """
+        if not math.isfinite(self.sem_unpaired):
+            return float("nan")
+        if self.sem_paired == 0.0:
+            # The paired differences are IDENTICAL, so the pairing removed all
+            # of the variance. That is a real, and the best possible, outcome --
+            # the self-anchor hits it exactly. Returning NaN would report it as
+            # "could not be computed" and a caller filtering on isfinite would
+            # silently drop the strongest result in the set.
+            return float("inf") if self.sem_unpaired > 0 else float("nan")
+        if self.sem_paired < 0 or not math.isfinite(self.sem_paired):
             return float("nan")
         return self.sem_unpaired / self.sem_paired
 
@@ -163,7 +176,7 @@ def pair_poses_by_scaffold(
     smiles_b: str,
     *,
     random_seed: int = 0xF00D,
-    scaffold_tolerance: float = 1e-6,
+    scaffold_tolerance: float = 0.5,
     relax: bool = True,
 ) -> list[PairedPose]:
     """Build one B pose per A pose, holding the shared scaffold fixed.
@@ -172,6 +185,11 @@ def pair_poses_by_scaffold(
     B is computed and B is embedded with those atoms CONSTRAINED to the parent's
     coordinates, so the scaffold is shared by construction rather than by
     alignment.
+
+    `scaffold_tolerance` is the drift a returned pose may carry, in Angstrom,
+    judged AFTER relaxation. The measured relaxed range is 0.011-0.128 A, so
+    the 0.5 default passes those comfortably while rejecting a pose whose
+    scaffold has genuinely moved.
 
     `relax` defaults to TRUE and should stay that way. With it off the scaffold
     is pinned hard, which MEASURABLY fails the self-anchor by +13.8 kcal/mol
@@ -238,6 +256,24 @@ def pair_poses_by_scaffold(
             )
             continue
 
+        # STAMP THE ORIGINAL INDEX ON EVERY ATOM BEFORE RemoveHs.
+        #
+        # `RemoveHs(sanitize=False)` RETAINS degree-zero, isotopic and hydride
+        # hydrogens -- RDKit even warns "not removing hydrogen atom without
+        # neighbors". `mol_a` is perceived from raw XYZ, so a stray atom easily
+        # ends up degree zero and survives. The obvious mapping ("the nth heavy
+        # atom of the stripped molecule is the nth non-H of the original") is
+        # then WRONG for every atom after the retained hydrogen, and an
+        # in-range shifted index pairs the wrong atoms SILENTLY.
+        #
+        # `scaffold_max_dev` CANNOT CATCH THAT: it measures the same `pairs`
+        # used to build `coord_map`, so a wrong correspondence is pinned to the
+        # parent's coordinates and then measures as ZERO drift. The check and
+        # the construction share the error -- an anchor cannot see a defect it
+        # is downstream of.
+        for m_ in (mol_a, mol_b):
+            for at in m_.GetAtoms():
+                at.SetIntProp("_pairIdx", at.GetIdx())
         a_heavy = Chem.RemoveHs(mol_a, sanitize=False)
         b_heavy = Chem.RemoveHs(mol_b, sanitize=False)
         mcs = rdFMCS.FindMCS(
@@ -293,13 +329,17 @@ def pair_poses_by_scaffold(
             )
             continue
 
-        # Heavy-atom indices -> full-molecule indices. RemoveHs preserves the
-        # order of the non-hydrogens, so position among heavies is the key.
-        a_full = [j for j, s in enumerate(symbols_a) if s != "H"]
-        b_full = [a.GetIdx() for a in mol_b.GetAtoms() if a.GetAtomicNum() != 1]
+        # Stripped index -> ORIGINAL index, read off the stamp rather than
+        # inferred from position. Correct whether or not RemoveHs kept an H.
         try:
-            pairs = [(a_full[x], b_full[y]) for x, y in zip(a_match, b_match)]
-        except IndexError:
+            pairs = [
+                (
+                    a_heavy.GetAtomWithIdx(x).GetIntProp("_pairIdx"),
+                    b_heavy.GetAtomWithIdx(y).GetIntProp("_pairIdx"),
+                )
+                for x, y in zip(a_match, b_match)
+            ]
+        except (KeyError, RuntimeError, IndexError):
             out.append(
                 PairedPose(
                     i,
@@ -309,6 +349,30 @@ def pair_poses_by_scaffold(
                     [],
                     [],
                     error="heavy-atom index map inconsistent with MCS",
+                )
+            )
+            continue
+
+        # INDEPENDENT of the index arithmetic above: a pair whose two atoms are
+        # different ELEMENTS means the map is wrong, whatever the MCS thought,
+        # because the pattern matched on element identity. This check does not
+        # share the failure mode it guards, which is the point -- see
+        # `scaffold_max_dev`, which does.
+        sb_all = [a.GetSymbol() for a in mol_b.GetAtoms()]
+        mism = [(ai, bj) for ai, bj in pairs if symbols_a[ai] != sb_all[bj]]
+        if mism:
+            out.append(
+                PairedPose(
+                    i,
+                    list(symbols_a),
+                    ca,
+                    [],
+                    [],
+                    [],
+                    error=(
+                        f"scaffold map pairs different elements at {mism[:3]}; "
+                        "the heavy-atom index map is wrong"
+                    ),
                 )
             )
             continue
@@ -364,15 +428,27 @@ def pair_poses_by_scaffold(
         # about. Report the deviation; let the caller decide.
         dev = max((math.dist(ca[ai], cb[bj]) for ai, bj in pairs), default=0.0)
         pp = PairedPose(i, list(symbols_a), ca, sb, cb, pairs, scaffold_max_dev=dev)
-        if dev > scaffold_tolerance and dev > 0.5:
-            pp.error = (
-                f"scaffold drifted {dev:.2f} A from the parent pose; the "
-                "pairing is not real and a paired difference over it would be "
-                "a different quantity, not a quieter one"
-            )
         out.append(pp)
 
-    return relax_substituent(out) if relax else out
+    # THE DRIFT GUARD RUNS AFTER RELAXATION, NOT BEFORE.
+    #
+    # It used to read `dev > scaffold_tolerance and dev > 0.5`, which is just
+    # `dev > max(scaffold_tolerance, 0.5)`: with the old 1e-6 default the
+    # parameter could not lower the threshold and so did nothing at all. Worse,
+    # it ran BEFORE `relax_substituent`, where drift is zero by construction
+    # (coordMap pins the scaffold) -- the guard was checking the one stage that
+    # cannot fail and skipping the one that can. The default is now the real
+    # threshold, and drift is judged on the poses actually returned.
+    out = relax_substituent(out) if relax else out
+    for pp in out:
+        if pp.usable and pp.scaffold_max_dev > scaffold_tolerance:
+            pp.error = (
+                f"scaffold drifted {pp.scaffold_max_dev:.3f} A from the parent "
+                f"pose (tolerance {scaffold_tolerance:g}); the pairing is not "
+                "real, and a paired difference over it is a different "
+                "quantity rather than a quieter one"
+            )
+    return out
 
 
 def _mol_from_symbols_coords(symbols: Sequence[str], coords: Coords):

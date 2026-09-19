@@ -61,7 +61,16 @@ UNPAIRED design over noise that is largely COMMON to the two molecules: the
 scatter is pose-conformational, a property of the scaffold in the pocket, while
 a substitution changes a handful of atoms and leaves ~68 where they were.
 
-| pair poses by scaffold (M17) | ddE SEM 4.07 -> 0.221-0.615 in the relaxed arm | **PROVISIONAL -- gas-phase MMFF only** |
+| pair poses by scaffold (M17) | paired SEM **0.221-0.615**, vs **0.459-0.742 unpaired ON THE SAME 24 POSES** | **PROVISIONAL -- gas-phase MMFF only** |
+
+**The comparison in that row is same-data, and that matters.** The 4.07 above is
+the n=100 UNPAIRED SEM from a different experiment; quoting `4.07 -> 0.221` as
+the effect of pairing would credit pairing with the difference between two
+experiments. `paired_ddE` computes both estimators from the SAME 24 poses, and
+the honest isolated gain is **1.21x (Cl) to 2.42x (F)** -- with the self-anchor
+and N-methyl far higher because their noise is almost entirely common. What
+crosses the 1-2 kcal/mol line is the ABSOLUTE paired SEM, which is a
+cross-experiment comparison and is labelled as one.
 
 `var(ddE_paired) = 2*sd^2*(1-rho)`, so the win is entirely in `rho`, and `rho`
 is what a pocket could destroy. Note that a shared random SEED is not a pairing:
@@ -186,7 +195,8 @@ tested.
 
 **Not yet, but no longer ruled out (M17):** a per-candidate ddE at 1-2 kcal/mol,
 via a PAIRED estimator rather than a quieter ensemble. Gas-phase MMFF gives SEM
-0.221-0.615 where the unpaired protocol gives 4.07. Untested in a pocket, which
+0.221-0.615, against 0.459-0.742 unpaired on the SAME poses (the n=100 4.07 is
+a different experiment). Untested in a pocket, which
 is the test that decides it.
 
 **May not, part 1:** "put this group at THIS position." The cheap gate cannot
