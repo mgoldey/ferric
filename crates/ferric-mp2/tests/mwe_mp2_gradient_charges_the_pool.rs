@@ -79,14 +79,23 @@ struct Fixture {
     cfg: RiMp2Config,
 }
 
-fn fixture() -> Fixture {
-    fixture_in("sto-3g")
+fn h2o() -> Molecule {
+    Molecule::parse_xyz(
+        "3\nH2O\nO 0 0 0\nH 0 0.757 0.587\nH 0 -0.757 0.587\n",
+        0,
+        1,
+    )
+    .unwrap()
 }
 
-/// [`fixture`] with an explicit orbital basis, for the per-worker probe, which
-/// needs the transients to be a non-negligible fraction of the working set.
-fn fixture_in(obs_name: &str) -> Fixture {
-    let mol = h2();
+fn fixture() -> Fixture {
+    fixture_for(h2(), "sto-3g")
+}
+
+/// [`fixture`] with an explicit molecule and orbital basis, for the per-worker
+/// probe, which needs a shape where the gradient's own planes -- not an
+/// upstream tensor -- set the pool floor.
+fn fixture_for(mol: Molecule, obs_name: &str) -> Fixture {
     let obs_bs = basis::bundled(obs_name).unwrap();
     let aux_bs = basis::bundled("cc-pvdz-ri").unwrap();
     let obs = PreparedBasis::new(&mol, &obs_bs).unwrap();
@@ -203,10 +212,16 @@ fn the_mo_side_gradient_planes_refuse_under_their_own_name() {
 #[test]
 fn the_per_worker_transient_charge_does_not_refuse_a_job_that_fits() {
     let _s = CleanSlot::acquire();
-    // cc-pVDZ, not STO-3G: at the minimal basis the per-worker transients are
-    // a rounding error against the hard planes, and the probe's own
-    // discrimination assertion below would (correctly) refuse to run.
-    let fx = fixture_in("cc-pvdz");
+    // H2O/STO-3G, and the choice is load-bearing -- see the slack argument at
+    // the `hard_floor` derivation below. What this shape buys is that the
+    // gradient's OWN hard planes (76608 B) exceed the upstream DF 3-index
+    // tensor (32928 B), so the pool floor is set INSIDE the function under
+    // test and there is no upstream slack for a hard per-worker charge to
+    // hide in. H2/cc-pVDZ, which this probe used before, has it the other way
+    // round (df3 22400 B > hard 12320 B) and leaves 10080 B of slack -- enough
+    // that the soft->hard mutation SURVIVED at 2 rayon workers. MEASURED, both
+    // shapes, at 1/2/4/12 workers.
+    let fx = fixture_for(h2o(), "sto-3g");
 
     // Size the probe from the HARD planes only, computed independently here.
     //
@@ -218,10 +233,9 @@ fn the_per_worker_transient_charge_does_not_refuse_a_job_that_fits() {
     //
     // The hard planes are x_ov + y_ov + c_fit (each naux x nov) + gamma_2c
     // (naux x naux); the per-worker transients sit on top of them. A pool
-    // holding a little over the hard planes must therefore still COMPLETE if
-    // the transient charge is soft, and REFUSE if it is hard -- provided the
-    // transient is big enough to matter, which is why this uses a real basis
-    // rather than the minimal one the other tests use.
+    // holding exactly the hard planes must therefore still COMPLETE if the
+    // transient charge is soft, and REFUSE if it is hard -- provided nothing
+    // else leaves room for the transient, which the slack guard below pins.
     let naux = fx.dfbs.nbasis();
     let nocc = (fx.mol.nelec() / 2) as usize;
     let nvir = fx.obs.nbasis() - nocc;
@@ -236,38 +250,69 @@ fn the_per_worker_transient_charge_does_not_refuse_a_job_that_fits() {
     let g3c = max_np * nbas * nbas * 8;
     let per_worker = workers * tt_i.max(g3c);
 
-    // The probe only MEANS anything if the transient is a real fraction of the
-    // pool. If it is negligible at this size, a hard charge would fit anyway
-    // and this test cannot distinguish soft from hard -- say so rather than
-    // report a green that proves nothing.
-    assert!(
-        per_worker * 4 > hard,
-        "probe is not discriminating at this system size: per-worker \
-         transients are {per_worker} B against {hard} B of hard planes, so a \
-         HARD per-worker charge would fit here too and this test could not \
-         tell soft from hard. Use a larger basis."
-    );
-
     // The pool must also clear everything UPSTREAM of this function (the DF
     // 3-index tensor and the z-vector pipeline), or the probe refuses for a
     // reason that has nothing to do with the per-worker charge -- MEASURED:
     // a pool sized at `hard` alone came back naming "DF 3-index (P|mn)
-    // in-core". Measure the full peak and give the probe that much, MINUS
-    // enough that the per-worker transients cannot also fit.
-    install_global(MemoryPool::with_capacity_bytes(8_000_000_000));
-    fx.gradient().expect("ample pool must admit");
-    let peak = global().expect("pool").peak_bytes();
-    clear_global();
+    // in-core", because `b_ov` is still outstanding when this function's own
+    // planes go live and `hard` alone does not describe that co-residency.
+    //
+    // The capacity is DERIVED, not read off an ample run's `peak_bytes()`. A
+    // soft charge that FITS is still debited and still lifts the high-water
+    // mark, so the peak tracks the worker count -- MEASURED on the H2/cc-pVDZ
+    // shape this probe used before: ample-run peak = 24416 / 30336 / 62336 B
+    // at 2 / 4 / 12 rayon workers over a floor that never moved from 24416 B.
+    // Subtracting a FRACTION of `per_worker` from that thread-varying number
+    // is what made this test thread-dependent: `peak - per_worker/2` came to
+    // 38336 B at 12 workers (cleared the floor, green) but 22336 B at 4 and
+    // 20416 B at 2 (below it, so the run refused on the DF 3-index plane and
+    // the probe blamed the soft charge). The floor below reads only basis
+    // dimensions, so it cannot move with RAYON_NUM_THREADS.
+    //
+    //     floor = 3*naux*nov*8 + naux*naux*8  (this function's hard planes)
+    //           + naux*nov*8                  (b_ov, still outstanding)
+    let b_ov = naux * nov * 8;
+    let df3 = naux * nbas * nbas * 8;
+    let hard_floor = hard + b_ov;
 
-    // Only meaningful if the peak genuinely has no room for the transients
-    // once we shave them off.
+    // DISCRIMINATION GUARD, and the one that picked this molecule/basis.
+    //
+    // The upstream DF 3-index tensor is RELEASED before this function's planes
+    // go live. So if that tensor were the tallest hard plane, the pool would
+    // have to be sized for IT, and the difference would be slack sitting free
+    // at the moment the per-worker transient is charged:
+    //
+    //     slack = max(0, df3 - hard)
+    //
+    // A per-worker term smaller than that slack fits even when hard-charged,
+    // and the probe silently stops discriminating. MEASURED on H2/cc-pVDZ:
+    // df3 = 22400 B against hard = 12320 B leaves 10080 B of slack, and the
+    // soft->hard mutation SURVIVED at 2 rayon workers (per_worker = 8000 B,
+    // which fits) while being caught at 4 and 12. H2O/STO-3G inverts that --
+    // hard = 76608 B against df3 = 32928 B, so the floor is set INSIDE the
+    // function under test and the slack is zero at every worker count.
+    let slack = df3.saturating_sub(hard);
     assert!(
-        peak > per_worker,
-        "peak {peak} B is below the per-worker term {per_worker} B; cannot \
-         construct a pool that admits the hard planes but not the transients"
+        per_worker > slack,
+        "probe is not discriminating at {workers} rayon workers: the \
+         per-worker transient is {per_worker} B but {slack} B is free at the \
+         moment it is charged (the upstream DF 3-index tensor, {df3} B, is \
+         taller than this function's own hard planes, {hard} B, and is \
+         released before them). A HARD per-worker charge would fit in that \
+         slack, so this test could not tell soft from hard. Pick a shape where \
+         the gradient's own planes set the floor."
     );
-    install_global(MemoryPool::with_capacity_bytes(peak - per_worker / 2));
+
+    // Run at EXACTLY the derived floor. Every hard plane fits and there is not
+    // one spare byte for the per-worker transient, so a HARD per-worker charge
+    // must refuse here and a SOFT one must shrug and run at lower concurrency.
+    //
+    // MEASURED on H2O/STO-3G: the derived floor is 83328 B (= 76608 B of
+    // MO-side planes + 6720 B of b_ov) and the gradient admits at exactly that
+    // capacity at 1, 2, 4 and 12 rayon workers.
+    install_global(MemoryPool::with_capacity_bytes(hard_floor));
     let got = fx.gradient();
+    let floor_peak = global().expect("pool").peak_bytes();
     clear_global();
 
     assert!(
@@ -277,5 +322,18 @@ fn the_per_worker_transient_charge_does_not_refuse_a_job_that_fits() {
          concurrency is available, never to a refusal -- otherwise admission \
          depends on RAYON_NUM_THREADS, and the same job is accepted on 4 \
          workers and refused on 12."
+    );
+
+    // The floor must be TIGHT, or the assertion above is satisfied by slack
+    // rather than by the charge being soft. Requiring the run to high-water
+    // the pool EXACTLY is what keeps the probe discriminating -- and it fires
+    // if a hard plane is ever added or removed, instead of letting this test
+    // quietly measure someone else's charge (the masking the header warns of).
+    assert_eq!(
+        floor_peak, hard_floor,
+        "the derived hard floor ({hard_floor} B = MO-side planes {hard} B + \
+         b_ov {b_ov} B) is not tight: the run high-watered {floor_peak} B. \
+         With slack in the pool a HARD per-worker charge would fit here too \
+         and the assertion above would pass for the wrong reason."
     );
 }
