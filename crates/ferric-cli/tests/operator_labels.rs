@@ -24,7 +24,34 @@ use std::fs;
 /// The function name and this test's own doc comment stay accurate to WHAT
 /// is being guarded; only the file path underneath changed.
 fn main_rs() -> String {
-    fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs")).expect("read lib.rs")
+    // Resolve the SOURCE at run time. `env!("CARGO_MANIFEST_DIR")` is baked in
+    // at compile time, so under `cargo nextest archive` -- built in one job,
+    // run in another -- it names a directory that no longer exists and this
+    // guard fails for a reason unrelated to the labels it checks.
+    //
+    // Unlike the other tests here, this one reads a SOURCE FILE rather than
+    // spawning the binary, so there is nothing in the archive to point at: it
+    // has to find the checkout.
+    let looks_like_root = |p: &std::path::Path| {
+        p.join("Cargo.toml").is_file() && p.join("crates/ferric-cli/src/lib.rs").is_file()
+    };
+    let mut root: Option<std::path::PathBuf> = None;
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut here: Option<&std::path::Path> = Some(cwd.as_path());
+        while let Some(p) = here {
+            if looks_like_root(p) {
+                root = Some(p.to_path_buf());
+                break;
+            }
+            here = p.parent();
+        }
+    }
+    let path = root
+        .map(|r| r.join("crates/ferric-cli/src/lib.rs"))
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"))
+        });
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
 /// The five rs-mp2-rpa component lines must interpolate `{sr_name}`/`{lr_name}`,
