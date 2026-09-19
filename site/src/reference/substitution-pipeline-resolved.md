@@ -206,8 +206,27 @@ from this would be reporting noise.
   only a handful of poses, and that is the gate the campaign actually failed
   at n=1 (v1's selection-bias artifact). **Build it for gates, not for
   rankings**, and size n from this table rather than from intuition.
-* **Tier 4 unvalidated** -- M10 recorded it does not fit the funnel as
-  configured. Dispersion (#99) not yet merged.
+* ~~**Tier 4 unvalidated -- M10 recorded it does not fit.**~~ **STALE, and it
+  cites a title M10 itself retracted on 2026-09-02.** Checked against the code
+  2026-09-19:
+
+  - **Cost**: RESOLVED. 612.4 s (10.2 min), 18 iterations, converged, for the
+    71-atom neutral acid at STO-3G/PBE. The ">57 min, did not finish" was
+    MEMORY CONTENTION -- a 7.26 GB auto-budget against a ~9.5 GB need, paging
+    until the OOM killer fired -- not DFT cost.
+  - **The 0-of-5 survivor failure**: both causes FIXED and verified present.
+    (a) the driver declared `net_charge=-1` on NEUTRAL structures, which asks
+    for an electron that does not exist; now deprotonates the STRUCTURE
+    (`Isomer.deprotonated`, `tools/isomers/model.py:44`) with
+    `test_deprotonation_conserves_electron_count` pinning it. (b) ring
+    contractions that SEVER a ring produced fragment pairs; now rejected at
+    enumeration (`enumerate.py:82`) and again at tier 1 (`tiers.py:125`).
+
+  What remains is narrower and worth stating as itself: tier 4 has never
+  produced a survivor list end to end SINCE those fixes, so "it works" rests on
+  the per-bug tests rather than on a completed funnel run. Dispersion (#99) is
+  also still unmerged, so a halogen/CF3 scan would be missing its dominant
+  attractive term.
 * **No ranking validated end to end.** VERIFIED 2026-09-19 that the repo
   contains no experimental affinity data at all (grepped `experiments/` and
   `testdata/` for IC50/Ki/Kd/pChEMBL: zero hits), so this is blocked on DATA
