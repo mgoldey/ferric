@@ -373,3 +373,24 @@ def test_a_scalar_floor_behaves_exactly_as_before():
     assert "EVERY ddE (2/2)" in joined and "4.07" in joined, joined
     assert "per-candidate" not in joined
     figs.close()
+
+
+def test_a_below_floor_cell_and_an_unmeasured_one_do_not_get_lumped_together():
+    """ "The others carry an ordering" must not sweep in the unmeasured cells.
+
+    One cell below its floor, one cell with no floor at all, one resolved. The
+    unmeasured cell is not "another cell that carries an ordering" -- saying so
+    contradicts the unbounded caveat and hands back the ordering the noise
+    floor exists to withhold.
+    """
+    from tools.viz.report import campaign_report
+
+    figs = campaign_report(
+        ddE_noise={("F", "S1"): 5.0, ("Cl", "S1"): 0.1},
+        ddE={("F", "S1"): 0.4, ("Cl", "S1"): 9.9, ("Br", "S1"): 0.4},
+    )
+    joined = " ".join(figs.caveats)
+    assert "WITH A MEASURED FLOOR" in joined, joined
+    assert "1 of 2" in joined, f"should count only the 2 measured cells: {joined}"
+    assert "unmeasured cell(s) carry none" in joined, joined
+    figs.close()

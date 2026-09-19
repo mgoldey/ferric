@@ -244,10 +244,21 @@ def _build(
                 "tried, not which are better. Do not order them."
             )
         elif below:
+            # "the others" must mean the others WITH A MEASURED FLOOR. A cell
+            # with no floor is not resolved, it is unjudged -- lumping it in
+            # here contradicts the unbounded caveat added just above and hands
+            # back exactly the ordering this argument exists to withhold.
+            measured = len(real) - len(unbounded)
             caveats.append(
-                f"{len(below)} of {len(real)} ddE values are inside the "
-                f"{floor_desc} {unit} noise floor and are greyed; only the "
-                "others carry an ordering."
+                f"{len(below)} of {measured} ddE values WITH A MEASURED FLOOR "
+                f"are inside the {floor_desc} {unit} noise floor and are "
+                f"greyed; only the remaining {measured - len(below)} measured "
+                "cells carry an ordering"
+                + (
+                    f" (the {len(unbounded)} unmeasured cell(s) carry none)."
+                    if unbounded
+                    else "."
+                )
             )
         # The site axis is a separate, harder limit than the noise floor.
         sites = {k[1] for k in ddE}
