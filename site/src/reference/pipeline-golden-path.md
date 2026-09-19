@@ -846,6 +846,33 @@ C4. Verify the TS: harmonic_frequencies -> n_imaginary() == 1, AND the
 C5. Barrier = E(TS) - E(reactant), with ZPE from the same frequency run.
 ```
 
+#### C0-C5 VERIFIED reachable from PYTHON, end to end (2026-09-19)
+
+The steps landed one at a time across several PRs, and the failure mode is a
+procedure that READS as complete while one step lives only in Rust. That
+happened twice: C3 until `run_saddle` was bound, and C4's mode vectors until
+#97 -- after which this document carried a stale "MODE VECTORS are Rust-only"
+caveat for a day.
+
+So it is now asserted by execution rather than by reading:
+
+```
+C0/C1 QM region + link atoms     ferric.QmmmSystem
+C2    optimize reactant/product  ferric.run_optimize_qmmm
+C3    FIND the transition state  ferric.run_saddle
+C4    verify                     ferric.run_frequencies
+C5    barrier                    arithmetic on C2/C3 energies
+
+C4a count   : 1 mode, 0 imaginary (H2 at equilibrium IS a minimum)
+C4b vectors : normal_modes present, 1x6 -- 3N components per mode
+```
+
+Pinned by `crates/ferric-python/tests/test_saddle.py`, and mutation-tested:
+renaming a checked attribute fails the test, so it is not a tautology over
+`hasattr`. It asserts REACHABILITY only -- each step has its own correctness
+tests; what this catches is a step quietly leaving the language `tools/` is
+written in.
+
 #### C1 and C4 VERIFIED to work (2026-09-18)
 
 Run against the merged extension, so these are not claims:
