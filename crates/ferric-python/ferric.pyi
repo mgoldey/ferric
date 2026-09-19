@@ -1128,8 +1128,116 @@ def run_frequencies(
     xc: str | None = None,
     delta: float | None = None,
     multiplicity: int | None = None,
+    point_charges: list[tuple[float, float, float, float]] | None = None,
+    external_field: tuple[float, float, float] | None = None,
 ) -> FrequencyResult:
-    """Harmonic vibrational frequencies via finite-difference of analytic gradients."""
+    """Harmonic vibrational frequencies via finite-difference of analytic gradients.
+
+    `point_charges` ((q, x, y, z) in Bohr) and `external_field` embed the QM
+    region in an MM field, the same way `run_optimize` does.
+    """
+    ...
+
+class SaddleResult:
+    """A first-order saddle point found by P-RFO."""
+
+    @property
+    def energy(self) -> float: ...
+    @property
+    def converged(self) -> bool: ...
+    @property
+    def steps(self) -> int: ...
+    @property
+    def n_imaginary(self) -> int: ...
+    @property
+    def lowest_eigenvalue(self) -> float: ...
+    @property
+    def symbols(self) -> list[str]: ...
+    @property
+    def coords(self) -> list[tuple[float, float, float]]: ...
+    @property
+    def imaginary_mode(self) -> list[float]:
+        """The followed mode as a flat 3N displacement vector."""
+        ...
+
+    def is_transition_state(self) -> bool:
+        """Gradient convergence AND exactly one imaginary mode.
+
+        A method rather than a property on purpose: convergence alone is
+        satisfied by every stationary point, so reading `converged` as "this is
+        a transition state" is the mistake this guards.
+        """
+        ...
+
+class IrcBranch:
+    """One direction of an intrinsic reaction coordinate walk."""
+
+    @property
+    def energy(self) -> float: ...
+    @property
+    def converged(self) -> bool:
+        """True when the walk reached a flat region, NOT that the endpoint is a
+        minimum -- confirming that needs a Hessian there."""
+        ...
+    @property
+    def steps(self) -> int: ...
+    @property
+    def symbols(self) -> list[str]: ...
+    @property
+    def coords(self) -> list[tuple[float, float, float]]: ...
+
+class IrcResult:
+    """Both branches of an IRC, and the barriers they imply."""
+
+    @property
+    def saddle_energy(self) -> float: ...
+    @property
+    def forward(self) -> IrcBranch: ...
+    @property
+    def reverse(self) -> IrcBranch: ...
+    def forward_barrier(self) -> float: ...
+    def reverse_barrier(self) -> float: ...
+    def both_converged(self) -> bool: ...
+
+def run_saddle(
+    mol: Molecule,
+    basis_name: str,
+    xc: str | None = None,
+    multiplicity: int | None = None,
+    max_steps: int | None = None,
+    trust_radius: float | None = None,
+    follow_mode: int | None = None,
+    delta: float | None = None,
+    point_charges: list[tuple[float, float, float, float]] | None = None,
+    external_field: tuple[float, float, float] | None = None,
+) -> SaddleResult:
+    """Partitioned rational function optimization to a first-order saddle.
+
+    Closed-shell references only. Starting with no negative projected Hessian
+    eigenvalue is a hard error naming that eigenvalue, rather than a converged
+    minimum labelled as a transition state.
+    """
+    ...
+
+def run_irc(
+    mol: Molecule,
+    basis_name: str,
+    mode: list[float],
+    xc: str | None = None,
+    multiplicity: int | None = None,
+    step: float | None = None,
+    max_steps: int | None = None,
+    g_max_thresh: float | None = None,
+    initial_displacement: float | None = None,
+    point_charges: list[tuple[float, float, float, float]] | None = None,
+    external_field: tuple[float, float, float] | None = None,
+) -> IrcResult:
+    """Follow the intrinsic reaction coordinate both ways from a saddle.
+
+    `mode` is the imaginary-mode VECTOR (3N, e.g. `SaddleResult.imaginary_mode`),
+    not an index. Walk it in the SAME field the saddle was found in: a
+    gas-phase walk from an embedded saddle descends a different surface.
+    """
     ...
 
 def run_rimp2(
