@@ -398,3 +398,47 @@ def test_external_field_is_threaded_too_not_just_point_charges():
         f"{fld_s.energy}; run_irc is on a different surface, which is what a "
         "dropped external_field= looks like"
     )
+
+
+def test_imaginary_mode_is_None_when_the_point_is_not_a_transition_state():
+    """The stub declares `list[float] | None`; this is the evidence for it.
+
+    `find_saddle` sets `imaginary_mode` only when `n_imaginary == 1`. A
+    gradient-converged point with zero or two imaginary modes is not a
+    transition state and has no single mode to follow. Without the `| None` a
+    type checker accepts `run_irc(mode=result.imaginary_mode)` unguarded, and
+    it fails at the boundary instead of at the keyboard.
+
+    Asserted as an INVARIANT over whatever the search returns rather than by
+    constructing a two-imaginary-mode case, which is not reliably reachable:
+    `mode is None` if and only if `n_imaginary != 1`.
+    """
+    mol = _near_planar_ammonia()
+    for pc in (None, _SYMMETRIC_CHARGES):
+        r = ferric.run_saddle(mol, "sto-3g", max_steps=40, point_charges=pc)
+        if r.n_imaginary == 1:
+            assert r.imaginary_mode is not None, (
+                "exactly one imaginary mode but no vector to follow"
+            )
+            assert len(r.imaginary_mode) == 3 * len(r.symbols), (
+                "the mode must be a flat 3N Cartesian vector"
+            )
+        else:
+            assert r.imaginary_mode is None, (
+                f"n_imaginary={r.n_imaginary} but a mode was returned; there is "
+                "no single mode to follow unless exactly one is imaginary"
+            )
+
+
+def test_a_minimum_basin_never_yields_a_mode_to_follow():
+    """The reachable half of the invariant: a refusal carries no mode.
+
+    H2 at equilibrium has nothing to climb, so the search refuses. The point of
+    the test is that a caller cannot get a mode out of a failed search and feed
+    it to `run_irc`.
+    """
+    with pytest.raises(Exception) as exc:
+        ferric.run_saddle(_h2(0.74), "sto-3g", max_steps=10)
+    assert (
+        "negative" in str(exc.value).lower() or "eigenvalue" in str(exc.value).lower()
+    )

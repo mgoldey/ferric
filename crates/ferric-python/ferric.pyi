@@ -1156,8 +1156,16 @@ class SaddleResult:
     @property
     def coords(self) -> list[tuple[float, float, float]]: ...
     @property
-    def imaginary_mode(self) -> list[float]:
-        """The followed mode as a flat 3N displacement vector."""
+    def imaginary_mode(self) -> list[float] | None:
+        """The followed mode as a flat 3N Cartesian displacement vector.
+
+        **`None` unless `n_imaginary == 1`.** A gradient-converged point with
+        zero or two imaginary modes is not a transition state and has no single
+        mode to follow, so there is nothing to return. Check
+        `is_transition_state()` before passing this to `run_irc`, which needs a
+        real vector -- the typed `| None` is what stops a checker accepting
+        `run_irc(mode=result.imaginary_mode)` unguarded.
+        """
         ...
 
     def is_transition_state(self) -> bool:
@@ -1222,7 +1230,7 @@ def run_saddle(
 def run_irc(
     mol: Molecule,
     basis_name: str,
-    mode: list[float],
+    mode: list[float],  # NOT `| None`: see SaddleResult.imaginary_mode
     xc: str | None = None,
     multiplicity: int | None = None,
     step: float | None = None,
