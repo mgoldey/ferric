@@ -224,3 +224,107 @@ def test_the_saddle_to_IRC_handoff_runs_FROM_PYTHON():
     assert abs(irc.forward.energy - irc.reverse.energy) < 1e-6
     for b in (irc.forward_barrier(), irc.reverse_barrier()):
         assert b > 0, f"a barrier of {b} Ha means the endpoint is ABOVE the saddle"
+
+
+# --- the catalyst branch IN AN MM FIELD --------------------------------------
+#
+# `run_optimize` took `point_charges=` and `run_saddle`, `run_irc` and
+# `run_frequencies` did not, so the QM/MM catalyst workflow could optimize an
+# embedded MINIMUM from Python and then had to leave the field to find the
+# saddle, take its frequencies, or follow the path. Every Rust piece already
+# threaded `external_potential`; only the bindings were missing.
+
+#: A SYMMETRIC pair on the C3 axis. Symmetry matters: an ANTISYMMETRIC pair
+#: makes planar NH3 non-stationary and the search correctly fails, which looks
+#: like a solver bug. (q, x, y, z) in Bohr.
+_SYMMETRIC_CHARGES = [(-0.4, 0.0, 0.0, 6.0), (-0.4, 0.0, 0.0, -6.0)]
+
+
+def _near_planar_ammonia():
+    return ferric.Molecule.from_xyz_string(
+        "4\nnh3 near planar\n"
+        "N  0.0000  0.0000  0.0000\n"
+        "H  0.0000  1.0100  0.1000\n"
+        "H  0.8747 -0.5050  0.1000\n"
+        "H -0.8747 -0.5050  0.1000\n"
+    )
+
+
+def test_an_mm_field_changes_the_saddle_energy():
+    """The threading must be LIVE, not merely accepted.
+
+    A kwarg that parses and is then dropped gives the vacuum answer while
+    reading as an embedded calculation -- the failure mode that is invisible
+    unless the two numbers are compared.
+    """
+    mol = _near_planar_ammonia()
+    vac = ferric.run_saddle(mol, "sto-3g", max_steps=40)
+    fld = ferric.run_saddle(
+        mol, "sto-3g", max_steps=40, point_charges=_SYMMETRIC_CHARGES
+    )
+    assert vac.converged and fld.converged
+    assert abs(vac.energy - fld.energy) > 1e-4, (
+        f"the MM field did not move the saddle energy ({vac.energy} vs "
+        f"{fld.energy}); point_charges= is being accepted and ignored"
+    )
+    # Still a transition state, so the field perturbed the surface rather than
+    # destroying the stationary point.
+    assert fld.n_imaginary == 1
+
+
+def test_an_mm_field_changes_the_frequencies():
+    mol = _near_planar_ammonia()
+    vac = ferric.run_frequencies(mol, "sto-3g")
+    fld = ferric.run_frequencies(mol, "sto-3g", point_charges=_SYMMETRIC_CHARGES)
+    assert abs(vac.energy - fld.energy) > 1e-4, "point_charges= ignored"
+    assert min(vac.frequencies) < 0 and min(fld.frequencies) < 0
+    assert abs(min(vac.frequencies) - min(fld.frequencies)) > 1.0, (
+        "the imaginary mode is identical in and out of the field, which a real "
+        "perturbation of the Hessian would not leave unchanged"
+    )
+
+
+def test_the_whole_embedded_chain_runs_and_the_barrier_moves():
+    """C3 -> C5 IN THE FIELD: saddle, then IRC in the SAME field.
+
+    The barrier is the deliverable, and it must be computed on ONE surface.
+    A gas-phase saddle followed by an embedded IRC descends a different surface
+    than the one the saddle sits on.
+    """
+    mol = _near_planar_ammonia()
+
+    def barrier(pc):
+        sad = ferric.run_saddle(mol, "sto-3g", max_steps=40, point_charges=pc)
+        assert sad.converged and sad.n_imaginary == 1
+        xyz = f"{len(sad.symbols)}\nsaddle\n" + "".join(
+            f"{s} {c[0]:.8f} {c[1]:.8f} {c[2]:.8f}\n"
+            for s, c in zip(sad.symbols, sad.coords)
+        )
+        irc = ferric.run_irc(
+            ferric.Molecule.from_xyz_string(xyz),
+            "sto-3g",
+            mode=sad.imaginary_mode,
+            max_steps=200,
+            step=0.15,
+            point_charges=pc,
+        )
+        return irc.forward_barrier(), irc.reverse_barrier()
+
+    hartree_to_kcal = 627.5094740631
+    vf, vr = barrier(None)
+    ff, fr = barrier(_SYMMETRIC_CHARGES)
+
+    # Vacuum NH3 inversion is symmetric by mirror symmetry -- a strong internal
+    # check that the walk stayed on the umbrella coordinate.
+    assert abs(vf - vr) < 1e-5, f"vacuum branches disagree: {vf} vs {vr}"
+    for b in (vf, vr, ff, fr):
+        assert b > 0, f"barrier {b} Ha puts an endpoint ABOVE the saddle"
+
+    # And the field must MOVE it. MEASURED at sto-3g: 11.141 kcal/mol in vacuum
+    # against 12.933/13.131 in this field, a 16% effect. Asserted loosely
+    # because the magnitude is a property of these charges, not a target.
+    assert abs(ff - vf) * hartree_to_kcal > 0.5, (
+        f"the field changed the barrier by only "
+        f"{abs(ff - vf) * hartree_to_kcal:.3f} kcal/mol; point_charges= is not "
+        "reaching the IRC"
+    )
