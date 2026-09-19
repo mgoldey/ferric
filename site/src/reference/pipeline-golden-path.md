@@ -1359,8 +1359,12 @@ pose-conformational; a substitution changes a few atoms and leaves ~68 in
 place). Pairing pose k of the analogue to pose k of the parent gives
 `var = sd_A^2 + sd_B^2 - 2*rho*sd_A*sd_B`, which is the familiar
 `2*sd^2*(1-rho)` only when the two spreads are EQUAL (they are, here, to within
-a few percent). The reported variance reduction is MEASURED as the ratio of the
-two SEMs on the same data, so it does not rest on that assumption.
+a few percent). The reported figure is a **standard-error ratio**, MEASURED as
+`SEM_unpaired / SEM_paired` on the same data, so it does not rest on that
+assumption -- and it is NOT a variance ratio: the corresponding variance
+reduction is its SQUARE (2.42x on the SEM is ~5.9x on the variance). Quoting
+the SEM ratio as "variance reduction" understates the variance effect while
+overstating what was measured, so this note says which one it means.
 
 MEASURED gas-phase MMFF only, no pocket -- and a pocket is exactly what could
 destroy the rho the method depends on, since a substituent may change the
