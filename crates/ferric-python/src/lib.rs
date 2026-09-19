@@ -1754,6 +1754,18 @@ struct PyFrequencyResult {
     /// Electronic energy at the undisplaced geometry.
     #[pyo3(get)]
     energy: f64,
+    /// Normal-mode displacement vectors in CARTESIAN coordinates: one row per
+    /// entry of `frequencies`, `3N` values each, ordered `[x0,y0,z0,x1,...]`
+    /// to match `Molecule.symbols()`. These are the mass-weighted eigenvectors
+    /// divided back through by `sqrt(m)`, so light atoms visibly move further
+    /// than heavy ones; they are not normalized to any convention.
+    ///
+    /// Needed because `n_imaginary() == 1` is NECESSARY BUT NOT SUFFICIENT for
+    /// a transition state -- a methyl rotor gives one imaginary frequency too.
+    /// Confirming a saddle means checking the imaginary mode displaces the
+    /// atoms along the reaction coordinate, which requires the vector.
+    #[pyo3(get)]
+    normal_modes: Vec<Vec<f64>>,
 }
 
 #[pymethods]
@@ -1847,6 +1859,15 @@ fn run_frequencies(
         asymmetry: r.asymmetry,
         n_gradient_evaluations: r.n_gradient_evaluations,
         energy: r.energy,
+        // Array2 -> Vec<Vec<f64>>, one row per mode. `.rows()` preserves the
+        // (mode, 3N) layout the Rust field documents; collecting from the flat
+        // slice would silently transpose whenever the array is not square.
+        normal_modes: r
+            .normal_modes
+            .rows()
+            .into_iter()
+            .map(|row| row.to_vec())
+            .collect(),
     })
 }
 
