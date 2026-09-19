@@ -100,10 +100,22 @@ which a halogen/CF3 scan is missing its dominant attractive term.
    reason. An absolute binding energy carries the full method error; the
    difference cancels most of it. Same argument as P2's relative gate.
 
-2. **The unit is the (substituent, SITE) pair, not the molecule.** MEASURED
-   within/between ratio **0.94-0.95** on two independent constructions: WHERE a
-   group goes matters as much as WHICH group. A pipeline keyed on substituent
-   alone averages over the larger effect.
+2. **The unit is the (substituent, SITE) pair -- and NEITHER TIER CAN
+   EXPRESS IT.** MEASURED within/between ratio **0.94-0.95** on two independent
+   constructions: WHERE a group goes matters as much as WHICH group. But:
+
+   - the CHEAP gate is **site-blind by construction** (M15). MW, cLogP and
+     TPSA are whole-molecule sums, so 9 sites of one substituent give ONE
+     descriptor tuple. Verified on ortho/meta/para fluorobenzoic acid: bit
+     identical. No fix to `relative_descriptors` changes this.
+   - the EXPENSIVE tier is **noise-limited** (M4-M14): ddE noise 4.07 kcal/mol
+     against effects of 1-2.
+
+   So the substituent axis is answerable and the site axis is not. Rank
+   SUBSTITUENTS cheaply; treat placement as a question for chemistry knowledge
+   or an experiment, not for this pipeline. Seeing a site would need a
+   POSITIONAL descriptor (3-D shape, per-atom charge, a QM property at the
+   site) -- an addition to cost, not a fix to apply.
 
 3. **One row per molecule is the WRONG shape, after all.** An earlier version
    of this note said the opposite, on the strength of the now-retracted
@@ -139,8 +151,12 @@ GENERATION is validated (M9: 0.95 A redock, 20/20 within 5 A). The enumeration,
 the relative descriptor gate and the classical prescreen all work and are
 tested.
 
-**May not:** "analogue A binds better than analogue B by 1-2 kcal/mol." No pose
-protocol available today supports that. The four measured options:
+**May not, part 1:** "put this group at THIS position." The cheap gate cannot
+see position at all (M15, inherent), and the expensive tier cannot resolve the
+difference. Both halves of the stated unit are blocked, for different reasons.
+
+**May not, part 2:** "analogue A binds better than analogue B by 1-2 kcal/mol."
+No pose protocol available today supports that. The five measured options:
 
 | protocol | ddE noise (kcal/mol) | vs the 0.25 gap |
 |---|---|---|
