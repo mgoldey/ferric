@@ -939,12 +939,13 @@ pipeline that LOOKS like it has a docking tier.
 
 ### Which dispersion model, once one exists (researched 2026-09-19)
 
-D3(BJ) is being added (see the open work). The comparison behind that choice,
+D3(BJ) is IMPLEMENTED (#99, in review), energy and analytic gradient both.
+The comparison behind that choice,
 because "add dispersion" has four plausible answers and they are not equivalent:
 
 | model | needs from the SCF | cost | status in ferric |
 |---|---|---|---|
-| D3(BJ) | geometry + Z only, not even a density | negligible | being added |
+| D3(BJ) | geometry + Z only, not even a density | negligible | **implemented** (#99, in review): energy + analytic gradient; `task="frequencies"` still refused, the FD Hessian from it is unvalidated |
 | D4 | geometry, Z, EEQ charges | negligible | none; reuses nothing ferric has |
 | XDM | rho, grad-rho, tau, grad^2-rho on a grid + Hirshfeld weights | negligible vs the SCF | ~80% present, see below |
 | VV10 | rho, grad-rho INSIDE the SCF | O(N_pts^2) pair sum | implemented, inside specific functionals |

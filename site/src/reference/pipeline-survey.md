@@ -33,9 +33,12 @@ which is not what varies when a MOLECULE grows at fixed basis. A wrong number
 labelled MEASURED is worse than an unlabelled estimate, so it is recorded here
 rather than quietly replaced.
 
-The `vina_dock.py` header carries a second, order-of-magnitude table. The two
-tables are consistent:
-one is per-pose, the other per-ligand at production exhaustiveness.
+The `vina_dock.py` header carries a second table. It USED to be reconciled
+here as "one is per-pose, the other per-ligand" -- that reconciliation is now
+obsolete, because this PR changed the `vina_dock.py` tier-1 figure from
+`~10 us/pose` (the inner-loop cost, which made docking look free) to the same
+26.4 s/ligand quoted above. **Both tables are now per-ligand and carry the same
+numbers**, so there is nothing left to reconcile.
 
 **Gap: `grep -rn 'tools/pipeline|funnel|vina' site/src/` returns NOTHING.**
 None of this is in the published mdBook. Same failure mode as the QM/MM page
