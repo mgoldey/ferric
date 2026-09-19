@@ -1318,43 +1318,11 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
 
-        // THE LOCK IS NOT ENOUGH, and the comment above used to imply it was.
-        // A Mutex serialises threads WITHIN one process. Under `cargo nextest`
-        // every test is its OWN process, so the lock protects nothing across
-        // tests -- and, more to the point, the var may be set by the
-        // ENVIRONMENT rather than by a sibling test at all.
-        //
-        // MEASURED: ci.yml sets `FERRIC_MEM_BUDGET_GB: "3"` workflow-wide, and
-        // with it this assertion gets 986 instead of 256. Under plain
-        // `cargo test` the failure was masked because ao_rpa.rs's test calls
-        // `remove_var` on the shared process env, clearing the workflow's
-        // value for everything that runs after it -- so the bug only appeared
-        // once tests stopped sharing a process.
-        //
-        // The precondition this test actually needs is "no budget env var",
-        // so ENFORCE it rather than hoping. Restored on drop so a
-        // process-sharing runner is left exactly as found.
-        struct EnvRestore(Vec<(&'static str, Option<String>)>);
-        impl Drop for EnvRestore {
-            fn drop(&mut self) {
-                for (k, v) in &self.0 {
-                    match v {
-                        Some(val) => std::env::set_var(k, val),
-                        None => std::env::remove_var(k),
-                    }
-                }
-            }
-        }
-        let _restore = EnvRestore(
-            ["FERRIC_MEM_BUDGET_GB", "FERRIC_LANCZOS_PANEL"]
-                .into_iter()
-                .map(|k| {
-                    let prev = std::env::var(k).ok();
-                    std::env::remove_var(k);
-                    (k, prev)
-                })
-                .collect(),
-        );
+        // The lock alone is NOT enough: a Mutex serialises threads within one
+        // PROCESS, and nextest is process-per-test. See BudgetEnvCleared's doc
+        // in lib.rs for the measurement (986 vs 256 under ci.yml's
+        // FERRIC_MEM_BUDGET_GB=3) and why this must be enforced, not hoped for.
+        let _restore = crate::BudgetEnvCleared::new();
 
         let naux = 4000;
         let nov = 200_000;
