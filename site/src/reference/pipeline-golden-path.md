@@ -270,7 +270,8 @@ bargain.
 | where does this ligand sit? | Vina dock | ~2 min/ligand @ ex=32, ~30 s @ ex=4 | **0.95 A** redock (M9), 20/20 poses on-site | **use it** |
 | which pose is best? | Vina score | free (comes with the dock) | r(score, RMSD) = +0.461; only 4/20 under 2.0 A | **do not trust** -- generates, cannot rank |
 | is this geometry sane? | MMFF94 | ~1 ms/pose | adequate to declash | **use it**, for declashing only |
-| how strained is this conformer? | GFN2-xTB | ~0.5 s/pose | 143 kcal/mol anion/neutral split resolved | **use it** |
+| how strained is this conformer? | GFN2-xTB | ~0.5 s/pose | 143 kcal/mol anion/neutral split resolved | **use it** for coarse separation |
+| which of these conformers is lowest? | GFN2-xTB | ~0.5 s/pose | **Spearman 0.011 vs DFT** over a 3 kcal/mol span (M16, n=20) | **do not trust** -- a gate, not a ranker |
 | which analogue binds better by 1-2 kcal/mol? | any of the above + ddE | -- | ddE noise **4.07 kcal/mol** at best (M4-M13) | **NO METHOD QUALIFIES** |
 | what is the SCF energy here? | ferric RHF / KS-DFT | 96 s @ 32 atoms, 612 s @ 71 | 1e-8 Ha vs PySCF (RHF), 2e-8 (PBE/B3LYP) | **use it** |
 | does the pocket field change it? | + `external_potential` | **~1.0x** the gas-phase SP (MEASURED) | embedding is essentially free | **use it** -- no reason not to |
