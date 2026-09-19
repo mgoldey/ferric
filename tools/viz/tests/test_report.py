@@ -265,3 +265,48 @@ def test_the_report_carries_the_reaction_path_and_its_caveat():
     assert plain.reaction is None
     assert not any("IRC" in c for c in plain.caveats)
     plain.close()
+
+
+def test_the_irc_carries_its_OWN_unit_not_the_campaign_ddE_unit():
+    """IRC energies are HARTREE; `unit` describes the ddE values (kcal/mol).
+
+    Passing the shared `unit` through would label -55.44 Ha as kcal/mol -- a
+    627x error that renders as a perfectly ordinary plot with a barrier of
+    0.0177 instead of 11.11.
+
+    Asserted on the BARRIER TEXT, because that is the number a reader takes
+    away and it is the only place the unit error becomes visible.
+    """
+    figs = campaign_report(
+        ddE_noise=4.07,  # kcal/mol, the campaign unit
+        irc=dict(
+            saddle_energy=-55.43766,  # HARTREE
+            forward_energy=-55.45542,
+            reverse_energy=-55.45542,
+            forward_converged=True,
+            reverse_converged=True,
+        ),
+    )
+    text = " ".join(t.get_text() for t in figs.reaction.axes[0].texts)
+    assert "11.1" in text, (
+        f"the NH3 barrier is 11.14 kcal/mol; got {text!r}. A value near 0.018 "
+        "means the Hartree energies were labelled kcal/mol."
+    )
+    figs.close()
+
+    # A caller with kcal/mol energies can say so, and then they are NOT
+    # converted again.
+    figs2 = campaign_report(
+        ddE_noise=4.07,
+        irc=dict(
+            unit="kcal/mol",
+            saddle_energy=-34789.1,
+            forward_energy=-34800.2,
+            reverse_energy=-34800.2,
+            forward_converged=True,
+            reverse_converged=True,
+        ),
+    )
+    text2 = " ".join(t.get_text() for t in figs2.reaction.axes[0].texts)
+    assert "11.1" in text2, f"an explicit kcal/mol unit must be honoured: {text2!r}"
+    figs2.close()
