@@ -42,6 +42,7 @@ because the numbers in them are expensive to reproduce.
 
 - [Golden path: formats to docking to xtb to DFT](./reference/pipeline-golden-path.md)
 - [Proposing substitutions at an active site](./reference/substitution-pipeline.md)
+- [Substitution pipeline: resolved shape](./reference/substitution-pipeline-resolved.md)
 - [CI timing and test sharding](./reference/ci-timing-analysis.md)
 - [Pipeline survey (what exists, 2026-09-18)](./reference/pipeline-survey.md)
 - [Pharma use-case coverage](./reference/pharma-use-case-coverage.md)
