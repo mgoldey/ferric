@@ -26,10 +26,16 @@ live. Ten PRs have merged since. VERIFIED against `origin/main` just now:
 
 STILL OPEN, and these are the real remaining gaps:
 
-- **No saddle search.** C3 blocks every catalyst workflow. ferric can VERIFY a
-  transition state (and now can from Python) but cannot FIND one.
-- **No analytic dispersion gradients** even once #99 lands, so
-  `task="optimize"` optimises the uncorrected surface.
+- ~~**No saddle search.**~~ **CLOSED 2026-09-19** (`feat/saddle-prfo`, not yet
+  merged): `ferric_scf::saddle::find_saddle`, P-RFO with a Bofill update.
+  C0-C5 is complete in principle. Still to do: wire it to the QM/MM evaluator
+  (item 0 in section 5), and note there is no IRC, so which two minima a saddle
+  connects remains unverified. Section 4 has the full scope.
+- **No analytic dispersion gradients** even once #99 lands. The consequence is
+  no longer a silently wrong surface: #99 now REFUSES `task="optimize"` and
+  `with_gradient=True` when dispersion is configured, rather than optimising
+  the uncorrected surface while reporting corrected energies. Dispersion-
+  corrected geometry optimization is unavailable, and says so.
 - **QM/MM dispersion.** D3/D4/XDM/VV10 are all QM-atom-pairwise; MM point
   charges carry none. Needs LJ terms in `ferric-mm`.
 - **Pose noise.** MEASURED per-pose sd 29.07 kcal/mol against 1-2 kcal/mol
@@ -313,11 +319,16 @@ Run concurrently they FAIL, and the failure looks exactly like a code defect --
 it is not. Satisfy the precondition (`--test-threads=1`, idle box) before
 believing either the numbers or a failure.
 
-### Frequencies / TS verification cost 6N gradients (ESTIMATED consequence)
+### Frequencies / TS verification cost 6N gradients (MEASURED)
 
 `harmonic_frequencies` central-differences the ANALYTIC gradient, so a full
-Hessian is **6N + 1 gradient evaluations**, each requiring its own converged
-SCF. There is no analytic Hessian to fall back on -- see section 4.
+Hessian is **6N gradient evaluations**, each requiring its own converged SCF.
+There is no analytic Hessian to fall back on -- see section 4.
+
+(Heading and this paragraph corrected 2026-09-19: both said "ESTIMATED" and
+"6N + 1" while the table two paragraphs below recorded the MEASURED 6N that
+refuted exactly that. A stale summary above a correct measurement is the more
+dangerous of the two, because it is what gets quoted.)
 
 VERIFIED TWICE, and the second pass CORRECTED the first. Reading the loop gives
 `for b in 0..n_coord` over 3N coordinates with TWO `energy_and_gradient` calls
@@ -609,7 +620,8 @@ C1. The cut WILL cross covalent bonds, so link atoms are mandatory:
     (Z1/RC/RCD). ferric has all of these, PySCF-validated.
 C2. Optimize the reactant and product complexes -- ferric CAN do this
     (optimize_qmmm is a minimizer).
-C3. FIND THE TRANSITION STATE. *** ferric CANNOT do this. See section 4. ***
+C3. FIND THE TRANSITION STATE. NOW AVAILABLE (2026-09-19, not yet merged):
+    ferric_scf::saddle::find_saddle -- P-RFO. See section 4, rewritten.
 C4. Verify the TS: harmonic_frequencies -> n_imaginary() == 1, AND the
     imaginary mode must point along the reaction coordinate (one imaginary
     frequency is necessary, not sufficient -- a methyl rotor gives one too).
@@ -635,9 +647,13 @@ step that distinguishes a catalyst QM region from a ligand one. C4's
 a verifier that cannot report "this is not a saddle" cannot report "this is"
 either.
 
-So C0-C2 and C4-C5 are working code. **Only C3 is missing**, and that gap is
-established by grep (no dimer / NEB / P-RFO / eigenvector-following anywhere),
-not by this script -- a negative cannot be demonstrated by running something.
+So C0-C2 and C4-C5 are working code. C3 was the ONLY gap, established by grep
+(no dimer / NEB / P-RFO / eigenvector-following anywhere) rather than by this
+script -- a negative cannot be demonstrated by running something.
+
+**C3 CLOSED 2026-09-19** (`ferric_scf::saddle`, branch `feat/saddle-prfo`, not
+yet merged). The chain C0-C5 is now complete in principle. What that does and
+does not mean is in the rewritten section 4.
 
 API INCONSISTENCY worth knowing before writing a workflow: `run_rhf` takes a
 `BasisSet` OBJECT (`ferric.BasisSet.bundled("sto-3g")`), while
@@ -684,72 +700,97 @@ detail -- it is the step that makes it a barrier calculation rather than two
 minimizations. Any catalyst workflow must either import the TS from another
 code (then C4-C5 are genuinely useful) or wait for a saddle search.
 
-## 4. Catalyst optimization is BLOCKED, not merely unimplemented
+## 4. Catalyst optimization: the search gap is CLOSED, the cost one is not
 
-VERIFIED by grep across `crates/ tools/ examples/ scripts/ site/` for dimer /
-NEB / eigenvector-following / P-RFO / rational-function / saddle /
-transition-state: **no implementation hits.** Only prose (a `frequencies.rs`
-doc comment, a comment at `frequencies.rs:400`, an unrelated cDFT lambda
-saddle).
+**UPDATED 2026-09-19.** This section previously read "BLOCKED". The blocker was
+C3 -- no saddle search anywhere in the tree. That is now implemented.
 
-- `optimize.rs` exposes `optimize_geometry`, `_uhf`, `_rohf`,
-  `optimize_coordinates` -- all one BFGS **minimizer** core.
-- `optimize_qmmm` (`qmmm.rs:1878`) delegates to that same
-  `optimize_coordinates`, so the QM/MM optimizer is a minimizer too.
-- `MoveMm` freezes whole MM atoms; QM atoms are ALWAYS free
-  (`free_atom_indices`, `qmmm.rs:1815`), so even a poor-man's constrained scan
-  is unavailable. No IRC, no reaction-coordinate constraint, no relaxed scan.
+### What landed
 
-What DOES exist is the **verifier**: `harmonic_frequencies`
-(`frequencies.rs:232`) plus `FrequencyResult::n_imaginary()` -- documented as
-"Zero at a minimum, one at a first-order saddle point". It builds the Hessian
-by CENTRAL-DIFFERENCING analytic gradients, and that is the validated
-production path.
+`ferric_scf::saddle::find_saddle` (branch `feat/saddle-prfo`, not yet merged):
+partitioned rational function optimization. It partitions the Hessian
+eigenspace and solves a separate RFO step in each -- maximize along one
+followed mode, minimize in the orthogonal complement (Banerjee/Adams/Simons/
+Shepard, JPC 89, 52 (1985)). Between steps the Hessian is carried by a Bofill
+update, chosen because it does NOT preserve positive definiteness; BFGS would
+drive out the negative eigenvalue the whole search depends on.
 
-CORRECTION (2026-09-18): an earlier draft of this doc also listed
-`rhf_hessian` (`hessian.rs:31`) as an available verifier. **It is not.** It is
-a documented stub that ALWAYS returns `Err`: only term 1 (nuclear repulsion) is
-implemented, and terms 2-5 (1e/overlap/2e skeleton + CPKS response) need
-libint2 `deriv_order=2`. Its error message says so explicitly. The module
-refuses rather than returning a nuclear-repulsion-only matrix that would have
-"the right shape, plausible magnitudes, silently missing every electronic
-contribution" -- the honest choice, and worth copying elsewhere.
+Why it could not be a flag on `optimize.rs`: that is a MINIMIZER, and its
+quasi-Newton update is kept positive definite on purpose. No step size turns a
+minimizer into a saddle finder.
 
-**Why deriv_order=2 is not a flag you can flip.** VERIFIED 2026-09-18 from
-`~/.local/include/libint2/config.h`: `INCLUDE_ERI 1`, `INCLUDE_ONEBODY 1` --
-first derivatives only. These are DERIVATIVE ORDERS baked in when the library
-is generated, not chosen by the consumer's cmake flags, and CI builds from the
-pre-generated `libint-<ver>-mpqc4.tgz` export (ci.yml:196). Raising them means
-re-running libint's compiler-generation stage (`--enable-eri=2
---enable-1body=2`), which at this build's `LIBINT_MAX_AM 6` is a large job --
-the CURRENT deriv-1 build already takes ~80 min on a runner (MEASURED, cited in
-ci.yml's cache rationale), and deriv-2 is substantially more generated code.
-Practically that is a once-off out-of-band build shipped as a release artifact
-or container image, not something CI produces.
+### CORRECTION to the previous draft of this section
 
-Note `/usr/local/include/libint2/config.h` on this box has ALL of these at 0 --
-that install cannot even do gradients. Only `~/.local` is usable.
+It said P-RFO "reuses the Hessian machinery already in `hessian.rs`". **Wrong.**
+`hessian.rs::rhf_hessian` is a documented stub that ALWAYS returns `Err` (this
+same section says so four paragraphs below, which should have caught it). The
+working Hessian is `frequencies.rs`'s central-differenced analytic gradient,
+and that is what `saddle.rs` calls.
 
-> ferric can CONFIRM you are standing on a transition state (by finite
-> difference of analytic gradients). ferric cannot FIND one, and has no
-> analytic Hessian.
+### The cost, which is now the binding constraint
 
-**Two honest options, pick one before documenting a catalyst workflow:**
+The Hessian is **6N gradient evaluations** (MEASURED via the gradient counter:
+H2 = 12, water = 18 -- exactly 6N). For a 20-atom QM region that is 120
+gradients for ONE Hessian. Rebuilding it every step is not a search, it is a
+Hessian benchmark, which is why `hessian_recalc_every` defaults to 0 (build
+once, then Bofill). A realistic catalyst run is therefore:
 
-(a) **Import and verify.** Get the TS from another code, use ferric to verify
-    (`n_imaginary() == 1`) and to compute the barrier at a better level.
-    Available today, honest, and useful. Document it as such.
+    1 Hessian (6N gradients) + ~20-60 P-RFO steps (1 gradient each)
 
-(b) **Implement a saddle search.** P-RFO on the existing BFGS scaffolding is
-    the smallest step (it reuses the Hessian machinery already in
-    `hessian.rs`); NEB needs more. This is a real project, not a wiring task.
+so the Hessian dominates at small N and the steps dominate past roughly N = 10.
+That ratio, not the algorithm, is what sizes a catalyst job now.
 
-Until one of these lands, a QM/MM catalyst workflow does NOT know what to do,
-and the docs must say so rather than implying a path exists.
+### What is still NOT available
+
+- **No analytic Hessian.** libint2 `deriv_order=2` is absent from this build
+  (VERIFIED from `~/.local/include/libint2/config.h`: `INCLUDE_ERI 1`,
+  `INCLUDE_ONEBODY 1`). Raising it means re-running libint's generation stage,
+  a once-off out-of-band build, not a cmake flag. Every Hessian here is finite
+  difference.
+- **No IRC**, so "this saddle connects THESE two minima" is still unverified.
+  P-RFO finds a first-order saddle; it does not prove which reaction it belongs
+  to.
+- **No reaction-coordinate constraint / relaxed scan.** `MoveMm` freezes whole
+  MM atoms and QM atoms are always free (`free_atom_indices`, `qmmm.rs:1815`),
+  so there is still no constrained-scan route to a starting guess.
+- **Not wired to QM/MM.** `find_saddle` takes energy/gradient/Hessian closures,
+  so pointing it at `optimize_qmmm`'s evaluator is a wiring task -- but it is a
+  task, not done.
+- **Cartesian only.** Internal-coordinate P-RFO converges in fewer steps on
+  floppy systems.
+- **The mode is not checked for being the RIGHT one.** Exactly one imaginary
+  frequency means first-order saddle, not "saddle for the reaction you meant" --
+  a methyl rotor gives one too. `SaddleResult::imaginary_mode` returns the
+  vector so a caller can check; the module does not pretend to.
+
+### What it refuses to do, on purpose
+
+- Starting with no negative projected eigenvalue is a HARD ERROR naming the
+  lowest eigenvalue. P-RFO from a minimum's basin has nothing to climb and
+  would otherwise return a minimum labelled as a transition state.
+- `is_transition_state()` requires gradient convergence AND exactly one
+  imaginary mode. Convergence alone is satisfied by every stationary point.
+
+### Honest status line
+
+> ferric can now SEARCH for a transition state and CONFIRM one. It still has no
+> analytic Hessian, no IRC, and no QM/MM wiring for the search -- so a catalyst
+> workflow knows what to do, and the remaining work is integration and cost,
+> not a missing capability.
 
 ---
 
 ## 5. Ordered next actions
+
+**UPDATED 2026-09-19.** Item 0 is new and is now the top of the list, because
+the capability it wires up did not exist when this list was written.
+
+0. **Wire `saddle::find_saddle` to the QM/MM evaluator.** It takes
+   energy/gradient/Hessian closures, and `optimize_qmmm` already has an
+   evaluator with the right shape. This is the step that turns "ferric has a
+   saddle search" into "the catalyst workflow can run", and it is wiring, not
+   new physics. Do it before anything else on this list: items 1-9 all serve a
+   pipeline whose last stage now exists.
 
 1. **Harvest the docked pose** into `context["geometry"]` in `run_funnel`'s
    stage loop (section 0). Highest value, smallest change, independent of
@@ -769,7 +810,10 @@ and the docs must say so rather than implying a path exists.
 6. **Fix the drifted docstring**: `qmmm.rs:26-34` says "no Lennard-Jones QM-MM
    term", but `qmmm_mm_terms` (`qmmm.rs:1578`) computes one at
    `qmmm.rs:1674-1704`. The code is right; the comment is stale.
-7. **Expose `FrequencyResult.normal_modes` to Python.** VERIFIED absent from
+7. **Expose `FrequencyResult.normal_modes` to Python.** [still open; and now
+   MORE valuable -- it is what lets a Python caller check `find_saddle`'s
+   imaginary mode points along the reaction coordinate, which is step C4's
+   second half.] VERIFIED absent from
    the bindings. Without it a Python workflow can count imaginary modes but
    not check one points along the reaction coordinate, so it cannot complete
    TS verification (step C4). Small, self-contained, and a prerequisite for
