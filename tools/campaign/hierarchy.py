@@ -7,12 +7,26 @@ examine. A tier is chosen for its COST and its DISCRIMINATION, not for being
 "the best method" — the best method applied to the wrong candidates is waste,
 and a cheap method asked to make a fine distinction is noise.
 
-    tier                cost/pose      poses      job
-    ------------------  -------------  ---------  --------------------------
-    1  Vina (empirical) ~10 us         10^5-10^6  SEARCH pose space
-    2  MMFF / GFN-FF    ~ms            10^2-10^3  relax, drop clashes
-    3  GFN2-xTB (DFTB)  ~0.5 s         10-10^2    rank survivors
-    4  DFT + dispersion minutes-hours  1-10       final energetics
+    tier                cost/candidate  poses      job
+    ------------------  --------------  ---------  -------------------------
+    1  Vina (empirical) 26.4 s @ ex=4   10^5-10^6  SEARCH pose space
+    2  MMFF / GFN-FF    2-22 ms         10^2-10^3  relax, drop clashes
+    3  GFN2-xTB (DFTB)  0.05-0.15 s     10-10^2    rank survivors
+    4  DFT + dispersion 0.7-9 s @ 9-19  1-10       final energetics
+                        atoms; 612 s @ 71
+
+MEASURED 2026-09-19 through the tier functions themselves (9-34 atoms,
+STO-3G for tier 4), except tier 1 which is RESULTS.md M11. The figures
+this table carried before -- `~10 us`, `~ms`, `~0.5 s`,
+`minutes-hours` -- were never measured, and `tools/pipeline/tiers.py`
+CITED THIS TABLE as their source while this table cited nothing. Tier 2
+was 20x low; tier 3 was the right order; tier 1's `~10 us` is a per-POSE
+figure that reads as per-candidate next to the others.
+
+That is the same failure `TierOutcome.seconds` warns about below -- "a
+cost split inferred from numbers nobody recorded" -- committed in this
+module's own header. Costs here are now measurements or they say they
+are not.
 
 ## Why this campaign needed it stated
 
