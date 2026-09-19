@@ -320,7 +320,9 @@ not require new capability are now closed:
 |---|---|
 | more poses (M4/M5) | **closed** — the failure was never precision; the metric is refuted |
 | relax poses in field (M6) | **closed** — real 15% effect, ~3 orders of magnitude short |
-| real pose search (docking) | **untested** — no docking engine available in this repo |
+| real pose search (docking) | ~~**untested** — no docking engine available in this repo~~ **STALE. Closed by M12: 1%, 32.5x short.** Docking landed in M9 (August); this line was written before it and misled a later probe into re-testing on a false premise. |
+| select one pose (M13) | **closed** — 7-10x WORSE than averaging |
+| a different scorer (M14) | **closed** — none available is less pose-sensitive |
 
 ### Known limitation in this probe
 
@@ -586,7 +588,13 @@ It ran tier 3 alone, fed by tier-2 output that had never seen the receptor.
 campaign.** Every energy reported anywhere above is GFN2. That is now the next
 step, and for the first time it has geometries worth spending it on.
 
-## M10. The isomer pipeline runs end to end; tier 4 does not fit (2026-08-30)
+## M10. The isomer pipeline runs end to end; ~~tier 4 does not fit~~ (2026-08-30)
+
+> **TITLE RETRACTED 2026-09-02, and re-confirmed 2026-09-19.** Tier 4 DOES
+> fit (612 s, converged) and now runs end to end in
+> `tools/pipeline/tests/test_golden_path_smoke.py`. The title is kept in
+> strikethrough because it was cited as a live blocker for weeks after the
+> retraction directly below it.
 
 > **STATUS as of 2026-09-02: the title of this section is WRONG and kept for
 > the record.** Tier 4 DOES fit -- **612.4 s (10.2 min), 18 iterations,
@@ -1289,28 +1297,67 @@ Vina returns poses rank-ordered, so index 0 IS the selected pose.
 | mean over 15 | −110.89 | 0 (by definition) |
 | min over 15 | −160.78 | **−49.89** <- the v1 estimator |
 
-And the two axes are statistically independent:
+And **no association between the two axes is detectable in this sample**:
 
     Spearman(vina rank, pose_fit) = -0.261   p = 0.35   n = 15
     Pearson                       = -0.328   p = 0.23
 
-### Why that kills the recommendation
+**That is not a demonstration of independence, and this section originally
+claimed it was.** At n = 15 the smallest correlation this test could have
+detected at p < 0.05 is **|ρ| = 0.514**, and the 95% CI on ρ runs
+**[−0.682, +0.290]** — it does not exclude a *strong* negative correlation.
+The honest statement is "no detectable association in 15 poses", which is a
+statement about the probe's power, not about Vina.
 
-Independence is *good* for bias — unlike the v1 `min`, selecting on an
-uncorrelated axis is unbiased **in expectation**. But it is fatal for
-PRECISION: an uncorrelated selector makes "pick rank 0" equivalent to
-**drawing one sample at random** from a distribution with sd 28.75.
+### Why that kills the recommendation ANYWAY
 
-For a ddE between two analogues (two independent draws):
+The recommendation dies on PRECISION, and — this is the part that matters —
+**the verdict does not depend on the independence claim that was wrong.**
+
+If the axes were genuinely uncorrelated, "pick rank 0" is equivalent to
+drawing one sample at random from a distribution with sd 28.75. For a ddE
+between two analogues (two draws):
 
 | protocol | noise on ddE | vs the 0.25 kcal/mol gap |
 |---|---|---|
 | select one pose | sd·√2 = **40.66** | **163x** |
 | average n = 100 | SEM·√2 = **4.07** | **16x** |
 
-Selection is worse than averaging by exactly √n = 10x. Both are far short;
-neither resolves the gap. **Averaging is the better of two inadequate options,
-not the worse one.**
+That is a factor √n = 10x, and it is **conditional on ρ = 0**.
+
+So test the conclusion at the edge of what the data allow. At **ρ = −0.682**,
+the most favourable value the CI permits, a rank-0 pick still carries residual
+sd `28.75·√(1−ρ²) = 21.08` about its conditional mean:
+
+| ρ | selection noise on ddE | vs average n=100 |
+|---|---|---|
+| 0 (the original claim) | 40.66 | 10.0x worse |
+| −0.682 (best the CI allows) | 29.81 | **7.3x worse** |
+
+**The ranking of the two protocols is robust across the whole interval.** The
+exact 10x is not — quote it as "roughly an order of magnitude, 7-10x depending
+on a correlation this probe could not resolve". Both protocols remain far short
+of the 0.25 kcal/mol gap either way. **Averaging is the better of two
+inadequate options, not the worse one.**
+
+### A latent bug found while fixing the wording
+
+`analyze_selection_bias.py` set `informative = ps < 0.05` and then branched on
+`if informative is False:`. scipy returns a **`numpy.bool_`**, and
+`np.bool_(False) is False` evaluates to **False** — so that branch never fired
+and **the script printed no verdict at all**, for its entire life. Nobody
+noticed because a missing line looks like nothing; the numbers above it printed
+correctly every time, and I read the verdict out of the numbers myself.
+
+Fixed with an explicit `bool(...)`. The general form is worth keeping: `is
+True` / `is False` against anything that has passed through numpy or pandas is
+an identity check that silently fails. Use truthiness, or coerce at the
+boundary.
+
+Note what a nonzero ρ would and would not buy. Correlation with `pose_fit`
+changes the BIAS of rank-0 selection, not the per-draw variance; variance only
+falls insofar as the selector tracks the quantity being estimated. Neither
+mechanism closes a 16x shortfall.
 
 ### What I mis-read, and it was already written down
 
@@ -1342,7 +1389,7 @@ axis carries no information about the xtb energy (this section). So:
 | more poses (M4/M5) | closed — sd flat in n |
 | relax in field (M6) | closed — real 15%, ~3 orders short |
 | real pose search (M12) | closed — 1%, 32.5x short |
-| **select one pose (M13)** | **closed — 10x WORSE than averaging** |
+| **select one pose (M13)** | **closed — 7-10x WORSE than averaging** |
 
 The remaining honest options are not protocol changes: reduce the per-pose sd
 at its source (a scoring function less sensitive to pose than the current
@@ -1428,7 +1475,7 @@ kcal/mol**, consistent with M5's 4.07.
 | more poses (M4/M5) | closed — sd flat in n |
 | relax in field (M6) | closed — real 15%, ~3 orders short |
 | real pose search (M12) | closed — 1%, 32.5x short |
-| select one pose (M13) | closed — 10x worse than averaging |
+| select one pose (M13) | closed — 7-10x worse than averaging |
 | **a different scorer (M14)** | **closed — none available is less pose-sensitive** |
 
 Nothing in this repo ranks analogues at 1-2 kcal/mol against a pose ensemble.
@@ -1496,3 +1543,71 @@ Descriptors that carry positional information exist and none is wired here:
 point, or a QM property evaluated at the site (e.g. local electrostatic
 potential). Any of those is a real addition rather than a fix, and should be
 costed before being built.
+
+---
+
+## M16. xTB does NOT rank conformers the way DFT does at ~3 kcal/mol (2026-09-19)
+
+`run_xtb_vs_dft_tracking.py`, `out/m16_n20.json`. The golden path costs tier 3
+(~0.5 s/pose) and says it "ranks survivors", but the only accuracy claim
+attached to it was a **143 kcal/mol** anion/neutral split — a gap so large that
+resolving it says nothing about ordering conformers a few kcal/mol apart, which
+is what ranking survivors means.
+
+Measured directly: 20 conformers, xtb-relaxed, then **the DFT single point taken
+at the xtb-RELAXED geometry** so both tiers score the same structures.
+
+| | |
+|---|---|
+| conformers scored by both | 20 |
+| xtb span / DFT span | 2.67 / 2.81 kcal/mol |
+| MAE on relative energies | **0.825 kcal/mol** |
+| **Spearman rho** | **0.011** (p = 0.96) |
+
+**No detectable correlation.** On a set spanning ~3 kcal/mol, xtb's ordering
+carries no information about DFT's *that 20 conformers can resolve* — the 95%
+CI on rho is [−0.434, +0.451], so a moderate association is not excluded. What
+IS established is the operational point: this probe cannot find an ordering
+signal to rely on, so tier 3's output may not be used as a fine ranking.
+
+### The n=8 run was underpowered and would have been a false positive
+
+The first run used 8 conformers and gave rho = 0.643, p = 0.086 — "positive but
+not significant", which reads like a near-miss worth more sampling. It was not:
+
+    n=8  can only detect rho >= 0.707 at p<0.05
+    n=20 can detect rho >= 0.444
+
+So 0.643 at n=8 was inside the noise floor of the test itself — its 95% CI was
+[−0.113, +0.927], which spans everything from mildly negative to nearly
+perfect. At n=20, where 0.643 WOULD have been significant, the value came out
+at 0.011.
+
+**The precise claim: the n=8 estimate was too uncertain to support a ranking
+conclusion, and it did not replicate.** That is not the same as proving it was
+sampling noise — a single non-replication cannot establish which of the two
+runs was the fluke. It does not need to: an estimate whose CI spans
+[−0.113, +0.927] licenses nothing regardless of what the next run shows, and
+quoting it would have been a power failure dressed as a finding.
+
+### What this means for the funnel
+
+Tier 3 is a **coarse gate, not a ranker** — at least for conformer selection at
+this energy scale. It is still the right tool for what M-series measured it on:
+a 143 kcal/mol anion/neutral split is resolved trivially. The failure is
+specific to fine ordering.
+
+Combined with M14 (no detectable association between Vina's score and xtb's)
+the pattern is
+consistent across the whole funnel: **each tier reliably separates things that
+are grossly different and does not reliably order things that are close.** That
+is the hierarchy working as designed, and it bounds what any single tier's
+output may be used for.
+
+### Scope
+
+One molecule (a paracetamol-like scaffold with one flexible tail), one
+conformer set, STO-3G. This measures whether the tiers AGREE, not whether
+either is right — neither is validated against experiment here. A larger basis
+or a system with bigger conformer gaps could give a different answer, and the
+probe takes `--smiles` / `--basis` / `--n-conformers` so that is testable.
