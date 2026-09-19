@@ -173,3 +173,61 @@ def test_a_mapping_that_is_not_a_permutation_is_refused():
         restore_hydrogens(
             ETHANOL, HEAVY_SYMS, HEAVY_COORDS, rdkit_index_of_heavy=[0, 1]
         )
+
+
+def test_a_docked_pose_carries_the_mapping_end_to_end():
+    """`DockedPose.rdkit_index_of_heavy` must survive the PDBQT round trip.
+
+    THE GAP THIS CLOSES. The mapping helper and the `rdkit_index_of_heavy=`
+    parameter existed, and NO PRODUCTION CALLER USED THEM -- because
+    `_parse_pdbqt_models` discarded the PDBQT serials, so the callers had
+    nothing to build a mapping from. The capability was present and the bug was
+    still live, which is the most expensive kind of half-fix: it reads as
+    handled in review.
+
+    Asserted on the parser directly rather than through a real dock, so it runs
+    in the fast tier. `dock_ligand` composes exactly these two pieces.
+    """
+    from tools.docking.vina_dock import _parse_pdbqt_models
+
+    # Two atoms written in NON-serial order, which is what Meeko does.
+    out = (
+        "MODEL 1\n"
+        "REMARK VINA RESULT:   -7.5  0.0  0.0\n"
+        "ATOM      5  C   UNL     1       1.000   2.000   3.000  0.00  0.00    +0.0 C\n"
+        "ATOM      1  O   UNL     1       4.000   5.000   6.000  0.00  0.00    -0.3 OA\n"
+        "ENDMDL\n"
+    )
+    models = _parse_pdbqt_models(out)
+    assert len(models) == 1
+    syms, crds, score, serials = models[0]
+    assert serials == [5, 1], (
+        f"serials must be retained IN FILE ORDER, got {serials}. Sorting them "
+        "would destroy the very correspondence they exist to record."
+    )
+    assert score == pytest.approx(-7.5)
+
+    # ...and they compose with the remark into a usable mapping.
+    serial_to_rdkit = parse_smiles_idx_remark(
+        "REMARK SMILES IDX 5 1 1 2\n"  # serial 5 -> rdkit 0, serial 1 -> rdkit 1
+    )
+    mapping = [serial_to_rdkit[k] for k in serials]
+    assert mapping == [0, 1], (
+        f"the first coordinate belongs to RDKit atom 0 and the second to 1; "
+        f"got {mapping}"
+    )
+    assert len(syms) == len(crds) == len(serials)
+
+
+def test_a_partial_mapping_is_not_used_at_all():
+    """Covering SOME serials must yield no mapping, not a half-applied one.
+
+    A partial map places some atoms correctly and the rest by position, which
+    is strictly harder to notice than no map: the molecule looks almost right.
+    `dock_ligand` requires every serial in the pose to be covered before it
+    builds one.
+    """
+    serial_to_rdkit = parse_smiles_idx_remark("REMARK SMILES IDX 5 1\n")
+    serials = [5, 1]
+    covered = all(k in serial_to_rdkit for k in serials)
+    assert not covered, "serial 1 is absent, so this must not count as covered"

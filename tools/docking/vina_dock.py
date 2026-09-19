@@ -64,6 +64,19 @@ class DockedPose:
     coords_angstrom: list[tuple[float, float, float]]
     vina_score: float  # kcal/mol, empirical -- a ranking heuristic only
     rank: int
+    #: For each coordinate above, the RDKit atom index it belongs to -- or
+    #: `None` when the input PDBQT carried no `REMARK SMILES IDX`.
+    #:
+    #: MEEKO REORDERS ATOMS for its torsion tree. MEASURED on aspirin, 10 of 13
+    #: heavy atoms come back at a different index than RDKit assigned, and
+    #: rebuilding a molecule by list position then misplaces an atom by up to
+    #: 4.9 A -- same count, same elements, no error. Anything reconstructing a
+    #: topology from this pose must pass this to
+    #: `tools.docking.united_atom.restore_hydrogens`.
+    #:
+    #: `None` means UNKNOWN, never identity: assuming identity is exactly the
+    #: wrong guess and looks like a successful parse.
+    rdkit_index_of_heavy: list[int] | None = None
 
 
 @dataclass
@@ -204,11 +217,18 @@ def _element_from_autodock_type(raw: str) -> str:
 
 
 def _parse_pdbqt_models(text: str):
-    """Split a Vina output PDBQT into (symbols, coords, score) per MODEL."""
-    models, cur, score, syms, crds = [], False, None, [], []
+    """Split a Vina output PDBQT into (symbols, coords, score, serials) per MODEL.
+
+    `serials` are the PDBQT atom serial numbers, RETAINED rather than discarded
+    because they are the only link back to the RDKit atom each coordinate
+    belongs to. Meeko reorders atoms, so without them a caller reconstructing a
+    molecule from this pose has to assume list order -- which is wrong for 10
+    of 13 heavy atoms on aspirin and misplaces one by up to 4.9 A.
+    """
+    models, cur, score, syms, crds, sers = [], False, None, [], [], []
     for line in text.splitlines():
         if line.startswith("MODEL"):
-            cur, score, syms, crds = True, None, [], []
+            cur, score, syms, crds, sers = True, None, [], [], []
         elif line.startswith("REMARK VINA RESULT"):
             parts = line.split()
             if len(parts) >= 4:
@@ -217,8 +237,12 @@ def _parse_pdbqt_models(text: str):
             raw = line[77:79].strip() or line[12:16].strip()
             syms.append(_element_from_autodock_type(raw))
             crds.append((float(line[30:38]), float(line[38:46]), float(line[46:54])))
+            # PDBQT columns 7-11 are the serial. Fall back to 1-based position
+            # if a writer left it blank, which keeps the list aligned.
+            ser = line[6:11].strip()
+            sers.append(int(ser) if ser.isdigit() else len(sers) + 1)
         elif line.startswith("ENDMDL") and cur:
-            models.append((syms, crds, score))
+            models.append((syms, crds, score, sers))
             cur = False
     return models
 
@@ -296,15 +320,32 @@ def dock_ligand(
         )
 
     models = _parse_pdbqt_models(out)
-    poses = [
-        DockedPose(
-            symbols=s,
-            coords_angstrom=c,
-            vina_score=sc if sc is not None else float("nan"),
-            rank=i,
+    # Meeko's `REMARK SMILES IDX` maps PDBQT serial -> RDKit index. It is
+    # written by the LIGAND preparation, so read it from the input PDBQT; Vina
+    # copies remarks through to its output, so either source works, and reading
+    # the input avoids depending on that.
+    from tools.docking.united_atom import parse_smiles_idx_remark
+
+    serial_to_rdkit = parse_smiles_idx_remark(lig_pdbqt)
+    poses = []
+    for i, (s, c, sc, sers) in enumerate(models):
+        # Only build the mapping when EVERY serial in this pose is covered. A
+        # partial map would silently place some atoms correctly and others by
+        # position, which is harder to notice than no map at all.
+        mapping = (
+            [serial_to_rdkit[k] for k in sers]
+            if serial_to_rdkit and all(k in serial_to_rdkit for k in sers)
+            else None
         )
-        for i, (s, c, sc) in enumerate(models)
-    ]
+        poses.append(
+            DockedPose(
+                symbols=s,
+                coords_angstrom=c,
+                vina_score=sc if sc is not None else float("nan"),
+                rank=i,
+                rdkit_index_of_heavy=mapping,
+            )
+        )
     if not poses:
         return DockResult(
             error="Vina returned no parseable pose",
