@@ -37,8 +37,12 @@ STILL OPEN, and these are the real remaining gaps:
   NH3 umbrella inversion under point-charge embedding converges in 5 steps to
   exactly one imaginary mode (`qmmm_saddle_converges.rs`). The "still to do:
   wire it to the QM/MM evaluator" this line used to carry is done.
-  STILL MISSING: there is no IRC, so which two minima a saddle connects remains
-  unverified -- the one-imaginary-mode check is necessary, not sufficient.
+  IRC LANDED 2026-09-19: `irc::follow_irc` walks mass-weighted steepest
+  descent off the saddle in both directions, so "which two minima does this
+  connect?" is now answerable. NH3 inversion lands at +0.8044/-0.8044 Bohr
+  pyramidalisation -- opposite sides, degenerate, barrier 0.016078 Ha both
+  ways. Runs under QM/MM embedding through the same closure `find_saddle`
+  takes, so the path and the search cannot disagree about the field.
   Section 4 has the full scope.
 - **No analytic dispersion gradients** even once #99 lands. The consequence is
   no longer a silently wrong surface: #99 now REFUSES `task="optimize"` and
@@ -336,7 +340,7 @@ bargain.
 | does the pocket field change it? | + `external_potential` | **~1.0x** the gas-phase SP (MEASURED) | embedding is essentially free | **use it** -- no reason not to |
 | where is the transition state? | `saddle::find_saddle` | 2*(6N+1) + (n_steps+1) gradients | converges on a known saddle; refuses a minimum's basin | **use it** |
 | is this really a TS? | `harmonic_frequencies` | 6N+1 gradients | exactly-one-imaginary check, from Rust AND Python | **use it** |
-| which two minima does it connect? | -- | -- | no IRC in ferric | **not available** |
+| which two minima does it connect? | `irc::follow_irc` | ~70 gradients/branch (MEASURED, NH3) | mass-weighted steepest descent both ways; endpoints step-size independent to 4 decimals | **use it** |
 | is this molecule a liability? | `tools/tox` alerts | 9.4 ms/molecule | published alert sets, NOT a probability of harm | **use it as a FLAG** |
 
 **The row that matters most is the one with no method.** Four pose protocols
@@ -1231,7 +1235,8 @@ script -- a negative cannot be demonstrated by running something.
 **C3 CLOSED AND MERGED 2026-09-19** (`ferric_scf::saddle`, #106), and
 demonstrated under QM/MM embedding rather than only in the gas phase. The chain
 C0-C5 is complete. What that does and does not mean is in the rewritten
-section 4 -- in particular there is still no IRC.
+section 4. The IRC gap is closed (`irc::follow_irc`); what remains is the
+analytic Hessian.
 
 API INCONSISTENCY worth knowing before writing a workflow: `run_rhf` takes a
 `BasisSet` OBJECT (`ferric.BasisSet.bundled("sto-3g")`), while
@@ -1333,7 +1338,11 @@ That ratio, not the algorithm, is what sizes a catalyst job now.
   `INCLUDE_ONEBODY 1`). Raising it means re-running libint's generation stage,
   a once-off out-of-band build, not a cmake flag. Every Hessian here is finite
   difference.
-- **No IRC**, so "this saddle connects THESE two minima" is still unverified.
+- ~~**No IRC.**~~ CLOSED 2026-09-19. `irc::follow_irc` answers it. Note what
+  it does NOT do: it stops on a gradient threshold and does not CONFIRM the
+  endpoint is a minimum -- that needs a Hessian there, another 6N+1 gradients
+  per side, and `IrcBranch::converged` reports which stopping condition fired
+  so the caller can decide.
   P-RFO finds a first-order saddle; it does not prove which reaction it belongs
   to.
 - **No reaction-coordinate constraint / relaxed scan.** `MoveMm` freezes whole
@@ -1385,10 +1394,19 @@ That ratio, not the algorithm, is what sizes a catalyst job now.
 
 ### Honest status line
 
-> ferric can now SEARCH for a transition state and CONFIRM one. It still has no
-> analytic Hessian, no IRC, and no QM/MM wiring for the search -- so a catalyst
-> workflow knows what to do, and the remaining work is integration and cost,
-> not a missing capability.
+> ferric can SEARCH for a transition state, CONFIRM one, and now FOLLOW the
+> reaction path off it in both directions. The QM/MM wiring for the search
+> exists and is demonstrated (NH3 inversion under point-charge embedding
+> converges in 5 steps to exactly one imaginary mode). What remains missing is
+> the ANALYTIC Hessian -- every Hessian here is finite-differenced from
+> analytic gradients at 6N+1 evaluations. So a catalyst workflow knows what to
+> do, and the remaining work is cost, not capability.
+
+Two claims in the previous version of this line were stale within a day: it
+said "no IRC" and "no QM/MM wiring for the search" after both had landed. A
+status line is the sentence people quote, so it goes stale first and does the
+most damage -- it is worth re-checking against the tree rather than against the
+paragraph above it.
 
 ---
 
