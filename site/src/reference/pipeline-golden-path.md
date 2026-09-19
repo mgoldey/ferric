@@ -830,8 +830,12 @@ C1. The cut WILL cross covalent bonds, so link atoms are mandatory:
     (Z1/RC/RCD). ferric has all of these, PySCF-validated.
 C2. Optimize the reactant and product complexes -- ferric CAN do this
     (optimize_qmmm is a minimizer).
-C3. FIND THE TRANSITION STATE. NOW AVAILABLE (2026-09-19, not yet merged):
-    ferric_scf::saddle::find_saddle -- P-RFO. See section 4, rewritten.
+C3. FIND THE TRANSITION STATE. AVAILABLE (2026-09-19, not yet merged) from
+    BOTH languages: ferric_scf::saddle::find_saddle (Rust) and
+    ferric.run_saddle(mol, basis, ...) (Python). The Python binding
+    matters because the whole tools/ pipeline is driven from Python --
+    without it C3 existed in a language the pipeline does not speak.
+    See section 4.
 C4. Verify the TS: harmonic_frequencies -> n_imaginary() == 1, AND the
     imaginary mode must point along the reaction coordinate (one imaginary
     frequency is necessary, not sufficient -- a methyl rotor gives one too).
@@ -993,6 +997,14 @@ That ratio, not the algorithm, is what sizes a catalyst job now.
     `optimize_qmmm` shares this.
   - Making it a library function means extracting `optimize_qmmm`'s 172-line
     inline evaluator closure -- a refactor with its own risk, and its own PR.
+
+  **Reachable from Python since 2026-09-19**: `ferric.run_saddle(mol, basis,
+  xc=, multiplicity=, max_steps=, trust_radius=, follow_mode=, delta=)` ->
+  `SaddleResult`, with `is_transition_state()` as a method so `converged`
+  alone cannot be read as a TS. The refusal crosses the FFI boundary with its
+  reason intact -- VERIFIED on H2 at 0.74 A, which returns "the projected
+  Hessian at the starting geometry has NO negative eigenvalue (lowest =
+  9.612869e-1)" rather than an opaque failure.
 - **Cartesian only.** Internal-coordinate P-RFO converges in fewer steps on
   floppy systems.
 - **The mode is not checked for being the RIGHT one.** Exactly one imaginary
