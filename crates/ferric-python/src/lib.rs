@@ -4688,21 +4688,6 @@ fn run_dft(
     // Refuse an (E, grad-E) pair that does not belong to the same surface.
     //
     // `total_energy` below is `e_scf + e_dispersion`, but `gradient_data` is
-    // the KS gradient of `e_scf` ALONE -- D3(BJ) nuclear derivatives are not
-    // implemented. Handing both back would let an optimizer walk the plain
-    // KS-DFT surface while reporting dispersion-corrected energies, which
-    // converges to the WRONG geometry with no warning. There is no correct
-    // value to return here, so this raises.
-    if with_gradient && dispersion.is_some() {
-        return Err(make_err(ferric_core::FerricError::General(
-            "with_gradient=True is not supported together with dispersion: the \
-             D3(BJ) nuclear gradient is not implemented, so the gradient would \
-             be that of the UNCORRECTED KS-DFT energy while the energy includes \
-             the correction. Request one or the other: dispersion=None for a \
-             consistent gradient, or with_gradient=False for a corrected energy."
-                .to_string(),
-        )));
-    }
     // Owned clone so the compute closure below never borrows the PyMolecule
     // pyclass field across the allow_threads boundary.
     let emol = mol.inner.clone();
@@ -4758,19 +4743,41 @@ fn run_dft(
     }
     let nbf = rhf.mos_alpha.nrows();
     let gradient_data = if with_gradient {
-        Some(
-            ks_gradient_closed(
-                &mol.inner,
-                &prep,
-                &basis_set.inner,
-                op,
-                &bounds,
-                &xc_name,
-                &rhf,
-                cfg.external_potential.as_ref(),
-            )
-            .map_err(make_err)?,
+        let mut g = ks_gradient_closed(
+            &mol.inner,
+            &prep,
+            &basis_set.inner,
+            op,
+            &bounds,
+            &xc_name,
+            &rhf,
+            cfg.external_potential.as_ref(),
         )
+        .map_err(make_err)?;
+        // D3(BJ) is additive in the ENERGY, so it is additive in the gradient.
+        // Adding it here rather than returning the bare KS gradient is what
+        // makes `total_energy` and `gradient()` describe the SAME surface --
+        // an optimizer handed a mismatched pair converges to the wrong
+        // geometry with nothing to indicate it.
+        if let Some(spec) = dispersion.as_deref() {
+            let which = resolve_d3_functional(spec, &xc_name)?;
+            let params = ferric_d3::d3bj_params_for_functional(&which).map_err(make_err)?;
+            let dg =
+                ferric_d3::d3bj_gradient_for_molecule(&mol.inner, &params).map_err(make_err)?;
+            if dg.len() != g.nrows() {
+                return Err(make_err(ferric_core::FerricError::General(format!(
+                    "D3 gradient has {} rows but the KS gradient has {}",
+                    dg.len(),
+                    g.nrows()
+                ))));
+            }
+            for (k, row) in dg.iter().enumerate() {
+                for a in 0..3 {
+                    g[[k, a]] += row[a];
+                }
+            }
+        }
+        Some(g)
     } else {
         None
     };
@@ -4781,37 +4788,11 @@ fn run_dft(
     // so a caller cannot mistake "not asked for" for "computed and found to be
     // zero". Any failure (unknown functional, unparameterised element) is
     // raised, never swallowed into a neutral-looking zero.
-    let e_dispersion = match dispersion {
+    let e_dispersion = match dispersion.as_deref() {
         None => None,
         Some(spec) => {
-            // Accepts exactly what the CLI's `[dft] dispersion` accepts, so the
-            // two surfaces cannot drift apart:
-            //   "d3bj"            -- the running functional's own parameters
-            //   "d3bj(<name>)"    -- <name>'s parameters instead, for when
-            //                        ferric's XC name and the D3 fit's differ
-            // Anything else is an error, NOT a silently-skipped correction.
-            let lower = spec.to_ascii_lowercase();
-            let which: &str = if lower == "d3bj" || lower == "d3(bj)" {
-                xc_name.as_str()
-            } else if let Some(inner) = lower
-                .strip_prefix("d3bj(")
-                .and_then(|r| r.strip_suffix(')'))
-            {
-                let inner = inner.trim();
-                if inner.is_empty() {
-                    return Err(make_err(ferric_core::FerricError::General(
-                        "dispersion=\"d3bj()\" names no functional".to_string(),
-                    )));
-                }
-                inner
-            } else {
-                return Err(make_err(ferric_core::FerricError::General(format!(
-                    "unknown dispersion scheme {spec:?}; expected \"d3bj\" or \
-                     \"d3bj(<functional>)\". Pass dispersion=None for no \
-                     correction -- there is no value meaning \"compute zero\"."
-                ))));
-            };
-            let params = ferric_d3::d3bj_params_for_functional(which).map_err(make_err)?;
+            let which = resolve_d3_functional(spec, &xc_name)?;
+            let params = ferric_d3::d3bj_params_for_functional(&which).map_err(make_err)?;
             Some(ferric_d3::d3bj_energy_for_molecule(&mol.inner, &params).map_err(make_err)?)
         }
     };
@@ -4825,6 +4806,45 @@ fn run_dft(
         gradient_data,
         scf_data: rhf,
     })
+}
+
+/// Resolve a `dispersion=` spec to the functional whose D3(BJ) parameters to use.
+///
+/// Accepts exactly what the CLI's `[dft] dispersion` accepts, so the two
+/// surfaces cannot drift apart:
+///   * `"d3bj"` / `"d3(bj)"` -- the running functional's own parameters
+///   * `"d3bj(<name>)"`      -- `<name>`'s parameters instead, for when
+///                              ferric's XC name and the D3 fit's name differ
+///
+/// Anything else is an error, never a silently-skipped correction.
+///
+/// SHARED between the energy and the gradient on purpose. When these were two
+/// inline copies it was possible for a future edit to make them resolve to
+/// DIFFERENT functionals, which would give an energy and a gradient from
+/// different surfaces -- the exact inconsistency the `with_gradient` rejection
+/// used to exist to prevent.
+fn resolve_d3_functional(spec: &str, xc_name: &str) -> PyResult<String> {
+    let lower = spec.to_ascii_lowercase();
+    if lower == "d3bj" || lower == "d3(bj)" {
+        return Ok(xc_name.to_string());
+    }
+    if let Some(inner) = lower
+        .strip_prefix("d3bj(")
+        .and_then(|r| r.strip_suffix(')'))
+    {
+        let inner = inner.trim();
+        if inner.is_empty() {
+            return Err(make_err(ferric_core::FerricError::General(
+                "dispersion=\"d3bj()\" names no functional".to_string(),
+            )));
+        }
+        return Ok(inner.to_string());
+    }
+    Err(make_err(ferric_core::FerricError::General(format!(
+        "unknown dispersion scheme {spec:?}; expected \"d3bj\" or \
+         \"d3bj(<functional>)\". Pass dispersion=None for no correction -- \
+         there is no value meaning \"compute zero\"."
+    ))))
 }
 
 /// Alias under the spec's canonical name. Same surface as `run_dft`.

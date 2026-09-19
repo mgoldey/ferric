@@ -25,7 +25,8 @@ use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_rpa::config::{QuadratureConfig, SternheimerConfig};
 use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_scf::optimize::{
-    optimize_geometry, optimize_geometry_rohf, optimize_geometry_uhf, OptimizeConfig,
+    optimize_geometry, optimize_geometry_rohf, optimize_geometry_uhf,
+    optimize_geometry_with_correction, OptimizeConfig,
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
@@ -288,13 +289,22 @@ pub fn run(args: Vec<String>) {
     // would report a plain KS-DFT geometry or Hessian as though it were
     // dispersion-corrected. D3(BJ) nuclear derivatives are not implemented, so
     // there is no correct answer to give here either -- refuse up front.
-    if cfg.dft.dispersion.is_some() && task != "energy" {
+    // `optimize` IS supported: the D3(BJ) analytic gradient is implemented and
+    // threaded through `optimize_geometry_with_correction`, so the energy and
+    // the gradient describe the same surface.
+    //
+    // `frequencies` is NOT, and that is a real gap rather than an oversight: a
+    // Hessian needs the SECOND derivative, which does not exist here. The
+    // frequency driver finite-differences the analytic gradient, so it WOULD
+    // silently produce a dispersion-corrected Hessian if allowed through --
+    // correct in principle, but 6N extra SCF+D3 evaluations whose accuracy has
+    // never been checked against anything. Refused until it is measured.
+    if cfg.dft.dispersion.is_some() && task == "frequencies" {
         eprintln!(
-            "error: [dft] dispersion is only supported with method.task = \"energy\"; \
-             got task = \"{task}\". The D3(BJ) nuclear gradient is not implemented, so \
-             an optimization or frequency run would follow the UNCORRECTED KS-DFT \
-             surface while appearing to be dispersion-corrected. Remove the \
-             dispersion key, or use task = \"energy\"."
+            "error: [dft] dispersion is not yet supported with method.task = \
+             \"frequencies\". The D3(BJ) analytic GRADIENT exists (so task = \
+             \"optimize\" works), but the finite-difference Hessian built from it \
+             has not been validated. Use task = \"energy\" or \"optimize\"."
         );
         std::process::exit(1);
     }
@@ -3917,11 +3927,61 @@ fn run_optimize(
     };
     match method {
         "rhf" | "ksdft" => {
-            let opt_result = optimize_geometry(ctx, mol, &bs.name, op, rhf_config, &opt_config)
-                .unwrap_or_else(|e| {
-                    eprintln!("error during optimization: {e}");
-                    std::process::exit(1);
-                });
+            // D3(BJ) as an ADDITIVE correction on both halves. It is threaded
+            // as a closure rather than as a flag inside `ferric-scf` so that
+            // crate stays free of any empirical dispersion model; see
+            // `optimize_geometry_with_correction`.
+            //
+            // The energy and the gradient come from the SAME resolved
+            // parameters, which is the property that makes optimizing on this
+            // surface meaningful -- a mismatched pair converges to a geometry
+            // that is a stationary point of neither.
+            let disp = match cfg.dft.dispersion.as_deref() {
+                None => None,
+                Some(spec) => {
+                    let req = crate::config::DispersionRequest::parse_config_str(
+                        spec,
+                        cfg.dft.functional.as_deref(),
+                    )
+                    .unwrap_or_else(|e| {
+                        eprintln!("error: {e}");
+                        std::process::exit(1);
+                    });
+                    let crate::config::DispersionRequest::D3Bj { functional } = req;
+                    Some(
+                        ferric_d3::d3bj_params_for_functional(&functional).unwrap_or_else(|e| {
+                            eprintln!("error: {e}");
+                            std::process::exit(1);
+                        }),
+                    )
+                }
+            };
+            let opt_result = optimize_geometry_with_correction(
+                ctx,
+                mol,
+                &bs.name,
+                op,
+                rhf_config,
+                &opt_config,
+                |m| match &disp {
+                    None => Ok((0.0, None)),
+                    Some(params) => {
+                        let e = ferric_d3::d3bj_energy_for_molecule(m, params)?;
+                        let g = ferric_d3::d3bj_gradient_for_molecule(m, params)?;
+                        let mut arr = ndarray::Array2::<f64>::zeros((g.len(), 3));
+                        for (k, row) in g.iter().enumerate() {
+                            for a in 0..3 {
+                                arr[[k, a]] = row[a];
+                            }
+                        }
+                        Ok((e, Some(arr)))
+                    }
+                },
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("error during optimization: {e}");
+                std::process::exit(1);
+            });
             println!("\nFinal Optimized Geometry (Bohr):");
             for (i, atom) in opt_result.mol.atoms.iter().enumerate() {
                 println!(

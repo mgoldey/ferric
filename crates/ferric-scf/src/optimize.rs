@@ -136,8 +136,64 @@ pub fn optimize_geometry(
     rhf_config: &RhfConfig,
     opt_config: &OptimizeConfig,
 ) -> Result<OptimizeResult, FerricError> {
+    optimize_geometry_with_correction(ctx, mol, basis_name, op, rhf_config, opt_config, |_| {
+        Ok((0.0, None))
+    })
+}
+
+/// [`optimize_geometry`] plus a caller-supplied ADDITIVE energy correction.
+///
+/// `correction(mol)` returns `(energy, Option<gradient>)` in Hartree and
+/// Hartree/Bohr, both added to the SCF values at every step. The motivating
+/// case is empirical dispersion: D3(BJ) is additive in the energy and
+/// therefore in the gradient, but it is an EMPIRICAL model and `ferric-scf`
+/// has no business depending on one. Passing it as a closure keeps this crate
+/// dispersion-agnostic -- `ferric-cli` supplies D3, and a caller with a
+/// different correction supplies that instead.
+///
+/// **An energy without a gradient is a hard error, not a zero.** A correction
+/// that can report an energy but not its derivative would make the optimizer
+/// walk one surface while reporting another, converging to a geometry that is
+/// a stationary point of neither.
+///
+/// With the default `|_| Ok((0.0, None))` this is byte-identical to the
+/// uncorrected optimizer: the `de != 0.0 || dg.is_some()` guard skips the
+/// addition entirely, so no floating-point operation is introduced on the
+/// path that existed before. Pinned by
+/// `a_zero_correction_is_byte_identical_to_no_correction`.
+pub fn optimize_geometry_with_correction(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    basis_name: &str,
+    op: Operator,
+    rhf_config: &RhfConfig,
+    opt_config: &OptimizeConfig,
+    mut correction: impl FnMut(&Molecule) -> Result<(f64, Option<Array2<f64>>), FerricError>,
+) -> Result<OptimizeResult, FerricError> {
     run_bfgs(mol, opt_config, |m| {
-        compute_energy_and_gradient(ctx, m, basis_name, op, rhf_config)
+        let (e, mut g) = compute_energy_and_gradient(ctx, m, basis_name, op, rhf_config)?;
+        let (de, dg) = correction(m)?;
+        if de != 0.0 || dg.is_some() {
+            let dg = dg.ok_or_else(|| {
+                FerricError::General(
+                    "geometry optimization: the energy correction returned a value but no \
+                     gradient. Optimizing would follow the UNCORRECTED surface while \
+                     reporting corrected energies, converging to a geometry that is a \
+                     stationary point of neither."
+                        .to_string(),
+                )
+            })?;
+            if dg.shape() != g.shape() {
+                return Err(FerricError::General(format!(
+                    "geometry optimization: correction gradient is {:?} but the SCF \
+                     gradient is {:?}",
+                    dg.shape(),
+                    g.shape()
+                )));
+            }
+            g = g + dg;
+        }
+        Ok((e + de, g))
     })
 }
 

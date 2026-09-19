@@ -311,6 +311,238 @@ pub fn d3bj_energy(
     Ok(energy)
 }
 
+/// Analytic nuclear gradient of the two-body D3(BJ) energy, `dE/dR` in
+/// Hartree/Bohr, as `n_atoms` rows of `[x, y, z]`.
+///
+/// # Why this is not just the pairwise derivative
+///
+/// `C6_AB` is **not a constant**: it is interpolated from reference values by
+/// both atoms' coordination numbers, and every CN depends on every interatomic
+/// distance. So moving atom `X` changes `C6_AB` for pairs that do not contain
+/// `X` at all. The gradient therefore has two distinct parts:
+///
+/// ```text
+/// dE/dR_X = [explicit]  the R^-6/R^-8 dependence of pairs containing X
+///         + [CN chain]  sum_A (dE/dCN_A) (dCN_A/dR_X)
+/// ```
+///
+/// Dropping the second part gives a gradient that looks right -- correct
+/// magnitude, correct symmetry, smoothly varying -- and is wrong by a few
+/// percent. It is caught only by finite difference, which is why
+/// `tests/gradient_vs_fd.rs` exists and why it tests a system with mixed
+/// coordination rather than a dimer (a dimer's CN term is small).
+///
+/// # What is NOT differentiated
+///
+/// The damping radius `f = a1*R0 + a2` with `R0 = sqrt(C8/C6) = sqrt(3*sqrt(QA*QB))`
+/// depends only on the two ELEMENTS, never on geometry, so `df/dR = 0`. This
+/// is a property of BJ damping, not an approximation: the `C6` in `C8 = 3*C6*q`
+/// cancels in `C8/C6`. Verified in `damping_radius_is_geometry_independent`.
+pub fn d3bj_gradient(
+    numbers: &[u8],
+    coords: &[[f64; 3]],
+    params: &D3Params,
+) -> Result<Vec<[f64; 3]>, FerricError> {
+    if numbers.len() != coords.len() {
+        return Err(FerricError::General(format!(
+            "D3 gradient: {} atomic numbers but {} coordinates",
+            numbers.len(),
+            coords.len()
+        )));
+    }
+    let z = checked_numbers(numbers)?;
+    let n = z.len();
+    let mut grad = vec![[0.0f64; 3]; n];
+    if n < 2 {
+        // Same identity as the energy: no pairs, so the sum is empty and its
+        // derivative is exactly zero. Not a fallback.
+        return Ok(grad);
+    }
+
+    let cn = coordination_numbers(&z, coords);
+
+    // dE/dCN_A, accumulated over every pair, then contracted with dCN_A/dR_X
+    // in a second pass. Doing it in two passes rather than one is what keeps
+    // this O(N^2) instead of O(N^3): the CN chain rule couples every pair to
+    // every atom, but only through these n scalars.
+    let mut de_dcn = vec![0.0f64; n];
+
+    for i in 0..n {
+        for j in 0..i {
+            let r = distance(&coords[i], &coords[j]);
+            if r <= f64::EPSILON {
+                return Err(FerricError::General(format!(
+                    "D3 gradient: atoms {i} and {j} are at the same position; \
+                     the dispersion energy and its gradient diverge."
+                )));
+            }
+            let c6 = c6_interpolated(z[i], z[j], cn[i], cn[j]);
+            let qq = sqrt_q(z[i]) * sqrt_q(z[j]);
+            let c8 = 3.0 * c6 * qq;
+            // R0 = sqrt(C8/C6) = sqrt(3*qq): the C6 cancels, so this carries
+            // no geometry dependence and contributes nothing to the gradient.
+            let r0 = (3.0 * qq).sqrt();
+
+            let f = params.a1 * r0 + params.a2;
+            let f2 = f * f;
+            let f6 = f2 * f2 * f2;
+            let f8 = f6 * f2;
+
+            let r2 = r * r;
+            let r6 = r2 * r2 * r2;
+            let r8 = r6 * r2;
+
+            let d6 = r6 + f6;
+            let d8 = r8 + f8;
+
+            // --- explicit R dependence -------------------------------------
+            // E_pair = -(s6 C6/d6 + s8 C8/d8), so
+            // dE/dR = s6 C6 * 6 R^5 / d6^2 + s8 C8 * 8 R^7 / d8^2
+            let r5 = r2 * r2 * r;
+            let r7 = r5 * r2;
+            let de_dr =
+                params.s6 * c6 * 6.0 * r5 / (d6 * d6) + params.s8 * c8 * 8.0 * r7 / (d8 * d8);
+
+            // dR/dx_i = (x_i - x_j)/R, and dR/dx_j is its negative.
+            let inv_r = 1.0 / r;
+            for a in 0..3 {
+                let comp = (coords[i][a] - coords[j][a]) * inv_r * de_dr;
+                grad[i][a] += comp;
+                grad[j][a] -= comp;
+            }
+
+            // --- C6 dependence, banked for the CN pass ----------------------
+            // dE_pair/dC6 = -(s6/d6 + 3 qq s8/d8), since C8 = 3 C6 qq is
+            // itself linear in C6.
+            let de_dc6 = -(params.s6 / d6 + 3.0 * qq * params.s8 / d8);
+            let (dc6_di, dc6_dj) = c6_interpolated_derivatives(z[i], z[j], cn[i], cn[j]);
+            de_dcn[i] += de_dc6 * dc6_di;
+            de_dcn[j] += de_dc6 * dc6_dj;
+        }
+    }
+
+    // --- contract dE/dCN with dCN/dR ---------------------------------------
+    //
+    // CN_A = sum_{B != A} g(R_AB), and the SAME pair term appears in both CN_A
+    // and CN_B, so a pair (i,j) contributes (de_dcn[i] + de_dcn[j]) * dg/dR.
+    for i in 0..n {
+        for j in 0..i {
+            let r = distance(&coords[i], &coords[j]);
+            if r <= f64::EPSILON {
+                // Already rejected above; the counting function saturates here
+                // and its derivative is zero, so skipping is consistent with
+                // `coordination_numbers`.
+                continue;
+            }
+            let rc = rcov(z[i]) + rcov(z[j]);
+            // g = 1/(1+exp(-k(rc/R - 1)))  =>  dg/dR = -k rc/R^2 * g(1-g)
+            let e = (-KCN * (rc / r - 1.0)).exp();
+            let g = 1.0 / (1.0 + e);
+            let dg_dr = -KCN * rc / (r * r) * g * (1.0 - g);
+
+            let w = (de_dcn[i] + de_dcn[j]) * dg_dr;
+            let inv_r = 1.0 / r;
+            for a in 0..3 {
+                let comp = (coords[i][a] - coords[j][a]) * inv_r * w;
+                grad[i][a] += comp;
+                grad[j][a] -= comp;
+            }
+        }
+    }
+
+    Ok(grad)
+}
+
+/// `dC6_AB/dCN_A` and `dC6_AB/dCN_B` at the given coordination numbers.
+///
+/// `C6 = N/D` with `N = sum_ij c_ij Wi Wj` and `D = sum_ij Wi Wj`, so by the
+/// quotient rule `dC6/dCN_A = (dN/dCN_A - C6 dD/dCN_A)/D`. Written in that
+/// form rather than as `(D dN - N dD)/D^2` because it reuses the already
+/// computed `C6` and keeps one fewer large intermediate.
+///
+/// Returns `(0, 0)` in the underflow regime where `c6_interpolated` falls back
+/// to the nearest reference: that branch is piecewise constant in CN, so its
+/// derivative genuinely is zero almost everywhere. It is reached only far
+/// outside the reference CN range.
+fn c6_interpolated_derivatives(zi: usize, zj: usize, cni: f64, cnj: f64) -> (f64, f64) {
+    let wi = reference_weights(zi, cni);
+    let wj = reference_weights(zj, cnj);
+
+    let mut num = 0.0;
+    let mut den = 0.0;
+    let mut dnum_i = 0.0;
+    let mut dden_i = 0.0;
+    let mut dnum_j = 0.0;
+    let mut dden_j = 0.0;
+
+    for (iref, &a) in wi.iter().enumerate() {
+        // dWi/dCN_A = -2 wf (CN_A - CNref_i) Wi
+        let cnref_i = tables::REFERENCE_CN[iref + tables::MAX_REF * (zi - 1)];
+        let da = -2.0 * WF * (cni - cnref_i) * a;
+        for (jref, &b) in wj.iter().enumerate() {
+            let cnref_j = tables::REFERENCE_CN[jref + tables::MAX_REF * (zj - 1)];
+            let db = -2.0 * WF * (cnj - cnref_j) * b;
+
+            let c = reference_c6(iref, jref, zi, zj);
+            num += c * a * b;
+            den += a * b;
+            dnum_i += c * da * b;
+            dden_i += da * b;
+            dnum_j += c * a * db;
+            dden_j += a * db;
+        }
+    }
+
+    if den > 1e-300 {
+        let c6 = num / den;
+        ((dnum_i - c6 * dden_i) / den, (dnum_j - c6 * dden_j) / den)
+    } else {
+        (0.0, 0.0)
+    }
+}
+
+/// Analytic D3(BJ) gradient for a [`ferric_core::mol::Molecule`], in
+/// Hartree/Bohr, with one row per atom **in the molecule's own order**.
+///
+/// Ghost centres are excluded from the dispersion sum for the same reason as
+/// in the energy (no nucleus, no polarisable density), and their rows come
+/// back as exact zeros. Getting that mapping right is the whole job of this
+/// wrapper: `d3bj_gradient` sees only the filtered list, so its row `k` is not
+/// atom `k` of the molecule whenever a ghost precedes it. Returning the
+/// filtered vector directly would silently apply each force to the WRONG atom
+/// -- a counterpoise geometry optimisation would then walk downhill on a
+/// scrambled surface without any error.
+pub fn d3bj_gradient_for_molecule(
+    mol: &ferric_core::mol::Molecule,
+    params: &D3Params,
+) -> Result<Vec<[f64; 3]>, FerricError> {
+    let real: Vec<usize> = (0..mol.atoms.len())
+        .filter(|&i| !mol.atoms[i].ghost)
+        .collect();
+    let numbers: Vec<u8> = real.iter().map(|&i| mol.atoms[i].z as u8).collect();
+    let coords: Vec<[f64; 3]> = real
+        .iter()
+        .map(|&i| [mol.atoms[i].x, mol.atoms[i].y, mol.atoms[i].zpos])
+        .collect();
+
+    // Same refusal as the energy: all-ghost is a configuration error, and a
+    // zero gradient there would be indistinguishable from a computed one.
+    if numbers.is_empty() && !mol.atoms.is_empty() {
+        return Err(FerricError::General(format!(
+            "D3 gradient: all {} centres in this molecule are ghosts, so there \
+             are no real atoms to correct.",
+            mol.atoms.len()
+        )));
+    }
+
+    let filtered = d3bj_gradient(&numbers, &coords, params)?;
+    let mut full = vec![[0.0f64; 3]; mol.atoms.len()];
+    for (row, &iatom) in filtered.iter().zip(&real) {
+        full[iatom] = *row;
+    }
+    Ok(full)
+}
+
 /// Two-body D3(BJ) energy for a [`ferric_core::mol::Molecule`].
 ///
 /// Convenience wrapper: ferric molecules already carry atomic numbers and
