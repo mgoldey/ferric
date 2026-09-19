@@ -112,8 +112,21 @@ def scan() -> dict:
                         data = json.load(fh)
                 except (json.JSONDecodeError, OSError):
                     continue
-                # Recover the real source path relative to the repo root.
+                # Recover the real source path relative to the REPO ROOT.
+                #
+                # rust-code-analysis-cli mirrors each input's ABSOLUTE path
+                # into the output tree, so relpath(fpath, tmp) yields
+                # "home/matt/qc/ferric/crates/..." -- the absolute path minus
+                # its leading slash, not a repo-relative one. Baselining that
+                # pins the keys to ONE checkout directory: every git worktree
+                # then reports every function as NEW, and the gate fails on
+                # changes that touch no Rust at all (a .config/nextest.toml
+                # edit hit exactly this). Strip the repo root so the keys are
+                # portable across worktrees and machines.
                 rel = os.path.relpath(fpath, tmp).removesuffix(".json")
+                root_key = os.path.relpath(ROOT, "/")
+                if rel.startswith(root_key + os.sep):
+                    rel = rel[len(root_key) + 1 :]
 
                 def walk(node):
                     if node.get("kind") == "function":
