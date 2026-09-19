@@ -215,6 +215,29 @@ The format table above says what can enter; these say what it costs. Min of
 | SMILES -> 3-D (`from_smiles`, ETKDG+MMFF) | **8.5 ms** | per molecule |
 | PDB -> `PocketCharges` (`derive_pocket_charges`, 7LCJ pocket) | **2.66 s** | 6458 charges, pdb2pqr30 |
 
+**The remaining five paths, measured 2026-09-19** so the table covers what
+section 1 says can enter rather than only the three that had been timed. All
+one molecule (aspirin, 21 atoms) so the number is the PARSER and not the size,
+min of 5, single-threaded:
+
+| entry path | cost |
+|---|---|
+| xyz -> `Molecule` (21 atoms) | **0.10 ms** |
+| **pdb (WITH hydrogens) -> `Molecule`** | **0.11 ms** |
+| **mol2 -> `Molecule`** | **0.12 ms** |
+| **multi-frame xyz -> 20-frame `ConformerEnsemble`** | **0.23 ms** |
+| **sdf -> `Molecule`** | **0.33 ms** |
+| SMILES -> 3-D | **8.16 ms** |
+
+**Every file-parsing path is 0.1-0.3 ms and none of them matters.** The only
+entry cost worth planning around is SMILES (~25-80x a file read, because ETKDG
+generates a conformer rather than reading one) and the one-off PDB->PQR at
+2.66 s. A campaign that reads 1000 SDF files spends 0.3 s total on parsing.
+
+Note the pdb row: a PDB **that already has hydrogens** reads at file speed. It
+is the crystal PDB with no hydrogens that is refused -- see the refusal note
+below, which is about protonation, not about the format being slow.
+
 Four orders of magnitude separate them, and the ordering is the point: **the
 PDB path is ~300x the SMILES path and ~9000x an xyz read.** It is also a
 ONE-OFF per target -- `PocketCharges` is derived once and reused across the
@@ -234,6 +257,24 @@ hand the solver a species that does not exist. A receptor goes through
 `derive_pocket_charges` (which runs pdb2pqr and protonates), not through
 `read_structure`. The error names the problem, but the two paths are easy to
 confuse on first use.
+
+**PQR and the chain-ID column: a non-bug, CHECKED (2026-09-19).**
+`pqr_parser` hard-requires exactly 10 whitespace fields and reads coordinates
+at `fields[5:9]`. PQR files that carry a chain ID have ELEVEN fields and shift
+the coordinates to `fields[6:10]`, so such a file is rejected with
+`Unexpected PQR field count (11, expected 10)` -- and both repo fixtures are
+10-field, so the 11-field layout is untested.
+
+That looks like a gap and is not one. MEASURED: `pdb2pqr30` **drops the chain
+ID**, emitting 10 fields even from a PDB whose ATOM records carry chain A. Fed
+a chain-bearing PDB through `run_pdb2pqr`, all 16 output records came back
+10-field. The parser matches its only producer in this pipeline, and the
+11-field layout is not reachable through `derive_pocket_charges`.
+
+It IS reachable if someone hands you a PQR from another tool (APBS's own
+writers, some Amber paths). The failure is then a clean error naming the field
+count, not a silent misparse -- coordinates read from the wrong columns would
+be far worse. Pinned by `test_an_eleven_field_pqr_is_refused_not_misparsed`.
 
 **Unit hazard, worth stating once:** Python geometry entry is Angstrom;
 `point_charges` and `QmmmSystem.point_charges()` are BOHR; `PocketCharges`
