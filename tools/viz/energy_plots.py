@@ -43,6 +43,7 @@ __all__ = [
     "site_substituent_heatmap",
     "pose_ensemble",
     "liability_profile",
+    "imaginary_mode",
     "close",
 ]
 
@@ -615,5 +616,98 @@ def liability_profile(
     )
     ax.grid(axis="y", alpha=0.3)
     ax.legend(frameon=False, fontsize=9)
+    fig.tight_layout()
+    return fig
+
+
+def imaginary_mode(
+    symbols: Sequence[str],
+    displacements: Sequence[float],
+    *,
+    top_n: int = 10,
+    title: str = "Imaginary mode: which atoms move",
+    expected_atoms: Sequence[int] | None = None,
+):
+    """Per-atom displacement magnitude of a transition state's imaginary mode.
+
+    The plot golden-path step C4 needs and nothing else provides. Counting
+    imaginary frequencies is NECESSARY AND NOT SUFFICIENT: exactly one means
+    first-order saddle, not "the saddle for the reaction you meant" -- a methyl
+    rotor gives one too. Completing C4 means checking the mode displaces the
+    atoms whose bonds are breaking or forming, and that is a question about a
+    3N vector that a frequency number cannot answer.
+
+    `displacements` is the flat 3N Cartesian vector from
+    `SaddleResult.imaginary_mode` (or a row of
+    `FrequencyResult.normal_modes`). Bars are per-atom magnitudes
+    `sqrt(dx^2+dy^2+dz^2)`, sorted largest first, because "which atoms move"
+    is the question and atom index order buries the answer.
+
+    `expected_atoms` are the indices you EXPECT to dominate -- the reacting
+    centres. They are highlighted, and the caption states how many of them
+    landed in the top `top_n`. That turns a visual impression into a check:
+    a mode whose largest motions are nowhere near the reacting bonds is the
+    methyl-rotor case, and it should be obvious rather than inferred.
+
+    This does NOT decide whether the mode is right. It shows what the mode
+    does; the chemistry is the caller's.
+    """
+    n3 = len(displacements)
+    if n3 == 0 or n3 % 3 != 0:
+        raise ValueError(
+            f"displacements has {n3} entries, which is not a 3N Cartesian "
+            "vector -- pass SaddleResult.imaginary_mode or one row of "
+            "FrequencyResult.normal_modes"
+        )
+    n_atoms = n3 // 3
+    if len(symbols) != n_atoms:
+        raise ValueError(
+            f"{len(symbols)} symbols but the mode covers {n_atoms} atoms -- "
+            "these must describe the same molecule"
+        )
+    if expected_atoms is not None:
+        bad = [i for i in expected_atoms if not 0 <= i < n_atoms]
+        if bad:
+            raise ValueError(
+                f"expected_atoms {bad} are out of range for {n_atoms} atoms"
+            )
+
+    mags = [
+        (
+            displacements[3 * i] ** 2
+            + displacements[3 * i + 1] ** 2
+            + displacements[3 * i + 2] ** 2
+        )
+        ** 0.5
+        for i in range(n_atoms)
+    ]
+    order = sorted(range(n_atoms), key=lambda i: mags[i], reverse=True)
+    shown = order[: min(top_n, n_atoms)]
+
+    plt = _plt()
+    fig, ax = plt.subplots(figsize=(max(5.5, 0.6 * len(shown) + 2), 4.0))
+    expect = set(expected_atoms or ())
+    colors = ["#c44e52" if i in expect else "#4c72b0" for i in shown]
+    ax.bar(range(len(shown)), [mags[i] for i in shown], color=colors)
+    ax.set_xticks(range(len(shown)))
+    ax.set_xticklabels(
+        [f"{symbols[i]}{i}" for i in shown], rotation=45, ha="right", fontsize=9
+    )
+    ax.set_ylabel("|displacement| (arbitrary units)")
+
+    if expected_atoms is not None:
+        hit = len(expect & set(shown))
+        ax.set_title(
+            f"{title}\n{hit}/{len(expect)} expected reacting atoms in the top "
+            f"{len(shown)}" + ("" if hit == len(expect) else "  -- CHECK THIS MODE")
+        )
+        ax.plot([], [], "s", color="#c44e52", label="expected reacting atom")
+        ax.legend(frameon=False, fontsize=9)
+    else:
+        ax.set_title(
+            title + "\n(no expected_atoms given -- this shows the mode, it does "
+            "not check it)"
+        )
+    ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
     return fig

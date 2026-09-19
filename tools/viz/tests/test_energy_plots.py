@@ -19,6 +19,7 @@ from tools.viz.energy_plots import (
     SeriesPoint,
     energy_profile,
     funnel_survival,
+    imaginary_mode,
     liability_profile,
     pose_ensemble,
     site_substituent_heatmap,
@@ -452,3 +453,55 @@ def test_close_releases_a_figure_so_a_batch_does_not_accumulate_them():
     for f in figs:
         viz_close(f)
     assert len(plt.get_fignums()) == before, "close() must actually release them"
+
+
+# --- imaginary mode (golden path C4) -----------------------------------------
+
+
+def test_imaginary_mode_sorts_by_magnitude_not_atom_index():
+    """ "Which atoms move" is the question; index order buries the answer."""
+    # Atom 3 moves most, atom 0 least. 4 atoms -> 12 components.
+    disp = [0.01, 0, 0, 0.5, 0, 0, 0.2, 0, 0, 0.9, 0, 0]
+    fig = imaginary_mode(["C", "H", "O", "N"], disp, top_n=4)
+    labels = [t.get_text() for t in fig.axes[0].get_xticklabels()]
+    assert labels == ["N3", "H1", "O2", "C0"], f"not sorted by magnitude: {labels}"
+
+
+def test_expected_atoms_turn_a_visual_impression_into_a_check():
+    """C4's second half: does the mode move the REACTING atoms?
+
+    One imaginary frequency means first-order saddle, not "the saddle you
+    meant" -- a methyl rotor gives one too. Naming the expected atoms puts the
+    hit count in the title, so a mode that moves the wrong atoms is stated
+    rather than left to the eye.
+    """
+    disp = [0.9, 0, 0, 0.8, 0, 0, 0.01, 0, 0, 0.01, 0, 0]
+    syms = ["C", "O", "H", "H"]
+
+    good = imaginary_mode(syms, disp, top_n=2, expected_atoms=[0, 1])
+    t = good.axes[0].get_title()
+    assert "2/2" in t, f"both reacting atoms dominate; title says {t!r}"
+    assert "CHECK THIS MODE" not in t
+
+    # The methyl-rotor case: the mode moves atoms nobody expected.
+    bad = imaginary_mode(syms, disp, top_n=2, expected_atoms=[2, 3])
+    t2 = bad.axes[0].get_title()
+    assert "0/2" in t2 and "CHECK THIS MODE" in t2, (
+        f"a mode missing every expected atom must say so loudly: {t2!r}"
+    )
+
+
+def test_without_expected_atoms_it_says_it_is_not_checking_anything():
+    """A figure that looks like a verdict but is only a display."""
+    fig = imaginary_mode(["C", "O"], [1.0, 0, 0, 0.5, 0, 0])
+    assert "does not check it" in fig.axes[0].get_title()
+
+
+def test_a_non_3N_vector_is_rejected():
+    """Silently truncating would plot a different molecule's mode."""
+    with pytest.raises(ValueError, match="not a 3N"):
+        imaginary_mode(["C", "O"], [1.0, 0.0, 0.0, 0.5])  # 4 entries
+    with pytest.raises(ValueError, match="same molecule"):
+        imaginary_mode(["C"], [1.0, 0, 0, 0.5, 0, 0])  # 1 symbol, 2 atoms
+    with pytest.raises(ValueError, match="out of range"):
+        imaginary_mode(["C", "O"], [1.0, 0, 0, 0.5, 0, 0], expected_atoms=[5])
