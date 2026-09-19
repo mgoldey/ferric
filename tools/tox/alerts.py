@@ -112,8 +112,15 @@ class RdkitAlertsProvider:
     """Offline provider: RDKit `FilterCatalog` alert sets + Lipinski/Veber.
 
     Constructed once and reused across a whole ensemble — building the
-    FilterCatalog objects parses several hundred SMARTS patterns, which is slow
-    enough that per-molecule construction dominates the runtime of a batch.
+    FilterCatalog objects parses several hundred SMARTS patterns.
+
+    MEASURED 2026-09-19 (danuglipron, min of 3-5 reps, single-threaded):
+    construction 47 ms, `fetch` 9.4 ms/molecule, so the ratio is **5x**.
+    Constructing per molecule would therefore cost a batch ~6x, not the
+    "dominates the runtime" this docstring previously claimed. Building once is
+    still clearly right; the earlier wording overstated the effect, and an
+    overstated reason is worse than none because it survives into decisions
+    elsewhere.
     """
 
     name = "rdkit-alerts"
