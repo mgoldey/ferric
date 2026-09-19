@@ -44,11 +44,12 @@
 //!
 //! ## Cost
 //!
-//! MEASURED in `tests/saddle_cost.rs`: `2 * 6N + n_steps` gradient
-//! evaluations, where N is the QM atom count. The two Hessians dominate until
-//! n_steps exceeds ~6N * 2. Every one of those gradients is an embedded SCF, so
-//! the QM region size is the only lever that matters — see the golden-path
-//! note's cost table.
+//! MEASURED in `tests/saddle_cost.rs`: `2 * (6N + 1) + (n_steps + 1)` gradient
+//! evaluations, where N is the QM atom count. Each Hessian is 6N DISPLACED
+//! evaluations plus one at the undisplaced geometry; `find_saddle` takes one
+//! more before its first step. The two Hessians dominate until n_steps exceeds
+//! ~6N * 2. Every one of those gradients is an embedded SCF, so the QM region
+//! size is the only lever that matters — see the golden-path note's cost table.
 //!
 //! Run with:
 //!
