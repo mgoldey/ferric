@@ -1274,13 +1274,24 @@ jobs:
             # OpenMPI writes $outdir/1/rank.N/std{out,err}; older builds write
             # $outdir.N directly. Concatenate whatever appeared, newline-safe,
             # so the greps below see every rank's complete output exactly once.
+            #
+            # `--output-filename` TEES: each rank's output goes to its per-rank
+            # file AND to the shared stdout. So the launch log is a DUPLICATE of
+            # the per-rank files, not a complement -- concatenating both counted
+            # every summary twice and produced "expected 1 ... found 2" at np=1.
+            # Use the per-rank files when they exist; fall back to the launch
+            # log only when they do not (an OpenMPI too old for the flag, or a
+            # failure before any file was created).
             : > "$log"
             find "$outdir" -type f \( -name 'stdout' -o -name 'stderr' \) 2>/dev/null \
               | sort | while read -r f; do cat "$f"; echo; done >> "$log"
             for f in "$outdir".*; do
               [ -f "$f" ] && { cat "$f"; echo; } >> "$log"
             done
-            cat "$log.launch" >> "$log"
+            if [ ! -s "$log" ]; then
+              echo "-- no per-rank output files under $outdir; falling back to the shared stream"
+              cat "$log.launch" >> "$log"
+            fi
             # Not anchored to column 0 any more: with per-rank files there is
             # no interleaving to anchor against, and an anchor would silently
             # re-introduce the same class of failure if a future OpenMPI
