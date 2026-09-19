@@ -296,7 +296,7 @@ not a defect to fix -- it is the empirical reason tiers 2-4 exist.
 | tier | method | cost | source |
 |---|---|---|---|
 | 1 | Vina, **exhaustiveness 4** (the RECOMMENDED setting) | **26.4 s/ligand** @ cpu=0 (12 cores); 109.0 s @ cpu=1 | RESULTS.md M11 |
-| 1 | Vina, exhaustiveness 32 | ~2 min/ligand | `tools/pipeline/tiers.py:11` |
+| 1 | ~~Vina, exhaustiveness 32, ~2 min/ligand~~ | superseded by the ex=4 row above; the figure was never measured and its `tiers.py:11` citation pointed at the module doc comment | |
 | 1 | Vina, per pose | ~10 us | `tools/docking/vina_dock.py:7` |
 
 **Budget from the ex=4 row, not the ex=32 one.** M11 measured that across an
@@ -311,8 +311,8 @@ only wins above ~4 workers, which is a narrower claim than "the machine sits
 idle at low exhaustiveness".
 | 2 | MMFF94 (`tier2_forcefield` = embed + optimize) | **2.2 ms @ 9 atoms, 8.2 @ 19, 21.6 @ 34; ~73 ms projected @ 71** | MEASURED 2026-09-19 |
 | 2 | ~~MMFF94 ~1 ms/pose~~ | superseded: that figure cited `tiers.py:12`, which is the same doc comment -- a circular citation, never a measurement, and it described a single point rather than embed+optimize | |
-| 3 | GFN2-xTB single point | ~0.5 s | `tiers.py:13` |
-| 4 | ferric DFT | 96.1 s @ 32 atoms, **def2-SVP** (~450 bf) | `tiers.py:14` |
+| 3 | GFN2-xTB via `tier3_gfn2` | **0.05-0.15 s** @ 9-19 atoms | MEASURED 2026-09-19 |
+| 4 | ferric DFT via `tier4_dft` | **0.66 s @ 9, 8.7 s @ 19** (STO-3G); 96.1 s @ 32 (**def2-SVP**, ~450 bf) | MEASURED 2026-09-19 / RESULTS.md |
 | 4 | ferric DFT | 612.4 s @ 71 atoms, **STO-3G**/PBE (~234 bf), 18 iters, converged | RESULTS.md |
 
 **DO NOT DERIVE A SCALING LAW FROM THOSE TWO ROWS.** They differ in BASIS as
@@ -366,6 +366,33 @@ timings. So:
   a few bond lengths. A floppy ligand in a pocket has far more soft degrees of
   freedom and will take more. Treat 34 as a FLOOR for the step count, not a
   typical value -- one geometry is not a distribution.
+
+### Every `tiers.py:NN` citation in this table pointed at a DOC COMMENT
+
+Three of the cost rows cited `tiers.py:11/13/14` or `vina_dock.py:7`. Every one
+of those lines is the module header's own cost table -- **the citations pointed
+at prose, not at a measurement**, and the golden path and the docstring were
+quoting each other.
+
+A `file.py:NN` reference survives the check "is this sourced?", which is what
+let three unmeasured figures sit in a MEASURED table. They also rot: correcting
+the tier-2 line shifted the numbering, so `tiers.py:13` and `:14` came to point
+at the wrong rows entirely.
+
+All three are now measured THROUGH THE TIER FUNCTIONS (not through the
+underlying library, which is a different cost):
+
+| tier | 9 atoms | 19 atoms | 34 atoms |
+|---|---|---|---|
+| 2 `tier2_forcefield` | 2.2 ms | 8.2 ms | 21.6 ms |
+| 3 `tier3_gfn2` | 0.152 s | 0.050 s | -- |
+| 4 `tier4_dft` (STO-3G) | 0.66 s | 8.7 s | -- |
+
+Tier 3's old `~0.5 s` was the right order. Tier 2's `~1 ms` was 20x low. Both
+were unmeasured; the difference is luck, not diligence.
+
+**When a cost in this table cites a file and line, open it.** If the line is a
+doc comment, the number is unsourced.
 
 ### Tier 2 is 20x costlier than claimed, and it changes nothing (MEASURED 2026-09-19)
 
