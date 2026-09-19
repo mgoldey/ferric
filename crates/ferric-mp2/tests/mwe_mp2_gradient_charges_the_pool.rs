@@ -80,12 +80,7 @@ struct Fixture {
 }
 
 fn h2o() -> Molecule {
-    Molecule::parse_xyz(
-        "3\nH2O\nO 0 0 0\nH 0 0.757 0.587\nH 0 -0.757 0.587\n",
-        0,
-        1,
-    )
-    .unwrap()
+    Molecule::parse_xyz("3\nH2O\nO 0 0 0\nH 0 0.757 0.587\nH 0 -0.757 0.587\n", 0, 1).unwrap()
 }
 
 fn fixture() -> Fixture {
