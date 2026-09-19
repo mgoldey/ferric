@@ -44,6 +44,7 @@ ferric-mp2 = { path = "../ferric-mp2" }
 # (ferric_dft::vv10::Vv10Damping) are ferric-dft types re-exported through
 # ferric-mp2's public API, so the CLI must name the crate to construct them.
 ferric-dft = { path = "../ferric-dft" }
+ferric-d3 = { path = "../ferric-d3" }
 ferric-rpa = { path = "../ferric-rpa" }
 ferric-gw = { path = "../ferric-gw" }
 ferric-export = { path = "../ferric-export" }

@@ -271,6 +271,73 @@ pub struct DftCfg {
     /// through the XC gradient's grid-response path, which is built for the
     /// unpruned grid and hard-errors on a pruned one.
     pub grid_prune: Option<String>,
+    /// Empirical dispersion correction to ADD to the SCF energy.
+    ///
+    ///   omitted / absent  — no correction. The reported energy is the plain
+    ///                       KS-DFT energy, exactly as before this key existed.
+    ///   `"d3bj"`          — Grimme D3(BJ), using the damping parameters
+    ///                       published for `functional`.
+    ///   `"d3bj(<name>)"`  — D3(BJ) using `<name>`'s published parameters
+    ///                       instead, for when ferric's XC name and the D3
+    ///                       fit's name differ (e.g. a libxc spelling).
+    ///
+    /// Unknown values are a hard error, and so is a functional with no
+    /// published D3(BJ) fit: the correction is FITTED per functional, so
+    /// substituting another one's parameters would silently change the answer.
+    /// There is deliberately no "off" value that reports a 0.0 correction --
+    /// absent means absent.
+    pub dispersion: Option<String>,
+}
+
+/// What `[dft] dispersion` asked for, after strict parsing.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DispersionRequest {
+    /// D3(BJ) with the named functional's published damping parameters.
+    D3Bj { functional: String },
+}
+
+impl DispersionRequest {
+    /// Parse the `[dft] dispersion` value.
+    ///
+    /// `xc` is the functional being run, used when the value does not name one
+    /// explicitly. Strict by this config's convention: an unknown value is an
+    /// error, never a silent no-op.
+    pub fn parse_config_str(s: &str, xc: Option<&str>) -> Result<Self, ferric_core::FerricError> {
+        let v = s.trim();
+        let lower = v.to_ascii_lowercase();
+        let named = |f: &str| -> Result<Self, ferric_core::FerricError> {
+            Ok(DispersionRequest::D3Bj {
+                functional: f.to_string(),
+            })
+        };
+        if lower == "d3bj" || lower == "d3(bj)" {
+            let f = xc.ok_or_else(|| {
+                ferric_core::FerricError::General(
+                    "[dft] dispersion = \"d3bj\" needs [dft] functional to know which \
+                     damping parameters to use, or name one explicitly as \
+                     \"d3bj(pbe)\"."
+                        .to_string(),
+                )
+            })?;
+            return named(f);
+        }
+        if let Some(rest) = lower
+            .strip_prefix("d3bj(")
+            .and_then(|r| r.strip_suffix(')'))
+        {
+            if rest.trim().is_empty() {
+                return Err(ferric_core::FerricError::General(
+                    "[dft] dispersion = \"d3bj()\" names no functional".to_string(),
+                ));
+            }
+            return named(rest.trim());
+        }
+        Err(ferric_core::FerricError::General(format!(
+            "unknown [dft] dispersion value {v:?}; expected \"d3bj\" or \
+             \"d3bj(<functional>)\". Omit the key entirely for no dispersion \
+             correction -- there is no value that means \"compute zero\"."
+        )))
+    }
 }
 
 /// One `[[external_potential.point_charges]]` entry: a fixed point charge
@@ -2037,6 +2104,67 @@ trunc_threshold = 1e-12
             err.contains("trunc_threshold"),
             "error should name the bad key: {err}"
         );
+    }
+
+    /// `[dft] dispersion` parses strictly: the accepted spellings resolve, and
+    /// everything else is a hard error rather than a silent no-op.
+    ///
+    /// The last case is the load-bearing one for this repo's conventions:
+    /// there must be NO value that means "compute a zero correction", because
+    /// a reported 0.0 dispersion is a physics claim, not an absence.
+    #[test]
+    fn dispersion_config_parses_strictly() {
+        use super::DispersionRequest;
+
+        // "d3bj" takes the running functional's parameters.
+        assert_eq!(
+            DispersionRequest::parse_config_str("d3bj", Some("PBE")).unwrap(),
+            DispersionRequest::D3Bj {
+                functional: "PBE".to_string()
+            }
+        );
+        // Case-insensitive, and the "d3(bj)" spelling is accepted too.
+        assert!(DispersionRequest::parse_config_str("D3BJ", Some("PBE")).is_ok());
+        assert!(DispersionRequest::parse_config_str("d3(bj)", Some("PBE")).is_ok());
+
+        // An explicit functional overrides the running one.
+        assert_eq!(
+            DispersionRequest::parse_config_str("d3bj(b3lyp)", Some("PBE")).unwrap(),
+            DispersionRequest::D3Bj {
+                functional: "b3lyp".to_string()
+            }
+        );
+
+        // "d3bj" with no functional to fall back on must error, not guess.
+        assert!(DispersionRequest::parse_config_str("d3bj", None).is_err());
+        // An empty parenthesised name is an error, not an empty lookup.
+        assert!(DispersionRequest::parse_config_str("d3bj()", Some("PBE")).is_err());
+        // Unknown schemes error.
+        for bad in ["d4", "xdm", "vv10", "yes", "true", "0", "none", "off"] {
+            assert!(
+                DispersionRequest::parse_config_str(bad, Some("PBE")).is_err(),
+                "{bad:?} must be rejected; omitting the key is the only way to \
+                 ask for no dispersion"
+            );
+        }
+    }
+
+    /// A `[dft] dispersion` key must actually reach `DftCfg` through the TOML
+    /// parser. Without this, the strict parser above could be correct and still
+    /// never be called, because `deny_unknown_fields` would reject the key.
+    #[test]
+    fn dispersion_key_is_accepted_by_the_toml_parser() {
+        let body = "[molecule]\nxyz = \"m.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+                    [method]\nkind = \"ksdft\"\n[dft]\nfunctional = \"PBE\"\n\
+                    dispersion = \"d3bj\"\n";
+        let cfg: Config = toml::from_str(body).expect("[dft] dispersion must parse");
+        assert_eq!(cfg.dft.dispersion.as_deref(), Some("d3bj"));
+
+        // ... and omitting it leaves it None, which is what "no correction" is.
+        let body_off = "[molecule]\nxyz = \"m.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+                        [method]\nkind = \"ksdft\"\n[dft]\nfunctional = \"PBE\"\n";
+        let cfg_off: Config = toml::from_str(body_off).unwrap();
+        assert_eq!(cfg_off.dft.dispersion, None);
     }
 
     /// `[dft] grid_prune` reaches the strict parser, and unknown values are a

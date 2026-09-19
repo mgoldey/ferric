@@ -1,0 +1,13 @@
+[package]
+name = "ferric-d3"
+version = "0.1.0"
+license.workspace = true
+edition = "2021"
+description = "Grimme D3(BJ) dispersion correction, implemented natively in Rust"
+
+[lints]
+workspace = true
+
+[dependencies]
+ferric-core = { path = "../ferric-core" }
+ndarray = { workspace = true }
