@@ -1051,6 +1051,21 @@ def test_delete_host_makes_the_embedded_optimization_converge():
     ).with_link_atoms([(0, 4)])
     z1 = base.with_boundary_charges([(0, 4)], "delete-host")
 
+    # THE NEGATIVE CONTROL COMES FIRST, because without it this test is inert.
+    # A VACUUM methyl also relaxes to zero imaginary modes (MEASURED:
+    # conv=True, n_imag=0, E=-39.726863), so asserting only that the Z1 case
+    # converges would pass with `point_charges` dropped entirely. The `keep`
+    # case is what distinguishes "the field is applied" from "no field at all".
+    kept = ferric.run_optimize(
+        base.qm_molecule(), "sto-3g", point_charges=base.point_charges(), max_steps=120
+    )
+    assert not kept.converged, (
+        "the retained-host case CONVERGED. Either the host charge is no longer "
+        "inside the link bond (check min_link_to_charge_distance), or "
+        "point_charges= is not reaching run_optimize -- in which case every "
+        "assertion below is about a vacuum methyl."
+    )
+
     opt = ferric.run_optimize(
         z1.qm_molecule(), "sto-3g", point_charges=z1.point_charges(), max_steps=120
     )
@@ -1060,6 +1075,14 @@ def test_delete_host_makes_the_embedded_optimization_converge():
     assert n_imag == 0, (
         f"a relaxed methyl in a Z1 field is a MINIMUM; got {n_imag} imaginary "
         "mode(s), so either the relaxation or the embedding is wrong"
+    )
+    # And the Z1 answer must DIFFER from vacuum, or the three remaining charges
+    # are ignored even though removing the host took effect.
+    vac = ferric.run_optimize(z1.qm_molecule(), "sto-3g", max_steps=120)
+    assert abs(vac.energy - opt.energy) > 1e-5, (
+        f"the Z1 field moved the relaxed energy by only "
+        f"{abs(vac.energy - opt.energy):.2e} Ha; the remaining charges are not "
+        "reaching the optimizer"
     )
 
 

@@ -308,11 +308,34 @@ def test_the_whole_embedded_chain_runs_and_the_barrier_moves():
             step=0.15,
             point_charges=pc,
         )
-        return irc.forward_barrier(), irc.reverse_barrier()
+        # `run_irc` RECOMPUTES the saddle energy on its own input surface, so
+        # this equality is a direct check that `point_charges` reached the IRC:
+        # a dropped field gives the gas-phase energy at the embedded geometry.
+        assert irc.saddle_energy == pytest.approx(sad.energy, abs=1e-8), (
+            f"run_irc saw saddle_energy {irc.saddle_energy} where run_saddle "
+            f"reported {sad.energy}; the two are on different surfaces, which "
+            "is what a dropped point_charges= looks like"
+        )
+        # Convergence is REPORTED, not asserted, and the distinction is the
+        # measurement. MEASURED on this system: the vacuum branches converge,
+        # the FIELD branches do not within 200 steps. Asserting both_converged
+        # would fail on the embedded case for a true reason -- a barrier
+        # against a step-limited branch is a lower bound -- so the caller gets
+        # the flag and the test asserts only what holds in each case.
+        return irc.forward_barrier(), irc.reverse_barrier(), irc.both_converged()
 
     hartree_to_kcal = 627.5094740631
-    vf, vr = barrier(None)
-    ff, fr = barrier(_SYMMETRIC_CHARGES)
+    vf, vr, v_conv = barrier(None)
+    ff, fr, f_conv = barrier(_SYMMETRIC_CHARGES)
+
+    # Vacuum MUST converge: it is the easy case, and if it stops converging the
+    # step control has regressed rather than the chemistry having changed.
+    assert v_conv, "the VACUUM IRC stopped converging; that is a solver regression"
+    # The field case is step-limited on this system, so its barriers are LOWER
+    # BOUNDS. Recorded rather than asserted either way, because a future change
+    # that made it converge should not fail this test.
+    if not f_conv:
+        assert ff > 0 and fr > 0, "a lower-bound barrier must still be positive"
 
     # Vacuum NH3 inversion is symmetric by mirror symmetry -- a strong internal
     # check that the walk stayed on the umbrella coordinate.
@@ -327,4 +350,51 @@ def test_the_whole_embedded_chain_runs_and_the_barrier_moves():
         f"the field changed the barrier by only "
         f"{abs(ff - vf) * hartree_to_kcal:.3f} kcal/mol; point_charges= is not "
         "reaching the IRC"
+    )
+
+
+def test_external_field_is_threaded_too_not_just_point_charges():
+    """`external_field` had NO coverage: every test above passes point_charges.
+
+    The two kwargs go through the same `build_external_potential` helper, but
+    "same helper" is an argument, not a test -- a binding could forward one and
+    drop the other, and nothing here would have noticed. A uniform field along
+    z shifts a polar molecule's energy, so the check is the same shape as the
+    point-charge one: compare against vacuum on the SAME geometry.
+    """
+    mol = _near_planar_ammonia()
+    field = (0.0, 0.0, 0.01)  # a.u., along the C3 axis
+
+    vac_f = ferric.run_frequencies(mol, "sto-3g")
+    fld_f = ferric.run_frequencies(mol, "sto-3g", external_field=field)
+    assert abs(vac_f.energy - fld_f.energy) > 1e-6, (
+        "run_frequencies: external_field= changed nothing, so it is being "
+        "accepted and dropped"
+    )
+
+    vac_s = ferric.run_saddle(mol, "sto-3g", max_steps=40)
+    fld_s = ferric.run_saddle(mol, "sto-3g", max_steps=40, external_field=field)
+    assert vac_s.converged and fld_s.converged
+    assert abs(vac_s.energy - fld_s.energy) > 1e-6, (
+        "run_saddle: external_field= changed nothing"
+    )
+
+    # And the IRC, via the energy it recomputes at the saddle -- the same
+    # same-surface check the point-charge test uses.
+    xyz = f"{len(fld_s.symbols)}\nsaddle\n" + "".join(
+        f"{s} {c[0]:.8f} {c[1]:.8f} {c[2]:.8f}\n"
+        for s, c in zip(fld_s.symbols, fld_s.coords)
+    )
+    irc = ferric.run_irc(
+        ferric.Molecule.from_xyz_string(xyz),
+        "sto-3g",
+        mode=fld_s.imaginary_mode,
+        max_steps=60,
+        step=0.15,
+        external_field=field,
+    )
+    assert irc.saddle_energy == pytest.approx(fld_s.energy, abs=1e-8), (
+        f"run_irc recomputed {irc.saddle_energy} where run_saddle reported "
+        f"{fld_s.energy}; run_irc is on a different surface, which is what a "
+        "dropped external_field= looks like"
     )
