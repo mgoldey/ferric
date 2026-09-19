@@ -305,12 +305,8 @@ fn lookup_by_name_matches_explicit_parameters_exactly() {
             &d3bj_params_for_functional(fname).unwrap(),
         )
         .unwrap();
-        let by_params = d3bj_energy(
-            &water.numbers,
-            &water.coords,
-            &D3Params { s6, s8, a1, a2 },
-        )
-        .unwrap();
+        let by_params =
+            d3bj_energy(&water.numbers, &water.coords, &D3Params { s6, s8, a1, a2 }).unwrap();
         assert_eq!(
             by_name.to_bits(),
             by_params.to_bits(),
