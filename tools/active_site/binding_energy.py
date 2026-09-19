@@ -76,6 +76,29 @@ def compute_binding_energy(
 
     Raises MemoryError up front if fewer than `min_available_gb` GB are free
     (set to 0 to disable the check).
+
+    WHAT THIS NUMBER CANNOT DO: RANK ANALOGUES.
+
+    The value is well defined and reproducible FOR ONE POSE. It is the pose
+    that is the problem. MEASURED on the danuglipron campaign
+    (`experiments/danuglipron/RESULTS.md`, M4-M14), five protocols for getting
+    a ddE out of a pose ensemble were tried and all five closed:
+
+        average over n poses    SEM*sqrt(2) = 4.07 kcal/mol   16x the gap
+        select one pose (M13)   sd*sqrt(2)  = 40.66           163x
+        a real pose search      1% improvement, 32.5x short
+        a different scorer      none available is less pose-sensitive
+        a better tier           the error is in the ENSEMBLE, not the SCF
+
+    Substituent effects are 1-2 kcal/mol, so the BEST available ddE noise is
+    ~2-4x the signal. No amount of tier-4 DFT fixes this: it is pose variance,
+    not electronic-structure error, and averaging more poses only buys
+    sqrt(n).
+
+    So: quote this for ONE ligand in ONE pose, or as a component of a larger
+    model. Do not order two analogues by it. `site_substituent_heatmap` takes
+    a `noise_floor=` for exactly this reason -- pass 4.07 (or your own measured
+    figure) and it greys out every cell the data cannot separate.
     """
     if min_available_gb > 0:
         check_available_memory(min_available_gb)
