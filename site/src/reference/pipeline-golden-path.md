@@ -667,14 +667,29 @@ and do not spend effort shaving P-RFO steps.
 **Putting a number on a catalyst TS.** Using the same 612 s DFT single point
 the tier-5 estimate uses, and treating a gradient as ~1 single point:
 
-    N = 20 QM atoms, n_steps = 30    ->  270 gradients  ->  ~46 h
-    N = 20 QM atoms, n_steps = 100   ->  340 gradients  ->  ~58 h
+    TS search, N = 20, n_steps = 30    273 gradients   ~46 h
+    TS search, N = 20, n_steps = 100   343 gradients   ~58 h
+    IRC, both branches                 142 gradients   ~24 h
+    -------------------------------------------------------
+    TS + IRC, n_steps = 30             415 gradients   ~71 h
+
+**The IRC is not a rounding item.** At 142 gradients (MEASURED: 71 per branch
+on NH3 inversion, two branches) it adds more than half the TS search again, and
+a catalyst study needs it -- without it "exactly one imaginary mode" says the
+geometry is A saddle, not that it is the one connecting your reactant and
+product. Budget the pair, not the search alone.
 
 ESTIMATED, and the multiplicand is the load-bearing weakness -- it is a 71-atom
 DFT single point measured on a different system. What is MEASURED is the
-multiplier (2 Hessians + n_steps) and the 6N Hessian cost. Note the step count
-matters much less than it does for a minimization: going from 30 to 100 steps
-moves the total by 26%, because the fixed 240-gradient Hessian cost swamps it.
+multiplier (`2*(6N+1) + n_steps + 1` for the search, ~71 gradients per IRC
+branch) and the 6N+1 Hessian cost. Note the step count matters much less than
+it does for a minimization: going from 30 to 100 steps moves the TS total by
+26%, because the fixed 242-gradient Hessian cost swamps it.
+
+**What is NOT in this budget**, so it is not mistaken for a full study: the
+reactant and product optimizations that precede the search, a frequency run at
+each endpoint for ZPE, and any conformational search over the QM region. Each
+is its own multiple of the same single-point cost.
 
 **The floor caveat, same as the BFGS one below.** The step count above comes
 from an analytic two-atom surface. A real catalyst TS has soft degrees of
