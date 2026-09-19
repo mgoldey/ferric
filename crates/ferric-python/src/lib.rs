@@ -4685,6 +4685,24 @@ fn run_dft(
     memory_budget_gb: Option<f64>,
     dispersion: Option<&str>,
 ) -> PyResult<PyDftResult> {
+    // Refuse an (E, grad-E) pair that does not belong to the same surface.
+    //
+    // `total_energy` below is `e_scf + e_dispersion`, but `gradient_data` is
+    // the KS gradient of `e_scf` ALONE -- D3(BJ) nuclear derivatives are not
+    // implemented. Handing both back would let an optimizer walk the plain
+    // KS-DFT surface while reporting dispersion-corrected energies, which
+    // converges to the WRONG geometry with no warning. There is no correct
+    // value to return here, so this raises.
+    if with_gradient && dispersion.is_some() {
+        return Err(make_err(ferric_core::FerricError::General(
+            "with_gradient=True is not supported together with dispersion: the \
+             D3(BJ) nuclear gradient is not implemented, so the gradient would \
+             be that of the UNCORRECTED KS-DFT energy while the energy includes \
+             the correction. Request one or the other: dispersion=None for a \
+             consistent gradient, or with_gradient=False for a corrected energy."
+                .to_string(),
+        )));
+    }
     // Owned clone so the compute closure below never borrows the PyMolecule
     // pyclass field across the allow_threads boundary.
     let emol = mol.inner.clone();

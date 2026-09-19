@@ -243,7 +243,14 @@ fn c6_interpolated(zi: usize, zj: usize, cni: f64, cnj: f64) -> f64 {
 /// (ferric's internal convention -- see `ferric_core::Molecule`).
 ///
 /// Returns an error rather than a number if any atom lies outside the D3
-/// parameterisation.
+/// parameterisation, if `numbers` and `coords` disagree in length, or if two
+/// atoms sit at the same position.
+///
+/// Fewer than two atoms returns `Ok(0.0)`, which is exact rather than a
+/// fallback: the two-body sum runs over pairs and there are none. A caller for
+/// which an empty input is a MISTAKE rather than a zero-dispersion system must
+/// reject it before calling -- `d3bj_energy_for_molecule` does exactly that for
+/// a molecule of only ghost centres.
 pub fn d3bj_energy(
     numbers: &[u8],
     coords: &[[f64; 3]],
@@ -259,8 +266,15 @@ pub fn d3bj_energy(
     let z = checked_numbers(numbers)?;
     let n = z.len();
     if n < 2 {
-        // One atom (or none) has no pairs: the sum is EMPTY, so this is an
-        // exact zero, not a small number.
+        // Fewer than two atoms means no PAIRS, so the two-body sum is empty.
+        // An empty sum is exactly 0.0 -- arithmetic, not a fallback, and this
+        // primitive keeps that identity (pinned by exactness_anchor.rs).
+        //
+        // Whether an empty input is MEANINGFUL is a caller question, not an
+        // arithmetic one, so it is answered one level up: see
+        // `d3bj_energy_for_molecule`, which rejects a molecule whose atoms are
+        // all ghosts because that is a configuration mistake rather than a
+        // zero-dispersion system.
         return Ok(0.0);
     }
 
@@ -326,6 +340,21 @@ pub fn d3bj_energy_for_molecule(
         .filter(|a| !a.ghost)
         .map(|a| [a.x, a.y, a.zpos])
         .collect();
+    // A molecule with atoms, ALL of which are ghosts, filters down to nothing.
+    // `d3bj_energy` would correctly report the empty sum as 0.0, but at THIS
+    // level that zero is indistinguishable from a computed correction, and it
+    // is almost certainly a mis-specified counterpoise input rather than a
+    // system anyone meant to correct. Refuse it here, where "all my atoms were
+    // ghosts" is a statement that can be made.
+    //
+    // A genuinely empty molecule (no atoms at all) still returns 0.0 through
+    // the primitive: there is nothing to warn anyone about.
+    if numbers.is_empty() && !mol.atoms.is_empty() {
+        return Err(FerricError::General(format!(
+            "D3: all {} centres in this molecule are ghosts, so there are no              real atoms to correct. A ghost carries basis functions but no              nucleus, so this is a configuration error, not a zero dispersion              correction.",
+            mol.atoms.len()
+        )));
+    }
     d3bj_energy(&numbers, &coords, params)
 }
 
@@ -456,6 +485,64 @@ mod tests {
             "a REAL carbon at the ghost's position must change the energy, else \
              the ghost test is vacuous: {e_plain:e} vs {e_real:e}"
         );
+    }
+
+    /// A molecule of ONLY ghost centres must ERROR, not report a zero
+    /// correction.
+    ///
+    /// This is the one case where the ghost filter and the "no silent zeros"
+    /// rule collide: filtering every atom out leaves an empty list, and the
+    /// empty two-body sum is arithmetically 0.0. But 0.0 here means "you
+    /// configured a system with no real atoms", which is a mistake, and it is
+    /// indistinguishable from a genuine zero once returned. So it raises.
+    #[test]
+    fn a_ghost_only_molecule_errors_instead_of_reporting_zero() {
+        let p = D3Params {
+            s6: 1.0,
+            s8: 0.7875,
+            a1: 0.4289,
+            a2: 4.4407,
+        };
+        let all_ghost = "3\nall ghosts\n@O 0.0 0.0 0.0623\n@H 0.0 0.7572 -0.4923\n\
+                         @H 0.0 -0.7572 -0.4923\n";
+        let mol = ferric_core::mol::Molecule::parse_xyz(all_ghost, 0, 1).unwrap();
+        assert!(
+            mol.atoms.iter().all(|a| a.ghost),
+            "every centre must parse as a ghost, else this tests nothing"
+        );
+        let err = d3bj_energy_for_molecule(&mol, &p)
+            .expect_err("a ghost-only molecule must error, not return 0.0");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ghost") || msg.contains("no real atoms"),
+            "the error must say WHY, so a user can fix the input; got: {msg}"
+        );
+
+        // Vacuity guard: the same three centres as REAL atoms must succeed.
+        // Without this, the assertion above would also pass if
+        // `d3bj_energy_for_molecule` errored for some unrelated reason.
+        let real = "3\nwater\nO 0.0 0.0 0.0623\nH 0.0 0.7572 -0.4923\nH 0.0 -0.7572 -0.4923\n";
+        let mol_r = ferric_core::mol::Molecule::parse_xyz(real, 0, 1).unwrap();
+        assert!(
+            d3bj_energy_for_molecule(&mol_r, &p).is_ok(),
+            "the same centres as real atoms must compute fine"
+        );
+    }
+
+    /// A SINGLE atom is the one legitimate `Ok(0.0)`: the two-body sum runs
+    /// over pairs and one atom has none. This pins that the empty-list error
+    /// above did not overreach into the one-atom case.
+    #[test]
+    fn a_single_atom_is_an_exact_zero_not_an_error() {
+        let p = D3Params {
+            s6: 1.0,
+            s8: 0.7875,
+            a1: 0.4289,
+            a2: 4.4407,
+        };
+        let e = d3bj_energy(&[8], &[[0.0, 0.0, 0.0]], &p)
+            .expect("one atom has no pairs; that is an exact zero, not an error");
+        assert_eq!(e, 0.0, "a lone atom's two-body dispersion is exactly zero");
     }
 
     /// The unsupported-element ERROR must propagate out of the public entry
