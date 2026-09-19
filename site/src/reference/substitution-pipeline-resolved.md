@@ -146,6 +146,7 @@ protocol available today supports that. The four measured options:
 |---|---|---|
 | select one pose (M13) | 40.66 | 163x |
 | average n = 100 (M5) | 4.07 | 16x |
+| a different scorer (M14) | 4.68 (best tracking) | 19x |
 | relax then average (M6) | ~4.1 | ~16x |
 | dock then average (M12) | ~4.1 | ~16x |
 
@@ -154,10 +155,22 @@ from this would be reporting noise.
 
 ## What is still NOT settled
 
-* **The per-pose sd is the whole problem, and it is a property of the SCORING
-  METRIC, not the poses.** M12 showed better poses do not help (1%); M13 showed
-  picking one does not either (10x worse). The lever left is a scorer less
-  sensitive to pose than a point-charge interaction energy.
+* ~~**The lever left is a scorer less sensitive to pose.**~~ **CLOSED by M14
+  (2026-09-19).** Scored the SAME 19 docked poses with every scorer in the
+  repo, comparing coefficient of variation (dimensionless, so comparable
+  across scales):
+
+  | scorer | CV | Spearman vs pose_fit |
+  |---|---|---|
+  | vina_score | 0.071 | -0.202 (p=0.41) |
+  | pose_fit (xtb) | 0.315 | reference |
+  | prescreen (classical) | 2.955 | +0.353 (p=0.14) |
+
+  prescreen is **9.4x worse**. Vina looks 4.4x smoother and does not track
+  pose_fit at all -- smooth because it is insensitive, not because it is
+  better. **No scorer in this repo is less pose-sensitive**, so the remaining
+  route is one that is pose-averaged BY CONSTRUCTION (FEP, or an ML affinity
+  model trained on ensembles), which is outside this campaign.
 * **`funnel.py` cannot express an ensemble** (`funnel.py:162`, one row per
   candidate), and with averaging restored it needs to.
 * **Tier 4 unvalidated** -- M10 recorded it does not fit the funnel as
