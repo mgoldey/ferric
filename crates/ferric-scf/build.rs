@@ -64,6 +64,34 @@ fn main() {
                 println!("cargo:rerun-if-changed={}", p.display());
             }
         }
+        // ...AND the ref HEAD points at.
+        //
+        // On a branch, `HEAD` holds the SYMBOLIC ref `ref: refs/heads/<name>`,
+        // and that text does NOT change when you commit -- only the loose ref
+        // file does. Watching HEAD alone therefore misses every commit on the
+        // current branch, which is the common case, and the baked-in
+        // FERRIC_GIT_SHA silently goes stale. (It DOES catch a branch switch,
+        // which is presumably why this looked like it worked.)
+        //
+        // `git rev-parse --git-common-dir` is where refs live; in a WORKTREE
+        // the per-worktree `--git-dir` has its own HEAD but shares refs with
+        // the main checkout, so resolving the ref against the wrong one finds
+        // nothing.
+        if let Ok(head) = std::fs::read_to_string(dir.join("HEAD")) {
+            if let Some(refname) = head.strip_prefix("ref: ").map(str::trim) {
+                let common = std::process::Command::new("git")
+                    .args(["rev-parse", "--git-common-dir"])
+                    .output()
+                    .ok()
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .map(|s| std::path::PathBuf::from(s.trim().to_string()))
+                    .unwrap_or_else(|| dir.to_path_buf());
+                let ref_path = common.join(refname);
+                if ref_path.exists() {
+                    println!("cargo:rerun-if-changed={}", ref_path.display());
+                }
+            }
+        }
     }
     // Let a build system (a container build, a CI job with no .git) supply the
     // SHA directly. An explicitly provided value always wins over the probe.
