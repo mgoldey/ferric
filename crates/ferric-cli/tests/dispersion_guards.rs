@@ -22,10 +22,65 @@
 //! wrong configs are rejected — it says nothing about whether the accepted one
 //! computes the right energy.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Path to the `ferric-cli` binary, resolved at RUN TIME.
+///
+/// Same trap as `workspace_root` below, different constant.
+/// `env!("CARGO_BIN_EXE_ferric-cli")` is baked in at COMPILE time; under
+/// `cargo nextest archive` the binary is EXTRACTED to a fresh temporary
+/// directory in the running job while that constant still names the build
+/// job's `target/debug/`. MEASURED: the archive DOES carry the executable
+/// (`target/debug/ferric-cli` is in the tarball), so the failure is the stale
+/// path, not a missing file -- which is why the error says NotFound and means
+/// something else.
+///
+/// Prefer a sibling of the currently-running test binary, which is where
+/// nextest puts it, then fall back to the compile-time path for plain
+/// `cargo test`. Copied from `ccsd_dispatch.rs`, which already had both
+/// helpers; writing this file with raw `env!` reintroduced a fixed bug.
+fn ferric_cli_bin() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        // .../target/<profile>/deps/<test-binary>  ->  .../target/<profile>/
+        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
+            let p = profile_dir.join("ferric-cli");
+            if p.is_file() {
+                return p;
+            }
+        }
+    }
+    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
+}
+
+/// Resolve the workspace root at RUN time, not compile time.
+///
+/// `env!("CARGO_MANIFEST_DIR")` is baked in when the test binary is COMPILED.
+/// Under `cargo nextest archive` the binary is built in one job and run in
+/// another whose checkout is elsewhere, so that path does not exist and
+/// `Command::current_dir` fails with
+///
+///     failed to run ferric-cli binary: NotFound "No such file or directory"
+///
+/// which names the BINARY and means the CWD. This file hit exactly that on CI
+/// after being written with the old helper; the repo already had the fix in
+/// `ccsd_dispatch.rs` and this is the same shape. `--workspace-remap` does NOT
+/// help -- it remaps cargo's view, not a string compiled into the test.
 fn workspace_root() -> PathBuf {
+    let looks_like_root = |p: &std::path::Path| {
+        p.join("Cargo.toml").is_file() && p.join("examples").is_dir() && p.join("testdata").is_dir()
+    };
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut here: Option<&std::path::Path> = Some(cwd.as_path());
+        while let Some(p) = here {
+            if looks_like_root(p) {
+                return p.to_path_buf();
+            }
+            here = p.parent();
+        }
+    }
+    // Correct under plain `cargo test`, where the compile and the run share a
+    // checkout.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
@@ -37,7 +92,7 @@ fn run_toml(tag: &str, body: &str) -> std::process::Output {
     let root = workspace_root();
     let path = root.join("target").join(format!("disp_guard_{tag}.toml"));
     std::fs::write(&path, body).expect("write temp toml");
-    Command::new(env!("CARGO_BIN_EXE_ferric-cli"))
+    Command::new(ferric_cli_bin())
         .arg(&path)
         .current_dir(&root)
         .env("OPENBLAS_NUM_THREADS", "1")
