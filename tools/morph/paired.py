@@ -106,11 +106,19 @@ class PairedResult:
     notes: list[str] = field(default_factory=list)
 
     @property
-    def variance_reduction(self) -> float:
-        """How many times smaller the paired SEM is. 1.0 = pairing bought nothing.
+    def sem_ratio(self) -> float:
+        """`SEM_unpaired / SEM_paired`. 1.0 = pairing bought nothing.
+
+        **This is a STANDARD-ERROR ratio, not a variance ratio**, and it was
+        called `variance_reduction` until review caught it. The corresponding
+        variance reduction is its SQUARE: 2.42x on the SEM is ~5.9x on the
+        variance. The old name understated the variance effect while
+        overstating what was measured -- the measurement is two SEMs on the
+        same data, and turning that into a variance claim takes an extra step
+        the name was silently making.
 
         `inf` when the paired SEM is exactly zero: the pairing removed ALL the
-        variance, which is a result rather than a failure to compute one.
+        spread, which is a result rather than a failure to compute one.
         """
         if not math.isfinite(self.sem_unpaired):
             return float("nan")
@@ -590,7 +598,7 @@ def paired_ddE(
     res.sd_unpaired = math.hypot(sa, sb)
     res.sem_unpaired = res.sd_unpaired / math.sqrt(len(ea))
 
-    # rho is the MECHANISM: the variance reduction is 1/sqrt(1-rho) when the two
+    # rho is the MECHANISM: the SEM ratio is 1/sqrt(1-rho) when the two
     # sds are equal, so reporting it says WHY the pairing did or did not help.
     if sa > 0 and sb > 0:
         cov = (

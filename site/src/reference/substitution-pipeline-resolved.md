@@ -67,7 +67,7 @@ a substitution changes a handful of atoms and leaves ~68 where they were.
 the n=100 UNPAIRED SEM from a different experiment; quoting `4.07 -> 0.221` as
 the effect of pairing would credit pairing with the difference between two
 experiments. `paired_ddE` computes both estimators from the SAME 24 poses, and
-the honest isolated gain is **1.21x (Cl) to 2.42x (F)** -- with the self-anchor
+the honest isolated gain is **1.21x (Cl) to 2.42x (F) on the SEM** -- with the self-anchor
 and N-methyl far higher because their noise is almost entirely common. What
 crosses the 1-2 kcal/mol line is the ABSOLUTE paired SEM, which is a
 cross-experiment comparison and is labelled as one.
@@ -87,7 +87,9 @@ Two results from that probe matter more than the SEM:
   it charges that much for pairing the parent with ITSELF, because the
   substituent is forced into whatever room the parent pose left. Relaxing the
   substituent against a restrained scaffold passes at +0.004.
-* **The Cl row is the warning**: rho 0.399, variance reduction only 1.21x.
+* **The Cl row is the warning**: rho 0.399, SEM ratio only 1.21x (a
+  standard-error ratio, not a variance one -- the variance figure is its
+  square).
   Pairing helps where the substitution is LOCAL and degrades smoothly to the
   unpaired case where it is not -- so a paired floor is PER-CANDIDATE, never
   one campaign-wide number.
