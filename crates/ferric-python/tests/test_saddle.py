@@ -69,3 +69,55 @@ def test_is_transition_state_requires_both_halves():
         "SaddleResult must expose is_transition_state(); `converged` alone is "
         "not a transition state and a caller needs the combined check"
     )
+
+
+def test_the_whole_catalyst_procedure_is_reachable_from_python():
+    """C0-C5 of the golden path, every step callable from Python.
+
+    The catalyst procedure is documented in
+    `wiki/golden-path-pipeline-2026-09-18.md` section 3b(b). Its steps were
+    landing one at a time across several PRs, and the failure mode is a
+    procedure that reads as complete while one step lives only in Rust -- which
+    is exactly what happened to C3 until `run_saddle` was bound, and to C4's
+    mode vectors until #97.
+
+    This asserts REACHABILITY, not correctness: each step has its own
+    correctness tests. What it catches is a step quietly becoming unreachable
+    from the language the `tools/` pipeline is written in.
+    """
+    for step, name in [
+        ("C0/C1 QM region + link atoms", "QmmmSystem"),
+        ("C2 optimize reactant/product", "run_optimize_qmmm"),
+        ("C3 FIND the transition state", "run_saddle"),
+        ("C4 verify the transition state", "run_frequencies"),
+        # C5 is arithmetic on C2/C3 energies -- no entry point to check.
+    ]:
+        assert hasattr(ferric, name), (
+            f"{step} is not reachable from Python (ferric.{name} missing); the "
+            "catalyst procedure documents it as available"
+        )
+
+
+def test_C4_has_BOTH_halves_from_python():
+    """Counting imaginary modes is necessary, not sufficient.
+
+    One imaginary frequency means first-order saddle, not "the saddle you
+    meant" -- a methyl rotor gives one too. Completing C4 needs the MODE
+    VECTOR, to check it displaces atoms along the reaction coordinate. That was
+    Rust-only until #97, and the golden path carried a stale "MODE VECTORS are
+    Rust-only" caveat for a day afterwards.
+    """
+    fr = ferric.run_frequencies(_h2(0.74), "sto-3g")
+
+    # C4a: the count.
+    assert hasattr(fr, "frequencies")
+    n_imag = sum(1 for f in fr.frequencies if f < 0)
+    assert n_imag == 0, f"H2 at equilibrium is a MINIMUM, got {n_imag} imaginary"
+
+    # C4b: the vectors. 3N entries per mode, in Cartesians.
+    assert hasattr(fr, "normal_modes"), "C4 cannot be completed without the modes"
+    assert len(fr.normal_modes) == len(fr.frequencies)
+    n_atoms = 2
+    assert all(len(m) == 3 * n_atoms for m in fr.normal_modes), (
+        f"each mode must have 3N = {3 * n_atoms} Cartesian components"
+    )
