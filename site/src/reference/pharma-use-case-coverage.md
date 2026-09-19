@@ -96,6 +96,7 @@ Every named use case now has code, a MEASURED cost, and a plot:
 | minima with FF | yes | 1e-3 s/pose | `tier_comparison` |
 | minima with xtb | yes | 5e-1 s/pose | `tier_comparison` |
 | transition state | yes | 2*(6N+1) + (n_steps+1) grads | `energy_profile` (barrier) + **`imaginary_mode`** (C4's second half) |
+| **reaction path (IRC)** | **yes** | **~70 gradients/branch** (MEASURED: NH3 inversion, 71 forward + 71 reverse) | `energy_profile` along the path |
 | common substitutions | yes | 2.8 ms enumerate, 214 ms embed | `site_substituent_heatmap`, `grid_with_scores` |
 | toxicology | yes | 9.4 ms/molecule | `liability_profile` |
 | binding energy in site | yes | tier 3/4 above | `site_substituent_heatmap` |
