@@ -1484,6 +1484,13 @@ exists and is outside this campaign: a scorer that is pose-averaged *by
 construction* (free-energy perturbation, or an ML affinity model trained on
 ensembles) rather than a single-pose energy.
 
+> **AMENDED 2026-09-19 (M17).** All five routes attack the per-pose **sd**, and
+> all five accept the estimator. A seventh route attacks the **estimator**: every
+> one of them computed `ddE` over INDEPENDENTLY embedded ensembles, which is an
+> UNPAIRED design over noise that is largely common to the two molecules. See
+> M17 — this closure is provisional pending a pocket-based test of the paired
+> construction.
+
 ---
 
 ## M15. The cheap gate is SITE-BLIND by construction (2026-09-19)
@@ -1611,3 +1618,96 @@ conformer set, STO-3G. This measures whether the tiers AGREE, not whether
 either is right — neither is validated against experiment here. A larger basis
 or a system with bigger conformer gaps could give a different answer, and the
 probe takes `--smiles` / `--basis` / `--n-conformers` so that is testable.
+
+
+## M17. The five closed routes were all UNPAIRED (2026-09-19)
+
+The pose problem is recorded closed from five directions (M4-M14). **Every one
+of them attacks the per-pose sd and accepts the estimator.** This probe attacks
+the estimator instead.
+
+### The observation
+
+All five computed
+
+    ddE = mean(E_A over ensemble_A) - mean(E_B over ensemble_B)
+
+with the two ensembles embedded INDEPENDENTLY. That discards the structure of
+the problem. The ~28.75 kcal/mol per-pose scatter is pose-conformational -- a
+property of the scaffold sitting in the pocket -- while a substitution changes a
+handful of atoms and leaves ~68 where they were. Variance common to both
+molecules cancels in a paired difference:
+
+    var(ddE_paired) = 2*sd^2*(1 - rho)     vs     2*sd^2 unpaired
+
+**A shared random seed is not a pairing.** `embed_analogue` uses
+`random_seed=0xF00D` for every candidate, but ETKDG with the same seed on two
+different molecular graphs gives uncorrelated conformers: the seed indexes a
+random stream, not a geometry. The pairing has to be geometric.
+
+### The measurement
+
+`tools/morph/paired.py`. Paracetamol-like parent (34 atoms), 24 ETKDG poses,
+MMFF energies. Pose k of the analogue is BUILT FROM pose k of the parent,
+sharing the MCS scaffold. Two constructions for the B side:
+
+| arm | case | ddE | sd | SEM | rho | var.red |
+|---|---|---:|---:|---:|---:|---:|
+| hard | **SELF** | **+13.841** | 2.597 | 0.530 | 0.579 | 1.37x |
+| hard | Cl-for-H | 31.023 | 7.946 | 1.622 | 0.070 | 1.01x |
+| relaxed | **SELF** | **+0.004** | 0.005 | 0.001 | 1.000 | 422x |
+| relaxed | F-for-H | 8.987 | 1.084 | 0.221 | 0.860 | 2.42x |
+| relaxed | Cl-for-H | 13.064 | 3.011 | 0.615 | 0.399 | 1.21x |
+| relaxed | N-methyl | 24.135 | 0.034 | 0.007 | 1.000 | 65.5x |
+
+`var.red` compares the paired SEM against the unpaired SEM **on the same data**,
+so it isolates the pairing.
+
+### The exactness anchor did the work, twice
+
+`SELF` is the parent paired with itself: no substitution, so ddE must be **0**.
+Pinning the scaffold hard charges **+13.841 kcal/mol for doing nothing** -- the
+substituent is forced into whatever room the parent pose left. The strain is
+substituent-DEPENDENT (F +9.5, Cl +17.2, N-methyl +31.1 above the self value),
+so subtracting it does not fix it. Cross-checked against freely relaxed
+geometries: +12.2 (F) and +17.0 (Cl) kcal/mol of real strain.
+
+Relaxing the substituent against a spring-restrained scaffold passes the anchor
+at **+0.004** while the scaffold still holds to 0.011-0.128 A.
+
+### The too-clean check, which it passed
+
+`rho = 1.000` on two relaxed rows is a stop condition, not a result. MMFF
+minimisation collapsing 24 poses onto one geometry would drive sd to 0 and rho
+to 1 by destroying the ensemble -- the failure M6 checked for. MEASURED:
+
+| case | mean pairwise RMSD before | after | retained |
+|---|---:|---:|---:|
+| SELF | 4.350 | 4.350 | 100.0% |
+| F-for-H | 4.359 | 4.359 | 100.0% |
+| N-methyl | 4.447 | 4.460 | 100.3% |
+
+No collapse. The poses stay 4.35 A apart; only embedding strain is removed
+(energy sd 3.17 -> 1.59). The correlation is real.
+
+### An inert guard, found and replaced
+
+The module first flagged a disagreement between `ddE_paired` and `ddE_unpaired`.
+**That guard could never fire**: `mean(E_B - E_A)` and `mean(E_B) - mean(E_A)`
+are the same number. It printed identical values in all four rows and I read
+that as agreement rather than as an identity. Pairing changes the estimator's
+VARIANCE, never its value. The live guard is the self-anchor.
+
+### Status: PROVISIONAL, and what it does not license
+
+MEASURED on one molecule, one force field, gas phase, **no pocket**. The relaxed
+SEM (0.221-0.615 kcal/mol) is below the 1-2 kcal/mol effect size where 4.07 was
+well above it. **That is a reason to run the pocket experiment, not a ranking.**
+
+Not established: that this survives at xtb or DFT (not smooth force fields), or
+IN A POCKET, where a substituent may change the binding mode and break the
+pairing outright.
+
+**The Cl row is the warning**: rho 0.399, var.red 1.21x. Pairing helps where the
+substitution is LOCAL and degrades smoothly to the unpaired case where it is
+not -- so it must be reported per-candidate, never as one campaign-wide floor.
