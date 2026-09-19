@@ -26,6 +26,21 @@ from tools.viz.energy_plots import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _close_figures():
+    """Release every figure a test created.
+
+    pyplot RETAINS figures, so without this the suite trips matplotlib's
+    "More than 20 figures have been opened" warning and each test's memory
+    outlives it. Autouse because every test here makes at least one figure and
+    forgetting the teardown is the default outcome.
+    """
+    yield
+    import matplotlib.pyplot as plt
+
+    plt.close("all")
+
+
 def _line_ys(fig):
     """Every finite y-value drawn as DATA on the figure.
 
@@ -339,3 +354,101 @@ def test_liability_profile_refuses_empty_inputs():
         liability_profile({})
     with pytest.raises(ValueError, match="no endpoints"):
         liability_profile({"a": {}})
+
+
+# --- the campaign's own numbers ----------------------------------------------
+
+
+def test_the_measured_noise_floor_greys_every_realistic_ddE():
+    """The honest picture, pinned.
+
+    MEASURED on danuglipron: the best ddE noise from any scorer that tracks the
+    reference is 4.68 kcal/mol (M14), against substituent effects of 1-2. So a
+    realistic ddE grid should come back ENTIRELY greyed -- every cell inside
+    the resolution limit.
+
+    This is a regression test on the PRESENTATION, not on the chemistry: if a
+    future change makes the noise floor cosmetic, or stops applying it to cells
+    it should cover, a reader would see a confident-looking ranking that the
+    measurements do not support. That is the failure this plot exists to
+    prevent, so it gets a test with the real number in it.
+    """
+    realistic = {
+        ("F", "C3"): -1.2,
+        ("CF3", "C3"): 0.8,
+        ("CF3", "C5"): 2.0,
+    }
+    fig = site_substituent_heatmap(realistic, noise_floor=4.68)
+    ax = fig.axes[0]
+    numeric = [t for t in ax.texts if t.get_text().startswith(("+", "-"))]
+    assert len(numeric) == 3, f"expected 3 value labels, got {len(numeric)}"
+    assert all(t.get_style() == "italic" for t in numeric), (
+        "every |ddE| < 4.68 must render as below-the-noise-floor; a substituent "
+        "effect of 1-2 kcal/mol is NOT resolvable by any measured protocol"
+    )
+    assert "4.68" in " ".join(a.get_ylabel() for a in fig.axes)
+
+    # Vacuity guard: a genuinely large effect must NOT be greyed, or the test
+    # above would pass for an implementation that italicises everything.
+    big = site_substituent_heatmap(
+        {("X", "C3"): -20.0, ("Y", "C3"): 1.0}, noise_floor=4.68
+    )
+    styles = {
+        t.get_text(): t.get_style()
+        for t in big.axes[0].texts
+        if t.get_text().startswith(("+", "-"))
+    }
+    assert styles.get("-20.00") == "normal", (
+        f"20 kcal/mol is well outside 4.68: {styles}"
+    )
+    assert styles.get("+1.00") == "italic"
+
+
+def test_pose_ensemble_reports_the_campaign_sd_on_campaign_scale_data():
+    """A spread like the real one must be legible, not clipped or collapsed."""
+    # The shape of M12's measured 15-pose spread: mean ~-111, sd ~29.
+    scores = [
+        -83.5,
+        -129.5,
+        -107.8,
+        -57.5,
+        -119.9,
+        -77.4,
+        -85.4,
+        -159.4,
+        -116.6,
+        -160.8,
+        -106.8,
+        -106.2,
+        -115.8,
+        -99.6,
+        -137.2,
+    ]
+    fig = pose_ensemble({"parent": scores})
+    ax = fig.axes[0]
+    sd_labels = [t.get_text() for t in ax.texts if t.get_text().startswith("sd")]
+    assert sd_labels, "the sd must be annotated -- it is the whole point"
+    # ~28.75 measured; assert the order of magnitude rather than the digits, so
+    # a future change to the fixture does not require editing the assertion.
+    val = float(sd_labels[0].split()[1])
+    assert 20.0 < val < 40.0, f"sd annotation {val} is not the measured ~29"
+
+
+def test_close_releases_a_figure_so_a_batch_does_not_accumulate_them():
+    """pyplot retains every figure; a 1000-analogue batch would hold 1000.
+
+    matplotlib warns at 20, which is a warning in a test run and a memory leak
+    in a campaign. `close` is the released-by-the-caller half of the contract:
+    these functions return a Figure and deliberately do not close it, because
+    the caller needs it.
+    """
+    import matplotlib.pyplot as plt
+
+    from tools.viz.energy_plots import close as viz_close
+
+    before = len(plt.get_fignums())
+    figs = [funnel_survival(["a", "b"], [10, 5]) for _ in range(5)]
+    assert len(plt.get_fignums()) == before + 5
+    for f in figs:
+        viz_close(f)
+    assert len(plt.get_fignums()) == before, "close() must actually release them"
