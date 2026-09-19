@@ -81,10 +81,11 @@ why step 5 matters.
 
 ## NOT A BLOCKER FOR THE OTHER FIVE
 
-Every other use case has working code. The pipeline-level gaps recorded
-elsewhere — that `context["geometry"]` is written by nothing, so tiers 3/4
-score a gas-phase conformer rather than the docked pose — are about *wiring*,
-not missing capability, and are tracked separately.
+Every other use case has working code. The pipeline-level gap recorded here —
+that `context["geometry"]` was written by nothing, so tiers 3/4 scored a
+gas-phase conformer rather than the docked pose — **was FIXED 2026-09-19** by
+`funnel._harvest_geometry`, verified end to end on `origin/main`. See section 0
+of the golden-path note for what the diagnosis is still worth keeping.
 
 ## COVERAGE, complete (updated 2026-09-19 after the viz work)
 

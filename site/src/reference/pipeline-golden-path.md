@@ -65,7 +65,32 @@ STILL OPEN, and these are the real remaining gaps:
   independent constructions: WHERE a group goes matters as much as WHICH group.
   The pipeline's unit must be the (substituent, SITE) pair.
 
-## 0. The headline defect: the docked pose is thrown away
+## 0. The headline defect: the docked pose is thrown away — FIXED 2026-09-19
+
+**RESOLVED.** `tools/pipeline/funnel.py::_harvest_geometry` writes the key and
+is called from the driver (`funnel.py:217`). Chain re-verified on `origin/main`:
+`tier1_dock` returns `symbols` + `coords_angstrom` in its payload,
+`_harvest_geometry` writes `context["geometry"][id]`, `tiers._embedded` reads
+it. The docked pose now reaches tiers 3 and 4.
+
+**Two things from the diagnosis are worth keeping, which is why the original
+write-up is left below rather than deleted.**
+
+FIRST, WHERE the write had to go. `_run_stage` dispatches through a
+`ProcessPoolExecutor`, so a tier that mutates `context` mutates a PER-WORKER
+COPY: the write is lost under the parallel path while appearing to work
+serially. Harvesting from the returned `results` in the driver is the only
+placement that holds for both. That generalises to any state a tier tries to
+pass forward.
+
+SECOND, THE GREP BELOW CANNOT SEE ITS OWN FIX. Re-run today it still reports
+one read and no writes, because the write is
+`context.setdefault("geometry", {})[...]` and `setdefault` matches none of the
+three alternatives in that pattern. A grep that would have to be rewritten to
+notice the bug being fixed is not a verification you can re-run -- and this
+one was labelled "VERIFIED by grep, both directions".
+
+The original 2026-09-18 write-up follows.
 
 VERIFIED by grep, both directions, on 2026-09-18:
 
