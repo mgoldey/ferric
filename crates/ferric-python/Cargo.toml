@@ -15,6 +15,7 @@ crate-type = ["cdylib"]
 ferric-core = { path = "../ferric-core" }
 ferric-integrals = { path = "../ferric-integrals" }
 ferric-mm = { path = "../ferric-mm" }
+ferric-d3 = { path = "../ferric-d3" }
 ferric-scf = { path = "../ferric-scf" }
 ferric-mp2 = { path = "../ferric-mp2" }
 ferric-rpa = { path = "../ferric-rpa" }

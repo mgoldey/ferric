@@ -1,0 +1,25 @@
+# KS-DFT with Grimme's D3(BJ) dispersion correction.
+#
+# Semilocal DFT has no long-range correlation, so PBE alone misses London
+# dispersion entirely. `[dft] dispersion` adds it back as a post-SCF pairwise
+# term: the SCF itself is untouched and its energy is printed separately, so
+# the correction is always visible rather than folded silently into a total.
+#
+# Omit the `dispersion` key for a plain KS-DFT run. There is deliberately no
+# value meaning "off" -- a reported 0.0 dispersion would be a physics claim.
+
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "ksdft"
+
+[dft]
+functional = "PBE"
+# "d3bj"          -> the damping parameters published for `functional` above.
+# "d3bj(b3lyp)"   -> some other functional's parameters, for when ferric's XC
+#                    name differs from the name the D3 fit was published under.
+dispersion = "d3bj"

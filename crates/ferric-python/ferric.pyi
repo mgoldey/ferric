@@ -804,7 +804,27 @@ class DftResult:
     """Result of a KS-DFT calculation."""
 
     @property
-    def total_energy(self) -> float: ...
+    def total_energy(self) -> float:
+        """SCF energy plus the dispersion correction, if one was requested.
+
+        Equals `e_scf` exactly when `dispersion=None`.
+        """
+        ...
+
+    @property
+    def e_scf(self) -> float:
+        """The Kohn-Sham SCF energy alone, with no dispersion correction."""
+        ...
+
+    @property
+    def e_dispersion(self) -> float | None:
+        """D3(BJ) dispersion correction in Hartree, or None if not requested.
+
+        `None` means UNEVALUATED, not zero: a DFT energy with no dispersion and
+        one whose dispersion is small are different claims.
+        """
+        ...
+
     @property
     def converged(self) -> bool: ...
     def vxc(self) -> NDArray[np.float64]:
@@ -1273,8 +1293,17 @@ def run_dft(
     mom_after_iter: int | None = None,
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
+    memory_budget_gb: float | None = None,
+    dispersion: str | None = None,
 ) -> DftResult:
-    """Kohn-Sham DFT (closed-shell)."""
+    """Kohn-Sham DFT (closed-shell).
+
+    `dispersion` adds an empirical dispersion correction to the SCF energy:
+    `"d3bj"` uses the damping parameters published for `functional`, and
+    `"d3bj(<name>)"` uses `<name>`'s instead. `None` (the default) applies no
+    correction and leaves the energy exactly as it was. Any other value raises
+    -- there is no spelling that means "compute a zero correction".
+    """
     ...
 
 def run_ksdft(
@@ -1290,8 +1319,27 @@ def run_ksdft(
     mom_after_iter: int | None = None,
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
+    memory_budget_gb: float | None = None,
+    dispersion: str | None = None,
 ) -> DftResult:
-    """Kohn-Sham DFT (closed-shell). Alias of run_dft."""
+    """Kohn-Sham DFT (closed-shell). Alias of run_dft.
+
+    `dispersion` adds an empirical dispersion correction to the SCF energy:
+    `"d3bj"` uses the damping parameters published for `functional`, and
+    `"d3bj(<name>)"` uses `<name>`'s instead. `None` (the default) applies no
+    correction and leaves the energy exactly as it was. Any other value raises
+    -- there is no spelling that means "compute a zero correction".
+    """
+    ...
+
+def d3bj_energy(mol: Molecule, functional: str) -> float:
+    """Grimme D3(BJ) dispersion energy in Hartree (two-body term).
+
+    `functional` names the XC functional whose published D3(BJ) damping
+    parameters to use; the correction is fitted per functional, so this is
+    required. Raises for an unknown functional or for an element outside the
+    D3 parameterisation, rather than silently returning a smaller number.
+    """
     ...
 
 def run_ccd(

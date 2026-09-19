@@ -871,7 +871,7 @@ pub fn run(args: Vec<String>) {
 
     match method {
         "rhf" => run_rhf(&cfg, &bs, &prep, &result),
-        "ksdft" => run_ksdft(&cfg, &bs, &prep, &result),
+        "ksdft" => run_ksdft(&cfg, &mol, &bs, &prep, &result),
         "rimp2" => run_rimp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "lmp2" => run_lmp2(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "lmp2-direct" => run_lmp2_direct(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
@@ -950,6 +950,7 @@ fn run_rhf(
 /// `"ksdft" => { ... }` match arm.
 fn run_ksdft(
     cfg: &Config,
+    mol: &Molecule,
     bs: &BasisSet,
     prep: &PreparedBasis,
     result: &ferric_scf::result::ScfResult,
@@ -959,7 +960,47 @@ fn run_ksdft(
     println!("  nbasis     = {}", prep.nbasis());
     println!("  iterations = {}", result.iterations);
     println!("  converged  = {}", result.converged);
-    println!("  energy     = {:.10} Hartree", result.energy);
+
+    // Empirical dispersion, only if [dft] dispersion asked for it. With the
+    // key absent the output below is byte-identical to before the key existed:
+    // one "energy" line and no dispersion line at all. A failure EXITS rather
+    // than printing an uncorrected energy under a heading that claims a
+    // correction was applied.
+    let disp = match cfg.dft.dispersion.as_deref() {
+        None => None,
+        Some(spec) => {
+            let req = crate::config::DispersionRequest::parse_config_str(
+                spec,
+                cfg.dft.functional.as_deref(),
+            )
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let crate::config::DispersionRequest::D3Bj { functional: dfunc } = &req;
+            let params = ferric_d3::d3bj_params_for_functional(dfunc).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            let e = ferric_d3::d3bj_energy_for_molecule(mol, &params).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+            Some((dfunc.clone(), e))
+        }
+    };
+
+    match disp {
+        None => println!("  energy     = {:.10} Hartree", result.energy),
+        Some((dfunc, e_disp)) => {
+            println!("  E(KS-DFT)  = {:.10} Hartree", result.energy);
+            println!("  E(D3BJ)    = {e_disp:+.10} Hartree [params: {dfunc}]");
+            println!(
+                "  energy     = {:.10} Hartree (KS-DFT + D3(BJ), two-body)",
+                result.energy + e_disp
+            );
+        }
+    }
 }
 
 /// `method.kind = "lmp2"`: amplitude-threshold local MP2

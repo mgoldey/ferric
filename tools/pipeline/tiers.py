@@ -26,6 +26,10 @@ MEASURED costs (2026-09-19, through the tier functions; tier 1 from RESULTS.md M
                            all agreeing on 2.3-2.6. The old N^3-N^4 was the
                            textbook basis-function scaling, which is not
                            what varies when a MOLECULE grows at fixed basis.
+            + D3(BJ)       microseconds -- a pairwise sum over atoms, free
+                           next to the SCF. Its analytic GRADIENT is the same
+                           order, so dispersion-corrected OPTIMIZATION costs
+                           no more than uncorrected.
 
 Tier 4's cost is the reason the funnel must narrow to a handful before reaching
 it. See `tools/campaign/hierarchy.py` for the rules.
@@ -289,6 +293,25 @@ def tier4_dft(iso: Isomer, context: dict) -> TierResult:
     75x110 per atom, so a smaller basis does NOT make a big molecule cheap.
     See `tools/pipeline/cost.py`.
 
+    **Dispersion.** This tier is labelled "DFT + dispersion" in
+    `tools/campaign/hierarchy.py`, and as of the `ferric-d3` crate that label is
+    true: `dispersion="d3bj"` is the DEFAULT here, adding Grimme's D3(BJ)
+    two-body correction to the SCF energy. Dispersion is the dominant attractive
+    term in ligand binding, so a bare semilocal DFT energy is not comparable
+    between conformers or substituents.
+
+    Pass `context["dispersion"] = None` to get the uncorrected SCF energy back.
+    The result's payload carries `e_scf` and `e_dispersion` separately;
+    `e_dispersion is None` means UNEVALUATED, never "zero dispersion".
+
+    Two scope limits that this does NOT fix:
+      - The Axilrod-Teller-Muto three-body term is not implemented (measured at
+        0.1% of the two-body energy for benzene, and RISING with system size --
+        see `ferric-d3`'s crate docs).
+      - QM/MM dispersion is NOT covered. D3 is a QM-atom-pairwise correction, so
+        dispersion between the QM region and MM point charges is still absent;
+        that needs Lennard-Jones terms across the boundary, not this.
+
     `mem_budget_gb` is forwarded to `FERRIC_MEM_BUDGET_GB` because ferric's
     default is `0.8 x` *live* MemAvailable. That makes the internal
     Full-vs-Batched AO-cache decision depend on whatever else happens to be
@@ -329,6 +352,7 @@ def _tier4_dft_inner(iso: Isomer, context: dict, ferric) -> TierResult:
             bs,
             functional=context.get("functional", "PBE"),
             point_charges=context.get("point_charges"),
+            dispersion=context.get("dispersion", "d3bj"),
         )
     except Exception as e:  # noqa: BLE001
         return TierResult(iso.canonical, None, f"DFT failed: {type(e).__name__}: {e}")
@@ -337,5 +361,15 @@ def _tier4_dft_inner(iso: Isomer, context: dict, ferric) -> TierResult:
     return TierResult(
         iso.canonical,
         res.total_energy,
-        payload={"converged": True, "symbols": symbols, "coords": coords},
+        payload={
+            "converged": True,
+            "symbols": symbols,
+            "coords": coords,
+            # Recorded separately so a downstream consumer can tell a
+            # dispersion-corrected energy from a bare SCF one. `None` here
+            # means dispersion was NOT computed (the caller passed
+            # dispersion=None), not that it was computed and found to be zero.
+            "e_scf": res.e_scf,
+            "e_dispersion": res.e_dispersion,
+        },
     )

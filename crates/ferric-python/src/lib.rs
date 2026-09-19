@@ -4473,8 +4473,21 @@ fn run_rs_mp2_rpa(
 #[pyclass]
 #[pyo3(name = "DftResult")]
 struct PyDftResult {
+    /// SCF energy PLUS the dispersion correction, when one was requested.
+    /// Equals `e_scf` exactly when `dispersion=None`.
     #[pyo3(get)]
     total_energy: f64,
+    /// The Kohn-Sham SCF energy alone, with no dispersion correction.
+    #[pyo3(get)]
+    e_scf: f64,
+    /// The D3(BJ) dispersion correction in Hartree, or `None` when dispersion
+    /// was not requested.
+    ///
+    /// `None` means UNEVALUATED, not zero. A DFT energy with no dispersion and
+    /// one whose dispersion happens to be small are different claims, and a
+    /// 0.0 here would assert the second while meaning the first.
+    #[pyo3(get)]
+    e_dispersion: Option<f64>,
     #[pyo3(get)]
     converged: bool,
     vxc_data: Array2<f64>,
@@ -4652,6 +4665,7 @@ fn run_double_hybrid(
     max_iter=None, energy_conv=None, density_conv=None,
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None,
+    dispersion=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_dft(
@@ -4669,6 +4683,7 @@ fn run_dft(
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
     external_field: Option<(f64, f64, f64)>,
     memory_budget_gb: Option<f64>,
+    dispersion: Option<&str>,
 ) -> PyResult<PyDftResult> {
     // Owned clone so the compute closure below never borrows the PyMolecule
     // pyclass field across the allow_threads boundary.
@@ -4741,8 +4756,51 @@ fn run_dft(
     } else {
         None
     };
+    // D3(BJ) dispersion, opt-in.
+    //
+    // `dispersion=None` leaves the energy BYTE-IDENTICAL to before this
+    // feature existed -- `e_dispersion` is then None (UNEVALUATED), never 0.0,
+    // so a caller cannot mistake "not asked for" for "computed and found to be
+    // zero". Any failure (unknown functional, unparameterised element) is
+    // raised, never swallowed into a neutral-looking zero.
+    let e_dispersion = match dispersion {
+        None => None,
+        Some(spec) => {
+            // Accepts exactly what the CLI's `[dft] dispersion` accepts, so the
+            // two surfaces cannot drift apart:
+            //   "d3bj"            -- the running functional's own parameters
+            //   "d3bj(<name>)"    -- <name>'s parameters instead, for when
+            //                        ferric's XC name and the D3 fit's differ
+            // Anything else is an error, NOT a silently-skipped correction.
+            let lower = spec.to_ascii_lowercase();
+            let which: &str = if lower == "d3bj" || lower == "d3(bj)" {
+                xc_name.as_str()
+            } else if let Some(inner) = lower
+                .strip_prefix("d3bj(")
+                .and_then(|r| r.strip_suffix(')'))
+            {
+                let inner = inner.trim();
+                if inner.is_empty() {
+                    return Err(make_err(ferric_core::FerricError::General(
+                        "dispersion=\"d3bj()\" names no functional".to_string(),
+                    )));
+                }
+                inner
+            } else {
+                return Err(make_err(ferric_core::FerricError::General(format!(
+                    "unknown dispersion scheme {spec:?}; expected \"d3bj\" or \
+                     \"d3bj(<functional>)\". Pass dispersion=None for no \
+                     correction -- there is no value meaning \"compute zero\"."
+                ))));
+            };
+            let params = ferric_d3::d3bj_params_for_functional(which).map_err(make_err)?;
+            Some(ferric_d3::d3bj_energy_for_molecule(&mol.inner, &params).map_err(make_err)?)
+        }
+    };
     Ok(PyDftResult {
-        total_energy: rhf.energy,
+        total_energy: rhf.energy + e_dispersion.unwrap_or(0.0),
+        e_scf: rhf.energy,
+        e_dispersion,
         converged: rhf.converged,
         vxc_data: Array2::<f64>::zeros((nbf, nbf)),
         density_data: rhf.density_total.clone(),
@@ -4758,6 +4816,7 @@ fn run_dft(
     max_iter=None, energy_conv=None, density_conv=None,
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None,
+    dispersion=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_ksdft(
@@ -4775,6 +4834,7 @@ fn run_ksdft(
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
     external_field: Option<(f64, f64, f64)>,
     memory_budget_gb: Option<f64>,
+    dispersion: Option<&str>,
 ) -> PyResult<PyDftResult> {
     run_dft(
         py,
@@ -4791,7 +4851,25 @@ fn run_ksdft(
         point_charges,
         external_field,
         memory_budget_gb,
+        dispersion,
     )
+}
+
+/// Grimme D3(BJ) dispersion energy for a molecule, in Hartree.
+///
+/// Standalone: this does no SCF, so it is the cheap way to add dispersion to an
+/// energy computed elsewhere, or to inspect the correction on its own.
+///
+/// `functional` names the XC functional whose published D3(BJ) damping
+/// parameters to use -- the correction is FITTED per functional, so this is
+/// required, not a convenience. An unknown functional raises rather than
+/// falling back to a default, and an element outside the D3 parameterisation
+/// raises rather than being silently skipped.
+#[pyfunction]
+#[pyo3(signature = (mol, functional))]
+fn d3bj_energy(mol: &PyMolecule, functional: &str) -> PyResult<f64> {
+    let params = ferric_d3::d3bj_params_for_functional(functional).map_err(make_err)?;
+    ferric_d3::d3bj_energy_for_molecule(&mol.inner, &params).map_err(make_err)
 }
 
 // ── CC (stub) ──
@@ -6804,6 +6882,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_laplace_sos_mp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_dft, m)?)?;
     m.add_function(wrap_pyfunction!(run_ksdft, m)?)?;
+    m.add_function(wrap_pyfunction!(d3bj_energy, m)?)?;
     m.add_function(wrap_pyfunction!(run_ccd, m)?)?;
     m.add_function(wrap_pyfunction!(run_ccsd, m)?)?;
     m.add_function(wrap_pyfunction!(run_ccsd_t, m)?)?;
