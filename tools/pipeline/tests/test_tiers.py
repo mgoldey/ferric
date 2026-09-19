@@ -524,3 +524,42 @@ def test_resolves_agrees_with_EXACT_arithmetic_even_at_the_float_limit():
             f"resolution=({r1:.3e}, {r2:.3e}) value=({v1:.3e}, {v2:.3e}): "
             f"got {got}, exact arithmetic says {want}"
         )
+
+
+def test_the_qm_mm_dispersion_comment_does_not_claim_missing_code():
+    """A "does not exist yet" comment must not outlive the code it describes.
+
+    `tiers.py` said closing the QM/MM dispersion gap "needs LJ terms on the MM
+    sites (`ferric-mm`), which do not exist yet". They had existed for three
+    weeks: `ferric_mm::qm_mm_lj_energy_gradient` landed 2026-08-27 (4a930a0f),
+    the comment was written 2026-09-19. It then generated a ticket to build
+    something the repo already had.
+
+    The FLAG is correct -- tier 4 really has no QM-to-MM dispersion -- but for
+    a different reason: `run_dft` takes no topology argument, so the LJ path is
+    simply unused, and `ferric-mm` assigns no parameters anyway.
+
+    This asserts the specific false claim cannot come back, and that the
+    function it was wrong about is still exported. Deliberately narrow: a
+    general "no comment may claim anything is missing" guard would be
+    unmaintainable, and the value here is pinning ONE claim that already
+    misled once.
+    """
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[3]
+    tiers_src = (repo / "tools/pipeline/tiers.py").read_text()
+
+    assert "which do not exist yet" not in tiers_src, (
+        "the retracted claim is back in tiers.py -- `ferric-mm`'s QM-MM LJ "
+        "terms DO exist; see qm_mm_lj_energy_gradient"
+    )
+
+    # ...and the function really is there, so this test fails loudly if it is
+    # ever removed rather than silently permitting the old comment again.
+    mm_src = (repo / "crates/ferric-mm/src/energy.rs").read_text()
+    assert "pub fn qm_mm_lj_energy_gradient" in mm_src, (
+        "qm_mm_lj_energy_gradient is gone from ferric-mm; if the QM-MM LJ "
+        "arithmetic was genuinely removed, the comment above needs rewriting "
+        "rather than this assertion deleting"
+    )
