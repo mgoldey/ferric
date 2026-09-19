@@ -149,11 +149,21 @@ none is illustrative.
 
 ```python
 # A. any input format -> a ferric Molecule (Angstrom, seeded ETKDG for SMILES)
-from tools.structure import from_smiles, read_structure
+from tools.structure import from_smiles, read
 mol = from_smiles("CC(=O)Oc1ccccc1C(=O)O", seed=0xF00D)   # aspirin: 21 atoms
-# read_structure("x.pdb" | "x.sdf" | "x.mol2" | "x.xyz")  -- same entry point
+mol = read("x.pdb")   # | "x.sdf" | "x.mol2" | "x.xyz" | "x.pqr" -- one entry point
+#   `read` RETURNS A MOLECULE. `read_structure` does NOT -- it stops at a
+#   `Structure` (symbols/coords/charge/multiplicity/source) and never imports
+#   ferric, which is what you want when inspecting a file without pulling in
+#   the extension. Call `.to_molecule()` on it if you need one.
+#
+#   This doc named `read_structure` here and called it "the same entry point"
+#   as `from_smiles`. It is not: pasting that line gives a TypeError on the
+#   next `.symbols()`, because a Structure exposes symbols as a FIELD and a
+#   Molecule as a METHOD. Verified 2026-09-19 by running it.
+#
 #   NOTE a crystal PDB is REJECTED ("no hydrogens"). A receptor goes through
-#   derive_pocket_charges (which protonates), not read_structure.
+#   derive_pocket_charges (which protonates), not through either reader.
 
 # B. enumerate analogues at every matching site
 from tools.pipeline.substitution import propose_substitutions, relative_descriptors
