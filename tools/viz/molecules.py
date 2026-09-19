@@ -210,11 +210,31 @@ def contacting_atom_indices(
     every atom regardless of distance renders any two cutoffs identically to
     each other, and that mutation SURVIVED a byte-comparison test. A list of
     indices is checkable; an image is not.
+
+    Being public, it validates its OWN cutoff rather than relying on
+    `contact_map` to have done it. The comparison is against `cutoff**2`, so a
+    NEGATIVE cutoff would square to the same positive number and return exactly
+    the contacts of its absolute value -- a silently wrong answer from an input
+    that is obviously a mistake. An empty pocket is refused for the same
+    reason: zero contacts from zero pocket atoms is a claim, not an absence.
     """
     import numpy as np
 
+    if not (isinstance(cutoff_angstrom, (int, float)) and cutoff_angstrom > 0):
+        raise ValueError(
+            f"cutoff_angstrom must be a positive number, got {cutoff_angstrom!r}. "
+            "The test is against its SQUARE, so a negative value would silently "
+            "return the contacts of its absolute value."
+        )
     lig = np.asarray(ligand_coords, dtype=float)
     pocket = np.asarray(pocket_coords, dtype=float)
+    if pocket.size == 0:
+        raise ValueError(
+            "pocket_coords is empty; zero contacts against zero pocket atoms is "
+            "a claim, not an absence"
+        )
+    if lig.size == 0:
+        return []
     # Squared distances, no sqrt: the comparison is monotone in it.
     d2 = ((lig[:, None, :] - pocket[None, :, :]) ** 2).sum(axis=2)
     return [int(i) for i in np.where(d2.min(axis=1) <= cutoff_angstrom**2)[0]]
