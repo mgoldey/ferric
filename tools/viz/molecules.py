@@ -31,6 +31,8 @@ __all__ = [
     "depict",
     "highlight_difference",
     "grid_with_scores",
+    "contact_map",
+    "contacting_atom_indices",
 ]
 
 # A palette that survives greyscale printing and the common colour-vision
@@ -192,3 +194,109 @@ def grid_with_scores(
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
+
+
+#: Contacts, drawn in a third colour distinct from added/removed.
+_CONTACT_RGB = (0.35, 0.65, 0.35)
+
+
+def contacting_atom_indices(
+    ligand_coords, pocket_coords, cutoff_angstrom: float
+) -> list[int]:
+    """Indices of ligand atoms within `cutoff_angstrom` of any pocket atom.
+
+    Split out of `contact_map` so the CONTACT LOGIC can be asserted directly.
+    Comparing two rendered PNGs cannot do it: an implementation that highlights
+    every atom regardless of distance renders any two cutoffs identically to
+    each other, and that mutation SURVIVED a byte-comparison test. A list of
+    indices is checkable; an image is not.
+    """
+    import numpy as np
+
+    lig = np.asarray(ligand_coords, dtype=float)
+    pocket = np.asarray(pocket_coords, dtype=float)
+    # Squared distances, no sqrt: the comparison is monotone in it.
+    d2 = ((lig[:, None, :] - pocket[None, :, :]) ** 2).sum(axis=2)
+    return [int(i) for i in np.where(d2.min(axis=1) <= cutoff_angstrom**2)[0]]
+
+
+def contact_map(
+    smiles: str,
+    coords_angstrom,
+    pocket_coords_angstrom,
+    *,
+    cutoff_angstrom: float = 4.0,
+    width: int = 400,
+    height: int = 340,
+    legend: str = "",
+) -> bytes:
+    """Depict a ligand with its POCKET-CONTACTING atoms highlighted.
+
+    A docked pose IS a 3-D geometry, so a 2-D drawing of one discards the thing
+    that makes it a pose -- which is why `depict` takes SMILES and there is no
+    "draw this pose" function. The question that DOES survive flattening is
+    *which atoms touch the pocket*, and that is the one a medicinal chemist
+    asks before choosing where to substitute: a buried atom has no room for a
+    CF3, and a solvent-exposed one is where the scan should go.
+
+    `coords_angstrom` is the ligand's 3-D geometry (e.g.
+    `DockedPose.coords_angstrom`); `pocket_coords_angstrom` any iterable of
+    (x, y, z). `cutoff_angstrom` is the contact radius -- 4.0 A is the usual
+    van-der-Waals-contact convention, and it is a PARAMETER because the right
+    value depends on what you mean by contact.
+
+    **This does not say a contact is favourable.** Proximity is geometry; an
+    unfavourable clash is also a contact. It shows where the ligand touches,
+    not whether touching there is good.
+
+    Atom ORDER must match between `smiles` (with explicit hydrogens, as RDKit
+    builds it) and `coords_angstrom`. A mismatch raises rather than
+    highlighting the wrong atoms -- which would be a confident, wrong picture.
+    """
+    Chem, AllChem, _, rdMolDraw2D = _rdkit()
+    import numpy as np
+
+    lig = np.asarray([tuple(float(v) for v in c) for c in coords_angstrom], dtype=float)
+    if lig.ndim != 2 or lig.shape[1] != 3:
+        raise ValueError(f"coords_angstrom must be (N, 3), got shape {lig.shape}")
+    pocket = np.asarray(
+        [tuple(float(v) for v in c) for c in pocket_coords_angstrom], dtype=float
+    )
+    if pocket.size == 0:
+        raise ValueError(
+            "no pocket coordinates -- with nothing to contact, every atom would "
+            "render as non-contacting, which is a claim rather than an absence"
+        )
+    if pocket.ndim != 2 or pocket.shape[1] != 3:
+        raise ValueError(f"pocket coords must be (M, 3), got shape {pocket.shape}")
+    if not (cutoff_angstrom > 0):
+        raise ValueError(f"cutoff_angstrom must be > 0, got {cutoff_angstrom}")
+
+    mol = Chem.AddHs(_mol_from(smiles))
+    if mol.GetNumAtoms() != len(lig):
+        raise ValueError(
+            f"{smiles!r} has {mol.GetNumAtoms()} atoms (with explicit H) but "
+            f"{len(lig)} coordinates were given. Highlighting under a mismatched "
+            "atom order would mark the WRONG atoms -- check whether the pose is "
+            "united-atom (PDBQT merges nonpolar hydrogens: a 71-atom ligand "
+            "comes back with 42)."
+        )
+
+    contacting = contacting_atom_indices(lig, pocket, cutoff_angstrom)
+
+    Chem.rdDepictor.Compute2DCoords(mol)
+    d = rdMolDraw2D.MolDraw2DCairo(width, height)
+    n_heavy = sum(1 for a in mol.GetAtoms() if a.GetAtomicNum() > 1)
+    heavy_contacts = sum(
+        1 for i in contacting if mol.GetAtomWithIdx(i).GetAtomicNum() > 1
+    )
+    rdMolDraw2D.PrepareAndDrawMolecule(
+        d,
+        mol,
+        legend=legend
+        or f"{heavy_contacts}/{n_heavy} heavy atoms within {cutoff_angstrom} A",
+        highlightAtoms=contacting,
+        highlightAtomColors={i: _CONTACT_RGB for i in contacting},
+    )
+    d.FinishDrawing()
+    return d.GetDrawingText()
