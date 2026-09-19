@@ -1199,3 +1199,300 @@ oversubscribe the box.
 result depends on `cpu` as well as `seed`. A screen that varies core count
 between runs is not reproducible even with identical seeds. Both are now
 pinned.
+
+---
+
+## M12. Docked poses do NOT tighten the xtb scatter — and why that is consistent (2026-09-19)
+
+`run_docked_pose_scatter.py`, `out/m7_docked_scatter.json`. Parent only,
+15 Vina poses (ex=32, seed 0xF00D, cpu=1), rescored with the SAME
+`tools.campaign.fit.pose_fit` M6 used.
+
+| ensemble | pose_fit sd (kcal/mol) | mean pairwise RMSD |
+|---|---|---|
+| M6 rigid overlay | 34.23 | 3.98 A |
+| M6 relaxed in field | 29.07 | 3.84 A |
+| **M12 docked (this run)** | **28.75** | **5.81 A** |
+
+**A 1% change.** Docking does not reduce the scatter that M5 and M6 closed the
+other two routes against. The bar, stated in the probe BEFORE running, was
+sd <= 0.88 (what a 0.25 kcal/mol ranking gap needs at n=100); this is short by
+**32.5x**, essentially the same factor M6 was short by.
+
+The artifact check passed in the other direction from M6's: mean pairwise RMSD
+went UP (3.84 -> 5.81 A), so docked poses are geometrically MORE diverse. The
+sd is not being held up by a collapsed ensemble.
+
+### The number that actually locates the problem
+
+Vina's own score on those same 15 poses has **sd = 0.83 kcal/mol**. Rescoring
+the identical geometries with xtb gives **sd = 28.75**. The two scores disagree
+by a factor of ~35 on how much the poses differ.
+
+That is M9's `r(vina_score, RMSD) = +0.461` seen from the energy side rather
+than the geometry side, and it sharpens the hierarchy's justification: the
+cheap tier does not merely rank imperfectly, it reports a nearly FLAT energy
+landscape across poses that xtb sees as spanning 103 kcal/mol. Tier 1 is a pose
+GENERATOR whose score carries almost no ranking information; that is not a
+defect to fix but the reason tiers 2-4 exist.
+
+### Consistency with M9, which this does not contradict
+
+M9 showed docking SOLVES pose generation (0.95 A redock, 20/20 poses on-site).
+M12 shows it does not solve pose SCORING. Both are true because they are about
+different stages: the right geometry is now reliably IN the candidate set
+(M9), and the ensemble of candidates still spans ~100 kcal/mol under the
+scoring metric (M12). Averaging over that ensemble is still the wrong
+instrument for a 0.25 kcal/mol question.
+
+**Route table, updated:**
+
+| route | status |
+|---|---|
+| more poses (M4/M5) | closed -- sd flat in n |
+| relax poses in field (M6) | closed -- real 15%, ~3 orders short |
+| real pose search (M12) | **closed -- 1%, 32.5x short** |
+
+All three routes to rescuing a per-pose-averaged ranking are now closed with
+numbers. What M9 leaves open is different and is the live path: do not average
+over poses at all -- **select** the pose (docking gets within 1 A) and score
+that one, accepting that the selection is the assumption.
+
+### A methodology error this probe made, recorded because it nearly shipped
+
+The first run compared Vina's `vina_score` sd (0.83) against M6's 29.07 and
+reported a **"35x reduction, bar cleared"**. That is a category error: the two
+are different quantities on different scales (~-11 vs ~-160 kcal/mol), and
+`vina_dock.py`'s own docstring calls `vina_score` "empirical -- a ranking
+heuristic only". The tell was tidiness -- 0.83 landing just under a 0.88 bar
+stated minutes earlier is the "too clean is a stop condition" signature. The
+corrected probe rescores with the same instrument, and the answer inverts from
+"closes the gap" to "1% change". Same data, opposite verdict, entirely because
+of which scale was read.
+
+---
+
+## M13. "Select a pose" is WORSE than averaging — retracting M12's recommendation (2026-09-19)
+
+M12 closed the three averaging routes and concluded: *"do not average over
+poses at all -- SELECT the pose (docking gets within 1 A) and score that."*
+**That recommendation is wrong, and this retracts it.** Same 15-pose M12 data,
+analysed for the question M12 did not ask.
+
+### The measurement
+
+Vina returns poses rank-ordered, so index 0 IS the selected pose.
+
+| estimator | pose_fit (kcal/mol) | bias vs mean |
+|---|---|---|
+| **selected** (vina rank 0) | −83.46 | **+27.43** |
+| mean over 15 | −110.89 | 0 (by definition) |
+| min over 15 | −160.78 | **−49.89** <- the v1 estimator |
+
+And the two axes are statistically independent:
+
+    Spearman(vina rank, pose_fit) = -0.261   p = 0.35   n = 15
+    Pearson                       = -0.328   p = 0.23
+
+### Why that kills the recommendation
+
+Independence is *good* for bias — unlike the v1 `min`, selecting on an
+uncorrelated axis is unbiased **in expectation**. But it is fatal for
+PRECISION: an uncorrelated selector makes "pick rank 0" equivalent to
+**drawing one sample at random** from a distribution with sd 28.75.
+
+For a ddE between two analogues (two independent draws):
+
+| protocol | noise on ddE | vs the 0.25 kcal/mol gap |
+|---|---|---|
+| select one pose | sd·√2 = **40.66** | **163x** |
+| average n = 100 | SEM·√2 = **4.07** | **16x** |
+
+Selection is worse than averaging by exactly √n = 10x. Both are far short;
+neither resolves the gap. **Averaging is the better of two inadequate options,
+not the worse one.**
+
+### What I mis-read, and it was already written down
+
+M12's case for selection was "M9 redocks danuglipron to 0.95 A". M9 itself says
+why that does not license selection, two paragraphs below its own headline:
+
+> r(vina_score, RMSD) = **+0.461**, and only **4 of 20** poses are under 2.0 A.
+> Vina put the right pose first here, but the correlation is weak enough that
+> it did so **partly by luck**.
+
+0.95 A is one draw from a weak selector, not a property of the protocol. I
+quoted the headline and not the caveat directly under it.
+
+### The distinction that survives, and matters
+
+**Geometric selection and energetic selection are different claims.** Docking
+reliably puts a near-native pose SOMEWHERE in its candidate set (M9: 20/20
+within 5 A of the site). It does not reliably put it FIRST, and its ranking
+axis carries no information about the xtb energy (this section). So:
+
+* for *"where does this ligand sit?"* — docking is the right tool, use it
+* for *"which analogue binds better by 1 kcal/mol?"* — no protocol built on
+  this scoring metric works, selected or averaged
+
+### Status of the pose problem: OPEN, and all four routes closed
+
+| route | status |
+|---|---|
+| more poses (M4/M5) | closed — sd flat in n |
+| relax in field (M6) | closed — real 15%, ~3 orders short |
+| real pose search (M12) | closed — 1%, 32.5x short |
+| **select one pose (M13)** | **closed — 10x WORSE than averaging** |
+
+The remaining honest options are not protocol changes: reduce the per-pose sd
+at its source (a scoring function less sensitive to pose than the current
+point-charge interaction energy), or accept that this metric answers "does it
+bind here" and not "which analogue is better", and rank on something else.
+
+### Method note
+
+This cost nothing to run — it is a re-analysis of M12's existing JSON, asking a
+question M12 did not. Worth stating because the expensive part (15 docked poses
++ 15 xtb rescores, ~9 min) was already paid, and the finding that inverts the
+recommendation came from four lines of arithmetic on data already on disk.
+
+---
+
+## M14. No available scorer is less pose-sensitive — the last lever is closed (2026-09-19)
+
+`run_scorer_pose_sensitivity.py`, `out/m14_scorer_sensitivity.json`. M13 left
+one route open: *"the lever is a scoring metric less pose-sensitive than a
+point-charge interaction energy."* This tests it on the cheapest possible
+experiment — score the SAME docked geometries with every scorer in the repo.
+
+19 poses, all three scorers, all 19 scored by all three.
+
+| scorer | mean | sd | **CV** | Spearman vs pose_fit |
+|---|---|---|---|---|
+| vina_score | −11.06 | 0.784 | **0.071** | −0.202 (p=0.41) |
+| pose_fit (xtb) | −104.97 | 33.06 | **0.315** | — (reference) |
+| prescreen (classical) | −0.0055 | 0.0163 | **2.955** | +0.353 (p=0.14) |
+
+**The figure of merit is the coefficient of variation, sd/|mean|**, because a
+raw sd is only meaningful on its own scale — comparing sds across scorers is
+exactly the category error M12 made.
+
+**Neither alternative is a candidate:**
+
+* **prescreen is 9.4x WORSE** than pose_fit, not better. The classical field
+  score is *more* pose-sensitive, which is the opposite of the hypothesis.
+* **Vina looks 4.4x smoother and is not measuring the same thing.** Spearman
+  −0.202, p=0.41 — indistinguishable from zero. It is smooth because it is
+  insensitive, which is the artifact hypothesis this probe wrote down before
+  running, and it is the same finding as M13's from the other direction.
+
+The artifact hypothesis was stated in advance precisely so "low CV" could not
+be reported as a win on its own, and it earned its keep: without the
+correlation column, Vina's 0.071 reads as a 4x improvement.
+
+### A near-miss worth recording
+
+The first run scored **0 of 19** poses. `embed_ligand_from_coords` refused with
+*"263 electrons with multiplicity 1 implies n_alpha = 263/2"*.
+
+Cause: **PDBQT is united-atom.** Nonpolar hydrogens are merged into their
+carbons, so a docked danuglipron has 42 atoms and 263 electrons where the real
+molecule has 71 and 292. 263 is odd, so a singlet is arithmetically impossible.
+
+What makes this worth writing down is that **`pose_fit` accepted the same
+structure without complaint** — xtb will happily run on a molecule missing 29
+hydrogens. Two scorers on identical input, one refusing and one silently
+scoring an incomplete species. Every pose_fit number in M12/M13 was computed on
+the united-atom structure; those conclusions are about SCATTER and survive
+(the same systematic omission is in every pose), but no absolute pose_fit
+energy from a docked pose should be quoted as this molecule's interaction
+energy.
+
+Fixed in this probe by rebuilding the full-hydrogen topology from SMILES,
+pinning the docked heavy atoms, and MMFF-relaxing only the hydrogens — so the
+pose being scored is still the pose that was docked. M9 hit the mirror image of
+this bug in its alignment check.
+
+### And a guard the probe needed against itself
+
+The first verdict reported `ddE_noise_at_n100 = 0.0023 kcal/mol`, which would
+have been a spectacular result. It was prescreen's sd (0.0163) divided by √100
+— a scale artifact, since prescreen's mean is −0.0055. The verdict now takes
+the lowest-CV scorer **that still tracks the reference**, giving **4.68
+kcal/mol**, consistent with M5's 4.07.
+
+### Status: all five routes closed
+
+| route | status |
+|---|---|
+| more poses (M4/M5) | closed — sd flat in n |
+| relax in field (M6) | closed — real 15%, ~3 orders short |
+| real pose search (M12) | closed — 1%, 32.5x short |
+| select one pose (M13) | closed — 10x worse than averaging |
+| **a different scorer (M14)** | **closed — none available is less pose-sensitive** |
+
+Nothing in this repo ranks analogues at 1-2 kcal/mol against a pose ensemble.
+That is now measured from five directions rather than assumed. A sixth route
+exists and is outside this campaign: a scorer that is pose-averaged *by
+construction* (free-energy perturbation, or an ML affinity model trained on
+ensembles) rather than a single-pose energy.
+
+---
+
+## M15. The cheap gate is SITE-BLIND by construction (2026-09-19)
+
+The pipeline's stated unit is the **(substituent, SITE) pair** — measured
+within/between ratio 0.94–0.95, i.e. *where* a group goes matters as much as
+*which*. This checks whether the cheap descriptor gate, which is what survives
+after M4–M14 closed every pose route, can actually express that unit.
+
+It cannot.
+
+    substituent   sites   distinct descriptor tuples
+    CF3             9       1    all (67.997, 1.0188, 0.0)
+    CN              9       1    all (25.010, -0.1283, 23.79)
+    F               9       1    all (17.990, 0.1391, 0.0)
+
+Nine sites, **one** value each.
+
+### It is inherent, not a defect
+
+MW, cLogP (Crippen) and TPSA are whole-molecule sums over atoms and fragment
+types. Two constitutional isomers have the same atoms and the same fragment
+types, so all three are identical BY CONSTRUCTION. Verified on the simplest
+possible case — ortho/meta/para fluorobenzoic acid:
+
+    Fc1ccccc1C(=O)O      MW=140.113  cLogP=1.524  TPSA=37.30
+    O=C(O)c1cccc(F)c1    MW=140.113  cLogP=1.524  TPSA=37.30
+    O=C(O)c1ccc(F)cc1    MW=140.113  cLogP=1.524  TPSA=37.30
+
+Bit-identical. The gate is CORRECT; the descriptors simply do not carry
+positional information, and no fix to `relative_descriptors` changes that.
+
+### What this means for the pipeline
+
+Combining M15 with M4–M14 gives the pipeline's actual, honest scope:
+
+| question | answerable? | by what |
+|---|---|---|
+| which SUBSTITUENT is more promising? | **yes** | relative descriptors — discriminating and chemically sensible (CN lowers cLogP, CF3 is worst) |
+| which SITE should it go on? | **no** | cheap gate is site-blind (M15); pose-based ranking is noise-limited (M4–M14) |
+| does an analogue bind here at all? | **yes** | docking, 0.95 Å redock (M9) |
+| how much better does it bind? | **no** | ddE noise 4.07 kcal/mol vs effects of 1–2 |
+
+**Both halves of the pipeline's stated unit are now blocked, for different
+reasons.** The substituent axis is answerable and the site axis is not — the
+cheap tier cannot see position and the expensive tier cannot resolve it. A
+campaign should therefore rank SUBSTITUENTS cheaply, and treat placement as a
+question for chemistry knowledge or an experiment rather than for this pipeline.
+
+That is a narrower claim than "the pipeline proposes viable substitutions", and
+it is the one the measurements support.
+
+### What WOULD see a site
+
+Descriptors that carry positional information exist and none is wired here:
+3-D shape/electrostatic similarity, per-atom partial charges at the substitution
+point, or a QM property evaluated at the site (e.g. local electrostatic
+potential). Any of those is a real addition rather than a fix, and should be
+costed before being built.
