@@ -1630,7 +1630,7 @@ the estimator instead.
 
 All five computed
 
-    ddE = mean(E_A over ensemble_A) - mean(E_B over ensemble_B)
+    ddE = mean(E_B over ensemble_B) - mean(E_A over ensemble_A)
 
 with the two ensembles embedded INDEPENDENTLY. That discards the structure of
 the problem. The ~28.75 kcal/mol per-pose scatter is pose-conformational -- a
@@ -1638,7 +1638,15 @@ property of the scaffold sitting in the pocket -- while a substitution changes a
 handful of atoms and leaves ~68 where they were. Variance common to both
 molecules cancels in a paired difference:
 
-    var(ddE_paired) = 2*sd^2*(1 - rho)     vs     2*sd^2 unpaired
+    var(ddE_paired) = sd_A^2 + sd_B^2 - 2*rho*sd_A*sd_B
+                    = 2*sd^2*(1 - rho)   WHEN the two spreads are equal
+    var(ddE_unpaired) = sd_A^2 + sd_B^2
+
+A is the PARENT and B the analogue, so a positive ddE means the analogue sits
+higher -- the sign `paired_ddE` computes and the sign of every value in the
+table below. The spreads are equal here to a few percent, and `var.red` is
+MEASURED as the ratio of two SEMs on the same data rather than derived from the
+formula, so the reported gain does not rest on that.
 
 **A shared random seed is not a pairing.** `embed_analogue` uses
 `random_seed=0xF00D` for every candidate, but ETKDG with the same seed on two
