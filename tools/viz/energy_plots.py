@@ -40,6 +40,8 @@ __all__ = [
     "funnel_survival",
     "energy_profile",
     "tier_comparison",
+    "site_substituent_heatmap",
+    "pose_ensemble",
 ]
 
 #: Hartree -> kcal/mol. The one conversion this module performs, named so a
@@ -295,5 +297,208 @@ def tier_comparison(
     ax.axhline(0.0, color="#333333", lw=0.8)
     ax.legend(frameon=False, fontsize=9)
     ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+def site_substituent_heatmap(
+    ddE: dict[tuple[str, str], float | None],
+    *,
+    unit: str = "kcal/mol",
+    title: str = "ddE vs parent, per (substituent, site)",
+    noise_floor: float | None = None,
+):
+    """ddE for every (substituent, SITE) pair, as a grid.
+
+    This is the substitution pipeline's actual output UNIT, and the reason it
+    is a grid rather than a bar chart per substituent: MEASURED within/between
+    ratio 0.94-0.95 on two independent constructions, i.e. WHERE a group goes
+    matters as much as WHICH group. Collapsing the site axis averages over the
+    larger of the two effects.
+
+    `ddE` is keyed `(substituent, site)`. A missing key, or a `None` value, is
+    drawn as an explicit hatched cell, NOT as zero and NOT as the colormap's
+    midpoint -- an unevaluated pair and a pair that came out neutral demand
+    opposite responses.
+
+    `noise_floor` draws the resolution limit into the COLORBAR LABEL and greys
+    every cell inside it. Pass the measured ddE noise for the protocol that
+    produced these numbers. On this campaign that is ~4.07 kcal/mol (averaging
+    n=100) against substituent effects of 1-2, so essentially every cell should
+    grey out -- which is the honest picture, and exactly why the parameter
+    exists rather than being left to a caption nobody reads.
+    """
+    if not ddE:
+        raise ValueError("nothing to plot")
+    plt = _plt()
+    import numpy as np
+
+    subs = sorted({k[0] for k in ddE})
+    sites = sorted({k[1] for k in ddE})
+    grid = np.full((len(subs), len(sites)), np.nan)
+    for i, sub in enumerate(subs):
+        for j, site in enumerate(sites):
+            v = ddE.get((sub, site))
+            if v is not None:
+                grid[i, j] = v
+
+    finite = grid[np.isfinite(grid)]
+    if finite.size == 0:
+        raise ValueError("every (substituent, site) pair is unevaluated")
+    # Symmetric limits so the diverging colormap's midpoint is a real zero
+    # rather than wherever the data happens to centre.
+    lim = float(np.abs(finite).max()) or 1.0
+
+    fig, ax = plt.subplots(
+        figsize=(max(5.0, 1.0 * len(sites) + 3), max(3.0, 0.55 * len(subs) + 2))
+    )
+    im = ax.imshow(grid, cmap="RdBu_r", vmin=-lim, vmax=lim, aspect="auto")
+
+    for i in range(len(subs)):
+        for j in range(len(sites)):
+            if not np.isfinite(grid[i, j]):
+                # Unevaluated: hatched, captioned, unmistakably not a number.
+                ax.add_patch(
+                    plt.Rectangle(
+                        (j - 0.5, i - 0.5),
+                        1,
+                        1,
+                        facecolor="#f0f0f0",
+                        edgecolor="#999999",
+                        hatch="///",
+                        linewidth=0.5,
+                    )
+                )
+                ax.text(
+                    j, i, "n/a", ha="center", va="center", fontsize=8, color="#666666"
+                )
+                continue
+            v = grid[i, j]
+            below = noise_floor is not None and abs(v) < noise_floor
+            ax.text(
+                j,
+                i,
+                f"{v:+.2f}",
+                ha="center",
+                va="center",
+                fontsize=8,
+                color="#999999"
+                if below
+                else ("white" if abs(v) > 0.6 * lim else "black"),
+                style="italic" if below else "normal",
+            )
+
+    ax.set_xticks(range(len(sites)))
+    ax.set_xticklabels(sites, rotation=30, ha="right", fontsize=9)
+    ax.set_yticks(range(len(subs)))
+    ax.set_yticklabels(subs, fontsize=9)
+    ax.set_xlabel("site")
+    ax.set_ylabel("substituent")
+    ax.set_title(title)
+    cb = fig.colorbar(im, ax=ax)
+    cb.set_label(
+        f"ddE ({unit})"
+        if noise_floor is None
+        else f"ddE ({unit}) -- |ddE| < {noise_floor:g} is BELOW THE NOISE FLOOR (greyed)"
+    )
+    fig.tight_layout()
+    return fig
+
+
+def pose_ensemble(
+    scores_by_candidate: dict[str, Sequence[float]],
+    *,
+    unit: str = "kcal/mol",
+    title: str = "Per-pose scores by candidate",
+    selected_index: int | None = None,
+):
+    """Every pose's score, per candidate, as a strip plot with the mean marked.
+
+    The plot that makes the pose problem visible instead of a footnote. On this
+    campaign the per-pose sd is ~29 kcal/mol against substituent effects of
+    1-2, so the strips overlap almost completely -- and a reader who has only
+    seen the MEANS has no way to know that. Showing the spread is the point.
+
+    `selected_index` marks one pose per candidate (e.g. the top-docked one).
+    MEASURED, selecting on an axis uncorrelated with the scorer is a single
+    random draw and is sqrt(n) WORSE than averaging, so this is drawn as an
+    annotation to be inspected, never as the candidate's value.
+    """
+    if not scores_by_candidate:
+        raise ValueError("nothing to plot")
+    plt = _plt()
+    import statistics
+
+    names = list(scores_by_candidate)
+    fig, ax = plt.subplots(figsize=(max(6.0, 1.3 * len(names) + 2), 4.5))
+    rng_state = 12345  # fixed jitter: a replot must not move the points
+
+    for i, name in enumerate(names):
+        vals = [v for v in scores_by_candidate[name] if v is not None]
+        if not vals:
+            # Place the marker in AXES coordinates on the x-position only, so a
+            # candidate with no poses does not drag the y-limits toward 0 (and
+            # does not trip tight_layout when every other point is at -100).
+            ax.annotate(
+                "n/a",
+                xy=(i, 0.5),
+                xycoords=("data", "axes fraction"),
+                ha="center",
+                va="center",
+                fontsize=9,
+                color="#666666",
+            )
+            continue
+        # Deterministic jitter so the figure is reproducible.
+        jit = [
+            ((rng_state * (k + 1) * (i + 7)) % 1000 / 1000.0 - 0.5) * 0.28
+            for k in range(len(vals))
+        ]
+        ax.plot(
+            [i + j for j in jit],
+            vals,
+            "o",
+            ms=5,
+            alpha=0.55,
+            color="#4c72b0",
+            label="poses" if i == 0 else None,
+        )
+        m = statistics.fmean(vals)
+        ax.plot(
+            [i - 0.3, i + 0.3],
+            [m, m],
+            "-",
+            lw=2.5,
+            color="#c44e52",
+            label="mean" if i == 0 else None,
+        )
+        if len(vals) > 1:
+            sd = statistics.stdev(vals)
+            ax.annotate(
+                f"sd {sd:.1f}",
+                xy=(i, m),
+                xytext=(0, -16),
+                textcoords="offset points",
+                ha="center",
+                fontsize=8,
+                color="#c44e52",
+            )
+        if selected_index is not None and 0 <= selected_index < len(vals):
+            ax.plot(
+                i,
+                vals[selected_index],
+                "x",
+                ms=11,
+                mew=2.0,
+                color="#111111",
+                label="selected pose (NOT the value)" if i == 0 else None,
+            )
+
+    ax.set_xticks(range(len(names)))
+    ax.set_xticklabels(names, rotation=30, ha="right", fontsize=9)
+    ax.set_ylabel(f"score ({unit})")
+    ax.set_title(title)
+    ax.grid(axis="y", alpha=0.3)
+    ax.legend(frameon=False, fontsize=9)
     fig.tight_layout()
     return fig
