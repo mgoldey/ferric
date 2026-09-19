@@ -556,7 +556,7 @@ pub fn detect_linear(mol: &Molecule, mass_au: &[f64]) -> bool {
 /// third rotation of a linear molecule. The returned length is therefore 6 for
 /// a nonlinear molecule and 5 for a linear one, determined by the numerics
 /// rather than asserted up front.
-fn translation_rotation_basis(
+pub(crate) fn translation_rotation_basis(
     mol: &Molecule,
     mass_au: &[f64],
 ) -> Result<Vec<Array1<f64>>, FerricError> {
