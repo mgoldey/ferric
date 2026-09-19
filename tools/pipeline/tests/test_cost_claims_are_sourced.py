@@ -96,3 +96,73 @@ def test_a_line_number_citation_is_not_used_for_a_cost():
             f"{path.name} cites a file:line for a cost figure: {bad}. Line "
             "numbers rot -- cite a symbol (tier3_gfn2) or MEASURED <date>."
         )
+
+
+#: The user-facing coverage table. This is where the numbers a reader actually
+#: quotes live, and it is the file the existing guard did NOT cover.
+COVERAGE = REPO / "site/src/reference/pharma-use-case-coverage.md"
+
+
+@pytest.mark.skipif(not COVERAGE.is_file(), reason=f"no {COVERAGE}")
+def test_the_coverage_table_agrees_with_the_measured_tier_costs():
+    """The doc a reader quotes must carry the SAME numbers as the source.
+
+    The provenance guard above checks that `tiers.py` says where its figures
+    came from. It cannot catch a doc that copies the figures and then goes
+    stale -- which is exactly what happened:
+
+        coverage table          tiers.py (MEASURED)
+        docking  1e-5 s/pose    26.4 s/ligand      <- 6 orders out
+        FF       1e-3 s/pose    2.2-21.6 ms
+        xtb      5e-1 s/pose    0.050-0.152 s
+
+    The docking row is the one that mattered. At 1e-5 s tier 1 reads as free,
+    when it is in fact 79% of a campaign's wall time -- the single number that
+    should drive where optimization effort goes.
+
+    Worse, `tiers.py` had ALREADY recorded that "~1 ms/pose" and "~0.5 s" were
+    never measured. Its own comment says the golden path cited that line as its
+    source. Correcting the numbers at the source did not reach the table.
+
+    So this asserts AGREEMENT rather than provenance: every distinctive figure
+    in `tiers.py`'s measured block must appear somewhere in the coverage table.
+    """
+    tiers = TIERS.read_text()
+    doc = COVERAGE.read_text()
+
+    # Distinctive substrings from the MEASURED block -- specific enough that a
+    # stale doc cannot satisfy them by coincidence, and stable across
+    # reformatting (no surrounding punctuation).
+    required = ["26.4", "2.2 ms", "21.6", "0.152", "612 s"]
+    for token in required:
+        assert token in tiers, (
+            f"{token!r} is no longer in tiers.py's measured block -- this test "
+            "is pinned to figures that moved; re-derive the list rather than "
+            "deleting the assertion"
+        )
+        assert token in doc, (
+            f"the coverage table does not mention {token!r}, which tiers.py "
+            "reports as MEASURED. A doc that carries different numbers from "
+            "its source is how 1e-5 s/pose survived for docking."
+        )
+
+
+@pytest.mark.skipif(not COVERAGE.is_file(), reason=f"no {COVERAGE}")
+def test_the_coverage_table_does_not_reassert_the_retracted_figures():
+    """The three wrong numbers must not come back as live claims.
+
+    They may appear in the CORRECTION note -- that is the record of what was
+    wrong -- so this checks they are not in a TABLE ROW, which is where a
+    reader takes a number from.
+    """
+    rows = [
+        line
+        for line in COVERAGE.read_text().splitlines()
+        if line.startswith("|") and "s/pose" in line
+    ]
+    for bad in ("1e-5 s/pose", "1e-3 s/pose", "5e-1 s/pose"):
+        offending = [r for r in rows if bad in r]
+        assert not offending, (
+            f"{bad!r} is back in a table row: {offending}. That figure was "
+            "RETRACTED -- see the correction note in the same file."
+        )

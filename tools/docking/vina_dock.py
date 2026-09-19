@@ -2,10 +2,15 @@
 
 ## Where this sits
 
-    tier 1  Vina (empirical)     ~10 us/pose   10^5-10^6 poses   SEARCH
-    tier 2  MMFF / GFN-FF        ~ms           10^2-10^3         relax, declash
-    tier 3  GFN2-xTB             ~0.5 s        10-10^2           rank
-    tier 4  DFT + dispersion     minutes-hours 1-10              final energetics
+    tier 1  Vina (empirical)     26.4 s/lig    10^5-10^6 poses   SEARCH
+    tier 2  MMFF / GFN-FF        2.2-21.6 ms   10^2-10^3         relax, declash
+    tier 3  GFN2-xTB             0.05-0.152 s  10-10^2           rank
+    tier 4  DFT + D3(BJ)         0.66-612 s    1-10              final energetics
+
+    MEASURED 2026-09-19 (tiers.py; tier 1 from RESULTS.md M11). The tier 1
+    figure is PER LIGAND, not per pose -- the old `~10 us/pose` was the
+    inner-loop cost and made docking look free when it is 79% of a
+    campaign. Tier 4 spans 9 to 71 atoms at STO-3G.
 
 Each tier exists to DISCARD, cheaply, what the next cannot afford to examine.
 Vina's scoring is empirical and crude; that is fine, because only its POSES are
