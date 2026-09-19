@@ -788,12 +788,29 @@ G4. Report a DIFFERENCE (dG_bind between ligands, or vs a reference ligand),
     difference is what error cancellation protects.
 ```
 
-**The blocking question before any of this is coded** (section 3's pose-noise
-caveat): `funnel.py:162` keys on `iso.canonical`, one row per MOLECULE, but
-binding energy is a property of a POSE, and the MEASURED per-pose sd is
-29.07 kcal/mol. Decide the pose treatment -- ensemble, Boltzmann weight,
-best-N -- BEFORE writing the adapter. The current data structure cannot
-express any of them.
+**That blocking question is now ANSWERED, and the answer is "none of them"**
+(2026-09-19, RESULTS.md M4-M14). It used to read: decide the pose treatment --
+ensemble, Boltzmann weight, best-N -- before writing the adapter. All five
+candidate treatments have since been measured:
+
+| treatment | ddE noise | vs a 0.25 kcal/mol gap |
+|---|---|---|
+| more poses, averaged (M4/M5) | 4.07 | 16x |
+| relax in field then average (M6) | ~4.1 | ~16x |
+| dock then average (M12) | ~4.1 | ~16x |
+| select the top-docked pose (M13) | 40.66 | 163x |
+| a different scorer (M14) | 4.68 best tracking | 19x |
+
+So `funnel.py:162`'s one-row-per-MOLECULE keying is not the blocker it was
+written up as -- no pose treatment the data structure could express resolves a
+1-2 kcal/mol substituent effect. **G2 is the last step whose output is
+trustworthy.** Its own "STOP HERE if you only need a coarse sort" is now the
+recommendation rather than an option, and G4's dG_bind difference is reportable
+only when the gap is large (>~5 kcal/mol, i.e. outside the measured noise), not
+for lead optimisation.
+
+This does NOT weaken G0-G3: the pose is found reliably (M9, 0.95 A redock) and
+the coarse sort works. It bounds what G4 may claim.
 
 #### G1-G4 VERIFIED END TO END on merged main (2026-09-18)
 
