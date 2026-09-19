@@ -218,6 +218,46 @@ timings. So:
   freedom and will take more. Treat 34 as a FLOOR for the step count, not a
   typical value -- one geometry is not a distribution.
 
+### Transition-state search costs 2 Hessians + n_steps (MEASURED, 2026-09-19)
+
+New entry: until `ferric_scf::saddle` landed there was no saddle search to
+cost. `crates/ferric-scf/tests/saddle_cost.rs` counts the actual calls rather
+than timing them, because a call count is a property of the algorithm while a
+wall time is a property of this box.
+
+    total = n_hessian * 6N  +  n_steps * 1        (gradient evaluations)
+
+MEASURED on an analytic surface whose saddle is known in closed form
+(`hessian_recalc_every = 0`, the default):
+
+| quantity | value | why |
+|---|---|---|
+| Hessians per search | **2** | one at the start (also the "is there anything to climb?" check), one at the end for the character check. None in between -- Bofill carries it. |
+| gradients per step | **1** | |
+| one Hessian | **6N** | central difference of the analytic gradient; H2 = 12, water = 18 |
+
+So a search on **N = 20** atoms costs **240 + n_steps** gradient evaluations,
+and **the two Hessians dominate until n_steps exceeds ~240**. That is the whole
+reason `hessian_recalc_every` defaults to 0; MEASURED, setting it to 1 doubles
+the Hessian work (2 -> 4 on this surface, i.e. 240 -> 480 gradient-equivalents
+at N=20).
+
+**Putting a number on a catalyst TS.** Using the same 612 s DFT single point
+the tier-5 estimate uses, and treating a gradient as ~1 single point:
+
+    N = 20 QM atoms, n_steps = 30    ->  270 gradients  ->  ~46 h
+    N = 20 QM atoms, n_steps = 100   ->  340 gradients  ->  ~58 h
+
+ESTIMATED, and the multiplicand is the load-bearing weakness -- it is a 71-atom
+DFT single point measured on a different system. What is MEASURED is the
+multiplier (2 Hessians + n_steps) and the 6N Hessian cost. Note the step count
+matters much less than it does for a minimization: going from 30 to 100 steps
+moves the total by 26%, because the fixed 240-gradient Hessian cost swamps it.
+
+**The floor caveat, same as the BFGS one below.** The step count above comes
+from an analytic two-atom surface. A real catalyst TS has soft degrees of
+freedom it does not. Treat any step count from this test as a FLOOR.
+
 ### Point-charge embedding is essentially FREE (MEASURED, 2026-09-18)
 
 Vacuum vs point-charge-embedded RHF on the SAME molecule (water), 8 MM charges
