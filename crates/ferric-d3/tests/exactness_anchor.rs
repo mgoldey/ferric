@@ -15,7 +15,7 @@
 //!
 //! These must pass before ANY number is measured.
 
-use ferric_d3::{d3bj_energy, D3Params};
+use ferric_d3::{d3bj_energy, d3bj_gradient, D3Params};
 
 /// Damping parameters for PBE (Grimme JCC 32, 1456 (2011) Table 1).
 /// Used only as a concrete non-trivial parameter set for the anchors; the
@@ -176,4 +176,52 @@ fn unsupported_element_errors_rather_than_contributing_zero() {
         "an element outside the D3 parameter table must ERROR, not silently \
          contribute zero dispersion; got {r:?}"
     );
+}
+
+/// Non-finite coordinates must be REFUSED, not propagated.
+///
+/// MEASURED before the guard:
+///
+/// ```text
+///   NaN coordinate -> Ok(NaN)
+///   inf coordinate -> Ok(0.0)      <- the dangerous one
+/// ```
+///
+/// The zero is what makes this worth a hard error. A NaN propagates visibly
+/// into whatever consumes it and someone eventually notices; `0.0` is
+/// indistinguishable from "computed, and the atoms are simply far apart", so a
+/// broken geometry reports no dispersion and the run looks fine.
+///
+/// Reachable from an optimizer that took a bad step, or a coordinate that came
+/// through a failed unit conversion.
+#[test]
+fn non_finite_coordinates_are_refused_by_both_energy_and_gradient() {
+    let p = D3Params {
+        s6: 1.0,
+        s8: 1.2177,
+        a1: 0.4145,
+        a2: 4.8593,
+    };
+    for (tag, bad) in [("NaN", f64::NAN), ("inf", f64::INFINITY)] {
+        let coords = vec![[0.0, 0.0, 0.0], [0.0, 0.0, bad]];
+        let e = d3bj_energy(&[18, 18], &coords, &p);
+        assert!(
+            e.is_err(),
+            "{tag} coordinate must be refused by the energy, got {e:?}"
+        );
+        assert!(
+            e.unwrap_err().to_string().contains("non-finite"),
+            "{tag}: the error must name the cause"
+        );
+        assert!(
+            d3bj_gradient(&[18, 18], &coords, &p).is_err(),
+            "{tag} coordinate must be refused by the gradient too"
+        );
+    }
+
+    // THE ANCHOR: a finite geometry still works, so this is about the VALUES
+    // and not about the guard rejecting everything.
+    let good = vec![[0.0, 0.0, 0.0], [0.0, 0.0, 7.1]];
+    assert!(d3bj_energy(&[18, 18], &good, &p).is_ok());
+    assert!(d3bj_gradient(&[18, 18], &good, &p).is_ok());
 }

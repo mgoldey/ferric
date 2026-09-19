@@ -371,5 +371,22 @@ def _tier4_dft_inner(iso: Isomer, context: dict, ferric) -> TierResult:
             # dispersion=None), not that it was computed and found to be zero.
             "e_scf": res.e_scf,
             "e_dispersion": res.e_dispersion,
+            # D3(BJ) IS QM-ATOM-PAIRWISE. It sums over the atoms in the
+            # molecule; MM point charges are not atoms and contribute nothing.
+            #
+            # So with `point_charges` set, the dispersion above covers the QM
+            # region INTERNALLY and the QM-to-MM interaction carries NONE. That
+            # is a partially corrected energy, and the missing part is exactly
+            # the one a binding or pocket question cares about -- dispersion is
+            # the dominant attractive term across a ligand/pocket boundary.
+            #
+            # Flagged rather than refused: the QM-internal correction is still
+            # correct and still worth having for conformer comparisons within
+            # one ligand. What must not happen is a caller reading this as a
+            # fully dispersion-corrected embedded energy. Closing the gap needs
+            # LJ terms on the MM sites (`ferric-mm`), which do not exist yet.
+            "dispersion_covers_qm_only": (
+                res.e_dispersion is not None and bool(context.get("point_charges"))
+            ),
         },
     )
