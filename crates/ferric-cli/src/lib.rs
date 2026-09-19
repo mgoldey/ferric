@@ -1089,6 +1089,7 @@ pub fn run(args: Vec<String>) {
         "laplace-sos-mp2",
         "scs-mp2",
         "scs-mp2-2terfc",
+        "mp3",
     ];
     let scf_only = matches!(method, "rhf" | "uhf" | "rohf" | "ksdft");
     if !scf_only && !RESULT_LOGGED.contains(&method) {
@@ -1519,6 +1520,22 @@ fn run_mp3(
     println!("  MP3 corr   = {:.10} Hartree", mp3_result.e_mp3);
     println!("  Total corr = {:.10} Hartree", mp3_result.e_corr);
     println!("  Total      = {:.10} Hartree", mp3_result.e_total);
+    if let Some(rl) = ferric_scf::runlog::log() {
+        // MP3 carries BOTH orders separately, not just their sum: the MP2->MP3
+        // step is the thing a reader checks for convergence of the series, and
+        // a combined `e_corr` hides whether MP3 corrected or overcorrected.
+        rl.result(
+            "mp3",
+            mp3_result.e_total,
+            serde_json::json!({
+                "e_corr": mp3_result.e_corr,
+                "e_mp2": mp3_result.e_mp2,
+                "e_mp3": mp3_result.e_mp3,
+                "e_scf_reference": mp3_result.e_hf,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
 }
 
 /// `method.kind = "oo-rimp2"`. Extracted verbatim from the former `main()`
