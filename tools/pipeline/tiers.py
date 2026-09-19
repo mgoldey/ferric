@@ -6,7 +6,7 @@ can call four very different methods -- an empirical docking score, a force
 field, a semiempirical Hamiltonian and a DFT SCF -- without knowing anything
 about any of them.
 
-Measured costs on this box (70-atom anion; def2-SVP/PBE for tier 4):
+MEASURED costs (2026-09-19, through the tier functions; tier 1 from RESULTS.md M11):
 
     tier 1  Vina           26.4 s/ligand at exhaustiveness 4, cpu=0 (12 cores)
                            109.0 s at cpu=1; ~2 min at the old ex=32
