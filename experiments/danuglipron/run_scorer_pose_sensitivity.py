@@ -90,6 +90,7 @@ def _restore_hydrogens(
     smiles: str,
     heavy_symbols: list[str],
     heavy_coords: list[tuple[float, float, float]],
+    rdkit_index_of_heavy: list[int] | None = None,
 ) -> tuple[list[str], list[tuple[float, float, float]]]:
     """Thin wrapper -- the implementation moved to `tools.docking.united_atom`.
 
@@ -99,7 +100,12 @@ def _restore_hydrogens(
     """
     from tools.docking.united_atom import restore_hydrogens
 
-    return restore_hydrogens(smiles, heavy_symbols, heavy_coords)
+    return restore_hydrogens(
+        smiles,
+        heavy_symbols,
+        heavy_coords,
+        rdkit_index_of_heavy=rdkit_index_of_heavy,
+    )
 
 
 def summarize(name: str, values: list[float]) -> dict:
@@ -212,7 +218,10 @@ def main() -> int:
             # SAME geometry, one silently accepting an incomplete molecule. M9
             # hit the mirror image of this bug in its alignment check.
             full_syms, full_coords = _restore_hydrogens(
-                DANUGLIPRON_SMILES, list(p.symbols), list(p.coords_angstrom)
+                DANUGLIPRON_SMILES,
+                list(p.symbols),
+                list(p.coords_angstrom),
+                p.rdkit_index_of_heavy,
             )
             el = embed_ligand_from_coords(
                 full_syms, full_coords, pocket=pocket, basis="sto-3g"

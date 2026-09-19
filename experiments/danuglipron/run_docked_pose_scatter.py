@@ -281,8 +281,18 @@ def main() -> int:
         # fix: the same omission was in every pose, so the SPREAD survives. It
         # is the ABSOLUTE energies that were of an incomplete species.
         try:
+            # `p.rdkit_index_of_heavy` is Meeko's own serial->RDKit map,
+            # carried through from the PDBQT. Without it `restore_hydrogens`
+            # assigns by list position, which is wrong for 10 of 13 heavy atoms
+            # on aspirin and misplaces one by up to 4.9 A. `None` means the
+            # PDBQT carried no mapping, and the positional fallback is then the
+            # only option -- but it is now an explicit absence rather than an
+            # unexamined assumption.
             syms, coords = restore_hydrogens(
-                DANUGLIPRON_SMILES, list(p.symbols), list(p.coords_angstrom)
+                DANUGLIPRON_SMILES,
+                list(p.symbols),
+                list(p.coords_angstrom),
+                rdkit_index_of_heavy=p.rdkit_index_of_heavy,
             )
         except Exception as exc:  # noqa: BLE001 -- one bad pose must not abort
             fit_errors.append(f"hydrogen restoration: {type(exc).__name__}: {exc}")
