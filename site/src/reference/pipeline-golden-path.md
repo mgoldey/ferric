@@ -811,6 +811,53 @@ above is STO-3G, the cheapest basis there is -- a real catalyst at def2-SVP or
 better is orders above these. Treat the table as the N-SCALING SHAPE, not as
 wall times.
 
+### HOW to size the QM region (the note said "first", never "how")
+
+C0 says the QM region "sets the cost" and the section below says to size it
+first. Neither said HOW, and it is the first decision a catalyst user makes.
+
+`QmSelection` offers three ways, and the choice matters:
+
+| variant | use it when |
+|---|---|
+| `Indices(Vec<usize>)` | you have already decided, e.g. from a residue list |
+| `WithinRadius { seeds, radius }` | "ligand plus everything within R". **Cuts mid-residue** -- selection is by ATOM with no completion, which is what link atoms exist for |
+| `WithinRadiusWholeResidues` | the same, but a residue joins whole. Usually what a pocket setup wants |
+
+**Two different enums share the name `WithinRadius`, and they answer opposite
+questions.** `QmSelection::WithinRadius` picks which atoms are QUANTUM;
+`MoveMm::WithinRadius(f64)` picks which MM atoms are allowed to MOVE during an
+optimization. Confusing them gives a QM region of the wrong size or a frozen
+pocket, and neither fails loudly. Note also that `MoveMm`'s radius is measured
+ONCE at the starting geometry -- a set re-evaluated as atoms move would change
+the coordinate vector's length mid-optimization.
+
+**What a radius costs.** MEASURED on a uniform shell model (3 ligand atoms
+plus a 2-Bohr lattice), counting only -- no SCF:
+
+```
+ radius(Bohr)  QM atoms   TS budget 2*(6N+1)+31 grads   rel. DFT cost N^2.3
+     3.0           29                  381                     1.0x
+     4.0           50                  633                     3.5x
+     5.0           95                 1173                    15.3x
+     6.0          145                 1773                    40.5x
+     8.0          333                 4029                   274x
+    10.0          551                 6645                   873x
+```
+
+**TWO exponents compound here, which is why this is the expensive knob.** Atom
+count grows as R^2.63 (tail-fitted over the last three points; the global fit
+gives 2.51 by averaging in the flat small-R start, and a uniform shell would
+give exactly 3 by volume). Then DFT cost grows as N^2.3 on top. So 3 -> 10
+Bohr is ~870x the cost PER GRADIENT while the gradient COUNT also grows 17x.
+
+**A uniform shell is the pessimistic case and this is a COUNTING model, not a
+chemistry one.** A real pocket is not uniform -- solvent is stripped, the
+protein is not a lattice, and whole-residue completion changes the boundary --
+so read the EXPONENT and the shape, not the absolute atom counts. What
+transfers is that radius is the dominant lever and that a Bohr is not a small
+unit here.
+
 That is the practical guidance the cost model was missing: **size the QM region
 first** (golden path C0 already says it "sets the cost" -- this is by how much),
 and do not spend effort shaving P-RFO steps.
