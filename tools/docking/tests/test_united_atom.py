@@ -23,7 +23,10 @@ import pytest
 
 pytest.importorskip("rdkit", reason="needs the 'docking' extra")
 
-from tools.docking.united_atom import restore_hydrogens  # noqa: E402
+from tools.docking.united_atom import (  # noqa: E402
+    parse_smiles_idx_remark,
+    restore_hydrogens,
+)
 
 # Ethanol: 3 heavy atoms (C, C, O), 6 hydrogens. Small enough to assert on by
 # hand, and it has a hydroxyl so polar and nonpolar hydrogens both appear.
@@ -89,3 +92,84 @@ def test_hydrogens_already_present_are_ignored_not_doubled():
 def test_an_unparseable_smiles_is_refused():
     with pytest.raises(ValueError, match="unparseable"):
         restore_hydrogens("not-a-smiles((", HEAVY_SYMS, HEAVY_COORDS)
+
+
+# Real Meeko output for aspirin, captured 2026-09-19. Kept verbatim rather than
+# regenerated at test time so the parser is pinned against the FORMAT and not
+# against whatever the installed Meeko happens to emit today.
+ASPIRIN_REMARK = (
+    "REMARK SMILES CC(=O)Oc1ccccc1C(=O)O\n"
+    "REMARK SMILES IDX 5 1 6 2 7 3 8 4 9 5 10 6 4 7 2 8 3 9 1 10 11 11 12 12 13 13\n"
+    "REMARK H PARENT 13 14\n"
+)
+
+
+def test_the_meeko_mapping_is_parsed_and_is_NOT_the_identity():
+    """Meeko reorders atoms, and the parser must see it.
+
+    MEASURED on aspirin: **10 of 13** heavy atoms come back at a different
+    position than RDKit assigned. A positional assignment misplaces an atom by
+    up to **4.9 A** -- a scrambled molecule with the right atom count, the right
+    elements, and no error raised anywhere.
+
+    The `is not the identity` assertion is the load-bearing one. A parser that
+    returned `{i: i}` would satisfy every downstream use and silently restore
+    the bug.
+    """
+    m = parse_smiles_idx_remark(ASPIRIN_REMARK)
+    assert len(m) == 13, f"expected 13 heavy atoms, parsed {len(m)}"
+    # serial 5 -> rdkit index 0 (the remark is 1-based, the map is 0-based)
+    assert m[5] == 0
+    assert m[7] == 2
+    assert m[1] == 9, "pdbqt serial 1 is RDKit atom 10 -- the reordering"
+    reordered = sum(1 for ser, idx in m.items() if ser - 1 != idx)
+    assert reordered == 10, (
+        f"{reordered} of 13 atoms reordered; the captured remark says 10. If "
+        "this changed, the fixture was regenerated with a different Meeko and "
+        "the measured 4.9 A figure needs re-checking."
+    )
+
+
+def test_an_absent_remark_returns_empty_not_identity():
+    """No remark means UNKNOWN mapping, which the caller must handle.
+
+    Returning an identity map would be the most dangerous possible default: it
+    is exactly the wrong assumption, and it looks like a successful parse.
+    """
+    assert parse_smiles_idx_remark("ATOM      1  C   UNL     1  0.0 0.0 0.0\n") == {}
+
+
+def test_a_permutation_puts_coordinates_on_the_RIGHT_atoms():
+    """With a mapping, the k-th docked coordinate lands on its RDKit atom.
+
+    Built as a deliberate REVERSAL so a positional implementation cannot pass:
+    without the mapping every coordinate goes to the wrong atom, and with it
+    every one is exact.
+    """
+    coords = [(0.0, 0.0, 0.0), (1.5, 0.0, 0.0), (2.1, 1.2, 0.0)]
+    # Docked order is the REVERSE of RDKit's heavy-atom order.
+    reversed_coords = list(reversed(coords))
+    mapping = [2, 1, 0]
+
+    syms, out = restore_hydrogens(
+        ETHANOL, HEAVY_SYMS, reversed_coords, rdkit_index_of_heavy=mapping
+    )
+    heavy_out = [c for s, c in zip(syms, out) if s != "H"]
+    for got, want in zip(heavy_out, coords):
+        for g, w in zip(got, want):
+            assert g == pytest.approx(w, abs=1e-6), (
+                f"with an explicit mapping the coordinates must land on the "
+                f"named atoms; got {heavy_out} for {coords}"
+            )
+
+
+def test_a_mapping_that_is_not_a_permutation_is_refused():
+    """A mapping and a SMILES that disagree are different molecules."""
+    with pytest.raises(ValueError, match="permutation"):
+        restore_hydrogens(
+            ETHANOL, HEAVY_SYMS, HEAVY_COORDS, rdkit_index_of_heavy=[0, 0, 1]
+        )
+    with pytest.raises(ValueError, match="entries"):
+        restore_hydrogens(
+            ETHANOL, HEAVY_SYMS, HEAVY_COORDS, rdkit_index_of_heavy=[0, 1]
+        )

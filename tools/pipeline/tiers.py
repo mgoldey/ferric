@@ -66,6 +66,49 @@ class TierResult:
     #: indistinguishable no matter how many digits the tier prints.
     resolution: float | None = None
 
+    def __post_init__(self) -> None:
+        """Reject a resolution that cannot mean what the field promises.
+
+        `resolves` squares this, so a NEGATIVE value behaves exactly as its
+        absolute value -- a caller passing -4.0 gets the comparisons of +4.0
+        and no indication. A NaN is worse: every `>` against it is False, so
+        `resolves` reports "indistinguishable" for ANY gap. MEASURED before the
+        fix, two results 990 units apart with `resolution=nan` came back
+        `False`, i.e. do-not-rank.
+
+        That inverts the field's whole purpose. `resolution` exists to stop a
+        ranking the tier cannot support; a NaN instead suppresses every real
+        distinction, and it does so in the direction that looks CAUTIOUS.
+
+        Zero is allowed: a tier that genuinely resolves exact ties is a
+        coherent claim, and the quadrature handles it.
+        """
+        if self.resolution is None:
+            return
+        r = self.resolution
+        if not isinstance(r, (int, float)) or isinstance(r, bool):
+            raise TypeError(f"resolution must be a real number or None, got {r!r}")
+        if r != r:  # NaN
+            raise ValueError(
+                f"resolution is NaN for {self.candidate_id!r}. Every comparison "
+                "against NaN is False, so `resolves` would report EVERY gap as "
+                "indistinguishable -- the opposite of what an unknown "
+                "resolution means. Pass None for UNCHARACTERISED."
+            )
+        if r < 0.0:
+            raise ValueError(
+                f"resolution must be >= 0, got {r} for {self.candidate_id!r}. "
+                "`resolves` squares it, so a negative value silently behaves as "
+                "its absolute value."
+            )
+        if r == float("inf"):
+            raise ValueError(
+                f"resolution is infinite for {self.candidate_id!r}, which makes "
+                "every gap unresolvable. If the tier cannot resolve anything, "
+                "that is a statement worth making explicitly rather than "
+                "through an arithmetic edge case."
+            )
+
     @property
     def ok(self) -> bool:
         return self.error is None and self.value is not None

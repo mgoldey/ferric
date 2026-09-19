@@ -398,3 +398,83 @@ def test_tier4_flags_that_dispersion_covers_only_the_QM_region():
         "no dispersion requested: nothing to qualify"
     )
     assert covers_qm_only(None, None) is False
+
+def test_a_nan_resolution_is_refused_because_it_suppresses_every_ranking():
+    """NaN is the dangerous one, and it fails in the CAUTIOUS-looking direction.
+
+    `resolves` compares `abs(gap) > combined`. Every `>` against NaN is False,
+    so a NaN resolution reports EVERY pair as indistinguishable. MEASURED
+    before the fix: two results 990 units apart came back `False` -- do not
+    rank.
+
+    That inverts the field's purpose. `resolution` exists to STOP a ranking the
+    tier cannot support; a NaN instead suppresses every distinction the tier
+    genuinely can make, and it looks like conservatism while doing it.
+
+    `None` is the correct way to say "uncharacterised" and stays accepted --
+    it returns `None` from `resolves`, which is UNKNOWN rather than a verdict.
+    """
+    import math
+
+    with pytest.raises(ValueError, match="NaN"):
+        TierResult("x", -10.0, resolution=math.nan)
+
+    # The anchor: None still means uncharacterised and still yields None.
+    a = TierResult("a", -10.0)
+    b = TierResult("b", -1000.0)
+    assert a.resolves(b) is None, "None must stay UNKNOWN, not become a verdict"
+
+
+def test_a_negative_resolution_is_refused_because_it_is_squared():
+    """-4.0 would behave exactly as +4.0, with nothing to indicate it."""
+    with pytest.raises(ValueError, match="must be >= 0"):
+        TierResult("x", -10.0, resolution=-4.0)
+
+    # The anchor: the positive value it would have impersonated still works,
+    # so the test is about the SIGN and not about the field being broken.
+    a = TierResult("a", -10.0, resolution=4.0)
+    b = TierResult("b", -20.0, resolution=4.0)
+    assert a.resolves(b) is True
+
+
+def test_an_infinite_resolution_is_refused():
+    """A tier that resolves nothing should say so, not encode it arithmetically."""
+    with pytest.raises(ValueError, match="infinite"):
+        TierResult("x", -10.0, resolution=float("inf"))
+
+
+def test_zero_resolution_is_ALLOWED():
+    """A tier claiming exact resolution is coherent; the quadrature handles it."""
+    a = TierResult("a", -10.0, resolution=0.0)
+    b = TierResult("b", -10.5, resolution=0.0)
+    assert a.resolves(b) is True, "a 0.5 gap at zero noise is resolvable"
+    same = TierResult("c", -10.0, resolution=0.0)
+    assert a.resolves(same) is False, (
+        "an exact tie is not resolvable even at zero noise"
+    )
+
+
+def test_the_guard_is_keyed_on_None_and_not_on_FALSINESS():
+    """`if not resolution` would skip validation for every falsy value.
+
+    A MUTATION SURVIVED here. Rewriting the early return as
+    `if not self.resolution: return` passes all the tests above, because the
+    only falsy value they exercise is 0.0 -- which is VALID either way, so it
+    cannot tell the two guards apart.
+
+    What it does let through is `False`. A bool is not a resolution, and
+    `resolution=False` then flows into `resolves` as 0, claiming the tier
+    resolves exact ties. That is a real, silent wrong answer reachable from a
+    plausible typo (`resolution=False` where `error=...` was meant).
+
+    So the discriminating input is a FALSY value that must be REFUSED, not the
+    falsy value that must be accepted.
+    """
+    with pytest.raises(TypeError, match="real number"):
+        TierResult("x", -10.0, resolution=False)
+    with pytest.raises(TypeError, match="real number"):
+        TierResult("x", -10.0, resolution=True)
+
+    # ...and the falsy value that IS valid still is, so the guard has not been
+    # over-corrected into rejecting everything falsy.
+    assert TierResult("x", -10.0, resolution=0.0).resolution == 0.0
