@@ -131,3 +131,98 @@ def test_a_substitution_that_breaks_a_required_feature_is_rejected_when_gated():
         "every substitution should have been rejected by a SMARTS no product "
         "can match; the gate is not being applied"
     )
+
+
+# ── embedding: proposal -> 3-D coordinates ────────────────────────────────
+#
+# `SubstitutionProposal` carries SMILES; every pocket-side entry point
+# (`embed_ligand_from_coords`, `batch_prescreen`, `compute_binding_energy`)
+# needs 3-D coordinates. That hop is the ONLY missing piece between the
+# enumeration half and the pocket half -- see
+# wiki/substitution-pipeline-danuglipron-2026-09-19.md.
+
+
+def test_embedding_returns_one_geometry_per_proposal():
+    from tools.pipeline.substitution import embed_proposals, propose_substitutions
+
+    props = propose_substitutions(PARENT, substituents={"F": "F"})
+    embedded = embed_proposals(props)
+    assert len(embedded) == len(props), (
+        f"{len(embedded)} geometries for {len(props)} proposals -- every "
+        "proposal must be embedded or explicitly reported as failed"
+    )
+
+
+def test_the_parent_is_embedded_too():
+    """The parent is the reference every ddE is measured against, so it must
+    reach the pocket alongside the analogues, not be filtered out as 'not a
+    substitution'."""
+    from tools.pipeline.substitution import embed_proposals, propose_substitutions
+
+    embedded = embed_proposals(propose_substitutions(PARENT, substituents={"F": "F"}))
+    parents = [e for e in embedded if e.proposal.is_parent]
+    assert len(parents) == 1, f"expected one embedded parent, got {len(parents)}"
+    assert parents[0].coords, "the parent was embedded with no coordinates"
+
+
+def test_embedded_geometry_is_three_dimensional():
+    """MUTATION KILLED: returning a flat or zeroed geometry.
+
+    ETKDG must produce a real 3-D structure. A planar or collapsed geometry
+    would still have the right SHAPE (n_atoms x 3) and would silently give
+    nonsense in the pocket, so this asserts genuine extent in all three axes.
+    """
+    from tools.pipeline.substitution import embed_proposals, propose_substitutions
+
+    e = embed_proposals(propose_substitutions(PARENT, substituents={}))[0]
+    assert len(e.symbols) == len(e.coords), "symbols and coords disagree in length"
+    assert len(e.coords) > 3, f"benzoic acid should have >3 atoms, got {len(e.coords)}"
+    for axis, name in enumerate("xyz"):
+        spread = max(c[axis] for c in e.coords) - min(c[axis] for c in e.coords)
+        assert spread > 0.5, (
+            f"the {name} extent is {spread:.3f} A -- the geometry is flat or "
+            "collapsed, not a real 3-D embedding"
+        )
+
+
+def test_embedding_is_deterministic():
+    """ETKDG is stochastic; an unseeded embedding makes every downstream
+    energy irreproducible. Two calls must agree exactly."""
+    from tools.pipeline.substitution import embed_proposals, propose_substitutions
+
+    props = propose_substitutions(PARENT, substituents={"F": "F"})
+    a = embed_proposals(props)
+    b = embed_proposals(props)
+    assert [x.coords for x in a] == [x.coords for x in b], (
+        "two embeddings of the same proposals disagree -- the ETKDG seed is "
+        "not being pinned"
+    )
+
+
+def test_an_unembeddable_proposal_is_reported_not_dropped():
+    """A proposal ETKDG cannot embed must come back with `coords is None` and
+    an error string, never be silently absent.
+
+    Dropping it would make the output length disagree with the input and, worse,
+    would read downstream as 'this analogue was not proposed' rather than 'this
+    analogue could not be embedded' -- the same distinction
+    tools/campaign/hierarchy.py rule 5 insists on.
+    """
+    from tools.pipeline.substitution import EmbeddedProposal, SubstitutionProposal
+
+    # A proposal whose SMILES cannot be parsed at all.
+    bad = SubstitutionProposal(
+        smiles="not-smiles",
+        label="bogus",
+        is_parent=False,
+        d_mw=0.0,
+        d_clogp=0.0,
+        d_tpsa=0.0,
+    )
+    from tools.pipeline.substitution import embed_proposals
+
+    out = embed_proposals([bad])
+    assert len(out) == 1, "the failed proposal was dropped instead of reported"
+    assert isinstance(out[0], EmbeddedProposal)
+    assert out[0].coords is None, "an unembeddable proposal must have no coordinates"
+    assert out[0].error, "an unembeddable proposal must carry an error string"

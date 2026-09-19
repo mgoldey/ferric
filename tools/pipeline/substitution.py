@@ -52,7 +52,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-__all__ = ["SubstitutionProposal", "propose_substitutions", "relative_descriptors"]
+__all__ = [
+    "SubstitutionProposal",
+    "EmbeddedProposal",
+    "propose_substitutions",
+    "embed_proposals",
+    "relative_descriptors",
+]
 
 
 @dataclass(frozen=True)
@@ -177,3 +183,80 @@ def propose_substitutions(
         )
     scored.sort(key=lambda p: (p.label, p.smiles))
     return rows + scored
+
+
+@dataclass(frozen=True)
+class EmbeddedProposal:
+    """A proposal with a 3-D geometry, ready for the pocket-side entry points.
+
+    `coords is None` means embedding FAILED and `error` says why. The proposal
+    is still returned: dropping it would make the output length disagree with
+    the input and would read downstream as "this analogue was never proposed"
+    rather than "this analogue could not be embedded". Those demand opposite
+    responses, which is the same distinction `tools/campaign/hierarchy.py`
+    rule 5 insists on ("a tier that cannot answer returns None/UNEVALUATED,
+    never a neutral-looking number").
+    """
+
+    proposal: SubstitutionProposal
+    symbols: tuple[str, ...]
+    #: Angstrom, matching `symbols` order. `None` if embedding failed.
+    coords: tuple[tuple[float, float, float], ...] | None
+    error: str | None = None
+
+
+def embed_proposals(
+    proposals: list[SubstitutionProposal],
+    seed: int = 0xF00D,
+    optimize: bool = True,
+) -> list[EmbeddedProposal]:
+    """Give every proposal a 3-D geometry, in Angstrom.
+
+    This is the ONE hop between the enumeration half of the pipeline and the
+    pocket half: `SubstitutionProposal` carries SMILES, while every pocket-side
+    entry point -- `active_site.ligand_embedding.embed_ligand_from_coords`,
+    `active_site.prescreen.batch_prescreen`,
+    `active_site.binding_energy.compute_binding_energy` -- needs coordinates.
+
+    `seed` is FIXED by default. ETKDG is stochastic, and an unseeded embedding
+    makes every downstream energy irreproducible; the same reasoning as
+    `tools.structure.from_smiles`, which this delegates to.
+
+    The geometry is ETKDG + (by default) an MMFF cleanup: a TIER-2 STARTING
+    STRUCTURE, not an optimized one. Feeding it straight to DFT wastes the DFT.
+    In the real pipeline this feeds docking (tier 1) or xtb (tier 3) first --
+    see `wiki/substitution-pipeline-danuglipron-2026-09-19.md` for the stage
+    list and the measured costs.
+
+    Every input yields exactly one output, in order. A proposal that cannot be
+    embedded comes back with `coords=None` and an `error`, never absent.
+    """
+    from tools.structure import from_smiles
+
+    out: list[EmbeddedProposal] = []
+    for p in proposals:
+        try:
+            mol = from_smiles(
+                p.smiles,
+                charge=None,  # read off the SMILES, which states it explicitly
+                multiplicity=1,
+                seed=seed,
+                optimize=optimize,
+            )
+            out.append(
+                EmbeddedProposal(
+                    proposal=p,
+                    symbols=tuple(mol.symbols()),
+                    coords=tuple(mol.coords()),  # Angstrom (coords_bohr is the other)
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 -- report, never drop
+            out.append(
+                EmbeddedProposal(
+                    proposal=p,
+                    symbols=(),
+                    coords=None,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            )
+    return out
