@@ -185,5 +185,158 @@ fn main() -> Result<(), FerricError> {
         (qm0.atoms[1].zpos - qm0.atoms[0].zpos).abs(),
         (qm0.atoms[1].zpos - qm0.atoms[0].zpos).abs() / ANGSTROM_TO_BOHR
     );
+
+    embedded_nh3_inversion()?;
+    Ok(())
+}
+
+/// A saddle search that SUCCEEDS, under the same MM embedding.
+///
+/// The H2 case above is a refusal, and a refusal alone does not show the
+/// workflow works -- code that rejects everything would print the same thing.
+/// This is the positive half: NH3 umbrella inversion, whose planar D3h form is
+/// a genuine first-order saddle.
+///
+/// Why this system. It is the smallest closed-shell TS that is unambiguous:
+///
+///   * planar NH3 at STO-3G has EXACTLY ONE imaginary mode, -1051.5 cm^-1 (the
+///     umbrella coordinate). MEASURED with `harmonic_frequencies` before this
+///     example was written -- see the rejected candidates below.
+///   * the pyramidal start (N lifted 0.15 A) also has one imaginary mode, so it
+///     is inside the saddle's basin but is NOT already the answer. A start that
+///     was already planar would make the search trivially succeed and prove
+///     nothing.
+///
+/// CANDIDATES REJECTED, because each is a second-order saddle and `find_saddle`
+/// correctly refuses them -- worth recording so they are not retried:
+///
+///   * linear H3+     : 2 imaginary (degenerate bend), -1068 cm^-1 twice
+///   * linear H2O     : 2 imaginary (degenerate bend), -2328.7 cm^-1 twice
+///
+/// The degeneracy is the trap: a bend perpendicular to a linear molecule comes
+/// in a pair, so "linear form of a bent molecule" is almost never a TS.
+fn embedded_nh3_inversion() -> Result<(), FerricError> {
+    let op = Operator::coulomb();
+    let basis = "sto-3g";
+
+    // Pyramidal start, N lifted off the H3 plane. Angstrom.
+    // r = 1.006 A is the STO-3G planar optimum, MEASURED by scanning the
+    // residual gradient: g_max falls 5.2e-3 -> 6.1e-4 between 1.010 and 1.006.
+    // Using a textbook 1.01 leaves a BOND-STRETCH gradient of 5.2e-3 that the
+    // convergence test (g_max 3e-4) rightly refuses, and the search then looks
+    // like it failed when the geometry was simply unrelaxed in a coordinate
+    // that has nothing to do with the umbrella. Relax everything except the
+    // coordinate under study before starting a saddle search.
+    let r = 1.006_f64;
+    let ang: f64 = 120.0_f64.to_radians();
+    let h = 0.15_f64;
+    let xyz = format!(
+        "4\nNH3 pyramidal start\nN 0.0 0.0 {h:.6}\nH {:.6} {:.6} 0.0\n\
+         H {:.6} {:.6} 0.0\nH {:.6} {:.6} 0.0\n",
+        r,
+        0.0,
+        r * ang.cos(),
+        r * ang.sin(),
+        r * (2.0 * ang).cos(),
+        r * (2.0 * ang).sin()
+    );
+
+    // Same fixed-field embedding as above: two off-axis MM charges, so the
+    // search runs against an EMBEDDED surface rather than a gas-phase one.
+    let atoms = vec![
+        QmmmAtom::new("N", 7, 0.0, 0.0, h, 0.0),
+        QmmmAtom::new("H", 1, r, 0.0, 0.0, 0.0),
+        QmmmAtom::new("H", 1, r * ang.cos(), r * ang.sin(), 0.0, 0.0),
+        QmmmAtom::new(
+            "H",
+            1,
+            r * (2.0 * ang).cos(),
+            r * (2.0 * ang).sin(),
+            0.0,
+            0.0,
+        ),
+        // BOTH charges the SAME SIGN, placed symmetrically about the H3 plane.
+        //
+        // This is not cosmetic. An ANTISYMMETRIC pair (-0.2 above, +0.2 below)
+        // applies a constant force along z, so planar NH3 stops being a
+        // stationary point at all: MEASURED max|g_z| = 3.8e-3 at the planar
+        // geometry, essentially independent of the N-H distance, against
+        // 1e-16 in the gas phase. The search then cannot converge -- correctly,
+        // because under that field there is no saddle there to find -- and it
+        // LOOKS like a solver failure.
+        //
+        // A symmetric pair perturbs the energy (by 5.0e-4 Ha here) while
+        // preserving the reflection symmetry that DEFINES this TS, so max|g_z|
+        // returns to ~1e-17 and the saddle survives the embedding.
+        //
+        // General rule: an MM field that breaks the symmetry defining your
+        // transition state does not make the search harder, it removes the
+        // target. Check that the embedded gradient still vanishes at the
+        // symmetric geometry before blaming the optimizer.
+        QmmmAtom::new("X", 0, 0.0, 0.0, 6.0, -0.2),
+        QmmmAtom::new("X", 0, 0.0, 0.0, -6.0, -0.2),
+    ];
+    let system = QmmmSystem::new(&atoms, QmSelection::Indices(vec![0, 1, 2, 3]), 0, 1)?;
+    let ext = system.to_external_potential();
+    let mut scf = RhfConfig {
+        external_potential: ext.clone(),
+        ..Default::default()
+    };
+    scf.max_iter = 300;
+
+    let mol = Molecule::parse_xyz(&xyz, 0, 1)?;
+    println!(
+        "\n--- embedded NH3 inversion: {} QM atoms, {} MM charges ---",
+        mol.atoms.len(),
+        ext.as_ref().map_or(0, |e| e.point_charges.len())
+    );
+
+    let s1 = scf.clone();
+    let eg = move |m: &Molecule| -> Result<(f64, Array1<f64>), FerricError> {
+        let bs = ferric_core::basis::bundled(basis)?;
+        let prep = PreparedBasis::new(m, &bs)?;
+        let b = SchwarzBounds::compute(op, &prep)?;
+        let res = solve_rhf(&ParallelContext::default(), m, &prep, op, &b, &s1)?;
+        let g = rhf_gradient(m, &prep, op, &b, &res, s1.external_potential.as_ref())?;
+        Ok((res.energy, Array1::from_iter(g.iter().copied())))
+    };
+    let s2 = scf.clone();
+    let hs = move |m: &Molecule| -> Result<Array2<f64>, FerricError> {
+        let fc = FrequencyConfig {
+            reference: FrequencyReference::Rhf,
+            ..Default::default()
+        };
+        Ok(
+            harmonic_frequencies(&ParallelContext::default(), m, basis, op, &s2, &fc)?
+                .cartesian_hessian,
+        )
+    };
+
+    let cfg = SaddleConfig {
+        max_steps: 60,
+        trust_radius: 0.10,
+        ..Default::default()
+    };
+    let res = find_saddle(&mol, &cfg, eg, hs)?;
+    println!(
+        "converged={}  steps={}  n_imaginary={}  E={:.8} Ha",
+        res.converged, res.steps, res.n_imaginary, res.energy
+    );
+    println!(
+        "is_transition_state() = {}  (needs converged AND exactly 1 imaginary)",
+        res.is_transition_state()
+    );
+
+    // THE CHECK THAT MATTERS, and the one a converged flag does not give you:
+    // is the structure the RIGHT saddle? For umbrella inversion the answer is
+    // planar, so every z must agree. A converged search with one imaginary mode
+    // can still be the wrong saddle on a surface with several.
+    let zs: Vec<f64> = res.mol.atoms.iter().map(|a| a.zpos).collect();
+    let spread = zs.iter().fold(f64::NEG_INFINITY, |a, b| a.max(*b))
+        - zs.iter().fold(f64::INFINITY, |a, b| a.min(*b));
+    println!(
+        "z spread = {spread:.4} Bohr -- planar means ~0; the N has come down \
+         into the H3 plane, which is the umbrella TS"
+    );
     Ok(())
 }
