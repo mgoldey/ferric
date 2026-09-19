@@ -4759,7 +4759,7 @@ fn run_dft(
         // makes `total_energy` and `gradient()` describe the SAME surface --
         // an optimizer handed a mismatched pair converges to the wrong
         // geometry with nothing to indicate it.
-        if let Some(spec) = dispersion.as_deref() {
+        if let Some(spec) = &dispersion {
             let which = resolve_d3_functional(spec, &xc_name)?;
             let params = ferric_d3::d3bj_params_for_functional(&which).map_err(make_err)?;
             let dg =
@@ -4788,7 +4788,7 @@ fn run_dft(
     // so a caller cannot mistake "not asked for" for "computed and found to be
     // zero". Any failure (unknown functional, unparameterised element) is
     // raised, never swallowed into a neutral-looking zero.
-    let e_dispersion = match dispersion.as_deref() {
+    let e_dispersion = match &dispersion {
         None => None,
         Some(spec) => {
             let which = resolve_d3_functional(spec, &xc_name)?;
@@ -4813,8 +4813,8 @@ fn run_dft(
 /// Accepts exactly what the CLI's `[dft] dispersion` accepts, so the two
 /// surfaces cannot drift apart:
 ///   * `"d3bj"` / `"d3(bj)"` -- the running functional's own parameters
-///   * `"d3bj(<name>)"`      -- `<name>`'s parameters instead, for when
-///                              ferric's XC name and the D3 fit's name differ
+///   * `"d3bj(<name>)"` -- `<name>`'s parameters instead, for when ferric's XC
+///     name and the D3 fit's name differ
 ///
 /// Anything else is an error, never a silently-skipped correction.
 ///

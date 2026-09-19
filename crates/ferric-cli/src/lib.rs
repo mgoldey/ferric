@@ -25,8 +25,8 @@ use ferric_mp2::scs::{scs_mp2, scs_mp2_2terfc, ScsMp2Config, ScsMp2TerfcConfig};
 use ferric_rpa::config::{QuadratureConfig, SternheimerConfig};
 use ferric_rpa::{run_pdep_rpa, PdepRpaConfig};
 use ferric_scf::optimize::{
-    optimize_geometry, optimize_geometry_rohf, optimize_geometry_uhf,
-    optimize_geometry_with_correction, OptimizeConfig,
+    optimize_geometry_rohf, optimize_geometry_uhf, optimize_geometry_with_correction,
+    OptimizeConfig,
 };
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
 use ferric_scf::rohf::solve_rohf;
