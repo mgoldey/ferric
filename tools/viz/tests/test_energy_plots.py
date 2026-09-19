@@ -729,3 +729,76 @@ def test_reaction_path_labels_the_axis_as_RELATIVE():
     label = fig.axes[0].get_ylabel()
     assert "relative" in label.lower(), f"axis must say RELATIVE, got {label!r}"
     assert "kcal/mol" in label
+
+
+# --- per-candidate noise floor (M17) -----------------------------------------
+#
+# A paired estimator's floor tracks rho and therefore varies per candidate
+# (MEASURED 0.221 at rho 0.860 vs 0.615 at rho 0.399 -- 2.8x on one scaffold),
+# so a single scalar cannot express it.
+
+
+def test_a_scalar_floor_still_works_unchanged():
+    """The existing contract must not move."""
+    from tools.viz.energy_plots import _floor_for, _floor_label
+
+    assert _floor_for(4.07, "F", "S1") == 4.07
+    assert _floor_for(None, "F", "S1") is None
+    assert "4.07" in _floor_label(4.07, "kcal/mol")
+    assert "PER-CANDIDATE" not in _floor_label(4.07, "kcal/mol")
+
+
+def test_a_mapping_gives_each_cell_its_own_floor():
+    from tools.viz.energy_plots import _floor_for
+
+    fl = {("F", "S1"): 0.221, ("Cl", "S1"): 0.615}
+    assert _floor_for(fl, "F", "S1") == 0.221
+    assert _floor_for(fl, "Cl", "S1") == 0.615
+
+
+def test_an_unmeasured_cell_has_NO_floor_not_a_zero_one():
+    """The distinction that matters: unmeasured != resolved at any magnitude.
+
+    Returning 0.0 would mark every value as ABOVE the floor, i.e. resolved,
+    which is the opposite of what an absent measurement means.
+    """
+    from tools.viz.energy_plots import _floor_for
+
+    assert _floor_for({("F", "S1"): 0.221}, "Br", "S1") is None
+
+
+def test_the_label_reports_a_RANGE_when_floors_differ():
+    """A single number in the label would imply one floor when there are many."""
+    from tools.viz.energy_plots import _floor_label
+
+    lab = _floor_label({("F", "S1"): 0.221, ("Cl", "S1"): 0.615}, "kcal/mol")
+    assert "0.221" in lab and "0.615" in lab and "PER-CANDIDATE" in lab
+    # ...but not when they happen to agree: a spurious range would be noise.
+    same = _floor_label({("F", "S1"): 0.4, ("Cl", "S1"): 0.4}, "kcal/mol")
+    assert "PER-CANDIDATE" not in same and "0.4" in same
+
+
+def test_a_per_cell_floor_actually_changes_WHICH_cells_grey():
+    """MUTATION-STYLE: the same ddE must grey under one floor and not another.
+
+    Without this the mapping could be accepted, stored, and never consulted --
+    the plot would look right and mean nothing. Uses the measured pair: 0.4
+    kcal/mol is resolved for F (floor 0.221) and NOT for Cl (floor 0.615).
+    """
+    from tools.viz.energy_plots import _floor_for
+
+    fl = {("F", "S1"): 0.221, ("Cl", "S1"): 0.615}
+    v = 0.4
+    assert not (abs(v) < _floor_for(fl, "F", "S1")), "F should be resolved at 0.4"
+    assert abs(v) < _floor_for(fl, "Cl", "S1"), "Cl should be greyed at 0.4"
+
+
+def test_the_heatmap_accepts_a_mapping_end_to_end():
+    from tools.viz.energy_plots import close, site_substituent_heatmap
+
+    fig = site_substituent_heatmap(
+        {("F", "S1"): 0.4, ("Cl", "S1"): 0.4},
+        noise_floor={("F", "S1"): 0.221, ("Cl", "S1"): 0.615},
+    )
+    assert fig is not None
+    close(fig)

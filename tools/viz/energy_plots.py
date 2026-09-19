@@ -323,12 +323,41 @@ def tier_comparison(
     return fig
 
 
+def _floor_for(noise_floor, sub: str, site: str) -> float | None:
+    """The resolution limit that applies to ONE cell.
+
+    A scalar applies everywhere. A mapping applies per (substituent, site), and
+    a cell it does not mention has NO floor rather than a zero one -- an
+    unmeasured limit must not render as a limit that nothing can fall below.
+    """
+    if noise_floor is None:
+        return None
+    if isinstance(noise_floor, dict):
+        v = noise_floor.get((sub, site))
+        return float(v) if v is not None else None
+    return float(noise_floor)
+
+
+def _floor_label(noise_floor, unit: str) -> str:
+    """The colorbar label, which must not imply one floor when there are many."""
+    if noise_floor is None:
+        return f"ddE ({unit})"
+    if isinstance(noise_floor, dict):
+        vals = [float(v) for v in noise_floor.values() if v is not None]
+        if not vals:
+            return f"ddE ({unit})"
+        lo, hi = min(vals), max(vals)
+        span = f"{lo:g}" if lo == hi else f"{lo:g}-{hi:g} (PER-CANDIDATE)"
+        return f"ddE ({unit}) -- |ddE| < {span} is BELOW THE NOISE FLOOR (greyed)"
+    return f"ddE ({unit}) -- |ddE| < {noise_floor:g} is BELOW THE NOISE FLOOR (greyed)"
+
+
 def site_substituent_heatmap(
     ddE: dict[tuple[str, str], float | None],
     *,
     unit: str = "kcal/mol",
     title: str = "ddE vs parent, per (substituent, site)",
-    noise_floor: float | None = None,
+    noise_floor: float | dict[tuple[str, str], float] | None = None,
 ):
     """ddE for every (substituent, SITE) pair, as a grid.
 
@@ -349,6 +378,19 @@ def site_substituent_heatmap(
     n=100) against substituent effects of 1-2, so essentially every cell should
     grey out -- which is the honest picture, and exactly why the parameter
     exists rather than being left to a caption nobody reads.
+
+    **It also accepts a PER-CELL mapping** `{(substituent, site): floor}`,
+    because a floor is not always one campaign-wide number. A PAIRED estimator
+    (RESULTS.md M17) cancels pose-conformational noise only to the extent the
+    two molecules share it, so its floor tracks rho and varies per candidate:
+    MEASURED 0.221 kcal/mol at rho 0.860 (F) against 0.615 at rho 0.399 (Cl),
+    a factor of 2.8 across two substituents on ONE scaffold. Collapsing that to
+    a scalar either greys cells that are genuinely resolved or passes cells that
+    are not, and both errors read as a finished measurement.
+
+    A cell with no entry in the mapping is NOT greyed and is counted in the
+    returned figure's caption as unbounded -- an unmeasured floor must not read
+    as a floor of zero.
     """
     if not ddE:
         raise ValueError("nothing to plot")
@@ -396,7 +438,8 @@ def site_substituent_heatmap(
                 )
                 continue
             v = grid[i, j]
-            below = noise_floor is not None and abs(v) < noise_floor
+            cell_floor = _floor_for(noise_floor, subs[i], sites[j])
+            below = cell_floor is not None and abs(v) < cell_floor
             ax.text(
                 j,
                 i,
@@ -418,11 +461,7 @@ def site_substituent_heatmap(
     ax.set_ylabel("substituent")
     ax.set_title(title)
     cb = fig.colorbar(im, ax=ax)
-    cb.set_label(
-        f"ddE ({unit})"
-        if noise_floor is None
-        else f"ddE ({unit}) -- |ddE| < {noise_floor:g} is BELOW THE NOISE FLOOR (greyed)"
-    )
+    cb.set_label(_floor_label(noise_floor, unit))
     fig.tight_layout()
     return fig
 
