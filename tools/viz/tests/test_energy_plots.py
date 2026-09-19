@@ -22,6 +22,7 @@ from tools.viz.energy_plots import (
     imaginary_mode,
     liability_profile,
     pose_ensemble,
+    reaction_path,
     site_substituent_heatmap,
     tier_comparison,
 )
@@ -561,3 +562,109 @@ def test_pose_ensemble_does_not_duplicate_legend_entries():
     )
     texts = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
     assert len(texts) == len(set(texts)), f"duplicated legend entries: {texts}"
+
+
+def test_reaction_path_marks_an_unconverged_branch_differently():
+    """An IRC branch that exhausted its budget must NOT look like a basin.
+
+    `IrcBranch.converged is False` means the walk stopped where the step budget
+    ran out, not at a minimum. The barrier computed against that endpoint is a
+    lower bound at best, and the endpoint identifies nothing.
+
+    This is the failure the plot exists to prevent, because a figure is what
+    gets pasted into a slide and read without its caveats. An unconverged
+    endpoint gets an OPEN marker, a dashed connector, an explicit annotation,
+    and the title says so.
+
+    Asserted on the ARTISTS, not on pixels: `mfc == 'none'` is the open marker,
+    and the dashed linestyle is on the connector. A test comparing rendered
+    images could not distinguish these.
+    """
+    fig = reaction_path(
+        saddle_energy=-55.437,
+        forward_energy=-55.455,
+        reverse_energy=-55.455,
+        forward_converged=True,
+        reverse_converged=False,
+    )
+    ax = fig.axes[0]
+
+    assert "did NOT converge" in ax.get_title(), (
+        f"the title must say a branch failed, got {ax.get_title()!r}"
+    )
+    assert "reverse" in ax.get_title()
+
+    # Exactly one open marker, for the one unconverged endpoint.
+    open_markers = [
+        ln
+        for ln in ax.lines
+        if ln.get_marker() == "o" and ln.get_markerfacecolor() == "none"
+    ]
+    assert len(open_markers) == 1, (
+        f"expected exactly 1 open marker for the unconverged endpoint, got "
+        f"{len(open_markers)}"
+    )
+    # ...and exactly one dashed connector.
+    dashed = [
+        ln for ln in ax.lines if ln.get_linestyle() == "--" and len(ln.get_xdata()) == 2
+    ]
+    assert len(dashed) == 1, f"expected 1 dashed connector, got {len(dashed)}"
+
+    texts = " ".join(t.get_text() for t in ax.texts)
+    assert "NOT converged" in texts
+
+
+def test_reaction_path_draws_a_fully_converged_result_plainly():
+    """THE ANCHOR: with both branches converged, nothing is marked as failed.
+
+    Without this, a plot that drew EVERY endpoint as unconverged would pass the
+    test above.
+    """
+    fig = reaction_path(
+        saddle_energy=-55.437,
+        forward_energy=-55.455,
+        reverse_energy=-55.455,
+        forward_converged=True,
+        reverse_converged=True,
+    )
+    ax = fig.axes[0]
+    assert "NOT" not in ax.get_title(), ax.get_title()
+    assert not [
+        ln
+        for ln in ax.lines
+        if ln.get_marker() == "o" and ln.get_markerfacecolor() == "none"
+    ], "no endpoint should be marked unconverged"
+    assert not [
+        ln for ln in ax.lines if ln.get_linestyle() == "--" and len(ln.get_xdata()) == 2
+    ]
+
+
+def test_reaction_path_states_BOTH_barriers():
+    """An IRC has two, and reporting one invites reading it as the barrier.
+
+    MEASURED on NH3 inversion: both are 11.14 kcal/mol because the minima are
+    mirror images. A real reaction has two different ones, and which is quoted
+    depends on the direction being asked about.
+    """
+    # 0.01776 Ha = 11.14 kcal/mol
+    fig = reaction_path(
+        saddle_energy=-55.43766,
+        forward_energy=-55.45542,
+        reverse_energy=-55.45542,
+        forward_converged=True,
+        reverse_converged=True,
+    )
+    texts = " ".join(t.get_text() for t in fig.axes[0].texts)
+    assert "forward barrier" in texts and "reverse barrier" in texts, texts
+    assert "11.1" in texts, f"expected the measured 11.14 kcal/mol, got: {texts}"
+
+
+def test_reaction_path_refuses_a_non_energy():
+    with pytest.raises(ValueError, match="three real energies"):
+        reaction_path(
+            saddle_energy=float("nan"),
+            forward_energy=-1.0,
+            reverse_energy=-1.0,
+            forward_converged=True,
+            reverse_converged=True,
+        )

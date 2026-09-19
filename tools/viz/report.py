@@ -50,6 +50,10 @@ class CampaignFigures:
     poses: object | None = None
     #: Liability endpoints, oriented so UP is worse.
     liabilities: object | None = None
+    #: The two minima an IRC connects, with BOTH barriers. `None` when no
+    #: reaction path was supplied -- a catalyst campaign has one, a
+    #: substitution campaign does not.
+    reaction: object | None = None
     #: Notes attached to the figure set: what it may and may not be read for.
     caveats: list[str] = field(default_factory=list)
 
@@ -57,7 +61,13 @@ class CampaignFigures:
         """Release every figure. pyplot retains them; a batch leaks otherwise."""
         from tools.viz.energy_plots import close as _close
 
-        for f in (self.funnel, self.heatmap, self.poses, self.liabilities):
+        for f in (
+            self.funnel,
+            self.heatmap,
+            self.poses,
+            self.liabilities,
+            self.reaction,
+        ):
             if f is not None:
                 _close(f)
 
@@ -72,6 +82,7 @@ def campaign_report(
     liabilities: dict[str, dict[str, tuple[float | None, bool]]] | None = None,
     parent: str | None = None,
     unit: str = "kcal/mol",
+    irc: dict | None = None,
 ) -> CampaignFigures:
     """Build the figure set for one campaign.
 
@@ -88,6 +99,7 @@ def campaign_report(
         funnel_survival,
         liability_profile,
         pose_ensemble,
+        reaction_path,
         site_substituent_heatmap,
     )
 
@@ -123,9 +135,11 @@ def campaign_report(
             liabilities=liabilities,
             parent=parent,
             unit=unit,
+            irc=irc,
             funnel_survival=funnel_survival,
             liability_profile=liability_profile,
             pose_ensemble=pose_ensemble,
+            reaction_path=reaction_path,
             site_substituent_heatmap=site_substituent_heatmap,
         )
     except Exception:
@@ -153,9 +167,11 @@ def _build(
     liabilities,
     parent,
     unit: str,
+    irc,
     funnel_survival,
     liability_profile,
     pose_ensemble,
+    reaction_path,
     site_substituent_heatmap,
 ) -> None:
     """Fill `figs` and `caveats`. Split out only so the caller can clean up."""
@@ -218,6 +234,21 @@ def _build(
                     "it is optimistic for THESE poses (per-pose sd "
                     f"{sd_max:.1f} {unit})."
                 )
+
+    if irc:
+        figs.reaction = reaction_path(unit=unit, **irc)
+        if not (irc.get("forward_converged") and irc.get("reverse_converged")):
+            caveats.append(
+                "An IRC branch did NOT converge: it stopped where its step "
+                "budget ran out, not at a basin. That endpoint identifies no "
+                "minimum, and the barrier against it is a lower bound."
+            )
+        else:
+            caveats.append(
+                "A converged IRC branch means the walk reached a FLAT REGION, "
+                "not that the endpoint is a minimum -- confirming that needs a "
+                "Hessian there (another 6N+1 gradients per side)."
+            )
 
     if liabilities:
         figs.liabilities = liability_profile(liabilities, parent=parent)

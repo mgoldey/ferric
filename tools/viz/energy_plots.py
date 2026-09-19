@@ -39,6 +39,7 @@ __all__ = [
     "SeriesPoint",
     "funnel_survival",
     "energy_profile",
+    "reaction_path",
     "tier_comparison",
     "site_substituent_heatmap",
     "pose_ensemble",
@@ -632,6 +633,146 @@ def liability_profile(
     )
     ax.grid(axis="y", alpha=0.3)
     ax.legend(frameon=False, fontsize=9)
+    fig.tight_layout()
+    return fig
+
+
+def reaction_path(
+    *,
+    saddle_energy: float,
+    forward_energy: float,
+    reverse_energy: float,
+    forward_converged: bool,
+    reverse_converged: bool,
+    unit: str = "hartree",
+    labels: tuple[str, str, str] = ("reverse endpoint", "TS", "forward endpoint"),
+    title: str = "Reaction path (IRC)",
+):
+    """An IRC result: the two endpoints a saddle connects, and both barriers.
+
+    `energy_profile` plots an ordered sequence and is the wrong shape for this.
+    An IRC is not a path from A to B -- it is a saddle with TWO downhill
+    branches, and the quantity a reader wants is the barrier in EACH direction.
+    Feeding it as three ordered points hides that the middle one is the origin
+    of both walks, not a waypoint between them.
+
+    ## Why the convergence flags are required arguments
+
+    `IrcBranch.converged` is `False` when the walk exhausted its step budget
+    instead of reaching a basin. That branch identifies NO minimum: its
+    endpoint is wherever the walk stopped, and the barrier computed against it
+    is a lower bound at best.
+
+    Drawing that identically to a converged branch is the failure this plot has
+    to avoid, because the figure is what gets pasted into a slide. An
+    unconverged endpoint is drawn with an OPEN marker, a dashed connector and
+    an explicit annotation, and the title says so.
+
+    ## What it does NOT claim
+
+    That either endpoint is a stationary point. The IRC stops on a gradient
+    threshold; confirming a minimum needs a Hessian there. A converged branch
+    means "this walk reached a flat region", not "this is a minimum".
+    """
+    plt = _plt()
+    e = _to_kcal([reverse_energy, saddle_energy, forward_energy], unit)
+    rev_e, sad_e, fwd_e = e[0], e[1], e[2]
+    # FINITE, not merely non-None. A NaN is the realistic case -- it is what an
+    # unconverged SCF hands back -- and it would plot as a silently missing
+    # point with the axis auto-scaled around the other two, which looks like a
+    # deliberate omission rather than a failure.
+    vals = {"reverse": rev_e, "saddle": sad_e, "forward": fwd_e}
+    bad = [
+        k
+        for k, v in vals.items()
+        if v is None or v != v or v in (float("inf"), float("-inf"))
+    ]
+    if bad:
+        raise ValueError(
+            f"reaction_path needs three real energies; {', '.join(bad)} "
+            f"is not finite ({vals}). A non-finite energy is a failed "
+            "calculation, not a point on a path."
+        )
+    # Relative to the LOWER endpoint, which is the conventional zero and makes
+    # both barriers read directly off the y axis.
+    zero = min(rev_e, fwd_e)
+    ys = [rev_e - zero, sad_e - zero, fwd_e - zero]
+    xs = [0.0, 1.0, 2.0]
+
+    fig, ax = plt.subplots(figsize=(6.4, 4.4))
+    # Connectors: dashed to an endpoint whose walk did not converge.
+    for (x0, x1), ok in (
+        ((0.0, 1.0), reverse_converged),
+        ((1.0, 2.0), forward_converged),
+    ):
+        i0, i1 = (0, 1) if x0 == 0.0 else (1, 2)
+        ax.plot(
+            [x0, x1],
+            [ys[i0], ys[i1]],
+            "-" if ok else "--",
+            color="#4c72b0" if ok else "#999999",
+            lw=2.0,
+        )
+    for k, (x, y) in enumerate(zip(xs, ys)):
+        ok = True if k == 1 else (reverse_converged if k == 0 else forward_converged)
+        ax.plot(
+            x,
+            y,
+            "o" if ok else "o",
+            ms=11,
+            mfc="#4c72b0" if ok else "none",
+            mec="#4c72b0" if ok else "#c44e52",
+            mew=2.0,
+        )
+        ax.annotate(
+            f"{y:.2f}",
+            xy=(x, y),
+            xytext=(0, 12),
+            textcoords="offset points",
+            ha="center",
+            fontsize=9,
+        )
+        if not ok:
+            ax.annotate(
+                "NOT converged\n(no basin reached)",
+                xy=(x, y),
+                xytext=(0, -30),
+                textcoords="offset points",
+                ha="center",
+                fontsize=8,
+                color="#c44e52",
+            )
+
+    # Both barriers, stated rather than left to be measured off the axis.
+    ax.annotate(
+        f"reverse barrier {ys[1] - ys[0]:.2f}",
+        xy=(0.5, (ys[0] + ys[1]) / 2),
+        ha="center",
+        fontsize=9,
+        color="#555555",
+    )
+    ax.annotate(
+        f"forward barrier {ys[1] - ys[2]:.2f}",
+        xy=(1.5, (ys[1] + ys[2]) / 2),
+        ha="center",
+        fontsize=9,
+        color="#555555",
+    )
+
+    ax.set_xticks(xs)
+    ax.set_xticklabels(list(labels), fontsize=9)
+    ax.set_ylabel("energy (kcal/mol)")
+    unconverged = [
+        n
+        for n, ok in (("reverse", reverse_converged), ("forward", forward_converged))
+        if not ok
+    ]
+    ax.set_title(
+        title
+        if not unconverged
+        else f"{title}  ({' and '.join(unconverged)} did NOT converge)"
+    )
+    ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
     return fig
 

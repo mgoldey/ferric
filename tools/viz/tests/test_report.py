@@ -206,3 +206,62 @@ def test_half_a_funnel_is_rejected_rather_than_silently_dropped():
     figs = campaign_report(ddE_noise=1.0)
     assert figs.funnel is None
     figs.close()
+
+
+def test_the_report_carries_the_reaction_path_and_its_caveat():
+    """A catalyst campaign's IRC belongs in the one entry point, with caveats.
+
+    `campaign_report` exists so the ten plotting functions have an obvious
+    front door and so the caveats travel with the figures. A reaction path
+    added to `energy_plots` but not reachable here would be a plot nobody
+    finds -- the same inert-capability failure this repo has hit repeatedly.
+
+    Both caveats are asserted, because they say OPPOSITE things and the wrong
+    one is worse than none:
+
+      * unconverged -> the endpoint identifies no minimum at all
+      * converged   -> the walk reached a flat region, which is still NOT a
+                       proof of a minimum (that needs a Hessian there)
+    """
+    unconverged = campaign_report(
+        ddE_noise=4.07,
+        irc=dict(
+            saddle_energy=-55.4377,
+            forward_energy=-55.4554,
+            reverse_energy=-55.4554,
+            forward_converged=True,
+            reverse_converged=False,
+        ),
+    )
+    assert unconverged.reaction is not None
+    assert any("did NOT converge" in c for c in unconverged.caveats), (
+        f"an unconverged branch must be flagged, got {unconverged.caveats}"
+    )
+    assert any("lower bound" in c for c in unconverged.caveats)
+    unconverged.close()
+
+    converged = campaign_report(
+        ddE_noise=4.07,
+        irc=dict(
+            saddle_energy=-55.4377,
+            forward_energy=-55.4554,
+            reverse_energy=-55.4554,
+            forward_converged=True,
+            reverse_converged=True,
+        ),
+    )
+    assert converged.reaction is not None
+    assert not any("did NOT converge" in c for c in converged.caveats)
+    assert any("FLAT REGION" in c for c in converged.caveats), (
+        "even a converged IRC must not be read as proving a minimum; "
+        f"got {converged.caveats}"
+    )
+    converged.close()
+
+    # No IRC supplied -> no figure and no reaction caveat. A substitution
+    # campaign has no reaction path, and an empty figure would read as
+    # "measured and found nothing".
+    plain = campaign_report(ddE_noise=4.07)
+    assert plain.reaction is None
+    assert not any("IRC" in c for c in plain.caveats)
+    plain.close()
