@@ -218,6 +218,68 @@ timings. So:
   freedom and will take more. Treat 34 as a FLOOR for the step count, not a
   typical value -- one geometry is not a distribution.
 
+### The CHEAP stages, measured at last (2026-09-19)
+
+The cost table covered the quantum tiers and said nothing about the four stages
+that run before them -- enumeration, descriptors, embedding, toxicology -- even
+though those are what a substitution campaign spends its first hour on. All
+MEASURED on danuglipron (73 proposals from 8 substituent groups), min of 3-5
+reps, single-threaded:
+
+| stage | cost | notes |
+|---|---|---|
+| enumerate (`propose_substitutions`) | **2.8 ms** / proposal | 207 ms for all 73 |
+| relative descriptors | **1.7 ms** / proposal | the P2 gate |
+| embed (`embed_proposals`, ETKDG+MMFF) | **214 ms** / proposal | ~75x the other two combined |
+| toxicology alerts (`RdkitAlertsProvider.fetch`) | **9.4 ms** / molecule | 13 endpoints |
+| tox catalog construction | **47 ms**, ONE-OFF | build the provider once |
+
+**What this changes about where to worry.** For 1000 analogues the whole cheap
+half is `1000 x (2.8 + 1.7 + 214 + 9.4) ms` = **~3.8 minutes**, of which
+embedding is 94%. Everything upstream of docking is free at campaign scale; the
+only cheap-tier stage worth optimizing is the ETKDG embed, and only if the
+campaign is much larger than 1000.
+
+**A docstring correction.** `RdkitAlertsProvider`'s own comment says
+per-molecule construction "dominates the runtime of a batch". MEASURED the
+ratio is **5x** (47 ms build vs 9.4 ms/molecule), so constructing per molecule
+would cost 6x a batch, not orders of magnitude. Building it once is still
+right; the stated reason overstates the effect.
+
+### End to end: DOCKING dominates a substitution campaign, not DFT (2026-09-19)
+
+Composing the measured per-stage numbers over a 10x-per-tier funnel
+(all -> 10% docked -> 10% xtb -> 1% DFT), single-threaded:
+
+| N analogues | cheap half | dock | xtb | DFT | total |
+|---|---|---|---|---|---|
+| 100 | 0.4 min | 0.6 h | 0.0 h | 0.2 h | **0.8 h** |
+| 1000 | 3.8 min | 5.6 h | 0.3 h | 1.7 h | **7.6 h** |
+
+Shares are scale-invariant at this funnel ratio: **cheap 0.8%, dock 73%,
+xtb 4%, DFT 22%**.
+
+**That inverts the intuition this pipeline was designed around.** DFT is the
+most expensive thing PER CALL by five orders of magnitude (6e+2 s vs 1e-5 s),
+and it is still only 22% of the campaign, because the funnel has already cut
+the population 100x by the time it runs. Docking is 73% -- it is cheap per pose
+and runs on EVERYTHING, 20 poses each.
+
+This is the same conclusion M11 reached from the other direction ("the funnel
+spent 2.6x more than it needed to", and the fix was tier-1 effort and fan-out,
+not tier 4). Two independent routes to "tier 1 is the budget" is worth more
+than either alone.
+
+**Practical consequence.** The lever is `exhaustiveness` and worker fan-out at
+tier 1, both already measured (M11: ex=4 matches ex=32's accuracy at a quarter
+the cost; 10 workers x cpu=1 gives 6.2x). Optimizing the DFT tier -- the
+instinctive target -- can win at most 22%.
+
+ESTIMATED, with the inputs labelled: the per-stage costs are MEASURED (above,
+and the hierarchy table), the funnel RATIOS are a design choice, and the DFT
+600 s is a 71-atom single point from a different system. Change the ratios and
+the shares move; the ordering is robust to anything reasonable.
+
 ### Transition-state search costs 2 Hessians + n_steps (MEASURED, 2026-09-19)
 
 New entry: until `ferric_scf::saddle` landed there was no saddle search to
