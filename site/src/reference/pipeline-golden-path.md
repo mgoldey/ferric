@@ -307,11 +307,27 @@ well as size, and in the unhelpful direction: the BIGGER system used the
 SMALLER basis. Fitting them gives p = 2.32, which UNDERSTATES pure N-scaling
 because part of the size increase was paid for by a cheaper basis.
 
-For comparison, an N-sweep at FIXED basis (RHF/STO-3G, alkanes, 2026-09-19)
-gives a tail exponent of **2.58**. The two agree within ~0.3, which is
-reassuring about both, but only the fixed-basis number is a scaling
-measurement. Quote 2.58 with its own caveat (three points, indicative) and
-treat the two rows above as two independent COST POINTS, not as a trend.
+**Measured directly, and the confound turns out to be small.** A DFT N-sweep at
+FIXED basis (PBE/STO-3G, alkanes C2-C4, 2026-09-19) gives a tail exponent of
+**2.32** -- exactly what the confounded pair gives. Two independent routes to
+the same number:
+
+| route | exponent | fixed basis? |
+|---|---|---|
+| the two rows above | 2.32 | NO (def2-SVP vs STO-3G) |
+| PBE/STO-3G N-sweep (this) | **2.32** | yes |
+| RHF/STO-3G N-sweep | 2.58 | yes |
+
+So p ~ 2.3-2.6 is the honest band, and the basis confound moves the answer less
+than the RHF-vs-DFT difference does. **Still quote the fixed-basis numbers**,
+because the agreement is what makes the confounded pair usable rather than the
+other way round -- and note all three are 2-3 point tail fits, which is
+indicative, not decisive.
+
+One measurement artifact worth naming: C1 came in at 5.30 s against C2's 0.37 s
+-- a first-call warm-up (basis parse, grid construction), not chemistry.
+Tail-fitting excludes it automatically, which is the reason the repo's protocol
+says to fit the tail rather than the whole series.
 
 ### ESTIMATED (reasoning stated, do not quote as measured)
 
