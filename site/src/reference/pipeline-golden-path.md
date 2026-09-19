@@ -793,9 +793,27 @@ That ratio, not the algorithm, is what sizes a catalyst job now.
 - **No reaction-coordinate constraint / relaxed scan.** `MoveMm` freezes whole
   MM atoms and QM atoms are always free (`free_atom_indices`, `qmmm.rs:1815`),
   so there is still no constrained-scan route to a starting guess.
-- **Not wired to QM/MM.** `find_saddle` takes energy/gradient/Hessian closures,
-  so pointing it at `optimize_qmmm`'s evaluator is a wiring task -- but it is a
-  task, not done.
+- ~~**Not wired to QM/MM.**~~ **DONE 2026-09-19**, and it needed less than
+  expected. `crates/ferric-scf/examples/qmmm_saddle.rs` runs the whole chain on
+  an embedded system: SCF -> analytic embedded gradient -> finite-difference
+  embedded Hessian -> projection -> saddle step.
+
+  The part I expected to block it did not: **a QM/MM Hessian needs no new
+  machinery.** `frequencies::harmonic_frequencies` already threads
+  `config.external_potential` into the same `rhf_gradient(.., ext)` /
+  `ks_gradient_closed(.., ext)` calls (`frequencies.rs:649`), so an embedded
+  Hessian is one ordinary call.
+
+  Three limitations remain, and they are why this ships as an EXAMPLE rather
+  than a library entry point:
+  - **MM charges are FIXED** (`to_external_potential()` evaluated once). A
+    barrier computed this way omits MM relaxation along the reaction
+    coordinate. `optimize_qmmm` rebuilds the field per step
+    (`qmmm.rs:2066`) precisely because that matters when MM atoms are free.
+  - **Link atoms do not track the frontier** as the QM region distorts.
+    `optimize_qmmm` shares this.
+  - Making it a library function means extracting `optimize_qmmm`'s 172-line
+    inline evaluator closure -- a refactor with its own risk, and its own PR.
 - **Cartesian only.** Internal-coordinate P-RFO converges in fewer steps on
   floppy systems.
 - **The mode is not checked for being the RIGHT one.** Exactly one imaginary
@@ -825,12 +843,12 @@ That ratio, not the algorithm, is what sizes a catalyst job now.
 **UPDATED 2026-09-19.** Item 0 is new and is now the top of the list, because
 the capability it wires up did not exist when this list was written.
 
-0. **Wire `saddle::find_saddle` to the QM/MM evaluator.** It takes
-   energy/gradient/Hessian closures, and `optimize_qmmm` already has an
-   evaluator with the right shape. This is the step that turns "ferric has a
-   saddle search" into "the catalyst workflow can run", and it is wiring, not
-   new physics. Do it before anything else on this list: items 1-9 all serve a
-   pipeline whose last stage now exists.
+0. ~~**Wire `saddle::find_saddle` to the QM/MM evaluator.**~~ **DONE
+   2026-09-19** -- `examples/qmmm_saddle.rs`, verified running end to end on an
+   embedded system. The catalyst workflow can now run. What remains is
+   promoting it from an example to a library entry point (needs
+   `optimize_qmmm`'s evaluator extracted) and lifting the fixed-MM-field
+   approximation; see section 4.
 
 1. **Harvest the docked pose** into `context["geometry"]` in `run_funnel`'s
    stage loop (section 0). Highest value, smallest change, independent of
