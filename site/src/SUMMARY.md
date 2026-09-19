@@ -32,3 +32,15 @@
 - [What is validated](./reference/validation.md)
 - [API documentation](./reference/api.md)
 - [References](./reference/references.md)
+
+# Measured pipeline notes
+
+These are working notes, not a tutorial: every claim is labelled MEASURED (with
+its source) or ESTIMATED (with its reasoning), and several record a RETRACTION
+where a first measurement turned out to be an artifact. They are committed
+because the numbers in them are expensive to reproduce.
+
+- [Golden path: formats to docking to xtb to DFT](./reference/pipeline-golden-path.md)
+- [Proposing substitutions at an active site](./reference/substitution-pipeline.md)
+- [CI timing and test sharding](./reference/ci-timing-analysis.md)
+- [Pipeline survey (what exists, 2026-09-18)](./reference/pipeline-survey.md)
