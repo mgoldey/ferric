@@ -24,7 +24,7 @@
 //! analytic gradient: **6N gradient evaluations** (MEASURED via the gradient
 //! counter: H2 = 12, water = 18 -- exactly 6N, not 6N+1).
 //!
-//! That cost is why [`SaddleConfig::hessian_recalc_every`] exists and defaults
+//! That cost is why [`crate::saddle::SaddleConfig::hessian_recalc_every`] exists and defaults
 //! to 0 (never recompute). Rebuilding the Hessian at every step would make a
 //! 10-atom search cost 60 gradients per step, which is not a search, it is a
 //! Hessian benchmark. Between recomputations the Hessian is carried forward by
@@ -40,15 +40,15 @@
 //!   transition state. It errors instead, naming the smallest eigenvalue.
 //! * **It will not call a stationary point converged on the gradient alone.**
 //!   A converged saddle must have EXACTLY ONE imaginary frequency.
-//!   [`SaddleResult::n_imaginary`] carries the count from a final Hessian and
-//!   [`SaddleResult::is_transition_state`] requires it to be 1. Zero means a
+//!   [`crate::saddle::SaddleResult::n_imaginary`] carries the count from a final Hessian and
+//!   [`crate::saddle::SaddleResult::is_transition_state`] requires it to be 1. Zero means a
 //!   minimum, two or more means a higher-order saddle; neither is a transition
 //!   state, and both otherwise satisfy `|g| -> 0`.
 //! * **It does not verify the mode is the RIGHT one.** Exactly one imaginary
 //!   frequency says first-order saddle, not "saddle for the reaction you
 //!   meant". Checking that the imaginary mode points along the intended
 //!   reaction coordinate needs `normal_modes` and chemical judgement; the
-//!   vector is returned in [`SaddleResult::imaginary_mode`] so a caller can do
+//!   vector is returned in [`crate::saddle::SaddleResult::imaginary_mode`] so a caller can do
 //!   it, and this module does not pretend to.
 //!
 //! # Scope
