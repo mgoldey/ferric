@@ -24,6 +24,13 @@ fn main() {
             .unwrap_or_else(|| "/tmp/ferric-overhead.jsonl".to_string()),
     );
     let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10_000);
+    // n = 0 makes the per-record figures 0/0 = NaN and the bytes-per-record
+    // line an INTEGER division by zero, which panics. Refuse up front: a
+    // benchmark over no records is a mistake, not a measurement of zero.
+    if n == 0 {
+        eprintln!("error: record count must be > 0 (got 0); there is nothing to time");
+        std::process::exit(1);
+    }
 
     // --- baseline: the call with NO sink installed (what a library caller,
     // and any run with `--no-json`, pays). This is the cost of the

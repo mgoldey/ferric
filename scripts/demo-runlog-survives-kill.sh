@@ -65,8 +65,25 @@ for _ in $(seq 1 600); do
   N=$(grep -c '"record":"scf_iter"' "$LOG" 2>/dev/null)
   N=${N:-0}
   if [ "$N" -ge 8 ] 2>/dev/null; then break; fi
+  # The CHILD may have exited on its own -- a failed run, a bad config. Without
+  # this the loop spins out its 600 iterations and the demo then reports a
+  # "durability" result for a process nobody killed.
+  if ! kill -0 "$PID" 2>/dev/null; then
+    echo "ERROR: ferric exited on its own after $N logged iterations, before the" >&2
+    echo "       kill. There is no SIGKILL durability to demonstrate here." >&2
+    exit 1
+  fi
   sleep 0.5
 done
+# Reaching 8 is the PRECONDITION for the claim below, not a nicety: killing a
+# run that had logged nothing proves only that an empty file survives.
+if [ "$N" -lt 8 ]; then
+  echo "ERROR: only $N SCF iterations were logged within the 300 s budget" >&2
+  echo "       (need 8). The run is too slow or stuck; killing it now would" >&2
+  echo "       demonstrate nothing about mid-stream durability." >&2
+  kill -9 "$PID" 2>/dev/null
+  exit 1
+fi
 echo "SCF iterations logged before the kill: $N"
 kill -9 "$PID" 2>/dev/null
 wait "$PID" 2>/dev/null
