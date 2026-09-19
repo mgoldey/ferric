@@ -1357,7 +1357,10 @@ computes ddE over INDEPENDENTLY embedded ensembles, which is an UNPAIRED design
 over noise that is largely COMMON to the two molecules (the scatter is
 pose-conformational; a substitution changes a few atoms and leaves ~68 in
 place). Pairing pose k of the analogue to pose k of the parent gives
-`var = 2*sd^2*(1-rho)`.
+`var = sd_A^2 + sd_B^2 - 2*rho*sd_A*sd_B`, which is the familiar
+`2*sd^2*(1-rho)` only when the two spreads are EQUAL (they are, here, to within
+a few percent). The reported variance reduction is MEASURED as the ratio of the
+two SEMs on the same data, so it does not rest on that assumption.
 
 MEASURED gas-phase MMFF only, no pocket -- and a pocket is exactly what could
 destroy the rho the method depends on, since a substituent may change the
@@ -1633,10 +1636,20 @@ dominate at SMALL N and the HESSIAN dominates as the region grows:
 | 20 | **121** | steps 14% | steps 33% |
 | 30 | **181** | steps 10% | steps 25% |
 
-Crossover is `6N+1 = n_steps`, i.e. **N = (n_steps-1)/6** -- N ~ 3 for a
-20-step search, N ~ 10 for a 60-step one. Past that the single Hessian is the
-larger half and keeps growing, which is why `hessian_recalc_every` defaults to 0
-and why the QM REGION SIZE, not the step count, is what sizes a catalyst job.
+Two crossovers, and the one that matters is the SMALLER:
+
+* **Per-Hessian** (`6N+1 = n_steps`): **N = (n_steps-1)/6** -- N ~ 3 at 20
+  steps, N ~ 10 at 60. This is the table above, and it compares ONE Hessian
+  against the steps.
+* **Full job** (`2*(6N+1) = n_steps+1`): **N = (n_steps-1)/12** -- N ~ 1.6 at
+  20 steps, N ~ 4.9 at 60. A complete search builds TWO Hessians (one to start,
+  one at the converged geometry to confirm exactly one imaginary frequency), so
+  this is the number to budget from.
+
+Either way the conclusion is the same and the full-job form makes it stronger:
+past a handful of atoms the Hessians are the larger half and keep growing, which
+is why `hessian_recalc_every` defaults to 0 and why the QM REGION SIZE, not the
+step count, is what sizes a catalyst job.
 The two exponents compound with the per-gradient cost (see "how to size the QM
 region" above): N^2.63 atoms in a radius, N^2.3 DFT cost each.
 
