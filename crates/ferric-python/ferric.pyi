@@ -402,7 +402,6 @@ class OptimizeResult:
         """
         ...
 
-
 class FrequencyResult:
     """Result of a harmonic vibrational frequency calculation."""
 
