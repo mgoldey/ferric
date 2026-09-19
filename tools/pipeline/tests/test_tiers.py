@@ -399,6 +399,7 @@ def test_tier4_flags_that_dispersion_covers_only_the_QM_region():
     )
     assert covers_qm_only(None, None) is False
 
+
 def test_a_nan_resolution_is_refused_because_it_suppresses_every_ranking():
     """NaN is the dangerous one, and it fails in the CAUTIOUS-looking direction.
 
