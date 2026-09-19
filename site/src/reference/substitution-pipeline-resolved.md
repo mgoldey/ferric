@@ -188,7 +188,24 @@ from this would be reporting noise.
   route is one that is pose-averaged BY CONSTRUCTION (FEP, or an ML affinity
   model trained on ensembles), which is outside this campaign.
 * **`funnel.py` cannot express an ensemble** (`funnel.py:162`, one row per
-  candidate), and with averaging restored it needs to.
+  candidate). Whether that is worth fixing depends on the resolution you want,
+  and the answer is measured (sd = 33.06 from M14's 19 docked poses):
+
+  | poses averaged | ddE noise | vs the 0.25 kcal/mol gap |
+  |---|---|---|
+  | 1 | 46.75 | 187x |
+  | 15 | 12.07 | 48x |
+  | 100 | 4.68 | 19x |
+  | 1000 | 1.48 | 6x |
+
+  A 2-sigma resolution of 0.25 kcal/mol needs **~140,000 poses per candidate**.
+
+  So ensemble support is NOT the blocker it was listed as for lead
+  optimisation -- no reachable n gets there. It IS worth building if the
+  question is coarse: separating a 15 kcal/mol control from the parent needs
+  only a handful of poses, and that is the gate the campaign actually failed
+  at n=1 (v1's selection-bias artifact). **Build it for gates, not for
+  rankings**, and size n from this table rather than from intuition.
 * **Tier 4 unvalidated** -- M10 recorded it does not fit the funnel as
   configured. Dispersion (#99) not yet merged.
 * **No ranking validated end to end**, and there is no held-out set with known
