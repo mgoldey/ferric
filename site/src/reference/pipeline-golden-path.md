@@ -141,6 +141,37 @@ Rust `Molecule` has only `load_xyz` / `load_xyz_with_charge` / `parse_xyz`
 `Molecule.from_xyz_string`, so a PDB and an XYZ of the same geometry give
 bit-identical Bohr coordinates rather than drifting through two parsers.
 
+### What each entry path COSTS (MEASURED 2026-09-19)
+
+The format table above says what can enter; these say what it costs. Min of
+1-3 reps, single-threaded, on this box:
+
+| entry path | cost | notes |
+|---|---|---|
+| xyz -> `Molecule` (71 atoms) | **0.3 ms** | the native path; free |
+| SMILES -> 3-D (`from_smiles`, ETKDG+MMFF) | **8.5 ms** | per molecule |
+| PDB -> `PocketCharges` (`derive_pocket_charges`, 7LCJ pocket) | **2.66 s** | 6458 charges, pdb2pqr30 |
+
+Four orders of magnitude separate them, and the ordering is the point: **the
+PDB path is ~300x the SMILES path and ~9000x an xyz read.** It is also a
+ONE-OFF per target -- `PocketCharges` is derived once and reused across the
+whole ensemble (that is the reason the type exists), so 2.66 s amortises to
+nothing over a 1000-analogue campaign and is a real cost for a one-molecule
+run.
+
+Note `from_smiles` at 8.5 ms here vs 214 ms/proposal for `embed_proposals` in
+the cheap-stage table: same ETKDG machinery, ~25x apart, because a drug-sized
+analogue is far harder to embed than the small test molecule timed here. Quote
+the 214 ms for campaign planning.
+
+**A refusal worth knowing about before you hit it.** `read_structure` REJECTS a
+crystal PDB with `StructureError: ... no hydrogens`. That is correct -- a PDB
+from the PDB has no hydrogens, and silently treating it as a QM molecule would
+hand the solver a species that does not exist. A receptor goes through
+`derive_pocket_charges` (which runs pdb2pqr and protonates), not through
+`read_structure`. The error names the problem, but the two paths are easy to
+confuse on first use.
+
 **Unit hazard, worth stating once:** Python geometry entry is Angstrom;
 `point_charges` and `QmmmSystem.point_charges()` are BOHR; `PocketCharges`
 holds Bohr. Mixing them is a silent 1.89x error, not a crash.
