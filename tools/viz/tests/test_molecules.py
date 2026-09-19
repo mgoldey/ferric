@@ -199,3 +199,33 @@ def test_a_nonpositive_cutoff_is_rejected():
     for bad in (0.0, -1.0):
         with pytest.raises(ValueError, match="cutoff_angstrom"):
             contact_map("CCO", coords, [(0.0, 0.0, 0.0)], cutoff_angstrom=bad)
+
+
+def test_contacting_atom_indices_refuses_a_nonpositive_cutoff():
+    """A negative cutoff must ERROR, not silently act as its absolute value.
+
+    The comparison is against `cutoff**2`, so `-4.0` squares to the same 16.0
+    as `+4.0` and returns identical contacts. MEASURED before the fix:
+    `contacting_atom_indices(coords, pocket, -4.0)` returned `[0]`, exactly
+    what `+4.0` returns.
+
+    `contact_map` validated its own cutoff, but this helper is PUBLIC -- it was
+    made public precisely so the contact logic could be asserted without going
+    through a rendered image -- so it has to validate its own input rather than
+    assume a particular caller.
+    """
+    coords = [(0.0, 0.0, 0.0), (10.0, 0.0, 0.0)]
+    pocket = [(0.5, 0.0, 0.0)]
+
+    # The anchor: a positive cutoff still works, so the test is about the SIGN.
+    assert contacting_atom_indices(coords, pocket, 4.0) == [0]
+
+    for bad in (-4.0, 0.0, -1e-9):
+        with pytest.raises(ValueError, match="positive"):
+            contacting_atom_indices(coords, pocket, bad)
+
+
+def test_contacting_atom_indices_refuses_an_empty_pocket():
+    """Zero contacts against zero pocket atoms is a claim, not an absence."""
+    with pytest.raises(ValueError, match="empty"):
+        contacting_atom_indices([(0.0, 0.0, 0.0)], [], 4.0)
