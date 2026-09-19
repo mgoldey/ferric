@@ -354,6 +354,37 @@ timings. So:
   freedom and will take more. Treat 34 as a FLOOR for the step count, not a
   typical value -- one geometry is not a distribution.
 
+### The xtb -> DFT ratio is ~200x at drug scale, not 1000x (MEASURED 2026-09-19)
+
+"DFT costs ~1000x" appeared twice as a STOP-HERE decision criterion. Measured
+on the SAME molecules (the only comparison that means anything -- the table's
+0.5 s and 96-612 s rows came from different systems), GFN2-xTB relax vs
+PBE/STO-3G single point:
+
+| molecule | N | xtb | DFT | ratio |
+|---|---:|---:|---:|---:|
+| ethane | 8 | 0.024 s | 0.397 s | **16x** |
+| butane | 14 | 0.044 s | 1.374 s | **31x** |
+| hexane | 20 | 0.077 s | 3.619 s | **47x** |
+
+The ratio GROWS with size, as `N^1.17` on the last two points, because DFT
+scales ~N^2.3 while xtb is much flatter. Projecting:
+
+| N | projected ratio |
+|---|---|
+| 32 | 81x |
+| 71 (danuglipron) | **206x** |
+| 100 | 307x |
+| ~274 | 1000x |
+
+So the ~1000x figure is right only above ~270 atoms -- roughly 4x larger than
+anything this pipeline runs. At danuglipron's 71 atoms it overstates by ~5x.
+
+**The decision does not change**: 200x is still a decisive reason to stop at
+tier 3 for a coarse sort. What changes is that the number is now measured, and
+anyone budgeting a campaign from it is out by 5x rather than in the right
+place by luck.
+
 ### The CHEAP stages, measured at last (2026-09-19)
 
 The cost table covered the quantum tiers and said nothing about the four stages
@@ -801,7 +832,8 @@ Decision points are marked. Steps 1-6 are available today; step 7 is blocked
    this, everything below scores a gas-phase conformer.
 5. **Tier 3, xtb.** ~0.5 s. **DECISION: stop here?** If you are rank-ordering
    many ligands and only need a coarse sort, GFN2 is often enough. Going to
-   DFT costs ~1000x per candidate.
+   DFT costs ~200x per candidate at this scale (MEASURED; ~1000x only
+   above ~270 atoms).
 6. **Tier 3.5/4, DFT.** **DECISION: gas phase or embedded?** Gas-phase DFT on
    a docked pose ignores the pocket electrostatics entirely. Use the pocket
    field (`context["point_charges"]`, already consumed at `tiers.py:196` and
@@ -841,7 +873,9 @@ G0. POSE-QUALITY GATE -- before scoring anything.
     cost the danuglipron campaign four measurement rounds.
 G1. Dock (tier 1), then HARVEST the pose into context["geometry"] (section 0).
 G2. Rank with GFN2-xTB in the pocket field (tier 3 + point_charges).
-    DECISION: if you only need a coarse sort, STOP HERE. DFT costs ~1000x.
+    DECISION: if you only need a coarse sort, STOP HERE. DFT costs ~200x at
+    danuglipron scale (MEASURED, see below -- NOT the ~1000x this line used
+    to claim).
 G3. QM region = the ligand. Pocket = MM point charges. No link atoms needed
     when the cut does not cross a covalent bond -- which for a non-covalent
     ligand it does not. This is the case ferric handles cleanly today.
