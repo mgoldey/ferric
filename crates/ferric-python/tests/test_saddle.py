@@ -121,3 +121,75 @@ def test_C4_has_BOTH_halves_from_python():
     assert all(len(m) == 3 * n_atoms for m in fr.normal_modes), (
         f"each mode must have 3N = {3 * n_atoms} Cartesian components"
     )
+
+
+def test_the_catalyst_chain_C0_to_C5_runs_FROM_PYTHON():
+    """C0-C5 end to end, executed rather than inspected for attributes.
+
+    The failure this guards is a step that lands in Rust and never reaches the
+    language `tools/` is written in. It has now happened three times: C3 until
+    `run_saddle` was bound, C4's mode vectors until #97, and C5 (the IRC) until
+    `run_irc` -- each time the chain READ as complete because the capability
+    existed somewhere.
+
+    MEASURED here, NH3 umbrella inversion at STO-3G:
+
+        saddle   converged, n_imaginary = 1, is_transition_state()
+        IRC      -0.4257 / +0.4257 A pyramidalisation, both converged
+        barrier  11.142 kcal/mol, symmetric to 3 decimals
+
+    The symmetry is the load-bearing check. NH3's two pyramidal minima are
+    mirror images, so a walk that went the same way twice -- the most likely
+    direction bug -- gives the same energy but the SAME SIGN, and only the sign
+    test catches it.
+    """
+    import math
+
+    r, a = 1.006, math.radians(120)
+    planar = (
+        f"4\nplanar NH3\nN 0.0 0.0 0.0\nH {r:.6f} 0.0 0.0\n"
+        f"H {r * math.cos(a):.6f} {r * math.sin(a):.6f} 0.0\n"
+        f"H {r * math.cos(2 * a):.6f} {r * math.sin(2 * a):.6f} 0.0\n"
+    )
+    # Start PYRAMIDAL: inside the saddle's basin but not already at it, or the
+    # search would succeed trivially.
+    pyramidal = planar.replace("N 0.0 0.0 0.0", "N 0.0 0.0 0.15")
+
+    sad = ferric.run_saddle(
+        ferric.Molecule.from_xyz_string(pyramidal, 0, 1), "sto-3g", max_steps=60
+    )
+    assert sad.is_transition_state(), (
+        f"C3: converged={sad.converged} n_imaginary={sad.n_imaginary}"
+    )
+    assert sad.imaginary_mode is not None and len(sad.imaginary_mode) == 12
+
+    irc = ferric.run_irc(
+        ferric.Molecule.from_xyz_string(planar, 0, 1),
+        "sto-3g",
+        sad.imaginary_mode,
+        step=0.15,
+        max_steps=120,
+    )
+    assert irc.both_converged(), (
+        f"C5: fwd converged={irc.forward.converged} "
+        f"rev converged={irc.reverse.converged}; an unconverged branch "
+        "identifies no basin"
+    )
+
+    def pyramidalisation(branch):
+        h_mean = sum(c[2] for c in branch.coords[1:]) / 3
+        return branch.coords[0][2] - h_mean
+
+    pf, pr = pyramidalisation(irc.forward), pyramidalisation(irc.reverse)
+    assert pf * pr < 0, (
+        f"the two branches must end on OPPOSITE sides of the H3 plane; got "
+        f"{pf:+.4f} and {pr:+.4f} A. Same sign means both walks went the same "
+        "way, which every energy-based check would miss."
+    )
+    assert abs(pf) > 0.05 and abs(pr) > 0.05
+
+    # Mirror images, so degenerate -- catches a branch that wandered off the
+    # umbrella coordinate.
+    assert abs(irc.forward.energy - irc.reverse.energy) < 1e-6
+    for b in (irc.forward_barrier(), irc.reverse_barrier()):
+        assert b > 0, f"a barrier of {b} Ha means the endpoint is ABOVE the saddle"
