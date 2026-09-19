@@ -39,8 +39,14 @@ fn main() {
         }
         "slow" => {
             assert!(runlog::init(&path), "probe: could not open {path:?}");
-            for i in 0.. {
+            // Deliberately unbounded: the PARENT kills this probe mid-stream
+            // to test a truncated log. `loop` + an explicit counter says that,
+            // where `for i in 0..` reads as an accident (and trips clippy's
+            // unbounded-range lint).
+            let mut i = 0usize;
+            loop {
                 emit_one(i);
+                i += 1;
                 // Slow enough that the parent reliably kills us mid-stream
                 // rather than after we would have finished.
                 std::thread::sleep(std::time::Duration::from_millis(5));
