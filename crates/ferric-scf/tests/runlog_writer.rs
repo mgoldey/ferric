@@ -72,18 +72,30 @@ fn probe_bin() -> PathBuf {
     // A test that can pass or fail because of a file it did not build is not
     // measuring the code. Refuse to run against a probe older than the module
     // it exercises, and say what to do about it.
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runlog.rs");
-    if let (Ok(bin_m), Ok(src_m)) = (p.metadata(), src.metadata()) {
-        if let (Ok(bin_t), Ok(src_t)) = (bin_m.modified(), src_m.modified()) {
+    // BOTH sources, not just the module. The probe is built from
+    // `examples/runlog_probe.rs` AND links `src/runlog.rs`; watching only the
+    // latter means a change to the probe itself leaves a stale binary that
+    // this guard happily accepts, which is the same class of false result the
+    // guard exists to prevent.
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let newest_src = [
+        manifest.join("src/runlog.rs"),
+        manifest.join("examples/runlog_probe.rs"),
+    ]
+    .iter()
+    .filter_map(|q| q.metadata().ok()?.modified().ok())
+    .max();
+    if let (Ok(bin_m), Some(src_t)) = (p.metadata(), newest_src) {
+        if let Ok(bin_t) = bin_m.modified() {
             assert!(
                 bin_t >= src_t,
-                "the probe binary {} is OLDER than {}, so these tests would \
-                 exercise a stale build rather than the current runlog.rs. \
+                "the probe binary {} predates its newest source \
+                 (src/runlog.rs or examples/runlog_probe.rs), so these tests \
+                 would exercise a stale build rather than the current code. \
                  Rebuild it: `cargo build -p ferric-scf --example runlog_probe` \
                  (or run the whole `cargo test -p ferric-scf`, which builds \
                  examples).",
-                p.display(),
-                src.display()
+                p.display()
             );
         }
     }

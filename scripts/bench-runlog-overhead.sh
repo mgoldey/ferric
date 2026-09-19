@@ -86,7 +86,18 @@ bench() { # $1 = label, $2.. = extra ferric args
 
 bench "log OFF" --no-json
 bench "log ON "
-iters=$(grep -c '"record":"scf_iter"' "$OUT/bench.ferric.jsonl" 2>/dev/null || echo '?')
+# `grep -c` prints 0 and EXITS NONZERO when nothing matches, so the old
+# `|| echo '?'` fired on an empty log as well as a missing one -- and the
+# guidance line below then told the reader to divide by '?'. Validate instead
+# of papering over it: a benchmark that cannot count its own iterations has
+# not measured anything.
+iters=$(grep -c '"record":"scf_iter"' "$OUT/bench.ferric.jsonl" 2>/dev/null) || iters=0
+if ! [[ "$iters" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: expected a positive scf_iter count in $OUT/bench.ferric.jsonl, got '$iters'." >&2
+  echo "       The run produced no logged iterations, so Part B cannot be" >&2
+  echo "       divided per iteration and the comparison below is meaningless." >&2
+  exit 1
+fi
 echo "  (water/STO-3G RHF, $iters logged SCF iterations)"
 echo
 echo "Compare Part A's added-per-record against (Part B ms / $iters) per iteration."
