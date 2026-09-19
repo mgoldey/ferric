@@ -449,9 +449,9 @@ The correction STRENGTHENS the conclusion rather than softening it: docking is
 
 **That inverts the intuition this pipeline was designed around.** DFT is the
 most expensive thing PER CALL by five orders of magnitude (6e+2 s vs 1e-5 s),
-and it is still only 22% of the campaign, because the funnel has already cut
-the population 100x by the time it runs. Docking is 73% -- it is cheap per pose
-and runs on EVERYTHING, 20 poses each.
+and it is still only **18%** of the campaign, because the funnel has already cut
+the population 100x by the time it runs. Docking is **79%** -- it is cheap per
+pose and runs on EVERYTHING, 20 poses each.
 
 This is the same conclusion M11 reached from the other direction ("the funnel
 spent 2.6x more than it needed to", and the fix was tier-1 effort and fan-out,
@@ -461,7 +461,7 @@ than either alone.
 **Practical consequence.** The lever is `exhaustiveness` and worker fan-out at
 tier 1, both already measured (M11: ex=4 matches ex=32's accuracy at a quarter
 the cost; 10 workers x cpu=1 gives 6.2x). Optimizing the DFT tier -- the
-instinctive target -- can win at most 22%.
+instinctive target -- can win at most **18%**.
 
 ESTIMATED, with the inputs labelled: the per-stage costs are MEASURED (above,
 and the hierarchy table), the funnel RATIOS are a design choice, and the DFT
