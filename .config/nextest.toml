@@ -1,0 +1,59 @@
+# cargo-nextest configuration.
+#
+# WHY NEXTEST IS HERE. `cargo test` runs test BINARIES serially -- each binary
+# parallelises only its own #[test] fns (rust-lang/cargo#5609). ferric has 317
+# fast-tier binaries and 262 of them finish in under 5 s (MEASURED, CI run
+# 35377097468), so the short ones were executed one at a time with most cores
+# idle. nextest runs binaries concurrently.
+#
+# THE HAZARD THIS FILE EXISTS TO MANAGE. nextest is PROCESS-PER-TEST. The
+# workflow sets FERRIC_MEM_BUDGET_GB=3, and every ferric process reads that as
+# ITS OWN budget. Under `cargo test` at most one test binary ran at a time, so
+# 3 GB meant 3 GB. Under nextest, N concurrent processes each believe they may
+# use 3 GB -- an N-times overcommit on a runner with ~14 GB free. That is the
+# same defect class already recorded for ferric-batch. The groups below cap
+# concurrency for the tests that actually allocate against the pool.
+
+[profile.ci]
+# Fail slow: report EVERY failing test, matching --no-fail-fast. A red run that
+# surfaces one failure per cycle costs one full CI round trip per bug.
+fail-fast = false
+# One retry. The MPI and pool probes have a measured launch/scheduling flake
+# ("a rank failed or never started"); a single retry distinguishes a flake from
+# a real failure instead of forcing a manual re-run. A test that fails twice is
+# reported as failed.
+retries = 1
+# Default parallelism. Left at the core count for the ~262 sub-5s binaries,
+# which are the entire reason for adopting nextest; the memory-heavy minority
+# is constrained by the group below, not by throttling everything.
+test-threads = "num-cpus"
+slow-timeout = { period = "120s", terminate-after = 4 }
+
+[profile.ci.junit]
+path = "junit.xml"
+
+# Tests that allocate against the shared MemoryPool. FERRIC_MEM_BUDGET_GB is
+# per-process, so these must not run many-at-once: 4 concurrent x 3 GB is
+# 12 GB against a runner that has ~14 GB free and has already died with
+# "No space left on device" once (run 33210162947).
+#
+# max-threads = 2 is a DELIBERATE, CONSERVATIVE choice, not a measurement:
+# 2 x 3 GB = 6 GB leaves headroom for the rest of the shard. Raise it only
+# with a measured peak-RSS number for the group.
+[test-groups]
+memory-pool = { max-threads = 2 }
+
+[[profile.ci.overrides]]
+filter = 'test(/^mwe_.*pool|pool.*$/) or test(/budget/) or test(/_charges_the_pool/)'
+test-group = 'memory-pool'
+
+# BLAS/rayon-heavy numerics. OPENBLAS_NUM_THREADS=1 is set workflow-wide, so
+# each of these is single-threaded in BLAS, but they still spawn rayon pools
+# sized to the machine. Capping their mutual concurrency keeps a shard from
+# oversubscribing the runner's 4 cores several times over.
+[test-groups.numerics]
+max-threads = 2
+
+[[profile.ci.overrides]]
+filter = 'test(/scf|dft|rimp2|ccsd|rpa|cosx|link_k/)'
+test-group = 'numerics'
