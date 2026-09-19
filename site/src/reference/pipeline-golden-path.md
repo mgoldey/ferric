@@ -121,6 +121,51 @@ today.
 
 ---
 
+## 0b. QUICKSTART -- the pipeline in code you can paste
+
+Everything below this section describes the pipeline and costs it. This one
+RUNS it. Every snippet was executed on 2026-09-19 and its real output is shown;
+none is illustrative.
+
+```python
+# A. any input format -> a ferric Molecule (Angstrom, seeded ETKDG for SMILES)
+from tools.structure import from_smiles, read_structure
+mol = from_smiles("CC(=O)Oc1ccccc1C(=O)O", seed=0xF00D)   # aspirin: 21 atoms
+# read_structure("x.pdb" | "x.sdf" | "x.mol2" | "x.xyz")  -- same entry point
+#   NOTE a crystal PDB is REJECTED ("no hydrogens"). A receptor goes through
+#   derive_pocket_charges (which protonates), not read_structure.
+
+# B. enumerate analogues at every matching site
+from tools.pipeline.substitution import propose_substitutions, relative_descriptors
+props = propose_substitutions("c1ccccc1C(=O)O", {"F": "F", "Cl": "Cl", "Me": "C"})
+#   -> 10 proposals, and props[0] is the PARENT. That is the anchor, not a bug:
+#      the parent rides through every stage so scores can be reported as ddE.
+
+# C. gate RELATIVE to the parent, never on absolutes
+relative_descriptors(props[0].smiles, "c1ccccc1C(=O)O")
+#   -> (-0.0, 0.0, 0.0)   the parent against itself: exactly zero, by construction
+
+# D. liability flags (published alert sets -- NOT a probability of harm)
+from tools.tox.alerts import RdkitAlertsProvider
+provider = RdkitAlertsProvider()          # build ONCE: 47 ms vs 9.4 ms/molecule
+eps = provider.fetch("CC(=O)Oc1ccccc1C(=O)O")
+#   -> 13 endpoints, e.g. alert_brenk = 0.333
+```
+
+For the pocket half (docking, xtb, DFT) the entry points are
+`tools.docking.vina_dock.dock_ligand`, `tools.campaign.fit.pose_fit` and
+`tools.active_site.binding_energy.compute_binding_energy`; the composition is
+`tools.pipeline.run_funnel`, and
+`tools/pipeline/tests/test_golden_path_smoke.py` runs two real tiers through it
+end to end in about 7 seconds.
+
+**Before you rank anything with the output, read "WHICH METHOD FOR WHICH
+QUESTION" below.** The pipeline will happily produce a ddE ordering that the
+measurements do not support -- five pose protocols have been tried and the best
+available noise is 4.07 kcal/mol against substituent effects of 1-2.
+
+---
+
 ## 1. Input formats: what can enter
 
 Rust `Molecule` has only `load_xyz` / `load_xyz_with_charge` / `parse_xyz`
