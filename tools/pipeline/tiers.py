@@ -15,8 +15,17 @@ Measured costs on this box (70-atom anion; def2-SVP/PBE for tier 4):
                            single point -- the old "~1 ms/pose" here was
                            never measured and the golden path CITED THIS
                            LINE as its source)
-    tier 3  GFN2-xTB       ~0.5 s single point
-    tier 4  ferric DFT     96.1 s at 32 atoms -> 17-37 min at 70 (N^3-N^4)
+    tier 3  GFN2-xTB       0.152 s @ 9 atoms, 0.050 @ 19 (via tier3_gfn2;
+                           the old "~0.5 s single point" was the right
+                           order but was never measured)
+    tier 4  ferric DFT     0.66 s @ 9, 8.7 @ 19 (STO-3G, via tier4_dft);
+                           96.1 s @ 32 at def2-SVP; 612 s @ 71 at STO-3G.
+                           Scales ~N^2.3 in ATOM COUNT, not N^3-N^4:
+                           measured three ways (a PBE/STO-3G sweep, an
+                           RHF/STO-3G sweep at 2.58, and the 32->71 pair),
+                           all agreeing on 2.3-2.6. The old N^3-N^4 was the
+                           textbook basis-function scaling, which is not
+                           what varies when a MOLECULE grows at fixed basis.
 
 Tier 4's cost is the reason the funnel must narrow to a handful before reaching
 it. See `tools/campaign/hierarchy.py` for the rules.
