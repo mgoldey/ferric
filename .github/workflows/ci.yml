@@ -1032,34 +1032,66 @@ jobs:
             # not a usable signal for a process that never finalizes. The
             # assertions below are the real gate.
             #
-            # RETRIED ONCE ON A LAUNCH FAILURE. MEASURED 2026-09-19 over the
-            # last 90 workflow runs: 3 of 45 completed `mpi` jobs failed
-            # (~6.7%), every one of them with the SAME annotation --
-            # "expected 2 passing 'test result: ok.' summaries, found 1 -- a
-            # rank failed or never started" (once "found 0"). In every case a
-            # plain re-run passed with NO code change; on PR #96 the diff was
-            # two PYTHON files and zero Rust, which alone rules out the code.
-            # It is mpirun failing to bring a rank up, not a test failing.
+            # PER-RANK OUTPUT FILES, and why the old approach was WRONG.
             #
-            # The retry wraps the LAUNCH, not the assertion. The rank-count
-            # check below is unchanged and still hard-fails: relaxing it to
-            # ">= 1" would silence a genuinely dead rank, which is the exact
-            # thing it exists to catch. A real failure now costs two attempts
-            # instead of one and still goes red.
-            local attempt oks
-            for attempt in 1 2; do
-              timeout 300 mpirun -np "$np" --oversubscribe "$BIN" --nocapture --test-threads=1 "$filter" \
-                > "$log" 2>&1 || true
-              oks=$(grep -c '^test result: ok\.' "$log" || true)
-              if [ "$oks" -eq "$np" ]; then
-                [ "$attempt" -eq 2 ] && echo "-- np=$np succeeded on attempt 2 (attempt 1 was a launch flake)"
-                break
-              fi
-              if [ "$attempt" -eq 1 ]; then
-                echo "-- np=$np: got $oks/$np rank summaries; retrying once (see the ~7% launch-flake note above)"
-                sed -n '1,40p' "$log"
-              fi
+            # This check used to point every rank at ONE shared stdout and
+            # count `grep -c '^test result: ok\.'`. Ranks write concurrently
+            # to that pipe with no line discipline between processes, so two
+            # writes INTERLEAVE MID-LINE. Captured on PR #105
+            # (job 105903318653), both ranks passing:
+            #
+            #     test result: ok
+            #     test result: ok. 1 passed; 0 failed; ... in 0.32s
+            #     . 1 passed; 0 failed; ... in 0.32s
+            #
+            # One rank's summary was split in two by the other's write, so the
+            # anchored grep matched once and the check reported "found 1 -- a
+            # rank failed or never started". BOTH RANKS HAD PASSED: the
+            # cross-rank spread on that very run was 0.000e0 and the two
+            # energies were bit-identical (0xbfca1cf3c06ada88).
+            #
+            # The previous diagnosis -- "~6.7% of mpi jobs fail, it is mpirun
+            # failing to bring a rank up" -- was therefore wrong, and the
+            # remedy built on it (retry the LAUNCH) could not work: the launch
+            # was never the problem. A retry only re-rolls the interleaving,
+            # which is why it appeared to help.
+            #
+            # `--output-filename` gives each rank its own file, so no two
+            # processes share a stream and the summaries cannot be split. The
+            # rank count is then exact rather than probabilistic, and the retry
+            # is gone -- a red result now means a red result.
+            local oks outdir
+            outdir="$log.d"
+            rm -rf "$outdir"
+            timeout 300 mpirun -np "$np" --oversubscribe \
+              --output-filename "$outdir" \
+              "$BIN" --nocapture --test-threads=1 "$filter" > "$log.launch" 2>&1 || true
+            # OpenMPI writes $outdir/1/rank.N/std{out,err}; older builds write
+            # $outdir.N directly. Concatenate whatever appeared, newline-safe,
+            # so the greps below see every rank's complete output exactly once.
+            #
+            # `--output-filename` TEES: each rank's output goes to its per-rank
+            # file AND to the shared stdout. So the launch log is a DUPLICATE of
+            # the per-rank files, not a complement -- concatenating both counted
+            # every summary twice and produced "expected 1 ... found 2" at np=1.
+            # Use the per-rank files when they exist; fall back to the launch
+            # log only when they do not (an OpenMPI too old for the flag, or a
+            # failure before any file was created).
+            : > "$log"
+            find "$outdir" -type f \( -name 'stdout' -o -name 'stderr' \) 2>/dev/null \
+              | sort | while read -r f; do cat "$f"; echo; done >> "$log"
+            for f in "$outdir".*; do
+              [ -f "$f" ] && { cat "$f"; echo; } >> "$log"
             done
+            if [ ! -s "$log" ]; then
+              echo "-- no per-rank output files under $outdir; falling back to the shared stream"
+              cat "$log.launch" >> "$log"
+            fi
+            # Not anchored to column 0 any more: with per-rank files there is
+            # no interleaving to anchor against, and an anchor would silently
+            # re-introduce the same class of failure if a future OpenMPI
+            # prefixed its output.
+            oks=$(grep -c 'test result: ok\.' "$log" || true)
             # Show the physics/banding lines and the libtest summaries.
             grep -E 'rank [0-9]+/[0-9]+|cross-rank spread|^test result:' "$log" || true
 
