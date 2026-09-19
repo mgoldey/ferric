@@ -147,3 +147,58 @@ def test_close_releases_every_figure_it_made():
     assert len(plt.get_fignums()) == before + 3
     figs.close()
     assert len(plt.get_fignums()) == before
+
+
+def test_a_failure_midway_closes_the_figures_already_built():
+    """A raise after the first figure must not leak it into pyplot.
+
+    `campaign_report` owns every figure it has built, and on failure the caller
+    never receives the `CampaignFigures` -- so it cannot call `close()`. A valid
+    heatmap followed by an invalid liability `parent` is the reachable case.
+    Without the cleanup this leaks one figure per attempt, which inside a
+    per-candidate loop is how a batch run exhausts memory.
+
+    Counts pyplot's OWN figure registry rather than a flag, so the assertion
+    sees the leak itself and not a proxy for it.
+    """
+    import matplotlib.pyplot as plt
+
+    plt.close("all")
+    before = len(plt.get_fignums())
+    with pytest.raises(Exception):
+        campaign_report(
+            ddE_noise=1.0,
+            ddE={("F", "R1"): 0.5},
+            # `parent` names a compound absent from `liabilities` -- the
+            # liability plot rejects it, AFTER the heatmap has been built.
+            liabilities={"cmpd-a": {"hERG": (1.0, False)}},
+            parent="not-a-compound-in-this-dict",
+        )
+    assert len(plt.get_fignums()) == before, (
+        f"{len(plt.get_fignums()) - before} figure(s) leaked past the failure"
+    )
+
+
+def test_half_a_funnel_is_rejected_rather_than_silently_dropped():
+    """Stages without counts (or vice versa) is a bug, not a smaller report.
+
+    Silently omitting the funnel hides a caller's mistake in the one output
+    nobody re-reads -- the reader sees a report with no funnel and concludes
+    the campaign had no funnel.
+    """
+    for kwargs in (
+        {"funnel_stages": ["dock", "ff"]},
+        {"funnel_counts": [10, 5]},
+    ):
+        with pytest.raises(ValueError, match="together"):
+            campaign_report(ddE_noise=1.0, **kwargs)
+
+    # Both together still works, and neither is still fine.
+    figs = campaign_report(
+        ddE_noise=1.0, funnel_stages=["dock", "ff"], funnel_counts=[10, 5]
+    )
+    assert figs.funnel is not None
+    figs.close()
+    figs = campaign_report(ddE_noise=1.0)
+    assert figs.funnel is None
+    figs.close()
