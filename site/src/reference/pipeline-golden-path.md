@@ -727,8 +727,10 @@ C3. FIND THE TRANSITION STATE. NOW AVAILABLE (2026-09-19, not yet merged):
 C4. Verify the TS: harmonic_frequencies -> n_imaginary() == 1, AND the
     imaginary mode must point along the reaction coordinate (one imaginary
     frequency is necessary, not sufficient -- a methyl rotor gives one too).
-    PARTIAL: the count is available from both Rust and Python; the MODE
-    VECTORS are Rust-only. See the caveat below.
+    COMPLETE since #97: `PyFrequencyResult.normal_modes` is a real
+    #[pyo3(get)] accessor on main (VERIFIED against origin/main
+    2026-09-19), so both halves are reachable from Python. The "MODE
+    VECTORS are Rust-only" caveat this line used to carry is STALE.
 C5. Barrier = E(TS) - E(reactant), with ZPE from the same frequency run.
 ```
 
@@ -788,19 +790,26 @@ work from Python.** C3 -- FINDING the saddle -- remains the single blocker, and
 it is a missing capability (no dimer/NEB/P-RFO anywhere), not a missing
 binding.
 
-**API caveat, VERIFIED 2026-09-18:** `FrequencyResult.normal_modes`
-(`frequencies.rs:181`, an `Array2<f64>` of 3N-entry eigenvectors) is NOT
-exposed in the pyo3 bindings -- `grep -c normal_modes crates/ferric-python/src/lib.rs`
-returns 0. Python sees `frequencies`, `trans_rot_frequencies`, `is_linear` and
-the Hessian-asymmetry diagnostic, but no mode vectors. So a Python workflow can
-COUNT imaginary modes and cannot INSPECT them, which means it cannot complete
-C4. Exposing `normal_modes` is a small, self-contained binding addition and is
-a prerequisite for any Python-driven catalyst workflow.
+~~**API caveat, VERIFIED 2026-09-18:** `FrequencyResult.normal_modes` is NOT
+exposed in the pyo3 bindings...~~ **SUPERSEDED 2026-09-19.** #97 exposed it.
+`PyFrequencyResult.normal_modes` is a real `#[pyo3(get)]` accessor
+(`crates/ferric-python/src/lib.rs:1768` on origin/main, re-verified
+2026-09-19), returning `Vec<Vec<f64>>` in the documented (mode, 3N) layout. A
+Python workflow can now both COUNT imaginary modes and INSPECT them, so C4 is
+complete from Python.
 
-Steps C0-C2 and C4-C5 all work today. **C3 does not exist**, and it is not a
-detail -- it is the step that makes it a barrier calculation rather than two
-minimizations. Any catalyst workflow must either import the TS from another
-code (then C4-C5 are genuinely useful) or wait for a saddle search.
+If a local check disagrees, check the loaded extension before the source: the
+`.so` symlinked into `.venv` points at the MAIN checkout's `target/release`, so
+a worktree can be testing a stale build. That is what made this caveat look
+current when I first re-read it today.
+
+~~**C3 does not exist.**~~ **SUPERSEDED 2026-09-19** by
+`ferric_scf::saddle::find_saddle` (P-RFO), and wired to QM/MM in
+`examples/qmmm_saddle.rs`. C0-C5 is complete in principle; section 4 states
+what that does and does not mean. A catalyst workflow no longer has to import
+its transition state from another code -- though doing so and using ferric to
+verify (C4) and compute the barrier at a better level (C5) remains a perfectly
+good option, and is the cheaper one when a TS is already in hand.
 
 ## 4. Catalyst optimization: the search gap is CLOSED, the cost one is not
 
