@@ -299,8 +299,19 @@ not a defect to fix -- it is the empirical reason tiers 2-4 exist.
 | 1 | Vina, per pose | ~10 us | `tools/docking/vina_dock.py:7` |
 | 2 | MMFF94 | ~1 ms/pose | `tiers.py:12` |
 | 3 | GFN2-xTB single point | ~0.5 s | `tiers.py:13` |
-| 4 | ferric DFT | 96.1 s @ 32 atoms | `tiers.py:14` |
-| 4 | ferric DFT | 612.4 s @ 71 atoms, STO-3G/PBE, 18 iters, converged | RESULTS.md |
+| 4 | ferric DFT | 96.1 s @ 32 atoms, **def2-SVP** (~450 bf) | `tiers.py:14` |
+| 4 | ferric DFT | 612.4 s @ 71 atoms, **STO-3G**/PBE (~234 bf), 18 iters, converged | RESULTS.md |
+
+**DO NOT DERIVE A SCALING LAW FROM THOSE TWO ROWS.** They differ in BASIS as
+well as size, and in the unhelpful direction: the BIGGER system used the
+SMALLER basis. Fitting them gives p = 2.32, which UNDERSTATES pure N-scaling
+because part of the size increase was paid for by a cheaper basis.
+
+For comparison, an N-sweep at FIXED basis (RHF/STO-3G, alkanes, 2026-09-19)
+gives a tail exponent of **2.58**. The two agree within ~0.3, which is
+reassuring about both, but only the fixed-basis number is a scaling
+measurement. Quote 2.58 with its own caveat (three points, indicative) and
+treat the two rows above as two independent COST POINTS, not as a trend.
 
 ### ESTIMATED (reasoning stated, do not quote as measured)
 
