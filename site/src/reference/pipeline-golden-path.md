@@ -412,6 +412,40 @@ reason `hessian_recalc_every` defaults to 0; MEASURED, setting it to 1 doubles
 the Hessian work (2 -> 4 on this surface, i.e. 240 -> 480 gradient-equivalents
 at N=20).
 
+**The multiplicand, measured at three sizes (2026-09-19).** The TS cost model
+`2*6N + n_steps` had a measured MULTIPLIER and an unmeasured MULTIPLICAND -- one
+gradient, taken from a 71-atom DFT single point on a different system. Measured
+directly on linear alkanes, RHF/STO-3G, single-threaded:
+
+| N atoms | one single point |
+|---|---|
+| 5 (methane) | 22 ms |
+| 8 (ethane) | 29 ms |
+| 11 (propane) | 66 ms |
+
+Last-two exponent **p = 2.58**. THREE POINTS IS NOT A SCALING MEASUREMENT --
+quote it as indicative, not as an exponent, and note the tail was fitted rather
+than the whole series (a global fit averages in the flat N=5->8 start).
+
+Projecting `t(N) = t(11)*(N/11)^2.58`:
+
+| QM region | steps | gradients | projected (STO-3G) |
+|---|---|---|---|
+| N = 11 | 30 | 162 | 0.2 min |
+| N = 20 | 30 | 270 | **1.4 min** |
+| N = 20 | 100 | 340 | 1.8 min |
+| N = 40 | 30 | 510 | **15.7 min** |
+
+**The step count barely matters and the BASIS dominates.** Going 30 -> 100
+steps at N=20 moves the total 26%; going N=20 -> 40 moves it 11x. And every row
+above is STO-3G, the cheapest basis there is -- a real catalyst at def2-SVP or
+better is orders above these. Treat the table as the N-SCALING SHAPE, not as
+wall times.
+
+That is the practical guidance the cost model was missing: **size the QM region
+first** (golden path C0 already says it "sets the cost" -- this is by how much),
+and do not spend effort shaving P-RFO steps.
+
 **Putting a number on a catalyst TS.** Using the same 612 s DFT single point
 the tier-5 estimate uses, and treating a gradient as ~1 single point:
 
