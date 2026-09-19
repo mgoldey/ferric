@@ -159,7 +159,23 @@ def _prescreen(embedded, pocket, centroid):
     seen: dict[str, int] = {}
     rows = []
     for e in embedded:
-        moved = [(x + cx, y + cy, z + cz) for x, y, z in e.coords]
+        # Put the LIGAND's centroid on the POCKET's centroid.
+        #
+        # Subtracting `e.coords`'s own centroid first is load-bearing, not
+        # defensive: `embed_proposals` returns whatever ETKDG produced, and
+        # ETKDG does not promise an origin-centred conformer. MEASURED over the
+        # embeddings this script generates, |centroid| is 0.0000 A for some
+        # molecules and 0.18-0.25 A for others (octane 0.2452, paracetamol
+        # 0.1807). Adding the pocket centroid to an already-offset conformer
+        # therefore displaces the pose by that much, in a direction and
+        # magnitude that vary PER ANALOGUE -- so it perturbs exactly the
+        # between-substituent comparison this scan exists to make, and does it
+        # silently.
+        n = len(e.coords)
+        gx = sum(c[0] for c in e.coords) / n
+        gy = sum(c[1] for c in e.coords) / n
+        gz = sum(c[2] for c in e.coords) / n
+        moved = [(x - gx + cx, y - gy + cy, z - gz + cz) for x, y, z in e.coords]
         el = embed_ligand_from_coords(
             list(e.symbols), moved, pocket=pocket, basis="sto-3g"
         )
