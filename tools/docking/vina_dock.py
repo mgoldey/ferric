@@ -247,6 +247,38 @@ def _parse_pdbqt_models(text: str):
     return models
 
 
+def heavy_atom_mapping(
+    symbols: list[str],
+    serials: list[int],
+    serial_to_rdkit: dict[int, int],
+) -> list[int] | None:
+    """RDKit index per HEAVY atom of a pose, or `None` if unmappable.
+
+    HEAVY ATOMS ONLY, on both sides. PDBQT keeps POLAR hydrogens (AutoDock
+    type HD) while merging nonpolar ones into their carbons, and
+    `REMARK SMILES IDX` maps only the heavy atoms. MEASURED on aspirin: the
+    pose has 14 atoms (13 heavy + the carboxylic H) against 13 mapped serials.
+
+    Requiring EVERY serial to be covered -- including that hydrogen's -- makes
+    the guard fail on any ligand with a polar H, so the mapping is silently
+    never used. The fix would be INERT on exactly the inputs it was written
+    for, and nothing would say so.
+
+    `restore_hydrogens` rebuilds hydrogens from SMILES and consumes the
+    heavy-atom frame, so the pose's polar H is redundant there.
+
+    Still ALL-OR-NOTHING over the heavy atoms: a partial map places some
+    correctly and the rest by position, which is harder to notice than no map,
+    because the molecule looks almost right.
+    """
+    if not serial_to_rdkit:
+        return None
+    heavy = [k for k, sym in zip(serials, symbols) if sym.upper() != "H"]
+    if not heavy or not all(k in serial_to_rdkit for k in heavy):
+        return None
+    return [serial_to_rdkit[k] for k in heavy]
+
+
 def dock_ligand(
     mol,
     receptor_pdbqt: str | Path,
@@ -329,14 +361,21 @@ def dock_ligand(
     serial_to_rdkit = parse_smiles_idx_remark(lig_pdbqt)
     poses = []
     for i, (s, c, sc, sers) in enumerate(models):
-        # Only build the mapping when EVERY serial in this pose is covered. A
-        # partial map would silently place some atoms correctly and others by
-        # position, which is harder to notice than no map at all.
-        mapping = (
-            [serial_to_rdkit[k] for k in sers]
-            if serial_to_rdkit and all(k in serial_to_rdkit for k in sers)
-            else None
-        )
+        # HEAVY ATOMS ONLY, on both sides.
+        #
+        # PDBQT keeps POLAR hydrogens (AutoDock type HD) while merging nonpolar
+        # ones into their carbons, and `REMARK SMILES IDX` maps only the HEAVY
+        # atoms. MEASURED on aspirin: the pose has 14 atoms (13 heavy + 1
+        # carboxylic H) against 13 mapped serials.
+        #
+        # So requiring EVERY serial to be covered -- including that hydrogen's
+        # -- makes the guard fail on every real ligand with a polar H, and the
+        # mapping is silently never used. The fix would be inert on exactly the
+        # inputs it was written for.
+        #
+        # `restore_hydrogens` rebuilds hydrogens from SMILES anyway, so it
+        # consumes the heavy-atom frame; the pose's polar H is redundant there.
+        mapping = heavy_atom_mapping(s, sers, serial_to_rdkit)
         poses.append(
             DockedPose(
                 symbols=s,
