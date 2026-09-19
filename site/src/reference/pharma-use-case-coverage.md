@@ -27,12 +27,17 @@ pattern anywhere under those three trees.
 | common substitutions | — | `tools/pipeline/substitution.py`, `tools/isomers/substitutional.py` (#96) | **covered** |
 | toxicology | 21 | `tools/tox/alerts.py`, `tools/tox/model.py` | **covered** |
 | binding energy in site | 4 | `tools/active_site/prescreen.py`, `binding_energy.py` | **covered** |
-| **transition state** | **1** | — | **GAP** |
+| **transition state** | **1** | — | **GAP at the time of this survey — CLOSED later the same day** |
 
-The single transition-state hit is `tools/campaign/tests/test_strain_and_fit.py`
-matching `dimer_` incidentally. There is no saddle-point search.
+The single transition-state hit was `tools/campaign/tests/test_strain_and_fit.py`
+matching `dimer_` incidentally. There was no saddle-point search.
 
-## THE GAP: transition-state search
+## THE GAP: transition-state search — CLOSED 2026-09-19
+
+**Everything in this section is the ANALYSIS THAT PRECEDED the fix**, kept
+because the dependency sketch is what the implementation followed. All six
+steps landed as `ferric_scf::saddle` (P-RFO + Bofill), wired to QM/MM in
+`examples/qmmm_saddle.rs`. See the completed coverage table below.
 
 What exists already, which is most of the machinery:
 
@@ -109,6 +114,7 @@ otherwise.
 
 Was absent entirely (`find tools experiments -iname '*vis*' -o -iname '*plot*'
 -o -iname '*render*'` returned nothing). `tools/viz/` now covers energy
-profiles, funnels, tier comparisons and 2-D depictions with substitution
-highlighting. The energy-profile plot is what a transition-state search would
-report against once it exists.
+profiles, funnels, tier comparisons, (substituent, site) ddE heatmaps, pose
+ensembles, liability profiles and 2-D depictions with substitution
+highlighting. The energy-profile plot is what a transition-state search
+reports against — and as of this date there is one to report from.
