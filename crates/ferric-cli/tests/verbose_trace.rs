@@ -12,14 +12,35 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Workspace root, derived from this crate's manifest dir (`<root>/crates/ferric-cli`)
-/// so example TOMLs' relative `testdata/...` paths resolve regardless of the
-/// directory `cargo test` invokes the test binary from.
+/// Workspace root, resolved at RUN TIME.
+///
+/// `env!("CARGO_MANIFEST_DIR")` is baked in when the test binary is COMPILED.
+/// Under `cargo nextest archive` the binary is built in one job and run in
+/// another, whose checkout lives at a different path -- so the compile-time
+/// directory does not exist and `Command::current_dir` fails with a bare
+/// `NotFound` that reads as "the ferric-cli binary is missing" (MEASURED: 36
+/// of 37 shard failures, all of them this).
+///
+/// So: walk up from the CURRENT directory to the nearest ancestor holding a
+/// workspace `Cargo.toml` alongside `examples/` and `testdata/`, and fall back
+/// to the compile-time path when that fails (the ordinary `cargo test` case,
+/// where it is correct and the cwd may be anywhere).
 fn workspace_root() -> PathBuf {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .parent() // crates/
-        .and_then(|p| p.parent()) // workspace root
+    let looks_like_root = |p: &std::path::Path| {
+        p.join("Cargo.toml").is_file() && p.join("examples").is_dir() && p.join("testdata").is_dir()
+    };
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut here: Option<&std::path::Path> = Some(cwd.as_path());
+        while let Some(p) = here {
+            if looks_like_root(p) {
+                return p.to_path_buf();
+            }
+            here = p.parent();
+        }
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
         .expect("ferric-cli manifest dir should be workspace_root/crates/ferric-cli")
         .to_path_buf()
 }
