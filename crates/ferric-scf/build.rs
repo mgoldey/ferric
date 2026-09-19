@@ -29,9 +29,40 @@ fn main() {
     // every edit. `-dirty` therefore means "was dirty when this was built",
     // and its ABSENCE on a build older than your last edit is not a promise of
     // cleanliness -- which is why the SHA is provenance, not proof.
-    for p in ["../../.git/HEAD", "../../.git/ORIG_HEAD"] {
-        if std::path::Path::new(p).exists() {
-            println!("cargo:rerun-if-changed={p}");
+    //
+    // ASK GIT where its directory is; do not guess "../../.git". In a git
+    // WORKTREE -- which is how most work in this repo actually happens -- the
+    // repo root's `.git` is a FILE containing "gitdir: <path>", not a
+    // directory, so `../../.git/HEAD` does not exist and the rerun-if-changed
+    // below was never emitted. The build script then did not re-run when HEAD
+    // moved, and the binary baked in the PREVIOUS commit's SHA: exactly the
+    // stale-SHA failure this file's own header calls worse than no SHA.
+    //
+    // Two directories, because they differ in a worktree:
+    //   --absolute-git-dir  -> .../.git/worktrees/<name>, which holds THIS
+    //                          worktree's HEAD
+    //   --git-common-dir    -> .../.git, which holds packed-refs
+    // In a normal checkout both are the same path and the duplicate is
+    // harmless.
+    for arg in ["--absolute-git-dir", "--git-common-dir"] {
+        let Ok(out) = Command::new("git")
+            .args(["rev-parse", "--path-format=absolute", arg])
+            .output()
+        else {
+            continue;
+        };
+        if !out.status.success() {
+            continue;
+        }
+        let Ok(dir) = String::from_utf8(out.stdout) else {
+            continue;
+        };
+        let dir = std::path::Path::new(dir.trim());
+        for f in ["HEAD", "ORIG_HEAD", "packed-refs"] {
+            let p = dir.join(f);
+            if p.exists() {
+                println!("cargo:rerun-if-changed={}", p.display());
+            }
         }
     }
     // Let a build system (a container build, a CI job with no .git) supply the
