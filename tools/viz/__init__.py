@@ -7,6 +7,9 @@ Two modules, split by what they need:
   and liability profiles. Needs matplotlib only.
 - `molecules` — 2-D structure depictions with substitution highlighting. Needs
   RDKit, which lives in the `docking` extra.
+- `report` — `campaign_report(...)` builds the whole figure set from what a
+  substitution campaign produces, and attaches the caveats the measurements
+  demand. Start here; the other two are the pieces it composes.
 
 Both are PRESENTATION ONLY. Neither computes a chemical quantity, and neither
 re-derives a value it was handed: a plotting layer that quietly recomputes
@@ -20,4 +23,4 @@ GAP, never as zero. A figure is read faster than a table and trusted more, so
 
 from __future__ import annotations
 
-__all__ = ["energy_plots", "molecules"]
+__all__ = ["energy_plots", "molecules", "report"]
