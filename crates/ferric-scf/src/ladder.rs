@@ -38,6 +38,35 @@ pub struct LadderResult {
     pub rung_outcomes: Vec<RungOutcome>,
 }
 
+/// Emit one `ladder_rung` record for a finished rung, if a JSON run log is
+/// installed. No-op otherwise.
+///
+/// `max_iter` comes from the rung's OWN config, not from the caller's, because
+/// the ladder builders HARDCODE a per-rung cap (60/60/60/80/100 -- see
+/// [`default_ladder_from`] and [`ksdft_ladder`]) that overrides whatever the
+/// user configured. Recording the cap next to the iteration count that hit it
+/// is the point: reading a reported "iterations = 100" as a whole-run total
+/// rather than as rung 4 exhausting its own budget has already produced a
+/// wrong diagnosis.
+fn log_rung(ctx: &ParallelContext, i: usize, cfg: &RhfConfig, r: &ScfResult) {
+    if !ctx.is_root() {
+        return;
+    }
+    let Some(rl) = crate::runlog::log() else {
+        return;
+    };
+    let tricks = crate::runlog::rung_tricks(cfg);
+    rl.ladder_rung(
+        i,
+        &tricks,
+        cfg.max_iter,
+        r.iterations,
+        &format!("{:?}", r.exit),
+        r.energy,
+        r.converged,
+    );
+}
+
 /// Walk the ladder: run each rung, carry density forward unless `restart`, stop
 /// at the first converged rung; else return the best-effort (lowest-energy)
 /// non-converged result.
@@ -70,7 +99,15 @@ pub fn solve_rhf_ladder(
             rung_tricks(&cfg),
             cfg.max_iter
         );
-        let r = solve_rhf(ctx, mol, prep, op, bounds, &cfg)?;
+        // Tag every `scf_iter` record this rung emits with the rung index, so
+        // a laddered run's iteration stream is attributable. The guard
+        // restores the previous tag on drop and is a single relaxed atomic
+        // store whether or not a log is installed.
+        let r = {
+            let _rung_scope = crate::runlog::RungScope::enter(i);
+            solve_rhf(ctx, mol, prep, op, bounds, &cfg)?
+        };
+        log_rung(ctx, i, &cfg, &r);
         // Log the OUTCOME, not just the attempt: iterations against this
         // rung's own cap (they are per-rung, NOT a total -- a recurring
         // source of confusion), the exit reason, and the energy.
@@ -583,7 +620,12 @@ pub fn solve_rohf_ladder(
                 cfg.init_guess_density = Some(d.clone());
             }
         }
-        let r = crate::rohf::solve_rohf_best_effort(ctx, mol, prep, op, bounds, &cfg)?;
+        // See the identical block in `solve_rhf_ladder`.
+        let r = {
+            let _rung_scope = crate::runlog::RungScope::enter(i);
+            crate::rohf::solve_rohf_best_effort(ctx, mol, prep, op, bounds, &cfg)?
+        };
+        log_rung(ctx, i, &cfg, &r);
         outcomes.push(RungOutcome {
             iters: r.iterations,
             exit: r.exit,

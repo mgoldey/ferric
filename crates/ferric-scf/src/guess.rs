@@ -271,6 +271,14 @@ fn free_atom_density(
     use ferric_integrals::basis_bridge::PreparedBasis;
     use ferric_integrals::operator::Operator;
 
+    // Everything below is an INTERNAL SCF: a free atom solved to build the
+    // SAD/MINAO guess, not the molecular SCF the user asked for. The guard
+    // routes its per-iteration JSON log records to `guess_scf_iter` instead of
+    // `scf_iter`, so a reader never mistakes free oxygen's energy or iteration
+    // count for the molecule's. Covers BOTH the RHF and UHF branches below,
+    // which is why it sits here rather than at the two call sites.
+    let _sub = crate::runlog::SubSolveScope::enter();
+
     let ctx = ParallelContext::default();
     let op = Operator::coulomb();
 

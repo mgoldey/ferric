@@ -775,6 +775,27 @@ pub fn solve_rohf_best_effort(
             );
         }
 
+        // Machine-readable per-iteration record, streamed and flushed NOW. See
+        // the identical block in `solve_rhf` for the full rationale; every
+        // value is one the loop already computed for the gate above.
+        // `grad_rms` is `None`: this loop forms only `err_max` from the
+        // antisymmetrized MO gradient, never an RMS.
+        if ctx.is_root() {
+            if let Some(rl) = crate::runlog::log() {
+                rl.scf_iter(
+                    if xc_contrib.is_some() { "roks" } else { "rohf" },
+                    crate::runlog::current_rung(),
+                    iter,
+                    energy,
+                    de,
+                    mon.dp_rms,
+                    mon.dp_max,
+                    err_max,
+                    None,
+                );
+            }
+        }
+
         if iter > 1 && converged {
             let (eps, c_f) = diagonalize(&f_eff, &s_inv_sqrt)?;
             let (d_a_f, d_b_f) = build_rohf_densities(&c_f, nocc_double, nocc_open);

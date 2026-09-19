@@ -37,6 +37,11 @@ pub struct Config {
     pub cosmo: Option<ferric_scf::cosmo::CosmoConfig>,
     #[serde(default)]
     pub tddft: TddftCfg,
+    /// Optional `[output]` section: where the machine-readable JSON run log
+    /// goes. Absent means the default (a `.ferric.jsonl` beside the input
+    /// file) -- logging is ON BY DEFAULT, see [`OutputCfg`].
+    #[serde(default)]
+    pub output: OutputCfg,
 }
 
 impl Config {
@@ -1260,6 +1265,69 @@ fn default_task() -> String {
     "energy".into()
 }
 
+/// `[output]` section: the machine-readable JSON run log.
+///
+/// # Logging is ON BY DEFAULT
+///
+/// Omit this section entirely and the run still writes a JSON Lines log
+/// (`<input-stem>.ferric.jsonl`, beside the input file). That is deliberate,
+/// not an oversight: a result whose run left no artifact cannot be checked
+/// afterwards, and this repo has already lost a load-bearing SCF measurement
+/// that way -- a 27-atom PBE/6-31G run reported as "173 iterations, converged,
+/// E = -390.3794234093" whose only log had been truncated to 275 bytes.
+/// Opt-out is explicit: `json = false`.
+///
+/// ```toml
+/// [output]
+/// json = "runs/benzene.jsonl"   # custom path
+/// # json = false                # opt out entirely
+/// ```
+///
+/// The log never fails a calculation: an unopenable path warns on stderr and
+/// the run continues without one (see `ferric_scf::runlog::init`).
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct OutputCfg {
+    /// Where to write the JSON run log. A string is a path; `false` turns
+    /// logging off; omitted uses the default path. `true` is accepted as an
+    /// explicit "yes, the default path".
+    #[serde(default)]
+    pub json: Option<JsonLogSpec>,
+}
+
+/// The value of `[output] json`: a path, or a bool.
+///
+/// `#[serde(untagged)]` rather than two keys so the TOML reads the way a user
+/// would write it (`json = "x.jsonl"` / `json = false`). Untagged means an
+/// unusable value (a table, an integer) is reported as "did not match any
+/// variant" rather than silently defaulting -- still an error, which is what
+/// the config-honesty convention requires.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum JsonLogSpec {
+    /// `json = false` disables the log; `json = true` requests the default path.
+    Enabled(bool),
+    /// `json = "path/to/run.jsonl"`.
+    Path(String),
+}
+
+impl OutputCfg {
+    /// Resolve `[output] json` against the input file's path to the log path
+    /// to use, or `None` when the user turned logging off.
+    ///
+    /// Note the asymmetry with most config knobs in this file: the ABSENT case
+    /// resolves to `Some(default)`, not `None`. Logging is on unless refused.
+    pub fn resolve_json_path(&self, input_toml: &std::path::Path) -> Option<std::path::PathBuf> {
+        match &self.json {
+            None | Some(JsonLogSpec::Enabled(true)) => {
+                Some(ferric_scf::runlog::default_path_for_input(input_toml))
+            }
+            Some(JsonLogSpec::Enabled(false)) => None,
+            Some(JsonLogSpec::Path(p)) => Some(std::path::PathBuf::from(p)),
+        }
+    }
+}
+
 fn default_n_roots() -> usize {
     3
 }
@@ -1855,6 +1923,111 @@ mod tests {
             1,
         )
         .unwrap()
+    }
+
+    // ---- [output]: the JSON run log's config surface ----
+
+    fn parse(toml_src: &str) -> Result<Config, String> {
+        toml::from_str::<Config>(toml_src).map_err(|e| e.to_string())
+    }
+
+    const MINIMAL: &str = r#"
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+[basis]
+name = "sto-3g"
+[method]
+kind = "rhf"
+"#;
+
+    /// THE default: no `[output]` section at all still yields a log path.
+    ///
+    /// Logging is ON BY DEFAULT and this is the test that says so. If someone
+    /// later "fixes" `resolve_json_path` to return `None` when the key is
+    /// absent — the shape every other optional knob in this file has — this
+    /// fails, which is the point: the asymmetry is deliberate.
+    #[test]
+    fn omitting_the_output_section_still_logs() {
+        let cfg = parse(MINIMAL).expect("minimal config must parse");
+        let p = cfg
+            .output
+            .resolve_json_path(std::path::Path::new("/runs/benzene.toml"));
+        assert_eq!(
+            p,
+            Some(std::path::PathBuf::from("/runs/benzene.ferric.jsonl")),
+            "a run with no [output] section must still write a log"
+        );
+    }
+
+    #[test]
+    fn json_false_turns_the_log_off() {
+        let cfg = parse(&format!("{MINIMAL}
+[output]
+json = false
+")).unwrap();
+        assert_eq!(
+            cfg.output
+                .resolve_json_path(std::path::Path::new("/runs/x.toml")),
+            None
+        );
+    }
+
+    #[test]
+    fn json_true_means_the_default_path() {
+        let cfg = parse(&format!("{MINIMAL}
+[output]
+json = true
+")).unwrap();
+        assert_eq!(
+            cfg.output
+                .resolve_json_path(std::path::Path::new("/runs/x.toml")),
+            Some(std::path::PathBuf::from("/runs/x.ferric.jsonl"))
+        );
+    }
+
+    #[test]
+    fn json_string_is_used_verbatim() {
+        let cfg = parse(&format!(
+            "{MINIMAL}
+[output]
+json = \"logs/custom.jsonl\"
+"
+        ))
+        .unwrap();
+        assert_eq!(
+            cfg.output
+                .resolve_json_path(std::path::Path::new("/runs/x.toml")),
+            Some(std::path::PathBuf::from("logs/custom.jsonl"))
+        );
+    }
+
+    /// `deny_unknown_fields` must still bite inside `[output]` — a typo'd key
+    /// is a hard error, never a silent default (the config-honesty convention).
+    #[test]
+    fn a_typod_output_key_hard_errors() {
+        let r = parse(&format!("{MINIMAL}
+[output]
+jsonn = false
+"));
+        assert!(
+            r.is_err(),
+            "typo'd [output] key parsed successfully — deny_unknown_fields regressed"
+        );
+    }
+
+    /// An `[output] json` value of a type that is neither a string nor a bool
+    /// must be an error, not a silent fall-through to the default. The
+    /// `untagged` enum makes this the "no variant matched" path.
+    #[test]
+    fn a_nonsense_json_value_hard_errors() {
+        assert!(parse(&format!("{MINIMAL}
+[output]
+json = 17
+")).is_err());
+        assert!(parse(&format!("{MINIMAL}
+[output]
+json = [1, 2]
+")).is_err());
     }
 
     /// Every shipped example must parse. With `deny_unknown_fields` on all

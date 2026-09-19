@@ -1399,6 +1399,30 @@ pub fn solve_rhf(
             );
         }
 
+        // Machine-readable per-iteration record, streamed and flushed NOW (see
+        // `crate::runlog`): a run killed at iteration 90 of 100 must leave the
+        // first 90 on disk. Every value here was already computed above for the
+        // convergence gate or the trace line — nothing is computed for the log,
+        // and nothing here is read back, so the energy is bit-identical with
+        // the log on or off (tests/runlog_bit_identity.rs). Rank-0-only under
+        // MPI, matching the `verbose` block above, so ranks > 1 do not
+        // interleave duplicate records into one file.
+        if ctx.is_root() {
+            if let Some(rl) = crate::runlog::log() {
+                rl.scf_iter(
+                    if xc_contrib.is_some() { "rks" } else { "rhf" },
+                    crate::runlog::current_rung(),
+                    iter,
+                    energy,
+                    de,
+                    mon.dp_rms,
+                    mon.dp_max,
+                    err_max,
+                    Some(grad_rms),
+                );
+            }
+        }
+
         // Live per-iteration progress for a user watching a long-running job
         // (opt-in via `config.verbose` — RhfConfig field, CLI `--verbose`/`-v`,
         // or TOML `[scf] verbose = true`). Printed to STDOUT (normal-operation

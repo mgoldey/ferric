@@ -450,6 +450,7 @@ dependencies = [
  "ndarray",
  "rayon",
  "serde",
+ "serde_json",
  "toml",
 ]
 
