@@ -80,6 +80,31 @@ elsewhere — that `context["geometry"]` is written by nothing, so tiers 3/4
 score a gas-phase conformer rather than the docked pose — are about *wiring*,
 not missing capability, and are tracked separately.
 
+## COVERAGE, complete (updated 2026-09-19 after the viz work)
+
+Every named use case now has code, a MEASURED cost, and a plot:
+
+| use case | code | cost | plot |
+|---|---|---|---|
+| docking geom opt | yes | 1e-5 s/pose | `pose_ensemble`, `funnel_survival` |
+| minima with FF | yes | 1e-3 s/pose | `tier_comparison` |
+| minima with xtb | yes | 5e-1 s/pose | `tier_comparison` |
+| transition state | yes | 2x6N + n_steps grads | `energy_profile` (barrier annotated) |
+| common substitutions | yes | 2.8 ms enumerate, 214 ms embed | `site_substituent_heatmap`, `grid_with_scores` |
+| toxicology | yes | 9.4 ms/molecule | `liability_profile` |
+| binding energy in site | yes | tier 3/4 above | `site_substituent_heatmap` |
+
+The costs are per-item; the campaign-level shares (cheap 0.8%, dock 73%,
+xtb 4%, DFT 22%) are in the golden-path note, and they are the number that
+should drive optimization decisions -- not the per-call cost.
+
+**What "has a plot" does NOT mean.** The binding-energy row has a plot and a
+cost and still cannot produce a trustworthy RANKING: all four pose protocols
+are closed (RESULTS.md M4-M13) and the best available ddE noise is ~4.07
+kcal/mol against effects of 1-2. `site_substituent_heatmap(noise_floor=...)`
+greys out every cell inside that limit precisely so a figure cannot imply
+otherwise.
+
 ## VISUALIZATION
 
 Was absent entirely (`find tools experiments -iname '*vis*' -o -iname '*plot*'
