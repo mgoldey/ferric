@@ -151,7 +151,7 @@ none is illustrative.
 # A. any input format -> a ferric Molecule (Angstrom, seeded ETKDG for SMILES)
 from tools.structure import from_smiles, read
 mol = from_smiles("CC(=O)Oc1ccccc1C(=O)O", seed=0xF00D)   # aspirin: 21 atoms
-mol = read("x.pdb")   # | "x.sdf" | "x.mol2" | "x.xyz" | "x.pqr" -- one entry point
+mol = read("ligand_with_hydrogens.pdb")   # | .sdf | .mol2 | .xyz | .pqr
 #   `read` RETURNS A MOLECULE. `read_structure` does NOT -- it stops at a
 #   `Structure` (symbols/coords/charge/multiplicity/source) and never imports
 #   ferric, which is what you want when inspecting a file without pulling in
@@ -162,8 +162,14 @@ mol = read("x.pdb")   # | "x.sdf" | "x.mol2" | "x.xyz" | "x.pqr" -- one entry po
 #   next `.symbols()`, because a Structure exposes symbols as a FIELD and a
 #   Molecule as a METHOD. Verified 2026-09-19 by running it.
 #
-#   NOTE a crystal PDB is REJECTED ("no hydrogens"). A receptor goes through
-#   derive_pocket_charges (which protonates), not through either reader.
+#   THE PDB MUST ALREADY HAVE EXPLICIT HYDROGENS. An ordinary
+#   crystallographic PDB does not, and `read` refuses it with a
+#   StructureError -- it does not protonate. That is correct (a species
+#   missing its hydrogens is not the molecule), but it means "x.pdb" is not
+#   a generic example, hence the filename above.
+#
+#   A RECEPTOR is the separate case: it goes through derive_pocket_charges,
+#   which runs pdb2pqr and DOES protonate. That does not change `read`.
 
 # B. enumerate analogues at every matching site
 from tools.pipeline.substitution import propose_substitutions, relative_descriptors
