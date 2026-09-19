@@ -81,7 +81,7 @@ fn dispersion_is_refused_for_a_non_ksdft_method() {
 }
 
 #[test]
-fn dispersion_WORKS_for_optimize_and_is_refused_for_frequencies() {
+fn dispersion_works_for_optimize_and_is_refused_for_frequencies() {
     // `optimize` USED TO BE REFUSED, because the D3(BJ) nuclear gradient did
     // not exist. It does now, and it is threaded through
     // `optimize_geometry_with_correction`, so the energy and the gradient
