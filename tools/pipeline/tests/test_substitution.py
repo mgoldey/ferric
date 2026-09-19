@@ -94,6 +94,45 @@ def test_relative_descriptors_is_zero_against_self():
     assert d == (0.0, 0.0, 0.0), f"a molecule against itself must be all zeros, got {d}"
 
 
+def test_a_canonicalised_parent_is_zero_only_to_a_TOLERANCE():
+    """The same molecule spelled two ways is NOT bit-identical in dMW.
+
+    `relative_descriptors(s, s)` is exactly (0,0,0) -- the test above. But
+    `props[0].smiles` is the CANONICAL form of the input, and comparing those
+    two spellings gives dMW = -1.42e-14:
+
+        relative_descriptors("O=C(O)c1ccccc1", "c1ccccc1C(=O)O")
+
+    Same molecule, different atom ORDER, so the molecular-weight float sum
+    lands one ulp apart. The golden-path quickstart printed this as
+    "(-0.0, 0.0, 0.0) ... exactly zero, by construction" for a day, which is
+    exactly the belief that produces an `== 0.0` gate.
+
+    Pinned because the parent rides through every stage as the ddE anchor: a
+    strict-equality check on "is this the parent?" would drop it from a
+    campaign, silently, and only for inputs written in a non-canonical form.
+    """
+    from rdkit import Chem
+
+    spelling_a = "c1ccccc1C(=O)O"
+    spelling_b = Chem.CanonSmiles(spelling_a)
+    assert spelling_a != spelling_b, (
+        "this test needs two SPELLINGS of one molecule; pick another input"
+    )
+
+    d = relative_descriptors(spelling_b, spelling_a)
+    assert d != (0.0, 0.0, 0.0), (
+        f"expected a sub-ulp difference between two spellings, got exact {d} "
+        "-- if the implementation now canonicalises both sides this test is "
+        "obsolete rather than failing, but the doc comment must change too"
+    )
+    for v in d:
+        assert abs(v) < 1e-9, (
+            f"a spelling difference must be NUMERICAL NOISE, got {d}; "
+            "anything larger means the two spellings are different molecules"
+        )
+
+
 def test_an_unparseable_parent_is_an_error_not_an_empty_list():
     """A silent empty list would read as 'no viable substitutions', which is a
     chemistry claim. A bad input is not that."""

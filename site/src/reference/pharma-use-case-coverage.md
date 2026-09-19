@@ -73,7 +73,8 @@ Sketch of what a `saddle.rs` needs, in dependency order:
    state, and this must be a hard check, not a warning.
 
 Cost note: step 1 is the expensive part. The Hessian is finite-differenced
-from analytic gradients, so it is 6N gradient evaluations per Hessian (MEASURED
+from analytic gradients, so it is 6N+1 evaluations per Hessian -- 6N displaced
+plus one undisplaced, which the counter omits (MEASURED
 via `n_gradient_evaluations`: H2 = 12, water = 18 — exactly 6N, not 6N+1).
 Rebuilding it every step is not affordable past a handful of atoms, which is
 why step 5 matters.
@@ -94,7 +95,7 @@ Every named use case now has code, a MEASURED cost, and a plot:
 | docking geom opt | yes | 1e-5 s/pose | `pose_ensemble`, `funnel_survival` |
 | minima with FF | yes | 1e-3 s/pose | `tier_comparison` |
 | minima with xtb | yes | 5e-1 s/pose | `tier_comparison` |
-| transition state | yes | 2x6N + n_steps grads | `energy_profile` (barrier) + **`imaginary_mode`** (C4's second half) |
+| transition state | yes | 2*(6N+1) + (n_steps+1) grads | `energy_profile` (barrier) + **`imaginary_mode`** (C4's second half) |
 | common substitutions | yes | 2.8 ms enumerate, 214 ms embed | `site_substituent_heatmap`, `grid_with_scores` |
 | toxicology | yes | 9.4 ms/molecule | `liability_profile` |
 | binding energy in site | yes | tier 3/4 above | `site_substituent_heatmap` |
