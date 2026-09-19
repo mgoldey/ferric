@@ -29,7 +29,35 @@ strain in the docked heavy-atom frame is still there.
 
 from __future__ import annotations
 
-__all__ = ["restore_hydrogens"]
+__all__ = ["parse_smiles_idx_remark", "restore_hydrogens"]
+
+
+def parse_smiles_idx_remark(pdbqt_text: str) -> dict[int, int]:
+    """Meeko's `REMARK SMILES IDX` mapping: PDBQT serial -> RDKit index (0-based).
+
+    Returns `{}` when the remark is absent, which a caller must treat as
+    "mapping unknown" rather than "identity".
+
+    **Meeko REORDERS atoms.** MEASURED on aspirin: 10 of 13 heavy atoms come
+    back at a different position than RDKit gave them, and assigning
+    coordinates by list order misplaces an atom by up to **4.9 A**. That is a
+    scrambled molecule scored as if it were the pose -- same atom COUNT, same
+    elements, no error anywhere.
+
+    Meeko writes the remark as pairs across one or more lines:
+
+        REMARK SMILES IDX 5 1 6 2 7 3 8 4 9 5 10 6 4 7 2 8 3 9 1 10 ...
+
+    read as (pdbqt_serial, rdkit_index_1_based).
+    """
+    mapping: dict[int, int] = {}
+    for line in pdbqt_text.splitlines():
+        if not line.startswith("REMARK SMILES IDX"):
+            continue
+        nums = [int(x) for x in line.split()[3:]]
+        for i in range(0, len(nums) - 1, 2):
+            mapping[nums[i]] = nums[i + 1] - 1
+    return mapping
 
 
 def restore_hydrogens(
@@ -38,6 +66,7 @@ def restore_hydrogens(
     heavy_coords: list[tuple[float, float, float]],
     *,
     seed: int = 0xF00D,
+    rdkit_index_of_heavy: list[int] | None = None,
 ) -> tuple[list[str], list[tuple[float, float, float]]]:
     """Return `(symbols, coords)` for the full-hydrogen molecule at this pose.
 
@@ -68,9 +97,37 @@ def restore_hydrogens(
             "hydrogen-count difference"
         )
 
+    # WHICH RDKit atom does each docked coordinate belong to?
+    #
+    # By default, list order -- which is correct only when the pose came back
+    # in the order RDKit built the molecule. IT USUALLY HAS NOT: Meeko reorders
+    # atoms for its torsion tree, MEASURED at 10 of 13 heavy atoms on aspirin,
+    # and a positional assignment then misplaces an atom by up to 4.9 A while
+    # every count and element still matches.
+    #
+    # `rdkit_index_of_heavy[k]` gives the RDKit index for the k-th docked
+    # heavy atom; build it from `parse_smiles_idx_remark`. A caller that cannot
+    # supply it is relying on the order being unchanged, which is a claim about
+    # its own pipeline rather than about this function.
+    if rdkit_index_of_heavy is not None:
+        if len(rdkit_index_of_heavy) != len(docked_heavy):
+            raise ValueError(
+                f"rdkit_index_of_heavy has {len(rdkit_index_of_heavy)} entries "
+                f"for {len(docked_heavy)} docked heavy atoms"
+            )
+        if sorted(rdkit_index_of_heavy) != sorted(heavy_idx):
+            raise ValueError(
+                "rdkit_index_of_heavy is not a permutation of this molecule's "
+                "heavy-atom indices; the mapping and the SMILES disagree about "
+                "which molecule this is"
+            )
+        targets = list(rdkit_index_of_heavy)
+    else:
+        targets = list(heavy_idx)
+
     AllChem.EmbedMolecule(mol, randomSeed=seed)
     conf = mol.GetConformer()
-    for idx, (_, c) in zip(heavy_idx, docked_heavy):
+    for idx, (_, c) in zip(targets, docked_heavy):
         conf.SetAtomPosition(idx, Point3D(*[float(v) for v in c]))
     # Optimise ONLY the hydrogens: the heavy atoms are the docking RESULT and
     # must not move, or the pose being scored is no longer the pose docked.
