@@ -555,11 +555,25 @@ def test_the_qm_mm_dispersion_comment_does_not_claim_missing_code():
         "terms DO exist; see qm_mm_lj_energy_gradient"
     )
 
-    # ...and the function really is there, so this test fails loudly if it is
-    # ever removed rather than silently permitting the old comment again.
+    # ...and the function is both DEFINED and EXPORTED, so this test fails
+    # loudly if it is removed rather than silently permitting the old comment.
+    #
+    # BOTH halves matter. Checking only the definition would pass while the
+    # symbol was unreachable: `energy.rs` is a private module, and dropping the
+    # `pub use` in `lib.rs` makes `ferric_mm::qm_mm_lj_energy_gradient` vanish
+    # from the public API with `pub fn` still sitting in the source. A caller
+    # would then be right that the function "does not exist" for them, which is
+    # exactly the claim this test exists to keep false.
     mm_src = (repo / "crates/ferric-mm/src/energy.rs").read_text()
     assert "pub fn qm_mm_lj_energy_gradient" in mm_src, (
-        "qm_mm_lj_energy_gradient is gone from ferric-mm; if the QM-MM LJ "
-        "arithmetic was genuinely removed, the comment above needs rewriting "
-        "rather than this assertion deleting"
+        "qm_mm_lj_energy_gradient is gone from ferric-mm/src/energy.rs; if the "
+        "QM-MM LJ arithmetic was genuinely removed, the comment above needs "
+        "rewriting rather than this assertion deleting"
+    )
+    mm_lib = (repo / "crates/ferric-mm/src/lib.rs").read_text()
+    assert "qm_mm_lj_energy_gradient" in mm_lib, (
+        "qm_mm_lj_energy_gradient is defined but no longer re-exported from "
+        "ferric-mm/src/lib.rs, so it is not reachable as "
+        "`ferric_mm::qm_mm_lj_energy_gradient`. The arithmetic existing in a "
+        "private module is not the same as a caller being able to use it."
     )
