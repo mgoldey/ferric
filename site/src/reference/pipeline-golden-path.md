@@ -1179,10 +1179,21 @@ C0/C1 QM region + link atoms     ferric.QmmmSystem
 C2    optimize reactant/product  ferric.run_optimize_qmmm
 C3    FIND the transition state  ferric.run_saddle
 C4    verify                     ferric.run_frequencies
-C5    barrier                    arithmetic on C2/C3 energies
+C5    WHICH minima does it join? ferric.run_irc          <- added 2026-09-19
+C6    barrier                    IrcResult.forward_barrier() / reverse_barrier()
 
-C4a count   : 1 mode, 0 imaginary (H2 at equilibrium IS a minimum)
-C4b vectors : normal_modes present, 1x6 -- 3N components per mode
+C0-C5 EXECUTED from Python, not inspected for attributes (2026-09-19),
+NH3 umbrella inversion at STO-3G:
+
+  saddle   converged, n_imaginary = 1, is_transition_state() = True
+  IRC      -0.4257 / +0.4257 A pyramidalisation, both branches converged
+  barrier  11.142 kcal/mol, symmetric to 3 decimals
+
+The SIGN is the load-bearing check, not the energy. NH3's two pyramidal
+minima are mirror images, so a walk that went the same way twice -- the
+most likely direction bug -- gives the same energy with the SAME SIGN.
+Only the sign test catches it, and it is MUTATION-VERIFIED through the
+Python layer.
 ```
 
 Pinned by `crates/ferric-python/tests/test_saddle.py`, and mutation-tested:

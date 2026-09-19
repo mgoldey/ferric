@@ -6621,6 +6621,67 @@ fn _cli_main(py: Python<'_>) -> PyResult<()> {
 
 // ── Module ──
 
+/// One direction of an IRC walk.
+#[pyclass(name = "IrcBranch")]
+#[derive(Clone)]
+struct PyIrcBranch {
+    /// Symbols at the endpoint.
+    #[pyo3(get)]
+    symbols: Vec<String>,
+    /// Endpoint coordinates in ANGSTROM.
+    #[pyo3(get)]
+    coords: Vec<(f64, f64, f64)>,
+    #[pyo3(get)]
+    energy: f64,
+    #[pyo3(get)]
+    steps: usize,
+    /// `True` if the gradient threshold was met; `False` if the step budget
+    /// ran out first.
+    ///
+    /// A `False` here means the endpoint is NOT a basin and this branch
+    /// identifies no minimum -- it is a partial path, and the pair of
+    /// endpoints must not be read as "the reaction".
+    #[pyo3(get)]
+    converged: bool,
+}
+
+/// Both directions of an IRC, plus the saddle they came from.
+#[pyclass(name = "IrcResult")]
+#[derive(Clone)]
+struct PyIrcResult {
+    /// The `+mode` direction.
+    #[pyo3(get)]
+    forward: PyIrcBranch,
+    /// The `-mode` direction.
+    #[pyo3(get)]
+    reverse: PyIrcBranch,
+    /// Energy at the saddle, for a barrier against each endpoint.
+    #[pyo3(get)]
+    saddle_energy: f64,
+}
+
+#[pymethods]
+impl PyIrcResult {
+    /// Barrier from the forward endpoint up to the saddle, in Hartree.
+    fn forward_barrier(&self) -> f64 {
+        self.saddle_energy - self.forward.energy
+    }
+
+    /// Barrier from the reverse endpoint up to the saddle, in Hartree.
+    fn reverse_barrier(&self) -> f64 {
+        self.saddle_energy - self.reverse.energy
+    }
+
+    /// Did BOTH directions reach a basin?
+    ///
+    /// Only then do the two endpoints answer "which minima does this saddle
+    /// connect?". One unconverged branch leaves one side unidentified, and the
+    /// result must not be read as a reaction.
+    fn both_converged(&self) -> bool {
+        self.forward.converged && self.reverse.converged
+    }
+}
+
 /// Outcome of a P-RFO transition-state search.
 #[pyclass(name = "SaddleResult")]
 #[derive(Clone)]
@@ -6854,6 +6915,161 @@ fn run_saddle(
     })
 }
 
+/// Follow the intrinsic reaction coordinate off a saddle, both directions.
+///
+/// Answers the question `run_saddle` cannot: **which two minima does this
+/// saddle connect?** One imaginary mode proves a geometry is a first-order
+/// saddle; it does not prove it is the saddle you meant. A methyl rotor gives
+/// one imaginary mode exactly as a bond-breaking coordinate does.
+///
+/// `mode` is the 3N Cartesian eigenvector -- pass `SaddleResult.imaginary_mode`
+/// straight through. It is mass-weighted and normalised internally, so its
+/// input scale does not matter; its DIRECTION does, and `forward` is `+mode`.
+///
+/// Cost: MEASURED ~71 gradients per branch on NH3 inversion, so ~142 for the
+/// pair. That is over half a TS search again -- budget the two together.
+///
+/// Closed-shell only, matching `run_saddle`: the callbacks here are the same
+/// restricted ones, so an open-shell request is refused rather than answered
+/// with the wrong reference.
+#[pyfunction]
+#[pyo3(signature = (
+    mol, basis_name, mode, xc=None, multiplicity=None,
+    step=None, max_steps=None, g_max_thresh=None, initial_displacement=None,
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_irc(
+    mol: &PyMolecule,
+    basis_name: &str,
+    mode: Vec<f64>,
+    xc: Option<&str>,
+    multiplicity: Option<u32>,
+    step: Option<f64>,
+    max_steps: Option<usize>,
+    g_max_thresh: Option<f64>,
+    initial_displacement: Option<f64>,
+) -> PyResult<PyIrcResult> {
+    use ferric_scf::gradient::rhf_gradient;
+    use ferric_scf::irc::{follow_irc, IrcConfig};
+    use ferric_scf::rhf::solve_rhf;
+    use ferric_scf::screening::SchwarzBounds;
+
+    let mut m = mol.inner.clone();
+    if let Some(mult) = multiplicity {
+        m.multiplicity = mult as usize;
+    }
+    // Same restriction, and the same reason, as `run_saddle`: the callback
+    // below is `solve_rhf` plus a closed-shell gradient, so an open-shell
+    // request would be answered with a closed-shell reference.
+    if m.multiplicity != 1 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "run_irc currently supports closed-shell (multiplicity = 1) \
+             references only; got multiplicity = {}.",
+            m.multiplicity
+        )));
+    }
+    // ECP before the first SCF -- it changes the electron count, so a path
+    // walked without it is a path on a different molecule.
+    {
+        let bs = ferric_core::basis::bundled(basis_name).map_err(make_err)?;
+        m.apply_ecp(&bs);
+    }
+
+    let scf_cfg = RhfConfig {
+        xc: xc.map(|s| s.to_string()),
+        ..Default::default()
+    };
+    let mut cfg = IrcConfig::default();
+    if let Some(v) = step {
+        cfg.step = v;
+    }
+    if let Some(v) = max_steps {
+        cfg.max_steps = v;
+    }
+    if let Some(v) = g_max_thresh {
+        cfg.g_max_thresh = v;
+    }
+    if let Some(v) = initial_displacement {
+        cfg.initial_displacement = v;
+    }
+
+    let op = Operator::coulomb();
+    let basis = basis_name.to_string();
+    let eg = move |mm: &ferric_core::mol::Molecule| {
+        let bs = ferric_core::basis::bundled(&basis)?;
+        let prep = PreparedBasis::new(mm, &bs)?;
+        let bounds = SchwarzBounds::compute(op, &prep)?;
+        let res = solve_rhf(
+            &ParallelContext::default(),
+            mm,
+            &prep,
+            op,
+            &bounds,
+            &scf_cfg,
+        )?;
+        if !res.converged {
+            return Err(ferric_core::FerricError::General(
+                "IRC: the SCF did not converge at this point on the path, so its \
+                 energy and gradient are not on the potential surface."
+                    .to_string(),
+            ));
+        }
+        // KS energy needs the KS gradient. Pairing `solve_rhf`'s XC energy
+        // with `rhf_gradient` would walk one surface while reporting another.
+        let g = if let Some(xc_name) = scf_cfg.xc.as_deref() {
+            ks_gradient_closed(
+                mm,
+                &prep,
+                &bs,
+                op,
+                &bounds,
+                xc_name,
+                &res,
+                scf_cfg.external_potential.as_ref(),
+            )?
+        } else {
+            rhf_gradient(
+                mm,
+                &prep,
+                op,
+                &bounds,
+                &res,
+                scf_cfg.external_potential.as_ref(),
+            )?
+        };
+        Ok((res.energy, ndarray::Array1::from_iter(g.iter().copied())))
+    };
+
+    let r = follow_irc(&m, &ndarray::Array1::from_vec(mode), &cfg, eg).map_err(make_err)?;
+
+    // Same value as run_saddle's local const. Both convert Bohr (ferric's
+    // internal unit) to the Angstrom the Python surface uses.
+    const BOHR_TO_ANGSTROM: f64 = 0.529_177_210_903;
+    let to_branch = |b: ferric_scf::irc::IrcBranch| PyIrcBranch {
+        symbols: b.mol.atoms.iter().map(|a| a.symbol.clone()).collect(),
+        coords: b
+            .mol
+            .atoms
+            .iter()
+            .map(|a| {
+                (
+                    a.x * BOHR_TO_ANGSTROM,
+                    a.y * BOHR_TO_ANGSTROM,
+                    a.zpos * BOHR_TO_ANGSTROM,
+                )
+            })
+            .collect(),
+        energy: b.energy,
+        steps: b.steps,
+        converged: b.converged,
+    };
+    Ok(PyIrcResult {
+        forward: to_branch(r.forward),
+        reverse: to_branch(r.reverse),
+        saddle_energy: r.saddle_energy,
+    })
+}
+
 /// Python bindings for ferric (pyo3).
 ///
 /// Exposes the engine to Python: `Molecule` / `BasisSet` constructors plus
@@ -6945,7 +7161,10 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_optimize_qmmm, m)?)?;
     m.add_function(wrap_pyfunction!(run_frequencies, m)?)?;
     m.add_function(wrap_pyfunction!(run_saddle, m)?)?;
+    m.add_function(wrap_pyfunction!(run_irc, m)?)?;
     m.add_class::<PySaddleResult>()?;
+    m.add_class::<PyIrcBranch>()?;
+    m.add_class::<PyIrcResult>()?;
     m.add_function(wrap_pyfunction!(esp_at_atoms, m)?)?;
     m.add_function(wrap_pyfunction!(esp_at_points, m)?)?;
     m.add_function(wrap_pyfunction!(hirshfeld_charges, m)?)?;
