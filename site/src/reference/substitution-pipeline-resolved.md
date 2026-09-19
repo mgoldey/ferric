@@ -72,8 +72,11 @@ and N-methyl far higher because their noise is almost entirely common. What
 crosses the 1-2 kcal/mol line is the ABSOLUTE paired SEM, which is a
 cross-experiment comparison and is labelled as one.
 
-`var(ddE_paired) = 2*sd^2*(1-rho)`, so the win is entirely in `rho`, and `rho`
-is what a pocket could destroy. Note that a shared random SEED is not a pairing:
+`var(ddE_paired) = sd_A^2 + sd_B^2 - 2*rho*sd_A*sd_B`, which is the familiar
+`2*sd^2*(1-rho)` only when the two spreads are EQUAL (they are here, to a few
+percent). So the win is essentially all in `rho`, and `rho` is what a pocket
+could destroy -- when the spreads differ the scale terms move the variance too,
+and the ratio stops being a function of `rho` alone. Note that a shared random SEED is not a pairing:
 ETKDG with the same seed on two different graphs gives uncorrelated conformers.
 The pairing must be geometric -- pose k of the analogue BUILT FROM pose k of the
 parent.
