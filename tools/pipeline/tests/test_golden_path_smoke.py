@@ -186,3 +186,63 @@ def test_a_rejected_candidate_carries_no_value_at_all():
     assert "fragment" in res.error.lower(), (
         f"the failure should name the reason, got {res.error!r}"
     )
+
+
+def test_the_full_funnel_reaches_tier_4_and_produces_a_survivor():
+    """FF -> xtb -> DFT, end to end, with a real energy at the end.
+
+    M10 ran the four-tier stack on danuglipron and tier 4 returned **0 of 5**.
+    Two bugs, both since fixed: the driver declared `net_charge=-1` on NEUTRAL
+    structures (asking for an electron that does not exist), and ring
+    contractions that SEVER a ring produced undockable fragment pairs.
+
+    Both have unit tests. What did NOT exist until now is a run of the whole
+    stack SINCE the fixes -- so "tier 4 works" rested on per-bug coverage
+    rather than on a completed funnel. This is that run, on molecules small
+    enough (~1.7 s total) to belong in the fast tier.
+
+    Asserts the COMPOSITION reaches the last tier with something in hand:
+
+        FORCE_FIELD    3 -> 3   failed 0
+        SEMIEMPIRICAL  3 -> 2   failed 0
+        QUANTUM        2 -> 1   failed 0     <- the step that used to be 0
+
+    The chemistry is irrelevant; a survivor carrying a real DFT energy is the
+    claim.
+    """
+    from tools.campaign.hierarchy import Tier
+    from tools.pipeline.tiers import tier3_gfn2, tier4_dft
+
+    try:
+        from tools.campaign.xtb_engine import verify_xtb_build
+    except ImportError:  # pragma: no cover -- environment
+        pytest.skip("xtb engine unavailable")
+    ok, err = verify_xtb_build()
+    if not ok:
+        pytest.skip(f"xtb unusable: {err}")
+
+    cands = [Isomer(s, s, "none", s) for s in ("CCO", "CC(=O)O", "CCN")]
+    stages = [
+        Stage(Tier.FORCE_FIELD, tier2_forcefield, keep=3, name="ff"),
+        Stage(Tier.SEMIEMPIRICAL, tier3_gfn2, keep=2, name="xtb"),
+        Stage(Tier.QUANTUM, tier4_dft, keep=1, name="dft"),
+    ]
+    rep = run_funnel(cands, stages, {"seed": 0xF00D, "basis": "sto-3g"})
+
+    by_tier = {o.tier.name: o for o in rep.outcomes}
+    assert "QUANTUM" in by_tier, (
+        "the funnel never reached tier 4; it stopped at "
+        f"{[o.tier.name for o in rep.outcomes]}"
+    )
+    q = by_tier["QUANTUM"]
+    assert q.n_in > 0, "tier 4 received nothing -- an earlier tier emptied the funnel"
+    assert q.n_out > 0, (
+        f"tier 4 produced NO survivors ({q.n_failed} failed) -- this is the exact "
+        "M10 failure mode, and it is what this test exists to catch"
+    )
+
+    assert rep.survivors, "the funnel produced no survivors"
+    for iso in rep.survivors:
+        e = rep.value("dft", iso.canonical)
+        assert e is not None, f"{iso.canonical} survived tier 4 with no energy"
+        assert e < 0.0, f"an electronic energy must be negative, got {e}"
