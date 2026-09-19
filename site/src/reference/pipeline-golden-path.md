@@ -340,7 +340,7 @@ bargain.
 | does the pocket field change it? | + `external_potential` | **~1.0x** the gas-phase SP (MEASURED) | embedding is essentially free | **use it** -- no reason not to |
 | where is the transition state? | `saddle::find_saddle` | 2*(6N+1) + (n_steps+1) gradients | converges on a known saddle; refuses a minimum's basin | **use it** |
 | is this really a TS? | `harmonic_frequencies` | 6N+1 gradients | exactly-one-imaginary check, from Rust AND Python | **use it** |
-| which two minima does it connect? | `irc::follow_irc` | ~70 gradients/branch (MEASURED, NH3) | mass-weighted steepest descent both ways; endpoints step-size independent to 4 decimals | **use it** |
+| which two minima does it connect? | `irc::follow_irc` | ~70 gradients/branch (MEASURED, NH3) | mass-weighted steepest descent both ways; endpoints agreed to 4 decimals across step 0.15/0.05/0.02, ASSERTED to a 0.02 Bohr band | **use it** |
 | is this molecule a liability? | `tools/tox` alerts | 9.4 ms/molecule | published alert sets, NOT a probability of harm | **use it as a FLAG** |
 
 **The row that matters most is the one with no method.** Four pose protocols
@@ -1182,8 +1182,11 @@ C4    verify                     ferric.run_frequencies
 C5    WHICH minima does it join? ferric.run_irc          <- added 2026-09-19
 C6    barrier                    IrcResult.forward_barrier() / reverse_barrier()
 
-C0-C5 EXECUTED from Python, not inspected for attributes (2026-09-19),
-NH3 umbrella inversion at STO-3G:
+C3 -> C5 EXECUTED from Python (2026-09-19), NH3 umbrella inversion at
+STO-3G. SCOPE: this runs `run_saddle` and `run_irc` only -- it does NOT
+build a QmmmSystem (C0/C1), call run_optimize_qmmm (C2), or call
+run_frequencies (C4). Those have their own coverage; an earlier version
+of this block said "C0-C5" and overclaimed a chain test:
 
   saddle   converged, n_imaginary = 1, is_transition_state() = True
   IRC      -0.4257 / +0.4257 A pyramidalisation, both branches converged

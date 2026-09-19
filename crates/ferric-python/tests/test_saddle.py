@@ -123,11 +123,21 @@ def test_C4_has_BOTH_halves_from_python():
     )
 
 
-def test_the_catalyst_chain_C0_to_C5_runs_FROM_PYTHON():
-    """C0-C5 end to end, executed rather than inspected for attributes.
+def test_the_saddle_to_IRC_handoff_runs_FROM_PYTHON():
+    """C3 -> C5, executed rather than inspected for attributes.
+
+    SCOPE, stated because the earlier name overclaimed it: this exercises
+    `run_saddle` and `run_irc` and NOTHING ELSE. It does not build a
+    `QmmmSystem` (C0/C1), does not call `run_optimize_qmmm` (C2), and does not
+    call `run_frequencies` (C4). Those have their own coverage; naming this
+    "C0-C5" implied a chain test it is not.
+
+    What it DOES cover is the handoff -- the saddle's geometry and its
+    imaginary mode flowing into the IRC -- which is the join no other test
+    touches.
 
     The failure this guards is a step that lands in Rust and never reaches the
-    language `tools/` is written in. It has now happened three times: C3 until
+    language `tools/` is written in. It has happened three times: C3 until
     `run_saddle` was bound, C4's mode vectors until #97, and C5 (the IRC) until
     `run_irc` -- each time the chain READ as complete because the capability
     existed somewhere.
@@ -163,12 +173,33 @@ def test_the_catalyst_chain_C0_to_C5_runs_FROM_PYTHON():
     )
     assert sad.imaginary_mode is not None and len(sad.imaginary_mode) == 12
 
+    # Build the IRC input from the SEARCH RESULT, not from the hand-written
+    # `planar` string.
+    #
+    # Passing `planar` made this test pass `sad.imaginary_mode` while silently
+    # ignoring `sad.coords` -- so the saddle-to-IRC handoff was never
+    # exercised, and `run_irc` recomputed `saddle_energy` at a geometry the
+    # search had not produced. The test would have passed with `sad.coords`
+    # returning anything at all.
+    found = "{}\nfound saddle\n{}\n".format(
+        len(sad.symbols),
+        "\n".join(
+            f"{s} {x:.8f} {y:.8f} {z:.8f}"
+            for s, (x, y, z) in zip(sad.symbols, sad.coords)
+        ),
+    )
     irc = ferric.run_irc(
-        ferric.Molecule.from_xyz_string(planar, 0, 1),
+        ferric.Molecule.from_xyz_string(found, 0, 1),
         "sto-3g",
         sad.imaginary_mode,
         step=0.15,
         max_steps=120,
+    )
+    # The IRC's saddle energy must be the one the SEARCH found, not some other
+    # geometry's. This is the assertion that makes the handoff checkable.
+    assert abs(irc.saddle_energy - sad.energy) < 1e-8, (
+        f"run_irc recomputed the saddle at {irc.saddle_energy} but the search "
+        f"returned {sad.energy} -- the geometry handoff is broken"
     )
     assert irc.both_converged(), (
         f"C5: fwd converged={irc.forward.converged} "
