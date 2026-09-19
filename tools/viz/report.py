@@ -74,7 +74,7 @@ class CampaignFigures:
 
 def campaign_report(
     *,
-    ddE_noise: float,
+    ddE_noise: float | dict[tuple[str, str], float],
     funnel_stages: Sequence[str] | None = None,
     funnel_counts: Sequence[int] | None = None,
     ddE: dict[tuple[str, str], float | None] | None = None,
@@ -103,9 +103,39 @@ def campaign_report(
         site_substituent_heatmap,
     )
 
-    if not (isinstance(ddE_noise, (int, float)) and ddE_noise > 0):
+    if isinstance(ddE_noise, dict):
+        # A PER-CANDIDATE floor, which a paired estimator needs: its noise
+        # tracks rho and varies per substituent (MEASURED 0.221 at rho 0.860 vs
+        # 0.615 at rho 0.399, RESULTS.md M17). Every entry must still be a
+        # positive number -- a None or a zero would read as "resolved at any
+        # magnitude", which is the opposite of an unmeasured floor.
+        if not ddE_noise:
+            raise ValueError(
+                "ddE_noise is an empty mapping. Pass the measured floor for at "
+                "least one (substituent, site), or a scalar for the whole "
+                "campaign; an empty mapping greys nothing and silently licenses "
+                "the ordering this argument exists to prevent."
+            )
+        bad = {
+            k: v
+            for k, v in ddE_noise.items()
+            if not (isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0)
+        }
+        if bad:
+            raise ValueError(
+                f"every ddE_noise entry must be a positive number; bad entries: "
+                f"{bad!r}. A zero or None floor marks a cell as resolved at any "
+                "magnitude -- if a candidate's floor was not measured, LEAVE IT "
+                "OUT, which renders as unbounded rather than as perfect."
+            )
+    elif not (
+        isinstance(ddE_noise, (int, float))
+        and not isinstance(ddE_noise, bool)
+        and ddE_noise > 0
+    ):
         raise ValueError(
-            f"ddE_noise must be a positive number, got {ddE_noise!r}. It is the "
+            f"ddE_noise must be a positive number, or a per-(substituent, site) "
+            f"mapping of them, got {ddE_noise!r}. It is the "
             "MEASURED resolution limit of the protocol that produced these "
             "numbers; there is no sensible default, and omitting it would let a "
             "reader order candidates the data cannot separate."
@@ -159,7 +189,7 @@ def _build(
     figs: CampaignFigures,
     caveats: list[str],
     *,
-    ddE_noise: float,
+    ddE_noise,
     funnel_stages,
     funnel_counts,
     ddE,
@@ -180,18 +210,43 @@ def _build(
 
     if ddE:
         figs.heatmap = site_substituent_heatmap(ddE, unit=unit, noise_floor=ddE_noise)
-        real = [v for v in ddE.values() if v is not None]
-        below = [v for v in real if abs(v) < ddE_noise]
+
+        # THE CAVEATS MUST BE COMPUTED PER CELL, not against one number.
+        # With a mapping, "is this inside the floor?" has a different answer per
+        # candidate, and a cell whose floor was never measured is neither inside
+        # nor outside -- it is UNBOUNDED, and saying so is the point.
+        def _floor(key):
+            if isinstance(ddE_noise, dict):
+                return ddE_noise.get(key)
+            return ddE_noise
+
+        real = [(k, v) for k, v in ddE.items() if v is not None]
+        below = [
+            (k, v) for k, v in real if (_floor(k) is not None and abs(v) < _floor(k))
+        ]
+        unbounded = [k for k, _ in real if _floor(k) is None]
+        if unbounded:
+            caveats.append(
+                f"{len(unbounded)} of {len(real)} cells have NO measured noise "
+                "floor and are drawn ungreyed. Ungreyed here means UNMEASURED, "
+                "not resolved -- do not read an ordering across them."
+            )
+        floor_desc = (
+            f"{min(v for v in ddE_noise.values()):g}-"
+            f"{max(v for v in ddE_noise.values()):g} (per-candidate)"
+            if isinstance(ddE_noise, dict)
+            else f"{ddE_noise:g}"
+        )
         if real and len(below) == len(real):
             caveats.append(
-                f"EVERY ddE ({len(real)}/{len(real)}) is inside the {ddE_noise:g} "
+                f"EVERY ddE ({len(real)}/{len(real)}) is inside the {floor_desc} "
                 f"{unit} noise floor. The heatmap shows WHICH substitutions were "
                 "tried, not which are better. Do not order them."
             )
         elif below:
             caveats.append(
                 f"{len(below)} of {len(real)} ddE values are inside the "
-                f"{ddE_noise:g} {unit} noise floor and are greyed; only the "
+                f"{floor_desc} {unit} noise floor and are greyed; only the "
                 "others carry an ordering."
             )
         # The site axis is a separate, harder limit than the noise floor.
@@ -224,11 +279,17 @@ def _build(
             # "sd >> floor" check would FALSE-ALARM here at 6.1x. The number
             # that matters is the implied n, not the ratio.
             sd_max = max(spreads)
-            implied_n = 2.0 * (sd_max / ddE_noise) ** 2
+            # With a per-candidate mapping there is no single floor to invert,
+            # so use the SMALLEST (the most optimistic claim on offer) -- that
+            # is the one whose implied pose count is hardest to justify.
+            floor_for_n = (
+                min(ddE_noise.values()) if isinstance(ddE_noise, dict) else ddE_noise
+            )
+            implied_n = 2.0 * (sd_max / floor_for_n) ** 2
             largest = max(len([x for x in v if x is not None]) for v in poses.values())
             if implied_n > 10 * max(largest, 1):
                 caveats.append(
-                    f"The stated {ddE_noise:g} {unit} floor implies averaging over "
+                    f"The stated {floor_for_n:g} {unit} floor implies averaging over "
                     f"~{implied_n:.0f} poses, but the largest ensemble here has "
                     f"{largest}. Either the floor came from a much bigger run, or "
                     "it is optimistic for THESE poses (per-pose sd "

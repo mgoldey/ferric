@@ -310,3 +310,66 @@ def test_the_irc_carries_its_OWN_unit_not_the_campaign_ddE_unit():
     text2 = " ".join(t.get_text() for t in figs2.reaction.axes[0].texts)
     assert "11.1" in text2, f"an explicit kcal/mol unit must be honoured: {text2!r}"
     figs2.close()
+
+
+# --- per-candidate noise floor in the report (M17) ----------------------------
+
+
+def test_report_accepts_a_per_candidate_mapping():
+    from tools.viz.report import campaign_report
+
+    figs = campaign_report(
+        ddE_noise={("F", "S1"): 0.221, ("Cl", "S1"): 0.615},
+        ddE={("F", "S1"): 0.4, ("Cl", "S1"): 0.4},
+    )
+    assert figs.heatmap is not None
+    # 0.4 is resolved for F (0.221) and greyed for Cl (0.615) -- so exactly one
+    # of two is below, and the caveat must say "1 of 2", not "every".
+    joined = " ".join(figs.caveats)
+    assert "1 of 2" in joined, joined
+    assert "per-candidate" in joined, joined
+    figs.close()
+
+
+def test_report_flags_cells_with_NO_measured_floor_as_unmeasured():
+    """Ungreyed must not read as resolved when the floor was never measured."""
+    from tools.viz.report import campaign_report
+
+    figs = campaign_report(
+        ddE_noise={("F", "S1"): 0.221},
+        ddE={("F", "S1"): 0.4, ("Br", "S1"): 0.4},
+    )
+    joined = " ".join(figs.caveats)
+    assert "NO measured noise" in joined and "UNMEASURED" in joined, joined
+    figs.close()
+
+
+def test_report_rejects_a_zero_or_none_floor_inside_a_mapping():
+    """A zero floor marks a cell resolved at ANY magnitude -- the worst default."""
+    import pytest
+
+    from tools.viz.report import campaign_report
+
+    for bad in (0.0, -1.0, None, True):
+        with pytest.raises(ValueError, match="positive number"):
+            campaign_report(ddE_noise={("F", "S1"): bad}, ddE={("F", "S1"): 0.4})
+
+
+def test_report_rejects_an_empty_mapping():
+    import pytest
+
+    from tools.viz.report import campaign_report
+
+    with pytest.raises(ValueError, match="empty mapping"):
+        campaign_report(ddE_noise={}, ddE={("F", "S1"): 0.4})
+
+
+def test_a_scalar_floor_behaves_exactly_as_before():
+    """The existing contract must not move."""
+    from tools.viz.report import campaign_report
+
+    figs = campaign_report(ddE_noise=4.07, ddE={("F", "S1"): 0.4, ("Cl", "S1"): 0.4})
+    joined = " ".join(figs.caveats)
+    assert "EVERY ddE (2/2)" in joined and "4.07" in joined, joined
+    assert "per-candidate" not in joined
+    figs.close()
