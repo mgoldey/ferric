@@ -42,6 +42,7 @@ __all__ = [
     "tier_comparison",
     "site_substituent_heatmap",
     "pose_ensemble",
+    "liability_profile",
 ]
 
 #: Hartree -> kcal/mol. The one conversion this module performs, named so a
@@ -498,6 +499,104 @@ def pose_ensemble(
     ax.set_xticklabels(names, rotation=30, ha="right", fontsize=9)
     ax.set_ylabel(f"score ({unit})")
     ax.set_title(title)
+    ax.grid(axis="y", alpha=0.3)
+    ax.legend(frameon=False, fontsize=9)
+    fig.tight_layout()
+    return fig
+
+
+def liability_profile(
+    endpoints_by_candidate: dict[str, dict[str, tuple[float | None, bool]]],
+    *,
+    title: str = "Liability profile vs parent",
+    parent: str | None = None,
+):
+    """Toxicity/liability endpoints per candidate, oriented so WORSE is up.
+
+    `endpoints_by_candidate[candidate][endpoint] = (value, higher_is_worse)`.
+    The polarity flag is REQUIRED per endpoint, mirroring `tools.tox.model`'s
+    `ToxEndpoint.higher_is_worse`, which deliberately has no default: a wrong
+    polarity silently inverts a safety ranking, and a plot inverts it just as
+    silently as a table. Endpoints with `higher_is_worse=False` are negated
+    before plotting, and the axis says so.
+
+    `value is None` means the source could not produce that endpoint. It is
+    drawn as a GAP, never as 0.0 -- for a probability-valued endpoint 0.0 means
+    "confidently predicted negative", the opposite of "unknown". That is
+    `ToxEndpoint`'s own rule and this honours it.
+
+    `parent=` plots that candidate as a dashed reference line, because a
+    liability readout is only interpretable RELATIVE to the compound you are
+    trying to improve on -- the same argument the pipeline makes for ddE.
+
+    This does NOT aggregate endpoints into a score. An alert set is a
+    literature flag, not a probability of harm (see `tools/tox/alerts.py`), and
+    summing flags of different provenance into one number is exactly the
+    laundering that docstring warns against.
+    """
+    if not endpoints_by_candidate:
+        raise ValueError("nothing to plot")
+    names = list(endpoints_by_candidate)
+    if parent is not None and parent not in names:
+        raise ValueError(
+            f"parent {parent!r} is not among the candidates {names} -- a "
+            "reference line must refer to something that was measured"
+        )
+    endpoints = sorted({e for d in endpoints_by_candidate.values() for e in d})
+    if not endpoints:
+        raise ValueError("no endpoints in any candidate")
+
+    # Polarity must be CONSISTENT across candidates, or the same endpoint gets
+    # flipped for one compound and not another -- a silent sign error.
+    polarity: dict[str, bool] = {}
+    for cand, d in endpoints_by_candidate.items():
+        for ep, (_, worse) in d.items():
+            if ep in polarity and polarity[ep] != worse:
+                raise ValueError(
+                    f"endpoint {ep!r} is declared higher_is_worse={polarity[ep]} for "
+                    f"one candidate and {worse} for {cand!r}. One of them is wrong, "
+                    "and plotting it would invert that endpoint for half the set."
+                )
+            polarity[ep] = worse
+
+    plt = _plt()
+    fig, ax = plt.subplots(figsize=(max(6.0, 0.9 * len(endpoints) + 3), 4.4))
+    xs = list(range(len(endpoints)))
+    n_gap = 0
+    for cand in names:
+        d = endpoints_by_candidate[cand]
+        ys: list[float | None] = []
+        for ep in endpoints:
+            v = d.get(ep, (None, polarity[ep]))[0]
+            if v is None:
+                ys.append(None)
+                n_gap += 1
+            else:
+                # Orient so UP is always worse.
+                ys.append(v if polarity[ep] else -v)
+        real = [(i, y) for i, y in enumerate(ys) if y is not None]
+        if not real:
+            continue
+        style = (
+            {"ls": "--", "lw": 2.0, "color": "#333333"}
+            if cand == parent
+            else {"lw": 1.4}
+        )
+        ax.plot(
+            [i for i, _ in real],
+            [y for _, y in real],
+            marker="o",
+            ms=5,
+            label=f"{cand} (parent)" if cand == parent else cand,
+            **style,
+        )
+
+    ax.set_xticks(xs)
+    ax.set_xticklabels(endpoints, rotation=35, ha="right", fontsize=9)
+    ax.set_ylabel("liability (UP = worse; lower-is-worse endpoints negated)")
+    ax.set_title(
+        title if not n_gap else f"{title}  ({n_gap} unevaluated, shown as gaps)"
+    )
     ax.grid(axis="y", alpha=0.3)
     ax.legend(frameon=False, fontsize=9)
     fig.tight_layout()

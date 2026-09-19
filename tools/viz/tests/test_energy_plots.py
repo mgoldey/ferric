@@ -19,6 +19,7 @@ from tools.viz.energy_plots import (
     SeriesPoint,
     energy_profile,
     funnel_survival,
+    liability_profile,
     pose_ensemble,
     site_substituent_heatmap,
     tier_comparison,
@@ -280,3 +281,61 @@ def test_pose_ensemble_handles_a_candidate_with_no_usable_poses():
 def test_pose_ensemble_refuses_an_empty_input():
     with pytest.raises(ValueError, match="nothing to plot"):
         pose_ensemble({})
+
+
+# --- liability profile -------------------------------------------------------
+
+
+def test_lower_is_worse_endpoints_are_negated_so_up_is_always_worse():
+    """A mixed-polarity panel plotted raw inverts half its endpoints.
+
+    `ToxEndpoint.higher_is_worse` has no default precisely because a wrong
+    polarity silently flips a safety ranking. A plot flips it just as silently,
+    so this asserts the orientation rather than trusting it.
+    """
+    fig = liability_profile({"a": {"hERG": (0.8, True), "solubility": (0.2, False)}})
+    ys = [float(v) for ln in fig.axes[0].get_lines() for v in ln.get_ydata() if v == v]
+    assert 0.8 in ys, "a higher-is-worse endpoint must plot as-is"
+    assert -0.2 in ys, "a lower-is-worse endpoint must be negated"
+    assert "UP = worse" in fig.axes[0].get_ylabel()
+
+
+def test_inconsistent_polarity_across_candidates_is_an_error():
+    """The same endpoint flipped for one compound and not another is a sign bug."""
+    with pytest.raises(ValueError, match="higher_is_worse"):
+        liability_profile(
+            {
+                "a": {"hERG": (0.8, True)},
+                "b": {"hERG": (0.5, False)},
+            }
+        )
+
+
+def test_an_unavailable_endpoint_is_a_gap_not_a_confident_zero():
+    """For a probability endpoint 0.0 means "confidently negative", not "unknown"."""
+    fig = liability_profile(
+        {"a": {"hERG": (0.8, True), "ames": (None, True), "clint": (0.3, True)}}
+    )
+    ys = [float(v) for ln in fig.axes[0].get_lines() for v in ln.get_ydata() if v == v]
+    assert 0.0 not in ys, "the None endpoint must not be plotted at zero"
+    assert sorted(ys) == pytest.approx([0.3, 0.8])
+    assert "unevaluated" in fig.axes[0].get_title()
+
+
+def test_the_parent_is_drawn_as_a_reference_and_must_exist():
+    """A liability readout only means something relative to what you improve on."""
+    data = {"parent": {"hERG": (0.5, True)}, "analogue": {"hERG": (0.3, True)}}
+    fig = liability_profile(data, parent="parent")
+    dashed = [ln for ln in fig.axes[0].get_lines() if ln.get_linestyle() == "--"]
+    assert len(dashed) == 1, "the parent must be visually distinct"
+    assert any("parent" in str(ln.get_label()) for ln in fig.axes[0].get_lines())
+
+    with pytest.raises(ValueError, match="not among the candidates"):
+        liability_profile(data, parent="nonexistent")
+
+
+def test_liability_profile_refuses_empty_inputs():
+    with pytest.raises(ValueError, match="nothing to plot"):
+        liability_profile({})
+    with pytest.raises(ValueError, match="no endpoints"):
+        liability_profile({"a": {}})

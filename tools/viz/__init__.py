@@ -2,8 +2,9 @@
 
 Two modules, split by what they need:
 
-- `energy_plots` — matplotlib figures for funnels, reaction/scan paths and
-  tier-vs-tier comparisons. Needs matplotlib only.
+- `energy_plots` — matplotlib figures for funnels, reaction/scan paths,
+  tier-vs-tier comparisons, (substituent, site) ddE heatmaps, pose ensembles
+  and liability profiles. Needs matplotlib only.
 - `molecules` — 2-D structure depictions with substitution highlighting. Needs
   RDKit, which lives in the `docking` extra.
 
