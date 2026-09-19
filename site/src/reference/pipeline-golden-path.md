@@ -8,6 +8,11 @@ scoped this) and `golden-path-qmmm-pipeline.md` (the full QM/MM tier design).
 
 ## STATUS AS OF 2026-09-19 — what has landed on main since this was written
 
+**C3 (transition-state search) is MERGED (#106) and now DEMONSTRATED under QM/MM
+embedding, not merely reachable.** The TS cost model was also corrected from
+`2*6N + n_steps` to `2*(6N+1) + (n_steps+1)` (#110) -- a constant +3, so no
+conclusion moves, but the tables below are each 3 low.
+
 This document was written against a main where several of its blockers were
 live. Ten PRs have merged since. VERIFIED against `origin/main` just now:
 
@@ -26,11 +31,15 @@ live. Ten PRs have merged since. VERIFIED against `origin/main` just now:
 
 STILL OPEN, and these are the real remaining gaps:
 
-- ~~**No saddle search.**~~ **CLOSED 2026-09-19** (`feat/saddle-prfo`, not yet
-  merged): `ferric_scf::saddle::find_saddle`, P-RFO with a Bofill update.
-  C0-C5 is complete in principle. Still to do: wire it to the QM/MM evaluator
-  (item 0 in section 5), and note there is no IRC, so which two minima a saddle
-  connects remains unverified. Section 4 has the full scope.
+- ~~**No saddle search.**~~ **CLOSED AND MERGED 2026-09-19** (#106):
+  `ferric_scf::saddle::find_saddle`, P-RFO with a Bofill update. C0-C5 is
+  complete, and it is now WIRED TO AND DEMONSTRATED ON the QM/MM evaluator --
+  NH3 umbrella inversion under point-charge embedding converges in 5 steps to
+  exactly one imaginary mode (`qmmm_saddle_converges.rs`). The "still to do:
+  wire it to the QM/MM evaluator" this line used to carry is done.
+  STILL MISSING: there is no IRC, so which two minima a saddle connects remains
+  unverified -- the one-imaginary-mode check is necessary, not sufficient.
+  Section 4 has the full scope.
 - **No analytic dispersion gradients** even once #99 lands. The consequence is
   no longer a silently wrong surface: #99 now REFUSES `task="optimize"` and
   `with_gradient=True` when dispersion is configured, rather than optimising
@@ -143,7 +152,16 @@ props = propose_substitutions("c1ccccc1C(=O)O", {"F": "F", "Cl": "Cl", "Me": "C"
 
 # C. gate RELATIVE to the parent, never on absolutes
 relative_descriptors(props[0].smiles, "c1ccccc1C(=O)O")
-#   -> (-0.0, 0.0, 0.0)   the parent against itself: exactly zero, by construction
+#   -> (-1.42e-14, 0.0, 0.0)   the parent against itself -- NOT exactly zero,
+#      and this doc used to print "(-0.0, 0.0, 0.0) ... exactly zero, by
+#      construction". The distinction is real and worth knowing:
+#        relative_descriptors(s, s)                     -> exactly (0.0,0.0,0.0)
+#        relative_descriptors(props[0].smiles, s)       -> -1.42e-14 in dMW
+#      because props[0].smiles is the CANONICAL form ("O=C(O)c1ccccc1") of the
+#      input spelling ("c1ccccc1C(=O)O"). Same molecule, different atom order,
+#      so the MW float sum lands one ulp apart. Compare ddE against a
+#      tolerance, never `== 0.0`, whenever either side has been round-tripped
+#      through a canonicaliser.
 
 # D. liability flags (published alert sets -- NOT a probability of harm)
 from tools.tox.alerts import RdkitAlertsProvider
@@ -275,8 +293,8 @@ bargain.
 | which analogue binds better by 1-2 kcal/mol? | any of the above + ddE | -- | ddE noise **4.07 kcal/mol** at best (M4-M13) | **NO METHOD QUALIFIES** |
 | what is the SCF energy here? | ferric RHF / KS-DFT | 96 s @ 32 atoms, 612 s @ 71 | 1e-8 Ha vs PySCF (RHF), 2e-8 (PBE/B3LYP) | **use it** |
 | does the pocket field change it? | + `external_potential` | **~1.0x** the gas-phase SP (MEASURED) | embedding is essentially free | **use it** -- no reason not to |
-| where is the transition state? | `saddle::find_saddle` | 2x6N + n_steps gradients | converges on a known saddle; refuses a minimum's basin | **use it** |
-| is this really a TS? | `harmonic_frequencies` | 6N gradients | exactly-one-imaginary check, from Rust AND Python | **use it** |
+| where is the transition state? | `saddle::find_saddle` | 2*(6N+1) + (n_steps+1) gradients | converges on a known saddle; refuses a minimum's basin | **use it** |
+| is this really a TS? | `harmonic_frequencies` | 6N+1 gradients | exactly-one-imaginary check, from Rust AND Python | **use it** |
 | which two minima does it connect? | -- | -- | no IRC in ferric | **not available** |
 | is this molecule a liability? | `tools/tox` alerts | 9.4 ms/molecule | published alert sets, NOT a probability of harm | **use it as a FLAG** |
 
@@ -525,7 +543,22 @@ cost. `crates/ferric-scf/tests/saddle_cost.rs` counts the actual calls rather
 than timing them, because a call count is a property of the algorithm while a
 wall time is a property of this box.
 
-    total = n_hessian * 6N  +  n_steps * 1        (gradient evaluations)
+    total = n_hessian * (6N + 1)  +  (n_steps + 1)   (gradient evaluations)
+
+**CORRECTED 2026-09-19 (was `2*6N + n_steps`).** `harmonic_frequencies` takes
+one energy-and-gradient at the UNDISPLACED geometry before its displacement
+loop, and `n_gradient_evaluations` is zeroed AFTER that call -- so the reported
+count is 6N while the true cost is 6N+1. `find_saddle` likewise takes one
+gradient before its first step. A constant +3 for a default search, so every
+conclusion below is unchanged and the tables are each 3 low.
+
+Worth recording WHY it survived review, because the failure is reusable: the
+cost test supplies its own ANALYTIC Hessian closure and therefore never calls
+`harmonic_frequencies` at all. The documented model described the
+finite-difference path while every assertion measured a synthetic one. The test
+looked like it pinned the cost model and pinned something else. Fixed by
+`a_finite_difference_hessian_costs_6n_plus_one_gradients`, which runs the real
+FD Hessian.
 
 MEASURED on an analytic surface whose saddle is known in closed form
 (`hessian_recalc_every = 0`, the default):
@@ -536,14 +569,14 @@ MEASURED on an analytic surface whose saddle is known in closed form
 | gradients per step | **1** | |
 | one Hessian | **6N** | central difference of the analytic gradient; H2 = 12, water = 18 |
 
-So a search on **N = 20** atoms costs **240 + n_steps** gradient evaluations,
+So a search on **N = 20** atoms costs **242 + n_steps + 1** gradient evaluations,
 and **the two Hessians dominate until n_steps exceeds ~240**. That is the whole
 reason `hessian_recalc_every` defaults to 0; MEASURED, setting it to 1 doubles
 the Hessian work (2 -> 4 on this surface, i.e. 240 -> 480 gradient-equivalents
 at N=20).
 
 **The multiplicand, measured at three sizes (2026-09-19).** The TS cost model
-`2*6N + n_steps` had a measured MULTIPLIER and an unmeasured MULTIPLICAND -- one
+`2*(6N+1) + (n_steps+1)` had a measured MULTIPLIER and an unmeasured MULTIPLICAND -- one
 gradient, taken from a 71-atom DFT single point on a different system. Measured
 directly on linear alkanes, RHF/STO-3G, single-threaded:
 
@@ -591,6 +624,56 @@ moves the total by 26%, because the fixed 240-gradient Hessian cost swamps it.
 **The floor caveat, same as the BFGS one below.** The step count above comes
 from an analytic two-atom surface. A real catalyst TS has soft degrees of
 freedom it does not. Treat any step count from this test as a FLOOR.
+
+### An EMBEDDED saddle search, demonstrated end to end (2026-09-19)
+
+`examples/qmmm_saddle.rs` originally showed only a REFUSAL -- H2 in an MM field
+has no saddle, so `find_saddle` declines. That is worth showing, but it does not
+demonstrate the workflow WORKS: code that rejected everything would print the
+same thing. `crates/ferric-scf/tests/qmmm_saddle_converges.rs` now pins the
+positive half.
+
+NH3 umbrella inversion under point-charge embedding: **converges in 5 steps,
+exactly 1 imaginary mode, `is_transition_state() = true`, z spread 0.0075 Bohr**
+(i.e. planar, which is the physically right answer).
+
+Two findings came out of building it, both of which cost real time:
+
+**1. An MM field that BREAKS THE SYMMETRY DEFINING THE SADDLE does not make the
+search harder -- it removes the target.**
+
+| field | max\|g_z\| at the planar geometry | outcome |
+|---|---|---|
+| gas phase | ~1e-16 | converges, 5 steps, 1 imaginary |
+| symmetric (-0.2, -0.2) | ~1e-17 | converges, 5 steps, 1 imaginary; E shifted 5.0e-4 Ha |
+| **antisymmetric (-0.2, +0.2)** | **3.8e-3** | runs to max_steps, `converged = false` |
+
+An antisymmetric pair puts a CONSTANT force along z, so planar NH3 stops being
+a stationary point at all. The search is right not to converge -- there is
+nothing there -- but it reads exactly like a solver bug. The tell that it is
+not step starvation: raising `max_steps` 60 -> 200 moved the energy by 2e-8.
+
+**Before debugging an embedded saddle search that will not converge, evaluate
+the gradient AT the symmetric geometry under the field.** If it does not
+vanish, the field removed the saddle.
+
+**2. Relax every coordinate EXCEPT the one under study first.** A textbook
+1.01 A N-H left a bond-stretch gradient of 5.2e-3 that the convergence test
+(g_max 3e-4) rightly refuses; the STO-3G planar optimum is 1.006 A (g_max
+6.1e-4). The search looked broken in a coordinate with nothing to do with the
+umbrella.
+
+**TS candidates REJECTED**, recorded so they are not retried: linear H3+ and
+linear H2O are both SECOND-order saddles (2 imaginary, -1068 and -2328.7 cm^-1,
+each doubly degenerate). The bend of a linear molecule comes in a perpendicular
+pair, so "the linear form of a bent molecule" is almost never a transition
+state. NH3 is the smallest unambiguous closed-shell TS that is not already the
+starting geometry.
+
+The negative half of that test is MUTATION-VERIFIED and is what makes the pair
+meaningful: setting `external_potential: None` passes the positive case --
+the gas-phase saddle is right there -- and FAILS the antisymmetric one. Without
+it, a `find_saddle` that ignored the embedding entirely would look correct.
 
 ### Point-charge embedding is essentially FREE (MEASURED, 2026-09-18)
 
@@ -693,10 +776,12 @@ Run concurrently they FAIL, and the failure looks exactly like a code defect --
 it is not. Satisfy the precondition (`--test-threads=1`, idle box) before
 believing either the numbers or a failure.
 
-### Frequencies / TS verification cost 6N gradients (MEASURED)
+### Frequencies / TS verification cost 6N+1 gradients (MEASURED)
 
 `harmonic_frequencies` central-differences the ANALYTIC gradient, so a full
-Hessian is **6N gradient evaluations**, each requiring its own converged SCF.
+Hessian is **6N+1 gradient evaluations** (6N displaced plus one undisplaced,
+which `n_gradient_evaluations` does not count), each requiring its own
+converged SCF.
 There is no analytic Hessian to fall back on -- see section 4.
 
 (Heading and this paragraph corrected 2026-09-19: both said "ESTIMATED" and
@@ -1009,12 +1094,16 @@ save you, and the QM region must contain the reacting bonds.
 C0. QM region MUST contain every bond that breaks or forms, plus any residue
     donating/accepting a proton or coordinating the metal. This is bigger
     than a ligand-only region and sets the cost.
+    AND: check the MM field does not break a symmetry that DEFINES your
+    saddle. MEASURED -- an antisymmetric charge pair makes planar NH3
+    non-stationary (max|g_z| 3.8e-3 vs ~1e-16 in gas phase), so the search
+    fails for want of a target and looks like a solver bug.
 C1. The cut WILL cross covalent bonds, so link atoms are mandatory:
     .with_link_atoms(bonds, DEFAULT_LINK_SCALE) and a boundary-charge scheme
     (Z1/RC/RCD). ferric has all of these, PySCF-validated.
 C2. Optimize the reactant and product complexes -- ferric CAN do this
     (optimize_qmmm is a minimizer).
-C3. FIND THE TRANSITION STATE. AVAILABLE (2026-09-19, not yet merged) from
+C3. FIND THE TRANSITION STATE. AVAILABLE AND MERGED (#106, 2026-09-19) from
     BOTH languages: ferric_scf::saddle::find_saddle (Rust) and
     ferric.run_saddle(mol, basis, ...) (Python). The Python binding
     matters because the whole tools/ pipeline is driven from Python --
@@ -1057,6 +1146,26 @@ renaming a checked attribute fails the test, so it is not a tautology over
 tests; what this catches is a step quietly leaving the language `tools/` is
 written in.
 
+#### ...and C3 now RUNS under embedding, not just reachable (2026-09-19)
+
+Reachability was the weaker claim, and the QM/MM example made it weaker still:
+it demonstrated only a REFUSAL (H2 in an MM field has no saddle, so
+`find_saddle` declines). A refusal alone does not show the procedure works --
+code that rejected everything would print the same thing.
+
+`crates/ferric-scf/tests/qmmm_saddle_converges.rs` closes that. NH3 umbrella
+inversion under point-charge embedding **converges in 5 steps to exactly one
+imaginary mode, `is_transition_state() = true`, z spread 0.0075 Bohr** -- i.e.
+planar, the physically right answer. C3 is now demonstrated on the embedded
+surface, which is the surface a catalyst question is actually asked on.
+
+**The trap it surfaced, which belongs in C0.** An MM field that BREAKS THE
+SYMMETRY DEFINING THE SADDLE removes the target rather than making the search
+harder: with an antisymmetric charge pair, max|g_z| at the planar geometry is
+3.8e-3 against ~1e-16 in gas phase, so planar NH3 is not a stationary point at
+all. `find_saddle` correctly fails and it reads like a solver bug. See the
+transition-state cost section for the table and the diagnostic.
+
 #### C1 and C4 VERIFIED to work (2026-09-18)
 
 Run against the merged extension, so these are not claims:
@@ -1078,9 +1187,10 @@ So C0-C2 and C4-C5 are working code. C3 was the ONLY gap, established by grep
 (no dimer / NEB / P-RFO / eigenvector-following anywhere) rather than by this
 script -- a negative cannot be demonstrated by running something.
 
-**C3 CLOSED 2026-09-19** (`ferric_scf::saddle`, branch `feat/saddle-prfo`, not
-yet merged). The chain C0-C5 is now complete in principle. What that does and
-does not mean is in the rewritten section 4.
+**C3 CLOSED AND MERGED 2026-09-19** (`ferric_scf::saddle`, #106), and
+demonstrated under QM/MM embedding rather than only in the gas phase. The chain
+C0-C5 is complete. What that does and does not mean is in the rewritten
+section 4 -- in particular there is still no IRC.
 
 API INCONSISTENCY worth knowing before writing a workflow: `run_rhf` takes a
 `BasisSet` OBJECT (`ferric.BasisSet.bundled("sto-3g")`), while
@@ -1141,7 +1251,7 @@ C3 -- no saddle search anywhere in the tree. That is now implemented.
 
 ### What landed
 
-`ferric_scf::saddle::find_saddle` (branch `feat/saddle-prfo`, not yet merged):
+`ferric_scf::saddle::find_saddle` (MERGED, #106):
 partitioned rational function optimization. It partitions the Hessian
 eigenspace and solves a separate RFO step in each -- maximize along one
 followed mode, minimize in the orthogonal complement (Banerjee/Adams/Simons/
@@ -1163,13 +1273,14 @@ and that is what `saddle.rs` calls.
 
 ### The cost, which is now the binding constraint
 
-The Hessian is **6N gradient evaluations** (MEASURED via the gradient counter:
+The Hessian is **6N+1 gradient evaluations** -- the counter reports 6N and
+omits the undisplaced call (MEASURED via the gradient counter:
 H2 = 12, water = 18 -- exactly 6N). For a 20-atom QM region that is 120
 gradients for ONE Hessian. Rebuilding it every step is not a search, it is a
 Hessian benchmark, which is why `hessian_recalc_every` defaults to 0 (build
 once, then Bofill). A realistic catalyst run is therefore:
 
-    1 Hessian (6N gradients) + ~20-60 P-RFO steps (1 gradient each)
+    1 Hessian (6N+1 gradients) + ~20-60 P-RFO steps (1 gradient each)
 
 so the Hessian dominates at small N and the steps dominate past roughly N = 10.
 That ratio, not the algorithm, is what sizes a catalyst job now.
