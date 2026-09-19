@@ -207,10 +207,38 @@ def _report_site_dependence(rows) -> None:
             "\n       (only one site per substituent -- site dependence not measurable here)"
         )
         return
-    allv = [s * HARTREE_TO_KCAL for s, _, _ in rows]
-    between = max(allv) - min(allv)
+    # The BETWEEN number must come from MATCHED SITES, not from the pooled
+    # range. `allv = every (substituent, site) score` already CONTAINS the
+    # within-substituent site variation, so `within / max(allv)-min(allv)` is a
+    # subset compared against its own superset: bounded by 1 by construction,
+    # and it cannot distinguish "site matters as much as identity" from "site
+    # is most of what the pooled range measures". An earlier version of this
+    # function printed exactly that ratio and drew the conclusion from it.
+    #
+    # Matched comparison: at each site index, spread across DIFFERENT
+    # substituents. That isolates identity with placement held fixed.
+    by_site = defaultdict(list)
+    for score, _label, site in rows:
+        by_site[site].append(score * HARTREE_TO_KCAL)
+    matched = [max(v) - min(v) for v in by_site.values() if len(v) > 1]
     within = max(max(v) - min(v) for v in multi.values())
-    print(f"\n       BETWEEN substituents : {between:6.2f} kcal/mol")
+
+    if not matched:
+        # Every site index has at most one substituent, so identity and
+        # placement are perfectly confounded here. Say so rather than falling
+        # back to the pooled range, which would silently restore the bug.
+        print(
+            f"\n       WITHIN one substituent: {within:6.2f} kcal/mol (same group, "
+            "different site)\n"
+            "       BETWEEN substituents  : NOT MEASURABLE -- no site index carries\n"
+            "         more than one substituent, so the two axes are perfectly\n"
+            "         confounded in this run. The pooled score range is NOT a\n"
+            "         substitute: it contains the within-substituent variation."
+        )
+        return
+
+    between = max(matched)
+    print(f"\n       BETWEEN substituents : {between:6.2f} kcal/mol (matched site)")
     print(
         f"       WITHIN one substituent: {within:6.2f} kcal/mol (same group, different site)"
     )
