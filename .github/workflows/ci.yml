@@ -1031,16 +1031,41 @@ jobs:
             # `|| true`: see the block comment above -- mpirun's exit code is
             # not a usable signal for a process that never finalizes. The
             # assertions below are the real gate.
-            timeout 300 mpirun -np "$np" --oversubscribe "$BIN" --nocapture --test-threads=1 "$filter" \
-              > "$log" 2>&1 || true
+            #
+            # RETRIED ONCE ON A LAUNCH FAILURE. MEASURED 2026-09-19 over the
+            # last 90 workflow runs: 3 of 45 completed `mpi` jobs failed
+            # (~6.7%), every one of them with the SAME annotation --
+            # "expected 2 passing 'test result: ok.' summaries, found 1 -- a
+            # rank failed or never started" (once "found 0"). In every case a
+            # plain re-run passed with NO code change; on PR #96 the diff was
+            # two PYTHON files and zero Rust, which alone rules out the code.
+            # It is mpirun failing to bring a rank up, not a test failing.
+            #
+            # The retry wraps the LAUNCH, not the assertion. The rank-count
+            # check below is unchanged and still hard-fails: relaxing it to
+            # ">= 1" would silence a genuinely dead rank, which is the exact
+            # thing it exists to catch. A real failure now costs two attempts
+            # instead of one and still goes red.
+            local attempt oks
+            for attempt in 1 2; do
+              timeout 300 mpirun -np "$np" --oversubscribe "$BIN" --nocapture --test-threads=1 "$filter" \
+                > "$log" 2>&1 || true
+              oks=$(grep -c '^test result: ok\.' "$log" || true)
+              if [ "$oks" -eq "$np" ]; then
+                [ "$attempt" -eq 2 ] && echo "-- np=$np succeeded on attempt 2 (attempt 1 was a launch flake)"
+                break
+              fi
+              if [ "$attempt" -eq 1 ]; then
+                echo "-- np=$np: got $oks/$np rank summaries; retrying once (see the ~7% launch-flake note above)"
+                sed -n '1,40p' "$log"
+              fi
+            done
             # Show the physics/banding lines and the libtest summaries.
             grep -E 'rank [0-9]+/[0-9]+|cross-rank spread|^test result:' "$log" || true
 
             # Every rank must print its own libtest summary. A rank that
             # died before running (MPI startup failure, missing .so) prints
             # none, and without this check its silence would read as success.
-            local oks
-            oks=$(grep -c '^test result: ok\.' "$log" || true)
             if [ "$oks" -ne "$np" ]; then
               echo "::error::expected $np passing 'test result: ok.' summaries (one per rank), found $oks -- a rank failed or never started"
               sed -n '1,120p' "$log"
