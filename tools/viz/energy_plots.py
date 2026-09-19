@@ -308,7 +308,10 @@ def tier_comparison(
 
     ax.set_xticks(range(len(labels)))
     ax.set_xticklabels(labels, rotation=30, ha="right", fontsize=9)
-    ax.set_ylabel(ylabel or f"energy ({unit})")
+    # `_to_kcal` already converted, so the axis is kcal/mol WHATEVER `unit`
+    # said on the way in. Labelling it `unit` put hartree over kcal/mol
+    # numbers -- a 627x mislabel that looks entirely plausible on a bar chart.
+    ax.set_ylabel(ylabel or "energy (kcal/mol)")
     ax.set_title(
         title if not n_missing else f"{title}  ({n_missing} unevaluated, shown as gaps)"
     )
@@ -451,6 +454,19 @@ def pose_ensemble(
     fig, ax = plt.subplots(figsize=(max(6.0, 1.3 * len(names) + 2), 4.5))
     rng_state = 12345  # fixed jitter: a replot must not move the points
 
+    # Label the FIRST artist of each kind that is actually drawn, NOT the one
+    # at index 0. Candidate 0 can have no usable poses, in which case the loop
+    # `continue`s before labelling anything and the legend comes out empty --
+    # taking the "selected pose (NOT the value)" disclaimer with it, which is
+    # the one piece of text on this figure that has to be there.
+    labelled: set[str] = set()
+
+    def _once(key: str, text: str) -> str | None:
+        if key in labelled:
+            return None
+        labelled.add(key)
+        return text
+
     for i, name in enumerate(names):
         vals = [v for v in scores_by_candidate[name] if v is not None]
         if not vals:
@@ -479,7 +495,7 @@ def pose_ensemble(
             ms=5,
             alpha=0.55,
             color="#4c72b0",
-            label="poses" if i == 0 else None,
+            label=_once("poses", "poses"),
         )
         m = statistics.fmean(vals)
         ax.plot(
@@ -488,7 +504,7 @@ def pose_ensemble(
             "-",
             lw=2.5,
             color="#c44e52",
-            label="mean" if i == 0 else None,
+            label=_once("mean", "mean"),
         )
         if len(vals) > 1:
             sd = statistics.stdev(vals)
@@ -509,7 +525,7 @@ def pose_ensemble(
                 ms=11,
                 mew=2.0,
                 color="#111111",
-                label="selected pose (NOT the value)" if i == 0 else None,
+                label=_once("selected", "selected pose (NOT the value)"),
             )
 
     ax.set_xticks(range(len(names)))

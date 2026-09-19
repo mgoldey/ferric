@@ -505,3 +505,61 @@ def test_a_non_3N_vector_is_rejected():
         imaginary_mode(["C"], [1.0, 0, 0, 0.5, 0, 0])  # 1 symbol, 2 atoms
     with pytest.raises(ValueError, match="out of range"):
         imaginary_mode(["C", "O"], [1.0, 0, 0, 0.5, 0, 0], expected_atoms=[5])
+
+
+def test_tier_comparison_labels_the_unit_it_actually_plots():
+    """The y-axis must say kcal/mol even when the INPUT was hartree.
+
+    `_to_kcal` converts on the way in, so the plotted numbers are always
+    kcal/mol. Labelling the axis with the caller's `unit` put "hartree" over
+    kcal/mol values -- a 627x mislabel, and one that looks entirely plausible
+    because a bar chart carries no other scale cue.
+
+    Asserted on the LABEL and the DATA together: the bar heights pin that the
+    conversion really happened, so a "fix" that relabels without converting
+    (or converts without relabelling) fails.
+    """
+    fig = tier_comparison(
+        ["a"], {"dft": [1.0]}, unit="hartree"
+    )
+    ax = fig.axes[0]
+    assert "kcal/mol" in ax.get_ylabel()
+    assert "hartree" not in ax.get_ylabel().lower()
+    (bar,) = [p for p in ax.patches if p.get_height() != 0]
+    assert bar.get_height() == pytest.approx(627.5094740631, rel=1e-9)
+
+
+def test_pose_ensemble_legend_survives_an_empty_first_candidate():
+    """The disclaimer must appear even when candidate 0 has no poses.
+
+    Labels were attached on `i == 0`. A first candidate with an empty or
+    all-`None` score list hits `continue` BEFORE any artist is created, so no
+    artist ever got a label, `ax.legend()` came out empty and matplotlib warned
+    "No artists with labels". The text that vanishes is
+    "selected pose (NOT the value)" -- the one piece of this figure that has to
+    be there, because the marker otherwise reads as "this is the right answer".
+    """
+    fig = pose_ensemble(
+        {"no-poses": [], "has-poses": [-9.0, -8.0, -7.0]}, selected_index=0
+    )
+    texts = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    assert "poses" in texts
+    assert "mean" in texts
+    assert any("NOT the value" in t for t in texts), (
+        f"the selected-pose disclaimer is missing from the legend: {texts}"
+    )
+
+
+def test_pose_ensemble_does_not_duplicate_legend_entries():
+    """Labelling the first artist DRAWN must not label every artist.
+
+    The guard against over-correcting the fix above: `_once` has to fire once
+    per kind, not once per candidate, or a ten-candidate figure gets ten
+    identical "poses" rows.
+    """
+    fig = pose_ensemble(
+        {"a": [-9.0, -8.0], "b": [-7.0, -6.0], "c": [-5.0, -4.0]},
+        selected_index=0,
+    )
+    texts = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    assert len(texts) == len(set(texts)), f"duplicated legend entries: {texts}"

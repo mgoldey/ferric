@@ -99,9 +99,66 @@ def campaign_report(
             "reader order candidates the data cannot separate."
         )
 
+    # Half a funnel is a configuration error, not a smaller report. Silently
+    # dropping the plot hides the mistake in the one output nobody re-reads.
+    if (funnel_stages is None) != (funnel_counts is None):
+        raise ValueError(
+            "funnel_stages and funnel_counts must be given together or not at "
+            f"all; got stages={'set' if funnel_stages is not None else 'None'}, "
+            f"counts={'set' if funnel_counts is not None else 'None'}"
+        )
+
     figs = CampaignFigures()
     caveats: list[str] = []
 
+    try:
+        _build(
+            figs,
+            caveats,
+            ddE_noise=ddE_noise,
+            funnel_stages=funnel_stages,
+            funnel_counts=funnel_counts,
+            ddE=ddE,
+            poses=poses,
+            liabilities=liabilities,
+            parent=parent,
+            unit=unit,
+            funnel_survival=funnel_survival,
+            liability_profile=liability_profile,
+            pose_ensemble=pose_ensemble,
+            site_substituent_heatmap=site_substituent_heatmap,
+        )
+    except Exception:
+        # A later helper can raise after an earlier figure was built -- a valid
+        # heatmap followed by an invalid liability parent, say. pyplot RETAINS
+        # every figure it made, and the caller never receives `figs`, so it
+        # cannot call `close()`. Without this the failure leaks a figure per
+        # attempt, which in a loop is how a batch job runs out of memory.
+        figs.close()
+        raise
+
+    figs.caveats = caveats
+    return figs
+
+
+def _build(
+    figs: CampaignFigures,
+    caveats: list[str],
+    *,
+    ddE_noise: float,
+    funnel_stages,
+    funnel_counts,
+    ddE,
+    poses,
+    liabilities,
+    parent,
+    unit: str,
+    funnel_survival,
+    liability_profile,
+    pose_ensemble,
+    site_substituent_heatmap,
+) -> None:
+    """Fill `figs` and `caveats`. Split out only so the caller can clean up."""
     if funnel_stages is not None and funnel_counts is not None:
         figs.funnel = funnel_survival(funnel_stages, funnel_counts)
 
@@ -168,6 +225,3 @@ def campaign_report(
             "Liability endpoints are published ALERT SETS, not probabilities of "
             "harm. A compound with no alerts is unflagged, not predicted safe."
         )
-
-    figs.caveats = caveats
-    return figs
