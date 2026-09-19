@@ -239,9 +239,20 @@ def dock_ligand(
     would make a pose ranking irreproducible for reasons unrelated to chemistry
     -- the same discipline `tools.morph.embed` applies to ETKDG.
 
-    `exhaustiveness` trades wall time for search thoroughness. Vina's default is
-    8; 32 is used here because the failure being fixed is a SEARCH failure, and
-    under-searching would reproduce it in a new form.
+    `exhaustiveness` trades wall time for search thoroughness. Vina's default
+    is 8; this signature's 32 predates the measurement and is NOT the
+    recommended setting.
+
+    MEASURED (RESULTS.md M11): across an 8x range of exhaustiveness the mean
+    redock RMSD moved 0.097 A, which is SMALLER than the 0.131 A between-seed
+    SEM, and ex=32 had the WORST mean of the four levels tried. The reasoning
+    this docstring used to give -- "the failure being fixed is a SEARCH
+    failure, so under-searching would reproduce it" -- is plausible and turned
+    out to be wrong: what moved the number was the ETKDG SEED, not the search
+    effort. `tools.pipeline.tiers.tier1_dock` therefore defaults to 4.
+
+    The 32 here is left as the signature default only so existing callers do
+    not change behaviour silently; pass 4 for new work.
 
     `cpu` is Vina's thread count; **0 means "use every core on the box"**, which
     is its own default and the right choice when docking ONE ligand. It is the
