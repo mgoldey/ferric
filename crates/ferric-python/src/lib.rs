@@ -1802,7 +1802,10 @@ impl PyFrequencyResult {
 /// error, too small amplifies SCF noise. Check `.asymmetry` rather than
 /// assuming.
 #[pyfunction]
-#[pyo3(signature = (mol, basis_name, reference=None, xc=None, delta=None, multiplicity=None))]
+#[pyo3(signature = (
+    mol, basis_name, reference=None, xc=None, delta=None, multiplicity=None,
+    point_charges=None, external_field=None,
+))]
 fn run_frequencies(
     mol: &PyMolecule,
     basis_name: &str,
@@ -1810,6 +1813,8 @@ fn run_frequencies(
     xc: Option<&str>,
     delta: Option<f64>,
     multiplicity: Option<u32>,
+    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
+    external_field: Option<(f64, f64, f64)>,
 ) -> PyResult<PyFrequencyResult> {
     use ferric_scf::frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference};
 
@@ -1837,8 +1842,14 @@ fn run_frequencies(
     if let Some(mult) = multiplicity {
         m.multiplicity = mult as usize;
     }
+    // The MM field. `harmonic_frequencies` already threads
+    // `config.external_potential` into the same gradient calls, so an embedded
+    // Hessian needs no new machinery -- only a way to ask for one. Without
+    // this, CONFIRMING an embedded saddle (exactly one imaginary frequency)
+    // had to be done in vacuum, against a Hessian from a different surface.
     let scf_cfg = RhfConfig {
         xc: xc.map(|s| s.to_string()),
+        external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
     };
     let mut fcfg = FrequencyConfig {
@@ -6752,6 +6763,7 @@ impl PySaddleResult {
 #[pyo3(signature = (
     mol, basis_name, xc=None, multiplicity=None,
     max_steps=None, trust_radius=None, follow_mode=None, delta=None,
+    point_charges=None, external_field=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_saddle(
@@ -6763,6 +6775,8 @@ fn run_saddle(
     trust_radius: Option<f64>,
     follow_mode: Option<usize>,
     delta: Option<f64>,
+    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
+    external_field: Option<(f64, f64, f64)>,
 ) -> PyResult<PySaddleResult> {
     use ferric_scf::frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference};
     use ferric_scf::gradient::rhf_gradient;
@@ -6803,8 +6817,21 @@ fn run_saddle(
         let bs = ferric_core::basis::bundled(basis_name).map_err(make_err)?;
         m.apply_ecp(&bs);
     }
+    // The MM field. Both closures below ALREADY read
+    // `scf_g.external_potential` and hand it to `rhf_gradient` /
+    // `ks_gradient_closed`, and `harmonic_frequencies` threads it too -- the
+    // only thing that was missing was a way to SET it from Python, so the
+    // catalyst branch of the QM/MM workflow was gas-phase only while
+    // `run_optimize` next door already took these kwargs.
+    //
+    // A saddle is the case where this matters most: an MM field can REMOVE the
+    // stationary point a gas-phase search would find (a symmetry-breaking
+    // charge pair makes planar NH3 non-stationary), so searching in vacuum and
+    // hoping the barrier transfers is not an approximation, it is a different
+    // question.
     let scf_cfg = RhfConfig {
         xc: xc.map(|s| s.to_string()),
+        external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
     };
     let mut cfg = SaddleConfig::default();
@@ -6936,6 +6963,7 @@ fn run_saddle(
 #[pyo3(signature = (
     mol, basis_name, mode, xc=None, multiplicity=None,
     step=None, max_steps=None, g_max_thresh=None, initial_displacement=None,
+    point_charges=None, external_field=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_irc(
@@ -6948,6 +6976,8 @@ fn run_irc(
     max_steps: Option<usize>,
     g_max_thresh: Option<f64>,
     initial_displacement: Option<f64>,
+    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
+    external_field: Option<(f64, f64, f64)>,
 ) -> PyResult<PyIrcResult> {
     use ferric_scf::gradient::rhf_gradient;
     use ferric_scf::irc::{follow_irc, IrcConfig};
@@ -6975,8 +7005,13 @@ fn run_irc(
         m.apply_ecp(&bs);
     }
 
+    // The MM field, same as `run_saddle`. An IRC started from an embedded
+    // saddle MUST be walked in the same field: the path is a property of the
+    // surface, and a gas-phase walk from an embedded saddle descends a
+    // different surface than the one the saddle sits on.
     let scf_cfg = RhfConfig {
         xc: xc.map(|s| s.to_string()),
+        external_potential: build_external_potential(point_charges, external_field),
         ..Default::default()
     };
     let mut cfg = IrcConfig::default();
