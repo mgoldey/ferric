@@ -1644,9 +1644,9 @@ molecules cancels in a paired difference:
 
 A is the PARENT and B the analogue, so a positive ddE means the analogue sits
 higher -- the sign `paired_ddE` computes and the sign of every value in the
-table below. The spreads are equal here to a few percent, and `var.red` is
-MEASURED as the ratio of two SEMs on the same data rather than derived from the
-formula, so the reported gain does not rest on that.
+table below. The spreads are equal here to a few percent, and the last column
+is MEASURED as the ratio of two SEMs on the same data rather than derived from
+the formula, so the reported gain does not rest on that.
 
 **A shared random seed is not a pairing.** `embed_analogue` uses
 `random_seed=0xF00D` for every candidate, but ETKDG with the same seed on two
@@ -1659,7 +1659,7 @@ random stream, not a geometry. The pairing has to be geometric.
 MMFF energies. Pose k of the analogue is BUILT FROM pose k of the parent,
 sharing the MCS scaffold. Two constructions for the B side:
 
-| arm | case | ddE | sd | SEM | rho | var.red |
+| arm | case | ddE | sd | SEM | rho | SEM ratio |
 |---|---|---:|---:|---:|---:|---:|
 | hard | **SELF** | **+13.841** | 2.597 | 0.530 | 0.579 | 1.37x |
 | hard | Cl-for-H | 31.023 | 7.946 | 1.622 | 0.070 | 1.01x |
@@ -1668,10 +1668,14 @@ sharing the MCS scaffold. Two constructions for the B side:
 | relaxed | Cl-for-H | 13.064 | 3.011 | 0.615 | 0.399 | 1.21x |
 | relaxed | N-methyl | 24.135 | 0.034 | 0.007 | 1.000 | 65.5x |
 
-`var.red` compares the paired SEM against the unpaired SEM **on the same data**,
-so it isolates the pairing. `rho` is Pearson between the two paired energy
+The last column compares the paired SEM against the unpaired SEM **on the same
+data**, so it isolates the pairing. **It is a STANDARD-ERROR ratio, not a
+variance ratio** -- the corresponding variance reduction is its SQUARE (2.42x
+on the SEM is ~5.9x on the variance). It was labelled `var.red` until review
+caught it; that name understated the variance effect while overstating what had
+been measured. `rho` is Pearson between the two paired energy
 series; `var = 2*sd^2*(1-rho)` assumes the two sds are EQUAL, which they are
-here to within a few percent, but the reported `var.red` is measured rather than
+here to within a few percent, but the reported SEM ratio is measured rather than
 derived from that formula and does not depend on the assumption.
 
 **A latent index bug was found in review and fixed; these numbers are
@@ -1734,6 +1738,6 @@ Not established: that this survives at xtb or DFT (not smooth force fields), or
 IN A POCKET, where a substituent may change the binding mode and break the
 pairing outright.
 
-**The Cl row is the warning**: rho 0.399, var.red 1.21x. Pairing helps where the
+**The Cl row is the warning**: rho 0.399, SEM ratio only 1.21x. Pairing helps where the
 substitution is LOCAL and degrades smoothly to the unpaired case where it is
 not -- so it must be reported per-candidate, never as one campaign-wide floor.

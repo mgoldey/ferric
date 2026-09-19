@@ -105,7 +105,7 @@ def test_pairing_reduces_variance_when_the_noise_is_common():
     assert res.sd_paired == pytest.approx(0.0, abs=1e-9)
     assert res.sd_unpaired > 20.0
     assert res.rho > 0.99, "perfectly common noise must show as rho ~ 1"
-    assert res.variance_reduction > 100.0
+    assert res.sem_ratio > 100.0
 
 
 def test_pairing_buys_nothing_when_the_noise_is_independent():
@@ -135,7 +135,7 @@ def test_pairing_buys_nothing_when_the_noise_is_independent():
     res = paired_ddE(pairs, e)
     assert abs(res.rho) < 0.4, "independent draws should show no correlation"
     # sd_paired ~ sd*sqrt(2) ~ sd_unpaired: the pairing is a relabeling.
-    assert res.variance_reduction == pytest.approx(1.0, rel=0.35)
+    assert res.sem_ratio == pytest.approx(1.0, rel=0.35)
 
 
 def test_paired_and_unpaired_estimates_are_ALGEBRAICALLY_EQUAL():
@@ -272,8 +272,8 @@ def test_total_variance_removal_reports_inf_not_nan():
 
     res = paired_ddE(_self_pairs(6), _spread_energy())
     assert res.sem_paired == 0.0
-    assert math.isinf(res.variance_reduction), (
-        f"got {res.variance_reduction}; total variance removal must not read "
+    assert math.isinf(res.sem_ratio), (
+        f"got {res.sem_ratio}; total spread removal must not read "
         "as a failed computation"
     )
 
@@ -322,4 +322,45 @@ def test_the_drift_guard_runs_after_relaxation():
     assert i_guard > i_relax, (
         "the drift guard runs before relaxation, where drift is zero by "
         "construction and the guard cannot fire"
+    )
+
+
+def test_sem_ratio_is_a_SEM_ratio_not_a_variance_ratio():
+    """The name was the bug: review caught `variance_reduction` on a SEM ratio.
+
+    `SEM_unpaired / SEM_paired` is a standard-error ratio. The corresponding
+    VARIANCE reduction is its square -- 2.42x on the SEM is ~5.9x on the
+    variance -- so the old name understated the variance effect while
+    overstating what had actually been measured.
+    """
+    import random
+
+    rng = random.Random(23)
+    pairs = []
+    for i in range(60):
+        shared = rng.gauss(0, 10.0)
+        pairs.append(
+            PairedPose(
+                i,
+                ["C"],
+                [(shared + rng.gauss(0, 1.0), 0.0, 0.0)],
+                ["N"],
+                [(shared + rng.gauss(0, 1.0), 0.0, 0.0)],
+                [(0, 0)],
+            )
+        )
+
+    res = paired_ddE(pairs, lambda s, c: c[0][0])
+    assert res.sem_ratio > 1.0, "common noise should give some reduction"
+    # The identity that makes the naming matter, checked rather than asserted
+    # in prose: the variance ratio IS the square of the SEM ratio.
+    var_ratio = (res.sd_unpaired**2) / (res.sd_paired**2)
+    assert var_ratio == pytest.approx(res.sem_ratio**2, rel=1e-9), (
+        f"sem_ratio {res.sem_ratio:.3f} squared should equal the variance "
+        f"ratio {var_ratio:.3f}; if these diverge the two are not related the "
+        "way the docstring claims"
+    )
+    assert not hasattr(res, "variance_reduction"), (
+        "the misleading name is back; a SEM ratio called variance_reduction "
+        "reads as a claim nobody measured"
     )
