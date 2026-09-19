@@ -423,7 +423,25 @@ PYTEST_PATHS=(crates/ferric-python/tests/)
 [[ -d tools ]] && PYTEST_PATHS+=(tools/)
 [[ -d experiments ]] && PYTEST_PATHS+=(experiments/)
 if [[ -f "$SO_PATH" ]]; then
+    # Report what the extension RESOLVES to, not the symlink. In a git
+    # worktree the .venv entry is a symlink into the MAIN checkout's
+    # target/release, so pytest can load a build of a DIFFERENT branch while
+    # this line claims the local one was tested. That produced a confident
+    # wrong diagnosis once already: "module 'ferric' has no attribute
+    # 'd3bj_energy'" and "run_dft() got an unexpected keyword argument
+    # 'dispersion'" were a stale .so, not code defects.
+    SO_REAL="$(readlink -f "$SO_PATH" 2>/dev/null || echo "$SO_PATH")"
     echo "   extension: $SO_PATH"
+    if [[ "$SO_REAL" != "$SO_PATH" ]]; then
+        echo "     -> $SO_REAL"
+        if [[ "$SO_REAL" != "$PWD"/* ]]; then
+            echo "   WARNING: that extension is OUTSIDE this checkout ($PWD)."
+            echo "            pytest is testing a build of some other branch."
+            echo "            Rebuild here and repoint the symlink:"
+            echo "              cargo build --release -p ferric-python"
+            echo "              ln -sf \$PWD/target/release/libferric.so $SO_PATH"
+        fi
+    fi
     echo "   paths:     ${PYTEST_PATHS[*]}"
     # libxtb resolves from the multiarch subdir; harmless when xtb is absent
     # (those suites skip themselves).
