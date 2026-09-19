@@ -133,6 +133,18 @@ def test_the_coverage_table_agrees_with_the_measured_tier_costs():
     # Distinctive substrings from the MEASURED block -- specific enough that a
     # stale doc cannot satisfy them by coincidence, and stable across
     # reformatting (no surrounding punctuation).
+    # EXTRACT THE TABLE ROWS. Searching the whole document does not work:
+    # this file contains a CORRECTION NOTE quoting the same figures, so a
+    # stale table row passes while the note satisfies the check. MEASURED --
+    # rewriting the docking row to "**WRONG s/ligand**" left all 7 tests
+    # green, because "26.4" still appeared in the prose below it.
+    rows = [ln for ln in doc.splitlines() if ln.startswith("|") and "yes |" in ln]
+    assert len(rows) >= 7, (
+        f"expected the coverage table's use-case rows, found {len(rows)}; the "
+        "table's shape changed and this guard needs re-deriving"
+    )
+    table = "\n".join(rows)
+
     required = ["26.4", "2.2 ms", "21.6", "0.152", "612 s"]
     for token in required:
         assert token in tiers, (
@@ -140,10 +152,10 @@ def test_the_coverage_table_agrees_with_the_measured_tier_costs():
             "is pinned to figures that moved; re-derive the list rather than "
             "deleting the assertion"
         )
-        assert token in doc, (
-            f"the coverage table does not mention {token!r}, which tiers.py "
-            "reports as MEASURED. A doc that carries different numbers from "
-            "its source is how 1e-5 s/pose survived for docking."
+        assert token in table, (
+            f"the coverage TABLE does not carry {token!r}, which tiers.py "
+            "reports as MEASURED. Checking the whole document instead lets a "
+            "correction note stand in for a stale row."
         )
 
 
@@ -155,12 +167,15 @@ def test_the_coverage_table_does_not_reassert_the_retracted_figures():
     wrong -- so this checks they are not in a TABLE ROW, which is where a
     reader takes a number from.
     """
+    # EVERY table row, not only those mentioning `s/pose`. Keying on that unit
+    # meant a retracted value reappearing with a different one -- "1e-5
+    # s/ligand", say -- walked straight through.
     rows = [
         line
         for line in COVERAGE.read_text().splitlines()
-        if line.startswith("|") and "s/pose" in line
+        if line.startswith("|") and "yes |" in line
     ]
-    for bad in ("1e-5 s/pose", "1e-3 s/pose", "5e-1 s/pose"):
+    for bad in ("1e-5", "1e-3", "5e-1"):
         offending = [r for r in rows if bad in r]
         assert not offending, (
             f"{bad!r} is back in a table row: {offending}. That figure was "
