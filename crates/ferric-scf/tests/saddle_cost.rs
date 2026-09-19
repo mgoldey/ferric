@@ -282,3 +282,88 @@ fn hessian_recalc_every_costs_one_extra_hessian_per_n_steps() {
         h_every * 120
     );
 }
+
+/// The trans/rot shift must stay FAR above every physical eigenvalue.
+///
+/// `projected_eigen` lifts the 5-6 translation/rotation modes to
+/// `TR_SHIFT = 1.0e3`, and `count_negative` then treats the top `n_tr` slots as
+/// shifted. That is only safe while no PHYSICAL mode can reach 1000, and
+/// nothing in the code enforces it -- it is an assumption about chemistry
+/// wearing the appearance of an index guard.
+///
+/// It is also convention-dependent. `saddle.rs` mass-weights with `atom_masses`
+/// output directly, which is in AMU; `frequencies.rs` converts to electron
+/// masses first (`AMU_TO_ELECTRON_MASS`, a factor of 1822.888). A uniform mass
+/// rescale cannot change eigenvalue SIGNS, ORDER or mode directions -- so it
+/// changes no decision `saddle.rs` makes -- but it does move every eigenvalue
+/// relative to the absolute `TR_SHIFT`, and the ELECTRON-mass convention would
+/// push them 1823x SMALLER, i.e. further from the shift. The AMU convention in
+/// use is therefore the less safe of the two, which is the one worth measuring.
+///
+/// MEASURED (amu convention, the one `saddle.rs` uses), max eigenvalue of the
+/// mass-weighted Hessian at STO-3G:
+///
+/// ```text
+///   H2    0.9613      H2O   0.8706      HF    0.9310
+/// ```
+///
+/// Three orders of magnitude of headroom. This test pins that the headroom
+/// EXISTS rather than pinning the numbers, so a future stiffer system or a
+/// changed mass convention fails here with an explanation instead of silently
+/// miscounting imaginary modes.
+#[test]
+fn physical_eigenvalues_stay_far_below_the_trans_rot_shift() {
+    use ferric_core::parallel::ParallelContext;
+    use ferric_integrals::operator::Operator;
+    use ferric_scf::frequencies::{
+        atom_masses, harmonic_frequencies, FrequencyConfig, FrequencyReference,
+    };
+    use ferric_scf::rhf::RhfConfig;
+    use ndarray_linalg::{Eigh, UPLO};
+
+    /// Mirrors `saddle.rs`'s private `TR_SHIFT`. If that constant changes this
+    /// must change with it -- which is the point of stating it here.
+    const TR_SHIFT: f64 = 1.0e3;
+    /// Demand two orders of magnitude, not a hair's breadth.
+    const REQUIRED_MARGIN: f64 = 100.0;
+
+    let op = Operator::coulomb();
+    for (tag, xyz) in [
+        ("H2", "2\nh2\nH 0 0 0\nH 0 0 0.74\n"),
+        (
+            "H2O",
+            "3\nw\nO 0 0 0.117\nH 0 0.757 -0.469\nH 0 -0.757 -0.469\n",
+        ),
+        // HF: the stiffest bond available at this scale, so the worst case for
+        // the margin among small closed-shell molecules.
+        ("HF", "2\nhf\nH 0 0 0\nF 0 0 0.92\n"),
+    ] {
+        let mol = Molecule::parse_xyz(xyz, 0, 1).expect("parse");
+        let mut scf = RhfConfig::default();
+        scf.max_iter = 300;
+        let fc = FrequencyConfig {
+            reference: FrequencyReference::Rhf,
+            ..Default::default()
+        };
+        let fr = harmonic_frequencies(&ParallelContext::default(), &mol, "sto-3g", op, &scf, &fc)
+            .expect("frequencies");
+        let m = atom_masses(&mol).expect("masses");
+        let n = 3 * mol.atoms.len();
+        let mut hw = fr.cartesian_hessian.clone();
+        for i in 0..n {
+            for j in 0..n {
+                hw[[i, j]] /= (m[i / 3] * m[j / 3]).sqrt();
+            }
+        }
+        let (evals, _) = hw.eigh(UPLO::Lower).expect("eigh");
+        let max = evals.iter().cloned().fold(f64::MIN, f64::max);
+        println!("{tag:4} max mass-weighted eigenvalue = {max:.4} (TR_SHIFT = {TR_SHIFT:.0})");
+        assert!(
+            max * REQUIRED_MARGIN < TR_SHIFT,
+            "{tag}: the largest physical eigenvalue is {max:.4}, within {REQUIRED_MARGIN}x \
+             of TR_SHIFT = {TR_SHIFT:.0}. count_negative assumes shifted modes occupy the \
+             TOP n_tr slots; if a physical mode can reach the shift, that assumption \
+             breaks and imaginary modes are miscounted."
+        );
+    }
+}
