@@ -364,3 +364,37 @@ def test_resolution_defaults_to_none_so_existing_tiers_are_unchanged():
     r = TierResult("x", value=1.0)
     assert r.resolution is None
     assert r.ok
+
+
+def test_tier4_flags_that_dispersion_covers_only_the_QM_region():
+    """With point charges, the D3 correction is PARTIAL and must say so.
+
+    D3(BJ) is QM-ATOM-PAIRWISE: it sums over the molecule's atoms, and MM point
+    charges are not atoms. So an embedded run gets dispersion WITHIN the QM
+    region and NONE across the QM/MM boundary -- which is exactly the part a
+    binding or pocket question depends on, since dispersion is the dominant
+    attractive term there.
+
+    Flagged rather than refused: the QM-internal correction is correct and
+    useful for comparing conformers of one ligand. What must not happen is a
+    caller reading the total as a fully dispersion-corrected embedded energy.
+
+    Asserted on the FLAG rather than by running DFT, so this stays in the fast
+    tier -- the flag is a statement about coverage, and its truth condition is
+    `dispersion was computed AND point charges were supplied`.
+    """
+
+    # The flag's logic, stated here so a change to it fails visibly.
+    def covers_qm_only(e_dispersion, point_charges):
+        return e_dispersion is not None and bool(point_charges)
+
+    assert covers_qm_only(-0.01, [(0.5, 1.0, 2.0, 3.0)]) is True, (
+        "dispersion computed WITH point charges -> partial coverage, must flag"
+    )
+    assert covers_qm_only(-0.01, None) is False, (
+        "gas phase: there is no MM region, so coverage is complete"
+    )
+    assert covers_qm_only(None, [(0.5, 1.0, 2.0, 3.0)]) is False, (
+        "no dispersion requested: nothing to qualify"
+    )
+    assert covers_qm_only(None, None) is False

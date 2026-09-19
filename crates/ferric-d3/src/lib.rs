@@ -263,6 +263,25 @@ pub fn d3bj_energy(
             coords.len()
         )));
     }
+    // Non-finite coordinates must be REFUSED, not propagated.
+    //
+    // MEASURED before this guard: a NaN coordinate returned `Ok(NaN)`, and an
+    // INFINITE one returned `Ok(0.0)` -- a clean-looking zero dispersion
+    // energy from a broken geometry. The zero is the dangerous one: NaN at
+    // least propagates visibly into whatever consumes it, while 0.0 is
+    // indistinguishable from "computed, and the atoms are far apart".
+    //
+    // Reachable from an optimizer that took a bad step, or from a coordinate
+    // read through a failed unit conversion.
+    for (i, c) in coords.iter().enumerate() {
+        if !c.iter().all(|v| v.is_finite()) {
+            return Err(FerricError::General(format!(
+                "D3: atom {i} has a non-finite coordinate {c:?}. An infinite \
+                 separation would return a clean 0.0, which is indistinguishable \
+                 from a computed answer."
+            )));
+        }
+    }
     let z = checked_numbers(numbers)?;
     let n = z.len();
     if n < 2 {
@@ -349,6 +368,25 @@ pub fn d3bj_gradient(
             numbers.len(),
             coords.len()
         )));
+    }
+    // Non-finite coordinates must be REFUSED, not propagated.
+    //
+    // MEASURED before this guard: a NaN coordinate returned `Ok(NaN)`, and an
+    // INFINITE one returned `Ok(0.0)` -- a clean-looking zero dispersion
+    // energy from a broken geometry. The zero is the dangerous one: NaN at
+    // least propagates visibly into whatever consumes it, while 0.0 is
+    // indistinguishable from "computed, and the atoms are far apart".
+    //
+    // Reachable from an optimizer that took a bad step, or from a coordinate
+    // read through a failed unit conversion.
+    for (i, c) in coords.iter().enumerate() {
+        if !c.iter().all(|v| v.is_finite()) {
+            return Err(FerricError::General(format!(
+                "D3: atom {i} has a non-finite coordinate {c:?}. An infinite \
+                 separation would return a clean 0.0, which is indistinguishable \
+                 from a computed answer."
+            )));
+        }
     }
     let z = checked_numbers(numbers)?;
     let n = z.len();
