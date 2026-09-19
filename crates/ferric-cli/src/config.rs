@@ -1961,10 +1961,13 @@ kind = "rhf"
 
     #[test]
     fn json_false_turns_the_log_off() {
-        let cfg = parse(&format!("{MINIMAL}
+        let cfg = parse(&format!(
+            "{MINIMAL}
 [output]
 json = false
-")).unwrap();
+"
+        ))
+        .unwrap();
         assert_eq!(
             cfg.output
                 .resolve_json_path(std::path::Path::new("/runs/x.toml")),
@@ -1974,10 +1977,13 @@ json = false
 
     #[test]
     fn json_true_means_the_default_path() {
-        let cfg = parse(&format!("{MINIMAL}
+        let cfg = parse(&format!(
+            "{MINIMAL}
 [output]
 json = true
-")).unwrap();
+"
+        ))
+        .unwrap();
         assert_eq!(
             cfg.output
                 .resolve_json_path(std::path::Path::new("/runs/x.toml")),
@@ -2005,10 +2011,12 @@ json = \"logs/custom.jsonl\"
     /// is a hard error, never a silent default (the config-honesty convention).
     #[test]
     fn a_typod_output_key_hard_errors() {
-        let r = parse(&format!("{MINIMAL}
+        let r = parse(&format!(
+            "{MINIMAL}
 [output]
 jsonn = false
-"));
+"
+        ));
         assert!(
             r.is_err(),
             "typo'd [output] key parsed successfully — deny_unknown_fields regressed"
@@ -2020,14 +2028,20 @@ jsonn = false
     /// `untagged` enum makes this the "no variant matched" path.
     #[test]
     fn a_nonsense_json_value_hard_errors() {
-        assert!(parse(&format!("{MINIMAL}
+        assert!(parse(&format!(
+            "{MINIMAL}
 [output]
 json = 17
-")).is_err());
-        assert!(parse(&format!("{MINIMAL}
+"
+        ))
+        .is_err());
+        assert!(parse(&format!(
+            "{MINIMAL}
 [output]
 json = [1, 2]
-")).is_err());
+"
+        ))
+        .is_err());
     }
 
     /// Every shipped example must parse. With `deny_unknown_fields` on all
