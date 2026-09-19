@@ -434,3 +434,136 @@ fn a_mis_sized_mode_is_refused() {
     .expect_err("a mis-sized mode must be refused");
     assert!(err.to_string().contains("imaginary mode"));
 }
+
+/// `IrcBranch.mol` and `IrcBranch.energy` must describe the SAME geometry.
+///
+/// The walk sets the geometry, evaluates there, then advances. A trailing
+/// `set_cart_from_mass_weighted` after the loop moved the geometry ONE STEP
+/// PAST the point the energy came from. On the `break` paths they happened to
+/// agree; on BUDGET EXHAUSTION they did not -- and that is the case a caller
+/// is most likely to inspect by hand, because it is the one that went wrong.
+///
+/// Checked by re-evaluating the returned geometry: the energy must match what
+/// the branch reports, to SCF precision.
+#[test]
+fn the_branch_energy_belongs_to_the_branch_geometry() {
+    // A tiny budget forces the exhaustion path, which is where they diverged.
+    let res = follow_irc(
+        &planar_nh3(),
+        &umbrella_mode(),
+        &IrcConfig {
+            step: 0.15,
+            max_steps: 4,
+            ..Default::default()
+        },
+        gas_phase_eg(),
+    )
+    .expect("IRC");
+    assert!(
+        !res.forward.converged,
+        "this test needs the BUDGET-EXHAUSTION path; raise the step count if \
+         the walk now converges in 4 steps"
+    );
+
+    let mut eg = gas_phase_eg();
+    for (tag, branch) in [("forward", &res.forward), ("reverse", &res.reverse)] {
+        let (e_recomputed, _) = eg(&branch.mol).expect("re-evaluate");
+        assert!(
+            (e_recomputed - branch.energy).abs() < 1e-9,
+            "{tag}: the branch reports E = {} but its geometry evaluates to \
+             {e_recomputed}. The two describe different structures.",
+            branch.energy
+        );
+    }
+}
+
+/// Every scalar knob must be FINITE and positive, not merely positive.
+///
+/// Each infinity fails differently and none of them fails loudly:
+/// `step = inf` was masked only by the `min(step, 2|g|)` damping cap, so it
+/// depended on an implementation detail; `initial_displacement = inf` hands
+/// NON-FINITE coordinates to the caller's SCF, which fails somewhere far from
+/// here; `g_max_thresh = inf` makes every gradient look converged, so the walk
+/// stops at step 1 and confidently reports a basin.
+#[test]
+fn non_finite_settings_are_refused() {
+    let inf = f64::INFINITY;
+    let cases = [
+        (
+            "step",
+            IrcConfig {
+                step: inf,
+                ..Default::default()
+            },
+        ),
+        (
+            "initial_displacement",
+            IrcConfig {
+                initial_displacement: inf,
+                ..Default::default()
+            },
+        ),
+        (
+            "g_max_thresh",
+            IrcConfig {
+                g_max_thresh: inf,
+                ..Default::default()
+            },
+        ),
+        (
+            "g_max_thresh<=0",
+            IrcConfig {
+                g_max_thresh: 0.0,
+                ..Default::default()
+            },
+        ),
+        (
+            "nan step",
+            IrcConfig {
+                step: f64::NAN,
+                ..Default::default()
+            },
+        ),
+    ];
+    for (tag, cfg) in cases {
+        let err = follow_irc(&planar_nh3(), &umbrella_mode(), &cfg, gas_phase_eg())
+            .expect_err(&format!("{tag} must be refused"));
+        assert!(
+            err.to_string().contains("finite"),
+            "{tag}: the error must say the value is not finite/positive, got: {err}"
+        );
+    }
+
+    // The anchor: the default config still runs, so the guard has not been
+    // over-corrected into rejecting everything.
+    assert!(follow_irc(
+        &planar_nh3(),
+        &umbrella_mode(),
+        &IrcConfig {
+            max_steps: 3,
+            ..Default::default()
+        },
+        gas_phase_eg()
+    )
+    .is_ok());
+}
+
+/// A callback returning the wrong gradient length must ERROR, not panic.
+///
+/// The callback is caller-supplied, so its length is an INPUT and not an
+/// invariant. Indexing past the end would panic inside a library; a short
+/// gradient would silently walk on truncated data.
+#[test]
+fn a_wrong_length_callback_gradient_is_refused() {
+    let err = follow_irc(
+        &planar_nh3(),
+        &umbrella_mode(),
+        &IrcConfig::default(),
+        |_m: &Molecule| Ok((0.0, Array1::zeros(3))), // 3 for a 12-coordinate molecule
+    )
+    .expect_err("a short gradient must be refused");
+    assert!(
+        err.to_string().contains("components"),
+        "the error must name the length mismatch, got: {err}"
+    );
+}

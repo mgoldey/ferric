@@ -154,14 +154,33 @@ pub fn follow_irc(
             saddle.atoms.len()
         )));
     }
-    if !(config.step > 0.0 && config.initial_displacement > 0.0) {
-        return Err(FerricError::General(format!(
-            "IRC: step ({}) and initial_displacement ({}) must both be positive. \
-             At the saddle the gradient is ZERO by definition, so a walk started \
-             with no displacement never moves and would report the saddle itself \
-             as both endpoints.",
-            config.step, config.initial_displacement
-        )));
+    // FINITE and positive, not merely positive. Each infinity fails
+    // differently and none of them fails loudly:
+    //   * step = inf          -- currently masked by `min(step, 2|g|)`, so it
+    //                            silently depends on that cap continuing to
+    //                            exist. Reject it at the boundary instead of
+    //                            relying on an implementation detail.
+    //   * initial_displacement = inf -- reaches the coordinate transform and
+    //                            hands NON-FINITE coordinates to the caller's
+    //                            SCF, which will fail somewhere far from here.
+    //   * g_max_thresh = inf  -- makes EVERY gradient look converged, so the
+    //                            walk stops at step 1 and reports a basin.
+    //   * g_max_thresh <= 0   -- can never be met, so the branch always
+    //                            exhausts its budget.
+    for (name, v) in [
+        ("step", config.step),
+        ("initial_displacement", config.initial_displacement),
+        ("g_max_thresh", config.g_max_thresh),
+    ] {
+        if !(v.is_finite() && v > 0.0) {
+            return Err(FerricError::General(format!(
+                "IRC: {name} must be finite and > 0, got {v}. At the saddle the \
+                 gradient is ZERO by definition, so a walk started with no \
+                 displacement never moves and would report the saddle itself as \
+                 both endpoints; an infinite threshold reports the first point \
+                 as converged."
+            )));
+        }
     }
 
     let masses = atom_masses(saddle)?;
@@ -227,6 +246,16 @@ fn walk(
     for _ in 0..config.max_steps {
         set_cart_from_mass_weighted(&mut mol, &q, sm);
         let (e, g) = energy_gradient(&mol)?;
+        // The callback is caller-supplied, so its gradient length is an input,
+        // not an invariant. Indexing `g[i]` past the end would panic inside a
+        // library; a short one would silently walk on a truncated gradient.
+        if g.len() != n3 {
+            return Err(FerricError::General(format!(
+                "IRC: the energy/gradient callback returned {} components for a \
+                 {n3}-coordinate molecule",
+                g.len()
+            )));
+        }
         energy = e;
         steps += 1;
 
@@ -264,7 +293,15 @@ fn walk(
         }
     }
 
-    set_cart_from_mass_weighted(&mut mol, &q, sm);
+    // NO trailing `set_cart_from_mass_weighted` here.
+    //
+    // `mol` already holds the geometry at which `energy` was evaluated -- the
+    // loop sets it, evaluates, and only then advances `q`. Applying the final
+    // `q` after the loop would move the geometry ONE STEP PAST the point the
+    // energy came from, so `IrcBranch.mol` and `IrcBranch.energy` would
+    // describe different structures. On the `break` paths they happened to
+    // agree; on budget exhaustion they did not, which is the case a caller is
+    // most likely to be inspecting by hand.
     Ok(IrcBranch {
         mol,
         energy,
