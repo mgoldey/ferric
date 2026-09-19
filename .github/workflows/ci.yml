@@ -1223,6 +1223,21 @@ jobs:
       # which needs the SAME libint2 this job already has cached above --
       # the reason this lives in the nightly coverage job rather than the
       # fast python-quality job.
+      - name: Install uv
+        # The ubuntu-22.04 image does NOT ship uv, and this job -- unlike
+        # python-quality, which installs it at its own "Install uv" step --
+        # went straight to `uv sync`. That failed with `uv: command not found`
+        # (exit 127) in 0.0s on every scheduled run from 2026-09-17 onward,
+        # which meant the two steps below it (maturin develop, then the pytest
+        # that exercises the compiled extension) had NEVER executed. The
+        # pytest step's own comment saying "nobody has observed a green run
+        # yet" was describing this, not a flaky test.
+        #
+        # `pip install uv` rather than astral-sh/setup-uv for the same reason
+        # python-quality gives: no third-party action off the already-present
+        # Python.
+        run: pip install uv
+
       - name: uv sync (dev + build extras)
         run: uv sync --extra dev --extra build --no-install-project
 
