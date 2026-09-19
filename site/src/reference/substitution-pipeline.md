@@ -245,12 +245,20 @@ than translating a fixed conformer. The 0.95 ratio is the transferable part.
    sd 0.83, xtb on the identical geometries 28.75. The cheap tier sees a
    nearly flat landscape where xtb sees 103 kcal/mol.
 
-   **So the connector must SELECT a pose, not average over one.** M9
-   redocks danuglipron to 0.95 A, so selection is defensible; it is an
-   assumption to state, not a noise source to average down. That also
-   means `funnel.py` keying one row per MOLECULE is no longer the blocker
-   it was written up as -- one row per molecule is the RIGHT shape once
-   the pose is selected rather than sampled.
+   **RETRACTED the same day by M13.** The sentence that stood here said
+   the connector must SELECT a pose rather than average. Measured on the
+   same 15 poses: Vina's ranking axis is statistically INDEPENDENT of the
+   xtb scoring axis (Spearman -0.261, p=0.35), so picking rank 0 is one
+   random draw from an sd-28.75 distribution. ddE noise is 40.66 selected
+   vs 4.07 averaged at n=100 -- selection is 10x WORSE. M9's 0.95 A redock
+   licenses "the near-native pose is in the set", not "it is first"; M9
+   itself says Vina got it first "partly by luck" (r = +0.461, 4/20 under
+   2.0 A).
+
+   So averaging stands as the least-bad estimator, and `funnel.py`'s
+   one-row-per-MOLECULE keying IS still a blocker. All four pose
+   protocols are now closed; the remaining lever is a scoring metric less
+   pose-sensitive than a point-charge interaction energy.
 
    The original blocker text follows, kept because the reasoning is still
    correct for the averaging approach it rejects:

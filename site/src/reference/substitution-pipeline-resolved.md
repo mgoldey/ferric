@@ -1,17 +1,41 @@
 # How we make a pipeline for proposing viable active-site substitutions
 
-**Resolved 2026-09-19.** The question has been open across several sessions
-because one design decision was genuinely undecided: whether to average over a
-pose ensemble or to select a single pose. M12 closes it with a measurement, so
-the pipeline shape below is now determined rather than chosen.
+**2026-09-19, revised the same day.** The pipeline's STAGES are settled and
+every one of them exists in code. What is NOT settled -- and what this note now
+says plainly, having briefly said the opposite -- is that its ranking can be
+trusted at the 1-2 kcal/mol resolution a substitution campaign needs. All four
+pose protocols have been measured and all four fail.
 
 Everything here is MEASURED on danuglipron against the GLP-1R pocket (7LCJ)
 unless labelled otherwise. Sources: `experiments/danuglipron/RESULTS.md`
-(M4-M12), `wiki/golden-path-pipeline-2026-09-18.md`.
+(M4-M13), `wiki/golden-path-pipeline-2026-09-18.md`.
 
 ---
 
-## The decision that was blocking: select, do not average
+## RETRACTION, same day (M13)
+
+An earlier version of this note recommended **"select one pose, do not
+average"**. That was wrong and is retracted below. The correction does not
+change the pipeline's STAGES -- P1-P7 stand -- but it changes what the output
+may be used for, which is the more important half.
+
+Short version: selecting the top-docked pose is **10x worse** than averaging,
+because Vina's ranking axis is statistically independent of the xtb scoring
+axis (Spearman -0.261, p=0.35), so "pick rank 0" is a single random draw from a
+distribution with sd 28.75 kcal/mol. Averaging at n=100 gives ddE noise 4.07;
+selecting gives 40.66. Both miss the 0.25 kcal/mol gap, by 16x and 163x.
+
+I had justified selection with "M9 redocks to 0.95 A". M9 says two paragraphs
+under its own headline that it did so **"partly by luck"** (r = +0.461, only
+4/20 poses under 2.0 A). I quoted the headline and not the caveat beneath it.
+
+**What this means for the pipeline:** the stages below are right, and the
+ranking they produce is NOT trustworthy at 1-2 kcal/mol resolution by any pose
+protocol currently available. Use it to answer *"does this analogue bind in
+this site at all"*, not *"which of these two is better"*. See
+"What the pipeline may and may not claim" at the end.
+
+## The decision that WAS thought to be blocking: select vs average (SUPERSEDED)
 
 Per-pose energy scatter is **sd ~29 kcal/mol** against substituent effects of
 **1-2 kcal/mol**. Three routes to averaging that away have now been tried, and
@@ -23,13 +47,17 @@ all three are closed with numbers:
 | relax poses in field (M6) | 34.23 -> 29.07, a real 15% tightening, poses stay distinct | closed -- ~3 orders of magnitude short |
 | real pose search (M12) | 29.07 -> 28.75, **1%**, poses MORE diverse (RMSD 3.84 -> 5.81 A) | closed -- 32.5x short |
 
-So the answer is not a better ensemble. **The pipeline must select one pose per
-analogue and score that**, stating the selection as an assumption.
+So the answer is not a better ensemble. It is also **not** selection -- M13
+measured that and it is worse (see the retraction above). A fourth row belongs
+in that table:
 
-That is defensible because pose GENERATION is solved for this target: M9
-redocks danuglipron into 7LCJ at **0.95 A** (best-of-20 and top-ranked both),
-20/20 poses within 5 A of the known site. Before docking, the best of 20 RDKit
-conformers was 2.23 A and nothing cleared the conventional 2.0 A bar.
+| select one pose (M13) | ddE noise 40.66 vs averaging's 4.07 | closed -- 10x WORSE |
+
+Pose GENERATION is nonetheless solved for this target: M9 redocks danuglipron
+into 7LCJ at **0.95 A**, 20/20 poses within 5 A of the known site, where the
+best of 20 RDKit conformers was 2.23 A. That licenses *"the near-native pose is
+in the candidate set"*. It does not license *"the first one is it"* -- M9's own
+r(vina_score, RMSD) = +0.461 says otherwise.
 
 ### The number that makes the decision concrete
 
@@ -55,9 +83,9 @@ P0  parent + site SMARTS + pocket PDB
 P1  ENUMERATE      propose_substitutions          -> SMILES per (substituent, SITE)
 P2  DESCRIPTOR     relative_descriptors           -> gate vs the PARENT, not absolutes
 P3  EMBED          embed_proposals (ETKDG, seeded) -> symbols + coords
-P4  DOCK           dock_ligand per analogue        -> SELECT one pose  <-- the decision
+P4  DOCK           dock_ligand per analogue        -> pose ENSEMBLE (do NOT take rank 0)
 P5  PRESCREEN      prescreen_pose (classical)      -> cheap triage, no SCF
-P6  RANK           xtb pose_fit                    -> ddE vs the parent
+P6  RANK           xtb pose_fit, MEAN over the ensemble -> ddE vs the parent
 P7  CONFIRM        ferric DFT + D3(BJ)             -> survivors only
 ```
 
@@ -77,10 +105,12 @@ which a halogen/CF3 scan is missing its dominant attractive term.
    group goes matters as much as WHICH group. A pipeline keyed on substituent
    alone averages over the larger effect.
 
-3. **One row per molecule is now CORRECT.** `funnel.py`'s one-row-per-candidate
-   keying was previously written up as a blocker ("cannot express an
-   ensemble"). Given P4 selects a pose, there is no ensemble to express, and
-   the existing shape is right. This is the concrete thing M12 changed.
+3. **One row per molecule is the WRONG shape, after all.** An earlier version
+   of this note said the opposite, on the strength of the now-retracted
+   selection recommendation. With averaging restored as the least-bad
+   estimator, `funnel.py` does need to express an ensemble -- it keys one row
+   per candidate (`funnel.py:162`). This is a real, open gap, and it was
+   briefly recorded as closed.
 
 4. **Ionization state is part of the measurement.** Danuglipron's carboxylic
    acid is deprotonated at pH 7.4; the anion/neutral split is 143 kcal/mol
@@ -102,23 +132,43 @@ pipeline's output until that is resolved.
 
 ---
 
-## What is still NOT settled, stated plainly
+## What the pipeline may and may not claim
 
-* **The selection is an assumption, not a proof.** Docking gets within ~1 A on
-  THIS target, where a crystal pose exists to check against. On a novel target
-  there is no such check, and the pipeline's output inherits that uncertainty.
-  Report it; do not launder it.
-* **No ranking has been validated end to end.** M12 closes the averaging
-  routes; it does not demonstrate that selected-pose ddE ranks analogues
-  correctly. That needs a held-out set with known relative affinities, which
-  this campaign does not have.
-* **Tier 4 unvalidated** (above), and dispersion (#99) not yet merged.
-* **The scan's prescreen is classical.** It triages; it does not rank.
+**May:** "this analogue docks into this site, and here is where." Pose
+GENERATION is validated (M9: 0.95 A redock, 20/20 within 5 A). The enumeration,
+the relative descriptor gate and the classical prescreen all work and are
+tested.
+
+**May not:** "analogue A binds better than analogue B by 1-2 kcal/mol." No pose
+protocol available today supports that. The four measured options:
+
+| protocol | ddE noise (kcal/mol) | vs the 0.25 gap |
+|---|---|---|
+| select one pose (M13) | 40.66 | 163x |
+| average n = 100 (M5) | 4.07 | 16x |
+| relax then average (M6) | ~4.1 | ~16x |
+| dock then average (M12) | ~4.1 | ~16x |
+
+Averaging is the least-bad option and is still 16x short. Reporting a ranking
+from this would be reporting noise.
+
+## What is still NOT settled
+
+* **The per-pose sd is the whole problem, and it is a property of the SCORING
+  METRIC, not the poses.** M12 showed better poses do not help (1%); M13 showed
+  picking one does not either (10x worse). The lever left is a scorer less
+  sensitive to pose than a point-charge interaction energy.
+* **`funnel.py` cannot express an ensemble** (`funnel.py:162`, one row per
+  candidate), and with averaging restored it needs to.
+* **Tier 4 unvalidated** -- M10 recorded it does not fit the funnel as
+  configured. Dispersion (#99) not yet merged.
+* **No ranking validated end to end**, and there is no held-out set with known
+  relative affinities in this campaign to validate one against.
 
 ## Honest status line
 
-> The pipeline's SHAPE is now determined: enumerate relative to the parent,
-> dock to select a pose, score that pose, report ddE per (substituent, site).
-> Every stage exists in code and four of them are validated. What is not
-> established is that the resulting ranking is correct -- only that the three
-> obvious ways of getting it wrong by averaging have been measured and closed.
+> The pipeline's SHAPE is settled and every stage exists: enumerate relative to
+> the parent, dock, prescreen, score, report ddE per (substituent, site). Its
+> RANKING is not trustworthy at the resolution a substitution campaign needs,
+> and four pose protocols have now been measured to establish that rather than
+> assumed. Use it to triage what binds; do not use it to order candidates.
