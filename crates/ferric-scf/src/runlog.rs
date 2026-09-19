@@ -614,9 +614,13 @@ pub fn default_path_for_input(input: &Path) -> PathBuf {
 #[must_use]
 pub fn rung_tricks(config: &crate::rhf::RhfConfig) -> Vec<&'static str> {
     let mut v = Vec::new();
+    // EXHAUSTIVE on purpose: a wildcard arm reported Ediis as "diis", so a run
+    // log -- whose whole job is to say what actually ran -- named the wrong
+    // solver. Adding a variant must break this match, not silently mislabel it.
     match config.diis_flavor {
+        crate::diis::DiisFlavor::Pulay => v.push("diis"),
         crate::diis::DiisFlavor::Adiis => v.push("adiis"),
-        _ => v.push("diis"),
+        crate::diis::DiisFlavor::Ediis => v.push("ediis"),
     }
     if config.level_shift > 0.0 {
         v.push("level_shift");
@@ -705,5 +709,51 @@ mod tests {
         // one), but `emit` on a `RunLog` with no sink must be a silent no-op
         // rather than a panic.
         RunLog.note("unit_test", serde_json::json!({"ok": true}));
+    }
+    /// Every `DiisFlavor` must report its OWN name.
+    ///
+    /// A wildcard arm reported `Ediis` as `"diis"`, so the run log -- whose one
+    /// job is to record what actually ran -- named the wrong solver. Nothing
+    /// downstream could tell EDIIS from Pulay, and the ladder record would show
+    /// an escalation that never happened.
+    ///
+    /// This asserts each variant SEPARATELY rather than looping, so a failure
+    /// names which flavour is mislabelled. It also asserts the three labels are
+    /// DISTINCT, which is the property that actually matters: a match arm that
+    /// returned "diis" three times would satisfy "every variant produces a
+    /// label" and still be the bug.
+    #[test]
+    fn every_diis_flavor_reports_its_own_name() {
+        use crate::diis::DiisFlavor;
+
+        let label = |f: DiisFlavor| {
+            let cfg = crate::rhf::RhfConfig {
+                diis_flavor: f,
+                ..Default::default()
+            };
+            rung_tricks(&cfg)[0]
+        };
+
+        assert_eq!(label(DiisFlavor::Pulay), "diis");
+        assert_eq!(label(DiisFlavor::Adiis), "adiis");
+        assert_eq!(
+            label(DiisFlavor::Ediis),
+            "ediis",
+            "EDIIS was reported as plain \"diis\" by a wildcard match arm"
+        );
+
+        let all = [
+            label(DiisFlavor::Pulay),
+            label(DiisFlavor::Adiis),
+            label(DiisFlavor::Ediis),
+        ];
+        let mut uniq = all.to_vec();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(
+            uniq.len(),
+            all.len(),
+            "two flavours share a label {all:?} -- the log cannot distinguish them"
+        );
     }
 }

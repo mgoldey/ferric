@@ -103,6 +103,37 @@ For a post-SCF method the `energy` is the **SCF reference**, not the method's
 total — `extra.energy_is` says which. Per-iteration coverage of MP2/RPA/CC/GW
 is not implemented yet.
 
+### `result`
+
+**The number the run was launched to produce.** Emitted once, after the method
+finishes, and the record to read for a correlated method's answer.
+
+| field | meaning |
+|---|---|
+| `kind` | the method that produced it, e.g. `"rimp2"`, `"ccsd"`, `"gw"` |
+| `total` | the headline number a user would quote |
+| `components` | the decomposition that makes `total` checkable — `e_corr`, `e_os`/`e_ss`, the reference energy, and whatever else the method defines |
+
+`total` and `run_end.energy` are **different numbers** for every post-SCF
+method. A `kind="rimp2"` run's `run_end.energy` is the RHF energy it was built
+on; its `result.total` is the RI-MP2 total. Reading the wrong one silently
+gives an uncorrelated answer.
+
+`components` exists because a total alone cannot be reconciled against a
+reference implementation — you need the pieces to see *where* a disagreement
+comes from.
+
+### `result_unlogged`
+
+A method that has not been wired up to `result` yet emits this instead, naming
+the `kind`.
+
+It exists because **silence is ambiguous**: a log with no `result` record could
+mean the method does not record one yet, or that the run died before producing
+one. Those demand opposite responses from whatever reads the log. This makes
+the first case explicit and leaves "the run failed" as the only remaining
+reading of a genuinely missing record.
+
 ## Example
 
 A water/STO-3G RHF run, abridged:
