@@ -222,6 +222,45 @@ eps = provider.fetch("CC(=O)Oc1ccccc1C(=O)O")
 #   -> 13 endpoints, e.g. alert_brenk = 0.333
 ```
 
+```python
+# E. the pocket half, composed -- all four tiers share ONE signature
+#    (iso, context) -> TierResult, so run_funnel chains them.
+from tools.pipeline import run_funnel, Stage
+from tools.pipeline.tiers import tier1_dock, tier2_forcefield, tier3_gfn2, tier4_dft
+from tools.campaign.hierarchy import Tier
+
+stages = [
+    Stage(Tier.FORCE_FIELD,   tier2_forcefield, keep=2, name="ff"),
+    Stage(Tier.SEMIEMPIRICAL, tier3_gfn2,       keep=2, name="xtb"),
+    Stage(Tier.QUANTUM,       tier4_dft,        keep=1, name="dft"),
+]
+rep = run_funnel(candidates, stages, {"seed": 0xF00D, "basis": "sto-3g"})
+#   tier 1 is omitted above only because it needs the `docking` extra and a
+#   receptor; add Stage(Tier.EMPIRICAL, tier1_dock, ...) with
+#   context["receptor_pdbqt"] and ["box_center"] to run it.
+```
+
+MEASURED 2026-09-19, two small candidates, STO-3G, one process:
+
+```
+funnel wall: 1.58 s
+  FORCE_FIELD    in=2 out=2 failed=0   0.03 s
+  SEMIEMPIRICAL  in=2 out=2 failed=0   0.04 s
+  QUANTUM        in=2 out=1 failed=0   1.51 s     <- 96% of the wall
+survivors: ['CC(=O)O']   dft = -225.76133078 Ha
+```
+
+**96% of the wall in the last tier on TWO candidates** is the funnel's whole
+argument in one line, and it gets worse with candidate count: the cheap tiers
+scale with the population, tier 4 scales with what reaches it. That is why
+`keep=` matters more than any per-call cost in this note.
+
+Note the DFT total (-225.76133078) is 4.18 mHa BELOW the SCF energy the ladder
+logs (-225.7571497). That difference is the D3(BJ) correction, -2.62 kcal/mol
+-- `tier4_dft` passes `dispersion="d3bj"` by default. It is a real
+contribution at chemical-accuracy scale, and it is why `run_end.energy` and a
+method's `result.total` are different numbers.
+
 For the pocket half (docking, xtb, DFT) the entry points are
 `tools.docking.vina_dock.dock_ligand`, `tools.campaign.fit.pose_fit` and
 `tools.active_site.binding_energy.compute_binding_energy`; the composition is
