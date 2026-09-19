@@ -43,6 +43,7 @@ __all__ = [
     "site_substituent_heatmap",
     "pose_ensemble",
     "liability_profile",
+    "close",
 ]
 
 #: Hartree -> kcal/mol. The one conversion this module performs, named so a
@@ -61,6 +62,21 @@ def _plt():
     import matplotlib.pyplot as plt
 
     return plt
+
+
+def close(fig) -> None:
+    """Release a figure returned by this module.
+
+    Every function here returns a `Figure` and does NOT close it -- the caller
+    needs it to save or display. But pyplot RETAINS every figure it creates, so
+    a batch that plots a thousand analogues holds a thousand figures and
+    matplotlib warns at 20 ("More than 20 figures have been opened").
+
+    Call this when done with one. It is a thin wrapper over `plt.close(fig)`,
+    provided so a caller does not have to import pyplot (and risk picking a GUI
+    backend) just to free a figure this module handed them.
+    """
+    _plt().close(fig)
 
 
 @dataclass(frozen=True)
