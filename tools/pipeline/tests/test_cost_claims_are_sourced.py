@@ -166,3 +166,47 @@ def test_the_coverage_table_does_not_reassert_the_retracted_figures():
             f"{bad!r} is back in a table row: {offending}. That figure was "
             "RETRACTED -- see the correction note in the same file."
         )
+
+
+GOLDEN = REPO / "site/src/reference/pipeline-golden-path.md"
+
+
+@pytest.mark.skipif(not GOLDEN.is_file(), reason=f"no {GOLDEN}")
+def test_the_quickstart_names_functions_that_return_what_it_claims():
+    """The quickstart says "any input format -> a ferric Molecule". It must.
+
+    It named `read_structure`, which returns a `Structure` -- symbols as a
+    FIELD, not a method -- so pasting the line and calling `.symbols()` raises
+    `TypeError: 'tuple' object is not callable`. The function that returns a
+    Molecule is `read`. Found 2026-09-19 by running the block, which is the
+    only way to find it: both names exist, both are exported, and the wrong one
+    reads perfectly.
+
+    This is the SECOND defect found in that block today (the first was
+    `relative_descriptors` printed as exactly zero when it is -1.42e-14), so
+    it earns a guard rather than another fix.
+
+    The guard is deliberately narrow: it checks the quickstart does not claim
+    `read_structure` returns a Molecule. Executing the whole block here would
+    need rdkit and a docking extra in the fast tier.
+    """
+    text = GOLDEN.read_text()
+    start = text.index("## 0b.")
+    block = text[start : text.index("\n## ", start + 5)]
+
+    assert "from tools.structure import" in block, (
+        "the quickstart no longer imports from tools.structure; re-derive this "
+        "guard rather than deleting it"
+    )
+    # The claim the block makes about itself.
+    assert "-> a ferric Molecule" in block
+
+    # `read_structure` may be MENTIONED (the note explaining the difference is
+    # useful), but it must not be the call bound to `mol`.
+    for line in block.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("mol = ") or stripped.startswith("mol="):
+            assert "read_structure(" not in stripped, (
+                f"the quickstart binds `mol` to read_structure, which returns a "
+                f"Structure and not a Molecule: {stripped!r}. Use `read`."
+            )
