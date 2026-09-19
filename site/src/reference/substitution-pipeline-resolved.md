@@ -53,6 +53,39 @@ in that table:
 
 | select one pose (M13) | ddE noise 40.66 vs averaging's 4.07 | closed -- 10x WORSE |
 
+### A fifth row, and it is a different KIND of row (M17, 2026-09-19)
+
+Every route above attacks the per-pose **sd** and accepts the **estimator**.
+All of them compute `ddE` over INDEPENDENTLY embedded ensembles, which is an
+UNPAIRED design over noise that is largely COMMON to the two molecules: the
+scatter is pose-conformational, a property of the scaffold in the pocket, while
+a substitution changes a handful of atoms and leaves ~68 where they were.
+
+| pair poses by scaffold (M17) | ddE SEM 4.07 -> 0.221-0.615 in the relaxed arm | **PROVISIONAL -- gas-phase MMFF only** |
+
+`var(ddE_paired) = 2*sd^2*(1-rho)`, so the win is entirely in `rho`, and `rho`
+is what a pocket could destroy. Note that a shared random SEED is not a pairing:
+ETKDG with the same seed on two different graphs gives uncorrelated conformers.
+The pairing must be geometric -- pose k of the analogue BUILT FROM pose k of the
+parent.
+
+Two results from that probe matter more than the SEM:
+
+* **A hard scaffold pin FAILS its own exactness anchor by +13.8 kcal/mol** --
+  it charges that much for pairing the parent with ITSELF, because the
+  substituent is forced into whatever room the parent pose left. Relaxing the
+  substituent against a restrained scaffold passes at +0.004.
+* **The Cl row is the warning**: rho 0.399, variance reduction only 1.21x.
+  Pairing helps where the substitution is LOCAL and degrades smoothly to the
+  unpaired case where it is not -- so a paired floor is PER-CANDIDATE, never
+  one campaign-wide number.
+
+This does NOT reopen the ranking claim below. It is measured on one molecule,
+one force field, gas phase, with no pocket, and the thing a pocket most plausibly
+breaks is exactly the correlation the method depends on. It is a reason to run
+that experiment. See RESULTS.md M17 and
+`wiki/paired-ddE-substitution-2026-09-19.md`.
+
 Pose GENERATION is nonetheless solved for this target: M9 redocks danuglipron
 into 7LCJ at **0.95 A**, 20/20 poses within 5 A of the known site, where the
 best of 20 RDKit conformers was 2.23 A. That licenses *"the near-native pose is
@@ -150,6 +183,11 @@ pipeline's output until that is resolved.
 GENERATION is validated (M9: 0.95 A redock, 20/20 within 5 A). The enumeration,
 the relative descriptor gate and the classical prescreen all work and are
 tested.
+
+**Not yet, but no longer ruled out (M17):** a per-candidate ddE at 1-2 kcal/mol,
+via a PAIRED estimator rather than a quieter ensemble. Gas-phase MMFF gives SEM
+0.221-0.615 where the unpaired protocol gives 4.07. Untested in a pocket, which
+is the test that decides it.
 
 **May not, part 1:** "put this group at THIS position." The cheap gate cannot
 see position at all (M15, inherent), and the expensive tier cannot resolve the
