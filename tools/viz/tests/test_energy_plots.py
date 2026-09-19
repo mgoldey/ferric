@@ -19,6 +19,8 @@ from tools.viz.energy_plots import (
     SeriesPoint,
     energy_profile,
     funnel_survival,
+    pose_ensemble,
+    site_substituent_heatmap,
     tier_comparison,
 )
 
@@ -179,3 +181,102 @@ def test_tier_comparison_omits_a_missing_score_rather_than_barring_zero():
 def test_tier_comparison_rejects_a_ragged_series():
     with pytest.raises(ValueError, match="values but there are"):
         tier_comparison(["a", "b"], {"xtb": [1.0]})
+
+
+# --- site x substituent heatmap ---------------------------------------------
+
+
+def test_an_unevaluated_pair_is_hatched_not_coloured_zero():
+    """A missing (substituent, site) must not land on the colormap midpoint.
+
+    A diverging colormap puts 0.0 in the middle, so an unevaluated pair drawn
+    as 0.0 reads as "measured, and neutral" -- the one reading it must never
+    have. It gets a hatched patch and an "n/a" label instead.
+    """
+    fig = site_substituent_heatmap(
+        {("F", "C3"): -1.2, ("F", "C5"): None, ("Cl", "C3"): 0.8, ("Cl", "C5"): 2.0}
+    )
+    ax = fig.axes[0]
+    hatched = [p for p in ax.patches if p.get_hatch()]
+    assert len(hatched) == 1, (
+        f"expected 1 hatched cell for the None, got {len(hatched)}"
+    )
+    labels = [t.get_text() for t in ax.texts]
+    assert "n/a" in labels
+    # And the n/a cell must NOT also carry a numeric label.
+    assert sum(1 for t in labels if t.startswith(("+", "-"))) == 3
+
+
+def test_a_missing_key_is_treated_the_same_as_an_explicit_none():
+    """Absent and None are both "not evaluated" and must render identically."""
+    explicit = site_substituent_heatmap({("F", "A"): 1.0, ("F", "B"): None})
+    implied = site_substituent_heatmap({("F", "A"): 1.0, ("Cl", "B"): 1.0})
+    assert len([p for p in explicit.axes[0].patches if p.get_hatch()]) == 1
+    # The implied grid is 2x2 with two filled and two absent cells.
+    assert len([p for p in implied.axes[0].patches if p.get_hatch()]) == 2
+
+
+def test_the_noise_floor_is_named_in_the_colorbar_not_left_to_a_caption():
+    """A resolution limit nobody can see is a limit nobody applies."""
+    plain = site_substituent_heatmap({("F", "A"): 1.0, ("Cl", "A"): -1.0})
+    flagged = site_substituent_heatmap(
+        {("F", "A"): 1.0, ("Cl", "A"): -1.0}, noise_floor=4.07
+    )
+    plain_lbl = " ".join(a.get_ylabel() for a in plain.axes)
+    flag_lbl = " ".join(a.get_ylabel() for a in flagged.axes)
+    assert "NOISE FLOOR" not in plain_lbl
+    assert "NOISE FLOOR" in flag_lbl and "4.07" in flag_lbl
+
+
+def test_heatmap_refuses_an_entirely_unevaluated_grid():
+    with pytest.raises(ValueError, match="unevaluated"):
+        site_substituent_heatmap({("F", "A"): None, ("Cl", "A"): None})
+    with pytest.raises(ValueError, match="nothing to plot"):
+        site_substituent_heatmap({})
+
+
+# --- pose ensemble -----------------------------------------------------------
+
+
+def test_pose_ensemble_shows_the_spread_and_labels_the_sd():
+    """The whole point: a reader who sees only means cannot see the problem."""
+    fig = pose_ensemble(
+        {"parent": [-100.0, -140.0, -80.0, -120.0], "analogue": [-105.0, -135.0, -85.0]}
+    )
+    ax = fig.axes[0]
+    pts = [ln for ln in ax.get_lines() if ln.get_marker() == "o"]
+    assert sum(len(ln.get_xdata()) for ln in pts) == 7, "every pose must be drawn"
+    assert any("sd" in t.get_text() for t in ax.texts), "the sd must be stated"
+
+
+def test_the_selected_pose_is_marked_but_is_not_the_value():
+    """Selection is 10x worse than averaging (MEASURED), so it is an annotation.
+
+    The mean marker must still be present and the selected pose must be drawn
+    with a DIFFERENT marker, so a reader cannot mistake one for the other.
+    """
+    scores = {"parent": [-100.0, -140.0, -80.0]}
+    without = pose_ensemble(scores)
+    with_sel = pose_ensemble(scores, selected_index=0)
+    xs = [ln for ln in with_sel.axes[0].get_lines() if ln.get_marker() == "x"]
+    assert len(xs) == 1, "the selected pose must be marked"
+    assert not [ln for ln in without.axes[0].get_lines() if ln.get_marker() == "x"]
+    labels = [ln.get_label() for ln in with_sel.axes[0].get_lines()]
+    assert any("NOT the value" in str(t) for t in labels), (
+        "the legend must say the selected pose is not the candidate's value"
+    )
+
+
+def test_pose_ensemble_handles_a_candidate_with_no_usable_poses():
+    """One failed candidate must not abort the figure."""
+    fig = pose_ensemble({"ok": [-100.0, -120.0], "failed": []})
+    ax = fig.axes[0]
+    # The marker is an annotation in axes coordinates (so an empty candidate
+    # cannot drag the y-limits toward 0), hence texts OR annotations.
+    labels = [t.get_text() for t in ax.texts]
+    assert "n/a" in labels, f"expected an n/a marker, got {labels}"
+
+
+def test_pose_ensemble_refuses_an_empty_input():
+    with pytest.raises(ValueError, match="nothing to plot"):
+        pose_ensemble({})
