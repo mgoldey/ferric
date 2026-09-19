@@ -34,7 +34,8 @@
 //!   quantity that exists only for the log.
 //! * Every failure is swallowed after one warning to stderr. An unopenable
 //!   path, a full disk, a broken pipe — none of them fail a calculation. See
-//!   [`RunLog::emit`].
+//!   `RunLog::emit` below (private: every public entry point funnels through
+//!   it, so the swallow-and-warn-once behaviour is in exactly one place).
 //!
 //! The regression tests `logging_does_not_move_the_energy_*` in
 //! `tests/runlog_bit_identity.rs` assert `f64::to_bits()` equality of SCF
@@ -338,7 +339,7 @@ impl RunLog {
     /// Every argument is a quantity the solver ALREADY computed for its own
     /// convergence decision or its existing `FERRIC_SCF_TRACE` line — nothing
     /// here is computed for the log's benefit. See
-    /// [`crate::rhf::ConvergenceSignals`] and the `scf_converged` gate.
+    /// `crate::rhf::ConvergenceSignals` (private) and the `scf_converged` gate.
     ///
     /// `err_max` is the DIIS commutator max element (a diagnostic, never a
     /// gate); `grad_rms` its RMS, which only `solve_rhf` forms — `None`
