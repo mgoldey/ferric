@@ -94,14 +94,22 @@ Every named use case now has code, a MEASURED cost, and a plot:
 | docking geom opt | yes | 1e-5 s/pose | `pose_ensemble`, `funnel_survival` |
 | minima with FF | yes | 1e-3 s/pose | `tier_comparison` |
 | minima with xtb | yes | 5e-1 s/pose | `tier_comparison` |
-| transition state | yes | 2x6N + n_steps grads | `energy_profile` (barrier annotated) |
+| transition state | yes | 2x6N + n_steps grads | `energy_profile` (barrier) + **`imaginary_mode`** (C4's second half) |
 | common substitutions | yes | 2.8 ms enumerate, 214 ms embed | `site_substituent_heatmap`, `grid_with_scores` |
 | toxicology | yes | 9.4 ms/molecule | `liability_profile` |
 | binding energy in site | yes | tier 3/4 above | `site_substituent_heatmap` |
 
-The costs are per-item; the campaign-level shares (cheap 0.8%, dock 73%,
-xtb 4%, DFT 22%) are in the golden-path note, and they are the number that
-should drive optimization decisions -- not the per-call cost.
+The costs are per-item; the campaign-level shares (MEASURED 2026-09-19:
+cheap 0.7%, **dock 79%**, xtb 3%, DFT 18%) are in the golden-path note, and
+they are the number that should drive optimization decisions -- not the
+per-call cost. An earlier 73%/22% split came from a ~20 s/ligand docking
+estimate; the measured 26.4 s at exhaustiveness 4 moves it to 79%/18%.
+
+**"Has a plot" now means the plot answers THAT use case's question**, not
+merely that a figure exists. The last gap was transition-state finding: a TS
+search produces an imaginary MODE (a 3N vector), and until `imaginary_mode`
+landed nothing could show whether it displaces the reacting atoms -- which is
+the second, non-optional half of C4.
 
 **What "has a plot" does NOT mean.** The binding-energy row has a plot and a
 cost and still cannot produce a trustworthy RANKING: all four pose protocols
