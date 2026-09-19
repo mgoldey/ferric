@@ -1837,10 +1837,31 @@ fn run_frequencies(
     if let Some(mult) = multiplicity {
         m.multiplicity = mult as usize;
     }
+    // BOTH callbacks below are RESTRICTED -- `solve_rhf` plus either
+    // `rhf_gradient` or `ks_gradient_closed`, and `FrequencyReference::Rhf`.
+    // Accepting a multiplicity > 1 would run a doublet through a closed-shell
+    // reference and return a confident answer for a state that does not exist.
+    // Refuse rather than silently choosing the wrong physics.
+    if m.multiplicity != 1 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "run_saddle currently supports closed-shell (multiplicity = 1) \
+             references only; got multiplicity = {}. Both the gradient and the \
+             Hessian callbacks are restricted, so an open-shell request would \
+             be answered with a closed-shell reference rather than refused.",
+            m.multiplicity
+        )));
+    }
     let scf_cfg = RhfConfig {
         xc: xc.map(|s| s.to_string()),
         ..Default::default()
     };
+    // ECP must be applied BEFORE the first SCF: it changes the electron count,
+    // so a search started without it optimizes a different molecule than the
+    // one the caller asked about.
+    {
+        let bs = ferric_core::basis::bundled(basis_name).map_err(make_err)?;
+        m.apply_ecp(&bs);
+    }
     let mut fcfg = FrequencyConfig {
         reference: refr,
         ..Default::default()
@@ -6747,20 +6768,55 @@ fn run_saddle(
         let prep = PreparedBasis::new(mm, &bs)?;
         let bounds = SchwarzBounds::compute(op, &prep)?;
         let res = solve_rhf(&ctx, mm, &prep, op, &bounds, &scf_g)?;
-        let g = rhf_gradient(
-            mm,
-            &prep,
-            op,
-            &bounds,
-            &res,
-            scf_g.external_potential.as_ref(),
-        )?;
+        // An unconverged SCF is not a point on any surface. Letting one
+        // through hands the optimizer an energy and a gradient from a density
+        // that never settled, and the search walks on noise while reporting
+        // ordinary-looking numbers.
+        if !res.converged {
+            return Err(ferric_core::FerricError::General(
+                "saddle search: the SCF did not converge at this geometry, so \
+                 its energy and gradient are not points on the potential \
+                 surface. Loosen the geometry, raise max_iter, or start closer \
+                 to the barrier."
+                    .to_string(),
+            ));
+        }
+        // `solve_rhf` returns a KS energy when `xc` is set, so the gradient
+        // must be the KS one too. Calling `rhf_gradient` here would pair a
+        // KS-DFT energy with a Hartree-Fock gradient -- two different surfaces,
+        // and the search would converge to a stationary point of neither.
+        let g = if let Some(xc_name) = scf_g.xc.as_deref() {
+            ks_gradient_closed(
+                mm,
+                &prep,
+                &bs,
+                op,
+                &bounds,
+                xc_name,
+                &res,
+                scf_g.external_potential.as_ref(),
+            )?
+        } else {
+            rhf_gradient(
+                mm,
+                &prep,
+                op,
+                &bounds,
+                &res,
+                scf_g.external_potential.as_ref(),
+            )?
+        };
         Ok((res.energy, ndarray::Array1::from_iter(g.iter().copied())))
     };
 
     let scf_h = scf_cfg.clone();
     let basis_h = basis.clone();
     let hessian = move |mm: &ferric_core::mol::Molecule| {
+        // `FrequencyReference::Rhf` already means "closed-shell RHF, or
+        // closed-shell KS-DFT when RhfConfig::xc is set" -- see its docstring.
+        // So this one variant covers both, and the Hessian follows `xc`
+        // automatically. (The GRADIENT callback above is not so lucky: it has
+        // to pick between rhf_gradient and ks_gradient_closed by hand.)
         let mut fc = FrequencyConfig {
             reference: FrequencyReference::Rhf,
             ..Default::default()

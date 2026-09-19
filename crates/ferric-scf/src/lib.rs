@@ -138,11 +138,12 @@ pub mod frequencies;
 /// Analytic RHF second derivatives (Hessian) — nuclear term implemented,
 /// electronic terms stubbed pending LIBINT2_MAX_DERIV_ORDER >= 2.
 pub mod hessian;
-/// Geometry optimization via L-BFGS with energy/gradient convergence.
-pub mod optimize;
 /// Transition-state search by partitioned rational function optimization.
 /// `optimize` MINIMIZES; a saddle needs one direction climbed, so it is a
 /// separate driver rather than a flag.
+pub mod irc;
+/// Geometry optimization via L-BFGS with energy/gradient convergence.
+pub mod optimize;
 pub mod saddle;
 pub use frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference, FrequencyResult};
 /// Continuous Fast Multipole Method (CFMM) for long-range Coulomb.
