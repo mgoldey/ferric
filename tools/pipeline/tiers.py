@@ -10,7 +10,11 @@ Measured costs on this box (70-atom anion; def2-SVP/PBE for tier 4):
 
     tier 1  Vina           26.4 s/ligand at exhaustiveness 4, cpu=0 (12 cores)
                            109.0 s at cpu=1; ~2 min at the old ex=32
-    tier 2  MMFF94         ~1 ms/pose
+    tier 2  MMFF94         2.2 ms @ 9 atoms, 8.2 @ 19, 21.6 @ 34
+                           (~73 ms projected @ 71; embed + OPTIMIZE, not a
+                           single point -- the old "~1 ms/pose" here was
+                           never measured and the golden path CITED THIS
+                           LINE as its source)
     tier 3  GFN2-xTB       ~0.5 s single point
     tier 4  ferric DFT     96.1 s at 32 atoms -> 17-37 min at 70 (N^3-N^4)
 
