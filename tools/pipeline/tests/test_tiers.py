@@ -478,3 +478,48 @@ def test_the_guard_is_keyed_on_None_and_not_on_FALSINESS():
     # ...and the falsy value that IS valid still is, so the guard has not been
     # over-corrected into rejecting everything falsy.
     assert TierResult("x", -10.0, resolution=0.0).resolution == 0.0
+
+
+def test_resolves_agrees_with_EXACT_arithmetic_even_at_the_float_limit():
+    """Saturation to `inf` on both sides produced one wrong verdict.
+
+    `hypot(1.7e308, 1.7e308)` and `abs(-1.7e308 - 1.7e308)` both overflow, and
+    `inf > inf` is False -- so two values 3.4e308 apart with 1.7e308 noise each
+    came back "indistinguishable" when exact arithmetic says they resolve.
+
+    Found by comparing against `fractions.Fraction`, which is the point of this
+    test: a float-only check cannot detect a float-only defect. Every case is
+    validated against exact rational arithmetic rather than a hand-computed
+    expectation.
+
+    UNREACHABLE with real inputs -- `resolution` is a noise figure in the
+    value's units and the largest MEASURED here is 4.07 kcal/mol -- but the
+    repair is two lines (halve both sides, which cannot change an inequality),
+    so the alternative was leaving a known-wrong branch in a function whose job
+    is to decide whether a ranking is supported.
+    """
+    from fractions import Fraction
+
+    cases = [
+        # (r1, r2, v1, v2) -- the first is the one that was wrong.
+        (1.7e308, 1.7e308, -1.7e308, 1.7e308),
+        (1e308, 1e308, 0.0, 1e308),
+        (1e200, 1e200, 0.0, 1e308),
+        (1e308, 1.0, 0.0, 1e308),
+        (1.0, 1.0, -1.7e308, 1.7e308),
+        # ...and an ordinary case, so the test is not only about extremes.
+        (4.07, 4.07, -10.0, -20.0),
+        (4.07, 4.07, -10.0, -10.5),
+    ]
+    for r1, r2, v1, v2 in cases:
+        got = TierResult("a", v1, resolution=r1).resolves(
+            TierResult("b", v2, resolution=r2)
+        )
+        # Exact, via squares so no sqrt is needed.
+        want = (Fraction(v1) - Fraction(v2)) ** 2 > Fraction(r1) ** 2 + Fraction(
+            r2
+        ) ** 2
+        assert got == want, (
+            f"resolution=({r1:.3e}, {r2:.3e}) value=({v1:.3e}, {v2:.3e}): "
+            f"got {got}, exact arithmetic says {want}"
+        )

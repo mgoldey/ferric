@@ -158,7 +158,22 @@ class TierResult:
         # from a function whose whole job is to answer a yes/no question.
         # hypot computes the same value without the intermediate square.
         combined = math.hypot(self.resolution, other.resolution)
-        return abs(self.value - other.value) > combined
+        gap = abs(self.value - other.value)
+        # BOTH sides can saturate to inf near the float maximum, and `inf > inf`
+        # is False -- so two values 3.4e308 apart with 1.7e308 noise each come
+        # back "indistinguishable" when exact arithmetic says otherwise. ONE
+        # wrong verdict, found by comparing against `fractions.Fraction`.
+        #
+        # Unreachable with real inputs: `resolution` is a noise figure in the
+        # value's own units, and the largest MEASURED in this repo is 4.07
+        # kcal/mol. Fixed anyway because the repair is two lines -- halve both
+        # sides, which cannot change an inequality and moves everything back
+        # inside the representable range.
+        if gap == float("inf") or combined == float("inf"):
+            half_gap = abs(self.value / 2.0 - other.value / 2.0)
+            half_combined = math.hypot(self.resolution / 2.0, other.resolution / 2.0)
+            return half_gap > half_combined
+        return gap > combined
 
 
 def tier2_forcefield(iso: Isomer, context: dict) -> TierResult:
