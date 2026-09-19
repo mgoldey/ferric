@@ -226,3 +226,40 @@ def test_an_unembeddable_proposal_is_reported_not_dropped():
     assert isinstance(out[0], EmbeddedProposal)
     assert out[0].coords is None, "an unembeddable proposal must have no coordinates"
     assert out[0].error, "an unembeddable proposal must carry an error string"
+
+
+def test_relative_descriptors_cannot_distinguish_SITES():
+    """The cheap gate ranks SUBSTITUENTS, never PLACEMENTS -- pinned.
+
+    The pipeline's stated unit is the (substituent, SITE) pair: MEASURED
+    within/between ratio 0.94-0.95, so where a group goes matters as much as
+    which group. This records that the cheap gate CANNOT express that unit,
+    and that this is inherent rather than fixable.
+
+    MW, cLogP (Crippen) and TPSA are whole-molecule sums over atoms and
+    fragment types. Constitutional isomers share both, so all three are
+    identical BY CONSTRUCTION -- no change to `relative_descriptors` alters
+    that. Anyone reaching for this gate to choose a position needs a
+    positional descriptor (3-D shape, per-atom charge, a QM property at the
+    site), which is an addition, not a fix.
+
+    Pinned as a test rather than left in a note because the failure mode is
+    someone reading a ranked substituent table and assuming the ordering also
+    tells them where to put the group.
+    """
+    ortho = relative_descriptors("Fc1ccccc1C(=O)O", "O=C(O)c1ccccc1")
+    meta = relative_descriptors("O=C(O)c1cccc(F)c1", "O=C(O)c1ccccc1")
+    para = relative_descriptors("O=C(O)c1ccc(F)cc1", "O=C(O)c1ccccc1")
+
+    assert ortho == meta == para, (
+        "these three differ only in WHERE the fluorine sits, and whole-molecule "
+        f"descriptors cannot see that: {ortho} / {meta} / {para}"
+    )
+
+    # Vacuity guard: the gate MUST still distinguish different SUBSTITUENTS, or
+    # the assertion above would pass for a function that returns a constant.
+    chlorine = relative_descriptors("Clc1ccccc1C(=O)O", "O=C(O)c1ccccc1")
+    assert chlorine != ortho, (
+        "F and Cl must give different descriptor deltas; if they do not, the "
+        "gate is inert rather than merely site-blind"
+    )
