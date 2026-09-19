@@ -8,7 +8,8 @@ about any of them.
 
 Measured costs on this box (70-atom anion; def2-SVP/PBE for tier 4):
 
-    tier 1  Vina           ~2 min/ligand at exhaustiveness 32
+    tier 1  Vina           26.4 s/ligand at exhaustiveness 4, cpu=0 (12 cores)
+                           109.0 s at cpu=1; ~2 min at the old ex=32
     tier 2  MMFF94         ~1 ms/pose
     tier 3  GFN2-xTB       ~0.5 s single point
     tier 4  ferric DFT     96.1 s at 32 atoms -> 17-37 min at 70 (N^3-N^4)
@@ -192,7 +193,13 @@ def tier1_dock(iso: Isomer, context: dict) -> TierResult:
                 context["receptor_pdbqt"],
                 context["box_center"],
                 context.get("box_size", (24.0, 24.0, 24.0)),
-                exhaustiveness=context.get("exhaustiveness", 16),
+                # DEFAULT 4, not 16 or 32. MEASURED (RESULTS.md M11): across
+                # an 8x range of exhaustiveness the mean redock RMSD moved
+                # 0.097 A -- SMALLER than the 0.131 A between-seed SEM -- and
+                # ex=32 had the WORST mean of the four levels tried. So effort
+                # above 4 costs 6.8x for no accuracy. Spend it on `n_seeds`
+                # instead, which is what actually moved the number.
+                exhaustiveness=context.get("exhaustiveness", 4),
                 n_poses=context.get("n_poses", 10),
                 seed=seed,
                 # Default 1, NOT Vina's 0: this tier runs inside a
