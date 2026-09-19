@@ -1802,8 +1802,33 @@ mod tests {
     /// against literature/PySCF).
     #[test]
     fn all_shipped_examples_parse() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
-        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        // Resolve the workspace at RUN time. `env!("CARGO_MANIFEST_DIR")` is
+        // baked in at COMPILE time, so under `cargo nextest archive` -- built
+        // in one job, run in another -- it names a directory that does not
+        // exist and every example "fails to parse" for want of a file. Walk up
+        // from the cwd to the root that actually holds examples/ + testdata/,
+        // falling back to the compile-time path for plain `cargo test`. Same
+        // fix as the ferric-cli integration tests' `workspace_root()`.
+        let workspace_root = {
+            let looks_like_root = |p: &std::path::Path| {
+                p.join("Cargo.toml").is_file()
+                    && p.join("examples").is_dir()
+                    && p.join("testdata").is_dir()
+            };
+            let mut found = None;
+            if let Ok(cwd) = std::env::current_dir() {
+                let mut here: Option<&std::path::Path> = Some(cwd.as_path());
+                while let Some(p) = here {
+                    if looks_like_root(p) {
+                        found = Some(p.to_path_buf());
+                        break;
+                    }
+                    here = p.parent();
+                }
+            }
+            found.unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        };
+        let dir = workspace_root.join("examples");
         let mut n = 0;
         for entry in std::fs::read_dir(&dir).unwrap() {
             let path = entry.unwrap().path();

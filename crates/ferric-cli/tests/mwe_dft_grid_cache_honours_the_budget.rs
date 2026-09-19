@@ -45,8 +45,34 @@
 //!
 //! Run with `OPENBLAS_NUM_THREADS=1` per the project's rayon/BLAS convention.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Path to the `ferric-cli` binary, resolved at RUN TIME.
+///
+/// `env!("CARGO_BIN_EXE_ferric-cli")` is baked in at COMPILE time. Under
+/// `cargo nextest archive` the binary is extracted to a fresh temporary
+/// directory in the RUNNING job, and that constant still points at the BUILD
+/// job's `target/debug/` -- which does not exist there. MEASURED: the archive
+/// does carry the executable ("419 binaries, including 3 non-test binaries"),
+/// so the failure is the stale path, not a missing file.
+///
+/// Prefer a sibling of the currently-running test binary
+/// (`<extract-dir>/target/debug/deps/<test>` -> `../ferric-cli`), which is
+/// where nextest puts it, then fall back to the compile-time path for plain
+/// `cargo test`.
+fn ferric_cli_bin() -> PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        // .../target/<profile>/deps/<test-binary>  ->  .../target/<profile>/
+        if let Some(profile_dir) = exe.parent().and_then(Path::parent) {
+            let p = profile_dir.join("ferric-cli");
+            if p.is_file() {
+                return p;
+            }
+        }
+    }
+    PathBuf::from(env!("CARGO_BIN_EXE_ferric-cli"))
+}
 
 /// Workspace root, resolved at RUN TIME.
 ///
@@ -104,7 +130,7 @@ fn run_dft(tag: &str, budget_gb: &str) -> (bool, String, String) {
         ),
     )
     .expect("write temp toml");
-    let out = Command::new(env!("CARGO_BIN_EXE_ferric-cli"))
+    let out = Command::new(ferric_cli_bin())
         .arg(&path)
         .current_dir(&root)
         .env("OPENBLAS_NUM_THREADS", "1")
@@ -235,7 +261,7 @@ fn an_absent_budget_section_still_auto_detects() {
          [dft]\nfunctional = \"PBE\"\n",
     )
     .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_ferric-cli"))
+    let out = Command::new(ferric_cli_bin())
         .arg(&path)
         .current_dir(&root)
         .env("OPENBLAS_NUM_THREADS", "1")
