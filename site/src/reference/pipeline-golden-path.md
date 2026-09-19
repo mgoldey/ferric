@@ -1349,11 +1349,31 @@ candidate treatments have since been measured:
 | dock then average (M12) | ~4.1 | ~16x |
 | select the top-docked pose (M13) | 40.66 | 163x |
 | a different scorer (M14) | 4.68 best tracking | 19x |
+| **pair poses by scaffold (M17)** | **0.22-0.62 (MMFF, gas phase)** | **below the effect size -- PROVISIONAL** |
+
+**The M17 row is a different KIND of row and must be read as provisional.** The
+first five all attack the per-pose SD and all accept the ESTIMATOR: each
+computes ddE over INDEPENDENTLY embedded ensembles, which is an UNPAIRED design
+over noise that is largely COMMON to the two molecules (the scatter is
+pose-conformational; a substitution changes a few atoms and leaves ~68 in
+place). Pairing pose k of the analogue to pose k of the parent gives
+`var = 2*sd^2*(1-rho)`.
+
+MEASURED gas-phase MMFF only, no pocket -- and a pocket is exactly what could
+destroy the rho the method depends on, since a substituent may change the
+binding mode. **It does not yet license a ranking**; it says the pocket
+experiment is worth running. Two cautions carry into any workflow that adopts
+it: a HARD scaffold pin fails its own self-anchor by +13.8 kcal/mol (it charges
+that much for pairing the parent with ITSELF, so relax the substituent against a
+restrained scaffold), and the Cl case gives rho 0.399 for only a 1.21x gain --
+so the floor is PER-CANDIDATE, never one campaign-wide number. See RESULTS.md
+M17.
 
 So `funnel.py:162`'s one-row-per-MOLECULE keying is not the blocker it was
 written up as -- no pose treatment the data structure could express resolves a
 1-2 kcal/mol substituent effect. **G2 is the last step whose output is
-trustworthy.** Its own "STOP HERE if you only need a coarse sort" is now the
+trustworthy** (unless and until the M17 paired estimator is validated in a
+pocket, which would move the line to G4). Its own "STOP HERE if you only need a coarse sort" is now the
 recommendation rather than an option, and G4's dG_bind difference is reportable
 only when the gap is large (>~5 kcal/mol, i.e. outside the measured noise), not
 for lead optimisation.
@@ -1594,8 +1614,31 @@ once, then Bofill). A realistic catalyst run is therefore:
 
     1 Hessian (6N+1 gradients) + ~20-60 P-RFO steps (1 gradient each)
 
-so the Hessian dominates at small N and the steps dominate past roughly N = 10.
-That ratio, not the algorithm, is what sizes a catalyst job now.
+**This is the SEARCH only.** The full cost model above is
+`n_hessian*(6N+1) + (n_steps+1)` with `n_hessian = 2`: the search builds one
+Hessian at the start, and CONFIRMING the result is a transition state needs a
+second at the converged geometry (exactly one imaginary frequency). Budgeting
+from this line alone under-counts by 6N+1 -- 121 gradients for a 20-atom region,
+which is the larger half of the job.
+
+**CORRECTED 2026-09-19.** This read "the Hessian dominates at small N and the
+steps dominate past roughly N = 10", which is backwards and points a user at the
+wrong knob. The Hessian term GROWS with N; the step count does not. So the steps
+dominate at SMALL N and the HESSIAN dominates as the region grows:
+
+| N | Hessian (6N+1) | 20 steps | 60 steps |
+|---:|---:|---:|---:|
+| 5 | 31 | steps 39% | **steps 66%** |
+| 10 | 61 | steps 25% | steps 50% |
+| 20 | **121** | steps 14% | steps 33% |
+| 30 | **181** | steps 10% | steps 25% |
+
+Crossover is `6N+1 = n_steps`, i.e. **N = (n_steps-1)/6** -- N ~ 3 for a
+20-step search, N ~ 10 for a 60-step one. Past that the single Hessian is the
+larger half and keeps growing, which is why `hessian_recalc_every` defaults to 0
+and why the QM REGION SIZE, not the step count, is what sizes a catalyst job.
+The two exponents compound with the per-gradient cost (see "how to size the QM
+region" above): N^2.63 atoms in a radius, N^2.3 DFT cost each.
 
 ### What is still NOT available
 
