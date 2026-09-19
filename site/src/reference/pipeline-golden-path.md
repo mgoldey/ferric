@@ -44,11 +44,18 @@ STILL OPEN, and these are the real remaining gaps:
   ways. Runs under QM/MM embedding through the same closure `find_saddle`
   takes, so the path and the search cannot disagree about the field.
   Section 4 has the full scope.
-- **No analytic dispersion gradients** even once #99 lands. The consequence is
-  no longer a silently wrong surface: #99 now REFUSES `task="optimize"` and
-  `with_gradient=True` when dispersion is configured, rather than optimising
-  the uncorrected surface while reporting corrected energies. Dispersion-
-  corrected geometry optimization is unavailable, and says so.
+- ~~**No analytic dispersion gradients.**~~ **CLOSED 2026-09-19 (#99).**
+  `ferric_d3::d3bj_gradient` is implemented and validated against finite
+  difference to 1e-12..1e-13 on four systems, with the step-size scan showing
+  textbook O(h^2) convergence. `task="optimize"` and `with_gradient=True` now
+  WORK; MEASURED end to end on Ar2/PBE/STO-3G from a short start, 6.7917 Bohr
+  uncorrected vs 6.6418 with d3bj -- the attraction shortens the bond, which is
+  the direction that shows the correction reached the GRADIENT and not only the
+  energy.
+  STILL REFUSED: `task="frequencies"`, on narrower grounds than before. The
+  gradient exists; the finite-difference Hessian built from it has never been
+  validated against anything, and 6N unvalidated SCF+D3 evaluations is not a
+  number to hand back silently.
 - **QM/MM dispersion.** D3/D4/XDM/VV10 are all QM-atom-pairwise; MM point
   charges carry none. Needs LJ terms in `ferric-mm`.
 - **Pose noise.** MEASURED per-pose sd 29.07 kcal/mol against 1-2 kcal/mol
@@ -333,13 +340,16 @@ bargain.
 | where does this ligand sit? | Vina dock | ~2 min/ligand @ ex=32, ~30 s @ ex=4 | **0.95 A** redock (M9), 20/20 poses on-site | **use it** |
 | which pose is best? | Vina score | free (comes with the dock) | r(score, RMSD) = +0.461; only 4/20 under 2.0 A | **do not trust** -- generates, cannot rank |
 | is this geometry sane? | MMFF94 | 2-22 ms/pose (9-34 atoms), ~73 ms @ 71 | adequate to declash | **use it**, for declashing only |
-| how strained is this conformer? | GFN2-xTB | ~0.5 s/pose | 143 kcal/mol anion/neutral split resolved | **use it** for coarse separation |
-| which of these conformers is lowest? | GFN2-xTB | ~0.5 s/pose | **Spearman 0.011 vs DFT** over a 3 kcal/mol span (M16, n=20) | **do not trust** -- a gate, not a ranker |
+| how strained is this conformer? | GFN2-xTB | 0.05-0.152 s/pose (9-19 atoms) | 143 kcal/mol anion/neutral split resolved | **use it** for coarse separation |
+| which of these conformers is lowest? | GFN2-xTB | 0.05-0.152 s/pose | **Spearman 0.011 vs DFT** over a 3 kcal/mol span (M16, n=20); 95% CI [-0.434, +0.451] | **do not trust** -- a gate, not a ranker |
 | which analogue binds better by 1-2 kcal/mol? | any of the above + ddE | -- | ddE noise **4.07 kcal/mol** at best (M4-M13) | **NO METHOD QUALIFIES** |
 | what is the SCF energy here? | ferric RHF / KS-DFT | 96 s @ 32 atoms, 612 s @ 71 | 1e-8 Ha vs PySCF (RHF), 2e-8 (PBE/B3LYP) | **use it** |
 | does the pocket field change it? | + `external_potential` | **~1.0x** the gas-phase SP (MEASURED) | embedding is essentially free | **use it** -- no reason not to |
 | where is the transition state? | `saddle::find_saddle` | 2*(6N+1) + (n_steps+1) gradients | converges on a known saddle; refuses a minimum's basin | **use it** |
 | is this really a TS? | `harmonic_frequencies` | 6N+1 gradients | exactly-one-imaginary check, from Rust AND Python | **use it** |
+| is dispersion missing from my DFT? | `[dft] dispersion = "d3bj"` | **microseconds**, energy AND gradient | two-body D3(BJ), Z=1-103, vs simple-dftd3 | **use it** -- semilocal DFT has no London dispersion at all |
+| ...and optimize on that surface? | same, `task = "optimize"` | same | Ar2 6.7917 -> 6.6418 Bohr (attraction shortens the bond) | **use it** |
+| ...and get frequencies on it? | -- | -- | the FD Hessian from the D3 gradient is unvalidated | **refused**, deliberately |
 | which two minima does it connect? | `irc::follow_irc` | ~70 gradients/branch (MEASURED, NH3) | mass-weighted steepest descent both ways; endpoints agreed to 4 decimals across step 0.15/0.05/0.02, ASSERTED to a 0.02 Bohr band | **use it** |
 | is this molecule a liability? | `tools/tox` alerts | 9.4 ms/molecule | published alert sets, NOT a probability of harm | **use it as a FLAG** |
 
@@ -993,9 +1003,17 @@ could not express.
 
 WHAT IS STILL MISSING, stated because a dispersion correction invites the
 assumption that everything dispersive is now handled:
-- **No analytic gradients.** `task="optimize"` silently optimizes the
-  UNCORRECTED surface. That is a sharp edge, not a rounding error, for any
-  geometry work on a dispersion-bound complex.
+- ~~**No analytic gradients.**~~ **CLOSED (#99), and this line was wrong even
+  before that** -- `task="optimize"` was REFUSED, never silently uncorrected.
+  Recorded because a stale "silently wrong" claim is worse than a stale
+  "missing" one: it invites a reader to distrust results that were never
+  produced.
+  The gradient's load-bearing subtlety, since it is easy to reimplement
+  wrongly: `C6_AB` is interpolated by both atoms' COORDINATION NUMBERS, so
+  moving atom X changes `C6` for pairs that do not contain X. Omitting that
+  chain rule costs ~1e7x in FD error on real molecules (water 1.3e-6,
+  CF2ONH 3.1e-4) and EXACTLY NOTHING on a dimer -- Ar2 is unchanged to
+  1.46e-13. A dimer-only test cannot see it.
 - **No ATM three-body term.** Absent rather than approximated -- there is no
   knob that does nothing. MEASURED contribution rises with system size:
   water 0.0001% -> benzene 0.1003% of the two-body energy. Extrapolating that
@@ -1031,7 +1049,7 @@ Decision points are marked. Steps 1-6 are available today; step 7 is blocked
    not know the search works.
 4. **Harvest the pose into `context["geometry"]`** -- see section 0. Without
    this, everything below scores a gas-phase conformer.
-5. **Tier 3, xtb.** ~0.5 s. **DECISION: stop here?** If you are rank-ordering
+5. **Tier 3, xtb.** 0.05-0.152 s (MEASURED, 9-19 atoms). **DECISION: stop here?** If you are rank-ordering
    many ligands and only need a coarse sort, GFN2 is often enough. Going to
    DFT costs ~200x per candidate at this scale (MEASURED; ~1000x only
    above ~270 atoms).

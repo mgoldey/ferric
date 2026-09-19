@@ -90,16 +90,33 @@ not missing capability, and are tracked separately.
 
 Every named use case now has code, a MEASURED cost, and a plot:
 
-| use case | code | cost | plot |
+| use case | code | cost (MEASURED, source) | plot |
 |---|---|---|---|
-| docking geom opt | yes | 1e-5 s/pose | `pose_ensemble`, `funnel_survival` |
-| minima with FF | yes | 1e-3 s/pose | `tier_comparison` |
-| minima with xtb | yes | 5e-1 s/pose | `tier_comparison` |
-| transition state | yes | 2*(6N+1) + (n_steps+1) grads | `energy_profile` (barrier) + **`imaginary_mode`** (C4's second half) |
+| docking geom opt | yes | **26.4 s/ligand** (Vina, ex=4, 12 cores; 109 s at cpu=1) — RESULTS.md M11 | `pose_ensemble`, `funnel_survival` |
+| minima with FF | yes | **2.2 ms @ 9 atoms, 8.2 @ 19, 21.6 @ 34** (~73 ms projected @ 71) — `tiers.py` | `tier_comparison` |
+| minima with xtb | yes | **0.152 s @ 9 atoms, 0.050 @ 19** — `tiers.py` | `tier_comparison` |
+| transition state | yes | 2*(6N+1) + (n_steps+1) grads — `saddle_cost.rs` | `energy_profile` (barrier) + **`imaginary_mode`** (C4's second half) |
 | **reaction path (IRC)** | **yes** | **~70 gradients/branch** (MEASURED: NH3 inversion, 71 forward + 71 reverse) | `energy_profile` along the path |
 | common substitutions | yes | 2.8 ms enumerate, 214 ms embed | `site_substituent_heatmap`, `grid_with_scores` |
-| toxicology | yes | 9.4 ms/molecule | `liability_profile` |
-| binding energy in site | yes | tier 3/4 above | `site_substituent_heatmap` |
+| toxicology | yes | 9.4 ms/molecule (+47 ms one-off catalog build) | `liability_profile` |
+| binding energy in site | yes | tier 4: 0.66 s @ 9, 8.7 @ 19, 612 s @ 71 (STO-3G) — `tiers.py` | `site_substituent_heatmap` |
+| **dispersion (D3(BJ))** | **yes** | **microseconds, energy AND gradient** — a pairwise sum; free next to the SCF | (folded into the DFT energy) |
+
+**CORRECTED 2026-09-19.** The first three rows previously read `1e-5`, `1e-3`
+and `5e-1` s/pose. All three were wrong, and each in a different way:
+
+* `1e-5 s/pose` for DOCKING was the *cheap-stage* per-call figure copied from a
+  different table — six orders below the measured 26.4 s/ligand, and it made
+  tier 1 look free when it is in fact **79% of a campaign's wall time**.
+* `1e-3` and `5e-1` were the "~1 ms/pose" and "~0.5 s single point" estimates
+  that `tiers.py` had ALREADY flagged as never measured — its own comment says
+  so, and says the golden path cited that line as its source. Correcting the
+  numbers there did not reach this table.
+
+Per-atom scaling is now given where it was measured, because a single number
+per tier hides that FF and xtb cost differ by ~100x at 9 atoms but only ~6x at
+19. Costs remain PER ITEM; the campaign-level shares below are what should
+drive optimization decisions.
 
 The costs are per-item; the campaign-level shares (MEASURED 2026-09-19:
 cheap 0.7%, **dock 79%**, xtb 3%, DFT 18%) are in the golden-path note, and

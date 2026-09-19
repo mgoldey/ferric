@@ -80,9 +80,9 @@ S0  Site selection   SMARTS chosen from the POCKET CONTACT MAP, not "every
 S1  Enumerate        substituent_scan (+ bioisostere_swaps for scaffold moves)   ms
 S2  Pharmacophore    GLP1R_PHARMACOPHORE.check -- gate SCAFFOLD moves only       ms
 S3  Liability        RELATIVE to parent, never absolute                          ms
-S4  Dock             into 7LCJ; harvest the pose (see PR #93)              ~2 min/lig
+S4  Dock             into 7LCJ; harvest the pose (see PR #93)              26.4 s/lig
 S5  Prescreen        batch_prescreen -- classical pocket field, no SCF        ms/pose
-S6  xtb in field     context["point_charges"]                                  ~0.5 s
+S6  xtb in field     context["point_charges"]                            0.05-0.152 s
 S7  QM/MM ddE        compute_binding_energy on parent AND analogue              minutes
 ```
 

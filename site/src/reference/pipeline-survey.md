@@ -16,16 +16,25 @@ research agent; this file is the survey that scoped it.
 | `tools/campaign/hierarchy.py` | the discard rules |
 | `tools/docking/vina_dock.py` | tier 1, with an honest-limits section |
 
-MEASURED costs, quoted from `tools/pipeline/tiers.py:9-16` (70-atom anion,
-def2-SVP/PBE at tier 4):
+Costs quoted from `tools/pipeline/tiers.py` (MEASURED 2026-09-19; tier 1 from
+RESULTS.md M11):
 
-    tier 1  Vina        ~2 min/ligand at exhaustiveness 32
-    tier 2  MMFF94      ~1 ms/pose
-    tier 3  GFN2-xTB    ~0.5 s single point
-    tier 4  ferric DFT  96.1 s at 32 atoms -> 17-37 min at 70 (N^3-N^4)
+    tier 1  Vina        26.4 s/ligand at exhaustiveness 4 (109 s at cpu=1)
+    tier 2  MMFF94      2.2 ms @ 9 atoms, 8.2 @ 19, 21.6 @ 34
+    tier 3  GFN2-xTB    0.152 s @ 9 atoms, 0.050 @ 19
+    tier 4  ferric DFT  0.66 s @ 9, 8.7 @ 19, 612 s @ 71 (STO-3G); ~N^2.3
 
-The `vina_dock.py` header carries a second, order-of-magnitude table
-(~10 us/pose at tier 1, 10^5-10^6 poses). The two tables are consistent:
+**This block previously said "MEASURED" while quoting figures that were not.**
+It read `~2 min/ligand`, `~1 ms/pose`, `~0.5 s single point` and `N^3-N^4` --
+the first because exhaustiveness 32 was the old default (ex=4 matches its
+accuracy at a quarter the cost, M11), the middle two because they had never
+been run, and the last because it was the textbook BASIS-function scaling,
+which is not what varies when a MOLECULE grows at fixed basis. A wrong number
+labelled MEASURED is worse than an unlabelled estimate, so it is recorded here
+rather than quietly replaced.
+
+The `vina_dock.py` header carries a second, order-of-magnitude table. The two
+tables are consistent:
 one is per-pose, the other per-ligand at production exhaustiveness.
 
 **Gap: `grep -rn 'tools/pipeline|funnel|vina' site/src/` returns NOTHING.**
