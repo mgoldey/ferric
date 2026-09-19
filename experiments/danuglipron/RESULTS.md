@@ -1661,7 +1661,25 @@ sharing the MCS scaffold. Two constructions for the B side:
 | relaxed | N-methyl | 24.135 | 0.034 | 0.007 | 1.000 | 65.5x |
 
 `var.red` compares the paired SEM against the unpaired SEM **on the same data**,
-so it isolates the pairing.
+so it isolates the pairing. `rho` is Pearson between the two paired energy
+series; `var = 2*sd^2*(1-rho)` assumes the two sds are EQUAL, which they are
+here to within a few percent, but the reported `var.red` is measured rather than
+derived from that formula and does not depend on the assumption.
+
+**A latent index bug was found in review and fixed; these numbers are
+UNCHANGED by it** (re-measured after the fix, identical to 3 decimals). The
+first pass mapped stripped-molecule indices back to the original by POSITION
+among the non-hydrogens, and `RemoveHs(sanitize=False)` RETAINS degree-zero
+hydrogens -- RDKit even warns "not removing hydrogen atom without neighbors".
+A stray atom would shift every index after it and pair the wrong atoms
+SILENTLY. This parent has no such atom, so the measurement was unaffected, but
+a perceived-from-XYZ molecule easily does.
+
+The self-anchor could not have caught it: it measures the same `pairs` used to
+build `coord_map`, so a wrong correspondence gets pinned to the parent's
+coordinates and measures as ZERO drift -- the check is downstream of the defect.
+Fixed by stamping the original index on each atom before stripping, plus an
+element-identity check that does NOT share that failure mode.
 
 ### The exactness anchor did the work, twice
 

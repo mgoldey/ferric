@@ -256,3 +256,70 @@ def test_pairing_defaults_to_relaxed_because_hard_fails_the_anchor():
 
     sig = inspect.signature(pair_poses_by_scaffold)
     assert sig.parameters["relax"].default is True
+
+
+# --- review findings, 2026-09-19 ---------------------------------------------
+
+
+def test_total_variance_removal_reports_inf_not_nan():
+    """sem_paired == 0 means the pairing removed ALL the variance.
+
+    NaN would report the BEST possible outcome as "could not be computed", and
+    a caller filtering on isfinite would silently drop it. The self-anchor hits
+    this case exactly.
+    """
+    import math
+
+    res = paired_ddE(_self_pairs(6), _spread_energy())
+    assert res.sem_paired == 0.0
+    assert math.isinf(res.variance_reduction), (
+        f"got {res.variance_reduction}; total variance removal must not read "
+        "as a failed computation"
+    )
+
+
+def test_the_drift_tolerance_is_actually_consulted():
+    """It used to be `dev > tol and dev > 0.5`, i.e. `dev > max(tol, 0.5)`.
+
+    With the old 1e-6 default the parameter could not lower the threshold, so
+    it did nothing at all -- a knob that reads as configuration and is inert.
+    """
+    import inspect
+
+    from tools.morph.paired import pair_poses_by_scaffold
+
+    sig = inspect.signature(pair_poses_by_scaffold)
+    assert sig.parameters["scaffold_tolerance"].default == 0.5, (
+        "the default must BE the threshold; a smaller one silently did nothing"
+    )
+    # Look at CODE, not prose: the docstring and comments quote the old
+    # conjunction to explain why it was wrong, so a plain substring search
+    # matches the explanation and fails on a correct implementation.
+    code = [
+        ln.split("#")[0]
+        for ln in inspect.getsource(pair_poses_by_scaffold).splitlines()
+        if not ln.strip().startswith("#")
+    ]
+    assert not any("and dev > 0.5" in ln for ln in code), (
+        "the conjunction is back: it makes any tolerance below 0.5 inert"
+    )
+
+
+def test_the_drift_guard_runs_after_relaxation():
+    """Before relaxation drift is zero BY CONSTRUCTION (coordMap pins it).
+
+    Checking there is checking the one stage that cannot fail while skipping
+    the one that can.
+    """
+    import inspect
+
+    from tools.morph.paired import pair_poses_by_scaffold
+
+    src = inspect.getsource(pair_poses_by_scaffold)
+    i_relax = src.find("relax_substituent(out)")
+    i_guard = src.find("scaffold_max_dev > scaffold_tolerance")
+    assert i_relax > 0 and i_guard > 0
+    assert i_guard > i_relax, (
+        "the drift guard runs before relaxation, where drift is zero by "
+        "construction and the guard cannot fire"
+    )
