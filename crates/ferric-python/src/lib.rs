@@ -6562,10 +6562,11 @@ impl PySaddleResult {
 
 /// Search for a first-order saddle point by P-RFO.
 ///
-/// Costs `2 * 6N + n_steps` gradient evaluations (MEASURED): two Hessians, each
-/// central-differenced from analytic gradients, plus one gradient per step. At
-/// N = 20 the Hessians dominate until n_steps exceeds ~240, which is why they
-/// are built twice and carried by a Bofill update in between.
+/// Costs `2 * (6N + 1) + (n_steps + 1)` gradient evaluations (MEASURED): two
+/// Hessians -- each 6N DISPLACED central-difference evaluations plus one at the
+/// undisplaced geometry -- and one gradient per step plus one before the first.
+/// At N = 20 the Hessians dominate until n_steps exceeds ~240, which is why
+/// they are built twice and carried by a Bofill update in between.
 ///
 /// Raises if the starting geometry has NO negative projected mode -- P-RFO from
 /// a minimum's basin has nothing to climb, and returning a result from there

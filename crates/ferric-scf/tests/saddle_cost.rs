@@ -9,12 +9,23 @@
 //!
 //! The total cost of a search is
 //!
-//!     n_hessian * 6N  +  n_steps * 1
+//!     n_hessian * (6N + 1)  +  (n_steps + 1)
 //!
-//! because the Hessian is central-differenced from analytic gradients (6N per
-//! Hessian, MEASURED: H2 = 12, water = 18) and each P-RFO step costs one
-//! gradient. With `hessian_recalc_every = 0` (the default) there are exactly
-//! two Hessians: one at the start and one at the end for the character check.
+//! because the Hessian is central-differenced from analytic gradients: 6N
+//! DISPLACED evaluations (MEASURED via `n_gradient_evaluations`: H2 = 12,
+//! water = 18) plus ONE at the undisplaced geometry, which
+//! `harmonic_frequencies` takes before the loop and which
+//! `n_gradient_evaluations` does not count. `find_saddle` likewise takes one
+//! gradient before its first step.
+//!
+//! The `+1`s are small but they are not rounding: this test exists to be the
+//! cost model other code quotes, and a model that is wrong by a constant is
+//! the kind of thing that gets multiplied by a candidate count later. An
+//! earlier version of this comment said `2 * 6N + n_steps` and undercounted a
+//! default search by 3 gradient evaluations.
+//!
+//! With `hessian_recalc_every = 0` (the default) there are exactly two
+//! Hessians: one at the start and one at the end for the character check.
 //!
 //! What this test PINS is the step count on a surface whose answer is known in
 //! closed form. It is deliberately not a chemistry benchmark: a real catalyst
@@ -143,20 +154,84 @@ fn prfo_cost_is_measured_in_gradient_and_hessian_calls() {
          -- either the step logic regressed or the convergence test changed"
     );
 
-    // N = 2 here, so one Hessian is 6N = 12 gradient-equivalents.
+    // N = 2 here, so one Hessian is 6N + 1 = 13 gradient-equivalents: 6N
+    // displaced, plus the undisplaced one `harmonic_frequencies` takes before
+    // its loop (which `n_gradient_evaluations` does NOT report).
     let n_atoms = 2;
-    let total = h * 6 * n_atoms + g;
+    let per_hessian = 6 * n_atoms + 1;
+    let total = h * per_hessian + g;
     println!(
         "MEASURED P-RFO cost on the analytic inverted parabola: {g} gradient \
-         calls + {h} Hessians (6N = {} each at N={n_atoms}) = {total} \
-         gradient-equivalents, {} steps",
-        6 * n_atoms,
+         calls + {h} Hessians ({per_hessian} = 6N+1 each at N={n_atoms}) = \
+         {total} gradient-equivalents, {} steps",
         res.steps
     );
     println!(
-        "  SCALING: a search on N atoms costs 2*6N + n_steps gradient calls. \
-         At N=20 that is 240 + n_steps, so the two Hessians dominate until \
-         n_steps exceeds ~240. This is why hessian_recalc_every defaults to 0."
+        "  SCALING: a search on N atoms costs 2*(6N+1) + (n_steps+1) gradient \
+         calls. At N=20 that is 242 + n_steps + 1, so the two Hessians dominate \
+         until n_steps exceeds ~240. This is why hessian_recalc_every \
+         defaults to 0."
+    );
+}
+
+/// The `6N + 1` in the cost model, measured against the REAL finite-difference
+/// Hessian rather than the analytic closure the test above uses.
+///
+/// This is the gap that let the `+1` go unnoticed for a whole PR.
+/// `prfo_cost_is_measured_...` supplies its own analytic Hessian, so it never
+/// touches `harmonic_frequencies` and cannot see what a real Hessian costs.
+/// The documented cost model describes the FD path; nothing measured it.
+///
+/// What is asserted, and why it is two separate things:
+///
+/// 1. `n_gradient_evaluations == 6N`. That is the DISPLACED count -- the
+///    counter is initialised to zero AFTER the undisplaced
+///    `energy_and_gradient` at the top of `harmonic_frequencies`.
+/// 2. The undisplaced call HAPPENS, evidenced by `energy` being a real
+///    converged number. `FrequencyResult::energy` is the energy AT THE
+///    UNDISPLACED GEOMETRY and can only come from that call, so a finite value
+///    witnesses a gradient evaluation the counter does not report.
+///
+/// Together: reported 6N, true cost 6N + 1. If someone later folds the
+/// undisplaced call into the counter, (1) fails and the cost model gets
+/// revisited -- which is the point.
+#[test]
+fn a_finite_difference_hessian_costs_6n_plus_one_gradients() {
+    use ferric_core::parallel::ParallelContext;
+    use ferric_integrals::operator::Operator;
+    use ferric_scf::frequencies::{harmonic_frequencies, FrequencyConfig};
+    use ferric_scf::rhf::RhfConfig;
+
+    let mol = h2(0.74);
+    let n_atoms = mol.atoms.len();
+    let ctx = ParallelContext::new();
+
+    let r = harmonic_frequencies(
+        &ctx,
+        &mol,
+        "sto-3g",
+        Operator::coulomb(),
+        &RhfConfig::default(),
+        &FrequencyConfig::default(),
+    )
+    .expect("H2/STO-3G harmonic frequencies");
+
+    assert_eq!(
+        r.n_gradient_evaluations,
+        6 * n_atoms,
+        "n_gradient_evaluations reports the DISPLACED count, 6N = {}",
+        6 * n_atoms
+    );
+    assert!(
+        r.energy.is_finite() && r.energy < 0.0,
+        "the undisplaced energy must be a real converged number -- it is the \
+         witness that the uncounted 6N+1'th gradient evaluation happened"
+    );
+    println!(
+        "MEASURED: N={n_atoms}, reported {} displaced gradients, true Hessian \
+         cost {} (6N+1) -- the undisplaced call is not counted",
+        r.n_gradient_evaluations,
+        r.n_gradient_evaluations + 1
     );
 }
 
