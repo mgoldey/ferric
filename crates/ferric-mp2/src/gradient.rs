@@ -336,6 +336,82 @@ pub(crate) fn integral_response_gradient_3c2c(
     let nov = nocc * nvir;
     let t2 = &inter.t2;
 
+    // --- memory plane: the (naux, nov) MO-side tensors this function builds.
+    //
+    // `inter`'s own tensors (t2, b_ov, v_inv_sqrt) are charged by their
+    // BUILDER via `Mp2Intermediates::_charge`, so they are deliberately NOT
+    // re-charged here -- doing so would double-debit one allocation, the
+    // mistake `Mp2Intermediates::uncharged` was named to prevent.
+    //
+    // What IS ours, and co-resident from here to the end of the function:
+    //   x_ov     (naux, nov)
+    //   y_ov     (naux, nov)   = V^{-1/2}ᵀ · x_ov
+    //   c_fit    (naux, nov)   = V^{-1/2}ᵀ · b_ov   (built later, still live)
+    //   gamma_2c (naux, naux)
+    // HARD, because there is no fallback: these are dense GEMM outputs with no
+    // streaming or blocked variant in this function. A soft charge whose
+    // `None` branch does not actually stream would be a lie, so it hard-errors
+    // with the plan's per-term breakdown instead.
+    //
+    // The guard is bound for the whole function body: all four tensors are
+    // still live at the 2-centre block at the bottom.
+    let _mo_charge = {
+        let per = naux.saturating_mul(nov).saturating_mul(8);
+        let gamma = naux.saturating_mul(naux).saturating_mul(8);
+        ferric_core::memory::pool::reserve_global(
+            "RI-MP2 gradient x_ov/y_ov/c_fit + gamma_2c",
+            per.saturating_mul(3).saturating_add(gamma),
+        )?
+    };
+
+    // --- memory plane: the per-rayon-worker transients.
+    //
+    // SOFT, and derived from `rayon::current_num_threads()` rather than
+    // frozen: hard-charging a quantity that reads the thread count would make
+    // ADMISSION depend on `RAYON_NUM_THREADS`, so the same job would be
+    // accepted on 4 workers and refused on 12. That is the nondeterminism
+    // `charge_mo_side_soft` documents at length, and the standing rule that
+    // the migration must not refuse a job the current tree completes.
+    //
+    // The fallback is real and needs no new code: rayon's work-stealing means
+    // the live transient count is bounded by however many workers are actually
+    // active, and both loops make progress down to a single worker. The `None`
+    // branch is therefore not a claim about a path that does not exist.
+    //
+    //   tt_i    (nvir, nov)  in the x_ov build
+    //   g3c_sp  (max_np, nbf, nbf) in the 3-centre block
+    // The two loops do not overlap, so the larger of the two is the peak.
+    //
+    // # Why this soft charge cannot starve a downstream hard plane
+    //
+    // A bare `try_reserve` is GREEDY -- it takes bytes whenever they happen to
+    // fit, with no regard for a MANDATORY allocation that asks next, which is
+    // how a soft gate can refuse a job that would otherwise have run (see the
+    // measured table in `ferric_rpa::run_pdep_rpa`, where an optional
+    // quadrature scratch starved the DF 3-index tensor).
+    //
+    // That cannot happen here, for a structural reason rather than a lucky
+    // one: this is the LAST pool reservation the function takes. The hard
+    // MO-side charge above is already held, and everything after this point
+    // allocates either libint2 derivative engines (not on the ledger at all)
+    // or `(natoms, 3)` partials. There is no later hard plane for a greedy
+    // soft charge to starve. If one is ever added below, this charge must
+    // become `soft + downstream_hard <= available` instead.
+    let _worker_charge = {
+        let workers = rayon::current_num_threads().max(1);
+        let tt_i = nvir.saturating_mul(nov).saturating_mul(8);
+        let max_np = dfbs.shell_dims().iter().copied().max().unwrap_or(0);
+        let nbas = obs.nbasis();
+        let g3c = max_np
+            .saturating_mul(nbas)
+            .saturating_mul(nbas)
+            .saturating_mul(8);
+        crate::rimp2::charge_mo_side_soft(
+            "RI-MP2 gradient per-worker transients (tt_i / g3c_sp)",
+            workers.saturating_mul(tt_i.max(g3c)),
+        )
+    };
+
     // Build X^P_{ia} = Σ_{jb} (2*t_{ij,ab} - t_{ij,ba}) * B^P_{jb} via a wide GEMM
     // per i: X_i[P, a] = B_ov · TT_i^T where TT_i[a, jb] = 2 t_{ij,ab} - t_{ij,ba}.
     // Replaces the per-element (P,i,a) scalar loop over (j,b): same FLOPs, BLAS3

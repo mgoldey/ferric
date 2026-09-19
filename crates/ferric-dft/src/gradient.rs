@@ -361,38 +361,49 @@ impl From<ferric_core::error::FerricError> for KsGradError {
 ///
 /// `natoms` is only used for the grid-response `weight1` term; pass
 /// `with_grid_response = false` for the paths (VV10) that do not build it.
+#[allow(clippy::too_many_arguments)]
 fn xc_gradient_plan(
     label: &'static str,
     nbf: usize,
     npts: usize,
+    grid_npts: usize,
     natoms: usize,
     kind: AoGridKind,
     is_uks: bool,
     with_grid_response: bool,
 ) -> MemoryPlan {
     let plane = nbf.saturating_mul(npts);
-    let mut plan = MemoryPlan::resolve(None, label);
+    // `from_global_pool`, not `resolve`: `resolve` hands this plan the WHOLE
+    // ceiling no matter what else the process is already holding, which is
+    // precisely the double-spend `memory::pool` exists to stop. A geometry
+    // optimization runs this path with a DF 3-index tensor and an SCF grid
+    // cache still resident from the energy step; against `resolve` every one
+    // of them independently "fits" the same bytes. Against the pool, whichever
+    // asks second sees only what the first left.
+    //
+    // With no pool installed this is exactly `MemoryPlan::resolve(None, label)`
+    // — the trivial limit, pinned by
+    // `mwe_gradient_pool_is_inert_without_a_pool.rs`.
+    let mut plan = MemoryPlan::from_global_pool(None, label);
 
     // Already allocated by the time this runs (the grid is built first, since
     // it is what determines `npts`) — declared so the AO tensors are sized
     // against what is left, not against an empty budget.
-    if with_grid_response {
-        plan.reserve_sized(
-            "grid + weight1 dw/dR (already resident)",
-            grid_response_bytes(npts, natoms),
-            1,
-            Lifetime::Resident,
-            1,
-        );
-    } else {
-        plan.reserve_sized(
-            "grid points (already resident)",
-            npts,
-            std::mem::size_of::<crate::grid::GridPoint>(),
-            Lifetime::Resident,
-            1,
-        );
-    }
+    // Sized by `grid_npts` (the WHOLE grid), not by `npts` (which is one
+    // batch on the batched paths): the grid and `weight1` are built before any
+    // AO plane exists, are indexed by absolute grid index, and outlive every
+    // batch — they are the one term batching cannot shrink.
+    plan.reserve_sized(
+        if with_grid_response {
+            "grid + weight1 dw/dR (whole grid, already resident, not batchable)"
+        } else {
+            "grid points (whole grid, already resident, not batchable)"
+        },
+        grid_resident_bytes(grid_npts, natoms, with_grid_response),
+        1,
+        Lifetime::Resident,
+        1,
+    );
 
     plan.reserve(
         match kind {
@@ -436,6 +447,182 @@ fn xc_gradient_plan(
     );
 
     plan
+}
+
+/// Bytes the grid itself leaves resident for the whole call, batched or not.
+///
+/// This is the one term batching CANNOT shrink: `build_atomic_grid_with_response`
+/// materializes `grid` and `weight1` before any AO plane exists, both are
+/// indexed by absolute grid index by the weight-response scatter, and both
+/// outlive every batch. Split out of [`xc_gradient_plan`] so the batched
+/// sizing can subtract it once and then size the batch against what is
+/// genuinely left.
+fn grid_resident_bytes(npts: usize, natoms: usize, with_grid_response: bool) -> usize {
+    if with_grid_response {
+        grid_response_bytes(npts, natoms)
+    } else {
+        npts.saturating_mul(std::mem::size_of::<crate::grid::GridPoint>())
+    }
+}
+
+/// `f64`s per grid point that one batch of the XC-gradient working set costs,
+/// planes and O(npts) companion vectors together.
+///
+/// Derived from the SAME census [`xc_gradient_plan`] declares — deliberately,
+/// so there is one table to keep honest rather than two that drift. Read it
+/// off the plan rather than re-listing the terms: build the plan at
+/// `npts = 1` with no grid term (the grid is not batchable, so it must not be
+/// charged per point), and its peak IS the per-point cost.
+///
+/// `natoms` is irrelevant at `npts = 1` with `with_grid_response = false`, so
+/// it is not a parameter: the weight1 term is exactly the piece being excluded.
+fn grad_batch_point_elems(nbf: usize, kind: AoGridKind, is_uks: bool) -> usize {
+    // `grid_npts = 0` zeroes the non-batchable grid term, so what is left IS
+    // the per-point cost of one batch point.
+    let plan = xc_gradient_plan("per-point probe", nbf, 1, 0, 0, kind, is_uks, false);
+    let per_point_bytes = plan.peak_bytes();
+    per_point_bytes.div_ceil(std::mem::size_of::<f64>())
+}
+
+/// The working budget the XC-gradient batch sizes itself against.
+///
+/// # Why this is the pool ledger and not live RSS
+///
+/// Batch boundaries fix which grid points land in which `row_dot` reduction,
+/// and `row_dot` is a sum over g — so the batch width sets a floating-point
+/// accumulation order, and therefore the gradient. `ks.rs` learned this the
+/// expensive way on the SCF side: its width came from `available_budget_now`,
+/// which subtracts this process's LIVE RSS, and the same terpinyl-cation input
+/// gave -390.3794282913 and -390.3794337741 Ha on two runs of the same binary
+/// (see `ks::grid_working_budget`). RSS is not even a configuration.
+///
+/// So: when a pool is installed, the figure is the pool's ledger —
+/// `available_bytes()`, which is capacity minus what THIS job has reserved, a
+/// deterministic function of which planes are held. With no pool installed
+/// there is nothing better, and the historical `resolve_budget_bytes` ceiling
+/// is used unchanged, which is what keeps the unbudgeted limit bit-identical.
+///
+/// Note this is strictly MORE deterministic than `ks.rs`'s unpooled fallback,
+/// which still reads `available_budget_now`: there is no gradient-side
+/// behaviour to preserve here (the gradient never batched at all), so the
+/// unpooled path takes the static ceiling and batching effectively never
+/// engages on it — see [`resolve_grad_batch_size`].
+fn grad_working_budget() -> usize {
+    let ceiling = ferric_core::memory::resolve_budget_bytes(None);
+    match ferric_core::memory::pool::global() {
+        Some(pool) => pool.available_bytes().min(ceiling),
+        None => ceiling,
+    }
+}
+
+/// Resolve the batch width (grid points per batch) for a batched XC-gradient
+/// path.
+///
+/// A pure function of `(nbf, npts, natoms, kind, is_uks, with_grid_response,
+/// budget)` — NEVER of thread count, and never of live RSS (see
+/// [`grad_working_budget`]). That matters for the same reason it matters in
+/// `ks.rs`: the width sets which points share a `row_dot` reduction, hence the
+/// accumulation order, hence the gradient's last few ulps.
+///
+/// Sizing: subtract the non-batchable grid/`weight1` term from the budget,
+/// then fit as many points as the remainder holds, clamped to `[1, npts]`.
+/// `fit_width`'s worker count is pinned to 1 because the batch loop is serial
+/// across batches — only the work *inside* a batch fans out over rayon — so
+/// there is never more than one batch's planes live, and admitting a thread
+/// count here would make the gradient depend on it.
+///
+/// Returning `npts` means "one batch", which is the whole grid: the trivial
+/// limit, and bit-identical to the pre-batching code (pinned by
+/// `a_full_width_batch_is_bit_identical_to_the_unbatched_gradient`).
+#[allow(clippy::too_many_arguments)]
+fn resolve_grad_batch_size(
+    nbf: usize,
+    npts: usize,
+    natoms: usize,
+    kind: AoGridKind,
+    is_uks: bool,
+    with_grid_response: bool,
+    budget: usize,
+) -> usize {
+    let grid_bytes = grid_resident_bytes(npts, natoms, with_grid_response);
+    let left = budget.saturating_sub(grid_bytes);
+    let plan = MemoryPlan::with_budget_bytes(left, "KS-DFT batched XC gradient");
+    let width = plan.fit_width(grad_batch_point_elems(nbf, kind, is_uks), 1);
+    width.min(npts.max(1)).max(1)
+}
+
+/// The grid batch width the closed-shell GGA/meta-GGA XC gradient would pick
+/// for this shape, against the budget the pool ledger currently reports.
+///
+/// Test hook. A test that cannot see WHICH width production chose cannot tell
+/// a width pinned by the pool ledger from one drifting with resident memory,
+/// and the width fixes the `row_dot` accumulation order — so it is load-bearing
+/// for the gradient, exactly as `KsXc::batch_pts_for_test` is for the SCF
+/// energy. Returns `npts` when the whole grid fits, i.e. "one batch".
+#[doc(hidden)]
+pub fn grad_batch_pts_for_test(nbf: usize, npts: usize, natoms: usize, is_uks: bool) -> usize {
+    resolve_grad_batch_size(
+        nbf,
+        npts,
+        natoms,
+        AoGridKind::ValueGradHess,
+        is_uks,
+        true,
+        grad_working_budget(),
+    )
+}
+
+/// One contiguous slice of the grid, with the absolute offset the
+/// weight-response scatter needs.
+///
+/// The weight-response term reads `weight1[g][atom][axis]` at the ABSOLUTE
+/// grid index, so a batch cannot just be handed `&grid[g0..g1]` and forget
+/// where it came from — `g0` travels with it.
+struct GradBatch<'a> {
+    /// Absolute index of this batch's first point in the full grid.
+    g0: usize,
+    /// This batch's grid points.
+    grid: &'a [crate::grid::GridPoint],
+}
+
+/// Walk `grid` in contiguous `batch_pts`-sized ranges, ascending, calling
+/// `f` once per batch and summing its `(natoms, 3)` contributions.
+///
+/// Batches are visited in ascending order and their contributions added to
+/// `grad` one at a time, before the next batch runs — so the inter-batch
+/// accumulation order is fixed by `batch_pts` alone, which
+/// [`resolve_grad_batch_size`] makes a deterministic function of the shape and
+/// the pool ledger.
+///
+/// The result is NOT expected to be bit-identical to the single-batch path at
+/// widths below `npts`: `row_dot` reduces over grid points, so splitting the
+/// range re-associates that sum. That is a floating-point reordering of the
+/// same terms, not a different quantity — see
+/// `batched_gradient_matches_the_unbatched_one_to_the_reassociation_floor`,
+/// which measures the size of the reordering rather than assuming it is zero.
+fn for_each_grad_batch<F>(
+    grid: &[crate::grid::GridPoint],
+    batch_pts: usize,
+    natoms: usize,
+    mut f: F,
+) -> Result<Array2<f64>, KsGradError>
+where
+    F: FnMut(GradBatch<'_>) -> Result<Array2<f64>, KsGradError>,
+{
+    let npts = grid.len();
+    let batch_pts = batch_pts.max(1);
+    let mut grad = Array2::<f64>::zeros((natoms, 3));
+    let mut g0 = 0usize;
+    while g0 < npts {
+        let g1 = (g0 + batch_pts).min(npts);
+        let part = f(GradBatch {
+            g0,
+            grid: &grid[g0..g1],
+        })?;
+        grad += &part;
+        g0 = g1;
+    }
+    Ok(grad)
 }
 
 impl From<LibxcError> for KsGradError {
@@ -594,16 +781,31 @@ pub fn xc_gradient_closed_lda_from_density(
     // what the grid + weight1 already left resident — see `xc_gradient_plan`.
     // The LDA path needs only χ + ∇χ, and never builds `mdchi`, but declaring
     // the shared shape keeps one census for the whole module.
-    xc_gradient_plan(
+    // `commit()`, not `check()`: `check()` only compares the projected peak
+    // against a ceiling and then FORGETS, so two gradient paths (or a gradient
+    // and the DF tensor an optimizer still holds) each see the same headroom.
+    // `commit()` checks AND DEBITS, handing back an RAII guard.
+    //
+    // The guard is bound to a named local, NOT dropped as a temporary: the
+    // bytes must stay debited for as long as chi/dchi/ddchi are resident, and
+    // a `let _ = ...` (or a bare `;`) would credit them back immediately —
+    // the exact defect the `_charge` field pattern exists to prevent. `_charge`
+    // rather than `charge` because nothing reads it; dropping at end of scope
+    // IS its only job.
+    let _charge = xc_gradient_plan(
         "KS-DFT LDA XC gradient",
         nbf,
+        // Not batched: this path's peak is 4 planes (LDA) or the VV10 pair sum
+        // that needs the whole NLC grid resident anyway, so batch width ==
+        // grid width and the two `npts` arguments coincide.
+        grid.len(),
         grid.len(),
         mol.atoms.len(),
         crate::ao_grid::AoGridKind::ValueAndGrad,
         false,
         true,
     )
-    .check()?;
+    .commit()?;
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
     let (chi, dchi) = crate::ao_grid::eval_basis_and_grad_on_points(mol, bs, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
@@ -750,17 +952,34 @@ pub fn vv10_gradient_from_density(
     // No grid response on this path (`build_atomic_grid`, not
     // `_with_response`), so no `weight1` term — but the AO Hessian and the
     // `m`/`mdchi` planes inside `gga_gradient_from_potentials` are the same.
-    xc_gradient_plan(
+    // Held for the life of the AO tensors — see the LDA path for why this is
+    // a bound local and not a temporary.
+    let _charge = xc_gradient_plan(
         "VV10 nonlocal gradient",
         nbf,
+        // NOT batched, and cannot be: VV10 is an O(npts²) pair sum over the
+        // NLC grid (see `vv10.rs`), so the whole grid has to be resident at
+        // once no matter how the AO planes are evaluated. Batch width == grid
+        // width, hence the two `npts` arguments coincide.
+        grid.len(),
         grid.len(),
         mol.atoms.len(),
         crate::ao_grid::AoGridKind::ValueGradHess,
         false,
         false,
     )
-    .check()?;
+    .commit()?;
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
+    // KNOWN, PRE-EXISTING, and deliberately left alone here: this is the
+    // CHECKED evaluator, whose `check_ao_grid_budget` debits the pool for the
+    // same 13 AO planes the plan above already declares — so this path (and
+    // the LDA one) is charged ~2x for its AO tensors while they are resident.
+    // The batched GGA/meta-GGA/UKS paths dropped that double charge by moving
+    // to `_unchecked`, which is what took benzene/cc-pVDZ from 3.033 GB of
+    // ample-pool demand to 1.860 GB. Doing the same here is a safe follow-up,
+    // but it is an ACCOUNTING fix with no batching component, so it is not
+    // folded into the batching change: it would make the two effects
+    // impossible to attribute separately in the peak table.
     let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
 
     // Density on the NLC grid.
@@ -811,6 +1030,49 @@ pub fn xc_gradient_closed_gga_from_density(
     shell_offsets: &[usize],
     shell_dims: &[usize],
 ) -> Result<Array2<f64>, KsGradError> {
+    xc_gradient_closed_gga_from_density_batched(
+        mol,
+        bs,
+        d_total,
+        xc_name,
+        grid_cfg,
+        shell_to_atom,
+        shell_offsets,
+        shell_dims,
+        None,
+    )
+}
+
+/// [`xc_gradient_closed_gga_from_density`] with the grid batch width forced.
+///
+/// `batch_pts = None` is production: the width comes from
+/// [`resolve_grad_batch_size`] against the pool ledger. `Some(w)` pins it.
+///
+/// # Why this hook exists
+///
+/// The batch width sets which grid points share a `row_dot` reduction, hence
+/// the floating-point accumulation order, hence the gradient's last ulps. A
+/// test that cannot SET the width cannot separate "batching is exact at full
+/// width" from "batching re-associates by this much at width w" — and those
+/// are two different claims, one of which is an exactness anchor and the
+/// other a measurement. Both are asserted in
+/// `crates/ferric-scf/tests/ks_gradient_batching.rs`.
+///
+/// `Some(w)` with `w >= npts` is the trivial limit: exactly one batch, which
+/// is the pre-batching code path, bit-identical.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn xc_gradient_closed_gga_from_density_batched(
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+    d_total: &Array2<f64>,
+    xc_name: &str,
+    grid_cfg: &AtomicGridConfig,
+    shell_to_atom: &[usize],
+    shell_offsets: &[usize],
+    shell_dims: &[usize],
+    batch_pts_override: Option<usize>,
+) -> Result<Array2<f64>, KsGradError> {
     let xc: XcDef = xc_def_from_name(xc_name)?;
     // Accept all families: caller handles the exact-exchange piece (via
     // ks_gradient_closed's K-gradient calls); the semilocal piece is what
@@ -820,23 +1082,75 @@ pub fn xc_gradient_closed_gga_from_density(
 
     let nbf = d_total.nrows();
     let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg)?;
-    // Gate the whole working set — the 13 AO planes AND the m/mdchi planes
-    // allocated after `check_ao_grid_budget` has already returned — against
-    // what the grid + weight1 left resident. See `xc_gradient_plan`.
-    xc_gradient_plan(
+    let natoms = mol.atoms.len();
+    let map = bf_to_atom(shell_to_atom, shell_offsets, shell_dims, nbf);
+
+    // Size the batch BEFORE charging anything: `grad_working_budget` reads the
+    // pool ledger, and the whole point is to charge only one batch's planes
+    // rather than the whole grid's. See `resolve_grad_batch_size`.
+    let batch_pts = batch_pts_override.map(|w| w.max(1)).unwrap_or_else(|| {
+        resolve_grad_batch_size(
+            nbf,
+            grid.len(),
+            natoms,
+            crate::ao_grid::AoGridKind::ValueGradHess,
+            false,
+            true,
+            grad_working_budget(),
+        )
+    });
+
+    // Gate the resident working set — the non-batchable grid/weight1 plus ONE
+    // batch's 13 AO planes and the m/mdchi planes allocated on top of them.
+    // Held for the life of the loop: each batch's tensors are freed at the end
+    // of its iteration, so one batch's charge covers every batch.
+    let _charge = xc_gradient_plan(
         "KS-DFT GGA XC gradient",
         nbf,
+        batch_pts,
         grid.len(),
-        mol.atoms.len(),
+        natoms,
         crate::ao_grid::AoGridKind::ValueGradHess,
         false,
         true,
     )
-    .check()?;
+    .commit()?;
+
+    let shells = crate::ao_grid::collect_shells(mol, bs)?;
+
+    for_each_grad_batch(&grid, batch_pts, natoms, |batch| {
+        gga_closed_batch(&xc, d_total, &map, natoms, nbf, &shells, &weight1, batch)
+    })
+}
+
+/// One batch of [`xc_gradient_closed_gga_from_density`].
+///
+/// Evaluates χ/∇χ/∇∇χ for this batch's points ONLY, and returns this batch's
+/// `(natoms, 3)` contribution. Everything below is point-local or a reduction
+/// over this batch's points, so the whole-grid version is the `batch_pts =
+/// npts` special case of this function — which is what the exactness anchor
+/// asserts.
+#[allow(clippy::too_many_arguments)]
+fn gga_closed_batch(
+    xc: &XcDef,
+    d_total: &Array2<f64>,
+    map: &[usize],
+    natoms: usize,
+    nbf: usize,
+    shells: &[ferric_integrals::ao_grid::LocatedShell<'_>],
+    weight1: &[Vec<[f64; 3]>],
+    batch: GradBatch<'_>,
+) -> Result<Array2<f64>, KsGradError> {
+    let grid = batch.grid;
+    let g_off = batch.g0;
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
-    let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
+    // `_unchecked`: the caller already resolved the budget ONCE and sized
+    // `batch_pts` against it, then COMMITTED that charge. Re-resolving here
+    // would read a ceiling that has moved since, which protects nothing — the
+    // same argument `ks.rs`'s batched V_xc makes for its own `_unchecked` call.
+    let (chi, dchi, ddchi) =
+        crate::ao_grid::eval_basis_grad_hess_on_points_unchecked(shells, nbf, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
-    let map = bf_to_atom(shell_to_atom, shell_offsets, shell_dims, nbf);
 
     let npts = chi.ncols();
     debug_assert_eq!(dchi.dim(), (3, nbf, npts));
@@ -898,12 +1212,11 @@ pub fn xc_gradient_closed_gga_from_density(
         mdchi.index_axis_mut(ndarray::Axis(0), b).assign(&prod);
     }
 
-    let natoms = mol.atoms.len();
     let mut grad = Array2::<f64>::zeros((natoms, 3));
 
     let c = gga_weight_columns(&t_sig, &dens.grad);
     let partials = gga_ao_partials(&m, &mdchi, &dchi, &ddchi, &c, &t_rho);
-    scatter_partials(&partials, &map, &mut grad);
+    scatter_partials(&partials, map, &mut grad);
 
     // ── Grid-response correction (P2.1, PySCF convention) ──
     //
@@ -916,16 +1229,21 @@ pub fn xc_gradient_closed_gga_from_density(
     //   ∂²_{αb} ρ = 2 Σ_μν D · [∂_α χ_μ · ∂_b χ_ν + χ_ν · ∂²_{αb} χ_μ]
     //             = 2 Σ_μ ∂_α χ_μ · (D · ∂_b χ)_μ
     //             + 2 Σ_μ m_μ · ∂²_{αb} χ_μ
+    //
+    // `weight1` is indexed by the ABSOLUTE grid index, so a batch offsets into
+    // it by `g_off` — the one place batching has to remember where it came
+    // from (see `GradBatch`).
     for g in 0..npts {
         let f = eps_total[g] * rho_slice[g];
+        let w1 = &weight1[g_off + g];
         for b in 0..natoms {
-            grad[(b, 0)] += weight1[g][b][0] * f;
-            grad[(b, 1)] += weight1[g][b][1] * f;
-            grad[(b, 2)] += weight1[g][b][2] * f;
+            grad[(b, 0)] += w1[b][0] * f;
+            grad[(b, 1)] += w1[b][1] * f;
+            grad[(b, 2)] += w1[b][2] * f;
         }
     }
     // ∂²_{αb} ρ(r_g) = 2 Σ_μ [ ∂_α χ_μ · (D ∂_b χ)_μ + m_μ · ∂²_{αb} χ_μ ].
-    // Precompute the per-(axis,b) column over the grid (reduction over μ) so the
+    // Precompute the per-(axis,b) column over the batch (reduction over μ) so the
     // per-point scatter below is a short serial pass. `hess_col[axis][b]` is a
     // length-npts array; the μ-reduction fans out over grid points via rayon.
     let hess_col: [[ndarray::Array1<f64>; 3]; 3] = std::array::from_fn(|axis| {
@@ -994,23 +1312,70 @@ pub fn xc_gradient_closed_mgga_from_density(
 
     let nbf = d_total.nrows();
     let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg)?;
-    // Gate the whole working set — the 13 AO planes AND the m/mdchi planes
-    // allocated after `check_ao_grid_budget` has already returned — against
-    // what the grid + weight1 left resident. See `xc_gradient_plan`.
-    xc_gradient_plan(
-        "KS-DFT meta-GGA XC gradient",
+    let natoms = mol.atoms.len();
+    let map = bf_to_atom(shell_to_atom, shell_offsets, shell_dims, nbf);
+
+    // Size the batch BEFORE charging anything — see `resolve_grad_batch_size`.
+    let batch_pts = resolve_grad_batch_size(
         nbf,
         grid.len(),
-        mol.atoms.len(),
+        natoms,
+        crate::ao_grid::AoGridKind::ValueGradHess,
+        false,
+        true,
+        grad_working_budget(),
+    );
+
+    // Charge the non-batchable grid/weight1 plus ONE batch's planes. Each
+    // batch's tensors are freed at the end of its iteration, so one batch's
+    // charge covers the whole loop.
+    let _charge = xc_gradient_plan(
+        "KS-DFT meta-GGA XC gradient",
+        nbf,
+        batch_pts,
+        grid.len(),
+        natoms,
         crate::ao_grid::AoGridKind::ValueGradHess,
         false,
         true,
     )
-    .check()?;
+    .commit()?;
+
+    let shells = crate::ao_grid::collect_shells(mol, bs)?;
+
+    for_each_grad_batch(&grid, batch_pts, natoms, |batch| {
+        mgga_closed_batch(&xc, d_total, &map, natoms, nbf, &shells, &weight1, batch)
+    })
+}
+
+/// One batch of [`xc_gradient_closed_mgga_from_density`].
+///
+/// Evaluates χ/∇χ/∇∇χ for this batch's points ONLY and returns this batch's
+/// `(natoms, 3)` contribution. Every term below is point-local or a reduction
+/// over this batch's points, so the whole-grid version is the
+/// `batch_pts = npts` special case — which is what the exactness anchor
+/// asserts.
+#[allow(clippy::too_many_arguments)]
+fn mgga_closed_batch(
+    xc: &XcDef,
+    d_total: &Array2<f64>,
+    map: &[usize],
+    natoms: usize,
+    nbf: usize,
+    shells: &[ferric_integrals::ao_grid::LocatedShell<'_>],
+    weight1: &[Vec<[f64; 3]>],
+    batch: GradBatch<'_>,
+) -> Result<Array2<f64>, KsGradError> {
+    let grid = batch.grid;
+    let g_off = batch.g0;
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
-    let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
+    // `_unchecked`: the caller already resolved the budget ONCE, sized
+    // `batch_pts` against it and COMMITTED that charge. Re-resolving here
+    // would read a ceiling that has moved since — the same argument `ks.rs`'s
+    // batched V_xc makes for its own `_unchecked` call.
+    let (chi, dchi, ddchi) =
+        crate::ao_grid::eval_basis_grad_hess_on_points_unchecked(shells, nbf, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
-    let map = bf_to_atom(shell_to_atom, shell_offsets, shell_dims, nbf);
 
     let npts = chi.ncols();
     debug_assert_eq!(dchi.dim(), (3, nbf, npts));
@@ -1083,25 +1448,24 @@ pub fn xc_gradient_closed_mgga_from_density(
     let m: Array2<f64> = with_blas_threads(opt_in_blas_threads(), || d_total.dot(&chi));
     let mdchi = build_mdchi(d_total, &dchi);
 
-    let natoms = mol.atoms.len();
     let mut grad = Array2::<f64>::zeros((natoms, 3));
 
     // ρ + σ AO-derivative terms (identical to the GGA path).
     let c = gga_weight_columns(&t_sig, &dens.grad);
     let partials = gga_ao_partials(&m, &mdchi, &dchi, &ddchi, &c, &t_rho);
-    scatter_partials(&partials, &map, &mut grad);
+    scatter_partials(&partials, map, &mut grad);
     // τ AO-derivative term.
     let tau_partials = mgga_tau_partials(&mdchi, &ddchi, &t_tau);
-    scatter_partials(&tau_partials, &map, &mut grad);
+    scatter_partials(&tau_partials, map, &mut grad);
 
     // ── Grid-response correction (same convention as the GGA path) ──
     // (1) weight response.
     for g in 0..npts {
         let f = eps_total[g] * rho_slice[g];
         for b in 0..natoms {
-            grad[(b, 0)] += weight1[g][b][0] * f;
-            grad[(b, 1)] += weight1[g][b][1] * f;
-            grad[(b, 2)] += weight1[g][b][2] * f;
+            grad[(b, 0)] += weight1[g_off + g][b][0] * f;
+            grad[(b, 1)] += weight1[g_off + g][b][1] * f;
+            grad[(b, 2)] += weight1[g_off + g][b][2] * f;
         }
     }
     // (2) home-translation of the integrand: ρ, σ and τ pieces.
@@ -1171,23 +1535,71 @@ pub fn xc_gradient_uks_from_density(
 
     let nbf = d_a.nrows();
     let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg)?;
-    // Gate the whole working set — the 13 AO planes AND the m/mdchi planes
-    // allocated after `check_ao_grid_budget` has already returned — against
-    // what the grid + weight1 left resident. See `xc_gradient_plan`.
-    xc_gradient_plan(
-        "KS-DFT UKS GGA XC gradient",
+    let natoms = mol.atoms.len();
+    let map = bf_to_atom(shell_to_atom, shell_offsets, shell_dims, nbf);
+
+    // Size the batch BEFORE charging anything — see `resolve_grad_batch_size`.
+    let batch_pts = resolve_grad_batch_size(
         nbf,
         grid.len(),
-        mol.atoms.len(),
+        natoms,
+        crate::ao_grid::AoGridKind::ValueGradHess,
+        true,
+        true,
+        grad_working_budget(),
+    );
+
+    // Charge the non-batchable grid/weight1 plus ONE batch's planes. Each
+    // batch's tensors are freed at the end of its iteration, so one batch's
+    // charge covers the whole loop.
+    let _charge = xc_gradient_plan(
+        "KS-DFT UKS GGA XC gradient",
+        nbf,
+        batch_pts,
+        grid.len(),
+        natoms,
         crate::ao_grid::AoGridKind::ValueGradHess,
         true,
         true,
     )
-    .check()?;
+    .commit()?;
+
+    let shells = crate::ao_grid::collect_shells(mol, bs)?;
+
+    for_each_grad_batch(&grid, batch_pts, natoms, |batch| {
+        uks_gga_batch(&xc, d_a, d_b, &map, natoms, nbf, &shells, &weight1, batch)
+    })
+}
+
+/// One batch of [`xc_gradient_uks_from_density`].
+///
+/// Evaluates χ/∇χ/∇∇χ for this batch's points ONLY and returns this batch's
+/// `(natoms, 3)` contribution. Every term below is point-local or a reduction
+/// over this batch's points, so the whole-grid version is the
+/// `batch_pts = npts` special case — which is what the exactness anchor
+/// asserts.
+#[allow(clippy::too_many_arguments)]
+fn uks_gga_batch(
+    xc: &XcDef,
+    d_a: &Array2<f64>,
+    d_b: &Array2<f64>,
+    map: &[usize],
+    natoms: usize,
+    nbf: usize,
+    shells: &[ferric_integrals::ao_grid::LocatedShell<'_>],
+    weight1: &[Vec<[f64; 3]>],
+    batch: GradBatch<'_>,
+) -> Result<Array2<f64>, KsGradError> {
+    let grid = batch.grid;
+    let g_off = batch.g0;
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
-    let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
+    // `_unchecked`: the caller already resolved the budget ONCE, sized
+    // `batch_pts` against it and COMMITTED that charge. Re-resolving here
+    // would read a ceiling that has moved since — the same argument `ks.rs`'s
+    // batched V_xc makes for its own `_unchecked` call.
+    let (chi, dchi, ddchi) =
+        crate::ao_grid::eval_basis_grad_hess_on_points_unchecked(shells, nbf, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
-    let map = bf_to_atom(shell_to_atom, shell_offsets, shell_dims, nbf);
     let npts = chi.ncols();
 
     // Polarized densities.
@@ -1237,7 +1649,6 @@ pub fn xc_gradient_uks_from_density(
     }
 
     const RHO_FLOOR: f64 = 1e-10;
-    let natoms = mol.atoms.len();
     let mut grad = Array2::<f64>::zeros((natoms, 3));
 
     // Inner kernel per spin σ.
@@ -1278,7 +1689,7 @@ pub fn xc_gradient_uks_from_density(
             mdchi.index_axis_mut(ndarray::Axis(0), b).assign(&prod);
         }
         let partials = gga_ao_partials(&m, &mdchi, &dchi, &ddchi, &c, &t_rho);
-        scatter_partials(&partials, &map, grad_out);
+        scatter_partials(&partials, map, grad_out);
     };
 
     add_spin_contribution(
@@ -1365,9 +1776,9 @@ pub fn xc_gradient_uks_from_density(
     for g in 0..npts {
         let f = eps_total[g] * (dens.rho_a[g] + dens.rho_b[g]);
         for b in 0..natoms {
-            grad[(b, 0)] += weight1[g][b][0] * f;
-            grad[(b, 1)] += weight1[g][b][1] * f;
-            grad[(b, 2)] += weight1[g][b][2] * f;
+            grad[(b, 0)] += weight1[g_off + g][b][0] * f;
+            grad[(b, 1)] += weight1[g_off + g][b][1] * f;
+            grad[(b, 2)] += weight1[g_off + g][b][2] * f;
         }
     }
     // (2) home-translation of the integrand.
@@ -1432,23 +1843,71 @@ pub fn xc_gradient_uks_mgga_from_density(
 
     let nbf = d_a.nrows();
     let (grid, weight1) = build_atomic_grid_with_response(mol, grid_cfg)?;
-    // Gate the whole working set — the 13 AO planes AND the m/mdchi planes
-    // allocated after `check_ao_grid_budget` has already returned — against
-    // what the grid + weight1 left resident. See `xc_gradient_plan`.
-    xc_gradient_plan(
-        "KS-DFT UKS meta-GGA XC gradient",
+    let natoms = mol.atoms.len();
+    let map = bf_to_atom(shell_to_atom, shell_offsets, shell_dims, nbf);
+
+    // Size the batch BEFORE charging anything — see `resolve_grad_batch_size`.
+    let batch_pts = resolve_grad_batch_size(
         nbf,
         grid.len(),
-        mol.atoms.len(),
+        natoms,
+        crate::ao_grid::AoGridKind::ValueGradHess,
+        true,
+        true,
+        grad_working_budget(),
+    );
+
+    // Charge the non-batchable grid/weight1 plus ONE batch's planes. Each
+    // batch's tensors are freed at the end of its iteration, so one batch's
+    // charge covers the whole loop.
+    let _charge = xc_gradient_plan(
+        "KS-DFT UKS meta-GGA XC gradient",
+        nbf,
+        batch_pts,
+        grid.len(),
+        natoms,
         crate::ao_grid::AoGridKind::ValueGradHess,
         true,
         true,
     )
-    .check()?;
+    .commit()?;
+
+    let shells = crate::ao_grid::collect_shells(mol, bs)?;
+
+    for_each_grad_batch(&grid, batch_pts, natoms, |batch| {
+        uks_mgga_batch(&xc, d_a, d_b, &map, natoms, nbf, &shells, &weight1, batch)
+    })
+}
+
+/// One batch of [`xc_gradient_uks_mgga_from_density`].
+///
+/// Evaluates χ/∇χ/∇∇χ for this batch's points ONLY and returns this batch's
+/// `(natoms, 3)` contribution. Every term below is point-local or a reduction
+/// over this batch's points, so the whole-grid version is the
+/// `batch_pts = npts` special case — which is what the exactness anchor
+/// asserts.
+#[allow(clippy::too_many_arguments)]
+fn uks_mgga_batch(
+    xc: &XcDef,
+    d_a: &Array2<f64>,
+    d_b: &Array2<f64>,
+    map: &[usize],
+    natoms: usize,
+    nbf: usize,
+    shells: &[ferric_integrals::ao_grid::LocatedShell<'_>],
+    weight1: &[Vec<[f64; 3]>],
+    batch: GradBatch<'_>,
+) -> Result<Array2<f64>, KsGradError> {
+    let grid = batch.grid;
+    let g_off = batch.g0;
     let pts: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
-    let (chi, dchi, ddchi) = crate::ao_grid::eval_basis_grad_hess_on_points(mol, bs, &pts)?;
+    // `_unchecked`: the caller already resolved the budget ONCE, sized
+    // `batch_pts` against it and COMMITTED that charge. Re-resolving here
+    // would read a ceiling that has moved since — the same argument `ks.rs`'s
+    // batched V_xc makes for its own `_unchecked` call.
+    let (chi, dchi, ddchi) =
+        crate::ao_grid::eval_basis_grad_hess_on_points_unchecked(shells, nbf, &pts)?;
     let weights: Vec<f64> = grid.iter().map(|g| g.weight).collect();
-    let map = bf_to_atom(shell_to_atom, shell_offsets, shell_dims, nbf);
     let npts = chi.ncols();
 
     let dens = eval_density_uks(d_a, d_b, &chi, &dchi);
@@ -1517,7 +1976,6 @@ pub fn xc_gradient_uks_mgga_from_density(
     }
 
     const RHO_FLOOR: f64 = 1e-10;
-    let natoms = mol.atoms.len();
     let mut grad = Array2::<f64>::zeros((natoms, 3));
 
     // Per-spin (D_σ χ) and (D_σ ∂_b χ), reused by both the AO-derivative sum and
@@ -1554,9 +2012,9 @@ pub fn xc_gradient_uks_mgga_from_density(
             }
         }
         let partials = gga_ao_partials(m_s, mdchi_s, &dchi, &ddchi, &c, &t_rho);
-        scatter_partials(&partials, &map, grad_out);
+        scatter_partials(&partials, map, grad_out);
         let tau_partials = mgga_tau_partials(mdchi_s, &ddchi, &t_tau);
-        scatter_partials(&tau_partials, &map, grad_out);
+        scatter_partials(&tau_partials, map, grad_out);
     };
 
     add_spin(
@@ -1589,9 +2047,9 @@ pub fn xc_gradient_uks_mgga_from_density(
     for g in 0..npts {
         let f = eps_total[g] * (dens.rho_a[g] + dens.rho_b[g]);
         for b in 0..natoms {
-            grad[(b, 0)] += weight1[g][b][0] * f;
-            grad[(b, 1)] += weight1[g][b][1] * f;
-            grad[(b, 2)] += weight1[g][b][2] * f;
+            grad[(b, 0)] += weight1[g_off + g][b][0] * f;
+            grad[(b, 1)] += weight1[g_off + g][b][1] * f;
+            grad[(b, 2)] += weight1[g_off + g][b][2] * f;
         }
     }
 
@@ -1673,6 +2131,7 @@ mod budget_tests {
             "KS-DFT UKS meta-GGA XC gradient",
             2000,
             500_000,
+            500_000,
             50,
             AoGridKind::ValueGradHess,
             true,
@@ -1708,6 +2167,7 @@ mod budget_tests {
             "closed",
             nbf,
             npts,
+            npts,
             natoms,
             AoGridKind::ValueGradHess,
             false,
@@ -1716,6 +2176,7 @@ mod budget_tests {
         let uks = xc_gradient_plan(
             "uks",
             nbf,
+            npts,
             npts,
             natoms,
             AoGridKind::ValueGradHess,
@@ -1758,7 +2219,7 @@ mod budget_tests {
             (AoGridKind::ValueGradHess, false),
             (AoGridKind::ValueGradHess, true),
         ] {
-            let plan = xc_gradient_plan("t", 25, 68_000, 3, kind, uks, true);
+            let plan = xc_gradient_plan("t", 25, 68_000, 68_000, 3, kind, uks, true);
             assert!(
                 plan.check().is_ok(),
                 "a 25-function, 68k-point gradient must fit 8 GiB:\n{}",
@@ -1768,13 +2229,31 @@ mod budget_tests {
 
         // And a mid-size one: 300 functions, 200k points, 20 atoms — 24 planes
         // is ~11.5 GB, so it must NOT fit 8 GiB, but must fit 32.
-        let plan = xc_gradient_plan("t", 300, 200_000, 20, AoGridKind::ValueGradHess, true, true);
+        let plan = xc_gradient_plan(
+            "t",
+            300,
+            200_000,
+            200_000,
+            20,
+            AoGridKind::ValueGradHess,
+            true,
+            true,
+        );
         assert!(
             plan.check().is_err(),
             "24 planes of 300x200k does not fit 8 GiB"
         );
         std::env::set_var(VAR, "32");
-        let plan = xc_gradient_plan("t", 300, 200_000, 20, AoGridKind::ValueGradHess, true, true);
+        let plan = xc_gradient_plan(
+            "t",
+            300,
+            200_000,
+            200_000,
+            20,
+            AoGridKind::ValueGradHess,
+            true,
+            true,
+        );
         assert!(
             plan.check().is_ok(),
             "...but it does fit 32 GiB:\n{}",

@@ -132,6 +132,34 @@ where
 
     let quads = screened_quartets(nsh, bounds, max_d);
     let n_quads = quads.len();
+
+    // --- memory plane: the screened quartet list.
+    //
+    // This is the one genuinely large allocation on the HF/KS gradient path.
+    // Everything else here is `(natoms, 3)` partials, which are negligible by
+    // construction. `quads` is 4 × usize per surviving quartet and its length
+    // is O(nsh⁴) before screening bites, so on a large system it is the peak
+    // of the whole analytic-gradient call.
+    //
+    // Charged AFTER the build, not before, and deliberately so: this is an
+    // accounting of a buffer that is ALREADY resident, not an admission gate
+    // that could steer the loop. Sizing or gating on the pool BEFORE the build
+    // would let the ledger pick the serial-vs-parallel branch (the
+    // `n_quads < PAR_2E_QUARTET_THRESHOLD` test below), and those two branches
+    // have different reduction shapes -- a pool-dependent branch is exactly
+    // the nondeterminism that moved a KS-DFT energy between
+    // -390.3794282913 and -390.3794337741 Ha. `n_quads` stays a pure function
+    // of (nsh, bounds, max_d), as `screened_quartets`' own doc requires.
+    //
+    // HARD: by the time this runs the bytes are already committed, so there is
+    // no fallback to fall back TO -- the honest thing a refusal buys is a
+    // named error naming this plane instead of an OOM kill a few shells later
+    // in the derivative loop, which is where the process would otherwise die.
+    let _quads_charge = ferric_core::memory::pool::reserve_global(
+        "HF/KS gradient screened quartet list",
+        n_quads.saturating_mul(std::mem::size_of::<(usize, usize, usize, usize)>()),
+    )?;
+
     let mut grad = Array2::zeros((natoms, 3));
     if n_quads == 0 {
         return Ok(grad);
@@ -198,6 +226,18 @@ where
         .flat_map(|s1| (0..=s1).map(move |s2| (s1, s2)))
         .collect();
     let n_pairs = pairs.len();
+
+    // --- memory plane: the shell-pair list. O(nsh²), so far smaller than the
+    // 2e path's O(nsh⁴) quartet list, but charged for the same reason: it is
+    // resident for the whole call and the pool's job is to see the SUM. Same
+    // after-the-build placement as `quads`, and for the same reason -- the
+    // `n_pairs < PAR_1E_PAIR_THRESHOLD` branch below must stay a pure
+    // function of the basis, never of the ledger.
+    let _pairs_charge = ferric_core::memory::pool::reserve_global(
+        "HF/KS gradient 1e shell-pair list",
+        n_pairs.saturating_mul(std::mem::size_of::<(usize, usize)>()),
+    )?;
+
     let mut grad = Array2::zeros((natoms, 3));
     if n_pairs == 0 {
         return Ok(grad);

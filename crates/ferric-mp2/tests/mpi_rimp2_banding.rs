@@ -117,7 +117,25 @@ fn df_rhf_config() -> RhfConfig {
     RhfConfig {
         df_j_aux: Some("def2-universal-jkfit".into()),
         df_k_aux: Some("def2-universal-jkfit".into()),
-        energy_conv: 1e-10,
+        // energy_conv is DELIBERATELY left at its 1e-3 default.
+        //
+        // This config used to force `energy_conv: 1e-10`, which made
+        // `mpi_rimp2_np1_matches_serial_water` FAIL:
+        //
+        //     rank 1/2: water RHF must converge (energy=-76.0267354275)
+        //
+        // The energy there is correct to every printed digit -- the DENSITY
+        // had converged and only the FLAG had not. `scf_converged` (rhf.rs)
+        // requires `dp_rms < density_conv && dp_max < 10*density_conv && de <
+        // energy_conv`, and `energy_conv` is a LOOSE "the energy is no longer
+        // descending" sanity bound whose default is 1e-3 for exactly that
+        // reason (rhf.rs:214, and see its doc at rhf.rs:397). Forcing it seven
+        // orders tighter puts it below the achievable dE floor for this
+        // DF-RHF, so the third condition never holds and the SCF burns to
+        // max_iter with a perfectly good density.
+        //
+        // Tightening the real convergence signal is what `density_conv: 1e-8`
+        // below already does; that one is the primary criterion and is kept.
         density_conv: 1e-8,
         use_sad_guess: false,
         ..Default::default()
