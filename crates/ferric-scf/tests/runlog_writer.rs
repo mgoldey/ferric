@@ -33,10 +33,31 @@ fn probe_bin() -> PathBuf {
         .and_then(Path::parent)
         .expect("target/<profile>");
     let p = profile_dir.join("examples").join("runlog_probe");
+
+    // FALLBACK for `cargo nextest archive`. MEASURED: `nextest archive
+    // --all-targets` on ferric-scf produced 163 files and ZERO matching
+    // `examples/runlog_probe` -- example binaries are not archived. The shard
+    // then extracts to a RANDOM temp directory
+    // (`/tmp/nextest-archive-<rand>/target/debug/`), so the probe cannot be
+    // pre-placed next to the test either.
+    //
+    // `FERRIC_RUNLOG_PROBE` lets the CI job that DOES build it say where it
+    // put it. Checked only when the sibling is absent, so a plain `cargo test`
+    // is unaffected and cannot accidentally run a stale probe from elsewhere.
+    let p = if p.exists() {
+        p
+    } else if let Ok(env_path) = std::env::var("FERRIC_RUNLOG_PROBE") {
+        PathBuf::from(env_path)
+    } else {
+        p
+    };
+
     assert!(
         p.exists(),
         "probe binary {} not built. Run `cargo test -p ferric-scf` (which builds \
-         examples) rather than `--test runlog_writer` alone.",
+         examples) rather than `--test runlog_writer` alone, or set \
+         FERRIC_RUNLOG_PROBE to a prebuilt one (what CI does, because \
+         `nextest archive` does not carry example binaries).",
         p.display()
     );
 

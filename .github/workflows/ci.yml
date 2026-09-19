@@ -620,6 +620,22 @@ jobs:
           set -euo pipefail
           cargo nextest archive --workspace --all-targets --locked \
             --archive-file /tmp/nextest-archive.tar.zst
+          # `runlog_writer` SPAWNS examples/runlog_probe as a subprocess, to
+          # exercise the JSON writer from a real process it can SIGKILL
+          # mid-stream. That binary is NOT in the archive: MEASURED, `nextest
+          # archive --all-targets` on ferric-scf produced 163 files and zero
+          # matching `examples/runlog_probe`. `cargo test --examples` does not
+          # help either -- it COMPILES examples as test targets hunting for
+          # #[test] fns and never LINKS the runnable binary, leaving .rmeta
+          # files in target/debug/examples/ and no executable.
+          #
+          # Only an explicit `cargo build --example` produces it. Built here,
+          # in the job that has a warm target/, and carried to the shards
+          # alongside the archive.
+          cargo build -p ferric-scf --example runlog_probe --locked
+          # Staged NEXT TO the archive: only /tmp/nextest-archive.tar.zst is
+          # uploaded, so a binary left in target/ never reaches a shard.
+          cp target/debug/examples/runlog_probe /tmp/runlog_probe
           # UNMEASURED RISK, printed so the first real run answers it: ci.yml
           # records ~190 test binaries at 200-335 MB each uncompressed. They
           # share most of their symbols so zstd should collapse it hard, but
@@ -633,7 +649,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nextest-archive
-          path: /tmp/nextest-archive.tar.zst
+          path: |
+            /tmp/nextest-archive.tar.zst
+            /tmp/runlog_probe
           retention-days: 1
 
       - name: Save cargo cache
@@ -890,6 +908,11 @@ jobs:
             EXPR="${EXPR}binary($b)"
           done
           echo "deferring $(echo $SLOW | wc -w) binaries from the fast tier"
+          # The probe is built by the archive job and shipped in the same
+          # artifact; nextest extracts the archive to a RANDOM temp dir, so the
+          # test cannot find it as a sibling and reads this instead.
+          chmod +x /tmp/runlog_probe
+          export FERRIC_RUNLOG_PROBE=/tmp/runlog_probe
           cargo nextest run \
             --profile ci \
             --archive-file /tmp/nextest-archive.tar.zst \
