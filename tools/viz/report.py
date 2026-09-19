@@ -236,7 +236,19 @@ def _build(
                 )
 
     if irc:
-        figs.reaction = reaction_path(unit=unit, **irc)
+        # THE IRC HAS ITS OWN UNIT, and it is not the campaign's.
+        #
+        # `unit` describes the ddE values, which are kcal/mol by default.
+        # `IrcResult` energies come straight from ferric and are HARTREE. Using
+        # the shared `unit` would label -55.44 Ha as kcal/mol -- a 627x error,
+        # and one that renders as a perfectly ordinary plot.
+        #
+        # Taken from the `irc` dict so a caller who really does have kcal/mol
+        # can say so, defaulting to hartree because that is what the API
+        # returns.
+        irc_args = dict(irc)
+        irc_unit = irc_args.pop("unit", "hartree")
+        figs.reaction = reaction_path(unit=irc_unit, **irc_args)
         if not (irc.get("forward_converged") and irc.get("reverse_converged")):
             caveats.append(
                 "An IRC branch did NOT converge: it stopped where its step "

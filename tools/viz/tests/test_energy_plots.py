@@ -668,3 +668,64 @@ def test_reaction_path_refuses_a_non_energy():
             forward_converged=True,
             reverse_converged=True,
         )
+
+
+def test_reaction_path_refuses_a_saddle_below_an_endpoint():
+    """An endpoint ABOVE the saddle is not a reaction path.
+
+    The IRC walks downhill, so both endpoints must land at or below the saddle.
+    One above means the branch left the surface it started on -- a diverged
+    SCF, a geometry that fell apart, or the wrong mode followed.
+
+    MEASURED before the guard: the plot drew a NEGATIVE barrier (-12.55) under
+    the ordinary title "Reaction path (IRC)", with no indication anything was
+    wrong. A negative activation energy read off a figure is worse than no
+    figure, which is why this raises rather than annotating.
+    """
+    with pytest.raises(ValueError, match="ABOVE the saddle"):
+        reaction_path(
+            saddle_energy=-55.46,  # BELOW both endpoints
+            forward_energy=-55.44,
+            reverse_energy=-55.44,
+            forward_converged=True,
+            reverse_converged=True,
+        )
+    # Only one side bad is still refused, and the error names WHICH.
+    with pytest.raises(ValueError, match="forward endpoint"):
+        reaction_path(
+            saddle_energy=-55.45,
+            forward_energy=-55.44,  # above
+            reverse_energy=-55.46,  # below, fine
+            forward_converged=True,
+            reverse_converged=True,
+        )
+
+    # THE ANCHOR: a physically valid path still draws.
+    fig = reaction_path(
+        saddle_energy=-55.4377,
+        forward_energy=-55.4554,
+        reverse_energy=-55.4554,
+        forward_converged=True,
+        reverse_converged=True,
+    )
+    assert fig is not None
+
+
+def test_reaction_path_labels_the_axis_as_RELATIVE():
+    """The values are shifted so the lower endpoint is zero.
+
+    Labelling the axis plain "energy (kcal/mol)" invites reading the plotted
+    0.00 as an absolute energy, when the real value is -55.4554 Ha. The
+    barriers are the point of the figure and they are differences, so the axis
+    has to say so.
+    """
+    fig = reaction_path(
+        saddle_energy=-55.4377,
+        forward_energy=-55.4554,
+        reverse_energy=-55.4554,
+        forward_converged=True,
+        reverse_converged=True,
+    )
+    label = fig.axes[0].get_ylabel()
+    assert "relative" in label.lower(), f"axis must say RELATIVE, got {label!r}"
+    assert "kcal/mol" in label

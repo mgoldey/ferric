@@ -693,6 +693,27 @@ def reaction_path(
             f"is not finite ({vals}). A non-finite energy is a failed "
             "calculation, not a point on a path."
         )
+    # A SADDLE BELOW EITHER ENDPOINT IS NOT A REACTION PATH.
+    #
+    # The IRC walks DOWNHILL from the saddle, so both endpoints must end up at
+    # or below it. A saddle underneath one means the path left the surface it
+    # started on -- a diverged SCF, a geometry that fell apart, or the wrong
+    # mode followed.
+    #
+    # Refused rather than drawn, because the plot renders it as a NEGATIVE
+    # barrier under a perfectly ordinary title (MEASURED: "reverse barrier
+    # -12.55" with no warning), and a negative activation energy read off a
+    # figure is worse than no figure.
+    for name, ev in (("forward", fwd_e), ("reverse", rev_e)):
+        if ev > sad_e:
+            raise ValueError(
+                f"the {name} endpoint ({ev:.4f} kcal/mol) is ABOVE the saddle "
+                f"({sad_e:.4f}). An IRC walks downhill, so this is not a "
+                "reaction path -- the branch left the intended surface. Check "
+                "the SCF converged along it and that the followed mode was the "
+                "reaction coordinate."
+            )
+
     # Relative to the LOWER endpoint, which is the conventional zero and makes
     # both barriers read directly off the y axis.
     zero = min(rev_e, fwd_e)
@@ -761,7 +782,10 @@ def reaction_path(
 
     ax.set_xticks(xs)
     ax.set_xticklabels(list(labels), fontsize=9)
-    ax.set_ylabel("energy (kcal/mol)")
+    # RELATIVE: the values are shifted so the lower endpoint is zero, which is
+    # what makes both barriers readable off the axis. Labelling it plain
+    # "energy" invites reading -55.4 as 0.
+    ax.set_ylabel("energy relative to the lower endpoint (kcal/mol)")
     unconverged = [
         n
         for n, ok in (("reverse", reverse_converged), ("forward", forward_converged))
