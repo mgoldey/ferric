@@ -165,7 +165,11 @@ def test_a_failure_midway_closes_the_figures_already_built():
 
     plt.close("all")
     before = len(plt.get_fignums())
-    with pytest.raises(Exception):
+    # A specific type, not a blind `Exception`: a bare catch here would also
+    # pass if the call failed for an unrelated reason (a typo in a kwarg, say)
+    # and never built a figure at all -- which is the one outcome that would
+    # make this test vacuous.
+    with pytest.raises(ValueError):
         campaign_report(
             ddE_noise=1.0,
             ddE={("F", "R1"): 0.5},

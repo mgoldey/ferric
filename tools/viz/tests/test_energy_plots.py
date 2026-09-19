@@ -519,9 +519,7 @@ def test_tier_comparison_labels_the_unit_it_actually_plots():
     conversion really happened, so a "fix" that relabels without converting
     (or converts without relabelling) fails.
     """
-    fig = tier_comparison(
-        ["a"], {"dft": [1.0]}, unit="hartree"
-    )
+    fig = tier_comparison(["a"], {"dft": [1.0]}, unit="hartree")
     ax = fig.axes[0]
     assert "kcal/mol" in ax.get_ylabel()
     assert "hartree" not in ax.get_ylabel().lower()
