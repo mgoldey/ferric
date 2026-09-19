@@ -10,6 +10,7 @@ so a Python-driven catalyst workflow could not complete TS verification at all.
 The vectors existed in Rust (`FrequencyResult::normal_modes`, an `Array2<f64>`)
 and simply were not exposed.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -53,7 +54,9 @@ def test_h2_stretch_is_along_the_bond():
     left mass-weighted.
     """
     r = ferric.run_frequencies(_h2(), "sto-3g")
-    assert len(r.frequencies) == 1, f"H2 should have 1 vibration, got {len(r.frequencies)}"
+    assert len(r.frequencies) == 1, (
+        f"H2 should have 1 vibration, got {len(r.frequencies)}"
+    )
     mode = r.normal_modes[0]
     ax, ay, az = mode[0], mode[1], mode[2]
     bx, by, bz = mode[3], mode[4], mode[5]
@@ -71,7 +74,9 @@ def test_modes_are_finite():
     r = ferric.run_frequencies(_water(), "sto-3g")
     for i, row in enumerate(r.normal_modes):
         for j, v in enumerate(row):
-            assert v == v and abs(v) != float("inf"), f"mode {i}[{j}] is not finite: {v}"
+            assert v == v and abs(v) != float("inf"), (
+                f"mode {i}[{j}] is not finite: {v}"
+            )
 
 
 def test_modes_are_not_mass_weighted():
