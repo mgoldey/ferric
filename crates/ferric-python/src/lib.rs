@@ -6505,6 +6505,182 @@ fn _cli_main(py: Python<'_>) -> PyResult<()> {
 
 // ── Module ──
 
+/// Outcome of a P-RFO transition-state search.
+#[pyclass(name = "SaddleResult")]
+#[derive(Clone)]
+struct PySaddleResult {
+    /// Symbols of the geometry the search arrived at.
+    #[pyo3(get)]
+    symbols: Vec<String>,
+    /// Coordinates in ANGSTROM, matching `symbols`. Valid to inspect even when
+    /// `converged` is false -- it is where the search stopped.
+    #[pyo3(get)]
+    coords: Vec<(f64, f64, f64)>,
+    #[pyo3(get)]
+    energy: f64,
+    #[pyo3(get)]
+    steps: usize,
+    /// Whether the GRADIENT converged. This alone does NOT mean a transition
+    /// state was found -- every stationary point satisfies it. See
+    /// `n_imaginary` and `is_transition_state`.
+    #[pyo3(get)]
+    converged: bool,
+    /// Negative eigenvalues of the projected Hessian at the final geometry.
+    /// **1** is a first-order transition state; 0 is a minimum; >1 is a
+    /// higher-order saddle.
+    #[pyo3(get)]
+    n_imaginary: usize,
+    /// The single negative mode's eigenvector in Cartesian coordinates (3N),
+    /// when there is exactly one; `None` otherwise. A caller MUST check this
+    /// points along the intended reaction coordinate -- one imaginary
+    /// frequency means first-order saddle, not "the saddle you meant".
+    #[pyo3(get)]
+    imaginary_mode: Option<Vec<f64>>,
+    #[pyo3(get)]
+    lowest_eigenvalue: f64,
+}
+
+#[pymethods]
+impl PySaddleResult {
+    /// A first-order transition state: gradient converged AND exactly one
+    /// imaginary frequency. Both halves are required.
+    fn is_transition_state(&self) -> bool {
+        self.converged && self.n_imaginary == 1
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "SaddleResult(converged={}, steps={}, n_imaginary={}, E={:.8}, TS={})",
+            self.converged,
+            self.steps,
+            self.n_imaginary,
+            self.energy,
+            self.is_transition_state()
+        )
+    }
+}
+
+/// Search for a first-order saddle point by P-RFO.
+///
+/// Costs `2 * 6N + n_steps` gradient evaluations (MEASURED): two Hessians, each
+/// central-differenced from analytic gradients, plus one gradient per step. At
+/// N = 20 the Hessians dominate until n_steps exceeds ~240, which is why they
+/// are built twice and carried by a Bofill update in between.
+///
+/// Raises if the starting geometry has NO negative projected mode -- P-RFO from
+/// a minimum's basin has nothing to climb, and returning a result from there
+/// would be a minimum labelled as a transition state.
+#[pyfunction]
+#[pyo3(signature = (
+    mol, basis_name, xc=None, multiplicity=None,
+    max_steps=None, trust_radius=None, follow_mode=None, delta=None,
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_saddle(
+    mol: &PyMolecule,
+    basis_name: &str,
+    xc: Option<&str>,
+    multiplicity: Option<u32>,
+    max_steps: Option<usize>,
+    trust_radius: Option<f64>,
+    follow_mode: Option<usize>,
+    delta: Option<f64>,
+) -> PyResult<PySaddleResult> {
+    use ferric_scf::frequencies::{harmonic_frequencies, FrequencyConfig, FrequencyReference};
+    use ferric_scf::gradient::rhf_gradient;
+    use ferric_scf::rhf::solve_rhf;
+    use ferric_scf::saddle::{find_saddle, SaddleConfig};
+    use ferric_scf::screening::SchwarzBounds;
+
+    if let Some(t) = trust_radius {
+        if !(t.is_finite() && t > 0.0) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "trust_radius must be finite and > 0 (got {t})"
+            )));
+        }
+    }
+
+    let mut m = mol.inner.clone();
+    if let Some(mult) = multiplicity {
+        m.multiplicity = mult as usize;
+    }
+    let scf_cfg = RhfConfig {
+        xc: xc.map(|s| s.to_string()),
+        ..Default::default()
+    };
+    let mut cfg = SaddleConfig::default();
+    if let Some(v) = max_steps {
+        cfg.max_steps = v;
+    }
+    if let Some(v) = trust_radius {
+        cfg.trust_radius = v;
+    }
+    if let Some(v) = follow_mode {
+        cfg.follow_mode = v;
+    }
+
+    let op = Operator::coulomb();
+    let basis = basis_name.to_string();
+    let ctx = ParallelContext::default();
+
+    let scf_g = scf_cfg.clone();
+    let basis_g = basis.clone();
+    let energy_gradient = move |mm: &ferric_core::mol::Molecule| {
+        let bs = ferric_core::basis::bundled(&basis_g)?;
+        let prep = PreparedBasis::new(mm, &bs)?;
+        let bounds = SchwarzBounds::compute(op, &prep)?;
+        let res = solve_rhf(&ctx, mm, &prep, op, &bounds, &scf_g)?;
+        let g = rhf_gradient(
+            mm,
+            &prep,
+            op,
+            &bounds,
+            &res,
+            scf_g.external_potential.as_ref(),
+        )?;
+        Ok((res.energy, ndarray::Array1::from_iter(g.iter().copied())))
+    };
+
+    let scf_h = scf_cfg.clone();
+    let basis_h = basis.clone();
+    let hessian = move |mm: &ferric_core::mol::Molecule| {
+        let mut fc = FrequencyConfig {
+            reference: FrequencyReference::Rhf,
+            ..Default::default()
+        };
+        if let Some(d) = delta {
+            fc.delta = d;
+        }
+        let fr = harmonic_frequencies(&ParallelContext::default(), mm, &basis_h, op, &scf_h, &fc)?;
+        Ok(fr.cartesian_hessian)
+    };
+
+    let r = find_saddle(&m, &cfg, energy_gradient, hessian).map_err(make_err)?;
+
+    const BOHR_TO_ANGSTROM: f64 = 0.529_177_210_903;
+    Ok(PySaddleResult {
+        symbols: r.mol.atoms.iter().map(|a| a.symbol.clone()).collect(),
+        coords: r
+            .mol
+            .atoms
+            .iter()
+            .map(|a| {
+                (
+                    a.x * BOHR_TO_ANGSTROM,
+                    a.y * BOHR_TO_ANGSTROM,
+                    a.zpos * BOHR_TO_ANGSTROM,
+                )
+            })
+            .collect(),
+        energy: r.energy,
+        steps: r.steps,
+        converged: r.converged,
+        n_imaginary: r.n_imaginary,
+        imaginary_mode: r.imaginary_mode.map(|v| v.to_vec()),
+        lowest_eigenvalue: r.lowest_eigenvalue,
+    })
+}
+
 /// Python bindings for ferric (pyo3).
 ///
 /// Exposes the engine to Python: `Molecule` / `BasisSet` constructors plus
@@ -6595,6 +6771,8 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_qmmm, m)?)?;
     m.add_function(wrap_pyfunction!(run_optimize_qmmm, m)?)?;
     m.add_function(wrap_pyfunction!(run_frequencies, m)?)?;
+    m.add_function(wrap_pyfunction!(run_saddle, m)?)?;
+    m.add_class::<PySaddleResult>()?;
     m.add_function(wrap_pyfunction!(esp_at_atoms, m)?)?;
     m.add_function(wrap_pyfunction!(esp_at_points, m)?)?;
     m.add_function(wrap_pyfunction!(hirshfeld_charges, m)?)?;
