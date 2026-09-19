@@ -30,11 +30,39 @@ pub struct RohfAhInputs<'a, 'b> {
 
 /// One augmented-Hessian Newton step on ROHF/ROKS MO coefficients.
 ///
-/// Returns updated C and the κ ∞-norm (step-size diagnostic). The trust
-/// region is enforced by componentwise clipping after Davidson; this is
-/// simpler than the full Bacskay-Hendrickson "shift λ until ‖κ‖ ≤ Δ"
-/// scheme and works well in practice because Davidson is computing the
-/// optimal step direction.
+/// Returns updated C and the κ ∞-norm (step-size diagnostic).
+///
+/// # Step-length control: clipping, and what it is not
+///
+/// The step length is bounded by **componentwise clipping** after Davidson:
+/// the AH eigenproblem is solved once at α = 1 and the resulting κ is scaled
+/// down if its ∞-norm exceeds `max_step`. This is NOT the Bacskay-Hendrickson
+/// / Helmich-Paris "shift μ until ‖κ‖ ≤ Δ" scheme — a clipped step is a
+/// *shortened* AH step, not the solution of the level-shifted Newton equations
+/// at the boundary, and the two differ in direction, not just length.
+///
+/// The genuine level-shifted trust region lives in [`crate::trah`], which
+/// searches the AH scale factor α so the step lands ON the radius, forms the
+/// predicted-vs-actual ratio ρ, and can REJECT a step. It is wired into
+/// RHF/RKS and UHF/UKS.
+///
+/// **ROHF/ROKS is deliberately not on that path**, and the reason is a real
+/// obstacle rather than an oversight: the ROHF rotation is packed as three
+/// blocks with *different* spin content — `vc` sums α+β (Roothaan coupling),
+/// `vo` is α-only, `oc` is β-only (see `crate::rohf_newton::gradient_blocks`).
+/// A trust region needs ΔE_pred to be a true energy, which requires the packed
+/// gradient to differ from the true orbital gradient by a single known scalar.
+/// For RHF that scalar is 4 and for UHF it is 2 (both measured and pinned in
+/// `crate::trah`), but no single scalar exists for this three-block packing —
+/// each block carries its own factor. Wiring ROHF through the same code would
+/// therefore produce a ρ that is a *weighted mixture* of three different
+/// scales, silently mis-classifying steps against Fletcher's thresholds while
+/// looking like it worked.
+///
+/// Deriving the per-block factors is tractable but is a separate piece of work
+/// with its own validation; until it is done, ROHF keeps this clipped AH step,
+/// which is honest about being a damped Newton method rather than a trust
+/// region.
 pub fn rohf_ah_step(
     ctx: &ParallelContext,
     inp: &RohfAhInputs,
@@ -180,7 +208,9 @@ pub fn rohf_ah_step(
     let mut k_oc = Array2::<f64>::zeros((no, nc));
     unpack_three(kappa_flat.view(), &mut k_vc, &mut k_vo, &mut k_oc);
 
-    // 5. Trust-region clip.
+    // 5. Step-length clip (NOT a trust region — see this function's doc).
+    //    A uniform scale-down of the α = 1 AH step, not a re-solve at a larger
+    //    level shift. `crate::trah` does the latter for RHF/UHF.
     let kmax = arr_max_abs(&k_vc)
         .max(arr_max_abs(&k_vo))
         .max(arr_max_abs(&k_oc));

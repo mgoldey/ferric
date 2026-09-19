@@ -328,6 +328,35 @@ pub struct OptimizeCfg {
     pub g_rms_thresh: Option<f64>,
     pub e_conv: Option<f64>,
     pub trust_radius: Option<f64>,
+    /// Coordinate system for the BFGS search: `"cartesian"` (the default) or
+    /// `"internal"` / `"redundant-internal"`.
+    ///
+    /// Parsed by [`parse_coord_system`], which is STRICT: an unrecognized value
+    /// is an error, never a silent fall back to the default. A user who typo'd
+    /// `"internals"` asked for internals and must be told they did not get
+    /// them.
+    pub coordinates: Option<String>,
+}
+
+/// Parse the `[optimize] coordinates` key into a
+/// [`CoordSystem`](ferric_scf::optimize::CoordSystem).
+///
+/// Strict by design — see [`OptimizeCfg::coordinates`].
+///
+/// # Errors
+///
+/// Returns a message naming the accepted values if `s` is not one of them.
+pub fn parse_coord_system(s: &str) -> Result<ferric_scf::optimize::CoordSystem, String> {
+    use ferric_scf::optimize::CoordSystem;
+    match s.trim().to_ascii_lowercase().as_str() {
+        "cartesian" | "cart" => Ok(CoordSystem::Cartesian),
+        "internal" | "internals" | "redundant-internal" | "redundant_internal" => {
+            Ok(CoordSystem::RedundantInternal)
+        }
+        other => Err(format!(
+            "unknown [optimize] coordinates = \"{other}\"; expected \"cartesian\" or \"internal\""
+        )),
+    }
 }
 
 /// `[frequencies]` — harmonic vibrational frequencies via finite difference of
@@ -3508,5 +3537,73 @@ max_iter = 42
             "{lines:?}"
         );
         assert!(lines[1].contains("[rpa]"), "{lines:?}");
+    }
+
+    /// The `[optimize] coordinates` parser must be STRICT: an unrecognized
+    /// value is an error, never a silent fall back to Cartesian. A user who
+    /// typo'd the value asked for internals and must be told they did not get
+    /// them — a silent default would make their iteration counts a mystery.
+    #[test]
+    fn optimize_coordinates_parser_is_strict() {
+        use ferric_scf::optimize::CoordSystem;
+        for good in ["cartesian", "CARTESIAN", " cart ", "Cart"] {
+            assert_eq!(
+                super::parse_coord_system(good).unwrap(),
+                CoordSystem::Cartesian,
+                "{good:?} should parse as Cartesian"
+            );
+        }
+        for good in [
+            "internal",
+            "internals",
+            "redundant-internal",
+            "redundant_internal",
+            "Internal",
+        ] {
+            assert_eq!(
+                super::parse_coord_system(good).unwrap(),
+                CoordSystem::RedundantInternal,
+                "{good:?} should parse as RedundantInternal"
+            );
+        }
+        // Near-misses and nonsense must ERROR, not silently default.
+        for bad in [
+            "",
+            "internl",
+            "redundant",
+            "z-matrix",
+            "delocalized",
+            "true",
+        ] {
+            let r = super::parse_coord_system(bad);
+            assert!(r.is_err(), "{bad:?} must be rejected, got {:?}", r.ok());
+            let msg = r.unwrap_err();
+            assert!(
+                msg.contains("cartesian") && msg.contains("internal"),
+                "the error must name the accepted values, got {msg:?}"
+            );
+        }
+    }
+
+    /// The `coordinates` key must actually reach the parsed [`Config`], and an
+    /// absent key must leave it unset. Without this the strict parser above
+    /// could be perfectly correct and simply never wired up.
+    #[test]
+    fn optimize_coordinates_key_is_accepted_by_the_toml_parser() {
+        let cfg = cfg_with("[optimize]\ncoordinates = \"internal\"\n").unwrap();
+        assert_eq!(cfg.optimize.coordinates.as_deref(), Some("internal"));
+
+        let cfg = cfg_with("[optimize]\nmax_steps = 10\n").unwrap();
+        assert_eq!(
+            cfg.optimize.coordinates, None,
+            "an absent key must stay None so the default applies"
+        );
+
+        // `deny_unknown_fields` must still reject a typo'd KEY name (as
+        // opposed to a typo'd value, which `parse_coord_system` catches).
+        assert!(
+            cfg_with("[optimize]\ncoordinate = \"internal\"\n").is_err(),
+            "a typo'd key must be rejected by deny_unknown_fields"
+        );
     }
 }

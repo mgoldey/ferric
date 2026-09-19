@@ -21,6 +21,7 @@ fn opt_cfg() -> OptimizeConfig {
         g_rms_thresh: 5.0e-5,
         e_conv: 1e-7,
         trust_radius: 0.2,
+        ..Default::default()
     }
 }
 

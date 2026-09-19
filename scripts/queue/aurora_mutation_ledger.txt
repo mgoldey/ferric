@@ -1,0 +1,24 @@
+=== AURORA mutation ledger ===
+KILL  coulomb-factor-8-to-4  <-     assembled_base_operator_matches_finite_difference_of_the_gradient     auxiliary_response_matches_finite_difference_of_the_gradient     zero_exchange_fraction_leaves_only_the_coulomb_response 
+KILL  exchange-factor-2-to-1  <-     assembled_base_operator_matches_finite_difference_of_the_gradient     auxiliary_response_matches_finite_difference_of_the_gradient 
+KILL  exchange-sign-flip  <-     assembled_base_operator_matches_finite_difference_of_the_gradient     auxiliary_response_matches_finite_difference_of_the_gradient 
+KILL  drop-second-exchange-term  <-     assembled_base_operator_matches_finite_difference_of_the_gradient     auxiliary_response_matches_finite_difference_of_the_gradient 
+KILL  drop-first-exchange-term  <-     assembled_base_operator_matches_finite_difference_of_the_gradient     auxiliary_response_matches_finite_difference_of_the_gradient 
+KILL  base-fock-factor-2-to-1  <-     assembled_base_operator_matches_finite_difference_of_the_gradient 
+KILL  base-fock-sign-flip  <-     assembled_base_operator_matches_finite_difference_of_the_gradient 
+KILL  geodesic-sin-cos-swap  <-     assembled_base_operator_matches_finite_difference_of_the_gradient     auxiliary_response_matches_finite_difference_of_the_gradient     geodesic_thin_svd_equals_dense_matrix_exponential     transport_approaches_the_identity_as_the_rotation_shrinks     transport_is_an_adjoint_projection_that_conserves_the_full_kappa_norm 
+KILL  geodesic-antisymmetry-broken  <-     assembled_base_operator_matches_finite_difference_of_the_gradient     auxiliary_response_matches_finite_difference_of_the_gradient     geodesic_thin_svd_equals_dense_matrix_exponential     transport_is_an_adjoint_projection_that_conserves_the_full_kappa_norm 
+KILL  geodesic-drop-cos-minus-one-occ  <-     assembled_base_operator_matches_finite_difference_of_the_gradient     auxiliary_response_matches_finite_difference_of_the_gradient     geodesic_thin_svd_equals_dense_matrix_exponential     transport_approaches_the_identity_as_the_rotation_shrinks     transport_is_an_adjoint_projection_that_conserves_the_full_kappa_norm 
+KILL  transport-drop-conjugation  <-     transport_approaches_the_identity_as_the_rotation_shrinks     transport_is_an_adjoint_projection_that_conserves_the_full_kappa_norm 
+KILL  transport-antisymmetry-broken  <-     transport_is_an_adjoint_projection_that_conserves_the_full_kappa_norm 
+KILL  default-enabled-true  <-     aurora_disabled_reproduces_pre_aurora_energies_bit_for_bit     disabled_aurora_performs_no_auxiliary_work 
+KILL  gate-always-allows  <-     pure_functional_is_declined_and_falls_back_to_diis_exactly 
+KILL  gate-never-allows  <-     the_low_exchange_gate_is_reachable_in_both_directions 
+KILL  step-not-applied  <-     benzene_ccpvdz_rhf_same_fixed_point     benzene_sto3g_rhf_same_fixed_point     methane_ccpvdz_rhf_same_fixed_point     the_low_exchange_gate_is_reachable_in_both_directions     water_ccpvdz_b3lyp_same_fixed_point     water_ccpvdz_rhf_same_fixed_point     water_sto3g_rhf_same_fixed_point 
+KILL  trust-radius-ignored  <-     powell_damped_history_is_built_and_used     the_trust_region_clip_binds_and_shortens_the_step 
+SURVIVE  powell-threshold-0.2-to-0.0  ** NO TEST CAUGHT THIS **
+SURVIVE  powell-theta-0.8-to-0.0  ** NO TEST CAUGHT THIS **
+KILL  shift-ignored  <-     the_adaptive_shift_actually_shifts_the_operator 
+KILL  jk-counter-never-ticks  <-     auxiliary_work_is_not_charged_to_the_target_build_count     target_jk_counter_tracks_iterations_exactly 
+
+=== ledger: 19 killed, 2 survived, 0 skipped ===

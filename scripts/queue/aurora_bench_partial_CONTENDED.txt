@@ -1,0 +1,38 @@
+   Compiling ferric-scf v0.1.0 (/home/matt/qc/ferric/.claude/worktrees/agent-ac947f7987e0383bd/crates/ferric-scf)
+    Finished `release` profile [optimized] target(s) in 1.17s
+     Running tests/aurora_benchmark.rs (target/release/deps/aurora_benchmark-aefb4e1588949c8c)
+
+running 1 test
+test aurora_vs_diis_cost_on_named_systems ... 
+system                           t_D (s)   t_A (s)    it_D    it_A   JK_D   JK_A  t_A/t_D JK_A/JK_D
+--------------------------------------------------------------------------------------------------------------
+water/cc-pVDZ     (  25 bf)        0.223     0.193      12      10     12     10    0.869    0.833
+                                 cpu 0.490/0.440 s   spread 79.9%/18.2%   ΔE = 0.00e0   conv true/true
+methane/cc-pVDZ   (  35 bf)        0.328     0.286      11      10     11     10    0.872    0.909
+                                 cpu 1.070/1.000 s   spread 24.1%/23.2%   ΔE = 6.39e-14   conv true/true
+benzene/STO-3G    (  36 bf)        0.365     0.285      10       8     10      8    0.779    0.800
+                                 cpu 2.230/1.770 s   spread 34.3%/35.1%   ΔE = 2.46e-11   conv true/true
+alkane_8/cc-pVDZ  ( 210 bf)       81.741    45.907      24      10     24     10    0.562    0.417
+                                 cpu 709.270/405.080 s   spread 53.7%/15.8%   ΔE = 9.32e-10   conv true/true
+benzene/cc-pVDZ   ( 114 bf)       12.396    11.383      12      10     12     10    0.918    0.833
+                                 cpu 111.790/92.680 s   spread 8.4%/2.2%   ΔE = 1.57e-11   conv true/true
+
+=== PROVENANCE / HEALTH WARNING (read before quoting anything here) ===
+Captured 2026-09-18 on a box shared with three other agents.
+Load average during the run: 20-40 on 12 cores. The run was KILLED partway
+through alkane_16/cc-pVDZ when free memory fell to ~927 MB and the box began
+swapping (si=9852), so the mean row was never produced.
+
+DO NOT QUOTE THE WALL-TIME COLUMN. Per-configuration spread across 3 repeats
+was 8%-80%, far too wide for the t_A/t_D ratios to carry weight. The cpu_s
+column tracked wall closely on the largest case (alkane_8: 709.3 -> 405.1 s
+cpu, ratio 0.571, against wall ratio 0.562), which is suggestive but is NOT a
+substitute for a quiet-box measurement.
+
+The iteration and J/K-build columns ARE trustworthy: integer counts,
+deterministic, independent of machine load. They are separately pinned by
+crates/ferric-scf/tests/aurora_benchmark_counter.rs.
+
+Re-run on a quiet box with:
+  OPENBLAS_NUM_THREADS=1 cargo test -p ferric-scf --test aurora_benchmark \
+      --release -- --ignored --nocapture --test-threads=1

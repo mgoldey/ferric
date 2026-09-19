@@ -292,6 +292,7 @@ fn relaxed_atoms() -> (Vec<QmmmAtom>, MmTopology, usize) {
             g_max_thresh: 1.0e-4,
             g_rms_thresh: 5.0e-5,
             e_conv: 1.0e-9,
+            ..Default::default()
         },
         mm_topology: Some(top.clone()),
         scf: tight_scf(),

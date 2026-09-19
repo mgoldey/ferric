@@ -87,6 +87,12 @@ pub struct RhfConfig {
     /// reasonable default for OH-doublet LDA/PBE plateaus. A value of 0
     /// disables Newton entirely (DIIS-only).
     pub newton_trigger: f64,
+
+    /// AURORA auxiliary-curvature accelerator (arXiv:2608.07354).
+    ///
+    /// Disabled by default; see [`crate::aurora::AuroraConfig`]. When disabled,
+    /// every SCF path behaves exactly as it did before this field existed.
+    pub aurora: crate::aurora::AuroraConfig,
     /// If > 0 in ROHF/ROKS: switch from DIIS / damped-Newton to an
     /// augmented-Hessian Newton step once err_max drops below this trigger.
     /// AH handles vanishing Hessian eigenvalues that trip up PCG. A value
@@ -94,6 +100,27 @@ pub struct RhfConfig {
     /// err_max < newton_trigger) and AH takes over when err_max < ah_trigger
     /// (typically a tighter threshold).
     pub ah_trigger: f64,
+    /// If `Some` in RHF/RKS or UHF/UKS: engage the **trust-region
+    /// augmented-Hessian** (TRAH) solver once the DIIS error drops below
+    /// `trah_trigger`. `None` (the default) disables TRAH entirely and every
+    /// existing SCF result is bit-identical — see
+    /// [`crate::trah`] for the algorithm and
+    /// `tests/trah_off_is_bit_identical.rs` for the proof.
+    ///
+    /// # How this differs from `newton_trigger` / `ah_trigger`
+    ///
+    /// `newton_trigger` arms a PCG Newton step with a fixed componentwise clip
+    /// at 0.2, and `ah_trigger` (ROHF/ROKS only) arms an augmented-Hessian step
+    /// with the same fixed clip. Neither has a trust region: no radius adapts,
+    /// no predicted-vs-actual ratio is formed, and a step that raises the
+    /// energy is kept. TRAH adds exactly those three things — a level-shifted
+    /// AH solve that lands ‖κ‖ ON the radius, a ρ test against the quadratic
+    /// model, and rejection plus contraction when the model was wrong.
+    ///
+    /// TRAH takes precedence over `newton_trigger` where both would fire.
+    pub trah_trigger: Option<f64>,
+    /// Trust-region parameters, read only when `trah_trigger` is `Some`.
+    pub trah: crate::trah::TrahConfig,
     /// If > 0 (RHF/UHF/ROHF/ROKS): activate Maximum-Overlap Method
     /// reordering after this many DIIS iters. From iter `mom_after_iter + 1`
     /// onward, the occupied MO set is picked by AO-overlap with the
@@ -394,7 +421,10 @@ impl Default for RhfConfig {
             nlc_grid: None,
             level_shift: 0.0,
             newton_trigger: 0.0,
+            aurora: crate::aurora::AuroraConfig::default(),
             ah_trigger: 0.0,
+            trah_trigger: None,
+            trah: crate::trah::TrahConfig::default(),
             mom_after_iter: 0,
             constraints: Vec::new(),
             cdft_lambda_tol: 1e-5,
@@ -999,6 +1029,23 @@ pub fn solve_rhf(
     // iterations so a max_iter exit can still report eps/MOs for the final density.
     let mut last_eps: Vec<f64> = Vec::new();
     let mut last_c: Array2<f64> = Array2::zeros((n, n));
+    // ── Trust-region augmented-Hessian state (opt-in; None = TRAH disabled) ──
+    // `trah_state` carries the radius and the pending ρ assessment across SCF
+    // iterations (see `crate::trah::TrahState` for why ρ must span two).
+    // `trah_undo` holds the (C, D) that the pending step departed FROM, so a
+    // rejected step can be exactly undone. Both stay `None` when
+    // `config.trah_trigger` is `None`, which is what makes the disabled path
+    // allocation-free and bit-identical.
+    let mut trah_state: Option<crate::trah::TrahState> = config
+        .trah_trigger
+        .map(|_| crate::trah::TrahState::new(config.trah));
+    let mut trah_undo: Option<(Array2<f64>, Array2<f64>)> = None;
+    // AURORA accelerator state. Built lazily at the first accelerated step (it
+    // needs converged-enough MOs and costs an auxiliary integral build), and
+    // never constructed at all when `config.aurora.enabled` is false.
+    let mut aurora_state: Option<crate::aurora::AuroraState> = None;
+    let mut aurora_first_step = true;
+    let mut aurora_last_energy = f64::NAN;
     // Bare occupied MO coefficients (C_occ, the lowest `nocc` columns) that
     // produced the CURRENT `d`, used to drive the O(naux·n²·nocc) DF-K
     // half-transform instead of the O(naux·n³) density contraction. Since
@@ -1140,6 +1187,12 @@ pub fn solve_rhf(
 
     for iter in 1..=config.max_iter {
         ctx.check_interrupted()?;
+        // One target-Hamiltonian J/K build happens below, unconditionally, on
+        // every pass of this loop. Ticking here (rather than at each of the four
+        // builder branches) keeps the count builder-independent, which is what
+        // makes it comparable across DIIS and AURORA runs. Auxiliary-curvature
+        // work is deliberately NOT counted here.
+        crate::aurora::TARGET_JK_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Build J and K using selected builder (reuse pre-allocated buffers).
         //
         // The DirectJK path may accumulate INCREMENTALLY onto the previous
@@ -1475,6 +1528,317 @@ pub fn solve_rhf(
             }
         }
         mon.note_energy(energy);
+        if std::env::var("FERRIC_TRAH_RHO_TRACE").is_ok() {
+            let dnorm = d.iter().map(|x| x * x).sum::<f64>().sqrt();
+            eprintln!(
+                "TRAH-ITER-TRACE: iter={iter} E={energy:.12} |D|={dnorm:.12} err_max={err_max:.3e}"
+            );
+        }
+
+        // ── Trust-region augmented-Hessian (TRAH) update, RHF/RKS ────────────
+        //
+        // Opt-in via `config.trah_trigger`. When `None` (the default) every
+        // line below is skipped and the iteration is bit-identical to a build
+        // with no TRAH support — `trah_state` is `None`, so this whole block
+        // collapses to one `Option` test. Proven by
+        // `tests/trah_off_is_bit_identical.rs`.
+        //
+        // The gates match the Newton path exactly (iter > 3 so `last_c` is a
+        // real MO set; ω = 0 because the Hessian matvec's K comes from the
+        // plain Coulomb `build_jk`; no meta-GGA because there is no τ f_xc
+        // kernel in this workspace). Anything outside those gates keeps DIIS,
+        // for the same reasons documented on the Newton branch below.
+        //
+        // # The two-phase structure
+        //
+        // Phase 1 (ρ): `energy` is, right now, the actual energy at the density
+        // produced by the PREVIOUS TRAH step. That is exactly what ρ needs, and
+        // it is free — no speculative Fock build. If the verdict is Rejected,
+        // the orbitals and density are restored from `trah_undo` and the
+        // iteration re-steps from the restored point at the contracted radius.
+        //
+        // Phase 2 (step): solve the level-shifted AH equations inside the
+        // current radius and apply the rotation.
+        let trah_armed = config.trah_trigger.is_some_and(|t| err_max < t)
+            && iter > 3
+            && k_mix.omega == 0.0
+            && !crate::rohf::xc_is_metagga(config.xc.as_deref());
+        // A TRAH step runs only if TRAH is armed AND the radius has not
+        // collapsed. Both conditions are computed ONCE here, because the
+        // "discard a stale prediction" rule must key off exactly the same
+        // condition as "take a step": if the radius collapses while a
+        // prediction is pending, DIIS resumes, and a later re-arm would
+        // otherwise score that stale prediction against an energy produced by
+        // DIIS steps in between — a ρ built from two unrelated points.
+        let trah_runs = trah_armed && !trah_state.as_ref().is_some_and(|s| s.collapsed());
+        if let Some(st) = trah_state.as_mut() {
+            if !trah_runs {
+                st.clear_pending();
+                trah_undo = None;
+            }
+        }
+        let mut trah_took_step = false;
+        if trah_runs {
+            // Phase 1: score the pending step, if any.
+            // `assess` returns None when NOTHING was pending — the first armed
+            // iteration, and the iteration right after a rejection (which
+            // consumed its pending step and skipped Phase 2). That is not an
+            // acceptance: treating it as one and then printing the PERSISTENT
+            // `last_rho` made the trace show a frozen ρ repeated across a
+            // reject/"accept" alternation that was not happening. Keep the
+            // Option so "no verdict" stays distinguishable from "accepted".
+            let verdict: Option<crate::trah::TrahVerdict> =
+                trah_state.as_mut().and_then(|st| st.assess(energy));
+            if let (Some(_), Some(rho)) = (verdict, trah_state.as_ref().and_then(|s| s.last_rho)) {
+                crate::trah::note_rho_rhf(rho);
+            }
+            if scf_trace() {
+                if let (Some(v), Some(rho)) =
+                    (verdict, trah_state.as_ref().and_then(|s| s.last_rho))
+                {
+                    eprintln!(
+                        "TRAH iter={iter}: rho={rho:.6} verdict={v:?} \
+                         Delta={:.3e} acc={} rej={}",
+                        trah_state.as_ref().map(|s| s.radius()).unwrap_or(0.0),
+                        trah_state.as_ref().map(|s| s.accepted).unwrap_or(0),
+                        trah_state.as_ref().map(|s| s.rejected).unwrap_or(0),
+                    );
+                }
+            }
+            if verdict == Some(crate::trah::TrahVerdict::Rejected) {
+                crate::trah::note_trah_rejection();
+                if let Some((c_undo, d_undo)) = trah_undo.take() {
+                    if scf_trace() {
+                        eprintln!(
+                            "TRAH iter={iter}: REJECTED (ρ={:.3e}), restoring orbitals, Δ→{:.3e}",
+                            trah_state.as_ref().and_then(|s| s.last_rho).unwrap_or(0.0),
+                            trah_state.as_ref().map(|s| s.radius()).unwrap_or(0.0)
+                        );
+                    }
+                    // Undo: MOs and density go back to the pre-step point. The
+                    // density change is RECORDED (not silently swapped) so the
+                    // convergence monitor sees the real motion — an undo that
+                    // hid itself from `dp_rms` could let the loop "converge" on
+                    // a density it had just thrown away.
+                    mon.record_density_change(&d_undo, &d);
+                    d.assign(&d_undo);
+                    last_c = c_undo;
+                    d_occ = Some(last_c.slice(ndarray::s![.., ..nocc]).to_owned());
+                    if effective_level_shift > 0.0 {
+                        c_prev = Some(last_c.clone());
+                    }
+                }
+            }
+
+            // Phase 2: step from the (possibly restored) point.
+            //
+            // After a REJECTION we do not step this iteration: `f` was built
+            // from the density we just discarded, so an MO-basis Fock formed
+            // from it would be a gradient at the wrong point. The loop
+            // `continue`s, rebuilds F from the restored density, and steps on
+            // the NEXT iteration at the already-contracted radius. That costs
+            // one Fock build per rejection and is why rejection is not free.
+            //
+            // The pending assessment was consumed by `assess` above, so the
+            // skipped iteration records nothing and the next ρ is formed from a
+            // matched (energy_before, predicted) pair — not from a stale one.
+            if verdict != Some(crate::trah::TrahVerdict::Rejected) {
+                let c_cur = last_c.clone();
+                let f_mo = c_cur.t().dot(&f).dot(&c_cur);
+
+                let fxc_store = if xc_contrib.is_some() {
+                    let main = config.dft_grid.clone().unwrap_or_default();
+                    let name = config.xc.as_deref().expect("xc_contrib implies Some(xc)");
+                    let d_half = 0.5 * &d;
+                    Some(crate::rohf::FxcKernelStore::build(
+                        mol, prep, &main, name, &d_half, &d_half,
+                    )?)
+                } else {
+                    None
+                };
+                let fxc_storage = fxc_store.as_ref().map(|s| s.response());
+                let fxc_ref: Option<&crate::rohf_newton::FxcResponse<'_>> = fxc_storage.as_deref();
+
+                let inputs = crate::rhf_newton::RhfNewtonInputs {
+                    prep,
+                    bounds,
+                    c: &c_cur,
+                    f_mo: &f_mo,
+                    nocc,
+                    k_mix_sr: if xc_contrib.is_some() { k_mix.sr } else { 1.0 },
+                    fxc: fxc_ref,
+                    thresh: config.integral_thresh,
+                    ooc_budget,
+                };
+                let radius = trah_state
+                    .as_ref()
+                    .map(|s| s.radius())
+                    .expect("trah_state is Some inside the armed branch");
+                let (c_new, step) = crate::trah::rhf_trah_step(ctx, &inputs, radius, &config.trah)?;
+                // Decline a step the model says is worthless. Once the orbital
+                // gradient is converged the quadratic model predicts a change
+                // below what the energy can resolve, and rho becomes numerical
+                // noise over a vanishing denominator (measured on RKS/PBE
+                // water: pred=-1.4e-15, actual=+2.7e-9, rho=-1.9e6). Stepping
+                // there cannot help and costs two Fock builds per cycle -- see
+                // `TrahConfig::predicted_min`. Falling through to DIIS lets the
+                // normal convergence test end the run.
+                if step.predicted.abs() < config.trah.predicted_min {
+                    if scf_trace() {
+                        eprintln!(
+                            "TRAH iter={iter}: predicted |{:.3e}| < {:.0e}, \
+                             nothing left to gain -- deferring to DIIS",
+                            step.predicted, config.trah.predicted_min
+                        );
+                    }
+                    if let Some(st) = trah_state.as_mut() {
+                        st.clear_pending();
+                    }
+                    trah_undo = None;
+                    // `trah_took_step` is already false here -- it is only set true in
+                    // the else-branch below -- so leaving it is what makes the loop
+                    // fall through to DIIS.
+                    // Record that the density did NOT move.
+                    //
+                    // `record_density_change` is a SETTER, not an accumulator:
+                    // `dp_rms`/`dp_max` keep whatever was last written. TRAH
+                    // `continue`s past the DIIS path, so on the iterations it
+                    // drives it is the ONLY writer -- and the moment it stops
+                    // writing, the last value it wrote is frozen in.
+                    //
+                    // That froze `dp_rms` at 2.059e-6 (above the 1e-8 bar) for
+                    // 200 iterations on RKS/PBE water while dE was exactly 0,
+                    // |g|_rms 4.9e-9 and err_max 2.2e-8 -- every other signal
+                    // converged, the run declared failure, and it reached an
+                    // energy matching DIIS to 1.9e-10. The solve was DONE; only
+                    // the bookkeeping said otherwise.
+                    //
+                    // Writing the true (zero) change here lets the ordinary
+                    // convergence test see the state the solver is actually in.
+                    mon.record_density_change(&d, &d);
+                } else {
+                    if scf_trace() {
+                        eprintln!(
+                            "TRAH iter={iter}: ‖κ‖={:.3e} Δ={:.3e} μ={:.3e} α={:.1} \
+                         ΔE_pred={:.3e} solves={} boundary={}",
+                            step.norm,
+                            radius,
+                            step.level_shift,
+                            step.alpha,
+                            step.predicted,
+                            step.shift_iterations,
+                            step.on_boundary
+                        );
+                    }
+
+                    // Save the pre-step point so a rejection can undo it exactly.
+                    if std::env::var("FERRIC_TRAH_RHO_TRACE").is_ok() {
+                        let dnorm = d.iter().map(|x| x * x).sum::<f64>().sqrt();
+                        let cnorm = c_cur.iter().map(|x| x * x).sum::<f64>().sqrt();
+                        let gnorm = {
+                            let gm = f_mo.slice(ndarray::s![nocc.., ..nocc]);
+                            gm.iter().map(|x| x * x).sum::<f64>().sqrt()
+                        };
+                        eprintln!(
+                            "TRAH-STEP-TRACE: iter={iter} E_at_step={energy:.12} \
+                         |D|={dnorm:.12} |C|={cnorm:.12} |g_ov|={gnorm:.6e} \
+                         |kappa|={:.6e} pred={:.6e} mu={:.6e} alpha={:.1}",
+                            step.norm, step.predicted, step.level_shift, step.alpha
+                        );
+                    }
+                    trah_undo = Some((c_cur, d.clone()));
+                    if let Some(st) = trah_state.as_mut() {
+                        st.record_step(energy, &step);
+                    }
+                    crate::trah::note_trah_step();
+
+                    let c_occ = c_new.slice(ndarray::s![.., ..nocc]);
+                    d_occ = Some(c_occ.to_owned());
+                    let d_new =
+                        with_blas_threads(opt_in_blas_threads(), || 2.0 * c_occ.dot(&c_occ.t()));
+                    mon.record_density_change(&d_new, &d);
+                    d.assign(&d_new);
+                    last_c = c_new;
+                    if effective_level_shift > 0.0 {
+                        c_prev = Some(last_c.clone());
+                    }
+                }
+                trah_took_step = true;
+            }
+        }
+        if trah_took_step {
+            continue;
+        }
+
+        // ── AURORA auxiliary-curvature update, RHF/RKS ───────────────────────
+        // Opt-in (config.aurora.enabled, default false). Replaces the DIIS
+        // extrapolation with a quasi-Newton orbital rotation whose curvature
+        // comes from an independent STO-3G auxiliary model, corrected by a
+        // transported L-BFGS history of exact target secants (arXiv:2608.07354).
+        //
+        // Placed BEFORE the Newton branch so the two are mutually exclusive and
+        // the precedence is explicit; with `enabled: false` the condition is a
+        // single bool test and every existing code path is unchanged.
+        //
+        // Like the Newton branch below, this `continue`s — bypassing DIIS and the
+        // Fock diagonalization — so it must itself update `d`, `d_occ`, `last_c`
+        // and record the density change for the next iteration's convergence test.
+        // The auxiliary model carries Coulomb + exact-exchange curvature but no
+        // exchange-correlation curvature (the paper's `D_k^xc` is named but never
+        // defined). On references with little or no exact exchange the model
+        // therefore understates the curvature and the step overshoots, so those
+        // stay on DIIS unless explicitly opted in. See `aurora::AuroraConfig`.
+        let aurora_ax = if xc_contrib.is_some() { k_mix.sr } else { 1.0 };
+        let aurora_exchange_ok = config.aurora.allow_low_exchange_ks
+            || aurora_ax >= crate::aurora::MIN_VALIDATED_EXCHANGE_FRACTION;
+        let use_aurora = config.aurora.enabled
+            && iter > 1
+            && nocc > 0
+            && nocc < prep.nbasis()
+            && aurora_exchange_ok
+            && (config.aurora.trigger <= 0.0 || err_max < config.aurora.trigger);
+        if use_aurora {
+            // `last_c` holds the MOs that produced the current density `d`; it is
+            // zeros before iter 2, hence the `iter > 1` gate above.
+            let c_cur = &last_c;
+            let f_mo = c_cur.t().dot(&f).dot(c_cur);
+
+            // Lazily construct the accelerator at the first accelerated step.
+            if aurora_state.is_none() {
+                // The curvature model's exchange fraction: full exact exchange
+                // for HF, the hybrid's mixing fraction otherwise. This enters the
+                // CURVATURE only and can never move the converged answer.
+                aurora_state = Some(crate::aurora::AuroraState::new(
+                    mol,
+                    prep,
+                    c_cur.view(),
+                    nocc,
+                    aurora_ax,
+                    &config.aurora,
+                )?);
+            }
+            let state = aurora_state.as_mut().expect("aurora_state just set");
+
+            // Close the previous macro step's secant pair with the target-level
+            // gradient now available at these orbitals.
+            let de = energy - aurora_last_energy;
+            state.observe(&f_mo, nocc, de);
+            aurora_last_energy = energy;
+
+            let c_new = state.step(c_cur.view(), &f_mo, nocc, aurora_first_step)?;
+            aurora_first_step = false;
+
+            let c_occ = c_new.slice(ndarray::s![.., ..nocc]);
+            d_occ = Some(c_occ.to_owned());
+            let d_new = with_blas_threads(opt_in_blas_threads(), || 2.0 * c_occ.dot(&c_occ.t()));
+            mon.record_density_change(&d_new, &d);
+            d.assign(&d_new);
+            last_c = c_new;
+            if effective_level_shift > 0.0 {
+                c_prev = Some(last_c.clone());
+            }
+            continue;
+        }
 
         // ── Second-order (Newton) update, RHF/RKS ────────────────────────────
         // When enabled (newton_trigger > 0) and err_max has dropped below the

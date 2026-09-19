@@ -307,7 +307,9 @@ jobs:
           df -h / | tail -1
           SLOW="dft_wb97xv mpi_dfjk_banding dft_pbe pair_screen_criteria attenuation_plus_dlpno lmp2_amplitude \
                 screening_exactness csam_screening link_scf_anchor link_screen_reachability \
-                grid_prune_live_scf hirshfeld_symmetry"
+                grid_prune_live_scf hirshfeld_symmetry \
+                cdft_coupling_hene cdft_state_selection rimp2_qqr3_screening \
+                cosx_group_screen_anchors cosx_sparse_anchors"
           # --no-fail-fast: report EVERY failing test, not just the first.
           # cargo stops at the first failing binary by default, so each red run
           # surfaced exactly one bug; five cycles at 10-40 min each fixed four
@@ -783,6 +785,15 @@ jobs:
             --test link_scf_anchor --test link_screen_reachability --locked || rc=1
           cargo test --no-fail-fast -p ferric-dft --test grid_prune_live_scf --locked || rc=1
           cargo test --no-fail-fast -p ferric-rpa --test hirshfeld_symmetry --locked || rc=1
+          # Added 2026-09-18 alongside the five new SLOW entries. This list is
+          # EXPLICIT, so a binary deferred above without a line here would stop
+          # running entirely -- deferral would become deletion, silently. The
+          # comment above this step already warns about that; these are the
+          # lines that honour it.
+          cargo test --no-fail-fast -p ferric-scf \
+            --test cdft_coupling_hene --test cdft_state_selection \
+            --test cosx_group_screen_anchors --test cosx_sparse_anchors --locked || rc=1
+          cargo test --no-fail-fast -p ferric-mp2 --test rimp2_qqr3_screening --locked || rc=1
           if [ "$rc" -ne 0 ]; then
             echo "::error::one or more deferred test commands failed -- see the FAILED lines above"
             exit 1
