@@ -261,6 +261,33 @@ entry cost worth planning around is SMILES (~25-80x a file read, because ETKDG
 generates a conformer rather than reading one) and the one-off PDB->PQR at
 2.66 s. A campaign that reads 1000 SDF files spends 0.3 s total on parsing.
 
+**THE FIRST `from_smiles` CALL COSTS 24x THE REST.** MEASURED on aspirin:
+
+    first call   214.66 ms
+    min of 7       9.38 ms
+    median         9.75 ms
+
+RDKit import plus ETKDG warm-up, paid once per PROCESS. The 8.5 ms in the
+table above is steady state and is right (re-measured: ethanol 2.38 ms,
+aspirin 8.52 ms) -- but a ONE-MOLECULE run pays 215 ms, not 8.5, and a
+per-molecule subprocess pays it every time.
+
+This is why the per-item costs in this note are the wrong unit for planning a
+campaign: 1000 molecules in one process is 9.6 s of embedding, and 1000
+subprocesses is 215 s. The difference is entirely warm-up, and it does not
+appear in any per-call figure.
+
+END-TO-END through the real tier functions, aspirin (21 atoms), one process:
+
+    SMILES -> 3D (first call)   205.76 ms   <- warm-up dominates
+    xyz -> Molecule               0.21 ms
+    tier 2 MMFF                  24.67 ms
+    tier 3 GFN2-xTB              50.26 ms
+
+Tier 2 at 24.67 ms sits between the table's 21.6 ms @ 34 atoms and the ~73 ms
+projected @ 71, so the projection holds at this size. Tier 3 at 50.26 ms is
+within the 0.05-0.152 s band.
+
 Note the pdb row: a PDB **that already has hydrogens** reads at file speed. It
 is the crystal PDB with no hydrogens that is refused -- see the refusal note
 below, which is about protonation, not about the format being slow.
@@ -688,6 +715,26 @@ the tier-5 estimate uses, and treating a gradient as ~1 single point:
     IRC, both branches                 142 gradients   ~24 h
     -------------------------------------------------------
     TS + IRC, n_steps = 30             415 gradients   ~71 h
+
+**WALL CLOCK, measured against main 2026-09-19.** The budget above is in
+gradient evaluations, which is the right unit for projecting -- but the whole
+chain had never been TIMED. NH3 umbrella inversion, STO-3G, one process,
+`OPENBLAS_NUM_THREADS=1`:
+
+    C3 saddle search     1.42 s    9 steps, is_transition_state() = True
+    C5 IRC (both)        2.87 s    63 + 63 steps, both converged
+    C6 barrier                     11.141 / 11.141 kcal/mol
+    ------------------------------------------------------------
+    TOTAL C3 -> C6       4.29 s
+
+The IRC is 67% of it -- 2x the search, not the "more than half" the gradient
+count predicts, because its steps are plain gradients while the search pays for
+two finite-difference Hessians AND the steps. Both ratios say the same thing
+for planning: budget the pair.
+
+This is a 4-atom molecule at the cheapest basis, so treat it as proof the chain
+RUNS end to end from Python, not as a catalyst estimate. The projection below
+is the estimate.
 
 **The IRC is not a rounding item.** At 142 gradients (MEASURED: 71 per branch
 on NH3 inversion, two branches) it adds more than half the TS search again, and
