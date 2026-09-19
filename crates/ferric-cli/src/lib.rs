@@ -298,6 +298,23 @@ pub fn run(args: Vec<String>) {
         );
         std::process::exit(1);
     }
+    // ...and the same for the METHOD, which the task guard above does not
+    // cover. The correction is evaluated in `report_ksdft`, so an `rhf` energy
+    // run passes the task check, dispatches to `run_rhf`, and never sees the
+    // dispersion key at all -- reporting a plain HF energy from a config that
+    // asks for a corrected one. There is no correct answer to substitute
+    // either: D3(BJ)'s damping parameters are fitted PER FUNCTIONAL, so there
+    // is no such thing as "D3(BJ) for Hartree-Fock" without naming a fit.
+    if cfg.dft.dispersion.is_some() && method != "ksdft" {
+        eprintln!(
+            "error: [dft] dispersion is only supported with method.kind = \"ksdft\"; \
+             got kind = \"{method}\". D3(BJ) is evaluated on the KS-DFT path only, so \
+             this run would silently report an UNCORRECTED energy. Its damping \
+             parameters are fitted per functional, so there is no default fit to \
+             apply here -- remove the dispersion key, or use kind = \"ksdft\"."
+        );
+        std::process::exit(1);
+    }
     // [dft] grid_prune — main-DFT-grid angular pruning. Strict parse (unknown
     // values are a hard error, never a silent default), then a task guard:
     // the XC gradient's grid-response term is only built for the unpruned
