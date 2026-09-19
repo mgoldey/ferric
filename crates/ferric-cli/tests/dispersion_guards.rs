@@ -117,8 +117,10 @@ fn the_supported_combination_still_runs_and_the_key_is_what_refuses() {
     // ...and the same two rejected configs must SUCCEED once the key is gone,
     // which pins that `dispersion` is what refuses them and not the method or
     // task by itself.
-    for (tag, kind, task) in [("rhf_nodisp", "rhf", "energy"), ("opt_nodisp", "ksdft", "optimize")]
-    {
+    for (tag, kind, task) in [
+        ("rhf_nodisp", "rhf", "energy"),
+        ("opt_nodisp", "ksdft", "optimize"),
+    ] {
         let out = run_toml(tag, &body(kind, task, false));
         assert!(
             out.status.success(),
