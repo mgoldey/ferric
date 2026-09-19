@@ -43,8 +43,25 @@ path = "junit.xml"
 [test-groups]
 memory-pool = { max-threads = 2 }
 
+#
+# MEASURED match counts (cargo nextest list -E '<filter>', this workspace,
+# --workspace --all-targets), because a filterset that silently matches
+# NOTHING is indistinguishable from one that works:
+#
+#   binary_id(/mwe_.*pool/)     88   <- the pool MWE binaries
+#   test(/pool/)                64
+#   test(/budget/)             163
+#   test(/_charges_the_pool/)    1
+#   the union below            264
+#
+# `binary_id()` rather than `test()` for the MWE binaries: nextest matches
+# `test()` against the TEST name, not the binary name, so the obvious-looking
+# `test(/^mwe_.*pool/)` matched 0 tests -- `mwe_cc_charge_lifetime` is the
+# binary, and the test inside it is `the_pooled_band_width_is_...`. That dead
+# branch was previously OR'd with `pool.*$`, which happened to cover the same
+# 64 tests, so the group worked while encoding a false belief about why.
 [[profile.ci.overrides]]
-filter = 'test(/^mwe_.*pool|pool.*$/) or test(/budget/) or test(/_charges_the_pool/)'
+filter = 'binary_id(/mwe_.*pool/) or test(/pool/) or test(/budget/) or test(/_charges_the_pool/)'
 test-group = 'memory-pool'
 
 # BLAS/rayon-heavy numerics. OPENBLAS_NUM_THREADS=1 is set workflow-wide, so
