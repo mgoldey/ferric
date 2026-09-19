@@ -81,20 +81,40 @@ fn dispersion_is_refused_for_a_non_ksdft_method() {
 }
 
 #[test]
-fn dispersion_is_refused_for_a_non_energy_task() {
-    // `optimize` returns before `report_ksdft`, and the D3(BJ) nuclear gradient
-    // does not exist — so this would optimize on the UNCORRECTED surface while
-    // the config claims otherwise.
+fn dispersion_WORKS_for_optimize_and_is_refused_for_frequencies() {
+    // `optimize` USED TO BE REFUSED, because the D3(BJ) nuclear gradient did
+    // not exist. It does now, and it is threaded through
+    // `optimize_geometry_with_correction`, so the energy and the gradient
+    // describe the same surface and the run must SUCCEED.
+    //
+    // MEASURED end to end, Ar2/PBE/STO-3G from a short start: 6.7917 Bohr
+    // uncorrected vs 6.6418 with d3bj -- the attraction shortens the bond,
+    // which is the direction that says the correction reached the GRADIENT
+    // and not only the energy.
     let out = run_toml("opt", &body("ksdft", "optimize", true));
-    let err = String::from_utf8_lossy(&out.stderr);
     assert!(
-        !out.status.success(),
-        "a task=optimize run with [dft] dispersion must FAIL.\nstdout: {}",
-        String::from_utf8_lossy(&out.stdout)
+        out.status.success(),
+        "a task=optimize run with [dft] dispersion must now SUCCEED -- the \
+         analytic D3(BJ) gradient is implemented.\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // `frequencies` is STILL refused, and the refusal is narrower than it was:
+    // the gradient exists, but the finite-difference Hessian built from it has
+    // never been validated against anything. Refusing an unvalidated number is
+    // the point -- it would be 6N extra SCF+D3 evaluations producing a Hessian
+    // nobody has checked.
+    let freq = run_toml("freq", &body("ksdft", "frequencies", true));
+    let err = String::from_utf8_lossy(&freq.stderr);
+    assert!(
+        !freq.status.success(),
+        "task=frequencies with dispersion must still FAIL.\nstdout: {}",
+        String::from_utf8_lossy(&freq.stdout)
     );
     assert!(
-        err.contains("method.task") && err.contains("energy"),
-        "the error must name the offending key and the supported value, got: {err}"
+        err.contains("frequencies") && err.contains("validated"),
+        "the error must name the task AND say why it is refused (the Hessian \
+         is unvalidated, not that the gradient is missing), got: {err}"
     );
 }
 
