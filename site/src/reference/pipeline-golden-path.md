@@ -213,6 +213,38 @@ not about missing software.
 
 ## 2. Cost estimates
 
+### WHICH METHOD FOR WHICH QUESTION (the table this note was missing)
+
+Everything below this heading costs methods. This one says which to REACH FOR,
+and -- more usefully -- what resolution each can actually deliver on this
+campaign. A method that is cheap and cannot answer your question is not a
+bargain.
+
+| the question | method | cost | resolution it delivers | verdict |
+|---|---|---|---|---|
+| where does this ligand sit? | Vina dock | ~2 min/ligand @ ex=32, ~30 s @ ex=4 | **0.95 A** redock (M9), 20/20 poses on-site | **use it** |
+| which pose is best? | Vina score | free (comes with the dock) | r(score, RMSD) = +0.461; only 4/20 under 2.0 A | **do not trust** -- generates, cannot rank |
+| is this geometry sane? | MMFF94 | ~1 ms/pose | adequate to declash | **use it**, for declashing only |
+| how strained is this conformer? | GFN2-xTB | ~0.5 s/pose | 143 kcal/mol anion/neutral split resolved | **use it** |
+| which analogue binds better by 1-2 kcal/mol? | any of the above + ddE | -- | ddE noise **4.07 kcal/mol** at best (M4-M13) | **NO METHOD QUALIFIES** |
+| what is the SCF energy here? | ferric RHF / KS-DFT | 96 s @ 32 atoms, 612 s @ 71 | 1e-8 Ha vs PySCF (RHF), 2e-8 (PBE/B3LYP) | **use it** |
+| does the pocket field change it? | + `external_potential` | **~1.0x** the gas-phase SP (MEASURED) | embedding is essentially free | **use it** -- no reason not to |
+| where is the transition state? | `saddle::find_saddle` | 2x6N + n_steps gradients | converges on a known saddle; refuses a minimum's basin | **use it** |
+| is this really a TS? | `harmonic_frequencies` | 6N gradients | exactly-one-imaginary check, from Rust AND Python | **use it** |
+| which two minima does it connect? | -- | -- | no IRC in ferric | **not available** |
+| is this molecule a liability? | `tools/tox` alerts | 9.4 ms/molecule | published alert sets, NOT a probability of harm | **use it as a FLAG** |
+
+**The row that matters most is the one with no method.** Four pose protocols
+have been measured (RESULTS.md M4-M13) and the best available ddE noise is
+4.07 kcal/mol against substituent effects of 1-2. Every OTHER row in this table
+is a green light; that one is not, and no amount of tier-4 DFT fixes it,
+because the error is in the pose ensemble and not the electronic structure.
+
+**Two rows are worth reading together.** "Where does this ligand sit?" is a
+green light and "which pose is best?" is a red one, from the SAME tool. Docking
+generates the right answer among its candidates and cannot pick it out. That is
+not a defect to fix -- it is the empirical reason tiers 2-4 exist.
+
 ### MEASURED (quoted with source)
 
 | tier | method | cost | source |
