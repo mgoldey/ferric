@@ -269,7 +269,7 @@ bargain.
 |---|---|---|---|---|
 | where does this ligand sit? | Vina dock | ~2 min/ligand @ ex=32, ~30 s @ ex=4 | **0.95 A** redock (M9), 20/20 poses on-site | **use it** |
 | which pose is best? | Vina score | free (comes with the dock) | r(score, RMSD) = +0.461; only 4/20 under 2.0 A | **do not trust** -- generates, cannot rank |
-| is this geometry sane? | MMFF94 | ~1 ms/pose | adequate to declash | **use it**, for declashing only |
+| is this geometry sane? | MMFF94 | 2-22 ms/pose (9-34 atoms), ~73 ms @ 71 | adequate to declash | **use it**, for declashing only |
 | how strained is this conformer? | GFN2-xTB | ~0.5 s/pose | 143 kcal/mol anion/neutral split resolved | **use it** for coarse separation |
 | which of these conformers is lowest? | GFN2-xTB | ~0.5 s/pose | **Spearman 0.011 vs DFT** over a 3 kcal/mol span (M16, n=20) | **do not trust** -- a gate, not a ranker |
 | which analogue binds better by 1-2 kcal/mol? | any of the above + ddE | -- | ddE noise **4.07 kcal/mol** at best (M4-M13) | **NO METHOD QUALIFIES** |
@@ -309,7 +309,8 @@ Note the parallel efficiency while you are here: giving up 11 of 12 cores costs
 4.1x, so Vina's internal parallelism runs at **34%**. Fan-out across ligands
 only wins above ~4 workers, which is a narrower claim than "the machine sits
 idle at low exhaustiveness".
-| 2 | MMFF94 | ~1 ms/pose | `tiers.py:12` |
+| 2 | MMFF94 (`tier2_forcefield` = embed + optimize) | **2.2 ms @ 9 atoms, 8.2 @ 19, 21.6 @ 34; ~73 ms projected @ 71** | MEASURED 2026-09-19 |
+| 2 | ~~MMFF94 ~1 ms/pose~~ | superseded: that figure cited `tiers.py:12`, which is the same doc comment -- a circular citation, never a measurement, and it described a single point rather than embed+optimize | |
 | 3 | GFN2-xTB single point | ~0.5 s | `tiers.py:13` |
 | 4 | ferric DFT | 96.1 s @ 32 atoms, **def2-SVP** (~450 bf) | `tiers.py:14` |
 | 4 | ferric DFT | 612.4 s @ 71 atoms, **STO-3G**/PBE (~234 bf), 18 iters, converged | RESULTS.md |
@@ -365,6 +366,28 @@ timings. So:
   a few bond lengths. A floppy ligand in a pocket has far more soft degrees of
   freedom and will take more. Treat 34 as a FLOOR for the step count, not a
   typical value -- one geometry is not a distribution.
+
+### Tier 2 is 20x costlier than claimed, and it changes nothing (MEASURED 2026-09-19)
+
+The `~1 ms/pose` figure cited `tiers.py:12` -- which is the same doc comment.
+A circular citation, never a measurement, and it described a single MMFF point
+while `tier2_forcefield` does embed + optimize.
+
+| molecule | atoms | tier 2 |
+|---|---:|---:|
+| ethanol | 9 | 2.2 ms |
+| acetanilide | 19 | 8.2 ms |
+| drug-like | 34 | 21.6 ms |
+
+Tail exponent 1.66, projecting to **~73 ms at danuglipron's 71 atoms** -- about
+20x the claimed figure.
+
+**And the conclusion is unchanged.** Tier 2 runs on the ~10% that survive
+docking, so at N=1000 it is **0.4%** of the campaign against docking's 78%.
+Recorded because the next person to notice the discrepancy should not have to
+re-measure it to find out it does not matter: a wrong number that changes no
+decision is still worth fixing once, and worth marking as decision-neutral so
+it is not fixed twice.
 
 ### The xtb -> DFT ratio is ~200x at drug scale, not 1000x (MEASURED 2026-09-19)
 
