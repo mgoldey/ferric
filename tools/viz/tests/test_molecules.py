@@ -13,7 +13,13 @@ import pytest
 
 rdkit = pytest.importorskip("rdkit", reason="RDKit is in the 'docking' extra")
 
-from tools.viz.molecules import depict, grid_with_scores, highlight_difference  # noqa: E402
+from tools.viz.molecules import (  # noqa: E402
+    contact_map,
+    contacting_atom_indices,
+    depict,
+    grid_with_scores,
+    highlight_difference,
+)  # noqa: E402
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
@@ -112,3 +118,84 @@ def test_grid_rejects_mismatched_inputs():
         grid_with_scores([BENZENE], [-1.0], labels=["a", "b"])
     with pytest.raises(ValueError, match="nothing to draw"):
         grid_with_scores([], [])
+
+
+# --- contact map -------------------------------------------------------------
+
+
+def _ethanol_coords():
+    """Ethanol with explicit H, in RDKit's atom order."""
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    m = Chem.AddHs(Chem.MolFromSmiles("CCO"))
+    AllChem.EmbedMolecule(m, randomSeed=0xF00D)
+    return m, [tuple(float(v) for v in r) for r in m.GetConformer().GetPositions()]
+
+
+def test_contact_map_highlights_only_atoms_within_the_cutoff():
+    """Proximity decides the highlight, and the cutoff is the knob."""
+    mol, coords = _ethanol_coords()
+    # One pocket atom, parked right on the first ligand atom.
+    pocket = [coords[0]]
+
+    tight = contact_map("CCO", coords, pocket, cutoff_angstrom=0.5)
+    loose = contact_map("CCO", coords, pocket, cutoff_angstrom=99.0)
+    assert tight.startswith(PNG_MAGIC) and loose.startswith(PNG_MAGIC)
+    assert tight != loose, (
+        "a 0.5 A cutoff and a 99 A cutoff must not produce the same picture; "
+        "if they do, the cutoff is not being applied"
+    )
+
+    # Comparing two RENDERS is not enough, and this is the lesson: an
+    # implementation highlighting EVERY atom regardless of distance renders any
+    # two cutoffs identically to each other, so a byte comparison cannot see
+    # it. That mutation SURVIVED until the contact logic was split out and
+    # asserted as a LIST OF INDICES.
+    assert contacting_atom_indices(coords, pocket, 0.5) == [0], (
+        "one pocket atom on ligand atom 0, cutoff 0.5 A -> exactly atom 0"
+    )
+    assert contacting_atom_indices(coords, pocket, 99.0) == list(range(len(coords))), (
+        "a 99 A cutoff must reach every atom"
+    )
+    assert contacting_atom_indices(coords, [(500.0, 500.0, 500.0)], 4.0) == [], (
+        "a pocket 500 A away must contact NOTHING -- an always-highlight "
+        "implementation cannot produce an empty list"
+    )
+
+
+def test_an_atom_count_mismatch_raises_rather_than_marking_wrong_atoms():
+    """The united-atom trap, caught rather than drawn.
+
+    MEASURED (M14): a PDBQT-docked danuglipron has 42 atoms where the real
+    molecule has 71, because nonpolar hydrogens are merged. Highlighting under
+    that mismatch would mark the WRONG atoms and look entirely plausible.
+    """
+    _, coords = _ethanol_coords()
+    with pytest.raises(ValueError, match="united-atom|coordinates were given"):
+        contact_map("CCO", coords[:3], [(0.0, 0.0, 0.0)])
+
+
+def test_an_empty_pocket_is_an_error_not_an_empty_highlight():
+    """Zero contacts from zero pocket atoms is a claim, not an absence."""
+    _, coords = _ethanol_coords()
+    with pytest.raises(ValueError, match="no pocket coordinates"):
+        contact_map("CCO", coords, [])
+
+
+def test_the_legend_states_how_many_heavy_atoms_contact():
+    """A picture of highlights without a count is hard to compare across poses."""
+    mol, coords = _ethanol_coords()
+    far = [(500.0, 500.0, 500.0)]
+    none_touching = contact_map("CCO", coords, far)
+    all_touching = contact_map("CCO", coords, [coords[0]], cutoff_angstrom=99.0)
+    assert none_touching != all_touching, (
+        "nothing-in-contact and everything-in-contact must render differently"
+    )
+
+
+def test_a_nonpositive_cutoff_is_rejected():
+    _, coords = _ethanol_coords()
+    for bad in (0.0, -1.0):
+        with pytest.raises(ValueError, match="cutoff_angstrom"):
+            contact_map("CCO", coords, [(0.0, 0.0, 0.0)], cutoff_angstrom=bad)
