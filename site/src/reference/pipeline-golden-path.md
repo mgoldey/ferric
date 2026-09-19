@@ -407,6 +407,50 @@ green light and "which pose is best?" is a red one, from the SAME tool. Docking
 generates the right answer among its candidates and cannot pick it out. That is
 not a defect to fix -- it is the empirical reason tiers 2-4 exist.
 
+### WHICH FUNCTIONAL AND BASIS (the other half of "which method")
+
+The table above says which METHOD KIND to reach for. It never said which
+FUNCTIONAL or BASIS, which is the choice a tier-4 user actually makes --
+`tiers.py` defaults to `PBE`/`def2-svp` and nothing explained why or when to
+depart from it.
+
+Grades below are from `wiki/VALIDATION.md`, which is the authority; the worst
+measured error against PySCF is quoted rather than a tolerance, because a
+guard band says what a test permits and not what the code does.
+
+| functional | grade | worst error vs PySCF | reach for it when |
+|---|---|---|---|
+| **PBE** | Proven (narrow) | **2.1e-8 Ha** | the default. Cheapest of the proven set, and the tightest agreement. |
+| **B3LYP** | Proven (narrow) | 1.6e-8 Ha | a hybrid is wanted for barriers or charge transfer; ~exact-exchange cost over PBE. |
+| **LDA** | Proven (narrow) | 5.9e-6 Ha | essentially never for chemistry -- 300x looser than PBE and it overbinds. Useful as a cheap smoke test. |
+| **wB97X-V** | Proven (narrow) | 3.1e-5 Ha | range separation matters (long-range CT, some excited states). Note this is the LOOSEST of the four, 1500x PBE. |
+| **SCAN / r2SCAN** | Proven (narrow) | 1.95e-8 Ha | meta-GGA accuracy without exact exchange. **r2SCAN over SCAN**: SCAN's E(R) is non-smooth and stays so at (150,302) grids -- a known SCAN trait r2SCAN was designed to fix. |
+
+All five are validated on **cc-pVDZ and def2-SVP only**, four small molecules.
+Larger systems and other bases are unverified, which is a scope limit and not
+a prediction of failure.
+
+**The gradient story is narrower than the energy story**, and it is the
+gradient that a geometry optimization or a saddle search depends on:
+
+* meta-GGA gradients are **s/p-shell only** -- ferric's AO Hessians do not go
+  past 6-31G, so a SCAN optimization at cc-pVDZ is out of reach. d shells
+  carry a ~6e-5 residual that the GGA path SHARES, so it is an AO-Hessian
+  limit rather than a meta-GGA one.
+* there is **no meta-GGA `f_xc` Newton kernel**, so those SCFs fall back to
+  DIIS.
+* there is **no analytic Hessian** for anything. Every Hessian in this note is
+  finite-differenced at 6N+1 gradients, which is what makes the TS and IRC
+  budgets what they are.
+
+**Basis.** `def2-svp` is the tier-4 default and the larger of the two
+validated sets. STO-3G appears throughout this note because it is what the
+end-to-end timings use -- it is a demonstration basis, NOT a production one,
+and no number measured at STO-3G should be read as an accuracy claim.
+
+**ECP.** `def2-ECP` is Proven (narrow) for RHF -- Xe 2e-12 Ha, I2 1.2e-6 --
+so heavy elements are reachable, on three systems and one basis.
+
 ### MEASURED (quoted with source)
 
 | tier | method | cost | source |

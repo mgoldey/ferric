@@ -240,3 +240,59 @@ def test_the_quickstart_names_functions_that_return_what_it_claims():
         assert "read_structure(" not in stripped, (
             f"the quickstart binds `mol` to read_structure: {stripped!r}"
         )
+
+
+#: `wiki/` is UNTRACKED (it lives only in the main checkout), so this guard
+#: SKIPS rather than fails when it is absent -- a worktree or a CI runner has
+#: no copy. Skipping is correct here: the alternative is a test that fails for
+#: everyone who is not on Matt's box, which would be turned off and then never
+#: re-enabled.
+VALIDATION = REPO / "wiki/VALIDATION.md"
+
+
+@pytest.mark.skipif(
+    not VALIDATION.is_file(),
+    reason="wiki/ is untracked; present only in the main checkout",
+)
+@pytest.mark.skipif(not GOLDEN.is_file(), reason=f"no {GOLDEN}")
+def test_the_functional_accuracies_match_validation_md():
+    """The functional table quotes VALIDATION.md; the two must not drift.
+
+    The golden path now tells a reader which functional to pick, justified by
+    worst-case error against PySCF. Those numbers are TRANSCRIBED from
+    `wiki/VALIDATION.md`, which is the authority -- and a transcribed number is
+    exactly the kind that goes stale silently when the source is re-measured.
+
+    This asserts each figure still appears in BOTH files. It deliberately does
+    not parse the table: the value is catching a re-measurement that did not
+    propagate, and a substring check does that without coupling to layout.
+    """
+    val = VALIDATION.read_text()
+    doc = GOLDEN.read_text()
+
+    # (label, the figure as VALIDATION.md states it)
+    quoted = [
+        ("PBE", "2.1e-8 Ha"),
+        ("B3LYP", "1.6e-8 Ha"),
+        ("LDA", "5.9e-6 Ha"),
+        ("wB97X-V", "3.1e-5 Ha"),
+        ("SCAN/r2SCAN", "1.95e-8 Ha"),
+    ]
+    for label, figure in quoted:
+        assert figure in val, (
+            f"{label}'s {figure} is no longer in wiki/VALIDATION.md -- it was "
+            "re-measured. Update the golden path's functional table to match "
+            "rather than deleting this assertion."
+        )
+        assert figure in doc, (
+            f"the golden path quotes {label} but not its measured {figure}; "
+            "the two files have drifted"
+        )
+
+    # The SCOPE limits matter as much as the numbers -- a reader who takes the
+    # table without them will try a meta-GGA optimization at cc-pVDZ.
+    assert "s/p-shell only" in val
+    assert "s/p-shell only" in doc, (
+        "the golden path must carry the meta-GGA gradient's s/p-shell limit; "
+        "without it the functional table reads as a free choice"
+    )
