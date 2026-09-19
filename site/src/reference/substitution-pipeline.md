@@ -233,7 +233,29 @@ than translating a fixed conformer. The 0.95 ratio is the transferable part.
    exactly this reason. An absolute binding energy carries the full method
    error; the difference cancels most of it. Same argument as the relative
    descriptor gate.
-2. **The pose problem is unsolved and blocks the QM tier.** MEASURED per-pose
+2. **The pose problem is RESOLVED as a design decision, 2026-09-19 (M12).**
+   All three routes to averaging the scatter away are now closed with
+   numbers: more poses (M5, sd flat in n), relax in field (M6, real 15%,
+   ~3 orders short), and real docking (M12, **1%**, 32.5x short). Docked
+   poses score at sd 28.75 vs M6's 29.07 while being geometrically MORE
+   diverse (pairwise RMSD 3.84 -> 5.81 A), so the scatter is not an
+   ensemble-quality problem that better poses fix.
+
+   The sharpest number: Vina's own score on those same 15 geometries has
+   sd 0.83, xtb on the identical geometries 28.75. The cheap tier sees a
+   nearly flat landscape where xtb sees 103 kcal/mol.
+
+   **So the connector must SELECT a pose, not average over one.** M9
+   redocks danuglipron to 0.95 A, so selection is defensible; it is an
+   assumption to state, not a noise source to average down. That also
+   means `funnel.py` keying one row per MOLECULE is no longer the blocker
+   it was written up as -- one row per molecule is the RIGHT shape once
+   the pose is selected rather than sampled.
+
+   The original blocker text follows, kept because the reasoning is still
+   correct for the averaging approach it rejects:
+
+   **The pose problem is unsolved and blocks the QM tier.** MEASURED per-pose
    sd is 29.07 kcal/mol (RESULTS.md M5/M6) against substituent effects of
    1-2 kcal/mol. One pose per analogue reports noise, and `funnel.py` keys one
    row per MOLECULE (`funnel.py:162`) so it cannot express an ensemble. **Do
