@@ -37,6 +37,8 @@ it. See `tools/campaign/hierarchy.py` for the rules.
 
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -88,6 +90,20 @@ class TierResult:
         r = self.resolution
         if not isinstance(r, (int, float)) or isinstance(r, bool):
             raise TypeError(f"resolution must be a real number or None, got {r!r}")
+        # COERCE to float HERE, before the range checks. `10**400` is a finite,
+        # positive Python int: it passes every check below and then raises
+        # OverflowError inside `resolves`. A field that validates and then
+        # throws downstream is worse than one that never validated -- the
+        # caller has been told it is safe.
+        try:
+            r = float(r)
+        except (OverflowError, ValueError) as exc:
+            raise ValueError(
+                f"resolution {self.resolution!r} cannot be represented as a "
+                f"float ({exc}). A resolution beyond the float range is not a "
+                "measurement."
+            ) from exc
+        object.__setattr__(self, "resolution", r)
         if r != r:  # NaN
             raise ValueError(
                 f"resolution is NaN for {self.candidate_id!r}. Every comparison "
@@ -137,7 +153,11 @@ class TierResult:
         if self.resolution is None or other.resolution is None:
             return None
         # Quadrature: a difference carries both results' noise.
-        combined = (self.resolution**2 + other.resolution**2) ** 0.5
+        # `math.hypot` rather than `(a**2 + b**2) ** 0.5`: squaring overflows
+        # for any resolution above ~1.3e154, so `1e200` raised OverflowError
+        # from a function whose whole job is to answer a yes/no question.
+        # hypot computes the same value without the intermediate square.
+        combined = math.hypot(self.resolution, other.resolution)
         return abs(self.value - other.value) > combined
 
 

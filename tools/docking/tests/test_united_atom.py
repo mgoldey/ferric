@@ -231,3 +231,77 @@ def test_a_partial_mapping_is_not_used_at_all():
     serials = [5, 1]
     covered = all(k in serial_to_rdkit for k in serials)
     assert not covered, "serial 1 is absent, so this must not count as covered"
+
+
+def test_the_mapping_covers_HEAVY_atoms_only_so_a_polar_H_does_not_void_it():
+    """PDBQT keeps polar hydrogens; `REMARK SMILES IDX` maps only heavy atoms.
+
+    MEASURED on aspirin: the pose has **14** atoms (13 heavy plus the
+    carboxylic H, AutoDock type HD) against **13** mapped serials. Requiring
+    every serial to be covered -- including that hydrogen's -- makes the guard
+    fail on any ligand with a polar H, so the mapping is silently never used.
+
+    That is the failure mode worth a test: the fix would have been INERT on
+    exactly the inputs it was written for, and nothing would have said so. The
+    earlier end-to-end test used a hand-written two-atom PDBQT with no
+    hydrogen, so it could not see this.
+
+    Both sides now use the same heavy-atom subset in the same order:
+    `dock_ligand` filters on symbol when building the mapping, and
+    `restore_hydrogens` filters on symbol when consuming it.
+    """
+    # 13 heavy + 1 polar H, serials 1..14; the remark covers 1..13.
+    symbols = ["C"] * 13 + ["H"]
+    serials = list(range(1, 15))
+    remark = "REMARK SMILES IDX " + " ".join(f"{i} {i}" for i in range(1, 14))
+    mapping = parse_smiles_idx_remark(remark)
+
+    # THE PRECONDITION: the hydrogen's serial is genuinely absent from the
+    # remark, or this test no longer reproduces the case it was written for.
+    assert not all(k in mapping for k in serials)
+
+    # Exercise THE PRODUCTION FUNCTION, not a copy of its logic.
+    #
+    # An earlier version of this test recomputed the heavy-atom filter inline
+    # and asserted on that. It passed with the production code REVERTED to the
+    # all-serials guard -- an inert test, and exactly the failure this file
+    # documents elsewhere. `heavy_atom_mapping` exists so the assertion can
+    # reach the real code.
+    from tools.docking.vina_dock import heavy_atom_mapping
+
+    got = heavy_atom_mapping(symbols, serials, mapping)
+    assert got is not None, (
+        "a polar hydrogen must not void the mapping -- requiring its serial to "
+        "be covered makes this return None for every real ligand"
+    )
+    assert len(got) == 13, f"expected 13 heavy-atom indices, got {len(got)}"
+    assert got == list(range(13))
+
+
+def test_a_resolution_beyond_the_float_range_is_refused_not_deferred():
+    """`10**400` passed validation and then raised inside `resolves`.
+
+    A field that validates and THEN throws downstream is worse than one that
+    never validated: the caller has been told the value is safe. `10**400` is a
+    finite, positive Python int, so every range check passed; the failure came
+    later, from `float()` conversion during the quadrature.
+
+    Measured before the fix: construction succeeded, `resolves` raised
+    `OverflowError: int too large to convert to float`.
+    """
+    import pytest as _pytest
+
+    from tools.pipeline.tiers import TierResult
+
+    with _pytest.raises(ValueError, match="float"):
+        TierResult("x", -10.0, resolution=10**400)
+
+    # 1e200 IS representable, so it must be ACCEPTED -- and `resolves` must not
+    # overflow on it. `(a**2 + b**2) ** 0.5` overflows above ~1.3e154;
+    # `math.hypot` does not.
+    a = TierResult("a", -10.0, resolution=1e200)
+    b = TierResult("b", -20.0, resolution=1.0)
+    assert a.resolves(b) is False, "a 10-unit gap against 1e200 noise is unresolvable"
+
+    # An int resolution is coerced, so the stored value is always a float.
+    assert TierResult("y", -1.0, resolution=4).resolution == 4.0
