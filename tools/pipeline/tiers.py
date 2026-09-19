@@ -38,10 +38,46 @@ class TierResult:
     value: float | None
     error: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
+    #: Smallest difference in `value` this tier can actually resolve, in the
+    #: same units. `None` means UNCHARACTERISED -- not "infinitely precise".
+    #:
+    #: This exists because `value` alone invites a comparison the tier cannot
+    #: support. MEASURED on the danuglipron campaign, the best available ddE
+    #: noise over a pose ensemble is 4.07 kcal/mol against substituent effects
+    #: of 1-2 (RESULTS.md M4-M13), so two candidates 0.5 kcal/mol apart are
+    #: indistinguishable no matter how many digits the tier prints.
+    resolution: float | None = None
 
     @property
     def ok(self) -> bool:
         return self.error is None and self.value is not None
+
+    def resolves(self, other: "TierResult") -> bool | None:
+        """Is the gap to `other` larger than what this tier can resolve?
+
+        `True`  -- the difference is real at this tier's stated resolution.
+        `False` -- the two are indistinguishable; do NOT rank them.
+        `None`  -- UNKNOWN, because a resolution was never characterised. It is
+                   deliberately not `True`: an uncharacterised tier has not
+                   earned the benefit of the doubt, and returning `True` here
+                   would make every unlabelled tier look infinitely precise.
+
+        Raises if either result failed -- comparing to a non-answer is a
+        caller bug, not a `False`.
+        """
+        if not self.ok or not other.ok:
+            raise ValueError(
+                f"cannot compare {self.candidate_id!r} to {other.candidate_id!r}: "
+                "one of them has no value. Check .ok first; a failed tier is not "
+                "a tie."
+            )
+        # Both resolutions must be known. Using only one side's would silently
+        # assume the other is at least as good.
+        if self.resolution is None or other.resolution is None:
+            return None
+        # Quadrature: a difference carries both results' noise.
+        combined = (self.resolution**2 + other.resolution**2) ** 0.5
+        return abs(self.value - other.value) > combined
 
 
 def tier2_forcefield(iso: Isomer, context: dict) -> TierResult:

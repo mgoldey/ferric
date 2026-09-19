@@ -304,3 +304,63 @@ def test_all_seeds_failing_reports_every_reason(monkeypatch):
     )
     assert not r.ok and r.value is None
     assert "no pose for seed" in r.error
+
+
+# --- TierResult.resolution ---------------------------------------------------
+
+
+def test_a_gap_below_the_resolution_is_not_a_ranking():
+    """Two candidates closer than the tier's noise must not be ordered.
+
+    MEASURED on this campaign: the best available ddE noise over a pose
+    ensemble is 4.07 kcal/mol against substituent effects of 1-2, so a tier
+    printing six digits still cannot separate them. `resolves` is how a caller
+    finds that out without re-deriving it.
+    """
+    a = TierResult("a", value=-10.00, resolution=4.07)
+    b = TierResult("b", value=-10.50, resolution=4.07)
+    assert a.resolves(b) is False, "0.5 kcal/mol is inside a 4.07 noise floor"
+
+    far = TierResult("far", value=-30.0, resolution=4.07)
+    assert a.resolves(far) is True, "20 kcal/mol is well outside it"
+
+
+def test_resolutions_combine_in_quadrature_not_singly():
+    """A difference carries BOTH results' noise.
+
+    Using one side's resolution alone understates the combined noise by up to
+    sqrt(2), which is exactly the margin that turns "indistinguishable" into a
+    confident ranking.
+    """
+    a = TierResult("a", value=0.0, resolution=3.0)
+    b = TierResult("b", value=4.0, resolution=3.0)
+    # Single-sided would say 4.0 > 3.0 -> resolved. Quadrature: sqrt(18)=4.24.
+    assert a.resolves(b) is False, "4.0 must NOT clear a combined 4.24 floor"
+    c = TierResult("c", value=5.0, resolution=3.0)
+    assert a.resolves(c) is True
+
+
+def test_an_uncharacterised_resolution_is_unknown_not_infinitely_precise():
+    """`None` must not read as "this tier can resolve anything"."""
+    known = TierResult("k", value=1.0, resolution=0.5)
+    unknown = TierResult("u", value=1.1)
+    assert unknown.resolution is None
+    assert known.resolves(unknown) is None, "must be UNKNOWN, not True/False"
+    assert unknown.resolves(known) is None
+
+
+def test_comparing_to_a_failed_result_raises_rather_than_tying():
+    """A tier that could not answer is not a tie, and must not silently be one."""
+    ok = TierResult("ok", value=1.0, resolution=0.1)
+    bad = TierResult("bad", value=None, error="xtb did not converge")
+    with pytest.raises(ValueError, match="no value"):
+        ok.resolves(bad)
+    with pytest.raises(ValueError, match="no value"):
+        bad.resolves(ok)
+
+
+def test_resolution_defaults_to_none_so_existing_tiers_are_unchanged():
+    """Adding the field must not silently re-grade every existing tier."""
+    r = TierResult("x", value=1.0)
+    assert r.resolution is None
+    assert r.ok
