@@ -1504,6 +1504,99 @@ harder: with an antisymmetric charge pair, max|g_z| at the planar geometry is
 all. `find_saddle` correctly fails and it reads like a solver bug. See the
 transition-state cost section for the table and the diagnostic.
 
+#### C1 + C4 with LINK ATOMS, executed from Python (2026-09-19)
+
+The block above uses bare point charges: a QM region with no covalent cut,
+which is the DOCKING case (G3). C1 is the CATALYST case -- the cut crosses a
+bond, so link atoms are mandatory -- and the question is whether
+`QmmmSystem` composes with the C3-C5 calls or needs its own path.
+
+**It composes, with no new machinery.** Ethane cut across the C-C bond,
+QM = one methyl:
+
+```python
+sys_ = ferric.QmmmSystem(symbols, coords_angstrom, mm_charges, qm_indices=[0,1,2,3])
+sys_ = sys_.with_link_atoms([(0, 4)])       # the frontier bond
+qm   = sys_.qm_molecule()                   # 5 atoms: CH3 + link H
+pc   = sys_.point_charges()                 # 4 MM charges
+r    = ferric.run_frequencies(qm, "sto-3g", point_charges=pc)
+```
+
+RUN, not sketched:
+
+```
+qm_atom_count 4 -> qm_molecule() 5 atoms (the link H is added, not counted as QM)
+point_charges() -> 4
+
+                E              lowest mode    n_imag
+  vacuum   -39.72660991        1686.7 cm^-1     0
+  field    -39.82456886       -2979.8 cm^-1     1
+```
+
+9 frequencies for 5 atoms is 3N-6, and vacuum gives zero imaginary modes --
+a methyl at its own geometry is a minimum, which is the right answer.
+
+**That single imaginary mode in the field is a REAL DEFECT in the setup, and
+re-optimizing does not fix it.** The obvious advice -- relax in the field (C2)
+before reading C4 -- was tried and FAILS here: the optimization diverges, energy
+climbing -39.82 -> -39.53 Ha and oscillating past 200 steps.
+
+The cause is visible in one number the API already exposes:
+
+```python
+sys_.min_link_to_charge_distance()   # 0.443 A
+```
+
+**The link H sits 0.443 A from a -0.27 point charge.** A bare point charge that
+close is an unphysical attractor: the link atom is dragged onto it, so there is
+no minimum to find. This is frontier overpolarization, and it is exactly what
+the boundary-charge schemes exist to prevent.
+
+MEASURED, same system, each scheme through `with_boundary_charges`:
+
+| scheme | charges | min link-charge dist | C2 optimize | C4 n_imag |
+|---|---:|---:|---|---:|
+| `keep` (no scheme) | 4 | **0.443 A** | **DIVERGES** (200 steps) | 1 |
+| `delete-host` (Z1) | 3 | **1.305 A** | **converged, 6 steps** | **0** |
+| `rc` | -- | -- | refuses: host has no MM neighbour to receive the charge | -- |
+| `rcd` | -- | -- | same refusal | -- |
+
+**So C1 is not optional and `keep` is not a default to fall back on.** Cutting a
+covalent bond and leaving the host charge in place puts a point charge inside
+the link atom's bond length. Use `delete-host` at minimum; `rc`/`rcd`
+redistribute rather than discard and need the host to have an MM neighbour in
+`bonds`, which they say plainly rather than silently doing nothing.
+
+Check `min_link_to_charge_distance()` before trusting any embedded geometry:
+below ~1 A, the answer is about the point charge, not the chemistry.
+
+#### ...and C3-C5 now run under embedding FROM PYTHON (2026-09-19)
+
+The subsection above is the RUST test. From Python the chain stopped at the
+field boundary: `run_optimize` took `point_charges=`, and `run_saddle`,
+`run_irc` and `run_frequencies` did not. A workflow could optimize an embedded
+minimum and then had to leave the field to find the saddle, confirm it, or walk
+the path -- on a DIFFERENT surface from the one the saddle sits on. All three
+now take `point_charges=`/`external_field=`.
+
+    vacuum   saddle -55.43766535   barriers 11.141 / 11.141  (converged)
+    field    saddle -55.43122815   barriers 12.933 / 13.131  (step-limited)
+
+The field raises the NH3 inversion barrier ~1.8 kcal/mol (16%) and moves the
+imaginary mode -929.2 -> -964.9 cm^-1, so the kwarg is LIVE rather than
+accepted-and-dropped -- the failure mode that returns the vacuum answer while
+reading as an embedded calculation. Vacuum comes back symmetric to 1e-5 by
+mirror symmetry, checking the walk stayed on the umbrella coordinate.
+
+Nothing underneath had to change: `find_saddle` takes CLOSURES for the
+energy/gradient and Hessian so it was already field-agnostic, those closures
+already read `external_potential`, and `harmonic_frequencies` already threaded
+it. Only the way to SET it was missing.
+
+**Use a SYMMETRIC charge arrangement when comparing to vacuum**, for the C0
+reason directly above: an antisymmetric one removes the saddle instead of
+perturbing it.
+
 #### C1 and C4 VERIFIED to work (2026-09-18)
 
 Run against the merged extension, so these are not claims:
@@ -1685,8 +1778,31 @@ region" above): N^2.63 atoms in a radius, N^2.3 DFT cost each.
   `ks_gradient_closed(.., ext)` calls (`frequencies.rs:649`), so an embedded
   Hessian is one ordinary call.
 
-  Three limitations remain, and they are why this ships as an EXAMPLE rather
-  than a library entry point:
+  **UPDATED 2026-09-19: the PYTHON side is no longer gas-phase only.**
+  `run_optimize` took `point_charges=`/`external_field=` and `run_saddle`,
+  `run_irc` and `run_frequencies` did not, so a workflow driven from Python
+  could optimize an embedded MINIMUM and then had to leave the field to find
+  the saddle, take its frequencies, or follow the path -- C3-C5 broken exactly
+  where a catalyst needs them. All three now take the same two kwargs, through
+  the same `build_external_potential` helper.
+
+  MEASURED, NH3 inversion at STO-3G with a symmetric charge pair on the C3
+  axis:
+
+  | | saddle E | barrier fwd/rev (kcal/mol) |
+  |---|---:|---|
+  | vacuum | -55.43766535 | 11.141 / 11.141 (converged) |
+  | field | -55.43122815 | 12.933 / 13.131 (step-limited) |
+
+  A 16% shift, so the threading is live rather than accepted-and-dropped; the
+  imaginary mode moves too (-929.2 -> -964.9 cm^-1). Vacuum returns symmetric
+  to 1e-5 by mirror symmetry, which checks the walk stayed on the umbrella
+  coordinate. **Use a SYMMETRIC charge arrangement when comparing to vacuum** --
+  an antisymmetric one makes planar NH3 non-stationary, and the search then
+  correctly fails for want of a target while looking like a solver bug.
+
+  Three limitations remain, and they are why the RUST QM/MM driver still ships
+  as an EXAMPLE rather than a library entry point:
   - **MM charges are FIXED** (`to_external_potential()` evaluated once). A
     barrier computed this way omits MM relaxation along the reaction
     coordinate. `optimize_qmmm` rebuilds the field per step
@@ -1697,8 +1813,8 @@ region" above): N^2.63 atoms in a radius, N^2.3 DFT cost each.
     inline evaluator closure -- a refactor with its own risk, and its own PR.
 
   **Reachable from Python since 2026-09-19**: `ferric.run_saddle(mol, basis,
-  xc=, multiplicity=, max_steps=, trust_radius=, follow_mode=, delta=)` ->
-  `SaddleResult`, with `is_transition_state()` as a method so `converged`
+  xc=, multiplicity=, max_steps=, trust_radius=, follow_mode=, delta=,
+  point_charges=, external_field=)` -> `SaddleResult`, with `is_transition_state()` as a method so `converged`
   alone cannot be read as a TS. The refusal crosses the FFI boundary with its
   reason intact -- VERIFIED on H2 at 0.74 A, which returns "the projected
   Hessian at the starting geometry has NO negative eigenvalue (lowest =
