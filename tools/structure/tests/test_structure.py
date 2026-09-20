@@ -316,3 +316,129 @@ def test_odd_electron_count_at_default_multiplicity_is_rejected(tmp_path):
     # ...and the correct doublet goes through.
     mol = read(_write(tmp_path, "ch3.xyz", ch3), charge=0, multiplicity=2)
     assert mol.nelec() == 9
+
+
+# --- element inference from PDB/PQR atom names -------------------------------
+#
+# These exist because the two-letter branch was UNREACHABLE for two months: the
+# code built an `Xx`-cased symbol and tested it for membership in an
+# all-uppercase frozenset, so nothing ever matched. `CL`/`ZN`/`NA` came back as
+# carbon, `Z` and nitrogen. Every test below fails against that version.
+
+
+def test_two_letter_elements_are_not_truncated_to_their_first_letter():
+    """The bug, stated directly. Chloride is not carbon; zinc is not `Z`."""
+    from tools.structure import element_from_pdb_atom_name as element
+
+    assert element("CL") == "Cl"
+    assert element("ZN") == "Zn"
+    assert element("NA") == "Na"
+    assert element("BR") == "Br"
+    assert element("MG") == "Mg"
+    assert element("FE") == "Fe"
+
+
+def test_the_two_letter_branch_is_reachable_at_all():
+    """A guard on the defect CLASS, not one instance.
+
+    The original defect was not a wrong entry in the table -- it was that no
+    input could reach the table. Assert every listed symbol round-trips, so a
+    future case-handling change that re-breaks the comparison fails here even
+    if `CL` happens to keep working.
+    """
+    from tools.structure import _TWO_LETTER_OK
+    from tools.structure import element_from_pdb_atom_name as element
+
+    for upper in sorted(_TWO_LETTER_OK):
+        expected = upper[0] + upper[1].lower()
+        assert element(upper) == expected, f"{upper} unreachable"
+        assert element(upper.lower()) == expected, f"{upper} case-sensitive"
+
+
+def test_backbone_carbons_stay_carbon():
+    """The reason the table is short: PDB names look like element symbols.
+
+    `CA` is an alpha carbon far more often than calcium, `CD` a delta carbon
+    rather than cadmium. Getting the ions right must not cost the backbone.
+    """
+    from tools.structure import element_from_pdb_atom_name as element
+
+    for name in ("CA", "CB", "CG", "CD", "CE", "CZ", "CD1", "CG2"):
+        assert element(name) == "C", name
+    for name in ("ND1", "NE2", "NZ"):
+        assert element(name) == "N", name
+    for name in ("OD1", "OG", "OXT"):
+        assert element(name) == "O", name
+    for name in ("HB2", "1HB", "HD21", "2HG1"):
+        assert element(name) == "H", name
+
+
+def test_an_atom_name_with_no_letters_is_refused_not_guessed():
+    from tools.structure import StructureError
+    from tools.structure import element_from_pdb_atom_name as element
+
+    for bad in ("", "   ", "123", "4"):
+        with pytest.raises(
+            StructureError, match="no element letters|carries no element"
+        ):
+            element(bad)
+
+
+def test_python_and_rust_element_heuristics_agree():
+    """The two implementations must not drift.
+
+    `crates/ferric-cli/src/config.rs::element_from_pqr_name` does the same job
+    for the `[qmmm]` TOML path. If they disagree, the SAME PQR gives different
+    nuclear charges from the CLI and from Python. This reads the Rust table out
+    of the source rather than duplicating it, so adding a symbol on one side
+    without the other fails here.
+    """
+    import re
+    from pathlib import Path
+
+    from tools.structure import _TWO_LETTER_OK
+
+    src = Path(__file__).resolve().parents[3] / "crates/ferric-cli/src/config.rs"
+    if not src.exists():  # pragma: no cover - source checkout only
+        pytest.skip("ferric-cli source not present")
+    text = src.read_text()
+    if "fn element_from_pqr_name" not in text:
+        pytest.skip("Rust element_from_pqr_name not on this branch yet")
+    body = text.split("fn element_from_pqr_name", 1)[1]
+    table = re.search(r"for two in \[([^\]]*)\]", body)
+    assert table, "could not find the Rust two-letter table"
+    rust = {s.strip().strip('"') for s in table.group(1).split(",") if s.strip()}
+    # Rust excludes CA inside the loop body rather than from the list.
+    if 'two != "CA"' in body:
+        rust.discard("CA")
+    assert "CA" not in rust and "CA" not in _TWO_LETTER_OK, (
+        "CA must resolve to carbon on BOTH sides"
+    )
+    missing_in_rust = _TWO_LETTER_OK - rust
+    missing_in_python = rust - _TWO_LETTER_OK
+    assert not missing_in_rust, f"Python accepts {missing_in_rust}, Rust does not"
+    assert not missing_in_python, f"Rust accepts {missing_in_python}, Python does not"
+
+
+def test_a_pqr_of_ions_reads_the_right_elements_end_to_end():
+    """Not just the helper -- the reader a caller actually uses.
+
+    A zinc metalloenzyme active site is a core QM/MM case; reading the zinc as
+    `Z` gives an SCF on a nonexistent element.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from tools.structure import read_structure
+
+    text = (
+        "ATOM      1  CL  CL      1      0.000   0.000   0.000 -1.0000 1.7500\n"
+        "ATOM      2  ZN  ZN      2      3.000   0.000   0.000  2.0000 1.3900\n"
+        "ATOM      3  NA  NA      3      6.000   0.000   0.000  1.0000 1.3700\n"
+        "ATOM      4  CA  ALA     4      9.000   0.000   0.000  0.0337 1.9080\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "ions.pqr"
+        p.write_text(text)
+        st = read_structure(p)
+    assert st.symbols == ("Cl", "Zn", "Na", "C")

@@ -102,6 +102,7 @@ it through xtb first (`tools/campaign/xtb_engine.py`); see
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -112,6 +113,7 @@ __all__ = [
     "read",
     "from_smiles",
     "SUPPORTED_SUFFIXES",
+    "element_from_pdb_atom_name",
 ]
 
 
@@ -320,31 +322,50 @@ def _read_pqr(path: Path, charge: int, multiplicity: int) -> Structure:
         raise StructureError(f"{path}: no ATOM/HETATM records")
     symbols, coords = [], []
     for a in atoms:
-        # PqrAtom.name is a PDB atom name (CA, HB2, OD1...). The element is its
-        # leading alphabetic run, minus any leading digit that PDB naming puts
-        # on hydrogens (1HB). This is the standard PDB convention, but it is a
-        # heuristic on a format that does not carry an element column.
-        raw = a.name.lstrip("0123456789")
-        sym = raw[0].upper() + (
-            raw[1:2].lower() if len(raw) > 1 and raw[:2].isalpha() else ""
-        )
-        # Two-letter guesses are wrong far more often than right in PDB naming
-        # (CA is carbon-alpha, not calcium), so only trust the first letter
-        # unless the name is exactly a known two-letter element.
-        if sym not in _TWO_LETTER_OK:
-            sym = raw[0].upper()
-        symbols.append(sym)
+        symbols.append(element_from_pdb_atom_name(a.name))
         coords.append(
             (a.x * BOHR_TO_ANGSTROM, a.y * BOHR_TO_ANGSTROM, a.z * BOHR_TO_ANGSTROM)
         )
     return Structure(tuple(symbols), tuple(coords), charge, multiplicity, str(path))
 
 
-# Two-letter element symbols that appear in PDB atom names meaning the element
-# itself rather than a carbon position. Kept short and explicit on purpose.
-_TWO_LETTER_OK = frozenset(
-    {"CL", "BR", "ZN", "FE", "MG", "MN", "NA", "CU", "SE", "NI", "CO", "CA"}
-)
+# Two-letter element symbols that appear in PDB/PQR atom names meaning the
+# element itself rather than a carbon position. Kept short and explicit.
+#
+# `CA` is deliberately NOT here. It is genuinely ambiguous -- an alpha carbon
+# in every protein residue, calcium as an ion -- and alpha carbons outnumber
+# calcium ions by orders of magnitude in any real structure, so it resolves to
+# carbon. `CO` (carbonyl carbon vs cobalt) and `NI` (a nitrogen vs nickel) are
+# excluded for the same reason, and for the same reason they are absent from
+# the Rust table.
+# An ion-heavy system needs a format with a real element column.
+# `crates/ferric-cli/src/config.rs::element_from_pqr_name` makes the same call
+# for the same reason; these two must agree.
+_TWO_LETTER_OK = frozenset({"CL", "BR", "ZN", "FE", "MG", "MN", "NA", "CU", "SE"})
+
+
+def element_from_pdb_atom_name(name: str) -> str:
+    """Element symbol from a PDB/PQR atom name (`CA`, `HB2`, `1HB`, `ZN`).
+
+    Neither PDB's atom-name column nor PQR carries an element, so this is a
+    heuristic on a naming convention: strip any leading digit (PDB puts one on
+    some hydrogens, `1HB`), take the leading alphabetic run, and accept it as a
+    two-letter element only when it is exactly one of `_TWO_LETTER_OK`.
+    Otherwise the element is the first letter.
+
+    The comparison is case-insensitive and the returned symbol is
+    `Xx`-capitalised. That matters: an earlier version compared an already
+    `Xx`-cased string against an all-uppercase set, so the two-letter branch
+    was unreachable and `CL`/`ZN`/`NA` were silently read as carbon, `Z` and
+    nitrogen -- wrong nuclear charges, not merely wrong labels.
+    """
+    raw = name.strip().lstrip("0123456789")
+    alpha = "".join(itertools.takewhile(str.isalpha, raw))
+    if not alpha:
+        raise StructureError(f"atom name {name!r} carries no element letters")
+    if alpha[:2].upper() in _TWO_LETTER_OK:
+        return alpha[0].upper() + alpha[1].lower()
+    return alpha[0].upper()
 
 
 def _read_rdkit(path: Path, charge: int, multiplicity: int, fmt: str) -> Structure:
