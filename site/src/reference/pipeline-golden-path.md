@@ -65,6 +65,70 @@ STILL OPEN, and these are the real remaining gaps:
   independent constructions: WHERE a group goes matters as much as WHICH group.
   The pipeline's unit must be the (substituent, SITE) pair.
 
+## 0a. THE ANSWER TABLE -- start here
+
+Every row was EXECUTED on `origin/main` on 2026-09-19 to produce the cost in it;
+a row nobody could run is not in this table. Costs are one call, warm process,
+single-threaded, on this box -- read them as orders of magnitude, and see "the
+first call costs 24x" below before planning a campaign from them.
+
+| you want to | call | cost | the plot that answers it |
+|---|---|---:|---|
+| enumerate substitutions | `substitution.propose_substitutions` | **216 ms** / 7 proposals | `site_substituent_heatmap` |
+| screen toxicology | `tox.alerts.RdkitAlertsProvider.fetch` | **4.9 ms** / molecule, 13 endpoints | `liability_profile` |
+| rank analogues by liability | `tox.assess.assess_smiles` -> `.liability_score` | ~5 ms / analogue | `liability_profile` |
+| dock a ligand | `docking.vina_dock` | **26.4 s** / ligand @ ex=4 | `pose_ensemble`, `funnel_survival` |
+| relax a pose (FF) | `tiers.tier2_forcefield` | **32 ms** @ 21 atoms | `tier_comparison` |
+| relax a pose (xtb) | `tiers.tier3_gfn2` | **53 ms** @ 21 atoms | `tier_comparison` |
+| score with DFT | `tiers.tier4_dft` | **1.0 s** @ 6 atoms, 613 s @ 71 | `tier_comparison` |
+| find a transition state | `ferric.run_saddle` | `2*(6N+1) + (n_steps+1)` gradients | `energy_profile` |
+| confirm it is one | `ferric.run_frequencies` | `6N+1` gradients | **`imaginary_mode`** |
+| get the barrier | `ferric.run_irc` | ~70 gradients / branch | `reaction_path` |
+| bind in a pocket | `active_site.binding_energy` | tier 3/4 above | `site_substituent_heatmap` |
+| **relax a geometry (QM)** | `ferric.run_optimize` | 1 gradient/step; 6 steps for an embedded methyl | **`optimization_trace`** |
+| **set up a QM/MM cut** | `ferric.QmmmSystem` + `.with_boundary_charges` | free (setup) | **`qmmm_partition`** |
+| draw the molecule | `viz.molecules.depict` | **14 ms** | -- |
+
+**Two rows carry a caveat that outweighs their cost.**
+
+*Ranking* by binding energy is **not** licensed: all four pose protocols are
+closed and the best available ddE noise is ~4.07 kcal/mol against effects of
+1-2 (RESULTS.md M4-M14). `site_substituent_heatmap(noise_floor=...)` greys out
+every cell inside that limit precisely so a figure cannot imply otherwise. A
+paired estimator (M17) measures 0.221-0.615 in gas-phase MMFF and is
+PROVISIONAL -- untested in a pocket.
+
+*Toxicology discriminates between MOTIFS, not between substituents that leave
+the motif alone.* MEASURED liability scores: benzene 0.000, aspirin 0.083
+(phenol ester), nitroaromatic 0.167, catechol 0.208 (PAINS + NIH + BMS),
+Michael acceptor 0.250 -- a chemically sensible ordering. But a halogen scan
+around an unchanged scaffold gives **every analogue the SAME score as the
+parent** (13 aspirin proposals, all 0.0833), because the alerts are
+substructure matches and F/Cl/Me on a ring do not hit one. That is correct
+behaviour and it bounds the use: the gate REMOVES a liability-bearing motif
+from the set; it does not order the survivors. Every endpoint says so in its
+own note -- "a rank-only liability density, NOT a probability of toxicity".
+
+*xtb is a gate, not a ranker*: Spearman **0.011** against DFT over a 3 kcal/mol
+span (M16, n=20, 95% CI [-0.434, +0.451]). Use it to separate the anion from the
+neutral, not to order two conformers.
+
+**The last two rows are the ones a catalyst user reaches for, and both exist
+because a number alone was not enough.** `run_optimize` reports `converged`,
+`steps` and a final energy, which cannot tell "ran out of steps near a minimum"
+from "walked uphill and oscillated" -- `optimization_trace` draws the climb with
+its magnitude. And `min_link_to_charge_distance()` says a frontier is bad
+without saying WHERE: `qmmm_partition` shows the cut, the link atoms and the
+offending charge. Pass it `expect_min_angstrom=` -- it cross-checks your
+coordinates against that accessor and refuses a mismatch, because
+`link_atom_positions()` is ANGSTROM while `point_charges()` is BOHR and
+converting both errs by 1.89x in the SAFE direction.
+
+**"Has a plot" means the plot answers THAT question**, not that a figure exists.
+The transition-state row is the example: a TS search produces an imaginary MODE
+(a 3N vector), and `imaginary_mode` shows whether it displaces the reacting
+atoms -- which is the second, non-optional half of confirming a saddle.
+
 ## 0. The headline defect: the docked pose is thrown away — FIXED 2026-09-19
 
 **RESOLVED.** `tools/pipeline/funnel.py::_harvest_geometry` writes the key and
@@ -185,6 +249,8 @@ none is illustrative.
 from tools.structure import from_smiles, read
 mol = from_smiles("CC(=O)Oc1ccccc1C(=O)O", seed=0xF00D)   # aspirin: 21 atoms
 mol = read("ligand_with_hydrogens.pdb")   # | .sdf | .mol2 | .xyz | .pqr
+#   ^ a PLACEHOLDER path -- substitute your own file. Everything below runs
+#     as written; this line is the only one that needs editing.
 #   `read` RETURNS A MOLECULE. `read_structure` does NOT -- it stops at a
 #   `Structure` (symbols/coords/charge/multiplicity/source) and never imports
 #   ferric, which is what you want when inspecting a file without pulling in
@@ -206,7 +272,8 @@ mol = read("ligand_with_hydrogens.pdb")   # | .sdf | .mol2 | .xyz | .pqr
 
 # B. enumerate analogues at every matching site
 from tools.pipeline.substitution import propose_substitutions, relative_descriptors
-props = propose_substitutions("c1ccccc1C(=O)O", {"F": "F", "Cl": "Cl", "Me": "C"})
+parent = "c1ccccc1C(=O)O"
+props = propose_substitutions(parent, {"F": "F", "Cl": "Cl", "Me": "C"})
 #   -> 10 proposals, and props[0] is the PARENT. That is the anchor, not a bug:
 #      the parent rides through every stage so scores can be reported as ddE.
 
@@ -241,6 +308,20 @@ stages = [
     Stage(Tier.FORCE_FIELD,   tier2_forcefield, keep=2, name="ff"),
     Stage(Tier.SEMIEMPIRICAL, tier3_gfn2,       keep=2, name="xtb"),
     Stage(Tier.QUANTUM,       tier4_dft,        keep=1, name="dft"),
+]
+# the funnel takes Isomers, and section B produced SubstitutionProposals --
+# this conversion is the one line between them, and the quickstart used to
+# omit it and refer to an undefined `candidates`.
+from tools.isomers.model import Isomer
+
+candidates = [
+    Isomer(
+        smiles=p.smiles,
+        kind="substitution",
+        transform=p.label,
+        parent_smiles=parent,
+    )
+    for p in props
 ]
 rep = run_funnel(candidates, stages, {"seed": 0xF00D, "basis": "sto-3g"})
 #   tier 1 is omitted above only because it needs the `docking` extra and a
@@ -459,7 +540,7 @@ bargain.
 | which of these conformers is lowest? | GFN2-xTB | 0.05-0.152 s/pose | **Spearman 0.011 vs DFT** over a 3 kcal/mol span (M16, n=20); 95% CI [-0.434, +0.451] | **do not trust** -- a gate, not a ranker |
 | which analogue binds better by 1-2 kcal/mol? | any of the above + ddE | -- | ddE noise **4.07 kcal/mol** at best (M4-M13) | **NO METHOD QUALIFIES** |
 | what is the SCF energy here? | ferric RHF / KS-DFT | 96 s @ 32 atoms, 612 s @ 71 | 1e-8 Ha vs PySCF (RHF), 2e-8 (PBE/B3LYP) | **use it** |
-| does the pocket field change it? | + `external_potential` | **~1.0x** the gas-phase SP (MEASURED) | embedding is essentially free | **use it** -- no reason not to |
+| does the pocket field change it? | + `external_potential` | **~1.0x up to ~1000 charges, 3.4-5.6x at 6458** (MEASURED) | free at small charge counts, 3-6x for a whole pocket; a naive distance cut is NOT a safe way to shrink it | **use it** -- full pocket, or validate your cut |
 | where is the transition state? | `saddle::find_saddle` | 2*(6N+1) + (n_steps+1) gradients | converges on a known saddle; refuses a minimum's basin | **use it** |
 | is this really a TS? | `harmonic_frequencies` | 6N+1 gradients | exactly-one-imaginary check, from Rust AND Python | **use it** |
 | is dispersion missing from my DFT? | `[dft] dispersion = "d3bj"` | **microseconds**, energy AND gradient | two-body D3(BJ), Z=1-103, vs simple-dftd3 | **use it** -- semilocal DFT has no London dispersion at all |
@@ -478,6 +559,89 @@ because the error is in the pose ensemble and not the electronic structure.
 green light and "which pose is best?" is a red one, from the SAME tool. Docking
 generates the right answer among its candidates and cannot pick it out. That is
 not a defect to fix -- it is the empirical reason tiers 2-4 exist.
+
+#### Embedding is free only while the charge set is small (CORRECTED 2026-09-19)
+
+The row above read "~1.0x, embedding is essentially free". That is true for a
+handful of charges and FALSE for a real pocket. MEASURED, benzene/STO-3G against
+the 7LCJ pocket (`derive_pocket_charges`, 6458 charges, net -1.000 e):
+
+| n charges | wall | vs vacuum |
+|---:|---:|---:|
+| 0 | 0.29 s | 1.00x |
+| 10 | 0.18 s | 0.62x |
+| 100 | 0.18 s | 0.64x |
+| 1000 | 0.31 s | 1.06x |
+| **6458** | **0.97 s** | **3.36x** |
+
+(The sub-1.0 ratios at 10-100 are SCF iteration-count noise on a 0.2 s baseline,
+not a speed-up from adding charges. A separate warm run of the same pair gave
+5.61x at 6458, so read the large-N cost as 3-6x rather than a single figure.)
+
+So both numbers are right about different things, and the old row generalized
+the small one. A whole pocket is a real cost. The PDB->charges step itself is
+2.46 s for 7LCJ and is paid once, not per candidate.
+
+**AND THE ANALOGUE MUST BE IN THE POCKET, which does not happen by itself.**
+`embed_proposals` returns ETKDG conformers centred on the ORIGIN; the pocket
+sits at its crystal coordinates. MEASURED on 7LCJ: the embedded analogue's
+centroid is (0.00, 0.00, 0.00) A and the pocket's is (124.3, 148.3, 116.9) --
+**226 A apart**. Feeding those coordinates straight to an embedded SCF is not
+an error, it is a confident dE of -0.001 to +0.005 kcal/mol, i.e. a
+gas-phase answer wearing a QM/MM label.
+
+This is the concrete shape of "harvest the docked pose" (section 0). The chain
+SMILES -> `propose_substitutions` -> `embed_proposals` -> `run_rhf` runs end to
+end and is WRONG without a placement step between the embed and the score. A dE
+of essentially zero against a charged pocket is the tell -- see the
+single-charge control under G3.
+
+**THERE ARE TWO PATHS TO A GEOMETRY AND ONLY ONE IS PLACED.** Verified in the
+source, because the two look interchangeable from a call site:
+
+| path | coordinate frame | safe to embed? |
+|---|---|---|
+| `dock_ligand` -> `DockedPose.coords_angstrom` | **the receptor's** (its docstring says so) | **yes** |
+| `propose_substitutions` -> `embed_proposals` | origin-centred ETKDG | **no** -- 226 A away |
+
+`funnel._harvest_geometry` exists to carry the first into
+`context["geometry"]` so tiers 3 and 4 score the DOCKED pose instead of
+re-embedding. Use the funnel, or take `coords_angstrom` off the pose yourself.
+The embed path is for enumeration and gas-phase work; it is not a substitute
+for docking, and nothing in either signature says so.
+
+**But DO NOT truncate with a naive distance cut.** That was the obvious next
+move and it is measured here because it does not work. Keeping charges within
+r of the probe, 7LCJ, water/STO-3G, error against the full 6458-charge answer:
+
+| r (A) | kept | dE (kcal/mol) | err vs full | net charge kept |
+|---:|---:|---:|---:|---:|
+| 6 | 62 | -1.070 | **+1.815** | +0.845 e |
+| 8 | 174 | -3.344 | -0.459 | +0.136 |
+| 10 | 337 | -2.849 | +0.036 | +3.552 |
+| 12 | 647 | -2.821 | +0.064 | +0.023 |
+| 15 | 1280 | -1.967 | +0.918 | +1.699 |
+| 20 | 2466 | -2.130 | +0.755 | +2.051 |
+| 30 | 4025 | -2.005 | +0.880 | +1.367 |
+| full | 6458 | -2.885 | 0 | **-1.000** |
+
+**The error is NOT monotone in r** -- 1.82 -> -0.46 -> 0.04 -> 0.06 -> 0.92 ->
+0.76 -> 0.88 -- so "use a bigger radius" does not buy accuracy, and a 15 A cut
+is worse than a 10 A one. A sphere through a protein also cuts residues in
+half: the net charge kept wanders from +0.02 to +3.55 e against the full
+pocket's clean -1.000, and a spurious monopole is exactly the kind of error
+that does not decay with distance.
+
+**What is NOT established:** that the error is CAUSED by the net charge.
+Spearman over these 7 points gives rho = -0.07 for |err| vs |net q| and +0.04
+vs radius, and at n=7 the smallest detectable |rho| is ~0.75 -- neither comes
+close. The non-monotonicity and the charge wander are both MEASURED; the link
+between them is a hypothesis this sweep cannot test. A truncation scheme that
+cuts on whole RESIDUES (keeping each one neutral) is the standard fix and is
+untested here.
+
+Until then: use the whole pocket and pay the 3-6x, or validate your own cut
+against it. `err vs full` is cheap to compute -- one extra SCF.
 
 ### WHICH FUNCTIONAL AND BASIS (the other half of "which method")
 
@@ -514,6 +678,26 @@ gradient that a geometry optimization or a saddle search depends on:
 * there is **no analytic Hessian** for anything. Every Hessian in this note is
   finite-differenced at 6N+1 gradients, which is what makes the TS and IRC
   budgets what they are.
+
+**Basis costs ~10x, and almost every timing in this note is STO-3G.**
+MEASURED 2026-09-19, RHF wall time on one process:
+
+| molecule | atoms | STO-3G | def2-SVP | ratio |
+|---|---:|---:|---:|---:|
+| methanol | 6 | 0.03 s | 0.15 s | 4.4x |
+| ethanol | 9 | 0.05 s | 0.54 s | 11.1x |
+| benzene | 12 | 0.17 s | 2.39 s | 14.0x |
+| aspirin | 21 | 2.35 s | 23.72 s | 10.1x |
+
+The EXPONENT is nearly unchanged -- tail-fitted 4.69 (STO-3G) against 4.10
+(def2-SVP), global 3.48 against 4.04 -- so the basis is a near-constant
+MULTIPLIER over this range, not a steeper curve. That makes the correction easy
+and reusable: **multiply any STO-3G figure in this note by ~10 to get what
+`def2-svp` costs**, and keep the scaling exponent.
+
+It matters because `def2-svp` is the tier-4 DEFAULT while STO-3G is what the
+end-to-end timings use. A campaign budgeted from the STO-3G rows is budgeted an
+order of magnitude light.
 
 **Basis.** `def2-svp` is the tier-4 default and the larger of the two
 validated sets. STO-3G appears throughout this note because it is what the
@@ -586,7 +770,13 @@ timings. So:
   add a one-body term" and then guessed 2x anyway; the same reasoning actually
   PREDICTS a small overhead, because a one-body term is cheap. The guess did
   not follow from the argument I gave for it.
-- **Tier 5 (QM/MM DFT optimization): ~5.8 h**, was "1.5-17 h".
+  **QUALIFIED 2026-09-19:** that ~1.0x holds up to ~1000 charges. A WHOLE
+  pocket (7LCJ, 6458 charges) costs 3.4-5.6x -- the one-body term is cheap
+  PER CHARGE and there are thousands of them. See "Embedding is free only
+  while the charge set is small". The original retraction stands at the scale
+  it was measured; it just does not generalize to an untruncated pocket.
+- **Tier 5 (QM/MM DFT optimization): ~17-35 h in a real pocket** (a ~5.8 h
+  gas-phase floor x the 3-6x embedding cost); was "1.5-17 h".
   The 10x width came entirely from an unmeasured BFGS step count. MEASURED
   2026-09-18: ethane with a link atom across the C-C cut (the catalyst shape)
   converges in **34 steps** -- and in 34 at BOTH STO-3G and 6-31G, so the step
@@ -598,6 +788,18 @@ timings. So:
   a few bond lengths. A floppy ligand in a pocket has far more soft degrees of
   freedom and will take more. Treat 34 as a FLOOR for the step count, not a
   typical value -- one geometry is not a distribution.
+  **SECOND CAVEAT, added 2026-09-19: the 612 s multiplicand is a GAS-PHASE
+  single point.** A QM/MM optimization pays the embedding cost at EVERY step,
+  and with a whole pocket that is not free. MEASURED, benzene/STO-3G against
+  the 7LCJ pocket (6458 charges), same optimizer, same convergence:
+
+      vacuum       4 steps, 0.278 s/step
+      full pocket  4 steps, 1.574 s/step     -> 5.7x
+
+  The STEP COUNT is unchanged, so the two factors MULTIPLY rather than trade
+  off: ~5.8 h becomes **~17-35 h** at 3-6x. Both caveats push the same way, so
+  read 5.8 h as a hard floor built from a gas-phase multiplicand and a
+  near-rigid multiplier -- not as an estimate of a real catalyst job.
 
 ### Every `tiers.py:NN` citation in this table pointed at a DOC COMMENT
 
@@ -727,13 +929,30 @@ first:
 | with MEASURED 26.4 s | **0.7%** | **79%** | **3%** | **18%** | **9.3 h** |
 
 The correction STRENGTHENS the conclusion rather than softening it: docking is
-79% of the campaign, DFT 18%. Quote the measured row.
+79% of the campaign, DFT 18%. Quote the measured row **of the two above** --
+and read the basis caveat below before quoting either, because both rows are
+STO-3G and the split inverts at the default basis.
 
 **That inverts the intuition this pipeline was designed around.** DFT is the
 most expensive thing PER CALL by five orders of magnitude (6e+2 s vs 1e-5 s),
 and it is still only **18%** of the campaign, because the funnel has already cut
 the population 100x by the time it runs. Docking is **79%** -- it is cheap per
 pose and runs on EVERYTHING, 20 poses each.
+
+**AND IT INVERTS AGAIN AT THE PRODUCTION BASIS (2026-09-19).** Both rows above
+use the 612 s DFT point, which is **STO-3G**. `def2-svp` -- the tier-4 DEFAULT
+-- costs ~10x that (measured under "Basis costs ~10x"), and nothing else in the
+table moves:
+
+| | cheap | dock | xtb | DFT | total |
+|---|---:|---:|---:|---:|---:|
+| STO-3G (the rows above) | 1% | **79%** | 3% | **18%** | 9.3 h |
+| **def2-svp (the default)** | 0% | **30%** | 1% | **69%** | 24.4 h |
+
+So "docking dominates, not DFT" is true of a DEMONSTRATION basis and false of
+the default. The M11 conclusion below stands for what it measured -- tier 1 at
+production exhaustiveness -- but do not carry the 79/18 split into a
+production budget.
 
 This is the same conclusion M11 reached from the other direction ("the funnel
 spent 2.6x more than it needed to", and the fix was tier-1 effort and fan-out,
@@ -751,33 +970,6 @@ and the hierarchy table), the funnel RATIOS are a design choice, and the DFT
 the shares move; the ordering is robust to anything reasonable.
 
 ### Transition-state search costs 2 Hessians + n_steps (MEASURED, 2026-09-19)
-
-**A GRADIENT IS NOT AN ENERGY, and the model below counts them as if it were.**
-MEASURED 2026-09-19, NH3/STO-3G: a single point is 13.5 ms and a full
-finite-difference Hessian is 580 ms -- a ratio of **43x**, against the
-`6N+1 = 25` the count predicts. So the gradient-count model understates wall
-time by roughly **1.7x**, because each of those 6N+1 evaluations is an
-energy AND an analytic gradient, not an energy.
-
-Use the counts to compare SHAPES (how a search scales with N, whether one
-Hessian or two) and multiply by a measured per-GRADIENT time, never by a
-single-point time. Every wall-clock estimate in this section is built from a
-single point and therefore carries that 1.7x on top of everything else already
-noted.
-
-**The embedding multiplier applies to the Hessian too, and the COUNT does not
-move.** MEASURED, NH3/STO-3G frequencies:
-
-| field | gradient evaluations | wall |
-|---|---:|---:|
-| vacuum | 24 | 0.60 s |
-| 2 point charges | 24 | 0.60 s |
-| whole 7LCJ pocket (6458) | 24 | **3.72 s** |
-
-6.2x in time, 1.0x in count -- which is the precise sense in which "a QM/MM
-Hessian needs no new machinery" is true. It needs no extra gradients; it needs
-more time per gradient.
-
 
 New entry: until `ferric_scf::saddle` landed there was no saddle search to
 cost. `crates/ferric-scf/tests/saddle_cost.rs` counts the actual calls rather
@@ -1249,7 +1441,7 @@ QM-atom-pairwise. ferric feeds MM atoms in as point charges carrying no
 dispersion at all, so QM-MM dispersion is a SEPARATE gap -- probably LJ terms
 across the boundary in `ferric-mm`. Easy to assume away, so stated explicitly.
 
-### The label "DFT + dispersion" -- FIXED 2026-09-19 (not yet merged)
+### The label "DFT + dispersion" -- FIXED and MERGED 2026-09-19
 
 `crates/ferric-d3` implements two-body D3(BJ) natively, Z=1..103, with ZERO new
 dependencies. Tier 4 now defaults to `dispersion="d3bj"`, so the label three
@@ -1327,7 +1519,15 @@ Decision points are marked. Steps 1-6 are available today; step 7 is blocked
    field (`context["point_charges"]`, already consumed at `tiers.py:196` and
    `tiers.py:249`) when the pocket is charged or polar.
    **DECISION: do you trust the number?** See the pose-noise caveat below.
-7. **Catalyst / barrier work.** BLOCKED -- see section 4.
+7. **Catalyst / barrier work.** ~~BLOCKED~~ **AVAILABLE since 2026-09-19** --
+   `ferric.run_saddle` -> `run_frequencies` -> `run_irc`, all three taking
+   `point_charges=`/`external_field=` so the whole chain runs on ONE surface.
+   Section 4 has the cost model and section 3b(b) the decision procedure.
+   **DECISION: is your QM region right?** That is the choice that sets the
+   cost -- see "how to size the QM region", and note the frontier trap:
+   keeping the host MM charge across a covalent cut puts a point charge
+   0.443 A from the link atom and the optimization DIVERGES. Use
+   `delete-host` at minimum.
 
 ### The pose-noise caveat, which decides whether step 6 is worth running
 
@@ -1367,10 +1567,76 @@ G2. Rank with GFN2-xTB in the pocket field (tier 3 + point_charges).
 G3. QM region = the ligand. Pocket = MM point charges. No link atoms needed
     when the cut does not cross a covalent bond -- which for a non-covalent
     ligand it does not. This is the case ferric handles cleanly today.
+    HOW MUCH does the field matter? MEASURED, water/STO-3G vs vacuum:
+
+        one -0.5 charge at 3.2 A      -5.97 kcal/mol
+        one -0.5 charge at 2.1 A     -12.89
+        one -1.0 (Asp-like) at 2.6 A -17.39
+
+    TENS of kcal/mol for a charged residue in contact range -- far larger
+    than the substituent effects a campaign tries to resolve. Embedding is
+    not a refinement here; omitting it changes the answer.
+
+    BUT CHECK YOUR POCKET MODEL IS EXERTING A FIELD AT ALL. A symmetric or
+    antisymmetric charge arrangement can cancel almost exactly at the
+    ligand: MEASURED -0.002 kcal/mol for a +-0.4 pair at +-4.2 A, against
+    -5.97 for a single -0.5 at 3.2 A. A near-zero embedding shift usually
+    indicts the MODEL rather than showing the pocket does not matter, so
+    compare against a single-charge control before concluding it is free.
 G4. Report a DIFFERENCE (dG_bind between ligands, or vs a reference ligand),
     never an absolute. The absolute carries the full method error; the
     difference is what error cancellation protects.
 ```
+
+**What one G0-G4 pass COSTS, per ligand.** The catalyst branch has a closed
+form (`2*(6N+1) + (n_steps+1)` gradients); this branch had per-stage numbers
+scattered across the note and no way to add them up. MEASURED 2026-09-19, one
+process, single-threaded:
+
+| ligand | atoms | G1 dock | G1 relax (MMFF) | G2 xtb | G3 DFT (STO-3G) |
+|---|---:|---:|---:|---:|---:|
+| ethanol | 9 | 26.4 s** | 130 ms* | 20 ms | 2.6 s |
+| aspirin | 21 | 26.4 s** | 12 ms | 46 ms | 62.6 s |
+| paracetamol-like | 34 | 26.4 s** | 23 ms | 76 ms | 265.3 s |
+
+**Docking is the same column as the formula below, so the table and the budget
+have one scope. 26.4 s/ligand at exhaustiveness 4 on 12 cores (RESULTS.md M11);
+it is quoted per ligand rather than per atom because Vina's cost is driven by
+the search, not by the atom count over this range.
+
+*The ethanol FF number is LARGER than aspirin's on a SMALLER molecule because
+it is the first call in the process -- the RDKit/ETKDG warm-up documented under
+"the first `from_smiles` call costs 24x". Read 12-23 ms as the steady state.
+
+So the budget for N ligands through G0-G3 is
+
+    N * (26.4 s docking + ~0.02 s FF + ~0.05 s xtb) + N_survivors * DFT
+
+and **DFT is the only term whose exponent hurts**: 2.6 -> 62.6 -> 265.3 s across
+9 -> 21 -> 34 atoms. Fitted on ATOM COUNT the exponent is **3.0 (21->34), 3.75
+(9->21), 3.48 globally** -- steeper than the ~N^2.3 measured elsewhere in this
+note, and the difference is the axis, not a contradiction: that figure is in
+BASIS FUNCTIONS at fixed basis, and these three molecules differ in composition
+as well as size, so atom count is the cruder axis. Quote whichever you fit, and
+say which. Everything before DFT is flat by comparison.
+
+**The practical consequence depends on the BASIS, and that is easy to get
+backwards.** At the STO-3G numbers in the table, docking 100 ligands costs
+44.0 min and DFT on 10 survivors at 34 atoms costs 44.2 -- comparable, which
+says "choose how many reach tier 4 before optimizing what tier 4 does".
+
+**At the tier-4 DEFAULT basis that conclusion inverts.** `def2-svp` costs ~10x
+STO-3G (measured above), so the same 10 survivors cost 442 min against
+docking's 44:
+
+| | docking 100 | DFT 10 survivors | DFT share |
+|---|---:|---:|---:|
+| STO-3G (the table above) | 44.0 min | 44.2 min | 50% |
+| **def2-svp (the default)** | 44.0 min | **442 min** | **91%** |
+
+So for a production run, tier 4 IS the budget and making it cheaper is where
+the work is. The STO-3G reading is right only for a demonstration basis.
+This is the same trap as reading any STO-3G row here as a production cost.
 
 **That blocking question is now ANSWERED, and the answer is "none of them"**
 (2026-09-19, RESULTS.md M4-M14). It used to read: decide the pose treatment --
@@ -1384,38 +1650,11 @@ candidate treatments have since been measured:
 | dock then average (M12) | ~4.1 | ~16x |
 | select the top-docked pose (M13) | 40.66 | 163x |
 | a different scorer (M14) | 4.68 best tracking | 19x |
-| **pair poses by scaffold (M17)** | **0.22-0.62 (MMFF, gas phase)** | **below the effect size -- PROVISIONAL** |
-
-**The M17 row is a different KIND of row and must be read as provisional.** The
-first five all attack the per-pose SD and all accept the ESTIMATOR: each
-computes ddE over INDEPENDENTLY embedded ensembles, which is an UNPAIRED design
-over noise that is largely COMMON to the two molecules (the scatter is
-pose-conformational; a substitution changes a few atoms and leaves ~68 in
-place). Pairing pose k of the analogue to pose k of the parent gives
-`var = sd_A^2 + sd_B^2 - 2*rho*sd_A*sd_B`, which is the familiar
-`2*sd^2*(1-rho)` only when the two spreads are EQUAL (they are, here, to within
-a few percent). The reported figure is a **standard-error ratio**, MEASURED as
-`SEM_unpaired / SEM_paired` on the same data, so it does not rest on that
-assumption -- and it is NOT a variance ratio: the corresponding variance
-reduction is its SQUARE (2.42x on the SEM is ~5.9x on the variance). Quoting
-the SEM ratio as "variance reduction" understates the variance effect while
-overstating what was measured, so this note says which one it means.
-
-MEASURED gas-phase MMFF only, no pocket -- and a pocket is exactly what could
-destroy the rho the method depends on, since a substituent may change the
-binding mode. **It does not yet license a ranking**; it says the pocket
-experiment is worth running. Two cautions carry into any workflow that adopts
-it: a HARD scaffold pin fails its own self-anchor by +13.8 kcal/mol (it charges
-that much for pairing the parent with ITSELF, so relax the substituent against a
-restrained scaffold), and the Cl case gives rho 0.399 for only a 1.21x gain --
-so the floor is PER-CANDIDATE, never one campaign-wide number. See RESULTS.md
-M17.
 
 So `funnel.py:162`'s one-row-per-MOLECULE keying is not the blocker it was
 written up as -- no pose treatment the data structure could express resolves a
 1-2 kcal/mol substituent effect. **G2 is the last step whose output is
-trustworthy** (unless and until the M17 paired estimator is validated in a
-pocket, which would move the line to G4). Its own "STOP HERE if you only need a coarse sort" is now the
+trustworthy.** Its own "STOP HERE if you only need a coarse sort" is now the
 recommendation rather than an option, and G4's dG_bind difference is reportable
 only when the gap is large (>~5 kcal/mol, i.e. outside the measured noise), not
 for lead optimisation.
@@ -1539,99 +1778,6 @@ harder: with an antisymmetric charge pair, max|g_z| at the planar geometry is
 all. `find_saddle` correctly fails and it reads like a solver bug. See the
 transition-state cost section for the table and the diagnostic.
 
-#### C1 + C4 with LINK ATOMS, executed from Python (2026-09-19)
-
-The block above uses bare point charges: a QM region with no covalent cut,
-which is the DOCKING case (G3). C1 is the CATALYST case -- the cut crosses a
-bond, so link atoms are mandatory -- and the question is whether
-`QmmmSystem` composes with the C3-C5 calls or needs its own path.
-
-**It composes, with no new machinery.** Ethane cut across the C-C bond,
-QM = one methyl:
-
-```python
-sys_ = ferric.QmmmSystem(symbols, coords_angstrom, mm_charges, qm_indices=[0,1,2,3])
-sys_ = sys_.with_link_atoms([(0, 4)])       # the frontier bond
-qm   = sys_.qm_molecule()                   # 5 atoms: CH3 + link H
-pc   = sys_.point_charges()                 # 4 MM charges
-r    = ferric.run_frequencies(qm, "sto-3g", point_charges=pc)
-```
-
-RUN, not sketched:
-
-```
-qm_atom_count 4 -> qm_molecule() 5 atoms (the link H is added, not counted as QM)
-point_charges() -> 4
-
-                E              lowest mode    n_imag
-  vacuum   -39.72660991        1686.7 cm^-1     0
-  field    -39.82456886       -2979.8 cm^-1     1
-```
-
-9 frequencies for 5 atoms is 3N-6, and vacuum gives zero imaginary modes --
-a methyl at its own geometry is a minimum, which is the right answer.
-
-**That single imaginary mode in the field is a REAL DEFECT in the setup, and
-re-optimizing does not fix it.** The obvious advice -- relax in the field (C2)
-before reading C4 -- was tried and FAILS here: the optimization diverges, energy
-climbing -39.82 -> -39.53 Ha and oscillating past 200 steps.
-
-The cause is visible in one number the API already exposes:
-
-```python
-sys_.min_link_to_charge_distance()   # 0.443 A
-```
-
-**The link H sits 0.443 A from a -0.27 point charge.** A bare point charge that
-close is an unphysical attractor: the link atom is dragged onto it, so there is
-no minimum to find. This is frontier overpolarization, and it is exactly what
-the boundary-charge schemes exist to prevent.
-
-MEASURED, same system, each scheme through `with_boundary_charges`:
-
-| scheme | charges | min link-charge dist | C2 optimize | C4 n_imag |
-|---|---:|---:|---|---:|
-| `keep` (no scheme) | 4 | **0.443 A** | **DIVERGES** (200 steps) | 1 |
-| `delete-host` (Z1) | 3 | **1.305 A** | **converged, 6 steps** | **0** |
-| `rc` | -- | -- | refuses: host has no MM neighbour to receive the charge | -- |
-| `rcd` | -- | -- | same refusal | -- |
-
-**So C1 is not optional and `keep` is not a default to fall back on.** Cutting a
-covalent bond and leaving the host charge in place puts a point charge inside
-the link atom's bond length. Use `delete-host` at minimum; `rc`/`rcd`
-redistribute rather than discard and need the host to have an MM neighbour in
-`bonds`, which they say plainly rather than silently doing nothing.
-
-Check `min_link_to_charge_distance()` before trusting any embedded geometry:
-below ~1 A, the answer is about the point charge, not the chemistry.
-
-#### ...and C3-C5 now run under embedding FROM PYTHON (2026-09-19)
-
-The subsection above is the RUST test. From Python the chain stopped at the
-field boundary: `run_optimize` took `point_charges=`, and `run_saddle`,
-`run_irc` and `run_frequencies` did not. A workflow could optimize an embedded
-minimum and then had to leave the field to find the saddle, confirm it, or walk
-the path -- on a DIFFERENT surface from the one the saddle sits on. All three
-now take `point_charges=`/`external_field=`.
-
-    vacuum   saddle -55.43766535   barriers 11.141 / 11.141  (converged)
-    field    saddle -55.43122815   barriers 12.933 / 13.131  (step-limited)
-
-The field raises the NH3 inversion barrier ~1.8 kcal/mol (16%) and moves the
-imaginary mode -929.2 -> -964.9 cm^-1, so the kwarg is LIVE rather than
-accepted-and-dropped -- the failure mode that returns the vacuum answer while
-reading as an embedded calculation. Vacuum comes back symmetric to 1e-5 by
-mirror symmetry, checking the walk stayed on the umbrella coordinate.
-
-Nothing underneath had to change: `find_saddle` takes CLOSURES for the
-energy/gradient and Hessian so it was already field-agnostic, those closures
-already read `external_potential`, and `harmonic_frequencies` already threaded
-it. Only the way to SET it was missing.
-
-**Use a SYMMETRIC charge arrangement when comparing to vacuum**, for the C0
-reason directly above: an antisymmetric one removes the saddle instead of
-perturbing it.
-
 #### C1 and C4 VERIFIED to work (2026-09-18)
 
 Run against the merged extension, so these are not claims:
@@ -1749,41 +1895,8 @@ once, then Bofill). A realistic catalyst run is therefore:
 
     1 Hessian (6N+1 gradients) + ~20-60 P-RFO steps (1 gradient each)
 
-**This is the SEARCH only.** The full cost model above is
-`n_hessian*(6N+1) + (n_steps+1)` with `n_hessian = 2`: the search builds one
-Hessian at the start, and CONFIRMING the result is a transition state needs a
-second at the converged geometry (exactly one imaginary frequency). Budgeting
-from this line alone under-counts by 6N+1 -- 121 gradients for a 20-atom region,
-which is the larger half of the job.
-
-**CORRECTED 2026-09-19.** This read "the Hessian dominates at small N and the
-steps dominate past roughly N = 10", which is backwards and points a user at the
-wrong knob. The Hessian term GROWS with N; the step count does not. So the steps
-dominate at SMALL N and the HESSIAN dominates as the region grows:
-
-| N | Hessian (6N+1) | 20 steps | 60 steps |
-|---:|---:|---:|---:|
-| 5 | 31 | steps 39% | **steps 66%** |
-| 10 | 61 | steps 25% | steps 50% |
-| 20 | **121** | steps 14% | steps 33% |
-| 30 | **181** | steps 10% | steps 25% |
-
-Two crossovers, and the one that matters is the SMALLER:
-
-* **Per-Hessian** (`6N+1 = n_steps`): **N = (n_steps-1)/6** -- N ~ 3 at 20
-  steps, N ~ 10 at 60. This is the table above, and it compares ONE Hessian
-  against the steps.
-* **Full job** (`2*(6N+1) = n_steps+1`): **N = (n_steps-1)/12** -- N ~ 1.6 at
-  20 steps, N ~ 4.9 at 60. A complete search builds TWO Hessians (one to start,
-  one at the converged geometry to confirm exactly one imaginary frequency), so
-  this is the number to budget from.
-
-Either way the conclusion is the same and the full-job form makes it stronger:
-past a handful of atoms the Hessians are the larger half and keep growing, which
-is why `hessian_recalc_every` defaults to 0 and why the QM REGION SIZE, not the
-step count, is what sizes a catalyst job.
-The two exponents compound with the per-gradient cost (see "how to size the QM
-region" above): N^2.63 atoms in a radius, N^2.3 DFT cost each.
+so the Hessian dominates at small N and the steps dominate past roughly N = 10.
+That ratio, not the algorithm, is what sizes a catalyst job now.
 
 ### What is still NOT available
 
@@ -1813,31 +1926,8 @@ region" above): N^2.63 atoms in a radius, N^2.3 DFT cost each.
   `ks_gradient_closed(.., ext)` calls (`frequencies.rs:649`), so an embedded
   Hessian is one ordinary call.
 
-  **UPDATED 2026-09-19: the PYTHON side is no longer gas-phase only.**
-  `run_optimize` took `point_charges=`/`external_field=` and `run_saddle`,
-  `run_irc` and `run_frequencies` did not, so a workflow driven from Python
-  could optimize an embedded MINIMUM and then had to leave the field to find
-  the saddle, take its frequencies, or follow the path -- C3-C5 broken exactly
-  where a catalyst needs them. All three now take the same two kwargs, through
-  the same `build_external_potential` helper.
-
-  MEASURED, NH3 inversion at STO-3G with a symmetric charge pair on the C3
-  axis:
-
-  | | saddle E | barrier fwd/rev (kcal/mol) |
-  |---|---:|---|
-  | vacuum | -55.43766535 | 11.141 / 11.141 (converged) |
-  | field | -55.43122815 | 12.933 / 13.131 (step-limited) |
-
-  A 16% shift, so the threading is live rather than accepted-and-dropped; the
-  imaginary mode moves too (-929.2 -> -964.9 cm^-1). Vacuum returns symmetric
-  to 1e-5 by mirror symmetry, which checks the walk stayed on the umbrella
-  coordinate. **Use a SYMMETRIC charge arrangement when comparing to vacuum** --
-  an antisymmetric one makes planar NH3 non-stationary, and the search then
-  correctly fails for want of a target while looking like a solver bug.
-
-  Three limitations remain, and they are why the RUST QM/MM driver still ships
-  as an EXAMPLE rather than a library entry point:
+  Three limitations remain, and they are why this ships as an EXAMPLE rather
+  than a library entry point:
   - **MM charges are FIXED** (`to_external_potential()` evaluated once). A
     barrier computed this way omits MM relaxation along the reaction
     coordinate. `optimize_qmmm` rebuilds the field per step
@@ -1848,8 +1938,8 @@ region" above): N^2.63 atoms in a radius, N^2.3 DFT cost each.
     inline evaluator closure -- a refactor with its own risk, and its own PR.
 
   **Reachable from Python since 2026-09-19**: `ferric.run_saddle(mol, basis,
-  xc=, multiplicity=, max_steps=, trust_radius=, follow_mode=, delta=,
-  point_charges=, external_field=)` -> `SaddleResult`, with `is_transition_state()` as a method so `converged`
+  xc=, multiplicity=, max_steps=, trust_radius=, follow_mode=, delta=)` ->
+  `SaddleResult`, with `is_transition_state()` as a method so `converged`
   alone cannot be read as a TS. The refusal crosses the FFI boundary with its
   reason intact -- VERIFIED on H2 at 0.74 A, which returns "the projected
   Hessian at the starting geometry has NO negative eigenvalue (lowest =

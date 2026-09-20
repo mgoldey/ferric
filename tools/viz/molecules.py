@@ -309,6 +309,29 @@ def contact_map(
 
     contacting = contacting_atom_indices(lig, pocket, cutoff_angstrom)
 
+    # ZERO CONTACTS IS AMBIGUOUS, and one of the two readings is a bug.
+    #
+    # A solvent-exposed pose genuinely touches nothing. So does a ligand whose
+    # coordinates were never placed in the pocket at all -- `embed_proposals`
+    # returns ETKDG conformers centred on the ORIGIN while a PDB-derived pocket
+    # sits at its crystal coordinates. MEASURED on 7LCJ: 226 A apart, 0 of 21
+    # atoms contacting, and the same picture as a real non-contacting pose.
+    #
+    # The centroid separation tells them apart for free, so say which one this
+    # is rather than drawing a figure that means either.
+    if len(contacting) == 0:
+        gap = float(np.linalg.norm(lig.mean(axis=0) - pocket.mean(axis=0)))
+        span = float(np.linalg.norm(lig.max(axis=0) - lig.min(axis=0)))
+        if gap > max(3.0 * cutoff_angstrom, 2.0 * span):
+            raise ValueError(
+                f"the ligand centroid is {gap:.1f} A from the pocket centroid "
+                f"(ligand span {span:.1f} A), and NO atom is within "
+                f"{cutoff_angstrom} A. That is not a solvent-exposed pose, it "
+                "is a ligand that was never placed: an embedder returns "
+                "origin-centred coordinates and a PDB-derived pocket is at its "
+                "crystal coordinates. Harvest the docked pose first."
+            )
+
     Chem.rdDepictor.Compute2DCoords(mol)
     d = rdMolDraw2D.MolDraw2DCairo(width, height)
     n_heavy = sum(1 for a in mol.GetAtoms() if a.GetAtomicNum() > 1)

@@ -37,6 +37,8 @@ from typing import Sequence
 
 __all__ = [
     "SeriesPoint",
+    "optimization_trace",
+    "qmmm_partition",
     "funnel_survival",
     "energy_profile",
     "reaction_path",
@@ -197,12 +199,15 @@ def energy_profile(
     if len(real) >= 3:
         imax, vmax = max(real, key=lambda t: t[1])
         if real[0][0] < imax < real[-1][0]:
+            # To the SIDE of the apex, not above: the maximum IS the top of
+            # the data, so an upward offset lands on the title. VERIFIED by
+            # rendering -- "barrier 13.2" printed through "Energy profile".
             ax.annotate(
                 f"barrier {vmax:.1f}",
                 xy=(imax, vmax),
-                xytext=(0, 10),
+                xytext=(12, -4),
                 textcoords="offset points",
-                ha="center",
+                ha="left",
                 fontsize=9,
                 color="#a03030",
             )
@@ -391,6 +396,16 @@ def site_substituent_heatmap(
     A cell with no entry in the mapping is NOT greyed and is counted in the
     returned figure's caption as unbounded -- an unmeasured floor must not read
     as a floor of zero.
+
+    **THE KEY MUST DISTINGUISH PLACEMENTS, and the obvious choice does not.**
+    `SubstitutionProposal.label` is the substituent name, not a unique id:
+    aspirin with {F, Cl} gives **9 proposals, 9 distinct SMILES, and 3 distinct
+    labels**, because each halogen has four ring positions. Keying on `label`
+    alone silently collapses nine candidates into three cells -- in a figure
+    whose entire premise is that WHERE a group goes matters as much as which
+    group. This function cannot detect that: it receives the collapsed dict and
+    a legitimately small one looks identical. Key on `(label, site)` with a real
+    site identifier, or on the SMILES.
     """
     if not ddE:
         raise ValueError("nothing to plot")
@@ -461,8 +476,22 @@ def site_substituent_heatmap(
     ax.set_ylabel("substituent")
     ax.set_title(title)
     cb = fig.colorbar(im, ax=ax)
-    cb.set_label(_floor_label(noise_floor, unit))
-    fig.tight_layout()
+    # The floor label is a sentence, and as a rotated colorbar label it was
+    # CLIPPED at the canvas edge ("...BELOW THE NOISE FLO") -- losing the word
+    # that makes it a warning. Short label on the bar, sentence under the axes.
+    cb.set_label(f"ddE ({unit})")
+    floor_note = _floor_label(noise_floor, unit)
+    if floor_note != f"ddE ({unit})":
+        fig.text(
+            0.5,
+            0.005,
+            floor_note.split("-- ", 1)[-1],
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            color="#555555",
+        )
+    fig.tight_layout(rect=(0, 0.06, 1, 1))
     return fig
 
 
@@ -784,19 +813,24 @@ def reaction_path(
             mec="#4c72b0" if ok else "#c44e52",
             mew=2.0,
         )
+        # The value sits to the SIDE of the marker. Directly above, it printed
+        # on top of the TS point at the apex -- VERIFIED by rendering.
         ax.annotate(
             f"{y:.2f}",
             xy=(x, y),
-            xytext=(0, 12),
+            xytext=(10, 6),
             textcoords="offset points",
-            ha="center",
+            ha="left",
             fontsize=9,
         )
         if not ok:
+            # ABOVE the marker, not below: at -30 points it landed on the
+            # x tick labels and the two overprinted. Offset further than the
+            # value label so the two do not stack either.
             ax.annotate(
                 "NOT converged\n(no basin reached)",
                 xy=(x, y),
-                xytext=(0, -30),
+                xytext=(0, 20),
                 textcoords="offset points",
                 ha="center",
                 fontsize=8,
@@ -836,6 +870,7 @@ def reaction_path(
         else f"{title}  ({' and '.join(unconverged)} did NOT converge)"
     )
     ax.grid(axis="y", alpha=0.3)
+    ax.margins(x=0.12)
     fig.tight_layout()
     return fig
 
@@ -904,6 +939,7 @@ def imaginary_mode(
     order = sorted(range(n_atoms), key=lambda i: mags[i], reverse=True)
     shown = order[: min(top_n, n_atoms)]
 
+    needs_bottom_margin = False
     plt = _plt()
     fig, ax = plt.subplots(figsize=(max(5.5, 0.6 * len(shown) + 2), 4.0))
     expect = set(expected_atoms or ())
@@ -924,10 +960,388 @@ def imaginary_mode(
         ax.plot([], [], "s", color="#c44e52", label="expected reacting atom")
         ax.legend(frameon=False, fontsize=9)
     else:
-        ax.set_title(
-            title + "\n(no expected_atoms given -- this shows the mode, it does "
-            "not check it)"
+        # Wrapped, and the caveat carries a smaller font: at figure width the
+        # single line ran off the canvas mid-word ("it does not che..."), which
+        # VERIFIED BY RENDERING is invisible to any assertion on the string.
+        # BELOW the axes. Two earlier attempts failed by rendering: as one
+        # long title line it ran off the canvas mid-word, and moved just above
+        # the axes it overprinted the title. There is room under the x labels
+        # and nothing competes for it.
+        ax.set_title(title, fontsize=11)
+        ax.figure.text(
+            0.5,
+            0.005,
+            "no expected_atoms given -- this SHOWS the mode, it does not CHECK it",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            color="#555555",
         )
+        # Reserve the room HERE, not in the caller: a figure that needs the
+        # caller to call subplots_adjust is a figure that renders wrong by
+        # default, and the default is what a test and a notebook both use.
+        needs_bottom_margin = True
     ax.grid(axis="y", alpha=0.3)
+    fig.tight_layout(rect=(0, 0.05, 1, 1) if needs_bottom_margin else None)
+    return fig
+
+
+def optimization_trace(
+    energies: Sequence[float],
+    *,
+    gradient_norms: Sequence[float] | None = None,
+    converged: bool = True,
+    unit: str = "hartree",
+    title: str = "Geometry optimization",
+):
+    """Energy and gradient norm per step, with divergence made unmissable.
+
+    THE PLOT THAT WOULD HAVE SAVED A WRONG DIAGNOSIS. A geometry optimization
+    reports `converged`, `steps` and a final energy, and those three numbers
+    cannot distinguish "ran out of steps near a minimum" from "walked uphill and
+    oscillated". MEASURED case: an embedded methyl whose link atom sat 0.443 A
+    from an MM point charge climbed -39.82 -> -39.53 Ha over 200 steps. The
+    numbers looked like a slow optimization; the trace shows an unphysical
+    attractor at a glance.
+
+    So this annotates the two things a scalar cannot say:
+
+    * **the energy went UP** from its best value, and by how much -- drawn as a
+      marked band from the minimum to the final point, because a rise is the
+      signature of a step-control or force-field problem rather than a slow
+      approach
+    * **it did not converge**, stated in the title rather than left to the
+      caller, since an unconverged trace and a converged one look identical
+      when both flatten
+
+    `gradient_norms` goes on a second log axis when supplied: energy can look
+    flat while the gradient is still large, which is exactly the case where the
+    geometry is not a stationary point and the frequencies computed on it mean
+    nothing.
+    """
+    if not energies:
+        raise ValueError("nothing to plot: no energies")
+    # Keep the INDEX with each finite value. Without it the annotation below
+    # lands on `steps[-1]`, which may be a step whose energy is None or NaN --
+    # the figure then attaches the final finite energy to a step that has none.
+    finite_pairs = [
+        (i, e) for i, e in enumerate(energies) if e is not None and _isfinite(e)
+    ]
+    if not finite_pairs:
+        raise ValueError("every energy is None or non-finite")
+    finite = [e for _, e in finite_pairs]
+    if gradient_norms is not None and len(gradient_norms) != len(energies):
+        raise ValueError(
+            f"gradient_norms has {len(gradient_norms)} entries for "
+            f"{len(energies)} energies; they are per-step and must match, or a "
+            "step's gradient is drawn against another step's energy"
+        )
+
+    plt = _plt()
+    steps = list(range(len(energies)))
+    best = min(finite)
+    i_final, final = finite_pairs[-1]
+    rose_by = final - best
+
+    fig, ax = plt.subplots(figsize=(7.5, 4.2))
+    ax.plot(steps, energies, marker="o", markersize=3, linewidth=1.2, color="#1f77b4")
+    ax.set_xlabel("step")
+    ax.set_ylabel(f"energy ({unit})")
+
+    i_best = next(i for i, e in finite_pairs if e == best)
+    ax.axhline(best, linestyle=":", linewidth=0.9, color="#888888")
+    ax.annotate(
+        f"best  {best:.6f}",
+        xy=(i_best, best),
+        xytext=(4, -12),
+        textcoords="offset points",
+        fontsize=8,
+        color="#555555",
+    )
+
+    # THE UPHILL BAND. Only drawn when the rise is real, so a converged run
+    # stays uncluttered and a diverging one cannot be mistaken for it.
+    if rose_by > 0:
+        ax.axhspan(best, final, color="#d62728", alpha=0.10, zorder=0)
+        # Anchored in AXES fraction, not offset from the final data point. With
+        # a final point near the top of the plot the text ran through the
+        # TITLE and both became unreadable -- VERIFIED by rendering, which is
+        # the only way to see it. A test asserting the string is present
+        # passes either way.
+        ax.annotate(
+            f"ENERGY ROSE {rose_by:+.4f} {unit} above its best\n"
+            "a minimization that climbs is not converging slowly",
+            xy=(0.98, 0.06),
+            xycoords="axes fraction",
+            ha="right",
+            va="bottom",
+            fontsize=8,
+            color="#d62728",
+            weight="bold",
+            bbox={
+                "boxstyle": "round,pad=0.3",
+                "fc": "white",
+                "ec": "#d62728",
+                "alpha": 0.85,
+            },
+        )
+
+    if gradient_norms is not None:
+        ax2 = ax.twinx()
+        ax2.semilogy(
+            steps, gradient_norms, linestyle="--", linewidth=1.0, color="#ff7f0e"
+        )
+        ax2.set_ylabel("|grad| (log)", color="#ff7f0e")
+        ax2.tick_params(axis="y", labelcolor="#ff7f0e")
+
+    status = "converged" if converged else "DID NOT CONVERGE"
+    ax.set_title(f"{title} -- {len(energies)} steps, {status}")
+    if not converged:
+        # An unconverged run's last point is where the budget ran out, not a
+        # stationary point. Saying so on the figure keeps it from being read
+        # as a result.
+        ax.annotate(
+            "final point is where the step budget ran out,\nnot a stationary point",
+            xy=(0.02, 0.94),
+            xycoords="axes fraction",
+            va="top",
+            fontsize=8,
+            color="#d62728",
+        )
+    fig.tight_layout()
+    return fig
+
+
+def _isfinite(x) -> bool:
+    import math
+
+    try:
+        return math.isfinite(float(x))
+    except (TypeError, ValueError):
+        return False
+
+
+def qmmm_partition(
+    symbols: Sequence[str],
+    coords_angstrom: Sequence[tuple[float, float, float]],
+    qm_indices: Sequence[int],
+    *,
+    link_positions_angstrom: Sequence[tuple[float, float, float]] = (),
+    charge_positions_angstrom: Sequence[tuple[float, float, float]] = (),
+    charge_values: Sequence[float] = (),
+    warn_below_angstrom: float = 1.0,
+    expect_min_angstrom: float | None = None,
+    title: str = "QM/MM partition",
+):
+    """Where the QM/MM cut falls, and whether a point charge sits on a link atom.
+
+    THE PICTURE THE FRONTIER BUG NEEDED. `min_link_to_charge_distance()` returns
+    a number; nothing showed WHERE the problem was. MEASURED case: keeping the
+    host MM charge across a covalent cut puts a bare -0.27 charge **0.443 A**
+    from the link hydrogen -- closer than a bond length -- and the optimization
+    then diverges rather than failing loudly.
+
+    Drawn as a projection onto the two axes of largest spread, which is a
+    2-D view of a 3-D system and therefore understates some distances. That is
+    acceptable here because the quantity being judged -- the SHORTEST
+    link-to-charge distance -- is computed in 3-D and annotated, not measured
+    off the picture.
+
+    **EVERY argument is ANGSTROM**, and that matters more than usual here
+    because ferric's own QM/MM accessors are NOT uniform:
+
+        QmmmSystem.link_atom_positions()  ->  ANGSTROM   (e.g. 1.0971)
+        QmmmSystem.point_charges()        ->  BOHR       (e.g. 2.91)
+
+    Scaling both by 0.529 gives a nearest link-charge distance of 0.959 A where
+    the true value is 0.443 -- a factor of 2.2, and in the SAFE direction, so a
+    0.443 A frontier problem renders as an unremarkable 0.959. VERIFIED against
+    `min_link_to_charge_distance()`, which is the authority: convert the
+    charges and leave the link positions alone.
+
+    Pass `expect_min_angstrom=` (typically that accessor's value) and the
+    function will REFUSE a set of inputs whose geometry disagrees with it,
+    rather than drawing a reassuring picture of mis-scaled coordinates.
+
+    **This does not say the partition is chemically sensible.** It shows where
+    the cut is, not whether the QM region contains the bonds that break. A
+    figure cannot tell you that, and the C0 rule in the golden path is the
+    thing that can.
+    """
+    if len(coords_angstrom) != len(symbols):
+        raise ValueError(
+            f"{len(coords_angstrom)} coordinates for {len(symbols)} symbols; "
+            "they are per-atom and must match, or atoms are drawn at other "
+            "atoms' positions"
+        )
+    if charge_values and len(charge_values) != len(charge_positions_angstrom):
+        raise ValueError(
+            f"{len(charge_values)} charge values for "
+            f"{len(charge_positions_angstrom)} charge positions"
+        )
+    if not symbols:
+        raise ValueError("nothing to plot: no atoms")
+
+    plt = _plt()
+    import numpy as np
+
+    xyz = np.asarray([[float(c) for c in p] for p in coords_angstrom], dtype=float)
+    qm = set(int(i) for i in qm_indices)
+    bad = [i for i in qm if not 0 <= i < len(symbols)]
+    if bad:
+        raise ValueError(f"qm_indices out of range for {len(symbols)} atoms: {bad}")
+
+    # Project onto the two axes of largest spread so the cut is visible rather
+    # than edge-on. Chosen from the QM+MM atoms only -- charges can be far away
+    # and would otherwise dominate the choice.
+    spread = xyz.max(axis=0) - xyz.min(axis=0)
+    a, b = sorted(range(3), key=lambda k: -spread[k])[:2]
+    axis_name = "xyz"
+
+    fig, ax = plt.subplots(figsize=(7.0, 5.5))
+    mm = [i for i in range(len(symbols)) if i not in qm]
+    if mm:
+        ax.scatter(
+            xyz[mm, a],
+            xyz[mm, b],
+            s=60,
+            c="#bbbbbb",
+            edgecolors="#888888",
+            label=f"MM ({len(mm)})",
+            zorder=2,
+        )
+    if qm:
+        qi = sorted(qm)
+        ax.scatter(
+            xyz[qi, a],
+            xyz[qi, b],
+            s=110,
+            c="#1f77b4",
+            edgecolors="#10496f",
+            label=f"QM ({len(qi)})",
+            zorder=3,
+        )
+    for i, s in enumerate(symbols):
+        ax.annotate(
+            s,
+            (xyz[i, a], xyz[i, b]),
+            fontsize=7,
+            ha="center",
+            va="center",
+            color="white" if i in qm else "#333333",
+            zorder=4,
+        )
+
+    link = np.asarray(
+        [[float(c) for c in p] for p in link_positions_angstrom], dtype=float
+    ).reshape(-1, 3)
+    if len(link):
+        ax.scatter(
+            link[:, a],
+            link[:, b],
+            s=150,
+            marker="*",
+            c="#2ca02c",
+            edgecolors="#14521a",
+            label=f"link atom ({len(link)})",
+            zorder=5,
+        )
+
+    chg = np.asarray(
+        [[float(c) for c in p] for p in charge_positions_angstrom], dtype=float
+    ).reshape(-1, 3)
+    closest = None
+    if len(chg):
+        vals = list(charge_values) or [0.0] * len(chg)
+        neg = [k for k, v in enumerate(vals) if v < 0]
+        pos = [k for k, v in enumerate(vals) if v >= 0]
+        for idx, colour, lbl in (
+            (neg, "#d62728", "MM charge -"),
+            (pos, "#9467bd", "MM charge +"),
+        ):
+            if idx:
+                ax.scatter(
+                    chg[idx, a],
+                    chg[idx, b],
+                    s=45,
+                    marker="x",
+                    c=colour,
+                    label=f"{lbl} ({len(idx)})",
+                    zorder=3,
+                )
+        # THE MEASUREMENT, in 3-D, not off the projection.
+        if len(link):
+            d = np.linalg.norm(link[:, None, :] - chg[None, :, :], axis=2)
+            li, ci = np.unravel_index(int(np.argmin(d)), d.shape)
+            closest = float(d[li, ci])
+            ax.plot(
+                [link[li, a], chg[ci, a]],
+                [link[li, b], chg[ci, b]],
+                linestyle="--",
+                linewidth=1.4,
+                color="#d62728" if closest < warn_below_angstrom else "#777777",
+                zorder=1,
+            )
+            mid = ((link[li, a] + chg[ci, a]) / 2, (link[li, b] + chg[ci, b]) / 2)
+            # The short distance label stays on the line; the WARNING moves to
+            # a corner. Rendering showed the multi-line warning printed over
+            # the link atom and the charge it points at. An assertion that the
+            # text exists cannot see that.
+            ax.annotate(
+                f"{closest:.3f} A",
+                mid,
+                fontsize=8,
+                ha="center",
+                va="bottom",
+                color="#d62728" if closest < warn_below_angstrom else "#555555",
+                weight="bold" if closest < warn_below_angstrom else "normal",
+                zorder=6,
+            )
+            if closest < warn_below_angstrom:
+                ax.annotate(
+                    "INSIDE A BOND LENGTH -- the charge is an attractor\n"
+                    "and the optimization will not settle",
+                    xy=(0.5, 0.02),
+                    xycoords="axes fraction",
+                    ha="center",
+                    va="bottom",
+                    fontsize=8,
+                    color="#d62728",
+                    weight="bold",
+                    bbox={
+                        "boxstyle": "round,pad=0.3",
+                        "fc": "white",
+                        "ec": "#d62728",
+                        "alpha": 0.9,
+                    },
+                    zorder=7,
+                )
+
+    # CROSS-CHECK against the caller's authoritative number. The unit mismatch
+    # described above is silent and lands in the SAFE direction, so a figure
+    # drawn from mis-scaled coordinates looks fine. Refusing beats reassuring.
+    if expect_min_angstrom is not None:
+        if closest is None:
+            raise ValueError(
+                f"expect_min_angstrom={expect_min_angstrom} was given but no "
+                "link/charge pair was supplied, so there is nothing to check "
+                "it against"
+            )
+        if abs(closest - float(expect_min_angstrom)) > 0.01:
+            raise ValueError(
+                f"the supplied geometry gives a nearest link-charge distance "
+                f"of {closest:.3f} A, but expect_min_angstrom is "
+                f"{float(expect_min_angstrom):.3f} A. Check the UNITS: "
+                "`link_atom_positions()` is Angstrom and `point_charges()` is "
+                "Bohr, so converting both is a factor ~1.89 error that renders "
+                "as a comfortably large distance."
+            )
+
+    ax.set_xlabel(f"{axis_name[a]} (Angstrom)")
+    ax.set_ylabel(f"{axis_name[b]} (Angstrom)")
+    suffix = "" if closest is None else f" -- nearest link-charge {closest:.3f} A"
+    ax.set_title(title + suffix)
+    ax.legend(fontsize=8, loc="best")
+    ax.set_aspect("equal", adjustable="datalim")
     fig.tight_layout()
     return fig
