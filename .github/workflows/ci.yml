@@ -963,11 +963,20 @@ jobs:
           # (crates/ferric-scf/tests/runlog_writer.rs), so continuing without
           # it would report a red test that is really a red download -- the
           # exact confusion being fixed. Better to stop here and say why.
-          if [ ! -f /tmp/runlog_probe ]; then
-            echo "::error::/tmp/runlog_probe is absent after the download AND" \
-                 "the retry. This is an ARTIFACT DOWNLOAD failure, not a build" \
-                 "or test failure -- build-tests produced the probe and the" \
-                 "sibling shards received it. Re-run this job."
+          # BOTH files, not just the probe. Checking only the probe leaves a
+          # hole: if the retry restores it while the archive is still missing,
+          # the shard falls through to `cargo nextest --archive-file` and dies
+          # on the archive instead of emitting this diagnostic -- which is the
+          # same misdirection the diagnostic exists to prevent.
+          still_missing=""
+          for f in /tmp/nextest-archive.tar.zst /tmp/runlog_probe; do
+            [ -f "$f" ] || still_missing="$still_missing $f"
+          done
+          if [ -n "$still_missing" ]; then
+            echo "::error::missing after the download AND the retry:$still_missing" \
+                 "-- this is an ARTIFACT DOWNLOAD failure, not a build or test" \
+                 "failure. build-tests produced these and the sibling shards" \
+                 "received them. Re-run this job."
             ls -la /tmp | head -40
             exit 1
           fi
