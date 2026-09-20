@@ -392,28 +392,55 @@ def test_the_answer_table_tier_costs_agree_with_tiers_py():
         f"expected the section 0a answer table, found {len(rows)} rows; its "
         "shape changed and this guard needs re-deriving"
     )
-    table = "\n".join(rows)
 
-    # Each tier row must carry a figure that tiers.py also reports, so the two
-    # cannot drift. Tokens are distinctive enough not to match by coincidence.
-    for token, why in [
-        ("8.2", "tier 2 MMFF94 at 19 atoms"),
-        ("21.6", "tier 2 MMFF94 at 34 atoms"),
-        ("0.050", "tier 3 GFN2 at 19 atoms"),
-        ("26.4", "tier 1 Vina per ligand"),
-    ]:
-        assert token in tiers, (
-            f"{token!r} ({why}) is no longer in tiers.py's measured block -- "
-            "this test is pinned to figures that moved; re-derive the list "
-            "rather than deleting the assertion"
+    def row_for(call: str) -> str:
+        """The ONE row naming this call. Joining the table is not enough.
+
+        A first version of this guard searched the whole joined table, so a
+        figure in the WRONG row satisfied it. MEASURED: swapping the FF and
+        xtb size breakdowns between the two rows -- FF claiming GFN2's
+        timings and vice versa -- left the test GREEN. Binding each figure to
+        the row that names its function is what makes this a check.
+        """
+        hits = [r for r in rows if call in r]
+        assert len(hits) == 1, (
+            f"expected exactly one section 0a row naming {call!r}, found {len(hits)}"
         )
-        assert token in table, (
-            f"section 0a does not carry {token!r} ({why}), which tiers.py "
-            f"reports as MEASURED. A cost in the answer table that the source "
-            f"does not know about is an unsourced figure."
-        )
+        return hits[0]
+
+    # Each row must carry its OWN median and its OWN size breakdown, and the
+    # breakdown figures must be ones tiers.py actually reports.
+    expected = {
+        "tiers.tier2_forcefield": (["9 ms", "2.2", "8.2", "21.6"], "MMFF94"),
+        "tiers.tier3_gfn2": (["39 ms", "0.152", "0.050"], "GFN2-xTB"),
+        "docking.vina_dock": (["26.4"], "Vina"),
+    }
+    for call, (tokens, why) in expected.items():
+        row = row_for(call)
+        for token in tokens:
+            assert token in row, (
+                f"the section 0a row for {call} ({why}) does not carry {token!r}: {row}"
+            )
+            # A size-breakdown figure must also exist in the source. The
+            # medians are re-measurements recorded here, so they are exempt.
+            if token not in ("9 ms", "39 ms"):
+                assert token in tiers, (
+                    f"{token!r} is no longer in tiers.py's measured block -- "
+                    "this test is pinned to figures that moved; re-derive the "
+                    "list rather than deleting the assertion"
+                )
+
+    # Cross-contamination: neither tier row may carry the OTHER tier's
+    # distinctive figures, which is what the swap mutation exploited.
+    ff_row = row_for("tiers.tier2_forcefield")
+    xtb_row = row_for("tiers.tier3_gfn2")
+    for token in ("0.152", "0.050"):
+        assert token not in ff_row, f"FF row carries GFN2's {token!r}: {ff_row}"
+    for token in ("2.2", "21.6"):
+        assert token not in xtb_row, f"xtb row carries MMFF's {token!r}: {xtb_row}"
 
     # And the specific stale values must not come back.
+    table = "\n".join(rows)
     for gone in ["**32 ms**", "**53 ms**"]:
         assert gone not in table, (
             f"section 0a re-asserts {gone}, which was RE-MEASURED 2026-09-20 "
