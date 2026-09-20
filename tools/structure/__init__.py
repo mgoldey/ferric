@@ -373,6 +373,49 @@ def element_from_pdb_atom_name(name: str) -> str:
     return alpha[0].upper()
 
 
+def _is_gro_box(line: str) -> bool:
+    """A GRO frame ends with 3 (rectangular) or 9 (triclinic) numeric values."""
+    fields = line.split()
+    if len(fields) not in (3, 9):
+        return False
+    try:
+        for f in fields:
+            float(f)
+    except ValueError:
+        return False
+    return True
+
+
+def _gro_coord_width(path: Path, line: str) -> int:
+    """Infer the coordinate field width from the decimal-point spacing.
+
+    GROMACS writes `%(n+5).nf` per coordinate, so three decimals gives the
+    common width 8 but four gives 9 and the `y`/`z` fields shift. Hardcoding 8
+    reads a four-decimal file as garbage or rejects it outright.
+
+    The width is the distance between consecutive decimal points, which is how
+    OpenMM's own `GromacsGroFile` does it. (OpenMM is inconsistent here: its
+    parser infers the width exactly this way, while its `_is_gro_coord`
+    line-detector hardcodes width-8 column offsets and therefore REJECTS the
+    four-decimal files its parser could read. We follow the parser.)
+    """
+    try:
+        first = line.index(".", 20)
+        second = line.index(".", first + 1)
+    except ValueError as exc:
+        raise StructureError(
+            f"{path}: first atom line has no decimal-point coordinates after "
+            f"column 20, so the field width cannot be determined: {line!r}"
+        ) from exc
+    width = second - first
+    if width < 4 or width > 20:
+        raise StructureError(
+            f"{path}: implausible GRO coordinate width {width} inferred from "
+            f"decimal spacing in {line!r}"
+        )
+    return width
+
+
 def _read_gro(path: Path, charge: int, multiplicity: int) -> Structure:
     """GROMACS `.gro` -- fixed-column, nanometres, no element column.
 
@@ -418,23 +461,32 @@ def _read_gro(path: Path, charge: int, multiplicity: int) -> Structure:
             f"{path}: header says {n} atoms, file has {len(body)} atom lines"
         )
     symbols, coords = [], []
+    width = _gro_coord_width(path, body[0])
+    need = 20 + 3 * width
     for i, line in enumerate(body):
-        if len(line) < 44:
+        if len(line) < need:
             raise StructureError(
                 f"{path}:{i + 3}: atom line is {len(line)} characters, need at "
-                f"least 44 for name and coordinates: {line!r}"
+                f"least {need} for name and {width}-wide coordinates: {line!r}"
             )
         name = line[10:15].strip()
         if not name:
             raise StructureError(f"{path}:{i + 3}: no atom name in columns 11-15")
+        fields = [line[20 + k * width : 20 + (k + 1) * width] for k in range(3)]
         try:
-            x, y, z = (float(line[20:28]), float(line[28:36]), float(line[36:44]))
+            x, y, z = (float(f) for f in fields)
         except ValueError as exc:
             raise StructureError(
-                f"{path}:{i + 3}: could not read nm coordinates from {line[20:44]!r}"
+                f"{path}:{i + 3}: could not read nm coordinates from {line[20:need]!r}"
             ) from exc
         symbols.append(element_from_pdb_atom_name(name))
         coords.append((x * NM_TO_ANGSTROM, y * NM_TO_ANGSTROM, z * NM_TO_ANGSTROM))
+    if len(lines) <= 2 + n or not _is_gro_box(lines[2 + n]):
+        raise StructureError(
+            f"{path}: no box line after the {n} atom records. A GRO file ends "
+            f"each frame with 3 or 9 numeric box vectors; without it the atom "
+            f"count and the frame boundaries cannot be trusted."
+        )
     n_frames = 1 + max(0, (len(lines) - (n + 3)) // (n + 3))
     src = str(path) if n_frames == 1 else f"{path} (frame 1 of {n_frames})"
     return Structure(tuple(symbols), tuple(coords), charge, multiplicity, src)

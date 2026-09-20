@@ -575,11 +575,28 @@ def test_gro_with_a_truncated_atom_line_is_refused_not_padded():
 
     from tools.structure import StructureError, read_structure
 
-    text = "t\n    1\n    1WATER   OW    1   0.126\n   1.0 1.0 1.0\n"
+    # Two shapes, and they fail at different places now that the coordinate
+    # width is INFERRED from the first atom line rather than assumed:
+    #
+    #   (a) the FIRST line is truncated -- there is no second decimal point, so
+    #       the width cannot be determined at all;
+    #   (b) a LATER line is truncated -- the width is known from line 1, and
+    #       this line is simply too short to hold three fields of it.
+    #
+    # Both must refuse. Neither may pad, because a padded field parses as a
+    # coordinate of zero and puts the atom at the origin.
+    one = "    1WATER   OW    1   0.126"
+    full = "    1WATER   OW    1   0.126   1.624   1.679"
     with tempfile.TemporaryDirectory() as d:
-        p = _write(Path(d), "short.gro", text)
-        with pytest.raises(StructureError, match="need at least 44"):
-            read_structure(p)
+        a = _write(Path(d), "short_first.gro", f"t\n    1\n{one}\n   1.0 1.0 1.0\n")
+        with pytest.raises(StructureError, match="field width cannot be determined"):
+            read_structure(a)
+
+        b = _write(
+            Path(d), "short_later.gro", f"t\n    2\n{full}\n{one}\n   1.0 1.0 1.0\n"
+        )
+        with pytest.raises(StructureError, match="need at least"):
+            read_structure(b)
 
 
 def test_gro_multi_frame_reads_frame_one_and_says_so():
@@ -605,3 +622,120 @@ def test_gro_is_listed_as_a_supported_suffix():
     from tools.structure import SUPPORTED_SUFFIXES
 
     assert SUPPORTED_SUFFIXES[".gro"] == "gro"
+
+
+def test_gro_four_decimal_coordinates_are_read_at_full_precision():
+    """GROMACS coordinate precision is not fixed at three decimals.
+
+    The format is `%(n+5).nf`, so three decimals gives the common width 8 but
+    four gives 9 and the y/z fields SHIFT. A reader that hardcodes width 8
+    either rejects the file or slices across field boundaries and returns
+    numbers that are wrong without looking wrong.
+
+    Note OpenMM cannot be used as the cross-check here: its parser infers the
+    width the same way we do, but its `_is_gro_coord` line-detector hardcodes
+    width-8 column offsets, so it REJECTS four-decimal files its own parser
+    could read. Verified directly -- it raises "Unexpected line in .gro file".
+    """
+    import tempfile
+    from pathlib import Path
+
+    from tools.structure import read_structure
+
+    rows = [
+        (1, "WATER", "OW", 1, 0.1265, 1.6244, 1.6795),
+        (1, "WATER", "HW1", 2, 0.1902, 1.6613, 1.7471),
+    ]
+    body = "\n".join("%5d%-5s%5s%5d%9.4f%9.4f%9.4f" % r for r in rows)
+    text = f"4dp\n    2\n{body}\n   1.8206   1.8206   1.8206\n"
+    with tempfile.TemporaryDirectory() as d:
+        st = read_structure(_write(Path(d), "p4.gro", text))
+    assert st.symbols == ("O", "H")
+    # The fourth decimal must SURVIVE: 0.1265 nm -> 1.265 A, not 1.26.
+    assert st.coords[0] == pytest.approx((1.265, 16.244, 16.795))
+    assert st.coords[1] == pytest.approx((1.902, 16.613, 17.471))
+
+
+def test_gro_three_and_four_decimal_files_of_one_geometry_agree():
+    """The width inference must not change the geometry it reports.
+
+    Same coordinates written at both precisions: the 3-dp file is the 4-dp one
+    rounded, so they must agree to the rounding, not merely parse.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from tools.structure import read_structure
+
+    rows = [(1, "WATER", "OW", 1, 0.126, 1.624, 1.679)]
+    three = "\n".join("%5d%-5s%5s%5d%8.3f%8.3f%8.3f" % r for r in rows)
+    four = "\n".join("%5d%-5s%5s%5d%9.4f%9.4f%9.4f" % r for r in rows)
+    box = "   1.8206   1.8206   1.8206\n"
+    with tempfile.TemporaryDirectory() as d:
+        a = read_structure(_write(Path(d), "a.gro", f"t\n    1\n{three}\n{box}"))
+        b = read_structure(_write(Path(d), "b.gro", f"t\n    1\n{four}\n{box}"))
+    assert a.coords[0] == pytest.approx(b.coords[0], abs=1e-9)
+
+
+def test_gro_without_a_box_line_is_refused():
+    """A frame that stops after its atoms is truncated, not valid.
+
+    Without this the frame arithmetic silently accepts the file: the atom
+    records are all present, so a reader that only counts atoms returns a
+    perfectly well-formed Structure from a file that was cut off mid-write.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from tools.structure import StructureError, read_structure
+
+    text = "\n".join(GRO_TWO_WATERS.splitlines()[:-1]) + "\n"
+    with tempfile.TemporaryDirectory() as d:
+        p = _write(Path(d), "nobox.gro", text)
+        with pytest.raises(StructureError, match="no box line"):
+            read_structure(p)
+
+
+def test_gro_box_line_accepts_triclinic_nine_values():
+    """3 values is rectangular, 9 is triclinic -- both are legal."""
+    import tempfile
+    from pathlib import Path
+
+    from tools.structure import read_structure
+
+    nine = "   1.8206   1.8206   1.8206   0.0000   0.0000   0.0000   0.0000   0.0000   0.0000\n"
+    text = "\n".join(GRO_TWO_WATERS.splitlines()[:-1]) + "\n" + nine
+    with tempfile.TemporaryDirectory() as d:
+        st = read_structure(_write(Path(d), "tri.gro", text))
+    assert len(st.symbols) == 6
+
+
+def test_gro_a_non_box_line_where_the_box_belongs_is_refused():
+    """The box check must inspect the line, not merely count lines.
+
+    Removing the box line entirely is caught by any length check. This case --
+    a line PRESENT but not a box -- is what distinguishes a real validation
+    from `len(lines) > 2 + n`. It is the realistic corruption too: a truncated
+    write that ends mid-atom, or a concatenation that dropped a box line, both
+    leave something there.
+
+    Added after mutation testing: loosening `_is_gro_box` to accept any
+    non-empty field list survived the whole suite without it.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from tools.structure import StructureError, read_structure
+
+    head = "\n".join(GRO_TWO_WATERS.splitlines()[:-1])
+    for bad, why in [
+        ("    3WATER   OW    7   1.000   2.000   3.000", "another atom record"),
+        ("   1.8206   1.8206", "only two box values"),
+        ("   1.8206   1.8206   1.8206   1.8206", "four box values"),
+        ("not numbers at all", "free text"),
+    ]:
+        with tempfile.TemporaryDirectory() as d:
+            p = _write(Path(d), "badbox.gro", f"{head}\n{bad}\n")
+            with pytest.raises(StructureError, match="no box line"):
+                read_structure(p)
+            assert why  # label kept for the failure message
