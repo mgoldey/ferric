@@ -302,7 +302,13 @@ def test_the_quickstart_block_actually_RUNS(tmp_path):
         "the quickstart no longer names the placeholder this test substitutes; "
         "re-derive the substitution rather than deleting the test"
     )
-    code = code.replace('"ligand_with_hydrogens.pdb"', f'"{fixture}"')
+    # repr(), not an f-string. A path interpolated raw becomes part of a
+    # Python string LITERAL in the generated child script, so a backslash in
+    # it is an escape: a Windows `...\Users\...` yields `\U`, which is a
+    # syntax error, and `\t`/`\n` would corrupt the path silently. repr()
+    # produces a valid literal for any path. (Linux-only CI here, so this is
+    # a correctness-by-construction fix rather than an observed failure.)
+    code = code.replace('"ligand_with_hydrogens.pdb"', repr(str(fixture)))
 
     # A SUBPROCESS, not `exec`. Two reasons, and bandit flagging B102 is the
     # lesser one: running the block in-process would leak its imports, its
