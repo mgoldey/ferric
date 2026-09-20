@@ -1036,6 +1036,28 @@ def optimization_trace(
             f"{len(energies)} energies; they are per-step and must match, or a "
             "step's gradient is drawn against another step's energy"
         )
+    if gradient_norms is not None:
+        # The gradient axis is logarithmic, and matplotlib does not complain
+        # about a value a log axis cannot show -- it keeps it in the data and
+        # simply draws nothing there. A converged step reported as exactly 0.0,
+        # or a NaN from a failed step, would then VANISH from the curve while
+        # the energy trace beside it still shows that step. The reader sees a
+        # shorter gradient history than the optimisation actually had and reads
+        # the wrong step as the last one. Refuse instead.
+        bad = [
+            (i, v)
+            for i, v in enumerate(gradient_norms)
+            if not _isfinite(v) or float(v) <= 0.0
+        ]
+        if bad:
+            shown = ", ".join(f"step {i}: {v!r}" for i, v in bad[:4])
+            raise ValueError(
+                f"gradient_norms must be finite and strictly positive to be "
+                f"drawn on a log axis; got {shown}"
+                + (f" (and {len(bad) - 4} more)" if len(bad) > 4 else "")
+                + ". A converged step is a small gradient, not zero -- pass the "
+                "true norm, or drop the trailing step."
+            )
 
     plt = _plt()
     steps = list(range(len(energies)))
