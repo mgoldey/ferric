@@ -434,3 +434,76 @@ def test_ALL_FOUR_tiers_compose_from_substitutions_to_a_survivor(tmp_path):
         f"a benzoic-acid-sized DFT total energy should be well below -100 Ha, "
         f"got {dft.value} -- a placeholder would pass a bare `is not None`"
     )
+
+
+@pytest.mark.skipif(
+    not _docking_available(), reason="needs the 'docking' extra (vina + meeko)"
+)
+@pytest.mark.skipif(not POCKET_PDB.is_file(), reason=f"no pocket at {POCKET_PDB}")
+def test_the_harvested_pose_carries_ITS_HYDROGENS(tmp_path):
+    """A PDBQT pose is UNITED-ATOM. The harvested geometry must not be.
+
+    Vina merges nonpolar hydrogens into their carbons, so `DockedPose.symbols`
+    is not the molecule that was docked. MEASURED on aspirin: 14 atoms out
+    where 21 went in. `funnel._harvest_geometry` puts that straight into
+    `context["geometry"]`, so tiers 3 and 4 score the stripped fragment.
+
+    The severity is uneven, which is why this went unnoticed:
+
+        tier 4  FAILS -- an odd electron count trips ferric's
+                charge/multiplicity parity check. Protected by accident.
+        tier 3  DOES NOT. GFN2 has no such check and returned -35.492226
+                against -39.621219 for the real molecule -- both plausible
+                GFN2 numbers, neither an error, 2591 kcal/mol apart.
+
+    `restore_hydrogens` already existed for exactly this and had NO production
+    caller. This pins the wiring.
+    """
+    from rdkit import Chem
+
+    from tools.active_site.pocket_charges import derive_pocket_charges
+    from tools.docking.vina_dock import prepare_receptor
+    from tools.isomers.model import Isomer
+    from tools.pipeline.tiers import tier1_dock
+
+    import numpy as np
+
+    receptor = tmp_path / "receptor.pdbqt"
+    try:
+        prepare_receptor(POCKET_PDB, receptor)
+    except Exception as exc:  # pragma: no cover - environment dependent
+        pytest.skip(f"receptor prep unavailable: {exc}")
+
+    pocket = derive_pocket_charges(str(POCKET_PDB))
+    bohr = 0.52917721092
+    centre = tuple(
+        float(v)
+        for v in np.array(
+            [[q[1] * bohr, q[2] * bohr, q[3] * bohr] for q in pocket.charges]
+        ).mean(axis=0)
+    )
+
+    smiles = "CC(=O)Oc1ccccc1C(=O)O"  # aspirin: 21 atoms with H, 13 heavy
+    iso = Isomer(smiles=smiles, kind="parent", transform="t", parent_smiles=smiles)
+    res = tier1_dock(iso, {"receptor_pdbqt": str(receptor), "box_center": centre})
+    assert res.ok, f"docking failed: {res.error}"
+
+    expected = Chem.AddHs(Chem.MolFromSmiles(smiles)).GetNumAtoms()
+    got = len(res.payload["symbols"])
+    assert got == expected, (
+        f"the harvested pose has {got} atoms but the molecule has {expected} -- "
+        f"a united-atom pose reached context['geometry'], and tier 3 will score "
+        f"it without complaint"
+    )
+    assert len(res.payload["coords"]) == expected
+
+    # The hydrogen COUNT specifically, since that is what PDBQT drops.
+    n_h = sum(1 for s in res.payload["symbols"] if s == "H")
+    n_h_expected = sum(
+        1
+        for a in Chem.AddHs(Chem.MolFromSmiles(smiles)).GetAtoms()
+        if a.GetSymbol() == "H"
+    )
+    assert n_h == n_h_expected, (
+        f"{n_h} hydrogens in the harvested pose, {n_h_expected} in the molecule"
+    )

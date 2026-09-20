@@ -226,8 +226,32 @@ def _fake_dock_factory(scores_by_seed):
             return SimpleNamespace(
                 ok=False, error=f"no pose for seed {seed}", best=None, poses=[]
             )
+        # A STRUCTURALLY VALID heavy-atom frame, not a single dummy carbon.
+        # `tier1_dock` now re-hydrogenates the pose (a PDBQT pose is
+        # united-atom, so the raw one is missing hydrogens and would be scored
+        # as a different molecule by tier 3). That step matches the pose
+        # against the candidate's SMILES, so a one-atom stand-in is correctly
+        # rejected as "1 docked heavy atom vs 7". Build the frame from the
+        # molecule the test actually uses.
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+
+        _m = Chem.AddHs(Chem.MolFromSmiles(BENZOIC.canonical))
+        AllChem.EmbedMolecule(_m, randomSeed=0xF00D)
+        _conf = _m.GetConformer()
+        _heavy = [a.GetIdx() for a in _m.GetAtoms() if a.GetSymbol() != "H"]
         pose = SimpleNamespace(
-            vina_score=score, symbols=["C"], coords_angstrom=[(0.0, 0.0, 0.0)]
+            vina_score=score,
+            symbols=[_m.GetAtomWithIdx(i).GetSymbol() for i in _heavy],
+            coords_angstrom=[
+                (
+                    _conf.GetAtomPosition(i).x,
+                    _conf.GetAtomPosition(i).y,
+                    _conf.GetAtomPosition(i).z,
+                )
+                for i in _heavy
+            ],
+            rdkit_index_of_heavy=list(range(len(_heavy))),
         )
         return SimpleNamespace(ok=True, error=None, best=pose, poses=[pose])
 
