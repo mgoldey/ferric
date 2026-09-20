@@ -30,6 +30,9 @@ this unrunnable without buying any more coverage of the composition question.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -246,3 +249,80 @@ def test_the_full_funnel_reaches_tier_4_and_produces_a_survivor():
         e = rep.value("dft", iso.canonical)
         assert e is not None, f"{iso.canonical} survived tier 4 with no energy"
         assert e < 0.0, f"an electronic energy must be negative, got {e}"
+
+
+def test_the_quickstart_block_actually_RUNS(tmp_path):
+    """Extract section 0b and execute it. Not compile it -- run it.
+
+    Two guards already cover this block and both stop short by design:
+    `test_the_quickstart_binds_every_name_it_uses` parses it and checks every
+    name is bound, and `test_the_quickstart_names_functions_that_return_what
+    _it_claims` checks one specific return type. Each documents why it does
+    not execute -- a DFT call does not belong in the fast tier.
+
+    But "it compiles" is not "it runs", and the two defects those guards exist
+    for were both found by RUNNING the block: `read_structure` vs `read`
+    (both names exist, the wrong one reads perfectly) and a
+    `relative_descriptors` value printed as exactly zero when it is -1.42e-14.
+
+    SLOW (~20 s): it runs two real SCFs. The one edit made here is the
+    PLACEHOLDER path the block itself flags -- "a PLACEHOLDER path, substitute
+    your own file" -- pointed at a generated fixture. Everything else executes
+    verbatim, so a rename or a changed return type in any function the
+    quickstart names fails here rather than in a user's paste.
+    """
+    import re
+
+    pytest.importorskip("rdkit")
+    pytest.importorskip("ferric")
+
+    golden = (
+        Path(__file__).resolve().parents[3]
+        / "site/src/reference/pipeline-golden-path.md"
+    )
+    if not golden.is_file():  # pragma: no cover - source checkout only
+        pytest.skip(f"no {golden}")
+
+    text = golden.read_text()
+    start = text.index("## 0b.")
+    block = text[start : text.index("\n## ", start + 5)]
+    code = "\n".join(re.findall(r"```python\n(.*?)```", block, re.S))
+    assert code.strip(), "section 0b has no python blocks; the guard needs re-deriving"
+
+    # The placeholder the block tells you to replace.
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    m = Chem.AddHs(Chem.MolFromSmiles("c1ccccc1C(=O)O"))
+    AllChem.EmbedMolecule(m, randomSeed=1)
+    AllChem.MMFFOptimizeMolecule(m)
+    fixture = tmp_path / "ligand_with_hydrogens.pdb"
+    Chem.MolToPDBFile(m, str(fixture))
+    assert "ligand_with_hydrogens.pdb" in code, (
+        "the quickstart no longer names the placeholder this test substitutes; "
+        "re-derive the substitution rather than deleting the test"
+    )
+    code = code.replace('"ligand_with_hydrogens.pdb"', f'"{fixture}"')
+
+    # A SUBPROCESS, not `exec`. Two reasons, and bandit flagging B102 is the
+    # lesser one: running the block in-process would leak its imports, its
+    # matplotlib state and its working directory into the rest of the session,
+    # and a `sys.exit` or a stray global in the doc would take the test run
+    # with it. A child process also gives the real "paste it into a fresh
+    # interpreter" semantics the quickstart promises.
+    repo = Path(__file__).resolve().parents[3]
+    script = tmp_path / "quickstart_block.py"
+    script.write_text(code)
+    env = {**os.environ, "PYTHONPATH": str(repo), "OPENBLAS_NUM_THREADS": "1"}
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert proc.returncode == 0, (
+        "the quickstart block does not RUN. This is what a reader gets when "
+        f"they paste it:\n--- stderr ---\n{proc.stderr[-2500:]}"
+    )
