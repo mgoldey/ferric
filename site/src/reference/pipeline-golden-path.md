@@ -19,7 +19,7 @@ live. Ten PRs have merged since. VERIFIED against `origin/main` just now:
 | blocker as written | status |
 |---|---|
 | `context["geometry"]` never written -> docked pose discarded | **FIXED** (#93). `_harvest_geometry` present in funnel.py |
-| No structure readers -- xyz only | **FIXED** (#91). `tools/structure` reads PDB/mmCIF/PQR/SDF/mol2/SMILES |
+| No structure readers -- xyz only | **FIXED** (#91, gro in #128). `tools/structure` reads PDB/mmCIF/PQR/SDF/mol2/gro/SMILES |
 | `normal_modes` not exposed to Python -> C4 uncompletable | **FIXED** (#97). Present in the bindings |
 | No substitution enumerator wired to the pocket | **FIXED** (#96). `propose_substitutions` + `embed_proposals` |
 | Gradient memory 3.033 GB peak | **FIXED** (#92). 7.4x lower |
@@ -248,7 +248,7 @@ none is illustrative.
 # A. any input format -> a ferric Molecule (Angstrom, seeded ETKDG for SMILES)
 from tools.structure import from_smiles, read
 mol = from_smiles("CC(=O)Oc1ccccc1C(=O)O", seed=0xF00D)   # aspirin: 21 atoms
-mol = read("ligand_with_hydrogens.pdb")   # | .sdf | .mol2 | .xyz | .pqr
+mol = read("ligand_with_hydrogens.pdb")   # | .sdf | .mol2 | .xyz | .pqr | .gro
 #   ^ a PLACEHOLDER path -- substitute your own file. Everything below runs
 #     as written; this line is the only one that needs editing.
 #   `read` RETURNS A MOLECULE. `read_structure` does NOT -- it stops at a
@@ -377,6 +377,7 @@ Rust `Molecule` has only `load_xyz` / `load_xyz_with_charge` / `parse_xyz`
 | PQR | `tools/active_site/pqr_parser`, `tools/structure` | Python | charges are MM, not a QM charge state |
 | SDF / mol / mol2 | `tools/structure` (rdkit) | Python | `ferric[docking]` extra |
 | SMILES | `tools/structure.from_smiles` (rdkit ETKDG) | Python | geometry is tier-2 grade, NOT optimized |
+| GROMACS gro | `tools/structure` (builtin) | Python | nm -> A; frame 1 only; cross-checked vs OpenMM |
 | AMBER prmtop | via OpenMM only | Python | no direct reader |
 | OpenMM | `active_site/mm_topology.topology_from_openmm` | Python | |
 
