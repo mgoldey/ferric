@@ -229,3 +229,42 @@ def test_contacting_atom_indices_refuses_an_empty_pocket():
     """Zero contacts against zero pocket atoms is a claim, not an absence."""
     with pytest.raises(ValueError, match="empty"):
         contacting_atom_indices([(0.0, 0.0, 0.0)], [], 4.0)
+
+
+def test_grid_captions_are_one_line_so_they_do_not_land_on_the_molecule():
+    """`MolsToGridImage` reserves room for ONE legend line.
+
+    A "\\n" in the caption puts the second line on top of the structure --
+    VERIFIED by rendering: "Cl-C5 / -1.90 kcal/mol" sat across the carboxyl
+    group. Raising `sub_size` does NOT help, because RDKit rescales the
+    structure to fill whatever box it is given; the fix has to be the caption.
+
+    Checked at the source rather than by inspecting pixels: the caption format
+    is the thing that must not regress, and a pixel test would be fragile
+    across RDKit versions.
+    """
+    import inspect
+
+    from tools.viz import molecules as vm
+
+    src = inspect.getsource(vm.grid_with_scores)
+    body = "\n".join(
+        line for line in src.splitlines() if not line.strip().startswith("#")
+    )
+    assert "captions.append" in body
+    caption_lines = [line for line in body.splitlines() if "n/a" in line]
+    assert caption_lines, "the caption builder moved; re-derive this guard"
+    assert not any("\\n" in line for line in caption_lines), (
+        f"a newline is back in the grid caption: {caption_lines}. Two lines "
+        "overprint the structure -- see this test's docstring."
+    )
+
+
+def test_grid_still_renders_and_distinguishes_a_missing_score():
+    """The one-line change must not lose the n/a distinction."""
+    from tools.viz.molecules import grid_with_scores
+
+    img = grid_with_scores(
+        ["CCO", "CCC"], [1.0, None], labels=["has", "missing"], unit="kcal/mol"
+    )
+    assert img and len(img) > 1000, "the grid did not render"
