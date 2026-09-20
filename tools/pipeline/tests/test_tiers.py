@@ -577,3 +577,52 @@ def test_the_qm_mm_dispersion_comment_does_not_claim_missing_code():
         "`ferric_mm::qm_mm_lj_energy_gradient`. The arithmetic existing in a "
         "private module is not the same as a caller being able to use it."
     )
+
+
+def test_tier1_missing_receptor_is_an_explained_failure_not_a_crash():
+    """A missing prerequisite must DROP the candidate, not kill the run.
+
+    `tier1_dock` read `context["receptor_pdbqt"]` and `context["box_center"]`
+    as bare subscripts at the dock call. MEASURED before the fix: a caller who
+    forgot the receptor got `KeyError: 'receptor_pdbqt'` propagating out of
+    `run_funnel`, taking the WHOLE RUN down -- 1 candidate or 10,000.
+
+    Every other tier honours the contract (`tier3_gfn2` returns
+    "no geometry for GFN2"), and `tier1_dock` itself already returned explained
+    failures for unparseable SMILES and multi-fragment molecules. The context
+    keys were simply missed.
+
+    The funnel half is the point: the report must show `n_failed` and carry the
+    reason, because that is what a caller sees when a screen of thousands has
+    one misconfigured stage.
+    """
+    from tools.campaign.hierarchy import Tier
+    from tools.isomers.model import Isomer
+    from tools.pipeline import Stage, run_funnel
+    from tools.pipeline.tiers import tier1_dock
+
+    iso = Isomer(smiles="CCO", kind="parent", transform="t", parent_smiles="CCO")
+
+    for ctx, why in [
+        ({}, "neither key"),
+        ({"receptor_pdbqt": "/x.pdbqt"}, "box_center missing"),
+        ({"box_center": (0.0, 0.0, 0.0)}, "receptor missing"),
+    ]:
+        r = tier1_dock(iso, ctx)
+        assert not r.ok, f"{why}: must fail"
+        assert r.value is None, (
+            f"{why}: a failed tier must not return a value -- the funnel ranks "
+            f"ASCENDING, so a placeholder 0.0 would be the BEST score"
+        )
+        assert "context[" in r.error, f"{why}: the error must name the key: {r.error}"
+        assert "prepare_receptor" in r.error, (
+            f"{why}: the error must name the remedy: {r.error}"
+        )
+
+    # And the funnel must COMPLETE, reporting the failure rather than raising.
+    rep = run_funnel([iso], [Stage(Tier.SEARCH, tier1_dock, keep=1, name="dock")], {})
+    assert rep.outcomes[0].n_failed == 1
+    assert rep.survivors == []
+    assert any("receptor_pdbqt" in e for e in rep.outcomes[0].errors), (
+        f"the reason must reach the report: {rep.outcomes[0].errors}"
+    )
