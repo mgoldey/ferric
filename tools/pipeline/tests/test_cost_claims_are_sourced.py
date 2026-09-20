@@ -439,10 +439,33 @@ def test_the_answer_table_tier_costs_agree_with_tiers_py():
     for token in ("2.2", "21.6"):
         assert token not in xtb_row, f"xtb row carries MMFF's {token!r}: {xtb_row}"
 
+    # A cold-start figure must not be quoted as a per-call cost. The
+    # substitution row read a flat "216 ms"; MEASURED, that is the FIRST call
+    # in a process (248 ms here) while every call after it is 7.6 ms, so the
+    # flat figure over-states a 100-analogue sweep by ~30x. Whenever a row
+    # names a first-call cost it must also name the warm one.
+    sub_row = row_for("substitution.propose_substitutions")
+    assert "first call" in sub_row and "warm" in sub_row, (
+        "the substitution row must distinguish the cold first call from the "
+        f"warm per-call cost; they differ by ~30x: {sub_row}"
+    )
+
+    # The liability row must say the DEFAULT reaches the network. MEASURED:
+    # `include_web=True` (the default) pulls admetlab3 and protox3 at 1.6 s
+    # per analogue against 54 ms for the offline rdkit-alerts path -- a 30x
+    # difference that also decides whether a sweep runs offline at all. The
+    # row used to read "~5 ms / analogue" and mention neither.
+    liab_row = row_for("tox.assess.assess_smiles")
+    assert "include_web" in liab_row or "offline" in liab_row, (
+        "the liability row must say that assess_smiles reaches the network by "
+        f"default; a screening loop is 30x slower than the offline path: {liab_row}"
+    )
+
     # And the specific stale values must not come back.
     table = "\n".join(rows)
-    for gone in ["**32 ms**", "**53 ms**"]:
+    for gone in ["**32 ms**", "**53 ms**", "**216 ms**", "~5 ms / analogue"]:
         assert gone not in table, (
-            f"section 0a re-asserts {gone}, which was RE-MEASURED 2026-09-20 "
-            f"as 9 ms (FF) and 39 ms (xtb) and disagrees with tiers.py"
+            f"section 0a re-asserts {gone}; these were all RE-MEASURED "
+            f"2026-09-20 as 9 ms (FF), 39 ms (xtb) and 7.6 ms warm "
+            f"(substitution, vs 248 ms on the first call in a process)"
         )
