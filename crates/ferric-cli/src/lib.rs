@@ -207,53 +207,6 @@ pub fn main() {
 /// extra element away, since `sys.argv` is the shape Python itself commits
 /// to being stable, not an implementation detail of how CPython's runtime
 /// happens to report process argv on this platform/version.
-
-/// Resolve the molecule to solve, and the QM/MM system behind it if `[qmmm]`
-/// is set.
-///
-/// Split out of `run` rather than inlined: `run`'s cyclomatic complexity is
-/// already at the project ceiling, and the QM/MM branch added +8. The logic is
-/// one decision -- QM region or plain molecule -- so it reads better alone.
-fn resolve_geometry(cfg: &Config) -> (Option<ferric_scf::qmmm::QmmmSystem>, Molecule) {
-    // A `[qmmm]` MM region and an explicit `[external_potential]` are two
-    // sources for the same field; combining them would double a contribution
-    // silently.
-    if cfg.qmmm.is_some() && cfg.external_potential.to_external_potential().is_some() {
-        eprintln!(
-            "error: [qmmm] and [external_potential] both define an external field. \
-             The QM/MM MM region IS an external potential, so combining them would \
-             double a contribution silently. Remove one."
-        );
-        std::process::exit(1);
-    }
-    let Some(q) = cfg.qmmm.as_ref() else {
-        let mol = Molecule::load_xyz_with_charge(
-            &cfg.molecule.xyz,
-            cfg.molecule.charge,
-            cfg.molecule.multiplicity,
-        )
-        .unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        });
-        return (None, mol);
-    };
-    let sys = q
-        .to_system(cfg.molecule.charge, cfg.molecule.multiplicity)
-        .unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1);
-        });
-    let mol = sys.to_qm_molecule();
-    eprintln!(
-        "[ferric] QM/MM: {} QM atoms, {} MM charges from {}",
-        mol.atoms.len(),
-        sys.mm_charge_positions().len(),
-        q.pqr
-    );
-    (Some(sys), mol)
-}
-
 pub fn run(args: Vec<String>) {
     // Safe-by-default threading: pin OpenBLAS to 1 thread (rayon owns ferric's
     // parallelism) unless the user explicitly set OPENBLAS_NUM_THREADS. Without
@@ -1170,6 +1123,52 @@ pub fn run(args: Vec<String>) {
             }),
         );
     }
+}
+
+/// Resolve the molecule to solve, and the QM/MM system behind it if `[qmmm]`
+/// is set.
+///
+/// Split out of `run` rather than inlined: `run`'s cyclomatic complexity is
+/// already at the project ceiling, and the QM/MM branch added +8. The logic is
+/// one decision -- QM region or plain molecule -- so it reads better alone.
+fn resolve_geometry(cfg: &Config) -> (Option<ferric_scf::qmmm::QmmmSystem>, Molecule) {
+    // A `[qmmm]` MM region and an explicit `[external_potential]` are two
+    // sources for the same field; combining them would double a contribution
+    // silently.
+    if cfg.qmmm.is_some() && cfg.external_potential.to_external_potential().is_some() {
+        eprintln!(
+            "error: [qmmm] and [external_potential] both define an external field. \
+             The QM/MM MM region IS an external potential, so combining them would \
+             double a contribution silently. Remove one."
+        );
+        std::process::exit(1);
+    }
+    let Some(q) = cfg.qmmm.as_ref() else {
+        let mol = Molecule::load_xyz_with_charge(
+            &cfg.molecule.xyz,
+            cfg.molecule.charge,
+            cfg.molecule.multiplicity,
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+        return (None, mol);
+    };
+    let sys = q
+        .to_system(cfg.molecule.charge, cfg.molecule.multiplicity)
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+    let mol = sys.to_qm_molecule();
+    eprintln!(
+        "[ferric] QM/MM: {} QM atoms, {} MM charges from {}",
+        mol.atoms.len(),
+        sys.mm_charge_positions().len(),
+        q.pqr
+    );
+    (Some(sys), mol)
 }
 
 /// Hill-notation molecular formula (C first, then H, then the rest
