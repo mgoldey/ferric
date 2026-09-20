@@ -703,8 +703,21 @@ impl PyQmmmSystem {
         };
         let inner = QmmmSystem::new(&atoms, selection, charge, multiplicity).map_err(make_err)?;
         if let Some(&bad) = inner.qm_indices.iter().find(|&&i| atoms[i].z == 0) {
+            // Say WHY it is there and what to do. A bare-charge site (symbol
+            // "X", z = 0) is how a pocket point charge enters the structure --
+            // it has no basis, so it can never be QM. The common way to hit
+            // this is sizing a QM region by RADIUS: the sphere grows until it
+            // reaches the pocket, and the message then has to distinguish "you
+            // picked a bad atom" from "your radius is too large", which the
+            // bare index did not.
+            let n_bare = atoms.iter().filter(|a| a.z == 0).count();
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "QM atom {bad} has symbol {:?}, which is not an element",
+                "QM atom {bad} has symbol {:?}, which is not an element, so it \
+                 cannot be in the QM region -- a bare-charge site (z = 0) has no \
+                 basis functions. This structure has {n_bare} such site(s), which \
+                 is how MM point charges are represented. If you selected by \
+                 radius, REDUCE qm_radius_angstrom until the sphere holds only \
+                 real atoms, or list the QM atoms explicitly with qm_indices.",
                 atoms[bad].symbol
             )));
         }
