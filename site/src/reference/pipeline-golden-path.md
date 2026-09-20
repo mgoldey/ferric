@@ -99,8 +99,10 @@ $ grep -rnE '\["geometry"\]|\.get\("geometry"|"geometry":' tools/ experiments/ -
 tools/pipeline/tiers.py:84:    cached = context.get("geometry", {}).get(iso.canonical)
 ```
 
-**One read. Zero writes.** Nothing in the repository ever populates
-`context["geometry"]`.
+**One read, zero writes -- AS OF THE SURVEY. Fixed since; see the heading.**
+`funnel.py:184` now writes `context.setdefault("geometry", {})[...]` from
+`_harvest_geometry`. The paragraphs below describe the DEFECT as found, because
+the reasoning is what makes the fix legible; they are not the current state.
 
 The consequence is concrete. `tier1_dock` DOES return the pose
 (`tiers.py:181-185`, payload carries `symbols` and `coords_angstrom`), and
@@ -108,9 +110,15 @@ The consequence is concrete. `tier1_dock` DOES return the pose
 connects the two. So `_embedded` falls through to `tier2_forcefield`, which
 re-embeds from SMILES with ETKDG **in free solution**.
 
-Tier 1 costs ~2 min/ligand (MEASURED, `tiers.py:11`). That entire spend is
-discarded, and tiers 3 and 4 then score a gas-phase conformer that has never
-seen the pocket. This violates the funnel's own stated premise -- `_embedded`'s
+Tier 1 costs **26.4 s/ligand** (RESULTS.md M11, exhaustiveness 4). That entire
+spend was discarded, and tiers 3 and 4 then scored a gas-phase conformer that
+had never seen the pocket.
+
+(This line used to read "~2 min/ligand (MEASURED, `tiers.py:11`)". The cost
+table below retracts that figure in as many words -- "never measured, and its
+`tiers.py:11` citation pointed at the module doc comment" -- so the retraction
+and the claim coexisted in one document. A citation that resolves to a doc
+comment is not a measurement.) This violates the funnel's own stated premise -- `_embedded`'s
 docstring says the cache exists so "tiers 3 and 4 would not be scoring
 DIFFERENT geometries of the same candidate".
 
