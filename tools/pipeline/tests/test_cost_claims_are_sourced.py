@@ -413,7 +413,11 @@ def test_the_answer_table_tier_costs_agree_with_tiers_py():
     expected = {
         "tiers.tier2_forcefield": (["9 ms", "2.2", "8.2", "21.6"], "MMFF94"),
         "tiers.tier3_gfn2": (["39 ms", "0.152", "0.050"], "GFN2-xTB"),
-        "docking.vina_dock": (["26.4"], "Vina"),
+        # Both the RESULTS.md M11 reference AND the size curve measured here
+        # 2026-09-20. One number hides a 16x spread (1.9 s at 9 atoms to 31 s
+        # at 57, ~N^1.5), and tier 1 is the budget item the whole campaign
+        # sizing rests on.
+        "docking.vina_dock": (["26.4", "31 s", "5.7", "1.9"], "Vina"),
         # The most expensive tier, and the one this guard did NOT cover until
         # 2026-09-20: its row quoted STO-3G figures while `tier4_dft`'s default
         # basis is def2-svp -- 2.64 s vs 0.75 at 9 atoms. Both must appear, so
@@ -422,7 +426,17 @@ def test_the_answer_table_tier_costs_agree_with_tiers_py():
     }
     # Re-measurements recorded in the golden path rather than copied from
     # tiers.py, so they are exempt from the "must exist in the source" check.
-    RE_MEASURED = {"9 ms", "39 ms", "2.6", "0.75", "def2-svp", "STO-3G"}
+    RE_MEASURED = {
+        "9 ms",
+        "39 ms",
+        "2.6",
+        "0.75",
+        "def2-svp",
+        "STO-3G",
+        "31 s",
+        "5.7",
+        "1.9",
+    }
     for call, (tokens, why) in expected.items():
         row = row_for(call)
         for token in tokens:
