@@ -98,3 +98,9 @@ experiments/danuglipron/out/
 
 # mdBook build output (site/ is the source; site/book is generated)
 site/book/
+
+# ferric run logs: written next to the TOML by any example run, and full of
+# machine-specific values (git_sha, memory_budget_bytes, rayon_num_threads,
+# timestamps). Three were committed by an `add -A` on 2026-09-19; they made
+# the working tree dirty on every example run.
+*.ferric.jsonl
