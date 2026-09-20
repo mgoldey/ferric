@@ -442,3 +442,166 @@ def test_a_pqr_of_ions_reads_the_right_elements_end_to_end():
         p.write_text(text)
         st = read_structure(p)
     assert st.symbols == ("Cl", "Zn", "Na", "C")
+
+
+# --- GROMACS .gro ------------------------------------------------------------
+
+GRO_TWO_WATERS = """MD of 2 waters, t= 0.0
+    6
+    1WATER   OW    1   0.126   1.624   1.679
+    1WATER  HW1    2   0.190   1.661   1.747
+    1WATER  HW2    3   0.177   1.568   1.613
+    2WATER   OW    4   1.275   0.053   0.622
+    2WATER  HW1    5   1.337   0.002   0.680
+    2WATER  HW2    6   1.326   0.120   0.568
+   1.82060   1.82060   1.82060
+"""
+
+
+def _write(tmp_path, name, text):
+    p = tmp_path / name
+    p.write_text(text)
+    return p
+
+
+def test_gro_coordinates_are_nanometres_and_get_scaled():
+    """The one reader whose file is not already in Angstrom.
+
+    A missing factor of 10 is the single most likely GRO bug and it does not
+    look like an error -- it looks like a very small molecule.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from tools.structure import read_structure
+
+    with tempfile.TemporaryDirectory() as d:
+        st = read_structure(_write(Path(d), "w.gro", GRO_TWO_WATERS))
+    assert st.symbols == ("O", "H", "H", "O", "H", "H")
+    # 0.126 nm -> 1.26 A, not 0.126 A.
+    assert st.coords[0] == pytest.approx((1.26, 16.24, 16.79))
+    # And the geometry has to be a water: O-H near 0.96 A, not 0.096 A.
+    import math
+
+    oh = math.dist(st.coords[0], st.coords[1])
+    assert 0.9 < oh < 1.1, f"O-H = {oh} A -- wrong length unit?"
+
+
+def test_gro_agrees_with_openmms_own_reader():
+    """Cross-validation against an INDEPENDENT implementation.
+
+    Reading the spec twice is one source, not two. OpenMM's `GromacsGroFile`
+    is a separately written parser, so agreement with it distinguishes a
+    correct reader from a self-consistent misreading.
+    """
+    import tempfile
+    from pathlib import Path
+
+    openmm_app = pytest.importorskip("openmm.app")
+    from openmm.unit import angstrom
+
+    from tools.structure import read_structure
+
+    with tempfile.TemporaryDirectory() as d:
+        p = _write(Path(d), "w.gro", GRO_TWO_WATERS)
+        mine = read_structure(p).coords
+        ref = openmm_app.GromacsGroFile(str(p)).getPositions(asNumpy=True)
+    ref = ref.value_in_unit(angstrom)
+    assert len(mine) == len(ref)
+    for got, want in zip(mine, ref):
+        assert got == pytest.approx(tuple(want), abs=1e-9)
+
+
+def test_gro_fixed_columns_survive_fields_running_together():
+    """Why this is not a `line.split()`.
+
+    GRO is `%5d%-5s%5s%5d%8.3f%8.3f%8.3f` and the fields are allowed to touch.
+    With a five-character residue name and a five-character atom name there is
+    no space between them at all:
+
+        `    1SOLVECLXYZ    1   1.000   2.000   3.000`
+
+    A whitespace split sees `['1SOLVECLXYZ', '1', '1.000', ...]` and takes the
+    ATOM INDEX as the atom name, so the element comes out of a bare `1`. The
+    columns say `CLXYZ` -> chlorine.
+
+    This test was rewritten once: the first version used a five-digit index
+    with a short atom name (`OW112345`), which a split also mangles -- but only
+    by appending digits, and the element heuristic stops at the first
+    non-letter, so `split()` still produced the right element and the test
+    PASSED against a deliberately broken reader. Truncation that does not
+    change the answer is not a discriminating case.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from tools.structure import read_structure
+
+    rows = [
+        (1, "SOLVE", "CLXYZ", 1, 1.234, 2.345, 3.456),
+        (2, "WATER", "OWXYZ", 2, 1.334, 2.345, 3.456),
+    ]
+    body = "\n".join("%5d%-5s%5s%5d%8.3f%8.3f%8.3f" % r for r in rows)
+    text = f"tight columns\n    2\n{body}\n   2.00000   2.00000   2.00000\n"
+
+    # The premise: the residue and atom names really do touch, so a split
+    # cannot recover the atom name at all.
+    first = body.splitlines()[0]
+    assert first.split()[0] == "1SOLVECLXYZ", first
+    assert first[10:15] == "CLXYZ", first
+
+    with tempfile.TemporaryDirectory() as d:
+        st = read_structure(_write(Path(d), "tight.gro", text))
+    assert st.symbols == ("Cl", "O")
+    assert st.coords[0] == pytest.approx((12.34, 23.45, 34.56))
+
+
+def test_gro_with_a_wrong_atom_count_is_refused():
+    import tempfile
+    from pathlib import Path
+
+    from tools.structure import StructureError, read_structure
+
+    text = GRO_TWO_WATERS.replace("    6", "    9", 1)
+    with tempfile.TemporaryDirectory() as d:
+        p = _write(Path(d), "bad.gro", text)
+        with pytest.raises(StructureError, match="header says 9 atoms"):
+            read_structure(p)
+
+
+def test_gro_with_a_truncated_atom_line_is_refused_not_padded():
+    import tempfile
+    from pathlib import Path
+
+    from tools.structure import StructureError, read_structure
+
+    text = "t\n    1\n    1WATER   OW    1   0.126\n   1.0 1.0 1.0\n"
+    with tempfile.TemporaryDirectory() as d:
+        p = _write(Path(d), "short.gro", text)
+        with pytest.raises(StructureError, match="need at least 44"):
+            read_structure(p)
+
+
+def test_gro_multi_frame_reads_frame_one_and_says_so():
+    """A trajectory holds frames of the same molecule.
+
+    Concatenating them invents atoms; averaging invents a geometry. Read the
+    first and record that in `source`, matching `_read_pdb`'s model-1 rule.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from tools.structure import read_structure
+
+    two = GRO_TWO_WATERS + GRO_TWO_WATERS.replace("0.126", "0.226", 1)
+    with tempfile.TemporaryDirectory() as d:
+        st = read_structure(_write(Path(d), "traj.gro", two))
+    assert len(st.symbols) == 6, "second frame must not be concatenated"
+    assert st.coords[0][0] == pytest.approx(1.26), "must be frame 1, not frame 2"
+    assert "frame 1 of 2" in st.source
+
+
+def test_gro_is_listed_as_a_supported_suffix():
+    from tools.structure import SUPPORTED_SUFFIXES
+
+    assert SUPPORTED_SUFFIXES[".gro"] == "gro"

@@ -25,6 +25,7 @@ parsers that could drift apart. `test_all_formats_agree_bitwise` pins it.
 | `.xyz`             | builtin | always                             |
 | `.pdb`, `.cif`     | gemmi   | always (gemmi is a core dependency)|
 | `.pqr`             | builtin | always                             |
+| `.gro`             | builtin | always                             |
 | `.sdf`, `.mol`     | rdkit   | `pip install 'ferric[docking]'`    |
 | `.mol2`            | rdkit   | `pip install 'ferric[docking]'`    |
 | SMILES (string)    | rdkit   | `pip install 'ferric[docking]'`    |
@@ -147,6 +148,7 @@ SUPPORTED_SUFFIXES: dict[str, str] = {
     ".mmcif": "pdb",
     ".ent": "pdb",
     ".pqr": "pqr",
+    ".gro": "gro",
     ".sdf": "sdf",
     ".mol": "sdf",
     ".mol2": "mol2",
@@ -341,6 +343,9 @@ def _read_pqr(path: Path, charge: int, multiplicity: int) -> Structure:
 # An ion-heavy system needs a format with a real element column.
 # `crates/ferric-cli/src/config.rs::element_from_pqr_name` makes the same call
 # for the same reason; these two must agree.
+#: GROMACS stores coordinates in nanometres; everything else here is Angstrom.
+NM_TO_ANGSTROM = 10.0
+
 _TWO_LETTER_OK = frozenset({"CL", "BR", "ZN", "FE", "MG", "MN", "NA", "CU", "SE"})
 
 
@@ -366,6 +371,73 @@ def element_from_pdb_atom_name(name: str) -> str:
     if alpha[:2].upper() in _TWO_LETTER_OK:
         return alpha[0].upper() + alpha[1].lower()
     return alpha[0].upper()
+
+
+def _read_gro(path: Path, charge: int, multiplicity: int) -> Structure:
+    """GROMACS `.gro` -- fixed-column, nanometres, no element column.
+
+    Three things make this its own reader rather than a whitespace split:
+
+    1. **Fixed columns are mandatory, not a convention.** The format is
+       `%5d%-5s%5s%5d%8.3f%8.3f%8.3f`. A residue name and atom name that both
+       fill their five columns run together (`12SOLVENTOW1`), and a five-digit
+       atom index touching an eight-wide coordinate does the same. Splitting on
+       whitespace works on hand-written examples and silently mis-parses real
+       trajectory output.
+    2. **Coordinates are in nanometres.** Everything else here is Angstrom, so
+       this is the one reader that scales by 10.
+    3. **Only the first frame is read.** A `.gro` can hold a trajectory; those
+       are frames of the SAME molecule, so concatenating them would invent
+       atoms and averaging them would invent a geometry. This reads frame 1 and
+       says so in `Structure.source`, matching `_read_pdb`'s model-1 rule.
+
+    Velocities (optional columns 45-68) are ignored: a `Structure` is a
+    geometry.
+
+    Elements come from `element_from_pdb_atom_name`, because GRO carries no
+    element column either and GROMACS atom names follow the same convention.
+    Cross-checked against `openmm.app.GromacsGroFile` in the tests -- an
+    independent reader, not a second reading of the spec by the same author.
+    """
+    lines = path.read_text().splitlines()
+    if len(lines) < 3:
+        raise StructureError(
+            f"{path}: a GRO file needs at least a title, a count and a box line"
+        )
+    try:
+        n = int(lines[1].strip())
+    except ValueError as exc:
+        raise StructureError(
+            f"{path}: line 2 is not an atom count: {lines[1]!r}"
+        ) from exc
+    if n <= 0:
+        raise StructureError(f"{path}: atom count is {n}")
+    body = lines[2 : 2 + n]
+    if len(body) != n:
+        raise StructureError(
+            f"{path}: header says {n} atoms, file has {len(body)} atom lines"
+        )
+    symbols, coords = [], []
+    for i, line in enumerate(body):
+        if len(line) < 44:
+            raise StructureError(
+                f"{path}:{i + 3}: atom line is {len(line)} characters, need at "
+                f"least 44 for name and coordinates: {line!r}"
+            )
+        name = line[10:15].strip()
+        if not name:
+            raise StructureError(f"{path}:{i + 3}: no atom name in columns 11-15")
+        try:
+            x, y, z = (float(line[20:28]), float(line[28:36]), float(line[36:44]))
+        except ValueError as exc:
+            raise StructureError(
+                f"{path}:{i + 3}: could not read nm coordinates from {line[20:44]!r}"
+            ) from exc
+        symbols.append(element_from_pdb_atom_name(name))
+        coords.append((x * NM_TO_ANGSTROM, y * NM_TO_ANGSTROM, z * NM_TO_ANGSTROM))
+    n_frames = 1 + max(0, (len(lines) - (n + 3)) // (n + 3))
+    src = str(path) if n_frames == 1 else f"{path} (frame 1 of {n_frames})"
+    return Structure(tuple(symbols), tuple(coords), charge, multiplicity, src)
 
 
 def _read_rdkit(path: Path, charge: int, multiplicity: int, fmt: str) -> Structure:
@@ -411,7 +483,12 @@ def _from_rdkit_mol(
     return Structure(tuple(symbols), tuple(coords), charge, multiplicity, source)
 
 
-_READERS = {"xyz": _read_xyz, "pdb": _read_pdb, "pqr": _read_pqr}
+_READERS = {
+    "xyz": _read_xyz,
+    "pdb": _read_pdb,
+    "pqr": _read_pqr,
+    "gro": _read_gro,
+}
 
 
 def read(
@@ -468,7 +545,7 @@ def read_structure(
         key = fmt.lower().lstrip(".")
         if key in SUPPORTED_SUFFIXES:
             key = SUPPORTED_SUFFIXES[key]
-        elif key not in ("xyz", "pdb", "pqr", "sdf", "mol2"):
+        elif key not in ("xyz", "pdb", "pqr", "gro", "sdf", "mol2"):
             raise StructureError(f"unknown fmt={fmt!r}")
     if not path.exists():
         raise StructureError(f"{path}: no such file")
