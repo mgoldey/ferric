@@ -84,10 +84,23 @@ first call costs 24x" below before planning a campaign from them.
 | find a transition state | `ferric.run_saddle` | `2*(6N+1) + (n_steps+1)` gradients | `energy_profile` |
 | confirm it is one | `ferric.run_frequencies` | `6N+1` gradients | **`imaginary_mode`** |
 | get the barrier | `ferric.run_irc` | ~70 gradients / branch | `reaction_path` |
-| bind in a pocket | `active_site.binding_energy` | tier 3/4 above | `site_substituent_heatmap` |
+| bind in a pocket | `active_site.binding_energy` | **137 s** @ 71 atoms/6458 charges, STO-3G (TWO SCFs + pdb2pqr) | `site_substituent_heatmap` |
 | **relax a geometry (QM)** | `ferric.run_optimize` | 1 gradient/step; 6 steps for an embedded methyl | **`optimization_trace`** |
 | **set up a QM/MM cut** | `ferric.QmmmSystem` + `.with_boundary_charges` | free (setup) | **`qmmm_partition`** |
 | draw the molecule | `viz.molecules.depict` | **5.9 ms** warm (88 ms first call) | -- |
+
+**`binding_energy` is TWO SCFs, not one tier.** RUN end to end 2026-09-20:
+danuglipron's cryo-EM pose (71 atoms) in the 7LCJ pocket (6458 charges),
+STO-3G/RHF, **137 s** wall, giving `delta_e_kcal_mol = -17.41`. The row used
+to say "tier 3/4 above", which is a pointer rather than a cost and does not
+add up from the tier rows: the call derives the pocket charges (2.66 s) and
+then runs the ligand SCF TWICE, embedded and in vacuum. At def2-SVP, scale by
+the tier-4 basis factor.
+
+The number is for ONE POSE and does not rank analogues -- `compute_binding_energy`'s
+own docstring carries the five closed protocols and the 4.07 kcal/mol ddE
+noise floor against 1-2 kcal/mol substituent effects. Pass that floor to
+`site_substituent_heatmap(noise_floor=)`.
 
 **`assess_smiles` reaches the NETWORK by default.** `include_web=True` adds
 the `admetlab3` and `protox3` providers, measured at **1.6 s/analogue** against
