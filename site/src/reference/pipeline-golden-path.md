@@ -1908,7 +1908,7 @@ refused with a clear message rather than silently solved.
 These are smoke tests, not the regression net. The chain is pinned by
 `test_the_whole_embedded_chain_runs_and_the_barrier_moves`
 (`crates/ferric-python/tests/test_saddle.py`), which asserts the same
-vacuum-converges/field-does-not split and uses `irc.saddle_energy` as a
+split -- the vacuum converges, the field does not -- and uses `irc.saddle_energy` as a
 field-detector.
 
 #### C1 and C4 VERIFIED to work (2026-09-18)
