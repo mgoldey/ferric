@@ -74,9 +74,9 @@ first call costs 24x" below before planning a campaign from them.
 
 | you want to | call | cost | the plot that answers it |
 |---|---|---:|---|
-| enumerate substitutions | `substitution.propose_substitutions` | **216 ms** / 7 proposals | `site_substituent_heatmap` |
+| enumerate substitutions | `substitution.propose_substitutions` | **7.6 ms** / 7 proposals warm (**248 ms** first call) | `site_substituent_heatmap` |
 | screen toxicology | `tox.alerts.RdkitAlertsProvider.fetch` | **4.9 ms** / molecule, 13 endpoints | `liability_profile` |
-| rank analogues by liability | `tox.assess.assess_smiles` -> `.liability_score` | ~5 ms / analogue | `liability_profile` |
+| rank analogues by liability | `tox.assess.assess_smiles` -> `.liability_score` | **54 ms** offline; **1.6 s** with the default `include_web=True` | `liability_profile` |
 | dock a ligand | `docking.vina_dock` | **26.4 s** / ligand @ ex=4 | `pose_ensemble`, `funnel_survival` |
 | relax a pose (FF) | `tiers.tier2_forcefield` | **9 ms** @ 21 atoms (2.2 @ 9, 8.2 @ 19, 21.6 @ 34) | `tier_comparison` |
 | relax a pose (xtb) | `tiers.tier3_gfn2` | **39 ms** @ 21 atoms (0.152 s @ 9, 0.050 @ 19) | `tier_comparison` |
@@ -87,7 +87,21 @@ first call costs 24x" below before planning a campaign from them.
 | bind in a pocket | `active_site.binding_energy` | tier 3/4 above | `site_substituent_heatmap` |
 | **relax a geometry (QM)** | `ferric.run_optimize` | 1 gradient/step; 6 steps for an embedded methyl | **`optimization_trace`** |
 | **set up a QM/MM cut** | `ferric.QmmmSystem` + `.with_boundary_charges` | free (setup) | **`qmmm_partition`** |
-| draw the molecule | `viz.molecules.depict` | **14 ms** | -- |
+| draw the molecule | `viz.molecules.depict` | **5.9 ms** warm (88 ms first call) | -- |
+
+**`assess_smiles` reaches the NETWORK by default.** `include_web=True` adds
+the `admetlab3` and `protox3` providers, measured at **1.6 s/analogue** against
+**54 ms** for the offline `rdkit-alerts` path alone. The row used to read
+"~5 ms / analogue", which matches neither and hid the network hop -- the one
+that decides whether a 1000-analogue sweep takes a minute or half an hour, and
+whether it works at all offline.
+
+The substitution row was RE-MEASURED 2026-09-20 (benzoic acid, `{F, Cl}`,
+the configuration that gives exactly 7 proposals): **248 ms on the FIRST call
+in a process, 7.6 ms on every call after it.** The old flat "216 ms" was a
+cold-start number quoted as a per-call cost, which over-states a sweep of 100
+analogues by ~30x. Both are given because both are real and they answer
+different questions -- budget the first call once, the rest at 7.6 ms.
 
 The two tier rows were RE-MEASURED 2026-09-20 through the tier functions
 themselves (aspirin, 21 atoms, n=9 after a warm-up call): FF median 9.0 ms
