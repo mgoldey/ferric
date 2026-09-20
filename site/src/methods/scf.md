@@ -147,6 +147,43 @@ grid); absolute energies do not. Three knobs, all optional:
 Setting any `cosx_*` key without `k_builder = "cosx"`, or `k_builder` together
 with `df_k_aux`, is refused or warned about rather than silently ignored.
 
+## QM/MM embedding from the CLI
+
+QM/MM used to be reachable only from the Rust and Python APIs. A `[qmmm]`
+section now drives it from TOML: the QM region becomes the molecule that is
+solved, and the MM region becomes the external potential it is solved in.
+
+```toml
+[qmmm]
+pqr = "testdata/molecules/water_na.pqr"
+qm_indices = [0, 1, 2]            # or: qm_seeds = [0], qm_radius_angstrom = 1.5
+# link_bonds = [[0, 3]]           # required when the cut crosses a covalent bond
+# boundary_scheme = "delete-host" # default; also "keep", "rc", "rcd"
+```
+
+**Geometry and MM charges both come from the PQR, not from `[molecule].xyz`.**
+An xyz has no partial charges, and an MM region without charges is a set of
+ignored coordinates. `[molecule].charge` and `.multiplicity` still apply — to
+the QM region.
+
+`boundary_scheme` defaults to `"delete-host"`, not `"keep"`. Keeping the host
+charge across a covalent cut puts a bare point charge inside the link atom's
+bond length (MEASURED 0.443 Å on an ethane C–C cut) and a geometry optimization
+in that field diverges rather than failing loudly. `"keep"` stays selectable and
+is right when the cut is not covalent.
+
+`[qmmm]` and `[external_potential]` together are refused: the MM region **is**
+an external potential, so combining them would double a contribution silently.
+
+MEASURED on `examples/water-qmmm.toml` — water (QM) with one Na⁺ at 4 Å (MM),
+sto-3g: vacuum −74.9629466809, embedded **−74.9653197421** (−1.489 kcal/mol),
+matching `ferric.run_rhf(point_charges=…)` to all ten printed digits.
+
+**Still not wired:** no prmtop/GRO parsing (PQR only), no periodic boundary
+conditions, no solvation box. The MM force field itself (`ferric-mm`, AMBER
+form, OpenMM-validated) is a separate library-only surface — `[qmmm]` here is
+electrostatic embedding, which needs charges and geometry, not bonded terms.
+
 ## Determinism
 
 The Fock build's reduction folds partial matrices in a **strict ascending group

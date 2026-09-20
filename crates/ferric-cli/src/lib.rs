@@ -396,15 +396,46 @@ pub fn run(args: Vec<String>) {
         );
         std::process::exit(1);
     }
-    let mut mol = Molecule::load_xyz_with_charge(
-        &cfg.molecule.xyz,
-        cfg.molecule.charge,
-        cfg.molecule.multiplicity,
-    )
-    .unwrap_or_else(|e| {
-        eprintln!("error: {e}");
+    // QM/MM: the QM region becomes the molecule that is solved, and the MM
+    // region becomes the external potential it is solved in. Built BEFORE the
+    // molecule so the two cannot disagree about which atoms are quantum --
+    // when `[qmmm]` is present, `[molecule].xyz` is not read at all.
+    if cfg.qmmm.is_some() && cfg.external_potential.to_external_potential().is_some() {
+        eprintln!(
+            "error: [qmmm] and [external_potential] both define an external field. \
+             The QM/MM MM region IS an external potential, so combining them would \
+             double a contribution silently. Remove one."
+        );
         std::process::exit(1);
+    }
+    let qmmm_system = cfg.qmmm.as_ref().map(|q| {
+        q.to_system(cfg.molecule.charge, cfg.molecule.multiplicity)
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            })
     });
+    let mut mol = match &qmmm_system {
+        Some(sys) => {
+            let m = sys.to_qm_molecule();
+            eprintln!(
+                "[ferric] QM/MM: {} QM atoms, {} MM charges from {}",
+                m.atoms.len(),
+                sys.mm_charge_positions().len(),
+                cfg.qmmm.as_ref().map(|q| q.pqr.as_str()).unwrap_or("?")
+            );
+            m
+        }
+        None => Molecule::load_xyz_with_charge(
+            &cfg.molecule.xyz,
+            cfg.molecule.charge,
+            cfg.molecule.multiplicity,
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }),
+    };
     let bs = if let Some(name) = &cfg.basis.name {
         basis::bundled(name)
     } else if let Some(path) = &cfg.basis.path {
@@ -630,7 +661,14 @@ pub fn run(args: Vec<String>) {
         use_sad_guess: cfg.scf.use_density_guess(),
         stall_window: None,
         divergence_tol: None,
-        external_potential: cfg.external_potential.to_external_potential(),
+        // A `[qmmm]` MM region and an explicit `[external_potential]` are two
+        // sources for the same field. Combining them silently would double a
+        // contribution nobody asked for, so the QM/MM one wins and the clash
+        // is refused above.
+        external_potential: match &qmmm_system {
+            Some(sys) => sys.to_external_potential(),
+            None => cfg.external_potential.to_external_potential(),
+        },
         cosmo: cfg.cosmo.clone(),
         // TODO(pcm-cli-wiring): no [pcm] TOML section yet -- PCM is only
         // reachable via the ferric-scf/ferric-python APIs for now. Wiring a

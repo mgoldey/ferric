@@ -1,0 +1,7 @@
+REMARK  Minimal QM/MM fixture: a water molecule (QM) and one Na+ ion (MM).
+REMARK  PQR carries BOTH geometry (Angstrom) and MM partial charges (e),
+REMARK  which is why the [qmmm] section reads one instead of an xyz.
+ATOM      1  O   WAT     1       0.000   0.000   0.000 -0.8340 1.7683
+ATOM      2  H   WAT     1       0.757   0.586   0.000  0.4170 0.0000
+ATOM      3  H   WAT     1      -0.757   0.586   0.000  0.4170 0.0000
+ATOM      4  NA  ION     2       0.000   0.000   4.000  1.0000 1.8680

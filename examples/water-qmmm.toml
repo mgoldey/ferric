@@ -1,0 +1,33 @@
+# QM/MM from the CLI: a QM water polarized by one MM Na+ ion.
+#
+# The QM region is solved as an ordinary RHF; the MM region enters as the
+# external potential. Geometry AND MM charges both come from the PQR --
+# an xyz has no charges, and an MM region without charges is just a set of
+# ignored coordinates.
+#
+# MEASURED at sto-3g: vacuum -74.9629466809, embedded -74.9653197421,
+# i.e. -1.489 kcal/mol from the ion at 4 A. Verified against
+# `ferric.run_rhf(point_charges=...)` to all 10 digits.
+
+[molecule]
+# Not read when [qmmm] is present -- the PQR supplies the geometry. `charge`
+# and `multiplicity` still apply, to the QM REGION.
+xyz = "testdata/molecules/water.xyz"
+charge = 0
+multiplicity = 1
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "rhf"
+task = "energy"
+
+[qmmm]
+pqr = "testdata/molecules/water_na.pqr"
+# Zero-based. Alternatively: qm_seeds = [0] with qm_radius_angstrom = 1.5.
+qm_indices = [0, 1, 2]
+# No link_bonds here: the QM/MM cut does not cross a covalent bond, so no
+# link atom is needed. When it DOES, set link_bonds and leave
+# boundary_scheme at its "delete-host" default -- "keep" puts a bare point
+# charge inside the link atom's bond length.
