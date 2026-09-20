@@ -401,6 +401,20 @@ pub fn run(args: Vec<String>) {
     // molecule so the two cannot disagree about which atoms are quantum --
     // when `[qmmm]` is present, `[molecule].xyz` is not read at all.
     let (qmmm_system, mut mol) = resolve_geometry(&cfg);
+    // Every `on {}` header and the run log's molecule `path` read
+    // `cfg.molecule.xyz`. With `[qmmm]` that file was NOT read -- the geometry
+    // came from the PQR -- so they were naming a file that did not produce the
+    // atoms being solved. Point the field at the real source rather than
+    // threading a second one through ~20 print sites: with `[qmmm]` present
+    // the PQR IS `molecule.xyz`'s job.
+    //
+    // This is not cosmetic. The stale header is what makes the vacuum
+    // reference easy to get wrong: the run says `on water.xyz` while solving
+    // the PQR geometry, so re-running without `[qmmm]` looks like the same
+    // molecule and is not (see examples/water-qmmm.toml).
+    if let Some(q) = cfg.qmmm.as_ref() {
+        cfg.molecule.xyz = q.pqr.clone();
+    }
     let bs = if let Some(name) = &cfg.basis.name {
         basis::bundled(name)
     } else if let Some(path) = &cfg.basis.path {
