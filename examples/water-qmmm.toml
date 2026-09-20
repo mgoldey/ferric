@@ -8,6 +8,11 @@
 # MEASURED at sto-3g: vacuum -74.9629466809, embedded -74.9653197421,
 # i.e. -1.489 kcal/mol from the ion at 4 A. Verified against
 # `ferric.run_rhf(point_charges=...)` to all 10 digits.
+#
+# The vacuum number above is at the PQR GEOMETRY. Deleting [qmmm] to get it
+# does NOT reproduce it: the run then falls back to the xyz below, which is an
+# optimized HF/cc-pVDZ water and gives -74.9631468000 -- a different molecule,
+# and 0.13 kcal/mol of error in the difference. Compare at one geometry.
 
 [molecule]
 # Not read when [qmmm] is present -- the PQR supplies the geometry. `charge`
