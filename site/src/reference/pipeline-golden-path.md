@@ -93,10 +93,21 @@ first call costs 24x" below before planning a campaign from them.
 | find a transition state | `ferric.run_saddle` | `2*(6N+1) + (n_steps+1)` gradients | `energy_profile` |
 | confirm it is one | `ferric.run_frequencies` | `6N+1` gradients | **`imaginary_mode`** |
 | get the barrier | `ferric.run_irc` | ~70 gradients / branch | `reaction_path` |
-| bind in a pocket | `active_site.binding_energy` | **137 s** @ 71 atoms/6458 charges, STO-3G (TWO SCFs + pdb2pqr) | `site_substituent_heatmap` |
+| bind in a pocket | `active_site.binding_energy` | **137 s** @ 71 atoms/6458 charges, STO-3G (TWO SCFs + pdb2pqr) | **`pocket_polarization`**, `site_substituent_heatmap` |
 | **relax a geometry (QM)** | `ferric.run_optimize` | 1 gradient/step; 6 steps for an embedded methyl | **`optimization_trace`** |
 | **set up a QM/MM cut** | `ferric.QmmmSystem` + `.with_boundary_charges` | free (setup) | **`qmmm_partition`** |
 | draw the molecule | `viz.molecules.depict` | **5.9 ms** warm (88 ms first call) | -- |
+
+**`pocket_polarization` is the plot for a SINGLE pose** (added 2026-09-20).
+This row used to point only at `site_substituent_heatmap`, which ranks
+substituents across sites and says nothing about one calculation.
+`compute_binding_energy` also returns `charges_vacuum` and `charges_field`,
+and nothing plotted them -- so the one output that distinguishes an embedded
+result from a number went unlooked at. `dq = q_field - q_vacuum` is the pocket
+pushing electrons around the ligand: MEASURED on danuglipron/7LCJ,
+max |dq| = 0.037 e, summing to zero to 1e-13. The plot annotates that sum,
+because a NONZERO total means the two SCFs were not the same molecule and the
+interaction energy alone cannot show it.
 
 **`binding_energy` is TWO SCFs, not one tier.** RUN end to end 2026-09-20:
 danuglipron's cryo-EM pose (71 atoms) in the 7LCJ pocket (6458 charges),

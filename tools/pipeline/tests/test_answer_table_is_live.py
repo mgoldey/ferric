@@ -51,6 +51,7 @@ TABLE_CALLS = {
         "reaction_path",
         "optimization_trace",
         "qmmm_partition",
+        "pocket_polarization",
     ],
     "tools.viz.molecules": ["depict"],
     # The two the table names by MODULE shorthand. Without them, renaming
@@ -191,24 +192,22 @@ def test_every_plot_the_table_cites_is_one_the_guard_checks():
     """
     text = GOLDEN.read_text()
     block = text[text.index("## 0a.") : text.index("\n## ", text.index("## 0a.") + 5)]
-    # Only the plot column: names in backticks that look like viz functions.
-    cited = {
-        m
-        for m in re.findall(r"`([a-z_][a-z_0-9]*)`", block)
-        if m.endswith(
-            (
-                "_profile",
-                "_survival",
-                "_comparison",
-                "_heatmap",
-                "_ensemble",
-                "_path",
-                "_mode",
-                "_trace",
-                "_partition",
-            )
-        )
+    # DERIVED from the module, not a hand-kept suffix list. The previous
+    # version matched backticked names ending in `_profile`, `_survival`,
+    # `_heatmap`, ... -- so a new plot whose name ended in anything else was
+    # INVISIBLE to this guard and the assertion below passed vacuously.
+    # MEASURED 2026-09-20: adding `pocket_polarization` to the table left the
+    # test green, because `_polarization` was not in the list. A third
+    # hand-maintained copy of the plot names is exactly the drift this file
+    # exists to catch one level up.
+    import tools.viz.energy_plots as _ep
+
+    public = {
+        n
+        for n in dir(_ep)
+        if not n.startswith("_") and callable(getattr(_ep, n)) and n.islower()
     }
+    cited = {m for m in re.findall(r"`([a-z_][a-z_0-9]*)`", block) if m in public}
     assert cited, "no plot names found in section 0a; has the column changed shape?"
     guarded = set(TABLE_CALLS.get("tools.viz.energy_plots", []))
     missing = sorted(cited - guarded)

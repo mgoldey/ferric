@@ -1220,6 +1220,14 @@ def test_axis_labels_and_titles_fit_inside_every_figure():
         "pose_ensemble": lambda: pose_ensemble(
             {"lig A": [-9.1, -8.8, -8.2], "lig B": [-10.2, -9.9, -9.1]}
         ),
+        "pocket_polarization": lambda: __import__(
+            "tools.viz.energy_plots", fromlist=["pocket_polarization"]
+        ).pocket_polarization(
+            ["C"] * 8 + ["H"] * 8,
+            [0.0] * 16,
+            [0.01 * i - 0.075 for i in range(16)],
+            delta_e_kcal_mol=-17.41,
+        ),
         "site_substituent_heatmap": lambda: site_substituent_heatmap(
             {
                 ("F", "C3"): -0.8,
@@ -1258,3 +1266,80 @@ def test_axis_labels_and_titles_fit_inside_every_figure():
                     )
         finally:
             close(fig)
+
+
+def test_pocket_polarization_refuses_mismatched_per_atom_arrays():
+    """Per-atom arrays that disagree would draw a shift on the wrong element.
+
+    `zip` truncates silently, which is the same failure that dropped solute
+    atoms in `write_pqr`. Here it would label carbon's charge shift with
+    hydrogen's symbol -- a plot that is wrong rather than short.
+    """
+    from tools.viz.energy_plots import pocket_polarization
+
+    with pytest.raises(ValueError, match="per-atom and must match"):
+        pocket_polarization(["C", "H", "O"], [0.1, -0.1], [0.1, -0.1, 0.0])
+    with pytest.raises(ValueError, match="per-atom and must match"):
+        pocket_polarization(["C", "H"], [0.1, -0.1], [0.1])
+    with pytest.raises(ValueError, match="no atoms"):
+        pocket_polarization([], [], [])
+
+
+def test_pocket_polarization_flags_a_charge_that_does_not_conserve():
+    """The conservation sum is the reader's CHECK, so it must be visible.
+
+    `dq` must sum to ~0: embedding redistributes the ligand's charge, it does
+    not change the total. A nonzero sum means the two SCFs did not describe the
+    same molecule (a different charge state, a dropped atom), which is
+    invisible in the interaction energy alone.
+
+    MEASURED on danuglipron/7LCJ: max |dq| = 0.037 e, sum = 1.2e-13.
+    """
+    from tools.viz.energy_plots import close, pocket_polarization
+
+    sym = ["C", "H", "O"]
+    # Conserving: the annotation is drawn in grey.
+    fig = pocket_polarization(sym, [0.1, 0.0, -0.1], [0.12, -0.01, -0.11])
+    try:
+        note = [t for t in fig.axes[0].texts if "sum dq" in t.get_text()]
+        assert len(note) == 1, "the conservation sum must be on the figure"
+        assert note[0].get_color() == "#555555", "a conserving sum is not an alarm"
+    finally:
+        close(fig)
+
+    # NOT conserving: same plot, but the sum is coloured as the warning it is.
+    fig = pocket_polarization(sym, [0.1, 0.0, -0.1], [0.3, 0.0, -0.1])
+    try:
+        note = [t for t in fig.axes[0].texts if "sum dq" in t.get_text()]
+        assert note[0].get_color() == "#d62728", (
+            "a non-conserving dq must be flagged; it means the two SCFs were "
+            "not the same molecule"
+        )
+    finally:
+        close(fig)
+
+
+def test_pocket_polarization_says_how_many_atoms_it_left_out():
+    """A long tail of untouched atoms buries the few that matter.
+
+    Showing only the largest shifts is right, but silently showing 12 of 71
+    invites reading the plot as the whole story.
+    """
+    from tools.viz.energy_plots import close, pocket_polarization
+
+    sym = ["C"] * 40
+    qv = [0.0] * 40
+    qf = [0.01 * i for i in range(40)]
+    qf = [f - sum(qf) / 40 for f in qf]
+    fig = pocket_polarization(sym, qv, qf, top_n=5)
+    try:
+        assert "5 largest of 40 atoms" in fig.axes[0].get_xlabel()
+        assert len(fig.axes[0].get_yticklabels()) == 5
+    finally:
+        close(fig)
+
+    fig = pocket_polarization(sym, qv, qf, top_n=100)
+    try:
+        assert "all 40 atoms" in fig.axes[0].get_xlabel()
+    finally:
+        close(fig)
