@@ -414,7 +414,15 @@ def test_the_answer_table_tier_costs_agree_with_tiers_py():
         "tiers.tier2_forcefield": (["9 ms", "2.2", "8.2", "21.6"], "MMFF94"),
         "tiers.tier3_gfn2": (["39 ms", "0.152", "0.050"], "GFN2-xTB"),
         "docking.vina_dock": (["26.4"], "Vina"),
+        # The most expensive tier, and the one this guard did NOT cover until
+        # 2026-09-20: its row quoted STO-3G figures while `tier4_dft`'s default
+        # basis is def2-svp -- 2.64 s vs 0.75 at 9 atoms. Both must appear, so
+        # the row cannot revert to quoting only the cheap basis.
+        "tiers.tier4_dft": (["2.6", "def2-svp", "0.75", "STO-3G"], "DFT"),
     }
+    # Re-measurements recorded in the golden path rather than copied from
+    # tiers.py, so they are exempt from the "must exist in the source" check.
+    RE_MEASURED = {"9 ms", "39 ms", "2.6", "0.75", "def2-svp", "STO-3G"}
     for call, (tokens, why) in expected.items():
         row = row_for(call)
         for token in tokens:
@@ -423,7 +431,7 @@ def test_the_answer_table_tier_costs_agree_with_tiers_py():
             )
             # A size-breakdown figure must also exist in the source. The
             # medians are re-measurements recorded here, so they are exempt.
-            if token not in ("9 ms", "39 ms"):
+            if token not in RE_MEASURED:
                 assert token in tiers, (
                     f"{token!r} is no longer in tiers.py's measured block -- "
                     "this test is pinned to figures that moved; re-derive the "

@@ -89,7 +89,7 @@ first call costs 24x" below before planning a campaign from them.
 | dock a ligand | `docking.vina_dock` | **26.4 s** / ligand @ ex=4 | `pose_ensemble`, `funnel_survival` |
 | relax a pose (FF) | `tiers.tier2_forcefield` | **9 ms** @ 21 atoms (2.2 @ 9, 8.2 @ 19, 21.6 @ 34) | `tier_comparison` |
 | relax a pose (xtb) | `tiers.tier3_gfn2` | **39 ms** @ 21 atoms (0.152 s @ 9, 0.050 @ 19) | `tier_comparison` |
-| score with DFT | `tiers.tier4_dft` | **1.0 s** @ 6 atoms, 613 s @ 71 | `tier_comparison` |
+| score with DFT | `tiers.tier4_dft` | **2.6 s** @ 9 atoms at the def2-svp DEFAULT (0.75 s at STO-3G; 613 s @ 71) | `tier_comparison` |
 | find a transition state | `ferric.run_saddle` | `2*(6N+1) + (n_steps+1)` gradients | `energy_profile` |
 | confirm it is one | `ferric.run_frequencies` | `6N+1` gradients | **`imaginary_mode`** |
 | get the barrier | `ferric.run_irc` | ~70 gradients / branch | `reaction_path` |
@@ -110,6 +110,17 @@ The number is for ONE POSE and does not rank analogues -- `compute_binding_energ
 own docstring carries the five closed protocols and the 4.07 kcal/mol ddE
 noise floor against 1-2 kcal/mol substituent effects. Pass that floor to
 `site_substituent_heatmap(noise_floor=)`.
+
+**The DFT row is quoted at the DEFAULT basis now.** `tier4_dft`'s default is
+`def2-svp`, not STO-3G, and at 9 atoms that is **2.64 s vs 0.75** -- 3.5x
+(re-measured 2026-09-20, n=3, tight). Every STO-3G figure in `tiers.py` is
+labelled as such and none is wrong, but the leading number was the one a
+reader budgets with, and it was not the one a default call costs. Worth
+recording how this nearly went the other way: a bare
+`run_dft(mol, sto3g, functional="pbe")` takes 0.69 s while `tier4_dft` on the
+same molecule takes 2.64, which reads as ~2 s of wrapper overhead. Profiling
+put 2.667 of 2.667 s inside `run_dft` -- there is no wrapper cost at all, the
+two calls simply used different bases.
 
 **`assess_smiles` reaches the NETWORK by default.** `include_web=True` adds
 the `admetlab3` and `protox3` providers, measured at **1.6 s/analogue** against
