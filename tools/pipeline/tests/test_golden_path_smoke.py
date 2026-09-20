@@ -332,3 +332,105 @@ def test_the_quickstart_block_actually_RUNS(tmp_path):
         "the quickstart block does not RUN. This is what a reader gets when "
         f"they paste it:\n--- stderr ---\n{proc.stderr[-2500:]}"
     )
+
+
+@pytest.mark.skipif(
+    not _docking_available(), reason="needs the 'docking' extra (vina + meeko)"
+)
+@pytest.mark.skipif(not POCKET_PDB.is_file(), reason=f"no pocket at {POCKET_PDB}")
+def test_ALL_FOUR_tiers_compose_from_substitutions_to_a_survivor(tmp_path):
+    """The whole golden path in one run: substitutions -> dock -> FF -> xtb -> DFT.
+
+    `test_the_full_funnel_reaches_tier_4_and_produces_a_survivor` starts AFTER
+    docking, because tier 1 needs a prepared receptor. That left the first hop
+    -- the one that turns a SMILES list into poses, and the one that costs the
+    most -- outside any composition test. Nothing exercised all four together.
+
+    SLOW (~45 s): it docks 10 candidates and runs two real SCFs.
+
+    MEASURED 2026-09-20 on this stack, benzoic acid + {F, Cl, Me} against 7LCJ,
+    keeping 6/4/2/1:
+
+        STO-3G     45.0 s   dock 72.7%  FF 0.1%  xtb 0.3%  DFT 27.0%
+        def2-svp   82.1 s   dock 39.8%  FF 0.1%  xtb 0.1%  DFT 60.0%
+
+    The test asserts COMPOSITION, not those timings: a survivor comes out, no
+    tier fails, and every stage passes something to the next. Timings vary with
+    the box; what must not vary is that the four tiers still fit together.
+    """
+    import numpy as np
+
+    from tools.active_site.pocket_charges import derive_pocket_charges
+    from tools.campaign.hierarchy import Tier
+    from tools.docking.vina_dock import prepare_receptor
+    from tools.isomers.model import Isomer
+    from tools.pipeline import Stage, run_funnel
+    from tools.pipeline.substitution import propose_substitutions
+    from tools.pipeline.tiers import (
+        tier1_dock,
+        tier2_forcefield,
+        tier3_gfn2,
+        tier4_dft,
+    )
+
+    receptor = tmp_path / "receptor.pdbqt"
+    try:
+        prepare_receptor(POCKET_PDB, receptor)
+    except Exception as exc:  # pragma: no cover - environment dependent
+        pytest.skip(f"receptor prep unavailable: {exc}")
+
+    pocket = derive_pocket_charges(str(POCKET_PDB))
+    bohr = 0.52917721092
+    centre = tuple(
+        float(v)
+        for v in np.array(
+            [[q[1] * bohr, q[2] * bohr, q[3] * bohr] for q in pocket.charges]
+        ).mean(axis=0)
+    )
+
+    parent = "c1ccccc1C(=O)O"
+    props = propose_substitutions(parent, {"F": "F", "Cl": "Cl", "Me": "C"})
+    cands = [
+        Isomer(
+            smiles=p.smiles,
+            kind="substitutional",
+            transform="sub",
+            parent_smiles=parent,
+        )
+        for p in props
+    ]
+    assert len(cands) >= 4, f"expected several candidates, got {len(cands)}"
+
+    ctx = {
+        "receptor_pdbqt": str(receptor),
+        "box_center": centre,
+        "basis": "sto-3g",  # the FAST basis: this is a composition test
+    }
+    rep = run_funnel(
+        cands,
+        [
+            Stage(Tier.SEARCH, tier1_dock, keep=4, name="dock"),
+            Stage(Tier.FORCE_FIELD, tier2_forcefield, keep=3, name="ff"),
+            Stage(Tier.SEMIEMPIRICAL, tier3_gfn2, keep=2, name="xtb"),
+            Stage(Tier.QUANTUM, tier4_dft, keep=1, name="dft"),
+        ],
+        ctx,
+    )
+
+    assert len(rep.outcomes) == 4, (
+        f"all four stages must RUN; the funnel stops early on an empty "
+        f"population, so fewer outcomes means a tier emptied it: "
+        f"{[(o.note, o.n_in, o.n_out) for o in rep.outcomes]}"
+    )
+    for o in rep.outcomes:
+        assert o.n_out > 0, f"{o.note}: passed nothing to the next tier"
+        assert o.n_failed == 0, f"{o.note}: {o.n_failed} failed -- {o.errors}"
+    assert len(rep.survivors) == 1, f"expected one survivor, got {rep.survivors}"
+
+    # The last tier must have produced a real energy, not merely survived.
+    dft = rep.results["dft"][0]
+    assert dft.ok and dft.value is not None
+    assert dft.value < -100.0, (
+        f"a benzoic-acid-sized DFT total energy should be well below -100 Ha, "
+        f"got {dft.value} -- a placeholder would pass a bare `is not None`"
+    )

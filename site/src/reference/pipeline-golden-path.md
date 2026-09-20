@@ -1057,6 +1057,29 @@ The correction STRENGTHENS the conclusion rather than softening it: docking is
 and read the basis caveat below before quoting either, because both rows are
 STO-3G and the split inverts at the default basis.
 
+#### The funnel RUN end to end, at both bases (2026-09-20)
+
+Not a model of the shares -- the actual pipeline, 10 substitution candidates of
+benzoic acid through dock -> FF -> xtb -> DFT against the 7LCJ pocket, keeping
+6/4/2/1. Zero failures at either basis, same survivor
+(`O=C(O)c1cccc(F)c1`):
+
+| basis | total | dock | FF | xtb | DFT |
+|---|---:|---:|---:|---:|---:|
+| STO-3G | 45.0 s | **72.7%** (32.7 s) | 0.1% | 0.3% | 27.0% (12.1 s) |
+| **def2-svp (the DEFAULT)** | 82.1 s | **39.8%** (32.7 s) | 0.1% | 0.1% | **60.0%** (49.2 s) |
+
+Two things this settles. At STO-3G the measured split is **73/27**, which
+reproduces the modelled share above independently -- different system,
+different candidate count, same answer. And the basis caveat is REAL, not
+defensive: at the default the ranking **inverts**, DFT becomes the majority of
+the run, and "docking dominates, not DFT" stops being true.
+
+So the headline holds only with the basis attached. Docking is the budget at
+STO-3G; DFT is the budget at def2-svp, which is what `tier4_dft` runs unless
+you say otherwise. The absolute docking cost is unchanged between the rows
+(32.7 s both times) -- it is DFT that moves.
+
 **That inverts the intuition this pipeline was designed around.** DFT is the
 most expensive thing PER CALL by five orders of magnitude (6e+2 s vs 1e-5 s),
 and it is still only **18%** of the campaign, because the funnel has already cut
