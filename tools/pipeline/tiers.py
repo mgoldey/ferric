@@ -359,12 +359,53 @@ def tier1_dock(iso: Isomer, context: dict) -> TierResult:
             iso.canonical, None, "; ".join(prep_errors) or "docking produced no pose"
         )
     best, n_poses, winning_seed = best_overall
+
+    # REBUILD THE HYDROGENS. A PDBQT pose is UNITED-ATOM: Vina merges nonpolar
+    # hydrogens into their carbons, so `best.symbols` is not the molecule that
+    # was docked. MEASURED on aspirin: 14 atoms out where 21 went in, seven H
+    # missing. `funnel._harvest_geometry` puts this straight into
+    # `context["geometry"]`, so tiers 3 and 4 score the stripped fragment.
+    #
+    # tier 4 happens to survive it -- an odd electron count trips ferric's
+    # charge/multiplicity parity check and the tier fails loudly. TIER 3 DOES
+    # NOT: GFN2 has no such check and returned -35.492226 against -39.621219
+    # for the real molecule. Both are plausible GFN2 numbers, neither errors,
+    # and they are 2591 kcal/mol apart.
+    #
+    # `restore_hydrogens` already existed for exactly this and had no
+    # production caller.
+    symbols, coords = list(best.symbols), list(best.coords_angstrom)
+    try:
+        from tools.docking.united_atom import restore_hydrogens
+
+        symbols, coords = restore_hydrogens(
+            iso.canonical,
+            [s for s, _ in zip(best.symbols, best.coords_angstrom) if s != "H"],
+            [c for s, c in zip(best.symbols, best.coords_angstrom) if s != "H"],
+            # getattr, because the multi-seed tests drive this with a fake
+            # pose that carries only symbols/coords/vina_score. The mapping is
+            # an OPTIMISATION for `restore_hydrogens` (it falls back to a
+            # substructure match without it), not a requirement, so a pose
+            # lacking it must still re-hydrogenate rather than fail the
+            # candidate.
+            rdkit_index_of_heavy=getattr(best, "rdkit_index_of_heavy", None),
+        )
+    except Exception as exc:  # noqa: BLE001
+        # A pose we cannot re-hydrogenate must NOT flow on as a stripped
+        # molecule -- that is the silent-wrong-answer path. Fail the candidate.
+        return TierResult(
+            iso.canonical,
+            None,
+            f"docked pose could not be re-hydrogenated ({exc}); a united-atom "
+            f"pose is not a QM geometry",
+        )
+
     return TierResult(
         iso.canonical,
         best.vina_score,
         payload={
-            "symbols": best.symbols,
-            "coords": best.coords_angstrom,
+            "symbols": symbols,
+            "coords": coords,
             "n_poses": n_poses,
             "n_seeds": n_seeds,
             "winning_seed": winning_seed,
