@@ -296,3 +296,58 @@ def test_the_functional_accuracies_match_validation_md():
         "the golden path must carry the meta-GGA gradient's s/p-shell limit; "
         "without it the functional table reads as a free choice"
     )
+
+
+@pytest.mark.skipif(not GOLDEN.is_file(), reason=f"no {GOLDEN}")
+def test_a_retracted_figure_is_not_still_quoted_as_measured():
+    """The note retracted "~2 min/ligand" and went on quoting it as MEASURED.
+
+    The cost table says, in as many words, that the figure "was never measured
+    and its `tiers.py:11` citation pointed at the module doc comment". Four
+    hundred lines earlier the same note said "Tier 1 costs ~2 min/ligand
+    (MEASURED, `tiers.py:11`)". A retraction and the claim it retracts lived in
+    one document.
+
+    Guards the SHAPE, not one string: if any figure is described as never
+    measured, that same figure must not also be labelled MEASURED.
+    """
+    text = GOLDEN.read_text()
+    if "never measured" not in text:
+        pytest.skip("nothing is described as never-measured; guard is vacuous")
+
+    # A QUOTATION of the retracted claim is fine and in fact desirable -- the
+    # correction explains what it replaced. What must not recur is an
+    # ASSERTIVE use, i.e. the figure stated as fact outside quotation marks.
+    # Checked line by line so a quoted mention does not mask a real one.
+    offenders = [
+        ln.strip()
+        for ln in text.splitlines()
+        if "MEASURED, `tiers.py:11`" in ln and '"' not in ln and "~~" not in ln
+    ]
+    assert not offenders, (
+        f"`tiers.py:11` is cited as a measurement outside quotation: "
+        f"{offenders}. The note itself says that citation resolves to a "
+        "module doc comment."
+    )
+
+
+@pytest.mark.skipif(not GOLDEN.is_file(), reason=f"no {GOLDEN}")
+def test_the_zero_writes_claim_is_scoped_to_the_survey():
+    """`context["geometry"]` IS written now, by funnel.py:184.
+
+    The bare claim "Zero writes. Nothing in the repository ever populates
+    context['geometry']" sat under a heading reading FIXED. Both cannot be
+    true, and the reader hits the bare one first.
+    """
+    from pathlib import Path
+
+    funnel = (Path(__file__).resolve().parents[1] / "funnel.py").read_text()
+    writes = 'setdefault("geometry"' in funnel
+    text = GOLDEN.read_text()
+    if writes:
+        assert (
+            "**One read. Zero writes.** Nothing in the repository ever" not in text
+        ), (
+            "funnel.py writes context['geometry'], but the note still states "
+            "unconditionally that nothing does"
+        )
