@@ -12847,51 +12847,51 @@
     "cc": 1.0,
     "mi": 118.97478077838218
   },
-  "crates/ferric-mm/src/topology.rs::<anonymous>@135": {
+  "crates/ferric-mm/src/topology.rs::<anonymous>@144": {
     "cc": 2.0,
     "mi": 109.2278788849781
   },
-  "crates/ferric-mm/src/topology.rs::<anonymous>@254": {
+  "crates/ferric-mm/src/topology.rs::<anonymous>@282": {
     "cc": 1.0,
     "mi": 128.2308890745831
   },
-  "crates/ferric-mm/src/topology.rs::<anonymous>@261": {
+  "crates/ferric-mm/src/topology.rs::<anonymous>@289": {
     "cc": 1.0,
     "mi": 115.27970245986853
   },
-  "crates/ferric-mm/src/topology.rs::<anonymous>@271": {
+  "crates/ferric-mm/src/topology.rs::<anonymous>@299": {
     "cc": 1.0,
     "mi": 115.46881420955708
   },
-  "crates/ferric-mm/src/topology.rs::<anonymous>@281": {
+  "crates/ferric-mm/src/topology.rs::<anonymous>@309": {
     "cc": 1.0,
     "mi": 109.73509147774136
   },
-  "crates/ferric-mm/src/topology.rs::exclusions@107": {
+  "crates/ferric-mm/src/topology.rs::exclusions@116": {
     "cc": 1.0,
     "mi": 131.60068186195994
   },
-  "crates/ferric-mm/src/topology.rs::from_amber_units@243": {
+  "crates/ferric-mm/src/topology.rs::from_amber_units@271": {
     "cc": 5.0,
     "mi": 68.99224971484244
   },
-  "crates/ferric-mm/src/topology.rs::n_atoms@102": {
+  "crates/ferric-mm/src/topology.rs::n_atoms@111": {
     "cc": 1.0,
     "mi": 134.05168511513583
   },
-  "crates/ferric-mm/src/topology.rs::new@121": {
+  "crates/ferric-mm/src/topology.rs::new@130": {
     "cc": 30.0,
-    "mi": 46.79579796114602
+    "mi": 44.17049303992921
   },
-  "crates/ferric-mm/src/topology.rs::ordered@92": {
+  "crates/ferric-mm/src/topology.rs::ordered@101": {
     "cc": 2.0,
     "mi": 115.23504975416503
   },
-  "crates/ferric-mm/src/topology.rs::pairs14@112": {
+  "crates/ferric-mm/src/topology.rs::pairs14@121": {
     "cc": 1.0,
     "mi": 131.60068186195994
   },
-  "crates/ferric-mm/src/topology.rs::with_scales@231": {
+  "crates/ferric-mm/src/topology.rs::with_scales@259": {
     "cc": 1.0,
     "mi": 121.21916545109133
   },
@@ -17331,7 +17331,7 @@
     "cc": 1.0,
     "mi": 117.95566386174903
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1084": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1097": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
@@ -17339,7 +17339,7 @@
     "cc": 1.0,
     "mi": 153.46801625837676
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1192": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1205": {
     "cc": 1.0,
     "mi": 151.74964174717402
   },
@@ -17351,7 +17351,7 @@
     "cc": 1.0,
     "mi": 160.0060069647112
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1386": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1399": {
     "cc": 1.0,
     "mi": 157.04690188600065
   },
@@ -17359,71 +17359,71 @@
     "cc": 1.0,
     "mi": 160.0060069647112
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1427": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1440": {
     "cc": 1.0,
     "mi": 125.98521449770203
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1435": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1448": {
     "cc": 1.0,
     "mi": 125.98521449770203
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1547": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1560": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1548": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1561": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1549": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1562": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1563": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1576": {
     "cc": 1.0,
     "mi": 149.49723095662594
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1572": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1585": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1629": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1642": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1630": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1643": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1631": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1644": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1645": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1658": {
     "cc": 1.0,
     "mi": 148.73844979929143
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1653": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1666": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1790": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1803": {
     "cc": 1.0,
     "mi": 155.57643482053922
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1859": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1872": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1888": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1901": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1962": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1975": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@1971": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@1984": {
     "cc": 1.0,
     "mi": 133.18100188654878
   },
@@ -17435,79 +17435,79 @@
     "cc": 2.0,
     "mi": 113.33974642413165
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2248": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@2261": {
     "cc": 1.0,
     "mi": 149.49723095662594
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2290": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@2303": {
     "cc": 1.0,
     "mi": 151.6056495187884
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2329": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@2342": {
     "cc": 1.0,
     "mi": 136.6084159143338
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2340": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@2353": {
     "cc": 1.0,
     "mi": 136.6084159143338
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2343": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@2356": {
     "cc": 1.0,
     "mi": 120.52208663514381
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2358": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@2371": {
     "cc": 1.0,
     "mi": 157.04690188600065
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2368": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@2381": {
     "cc": 1.0,
     "mi": 160.0060069647112
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2378": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@2391": {
     "cc": 1.0,
     "mi": 160.0060069647112
-  },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2483": {
-    "cc": 2.0,
-    "mi": 151.90570152002823
-  },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2487": {
-    "cc": 2.0,
-    "mi": 102.04091115678095
   },
   "crates/ferric-python/src/lib.rs::<anonymous>@249": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2520": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@2496": {
+    "cc": 2.0,
+    "mi": 151.90570152002823
+  },
+  "crates/ferric-python/src/lib.rs::<anonymous>@2500": {
+    "cc": 2.0,
+    "mi": 102.04091115678095
+  },
+  "crates/ferric-python/src/lib.rs::<anonymous>@2533": {
     "cc": 1.0,
     "mi": 123.03160527763995
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2534": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@2547": {
     "cc": 5.0,
     "mi": 82.04837925374261
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2548": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@2561": {
     "cc": 1.0,
     "mi": 125.53275533735598
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2626": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@2639": {
     "cc": 1.0,
     "mi": 152.90998821400794
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2644": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@2657": {
     "cc": 2.0,
     "mi": 122.44975199466182
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2646": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@2659": {
     "cc": 1.0,
     "mi": 152.90998821400794
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2730": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@2743": {
     "cc": 1.0,
     "mi": 151.32047675223683
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2768": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@2781": {
     "cc": 1.0,
     "mi": 148.2448388526475
   },
@@ -17519,7 +17519,7 @@
     "cc": 1.0,
     "mi": 116.05435891776145
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@2974": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@2987": {
     "cc": 7.0,
     "mi": 80.64921086485099
   },
@@ -17527,21 +17527,21 @@
     "cc": 1.0,
     "mi": 151.67923968396897
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@3500": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@3513": {
     "cc": 1.0,
     "mi": 152.30766979154288
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@4332": {
-    "cc": 1.0,
-    "mi": 155.01840677617037
-  },
-  "crates/ferric-python/src/lib.rs::<anonymous>@4468": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@4345": {
     "cc": 1.0,
     "mi": 155.01840677617037
   },
   "crates/ferric-python/src/lib.rs::<anonymous>@448": {
     "cc": 1.0,
     "mi": 157.8484854211024
+  },
+  "crates/ferric-python/src/lib.rs::<anonymous>@4481": {
+    "cc": 1.0,
+    "mi": 155.01840677617037
   },
   "crates/ferric-python/src/lib.rs::<anonymous>@449": {
     "cc": 1.0,
@@ -17551,11 +17551,11 @@
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@4558": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@4571": {
     "cc": 1.0,
     "mi": 153.97676999581998
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@4752": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@4765": {
     "cc": 1.0,
     "mi": 129.86396239303022
   },
@@ -17563,111 +17563,111 @@
     "cc": 1.0,
     "mi": 148.73844979929143
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@4852": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@4865": {
     "cc": 1.0,
     "mi": 156.27079806218674
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5045": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5058": {
     "cc": 6.0,
     "mi": 92.20459913793076
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5105": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5118": {
     "cc": 8.0,
     "mi": 88.17650022561699
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5204": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5217": {
     "cc": 1.0,
     "mi": 153.42889531439928
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5291": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5304": {
     "cc": 1.0,
     "mi": 151.6056495187884
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5414": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5427": {
     "cc": 1.0,
     "mi": 157.04690188600065
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5467": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5480": {
     "cc": 1.0,
     "mi": 156.35253864435316
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5520": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5533": {
     "cc": 1.0,
     "mi": 151.6056495187884
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5546": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5559": {
     "cc": 1.0,
     "mi": 154.40593499075717
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5561": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5574": {
     "cc": 1.0,
     "mi": 105.91831652713284
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5585": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5598": {
     "cc": 1.0,
     "mi": 153.97676999581998
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5586": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5599": {
     "cc": 1.0,
     "mi": 153.0837736153568
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5700": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5713": {
     "cc": 1.0,
     "mi": 157.04690188600065
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5701": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5714": {
     "cc": 1.0,
     "mi": 157.04690188600065
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5754": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5767": {
     "cc": 1.0,
     "mi": 156.35253864435316
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5765": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5778": {
     "cc": 1.0,
     "mi": 156.35253864435316
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5820": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5833": {
     "cc": 1.0,
     "mi": 151.6056495187884
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5846": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5859": {
     "cc": 1.0,
     "mi": 154.40593499075717
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5872": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5885": {
     "cc": 1.0,
     "mi": 153.97676999581998
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@5873": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@5886": {
     "cc": 1.0,
     "mi": 153.0837736153568
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@6030": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@6043": {
     "cc": 1.0,
     "mi": 151.6056495187884
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@6097": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@6110": {
     "cc": 1.0,
     "mi": 156.35253864435316
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@6187": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@6200": {
     "cc": 1.0,
     "mi": 151.6056495187884
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@6332": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@6345": {
     "cc": 1.0,
     "mi": 151.6056495187884
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@6359": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@6372": {
     "cc": 1.0,
     "mi": 148.29939365131386
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@6407": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@6420": {
     "cc": 2.0,
     "mi": 120.0999339588625
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@6408": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@6421": {
     "cc": 1.0,
     "mi": 133.808130442365
   },
@@ -17675,11 +17675,11 @@
     "cc": 1.0,
     "mi": 152.5881606803743
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@6564": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@6577": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@6565": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@6578": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
@@ -17699,147 +17699,151 @@
     "cc": 1.0,
     "mi": 151.6056495187884
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@6841": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@6854": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@6862": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@6875": {
     "cc": 9.0,
     "mi": 72.0141819843155
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@6910": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@6923": {
     "cc": 3.0,
     "mi": 95.56388675282373
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@6931": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@6944": {
     "cc": 1.0,
     "mi": 157.04690188600065
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@6936": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@6949": {
     "cc": 1.0,
     "mi": 117.95566386174903
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@6948": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@6961": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@7021": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@7034": {
     "cc": 1.0,
     "mi": 157.8484854211024
-  },
-  "crates/ferric-python/src/lib.rs::<anonymous>@7041": {
-    "cc": 9.0,
-    "mi": 72.2816450441396
   },
   "crates/ferric-python/src/lib.rs::<anonymous>@705": {
     "cc": 1.0,
     "mi": 152.5881606803743
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@7091": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@7054": {
+    "cc": 9.0,
+    "mi": 72.2816450441396
+  },
+  "crates/ferric-python/src/lib.rs::<anonymous>@7104": {
     "cc": 3.0,
     "mi": 95.57113634161983
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@7092": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@7105": {
     "cc": 1.0,
     "mi": 157.04690188600065
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@7097": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@7110": {
     "cc": 1.0,
     "mi": 117.95566386174903
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@7146": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@713": {
+    "cc": 1.0,
+    "mi": 156.27079806218674
+  },
+  "crates/ferric-python/src/lib.rs::<anonymous>@7159": {
     "cc": 1.0,
     "mi": 125.05544481170261
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@737": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@750": {
     "cc": 1.0,
     "mi": 152.5881606803743
-  },
-  "crates/ferric-python/src/lib.rs::<anonymous>@760": {
-    "cc": 2.0,
-    "mi": 119.00748269325129
-  },
-  "crates/ferric-python/src/lib.rs::<anonymous>@763": {
-    "cc": 1.0,
-    "mi": 152.30766979154288
   },
   "crates/ferric-python/src/lib.rs::<anonymous>@77": {
     "cc": 1.0,
     "mi": 151.6056495187884
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@775": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@773": {
+    "cc": 2.0,
+    "mi": 119.00748269325129
+  },
+  "crates/ferric-python/src/lib.rs::<anonymous>@776": {
+    "cc": 1.0,
+    "mi": 152.30766979154288
+  },
+  "crates/ferric-python/src/lib.rs::<anonymous>@788": {
     "cc": 2.0,
     "mi": 118.4596080118306
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@778": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@791": {
     "cc": 1.0,
     "mi": 151.3595976962143
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@795": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@808": {
     "cc": 1.0,
     "mi": 151.67923968396897
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@824": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@837": {
     "cc": 1.0,
     "mi": 117.95566386174903
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@838": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@851": {
     "cc": 1.0,
     "mi": 115.66506391506789
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@853": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@866": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-python/src/lib.rs::<anonymous>@955": {
+  "crates/ferric-python/src/lib.rs::<anonymous>@968": {
     "cc": 1.0,
     "mi": 153.97676999581998
   },
-  "crates/ferric-python/src/lib.rs::__len__@2126": {
+  "crates/ferric-python/src/lib.rs::__len__@2139": {
     "cc": 1.0,
     "mi": 134.05168511513583
   },
-  "crates/ferric-python/src/lib.rs::__len__@2311": {
+  "crates/ferric-python/src/lib.rs::__len__@2324": {
     "cc": 1.0,
     "mi": 134.05168511513583
   },
-  "crates/ferric-python/src/lib.rs::__repr__@1306": {
+  "crates/ferric-python/src/lib.rs::__repr__@1319": {
     "cc": 1.0,
     "mi": 120.20683860169837
   },
-  "crates/ferric-python/src/lib.rs::__repr__@1489": {
+  "crates/ferric-python/src/lib.rs::__repr__@1502": {
     "cc": 1.0,
     "mi": 121.02254588024968
   },
-  "crates/ferric-python/src/lib.rs::__repr__@1688": {
+  "crates/ferric-python/src/lib.rs::__repr__@1701": {
     "cc": 1.0,
     "mi": 120.20683860169837
   },
-  "crates/ferric-python/src/lib.rs::__repr__@1781": {
+  "crates/ferric-python/src/lib.rs::__repr__@1794": {
     "cc": 1.0,
     "mi": 114.81990388345423
   },
-  "crates/ferric-python/src/lib.rs::__repr__@2014": {
+  "crates/ferric-python/src/lib.rs::__repr__@2027": {
     "cc": 1.0,
     "mi": 119.48035345717307
   },
-  "crates/ferric-python/src/lib.rs::__repr__@2071": {
+  "crates/ferric-python/src/lib.rs::__repr__@2084": {
     "cc": 1.0,
     "mi": 119.48035345717307
   },
-  "crates/ferric-python/src/lib.rs::__repr__@2129": {
+  "crates/ferric-python/src/lib.rs::__repr__@2142": {
     "cc": 1.0,
     "mi": 113.80089558950002
   },
-  "crates/ferric-python/src/lib.rs::__repr__@2465": {
+  "crates/ferric-python/src/lib.rs::__repr__@2478": {
     "cc": 1.0,
     "mi": 117.13122428592362
   },
-  "crates/ferric-python/src/lib.rs::__repr__@2921": {
+  "crates/ferric-python/src/lib.rs::__repr__@2934": {
     "cc": 1.0,
     "mi": 121.02254588024968
   },
-  "crates/ferric-python/src/lib.rs::__repr__@3527": {
+  "crates/ferric-python/src/lib.rs::__repr__@3540": {
     "cc": 1.0,
     "mi": 120.20683860169837
   },
@@ -17847,51 +17851,51 @@
     "cc": 1.0,
     "mi": 121.02254588024968
   },
-  "crates/ferric-python/src/lib.rs::__repr__@3635": {
+  "crates/ferric-python/src/lib.rs::__repr__@3648": {
     "cc": 1.0,
     "mi": 121.02254588024968
   },
-  "crates/ferric-python/src/lib.rs::__repr__@3719": {
+  "crates/ferric-python/src/lib.rs::__repr__@3732": {
     "cc": 1.0,
     "mi": 121.02254588024968
   },
-  "crates/ferric-python/src/lib.rs::__repr__@3813": {
+  "crates/ferric-python/src/lib.rs::__repr__@3826": {
     "cc": 1.0,
     "mi": 120.20683860169837
   },
-  "crates/ferric-python/src/lib.rs::__repr__@3928": {
+  "crates/ferric-python/src/lib.rs::__repr__@3941": {
     "cc": 1.0,
     "mi": 121.02254588024968
   },
-  "crates/ferric-python/src/lib.rs::__repr__@4069": {
+  "crates/ferric-python/src/lib.rs::__repr__@4082": {
     "cc": 1.0,
     "mi": 121.02254588024968
   },
-  "crates/ferric-python/src/lib.rs::__repr__@4225": {
+  "crates/ferric-python/src/lib.rs::__repr__@4238": {
     "cc": 1.0,
     "mi": 120.20683860169837
   },
-  "crates/ferric-python/src/lib.rs::__repr__@4389": {
+  "crates/ferric-python/src/lib.rs::__repr__@4402": {
     "cc": 1.0,
     "mi": 121.02254588024968
   },
-  "crates/ferric-python/src/lib.rs::__repr__@4560": {
+  "crates/ferric-python/src/lib.rs::__repr__@4573": {
     "cc": 1.0,
     "mi": 121.02254588024968
   },
-  "crates/ferric-python/src/lib.rs::__repr__@4598": {
+  "crates/ferric-python/src/lib.rs::__repr__@4611": {
     "cc": 1.0,
     "mi": 120.20683860169837
   },
-  "crates/ferric-python/src/lib.rs::__repr__@4945": {
+  "crates/ferric-python/src/lib.rs::__repr__@4958": {
     "cc": 3.0,
     "mi": 104.51124323433635
   },
-  "crates/ferric-python/src/lib.rs::__repr__@5226": {
+  "crates/ferric-python/src/lib.rs::__repr__@5239": {
     "cc": 1.0,
     "mi": 120.20683860169837
   },
-  "crates/ferric-python/src/lib.rs::__repr__@5405": {
+  "crates/ferric-python/src/lib.rs::__repr__@5418": {
     "cc": 1.0,
     "mi": 114.81990388345423
   },
@@ -17899,63 +17903,63 @@
     "cc": 1.0,
     "mi": 110.28000478468662
   },
-  "crates/ferric-python/src/lib.rs::__repr__@5691": {
+  "crates/ferric-python/src/lib.rs::__repr__@5704": {
     "cc": 1.0,
     "mi": 114.81990388345423
   },
-  "crates/ferric-python/src/lib.rs::__repr__@5952": {
+  "crates/ferric-python/src/lib.rs::__repr__@5965": {
     "cc": 1.0,
     "mi": 114.81990388345423
   },
-  "crates/ferric-python/src/lib.rs::__repr__@6102": {
+  "crates/ferric-python/src/lib.rs::__repr__@6115": {
     "cc": 1.0,
     "mi": 120.20683860169837
   },
-  "crates/ferric-python/src/lib.rs::__repr__@6263": {
+  "crates/ferric-python/src/lib.rs::__repr__@6276": {
     "cc": 1.0,
     "mi": 115.24916527601178
   },
-  "crates/ferric-python/src/lib.rs::__repr__@6492": {
+  "crates/ferric-python/src/lib.rs::__repr__@6505": {
     "cc": 1.0,
     "mi": 121.02254588024968
   },
-  "crates/ferric-python/src/lib.rs::__repr__@6747": {
+  "crates/ferric-python/src/lib.rs::__repr__@6760": {
     "cc": 1.0,
     "mi": 110.30844330566133
   },
-  "crates/ferric-python/src/lib.rs::__repr__@859": {
+  "crates/ferric-python/src/lib.rs::__repr__@872": {
     "cc": 1.0,
     "mi": 110.16752834665654
   },
-  "crates/ferric-python/src/lib.rs::__repr__@957": {
+  "crates/ferric-python/src/lib.rs::__repr__@970": {
     "cc": 1.0,
     "mi": 112.25718774061956
   },
-  "crates/ferric-python/src/lib.rs::__str__@1312": {
+  "crates/ferric-python/src/lib.rs::__str__@1325": {
     "cc": 1.0,
     "mi": 120.20683860169837
   },
-  "crates/ferric-python/src/lib.rs::__str__@1495": {
+  "crates/ferric-python/src/lib.rs::__str__@1508": {
     "cc": 1.0,
     "mi": 120.20683860169837
   },
-  "crates/ferric-python/src/lib.rs::__str__@1694": {
+  "crates/ferric-python/src/lib.rs::__str__@1707": {
     "cc": 1.0,
     "mi": 120.20683860169837
   },
-  "crates/ferric-python/src/lib.rs::__str__@1789": {
+  "crates/ferric-python/src/lib.rs::__str__@1802": {
     "cc": 2.0,
     "mi": 106.20758975234652
   },
-  "crates/ferric-python/src/lib.rs::__str__@2068": {
+  "crates/ferric-python/src/lib.rs::__str__@2081": {
     "cc": 1.0,
     "mi": 134.79064160395092
   },
-  "crates/ferric-python/src/lib.rs::__str__@2927": {
+  "crates/ferric-python/src/lib.rs::__str__@2940": {
     "cc": 1.0,
     "mi": 120.20683860169837
   },
-  "crates/ferric-python/src/lib.rs::__str__@3533": {
+  "crates/ferric-python/src/lib.rs::__str__@3546": {
     "cc": 1.0,
     "mi": 118.2301959978505
   },
@@ -17963,79 +17967,79 @@
     "cc": 1.0,
     "mi": 120.20683860169837
   },
-  "crates/ferric-python/src/lib.rs::__str__@3641": {
+  "crates/ferric-python/src/lib.rs::__str__@3654": {
     "cc": 1.0,
     "mi": 119.48035345717307
   },
-  "crates/ferric-python/src/lib.rs::__str__@3725": {
+  "crates/ferric-python/src/lib.rs::__str__@3738": {
     "cc": 1.0,
     "mi": 119.48035345717307
   },
-  "crates/ferric-python/src/lib.rs::__str__@3819": {
+  "crates/ferric-python/src/lib.rs::__str__@3832": {
     "cc": 1.0,
     "mi": 118.2301959978505
   },
-  "crates/ferric-python/src/lib.rs::__str__@3934": {
+  "crates/ferric-python/src/lib.rs::__str__@3947": {
     "cc": 1.0,
     "mi": 118.82572249197182
   },
-  "crates/ferric-python/src/lib.rs::__str__@4075": {
+  "crates/ferric-python/src/lib.rs::__str__@4088": {
     "cc": 1.0,
     "mi": 118.82572249197182
   },
-  "crates/ferric-python/src/lib.rs::__str__@4231": {
+  "crates/ferric-python/src/lib.rs::__str__@4244": {
     "cc": 1.0,
     "mi": 119.48035345717307
   },
-  "crates/ferric-python/src/lib.rs::__str__@4395": {
+  "crates/ferric-python/src/lib.rs::__str__@4408": {
     "cc": 1.0,
     "mi": 118.82572249197182
   },
-  "crates/ferric-python/src/lib.rs::__str__@4566": {
+  "crates/ferric-python/src/lib.rs::__str__@4579": {
     "cc": 1.0,
     "mi": 121.02254588024968
   },
-  "crates/ferric-python/src/lib.rs::__str__@4604": {
+  "crates/ferric-python/src/lib.rs::__str__@4617": {
     "cc": 1.0,
     "mi": 120.20683860169837
   },
-  "crates/ferric-python/src/lib.rs::__str__@4957": {
+  "crates/ferric-python/src/lib.rs::__str__@4970": {
     "cc": 3.0,
     "mi": 104.04526000914996
   },
-  "crates/ferric-python/src/lib.rs::__str__@5232": {
+  "crates/ferric-python/src/lib.rs::__str__@5245": {
     "cc": 1.0,
     "mi": 118.82572249197182
   },
-  "crates/ferric-python/src/lib.rs::__str__@5413": {
+  "crates/ferric-python/src/lib.rs::__str__@5426": {
     "cc": 2.0,
     "mi": 111.93156998409577
   },
-  "crates/ferric-python/src/lib.rs::__str__@5699": {
+  "crates/ferric-python/src/lib.rs::__str__@5712": {
     "cc": 3.0,
     "mi": 107.39814435132797
   },
-  "crates/ferric-python/src/lib.rs::__str__@5960": {
+  "crates/ferric-python/src/lib.rs::__str__@5973": {
     "cc": 2.0,
     "mi": 100.24419615698895
   },
-  "crates/ferric-python/src/lib.rs::__str__@6108": {
+  "crates/ferric-python/src/lib.rs::__str__@6121": {
     "cc": 1.0,
     "mi": 120.20683860169837
   },
-  "crates/ferric-python/src/lib.rs::__str__@6271": {
+  "crates/ferric-python/src/lib.rs::__str__@6284": {
     "cc": 2.0,
     "mi": 93.21422522811623
   },
-  "crates/ferric-python/src/lib.rs::__str__@6498": {
+  "crates/ferric-python/src/lib.rs::__str__@6511": {
     "cc": 1.0,
     "mi": 114.81990388345423
   },
-  "crates/ferric-python/src/lib.rs::_cli_main@6635": {
+  "crates/ferric-python/src/lib.rs::_cli_main@6648": {
     "cc": 4.0,
     "mi": 117.480409359068
   },
-  "crates/ferric-python/src/lib.rs::atom_coords_angstrom@820": {
+  "crates/ferric-python/src/lib.rs::atom_coords_angstrom@833": {
     "cc": 2.0,
     "mi": 102.1013036349247
   },
@@ -18043,27 +18047,27 @@
     "cc": 2.0,
     "mi": 129.41265239805244
   },
-  "crates/ferric-python/src/lib.rs::atomic_numbers@2363": {
+  "crates/ferric-python/src/lib.rs::atomic_numbers@2376": {
     "cc": 2.0,
     "mi": 112.2568512784851
   },
-  "crates/ferric-python/src/lib.rs::boltzmann_weights@2427": {
+  "crates/ferric-python/src/lib.rs::boltzmann_weights@2440": {
     "cc": 5.0,
     "mi": 87.7059659259478
   },
-  "crates/ferric-python/src/lib.rs::boltzmann_weights@2578": {
+  "crates/ferric-python/src/lib.rs::boltzmann_weights@2591": {
     "cc": 1.0,
     "mi": 119.76209764064455
   },
-  "crates/ferric-python/src/lib.rs::both_converged@6699": {
+  "crates/ferric-python/src/lib.rs::both_converged@6712": {
     "cc": 2.0,
     "mi": 132.41778397553108
   },
-  "crates/ferric-python/src/lib.rs::boundary_scheme@856": {
+  "crates/ferric-python/src/lib.rs::boundary_scheme@869": {
     "cc": 1.0,
     "mi": 132.6477839755311
   },
-  "crates/ferric-python/src/lib.rs::boys_localize@6514": {
+  "crates/ferric-python/src/lib.rs::boys_localize@6527": {
     "cc": 4.0,
     "mi": 82.49309272865591
   },
@@ -18083,39 +18087,39 @@
     "cc": 3.0,
     "mi": 117.35263288111196
   },
-  "crates/ferric-python/src/lib.rs::c_loc@6485": {
+  "crates/ferric-python/src/lib.rs::c_loc@6498": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::centers@6489": {
+  "crates/ferric-python/src/lib.rs::centers@6502": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::chelpg_charges@2823": {
+  "crates/ferric-python/src/lib.rs::chelpg_charges@2836": {
     "cc": 2.0,
     "mi": 108.28906305397692
   },
-  "crates/ferric-python/src/lib.rs::compute_eri3@6377": {
+  "crates/ferric-python/src/lib.rs::compute_eri3@6390": {
     "cc": 4.0,
     "mi": 94.33589160290049
   },
-  "crates/ferric-python/src/lib.rs::compute_eri3_mo@6434": {
+  "crates/ferric-python/src/lib.rs::compute_eri3_mo@6447": {
     "cc": 7.0,
     "mi": 74.51453548174112
   },
-  "crates/ferric-python/src/lib.rs::compute_metric_2c@6578": {
+  "crates/ferric-python/src/lib.rs::compute_metric_2c@6591": {
     "cc": 4.0,
     "mi": 91.90794599603949
   },
-  "crates/ferric-python/src/lib.rs::conformer_err@1921": {
+  "crates/ferric-python/src/lib.rs::conformer_err@1934": {
     "cc": 1.0,
     "mi": 131.1535141041124
   },
-  "crates/ferric-python/src/lib.rs::coordinates@2387": {
+  "crates/ferric-python/src/lib.rs::coordinates@2400": {
     "cc": 1.0,
     "mi": 128.33419408926648
   },
-  "crates/ferric-python/src/lib.rs::coordinates_bohr@2394": {
+  "crates/ferric-python/src/lib.rs::coordinates_bohr@2407": {
     "cc": 1.0,
     "mi": 128.33419408926648
   },
@@ -18123,7 +18127,7 @@
     "cc": 2.0,
     "mi": 102.1013036349247
   },
-  "crates/ferric-python/src/lib.rs::coords_arrays@2482": {
+  "crates/ferric-python/src/lib.rs::coords_arrays@2495": {
     "cc": 5.0,
     "mi": 89.78540557599015
   },
@@ -18131,11 +18135,11 @@
     "cc": 2.0,
     "mi": 113.4298966556652
   },
-  "crates/ferric-python/src/lib.rs::d3bj_energy@4927": {
+  "crates/ferric-python/src/lib.rs::d3bj_energy@4940": {
     "cc": 2.0,
     "mi": 121.39247246493483
   },
-  "crates/ferric-python/src/lib.rs::density@2664": {
+  "crates/ferric-python/src/lib.rs::density@2677": {
     "cc": 3.0,
     "mi": 115.74022755940746
   },
@@ -18143,131 +18147,131 @@
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::density@4527": {
+  "crates/ferric-python/src/lib.rs::density@4540": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::density_alpha@1477": {
+  "crates/ferric-python/src/lib.rs::density_alpha@1490": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::density_beta@1480": {
+  "crates/ferric-python/src/lib.rs::density_beta@1493": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::density_second_moment@2776": {
+  "crates/ferric-python/src/lib.rs::density_second_moment@2789": {
     "cc": 2.0,
     "mi": 105.7229584006062
   },
-  "crates/ferric-python/src/lib.rs::diagnostics@2123": {
+  "crates/ferric-python/src/lib.rs::diagnostics@2136": {
     "cc": 1.0,
     "mi": 133.92196036370245
   },
-  "crates/ferric-python/src/lib.rs::diagnostics@2453": {
+  "crates/ferric-python/src/lib.rs::diagnostics@2466": {
     "cc": 2.0,
     "mi": 106.1482911748389
   },
-  "crates/ferric-python/src/lib.rs::drpa_config@3195": {
+  "crates/ferric-python/src/lib.rs::drpa_config@3208": {
     "cc": 3.0,
     "mi": 83.03848397095337
   },
-  "crates/ferric-python/src/lib.rs::drpa_result_to_dict@3225": {
+  "crates/ferric-python/src/lib.rs::drpa_result_to_dict@3238": {
     "cc": 10.0,
     "mi": 89.40763911610313
   },
-  "crates/ferric-python/src/lib.rs::eigenpotentials@5168": {
+  "crates/ferric-python/src/lib.rs::eigenpotentials@5181": {
     "cc": 1.0,
     "mi": 128.02949002988194
   },
-  "crates/ferric-python/src/lib.rs::eigenvalues_freq@5183": {
+  "crates/ferric-python/src/lib.rs::eigenvalues_freq@5196": {
     "cc": 1.0,
     "mi": 128.02949002988194
   },
-  "crates/ferric-python/src/lib.rs::eigenvalues_static@5162": {
+  "crates/ferric-python/src/lib.rs::eigenvalues_static@5175": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::elements@2353": {
+  "crates/ferric-python/src/lib.rs::elements@2366": {
     "cc": 2.0,
     "mi": 112.21476019047651
   },
-  "crates/ferric-python/src/lib.rs::energies@1303": {
+  "crates/ferric-python/src/lib.rs::energies@1316": {
     "cc": 1.0,
     "mi": 132.79564043134945
   },
-  "crates/ferric-python/src/lib.rs::energies@2402": {
+  "crates/ferric-python/src/lib.rs::energies@2415": {
     "cc": 1.0,
     "mi": 131.02230855938677
   },
-  "crates/ferric-python/src/lib.rs::eps_mf@5386": {
+  "crates/ferric-python/src/lib.rs::eps_mf@5399": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::eps_mf_a@5652": {
+  "crates/ferric-python/src/lib.rs::eps_mf_a@5665": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::eps_mf_b@5672": {
+  "crates/ferric-python/src/lib.rs::eps_mf_b@5685": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::eps_qp@5390": {
+  "crates/ferric-python/src/lib.rs::eps_qp@5403": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::eps_qp@5937": {
+  "crates/ferric-python/src/lib.rs::eps_qp@5950": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::eps_qp_a@5656": {
+  "crates/ferric-python/src/lib.rs::eps_qp_a@5669": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::eps_qp_b@5676": {
+  "crates/ferric-python/src/lib.rs::eps_qp_b@5689": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::esp_at_atoms@2696": {
+  "crates/ferric-python/src/lib.rs::esp_at_atoms@2709": {
     "cc": 2.0,
     "mi": 108.28906305397692
   },
-  "crates/ferric-python/src/lib.rs::esp_at_points@2716": {
+  "crates/ferric-python/src/lib.rs::esp_at_points@2729": {
     "cc": 4.0,
     "mi": 89.19126469341897
   },
-  "crates/ferric-python/src/lib.rs::excitation_energies@6249": {
+  "crates/ferric-python/src/lib.rs::excitation_energies@6262": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::exit_reason@4549": {
+  "crates/ferric-python/src/lib.rs::exit_reason@4562": {
     "cc": 1.0,
     "mi": 132.61029313705293
   },
-  "crates/ferric-python/src/lib.rs::extract_bound@2680": {
+  "crates/ferric-python/src/lib.rs::extract_bound@2693": {
     "cc": 3.0,
     "mi": 101.15268214583654
   },
-  "crates/ferric-python/src/lib.rs::extract_element_symbols@2519": {
+  "crates/ferric-python/src/lib.rs::extract_element_symbols@2532": {
     "cc": 9.0,
     "mi": 70.93552767918264
   },
-  "crates/ferric-python/src/lib.rs::ferric@7139": {
+  "crates/ferric-python/src/lib.rs::ferric@7152": {
     "cc": 156.0,
     "mi": 12.012798936311242
   },
-  "crates/ferric-python/src/lib.rs::forward_barrier@6685": {
+  "crates/ferric-python/src/lib.rs::forward_barrier@6698": {
     "cc": 1.0,
     "mi": 133.00654690726324
   },
-  "crates/ferric-python/src/lib.rs::from@2002": {
+  "crates/ferric-python/src/lib.rs::from@2015": {
     "cc": 1.0,
     "mi": 115.00869444631084
   },
-  "crates/ferric-python/src/lib.rs::from@2080": {
+  "crates/ferric-python/src/lib.rs::from@2093": {
     "cc": 1.0,
     "mi": 102.21619475631229
   },
-  "crates/ferric-python/src/lib.rs::from@2140": {
+  "crates/ferric-python/src/lib.rs::from@2153": {
     "cc": 1.0,
     "mi": 107.49942135872669
   },
@@ -18275,11 +18279,11 @@
     "cc": 4.0,
     "mi": 80.85155340801202
   },
-  "crates/ferric-python/src/lib.rs::from_coordinates@2231": {
+  "crates/ferric-python/src/lib.rs::from_coordinates@2244": {
     "cc": 9.0,
     "mi": 74.3499303786227
   },
-  "crates/ferric-python/src/lib.rs::from_multi_xyz@2283": {
+  "crates/ferric-python/src/lib.rs::from_multi_xyz@2296": {
     "cc": 7.0,
     "mi": 82.81298978515849
   },
@@ -18291,23 +18295,23 @@
     "cc": 3.0,
     "mi": 115.89511651366769
   },
-  "crates/ferric-python/src/lib.rs::full_gradient@928": {
+  "crates/ferric-python/src/lib.rs::full_gradient@941": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::gradient@4555": {
+  "crates/ferric-python/src/lib.rs::gradient@4568": {
     "cc": 2.0,
     "mi": 118.0953781428399
   },
-  "crates/ferric-python/src/lib.rs::hirshfeld_charges@2739": {
+  "crates/ferric-python/src/lib.rs::hirshfeld_charges@2752": {
     "cc": 1.0,
     "mi": 110.7425291322161
   },
-  "crates/ferric-python/src/lib.rs::hirshfeld_polarizability@2864": {
+  "crates/ferric-python/src/lib.rs::hirshfeld_polarizability@2877": {
     "cc": 7.0,
     "mi": 74.21568692372955
   },
-  "crates/ferric-python/src/lib.rs::induced_dipoles@952": {
+  "crates/ferric-python/src/lib.rs::induced_dipoles@965": {
     "cc": 2.0,
     "mi": 118.0953781428399
   },
@@ -18315,39 +18319,39 @@
     "cc": 2.0,
     "mi": 129.41265239805244
   },
-  "crates/ferric-python/src/lib.rs::is_ghost@2373": {
+  "crates/ferric-python/src/lib.rs::is_ghost@2386": {
     "cc": 2.0,
     "mi": 112.2568512784851
   },
-  "crates/ferric-python/src/lib.rs::is_single_conformer_dominated@2064": {
+  "crates/ferric-python/src/lib.rs::is_single_conformer_dominated@2077": {
     "cc": 1.0,
     "mi": 132.2515302053208
   },
-  "crates/ferric-python/src/lib.rs::is_transition_state@6743": {
+  "crates/ferric-python/src/lib.rs::is_transition_state@6756": {
     "cc": 2.0,
     "mi": 132.02153020532077
   },
-  "crates/ferric-python/src/lib.rs::iterations@4540": {
+  "crates/ferric-python/src/lib.rs::iterations@4553": {
     "cc": 1.0,
     "mi": 134.50414427548188
   },
-  "crates/ferric-python/src/lib.rs::link_atom_positions@834": {
+  "crates/ferric-python/src/lib.rs::link_atom_positions@847": {
     "cc": 2.0,
     "mi": 101.03405235197434
   },
-  "crates/ferric-python/src/lib.rs::lowdin_charges@2790": {
+  "crates/ferric-python/src/lib.rs::lowdin_charges@2803": {
     "cc": 2.0,
     "mi": 108.28906305397692
   },
-  "crates/ferric-python/src/lib.rs::lowest_ev@5945": {
+  "crates/ferric-python/src/lib.rs::lowest_ev@5958": {
     "cc": 1.0,
     "mi": 132.44543420186244
   },
-  "crates/ferric-python/src/lib.rs::lowest_ev@6256": {
+  "crates/ferric-python/src/lib.rs::lowest_ev@6269": {
     "cc": 2.0,
     "mi": 115.85657739746878
   },
-  "crates/ferric-python/src/lib.rs::lowest_oscillator_strength@5949": {
+  "crates/ferric-python/src/lib.rs::lowest_oscillator_strength@5962": {
     "cc": 1.0,
     "mi": 133.5972239664512
   },
@@ -18355,23 +18359,23 @@
     "cc": 1.0,
     "mi": 131.1535141041124
   },
-  "crates/ferric-python/src/lib.rs::min_link_to_charge_distance@850": {
+  "crates/ferric-python/src/lib.rs::min_link_to_charge_distance@863": {
     "cc": 2.0,
     "mi": 121.30742763073243
   },
-  "crates/ferric-python/src/lib.rs::mm_charge_positions@791": {
+  "crates/ferric-python/src/lib.rs::mm_charge_positions@804": {
     "cc": 2.0,
     "mi": 112.64452790957625
   },
-  "crates/ferric-python/src/lib.rs::mm_energy@937": {
+  "crates/ferric-python/src/lib.rs::mm_energy@950": {
     "cc": 7.0,
     "mi": 100.29936495292633
   },
-  "crates/ferric-python/src/lib.rs::mm_forces@915": {
+  "crates/ferric-python/src/lib.rs::mm_forces@928": {
     "cc": 3.0,
     "mi": 101.9502525945196
   },
-  "crates/ferric-python/src/lib.rs::mm_indices@803": {
+  "crates/ferric-python/src/lib.rs::mm_indices@816": {
     "cc": 1.0,
     "mi": 132.43687749961728
   },
@@ -18379,15 +18383,15 @@
     "cc": 1.0,
     "mi": 128.02949002988194
   },
-  "crates/ferric-python/src/lib.rs::mol@1683": {
+  "crates/ferric-python/src/lib.rs::mol@1696": {
     "cc": 1.0,
     "mi": 125.36008793022441
   },
-  "crates/ferric-python/src/lib.rs::molecule@2336": {
+  "crates/ferric-python/src/lib.rs::molecule@2349": {
     "cc": 3.0,
     "mi": 99.50855998317309
   },
-  "crates/ferric-python/src/lib.rs::molecule_from_coords@1937": {
+  "crates/ferric-python/src/lib.rs::molecule_from_coords@1950": {
     "cc": 7.0,
     "mi": 74.49430036297579
   },
@@ -18395,15 +18399,15 @@
     "cc": 2.0,
     "mi": 95.1057197247627
   },
-  "crates/ferric-python/src/lib.rs::molecules@2325": {
+  "crates/ferric-python/src/lib.rs::molecules@2338": {
     "cc": 2.0,
     "mi": 110.81354978652733
   },
-  "crates/ferric-python/src/lib.rs::mulliken_charges@2805": {
+  "crates/ferric-python/src/lib.rs::mulliken_charges@2818": {
     "cc": 2.0,
     "mi": 108.28906305397692
   },
-  "crates/ferric-python/src/lib.rs::n_atoms@2319": {
+  "crates/ferric-python/src/lib.rs::n_atoms@2332": {
     "cc": 1.0,
     "mi": 134.05168511513583
   },
@@ -18411,11 +18415,11 @@
     "cc": 1.0,
     "mi": 134.05168511513583
   },
-  "crates/ferric-python/src/lib.rs::n_conformers@2315": {
+  "crates/ferric-python/src/lib.rs::n_conformers@2328": {
     "cc": 1.0,
     "mi": 134.05168511513583
   },
-  "crates/ferric-python/src/lib.rs::natoms@812": {
+  "crates/ferric-python/src/lib.rs::natoms@825": {
     "cc": 1.0,
     "mi": 133.63546303523344
   },
@@ -18428,14 +18432,14 @@
     "mi": 134.05168511513583
   },
   "crates/ferric-python/src/lib.rs::new@607": {
-    "cc": 19.0,
-    "mi": 48.87157157112058
+    "cc": 20.0,
+    "mi": 46.577087583861456
   },
   "crates/ferric-python/src/lib.rs::nuclear_repulsion@81": {
     "cc": 1.0,
     "mi": 134.05168511513583
   },
-  "crates/ferric-python/src/lib.rs::omega@5933": {
+  "crates/ferric-python/src/lib.rs::omega@5946": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
@@ -18443,23 +18447,23 @@
     "cc": 1.0,
     "mi": 128.02949002988194
   },
-  "crates/ferric-python/src/lib.rs::orbital_energies_alpha@1483": {
+  "crates/ferric-python/src/lib.rs::orbital_energies_alpha@1496": {
     "cc": 1.0,
     "mi": 128.02949002988194
   },
-  "crates/ferric-python/src/lib.rs::orbital_energies_beta@1486": {
+  "crates/ferric-python/src/lib.rs::orbital_energies_beta@1499": {
     "cc": 1.0,
     "mi": 128.02949002988194
   },
-  "crates/ferric-python/src/lib.rs::orbital_moments@2753": {
+  "crates/ferric-python/src/lib.rs::orbital_moments@2766": {
     "cc": 5.0,
     "mi": 87.32666894220314
   },
-  "crates/ferric-python/src/lib.rs::oscillator_strength@5941": {
+  "crates/ferric-python/src/lib.rs::oscillator_strength@5954": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::oscillator_strengths@6253": {
+  "crates/ferric-python/src/lib.rs::oscillator_strengths@6266": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
@@ -18467,51 +18471,51 @@
     "cc": 5.0,
     "mi": 100.71606931162077
   },
-  "crates/ferric-python/src/lib.rs::parse_move_mm@1406": {
+  "crates/ferric-python/src/lib.rs::parse_move_mm@1419": {
     "cc": 13.0,
     "mi": 67.96081148039414
   },
-  "crates/ferric-python/src/lib.rs::point_charges@757": {
+  "crates/ferric-python/src/lib.rs::point_charges@770": {
     "cc": 3.0,
     "mi": 103.83137181367107
   },
-  "crates/ferric-python/src/lib.rs::qm_atom_count@808": {
+  "crates/ferric-python/src/lib.rs::qm_atom_count@821": {
     "cc": 1.0,
     "mi": 134.05168511513583
   },
-  "crates/ferric-python/src/lib.rs::qm_gradient@901": {
+  "crates/ferric-python/src/lib.rs::qm_gradient@914": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::qm_indices@799": {
+  "crates/ferric-python/src/lib.rs::qm_indices@812": {
     "cc": 1.0,
     "mi": 132.43687749961728
   },
-  "crates/ferric-python/src/lib.rs::qm_molecule@748": {
+  "crates/ferric-python/src/lib.rs::qm_molecule@761": {
     "cc": 1.0,
     "mi": 125.36008793022441
   },
-  "crates/ferric-python/src/lib.rs::quad_freqs@5173": {
+  "crates/ferric-python/src/lib.rs::quad_freqs@5186": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::quad_weights@5178": {
+  "crates/ferric-python/src/lib.rs::quad_weights@5191": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::resolve_d3_functional@4845": {
+  "crates/ferric-python/src/lib.rs::resolve_d3_functional@4858": {
     "cc": 6.0,
     "mi": 86.11740171757887
   },
-  "crates/ferric-python/src/lib.rs::resolve_operator@6406": {
+  "crates/ferric-python/src/lib.rs::resolve_operator@6419": {
     "cc": 19.0,
     "mi": 78.73934157471139
   },
-  "crates/ferric-python/src/lib.rs::resp_charges@2841": {
+  "crates/ferric-python/src/lib.rs::resp_charges@2854": {
     "cc": 2.0,
     "mi": 108.28906305397692
   },
-  "crates/ferric-python/src/lib.rs::reverse_barrier@6690": {
+  "crates/ferric-python/src/lib.rs::reverse_barrier@6703": {
     "cc": 1.0,
     "mi": 133.00654690726324
   },
@@ -18523,103 +18527,103 @@
     "cc": 2.0,
     "mi": 113.00700332101948
   },
-  "crates/ferric-python/src/lib.rs::run_attenuated_rimp2@3944": {
+  "crates/ferric-python/src/lib.rs::run_attenuated_rimp2@3957": {
     "cc": 7.0,
     "mi": 69.94082608478173
   },
-  "crates/ferric-python/src/lib.rs::run_bse_tda@5996": {
+  "crates/ferric-python/src/lib.rs::run_bse_tda@6009": {
     "cc": 10.0,
     "mi": 59.708369089741865
   },
-  "crates/ferric-python/src/lib.rs::run_ccd@4973": {
+  "crates/ferric-python/src/lib.rs::run_ccd@4986": {
     "cc": 7.0,
     "mi": 73.31024414402404
   },
-  "crates/ferric-python/src/lib.rs::run_ccsd@5015": {
+  "crates/ferric-python/src/lib.rs::run_ccsd@5028": {
     "cc": 8.0,
     "mi": 67.9960057308476
   },
-  "crates/ferric-python/src/lib.rs::run_ccsd_t@5069": {
+  "crates/ferric-python/src/lib.rs::run_ccsd_t@5082": {
     "cc": 10.0,
     "mi": 64.254798809156
   },
-  "crates/ferric-python/src/lib.rs::run_dft@4690": {
+  "crates/ferric-python/src/lib.rs::run_dft@4703": {
     "cc": 25.0,
     "mi": 42.16486157323567
   },
-  "crates/ferric-python/src/lib.rs::run_double_hybrid@4618": {
+  "crates/ferric-python/src/lib.rs::run_double_hybrid@4631": {
     "cc": 11.0,
     "mi": 62.69981645504981
   },
-  "crates/ferric-python/src/lib.rs::run_drpa@3266": {
+  "crates/ferric-python/src/lib.rs::run_drpa@3279": {
     "cc": 7.0,
     "mi": 69.58771145240665
   },
-  "crates/ferric-python/src/lib.rs::run_drpa_scan@3326": {
+  "crates/ferric-python/src/lib.rs::run_drpa_scan@3339": {
     "cc": 13.0,
     "mi": 60.937440955319104
   },
-  "crates/ferric-python/src/lib.rs::run_frequencies@1817": {
+  "crates/ferric-python/src/lib.rs::run_frequencies@1830": {
     "cc": 13.0,
     "mi": 59.05067992696769
   },
-  "crates/ferric-python/src/lib.rs::run_gw@5441": {
+  "crates/ferric-python/src/lib.rs::run_gw@5454": {
     "cc": 26.0,
     "mi": 37.392087506652075
   },
-  "crates/ferric-python/src/lib.rs::run_irc@6977": {
+  "crates/ferric-python/src/lib.rs::run_irc@6990": {
     "cc": 22.0,
     "mi": 43.64773843313726
   },
-  "crates/ferric-python/src/lib.rs::run_ksdft@4879": {
+  "crates/ferric-python/src/lib.rs::run_ksdft@4892": {
     "cc": 1.0,
     "mi": 79.9584301781939
   },
-  "crates/ferric-python/src/lib.rs::run_laplace_mp2@3735": {
+  "crates/ferric-python/src/lib.rs::run_laplace_mp2@3748": {
     "cc": 7.0,
     "mi": 69.74699912153034
   },
-  "crates/ferric-python/src/lib.rs::run_laplace_sos_mp2@3852": {
+  "crates/ferric-python/src/lib.rs::run_laplace_sos_mp2@3865": {
     "cc": 11.0,
     "mi": 64.40148063363247
   },
-  "crates/ferric-python/src/lib.rs::run_linlccd_amplitude@3396": {
+  "crates/ferric-python/src/lib.rs::run_linlccd_amplitude@3409": {
     "cc": 16.0,
     "mi": 59.33807136343566
   },
-  "crates/ferric-python/src/lib.rs::run_lmp2@3017": {
+  "crates/ferric-python/src/lib.rs::run_lmp2@3030": {
     "cc": 16.0,
     "mi": 61.388832261549084
   },
-  "crates/ferric-python/src/lib.rs::run_lmp2_direct@3092": {
+  "crates/ferric-python/src/lib.rs::run_lmp2_direct@3105": {
     "cc": 29.0,
     "mi": 48.57759325246258
   },
-  "crates/ferric-python/src/lib.rs::run_mp2_v@4254": {
+  "crates/ferric-python/src/lib.rs::run_mp2_v@4267": {
     "cc": 21.0,
     "mi": 50.266695438897074
   },
-  "crates/ferric-python/src/lib.rs::run_mp3@3651": {
+  "crates/ferric-python/src/lib.rs::run_mp3@3664": {
     "cc": 7.0,
     "mi": 69.31131995631362
   },
-  "crates/ferric-python/src/lib.rs::run_oo_rimp2@3555": {
+  "crates/ferric-python/src/lib.rs::run_oo_rimp2@3568": {
     "cc": 7.0,
     "mi": 64.73801420189571
   },
-  "crates/ferric-python/src/lib.rs::run_optimize@1704": {
+  "crates/ferric-python/src/lib.rs::run_optimize@1717": {
     "cc": 2.0,
     "mi": 79.51907087456598
   },
-  "crates/ferric-python/src/lib.rs::run_optimize_qmmm@1337": {
+  "crates/ferric-python/src/lib.rs::run_optimize_qmmm@1350": {
     "cc": 13.0,
     "mi": 62.07854066363602
   },
-  "crates/ferric-python/src/lib.rs::run_pdep_rpa@5249": {
+  "crates/ferric-python/src/lib.rs::run_pdep_rpa@5262": {
     "cc": 13.0,
     "mi": 53.870400566086445
   },
-  "crates/ferric-python/src/lib.rs::run_qmmm@1013": {
+  "crates/ferric-python/src/lib.rs::run_qmmm@1026": {
     "cc": 54.0,
     "mi": 20.822265513122716
   },
@@ -18627,91 +18631,91 @@
     "cc": 10.0,
     "mi": 57.581115626754155
   },
-  "crates/ferric-python/src/lib.rs::run_rimp2@2955": {
+  "crates/ferric-python/src/lib.rs::run_rimp2@2968": {
     "cc": 9.0,
     "mi": 66.27849850870716
   },
-  "crates/ferric-python/src/lib.rs::run_rohf@1599": {
+  "crates/ferric-python/src/lib.rs::run_rohf@1612": {
     "cc": 9.0,
     "mi": 63.6104549445796
   },
-  "crates/ferric-python/src/lib.rs::run_rs_mp2_rpa@4406": {
+  "crates/ferric-python/src/lib.rs::run_rs_mp2_rpa@4419": {
     "cc": 14.0,
     "mi": 55.212330362132036
   },
-  "crates/ferric-python/src/lib.rs::run_saddle@6777": {
+  "crates/ferric-python/src/lib.rs::run_saddle@6790": {
     "cc": 27.0,
     "mi": 37.52470823750413
   },
-  "crates/ferric-python/src/lib.rs::run_scs_mp2@4085": {
+  "crates/ferric-python/src/lib.rs::run_scs_mp2@4098": {
     "cc": 7.0,
     "mi": 70.22876785568748
   },
-  "crates/ferric-python/src/lib.rs::run_scs_mp2_2terfc@4138": {
+  "crates/ferric-python/src/lib.rs::run_scs_mp2_2terfc@4151": {
     "cc": 8.0,
     "mi": 65.65987930637894
   },
-  "crates/ferric-python/src/lib.rs::run_tddft@6294": {
+  "crates/ferric-python/src/lib.rs::run_tddft@6307": {
     "cc": 15.0,
     "mi": 56.4958074321879
   },
-  "crates/ferric-python/src/lib.rs::run_tdhf_static_polarizability@6143": {
+  "crates/ferric-python/src/lib.rs::run_tdhf_static_polarizability@6156": {
     "cc": 10.0,
     "mi": 54.91111593478139
   },
-  "crates/ferric-python/src/lib.rs::run_terfc_rimp2@3999": {
+  "crates/ferric-python/src/lib.rs::run_terfc_rimp2@4012": {
     "cc": 7.0,
     "mi": 68.75103944895965
   },
-  "crates/ferric-python/src/lib.rs::run_u_gw@5727": {
+  "crates/ferric-python/src/lib.rs::run_u_gw@5740": {
     "cc": 35.0,
     "mi": 33.590848190841115
   },
-  "crates/ferric-python/src/lib.rs::run_uhf@1517": {
+  "crates/ferric-python/src/lib.rs::run_uhf@1530": {
     "cc": 9.0,
     "mi": 63.37109113012281
   },
-  "crates/ferric-python/src/lib.rs::save_scree_plot@5193": {
+  "crates/ferric-python/src/lib.rs::save_scree_plot@5206": {
     "cc": 19.0,
     "mi": 71.546305164477
   },
-  "crates/ferric-python/src/lib.rs::scf@2671": {
+  "crates/ferric-python/src/lib.rs::scf@2684": {
     "cc": 3.0,
     "mi": 116.56482760475242
   },
-  "crates/ferric-python/src/lib.rs::set_energy@2409": {
+  "crates/ferric-python/src/lib.rs::set_energy@2422": {
     "cc": 1.0,
     "mi": 128.6253985425307
   },
-  "crates/ferric-python/src/lib.rs::shell_info@6547": {
+  "crates/ferric-python/src/lib.rs::shell_info@6560": {
     "cc": 5.0,
     "mi": 81.27004427303852
   },
-  "crates/ferric-python/src/lib.rs::sigma_c@5398": {
+  "crates/ferric-python/src/lib.rs::sigma_c@5411": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::sigma_c_a@5664": {
+  "crates/ferric-python/src/lib.rs::sigma_c_a@5677": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::sigma_c_b@5684": {
+  "crates/ferric-python/src/lib.rs::sigma_c_b@5697": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::sigma_x@5394": {
+  "crates/ferric-python/src/lib.rs::sigma_x@5407": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::sigma_x_a@5660": {
+  "crates/ferric-python/src/lib.rs::sigma_x_a@5673": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::sigma_x_b@5680": {
+  "crates/ferric-python/src/lib.rs::sigma_x_b@5693": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::smeared_charges@772": {
+  "crates/ferric-python/src/lib.rs::smeared_charges@785": {
     "cc": 3.0,
     "mi": 103.35397255755481
   },
@@ -18719,11 +18723,11 @@
     "cc": 2.0,
     "mi": 129.36523696173762
   },
-  "crates/ferric-python/src/lib.rs::system@1296": {
+  "crates/ferric-python/src/lib.rs::system@1309": {
     "cc": 1.0,
     "mi": 125.36008793022441
   },
-  "crates/ferric-python/src/lib.rs::tensor@6093": {
+  "crates/ferric-python/src/lib.rs::tensor@6106": {
     "cc": 2.0,
     "mi": 104.95571026100366
   },
@@ -18731,43 +18735,43 @@
     "cc": 1.0,
     "mi": 134.05168511513583
   },
-  "crates/ferric-python/src/lib.rs::tune_omega@3469": {
+  "crates/ferric-python/src/lib.rs::tune_omega@3482": {
     "cc": 9.0,
     "mi": 72.99249677351149
   },
-  "crates/ferric-python/src/lib.rs::vxc@4523": {
+  "crates/ferric-python/src/lib.rs::vxc@4536": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::weighted_stats@2599": {
+  "crates/ferric-python/src/lib.rs::weighted_stats@2612": {
     "cc": 1.0,
     "mi": 119.25020926201563
   },
-  "crates/ferric-python/src/lib.rs::weighted_stats_tensor@2639": {
+  "crates/ferric-python/src/lib.rs::weighted_stats_tensor@2652": {
     "cc": 3.0,
     "mi": 100.89815720358334
   },
-  "crates/ferric-python/src/lib.rs::weighted_stats_vector@2621": {
+  "crates/ferric-python/src/lib.rs::weighted_stats_vector@2634": {
     "cc": 2.0,
     "mi": 109.22103106697196
   },
-  "crates/ferric-python/src/lib.rs::with_boundary_charges@735": {
+  "crates/ferric-python/src/lib.rs::with_boundary_charges@748": {
     "cc": 4.0,
     "mi": 101.41846560475776
   },
-  "crates/ferric-python/src/lib.rs::with_link_atoms@719": {
+  "crates/ferric-python/src/lib.rs::with_link_atoms@732": {
     "cc": 2.0,
     "mi": 105.04724328551264
   },
-  "crates/ferric-python/src/lib.rs::z_factor@5402": {
+  "crates/ferric-python/src/lib.rs::z_factor@5415": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::z_factor_a@5668": {
+  "crates/ferric-python/src/lib.rs::z_factor_a@5681": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
-  "crates/ferric-python/src/lib.rs::z_factor_b@5688": {
+  "crates/ferric-python/src/lib.rs::z_factor_b@5701": {
     "cc": 1.0,
     "mi": 128.19999710856152
   },
@@ -21159,51 +21163,51 @@
     "cc": 1.0,
     "mi": 155.01840677617037
   },
-  "crates/ferric-rpa/src/properties.rs::<anonymous>@3843": {
+  "crates/ferric-rpa/src/properties.rs::<anonymous>@3863": {
     "cc": 1.0,
     "mi": 150.44530305195448
   },
-  "crates/ferric-rpa/src/properties.rs::<anonymous>@3870": {
+  "crates/ferric-rpa/src/properties.rs::<anonymous>@3890": {
     "cc": 1.0,
     "mi": 86.19706185448467
   },
-  "crates/ferric-rpa/src/properties.rs::<anonymous>@3905": {
+  "crates/ferric-rpa/src/properties.rs::<anonymous>@3925": {
     "cc": 2.0,
     "mi": 77.55966123909293
   },
-  "crates/ferric-rpa/src/properties.rs::<anonymous>@3940": {
+  "crates/ferric-rpa/src/properties.rs::<anonymous>@3960": {
     "cc": 1.0,
     "mi": 125.55371904879837
   },
-  "crates/ferric-rpa/src/properties.rs::<anonymous>@4044": {
+  "crates/ferric-rpa/src/properties.rs::<anonymous>@4064": {
     "cc": 2.0,
     "mi": 114.74652531907554
   },
-  "crates/ferric-rpa/src/properties.rs::<anonymous>@4047": {
+  "crates/ferric-rpa/src/properties.rs::<anonymous>@4067": {
     "cc": 1.0,
     "mi": 146.80631930584252
   },
-  "crates/ferric-rpa/src/properties.rs::<anonymous>@4079": {
+  "crates/ferric-rpa/src/properties.rs::<anonymous>@4099": {
     "cc": 1.0,
     "mi": 145.9612060870103
   },
-  "crates/ferric-rpa/src/properties.rs::<anonymous>@4116": {
+  "crates/ferric-rpa/src/properties.rs::<anonymous>@4136": {
     "cc": 2.0,
     "mi": 114.74652531907554
   },
-  "crates/ferric-rpa/src/properties.rs::<anonymous>@4119": {
+  "crates/ferric-rpa/src/properties.rs::<anonymous>@4139": {
     "cc": 1.0,
     "mi": 146.80631930584252
   },
-  "crates/ferric-rpa/src/properties.rs::<anonymous>@4172": {
+  "crates/ferric-rpa/src/properties.rs::<anonymous>@4192": {
     "cc": 1.0,
     "mi": 145.9612060870103
   },
-  "crates/ferric-rpa/src/properties.rs::<anonymous>@4226": {
+  "crates/ferric-rpa/src/properties.rs::<anonymous>@4246": {
     "cc": 1.0,
     "mi": 145.9612060870103
   },
-  "crates/ferric-rpa/src/properties.rs::<anonymous>@4321": {
+  "crates/ferric-rpa/src/properties.rs::<anonymous>@4341": {
     "cc": 1.0,
     "mi": 159.05793486938265
   },
@@ -21279,23 +21283,23 @@
     "cc": 18.0,
     "mi": 46.56512479396228
   },
-  "crates/ferric-rpa/src/properties.rs::becke_dynamic_alpha_decays_with_frequency@4101": {
+  "crates/ferric-rpa/src/properties.rs::becke_dynamic_alpha_decays_with_frequency@4121": {
     "cc": 3.0,
     "mi": 77.3966049360558
   },
-  "crates/ferric-rpa/src/properties.rs::becke_dynamic_alpha_h2_symmetry_and_positivity@4063": {
+  "crates/ferric-rpa/src/properties.rs::becke_dynamic_alpha_h2_symmetry_and_positivity@4083": {
     "cc": 2.0,
     "mi": 75.55940402487475
   },
-  "crates/ferric-rpa/src/properties.rs::becke_dynamic_alpha_molecular_sum_decays@4027": {
+  "crates/ferric-rpa/src/properties.rs::becke_dynamic_alpha_molecular_sum_decays@4047": {
     "cc": 3.0,
     "mi": 76.91298693303096
   },
-  "crates/ferric-rpa/src/properties.rs::build_h2@4011": {
+  "crates/ferric-rpa/src/properties.rs::build_h2@4031": {
     "cc": 1.0,
     "mi": 93.62718522263097
   },
-  "crates/ferric-rpa/src/properties.rs::build_h_atom@4135": {
+  "crates/ferric-rpa/src/properties.rs::build_h_atom@4155": {
     "cc": 1.0,
     "mi": 89.02993000766985
   },
@@ -21307,7 +21311,7 @@
     "cc": 1.0,
     "mi": 129.43037802654715
   },
-  "crates/ferric-rpa/src/properties.rs::dipole_band_width_bounds_live_memory_at_realistic_scale@3865": {
+  "crates/ferric-rpa/src/properties.rs::dipole_band_width_bounds_live_memory_at_realistic_scale@3885": {
     "cc": 2.0,
     "mi": 81.08484762151245
   },
@@ -21315,7 +21319,7 @@
     "cc": 1.0,
     "mi": 113.30560564903982
   },
-  "crates/ferric-rpa/src/properties.rs::dipole_band_width_respects_budget_and_floors@3900": {
+  "crates/ferric-rpa/src/properties.rs::dipole_band_width_respects_budget_and_floors@3920": {
     "cc": 3.0,
     "mi": 74.00601208012542
   },
@@ -21331,23 +21335,23 @@
     "cc": 1.0,
     "mi": 102.85174934950953
   },
-  "crates/ferric-rpa/src/properties.rs::h2_polarizability_finite_positive@4240": {
+  "crates/ferric-rpa/src/properties.rs::h2_polarizability_finite_positive@4260": {
     "cc": 3.0,
     "mi": 86.33189121509017
   },
-  "crates/ferric-rpa/src/properties.rs::h_atom_dynamic_alpha_unrestricted_decays@4155": {
+  "crates/ferric-rpa/src/properties.rs::h_atom_dynamic_alpha_unrestricted_decays@4175": {
     "cc": 2.0,
     "mi": 79.28849975453198
   },
   "crates/ferric-rpa/src/properties.rs::hirshfeld_charges@3715": {
-    "cc": 20.0,
-    "mi": 44.175490808525424
+    "cc": 21.0,
+    "mi": 41.513004876374794
   },
   "crates/ferric-rpa/src/properties.rs::hirshfeld_i_charges@3550": {
     "cc": 29.0,
     "mi": 36.09591811088718
   },
-  "crates/ferric-rpa/src/properties.rs::molecular_dynamic_alpha_uhf_matches_rhf_on_closed_shell@4186": {
+  "crates/ferric-rpa/src/properties.rs::molecular_dynamic_alpha_uhf_matches_rhf_on_closed_shell@4206": {
     "cc": 3.0,
     "mi": 66.2202400877139
   },
@@ -21359,7 +21363,7 @@
     "cc": 21.0,
     "mi": 43.22334017092051
   },
-  "crates/ferric-rpa/src/properties.rs::molecular_pdep_untruncated_matches_full@3951": {
+  "crates/ferric-rpa/src/properties.rs::molecular_pdep_untruncated_matches_full@3971": {
     "cc": 4.0,
     "mi": 64.74870621176888
   },
@@ -21423,7 +21427,7 @@
     "cc": 8.0,
     "mi": 85.62826235461347
   },
-  "crates/ferric-rpa/src/properties.rs::solve_dielectric_3_cholesky_matches_general_lu@4274": {
+  "crates/ferric-rpa/src/properties.rs::solve_dielectric_3_cholesky_matches_general_lu@4294": {
     "cc": 5.0,
     "mi": 67.56590924713122
   },
