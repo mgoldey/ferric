@@ -20,6 +20,13 @@ MEASURED costs (2026-09-19, through the tier functions; tier 1 from RESULTS.md M
                            order but was never measured)
     tier 4  ferric DFT     0.66 s @ 9, 8.7 @ 19 (STO-3G, via tier4_dft);
                            96.1 s @ 32 at def2-SVP; 612 s @ 71 at STO-3G.
+                           NOTE the STO-3G figures are NOT what a default call
+                           costs: tier4_dft's own default is def2-svp
+                           (`context["basis"]`), which at 9 atoms is 2.64 s
+                           against STO-3G's 0.75 -- 3.5x, re-measured
+                           2026-09-20. The rows are labelled by basis and are
+                           each correct; the leading one is simply not the
+                           default. Budget def2-svp unless you set the basis.
                            Scales ~N^2.3 in ATOM COUNT, not N^3-N^4:
                            measured three ways (a PBE/STO-3G sweep, an
                            RHF/STO-3G sweep at 2.58, and the 32->71 pair),
