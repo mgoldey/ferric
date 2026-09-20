@@ -848,6 +848,30 @@ timings. So:
   read 5.8 h as a hard floor built from a gas-phase multiplicand and a
   near-rigid multiplier -- not as an estimate of a real catalyst job.
 
+  **THIRD CAVEAT, and it cuts the other way (2026-09-20): the 3-6x embedding
+  factor DOES NOT TRANSFER to a large QM region.** It was measured on benzene,
+  12 atoms. MEASURED on danuglipron, 71 atoms, same 6458-charge pocket,
+  RHF/STO-3G:
+
+  | system | atoms | vacuum | embedded | ratio | ABSOLUTE overhead |
+  |---|---:|---:|---:|---:|---:|
+  | benzene | 12 | 0.278 s | 1.574 s | **5.7x** | 1.30 s |
+  | danuglipron | 71 | 43.1 s | 49.1 s | **1.14x** | 6.0 s |
+
+  The pocket contributes roughly FIXED work -- 6458 charges folded into hcore
+  once -- so the absolute overhead grows slowly (1.3 -> 6.0 s) while the QM SCF
+  grows fast (0.28 -> 43 s), and the RATIO therefore FALLS with QM size.
+  Applying benzene's 5.7x at 71 atoms overstates the embedding cost by ~5x.
+  Use the absolute overhead, not the ratio, and never carry a ratio measured
+  at one QM size to another.
+
+  A worked consequence: an RHF/STO-3G QM/MM optimization of this 71-atom
+  ligand in the full pocket MEASURED **77.8 s/step** (6 steps, 466.9 s), so
+  the 34-step floor is **~0.73 h**, not 5.8. The 5.8 h figure is a KS-DFT
+  number -- tier 4's 612 s multiplicand is `tier4_dft`, i.e. DFT with a grid,
+  not the 49.1 s RHF single point measured here. Quote the one that matches
+  the method you are actually running.
+
 ### Every `tiers.py:NN` citation in this table pointed at a DOC COMMENT
 
 Three of the cost rows cited `tiers.py:11/13/14` or `vina_dock.py:7`. Every one
