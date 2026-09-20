@@ -302,3 +302,28 @@ def test_relative_descriptors_cannot_distinguish_SITES():
         "F and Cl must give different descriptor deltas; if they do not, the "
         "gate is inert rather than merely site-blind"
     )
+
+
+def test_embed_proposals_warns_in_its_OWN_docstring_about_placement():
+    """The warning has to live where a caller reads it.
+
+    `embed_proposals` returns ETKDG conformers centred on the ORIGIN; a pocket
+    from a PDB sits at its crystal coordinates. MEASURED on 7LCJ, 226 A apart.
+    Feeding one to an embedded SCF is not an error -- it converges and reports
+    ~0.00 kcal/mol, a gas-phase answer wearing a QM/MM label.
+
+    The golden path documented this and its own text said the honest thing:
+    "nothing in either signature says so". A caller reads the docstring, not
+    the reference page, so the warning belongs in both. This pins the
+    docstring half -- the one that is in reach at the call site.
+    """
+    from tools.pipeline.substitution import embed_proposals
+
+    doc = embed_proposals.__doc__ or ""
+    assert "ORIGIN" in doc, "the docstring must say the coordinates are origin-centred"
+    assert "226" in doc, (
+        "the docstring must carry the MEASURED separation -- a warning without "
+        "a number reads as a theoretical caveat"
+    )
+    for remedy in ("dock", "coords_angstrom"):
+        assert remedy in doc, f"the docstring must name the remedy ({remedy!r})"
