@@ -223,8 +223,16 @@ impl MmTopology {
         // depth at which a node is reached, graph distance is symmetric, and
         // `d <= 2` and `d == 3` are mutually exclusive conditions on that one
         // number -- so a pair can never be inserted into `pairs14` and also
-        // into `exclusions`. Verified by exhaustive enumeration of all 31,721
-        // connected graphs on 3-6 nodes: the removal never fires once.
+        // into `exclusions`. Verified by exhaustive enumeration of ALL 33,866
+        // edge subsets on 2-6 nodes -- connected or not, no minimum edge count
+        // -- on none of which the removal fires.
+        //
+        // (An earlier note here said "31,721 connected graphs on 3-6 nodes".
+        // That number was real but mislabeled: it counted every edge subset
+        // with at least n-1 edges, which is not the same as connected. Only
+        // 27,474 of those are connected. Review caught the arithmetic; the
+        // enumeration above is both correct and strictly larger, so the
+        // conclusion is unchanged.)
         //
         // The invariant it protects is real and IS tested
         // (`tests/ring_exclusions.rs`, which checks the two sets stay disjoint
