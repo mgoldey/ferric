@@ -42,6 +42,11 @@ pub struct Config {
     /// file) -- logging is ON BY DEFAULT, see [`OutputCfg`].
     #[serde(default)]
     pub output: OutputCfg,
+    /// Optional `[qmmm]` section: QM/MM embedding. Absent means no QM/MM --
+    /// byte-identical to the plain single-region run, the same convention
+    /// `[cosmo]` and `[external_potential]` follow.
+    #[serde(default)]
+    pub qmmm: Option<QmmmCfg>,
 }
 
 impl Config {
@@ -2085,6 +2090,156 @@ json = [1, 2]
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
     }
 
+    // --- [qmmm]: the section that made QM/MM reachable from the CLI --------
+    //
+    // The load-bearing test is `the_mm_field_is_actually_applied`. Every other
+    // assertion here also passes if the MM charges are parsed, stored, and
+    // then ignored -- a QM/MM run that drops its field still converges and
+    // still prints an energy, the VACUUM energy wearing a QM/MM label.
+
+    fn qmmm_fixture(extra: &str) -> String {
+        format!(
+            "[molecule]\nxyz = \"unused.xyz\"\ncharge = 0\nmultiplicity = 1\n\n\
+             [basis]\nname = \"sto-3g\"\n\n[method]\nkind = \"rhf\"\n\n\
+             [qmmm]\npqr = \"{}/testdata/molecules/water_na.pqr\"\n{extra}\n",
+            runtime_workspace_root().display()
+        )
+    }
+
+    fn qmmm_cfg(extra: &str) -> QmmmCfg {
+        toml::from_str::<Config>(&qmmm_fixture(extra))
+            .expect("fixture should parse")
+            .qmmm
+            .expect("[qmmm] should be present")
+    }
+
+    #[test]
+    fn qmmm_the_mm_field_is_actually_applied() {
+        // Water (QM) + Na+ at 4 A (MM). The CLI energy for this input is
+        // -74.9653197421, which matches
+        // `ferric.run_rhf(point_charges=[(1.0, 0, 0, 4/0.529...)])` to all 10
+        // printed digits; vacuum is -74.9629466809. A run that parsed the
+        // charge and dropped it would land on the latter.
+        let sys = qmmm_cfg("qm_indices = [0, 1, 2]")
+            .to_system(0, 1)
+            .expect("system should build");
+        assert_eq!(sys.to_qm_molecule().atoms.len(), 3);
+
+        let ext = sys
+            .to_external_potential()
+            .expect("one MM atom means a non-empty external potential");
+        assert_eq!(ext.point_charges.len(), 1);
+        let na = &ext.point_charges[0];
+        assert!(
+            (na.q - 1.0).abs() < 1e-12,
+            "the PQR charge column must reach the field, got q = {}",
+            na.q
+        );
+        // 4 Angstrom in Bohr. A unit slip here yields a plausible wrong
+        // answer rather than an error, which is why it is asserted.
+        let expect_z = 4.0 / 0.529_177_210_92;
+        assert!(
+            (na.z - expect_z).abs() < 1e-9,
+            "Na z = {} Bohr, expected {expect_z} (4 A)",
+            na.z
+        );
+    }
+
+    #[test]
+    fn qmmm_a_radial_selection_picks_the_same_region() {
+        // 1.5 A around O catches both H (0.96 A) and not the ion (4 A). The
+        // same split reached a different way, so the two selection modes
+        // cannot silently disagree.
+        let sys = qmmm_cfg("qm_seeds = [0]\nqm_radius_angstrom = 1.5")
+            .to_system(0, 1)
+            .expect("radial selection should build");
+        assert_eq!(sys.to_qm_molecule().atoms.len(), 3);
+        assert_eq!(sys.to_external_potential().unwrap().point_charges.len(), 1);
+    }
+
+    #[test]
+    fn qmmm_two_selections_at_once_are_refused() {
+        let err = qmmm_cfg("qm_indices = [0]\nqm_seeds = [0]\nqm_radius_angstrom = 3.0")
+            .to_system(0, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not both"), "{err}");
+    }
+
+    #[test]
+    fn qmmm_no_selection_is_refused() {
+        let err = qmmm_cfg("").to_system(0, 1).unwrap_err().to_string();
+        assert!(err.contains("no QM region selected"), "{err}");
+    }
+
+    #[test]
+    fn qmmm_an_unknown_boundary_scheme_is_refused() {
+        let err = qmmm_cfg(
+            "qm_indices = [0, 1, 2]\nlink_bonds = [[0, 3]]\nboundary_scheme = \"wishful\"",
+        )
+        .to_system(0, 1)
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown boundary charge scheme"), "{err}");
+    }
+
+    #[test]
+    fn qmmm_a_scheme_without_link_bonds_is_refused() {
+        // It would do nothing, which is worse than an error: it reads as
+        // though it did something.
+        let err = qmmm_cfg("qm_indices = [0, 1, 2]\nboundary_scheme = \"rc\"")
+            .to_system(0, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no link_bonds"), "{err}");
+    }
+
+    #[test]
+    fn qmmm_an_out_of_range_index_is_refused_rather_than_clamped() {
+        let err = qmmm_cfg("qm_indices = [0, 99]")
+            .to_system(0, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("out of range"), "{err}");
+    }
+
+    #[test]
+    fn qmmm_an_unknown_key_is_a_hard_error() {
+        // `deny_unknown_fields`, as every other section has: a typo'd knob
+        // must not read as a default.
+        // `Config` has no Debug, so match rather than unwrap_err.
+        let e = match toml::from_str::<Config>(&qmmm_fixture("qm_indices = [0]\nqm_radius = 3.0")) {
+            Ok(_) => panic!("an unknown [qmmm] key parsed instead of erroring"),
+            Err(e) => e.to_string(),
+        };
+        assert!(e.contains("qm_radius"), "{e}");
+    }
+
+    #[test]
+    fn qmmm_pqr_element_symbols_come_from_atom_names() {
+        // PDB naming: leading digits stripped, element is the leading alpha
+        // run. `CA` resolves to CARBON (alpha carbon), which is the common
+        // case in a protein file and is documented as the ambiguity it is.
+        assert_eq!(element_from_pqr_name("O"), "O");
+        assert_eq!(element_from_pqr_name("HB2"), "H");
+        assert_eq!(element_from_pqr_name("1HG1"), "H");
+        assert_eq!(element_from_pqr_name("NA"), "Na");
+        assert_eq!(element_from_pqr_name("CL"), "Cl");
+        assert_eq!(element_from_pqr_name("CA"), "C");
+    }
+
+    #[test]
+    fn qmmm_a_short_pqr_record_is_an_error_not_a_skipped_atom() {
+        // A silently dropped atom changes the MM field without changing
+        // anything a user would look at.
+        let dir = std::env::temp_dir().join("ferric_qmmm_pqr_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("short.pqr");
+        std::fs::write(&p, "ATOM      1  O   WAT     1       0.0   0.0   0.0\n").unwrap();
+        let err = parse_pqr(p.to_str().unwrap()).unwrap_err().to_string();
+        assert!(err.contains("expected 10"), "{err}");
+    }
+
     #[test]
     fn all_shipped_examples_parse() {
         // Resolve the workspace at RUN time. `env!("CARGO_MANIFEST_DIR")` is
@@ -3958,5 +4113,269 @@ max_iter = 42
             cfg_with("[optimize]\ncoordinate = \"internal\"\n").is_err(),
             "a typo'd key must be rejected by deny_unknown_fields"
         );
+    }
+}
+
+/// `[qmmm]` -- QM/MM embedding driven from TOML.
+///
+/// Until now QM/MM was reachable only from the Rust and Python APIs, so a CLI
+/// user could not run an embedded calculation at all. This wires
+/// [`ferric_scf::qmmm::QmmmSystem`] to the same `[method]` machinery every other
+/// run uses: the QM region becomes the molecule that is solved, and the MM
+/// region becomes the external potential it is solved in.
+///
+/// GEOMETRY AND CHARGES COME FROM A PQR, not from `[molecule].xyz`. An xyz has
+/// no partial charges, and an MM region without charges is not an MM region --
+/// it is a set of ignored coordinates. When `[qmmm]` is present, `pqr` supplies
+/// BOTH the full-system geometry and the per-atom MM charges;
+/// `[molecule].charge` and `.multiplicity` still apply, to the QM REGION.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QmmmCfg {
+    /// PQR file: geometry (Angstrom) plus per-atom MM partial charges (e).
+    /// PQR is the one common format carrying both, which is why it is the
+    /// input here rather than xyz-plus-a-separate-charge-list.
+    pub pqr: String,
+    /// Zero-based indices of the atoms forming the QM region. Mutually
+    /// exclusive with `qm_seeds`/`qm_radius_angstrom`.
+    #[serde(default)]
+    pub qm_indices: Vec<usize>,
+    /// Seed atoms for a radial selection ("the ligand"). Requires
+    /// `qm_radius_angstrom`.
+    #[serde(default)]
+    pub qm_seeds: Vec<usize>,
+    /// Radius in ANGSTROM around `qm_seeds`, converted to Bohr internally.
+    /// Stated in Angstrom because that is the unit a PQR is written in and the
+    /// unit a pocket radius is quoted in.
+    pub qm_radius_angstrom: Option<f64>,
+    /// Bonds crossing the QM/MM boundary, as `[qm_atom, mm_atom]` index pairs.
+    /// A covalent cut REQUIRES these -- without a link atom the QM region has
+    /// a dangling valence.
+    #[serde(default)]
+    pub link_bonds: Vec<[usize; 2]>,
+    /// Boundary-charge scheme for the `link_bonds` hosts: `"keep"`,
+    /// `"delete-host"`, `"rc"` or `"rcd"`. Parsed by
+    /// [`ferric_scf::qmmm::BoundaryChargeScheme::parse_config_str`], so an
+    /// unknown value is a hard error rather than a silent default.
+    ///
+    /// **Defaults to `"delete-host"`, not `"keep"`.** Keeping the host charge
+    /// puts a bare point charge inside the link atom's bond length (MEASURED
+    /// 0.443 A on an ethane C-C cut) and a geometry optimization in that field
+    /// then DIVERGES rather than failing loudly. `"keep"` stays selectable and
+    /// is the right choice when the cut is not covalent.
+    #[serde(default = "default_boundary_scheme")]
+    pub boundary_scheme: String,
+}
+
+fn default_boundary_scheme() -> String {
+    "delete-host".to_string()
+}
+
+/// One `ATOM`/`HETATM` record from a PQR file.
+///
+/// PQR is PDB with the occupancy and B-factor columns replaced by charge and
+/// radius. It is whitespace-delimited in practice (the format has no strict
+/// column spec once the charge/radius fields widen), which is how
+/// `tools/active_site/pqr_parser.py` reads it and how this reader does too --
+/// the two must agree, so they parse the same way.
+#[derive(Debug, Clone)]
+pub struct PqrAtom {
+    pub name: String,
+    pub q: f64,
+    /// Angstrom, as written in the file.
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+/// Element symbol from a PDB/PQR atom name (`CA` -> C, `HB2` -> H, `1HG1` -> H).
+///
+/// PDB naming puts a leading digit on some hydrogens, and the element is the
+/// leading alphabetic run of what remains. Two-letter elements common in
+/// biomolecular files are recognised explicitly; everything else takes the
+/// first letter, which is right for C/N/O/S/P/H.
+fn element_from_pqr_name(name: &str) -> String {
+    let t = name.trim_start_matches(|c: char| c.is_ascii_digit());
+    let alpha: String = t.chars().take_while(|c| c.is_ascii_alphabetic()).collect();
+    let upper = alpha.to_ascii_uppercase();
+    for two in ["CL", "BR", "NA", "MG", "ZN", "FE", "CA", "MN", "CU", "SE"] {
+        // `CA` is ambiguous: an alpha carbon in a protein, calcium as an ion.
+        // A 2-character NAME that is exactly the symbol is the ion; `CA` as a
+        // backbone atom appears in a residue with other backbone atoms and is
+        // 2 characters too, so this is genuinely ambiguous in PQR and we
+        // resolve it as CARBON, which is overwhelmingly the common case in a
+        // protein file. An ion-heavy system needs an explicit element column,
+        // which PQR does not have.
+        if upper == two && two != "CA" {
+            let mut c = two.chars();
+            let first = c.next().unwrap();
+            return format!("{first}{}", c.next().unwrap().to_ascii_lowercase());
+        }
+    }
+    upper
+        .chars()
+        .next()
+        .map(|c| c.to_string())
+        .unwrap_or_default()
+}
+
+/// Parse the `ATOM`/`HETATM` records of a PQR file.
+///
+/// Deliberately strict: a record whose field count is not 10 is an ERROR, not
+/// a skipped line. A silently dropped atom changes the MM field without
+/// changing anything a user would look at.
+pub fn parse_pqr(path: &str) -> Result<Vec<PqrAtom>, ferric_core::FerricError> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        ferric_core::FerricError::General(format!("[qmmm] pqr: cannot read {path}: {e}"))
+    })?;
+    let mut out = Vec::new();
+    for (lineno, line) in text.lines().enumerate() {
+        if !(line.starts_with("ATOM") || line.starts_with("HETATM")) {
+            continue;
+        }
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.len() != 10 {
+            return Err(ferric_core::FerricError::General(format!(
+                "[qmmm] pqr {path}:{}: expected 10 whitespace-separated fields \
+                 (record serial name resName resSeq x y z charge radius), got {}: {line:?}",
+                lineno + 1,
+                f.len()
+            )));
+        }
+        let num = |s: &str, what: &str| -> Result<f64, ferric_core::FerricError> {
+            s.parse::<f64>().map_err(|_| {
+                ferric_core::FerricError::General(format!(
+                    "[qmmm] pqr {path}:{}: {what} {s:?} is not a number",
+                    lineno + 1
+                ))
+            })
+        };
+        out.push(PqrAtom {
+            name: f[2].to_string(),
+            x: num(f[5], "x")?,
+            y: num(f[6], "y")?,
+            z: num(f[7], "z")?,
+            q: num(f[8], "charge")?,
+        });
+    }
+    if out.is_empty() {
+        return Err(ferric_core::FerricError::General(format!(
+            "[qmmm] pqr {path}: no ATOM/HETATM records"
+        )));
+    }
+    Ok(out)
+}
+
+impl QmmmCfg {
+    /// Build the `QmmmSystem` this section describes.
+    ///
+    /// `qm_charge`/`qm_multiplicity` come from `[molecule]` and apply to the QM
+    /// REGION, not the whole structure -- the MM atoms carry their own partial
+    /// charges and are not part of the SCF.
+    pub fn to_system(
+        &self,
+        qm_charge: i32,
+        qm_multiplicity: usize,
+    ) -> Result<ferric_scf::qmmm::QmmmSystem, ferric_core::FerricError> {
+        use ferric_core::FerricError;
+        use ferric_scf::qmmm::{BoundaryChargeScheme, QmSelection, QmmmAtom, QmmmSystem};
+
+        const ANGSTROM_TO_BOHR: f64 = 1.0 / 0.529_177_210_92;
+
+        let have_indices = !self.qm_indices.is_empty();
+        let have_radial = !self.qm_seeds.is_empty() || self.qm_radius_angstrom.is_some();
+        if have_indices && have_radial {
+            return Err(FerricError::General(
+                "[qmmm]: give EITHER qm_indices OR qm_seeds+qm_radius_angstrom, not both -- \
+                 two selections would silently disagree about which atoms are quantum"
+                    .to_string(),
+            ));
+        }
+        if !have_indices && !have_radial {
+            return Err(FerricError::General(
+                "[qmmm]: no QM region selected; set qm_indices, or qm_seeds with \
+                 qm_radius_angstrom"
+                    .to_string(),
+            ));
+        }
+
+        let atoms_pqr = parse_pqr(&self.pqr)?;
+        let n = atoms_pqr.len();
+        let atoms: Vec<QmmmAtom> = atoms_pqr
+            .iter()
+            .map(|a| {
+                let sym = element_from_pqr_name(&a.name);
+                let z = ferric_core::elements::symbol_to_z(&sym).unwrap_or(0) as i32;
+                QmmmAtom::new(
+                    sym,
+                    z,
+                    a.x * ANGSTROM_TO_BOHR,
+                    a.y * ANGSTROM_TO_BOHR,
+                    a.z * ANGSTROM_TO_BOHR,
+                    a.q,
+                )
+            })
+            .collect();
+
+        let check = |label: &str, idx: usize| -> Result<(), FerricError> {
+            if idx >= n {
+                Err(FerricError::General(format!(
+                    "[qmmm]: {label} index {idx} is out of range ({n} atoms in {})",
+                    self.pqr
+                )))
+            } else {
+                Ok(())
+            }
+        };
+        for &i in &self.qm_indices {
+            check("qm_indices", i)?;
+        }
+        for &i in &self.qm_seeds {
+            check("qm_seeds", i)?;
+        }
+
+        let selection = if have_indices {
+            QmSelection::Indices(self.qm_indices.clone())
+        } else {
+            let r = self.qm_radius_angstrom.ok_or_else(|| {
+                FerricError::General("[qmmm]: qm_seeds needs qm_radius_angstrom".to_string())
+            })?;
+            if self.qm_seeds.is_empty() {
+                return Err(FerricError::General(
+                    "[qmmm]: qm_radius_angstrom needs qm_seeds to measure from".to_string(),
+                ));
+            }
+            if !(r.is_finite() && r > 0.0) {
+                return Err(FerricError::General(format!(
+                    "[qmmm]: qm_radius_angstrom must be finite and > 0, got {r}"
+                )));
+            }
+            QmSelection::WithinRadius {
+                seeds: self.qm_seeds.clone(),
+                radius: r * ANGSTROM_TO_BOHR,
+            }
+        };
+
+        let mut sys = QmmmSystem::new(&atoms, selection, qm_charge, qm_multiplicity)?;
+
+        if !self.link_bonds.is_empty() {
+            for b in &self.link_bonds {
+                check("link_bonds", b[0])?;
+                check("link_bonds", b[1])?;
+            }
+            let bonds: Vec<(usize, usize)> = self.link_bonds.iter().map(|b| (b[0], b[1])).collect();
+            sys = sys.with_link_atoms(&bonds, ferric_scf::qmmm::DEFAULT_LINK_SCALE)?;
+            let scheme = BoundaryChargeScheme::parse_config_str(&self.boundary_scheme)?;
+            sys = sys.with_boundary_charges(&bonds, scheme)?;
+        } else if self.boundary_scheme != "delete-host" {
+            return Err(FerricError::General(format!(
+                "[qmmm]: boundary_scheme = {:?} but no link_bonds were given. A boundary \
+                 charge scheme only acts on the hosts of a covalent cut, so this setting \
+                 would do nothing -- which is worse than an error, because it reads as \
+                 though it did something.",
+                self.boundary_scheme
+            )));
+        }
+        Ok(sys)
     }
 }
