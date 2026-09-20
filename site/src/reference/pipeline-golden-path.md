@@ -1436,6 +1436,45 @@ reproduced above in full effect. What matters is that it was RUN, so the (a)
 branch below is a description of working code rather than an intention. The (b)
 branch is not, and cannot be until a saddle search exists.
 
+#### The same thing from the CLI, no Python (2026-09-19)
+
+G3 no longer requires writing a script. A `[qmmm]` TOML section drives the
+same path -- the QM region becomes the molecule that is solved, the MM region
+becomes the external potential it is solved in:
+
+```toml
+[qmmm]
+pqr = "testdata/molecules/water_na.pqr"
+qm_indices = [0, 1, 2]            # or: qm_seeds = [0], qm_radius_angstrom = 1.5
+# link_bonds = [[0, 3]]           # required when the cut crosses a covalent bond
+# boundary_scheme = "delete-host" # default; also "keep", "rc", "rcd"
+```
+
+RUN, not described (`examples/water-qmmm.toml`, water + one Na+ at 4 A,
+STO-3G):
+
+```
+[ferric] QM/MM: 3 QM atoms, 1 MM charges from testdata/molecules/water_na.pqr
+embedded : -74.9653197421 Ha
+vacuum   : -74.9629466809 Ha
+G4 dE    : -0.002373 Ha = -1.489 kcal/mol
+```
+
+**A geometry comes from the PQR, not from `[molecule] xyz`.** The xyz key is
+still accepted and still ignored when `[qmmm]` is present -- a PQR carries
+BOTH coordinates and MM charges, and an xyz carries no charges, so the PQR has
+to win. This bites when computing the vacuum reference for G4: deleting the
+`[qmmm]` section makes the run fall back to the xyz, and if that file holds a
+different geometry you get a different molecule. Here `water.xyz` is an
+optimized HF/cc-pVDZ structure and gives -74.9631468000, which is NOT the
+vacuum energy of the embedded geometry and would put a 0.13 kcal/mol error
+straight into the difference.
+
+For a G4 difference, take the vacuum number at the SAME geometry -- write the
+PQR's QM atoms out as an xyz, or call `run_rhf` twice with and without
+`point_charges=`. `charge` and `multiplicity` under `[molecule]` DO still
+apply, to the QM region.
+
 ### (b) Catalyst optimization
 
 The question is a BARRIER, i.e. a SADDLE POINT. Error cancellation does not
