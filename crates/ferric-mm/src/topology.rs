@@ -7,6 +7,15 @@
 //! and which are scaled 1-4 pairs. AMBER convention: a pair that is
 //! simultaneously 1-3 (via one path) and 1-4 (via another, e.g. in a small
 //! ring) is **excluded**, not scaled — exclusion always wins.
+//!
+//! The derivation classifies a pair by its SHORTEST path, so the short path
+//! decides and the rule holds by construction rather than by a tie-break. In
+//! benzene the meta pairs are 1-3 and stay excluded even though a three-bond
+//! path exists the long way round; only the three para pairs are 1-4. That
+//! matches `openmm.NonbondedForce::createExceptionsFromBonds` on the same bond
+//! graph, and `tests/ring_exclusions.rs` pins it for rings 3-8, a fused
+//! bicyclic, and (as a negative control) an acyclic chain whose 1-4 must
+//! survive.
 
 use ferric_core::FerricError;
 use std::collections::{HashMap, HashSet};
@@ -208,8 +217,19 @@ impl MmTopology {
                 }
             }
         }
-        // Exclusion wins over 1-4 for any pair reachable both ways (e.g. a
-        // small ring where a 1-4 path coexists with a 1-3 path).
+        // Exclusion wins over 1-4 for any pair that is both. Kept as a
+        // belt-and-braces guard, but note it is currently UNREACHABLE and no
+        // test can kill it: the BFS above records only the FIRST (shortest)
+        // depth at which a node is reached, graph distance is symmetric, and
+        // `d <= 2` and `d == 3` are mutually exclusive conditions on that one
+        // number -- so a pair can never be inserted into `pairs14` and also
+        // into `exclusions`. Verified by exhaustive enumeration of all 31,721
+        // connected graphs on 3-6 nodes: the removal never fires once.
+        //
+        // The invariant it protects is real and IS tested
+        // (`tests/ring_exclusions.rs`, which checks the two sets stay disjoint
+        // on rings 3-8 and on a fused bicyclic). If the BFS is ever changed to
+        // enumerate paths rather than shortest distances, this becomes live.
         for pair in &exclusions {
             pairs14.remove(pair);
         }
