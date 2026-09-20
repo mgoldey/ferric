@@ -186,8 +186,12 @@ def test_an_empty_pocket_is_an_error_not_an_empty_highlight():
 def test_the_legend_states_how_many_heavy_atoms_contact():
     """A picture of highlights without a count is hard to compare across poses."""
     mol, coords = _ethanol_coords()
-    far = [(500.0, 500.0, 500.0)]
-    none_touching = contact_map("CCO", coords, far)
+    # NEARBY but outside the cutoff -- a genuinely solvent-exposed pose.
+    # A pocket at (500, 500, 500) would instead be REFUSED: that is not a
+    # non-contacting pose, it is a ligand that was never placed, and
+    # `contact_map` now distinguishes the two (see its zero-contact guard).
+    nearby_but_outside = [(coords[0][0] + 8.0, coords[0][1], coords[0][2])]
+    none_touching = contact_map("CCO", coords, nearby_but_outside)
     all_touching = contact_map("CCO", coords, [coords[0]], cutoff_angstrom=99.0)
     assert none_touching != all_touching, (
         "nothing-in-contact and everything-in-contact must render differently"
@@ -268,3 +272,49 @@ def test_grid_still_renders_and_distinguishes_a_missing_score():
         ["CCO", "CCC"], [1.0, None], labels=["has", "missing"], unit="kcal/mol"
     )
     assert img and len(img) > 1000, "the grid did not render"
+
+
+# --- zero contacts is ambiguous, and one reading is a bug --------------------
+
+
+def test_a_never_placed_ligand_is_REFUSED_not_drawn_as_non_contacting():
+    """226 A away and 0 contacts is not a solvent-exposed pose.
+
+    `embed_proposals` returns ETKDG conformers centred on the ORIGIN while a
+    PDB-derived pocket sits at its crystal coordinates. MEASURED on 7LCJ: 226 A
+    apart, 0 of 21 atoms contacting -- and the SAME picture a real
+    non-contacting pose produces. Drawing it is a claim about the chemistry
+    when the truth is a coordinate-frame mistake.
+    """
+    _, coords = _ethanol_coords()
+    pocket_far_away = [(200.0, 200.0, 200.0), (201.0, 200.0, 200.0)]
+    with pytest.raises(ValueError, match="never placed"):
+        contact_map("CCO", coords, pocket_far_away)
+
+
+def test_a_genuinely_solvent_exposed_pose_still_renders():
+    """The other reading must NOT be refused, or the guard is a false alarm.
+
+    Nearby, outside the cutoff, touching nothing: a real and informative
+    result. If this ever raises, the guard's threshold has grown until it
+    rejects the case it was written to preserve.
+    """
+    _, coords = _ethanol_coords()
+    nearby = [(coords[0][0] + 8.0, coords[0][1], coords[0][2])]
+    img = contact_map("CCO", coords, nearby)
+    assert img, "a solvent-exposed pose must still draw"
+
+
+def test_the_guard_scales_with_the_LIGAND_not_a_fixed_distance():
+    """A big ligand legitimately spans more than a small one.
+
+    The threshold is `max(3*cutoff, 2*span)`, so a long molecule whose far end
+    sits well away from the pocket is not mistaken for a misplacement.
+    """
+    _, coords = _ethanol_coords()
+    # 25 A away: beyond 3*4.0 = 12, and beyond 2*span for ethanol -> refused.
+    with pytest.raises(ValueError, match="never placed"):
+        contact_map("CCO", coords, [(25.0, 0.0, 0.0)])
+    # The same 25 A is tolerated when the cutoff says contacts are long-range.
+    img = contact_map("CCO", coords, [(25.0, 0.0, 0.0)], cutoff_angstrom=9.0)
+    assert img, "a 9 A cutoff makes 25 A a plausible near-miss, not a misplacement"

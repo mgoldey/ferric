@@ -240,9 +240,21 @@ def test_the_noise_floor_is_named_in_the_colorbar_not_left_to_a_caption():
     flagged = site_substituent_heatmap(
         {("F", "A"): 1.0, ("Cl", "A"): -1.0}, noise_floor=4.07
     )
-    plain_lbl = " ".join(a.get_ylabel() for a in plain.axes)
-    flag_lbl = " ".join(a.get_ylabel() for a in flagged.axes)
-    assert "NOISE FLOOR" not in plain_lbl
+
+    # The floor moved OFF the colorbar label and under the axes: as a rotated
+    # colorbar label the sentence was CLIPPED at the canvas edge ("...BELOW THE
+    # NOISE FLO"), losing the word that makes it a warning. The requirement is
+    # unchanged -- the reader must SEE the limit -- so check everywhere it can
+    # render, and still require that a plain heatmap says nothing about a floor.
+    def _visible(fig):
+        return " ".join(
+            [a.get_ylabel() for a in fig.axes]
+            + [a.get_title() for a in fig.axes]
+            + [t.get_text() for t in fig.texts]
+        )
+
+    assert "NOISE FLOOR" not in _visible(plain)
+    flag_lbl = _visible(flagged)
     assert "NOISE FLOOR" in flag_lbl and "4.07" in flag_lbl
 
 
@@ -388,7 +400,11 @@ def test_the_measured_noise_floor_greys_every_realistic_ddE():
         "every |ddE| < 4.68 must render as below-the-noise-floor; a substituent "
         "effect of 1-2 kcal/mol is NOT resolvable by any measured protocol"
     )
-    assert "4.68" in " ".join(a.get_ylabel() for a in fig.axes)
+    # The floor renders under the axes now, not in the colorbar label -- see
+    # the caption test above for why. Still required to be VISIBLE.
+    assert "4.68" in " ".join(
+        [a.get_ylabel() for a in fig.axes] + [t.get_text() for t in fig.texts]
+    )
 
     # Vacuity guard: a genuinely large effect must NOT be greyed, or the test
     # above would pass for an implementation that italicises everything.
@@ -495,7 +511,22 @@ def test_expected_atoms_turn_a_visual_impression_into_a_check():
 def test_without_expected_atoms_it_says_it_is_not_checking_anything():
     """A figure that looks like a verdict but is only a display."""
     fig = imaginary_mode(["C", "O"], [1.0, 0, 0, 0.5, 0, 0])
-    assert "does not check it" in fig.axes[0].get_title()
+    # The caveat moved OUT of the title and into its own text: as one long
+    # title line it ran off the canvas mid-word at figure width. Check
+    # wherever it renders, since the requirement is that the reader SEES it,
+    # not that it occupies a particular artist.
+    # The caveat is FIGURE text now, not axes text: it sits below the x labels
+    # because every in-axes position tried either truncated at the canvas edge
+    # or overprinted the title. Search both, since the requirement is that the
+    # reader sees it, not which artist holds it.
+    shown = (
+        fig.axes[0].get_title()
+        + " "
+        + " ".join(t.get_text() for t in fig.axes[0].texts)
+        + " "
+        + " ".join(t.get_text() for t in fig.texts)
+    )
+    assert "does not CHECK it" in shown or "does not check it" in shown, shown
 
 
 def test_a_non_3N_vector_is_rejected():
@@ -802,3 +833,221 @@ def test_the_heatmap_accepts_a_mapping_end_to_end():
     )
     assert fig is not None
     close(fig)
+
+
+# --- optimization_trace ------------------------------------------------------
+#
+# The plot that would have caught a wrong diagnosis: `converged`, `steps` and a
+# final energy cannot distinguish "ran out of steps near a minimum" from
+# "climbed and oscillated".
+
+
+def test_a_converged_descent_draws_no_uphill_band():
+    from tools.viz.energy_plots import close, optimization_trace
+
+    fig = optimization_trace([-39.5, -39.7, -39.72, -39.726], converged=True)
+    texts = " ".join(t.get_text() for t in fig.axes[0].texts)
+    assert "ENERGY ROSE" not in texts, (
+        "a monotonically descending run was flagged as rising; the band would "
+        "cry wolf on every healthy optimization"
+    )
+    assert "DID NOT CONVERGE" not in fig.axes[0].get_title()
+    close(fig)
+
+
+def test_a_run_that_climbs_is_flagged_with_the_amount():
+    """MEASURED case: -39.82 -> -39.53 over 200 steps, link atom on a charge."""
+    from tools.viz.energy_plots import close, optimization_trace
+
+    fig = optimization_trace(
+        [-39.82, -39.70, -39.60, -39.53], converged=False, unit="hartree"
+    )
+    texts = " ".join(t.get_text() for t in fig.axes[0].texts)
+    assert "ENERGY ROSE" in texts, "a 0.29 Ha climb was not flagged"
+    assert "+0.29" in texts, f"the amount is missing from: {texts!r}"
+    assert "DID NOT CONVERGE" in fig.axes[0].get_title()
+    assert "step budget ran out" in texts, (
+        "an unconverged final point must be labelled as such, or it reads as a result"
+    )
+    close(fig)
+
+
+def test_gradient_norms_must_be_per_step():
+    """A mismatched length draws one step's gradient against another's energy."""
+    import pytest
+
+    from tools.viz.energy_plots import optimization_trace
+
+    with pytest.raises(ValueError, match="per-step"):
+        optimization_trace([-1.0, -1.1, -1.2], gradient_norms=[0.5, 0.1])
+
+
+def test_gradient_norms_get_their_own_log_axis():
+    from tools.viz.energy_plots import close, optimization_trace
+
+    fig = optimization_trace(
+        [-1.0, -1.1, -1.2], gradient_norms=[0.5, 0.05, 1e-4], converged=True
+    )
+    assert len(fig.axes) == 2, "the gradient needs its own axis, not the energy's"
+    assert fig.axes[1].get_yscale() == "log", (
+        "a gradient spanning orders of magnitude on a linear axis hides the "
+        "approach to zero, which is the thing being looked at"
+    )
+    close(fig)
+
+
+def test_an_empty_or_all_none_trace_refuses():
+    import pytest
+
+    from tools.viz.energy_plots import optimization_trace
+
+    with pytest.raises(ValueError, match="no energies"):
+        optimization_trace([])
+    with pytest.raises(ValueError, match="non-finite"):
+        optimization_trace([None, None])
+
+
+def test_the_uphill_annotation_lands_on_the_last_FINITE_step():
+    """A trace ending in None put the annotation on a step with no energy.
+
+    `final` came from the last finite value but `xy` used `steps[-1]`, so the
+    figure attached the final finite energy to a step that has none. MEASURED
+    before the fix: annotation at x=3 for a 4-point trace whose last finite
+    point is index 2.
+    """
+    from tools.viz.energy_plots import close, optimization_trace
+
+    fig = optimization_trace([-39.82, -39.70, -39.53, None], converged=False)
+    rose = [t for t in fig.axes[0].texts if "ROSE" in t.get_text()]
+    assert rose, "the climb was not flagged at all"
+    # The TEXT now sits in axes fraction (it collided with the title at the
+    # data point -- found by rendering). What must still use the last FINITE
+    # index is the shaded band: `final` comes from index 2, not from the
+    # trailing None, so the span's top edge is the last real energy.
+    assert "+0.29" in rose[0].get_text(), (
+        f"the rise is computed from the wrong endpoint: {rose[0].get_text()!r}. "
+        "-39.53 is the last FINITE energy; the trailing None has none."
+    )
+    spans = [p for p in fig.axes[0].patches if hasattr(p, "get_xy")]
+    assert spans, "the uphill band is gone"
+    close(fig)
+
+
+def test_the_best_marker_also_ignores_non_finite_entries():
+    """`energies.index(best)` would raise or mis-locate on a NaN-bearing trace."""
+    from tools.viz.energy_plots import close, optimization_trace
+
+    fig = optimization_trace(
+        [None, -39.90, -39.70, float("nan"), -39.60], converged=True
+    )
+    assert fig is not None
+    close(fig)
+
+
+# --- qmmm_partition ----------------------------------------------------------
+#
+# The picture the frontier bug needed: `min_link_to_charge_distance()` returns a
+# number and nothing showed WHERE the problem was.
+
+_ETHANE_SYM = ["C", "H", "H", "H", "C", "H", "H", "H"]
+_ETHANE_CRD = [
+    (0.000, 0.000, 0.000),
+    (-0.363, 1.027, 0.000),
+    (-0.363, -0.513, 0.889),
+    (-0.363, -0.513, -0.889),
+    (1.540, 0.000, 0.000),
+    (1.903, -1.027, 0.000),
+    (1.903, 0.513, -0.889),
+    (1.903, 0.513, 0.889),
+]
+_BOHR = 0.52917721
+
+
+def test_a_charge_inside_the_link_bond_is_flagged_on_the_figure():
+    """MEASURED: the retained host charge sits 0.443 A from the link H."""
+    from tools.viz.energy_plots import close, qmmm_partition
+
+    fig = qmmm_partition(
+        _ETHANE_SYM,
+        _ETHANE_CRD,
+        [0, 1, 2, 3],
+        link_positions_angstrom=[(1.0971, 0.0, 0.0)],
+        charge_positions_angstrom=[(1.540, 0.0, 0.0)],
+        charge_values=[-0.27],
+    )
+    txt = " ".join(t.get_text() for t in fig.axes[0].texts)
+    assert "0.443" in txt, f"the measured distance is missing: {txt!r}"
+    assert "INSIDE A BOND LENGTH" in txt, "a 0.443 A charge was not flagged"
+    close(fig)
+
+
+def test_a_healthy_frontier_is_not_flagged():
+    """MUTATION-STYLE: delete-host moves it to 1.305 A and must stay quiet."""
+    from tools.viz.energy_plots import close, qmmm_partition
+
+    fig = qmmm_partition(
+        _ETHANE_SYM,
+        _ETHANE_CRD,
+        [0, 1, 2, 3],
+        link_positions_angstrom=[(1.0971, 0.0, 0.0)],
+        charge_positions_angstrom=[(1.903 + 0.5, 0.0, 0.0)],
+        charge_values=[0.09],
+    )
+    txt = " ".join(t.get_text() for t in fig.axes[0].texts)
+    assert "INSIDE A BOND LENGTH" not in txt, (
+        "a comfortable frontier was flagged; the warning would cry wolf"
+    )
+    close(fig)
+
+
+def test_the_unit_cross_check_refuses_mis_scaled_coordinates():
+    """The trap that caught ME, now a guard.
+
+    `link_atom_positions()` is ANGSTROM and `point_charges()` is BOHR. Scaling
+    both turns a 0.443 A frontier problem into an unremarkable 0.959 A -- in
+    the SAFE direction, so the figure looks fine and says the opposite of the
+    truth.
+    """
+    import pytest
+
+    from tools.viz.energy_plots import qmmm_partition
+
+    with pytest.raises(ValueError, match="UNITS"):
+        qmmm_partition(
+            _ETHANE_SYM,
+            _ETHANE_CRD,
+            [0, 1, 2, 3],
+            link_positions_angstrom=[(1.0971 * _BOHR, 0.0, 0.0)],  # wrongly scaled
+            charge_positions_angstrom=[(1.540, 0.0, 0.0)],
+            charge_values=[-0.27],
+            expect_min_angstrom=0.443,
+        )
+
+
+def test_the_cross_check_accepts_correct_coordinates():
+    from tools.viz.energy_plots import close, qmmm_partition
+
+    fig = qmmm_partition(
+        _ETHANE_SYM,
+        _ETHANE_CRD,
+        [0, 1, 2, 3],
+        link_positions_angstrom=[(1.0971, 0.0, 0.0)],
+        charge_positions_angstrom=[(1.540, 0.0, 0.0)],
+        charge_values=[-0.27],
+        expect_min_angstrom=0.443,
+    )
+    assert fig is not None
+    close(fig)
+
+
+def test_mismatched_lengths_and_bad_indices_are_refused():
+    import pytest
+
+    from tools.viz.energy_plots import qmmm_partition
+
+    with pytest.raises(ValueError, match="per-atom"):
+        qmmm_partition(_ETHANE_SYM, _ETHANE_CRD[:3], [0])
+    with pytest.raises(ValueError, match="out of range"):
+        qmmm_partition(_ETHANE_SYM, _ETHANE_CRD, [0, 99])
+    with pytest.raises(ValueError, match="no atoms"):
+        qmmm_partition([], [], [])
