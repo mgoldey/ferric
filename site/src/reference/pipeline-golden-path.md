@@ -86,7 +86,7 @@ first call costs 24x" below before planning a campaign from them.
 | enumerate substitutions | `substitution.propose_substitutions` | **7.6 ms** / 7 proposals warm (**248 ms** first call) | `site_substituent_heatmap` |
 | screen toxicology | `tox.alerts.RdkitAlertsProvider.fetch` | **4.9 ms** / molecule, 13 endpoints | `liability_profile` |
 | rank analogues by liability | `tox.assess.assess_smiles` -> `.liability_score` | **54 ms** offline; **1.6 s** with the default `include_web=True` | `liability_profile` |
-| dock a ligand | `docking.vina_dock` | **26.4 s** / ligand @ ex=4 | `pose_ensemble`, `funnel_survival` |
+| dock a ligand | `docking.vina_dock` | **31 s** @ 57 atoms, 5.7 @ 21, 1.9 @ 9 (ex=4, 7LCJ; RESULTS.md M11 has 26.4 s/ligand) | `pose_ensemble`, `funnel_survival` |
 | relax a pose (FF) | `tiers.tier2_forcefield` | **9 ms** @ 21 atoms (2.2 @ 9, 8.2 @ 19, 21.6 @ 34) | `tier_comparison` |
 | relax a pose (xtb) | `tiers.tier3_gfn2` | **39 ms** @ 21 atoms (0.152 s @ 9, 0.050 @ 19) | `tier_comparison` |
 | score with DFT | `tiers.tier4_dft` | **2.6 s** @ 9 atoms at the def2-svp DEFAULT (0.75 s at STO-3G; 613 s @ 71) | `tier_comparison` |
@@ -97,6 +97,25 @@ first call costs 24x" below before planning a campaign from them.
 | **relax a geometry (QM)** | `ferric.run_optimize` | 1 gradient/step; 6 steps for an embedded methyl | **`optimization_trace`** |
 | **set up a QM/MM cut** | `ferric.QmmmSystem` + `.with_boundary_charges` | free (setup) | **`qmmm_partition`** |
 | draw the molecule | `viz.molecules.depict` | **5.9 ms** warm (88 ms first call) | -- |
+
+**Tier 1 is now MEASURED here, not only cited.** Every previous pass recorded
+that docking could not be re-measured on this box because
+`mk_prepare_receptor.py` was "missing". It was not -- it ships in the venv's
+`bin/` and was simply not on `PATH`, so the check that found it absent was a
+PATH artifact rather than a missing dependency. Run 2026-09-20 against the
+7LCJ pocket at exhaustiveness 4:
+
+| ligand | atoms | dock time | Vina score |
+|---|---:|---:|---:|
+| ethanol | 9 | 1.9 s | -2.353 |
+| aspirin | 21 | 5.7 s (n=4, 5.5-6.0) | -6.572 |
+| drug-scale | 57 | 31.2 s | -8.713 |
+
+`prepare_receptor` itself is 3.1 s, once per receptor. The 26.4 s/ligand figure
+from RESULTS.md M11 sits inside this curve at drug scale and is CONFIRMED
+independently. Cost scales ~N^1.5 in atom count, so quoting one number hides a
+16x spread across the sizes a campaign actually sees -- the row now gives three
+points.
 
 **`pocket_polarization` is the plot for a SINGLE pose** (added 2026-09-20).
 This row used to point only at `site_substituent_heatmap`, which ranks
