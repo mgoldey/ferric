@@ -1216,3 +1216,41 @@ def test_a_bare_charge_site_pulled_into_the_QM_region_says_what_to_do():
     )
     assert len(sys_ok.qm_molecule().symbols()) == 4, "the whole methyl should be QM"
     assert len(sys_ok.point_charges()) == 2, "both bare sites stay MM"
+
+
+def test_the_basis_argument_convention_is_stable():
+    """Energy calls take a `BasisSet`; geometry-changing calls take a NAME.
+
+    Not arbitrary -- a call that MOVES the nuclei rebuilds the basis at each new
+    geometry, so it needs the name rather than a prepared set. But nothing in
+    either signature says which it wants, and passing the wrong one raises a
+    `TypeError` about `PyString` conversion that reads like a bug in the
+    caller's code rather than a convention. It cost a run while checking the
+    catalyst chain.
+
+    This pins the split so it cannot drift silently in either direction: a
+    future change that made `run_frequencies` accept a `BasisSet` would be an
+    improvement, but it should be a DELIBERATE one that updates the golden
+    path's table alongside it.
+    """
+    mol = ferric.Molecule.from_xyz_string("2\nh2\nH 0 0 0\nH 0 0 0.74\n")
+    bs = ferric.BasisSet.bundled("sto-3g")
+
+    def takes(fn, basis, **kw):
+        """True if `fn` accepts this basis form, judged ONLY on the argument
+        binding -- any other failure (SCF, convergence) means it was accepted."""
+        try:
+            fn(mol, basis, **kw)
+            return True
+        except TypeError as exc:
+            return "basis" not in str(exc)
+        except Exception:
+            return True
+
+    assert takes(ferric.run_rhf, bs), "run_rhf must take a BasisSet"
+    assert not takes(ferric.run_rhf, "sto-3g"), "run_rhf must NOT take a name"
+
+    for name in ("run_optimize", "run_frequencies"):
+        fn = getattr(ferric, name)
+        assert takes(fn, "sto-3g"), f"{name} must take a basis NAME"
+        assert not takes(fn, bs), f"{name} must NOT take a BasisSet"

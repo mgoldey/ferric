@@ -56,6 +56,15 @@ STILL OPEN, and these are the real remaining gaps:
   gradient exists; the finite-difference Hessian built from it has never been
   validated against anything, and 6N unvalidated SCF+D3 evaluations is not a
   number to hand back silently.
+  HOW it is refused, checked 2026-09-20: STRUCTURALLY, not at runtime.
+  `dispersion=` is a `run_dft` argument (the correction surfaces as
+  `DftResult.e_dispersion`); `run_frequencies` has no such parameter, so
+  `run_frequencies(mol, "sto-3g", dispersion="d3bj")` is a TypeError from
+  Python's own argument binding. Plain `run_frequencies(mol, "sto-3g")` works
+  and is what C4 uses. That is a stronger guarantee than a runtime check --
+  there is no code path to reach -- but it also means the refusal carries no
+  explanation, so a reader who does not know dispersion is DFT-path-only sees
+  only "unexpected keyword argument".
 - **QM/MM dispersion.** D3/D4/XDM/VV10 are all QM-atom-pairwise; MM point
   charges carry none. Needs LJ terms in `ferric-mm`.
 - **Pose noise.** MEASURED per-pose sd 29.07 kcal/mol against 1-2 kcal/mol
@@ -1995,7 +2004,20 @@ energy. That subtracted two energies at two DIFFERENT geometries, one of them
 not stationary, so it was not the quantity it named. Review caught it; the
 single-geometry number above is what was meant.)
 
-Three API details cost a run each here, all now fixed in the C-steps above:
+**The basis argument is a `BasisSet` for energies and a NAME for geometry
+changes.** Checked across the entry points 2026-09-20:
+
+| takes `BasisSet.bundled(...)` | takes the name `"sto-3g"` |
+|---|---|
+| `run_rhf`, `run_dft` | `run_optimize`, `run_frequencies`, `run_saddle` |
+
+Not arbitrary -- a call that MOVES the nuclei has to rebuild the basis at each
+new geometry, so it needs the name rather than a prepared set. But nothing in
+either signature says which it wants, and passing the wrong one is a
+`TypeError` about `PyString` conversion that reads like a bug in your code
+rather than a convention. It cost a run here.
+
+Three more API details cost a run each here, all now fixed in the C-steps above:
 `OptimizeResult.mol` is a METHOD (`o.mol()`), `FrequencyResult.frequencies` is
 a PROPERTY (no parentheses), and `n_imaginary` is on `SaddleResult`, not on
 `FrequencyResult`. `run_saddle` is closed-shell only -- a doublet guess is
