@@ -85,3 +85,91 @@ fn all_fallback_and_mixed_are_different_code_paths() {
          and this test cannot distinguish the two branches"
     );
 }
+
+/// The WORDING, read from a real subprocess.
+///
+/// The charge-value test above proves the two paths are distinct CODE. It does
+/// not read a single character of the warning -- mutation-verified, merging
+/// the two messages back into one passed it unchanged, which is the entire
+/// defect this file exists for.
+///
+/// `eprintln!` cannot be captured in-process, so this runs
+/// `examples/hirshfeld_warning_probe` and asserts each message separately.
+/// NOTE `cargo test --examples` does NOT link an example binary -- it compiles
+/// examples as test targets hunting for `#[test]` and leaves .rmeta behind --
+/// so the probe must be built with `cargo build --example`. CI's `build-tests`
+/// job does that for `runlog_probe` already; here the test SKIPS with an
+/// actionable message rather than failing when the binary is absent, because a
+/// missing build artefact is not a defect in the code under test.
+#[test]
+fn the_two_warnings_say_different_things() {
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    // Resolved at RUN TIME: a sibling of this test binary, so it survives
+    // `nextest archive` extracting to a different directory.
+    let probe: Option<PathBuf> = std::env::current_exe().ok().and_then(|exe| {
+        let dir = exe.parent().and_then(Path::parent)?;
+        let p = dir.join("examples").join("hirshfeld_warning_probe");
+        p.is_file().then_some(p)
+    });
+    let Some(probe) = probe else {
+        eprintln!(
+            "SKIP: examples/hirshfeld_warning_probe not built. \
+             Run `cargo build -p ferric-rpa --example hirshfeld_warning_probe` \
+             (`cargo test --examples` does not link it)."
+        );
+        return;
+    };
+
+    let stderr_of = |arg: &str| -> String {
+        let out = Command::new(&probe)
+            .arg(arg)
+            .env("OPENBLAS_NUM_THREADS", "1")
+            .output()
+            .expect("run probe");
+        assert!(out.status.success(), "probe {arg} failed: {out:?}");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+
+    let all = stderr_of("all");
+    let mixed = stderr_of("mixed");
+
+    // The all-fallback case must NOT claim a mixture. This is the exact
+    // sentence that was wrong: with every atom on the crude model there are
+    // no "other atoms" and nothing is mixed.
+    assert!(
+        all.contains("ALL 3 atoms"),
+        "all-fallback message does not say ALL: {all}"
+    );
+    assert!(
+        all.contains("CONSISTENT") && all.contains("qualitative"),
+        "all-fallback message must say the partitioning is consistent but \
+         qualitative: {all}"
+    );
+    assert!(
+        !all.contains("The other atoms used the SCF density"),
+        "the all-fallback message claims a mixture that cannot exist: {all}"
+    );
+    assert!(
+        !all.contains("NOT uniformly converged"),
+        "all-fallback is uniformly crude, not unevenly converged: {all}"
+    );
+
+    // The mixed case must still carry the mixture warning AND the indices.
+    assert!(
+        mixed.contains("2 of 3 atoms") && mixed.contains("[1, 2]"),
+        "mixed message must name the count and the offending indices: {mixed}"
+    );
+    assert!(
+        mixed.contains("mix two different proatom sources"),
+        "mixed message must say the sources are mixed: {mixed}"
+    );
+
+    // And they must be DIFFERENT text, which is what re-merging breaks.
+    assert_ne!(
+        all.trim(),
+        mixed.trim(),
+        "the two cases emit identical warnings -- they were merged back"
+    );
+}
