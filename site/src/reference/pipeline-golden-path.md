@@ -756,6 +756,16 @@ the same number:
 | the two rows above | 2.32 | NO (def2-SVP vs STO-3G) |
 | PBE/STO-3G N-sweep (this) | **2.32** | yes |
 | RHF/STO-3G N-sweep | 2.58 | yes |
+| 3->9 atoms via `tier4_dft` (2026-09-20) | 2.16 overall, **2.38 on the 6->9 tail** | yes |
+
+The last row is a DIFFERENT KIND of point and is here to stop a future session
+misreading it. Measured through `tier4_dft`: 0.25 s @ 3 atoms, 1.02 @ 6, 2.68
+@ 9 -- so the table's "1.0 s @ 6 atoms" is exact. The OVERALL 3->9 exponent is
+2.16, which looks like it undercuts the 2.3-2.6 band. It does not: these sizes
+are far below the 9-71 range the band is fitted on, and fitting the TAIL
+(6->9) gives 2.38, inside it. Averaging in the flat small-N start pulls the
+exponent DOWN, the same artefact this document flags for the QM-radius sweep
+below ("gives 2.51 by averaging in the flat small-R start").
 
 So p ~ 2.3-2.6 is the honest band, and the basis confound moves the answer less
 than the RHF-vs-DFT difference does. **Still quote the fixed-basis numbers**,
