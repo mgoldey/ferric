@@ -175,7 +175,12 @@ def grid_with_scores(
     captions = []
     for i, sc in enumerate(scores):
         name = labels[i] if labels is not None else f"#{i}"
-        captions.append(f"{name}\nn/a" if sc is None else f"{name}\n{sc:.2f} {unit}")
+        # ONE line, not two. `MolsToGridImage` reserves room for a single
+        # legend line and draws the structure to fill the rest, so a "\n" puts
+        # the second line ON the molecule -- VERIFIED by rendering: "Cl-C5 /
+        # -1.90 kcal/mol" sat across the carboxyl group, and raising sub_size
+        # does not help because RDKit rescales the structure to match.
+        captions.append(f"{name}: n/a" if sc is None else f"{name}: {sc:.2f} {unit}")
 
     img = Draw.MolsToGridImage(
         mols,
