@@ -1070,12 +1070,17 @@ def optimization_trace(
     ax.set_xlabel("step")
     ax.set_ylabel(f"energy ({unit})")
 
-    i_best = next(i for i, e in finite_pairs if e == best)
     ax.axhline(best, linestyle=":", linewidth=0.9, color="#888888")
+    # Anchored in AXES FRACTION, not at the best point's data coordinates. The
+    # best energy is usually the LAST step, so a data-anchored label sits at
+    # the right spine and is clipped -- RENDERED and seen, not deduced: the
+    # label read "best  -39.72650" with the digits past the axis cut off.
+    # Left-aligned just above the line it labels, where there is always room.
     ax.annotate(
         f"best  {best:.6f}",
-        xy=(i_best, best),
-        xytext=(4, -12),
+        xy=(0.015, best),
+        xycoords=("axes fraction", "data"),
+        xytext=(0, 4),
         textcoords="offset points",
         fontsize=8,
         color="#555555",
@@ -1117,7 +1122,12 @@ def optimization_trace(
         ax2.tick_params(axis="y", labelcolor="#ff7f0e")
 
     status = "converged" if converged else "DID NOT CONVERGE"
-    ax.set_title(f"{title} -- {len(energies)} steps, {status}")
+    # `pad` clears matplotlib's offset-text box (the "-3.9726e1" that appears
+    # above the y axis whenever the energies share a large constant part, which
+    # for a Hartree total energy is ALWAYS). Without it the exponent label and
+    # the title overprint each other -- again seen by rendering, since every
+    # string assertion about the title passes either way.
+    ax.set_title(f"{title} -- {len(energies)} steps, {status}", pad=14)
     if not converged:
         # An unconverged run's last point is where the budget ran out, not a
         # stationary point. Saying so on the figure keeps it from being read
