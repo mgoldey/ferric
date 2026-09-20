@@ -744,6 +744,33 @@ the shares move; the ordering is robust to anything reasonable.
 
 ### Transition-state search costs 2 Hessians + n_steps (MEASURED, 2026-09-19)
 
+**A GRADIENT IS NOT AN ENERGY, and the model below counts them as if it were.**
+MEASURED 2026-09-19, NH3/STO-3G: a single point is 13.5 ms and a full
+finite-difference Hessian is 580 ms -- a ratio of **43x**, against the
+`6N+1 = 25` the count predicts. So the gradient-count model understates wall
+time by roughly **1.7x**, because each of those 6N+1 evaluations is an
+energy AND an analytic gradient, not an energy.
+
+Use the counts to compare SHAPES (how a search scales with N, whether one
+Hessian or two) and multiply by a measured per-GRADIENT time, never by a
+single-point time. Every wall-clock estimate in this section is built from a
+single point and therefore carries that 1.7x on top of everything else already
+noted.
+
+**The embedding multiplier applies to the Hessian too, and the COUNT does not
+move.** MEASURED, NH3/STO-3G frequencies:
+
+| field | gradient evaluations | wall |
+|---|---:|---:|
+| vacuum | 24 | 0.60 s |
+| 2 point charges | 24 | 0.60 s |
+| whole 7LCJ pocket (6458) | 24 | **3.72 s** |
+
+6.2x in time, 1.0x in count -- which is the precise sense in which "a QM/MM
+Hessian needs no new machinery" is true. It needs no extra gradients; it needs
+more time per gradient.
+
+
 New entry: until `ferric_scf::saddle` landed there was no saddle search to
 cost. `crates/ferric-scf/tests/saddle_cost.rs` counts the actual calls rather
 than timing them, because a call count is a property of the algorithm while a
