@@ -691,6 +691,23 @@ source, because the two look interchangeable from a call site:
 | `dock_ligand` -> `DockedPose.coords_angstrom` | **the receptor's** (its docstring says so) | **yes** |
 | `propose_substitutions` -> `embed_proposals` | origin-centred ETKDG | **no** -- 226 A away |
 
+**A DOCKED POSE IS UNITED-ATOM, so it is not a QM geometry as it stands.**
+Vina merges nonpolar hydrogens into their carbons: MEASURED, aspirin docks as
+14 atoms where 21 went in. `tier1_dock` now re-hydrogenates the pose via
+`united_atom.restore_hydrogens` before handing it on, and fails the candidate
+if it cannot -- because the failure downstream is silent in the worst place:
+
+| tier | on a stripped pose |
+|---|---|
+| tier 4 (ferric DFT) | FAILS -- the odd electron count trips the charge/multiplicity parity check. Protected by ACCIDENT |
+| tier 3 (GFN2) | **does not.** -35.492226 vs -39.621219 for the real molecule. Both plausible, neither errors, **2591 kcal/mol apart** |
+
+AUDITED afterwards, because the obvious question is whether any other hop does
+this: it does not. `read_structure` (.sdf/.pdb/.xyz), `from_smiles`,
+`tier2_forcefield` and `embed_proposals` all preserve every atom, pinned by
+`test_no_geometry_hop_silently_changes_the_MOLECULE`. Docking was the only one,
+and only because PDBQT is a united-atom format.
+
 `funnel._harvest_geometry` exists to carry the first into
 `context["geometry"]` so tiers 3 and 4 score the DOCKED pose instead of
 re-embedding. Use the funnel, or take `coords_angstrom` off the pose yourself.
