@@ -441,24 +441,53 @@ def test_the_answer_table_tier_costs_agree_with_tiers_py():
 
     # A cold-start figure must not be quoted as a per-call cost. The
     # substitution row read a flat "216 ms"; MEASURED, that is the FIRST call
-    # in a process (248 ms here) while every call after it is 7.6 ms, so the
-    # flat figure over-states a 100-analogue sweep by ~30x. Whenever a row
-    # names a first-call cost it must also name the warm one.
-    sub_row = row_for("substitution.propose_substitutions")
-    assert "first call" in sub_row and "warm" in sub_row, (
-        "the substitution row must distinguish the cold first call from the "
-        f"warm per-call cost; they differ by ~30x: {sub_row}"
-    )
+    # in a process (248 ms) while every call after it is 7.6 ms, so the flat
+    # figure over-states a 100-analogue sweep by ~30x.
+    #
+    # These assert the MEASURED VALUES, not just the vocabulary. A first
+    # version required only the words "first call" and "warm" and the word
+    # "include_web" -- mutation-verified, it PASSED with every number replaced
+    # by nonsense (warm SLOWER than cold, offline the same as networked). A
+    # guard on a cost table has to check the costs.
+    for call, tokens, why in [
+        (
+            "substitution.propose_substitutions",
+            ["7.6 ms", "248 ms", "first call", "warm"],
+            "248 ms cold vs 7.6 ms warm -- a ~30x difference",
+        ),
+        (
+            "tox.assess.assess_smiles",
+            ["54 ms", "1.6 s", "include_web"],
+            "1.6 s with the DEFAULT include_web=True vs 54 ms offline",
+        ),
+        (
+            "viz.molecules.depict",
+            ["5.9 ms", "88 ms", "warm"],
+            "88 ms first call vs 5.9 ms warm",
+        ),
+    ]:
+        row = row_for(call)
+        for token in tokens:
+            assert token in row, (
+                f"the section 0a row for {call} must carry {token!r} ({why}), "
+                f"got: {row}"
+            )
 
-    # The liability row must say the DEFAULT reaches the network. MEASURED:
-    # `include_web=True` (the default) pulls admetlab3 and protox3 at 1.6 s
-    # per analogue against 54 ms for the offline rdkit-alerts path -- a 30x
-    # difference that also decides whether a sweep runs offline at all. The
-    # row used to read "~5 ms / analogue" and mention neither.
+    # Ordering, so a swapped pair cannot satisfy the token checks above: the
+    # warm figure has to come FIRST in each row that gives both. This is what
+    # catches "999 ms warm (1 ms first call)", which carries plausible
+    # vocabulary and inverted numbers.
+    sub_row = row_for("substitution.propose_substitutions")
+    assert sub_row.index("7.6 ms") < sub_row.index("248 ms"), (
+        f"the substitution row must lead with the WARM cost: {sub_row}"
+    )
+    dep_row = row_for("viz.molecules.depict")
+    assert dep_row.index("5.9 ms") < dep_row.index("88 ms"), (
+        f"the depict row must lead with the WARM cost: {dep_row}"
+    )
     liab_row = row_for("tox.assess.assess_smiles")
-    assert "include_web" in liab_row or "offline" in liab_row, (
-        "the liability row must say that assess_smiles reaches the network by "
-        f"default; a screening loop is 30x slower than the offline path: {liab_row}"
+    assert liab_row.index("54 ms") < liab_row.index("1.6 s"), (
+        f"the liability row must lead with the OFFLINE cost: {liab_row}"
     )
 
     # And the specific stale values must not come back.
