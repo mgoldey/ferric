@@ -3808,13 +3808,33 @@ pub fn hirshfeld_charges(
     }
 
     if !fallback_atoms.is_empty() {
-        eprintln!(
-            "[hirshfeld] WARNING: {} of {natoms} atoms (indices {fallback_atoms:?}) had no \
-             free-atom SCF proatom density and fell back to a crude single-Slater model. \
-             The other atoms used the SCF density, so these charges mix two different \
-             proatom sources and the partitioning is NOT uniformly converged.",
-            fallback_atoms.len()
-        );
+        // TWO different situations, and they need different warnings. The
+        // mixed case is the subtle one -- some atoms on SCF proatoms and some
+        // on the crude model means the partitioning is internally
+        // inconsistent. The all-fallback case is not a mixture at all (it is
+        // what you get with no proatom provider, e.g. `binding_energy`), and
+        // saying "the other atoms used the SCF density" there is simply false:
+        // there are no other atoms. Reported as one message, it sent a reader
+        // looking for an inconsistency that was not present while
+        // under-stating the one that was -- every charge came from the crude
+        // model.
+        if fallback_atoms.len() == natoms {
+            eprintln!(
+                "[hirshfeld] WARNING: ALL {natoms} atoms fell back to the crude \
+                 single-Slater proatom model -- no free-atom SCF proatom density was \
+                 supplied. The partitioning is internally CONSISTENT but uniformly \
+                 crude; treat these charges as qualitative. Pass a proatom provider \
+                 for SCF-quality proatoms."
+            );
+        } else {
+            eprintln!(
+                "[hirshfeld] WARNING: {} of {natoms} atoms (indices {fallback_atoms:?}) had no \
+                 free-atom SCF proatom density and fell back to a crude single-Slater model. \
+                 The other atoms used the SCF density, so these charges mix two different \
+                 proatom sources and the partitioning is NOT uniformly converged.",
+                fallback_atoms.len()
+            );
+        }
     }
 
     let eps_floor = 1e-12;
