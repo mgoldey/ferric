@@ -695,7 +695,12 @@ def liability_profile(
 
     ax.set_xticks(xs)
     ax.set_xticklabels(endpoints, rotation=35, ha="right", fontsize=9)
-    ax.set_ylabel("liability (UP = worse; lower-is-worse endpoints negated)")
+    # TWO LINES. As one 58-character string this label is taller than the axes
+    # and matplotlib does not shrink or wrap it -- MEASURED, it overran the
+    # figure top by 16px and rendered as "...endpoints negate", losing the "d"
+    # and the closing paren. `tight_layout` does not help: it reserves room for
+    # the label's BOX, and the box is already taller than the canvas.
+    ax.set_ylabel("liability (UP = worse;\nlower-is-worse endpoints negated)")
     ax.set_title(
         title if not n_gap else f"{title}  ({n_gap} unevaluated, shown as gaps)"
     )

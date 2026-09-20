@@ -1163,3 +1163,98 @@ def test_the_best_label_and_title_stay_inside_the_figure():
         )
     finally:
         close(fig)
+
+
+def test_axis_labels_and_titles_fit_inside_every_figure():
+    """The layout check, generalised past the one plot that had the bug.
+
+    `test_the_best_label_and_title_stay_inside_the_figure` pins
+    `optimization_trace`. This one sweeps the plots the golden path's answer
+    table cites, because the same defect appeared again in a second plot the
+    moment one was rendered: `liability_profile`'s y label is a 58-character
+    string that is TALLER than its own axes, so it overran the figure top by
+    16px and rendered as "...endpoints negate" -- losing the final letter and
+    the closing paren.
+
+    `tight_layout` does not save you: it reserves room for the label's BOX,
+    and the box was already taller than the canvas. The fix is a newline in
+    the label, which no string assertion would have prompted.
+    """
+    from tools.viz.energy_plots import (
+        close,
+        funnel_survival,
+        liability_profile,
+        pose_ensemble,
+        site_substituent_heatmap,
+    )
+
+    cases = {
+        # SEVEN endpoints with the real, long names -- not two short ones.
+        # The fixture is load-bearing here: with 2 short x-tick labels the
+        # axes stay tall and the 58-character y label FITS, so a small
+        # fixture passed with the defect restored (mutation-verified). The
+        # rotated `alert_chembl_dundee`-length ticks are what shrink the axes
+        # and push the label off the canvas, so the fixture has to carry the
+        # same shape the tox screen actually produces.
+        "liability_profile": lambda: liability_profile(
+            {
+                name: {
+                    ep: (v, True)
+                    for ep, v in [
+                        ("alert_brenk", 0.33 * m),
+                        ("alert_chembl_bms", 0.0),
+                        ("alert_chembl_dundee", 0.33 * m),
+                        ("alert_chembl_glaxo", 0.0),
+                        ("alert_nih", 0.0),
+                        ("alert_pains", 0.0),
+                        ("alert_total_count", 2.0 * m),
+                    ]
+                }
+                for name, m in (("parent", 1.0), ("analogue", 2.0))
+            },
+            parent="parent",
+        ),
+        "funnel_survival": lambda: funnel_survival(
+            ["dock", "FF", "xtb", "DFT"], [1000, 250, 40, 6]
+        ),
+        "pose_ensemble": lambda: pose_ensemble(
+            {"lig A": [-9.1, -8.8, -8.2], "lig B": [-10.2, -9.9, -9.1]}
+        ),
+        "site_substituent_heatmap": lambda: site_substituent_heatmap(
+            {
+                ("F", "C3"): -0.8,
+                ("Cl", "C3"): -1.2,
+                ("F", "C4"): 0.3,
+                ("Cl", "C4"): None,
+            }
+        ),
+    }
+
+    for name, make in cases.items():
+        fig = make()
+        try:
+            fig.canvas.draw()
+            rend = fig.canvas.get_renderer()
+            fb = fig.bbox
+            for ax in fig.axes:
+                for what, artist in (
+                    ("title", ax.title),
+                    ("xlabel", ax.xaxis.label),
+                    ("ylabel", ax.yaxis.label),
+                ):
+                    if not artist.get_text():
+                        continue
+                    bb = artist.get_window_extent(renderer=rend)
+                    # 1px of tolerance: a box may touch the edge exactly.
+                    assert bb.y1 <= fb.y1 + 1 and bb.y0 >= fb.y0 - 1, (
+                        f"{name}: {what} spans y {bb.y0:.0f}..{bb.y1:.0f}, "
+                        f"outside the figure 0..{fb.y1:.0f} -- it is clipped. "
+                        f"A long label needs a newline; tight_layout cannot "
+                        f"shrink a box taller than the canvas."
+                    )
+                    assert bb.x1 <= fb.x1 + 1 and bb.x0 >= fb.x0 - 1, (
+                        f"{name}: {what} spans x {bb.x0:.0f}..{bb.x1:.0f}, "
+                        f"outside the figure 0..{fb.x1:.0f} -- it is clipped"
+                    )
+        finally:
+            close(fig)
