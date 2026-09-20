@@ -2229,6 +2229,89 @@ json = [1, 2]
     }
 
     #[test]
+    fn qmmm_an_unresolvable_element_is_refused_in_either_region() {
+        // `unwrap_or(0)` used to make this a Z = 0 atom, and what happened
+        // then depended on WHERE the atom landed:
+        //
+        //   QM region -> the basis lookup caught it by luck ("no basis shells
+        //                for Z=0"), an error about the wrong thing;
+        //   MM region -> NOTHING caught it. MM atoms enter only through charge
+        //                and position, so the run completed and printed an
+        //                energy with no sign that a record was malformed.
+        //
+        // The MM case is the one that matters and the one a QM-only test
+        // would miss, so both are asserted here.
+        let dir = std::env::temp_dir().join("ferric_qmmm_element_test");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let good = "ATOM      1  O   WAT     1       0.000   0.000   0.000 -0.834 1.77\n\
+                    ATOM      2  H   WAT     1       0.757   0.586   0.000  0.417 0.00\n\
+                    ATOM      3  H   WAT     1      -0.757   0.586   0.000  0.417 0.00\n";
+        let bad_mm =
+            format!("{good}ATOM      4  XX  ION     2       0.000   0.000   4.000  1.000 1.87\n");
+        let bad_qm = "ATOM      1  O   WAT     1       0.000   0.000   0.000 -0.834 1.77\n\
+                      ATOM      2  H   WAT     1       0.757   0.586   0.000  0.417 0.00\n\
+                      ATOM      3  XX  WAT     1      -0.757   0.586   0.000  0.417 0.00\n\
+                      ATOM      4  NA  ION     2       0.000   0.000   4.000  1.000 1.87\n";
+
+        for (name, text, label) in [
+            ("bad_mm.pqr", bad_mm.as_str(), "MM region"),
+            ("bad_qm.pqr", bad_qm, "QM region"),
+        ] {
+            let path = dir.join(name);
+            std::fs::write(&path, text).unwrap();
+            let cfg = QmmmCfg {
+                pqr: path.to_str().unwrap().to_string(),
+                qm_indices: vec![0, 1, 2],
+                qm_seeds: vec![],
+                qm_radius_angstrom: None,
+                link_bonds: vec![],
+                boundary_scheme: default_boundary_scheme(),
+            };
+            match cfg.to_system(0, 1) {
+                Ok(_) => panic!("{label}: an unknown element must be refused"),
+                Err(e) => {
+                    let msg = e.to_string();
+                    assert!(
+                        msg.contains("not a known element"),
+                        "{label}: wrong error: {msg}"
+                    );
+                    // The INDEX must be there, or the user cannot find the
+                    // offending record in a 6000-atom pocket file. Asserting
+                    // on the word "atom" alone is not enough -- it also
+                    // appears in the prose, so that version of this check
+                    // passed against a message with the index removed. The
+                    // bad record is index 3 in the MM file and index 2 in the
+                    // QM one, so require the specific number.
+                    let want = if label == "MM region" {
+                        "atom 3"
+                    } else {
+                        "atom 2"
+                    };
+                    assert!(msg.contains(want), "{label}: want {want:?} in: {msg}");
+                }
+            }
+        }
+
+        // And a file of resolvable elements must still build.
+        let ok = dir.join("ok.pqr");
+        std::fs::write(
+            &ok,
+            format!("{good}ATOM      4  NA  ION     2       0.000   0.000   4.000  1.000 1.87\n"),
+        )
+        .unwrap();
+        let cfg = QmmmCfg {
+            pqr: ok.to_str().unwrap().to_string(),
+            qm_indices: vec![0, 1, 2],
+            qm_seeds: vec![],
+            qm_radius_angstrom: None,
+            link_bonds: vec![],
+            boundary_scheme: default_boundary_scheme(),
+        };
+        assert!(cfg.to_system(0, 1).is_ok(), "a valid PQR must still build");
+    }
+
+    #[test]
     fn qmmm_a_short_pqr_record_is_an_error_not_a_skipped_atom() {
         // A silently dropped atom changes the MM field without changing
         // anything a user would look at.
@@ -4301,21 +4384,40 @@ impl QmmmCfg {
 
         let atoms_pqr = parse_pqr(&self.pqr)?;
         let n = atoms_pqr.len();
+        // An atom name whose element cannot be resolved is a HARD ERROR, not
+        // a Z = 0 atom. `unwrap_or(0)` used to be silent, and what it did
+        // depended on where the atom landed: in the QM region the basis
+        // lookup happened to catch it ("no basis shells for Z=0"), but in the
+        // MM region nothing did -- MM atoms enter only through charge and
+        // position, so a typo'd or unsupported element ran to completion and
+        // printed an energy with no indication that a record was malformed.
+        // Silently accepting one contradicts the strict-parse convention the
+        // rest of this file follows.
         let atoms: Vec<QmmmAtom> = atoms_pqr
             .iter()
-            .map(|a| {
+            .enumerate()
+            .map(|(i, a)| {
                 let sym = element_from_pqr_name(&a.name);
-                let z = ferric_core::elements::symbol_to_z(&sym).unwrap_or(0) as i32;
-                QmmmAtom::new(
+                let z = ferric_core::elements::symbol_to_z(&sym).ok_or_else(|| {
+                    FerricError::General(format!(
+                        "[qmmm]: atom {i} in {} has name {:?}, whose element \
+                         symbol {sym:?} is not a known element. PQR carries no \
+                         element column, so the element is read from the atom \
+                         name; rename the atom or use a format with an element \
+                         column.",
+                        self.pqr, a.name
+                    ))
+                })? as i32;
+                Ok(QmmmAtom::new(
                     sym,
                     z,
                     a.x * ANGSTROM_TO_BOHR,
                     a.y * ANGSTROM_TO_BOHR,
                     a.z * ANGSTROM_TO_BOHR,
                     a.q,
-                )
+                ))
             })
-            .collect();
+            .collect::<Result<Vec<_>, FerricError>>()?;
 
         let check = |label: &str, idx: usize| -> Result<(), FerricError> {
             if idx >= n {
