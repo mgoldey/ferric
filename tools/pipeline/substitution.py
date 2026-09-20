@@ -230,6 +230,20 @@ def embed_proposals(
 
     Every input yields exactly one output, in order. A proposal that cannot be
     embedded comes back with `coords=None` and an `error`, never absent.
+
+    **THESE COORDINATES ARE CENTRED ON THE ORIGIN, so they cannot go straight
+    into a pocket.** ETKDG builds a molecule in its own frame; a pocket derived
+    from a PDB sits at its crystal coordinates. MEASURED on 7LCJ: the two are
+    **226 A apart**. Handing these to `run_rhf(point_charges=...)` or
+    `compute_binding_energy` is NOT an error -- the SCF converges and returns a
+    confident ~0.00 kcal/mol interaction, a gas-phase answer wearing a QM/MM
+    label.
+
+    To score a proposal in a pocket you need a POSE, which means docking it:
+    `dock_ligand` returns `DockedPose.coords_angstrom` in the receptor's frame,
+    and `funnel._harvest_geometry` carries that into `context["geometry"]` so
+    tiers 3 and 4 score the docked pose instead of re-embedding. This function
+    is for enumeration and gas-phase work.
     """
     from tools.structure import from_smiles
 

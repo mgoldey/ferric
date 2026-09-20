@@ -645,7 +645,10 @@ source, because the two look interchangeable from a call site:
 `context["geometry"]` so tiers 3 and 4 score the DOCKED pose instead of
 re-embedding. Use the funnel, or take `coords_angstrom` off the pose yourself.
 The embed path is for enumeration and gas-phase work; it is not a substitute
-for docking, and nothing in either signature says so.
+for docking. `embed_proposals`' docstring now SAYS so, with the 226 A figure
+(added 2026-09-20 -- this paragraph used to end "and nothing in either
+signature says so", which was the accurate complaint and the cheaper fix:
+a caller reads the docstring, not this page).
 
 **But DO NOT truncate with a naive distance cut.** That was the obvious next
 move and it is measured here because it does not work. Keeping charges within
