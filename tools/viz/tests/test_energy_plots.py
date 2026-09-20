@@ -1103,3 +1103,63 @@ def test_a_gradient_a_log_axis_cannot_draw_is_refused_not_silently_dropped():
     # The guard must not cost the valid cases.
     close(optimization_trace(energies, gradient_norms=[1e-1, 1e-2, 1e-3, 1e-4]))
     close(optimization_trace(energies))
+
+
+def test_the_best_label_and_title_stay_inside_the_figure():
+    """A LAYOUT assertion, because string checks cannot see position.
+
+    Two defects shipped in this plot and both were invisible to every existing
+    test -- found only by rendering the PNG and looking at it:
+
+      * `best  -39.726507` was anchored at the best point's DATA coordinates.
+        The best energy is normally the LAST step, so the label sat on the
+        right spine with its digits clipped off.
+      * A Hartree total energy makes matplotlib draw an offset box
+        (`-3.9726e1`) above the y axis, which overprinted the title.
+
+    Both render without error and satisfy any `"best" in text` assertion, so
+    the only thing that catches them is measuring where the ink actually lands.
+    """
+    from tools.viz.energy_plots import close, optimization_trace
+
+    # Hartree totals: a large shared constant, which is what triggers the
+    # offset text. Using small numbers here would make the test vacuous.
+    fig = optimization_trace(
+        [-39.72623741, -39.72643914, -39.72650465, -39.72650689, -39.72650708],
+        gradient_norms=[1.28e-2, 3.73e-3, 1.55e-3, 2.76e-4, 2.23e-4],
+        converged=True,
+    )
+    try:
+        fig.canvas.draw()
+        rend = fig.canvas.get_renderer()
+        ax = fig.axes[0]
+        fig_box = fig.bbox
+
+        best = [t for t in ax.texts if t.get_text().startswith("best")]
+        assert len(best) == 1, f"expected one 'best' label, got {len(best)}"
+        bb = best[0].get_window_extent(renderer=rend)
+        ax_box = ax.get_window_extent(renderer=rend)
+        # Against the AXES, not the figure. MEASURED with the defect restored:
+        # the data-anchored label ran to x=737 in a 750px-wide figure -- still
+        # inside the canvas, so a figure-bounds assertion PASSED against the
+        # very bug this test exists for (mutation-verified). What it actually
+        # did was overrun the axes by 77px and print across the twin gradient
+        # axis. The plot area is the bound that matters.
+        assert bb.x1 <= ax_box.x1 + 1.0, (
+            f"'best' label ends at x={bb.x1:.0f}, past the axes right edge "
+            f"x={ax_box.x1:.0f} by {bb.x1 - ax_box.x1:.0f}px -- it is printing "
+            f"over the gradient axis, and at the figure edge it is clipped"
+        )
+        assert bb.x0 >= fig_box.x0, "'best' label runs off the left of the figure"
+
+        # The offset text ("-3.9726e1") must not overlap the title.
+        offset = ax.yaxis.get_offset_text()
+        assert offset.get_text(), "expected an offset box for Hartree totals"
+        ob = offset.get_window_extent(renderer=rend)
+        tb = ax.title.get_window_extent(renderer=rend)
+        assert ob.y1 <= tb.y0 + 1.0, (
+            f"offset text (top y={ob.y1:.0f}) overlaps the title "
+            f"(bottom y={tb.y0:.0f}); raise the title pad"
+        )
+    finally:
+        close(fig)
