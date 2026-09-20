@@ -269,6 +269,30 @@ def tier1_dock(iso: Isomer, context: dict) -> TierResult:
             f"({len(Chem.GetMolFrags(mol0))} fragments)",
         )
 
+    # AFTER the molecule checks, deliberately. A multi-fragment or unparseable
+    # ligand is wrong no matter how the run is configured, so that reason is
+    # the useful one to report; a missing receptor is a caller mistake that
+    # applies to every candidate equally. Putting this first made a
+    # multi-fragment input report the receptor instead, which an existing test
+    # caught.
+    # REQUIRED context, checked as an explained failure like every other
+    # precondition in this function. These were bare `context[...]` subscripts
+    # at the dock call below, so a caller who forgot the receptor got a
+    # `KeyError: 'receptor_pdbqt'` that propagated out of `run_funnel` and took
+    # the WHOLE RUN down -- not one candidate dropped with a reason, which is
+    # the contract every other tier honours (`tier3_gfn2` returns
+    # "no geometry for GFN2"). MEASURED: `run_funnel([iso], [Stage(SEARCH,
+    # tier1_dock, ...)], {})` raised rather than reporting.
+    missing = [k for k in ("receptor_pdbqt", "box_center") if k not in context]
+    if missing:
+        return TierResult(
+            iso.canonical,
+            None,
+            f"tier 1 needs context[{'], context['.join(missing)}] -- "
+            f"prepare a receptor with docking.vina_dock.prepare_receptor and "
+            f"pass its path plus the box centre",
+        )
+
     base_seed = context.get("seed", 0xF00D)
     n_seeds = max(1, int(context.get("n_seeds", 1)))
     best_overall = None
