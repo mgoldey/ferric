@@ -1168,3 +1168,51 @@ def test_the_trace_is_present_even_for_a_plain_gas_phase_run():
         "the last traced energy must be the reported one, or the two describe "
         "different geometries"
     )
+
+
+def test_a_bare_charge_site_pulled_into_the_QM_region_says_what_to_do():
+    """Sizing a QM region by RADIUS eventually reaches the MM charges.
+
+    A pocket point charge enters the structure as symbol "X" (z = 0) -- it has
+    no basis functions, so it can never be QM. The sphere grows until it
+    touches one, and at that moment the user needs to know it is their RADIUS
+    that is wrong, not their seed.
+
+    MEASURED while sizing a QM region around danuglipron in the 7LCJ pocket:
+    2 A -> 5 QM atoms, 4 A -> 15, 6 A -> this error. The message used to be
+    "QM atom 156 has symbol "X", which is not an element" -- true, and it does
+    name the index, but it does not say that X is how an MM charge is
+    represented or that the fix is a smaller radius.
+    """
+    symbols = ["C", "H", "H", "H", "X", "X"]
+    coords = [
+        (0.0, 0.0, 0.0),
+        (0.63, 0.63, 0.63),
+        (-0.63, -0.63, 0.63),
+        (-0.63, 0.63, -0.63),
+        (3.0, 0.0, 0.0),
+        (3.5, 0.0, 0.0),
+    ]
+    charges = [0.0, 0.0, 0.0, 0.0, -0.5, 0.5]
+
+    # A radius that reaches the bare-charge sites must be REFUSED...
+    with pytest.raises(ValueError) as exc:
+        ferric.QmmmSystem(
+            symbols, coords, charges, qm_seeds=[0], qm_radius_angstrom=4.0
+        )
+    msg = str(exc.value)
+    assert "not an element" in msg
+    # ...and the message must name the CAUSE and the REMEDY, not just the atom.
+    assert "bare-charge" in msg or "z = 0" in msg, f"no explanation of X: {msg}"
+    assert "qm_radius_angstrom" in msg, f"message does not name the knob: {msg}"
+    assert "qm_indices" in msg, f"message does not offer the alternative: {msg}"
+    assert "2 such site(s)" in msg or "2 such site" in msg, (
+        f"message should count the bare sites so the scale is obvious: {msg}"
+    )
+
+    # A radius that stays inside the real atoms still works.
+    sys_ok = ferric.QmmmSystem(
+        symbols, coords, charges, qm_seeds=[0], qm_radius_angstrom=1.5
+    )
+    assert len(sys_ok.qm_molecule().symbols()) == 4, "the whole methyl should be QM"
+    assert len(sys_ok.point_charges()) == 2, "both bare sites stay MM"

@@ -1122,6 +1122,29 @@ first. Neither said HOW, and it is the first decision a catalyst user makes.
 | `WithinRadius { seeds, radius }` | "ligand plus everything within R". **Cuts mid-residue** -- selection is by ATOM with no completion, which is what link atoms exist for |
 | `WithinRadiusWholeResidues` | the same, but a residue joins whole. Usually what a pocket setup wants |
 
+**What a radius actually buys, MEASURED 2026-09-20** (danuglipron in the 7LCJ
+pocket, seeded on one ligand atom, from Python):
+
+| selection | QM atoms |
+|---|---:|
+| `qm_indices` = the whole ligand | 71 |
+| `qm_radius_angstrom = 2.0` | 5 |
+| `qm_radius_angstrom = 4.0` | 15 |
+| `qm_radius_angstrom = 6.0` | **refused** -- the sphere reached an MM charge |
+
+That refusal is the thing to know before you sweep a radius. A pocket point
+charge enters the structure as symbol `"X"` with `z = 0`; it has no basis
+functions, so it can never be quantum, and the sphere reaches one as soon as it
+leaves the ligand. The error now says so and names the knob:
+
+    QM atom 156 has symbol "X", which is not an element, so it cannot be in
+    the QM region -- a bare-charge site (z = 0) has no basis functions. ...
+    If you selected by radius, REDUCE qm_radius_angstrom until the sphere
+    holds only real atoms, or list the QM atoms explicitly with qm_indices.
+
+It used to stop at "which is not an element", which is true, names the index,
+and still leaves you guessing whether the seed or the radius was wrong.
+
 **Two different enums share the name `WithinRadius`, and they answer opposite
 questions.** `QmSelection::WithinRadius` picks which atoms are QUANTUM;
 `MoveMm::WithinRadius(f64)` picks which MM atoms are allowed to MOVE during an
