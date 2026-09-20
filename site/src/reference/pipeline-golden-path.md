@@ -78,8 +78,8 @@ first call costs 24x" below before planning a campaign from them.
 | screen toxicology | `tox.alerts.RdkitAlertsProvider.fetch` | **4.9 ms** / molecule, 13 endpoints | `liability_profile` |
 | rank analogues by liability | `tox.assess.assess_smiles` -> `.liability_score` | ~5 ms / analogue | `liability_profile` |
 | dock a ligand | `docking.vina_dock` | **26.4 s** / ligand @ ex=4 | `pose_ensemble`, `funnel_survival` |
-| relax a pose (FF) | `tiers.tier2_forcefield` | **32 ms** @ 21 atoms | `tier_comparison` |
-| relax a pose (xtb) | `tiers.tier3_gfn2` | **53 ms** @ 21 atoms | `tier_comparison` |
+| relax a pose (FF) | `tiers.tier2_forcefield` | **9 ms** @ 21 atoms (2.2 @ 9, 8.2 @ 19, 21.6 @ 34) | `tier_comparison` |
+| relax a pose (xtb) | `tiers.tier3_gfn2` | **39 ms** @ 21 atoms (0.152 s @ 9, 0.050 @ 19) | `tier_comparison` |
 | score with DFT | `tiers.tier4_dft` | **1.0 s** @ 6 atoms, 613 s @ 71 | `tier_comparison` |
 | find a transition state | `ferric.run_saddle` | `2*(6N+1) + (n_steps+1)` gradients | `energy_profile` |
 | confirm it is one | `ferric.run_frequencies` | `6N+1` gradients | **`imaginary_mode`** |
@@ -88,6 +88,15 @@ first call costs 24x" below before planning a campaign from them.
 | **relax a geometry (QM)** | `ferric.run_optimize` | 1 gradient/step; 6 steps for an embedded methyl | **`optimization_trace`** |
 | **set up a QM/MM cut** | `ferric.QmmmSystem` + `.with_boundary_charges` | free (setup) | **`qmmm_partition`** |
 | draw the molecule | `viz.molecules.depict` | **14 ms** | -- |
+
+The two tier rows were RE-MEASURED 2026-09-20 through the tier functions
+themselves (aspirin, 21 atoms, n=9 after a warm-up call): FF median 9.0 ms
+(min 8.8, max 10.3), GFN2 median 39.0 ms (min 35.4, max 44.0). They had read
+**32 ms** and **53 ms** with no provenance, and the FF figure was 3.5x high --
+`tiers.py` measures 8.2 ms at 19 atoms and 21.6 at 34, which cannot bracket
+32 ms at 21. Both rows now carry the size breakdown, because a single number
+hides that tier 2 and tier 3 scale differently with atom count.
+`test_the_answer_table_tier_costs_agree_with_tiers_py` pins them to the source.
 
 **Two rows carry a caveat that outweighs their cost.**
 

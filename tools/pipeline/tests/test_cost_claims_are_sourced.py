@@ -351,3 +351,71 @@ def test_the_zero_writes_claim_is_scoped_to_the_survey():
             "funnel.py writes context['geometry'], but the note still states "
             "unconditionally that nothing does"
         )
+
+
+GOLDEN_PATH = REPO / "site/src/reference/pipeline-golden-path.md"
+
+
+@pytest.mark.skipif(not GOLDEN_PATH.is_file(), reason=f"no {GOLDEN_PATH}")
+def test_the_answer_table_tier_costs_agree_with_tiers_py():
+    """Section 0a is the most-quoted table in the repo, and nothing checked it.
+
+    `test_the_coverage_table_agrees_with_the_measured_tier_costs` above pins
+    the COVERAGE doc to `tiers.py`. It does not look at the golden path's
+    section 0a answer table -- and that is where the figures went stale:
+
+        section 0a          tiers.py (MEASURED)
+        FF   32 ms @ 21     2.2 @ 9, 8.2 @ 19, 21.6 @ 34   <- 3.5x high
+        xtb  53 ms @ 21     0.152 s @ 9, 0.050 @ 19
+
+    RE-MEASURED 2026-09-20 through the tier functions themselves, aspirin at
+    21 atoms, n=9 after a warm-up call: FF median 9.0 ms (min 8.8, max 10.3),
+    GFN2 median 39.0 ms (min 35.4, max 44.0). The FF row was the bad one --
+    8.2 ms at 19 atoms and 21.6 at 34 cannot bracket 32 ms at 21.
+
+    Neither figure carried any provenance, unlike the docking row beside them
+    which cites RESULTS.md M11. An unsourced number in the table a reader
+    quotes is the exact shape of the closed citation loop this FILE exists to
+    prevent, one table over.
+
+    Like its sibling, this asserts AGREEMENT rather than provenance, and it
+    reads the table ROWS rather than the whole document so a correction note
+    quoting the old figure cannot stand in for a corrected row.
+    """
+    tiers = TIERS.read_text()
+    doc = GOLDEN_PATH.read_text()
+
+    start = doc.index("## 0a.")
+    block = doc[start : doc.index("\n## ", start + 5)]
+    rows = [ln for ln in block.splitlines() if ln.startswith("|")]
+    assert len(rows) >= 10, (
+        f"expected the section 0a answer table, found {len(rows)} rows; its "
+        "shape changed and this guard needs re-deriving"
+    )
+    table = "\n".join(rows)
+
+    # Each tier row must carry a figure that tiers.py also reports, so the two
+    # cannot drift. Tokens are distinctive enough not to match by coincidence.
+    for token, why in [
+        ("8.2", "tier 2 MMFF94 at 19 atoms"),
+        ("21.6", "tier 2 MMFF94 at 34 atoms"),
+        ("0.050", "tier 3 GFN2 at 19 atoms"),
+        ("26.4", "tier 1 Vina per ligand"),
+    ]:
+        assert token in tiers, (
+            f"{token!r} ({why}) is no longer in tiers.py's measured block -- "
+            "this test is pinned to figures that moved; re-derive the list "
+            "rather than deleting the assertion"
+        )
+        assert token in table, (
+            f"section 0a does not carry {token!r} ({why}), which tiers.py "
+            f"reports as MEASURED. A cost in the answer table that the source "
+            f"does not know about is an unsourced figure."
+        )
+
+    # And the specific stale values must not come back.
+    for gone in ["**32 ms**", "**53 ms**"]:
+        assert gone not in table, (
+            f"section 0a re-asserts {gone}, which was RE-MEASURED 2026-09-20 "
+            f"as 9 ms (FF) and 39 ms (xtb) and disagrees with tiers.py"
+        )
