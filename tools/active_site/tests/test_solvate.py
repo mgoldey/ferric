@@ -113,3 +113,46 @@ def test_write_pqr_puts_the_solute_first(tmp_path):
 
     atoms = parse_pqr_atoms(p)
     assert len(atoms) == n, "the PQR we write must parse with the PQR we read"
+
+
+def test_a_short_radii_list_is_refused_not_silently_truncated():
+    """`zip` stops at the shortest sequence, so this failed silently.
+
+    MEASURED before the fix: one radius for a 3-atom solute wrote ONE solute
+    record, and every water shifted up by two. `write_pqr` exists to guarantee
+    that the solute occupies indices `0 .. n_solute-1` so they can be handed to
+    `[qmmm] qm_indices` unchanged -- and with a short radii list
+    `qm_indices = [0, 1, 2]` selected an oxygen plus two WATER atoms. A QM
+    region that is not the molecule, from a file that looks well-formed.
+
+    The symbols/coords/charges lengths were already checked; radii were simply
+    left out of that check.
+    """
+    import tempfile
+    from pathlib import Path
+
+    sym = ("O", "H", "H")
+    xyz = [(0.0, 0.0, 0.0), (0.96, 0.0, 0.0), (-0.24, 0.93, 0.0)]
+    drop = solvate(sym, xyz, radius_angstrom=4.0, seed=1)
+
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "x.pqr"
+        for bad in [(1.7,), (1.7, 1.2), (1.7, 1.2, 1.2, 1.2)]:
+            with pytest.raises(ValueError, match="radii"):
+                write_pqr(p, sym, xyz, (0.0, 0.0, 0.0), drop, solute_radii=bad)
+
+        # The valid cases must still work, and must write EVERY solute atom.
+        n_full = write_pqr(
+            p, sym, xyz, (0.0, 0.0, 0.0), drop, solute_radii=(1.7, 1.2, 1.2)
+        )
+        records = [ln for ln in p.read_text().splitlines() if ln.startswith("ATOM")]
+        assert len(records) == n_full == 3 + 3 * drop.n_waters
+        assert sum(1 for ln in records if " SOL " in ln) == 3, (
+            "every solute atom must be written, or qm_indices is wrong"
+        )
+        # And the first three records ARE the solute, in order.
+        for i, s in enumerate(sym):
+            assert records[i].split()[2] == s, records[i]
+
+        n_none = write_pqr(p, sym, xyz, (0.0, 0.0, 0.0), drop)
+        assert n_none == n_full, "omitting radii must not change the atom count"

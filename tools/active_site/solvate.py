@@ -269,7 +269,24 @@ def write_pqr(
         raise ValueError(
             f"solute mismatch: {len(ssym)} symbols, {len(solute)} coords, {len(sq)} charges"
         )
-    srad = tuple(solute_radii) if solute_radii is not None else (0.0,) * len(ssym)
+    srad = (
+        tuple(float(r) for r in solute_radii)
+        if solute_radii is not None
+        else (0.0,) * len(ssym)
+    )
+    # `zip` stops at the SHORTEST sequence, so a short `solute_radii` does not
+    # raise -- it silently writes fewer solute records. MEASURED: one radius
+    # for a 3-atom solute wrote ONE atom, and the waters then shifted up by
+    # two, so `qm_indices = [0, 1, 2]` selected an oxygen plus two water atoms.
+    # That is the one invariant this function exists to provide (solute first,
+    # indices 0..n-1), broken silently, in a file whose whole purpose is to be
+    # handed to `[qmmm]`.
+    if len(srad) != len(ssym):
+        raise ValueError(
+            f"solute mismatch: {len(ssym)} symbols, {len(srad)} radii -- a "
+            f"short radii list silently drops solute atoms and shifts every "
+            f"qm_indices entry"
+        )
 
     lines = [
         "REMARK  solute + explicit TIP3P DROPLET (finite, non-periodic).",
