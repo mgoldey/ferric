@@ -507,3 +507,67 @@ def test_the_harvested_pose_carries_ITS_HYDROGENS(tmp_path):
     assert n_h == n_h_expected, (
         f"{n_h} hydrogens in the harvested pose, {n_h_expected} in the molecule"
     )
+
+
+def test_no_geometry_hop_silently_changes_the_MOLECULE():
+    """Every hop that carries a geometry must preserve the atom count.
+
+    The united-atom docking bug (see
+    `test_the_harvested_pose_carries_ITS_HYDROGENS`) was a geometry crossing a
+    tool boundary and coming out as a DIFFERENT MOLECULE -- aspirin 14 atoms
+    instead of 21 -- which tier 3 then scored without complaint, 2591 kcal/mol
+    wrong.
+
+    That prompted the obvious question: is docking the only hop that does this?
+    AUDITED 2026-09-20, and it is -- every reader and embedder below preserves
+    all 21 atoms. This pins that, so a change to any of them has to notice.
+
+    The docking hop is not here because it needs a receptor; it has its own
+    test above.
+    """
+    import os
+    import tempfile
+
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    from tools.isomers.model import Isomer
+    from tools.pipeline.substitution import embed_proposals, propose_substitutions
+    from tools.pipeline.tiers import tier2_forcefield
+    from tools.structure import from_smiles, read_structure
+
+    smiles = "CC(=O)Oc1ccccc1C(=O)O"
+    expected = Chem.AddHs(Chem.MolFromSmiles(smiles)).GetNumAtoms()
+    assert expected == 21, "fixture changed; re-derive the expected count"
+
+    mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    AllChem.EmbedMolecule(mol, randomSeed=1)
+    AllChem.MMFFOptimizeMolecule(mol)
+
+    counts = {}
+    with tempfile.TemporaryDirectory() as d:
+        for ext, writer in [
+            ("sdf", Chem.MolToMolFile),
+            ("pdb", Chem.MolToPDBFile),
+            ("xyz", Chem.MolToXYZFile),
+        ]:
+            path = os.path.join(d, f"a.{ext}")
+            writer(mol, path)
+            counts[f"read_structure .{ext}"] = len(read_structure(path).symbols)
+
+    counts["from_smiles"] = len(from_smiles(smiles).symbols())
+
+    iso = Isomer(smiles=smiles, kind="parent", transform="t", parent_smiles=smiles)
+    counts["tier2_forcefield"] = len(tier2_forcefield(iso, {}).payload["symbols"])
+
+    # The trivial limit: no substituents returns the parent unchanged.
+    embedded = embed_proposals(propose_substitutions(smiles, {}))
+    counts["embed_proposals"] = len(embedded[0].symbols or ())
+
+    wrong = {k: v for k, v in counts.items() if v != expected}
+    assert not wrong, (
+        f"these hops changed the molecule: {wrong} (expected {expected} atoms). "
+        f"A geometry that loses atoms crossing a boundary is scored as a "
+        f"DIFFERENT molecule downstream, and only tier 4's parity check would "
+        f"notice."
+    )
