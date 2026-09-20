@@ -1051,3 +1051,55 @@ def test_mismatched_lengths_and_bad_indices_are_refused():
         qmmm_partition(_ETHANE_SYM, _ETHANE_CRD, [0, 99])
     with pytest.raises(ValueError, match="no atoms"):
         qmmm_partition([], [], [])
+
+
+def test_a_gradient_a_log_axis_cannot_draw_is_refused_not_silently_dropped():
+    """A zero or NaN gradient norm must error, not disappear.
+
+    The gradient axis is logarithmic and matplotlib does NOT complain about a
+    value a log axis cannot show -- it keeps the point in the data and draws
+    nothing there:
+
+        semilogy([0,1,2,3],[1.0, 0.1, 0.0, nan]).get_path().vertices
+        -> [[0,1.0],[1,0.1],[2,0.0],[3,nan]]     # last two never render
+
+    So a converged step reported as exactly 0.0 would vanish from the gradient
+    curve while the energy trace beside it still shows that step. The reader
+    sees a shorter history than the optimisation had and reads the wrong step
+    as the last one -- the same silent-misreading failure the per-step length
+    check already guards against.
+    """
+    from tools.viz.energy_plots import close, optimization_trace
+
+    energies = [-1.0, -1.1, -1.15, -1.16]
+    for bad, why in [
+        ([1e-1, 1e-2, 1e-3, 0.0], "exactly zero"),
+        ([1e-1, 1e-2, float("nan"), 1e-4], "NaN"),
+        ([1e-1, 1e-2, float("inf"), 1e-4], "infinite"),
+        ([1e-1, -1e-2, 1e-3, 1e-4], "negative"),
+    ]:
+        with pytest.raises(ValueError, match="finite and strictly positive"):
+            optimization_trace(energies, gradient_norms=bad)
+        # And the message must name the OFFENDING INDEX, or the caller cannot
+        # find it in a 200-step trace. Asserting merely that the word "step"
+        # appears is not enough -- it also occurs in the advice sentence, so
+        # that version of this check passed against a message with the index
+        # stripped out. Match the index of the value actually at fault.
+        i_bad = next(
+            i
+            for i, v in enumerate(bad)
+            if not isinstance(v, (int, float))
+            or v <= 0
+            or v != v
+            or v in (float("inf"), float("-inf"))
+        )
+        try:
+            optimization_trace(energies, gradient_norms=bad)
+        except ValueError as exc:
+            assert f"step {i_bad}" in str(exc), (
+                f"{why}: message must name step {i_bad}, got {exc}"
+            )
+
+    # The guard must not cost the valid cases.
+    close(optimization_trace(energies, gradient_norms=[1e-1, 1e-2, 1e-3, 1e-4]))
+    close(optimization_trace(energies))
