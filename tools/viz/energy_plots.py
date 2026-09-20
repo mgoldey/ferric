@@ -1382,3 +1382,90 @@ def qmmm_partition(
     ax.set_aspect("equal", adjustable="datalim")
     fig.tight_layout()
     return fig
+
+
+def pocket_polarization(
+    symbols: Sequence[str],
+    charges_vacuum: Sequence[float],
+    charges_field: Sequence[float],
+    *,
+    delta_e_kcal_mol: float | None = None,
+    top_n: int = 12,
+    title: str = "How the pocket polarizes the ligand",
+):
+    """Per-atom charge shift between vacuum and the pocket field.
+
+    THE PLOT A BINDING-ENERGY RUN HAD NO WAY TO SHOW. `compute_binding_energy`
+    returns `charges_vacuum` and `charges_field` alongside the interaction
+    energy, and nothing plotted them -- so the one output that distinguishes a
+    real embedded calculation from a number went unlooked at. The answer table
+    pointed this use case at `site_substituent_heatmap`, which ranks
+    substituents and says nothing about a single pose.
+
+    `dq = q_field - q_vacuum` is the pocket pushing electrons around the
+    ligand. MEASURED on danuglipron in 7LCJ (71 atoms, 6458 charges,
+    RHF/STO-3G): max |dq| = 0.037 e, and dq sums to zero to 1e-13 because the
+    ligand's total charge cannot change -- only its distribution.
+
+    THAT SUM IS THE READER'S CHECK, so it is annotated rather than assumed. A
+    nonzero total means the two SCFs did not describe the same molecule (a
+    different charge state, a dropped atom), which is invisible in the
+    interaction energy alone.
+
+    Only the `top_n` largest shifts are drawn. A 71-atom ligand has a long tail
+    of atoms the pocket does not touch, and plotting all of them buries the few
+    that matter -- the count of what was omitted is stated on the axis.
+    """
+    plt = _plt()
+
+    n = len(symbols)
+    if not (len(charges_vacuum) == len(charges_field) == n):
+        raise ValueError(
+            f"pocket_polarization: {n} symbols but "
+            f"{len(charges_vacuum)} vacuum and {len(charges_field)} field "
+            f"charges -- these are per-atom and must match, or a shift is "
+            f"drawn against the wrong element"
+        )
+    if n == 0:
+        raise ValueError("pocket_polarization: no atoms")
+
+    dq = [float(f) - float(v) for v, f in zip(charges_vacuum, charges_field)]
+    total = sum(dq)
+
+    order = sorted(range(n), key=lambda i: abs(dq[i]), reverse=True)[: min(top_n, n)]
+    order.sort(key=lambda i: dq[i])
+    labels = [f"{symbols[i]}{i}" for i in order]
+    vals = [dq[i] for i in order]
+
+    fig, ax = plt.subplots(figsize=(7.2, max(2.6, 0.32 * len(order) + 1.4)))
+    colors = ["#d62728" if v > 0 else "#1f77b4" for v in vals]
+    ax.barh(range(len(vals)), vals, color=colors)
+    ax.set_yticks(range(len(vals)))
+    ax.set_yticklabels(labels, fontsize=8)
+    ax.axvline(0.0, color="#444444", linewidth=0.8)
+    shown = f"{len(order)} largest of {n} atoms" if len(order) < n else f"all {n} atoms"
+    ax.set_xlabel(f"dq = q(field) - q(vacuum)   (e; {shown})")
+    ax.set_title(title)
+
+    # The conservation check, stated on the figure.
+    ax.annotate(
+        f"sum dq = {total:+.1e} e  (must be ~0: the ligand's TOTAL charge\n"
+        f"cannot change, only its distribution)",
+        xy=(0.5, -0.16),
+        xycoords="axes fraction",
+        ha="center",
+        va="top",
+        fontsize=8,
+        color="#555555" if abs(total) < 1e-6 else "#d62728",
+    )
+    if delta_e_kcal_mol is not None:
+        # In the TITLE, not floated above the axes. At xy=(0.5, 1.02) it
+        # overprinted the title -- rendered and seen, the same collision class
+        # as `optimization_trace`'s offset box. A second line of the title
+        # cannot collide with the first.
+        ax.set_title(
+            f"{title}\ninteraction energy {delta_e_kcal_mol:+.2f} kcal/mol",
+            fontsize=11,
+        )
+    fig.tight_layout(rect=(0, 0.06, 1, 1))
+    return fig
