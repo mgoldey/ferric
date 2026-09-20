@@ -1317,7 +1317,25 @@ loop -- from which I concluded 6N+1. **That was wrong by one.** The live counter
 | water | 3 | 18 |
 
 The undisplaced call supplies `result.energy` and is not counted as a gradient
-evaluation; `frequencies.rs:194` documents the field as `6N`. Lesson worth
+evaluation; `frequencies.rs:194` documents the field as `6N`.
+
+RE-CONFIRMED 2026-09-20 on four sizes, against merged main, and recorded here
+because the counter alone invites exactly the wrong correction:
+
+| system | N | counter | 6N | 6N+1 |
+|---|---:|---:|---:|---:|
+| H2 | 2 | 12 | 12 | 13 |
+| water | 3 | 18 | 18 | 19 |
+| NH3 | 4 | 24 | 24 | 25 |
+| CH4 | 5 | 30 | 30 | 31 |
+
+The counter is 6N at every size, and `frequencies.rs:260` makes one
+`energy_and_gradient` call before the `0..n_coord` loop's two per coordinate.
+So BOTH numbers are right for different questions: budget 6N+1 SCFs, expect
+the counter to say 6N. Someone reading only the counter will "fix" the 6N+1
+figures in this document and understate every Hessian budget by one gradient.
+
+Lesson worth
 keeping: reading a loop is better than trusting a docstring, but an EXPOSED
 COUNTER beats both -- it cannot drift from what the code did. `energy_and_gradient` takes
 `(mol, basis_name, op, scf_config, reference)` -- no density argument, so
@@ -1681,8 +1699,12 @@ reported is a DIFFERENCE rather than an absolute. Both SCFs converged.
 
 The script is `/tmp` scratch, not committed -- it is four calls and is
 reproduced above in full effect. What matters is that it was RUN, so the (a)
-branch below is a description of working code rather than an intention. The (b)
-branch is not, and cannot be until a saddle search exists.
+branch below is a description of working code rather than an intention.
+
+**The (b) branch is too, as of 2026-09-20.** This paragraph used to end "and
+cannot be until a saddle search exists", which contradicted item 7 of the
+capability list above once `run_saddle` landed on 2026-09-19. C1-C5 was then
+executed end to end against merged main -- see "C1-C5 RUN EMBEDDED" under (b).
 
 #### The same thing from the CLI, no Python (2026-09-19)
 
@@ -1747,9 +1769,15 @@ C3. FIND THE TRANSITION STATE. AVAILABLE AND MERGED (#106, 2026-09-19) from
     matters because the whole tools/ pipeline is driven from Python --
     without it C3 existed in a language the pipeline does not speak.
     See section 4.
-C4. Verify the TS: harmonic_frequencies -> n_imaginary() == 1, AND the
-    imaginary mode must point along the reaction coordinate (one imaginary
-    frequency is necessary, not sufficient -- a methyl rotor gives one too).
+C4. Verify the TS: n_imaginary == 1, AND the imaginary mode must point along
+    the reaction coordinate (one imaginary frequency is necessary, not
+    sufficient -- a methyl rotor gives one too).
+    WHICH OBJECT: `n_imaginary` and `is_transition_state()` are on
+    **SaddleResult** (from `run_saddle`). **FrequencyResult** (from
+    `run_frequencies`) has no `n_imaginary` -- it exposes `frequencies` as a
+    PROPERTY, not a method, and you count the negatives yourself. This line
+    used to read `harmonic_frequencies -> n_imaginary()`, which is neither
+    object's API and raises AttributeError if typed literally.
     COMPLETE since #97: `PyFrequencyResult.normal_modes` is a real
     #[pyo3(get)] accessor on main (VERIFIED against origin/main
     2026-09-19), so both halves are reachable from Python. The "MODE
@@ -1817,6 +1845,39 @@ harder: with an antisymmetric charge pair, max|g_z| at the planar geometry is
 3.8e-3 against ~1e-16 in gas phase, so planar NH3 is not a stationary point at
 all. `find_saddle` correctly fails and it reads like a solver bug. See the
 transition-state cost section for the table and the diagnostic.
+
+#### C1-C5 RUN EMBEDDED, end to end (2026-09-20)
+
+The whole catalyst chain against merged main, one MM field throughout
+(ethane, QM = one CH3, STO-3G; then planar NH3 for the saddle):
+
+```
+C1  QM 5 atoms ['C','H','H','H','H']; 3 MM charges; min link-charge 1.304 A
+C2  optimize   converged=True  steps=4   E=-39.72650708        [0.1 s]
+C4  freqs@min  9 modes, n_imag=0         30 gradients          [0.8 s]
+C4  normal_modes reachable from Python: True
+C3  saddle     vacuum: converged=True  n_imag=1  is_TS=True    [2.5 s]
+C3  saddle     in MM field: converged=False n_imag=1 is_TS=False
+C5  IRC        IrcResult returned
+```
+
+**The C3 line is the interesting one, and it is not a solver failure.** The
+SAME search converges in vacuum and does not in the field. That is the
+documented behaviour of a symmetry-breaking MM field: it makes planar NH3
+non-stationary, so there is no saddle left to find and the search correctly
+fails. Running the vacuum case is the discriminator -- without it, "converged
+= False" reads as a broken optimizer. The field also shifts the saddle energy
+by +0.635 kcal/mol, so it is doing something, which is the other half of the
+check.
+
+Pick a test saddle whose symmetry your field does not break, or accept that
+the field has removed it. See C0's symmetry warning.
+
+Three API details cost a run each here, all now fixed in the C-steps above:
+`OptimizeResult.mol` is a METHOD (`o.mol()`), `FrequencyResult.frequencies` is
+a PROPERTY (no parentheses), and `n_imaginary` is on `SaddleResult`, not on
+`FrequencyResult`. `run_saddle` is closed-shell only -- a doublet guess is
+refused with a clear message rather than silently solved.
 
 #### C1 and C4 VERIFIED to work (2026-09-18)
 
