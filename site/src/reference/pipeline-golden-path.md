@@ -1704,7 +1704,7 @@ branch below is a description of working code rather than an intention.
 **The (b) branch is too, as of 2026-09-20.** This paragraph used to end "and
 cannot be until a saddle search exists", which contradicted item 7 of the
 capability list above once `run_saddle` landed on 2026-09-19. C1-C5 was then
-executed end to end against merged main -- see "C1-C5 RUN EMBEDDED" under (b).
+executed end to end against merged main -- see "Every C-step RUN against merged main" under (b).
 
 #### The same thing from the CLI, no Python (2026-09-19)
 
@@ -1846,38 +1846,70 @@ harder: with an antisymmetric charge pair, max|g_z| at the planar geometry is
 all. `find_saddle` correctly fails and it reads like a solver bug. See the
 transition-state cost section for the table and the diagnostic.
 
-#### C1-C5 RUN EMBEDDED, end to end (2026-09-20)
+#### Every C-step RUN against merged main (2026-09-20)
 
-The whole catalyst chain against merged main, one MM field throughout
-(ethane, QM = one CH3, STO-3G; then planar NH3 for the saddle):
+Not one end-to-end run on one system -- **two smoke tests on two systems**, and
+the distinction matters because the sizes and the surfaces differ. Labelling
+this "C1-C5 end to end" (as an earlier revision did) would claim a continuity
+these runs do not have.
 
-```
+**C1/C2/C4 -- ethane, QM = one CH3, covalent cut with a link atom, STO-3G.**
+Embedded throughout, one MM field:
+
+```text
 C1  QM 5 atoms ['C','H','H','H','H']; 3 MM charges; min link-charge 1.304 A
-C2  optimize   converged=True  steps=4   E=-39.72650708        [0.1 s]
-C4  freqs@min  9 modes, n_imag=0         30 gradients          [0.8 s]
+C2  optimize   converged=True  steps=4   E=-39.72650708            [0.1 s]
+C4  freqs@min  9 modes, n_imag=0   counter=30 gradients, 31 SCF calls  [0.8 s]
 C4  normal_modes reachable from Python: True
-C3  saddle     vacuum: converged=True  n_imag=1  is_TS=True    [2.5 s]
-C3  saddle     in MM field: converged=False n_imag=1 is_TS=False
-C5  IRC        IrcResult returned
 ```
 
-**The C3 line is the interesting one, and it is not a solver failure.** The
-SAME search converges in vacuum and does not in the field. That is the
-documented behaviour of a symmetry-breaking MM field: it makes planar NH3
-non-stationary, so there is no saddle left to find and the search correctly
-fails. Running the vacuum case is the discriminator -- without it, "converged
-= False" reads as a broken optimizer. The field also shifts the saddle energy
-by +0.635 kcal/mol, so it is doing something, which is the other half of the
-check.
+C4's `counter=30` is `n_gradient_evaluations`; the BUDGET is 31 SCF calls
+(6N+1, the extra one undisplaced and uncounted). Both numbers appear here
+deliberately -- see the accounting section above for why quoting only the
+counter understates a Hessian by one.
 
-Pick a test saddle whose symmetry your field does not break, or accept that
-the field has removed it. See C0's symmetry warning.
+**C3/C5 -- planar NH3 inversion, STO-3G.** A separate system, because the
+ethane methyl has no saddle to find:
+
+```text
+C3  vacuum saddle   converged=True   n_imag=1  is_TS=True   E=-55.43766531
+C3  in the MM field converged=False  n_imag=1  is_TS=False  (no stationary point)
+C5  IRC             from the VACUUM saddle geometry and its imaginary mode,
+                    run with point_charges= -- returns an IrcResult
+```
+
+**The C3 pair is the point, and it is not a solver failure.** The same search
+converges in vacuum and does not in the field: a symmetry-breaking MM field
+makes planar NH3 non-stationary, so there is no saddle left to find. Running
+the vacuum case is the discriminator -- without it, `converged=False` reads as
+a broken optimizer. See C0's symmetry warning.
+
+The field IS being applied, and the honest way to show that is at ONE
+geometry with two Hamiltonians, since the field search has no stationary point
+to quote an energy from:
+
+| at the converged VACUUM saddle geometry | energy (Ha) |
+|---|---:|
+| vacuum RHF | -55.43766531 |
+| RHF + MM point charges | -55.43664618 |
+| **field shift** | **+0.640 kcal/mol** |
+
+(An earlier revision quoted "+0.635 kcal/mol" as the shift in the *saddle*
+energy. That subtracted two energies at two DIFFERENT geometries, one of them
+not stationary, so it was not the quantity it named. Review caught it; the
+single-geometry number above is what was meant.)
 
 Three API details cost a run each here, all now fixed in the C-steps above:
 `OptimizeResult.mol` is a METHOD (`o.mol()`), `FrequencyResult.frequencies` is
 a PROPERTY (no parentheses), and `n_imaginary` is on `SaddleResult`, not on
 `FrequencyResult`. `run_saddle` is closed-shell only -- a doublet guess is
 refused with a clear message rather than silently solved.
+
+These are smoke tests, not the regression net. The chain is pinned by
+`test_the_whole_embedded_chain_runs_and_the_barrier_moves`
+(`crates/ferric-python/tests/test_saddle.py`), which asserts the same
+vacuum-converges/field-does-not split and uses `irc.saddle_energy` as a
+field-detector.
 
 #### C1 and C4 VERIFIED to work (2026-09-18)
 
