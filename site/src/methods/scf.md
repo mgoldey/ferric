@@ -149,9 +149,9 @@ with `df_k_aux`, is refused or warned about rather than silently ignored.
 
 ## QM/MM embedding from the CLI
 
-QM/MM used to be reachable only from the Rust and Python APIs. A `[qmmm]`
-section now drives it from TOML: the QM region becomes the molecule that is
-solved, and the MM region becomes the external potential it is solved in.
+A `[qmmm]` section drives QM/MM from TOML: the QM region becomes the molecule
+that is solved, and the MM region becomes the external potential it is solved
+in.
 
 ```toml
 [qmmm]

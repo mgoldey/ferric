@@ -18,10 +18,9 @@ numbers. Companion: the caching research is in a separate note.
 | **Test (fast tier)** | **63.2 min** | **89%** |
 | Save cargo cache | 0.1 min | <1% |
 
-Job total 70.9 min on this run. CORRECTION: an earlier version of this note
-quoted 40.3 min for the fast tier and a 51.4 min median job, taken from a PR
-run (35398853006). Main runs are longer, and 63.2 min is the figure that
-matters because it is the one approaching the step's own 100-minute cap.
+Job total 70.9 min on this run. These are MAIN-branch figures: a PR run is
+shorter (40.3 min fast tier, 51.4 min median job), but main is what approaches
+the step's own 100-minute cap, so it is the number that matters for headroom.
 ci.yml's comment claiming the deferrals brought the fast tier to "~23 min" was
 true on 2026-09-16 and has drifted ~2.7x since. Second-longest job `mpi` at
 8.6 min. `needs:` is
