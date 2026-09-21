@@ -69,6 +69,16 @@ class EmbeddedAnalogue:
         prefix = prefix or self.analogue.label
         paths = []
         for i, coords in enumerate(self.conformers):
+            # The header below is `len(self.symbols)` while the body comes from
+            # `zip(self.symbols, coords)`, which stops at the shorter one. A
+            # mismatch therefore writes a file whose header disagrees with its
+            # contents, and it reads back as a different molecule.
+            if len(coords) != len(self.symbols):
+                raise ValueError(
+                    f"conformer {i} has {len(coords)} coordinates for "
+                    f"{len(self.symbols)} symbols -- these are per-atom and "
+                    f"must match, or the xyz header will disagree with its body"
+                )
             p = out_dir / f"{prefix}_conf_{i:02d}.xyz"
             lines = [
                 str(len(self.symbols)),

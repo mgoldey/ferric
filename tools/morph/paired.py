@@ -463,6 +463,14 @@ def _mol_from_symbols_coords(symbols: Sequence[str], coords: Coords):
     """An RDKit molecule with perceived connectivity from raw symbols+coords."""
     from rdkit import Chem
 
+    # Header count vs a zipped body: a mismatch yields an xyz that RDKit reads
+    # as a different molecule, silently. Same shape as the united-atom pose bug.
+    symbols, coords = list(symbols), list(coords)
+    if len(symbols) != len(coords):
+        raise ValueError(
+            f"_mol_from_symbols_coords: {len(symbols)} symbols but "
+            f"{len(coords)} coordinate rows -- these are per-atom and must match"
+        )
     xyz = f"{len(symbols)}\n\n" + "".join(
         f"{s} {c[0]:.8f} {c[1]:.8f} {c[2]:.8f}\n" for s, c in zip(symbols, coords)
     )
