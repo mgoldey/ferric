@@ -197,12 +197,35 @@ def test_every_xyz_writer_in_tools_guards_its_header_against_its_body():
         ]:
             src = ast.get_source_segment(path.read_text(), fn) or ""
             # The shape: a header from len(<something>) AND a zip of two
-            # per-atom sequences.
+            # per-atom sequences AND the result actually being written out.
+            #
+            # The write check matters: `f"{len(x)} ..."` also matches an ERROR
+            # MESSAGE. tools/active_site/solvate.py::solvate builds no xyz at
+            # all (it returns a Droplet, and its zips are distance loops) but
+            # was selected on the len(...) inside its own ValueError text.
             has_header = "str(len(" in src or 'f"{len(' in src
             has_zip = "zip(" in src and (
                 "coords" in src or "coord" in src or "crd" in src
             )
-            if not (has_header and has_zip):
+            # "Emits" covers BOTH writing a file and building the xyz TEXT for
+            # another parser (relax_substituent hands its string to RDKit).
+            # Narrowing this to file writes alone silently dropped two real
+            # writers from the audit -- a selector that passes by selecting
+            # nothing is the failure mode this whole test exists to prevent.
+            emits_xyz = any(
+                marker in src
+                for marker in (
+                    "write_text",
+                    ".write(",
+                    "writelines",
+                    ".xyz",
+                    "MolFromXYZBlock",
+                    "xyz =",
+                    "xyz_block",
+                    "\\n\\n",
+                )
+            )
+            if not (has_header and has_zip and emits_xyz):
                 continue
 
             # Safe only if the function compares the lengths of two sequences
@@ -210,6 +233,12 @@ def test_every_xyz_writer_in_tools_guards_its_header_against_its_body():
             # "!= len(" accepted ANY comparison -- mutation-verified: replacing
             # a real guard with `len(_a) != len(_b)` over two unrelated lists
             # left the test green. Bind it to the named sequences instead.
+            def _expand_aliases(names, alias_map):
+                out = set(names)
+                for n in names:
+                    out |= alias_map.get(n, set())
+                return out
+
             def _seq_name(node):
                 """`x` / `self.x` / `p.x` / `tuple(x)` -> a comparable key."""
                 if isinstance(node, ast.Name):
@@ -224,14 +253,36 @@ def test_every_xyz_writer_in_tools_guards_its_header_against_its_body():
             # the body. Collecting from every len() call too would be circular
             # -- a decoy `len(_a) != len(_b)` would supply its own evidence
             # (mutation-verified: that decoy survived until this was narrowed).
-            used = set()
+            # `targets = list(heavy_idx)` renames a sequence, and the guard
+            # may legitimately name either side. Map each simple alias to its
+            # source so a guard on the original still counts for the zip that
+            # uses the copy.
+            aliases = {}
+            for node in ast.walk(fn):
+                if (
+                    isinstance(node, ast.Assign)
+                    and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                ):
+                    src = _seq_name(node.value)
+                    if src and src != node.targets[0].id:
+                        aliases.setdefault(node.targets[0].id, set()).add(src)
+                        aliases.setdefault(src, set()).add(node.targets[0].id)
+
+            # Track each zip() call's operands SEPARATELY. A flat union
+            # accepts `len(symbols) != len(scratch)` -- symbols is zipped, so
+            # the intersection is non-empty -- while `coords` stays unchecked.
+            # Mutation-verified: that half-guard passed the union version.
+            zip_operand_sets = []
             for call in ast.walk(fn):
                 if (
                     isinstance(call, ast.Call)
                     and isinstance(call.func, ast.Name)
                     and call.func.id == "zip"
                 ):
-                    used |= {n for n in (_seq_name(a) for a in call.args) if n}
+                    operands = {n for n in (_seq_name(a) for a in call.args) if n}
+                    if len(operands) >= 2:
+                        zip_operand_sets.append(operands)
 
             guarded = False
             for cmp_node in [c for c in ast.walk(fn) if isinstance(c, ast.Compare)]:
@@ -251,10 +302,13 @@ def test_every_xyz_writer_in_tools_guards_its_header_against_its_body():
                         name = _seq_name(op.args[0])
                         if name:
                             lens.add(name)
-                # Two DISTINCT sequences, and at least one of them is a
-                # sequence the body actually zips -- so the comparison is tied
-                # to the data that fills the file, not to scratch variables.
-                if len(lens) >= 2 and lens & used:
+                # BOTH compared sequences must come from the SAME zip()
+                # call, so the comparison covers the pair that fills the file
+                # rather than one real name and one scratch variable.
+                if any(
+                    len(_expand_aliases(lens, aliases) & operands) >= 2
+                    for operands in zip_operand_sets
+                ):
                     guarded = True
                     break
 
