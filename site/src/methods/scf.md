@@ -179,10 +179,16 @@ MEASURED on `examples/water-qmmm.toml` — water (QM) with one Na⁺ at 4 Å (MM
 sto-3g: vacuum −74.9629466809, embedded **−74.9653197421** (−1.489 kcal/mol),
 matching `ferric.run_rhf(point_charges=…)` to all ten printed digits.
 
-**Still not wired:** no prmtop/GRO parsing (PQR only), no periodic boundary
-conditions, no solvation box. The MM force field itself (`ferric-mm`, AMBER
-form, OpenMM-validated) is a separate library-only surface — `[qmmm]` here is
-electrostatic embedding, which needs charges and geometry, not bonded terms.
+**Scope of this TOML section:** `[qmmm]` reads a **PQR**, because it needs
+charges and geometry together and an xyz has no charges. The other formats
+(PDB, mmCIF, SDF, mol2, GROMACS `.gro`, SMILES) are read from Python via
+`tools.structure`, and `tools.active_site.solvate` builds a TIP3P droplet you
+can write straight to a PQR for this section. Still absent everywhere: an
+AMBER `prmtop` reader (go through OpenMM) and periodic boundary conditions.
+
+The MM force field itself (`ferric-mm`, AMBER form, OpenMM-validated) is a
+separate library-only surface — `[qmmm]` here is electrostatic embedding, which
+needs charges and geometry, not bonded terms.
 
 ## Determinism
 
