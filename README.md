@@ -78,8 +78,8 @@ measured result (see the wiki's `VALIDATION.md` and the local-correlation notes)
 - **Double hybrids** — B2PLYP and DSD-PBEP86, and **wB97X-L-V**, which converges
   its own KS reference and adds a short-range LinLCCD(hh) correction
 
-**Environment and embedding** — *validated but previously undocumented; see [QM/MM](site/src/using/qmmm.md)*
-- **QM/MM** — QM region selection by index, radius, or whole residue; link atoms; Z1 / RC / RCD boundary-charge schemes; Gaussian-smeared charges; Thole polarizable embedding; analytic QM and MM forces and a full-structure gradient across the cut; `optimize_qmmm`. Validated against `pyscf.qmmm.mm_charge` (energy shift <1e-8 Ha, MM forces 3e-10); an empty MM region is bit-identical to gas phase. **No PDB/prmtop/GRO reader, no PBC, no solvation box** — you supply coordinate arrays.
+**Environment and embedding** — see [QM/MM](site/src/using/qmmm.md)
+- **QM/MM** — QM region selection by index, radius, or whole residue; link atoms; Z1 / RC / RCD boundary-charge schemes; Gaussian-smeared charges; Thole polarizable embedding; analytic QM and MM forces and a full-structure gradient across the cut; `optimize_qmmm`; a `[qmmm]` CLI TOML section; a TIP3P solvation droplet. Structures from PDB, mmCIF, PQR, SDF, mol2, GROMACS `.gro`, XYZ or SMILES. Validated against `pyscf.qmmm.mm_charge` (energy shift <1e-8 Ha, MM forces 3e-10); an empty MM region is bit-identical to gas phase. **No AMBER `prmtop` reader (go through OpenMM), no PBC** — the droplet is finite.
 - **ferric-mm** — AMBER-form molecular mechanics (harmonic bonds/angles, periodic torsions, Lennard-Jones, Coulomb), validated against OpenMM
 - **Implicit solvation** — IEF-PCM (`ferric-pcm`) and conductor-limit COSMO. PCM agrees with PySCF IEF-PCM to 0.3% on water/STO-3G; COSMO is ~2x off and the discrepancy is attributed to cavity discretization (see `docs/VALIDATION.md`)
 

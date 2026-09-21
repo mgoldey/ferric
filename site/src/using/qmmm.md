@@ -1,19 +1,20 @@
 # QM/MM
 
-ferric has a validated QM/MM layer that is easy to miss: until this page it was
-mentioned **nowhere** in the README or this site, despite being ~2,500 lines
-with a Python API and nine test files. An external reviewer reading the repo
-concluded ferric had "no QM/MM environment builder". The physics was there; the
-documentation was not.
+Run a quantum region inside a classical environment: a ligand in a protein
+pocket, a reacting site in an enzyme, a solute in explicit solvent. The QM
+atoms get a real wavefunction; everything else becomes point charges that
+polarize it.
 
-**What exists:** QM region selection (by index, by radius, by whole residue),
-link atoms, three boundary-charge schemes, Gaussian-smeared charges, Thole
-polarizable embedding, an AMBER-form MM crate, analytic QM and MM forces, a
-full-structure gradient across the cut, and geometry optimization.
+**What you get:** QM region selection (by index, by radius, or by whole
+residue), link atoms across covalent cuts with four boundary-charge schemes,
+Gaussian-smeared charges, Thole polarizable embedding, an AMBER-form MM crate,
+analytic QM and MM forces, a full-structure gradient across the cut, geometry
+optimization, and a TIP3P solvation droplet. Structures come from PDB, mmCIF,
+PQR, SDF, mol2, GROMACS `.gro`, XYZ or SMILES.
 
-**What does not:** there is **no PDB / prmtop / GRO reader, no solvation, and
-no PBC**. You supply coordinate arrays. That is the real gap — the physics is
-complete, the input plumbing is not.
+**What is missing:** no AMBER `prmtop` reader (go through OpenMM), and no
+periodic boundary conditions — the solvation droplet is finite, with a vacuum
+boundary.
 
 ---
 
@@ -149,14 +150,70 @@ forces to 3e-10**. An empty or all-zero MM region is **bit-identical** to a gas
 phase calculation — the trivial limit is a genuine no-op, not an approximation
 that happens to be small.
 
-Not validated: periodic boundary conditions (absent), solvation (absent), and
-anything requiring a structure-file reader (absent).
+Not validated: periodic boundary conditions (absent), and the solvation
+droplet, which is a hard-sphere packing at roughly bulk density rather than an
+equilibrated box.
+
+## Reading a structure
+
+Every format lands in the same place, so a PDB and an XYZ of one molecule give
+a bit-identical `Molecule`:
+
+```python
+from tools.structure import read, from_smiles
+
+mol = read("ligand.pdb")        # or .cif .pqr .sdf .mol2 .gro .xyz
+mol = from_smiles("CCO")        # ETKDG geometry -- tier-2 grade, NOT optimized
+```
+
+A PQR carries MM charges as well as coordinates, which is why the CLI's
+`[qmmm]` section reads one. Note that a docked pose from Vina is **united-atom**
+— nonpolar hydrogens are merged into their carbons — so it is not a QM geometry
+until those are restored; `tier1_dock` does that for you.
+
+## From the CLI
+
+QM/MM also runs from a TOML file, no Python required:
+
+```toml
+[qmmm]
+pqr = "pocket.pqr"
+qm_indices = [0, 1, 2]            # or: qm_seeds = [0], qm_radius_angstrom = 1.5
+# link_bonds = [[0, 3]]           # when the cut crosses a covalent bond
+# boundary_scheme = "delete-host" # default; also "keep", "rc", "rcd"
+```
+
+The geometry comes from the PQR, **not** from `[molecule] xyz` — that key is
+still accepted and ignored, which matters when you compute a vacuum reference:
+deleting `[qmmm]` falls back to the xyz, and if that file holds a different
+geometry you are comparing two different molecules.
+
+## Solvating a solute
+
+```python
+from tools.active_site.solvate import solvate, write_pqr
+
+drop = solvate(symbols, coords_angstrom, radius_angstrom=12.0)
+write_pqr("solvated.pqr", symbols, coords_angstrom, charges, drop)
+```
+
+The solute is written **first**, so its indices are `0 .. n-1` and can go
+straight into `[qmmm] qm_indices`. Waters are TIP3P at roughly bulk density;
+this is a starting structure, not an equilibrated one, and a droplet has a
+vacuum boundary. Repeat over several `seed=` values before trusting a
+difference — `dE_statistics` does that and refuses fewer than two seeds.
 
 ## Known limits, stated plainly
 
-- **No PDB / prmtop / GRO parsing.** Build the arrays yourself, or via RDKit /
-  MDAnalysis / ASE.
-- **No PBC, no solvation box.**
-- Not wired into the CLI TOML — QM/MM is Rust and Python API only.
+- **No AMBER `prmtop` reader.** Go through OpenMM
+  (`active_site.mm_topology.topology_from_openmm`), or build the arrays.
+- **No periodic boundary conditions.** `solvate()` gives a finite droplet with
+  a vacuum boundary — adequate for a local environment, not for bulk.
+- **The pocket field is fixed unless you ask otherwise.** `move_mm="none"` is
+  the default in `run_optimize_qmmm`; the MM sites do not relax with the QM
+  region until you widen it.
+- **No QM/MM dispersion.** D3/D4/XDM/VV10 are all QM-atom-pairwise, so
+  dispersion between the QM region and the MM charges is absent. The MM crate
+  supplies Lennard-Jones terms for the MM-MM part only.
 - The MM crate is AMBER-form (harmonic bonds and angles, periodic torsions,
-  Lennard-Jones, Coulomb) and was validated against OpenMM.
+  Lennard-Jones, Coulomb), validated against OpenMM.
