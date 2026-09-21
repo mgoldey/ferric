@@ -109,6 +109,23 @@ class AnnealRun:
 
 
 def _write_xyz(path: Path, symbols, coords_angstrom, comment="") -> None:
+    """Write an xyz. The header count and the body MUST agree.
+
+    The header was `len(symbols)` while the body came from
+    `zip(symbols, coords)`, which stops at the shorter one -- so mismatched
+    inputs produced a file whose header disagreed with its contents. The file
+    then reads back as a DIFFERENT MOLECULE, which is the same failure a
+    united-atom docking pose caused in the quantum tiers: no error anywhere,
+    a plausible number at the end.
+    """
+    symbols = list(symbols)
+    coords_angstrom = list(coords_angstrom)
+    if len(symbols) != len(coords_angstrom):
+        raise ValueError(
+            f"_write_xyz: {len(symbols)} symbols but "
+            f"{len(coords_angstrom)} coordinates -- these are per-atom and "
+            f"must match, or the xyz header will disagree with its body"
+        )
     lines = [str(len(symbols)), comment]
     for s, (x, y, z) in zip(symbols, coords_angstrom):
         lines.append(f"{s:<3s} {x:14.8f} {y:14.8f} {z:14.8f}")
@@ -116,10 +133,23 @@ def _write_xyz(path: Path, symbols, coords_angstrom, comment="") -> None:
 
 
 def _read_xyz(path: Path):
+    """Read an xyz, REFUSING one whose header overstates its body.
+
+    `lines[2 : 2 + n]` silently returns fewer than `n` rows for a truncated
+    file, so a 10-atom header over 9 atom lines came back as a 9-atom molecule
+    with no complaint. `tools.structure.read_structure` already refuses this;
+    this reader did not, and a caller's choice of reader should not decide
+    whether a malformed file is caught.
+    """
     lines = path.read_text().splitlines()
     n = int(lines[0].split()[0])
+    body = lines[2 : 2 + n]
+    if len(body) != n:
+        raise ValueError(
+            f"{path}: header says {n} atoms, file has {len(body)} atom lines"
+        )
     symbols, coords = [], []
-    for line in lines[2 : 2 + n]:
+    for line in body:
         p = line.split()
         symbols.append(p[0])
         coords.append((float(p[1]), float(p[2]), float(p[3])))

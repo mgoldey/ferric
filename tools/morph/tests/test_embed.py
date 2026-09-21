@@ -150,3 +150,66 @@ def test_write_xyz_round_trips_through_the_active_site_reader():
             assert got.x == pytest.approx(want[0], abs=1e-7)
             assert got.y == pytest.approx(want[1], abs=1e-7)
             assert got.z == pytest.approx(want[2], abs=1e-7)
+
+
+def test_write_xyz_refuses_a_conformer_that_does_not_match_the_symbols():
+    """A mismatch would write a header disagreeing with the body.
+
+    The header is `len(self.symbols)`; the body comes from
+    `zip(self.symbols, coords)`, which stops at the shorter one. The resulting
+    file reads back as a different molecule -- the writer-side twin of the
+    united-atom docking bug. MEASURED before the fix: header 22, body 21.
+    """
+    import types
+
+    import pytest
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    from tools.morph.embed import Analogue, EmbeddedAnalogue
+
+    mol = Chem.AddHs(Chem.MolFromSmiles("CCO"))
+    AllChem.EmbedMolecule(mol, randomSeed=1)
+    conf = mol.GetConformer()
+    symbols = [a.GetSymbol() for a in mol.GetAtoms()]
+    coords = [
+        (
+            conf.GetAtomPosition(i).x,
+            conf.GetAtomPosition(i).y,
+            conf.GetAtomPosition(i).z,
+        )
+        for i in range(mol.GetNumAtoms())
+    ]
+    analogue = Analogue(
+        label="t",
+        smiles="CCO",
+        hypothesis="h",
+        rationale="r",
+        pharmacophore=types.SimpleNamespace(check=lambda m: True),
+    )
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        # One symbol too many.
+        bad = EmbeddedAnalogue(
+            analogue=analogue,
+            symbols=symbols + ["H"],
+            conformers=[coords],
+            mmff_energies=[0.0],
+        )
+        with pytest.raises(ValueError, match="per-atom and must match"):
+            bad.write_xyz(d)
+
+        # The valid case must still write, and read back unchanged.
+        good = EmbeddedAnalogue(
+            analogue=analogue,
+            symbols=symbols,
+            conformers=[coords],
+            mmff_energies=[0.0],
+        )
+        path = good.write_xyz(d)[0]
+        from tools.structure import read_structure
+
+        back = read_structure(path)
+        assert list(back.symbols) == symbols

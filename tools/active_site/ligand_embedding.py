@@ -118,6 +118,20 @@ def embed_ligand_from_coords(
     generated conformer) instead of an xyz file — avoids a temp-file
     round-trip in a batch screening/optimization loop.
     """
+    # The header is `len(symbols)`; the body below comes from
+    # `zip(symbols, coords)`, which stops at the shorter one. A mismatch would
+    # build an xyz whose header disagrees with its contents and hand it to
+    # ferric as a different molecule -- the same failure a united-atom docking
+    # pose caused in the quantum tiers. This is a public entry point in the
+    # screening loop, so the arrays come from a caller.
+    symbols = list(symbols)
+    coords_angstrom = list(coords_angstrom)
+    if len(symbols) != len(coords_angstrom):
+        raise ValueError(
+            f"embed_ligand_from_coords: {len(symbols)} symbols but "
+            f"{len(coords_angstrom)} coordinate rows -- these are per-atom and "
+            f"must match, or the xyz header will disagree with its body"
+        )
     xyz_lines = [str(len(symbols)), "embed_ligand_from_coords"]
     for sym, (x, y, z) in zip(symbols, coords_angstrom):
         xyz_lines.append(f"{sym} {x:.10f} {y:.10f} {z:.10f}")
