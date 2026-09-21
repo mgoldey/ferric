@@ -246,9 +246,10 @@ than translating a fixed conformer. The 0.95 ratio is the transferable part.
    nearly flat landscape where xtb sees 103 kcal/mol.
 
    **The connector must AVERAGE over poses, not select one.** Measured on the
-   same 15 poses: Vina's ranking axis is statistically INDEPENDENT of the
-   xtb scoring axis (Spearman -0.261, p=0.35), so picking rank 0 is one
-   random draw from an sd-28.75 distribution. ddE noise is 40.66 selected
+   same 15 poses: Vina's ranking showed NO DETECTABLE relation to the xtb
+   score (Spearman -0.261, p=0.35 -- non-significant, i.e. no correlation
+   demonstrated, not independence proven), so picking rank 0 behaves as one
+   draw from an sd-28.75 distribution. ddE noise is 40.66 selected
    vs 4.07 averaged at n=100 -- selection is 10x WORSE. M9's 0.95 A redock
    licenses "the near-native pose is in the set", not "it is first"; M9
    itself says Vina got it first "partly by luck" (r = +0.461, 4/20 under
