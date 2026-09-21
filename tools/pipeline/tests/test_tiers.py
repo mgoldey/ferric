@@ -650,3 +650,117 @@ def test_tier1_missing_receptor_is_an_explained_failure_not_a_crash():
     assert any("receptor_pdbqt" in e for e in rep.outcomes[0].errors), (
         f"the reason must reach the report: {rep.outcomes[0].errors}"
     )
+
+
+def test_a_cached_geometry_that_is_not_the_molecule_is_REFUSED():
+    """The geometry reaching the quantum tiers must BE the candidate.
+
+    A geometry in `context["geometry"]` has crossed a tool boundary -- Vina, a
+    file reader, an embedder -- and any of them can return a different species.
+    The one that happened: a PDBQT pose is UNITED-ATOM, so aspirin arrived as
+    14 atoms where 21 went in, and `_harvest_geometry` fed that to tiers 3
+    and 4.
+
+    The damage was UNEVEN, which is why it went unnoticed for so long:
+
+        tier 4  failed -- but BY ACCIDENT. 87 electrons with multiplicity 1
+                trips ferric's charge/multiplicity parity check, which is a
+                statement about electron count, not about identity.
+        tier 3  did not. GFN2 returned -35.492226 Ha against -39.621219 for
+                the real molecule: both plausible, neither an error, and
+                2591 kcal/mol apart.
+
+    The guard lives in `_embedded`, the shared funnel both tiers read through,
+    so one check covers both and anything added later.
+    """
+    from rdkit import Chem
+
+    from tools.pipeline.tiers import tier3_gfn2, tier4_dft
+
+    smiles = "CC(=O)Oc1ccccc1C(=O)O"  # aspirin: 21 atoms with H, 13 heavy
+    iso = Isomer(smiles=smiles, kind="parent", transform="t", parent_smiles=smiles)
+
+    # The real failure shape: heavy atoms plus the one polar hydrogen.
+    full = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    united = [a.GetSymbol() for a in full.GetAtoms() if a.GetSymbol() != "H"] + ["H"]
+    coords = [(0.0, 0.0, float(i)) for i in range(len(united))]
+    ctx = {
+        "geometry": {iso.canonical: {"symbols": united, "coords": coords}},
+        "basis": "sto-3g",
+    }
+
+    for name, tier in (("tier3_gfn2", tier3_gfn2), ("tier4_dft", tier4_dft)):
+        r = tier(iso, ctx)
+        assert not r.ok, f"{name} scored a geometry that is not the molecule"
+        assert r.value is None, (
+            f"{name} must not return a value -- the funnel ranks ASCENDING, so "
+            f"a number from the wrong molecule can win"
+        )
+        # The message has to name the discrepancy, or the reader cannot tell
+        # this from a missing cache.
+        assert "not this molecule" in r.error, f"{name}: {r.error}"
+        assert "C9H1O4" in r.error and "C9H8O4" in r.error, (
+            f"{name} must give BOTH formulas: {r.error}"
+        )
+        assert "missing H7" in r.error, (
+            f"{name} must name what is absent, not just that something is: {r.error}"
+        )
+
+
+def test_the_formula_check_compares_ELEMENTS_not_just_the_count():
+    """Right number of the wrong atoms must fail too.
+
+    An atom-count check is the obvious version and it is not enough: swapping a
+    carbon for a nitrogen keeps the count and changes the molecule. The
+    united-atom bug happened to change the count, so a count check would have
+    caught THAT instance while leaving the class open.
+    """
+    from tools.pipeline.tiers import tier2_forcefield, tier3_gfn2
+
+    iso = Isomer(smiles="CCO", kind="parent", transform="t", parent_smiles="CCO")
+    good = tier2_forcefield(iso, {})
+    assert good.ok
+
+    swapped = list(good.payload["symbols"])
+    swapped[0] = "N"
+    assert len(swapped) == len(good.payload["symbols"]), "the count must be unchanged"
+
+    r = tier3_gfn2(
+        iso,
+        {
+            "geometry": {
+                iso.canonical: {"symbols": swapped, "coords": good.payload["coords"]}
+            }
+        },
+    )
+    assert not r.ok and r.value is None
+    assert "C1H6N1O1" in r.error and "C2H6O1" in r.error, r.error
+
+
+def test_a_legitimate_geometry_still_passes():
+    """The guard must not cost the cases the pipeline exists to move around.
+
+    A docked pose, a relaxed pose and a re-embedded conformer are all the same
+    molecule at different coordinates. The check compares FORMULA only and says
+    nothing about geometry, so all three pass -- verified here by perturbing a
+    real geometry and confirming the energy still comes back.
+    """
+    from tools.pipeline.tiers import tier2_forcefield, tier3_gfn2
+
+    iso = Isomer(smiles="CCO", kind="parent", transform="t", parent_smiles="CCO")
+
+    uncached = tier3_gfn2(iso, {})
+    assert uncached.ok and uncached.value is not None
+
+    base = tier2_forcefield(iso, {})
+    moved = [(x + 0.05, y, z) for x, y, z in base.payload["coords"]]
+    cached = tier3_gfn2(
+        iso,
+        {
+            "geometry": {
+                iso.canonical: {"symbols": base.payload["symbols"], "coords": moved}
+            }
+        },
+    )
+    assert cached.ok, f"a perturbed conformer must still score: {cached.error}"
+    assert cached.value is not None
