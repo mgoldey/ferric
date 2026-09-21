@@ -15,16 +15,18 @@ unless labelled otherwise. Sources: `experiments/danuglipron/RESULTS.md`
 ## Average over poses; do not select one
 
 **Do not "pick the top-docked pose".** It is measurably worse than averaging,
-and the reason generalises: Vina's ranking axis is statistically independent of
-the xtb scoring axis, so selecting on it is a random draw.
+and the reason generalises: nothing in this sample shows Vina's ranking axis
+tracks the xtb scoring axis, so selecting on it behaves like a random draw.
 
 The pipeline's STAGES are unaffected -- P1-P7 stand -- but what the output may
 be used for is not.
 
-Selecting the top-docked pose is **10x worse** than averaging,
-because Vina's ranking axis is statistically independent of the xtb scoring
-axis (Spearman -0.261, p=0.35), so "pick rank 0" is a single random draw from a
-distribution with sd 28.75 kcal/mol. Averaging at n=100 gives ddE noise 4.07;
+Selecting the top-docked pose is **10x worse** than averaging. Vina's ranking
+showed no detectable monotonic relation to the xtb score on these 15 poses
+(Spearman -0.261, p=0.35 -- a NON-SIGNIFICANT test, which fails to demonstrate
+a correlation rather than proving there is none; n=15 can only detect
+|rho| >= ~0.51). With no usable ranking signal, "pick rank 0" behaves as a
+single draw from a distribution with sd 28.75 kcal/mol. Averaging at n=100 gives ddE noise 4.07;
 selecting gives 40.66. Both miss the 0.25 kcal/mol gap, by 16x and 163x.
 
 I had justified selection with "M9 redocks to 0.95 A". M9 says two paragraphs
