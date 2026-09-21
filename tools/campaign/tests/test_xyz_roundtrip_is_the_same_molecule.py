@@ -105,6 +105,25 @@ def test_a_truncated_file_is_REFUSED_by_the_reader_too():
             _read_xyz(path)
 
 
+def test_a_file_with_SURPLUS_rows_is_REFUSED_by_the_reader():
+    """The other half of the mismatch, which the truncation check cannot see.
+
+    `_read_xyz` sliced `lines[2 : 2 + n]`, so a header of 9 over a body of 10
+    was capped to 9 and returned as a valid molecule with the last atom
+    silently DROPPED -- the same class of bug as the united-atom pose
+    (a plausible number for a molecule nobody asked about). Truncation raised;
+    surplus did not, so testing one direction proved nothing about the other.
+    """
+    from tools.campaign.xtb_engine import _read_xyz
+
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "long.xyz"
+        body = "\n".join(f"C 0.0 0.0 {i}.0" for i in range(10))
+        path.write_text(f"9\ncomment\n{body}\n")
+        with pytest.raises(ValueError, match="header says 9 atoms"):
+            _read_xyz(path)
+
+
 def test_both_readers_agree_about_a_malformed_file():
     """The uneven-protection check, stated directly.
 
@@ -161,8 +180,6 @@ def test_every_xyz_writer_in_tools_guards_its_header_against_its_body():
         # Reads through `_embedded`, which now checks the geometry's FORMULA
         # against the candidate SMILES -- a stronger property than a length.
         "tools/pipeline/tiers.py::_tier4_dft_inner",
-        # Delegates to `_mol_from_symbols_coords`, which checks the lengths.
-        "tools/morph/paired.py::relax_substituent",
     }
 
     offenders = []
@@ -187,8 +204,60 @@ def test_every_xyz_writer_in_tools_guards_its_header_against_its_body():
             )
             if not (has_header and has_zip):
                 continue
-            # Safe if the function compares the two lengths itself.
-            guarded = "!= len(" in src or "== len(" in src
+
+            # Safe only if the function compares the lengths of two sequences
+            # that its own header/body actually use. A substring check on
+            # "!= len(" accepted ANY comparison -- mutation-verified: replacing
+            # a real guard with `len(_a) != len(_b)` over two unrelated lists
+            # left the test green. Bind it to the named sequences instead.
+            def _seq_name(node):
+                """`x` / `self.x` / `p.x` / `tuple(x)` -> a comparable key."""
+                if isinstance(node, ast.Name):
+                    return node.id
+                if isinstance(node, ast.Attribute):
+                    return node.attr
+                if isinstance(node, ast.Call) and node.args:
+                    return _seq_name(node.args[0])
+                return None
+
+            # ONLY the sequences the writer itself names: the zip() that fills
+            # the body. Collecting from every len() call too would be circular
+            # -- a decoy `len(_a) != len(_b)` would supply its own evidence
+            # (mutation-verified: that decoy survived until this was narrowed).
+            used = set()
+            for call in ast.walk(fn):
+                if (
+                    isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Name)
+                    and call.func.id == "zip"
+                ):
+                    used |= {n for n in (_seq_name(a) for a in call.args) if n}
+
+            guarded = False
+            for cmp_node in [c for c in ast.walk(fn) if isinstance(c, ast.Compare)]:
+                if not all(
+                    isinstance(o, ast.NotEq) or isinstance(o, ast.Eq)
+                    for o in cmp_node.ops
+                ):
+                    continue
+                lens = set()
+                for op in (cmp_node.left, *cmp_node.comparators):
+                    if (
+                        isinstance(op, ast.Call)
+                        and isinstance(op.func, ast.Name)
+                        and op.func.id == "len"
+                        and op.args
+                    ):
+                        name = _seq_name(op.args[0])
+                        if name:
+                            lens.add(name)
+                # Two DISTINCT sequences, and at least one of them is a
+                # sequence the body actually zips -- so the comparison is tied
+                # to the data that fills the file, not to scratch variables.
+                if len(lens) >= 2 and lens & used:
+                    guarded = True
+                    break
+
             key = f"{path.relative_to(repo)}::{fn.name}"
             if not guarded and key not in KNOWN_SAFE:
                 offenders.append(key)

@@ -519,6 +519,15 @@ def relax_substituent(
         if not p.usable or not p.symbols_b:
             out.append(p)
             continue
+        # `PairedPose` carries no length invariant, so the header
+        # (`len(symbols_b)`) and the zipped body can disagree. RDKit then
+        # perceives a DIFFERENT MOLECULE from the one the pose describes.
+        if len(p.symbols_b) != len(p.coords_b):
+            raise ValueError(
+                f"relax_substituent: pose has {len(p.symbols_b)} symbols but "
+                f"{len(p.coords_b)} coordinate rows -- these are per-atom and "
+                f"must match, or the xyz header will disagree with its body"
+            )
         xyz = f"{len(p.symbols_b)}\n\n" + "".join(
             f"{s} {c[0]:.8f} {c[1]:.8f} {c[2]:.8f}\n"
             for s, c in zip(p.symbols_b, p.coords_b)

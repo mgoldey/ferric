@@ -143,7 +143,11 @@ def _read_xyz(path: Path):
     """
     lines = path.read_text().splitlines()
     n = int(lines[0].split()[0])
-    body = lines[2 : 2 + n]
+    # EVERY row after the comment, not `lines[2 : 2 + n]`. Slicing to n first
+    # caps the count before the check, so a file declaring 9 atoms with 10 rows
+    # passed and silently dropped the tenth. Truncation and surplus are both
+    # corruption; only one of them was caught.
+    body = [ln for ln in lines[2:] if ln.strip()]
     if len(body) != n:
         raise ValueError(
             f"{path}: header says {n} atoms, file has {len(body)} atom lines"
