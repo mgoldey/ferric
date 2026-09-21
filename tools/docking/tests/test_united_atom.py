@@ -11,6 +11,8 @@ import pytest
 
 pytest.importorskip("rdkit", reason="re-hydrogenation is RDKit-based")
 
+from rdkit import Chem  # noqa: E402
+
 from tools.docking.united_atom import restore_hydrogens  # noqa: E402
 
 # Small, unambiguous, and has nonpolar hydrogens to lose: toluene.
@@ -92,3 +94,70 @@ def test_hydrogens_are_placed_at_chemically_sane_distances():
             f"hydrogen {nearest:.2f} A from its nearest heavy atom -- a C-H "
             "bond is ~1.09 A, so this H was not actually placed on the molecule"
         )
+
+
+# --- atom ORDER: meeko does not preserve it ---------------------------------
+# MEASURED 2026-09-21 on danuglipron: only 12 of 41 heavy positions matched in
+# input order after a meeko PDBQT round trip, and the declared (S) stereocentre
+# came back (R) -- the mirror image of the drug, with no error raised.
+
+ALANINE = "C[C@@H](N)C(=O)O"  # one defined stereocentre, small enough to check
+
+
+def _alanine_ref():
+    from rdkit.Chem import AllChem
+
+    mol = Chem.AddHs(Chem.MolFromSmiles(ALANINE))
+    AllChem.EmbedMolecule(mol, randomSeed=0xF00D)
+    AllChem.MMFFOptimizeMolecule(mol)
+    syms = [a.GetSymbol() for a in mol.GetAtoms()]
+    pos = mol.GetConformer().GetPositions()
+    return syms, [tuple(float(v) for v in row) for row in pos]
+
+
+def test_a_SCRAMBLED_atom_order_is_refused_on_stereochemistry():
+    """The silent failure: coordinates landing on the wrong atoms.
+
+    Swapping two heavy atoms' coordinates makes a different isomer. Counts,
+    formula and bond graph all still check out -- only the stereocentre shows
+    it, which is why the stereo guard exists.
+    """
+    from tools.docking.united_atom import StereochemistryError
+
+    syms, coords = _alanine_ref()
+    heavy = [i for i, s in enumerate(syms) if s != "H"]
+    scrambled = list(coords)
+    a, b = heavy[0], heavy[1]
+    scrambled[a], scrambled[b] = scrambled[b], scrambled[a]
+
+    with pytest.raises(StereochemistryError, match="different isomer"):
+        restore_hydrogens(ALANINE, syms, scrambled)
+
+
+def test_an_explicit_order_map_is_validated_against_the_topology():
+    syms, coords = _alanine_ref()
+    heavy_n = sum(1 for s in syms if s != "H")
+    with pytest.raises(ValueError, match="not a permutation"):
+        restore_hydrogens(ALANINE, syms, coords, rdkit_index_of_heavy=[999] * heavy_n)
+
+
+def test_pose_to_rdkit_order_reads_meekos_own_map():
+    from tools.docking.united_atom import pose_to_rdkit_order
+
+    pdbqt = (
+        "REMARK SMILES CC(N)C(=O)O\n"
+        "REMARK SMILES IDX 3 1 2 2 1 3\n"
+        "ATOM      1  N   UNL     1       0.000   0.000   0.000\n"
+    )
+    smiles, order = pose_to_rdkit_order(pdbqt)
+    assert smiles == "CC(N)C(=O)O"
+    # sorted by pdbqt serial 1,2,3 -> smiles idx 3,2,1 -> 0-based 2,1,0
+    assert order == [2, 1, 0]
+
+
+def test_a_pdbqt_without_the_remarks_is_REFUSED():
+    """Falling back to positional order is the bug, so absence must raise."""
+    from tools.docking.united_atom import pose_to_rdkit_order
+
+    with pytest.raises(ValueError, match="no `REMARK SMILES`"):
+        pose_to_rdkit_order("ATOM      1  N   UNL     1       0.0   0.0   0.0\n")

@@ -26,7 +26,11 @@ from collections.abc import Sequence
 
 Coords = Sequence[tuple[float, float, float]]
 
-__all__ = ["restore_hydrogens"]
+__all__ = ["restore_hydrogens", "pose_to_rdkit_order", "StereochemistryError"]
+
+
+class StereochemistryError(ValueError):
+    """A restored pose whose stereocentres are not the molecule's."""
 
 
 def restore_hydrogens(
@@ -34,6 +38,8 @@ def restore_hydrogens(
     heavy_symbols: Sequence[str],
     heavy_coords: Coords,
     *,
+    rdkit_index_of_heavy: Sequence[int] | None = None,
+    check_stereo: bool = True,
     random_seed: int = 0xF00D,
     max_iterations: int = 500,
 ) -> tuple[list[str], list[tuple[float, float, float]]]:
@@ -48,6 +54,18 @@ def restore_hydrogens(
     Raises `ValueError` if the heavy-atom counts disagree. Silently truncating
     (or zipping to the shorter list) would score a different molecule, which is
     the exact failure this function exists to prevent.
+
+    **`rdkit_index_of_heavy` is not optional in practice for a MEEKO pose.**
+    Without it the docked heavy atoms are assigned to the SMILES heavy atoms
+    IN ORDER, and meeko reorders atoms when it writes PDBQT: MEASURED on
+    danuglipron, only **12 of 41** heavy positions matched in order, and the
+    first source carbon landed on a nitrogen. The molecule that comes back is
+    a scrambled isomer -- on danuglipron the declared (S) stereocentre came
+    back **(R)**, i.e. the mirror image of the drug, with no error raised.
+
+    Meeko writes the mapping itself, as `REMARK SMILES IDX` lines in the PDBQT
+    (serial <-> index into meeko's own `REMARK SMILES`). Parse those and pass
+    them here. `pose_to_rdkit_order` does exactly that.
     """
     from rdkit import Chem
     from rdkit.Chem import AllChem
@@ -76,6 +94,19 @@ def restore_hydrogens(
             "hydrogen-count difference"
         )
 
+    if rdkit_index_of_heavy is not None:
+        if len(rdkit_index_of_heavy) != len(docked_heavy):
+            raise ValueError(
+                f"rdkit_index_of_heavy has {len(rdkit_index_of_heavy)} entries "
+                f"for {len(docked_heavy)} docked heavy atoms"
+            )
+        if sorted(rdkit_index_of_heavy) != sorted(heavy_idx):
+            raise ValueError(
+                "rdkit_index_of_heavy is not a permutation of this molecule's "
+                "heavy-atom indices -- it does not describe this topology"
+            )
+        heavy_idx = list(rdkit_index_of_heavy)
+
     if AllChem.EmbedMolecule(mol, randomSeed=random_seed) != 0:
         raise ValueError(
             "restore_hydrogens: RDKit could not embed the full-hydrogen "
@@ -92,6 +123,67 @@ def restore_hydrogens(
             ff.AddFixedPoint(idx)
         ff.Minimize(maxIts=max_iterations)
 
+    if check_stereo:
+        declared = Chem.FindMolChiralCenters(
+            Chem.MolFromSmiles(smiles), useLegacyImplementation=False
+        )
+        if declared:
+            probe = Chem.Mol(mol)
+            Chem.AssignStereochemistryFrom3D(probe)
+            got = Chem.FindMolChiralCenters(probe, useLegacyImplementation=False)
+            if dict(got) != dict(declared):
+                raise StereochemistryError(
+                    f"the restored pose has stereocentres {got} but {smiles!r} "
+                    f"declares {declared} -- this is a different isomer, not "
+                    "the molecule that was docked. The usual cause is an atom "
+                    "ORDER mismatch: pass rdkit_index_of_heavy (see "
+                    "pose_to_rdkit_order)."
+                )
+
     syms = [a.GetSymbol() for a in mol.GetAtoms()]
     pos = mol.GetConformer().GetPositions()
     return syms, [tuple(float(v) for v in row) for row in pos]
+
+
+def pose_to_rdkit_order(pdbqt_text: str) -> tuple[str, list[int]]:
+    """Meeko's own atom mapping, read out of the PDBQT it wrote.
+
+    Meeko emits `REMARK SMILES` (its canonical SMILES for the ligand) and
+    `REMARK SMILES IDX <smiles_index> <pdbqt_serial> ...` pairs. Those are the
+    ONLY authoritative statement of which docked atom is which -- meeko
+    reorders atoms freely, and assuming its output order matches the input
+    silently produces a scrambled isomer.
+
+    Returns `(meeko_smiles, rdkit_index_of_heavy)` where the list is ordered by
+    PDBQT serial (i.e. by the order coordinates appear in the pose) and holds
+    0-based indices into the molecule built from `meeko_smiles`.
+
+    Raises `ValueError` when the remarks are absent -- a caller that silently
+    fell back to positional order is the bug this exists to prevent.
+    """
+    smiles = None
+    tokens: list[str] = []
+    for line in pdbqt_text.splitlines():
+        if line.startswith("REMARK SMILES IDX"):
+            tokens += line[len("REMARK SMILES IDX") :].split()
+        elif line.startswith("REMARK SMILES") and smiles is None:
+            parts = line.split(None, 2)
+            if len(parts) == 3:
+                smiles = parts[2].strip()
+
+    if smiles is None or not tokens:
+        raise ValueError(
+            "this PDBQT carries no `REMARK SMILES`/`REMARK SMILES IDX` lines, "
+            "so meeko's atom order cannot be recovered and any coordinate "
+            "assignment would be positional -- which scrambles the molecule"
+        )
+    if len(tokens) % 2:
+        raise ValueError(
+            f"`REMARK SMILES IDX` has {len(tokens)} tokens, which is not an "
+            "even number of (smiles_index, pdbqt_serial) pairs"
+        )
+
+    # (smiles_index, pdbqt_serial), both 1-based as meeko writes them.
+    pairs = [(int(tokens[i]), int(tokens[i + 1])) for i in range(0, len(tokens), 2)]
+    pairs.sort(key=lambda p: p[1])  # order by the serial the coords come in
+    return smiles, [smi - 1 for smi, _ in pairs]
