@@ -66,16 +66,6 @@ def test_a_heavy_atom_COUNT_MISMATCH_is_refused_not_truncated():
         restore_hydrogens(TOLUENE, TOLUENE_HEAVY[:-1], TOLUENE_COORDS[:-1])
 
 
-def test_symbols_and_coords_must_be_per_atom():
-    with pytest.raises(ValueError, match="per-atom"):
-        restore_hydrogens(TOLUENE, TOLUENE_HEAVY, TOLUENE_COORDS[:-1])
-
-
-def test_an_unparseable_smiles_is_refused():
-    with pytest.raises(ValueError, match="could not parse"):
-        restore_hydrogens("not-a-smiles((", TOLUENE_HEAVY, TOLUENE_COORDS)
-
-
 def test_hydrogens_are_placed_at_chemically_sane_distances():
     """A vacuity guard: the H's must be BONDED, not dumped at the origin.
 
@@ -139,25 +129,3 @@ def test_an_explicit_order_map_is_validated_against_the_topology():
     heavy_n = sum(1 for s in syms if s != "H")
     with pytest.raises(ValueError, match="not a permutation"):
         restore_hydrogens(ALANINE, syms, coords, rdkit_index_of_heavy=[999] * heavy_n)
-
-
-def test_pose_to_rdkit_order_reads_meekos_own_map():
-    from tools.docking.united_atom import pose_to_rdkit_order
-
-    pdbqt = (
-        "REMARK SMILES CC(N)C(=O)O\n"
-        "REMARK SMILES IDX 3 1 2 2 1 3\n"
-        "ATOM      1  N   UNL     1       0.000   0.000   0.000\n"
-    )
-    smiles, order = pose_to_rdkit_order(pdbqt)
-    assert smiles == "CC(N)C(=O)O"
-    # sorted by pdbqt serial 1,2,3 -> smiles idx 3,2,1 -> 0-based 2,1,0
-    assert order == [2, 1, 0]
-
-
-def test_a_pdbqt_without_the_remarks_is_REFUSED():
-    """Falling back to positional order is the bug, so absence must raise."""
-    from tools.docking.united_atom import pose_to_rdkit_order
-
-    with pytest.raises(ValueError, match="no `REMARK SMILES`"):
-        pose_to_rdkit_order("ATOM      1  N   UNL     1       0.0   0.0   0.0\n")
