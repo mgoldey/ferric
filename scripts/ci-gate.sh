@@ -181,10 +181,17 @@ source "$REPO_ROOT/scripts/cargo-lock-lib.sh"
 
 ferric_clear_stale_sccache_lock "$LOCK_FILE"
 
+# Clear again before EVERY lock acquisition, not just once at startup.
+# A gate runs several cargo stages; each one respawns sccache, and the daemon
+# left over from stage N squats on the lock that stage N+1 then waits 4h for.
+# The startup-only call cannot see that -- it ran before the daemon existed.
+# MEASURED 2026-09-21: `cargo doc` sat on a lock whose only holders were a
+# squatting sccache and this gate's own queued flock.
 run_step() {
     local name="$1"
     shift
     echo "-- $name --"
+    ferric_clear_stale_sccache_lock "$LOCK_FILE"
     if timeout --signal=TERM --kill-after=30 "${TIMEOUT_SECS}" \
         flock -w "$LOCK_WAIT_SECS" "$LOCK_FILE" -c "$*"; then
         echo "-- $name: PASS --"
@@ -272,6 +279,7 @@ ALLOWED_LINTS=(
 if [[ "${CI_GATE_SKIP_CLIPPY:-0}" != "1" ]]; then
     echo "-- cargo clippy --workspace --all-targets --"
     CLIPPY_JSON="$(mktemp /tmp/ferric-ci-gate-clippy.XXXXXX.json)"
+    ferric_clear_stale_sccache_lock "$LOCK_FILE"
     if timeout --signal=TERM --kill-after=30 "${TIMEOUT_SECS}" \
         flock -w "$LOCK_WAIT_SECS" "$LOCK_FILE" -c \
         "OPENBLAS_NUM_THREADS=1 cargo clippy --workspace --all-targets -j $JOBS --message-format=json" \
