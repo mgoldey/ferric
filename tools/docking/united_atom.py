@@ -1,91 +1,70 @@
 """Put a united-atom docked pose back on a full-hydrogen topology.
 
-## Why this is its own module
+A PDBQT pose is UNITED-ATOM: Vina merges nonpolar hydrogens into the carbon
+they sit on, so `DockedPose.symbols` is **not the molecule that was docked**.
+MEASURED on danuglipron/7LCJ: 71 atoms in, **42 out**. On aspirin: 21 in, 14
+out.
 
-PDBQT — what AutoDock Vina reads and writes — is **united-atom**: nonpolar
-hydrogens are merged into the carbons they sit on. MEASURED on danuglipron
-(RESULTS.md M14): a docked pose has **42 atoms and 263 electrons** where the
-real molecule has **71 and 292**.
+That matters because the downstream consumers are UNEVENLY protected. A QM
+tier with a charge/multiplicity parity check may reject an odd electron count
+by accident, but a neighbouring scorer has no such check and will happily
+return a plausible number for a molecule nobody asked about -- measured
+2591 kcal/mol wrong on aspirin at GFN2, with no error raised.
 
-That difference is not cosmetic, and the two consumers in this repo disagree
-about it in the worst possible way:
+So: anything that takes a docked pose into an energy calculation must restore
+the hydrogens first, and must FAIL rather than truncate when the heavy-atom
+counts disagree.
 
-* `embed_ligand_from_coords` **refuses** — 263 electrons at multiplicity 1
-  implies `n_alpha = 263/2`, which is not an integer. A loud, immediate failure.
-* `pose_fit` **accepts it silently**. xtb will happily run on a molecule missing
-  29 hydrogens and return a number that looks entirely normal.
-
-So the same pose is rejected by one scorer and quietly scored by the other. A
-copy of this fix living inside one probe script is how that asymmetry persists;
-it belongs where every pose consumer can reach it.
-
-## What it does NOT fix
-
-Restoring hydrogens does not make a docked pose a relaxed structure. The heavy
-atoms are pinned exactly where docking put them — that is the point, since
-moving them would score a different pose than the one that was docked — so any
-strain in the docked heavy-atom frame is still there.
+Promoted from `experiments/danuglipron/run_scorer_pose_sensitivity.py`, where
+this logic worked but was private to one script and therefore unavailable to
+the pipeline tiers that need it.
 """
 
 from __future__ import annotations
 
-__all__ = ["parse_smiles_idx_remark", "restore_hydrogens"]
+from collections.abc import Sequence
 
+Coords = Sequence[tuple[float, float, float]]
 
-def parse_smiles_idx_remark(pdbqt_text: str) -> dict[int, int]:
-    """Meeko's `REMARK SMILES IDX` mapping: PDBQT serial -> RDKit index (0-based).
-
-    Returns `{}` when the remark is absent, which a caller must treat as
-    "mapping unknown" rather than "identity".
-
-    **Meeko REORDERS atoms.** MEASURED on aspirin: 10 of 13 heavy atoms come
-    back at a different position than RDKit gave them, and assigning
-    coordinates by list order misplaces an atom by up to **4.9 A**. That is a
-    scrambled molecule scored as if it were the pose -- same atom COUNT, same
-    elements, no error anywhere.
-
-    Meeko writes the remark as pairs across one or more lines:
-
-        REMARK SMILES IDX 5 1 6 2 7 3 8 4 9 5 10 6 4 7 2 8 3 9 1 10 ...
-
-    read as (pdbqt_serial, rdkit_index_1_based).
-    """
-    mapping: dict[int, int] = {}
-    for line in pdbqt_text.splitlines():
-        if not line.startswith("REMARK SMILES IDX"):
-            continue
-        nums = [int(x) for x in line.split()[3:]]
-        for i in range(0, len(nums) - 1, 2):
-            mapping[nums[i]] = nums[i + 1] - 1
-    return mapping
+__all__ = ["restore_hydrogens"]
 
 
 def restore_hydrogens(
     smiles: str,
-    heavy_symbols: list[str],
-    heavy_coords: list[tuple[float, float, float]],
+    heavy_symbols: Sequence[str],
+    heavy_coords: Coords,
     *,
-    seed: int = 0xF00D,
-    rdkit_index_of_heavy: list[int] | None = None,
+    random_seed: int = 0xF00D,
+    max_iterations: int = 500,
 ) -> tuple[list[str], list[tuple[float, float, float]]]:
-    """Return `(symbols, coords)` for the full-hydrogen molecule at this pose.
+    """Return (symbols, coords) for the full-hydrogen molecule.
 
-    Builds the topology from SMILES (which knows every hydrogen), assigns the
-    docked HEAVY-ATOM coordinates onto its heavy atoms in order, then places the
-    hydrogens with MMFF while holding every heavy atom fixed.
+    Builds the topology from `smiles` (which knows every hydrogen), assigns the
+    docked HEAVY-ATOM coordinates onto its heavy atoms in order, then places
+    the hydrogens with MMFF while holding every heavy atom FIXED -- the heavy
+    atoms are the docking result, and moving them would mean scoring a pose
+    that was never docked.
 
-    Raises when the heavy-atom counts disagree: that means the SMILES and the
-    pose are different molecules, and silently truncating would score the wrong
-    one — the exact failure mode this module exists to prevent.
+    Raises `ValueError` if the heavy-atom counts disagree. Silently truncating
+    (or zipping to the shorter list) would score a different molecule, which is
+    the exact failure this function exists to prevent.
     """
     from rdkit import Chem
     from rdkit.Chem import AllChem
     from rdkit.Geometry import Point3D
 
+    if len(heavy_symbols) != len(heavy_coords):
+        raise ValueError(
+            f"restore_hydrogens: {len(heavy_symbols)} symbols but "
+            f"{len(heavy_coords)} coordinate rows -- these are per-atom and "
+            "must match"
+        )
+
     parsed = Chem.MolFromSmiles(smiles)
     if parsed is None:
-        raise ValueError(f"unparseable SMILES: {smiles!r}")
+        raise ValueError(f"restore_hydrogens: RDKit could not parse {smiles!r}")
     mol = Chem.AddHs(parsed)
+
     heavy_idx = [a.GetIdx() for a in mol.GetAtoms() if a.GetAtomicNum() > 1]
     docked_heavy = [
         (s, c) for s, c in zip(heavy_symbols, heavy_coords) if s.upper() != "H"
@@ -97,47 +76,22 @@ def restore_hydrogens(
             "hydrogen-count difference"
         )
 
-    # WHICH RDKit atom does each docked coordinate belong to?
-    #
-    # By default, list order -- which is correct only when the pose came back
-    # in the order RDKit built the molecule. IT USUALLY HAS NOT: Meeko reorders
-    # atoms for its torsion tree, MEASURED at 10 of 13 heavy atoms on aspirin,
-    # and a positional assignment then misplaces an atom by up to 4.9 A while
-    # every count and element still matches.
-    #
-    # `rdkit_index_of_heavy[k]` gives the RDKit index for the k-th docked
-    # heavy atom; build it from `parse_smiles_idx_remark`. A caller that cannot
-    # supply it is relying on the order being unchanged, which is a claim about
-    # its own pipeline rather than about this function.
-    if rdkit_index_of_heavy is not None:
-        if len(rdkit_index_of_heavy) != len(docked_heavy):
-            raise ValueError(
-                f"rdkit_index_of_heavy has {len(rdkit_index_of_heavy)} entries "
-                f"for {len(docked_heavy)} docked heavy atoms"
-            )
-        if sorted(rdkit_index_of_heavy) != sorted(heavy_idx):
-            raise ValueError(
-                "rdkit_index_of_heavy is not a permutation of this molecule's "
-                "heavy-atom indices; the mapping and the SMILES disagree about "
-                "which molecule this is"
-            )
-        targets = list(rdkit_index_of_heavy)
-    else:
-        targets = list(heavy_idx)
-
-    AllChem.EmbedMolecule(mol, randomSeed=seed)
+    if AllChem.EmbedMolecule(mol, randomSeed=random_seed) != 0:
+        raise ValueError(
+            "restore_hydrogens: RDKit could not embed the full-hydrogen "
+            "topology, so there is no conformer to write the pose onto"
+        )
     conf = mol.GetConformer()
-    for idx, (_, c) in zip(targets, docked_heavy):
+    for idx, (_, c) in zip(heavy_idx, docked_heavy):
         conf.SetAtomPosition(idx, Point3D(*[float(v) for v in c]))
-    # Optimise ONLY the hydrogens: the heavy atoms are the docking RESULT and
-    # must not move, or the pose being scored is no longer the pose docked.
+
     props = AllChem.MMFFGetMoleculeProperties(mol)
     ff = AllChem.MMFFGetMoleculeForceField(mol, props) if props is not None else None
     if ff is not None:
         for idx in heavy_idx:
             ff.AddFixedPoint(idx)
-        ff.Minimize(maxIts=500)
+        ff.Minimize(maxIts=max_iterations)
 
     syms = [a.GetSymbol() for a in mol.GetAtoms()]
     pos = mol.GetConformer().GetPositions()
-    return syms, [tuple(float(v) for v in r) for r in pos]
+    return syms, [tuple(float(v) for v in row) for row in pos]
