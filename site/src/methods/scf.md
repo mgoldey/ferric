@@ -181,7 +181,7 @@ matching `ferric.run_rhf(point_charges=…)` to all ten printed digits.
 
 **Scope of this TOML section:** `[qmmm]` reads a **PQR**, because it needs
 charges and geometry together and an xyz has no charges. The other formats
-(PDB, mmCIF, SDF, mol2, GROMACS `.gro`, SMILES) are read from Python via
+(XYZ, PDB, mmCIF, SDF, mol2, GROMACS `.gro`, SMILES) are read from Python via
 `tools.structure`, and `tools.active_site.solvate` builds a TIP3P droplet you
 can write straight to a PQR for this section. Still absent everywhere: an
 AMBER `prmtop` reader (go through OpenMM) and periodic boundary conditions.
