@@ -216,19 +216,85 @@ def tier2_forcefield(iso: Isomer, context: dict) -> TierResult:
     )
 
 
+def _geometry_formula_mismatch(canonical: str, symbols) -> str | None:
+    """`None` if `symbols` is the same MOLECULE as `canonical`, else why not.
+
+    THE GEOMETRY IS NOT ALWAYS THE MOLECULE. A geometry reaching this point has
+    crossed a tool boundary -- Vina, a file reader, an embedder -- and any of
+    them can hand back a different species. The one that actually happened: a
+    PDBQT pose is UNITED-ATOM, so aspirin came back as 14 atoms where 21 went
+    in, and `funnel._harvest_geometry` fed that to the quantum tiers.
+
+    The consequence was uneven, which is exactly why it went unnoticed. Tier 4
+    failed -- but only BY ACCIDENT, because 87 electrons with multiplicity 1
+    trips ferric's charge/multiplicity parity check, which is a statement about
+    electron count and not about identity. Tier 3 has no such check: GFN2
+    returned -35.492226 Ha against -39.621219 for the real molecule. Both are
+    plausible GFN2 numbers, neither errors, and they are **2591 kcal/mol**
+    apart.
+
+    So the check belongs HERE, at the shared funnel both quantum tiers read
+    through, rather than in either tier: one guard covers both and anything
+    added later.
+
+    Compares the FORMULA (element counts), not the atom count: a count alone
+    passes a geometry with the right number of the wrong atoms. It says nothing
+    about coordinates, so a different conformer, a relaxed pose and a docked
+    pose all pass -- which is the point, since those are the things this
+    pipeline is supposed to move around.
+    """
+    from collections import Counter
+
+    from rdkit import Chem
+
+    mol = Chem.MolFromSmiles(canonical)
+    if mol is None:
+        return None  # unparseable SMILES is the tiers' own error to report
+    expected = Counter(a.GetSymbol() for a in Chem.AddHs(mol).GetAtoms())
+    got = Counter(symbols)
+    if got == expected:
+        return None
+
+    def formula(c):
+        return "".join(f"{el}{n}" for el, n in sorted(c.items()))
+
+    missing = {el: n for el, n in (expected - got).items()}
+    extra = {el: n for el, n in (got - expected).items()}
+    detail = []
+    if missing:
+        detail.append(f"missing {formula(Counter(missing))}")
+    if extra:
+        detail.append(f"extra {formula(Counter(extra))}")
+    return (
+        f"the cached geometry is not this molecule: {formula(got)} "
+        f"({sum(got.values())} atoms) vs {formula(expected)} "
+        f"({sum(expected.values())} atoms) from the SMILES -- "
+        f"{', '.join(detail)}"
+    )
+
+
 def _embedded(iso: Isomer, context: dict):
     """Shared 3D geometry for tiers 3 and 4: reuse a cached one if present.
 
     Without the cache each tier would re-embed, and tiers 3 and 4 would then be
     scoring DIFFERENT geometries of the same candidate -- which makes their
     energies incomparable for no benefit.
+
+    Returns `(symbols, coords)`, or `(None, reason)` when there is no usable
+    geometry -- so a caller must check `symbols is None` and may report
+    `coords` as the reason. A cached geometry whose FORMULA disagrees with the
+    candidate's SMILES is refused here rather than scored; see
+    `_geometry_formula_mismatch`.
     """
     cached = context.get("geometry", {}).get(iso.canonical)
     if cached:
+        why = _geometry_formula_mismatch(iso.canonical, cached["symbols"])
+        if why is not None:
+            return None, why
         return cached["symbols"], cached["coords"]
     r = tier2_forcefield(iso, context)
     if not r.ok:
-        return None, None
+        return None, r.error
     return r.payload["symbols"], r.payload["coords"]
 
 
@@ -419,7 +485,11 @@ def tier3_gfn2(iso: Isomer, context: dict) -> TierResult:
 
     symbols, coords = _embedded(iso, context)
     if symbols is None:
-        return TierResult(iso.canonical, None, "no geometry for GFN2")
+        # `coords` carries the REASON here -- a formula mismatch, or whatever
+        # tier 2 reported. Passing it through beats "no geometry for GFN2",
+        # which says nothing about why and sent a reader looking for a missing
+        # cache when the geometry was present and wrong.
+        return TierResult(iso.canonical, None, coords or "no geometry for GFN2")
     run = singlepoint(
         symbols,
         coords,
@@ -490,7 +560,11 @@ def tier4_dft(iso: Isomer, context: dict) -> TierResult:
 def _tier4_dft_inner(iso: Isomer, context: dict, ferric) -> TierResult:
     symbols, coords = _embedded(iso, context)
     if symbols is None:
-        return TierResult(iso.canonical, None, "no geometry for DFT")
+        # `coords` carries the REASON here -- a formula mismatch, or whatever
+        # tier 2 reported. Passing it through beats "no geometry for DFT",
+        # which says nothing about why and sent a reader looking for a missing
+        # cache when the geometry was present and wrong.
+        return TierResult(iso.canonical, None, coords or "no geometry for DFT")
     xyz = [str(len(symbols)), "tier4"]
     for s, (x, y, z) in zip(symbols, coords):
         xyz.append(f"{s} {x:.8f} {y:.8f} {z:.8f}")
