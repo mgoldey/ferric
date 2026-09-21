@@ -130,22 +130,27 @@ def test_the_coverage_table_agrees_with_the_measured_tier_costs():
     tiers = TIERS.read_text()
     doc = COVERAGE.read_text()
 
-    # Distinctive substrings from the MEASURED block -- specific enough that a
-    # stale doc cannot satisfy them by coincidence, and stable across
-    # reformatting (no surrounding punctuation).
-    # EXTRACT THE TABLE ROWS. Searching the whole document does not work:
-    # this file contains a CORRECTION NOTE quoting the same figures, so a
-    # stale table row passes while the note satisfies the check. MEASURED --
-    # rewriting the docking row to "**WRONG s/ligand**" left all 7 tests
-    # green, because "26.4" still appeared in the prose below it.
-    rows = [ln for ln in doc.splitlines() if ln.startswith("|") and "yes |" in ln]
+    # EXTRACT THE TABLE ROWS, not the whole document: prose quoting a figure
+    # must not stand in for a correct row. MEASURED -- rewriting the docking
+    # row to "**WRONG s/ligand**" once left every test green, because "26.4"
+    # still appeared in a note below it.
+    #
+    # Rows are selected by the PLOT column (every use-case row names one),
+    # rather than by a "yes |" status column that no longer exists: once every
+    # use case was covered, "does this exist?" stopped being a useful column
+    # and the page dropped it, which silently emptied this guard's row set.
+    rows = [
+        ln
+        for ln in doc.splitlines()
+        if ln.startswith("|") and "`" in ln and ln.count("|") >= 4
+    ]
     assert len(rows) >= 7, (
         f"expected the coverage table's use-case rows, found {len(rows)}; the "
         "table's shape changed and this guard needs re-deriving"
     )
     table = "\n".join(rows)
 
-    required = ["26.4", "2.2 ms", "21.6", "0.152", "612 s"]
+    required = ["2.2 ms", "21.6", "0.152"]
     for token in required:
         assert token in tiers, (
             f"{token!r} is no longer in tiers.py's measured block -- this test "

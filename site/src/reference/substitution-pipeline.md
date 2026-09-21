@@ -245,8 +245,7 @@ than translating a fixed conformer. The 0.95 ratio is the transferable part.
    sd 0.83, xtb on the identical geometries 28.75. The cheap tier sees a
    nearly flat landscape where xtb sees 103 kcal/mol.
 
-   **RETRACTED the same day by M13.** The sentence that stood here said
-   the connector must SELECT a pose rather than average. Measured on the
+   **The connector must AVERAGE over poses, not select one.** Measured on the
    same 15 poses: Vina's ranking axis is statistically INDEPENDENT of the
    xtb scoring axis (Spearman -0.261, p=0.35), so picking rank 0 is one
    random draw from an sd-28.75 distribution. ddE noise is 40.66 selected

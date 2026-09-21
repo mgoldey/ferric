@@ -35,8 +35,8 @@ STILL OPEN, and these are the real remaining gaps:
   `ferric_scf::saddle::find_saddle`, P-RFO with a Bofill update. C0-C5 is
   complete, and it is now WIRED TO AND DEMONSTRATED ON the QM/MM evaluator --
   NH3 umbrella inversion under point-charge embedding converges in 5 steps to
-  exactly one imaginary mode (`qmmm_saddle_converges.rs`). The "still to do:
-  wire it to the QM/MM evaluator" this line used to carry is done.
+  exactly one imaginary mode (`qmmm_saddle_converges.rs`), wired to the QM/MM
+  evaluator.
   IRC LANDED 2026-09-19: `irc::follow_irc` walks mass-weighted steepest
   descent off the saddle in both directions, so "which two minima does this
   connect?" is now answerable. NH3 inversion lands at +0.8044/-0.8044 Bohr
@@ -154,10 +154,9 @@ two calls simply used different bases.
 
 **`assess_smiles` reaches the NETWORK by default.** `include_web=True` adds
 the `admetlab3` and `protox3` providers, measured at **1.6 s/analogue** against
-**54 ms** for the offline `rdkit-alerts` path alone. The row used to read
-"~5 ms / analogue", which matches neither and hid the network hop -- the one
-that decides whether a 1000-analogue sweep takes a minute or half an hour, and
-whether it works at all offline.
+**54 ms** for the offline `rdkit-alerts` path alone. Which one you pay decides
+whether a 1000-analogue sweep takes a minute or half an hour, and whether it
+runs offline at all.
 
 The substitution row was RE-MEASURED 2026-09-20 (benzoic acid, `{F, Cl}`,
 the configuration that gives exactly 7 proposals): **248 ms on the FIRST call
@@ -264,11 +263,9 @@ Tier 1 costs **26.4 s/ligand** (RESULTS.md M11, exhaustiveness 4). That entire
 spend was discarded, and tiers 3 and 4 then scored a gas-phase conformer that
 had never seen the pocket.
 
-(This line used to read "~2 min/ligand (MEASURED, `tiers.py:11`)". The cost
-table below retracts that figure in as many words -- "never measured, and its
-`tiers.py:11` citation pointed at the module doc comment" -- so the retraction
-and the claim coexisted in one document. A citation that resolves to a doc
-comment is not a measurement.) This violates the funnel's own stated premise -- `_embedded`'s
+(Cost figures here cite RESULTS.md, not a `file.py:NN` line: a citation that
+resolves to a module doc comment is not a measurement, and the cost table
+below says so at length.) This violates the funnel's own stated premise -- `_embedded`'s
 docstring says the cache exists so "tiers 3 and 4 would not be scoring
 DIFFERENT geometries of the same candidate".
 
@@ -1843,10 +1840,8 @@ So for a production run, tier 4 IS the budget and making it cheaper is where
 the work is. The STO-3G reading is right only for a demonstration basis.
 This is the same trap as reading any STO-3G row here as a production cost.
 
-**That blocking question is now ANSWERED, and the answer is "none of them"**
-(2026-09-19, RESULTS.md M4-M14). It used to read: decide the pose treatment --
-ensemble, Boltzmann weight, best-N -- before writing the adapter. All five
-candidate treatments have since been measured:
+**No pose treatment works** (RESULTS.md M4-M14). Ensemble, Boltzmann weight
+and best-N were each measured:
 
 | treatment | ddE noise | vs a 0.25 kcal/mol gap |
 |---|---|---|
@@ -1961,13 +1956,12 @@ C4. Verify the TS: n_imaginary == 1, AND the imaginary mode must point along
     WHICH OBJECT: `n_imaginary` and `is_transition_state()` are on
     **SaddleResult** (from `run_saddle`). **FrequencyResult** (from
     `run_frequencies`) has no `n_imaginary` -- it exposes `frequencies` as a
-    PROPERTY, not a method, and you count the negatives yourself. This line
-    used to read `harmonic_frequencies -> n_imaginary()`, which is neither
-    object's API and raises AttributeError if typed literally.
+    PROPERTY, not a method, and you count the negatives yourself. Writing
+    `harmonic_frequencies -> n_imaginary()` is neither object's API and raises
+    AttributeError.
     COMPLETE since #97: `PyFrequencyResult.normal_modes` is a real
     #[pyo3(get)] accessor on main (VERIFIED against origin/main
-    2026-09-19), so both halves are reachable from Python. The "MODE
-    VECTORS are Rust-only" caveat this line used to carry is STALE.
+    2026-09-19), so both halves are reachable from Python.
 C5. Barrier = E(TS) - E(reactant), with ZPE from the same frequency run.
 ```
 

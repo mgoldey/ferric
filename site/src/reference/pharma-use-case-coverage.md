@@ -1,148 +1,65 @@
-# Pharma use-case coverage, measured 2026-09-19
+# Pharma use-case coverage
 
-What the golden paths actually cover against the six use cases Matt named, and
-where the one real gap is. Measured by grepping `tools/`, `experiments/` and
-`crates/ferric-python/` on `origin/main` at `1ad0c84b`, not by reading the
-pipeline docs — the docs describe intent, the grep describes code.
+Every named use case, what runs it, what it costs, and the plot that answers
+it. Costs are MEASURED on this project; where a figure depends on basis or on
+warm-vs-cold, both are given, because quoting one hides a 3-30x spread.
 
-## METHOD, and one correction
+## Coverage
 
-First pass used `grep -rlE 'MMFF\|UFF'` with escaped alternation inside `-E`,
-which matches the literal string `MMFF|UFF` and therefore **nothing**. It
-reported four capabilities as absent that are all present (ff-minimize, xtb,
-toxicology, substitution). Caught by running the pattern against a term known
-to be there — the discipline in `grep-patterns-manufacture-false-results`.
-
-The table below is the corrected pass. `files` counts files matching the
-pattern anywhere under those three trees.
-
-## COVERAGE
-
-| use case | files | where | status |
-|---|---:|---|---|
-| docking | 33 | `tools/docking/` (vina + meeko) | **covered** |
-| geometry opt (pose) | 7 | `tools/active_site/pose_relaxation.py` | **covered** |
-| minima with FF | 16 | `tools/docking/vina_dock.py`, `tools/campaign/strain.py` (MMFF/UFF) | **covered** |
-| minima with xtb | 27 | `tools/campaign/xtb_engine.py` | **covered** |
-| common substitutions | — | `tools/pipeline/substitution.py`, `tools/isomers/substitutional.py` (#96) | **covered** |
-| toxicology | 21 | `tools/tox/alerts.py`, `tools/tox/model.py` | **covered** |
-| binding energy in site | 4 | `tools/active_site/prescreen.py`, `binding_energy.py` | **covered** |
-| **transition state** | **1** | — | **GAP at the time of this survey — CLOSED later the same day** |
-
-The single transition-state hit was `tools/campaign/tests/test_strain_and_fit.py`
-matching `dimer_` incidentally. There was no saddle-point search.
-
-## THE GAP: transition-state search — CLOSED 2026-09-19
-
-**Everything in this section is the ANALYSIS THAT PRECEDED the fix**, kept
-because the dependency sketch is what the implementation followed. All six
-steps landed as `ferric_scf::saddle` (P-RFO + Bofill), wired to QM/MM in
-`examples/qmmm_saddle.rs`. See the completed coverage table below.
-
-What exists already, which is most of the machinery:
-
-- `crates/ferric-scf/src/optimize.rs` — BFGS driver, minimizes; `run_bfgs`
-  plus a coordinate-vector core `optimize_coordinates`
-- `crates/ferric-scf/src/frequencies.rs` — `harmonic_frequencies` and
-  `frequencies_from_cartesian_hessian`, i.e. a finite-difference Hessian built
-  from analytic gradients, plus `atom_masses` and `detect_linear`
-- Analytic nuclear gradients for RHF/UHF/ROHF and KS-DFT including meta-GGA
-
-What is missing is the **saddle step itself**: P-RFO (partitioned rational
-function optimization) follows the eigenvector with the *negative* Hessian
-eigenvalue UPHILL while minimizing along all the others. BFGS cannot do this —
-it is built to descend, and its Hessian update is kept positive definite on
-purpose.
-
-Sketch of what a `saddle.rs` needs, in dependency order:
-
-1. Cartesian Hessian at the current geometry — `frequencies.rs` already
-   produces one; it must be callable mid-optimization, not only at a minimum.
-2. Project out translations and rotations (6, or 5 if linear —
-   `detect_linear` exists) before diagonalizing, or the near-zero modes
-   contaminate the eigenvector selection.
-3. Mode selection: follow the lowest eigenvalue by default; a
-   `follow_mode: usize` knob for when the lowest is not the reaction
-   coordinate.
-4. The P-RFO step: two separate RFO partitions, one maximizing along the
-   followed mode, one minimizing in its orthogonal complement.
-5. Hessian update between steps (Bofill is the usual choice for saddles —
-   it does NOT preserve positive definiteness, which is the point).
-6. Convergence: gradient norm AND **exactly one** imaginary frequency. A
-   "converged" saddle with zero or two imaginary modes is not a transition
-   state, and this must be a hard check, not a warning.
-
-Cost note: step 1 is the expensive part. The Hessian is finite-differenced
-from analytic gradients, so it is 6N+1 evaluations per Hessian -- 6N displaced
-plus one undisplaced, which the counter omits (MEASURED
-via `n_gradient_evaluations`: H2 = 12, water = 18 — exactly 6N, not 6N+1).
-Rebuilding it every step is not affordable past a handful of atoms, which is
-why step 5 matters.
-
-## NOT A BLOCKER FOR THE OTHER FIVE
-
-Every other use case has working code. The pipeline-level gap recorded here —
-that `context["geometry"]` was written by nothing, so tiers 3/4 scored a
-gas-phase conformer rather than the docked pose — **was FIXED 2026-09-19** by
-`funnel._harvest_geometry`, verified end to end on `origin/main`. See section 0
-of the golden-path note for what the diagnosis is still worth keeping.
-
-## COVERAGE, complete (updated 2026-09-19 after the viz work)
-
-Every named use case now has code, a MEASURED cost, and a plot:
-
-| use case | code | cost (MEASURED, source) | plot |
+| use case | entry point | cost (measured) | plot |
 |---|---|---|---|
-| docking geom opt | yes | **26.4 s/ligand** (Vina, ex=4, 12 cores; 109 s at cpu=1) — RESULTS.md M11 | `pose_ensemble`, `funnel_survival` |
-| minima with FF | yes | **2.2 ms @ 9 atoms, 8.2 @ 19, 21.6 @ 34** (~73 ms projected @ 71) — `tiers.py` | `tier_comparison` |
-| minima with xtb | yes | **0.152 s @ 9 atoms, 0.050 @ 19** — `tiers.py` | `tier_comparison` |
-| transition state | yes | 2*(6N+1) + (n_steps+1) grads — `saddle_cost.rs` | `energy_profile` (barrier) + **`imaginary_mode`** (C4's second half) |
-| **reaction path (IRC)** | **yes** | **~70 gradients/branch** (MEASURED: NH3 inversion, 71 forward + 71 reverse) | `energy_profile` along the path |
-| common substitutions | yes | 2.8 ms enumerate, 214 ms embed | `site_substituent_heatmap`, `grid_with_scores` |
-| toxicology | yes | 9.4 ms/molecule (+47 ms one-off catalog build) | `liability_profile` |
-| binding energy in site | yes | tier 4: 0.66 s @ 9, 8.7 @ 19, 612 s @ 71 (STO-3G) — `tiers.py` | `site_substituent_heatmap` |
-| **dispersion (D3(BJ))** | **yes** | **microseconds, energy AND gradient** — a pairwise sum; free next to the SCF | (folded into the DFT energy) |
+| docking | `docking.vina_dock`, `tiers.tier1_dock` | **31 s** @ 57 atoms, 5.7 @ 21, 1.9 @ 9 (ex=4, 7LCJ); ~N^1.5 | `pose_ensemble`, `funnel_survival` |
+| docking geom opt | `active_site.pose_relaxation` | **77.8 s/step** @ 71 atoms in a 6458-charge pocket | `optimization_trace` |
+| minima with FF | `tiers.tier2_forcefield` | **9 ms** @ 21 atoms (2.2 ms @ 9 atoms, 8.2 @ 19, 21.6 @ 34) | `tier_comparison` |
+| minima with xtb | `tiers.tier3_gfn2` | **39 ms** @ 21 atoms (0.152 s @ 9, 0.050 @ 19) | `tier_comparison` |
+| score with DFT | `tiers.tier4_dft` | **2.6 s** @ 9 atoms at the def2-svp DEFAULT (0.75 s at STO-3G) | `tier_comparison` |
+| transition state | `ferric.run_saddle` | `2*(6N+1) + (n_steps+1)` gradients | `imaginary_mode` |
+| reaction path (IRC) | `ferric.run_irc` | ~70 gradients/branch | `reaction_path` |
+| common substitutions | `pipeline.substitution` | **7.6 ms** warm / 7 proposals (248 ms first call) | `site_substituent_heatmap` |
+| toxicology | `tox.alerts`, `tox.assess` | **3.7 ms** screen; **54 ms** offline assess, **1.6 s** with the default `include_web=True` | `liability_profile` |
+| binding energy in site | `active_site.binding_energy` | **137 s** @ 71 atoms / 6458 charges (TWO SCFs + pdb2pqr) | `pocket_polarization` |
+| QM/MM setup | `ferric.QmmmSystem` | free | `qmmm_partition` |
+| dispersion D3(BJ) | `run_dft(dispersion="d3bj")` | microseconds, energy and gradient | folded into the DFT energy |
 
-**CORRECTED 2026-09-19.** The first three rows previously read `1e-5`, `1e-3`
-and `5e-1` s/pose. All three were wrong, and each in a different way:
+## Where the campaign time actually goes
 
-* `1e-5 s/pose` for DOCKING was the *cheap-stage* per-call figure copied from a
-  different table — six orders below the measured 26.4 s/ligand, and it made
-  tier 1 look free when it is in fact **79% of a campaign's wall time**.
-* `1e-3` and `5e-1` were the "~1 ms/pose" and "~0.5 s single point" estimates
-  that `tiers.py` had ALREADY flagged as never measured — its own comment says
-  so, and says the golden path cited that line as its source. Correcting the
-  numbers there did not reach this table.
+The whole funnel RUN end to end — 10 substitution candidates of benzoic acid
+through dock → FF → xtb → DFT against the 7LCJ pocket, keeping 6/4/2/1, zero
+failures, same survivor both times:
 
-Per-atom scaling is now given where it was measured, because a single number
-per tier hides that FF and xtb cost differ by ~100x at 9 atoms but only ~6x at
-19. Costs remain PER ITEM; the campaign-level shares below are what should
-drive optimization decisions.
+| basis | total | dock | FF | xtb | DFT |
+|---|---:|---:|---:|---:|---:|
+| STO-3G | 45.0 s | **72.7%** | 0.1% | 0.3% | 27.0% |
+| **def2-svp (the `tier4_dft` DEFAULT)** | 82.1 s | **39.8%** | 0.1% | 0.1% | **60.0%** |
 
-The costs are per-item; the campaign-level shares (MEASURED 2026-09-19:
-cheap 0.7%, **dock 79%**, xtb 3%, DFT 18%) are in the golden-path note, and
-they are the number that should drive optimization decisions -- not the
-per-call cost. An earlier 73%/22% split came from a ~20 s/ligand docking
-estimate; the measured 26.4 s at exhaustiveness 4 moves it to 79%/18%.
+**"Docking dominates, not DFT" holds only at STO-3G.** At the default basis the
+ranking inverts and DFT is the majority of the run. The absolute docking cost
+is identical between the rows (32.7 s); it is DFT that moves, because
+`tier4_dft` defaults to def2-svp and that is 3.5x STO-3G.
 
-**"Has a plot" now means the plot answers THAT use case's question**, not
-merely that a figure exists. The last gap was transition-state finding: a TS
-search produces an imaginary MODE (a 3N vector), and until `imaginary_mode`
-landed nothing could show whether it displaces the reacting atoms -- which is
-the second, non-optional half of C4.
+So: quote the share WITH the basis, and decide where to optimize from the row
+that matches the basis you actually run.
 
-**What "has a plot" does NOT mean.** The binding-energy row has a plot and a
-cost and still cannot produce a trustworthy RANKING: all four pose protocols
-are closed (RESULTS.md M4-M13) and the best available ddE noise is ~4.07
-kcal/mol against effects of 1-2. `site_substituent_heatmap(noise_floor=...)`
-greys out every cell inside that limit precisely so a figure cannot imply
-otherwise.
+## What "has a plot" does and does not mean
 
-## VISUALIZATION
+The plot has to answer *that* use case's question. A transition-state search
+produces an imaginary MODE — a 3N vector — so `imaginary_mode` shows whether it
+displaces the reacting atoms, which is the second and non-optional half of
+verifying a saddle. One imaginary frequency is necessary, not sufficient: a
+methyl rotor gives one too.
 
-Was absent entirely (`find tools experiments -iname '*vis*' -o -iname '*plot*'
--o -iname '*render*'` returned nothing). `tools/viz/` now covers energy
-profiles, funnels, tier comparisons, (substituent, site) ddE heatmaps, pose
-ensembles, liability profiles and 2-D depictions with substitution
-highlighting. The energy-profile plot is what a transition-state search
-reports against — and as of this date there is one to report from.
+**A plot and a cost do not license a RANKING.** The binding-energy row has
+both and still cannot order two analogues: every pose protocol tried is closed
+(RESULTS.md M4-M13), and the best available ddE noise is ~4.07 kcal/mol against
+substituent effects of 1-2. `site_substituent_heatmap(noise_floor=...)` greys
+out every cell inside that limit so a figure cannot imply otherwise.
+
+## Known gaps
+
+- **AMBER `prmtop`** — no reader; go through OpenMM.
+- **Periodic boundary conditions** — absent. `solvate()` gives a finite
+  droplet with a vacuum boundary.
+- **QM/MM dispersion** — D3/D4/XDM/VV10 are QM-atom-pairwise, so dispersion
+  between the QM region and MM charges is absent.
+- **Pose-ensemble ranking** — see above; this is a noise floor, not a missing
+  feature.

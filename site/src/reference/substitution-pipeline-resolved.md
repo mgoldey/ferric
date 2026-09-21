@@ -12,14 +12,16 @@ unless labelled otherwise. Sources: `experiments/danuglipron/RESULTS.md`
 
 ---
 
-## RETRACTION, same day (M13)
+## Average over poses; do not select one
 
-An earlier version of this note recommended **"select one pose, do not
-average"**. That was wrong and is retracted below. The correction does not
-change the pipeline's STAGES -- P1-P7 stand -- but it changes what the output
-may be used for, which is the more important half.
+**Do not "pick the top-docked pose".** It is measurably worse than averaging,
+and the reason generalises: Vina's ranking axis is statistically independent of
+the xtb scoring axis, so selecting on it is a random draw.
 
-Short version: selecting the top-docked pose is **10x worse** than averaging,
+The pipeline's STAGES are unaffected -- P1-P7 stand -- but what the output may
+be used for is not.
+
+Selecting the top-docked pose is **10x worse** than averaging,
 because Vina's ranking axis is statistically independent of the xtb scoring
 axis (Spearman -0.261, p=0.35), so "pick rank 0" is a single random draw from a
 distribution with sd 28.75 kcal/mol. Averaging at n=100 gives ddE noise 4.07;
@@ -164,12 +166,10 @@ which a halogen/CF3 scan is missing its dominant attractive term.
    POSITIONAL descriptor (3-D shape, per-atom charge, a QM property at the
    site) -- an addition to cost, not a fix to apply.
 
-3. **One row per molecule is the WRONG shape, after all.** An earlier version
-   of this note said the opposite, on the strength of the now-retracted
-   selection recommendation. With averaging restored as the least-bad
-   estimator, `funnel.py` does need to express an ensemble -- it keys one row
-   per candidate (`funnel.py:162`). This is a real, open gap, and it was
-   briefly recorded as closed.
+3. **One row per molecule is the WRONG shape.** Averaging is the least-bad
+   estimator (see above), so `funnel.py` needs to express a pose ENSEMBLE --
+   and it keys one row per candidate (`funnel.py:162`). This is a real, open
+   gap.
 
 4. **Ionization state is part of the measurement.** Danuglipron's carboxylic
    acid is deprotonated at pH 7.4; the anion/neutral split is 143 kcal/mol
