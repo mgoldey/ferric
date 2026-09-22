@@ -280,6 +280,69 @@ fn resolve_df_aux(requested: Option<&str>, default_aux: &str) -> Option<String> 
     }
 }
 
+/// Convert the Python `solvent` kwarg into a `PcmConfig`.
+///
+/// Implicit solvation is the difference between an electrostatic interaction
+/// term and something that can be compared to an affinity. A vacuum
+/// calculation lets both partners leave water for free, so burying an ionized
+/// group costs nothing -- MEASURED on danuglipron/GLP-1R, that overshoots the
+/// experimental binding free energy by 4.5x.
+///
+/// Accepts a dielectric constant directly (`solvent=78.4`) or a named solvent.
+/// A name that is not recognised ERRORS rather than silently defaulting to
+/// vacuum, which would look like a successful run with no solvent.
+fn build_pcm_config(
+    solvent: Option<&Bound<'_, PyAny>>,
+    lebedev_order: Option<usize>,
+) -> PyResult<Option<ferric_pcm::PcmConfig>> {
+    let Some(obj) = solvent else {
+        return Ok(None);
+    };
+    // Dielectric constants at 298 K.
+    let epsilon = if let Ok(eps) = obj.extract::<f64>() {
+        eps
+    } else if let Ok(name) = obj.extract::<String>() {
+        match name.to_ascii_lowercase().as_str() {
+            "water" => 78.4,
+            "dmso" => 46.7,
+            "methanol" => 32.6,
+            "ethanol" => 24.9,
+            "acetone" => 20.7,
+            "dichloromethane" | "dcm" => 8.93,
+            "thf" => 7.43,
+            "chloroform" => 4.71,
+            "toluene" => 2.38,
+            "hexane" => 1.88,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "solvent = '{other}' not recognised. Pass a dielectric \
+                     constant directly (e.g. solvent=78.4) or one of: water, \
+                     dmso, methanol, ethanol, acetone, dichloromethane, thf, \
+                     chloroform, toluene, hexane"
+                )))
+            }
+        }
+    } else {
+        return Err(pyo3::exceptions::PyTypeError::new_err(
+            "solvent must be a dielectric constant (float) or a solvent name (str)",
+        ));
+    };
+    if epsilon <= 1.0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "solvent dielectric must be > 1.0, got {epsilon} (vacuum is 1.0; \
+             pass solvent=None for no solvation)"
+        )));
+    }
+    let mut cfg = ferric_pcm::PcmConfig {
+        epsilon,
+        ..Default::default()
+    };
+    if let Some(order) = lebedev_order {
+        cfg.lebedev_order = order;
+    }
+    Ok(Some(cfg))
+}
+
 /// Parse the `diis` kwarg into a `DiisFlavor` (strict — unknown values error).
 /// None = Pulay (plain DIIS, the default).
 fn parse_diis_flavor(diis: Option<&str>) -> PyResult<ferric_scf::diis::DiisFlavor> {
@@ -424,6 +487,16 @@ impl PyRhfResult {
 ///                   smeared charges.
 ///   external_field  uniform (Ex, Ey, Ez) electric field in Hartree atomic units.
 ///                   None = no field.
+///   solvent         IEF-PCM implicit solvation: a dielectric constant
+///                   (`solvent=78.4`) or a name (`solvent="water"`). None =
+///                   vacuum. Without it, a ligand and its pocket each leave
+///                   water for free, so burying an ionized group costs
+///                   nothing -- on danuglipron/GLP-1R that overshoots the
+///                   experimental binding free energy by 4.5x. An
+///                   unrecognised name ERRORS rather than falling back to
+///                   vacuum.
+///   pcm_lebedev_order  tesserae per atomic sphere (6/14/26/50/110/302,
+///                   default 110). Lower is faster and coarser.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set,
@@ -432,7 +505,7 @@ impl PyRhfResult {
     level_shift=None, mom_after_iter=None,
     guess=None, diis=None, smearing_sigma=None, soscf=None,
     point_charges=None, external_field=None, smeared_charges=None,
-    memory_budget_gb=None,
+    memory_budget_gb=None, solvent=None, pcm_lebedev_order=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhf(
@@ -457,6 +530,8 @@ fn run_rhf(
     external_field: Option<(f64, f64, f64)>,
     smeared_charges: Option<Vec<(f64, f64, f64, f64, f64)>>,
     memory_budget_gb: Option<f64>,
+    solvent: Option<&Bound<'_, PyAny>>,
+    pcm_lebedev_order: Option<usize>,
 ) -> PyResult<PyRhfResult> {
     // Apply ECP core-electron counts (no-op without an ECP basis) so nelec()
     // gives the valence count; the effective nuclear charge is set inside
@@ -487,6 +562,7 @@ fn run_rhf(
             smeared_charges,
             external_field,
         ),
+        pcm: build_pcm_config(solvent, pcm_lebedev_order)?,
         // 0 means "unset -> auto" (ferric_scf::rhf::resolve_three_index_budget),
         // so an omitted kwarg preserves the previous auto-detect behaviour.
         three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
