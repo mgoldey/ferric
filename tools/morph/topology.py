@@ -86,7 +86,7 @@ def mol_with_coords(
     symbols: Sequence[str],
     coords: Coords,
     *,
-    random_seed: int = 0xF00D,
+    random_seed: int = 0xF00D,  # unused: no embedding happens, kept for callers
     check: bool = True,
 ):
     """An RDKit molecule with `smiles`' topology and `coords`' geometry.
@@ -133,14 +133,18 @@ def mol_with_coords(
             f"{symbols[first]!r}) -- the coordinates would land on the wrong atoms"
         )
 
-    if AllChem.EmbedMolecule(mol, randomSeed=random_seed) != 0:
-        raise ValueError(
-            "mol_with_coords: RDKit could not embed the topology, so there is "
-            "no conformer to write coordinates onto"
-        )
-    conf = mol.GetConformer()
+    # Build the conformer DIRECTLY from the supplied coordinates.
+    #
+    # Embedding first and overwriting every position was wasteful and could
+    # FAIL: distance geometry returns -1 on a perfectly valid topology often
+    # enough to matter (it does so on strained danuglipron poses), and the
+    # embedded coordinates were discarded anyway. Every position here is
+    # supplied by the caller, so there is nothing to generate.
+    conf = Chem.Conformer(mol.GetNumAtoms())
     for i, (x, y, z) in enumerate(coords):
         conf.SetAtomPosition(i, Point3D(float(x), float(y), float(z)))
+    mol.RemoveAllConformers()
+    mol.AddConformer(conf, assignId=True)
 
     if check:
         assert_graph_is_sane(mol, expect_heavy=parsed.GetNumAtoms())

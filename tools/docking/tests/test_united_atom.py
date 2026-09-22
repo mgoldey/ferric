@@ -129,3 +129,42 @@ def test_an_explicit_order_map_is_validated_against_the_topology():
     heavy_n = sum(1 for s in syms if s != "H")
     with pytest.raises(ValueError, match="not a permutation"):
         restore_hydrogens(ALANINE, syms, coords, rdkit_index_of_heavy=[999] * heavy_n)
+
+
+# A ligand with BOTH a declared and an undefined stereocentre: an amino acid
+# analogue with two extra unspecified centres.
+MIXED_STEREO = "C[C@H](N)C(C)(O)CC(C)F"
+
+
+def test_an_UNDEFINED_stereocentre_does_not_cause_a_false_rejection():
+    """The guard must check what the SMILES DECLARES, nothing else.
+
+    `FindMolChiralCenters` omits undefined centres, but
+    `AssignStereochemistryFrom3D` assigns them from the geometry. Comparing
+    whole dicts therefore rejects a pose whose declared centres are correct.
+    MEASURED on this molecule: declared [(1,'S')], after 3D
+    [(1,'S'),(3,'S'),(7,'S')].
+    """
+    from rdkit.Chem import AllChem
+
+    mol = Chem.AddHs(Chem.MolFromSmiles(MIXED_STEREO))
+    assert AllChem.EmbedMolecule(mol, randomSeed=0xF00D) == 0
+    syms = [a.GetSymbol() for a in mol.GetAtoms()]
+    coords = [tuple(float(v) for v in r) for r in mol.GetConformer().GetPositions()]
+
+    # Guard the guard: the fixture must actually have an undefined centre,
+    # or this test passes for the wrong reason.
+    declared = Chem.FindMolChiralCenters(
+        Chem.MolFromSmiles(MIXED_STEREO), useLegacyImplementation=False
+    )
+    everything = Chem.FindMolChiralCenters(
+        Chem.MolFromSmiles(MIXED_STEREO),
+        useLegacyImplementation=True,
+        includeUnassigned=True,
+    )
+    assert len(everything) > len(declared), (
+        "fixture has no undefined stereocentre, so it cannot exercise the bug"
+    )
+
+    out_syms, out_coords = restore_hydrogens(MIXED_STEREO, syms, coords)
+    assert len(out_syms) == len(syms)
