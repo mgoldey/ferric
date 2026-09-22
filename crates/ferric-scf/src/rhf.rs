@@ -924,14 +924,32 @@ pub fn solve_rhf(
     // DFT-specific.)
     let k_consumed = xc_contrib.is_none() || k_mix.sr > 0.0 || k_mix.omega > 0.0;
     use crate::fock_assembly::DEFAULT_JK_AUX;
-    let df_j_aux_eff: Option<String> = config
-        .df_j_aux
-        .clone()
-        .or_else(|| needs_j.then(|| DEFAULT_JK_AUX.into()));
-    let df_k_aux_eff: Option<String> = config
-        .df_k_aux
-        .clone()
-        .or_else(|| needs_k.then(|| DEFAULT_JK_AUX.into()));
+    // THREE states, not two. `None` has always meant "unset, so auto-default",
+    // which left no way to say "do NOT density-fit" for a functional -- the
+    // auto-default fired and RI-J was silently unavoidable.
+    //
+    // That silence had a cost: a caller comparing ferric against an
+    // exact-Coulomb reference measures the RI-J FITTING ERROR and reads it as
+    // a ferric defect. MEASURED at PBE/STO-3G against conventional J: water
+    // 0.28, benzene 1.16, and a 71-atom drug molecule **9.5 kcal/mol**. The
+    // other direction confirms it -- ORCA re-run WITH RI-J agrees with ferric
+    // to 2.7 kcal/mol where exact-Coulomb ORCA was 9.5 away.
+    //
+    //   None            -> auto-default (unchanged behaviour)
+    //   Some("")        -> EXPLICITLY conventional four-centre J/K
+    //   Some(basis)     -> density-fit with that basis (unchanged)
+    //
+    // An empty string is not a valid basis name, so it cannot collide with a
+    // real request.
+    fn resolve_aux(requested: &Option<String>, needed: bool) -> Option<String> {
+        match requested.as_deref() {
+            None => needed.then(|| DEFAULT_JK_AUX.to_string()),
+            Some("") => None, // explicit opt-out
+            Some(name) => Some(name.to_string()),
+        }
+    }
+    let df_j_aux_eff: Option<String> = resolve_aux(&config.df_j_aux, needs_j);
+    let df_k_aux_eff: Option<String> = resolve_aux(&config.df_k_aux, needs_k);
 
     // Density-fitted Coulomb (RI-J) / exchange (RI-K). Builds 3-center
     // tensor(s) + metric(s) once, sharing one `PreparedBasis` when
