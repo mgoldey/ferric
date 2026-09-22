@@ -181,12 +181,26 @@ def restore_hydrogens(
     # Stereochemistry is the cheapest observable that separates a correctly
     # placed pose from a scrambled one, so it is the guard.
     if check_stereo:
-        declared = Chem.FindMolChiralCenters(parsed, useLegacyImplementation=False)
+        # Compare ONLY the centres the SMILES declares.
+        #
+        # `FindMolChiralCenters` omits UNDEFINED centres by default, but
+        # `AssignStereochemistryFrom3D` assigns them from the geometry -- so
+        # the second call returns extra keys and a whole-dict comparison
+        # rejects a pose whose declared centres are perfectly correct.
+        # MEASURED on C[C@H](N)C(C)(O)CC(C)F: declared [(1,'S')], after 3D
+        # [(1,'S'),(3,'S'),(7,'S')]. An undefined centre has no correct value
+        # to check against, so it is not evidence of anything.
+        declared = dict(
+            Chem.FindMolChiralCenters(parsed, useLegacyImplementation=False)
+        )
         if declared:
             probe = Chem.Mol(mol)
             Chem.AssignStereochemistryFrom3D(probe)
-            got = Chem.FindMolChiralCenters(probe, useLegacyImplementation=False)
-            if dict(got) != dict(declared):
+            got_all = dict(
+                Chem.FindMolChiralCenters(probe, useLegacyImplementation=False)
+            )
+            got = {i: v for i, v in got_all.items() if i in declared}
+            if got != declared:
                 raise StereochemistryError(
                     f"the restored pose has stereocentres {got} but the SMILES "
                     f"declares {declared} -- this is a different isomer, not the "
