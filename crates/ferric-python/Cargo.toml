@@ -17,6 +17,7 @@ ferric-integrals = { path = "../ferric-integrals" }
 ferric-mm = { path = "../ferric-mm" }
 ferric-d3 = { path = "../ferric-d3" }
 ferric-scf = { path = "../ferric-scf" }
+ferric-pcm = { path = "../ferric-pcm" }
 ferric-mp2 = { path = "../ferric-mp2" }
 ferric-rpa = { path = "../ferric-rpa" }
 ferric-gw = { path = "../ferric-gw" }
