@@ -252,6 +252,34 @@ fn rhf_config_budgeted(k_builder: Option<&str>, budget_bytes: Option<usize>) -> 
     }
 }
 
+/// Resolve a `df_*_aux` kwarg into an `RhfConfig` auxiliary-basis setting.
+///
+/// `None` keeps the caller-facing DEFAULT (density fitting on, which is what
+/// every ferric DFT entry point has always done). An explicit `""`, `"none"`
+/// or `"exact"` selects conventional four-centre Coulomb instead.
+///
+/// Why this exists: `run_dft` hardcoded RI-J with no override, so a caller
+/// comparing ferric against an exact-Coulomb reference measured the RI-J
+/// fitting error and read it as a ferric defect. It grows with system size --
+/// MEASURED at PBE/STO-3G against conventional J: water 0.28, benzene 1.16,
+/// and a 71-atom drug molecule 9.5 kcal/mol.
+///
+/// An unrecognised basis NAME is passed through unchanged so the SCF layer
+/// reports it, rather than being silently replaced by the default (which
+/// would turn a typo into a quiet change of method).
+fn resolve_df_aux(requested: Option<&str>, default_aux: &str) -> Option<String> {
+    match requested {
+        None => Some(default_aux.to_string()),
+        Some(v) => match v.trim().to_ascii_lowercase().as_str() {
+            // Some("") is the SENTINEL the SCF layer reads as "explicitly do
+            // not density-fit". Returning None here would mean "unset", which
+            // the auto-default then fills back in -- the bug this fixes.
+            "" | "none" | "off" | "exact" | "conventional" => Some(String::new()),
+            _ => Some(v.trim().to_string()),
+        },
+    }
+}
+
 /// Parse the `diis` kwarg into a `DiisFlavor` (strict — unknown values error).
 /// None = Pulay (plain DIIS, the default).
 fn parse_diis_flavor(diis: Option<&str>) -> PyResult<ferric_scf::diis::DiisFlavor> {
@@ -4697,7 +4725,7 @@ fn run_double_hybrid(
     max_iter=None, energy_conv=None, density_conv=None,
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None,
-    dispersion=None,
+    dispersion=None, df_j_aux=None, df_k_aux=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_dft(
@@ -4716,6 +4744,8 @@ fn run_dft(
     external_field: Option<(f64, f64, f64)>,
     memory_budget_gb: Option<f64>,
     dispersion: Option<&str>,
+    df_j_aux: Option<&str>,
+    df_k_aux: Option<&str>,
 ) -> PyResult<PyDftResult> {
     // Refuse an (E, grad-E) pair that does not belong to the same surface.
     //
@@ -4746,11 +4776,16 @@ fn run_dft(
     cfg.external_potential = build_external_potential(point_charges, external_field);
     let xc_name = functional.unwrap_or("LDA").to_string();
     cfg.xc = Some(xc_name.clone());
-    // RI-J always on (matches PySCF density_fit reference convention).
-    cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
+    // RI-J on by DEFAULT (PySCF's density_fit convention), now OVERRIDABLE.
+    // `run_rhf` always exposed these; `run_dft` did not, so there was no way
+    // to request exact Coulomb -- and a caller comparing against an
+    // exact-Coulomb code measured the RI-J FITTING ERROR as a ferric defect.
+    // MEASURED at PBE/STO-3G vs conventional J: water 0.28, benzene 1.16,
+    // 71-atom drug 9.5 kcal/mol. `df_j_aux=""` selects conventional J.
+    cfg.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
     // RI-K only matters for hybrid/RSH; harmless for pure DFT (path is bypassed
     // when k_mix.sr == 0 and k_mix.omega == 0).
-    cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
+    cfg.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");
     // Run through the level-shift ladder (KS-DFT = solve_rhf with cfg.xc set),
     // so a hybrid on a hard system that DIIS-limit-cycles at level_shift=0
     // escalates the virtual-block shift instead of erroring out at max_iter.
@@ -4886,7 +4921,7 @@ fn resolve_d3_functional(spec: &str, xc_name: &str) -> PyResult<String> {
     max_iter=None, energy_conv=None, density_conv=None,
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None,
-    dispersion=None,
+    dispersion=None, df_j_aux=None, df_k_aux=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_ksdft(
@@ -4905,6 +4940,8 @@ fn run_ksdft(
     external_field: Option<(f64, f64, f64)>,
     memory_budget_gb: Option<f64>,
     dispersion: Option<&str>,
+    df_j_aux: Option<&str>,
+    df_k_aux: Option<&str>,
 ) -> PyResult<PyDftResult> {
     run_dft(
         py,
@@ -4922,6 +4959,8 @@ fn run_ksdft(
         external_field,
         memory_budget_gb,
         dispersion,
+        df_j_aux,
+        df_k_aux,
     )
 }
 
