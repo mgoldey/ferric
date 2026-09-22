@@ -5371,7 +5371,8 @@ impl PyPdepRpaResult {
     frozen_core=None, n_quad=None, quadrature=None, u0=None,
     trunc_thresh=None, eigensolver_conv_thresh=None,
     run_diagnostics=false, k_builder=None, chi0_sparsity=None,
-    memory_budget_gb=None,
+    memory_budget_gb=None, point_charges=None, external_field=None,
+    solvent=None, pcm_lebedev_order=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_pdep_rpa(
@@ -5388,6 +5389,10 @@ fn run_pdep_rpa(
     k_builder: Option<&str>,
     chi0_sparsity: Option<&str>,
     memory_budget_gb: Option<f64>,
+    point_charges: Option<Vec<(f64, f64, f64, f64)>>,
+    external_field: Option<(f64, f64, f64)>,
+    solvent: Option<&Bound<'_, PyAny>>,
+    pcm_lebedev_order: Option<usize>,
 ) -> PyResult<PyPdepRpaResult> {
     use ferric_rpa::config::{QuadratureConfig, QuadratureScheme, SternheimerConfig};
     use ferric_rpa::{run_pdep_rpa as run_pdep_rpa_inner, PdepRpaConfig};
@@ -5397,15 +5402,17 @@ fn run_pdep_rpa(
     let op = Operator::coulomb();
     let bounds = SchwarzBounds::compute(op, &prep).map_err(make_err)?;
     let ctx = ParallelContext::default();
-    let rhf = solve_rhf(
-        &ctx,
-        &mol.inner,
-        &prep,
-        op,
-        &bounds,
-        &rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb)),
-    )
-    .map_err(make_err)?;
+    // The reference SCF must see the ENVIRONMENT, or the dielectric response
+    // computed from it is that of an isolated molecule. Screening a
+    // ligand-pocket interaction needs the response of the ligand AS IT SITS
+    // IN THE POCKET, so the point charges have to reach this SCF.
+    let mut scf_config =
+        rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
+    scf_config.external_potential =
+        build_external_potential(point_charges, external_field);
+    scf_config.pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &scf_config)
+        .map_err(make_err)?;
     if !rhf.converged {
         return Err(make_err(ferric_core::FerricError::ScfConvergence {
             iterations: rhf.iterations,
