@@ -284,8 +284,29 @@ def test_every_xyz_writer_in_tools_guards_its_header_against_its_body():
                     if len(operands) >= 2:
                         zip_operand_sets.append(operands)
 
+            # A comparison must ENFORCE something. `_ = len(a) != len(b)`
+            # names the right operands and does nothing -- mutation-verified
+            # that it passed until this was added. Only comparisons that
+            # CONTROL a statement (an `if`, an assert, a boolean operand of
+            # one) can refuse a mismatch.
+            enforcing = set()
+            for node in ast.walk(fn):
+                tests = []
+                if isinstance(node, (ast.If, ast.While)):
+                    tests.append(node.test)
+                elif isinstance(node, ast.Assert):
+                    tests.append(node.test)
+                elif isinstance(node, ast.IfExp):
+                    tests.append(node.test)
+                for t in tests:
+                    for sub in ast.walk(t):
+                        if isinstance(sub, ast.Compare):
+                            enforcing.add(id(sub))
+
             guarded = False
             for cmp_node in [c for c in ast.walk(fn) if isinstance(c, ast.Compare)]:
+                if id(cmp_node) not in enforcing:
+                    continue
                 if not all(
                     isinstance(o, ast.NotEq) or isinstance(o, ast.Eq)
                     for o in cmp_node.ops
@@ -321,4 +342,45 @@ def test_every_xyz_writer_in_tools_guards_its_header_against_its_body():
         "with no length check -- a mismatch writes a file whose header "
         "disagrees with its body and reads back as a DIFFERENT MOLECULE:\n  "
         + "\n  ".join(offenders)
+    )
+
+
+def test_the_audit_requires_an_ENFORCING_comparison(tmp_path):
+    """A comparison that exists but does nothing is not a guard.
+
+    `_ = len(symbols) != len(coords)` names exactly the right operands and
+    refuses nothing. It passed the audit until the check required the
+    comparison to CONTROL a statement -- mutation-verified against
+    tools/morph/embed.py.
+
+    Checked on a synthetic module so the case is pinned even if every real
+    writer is later rewritten.
+    """
+    import ast
+
+    src = """
+def write_xyz(self, coords):
+    _ = len(coords) != len(self.symbols)   # names the operands, refuses nothing
+    lines = [str(len(self.symbols)), ""]
+    for sym, (x, y, z) in zip(self.symbols, coords):
+        lines.append(f"{sym} {x} {y} {z}")
+    open("out.xyz", "w").write("\\n".join(lines))
+"""
+    fn = ast.parse(src).body[0]
+
+    enforcing = set()
+    for node in ast.walk(fn):
+        tests = []
+        if isinstance(node, (ast.If, ast.While, ast.Assert, ast.IfExp)):
+            tests.append(node.test)
+        for t in tests:
+            for sub in ast.walk(t):
+                if isinstance(sub, ast.Compare):
+                    enforcing.add(id(sub))
+
+    comparisons = [c for c in ast.walk(fn) if isinstance(c, ast.Compare)]
+    assert comparisons, "the fixture must contain a comparison, or this is vacuous"
+    assert not any(id(c) in enforcing for c in comparisons), (
+        "a bare `_ = len(a) != len(b)` controls no statement, so it cannot "
+        "refuse a mismatch and must not count as a guard"
     )
