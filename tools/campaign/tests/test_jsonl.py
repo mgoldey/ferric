@@ -173,3 +173,83 @@ def test_a_malformed_row_in_the_MIDDLE_is_not_silently_dropped(tmp_path):
 
     with pytest.raises(json.JSONDecodeError):
         read_jsonl(p)
+
+
+def test_tail_repair_does_not_rewrite_durable_rows(tmp_path):
+    """The repair must touch only the tail.
+
+    `write_text` truncates the whole file first, so a live reader sees an
+    empty file and a crash mid-rewrite destroys rows that were already on
+    disk. Verified by inode + prefix: the bytes before the tail must be
+    untouched.
+    """
+    p = tmp_path / "run.jsonl"
+    with JsonlWriter(p) as w:
+        for i in range(50):
+            w.append({"pose": i})
+    good_prefix = p.read_bytes()
+    with p.open("a") as fh:
+        fh.write('{"pose": 50, "par')  # killed mid-row
+
+    with JsonlWriter(p, append=True) as w:
+        w.append({"pose": 51})
+
+    after = p.read_bytes()
+    assert after.startswith(good_prefix), "the durable prefix was rewritten"
+    assert [r["pose"] for r in read_jsonl(p)] == list(range(50)) + [51]
+
+
+def test_tail_repair_never_opens_the_file_for_TRUNCATION(tmp_path, monkeypatch):
+    """The hazard is the window, not the end state.
+
+    A truncate-and-rewrite leaves identical bytes when it succeeds, so
+    comparing the final file cannot see it. What matters is that the file is
+    never opened in a mode that empties it: in that window a reader sees
+    nothing and a crash loses every durable row.
+    """
+    p = tmp_path / "run.jsonl"
+    with JsonlWriter(p) as w:
+        w.append({"pose": 0})
+    with p.open("a") as fh:
+        fh.write('{"pose": 1, "par')
+
+    from pathlib import Path as _P
+
+    real_open, real_write_text = _P.open, _P.write_text
+
+    def guarded_open(self, mode="r", *a, **k):
+        if self == p and ("w" in mode or "+" in mode and "r" not in mode):
+            raise AssertionError(f"repair opened {p.name} with mode {mode!r}")
+        return real_open(self, mode, *a, **k)
+
+    def guarded_write_text(self, *a, **k):
+        if self == p:
+            raise AssertionError("repair used write_text(): that truncates")
+        return real_write_text(self, *a, **k)
+
+    monkeypatch.setattr(_P, "open", guarded_open)
+    monkeypatch.setattr(_P, "write_text", guarded_write_text)
+    with JsonlWriter(p, append=True) as w:
+        w.append({"pose": 2})
+
+
+def test_reader_streams_rather_than_loading_the_file(tmp_path, monkeypatch):
+    """Memory must not scale with the experiment.
+
+    Asserted by forbidding the whole-file read outright: if `read_text` is
+    called, the streaming contract is not being honoured.
+    """
+    p = tmp_path / "run.jsonl"
+    with JsonlWriter(p, flush=False) as w:
+        for i in range(200):
+            w.append({"i": i})
+
+    from pathlib import Path as _P
+
+    def forbidden(*a, **k):
+        raise AssertionError("iter_jsonl called read_text(); it must stream")
+
+    monkeypatch.setattr(_P, "read_text", forbidden)
+    it = iter_jsonl(p)
+    assert next(it)["i"] == 0
+    assert next(it)["i"] == 1
