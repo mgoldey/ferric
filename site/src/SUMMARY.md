@@ -12,6 +12,7 @@
 - [Installation](./using/installation.md)
 - [Quick start](./using/quickstart.md)
 - [Python bindings](./using/python.md)
+- [Toxicity screening](./using/toxicity.md)
 - [Recipes](./using/recipes.md)
 - [Applications](./using/applications.md)
 - [QM/MM](./using/qmmm.md)
