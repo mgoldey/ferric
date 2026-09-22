@@ -82,6 +82,15 @@ class DockedPose:
     #: `None` means UNKNOWN, never identity: assuming identity is exactly the
     #: wrong guess and looks like a successful parse.
     rdkit_index_of_heavy: list[int] | None = None
+    #: Meeko's OWN `REMARK SMILES`, which is the string `rdkit_index_of_heavy`
+    #: indexes into. It is canonically identical to the SMILES that was docked
+    #: but its ATOM ORDER differs, so the mapping and this string are only
+    #: correct TOGETHER. MEASURED on danuglipron: applying the mapping to the
+    #: caller's own SMILES still produced the (R) enantiomer of an (S) drug.
+    #:
+    #: A caller passing `rdkit_index_of_heavy` must build the topology from
+    #: THIS, not from its own SMILES.
+    meeko_smiles: str | None = None
 
 
 @dataclass
@@ -361,9 +370,13 @@ def dock_ligand(
     # written by the LIGAND preparation, so read it from the input PDBQT; Vina
     # copies remarks through to its output, so either source works, and reading
     # the input avoids depending on that.
-    from tools.docking.united_atom import parse_smiles_idx_remark
+    from tools.docking.united_atom import (
+        parse_smiles_idx_remark,
+        smiles_from_pdbqt_remark,
+    )
 
     serial_to_rdkit = parse_smiles_idx_remark(lig_pdbqt)
+    mk_smiles = smiles_from_pdbqt_remark(lig_pdbqt)
     poses = []
     for i, (s, c, sc, sers) in enumerate(models):
         # HEAVY ATOMS ONLY, on both sides.
@@ -388,6 +401,7 @@ def dock_ligand(
                 vina_score=sc if sc is not None else float("nan"),
                 rank=i,
                 rdkit_index_of_heavy=mapping,
+                meeko_smiles=mk_smiles,
             )
         )
     if not poses:
