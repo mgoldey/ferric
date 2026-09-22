@@ -67,9 +67,33 @@ class JsonlWriter:
         self._t0 = time.time()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         existed = self.path.exists() and self.path.stat().st_size > 0
+        if append and existed:
+            self._repair_unterminated_tail()
         self._fh = self.path.open("a" if append else "w", encoding="utf-8")
         if meta is not None and not (append and existed):
             self._write({META_KEY: {**meta, "started": time.time()}})
+
+    def _repair_unterminated_tail(self) -> None:
+        """Make an interrupted file safe to append to.
+
+        A process killed mid-row leaves a file with no trailing newline.
+        Opening that with "a" writes the next object onto the partial row and
+        fuses them into one invalid line, destroying BOTH.
+
+        A complete-but-unterminated final object just needs its newline. An
+        incomplete fragment is truncated -- it was never a row.
+        """
+        raw = self.path.read_text(encoding="utf-8")
+        if not raw or raw.endswith("\n"):
+            return
+        head, _, tail = raw.rpartition("\n")
+        try:
+            json.loads(tail)
+        except json.JSONDecodeError:
+            keep = head + "\n" if head else ""  # drop the fragment
+        else:
+            keep = raw + "\n"  # whole row, just unterminated
+        self.path.write_text(keep, encoding="utf-8")
 
     def _write(self, obj: dict[str, Any]) -> None:
         self._fh.write(json.dumps(obj, default=str) + "\n")
@@ -115,20 +139,27 @@ def iter_jsonl(
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"no JSONL at {p}")
-    with p.open(encoding="utf-8") as fh:
-        for lineno, line in enumerate(fh, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                if strict:
-                    raise
-                continue  # a partial last line: the writer is still going
-            if isinstance(obj, dict) and META_KEY in obj and not include_meta:
-                continue
-            yield obj
+    # Only an UNTERMINATED final line may be skipped. A malformed line that
+    # ends in a newline is a completed, corrupt row: dropping it silently
+    # while returning the rows after it would hand back a short result that
+    # looks whole.
+    raw = p.read_text(encoding="utf-8")
+    lines = raw.split("\n")
+    tail_is_unterminated = bool(lines) and lines[-1] != ""
+    last_index = len(lines) - 1
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            if not strict and i == last_index and tail_is_unterminated:
+                continue  # the writer is mid-row right now
+            raise
+        if isinstance(obj, dict) and META_KEY in obj and not include_meta:
+            continue
+        yield obj
 
 
 def read_jsonl(
