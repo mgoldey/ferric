@@ -36,21 +36,37 @@ def _read_inputs(items: list[str]) -> dict[str, str]:
     A `.smi` line is `<smiles>[ <label>]`. A path that exists is read as a
     file; anything else is treated as a literal SMILES, so a mistyped filename
     becomes an unparseable-SMILES error rather than being silently skipped.
+
+    A duplicate label is a hard error rather than a silent overwrite: `dict`
+    assignment would keep only the LAST SMILES for a repeated label, so
+    `assess_many` would never see the earlier molecule at all, and the CLI
+    could exit 0 having assessed fewer molecules than were requested.
     """
     out: dict[str, str] = {}
     for n, item in enumerate(items, 1):
         p = Path(item)
         if p.exists() and p.suffix in {".smi", ".smiles", ".txt"}:
-            for ln, line in enumerate(p.read_text().splitlines(), 1):
+            for ln, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
                 parts = line.split(None, 1)
                 smi = parts[0]
                 label = parts[1].strip() if len(parts) > 1 else f"{p.stem}:{ln}"
+                if label in out and out[label] != smi:
+                    raise ValueError(
+                        f"duplicate label {label!r} ({p}:{ln}): already mapped "
+                        f"to {out[label]!r}, now given {smi!r}"
+                    )
                 out[label] = smi
         else:
-            out[f"input{n}" if len(items) > 1 else "molecule"] = item
+            label = f"input{n}" if len(items) > 1 else "molecule"
+            if label in out and out[label] != item:
+                raise ValueError(
+                    f"duplicate label {label!r}: already mapped to "
+                    f"{out[label]!r}, now given {item!r}"
+                )
+            out[label] = item
     return out
 
 
@@ -122,7 +138,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args(argv)
 
-    inputs = _read_inputs(args.inputs)
+    try:
+        inputs = _read_inputs(args.inputs)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     if not inputs:
         print("no molecules to assess", file=sys.stderr)
         return 1

@@ -85,3 +85,59 @@ def test_offline_makes_no_network_call(monkeypatch, capsys):
 
     monkeypatch.setattr(web, "_post_json", explode)
     assert main(["--offline", ASPIRIN]) == 0
+
+
+def test_a_smi_file_is_read_as_utf8_explicitly(tmp_path, monkeypatch):
+    """The read must not depend on the host's locale encoding.
+
+    `Path.read_text()` with no `encoding=` decodes using the host locale, so a
+    valid UTF-8 file with a non-ASCII label can fail on a non-UTF-8 locale.
+    Monkeypatching `locale.getpreferredencoding` does not reliably change what
+    `read_text()` resolves to on every platform/version, so this asserts the
+    call site passes `encoding="utf-8"` explicitly rather than relying on the
+    ambient locale to happen to be UTF-8 (as it is on this box).
+    """
+    import pathlib
+
+    seen: dict[str, object] = {}
+    real_read_text = pathlib.Path.read_text
+
+    def spy(self, *args, **kwargs):
+        if self.name == "set.smi":
+            seen["encoding"] = kwargs.get("encoding") or (args[0] if args else None)
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "read_text", spy)
+
+    f = tmp_path / "set.smi"
+    f.write_bytes(f"{ASPIRIN} café\n".encode("utf-8"))
+    from tools.tox.__main__ import _read_inputs
+
+    result = _read_inputs([str(f)])
+    assert seen.get("encoding") == "utf-8", (
+        f"read_text was called with encoding={seen.get('encoding')!r}; "
+        "a locale-dependent read can garble a valid UTF-8 label"
+    )
+    assert "café" in result
+
+
+def test_a_duplicate_label_is_an_input_error_not_a_silent_drop(tmp_path, capsys):
+    """Two lines sharing a label must not let dict assignment eat the first.
+
+    Silently overwriting means `assess_many` only ever sees the LAST SMILES
+    for that label -- the CLI could exit 0 having assessed fewer molecules
+    than were requested.
+    """
+    f = tmp_path / "set.smi"
+    f.write_text(f"{ASPIRIN} dup\nCCO dup\n")
+    rc = main(["--offline", str(f)])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "dup" in err
+
+
+def test_a_repeated_identical_label_and_smiles_is_not_an_error(tmp_path, capsys):
+    """The SAME molecule listed twice under the SAME label is a harmless no-op."""
+    f = tmp_path / "set.smi"
+    f.write_text(f"{ASPIRIN} aspirin\n{ASPIRIN} aspirin\n")
+    assert main(["--offline", str(f)]) == 0
