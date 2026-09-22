@@ -83,17 +83,43 @@ class JsonlWriter:
         A complete-but-unterminated final object just needs its newline. An
         incomplete fragment is truncated -- it was never a row.
         """
-        raw = self.path.read_text(encoding="utf-8")
-        if not raw or raw.endswith("\n"):
-            return
-        head, _, tail = raw.rpartition("\n")
-        try:
-            json.loads(tail)
-        except json.JSONDecodeError:
-            keep = head + "\n" if head else ""  # drop the fragment
-        else:
-            keep = raw + "\n"  # whole row, just unterminated
-        self.path.write_text(keep, encoding="utf-8")
+        # Modify only the TAIL, in binary mode. `write_text` truncates the
+        # whole file before rewriting it, so a live reader can observe an
+        # empty file and a second interruption mid-rewrite destroys rows that
+        # were already durable. Appending a newline, or truncating back to the
+        # last complete one, touches nothing that is already correct.
+        with self.path.open("r+b") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            if size == 0:
+                return
+            fh.seek(size - 1)
+            if fh.read(1) == b"\n":
+                return  # already well-formed
+
+            window = min(size, 1 << 20)
+            fh.seek(size - window)
+            chunk = fh.read(window)
+            nl = chunk.rfind(b"\n")
+            if nl < 0 and window < size:
+                # Final row exceeds the window; leave the file untouched
+                # rather than guessing where it starts.
+                return
+            tail = chunk[nl + 1 :]
+
+            try:
+                json.loads(tail.decode("utf-8"))
+                complete = True
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                complete = False
+
+            if complete:
+                fh.seek(0, os.SEEK_END)
+                fh.write(b"\n")  # whole row, just unterminated
+            else:
+                fh.truncate(size - len(tail))  # drop the fragment only
+            fh.flush()
+            os.fsync(fh.fileno())
 
     def _write(self, obj: dict[str, Any]) -> None:
         self._fh.write(json.dumps(obj, default=str) + "\n")
@@ -143,23 +169,24 @@ def iter_jsonl(
     # ends in a newline is a completed, corrupt row: dropping it silently
     # while returning the rows after it would hand back a short result that
     # looks whole.
-    raw = p.read_text(encoding="utf-8")
-    lines = raw.split("\n")
-    tail_is_unterminated = bool(lines) and lines[-1] != ""
-    last_index = len(lines) - 1
-    for i, line in enumerate(lines):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            if not strict and i == last_index and tail_is_unterminated:
-                continue  # the writer is mid-row right now
-            raise
-        if isinstance(obj, dict) and META_KEY in obj and not include_meta:
-            continue
-        yield obj
+    # Stream one line at a time: `read_text()` would materialise the whole
+    # file before yielding the first row, so memory would scale with the
+    # experiment despite the streaming contract.
+    with p.open(encoding="utf-8") as fh:
+        for raw_line in fh:
+            terminated = raw_line.endswith("\n")
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                if not strict and not terminated:
+                    return  # the writer is mid-row; stop cleanly
+                raise
+            if isinstance(obj, dict) and META_KEY in obj and not include_meta:
+                continue
+            yield obj
 
 
 def read_jsonl(
