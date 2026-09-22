@@ -123,3 +123,53 @@ def test_a_missing_file_raises_rather_than_reading_as_empty(tmp_path):
     """Empty results and a missing run are different, and must look different."""
     with pytest.raises(FileNotFoundError):
         read_jsonl(tmp_path / "never_ran.jsonl")
+
+
+def test_resume_after_a_kill_mid_row_does_not_fuse_two_rows(tmp_path):
+    """A process killed mid-write leaves no trailing newline.
+
+    Appending onto that fuses the partial row and the next object into one
+    invalid line, destroying BOTH.
+    """
+    p = tmp_path / "run.jsonl"
+    with JsonlWriter(p) as w:
+        w.append({"pose": 0})
+    with p.open("a") as fh:
+        fh.write('{"pose": 1, "ener')  # killed here
+
+    with JsonlWriter(p, append=True) as w:
+        w.append({"pose": 2})
+
+    poses = [r["pose"] for r in read_jsonl(p)]
+    assert poses == [0, 2], f"the fragment must be dropped, not fused: {poses}"
+
+
+def test_resume_keeps_a_COMPLETE_row_that_merely_lacks_its_newline(tmp_path):
+    """Whole object, missing newline: it is data and must survive."""
+    p = tmp_path / "run.jsonl"
+    with JsonlWriter(p) as w:
+        w.append({"pose": 0})
+    with p.open("a") as fh:
+        fh.write('{"pose": 1}')  # complete, unterminated
+
+    with JsonlWriter(p, append=True) as w:
+        w.append({"pose": 2})
+    assert [r["pose"] for r in read_jsonl(p)] == [0, 1, 2]
+
+
+def test_a_malformed_row_in_the_MIDDLE_is_not_silently_dropped(tmp_path):
+    """Tolerance is for the live tail only.
+
+    A corrupt newline-terminated row is a completed row. Skipping it while
+    returning the rows after it hands back a short result that looks whole.
+    """
+    p = tmp_path / "run.jsonl"
+    with JsonlWriter(p) as w:
+        w.append({"pose": 0})
+        w.append({"pose": 1})
+    text = p.read_text().split("\n")
+    text[1] = '{"pose": 0, "brok'  # corrupt a row that IS newline-terminated
+    p.write_text("\n".join(text))
+
+    with pytest.raises(json.JSONDecodeError):
+        read_jsonl(p)
