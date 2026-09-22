@@ -444,8 +444,16 @@ def tier1_dock(iso: Isomer, context: dict) -> TierResult:
     try:
         from tools.docking.united_atom import restore_hydrogens
 
+        # The mapping indexes into MEEKO's SMILES, not ours -- canonically the
+        # same molecule, different atom order. Using them together is the only
+        # correct combination; pairing the mapping with `iso.canonical`
+        # produced the (R) enantiomer of an (S) drug (measured on
+        # danuglipron). When the pose carries no mapping there is nothing to
+        # mis-index, so our own SMILES is right.
+        _mapping = getattr(best, "rdkit_index_of_heavy", None)
+        _smiles = getattr(best, "meeko_smiles", None) if _mapping else None
         symbols, coords = restore_hydrogens(
-            iso.canonical,
+            _smiles or iso.canonical,
             [s for s, _ in zip(best.symbols, best.coords_angstrom) if s != "H"],
             [c for s, c in zip(best.symbols, best.coords_angstrom) if s != "H"],
             # getattr, because the multi-seed tests drive this with a fake
@@ -454,7 +462,7 @@ def tier1_dock(iso: Isomer, context: dict) -> TierResult:
             # substructure match without it), not a requirement, so a pose
             # lacking it must still re-hydrogenate rather than fail the
             # candidate.
-            rdkit_index_of_heavy=getattr(best, "rdkit_index_of_heavy", None),
+            rdkit_index_of_heavy=_mapping,
         )
     except Exception as exc:  # noqa: BLE001
         # A pose we cannot re-hydrogenate must NOT flow on as a stripped
