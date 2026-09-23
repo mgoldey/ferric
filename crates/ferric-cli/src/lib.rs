@@ -353,10 +353,9 @@ pub fn run(args: Vec<String>) {
     // [dft] dispersion — same task guard as grid_prune below, for the same
     // reason. The correction is applied inside `run_ksdft`, which only the
     // "energy" task reaches: `optimize` and `frequencies` return above. A
-    // configured correction would therefore be silently DROPPED, and the run
-    // would report a plain KS-DFT geometry or Hessian as though it were
-    // dispersion-corrected. D3(BJ) nuclear derivatives are not implemented, so
-    // there is no correct answer to give here either -- refuse up front.
+    // configured correction would therefore be silently DROPPED unless the task
+    // path applies it itself, and the run would report a plain KS-DFT geometry
+    // or Hessian as though it were dispersion-corrected.
     // `optimize` IS supported: the D3(BJ) analytic gradient is implemented and
     // threaded through `optimize_geometry_with_correction`, so the energy and
     // the gradient describe the same surface.
