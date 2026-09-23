@@ -56,6 +56,9 @@ def converge(mol, guess: str):
     mf.conv_tol = 1e-12
     mf.conv_tol_grad = 1e-9
     mf.kernel()
+    # A saddle point can stall DIIS at max_cycle; recording that energy would
+    # silently pin ferric's tests (TOL 1e-6) to a wrong reference.
+    assert mf.converged, f"UHF from init_guess={guess!r} ({mol.basis}) did not converge"
     return mf
 
 
