@@ -228,14 +228,18 @@ pub(crate) fn build_rsh_dfk_pair<'a>(
 /// * `Ok(Some(kind))` — construct that builder.
 ///
 /// `df_active` is `df_j.is_some() || df_k.is_some()` AFTER the solver's own
-/// auto-defaulting (a hybrid/RSH functional silently turns DF-K on). Exchange
-/// then comes from DF-K or the direct 4-centre builder and a pluggable K would
-/// be built and thrown away, so it is skipped WITH A WARNING rather than
-/// silently no-op'ing. `df_k_present` only picks the wording.
+/// auto-defaulting (a hybrid/RSH functional silently turns DF-K on), plus, in
+/// `solve_rhf`, a requested DF-K that was dropped because its K is never read.
+/// A pluggable K would then be built and thrown away, so it is skipped WITH A
+/// WARNING rather than silently no-op'ing. `df_k_present`, `need_k` (the
+/// functional consumes exact exchange at all) and `omega` only pick the
+/// wording — see [`exchange_route_when_df_active`].
 pub(crate) fn resolve_k_builder(
     k_builder: Option<&str>,
     df_active: bool,
     df_k_present: bool,
+    need_k: bool,
+    omega: f64,
 ) -> Result<Option<&str>, FerricError> {
     let Some(kb) = k_builder else {
         return Ok(None);
@@ -250,13 +254,37 @@ pub(crate) fn resolve_k_builder(
         if let Some(kind) = pluggable {
             eprintln!(
                 "[ferric] warning: k_builder = \"{kind}\" is IGNORED because density-fitted J/K is active \
-                 (df_j_aux/df_k_aux set, or auto-defaulted for a functional); exchange comes from {}",
-                if df_k_present { "DF-K" } else { "the direct 4-centre builder" }
+                 (df_j_aux/df_k_aux set, or auto-defaulted for a functional); {}",
+                exchange_route_when_df_active(df_k_present, need_k, omega)
             );
         }
         return Ok(None);
     }
     Ok(pluggable)
+}
+
+/// Where exchange actually comes from when [`resolve_k_builder`] skips a
+/// pluggable builder because density fitting is active.
+///
+/// Before this existed the warning said "the direct 4-centre builder" whenever
+/// DF-K was absent, which was wrong for the two cases where `solve_rhf` drops
+/// DF-K on purpose: a pure functional builds no K at all, and an RSH
+/// functional contracts K from its SR/LR DF fitters (there is no four-centre
+/// erf/erfc exchange path). Same wording as [`narrow_k_builder_to_supported`].
+pub(crate) fn exchange_route_when_df_active(
+    df_k_present: bool,
+    need_k: bool,
+    omega: f64,
+) -> &'static str {
+    if !need_k {
+        "the functional uses no exact exchange"
+    } else if omega > 0.0 {
+        "exchange for a range-separated functional comes from the SR/LR density-fitted fitters"
+    } else if df_k_present {
+        "exchange comes from DF-K"
+    } else {
+        "exchange comes from the direct 4-centre builder"
+    }
 }
 
 /// Construct the pluggable exchange builder named by [`resolve_k_builder`].
@@ -421,4 +449,32 @@ pub(crate) fn subtract_rsh_exchange(
     k_sr.scaled_add(c_lr, &k_lr);
     f.scaled_add(-eff_scale, &k_sr);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The four routes `resolve_k_builder`'s warning can name. The two
+    /// `df_k_present = false` cases with `need_k = false` or `omega > 0` are
+    /// exactly `solve_rhf`'s `df_k_skipped` runs, which used to be told
+    /// exchange came from "the direct 4-centre builder".
+    #[test]
+    fn exchange_route_names_the_builder_actually_used() {
+        let pure = exchange_route_when_df_active(false, false, 0.0);
+        assert!(pure.contains("no exact exchange"), "{pure}");
+        let rsh = exchange_route_when_df_active(false, true, 0.3);
+        assert!(rsh.contains("SR/LR density-fitted"), "{rsh}");
+        for route in [pure, rsh] {
+            assert!(!route.contains("4-centre"), "{route}");
+        }
+        assert_eq!(
+            exchange_route_when_df_active(true, true, 0.0),
+            "exchange comes from DF-K"
+        );
+        assert_eq!(
+            exchange_route_when_df_active(false, true, 0.0),
+            "exchange comes from the direct 4-centre builder"
+        );
+    }
 }

@@ -667,6 +667,8 @@ pub fn solve_uhf_fockmod(
         config.k_builder.as_deref(),
         df_j.is_some() || df_k.is_some(),
         df_k.is_some(),
+        need_k,
+        k_mix.omega,
     )?;
     let pluggable_k_kind =
         crate::fock_assembly::narrow_k_builder_to_supported(pluggable_k_kind, need_k, k_mix.omega);
