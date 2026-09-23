@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -73,6 +74,10 @@ class JsonlWriter:
         if meta is not None and not (append and existed):
             self._write({META_KEY: {**meta, "started": time.time()}})
 
+    # Backward-scan chunk size for `_repair_unterminated_tail`; a class
+    # attribute so a test can shrink it below one row.
+    _TAIL_CHUNK = 1 << 20
+
     def _repair_unterminated_tail(self) -> None:
         """Make an interrupted file safe to append to.
 
@@ -97,15 +102,22 @@ class JsonlWriter:
             if fh.read(1) == b"\n":
                 return  # already well-formed
 
-            window = min(size, 1 << 20)
-            fh.seek(size - window)
-            chunk = fh.read(window)
-            nl = chunk.rfind(b"\n")
-            if nl < 0 and window < size:
-                # Final row exceeds the window; leave the file untouched
-                # rather than guessing where it starts.
-                return
-            tail = chunk[nl + 1 :]
+            # Walk back in fixed chunks to the last newline. A single window
+            # is not enough: a final row longer than it would be left in
+            # place, the next append would fuse onto it, and the fused line --
+            # newline-terminated -- would make every later read raise.
+            start = size
+            tail_start = 0  # no newline at all: the whole file is the tail
+            while start > 0:
+                step = min(start, self._TAIL_CHUNK)
+                start -= step
+                fh.seek(start)
+                nl = fh.read(step).rfind(b"\n")
+                if nl >= 0:
+                    tail_start = start + nl + 1
+                    break
+            fh.seek(tail_start)
+            tail = fh.read(size - tail_start)
 
             try:
                 json.loads(tail.decode("utf-8"))
@@ -212,7 +224,25 @@ def to_json(src: str | Path, dst: str | Path | None = None) -> Path:
     src = Path(src)
     dst = Path(dst) if dst else src.with_suffix(".json")
     rows = read_jsonl(src, strict=True)
-    tmp = dst.with_suffix(dst.suffix + ".tmp")
-    tmp.write_text(json.dumps(rows, indent=1), encoding="utf-8")
-    os.replace(tmp, dst)
+    # A UNIQUE temp name in dst's directory (so os.replace stays a same-
+    # filesystem rename and two concurrent conversions cannot share one temp
+    # file), fsynced before the rename so a power loss cannot leave `dst`
+    # present but empty, and removed on any failure.
+    fd, tmp_name = tempfile.mkstemp(
+        dir=dst.parent, prefix=dst.name + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(rows, fh, indent=1)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, dst)
+        dir_fd = os.open(dst.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    finally:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
     return dst

@@ -113,6 +113,21 @@ def test_to_json_produces_the_same_rows(tmp_path):
     assert out.suffix == ".json"
     assert json.loads(out.read_text()) == read_jsonl(p)
     assert not out.with_suffix(".json.tmp").exists()  # no temp left behind
+    assert sorted(x.name for x in tmp_path.iterdir()) == ["run.json", "run.jsonl"]
+
+
+def test_to_json_leaves_no_temp_when_the_write_FAILS(tmp_path, monkeypatch):
+    p = tmp_path / "run.jsonl"
+    with JsonlWriter(p) as w:
+        w.append({"pose": 0})
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(json, "dump", boom)
+    with pytest.raises(OSError, match="disk full"):
+        to_json(p)
+    assert sorted(x.name for x in tmp_path.iterdir()) == ["run.jsonl"]
 
 
 def test_iter_does_not_load_the_whole_file(tmp_path):
@@ -149,6 +164,25 @@ def test_resume_after_a_kill_mid_row_does_not_fuse_two_rows(tmp_path):
 
     poses = [r["pose"] for r in read_jsonl(p)]
     assert poses == [0, 2], f"the fragment must be dropped, not fused: {poses}"
+
+
+def test_resume_repairs_a_fragment_LONGER_than_one_scan_chunk(tmp_path, monkeypatch):
+    """The old single-window scan left an oversized fragment in place.
+
+    The next append then fused onto it, and the newline-terminated fused line
+    made every later read raise.
+    """
+    monkeypatch.setattr(JsonlWriter, "_TAIL_CHUNK", 8)
+    p = tmp_path / "run.jsonl"
+    with JsonlWriter(p) as w:
+        w.append({"pose": 0})
+    with p.open("a") as fh:
+        fh.write('{"pose": 1, "energy": -1.2345678, "ener')  # killed here
+
+    with JsonlWriter(p, append=True) as w:
+        w.append({"pose": 2})
+
+    assert [r["pose"] for r in read_jsonl(p, strict=True)] == [0, 2]
 
 
 def test_resume_keeps_a_COMPLETE_row_that_merely_lacks_its_newline(tmp_path):
