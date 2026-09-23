@@ -5,8 +5,9 @@
 //! - SCS-MP2(2terfc): dual-attenuated SCS (Goldey & Head-Gordon, J. Phys. Chem. B
 //!   118, 6519 (2014) -- "Separate electronic attenuation allowing a
 //!   spin-component-scaled MP2 to be effective for both thermochemistry and
-//!   noncovalent interactions"; its aTZ parameters are re-tabulated in Goldey,
-//!   Belzunces & Head-Gordon, JCTC 11, 4159 (2015), Table 2)
+//!   noncovalent interactions", which is where the parameters are fitted; its
+//!   aTZ S66 RMSD is reported in Goldey, Belzunces & Head-Gordon, JCTC 11, 4159
+//!   (2015), Table 2)
 //!   E = c_OS * E_OS(r0_1) + c_SS * [E_SS(r0_2) - E_SS(r0_1)], using the EXACT
 //!   `terfc` operator (2D interpolation tables), not the erfc approximation.
 
