@@ -12,11 +12,15 @@ bigger the system the more convincing the false "defect" looks.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 ferric = pytest.importorskip("ferric")
 
-WATER = "/home/matt/qc/ferric/testdata/molecules/water.xyz"
+WATER = str(
+    Path(__file__).resolve().parents[3] / "testdata" / "molecules" / "water.xyz"
+)
 HARTREE_TO_KCAL = 627.5095
 
 
@@ -63,9 +67,7 @@ def test_every_opt_out_spelling_agrees(setup, spelling):
 def test_an_explicit_basis_name_is_honoured(setup):
     """A named aux basis must not be swallowed by the default."""
     mol, bs = setup
-    named = ferric.run_dft(
-        mol, bs, "PBE", df_j_aux="def2-universal-jkfit"
-    ).total_energy
+    named = ferric.run_dft(mol, bs, "PBE", df_j_aux="def2-universal-jkfit").total_energy
     assert named == ferric.run_dft(mol, bs, "PBE").total_energy
 
 
@@ -83,3 +85,22 @@ def test_exact_J_moves_TOWARD_an_independent_reference(setup):
         f"exact J ({exact:.6f}) is not closer to PySCF ({reference}) than "
         f"RI-J ({rij:.6f})"
     )
+
+
+def test_RSH_refuses_a_DF_K_opt_out_by_name(setup):
+    """RSH exchange exists only as RI-K, so `df_k_aux="off"` cannot be honoured.
+
+    It used to reach `basis::bundled("")` and fail with an unrelated basis
+    error. It must instead say what was refused and why.
+    """
+    mol, bs = setup
+    with pytest.raises(RuntimeError, match="range-separated"):
+        ferric.run_dft(mol, bs, "wB97X-V", df_k_aux="off")
+
+
+def test_RSH_still_honours_a_DF_J_opt_out(setup):
+    """Only the K opt-out is unsupported for RSH; exact J must still work."""
+    mol, bs = setup
+    rij = ferric.run_dft(mol, bs, "wB97X-V").total_energy
+    exact = ferric.run_dft(mol, bs, "wB97X-V", df_j_aux="off").total_energy
+    assert rij != exact

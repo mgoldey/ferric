@@ -122,6 +122,20 @@ pub(crate) fn prepare<'a>(
     };
     let ooc_budget = crate::rhf::resolve_three_index_budget(config.three_index_budget_bytes);
     let (dfk_sr, dfk_lr) = if k_mix.omega > 0.0 {
+        // RSH exchange is density-fitted ONLY: there is no conventional
+        // four-centre erf/erfc exchange path. The explicit opt-out
+        // `df_k_aux = Some("")` (see `solve_rhf`) cannot be honoured here, and
+        // passing it on would fail inside `basis::bundled("")` with an
+        // unrelated-looking basis error. Refuse it by name instead.
+        if config.df_k_aux.as_deref() == Some("") {
+            return Err(FerricError::General(format!(
+                "density-fitted exchange cannot be turned off for a \
+                 range-separated functional (omega = {}): ferric builds RSH \
+                 exchange only via RI-K. Leave df_k_aux unset or name an aux \
+                 basis; df_j_aux may still be turned off.",
+                k_mix.omega
+            )));
+        }
         let (sr, lr) = crate::fock_assembly::build_rsh_dfk_pair(
             ctx,
             mol,
