@@ -24,14 +24,16 @@ n_quad = 7
 # not a scaling win.
 #
 # "ao-sparse" restricts the pseudo-densities to Boys-orbital AO domains and
-# requires `domain_cutoff_bohr`. It is the one APPROXIMATE variant, and it was
-# MEASURED not to pay: the radius needed for 1% accuracy tracks the molecular
-# diameter rather than saturating (water/ethane/butane/hexane/octane need
-# 3/6/10/14/20 Bohr for diameters 2.9/5.8/10.5/15.2/19.9), so the domain either
-# spans the whole molecule and discards nothing, or loses percent-scale energy.
-# A 12 Bohr cutoff is exact for butane and still loses 32% on octane. Kept as a
-# user-driven knob, not a recommended production path — see
-# docs/guide/tutorials/02-mp2-family.md.
+# requires `domain_cutoff_bohr`. It is the one APPROXIMATE variant: it converges
+# to "ao" as the cutoff grows and is exact once the domains span the molecule.
+# Measured 2026-07-28 against the exact AO path (n-alkanes, c_os = 1.0,
+# n_quad = 7): chemical accuracy (< 1.6 mHa) needs r = 3-5 Bohr from ethane to
+# dodecane, so r/diameter FALLS 0.52 -> 0.17 -- a finite decay length, not strict
+# saturation. Danuglipron (71 atoms, 31 Bohr, STO-3G) is within 0.05% at 4 Bohr.
+# Pinned by ferric-mp2's sos_ao_sparse_truncation_radius_is_transferable_across_sizes.
+# The AO algebra is still DENSE, so a cutoff does not yet save time or memory.
+# (An earlier "radius tracks the molecular diameter" result was an artifact of a
+# domain-mask index bug, fixed 2026-07-27.) See site/src/methods/mp2.md.
 sos_formulation = "mo"
 # domain_cutoff_bohr = 12.0   # required by (and ONLY valid with) "ao-sparse"
 

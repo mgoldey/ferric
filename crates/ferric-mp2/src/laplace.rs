@@ -2189,10 +2189,13 @@ mod tests {
     /// vacuously (measured: |d| = 0.0 at EVERY radius >= 3). Butane is 10.5
     /// Bohr across, so the small radii here genuinely truncate.
     ///
-    /// The `r = 4` deviation is asserted to be LARGE on purpose. Domain
-    /// truncation is not a mild perturbation at these radii — see
-    /// `sos_ao_sparse_truncation_radius_tracks_molecular_diameter` for why
-    /// that matters.
+    /// The `r = 4` deviation is asserted to be SMALL (< 0.1%) but NONZERO: small
+    /// because the localized construction truncates accurately, nonzero so the
+    /// sweep provably contains a radius that masks something. (This doc used to
+    /// say the r = 4 deviation was asserted LARGE and pointed at a test named
+    /// `sos_ao_sparse_truncation_radius_tracks_molecular_diameter`; both
+    /// predate the 2026-07-27 index-mismatch fix. That test is now
+    /// `sos_ao_sparse_truncation_radius_is_transferable_across_sizes`.)
     #[test]
     fn sos_ao_sparse_converges_to_dense_as_cutoff_grows() {
         let mol = Molecule::load_xyz(concat!(
@@ -2368,9 +2371,11 @@ mod tests {
             (dense, (sparse - dense).abs() / dense.abs())
         };
 
-        // A radius that is EXACT for butane (10.5 Bohr across) must still be
-        // badly wrong for octane (19.9 Bohr across). That is the whole point:
-        // the usable radius is not transferable between system sizes.
+        // A radius that is EXACT for butane (10.5 Bohr across) must ALSO be
+        // essentially exact for octane (19.9 Bohr across): the usable radius
+        // transfers between system sizes. (This comment previously stated the
+        // retracted opposite claim; the assertions below were already the
+        // corrected ones.)
         let (_, rel_butane) = run("alkane_4", 12.0);
         let (_, rel_octane) = run("alkane_8", 12.0);
         eprintln!(

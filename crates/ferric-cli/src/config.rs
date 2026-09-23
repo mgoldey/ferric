@@ -668,11 +668,15 @@ pub struct Mp2Cfg {
     ///   "mo" (default) — τ-weighted `(P|ia)` amplitudes, `J = B(t)B(t)ᵀ`.
     ///   "ao"           — occupied/virtual pseudo-densities; no MO transform
     ///                    inside the quadrature loop.
+    ///   "ao-sparse"    — "ao" with the pseudo-densities restricted to
+    ///                    Boys-orbital AO domains; needs `domain_cutoff_bohr`.
     ///
-    /// Both compute the SAME quantity and agree to round-off (asserted in
-    /// `ferric-mp2`'s tests). The AO path is the correctness reference for the
-    /// pseudo-density limit — it is dense here, so selecting it is NOT a
-    /// scaling win; see `docs/notebooks/11-laplace-sos-mp2.ipynb`.
+    /// "mo" and "ao" compute the SAME quantity and agree to round-off (asserted
+    /// in `ferric-mp2`'s tests). The AO path is the correctness reference for
+    /// the pseudo-density limit — it is dense here, so selecting it is NOT a
+    /// scaling win. "ao-sparse" is the one approximate variant; see
+    /// `domain_cutoff_bohr` below. Unknown values are a hard error
+    /// (`SosFormulation::parse_config_str`).
     ///
     /// Distinct from `formulation`, which selects the rs-mp2-rpa Δ-form.
     pub sos_formulation: Option<String>,
