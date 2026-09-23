@@ -755,8 +755,17 @@ mod tests {
             }
         }
         // An RI set for an oxygen-containing molecule needs f functions.
-        let o_max_l = rifit.for_element(8).unwrap().iter().map(|s| s.l).max().unwrap();
-        assert!(o_max_l >= 3, "cc-pvdz-rifit O max_l = {o_max_l}, expected >= 3");
+        let o_max_l = rifit
+            .for_element(8)
+            .unwrap()
+            .iter()
+            .map(|s| s.l)
+            .max()
+            .unwrap();
+        assert!(
+            o_max_l >= 3,
+            "cc-pvdz-rifit O max_l = {o_max_l}, expected >= 3"
+        );
         assert_eq!(rifit.name, "cc-pvdz-rifit");
     }
 
