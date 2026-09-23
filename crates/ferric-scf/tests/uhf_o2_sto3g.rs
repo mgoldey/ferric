@@ -6,6 +6,10 @@
 //! "UHF on O₂ (M = 3) / STO-3G reports `converged = true` at an energy 0.255 Ha
 //! ABOVE PySCF's UHF and above ferric's own ROHF; at cc-pVDZ it agrees."
 //!
+//! The report's 0.255 Ha (0.2551) is measured against PySCF's DEFAULT-guess
+//! state, itself a saddle; against the stable UHF minimum the hcore saddle is
+//! 0.2564 Ha higher. "The 0.255 Ha state" below names the hcore saddle.
+//!
 //! Reproduced (2026-09-23) with the extension built from the main checkout's
 //! `feat/esp-on-surface` branch, whose `uhf.rs` PREDATES #83 (`396e0d61`, "open-shell
 //! SCF discarded its initial guess"): that build gives −147.37890121 Ha. On
@@ -204,7 +208,7 @@ fn hcore_guess_reproduces_the_reported_saddle_and_it_is_flagged() {
     assert!(
         (r.energy - e_hcore).abs() < TOL,
         "hcore guess gave E = {:.10}, not the reported saddle {e_hcore:.10}; this file's \
-         premise (a second basin at +0.255 Ha) is gone",
+         premise (a second basin 0.255 Ha above the default-guess state) is gone",
         r.energy
     );
     assert_eq!(

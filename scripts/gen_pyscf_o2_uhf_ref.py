@@ -9,8 +9,9 @@ returns depends on the guess. All three are recorded, because the test needs
 to tell them apart:
 
 * `energy_hcore_guess`   -- what PySCF reaches from init_guess = hcore / 1e /
-  huckel. A saddle 0.255 Ha ABOVE the minimum (and above ROHF). This is the
-  state ferric returned before it honoured the MINAO guess for UHF (#83).
+  huckel. A saddle 0.2564 Ha ABOVE the minimum (0.2551 Ha above
+  `energy_default_guess`, and above ROHF). This is the state ferric returned
+  before it honoured the MINAO guess for UHF (#83).
 * `energy_default_guess` -- what PySCF reaches from init_guess = minao / atom.
   Also a SADDLE of the UHF orbital Hessian (doubly degenerate lambda_min < 0):
   PySCF's own `stability()` reports it internally unstable.
