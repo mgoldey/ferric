@@ -77,6 +77,13 @@ def test_a_non_dict_row_is_REFUSED(tmp_path):
             w.append([1, 2, 3])
 
 
+def test_a_non_dict_row_is_REFUSED_on_read(tmp_path):
+    p = tmp_path / "r.jsonl"
+    p.write_text('{"a": 1}\n["pose", 1]\n{"a": 2}\n', encoding="utf-8")
+    with pytest.raises(TypeError, match=r":2: .*got list"):
+        read_jsonl(p)
+
+
 def test_append_mode_does_not_duplicate_the_meta_header(tmp_path):
     p = tmp_path / "run.jsonl"
     with JsonlWriter(p, meta={"run": 1}) as w:
