@@ -13,28 +13,34 @@ providers**. The local pass checks several hundred compiled SMARTS patterns
 from six published alert catalogs (Brenk, PAINS, NIH, and the Glaxo, Dundee and
 BMS sets via ChEMBL), plus Lipinski and Veber rules, and needs no network.
 
-**Use `--offline` today.** Neither web provider currently returns endpoints:
+**What the web providers return (probed 2026-09-23):**
 
-- **ADMETlab 3.0**'s documented API returned HTTP 404 on every path tried when
-  it was last probed (2026-08-29). The client degrades cleanly and will start
-  contributing again if the service comes back.
-- **ProTox-3.0** has no documented JSON API. The provider only checks that the
-  site is reachable, and by design it never scrapes the HTML results page.
+- **ADMETlab 3.0**'s documented `POST /api/admet` returns HTTP 404. The client
+  uses the live but undocumented `POST /api/single/admet` instead, one molecule
+  per request. The host rate-limits hard, so expect HTTP 429, reported as an
+  unavailable provider (exit 3), on larger batches.
+- **ProTox-3.0** has no documented JSON API, and by design the provider never
+  scrapes the HTML results page. It never contributes endpoints: every online
+  run lists it as `unsupported`, and it never affects the exit status.
 
-Both record their reason as a provider error. So a run without `--offline`
-currently exits with status **2** even when the local screen succeeded
-(MEASURED 2026-09-23).
+For a batch, `--offline` is still the safer default. The local screen needs no
+network, and it is the part whose output does not depend on a third-party
+service being up.
 
 ## Usage
 
 ```
-python -m tools.tox [--offline] [--json] SMILES|FILE [SMILES|FILE ...]
+python -m tools.tox [--offline | --require-online] [--fail-on-alerts]
+                    [--timeout SECONDS] [--json] SMILES|FILE [SMILES|FILE ...]
 ```
 
 | flag | effect |
 |---|---|
 | `--offline` | local RDKit screen only; makes no network call |
-| `--json` | machine-readable output on stdout |
+| `--require-online` | an unavailable online provider is a hard failure (exit 2), not a degraded run (exit 3). Cannot be combined with `--offline` |
+| `--fail-on-alerts` | exit 4 when any molecule has a structural alert |
+| `--timeout SECONDS` | wall-clock limit per web request (default 20). A provider that does not answer is not retried for the rest of the run |
+| `--json` | machine-readable output on stdout, including each provider's `provider_status` |
 
 An input is read as a file when it exists and ends in `.smi`, `.smiles` or
 `.txt`; otherwise it is treated as a literal SMILES. A file holds one
@@ -54,14 +60,30 @@ python -m tools.tox --offline candidates.smi
 
 | code | meaning |
 |---|---|
-| 0 | every molecule assessed, and no provider reported an error |
-| 1 | a SMILES could not be parsed, or there was nothing to assess |
-| 2 | a provider failed or returned nothing (currently every online run; see above) |
+| 0 | clean: every molecule assessed by every provider that was asked to |
+| 1 | usage or input error: a bad flag, an unparseable SMILES, a duplicate label, or nothing to assess |
+| 2 | a required check did not run: the local screen failed, or `--require-online` was given and an online provider was unavailable |
+| 3 | online checks unavailable: the local screen ran and is reported in full; each unavailable provider is named with its reason |
+| 4 | structural alerts found (only with `--fail-on-alerts`) |
+
+When several apply, the precedence is 1 > 2 > 4 > 3 > 0.
 
 These are distinct on purpose. "No alerts found" and "the alert screen did not
 run" produce similar-looking output, and they mean opposite things — so a
-provider failure is never folded into success. In a pipeline, treat a non-zero
-status as *no result*, not as a clean molecule.
+provider failure is never folded into success. A web-service outage is neither
+a usage error nor a verdict, so it has its own status: 3 means the local
+results are usable and the online predictions are missing. If a pipeline needs
+the online predictions, pass `--require-online`. Without `--fail-on-alerts`,
+alerts are reported but do not change the exit status.
+
+Each provider's outcome is in the JSON as `provider_status`: `ok`,
+`unavailable` (outage, HTTP error, rate limit, timeout, unparseable response),
+`unsupported` (ProTox), `no_result`, `error` or `contract_violation`. The human
+output shows the same tag in brackets on its `!!` lines.
+
+Before 2026-09-23, every run without `--offline` exited 2, even when the local
+screen succeeded: ADMETlab's documented path returned 404, and ProTox's
+by-design note was counted as a failure.
 
 ## Reading the output
 
@@ -78,10 +100,13 @@ explanation, omitted here):
 ```
 
 Every line states its **polarity**, and the JSON carries the same flag as
-`higher_is_worse`. The local endpoints are all "higher is worse". Some web
-endpoints are not: ADMETlab's oral-bioavailability columns, for example, are
-"higher is better". An aggregator that guesses the direction will invert a
-safety ranking. Read the flag, and don't assume a direction.
+`higher_is_worse`. An aggregator that guesses the direction will invert a
+safety ranking, so read the flag rather than assuming one. ADMETlab's
+F20%/F30% columns are an example of how easy the guess is to get wrong: they
+are the probability of *low* oral bioavailability (below 20% or 30%), so they
+are reported as `low_bioavailability_20pct` and `low_bioavailability_30pct`,
+higher is worse. They were previously mapped as bioavailability, higher is
+better, which inverted them.
 
 A value of `None` means *unknown*, never zero. For a probability-valued
 endpoint, `0.0` means "confidently predicted negative", which is the opposite
