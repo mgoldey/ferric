@@ -9,19 +9,21 @@ Screening a ligand-pocket interaction needs the response of the ligand as it
 sits in the pocket, so the point charges have to reach that SCF.
 """
 
+from pathlib import Path
+
 import pytest
 
 ferric = pytest.importorskip("ferric")
 
-WATER = "/home/matt/qc/ferric/testdata/molecules/water.xyz"
+WATER = str(
+    Path(__file__).resolve().parents[3] / "testdata" / "molecules" / "water.xyz"
+)
 
 
 @pytest.fixture(scope="module")
 def setup():
     mol = ferric.Molecule.from_xyz(WATER)
-    return mol, ferric.BasisSet.bundled("sto-3g"), ferric.BasisSet.bundled(
-        "cc-pvdz-ri"
-    )
+    return mol, ferric.BasisSet.bundled("sto-3g"), ferric.BasisSet.bundled("cc-pvdz-ri")
 
 
 def test_no_environment_is_BIT_IDENTICAL_to_omitting_the_kwargs(setup):
@@ -43,9 +45,7 @@ def test_a_point_charge_REACHES_the_reference_scf(setup):
     """
     mol, bs, aux = setup
     vac = ferric.run_pdep_rpa(mol, bs, aux)
-    charged = ferric.run_pdep_rpa(
-        mol, bs, aux, point_charges=[(0.5, 0.0, 0.0, 6.0)]
-    )
+    charged = ferric.run_pdep_rpa(mol, bs, aux, point_charges=[(0.5, 0.0, 0.0, 6.0)])
     assert abs(charged.total_energy - vac.total_energy) > 1e-9, (
         "a 0.5 e charge 6 Bohr away changed nothing -- it never reached the SCF"
     )

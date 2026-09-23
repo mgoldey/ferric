@@ -6,23 +6,29 @@ electrostatic interaction overshoots the experimental binding free energy
 (~-10 kcal/mol at 80 nM) by 4.5x.
 """
 
+from pathlib import Path
+
 import pytest
 
 ferric = pytest.importorskip("ferric")
 
+WATER = str(
+    Path(__file__).resolve().parents[3] / "testdata" / "molecules" / "water.xyz"
+)
+
 
 @pytest.fixture(scope="module")
 def water():
-    mol = ferric.Molecule.from_xyz(
-        "/home/matt/qc/ferric/testdata/molecules/water.xyz"
-    )
+    mol = ferric.Molecule.from_xyz(WATER)
     return mol, ferric.BasisSet.bundled("sto-3g")
 
 
 def test_solvent_none_is_BIT_IDENTICAL_to_vacuum(water):
     """The trivial-limit anchor: no solvent must change nothing at all."""
     mol, bs = water
-    assert ferric.run_rhf(mol, bs, solvent=None).energy == ferric.run_rhf(mol, bs).energy
+    assert (
+        ferric.run_rhf(mol, bs, solvent=None).energy == ferric.run_rhf(mol, bs).energy
+    )
 
 
 def test_water_stabilises_by_the_expected_magnitude(water):
@@ -59,11 +65,24 @@ def test_a_dielectric_below_vacuum_is_REFUSED(water):
         ferric.run_rhf(mol, bs, solvent=0.5)
 
 
+@pytest.mark.parametrize("eps", [float("nan"), float("inf")])
+def test_a_NON_FINITE_dielectric_is_REFUSED(water, eps):
+    """`nan <= 1.0` and `inf <= 1.0` are both False, so a bare `<=` let them in."""
+    mol, bs = water
+    with pytest.raises(ValueError, match="finite"):
+        ferric.run_rhf(mol, bs, solvent=eps)
+
+
+@pytest.mark.parametrize("order", [0, 7, 194])
+def test_an_unsupported_lebedev_order_is_a_ValueError(water, order):
+    """Refused at the kwarg, not as a RuntimeError from RHF setup."""
+    mol, bs = water
+    with pytest.raises(ValueError, match="pcm_lebedev_order"):
+        ferric.run_rhf(mol, bs, solvent="water", pcm_lebedev_order=order)
+
+
 def test_a_higher_dielectric_stabilises_more(water):
     """Monotonicity: the ordering is physics, not a fitted constant."""
     mol, bs = water
-    e = [
-        ferric.run_rhf(mol, bs, solvent=eps).energy
-        for eps in (2.38, 20.7, 78.4)
-    ]
+    e = [ferric.run_rhf(mol, bs, solvent=eps).energy for eps in (2.38, 20.7, 78.4)]
     assert e[0] > e[1] > e[2], f"not monotone in dielectric: {e}"
