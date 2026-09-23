@@ -497,8 +497,8 @@ fn radial_and_d_d2(shell: &LocatedShell, r2: f64) -> (f64, f64, f64) {
 /// shell center.
 ///
 /// Convention (must match `eval_shell` exactly):
-///   * s shell: out[0] = rad
-///   * p shell: [px, py, pz] · rad (Cartesian order)
+///   * s shell: `out[0] = rad`
+///   * p shell: `[px, py, pz] · rad` (Cartesian order)
 ///   * pure-d:  5 solid harmonics, m = -2..+2 order
 ///   * cart-d:  6 functions in libint2 xx, xy, xz, yy, yz, zz order
 ///   * pure-f:  7 solid harmonics, m = -3..+3 order

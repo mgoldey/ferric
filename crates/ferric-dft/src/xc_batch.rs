@@ -17,13 +17,13 @@
 //!
 //! # Design
 //!
-//! 1. **Spatial batches** ([`partition_points`]). Becke points arrive atom by
+//! 1. **Spatial batches** (`partition_points`). Becke points arrive atom by
 //!    atom and shell by shell; a large-r angular shell is not compact. The grid
 //!    is recursively bisected along the longest bounding-box axis into batches
 //!    of at most `max_batch_pts` points. Each batch stores the ORIGINAL point
 //!    indices, so weights and every per-point array stay in the grid's own
 //!    order — the grid itself is never permuted.
-//! 2. **Shell screening** ([`screen_batch`]). A shell is kept for a batch iff
+//! 2. **Shell screening** (`screen_batch`). A shell is kept for a batch iff
 //!    `max` over the batch's points and the shell's functions of
 //!    `max(|χ|, |∂xχ|, |∂yχ|, |∂zχ|)` exceeds `screen_thresh`. The test uses
 //!    the ACTUAL values (one full evaluation at construction), not an analytic
@@ -37,7 +37,7 @@
 //!      point-local row reductions. Results are written back to the ORIGINAL
 //!      point slots — disjoint per batch, so there is no reduction here.
 //!    * The libxc kernel runs ONCE over the whole grid through
-//!      [`crate::vxc::closed_kernel`] / [`crate::vxc::polarized_kernel`] —
+//!      `crate::vxc::closed_kernel` / `crate::vxc::polarized_kernel` —
 //!      the very functions the dense path calls, so the two paths cannot drift.
 //!      (Per-batch libxc calls from rayon workers would need per-worker libxc
 //!      handles; the global call already parallelizes safely and is
@@ -62,7 +62,7 @@
 //! * inside a batch everything is serial (the AO evaluator here is serial,
 //!   GEMMs run on the calling worker, and OpenBLAS is pinned to 1 thread for
 //!   the whole Fock build before any worker starts). The one exception is the
-//!   one-thread-pool serial mode ([`Exec`]), which is bit-identical to the
+//!   one-thread-pool serial mode (`Exec`), which is bit-identical to the
 //!   parallel mode under the default `FERRIC_BLAS_THREADS`;
 //! * pass-1 outputs are disjoint slots; the libxc call is chunk-bit-identical;
 //!   `E_xc` uses the fixed-group `deterministic_point_sum`;
@@ -623,7 +623,7 @@ pub(crate) struct Exec {
 }
 
 impl Exec {
-    /// The mode for a call made from the current thread (see [`Exec`]).
+    /// The mode for a call made from the current thread (see `Exec`).
     pub(crate) fn auto() -> Self {
         if rayon::current_thread_index().is_none() && rayon::current_num_threads() == 1 {
             Self {
@@ -882,7 +882,7 @@ impl ScreenedGrid {
     /// would race): 1 in the rayon-parallel mode, where every GEMM runs on a
     /// worker and a multi-threaded OpenBLAS oversubscribes (and has crashed
     /// before, see `blas_threads.rs`); `opt_in_blas_threads()` in the serial
-    /// mode. See [`Exec`] for when each is chosen and what is bit-identical.
+    /// mode. See `Exec` for when each is chosen and what is bit-identical.
     pub(crate) fn integrate_closed(
         &self,
         grid: &[GridPoint],
