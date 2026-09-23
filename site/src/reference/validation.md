@@ -73,10 +73,11 @@ Reported rather than omitted:
   `ferric.run_frequencies`).
 - **Local MP2 (amplitude threshold)**: the J build is still dense (from RI), so
   no scaling claim is made; only counters are reported.
-- **Laplace SOS-MP2, AO-sparse variant**: the domain truncation is accurate
-  and the radius it needs does **not** grow with the molecule (octane is exact
-  at the radius that suffices for butane; a 71-atom drug molecule is within
-  0.05% at 4 Bohr, about 13% of its diameter). The algebra is still dense, so
+- **Laplace SOS-MP2, AO-sparse variant**: the domain truncation is accurate,
+  and the radius it needs grows far more slowly than the molecule (chemical
+  accuracy at 3 to 5 Bohr on n-alkanes C2 to C12, radius/diameter falling from
+  0.52 to 0.17; a 71-atom drug molecule is within 0.05% at 4 Bohr, about 13%
+  of its diameter). The algebra is still dense, so
   **no speedup is claimed**. An earlier "measured negative" for this variant
   was an indexing bug and has been retracted; the regression test
   `sos_ao_sparse_truncation_radius_is_transferable_across_sizes` records the
