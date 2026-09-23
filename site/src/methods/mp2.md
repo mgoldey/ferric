@@ -136,9 +136,10 @@ of RI-MP2 to quadrature error, which is the test anchor. Three formulations
 
 **What is measured for `ao-sparse`:**
 
-- Against the exact AO path on n-alkanes (c<sub>OS</sub> = 1, `n_quad` = 7,
-  2026-07-28), chemical accuracy needs a domain radius of 3, 3, 3, 4, 5 and
-  5 Bohr for C2, C4, C6, C8, C10 and C12. The diameter grows fivefold over that
+- Against the exact AO path on n-alkanes (cc-pVDZ, c<sub>OS</sub> = 1,
+  `n_quad` = 7, 2026-07-28), chemical accuracy (absolute error below 1.6 mHa)
+  needs a domain radius of 3, 3, 3, 4, 5 and 5 Bohr for C2, C4, C6, C8, C10
+  and C12. The diameter grows fivefold over that
   series, so radius/diameter falls from 0.52 to 0.17.
 - In the STO-3G tests, a 12 Bohr domain that is exact for butane (10.5 Bohr
   across) is also exact for octane (19.9 Bohr across), and a 4 Bohr domain on
