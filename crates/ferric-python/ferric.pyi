@@ -1075,8 +1075,16 @@ def run_rhf(
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
     smeared_charges: list[tuple[float, float, float, float, float]] | None = None,
+    memory_budget_gb: float | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
+
+    solvent: IEF-PCM implicit solvation, as a dielectric constant (> 1.0) or a
+    solvent name (water, dmso, methanol, ethanol, acetone, dichloromethane,
+    thf, chloroform, toluene, hexane). None = vacuum.
+    pcm_lebedev_order: tesserae per atomic sphere (6/14/26/50/110/302).
 
     smeared_charges: list of (q, x, y, z, width) Gaussian-smeared classical
     charges (Bohr / Hartree atomic units).
@@ -1520,6 +1528,10 @@ def run_pdep_rpa(
     k_builder: str | None = None,
     chi0_sparsity: str | None = None,
     memory_budget_gb: float | None = None,
+    point_charges: list[tuple[float, float, float, float]] | None = None,
+    external_field: tuple[float, float, float] | None = None,
+    solvent: float | str | None = None,
+    pcm_lebedev_order: int | None = None,
 ) -> PdepRpaResult:
     """PDEP-RPA (dielectric eigendecomposition RPA)."""
     ...

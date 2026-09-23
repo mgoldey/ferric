@@ -327,9 +327,11 @@ fn build_pcm_config(
             "solvent must be a dielectric constant (float) or a solvent name (str)",
         ));
     };
-    if epsilon <= 1.0 {
+    // `NaN <= 1.0` and `inf <= 1.0` are both false, so a bare `<=` let them
+    // through to fail later inside the cavity solve as a RuntimeError.
+    if !epsilon.is_finite() || epsilon <= 1.0 {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "solvent dielectric must be > 1.0, got {epsilon} (vacuum is 1.0; \
+            "solvent dielectric must be > 1.0 and finite, got {epsilon} (vacuum is 1.0; \
              pass solvent=None for no solvation)"
         )));
     }
@@ -338,6 +340,14 @@ fn build_pcm_config(
         ..Default::default()
     };
     if let Some(order) = lebedev_order {
+        // The set `ferric_pcm`'s cavity and Gaussian-xi tables support. Checked
+        // here so a bad order is a ValueError naming the kwarg, not a
+        // RuntimeError from deep inside RHF setup.
+        if !matches!(order, 6 | 14 | 26 | 50 | 110 | 302) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "pcm_lebedev_order must be one of 6, 14, 26, 50, 110, 302; got {order}"
+            )));
+        }
         cfg.lebedev_order = order;
     }
     Ok(Some(cfg))
@@ -5406,13 +5416,10 @@ fn run_pdep_rpa(
     // computed from it is that of an isolated molecule. Screening a
     // ligand-pocket interaction needs the response of the ligand AS IT SITS
     // IN THE POCKET, so the point charges have to reach this SCF.
-    let mut scf_config =
-        rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
-    scf_config.external_potential =
-        build_external_potential(point_charges, external_field);
+    let mut scf_config = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
+    scf_config.external_potential = build_external_potential(point_charges, external_field);
     scf_config.pcm = build_pcm_config(solvent, pcm_lebedev_order)?;
-    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &scf_config)
-        .map_err(make_err)?;
+    let rhf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &scf_config).map_err(make_err)?;
     if !rhf.converged {
         return Err(make_err(ferric_core::FerricError::ScfConvergence {
             iterations: rhf.iterations,

@@ -601,6 +601,7 @@ dependencies = [
  "ferric-integrals",
  "ferric-mm",
  "ferric-mp2",
+ "ferric-pcm",
  "ferric-rpa",
  "ferric-scf",
  "ferric-tddft",
