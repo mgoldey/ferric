@@ -5040,8 +5040,10 @@ fn run_dft(
 /// Number of points in the main KS integration grid `run_dft` would build for
 /// `mol` with the same `grid_*` kwargs (same resolver, same builder, no
 /// weight screening in between). Lets a caller see what pruning saves on
-/// their own molecule without running an SCF; the Becke partitioning is the
-/// only non-trivial cost.
+/// their own molecule without running an SCF. Counts per radial shell via
+/// `ferric_dft::grid::atomic_grid_point_count`, which resolves the same
+/// per-shell angular orders as the builder but never generates points or
+/// Becke weights.
 #[pyfunction]
 #[pyo3(signature = (mol, grid_radial=None, grid_angular=None, grid_prune=None))]
 fn dft_grid_point_count(
@@ -5051,9 +5053,7 @@ fn dft_grid_point_count(
     grid_prune: Option<&str>,
 ) -> PyResult<usize> {
     let cfg = resolve_dft_grid(grid_radial, grid_angular, grid_prune)?.unwrap_or_default();
-    let grid = ferric_dft::grid::build_atomic_grid_pruned(&mol.inner, &cfg, cfg.prune)
-        .map_err(make_err)?;
-    Ok(grid.len())
+    ferric_dft::grid::atomic_grid_point_count(&mol.inner, &cfg, cfg.prune).map_err(make_err)
 }
 
 /// Resolve a `dispersion=` spec to the functional whose D3(BJ) parameters to use.

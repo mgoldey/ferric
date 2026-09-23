@@ -233,7 +233,7 @@ pub fn build_atomic_grid_pruned(
 
     for (a_idx, atom) in mol.atoms.iter().enumerate() {
         let (rs, ws) = treutler_ahlrichs_m4(atom.z, cfg.n_radial);
-        let orders = angular_orders_for_atom(atom.z, &rs, cfg.n_angular, scheme)?;
+        let orders = shell_angular_orders(atom.z, &rs, cfg, Some(scheme))?;
         for ((r, w_r), &order) in rs.iter().zip(ws.iter()).zip(orders.iter()) {
             if !cache.iter().any(|(o, _, _)| *o == order) {
                 let (p, w) = lebedev(order);
@@ -269,6 +269,56 @@ pub fn build_atomic_grid_pruned(
     } else {
         pre.iter().map(build_point).collect()
     })
+}
+
+/// Lebedev order of each radial shell `rs` of an atom with charge `z`: the
+/// flat `cfg.n_angular` everywhere when `prune` is `None`, otherwise the
+/// scheme's per-shell orders. [`build_atomic_grid_pruned`] and
+/// [`atomic_grid_point_count`] both resolve orders through this one function,
+/// so the count cannot drift from the grid the builder produces.
+fn shell_angular_orders(
+    z: i32,
+    rs: &[f64],
+    cfg: &AtomicGridConfig,
+    prune: Option<PruneScheme>,
+) -> std::result::Result<Vec<usize>, FerricError> {
+    match prune {
+        None => Ok(vec![cfg.n_angular; rs.len()]),
+        Some(scheme) => angular_orders_for_atom(z, rs, cfg.n_angular, scheme),
+    }
+}
+
+/// Number of points [`build_atomic_grid_pruned`]`(mol, cfg, prune)` returns,
+/// without generating the points or their Becke weights (the builder applies
+/// no weight screening, so every (shell, angular point) pair is kept).
+///
+/// Cost is the radial quadrature per atom plus one Lebedev rule per distinct
+/// order — O(natoms · n_radial), independent of the grid size. Errors exactly
+/// where the builder errors (e.g. pruning at `n_angular = 50`).
+pub fn atomic_grid_point_count(
+    mol: &Molecule,
+    cfg: &AtomicGridConfig,
+    prune: Option<PruneScheme>,
+) -> std::result::Result<usize, FerricError> {
+    // Size of each distinct Lebedev rule, taken from the rule itself rather
+    // than assumed equal to its order.
+    let mut rule_len: Vec<(usize, usize)> = Vec::new();
+    let mut total = 0usize;
+    for atom in &mol.atoms {
+        let (rs, _) = treutler_ahlrichs_m4(atom.z, cfg.n_radial);
+        for order in shell_angular_orders(atom.z, &rs, cfg, prune)? {
+            let n = match rule_len.iter().find(|(o, _)| *o == order) {
+                Some(&(_, n)) => n,
+                None => {
+                    let n = lebedev(order).0.len();
+                    rule_len.push((order, n));
+                    n
+                }
+            };
+            total += n;
+        }
+    }
+    Ok(total)
 }
 
 /// Build the molecular grid AND the per-grid-point full quadrature-weight
@@ -699,6 +749,53 @@ mod tests {
             (sum_atoms - total).abs() < 1e-12,
             "pruned Becke partition mismatch: {sum_atoms} vs {total}"
         );
+    }
+
+    #[test]
+    fn point_count_equals_built_grid_len_flat_and_pruned() {
+        // O + 2 H: two element rows, so the pruned count exercises the
+        // Z-dependent region boundaries, not just hydrogen's.
+        let mut water = h2();
+        water.atoms[1].zpos = 0.0;
+        water.atoms[1].x = 1.43;
+        water.atoms[1].y = 1.11;
+        water.atoms[0].x = -1.43;
+        water.atoms[0].y = 1.11;
+        water.atoms.push(Atom {
+            symbol: "O".into(),
+            z: 8,
+            x: 0.0,
+            y: 0.0,
+            zpos: 0.0,
+            ghost: false,
+            n_core_ecp: 0,
+        });
+        for mol in [h2(), water] {
+            for (n_radial, n_angular) in [(75, 110), (40, 302)] {
+                let cfg = AtomicGridConfig {
+                    n_radial,
+                    n_angular,
+                    ..Default::default()
+                };
+                for prune in [None, Some(PruneScheme::NwchemLike)] {
+                    let built = build_atomic_grid_pruned(&mol, &cfg, prune).unwrap().len();
+                    let counted = atomic_grid_point_count(&mol, &cfg, prune).unwrap();
+                    assert_eq!(
+                        counted,
+                        built,
+                        "{} atoms, {n_radial}x{n_angular}, prune {prune:?}",
+                        mol.atoms.len()
+                    );
+                }
+            }
+        }
+        // And it refuses exactly where the builder refuses.
+        let cfg50 = AtomicGridConfig {
+            n_radial: 50,
+            n_angular: 50,
+            ..Default::default()
+        };
+        assert!(atomic_grid_point_count(&h2(), &cfg50, Some(PruneScheme::NwchemLike)).is_err());
     }
 
     #[test]
