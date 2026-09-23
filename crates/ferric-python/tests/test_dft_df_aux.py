@@ -104,3 +104,17 @@ def test_RSH_still_honours_a_DF_J_opt_out(setup):
     rij = ferric.run_dft(mol, bs, "wB97X-V").total_energy
     exact = ferric.run_dft(mol, bs, "wB97X-V", df_j_aux="off").total_energy
     assert rij != exact
+
+
+def test_non_RSH_hybrid_honours_a_DF_K_opt_out(setup):
+    """B3LYP consumes K with omega = 0, so exact K IS available and must be used.
+
+    PBE bypasses K and wB97X-V refuses the opt-out, so without this case a
+    regression that ignored `df_k_aux="off"` for a global hybrid would pass.
+    """
+    mol, bs = setup
+    ri_k = ferric.run_dft(mol, bs, "B3LYP").total_energy
+    exact_k = ferric.run_dft(mol, bs, "B3LYP", df_k_aux="off").total_energy
+    err = (ri_k - exact_k) * HARTREE_TO_KCAL
+    assert abs(err) > 1e-4, "df_k_aux='off' did not reach the B3LYP K build"
+    assert abs(err) < 2.0, f"implausible RI-K error {err:.3f} kcal/mol"
