@@ -1,0 +1,20 @@
+{
+  "energy": -147.63529635185998,
+  "converged": true,
+  "stability_rounds_from_default": 1,
+  "lowest_hessian_eigenvalue": -2.392348590063431e-09,
+  "energy_default_guess": -147.6339696084963,
+  "lowest_hessian_eigenvalue_default_guess": -0.030636544087309828,
+  "energy_hcore_guess": -147.3789011759731,
+  "lowest_hessian_eigenvalue_hcore_guess": -0.26250836736692534,
+  "energy_rohf": -147.6321910013124,
+  "nelec_a": 9,
+  "nelec_b": 7,
+  "s_squared": 2.0033246908397926,
+  "multiplicity": 3.002215642381335,
+  "nuclear_repulsion": 28.035878724238415,
+  "basis": "sto-3g",
+  "method": "uhf",
+  "molecule": "O2",
+  "note": "energy = stable UHF minimum; energy_default_guess and energy_hcore_guess are internally-unstable UHF saddles. Hessian eigenvalues in PySCF gen_g_hop_uhf units."
+}

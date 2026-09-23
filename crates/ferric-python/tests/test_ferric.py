@@ -257,6 +257,50 @@ def test_run_uhf_with_external_field():
     assert abs(perturbed.energy - base.energy) > 1e-8
 
 
+_O2_XYZ = "2\nO2\nO 0.0 0.0 0.0\nO 0.0 0.0 1.208\n"
+
+
+def _o2_sto3g_uhf_ref() -> dict:
+    with open(os.path.join(TESTDATA, "reference", "o2_sto-3g_uhf.json")) as f:
+        return json.load(f)
+
+
+def test_run_uhf_o2_sto3g_guess_and_stability_descent_kwargs():
+    """O2 triplet/STO-3G has three UHF stationary points (see
+    scripts/gen_pyscf_o2_uhf_ref.py). This pins that the Python surface can
+    reach each one, and in particular the MINIMUM, which needs the descent.
+
+    If `guess` were ignored, the hcore row would equal the default row (and
+    miss the 0.255 Ha saddle). If `stability_descent` were ignored (or turned
+    on only `scf_stability_descent` without `check_stability`, which makes the
+    descent print SKIPPED and return the input), the descent row would stay at
+    the default-guess saddle, 1.33e-3 Ha above the reference.
+    """
+    ref = _o2_sto3g_uhf_ref()
+    mol = ferric.Molecule.from_xyz_string(_O2_XYZ, charge=0, multiplicity=3)
+    bs = ferric.BasisSet.bundled("sto-3g")
+    tight = dict(max_iter=400, energy_conv=1e-10, density_conv=1e-9)
+
+    default = ferric.run_uhf(mol, bs, **tight)
+    hcore = ferric.run_uhf(mol, bs, guess="hcore", **tight)
+    descended = ferric.run_uhf(mol, bs, stability_descent=True, **tight)
+
+    assert default.converged and hcore.converged and descended.converged
+    assert abs(default.energy - ref["energy_default_guess"]) < 1e-6, default.energy
+    assert abs(hcore.energy - ref["energy_hcore_guess"]) < 1e-6, hcore.energy
+    assert abs(descended.energy - ref["energy"]) < 1e-6, (
+        f"stability_descent=True gave {descended.energy:.10f}, "
+        f"UHF minimum is {ref['energy']:.10f}"
+    )
+
+
+def test_run_uhf_rejects_an_unknown_guess():
+    mol = ferric.Molecule.from_xyz_string(_O2_XYZ, charge=0, multiplicity=3)
+    bs = ferric.BasisSet.bundled("sto-3g")
+    with pytest.raises(ValueError, match="guess"):
+        ferric.run_uhf(mol, bs, guess="hcroe")
+
+
 def test_run_ksdft_with_external_point_charge():
     """Same perturbation check for the KS-DFT driver (also exercises the
     gradient path picking up external_potential, not just the energy)."""

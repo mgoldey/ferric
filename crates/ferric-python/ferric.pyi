@@ -1161,8 +1161,16 @@ def run_uhf(
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
     memory_budget_gb: float | None = None,
+    guess: str | None = None,
+    stability_descent: bool | None = None,
 ) -> UhfResult:
-    """Unrestricted Hartree-Fock (open-shell)."""
+    """Unrestricted Hartree-Fock (open-shell).
+
+    ``guess`` is ``"minao"`` (default; ``"sad"`` is an alias) or ``"hcore"``. ``stability_descent=True``
+    checks internal stability and follows a downhill orbital-Hessian mode off a
+    saddle (e.g. O2 triplet/STO-3G, whose default-guess solution is a saddle
+    1.33 mHa above the UHF minimum).
+    """
     ...
 
 def run_rohf(
