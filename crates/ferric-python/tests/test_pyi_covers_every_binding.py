@@ -101,8 +101,14 @@ def _stub_params(stub: str, name: str) -> list[str] | None:
     m = re.search(rf"^def {re.escape(name)}\(", stub, re.M)
     if not m:
         return None
-    body = "\n".join(line.split("#")[0] for line in _balanced(stub, m.end() - 1).splitlines())
-    return [p.split(":")[0].split("=")[0].strip() for p in _split_top(body) if p not in ("*", "/")]
+    body = "\n".join(
+        line.split("#")[0] for line in _balanced(stub, m.end() - 1).splitlines()
+    )
+    return [
+        p.split(":")[0].split("=")[0].strip()
+        for p in _split_top(body)
+        if p not in ("*", "/")
+    ]
 
 
 def _exported_classes(src: str) -> list[str]:
@@ -124,12 +130,16 @@ def test_the_scan_finds_the_module(src):
 
 
 def test_every_registered_function_is_in_the_stub(src, stub):
-    missing = [n for n in _exported_functions(src) if not re.search(rf"^def {n}\(", stub, re.M)]
+    missing = [
+        n for n in _exported_functions(src) if not re.search(rf"^def {n}\(", stub, re.M)
+    ]
     assert not missing, f"registered in lib.rs but absent from ferric.pyi: {missing}"
 
 
 def test_every_registered_class_is_in_the_stub(src, stub):
-    missing = [c for c in _exported_classes(src) if not re.search(rf"^class {c}\b", stub, re.M)]
+    missing = [
+        c for c in _exported_classes(src) if not re.search(rf"^class {c}\b", stub, re.M)
+    ]
     assert not missing, f"registered in lib.rs but absent from ferric.pyi: {missing}"
 
 
@@ -142,4 +152,6 @@ def test_stub_parameters_match_the_binding(src, stub):
         r = _rust_params(src, name)
         if r != s:
             diffs.append(f"{name}:\n    binding {r}\n    stub    {s}")
-    assert not diffs, "ferric.pyi parameter lists differ from the bindings:\n" + "\n".join(diffs)
+    assert not diffs, (
+        "ferric.pyi parameter lists differ from the bindings:\n" + "\n".join(diffs)
+    )
