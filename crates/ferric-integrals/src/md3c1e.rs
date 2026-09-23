@@ -386,7 +386,13 @@ fn build_r_program(l: usize, h: &Hermite) -> RProgram {
 /// Recursion (Helgaker eq. 9.5.6-7, with `X_PA = -(b/p) q`, `X_PB = (a/p) q`):
 /// `E_t^{i+1,j} = E_{t-1}^{ij}/(2p) + X_PA E_t^{ij} + (t+1) E_{t+1}^{ij}` and
 /// the same with `X_PB` for `j+1`. `E_0^{00} = exp(-a b q² / p)`.
-fn e_table(la: usize, lb: usize, a: f64, b: f64, q: f64, out: &mut [f64]) {
+///
+/// Public so other pure-Rust Gaussian kernels reuse the one tested recursion
+/// (e.g. `ferric-pbc`'s analytic pair-density Fourier transform, where the
+/// Hermite Gaussian `Λ_t` transforms to `(−iG)^t` times the s-type FT).
+/// `out.len()` must be at least `(la+1)*(lb+1)*(la+lb+1)`; only that prefix is
+/// written. The primitive normalization is NOT included (see [`prim_norm`]).
+pub fn e_table(la: usize, lb: usize, a: f64, b: f64, q: f64, out: &mut [f64]) {
     let p = a + b;
     let mu = a * b / p;
     let inv2p = 0.5 / p;
@@ -443,7 +449,9 @@ pub fn cart_components(l: usize) -> Vec<[u8; 3]> {
 /// `N(a, l) = (2a/π)^{3/4} (4a)^{l/2} / √((2l-1)!!)` — the primitive
 /// normalization that makes the `(l,0,0)` Cartesian component unit-normalized
 /// (identical to `ao_grid::radial`'s factor and to libint2's).
-pub(crate) fn prim_norm(a: f64, l: usize) -> f64 {
+///
+/// `l <= MAX_L` (panics on an out-of-range index otherwise).
+pub fn prim_norm(a: f64, l: usize) -> f64 {
     const DFACT: [f64; MAX_L + 1] = [1.0, 1.0, 3.0, 15.0, 105.0];
     (2.0 * a / std::f64::consts::PI).powf(0.75) * (4.0 * a).powi(l as i32).sqrt() / DFACT[l].sqrt()
 }

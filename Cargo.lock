@@ -574,6 +574,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferric-pbc"
+version = "0.1.0"
+dependencies = [
+ "ferric-core",
+ "ferric-integrals",
+ "ndarray",
+ "num-complex",
+ "serde_json",
+]
+
+[[package]]
 name = "ferric-pcm"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,19 @@
+[package]
+name = "ferric-pbc"
+version = "0.1.0"
+license.workspace = true
+edition = "2021"
+description = "Periodic-boundary-condition primitives for ferric (Stage 0: cell, Ewald, Madelung, analytic pair-density Fourier transforms)"
+
+[lints]
+workspace = true
+
+[dependencies]
+ferric-core = { path = "../ferric-core" }
+ferric-integrals = { path = "../ferric-integrals" }
+ndarray = { workspace = true }
+# Same spec as ferric-gw (the only other num-complex user); resolves to 0.4.6.
+num-complex = "0.4"
+
+[dev-dependencies]
+serde_json = { workspace = true }
