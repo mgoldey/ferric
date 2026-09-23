@@ -173,7 +173,7 @@ def iter_jsonl(
     # file before yielding the first row, so memory would scale with the
     # experiment despite the streaming contract.
     with p.open(encoding="utf-8") as fh:
-        for raw_line in fh:
+        for lineno, raw_line in enumerate(fh, 1):
             terminated = raw_line.endswith("\n")
             line = raw_line.strip()
             if not line:
@@ -184,7 +184,14 @@ def iter_jsonl(
                 if not strict and not terminated:
                     return  # the writer is mid-row; stop cleanly
                 raise
-            if isinstance(obj, dict) and META_KEY in obj and not include_meta:
+            # The writer refuses non-dict rows, so one here was not written by
+            # it. Yielding it would break the declared row type downstream.
+            if not isinstance(obj, dict):
+                raise TypeError(
+                    f"{p}:{lineno}: JSONL row must be a JSON object, "
+                    f"got {type(obj).__name__}"
+                )
+            if META_KEY in obj and not include_meta:
                 continue
             yield obj
 
