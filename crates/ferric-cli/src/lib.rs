@@ -57,7 +57,7 @@ fn print_usage() {
     eprintln!("usage: ferric [--verbose|-v] [--json <path>|--no-json] <input.toml>");
     eprintln!();
     eprintln!("Run a ferric quantum-chemistry calculation from a TOML input file.");
-    eprintln!("See examples/*.toml for sample inputs and docs/quickstart.md for a walkthrough.");
+    eprintln!("See examples/*.toml for sample inputs and site/src/using/quickstart.md for a walkthrough.");
     eprintln!();
     eprintln!("  --verbose, -v   Print one line per SCF iteration to stdout (energy, dE,");
     eprintln!("                  density/DIIS error) as the job runs. Same effect as setting");
@@ -81,19 +81,19 @@ fn print_usage() {
 const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
     (
         "gw",
-        "method.kind = \"gw\" is Smoke-grade (see docs/VALIDATION.md): G0W0/COHSEX/evGW0/evGW \
+        "method.kind = \"gw\" is Smoke-grade (see site/src/reference/validation.md): G0W0/COHSEX/evGW0/evGW \
          validated to ~5 meV vs MOLGW on a single H2O/cc-pVDZ case but most asserts are loose \
          range bands; treat results as accurate to roughly +/-0.3 eV, not a reference number.",
     ),
     (
         "bse-tda",
-        "method.kind = \"bse-tda\" is Smoke-grade (see docs/VALIDATION.md): only excitation \
+        "method.kind = \"bse-tda\" is Smoke-grade (see site/src/reference/validation.md): only excitation \
          ordering and a physicality gate are checked; the excitation-energy gap error is \
          inherited directly from the underlying GW quasiparticle gap (also Smoke-grade).",
     ),
     (
         "tdhf-static-polarizability",
-        "method.kind = \"tdhf-static-polarizability\" is Smoke-grade (see docs/VALIDATION.md): \
+        "method.kind = \"tdhf-static-polarizability\" is Smoke-grade (see site/src/reference/validation.md): \
          static alpha at RPAx@KS matches DOSD water closely in the one case checked, but the \
          same dense TDHF/RPAx kernel gives C6 ~63% low regardless of gap -- do not extrapolate \
          this method's accuracy beyond static alpha on a KS reference. Note also that at the \
@@ -105,14 +105,14 @@ const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
     (
         "rs-mp2-rpa",
         "method.kind = \"rs-mp2-rpa\" has Proven energy LIMITS (omega->0/infinity reduce exactly \
-         to MP2/MP2+dRPA) but is only Smoke-grade at production omega (see docs/VALIDATION.md): \
+         to MP2/MP2+dRPA) but is only Smoke-grade at production omega (see site/src/reference/validation.md): \
          ACONF ties RI-MP2 at omega<=0.3 1/A, and the aug-cc-pVTZ benchmark criterion was met \
          only marginally on one small subset -- treat mid-range-omega numbers as unproven on \
          new systems.",
     ),
     (
         "mp2-v",
-        "method.kind = \"mp2-v\" is Smoke-grade (see docs/VALIDATION.md): the VV10 half is proven \
+        "method.kind = \"mp2-v\" is Smoke-grade (see site/src/reference/validation.md): the VV10 half is proven \
          bit-identical to the wB97X-V code path and the damping is validated by limits, but there \
          is NO comparison to any published MP2-V number (the paper reports only S66/G2 statistics, \
          never a total energy). The defaults (r0 = 1.00 A, b = 11.0, C = 0.0089, terfc, post-HF) \
@@ -123,14 +123,14 @@ const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
     ),
     (
         "oo-rimp2",
-        "method.kind = \"oo-rimp2\" is Smoke-grade (see docs/VALIDATION.md): orbital \
+        "method.kind = \"oo-rimp2\" is Smoke-grade (see site/src/reference/validation.md): orbital \
          optimization is checked for internal self-consistency (converged stationary point, \
          analytic gradient vanishes) but there is NO external absolute-energy reference -- \
          PySCF/psi4/forte all lack a directly comparable OO-MP2 implementation.",
     ),
     (
         "wb97x-l-v",
-        "method.kind = \"wb97x-l-v\" is Smoke-grade (see docs/VALIDATION.md): the functional runs \
+        "method.kind = \"wb97x-l-v\" is Smoke-grade (see site/src/reference/validation.md): the functional runs \
          end to end and its pieces (E_KS, E_c, the lambda scaling, the omega range separation) are \
          separately checked against the paper's structure and limits, but NO reference value for \
          the TOTAL energy exists in ferric -- nothing compares it to the paper or to another code. \
@@ -3434,10 +3434,10 @@ fn run_pdep_rpa_arm(
                                      come from a live SCF on the same integration scale as the \
                                      molecular volume; the old hardcoded-table fallback was \
                                      removed because it is on a mismatched scale and was never \
-                                     sourced for most elements (docs/vol-free-verification.md). \
+                                     sourced for most elements (project wiki: vol-free-verification.md). \
                                      Refusing to fabricate a C6 from a mismatched denominator \
                                      (same convention as the Z>18 hard-error path — see \
-                                     ts_atom_params / CLAUDE.md TS/MBD honesty). Use \
+                                     ts_atom_params). Use \
                                      c6_source=\"pdep\" for a table-free dispersion source."
                                 );
                                 return None;
@@ -3600,7 +3600,7 @@ fn run_pdep_rpa_arm(
                     "note: NPZ c6_iso/c6_aniso are per-atom PAIR tensors, not the \
                          molecular C6 total — do not sum them to approximate it (can be \
                          20-58% off). Read the NPZ key \"c6_molecular_iso\" for the \
-                         correct DOSD-comparable value (see docs/dosd-c6-rpa-vs-ts.md). \
+                         correct DOSD-comparable value (project wiki: dosd-c6-rpa-vs-ts.md). \
                          The per-atom arrays are a PARTITION CONVENTION, not an \
                          observable; the NPZ keys \"c6_partition\"/\"c6_source\" record \
                          which one produced them (decode with .tobytes().decode())."
@@ -4170,7 +4170,7 @@ fn run_tdhf_static_polarizability(
     );
     println!(
         "  NOTE: static polarizability only -- do not use for C6/dispersion \
-             (known negative accuracy result, see docs/VALIDATION.md)"
+             (known negative accuracy result, see site/src/reference/validation.md)"
     );
     println!("  nbasis     = {}", prep.nbasis());
     println!("  KS energy  = {:.10} Hartree", result.energy);

@@ -3133,7 +3133,7 @@ impl PyRiMp2Result {
 /// `auxbasis` is the RI auxiliary basis (e.g. a bundled `*-ri`/`*-rifit` set
 /// such as `"cc-pvdz-ri"` for orbital basis `"cc-pvdz"`, or `"def2-svp-rifit"`
 /// for `"def2-svp"`) — NOT the SCF's own `df_j_aux`/`df_k_aux`. See
-/// `docs/quickstart.md`'s basis/auxiliary-basis pairing table.
+/// the quickstart (site/src/using/quickstart.md) for a worked pairing.
 ///
 /// `frozen_core` (default 0) excludes that many lowest-energy occupied
 /// orbitals from the correlation treatment.
@@ -6372,7 +6372,8 @@ impl PyTdhfStaticPolarizabilityResult {
 /// **Scope: static polarizability only.** Do not use this method, or its
 /// output, for C6/dispersion — see the module doc above and
 /// `ferric_gw::bse::run_rpax_static_polarizability`'s doc comment for the
-/// full negative-result caveat (validated in `docs/VALIDATION.md`: C6 built
+/// full negative-result caveat (site/src/reference/validation.md, "Known
+/// negatives": C6 built
 /// from this same kernel's dynamic alpha(iw) stays ~63% low regardless of
 /// the HOMO-LUMO gap, worse than ferric's production dRPA/PDEP C6 pipeline).
 ///

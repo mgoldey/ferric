@@ -1164,7 +1164,7 @@ pub fn check_alpha_diagonal_positive(
          molecules; [gw] scissor in the CLI TOML, scissor= in Python) to widen the diagonal \
          toward the true GW gap, or source the diagonal from real G0W0 quasiparticle energies. \
          Full diagonal: ({:+.6e}, {:+.6e}, {:+.6e}). Root cause: \
-         docs/rpax-negative-diagonal-investigation.md",
+         project wiki, rpax-negative-diagonal-investigation.md",
         tensor[0][0], tensor[1][1], tensor[2][2]
     )))
 }
