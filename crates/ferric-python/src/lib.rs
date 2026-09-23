@@ -1698,6 +1698,23 @@ impl PyUhfResult {
 /// Exposes the same SCF knob set as `run_rhf`; the convergence aids `level_shift`
 /// and `mom_after_iter` are especially useful for open-shell doublets / radicals
 /// where DIIS plateaus or the occupied set flip-flops.
+///
+///   guess             "minao" (default) or "hcore". The bare hcore guess is
+///                     what UHF used unconditionally before #83; it is kept as
+///                     an explicit opt-in so the old state can be reproduced.
+///                     An unrecognised value is an error, never a silent
+///                     fallback.
+///   stability_descent False (default). When True, check the converged UHF
+///                     solution's internal stability and, if it is a SADDLE of
+///                     the orbital Hessian, follow the downhill eigenvector and
+///                     re-converge, keeping the lowest state
+///                     (`RhfConfig::check_stability` + `scf_stability_descent`).
+///                     Costs one Davidson eigensolve per solve plus one SCF per
+///                     descent taken. Needed where the default guess lands on a
+///                     saddle: O2 triplet/STO-3G (1.33 mHa above the UHF
+///                     minimum, exactly as PySCF's own default guess does) and
+///                     N2+/6-31G. Before this kwarg the repair was unreachable
+///                     from Python.
 #[pyfunction]
 #[pyo3(signature = (
     mol, basis_set,
@@ -1705,6 +1722,7 @@ impl PyUhfResult {
     integral_thresh=None, k_builder=None, df_j_aux=None, df_k_aux=None,
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None,
+    guess=None, stability_descent=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_uhf(
@@ -1724,7 +1742,23 @@ fn run_uhf(
     point_charges: Option<Vec<(f64, f64, f64, f64)>>,
     external_field: Option<(f64, f64, f64)>,
     memory_budget_gb: Option<f64>,
+    guess: Option<&str>,
+    stability_descent: Option<bool>,
 ) -> PyResult<PyUhfResult> {
+    // Strict, unlike run_rhf's `guess`: a typo must not silently select a
+    // different SCF state (on O2/STO-3G the two guesses differ by 0.255 Ha).
+    let use_sad_guess = match guess.map(|g| g.trim().to_ascii_lowercase()).as_deref() {
+        None | Some("minao") => true,
+        Some("hcore") => false,
+        Some(other) => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "guess: unknown value \"{other}\"; expected \"minao\" (default) or \"hcore\""
+            )));
+        }
+    };
+    // The descent needs a stability verdict to act on, so the kwarg turns on
+    // both halves; `scf_stability_descent` alone only prints a SKIPPED notice.
+    let descent = stability_descent.unwrap_or(false);
     let mut emol = mol.inner.clone();
     emol.apply_ecp(&basis_set.inner);
     let prep = PreparedBasis::new(&emol, &basis_set.inner).map_err(make_err)?;
@@ -1746,6 +1780,9 @@ fn run_uhf(
         // 0 means "unset -> auto" (resolve_three_index_budget), so an
         // omitted kwarg preserves the previous auto-detect behaviour.
         three_index_budget_bytes: budget_bytes_from_gb(memory_budget_gb).unwrap_or(0),
+        use_sad_guess,
+        check_stability: descent,
+        scf_stability_descent: descent,
         ..Default::default()
     };
     let ctx = ParallelContext::default();
