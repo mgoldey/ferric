@@ -393,7 +393,11 @@ fn parse_g94(text: &str, name: &str) -> Result<BasisSet, FerricError> {
 
 /// Load a bundled basis set by name (case-insensitive).
 ///
-/// Automatically supports all `.json` files in the bundled folder.
+/// Only the names matched below are loadable. This is NOT every `.json` in
+/// `basis/bundled/`: as of 2026-09-23, 21 of the 47 files there (e.g.
+/// `cc-pvqz-rifit`, `def2-svpd`, the `*-pp-rifit` sets) ship but are not
+/// registered, so `bundled()` errors for them. Registering one is a one-line
+/// arm here plus a check that its element coverage suits its callers.
 ///
 /// # Examples
 ///
