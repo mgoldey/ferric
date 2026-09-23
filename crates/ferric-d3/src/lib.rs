@@ -37,10 +37,17 @@
 //! # Scope (be precise about what this does and does not do)
 //!
 //! Implemented and validated: the **two-body** D3(BJ) energy, for elements
-//! Z = 1..103, for any molecular geometry.
+//! Z = 1..103, for any molecular geometry, and its **analytic nuclear
+//! gradient** ([`d3bj_gradient`], [`d3bj_gradient_for_molecule`]), including
+//! the coordination-number chain rule. The gradient is checked against central
+//! finite differences of [`d3bj_energy`] to 1e-7 Hartree/Bohr on Ar2, water, a
+//! branched hydrocarbon and a mixed-element system (`tests/gradient_vs_fd.rs`);
+//! it is NOT compared to an external code's gradient. The CLI uses it for
+//! `task = "optimize"` with `[dft] dispersion`; `task = "frequencies"` is
+//! refused (the finite-difference Hessian built from it is unvalidated).
 //!
-//! NOT implemented: the Axilrod-Teller-Muto three-body term (`s9`), analytic
-//! gradients, and periodic boundary conditions. These are absent rather than
+//! NOT implemented: the Axilrod-Teller-Muto three-body term (`s9`), second
+//! derivatives, and periodic boundary conditions. These are absent rather than
 //! approximated -- there is no `s9` knob that silently does nothing.
 //!
 //! ## Size of the omitted three-body term (MEASURED, not estimated)
