@@ -740,12 +740,13 @@ pub struct Mp2Cfg {
     /// a real config field with a regression test rather than a local patch.
     pub r0_sweep: Option<Vec<f64>>,
     /// Bonded (shorter-range) terfc cutoff **r0(1)** in **Å**, used ONLY by
-    /// `method.kind = "scs-mp2-2terfc"`. Default 0.75 Å (thesis value).
+    /// `method.kind = "scs-mp2-2terfc"`. Default 0.75 Å (the published
+    /// SCS-MP2(2terfc, aTZ) value, J. Phys. Chem. B 118, 6519 (2014)).
     /// Requires the terfc interpolation tables (`FERRIC_TERF_TABLE_DIR`).
     pub r0_bonded: Option<f64>,
     /// Non-bonded (longer-range) terfc cutoff **r0(2)** in **Å**, used ONLY by
     /// `method.kind = "scs-mp2-2terfc"`. Must be > `r0_bonded`. Default 1.05 Å
-    /// (thesis value). Requires the terfc interpolation tables
+    /// (published SCS-MP2(2terfc, aTZ) value). Requires the terfc interpolation tables
     /// (`FERRIC_TERF_TABLE_DIR`).
     pub r0_nonbonded: Option<f64>,
 
