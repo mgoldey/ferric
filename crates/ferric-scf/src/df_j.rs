@@ -37,8 +37,9 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::three_index_source::ThreeIndexSource;
 use ferric_integrals::threeindex::coulomb_metric_2c;
-use ndarray::Array2;
-use ndarray_linalg::Inverse;
+use ndarray::{Array1, Array2, OwnedRepr};
+use ndarray_linalg::cholesky::{CholeskyFactorized, FactorizeC, SolveC};
+use ndarray_linalg::UPLO;
 use rayon::prelude::*;
 
 /// DF-J Coulomb builder. Uses a budget-bounded ThreeIndexSource for raw (P|μν).
@@ -58,9 +59,20 @@ pub struct DfJ<'a> {
     /// Budget-bounded raw 3-index source (in-core or disk-spill) — holds only
     /// this rank's aux band `[band_p0, band_p1)`.
     source: ThreeIndexSource,
-    /// (naux, naux) inverse Coulomb metric V^{-1}. FULL (all ranks hold it — it
-    /// is small, O(naux²), and the V^{-1} d_P multiply couples all P).
-    v_inv: Array2<f64>,
+    /// Cholesky factor of the (naux, naux) Coulomb metric V. FULL (all ranks
+    /// hold it — it is small, O(naux²), and the V^{-1} d_P solve couples all P).
+    ///
+    /// NOT an explicit inverse. JK-fit metrics are ill-conditioned (MEASURED
+    /// cond(V) = 7.1e8 for benzene/def2-universal-jkfit), and the old
+    /// `v.inv()` (LU + dgetri) followed by a GEMV has a forward error of
+    /// ~eps·cond that is NOT a smooth function of the density: with D fixed
+    /// to 1e-9 it made J jitter by ~8e-7 and the SCF energy by ~1e-5 Ha on
+    /// benzene/STO-3G (HF and KS alike), floored the DIIS commutator at ~1e-7,
+    /// and let ANY bit-level perturbation (a 1e-9 Å rigid translation, a
+    /// reordered V_xc sum) move a "converged" energy by 1e-6..1e-4 Ha. A
+    /// backward-stable Cholesky solve makes E_J = ½ dᵀV⁻¹d smooth to ~1e-13
+    /// (see `df_j_energy_is_smooth_in_the_density`).
+    v_chol: CholeskyFactorized<OwnedRepr<f64>>,
     /// Parallel context for the cross-rank reductions. `None` → serial / non-MPI
     /// (no reduction, full band).
     #[allow(dead_code)]
@@ -125,7 +137,7 @@ impl<'a> DfJ<'a> {
     ///
     /// `source` MUST cover exactly this rank's aux band, i.e. what
     /// `build_band(.., p0, p1)` would have produced — `build` reports GLOBAL aux
-    /// indices and slices `v_inv` with them, so a mismatched band would silently
+    /// indices and indexes the full-metric `c_P` with them, so a mismatched band would silently
     /// contract the wrong rows. Single-rank (`ctx` None or size 1) is the only
     /// case where DfJ's band and DfK's full range coincide; `build_df_jk` gates
     /// the sharing on exactly that.
@@ -137,31 +149,38 @@ impl<'a> DfJ<'a> {
         ctx: Option<&'a ParallelContext>,
     ) -> Result<Self, FerricError> {
         let v = coulomb_metric_2c(op, dfbs)?;
-        // NOT wrapped in with_blas_threads, deliberately: `.inv()` is
-        // LU-based (dgetrf/dgetri). Verified 2026-07-10 that OpenBLAS's
-        // multi-threaded dgetrf_parallel overflows the stack even OUTSIDE any
-        // rayon region — reproduced in isolation on a plain OS thread (8 MB
-        // ulimit -s) at a realistic (113, 113) JK-fit metric size with
-        // FERRIC_BLAS_THREADS=2 (SIGABRT "stack overflow, aborting"); the
-        // unwrapped call at the same size succeeds. This is the same
-        // dgetrf_parallel hazard the openblas-rayon-dgetrf-crash memory
-        // documents for rayon workers, just proven to also hit plain threads
-        // — `.cholesky()`/`.eigh()` at comparable sizes were NOT observed to
-        // crash, so this is specific to the LU/getri path, not a general BLAS
-        // thread-count issue. Stays at the OPENBLAS_NUM_THREADS=1 process
-        // default (correct, safe, and identical to pre-B6 behavior).
-        let v_inv = v
-            .inv()
-            .map_err(|e| FerricError::Lapack(format!("V^-1 in DfJ: {e}")))?;
+        // Cholesky (dpotrf), NOT the LU inverse this used to form: see the
+        // `v_chol` field doc for why an explicit inverse is numerically wrong
+        // here. Also sidesteps the multi-threaded dgetrf_parallel stack
+        // overflow the LU path was exposed to (openblas-rayon-dgetrf-crash;
+        // `.cholesky()` was never observed to crash at these sizes). A metric
+        // that is not numerically positive definite is a hard error, never a
+        // silently garbage inverse.
+        let v_chol = v.factorizec(UPLO::Lower).map_err(|e| {
+            FerricError::Lapack(format!(
+                "Cholesky of the DF-J Coulomb metric failed (V is not numerically \
+                 positive definite: the auxiliary basis is linearly dependent): {e}"
+            ))
+        })?;
         // Store ctx only when it actually implies a reduction (>1 rank); a size-1
         // ctx behaves exactly like None (full band, no all_reduce).
         let ctx = ctx.filter(|c| c.size > 1);
         Ok(DfJ {
             source,
-            v_inv,
+            v_chol,
             ctx,
             budget_bytes,
         })
+    }
+}
+
+impl DfJ<'_> {
+    /// `c = V^{-1} d` by a backward-stable Cholesky solve against the stored
+    /// factor (see the `v_chol` field doc).
+    fn solve_metric(&self, d_p: &Array1<f64>) -> Result<Array1<f64>, FerricError> {
+        self.v_chol
+            .solvec(d_p)
+            .map_err(|e| FerricError::Lapack(format!("DF-J metric solve failed: {e}")))
     }
 }
 
@@ -231,8 +250,9 @@ impl JBuilder for DfJ<'_> {
             }
         }
 
-        // c_P = V^{-1} d_P  (full d_P → identical c_P on every rank)
-        let c_p = self.v_inv.dot(&d_p);
+        // c_P = V^{-1} d_P by Cholesky solve (full d_P → identical c_P on
+        // every rank).
+        let c_p = self.solve_metric(&d_p)?;
 
         // Pass 2: J[μν] = Σ_P B[P,μν] c_P. This IS a true reduction (every P
         // contributes to every μν), so accumulate via grouped_deterministic_sum
@@ -378,7 +398,7 @@ mod tests {
         // Implementation-equivalence test for the rayon-chunked restructure:
         // the chunked GEMV contraction in `build` must reproduce the naive
         // per-block (unchunked) two-pass contraction over the SAME raw B
-        // tensor and V^{-1} to machine precision. A dense symmetric density
+        // tensor and metric solve to machine precision. A dense symmetric density
         // exercises every (P,μν) coupling, unlike the diagonal-D accuracy
         // test above (which measures RI fitting error vs direct J and cannot
         // separate algebra bugs from fitting error). Mirrors
@@ -416,7 +436,7 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        let c_p_ref = dfj.v_inv.dot(&d_p_ref);
+        let c_p_ref = dfj.solve_metric(&d_p_ref).unwrap();
         let mut j_ref = Array2::<f64>::zeros((n, n));
         {
             let mut j_flat = j_ref.view_mut().into_shape_with_order(n * n).unwrap();
@@ -692,7 +712,7 @@ mod tests {
                     Ok(())
                 })
                 .unwrap();
-            let c_p_ref = dfj.v_inv.dot(&d_p_ref);
+            let c_p_ref = dfj.solve_metric(&d_p_ref).unwrap();
             let mut j_ref = Array2::<f64>::zeros((n, n));
             {
                 let mut j_flat = j_ref.view_mut().into_shape_with_order(n * n).unwrap();
