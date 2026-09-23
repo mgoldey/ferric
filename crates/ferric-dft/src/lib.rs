@@ -8,7 +8,8 @@
 //!   [`becke`] holds the fuzzy-cell partition (and its nuclear gradients).
 //! - **Density on the grid** ([`density_on_grid`], [`ao_grid`]) — AO values χ and
 //!   gradients ∇χ at grid points, and ρ/∇ρ/σ from a density matrix.
-//! - **Potentials** ([`vxc`]) — the V_xc Fock contribution (closed/open-shell);
+//! - **Potentials** ([`vxc`]) — the V_xc Fock contribution (closed/open-shell),
+//!   dense reference form; [`xc_batch`] the batched/screened form the SCF uses;
 //!   [`vv10`] nonlocal correlation; [`fxc`] the XC kernel.
 //! - **Gradients** ([`gradient`]) — analytical XC nuclear gradients with grid response.
 //! - **High-level KS glue** ([`ks`], [`xc_trait`]) — caches grid + χ, adds V_xc in place.
@@ -57,6 +58,8 @@ pub mod radial;
 pub mod vv10;
 /// V_xc Fock-matrix contribution from the XC potential on the grid.
 pub mod vxc;
+/// Batched, basis-function-screened semilocal XC integration (the KS SCF path).
+pub mod xc_batch;
 /// [`XcContribution`](xc_trait::XcContribution) trait: abstract interface to XC evaluators.
 pub mod xc_trait;
 
