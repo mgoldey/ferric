@@ -484,8 +484,8 @@ pub fn run(args: Vec<String>) {
         let functional = cfg.dft.functional.clone().unwrap_or_else(|| "LDA".into());
         (
             Some(functional),
-            Some("def2-universal-jkfit".to_string()),
-            Some("def2-universal-jkfit".to_string()),
+            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
+            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
         )
     } else if matches!(
         method,
@@ -507,8 +507,8 @@ pub fn run(args: Vec<String>) {
         // a.u. gate-2 measurement) and is deliberately not offered here.
         (
             cfg.rpa.xc.clone(),
-            Some("def2-universal-jkfit".to_string()),
-            Some("def2-universal-jkfit".to_string()),
+            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
+            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
         )
     } else if matches!(
         method,
@@ -523,20 +523,20 @@ pub fn run(args: Vec<String>) {
         // (see ferric-jk-aux-convention).
         (
             None,
-            Some("def2-universal-jkfit".to_string()),
-            Some("def2-universal-jkfit".to_string()),
+            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
+            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
         )
     } else if matches!(method, "tda" | "tddft") && cfg.tddft.xc.is_some() {
         (
             cfg.tddft.xc.clone(),
-            Some("def2-universal-jkfit".to_string()),
-            Some("def2-universal-jkfit".to_string()),
+            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
+            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
         )
     } else if matches!(method, "tda" | "tddft") {
         (
             None,
-            Some("def2-universal-jkfit".to_string()),
-            Some("def2-universal-jkfit".to_string()),
+            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
+            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
         )
     } else {
         (None, None, None)
@@ -1304,7 +1304,7 @@ fn run_lmp2(
         eprintln!("error: lmp2 is closed-shell (RHF/RKS reference) only");
         std::process::exit(1);
     }
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -1381,7 +1381,7 @@ fn run_lmp2_direct(
         eprintln!("error: lmp2-direct is closed-shell (RHF/RKS reference) only");
         std::process::exit(1);
     }
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -1493,7 +1493,7 @@ fn run_rimp2(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -1581,7 +1581,7 @@ fn run_mp3(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -1645,7 +1645,7 @@ fn run_oo_rimp2(
     budget_bytes: Option<usize>,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -1699,7 +1699,7 @@ fn run_att_rimp2(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -1765,7 +1765,7 @@ fn run_rs_mp2_rpa(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2006,7 +2006,7 @@ fn run_scs_mp2(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2060,7 +2060,7 @@ fn run_scs_mp2_2terfc(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2148,7 +2148,7 @@ fn run_mp2_v(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2265,7 +2265,7 @@ fn run_ccsd(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2351,7 +2351,7 @@ fn run_linlccd(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2431,7 +2431,7 @@ fn run_wb97x_l_v_arm(
     rhf_config: &RhfConfig,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2509,7 +2509,7 @@ fn run_mp2_double_hybrid_arm(
         "dsd-pbep86" => DoubleHybridKind::DsdPbep86,
         _ => unreachable!(),
     };
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2521,8 +2521,8 @@ fn run_mp2_double_hybrid_arm(
 
     let mut ks_cfg = rhf_config.clone();
     ks_cfg.xc = Some(dh_kind.xc_name().to_string());
-    ks_cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
-    ks_cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
+    ks_cfg.df_j_aux = Some(config::DEFAULT_SCF_JK_AUX.to_string());
+    ks_cfg.df_k_aux = Some(config::DEFAULT_SCF_JK_AUX.to_string());
 
     let ladder = ferric_scf::ladder::ksdft_ladder(&ks_cfg);
     let lr =
@@ -2578,7 +2578,7 @@ fn run_laplace_mp2(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2641,7 +2641,7 @@ fn run_laplace_sos_mp2(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2739,7 +2739,7 @@ fn run_pdep_rpa_arm(
     proatom_gs_mult: &dyn Fn(i32) -> usize,
     proatom: &dyn Fn(i32, i32) -> Option<ferric_rpa::properties::RadialProatom>,
 ) {
-    let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -3634,7 +3634,7 @@ fn run_gw(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -3951,7 +3951,7 @@ fn run_bse_tda(
         );
         std::process::exit(1);
     }
-    let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -4072,7 +4072,7 @@ fn run_tdhf_static_polarizability(
         );
         std::process::exit(1);
     }
-    let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+    let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -4404,7 +4404,7 @@ fn run_optimize(
             println!("  final E    = {:.10} Hartree", opt_result.energy);
         }
         "pdep-rpa" => {
-            let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+            let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
             let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 std::process::exit(1);
@@ -4470,7 +4470,7 @@ fn run_optimize(
             );
         }
         "rimp2" => {
-            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-ri");
+            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
             let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 std::process::exit(1);
@@ -4563,7 +4563,7 @@ fn run_tddft_arm(
 ) {
     use ferric_tddft::{TddftConfig, TddftMethod};
 
-    let auxbasis_name = cfg.mp2.auxbasis.as_deref().unwrap_or("cc-pvdz-rifit");
+    let auxbasis_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::TDDFT_DEFAULT_AUX);
     let dfbs_basis = basis::bundled(auxbasis_name).unwrap_or_else(|_| {
         eprintln!("error: auxiliary basis '{auxbasis_name}' not found");
         std::process::exit(1);

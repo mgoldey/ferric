@@ -1,6 +1,20 @@
 use ferric_core::mol::Molecule;
 use serde::Deserialize;
 
+/// Correlation (RI) auxiliary basis used when `[mp2] auxbasis` / `[rpa]
+/// auxbasis` is omitted. Named here, not as a literal at each use site, so
+/// `default_aux_bases_resolve` can check that the defaults a run falls back to
+/// are actually bundled -- the TDDFT default below was not, for as long as it
+/// existed, and no test could see it because it lived only in lib.rs.
+pub const DEFAULT_CORRELATION_AUX: &str = "cc-pvdz-ri";
+/// RI auxiliary basis for `method.kind = "tda" | "tddft"` when `[mp2]
+/// auxbasis` is omitted. Same data as [`DEFAULT_CORRELATION_AUX`] (the BSE
+/// name for it); kept as its own constant so this default is unchanged.
+pub const TDDFT_DEFAULT_AUX: &str = "cc-pvdz-rifit";
+/// JK-fit auxiliary basis the CLI defaults RI-J/RI-K to for KS-DFT and the
+/// RPA/GW/TDDFT references.
+pub const DEFAULT_SCF_JK_AUX: &str = "def2-universal-jkfit";
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -2088,6 +2102,83 @@ json = [1, 2]
             }
         }
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    /// Every basis NAME a shipped example references must resolve through
+    /// `ferric_core::basis::bundled`.
+    ///
+    /// `all_shipped_examples_parse` only checks TOML shape, so an example
+    /// naming an unbundled set parses fine and dies at run time with
+    /// "unknown bundled basis". Three examples (water-tda, water-tddft-pbe,
+    /// water-b2plyp) did exactly that: b2plyp named `cc-pvdz-rifit`, and the two
+    /// TDDFT ones fell back to the same unbundled name as the CLI default.
+    /// Hence the defaults are checked too (`default_aux_bases_resolve`).
+    ///
+    /// Static: loads each basis, runs no calculation.
+    #[test]
+    fn all_shipped_examples_reference_bundled_bases() {
+        let workspace_root = runtime_workspace_root();
+        let dir = workspace_root.join("examples");
+        let mut checked = 0usize;
+        let mut failures = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+                continue;
+            }
+            let s = std::fs::read_to_string(&path).unwrap();
+            let cfg: Config = toml::from_str(&s)
+                .unwrap_or_else(|e| panic!("example {} no longer parses: {e}", path.display()));
+            let mut names: Vec<(&str, &str)> = Vec::new();
+            if let Some(n) = cfg.basis.name.as_deref() {
+                names.push(("[basis] name", n));
+            }
+            if let Some(p) = cfg.basis.path.as_deref() {
+                if !workspace_root.join(p).is_file() {
+                    failures.push(format!("{}: [basis] path = {p:?} does not exist", path.display()));
+                }
+            }
+            let optional = [
+                ("[mp2] auxbasis", cfg.mp2.auxbasis.as_deref()),
+                ("[rpa] auxbasis", cfg.rpa.auxbasis.as_deref()),
+                ("[scf] df_j_aux", cfg.scf.df_j_aux.as_deref()),
+                ("[scf] df_k_aux", cfg.scf.df_k_aux.as_deref()),
+                ("[scf] df_guess_aux", cfg.scf.df_guess_aux.as_deref()),
+                ("[scf] df_increments_aux", cfg.scf.df_increments_aux.as_deref()),
+            ];
+            names.extend(optional.iter().filter_map(|(k, v)| v.map(|v| (*k, v))));
+            for rung in &cfg.scf.ladder {
+                if let Some(v) = rung.df_j_aux.as_deref() {
+                    names.push(("[[scf.ladder]] df_j_aux", v));
+                }
+                if let Some(v) = rung.df_k_aux.as_deref() {
+                    names.push(("[[scf.ladder]] df_k_aux", v));
+                }
+            }
+            for (key, name) in names {
+                checked += 1;
+                if let Err(e) = ferric_core::basis::bundled(name) {
+                    failures.push(format!("{}: {key} = {name:?}: {e}", path.display()));
+                }
+            }
+        }
+        assert!(checked > 0, "no basis names found in {}", dir.display());
+        assert!(
+            failures.is_empty(),
+            "shipped examples reference basis sets that are not bundled:\n  {}",
+            failures.join("\n  ")
+        );
+    }
+
+    /// The aux bases a run falls back to when the TOML names none must be
+    /// bundled -- an example that omits `auxbasis` exercises these, and the
+    /// static scan above cannot see a default.
+    #[test]
+    fn default_aux_bases_resolve() {
+        for name in [DEFAULT_CORRELATION_AUX, TDDFT_DEFAULT_AUX, DEFAULT_SCF_JK_AUX] {
+            ferric_core::basis::bundled(name)
+                .unwrap_or_else(|e| panic!("default aux basis {name:?} is not bundled: {e}"));
+        }
     }
 
     // --- [qmmm]: the section that made QM/MM reachable from the CLI --------
