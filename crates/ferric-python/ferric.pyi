@@ -1533,7 +1533,15 @@ def run_pdep_rpa(
     solvent: float | str | None = None,
     pcm_lebedev_order: int | None = None,
 ) -> PdepRpaResult:
-    """PDEP-RPA (dielectric eigendecomposition RPA)."""
+    """PDEP-RPA (dielectric eigendecomposition RPA).
+
+    point_charges / external_field / solvent embed the REFERENCE RHF, so the
+    dielectric response is that of the molecule in its environment. Units match
+    run_rhf: point_charges are (q, x, y, z) with q in e and positions in BOHR
+    (Molecule.coords() is Angstrom -- convert first); external_field is
+    (Ex, Ey, Ez) in atomic units (Hartree / (e * Bohr)). solvent and
+    pcm_lebedev_order are as in run_rhf.
+    """
     ...
 
 def run_gw(
