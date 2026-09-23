@@ -280,6 +280,62 @@ fn resolve_df_aux(requested: Option<&str>, default_aux: &str) -> Option<String> 
     }
 }
 
+/// Resolve the `grid_radial` / `grid_angular` / `grid_prune` kwargs into the
+/// main KS grid config (`RhfConfig::dft_grid`).
+///
+/// All three `None` returns `None`, which keeps `AtomicGridConfig::default()`
+/// (75x110, unpruned) and so is byte-identical to the path before these kwargs
+/// existed. Any one set materialises an explicit config, with the unset sizes
+/// taken from that same default. It touches the MAIN grid only: the VV10/NLC
+/// grid keeps its own 50x50 unpruned default, where pruning has no valid table
+/// (same scoping as the CLI's `[dft] grid_prune`).
+///
+/// Everything is validated HERE, as a `ValueError`, rather than downstream:
+/// `lebedev()` PANICS on an unsupported angular order, and a prune scheme with
+/// no table at the requested order (`n_angular = 50`) would otherwise surface
+/// only as a generic SCF error after the GIL is released. `grid_prune` goes
+/// through the same strict parser as the CLI (`PruneScheme::parse_config_str`:
+/// "none"/"off"/"flat" or "nwchem"), so an unknown value is an error, never a
+/// silent flat grid.
+fn resolve_dft_grid(
+    grid_radial: Option<usize>,
+    grid_angular: Option<usize>,
+    grid_prune: Option<&str>,
+) -> PyResult<Option<ferric_dft::grid::AtomicGridConfig>> {
+    use ferric_dft::prune::{region_orders, PruneScheme, SUPPORTED_LEBEDEV_ORDERS};
+    let prune = match grid_prune {
+        None => None,
+        Some(s) => PruneScheme::parse_config_str(s)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("grid_prune: {e}")))?,
+    };
+    if grid_radial.is_none() && grid_angular.is_none() && grid_prune.is_none() {
+        return Ok(None);
+    }
+    let default = ferric_dft::grid::AtomicGridConfig::default();
+    let n_radial = grid_radial.unwrap_or(default.n_radial);
+    let n_angular = grid_angular.unwrap_or(default.n_angular);
+    if n_radial == 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "grid_radial must be > 0",
+        ));
+    }
+    if !SUPPORTED_LEBEDEV_ORDERS.contains(&n_angular) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "grid_angular = {n_angular} is not a supported Lebedev order \
+             (supported: {SUPPORTED_LEBEDEV_ORDERS:?})"
+        )));
+    }
+    if prune.is_some() {
+        region_orders(n_angular)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("grid_prune: {e}")))?;
+    }
+    Ok(Some(ferric_dft::grid::AtomicGridConfig {
+        n_radial,
+        n_angular,
+        prune,
+    }))
+}
+
 /// Convert the Python `solvent` kwarg into a `PcmConfig`.
 ///
 /// Implicit solvation is the difference between an electrostatic interaction
@@ -4812,6 +4868,7 @@ fn run_double_hybrid(
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None,
     dispersion=None, df_j_aux=None, df_k_aux=None,
+    grid_radial=None, grid_angular=None, grid_prune=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_dft(
@@ -4832,6 +4889,9 @@ fn run_dft(
     dispersion: Option<&str>,
     df_j_aux: Option<&str>,
     df_k_aux: Option<&str>,
+    grid_radial: Option<usize>,
+    grid_angular: Option<usize>,
+    grid_prune: Option<&str>,
 ) -> PyResult<PyDftResult> {
     // Refuse an (E, grad-E) pair that does not belong to the same surface.
     //
@@ -4869,9 +4929,25 @@ fn run_dft(
     // MEASURED at PBE/STO-3G vs conventional J: water 0.28, benzene 1.16,
     // 71-atom drug 9.5 kcal/mol. `df_j_aux=""` selects conventional J.
     cfg.df_j_aux = resolve_df_aux(df_j_aux, "def2-universal-jkfit");
-    // RI-K only matters for hybrid/RSH; harmless for pure DFT (path is bypassed
-    // when k_mix.sr == 0 and k_mix.omega == 0).
+    // RI-K only matters for ω = 0 hybrids and HF. For a pure functional (and
+    // for RSH, which uses its own SR/LR fitters) `solve_rhf` now skips
+    // building this DfK altogether rather than building it and discarding K.
     cfg.df_k_aux = resolve_df_aux(df_k_aux, "def2-universal-jkfit");
+    // Main KS grid. `None` (no grid kwarg) keeps the historical 75x110 flat
+    // grid byte-for-byte; `ksdft_ladder` clones `cfg`, so every rung uses it.
+    cfg.dft_grid = resolve_dft_grid(grid_radial, grid_angular, grid_prune)?;
+    // `ks_gradient_closed` builds its OWN default grid (it takes no grid
+    // config), so a gradient after a non-default-grid SCF would be the
+    // gradient of a different energy -- and on a pruned grid the XC
+    // grid-response term does not exist at all. Refuse the pair up front, the
+    // same rule the CLI applies to `[dft] grid_prune` with task != "energy".
+    if with_gradient && cfg.dft_grid.is_some() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "with_gradient=True cannot be combined with grid_radial / grid_angular / \
+             grid_prune: the analytic KS gradient is built on the default 75x110 \
+             unpruned grid, so it would not be the gradient of this energy",
+        ));
+    }
     // Run through the level-shift ladder (KS-DFT = solve_rhf with cfg.xc set),
     // so a hybrid on a hard system that DIIS-limit-cycles at level_shift=0
     // escalates the virtual-block shift instead of erroring out at max_iter.
@@ -4961,6 +5037,25 @@ fn run_dft(
     })
 }
 
+/// Number of points in the main KS integration grid `run_dft` would build for
+/// `mol` with the same `grid_*` kwargs (same resolver, same builder, no
+/// weight screening in between). Lets a caller see what pruning saves on
+/// their own molecule without running an SCF; the Becke partitioning is the
+/// only non-trivial cost.
+#[pyfunction]
+#[pyo3(signature = (mol, grid_radial=None, grid_angular=None, grid_prune=None))]
+fn dft_grid_point_count(
+    mol: &PyMolecule,
+    grid_radial: Option<usize>,
+    grid_angular: Option<usize>,
+    grid_prune: Option<&str>,
+) -> PyResult<usize> {
+    let cfg = resolve_dft_grid(grid_radial, grid_angular, grid_prune)?.unwrap_or_default();
+    let grid = ferric_dft::grid::build_atomic_grid_pruned(&mol.inner, &cfg, cfg.prune)
+        .map_err(make_err)?;
+    Ok(grid.len())
+}
+
 /// Resolve a `dispersion=` spec to the functional whose D3(BJ) parameters to use.
 ///
 /// Accepts exactly what the CLI's `[dft] dispersion` accepts, so the two
@@ -5008,6 +5103,7 @@ fn resolve_d3_functional(spec: &str, xc_name: &str) -> PyResult<String> {
     level_shift=None, mom_after_iter=None,
     point_charges=None, external_field=None, memory_budget_gb=None,
     dispersion=None, df_j_aux=None, df_k_aux=None,
+    grid_radial=None, grid_angular=None, grid_prune=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn run_ksdft(
@@ -5028,6 +5124,9 @@ fn run_ksdft(
     dispersion: Option<&str>,
     df_j_aux: Option<&str>,
     df_k_aux: Option<&str>,
+    grid_radial: Option<usize>,
+    grid_angular: Option<usize>,
+    grid_prune: Option<&str>,
 ) -> PyResult<PyDftResult> {
     run_dft(
         py,
@@ -5047,6 +5146,9 @@ fn run_ksdft(
         dispersion,
         df_j_aux,
         df_k_aux,
+        grid_radial,
+        grid_angular,
+        grid_prune,
     )
 }
 
@@ -7380,6 +7482,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_laplace_sos_mp2, m)?)?;
     m.add_function(wrap_pyfunction!(run_dft, m)?)?;
     m.add_function(wrap_pyfunction!(run_ksdft, m)?)?;
+    m.add_function(wrap_pyfunction!(dft_grid_point_count, m)?)?;
     m.add_function(wrap_pyfunction!(d3bj_energy, m)?)?;
     m.add_function(wrap_pyfunction!(run_ccd, m)?)?;
     m.add_function(wrap_pyfunction!(run_ccsd, m)?)?;

@@ -1432,6 +1432,9 @@ def run_dft(
     dispersion: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    grid_radial: int | None = None,
+    grid_angular: int | None = None,
+    grid_prune: str | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell).
 
@@ -1440,7 +1443,25 @@ def run_dft(
     `"d3bj(<name>)"` uses `<name>`'s instead. `None` (the default) applies no
     correction and leaves the energy exactly as it was. Any other value raises
     -- there is no spelling that means "compute a zero correction".
+
+    `grid_radial` / `grid_angular` / `grid_prune` set the main XC grid. All
+    `None` (the default) is the 75x110 unpruned grid, unchanged. `grid_angular`
+    must be a supported Lebedev order (6, 14, 26, 50, 110, 302).
+    `grid_prune="nwchem"` applies NWChem-style radial-region angular pruning
+    (~23% fewer points at 75x110, ~1e-10 Ha); `"none"` is the flat grid, and
+    any other value raises ValueError. Pruning has no table at
+    `grid_angular=50`. Any grid kwarg with `with_gradient=True` raises
+    ValueError: the analytic gradient is built on the default grid.
     """
+    ...
+
+def dft_grid_point_count(
+    mol: Molecule,
+    grid_radial: int | None = None,
+    grid_angular: int | None = None,
+    grid_prune: str | None = None,
+) -> int:
+    """Number of points in the main XC grid `run_dft` builds with these kwargs."""
     ...
 
 def run_ksdft(
@@ -1460,8 +1481,11 @@ def run_ksdft(
     dispersion: str | None = None,
     df_j_aux: str | None = None,
     df_k_aux: str | None = None,
+    grid_radial: int | None = None,
+    grid_angular: int | None = None,
+    grid_prune: str | None = None,
 ) -> DftResult:
-    """Kohn-Sham DFT (closed-shell). Alias of run_dft.
+    """Kohn-Sham DFT (closed-shell). Alias of run_dft (same grid_* kwargs).
 
     `dispersion` adds an empirical dispersion correction to the SCF energy:
     `"d3bj"` uses the damping parameters published for `functional`, and
