@@ -703,7 +703,14 @@ impl ScreenedGrid {
             let mut buf = [0.0f64; 15];
             let mut gbuf: [[f64; 15]; 3] = [[0.0; 15]; 3];
             for sh in &shells {
-                eval_shell_and_grad(&sh.located(), 0.5, 0.5, 0.5, &mut buf[..sh.nfunc], &mut gbuf)?;
+                eval_shell_and_grad(
+                    &sh.located(),
+                    0.5,
+                    0.5,
+                    0.5,
+                    &mut buf[..sh.nfunc],
+                    &mut gbuf,
+                )?;
             }
         }
         let xyz: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
@@ -893,7 +900,9 @@ impl ScreenedGrid {
         xc: &XcDef,
         exec: Exec,
     ) -> Result<(f64, Array2<f64>), GtoEvalError> {
-        with_blas_threads(exec.blas, || self.integrate_closed_inner(grid, d, xc, exec.serial))
+        with_blas_threads(exec.blas, || {
+            self.integrate_closed_inner(grid, d, xc, exec.serial)
+        })
     }
 
     fn integrate_closed_inner(
@@ -1232,9 +1241,13 @@ mod tests {
             let located = collect_shells(&mol, &bs).unwrap();
             let nbf = nbasis(&mol, &bs).unwrap();
             let thresh = DEFAULT_SCREEN_THRESH;
-            let sg =
-                ScreenedGrid::build(&grid, owned_shells(&located), nbf, &XcBatchConfig::default())
-                    .unwrap();
+            let sg = ScreenedGrid::build(
+                &grid,
+                owned_shells(&located),
+                nbf,
+                &XcBatchConfig::default(),
+            )
+            .unwrap();
             if basis == "cc-pvdz" {
                 assert!(
                     sg.shells.iter().any(|s| s.l == 2 && s.pure),
@@ -1244,7 +1257,8 @@ mod tests {
             let (mut n_dropped, mut n_grad_only, mut n_pairs) = (0usize, 0usize, 0usize);
             for b in &sg.batches {
                 let pts: Vec<[f64; 3]> = b.idx.iter().map(|&i| grid[i as usize].xyz).collect();
-                let (chi, dchi) = eval_basis_and_grad_on_points_unchecked(&located, nbf, &pts).unwrap();
+                let (chi, dchi) =
+                    eval_basis_and_grad_on_points_unchecked(&located, nbf, &pts).unwrap();
                 let mut expect_funcs = Vec::new();
                 for (si, sh) in sg.shells.iter().enumerate() {
                     let mut m_chi = 0.0_f64;
@@ -1280,7 +1294,10 @@ mod tests {
                         n_dropped += 1;
                     }
                 }
-                assert_eq!(b.funcs, expect_funcs, "{basis}: funcs must match the kept shells");
+                assert_eq!(
+                    b.funcs, expect_funcs,
+                    "{basis}: funcs must match the kept shells"
+                );
             }
             eprintln!(
                 "{basis}: {n_dropped}/{n_pairs} (batch, shell) pairs dropped, \
@@ -1316,22 +1333,34 @@ mod tests {
         );
         let located = collect_shells(&mol, &bs).unwrap();
         let nbf = nbasis(&mol, &bs).unwrap();
-        let mut sg =
-            ScreenedGrid::build(&grid, owned_shells(&located), nbf, &XcBatchConfig::default())
-                .unwrap();
+        let mut sg = ScreenedGrid::build(
+            &grid,
+            owned_shells(&located),
+            nbf,
+            &XcBatchConfig::default(),
+        )
+        .unwrap();
         sg.materialize(&grid).unwrap();
         // A symmetric, positive "density matrix": only the arithmetic path is
         // under test here, not the physics.
-        let c = Array2::from_shape_fn((nbf, 6), |(i, j)| ((i * 7 + j * 3) % 11) as f64 * 0.05 - 0.2);
+        let c = Array2::from_shape_fn((nbf, 6), |(i, j)| {
+            ((i * 7 + j * 3) % 11) as f64 * 0.05 - 0.2
+        });
         let d = 2.0 * c.dot(&c.t());
         let d_b = 0.5 * &d;
         for name in ["PBE", "SCAN"] {
             let xc1 = crate::libxc::xc_def_from_name(name).unwrap();
-            let (e_p, v_p) = sg.integrate_closed_exec(&grid, &d, &xc1, Exec::parallel()).unwrap();
-            let (e_s, v_s) =
-                sg.integrate_closed_exec(&grid, &d, &xc1, Exec::serial_single_blas()).unwrap();
+            let (e_p, v_p) = sg
+                .integrate_closed_exec(&grid, &d, &xc1, Exec::parallel())
+                .unwrap();
+            let (e_s, v_s) = sg
+                .integrate_closed_exec(&grid, &d, &xc1, Exec::serial_single_blas())
+                .unwrap();
             assert_eq!(e_p.to_bits(), e_s.to_bits(), "{name} closed E");
-            assert!(v_p.iter().zip(v_s.iter()).all(|(a, b)| a.to_bits() == b.to_bits()));
+            assert!(v_p
+                .iter()
+                .zip(v_s.iter())
+                .all(|(a, b)| a.to_bits() == b.to_bits()));
             let xc2 = crate::libxc::xc_def_from_name_nspin(name, 2).unwrap();
             let (e_p, a_p, b_p) = sg
                 .integrate_polarized_exec(&grid, &d, &d_b, &xc2, Exec::parallel())
@@ -1340,8 +1369,14 @@ mod tests {
                 .integrate_polarized_exec(&grid, &d, &d_b, &xc2, Exec::serial_single_blas())
                 .unwrap();
             assert_eq!(e_p.to_bits(), e_s.to_bits(), "{name} uks E");
-            assert!(a_p.iter().zip(a_s.iter()).all(|(a, b)| a.to_bits() == b.to_bits()));
-            assert!(b_p.iter().zip(b_s.iter()).all(|(a, b)| a.to_bits() == b.to_bits()));
+            assert!(a_p
+                .iter()
+                .zip(a_s.iter())
+                .all(|(a, b)| a.to_bits() == b.to_bits()));
+            assert!(b_p
+                .iter()
+                .zip(b_s.iter())
+                .all(|(a, b)| a.to_bits() == b.to_bits()));
         }
     }
 

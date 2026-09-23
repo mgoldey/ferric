@@ -1470,7 +1470,10 @@ mod anchor_tests {
                 let (tol_e, tol_v) = screen_bars(name, basis_name);
                 eprintln!("screen closed {basis_name} {name}: dE={de:.2e} max|dV|={dv:.2e}");
                 assert!(de <= tol_e, "{basis_name} {name}: dE {de:e} > {tol_e:e}");
-                assert!(dv <= tol_v, "{basis_name} {name}: max|dV| {dv:e} > {tol_v:e}");
+                assert!(
+                    dv <= tol_v,
+                    "{basis_name} {name}: max|dV| {dv:e} > {tol_v:e}"
+                );
             }
         }
     }
@@ -1511,7 +1514,10 @@ mod anchor_tests {
                 let (tol_e, tol_v) = screen_bars(name, basis_name);
                 eprintln!("screen uks {basis_name} {name}: dE={de:.2e} max|dV|={dv:.2e}");
                 assert!(de <= tol_e, "{basis_name} {name}: dE {de:e} > {tol_e:e}");
-                assert!(dv <= tol_v, "{basis_name} {name}: max|dV| {dv:e} > {tol_v:e}");
+                assert!(
+                    dv <= tol_v,
+                    "{basis_name} {name}: max|dV| {dv:e} > {tol_v:e}"
+                );
             }
         }
     }
@@ -1543,44 +1549,44 @@ mod anchor_tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = far_water_dimer();
         for basis_name in ["6-31g", "cc-pvdz"] {
-        let bs = basis::bundled(basis_name).unwrap();
-        let d = rhf_density(&mol, &bs);
-        let mut results = Vec::new();
-        for storage in [AoStorage::Resident, AoStorage::Recompute] {
-            let cfg = XcBatchConfig {
-                storage,
-                ..Default::default()
-            };
-            let ks = KsXc::new_with_batch_config(
-                &mol,
-                &bs,
-                "SCAN",
-                &main_grid(),
-                &nlc_grid(),
-                None,
-                None,
-                cfg,
-            )
-            .unwrap();
-            assert!(ks.xc_screening_stats().active_fraction < 1.0);
-            for threads in [1usize, 4] {
-                let (e, f) = in_pool(threads, || {
-                    let mut f = Array2::<f64>::zeros(d.dim());
-                    let e = ks.add_xc(&d, &mut f);
-                    (e, f)
-                });
-                results.push((format!("{storage:?}/{threads}t"), e, f));
+            let bs = basis::bundled(basis_name).unwrap();
+            let d = rhf_density(&mol, &bs);
+            let mut results = Vec::new();
+            for storage in [AoStorage::Resident, AoStorage::Recompute] {
+                let cfg = XcBatchConfig {
+                    storage,
+                    ..Default::default()
+                };
+                let ks = KsXc::new_with_batch_config(
+                    &mol,
+                    &bs,
+                    "SCAN",
+                    &main_grid(),
+                    &nlc_grid(),
+                    None,
+                    None,
+                    cfg,
+                )
+                .unwrap();
+                assert!(ks.xc_screening_stats().active_fraction < 1.0);
+                for threads in [1usize, 4] {
+                    let (e, f) = in_pool(threads, || {
+                        let mut f = Array2::<f64>::zeros(d.dim());
+                        let e = ks.add_xc(&d, &mut f);
+                        (e, f)
+                    });
+                    results.push((format!("{storage:?}/{threads}t"), e, f));
+                }
             }
-        }
-        let (n0, e0, f0) = &results[0];
-        for (n, e, f) in &results[1..] {
-            assert_eq!(
-                e0.to_bits(),
-                e.to_bits(),
-                "{basis_name} {n0} vs {n}: {e0:e} vs {e:e}"
-            );
-            assert_bits(f0, f, &format!("{basis_name} V {n0} vs {n}"));
-        }
+            let (n0, e0, f0) = &results[0];
+            for (n, e, f) in &results[1..] {
+                assert_eq!(
+                    e0.to_bits(),
+                    e.to_bits(),
+                    "{basis_name} {n0} vs {n}: {e0:e} vs {e:e}"
+                );
+                assert_bits(f0, f, &format!("{basis_name} V {n0} vs {n}"));
+            }
         }
     }
 
@@ -1590,41 +1596,41 @@ mod anchor_tests {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = water_oh_far();
         for basis_name in ["6-31g", "cc-pvdz"] {
-        let bs = basis::bundled(basis_name).unwrap();
-        let (d_a, d_b) = uhf_densities(&mol, &bs);
-        let mut results = Vec::new();
-        for storage in [AoStorage::Resident, AoStorage::Recompute] {
-            let cfg = XcBatchConfig {
-                storage,
-                ..Default::default()
-            };
-            let ks = KsXcUks::new_with_batch_config(
-                &mol,
-                &bs,
-                "SCAN",
-                &main_grid(),
-                &nlc_grid(),
-                None,
-                None,
-                cfg,
-            )
-            .unwrap();
-            for threads in [1usize, 4] {
-                let r = in_pool(threads, || {
-                    let mut fa = Array2::<f64>::zeros(d_a.dim());
-                    let mut fb = Array2::<f64>::zeros(d_b.dim());
-                    let e = ks.add_xc_uks(&d_a, &d_b, &mut fa, &mut fb);
-                    (e, fa, fb)
-                });
-                results.push((format!("{storage:?}/{threads}t"), r));
+            let bs = basis::bundled(basis_name).unwrap();
+            let (d_a, d_b) = uhf_densities(&mol, &bs);
+            let mut results = Vec::new();
+            for storage in [AoStorage::Resident, AoStorage::Recompute] {
+                let cfg = XcBatchConfig {
+                    storage,
+                    ..Default::default()
+                };
+                let ks = KsXcUks::new_with_batch_config(
+                    &mol,
+                    &bs,
+                    "SCAN",
+                    &main_grid(),
+                    &nlc_grid(),
+                    None,
+                    None,
+                    cfg,
+                )
+                .unwrap();
+                for threads in [1usize, 4] {
+                    let r = in_pool(threads, || {
+                        let mut fa = Array2::<f64>::zeros(d_a.dim());
+                        let mut fb = Array2::<f64>::zeros(d_b.dim());
+                        let e = ks.add_xc_uks(&d_a, &d_b, &mut fa, &mut fb);
+                        (e, fa, fb)
+                    });
+                    results.push((format!("{storage:?}/{threads}t"), r));
+                }
             }
-        }
-        let (n0, (e0, fa0, fb0)) = &results[0];
-        for (n, (e, fa, fb)) in &results[1..] {
-            assert_eq!(e0.to_bits(), e.to_bits(), "{basis_name} {n0} vs {n}");
-            assert_bits(fa0, fa, &format!("{basis_name} Va {n0} vs {n}"));
-            assert_bits(fb0, fb, &format!("{basis_name} Vb {n0} vs {n}"));
-        }
+            let (n0, (e0, fa0, fb0)) = &results[0];
+            for (n, (e, fa, fb)) in &results[1..] {
+                assert_eq!(e0.to_bits(), e.to_bits(), "{basis_name} {n0} vs {n}");
+                assert_bits(fa0, fa, &format!("{basis_name} Va {n0} vs {n}"));
+                assert_bits(fb0, fb, &format!("{basis_name} Vb {n0} vs {n}"));
+            }
         }
     }
 
