@@ -903,7 +903,7 @@ pub fn solve_rhf(
     // (`df_active = false` here is only about which branch reports the error;
     // the whitelist check is unconditional). The DF-vs-pluggable decision is
     // re-resolved below once `build_df_jk` has said what is actually active.
-    crate::fock_assembly::resolve_k_builder(config.k_builder.as_deref(), false, false)?;
+    crate::fock_assembly::resolve_k_builder(config.k_builder.as_deref(), false, false, true, 0.0)?;
 
     // Meta-GGA default virtual-block level shift (see driver::effective_level_shift).
     let effective_level_shift = crate::driver::effective_level_shift(config);
@@ -1006,6 +1006,8 @@ pub fn solve_rhf(
         config.k_builder.as_deref(),
         df_any,
         df_k.is_some(),
+        k_consumed,
+        k_mix.omega,
     )?;
     // Build the pluggable builder once — LinK's SignificantPairs and COSX's
     // grid/overlap-fit factor are geometry-only and expensive per iteration.
