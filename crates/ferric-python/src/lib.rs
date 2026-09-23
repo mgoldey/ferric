@@ -4321,8 +4321,8 @@ fn run_scs_mp2(
     })
 }
 
-/// SCS-MP2(2terfc): dual-attenuated SCS-MP2 (Goldey, Dutoi, Head-Gordon, PCCP
-/// 2013) using the EXACT terfc operator at two cutoffs `r0_bonded` < `r0_nonbonded`
+/// SCS-MP2(2terfc): dual-attenuated SCS-MP2 (Goldey & Head-Gordon, J. Phys.
+/// Chem. B 118, 6519 (2014)) using the EXACT terfc operator at two cutoffs `r0_bonded` < `r0_nonbonded`
 /// (Å). E = c_OS·E_OS(r0_1) + c_SS·[E_SS(r0_2) − E_SS(r0_1)]. Requires the terfc
 /// tables (FERRIC_TERF_TABLE_DIR). Paper defaults: r0=0.75/1.05 Å, c_OS=1.27, c_SS=4.05.
 #[pyfunction]

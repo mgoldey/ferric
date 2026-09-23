@@ -1,7 +1,12 @@
 //! Spin-component scaled MP2 variants.
 //!
-//! - SCS-MP2: E = c_OS * E_OS + c_SS * E_SS (Grimme, JCP 2003)
-//! - SCS-MP2(2terfc): dual-attenuated SCS (Goldey, Dutoi, Head-Gordon, PCCP 2013)
+//! - SCS-MP2: E = c_OS * E_OS + c_SS * E_SS (Grimme, J. Chem. Phys. 118, 9095
+//!   (2003))
+//! - SCS-MP2(2terfc): dual-attenuated SCS (Goldey & Head-Gordon, J. Phys. Chem. B
+//!   118, 6519 (2014) -- "Separate electronic attenuation allowing a
+//!   spin-component-scaled MP2 to be effective for both thermochemistry and
+//!   noncovalent interactions"; its aTZ parameters are re-tabulated in Goldey,
+//!   Belzunces & Head-Gordon, JCTC 11, 4159 (2015), Table 2)
 //!   E = c_OS * E_OS(r0_1) + c_SS * [E_SS(r0_2) - E_SS(r0_1)], using the EXACT
 //!   `terfc` operator (2D interpolation tables), not the erfc approximation.
 
@@ -15,7 +20,7 @@ use ferric_scf::ScfResult;
 /// Angstrom to Bohr conversion factor.
 const ANGSTROM_TO_BOHR: f64 = 1.8897259886;
 
-/// Standard SCS-MP2 configuration (Grimme, JCP 2003).
+/// Standard SCS-MP2 configuration (Grimme, J. Chem. Phys. 118, 9095 (2003)).
 #[derive(Debug, Clone)]
 pub struct ScsMp2Config {
     /// Opposite-spin scaling coefficient (Grimme default: 6/5).
@@ -91,7 +96,15 @@ pub fn scs_mp2(
     })
 }
 
-/// SCS-MP2(2terfc) configuration (Goldey, Dutoi, Head-Gordon, PCCP 2013; thesis Eq 5.6).
+/// SCS-MP2(2terfc) configuration (Goldey & Head-Gordon, J. Phys. Chem. B 118,
+/// 6519 (2014)).
+///
+/// Citation note (2026-09-23): this was previously attributed to Goldey, Dutoi
+/// & Head-Gordon, PCCP 15, 15869 (2013). That paper is attenuated MP2 in
+/// aug-cc-pVTZ; the separately-attenuated SCS variant is the 2014 JPCB paper.
+/// The "thesis Eq 5.6" references are to the author's dissertation and were
+/// NOT checked against its text; the formula implemented is the one written
+/// out below and pinned by `scs_2terfc_matches_eq12_assembled_by_hand`.
 #[derive(Debug, Clone)]
 pub struct ScsMp2TerfcConfig {
     /// Bonded attenuation distance r0(1) in Bohr.
@@ -116,8 +129,8 @@ impl Default for ScsMp2TerfcConfig {
     ///
     /// r₀(1) = 0.75 Å, r₀(2) = 1.05 Å, c_OS = 1.27, c_SS = 4.05, in
     /// **aug-cc-pVTZ**. Reported S66 RMSD 0.228 kcal/mol (Goldey/Belzunces/
-    /// Head-Gordon, JCTC 11, 4159 (2015), Table 2; the parameters themselves are
-    /// from the earlier Goldey/Dutoi/Head-Gordon PCCP 2013 work / thesis Eq 5.6).
+    /// Head-Gordon, JCTC 11, 4159 (2015), Table 2; the method and its fit are
+    /// from Goldey & Head-Gordon, J. Phys. Chem. B 118, 6519 (2014)).
     ///
     /// **Do NOT confuse these with SCS-MP2-V(2terfc, aTZ)**, the VV10-corrected
     /// variant, which is a genuinely different fit: r₀^SR = 0.70 Å,
@@ -145,7 +158,7 @@ impl Default for ScsMp2TerfcConfig {
 
 /// SCS-MP2(2terfc): E = c_OS * E_OS(r0_1) + c_SS * [E_SS(r0_2) - E_SS(r0_1)].
 ///
-/// Dual-attenuated SCS-MP2 from Goldey, Dutoi, Head-Gordon (PCCP 2013). Calls
+/// Dual-attenuated SCS-MP2 from Goldey & Head-Gordon (JPCB 118, 6519 (2014)). Calls
 /// `ri_mp2_spin_components` twice with the EXACT `terfc` operator at the bonded
 /// (r0_1) and non-bonded (r0_2) attenuation distances. Unlike the deprecated
 /// spike, this uses the interpolation-table terfc integrals, not an erfc fit.
@@ -205,7 +218,8 @@ pub fn scs_mp2_2terfc(
         &ri_config,
     )?;
 
-    // Thesis Eq 5.6: E = c_OS * E_OS(r0_1) + c_SS * [E_SS(r0_2) - E_SS(r0_1)].
+    // E = c_OS * E_OS(r0_1) + c_SS * [E_SS(r0_2) - E_SS(r0_1)] (the SCS-MP2(2terfc)
+    // energy; same structure as JCTC 11, 4159 (2015) Eq. 12 without its VV10 term).
     let e_ss = sc2.e_ss - sc1.e_ss;
     let scs_corr = config.c_os * sc1.e_os + config.c_ss * e_ss;
     Ok(ScsMp2Result {
