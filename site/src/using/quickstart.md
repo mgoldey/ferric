@@ -94,8 +94,9 @@ in the [input reference](../reference/input.md).
 
 ## 3. Add correlation
 
-Change one line in the TOML, or one call in Python, to go beyond Hartree–Fock.
-RI-MP2 needs an auxiliary (fitting) basis alongside the orbital basis:
+To go beyond Hartree–Fock, change the method and the basis. RI-MP2 needs an
+auxiliary (fitting) basis alongside the orbital basis, and STO-3G is too small
+for a meaningful correlation energy, so this example moves to cc-pVDZ:
 
 <!-- doctest -->
 ```python
@@ -109,8 +110,23 @@ print(f"RI-MP2 total energy: {mp2.total_energy:.10f} Ha")
 RI-MP2 total energy: -76.2308014550 Ha
 ```
 
-In TOML the same calculation is `kind = "rimp2"` with `auxbasis` in the `[mp2]`
-section; see [`examples/water-rimp2.toml`](https://github.com/mgoldey/ferric/blob/main/examples/water-rimp2.toml).
+In TOML the same calculation changes the `[basis]` name and the method kind,
+and adds an `[mp2]` section naming the auxiliary basis:
+
+```toml
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "rimp2"
+
+[mp2]
+auxbasis = "cc-pvdz-ri"
+```
+
+If `auxbasis` is omitted the CLI uses `cc-pvdz-ri`, but name it explicitly: the
+auxiliary basis should match the orbital basis. This is
+[`examples/water-rimp2.toml`](https://github.com/mgoldey/ferric/blob/main/examples/water-rimp2.toml).
 
 ## 4. Where to next
 

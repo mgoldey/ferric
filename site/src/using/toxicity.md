@@ -62,7 +62,7 @@ python -m tools.tox --offline candidates.smi
 |---|---|
 | 0 | clean: every molecule assessed by every provider that was asked to |
 | 1 | usage or input error: a bad flag, an unparseable SMILES, a duplicate label, or nothing to assess |
-| 2 | a required check did not run: the local screen failed, or `--require-online` was given and an online provider was unavailable |
+| 2 | a required check did not run: the local screen failed, a provider raised instead of returning a result (`contract_violation`), or `--require-online` was given and an online provider was unavailable |
 | 3 | online checks unavailable: the local screen ran and is reported in full; each unavailable provider is named with its reason |
 | 4 | structural alerts found (only with `--fail-on-alerts`) |
 
