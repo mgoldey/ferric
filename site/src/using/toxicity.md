@@ -1,16 +1,29 @@
 # Toxicity screening
 
 Structural-alert and predicted-liability readouts for a molecule, from the
-command line.
+command line. This is a repository tool (`tools/tox`), not part of the wheel.
+Run it from a git clone of ferric with RDKit installed.
 
 ```
-python -m tools.tox "CC(=O)Oc1ccccc1C(=O)O"
+python -m tools.tox --offline "CC(=O)Oc1ccccc1C(=O)O"
 ```
 
-The screen combines a **local RDKit pass** — several hundred compiled SMARTS
-patterns across six published alert catalogs, plus Lipinski and Veber rules —
-with two optional **web predictors** (ADMETlab, ProTox). The local pass needs
-no network.
+The screen combines a **local RDKit pass** with two optional **web
+providers**. The local pass checks several hundred compiled SMARTS patterns
+from six published alert catalogs (Brenk, PAINS, NIH, and the Glaxo, Dundee and
+BMS sets via ChEMBL), plus Lipinski and Veber rules, and needs no network.
+
+**Use `--offline` today.** Neither web provider currently returns endpoints:
+
+- **ADMETlab 3.0**'s documented API returned HTTP 404 on every path tried when
+  it was last probed (2026-08-29). The client degrades cleanly and will start
+  contributing again if the service comes back.
+- **ProTox-3.0** has no documented JSON API. The provider only checks that the
+  site is reachable, and by design it never scrapes the HTML results page.
+
+Both record their reason as a provider error. So a run without `--offline`
+currently exits with status **2** even when the local screen succeeded
+(MEASURED 2026-09-23).
 
 ## Usage
 
@@ -41,9 +54,9 @@ python -m tools.tox --offline candidates.smi
 
 | code | meaning |
 |---|---|
-| 0 | every molecule assessed |
-| 1 | a SMILES could not be parsed |
-| 2 | a provider failed |
+| 0 | every molecule assessed, and no provider reported an error |
+| 1 | a SMILES could not be parsed, or there was nothing to assess |
+| 2 | a provider failed or returned nothing (currently every online run; see above) |
 
 These are distinct on purpose. "No alerts found" and "the alert screen did not
 run" produce similar-looking output, and they mean opposite things — so a
@@ -52,17 +65,23 @@ status as *no result*, not as a clean molecule.
 
 ## Reading the output
 
+Abridged, for aspirin with `--offline` (each line is followed by a one-line
+explanation, omitted here):
+
 ```
-  alert_total_count                    2 count        [higher=worse] rdkit-alerts
-  desc_clogp                        1.31 log10        [higher=worse] rdkit-alerts
-  desc_mw                          180.2 Da           [higher=worse] rdkit-alerts
-  lipinski_violation_fraction          0 probability  [higher=worse] rdkit-alerts
+  alert_brenk                            0.3333 probability  [higher=worse] rdkit-alerts
+  alert_pains                                 0 probability  [higher=worse] rdkit-alerts
+  alert_total_count                           2 count        [higher=worse] rdkit-alerts
+  desc_clogp                               1.31 log10        [higher=worse] rdkit-alerts
+  desc_mw                                 180.2 Da           [higher=worse] rdkit-alerts
+  lipinski_violation_fraction                 0 probability  [higher=worse] rdkit-alerts
 ```
 
-Every line states its **polarity**. Roughly half of these endpoints are
-"higher is worse" and half are not, so a bare number invites the wrong reading
-and an aggregator that guesses the direction will invert a safety ranking. The
-same flag is carried as `higher_is_worse` in the JSON.
+Every line states its **polarity**, and the JSON carries the same flag as
+`higher_is_worse`. The local endpoints are all "higher is worse". Some web
+endpoints are not: ADMETlab's oral-bioavailability columns, for example, are
+"higher is better". An aggregator that guesses the direction will invert a
+safety ranking. Read the flag, and don't assume a direction.
 
 A value of `None` means *unknown*, never zero. For a probability-valued
 endpoint, `0.0` means "confidently predicted negative", which is the opposite

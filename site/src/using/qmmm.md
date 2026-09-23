@@ -118,7 +118,9 @@ The parser is strict: an unknown string is an error, never a silent default.
 ## Energies, forces, and optimization
 
 ```python
-res = ferric.run_qmmm(sys, "cc-pvdz", method="uhf")   # or xc="PBE" for KS-DFT
+res = ferric.run_qmmm(sys, "cc-pvdz", method="uhf")
+# KS-DFT: method="rks" or "uks" AND xc, e.g. method="rks", xc="PBE".
+# xc without rks/uks (or rks/uks without xc) raises ValueError.
 res.energy
 res.qm_gradient()      # dE/dR on the QM atoms
 res.mm_forces()        # forces on the MM sites
@@ -127,8 +129,11 @@ res.full_gradient()    # across the cut, link rows folded back onto the frontier
 opt = ferric.run_optimize_qmmm(sys, "cc-pvdz", method="rhf", move_mm="none")
 ```
 
-`move_mm` chooses what is allowed to relax: `none`, a radius, whole residues, or
-everything.
+`move_mm` chooses which MM atoms relax: `"none"` (the default, where only QM
+atoms move), `("within", radius_angstrom)`, `("residues", [ids])` (the system
+must have been built with `residue_ids=`), or `"all"`. Any value other than
+`"none"` requires `mm_topology=`, because moving MM atoms without a force field
+to hold their own geometry together is meaningless.
 
 ## Polarizable embedding
 
@@ -173,20 +178,62 @@ until those are restored; `tier1_dock` does that for you.
 
 ## From the CLI
 
-QM/MM also runs from a TOML file, no Python required:
+A `[qmmm]` section runs QM/MM from a TOML file, with no Python needed. The QM
+region becomes the molecule that is solved, and the MM region becomes the
+external potential it is solved in. A complete, runnable input is
+`examples/water-qmmm.toml` (repository, not the wheel):
 
 ```toml
+[molecule]
+xyz = "testdata/molecules/water.xyz"   # required by the parser, NOT read with [qmmm]
+charge = 0                             # apply to the QM region
+multiplicity = 1
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "rhf"
+task = "energy"
+
 [qmmm]
-pqr = "pocket.pqr"
-qm_indices = [0, 1, 2]            # or: qm_seeds = [0], qm_radius_angstrom = 1.5
-# link_bonds = [[0, 3]]           # when the cut crosses a covalent bond
+pqr = "testdata/molecules/water_na.pqr"
+qm_indices = [0, 1, 2]            # zero-based; or: qm_seeds = [0], qm_radius_angstrom = 1.5
+# link_bonds = [[0, 3]]           # required when the cut crosses a covalent bond
 # boundary_scheme = "delete-host" # default; also "keep", "rc", "rcd"
 ```
 
-The geometry comes from the PQR, **not** from `[molecule] xyz` — that key is
-still accepted and ignored, which matters when you compute a vacuum reference:
-deleting `[qmmm]` falls back to the xyz, and if that file holds a different
-geometry you are comparing two different molecules.
+MEASURED on that file (water QM, one Na⁺ 4 Å away as MM, STO-3G): vacuum
+−74.9629466809, embedded **−74.9653197421** Ha (−1.489 kcal/mol). That matches
+`ferric.run_rhf(point_charges=...)` to all ten printed digits.
+
+**The geometry and the MM charges both come from the PQR.** An xyz has no
+partial charges, and an MM region without charges is just a set of ignored
+coordinates. `[molecule] xyz` must still be present, because the parser
+requires it, but it is not read when `[qmmm]` is present. That matters when
+you compute a vacuum reference: delete `[qmmm]` and ferric falls back to the
+xyz. If the xyz holds a different geometry, you are comparing two different
+molecules. In the example above, the xyz is an optimized water that gives
+−74.9631468000, which is 0.13 kcal/mol of error in the difference. Compare at
+one geometry.
+
+**`boundary_scheme` defaults to `"delete-host"`, not `"keep"`.** Keeping the
+host charge across a covalent cut puts a bare point charge inside the link
+atom's bond length (MEASURED 0.443 Å on an ethane C–C cut). A geometry
+optimization in that field diverges instead of failing with an error. `"keep"`
+is still available and is the right choice when the cut isn't covalent. An
+unknown scheme name is an error.
+
+**`[qmmm]` and `[external_potential]` together are refused.** The MM region
+*is* an external potential, so combining them would silently count a
+contribution twice.
+
+**Scope of the CLI section.** It reads only a PQR, because it needs charges
+and geometry together. Use Python (`tools.structure`, below) for the other
+formats. `tools.active_site.solvate` can write a solvated system straight to a
+PQR for this section. The CLI section does electrostatic embedding only.
+Polarizable sites, smeared charges, the MM force field and MM relaxation are
+Python-only.
 
 ## Solvating a solute
 

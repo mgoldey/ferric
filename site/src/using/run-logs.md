@@ -1,6 +1,11 @@
 # Run logs
 
-Every ferric run writes a machine-readable JSON Lines log, without being asked.
+Every ferric CLI run writes a machine-readable JSON Lines log, without being
+asked.
+
+The format is ferric's own. It is **not QCSchema**, and there is no QCSchema
+exporter. Each record's `schema` field (currently `1`, on `run_start`) versions
+this format. It is not a QCSchema version.
 
 ```
 $ ferric water-rhf.toml
@@ -10,11 +15,10 @@ $ ferric water-rhf.toml
 
 ## Why it is on by default
 
-A result whose run left no artifact cannot be checked. Ferric turned this on
-because a load-bearing measurement was lost exactly that way: a 27-atom
-PBE/6-31G run reported as "173 iterations, converged, E = -390.3794234093" had
-no surviving log — the stdout capture had been truncated to 275 bytes and two
-sibling captures were empty — so the claim could not be verified, only repeated.
+A result whose run left no artifact can't be checked. The log is on by default
+because a key measurement was once lost that way. A 27-atom PBE/6-31G run was
+reported as "173 iterations, converged", but its stdout capture had been
+truncated, so the claim could only be repeated, never checked.
 
 Opt out explicitly if you need to:
 
@@ -87,12 +91,20 @@ molecule's.
 One per convergence-ladder rung: `rung`, `tricks` (which accelerators it
 enables), `iterations`, `exit`, `energy`, `converged` — and **`max_iter`**.
 
-That last field matters more than it looks. The ladder *hardcodes* a per-rung
-iteration cap (60/60/60/80/100) that overrides whatever `[scf] max_iter` says.
-A run that reports "iterations = 100" is usually rung 4 exhausting its own
-budget, not a hundred-iteration run; reading it the other way has already
-produced a wrong diagnosis. The cap and the count that hit it are recorded
-together so the log cannot be misread that way.
+That last field matters more than it looks. In the CLI, `kind = "rhf"` and
+`kind = "ksdft"` run through a convergence ladder, and unless you define your
+own `[[scf.ladder]]` rungs, the default ladder sets its own per-rung iteration
+caps:
+
+| `kind` | rung 0 | rungs 1–4 |
+|---|---|---|
+| `rhf` | 60 | 60 / 60 / 80 / 100 |
+| `ksdft` | `[scf] max_iter` | 60 / 60 / 80 / 100 |
+
+So for `rhf`, `[scf] max_iter` does not set the per-rung cap. A run that reports
+"iterations = 100" is usually rung 4 using up its own budget, not a single
+hundred-iteration SCF. The cap and the count are recorded together so the log
+can't be misread that way.
 
 ### `run_end`
 
@@ -100,13 +112,21 @@ The terminal record: `energy`, `converged`, `exit`, `wall_s`, `cpu_s` and
 `peak_rss_bytes` (the high-water mark, not the RSS at exit).
 
 For a post-SCF method the `energy` is the **SCF reference**, not the method's
-total — `extra.energy_is` says which. Per-iteration coverage of MP2/RPA/CC/GW
-is not implemented yet.
+total. `extra.energy_is` says which. Per-iteration records for MP2/RPA/CC/GW
+are not implemented yet.
+
+**Only `task = "energy"` writes `run_end`.** `task = "optimize"` and
+`task = "frequencies"` currently write `run_start` and the SCF iteration
+records, but no `run_end`, `ladder_rung` or `result`. Read the final geometry
+and energy from stdout for those tasks. A missing `run_end` in such a log
+doesn't mean the run failed (MEASURED on `examples/h2-lda-opt.toml`,
+2026-09-23).
 
 ### `result`
 
-**The number the run was launched to produce.** Emitted once, after the method
-finishes, and the record to read for a correlated method's answer.
+**The number a correlated run was launched to produce.** It's written once,
+after the method finishes. Plain SCF runs (`rhf`, `uhf`, `rohf`, `ksdft`) don't
+write one, because for them `run_end.energy` *is* the answer.
 
 | field | meaning |
 |---|---|
@@ -125,8 +145,11 @@ comes from.
 
 ### `result_unlogged`
 
-A method that has not been wired up to `result` yet emits this instead, naming
-the `kind`.
+A post-SCF method that isn't wired up to `result` yet writes this instead,
+naming the `kind`. The methods that do write `result` are `rimp2`,
+`oo-rimp2`, `att-rimp2`, `laplace-mp2`, `laplace-sos-mp2`, `scs-mp2`,
+`scs-mp2-2terfc`, `mp3`, `ccsd`, `linlccd`, `lmp2`, `lmp2-direct`, `mp2-v` and
+`rs-mp2-rpa`.
 
 It exists because **silence is ambiguous**: a log with no `result` record could
 mean the method does not record one yet, or that the run died before producing

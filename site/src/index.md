@@ -1,53 +1,82 @@
 # ferric
 
-A Rust-native quantum chemistry engine, wrapping libint2 for electron integrals,
-with pyo3 Python bindings.
+A quantum chemistry engine written in Rust, with Python bindings and a
+TOML-driven command line. It computes Hartree–Fock and DFT energies and
+gradients, the MP2 family, coupled cluster, RPA and GW, and constrained DFT,
+with libint2 for the integrals.
 
-`ferric` is organized around one object: **electronic response** — how the
-density reacts to a perturbation. That object shows up as the polarizability
-\\( \alpha \\), the dielectric function \\( \varepsilon \\), and the
-susceptibility \\( \chi \\), and the methods here are three faces of getting it
-right where standard methods get it wrong.
+```bash
+pip install ferric      # Linux x86_64, Python 3.10–3.13
+```
 
-- **[Attenuated MP2](./methods/mp2.md)** — MP2 builds dispersion from an
-  *uncoupled* polarizability that over-polarizes, giving too-large \\( C_6 \\)
-  and overestimated π-stacking. Attenuating the correlation operator tames that
-  response error with a single tunable parameter.
-- **[PDEP-RPA / GW](./methods/rpa-gw.md)** — the dielectric matrix *is* the
-  density–density response. PDEP keeps only its dominant low-rank eigenmodes, so
-  RPA correlation and the GW screened interaction need no explicit sum over
-  empty states.
-- **[Constrained DFT](./methods/cdft.md)** — a constraint couples to the density
-  and reads its response (\\( \partial N / \partial \lambda \\) is a
-  susceptibility), building charge-localized diabatic states and their
-  electron-transfer couplings.
+## Start here
 
-The motivating claim is that response is **local in real space and low-rank in
-its eigenspectrum**, so organizing around it should make the computation
-cheaper.
+<div class="routes">
+
+**[Get started →](./using/quickstart.md)**
+Install the wheel and compute a checked number in under a minute. Then read
+the [sharp bits](./using/sharp-bits.md) that catch new users.
+
+**[How-to guides →](./using/recipes.md)**
+Task recipes: charged and open-shell molecules, optimization, SMILES input,
+QM/MM, ligand pipelines. [Choosing a method](./using/choosing-a-method.md)
+maps a chemistry question to a method.
+
+**[Methods →](./methods/index.md)**
+What each method family is, how to run it, how accurate it is, what it costs
+and what to cite.
+
+**[Reference →](./reference/validation.md)**
+[What is validated](./reference/validation.md) ·
+[Capabilities](./reference/capabilities.md) ·
+[Input file](./reference/input.md) ·
+[Python API](./using/python.md) ·
+[Examples](./reference/examples.md) ·
+[Rust API](./reference/api.md)
+
+</div>
+
+| If you are | Start with |
+|---|---|
+| A chemist who wants numbers | [Your first calculation](./using/quickstart.md), then [Choosing a method](./using/choosing-a-method.md) |
+| Coming from PySCF | [For PySCF users](./using/pyscf-users.md) |
+| Working on drug-discovery workflows | [End-to-end applications](./using/applications.md) and [QM/MM](./using/qmmm.md) |
+| A method developer | [Electronic response](./idea/response.md), [Architecture](./reference/architecture.md), [Rust API](./reference/api.md) |
+| An automated agent | [For automated agents](./using/agents.md) |
 
 ## Implemented ≠ validated
 
-Working code is not a checked number. This documentation describes what exists;
-it is not a claim that every number is trustworthy.
+Working code is not a checked number. These pages describe what exists; how
+far each capability's numbers have been checked against an independent
+reference differs a lot between methods. Each one is graded individually in
+**[What is validated](./reference/validation.md)**. Read it before relying on a
+result.
 
-For how strongly each capability's numbers are checked against ground truth —
-and where they are known to fail — see **[What is validated](./reference/validation.md)**.
-Capability maturity varies a great deal between methods, and they are graded
-individually rather than presented as a flat list of equals.
+## The idea
 
-## Where to start
+`ferric` is organized around **electronic response**: how the density reacts to
+a perturbation. That object appears as the polarizability \\( \alpha \\), the
+dielectric function \\( \varepsilon \\) and the susceptibility \\( \chi \\), and
+three of the method families here are different ways of getting it right where
+standard methods get it wrong:
 
-| If you want to | Go to |
-|---|---|
-| Understand the design | [Electronic response](./idea/response.md) |
-| Run a calculation | [Quick start](./using/quickstart.md) |
-| Build it | [Installation](./using/installation.md) |
-| Call it from Python | [Python bindings](./using/python.md) |
-| Read the crate docs | [API documentation](./reference/api.md) |
-| Know what to trust | [What is validated](./reference/validation.md) |
+- **[Attenuated MP2](./methods/mp2.md)**: MP2 builds dispersion from an
+  uncoupled polarizability, which overbinds some systems (π-stacking is the
+  classic case). Attenuating the correlation operator removes the long-range
+  part where that error lives.
+- **[PDEP-RPA / GW](./methods/rpa-gw.md)**: the dielectric matrix is the
+  density–density response. PDEP keeps only its dominant eigenmodes, a low-rank
+  representation of the screening used by RPA correlation and the GW
+  interaction.
+- **[Constrained DFT](./methods/cdft.md)**: a constraint couples to the density
+  and reads its response, building charge-localized diabatic states and their
+  electron-transfer couplings.
 
-## Source
+[Electronic response](./idea/response.md) develops the argument and says which
+parts of it are demonstrated and which remain a design premise.
 
-[github.com/mgoldey/ferric](https://github.com/mgoldey/ferric) — dual-licensed
-MIT / Apache-2.0.
+## Source, license, citation
+
+[github.com/mgoldey/ferric](https://github.com/mgoldey/ferric), dual-licensed
+MIT / Apache-2.0. To cite ferric and the methods you used, see
+[References and citing](./reference/references.md#citing-ferric).

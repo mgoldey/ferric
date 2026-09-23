@@ -1,59 +1,56 @@
 # Where the methods come from
 
-The three method families in `ferric` are not an arbitrary selection. Each one
-attacks the response function from a different direction.
+The method families in `ferric` are not an arbitrary selection. Each one works
+on the response function from a different direction. The definitions and
+parameters live on the method pages; this page is the map.
 
-## Attenuated MP2 — fixing a response error
+## Attenuated MP2: removing the long-range part
 
-MP2 correlation is built from an **uncoupled** polarizability. Uncoupled means
-the density fluctuation does not feel the field it creates: there is no
-self-consistency in the response. The result over-polarizes, which shows up as:
+MP2's dispersion comes from an **uncoupled** response, which over-polarizes for
+highly polarizable (for example π-stacked) systems. In small basis sets the
+resulting overbinding is partly cancelled by basis-set superposition error,
+which disguises it.
 
-- \\( C_6 \\) dispersion coefficients that are too large
-- overestimated π-stacking energies
-- basis-set superposition error that partly cancels the overestimate, disguising
-  the problem in small basis sets
+Attenuated MP2 replaces \\( 1/r \\) in the correlation energy with a
+short-range operator (erfc or terfc) and fits its range to interaction
+energies in a chosen basis. It removes the long-range correlation entirely
+rather than correcting it, so it has no asymptotic \\( C_6 \\), and its
+parameters are specific to the basis and protocol they were fitted in. MP2-V
+restores long-range dispersion with VV10; RS-MP2 + LR-RPA restores it with
+long-range RPA.
 
-Attenuating the correlation operator — replacing \\( 1/r \\) with
-\\( \mathrm{erfc}(\omega r)/r \\) or a `terfc` form — damps the long-range part
-where the uncoupled approximation is worst, with a single tunable parameter.
+Goldey & Head-Gordon (JPCL 2012) introduced it in aug-cc-pVDZ; Goldey, Dutoi &
+Head-Gordon (PCCP 2013) introduced terfc in aug-cc-pVTZ; the dual-attenuated
+SCS variant is Goldey & Head-Gordon (JPCB 2014). Operators, parameters and
+fitting protocol: [The MP2 family](../methods/mp2.md#attenuated-mp2).
 
-This is Goldey & Head-Gordon (JPCL 2012); the dual-attenuated SCS variant is
-Goldey, Dutoi & Head-Gordon (PCCP 2013). See [The MP2 family](../methods/mp2.md).
+## PDEP-RPA and GW: compressing the response
 
-## PDEP-RPA and GW — compressing the response
+The dielectric matrix is built from the density–density response function.
+ferric forms the independent-particle response in the RI auxiliary basis by
+summing over occupied–virtual pairs, then works in the eigenbasis of the
+static dielectric matrix, dropping eigenpotentials that carry almost no
+screening. PDEP (projective dielectric eigenpotentials) is that compression.
+It is the demonstrated part of the low-rank premise; the empty-state sum that
+feeds it is still there. See [RPA, GW and excited states](../methods/rpa-gw.md).
 
-The dielectric matrix **is** the density–density response function. Conventional
-RPA and GW evaluate it through an explicit sum over empty orbital states, which
-is expensive and converges slowly with basis size.
-
-PDEP — projective dielectric eigenpotentials — builds a low-rank basis from the
-dominant eigenmodes of the dielectric matrix instead. Because the spectrum
-decays quickly, a modest number of modes captures the physics, and the sum over
-empty states disappears.
-
-This is the part of the locality-and-low-rank claim that is **actually
-demonstrated** in this codebase. See [RPA and GW](../methods/rpa-gw.md).
-
-## Constrained DFT — reading the response
+## Constrained DFT: reading the response
 
 A cDFT constraint couples a Lagrange multiplier \\( \lambda \\) to a
 fragment-weighted density operator. The derivative \\( \partial N / \partial
-\lambda \\) — how much charge moves per unit constraint potential — *is* a
+\lambda \\), how much charge moves per unit constraint potential, *is* a
 susceptibility.
 
-That makes cDFT a direct probe of the same object, and it yields
+That makes cDFT a direct probe of the same object. It also yields
 charge-localized diabatic states whose electron-transfer couplings
-\\( H_{ab} \\) follow from non-orthogonal determinant overlaps.
-
-See [Constrained DFT](../methods/cdft.md).
+\\( H_{ab} \\) follow from non-orthogonal determinant overlaps. See
+[Constrained DFT](../methods/cdft.md).
 
 ## What this buys
 
-Three methods, one object. An error in the polarizability shows up as an error
-in dispersion, in screening, and in charge-transfer coupling — so a fix
+Three families, one object. An error in the polarizability shows up as an error
+in dispersion, in screening, and in charge-transfer coupling, so a fix
 validated in one place has predictable consequences in the others.
 
-That is the design bet. Whether it pays off in *cost* is still open (see
-[Electronic response](./response.md) for the measured negatives); that it pays
-off in *diagnosis* is already clear.
+That is the design bet. Whether it pays off in *cost* is still open; see
+[Electronic response](./response.md) for what has and has not been measured.

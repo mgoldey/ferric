@@ -21,15 +21,18 @@ mechanism.
 ### Step 0 — gate before you spend hours
 
 ```bash
-pip install ferric && ferric examples/water-rhf.toml
+pip install ferric
+git clone https://github.com/mgoldey/ferric && cd ferric   # examples/, testdata/, tools/, scripts/
+ferric examples/water-rhf.toml    # expect converged = true, energy = -74.9631468000
 ```
 
-Do not skip this, and **do not build from source first** -- the wheel is
-seconds and a source build is ~45 minutes. If the install is broken, every
-downstream failure will look like a chemistry problem.
+Don't skip this, and **don't build from source first**. The wheel installs in
+about a minute, and a source build takes ~30 minutes. If the install is broken,
+every later failure will look like a chemistry problem. The clone is needed
+because the wheel doesn't ship `examples/`, `testdata/`, `scripts/` or `tools/`.
 
-Run the study itself under `scripts/ferric-limited --max=8G --high=7G --`:
-these are multi-hour jobs and an OOM kills them with a truncated log and no
+Run the study itself under `scripts/ferric-limited --max=8G --high=7G --`.
+These can be multi-hour jobs, and an OOM kill leaves a truncated log with no
 error message.
 
 ### Step 1 — build the species, and check parity
@@ -60,7 +63,7 @@ correct behaviour for overlapping nuclei, and it cost a run to discover.
 ```python
 # formula check and geometry check fail on DIFFERENT mistakes -- keep both
 assert (n_elec % 2 == 0) == (multiplicity % 2 == 1)   # bad stoichiometry
-assert min_interatomic_distance(xyz) > 0.9            # bad geometry
+assert min_interatomic_distance(xyz) > 0.9            # bad geometry (your own helper, in Angstrom)
 ```
 
 ### Step 1b -- relax with xtb before ANY DFT
@@ -95,25 +98,30 @@ charge = 1
 multiplicity = 1
 
 [basis]
-name = "def2-svp"
+name = "6-31g"           # def2-SVP did not fit on a workstation here; see below
 
 [method]
 kind = "ksdft"
 task = "optimize"
 
 [dft]
-functional = "B3LYP"
+functional = "PBE"
 
 [scf]
-energy_conv = 1e-10
-density_conv = 1e-9      # set BOTH; see below
+max_iter = 400           # 173 iterations was needed; the default is 100
+energy_conv = 1e-7       # a loose, reachable bound; see below
+# density_conv defaults to 1e-6 and is the criterion that does the real work.
+# Tighten it if you need more than the energy; see below.
 
 [optimize]
 max_steps = 60
 ```
 
-**Open-shell cations need iterations, and a reachable `energy_conv`.**
-MEASURED, the same converged system, changing only these two knobs:
+These settings follow from the measurements below. Don't raise the basis or
+tighten `energy_conv` without measuring one species first.
+
+**Delocalised cations need iterations, and a reachable `energy_conv`.**
+MEASURED on the same 27-atom cation, changing only these two knobs:
 
     max_iter 100, energy_conv 1e-8  ->  MaxIter @100,  29 min, 3.30 GB, no result
     max_iter 400, energy_conv 1e-7  ->  CONVERGED @173, 4.9 min, 1.81 GB
@@ -137,73 +145,99 @@ does not. This bit a real measurement in this repo: a pinned correlation energy
 was reproducible only until something upstream moved, because the density had
 never actually converged.
 
-**Checkpoint every species as it finishes.** These are minutes-to-tens-of-
-minutes each; a crash at species 6 of 8 should cost one species, not the run.
+**Checkpoint every species as it finishes.** A crash at species 6 of 8 should
+cost one species, not the whole run.
 
 **Basis choice decides whether the study is possible at all.** MEASURED on the
-same 27-atom cation:
+same 27-atom cation, single point:
 
     def2-SVP / B3LYP : >22 min, 6.04 GB, SIGKILLed before converging
     6-31G   / PBE    :  4.9 min, 1.81 GB, CONVERGED
 
-A third of the memory and it finishes. At ~5 min per single point a geometry
-optimisation lands back inside the "10-40 min" a study plan would assume --
-but only at 6-31G, and only from a relaxed starting structure. Do not plan a
-def2-SVP cascade on a workstation without measuring one species first.
+6-31G/PBE used a third of the memory and finished. Don't plan a def2-SVP
+cascade on a workstation without measuring one species first.
 
-**A 27-atom cation at def2-SVP needs ~6 GB.** Budget the study accordingly:
-eight species at that size run concurrently is not a plan, it is an outage.
-Always wrap the run in `scripts/ferric-limited --max=8G --high=7G --`; why the
-in-process budget alone is not enough is explained in
-[For agents](agents.md#failure-modes-that-cost-the-most-time).
+**Size the optimization from those numbers, not from a guess.** An optimization
+takes tens of gradient steps. ESTIMATED: at ~5 min per 6-31G single point and
+30–60 steps, that is roughly 2.5–5 hours per species. Later steps start from
+the previous density and may converge faster than a cold start, but that
+hasn't been measured here. A plan that budgets "10–40 min per optimization" for
+this system is off by an order of magnitude, even at 6-31G.
 
-**The release binary is not the whole answer either.** MEASURED here: the
-alpha-terpinyl cation (C10H17+, 27 atoms, def2-SVP, B3LYP) ran **>34 minutes
-without converging a SINGLE POINT** on a debug binary sharing a box with one
-other job. An optimization is 30-60 single-point equivalents, so that is
-**17-34 hours per species** -- against a plan that budgeted "10-40 min per
-optimization". The gap is not tuning; it is the binary. Build with `--release`
-or install the wheel, and serialize.
+**Use a release build.** MEASURED: the same cation at B3LYP/def2-SVP ran for
+more than 34 minutes on a *debug* binary, sharing the machine with one other
+job, without converging a single point. The wheel and `cargo build --release`
+are both release builds.
 
-**Size it before you start.** MEASURED on this system: tert-butyl cation
-(C4H9+, ~101 basis functions at def2-SVP) is a seconds-scale single-point.
-A C10 cascade cation (C10H17+) is ~225 basis functions -- about **16x** the
-single-point cost at N^3.5 scaling. That is still cheap for an energy, but an
-optimization multiplies it by the step count, so a 30-60 step optimization on a
-C10 species is the dominant cost of the whole study. Run one species end to end
-and time it before queueing eight.
+**A 27-atom cation at def2-SVP needs ~6 GB.** Budget the study with that in
+mind. Running eight species of that size at once is an outage, not a plan.
+Always wrap the run in `scripts/ferric-limited --max=8G --high=7G --`.
+[For agents](agents.md#memory-the-budget-predicts-the-cgroup-enforces)
+explains why the in-process budget alone is not enough.
+
+**Size it before you start.** MEASURED: the tert-butyl cation (C4H9+, 101
+basis functions at def2-SVP) is a single point that takes seconds. A C10
+cascade cation (C10H17+) has 225 basis functions. ESTIMATED at N^3.5 scaling,
+that is about **16x** the single-point cost. That's still cheap for an energy,
+but an optimization multiplies it by the step count. So the optimizations of
+the C10 species are the dominant cost of the whole study. Run one species end
+to end and time it before you queue eight.
 
 ### Step 3 — confirm the ordering survives the functional
 
-Single-points on the optimized geometries with **PBE** and **wB97X-V**
-(both available; `wB97X-V` resolves to `HYB_GGA_XC_WB97X_V`).
+Run single points on the optimized geometries with at least two more
+functionals, for example **B3LYP** and **wB97X-V** (both available;
+`wB97X-V` resolves to libxc's `HYB_GGA_XC_WB97X_V`), at a basis that fitted in
+Step 2.
 
-If the three functionals disagree on the *ordering* of intermediates, **report
+If the functionals disagree on the *ordering* of intermediates, **report
 the disagreement**. Do not average them and do not pick the one that matches
 your hypothesis. A cascade whose ordering is functional-dependent is a finding
 about the system, not a number to be cleaned up.
 
 ### Step 4 — properties at the key intermediate
 
-Hirshfeld/Löwdin charges, ESP at nuclei, and static polarizability for the
-π-stabilized cation.
+Hirshfeld and Löwdin charges, the ESP at the nuclei, and the static
+polarizability of the π-stabilized cation. From Python these are
+`ferric.hirshfeld_charges`, `ferric.lowdin_charges` and `ferric.esp_at_atoms`.
 
-**Cost warning:** `pdep_polarizability_static` lives in `ferric-rpa` and is an
-RPA-level calculation, not a cheap add-on to the DFT run. Budget it separately;
-it can exceed the optimization it follows.
+**Cost warning:** the polarizability comes from `ferric-rpa` and is an
+RPA-level calculation, not a cheap add-on to the DFT run. Budget it
+separately. It can cost more than the optimization before it.
+
+### Step 5 (optional) — barriers
+
+Intermediates alone give you a thermodynamic profile. If you need barriers,
+ferric has a Python-only transition-state toolchain. None of it is wired to
+the CLI's `method.task`:
+
+| Call | What it does | Scope |
+|---|---|---|
+| `ferric.run_saddle(mol, basis, xc=...)` | P-RFO search for a first-order saddle point | Closed shell only (multiplicity 1), HF or KS. It raises if the start has no negative Hessian mode, so start from a guessed TS, not a minimum. The Hessian is built twice by central differences and Bofill-updated in between: `2(6N+1) + (steps+1)` gradients. |
+| `ferric.run_irc(mol, basis, mode=...)` | Follows the reaction path downhill in both directions, from the saddle to the two minima it connects | Closed shell only. Pass `SaddleResult.imaginary_mode` as `mode`. MEASURED ~71 gradients per direction on NH3 inversion. |
+| `ferric.run_frequencies(mol, basis, reference=..., xc=...)` (CLI: `task = "frequencies"`) | Harmonic frequencies from finite differences of the analytic gradient (6N gradients). Negative entries are imaginary modes. `.normal_modes` gives the vectors. | RHF/UHF/ROHF and their KS variants. Check `.asymmetry` to judge whether the step size suited the system. The CLI refuses `[dft] dispersion` with this task. |
+
+One imaginary frequency is necessary but not sufficient for a transition state:
+a methyl rotor also gives one. Use `run_irc` to confirm that the saddle connects
+the two intermediates you meant.
 
 ### What this cannot tell you
 
-State these in any write-up; they are not hedging, they bound the claim.
+State these in any write-up. They aren't hedging. They define the scope of
+the claim.
 
-* **Gas-phase cluster models.** No enzyme environment unless you add QM/MM
-  (golden path B).
-* **No transition states.** libint2 as built here has no second derivatives, so
-  there are no analytic Hessians and no TS characterization. You get
-  intermediate energies, not barriers. *kcat depends on barriers.*
-* **No entropy, no ZPE.** Electronic energies only.
+* **Gas-phase cluster models.** There's no enzyme environment unless you add
+  QM/MM (golden path B, and [QM/MM](qmmm.md)).
+* **No analytic Hessians.** Frequencies and TS searches use finite differences
+  of analytic gradients (Step 5). That costs 6N gradients per Hessian, so a
+  C10 cation Hessian is hundreds of gradient evaluations. Without Step 5 you
+  have intermediate energies, not barriers, and *kcat depends on barriers*.
+* **No thermochemistry.** There's no entropy, enthalpy or free-energy
+  correction anywhere, from the CLI or Python. You can compute a zero-point
+  energy yourself from the frequencies (½Σhν over the real modes). Python's
+  `FrequencyResult` doesn't provide one.
 * **Relative energies only.** Absolute totals carry basis-set and functional
-  error far larger than the differences you are interpreting.
+  errors far larger than the differences you are interpreting.
 
 ---
 
@@ -217,23 +251,18 @@ not design, and it does not predict ΔΔG.
 
 ### Step 1 — classical pre-screen (cheap, all residues)
 
-```python
-from tools.active_site.pqr_parser import parse_pqr
-from tools.active_site.pocket_charges import derive_pocket_charges
-from tools.active_site.pocket_field import pocket_field_at_atoms
-
-pocket = derive_pocket_charges(...)
-field  = pocket_field_at_atoms(pocket, reactive_center_xyz)  # (N,4) a.u.
-```
-
-Rank residues by their contribution to the field at the reactive center.
-`pqr_parser` carries `res_name` and `res_seq`, so the ranking is
-residue-resolved and directly reportable.
+`derive_pocket_charges` (in `tools/active_site/pocket_charges.py`) runs
+pdb2pqr on the pocket and records each charge's residue
+(`residue_ids`, `res_names`). `pocket_field_at_atoms` returns the potential and
+field `[phi, Ex, Ey, Ez]` (atomic units) at the sites you give it. It returns
+the *total*. To rank residues, group the charges by residue and evaluate each
+group separately. [Recipes](recipes.md) §5 has a sketch of the code.
 
 ### Step 2 — QM/MM the top few (expensive, short list only)
 
-`ferric_scf::qmmm` — validated against `pyscf.qmmm.mm_charge` to <1e-8.
-This step is what makes the answer physics rather than electrostatics.
+Use [QM/MM](qmmm.md) (`ferric.QmmmSystem` + `ferric.run_qmmm`). The embedding
+energy shift matches `pyscf.qmmm.mm_charge` to <1e-8 Ha. This step is what
+turns the answer into physics rather than electrostatics.
 
 The pre-screen exists to make this step affordable. Running QM/MM on every
 residue is the thing the funnel pattern is designed to avoid.
@@ -250,31 +279,31 @@ for QM/MM**, not a designed mutation.
 
 **Answers:** of N candidates, which few deserve expensive QM.
 
-Use `tools/pipeline/funnel.py`. Do not hand-roll this loop.
+Use `tools.pipeline.run_funnel` (repository `tools/`, not the wheel). Don't
+write your own loop. [Recipes](recipes.md) §4 has a funnel you can run
+(force field → xtb → DFT on three isomers, with its measured output). The
+[pipeline notes](../reference/pipeline-golden-path.md) §0b show the
+substituent version: parent-relative gating, liability flags and the optional
+docking tier.
 
-```python
-from tools.pipeline import Stage, run_funnel
+Why use it instead of your own loop:
 
-report = run_funnel(
-    candidates=isomers,
-    stages=[
-        Stage(name="dock", tier=0, keep=50, fn=dock_fn),
-        Stage(name="xtb",  tier=1, keep=10, fn=xtb_fn),
-        Stage(name="dft",  tier=2, keep=3,  fn=ferric_dft_fn),
-    ],
-    context={...},
-)
-```
-
-Why this over a loop you write yourself:
-
-* **Failed candidates are dropped and counted — never ranked.** A hand-rolled
+* **Failed candidates are dropped and counted, never ranked.** A hand-written
   screen that sorts ascending on a sentinel value silently promotes its
-  failures to the top. This is the bug the funnel exists to prevent.
-* **Per-tier wall times**, because the tier that actually dominates is
-  routinely not the one the cost table predicts.
+  failures to the top. The funnel exists to prevent that bug.
+* **Per-tier wall times.** The tier that actually dominates is often not the
+  one the cost table predicts. MEASURED in both recorded runs: the DFT tier
+  took 90–96% of the wall time.
 * **Early stop** on an empty population.
-* **Ascending rank** at every tier, since each reports an energy-like score.
+* **Ascending rank** at every tier, since each tier reports an energy-like
+  score. Rank only candidates with the same formula, or rank relative to a
+  parent.
+
+**The funnel will produce an ordering that the noise doesn't support.**
+MEASURED on a real campaign: the best available ΔΔE noise over a pose ensemble
+was 4.07 kcal/mol, against substituent effects of 1–2. Read the
+[pharma coverage notes](../reference/pharma-use-case-coverage.md) before you
+rank anything.
 
 ---
 
@@ -286,12 +315,15 @@ Why this over a loop you write yourself:
 | `converged = false` | An energy is still printed. It is NOT a result. |
 | `exit Some(Stalled)` | The SCF could not progress. Suspect the GEOMETRY -- check the minimum interatomic distance and relax with xtb. |
 | `exit Some(MaxIter)` | It WAS progressing and ran out of iterations. Raise `max_iter` (173 is normal for a delocalised cation) and check `energy_conv` is reachable under DF. |
+| `exit Some(Diverged)` | The energy climbed for several iterations in a row. Suspect the geometry or the charge/multiplicity before the solver. |
 | charge/multiplicity error | Your `.xyz` atom count is wrong. Read the arithmetic it prints. |
 | Disagreement with another code ~1e-5 Ha | Check the grid: ferric `(75,110)` vs PySCF ~`(75,302)`. Scales with **atom count**. |
+| Larger KS-DFT disagreement that grows with size | ferric density-fits Coulomb by default in KS-DFT. See [Recipes](recipes.md) §6. |
 | A correlation energy that moves when nothing physical changed | `density_conv` was never set. |
 
 ## Before publishing any number
 
-Check `wiki/VALIDATION.md` for the capability's maturity grade. A method being
-CLI-wired does not mean its numbers are production-grade — the matrix
-distinguishes proven, smoke-tested, and stub, and it is the authority.
+Check the capability's grade in [Capabilities](../reference/capabilities.md)
+and [What is validated](../reference/validation.md). A method being available
+from the CLI doesn't mean its numbers are production-grade. The grades
+distinguish proven, smoke-tested and stub.
