@@ -17,6 +17,7 @@ source; see [Installation](https://matthew.thegoldeys.com/ferric/using/installat
 
 ## A first calculation
 
+<!-- doctest -->
 ```python
 import ferric
 

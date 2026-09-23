@@ -4481,3 +4481,7 @@ impl QmmmCfg {
         Ok(sys)
     }
 }
+
+#[cfg(test)]
+#[path = "config_doc_tests.rs"]
+mod doc_tests;

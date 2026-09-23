@@ -894,6 +894,29 @@ jobs:
           }
           echo "Console-script smoke test PASSED."
 
+      # The docs' Python examples, run against THIS wheel in the fresh venv:
+      # the same thing a reader does after `pip install ferric`. Only the docs
+      # and the stdlib-only runner are checked out, into a subdirectory, so
+      # the import still resolves to the installed wheel and never to the
+      # source tree. The runner gives each page an empty temporary working
+      # directory, which also proves the marked examples need no git clone.
+      # Blocks opt in with <!-- doctest -->; see the runner's docstring.
+      - name: Check out the docs for the snippet check
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: docs-src
+          sparse-checkout: |
+            site/src
+            README.md
+            scripts/check_doc_snippets.py
+          sparse-checkout-cone-mode: false
+
+      - name: Docs snippets -- run the marked Python examples and compare output
+        run: |
+          set -euo pipefail
+          source /tmp/smoke-venv/bin/activate
+          python3 docs-src/scripts/check_doc_snippets.py --root docs-src
+
   # Publishes to PyPI via trusted publishing (OIDC) -- no long-lived token in
   # this repo. All three prerequisites this job used to wait on are now met:
   #   1. Wheels from a real run (33697177255, built from c87e7456) were

@@ -1,0 +1,61 @@
+name: docs-check
+
+# Build the mdBook and check every internal link and #anchor, on every PR that
+# touches the docs.
+#
+# Why a separate workflow: ci.yml's `paths-ignore` skips docs-only PRs (a
+# Markdown edit should not pay for the libint2 build and the test suite), and
+# docs.yml builds only AFTER CI succeeds on main. Without this job, a PR that
+# only edits site/ ran no check at all: a broken SUMMARY.md entry failed the
+# Pages deploy after merge, and a link to a renamed page or heading built
+# cleanly and 404'd for readers. This job builds no Rust and takes about a
+# minute.
+#
+# What it does NOT cover, and where that lives instead:
+#   - input.md vs the config structs, and "every ```toml block parses": Rust
+#     tests in crates/ferric-cli/src/config_doc_tests.rs. They run in ci.yml
+#     on every PR that touches code, and nightly for docs-only changes.
+#   - Python blocks marked <!-- doctest -->: scripts/check_doc_snippets.py,
+#     run against the built wheel in wheels.yml's smoke test (nightly and on
+#     release tags), and by crates/ferric-python/tests/test_doc_snippets.py.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '**/*.md'
+      - 'scripts/check_doc_links.py'
+      - '.github/workflows/docs-check.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Same pin as docs.yml, so the check builds exactly what Pages will build.
+  MDBOOK_VERSION: '0.4.40'
+
+jobs:
+  book:
+    name: docs (mdbook build + links)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install mdBook
+        run: |
+          tar_url="https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL "$tar_url" | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build the book
+        run: mdbook build site -d "$RUNNER_TEMP/book"
+
+      - name: Check internal links and anchors
+        run: python3 scripts/check_doc_links.py "$RUNNER_TEMP/book"

@@ -181,6 +181,8 @@ message prints the arithmetic and the rule, so check the atom count in your
 A radical (open-shell doublet) uses the same keys:
 
 ```toml
+[molecule]
+xyz = "radical.xyz"
 charge = 0
 multiplicity = 2    # one unpaired electron -> UHF/UKS
 ```
