@@ -7436,6 +7436,8 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBoltzmannWeights>()?;
     m.add_class::<PyWeightedStats>()?;
     m.add_class::<PyEnsembleDiagnostics>()?;
+    // Returned by `boys_localize`; unregistered, `ferric.BoysResult` did not exist.
+    m.add_class::<PyBoysResult>()?;
     // Conformer-ensemble constants, so callers need not hardcode them.
     m.add(
         "DEFAULT_TEMPERATURE_K",
