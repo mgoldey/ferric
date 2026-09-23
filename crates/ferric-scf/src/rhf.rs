@@ -3713,8 +3713,15 @@ mod tests {
             ..Default::default()
         };
         let before = crate::fock_assembly::DF_K_BUILT.with(|c| c.get());
-        let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &config)
-            .unwrap();
+        let res = solve_rhf(
+            &ParallelContext::default(),
+            &mol,
+            &prep,
+            op,
+            &bounds,
+            &config,
+        )
+        .unwrap();
         assert!(res.converged, "{xc:?} did not converge");
         crate::fock_assembly::DF_K_BUILT.with(|c| c.get()) - before
     }
@@ -3726,7 +3733,10 @@ mod tests {
     /// regardless of `needs_k`.
     #[test]
     fn pure_gga_with_named_df_k_aux_builds_no_dfk() {
-        assert_eq!(df_k_builds(Some("PBE"), Some(crate::fock_assembly::DEFAULT_JK_AUX)), 0);
+        assert_eq!(
+            df_k_builds(Some("PBE"), Some(crate::fock_assembly::DEFAULT_JK_AUX)),
+            0
+        );
         // Unset aux must not auto-default one either (needs_k is false).
         assert_eq!(df_k_builds(Some("PBE"), None), 0);
     }
@@ -3746,8 +3756,14 @@ mod tests {
     /// drops ω = 0 hybrids.
     #[test]
     fn hf_and_hybrid_still_build_dfk() {
-        assert_eq!(df_k_builds(None, Some(crate::fock_assembly::DEFAULT_JK_AUX)), 1);
+        assert_eq!(
+            df_k_builds(None, Some(crate::fock_assembly::DEFAULT_JK_AUX)),
+            1
+        );
         assert_eq!(df_k_builds(Some("B3LYP"), None), 1);
-        assert_eq!(df_k_builds(Some("B3LYP"), Some(crate::fock_assembly::DEFAULT_JK_AUX)), 1);
+        assert_eq!(
+            df_k_builds(Some("B3LYP"), Some(crate::fock_assembly::DEFAULT_JK_AUX)),
+            1
+        );
     }
 }

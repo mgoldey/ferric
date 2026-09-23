@@ -30,12 +30,15 @@ fn water(xc: Option<&str>, df_k_aux: &str) -> f64 {
         xc: xc.map(str::to_string),
         df_j_aux: Some(JKFIT.to_string()),
         df_k_aux: Some(df_k_aux.to_string()),
-        energy_conv: 1e-10,
-        density_conv: 1e-8,
+        // Default convergence thresholds on purpose: 1e-10 Ha sits below the
+        // RI noise floor and never converges (see energy_conv's doc).
         ..Default::default()
     };
     let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &cfg).unwrap();
-    assert!(res.converged, "{xc:?} df_k_aux={df_k_aux:?} did not converge");
+    assert!(
+        res.converged,
+        "{xc:?} df_k_aux={df_k_aux:?} did not converge"
+    );
     res.energy
 }
 
@@ -76,7 +79,10 @@ fn assert_ri_k_active(xc: Option<&str>) {
         "{xc:?}: RI-K and direct K agree to {d:.3e} -- the DF-K was not used \
          (gate dropped a K that IS consumed)"
     );
-    assert!(d < MAX_K_FIT_ERR, "{xc:?}: RI-K vs direct K differ by {d:.3e}");
+    assert!(
+        d < MAX_K_FIT_ERR,
+        "{xc:?}: RI-K vs direct K differ by {d:.3e}"
+    );
 }
 
 /// HF: xc = None, so the DFT-specific `needs_k` is FALSE while K is consumed.
