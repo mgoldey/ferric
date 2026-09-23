@@ -134,13 +134,26 @@ of RI-MP2 to quadrature error, which is the test anchor. Three formulations
   domain of radius `domain_cutoff_bohr` (required, no default). It is the one
   approximate variant.
 
-**What is measured for `ao-sparse`:** the domain radius needed does **not** grow
-with the molecule. In the STO-3G tests, a 12 Bohr domain that is exact for
-butane (10.5 Bohr across) is also exact for octane (19.9 Bohr across), and a
-4 Bohr domain on butane is already within 0.1%. The same test's history
-records a 71-atom drug molecule (31.3 Bohr across) within 0.05% at 4 Bohr.
-The test is `sos_ao_sparse_truncation_radius_is_transferable_across_sizes` in
-`crates/ferric-mp2/src/laplace.rs`.
+**What is measured for `ao-sparse`:**
+
+- Against the exact AO path on n-alkanes (c<sub>OS</sub> = 1, `n_quad` = 7,
+  2026-07-28), chemical accuracy needs a domain radius of 3, 3, 3, 4, 5 and
+  5 Bohr for C2, C4, C6, C8, C10 and C12. The diameter grows fivefold over that
+  series, so radius/diameter falls from 0.52 to 0.17.
+- In the STO-3G tests, a 12 Bohr domain that is exact for butane (10.5 Bohr
+  across) is also exact for octane (19.9 Bohr across), and a 4 Bohr domain on
+  butane is already within 0.1%.
+- A 71-atom drug molecule (danuglipron, 31.3 Bohr across, STO-3G) is within
+  0.05% at 4 Bohr.
+
+The butane/octane figures are pinned by the test
+`sos_ao_sparse_truncation_radius_is_transferable_across_sizes` in
+`crates/ferric-mp2/src/laplace.rs`, whose doc comment also records the
+danuglipron run. The alkane sweep is kept in the project's working notes.
+
+**How to read it (provisional):** the radius needed grows, but far more slowly
+than the molecule. That points to a finite decay length rather than strict
+saturation: no single radius is shown to suffice at every size.
 
 **What is not claimed:** any speedup. The domains discard contributions but
 the tensor algebra is still dense, so there are no timings to report.

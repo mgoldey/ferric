@@ -43,9 +43,10 @@ what comes out of that sum.
 **Locality: one positive result, still without a speedup.**
 
 - **AO-sparse Laplace SOS-MP2.** Restricting each localized orbital's
-  pseudo-density to an AO domain works: the radius needed does not grow with
-  the molecule (exact for octane at the radius that is exact for butane;
-  within 0.05% at 4 Bohr on a 71-atom drug molecule). The tensor algebra is
+  pseudo-density to an AO domain works: the radius needed grows far more
+  slowly than the molecule (chemical accuracy at 3 to 5 Bohr from ethane to
+  dodecane, while radius/diameter falls from 0.52 to 0.17; within 0.05% at
+  4 Bohr on a 71-atom drug molecule). The tensor algebra is
   still dense, so **no timing gain is claimed**. This result is specific to
   that formulation and does not carry over to the other locality lanes below.
   An earlier version of this page reported it as a measured negative; that was
