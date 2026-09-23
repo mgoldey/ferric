@@ -160,6 +160,56 @@ const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Every `method.kind` the CLI dispatches, in the order the unknown-kind
+/// error lists them.
+///
+/// SINGLE SOURCE for both the accept check in [`run`] and the error message
+/// ([`unsupported_method_message`]). The two used to be a `matches!` and a
+/// hand-written string, and the string drifted: it omitted `lmp2` and
+/// `lmp2-direct`, which the `matches!` accepted. `tests/method_kinds_are_listed.rs`
+/// checks this list against the dispatch arms in `run`, so a kind added to
+/// one and not the other fails a test.
+pub const SUPPORTED_METHOD_KINDS: &[&str] = &[
+    "rhf",
+    "uhf",
+    "rohf",
+    "ksdft",
+    "rimp2",
+    "lmp2",
+    "lmp2-direct",
+    "mp3",
+    "oo-rimp2",
+    "att-rimp2",
+    "mp2-v",
+    "scs-mp2",
+    "scs-mp2-2terfc",
+    "laplace-mp2",
+    "laplace-sos-mp2",
+    "pdep-rpa",
+    "rs-mp2-rpa",
+    "gw",
+    "bse-tda",
+    "tdhf-static-polarizability",
+    "ccsd",
+    "linlccd",
+    "wb97x-l-v",
+    "b2plyp",
+    "dsd-pbep86",
+    "tda",
+    "tddft",
+];
+
+/// The error text for an unrecognised `method.kind`, listing every entry of
+/// [`SUPPORTED_METHOD_KINDS`] quoted, so it cannot fall out of step with what
+/// is accepted.
+pub fn unsupported_method_message(method: &str) -> String {
+    let listed: Vec<String> = SUPPORTED_METHOD_KINDS.iter().map(|k| format!("\"{k}\"")).collect();
+    format!(
+        "unsupported method.kind = \"{method}\"; expected one of {}",
+        listed.join(", ")
+    )
+}
+
 /// Print a one-line epistemic-status warning to stderr if `method` is a
 /// Smoke/Stub-grade `method.kind` per `docs/VALIDATION.md`. No-op (and no
 /// output) for Proven / Proven (narrow) methods.
@@ -291,37 +341,8 @@ pub fn run(args: Vec<String>) {
 
     let method = cfg.method.kind.as_str();
     let task = cfg.method.task.as_str();
-    if !matches!(
-        method,
-        "rhf"
-            | "uhf"
-            | "rohf"
-            | "ksdft"
-            | "rimp2"
-            | "lmp2"
-            | "lmp2-direct"
-            | "mp3"
-            | "oo-rimp2"
-            | "att-rimp2"
-            | "mp2-v"
-            | "scs-mp2"
-            | "scs-mp2-2terfc"
-            | "laplace-mp2"
-            | "laplace-sos-mp2"
-            | "pdep-rpa"
-            | "rs-mp2-rpa"
-            | "gw"
-            | "bse-tda"
-            | "tdhf-static-polarizability"
-            | "ccsd"
-            | "linlccd"
-            | "wb97x-l-v"
-            | "b2plyp"
-            | "dsd-pbep86"
-            | "tda"
-            | "tddft"
-    ) {
-        eprintln!("error: unsupported method.kind = \"{method}\"; expected rhf, uhf, rohf, ksdft, rimp2, mp3, oo-rimp2, att-rimp2, mp2-v, scs-mp2, scs-mp2-2terfc, laplace-mp2, laplace-sos-mp2, pdep-rpa, rs-mp2-rpa, gw, bse-tda, tdhf-static-polarizability, ccsd, linlccd, wb97x-l-v, b2plyp, dsd-pbep86, tda, or tddft");
+    if !SUPPORTED_METHOD_KINDS.contains(&method) {
+        eprintln!("error: {}", unsupported_method_message(method));
         std::process::exit(1);
     }
     warn_if_epistemically_unproven(method);
