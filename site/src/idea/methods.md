@@ -7,7 +7,8 @@ parameters live on the method pages; this page is the map.
 ## Attenuated MP2: removing the long-range part
 
 MP2's dispersion comes from an **uncoupled** response, which over-polarizes for
-highly polarizable (for example π-stacked) systems. In small basis sets the
+systems with low-lying, highly polarizable excitations (π-stacked aromatics
+are the classic case); it is not a general property of polarizable molecules. In small basis sets the
 resulting overbinding is partly cancelled by basis-set superposition error,
 which disguises it.
 

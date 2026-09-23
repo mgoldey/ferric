@@ -63,7 +63,10 @@ correct behaviour for overlapping nuclei, and it cost a run to discover.
 ```python
 # formula check and geometry check fail on DIFFERENT mistakes -- keep both
 assert (n_elec % 2 == 0) == (multiplicity % 2 == 1)   # bad stoichiometry
-assert min_interatomic_distance(xyz) > 0.9            # bad geometry (your own helper, in Angstrom)
+assert min_interatomic_distance(xyz) > 0.9            # gross overlap only (your own helper, Angstrom)
+# The failure above PASSES that screen (closest contact 0.902 A): its H sat
+# ~1 A from two carbons at once. Also reject any H bonded to two heavy atoms:
+assert max_heavy_neighbours_of_hydrogen(xyz, cutoff=1.3) <= 1
 ```
 
 ### Step 1b -- relax with xtb before ANY DFT
@@ -148,8 +151,10 @@ never actually converged.
 **Checkpoint every species as it finishes.** A crash at species 6 of 8 should
 cost one species, not the whole run.
 
-**Basis choice decides whether the study is possible at all.** MEASURED on the
-same 27-atom cation, single point:
+**The method and basis decide whether the study is possible at all.**
+MEASURED on the same 27-atom cation, single point (both the basis and the
+functional differ between the two rows, so this does not isolate the cost of
+the basis):
 
     def2-SVP / B3LYP : >22 min, 6.04 GB, SIGKILLed before converging
     6-31G   / PBE    :  4.9 min, 1.81 GB, CONVERGED
@@ -157,12 +162,13 @@ same 27-atom cation, single point:
 6-31G/PBE used a third of the memory and finished. Don't plan a def2-SVP
 cascade on a workstation without measuring one species first.
 
-**Size the optimization from those numbers, not from a guess.** An optimization
-takes tens of gradient steps. ESTIMATED: at ~5 min per 6-31G single point and
-30–60 steps, that is roughly 2.5–5 hours per species. Later steps start from
-the previous density and may converge faster than a cold start, but that
-hasn't been measured here. A plan that budgets "10–40 min per optimization" for
-this system is off by an order of magnitude, even at 6-31G.
+**Treat the optimization time as an estimate.** An optimization takes tens of
+gradient steps. ESTIMATED: at ~5 min per 6-31G single point, 30–60 steps would
+take roughly 2.5–5 hours per species *if* each gradient step costs about as much
+as a single point. Neither a gradient step nor a full optimization of this
+system has been timed. Later steps start from the previous density and may
+converge faster than a cold start. Time one optimization before budgeting a
+cascade.
 
 **Use a release build.** MEASURED: the same cation at B3LYP/def2-SVP ran for
 more than 34 minutes on a *debug* binary, sharing the machine with one other

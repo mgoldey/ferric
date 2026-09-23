@@ -83,7 +83,7 @@ QM/MM accessors.
 ### Bundled basis sets
 
 `BasisSet.bundled(name)` loads a basis compiled into the library. Names are
-case-insensitive. An unknown name raises `ValueError`. These 26 are
+case-insensitive. An unknown name raises `ValueError`. These 25 are
 available:
 
 | Kind | Names |

@@ -149,7 +149,7 @@ energies, charges), not raw AO matrices. Axis order differs too:
 `compute_eri3` returns `(naux, n_bf, n_bf)`, with the auxiliary index first.
 
 **Basis sets come from a fixed bundled list.** `BasisSet.bundled(name)` knows
-26 names (see [Bundled basis sets](./python.md#bundled-basis-sets)). There is
+25 names (see [Bundled basis sets](./python.md#bundled-basis-sets)). There is
 no Python loader for a basis file or for a per-element basis dictionary.
 
 **Results come back as numpy arrays or lists, not live objects.** Matrices are
