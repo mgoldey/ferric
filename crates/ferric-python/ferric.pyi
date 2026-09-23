@@ -1038,6 +1038,60 @@ class TdhfStaticPolarizabilityResult:
         """Cartesian alpha_ij(0) tensor (3x3, a.u.)."""
         ...
 
+class TddftResult:
+    """Result of a closed-shell linear-response TDA/TDDFT (or CIS/TDHF) calculation."""
+
+    @property
+    def n_roots(self) -> int:
+        """Number of excitation energies returned."""
+        ...
+
+    @property
+    def method(self) -> str:
+        """Which equations were solved: "Tda" or "Casida"."""
+        ...
+
+    @property
+    def excitation_energies(self) -> NDArray[np.float64]:
+        """Singlet excitation energies (Hartree), ascending."""
+        ...
+
+    @property
+    def oscillator_strengths(self) -> NDArray[np.float64]:
+        """Length-gauge oscillator strengths (dimensionless), one per root."""
+        ...
+
+    def lowest_ev(self) -> float:
+        """Lowest excitation energy in eV (0.0 if no roots)."""
+        ...
+
+class DoubleHybridResult:
+    """Result of an MP2-based double hybrid (B2PLYP / DSD-PBEP86)."""
+
+    @property
+    def total_energy(self) -> float:
+        """E_KS + scaled MP2 correlation (Hartree)."""
+        ...
+
+    @property
+    def e_ks(self) -> float:
+        """Energy of the double hybrid's own KS reference (Hartree)."""
+        ...
+
+    @property
+    def e_corr_scaled(self) -> float:
+        """c_OS * E_OS + c_SS * E_SS (Hartree)."""
+        ...
+
+    @property
+    def e_os(self) -> float: ...
+    @property
+    def e_ss(self) -> float: ...
+    @property
+    def c_os(self) -> float: ...
+    @property
+    def c_ss(self) -> float: ...
+
 class BoysResult:
     """Result of Boys localization."""
 
@@ -1106,6 +1160,7 @@ def run_uhf(
     mom_after_iter: int | None = None,
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
+    memory_budget_gb: float | None = None,
 ) -> UhfResult:
     """Unrestricted Hartree-Fock (open-shell)."""
     ...
@@ -1125,6 +1180,7 @@ def run_rohf(
     mom_after_iter: int | None = None,
     point_charges: list[tuple[float, float, float, float]] | None = None,
     external_field: tuple[float, float, float] | None = None,
+    memory_budget_gb: float | None = None,
 ) -> UhfResult:
     """Restricted Open-Shell Hartree-Fock."""
     ...
@@ -1300,6 +1356,7 @@ def run_mp3(
     auxbasis: BasisSet,
     frozen_core: int | None = None,
     k_builder: str | None = None,
+    memory_budget_gb: float | None = None,
 ) -> Mp3Result:
     """Spin-orbital MP3 via einsum."""
     ...
@@ -1311,6 +1368,7 @@ def run_laplace_mp2(
     n_quad: int | None = None,
     frozen_core: int | None = None,
     k_builder: str | None = None,
+    memory_budget_gb: float | None = None,
 ) -> LaplaceMp2Result:
     """Laplace-transform RI-MP2."""
     ...
@@ -1653,6 +1711,32 @@ def run_tdhf_static_polarizability(
     """RPAx@KS static polarizability (omega=0). xc is REQUIRED."""
     ...
 
+def run_tddft(
+    mol: Molecule,
+    basis_set: BasisSet,
+    auxbasis: BasisSet,
+    functional: str | None = None,
+    n_roots: int = 3,
+    method: str = "tda",
+) -> TddftResult:
+    """Closed-shell linear response. functional=None runs on an RHF reference
+    (CIS for method="tda"/"cis", TDHF for "casida"/"rpa"/"tddft"/"tdhf");
+    a functional runs TDA/TDDFT on that KS reference WITHOUT the f_xc kernel
+    term, so DFT-reference excitation energies are approximate."""
+    ...
+
+def run_double_hybrid(
+    mol: Molecule,
+    basis_set: BasisSet,
+    auxbasis: BasisSet,
+    kind: str = "b2plyp",
+    frozen_core: int | None = None,
+    k_builder: str | None = None,
+    memory_budget_gb: float | None = None,
+) -> DoubleHybridResult:
+    """MP2-based double hybrid: kind="b2plyp" or "dsd-pbep86"."""
+    ...
+
 def run_lmp2(
     mol: Molecule,
     basis_set: BasisSet,
@@ -1664,6 +1748,27 @@ def run_lmp2(
     compute_reference: bool | None = None,
 ) -> dict[str, object]:
     """Amplitude-threshold local MP2 (closed-shell). Returns a dict."""
+    ...
+
+def run_lmp2_direct(
+    mol: Molecule,
+    basis_set: BasisSet,
+    auxbasis: BasisSet,
+    eps: float | None = None,
+    frozen_core: int | None = None,
+    aux_radius_bohr: float | None = None,
+    virt_radius_bohr: float | None = None,
+    ao_tail: float | None = None,
+    schwarz_skip: float | None = None,
+    batch_merge: int | None = None,
+    pair_gate_cal: float | None = None,
+    virt_schwarz_kappa: float | None = None,
+    k_builder: str | None = None,
+    memory_budget_gb: float | None = None,
+    compute_reference: bool | None = None,
+) -> dict[str, object]:
+    """Integral-direct amplitude-threshold local MP2 (closed-shell). Returns
+    the run_lmp2 dict plus strip/eri3 counters and stage timings."""
     ...
 
 def run_drpa(

@@ -4769,6 +4769,7 @@ impl PyDftResult {
 // ---------------------------------------------------------------------------
 
 #[pyclass]
+#[pyo3(name = "DoubleHybridResult")]
 struct PyDoubleHybridResult {
     #[pyo3(get)]
     total_energy: f64,
@@ -7430,6 +7431,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBseResult>()?;
     m.add_class::<PyTdhfStaticPolarizabilityResult>()?;
     m.add_class::<PyTddftResult>()?;
+    m.add_class::<PyDoubleHybridResult>()?;
     m.add_class::<PyConformerEnsemble>()?;
     m.add_class::<PyBoltzmannWeights>()?;
     m.add_class::<PyWeightedStats>()?;
