@@ -1,16 +1,12 @@
 //! Memory-budget behavior in `KsXc::new` / `KsXcUks::new`.
 //!
-//! The resident main-grid working set is `ks::batch_planes` planes of
-//! `nbf·npts·8` bytes (6-8 depending on spin and functional rung — χ + ∇χ, the
-//! `VxcScratch` buffer, and the largest of the density/τ GEMM stages) plus the
-//! O(npts) companion vectors, doubled with VV10's NLC grid. When
-//! `FERRIC_ERI3_BUDGET_GB` says the *main*-grid working set alone
-//! cannot fit, construction no longer fails: it falls back to a batched
-//! per-iteration evaluation (never materializing the full cache) — see
-//! `ks.rs`'s `GridCache::Batched`. VV10 is the one exception: its NLC grid's
-//! own O(npts²) pair sum needs its own cache fully resident regardless (not
-//! batchable), so an over-budget VV10 functional still returns
-//! `KsXcError::OverBudget`.
+//! The main grid is integrated in screened spatial batches (`xc_batch.rs`).
+//! When the budget admits them, the per-batch compact AO blocks are held
+//! resident; when it does not, construction does NOT fail — the blocks are
+//! re-evaluated every Fock build instead (bit-identical to resident). VV10 is
+//! the one exception: its NLC grid's dense cache is needed in full for the
+//! O(npts²) pair sum (not batchable), so an over-budget VV10 functional still
+//! returns `KsXcError::OverBudget`.
 //!
 //! Single test fn in its own integration-test binary: the env-var mutation
 //! must not race other tests that construct `KsXc` in the same process.
