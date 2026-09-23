@@ -67,6 +67,42 @@ pub(crate) fn build_df_jk<'a>(
     k_aux: Option<&str>,
     ooc_budget: usize,
 ) -> Result<(Option<DfJ<'a>>, Option<DfK<'a>>), FerricError> {
+    let out = build_df_jk_impl(ctx, mol, op, prep, j_aux, k_aux, ooc_budget)?;
+    note_df_k_built(out.1.is_some());
+    Ok(out)
+}
+
+// Test-only observable for "was a DF-K fitter constructed on THIS thread".
+// Thread-local rather than a global atomic so parallel `cargo test` threads
+// cannot see each other's builds; the SAD free-atom solves run inside their
+// own single-thread rayon pool (`guess::run_serial_pool`), so they do not
+// increment the caller's counter either. Used by `rhf::tests` to prove a pure
+// functional never builds the DfK whose K it would discard.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static DF_K_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn note_df_k_built(built: bool) {
+    if built {
+        DF_K_BUILT.with(|c| c.set(c.get() + 1));
+    }
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn note_df_k_built(_built: bool) {}
+
+fn build_df_jk_impl<'a>(
+    ctx: &'a ParallelContext,
+    mol: &Molecule,
+    op: Operator,
+    prep: &PreparedBasis,
+    j_aux: Option<&str>,
+    k_aux: Option<&str>,
+    ooc_budget: usize,
+) -> Result<(Option<DfJ<'a>>, Option<DfK<'a>>), FerricError> {
     // `Some("")` is the explicit "do not density-fit" sentinel (see
     // `solve_rhf`); UHF/ROHF pass the config straight through, so honour it
     // here rather than letting it reach `basis::bundled("")`.

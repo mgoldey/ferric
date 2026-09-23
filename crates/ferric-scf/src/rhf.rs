@@ -949,7 +949,36 @@ pub fn solve_rhf(
         }
     }
     let df_j_aux_eff: Option<String> = resolve_aux(&config.df_j_aux, needs_j);
-    let df_k_aux_eff: Option<String> = resolve_aux(&config.df_k_aux, needs_k);
+    // Whether the K written into `k_buf` below ever reaches F. Narrower than
+    // `k_consumed`: an RSH functional consumes exact exchange, but from its
+    // own SR/LR fitters (`dfk_sr`/`dfk_lr`, built by `driver::prepare`), so
+    // the F assembly never reads `k_buf` when ω > 0. True exactly for pure HF
+    // (k_mix = {1, 1, 0}) and ω = 0 hybrids.
+    let k_buf_consumed = k_consumed && k_mix.omega == 0.0;
+    // The DF-K the caller asked for (explicitly, or via the functional
+    // auto-default), BEFORE the consumption gate.
+    let df_k_aux_requested: Option<String> = resolve_aux(&config.df_k_aux, needs_k);
+    // Do not build a DF-K whose K is thrown away. `resolve_aux` honours an
+    // explicit `Some(name)` regardless of `needs_k`, and `run_dft` passes
+    // `def2-universal-jkfit` for every functional, so a pure GGA used to
+    // build a full DfK (V^{-1/2} dressing + `DfK::from_full_raw`) and run
+    // `build_from_occ` every iteration only for `k_mix = 0` to discard it.
+    // MEASURED on danuglipron (71 atoms) PBE/STO-3G: setup:df_fitters 91 s
+    // and jk_build 33 s, most of it that unused K. Same for the main DfK of
+    // an RSH functional. Energy is unaffected by construction: the K never
+    // entered F. Mirrors the open-shell solvers, whose `k_aux_eff` already
+    // requires `need_k && ω == 0`.
+    let df_k_aux_eff: Option<String> = if k_buf_consumed {
+        df_k_aux_requested.clone()
+    } else {
+        None
+    };
+    // A DF-K the gate above dropped still selects the DF ROUTING for J: with
+    // conventional J (`df_j_aux = Some("")`) and a requested-but-unused DF-K,
+    // the old code took the `df_any` branch (DirectJ + DfK). Without this the
+    // run would fall to the combined DirectJK path, which builds a 4-centre K
+    // for the same functional that has no use for it.
+    let df_k_skipped = df_k_aux_requested.is_some() && df_k_aux_eff.is_none();
 
     // Density-fitted Coulomb (RI-J) / exchange (RI-K). Builds 3-center
     // tensor(s) + metric(s) once, sharing one `PreparedBasis` when
@@ -972,7 +1001,7 @@ pub fn solve_rhf(
     // non-DF path (see the iteration branch structure below): when DF-J or
     // DF-K is active it would be built and then silently ignored — a
     // pre-existing silent no-op for "link" — so warn and skip construction.
-    let df_any = df_j.is_some() || df_k.is_some();
+    let df_any = df_j.is_some() || df_k.is_some() || df_k_skipped;
     let pluggable_k = crate::fock_assembly::resolve_k_builder(
         config.k_builder.as_deref(),
         df_any,
@@ -1137,8 +1166,10 @@ pub fn solve_rhf(
     // (see `k_consumed`). Pure DFT (LDA/GGA, k_mix all zero) discards any K it
     // builds, so a full direct 4-center K on an all-electron heavy-atom system
     // (e.g. Cu2/aug-cc-pVDZ) dominated the iteration at ~99 s while the actual XC
-    // grid work was ~0.4 s. HF and hybrids/RSH keep k_consumed = true, unaffected.
-    let mut direct_k: Option<DirectK> = if df_any && df_k.is_none() && k_consumed {
+    // grid work was ~0.4 s. HF and ω = 0 hybrids are unaffected. Gated on
+    // `k_buf_consumed`, not `k_consumed`: an RSH run whose main DF-K the gate
+    // above dropped must not fall through to a 4-centre K it would also discard.
+    let mut direct_k: Option<DirectK> = if df_any && df_k.is_none() && k_buf_consumed {
         Some(DirectK::new(
             ctx,
             prep,
@@ -1261,9 +1292,9 @@ pub fn solve_rhf(
                     }
                 }
             } else if let Some(dk) = direct_k.as_mut() {
-                // Only reached when exact exchange is consumed (k_consumed):
-                // for pure DFT `direct_k` is None and k_buf stays zero, since
-                // the discarded K would only be multiplied by k_mix = 0 below.
+                // Only reached when `k_buf` is consumed (k_buf_consumed): for
+                // pure DFT and RSH `direct_k` is None and k_buf stays zero,
+                // since the F assembly below never reads it.
                 total_quartets += <DirectK as KBuilder>::build(dk, &d, &mut k_buf)?;
             }
         } else if let Some(lk) = k_builder.as_mut() {
@@ -3657,5 +3688,66 @@ mod tests {
             "incremental Fock SLOWED convergence on hexane: {it_incr} iters vs \
              {it_full} full-rebuild — this is the DF-K-incident bug class, do NOT ship"
         );
+    }
+
+    // ── DF-K is built only when its K reaches F ─────────────────────────────
+    //
+    // Observable: `fock_assembly::DF_K_BUILT`, a test-only thread-local bumped
+    // each time `build_df_jk` returns a DfK. Each case runs one solve and
+    // reads the DELTA on this thread. The MINAO guess solves no SCF, so the
+    // only `build_df_jk` call on this thread is the molecule's own.
+
+    /// Number of DfK fitters `solve_rhf` constructed for water/STO-3G with
+    /// `xc` and `df_k_aux`; `df_j_aux` left unset (auto RI-J for a functional).
+    fn df_k_builds(xc: Option<&str>, df_k_aux: Option<&str>) -> usize {
+        // See ENV_LOCK doc comment: solve_rhf reads the budget env vars.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&mol, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let config = RhfConfig {
+            xc: xc.map(str::to_string),
+            df_k_aux: df_k_aux.map(str::to_string),
+            ..Default::default()
+        };
+        let before = crate::fock_assembly::DF_K_BUILT.with(|c| c.get());
+        let res = solve_rhf(&ParallelContext::default(), &mol, &prep, op, &bounds, &config)
+            .unwrap();
+        assert!(res.converged, "{xc:?} did not converge");
+        crate::fock_assembly::DF_K_BUILT.with(|c| c.get()) - before
+    }
+
+    /// A pure GGA consumes no exact exchange, so an explicitly named DF-K aux
+    /// (what `run_dft` passes for every functional) must not build a DfK.
+    /// FAILS (1 != 0) if `df_k_aux_eff` goes back to `resolve_aux(.., needs_k)`
+    /// without the `k_buf_consumed` gate: `resolve_aux` honours `Some(name)`
+    /// regardless of `needs_k`.
+    #[test]
+    fn pure_gga_with_named_df_k_aux_builds_no_dfk() {
+        assert_eq!(df_k_builds(Some("PBE"), Some(crate::fock_assembly::DEFAULT_JK_AUX)), 0);
+        // Unset aux must not auto-default one either (needs_k is false).
+        assert_eq!(df_k_builds(Some("PBE"), None), 0);
+    }
+
+    /// RSH contracts exchange from its own SR/LR fitters (`driver::prepare`),
+    /// never from `k_buf`, so the main DfK is dead weight there too. FAILS
+    /// (1 != 0) if the gate uses `k_consumed` (true for RSH) instead of
+    /// `k_buf_consumed`.
+    #[test]
+    fn rsh_builds_no_main_dfk() {
+        assert_eq!(df_k_builds(Some("wB97X-V"), None), 0);
+    }
+
+    /// Positive controls: HF (xc = None, `needs_k` FALSE but K consumed) and a
+    /// plain hybrid must still build their DfK. FAIL (0 != 1) if the gate is
+    /// keyed on `needs_k`, which is DFT-specific and false for HF, or if it
+    /// drops ω = 0 hybrids.
+    #[test]
+    fn hf_and_hybrid_still_build_dfk() {
+        assert_eq!(df_k_builds(None, Some(crate::fock_assembly::DEFAULT_JK_AUX)), 1);
+        assert_eq!(df_k_builds(Some("B3LYP"), None), 1);
+        assert_eq!(df_k_builds(Some("B3LYP"), Some(crate::fock_assembly::DEFAULT_JK_AUX)), 1);
     }
 }
