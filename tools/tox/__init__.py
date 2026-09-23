@@ -12,11 +12,13 @@ Providers, in the order the driver prefers them:
   PAINS, NIH, ChEMBL/Glaxo/Dundee/BMS) as shipped in RDKit's `FilterCatalog`,
   plus Lipinski/Veber physicochemical rules. Offline, deterministic, always
   available. This is the BASELINE that always runs.
-- `web.AdmetlabProvider` — ADMETlab 3.0 REST (`/api/admet`). 119 endpoints
-  including DILI/hERG/Ames/H-HT. **Endpoint was returning 404 on 2026-08-29**;
-  kept because it is the right primary source when the service returns, and it
-  degrades to `None` rather than fabricating.
-- `web.ProToxProvider` — ProTox-3.0 organ-specific toxicity / LD50.
+- `web.AdmetlabProvider` — ADMETlab 3.0 REST. 119 endpoints including
+  DILI/hERG/Ames/H-HT. The documented `/api/admet` has returned 404 since at
+  least 2026-08-29. Since 2026-09-23 the client uses the live, undocumented
+  `/api/single/admet` (see `web.py`), and it degrades to `None` rather than
+  fabricating.
+- `web.ProToxProvider` — ProTox-3.0 reachability probe only (no JSON API); it
+  never contributes endpoints and reports itself as `unsupported`.
 
 ## The one invariant that matters
 
