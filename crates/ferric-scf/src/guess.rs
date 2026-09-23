@@ -1030,10 +1030,22 @@ mod tests {
 
     #[test]
     fn initial_guess_parse_is_strict() {
-        assert_eq!(InitialGuess::parse_config_str("minao").unwrap(), InitialGuess::Minao);
-        assert_eq!(InitialGuess::parse_config_str("sad").unwrap(), InitialGuess::Minao);
-        assert_eq!(InitialGuess::parse_config_str("hcore").unwrap(), InitialGuess::Hcore);
-        assert_eq!(InitialGuess::parse_config_str("Hcore").unwrap(), InitialGuess::Hcore);
+        assert_eq!(
+            InitialGuess::parse_config_str("minao").unwrap(),
+            InitialGuess::Minao
+        );
+        assert_eq!(
+            InitialGuess::parse_config_str("sad").unwrap(),
+            InitialGuess::Minao
+        );
+        assert_eq!(
+            InitialGuess::parse_config_str("hcore").unwrap(),
+            InitialGuess::Hcore
+        );
+        assert_eq!(
+            InitialGuess::parse_config_str("Hcore").unwrap(),
+            InitialGuess::Hcore
+        );
         assert!(InitialGuess::Minao.use_sad_guess());
         assert!(!InitialGuess::Hcore.use_sad_guess());
         for bad in ["", "core", "sad-smallbasis", "huckel"] {

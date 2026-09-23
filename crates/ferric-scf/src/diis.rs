@@ -870,8 +870,14 @@ mod tests {
             let f = DiisFlavor::parse_config_str(name).unwrap();
             assert_eq!(f.as_str(), name);
         }
-        assert_eq!(DiisFlavor::parse_config_str("ADIIS").unwrap(), DiisFlavor::Adiis);
-        assert_eq!(DiisFlavor::parse_config_str("Pulay").unwrap(), DiisFlavor::Pulay);
+        assert_eq!(
+            DiisFlavor::parse_config_str("ADIIS").unwrap(),
+            DiisFlavor::Adiis
+        );
+        assert_eq!(
+            DiisFlavor::parse_config_str("Pulay").unwrap(),
+            DiisFlavor::Pulay
+        );
         for bad in ["", "diis", "cdiis", "pulay "] {
             let msg = DiisFlavor::parse_config_str(bad).unwrap_err().to_string();
             for &name in DiisFlavor::VALID {

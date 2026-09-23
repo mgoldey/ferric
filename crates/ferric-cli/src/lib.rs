@@ -57,7 +57,9 @@ fn print_usage() {
     eprintln!("usage: ferric [--verbose|-v] [--json <path>|--no-json] <input.toml>");
     eprintln!();
     eprintln!("Run a ferric quantum-chemistry calculation from a TOML input file.");
-    eprintln!("See examples/*.toml for sample inputs and site/src/using/quickstart.md for a walkthrough.");
+    eprintln!(
+        "See examples/*.toml for sample inputs and site/src/using/quickstart.md for a walkthrough."
+    );
     eprintln!();
     eprintln!("  --verbose, -v   Print one line per SCF iteration to stdout (energy, dE,");
     eprintln!("                  density/DIIS error) as the job runs. Same effect as setting");
@@ -203,7 +205,10 @@ pub const SUPPORTED_METHOD_KINDS: &[&str] = &[
 /// [`SUPPORTED_METHOD_KINDS`] quoted, so it cannot fall out of step with what
 /// is accepted.
 pub fn unsupported_method_message(method: &str) -> String {
-    let listed: Vec<String> = SUPPORTED_METHOD_KINDS.iter().map(|k| format!("\"{k}\"")).collect();
+    let listed: Vec<String> = SUPPORTED_METHOD_KINDS
+        .iter()
+        .map(|k| format!("\"{k}\""))
+        .collect();
     format!(
         "unsupported method.kind = \"{method}\"; expected one of {}",
         listed.join(", ")
@@ -1333,7 +1338,11 @@ fn run_lmp2(
         eprintln!("error: lmp2 is closed-shell (RHF/RKS reference) only");
         std::process::exit(1);
     }
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -1410,7 +1419,11 @@ fn run_lmp2_direct(
         eprintln!("error: lmp2-direct is closed-shell (RHF/RKS reference) only");
         std::process::exit(1);
     }
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -1522,7 +1535,11 @@ fn run_rimp2(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -1610,7 +1627,11 @@ fn run_mp3(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -1674,7 +1695,11 @@ fn run_oo_rimp2(
     budget_bytes: Option<usize>,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -1728,7 +1753,11 @@ fn run_att_rimp2(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -1794,7 +1823,11 @@ fn run_rs_mp2_rpa(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2035,7 +2068,11 @@ fn run_scs_mp2(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2089,7 +2126,11 @@ fn run_scs_mp2_2terfc(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2177,7 +2218,11 @@ fn run_mp2_v(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2294,7 +2339,11 @@ fn run_ccsd(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2380,7 +2429,11 @@ fn run_linlccd(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2460,7 +2513,11 @@ fn run_wb97x_l_v_arm(
     rhf_config: &RhfConfig,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2538,7 +2595,11 @@ fn run_mp2_double_hybrid_arm(
         "dsd-pbep86" => DoubleHybridKind::DsdPbep86,
         _ => unreachable!(),
     };
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2607,7 +2668,11 @@ fn run_laplace_mp2(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2670,7 +2735,11 @@ fn run_laplace_sos_mp2(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -2768,7 +2837,11 @@ fn run_pdep_rpa_arm(
     proatom_gs_mult: &dyn Fn(i32) -> usize,
     proatom: &dyn Fn(i32, i32) -> Option<ferric_rpa::properties::RadialProatom>,
 ) {
-    let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .rpa
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -3663,7 +3736,11 @@ fn run_gw(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
-    let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .rpa
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -3980,7 +4057,11 @@ fn run_bse_tda(
         );
         std::process::exit(1);
     }
-    let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .rpa
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -4101,7 +4182,11 @@ fn run_tdhf_static_polarizability(
         );
         std::process::exit(1);
     }
-    let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_name = cfg
+        .rpa
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
     let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -4433,7 +4518,11 @@ fn run_optimize(
             println!("  final E    = {:.10} Hartree", opt_result.energy);
         }
         "pdep-rpa" => {
-            let aux_name = cfg.rpa.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+            let aux_name = cfg
+                .rpa
+                .auxbasis
+                .as_deref()
+                .unwrap_or(config::DEFAULT_CORRELATION_AUX);
             let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 std::process::exit(1);
@@ -4499,7 +4588,11 @@ fn run_optimize(
             );
         }
         "rimp2" => {
-            let aux_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::DEFAULT_CORRELATION_AUX);
+            let aux_name = cfg
+                .mp2
+                .auxbasis
+                .as_deref()
+                .unwrap_or(config::DEFAULT_CORRELATION_AUX);
             let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 std::process::exit(1);
@@ -4592,7 +4685,11 @@ fn run_tddft_arm(
 ) {
     use ferric_tddft::{TddftConfig, TddftMethod};
 
-    let auxbasis_name = cfg.mp2.auxbasis.as_deref().unwrap_or(config::TDDFT_DEFAULT_AUX);
+    let auxbasis_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::TDDFT_DEFAULT_AUX);
     let dfbs_basis = basis::bundled(auxbasis_name).unwrap_or_else(|_| {
         eprintln!("error: auxiliary basis '{auxbasis_name}' not found");
         std::process::exit(1);

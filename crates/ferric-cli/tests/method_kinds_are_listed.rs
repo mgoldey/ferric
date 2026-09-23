@@ -36,7 +36,11 @@ fn workspace_root() -> PathBuf {
 
 /// Every double-quoted literal in `s`.
 fn quoted(s: &str) -> Vec<String> {
-    s.split('"').skip(1).step_by(2).map(str::to_string).collect()
+    s.split('"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_string)
+        .collect()
 }
 
 #[test]
@@ -64,7 +68,9 @@ fn supported_kinds_match_the_dispatch_arms_in_run() {
         .expect("read ferric-cli/src/lib.rs");
 
     // The body of `run()`: from its signature to the next top-level `fn`.
-    let start = src.find("pub fn run(args: Vec<String>)").expect("run() must exist");
+    let start = src
+        .find("pub fn run(args: Vec<String>)")
+        .expect("run() must exist");
     let len = src[start..]
         .find("\nfn ")
         .expect("a top-level fn must follow run()");

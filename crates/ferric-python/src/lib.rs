@@ -6374,7 +6374,7 @@ impl PyTdhfStaticPolarizabilityResult {
 /// output, for C6/dispersion — see the module doc above and
 /// `ferric_gw::bse::run_rpax_static_polarizability`'s doc comment for the
 /// full negative-result caveat (site/src/reference/validation.md, "Known
-/// negatives": C6 built
+/// limits and negatives": C6 built
 /// from this same kernel's dynamic alpha(iw) stays ~63% low regardless of
 /// the HOMO-LUMO gap, worse than ferric's production dRPA/PDEP C6 pipeline).
 ///

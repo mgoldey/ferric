@@ -64,7 +64,13 @@ fn no_message_cites_a_docs_path() {
 #[test]
 fn the_cited_pages_exist() {
     let root = workspace_root();
-    for page in ["site/src/reference/validation.md", "site/src/using/quickstart.md"] {
-        assert!(root.join(page).is_file(), "{page} is cited by CLI messages but missing");
+    for page in [
+        "site/src/reference/validation.md",
+        "site/src/using/quickstart.md",
+    ] {
+        assert!(
+            root.join(page).is_file(),
+            "{page} is cited by CLI messages but missing"
+        );
     }
 }

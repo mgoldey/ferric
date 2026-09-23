@@ -1938,7 +1938,10 @@ impl ScfCfg {
                 cfg.use_sad_guess = r
                     .use_sad_guess()
                     .map_err(|e| format!("[[scf.ladder]] rung {i}: {e}"))?;
-                Ok(Rung { config: cfg, restart: r.restart })
+                Ok(Rung {
+                    config: cfg,
+                    restart: r.restart,
+                })
             })
             .collect()
     }
@@ -2168,7 +2171,10 @@ json = [1, 2]
             }
             if let Some(p) = cfg.basis.path.as_deref() {
                 if !workspace_root.join(p).is_file() {
-                    failures.push(format!("{}: [basis] path = {p:?} does not exist", path.display()));
+                    failures.push(format!(
+                        "{}: [basis] path = {p:?} does not exist",
+                        path.display()
+                    ));
                 }
             }
             let optional = [
@@ -2177,7 +2183,10 @@ json = [1, 2]
                 ("[scf] df_j_aux", cfg.scf.df_j_aux.as_deref()),
                 ("[scf] df_k_aux", cfg.scf.df_k_aux.as_deref()),
                 ("[scf] df_guess_aux", cfg.scf.df_guess_aux.as_deref()),
-                ("[scf] df_increments_aux", cfg.scf.df_increments_aux.as_deref()),
+                (
+                    "[scf] df_increments_aux",
+                    cfg.scf.df_increments_aux.as_deref(),
+                ),
             ];
             names.extend(optional.iter().filter_map(|(k, v)| v.map(|v| (*k, v))));
             for rung in &cfg.scf.ladder {
@@ -2208,7 +2217,11 @@ json = [1, 2]
     /// static scan above cannot see a default.
     #[test]
     fn default_aux_bases_resolve() {
-        for name in [DEFAULT_CORRELATION_AUX, TDDFT_DEFAULT_AUX, DEFAULT_SCF_JK_AUX] {
+        for name in [
+            DEFAULT_CORRELATION_AUX,
+            TDDFT_DEFAULT_AUX,
+            DEFAULT_SCF_JK_AUX,
+        ] {
             ferric_core::basis::bundled(name)
                 .unwrap_or_else(|e| panic!("default aux basis {name:?} is not bundled: {e}"));
         }
@@ -2504,9 +2517,15 @@ json = [1, 2]
             let err = cfg.use_density_guess().unwrap_err();
             assert!(err.starts_with("[scf] guess"), "{bad:?}: {err}");
             for valid in ["'minao'", "'sad'", "'hcore'"] {
-                assert!(err.contains(valid), "{bad:?}: message must list {valid}: {err}");
+                assert!(
+                    err.contains(valid),
+                    "{bad:?}: message must list {valid}: {err}"
+                );
             }
-            assert!(cfg.validate().is_err(), "{bad:?}: validate() must reject it too");
+            assert!(
+                cfg.validate().is_err(),
+                "{bad:?}: validate() must reject it too"
+            );
         }
     }
 
@@ -2518,9 +2537,18 @@ json = [1, 2]
     fn scf_diis_bad_value_errors_and_does_not_panic() {
         use ferric_scf::diis::DiisFlavor;
         assert_eq!(scf_cfg("").diis_flavor(), Ok(DiisFlavor::Pulay));
-        assert_eq!(scf_cfg("diis = \"pulay\"").diis_flavor(), Ok(DiisFlavor::Pulay));
-        assert_eq!(scf_cfg("diis = \"adiis\"").diis_flavor(), Ok(DiisFlavor::Adiis));
-        assert_eq!(scf_cfg("diis = \"EDIIS\"").diis_flavor(), Ok(DiisFlavor::Ediis));
+        assert_eq!(
+            scf_cfg("diis = \"pulay\"").diis_flavor(),
+            Ok(DiisFlavor::Pulay)
+        );
+        assert_eq!(
+            scf_cfg("diis = \"adiis\"").diis_flavor(),
+            Ok(DiisFlavor::Adiis)
+        );
+        assert_eq!(
+            scf_cfg("diis = \"EDIIS\"").diis_flavor(),
+            Ok(DiisFlavor::Ediis)
+        );
         let cfg = scf_cfg("diis = \"cdiis\"");
         let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cfg.diis_flavor()));
         let err = got
@@ -2538,11 +2566,16 @@ json = [1, 2]
     /// ferric-batch), naming the file.
     #[test]
     fn load_config_rejects_bad_scf_strings() {
-        let dir = std::env::temp_dir().join(format!("ferric-cli-scf-strict-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("ferric-cli-scf-strict-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cases = [
             ("bad_diis.toml", "[scf]\ndiis = \"cdiis\"\n", "[scf] diis"),
-            ("bad_guess.toml", "[scf]\nguess = \"huckel\"\n", "[scf] guess"),
+            (
+                "bad_guess.toml",
+                "[scf]\nguess = \"huckel\"\n",
+                "[scf] guess",
+            ),
             (
                 "bad_rung.toml",
                 "[[scf.ladder]]\nguess = \"hcore\"\n[[scf.ladder]]\nguess = \"sad-smallbasis\"\n",
@@ -3896,7 +3929,10 @@ kind = "rhf"
 "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert!(cfg.scf.ladder.is_empty());
-        let built = cfg.scf.build_ladder(&ferric_scf::rhf::RhfConfig::default()).unwrap();
+        let built = cfg
+            .scf
+            .build_ladder(&ferric_scf::rhf::RhfConfig::default())
+            .unwrap();
         assert_eq!(built.len(), ferric_scf::ladder::default_ladder().len());
     }
 
