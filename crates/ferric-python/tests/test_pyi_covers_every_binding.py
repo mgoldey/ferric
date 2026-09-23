@@ -17,6 +17,12 @@ it runs without a build and sees exactly what the next build will export:
   it has none, from the Rust parameter list minus `py: Python`.
 
 Private entry points (leading underscore, e.g. `_cli_main`) are exempt.
+
+The check runs BOTH ways: a top-level `def`, `class` or annotated constant in
+the stub must also be registered (`wrap_pyfunction!` / `add_class` /
+`m.add("NAME", ...)`), except names in `STUB_ONLY`. The stub once declared
+`BoysResult` while `PyBoysResult` was never added to the module, so
+`from ferric import BoysResult` failed although type checkers accepted it.
 """
 
 from __future__ import annotations
@@ -29,6 +35,11 @@ import pytest
 CRATE = Path(__file__).resolve().parents[1]
 SRC = CRATE / "src" / "lib.rs"
 PYI = CRATE / "ferric.pyi"
+
+# Top-level stub names that exist only for type checkers and are deliberately
+# NOT registered by the module (TypeAliases, Protocols, TypeVars). Empty today;
+# add a name here only if it has no runtime counterpart by design.
+STUB_ONLY: frozenset[str] = frozenset()
 
 
 def _split_top(body: str) -> list[str]:
@@ -121,12 +132,33 @@ def _exported_classes(src: str) -> list[str]:
     return [py_name.get(c, c) for c in re.findall(r"add_class::<\s*(\w+)\s*>", src)]
 
 
+def _exported_constants(src: str) -> list[str]:
+    return re.findall(r'\bm\.add\(\s*"(\w+)"', src)
+
+
+def _stub_top_level(stub: str) -> dict[str, list[str]]:
+    return {
+        "def": re.findall(r"^def (\w+)\(", stub, re.M),
+        "class": re.findall(r"^class (\w+)\b", stub, re.M),
+        "constant": re.findall(r"^(\w+)\s*:", stub, re.M),
+    }
+
+
 def test_the_scan_finds_the_module(src):
     """Reachability: a regex that matches nothing would pass every check below."""
     assert len(_exported_functions(src)) > 40
     assert len(_exported_classes(src)) > 25
     assert "run_rhf" in _exported_functions(src)
     assert "RhfResult" in _exported_classes(src)
+    assert "DEFAULT_TEMPERATURE_K" in _exported_constants(src)
+
+
+def test_the_stub_scan_finds_the_stub(stub):
+    """Reachability for the reverse checks: an empty scan would pass them."""
+    top = _stub_top_level(stub)
+    assert len(top["def"]) > 40
+    assert len(top["class"]) > 25
+    assert "DEFAULT_TEMPERATURE_K" in top["constant"]
 
 
 def test_every_registered_function_is_in_the_stub(src, stub):
@@ -155,3 +187,33 @@ def test_stub_parameters_match_the_binding(src, stub):
     assert not diffs, (
         "ferric.pyi parameter lists differ from the bindings:\n" + "\n".join(diffs)
     )
+
+
+def test_every_stub_function_is_registered(src, stub):
+    registered = set(_exported_functions(src))
+    stale = [
+        n
+        for n in _stub_top_level(stub)["def"]
+        if n not in registered and n not in STUB_ONLY
+    ]
+    assert not stale, f"declared in ferric.pyi but not registered in lib.rs: {stale}"
+
+
+def test_every_stub_class_is_registered(src, stub):
+    registered = set(_exported_classes(src))
+    stale = [
+        c
+        for c in _stub_top_level(stub)["class"]
+        if c not in registered and c not in STUB_ONLY
+    ]
+    assert not stale, f"declared in ferric.pyi but not registered in lib.rs: {stale}"
+
+
+def test_every_stub_constant_is_registered(src, stub):
+    registered = set(_exported_constants(src))
+    stale = [
+        c
+        for c in _stub_top_level(stub)["constant"]
+        if c not in registered and c not in STUB_ONLY
+    ]
+    assert not stale, f"declared in ferric.pyi but not registered in lib.rs: {stale}"
