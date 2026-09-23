@@ -24107,75 +24107,75 @@
     "cc": 1.0,
     "mi": 151.74964174717402
   },
-  "crates/ferric-scf/src/driver.rs::<anonymous>@181": {
+  "crates/ferric-scf/src/driver.rs::<anonymous>@195": {
     "cc": 1.0,
     "mi": 122.25266300789264
   },
-  "crates/ferric-scf/src/driver.rs::<anonymous>@195": {
+  "crates/ferric-scf/src/driver.rs::<anonymous>@209": {
     "cc": 1.0,
     "mi": 159.05793486938265
   },
-  "crates/ferric-scf/src/driver.rs::<anonymous>@196": {
+  "crates/ferric-scf/src/driver.rs::<anonymous>@210": {
     "cc": 1.0,
     "mi": 157.8484854211024
   },
-  "crates/ferric-scf/src/driver.rs::<anonymous>@283": {
+  "crates/ferric-scf/src/driver.rs::<anonymous>@297": {
     "cc": 2.0,
     "mi": 95.52509931409831
   },
-  "crates/ferric-scf/src/driver.rs::<anonymous>@301": {
+  "crates/ferric-scf/src/driver.rs::<anonymous>@315": {
     "cc": 1.0,
     "mi": 153.0837736153568
   },
-  "crates/ferric-scf/src/driver.rs::density_change@175": {
+  "crates/ferric-scf/src/driver.rs::density_change@189": {
     "cc": 6.0,
     "mi": 80.87912730503587
   },
-  "crates/ferric-scf/src/driver.rs::diagonalize_rect@277": {
+  "crates/ferric-scf/src/driver.rs::diagonalize_rect@291": {
     "cc": 6.0,
     "mi": 76.51637080392237
   },
-  "crates/ferric-scf/src/driver.rs::diverging@432": {
+  "crates/ferric-scf/src/driver.rs::diverging@446": {
     "cc": 2.0,
     "mi": 106.43767771177393
   },
-  "crates/ferric-scf/src/driver.rs::effective_level_shift@153": {
+  "crates/ferric-scf/src/driver.rs::effective_level_shift@167": {
     "cc": 3.0,
     "mi": 114.439173204258
   },
-  "crates/ferric-scf/src/driver.rs::new@402": {
+  "crates/ferric-scf/src/driver.rs::new@416": {
     "cc": 1.0,
     "mi": 113.14341164644468
   },
-  "crates/ferric-scf/src/driver.rs::note_energy@452": {
+  "crates/ferric-scf/src/driver.rs::note_energy@466": {
     "cc": 1.0,
     "mi": 132.0866712701303
   },
   "crates/ferric-scf/src/driver.rs::prepare@85": {
-    "cc": 15.0,
-    "mi": 61.17586159965718
+    "cc": 16.0,
+    "mi": 57.20352812266462
   },
-  "crates/ferric-scf/src/driver.rs::record_density_change@423": {
+  "crates/ferric-scf/src/driver.rs::record_density_change@437": {
     "cc": 1.0,
     "mi": 117.7752826427828
   },
-  "crates/ferric-scf/src/driver.rs::signals@413": {
+  "crates/ferric-scf/src/driver.rs::signals@427": {
     "cc": 1.0,
     "mi": 115.86901162346496
   },
-  "crates/ferric-scf/src/driver.rs::solvent_terms@319": {
+  "crates/ferric-scf/src/driver.rs::solvent_terms@333": {
     "cc": 10.0,
     "mi": 63.11290473094762
   },
-  "crates/ferric-scf/src/driver.rs::stalled@445": {
+  "crates/ferric-scf/src/driver.rs::stalled@459": {
     "cc": 1.0,
     "mi": 117.22039919662237
   },
-  "crates/ferric-scf/src/driver.rs::warn_if_diis_history_large@234": {
+  "crates/ferric-scf/src/driver.rs::warn_if_diis_history_large@248": {
     "cc": 2.0,
     "mi": 90.20245041267191
   },
-  "crates/ferric-scf/src/driver.rs::warn_if_rss_over_at_stage@264": {
+  "crates/ferric-scf/src/driver.rs::warn_if_rss_over_at_stage@278": {
     "cc": 1.0,
     "mi": 128.0374727456536
   },
@@ -24183,31 +24183,39 @@
     "cc": 1.0,
     "mi": 109.88381858387223
   },
-  "crates/ferric-scf/src/fock_assembly.rs::build_df_jk@61": {
-    "cc": 21.0,
-    "mi": 57.40986087587321
+  "crates/ferric-scf/src/fock_assembly.rs::<anonymous>@73": {
+    "cc": 1.0,
+    "mi": 156.27079806218674
   },
-  "crates/ferric-scf/src/fock_assembly.rs::build_open_shell_pluggable_k@321": {
+  "crates/ferric-scf/src/fock_assembly.rs::<anonymous>@74": {
+    "cc": 1.0,
+    "mi": 156.27079806218674
+  },
+  "crates/ferric-scf/src/fock_assembly.rs::build_df_jk@61": {
+    "cc": 23.0,
+    "mi": 55.38827144442929
+  },
+  "crates/ferric-scf/src/fock_assembly.rs::build_open_shell_pluggable_k@326": {
     "cc": 3.0,
     "mi": 98.38841619839559
   },
-  "crates/ferric-scf/src/fock_assembly.rs::build_pluggable_k@246": {
+  "crates/ferric-scf/src/fock_assembly.rs::build_pluggable_k@251": {
     "cc": 6.0,
     "mi": 76.90829901625871
   },
-  "crates/ferric-scf/src/fock_assembly.rs::build_rsh_dfk_pair@136": {
+  "crates/ferric-scf/src/fock_assembly.rs::build_rsh_dfk_pair@141": {
     "cc": 5.0,
     "mi": 82.48424962974171
   },
-  "crates/ferric-scf/src/fock_assembly.rs::narrow_k_builder_to_supported@298": {
+  "crates/ferric-scf/src/fock_assembly.rs::narrow_k_builder_to_supported@303": {
     "cc": 4.0,
     "mi": 96.16116562935376
   },
-  "crates/ferric-scf/src/fock_assembly.rs::resolve_k_builder@194": {
+  "crates/ferric-scf/src/fock_assembly.rs::resolve_k_builder@199": {
     "cc": 7.0,
     "mi": 83.59708154101685
   },
-  "crates/ferric-scf/src/fock_assembly.rs::subtract_rsh_exchange@349": {
+  "crates/ferric-scf/src/fock_assembly.rs::subtract_rsh_exchange@354": {
     "cc": 6.0,
     "mi": 76.82732394311721
   },
