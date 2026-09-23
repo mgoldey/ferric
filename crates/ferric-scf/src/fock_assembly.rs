@@ -67,6 +67,11 @@ pub(crate) fn build_df_jk<'a>(
     k_aux: Option<&str>,
     ooc_budget: usize,
 ) -> Result<(Option<DfJ<'a>>, Option<DfK<'a>>), FerricError> {
+    // `Some("")` is the explicit "do not density-fit" sentinel (see
+    // `solve_rhf`); UHF/ROHF pass the config straight through, so honour it
+    // here rather than letting it reach `basis::bundled("")`.
+    let j_aux = j_aux.filter(|s| !s.is_empty());
+    let k_aux = k_aux.filter(|s| !s.is_empty());
     if j_aux.is_none() && k_aux.is_none() {
         return Ok((None, None));
     }

@@ -1422,6 +1422,8 @@ def run_dft(
     external_field: tuple[float, float, float] | None = None,
     memory_budget_gb: float | None = None,
     dispersion: str | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell).
 
@@ -1448,6 +1450,8 @@ def run_ksdft(
     external_field: tuple[float, float, float] | None = None,
     memory_budget_gb: float | None = None,
     dispersion: str | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
 ) -> DftResult:
     """Kohn-Sham DFT (closed-shell). Alias of run_dft.
 
