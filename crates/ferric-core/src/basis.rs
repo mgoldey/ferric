@@ -410,7 +410,15 @@ pub fn bundled(name: &str) -> Result<BasisSet, FerricError> {
         "6-31g" => include_str!("basis/bundled/6-31g.json"),
         "cc-pvdz" => include_str!("basis/bundled/cc-pvdz.json"),
         "def2-svp" => include_str!("basis/bundled/def2-svp.json"),
-        "cc-pvdz-ri" => include_str!("basis/bundled/cc-pvdz-ri.json"),
+        // `cc-pvdz-ri.json` IS the BSE set named "cc-pVDZ-RIFIT" (its own
+        // `name` field says so; Turbomole 7.3, 2019-01-08, elements 1-18 and
+        // 31-36). Verified 2026-09-23 element-for-element identical to
+        // `basis_set_exchange.get_basis("cc-pvdz-rifit")`. Both spellings
+        // resolve to the one copy of the data: every other RI set here is
+        // registered under its BSE `-rifit` name, and the tda/tddft CLI
+        // default plus examples/water-b2plyp.toml asked for "cc-pvdz-rifit",
+        // which used to be an "unknown bundled basis" error.
+        "cc-pvdz-ri" | "cc-pvdz-rifit" => include_str!("basis/bundled/cc-pvdz-ri.json"),
         "cc-pvdz-f12" => include_str!("basis/bundled/cc-pvdz-f12.json"),
         "cc-pvdz-f12-optri" => include_str!("basis/bundled/cc-pvdz-f12-optri.json"),
         "def2-svp-rifit" => include_str!("basis/bundled/def2-svp-rifit.json"),
@@ -720,6 +728,32 @@ mod tests {
             max_l >= 3,
             "cc-pVDZ-RI oxygen should have at least f functions, got max_l={max_l}"
         );
+    }
+
+    /// `cc-pvdz-rifit` (the BSE name) must load and be the SAME data as
+    /// `cc-pvdz-ri`. Three shipped examples (water-tda, water-tddft-pbe,
+    /// water-b2plyp) needed this name and failed with "unknown bundled basis"
+    /// before it was registered.
+    #[test]
+    fn test_bundled_ccpvdz_rifit_alias() {
+        let rifit = bundled("cc-pvdz-rifit").unwrap();
+        let ri = bundled("cc-pvdz-ri").unwrap();
+        for z in [1i32, 6, 7, 8] {
+            let a = rifit
+                .for_element(z)
+                .unwrap_or_else(|| panic!("cc-pvdz-rifit has no shells for Z={z}"));
+            assert!(!a.is_empty(), "cc-pvdz-rifit: empty shell list for Z={z}");
+            let b = ri.for_element(z).unwrap();
+            assert_eq!(a.len(), b.len(), "Z={z}: alias must be the same data");
+            for (sa, sb) in a.iter().zip(b) {
+                assert_eq!(sa.l, sb.l, "Z={z}: shell l differs");
+                assert_eq!(sa.exponents, sb.exponents, "Z={z}: exponents differ");
+            }
+        }
+        // An RI set for an oxygen-containing molecule needs f functions.
+        let o_max_l = rifit.for_element(8).unwrap().iter().map(|s| s.l).max().unwrap();
+        assert!(o_max_l >= 3, "cc-pvdz-rifit O max_l = {o_max_l}, expected >= 3");
+        assert_eq!(rifit.name, "cc-pvdz-rifit");
     }
 
     #[test]
