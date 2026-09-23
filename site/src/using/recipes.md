@@ -164,8 +164,8 @@ Expect seconds to about a minute at this size.
 
 ### The error you will hit first
 
-If the atom count is wrong, you get this error. It's worth learning to
-recognise:
+If the electron count and the multiplicity disagree, you get this error. It's
+worth learning to recognise:
 
 ```
 error: inconsistent charge/multiplicity: 35 electrons with multiplicity 1
@@ -174,9 +174,10 @@ integer... An odd electron count needs an even multiplicity (2, 4, ...)
 and vice versa
 ```
 
-It means **your geometry or your charge is wrong**. ferric can handle ions. The
-message prints the arithmetic and the rule, so check the atom count in your
-`.xyz` against the first line of the file.
+It means **your geometry, your charge or your multiplicity is wrong**. ferric
+can handle ions and open shells. The message prints the arithmetic and the
+rule, so check the atom count in your `.xyz` against the first line of the
+file, then the `charge` and `multiplicity` you set.
 
 A radical (open-shell doublet) uses the same keys:
 
