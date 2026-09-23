@@ -11,6 +11,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
+# Per-provider outcome for one molecule, in `ToxAssessment.provider_status`.
+# The split exists so a caller (and the CLI's exit status) can tell "a web
+# service is down" apart from "the screen itself is broken":
+STATUS_OK = "ok"  # returned endpoints, reported no error
+STATUS_UNAVAILABLE = (
+    "unavailable"  # service outage: HTTP error, timeout, refused, bad body
+)
+STATUS_UNSUPPORTED = "unsupported"  # by design never returns endpoints (ProTox stub)
+STATUS_NO_RESULT = "no_result"  # answered nothing, no stated reason (e.g. bad SMILES)
+STATUS_ERROR = "error"  # reported an error with no classification
+STATUS_CONTRACT_VIOLATION = "contract_violation"  # raised instead of returning []
+
 
 @dataclass(frozen=True)
 class ToxEndpoint:
@@ -58,6 +70,9 @@ class ToxAssessment:
     endpoints: list[ToxEndpoint] = field(default_factory=list)
     provider_errors: dict[str, str] = field(default_factory=dict)
     label: str = ""
+    # provider name -> one of the STATUS_* constants above, for EVERY provider
+    # that was consulted (including the ones that succeeded).
+    provider_status: dict[str, str] = field(default_factory=dict)
 
     @property
     def known_endpoints(self) -> list[ToxEndpoint]:
@@ -113,6 +128,11 @@ class ToxProvider(Protocol):
       non-string argument).
     - An endpoint it cannot determine is omitted, or included with
       `value=None`. Never `value=0.0`.
+    - Optional attributes read by the driver after each `fetch`: `last_error`
+      (reason string or None), `last_error_kind` (a STATUS_* constant),
+      `last_error_unreachable` (the service did not answer at all, so retrying
+      in the same run would cost another full timeout) and the class attribute
+      `online` (True for a network provider).
     """
 
     name: str
