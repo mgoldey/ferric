@@ -101,6 +101,32 @@ mdbook serve site
 number on a page should be traceable to a test, an example header or a measured
 run; if it is not, leave the cell empty rather than estimating.
 
+The docs are tested, in four places:
+
+| Check | What fails it | Where it runs |
+|---|---|---|
+| `mdbook build` + `scripts/check_doc_links.py` | a missing page, a link to a page or heading that does not exist | `docs-check.yml`, on every PR touching Markdown |
+| `input_reference_documents_exactly_the_accepted_keys` | a config key with no row in `reference/input.md`, or a row for a key the CLI rejects | `ferric-cli` unit tests (`src/config_doc_tests.rs`) |
+| `every_toml_block_in_the_docs_parses` | a ```` ```toml ```` block the CLI would reject | same |
+| `scripts/check_doc_snippets.py` | a marked Python block that raises, or prints something other than the ```` ```text ```` block the page shows | wheel smoke test (nightly, release tags) and `crates/ferric-python/tests/test_doc_snippets.py` |
+
+Adding a config field therefore means adding its row to
+`site/src/reference/input.md`; the test names the missing key. A TOML block that
+is deliberately invalid goes after a `<!-- doctest: skip -->` line.
+
+To make a Python block checked, put `<!-- doctest -->` on the line above it.
+Marked blocks on a page run in order in one interpreter, like a notebook, in an
+empty directory, so they must not need a clone. A ```` ```text ```` block
+directly after a marked block (or anywhere below it, marked
+`<!-- doctest-output -->`) is its expected output; numbers are compared to
+`atol=1e-8` unless the marker says otherwise (`<!-- doctest: atol=1e-6 -->`).
+Run the check locally against a release build:
+
+```bash
+cargo build --release -p ferric-python
+OPENBLAS_NUM_THREADS=1 uv run --no-sync pytest crates/ferric-python/tests/test_doc_snippets.py
+```
+
 Contributor-only analysis lives next to the book but outside its table of
 contents, for example `site/src/reference/ci-timing-analysis.md` (test sharding
 and CI timing).

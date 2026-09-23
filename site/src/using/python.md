@@ -16,6 +16,7 @@ the reference tables were not run.
 
 ## Molecules and basis sets
 
+<!-- doctest -->
 ```python
 import ferric
 
@@ -37,6 +38,7 @@ ghost atom, which carries basis functions but no nucleus or electrons.
 
 **Charge and spin belong to the molecule**, not to the SCF call:
 
+<!-- doctest -->
 ```python
 o2 = ferric.Molecule.from_xyz_string("""2
 O2 triplet
@@ -69,6 +71,7 @@ from the molecule. The geometry-changing drivers (`run_frequencies`,
 | Energies | Hartree |
 | Gradients | Hartree/Bohr |
 
+<!-- doctest -->
 ```python
 print(water.coords()[0])        # (0.0, 0.0, 0.11779)            Ångström
 print(water.coords_bohr()[0])   # (0.0, 0.0, 0.22259084021251865) Bohr
@@ -105,6 +108,7 @@ rebuild the basis at every geometry.
 
 ## Ground state
 
+<!-- doctest -->
 ```python
 rhf = ferric.run_rhf(water, bs)
 print(rhf)
@@ -118,6 +122,7 @@ RHF: -74.9631468000 Ha, converged=True
 
 Open shell, using the triplet `o2` built above:
 
+<!-- doctest -->
 ```python
 bs_dz = ferric.BasisSet.bundled("cc-pvdz")
 uhf  = ferric.run_uhf(o2, bs_dz)
@@ -137,6 +142,7 @@ densities and orbital energies, which coincide for the spatial orbitals.
 
 Kohn–Sham DFT:
 
+<!-- doctest -->
 ```python
 dft = ferric.run_dft(water, bs_dz, functional="b3lyp")
 print(f"B3LYP {dft.total_energy:.10f}")
@@ -181,6 +187,7 @@ Correlated drivers run their own reference SCF internally, so they take the
 molecule and basis rather than an SCF result. They also take an explicit
 auxiliary (RI) basis. There is no automatic choice.
 
+<!-- doctest -->
 ```python
 aux = ferric.BasisSet.bundled("cc-pvdz-ri")
 
@@ -196,12 +203,15 @@ print(f"         {cc.t_correction:.10f}  (T)")
 ```
 
 ```text
+closed-shell CCSD converged in 10 iterations. E_corr = -0.2135061893
 RHF      -76.0267679974
-RI-MP2   -76.2308014556  (corr -0.2040334582)
+RI-MP2   -76.2308014541  (corr -0.2040334567)
 CCSD(T)  -76.2433412449  total
-         -0.2135061897  CCSD correlation
-         -0.0030670578  (T)
+         -0.2135061893  CCSD correlation
+         -0.0030670582  (T)
 ```
+
+The first line is progress output that the CCSD solver prints to stdout.
 
 `CcResult` holds only `correlation_energy` and `t_correction` (which is `None`
 for `run_ccd` and `run_ccsd`). It carries no reference energy, so the total
@@ -210,6 +220,7 @@ above adds `run_rhf(...).energy` by hand. The MP2-family results all carry a
 
 Other members of the family use the same call shape:
 
+<!-- doctest -->
 ```python
 att   = ferric.run_attenuated_rimp2(water, bs_dz, aux, omega=0.420)  # Å⁻¹
 scs   = ferric.run_scs_mp2(water, bs_dz, aux)
@@ -224,6 +235,7 @@ no CLI `method.kind`; the reference table below marks which ones do.
 
 ## Response and excited states
 
+<!-- doctest -->
 ```python
 rpa   = ferric.run_pdep_rpa(water, bs_dz, aux)            # RPA correlation
 gw    = ferric.run_gw(water, bs_dz, aux)                  # G0W0@HF by default
@@ -250,6 +262,7 @@ and are approximate. With no `functional`, it is CIS (`method="tda"`) or TDHF
 The property functions take the molecule, the basis and a converged
 `RhfResult` or `DftResult`. They work on closed-shell results.
 
+<!-- doctest -->
 ```python
 import numpy as np
 
@@ -285,6 +298,7 @@ charges, polarizabilities, C6 coefficients) in one run, use the CLI's
 Results are Python objects with plain attributes for scalars and methods for
 arrays:
 
+<!-- doctest -->
 ```python
 D = rhf.density()             # numpy.ndarray, (n_bf, n_bf), AO basis
 e = rhf.orbital_energies()    # numpy.ndarray, ascending, Hartree
@@ -308,6 +322,7 @@ integral work, and some paths refuse to start when their predicted peak does
 not fit. It is **not** a cap on total process memory, and how strictly it is
 enforced varies by method; see [Sharp bits](./sharp-bits.md).
 
+<!-- doctest -->
 ```python
 mp2 = ferric.run_rimp2(water, bs_dz, aux, memory_budget_gb=8.0)
 ```

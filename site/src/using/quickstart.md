@@ -13,6 +13,7 @@ whether your installation is right.
 
 Save this as `water.py`:
 
+<!-- doctest -->
 ```python
 import ferric
 
@@ -38,6 +39,7 @@ OPENBLAS_NUM_THREADS=1 python water.py
 
 You should see:
 
+<!-- doctest-output -->
 ```text
 True -74.9631468000
 ```
@@ -90,6 +92,7 @@ in the [input reference](../reference/input.md).
 Change one line in the TOML, or one call in Python, to go beyond Hartree–Fock.
 RI-MP2 needs an auxiliary (fitting) basis alongside the orbital basis:
 
+<!-- doctest -->
 ```python
 bs  = ferric.BasisSet.bundled("cc-pvdz")
 aux = ferric.BasisSet.bundled("cc-pvdz-ri")
