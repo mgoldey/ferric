@@ -61,7 +61,9 @@
 //!   `max_batch_pts` (total-order comparator with an index tie-break);
 //! * inside a batch everything is serial (the AO evaluator here is serial,
 //!   GEMMs run on the calling worker, and OpenBLAS is pinned to 1 thread for
-//!   the whole Fock build before any worker starts);
+//!   the whole Fock build before any worker starts). The one exception is the
+//!   one-thread-pool serial mode ([`Exec`]), which is bit-identical to the
+//!   parallel mode under the default `FERRIC_BLAS_THREADS`;
 //! * pass-1 outputs are disjoint slots; the libxc call is chunk-bit-identical;
 //!   `E_xc` uses the fixed-group `deterministic_point_sum`;
 //! * pass-2 contributions are reduced in a FIXED grouping: batches are split
@@ -75,6 +77,9 @@
 //!
 //! Per-batch compact AO arrays `(nact, 4·nb)` are either held resident (the
 //! default when they fit the memory budget) or re-evaluated each Fock build.
+//! Recompute mode evaluates each batch's AO block TWICE per Fock build — once
+//! for pass 1 and once for pass 2, because the global libxc call sits between
+//! them — trading ~2 serial-per-batch AO evaluations for the resident memory.
 //! Both modes call the same serial evaluator on the same (shell, point) pairs,
 //! and every downstream operation sees identically-shaped inputs, so the two
 //! modes are bit-identical by construction — the storage decision can move
@@ -476,8 +481,8 @@ fn batch_density_one(
             tau,
         };
     }
-    // Φ = D_sub · [χ | (∂χ)] — ONE GEMM on the calling rayon worker, with
-    // OpenBLAS already pinned to 1 thread by `integrate_*`.
+    // Φ = D_sub · [χ | (∂χ)] — ONE GEMM, BLAS threads set once by
+    // `integrate_*_exec` (1 on rayon workers; see `Exec`).
     let phi = dsub.dot(&ao.slice(s![.., ..ncols]));
     let phi = phi.as_standard_layout();
     let p = phi.as_slice().expect("standard layout");
@@ -584,6 +589,80 @@ fn batch_vxc_one(
     scatter_sym(&vb, funcs, acc);
 }
 
+/// How one Fock build is executed.
+///
+/// * **Parallel** (default): batches run on rayon workers, OpenBLAS pinned to
+///   one thread for the whole call. Bit-identical across rayon thread counts.
+/// * **Serial**: chosen only when the caller is NOT inside a rayon worker and
+///   the rayon pool has exactly one thread — the documented
+///   `OPENBLAS_NUM_THREADS>1 ⇒ RAYON_NUM_THREADS=1` configuration, where the
+///   parallel mode would leave the build fully serial on one BLAS thread. The
+///   batch loops then run on the CALLING thread (outside any rayon worker,
+///   which is the call-path proof `blas_threads.rs` requires for a raise) with
+///   `opt_in_blas_threads()` BLAS threads — the same opt-in the old dense path
+///   used for its digestion GEMMs.
+///
+/// # What is and is not bit-identical
+///
+/// Serial and Parallel perform the same floating-point operations in the same
+/// order: same batches, same fixed reduction groups, each group accumulated in
+/// ascending batch order, groups summed in ascending order. With the default
+/// `FERRIC_BLAS_THREADS` (unset ⇒ 1) the two are therefore bit-identical, so
+/// the energy is bit-identical for EVERY rayon thread count (pinned by
+/// `serial_and_parallel_execution_are_bit_identical`). With
+/// `FERRIC_BLAS_THREADS=N>1` AND a one-thread rayon pool, the per-batch GEMMs
+/// run on N OpenBLAS threads, whose internal work split is not guaranteed to
+/// reproduce the single-thread bit pattern — the same caveat that already
+/// applies to every other `FERRIC_BLAS_THREADS` site (see `einsum.rs`). The
+/// per-batch GEMMs are small (`nact × 128 × nact`), so expect a modest gain
+/// from the raise at best; the rayon-parallel mode is the fast path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Exec {
+    serial: bool,
+    blas: usize,
+}
+
+impl Exec {
+    /// The mode for a call made from the current thread (see [`Exec`]).
+    pub(crate) fn auto() -> Self {
+        if rayon::current_thread_index().is_none() && rayon::current_num_threads() == 1 {
+            Self {
+                serial: true,
+                blas: ferric_integrals::blas_threads::opt_in_blas_threads(),
+            }
+        } else {
+            Self::parallel()
+        }
+    }
+    pub(crate) fn parallel() -> Self {
+        Self {
+            serial: false,
+            blas: 1,
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn serial_single_blas() -> Self {
+        Self {
+            serial: true,
+            blas: 1,
+        }
+    }
+}
+
+/// `(0..n).map(f)` collected in index order, serially or on rayon. Output
+/// order (and each `f(i)`) is identical either way.
+fn map_indexed<T, F>(serial: bool, n: usize, f: F) -> Result<Vec<T>, GtoEvalError>
+where
+    T: Send,
+    F: Fn(usize) -> Result<T, GtoEvalError> + Sync + Send,
+{
+    if serial {
+        (0..n).map(f).collect()
+    } else {
+        (0..n).into_par_iter().map(f).collect()
+    }
+}
+
 /// One spatial batch: original point indices, active shells, active functions.
 #[derive(Debug)]
 pub(crate) struct XcBatch {
@@ -614,6 +693,19 @@ impl ScreenedGrid {
         cfg: &XcBatchConfig,
     ) -> Result<Self, GtoEvalError> {
         debug_assert_eq!(shells.iter().map(|s| s.nfunc).sum::<usize>(), nbf);
+        // Evaluate every shell once, whatever the threshold. `screen_batch`
+        // skips evaluation entirely at `thresh <= 0`, so without this an
+        // unsupported shell (UnsupportedL) would first surface inside a Fock
+        // build — where `add_xc` can only panic — instead of here, where it
+        // is a proper constructor error. After this, per-shell evaluation
+        // cannot fail later (the only error is a function of `l` alone).
+        {
+            let mut buf = [0.0f64; 15];
+            let mut gbuf: [[f64; 15]; 3] = [[0.0; 15]; 3];
+            for sh in &shells {
+                eval_shell_and_grad(&sh.located(), 0.5, 0.5, 0.5, &mut buf[..sh.nfunc], &mut gbuf)?;
+            }
+        }
         let xyz: Vec<[f64; 3]> = grid.iter().map(|g| g.xyz).collect();
         let parts = partition_points(&xyz, cfg.max_batch_pts);
         let thresh = cfg.screen_thresh;
@@ -700,7 +792,11 @@ impl ScreenedGrid {
         eval_batch_ao(&self.shells, &b.shells, b.funcs.len(), &pts)
     }
 
-    fn batch_ao(&self, bi: usize, grid: &[GridPoint]) -> Result<Cow<'_, Array2<f64>>, GtoEvalError> {
+    fn batch_ao(
+        &self,
+        bi: usize,
+        grid: &[GridPoint],
+    ) -> Result<Cow<'_, Array2<f64>>, GtoEvalError> {
         match &self.ao {
             Some(v) => Ok(Cow::Borrowed(&v[bi])),
             None => Ok(Cow::Owned(self.eval_batch(bi, grid)?)),
@@ -741,24 +837,27 @@ impl ScreenedGrid {
 
     /// Fixed-grouping, ordered reduction of per-batch V contributions.
     /// `body(bi, accs)` adds batch `bi` into the group's `nmats` accumulators.
-    fn reduce_groups<F>(&self, nmats: usize, body: F) -> Result<Vec<Array2<f64>>, GtoEvalError>
+    fn reduce_groups<F>(
+        &self,
+        serial: bool,
+        nmats: usize,
+        body: F,
+    ) -> Result<Vec<Array2<f64>>, GtoEvalError>
     where
-        F: Fn(usize, &mut [Array2<f64>]) -> Result<(), GtoEvalError> + Sync,
+        F: Fn(usize, &mut [Array2<f64>]) -> Result<(), GtoEvalError> + Sync + Send,
     {
         let nbf = self.nbf;
         let ngroups = n_groups(self.batches.len(), nbf, nmats);
         let ranges = group_ranges(self.batches.len(), ngroups);
-        let partials: Vec<Vec<Array2<f64>>> = ranges
-            .into_par_iter()
-            .map(|(b0, b1)| -> Result<Vec<Array2<f64>>, GtoEvalError> {
-                let mut accs: Vec<Array2<f64>> =
-                    (0..nmats).map(|_| Array2::zeros((nbf, nbf))).collect();
-                for bi in b0..b1 {
-                    body(bi, &mut accs[..])?;
-                }
-                Ok(accs)
-            })
-            .collect::<Result<Vec<_>, GtoEvalError>>()?;
+        let partials: Vec<Vec<Array2<f64>>> = map_indexed(serial, ranges.len(), |gi| {
+            let (b0, b1) = ranges[gi];
+            let mut accs: Vec<Array2<f64>> =
+                (0..nmats).map(|_| Array2::zeros((nbf, nbf))).collect();
+            for bi in b0..b1 {
+                body(bi, &mut accs[..])?;
+            }
+            Ok(accs)
+        })?;
         // Ascending group order — the one and only cross-group summation.
         let mut out: Vec<Array2<f64>> = (0..nmats).map(|_| Array2::zeros((nbf, nbf))).collect();
         for accs in &partials {
@@ -771,20 +870,30 @@ impl ScreenedGrid {
 
     /// Closed-shell `(E_xc, V_xc)` for the total density matrix `d`.
     ///
-    /// The whole call runs with OpenBLAS pinned to ONE thread (set once on the
-    /// calling thread, before any worker starts — OpenBLAS's thread count is
-    /// process-global). Every GEMM here runs inside a rayon worker, where a
-    /// multi-threaded OpenBLAS oversubscribes and has crashed before (see
-    /// `blas_threads.rs`); pinning here, rather than per GEMM inside workers,
-    /// avoids workers racing on that global. This matches the old dense
-    /// path's effective setting (`opt_in_blas_threads()` defaults to 1).
+    /// The OpenBLAS thread count is set ONCE on the calling thread for the
+    /// whole call (it is process-global, so setting it per GEMM inside workers
+    /// would race): 1 in the rayon-parallel mode, where every GEMM runs on a
+    /// worker and a multi-threaded OpenBLAS oversubscribes (and has crashed
+    /// before, see `blas_threads.rs`); `opt_in_blas_threads()` in the serial
+    /// mode. See [`Exec`] for when each is chosen and what is bit-identical.
     pub(crate) fn integrate_closed(
         &self,
         grid: &[GridPoint],
         d: &Array2<f64>,
         xc: &XcDef,
     ) -> Result<(f64, Array2<f64>), GtoEvalError> {
-        with_blas_threads(1, || self.integrate_closed_inner(grid, d, xc))
+        self.integrate_closed_exec(grid, d, xc, Exec::auto())
+    }
+
+    /// [`Self::integrate_closed`] with an explicit execution mode.
+    pub(crate) fn integrate_closed_exec(
+        &self,
+        grid: &[GridPoint],
+        d: &Array2<f64>,
+        xc: &XcDef,
+        exec: Exec,
+    ) -> Result<(f64, Array2<f64>), GtoEvalError> {
+        with_blas_threads(exec.blas, || self.integrate_closed_inner(grid, d, xc, exec.serial))
     }
 
     fn integrate_closed_inner(
@@ -792,6 +901,7 @@ impl ScreenedGrid {
         grid: &[GridPoint],
         d: &Array2<f64>,
         xc: &XcDef,
+        serial: bool,
     ) -> Result<(f64, Array2<f64>), GtoEvalError> {
         let npts = self.npts;
         assert_eq!(grid.len(), npts, "grid does not match the screened grid");
@@ -806,15 +916,12 @@ impl ScreenedGrid {
             .any(|f| !matches!(f.family(), FunctionalFamily::Lda));
 
         // ── Pass 1: density, parallel over batches, disjoint output slots.
-        let parts: Vec<BatchDensity> = (0..self.batches.len())
-            .into_par_iter()
-            .map(|bi| -> Result<BatchDensity, GtoEvalError> {
-                let b = &self.batches[bi];
-                let ao = self.batch_ao(bi, grid)?;
-                let dsub = gather_sub(d, &b.funcs);
-                Ok(batch_density_one(&ao, &dsub, b.idx.len(), has_mgga))
-            })
-            .collect::<Result<Vec<_>, GtoEvalError>>()?;
+        let parts: Vec<BatchDensity> = map_indexed(serial, self.batches.len(), |bi| {
+            let b = &self.batches[bi];
+            let ao = self.batch_ao(bi, grid)?;
+            let dsub = gather_sub(d, &b.funcs);
+            Ok(batch_density_one(&ao, &dsub, b.idx.len(), has_mgga))
+        })?;
         let mut rho = Array1::<f64>::zeros(npts);
         let mut grad = Array2::<f64>::zeros((3, npts));
         let mut tau = Array1::<f64>::zeros(if has_mgga { npts } else { 0 });
@@ -843,7 +950,7 @@ impl ScreenedGrid {
         let e_xc = deterministic_point_sum(npts, |g| grid[g].weight * dens.rho[g] * k.exc[g]);
 
         // ── Pass 2: V, fixed-group ordered reduction.
-        let mut v = self.reduce_groups(1, |bi, accs| {
+        let mut v = self.reduce_groups(serial, 1, |bi, accs| {
             let b = &self.batches[bi];
             if b.funcs.is_empty() {
                 return Ok(());
@@ -884,7 +991,7 @@ impl ScreenedGrid {
     }
 
     /// Spin-polarized `(E_xc, V_α, V_β)` for the spin density matrices. BLAS
-    /// is pinned to one thread for the call; see [`Self::integrate_closed`].
+    /// threading and execution mode as in [`Self::integrate_closed`].
     pub(crate) fn integrate_polarized(
         &self,
         grid: &[GridPoint],
@@ -892,7 +999,21 @@ impl ScreenedGrid {
         d_b: &Array2<f64>,
         xc: &XcDef,
     ) -> Result<(f64, Array2<f64>, Array2<f64>), GtoEvalError> {
-        with_blas_threads(1, || self.integrate_polarized_inner(grid, d_a, d_b, xc))
+        self.integrate_polarized_exec(grid, d_a, d_b, xc, Exec::auto())
+    }
+
+    /// [`Self::integrate_polarized`] with an explicit execution mode.
+    pub(crate) fn integrate_polarized_exec(
+        &self,
+        grid: &[GridPoint],
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+        xc: &XcDef,
+        exec: Exec,
+    ) -> Result<(f64, Array2<f64>, Array2<f64>), GtoEvalError> {
+        with_blas_threads(exec.blas, || {
+            self.integrate_polarized_inner(grid, d_a, d_b, xc, exec.serial)
+        })
     }
 
     fn integrate_polarized_inner(
@@ -901,6 +1022,7 @@ impl ScreenedGrid {
         d_a: &Array2<f64>,
         d_b: &Array2<f64>,
         xc: &XcDef,
+        serial: bool,
     ) -> Result<(f64, Array2<f64>, Array2<f64>), GtoEvalError> {
         let npts = self.npts;
         assert_eq!(grid.len(), npts, "grid does not match the screened grid");
@@ -916,17 +1038,15 @@ impl ScreenedGrid {
             .any(|f| !matches!(f.family(), FunctionalFamily::Lda));
 
         // ── Pass 1.
-        let parts: Vec<(BatchDensity, BatchDensity)> = (0..self.batches.len())
-            .into_par_iter()
-            .map(|bi| -> Result<(BatchDensity, BatchDensity), GtoEvalError> {
+        let parts: Vec<(BatchDensity, BatchDensity)> =
+            map_indexed(serial, self.batches.len(), |bi| {
                 let b = &self.batches[bi];
                 let ao = self.batch_ao(bi, grid)?;
                 let nb = b.idx.len();
                 let pa = batch_density_one(&ao, &gather_sub(d_a, &b.funcs), nb, has_mgga);
                 let pb = batch_density_one(&ao, &gather_sub(d_b, &b.funcs), nb, has_mgga);
                 Ok((pa, pb))
-            })
-            .collect::<Result<Vec<_>, GtoEvalError>>()?;
+            })?;
         let mut rho_a = Array1::<f64>::zeros(npts);
         let mut rho_b = Array1::<f64>::zeros(npts);
         let mut grad_a = Array2::<f64>::zeros((3, npts));
@@ -1033,7 +1153,7 @@ impl ScreenedGrid {
             }
             fac
         };
-        let mut v = self.reduce_groups(2, |bi, accs| {
+        let mut v = self.reduce_groups(serial, 2, |bi, accs| {
             let b = &self.batches[bi];
             if b.funcs.is_empty() {
                 return Ok(());
@@ -1059,28 +1179,206 @@ mod tests {
     fn lcg_points(n: usize, seed: u64) -> Vec<[f64; 3]> {
         let mut x = seed;
         let mut next = || {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            x = x
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((x >> 11) as f64 / (1u64 << 53) as f64) * 20.0 - 10.0
         };
         (0..n).map(|_| [next(), next(), next()]).collect()
+    }
+
+    fn water_dimer_far() -> ferric_core::mol::Molecule {
+        ferric_core::mol::Molecule::parse_xyz(
+            "6\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.96\nH 0.93 0.0 -0.24\n\
+             O 9.0 0.0 0.0\nH 9.0 0.0 0.96\nH 9.93 0.0 -0.24\n",
+            0,
+            1,
+        )
+        .unwrap()
+    }
+
+    /// THE SCREENING INVARIANT, tested directly rather than through an energy
+    /// tolerance: for every batch and every shell, recompute
+    /// `max over the batch's points and the shell's functions of
+    /// max(|χ|, |∂xχ|, |∂yχ|, |∂zχ|)` with the independent dense evaluator
+    /// (`eval_basis_and_grad_on_points_unchecked`, all shells, all points of
+    /// the batch) and assert: kept ⇔ max > thresh, dropped ⇔ max <= thresh.
+    /// Exact comparison — both evaluators produce bit-identical values.
+    ///
+    /// Catches (energy tolerances cannot — measured: screening on χ only moves
+    /// E_xc by just 1.5e-13 on this fixture): screening on χ without ∇χ, on
+    /// only one gradient axis, on the wrong batch's points (e.g. a partition
+    /// index mix-up), on a subset of a shell's functions, `>=` vs `>` drift,
+    /// and a batch whose `funcs` list disagrees with its `shells` list.
+    ///
+    /// Reachability (so it cannot pass vacuously): asserts that shells ARE
+    /// dropped, and that some kept shells are significant ONLY through their
+    /// gradient (χ max <= thresh < ∇χ max) — the prototype counted 6-13 such
+    /// (batch, shell) pairs on these fixtures at 1e-10. Covers s/p (6-31G) and
+    /// pure-d (cc-pVDZ) shells.
+    #[test]
+    fn every_dropped_shell_is_below_threshold_and_every_kept_one_above() {
+        use crate::ao_grid::{collect_shells, eval_basis_and_grad_on_points_unchecked, nbasis};
+        use crate::grid::{build_atomic_grid, AtomicGridConfig};
+        let mol = water_dimer_far();
+        let cfg_grid = AtomicGridConfig {
+            n_radial: 40,
+            n_angular: 110,
+            ..Default::default()
+        };
+        let grid = build_atomic_grid(&mol, &cfg_grid);
+        for basis in ["6-31g", "cc-pvdz"] {
+            let bs = ferric_core::basis::bundled(basis).unwrap();
+            let located = collect_shells(&mol, &bs).unwrap();
+            let nbf = nbasis(&mol, &bs).unwrap();
+            let thresh = DEFAULT_SCREEN_THRESH;
+            let sg =
+                ScreenedGrid::build(&grid, owned_shells(&located), nbf, &XcBatchConfig::default())
+                    .unwrap();
+            if basis == "cc-pvdz" {
+                assert!(
+                    sg.shells.iter().any(|s| s.l == 2 && s.pure),
+                    "cc-pVDZ fixture must contain pure d shells"
+                );
+            }
+            let (mut n_dropped, mut n_grad_only, mut n_pairs) = (0usize, 0usize, 0usize);
+            for b in &sg.batches {
+                let pts: Vec<[f64; 3]> = b.idx.iter().map(|&i| grid[i as usize].xyz).collect();
+                let (chi, dchi) = eval_basis_and_grad_on_points_unchecked(&located, nbf, &pts).unwrap();
+                let mut expect_funcs = Vec::new();
+                for (si, sh) in sg.shells.iter().enumerate() {
+                    let mut m_chi = 0.0_f64;
+                    let mut m_all = 0.0_f64;
+                    for f in sh.offset..sh.offset + sh.nfunc {
+                        for g in 0..pts.len() {
+                            m_chi = m_chi.max(chi[(f, g)].abs());
+                            m_all = m_all
+                                .max(chi[(f, g)].abs())
+                                .max(dchi[(0, f, g)].abs())
+                                .max(dchi[(1, f, g)].abs())
+                                .max(dchi[(2, f, g)].abs());
+                        }
+                    }
+                    let kept = b.shells.contains(&(si as u32));
+                    n_pairs += 1;
+                    if kept {
+                        assert!(
+                            m_all > thresh,
+                            "{basis}: kept shell {si} has max {m_all:e} <= {thresh:e}"
+                        );
+                        expect_funcs.extend((sh.offset..sh.offset + sh.nfunc).map(|f| f as u32));
+                        if m_chi <= thresh {
+                            n_grad_only += 1;
+                        }
+                    } else {
+                        assert!(
+                            m_all <= thresh,
+                            "{basis}: DROPPED shell {si} (l={}) has max(|chi|,|grad chi|) \
+                             {m_all:e} > {thresh:e} (|chi| max {m_chi:e})",
+                            sh.l
+                        );
+                        n_dropped += 1;
+                    }
+                }
+                assert_eq!(b.funcs, expect_funcs, "{basis}: funcs must match the kept shells");
+            }
+            eprintln!(
+                "{basis}: {n_dropped}/{n_pairs} (batch, shell) pairs dropped, \
+                 {n_grad_only} kept only through the gradient"
+            );
+            assert!(n_dropped > 0, "{basis}: fixture must drop shells");
+            assert!(
+                n_grad_only > 0,
+                "{basis}: fixture must contain shells significant only through ∇χ, \
+                 or a χ-only screen would pass this test"
+            );
+        }
+    }
+
+    /// Catches: the serial execution mode (one-thread rayon pool, BLAS opt-in)
+    /// drifting from the parallel mode — different group boundaries, a
+    /// different batch order, or a missed batch. With BLAS at 1 thread the
+    /// two must be bit-identical (see `Exec`). Meta-GGA, UKS and closed shell,
+    /// screening on, cc-pVDZ.
+    #[test]
+    fn serial_and_parallel_execution_are_bit_identical() {
+        use crate::ao_grid::{collect_shells, nbasis};
+        use crate::grid::{build_atomic_grid, AtomicGridConfig};
+        let mol = water_dimer_far();
+        let bs = ferric_core::basis::bundled("cc-pvdz").unwrap();
+        let grid = build_atomic_grid(
+            &mol,
+            &AtomicGridConfig {
+                n_radial: 30,
+                n_angular: 50,
+                ..Default::default()
+            },
+        );
+        let located = collect_shells(&mol, &bs).unwrap();
+        let nbf = nbasis(&mol, &bs).unwrap();
+        let mut sg =
+            ScreenedGrid::build(&grid, owned_shells(&located), nbf, &XcBatchConfig::default())
+                .unwrap();
+        sg.materialize(&grid).unwrap();
+        // A symmetric, positive "density matrix": only the arithmetic path is
+        // under test here, not the physics.
+        let c = Array2::from_shape_fn((nbf, 6), |(i, j)| ((i * 7 + j * 3) % 11) as f64 * 0.05 - 0.2);
+        let d = 2.0 * c.dot(&c.t());
+        let d_b = 0.5 * &d;
+        for name in ["PBE", "SCAN"] {
+            let xc1 = crate::libxc::xc_def_from_name(name).unwrap();
+            let (e_p, v_p) = sg.integrate_closed_exec(&grid, &d, &xc1, Exec::parallel()).unwrap();
+            let (e_s, v_s) =
+                sg.integrate_closed_exec(&grid, &d, &xc1, Exec::serial_single_blas()).unwrap();
+            assert_eq!(e_p.to_bits(), e_s.to_bits(), "{name} closed E");
+            assert!(v_p.iter().zip(v_s.iter()).all(|(a, b)| a.to_bits() == b.to_bits()));
+            let xc2 = crate::libxc::xc_def_from_name_nspin(name, 2).unwrap();
+            let (e_p, a_p, b_p) = sg
+                .integrate_polarized_exec(&grid, &d, &d_b, &xc2, Exec::parallel())
+                .unwrap();
+            let (e_s, a_s, b_s) = sg
+                .integrate_polarized_exec(&grid, &d, &d_b, &xc2, Exec::serial_single_blas())
+                .unwrap();
+            assert_eq!(e_p.to_bits(), e_s.to_bits(), "{name} uks E");
+            assert!(a_p.iter().zip(a_s.iter()).all(|(a, b)| a.to_bits() == b.to_bits()));
+            assert!(b_p.iter().zip(b_s.iter()).all(|(a, b)| a.to_bits() == b.to_bits()));
+        }
     }
 
     /// Catches: a partition that drops or duplicates a point (its weight would
     /// vanish from, or double in, every integral), or a batch above the cap.
     #[test]
     fn partition_covers_every_point_exactly_once_within_the_cap() {
-        for &(n, cap) in &[(0usize, 128usize), (1, 128), (128, 128), (129, 128), (5000, 128), (5000, 37), (777, 1)] {
+        for &(n, cap) in &[
+            (0usize, 128usize),
+            (1, 128),
+            (128, 128),
+            (129, 128),
+            (5000, 128),
+            (5000, 37),
+            (777, 1),
+        ] {
             let pts = lcg_points(n, 7 + n as u64);
             let parts = partition_points(&pts, cap);
             let mut seen = vec![0u32; n];
             for p in &parts {
-                assert!(!p.is_empty() && p.len() <= cap, "batch size {} cap {cap}", p.len());
-                assert!(p.windows(2).all(|w| w[0] < w[1]), "batch indices must ascend");
+                assert!(
+                    !p.is_empty() && p.len() <= cap,
+                    "batch size {} cap {cap}",
+                    p.len()
+                );
+                assert!(
+                    p.windows(2).all(|w| w[0] < w[1]),
+                    "batch indices must ascend"
+                );
                 for &i in p {
                     seen[i as usize] += 1;
                 }
             }
-            assert!(seen.iter().all(|&c| c == 1), "n={n} cap={cap}: not a partition");
+            assert!(
+                seen.iter().all(|&c| c == 1),
+                "n={n} cap={cap}: not a partition"
+            );
         }
     }
 
@@ -1112,7 +1410,11 @@ mod tests {
         assert!(mean_diag < 13.0, "mean batch diagonal {mean_diag}");
         // Most batches should be full (the split is at multiples of the cap).
         let full = parts.iter().filter(|p| p.len() == 128).count();
-        assert!(full * 10 >= parts.len() * 8, "{full}/{} full batches", parts.len());
+        assert!(
+            full * 10 >= parts.len() * 8,
+            "{full}/{} full batches",
+            parts.len()
+        );
     }
 
     /// Catches: a thread-count- or run-dependent partition (would reorder the

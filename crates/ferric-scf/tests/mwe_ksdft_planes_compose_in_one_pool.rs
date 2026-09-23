@@ -150,7 +150,7 @@ fn a_built_three_index_source_keeps_its_charge_outstanding() {
 /// The DF sibling of this test (`a_built_three_index_source_keeps_its_charge_outstanding`)
 /// cannot see this: the two planes are charged in different crates, by
 /// different mechanisms (`ThreeIndexSource::_charge` vs
-/// `GridCache::Full::_charge`), so a lifetime test for one says nothing about
+/// `KsXc::_charge`, formerly `GridCache::Full::_charge`), so a lifetime test for one says nothing about
 /// the other. This is the test that caught mutation M4 (grid charge dropped
 /// after the Full-vs-Batched decision instead of stored beside chi/dchi),
 /// which every other test in this file survived.

@@ -1,6 +1,20 @@
 //! The grid batch width -- and therefore the SCF energy -- must NOT depend on
 //! the process's transient resident memory.
 //!
+//! # STATUS (2026-09, screened-batch XC): passes BY CONSTRUCTION
+//!
+//! `KsXc` now integrates the main grid in screened spatial batches
+//! (`ferric_dft::xc_batch`) whose boundaries are a pure function of the grid
+//! coordinates and a fixed 128-point cap; the budget only chooses whether the
+//! per-batch AO blocks stay resident or are recomputed, and those two modes
+//! are bit-identical (pinned in `ks.rs`'s `storage_tests`). So the ENERGY can
+//! no longer depend on RSS through this path at all. `batch_pts_for_test`
+//! now reports the storage mode (`None` resident, `Some(cap)` recompute); this
+//! test still checks that the MODE is RSS-independent under a pool (the pool
+//! ledger decides), which keeps memory behaviour reproducible, but it can no
+//! longer catch an energy defect. The history below describes the retired
+//! `resolve_batch_size` design and is kept as the record.
+//!
 //! # The defect
 //!
 //! `KsXc::new_with_omega_budgeted` sizes its working budget with
