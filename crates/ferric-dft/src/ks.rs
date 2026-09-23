@@ -100,31 +100,61 @@ fn nlc_cache_bytes(nbf: usize, npts_nlc: usize) -> usize {
 /// Contains "grid AO cache" so occupancy reports keep naming the plane.
 const RESIDENT_LABEL: &str = "KS-DFT grid AO cache (screened batches)";
 
-/// Decide whether the screened main-grid AO blocks are held resident.
-///
-/// `Ok(Some(guard))` = resident; the caller must keep `guard` alive for as long
-/// as the blocks are (it is the pool charge — dropping it early would credit
-/// the bytes back while the arrays are live, the double-spend the pool exists
-/// to prevent). `Ok(None)` = recompute per Fock build. `Err` = the VV10 NLC
-/// cache, which is not batchable, cannot fit even on its own.
+/// Label for the recompute-mode charge (per-Fock-build working set + NLC).
+const RECOMPUTE_LABEL: &str = "KS-DFT grid working set (screened batches, recompute)";
+
+/// Stable phrase of the warning printed when the budget forces recompute.
+/// `ferric-cli`'s budget MWE asserts on it, so keep it verbatim.
+pub const RECOMPUTE_WARNING: &str = "KS-DFT grid AO blocks recomputed every Fock build";
+
+/// Outcome of [`decide_storage`].
+#[derive(Debug)]
+struct StorageDecision {
+    /// Hold the compact AO blocks resident (else recompute per Fock build).
+    resident: bool,
+    /// Pool charge held for the evaluator's lifetime (inert without a pool,
+    /// or when a recompute-mode charge could not be covered — see below).
+    charge: Reservation,
+    /// Bytes that could NOT be charged (recompute mode only): the working set
+    /// runs anyway, because nothing smaller exists. 0 when fully charged.
+    uncharged: usize,
+}
+
+/// Decide whether the screened main-grid AO blocks are held resident, and
+/// charge the pool for what the evaluator will hold.
 ///
 /// * `resident` — bytes of the compact AO blocks.
-/// * `transient` — per-Fock-build working set on top of them (O(npts)
-///   vectors, group accumulators, per-worker scratch).
-/// * `nlc` — the NLC cache bytes when VV10 is present.
+/// * `transient` — the per-Fock-build working set (O(npts) vectors, group
+///   accumulators, per-worker scratch; `ScreenedGrid::transient_bytes`).
+/// * `nlc` — the dense VV10 NLC cache bytes when VV10 is present.
 ///
-/// # Why try_reserve, and why recompute never errors
+/// # What is charged, and for how long
 ///
-/// Recomputation is always available and needs no resident AO blocks, so an
-/// over-budget ask here takes the recompute branch instead of failing — the
-/// same contract the old Full-vs-Batched gate kept. Only the non-batchable
-/// VV10 NLC cache is a hard error.
+/// Resident: `resident + transient + nlc`. Recompute: `transient + nlc`.
+/// Either charge is held for the evaluator's whole LIFETIME, including
+/// `transient`, which is only live during `add_xc`. That is deliberate: the
+/// SCF calls `add_xc` every iteration while the DF 3-index tensor and the
+/// other planes are live, so the process peak is "everything else + this
+/// working set". Charging it only inside `add_xc` would let another plane be
+/// admitted against those bytes between iterations and collide with them on
+/// the next Fock build. The NLC cache genuinely lives for the evaluator's
+/// lifetime.
+///
+/// # Why recompute never errors
+///
+/// Recomputation needs no resident AO blocks, and its working set cannot be
+/// made smaller (the old per-point batching fallback could shrink to 1 point;
+/// this one is bounded below by the O(npts) density/kernel vectors). So an
+/// over-budget main grid takes the recompute branch; if even its working set
+/// cannot be covered, the job runs uncharged for that amount and reports it
+/// via `uncharged` (the caller warns) rather than refusing a job the old
+/// fallback would have run. Only the non-batchable VV10 NLC cache is a hard
+/// error.
 ///
 /// # Determinism
 ///
-/// The two modes are bit-identical by construction (same serial evaluator,
-/// same shapes everywhere downstream), so this decision — whatever it reads —
-/// cannot move an energy.
+/// The two modes are bit-identical by construction, so this decision —
+/// whatever it reads — cannot move an energy.
 fn decide_storage(
     storage: AoStorage,
     resident: usize,
@@ -133,10 +163,11 @@ fn decide_storage(
     budget: usize,
     nbf: usize,
     npts: usize,
-) -> Result<Option<Reservation>, KsXcError> {
+) -> Result<StorageDecision, KsXcError> {
     let nlc_bytes = nlc.unwrap_or(0);
     let has_vv10 = nlc.is_some();
-    let needed = resident.saturating_add(transient).saturating_add(nlc_bytes);
+    let lean = transient.saturating_add(nlc_bytes);
+    let needed = resident.saturating_add(lean);
     let pool = ferric_core::memory::pool::global();
 
     // The VV10 NLC cache alone must fit, whatever happens to the main grid.
@@ -163,37 +194,62 @@ fn decide_storage(
             })
         }
     };
+    // Recompute-mode charge: `transient + nlc`, or inert + `uncharged` when
+    // it cannot be covered.
+    let recompute = || -> StorageDecision {
+        let covered = match &pool {
+            Some(p) => p.try_reserve(RECOMPUTE_LABEL, lean),
+            None => (lean <= budget).then(|| Reservation::inert(RECOMPUTE_LABEL)),
+        };
+        match covered {
+            Some(charge) => StorageDecision {
+                resident: false,
+                charge,
+                uncharged: 0,
+            },
+            None => StorageDecision {
+                resident: false,
+                charge: Reservation::inert(RECOMPUTE_LABEL),
+                uncharged: lean,
+            },
+        }
+    };
 
     match storage {
         AoStorage::Recompute => {
             nlc_fits()?;
-            Ok(None)
+            Ok(recompute())
         }
         // Forced resident (tests): charge the pool when one is installed and
         // it has room, otherwise hold an inert guard — the caller asked for
         // residency explicitly, so a full pool does not veto it.
         AoStorage::Resident => {
             nlc_fits()?;
-            let guard = pool
+            let charge = pool
                 .as_ref()
                 .and_then(|p| p.try_reserve(RESIDENT_LABEL, needed))
                 .unwrap_or_else(|| Reservation::inert(RESIDENT_LABEL));
-            Ok(Some(guard))
+            Ok(StorageDecision {
+                resident: true,
+                charge,
+                uncharged: 0,
+            })
         }
         AoStorage::Auto => {
-            if let Some(p) = &pool {
-                if let Some(guard) = p.try_reserve(RESIDENT_LABEL, needed) {
-                    return Ok(Some(guard));
-                }
-                nlc_fits()?;
-                return Ok(None);
-            }
-            // No pool: the historical ceiling comparison (trivial limit).
-            if needed <= budget {
-                return Ok(Some(Reservation::inert(RESIDENT_LABEL)));
+            let fits = match &pool {
+                Some(p) => p.try_reserve(RESIDENT_LABEL, needed),
+                // No pool: the historical ceiling comparison (trivial limit).
+                None => (needed <= budget).then(|| Reservation::inert(RESIDENT_LABEL)),
+            };
+            if let Some(charge) = fits {
+                return Ok(StorageDecision {
+                    resident: true,
+                    charge,
+                    uncharged: 0,
+                });
             }
             nlc_fits()?;
-            Ok(None)
+            Ok(recompute())
         }
     }
 }
@@ -202,7 +258,7 @@ fn decide_storage(
 struct GridBuild {
     grid: Vec<GridPoint>,
     screened: ScreenedGrid,
-    charge: Option<Reservation>,
+    charge: Reservation,
     nlc_grid: Option<Vec<GridPoint>>,
     nlc_chi: Option<Array2<f64>>,
     nlc_dchi: Option<Array3<f64>>,
@@ -263,18 +319,36 @@ fn build_grids(
     };
     let nlc_bytes = nlc_grid.as_ref().map(|g| nlc_cache_bytes(nbf, g.len()));
 
-    let charge = decide_storage(
+    let resident_bytes = screened.resident_ao_bytes();
+    let decision = decide_storage(
         batch.storage,
-        screened.resident_ao_bytes(),
+        resident_bytes,
         screened.transient_bytes(is_uks),
         nlc_bytes,
         budget,
         nbf,
         grid.len(),
     )?;
-    if charge.is_some() {
+    if decision.resident {
         screened.materialize(&grid)?;
+    } else if batch.storage == AoStorage::Auto {
+        // The budget, not the caller, forced recompute: say so. Results are
+        // bit-identical to resident mode; only speed changes.
+        let extra = if decision.uncharged > 0 {
+            format!(
+                "; the {:.3} GB per-build working set also exceeds it and runs uncharged",
+                decision.uncharged as f64 / 1e9
+            )
+        } else {
+            String::new()
+        };
+        eprintln!(
+            "warning: {RECOMPUTE_WARNING} (bit-identical, slower): the screened AO blocks \
+             need {:.3} GB, which the memory budget cannot hold{extra}",
+            resident_bytes as f64 / 1e9
+        );
     }
+    let charge = decision.charge;
 
     let (nlc_chi, nlc_dchi) = if let Some(g) = nlc_grid.as_ref() {
         let p: Vec<[f64; 3]> = g.iter().map(|gp| gp.xyz).collect();
@@ -302,11 +376,12 @@ pub struct KsXc {
     pub grid: Vec<GridPoint>,
     /// Batched, screened main grid (and its resident AO blocks, if any).
     screened: ScreenedGrid,
-    /// Pool charge for the resident AO blocks, held for exactly as long as
-    /// they live. Declared AFTER `screened` so the arrays drop first. `None`
-    /// in recompute mode; inert when no pool is installed (which keeps the
+    /// Pool charge for what this evaluator holds (see `decide_storage`: the
+    /// resident AO blocks if any, the per-build working set, the NLC cache),
+    /// held for exactly its lifetime. Declared AFTER `screened` so the arrays
+    /// drop first. Inert when no pool is installed (which keeps the
     /// unbudgeted path identical).
-    _charge: Option<Reservation>,
+    _charge: Reservation,
     pub nlc_grid: Option<Vec<GridPoint>>,
     pub nlc_chi: Option<Array2<f64>>,
     pub nlc_dchi: Option<Array3<f64>>,
@@ -372,7 +447,6 @@ fn grid_working_budget(memory_budget_bytes: Option<usize>) -> usize {
         None => ferric_core::memory::available_budget_now(ceiling),
     }
 }
-
 
 impl KsXc {
     /// `Some(max points per batch)` when the screened AO blocks are
@@ -499,9 +573,10 @@ impl XcContribution for KsXc {
             .screened
             .integrate_closed(&self.grid, d, &self.xc)
             .expect(
-                "batched AO evaluation failed for a basis already evaluated on every grid \
-                 point by KsXc::new's screening pass — only a genuine per-shell error \
-                 (e.g. UnsupportedL) can fail there, and it would have failed there first",
+                "per-shell AO evaluation failed inside a Fock build, but KsXc::new already \
+                 evaluated every shell once (ScreenedGrid::build) and the only per-shell \
+                 error (UnsupportedL) depends on l alone, so the constructor would have \
+                 returned it",
             );
         *f += &vxc;
 
@@ -566,7 +641,7 @@ pub struct KsXcUks {
     /// See `KsXc::screened`.
     screened: ScreenedGrid,
     /// See `KsXc::_charge`.
-    _charge: Option<Reservation>,
+    _charge: Reservation,
     pub nlc_grid: Option<Vec<GridPoint>>,
     pub nlc_chi: Option<Array2<f64>>,
     pub nlc_dchi: Option<Array3<f64>>,
@@ -683,9 +758,10 @@ impl UksXcContribution for KsXcUks {
             .screened
             .integrate_polarized(&self.grid, d_a, d_b, &self.xc)
             .expect(
-                "batched AO evaluation failed for a basis already evaluated on every grid \
-                 point by KsXcUks::new's screening pass — only a genuine per-shell error \
-                 (e.g. UnsupportedL) can fail there, and it would have failed there first",
+                "per-shell AO evaluation failed inside a Fock build, but KsXcUks::new already \
+                 evaluated every shell once (ScreenedGrid::build) and the only per-shell \
+                 error (UnsupportedL) depends on l alone, so the constructor would have \
+                 returned it",
             );
         *f_a += &vxc_a;
         *f_b += &vxc_b;
@@ -803,7 +879,8 @@ mod storage_tests {
 
     /// Catches: a gate that refuses (Err) instead of falling back to
     /// recompute when the main grid is over budget — recompute is always
-    /// available, so only VV10 may hard-fail.
+    /// available, so only VV10 may hard-fail — and a working set that is
+    /// silently neither charged nor reported.
     #[test]
     fn over_budget_without_vv10_recomputes_instead_of_failing() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -811,25 +888,31 @@ mod storage_tests {
             return; // a pool from another test in this binary; the pool path is tested elsewhere
         }
         let r = decide_storage(AoStorage::Auto, 1_000_000, 1_000, None, 10, 24, 1000).unwrap();
-        assert!(r.is_none(), "over budget must select recompute");
+        assert!(!r.resident, "over budget must select recompute");
+        // The 1000 B working set does not fit 10 B either: reported, not refused.
+        assert_eq!(r.uncharged, 1_000);
+        let r = decide_storage(AoStorage::Auto, 1_000_000, 5, None, 10, 24, 1000).unwrap();
+        assert!(!r.resident);
+        assert_eq!(r.uncharged, 0, "a working set that fits is charged");
     }
 
     /// Catches: an over-estimating gate that refuses residency for a job that
-    /// fits (as much a bug as an under-estimating one).
+    /// fits (as much a bug as an under-estimating one), and an off-by-one at
+    /// the boundary.
     #[test]
     fn an_ample_budget_is_resident() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         if ferric_core::memory::pool::global().is_some() {
             return;
         }
-        let r = decide_storage(AoStorage::Auto, 1_000_000, 1_000, None, usize::MAX / 2, 24, 1000)
-            .unwrap();
-        assert!(r.is_some(), "ample budget must be resident");
+        let big = usize::MAX / 2;
+        let r = decide_storage(AoStorage::Auto, 1_000_000, 1_000, None, big, 24, 1000).unwrap();
+        assert!(r.resident, "ample budget must be resident");
         // Exactly at the boundary still fits (<=).
         let r = decide_storage(AoStorage::Auto, 900, 100, None, 1000, 24, 1000).unwrap();
-        assert!(r.is_some());
+        assert!(r.resident);
         let r = decide_storage(AoStorage::Auto, 901, 100, None, 1000, 24, 1000).unwrap();
-        assert!(r.is_none());
+        assert!(!r.resident);
     }
 
     /// Catches: dropping the VV10 hard error (the NLC cache is not batchable),
@@ -844,10 +927,11 @@ mod storage_tests {
             .expect_err("NLC 5000 B over a 1000 B budget must fail");
         assert!(format!("{err}").contains("VV10"), "{err}");
         // Recompute mode enforces the same NLC bar.
-        assert!(decide_storage(AoStorage::Recompute, 10, 10, Some(5_000), 1_000, 24, 1000).is_err());
+        let r = decide_storage(AoStorage::Recompute, 10, 10, Some(5_000), 1_000, 24, 1000);
+        assert!(r.is_err());
         // Main grid too big but NLC fits: recompute, no error.
-        let r = decide_storage(AoStorage::Auto, 1_000_000, 10, Some(500), 1_000, 24, 1000).unwrap();
-        assert!(r.is_none());
+        let r = decide_storage(AoStorage::Auto, 1_000_000, 10, Some(500), 1_000, 24, 1000);
+        assert!(!r.unwrap().resident);
     }
 
     /// Catches: forced modes being overridden by the budget (the anchor and
@@ -858,12 +942,10 @@ mod storage_tests {
         if ferric_core::memory::pool::global().is_some() {
             return;
         }
-        assert!(decide_storage(AoStorage::Resident, usize::MAX / 4, 0, None, 1, 24, 1000)
-            .unwrap()
-            .is_some());
-        assert!(decide_storage(AoStorage::Recompute, 1, 0, None, usize::MAX / 2, 24, 1000)
-            .unwrap()
-            .is_none());
+        let r = decide_storage(AoStorage::Resident, usize::MAX / 4, 0, None, 1, 24, 1000);
+        assert!(r.unwrap().resident);
+        let r = decide_storage(AoStorage::Recompute, 1, 0, None, usize::MAX / 2, 24, 1000);
+        assert!(!r.unwrap().resident);
     }
 
     /// Catches: a NaN threshold silently dropping every shell (E_xc = 0), and
@@ -913,7 +995,11 @@ mod storage_tests {
         clear_budget_env();
 
         if ferric_core::memory::pool::global().is_none() {
-            assert_eq!(ks_res.batch_pts_for_test(), None, "large budget must be resident");
+            assert_eq!(
+                ks_res.batch_pts_for_test(),
+                None,
+                "large budget must be resident"
+            );
             assert!(
                 ks_rec.batch_pts_for_test().is_some(),
                 "tiny budget must recompute (and must NOT fail)"
@@ -1018,7 +1104,10 @@ mod storage_tests {
         // nbf=7 · npts=8 · 4 planes · 8 B = 1792 B > ~1 KB.
         std::env::set_var(VAR, "0.000001");
         let checked = eval_basis_and_grad_on_points(&mol, &bs, &pts);
-        assert!(checked.is_err(), "sanity: tiny budget must fail the checked path");
+        assert!(
+            checked.is_err(),
+            "sanity: tiny budget must fail the checked path"
+        );
         let unchecked = eval_basis_and_grad_on_points_unchecked(&shells, nbf, &pts);
         clear_budget_env();
         assert!(unchecked.is_ok());
@@ -1090,6 +1179,18 @@ mod anchor_tests {
         .unwrap()
     }
 
+    /// Water + OH radical 9 Å apart (doublet): the open-shell twin of
+    /// `far_water_dimer`.
+    fn water_oh_far() -> Molecule {
+        Molecule::parse_xyz(
+            "5\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.96\nH 0.93 0.0 -0.24\n\
+             O 9.0 0.0 0.0\nH 9.0 0.0 0.97\n",
+            0,
+            2,
+        )
+        .unwrap()
+    }
+
     fn rhf_density(mol: &Molecule, bs: &BasisSet) -> Array2<f64> {
         let prep = PreparedBasis::new(mol, bs).unwrap();
         let op = Operator::coulomb();
@@ -1135,7 +1236,12 @@ mod anchor_tests {
     }
 
     /// Dense closed-shell reference on the SAME grid and SAME XcDef.
-    fn dense_closed(ks: &KsXc, mol: &Molecule, bs: &BasisSet, d: &Array2<f64>) -> (f64, Array2<f64>) {
+    fn dense_closed(
+        ks: &KsXc,
+        mol: &Molecule,
+        bs: &BasisSet,
+        d: &Array2<f64>,
+    ) -> (f64, Array2<f64>) {
         let (chi, dchi) = dense_chi(mol, bs, &ks.grid);
         let dens = eval_density_closed(d, &chi, &dchi);
         let tau = is_mgga(&ks.xc).then(|| eval_tau_closed(d, &dchi));
@@ -1203,7 +1309,10 @@ mod anchor_tests {
             )
             .unwrap();
             let st = ks.xc_screening_stats();
-            assert_eq!(st.active_fraction, 1.0, "{name}: anchor must keep every function");
+            assert_eq!(
+                st.active_fraction, 1.0,
+                "{name}: anchor must keep every function"
+            );
             assert!(st.nbatches > 1, "{name}: must actually batch");
             let (e_ref, v_ref) = dense_closed(&ks, &mol, &bs, &d);
             let mut f = Array2::<f64>::zeros(d.dim());
@@ -1211,8 +1320,14 @@ mod anchor_tests {
             let de = (e - e_ref).abs();
             let dv = max_abs_diff(&f, &v_ref);
             eprintln!("anchor closed {name}: E={e:.12} dE={de:.2e} max|dV|={dv:.2e}");
-            assert!(de <= ANCHOR_REL * e_ref.abs(), "{name}: E {e:.15} vs {e_ref:.15}");
-            assert!(dv <= ANCHOR_REL * max_abs(&v_ref).max(1.0), "{name}: max|dV| {dv:e}");
+            assert!(
+                de <= ANCHOR_REL * e_ref.abs(),
+                "{name}: E {e:.15} vs {e_ref:.15}"
+            );
+            assert!(
+                dv <= ANCHOR_REL * max_abs(&v_ref).max(1.0),
+                "{name}: max|dV| {dv:e}"
+            );
         }
     }
 
@@ -1249,100 +1364,155 @@ mod anchor_tests {
             let dva = max_abs_diff(&fa, &va_ref);
             let dvb = max_abs_diff(&fb, &vb_ref);
             eprintln!("anchor uks {name}: E={e:.12} dE={de:.2e} dVa={dva:.2e} dVb={dvb:.2e}");
-            assert!(de <= ANCHOR_REL * e_ref.abs(), "{name}: E {e:.15} vs {e_ref:.15}");
-            assert!(dva <= ANCHOR_REL * max_abs(&va_ref).max(1.0), "{name}: dVa {dva:e}");
-            assert!(dvb <= ANCHOR_REL * max_abs(&vb_ref).max(1.0), "{name}: dVb {dvb:e}");
+            assert!(
+                de <= ANCHOR_REL * e_ref.abs(),
+                "{name}: E {e:.15} vs {e_ref:.15}"
+            );
+            assert!(
+                dva <= ANCHOR_REL * max_abs(&va_ref).max(1.0),
+                "{name}: dVa {dva:e}"
+            );
+            assert!(
+                dvb <= ANCHOR_REL * max_abs(&vb_ref).max(1.0),
+                "{name}: dVb {dvb:e}"
+            );
             // α ≠ β here, so a swapped-spin defect cannot pass by symmetry.
-            assert!(max_abs_diff(&va_ref, &vb_ref) > 1e-3, "{name}: fixture must be spin-polarized");
+            assert!(
+                max_abs_diff(&va_ref, &vb_ref) > 1e-3,
+                "{name}: fixture must be spin-polarized"
+            );
         }
     }
 
-    /// Derived tolerance for the DEFAULT screening threshold (1e-10). The
-    /// prototype of this algorithm measured |dE_xc| <= 4e-13 and
-    /// max|dV| <= 9e-12 up to danuglipron (nbf 235); the acceptance bar is
-    /// 1e-9 Ha. E is asserted at 1e-10 (>100x the measured error, 10x under
-    /// the bar), V at 1e-9.
-    const SCREEN_TOL_E: f64 = 1e-10;
-    const SCREEN_TOL_V: f64 = 1e-9;
-
-    /// Default screening vs dense, closed shell, on a fixture where screening
-    /// genuinely removes work (asserted, so the test cannot pass vacuously).
+    /// Derived tolerance bars for the DEFAULT screening threshold (1e-10), per
+    /// basis, for PBE. MEASURED with a numpy/PySCF reimplementation of exactly
+    /// this algorithm on exactly these fixtures (40x110 Becke grid, RHF/UHF
+    /// densities, deltas vs the unscreened batched sum), |dE_xc| / max|dV|:
     ///
-    /// Catches: a screening criterion that drops significant shells (e.g.
-    /// testing only χ and not ∇χ, or comparing against the wrong batch's
-    /// points), which shows as E/V errors far above 1e-10.
+    /// ```text
+    ///                     at 1e-10 (default)    at 1e-8 (mutant)      chi-only 1e-10
+    ///   dimer   6-31G     1.1e-14 / 3.4e-14     1.4e-12 / 3.0e-12     1.5e-13 / 3.0e-13
+    ///   W+OH    6-31G     7.1e-15 / 5.3e-14     1.7e-12 / 4.7e-12     1.3e-13 / 5.0e-13
+    ///   dimer   cc-pVDZ   0       / 1.4e-13     0       / 1.2e-11     0       / 6.3e-13
+    ///   W+OH    cc-pVDZ   0       / 6.3e-13     5.3e-14 / 2.9e-11     0       / 6.5e-13
+    /// ```
+    ///
+    /// Bars sit between the default's measured error and the 1e-8 mutant's:
+    /// 6-31G E 1e-13 (9x above measured, 14x below the mutant), V 5e-13 (9x
+    /// above, 6x below); cc-pVDZ V 3e-12 (4.8x above, 4x below; E cannot
+    /// discriminate there, so it only keeps the 1e-13 sanity bar). The
+    /// dense-vs-batched summation-order noise these comparisons also carry
+    /// is ~1e-15 (anchor tests). A χ-only screening criterion is NOT
+    /// separable by any energy/V bar (see the chi-only column); it is caught
+    /// by `xc_batch::tests::every_dropped_shell_is_below_threshold_and_every_kept_one_above`.
+    /// The calibration used PySCF's radial grid, not ferric's TA-M4; if a bar
+    /// fails with the DEFAULT threshold, compare the printed values against
+    /// this table before loosening it.
+    fn pbe_screen_bars(basis: &str) -> (f64, f64) {
+        match basis {
+            "6-31g" => (1e-13, 5e-13),
+            "cc-pvdz" => (1e-13, 3e-12),
+            other => panic!("no calibrated bars for {other}"),
+        }
+    }
+
+    /// SCAN bars: coverage of the τ path under screening, NOT calibrated (the
+    /// prototype was PBE only). 1e-10 Ha / 1e-9 is the acceptance bar.
+    const SCAN_SCREEN_TOL_E: f64 = 1e-10;
+    const SCAN_SCREEN_TOL_V: f64 = 1e-9;
+
+    fn screen_bars(name: &str, basis: &str) -> (f64, f64) {
+        if name == "PBE" {
+            pbe_screen_bars(basis)
+        } else {
+            (SCAN_SCREEN_TOL_E, SCAN_SCREEN_TOL_V)
+        }
+    }
+
+    /// Default screening vs dense, closed shell, 6-31G (s/p) and cc-pVDZ
+    /// (pure d), on a fixture where screening genuinely removes work
+    /// (asserted, so the test cannot pass vacuously).
+    ///
+    /// Catches: a default threshold loosened past its measurement (1e-8 fails
+    /// the PBE V bars by 4-6x), and gross screening errors (dropping clearly
+    /// significant shells, the wrong batch's points).
     #[test]
     fn default_screening_matches_dense_within_derived_tolerance_closed_shell() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = far_water_dimer();
-        let bs = basis::bundled("6-31g").unwrap();
-        let d = rhf_density(&mol, &bs);
-        for name in ["PBE", "SCAN"] {
-            let ks = KsXc::new_with_batch_config(
-                &mol,
-                &bs,
-                name,
-                &main_grid(),
-                &nlc_grid(),
-                None,
-                None,
-                XcBatchConfig::default(),
-            )
-            .unwrap();
-            let st = ks.xc_screening_stats();
-            eprintln!("screen closed {name}: {st:?}");
-            assert!(
-                st.active_fraction < 0.9,
-                "{name}: fixture must exercise screening, active {}",
-                st.active_fraction
-            );
-            let (e_ref, v_ref) = dense_closed(&ks, &mol, &bs, &d);
-            let mut f = Array2::<f64>::zeros(d.dim());
-            let e = ks.add_xc(&d, &mut f);
-            let de = (e - e_ref).abs();
-            let dv = max_abs_diff(&f, &v_ref);
-            eprintln!("screen closed {name}: dE={de:.2e} max|dV|={dv:.2e}");
-            assert!(de <= SCREEN_TOL_E, "{name}: dE {de:e}");
-            assert!(dv <= SCREEN_TOL_V, "{name}: max|dV| {dv:e}");
+        for basis_name in ["6-31g", "cc-pvdz"] {
+            let bs = basis::bundled(basis_name).unwrap();
+            let d = rhf_density(&mol, &bs);
+            for name in ["PBE", "SCAN"] {
+                let ks = KsXc::new_with_batch_config(
+                    &mol,
+                    &bs,
+                    name,
+                    &main_grid(),
+                    &nlc_grid(),
+                    None,
+                    None,
+                    XcBatchConfig::default(),
+                )
+                .unwrap();
+                let st = ks.xc_screening_stats();
+                eprintln!("screen closed {basis_name} {name}: {st:?}");
+                assert!(
+                    st.active_fraction < 0.9,
+                    "{basis_name} {name}: fixture must exercise screening, active {}",
+                    st.active_fraction
+                );
+                let (e_ref, v_ref) = dense_closed(&ks, &mol, &bs, &d);
+                let mut f = Array2::<f64>::zeros(d.dim());
+                let e = ks.add_xc(&d, &mut f);
+                let de = (e - e_ref).abs();
+                let dv = max_abs_diff(&f, &v_ref);
+                let (tol_e, tol_v) = screen_bars(name, basis_name);
+                eprintln!("screen closed {basis_name} {name}: dE={de:.2e} max|dV|={dv:.2e}");
+                assert!(de <= tol_e, "{basis_name} {name}: dE {de:e} > {tol_e:e}");
+                assert!(dv <= tol_v, "{basis_name} {name}: max|dV| {dv:e} > {tol_v:e}");
+            }
         }
     }
 
-    /// Default screening vs dense, open shell (a far water / OH pair).
+    /// Default screening vs dense, open shell (a far water / OH pair), 6-31G
+    /// and cc-pVDZ. Same bars and catches as the closed-shell test.
     #[test]
     fn default_screening_matches_dense_within_derived_tolerance_uks() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mol = Molecule::parse_xyz(
-            "5\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.96\nH 0.93 0.0 -0.24\n\
-             O 9.0 0.0 0.0\nH 9.0 0.0 0.97\n",
-            0,
-            2,
-        )
-        .unwrap();
-        let bs = basis::bundled("6-31g").unwrap();
-        let (d_a, d_b) = uhf_densities(&mol, &bs);
-        for name in ["PBE", "SCAN"] {
-            let ks = KsXcUks::new_with_batch_config(
-                &mol,
-                &bs,
-                name,
-                &main_grid(),
-                &nlc_grid(),
-                None,
-                None,
-                XcBatchConfig::default(),
-            )
-            .unwrap();
-            let st = ks.xc_screening_stats();
-            assert!(st.active_fraction < 0.9, "{name}: active {}", st.active_fraction);
-            let (e_ref, va_ref, vb_ref) = dense_uks(&ks, &mol, &bs, &d_a, &d_b);
-            let mut fa = Array2::<f64>::zeros(d_a.dim());
-            let mut fb = Array2::<f64>::zeros(d_b.dim());
-            let e = ks.add_xc_uks(&d_a, &d_b, &mut fa, &mut fb);
-            let de = (e - e_ref).abs();
-            let dv = max_abs_diff(&fa, &va_ref).max(max_abs_diff(&fb, &vb_ref));
-            eprintln!("screen uks {name}: dE={de:.2e} max|dV|={dv:.2e}");
-            assert!(de <= SCREEN_TOL_E, "{name}: dE {de:e}");
-            assert!(dv <= SCREEN_TOL_V, "{name}: max|dV| {dv:e}");
+        let mol = water_oh_far();
+        for basis_name in ["6-31g", "cc-pvdz"] {
+            let bs = basis::bundled(basis_name).unwrap();
+            let (d_a, d_b) = uhf_densities(&mol, &bs);
+            for name in ["PBE", "SCAN"] {
+                let ks = KsXcUks::new_with_batch_config(
+                    &mol,
+                    &bs,
+                    name,
+                    &main_grid(),
+                    &nlc_grid(),
+                    None,
+                    None,
+                    XcBatchConfig::default(),
+                )
+                .unwrap();
+                let st = ks.xc_screening_stats();
+                assert!(
+                    st.active_fraction < 0.9,
+                    "{basis_name} {name}: active {}",
+                    st.active_fraction
+                );
+                let (e_ref, va_ref, vb_ref) = dense_uks(&ks, &mol, &bs, &d_a, &d_b);
+                let mut fa = Array2::<f64>::zeros(d_a.dim());
+                let mut fb = Array2::<f64>::zeros(d_b.dim());
+                let e = ks.add_xc_uks(&d_a, &d_b, &mut fa, &mut fb);
+                let de = (e - e_ref).abs();
+                let dv = max_abs_diff(&fa, &va_ref).max(max_abs_diff(&fb, &vb_ref));
+                let (tol_e, tol_v) = screen_bars(name, basis_name);
+                eprintln!("screen uks {basis_name} {name}: dE={de:.2e} max|dV|={dv:.2e}");
+                assert!(de <= tol_e, "{basis_name} {name}: dE {de:e} > {tol_e:e}");
+                assert!(dv <= tol_v, "{basis_name} {name}: max|dV| {dv:e} > {tol_v:e}");
+            }
         }
     }
 
@@ -1362,8 +1532,8 @@ mod anchor_tests {
 
     /// DETERMINISM (closed shell): bit-identical E_xc and V_xc across 1 vs 4
     /// rayon threads, in both storage modes, with screening on and a
-    /// meta-GGA (every pass-1/pass-2 code path live). Also resident vs
-    /// recompute bitwise.
+    /// meta-GGA (every pass-1/pass-2 code path live), for 6-31G and cc-pVDZ
+    /// (pure d). Also resident vs recompute bitwise.
     ///
     /// Catches: any per-thread accumulator, a group count or batch boundary
     /// that reads the thread pool, rayon `reduce`/`sum` over floats, BLAS
@@ -1372,7 +1542,8 @@ mod anchor_tests {
     fn add_xc_is_bit_identical_across_thread_counts_and_storage_modes_closed_shell() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mol = far_water_dimer();
-        let bs = basis::bundled("6-31g").unwrap();
+        for basis_name in ["6-31g", "cc-pvdz"] {
+        let bs = basis::bundled(basis_name).unwrap();
         let d = rhf_density(&mol, &bs);
         let mut results = Vec::new();
         for storage in [AoStorage::Resident, AoStorage::Recompute] {
@@ -1403,8 +1574,13 @@ mod anchor_tests {
         }
         let (n0, e0, f0) = &results[0];
         for (n, e, f) in &results[1..] {
-            assert_eq!(e0.to_bits(), e.to_bits(), "{n0} vs {n}: {e0:e} vs {e:e}");
-            assert_bits(f0, f, &format!("V {n0} vs {n}"));
+            assert_eq!(
+                e0.to_bits(),
+                e.to_bits(),
+                "{basis_name} {n0} vs {n}: {e0:e} vs {e:e}"
+            );
+            assert_bits(f0, f, &format!("{basis_name} V {n0} vs {n}"));
+        }
         }
     }
 
@@ -1412,14 +1588,9 @@ mod anchor_tests {
     #[test]
     fn add_xc_is_bit_identical_across_thread_counts_and_storage_modes_uks() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mol = Molecule::parse_xyz(
-            "5\n\nO 0.0 0.0 0.0\nH 0.0 0.0 0.96\nH 0.93 0.0 -0.24\n\
-             O 9.0 0.0 0.0\nH 9.0 0.0 0.97\n",
-            0,
-            2,
-        )
-        .unwrap();
-        let bs = basis::bundled("6-31g").unwrap();
+        let mol = water_oh_far();
+        for basis_name in ["6-31g", "cc-pvdz"] {
+        let bs = basis::bundled(basis_name).unwrap();
         let (d_a, d_b) = uhf_densities(&mol, &bs);
         let mut results = Vec::new();
         for storage in [AoStorage::Resident, AoStorage::Recompute] {
@@ -1450,9 +1621,10 @@ mod anchor_tests {
         }
         let (n0, (e0, fa0, fb0)) = &results[0];
         for (n, (e, fa, fb)) in &results[1..] {
-            assert_eq!(e0.to_bits(), e.to_bits(), "{n0} vs {n}");
-            assert_bits(fa0, fa, &format!("Va {n0} vs {n}"));
-            assert_bits(fb0, fb, &format!("Vb {n0} vs {n}"));
+            assert_eq!(e0.to_bits(), e.to_bits(), "{basis_name} {n0} vs {n}");
+            assert_bits(fa0, fa, &format!("{basis_name} Va {n0} vs {n}"));
+            assert_bits(fb0, fb, &format!("{basis_name} Vb {n0} vs {n}"));
+        }
         }
     }
 
@@ -1486,7 +1658,7 @@ mod anchor_tests {
         let mut f = Array2::<f64>::zeros(d.dim());
         let e = ks.add_xc(&d, &mut f);
         assert!(
-            (e - e_ref).abs() > 1e3 * SCREEN_TOL_E,
+            (e - e_ref).abs() > 1e-7, // 1e3x the loosest (SCAN) bar
             "thresh 1e-2 should visibly perturb E_xc: {e} vs {e_ref}"
         );
     }

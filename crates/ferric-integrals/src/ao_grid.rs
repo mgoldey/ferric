@@ -33,9 +33,9 @@ impl From<GtoEvalError> for ferric_core::error::FerricError {
 /// evaluation keeps alive at once.
 ///
 /// - `chi` alone: 1 plane.
-/// - `chi` + `dchi` (value + 3-component gradient): 1 + 3 = 4 planes — this is
-///   the formula `ks.rs`'s `check_grid_budget` has used since the SCF energy
-///   path was first guarded.
+/// - `chi` + `dchi` (value + 3-component gradient): 1 + 3 = 4 planes — the
+///   formula the dense SCF grid cache used (retired 2026-09 for the screened
+///   batches in `ferric_dft::xc_batch`) and the gradient / f_xc paths still use.
 /// - `chi` + `dchi` + `ddchi` (value + gradient + full 3×3 Hessian): 1 + 3 + 9
 ///   = 13 planes in principle, but `ddchi` is symmetric (∂²/∂a∂b = ∂²/∂b∂a) —
 ///   [`eval_basis_grad_hess_on_points`] nonetheless *materializes* the full
@@ -898,10 +898,13 @@ pub fn eval_basis_and_grad_on_points(
 /// genuine reason (`UnsupportedL`), unrelated to the memory budget — only the
 /// budget re-check is skipped, not error propagation in general.
 ///
-/// Exists for `ferric_dft::ks`'s batched V_xc fallback: `KsXc`/`KsXcUks`
-/// resolve the budget ONCE in `new()` and use it both to decide Full-vs-Batched
-/// AND to size `resolve_batch_size`'s `batch_pts` so that a batch of exactly
-/// `batch_pts` points is guaranteed to fit. `check_ao_grid_budget` resolves
+/// Written for `ferric_dft::ks`'s former batched V_xc fallback (retired
+/// 2026-09: `KsXc`/`KsXcUks` now use `ferric_dft::xc_batch`, which evaluates
+/// per-batch screened shells with [`eval_shell_and_grad`] directly), whose
+/// caller resolved the budget ONCE in `new()` and sized each batch against
+/// it; it remains the unchecked entry point for callers that did the same,
+/// and the independent dense evaluator the `xc_batch` tests compare against.
+/// `check_ao_grid_budget` resolves
 /// [`ferric_core::memory::resolve_budget_bytes`] itself — a *live* 0.8×
 /// MemAvailable reading in the auto-detect case — so calling it again from
 /// inside the per-batch loop re-reads a budget that has been shrinking as the
@@ -909,8 +912,8 @@ pub fn eval_basis_and_grad_on_points(
 /// correctly (this was the mid-run `.expect(...)` panic site before this
 /// function existed: `check_ao_grid_budget` firing on a drifted reading
 /// protects nothing once the caller has already accounted for the real
-/// budget with better information). Callers outside `ks.rs`'s batched path
-/// should use the checked [`eval_basis_and_grad_on_points`] instead.
+/// budget with better information). Callers that have not sized the call
+/// themselves should use the checked [`eval_basis_and_grad_on_points`].
 pub fn eval_basis_and_grad_on_points_unchecked(
     shells: &[LocatedShell],
     nbf: usize,

@@ -146,80 +146,56 @@ fn run_dft(tag: &str, budget_gb: &str) -> (bool, String, String) {
     )
 }
 
-/// CONTRACT 1: a starvation `budget_gb` must CHANGE the grid path.
+/// CONTRACT 1: a starvation `budget_gb` must CHANGE the grid storage mode.
 ///
-/// The observable took two attempts to get right, which is worth recording.
+/// # Observable (rewritten 2026-09 for the screened-batch XC path)
 ///
-/// My first version asserted the run must FAIL with a budget message. It does
-/// not, and should not: the KS-DFT driver has a graceful batched fallback
-/// (`GridCache::Full` -> batched, see `ks.rs`), so a tiny budget makes it
-/// reconstruct chi per batch rather than refuse. That test failed against the
-/// FIXED tree for the wrong reason — I was asserting a refusal the design
-/// deliberately avoids.
+/// `KsXc` now integrates the main grid in screened spatial batches
+/// (`ferric_dft::xc_batch`). The budget chooses only whether the per-batch AO
+/// blocks stay resident or are recomputed every Fock build, and the two modes
+/// are BIT-IDENTICAL by construction (pinned in `ks.rs`'s `storage_tests`).
+/// The energy is therefore the wrong observable: this contract used to assert
+/// that the ample and starvation energies DIFFER (the retired dense
+/// `GridCache::Full` vs batched fallback differed by ~2.5e-8 Ha); that
+/// difference is now zero on purpose, and a test that still compared energies
+/// would pass or fail for reasons unrelated to the budget.
 ///
-/// The right observable is that the budget reaches the sizing DECISION at all.
-/// `resolve_batch_size`'s own doc states the batched path is "NOT expected to
-/// be bit-identical to the `Full`-cache path", so flipping modes moves the
-/// energy — measured on water/cc-pVDZ PBE with the env vars cleared:
+/// The observable is the mode itself, which a subprocess can only see through
+/// the warning `KsXc` prints when the BUDGET (not the caller) forces
+/// recompute: `ferric_dft::ks::RECOMPUTE_WARNING`. Starvation must print it;
+/// the ample run must not (asserting both directions, so a warning printed
+/// unconditionally, or never, fails).
 ///
-/// ```text
-///   budget_gb = 8.0      -76.3335101452   Full cache
-///   budget_gb = 0.5      -76.3335101452   Full cache
-///   budget_gb = 0.05     -76.3335101452   Full cache
-///   budget_gb = 0.00001  -76.3335101204   BATCHED  (2.5e-8 Ha shift)
-/// ```
+/// # HONEST SCOPE — still does NOT distinguish the config wiring from the pool
 ///
-/// Before the fix all four were identical, because the config budget never
-/// reached the decision. That 2.5e-8 Ha is therefore the signature of the
-/// knob working, not a defect — and it is the documented, intended cost of
-/// the fallback.
-///
-/// # HONEST SCOPE — this contract does NOT yet distinguish fixed from unfixed
-///
-/// Mutation-checked and it FAILED the check: reverting `rhf.rs`'s wiring to
-/// `None` (the original defect) leaves this test GREEN. The energies still
-/// differ between the ample and starvation runs, so something other than the
-/// config budget is also moving the grid decision on this fixture — most
-/// likely the tiny budget tripping a different gate upstream of the cache. I
-/// did not isolate which, and the binary was confirmed freshly rebuilt, so
-/// this is not the stale-binary trap.
-///
-/// What IS established, by direct measurement rather than by this test: the
-/// wiring is live. With the env vars cleared, water/cc-pVDZ PBE gives
-/// -76.3335101452 at budget_gb 8.0 / 0.5 / 0.05 and -76.3335101204 at 1e-5,
-/// i.e. the config budget reaches the Full-vs-batched decision and moves the
-/// energy by the documented 2.5e-8 Ha. Before the wiring that knob was inert.
-///
-/// So treat this contract as a smoke test, not a regression guard, until
-/// someone finds a fixture where the two paths genuinely diverge — probably
-/// one large enough that auto-detect lands in Full while a modest explicit
-/// budget lands in batched.
+/// `ferric-cli` installs a memory pool sized from the same `budget_gb`, and
+/// `KsXc` sizes against the pool ledger when one is installed. So reverting
+/// `rhf.rs`'s `new_with_omega_budgeted` wiring to `None` would still leave the
+/// starvation run in recompute mode via the pool — the same limitation the
+/// original energy-based version of this test recorded after mutation-testing
+/// it. What this contract does establish is that `[memory] budget_gb` reaches
+/// the grid storage decision end to end through the CLI.
 #[test]
 fn a_starvation_config_budget_reaches_the_grid_sizing_decision() {
-    let (ample_ok, ample_out, ample_err) = run_dft("ample_ref", "8.0");
+    let (ample_ok, _ample_out, ample_err) = run_dft("ample_ref", "8.0");
     assert!(ample_ok, "reference run must succeed.\n{ample_err}");
-    let (starve_ok, starve_out, starve_err) = run_dft("starve", "0.00001");
+    let (starve_ok, _starve_out, starve_err) = run_dft("starve", "0.00001");
     assert!(
         starve_ok,
-        "a tiny budget must DEGRADE (batched grid), not fail — the driver has a graceful \
-         fallback by design.\n--- stderr ---\n{starve_err}"
+        "a tiny budget must DEGRADE (recomputed grid AO blocks), not fail — the driver has \
+         a graceful fallback by design.\n--- stderr ---\n{starve_err}"
     );
-
-    let grab = |s: &str| -> String {
-        s.lines()
-            .find(|l| l.contains("energy"))
-            .unwrap_or("<none>")
-            .trim()
-            .to_string()
-    };
-    let a = grab(&ample_out);
-    let b = grab(&starve_out);
-    assert_ne!(
-        a, b,
-        "the ample and starvation budgets produced the IDENTICAL energy ({a}), so \
-         `[memory] budget_gb` is not reaching the grid-cache sizing decision — it is being \
-         resolved from env/auto-detect instead, which is exactly the defect. (The two must \
-         differ because the batched path is documented as not bit-identical to Full.)"
+    let marker = ferric_dft::ks::RECOMPUTE_WARNING;
+    assert!(
+        starve_err.contains(marker),
+        "a 1e-5 GB `[memory] budget_gb` must force the grid AO blocks into recompute mode \
+         (warning `{marker}`), i.e. the config budget must reach the grid storage \
+         decision.\n--- stderr ---\n{starve_err}"
+    );
+    assert!(
+        !ample_err.contains(marker),
+        "an 8 GB budget must keep water/cc-pVDZ's grid AO blocks resident, yet the \
+         recompute warning was printed.\n--- stderr ---\n{ample_err}"
     );
 }
 

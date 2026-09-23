@@ -557,8 +557,11 @@ fn resolve_grad_batch_size(
 /// Test hook. A test that cannot see WHICH width production chose cannot tell
 /// a width pinned by the pool ledger from one drifting with resident memory,
 /// and the width fixes the `row_dot` accumulation order — so it is load-bearing
-/// for the gradient, exactly as `KsXc::batch_pts_for_test` is for the SCF
-/// energy. Returns `npts` when the whole grid fits, i.e. "one batch".
+/// for the gradient. (Its former SCF-energy twin, `KsXc::batch_pts_for_test`,
+/// no longer reports a width: the SCF grid's batch boundaries are now fixed by
+/// the grid alone, and that hook reports only the resident/recompute storage
+/// mode, which cannot move the energy.) Returns `npts` when the whole grid
+/// fits, i.e. "one batch".
 #[doc(hidden)]
 pub fn grad_batch_pts_for_test(nbf: usize, npts: usize, natoms: usize, is_uks: bool) -> usize {
     resolve_grad_batch_size(
