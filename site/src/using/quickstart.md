@@ -1,86 +1,131 @@
-# Quick start
+# Your first calculation
 
-Both interfaces cover most methods: a TOML-driven CLI and Python bindings.
+This page takes you from an installed `ferric` to one checked number, then shows
+where to go next. It assumes you have run `pip install ferric`
+([Installation](./installation.md)). No git clone is needed until the last
+section.
 
-> Build first — see [Installation](./installation.md). `ferric` needs libint2
-> built and on the linker path.
+We compute the Hartree–Fock energy of water in the minimal STO-3G basis. It
+takes well under a second and has a known answer, so you can tell immediately
+whether your installation is right.
 
-## CLI
+## 1. From Python
 
-Calculations are described by a TOML file. The `examples/` directory has one per
-method.
-
-```bash
-# RHF on water with STO-3G
-cargo run --release -- examples/water-rhf.toml
-
-# RI-MP2 on water with cc-pVDZ / cc-pVDZ-RI
-cargo run --release -- examples/water-rimp2.toml
-
-# Attenuated RI-MP2 (short-range correlation only, r0 = 1.05 Å)
-cargo run --release -- examples/water-attmp2.toml
-
-# SCS-MP2 (Grimme spin-component scaling)
-cargo run --release -- examples/water-scs-mp2.toml
-
-# SCS-MP2(2terfc) (dual-attenuated, Goldey/Head-Gordon 2013)
-cargo run --release -- examples/water-scs-mp2-2terfc.toml
-
-# CCSD (H2/STO-3G)
-cargo run --release -- examples/water-ccsd.toml
-
-# LinLCCD(hh) — linearized hole-hole ladder CCD (closed-shell only)
-cargo run --release -- examples/water-linlccd.toml
-
-# wB97X-L-V — a double hybrid built on LinLCCD(hh) instead of MP2
-cargo run --release -- examples/water-wb97xlv.toml
-```
-
-**CLI coverage is not complete.** Only `method.kind = "ccsd"` is wired for
-coupled cluster; **CCD and CCSD(T) are library/Python-only**. Use
-`ferric.run_ccd` / `ferric.run_ccsd_t` from Python until a CLI arm is added.
-
-## Python
+Save this as `water.py`:
 
 ```python
 import ferric
 
-mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
-bs  = ferric.BasisSet.bundled("cc-pvdz")
-aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+# XYZ format: atom count, a comment line, then symbol x y z in Ångström.
+water = ferric.Molecule.from_xyz_string("""3
+water
+O   0.000000   0.000000   0.117790
+H   0.000000   0.755453  -0.471161
+H   0.000000  -0.755453  -0.471161
+""", 0, 1)                       # charge 0, spin multiplicity 1 (singlet)
 
-# Standard RI-MP2
-mp2 = ferric.run_rimp2(mol, bs, aux)
-print(f"RI-MP2 total: {mp2.total_energy:.10f} Ha")
+basis = ferric.BasisSet.bundled("sto-3g")
+rhf = ferric.run_rhf(water, basis)
 
-# Attenuated RI-MP2 (omega in Å⁻¹)
-att = ferric.run_attenuated_rimp2(mol, bs, aux, omega=0.420)
-print(f"Att-MP2 total: {att.total_energy:.10f} Ha "
-      f"(E_OS={att.e_os:.6f}, E_SS={att.e_ss:.6f})")
-
-# SCS-MP2 (Grimme defaults)
-scs = ferric.run_scs_mp2(mol, bs, aux)
-
-# SCS-MP2(2terfc) — thesis defaults r0_1=0.75Å, r0_2=1.05Å, c_OS=1.27, c_SS=4.05
-terfc = ferric.run_scs_mp2_2terfc(mol, bs, aux)
-
-# Coupled cluster — RI-CCSD(T)
-cc = ferric.run_ccsd_t(mol, bs, aux)
-print(f"CCSD(T) total: {cc.correlation_energy + cc.t_correction:.10f} Ha")
+print(rhf.converged, f"{rhf.energy:.10f}")
 ```
 
-See [Python bindings](./python.md) for the full surface and threading notes.
-
-## Threading
-
-Set `OPENBLAS_NUM_THREADS=1` when running tests or benchmarks. `ferric` uses
-rayon for outer parallelism and pins BLAS to one thread inside rayon workers;
-letting OpenBLAS thread on top of that oversubscribes the box and can produce
-unstable timings.
+Run it:
 
 ```bash
-OPENBLAS_NUM_THREADS=1 cargo test --workspace
+OPENBLAS_NUM_THREADS=1 python water.py
 ```
 
-For throughput across many independent jobs, prefer many single-threaded
-processes over one multi-threaded job.
+You should see:
+
+```text
+True -74.9631468000
+```
+
+Two things to notice:
+
+- **Always read `converged`.** When `run_rhf` runs out of iterations it still
+  returns an energy; it sets the flag and does not raise. A number with
+  `converged == False` is not a result. See [Sharp bits](./sharp-bits.md).
+- **Energies are in Hartree.** Geometries go in as Ångström; see
+  [Sharp bits](./sharp-bits.md) for which accessors return Bohr.
+
+## 2. The same thing from the command line
+
+The wheel also installs a `ferric` command that reads a TOML input file. Save
+the three atom lines above, with their two header lines, as `water.xyz`, and
+write `water-rhf.toml` next to it:
+
+```toml
+[molecule]
+xyz = "water.xyz"      # resolved relative to the directory you run ferric from
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "rhf"
+```
+
+```bash
+OPENBLAS_NUM_THREADS=1 ferric water-rhf.toml
+```
+
+The output ends with:
+
+```text
+RHF/sto-3g on water.xyz
+  nbasis     = 7
+  iterations = 8
+  converged  = true
+  energy     = -74.9631468000 Hartree
+```
+
+Same molecule, same number. The CLI rejects any key it does not recognise, so
+a typo is an error rather than a silently ignored setting. Every key is listed
+in the [input reference](../reference/input.md).
+
+## 3. Add correlation
+
+Change one line in the TOML, or one call in Python, to go beyond Hartree–Fock.
+RI-MP2 needs an auxiliary (fitting) basis alongside the orbital basis:
+
+```python
+bs  = ferric.BasisSet.bundled("cc-pvdz")
+aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+mp2 = ferric.run_rimp2(water, bs, aux)
+print(f"RI-MP2 total energy: {mp2.total_energy:.10f} Ha")
+```
+
+```text
+RI-MP2 total energy: -76.2308014550 Ha
+```
+
+In TOML the same calculation is `kind = "rimp2"` with `auxbasis` in the `[mp2]`
+section; see [`examples/water-rimp2.toml`](https://github.com/mgoldey/ferric/blob/main/examples/water-rimp2.toml).
+
+## 4. Where to next
+
+| You want to | Go to |
+|---|---|
+| Pick a method for a chemistry question | [Choosing a method](./choosing-a-method.md) |
+| See what every method supports (open shell? gradients? CLI?) | [Capabilities](../reference/capabilities.md) |
+| Charged or open-shell molecules, geometry optimization, SMILES input | [Recipes](./recipes.md) |
+| The whole Python surface | [Python bindings](./python.md) |
+| Coming from PySCF | [For PySCF users](./pyscf-users.md) |
+| Know what to trust | [What is validated](../reference/validation.md) |
+
+### Running the bundled examples
+
+The repository has one input file per method under `examples/`, indexed in
+[Examples](../reference/examples.md). They refer to molecules under
+`testdata/`, which the wheel does not include, so run them from a clone:
+
+```bash
+git clone https://github.com/mgoldey/ferric && cd ferric
+OPENBLAS_NUM_THREADS=1 ferric examples/water-rimp2.toml
+OPENBLAS_NUM_THREADS=1 ferric examples/water-attmp2.toml   # attenuated MP2, ω = 0.420 Å⁻¹
+```
+
+If you built from source rather than installing the wheel, replace `ferric` with
+`cargo run --release --bin ferric --`.

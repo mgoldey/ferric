@@ -5,7 +5,7 @@ integrals and core, not on each other.
 
 ```text
                           +------------------+
-                          |   ferric-cli     |   TOML config -> all methods
+                          |   ferric-cli     |   TOML config -> most methods
                           +--------+---------+   (+ ferric-python: pyo3 bindings)
                                    |
    +-----------+-----------+-------+------+-----------+------------+

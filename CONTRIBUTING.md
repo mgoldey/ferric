@@ -7,7 +7,7 @@
 | Rust       | 1.75+   | stable toolchain |
 | libint2    | 2.7+    | build from the [mpqc4 tarball](https://github.com/evaleev/libint/releases) |
 | OpenBLAS   | any     | with LAPACK support (`libopenblas-dev` on Debian/Ubuntu) |
-| libxc      | 6+      | `libxc-dev` on Debian/Ubuntu |
+| libxc      | as packaged | `libxc-dev` on Debian/Ubuntu (CI builds against Ubuntu 22.04's) |
 | cmake      | 3.14+   | needed to build the vendored libecpint |
 | Python     | 3.10+   | matches `requires-python` in `pyproject.toml`; needed for `uv`, pytest, and the Python bindings |
 
@@ -49,20 +49,61 @@ OPENBLAS_NUM_THREADS=1 uv run --no-sync pytest crates/ferric-python/tests/ -q
 ```
 
 The `--no-sync` flag matters: a bare `uv run` rebuilds and reinstalls the wheel,
-replacing the site-packages symlink. See CLAUDE.md for recovery instructions.
+replacing the site-packages symlink with a copied `.so`. To restore it:
 
-Plain `uv sync` now works, for the first time: before this branch,
-`requires-python` was `>=3.9` while the `dev` extra's `ipython>=9.13.0`
-required `>=3.11`, so `uv lock`/`uv sync`/`uv run` failed for everyone,
-not just on old Python. The floor is now `>=3.10` (matching the wheel
-matrix, which never actually built for 3.9) and the `dev` extra's `ipython`
-floor is `>=8.18`, which resolves. Use it to pull in the `dev` extra's
-dependencies (numpy, scipy, pytest, ipython, ...) without touching the
-compiled extension:
+```bash
+ln -sf "$(pwd)/target/release/libferric.so" \
+  .venv/lib/python3.11/site-packages/ferric/ferric.cpython-311-x86_64-linux-gnu.so
+```
+
+Adjust the Python version in both paths to match your `.venv`.
+
+To pull in the `dev` extra (numpy, scipy, pytest, ipython, ...) without touching
+the compiled extension:
 
 ```bash
 uv sync --extra dev --no-install-project
 ```
+
+### The Python development loop
+
+```bash
+uv run maturin develop --release   # compile and install the .so into .venv
+uv run python scripts/foo.py       # later runs reuse it, no recompile
+```
+
+Always use `uv run maturin develop`, not a bare `maturin develop`. Without
+`uv run`, maturin targets whatever Python is first on `$PATH` and installs there
+instead of into the project `.venv`, and `uv run python` keeps loading the stale
+build.
+
+For zero-copy updates, replace the installed `.so` with the symlink above. It
+points at **`target/release/libferric.so`**, which a plain `cargo build
+--release -p ferric-python` refreshes. Do not symlink to
+`target/maturin/libferric.so`: only `maturin develop` writes it, so it goes
+stale, and a failed `maturin develop` can leave it truncated to 0 bytes. A later
+`uv run maturin develop` replaces the symlink with a copy; re-run `ln -sf` to
+restore it.
+
+### Documentation
+
+User documentation is the mdBook under `site/src` (table of contents:
+`site/src/SUMMARY.md`), published by `.github/workflows/docs.yml`. Build it
+locally with [mdBook 0.4.40](https://github.com/rust-lang/mdBook/releases/tag/v0.4.40),
+the version CI pins:
+
+```bash
+mdbook serve site
+```
+
+`ruff format` also formats Python code blocks inside Markdown, so run
+`uvx ruff@0.15.8 format .` after editing a page with Python examples. Every
+number on a page should be traceable to a test, an example header or a measured
+run; if it is not, leave the cell empty rather than estimating.
+
+Contributor-only analysis lives next to the book but outside its table of
+contents, for example `site/src/reference/ci-timing-analysis.md` (test sharding
+and CI timing).
 
 ## Code quality
 
@@ -165,9 +206,11 @@ principles:
 - **Too clean is a stop condition.** An exact coincidence at every system size
   is a fingerprint of arithmetic, not chemistry.
 
-The full contributor guide lives in the project wiki under `docs/guide/dev/`:
-architecture, adding a method, testing conventions, common pitfalls, and
-workflow.
+The crate layout and cross-cutting conventions (threading, determinism,
+memory, errors) are described in the book's
+[Architecture](https://matthew.thegoldeys.com/ferric/reference/architecture.html)
+page. Doc comments in the code record the reasoning behind non-obvious
+decisions, including optimizations that were tried and rejected.
 
 ## Commit and PR guidelines
 

@@ -9,13 +9,15 @@ table {
 }
 
 table thead th {
-    border-bottom: 2px solid var(--table-border-color);
+    border-bottom: 1px solid var(--table-border-color);
     font-weight: 600;
 }
 
 table td,
 table th {
     padding: 0.4rem 0.75rem;
+    /* Energies, errors and timings must line up digit for digit. */
+    font-variant-numeric: tabular-nums;
 }
 
 /* Wide tables must scroll inside their own box rather than pushing the page
@@ -50,4 +52,20 @@ blockquote {
 /* MathJax blocks sit tight against surrounding prose by default. */
 mjx-container[display="true"] {
     margin: 1rem 0 !important;
+}
+
+/* The landing page routes readers by what they need (tutorial / how-to /
+   methods / reference). Four equal boxes read faster than a paragraph. */
+.routes {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    gap: 0.75rem;
+    margin: 1.25rem 0;
+}
+
+.routes > p {
+    margin: 0;
+    padding: 0.75rem 1rem;
+    border: 1px solid var(--table-border-color);
+    border-radius: 4px;
 }

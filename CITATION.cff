@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: >-
+  If you use ferric, please cite the software and the papers for the methods
+  you ran. Per-method references are listed at
+  https://matthew.thegoldeys.com/ferric/reference/references.html
+title: "ferric: a Rust-native quantum chemistry engine"
+type: software
+authors:
+  - family-names: Goldey
+    given-names: Matthew
+repository-code: "https://github.com/mgoldey/ferric"
+url: "https://matthew.thegoldeys.com/ferric/"
+license:
+  - MIT
+  - Apache-2.0
+keywords:
+  - quantum chemistry
+  - electronic structure
+  - Rust
+  - MP2
+  - RPA
+  - GW

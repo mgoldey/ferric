@@ -1,559 +1,108 @@
 # ferric
 
-Rust-native quantum chemistry engine wrapping libint2 for electron integrals, with pyo3 Python bindings.
+A quantum chemistry engine written in Rust, with Python bindings and a
+TOML-driven command line. libint2 supplies the integrals and libxc the
+functionals.
 
-<!-- ![build](https://img.shields.io/badge/build-passing-brightgreen) ![tests](https://img.shields.io/badge/tests-passing-brightgreen) -->
+**Documentation: <https://matthew.thegoldeys.com/ferric/>**
 
-## The idea behind it
-
-`ferric` is organized around **electronic response** — how the density reacts to a
-perturbation, the object that appears as the polarizability α, the dielectric function ε,
-and the susceptibility χ. The methods here are, at heart, three faces of getting that one
-object right where standard methods get it wrong:
-
-- **Attenuated MP2** — MP2 builds dispersion from an *uncoupled* polarizability that
-  over-polarizes (too-large C₆, overestimated π-stacking); attenuating the correlation
-  operator tames that response error with a single tunable parameter.
-- **PDEP-RPA / GW** — the dielectric matrix *is* the density–density response; PDEP keeps
-  only its dominant low-rank eigenmodes, so RPA correlation and the GW screened
-  interaction need no explicit sum over empty states.
-- **Constrained DFT** — a constraint couples to the density and reads its response
-  (∂N/∂λ is a susceptibility), building charge-localized diabatic states and their
-  electron-transfer couplings.
-
-The motivating claim is that response is local in real space and low-rank in its
-eigenspectrum, so organizing around it should make the computation cheaper —
-attenuate the operator, keep the dominant dielectric modes. PDEP's low-rank
-compression of the dielectric matrix is the part of that which is actually
-demonstrated here; the real-space locality half remains a design premise, not a
-measured result (see the wiki's `VALIDATION.md` and the local-correlation notes).
-
-## Features
-
-**Self-consistent field**
-- **RHF** (closed-shell) with DIIS, Schwarz/QQR screening, and a choice of direct or density-fitted (RI-J / RI-K) Fock builds
-- **UHF / ROHF** (open-shell) with per-spin DIIS, virtual-space level shifting, augmented-Hessian Newton, and Maximum-Overlap-Method (MOM) orbital tracking for near-degenerate cases
-- **Kohn–Sham DFT** — closed- and open-shell (RKS / UKS / ROKS) via libxc: LDA/GGA/hybrid/range-separated-hybrid functionals (LDA, PBE, B3LYP, ωB97X-V) on Becke–Lebedev grids, with VV10 nonlocal correlation
-- **Analytical nuclear gradients** for RHF, UHF, ROHF and KS-DFT (incl. grid response), validated against finite differences
-
-**Correlation (MP2 family)**
-- **RI-MP2** (density-fitted) via 3-center/2-center integrals; **canonical MP2** for cross-validation
-- **OO-RI-MP2** (orbital-optimized) with level-shifted Newton, orbital DIIS, Cayley rotations, backtracking
-- **Attenuated RI-MP2** with erfc(ωr)/r and terfc operators (Goldey & Head-Gordon, JPCL 2012)
-- **SCS-MP2** (Grimme, JCP 2003) and **SCS-MP2(2terfc)** dual-attenuated (Goldey, Dutoi, Head-Gordon, PCCP 2013)
-- **RI-Laplace MP2** — AO-Laplace formulation via pseudo-density matrices. The
-  implementation is dense; it serves as the correctness reference for that
-  formulation, not as a reduced-scaling path (no O(N) has been measured)
-- **Laplace SOS-MP2** — opposite-spin-only MP2 with a Laplace-factorized
-  denominator (`c_os` scaling, minimax quadrature). MO and AO formulations agree
-  to machine precision; the AO-sparse variant is implemented but **measured
-  negative** — its truncation radius tracks the molecular diameter instead of
-  saturating, so it is not a reduced-scaling path
-- **MP3** — spin-orbital third-order Møller–Plesset via the `einsum!` framework
-- **Local MP2 (amplitude-threshold)** — WSHG23 single-threshold LMP2 with
-  localized virtuals and per-pair domain-local RI fits. Counters only: the J
-  build is still dense-from-RI, so **no scaling claim is made**
-- **MP2-V** — attenuated MP2 combined with VV10 nonlocal correlation
-
-**Coupled cluster**
-- **RI-CCD, RI-CCSD, and the perturbative triples (T)** correction — all
-  validated against exact-integral / PySCF references (H2O/cc-pVDZ (T) matches
-  PySCF to ~1e-6). See `VALIDATION.md` in the project wiki.
-- CLI: only `method.kind = "ccsd"` is currently wired (see
-  `examples/water-ccsd.toml`). **CCD and CCSD(T) are library/Python-only, not
-  yet CLI-wired** — use `ferric.run_ccd` / `ferric.run_ccsd_t` from Python (see
-  the Quick Example below) until a CLI arm is added.
-
-**Many-body response (RPA & GW)**
-- **PDEP-RPA** — RPA correlation via projective dielectric-eigenpotentials (a low-rank W basis in Gaussians), closed- and open-shell (U-PDEP-RPA over a spin-summed dielectric)
-- **GW quasiparticle energies** — G0W0, COHSEX, evGW0, evGW (and unrestricted U-GW); G0W0@HF matches MOLGW to ~5 meV
-- **Attenuated RPA** (short-range correlation via erfc)
-
-**Excited states & double hybrids**
-- **TDDFT** — linear response in both the Tamm–Dancoff approximation (TDA/CIS)
-  and the full Casida equations, closed-shell references
-- **TDHF / RPAx static polarizability** — dense A/B response with HF exchange in
-  the kernel. Static α is reasonable, but the C6 it yields stays ~60% low
-  regardless of gap, so it is a polarizability tool, not a dispersion one
-- **Double hybrids** — B2PLYP and DSD-PBEP86, and **wB97X-L-V**, which converges
-  its own KS reference and adds a short-range LinLCCD(hh) correction
-
-**Environment and embedding** — see [QM/MM](site/src/using/qmmm.md)
-- **QM/MM** — QM region selection by index, radius, or whole residue; link atoms; Z1 / RC / RCD boundary-charge schemes; Gaussian-smeared charges; Thole polarizable embedding; analytic QM and MM forces and a full-structure gradient across the cut; `optimize_qmmm`; a `[qmmm]` CLI TOML section; a TIP3P solvation droplet. Structures from PDB, mmCIF, PQR, SDF, mol2, GROMACS `.gro`, XYZ or SMILES. Validated against `pyscf.qmmm.mm_charge` (energy shift <1e-8 Ha, MM forces 3e-10); an empty MM region is bit-identical to gas phase. **No AMBER `prmtop` reader (go through OpenMM), no PBC** — the droplet is finite.
-- **ferric-mm** — AMBER-form molecular mechanics (harmonic bonds/angles, periodic torsions, Lennard-Jones, Coulomb), validated against OpenMM
-- **Implicit solvation** — IEF-PCM (`ferric-pcm`) and conductor-limit COSMO. PCM agrees with PySCF IEF-PCM to 0.3% on water/STO-3G; COSMO is ~2x off and the discrepancy is attributed to cavity discretization (see `docs/VALIDATION.md`)
-
-**Constrained DFT (electron transfer)**
-- **cDFT** — fragment charge/spin constraints via a grid-Becke weight operator and a nested Lagrange-multiplier solve (Wu–Van Voorhis)
-- **Electron-transfer coupling H_ab** — diabatic-state coupling via non-orthogonal-determinant overlap (Löwdin biorthogonalization)
-
-**Properties & ML export**
-- ESP-at-nuclei, electric field, static and atom-partitioned polarizabilities, Hirshfeld and Löwdin charges, density matrices
-- **NPZ export** of ML-ready features (MO coefficients, orbital energies, PDEP eigenvectors, ESP, polarizability tensors, charges) for downstream generative-model conditioning
-
-**Infrastructure**
-- **QQR screening** (Maurer/Lambrecht/Ochsenfeld 2012) and **LinK exchange** (Ochsenfeld/White/Head-Gordon 1998) for the Fock build
-- **Spherical and Cartesian** basis support (BSE-JSON and Gaussian-94 parsers); bundled orbital bases (STO-3G, 6-31G, cc-pVDZ, def2-SVP) + RI/JK auxiliary bases (cc-pVDZ-RI, def2-\*-RIFIT, def2-universal-jkfit)
-- **Python bindings** (pyo3) and a **TOML-driven CLI** for all methods
-
-## Quick Example
-
-### CLI
+## Install
 
 ```bash
-# RHF on water with STO-3G
-cargo run --release -- examples/water-rhf.toml
-
-# RI-MP2 on water with cc-pVDZ / cc-pVDZ-RI
-cargo run --release -- examples/water-rimp2.toml
-
-# Attenuated RI-MP2 (short-range correlation only, r0=1.05 A)
-cargo run --release -- examples/water-attmp2.toml
-
-# SCS-MP2 (Grimme spin-component scaling)
-cargo run --release -- examples/water-scs-mp2.toml
-
-# SCS-MP2(2terfc) (dual-attenuated, Goldey/Head-Gordon 2013)
-cargo run --release -- examples/water-scs-mp2-2terfc.toml
-
-# CCSD (H2/STO-3G; CCD and CCSD(T) are not yet CLI-wired, use Python)
-cargo run --release -- examples/water-ccsd.toml
-
-# LinLCCD(hh) -- linearized hole-hole ladder CCD (closed-shell only)
-cargo run --release -- examples/water-linlccd.toml
-
-# wB97X-L-V -- double hybrid built on LinLCCD(hh) instead of MP2.
-# Converges its own wB97X-L-V KS reference, then adds the short-range
-# LinLCCD(hh) correction. [dft] lambda/omega override the published
-# 0.6 / 0.1 Bohr^-1; omitting them gives the published values.
-cargo run --release -- examples/water-wb97xlv.toml
+pip install ferric      # Linux x86_64, CPython 3.10–3.13
 ```
 
-### Python
+The wheel needs no compiler. To change ferric itself or to use MPI, build from
+source; see [Installation](https://matthew.thegoldeys.com/ferric/using/installation.html).
+
+## A first calculation
 
 ```python
 import ferric
 
-mol = ferric.Molecule.from_xyz("testdata/molecules/water.xyz")
-bs  = ferric.BasisSet.bundled("cc-pvdz")
-aux = ferric.BasisSet.bundled("cc-pvdz-ri")
+water = ferric.Molecule.from_xyz_string(
+    """3
+water
+O   0.000000   0.000000   0.117790
+H   0.000000   0.755453  -0.471161
+H   0.000000  -0.755453  -0.471161
+""",
+    0,
+    1,
+)  # charge, multiplicity
 
-# Standard RI-MP2
-mp2 = ferric.run_rimp2(mol, bs, aux)
-print(f"RI-MP2 total: {mp2.total_energy:.10f} Ha")
-
-# Attenuated RI-MP2 (omega in Å⁻¹)
-att = ferric.run_attenuated_rimp2(mol, bs, aux, omega=0.420)
-print(f"Att-MP2 total: {att.total_energy:.10f} Ha (E_OS={att.e_os:.6f}, E_SS={att.e_ss:.6f})")
-
-# SCS-MP2 (Grimme defaults)
-scs = ferric.run_scs_mp2(mol, bs, aux)
-print(f"SCS-MP2 total: {scs.total_energy:.10f} Ha")
-
-# SCS-MP2(2terfc) (thesis defaults: r0_1=0.75A, r0_2=1.05A, c_OS=1.27, c_SS=4.05)
-terfc = ferric.run_scs_mp2_2terfc(mol, bs, aux)
-print(f"SCS-MP2(2terfc) total: {terfc.total_energy:.10f} Ha")
-
-# Coupled Cluster — RI-CCSD(T) (validated vs exact-integral / PySCF refs).
-cc = ferric.run_ccsd_t(mol, bs, aux)
-print(f"CCSD correlation: {cc.correlation_energy:.10f} Ha")
-print(f"(T) correction:   {cc.t_correction:.10f} Ha")
-print(f"CCSD(T) total:    {cc.correlation_energy + cc.t_correction:.10f} Ha")
+rhf = ferric.run_rhf(water, ferric.BasisSet.bundled("sto-3g"))
+print(rhf.converged, f"{rhf.energy:.10f}")  # True -74.9631468000
 ```
 
-## Tutorials
+The same calculation from the command line (`ferric` is installed with the
+wheel):
 
-Step-by-step, runnable walkthroughs (CLI + Python, with verified output and
-per-method maturity badges) live in the project wiki's tutorials section:
+```toml
+# water-rhf.toml
+[molecule]
+xyz = "water.xyz"
 
-1. Your first calculation: RHF on water
-2. Energies you can trust: the MP2 family
-3. DFT calculations
-4. Open-shell systems
-5. Geometry optimization
-6. Dispersion C6 and polarizabilities
-7. Exporting ML features (NPZ)
-8. Batches and scaling
+[basis]
+name = "sto-3g"
 
-For the **theory behind the methods** — Hartree–Fock, MP2/RI, why MP2 fails for
-non-covalent interactions, attenuated MP2 and the terfc operator,
-SCS-MP2(2terfc), and the DFT/RPA/GW response methods (drawing on the developer's
-dissertation) — see the methods guide in the project wiki.
-
-> **Note:** comments in the source tree cite design notes and validation
-> reports by `docs/<name>.md` paths. Those documents live in the project wiki
-> (the `docs/` directory was moved out of the repo); look up the same filename
-> there.
-
-## Architecture
-
+[method]
+kind = "rhf"
 ```
-                          +------------------+
-                          |   ferric-cli     |   TOML config -> all methods
-                          +--------+---------+   (+ ferric-python: pyo3 bindings)
-                                   |
-   +-----------+-----------+-------+------+-----------+------------+
-   |           |           |              |           |            |
-+--v----+ +----v----+ +----v----+   +-----v----+ +----v-----+ +---v------+
-|ferric | |ferric   | |ferric   |   |ferric    | |ferric    | |ferric    |
-|-scf   | |-mp2     | |-dft     |   |-rpa      | |-gw       | |-cc       |
-|RHF/UHF| |RI-MP2,  | |RKS/UKS/ |   |PDEP-RPA, | |G0W0,     | |CCD/CCSD/ |
-|/ROHF, | |OO,att,  | |ROKS,    |   |U-PDEP,   | |COHSEX,   | |(T)       |
-|KS-DFT,| |SCS,     | |libxc,   |   |response  | |evGW,     | +----------+
-|DIIS,  | |2terfc,  | |Becke    |   |props,    | |U-GW      |
-|MOM,AH,| |Laplace  | |grids,   |   |ESP/Hirsh/| +-----+----+
-|cDFT,  | +----+----+ |VV10     |   |NPZ export|       |
-|grads  |      |      +----+----+   +-----+----+       |
-+---+---+      |           |              |            |
-    |          +-----+-----+------+-------+------------+
-    |                |     |      |
-    |   +------------v--+ +v------v-----+   ferric-tensors (sparse), 
-    |   |ferric-export | |ferric-      |   ferric-quadrature (Laplace/grid roots)
-    |   |cube,NPZ,GTO  | |integrals    |   support crates
-    |   +--------------+ |libint2 FFI  |
-    |                    |shim/shim.cc |   Coulomb/erf/erfc, 1e/2e/3c/2c, derivs
-    +--------+-----------+------+------+
-             |                  |
-        +----v------------------v----+
-        |        ferric-core         |   Molecule, BasisSet, Shell, elements,
-        |                            |   BSE-JSON / G94 parsers, bundled bases
-        +----------------------------+
-```
-
-## Installation
-
-### Prerequisites
-
-- Rust 1.75+ (install via [rustup](https://rustup.rs/))
-- libint2 2.7+ built from the [mpqc4 tarball](https://github.com/evaleev/libint/releases/download/v2.7.2/libint-2.7.2-mpqc4.tgz).
-
-  Note what that prebuilt export does and does not carry — these are fixed when
-  the tarball is *generated*, so no `cmake` flag changes them (`compiler.config`
-  in the tarball records the exact settings):
-
-  | Capability | mpqc4 export | Needed for |
-  |---|---|---|
-  | 1st derivatives (`--enable-eri=1`, `--enable-1body=1`) | yes | analytical **gradients**, geometry optimization |
-  | RI / 3- and 2-center ERI (`--enable-eri3=1`, `--enable-eri2=1`) | yes | RI-MP2, RPA, GW |
-  | 2nd derivatives (`--enable-eri=2`) | **no** | analytical **Hessians** / frequencies |
-  | G12 geminal (`INCLUDE_G12`) | **no** | F12 / geminal integrals |
-
-  Building against this tarball is correct for everything ferric currently
-  validates. The G12-dependent tests detect its absence at run time and skip
-  with an explicit message rather than failing. To get either missing
-  capability you must re-generate libint2 from the upstream source repo with
-  the corresponding `--enable-*` flags, which is a substantially longer build.
-- OpenBLAS and LAPACK
-- Eigen3 headers
-- Python 3.10+ and maturin (for Python bindings, optional)
-- For the optional `mpi` feature only: an MPI implementation (OpenMPI/MPICH) **and**
-  libclang (`libclang-dev`, for `mpi-sys`'s bindgen step) — see
-  [Optional: distributed-memory MPI](#optional-distributed-memory-mpi---features-mpi) below
-
-### Building from Source
 
 ```bash
-# Install system dependencies (Ubuntu 22.04+)
-sudo apt-get install -y build-essential cmake g++ gfortran wget \
-    libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-    python3-dev python3-pip python3-venv
+OPENBLAS_NUM_THREADS=1 ferric water-rhf.toml
+```
 
-# Build and install libint2 (takes ~30 min)
-wget https://github.com/evaleev/libint/releases/download/v2.7.2/libint-2.7.2-mpqc4.tgz
-tar xzf libint-2.7.2-mpqc4.tgz
-cd libint-2.7.2-mpqc4
-mkdir build && cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=$HOME/.local -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-make -j$(nproc)
-make install
-cd ../..
+Continue with [Your first calculation](https://matthew.thegoldeys.com/ferric/using/quickstart.html)
+and the [Sharp bits](https://matthew.thegoldeys.com/ferric/using/sharp-bits.html).
 
-# Build ferric
+## What it does
+
+| Family | Examples | Page |
+|---|---|---|
+| SCF and DFT | RHF/UHF/ROHF, RKS/UKS/ROKS via libxc (LDA to meta-GGA, range-separated hybrids, VV10, D3(BJ)), analytic gradients, optimization, finite-difference frequencies, PCM/COSMO solvation | [SCF and DFT](https://matthew.thegoldeys.com/ferric/methods/scf.html) |
+| MP2 family | RI-MP2, attenuated MP2, SCS-MP2 and SCS-MP2(2terfc), OO-MP2, Laplace and SOS-MP2, MP3, local MP2, MP2-V | [The MP2 family](https://matthew.thegoldeys.com/ferric/methods/mp2.html) |
+| Coupled cluster | CCD, CCSD, CCSD(T), LinLCCD, double hybrids | [Coupled cluster](https://matthew.thegoldeys.com/ferric/methods/cc.html) |
+| Response | PDEP-RPA, GW (G0W0, COHSEX, evGW), BSE-TDA, TDDFT/TDA, polarizabilities and C6 | [RPA and GW](https://matthew.thegoldeys.com/ferric/methods/rpa-gw.html) |
+| Constrained DFT | charge/spin constraints, electron-transfer couplings | [Constrained DFT](https://matthew.thegoldeys.com/ferric/methods/cdft.html) |
+| Embedding | QM/MM with link atoms, smeared and polarizable charges | [QM/MM](https://matthew.thegoldeys.com/ferric/using/qmmm.html) |
+
+Which of these run from the CLI, which are Python-only, and which support open
+shells or gradients is tabulated in
+[Capabilities](https://matthew.thegoldeys.com/ferric/reference/capabilities.html).
+
+> **Implemented ≠ validated.** Working code is not a checked number. Each
+> capability is graded (Proven / Smoke / Spike) against independent references
+> in [What is validated](https://matthew.thegoldeys.com/ferric/reference/validation.html).
+> Read it before relying on a result.
+
+## Why it exists
+
+ferric is organized around **electronic response**: how the density reacts to a
+perturbation, the object behind polarizabilities, dielectric screening and
+dispersion. Attenuated MP2, PDEP-RPA/GW and constrained DFT are three ways of
+getting that object right where standard methods get it wrong. See
+[Electronic response](https://matthew.thegoldeys.com/ferric/idea/response.html).
+
+## Building from source and contributing
+
+```bash
+git clone https://github.com/mgoldey/ferric && cd ferric
+# libint2 first: see the Installation page (about 30 minutes)
 cargo build --release
-
-# Run tests
-cargo test --workspace
-```
-
-### Debug vs. Release builds
-
-```bash
-# Debug build (fast to compile, slow to run) -- for iterating on Rust code
-# and catching debug_assert!/overflow bugs during development
-cargo build --workspace
-cargo run -- examples/water-rhf.toml
-
-# Release build (slow to compile, fast to run) -- for anything you'll
-# actually wait on: real molecules, benchmarks, RPA/GW/CC jobs
-cargo build --release --workspace
-cargo run --release -- examples/water-rhf.toml
-```
-
-A debug SCF/RPA/GW run can be one to two orders of magnitude slower than
-release (no LTO/opt, plus active overflow and `debug_assert!` checks) --
-debug builds are for compile-edit-test loops on small systems (H2/STO-3G,
-water), not for anything you'd want a real energy from. `cargo test
---workspace` runs against debug builds by default; add `--release` if a slow
-test needs it. Always set `OPENBLAS_NUM_THREADS=1` for both build kinds when
-running tests or jobs (see [Testing](#testing) below) -- BLAS>1 under this
-crate's rayon parallelism is known to segfault or slow down significantly.
-
-### Optional: distributed-memory MPI (`--features mpi`)
-
-MPI support (distributed DF-JK aux-band striping across ranks/nodes) is behind
-the optional `mpi` Cargo feature and is **off by default** — a normal build
-needs none of the packages below.
-
-To build `--features mpi` you need **two** things:
-
-1. **An MPI implementation** (OpenMPI or MPICH) providing `mpicc`, `mpirun`,
-   `mpi.h`, and `libmpi.so`. On Ubuntu/Mint:
-   ```bash
-   sudo apt-get install -y libopenmpi-dev openmpi-bin
-   ```
-   (A user-local OpenMPI on `PATH` works too — `rsmpi`/`mpi-sys` discovers it via
-   `mpicc`.)
-
-2. **libclang** — the `mpi-sys` crate runs `bindgen` over `mpi.h` at build time,
-   which needs libclang's shared library. **This is the piece most often
-   missing** (the MPI runtime can be present while libclang is not, giving
-   `Unable to find libclang` from the `mpi-sys` build script). Prefer the distro
-   package — it ships both the library and clang's builtin headers:
-   ```bash
-   sudo apt-get install -y libclang-dev
-   ```
-   If bindgen still can't find the library, point it at it explicitly:
-   ```bash
-   export LIBCLANG_PATH=$(dirname "$(find /usr/lib -name 'libclang.so*' | head -1)")
-   ```
-   *No sudo?* The `pip install --user libclang` wheel provides `libclang.so`, but
-   it does **not** bundle clang's builtin headers, so bindgen then fails with
-   `'stddef.h' file not found`. Point it at GCC's builtin headers to fix that:
-   ```bash
-   pip install --user libclang
-   export LIBCLANG_PATH="$(python3 -c 'import clang,os;print(os.path.join(os.path.dirname(clang.__file__),"native"))')"
-   export BINDGEN_EXTRA_CLANG_ARGS="-I$(dirname "$(find /usr/lib/gcc -name stddef.h | head -1)")"
-   ```
-
-Then build and run under `mpirun` (keep OpenBLAS single-threaded; see
-the MPI notes (`mpi.md`) in the project wiki for thread-layout guidance):
-
-```bash
-OPENBLAS_NUM_THREADS=1 cargo build --release --workspace --features mpi
-mpirun -np 4 -x OPENBLAS_NUM_THREADS=1 -x RAYON_NUM_THREADS=4 \
-    target/release/ferric input.toml
-```
-
-**A user-local (non-system) OpenMPI install needs `LD_LIBRARY_PATH`**, or the
-built binary fails at launch with `error while loading shared libraries:
-libmpi.so.40: cannot open shared object file` even though it linked and
-compiled fine (the linker found `libmpi.so` via `mpicc`'s search path at
-build time; the dynamic loader does not use that same path at run time). If
-`mpirun`/`mpicc` resolve to a path under your home directory (e.g.
-`~/.local/bin/mpirun`, check with `which mpirun`) rather than
-`/usr/bin/mpirun`, set:
-```bash
-export LD_LIBRARY_PATH="$HOME/.local/lib:$LD_LIBRARY_PATH"
-```
-before running `mpirun` (both for `target/release/ferric` and for any
-`--features mpi`-gated test binary launched directly, e.g.
-`mpi_dfjk_banding`). Not needed for a distro-packaged
-`/usr/lib/.../libopenmpi` install, where the loader already knows the path.
-
-#### Installing the prebuilt MPI wheel (`ferric-mpi`)
-
-Everything above builds from source. There is also a prebuilt wheel that skips
-the ~30 min libint2 build, published as a **separate distribution** named
-`ferric-mpi` (the import name stays `ferric`):
-
-```bash
-# Requires a system OpenMPI 4.x -- see below. Install it FIRST.
-sudo apt-get install -y libopenmpi-dev openmpi-bin   # Debian/Ubuntu/Mint
-# sudo dnf install -y openmpi                        # RHEL/Alma/Rocky/Fedora
-#
-# Only the runtime (libmpi.so.40 + mpirun) is needed, not the headers, but the
-# runtime package's name moves between releases -- Ubuntu 24.04 calls it
-# `libopenmpi3t64`, earlier ones `libopenmpi3`. `libopenmpi-dev` pulls the
-# right one in on every release, and is what you need anyway if you also build
-# from source, so it is the safe thing to name here.
-
-pip install ferric-mpi
-mpirun -np 4 -x OPENBLAS_NUM_THREADS=1 ferric examples/water-rhf.toml
-```
-
-`ferric-mpi` and the portable `ferric` wheel both own the `ferric/` import
-package — install **one or the other** into an environment, never both.
-
-> **Use the DF/RI-JK path for any run with `-np` > 1.** The exact 4-index J/K
-> path is currently **silently wrong** at two or more ranks — it does not error,
-> it returns a converged-looking wrong number. Measured 2026-09-16 (OpenMPI
-> 4.1.6, water/STO-3G): `-np 1` gives `-74.9631468000 Ha, converged=true`, while
-> `-np 2` gives `+156.3238081949 Ha, converged=false`. Setting `df_j_aux` and
-> `df_k_aux` in `[scf]` selects the DF path, which is correct and rank-invariant
-> (water/cc-pVDZ RI-JK: `-76.0278457869 Ha` at `-np 1` and bit-identically on
-> both ranks at `-np 2`). This is a library bug, not a packaging one — a native
-> `cargo build --features mpi` binary reproduces it exactly.
-
-**The CLI is the supported MPI entry point. The Python API is not.**
-`pip install` puts a `ferric` executable on `PATH`, and it runs the full CLI
-inside the same extension module, so `mpirun -np N ferric input.toml` runs one
-rank per process with MPI initialized from that shared library. That works
-because the CLI is SPMD by design and already handles rank-aware output.
-
-Running `mpirun -np N python your_script.py` is **not supported**: the bindings
-expose no rank or world-size accessor, so `if rank == 0` cannot be written.
-Every rank executes the whole script, prints its output N times, and races the
-other ranks writing the same output files. Use the CLI, or drive ferric from a
-single-rank process.
-
-**A system OpenMPI 4.x is required — the wheel bundles no MPI at all.** The
-extension is linked against soname `libmpi.so.40` and resolves it from the
-system at load time. Without one, both entry points fail at import with:
-
-```
-ImportError: libmpi.so.40: cannot open shared object file: No such file or directory
-```
-
-MPICH and Intel MPI will **not** work: their soname is `libmpi.so.12` and the
-ABI is incompatible with OpenMPI's, so neither satisfies that link.
-
-This is deliberate, not an oversight. Vendoring an MPI runtime into a wheel is
-a documented dead end — `auditwheel` copies only `DT_NEEDED` libraries, never
-OpenMPI's `dlopen`'d MCA component plugins and never the `orted` launcher
-binary, so a self-contained MPI wheel fails at startup (or, worse, silently
-runs with a zero-filled `MPI_COMM_WORLD` when two libmpi images end up in one
-process). Linking the system MPI is what mpi4py and NWChemEx/ParallelZone both
-settled on, and it is also what lets a cluster's own hardware-optimized OpenMPI
-and its own `mpirun` drive the library.
-
-### Python Bindings
-
-```bash
-# Set up the venv and install the extension in editable/develop mode
-uv sync
-uv run maturin develop --release
-
-# Verify
-uv run python -c "import ferric; print('OK')"
-```
-
-After `maturin develop`, the compiled `.so` is installed into `.venv/`. The `pyproject.toml` sets `[tool.uv] no-build-isolation-package = ["ferric"]` so that `uv run` skips re-invoking cargo and uses the existing `.so`.
-
-**Important:** always use `uv run maturin develop --release`, not bare `maturin develop`. Without `uv run`, maturin targets whatever Python is on `$PATH` (e.g. pyenv's) and installs the `.so` into that Python's site-packages instead of the project `.venv`. The two copies are unrelated, so `uv run python` will keep loading the stale build.
-
-**Normal dev loop:**
-```bash
-uv run maturin develop --release   # recompile and install .so into .venv
-uv run python scripts/foo.py       # fast on subsequent runs — no recompile
-```
-
-**Optional: symlink for zero-copy updates**
-
-If you want `cargo build --release` alone to update what Python sees (without running `maturin develop`), replace the installed `.so` with a symlink to **`target/release/libferric.so`** — the artifact `cargo build` actually refreshes:
-
-```bash
-ln -sf "$(pwd)/target/release/libferric.so" \
-  .venv/lib/python3.11/site-packages/ferric/ferric.cpython-311-x86_64-linux-gnu.so
-```
-
-With this symlink, `cargo build --release` is sufficient — the `.so` in `.venv` always reflects the latest build.
-
-> **Do not symlink to `target/maturin/libferric.so`.** That directory is only
-> written by `maturin develop`, *not* by `cargo build`, so a symlink there goes
-> stale after a plain `cargo build` — and if a `maturin develop` run fails, the
-> file there can be truncated to 0 bytes, breaking the import. Symlink to
-> `target/release/` instead.
-
-Note: `uv run maturin develop --release` overwrites the symlink with a fresh copy of the build; re-run the `ln -sf` above to restore the symlink if you want zero-copy updates again.
-
-## Testing
-
-```bash
-# All workspace tests (OPENBLAS_NUM_THREADS=1 -- see note above)
+OPENBLAS_NUM_THREADS=1 ./target/release/ferric examples/water-rhf.toml
 OPENBLAS_NUM_THREADS=1 cargo test --workspace
-
-# Specific crate
-OPENBLAS_NUM_THREADS=1 cargo test -p ferric-scf
-
-# With output (shows energies and convergence info)
-OPENBLAS_NUM_THREADS=1 cargo test --workspace -- --nocapture
 ```
 
-Reference energies validated against PySCF to at least 1e-8 Hartree:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development loop, the Python
+binding tests and the push gate.
 
-| System | Basis | Method | Energy (Ha) |
-|--------|-------|--------|-------------|
-| H2O | STO-3G | RHF | -74.9631468000 |
-| H2O | cc-pVDZ | RI-MP2 | -76.2308014548 |
-| H2O | cc-pVDZ | Att-RI-MP2 (r₀=1.05Å) | -76.2102635714 |
-| H2O | cc-pVDZ | SCS-MP2 | -76.2268940016 |
-| H2O | cc-pVDZ | SCS-MP2(2terfc) | -76.2151715715 |
-| CH4 | cc-pVDZ | RHF | -40.1987085425 |
+## Citing
 
-## Project Structure
-
-```
-ferric/
-  Cargo.toml                    # Workspace root
-  crates/
-    ferric-core/                # Molecule, BasisSet, elements, parsers
-      src/basis/bundled/        # Embedded BSE-JSON basis set files (orbital + RI/JK aux)
-    ferric-integrals/           # libint2 FFI: 1e, 2e, 3-center, 2-center, derivatives
-      shim/shim.{h,cc}         # C++ shim calling libint2 API
-    ferric-scf/                 # RHF/UHF/ROHF + KS-DFT solvers, DIIS, MOM, AH-Newton,
-                                #   Fock builds (direct/DF), gradients, QQR, LinK, cDFT
-    ferric-dft/                 # libxc bridge, Becke-Lebedev grids, Vxc, VV10, cDFT weights
-    ferric-mp2/                 # RI-MP2, OO-RI-MP2, attenuated, SCS, canonical, Laplace
-    ferric-cc/                  # RI-CCD, RI-CCSD, CCSD(T) perturbative triples
-    ferric-rpa/                 # PDEP-RPA (closed/open-shell), response properties,
-                                #   ESP / Hirshfeld / Löwdin / polarizability
-    ferric-gw/                  # G0W0, COHSEX, evGW0, evGW, U-GW (PDEP-as-W)
-    ferric-tensors/             # Sparse tensor + einsum! support
-    ferric-quadrature/          # Laplace / grid quadrature roots and weights
-    ferric-export/              # Cube files, NPZ ML-feature export, GTO grid eval
-    ferric-cli/                 # TOML-driven command-line driver
-    ferric-python/              # pyo3 Python bindings
-  testdata/
-    molecules/                  # XYZ files (water, methane, ...)
-    reference/                  # PySCF/MOLGW reference values (JSON)
-  examples/                     # TOML input files
-```
-
-## Status
-
-> **Implemented ≠ validated.** Working code is not a checked number. For how
-> strongly each capability's *numbers* are checked against ground truth — and
-> where they are known to fail — see `VALIDATION.md` in the project wiki. That
-> document, not this one, is the authority on what you can trust.
-
-Broadly, `ferric` covers ground-state SCF (RHF/UHF/ROHF and KS-DFT via libxc),
-the MP2 family (RI, attenuated, SCS, orbital-optimized, Laplace), coupled
-cluster (CCD/CCSD/CCSD(T)), RPA and GW, constrained DFT, and analytical
-gradients for much of the above. Python bindings and a TOML-driven CLI expose
-most of it; `CLAUDE.md` carries a per-module index.
-
-Capability maturity varies a lot between those, and the wiki's `VALIDATION.md`
-grades each one (proven / smoke / stub) rather than presenting them as a flat
-list of equals.
-
-## References
-
-- [libint2](https://github.com/evaleev/libint) -- Obara-Saika integral engine
-- [pyo3](https://pyo3.rs/) -- Rust/Python interop
-- [ndarray](https://docs.rs/ndarray) -- N-dimensional arrays for Rust
-- [ndarray-linalg](https://docs.rs/ndarray-linalg) -- LAPACK bindings for ndarray
-- Szabo & Ostlund, *Modern Quantum Chemistry* (1996)
-- Pulay, Chem. Phys. Lett. 73, 393 (1980) -- DIIS convergence acceleration
-- Weigend, Phys. Chem. Chem. Phys. 4, 4285 (2002) -- RI-MP2 auxiliary basis sets
-- Bozkaya & Sherrill, J. Chem. Phys. 135, 104103 (2011) -- Orbital-optimized MP2
-- Goldey & Head-Gordon, J. Phys. Chem. Lett. 3, 3592 (2012) -- Attenuated MP2
-- Goldey, Dutoi, Head-Gordon, Phys. Chem. Chem. Phys. 15, 15869 (2013) -- SCS-MP2(2terfc)
-- Grimme, J. Chem. Phys. 118, 9095 (2003) -- SCS-MP2
-- Maurer, Lambrecht, Ochsenfeld, J. Chem. Phys. 136, 144107 (2012) -- QQR screening
-- Ochsenfeld, White, Head-Gordon, J. Chem. Phys. 109, 1663 (1998) -- LinK exchange
-- Bartlett & Musiał, Rev. Mod. Phys. 79, 291 (2007) -- Coupled-cluster theory
-- Scuseria, Janssen, Schaefer, J. Chem. Phys. 89, 7382 (1988) -- CCSD methods
-- Raghavachari et al., Chem. Phys. Lett. 157, 479 (1989) -- CCSD(T) triples correction
+If you use ferric, cite the software (see [CITATION.cff](CITATION.cff)) and the
+papers for the methods you ran, listed in
+[References and citing](https://matthew.thegoldeys.com/ferric/reference/references.html).
 
 ## License
 
@@ -570,10 +119,10 @@ at your option.
 (MIT, Copyright (c) 2021 Robert A. Shaw); its license is retained at
 `crates/ferric-integrals/shim/libecpint/LICENSE`.
 
-ferric links against external libraries with their own licenses — notably
+ferric links against external libraries with their own licenses, notably
 libint2 (LGPL-3.0-or-later), libxc (MPL-2.0), OpenBLAS/LAPACK (BSD), and
-optionally xtb (LGPL-3.0) — which govern redistribution of binaries built
-against them. Note that libint2 is a required dependency, not an optional one:
+optionally xtb (LGPL-3.0), which govern redistribution of binaries built
+against them. libint2 is a required dependency, not an optional one:
 distributing a compiled ferric binary means distributing LGPL-linked code, which
 carries obligations (relinking, source availability) beyond ferric's own MIT/
 Apache-2.0 terms. Building from source for your own use is unaffected.
