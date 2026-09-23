@@ -54,7 +54,11 @@ fn build_rhf(xyz: &str, obs_name: &str, aux_name: &str) -> Ref {
     let ctx = ParallelContext::default();
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     let cfg = RhfConfig {
-        energy_conv: 1e-10,
+        // Default energy_conv on purpose: it is a not-descending sanity bound, and
+        // 1e-10 sits below the ~1e-8 XC-grid energy noise floor, so convergence
+        // became a coin flip (it passed on the dense path only by drawing one
+        // lucky dE). Convergence is decided by density_conv.
+        energy_conv: 1e-3,
         density_conv: 1e-9,
         ..Default::default()
     };
@@ -208,7 +212,11 @@ fn fxc_term_is_not_a_no_op() {
     let bounds = SchwarzBounds::compute(op, &obs).unwrap();
     // An LDA reference, so the f_xc kernel is the LDA one.
     let cfg = RhfConfig {
-        energy_conv: 1e-10,
+        // Default energy_conv on purpose: it is a not-descending sanity bound, and
+        // 1e-10 sits below the ~1e-8 XC-grid energy noise floor, so convergence
+        // became a coin flip (it passed on the dense path only by drawing one
+        // lucky dE). Convergence is decided by density_conv.
+        energy_conv: 1e-3,
         density_conv: 1e-9,
         xc: Some("LDA".to_string()),
         ..Default::default()
@@ -276,7 +284,11 @@ fn exact_exchange_fraction_is_read_from_the_functional() {
         op,
         &bounds,
         &RhfConfig {
-            energy_conv: 1e-10,
+            // Default energy_conv on purpose: it is a not-descending sanity bound, and
+            // 1e-10 sits below the ~1e-8 XC-grid energy noise floor, so convergence
+            // became a coin flip (it passed on the dense path only by drawing one
+            // lucky dE). Convergence is decided by density_conv.
+            energy_conv: 1e-3,
             density_conv: 1e-9,
             ..Default::default()
         },
@@ -316,7 +328,11 @@ fn unsupported_functionals_are_rejected_not_silently_approximated() {
         op,
         &bounds,
         &RhfConfig {
-            energy_conv: 1e-10,
+            // Default energy_conv on purpose: it is a not-descending sanity bound, and
+            // 1e-10 sits below the ~1e-8 XC-grid energy noise floor, so convergence
+            // became a coin flip (it passed on the dense path only by drawing one
+            // lucky dE). Convergence is decided by density_conv.
+            energy_conv: 1e-3,
             density_conv: 1e-9,
             ..Default::default()
         },
