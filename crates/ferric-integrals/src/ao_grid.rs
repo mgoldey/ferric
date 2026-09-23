@@ -96,7 +96,7 @@ pub fn check_ao_grid_budget(kind: AoGridKind, nbf: usize, npts: usize) -> Result
 /// statement — so the bytes are credited back while the array it approved is
 /// still resident, and the next plane to ask sees a pool that looks empty.
 /// That is precisely the composition failure the pool exists to fix, so the
-/// long-lived owner (`ferric_dft::ks::GridCache::Full`) must store the guard
+/// long-lived owner (the resident screened cache in `ferric_dft::ks`) must store the guard
 /// in the same struct field as the arrays.
 ///
 /// Callers whose buffer really is transient (dropped before the next plane
@@ -506,7 +506,14 @@ fn radial_and_d_d2(shell: &LocatedShell, r2: f64) -> (f64, f64, f64) {
 ///   * pure-g:  9 solid harmonics, m = -4..+4 order
 ///   * cart-g:  15 functions in libint2 xxxx, xxxy, xxxz, xxyy, xxyz, xxzz, xyyy, xyyz, xyzz, xzzz, yyyy, yyyz, yyzz, yzzz, zzzz order
 ///   * l ≥ 5:   not supported (UnsupportedL)
-fn eval_shell_and_grad(
+///
+/// Public so `ferric_dft::xc_batch` can evaluate only the *screened* shells of
+/// one spatial grid batch, serially inside a rayon worker, with values that
+/// are bit-identical to the dense [`eval_basis_and_grad_on_points_unchecked`]
+/// (same function, same `p - center` offsets). `out` must have at least
+/// `num_functions(l, pure)` entries; callers zero `out`/`out_grad` first, as
+/// the dense evaluator does.
+pub fn eval_shell_and_grad(
     sh: &LocatedShell,
     dx: f64,
     dy: f64,

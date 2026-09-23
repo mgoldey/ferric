@@ -23,7 +23,7 @@ use rayon::prelude::*;
 
 /// Below this density, libxc-returned v_ρ / v_σ may diverge; skip grid points
 /// to keep V_xc well-conditioned. Matches libxc's internal `dens_threshold` default.
-const DENSITY_FLOOR: f64 = 1e-10;
+pub(crate) const DENSITY_FLOOR: f64 = 1e-10;
 
 use crate::density_on_grid::{DensityGrid, UksDensityGrid};
 use crate::grid::GridPoint;
@@ -52,7 +52,7 @@ const EXC_SUM_GROUPS: usize = 256;
 /// would use within each group, just re-associated at group boundaries)
 /// numerically matches the serial sum to machine precision — see the
 /// `deterministic_sum_matches_serial_fold` test.
-fn deterministic_point_sum<F>(npts: usize, term: F) -> f64
+pub(crate) fn deterministic_point_sum<F>(npts: usize, term: F) -> f64
 where
     F: Fn(usize) -> f64 + Sync,
 {
@@ -124,51 +124,37 @@ pub(crate) fn scale_columns_into(
         .for_each(|o, &c, &s| *o = c * s);
 }
 
-/// Closed-shell semilocal exchange-correlation energy and potential.
-///
-/// Returns (E_xc, V_xc). V_xc is symmetrized before return.
-///
-/// Convenience wrapper over [`semilocal_vxc_closed_scratch`] that allocates a
-/// fresh scratch — fine for one-shot callers; SCF loops should hold a
-/// [`VxcScratch`] and call the `_scratch` variant.
-///
-/// `tau` (the total kinetic-energy density τ = ½ Σ_i|∇φ_i|², from
-/// [`crate::density_on_grid::eval_tau_closed`]) is required for meta-GGA
-/// functionals and ignored for LDA/GGA. Pass `None` for a pure LDA/GGA call.
-pub fn semilocal_vxc_closed(
-    grid: &[GridPoint],
-    chi: &Array2<f64>,  // (nbf, npts)
-    dchi: &Array3<f64>, // (3, nbf, npts)
-    dens: &DensityGrid,
-    tau: Option<&Array1<f64>>,
-    xc: &XcDef,
-) -> (f64, Array2<f64>) {
-    semilocal_vxc_closed_scratch(grid, chi, dchi, dens, tau, xc, &mut VxcScratch::new())
+/// Per-point libxc outputs for a closed-shell (unpolarized) evaluation, each
+/// summed over the component functionals with their mixing weights.
+pub(crate) struct ClosedKernel {
+    /// ε_xc per particle.
+    pub exc: Array1<f64>,
+    /// ∂(ρ ε_xc)/∂ρ.
+    pub vrho: Array1<f64>,
+    /// ∂(ρ ε_xc)/∂σ (zero for pure LDA).
+    pub vsigma: Array1<f64>,
+    /// ∂(ρ ε_xc)/∂τ (zero unless a meta-GGA component is present).
+    pub vtau: Array1<f64>,
 }
 
-/// Closed-shell semilocal V_xc with caller-owned scratch (see [`VxcScratch`]).
+/// Evaluate every component functional of `xc` on the closed-shell density
+/// `dens` (and total `tau` for meta-GGA) and accumulate the weighted sums.
 ///
-/// For meta-GGA functionals `tau` must be `Some(&τ)` (total kinetic-energy
-/// density on the grid); it is ignored for LDA/GGA. A meta-GGA call with
-/// `tau == None` panics (a programming error at the call site).
-pub fn semilocal_vxc_closed_scratch(
-    grid: &[GridPoint],
-    chi: &Array2<f64>,  // (nbf, npts)
-    dchi: &Array3<f64>, // (3, nbf, npts)
+/// This is the libxc half of [`semilocal_vxc_closed_scratch`], factored out
+/// verbatim so the dense reference path and the batched/screened path in
+/// `xc_batch.rs` share ONE kernel implementation. The point count is
+/// `dens.rho.len()`. Panics (a call-site programming error) when a meta-GGA
+/// component is present and `tau` is `None`.
+pub(crate) fn closed_kernel(
     dens: &DensityGrid,
     tau: Option<&Array1<f64>>,
     xc: &XcDef,
-    scratch: &mut VxcScratch,
-) -> (f64, Array2<f64>) {
-    let (nbf, npts) = chi.dim();
-    debug_assert_eq!(dchi.dim(), (3, nbf, npts));
-
+) -> ClosedKernel {
+    let npts = dens.rho.len();
     let has_mgga = xc
         .funcs
         .iter()
         .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
-
-    let w: Array1<f64> = grid.iter().map(|g| g.weight).collect();
 
     let mut exc_total = Array1::<f64>::zeros(npts);
     let mut vrho_total = Array1::<f64>::zeros(npts);
@@ -241,6 +227,69 @@ pub fn semilocal_vxc_closed_scratch(
             .zip(&vrho)
             .for_each(|(t, &v)| *t += w_i * v);
     }
+
+    ClosedKernel {
+        exc: exc_total,
+        vrho: vrho_total,
+        vsigma: vsigma_total,
+        vtau: vtau_total,
+    }
+}
+
+/// Closed-shell semilocal exchange-correlation energy and potential.
+///
+/// Returns (E_xc, V_xc). V_xc is symmetrized before return.
+///
+/// Convenience wrapper over [`semilocal_vxc_closed_scratch`] that allocates a
+/// fresh scratch — fine for one-shot callers; SCF loops should hold a
+/// [`VxcScratch`] and call the `_scratch` variant.
+///
+/// `tau` (the total kinetic-energy density τ = ½ Σ_i|∇φ_i|², from
+/// [`crate::density_on_grid::eval_tau_closed`]) is required for meta-GGA
+/// functionals and ignored for LDA/GGA. Pass `None` for a pure LDA/GGA call.
+pub fn semilocal_vxc_closed(
+    grid: &[GridPoint],
+    chi: &Array2<f64>,  // (nbf, npts)
+    dchi: &Array3<f64>, // (3, nbf, npts)
+    dens: &DensityGrid,
+    tau: Option<&Array1<f64>>,
+    xc: &XcDef,
+) -> (f64, Array2<f64>) {
+    semilocal_vxc_closed_scratch(grid, chi, dchi, dens, tau, xc, &mut VxcScratch::new())
+}
+
+/// Closed-shell semilocal V_xc with caller-owned scratch (see [`VxcScratch`]).
+///
+/// For meta-GGA functionals `tau` must be `Some(&τ)` (total kinetic-energy
+/// density on the grid); it is ignored for LDA/GGA. A meta-GGA call with
+/// `tau == None` panics (a programming error at the call site).
+pub fn semilocal_vxc_closed_scratch(
+    grid: &[GridPoint],
+    chi: &Array2<f64>,  // (nbf, npts)
+    dchi: &Array3<f64>, // (3, nbf, npts)
+    dens: &DensityGrid,
+    tau: Option<&Array1<f64>>,
+    xc: &XcDef,
+    scratch: &mut VxcScratch,
+) -> (f64, Array2<f64>) {
+    let (nbf, npts) = chi.dim();
+    debug_assert_eq!(dchi.dim(), (3, nbf, npts));
+
+    let has_mgga = xc
+        .funcs
+        .iter()
+        .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
+
+    let w: Array1<f64> = grid.iter().map(|g| g.weight).collect();
+
+    // libxc kernel over all points (shared with the batched path in
+    // `xc_batch.rs`, so the two cannot drift apart).
+    let ClosedKernel {
+        exc: exc_total,
+        vrho: vrho_total,
+        vsigma: vsigma_total,
+        vtau: vtau_total,
+    } = closed_kernel(dens, tau, xc);
 
     // E_xc = Σ_g w_g · ρ(r_g) · ε_xc(r_g). Deterministic grouped reduction —
     // see `deterministic_point_sum`: bit-identical across thread counts.
@@ -341,55 +390,34 @@ pub fn semilocal_vxc_closed_scratch(
     (e_xc, vxc_sym)
 }
 
-/// Spin-polarized (UKS) semilocal exchange-correlation energy and potentials.
-///
-/// Returns `(E_xc, V_α, V_β)`. Each `V_σ` is symmetrized before return.
-///
-/// Convenience wrapper over [`semilocal_vxc_polarized_scratch`]; SCF loops
-/// should hold a [`VxcScratch`] and call the `_scratch` variant.
-pub fn semilocal_vxc_polarized(
-    grid: &[GridPoint],
-    chi: &Array2<f64>,
-    dchi: &Array3<f64>,
-    dens: &UksDensityGrid,
-    tau: Option<(&Array1<f64>, &Array1<f64>)>,
-    xc: &XcDef,
-) -> (f64, Array2<f64>, Array2<f64>) {
-    semilocal_vxc_polarized_scratch(grid, chi, dchi, dens, tau, xc, &mut VxcScratch::new())
+/// Per-point libxc outputs for a spin-polarized evaluation, each summed over
+/// the component functionals with their mixing weights.
+pub(crate) struct PolarizedKernel {
+    pub exc: Array1<f64>,
+    pub vrho_a: Array1<f64>,
+    pub vrho_b: Array1<f64>,
+    pub vsigma_aa: Array1<f64>,
+    pub vsigma_ab: Array1<f64>,
+    pub vsigma_bb: Array1<f64>,
+    pub vtau_a: Array1<f64>,
+    pub vtau_b: Array1<f64>,
 }
 
-/// Spin-polarized semilocal V_xc with caller-owned scratch.
-///
-/// libxc polarized interleaved layouts:
-///   `rho_in[2g+0]   = ρ_α`,  `rho_in[2g+1]   = ρ_β`
-///   `sigma_in[3g+0] = σ_αα`, `sigma_in[3g+1] = σ_αβ`, `sigma_in[3g+2] = σ_ββ`
-///   `vrho[2g+0]     = v_α`,  `vrho[2g+1]     = v_β`
-///   `vsigma[3g+0]   = v_σαα`,`vsigma[3g+1]   = v_σαβ`, `vsigma[3g+2]   = v_σββ`
-///
-/// V^α_μν includes a σ_αβ cross-term proportional to ∇ρ_β (and vice versa).
-///
-/// For meta-GGA functionals `tau` must be `Some((&τ_α, &τ_β))` — the per-spin
-/// kinetic-energy densities (each τ_σ = ½ Σ_i∈σ |∇φ_i|², from
-/// [`crate::density_on_grid::eval_tau_uks`]); it is ignored for LDA/GGA. A
-/// meta-GGA call with `tau == None` panics.
-pub fn semilocal_vxc_polarized_scratch(
-    grid: &[GridPoint],
-    chi: &Array2<f64>,
-    dchi: &Array3<f64>,
+/// Polarized twin of [`closed_kernel`]: the libxc half of
+/// [`semilocal_vxc_polarized_scratch`], factored out verbatim so the dense
+/// reference and `xc_batch.rs` share one kernel. Point count is
+/// `dens.rho_a.len()`. Panics when a meta-GGA component is present and `tau`
+/// is `None`.
+pub(crate) fn polarized_kernel(
     dens: &UksDensityGrid,
     tau: Option<(&Array1<f64>, &Array1<f64>)>,
     xc: &XcDef,
-    scratch: &mut VxcScratch,
-) -> (f64, Array2<f64>, Array2<f64>) {
-    let (nbf, npts) = chi.dim();
-    debug_assert_eq!(dchi.dim(), (3, nbf, npts));
-
+) -> PolarizedKernel {
+    let npts = dens.rho_a.len();
     let has_mgga = xc
         .funcs
         .iter()
         .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
-
-    let w: Array1<f64> = grid.iter().map(|g| g.weight).collect();
 
     // Build interleaved rho / sigma (and τ, for meta-GGA) input for libxc.
     // Left serial: a handful of loads/stores per point, one pass, no reduction.
@@ -471,6 +499,81 @@ pub fn semilocal_vxc_polarized_scratch(
             vrho_b_total[g] += w_i * vrho[2 * g + 1];
         }
     }
+
+    PolarizedKernel {
+        exc: exc_total,
+        vrho_a: vrho_a_total,
+        vrho_b: vrho_b_total,
+        vsigma_aa: vsigma_aa_total,
+        vsigma_ab: vsigma_ab_total,
+        vsigma_bb: vsigma_bb_total,
+        vtau_a: vtau_a_total,
+        vtau_b: vtau_b_total,
+    }
+}
+
+/// Spin-polarized (UKS) semilocal exchange-correlation energy and potentials.
+///
+/// Returns `(E_xc, V_α, V_β)`. Each `V_σ` is symmetrized before return.
+///
+/// Convenience wrapper over [`semilocal_vxc_polarized_scratch`]; SCF loops
+/// should hold a [`VxcScratch`] and call the `_scratch` variant.
+pub fn semilocal_vxc_polarized(
+    grid: &[GridPoint],
+    chi: &Array2<f64>,
+    dchi: &Array3<f64>,
+    dens: &UksDensityGrid,
+    tau: Option<(&Array1<f64>, &Array1<f64>)>,
+    xc: &XcDef,
+) -> (f64, Array2<f64>, Array2<f64>) {
+    semilocal_vxc_polarized_scratch(grid, chi, dchi, dens, tau, xc, &mut VxcScratch::new())
+}
+
+/// Spin-polarized semilocal V_xc with caller-owned scratch.
+///
+/// libxc polarized interleaved layouts:
+///   `rho_in[2g+0]   = ρ_α`,  `rho_in[2g+1]   = ρ_β`
+///   `sigma_in[3g+0] = σ_αα`, `sigma_in[3g+1] = σ_αβ`, `sigma_in[3g+2] = σ_ββ`
+///   `vrho[2g+0]     = v_α`,  `vrho[2g+1]     = v_β`
+///   `vsigma[3g+0]   = v_σαα`,`vsigma[3g+1]   = v_σαβ`, `vsigma[3g+2]   = v_σββ`
+///
+/// V^α_μν includes a σ_αβ cross-term proportional to ∇ρ_β (and vice versa).
+///
+/// For meta-GGA functionals `tau` must be `Some((&τ_α, &τ_β))` — the per-spin
+/// kinetic-energy densities (each τ_σ = ½ Σ_i∈σ |∇φ_i|², from
+/// [`crate::density_on_grid::eval_tau_uks`]); it is ignored for LDA/GGA. A
+/// meta-GGA call with `tau == None` panics.
+pub fn semilocal_vxc_polarized_scratch(
+    grid: &[GridPoint],
+    chi: &Array2<f64>,
+    dchi: &Array3<f64>,
+    dens: &UksDensityGrid,
+    tau: Option<(&Array1<f64>, &Array1<f64>)>,
+    xc: &XcDef,
+    scratch: &mut VxcScratch,
+) -> (f64, Array2<f64>, Array2<f64>) {
+    let (nbf, npts) = chi.dim();
+    debug_assert_eq!(dchi.dim(), (3, nbf, npts));
+
+    let has_mgga = xc
+        .funcs
+        .iter()
+        .any(|f| matches!(f.family(), FunctionalFamily::MetaGga));
+
+    let w: Array1<f64> = grid.iter().map(|g| g.weight).collect();
+
+    // libxc kernel over all points (shared with the batched path in
+    // `xc_batch.rs`, so the two cannot drift apart).
+    let PolarizedKernel {
+        exc: exc_total,
+        vrho_a: vrho_a_total,
+        vrho_b: vrho_b_total,
+        vsigma_aa: vsigma_aa_total,
+        vsigma_ab: vsigma_ab_total,
+        vsigma_bb: vsigma_bb_total,
+        vtau_a: vtau_a_total,
+        vtau_b: vtau_b_total,
+    } = polarized_kernel(dens, tau, xc);
 
     // E_xc = Σ_g w_g · (ρ_α + ρ_β) · ε_xc. Deterministic grouped reduction —
     // see `deterministic_point_sum`: bit-identical across thread counts.
