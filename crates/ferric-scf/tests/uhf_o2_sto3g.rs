@@ -116,15 +116,7 @@ fn uhf(s: &Sys, cfg: &RhfConfig) -> ScfResult {
 }
 
 fn rohf(s: &Sys, cfg: &RhfConfig) -> ScfResult {
-    solve_rohf(
-        &s.ctx,
-        &s.mol,
-        &s.prep,
-        Operator::coulomb(),
-        &s.bounds,
-        cfg,
-    )
-    .unwrap()
+    solve_rohf(&s.ctx, &s.mol, &s.prep, Operator::coulomb(), &s.bounds, cfg).unwrap()
 }
 
 fn verdict(r: &ScfResult) -> StabilityVerdict {
@@ -205,7 +197,10 @@ fn hcore_guess_reproduces_the_reported_saddle_and_it_is_flagged() {
         lambda_min(&r),
         verdict(&r).label()
     );
-    assert!(r.converged, "the reported symptom includes converged = true");
+    assert!(
+        r.converged,
+        "the reported symptom includes converged = true"
+    );
     assert!(
         (r.energy - e_hcore).abs() < TOL,
         "hcore guess gave E = {:.10}, not the reported saddle {e_hcore:.10}; this file's \
