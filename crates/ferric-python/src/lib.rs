@@ -410,16 +410,26 @@ fn build_pcm_config(
 }
 
 /// Parse the `diis` kwarg into a `DiisFlavor` (strict — unknown values error).
-/// None = Pulay (plain DIIS, the default).
+/// None = Pulay (plain DIIS, the default). Delegates to the parser the CLI's
+/// `[scf] diis` uses, so the two surfaces accept exactly the same spellings.
 fn parse_diis_flavor(diis: Option<&str>) -> PyResult<ferric_scf::diis::DiisFlavor> {
     use ferric_scf::diis::DiisFlavor;
     match diis {
-        None | Some("pulay") => Ok(DiisFlavor::Pulay),
-        Some("adiis") => Ok(DiisFlavor::Adiis),
-        Some("ediis") => Ok(DiisFlavor::Ediis),
-        Some(other) => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "diis = '{other}' not recognized (use 'pulay', 'adiis', or 'ediis')"
-        ))),
+        None => Ok(DiisFlavor::Pulay),
+        Some(s) => DiisFlavor::parse_config_str(s)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string())),
+    }
+}
+
+/// Parse the `guess` kwarg into `RhfConfig::use_sad_guess` (strict — unknown
+/// values error; before this any string but "hcore" silently ran MINAO).
+/// None = MINAO. Shares `ferric_scf::guess::InitialGuess` with the CLI.
+fn parse_guess(guess: Option<&str>) -> PyResult<bool> {
+    match guess {
+        None => Ok(true),
+        Some(s) => ferric_scf::guess::InitialGuess::parse_config_str(s)
+            .map(|g| g.use_sad_guess())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string())),
     }
 }
 
@@ -622,7 +632,7 @@ fn run_rhf(
         diis_flavor: parse_diis_flavor(diis)?,
         smearing_sigma,
         newton_trigger: if soscf.unwrap_or(false) { 1e-3 } else { 0.0 },
-        use_sad_guess: !matches!(guess, Some("hcore")),
+        use_sad_guess: parse_guess(guess)?,
         external_potential: build_external_potential_with_smeared(
             point_charges,
             smeared_charges,
@@ -1258,7 +1268,7 @@ fn run_qmmm(
         density_conv: density_conv.unwrap_or(1e-6),
         level_shift: level_shift.unwrap_or(0.0),
         mom_after_iter: mom_after_iter.unwrap_or(0),
-        use_sad_guess: !matches!(guess, Some("hcore")),
+        use_sad_guess: parse_guess(guess)?,
         external_potential: sys.to_external_potential(),
         polarizable,
         ..Default::default()

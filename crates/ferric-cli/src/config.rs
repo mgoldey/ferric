@@ -368,6 +368,7 @@ impl DispersionRequest {
 /// (units: e for `q`, Bohr for coordinates) contributing to the one-electron
 /// Hamiltonian and nuclear-repulsion-like energy term.
 #[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PointChargeCfg {
     pub q: f64,
     pub x: f64,
@@ -378,6 +379,7 @@ pub struct PointChargeCfg {
 /// The `[external_potential]` TOML section: an array of fixed point charges
 /// plus an optional uniform external electric field (a.u.).
 #[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ExternalPotentialCfg {
     #[serde(default)]
     pub point_charges: Vec<PointChargeCfg>,
@@ -1704,22 +1706,42 @@ impl ScfCfg {
 
     /// Parse the `diis` string into a `DiisFlavor` (strict — unknown values are a
     /// hard error, per the config-honesty convention). Absent = Pulay.
-    pub fn diis_flavor(&self) -> ferric_scf::diis::DiisFlavor {
-        use ferric_scf::diis::DiisFlavor;
+    ///
+    /// Returns `Err` rather than panicking: this used to be a `panic!`, so a
+    /// typo'd `[scf] diis` aborted the process with a Rust backtrace instead of
+    /// a clean error. The parser is shared with `ferric-python`'s `diis=` kwarg.
+    pub fn diis_flavor(&self) -> Result<ferric_scf::diis::DiisFlavor, String> {
         match self.diis.as_deref() {
-            None | Some("pulay") | Some("Pulay") => DiisFlavor::Pulay,
-            Some("adiis") | Some("ADIIS") => DiisFlavor::Adiis,
-            Some("ediis") | Some("EDIIS") => DiisFlavor::Ediis,
-            Some(other) => panic!(
-                "[scf] diis = \"{other}\" is not recognized (use \"pulay\", \"adiis\", or \"ediis\")"
-            ),
+            None => Ok(ferric_scf::diis::DiisFlavor::Pulay),
+            Some(s) => ferric_scf::diis::DiisFlavor::parse_config_str(s)
+                .map_err(|e| format!("[scf] diis: {e}")),
         }
     }
-    /// Whether the guess is "sad" (legacy free-atom-SCF) vs the default MINAO.
-    /// Returns `use_sad_guess`-style: true means run the density-superposition
-    /// guess (MINAO or SAD via use_sad_guess), false forces hcore.
-    pub fn use_density_guess(&self) -> bool {
-        !matches!(self.guess.as_deref(), Some("hcore") | Some("Hcore"))
+    /// Resolve `[scf] guess` to `RhfConfig::use_sad_guess` (strict). `true`
+    /// selects the MINAO guess (the default), `false` the hcore guess; `"sad"`
+    /// is an alias of `"minao"` (see `ferric_scf::guess::InitialGuess`).
+    /// Unknown values are an error -- before this, any string other than
+    /// "hcore" was accepted and silently ran MINAO.
+    pub fn use_density_guess(&self) -> Result<bool, String> {
+        match self.guess.as_deref() {
+            None => Ok(true),
+            Some(s) => ferric_scf::guess::InitialGuess::parse_config_str(s)
+                .map(|g| g.use_sad_guess())
+                .map_err(|e| format!("[scf] guess: {e}")),
+        }
+    }
+    /// Post-parse validation of the `[scf]` string knobs whose resolution is
+    /// otherwise deferred to the point of use. Called from [`load_config`] so
+    /// every entry point (CLI and `ferric-batch`) fails before any integral is
+    /// computed.
+    pub fn validate(&self) -> Result<(), String> {
+        self.diis_flavor()?;
+        self.use_density_guess()?;
+        for (i, rung) in self.ladder.iter().enumerate() {
+            rung.use_sad_guess()
+                .map_err(|e| format!("[[scf.ladder]] rung {i}: {e}"))?;
+        }
+        Ok(())
     }
     /// Resolve `df_guess_aux` under the config-honesty convention: setting it
     /// while `df_guess = false` would be a silent no-op, so it is a hard
@@ -1806,10 +1828,12 @@ fn default_integral_thresh() -> f64 {
 /// [`ScfCfg::build_ladder`] (derived from the flat `[scf]` settings); unset
 /// fields inherit from `base`.
 #[derive(Debug, Clone, serde::Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct LadderRungCfg {
-    /// Initial guess for this rung: "sad" | "sad-smallbasis" | "hcore".
-    /// `None` (default) behaves like "sad".
+    /// Initial guess for this rung: "minao" | "sad" (alias of "minao") |
+    /// "hcore". `None` (default) behaves like "minao". Strict: anything else
+    /// -- including the former "sad-smallbasis", which was never wired to the
+    /// CLI and silently ran plain MINAO after a warning -- is an error.
     pub guess: Option<String>,
     pub level_shift: Option<f64>,
     pub max_iter: Option<usize>,
@@ -1837,12 +1861,27 @@ impl Default for LadderRungCfg {
     }
 }
 
+impl LadderRungCfg {
+    /// This rung's `guess`, resolved strictly (see the field doc).
+    pub fn use_sad_guess(&self) -> Result<bool, String> {
+        match self.guess.as_deref() {
+            None => Ok(true),
+            Some(s) => ferric_scf::guess::InitialGuess::parse_config_str(s)
+                .map(|g| g.use_sad_guess())
+                .map_err(|e| format!("guess: {e}")),
+        }
+    }
+}
+
 impl ScfCfg {
     /// Build the SCF convergence ladder. If no `[[scf.ladder]]` rungs are
     /// configured, returns the built-in `default_ladder()`. Otherwise each
     /// rung starts from `base` (the `RhfConfig` derived from the flat `[scf]`
     /// settings) and overrides the fields the rung specifies.
-    pub fn build_ladder(&self, base: &ferric_scf::rhf::RhfConfig) -> Vec<ferric_scf::ladder::Rung> {
+    pub fn build_ladder(
+        &self,
+        base: &ferric_scf::rhf::RhfConfig,
+    ) -> Result<Vec<ferric_scf::ladder::Rung>, String> {
         use ferric_scf::ladder::Rung;
         if self.ladder.is_empty() {
             // Default escalation, but seeded from the user's [scf] settings
@@ -1866,15 +1905,16 @@ impl ScfCfg {
             // paths already call `ksdft_ladder` directly (lib.rs) -- this
             // brings the CLI's `ksdft` path in line with that, instead of
             // silently falling through to the HF-tuned ladder.
-            return if base.xc.is_some() {
+            return Ok(if base.xc.is_some() {
                 ferric_scf::ladder::ksdft_ladder(base)
             } else {
                 ferric_scf::ladder::default_ladder_from(base)
-            };
+            });
         }
         self.ladder
             .iter()
-            .map(|r| {
+            .enumerate()
+            .map(|(i, r)| -> Result<Rung, String> {
                 let mut cfg = base.clone();
                 if let Some(v) = r.level_shift {
                     cfg.level_shift = v;
@@ -1890,23 +1930,10 @@ impl ScfCfg {
                 }
                 cfg.stall_window = r.stall_window;
                 cfg.divergence_tol = r.divergence_tol;
-                match r.guess.as_deref() {
-                    Some("hcore") => {
-                        cfg.use_sad_guess = false;
-                    }
-                    Some("sad") | None => {
-                        cfg.use_sad_guess = true;
-                    }
-                    Some("sad-smallbasis") => {
-                        eprintln!("warning: scf.ladder guess \"sad-smallbasis\" is not yet wired to the CLI rung guess; using plain SAD");
-                        cfg.use_sad_guess = true;
-                    }
-                    Some(other) => {
-                        eprintln!("warning: unknown scf.ladder guess \"{other}\", using sad");
-                        cfg.use_sad_guess = true;
-                    }
-                }
-                Rung { config: cfg, restart: r.restart }
+                cfg.use_sad_guess = r
+                    .use_sad_guess()
+                    .map_err(|e| format!("[[scf.ladder]] rung {i}: {e}"))?;
+                Ok(Rung { config: cfg, restart: r.restart })
             })
             .collect()
     }
@@ -1924,6 +1951,7 @@ pub fn load_config(path: &str) -> Result<Config, String> {
     // point is covered by construction — the CLI, and `ferric-batch`'s
     // per-child TOML rewriting, which does not go through lib.rs's checks.
     cfg.memory.validate().map_err(|e| format!("{path}: {e}"))?;
+    cfg.scf.validate().map_err(|e| format!("{path}: {e}"))?;
     Ok(cfg)
 }
 
@@ -2447,6 +2475,131 @@ json = [1, 2]
             n += 1;
         }
         assert!(n > 0, "no example TOMLs found in {}", dir.display());
+    }
+
+    // ---- [scf] guess / diis: strict string knobs -------------------------
+
+    fn scf_cfg(scf: &str) -> ScfCfg {
+        parse(&format!("{MINIMAL}[scf]\n{scf}"))
+            .unwrap_or_else(|e| panic!("[scf] {scf:?} must parse: {e}"))
+            .scf
+    }
+
+    /// `[scf] guess` used to accept ANY string: everything but "hcore" silently
+    /// ran MINAO, so `guess = "hcroe"` produced a MINAO run the user did not ask
+    /// for. Now: the valid spellings resolve, anything else errors and lists them.
+    #[test]
+    fn scf_guess_is_strict() {
+        assert_eq!(scf_cfg("").use_density_guess(), Ok(true), "absent = MINAO");
+        assert_eq!(scf_cfg("guess = \"minao\"").use_density_guess(), Ok(true));
+        assert_eq!(scf_cfg("guess = \"sad\"").use_density_guess(), Ok(true));
+        assert_eq!(scf_cfg("guess = \"hcore\"").use_density_guess(), Ok(false));
+        for bad in ["hcroe", "core", "sad-smallbasis", ""] {
+            let cfg = scf_cfg(&format!("guess = {bad:?}"));
+            let err = cfg.use_density_guess().unwrap_err();
+            assert!(err.starts_with("[scf] guess"), "{bad:?}: {err}");
+            for valid in ["'minao'", "'sad'", "'hcore'"] {
+                assert!(err.contains(valid), "{bad:?}: message must list {valid}: {err}");
+            }
+            assert!(cfg.validate().is_err(), "{bad:?}: validate() must reject it too");
+        }
+    }
+
+    /// A bad `[scf] diis` used to PANIC (a `panic!` in `diis_flavor`), aborting
+    /// the process with a backtrace. It must be a clean `Err` naming the valid
+    /// values -- checked under `catch_unwind` so a regression to a panic fails
+    /// here as a panic-was-caught assertion, not as a crashed test binary.
+    #[test]
+    fn scf_diis_bad_value_errors_and_does_not_panic() {
+        use ferric_scf::diis::DiisFlavor;
+        assert_eq!(scf_cfg("").diis_flavor(), Ok(DiisFlavor::Pulay));
+        assert_eq!(scf_cfg("diis = \"pulay\"").diis_flavor(), Ok(DiisFlavor::Pulay));
+        assert_eq!(scf_cfg("diis = \"adiis\"").diis_flavor(), Ok(DiisFlavor::Adiis));
+        assert_eq!(scf_cfg("diis = \"EDIIS\"").diis_flavor(), Ok(DiisFlavor::Ediis));
+        let cfg = scf_cfg("diis = \"cdiis\"");
+        let got = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cfg.diis_flavor()));
+        let err = got
+            .expect("a bad [scf] diis must return Err, not panic")
+            .unwrap_err();
+        assert!(err.starts_with("[scf] diis"), "{err}");
+        for valid in ["'pulay'", "'adiis'", "'ediis'"] {
+            assert!(err.contains(valid), "message must list {valid}: {err}");
+        }
+        assert!(cfg.validate().is_err());
+    }
+
+    /// `load_config` runs the `[scf]` validation, so a typo'd value fails at
+    /// load time -- before any integral -- on every entry point (the CLI and
+    /// ferric-batch), naming the file.
+    #[test]
+    fn load_config_rejects_bad_scf_strings() {
+        let dir = std::env::temp_dir().join(format!("ferric-cli-scf-strict-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cases = [
+            ("bad_diis.toml", "[scf]\ndiis = \"cdiis\"\n", "[scf] diis"),
+            ("bad_guess.toml", "[scf]\nguess = \"huckel\"\n", "[scf] guess"),
+            (
+                "bad_rung.toml",
+                "[[scf.ladder]]\nguess = \"hcore\"\n[[scf.ladder]]\nguess = \"sad-smallbasis\"\n",
+                "rung 1",
+            ),
+        ];
+        for (file, extra, want) in cases {
+            let p = dir.join(file);
+            std::fs::write(&p, format!("{MINIMAL}{extra}")).unwrap();
+            let err = match load_config(p.to_str().unwrap()) {
+                Ok(_) => panic!("{file}: load_config accepted a bad value"),
+                Err(e) => e,
+            };
+            assert!(err.contains(want), "{file}: expected {want:?} in: {err}");
+        }
+        // Positive control: the same file shape with valid values loads.
+        let p = dir.join("good.toml");
+        std::fs::write(
+            &p,
+            format!("{MINIMAL}[scf]\ndiis = \"adiis\"\nguess = \"hcore\"\n[[scf.ladder]]\nguess = \"minao\"\n"),
+        )
+        .unwrap();
+        load_config(p.to_str().unwrap()).expect("valid [scf] strings must load");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- deny_unknown_fields on the nested tables that lacked it ----------
+
+    /// `[external_potential]`, its `[[external_potential.point_charges]]`
+    /// entries, and `[[scf.ladder]]` rungs silently IGNORED unknown keys: a
+    /// typo'd `feild = [0, 0, 0.01]` ran the unperturbed molecule, and a rung's
+    /// `levelshift = 0.5` ran unshifted. Each typo must now fail to parse, and
+    /// each correctly-spelled twin must still parse (so the rejection is about
+    /// the key, not the table).
+    #[test]
+    fn nested_tables_reject_unknown_keys() {
+        let cases = [
+            (
+                "[external_potential]\nfield = [0.0, 0.0, 0.01]\n",
+                "[external_potential]\nfeild = [0.0, 0.0, 0.01]\n",
+                "feild",
+            ),
+            (
+                "[[external_potential.point_charges]]\nq = 1.0\nx = 0.0\ny = 0.0\nz = 5.0\n",
+                "[[external_potential.point_charges]]\nq = 1.0\nx = 0.0\ny = 0.0\nz = 5.0\ncharge = 1.0\n",
+                "charge",
+            ),
+            (
+                "[[scf.ladder]]\nlevel_shift = 0.5\n",
+                "[[scf.ladder]]\nlevelshift = 0.5\n",
+                "levelshift",
+            ),
+        ];
+        for (good, typo, key) in cases {
+            parse(&format!("{MINIMAL}{good}"))
+                .unwrap_or_else(|e| panic!("valid table must parse:\n{good}\n{e}"));
+            let err = match parse(&format!("{MINIMAL}{typo}")) {
+                Ok(_) => panic!("typo'd key `{key}` was silently accepted:\n{typo}"),
+                Err(e) => e,
+            };
+            assert!(err.contains(key), "error must name `{key}`: {err}");
+        }
     }
 
     /// `[scf] cosx_grid` / `cosx_overlap_fit`: parse, resolve, and refuse
@@ -3738,7 +3891,7 @@ kind = "rhf"
 "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
         assert!(cfg.scf.ladder.is_empty());
-        let built = cfg.scf.build_ladder(&ferric_scf::rhf::RhfConfig::default());
+        let built = cfg.scf.build_ladder(&ferric_scf::rhf::RhfConfig::default()).unwrap();
         assert_eq!(built.len(), ferric_scf::ladder::default_ladder().len());
     }
 
@@ -3761,7 +3914,7 @@ kind = "rhf"
         };
         let cfg = ScfCfg::default();
         assert!(cfg.ladder.is_empty());
-        let built = cfg.build_ladder(&base);
+        let built = cfg.build_ladder(&base).unwrap();
         let expected = ferric_scf::ladder::ksdft_ladder(&base);
         assert_eq!(built.len(), expected.len());
         // ksdft_ladder's rung 0 honors the caller's own max_iter (100 here);
@@ -3795,7 +3948,7 @@ kind = "rhf"
         };
         let cfg = ScfCfg::default();
         assert!(cfg.ladder.is_empty());
-        let built = cfg.build_ladder(&base);
+        let built = cfg.build_ladder(&base).unwrap();
         assert_eq!(built.len(), ferric_scf::ladder::default_ladder().len());
         for (i, rung) in built.iter().enumerate() {
             assert_eq!(
@@ -3836,7 +3989,7 @@ kind = "rhf"
             ..Default::default()
         };
         let cfg = ScfCfg::default();
-        let built = cfg.build_ladder(&base);
+        let built = cfg.build_ladder(&base).unwrap();
         for rung in &built {
             assert_eq!(rung.config.df_j_aux.as_deref(), Some("cc-pvdz-jkfit"));
             assert_eq!(rung.config.df_k_aux.as_deref(), Some("cc-pvdz-jkfit"));
@@ -3988,7 +4141,7 @@ max_iter = 42
 "#;
         let cfg: Config = toml::from_str(toml_str).unwrap();
         let base = ferric_scf::rhf::RhfConfig::default();
-        let built = cfg.scf.build_ladder(&base);
+        let built = cfg.scf.build_ladder(&base).unwrap();
         assert_eq!(built.len(), 1);
         assert_eq!(built[0].config.level_shift, 0.3);
         assert_eq!(built[0].config.max_iter, 42);

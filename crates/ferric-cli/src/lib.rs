@@ -578,7 +578,10 @@ pub fn run(args: Vec<String>) {
         energy_conv: cfg.scf.energy_conv,
         density_conv: cfg.scf.density_conv,
         diis_size: cfg.scf.diis_size,
-        diis_flavor: cfg.scf.diis_flavor(),
+        diis_flavor: cfg.scf.diis_flavor().unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }),
         diis_switch_thresh: cfg.scf.diis_switch_thresh.unwrap_or(1e-1),
         smearing_sigma: cfg.scf.smearing_sigma,
         integral_thresh: cfg.scf.integral_thresh,
@@ -637,7 +640,10 @@ pub fn run(args: Vec<String>) {
         // [memory] budget (incl. a deliberate 2 GiB) is passed through and honored.
         three_index_budget_bytes: budget_bytes.unwrap_or(0),
         init_guess_density: None,
-        use_sad_guess: cfg.scf.use_density_guess(),
+        use_sad_guess: cfg.scf.use_density_guess().unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }),
         stall_window: None,
         divergence_tol: None,
         // A `[qmmm]` MM region and an explicit `[external_potential]` are two
@@ -818,7 +824,10 @@ pub fn run(args: Vec<String>) {
                 "warning: [scf] df_increments is not yet composed with the {method} convergence ladder; ignored here (use kind = \"rimp2\" or another non-laddered method to use it)"
             );
         }
-        let ladder = cfg.scf.build_ladder(&rhf_config);
+        let ladder = cfg.scf.build_ladder(&rhf_config).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
         // Report the J/K path actually in use. RI-JK is now opt-in (the ladder
         // no longer substitutes it — see `ladder::default_ladder_from`), but
         // KS-DFT still auto-selects an aux above, so state which one ran rather

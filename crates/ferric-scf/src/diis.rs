@@ -368,6 +368,36 @@ pub enum DiisFlavor {
     Ediis,
 }
 
+impl DiisFlavor {
+    /// The accepted config spellings, in the order error messages list them.
+    pub const VALID: &'static [&'static str] = &["pulay", "adiis", "ediis"];
+
+    /// Strict config-string parser shared by the CLI (`[scf] diis`) and the
+    /// Python bindings (`diis=`): `"pulay"`, `"adiis"` or `"ediis"`, ASCII
+    /// case-insensitive (the CLI historically accepted `"ADIIS"`/`"Pulay"`).
+    /// Anything else is an error naming the valid options -- never a silent
+    /// default, and never a panic (the CLI used to `panic!` here).
+    pub fn parse_config_str(s: &str) -> Result<Self, ferric_core::FerricError> {
+        match s.to_ascii_lowercase().as_str() {
+            "pulay" => Ok(Self::Pulay),
+            "adiis" => Ok(Self::Adiis),
+            "ediis" => Ok(Self::Ediis),
+            _ => Err(ferric_core::FerricError::General(format!(
+                "unknown diis '{s}': valid options are 'pulay' (default), 'adiis' and 'ediis'"
+            ))),
+        }
+    }
+
+    /// The config-string spelling (inverse of [`Self::parse_config_str`]).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pulay => "pulay",
+            Self::Adiis => "adiis",
+            Self::Ediis => "ediis",
+        }
+    }
+}
+
 /// Minimize `f(c) = g·c + ½ cᵀ H c` over the probability simplex
 /// (`c_i ≥ 0`, `Σ c_i = 1`) via the `c_i = t_i²/Σt_k²` reparametrization plus
 /// backtracking gradient descent in `t`. `h` is row-major `m×m` (need not be
@@ -831,6 +861,24 @@ fn solve_linear(mut a: Vec<f64>, mut x: Vec<f64>, n: usize) -> Option<Vec<f64>> 
 
 #[cfg(test)]
 mod tests {
+
+    /// Every spelling round-trips; unknown values ERR (not panic, not default)
+    /// and the message lists every valid option.
+    #[test]
+    fn diis_flavor_parse_is_strict() {
+        for &name in DiisFlavor::VALID {
+            let f = DiisFlavor::parse_config_str(name).unwrap();
+            assert_eq!(f.as_str(), name);
+        }
+        assert_eq!(DiisFlavor::parse_config_str("ADIIS").unwrap(), DiisFlavor::Adiis);
+        assert_eq!(DiisFlavor::parse_config_str("Pulay").unwrap(), DiisFlavor::Pulay);
+        for bad in ["", "diis", "cdiis", "pulay "] {
+            let msg = DiisFlavor::parse_config_str(bad).unwrap_err().to_string();
+            for &name in DiisFlavor::VALID {
+                assert!(msg.contains(&format!("'{name}'")), "{bad:?}: {msg}");
+            }
+        }
+    }
     use super::*;
 
     /// `solve_linear` must be invariant to a uniform rescaling of the system.

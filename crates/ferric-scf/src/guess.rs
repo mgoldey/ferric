@@ -4,6 +4,49 @@ use ferric_core::FerricError;
 use ndarray::Array2;
 use ndarray_linalg::Eigh;
 
+/// The SCF initial guesses a config string can select.
+///
+/// The solvers expose this as the `RhfConfig::use_sad_guess` bool: `true`
+/// runs [`minao_projection_guess`] (falling back to hcore if it fails),
+/// `false` runs [`hcore_guess`]. The free-atom-SCF [`sad_guess`] is NOT
+/// reachable from a config string -- the field name predates the switch to
+/// MINAO -- so `"sad"` is accepted only as a backward-compatible ALIAS of
+/// `"minao"`, and says so in this doc rather than pretending otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitialGuess {
+    /// MINAO projection guess (the default).
+    Minao,
+    /// Core-Hamiltonian guess.
+    Hcore,
+}
+
+impl InitialGuess {
+    /// The accepted config spellings, in the order error messages list them.
+    pub const VALID: &'static [&'static str] = &["minao", "sad", "hcore"];
+
+    /// Strict config-string parser shared by the CLI (`[scf] guess`, the
+    /// `[[scf.ladder]]` rung `guess`) and the Python bindings (`guess=`).
+    /// ASCII case-insensitive (the CLI historically accepted `"Hcore"`).
+    /// Unknown values are an error listing the valid options -- before this,
+    /// any string other than "hcore" silently ran MINAO.
+    pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
+        match s.to_ascii_lowercase().as_str() {
+            "minao" | "sad" => Ok(Self::Minao),
+            "hcore" => Ok(Self::Hcore),
+            _ => Err(FerricError::General(format!(
+                "unknown guess '{s}': valid options are 'minao' (default), 'sad' \
+                 (alias of 'minao': the free-atom-SCF SAD guess is not selectable \
+                 from config) and 'hcore'"
+            ))),
+        }
+    }
+
+    /// The value for `RhfConfig::use_sad_guess` (`true` selects MINAO).
+    pub fn use_sad_guess(self) -> bool {
+        matches!(self, Self::Minao)
+    }
+}
+
 /// Generate an initial density matrix from the core Hamiltonian eigenvectors.
 ///
 /// Diagonalizes H in the canonically-orthogonalized basis and occupies the
@@ -984,6 +1027,22 @@ where
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn initial_guess_parse_is_strict() {
+        assert_eq!(InitialGuess::parse_config_str("minao").unwrap(), InitialGuess::Minao);
+        assert_eq!(InitialGuess::parse_config_str("sad").unwrap(), InitialGuess::Minao);
+        assert_eq!(InitialGuess::parse_config_str("hcore").unwrap(), InitialGuess::Hcore);
+        assert_eq!(InitialGuess::parse_config_str("Hcore").unwrap(), InitialGuess::Hcore);
+        assert!(InitialGuess::Minao.use_sad_guess());
+        assert!(!InitialGuess::Hcore.use_sad_guess());
+        for bad in ["", "core", "sad-smallbasis", "huckel"] {
+            let msg = InitialGuess::parse_config_str(bad).unwrap_err().to_string();
+            for &name in InitialGuess::VALID {
+                assert!(msg.contains(&format!("'{name}'")), "{bad:?}: {msg}");
+            }
+        }
+    }
     use super::*;
     use ferric_core::basis;
     use ferric_core::mol::Molecule;
