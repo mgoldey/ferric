@@ -54,9 +54,14 @@ Two things to notice:
 
 ## 2. The same thing from the command line
 
-The wheel also installs a `ferric` command that reads a TOML input file. Save
-the three atom lines above, with their two header lines, as `water.xyz`, and
-write `water-rhf.toml` next to it:
+The wheel also installs a `ferric` command that reads a TOML input file. Write
+the geometry to `water.xyz`:
+
+```bash
+printf '3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n' > water.xyz
+```
+
+and write `water-rhf.toml` next to it:
 
 ```toml
 [molecule]

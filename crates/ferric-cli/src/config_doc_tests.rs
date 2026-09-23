@@ -107,6 +107,13 @@ fn accepted_keys_by_section() -> BTreeMap<&'static str, BTreeSet<&'static str>> 
     ])
 }
 
+/// `#[serde(alias = ...)]` names, per table. serde lists aliases among a
+/// struct's fields with nothing to tell them apart, so they are named here;
+/// these alone may be documented in another key's Notes instead of in a row
+/// of their own. A missing entry fails loudly (the alias has no row); a stale
+/// one is caught by the check at the end of the sync test.
+const SERDE_ALIASES: &[(&str, &str)] = &[("rpa", "davidson_conv_thresh")];
+
 /// The repository root, found at RUN time (see `all_shipped_examples_parse`
 /// for why `CARGO_MANIFEST_DIR` alone breaks under `cargo nextest archive`).
 fn repo_root() -> PathBuf {
@@ -222,22 +229,28 @@ fn input_reference_documents_exactly_the_accepted_keys() {
             }
         }
         for key in keys {
-            // Each key needs its own row. The one exception is a serde alias
-            // (serde lists aliases among a struct's fields), which may instead
-            // be named on a line that calls it an alias. Merely appearing in
-            // another key's notes does not count: that is how a deleted row
-            // would go unnoticed.
+            // Each key needs its own row. The only exception is a serde alias
+            // listed in SERDE_ALIASES, which is documented in the Notes of the
+            // key it aliases. Merely appearing in another row's text does not
+            // count: that is how a deleted row would go unnoticed.
             let has_row = sec.documented.iter().any(|d| d == key);
-            let named_as_alias = sec
-                .text
-                .lines()
-                .any(|l| l.contains(&format!("`{key}`")) && l.to_lowercase().contains("alias"));
-            if !has_row && !named_as_alias {
+            let is_documented_alias = SERDE_ALIASES.contains(&(sec.table.as_str(), *key))
+                && sec.text.contains(&format!("`{key}`"));
+            if !has_row && !is_documented_alias {
                 problems.push(format!(
                     "[{}] accepts `{key}`, but input.md has no row for it",
                     sec.table
                 ));
             }
+        }
+    }
+
+    // A stale entry would silently exempt a key forever.
+    for (table, alias) in SERDE_ALIASES {
+        if !accepted.get(table).is_some_and(|k| k.contains(alias)) {
+            problems.push(format!(
+                "SERDE_ALIASES lists [{table}] `{alias}`, which the config struct does not accept"
+            ));
         }
     }
 

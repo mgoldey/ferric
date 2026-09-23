@@ -75,8 +75,9 @@ the SCF runs.
   does **not** turn them into UKS/ROKS: the CLI sets an XC functional only
   for `ksdft`.
 - `pdep-rpa`, `gw` and `mp2-v` re-solve with UHF (with MOM after 5
-  iterations) when `multiplicity > 1`. With `[rpa] xc` set, that reference
-  becomes UKS.
+  iterations) when `multiplicity > 1`. For `pdep-rpa` and `gw`, setting
+  `[rpa] xc` makes that reference UKS; `mp2-v` does not read `[rpa] xc` and
+  stays UHF.
 - `lmp2`, `lmp2-direct`, `linlccd`, `wb97x-l-v`, `b2plyp`, `dsd-pbep86`,
   `tda`, `tddft`, `bse-tda` and `tdhf-static-polarizability` refuse an
   open-shell input with an error.

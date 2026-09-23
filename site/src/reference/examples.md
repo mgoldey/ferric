@@ -9,7 +9,7 @@ OPENBLAS_NUM_THREADS=1 cargo run --release --bin ferric -- examples/water-rhf.to
 
 ## What CI checks
 
-**CI only checks that the examples parse. It does not run them.** The test
+**CI parses every shipped example, but runs only the three listed below.** The test
 `all_shipped_examples_parse` (in `crates/ferric-cli/src/config.rs`) loads
 every `examples/*.toml` through the strict parser. It also checks that each
 file's `[molecule] xyz` path exists. It does not execute the calculation or

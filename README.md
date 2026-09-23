@@ -52,6 +52,7 @@ kind = "rhf"
 ```
 
 ```bash
+printf '3\nwater\nO 0.000000 0.000000 0.117790\nH 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n' > water.xyz
 OPENBLAS_NUM_THREADS=1 ferric water-rhf.toml
 ```
 

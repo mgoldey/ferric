@@ -62,8 +62,12 @@ To pull in the `dev` extra (numpy, scipy, pytest, ipython, ...) without touching
 the compiled extension:
 
 ```bash
-uv sync --extra dev --no-install-project
+uv sync --extra dev --no-install-project --inexact
 ```
+
+`--inexact` matters: `uv sync` otherwise removes packages the lockfile does not
+list, and with `--no-install-project` that includes the `ferric` you installed
+or symlinked above.
 
 ### The Python development loop
 
@@ -109,6 +113,15 @@ The docs are tested, in four places:
 | `input_reference_documents_exactly_the_accepted_keys` | a config key with no row in `reference/input.md`, or a row for a key the CLI rejects | `ferric-cli` unit tests (`src/config_doc_tests.rs`) |
 | `every_toml_block_in_the_docs_parses` | a ```` ```toml ```` block the CLI would reject | same |
 | `scripts/check_doc_snippets.py` | a marked Python block that raises, or prints something other than the ```` ```text ```` block the page shows | wheel smoke test (nightly, release tags) and `crates/ferric-python/tests/test_doc_snippets.py` |
+
+`ci.yml` skips docs-only PRs (its `paths-ignore` covers `**/*.md` and
+`site/**`), so a PR that edits only `input.md` or a TOML example runs the two
+`ferric-cli` tests nightly, not before merge. Run them yourself when you edit
+either:
+
+```bash
+OPENBLAS_NUM_THREADS=1 cargo test -p ferric-cli --lib doc_tests
+```
 
 Adding a config field therefore means adding its row to
 `site/src/reference/input.md`; the test names the missing key. A TOML block that
