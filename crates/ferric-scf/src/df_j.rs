@@ -539,6 +539,100 @@ mod tests {
         );
     }
 
+    /// E_J(D) = ½ Σ D∘J(D) is an exact quadratic in D, and J(D) exactly
+    /// linear, so along a line D(t) = D + t·X a quadratic (resp. linear) fit
+    /// must leave only rounding-level residuals. This is the property the old
+    /// explicit-inverse metric (`v.inv()` + GEMV) violated: with cond(V) ~
+    /// 7e8 its forward error is not a smooth function of D.
+    ///
+    /// MEASURED on exactly this fixture (numpy replica, same B/V/D/X, 21
+    /// points): explicit inverse → E residual 1.2e-5 Ha, J residual 7.8e-7;
+    /// Cholesky solve → E 2.8e-13, J 5.7e-14 (eigh: J 6.4e-14). The bars
+    /// below sit ~4 orders from each side. In the SCF this jitter made the
+    /// benzene/STO-3G energy wander ±1e-5 Ha with D fixed to 1e-9 (HF and
+    /// PBE alike), floored the commutator at ~1e-7, and made a 71-atom
+    /// "converged" PBE energy move 3.6e-4 Ha under a bit-level V_xc change.
+    ///
+    /// Artifact check: the fit is exact in exact arithmetic (orthogonal
+    /// polynomial projection on a symmetric grid), so a large residual cannot
+    /// come from the fit itself; the J-linearity half is independent of the
+    /// energy contraction.
+    #[test]
+    fn df_j_energy_is_smooth_in_the_density() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let op = Operator::coulomb();
+        let n = obs.nbasis();
+
+        let mut d = Array2::<f64>::zeros((n, n));
+        let mut x = Array2::<f64>::zeros((n, n));
+        for i in 0..n {
+            for j in 0..n {
+                d[(i, j)] = 0.02 * (((i * j + 3) % 11) as f64);
+                x[(i, j)] = 1e-6 * ((((i * 7 + j * 3) % 13) as f64) - 6.0);
+            }
+            d[(i, i)] += 1.0;
+        }
+        let d = 0.5 * (&d + &d.t());
+        let x = 0.5 * (&x + &x.t());
+
+        let mut dfj = DfJ::new(op, &obs, &dfbs, usize::MAX).unwrap();
+        let npt = 21usize;
+        let ts: Vec<f64> = (0..npt)
+            .map(|k| -1.0 + 2.0 * k as f64 / (npt - 1) as f64)
+            .collect();
+        let mut es = Vec::with_capacity(npt);
+        let mut js = Vec::with_capacity(npt);
+        for &t in &ts {
+            let dt = &d + &(t * &x);
+            let mut j = Array2::zeros((n, n));
+            dfj.build(&dt, &mut j).unwrap();
+            es.push(0.5 * (&dt * &j).sum());
+            js.push(j);
+        }
+
+        // Orthogonal polynomials on the symmetric grid: 1, t, t² − <t²>.
+        let m2 = ts.iter().map(|t| t * t).sum::<f64>() / npt as f64;
+        let basis_fns: [Box<dyn Fn(f64) -> f64>; 3] = [
+            Box::new(|_| 1.0),
+            Box::new(|t| t),
+            Box::new(move |t| t * t - m2),
+        ];
+        let fit_resid = |ys: &[f64], deg: usize| -> f64 {
+            let mut r = ys.to_vec();
+            for p in basis_fns.iter().take(deg + 1) {
+                let num: f64 = ts.iter().zip(ys).map(|(&t, &y)| p(t) * y).sum();
+                let den: f64 = ts.iter().map(|&t| p(t) * p(t)).sum();
+                let c = num / den;
+                for (k, &t) in ts.iter().enumerate() {
+                    r[k] -= c * p(t);
+                }
+            }
+            r.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
+        };
+
+        let e_resid = fit_resid(&es, 2);
+        let mut j_resid = 0.0_f64;
+        for mu in 0..n {
+            for nu in 0..n {
+                let col: Vec<f64> = js.iter().map(|j| j[(mu, nu)]).collect();
+                j_resid = j_resid.max(fit_resid(&col, 1));
+            }
+        }
+        assert!(
+            e_resid < 1e-9,
+            "E_J(D + tX) departs from a quadratic by {e_resid:.3e} Ha: the metric solve \
+             is not backward stable (explicit-inverse regression?)"
+        );
+        assert!(
+            j_resid < 1e-10,
+            "J(D + tX) departs from linear by {j_resid:.3e}: the metric solve is not \
+             backward stable (explicit-inverse regression?)"
+        );
+    }
+
     /// Timing demo, run explicitly:
     ///   OPENBLAS_NUM_THREADS=1 cargo test -p ferric-scf --lib \
     ///     df_j_timing_chunked_vs_naive_demo -- --ignored --nocapture
