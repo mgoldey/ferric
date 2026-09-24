@@ -435,7 +435,7 @@ pub fn solve_uhf_fockmod(
         polarizable_site_basis,
         mut dfk_sr,
         mut dfk_lr,
-    } = crate::driver::prepare(ctx, mol, prep, config, &k_mix)?;
+    } = crate::driver::prepare(ctx, mol, prep, config, &k_mix, None)?;
     let n = prep.nbasis();
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;

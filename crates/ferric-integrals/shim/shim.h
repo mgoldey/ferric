@@ -95,6 +95,14 @@ int  scf_engine_set_point_charges(scf_engine *eng,
 int scf_compute_1e_block(scf_engine *eng, const scf_basis *bs,
                            int sh1, int sh2, double *out);
 
+/* As scf_compute_1e_block, with shell sh2 translated by shift[3] (Bohr):
+ * <sh1 | op | sh2 moved to O_sh2 + shift>. shift = {0,0,0} is bitwise equal to
+ * scf_compute_1e_block. Returns n1*n2, SCF_EINVAL on a null pointer, an
+ * out-of-range shell or a non-finite shift, or SCF_EINTERNAL. */
+int scf_compute_1e_block_shifted(scf_engine *eng, const scf_basis *bs,
+                                   int sh1, int sh2, const double *shift,
+                                   double *out);
+
 /* Compute one shell-quartet (sh1 sh2 | sh3 sh4). Writes n1*n2*n3*n4 doubles
  * into out in row-major (i j k l). Returns n_written, 0 if libint screened,
  * or SCF_EINTERNAL. */
