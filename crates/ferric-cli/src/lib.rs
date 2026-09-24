@@ -867,12 +867,27 @@ pub fn run(args: Vec<String>) {
         // KS-DFT still auto-selects an aux above, so state which one ran rather
         // than leaving a CLI-vs-library energy comparison to guesswork.
         if let Some(rung0) = ladder.first() {
-            match rung0.config.df_j_aux.as_deref() {
-                Some(aux) => eprintln!("[ferric] SCF J/K: RI-JK via {aux}"),
-                None => eprintln!(
-                    "[ferric] SCF J/K: exact 4-index (set [scf] df_j_aux/df_k_aux for RI-JK)"
-                ),
-            }
+            // Same test `solve_rhf` applies before building any K: plain HF,
+            // or a functional with nonzero short-range or range-separated
+            // exact exchange. An unparseable name is reported by the SCF
+            // itself, so it is treated as "uses K" here.
+            let exchange_used = match rung0.config.xc.as_deref() {
+                None => true,
+                Some(name) => ferric_dft::libxc::xc_def_from_name(name)
+                    .map(|d| {
+                        let m = ferric_dft::libxc::k_mix_from_xc_def(&d);
+                        m.sr != 0.0 || m.omega > 0.0
+                    })
+                    .unwrap_or(true),
+            };
+            eprintln!(
+                "[ferric] SCF J/K: {}",
+                config::describe_jk_path(
+                    rung0.config.df_j_aux.as_deref(),
+                    rung0.config.df_k_aux.as_deref(),
+                    exchange_used,
+                )
+            );
         }
         let lr = ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol, &prep, op, &bounds, &ladder)
             .unwrap_or_else(|e| {

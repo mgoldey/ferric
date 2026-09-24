@@ -2209,6 +2209,52 @@ impl Config {
     }
 }
 
+/// One line saying which Coulomb/exchange path an RHF/RKS run uses.
+///
+/// `None` and `Some("")` both mean conventional four-centre integrals here:
+/// `""` is the explicit "do not density-fit" sentinel, and `None` only
+/// reaches this from `kind = "rhf"` (a `ksdft` run always carries an aux
+/// basis, from `[scf]` or the RI-JK default), where plain HF does not
+/// auto-select one. The all-RI and all-exact lines are kept verbatim from
+/// before the per-side split, so existing logs read the same.
+///
+/// `exchange_used = false` (a pure functional, whose exchange-mixing
+/// coefficients are all zero) reports that no K is built at all, whatever
+/// `df_k_aux` says: `solve_rhf` skips both the DF-K fitter and the K build
+/// in that case.
+///
+/// Before this, the log matched only on `Some(aux)` and printed
+/// `SCF J/K: RI-JK via ` (empty name) for `df_j_aux = ""`, i.e. for exactly
+/// the run that had turned density fitting OFF.
+pub fn describe_jk_path(
+    df_j_aux: Option<&str>,
+    df_k_aux: Option<&str>,
+    exchange_used: bool,
+) -> String {
+    let fitted = |a: Option<&str>| a.filter(|s| !s.is_empty()).map(str::to_string);
+    if !exchange_used {
+        return match fitted(df_j_aux) {
+            Some(j) => format!("RI-J via {j}; no K (pure functional)"),
+            None => "exact J (four-centre); no K (pure functional)".to_string(),
+        };
+    }
+    match (fitted(df_j_aux), fitted(df_k_aux)) {
+        (Some(j), Some(k)) if j == k => format!("RI-JK via {j}"),
+        (None, None) => "exact 4-index (set [scf] df_j_aux/df_k_aux for RI-JK)".to_string(),
+        (j, k) => {
+            let j = j.map_or_else(
+                || "exact J (four-centre)".to_string(),
+                |a| format!("RI-J via {a}"),
+            );
+            let k = k.map_or_else(
+                || "exact K (four-centre)".to_string(),
+                |a| format!("RI-K via {a}"),
+            );
+            format!("{j}, {k}")
+        }
+    }
+}
+
 #[cfg(test)]
 mod compat_guard_tests {
     use super::*;
@@ -2409,6 +2455,36 @@ mod compat_guard_tests {
             Some("def2-universal-jkfit")
         );
         assert_eq!(cfg("rhf", "energy", "").scf.df_j_aux_resolved(), None);
+    }
+
+    /// Pre-fix the log printed `RI-JK via ` (empty) for `df_j_aux = ""`.
+    /// Reverting `describe_jk_path` to the old `Some(aux) => "RI-JK via
+    /// {aux}"` match fails the first two assertions; the last two pin the
+    /// unchanged all-RI / all-exact lines.
+    #[test]
+    fn jk_log_line_names_what_is_actually_used() {
+        let aux = Some("def2-universal-jkfit");
+        assert_eq!(
+            describe_jk_path(Some(""), aux, true),
+            "exact J (four-centre), RI-K via def2-universal-jkfit"
+        );
+        assert_eq!(
+            describe_jk_path(Some(""), Some(""), true),
+            "exact 4-index (set [scf] df_j_aux/df_k_aux for RI-JK)"
+        );
+        // A pure functional builds no K, whatever df_k_aux names.
+        assert_eq!(
+            describe_jk_path(Some(""), aux, false),
+            "exact J (four-centre); no K (pure functional)"
+        );
+        assert_eq!(
+            describe_jk_path(aux, aux, true),
+            "RI-JK via def2-universal-jkfit"
+        );
+        assert_eq!(
+            describe_jk_path(None, None, true),
+            "exact 4-index (set [scf] df_j_aux/df_k_aux for RI-JK)"
+        );
     }
 
     /// Pre-fix, `k_builder = "cosx"` + optimize ran silently, pairing COSX
