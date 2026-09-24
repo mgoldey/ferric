@@ -121,8 +121,8 @@ Reported rather than omitted:
     parity. At def2-TZVP on C20 it is faster (0.67×); that is the only
     triple-zeta size measured.
   - Against exact direct exchange on butane it is 3.7× slower at def2-TZVP
-    (full SCF). At def2-QZVP its K build is 4.7× faster (90 s vs 421 s) at a
-    relative K error of 5.4e-5.
+    (full SCF). At def2-QZVP its K build takes 90 s against about 400 s for
+    the direct build's single J+K sweep, at a relative K error of 5.4e-5.
   - Its K build grows as N<sup>1.29</sup>–N<sup>1.32</sup> between C20 and
     C48 at def2-SVP.
   - It applies to the Coulomb operator only: a range-separated functional

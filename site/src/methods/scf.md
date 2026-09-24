@@ -147,7 +147,7 @@ Butane, one thread; TZ is def2-TZVP (184 functions), QZ is def2-QZVP (528).
 | *(default)* | Schwarz-screened direct four-centre J + K | yes | all SCF types |
 | `k_builder = "link"` | LinK: pair-list-screened direct K | yes (== direct to 9e-12 Ha, butane/def2-SVP) | RHF, UHF, ROHF |
 | `df_j_aux` / `df_k_aux` | density-fitted J and K (RI-JK) | fitting error, grows with size (see *Kohn–Sham DFT* above) | all SCF types |
-| `k_builder = "cosx"` | seminumerical (COSX) K on a grid | grid error, see below | RHF/UHF/ROHF, Coulomb operator only, no COSX gradient (see below) |
+| `k_builder = "cosx"` | seminumerical (COSX) K on a grid | grid error, see below | RHF/UHF/ROHF, Coulomb operator only; analytic gradient for RHF, RKS, UHF (see below) |
 
 **Time for one exchange build** (seconds, butane, one thread):
 
@@ -156,7 +156,7 @@ Butane, one thread; TZ is def2-TZVP (184 functions), QZ is def2-QZVP (528).
 | direct | J and K together (one integral sweep) | not measured | 400 |
 | LinK | K | being re-measured | being re-measured |
 | RI-JK | K | 0.05 | 0.43 |
-| COSX | K | not measured | 137 |
+| COSX | K | not measured | 90 |
 
 **Time for a full SCF** (seconds, butane, one thread):
 
@@ -199,8 +199,9 @@ roughly tenfold from SVP to QZVP, so it wins at high angular momentum, not at
 large system size. Measured on one thread at the default grid:
 
 - On butane, against exact direct exchange: at def2-TZVP the full COSX SCF is
-  3.7× slower (358 s vs 98 s); at def2-QZVP the COSX K build is 4.7× faster
-  (90 s vs 421 s), at a relative K error of 5.4e-5.
+  3.7× slower (358 s vs 98 s); at def2-QZVP the COSX K build takes 90 s,
+  against about 400 s for the direct build's single J+K sweep, at a relative
+  K error of 5.4e-5.
 - On n-alkanes at def2-SVP, against LinK: slower at every size measured,
   1.59× (C20), 1.09× (C32) and 1.22× (C48), with no trend toward parity. At
   def2-TZVP on C20 it is faster (0.67×).
@@ -238,13 +239,15 @@ grid); absolute energies do not. Four knobs, all optional:
 Setting any `cosx_*` key without `k_builder = "cosx"`, or `k_builder` together
 with `df_k_aux`, is refused or warned about rather than silently ignored.
 
-**COSX has no gradient of its own.** `task = "optimize"` with
-`k_builder = "cosx"` is neither refused nor warned about: the SCF energy at
-each step comes from COSX, and the nuclear gradient is the analytic
-exact-exchange gradient (four-centre derivative integrals) evaluated at the
-COSX density. The gradient is therefore not the derivative of the energy
-being minimized, and the optimized geometry is not a COSX stationary point.
-Use direct or LinK exchange for geometry optimization.
+**COSX gradients.** `task = "optimize"` and `task = "frequencies"` with
+`k_builder = "cosx"` differentiate the COSX energy itself (grid-function,
+ESP-integral and Becke-weight derivatives). With the default overlap fit the
+fitted exchange is not variational in the orbitals, so the gradient adds an
+orbital-response (Z-vector) term. The gradient is exact for RHF, RKS and UHF
+with `cosx_overlap_fit = false`, and for RHF and UHF with the default fit;
+measured against finite differences of the COSX energy it agrees to
+2e-9–4e-9 Ha/Bohr. Fitted COSX with a Kohn–Sham functional, UKS, ROHF/ROKS
+and pruned COSX grids are refused for gradient tasks before the SCF runs.
 
 ## Convergence
 
