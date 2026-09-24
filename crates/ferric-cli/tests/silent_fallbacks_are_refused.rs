@@ -218,3 +218,24 @@ fn cosx_with_optimize_is_refused_but_a_cosx_energy_runs() {
         "an rhf COSX energy",
     );
 }
+
+// ─── [scf] df_j_aux / df_k_aux spellings (item 6) ───────────────────────────
+
+/// Pre-fix: `[scf] df_j_aux = "exact"` failed with "unknown bundled basis:
+/// exact", although Python `run_dft` reads that spelling as conventional J.
+/// If `ScfCfg::df_*_aux_resolved` stops going through
+/// `ferric_scf::rhf::normalize_df_aux`, this run fails the same way again.
+#[test]
+fn scf_df_aux_accepts_the_shared_opt_out_spellings() {
+    let out = run_toml(
+        "dfaux_exact",
+        &body(
+            "water.xyz",
+            1,
+            "rhf",
+            "energy",
+            "[scf]\ndf_j_aux = \"exact\"\ndf_k_aux = \"none\"\n",
+        ),
+    );
+    assert_runs(&out, "rhf with df_j_aux = \"exact\"");
+}
