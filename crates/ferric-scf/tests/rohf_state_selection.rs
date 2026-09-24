@@ -224,6 +224,20 @@ fn minao_cfg() -> RhfConfig {
     }
 }
 
+/// The PRE-F6 hcore path: the hcore guess AND `rohf_occupation_guard = false`.
+///
+/// Since F6 (`crate::rohf_occupation`) `hcore_cfg()` alone no longer
+/// reproduces the pre-fix answers: the swap witness refuses to return the
+/// excited states the hcore guess used to converge to (OH/6-31G, F₂⁺/6-31G,
+/// NH₂/6-31G) and continues to the ground state. Tests whose claim is about
+/// the PRE-FIX hcore state pin this config instead.
+fn prefix_hcore_cfg() -> RhfConfig {
+    RhfConfig {
+        rohf_occupation_guard: false,
+        ..hcore_cfg()
+    }
+}
+
 /// Every system in the sweep, with its PySCF ROHF reference.
 ///
 /// TWO BASES for seven of the systems. This is the structural defence against
@@ -511,9 +525,14 @@ fn the_fixed_rohf_path_reaches_every_reference() {
                 n_checked += 1;
                 // `e - e_ref > TOL` (signed, not |·|): landing BELOW a PySCF
                 // reference means ferric found a LOWER ROHF stationary point,
-                // which is not a failure of ferric. Two rows do exactly that
-                // (B2 at both bases) and are documented in
+                // which is not a failure of ferric. Two rows did that before F6
+                // (B2 at both bases), documented in
                 // `ferric_finds_lower_rohf_states_than_pyscfs_standard_guesses`.
+                // Since F6's swap witness, N2+ does too, at both bases: the
+                // witness continues from PySCF's standard σ-hole state to a
+                // π-hole state 9.3 mHa (6-31G) / 24.9 mHa (cc-pVDZ) lower.
+                // MEASURED in the numpy replica; PySCF's own ROHF, started
+                // from that density, converges to it (−108.2898555038, 6-31G).
                 if e - e_ref > TOL {
                     failures.push(format!(
                         "{name}: ferric {e:.10} is {:+.4} eV ABOVE pyscf {e_ref:.10}",
@@ -632,6 +651,9 @@ fn cn_is_the_system_the_guess_fix_costs() {
 /// 0.318 eV below every standard PySCF guess, and PySCF finds a still lower
 /// −49.1004769400 only from random starts.
 ///
+/// Since F6 (the ROHF occupation guard's swap witness), the MINAO run at
+/// 6-31G also reaches the lower hcore state instead of PySCF's.
+///
 /// Neither is a ferric error: both are real ROHF stationary points, both are
 /// above the UHF bound (PySCF UHF/B₂/6-31G after stability-following is
 /// −49.1224344968, 1.43 eV below ferric's ROHF), and ROHF ≥ UHF is the only
@@ -649,9 +671,21 @@ fn ferric_finds_lower_rohf_states_than_pyscfs_standard_guesses() {
         "B2/6-31G from hcore is expected BELOW the PySCF reference (a \
          symmetry-broken state PySCF's guesses miss); got {e_hcore:.10}"
     );
+    // F6 CHANGED THIS ROW. Before the occupation guard, MINAO converged to
+    // PySCF's standard state (−49.0580367850). The swap witness now finds a
+    // one-electron move from it that is 2.37e-3 Ha lower, continues, and lands
+    // on the same symmetry-broken state as hcore (MEASURED in the numpy replica
+    // of solve_rohf on PySCF integrals: −49.0697027079). So MINAO is now also
+    // BELOW the PySCF reference, and at the hcore state.
     assert!(
-        (e_minao - B2_631G).abs() < 1e-6,
-        "B2/6-31G from MINAO should agree with PySCF; got {e_minao:.10}"
+        e_minao < B2_631G - 1e-4,
+        "B2/6-31G from MINAO is expected BELOW the PySCF reference since F6 \
+         (the swap witness continues past PySCF's standard state); got {e_minao:.10}"
+    );
+    assert!(
+        (e_minao - e_hcore).abs() < 1e-6,
+        "B2/6-31G: MINAO should now reach the same lower state as hcore \
+         ({e_hcore:.10}); got {e_minao:.10}"
     );
 
     let b2_dz = diatomic("B", "B", 1.590, 0, 3, "cc-pvdz");
@@ -758,7 +792,10 @@ fn hcore_config_reproduces_the_pre_fix_answer_bit_identically() {
     /// OH/6-31G under the hcore guess, measured at `07898944` (before the fix).
     const OH_631G_PRE_FIX: f64 = -75.203_724_952_9;
     let sys = diatomic("O", "H", 0.97, 0, 2, "6-31g");
-    let e = run(&sys, &hcore_cfg()).expect("OH/6-31G hcore must converge");
+    // The escape hatch is now TWO flags: the hcore guess, and the F6
+    // occupation guard off. With the guard on, the witness refuses this
+    // excited state (asserted at the end of this test).
+    let e = run(&sys, &prefix_hcore_cfg()).expect("OH/6-31G hcore must converge");
     println!("OH/6-31G hcore = {e:.10} (pre-fix {OH_631G_PRE_FIX:.10})");
     assert!(
         (e - OH_631G_PRE_FIX).abs() < 1e-9,
@@ -771,6 +808,14 @@ fn hcore_config_reproduces_the_pre_fix_answer_bit_identically() {
     assert!(
         e - OH_631G > 1e-3,
         "the hcore escape hatch should still land ABOVE the reference"
+    );
+    // F6: with the guard ON (the default), the hcore guess no longer returns
+    // that excited state — the swap witness finds a one-electron move 0.154 Ha
+    // lower and the SCF continues to the reference.
+    let e_guarded = run(&sys, &hcore_cfg()).expect("OH/6-31G hcore + guard must converge");
+    assert!(
+        (e_guarded - OH_631G).abs() < 1e-6,
+        "hcore guess + F6 guard should reach {OH_631G:.10}; got {e_guarded:.10}"
     );
 }
 
@@ -988,7 +1033,11 @@ fn ferrics_pre_fix_state_matches_pyscfs_hcore_state_on_two_of_four_systems() {
             HENE_SVP_PYSCF_HCORE,
         ),
     ] {
-        let e = run(&sys, &hcore_cfg()).unwrap_or_else(|m| panic!("{name} hcore: {m}"));
+        // PRE-FIX path (guard off): this test's claim is about the state the
+        // pre-F6 solver shared with PySCF's hcore run. With the guard on,
+        // F2+/6-31G no longer stops there (the witness continues to the
+        // reference); HeNe+/def2-SVP is unchanged either way.
+        let e = run(&sys, &prefix_hcore_cfg()).unwrap_or_else(|m| panic!("{name} hcore: {m}"));
         println!(
             "{name:16} ferric-hcore {e:.10}  pyscf-hcore {pyscf_hcore:.10}  diff {:.2e}",
             (e - pyscf_hcore).abs()

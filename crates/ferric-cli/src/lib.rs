@@ -593,6 +593,10 @@ pub fn run(args: Vec<String>) {
         newton_trigger: if cfg.scf.soscf { 1e-3 } else { 0.0 },
         ah_trigger: 0.0,
         mom_after_iter: cfg.scf.mom_after_iter,
+        // ROHF/ROKS F6 occupation guard (ferric_scf::rohf_occupation): ON, as
+        // in the Default impl. Not a TOML key; listed because this literal is
+        // exhaustive.
+        rohf_occupation_guard: true,
         constraints: Vec::new(),
         cdft_lambda_tol: 1e-5,
         // cDFT is not CLI-wired (constraints above are always empty), so this
