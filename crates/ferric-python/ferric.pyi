@@ -1277,6 +1277,10 @@ def run_rhf(
 ) -> RhfResult:
     """Closed-shell Restricted Hartree-Fock.
 
+    df_j_aux / df_k_aux: an aux basis name selects RI-J / RI-K; "" / "exact" /
+    "none" / "off" / "conventional" select conventional four-centre integrals
+    (the same spellings run_dft accepts, also for run_uhf / run_rohf).
+
     solvent: IEF-PCM implicit solvation, as a dielectric constant (> 1.0) or a
     solvent name (water, dmso, methanol, ethanol, acetone, dichloromethane,
     thf, chloroform, toluene, hexane). None = vacuum.

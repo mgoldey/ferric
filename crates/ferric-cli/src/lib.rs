@@ -637,8 +637,10 @@ pub fn run(args: Vec<String>) {
             eprintln!("error: {e}");
             std::process::exit(1);
         }),
-        df_j_aux: cfg.scf.df_j_aux.clone().or(df_j_default),
-        df_k_aux: cfg.scf.df_k_aux.clone().or(df_k_default),
+        // Shared spelling parser: "exact"/"none"/"off"/"conventional" mean
+        // the same "" (no density fitting) as in the Python bindings.
+        df_j_aux: cfg.scf.df_j_aux_resolved().or(df_j_default),
+        df_k_aux: cfg.scf.df_k_aux_resolved().or(df_k_default),
         xc,
         // `None` keeps `AtomicGridConfig::default()` (75x110, unpruned) —
         // byte-identical to the historical path. Only a `[dft] grid_prune`

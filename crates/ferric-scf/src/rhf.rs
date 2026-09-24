@@ -725,6 +725,30 @@ pub(crate) fn scf_converged(
     }
 }
 
+/// Spellings of `df_j_aux` / `df_k_aux` that mean "do not density-fit"
+/// (conventional four-centre J/K). Compared case-insensitively after
+/// trimming. `""` is the canonical form the SCF layer reads (see
+/// `resolve_aux` in [`solve_rhf`] and `build_df_jk`).
+pub const DF_AUX_OFF_SPELLINGS: &[&str] = &["", "none", "off", "exact", "conventional"];
+
+/// Normalise a user-supplied `df_j_aux` / `df_k_aux` value: any spelling in
+/// [`DF_AUX_OFF_SPELLINGS`] becomes the `""` sentinel, anything else is taken
+/// as an aux basis name (trimmed) and validated later by `basis::bundled`.
+///
+/// ONE parser for every surface. Python `run_dft` accepted all five
+/// spellings while `run_rhf`/`run_uhf`/`run_rohf` and the CLI `[scf]` keys
+/// passed the string through raw, so `df_j_aux="exact"` meant conventional J
+/// in one function and "look up a basis called exact" (a basis error) in the
+/// next.
+pub fn normalize_df_aux(value: &str) -> String {
+    let t = value.trim();
+    if DF_AUX_OFF_SPELLINGS.contains(&t.to_ascii_lowercase().as_str()) {
+        String::new()
+    } else {
+        t.to_string()
+    }
+}
+
 /// Refuse a molecule whose multiplicity says it is open-shell.
 ///
 /// `solve_rhf` occupies `nelec / 2` doubly-occupied orbitals and never read
@@ -2447,6 +2471,30 @@ mod tests {
         // above proves nothing about WHICH input it refuses.
         let singlet = Molecule::parse_xyz(xyz, 0, 1).unwrap();
         assert!(require_closed_shell(&singlet).is_ok());
+    }
+
+    /// Every opt-out spelling maps to the `""` sentinel and a basis name is
+    /// kept (trimmed, case preserved). If `normalize_df_aux` became a plain
+    /// passthrough again, the "exact"/"NONE"/" off " cases fail.
+    #[test]
+    fn normalize_df_aux_maps_every_opt_out_spelling_to_the_sentinel() {
+        for s in [
+            "",
+            "none",
+            "off",
+            "exact",
+            "conventional",
+            "NONE",
+            " off ",
+            "Exact",
+        ] {
+            assert_eq!(normalize_df_aux(s), "", "{s:?}");
+        }
+        assert_eq!(
+            normalize_df_aux(" def2-universal-jkfit "),
+            "def2-universal-jkfit"
+        );
+        assert_eq!(normalize_df_aux("cc-pvdz-jkfit"), "cc-pvdz-jkfit");
     }
 
     #[test]

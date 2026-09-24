@@ -270,13 +270,12 @@ fn rhf_config_budgeted(k_builder: Option<&str>, budget_bytes: Option<usize>) -> 
 fn resolve_df_aux(requested: Option<&str>, default_aux: &str) -> Option<String> {
     match requested {
         None => Some(default_aux.to_string()),
-        Some(v) => match v.trim().to_ascii_lowercase().as_str() {
-            // Some("") is the SENTINEL the SCF layer reads as "explicitly do
-            // not density-fit". Returning None here would mean "unset", which
-            // the auto-default then fills back in -- the bug this fixes.
-            "" | "none" | "off" | "exact" | "conventional" => Some(String::new()),
-            _ => Some(v.trim().to_string()),
-        },
+        // Every opt-out spelling becomes Some(""), the SENTINEL the SCF layer
+        // reads as "explicitly do not density-fit". Returning None here would
+        // mean "unset", which the auto-default then fills back in. The
+        // spelling list is shared with run_rhf/run_uhf/run_rohf and the CLI
+        // (`ferric_scf::rhf::normalize_df_aux`).
+        Some(v) => Some(ferric_scf::rhf::normalize_df_aux(v)),
     }
 }
 
@@ -552,6 +551,9 @@ impl PyRhfResult {
 ///   df_j_aux        auxiliary basis name for density-fitted Coulomb (RI-J).
 ///   df_k_aux        auxiliary basis name for density-fitted exchange (RI-K);
 ///                   should be a JK-fit basis, not an MP2-fit basis.
+///                   For either, "" / "exact" / "none" / "off" /
+///                   "conventional" select conventional four-centre integrals
+///                   (the same spellings run_dft accepts). Omitted = no DF.
 /// External perturbation:
 ///   point_charges   list of (q, x, y, z) classical point charges (Hartree
 ///                   atomic units; coordinates in Bohr) added to the one-electron
@@ -625,8 +627,9 @@ fn run_rhf(
         diis_size: diis_size.unwrap_or(8),
         integral_thresh: integral_thresh.unwrap_or(1e-12),
         k_builder: k_builder.map(|s| s.to_string()),
-        df_j_aux: df_j_aux.map(|s| s.to_string()),
-        df_k_aux: df_k_aux.map(|s| s.to_string()),
+        // Same opt-out spellings as run_dft ("exact"/"none"/"off"/...).
+        df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
+        df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
         level_shift: level_shift.unwrap_or(0.0),
         mom_after_iter: mom_after_iter.unwrap_or(0),
         diis_flavor: parse_diis_flavor(diis)?,
@@ -1765,8 +1768,9 @@ fn run_uhf(
         diis_size: diis_size.unwrap_or(8),
         integral_thresh: integral_thresh.unwrap_or(1e-12),
         k_builder: k_builder.map(|s| s.to_string()),
-        df_j_aux: df_j_aux.map(|s| s.to_string()),
-        df_k_aux: df_k_aux.map(|s| s.to_string()),
+        // Same opt-out spellings as run_dft ("exact"/"none"/"off"/...).
+        df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
+        df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
         level_shift: level_shift.unwrap_or(0.0),
         mom_after_iter: mom_after_iter.unwrap_or(0),
         external_potential: build_external_potential(point_charges, external_field),
@@ -1850,8 +1854,9 @@ fn run_rohf(
         diis_size: diis_size.unwrap_or(8),
         integral_thresh: integral_thresh.unwrap_or(1e-12),
         k_builder: k_builder.map(|s| s.to_string()),
-        df_j_aux: df_j_aux.map(|s| s.to_string()),
-        df_k_aux: df_k_aux.map(|s| s.to_string()),
+        // Same opt-out spellings as run_dft ("exact"/"none"/"off"/...).
+        df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
+        df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
         level_shift: level_shift.unwrap_or(0.0),
         mom_after_iter: mom_after_iter.unwrap_or(0),
         external_potential: build_external_potential(point_charges, external_field),

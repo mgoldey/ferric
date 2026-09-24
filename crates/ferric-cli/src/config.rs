@@ -1520,7 +1520,11 @@ pub struct ScfCfg {
     /// Unknown values and setting this with `k_builder != "cosx"` are hard
     /// errors.
     pub cosx_half_transform: Option<String>,
+    /// Aux basis for density-fitted Coulomb (RI-J), or `""` / `"exact"` /
+    /// `"none"` / `"off"` / `"conventional"` for conventional four-centre J
+    /// (see [`ScfCfg::df_j_aux_resolved`]). Omitted = the method's default.
     pub df_j_aux: Option<String>,
+    /// As `df_j_aux`, for exchange (RI-K).
     pub df_k_aux: Option<String>,
     /// Optional virtual-virtual block level shift (Ha) for open-shell SCF
     /// (UHF / ROHF / UKS / ROKS). The shift is rational-damped by the DIIS
@@ -1671,6 +1675,27 @@ pub struct CosxGridCfg {
 }
 
 impl ScfCfg {
+    /// `[scf] df_j_aux` through the shared spelling parser
+    /// (`ferric_scf::rhf::normalize_df_aux`): the opt-out spellings become
+    /// the `""` "do not density-fit" sentinel, anything else a trimmed basis
+    /// name. `None` stays `None` so the method's default still applies.
+    ///
+    /// Before this, `""` worked but `"exact"`/`"none"`/`"off"` -- which the
+    /// Python `run_dft` accepts -- reached `basis::bundled` as basis names and
+    /// failed with "unknown bundled basis: exact".
+    pub fn df_j_aux_resolved(&self) -> Option<String> {
+        self.df_j_aux
+            .as_deref()
+            .map(ferric_scf::rhf::normalize_df_aux)
+    }
+
+    /// As [`ScfCfg::df_j_aux_resolved`], for `[scf] df_k_aux`.
+    pub fn df_k_aux_resolved(&self) -> Option<String> {
+        self.df_k_aux
+            .as_deref()
+            .map(ferric_scf::rhf::normalize_df_aux)
+    }
+
     /// Resolve the `[scf] cosx_*` knobs into a `CosxConfig` (strict).
     ///
     /// A `cosx_grid` / `cosx_overlap_fit` / `cosx_backend` key with
@@ -1942,11 +1967,12 @@ impl ScfCfg {
                 if let Some(v) = r.max_iter {
                     cfg.max_iter = v;
                 }
-                if r.df_j_aux.is_some() {
-                    cfg.df_j_aux = r.df_j_aux.clone();
+                // Same spelling parser as `[scf] df_j_aux` / `df_k_aux`.
+                if let Some(v) = r.df_j_aux.as_deref() {
+                    cfg.df_j_aux = Some(ferric_scf::rhf::normalize_df_aux(v));
                 }
-                if r.df_k_aux.is_some() {
-                    cfg.df_k_aux = r.df_k_aux.clone();
+                if let Some(v) = r.df_k_aux.as_deref() {
+                    cfg.df_k_aux = Some(ferric_scf::rhf::normalize_df_aux(v));
                 }
                 cfg.stall_window = r.stall_window;
                 cfg.divergence_tol = r.divergence_tol;
@@ -2347,6 +2373,42 @@ mod compat_guard_tests {
             cfg("pdep-rpa", "optimize", "").validate_task_compat(),
             Ok(())
         );
+    }
+
+    /// `[scf] df_j_aux = "exact"` used to reach `basis::bundled("exact")`
+    /// and fail with "unknown bundled basis: exact", while Python `run_dft`
+    /// read the same spelling as conventional J. If `df_*_aux_resolved` (or
+    /// the ladder rung override) goes back to passing the string through,
+    /// the `Some("")` assertions fail.
+    #[test]
+    fn scf_df_aux_uses_the_shared_opt_out_spellings() {
+        let c = cfg(
+            "rhf",
+            "energy",
+            "[scf]\ndf_j_aux = \"exact\"\ndf_k_aux = \"None\"\n\
+             [[scf.ladder]]\ndf_j_aux = \"off\"\n",
+        );
+        assert_eq!(c.scf.df_j_aux_resolved().as_deref(), Some(""));
+        assert_eq!(c.scf.df_k_aux_resolved().as_deref(), Some(""));
+        let rungs = c
+            .scf
+            .build_ladder(&ferric_scf::rhf::RhfConfig {
+                df_j_aux: Some("def2-universal-jkfit".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(rungs[0].config.df_j_aux.as_deref(), Some(""));
+        // Anchors: a basis name and an omitted key are unchanged.
+        let named = cfg(
+            "rhf",
+            "energy",
+            "[scf]\ndf_j_aux = \"def2-universal-jkfit\"\n",
+        );
+        assert_eq!(
+            named.scf.df_j_aux_resolved().as_deref(),
+            Some("def2-universal-jkfit")
+        );
+        assert_eq!(cfg("rhf", "energy", "").scf.df_j_aux_resolved(), None);
     }
 
     /// Pre-fix, `k_builder = "cosx"` + optimize ran silently, pairing COSX
