@@ -27,6 +27,10 @@
 //!   ferric-rpa's full-rank pipeline (`run_pdep_rpa_from_parts`, no molecular
 //!   basis objects), or the dense-AFT plasmon oracle; same denominator
 //!   conventions as MP2.
+//! * [`mod@uhf`] — Stage 4: Gamma-point open-shell UHF (`gamma_uhf`) over
+//!   `ferric_scf::uhf::solve_uhf_injected`, with the per-spin Madelung term in
+//!   the K builders, a per-spin gap check against `v_M`, and the staged
+//!   (`exxdiv` none → ewald) start that avoids the Gamma Ewald trap.
 //!
 //! Units: Bohr and Hartree throughout; G vectors in Bohr⁻¹.
 //!
@@ -42,6 +46,7 @@ pub mod lattice;
 pub mod mp2;
 pub mod pair_ft;
 pub mod rsgdf;
+pub mod uhf;
 
 pub use dense_aft::{DenseAftEri, ExxDiv};
 pub use drpa::{gamma_drpa, GammaDrpaConfig, GammaDrpaIntegrals, GammaDrpaResult};
@@ -51,3 +56,4 @@ pub use lattice::Cell;
 pub use mp2::{gamma_mp2, GammaMp2Config, GammaMp2Integrals, GammaMp2Result, Mp2Denominators};
 pub use pair_ft::pair_ft;
 pub use rsgdf::{RsGdf, RsGdfConfig};
+pub use uhf::{gamma_uhf, EwaldStart, GammaUhfConfig, GammaUhfIntegrals, GammaUhfResult};

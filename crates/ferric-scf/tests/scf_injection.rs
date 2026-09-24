@@ -19,6 +19,12 @@
 //! injects a perturbed V_nn and requires the energy to move by exactly that
 //! shift (and the density not at all).
 //!
+//! Stage 4 (UHF, bottom of this file): the same three anchors for
+//! `solve_uhf_injected` on the water cation doublet (bitwise vs `solve_uhf`
+//! with `k_builder = "link"`; 1e-10 vs the default combined `DirectJK`;
+//! V_nn negative control), plus the explicit-density guess path and every
+//! refused field by name, including the UHF-only `scf_stability_descent`.
+//!
 //! Rejections: every refused `RhfConfig` field is asserted BY NAME, both on
 //! the typed `InjectedConfigError::field` and in the `FerricError` message
 //! returned by `solve_rhf_injected`.
@@ -38,6 +44,7 @@ use ferric_scf::rhf::{
     PeriodicInjection, RhfConfig,
 };
 use ferric_scf::screening::{LinkBound, SchwarzBounds, ScreeningKind};
+use ferric_scf::uhf::{solve_uhf, solve_uhf_injected, validate_injected_uhf};
 use ndarray::Array2;
 
 const WATER: &str = "3
@@ -56,7 +63,11 @@ struct Setup {
 }
 
 fn setup(basis_name: &str) -> Setup {
-    let mol = Molecule::parse_xyz(WATER, 0, 1).expect("water");
+    setup_spin(basis_name, 0, 1)
+}
+
+fn setup_spin(basis_name: &str, charge: i32, mult: usize) -> Setup {
+    let mol = Molecule::parse_xyz(WATER, charge, mult).expect("water");
     let bs = basis::bundled(basis_name).expect("basis");
     let prep = PreparedBasis::new(&mol, &bs).expect("prep");
     let op = Operator::coulomb();
@@ -454,4 +465,293 @@ fn wrong_shape_and_nonfinite_vnn_are_rejected() {
     .expect_err("NaN vnn")
     .to_string();
     assert!(e.contains("PeriodicInjection.vnn is not finite"), "{e}");
+}
+
+// ===========================================================================
+// Stage 4: solve_uhf_injected
+// ===========================================================================
+
+/// Water cation doublet (N_α = 5, N_β = 4): a genuine open shell, so K_α ≠
+/// K_β and a K built from the TOTAL density (the prototype's main mutant)
+/// changes the answer.
+fn uhf_setup() -> Setup {
+    setup_spin("6-31g", 1, 2)
+}
+
+/// Injected UHF with the given builders and the molecular (S, h, V_nn).
+fn run_uhf_injected<'a>(
+    su: &'a Setup,
+    cfg: &RhfConfig,
+    vnn_shift: f64,
+    j: Box<dyn ferric_scf::fock::JBuilder + 'a>,
+    k: Box<dyn ferric_scf::fock::KBuilder + 'a>,
+) -> ScfResult {
+    let (s, h, vnn) = molecular_one_electron(su);
+    let inj = PeriodicInjection {
+        s,
+        h,
+        vnn: vnn + vnn_shift,
+        j,
+        k,
+    };
+    solve_uhf_injected(&su.ctx, &su.mol, &su.prep, &su.bounds, cfg, inj, None)
+        .expect("injected UHF")
+}
+
+fn assert_bitwise_uhf(label: &str, a: &ScfResult, b: &ScfResult) {
+    assert_bitwise(label, a, b);
+    assert_eq!(a.density_alpha, b.density_alpha, "{label}: D_alpha");
+    assert_eq!(a.density_beta, b.density_beta, "{label}: D_beta");
+    assert_eq!(a.eps_beta, b.eps_beta, "{label}: eps_beta");
+    assert_eq!(a.fock_beta, b.fock_beta, "{label}: F_beta");
+}
+
+/// Bitwise: `solve_uhf` with `k_builder = "link"` runs DirectJ.build(D_α+D_β)
+/// then, per spin, LinkK.update_density(D_σ) + LinkK.build(D_σ) from the
+/// core guess (`use_sad_guess = false`). Injecting the same DirectJ + LinkK
+/// (same bounds, thresh, budget) must reproduce it bit for bit.
+#[test]
+fn injected_molecular_link_pair_reproduces_solve_uhf_bitwise() {
+    let su = uhf_setup();
+    let cfg = injectable_config();
+    let budget = resolve_three_index_budget(cfg.three_index_budget_bytes);
+    let ref_cfg = RhfConfig {
+        k_builder: Some("link".into()),
+        ..injectable_config()
+    };
+    let reference =
+        solve_uhf(&su.ctx, &su.mol, &su.prep, &su.bounds, &ref_cfg).expect("reference UHF");
+    // solve_uhf builds LinkK on LinkBound::SchwarzRef(bounds) with bounds.op.
+    let link_bound = LinkBound::SchwarzRef(&su.bounds);
+    let injected = run_uhf_injected(
+        &su,
+        &cfg,
+        0.0,
+        Box::new(DirectJ::new(
+            &su.ctx,
+            &su.prep,
+            &su.bounds,
+            cfg.integral_thresh,
+            budget,
+        )),
+        Box::new(LinkK::new(
+            &su.ctx,
+            &su.prep,
+            &link_bound,
+            su.op,
+            cfg.integral_thresh,
+            budget,
+        )),
+    );
+    assert_bitwise_uhf("H2O+/6-31G link UHF", &reference, &injected);
+    assert!(
+        reference.density_alpha != *reference.density_beta.as_ref().unwrap(),
+        "vacuous: the cation must be spin-polarised"
+    );
+}
+
+/// Structural: the default molecular UHF runs the combined single-pass
+/// `DirectJK::build_uhf` (one quartet sweep for J, K_α, K_β), whose reduction
+/// order differs from separate DirectJ + DirectK builds, so agreement is
+/// 1e-10 Ha, not bitwise.
+#[test]
+fn injected_direct_pair_matches_default_uhf_path() {
+    let su = uhf_setup();
+    let cfg = RhfConfig {
+        density_conv: 1e-9,
+        ..injectable_config()
+    };
+    let budget = resolve_three_index_budget(cfg.three_index_budget_bytes);
+    let reference = solve_uhf(&su.ctx, &su.mol, &su.prep, &su.bounds, &cfg).expect("reference");
+    let injected = run_uhf_injected(
+        &su,
+        &cfg,
+        0.0,
+        Box::new(DirectJ::new(
+            &su.ctx,
+            &su.prep,
+            &su.bounds,
+            cfg.integral_thresh,
+            budget,
+        )),
+        Box::new(DirectK::new(
+            &su.ctx,
+            &su.prep,
+            &su.bounds,
+            cfg.integral_thresh,
+            budget,
+        )),
+    );
+    let de = (reference.energy - injected.energy).abs();
+    let dd = (&reference.density_total - &injected.density_total)
+        .iter()
+        .fold(0.0f64, |m, v| m.max(v.abs()));
+    println!(
+        "UHF default DirectJK vs injected DirectJ+DirectK: |dE| = {de:.3e}, max|dD| = {dd:.3e}"
+    );
+    assert!(de < 1e-10, "|dE| = {de:.3e}");
+    assert!(dd < 1e-7, "max|dD| = {dd:.3e}");
+}
+
+/// Negative control: the injected V_nn is the one used (E moves by exactly
+/// the shift, densities bitwise unchanged).
+#[test]
+fn injected_uhf_vnn_is_the_one_used() {
+    let su = setup_spin("sto-3g", 1, 2);
+    let cfg = injectable_config();
+    let mk = || {
+        (
+            Box::new(DirectJ::new(&su.ctx, &su.prep, &su.bounds, 1e-12, 1 << 30)),
+            Box::new(DirectK::new(&su.ctx, &su.prep, &su.bounds, 1e-12, 1 << 30)),
+        )
+    };
+    let (j0, k0) = mk();
+    let base = run_uhf_injected(&su, &cfg, 0.0, j0, k0);
+    let (j1, k1) = mk();
+    let shifted = run_uhf_injected(&su, &cfg, 0.25, j1, k1);
+    assert!(
+        (shifted.energy - base.energy - 0.25).abs() < 1e-12,
+        "V_nn shift not honoured: dE = {}",
+        shifted.energy - base.energy
+    );
+    assert_eq!(shifted.density_alpha, base.density_alpha);
+    assert_eq!(shifted.density_beta, base.density_beta);
+}
+
+/// The explicit-density guess builds its Fock from the INJECTED builders
+/// (never MINAO / molecular build_jk). With the converged total density as
+/// the guess and `use_sad_guess = true` (legal once a density is given), the
+/// SCF lands on the same state.
+#[test]
+fn injected_uhf_explicit_density_guess_reaches_the_same_state() {
+    let su = setup_spin("sto-3g", 1, 2);
+    let cfg = injectable_config();
+    let mk = || {
+        (
+            Box::new(DirectJ::new(&su.ctx, &su.prep, &su.bounds, 1e-12, 1 << 30)),
+            Box::new(DirectK::new(&su.ctx, &su.prep, &su.bounds, 1e-12, 1 << 30)),
+        )
+    };
+    let (j0, k0) = mk();
+    let base = run_uhf_injected(&su, &cfg, 0.0, j0, k0);
+    let guess_cfg = RhfConfig {
+        use_sad_guess: true,
+        init_guess_density: Some(base.density_total.clone()),
+        ..injectable_config()
+    };
+    let (j1, k1) = mk();
+    let from_d = run_uhf_injected(&su, &guess_cfg, 0.0, j1, k1);
+    let de = (from_d.energy - base.energy).abs();
+    println!(
+        "explicit-density guess: |dE| = {de:.3e}, iterations {} (core guess {})",
+        from_d.iterations, base.iterations
+    );
+    assert!(de < 1e-8, "|dE| = {de:.3e}");
+
+    // Wrong-shape density is a named error, not a silent core-guess fallback.
+    let bad_cfg = RhfConfig {
+        init_guess_density: Some(Array2::zeros((2, 2))),
+        ..injectable_config()
+    };
+    let (j2, k2) = mk();
+    let (s, h, vnn) = molecular_one_electron(&su);
+    let inj = PeriodicInjection {
+        s,
+        h,
+        vnn,
+        j: j2,
+        k: k2,
+    };
+    let e = solve_uhf_injected(&su.ctx, &su.mol, &su.prep, &su.bounds, &bad_cfg, inj, None)
+        .expect_err("bad guess density shape")
+        .to_string();
+    assert!(e.contains("init_guess_density shape"), "{e}");
+}
+
+fn rejected_cases_uhf() -> Vec<(&'static str, RhfConfig)> {
+    let mut v = rejected_cases();
+    v.push((
+        "scf_stability_descent",
+        RhfConfig {
+            scf_stability_descent: true,
+            ..injectable_config()
+        },
+    ));
+    v
+}
+
+#[test]
+fn uhf_baseline_injectable_config_is_accepted() {
+    validate_injected_uhf(&injectable_config()).expect("baseline must validate");
+}
+
+#[test]
+fn each_rejected_field_is_named_by_validate_injected_uhf() {
+    for (field, cfg) in rejected_cases_uhf() {
+        let err = validate_injected_uhf(&cfg).expect_err(field);
+        assert_eq!(err.field, field, "wrong field reported");
+    }
+}
+
+#[test]
+fn each_rejected_field_is_named_by_solve_uhf_injected() {
+    let su = setup_spin("sto-3g", 1, 2);
+    for (field, cfg) in rejected_cases_uhf() {
+        let (s, h, vnn) = molecular_one_electron(&su);
+        let inj = PeriodicInjection {
+            s,
+            h,
+            vnn,
+            j: Box::new(DirectJ::new(&su.ctx, &su.prep, &su.bounds, 1e-12, 1 << 30)),
+            k: Box::new(DirectK::new(&su.ctx, &su.prep, &su.bounds, 1e-12, 1 << 30)),
+        };
+        let err = solve_uhf_injected(&su.ctx, &su.mol, &su.prep, &su.bounds, &cfg, inj, None)
+            .expect_err(field)
+            .to_string();
+        let needle = format!("solve_uhf_injected: RhfConfig.{field} is not supported");
+        assert!(err.contains(&needle), "expected {needle:?} in {err:?}");
+    }
+}
+
+#[test]
+fn uhf_wrong_shape_and_nonfinite_vnn_are_rejected() {
+    let su = setup_spin("sto-3g", 1, 2);
+    let cfg = injectable_config();
+    let n = su.prep.nbasis();
+    let (s, h, vnn) = molecular_one_electron(&su);
+    for (label, s_, h_, v_, needle) in [
+        (
+            "bad S",
+            Array2::<f64>::zeros((n + 1, n + 1)),
+            h.clone(),
+            vnn,
+            "solve_uhf_injected: PeriodicInjection.s has shape",
+        ),
+        (
+            "bad h",
+            s.clone(),
+            Array2::<f64>::zeros((n, n - 1)),
+            vnn,
+            "solve_uhf_injected: PeriodicInjection.h has shape",
+        ),
+        (
+            "NaN vnn",
+            s.clone(),
+            h.clone(),
+            f64::NAN,
+            "solve_uhf_injected: PeriodicInjection.vnn is not finite",
+        ),
+    ] {
+        let inj = PeriodicInjection {
+            s: s_,
+            h: h_,
+            vnn: v_,
+            j: Box::new(DirectJ::new(&su.ctx, &su.prep, &su.bounds, 1e-12, 1 << 30)),
+            k: Box::new(DirectK::new(&su.ctx, &su.prep, &su.bounds, 1e-12, 1 << 30)),
+        };
+        let e = solve_uhf_injected(&su.ctx, &su.mol, &su.prep, &su.bounds, &cfg, inj, None)
+            .expect_err(label)
+            .to_string();
+        assert!(e.contains(needle), "{label}: {e}");
+    }
 }
