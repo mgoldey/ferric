@@ -394,6 +394,334 @@ pub fn rhf_gradient(
     Ok(grad)
 }
 
+/// RHF gradient for an SCF whose exchange came from COSX (`k_builder = "cosx"`).
+///
+/// Same composition as [`rhf_gradient`] — `V_nn` + 1e + `−W dS` + ECP — but the
+/// four-centre integrals supply only Coulomb (`Γ_J = ½·D·D`) and the exchange
+/// term `−¼·tr[D K_COSX(D)]` is differentiated on the COSX grid by
+/// [`crate::cosx_gradient::cosx_exchange_gradient`]. That is the derivative of
+/// the energy the COSX SCF converged; [`rhf_gradient`] after a COSX SCF
+/// differentiates exact exchange instead and is off by the COSX grid error
+/// (measured 1e-5..3e-4 Ha/Bohr on water).
+///
+/// With `overlap_fit = true` (the energy default) the fitted energy is not
+/// variational, and the gradient is the Z-vector Lagrangian one: the response
+/// [`crate::cosx_gradient::fitted_exchange_response`] supplies `Zs` and the
+/// Lagrangian `W`, and
+///
+/// ```text
+///   g = V_nn' + tr[(D + Zs) h'] - tr[S' W] + J'(D, D) / 2 + J'(Zs, D)
+///       - (1/4) dT(D, D) - (1/2) dT(Zs, D)       (T(Y,B) = tr[Y Q Kt(B)])
+/// ```
+///
+/// (`cosx_gradient` module doc; prototype `scripts/cosx_fit_gradient_proto.py`).
+pub fn rhf_gradient_cosx(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    cosx: &crate::cosx_k::CosxConfig,
+) -> Result<Array2<f64>, FerricError> {
+    rhf_gradient_cosx_with_q(
+        mol,
+        prep,
+        op,
+        bounds,
+        result,
+        ext,
+        cosx,
+        crate::cosx_gradient::FitQ::Configured,
+    )
+}
+
+/// [`rhf_gradient_cosx`] with an explicit [`crate::cosx_gradient::FitQ`].
+/// `FitQ::Identity` runs the FITTED (Z-vector Lagrangian) assembly with
+/// `Q = I`, where it must reproduce the fit-off gradient — the exactness
+/// anchor of the fitted path. Production callers use [`rhf_gradient_cosx`].
+#[allow(clippy::too_many_arguments)]
+pub fn rhf_gradient_cosx_with_q(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    cosx: &crate::cosx_k::CosxConfig,
+    q: crate::cosx_gradient::FitQ,
+) -> Result<Array2<f64>, FerricError> {
+    crate::cosx_gradient::check_gradient_supported(cosx)?;
+    if mol.atoms.iter().any(|a| a.ghost) {
+        return Err(FerricError::Libint(
+            "rhf_gradient_cosx is not implemented for molecules containing ghost atoms".into(),
+        ));
+    }
+    let nocc = (mol.nelec() / 2) as usize;
+    let d = result.density_r();
+    let identity = q == crate::cosx_gradient::FitQ::Identity;
+    if !cosx.overlap_fit && !identity {
+        let w = build_energy_weighted_density(result, nocc);
+        let mut grad = oneelectron_gradient(mol, prep, d, &w, ext)?;
+        grad += &twoelectron_j_gradient(prep, op, bounds, d)?;
+        grad += &crate::cosx_gradient::cosx_exchange_gradient(mol, prep, cosx, &[(d, -0.25)])?;
+        grad += &ecp_gradient(mol, prep, d)?;
+        return Ok(grad);
+    }
+    // Overlap fit: Z-vector Lagrangian (Hartree-Fock, c_x = 1).
+    let resp = crate::cosx_gradient::fitted_exchange_response_with_q(
+        mol,
+        prep,
+        bounds,
+        cosx,
+        &[crate::cosx_gradient::SpinOrbitals {
+            c: result.mos_r(),
+            eps: result.eps_r(),
+            nocc,
+            d,
+        }],
+        1.0,
+        q,
+    )?;
+    let zs = &resp.zs[0];
+    let dz = d + zs;
+    let mut grad = oneelectron_gradient(mol, prep, &dz, &resp.w, ext)?;
+    grad += &twoelectron_j_gradient_with_response(prep, op, bounds, d, zs)?;
+    grad += &crate::cosx_gradient::cosx_exchange_gradient_bilinear_with_q(
+        mol,
+        prep,
+        cosx,
+        &[(d, d, -0.25), (zs, d, -0.5)],
+        q,
+    )?;
+    grad += &ecp_gradient(mol, prep, &dz)?;
+    Ok(grad)
+}
+
+/// UHF gradient for an SCF whose exchange came from COSX: [`uhf_gradient`]'s
+/// composition with `Γ_J = ½·D·D` from the four-centre integrals and the
+/// exchange `−½·Σ_σ tr[D_σ K_COSX(D_σ)]` from
+/// [`crate::cosx_gradient::cosx_exchange_gradient`]. With the overlap fit, the
+/// per-spin Z-vector response is added exactly as in [`rhf_gradient_cosx`]
+/// (exchange terms `−½ dT(D_σ, D_σ) − dT(Zs_σ, D_σ)`).
+pub fn uhf_gradient_cosx(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    cosx: &crate::cosx_k::CosxConfig,
+) -> Result<Array2<f64>, FerricError> {
+    crate::cosx_gradient::check_gradient_supported(cosx)?;
+    if mol.atoms.iter().any(|a| a.ghost) {
+        return Err(FerricError::Libint(
+            "uhf_gradient_cosx is not implemented for molecules containing ghost atoms".into(),
+        ));
+    }
+    if !matches!(result.spin, Spin::Unrestricted) {
+        return Err(FerricError::General(
+            "uhf_gradient_cosx: ScfResult.spin must be Unrestricted".into(),
+        ));
+    }
+    let nelec = mol.nelec() as i64;
+    let two_s = mol.multiplicity as i64 - 1;
+    let nocc_a = ((nelec + two_s) / 2) as usize;
+    let nocc_b = ((nelec - two_s) / 2) as usize;
+    let d_a = &result.density_alpha;
+    let d_b = result
+        .density_beta
+        .as_ref()
+        .ok_or_else(|| FerricError::General("uhf_gradient_cosx: missing density_beta".into()))?;
+    let d_total = d_a + d_b;
+    if !cosx.overlap_fit {
+        let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
+        let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
+        grad += &twoelectron_j_gradient(prep, op, bounds, &d_total)?;
+        grad += &crate::cosx_gradient::cosx_exchange_gradient(
+            mol,
+            prep,
+            cosx,
+            &[(d_a, -0.5), (d_b, -0.5)],
+        )?;
+        grad += &ecp_gradient(mol, prep, &d_total)?;
+        return Ok(grad);
+    }
+    // Overlap fit: per-spin Z-vector Lagrangian (Hartree-Fock, c_x = 1).
+    let (c_b, eps_b) = match (result.mos_beta.as_ref(), result.eps_beta.as_ref()) {
+        (Some(c), Some(e)) => (c, e.as_slice()),
+        _ => {
+            return Err(FerricError::General(
+                "uhf_gradient_cosx: missing beta orbitals".into(),
+            ))
+        }
+    };
+    let resp = crate::cosx_gradient::fitted_exchange_response(
+        mol,
+        prep,
+        bounds,
+        cosx,
+        &[
+            crate::cosx_gradient::SpinOrbitals {
+                c: &result.mos_alpha,
+                eps: &result.eps_alpha,
+                nocc: nocc_a,
+                d: d_a,
+            },
+            crate::cosx_gradient::SpinOrbitals {
+                c: c_b,
+                eps: eps_b,
+                nocc: nocc_b,
+                d: d_b,
+            },
+        ],
+        1.0,
+    )?;
+    let (zs_a, zs_b) = (&resp.zs[0], &resp.zs[1]);
+    let zt = zs_a + zs_b;
+    let dz = &d_total + &zt;
+    let mut grad = oneelectron_gradient(mol, prep, &dz, &resp.w, ext)?;
+    grad += &twoelectron_j_gradient_with_response(prep, op, bounds, &d_total, &zt)?;
+    grad += &crate::cosx_gradient::cosx_exchange_gradient_bilinear(
+        mol,
+        prep,
+        cosx,
+        &[
+            (d_a, d_a, -0.5),
+            (d_b, d_b, -0.5),
+            (zs_a, d_a, -1.0),
+            (zs_b, d_b, -1.0),
+        ],
+    )?;
+    grad += &ecp_gradient(mol, prep, &dz)?;
+    Ok(grad)
+}
+
+/// Coulomb-only four-centre gradient `Σ ½·D_μν D_λσ · d(μν|λσ)/dR` — the J half
+/// of [`twoelectron_gradient`], for a gradient whose exchange term comes from
+/// somewhere else (COSX).
+pub fn twoelectron_j_gradient(
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    d: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let max_d = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+    par_twoelectron_gradient(prep, op, bounds, max_d, |mu, nu, la, sg| {
+        0.5 * d[(mu, nu)] * d[(la, sg)]
+    })
+}
+
+/// Coulomb four-centre gradient with a Z-vector response density:
+/// `Σ (μν|λσ)' [½ D_μν D_λσ + ½ (Z_μν D_λσ + D_μν Z_λσ)]`, i.e.
+/// `½ J'(D, D) + J'(Z, D)` — the Coulomb part of the fitted-COSX Lagrangian
+/// gradient ([`rhf_gradient_cosx`]). `Z = 0` is [`twoelectron_j_gradient`].
+pub fn twoelectron_j_gradient_with_response(
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    d: &Array2<f64>,
+    z: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    let md = d.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+    let mz = z.iter().map(|v| v.abs()).fold(0.0f64, f64::max);
+    // Γ is bounded by |D|(|D| + 2|Z|) <= (max|D| + max|Z|)²: screen on that.
+    par_twoelectron_gradient(prep, op, bounds, md + mz, |mu, nu, la, sg| {
+        0.5 * d[(mu, nu)] * d[(la, sg)]
+            + 0.5 * (z[(mu, nu)] * d[(la, sg)] + d[(mu, nu)] * z[(la, sg)])
+    })
+}
+
+/// Closed-shell (RHF / RKS) SCF gradient that differentiates the exchange the
+/// SCF ACTUALLY built.
+///
+/// With `config.k_builder = "cosx"` and COSX in effect for this configuration
+/// (see [`crate::cosx_gradient::scf_exchange_is_cosx`]), routes to
+/// [`rhf_gradient_cosx`] / [`crate::ks_gradient::ks_gradient_closed_with_exchange`];
+/// otherwise it is exactly [`rhf_gradient`] / [`crate::ks_gradient::ks_gradient_closed`]
+/// (the same calls, so exact-K gradients are unchanged bit for bit).
+#[allow(clippy::too_many_arguments)]
+pub fn restricted_scf_gradient(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &crate::rhf::RhfConfig,
+    result: &ScfResult,
+) -> Result<Array2<f64>, FerricError> {
+    let ext = config.external_potential.as_ref();
+    let cosx = crate::cosx_gradient::scf_exchange_is_cosx(config, false)?.then_some(&config.cosx);
+    match (config.xc.as_deref(), cosx) {
+        (Some(xc), cosx) => crate::ks_gradient::ks_gradient_closed_with_exchange(
+            mol, prep, bs, op, bounds, xc, result, ext, cosx,
+        ),
+        (None, Some(c)) => rhf_gradient_cosx(mol, prep, op, bounds, result, ext, c),
+        (None, None) => rhf_gradient(mol, prep, op, bounds, result, ext),
+    }
+}
+
+/// Open-shell counterpart of [`restricted_scf_gradient`] for a UHF / UKS SCF.
+/// COSX exchange is differentiated for UHF ([`uhf_gradient_cosx`]); a UKS run
+/// whose exchange came from COSX is REFUSED (the COSX gradient is not wired into
+/// `ks_gradient_uks`), never paired with an exact-K gradient.
+#[allow(clippy::too_many_arguments)]
+pub fn unrestricted_scf_gradient(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    config: &crate::rhf::RhfConfig,
+    result: &ScfResult,
+) -> Result<Array2<f64>, FerricError> {
+    let ext = config.external_potential.as_ref();
+    let cosx = crate::cosx_gradient::scf_exchange_is_cosx(config, true)?;
+    match (config.xc.as_deref(), cosx) {
+        (Some(_), true) => Err(crate::cosx_gradient::unsupported_reference_error("UKS")),
+        (Some(xc), false) => {
+            crate::ks_gradient::ks_gradient_uks(mol, prep, bs, op, bounds, xc, result, ext)
+        }
+        (None, true) => uhf_gradient_cosx(mol, prep, op, bounds, result, ext, &config.cosx),
+        (None, false) => uhf_gradient(mol, prep, op, bounds, result, ext),
+    }
+}
+
+/// Closed-shell RHF/RKS: refuse BEFORE the SCF a COSX setup whose gradient is
+/// not implemented (pruned grid; overlap fit with a KS functional), so a geometry driver fails
+/// fast instead of after a full SCF. `Ok(())` when exchange is not COSX.
+pub fn preflight_cosx_restricted(config: &crate::rhf::RhfConfig) -> Result<(), FerricError> {
+    if crate::cosx_gradient::scf_exchange_is_cosx(config, false)? {
+        crate::cosx_gradient::check_gradient_supported(&config.cosx)?;
+        crate::cosx_gradient::check_fitted_ks_supported(&config.cosx, config.xc.as_deref())?;
+    }
+    Ok(())
+}
+
+/// UHF/UKS counterpart of [`preflight_cosx_restricted`]: UKS has no COSX
+/// gradient yet (refused inside [`unrestricted_scf_gradient`] too).
+pub fn preflight_cosx_unrestricted(config: &crate::rhf::RhfConfig) -> Result<(), FerricError> {
+    if crate::cosx_gradient::scf_exchange_is_cosx(config, true)? {
+        if config.xc.is_some() {
+            return Err(crate::cosx_gradient::unsupported_reference_error("UKS"));
+        }
+        crate::cosx_gradient::check_gradient_supported(&config.cosx)?;
+    }
+    Ok(())
+}
+
+/// ROHF / ROKS: no COSX gradient yet. Returns an error when the SCF's exchange
+/// came from COSX (never an exact-K gradient paired with a COSX energy);
+/// `Ok(())` otherwise, so the caller proceeds with its usual gradient.
+pub fn refuse_cosx_restricted_open(config: &crate::rhf::RhfConfig) -> Result<(), FerricError> {
+    if crate::cosx_gradient::scf_exchange_is_cosx(config, true)? {
+        return Err(crate::cosx_gradient::unsupported_reference_error(
+            "ROHF/ROKS",
+        ));
+    }
+    Ok(())
+}
+
 /// Closed-shell one- plus two-electron HF gradient of `result`'s energy: the
 /// fitted route when the SCF density-fitted J/K, else the original
 /// four-centre `hf_gradient_with_density` path, unchanged.
