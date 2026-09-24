@@ -203,6 +203,7 @@ pub(crate) fn solve_rhf_with_external(
                 computed_quartets: total_quartets,
                 induced_dipoles: None,
                 stability: None,
+                df_jk: None,
             });
         }
         prev_e = energy;

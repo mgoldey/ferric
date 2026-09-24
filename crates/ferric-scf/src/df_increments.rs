@@ -453,6 +453,8 @@ pub fn solve_rhf_with_df_increments(
                 computed_quartets: exact_quartets,
                 induced_dipoles: None,
                 stability: None,
+                // The reported energy comes from the exact cleanup iterations.
+                df_jk: None,
             };
             return Ok(DfIncrementsResult {
                 result,
@@ -487,6 +489,8 @@ pub fn solve_rhf_with_df_increments(
                 computed_quartets: exact_quartets,
                 induced_dipoles: None,
                 stability: None,
+                // The reported energy comes from the exact cleanup iterations.
+                df_jk: None,
             };
             return Ok(DfIncrementsResult {
                 result,

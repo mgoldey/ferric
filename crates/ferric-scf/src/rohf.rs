@@ -445,6 +445,24 @@ pub fn solve_rohf_best_effort(
     let (mut df_j, mut df_k) = crate::fock_assembly::build_df_jk(
         ctx, mol, coulomb_op, prep, j_aux_eff, k_aux_eff, ooc_budget,
     )?;
+    // Record the builders that produced the energy (same effective names as
+    // `build_df_jk` above and `driver::prepare`'s RSH pair) so the analytic
+    // gradient differentiates THIS energy. `None` when nothing is fitted.
+    let df_jk_route = crate::result::DfJkRoute::from_scf(
+        j_aux_eff,
+        k_aux_eff,
+        (k_mix.omega > 0.0).then(|| {
+            (
+                config
+                    .df_k_aux
+                    .as_deref()
+                    .unwrap_or(crate::fock_assembly::DEFAULT_JK_AUX),
+                k_mix.omega,
+            )
+        }),
+        coulomb_op,
+        ooc_budget,
+    );
     // Combined open-shell direct J+K + incremental Fock — identical scheme and
     // identical gating to `solve_uhf`; see the block comments there (and on
     // `DirectJK::build_uhf` / `build_uhf_incremental`) for the rationale and for
@@ -835,6 +853,7 @@ pub fn solve_rohf_best_effort(
                 computed_quartets: total_quartets,
                 induced_dipoles: last_induced_dipoles,
                 stability: None,
+                df_jk: df_jk_route.clone(),
             });
         }
         mon.note_energy(energy);
@@ -1029,6 +1048,7 @@ pub fn solve_rohf_best_effort(
         computed_quartets: total_quartets,
         induced_dipoles: last_induced_dipoles,
         stability: None,
+        df_jk: df_jk_route,
     })
 }
 
