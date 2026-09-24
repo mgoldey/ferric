@@ -858,8 +858,7 @@ pub struct PeriodicInjection<'a> {
     /// Kohn-Sham exchange-correlation on the caller's (periodic) grid, or
     /// `None` for Hartree-Fock. This is the ONLY way to run KS on the injected
     /// path: `RhfConfig.xc` stays a named error (it would build the MOLECULAR
-    /// Becke grid). When present the SCF (RHF only — the UHF injected path
-    /// refuses it by name) forms
+    /// Becke grid). When present [`solve_rhf_injected`] (RKS) forms
     ///
     /// ```text
     /// F = h + J − ½·a·K + V_xc,   E = ½Tr[D(h + F_noxc)] + E_xc + V_nn,
@@ -870,6 +869,16 @@ pub struct PeriodicInjection<'a> {
     /// by the global-hybrid fraction `a` — measured in the prototype:
     /// Madelung on `a·K` gives the box-limit `a⁻³` coefficient `a ×` the HF
     /// one (FINDINGS "Iteration 8"). For `a = 0` the injected K is never built.
+    ///
+    /// [`crate::uhf::solve_uhf_injected`] (UKS, FINDINGS "Iteration 10")
+    /// requires [`XcBuilder::supports_polarized`] and forms, per spin σ,
+    ///
+    /// ```text
+    /// F_σ = h + J[D_α + D_β] − a·K[D_σ] + V_σ,   (V_α, V_β) from build_polarized
+    /// ```
+    ///
+    /// with NO per-spin ½ (the injected K is linear in D_σ, Madelung
+    /// included) and no Madelung on the semilocal `(1 − a)` part.
     pub xc: Option<Box<dyn XcBuilder + 'a>>,
 }
 
@@ -888,6 +897,32 @@ pub trait XcBuilder {
     fn build(&mut self, d: &Array2<f64>) -> Result<(f64, Array2<f64>), FerricError>;
     /// Global exact-exchange fraction `a` (0 for LDA/GGA, 0.25 for PBE0).
     fn exact_exchange_fraction(&self) -> f64;
+    /// Spin-polarized semilocal `(E_xc, V_α, V_β)` at the per-spin densities
+    /// `(d_a, d_b)` (`tr(D_σ S) = N_σ`), for the injected UKS path
+    /// ([`crate::uhf::solve_uhf_injected`]). Each `V_σ` must be
+    /// `(nbasis, nbasis)` and symmetric, and must be the derivative of `E_xc`
+    /// with respect to `D_σ` INCLUDING the `σ_αβ` cross term of a GGA (an
+    /// energy-only test cannot see that term: FINDINGS "Iteration 10").
+    ///
+    /// Default: an error (closed-shell-only builder). Implementors that
+    /// override it must also override [`XcBuilder::supports_polarized`].
+    fn build_polarized(
+        &mut self,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+    ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
+        let _ = (d_a, d_b);
+        Err(FerricError::General(
+            "XcBuilder::build_polarized is not implemented by this builder (closed-shell only)"
+                .into(),
+        ))
+    }
+    /// Whether [`XcBuilder::build_polarized`] is implemented. Checked by
+    /// [`crate::uhf::solve_uhf_injected`] before the SCF starts, so a
+    /// closed-shell-only builder is refused by name up front.
+    fn supports_polarized(&self) -> bool {
+        false
+    }
 }
 
 /// A [`RhfConfig`] field that [`solve_rhf_injected`] cannot honour, by name.

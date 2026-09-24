@@ -47,7 +47,11 @@
 //! * [`dft`] — Stage 2: Gamma-point closed-shell KS-DFT (`gamma_rks`; LDA,
 //!   GGA, global hybrids): periodic atom-centred grid with SSF/Becke weights
 //!   over image atoms (`PeriodicGrid`), lattice-summed AOs, and `PeriodicXc`
-//!   injected into `solve_rhf_injected` as its `XcBuilder`.
+//!   injected into `solve_rhf_injected` as its `XcBuilder`. Stage 5: Gamma
+//!   UKS (`gamma_uks`) — the same `PeriodicXc` evaluated spin-polarized and
+//!   injected into `solve_uhf_injected` (`F_σ = h + J − a·K_inj(D_σ) + V_σ`),
+//!   staged ewald start for hybrids, occupation-aware gap check against
+//!   `a·v_M`. No periodic ROKS.
 //!
 //! Units: Bohr and Hartree throughout; G vectors in Bohr⁻¹.
 //!
@@ -70,8 +74,9 @@ pub mod uhf;
 
 pub use dense_aft::{DenseAftEri, ExxDiv};
 pub use dft::{
-    covering_radius_bound, gamma_rks, GammaRksConfig, GammaRksResult, PeriodicDftError,
-    PeriodicGrid, PeriodicGridConfig, PeriodicXc, PeriodicXcConfig,
+    covering_radius_bound, gamma_rks, gamma_uks, gamma_uks_with_xc, GammaRksConfig, GammaRksResult,
+    GammaUksConfig, GammaUksGridInfo, GammaUksResult, PeriodicDftError, PeriodicGrid,
+    PeriodicGridConfig, PeriodicXc, PeriodicXcConfig,
 };
 pub use drpa::{gamma_drpa, GammaDrpaConfig, GammaDrpaIntegrals, GammaDrpaResult};
 pub use ewald::{ewald_nuclear_repulsion, madelung_constant};
@@ -86,4 +91,7 @@ pub use mp2::{gamma_mp2, GammaMp2Config, GammaMp2Integrals, GammaMp2Result, Mp2D
 pub use pair_ft::pair_ft;
 pub use rsgdf::{PeriodicFitParts, RsGdf, RsGdfConfig};
 pub use ucorr::{gamma_ump2, gamma_urpa, GammaUmp2Result, GammaUrpaResult};
-pub use uhf::{gamma_uhf, EwaldStart, GammaUhfConfig, GammaUhfIntegrals, GammaUhfResult};
+pub use uhf::{
+    gamma_uhf, occupation_gaps, EwaldStart, GammaUhfConfig, GammaUhfIntegrals, GammaUhfResult,
+    SpinGapReport,
+};
