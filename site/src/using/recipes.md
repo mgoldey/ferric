@@ -35,11 +35,14 @@ Run those recipes from the repository root:
 | 4. Ligand funnel | yes (`tools.pipeline`) | RDKit, `xtb` on `PATH` |
 | 5. Residue ranking | yes (`tools.active_site`) | pdb2pqr |
 
-**On a shared machine, run anything real under a memory cap.** ferric's memory
-budget is a prediction; only a cgroup enforces a limit. MEASURED: a 27-atom job
-overshot its 4.72 GiB budget, reached 6.04 GiB and was SIGKILLed, and the
-system OOM killer took unrelated processes with it. The full explanation is in
-[For agents](agents.md#memory-the-budget-predicts-the-cgroup-enforces).
+**On a shared machine, run anything real under a memory cap.** ferric's
+memory budget charges only the large, size-dependent tensors; basis-sized
+matrices, integral engines, BLAS scratch and allocator overhead are not
+charged, so a job's resident memory can exceed the budget. Only a cgroup puts
+a hard ceiling on the process, and without one an overshoot can trigger the
+system-wide OOM killer, which may kill unrelated processes. The details are in
+[Sharp bits](sharp-bits.md#memory-budget_gb-does-not-cap-the-whole-process)
+and [For agents](agents.md#memory-the-budget-predicts-the-cgroup-enforces).
 `scripts/ferric-limited` (repository, Linux with systemd) wraps a command in a
 `systemd-run --user` scope:
 

@@ -15,10 +15,11 @@ $ ferric water-rhf.toml
 
 ## Why it is on by default
 
-A result whose run left no artifact can't be checked. The log is on by default
-because a key measurement was once lost that way. A 27-atom PBE/6-31G run was
-reported as "173 iterations, converged", but its stdout capture had been
-truncated, so the claim could only be repeated, never checked.
+A result whose run left no artifact can't be checked. Stdout captures get
+truncated, and a claim such as "173 iterations, converged" that survives only
+in a truncated capture can be repeated but never checked. The run log keeps
+the record on disk whether or not anyone captured stdout, which is why it is
+on by default.
 
 Opt out explicitly if you need to:
 
