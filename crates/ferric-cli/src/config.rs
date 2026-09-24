@@ -1996,7 +1996,88 @@ fn open_shell_kinds(task: &str) -> &'static [&'static str] {
     }
 }
 
+/// `method.kind`s whose Kohn-Sham reference is chosen by `[rpa] xc` (the same
+/// list `run()` uses to turn `[rpa] xc` into the SCF functional).
+const RPA_XC_KINDS: &[&str] = &["pdep-rpa", "rpa", "gw", "tdhf-static-polarizability"];
+
+/// `method.kind`s that read `[dft] functional`: `ksdft` uses it, and the three
+/// double hybrids carry their own functional and WARN when it differs (a
+/// user naming a functional there has at least asked for DFT).
+const DFT_FUNCTIONAL_KINDS: &[&str] = &["ksdft", "wb97x-l-v", "b2plyp", "dsd-pbep86"];
+
 impl Config {
+    /// Does this run build a Kohn-Sham integration grid at all? `[dft]
+    /// grid_prune` only means something when it does.
+    fn runs_a_ks_grid(&self) -> bool {
+        let kind = self.method.kind.as_str();
+        DFT_FUNCTIONAL_KINDS.contains(&kind)
+            || (RPA_XC_KINDS.contains(&kind) && self.rpa.xc.is_some())
+            || (matches!(kind, "tda" | "tddft") && self.tddft.xc.is_some())
+    }
+
+    /// Refuse a `[dft]` key that the selected `method.kind` never reads.
+    ///
+    /// The case that motivated it: `kind = "uhf"` with `[dft] functional =
+    /// "PBE"` on the OH radical printed the UHF energy (-74.3626375456 at
+    /// STO-3G, identical with and without the key) under a config that asks
+    /// for UKS/PBE. `rhf` did the same with a closed-shell molecule. A plain
+    /// HF number in the output looks exactly like a DFT one.
+    ///
+    /// Routing `uhf` + functional to UKS instead was considered and rejected:
+    /// the CLI has no UKS path today (`ksdft` is `solve_rhf` with `xc` set),
+    /// so routing would add a new, unvalidated CLI method (its own print
+    /// block, RI-JK default, D3/grid guards and gradients) under a kind whose
+    /// name says Hartree-Fock. The library already supports UKS; the message
+    /// names where.
+    ///
+    /// `[dft] dispersion` is not handled here: `run()` already refuses it for
+    /// any kind but `ksdft`, with its own message, before this runs.
+    pub fn validate_dft_section(&self) -> Result<(), String> {
+        let kind = self.method.kind.as_str();
+        if let Some(f) = self.dft.functional.as_deref() {
+            if !DFT_FUNCTIONAL_KINDS.contains(&kind) {
+                let hint = match kind {
+                    "rhf" => "for closed-shell Kohn-Sham DFT use kind = \"ksdft\"".to_string(),
+                    "uhf" | "rohf" => OPEN_SHELL_KS_ROUTES.to_string(),
+                    k if RPA_XC_KINDS.contains(&k) => {
+                        "this method's Kohn-Sham reference is selected by [rpa] xc".to_string()
+                    }
+                    "tda" | "tddft" => "the TDDFT functional is selected by [tddft] xc".to_string(),
+                    _ => format!("kind = \"{kind}\" runs on a Hartree-Fock reference"),
+                };
+                return Err(format!(
+                    "[dft] functional = \"{f}\" is not used by method.kind = \"{kind}\"; the run \
+                     would silently ignore it and report a result without that functional -- \
+                     {hint}. Remove the key, or pick a kind that uses it."
+                ));
+            }
+        }
+        if (self.dft.lambda.is_some() || self.dft.omega.is_some()) && kind != "wb97x-l-v" {
+            return Err(format!(
+                "[dft] lambda / omega are the wB97X-L-V double-hybrid parameters and are only \
+                 read by method.kind = \"wb97x-l-v\"; got kind = \"{kind}\", which would \
+                 silently ignore them"
+            ));
+        }
+        if let Some(s) = self.dft.grid_prune.as_deref() {
+            // A value that parses to "no pruning" asks for nothing, so it is
+            // harmless anywhere. A malformed value is left for `run()`'s
+            // strict parse, which reports it first.
+            let prunes = matches!(
+                ferric_dft::prune::PruneScheme::parse_config_str(s),
+                Ok(Some(_))
+            );
+            if prunes && !self.runs_a_ks_grid() {
+                return Err(format!(
+                    "[dft] grid_prune = \"{s}\" has no Kohn-Sham grid to prune: method.kind = \
+                     \"{kind}\" runs no exchange-correlation functional here, so the key would \
+                     be silently ignored"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Refuse an open-shell molecule for a `method.kind`/`task` that can only
     /// build a closed-shell (RHF/RKS) reference.
     ///
@@ -2060,6 +2141,75 @@ mod compat_guard_tests {
              [method]\nkind = \"{kind}\"\ntask = \"{task}\"\n{extra}"
         );
         toml::from_str::<Config>(&src).expect("test config must parse")
+    }
+
+    /// Pre-fix, every one of these ran and reported a result WITHOUT the key:
+    /// `uhf` + PBE printed the UHF energy (-74.3626375456, OH/STO-3G, same
+    /// with and without the key). If `validate_dft_section` is reverted to
+    /// `Ok(())`, every `expect_err` below panics.
+    #[test]
+    fn dft_keys_a_kind_never_reads_are_refused() {
+        for kind in ["rhf", "uhf", "rohf", "rimp2", "pdep-rpa", "tddft", "ccsd"] {
+            let e = cfg(kind, "energy", "[dft]\nfunctional = \"PBE\"\n")
+                .validate_dft_section()
+                .expect_err(kind);
+            assert!(e.contains("[dft] functional") && e.contains(kind), "{e}");
+        }
+        // uhf/rohf must name where open-shell KS actually lives.
+        let e = cfg("uhf", "energy", "[dft]\nfunctional = \"PBE\"\n")
+            .validate_dft_section()
+            .unwrap_err();
+        assert!(e.contains("solve_uhf") && e.contains("run_qmmm"), "{e}");
+        // pdep-rpa must point at the key it DOES read.
+        let e = cfg("pdep-rpa", "energy", "[dft]\nfunctional = \"PBE\"\n")
+            .validate_dft_section()
+            .unwrap_err();
+        assert!(e.contains("[rpa] xc"), "{e}");
+
+        let e = cfg(
+            "ksdft",
+            "energy",
+            "[dft]\nfunctional = \"PBE\"\nlambda = 0.5\n",
+        )
+        .validate_dft_section()
+        .unwrap_err();
+        assert!(e.contains("lambda"), "{e}");
+        let e = cfg("rhf", "energy", "[dft]\ngrid_prune = \"nwchem\"\n")
+            .validate_dft_section()
+            .unwrap_err();
+        assert!(e.contains("grid_prune"), "{e}");
+    }
+
+    /// Reachability: every combination the CLI DOES honour must still pass,
+    /// or the refusals above would pass for a guard that rejects everything.
+    #[test]
+    fn dft_keys_a_kind_reads_still_pass() {
+        let ok = [
+            (
+                "ksdft",
+                "[dft]\nfunctional = \"PBE\"\ngrid_prune = \"nwchem\"\n",
+            ),
+            ("wb97x-l-v", "[dft]\nlambda = 0.6\nomega = 0.1\n"),
+            ("b2plyp", "[dft]\nfunctional = \"B2PLYP\"\n"),
+            (
+                "pdep-rpa",
+                "[rpa]\nxc = \"PBE\"\n[dft]\ngrid_prune = \"nwchem\"\n",
+            ),
+            (
+                "tddft",
+                "[tddft]\nxc = \"PBE\"\n[dft]\ngrid_prune = \"nwchem\"\n",
+            ),
+            // "none" asks for no pruning, so it is harmless on any kind.
+            ("rhf", "[dft]\ngrid_prune = \"none\"\n"),
+            ("uhf", ""),
+        ];
+        for (kind, extra) in ok {
+            assert_eq!(
+                cfg(kind, "energy", extra).validate_dft_section(),
+                Ok(()),
+                "{kind}: {extra}"
+            );
+        }
     }
 
     /// Before the guard, `ksdft` on a doublet failed inside the SCF as

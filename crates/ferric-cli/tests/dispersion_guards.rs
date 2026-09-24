@@ -108,11 +108,20 @@ fn body(kind: &str, task: &str, dispersion: bool) -> String {
     } else {
         ""
     };
+    // `functional` only where the kind reads it. `[dft] functional` on an
+    // `rhf` run is itself refused now (`Config::validate_dft_section`), so
+    // writing it unconditionally would make the `rhf_nodisp` anchor below fail
+    // for a reason that has nothing to do with dispersion.
+    let functional = if kind == "ksdft" {
+        "functional = \"PBE\"\n"
+    } else {
+        ""
+    };
     format!(
         "[molecule]\nxyz = \"testdata/molecules/h2.xyz\"\n\n\
          [basis]\nname = \"sto-3g\"\n\n\
          [method]\nkind = \"{kind}\"\ntask = \"{task}\"\n\n\
-         [dft]\nfunctional = \"PBE\"\n{disp}"
+         [dft]\n{functional}{disp}"
     )
 }
 
