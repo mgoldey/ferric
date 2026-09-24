@@ -10,8 +10,14 @@
 //! A refusal from the Rust side (`FerricError::General`, which is how every
 //! `ferric-pbc` config/shape/budget check reports) is a `ValueError` carrying
 //! its message; numerical failures (LAPACK, libint, SCF non-convergence) are
-//! `RuntimeError`s. Charged cells and ECP bases are refused for every driver:
-//! no `ferric-pbc` path implements the electronic neutralising background.
+//! `RuntimeError`s. Charged cells are refused for every driver: no
+//! `ferric-pbc` path implements the electronic neutralising background.
+//! ECP bases are supported by every driver: the ECP is applied to the cell's
+//! molecule (`Molecule::apply_ecp`, as the molecular bindings do) before the
+//! `Cell` is built, and every path's one-electron Hamiltonian comes from
+//! `periodic_hcore` / `periodic_hcore_kpts`, which add the lattice-summed
+//! V_ECP (`ferric_pbc::ecp`) behind the `check_ecp_applied` guard. Electron
+//! counts (and `frozen_core`) are VALENCE counts under an ECP.
 
 use super::*;
 use ferric_core::FerricError;
@@ -218,12 +224,14 @@ fn pbc_setup(a: &PbcArgs<'_, '_>) -> PyResult<PbcSetup> {
         a.lattice,
         a.omega,
     )?;
-    if a.closed_shell {
-        validate_gamma_cell(a.fname, &a.mol.inner, &a.basis.inner)?;
+    // The ECP (if the basis carries one) is applied here, before the Cell is
+    // built; `periodic_hcore(_kpts)` adds V_ECP and re-checks it.
+    let emol = if a.closed_shell {
+        validate_gamma_cell(a.fname, &a.mol.inner, &a.basis.inner)?
     } else {
-        validate_periodic_cell(a.fname, &a.mol.inner, &a.basis.inner)?;
-    }
-    let cell = Cell::new(a.mol.inner.clone(), lattice_bohr).map_err(pbc_err(a.fname))?;
+        validate_periodic_cell(a.fname, &a.mol.inner, &a.basis.inner)?
+    };
+    let cell = Cell::new(emol, lattice_bohr).map_err(pbc_err(a.fname))?;
     let prep = PreparedBasis::new(cell.mol(), &a.basis.inner).map_err(make_err)?;
     let (aux, aux_name) = match a.auxbasis {
         None => (None, None),
@@ -671,7 +679,7 @@ fn run_open_shell(
 /// The result reports the per-spin gaps against the applied Madelung shift
 /// (`gaps_satisfied`).
 ///
-/// Hard errors (ValueError): charged cell, ECP basis, incompatible electron
+/// Hard errors (ValueError): charged cell, incompatible electron
 /// count / multiplicity, and every refusal of the Rust driver.
 ///
 /// Validated (tests/test_pbc_bindings.py vs crates/ferric-pbc/tests/pbc_uhf.rs):
