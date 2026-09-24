@@ -129,6 +129,13 @@ pub struct RhfConfig {
     /// flip-flop, it does not steer to the ground state. Arm only after DIIS
     /// has settled (open-shell plateaus: ~5; closed-shell wanderers: 50+).
     pub mom_after_iter: usize,
+    /// ROHF/ROKS only (ignored by every other solver): the F6 occupation guard
+    /// in `solve_rohf` — hole-swap lock for degenerate open shells, orbital-
+    /// gradient guard on convergence, and the single-swap energy witness that
+    /// refuses to return a state a one-electron move can lower (see
+    /// `crate::rohf_occupation`). Default `true`. Also inactive whenever
+    /// `mom_after_iter > 0`. `false` restores the pre-F6 loop bit-for-bit.
+    pub rohf_occupation_guard: bool,
     /// cDFT constraints. Empty (default) = ordinary SCF. Each constraint pins a
     /// fragment population (charge or spin) to a target via a Lagrange
     /// multiplier added to the Fock matrix. Consumed by `solve_cdft_uhf`.
@@ -426,6 +433,7 @@ impl Default for RhfConfig {
             trah_trigger: None,
             trah: crate::trah::TrahConfig::default(),
             mom_after_iter: 0,
+            rohf_occupation_guard: true,
             constraints: Vec::new(),
             cdft_lambda_tol: 1e-5,
             cdft_max_outer: 30,

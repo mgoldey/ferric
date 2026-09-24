@@ -124,6 +124,8 @@ pub mod mom;
 pub mod rohf_ah;
 /// Newton-step ROHF solver with f_xc kernel acceleration.
 pub mod rohf_newton;
+/// ROHF occupation guard: hole-swap lock, gradient guard, swap witness (F6).
+pub(crate) mod rohf_occupation;
 /// Internal stability analysis: is a converged SCF solution a minimum or a saddle?
 pub mod stability;
 /// Trust-region augmented-Hessian (TRAH) orbital optimization.

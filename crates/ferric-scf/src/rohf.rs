@@ -359,7 +359,10 @@ pub fn solve_rohf_best_effort(
     // an operator these orbitals are not a stationary point of. The convergence
     // exit below prints that skip reason when `check_stability` is set, so a
     // ROHF solution that this guess does not repair is DETECTABLE rather than
-    // silently reported as the ground state.
+    // silently reported as the ground state. What IS available without a
+    // Hessian is the F6 swap witness (`crate::rohf_occupation`): at
+    // convergence the best one-electron neighbours are evaluated, and a state
+    // one of them lowers is not returned.
     let mut c = match rohf_guess_mos(
         ctx,
         mol,
@@ -560,7 +563,29 @@ pub fn solve_rohf_best_effort(
     let mut d_last_fock: Option<(Array2<f64>, Array2<f64>)> = None;
     const INCREMENTAL_FULL_REBUILD_EVERY: usize = 8;
 
-    for iter in 1..=config.max_iter {
+    // F6 occupation guard (see `crate::rohf_occupation` for the measured
+    // defect and each remedy). OFF under explicit MOM, which deliberately
+    // holds non-aufbau (ΔSCF) states, and under `rohf_occupation_guard =
+    // false`, which restores the pre-F6 loop exactly.
+    let mut guard = crate::rohf_occupation::OccupationGuard::new(
+        config.mom_after_iter == 0 && config.rohf_occupation_guard,
+        nocc_double,
+        nocc_open,
+    );
+
+    let mut iter = 0usize;
+    loop {
+        iter += 1;
+        if iter > guard.iteration_cap(config.max_iter) {
+            break;
+        }
+        if let Some(c_probe) = guard.take_pending_orbitals() {
+            // A witness probe: build this pass's Fock from a single-swap
+            // neighbour of the converged state (full rebuild, no increment).
+            c = c_probe;
+            (d_a, d_b) = build_rohf_densities(&c, nocc_double, nocc_open);
+            d_last_fock = None;
+        }
         ctx.check_interrupted()?;
         let direct_full_rebuild = incremental_direct
             && (d_last_fock.is_none() || iter % INCREMENTAL_FULL_REBUILD_EVERY == 1);
@@ -681,6 +706,15 @@ pub fn solve_rohf_best_effort(
 
         let energy = e_elec_no_xc + e_xc + e_cosmo + e_pcm + e_pol + vnn;
 
+        // Swap witness: while a probe is outstanding, `energy` is the probe
+        // determinant's unrelaxed energy (see OccupationGuard::on_energy).
+        match guard.on_energy(energy, iter, &mut diis, &mut mon, ctx.is_root()) {
+            crate::rohf_occupation::GuardStep::Proceed => {}
+            crate::rohf_occupation::GuardStep::Continue => continue,
+            crate::rohf_occupation::GuardStep::Return(r) => return Ok(*r),
+            crate::rohf_occupation::GuardStep::Stop => break,
+        }
+
         // Build Roothaan effective Fock (Guest-Saunders, via PySCF projector form).
         let f_eff = roothaan_fock(&f_a, &f_b, &d_a, &d_b, &s);
         f_eff_last = f_eff.clone();
@@ -698,25 +732,7 @@ pub fn solve_rohf_best_effort(
         // plateau in the FDS-SDF formulation.
         let f_a_mo: Array2<f64> = c.t().dot(&f_a).dot(&c);
         let f_b_mo: Array2<f64> = c.t().dot(&f_b).dot(&c);
-        let mut g_mo: Array2<f64> = Array2::zeros((n, n));
-        // closed → virtual block: rows = virtual, cols = closed
-        for p in nocc_a..n {
-            for q in 0..nocc_double {
-                g_mo[(p, q)] = f_a_mo[(p, q)] + f_b_mo[(p, q)];
-            }
-        }
-        // open → virtual block: rows = virtual, cols = open
-        for p in nocc_a..n {
-            for q in nocc_double..nocc_a {
-                g_mo[(p, q)] = f_a_mo[(p, q)];
-            }
-        }
-        // closed → open block: rows = open, cols = closed
-        for p in nocc_double..nocc_a {
-            for q in 0..nocc_double {
-                g_mo[(p, q)] = f_b_mo[(p, q)];
-            }
-        }
+        let g_mo = rohf_gradient_mo(&f_a_mo, &f_b_mo, nocc_double, nocc_open);
         // Antisymmetrize in MO basis, then transform back to AO.
         let g_mo_anti: Array2<f64> = &g_mo - &g_mo.t();
         let err: Array2<f64> = s.dot(&c).dot(&g_mo_anti).dot(&c.t()).dot(&s);
@@ -764,23 +780,8 @@ pub fn solve_rohf_best_effort(
                     format!("[{i}{tag}{:.4}]", eps_now[i])
                 })
                 .collect();
-            // Per-block gradient maxima from g_mo (pre-antisymmetrize).
-            let mut g_vc_max = 0.0f64;
-            let mut g_vo_max = 0.0f64;
-            let mut g_oc_max = 0.0f64;
-            for p in nocc_a..n {
-                for q in 0..nocc_double {
-                    g_vc_max = g_vc_max.max(g_mo[(p, q)].abs());
-                }
-                for q in nocc_double..nocc_a {
-                    g_vo_max = g_vo_max.max(g_mo[(p, q)].abs());
-                }
-            }
-            for p in nocc_double..nocc_a {
-                for q in 0..nocc_double {
-                    g_oc_max = g_oc_max.max(g_mo[(p, q)].abs());
-                }
-            }
+            let (g_vc_max, g_vo_max, g_oc_max) =
+                gradient_block_maxima(&g_mo, nocc_double, nocc_open);
             eprintln!(
                 "ROHFTRACE it={iter:>3} E={energy:.10} dE={de:.3e} err={err_max:.3e} |g|vc={g_vc_max:.3e} |g|vo={g_vo_max:.3e} |g|oc={g_oc_max:.3e}  eps:{}",
                 eps_window.join(" ")
@@ -820,8 +821,11 @@ pub fn solve_rohf_best_effort(
             }
         }
 
-        if iter > 1 && converged {
+        // Gradient guard (F6): a stagnated DIIS extrapolation settles ΔP and ΔE
+        // without being a stationary point (OH ROKS/PBE on CI, 0.58 Ha high).
+        if iter > 1 && guard.accept(converged, err_max, iter, &mut diis, ctx.is_root()) {
             let (eps, c_f) = diagonalize(&f_eff, &s_inv_sqrt)?;
+            let (eps, c_f) = guard.relabel(&c, eps, c_f, &s);
             let (d_a_f, d_b_f) = build_rohf_densities(&c_f, nocc_double, nocc_open);
             let density_total = &d_a_f + &d_b_f;
             // Stability analysis is NOT available for a ROHF/ROKS reference:
@@ -839,7 +843,7 @@ pub fn solve_rohf_best_effort(
                     crate::stability::StabilitySkip::Rohf.reason()
                 );
             }
-            return Ok(ScfResult {
+            let result = ScfResult {
                 spin: Spin::RestrictedOpen,
                 energy,
                 density_total,
@@ -854,12 +858,20 @@ pub fn solve_rohf_best_effort(
                 converged: true,
                 exit: crate::result::ScfExit::Converged,
                 iterations: iter,
+                // Counts the quartets that produced THIS state; a later witness
+                // probe's builds are not added to a result that stands.
                 computed_quartets: total_quartets,
-                induced_dipoles: last_induced_dipoles,
+                induced_dipoles: last_induced_dipoles.clone(),
                 stability: None,
                 df_jk: df_jk_route.clone(),
                 rohf_spin_focks: spin_focks_last.clone(),
-            });
+            };
+            // Swap witness (F6): returned now, or held while its best
+            // single-swap neighbours are evaluated on the next passes.
+            if let Some(r) = guard.on_converged(result, &f_a, &f_b) {
+                return Ok(r);
+            }
+            continue;
         }
         mon.note_energy(energy);
 
@@ -891,7 +903,8 @@ pub fn solve_rohf_best_effort(
             && (xc_contrib.is_none() || xc_supports_newton_fxc)
             && k_mix.omega == 0.0;
         if use_ah {
-            let (_, c_now) = diagonalize(&f_eff, &s_inv_sqrt)?;
+            let (eps_now, c_now) = diagonalize(&f_eff, &s_inv_sqrt)?;
+            let (_, c_now) = guard.relabel(&c, eps_now, c_now, &s);
             let f_a_mo = c_now.t().dot(&f_a).dot(&c_now);
             let f_b_mo = c_now.t().dot(&f_b).dot(&c_now);
 
@@ -937,7 +950,8 @@ pub fn solve_rohf_best_effort(
             && err_max < config.newton_trigger
             && (xc_contrib.is_none() || xc_supports_newton_fxc);
         if use_newton {
-            let (_, c_now) = diagonalize(&f_eff, &s_inv_sqrt)?;
+            let (eps_now, c_now) = diagonalize(&f_eff, &s_inv_sqrt)?;
+            let (_, c_now) = guard.relabel(&c, eps_now, c_now, &s);
             let f_a_mo = c_now.t().dot(&f_a).dot(&c_now);
             let f_b_mo = c_now.t().dot(&f_b).dot(&c_now);
 
@@ -997,7 +1011,12 @@ pub fn solve_rohf_best_effort(
                     f_new += &shift_term;
                 }
             }
-            let (_, c_new) = diagonalize(&f_new, &s_inv_sqrt)?;
+            let (eps_new, c_new) = diagonalize(&f_new, &s_inv_sqrt)?;
+            // F6 hole-swap lock (see crate::rohf_occupation): a no-op (the same
+            // `c_new`) unless the open shell has swapped several iterations
+            // running, after which the labels follow orbital continuity.
+            let announce = rohf_trace() || (config.verbose && ctx.is_root());
+            let c_new = guard.select(&c, eps_new, c_new, &s, &mut diis, announce);
             let c_after_mom = if config.mom_after_iter > 0 && iter > config.mom_after_iter {
                 match mom_ref.as_ref() {
                     Some((ref_closed, ref_open)) => crate::mom::mom_reorder(
@@ -1034,6 +1053,7 @@ pub fn solve_rohf_best_effort(
     // convergence LADDER can carry them into the next rung.
     let (eps_last, c_last) =
         diagonalize(&f_eff_last, &s_inv_sqrt).unwrap_or_else(|_| (vec![0.0; c.ncols()], c.clone()));
+    let (eps_last, c_last) = guard.relabel(&c, eps_last, c_last, &s);
     let density_total = &d_a + &d_b;
     Ok(ScfResult {
         spin: Spin::RestrictedOpen,
@@ -1049,13 +1069,79 @@ pub fn solve_rohf_best_effort(
         fock_beta: None,
         converged: false,
         exit: crate::result::ScfExit::MaxIter,
-        iterations: config.max_iter,
+        iterations: guard.reported_iterations(config.max_iter),
         computed_quartets: total_quartets,
         induced_dipoles: last_induced_dipoles,
         stability: None,
         df_jk: df_jk_route,
         rohf_spin_focks: spin_focks_last,
     })
+}
+
+/// The ROHF orbital-rotation gradient in the MO basis (PySCF `get_grad`),
+/// before antisymmetrization: only the three unique off-diagonal blocks
+///   g[v,c] = f_α[v,c] + f_β[v,c]   (closed → virtual)
+///   g[v,o] = f_α[v,o]              (open → virtual; only α occupies open)
+///   g[o,c] = f_β[o,c]              (closed → open; only β leaves open)
+/// are nonzero. Moved verbatim out of `solve_rohf_best_effort` (same element
+/// order, same arithmetic).
+fn rohf_gradient_mo(
+    f_a_mo: &Array2<f64>,
+    f_b_mo: &Array2<f64>,
+    nocc_double: usize,
+    nocc_open: usize,
+) -> Array2<f64> {
+    let n = f_a_mo.nrows();
+    let nocc_a = nocc_double + nocc_open;
+    let mut g_mo: Array2<f64> = Array2::zeros((n, n));
+    // closed → virtual block: rows = virtual, cols = closed
+    for p in nocc_a..n {
+        for q in 0..nocc_double {
+            g_mo[(p, q)] = f_a_mo[(p, q)] + f_b_mo[(p, q)];
+        }
+    }
+    // open → virtual block: rows = virtual, cols = open
+    for p in nocc_a..n {
+        for q in nocc_double..nocc_a {
+            g_mo[(p, q)] = f_a_mo[(p, q)];
+        }
+    }
+    // closed → open block: rows = open, cols = closed
+    for p in nocc_double..nocc_a {
+        for q in 0..nocc_double {
+            g_mo[(p, q)] = f_b_mo[(p, q)];
+        }
+    }
+    g_mo
+}
+
+/// Per-block maxima `(|g|vc, |g|vo, |g|oc)` of the pre-antisymmetrized MO
+/// gradient, for the FERRIC_ROHF_TRACE line. Moved verbatim out of
+/// `solve_rohf_best_effort`.
+fn gradient_block_maxima(
+    g_mo: &Array2<f64>,
+    nocc_double: usize,
+    nocc_open: usize,
+) -> (f64, f64, f64) {
+    let n = g_mo.nrows();
+    let nocc_a = nocc_double + nocc_open;
+    let mut g_vc_max = 0.0f64;
+    let mut g_vo_max = 0.0f64;
+    let mut g_oc_max = 0.0f64;
+    for p in nocc_a..n {
+        for q in 0..nocc_double {
+            g_vc_max = g_vc_max.max(g_mo[(p, q)].abs());
+        }
+        for q in nocc_double..nocc_a {
+            g_vo_max = g_vo_max.max(g_mo[(p, q)].abs());
+        }
+    }
+    for p in nocc_double..nocc_a {
+        for q in 0..nocc_double {
+            g_oc_max = g_oc_max.max(g_mo[(p, q)].abs());
+        }
+    }
+    (g_vc_max, g_vo_max, g_oc_max)
 }
 
 /// Build ROHF α/β densities from MO coefficients:
