@@ -51,7 +51,12 @@
 //!   UKS (`gamma_uks`) — the same `PeriodicXc` evaluated spin-polarized and
 //!   injected into `solve_uhf_injected` (`F_σ = h + J − a·K_inj(D_σ) + V_σ`),
 //!   staged ewald start for hybrids, occupation-aware gap check against
-//!   `a·v_M`. No periodic ROKS.
+//!   `a·v_M`.
+//! * [`rohf`] — Stage 5b: Gamma ROHF / ROKS (`gamma_rohf`, `gamma_roks`) via
+//!   `ferric_scf::rohf::solve_rohf_injected`: the UHF/UKS per-spin Fock
+//!   (`F_σ = h + J − a·K_inj(D_σ) + V_σ`) Roothaan-combined on one MO set,
+//!   staged ewald start for `a > 0`, per-spin gaps from the actual
+//!   occupations against `a·v_M`.
 //! * [`kpts`], [`kscf`], [`kdense_aft`] — Stage 3: k-point RHF
 //!   (`solve_krhf`): Monkhorst-Pack / Gamma-centred meshes with exact
 //!   Bloch phases and time-reversal pairing, per-k complex `S(k)`, `h(k)`
@@ -59,6 +64,11 @@
 //!   (`pair_ft::residues`), a DENSE pure-AFT k-point J/K oracle (supercell
 //!   Madelung for `exxdiv = ewald`) and k-point RS-GDF per momentum transfer
 //!   q ([`rsgdf::kpoint`], `KRhfConfig::jk = rsgdf`).
+//! * [`kuscf`] — Stage 9: k-point open-shell UHF (`solve_kuhf`): per-spin
+//!   `D_σ(k)`, `J[D_α + D_β]`, `K[D_σ]` from the same `KPointJk` (Madelung
+//!   linear, no per-spin ½), GLOBAL per-spin aufbau over the mesh, staged
+//!   (none → ewald) start by default, per-spin gaps from the actual
+//!   occupations, giant-determinant `⟨S²⟩`.
 //! * [`kcorr`] — Stage 9: k-point closed-shell MP2 (`kpoint_mp2`) and
 //!   direct RPA (`kpoint_drpa`) on the complex k-point RS-GDF blocks (or the
 //!   dense-AFT pair oracle `KDenseAftPairs`): explicit `Bvo`, momentum
@@ -81,10 +91,12 @@ pub mod kcorr;
 pub mod kdense_aft;
 pub mod kpts;
 pub mod kscf;
+pub mod kuscf;
 pub mod lattice;
 pub mod lmp2;
 pub mod mp2;
 pub mod pair_ft;
+pub mod rohf;
 pub mod rsgdf;
 pub mod ucorr;
 pub mod uhf;
@@ -109,6 +121,10 @@ pub use kscf::{
     complex_canonical_orthogonalizer, solve_krhf, solve_krhf_injected, KJkKind, KPointInjection,
     KPointJk, KRhfConfig, KScfConfig, KScfResult,
 };
+pub use kuscf::{
+    kuhf_gap_report, solve_kuhf, solve_kuhf_injected, solve_kuhf_injected_with_guess, KUScfResult,
+    KUhfConfig, KUhfResult,
+};
 pub use lattice::Cell;
 pub use lmp2::{
     gamma_lmp2, gamma_lmp2_with_spaces, gamma_localized_spaces, mp2_closed_form_local, needle_axis,
@@ -117,6 +133,10 @@ pub use lmp2::{
 };
 pub use mp2::{gamma_mp2, GammaMp2Config, GammaMp2Integrals, GammaMp2Result, Mp2Denominators};
 pub use pair_ft::pair_ft;
+pub use rohf::{
+    gamma_rohf, gamma_roks, gamma_roks_with_xc, rohf_occupation_gaps, GammaRohfConfig,
+    GammaRohfResult, GammaRoksConfig, GammaRoksResult,
+};
 pub use rsgdf::kpoint::{KRsGdf, KRsGdfConfig, KRsGdfJk, KRsGdfQStats, KRsGdfStats};
 pub use rsgdf::{PeriodicFitParts, RsGdf, RsGdfConfig};
 pub use ucorr::{gamma_ump2, gamma_urpa, GammaUmp2Result, GammaUrpaResult};
