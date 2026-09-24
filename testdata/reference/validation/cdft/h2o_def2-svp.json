@@ -1,0 +1,163 @@
+{
+  "row": "cDFT",
+  "system": "h2o",
+  "basis": "def2-svp",
+  "charge": 1,
+  "multiplicity": 2,
+  "functional": "PBE",
+  "fragment": [
+    0
+  ],
+  "nuclear_repulsion": 9.18919322931,
+  "nao": 24,
+  "grids": {
+    "matched": {
+      "radial": 99,
+      "nwchem_lebedev_index": 11,
+      "angular": 302
+    },
+    "converged": {
+      "radial": 300,
+      "nwchem_lebedev_index": 16,
+      "angular": 974
+    }
+  },
+  "unconstrained": {
+    "matched": {
+      "energy": -75.816969607085,
+      "grid_integrated_density": 9.000000562233
+    },
+    "converged": {
+      "energy": -75.816969287755,
+      "grid_integrated_density": null
+    }
+  },
+  "constrained": [
+    {
+      "kind": "charge",
+      "target": 7.3,
+      "nwchem_fragment_charge": 0.7000000000000002,
+      "nwchem_cdft_line": "cdft 1 1 charge 0.7000000000000002 pop becke convergence 1e-10",
+      "matched": {
+        "energy": -75.795481839155,
+        "lambda": 0.2264993417,
+        "e_minus_unconstrained": 0.021487767929997403,
+        "grid_integrated_density": 9.000000662053
+      },
+      "converged": {
+        "energy": -75.795481598846,
+        "lambda": 0.2264988329,
+        "e_minus_unconstrained": 0.021487688909004987,
+        "grid_integrated_density": null
+      }
+    },
+    {
+      "kind": "charge",
+      "target": 7.4,
+      "nwchem_fragment_charge": 0.5999999999999996,
+      "nwchem_cdft_line": "cdft 1 1 charge 0.5999999999999996 pop becke convergence 1e-10",
+      "matched": {
+        "energy": -75.812254760384,
+        "lambda": 0.1079658329,
+        "e_minus_unconstrained": 0.004714846701006081,
+        "grid_integrated_density": 9.000000608788
+      },
+      "converged": {
+        "energy": -75.812254473747,
+        "lambda": 0.1079654155,
+        "e_minus_unconstrained": 0.0047148140079968925,
+        "grid_integrated_density": null
+      }
+    },
+    {
+      "kind": "charge",
+      "target": 7.6,
+      "nwchem_fragment_charge": 0.40000000000000036,
+      "nwchem_cdft_line": "cdft 1 1 charge 0.40000000000000036 pop becke convergence 1e-10",
+      "matched": {
+        "energy": -75.808543112909,
+        "lambda": -0.1505773025,
+        "e_minus_unconstrained": 0.008426494175992616,
+        "grid_integrated_density": 9.000000501242
+      },
+      "converged": {
+        "energy": -75.808542761255,
+        "lambda": -0.1505775357,
+        "e_minus_unconstrained": 0.008426526500002751,
+        "grid_integrated_density": null
+      }
+    },
+    {
+      "kind": "spin",
+      "target": 0.9,
+      "nwchem_cdft_line": "cdft 1 1 spin 0.9 pop becke convergence 1e-10",
+      "matched": {
+        "energy": -75.81546145264,
+        "lambda": 0.0403329911,
+        "e_minus_unconstrained": 0.0015081544450055162,
+        "grid_integrated_density": 9.000000561951
+      },
+      "converged": {
+        "energy": -75.815461134758,
+        "lambda": 0.0403329596,
+        "e_minus_unconstrained": 0.0015081529970046859,
+        "grid_integrated_density": null
+      }
+    }
+  ],
+  "provenance": {
+    "code": "NWChem",
+    "version": "7.2.2",
+    "keywords": {
+      "module": "dft (odft)",
+      "xc": "xpbe96 cpbe96",
+      "cdft": "pop becke, convergence 1e-10, cdft_maxiter 200",
+      "grid": "lebedev <nrad> <iang> becke treutler; set dft:no_prune T",
+      "integrals": "direct, tolerances tight, no density fitting",
+      "inputs": "scripts/validation/nwchem/cdft/h2o_def2-svp_*.nw"
+    },
+    "grid": {
+      "matched": "99x302 Treutler(Perez-Jorda Chebyshev) x Lebedev, Becke size-adjusted, unpruned",
+      "converged": "300x974 Treutler(Perez-Jorda Chebyshev) x Lebedev, Becke size-adjusted, unpruned"
+    },
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "energy": 1e-11,
+      "density": 1e-09,
+      "cdft_multiplier": 1e-10
+    },
+    "stability": null,
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/h2o.xyz",
+    "geometry_xyz_sha256": "284b6da243e9abcf0aa2d6e13ad7204946feecb55d27b7819f12097095fdd6ae",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.22259084021251865
+      ],
+      [
+        "H",
+        0.0,
+        1.4275992699810498,
+        -0.8903652505761991
+      ],
+      [
+        "H",
+        0.0,
+        -1.4275992699810498,
+        -0.8903652505761991
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_cdft.py",
+    "git_head": "a13f2ff5f6a5e27b84118c9ce14864f021232f54",
+    "generated_utc": "2026-09-24T22:37:02+00:00"
+  }
+}

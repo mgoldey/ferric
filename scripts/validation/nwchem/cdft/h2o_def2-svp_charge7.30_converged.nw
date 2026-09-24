@@ -1,0 +1,51 @@
+start cdft
+title ferric-validation-cdft
+geometry units bohr noautoz noautosym nocenter
+  symmetry c1
+  O 0.0 0.0 0.22259084021251865
+  H 0.0 1.4275992699810498 -0.8903652505761991
+  H 0.0 -1.4275992699810498 -0.8903652505761991
+end
+basis "ao basis" spherical
+O S
+  2266.1767785 -0.005389350392174298
+  340.87010191 -0.040234721388960164
+  77.363135167 -0.18008184205525832
+  21.47964494 -0.46828857657650924
+  6.6589433124 -0.44692617160187303
+O S
+  0.80975975668 1.0
+O S
+  0.25530772234 1.0
+O P
+  17.721504317 0.06263024876316103
+  3.863550544 0.33331138482351774
+  1.0480920883 0.7414863830812235
+O P
+  0.27641544411 1.0
+O D
+  1.2 1.0
+H S
+  13.010701 0.033485484812988665
+  1.9622572 0.23472187088124866
+  0.44453796 0.8137702852595536
+H S
+  0.12194962 1.0
+H P
+  0.8 1.0
+end
+charge 1
+dft
+  odft
+  mult 2
+  xc xpbe96 cpbe96
+  grid lebedev 300 16 becke treutler
+  convergence energy 1e-11 density 1e-09 nolevelshifting
+  tolerances tight
+  iterations 300
+  direct
+  cdft 1 1 charge 0.7000000000000002 pop becke convergence 1e-10
+end
+set dft:no_prune T
+set dft:cdft_maxiter 200
+task dft energy

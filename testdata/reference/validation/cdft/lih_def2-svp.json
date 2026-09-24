@@ -1,0 +1,140 @@
+{
+  "row": "cDFT",
+  "system": "lih",
+  "basis": "def2-svp",
+  "charge": 0,
+  "multiplicity": 1,
+  "functional": "PBE",
+  "fragment": [
+    0
+  ],
+  "nuclear_repulsion": 0.992207270475,
+  "nao": 14,
+  "grids": {
+    "matched": {
+      "radial": 99,
+      "nwchem_lebedev_index": 11,
+      "angular": 302
+    },
+    "converged": {
+      "radial": 300,
+      "nwchem_lebedev_index": 16,
+      "angular": 974
+    }
+  },
+  "unconstrained": {
+    "matched": {
+      "energy": -8.037886043584,
+      "grid_integrated_density": 4.000000063734
+    },
+    "converged": {
+      "energy": -8.037885616523,
+      "grid_integrated_density": null
+    }
+  },
+  "constrained": [
+    {
+      "kind": "charge",
+      "target": 2.6,
+      "nwchem_fragment_charge": 0.3999999999999999,
+      "nwchem_cdft_line": "cdft 1 1 charge 0.3999999999999999 pop becke convergence 1e-10",
+      "matched": {
+        "energy": -8.014120971847,
+        "lambda": 0.2220574994,
+        "e_minus_unconstrained": 0.023765071737001264,
+        "grid_integrated_density": 4.000000044321
+      },
+      "converged": {
+        "energy": -8.014120473928,
+        "lambda": 0.2220579383,
+        "e_minus_unconstrained": 0.02376514259500162,
+        "grid_integrated_density": null
+      }
+    },
+    {
+      "kind": "charge",
+      "target": 2.75,
+      "nwchem_fragment_charge": 0.25,
+      "nwchem_cdft_line": "cdft 1 1 charge 0.25 pop becke convergence 1e-10",
+      "matched": {
+        "energy": -8.035101208626,
+        "lambda": 0.0676569219,
+        "e_minus_unconstrained": 0.0027848349580015253,
+        "grid_integrated_density": 4.000000048427
+      },
+      "converged": {
+        "energy": -8.035100761173,
+        "lambda": 0.0676571282,
+        "e_minus_unconstrained": 0.0027848553500007256,
+        "grid_integrated_density": null
+      }
+    },
+    {
+      "kind": "charge",
+      "target": 2.95,
+      "nwchem_fragment_charge": 0.04999999999999982,
+      "nwchem_cdft_line": "cdft 1 1 charge 0.04999999999999982 pop becke convergence 1e-10",
+      "matched": {
+        "energy": -8.032962399036,
+        "lambda": -0.0837209548,
+        "e_minus_unconstrained": 0.004923644548000539,
+        "grid_integrated_density": 4.000000090858
+      },
+      "converged": {
+        "energy": -8.03296200679,
+        "lambda": -0.0837202856,
+        "e_minus_unconstrained": 0.004923609733001655,
+        "grid_integrated_density": null
+      }
+    }
+  ],
+  "provenance": {
+    "code": "NWChem",
+    "version": "7.2.2",
+    "keywords": {
+      "module": "dft (odft)",
+      "xc": "xpbe96 cpbe96",
+      "cdft": "pop becke, convergence 1e-10, cdft_maxiter 200",
+      "grid": "lebedev <nrad> <iang> becke treutler; set dft:no_prune T",
+      "integrals": "direct, tolerances tight, no density fitting",
+      "inputs": "scripts/validation/nwchem/cdft/lih_def2-svp_*.nw"
+    },
+    "grid": {
+      "matched": "99x302 Treutler(Perez-Jorda Chebyshev) x Lebedev, Becke size-adjusted, unpruned",
+      "converged": "300x974 Treutler(Perez-Jorda Chebyshev) x Lebedev, Becke size-adjusted, unpruned"
+    },
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "energy": 1e-11,
+      "density": 1e-09,
+      "cdft_multiplier": 1e-10
+    },
+    "stability": null,
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/lih.xyz",
+    "geometry_xyz_sha256": "5a49e24c6e2d4c1d7d10d0915321276dfa62c73f98c332570cbe34d4bed2ff35",
+    "geometry_bohr": [
+      [
+        "Li",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        0.0,
+        3.0235617993040993
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_cdft.py",
+    "git_head": "a13f2ff5f6a5e27b84118c9ce14864f021232f54",
+    "generated_utc": "2026-09-24T22:31:26+00:00"
+  }
+}
