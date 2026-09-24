@@ -32,8 +32,7 @@
 //! Memory is `2 N_k² nao⁴ × 16` bytes (HARD-capped by
 //! [`KDenseAftConfig::max_bytes`], error not warning) and the K sphere grows
 //! as `Ω p_max^{3/2}`: toy cells and the exactness anchors only. Production
-//! k-point exchange needs complex RS-GDF per q (not implemented; see
-//! `kscf` module doc).
+//! k-point J/K is complex RS-GDF per q ([`crate::rsgdf::kpoint`]).
 
 use crate::budget::{bytes_of, Ledger};
 use crate::dense_aft::{ExxDiv, DEFAULT_DENSE_AFT_MAX_BYTES, DEFAULT_DENSE_AFT_PRECISION};
@@ -126,7 +125,7 @@ impl KDenseAftEri {
         if kbytes > cfg.max_bytes as u128 {
             return Err(FerricError::General(format!(
                 "KDenseAftEri: dense k-point kernels need {kbytes} bytes (nao = {nao}, N_k = {nk}) \
-                 > cap {} bytes; this is a toy-cell oracle (k-point RS-GDF is not implemented)",
+                 > cap {} bytes; this is a toy-cell oracle (use jk = rsgdf)",
                 cfg.max_bytes
             )));
         }
