@@ -35,6 +35,11 @@
 //!   pair below a volume onset; the opt-in `GammaEpsGate::UniformHeadRestored`
 //!   ("A-drop": restored q = 0 head, needle supercells only) removes it, with
 //!   a different eps = 0 target (see the module doc).
+//! * [`ucorr`] — Stage 8: Gamma-point open-shell UMP2 (`gamma_ump2`) and
+//!   URPA (`gamma_urpa`) on the Gamma UHF: per-spin B from ONE periodic B →
+//!   ferric-mp2's `u_ri_mp2_from_parts` / ferric-rpa's
+//!   `run_u_pdep_rpa_from_parts`, or the dense-AFT oracle (independent UMP2
+//!   loop, joint-spin plasmon); the same `v_M` on each spin's occupied levels.
 //! * [`mod@uhf`] — Stage 4: Gamma-point open-shell UHF (`gamma_uhf`) over
 //!   `ferric_scf::uhf::solve_uhf_injected`, with the per-spin Madelung term in
 //!   the K builders, a per-spin gap check against `v_M`, and the staged
@@ -55,6 +60,7 @@ pub mod lmp2;
 pub mod mp2;
 pub mod pair_ft;
 pub mod rsgdf;
+pub mod ucorr;
 pub mod uhf;
 
 pub use dense_aft::{DenseAftEri, ExxDiv};
@@ -70,4 +76,5 @@ pub use lmp2::{
 pub use mp2::{gamma_mp2, GammaMp2Config, GammaMp2Integrals, GammaMp2Result, Mp2Denominators};
 pub use pair_ft::pair_ft;
 pub use rsgdf::{PeriodicFitParts, RsGdf, RsGdfConfig};
+pub use ucorr::{gamma_ump2, gamma_urpa, GammaUmp2Result, GammaUrpaResult};
 pub use uhf::{gamma_uhf, EwaldStart, GammaUhfConfig, GammaUhfIntegrals, GammaUhfResult};
