@@ -10,8 +10,9 @@ There are two ways in. Most people want the first.
 ## Fastest: the prebuilt wheel
 
 Wheels are published to PyPI for **Linux x86_64** (`manylinux_2_28`),
-CPython 3.10–3.13. libint2 and libxc are compiled into the extension and
-OpenBLAS ships inside the wheel, so nothing needs compiling.
+CPython 3.10–3.13. libint2 is statically linked into the extension, and libxc
+and OpenBLAS ship inside the wheel as bundled shared libraries, so nothing
+needs compiling.
 
 ```bash
 pip install ferric        # or: uv pip install ferric
@@ -111,7 +112,9 @@ so `cargo run` needs to be told which one: `cargo run --release --bin ferric -- 
 OPENBLAS_NUM_THREADS=1 cargo test --workspace
 ```
 
-`OPENBLAS_NUM_THREADS=1` is not optional; see [Sharp bits](./sharp-bits.md).
+`.cargo/config.toml` sets `OPENBLAS_NUM_THREADS=1` for every cargo-invoked
+process, so the prefix above only makes it explicit. Do not raise it above 1;
+see [Threading](#threading).
 The Python binding tests are pytest, not cargo; see
 [CONTRIBUTING.md](https://github.com/mgoldey/ferric/blob/main/CONTRIBUTING.md).
 
@@ -180,8 +183,11 @@ runs the whole script, prints N times, and races on the same output files.
 
 ## Threading
 
-Set `OPENBLAS_NUM_THREADS=1`. `ferric` uses rayon for outer parallelism and pins
-BLAS to one thread inside rayon workers. Letting OpenBLAS thread on top of that
-oversubscribes the machine and, in the worst case, crashes. For throughput
+The `ferric` binary and `import ferric` pin OpenBLAS to one thread when
+`OPENBLAS_NUM_THREADS` is unset, and honour the variable when it is set
+(`cargo` sets it to 1 through `.cargo/config.toml`). Leave it unset or at 1.
+ferric uses rayon for its parallelism; a threaded OpenBLAS on top of that
+oversubscribes the machine, and its LU routines can crash when called from
+rayon workers. For throughput
 across many independent jobs, prefer many single-threaded processes over one
 multi-threaded job.

@@ -57,15 +57,6 @@ difference is the fitting error that density fitting always carries, not a
 bug. Against exact J at PBE/STO-3G it is 0.28 kcal/mol for water, 1.16 for
 benzene and 9.5 for a 71-atom drug molecule.
 
-Separately from that systematic error, an RI-J energy also carries numerical
-noise: the fit applies an explicit inverse of an ill-conditioned metric, so a
-bit-level change (another build, thread count, or an in-core versus spilled
-three-index tensor) can move it by about 1e-5 Ha for benzene and up to about
-1e-4 Ha at 71 atoms. Benzene PBE/def2-SVP moves by 2.5e-6 Ha between an
-in-core run and one with the tensor spilled to disk. Energy differences
-smaller than that are not resolved by an RI-J calculation; use exact J for
-them.
-
 **Do:**
 
 - To compare with an exact-Coulomb code (ORCA with `NORI`, PySCF without
@@ -88,7 +79,9 @@ them.
 |---|---|---|
 | Molecule geometry input (`from_xyz`, `from_xyz_string`, `.xyz` files) | Python, CLI | Ångström |
 | Coordinates inside the Rust library | Rust | Bohr |
-| Range-separation ω (`omega`) | CLI TOML, Python | Å⁻¹ |
+| Attenuation ω: `[mp2] omega` (`att-rimp2`, `rs-mp2-rpa`), `[mp2] mp2v_omega` (`mp2-v`); `omega=` of `run_attenuated_rimp2`, `run_rs_mp2_rpa`, `run_mp2_v`, and `terf_omega=` of `run_rs_mp2_rpa` | CLI TOML, Python | Å⁻¹ |
+| Double-hybrid ω: `[dft] omega` (`wb97x-l-v`) | CLI TOML | **Bohr⁻¹** |
+| `tune_omega` (bracket and result); `omega=` of `compute_eri3_mo` and `compute_metric_2c` | Python | **Bohr⁻¹** |
 | Range-separation ω | Rust configs | Bohr⁻¹ |
 | `QmmmSystem(...)` coordinates | Python | Ångström |
 | `QmmmSystem.point_charges()` | Python | **Bohr** |

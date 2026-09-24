@@ -144,9 +144,9 @@ names which one you have.
 
 **Set `density_conv`, not just `energy_conv`.** E_HF is variational and
 tolerates a loose density; anything depending linearly on the MO coefficients
-does not. This bit a real measurement in this repo: a pinned correlation energy
-was reproducible only until something upstream moved, because the density had
-never actually converged.
+does not. A correlation energy computed from an unconverged density can look
+reproducible and still shift when anything upstream changes, because the
+density was never converged.
 
 **Checkpoint every species as it finishes.** A crash at species 6 of 8 should
 cost one species, not the whole run.
@@ -332,4 +332,4 @@ rank anything.
 Check the capability's grade in [Capabilities](../reference/capabilities.md)
 and [What is validated](../reference/validation.md). A method being available
 from the CLI doesn't mean its numbers are production-grade. The grades
-distinguish proven, smoke-tested and stub.
+are Proven, Proven (narrow), Smoke and Spike; a few kinds are not graded.

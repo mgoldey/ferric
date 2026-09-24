@@ -56,8 +56,8 @@ auxbasis = "cc-pvdz-ri"
 Auxiliary basis names used elsewhere (`auxbasis`, `df_*_aux`) come from the
 same table: `cc-pvdz-ri`, `cc-pvtz-rifit`, `aug-cc-pv{d,t,q}z-rifit`,
 `def2-svp-rifit`, `def2-tzvp-rifit`, `def2-tzvpp-rifit`, `def2-qzvp-rifit`,
-`def2-qzvpp-rifit`, `def2-universal-jkfit`, `cc-pvdz-f12-optri`. **There is no
-`cc-pvdz-rifit`**; the cc-pVDZ RI set is `cc-pvdz-ri`.
+`def2-qzvpp-rifit`, `def2-universal-jkfit`, `cc-pvdz-f12-optri`.
+`cc-pvdz-rifit` is an alias of `cc-pvdz-ri`; both names load the same set.
 
 ## `[method]` (required)
 
@@ -135,7 +135,7 @@ here.
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
-| `auxbasis` | string | `"cc-pvdz-ri"`; `"cc-pvdz-rifit"` for `tda`/`tddft` | aux basis name | The `tda`/`tddft` default is **not a bundled basis**, so set this key explicitly for those kinds. |
+| `auxbasis` | string | `"cc-pvdz-ri"`; `"cc-pvdz-rifit"` for `tda`/`tddft` | aux basis name | The two defaults name the same bundled set (`cc-pvdz-rifit` is an alias of `cc-pvdz-ri`). |
 | `frozen_core` | int, string or bool | `0` | integer ≥ 0, `"auto"`, `"none"`, `true` (= auto), `false` (= 0) | `"auto"` gives the standard small core for this molecule after the ECP is applied, and the run prints the resolved count. |
 | `omega` | float | `0.420` | Å⁻¹ | `att-rimp2`, `rs-mp2-rpa`. Ignored with a warning when `attenuator = "terf"`. |
 | `kappa` | float | none | κ > 0, Hartree⁻¹ | κ-regularized MP2 for `rimp2`. Absent = plain MP2. |

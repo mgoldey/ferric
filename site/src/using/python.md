@@ -83,8 +83,8 @@ QM/MM accessors.
 ### Bundled basis sets
 
 `BasisSet.bundled(name)` loads a basis compiled into the library. Names are
-case-insensitive. An unknown name raises `ValueError`. These 25 are
-available:
+case-insensitive. An unknown name raises `ValueError`. These 25 sets are
+available (`cc-pvdz-rifit` is also accepted, as an alias of `cc-pvdz-ri`):
 
 | Kind | Names |
 |---|---|
@@ -173,13 +173,17 @@ with `converged = False`, and its energy is a plausible, wrong number.
 behave differently: they **raise** if their reference SCF does not converge.
 
 `converged = True` means the SCF reached a stationary point. It does not mean
-the lowest one. MEASURED while writing this page: the O2 triplet above with
-`sto-3g` instead of `cc-pvdz` gives `converged=True` from `run_uhf` in 9
-iterations at −147.3789 Ha. That is 0.255 Ha above PySCF's UHF (−147.6340) and
-above ferric's own ROHF (−147.6322), and `level_shift=0.2` or
-`mom_after_iter=5` land on the same state. A UHF energy above the ROHF energy
-for the same molecule cannot be a ground state, so comparing the two is a cheap
-check for open-shell work.
+the lowest one. The O2 triplet above with `sto-3g` instead of `cc-pvdz` shows
+this. `run_uhf` with the default MINAO guess converges to −147.63397 Ha, which
+is a saddle of the orbital Hessian 1.33 mHa above the UHF minimum at
+−147.635296 Ha (PySCF's default guess lands on the same saddle). Without
+`stability_descent` nothing in the result flags it.
+`run_uhf(o2, bs, stability_descent=True)` follows the downhill eigenvector and
+reaches the minimum. `guess="hcore"` converges (`converged=True`) to a much
+higher stationary point, −147.3789 Ha, which lies above ferric's own ROHF
+(−147.63219 Ha). A UHF energy above the ROHF energy for the same molecule
+cannot be a ground state, so comparing the two is a cheap check for open-shell
+work.
 
 ## Correlation
 
@@ -229,9 +233,11 @@ oo    = ferric.run_oo_rimp2(water, bs_dz, aux)
 mp3   = ferric.run_mp3(water, bs_dz, aux)
 ```
 
-`frozen_core=` is accepted by every correlated driver. `run_ccd`, `run_ccsd_t`,
-`run_terfc_rimp2`, `run_drpa` and the other amplitude-threshold drivers have
-no CLI `method.kind`; the reference table below marks which ones do.
+`frozen_core=` is accepted by every correlated driver. `run_ccd`,
+`run_ccsd_t`, `run_terfc_rimp2` and the amplitude-threshold drivers
+`run_drpa`, `run_drpa_scan` and `run_linlccd_amplitude` have no CLI
+`method.kind`; `run_lmp2` and `run_lmp2_direct` do (`lmp2`, `lmp2-direct`).
+The reference table below marks which drivers have one.
 
 ## Response and excited states
 
@@ -317,10 +323,14 @@ element by up to 1.5. Compare invariant quantities, not raw AO matrices.
 
 ## Memory, threads and MPI
 
-Most drivers accept `memory_budget_gb` (GiB). It sizes the three-index (RI)
-integral work, and some paths refuse to start when their predicted peak does
-not fit. It is **not** a cap on total process memory, and how strictly it is
-enforced varies by method; see [Sharp bits](./sharp-bits.md).
+Most drivers accept `memory_budget_gb` (GiB). It sets the same per-allocation
+limits as the CLI's `[memory] budget_gb`: an allocation that does not fit is
+spilled to disk, recomputed on demand (the DFT grid AO cache) or refused with
+an error naming it (for example `run_rimp2` and `run_ccsd`). Unlike the CLI,
+Python installs no shared ledger, so each check compares its own allocation
+with the whole budget rather than with what other live allocations have left.
+It is **not** a cap on total process memory; see
+[Sharp bits](./sharp-bits.md#memory-budget_gb-does-not-cap-the-whole-process).
 
 <!-- doctest -->
 ```python
@@ -341,7 +351,7 @@ runs go through the CLI built from source with MPI; see
 
 ## Full reference
 
-The module registers **58 public functions** and **34 classes**. That count
+The module registers **59 public functions** and **36 classes**. That count
 excludes `_cli_main`, the entry point behind the `ferric` console command. It
 also exports two constants: `DEFAULT_TEMPERATURE_K` (298.15) and
 `BOLTZMANN_HARTREE_PER_K`. The list below was taken from the registration
@@ -370,7 +380,8 @@ capability is Python-only. How well each one is validated is in the
 | `run_dft` | Closed-shell Kohn–Sham DFT (LDA/GGA/hybrid/RSH/meta-GGA by name), optional D3(BJ) and analytic gradient. | `ksdft` |
 | `run_ksdft` | Alias of `run_dft`. | `ksdft` |
 | `d3bj_energy` | Grimme D3(BJ) dispersion energy for a molecule and functional, in Hartree. | `[dft] dispersion` |
-| `tune_omega` | IP-based (Baer/Kronik) tuning of an RSH functional's ω; closed-shell neutral plus doublet cation. | — |
+| `tune_omega` | IP-based (Baer/Kronik) tuning of an RSH functional's ω (Bohr⁻¹); closed-shell neutral plus doublet cation. | — |
+| `dft_grid_point_count` | Number of points in the main KS grid `run_dft` would build for the molecule with the same `grid_*` kwargs, without running an SCF (shows what pruning saves). | — |
 | `RhfResult` | Result of `run_rhf`: `energy`, `converged`, `iterations`, `density()`, `orbital_energies()`, `mo_coefficients()`. | |
 | `UhfResult` | Result of `run_uhf`/`run_rohf`: α and β densities and orbital energies. | |
 | `DftResult` | Result of `run_dft`: `total_energy`, `e_scf`, `e_dispersion`, `converged`, `exit_reason()`, `density()`, `gradient()`. | |
@@ -425,9 +436,7 @@ See [QM/MM](./qmmm.md) for a worked example.
 | `Mp2VResult` | MP2-V total, attenuated MP2 part and VV10 part. | |
 | `LaplaceMp2Result` | Laplace MP2 total, correlation and spin components. | |
 | `SosMp2Result` | Scaled and unscaled OS energy, `c_os`, `n_quad` and `formulation` echoed back. | |
-
-`run_double_hybrid` returns a result object whose class is not registered in
-the module, so it cannot be imported by name; use its attributes directly.
+| `DoubleHybridResult` | Result of `run_double_hybrid`: `total_energy`, `e_ks`, `e_corr_scaled`, `e_os`, `e_ss`, `c_os`, `c_ss`. | |
 
 ### Amplitude-threshold local correlation
 
@@ -504,10 +513,8 @@ These take `omega`/`r0` in raw Bohr units, unlike the `run_*` drivers.
 | `compute_eri3_mo` | MO-basis 3-centre integrals (P\|pq) for any two coefficient matrices, built blockwise under a memory budget. | — |
 | `compute_metric_2c` | 2-centre metric (P\|w\|Q) over the auxiliary basis, Coulomb by default. | — |
 | `shell_info` | Shell centres (Bohr), first-function offsets and sizes, for building fitting domains. | — |
-| `boys_localize` | Foster–Boys localization of given orbitals; returns `c_loc()`, `centers()`, `converged`. | — |
-
-`boys_localize` returns a `BoysResult`, another class that is not registered
-in the module.
+| `boys_localize` | Foster–Boys localization of given orbitals; returns a `BoysResult`. | — |
+| `BoysResult` | Result of `boys_localize`: `c_loc()`, `centers()`, `converged`, `iterations`. | |
 
 ### Conformer ensembles
 

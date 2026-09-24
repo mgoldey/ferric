@@ -11,12 +11,17 @@
 | cmake      | 3.14+   | needed to build the vendored libecpint |
 | Python     | 3.10+   | matches `requires-python` in `pyproject.toml`; needed for `uv`, pytest, and the Python bindings |
 
-**Non-standard install locations.** If libint2 or libxc are not in
-`$HOME/.local` or `/usr/local`, set these environment variables before building:
+**Non-standard install locations.** If libint2 is not in `$HOME/.local` or
+`/usr/local`, set `LIBINT2_PREFIX` before building. libxc is linked by name
+(`crates/ferric-dft/build.rs` emits only `rustc-link-lib=xc`), so a libxc
+outside the default linker path goes on `LIBRARY_PATH` (or
+`RUSTFLAGS="-L/path/to/libxc/lib"`) for linking and on `LD_LIBRARY_PATH` at
+run time:
 
 ```
 export LIBINT2_PREFIX=/path/to/libint2   # expects $LIBINT2_PREFIX/include and $LIBINT2_PREFIX/lib
-export LIBXC_DIR=/path/to/libxc
+export LIBRARY_PATH=/path/to/libxc/lib:$LIBRARY_PATH
+export LD_LIBRARY_PATH=/path/to/libxc/lib:$LD_LIBRARY_PATH
 ```
 
 ## Building
@@ -33,8 +38,13 @@ cargo build --release --workspace
 
 ## Testing
 
-**Critical:** set `OPENBLAS_NUM_THREADS=1` for all test runs. OpenBLAS with
-multiple threads under rayon causes segfaults and non-deterministic slowdowns.
+**Critical:** never run tests with `OPENBLAS_NUM_THREADS` above 1. OpenBLAS
+with multiple threads under rayon causes segfaults and non-deterministic
+slowdowns. `.cargo/config.toml` sets it to 1 for every cargo-invoked process,
+and the CLI and `import ferric` pin OpenBLAS to one thread when the variable
+is unset, so the explicit prefix below only matters when your shell exports a
+larger value (and for the `uv run pytest` line, which is not a cargo process;
+there `import ferric` does the pinning).
 
 ```bash
 # Full Rust test suite
@@ -115,9 +125,10 @@ The docs are tested, in four places:
 | `scripts/check_doc_snippets.py` | a marked Python block that raises, or prints something other than the ```` ```text ```` block the page shows | wheel smoke test (nightly, release tags) and `crates/ferric-python/tests/test_doc_snippets.py` |
 
 `ci.yml` skips docs-only PRs (its `paths-ignore` covers `**/*.md` and
-`site/**`), so a PR that edits only `input.md` or a TOML example runs the two
-`ferric-cli` tests nightly, not before merge. Run them yourself when you edit
-either:
+`site/**`), so a PR that edits only `input.md` or a ```` ```toml ```` block
+inside a Markdown page runs the two `ferric-cli` tests nightly, not before
+merge. (A PR that edits a TOML file under `examples/` does run CI:
+`examples/` is not in `paths-ignore`.) Run them yourself when you edit a page:
 
 ```bash
 OPENBLAS_NUM_THREADS=1 cargo test -p ferric-cli --lib doc_tests
@@ -185,8 +196,8 @@ numerical code (e.g. `excessive_precision` for verbatim quadrature constants,
 **Report-only** (CI runs these and posts the results, but a PR is not blocked
 on them):
 
-- `ruff check .` (default rule set): 282 remaining findings as of this
-  writing, tracked as a backlog, not yet gated.
+- `ruff check .` (default rule set): the tree has open findings under it;
+  they are tracked as a backlog and not gated.
 - `ty check`: type-check debt, not yet gated.
 - Rust coverage and the `ferric-python` bindings coverage (nightly-only, via
   `schedule`/`workflow_dispatch`): no coverage threshold is set.

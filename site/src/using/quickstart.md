@@ -107,7 +107,7 @@ print(f"RI-MP2 total energy: {mp2.total_energy:.10f} Ha")
 ```
 
 ```text
-RI-MP2 total energy: -76.2308014550 Ha
+RI-MP2 total energy: -76.2308014541 Ha
 ```
 
 In TOML the same calculation changes the `[basis]` name and the method kind,

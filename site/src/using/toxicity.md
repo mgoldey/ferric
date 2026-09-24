@@ -110,8 +110,15 @@ of "no information".
 
 ### What the alert scores are not
 
-The `alert_*` endpoints are scaled hit counts (n/3, capped at 1.0). They are a
-**rank-only liability density**, not a probability of toxicity. A molecule with
+The `alert_*` endpoints are scaled hit counts (n/3, capped at 1.0). The output
+labels them, like `lipinski_violation_fraction` and
+`veber_violation_fraction`, with the unit `probability`. That label marks a
+0–1, higher-is-worse scale, and it is what puts these endpoints into the mean
+that `ToxAssessment.liability_score` (the rank-only aggregate on the object
+`assess_smiles` returns) takes over every `probability`-unit endpoint;
+`alert_total_count` (unit `count`) stays out of it. The number itself is a
+**rank-only liability density**, not a probability of toxicity, and each
+alert line's explanation says so. A molecule with
 zero alerts is not thereby safe: danuglipron screens clean across all six
 catalogs and was discontinued for a liver signal. Structural alerts catch known
 problem substructures; they say nothing about dose, exposure or on-target

@@ -55,15 +55,17 @@ your orbital basis. The bundled pairs are:
 
 | Orbital basis | RI (correlation) aux | JK aux (for `df_j_aux` / `df_k_aux`) |
 |---|---|---|
-| cc-pVDZ | `cc-pvdz-ri` | `def2-universal-jkfit` |
-| cc-pVTZ, cc-pVQZ | `cc-pvtz-rifit`, `cc-pvqz-rifit` | `cc-pvtz-jkfit`, `cc-pvqz-jkfit` |
+| cc-pVDZ | `cc-pvdz-ri` (alias `cc-pvdz-rifit`) | `def2-universal-jkfit` |
+| cc-pVTZ | `cc-pvtz-rifit` | `def2-universal-jkfit` |
 | aug-cc-pVDZ / TZ / QZ | `aug-cc-pvdz-rifit`, `aug-cc-pvtz-rifit`, `aug-cc-pvqz-rifit` | `def2-universal-jkfit` |
-| cc-pVXZ-PP, aug-cc-pVXZ-PP | the matching `*-pp-rifit` | `def2-universal-jkfit` |
-| def2-SVP, -TZVP, -TZVPP, -QZVP, -QZVPP, and -D variants | the matching `def2-*-rifit` | `def2-universal-jkfit` |
+| def2-SVP, def2-TZVP, def2-QZVP | `def2-svp-rifit`, `def2-tzvp-rifit`, `def2-qzvp-rifit` | `def2-universal-jkfit` |
 
-There is no `cc-pvdz-rifit`; the cc-pVDZ set is named `cc-pvdz-ri`. STO-3G and
-6-31G have no matching RI set; the examples pair them with `cc-pvdz-ri` or a
-larger RI set.
+`def2-tzvpp-rifit` and `def2-qzvpp-rifit` are also bundled as auxiliary sets.
+The ECP orbital sets `aug-cc-pvdz-pp` and `aug-cc-pvtz-pp` have no bundled
+`-pp-rifit` partner. STO-3G and 6-31G have no matching RI set; the examples
+pair them with `cc-pvdz-ri` or a larger RI set. Only the names above (plus
+`cc-pvdz-f12` and `cc-pvdz-f12-optri`) load by name; any other set goes in
+through `[basis] path` as a Gaussian-94 file (orbital basis only).
 `def2-universal-jkfit` is the default JK set for KS-DFT.
 
 ## When nothing here fits

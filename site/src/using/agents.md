@@ -82,9 +82,11 @@ read the `result` record ([Run logs](run-logs.md)).
 3. **MPI is a workspace feature, not a CLI one.** `ferric-cli` has no `mpi`
    feature of its own, so `-p ferric-cli --features mpi` fails. The working
    build is `cargo build --release --workspace --features mpi`.
-4. **Threading.** Set `OPENBLAS_NUM_THREADS=1`. Multithreaded BLAS under
-   ferric's rayon parallelism has crashed or miscomputed in this repository.
-   It's a correctness setting, not a performance tip.
+4. **Threading.** Don't set `OPENBLAS_NUM_THREADS` above 1. The CLI and
+   `import ferric` pin OpenBLAS to one thread when the variable is unset and
+   honour an explicit value, and `cargo` sets it to 1. Multithreaded BLAS
+   under ferric's rayon parallelism can crash (LU routines) or oversubscribe
+   the machine. It's a correctness setting, not a performance tip.
 5. **Under-converged density.** `energy_conv` alone doesn't converge the
    density. Correlation energies and properties inherit the full first-order
    density error. E_HF doesn't, because it's variational. Set `density_conv`.
@@ -96,19 +98,24 @@ read the `result` record ([Run logs](run-logs.md)).
 ### Memory: the budget predicts, the cgroup enforces
 
 ferric works out a memory budget from `[memory] budget_gb`,
-`FERRIC_MEM_BUDGET_GB`, or, if neither is set, 0.8 × available RAM. It prints
-that budget at startup. The budget is a shared, debited pool: SCF, KS-DFT,
-MP2, RPA, CC, GW and the gradient paths all draw from it. Where a code path
-checks the pool, a job that cannot fit is refused up front with a breakdown
-naming the largest term.
+`FERRIC_MEM_BUDGET_GB`, or, if neither is set, 0.8 × available RAM. The CLI
+prints that budget at startup and installs it as one shared, debited pool for
+the whole process: the three-index RI tensors, the DFT grid's AO cache and the
+large tensors of the MP2, RPA, GW and CC methods reserve their bytes from it,
+so two allocations alive at the same time cannot each claim the whole budget.
+From Python, `memory_budget_gb=` sets the same per-allocation limits but
+installs no shared pool, so each check compares its own allocation with the
+whole budget. In both, an allocation that does not fit is spilled to disk,
+recomputed on demand, or refused with an error naming it, depending on the
+allocation (see
+[Sharp bits](sharp-bits.md#memory-budget_gb-does-not-cap-the-whole-process)).
 
-**The budget still isn't a cap on process memory (RSS).** It covers the
-dominant tensors, not every allocation. For example, libint2's C++-side
-engine pools aren't counted. Treat the printed number as a floor. MEASURED on
-a 27-atom KS-DFT def2-SVP run with a release binary, before the pool existed:
-a 4.72 GiB budget, a peak of 6.04 GiB, and a SIGKILL after 1344 s. Lowering
-`FERRIC_MEM_BUDGET_GB` changes how work is split into blocks. It doesn't make
-an over-budget job fit.
+**The budget isn't a cap on process memory (RSS).** It covers the dominant
+tensors, not every allocation. Basis-sized matrices, integral engines (for
+example libint2's C++-side pools), BLAS and per-thread scratch and allocator
+overhead aren't charged, so treat the printed number as a floor on what the
+process needs. Lowering `FERRIC_MEM_BUDGET_GB` changes how the charged work
+is split into blocks. It doesn't shrink the uncharged part.
 
 **Size the budget from a gradient, not a single point.** MEASURED on
 benzene/cc-pVDZ/PBE/RI-J: the SCF alone peaked at 0.616 GB, and the SCF plus

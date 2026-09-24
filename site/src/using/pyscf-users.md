@@ -87,8 +87,12 @@ keyword.
 **The auxiliary basis is always explicit.** PySCF picks an auxiliary basis for
 you when you call `.density_fit()` without one. ferric's MP2, CC, RPA, GW and
 TDDFT drivers take the RI basis as a required argument. Only SCF-level
-fitting has a default: `run_dft` (and the reference SCF inside
-`run_rs_mp2_rpa`) fit with `def2-universal-jkfit` unless told otherwise.
+fitting has a default: `run_dft` and `run_ksdft` fit J (and K for hybrids)
+with `def2-universal-jkfit` unless you pass `df_j_aux`/`df_k_aux`. These fit
+their reference SCF with `def2-universal-jkfit` and take no override:
+`run_qmmm` with a KS method, `run_gw` and `run_u_gw` with `xc`, `run_tddft`
+with a functional, `run_tdhf_static_polarizability`, `run_double_hybrid`, and
+`run_rs_mp2_rpa` (its HF reference).
 
 **Density fitting is on in `run_dft` and off in `run_rhf`.** `run_dft` uses
 RI-J by default, and RI-K for hybrids. `dft.RKS` in PySCF uses exact Coulomb
