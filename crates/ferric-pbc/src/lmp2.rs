@@ -1498,9 +1498,9 @@ mod tests {
                 [3.4, 3.6, 2.2],
             ] {
                 let mut best = f64::INFINITY;
-                for n0 in -3i32..=3 {
-                    for n1 in -3i32..=3 {
-                        for n2 in -3i32..=3 {
+                for n0 in -6i32..=6 {
+                    for n1 in -6i32..=6 {
+                        for n2 in -6i32..=6 {
                             let v: Vec<f64> = (0..3)
                                 .map(|x| {
                                     d[x] + n0 as f64 * lat[0][x]
