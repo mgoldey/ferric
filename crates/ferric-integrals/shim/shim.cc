@@ -478,6 +478,49 @@ int scf_compute_1e_block(scf_engine *eng, const scf_basis *bs,
   }
 }
 
+/* Same as scf_compute_1e_block, but with shell sh2 translated by `shift`
+ * (Bohr): computes <sh1 | op | sh2(r - shift)>, the lattice-image block a
+ * periodic lattice sum needs, without building an image basis. The shell is
+ * COPIED and Shell::move()d, so the immutable scf_basis (and the per-engine
+ * ShellPair cache keyed on it, which only the quartet path reads) is never
+ * touched. Shell::move changes only the origin -- contraction coefficients
+ * and max_ln_coeff are copied verbatim -- so shift = {0,0,0} is bitwise
+ * identical to scf_compute_1e_block. Nuclear-type operators keep whatever
+ * point charges the engine holds (the caller places image charges).
+ * Returns n1*n2, SCF_EINVAL on null pointers / out-of-range shells / a
+ * non-finite shift, or SCF_EINTERNAL on any libint2 exception. */
+int scf_compute_1e_block_shifted(scf_engine *eng, const scf_basis *bs,
+                                   int sh1, int sh2, const double *shift,
+                                   double *out) {
+    if (!eng || !bs || !shift || !out) return SCF_EINVAL;
+    const int nsh = static_cast<int>(bs->bs.size());
+    if (sh1 < 0 || sh1 >= nsh || sh2 < 0 || sh2 >= nsh) return SCF_EINVAL;
+    if (!std::isfinite(shift[0]) || !std::isfinite(shift[1]) ||
+        !std::isfinite(shift[2])) {
+        return SCF_EINVAL;
+    }
+    try {
+        const auto &shells = bs->bs;
+        Shell moved = shells[sh2];
+        moved.move({moved.O[0] + shift[0], moved.O[1] + shift[1],
+                    moved.O[2] + shift[2]});
+        eng->engine.compute(shells[sh1], moved);
+        const auto &result = eng->engine.results();
+        int n = bs->nfunc[sh1] * bs->nfunc[sh2];
+        if (result[0] == nullptr) {
+            for (int i = 0; i < n; ++i) out[i] = 0.0;
+        } else {
+            for (int i = 0; i < n; ++i) out[i] = result[0][i];
+        }
+        return n;
+    } catch (const std::exception &ex) {
+        std::fprintf(stderr, "scf_compute_1e_block_shifted: %s\n", ex.what());
+        return SCF_EINTERNAL;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+}
+
 // Reproduces libint2's Engine::set_precision formula (engine.h) from the
 // public Engine::precision() accessor, since ln_precision_ itself has no
 // public getter. MUST stay byte-identical to that formula: it is what makes

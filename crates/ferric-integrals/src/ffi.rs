@@ -75,6 +75,16 @@ extern "C" {
         sh2: c_int,
         out: *mut c_double,
     ) -> c_int;
+    /// `scf_compute_1e_block` with shell `sh2` translated by `shift` (3
+    /// doubles, Bohr). Returns n1*n2, `SCF_EINVAL` (-1) or `SCF_EINTERNAL` (-3).
+    pub fn scf_compute_1e_block_shifted(
+        eng: *mut c_void,
+        bs: *const c_void,
+        sh1: c_int,
+        sh2: c_int,
+        shift: *const c_double,
+        out: *mut c_double,
+    ) -> c_int;
     pub fn scf_compute_eri_quartet(
         eng: *mut c_void,
         bs: *const c_void,

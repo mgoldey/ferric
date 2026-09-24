@@ -443,6 +443,67 @@ impl Engine {
         &self.buf[..written as usize]
     }
 
+    /// [`Self::compute_1e_block`] with shell `sh2` translated by `shift`
+    /// (Bohr): `⟨sh1 | op | sh2(r − shift)⟩`, row-major `(n1, n2)`.
+    ///
+    /// The building block of periodic lattice sums, e.g.
+    /// `S_latt[μ,ν] = Σ_L ⟨μ_0|ν_L⟩`, without an image `PreparedBasis`.
+    /// Per-image blocks are NOT symmetric (`⟨μ_0|ν_L⟩ = ⟨ν_0|μ_{−L}⟩`), so
+    /// callers fill full blocks. For a nuclear-type engine the point charges
+    /// are whatever was last set (they do not move with the shell).
+    /// `shift = [0.0; 3]` is bitwise equal to `compute_1e_block`.
+    ///
+    /// Errors (instead of panicking) on out-of-range shells, a non-finite
+    /// shift, or a libint2 exception caught in the shim.
+    pub fn compute_1e_block_shifted(
+        &mut self,
+        prep: &PreparedBasis,
+        sh1: usize,
+        sh2: usize,
+        shift: [f64; 3],
+    ) -> Result<&[f64], FerricError> {
+        let dims = prep.shell_dims();
+        if sh1 >= dims.len() || sh2 >= dims.len() {
+            return Err(FerricError::Libint(format!(
+                "compute_1e_block_shifted: shell ({sh1},{sh2}) out of range (nshells {})",
+                dims.len()
+            )));
+        }
+        if !shift.iter().all(|v| v.is_finite()) {
+            return Err(FerricError::Libint(format!(
+                "compute_1e_block_shifted: non-finite shift {shift:?}"
+            )));
+        }
+        let n = dims[sh1] * dims[sh2];
+        if self.buf.len() < n {
+            self.buf.resize(n, 0.0);
+        }
+        // SAFETY: valid engine/basis handles; shells range-checked above;
+        // `shift` is 3 contiguous f64 alive for the call; `self.buf` holds >= n
+        // doubles. The shim catches every C++ exception (status < 0).
+        let written = unsafe {
+            ffi::scf_compute_1e_block_shifted(
+                self.handles[0].1,
+                prep.handle(),
+                sh1 as c_int,
+                sh2 as c_int,
+                shift.as_ptr(),
+                self.buf.as_mut_ptr(),
+            )
+        };
+        if written < 0 {
+            return Err(FerricError::Libint(format!(
+                "scf_compute_1e_block_shifted ({sh1},{sh2}) failed: status {written}"
+            )));
+        }
+        if written as usize != n {
+            return Err(FerricError::Libint(format!(
+                "scf_compute_1e_block_shifted ({sh1},{sh2}) wrote {written} values, expected {n}"
+            )));
+        }
+        Ok(&self.buf[..n])
+    }
+
     /// Create a first-derivative one-electron integral engine.
     pub fn new_1e_deriv(
         op_kind: c_int,
