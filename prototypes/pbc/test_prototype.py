@@ -1272,3 +1272,278 @@ def test_uniform_gate_removes_the_onset_and_the_addback_is_needed(needle_unif):
     assert rd["partners"].max() == 3 and 0 < rd["e"] - t["eh"] < 1e-5
     with pytest.raises(ValueError):
         LM.solve(p, 1e-4, gate="J-unif")
+
+
+# ================================================================ Gamma UMP2 / URPA (Iteration 7)
+import pbc_ump2 as UM  # noqa: E402
+from pbc_rpa import drpa_quad as _drpa_quad, gamma_drpa as _gamma_drpa  # noqa: E402
+
+PENTA_ATOMS = TRI_ATOMS + [("H", (1.3, 3.1, 4.0))]
+# PySCF 2.13 pbc.mp.UMP2 on pbc.scf.UHF + AFTDF (mesh 61^3), measured 2026-09-24 by run_ump2_oracle.py.
+# 'urpa' = PySCF's own periodic AFTDF (ia|jb) blocks + our spin-orbital plasmon (PySCF has no periodic RPA).
+UMP2_REF = {
+    "penta one-s doublet": {
+        "unshifted": (-2.167566950256e-02, -3.602910454467e-02),
+        "shifted": (-1.179101239432e-02, -2.150209066693e-02),
+    },  # ours - PySCF <= 1.2e-12
+    "H2 6-31g triplet": {
+        "unshifted": (-8.878036761172e-04, -3.225957845588e-02),
+        "shifted": (-5.712132378726e-04, -1.133223577905e-02),
+    },  # <= 2.3e-14 (URPA 9e-12)
+    "tri 4H s+p triplet": {
+        "unshifted": (-3.332802589058e-02, -6.935114524772e-02),
+        "shifted": (-2.278123432187e-02, -4.834534740428e-02),
+    },  # <= 4.5e-10 (SCF orbitals)
+}
+
+
+def _penta_anchor():
+    """5 one-s H in the tri cell, doublet (na 3, nb 2): aa, bb AND ab UMP2 blocks all nonzero (the tri triplet has a
+    single alpha virtual, so its aa block vanishes).  Aux = all 15 x 8 periodic pair products (exact span)."""
+    cell = Cell(TRI_A, PENTA_ATOMS, {"H": [[0, [ANCHOR_ALPHA, 1.0]]]})
+    n = len(PENTA_ATOMS)
+    cen = [
+        0.5 * (cell.R[i] + cell.R[j] + np.array(h) @ cell.a)
+        for i in range(n)
+        for j in range(i, n)
+        for h in np.ndindex(2, 2, 2)
+    ]
+    aux = gto.M(
+        atom=[("X", c) for c in cen],
+        basis={"X": [[0, [2 * ANCHOR_ALPHA, 1.0]]]},
+        unit="B",
+        cart=True,
+        verbose=0,
+    )
+    return cell, aux
+
+
+@pytest.fixture(scope="module")
+def penta():
+    cell, aux = _penta_anchor()
+    I = build_integrals(cell, None, exxdiv="ewald", verbose=False)
+    u = uhf(I["S"], I["h"], I["I"], I["enn"], 3, 2, conv=1e-12)
+    u = uhf(
+        I["S"],
+        I["h"],
+        I["I"],
+        I["enn"],
+        3,
+        2,
+        conv=1e-16,
+        maxiter=400,
+        guess=(u["Da"], u["Db"]),
+    )
+    # prec 1e-15: at the default 1e-13 the SR truncation leaves max|dI| 3.5e-10 -> dUMP2 1e-11
+    return dict(I=I, u=u, B=build_gdf(cell, None, auxmol=aux, prec=1e-15)["B"])
+
+
+def _swap_bia(
+    B, Ca, Cb, na, nb, frozen=0
+):  # MUTANT: alpha orbitals used for the beta B_ia
+    return UM._bia(B, Ca, na, frozen), UM._bia(B, Ca, nb, frozen)
+
+
+@pytest.mark.parametrize("convention", ["shifted", "unshifted"])
+def test_ump2_urpa_closed_shell_equal_restricted(
+    h2_ints, tri_anchor, convention, monkeypatch
+):
+    """Anchor (a): na == nb through the U path == pbc_mp2 / pbc_rpa (measured <= 2.2e-16 same C; <= 1e-11 with the UHF's
+    own orbitals).  Per-spin factor 4 (the closed-shell factor on each spin channel): -1.8e-2 (H2) / -5.3e-2 (tri)."""
+    for I, n, B in ((h2_ints, 1, None), (tri_anchor["ref"], 2, tri_anchor["B"])):
+        _, eps, _, C = rhf(
+            I["S"], I["h"], I["I"], I["enn"], 2 * n, conv=1e-12, return_mo=True
+        )
+        e = np.concatenate(denominators(eps, n, I["madelung"], convention))
+        den = UM.u_denominators(eps, eps, n, n, I["madelung"], convention)
+        rm = gamma_mp2(C, e, n, eri=I["I"])[0]
+        rr = _gamma_drpa(C, e, n, eri=I["I"], method="plasmon")
+        assert abs(UM.gamma_ump2(C, C, den, n, n, eri=I["I"])[0] - rm) < 1e-12
+        for m in ("plasmon", "quad"):
+            assert (
+                abs(UM.gamma_urpa(C, C, den, n, n, eri=I["I"], method=m) - rr) < 1e-12
+            )
+        if B is not None:
+            rbq = _drpa_quad(bia_from_B(B, C[:, :n], C[:, n:]), e[:n], e[n:])
+            assert abs(UM.gamma_urpa(C, C, den, n, n, B=B) - rbq) < 1e-12
+        monkeypatch.setattr(UM, "SPIN_FACTOR", 4.0)
+        assert (
+            abs(UM.gamma_urpa(C, C, den, n, n, eri=I["I"], method="quad") - rr) > 1e-2
+        )
+        monkeypatch.setattr(UM, "SPIN_FACTOR", 2.0)
+
+
+@pytest.mark.parametrize("convention", ["shifted", "unshifted"])
+def test_ump2_urpa_open_shell_B_matches_dense_in_the_trivial_aux_limit(
+    tri_anchor, penta, convention, monkeypatch
+):
+    """Anchor (b): tri one-s TRIPLET (na 3, nb 1; ab only) and penta DOUBLET (na 3, nb 2; aa, bb, ab), trivial-aux B vs
+    dense pure-AFT ERI, same C: measured UMP2 <= 1.2e-14, URPA B-quad vs dense plasmon <= 2.1e-13.  Mutants: alpha C
+    for the beta B_ia (UMP2 6e-4..1.7e-3, URPA 1e-4..2e-3); per-spin factor 4 (URPA 2.7e-2..8.5e-2)."""
+    I3 = tri_anchor["ref"]
+    u3 = uhf(I3["S"], I3["h"], I3["I"], I3["enn"], 3, 1, conv=1e-12)
+    for I, u, B, na, nb in (
+        (I3, u3, tri_anchor["B"], 3, 1),
+        (penta["I"], penta["u"], penta["B"], 3, 2),
+    ):
+        Ca, Cb = u["Ca"], u["Cb"]
+        den = UM.u_denominators(
+            u["eps_a"], u["eps_b"], na, nb, I["madelung"], convention
+        )
+        em = UM.gamma_ump2(Ca, Cb, den, na, nb, eri=I["I"])[0]
+        er = UM.gamma_urpa(Ca, Cb, den, na, nb, eri=I["I"], method="plasmon")
+        assert abs(UM.gamma_ump2(Ca, Cb, den, na, nb, B=B)[0] - em) < 1e-12
+        assert abs(UM.gamma_urpa(Ca, Cb, den, na, nb, B=B) - er) < 1e-11
+        with monkeypatch.context() as mp_:
+            mp_.setattr(UM, "u_bia", _swap_bia)
+            assert abs(UM.gamma_ump2(Ca, Cb, den, na, nb, B=B)[0] - em) > 1e-4
+            assert abs(UM.gamma_urpa(Ca, Cb, den, na, nb, B=B) - er) > 1e-5
+        with monkeypatch.context() as mp_:
+            mp_.setattr(UM, "SPIN_FACTOR", 4.0)
+            assert abs(UM.gamma_urpa(Ca, Cb, den, na, nb, B=B) - er) > 1e-2
+    # the penta blocks: all three nonzero, so a dropped same-spin 1/2 or dropped exchange is visible
+    _, eaa, ebb, eab = UM.gamma_ump2(Ca, Cb, den, na, nb, eri=I["I"])
+    assert eaa < -1e-7 and ebb < -1e-6 and eab < -1e-3
+    assert abs(UM.direct_ump2(UM.u_ovov(Ca, Cb, na, nb, eri=I["I"]), *den) - em) > 1e-3
+
+
+def test_urpa_second_order_term_is_direct_ump2(penta, monkeypatch):
+    """Anchor (c): -(1/2pi) int tr Pi^2/2 == 1/2 sum_aa (ia|jb)^2/D + 1/2 sum_bb + sum_ab (measured 1.2e-14 / 2.4e-14),
+    pinning the per-spin factor 2 and the half-line normalisation without PySCF.  Factor-4 mutant: -7.4e-2."""
+    I, u = penta["I"], penta["u"]
+    den = UM.u_denominators(u["eps_a"], u["eps_b"], 3, 2, I["madelung"], "shifted")
+    Ba, Bb = UM.u_bia(penta["B"], u["Ca"], u["Cb"], 3, 2)
+    dm = UM.direct_ump2(UM.u_ovov(u["Ca"], u["Cb"], 3, 2, eri=I["I"]), *den)
+    assert abs(UM.urpa_second_order_quad(Ba, Bb, *den) - dm) < 1e-12
+    monkeypatch.setattr(UM, "SPIN_FACTOR", 4.0)
+    assert abs(UM.urpa_second_order_quad(Ba, Bb, *den) - dm) > 1e-2
+
+
+def _pin_ump2(I, na, nb, key):
+    un = uhf(I["S"], I["h"], I["I"], I["enn"], na, nb, conv=1e-12)
+    un = uhf(
+        I["S"],
+        I["h"],
+        I["I"],
+        I["enn"],
+        na,
+        nb,
+        conv=1e-16,
+        maxiter=400,
+        guess=(un["Da"], un["Db"]),
+    )
+    out = {}
+    for c in ("unshifted", "shifted"):
+        den = UM.u_denominators(un["eps_a"], un["eps_b"], na, nb, I["madelung"], c)
+        out[c] = (
+            UM.gamma_ump2(un["Ca"], un["Cb"], den, na, nb, eri=I["I"])[0],
+            UM.gamma_urpa(
+                un["Ca"], un["Cb"], den, na, nb, eri=I["I"], method="plasmon"
+            ),
+        )
+    return out
+
+
+def test_ump2_matches_pinned_pyscf_pbc_ump2_penta(penta):
+    """exxdiv=None -> unshifted, exxdiv='ewald' -> shifted (PySCF pbc.mp.UMP2 takes mf.mo_energy; pbc UCCSD's MP2 is
+    ALWAYS shifted, per spin).  The shifted/unshifted pair differ by 1e-2, so a convention swap cannot pass."""
+    got = _pin_ump2(penta["I"], 3, 2, "penta one-s doublet")
+    for c, (m, r) in UMP2_REF["penta one-s doublet"].items():
+        assert abs(got[c][0] - m) < 1e-11 and abs(got[c][1] - r) < 1e-11
+
+
+@pytest.mark.skipif(
+    not SLOW, reason="set PBC_SLOW=1 (~70 s H2/6-31G + ~45 s tri s+p pure-AFT builds)"
+)
+def test_ump2_matches_pinned_pyscf_pbc_ump2_h2_triplet_and_tri_sp_triplet():
+    """H2/6-31G a=4 triplet (aa only; STO-3G would be identically 0) and tri 4H s+p triplet (aa + ab)."""
+    for key, a, atoms, basis, na, nb, tol in (
+        ("H2 6-31g triplet", H2_A, H2_ATOMS, "6-31g", 2, 0, 1e-11),
+        ("tri 4H s+p triplet", TRI_A, TRI_ATOMS, SP_BASIS, 3, 1, 1e-9),
+    ):
+        got = _pin_ump2(
+            build_integrals(Cell(a, atoms, basis), None, exxdiv="ewald", verbose=False),
+            na,
+            nb,
+            key,
+        )
+        for c, (m, r) in UMP2_REF[key].items():
+            assert abs(got[c][0] - m) < tol and abs(got[c][1] - r) < tol
+
+
+NH_ATOMS = [("N", (0.3, 0.2, 0.1)), ("H", (0.3, 0.2, 0.1 + 1.95))]
+
+
+def _ump2_box(atoms, na, nb, edge, dm):
+    w = min(1.0, 8.0 / edge)
+    I = build_integrals(
+        Cell(np.eye(3) * edge, atoms, "6-31g"),
+        w,
+        rcut_bra=18.0,
+        rcut_2e=18.0 + 6.0 / w,
+        exxdiv="ewald",
+        verbose=False,
+    )
+    u = uhf(I["S"], I["h"], I["I"], I["enn"], na, nb, conv=1e-12, guess=dm)
+    return u, I
+
+
+def test_ump2_urpa_box_limit_nh_triplet_is_a3_with_predicted_c3_and_per_spin_shift():
+    """NH/6-31G triplet (5,3), shifted = per-spin eps_occ,s - v_M.  Predicted (molecular harmonic kernel, UHF relaxed):
+    c3 UMP2 0.761014, URPA 1.502486.  Measured (32,40) c3+c5 fit: 0.761792 (+1.0e-3) / 1.503251 (+5.1e-4); local exponent
+    3.019 / 3.013 at 32->40.  MUTANT denominators leave 1/a: v_M/2 per spin dE*a -0.0545 / -0.063; alpha-only
+    -0.0439 / -0.062 (at a=40 these are 30-60x the shifted residual)."""
+    from run_ump2_box_limit import molecular
+
+    mol, mf, e_mp2, e_rpa, _ = molecular(NH_ATOMS, 5, 3)
+    c3 = UM.u_r2_kernel_c3(mol, 5, 3, guess=mf.make_rdm1())
+    res = {}
+    for edge in (32.0, 40.0):
+        u, I = _ump2_box(NH_ATOMS, 5, 3, edge, mf.make_rdm1())
+        vm, (ea, eb), (Ca, Cb) = (
+            I["madelung"],
+            (u["eps_a"], u["eps_b"]),
+            (u["Ca"], u["Cb"]),
+        )
+        den = UM.u_denominators(ea, eb, 5, 3, vm, "shifted")
+        res[edge] = (
+            UM.gamma_ump2(Ca, Cb, den, 5, 3, eri=I["I"])[0] - e_mp2,
+            UM.gamma_urpa(Ca, Cb, den, 5, 3, eri=I["I"], method="plasmon") - e_rpa,
+        )
+        for sa, sb in ((vm / 2, vm / 2), (vm, 0.0)):
+            bad = (
+                UM.gamma_ump2(
+                    Ca, Cb, (ea[:5] - sa, ea[5:], eb[:3] - sb, eb[3:]), 5, 3, eri=I["I"]
+                )[0]
+                - e_mp2
+            )
+            assert abs(bad * edge) > 0.03  # 1/a plateau, vs shifted dE*a ~5e-4
+    A = np.array([[32.0**-3, 32.0**-5], [40.0**-3, 40.0**-5]])
+    for k, key in enumerate(("mp2", "rpa")):
+        fit = np.linalg.solve(A, [res[32.0][k], res[40.0][k]])[0]
+        assert abs(fit - c3[key]) < 3e-3 * abs(c3[key])
+        p = np.log(res[32.0][k] / res[40.0][k]) / np.log(40.0 / 32.0)
+        assert abs(p - 3.0) < 0.05
+
+
+def test_ump2_urpa_box_limit_h_atom_ump2_zero_urpa_c3_plus_second_order_c6():
+    """H/6-31G doublet: UMP2 == 0 at every a (one electron).  URPA (dRPA self-correlation) residual == c3/a^3 + c6/a^6,
+    BOTH predicted from the molecule: c3 = dE/dk (0.046533), c6 = 1/2 E''(k) (4pi/3)^2 (0.79013; orbital relaxation in
+    the harmonic en field, possible at 6-31G, impossible at STO-3G).  Spherical -> no c5.  Measured at a=20: residual
+    after both terms 4.5e-6 of c3; with c6 omitted it would be 2.1e-3 of c3."""
+    from run_ump2_box_limit import molecular
+
+    atoms = [("H", (0.3, 0.2, 0.1))]
+    mol, mf, e_mp2, e_rpa, _ = molecular(atoms, 1, 0)
+    c = UM.u_r2_kernel_c3(mol, 1, 0, h=1e-3, guess=mf.make_rdm1(), second=True)
+    u, I = _ump2_box(atoms, 1, 0, 20.0, mf.make_rdm1())
+    den = UM.u_denominators(u["eps_a"], u["eps_b"], 1, 0, I["madelung"], "shifted")
+    assert (
+        e_mp2 == 0.0
+        and UM.gamma_ump2(u["Ca"], u["Cb"], den, 1, 0, eri=I["I"])[0] == 0.0
+    )
+    d = UM.gamma_urpa(u["Ca"], u["Cb"], den, 1, 0, eri=I["I"], method="plasmon") - e_rpa
+    assert abs(d * 20.0**3 - c["rpa"] - c["rpa6"] / 20.0**3) < 2e-5 * abs(c["rpa"])
+    assert abs(d * 20.0**3 - c["rpa"]) > 1e-3 * abs(
+        c["rpa"]
+    )  # c6 is needed: the predictor's second order is real
