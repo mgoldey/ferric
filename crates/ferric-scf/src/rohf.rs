@@ -29,7 +29,7 @@ use crate::direct_k::DirectK;
 use crate::fock::{JBuilder, KBuilder};
 use crate::guess::hcore_guess;
 use crate::result::{ScfResult, Spin};
-use crate::rhf::RhfConfig;
+use crate::rhf::{validate_injected, InjectedConfigError, PeriodicInjection, RhfConfig};
 use crate::screening::SchwarzBounds;
 
 use ferric_core::mol::Molecule;
@@ -212,8 +212,143 @@ pub fn solve_rohf_best_effort(
     bounds: &SchwarzBounds,
     config: &RohfConfig,
 ) -> Result<ScfResult, FerricError> {
+    solve_rohf_impl(ctx, mol, prep, bounds, config, None, None)
+}
+
+/// Reject every `RohfConfig` feature [`solve_rohf_injected`] cannot honour,
+/// naming the first offending field: everything [`validate_injected`] refuses
+/// for RHF (DF/pluggable K, `xc`, Newton/TRAH/AURORA, the MINAO guess without
+/// an explicit density, external potential, COSMO/PCM/polarizable,
+/// `check_stability`), then the ROHF-specific ones:
+///
+/// * `scf_stability_descent` — ROHF has no stability descent at all
+///   ([`crate::stability::StabilitySkip::Rohf`]); the molecular solver ignores
+///   the flag, the injected path refuses it rather than ignore it silently.
+/// * `ah_trigger` — the augmented-Hessian step (`rohf_ah` over
+///   `rohf_newton::RohfNewtonInputs { prep, bounds, .. }`) builds its orbital
+///   Hessian response from MOLECULAR J/K integrals, which would be wrong for
+///   the injected (periodic) operator. (`newton_trigger`, the other
+///   `rohf_newton` user, is already refused by [`validate_injected`].)
+///
+/// Checked after the RHF list, so a config that sets both reports the RHF
+/// field.
+pub fn validate_injected_rohf(config: &RohfConfig) -> Result<(), InjectedConfigError> {
+    validate_injected(config)?;
+    if config.scf_stability_descent {
+        return Err(InjectedConfigError {
+            field: "scf_stability_descent",
+            reason: "ROHF has no stability descent (the Roothaan open-shell Hessian is not \
+                     implemented); the injected path refuses the flag instead of ignoring it",
+        });
+    }
+    if config.ah_trigger > 0.0 {
+        return Err(InjectedConfigError {
+            field: "ah_trigger",
+            reason: "the ROHF augmented-Hessian step rebuilds molecular J/K response \
+                     integrals from prep/bounds",
+        });
+    }
+    Ok(())
+}
+
+/// Restricted open-shell HF / KS on caller-supplied `(S, h, V_nn)` and J/K
+/// builders — the Gamma-point periodic ROHF/ROKS entry (FINDINGS "Iteration
+/// 10": ROKS = the UKS energy functional on one spatial MO set, Roothaan
+/// effective Fock). Mirrors [`crate::uhf::solve_uhf_injected`]:
+///
+/// * `mol` supplies only the electron count, charge and multiplicity; `prep`
+///   only `nbasis`; `op`/`bounds` are never read for integrals on this path.
+/// * J = `inj.j` on `D_α + D_β`; K_σ = the SAME `inj.k`, called per spin as
+///   `update_density(D_σ)` then `build(D_σ)`. F_σ = h + J − a·K_σ (+ V_σ),
+///   then the unchanged Guest-Saunders Roothaan combination. Any Madelung
+///   term lives in the K builder, linear in D_σ: NO per-spin ½, and with an
+///   injected `xc` it rides on the `a·K` part only (a = the builder's
+///   exact-exchange fraction; a = 0 never builds K).
+/// * `xc = Some(x)` must report [`crate::rhf::XcBuilder::supports_polarized`];
+///   `(E_xc, V_α, V_β) = x.build_polarized(D_α, D_β)`, E_xc outside the trace
+///   (the molecular `add_xc_uks` convention).
+/// * Guess: `initial_mos` (one `(nbasis, nbasis)` MO set; the first
+///   `nocc_double + nocc_open` columns are occupied) > `config.init_guess_density`
+///   (spin-summed; split by occupation, guess Fock `h + J[D] − K[D_σ]` from the
+///   INJECTED builders, Roothaan-combined, no XC) > the core guess
+///   (diagonalize the injected `h`, the molecular `use_sad_guess = false`
+///   path). The molecular MINAO / `rhf::build_jk` guess is never called.
+///
+/// Errors (typed, by name) on any field [`validate_injected_rohf`] refuses, on
+/// an `xc` without spin-polarized support or with `a` outside [0, 1], on
+/// wrong-shape `s`/`h`/`initial_mos` or non-finite `vnn`, and — like
+/// [`solve_rohf`] — when the SCF does not converge. Ewald-trap caveat as for
+/// UHF: `ferric_pbc::rohf` checks the per-spin gaps against `a·v_M`.
+#[allow(clippy::too_many_arguments)]
+pub fn solve_rohf_injected<'a>(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    _op: Operator,
+    bounds: &SchwarzBounds,
+    config: &RohfConfig,
+    inj: PeriodicInjection<'a>,
+    initial_mos: Option<&Array2<f64>>,
+) -> Result<ScfResult, FerricError> {
+    validate_injected_rohf(config).map_err(|e| {
+        FerricError::General(format!(
+            "solve_rohf_injected: RhfConfig.{} is not supported with injected S/h/J/K: {}",
+            e.field, e.reason
+        ))
+    })?;
+    crate::rhf::check_injection_shapes("solve_rohf_injected", &inj, prep.nbasis())?;
+    if let Some(x) = inj.xc.as_ref() {
+        if !x.supports_polarized() {
+            return Err(FerricError::General(
+                "solve_rohf_injected: PeriodicInjection.xc does not support spin-polarized \
+                 evaluation (XcBuilder::supports_polarized() is false): the injected ROKS path \
+                 needs XcBuilder::build_polarized (e.g. ferric_pbc::dft::PeriodicXc)"
+                    .into(),
+            ));
+        }
+    }
+    let r = solve_rohf_impl(ctx, mol, prep, bounds, config, initial_mos, Some(inj))?;
+    if r.converged {
+        Ok(r)
+    } else {
+        Err(FerricError::ScfConvergence {
+            iterations: r.iterations,
+            last_energy: r.energy,
+        })
+    }
+}
+
+/// Shared body of [`solve_rohf_best_effort`] (`inj = None`, `initial_mos =
+/// None`: the molecular solver, byte-identical to the pre-injection code —
+/// every injected-path branch is gated on `inj_jk`/`inj_xc` being `Some`) and
+/// [`solve_rohf_injected`] (config already validated).
+#[allow(clippy::too_many_arguments)]
+fn solve_rohf_impl(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    config: &RohfConfig,
+    initial_mos: Option<&Array2<f64>>,
+    inj: Option<PeriodicInjection<'_>>,
+) -> Result<ScfResult, FerricError> {
     use ferric_dft::ks::KsXcUks;
     use ferric_dft::xc_trait::{KMix, UksXcContribution};
+
+    // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
+    // (and XC) builders are driven in the loop — as in uhf::solve_uhf_impl.
+    let (pre_env, mut inj_jk, mut inj_xc) = match inj {
+        Some(PeriodicInjection {
+            s,
+            h,
+            vnn,
+            j,
+            k,
+            xc,
+        }) => (Some((s, h, vnn)), Some((j, k)), xc),
+        None => (None, None, None),
+    };
+    let injected = inj_jk.is_some();
 
     // Build UKS XC contribution once. None for pure ROHF.
     let xc_contrib: Option<Box<dyn UksXcContribution>> = if let Some(name) = config.xc.as_deref() {
@@ -251,8 +386,32 @@ pub fn solve_rohf_best_effort(
         None
     };
 
-    let k_mix: KMix = xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default();
-    let c_k: f64 = if xc_contrib.is_some() { k_mix.sr } else { 1.0 };
+    // Injected (periodic) ROKS: a global hybrid scales the injected K by its
+    // exact-exchange fraction (validate_injected_rohf guarantees `xc_contrib`
+    // is None there). Molecular path: `inj_xc` is None and these are the
+    // historical expressions.
+    let k_mix: KMix = match inj_xc.as_ref() {
+        Some(x) => {
+            let a = x.exact_exchange_fraction();
+            if !(a.is_finite() && (0.0..=1.0).contains(&a)) {
+                return Err(FerricError::General(format!(
+                    "solve_rohf_injected: XcBuilder exact-exchange fraction must be in [0, 1], \
+                     got {a}"
+                )));
+            }
+            KMix {
+                sr: a,
+                lr: a,
+                omega: 0.0,
+            }
+        }
+        None => xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default(),
+    };
+    let c_k: f64 = if xc_contrib.is_some() || inj_xc.is_some() {
+        k_mix.sr
+    } else {
+        1.0
+    };
 
     // Meta-GGA (SCAN / r2SCAN) ROKS is stiffer than LDA/GGA and limit-cycles
     // under plain DIIS; apply the same modest default virtual-block level shift
@@ -278,7 +437,7 @@ pub fn solve_rohf_best_effort(
         polarizable_site_basis,
         mut dfk_sr,
         mut dfk_lr,
-    } = crate::driver::prepare(ctx, mol, prep, config, &k_mix, None)?;
+    } = crate::driver::prepare(ctx, mol, prep, config, &k_mix, pre_env)?;
     let n = prep.nbasis();
     let nelec = mol.nelec() as i64;
     let mult = mol.multiplicity as i64;
@@ -371,28 +530,64 @@ pub fn solve_rohf_best_effort(
     // Hessian is the F6 swap witness (`crate::rohf_occupation`): at
     // convergence the best one-electron neighbours are evaluated, and a state
     // one of them lowers is not returned.
-    let mut c = match rohf_guess_mos(
-        ctx,
-        mol,
-        prep,
-        bounds,
-        config,
-        &h,
-        &s,
-        &s_inv_sqrt,
-        nocc_double,
-        nocc_open,
-    )? {
-        Some(c_guess) => c_guess,
-        None => {
-            // hcore guess: diagonalize bare h, exactly as this path did
-            // unconditionally before.
-            let _ = hcore_guess(&s, &h, nocc_a.max(1))?; // sanity check it succeeds
-            let h_prime = s_inv_sqrt.dot(&h).dot(&s_inv_sqrt);
-            let (_, c_prime) = h_prime
-                .eigh(ndarray_linalg::UPLO::Upper)
-                .map_err(|e| FerricError::Lapack(format!("H' diag: {e}")))?;
-            s_inv_sqrt.dot(&c_prime)
+    let mut c = if let Some(c0) = initial_mos {
+        // Caller-supplied MOs (injected path only; the molecular wrappers
+        // pass None).
+        if c0.dim() != (n, n) {
+            return Err(FerricError::General(format!(
+                "solve_rohf_injected: initial MO shape {:?} != ({n},{n})",
+                c0.dim()
+            )));
+        }
+        c0.clone()
+    } else if let Some((ij, ik)) = inj_jk.as_mut() {
+        // Injected (periodic) path: never the molecular build_jk / MINAO. An
+        // explicit density builds the guess Fock from the INJECTED J/K;
+        // otherwise the core guess, identical to the molecular hcore branch.
+        match config.init_guess_density.as_ref() {
+            Some(d0) => injected_rohf_guess_mos(
+                ij.as_mut(),
+                ik.as_mut(),
+                d0,
+                &h,
+                &s,
+                &s_inv_sqrt,
+                nocc_double,
+                nocc_open,
+            )?,
+            None => {
+                let _ = hcore_guess(&s, &h, nocc_a.max(1))?;
+                let h_prime = s_inv_sqrt.dot(&h).dot(&s_inv_sqrt);
+                let (_, c_prime) = h_prime
+                    .eigh(ndarray_linalg::UPLO::Upper)
+                    .map_err(|e| FerricError::Lapack(format!("H' diag: {e}")))?;
+                s_inv_sqrt.dot(&c_prime)
+            }
+        }
+    } else {
+        match rohf_guess_mos(
+            ctx,
+            mol,
+            prep,
+            bounds,
+            config,
+            &h,
+            &s,
+            &s_inv_sqrt,
+            nocc_double,
+            nocc_open,
+        )? {
+            Some(c_guess) => c_guess,
+            None => {
+                // hcore guess: diagonalize bare h, exactly as this path did
+                // unconditionally before.
+                let _ = hcore_guess(&s, &h, nocc_a.max(1))?; // sanity check it succeeds
+                let h_prime = s_inv_sqrt.dot(&h).dot(&s_inv_sqrt);
+                let (_, c_prime) = h_prime
+                    .eigh(ndarray_linalg::UPLO::Upper)
+                    .map_err(|e| FerricError::Lapack(format!("H' diag: {e}")))?;
+                s_inv_sqrt.dot(&c_prime)
+            }
         }
     };
 
@@ -521,6 +716,7 @@ pub fn solve_rohf_best_effort(
         && need_k
         && k_mix.omega == 0.0
         && pluggable_k.is_none()
+        && !injected
         && crate::direct_jk::combined_open_shell_jk_enabled();
     let mut direct_jk: Option<crate::direct_jk::DirectJK> = if combined_direct_jk {
         Some(crate::direct_jk::DirectJK::new(
@@ -533,7 +729,10 @@ pub fn solve_rohf_best_effort(
     } else {
         None
     };
-    let mut direct_j: Option<DirectJ> = if df_j.is_none() && !combined_direct_jk {
+    // No molecular direct builders on the injected path (J/K come from
+    // `inj_jk`); `!injected` is `true` on the molecular path, so the gates are
+    // unchanged there.
+    let mut direct_j: Option<DirectJ> = if df_j.is_none() && !combined_direct_jk && !injected {
         Some(DirectJ::new(
             ctx,
             prep,
@@ -549,6 +748,7 @@ pub fn solve_rohf_best_effort(
         && df_k.is_none()
         && !combined_direct_jk
         && pluggable_k.is_none()
+        && !injected
     {
         Some(DirectK::new(
             ctx,
@@ -613,7 +813,11 @@ pub fn solve_rohf_best_effort(
         prev_d_total = Some(d_total.clone());
 
         // Combined single-pass J + K_α + K_β when enabled; otherwise J alone here.
-        if let Some(djk) = direct_jk.as_mut() {
+        // An injected (periodic) J pre-empts all of them (validate_injected_rohf
+        // guarantees no DF/pluggable builder was requested alongside it).
+        if let Some((ij, _)) = inj_jk.as_mut() {
+            total_quartets += ij.build(&d_total, &mut j_buf)?;
+        } else if let Some(djk) = direct_jk.as_mut() {
             if direct_incremental {
                 let (da_prev, db_prev) = d_last_fock
                     .as_ref()
@@ -663,7 +867,19 @@ pub fn solve_rohf_best_effort(
                 dfk_sr, dfk_lr, &d_b, None, 1.0, &mut f_b, k_mix.sr, k_mix.lr, 1.0,
             )?;
         } else if need_k {
-            if direct_jk.is_some() {
+            if let Some((_, ik)) = inj_jk.as_mut() {
+                // Injected K per spin: update_density(D_σ) + build(D_σ) from the
+                // one builder. Its Madelung term (if any) is linear in D_σ, so
+                // no per-spin factor; `c_k = a` puts it on the exact-exchange
+                // part only (FINDINGS Iterations 6, 10).
+                total_quartets += crate::fock_assembly::build_open_shell_pluggable_k(
+                    ik.as_mut(),
+                    &d_a,
+                    &d_b,
+                    &mut k_a_buf,
+                    &mut k_b_buf,
+                )?;
+            } else if direct_jk.is_some() {
                 // K_α/K_β already filled by the combined single-pass build above.
             } else if let Some(kb) = pluggable_k.as_mut() {
                 // Per-spin `update_density(D_σ)` + `build(D_σ)` from one shared
@@ -691,6 +907,22 @@ pub fn solve_rohf_best_effort(
         let e_elec_no_xc: f64 = 0.5 * ((&(&h + &f_a) * &d_a).sum() + (&(&h + &f_b) * &d_b).sum());
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
             x.add_xc_uks(&d_a, &d_b, &mut f_a, &mut f_b)
+        } else if let Some(ix) = inj_xc.as_mut() {
+            // Injected (periodic) ROKS: V_σ added after the exchange term and
+            // before the Roothaan combination; E_xc outside the trace.
+            let (e, v_a, v_b) = ix.build_polarized(&d_a, &d_b)?;
+            if v_a.dim() != f_a.dim() || v_b.dim() != f_b.dim() {
+                return Err(FerricError::General(format!(
+                    "solve_rohf_injected: XcBuilder::build_polarized returned V_xc of shapes \
+                     {:?}/{:?}, expected {:?}",
+                    v_a.dim(),
+                    v_b.dim(),
+                    f_a.dim()
+                )));
+            }
+            f_a += &v_a;
+            f_b += &v_b;
+            e
         } else {
             0.0
         };
@@ -816,7 +1048,11 @@ pub fn solve_rohf_best_effort(
         if ctx.is_root() {
             if let Some(rl) = crate::runlog::log() {
                 rl.scf_iter(
-                    if xc_contrib.is_some() { "roks" } else { "rohf" },
+                    if xc_contrib.is_some() || inj_xc.is_some() {
+                        "roks"
+                    } else {
+                        "rohf"
+                    },
                     crate::runlog::current_rung(),
                     iter,
                     energy,
@@ -906,6 +1142,7 @@ pub fn solve_rohf_best_effort(
         // Handles vanishing Hessian eigenvalues (e.g., doublet OH at LDA with
         // near-degenerate SOMO/HOMO) that PCG can't resolve.
         let use_ah = config.ah_trigger > 0.0
+            && !injected
             && iter > 3
             && err_max < config.ah_trigger
             && (xc_contrib.is_none() || xc_supports_newton_fxc)
@@ -954,6 +1191,7 @@ pub fn solve_rohf_best_effort(
             continue;
         }
         let use_newton = config.newton_trigger > 0.0
+            && !injected
             && iter > 3
             && err_max < config.newton_trigger
             && (xc_contrib.is_none() || xc_supports_newton_fxc);
@@ -1346,6 +1584,49 @@ fn rohf_guess_mos(
             Ok(None)
         }
     }
+}
+
+/// Injected-path counterpart of [`rohf_guess_mos`] for an explicit
+/// spin-summed guess density: split BY OCCUPATION (`D_σ = D · nocc_σ / N`, as
+/// the molecular helper), guess Fock `F_σ = h + J[D] − K[D_σ]` from the
+/// INJECTED builders (per spin `update_density` + `build`, so any Madelung
+/// term is included consistently; no XC — it is a guess), Roothaan-combined
+/// and diagonalized. Unlike the molecular helper a failing build is an error,
+/// not a silent hcore fallback: on the injected path the builders ARE the
+/// integrals.
+#[allow(clippy::too_many_arguments)]
+fn injected_rohf_guess_mos(
+    j: &mut dyn JBuilder,
+    k: &mut dyn KBuilder,
+    d_total: &Array2<f64>,
+    h: &Array2<f64>,
+    s: &Array2<f64>,
+    s_inv_sqrt: &Array2<f64>,
+    nocc_double: usize,
+    nocc_open: usize,
+) -> Result<Array2<f64>, FerricError> {
+    let n = h.nrows();
+    if d_total.dim() != (n, n) {
+        return Err(FerricError::General(format!(
+            "solve_rohf_injected: init_guess_density shape {:?} != ({n},{n})",
+            d_total.dim()
+        )));
+    }
+    let nocc_a = nocc_double + nocc_open;
+    let nocc_b = nocc_double;
+    let nelec = (nocc_a + nocc_b).max(1);
+    let d_a = d_total * (nocc_a as f64 / nelec as f64);
+    let d_b = d_total * (nocc_b as f64 / nelec as f64);
+    let mut jm = Array2::<f64>::zeros((n, n));
+    j.build(d_total, &mut jm)?;
+    let mut k_a = Array2::<f64>::zeros((n, n));
+    let mut k_b = Array2::<f64>::zeros((n, n));
+    crate::fock_assembly::build_open_shell_pluggable_k(k, &d_a, &d_b, &mut k_a, &mut k_b)?;
+    let f_a = &(h + &jm) - &k_a;
+    let f_b = &(h + &jm) - &k_b;
+    let f_eff = roothaan_fock(&f_a, &f_b, &d_a, &d_b, s);
+    let (_, c) = diagonalize(&f_eff, s_inv_sqrt)?;
+    Ok(c)
 }
 
 fn roothaan_fock(

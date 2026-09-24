@@ -248,7 +248,7 @@ pub fn solve_krhf(
     }
 }
 
-fn herm_t(m: &Array2<Complex64>) -> Array2<Complex64> {
+pub(crate) fn herm_t(m: &Array2<Complex64>) -> Array2<Complex64> {
     m.t().mapv(|z| z.conj())
 }
 
@@ -294,7 +294,7 @@ pub fn complex_canonical_orthogonalizer(
 }
 
 /// DIIS over stacked k blocks with real weights.
-struct KDiis {
+pub(crate) struct KDiis {
     cap: usize,
     focks: VecDeque<Vec<Array2<Complex64>>>,
     errs: VecDeque<Vec<Array2<Complex64>>>,
@@ -370,7 +370,7 @@ fn diis_coeffs(b: &[Vec<f64>]) -> Option<Vec<f64>> {
 }
 
 impl KDiis {
-    fn new(cap: usize) -> Self {
+    pub(crate) fn new(cap: usize) -> Self {
         Self {
             cap,
             focks: VecDeque::new(),
@@ -378,7 +378,11 @@ impl KDiis {
         }
     }
 
-    fn step(&mut self, f: &[Array2<Complex64>], e: &[Array2<Complex64>]) -> Vec<Array2<Complex64>> {
+    pub(crate) fn step(
+        &mut self,
+        f: &[Array2<Complex64>],
+        e: &[Array2<Complex64>],
+    ) -> Vec<Array2<Complex64>> {
         if self.cap < 2 {
             return f.to_vec();
         }
@@ -419,7 +423,7 @@ impl KDiis {
 
 /// Diagonalise `F(k)` for the time-reversal representatives and fill the
 /// partners by conjugation. Returns `(ε(k), C(k))` for every k.
-fn diagonalize_all(
+pub(crate) fn diagonalize_all(
     mesh: &KPointMesh,
     f: &[Array2<Complex64>],
     x: &[Array2<Complex64>],
@@ -445,7 +449,7 @@ fn diagonalize_all(
 
 /// Global aufbau: the `n_occ_total` lowest levels over all k. Errors if the
 /// gap closes (module doc).
-fn aufbau(
+pub(crate) fn aufbau(
     eps: &[Vec<f64>],
     n_occ_total: usize,
     min_gap: f64,
@@ -479,13 +483,19 @@ fn aufbau(
 }
 
 fn density(c: &Array2<Complex64>, occ: &[f64]) -> Array2<Complex64> {
+    occupied_projector(c, occ).mapv(|z| z * 2.0)
+}
+
+/// `C_occ C_occ^H` over the columns with `occ[i] > 0` (unit occupation; the
+/// RHF density is twice this, the per-spin UHF density is this).
+pub(crate) fn occupied_projector(c: &Array2<Complex64>, occ: &[f64]) -> Array2<Complex64> {
     let occ_idx: Vec<usize> = (0..occ.len()).filter(|&i| occ[i] > 0.0).collect();
     let n = c.nrows();
     let mut co = Array2::<Complex64>::zeros((n, occ_idx.len()));
     for (j, &i) in occ_idx.iter().enumerate() {
         co.slice_mut(s![.., j]).assign(&c.slice(s![.., i]));
     }
-    co.dot(&herm_t(&co)).mapv(|z| z * 2.0)
+    co.dot(&herm_t(&co))
 }
 
 /// k-point closed-shell RHF on injected `S(k)`, `h(k)`, `E_nn` and J/K

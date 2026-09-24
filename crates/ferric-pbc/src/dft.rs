@@ -1055,7 +1055,7 @@ impl XcBuilder for XcRef<'_> {
 
 /// Borrowing adapter over ANY [`XcBuilder`] (so [`gamma_uks_with_xc`] can
 /// inject the caller's builder into two SCF stages and keep it afterwards).
-struct DynXcRef<'b, 'c>(&'b mut (dyn XcBuilder + 'c));
+pub(crate) struct DynXcRef<'b, 'c>(pub(crate) &'b mut (dyn XcBuilder + 'c));
 
 impl XcBuilder for DynXcRef<'_, '_> {
     fn build(&mut self, d: &Array2<f64>) -> Result<(f64, Array2<f64>), FerricError> {
@@ -1308,7 +1308,7 @@ pub struct GammaUksResult {
 /// Refuse the molecular-grid `RhfConfig` knobs the periodic KS paths never
 /// honour (shared by [`gamma_rks`]-style entries; `validate_injected*` covers
 /// the rest).
-fn refuse_molecular_grid_knobs(scf: &RhfConfig) -> Result<(), FerricError> {
+pub(crate) fn refuse_molecular_grid_knobs(scf: &RhfConfig) -> Result<(), FerricError> {
     let refuse = |feature: &'static str, reason: &str| -> Result<(), FerricError> {
         Err(PeriodicDftError::Unsupported {
             feature,
