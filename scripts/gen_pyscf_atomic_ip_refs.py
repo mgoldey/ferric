@@ -103,16 +103,18 @@ def energy_in_field(sym, f):
 def polarizability_block():
     print("--- UHF/def2-SVP finite-field alpha_zz (a.u.) ---")
     print("alpha_zz = -[E(+h) - 2E(0) + E(-h)] / h^2, central 3-point.")
-    print("The Rust test stores the h=0.01 row; the smaller steps show the")
-    print("O(h^2) approach to the limit. NOTE the second difference at")
-    print("h=0.00125 is ~5.7e-11 Ha, i.e. at the SCF conv_tol floor -- the")
-    print("last ratio is noise and the Rust test deliberately does not")
-    print("assert on it.")
+    print("The Rust test stores the h=0.01 row; the other steps show the")
+    print("O(h^2) approach to the limit, alpha(h) = alpha + (gamma/12) h^2, so")
+    print("successive changes fall by 4x per halving. The second difference")
+    print("itself is alpha*h^2 (~1e-5 Ha at h=0.005 for He); what limits small h")
+    print("is its f64 cancellation error, ~1e-13 Ha on Ne's ~-128 Ha energies,")
+    print("which h^2 amplifies into alpha. The Rust test therefore uses steps")
+    print("0.04..0.005, where that error is ~1e-9 in alpha against 5e-7 changes.")
     for sym in ("He", "Ne"):
         e0 = energy_in_field(sym, 0.0)
         prev = None
         print(f"  {sym}: E(F=0) = {e0:.12f} Ha")
-        for h in (0.01, 0.005, 0.0025, 0.00125):
+        for h in (0.04, 0.02, 0.01, 0.005):
             a = -(energy_in_field(sym, h) - 2 * e0 + energy_in_field(sym, -h)) / (h * h)
             d = "" if prev is None else f"   (change {a - prev:+.2e})"
             print(f"    h={h:<8} alpha_zz = {a:.8f}{d}")
