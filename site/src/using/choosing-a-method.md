@@ -28,7 +28,7 @@ has no validated option for a task, the row says so.
 | \\( C_6 \\) dispersion coefficients | PDEP-RPA dynamic α (`c6_source = "pdep"`) or TS/MBD, in an augmented basis. Not RPAx: its \\( C_6 \\) is ~63% low | CLI `pdep-rpa` + `[rpa] compute_c6` | which source is better is not established | N⁴ (RI) | `water-c6-pdep.toml`, `argon-c6-rpa-pbe.toml` |
 | Implicit solvation | IEF-PCM (Python `solvent=`) or COSMO (CLI `[cosmo]`) | see [SCF and DFT](../methods/scf.md#implicit-solvation) | both cross-checked against PySCF on water | SCF cost | — |
 | Embedding in a protein or solvent | QM/MM | Python `run_qmmm`; CLI `[qmmm]` (point charges) | see [QM/MM](./qmmm.md) | SCF cost | `water-qmmm.toml` |
-| Electron-transfer coupling | constrained DFT + Wu–Van Voorhis \\( H_{ab} \\) | Rust library only | no external reference | SCF cost × outer λ loop | — |
+| Electron-transfer coupling | constrained DFT + Wu–Van Voorhis \\( H_{ab} \\) | Python `run_cdft`, `cdft_coupling` (no CLI) | no external reference | SCF cost × outer λ loop | — |
 | Atomic charges, ESP | Löwdin, Hirshfeld, CHELPG, RESP; ESP at nuclei or on the surface | Python | see [Capabilities](../reference/capabilities.md#python-only-capabilities) | SCF cost | — |
 
 Notes on the table:

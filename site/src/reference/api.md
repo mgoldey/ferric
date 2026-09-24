@@ -42,7 +42,7 @@ The most useful starting points, by crate:
 | Crate | Start at |
 |---|---|
 | `ferric_core` | `Molecule`, `BasisSet`, `Shell` |
-| `ferric_scf` | `solve_rhf`, `solve_uhf`, `solve_rohf` |
+| `ferric_scf` | `solve_rhf`, `solve_uhf`, `solve_rohf`; constrained DFT in `cdft_driver::solve_cdft_uhf` and `cdft_coupling::coupling_hab` (Python: `run_cdft`, `cdft_coupling`) |
 | `ferric_mp2` | `ri_mp2`, `oo_ri_mp2` |
 | `ferric_cc` | `ccsd_closed_shell`, `ccsd_t_closed_shell` |
 | `ferric_rpa` | `pdep_polarizability_static`, RPA correlation drivers |
