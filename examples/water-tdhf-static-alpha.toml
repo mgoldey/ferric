@@ -1,22 +1,29 @@
 # RPAx@PBE STATIC polarizability / cc-pVDZ on water.
 #
-# SCOPE: static (omega=0) polarizability ONLY. Do not use this method for
-# C6/dispersion or extrapolate a dynamic alpha(iw) from it -- docs/VALIDATION.md's
-# "Correlation / response (RPA, GW, BSE)" table records a validated NEGATIVE
-# result for the dynamic extension of this exact kernel: static alpha matches
-# DOSD water almost exactly (measured 9.24 vs DOSD 9.64 a.u. at this same
-# functional/basis via the underlying run_bse_c6_ks spike), but a C6 built
-# from alpha(iw) on this kernel stays ~63% low regardless of the HOMO-LUMO
-# gap. That is a *worse*, mechanistically *different* C6 failure than
-# ferric's existing production dRPA/PDEP C6 pipeline (~-12 to -16% deficit),
-# not a fix for it. See crates/ferric-gw/src/bse.rs's
-# run_rpax_static_polarizability doc comment for the full caveat.
+# SCOPE: static (omega=0) polarizability ONLY, and Smoke-grade even there.
+# Do not use this method for C6/dispersion or extrapolate a dynamic alpha(iw)
+# from it: a C6 built from alpha(iw) on this same kernel stays ~63% low
+# regardless of the HOMO-LUMO gap, worse than ferric's production dRPA/PDEP C6
+# pipeline (~-12 to -16%). See site/src/reference/validation.md and
+# crates/ferric-gw/src/bse.rs's run_rpax_static_polarizability doc comment.
 #
-# This method REQUIRES a KS reference ([rpa].xc) -- the validated accuracy
-# above is specifically a KS-reference (RPAx@PBE) result; an HF reference on
-# the same kernel gives a much worse static alpha (~5.24 a.u. gate-2
-# measurement), so the CLI hard-errors if [rpa].xc is unset rather than
-# silently falling back to HF.
+# ACCURACY: this file gives alpha_iso = 5.20 a.u. (diagonal 3.17 / 7.12 /
+# 5.32), against the DOSD reference 9.64 a.u. for water: 46% LOW. It does NOT
+# reproduce DOSD. An earlier "9.24 vs 9.64" figure came from scissor = 0.0,
+# where this kernel is excitonically unstable and the tensor had a NEGATIVE
+# diagonal element (alpha_xx = -2.68); the isotropic average only looked
+# right because it averaged over that unphysical component. That setting is
+# now refused (the run exits with "unphysical static polarizability"), which
+# is why this file sets the scissor explicitly.
+#
+# [gw] scissor = 0.36 Ha is added to every virtual KS orbital energy before the
+# response diagonal is built. 0.36 Ha is the shift that matches water's GW
+# gap at this functional/basis (rpax_pbe_scissor_scan_h2o in
+# crates/ferric-gw/tests/h2o_bse_tda.rs: KS gap 7.05 eV -> GW gap 16.86 eV).
+# The response matrices are safely positive-definite there and lose that
+# between 0.05 and 0.10 Ha (crates/ferric-gw/tests/rpax_scissor_stabilizes.rs).
+#
+# [rpa] xc is REQUIRED: the CLI refuses to run this method on an HF reference.
 [molecule]
 xyz = "testdata/molecules/water.xyz"
 
@@ -36,3 +43,4 @@ xc = "PBE"
 
 [gw]
 frozen_core = 0
+scissor = 0.36

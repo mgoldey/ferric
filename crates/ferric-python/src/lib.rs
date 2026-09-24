@@ -7142,13 +7142,18 @@ impl PyTdhfStaticPolarizabilityResult {
 /// from this same kernel's dynamic alpha(iw) stays ~63% low regardless of
 /// the HOMO-LUMO gap, worse than ferric's production dRPA/PDEP C6 pipeline).
 ///
-/// `xc` is REQUIRED (e.g. `"pbe"`) — this method's validated accuracy
-/// (static alpha ~= DOSD water, 9.24 vs 9.64 a.u.) is specifically a
-/// KS-reference result; the HF-reference variant of this same kernel gives a
-/// much worse static alpha (~5.24 a.u.), so there is no HF-default fallback
-/// here (unlike `run_gw`'s `xc=None` HF default). `scissor` (Hartree, default
-/// 0.0) is added to every virtual orbital energy before assembling the
-/// diagonal — a cheap proxy for widening the KS gap toward a GW-level gap.
+/// `xc` is REQUIRED (e.g. `"pbe"`): the path is wired and checked for a KS
+/// reference only, so there is no HF-default fallback here (unlike
+/// `run_gw`'s `xc=None` HF default). Static alpha is NOT validated: on
+/// water/cc-pVDZ/PBE with `scissor=0.36` it is 5.20 a.u. against the DOSD
+/// reference 9.64 (46% low). The earlier "9.24 vs 9.64" figure came from
+/// `scissor=0.0`, whose tensor had a negative diagonal element, and is
+/// retracted. `scissor` (Hartree, default 0.0) is added to every virtual
+/// orbital energy before assembling the diagonal — a cheap proxy for
+/// widening the KS gap toward a GW-level gap (0.36 Ha matches water's GW gap
+/// at PBE/cc-pVDZ). At 0.0 the kernel is often excitonically unstable and
+/// the call raises on the resulting negative alpha diagonal; ~0.3-0.4 Ha is
+/// the remedy.
 /// Other kwargs mirror `run_bse_tda`'s `[rpa]`-equivalent shape (n_quad/
 /// quadrature/u0/trunc_thresh/eigensolver_conv_thresh/k_builder/
 /// chi0_sparsity/memory_budget_gb) plus `frozen_core`.

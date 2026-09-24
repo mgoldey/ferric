@@ -1911,7 +1911,12 @@ def run_tdhf_static_polarizability(
     chi0_sparsity: str | None = None,
     memory_budget_gb: float | None = None,
 ) -> TdhfStaticPolarizabilityResult:
-    """RPAx@KS static polarizability (omega=0). xc is REQUIRED."""
+    """RPAx@KS static polarizability (omega=0). xc is REQUIRED.
+
+    Not validated: water/cc-pVDZ/PBE at scissor=0.36 gives 5.20 a.u. vs DOSD
+    9.64 (46% low). At the default scissor=0.0 the kernel is often unstable
+    and the call raises on a negative alpha diagonal; use scissor ~0.3-0.4 Ha.
+    """
     ...
 
 def run_tddft(
