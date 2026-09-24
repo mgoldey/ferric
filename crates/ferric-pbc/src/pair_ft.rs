@@ -41,6 +41,17 @@
 //! No calibration against the overlap is done: `P(G=0) ≡ S_latt` is a TEST,
 //! not an input.
 //!
+//! # Per-primitive-pair G window (Stage 1)
+//!
+//! G vectors are processed in `|G|`-ascending order and a surviving
+//! primitive pair of magnitude `m` only visits
+//! `G² <= 4p (ln(m/thresh) + 10 + (l_a+l_b) ln max(1, |G|_max))`: beyond it
+//! the term is below `thresh·e^{−10}` even with the `(−iG)^t` factors at
+//! their largest (`pbc_gamma.py` uses the same `+10` window). Diffuse pairs,
+//! the ones that survive at many lattice images, need only the first few
+//! per cent of a dense-AFT G sphere, which is what makes the triclinic
+//! s+p oracle tractable. Output is scattered back to the caller's G order.
+//!
 //! # Screening and lattice range
 //!
 //! A primitive pair at separation `R` is skipped when its s-type overlap
@@ -63,6 +74,9 @@ use num_complex::Complex64;
 
 /// Default primitive-pair screening threshold for [`pair_ft`].
 pub const DEFAULT_PAIR_FT_THRESH: f64 = 1e-15;
+
+/// Extra e-folds in the per-primitive-pair G window (the prototype's `+10`).
+const WINDOW_MARGIN: f64 = 10.0;
 
 struct FtShell {
     l: usize,
@@ -197,6 +211,16 @@ pub fn pair_ft_with_thresh(
     let rpair = (2.0 * (1e3 / thresh).ln() / amin).sqrt() + 2.0;
     let images = cell.translations(rpair)?;
 
+    // Work in |G|-ascending order so each primitive pair touches only the
+    // prefix of G it can reach (window below); results are scattered back
+    // to the caller's order at the end.
+    let norm2 = |g: &[f64; 3]| g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
+    let mut order: Vec<usize> = (0..ng).collect();
+    order.sort_by(|&x, &y| norm2(&gvecs[x]).total_cmp(&norm2(&gvecs[y])));
+    let gsorted: Vec<[f64; 3]> = order.iter().map(|&i| gvecs[i]).collect();
+    let gvecs: &[[f64; 3]] = &gsorted;
+    let gmax = norm2(&gvecs[ng - 1]).sqrt();
+
     let lmax = shells.iter().map(|s| s.l).max().unwrap_or(0);
     let nt = 2 * lmax + 1;
     let g2: Vec<f64> = gvecs
@@ -257,7 +281,20 @@ pub fn pair_ft_with_thresh(
                     for (&b, &cb) in sb.exps.iter().zip(&sb.coefs) {
                         let p = a + b;
                         let cc = ca * cb * (pi / p).powf(1.5);
-                        if (cc * (-a * b / p * r2).exp()).abs() < thresh {
+                        let mag = (cc * (-a * b / p * r2).exp()).abs();
+                        if mag < thresh {
+                            continue;
+                        }
+                        // G window: drop G with mag·e^{−G²/4p}·gmax^{la+lb}
+                        // < thresh·e^{−WINDOW_MARGIN} (the (−iG)^t factors
+                        // are bounded by gmax^{la+lb}).
+                        let g2max = 4.0
+                            * p
+                            * ((mag / thresh).ln().max(0.0)
+                                + WINDOW_MARGIN
+                                + (la + lb) as f64 * gmax.max(1.0).ln());
+                        let ngp = g2.partition_point(|&x| x <= g2max);
+                        if ngp == 0 {
                             continue;
                         }
                         let pc = [
@@ -265,7 +302,7 @@ pub fn pair_ft_with_thresh(
                             (a * sa.center[1] + b * bc[1]) / p,
                             (a * sa.center[2] + b * bc[2]) / p,
                         ];
-                        for (g, gv) in gvecs.iter().enumerate() {
+                        for (g, gv) in gvecs.iter().enumerate().take(ngp) {
                             let mag = cc * (-g2[g] / (4.0 * p)).exp();
                             let ph = gv[0] * pc[0] + gv[1] * pc[1] + gv[2] * pc[2];
                             // e^{−iG·P}
@@ -275,14 +312,14 @@ pub fn pair_ft_with_thresh(
                             e_table(la, lb, a, b, ab[d], &mut ebuf[d]);
                             let (e, f, w) = (&ebuf[d], &mut fbuf[d], &pw[d]);
                             for ij in 0..nij {
-                                let frow = &mut f[ij * ng..(ij + 1) * ng];
+                                let frow = &mut f[ij * ng..ij * ng + ngp];
                                 frow.fill(zero);
                                 for t in 0..st {
                                     let et = e[ij * st + t];
                                     if et == 0.0 {
                                         continue;
                                     }
-                                    let wrow = &w[t * ng..(t + 1) * ng];
+                                    let wrow = &w[t * ng..t * ng + ngp];
                                     for (x, wv) in frow.iter_mut().zip(wrow) {
                                         *x += *wv * et;
                                     }
@@ -295,8 +332,8 @@ pub fn pair_ft_with_thresh(
                                 let ix = (ac[0] as usize * (lb + 1) + bcmp[0] as usize) * ng;
                                 let iy = (ac[1] as usize * (lb + 1) + bcmp[1] as usize) * ng;
                                 let iz = (ac[2] as usize * (lb + 1) + bcmp[2] as usize) * ng;
-                                let dst = &mut cart[(u * ncb + v) * ng..(u * ncb + v + 1) * ng];
-                                for g in 0..ng {
+                                let dst = &mut cart[(u * ncb + v) * ng..(u * ncb + v) * ng + ngp];
+                                for g in 0..ngp {
                                     dst[g] += common[g] * fx[ix + g] * fy[iy + g] * fz[iz + g];
                                 }
                             }
@@ -343,7 +380,7 @@ pub fn pair_ft_with_thresh(
                         } else {
                             right[(i * nfb + j) * ng + g]
                         };
-                        out[[sa.off + i, sb.off + j, g]] = val;
+                        out[[sa.off + i, sb.off + j, order[g]]] = val;
                     }
                 }
             }

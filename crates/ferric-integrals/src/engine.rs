@@ -904,6 +904,105 @@ impl Engine {
         }
     }
 
+    /// [`Self::compute_eri3`] with every shell translated:
+    /// `(P(r − s_P) | μ(r − s_1) ν(r − s_2))`, `shifts = [s_P, s_1, s_2]`
+    /// (Bohr). Output layout is the same P-major `(nP, n1, n2)` block.
+    ///
+    /// The periodic lattice-sum primitive (stage1-design.md §4): e.g. the
+    /// Gaussian-nucleus short-range attraction `(g_{C,M} | μ_0 ν_L)` with
+    /// `s_P = M`, `s_1 = 0`, `s_2 = L`, without building image bases.
+    /// All-zero shifts are bitwise equal to `compute_eri3`.
+    ///
+    /// Returns `Ok(None)` if libint2 screened the triplet (as `compute_eri3`).
+    /// Errors (instead of panicking) on an out-of-range shell, a non-finite
+    /// shift, a terf/terfc table engine (no shifted variant), or a libint2
+    /// exception caught in the shim.
+    pub fn compute_eri3_shifted(
+        &mut self,
+        obs: &PreparedBasis,
+        dfbs: &PreparedBasis,
+        sh_p: usize,
+        sh1: usize,
+        sh2: usize,
+        shifts: [[f64; 3]; 3],
+    ) -> Result<Option<&[f64]>, FerricError> {
+        if self.is_terfc {
+            return Err(FerricError::Libint(
+                "compute_eri3_shifted: terf/terfc table engines have no shifted variant".into(),
+            ));
+        }
+        let (odims, ddims) = (obs.shell_dims(), dfbs.shell_dims());
+        if sh_p >= ddims.len() || sh1 >= odims.len() || sh2 >= odims.len() {
+            return Err(FerricError::Libint(format!(
+                "compute_eri3_shifted: shells ({sh_p}|{sh1},{sh2}) out of range \
+                 (aux {}, obs {})",
+                ddims.len(),
+                odims.len()
+            )));
+        }
+        if !shifts.iter().flatten().all(|v| v.is_finite()) {
+            return Err(FerricError::Libint(format!(
+                "compute_eri3_shifted: non-finite shift {shifts:?}"
+            )));
+        }
+        let n = ddims[sh_p] * odims[sh1] * odims[sh2];
+        if self.buf.len() < n {
+            self.buf.resize(n, 0.0);
+        }
+        if self.scratch.len() < n {
+            self.scratch.resize(n, 0.0);
+        }
+        let flat: [f64; 9] = [
+            shifts[0][0],
+            shifts[0][1],
+            shifts[0][2],
+            shifts[1][0],
+            shifts[1][1],
+            shifts[1][2],
+            shifts[2][0],
+            shifts[2][1],
+            shifts[2][2],
+        ];
+        let mut any = false;
+        self.buf[..n].fill(0.0);
+        for &(coeff, h) in &self.handles {
+            // SAFETY: `h`, `obs.handle()`, `dfbs.handle()` are valid libint2
+            // handles; shells range-checked above; `flat` is 9 contiguous f64
+            // alive for the call; `self.scratch` holds >= n doubles. The shim
+            // catches every C++ exception (status < 0).
+            let written = unsafe {
+                ffi::scf_compute_eri3_shifted(
+                    h,
+                    obs.handle(),
+                    dfbs.handle(),
+                    sh_p as c_int,
+                    sh1 as c_int,
+                    sh2 as c_int,
+                    flat.as_ptr(),
+                    self.scratch.as_mut_ptr(),
+                )
+            };
+            if written < 0 {
+                return Err(FerricError::Libint(format!(
+                    "scf_compute_eri3_shifted ({sh_p}|{sh1},{sh2}) failed: status {written}"
+                )));
+            }
+            if written == 0 {
+                continue;
+            }
+            if written as usize != n {
+                return Err(FerricError::Libint(format!(
+                    "scf_compute_eri3_shifted ({sh_p}|{sh1},{sh2}) wrote {written} values, expected {n}"
+                )));
+            }
+            any = true;
+            for i in 0..n {
+                self.buf[i] += coeff * self.scratch[i];
+            }
+        }
+        Ok(if any { Some(&self.buf[..n]) } else { None })
+    }
+
     /// Compute a 2-center ERI shell pair (P|Q).
     pub fn compute_eri2(&mut self, dfbs: &PreparedBasis, sh_p: usize, sh_q: usize) -> &[f64] {
         let n = dfbs.shell_dims()[sh_p] * dfbs.shell_dims()[sh_q];

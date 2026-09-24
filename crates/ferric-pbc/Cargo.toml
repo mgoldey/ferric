@@ -3,7 +3,7 @@ name = "ferric-pbc"
 version = "0.1.0"
 license.workspace = true
 edition = "2021"
-description = "Periodic-boundary-condition primitives for ferric (Stage 0: cell, Ewald, Madelung, analytic pair-density Fourier transforms)"
+description = "Periodic-boundary-condition primitives for ferric (cell, Ewald, Madelung, analytic pair-density Fourier transforms, Gamma-point periodic hcore)"
 
 [lints]
 workspace = true
@@ -11,6 +11,9 @@ workspace = true
 [dependencies]
 ferric-core = { path = "../ferric-core" }
 ferric-integrals = { path = "../ferric-integrals" }
+# JBuilder/KBuilder traits (dense_aft) and solve_rhf_injected in tests. No
+# cycle: ferric-scf does not depend on ferric-pbc.
+ferric-scf = { path = "../ferric-scf" }
 ndarray = { workspace = true }
 # Same spec as ferric-gw (the only other num-complex user); resolves to 0.4.6.
 num-complex = "0.4"
