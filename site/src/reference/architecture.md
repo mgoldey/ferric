@@ -50,7 +50,8 @@ sentinel, so a C++ exception never unwinds across the FFI boundary.
 
 **Method crates** — `ferric-scf`, `ferric-mp2`, `ferric-dft`, `ferric-rpa`,
 `ferric-gw`, `ferric-cc`, `ferric-ci`, `ferric-tddft`, `ferric-pcm`,
-`ferric-mm`, `ferric-xtb`.
+`ferric-mm`, `ferric-xtb`, `ferric-d3` (Grimme D3(BJ) dispersion energy and
+gradient).
 
 **Support** — `ferric-tensors` (the `einsum!` contraction macro),
 `ferric-quadrature` (Lebedev grids, minimax Laplace roots), `ferric-export`
@@ -71,8 +72,16 @@ pinned by tests. A different-but-deterministic order — a tree-fold, say — wo
 
 **Memory.** `MemoryPlan` expresses what a path will allocate and when, so an
 oversized job is refused before allocating, with a breakdown naming the dominant
-term. Guards are tested in both directions: a starved budget must be refused,
-and an ample budget must still run.
+term. The CLI installs one process-wide `MemoryPool` sized from the resolved
+budget, and the large, size-dependent allocations reserve their bytes from it,
+so two allocations alive at the same time cannot each claim the whole budget.
+Library and Python callers install no pool; each check then compares its own
+allocation with the whole budget. Some allocations spill to disk or are
+recomputed instead of being refused, and basis-sized matrices, engines and
+scratch are not charged (see
+[Sharp bits](../using/sharp-bits.md#memory-budget_gb-does-not-cap-the-whole-process)).
+Guards are tested in both directions: a starved budget must be refused (or
+must fall back), and an ample budget must still run.
 
 **Errors.** Methods return `Result`; iterative solvers additionally carry a
 `converged` flag, since non-convergence is a result rather than an error.
