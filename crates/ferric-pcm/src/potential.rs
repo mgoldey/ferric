@@ -374,6 +374,35 @@ pub fn build_reaction_field_operator_smeared(
     smeared_attraction(prep, &smeared)
 }
 
+impl crate::config::ProbeKind {
+    /// Solute electrostatic potential at each tessera for this probe kind.
+    pub fn potential_at_tesserae(
+        self,
+        mol: &Molecule,
+        prep: &PreparedBasis,
+        density: &Array2<f64>,
+        tess: &[Tessera],
+    ) -> Result<Vec<f64>, FerricError> {
+        match self {
+            Self::Point => solute_potential_at_tesserae(mol, prep, density, tess),
+            Self::GaussianSmeared => solute_potential_at_tesserae_smeared(mol, prep, density, tess),
+        }
+    }
+
+    /// Reaction-field one-electron AO operator from the tessera charges `q`.
+    pub fn reaction_field_operator(
+        self,
+        prep: &PreparedBasis,
+        tess: &[Tessera],
+        q: &[f64],
+    ) -> Result<Array2<f64>, FerricError> {
+        match self {
+            Self::Point => build_reaction_field_operator(prep, tess, q),
+            Self::GaussianSmeared => build_reaction_field_operator_smeared(prep, tess, q),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

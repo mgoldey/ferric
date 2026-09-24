@@ -169,21 +169,15 @@ pub fn pcm_step(
     prep: &PreparedBasis,
     density: &Array2<f64>,
 ) -> Result<(Array2<f64>, f64), FerricError> {
-    let v = match ctx.probe {
-        ProbeKind::Point => potential::solute_potential_at_tesserae(mol, prep, density, &ctx.tess)?,
-        ProbeKind::GaussianSmeared => {
-            potential::solute_potential_at_tesserae_smeared(mol, prep, density, &ctx.tess)?
-        }
-    };
+    let v = ctx
+        .probe
+        .potential_at_tesserae(mol, prep, density, &ctx.tess)?;
     let v_arr = ndarray::Array1::from_vec(v);
     let PcmChargeResult { q, e_pcm } = solver::solve_pcm_charges(&ctx.k, &ctx.r, &v_arr)?;
-    let q = q.as_slice().unwrap();
-    let v_pcm = match ctx.probe {
-        ProbeKind::Point => potential::build_reaction_field_operator(prep, &ctx.tess, q)?,
-        ProbeKind::GaussianSmeared => {
-            potential::build_reaction_field_operator_smeared(prep, &ctx.tess, q)?
-        }
-    };
+    let q = q
+        .as_slice()
+        .expect("solve_pcm_charges returns a contiguous vector");
+    let v_pcm = ctx.probe.reaction_field_operator(prep, &ctx.tess, q)?;
     Ok((v_pcm, e_pcm))
 }
 
