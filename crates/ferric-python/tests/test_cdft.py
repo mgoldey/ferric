@@ -551,3 +551,22 @@ def test_df_aux_off_spellings_are_one_hamiltonian_for_the_coupling():
     # Hamiltonian key compares the raw setting instead of the effective one.
     ferric.cdft_coupling(a, b_exact)
     ferric.cdft_coupling(a, b_blank)
+
+
+def test_coupling_refuses_a_ghost_centre_that_keeps_the_overlap():
+    """A ghost centre (@He) keeps the basis and the AO overlap of He2+ while
+    removing a nucleus; with charge -1 the electron count and occupations also
+    match. Only the nuclear part of the Hamiltonian key can refuse it. Fails if
+    the molecule is dropped from hamiltonian_key: cdft_coupling then returns a
+    number for two different nuclear Hamiltonians."""
+    a, _ = _he2_plus_states(3.0)
+    ghost = ferric.Molecule.from_xyz_string("2\nx\nHe 0 0 0\n@He 0 0 3.0\n", -1, 2)
+    kw = dict(
+        lambda_tol=1e-2, max_outer=40, level_shift=0.2, grid_radial=99, grid_angular=302
+    )
+    # 2.99 on the real He: the ghost has no nucleus, so almost all three
+    # electrons sit on the real atom (a 1.0 target does not converge).
+    b = ferric.run_cdft(ghost, _svp(), [ferric.CdftConstraint([0], 2.99)], **kw)
+    assert b.converged
+    with pytest.raises(ValueError, match="different Hamiltonians"):
+        ferric.cdft_coupling(a, b)
