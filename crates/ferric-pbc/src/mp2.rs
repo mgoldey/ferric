@@ -113,6 +113,22 @@ impl Mp2Denominators {
     }
 }
 
+/// The shift added to every occupied ε so that a reference converged with
+/// `reference_exxdiv` yields `denominators` (the module-doc table). Shared
+/// by [`gamma_mp2`] and [`crate::drpa::gamma_drpa`].
+pub fn occupied_shift(
+    reference_exxdiv: ExxDiv,
+    denominators: Mp2Denominators,
+    madelung: f64,
+) -> f64 {
+    match (reference_exxdiv, denominators) {
+        (ExxDiv::Ewald, Mp2Denominators::MadelungShifted) => 0.0,
+        (ExxDiv::None, Mp2Denominators::MadelungShifted) => -madelung,
+        (ExxDiv::None, Mp2Denominators::Unshifted) => 0.0,
+        (ExxDiv::Ewald, Mp2Denominators::Unshifted) => madelung,
+    }
+}
+
 /// Settings for [`gamma_mp2`]. Deliberately no `Default`: the reference
 /// exxdiv and the denominator convention must be stated.
 #[derive(Debug, Clone, Copy)]
@@ -291,12 +307,7 @@ pub fn gamma_mp2(
     let nvir = nmo - nocc_total;
 
     let madelung = madelung_constant(cell)?;
-    let occ_shift = match (cfg.reference_exxdiv, cfg.denominators) {
-        (ExxDiv::Ewald, Mp2Denominators::MadelungShifted) => 0.0,
-        (ExxDiv::None, Mp2Denominators::MadelungShifted) => -madelung,
-        (ExxDiv::None, Mp2Denominators::Unshifted) => 0.0,
-        (ExxDiv::Ewald, Mp2Denominators::Unshifted) => madelung,
-    };
+    let occ_shift = occupied_shift(cfg.reference_exxdiv, cfg.denominators, madelung);
     let mut eps = eps_in.to_vec();
     for e in eps.iter_mut().take(nocc_total) {
         *e += occ_shift;

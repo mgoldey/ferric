@@ -23,6 +23,10 @@
 //! * [`mp2`] — Stage 6: Gamma-point closed-shell MP2 on the RS-GDF B (the
 //!   SCF's own B → `B[k,ia]` → ferric-mp2's `spin_components_from_b_ov`) or
 //!   the dense-AFT oracle, with explicit Madelung-shifted denominators.
+//! * [`drpa`] — Stage 7: Gamma-point closed-shell dRPA on the same B through
+//!   ferric-rpa's full-rank pipeline (`run_pdep_rpa_from_parts`, no molecular
+//!   basis objects), or the dense-AFT plasmon oracle; same denominator
+//!   conventions as MP2.
 //!
 //! Units: Bohr and Hartree throughout; G vectors in Bohr⁻¹.
 //!
@@ -31,6 +35,7 @@
 
 pub mod budget;
 pub mod dense_aft;
+pub mod drpa;
 pub mod ewald;
 pub mod hcore;
 pub mod lattice;
@@ -39,6 +44,7 @@ pub mod pair_ft;
 pub mod rsgdf;
 
 pub use dense_aft::{DenseAftEri, ExxDiv};
+pub use drpa::{gamma_drpa, GammaDrpaConfig, GammaDrpaIntegrals, GammaDrpaResult};
 pub use ewald::{ewald_nuclear_repulsion, madelung_constant};
 pub use hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
 pub use lattice::Cell;
