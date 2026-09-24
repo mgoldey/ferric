@@ -212,9 +212,13 @@ fn every_proof_link_resolves() {
 #[test]
 fn every_validation_file_is_linked() {
     let root = workspace_root();
-    let linked: std::collections::BTreeSet<String> = repo_links(&page_text())
+    // Only links in an Anchors Proof cell count: a validation file linked
+    // from prose (while its row's Proof cell keeps only the generator) is not
+    // the proof of any row.
+    let linked: std::collections::BTreeSet<String> = anchor_rows(&page_text())
         .iter()
-        .filter_map(|u| link_path(u).ok())
+        .flat_map(|(_, proof)| repo_links(proof))
+        .filter_map(|u| link_path(&u).ok())
         .collect();
     let mut on_disk = Vec::new();
     for c in std::fs::read_dir(root.join("crates")).expect("read crates/") {
@@ -250,8 +254,8 @@ fn every_validation_file_is_linked() {
     let unlinked: Vec<&String> = on_disk.iter().filter(|p| !linked.contains(*p)).collect();
     assert!(
         unlinked.is_empty(),
-        "validation test files with no proof link on {PAGE} (add a \
-         {REPO_URL}blob/main/<path> link to the row it proves):\n  {}",
+        "validation test files not linked from any Anchors Proof cell on {PAGE} (add a \
+         {REPO_URL}blob/main/<path> link to the Proof cell of the row it proves):\n  {}",
         unlinked
             .iter()
             .map(|s| s.as_str())
