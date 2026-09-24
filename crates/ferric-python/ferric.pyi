@@ -1353,7 +1353,9 @@ def run_rhf_gamma(
     budget). auxbasis/memory_budget_gb with "dense", or max_eri_gb with
     "rsgdf", raise ValueError. lattice: 3x3 rows in Angstrom; omega in
     1/Angstrom; exxdiv "ewald" | "none" and jk (strict). Charged cells, open
-    shells, odd electron counts and ECP bases raise ValueError.
+    shells and odd (valence) electron counts raise ValueError. An ECP basis
+    (e.g. def2-* for Z > 36, *-pp) is applied to the cell's molecule as in
+    run_rhf, and the lattice-summed V_ECP enters the periodic hcore.
     """
     ...
 
@@ -1363,9 +1365,11 @@ def run_rhf_gamma(
 # in 1/Angstrom, energies in Hartree per cell. jk="dense" (toy-scale AFT
 # oracle, capped by max_eri_gb) | "rsgdf" (REQUIRES auxbasis, bounded by
 # memory_budget_gb); a knob the chosen path ignores is a ValueError. Charged
-# cells and ECP bases raise ValueError; Rust-side refusals raise ValueError
-# with their message; numerical failures (incl. SCF non-convergence) raise
-# RuntimeError.
+# cells raise ValueError. ECP bases are supported by every driver (ECP applied
+# to the cell's molecule as in run_rhf; lattice-summed V_ECP in the periodic
+# hcore; electron counts and frozen_core are valence counts); Rust-side
+# refusals raise ValueError with their message; numerical failures (incl. SCF
+# non-convergence) raise RuntimeError.
 
 class GammaOpenShellResult:
     """Result of run_uhf_gamma / run_rohf_gamma / run_uks_gamma / run_roks_gamma."""

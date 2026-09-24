@@ -757,59 +757,62 @@ impl PyGammaRhfResult {
     }
 }
 
-/// Reject what any periodic driver cannot represent (charged cell, ECP
-/// basis), as `ValueError`s naming the offending input.
+/// Reject what any periodic driver cannot represent (a charged cell), as a
+/// `ValueError` naming the offending input, and return the cell's molecule
+/// with the basis set's ECPs applied (`Molecule::apply_ecp`, exactly as the
+/// molecular bindings do), so `n_core_ecp` / `effective_z` are set before
+/// the `Cell` is built. Every periodic driver builds its one-electron
+/// Hamiltonian through `periodic_hcore` / `periodic_hcore_kpts`, which add
+/// the lattice-summed V_ECP and whose `check_ecp_applied` guard stays the
+/// backstop against a bare-Z cell. Without an ECP basis the returned
+/// molecule is a plain clone (`apply_ecp` is a no-op).
 fn validate_periodic_cell(
     fname: &str,
     mol: &Molecule,
     bs: &ferric_core::basis::BasisSet,
-) -> PyResult<()> {
-    let bad = |m: String| -> PyResult<()> { Err(pyo3::exceptions::PyValueError::new_err(m)) };
+) -> PyResult<Molecule> {
     if mol.charge != 0 {
-        return bad(format!(
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "{fname}: charged cell (charge = {}) is not supported: a periodic \
              charged cell needs a neutralising-background correction for the \
              electrons that is not implemented. Use a neutral cell.",
             mol.charge
-        ));
+        )));
     }
-    if let Some(a) = mol.atoms.iter().find(|a| bs.ecps.contains_key(&a.z)) {
-        return bad(format!(
-            "{fname}: basis '{}' carries an ECP for {} (Z={}); ECP lattice \
-             sums are not implemented for periodic cells",
-            bs.name, a.symbol, a.z
-        ));
-    }
-    Ok(())
+    let mut emol = mol.clone();
+    emol.apply_ecp(bs);
+    Ok(emol)
 }
 
 /// Reject what a closed-shell periodic driver (RHF/RKS and the correlation
 /// methods on top) cannot represent: [`validate_periodic_cell`] plus an
-/// open shell or an odd electron count. Kept out of the bindings so their
-/// bodies stay thin dispatch layers.
+/// open shell or an odd electron count. The count is the VALENCE count of
+/// the ECP-applied molecule (what the SCF actually occupies). Returns that
+/// ECP-applied molecule. Kept out of the bindings so their bodies stay thin
+/// dispatch layers.
 fn validate_gamma_cell(
     fname: &str,
     mol: &Molecule,
     bs: &ferric_core::basis::BasisSet,
-) -> PyResult<()> {
-    let bad = |m: String| -> PyResult<()> { Err(pyo3::exceptions::PyValueError::new_err(m)) };
-    validate_periodic_cell(fname, mol, bs)?;
-    if mol.multiplicity != 1 {
+) -> PyResult<Molecule> {
+    let bad = |m: String| -> PyResult<Molecule> { Err(pyo3::exceptions::PyValueError::new_err(m)) };
+    let emol = validate_periodic_cell(fname, mol, bs)?;
+    if emol.multiplicity != 1 {
         return bad(format!(
             "{fname}: multiplicity {} requested, but this driver is closed-shell \
              (multiplicity 1) only; use the UHF/ROHF/UKS/ROKS periodic drivers \
              for an open shell",
-            mol.multiplicity
+            emol.multiplicity
         ));
     }
-    let nelec = mol.nelec();
+    let nelec = emol.nelec();
     if nelec <= 0 || nelec % 2 != 0 {
         return bad(format!(
             "{fname}: {nelec} electrons per cell; a closed-shell driver needs a \
              positive even count"
         ));
     }
-    Ok(())
+    Ok(emol)
 }
 
 /// What the Gamma-point driver hands back across the GIL boundary.
@@ -1087,7 +1090,7 @@ fn parse_gamma_options(
 ///
 /// Hard errors (ValueError): charged cell (charge != 0; no neutralising-
 /// background correction for electrons), multiplicity != 1 or an odd
-/// electron count (RHF only), an ECP basis, a non-3x3 or singular lattice,
+/// electron count (RHF only; counted after the ECP), a non-3x3 or singular lattice,
 /// a bad `exxdiv`/`jk`, an unknown bundled `auxbasis`, a knob given to the
 /// path that ignores it, non-positive `omega`/`max_eri_gb`/`memory_budget_gb`,
 /// an oversize dense cell.
@@ -1132,8 +1135,8 @@ fn run_rhf_gamma(
         &lattice,
         omega,
     )?;
-    validate_gamma_cell("run_rhf_gamma", &mol.inner, &basis_set.inner)?;
-    let cell = ferric_pbc::Cell::new(mol.inner.clone(), a).map_err(|e| val_err(format!("{e}")))?;
+    let emol = validate_gamma_cell("run_rhf_gamma", &mol.inner, &basis_set.inner)?;
+    let cell = ferric_pbc::Cell::new(emol, a).map_err(|e| val_err(format!("{e}")))?;
     let prep = PreparedBasis::new(cell.mol(), &basis_set.inner).map_err(make_err)?;
     let nao = prep.nbasis();
     let (jk_choice, aux_name) = match auxbasis {
