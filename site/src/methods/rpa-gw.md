@@ -119,9 +119,7 @@ Three sources feed the \\( C_6 \\) contraction (`[rpa] c6_source`):
 
 The `argon-c6-rpa-pbe.toml` header records C6(Ar–Ar) = 56.4 a.u. at
 RPA@PBE/aug-cc-pVTZ against the DOSD value 64.3 (−12%). **Which of TS and
-PDEP-RPA gives better molecular \\( C_6 \\) is not established**: an earlier
-claim that dRPA@PBE was about 3× better than TS predates a fix to TS's
-free-atom volumes and is withdrawn.
+PDEP-RPA gives better molecular \\( C_6 \\) is not established.**
 
 Use an augmented basis for any polarizability or \\( C_6 \\): without diffuse
 functions the dipole response is badly underestimated.

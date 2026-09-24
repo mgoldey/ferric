@@ -1,10 +1,9 @@
 # How we make a pipeline for proposing viable active-site substitutions
 
-**2026-09-19, revised the same day.** The pipeline's STAGES are settled and
-every one of them exists in code. What is NOT settled -- and what this note now
-says plainly, having briefly said the opposite -- is that its ranking can be
-trusted at the 1-2 kcal/mol resolution a substitution campaign needs. All four
-pose protocols have been measured and all four fail.
+**2026-09-19.** The pipeline's STAGES are settled and every one of them exists
+in code. What is NOT settled is that its ranking can be trusted at the
+1-2 kcal/mol resolution a substitution campaign needs. All four pose protocols
+have been measured and all four fail.
 
 Everything here is MEASURED on danuglipron against the GLP-1R pocket (7LCJ)
 unless labelled otherwise. Sources: `experiments/danuglipron/RESULTS.md`

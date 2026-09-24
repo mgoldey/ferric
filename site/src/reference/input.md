@@ -260,7 +260,7 @@ Read when `task = "frequencies"`.
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
-| `budget_gb` | float | auto | finite and > 0 | Precedence: this key, then `FERRIC_MEM_BUDGET_GB`, then the legacy `FERRIC_OOC_BUDGET_GB`/`FERRIC_ERI3_BUDGET_GB`, then 0.8 × available RAM, then 2 GiB. A value of 0, a negative value or NaN is an error (it used to mean "auto"). It bounds the ledgered allocations, not total process memory. |
+| `budget_gb` | float | auto | finite and > 0 | Precedence: this key, then `FERRIC_MEM_BUDGET_GB`, then the legacy `FERRIC_OOC_BUDGET_GB`/`FERRIC_ERI3_BUDGET_GB`, then 0.8 × available RAM, then 2 GiB. A value of 0, a negative value or NaN is an error; omit the key for auto. It bounds the ledgered allocations, not total process memory. |
 | `three_index_budget_gb` | float | — | | Deprecated alias. `budget_gb` wins if both are set. |
 
 ## `[output]`

@@ -154,7 +154,7 @@ Butane, one thread; TZ is def2-TZVP (184 functions), QZ is def2-QZVP (528).
 | Builder | What the time covers | def2-TZVP | def2-QZVP |
 |---|---|---:|---:|
 | direct | J and K together (one integral sweep) | not measured | 400 |
-| LinK | K | being re-measured (#50) | being re-measured (#50) |
+| LinK | K | being re-measured | being re-measured |
 | RI-JK | K | 0.05 | 0.43 |
 | COSX | K | not measured | 137 |
 
@@ -163,7 +163,7 @@ Butane, one thread; TZ is def2-TZVP (184 functions), QZ is def2-QZVP (528).
 | Builder | def2-TZVP | def2-QZVP |
 |---|---:|---:|
 | direct | 98 | not measured |
-| LinK | being re-measured (#50) | being re-measured (#50) |
+| LinK | being re-measured | being re-measured |
 | RI-JK | not measured | not measured |
 | COSX | 358 | not measured |
 
@@ -183,12 +183,9 @@ per build than anything else here. Its error is a fitting error, not zero, and
 it grows with system size.
 
 **Need exact exchange?** Direct or LinK; both are exact to the screening
-threshold as *K builders*. LinK's pair lists were fixed in #50 (three
-pair-list defects; butane/def2-SVP `link` == direct to 9e-12 Ha). Every LinK
-timing taken before that fix was against a kernel that skipped quartets, so
-none is repeated here; its cost against the corrected kernel is being
-re-measured. `k_builder` is honoured by UHF and ROHF as well as RHF (it was
-silently ignored for open-shell runs before 2026-09-08): the open-shell solvers
+threshold as *K builders* (butane/def2-SVP: `link` == direct to 9e-12 Ha).
+LinK's cost is being re-measured, so no LinK timing is quoted here.
+`k_builder` is honoured by UHF and ROHF as well as RHF: the open-shell solvers
 build K_α and K_β from one builder instance, refreshing its density-dependent
 state per spin. Whether LinK is the faster choice for a given system is a
 separate question from whether it is honoured — see the cost note above, which
@@ -202,8 +199,7 @@ roughly tenfold from SVP to QZVP, so it reaches analytic exchange only at
 quadruple-zeta: on butane/def2-QZVP a COSX K build is **137 s against 400 s**
 for the default direct J+K build (parity; J and K share that sweep), while at
 TZ the full COSX SCF is 3.7× slower than direct (358 s vs 98 s). Below QZ it
-is the wrong tool. Ratios against LinK are withheld until LinK is re-measured
-with the #50 lists.
+is the wrong tool. Ratios against LinK are withheld until LinK is re-measured.
 
 Its integral work is sub-quadratic in system size — a density-driven pair
 screen (on the product of the integral bound and the local half-transformed
@@ -260,18 +256,18 @@ threshold is tunable via `FERRIC_LINDEP_THRESH`.
 ## Screening
 
 - **Schwarz** bounds on every 4-centre path, built so they can never
-  underestimate (a zero-valued table entry once cost 1.5e-4 Ha; it is now
-  floored)
+  underestimate (zero-valued table entries are floored; left unfloored, one
+  such entry was measured to cost 1.5e-4 Ha)
 - **LinK** (Ochsenfeld, White & Head-Gordon 1998) — exchange via
-  significant-pair and density-pair lists; the lists were corrected in #50
-  and its scaling is being re-measured
+  significant-pair and density-pair lists; its scaling is being re-measured
 - **QQR** (Maurer, Lambrecht & Ochsenfeld 2012) is implemented and
   validated as a bound but is *not* used in production: on LinK it screened
-  only 0.009% more quartets than Schwarz at alkane_16 (measured before the
-  #50 list fix)
+  only 0.009% more quartets than Schwarz at alkane_16 (measured against a
+  LinK pair-list implementation that skipped quartets; not yet repeated on the
+  current lists)
 - **COSX** shell-pair screening uses a primitive-level Hölder bound that
-  provably never underestimates; an earlier overlap-based bound did, and
-  silently corrupted K
+  provably never underestimates; an overlap-based bound can underestimate,
+  which silently corrupts K
 
 ## QM/MM embedding
 

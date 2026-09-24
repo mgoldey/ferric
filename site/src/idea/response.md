@@ -49,9 +49,8 @@ what comes out of that sum.
   4 Bohr on a 71-atom drug molecule). The tensor algebra is
   still dense, so **no timing gain is claimed**. This result is specific to
   that formulation and does not carry over to the other locality lanes below.
-  An earlier version of this page reported it as a measured negative; that was
-  an indexing bug, now fixed and recorded in the test
-  `sos_ao_sparse_truncation_radius_is_transferable_across_sizes`.
+  The test `sos_ao_sparse_truncation_radius_is_transferable_across_sizes`
+  pins it.
 - **Local MP2 (amplitude threshold)** has localized virtuals and per-pair
   domain-local RI fits. The integral-direct variant (`lmp2-direct`) is
   measured at about N<sup>1.24</sup> (erfc) to N<sup>1.4</sup> (Coulomb) on

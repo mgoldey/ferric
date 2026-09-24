@@ -159,11 +159,6 @@ saturation: no single radius is shown to suffice at every size.
 **What is not claimed:** any speedup. The domains discard contributions but
 the tensor algebra is still dense, so there are no timings to report.
 
-> An earlier version of these docs called `ao-sparse` a "measured negative"
-> (radius tracking the molecular diameter). That result came from an indexing
-> bug that masked canonical orbitals with localized orbitals' domains, and it
-> has been retracted; the test above records the history.
-
 ## Local MP2
 
 **Amplitude-threshold LMP2** (`lmp2`, `examples/water-lmp2.toml`,

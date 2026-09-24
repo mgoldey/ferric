@@ -118,8 +118,8 @@ independently. Cost scales ~N^1.5 in atom count, so quoting one number hides a
 points.
 
 **`pocket_polarization` is the plot for a SINGLE pose** (added 2026-09-20).
-This row used to point only at `site_substituent_heatmap`, which ranks
-substituents across sites and says nothing about one calculation.
+`site_substituent_heatmap` ranks substituents across sites and says nothing
+about one calculation.
 `compute_binding_energy` also returns `charges_vacuum` and `charges_field`,
 and nothing plotted them -- so the one output that distinguishes an embedded
 result from a number went unlooked at. `dq = q_field - q_vacuum` is the pocket
@@ -362,9 +362,8 @@ props = propose_substitutions(parent, {"F": "F", "Cl": "Cl", "Me": "C"})
 
 # C. gate RELATIVE to the parent, never on absolutes
 relative_descriptors(props[0].smiles, "c1ccccc1C(=O)O")
-#   -> (-1.42e-14, 0.0, 0.0)   the parent against itself -- NOT exactly zero,
-#      and this doc used to print "(-0.0, 0.0, 0.0) ... exactly zero, by
-#      construction". The distinction is real and worth knowing:
+#   -> (-1.42e-14, 0.0, 0.0)   the parent against itself -- NOT exactly zero.
+#      The distinction is real and worth knowing:
 #        relative_descriptors(s, s)                     -> exactly (0.0,0.0,0.0)
 #        relative_descriptors(props[0].smiles, s)       -> -1.42e-14 in dMW
 #      because props[0].smiles is the CANONICAL form ("O=C(O)c1ccccc1") of the
@@ -393,8 +392,7 @@ stages = [
     Stage(Tier.QUANTUM,       tier4_dft,        keep=1, name="dft"),
 ]
 # the funnel takes Isomers, and section B produced SubstitutionProposals --
-# this conversion is the one line between them, and the quickstart used to
-# omit it and refer to an undefined `candidates`.
+# this conversion is the one line between them.
 from tools.isomers.model import Isomer
 
 candidates = [
@@ -709,10 +707,7 @@ and only because PDBQT is a united-atom format.
 `context["geometry"]` so tiers 3 and 4 score the DOCKED pose instead of
 re-embedding. Use the funnel, or take `coords_angstrom` off the pose yourself.
 The embed path is for enumeration and gas-phase work; it is not a substitute
-for docking. `embed_proposals`' docstring now SAYS so, with the 226 A figure
-(added 2026-09-20 -- this paragraph used to end "and nothing in either
-signature says so", which was the accurate complaint and the cheaper fix:
-a caller reads the docstring, not this page).
+for docking. `embed_proposals`' docstring SAYS so, with the 226 A figure.
 
 **But DO NOT truncate with a naive distance cut.** That was the obvious next
 move and it is measured here because it does not work. Keeping charges within
@@ -1199,10 +1194,10 @@ above is STO-3G, the cheapest basis there is -- a real catalyst at def2-SVP or
 better is orders above these. Treat the table as the N-SCALING SHAPE, not as
 wall times.
 
-### HOW to size the QM region (the note said "first", never "how")
+### HOW to size the QM region
 
 C0 says the QM region "sets the cost" and the section below says to size it
-first. Neither said HOW, and it is the first decision a catalyst user makes.
+first. This is HOW, and it is the first decision a catalyst user makes.
 
 `QmSelection` offers three ways, and the choice matters:
 
@@ -1483,11 +1478,6 @@ which `n_gradient_evaluations` does not count), each requiring its own
 converged SCF.
 There is no analytic Hessian to fall back on -- see section 4.
 
-(Heading and this paragraph corrected 2026-09-19: both said "ESTIMATED" and
-"6N + 1" while the table two paragraphs below recorded the MEASURED 6N that
-refuted exactly that. A stale summary above a correct measurement is the more
-dangerous of the two, because it is what gets quoted.)
-
 VERIFIED TWICE, and the second pass CORRECTED the first. Reading the loop gives
 `for b in 0..n_coord` over 3N coordinates with TWO `energy_and_gradient` calls
 inside (`+delta`, `-delta`), plus one at the undisplaced geometry before the
@@ -1764,8 +1754,7 @@ G0. POSE-QUALITY GATE -- before scoring anything.
 G1. Dock (tier 1), then HARVEST the pose into context["geometry"] (section 0).
 G2. Rank with GFN2-xTB in the pocket field (tier 3 + point_charges).
     DECISION: if you only need a coarse sort, STOP HERE. DFT costs ~200x at
-    danuglipron scale (MEASURED, see below -- NOT the ~1000x this line used
-    to claim).
+    danuglipron scale (MEASURED, see below).
 G3. QM region = the ligand. Pocket = MM point charges. No link atoms needed
     when the cut does not cross a covalent bond -- which for a non-covalent
     ligand it does not. This is the case ferric handles cleanly today.
@@ -1882,10 +1871,8 @@ The script is `/tmp` scratch, not committed -- it is four calls and is
 reproduced above in full effect. What matters is that it was RUN, so the (a)
 branch below is a description of working code rather than an intention.
 
-**The (b) branch is too, as of 2026-09-20.** This paragraph used to end "and
-cannot be until a saddle search exists", which contradicted item 7 of the
-capability list above once `run_saddle` landed on 2026-09-19. C1-C5 was then
-executed end to end against merged main -- see "Every C-step RUN against merged main" under (b).
+**The (b) branch is too, as of 2026-09-20.** `run_saddle` landed on
+2026-09-19, and C1-C5 was then executed end to end against merged main -- see "Every C-step RUN against merged main" under (b).
 
 #### The same thing from the CLI, no Python (2026-09-19)
 
@@ -1986,8 +1973,8 @@ C6    barrier                    IrcResult.forward_barrier() / reverse_barrier()
 C3 -> C5 EXECUTED from Python (2026-09-19), NH3 umbrella inversion at
 STO-3G. SCOPE: this runs `run_saddle` and `run_irc` only -- it does NOT
 build a QmmmSystem (C0/C1), call run_optimize_qmmm (C2), or call
-run_frequencies (C4). Those have their own coverage; an earlier version
-of this block said "C0-C5" and overclaimed a chain test:
+run_frequencies (C4). Those have their own coverage, so this is not a
+C0-C5 chain test:
 
   saddle   converged, n_imaginary = 1, is_transition_state() = True
   IRC      -0.4257 / +0.4257 A pyramidalisation, both branches converged
@@ -2030,7 +2017,7 @@ transition-state cost section for the table and the diagnostic.
 
 Not one end-to-end run on one system -- **two smoke tests on two systems**, and
 the distinction matters because the sizes and the surfaces differ. Labelling
-this "C1-C5 end to end" (as an earlier revision did) would claim a continuity
+this "C1-C5 end to end" would claim a continuity
 these runs do not have.
 
 **C1/C2/C4 -- ethane, QM = one CH3, covalent cut with a link atom, STO-3G.**
@@ -2074,10 +2061,9 @@ to quote an energy from:
 | RHF + MM point charges | -55.43664618 |
 | **field shift** | **+0.640 kcal/mol** |
 
-(An earlier revision quoted "+0.635 kcal/mol" as the shift in the *saddle*
-energy. That subtracted two energies at two DIFFERENT geometries, one of them
-not stationary, so it was not the quantity it named. Review caught it; the
-single-geometry number above is what was meant.)
+(The shift is taken at ONE geometry. Subtracting the two *saddle* energies
+instead gives +0.635 kcal/mol, but that compares two DIFFERENT geometries, one
+of them not stationary, so it is not a field shift.)
 
 **The basis argument is a `BasisSet` for energies and a NAME for geometry
 changes.** Checked across the entry points 2026-09-20:
@@ -2127,8 +2113,8 @@ script -- a negative cannot be demonstrated by running something.
 
 **C3 CLOSED AND MERGED 2026-09-19** (`ferric_scf::saddle`, #106), and
 demonstrated under QM/MM embedding rather than only in the gas phase. The chain
-C0-C5 is complete. What that does and does not mean is in the rewritten
-section 4. The IRC gap is closed (`irc::follow_irc`); what remains is the
+C0-C5 is complete. What that does and does not mean is in section 4.
+The IRC gap is closed (`irc::follow_irc`); what remains is the
 analytic Hessian.
 
 API INCONSISTENCY worth knowing before writing a workflow: `run_rhf` takes a
@@ -2185,8 +2171,8 @@ good option, and is the cheaper one when a TS is already in hand.
 
 ## 4. Catalyst optimization: the search gap is CLOSED, the cost one is not
 
-**UPDATED 2026-09-19.** This section previously read "BLOCKED". The blocker was
-C3 -- no saddle search anywhere in the tree. That is now implemented.
+**2026-09-19.** The blocker was C3 -- no saddle search anywhere in the tree.
+That is now implemented.
 
 ### What landed
 
@@ -2202,13 +2188,12 @@ Why it could not be a flag on `optimize.rs`: that is a MINIMIZER, and its
 quasi-Newton update is kept positive definite on purpose. No step size turns a
 minimizer into a saddle finder.
 
-### CORRECTION to the previous draft of this section
+### Where the Hessian comes from
 
-It said P-RFO "reuses the Hessian machinery already in `hessian.rs`". **Wrong.**
-`hessian.rs::rhf_hessian` is a documented stub that ALWAYS returns `Err` (this
-same section says so four paragraphs below, which should have caught it). The
-working Hessian is `frequencies.rs`'s central-differenced analytic gradient,
-and that is what `saddle.rs` calls.
+P-RFO does NOT use `hessian.rs`: `hessian.rs::rhf_hessian` is a documented stub
+that ALWAYS returns `Err` (see four paragraphs below). The working Hessian is
+`frequencies.rs`'s central-differenced analytic gradient, and that is what
+`saddle.rs` calls.
 
 ### The cost, which is now the binding constraint
 
@@ -2295,18 +2280,9 @@ That ratio, not the algorithm, is what sizes a catalyst job now.
 > analytic gradients at 6N+1 evaluations. So a catalyst workflow knows what to
 > do, and the remaining work is cost, not capability.
 
-Two claims in the previous version of this line were stale within a day: it
-said "no IRC" and "no QM/MM wiring for the search" after both had landed. A
-status line is the sentence people quote, so it goes stale first and does the
-most damage -- it is worth re-checking against the tree rather than against the
-paragraph above it.
-
 ---
 
 ## 5. Ordered next actions
-
-**UPDATED 2026-09-19.** Item 0 is new and is now the top of the list, because
-the capability it wires up did not exist when this list was written.
 
 0. ~~**Wire `saddle::find_saddle` to the QM/MM evaluator.**~~ **DONE
    2026-09-19** -- `examples/qmmm_saddle.rs`, verified running end to end on an
