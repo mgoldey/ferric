@@ -59,6 +59,12 @@
 //!   (`pair_ft::residues`), a DENSE pure-AFT k-point J/K oracle (supercell
 //!   Madelung for `exxdiv = ewald`) and k-point RS-GDF per momentum transfer
 //!   q ([`rsgdf::kpoint`], `KRhfConfig::jk = rsgdf`).
+//! * [`kcorr`] — Stage 9: k-point closed-shell MP2 (`kpoint_mp2`) and
+//!   direct RPA (`kpoint_drpa`) on the complex k-point RS-GDF blocks (or the
+//!   dense-AFT pair oracle `KDenseAftPairs`): explicit `Bvo`, momentum
+//!   conservation `kb = ki + kj − ka`, per-q complex Hermitian `Π(q)`
+//!   realified into ferric-rpa's real log-det pipeline; per-cell energies,
+//!   Madelung-shifted denominators as at Gamma.
 //!
 //! Units: Bohr and Hartree throughout; G vectors in Bohr⁻¹.
 //!
@@ -71,6 +77,7 @@ pub mod dft;
 pub mod drpa;
 pub mod ewald;
 pub mod hcore;
+pub mod kcorr;
 pub mod kdense_aft;
 pub mod kpts;
 pub mod kscf;
@@ -92,6 +99,10 @@ pub use drpa::{gamma_drpa, GammaDrpaConfig, GammaDrpaIntegrals, GammaDrpaResult}
 pub use ewald::{ewald_nuclear_repulsion, madelung_constant};
 pub use hcore::kpoint::{periodic_hcore_kpts, PeriodicHcoreK};
 pub use hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
+pub use kcorr::{
+    kpoint_drpa, kpoint_mp2, KCorrIntegrals, KDenseAftPairs, KDrpaConfig, KDrpaEnergy, KDrpaResult,
+    KMp2Config, KMp2Result,
+};
 pub use kdense_aft::{KDenseAftConfig, KDenseAftEri, KDenseAftJk};
 pub use kpts::{KPointMesh, MeshCentring};
 pub use kscf::{
