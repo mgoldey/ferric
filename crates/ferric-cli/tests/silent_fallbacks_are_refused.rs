@@ -103,6 +103,25 @@ fn assert_runs(out: &std::process::Output, what: &str) {
 /// workspace-relative path for `[molecule] xyz`. One file per test (`tag`):
 /// the tests run in parallel, and a shared file rewritten by one test while
 /// another's CLI reads it would be a race.
+/// Bent NH2 (N-H 1.024 A, H-N-H ~103 deg): a doublet whose singly occupied
+/// orbital (b1) is NON-degenerate. Used for ROKS because OH's degenerate pi
+/// shell leaves ROKS fragile: 1e-7 A perturbations change its iteration count
+/// from 57 to 115, 1e-6 to 1e-3 A ones fail to converge in 200 iterations, and
+/// on the CI runner (AMD EPYC 9V74) it converged to an excited configuration
+/// 0.58 Ha above the ground state. That is a solver defect tracked on its own
+/// (validation campaign F6), not something this routing test should depend on.
+/// NH2 ROKS converges in 7-9 iterations at every perturbation from 1e-7 to
+/// 1e-3 A with the same energy.
+fn nh2_xyz(tag: &str) -> String {
+    let rel = format!("target/silent_fallback_nh2_{tag}.xyz");
+    std::fs::write(
+        workspace_root().join(&rel),
+        "3\nNH2 doublet\nN 0.0 0.0 0.0\nH 0.0 0.7983 0.6228\nH 0.0 -0.7983 0.6228\n",
+    )
+    .expect("write NH2 xyz");
+    rel
+}
+
 fn oh_097_xyz(tag: &str) -> String {
     let rel = format!("target/silent_fallback_oh_097_{tag}.xyz");
     std::fs::write(
@@ -224,7 +243,7 @@ fn ksdft_on_a_doublet_runs_uks_and_matches_pyscf() {
 /// * rhf + PBE on (closed-shell) water is RKS, equal to `ksdft`.
 #[test]
 fn uhf_rohf_and_rhf_with_a_functional_run_kohn_sham() {
-    let xyz = oh_097_xyz("uhf_rohf_and_rhf_with_a_functional_run_kohn_sham");
+    let xyz = nh2_xyz("uhf_rohf_and_rhf_with_a_functional_run_kohn_sham");
     let pbe = format!("[dft]\nfunctional = \"PBE\"\n\n{TIGHT_SCF}");
     let energy = |tag: &str, kind: &str, extra: &str| {
         stdout_value(
@@ -232,19 +251,17 @@ fn uhf_rohf_and_rhf_with_a_functional_run_kohn_sham() {
             "energy ",
         )
     };
-    let e_ksdft = energy("oh_ksdft_pbe", "ksdft", &pbe);
-    let e_uks = energy("oh_uhf_pbe", "uhf", &pbe);
-    let e_uhf = energy("oh_uhf_plain", "uhf", TIGHT_SCF);
-    // Keep the ROKS run's full output: when the gap assertion below fails it
-    // prints what the SCF did (iterations, <S^2>, warnings), because a wrong
-    // ROKS state has so far only reproduced on the CI runner (AMD EPYC 9V74),
-    // never locally in debug or release.
+    let e_ksdft = energy("nh2_ksdft_pbe", "ksdft", &pbe);
+    let e_uks = energy("nh2_uhf_pbe", "uhf", &pbe);
+    let e_uhf = energy("nh2_uhf_plain", "uhf", TIGHT_SCF);
+    // Keep the ROKS run's full output: if the gap assertion below fails it
+    // prints what the SCF did (iterations, <S^2>, warnings).
     let roks_out = run_ok(
-        "oh_rohf_pbe",
+        "nh2_rohf_pbe",
         &body_at(&xyz, 2, "sto-3g", "rohf", "energy", &pbe),
     );
     let e_roks = stdout_value(&roks_out, "energy ");
-    let e_rohf = energy("oh_rohf_plain", "rohf", TIGHT_SCF);
+    let e_rohf = energy("nh2_rohf_plain", "rohf", TIGHT_SCF);
     assert!(
         (e_uks - e_ksdft).abs() < 1e-8,
         "uhf + PBE {e_uks:.10} must be the ksdft UKS {e_ksdft:.10}"
@@ -253,13 +270,13 @@ fn uhf_rohf_and_rhf_with_a_functional_run_kohn_sham() {
         (e_uks - e_uhf).abs() > 0.1,
         "uhf + PBE {e_uks:.10} is (still) the UHF energy {e_uhf:.10}"
     );
-    // The ROKS - UKS gap, which cancels the grid/fitting offset between codes:
-    // PySCF (ROKS vs UKS, PBE/STO-3G, grids.level 5) gives 3.2080e-4 Ha;
-    // ferric measured 3.1933e-4. A ROKS run that fell back to UKS gives 0,
-    // one that dropped the functional gives ~0.2 Ha.
-    const PYSCF_ROKS_MINUS_UKS: f64 = 3.2080e-4;
+    // The ROKS - UKS gap on NH2, which cancels the grid/fitting offset between
+    // codes: PySCF 2.13.1 (ROKS vs UKS, PBE/STO-3G, grids.level 5) gives
+    // 6.6033e-4 Ha; ferric measured 6.6031e-4. A ROKS run that fell back to
+    // UKS gives 0, one that dropped the functional gives ~0.2 Ha.
+    const PYSCF_ROKS_MINUS_UKS: f64 = 6.6033e-4;
     assert!(
-        (e_roks - e_uks - PYSCF_ROKS_MINUS_UKS).abs() < 2e-5,
+        (e_roks - e_uks - PYSCF_ROKS_MINUS_UKS).abs() < 1e-6,
         "ROKS {e_roks:.10} - UKS {e_uks:.10} = {:.4e}; PySCF gives {PYSCF_ROKS_MINUS_UKS:.4e}\n\
          --- ROKS stdout ---\n{}\n--- ROKS stderr ---\n{}",
         e_roks - e_uks,
@@ -271,7 +288,7 @@ fn uhf_rohf_and_rhf_with_a_functional_run_kohn_sham() {
         "rohf + PBE {e_roks:.10} is (still) the ROHF energy {e_rohf:.10}"
     );
     let roks = run_ok(
-        "oh_rohf_pbe_label",
+        "nh2_rohf_pbe_label",
         &body_at(&xyz, 2, "sto-3g", "rohf", "energy", &pbe),
     );
     assert!(String::from_utf8_lossy(&roks.stdout).contains("ROKS[PBE]/sto-3g"));
