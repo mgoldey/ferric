@@ -56,6 +56,21 @@
 //! Madelung term included — by the exact-exchange fraction (measured in the
 //! prototype: the box-limit `a⁻³` coefficient is `hyb ×` the HF one).
 //!
+//! # Open shell (Stage 5, FINDINGS "Iteration 10")
+//!
+//! [`PeriodicXc`] also evaluates the spin-polarized kernel
+//! ([`PeriodicXc::eval_polarized`], ferric-dft's unchanged
+//! `semilocal_vxc_polarized` on `nspin = 2` libxc handles) and implements
+//! `XcBuilder::build_polarized`; [`gamma_uks`] injects it into
+//! `ferric_scf::uhf::solve_uhf_injected`, which forms per spin
+//! `F_σ = h + J − a·K_inj(D_σ) + V_σ` (the injected K carries the Madelung
+//! term, linear in D_σ: no per-spin ½, no Madelung on the `(1 − a)` part).
+//! For `a > 0` and `exxdiv = ewald` the default start is
+//! [`EwaldStart::Staged`] (none, then ewald from those MOs), and the
+//! OCCUPATION-AWARE per-spin gap is checked against `a·v_M`
+//! ([`crate::uhf::occupation_gaps`]). ROKS is NOT implemented (ferric-scf's
+//! ROHF has no injected path).
+//!
 //! Refused by name: range-separated hybrids (need an attenuated periodic K),
 //! meta-GGA (not prototyped), VV10 / double hybrids, grid pruning, Newton /
 //! TRAH / stability (they rebuild molecular J/K and the f_xc kernel on the
@@ -70,18 +85,20 @@ use crate::dense_aft::ExxDiv;
 use crate::ewald::madelung_constant;
 use crate::hcore::PeriodicHcore;
 use crate::lattice::Cell;
-use crate::uhf::GammaUhfIntegrals;
+use crate::uhf::{
+    nocc_ab, occupation_gaps, spin_square, EwaldStart, GammaUhfIntegrals, SpinGapReport,
+};
 use ferric_core::basis::{num_functions, BasisSet};
 use ferric_core::parallel::ParallelContext;
 use ferric_core::FerricError;
 use ferric_dft::becke::{partition_weight_over, NeighbourAtom, PartitionScheme};
-use ferric_dft::density_on_grid::eval_density_closed;
+use ferric_dft::density_on_grid::{eval_density_closed, eval_density_uks};
 use ferric_dft::grid::GridPoint;
 use ferric_dft::lebedev::lebedev;
-use ferric_dft::libxc::{xc_def_from_name, FunctionalFamily, XcDef};
+use ferric_dft::libxc::{xc_def_from_name, xc_def_from_name_nspin, FunctionalFamily, XcDef};
 use ferric_dft::prune::PruneScheme;
 use ferric_dft::radial::treutler_ahlrichs_m4;
-use ferric_dft::vxc::{semilocal_vxc_closed_scratch, VxcScratch};
+use ferric_dft::vxc::{semilocal_vxc_closed_scratch, semilocal_vxc_polarized_scratch, VxcScratch};
 use ferric_integrals::ao_grid::{collect_shells, eval_shell_and_grad, LocatedShell};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
@@ -90,6 +107,7 @@ use ferric_scf::rhf::{
     solve_rhf_injected, validate_injected, PeriodicInjection, RhfConfig, XcBuilder,
 };
 use ferric_scf::screening::SchwarzBounds;
+use ferric_scf::uhf::solve_uhf_injected;
 use ndarray::{Array2, Array3};
 use rayon::prelude::*;
 
@@ -801,6 +819,8 @@ impl Default for PeriodicXcConfig {
 pub struct PeriodicXc {
     name: String,
     xc: XcDef,
+    /// The same functional on `nspin = 2` libxc handles (UKS).
+    xc_pol: XcDef,
     exx: f64,
     chunks: Vec<AoChunk>,
     nbf: usize,
@@ -829,11 +849,17 @@ impl PeriodicXc {
         cfg: &PeriodicXcConfig,
     ) -> Result<Self, FerricError> {
         let (xc, exx) = resolve_periodic_functional(functional)?;
+        let xc_pol = xc_def_from_name_nspin(functional, 2).map_err(|e| {
+            FerricError::General(format!(
+                "periodic DFT: functional {functional:?} (spin-polarized): {e:?}"
+            ))
+        })?;
         let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
         let (chunks, nbf) = lattice_ao_chunks(cell, bs, grid, cfg.ao_threshold, &mut ledger)?;
         Ok(Self {
             name: functional.to_string(),
             xc,
+            xc_pol,
             exx,
             chunks,
             nbf,
@@ -934,6 +960,52 @@ impl PeriodicXc {
     }
 }
 
+impl PeriodicXc {
+    /// Spin-polarized `(E_xc, V_α, V_β)` at `(d_a, d_b)` (chunk sums of
+    /// ferric-dft's `semilocal_vxc_polarized`, libxc `nspin = 2`; each chunk's
+    /// `V_σ` symmetrised by the kernel). GGA: `V_σ` includes the `σ_αβ` cross
+    /// term through `∇ρ_{σ'}`. Closed shell (`d_a = d_b = D/2`) reproduces
+    /// [`PeriodicXc::eval`] up to the libxc polarized/unpolarized rounding.
+    pub fn eval_polarized(
+        &mut self,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+    ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
+        self.check_d(d_a)?;
+        self.check_d(d_b)?;
+        let mut e = 0.0;
+        let mut v_a = Array2::<f64>::zeros((self.nbf, self.nbf));
+        let mut v_b = Array2::<f64>::zeros((self.nbf, self.nbf));
+        for c in &self.chunks {
+            let dens = eval_density_uks(d_a, d_b, &c.chi, &c.dchi);
+            let (ec, va, vb) = semilocal_vxc_polarized_scratch(
+                &c.points,
+                &c.chi,
+                &c.dchi,
+                &dens,
+                None,
+                &self.xc_pol,
+                &mut self.scratch,
+            );
+            e += ec;
+            v_a += &va;
+            v_b += &vb;
+        }
+        if !e.is_finite() || v_a.iter().chain(v_b.iter()).any(|x| !x.is_finite()) {
+            return Err(FerricError::General(format!(
+                "PeriodicXc: non-finite polarized E_xc/V_xc ({e}) for {}",
+                self.name
+            )));
+        }
+        Ok((e, v_a, v_b))
+    }
+
+    /// The functional's global exact-exchange fraction.
+    pub fn exact_exchange_fraction(&self) -> f64 {
+        self.exx
+    }
+}
+
 impl XcBuilder for PeriodicXc {
     fn build(&mut self, d: &Array2<f64>) -> Result<(f64, Array2<f64>), FerricError> {
         self.eval(d)
@@ -941,6 +1013,18 @@ impl XcBuilder for PeriodicXc {
 
     fn exact_exchange_fraction(&self) -> f64 {
         self.exx
+    }
+
+    fn build_polarized(
+        &mut self,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+    ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
+        self.eval_polarized(d_a, d_b)
+    }
+
+    fn supports_polarized(&self) -> bool {
+        true
     }
 }
 
@@ -954,6 +1038,44 @@ impl XcBuilder for XcRef<'_> {
 
     fn exact_exchange_fraction(&self) -> f64 {
         self.0.exx
+    }
+
+    fn build_polarized(
+        &mut self,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+    ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
+        self.0.eval_polarized(d_a, d_b)
+    }
+
+    fn supports_polarized(&self) -> bool {
+        true
+    }
+}
+
+/// Borrowing adapter over ANY [`XcBuilder`] (so [`gamma_uks_with_xc`] can
+/// inject the caller's builder into two SCF stages and keep it afterwards).
+struct DynXcRef<'b, 'c>(&'b mut (dyn XcBuilder + 'c));
+
+impl XcBuilder for DynXcRef<'_, '_> {
+    fn build(&mut self, d: &Array2<f64>) -> Result<(f64, Array2<f64>), FerricError> {
+        self.0.build(d)
+    }
+
+    fn exact_exchange_fraction(&self) -> f64 {
+        self.0.exact_exchange_fraction()
+    }
+
+    fn build_polarized(
+        &mut self,
+        d_a: &Array2<f64>,
+        d_b: &Array2<f64>,
+    ) -> Result<(f64, Array2<f64>, Array2<f64>), FerricError> {
+        self.0.build_polarized(d_a, d_b)
+    }
+
+    fn supports_polarized(&self) -> bool {
+        self.0.supports_polarized()
     }
 }
 
@@ -1055,7 +1177,7 @@ pub fn gamma_rks(
     if mol.nelec() % 2 != 0 || mol.multiplicity != 1 {
         refuse(
             "open shell",
-            "Stage 2 is closed-shell RKS only (periodic UKS is not implemented)",
+            "gamma_rks is closed-shell RKS only; use gamma_uks for an open-shell cell",
         )?;
     }
     // Cheap name checks before the grid is built.
@@ -1097,6 +1219,245 @@ pub fn gamma_rks(
         neighbour_cutoff: grid.neighbour_cutoff(),
         electrons_on_grid,
         e_xc,
+        scf,
+    })
+}
+
+// ───────────────────────────────────────────────────── Stage 5: Gamma UKS
+
+/// Configuration for [`gamma_uks`] / [`gamma_uks_with_xc`].
+#[derive(Debug, Clone)]
+pub struct GammaUksConfig {
+    /// LDA / GGA / global-hybrid name, as [`GammaRksConfig::functional`].
+    /// Ignored by [`gamma_uks_with_xc`] (the caller's builder is the XC).
+    pub functional: String,
+    /// The periodic grid (ignored by [`gamma_uks_with_xc`]).
+    pub grid: PeriodicGridConfig,
+    /// Exchange-divergence treatment of the injected K (consumed only by a
+    /// hybrid, scaled by its exact-exchange fraction).
+    pub exxdiv: ExxDiv,
+    /// Start strategy for `exxdiv = ewald` with `a > 0` (default
+    /// [`EwaldStart::Staged`], FINDINGS "Iteration 10": the staged start never
+    /// stagnated and is always safe). Ignored for `a = 0` (no K is built, so
+    /// the Madelung term cannot act) and for `exxdiv = none`.
+    pub ewald_start: EwaldStart,
+    /// AO truncation and budget for the XC AO cache (ignored by
+    /// [`gamma_uks_with_xc`]).
+    pub xc: PeriodicXcConfig,
+    /// SCF knobs, validated by `validate_injected_uhf` plus the molecular-grid
+    /// fields refused here.
+    pub scf: RhfConfig,
+    /// Optional per-spin starting MOs `(C_α, C_β)`, each `(nao, nao)`; used
+    /// by the first stage only.
+    pub initial_mos: Option<(Array2<f64>, Array2<f64>)>,
+}
+
+impl GammaUksConfig {
+    /// Defaults (grid (75, 302) SSF, exxdiv ewald, staged start, hcore
+    /// guess, tight convergence) for `functional`.
+    pub fn new(functional: &str) -> Self {
+        let rks = GammaRksConfig::new(functional);
+        Self {
+            functional: rks.functional,
+            grid: rks.grid,
+            exxdiv: rks.exxdiv,
+            ewald_start: EwaldStart::Staged,
+            xc: rks.xc,
+            scf: rks.scf,
+            initial_mos: None,
+        }
+    }
+}
+
+/// Grid diagnostics of [`gamma_uks`] (absent from [`gamma_uks_with_xc`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GammaUksGridInfo {
+    /// Grid points used.
+    pub n_grid_points: usize,
+    /// Neighbour cutoff `D` used (Bohr).
+    pub neighbour_cutoff: f64,
+    /// `Σ_g w_g ρ(r_g)` of the converged TOTAL density (vs N: grid error).
+    pub electrons_on_grid: f64,
+}
+
+/// Result of [`gamma_uks`] / [`gamma_uks_with_xc`].
+#[derive(Debug, Clone)]
+#[must_use]
+pub struct GammaUksResult {
+    /// The final SCF (requested `exxdiv`; energy includes E_xc and E_nn).
+    pub scf: ScfResult,
+    /// The `exxdiv = none` first stage, when the staged start ran.
+    pub none_stage: Option<ScfResult>,
+    /// `v_M` of the cell (applied, times `a`, iff `exxdiv = ewald`).
+    pub madelung: f64,
+    /// The functional's global exact-exchange fraction `a`.
+    pub exact_exchange_fraction: f64,
+    /// `(N_α, N_β)` from the cell's charge and multiplicity.
+    pub nocc: (usize, usize),
+    /// `⟨S²⟩` of the KS determinant with the lattice overlap.
+    pub s2: f64,
+    /// Occupation-aware per-spin gaps against `a·v_M_applied`
+    /// ([`crate::uhf::occupation_gaps`]).
+    pub gaps: SpinGapReport,
+    /// Semilocal `E_xc` at the converged `(D_α, D_β)`.
+    pub e_xc: f64,
+    /// Grid diagnostics ([`gamma_uks`] only).
+    pub grid: Option<GammaUksGridInfo>,
+}
+
+/// Refuse the molecular-grid `RhfConfig` knobs the periodic KS paths never
+/// honour (shared by [`gamma_rks`]-style entries; `validate_injected*` covers
+/// the rest).
+fn refuse_molecular_grid_knobs(scf: &RhfConfig) -> Result<(), FerricError> {
+    let refuse = |feature: &'static str, reason: &str| -> Result<(), FerricError> {
+        Err(PeriodicDftError::Unsupported {
+            feature,
+            reason: reason.to_string(),
+        }
+        .into())
+    };
+    if scf.xc_omega.is_some() {
+        refuse(
+            "scf.xc_omega",
+            "range-separated functionals are refused on the periodic path",
+        )?;
+    }
+    if scf.dft_grid.is_some() {
+        refuse(
+            "scf.dft_grid",
+            "the molecular grid is never built here; set GammaUksConfig.grid",
+        )?;
+    }
+    if scf.nlc_grid.is_some() {
+        refuse("scf.nlc_grid", "no periodic VV10/NLC grid exists")?;
+    }
+    Ok(())
+}
+
+/// Gamma-point open-shell (or closed-shell) UKS of `cell` (spin state from
+/// `cell.mol()`'s charge and multiplicity) on the lattice one-electron terms
+/// `hc` and the J/K of `ints`, with [`PeriodicXc`] built from
+/// `cfg.functional` on `cfg.grid` (module doc, "Open shell").
+///
+/// `prep` must be the basis `hc`/`ints` were built in, from `cell.mol()`.
+/// Errors (by name) on refused functionals / grid knobs / SCF features, a
+/// neighbour cutoff below the covering bound, budget overruns, and a
+/// non-converged SCF stage. Warns on stderr when the occupation-aware
+/// per-spin gap is below `a·v_M` (possible Ewald trap).
+pub fn gamma_uks(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &PeriodicHcore,
+    ints: GammaUhfIntegrals<'_>,
+    cfg: &GammaUksConfig,
+) -> Result<GammaUksResult, FerricError> {
+    ferric_scf::uhf::validate_injected_uhf(&cfg.scf).map_err(FerricError::from)?;
+    refuse_molecular_grid_knobs(&cfg.scf)?;
+    nocc_ab(cell.mol())?;
+    // Cheap name checks before the grid is built.
+    resolve_periodic_functional(&cfg.functional)?;
+    let grid = PeriodicGrid::build(cell, &cfg.grid)?;
+    let mut pxc = PeriodicXc::new(cell, prep.basis_set(), &cfg.functional, &grid, &cfg.xc)?;
+    let mut out = gamma_uks_with_xc(cell, prep, hc, ints, &mut pxc, cfg)?;
+    let electrons_on_grid = pxc.integrate_density(&out.scf.density_total)?;
+    out.grid = Some(GammaUksGridInfo {
+        n_grid_points: grid.len(),
+        neighbour_cutoff: grid.neighbour_cutoff(),
+        electrons_on_grid,
+    });
+    Ok(out)
+}
+
+/// [`gamma_uks`] with a caller-supplied spin-polarized [`XcBuilder`] instead
+/// of a [`PeriodicXc`] built from `cfg.functional` (`cfg.functional`,
+/// `cfg.grid` and `cfg.xc` are ignored). Everything else — the injected SCF,
+/// the staged ewald start for `a > 0`, `⟨S²⟩` and the occupation-aware gap
+/// check against `a·v_M` — is identical. A builder with `a = 1` and zero
+/// `E_xc`/`V_σ` is exactly the Gamma UHF (the equivalence test).
+pub fn gamma_uks_with_xc(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &PeriodicHcore,
+    ints: GammaUhfIntegrals<'_>,
+    xc: &mut dyn XcBuilder,
+    cfg: &GammaUksConfig,
+) -> Result<GammaUksResult, FerricError> {
+    ferric_scf::uhf::validate_injected_uhf(&cfg.scf).map_err(FerricError::from)?;
+    refuse_molecular_grid_knobs(&cfg.scf)?;
+    if !xc.supports_polarized() {
+        return Err(PeriodicDftError::Unsupported {
+            feature: "closed-shell XcBuilder",
+            reason: "gamma_uks needs XcBuilder::build_polarized (supports_polarized() is false)"
+                .into(),
+        }
+        .into());
+    }
+    let mol = cell.mol();
+    let (na, nb) = nocc_ab(mol)?;
+    let a = xc.exact_exchange_fraction();
+    if !(a.is_finite() && (0.0..=1.0).contains(&a)) {
+        return Err(FerricError::General(format!(
+            "gamma_uks: exact-exchange fraction must be in [0, 1], got {a}"
+        )));
+    }
+    let v_m = madelung_constant(cell)?;
+    let applied = match cfg.exxdiv {
+        ExxDiv::None => 0.0,
+        ExxDiv::Ewald => v_m,
+    };
+    let ctx = ParallelContext::default();
+    // Required by the solver signature; never read for integrals here.
+    let bounds = SchwarzBounds::compute(Operator::coulomb(), prep)?;
+    let mut run = |vm: f64, init: Option<(&Array2<f64>, &Array2<f64>)>| {
+        let (j, k) = crate::uhf::builders(ints, vm);
+        let inj = PeriodicInjection {
+            s: hc.s.clone(),
+            h: hc.h.clone(),
+            vnn: hc.enn,
+            j,
+            k,
+            xc: Some(Box::new(DynXcRef(&mut *xc))),
+        };
+        solve_uhf_injected(&ctx, mol, prep, &bounds, &cfg.scf, inj, init)
+    };
+    let init = cfg.initial_mos.as_ref().map(|(ca, cb)| (ca, cb));
+    let staged = cfg.exxdiv == ExxDiv::Ewald && cfg.ewald_start == EwaldStart::Staged && a > 0.0;
+    let (scf, none_stage) = if staged {
+        let first = run(0.0, init)?;
+        let cb = first.mos_beta.clone().ok_or_else(|| {
+            FerricError::General("gamma_uks: the none stage returned no beta MOs".into())
+        })?;
+        let ca = first.mos_alpha.clone();
+        let second = run(applied, Some((&ca, &cb)))?;
+        (second, Some(first))
+    } else {
+        (run(applied, init)?, None)
+    };
+    let shift = a * applied;
+    let gaps = occupation_gaps(&scf, &hc.s, shift);
+    if !gaps.satisfied() {
+        eprintln!(
+            "gamma_uks WARNING: occupation-aware per-spin gap below a*v_M (gap_alpha {:?}, \
+             gap_beta {:?}, a*v_M {shift:.6}, margin {:?}). Under exxdiv=none this state has a \
+             hole below the Fermi level: likely the Gamma Ewald trap (FINDINGS Iterations 6, \
+             10). Use EwaldStart::Staged or a better initial_mos.",
+            gaps.gap_alpha, gaps.gap_beta, gaps.margin
+        );
+    }
+    let s2 = spin_square(&scf, &hc.s, na, nb)?;
+    let d_b = scf.density_beta.as_ref().ok_or_else(|| {
+        FerricError::General("gamma_uks: the SCF returned no beta density".into())
+    })?;
+    let (e_xc, _, _) = xc.build_polarized(&scf.density_alpha, d_b)?;
+    Ok(GammaUksResult {
+        madelung: v_m,
+        exact_exchange_fraction: a,
+        nocc: (na, nb),
+        s2,
+        gaps,
+        e_xc,
+        grid: None,
+        none_stage,
         scf,
     })
 }

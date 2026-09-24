@@ -131,7 +131,9 @@ pub struct SpinGapReport {
     pub gap_alpha: Option<f64>,
     /// Same for β.
     pub gap_beta: Option<f64>,
-    /// `v_M` applied in K (0 for `exxdiv = none`).
+    /// The occupied-level shift the gaps are tested against: `v_M` applied in
+    /// K for UHF, `a·v_M` for a hybrid UKS ([`occupation_gaps`]); 0 for
+    /// `exxdiv = none`.
     pub madelung_applied: f64,
     /// `min_σ gap_σ − v_M` (= the smallest gap in the `none` convention, since
     /// ewald lowers occupied levels by exactly `v_M` at Gamma); `None` if no
@@ -223,6 +225,57 @@ pub fn spin_gaps(r: &ScfResult, na: usize, nb: usize, madelung_applied: f64) -> 
         gap_beta,
         madelung_applied,
         margin: min_gap.map(|g| g - madelung_applied),
+    }
+}
+
+/// OCCUPATION-AWARE per-spin gaps of a converged `r` against `shift` (the
+/// exchange-divergence shift of the occupied levels: `v_M` for UHF, `a·v_M`
+/// for a hybrid UKS, 0 for `exxdiv = none`) — `pbc_uks.occ_gap` of the
+/// prototype (FINDINGS "Iteration 10").
+///
+/// For each spin σ the eigenvectors `c_i` of the converged (undamped) Fock
+/// `r.fock_σ` (`r.mos_σ`, eigenvalues `r.eps_σ`) are classified by their
+/// ACTUAL occupation `n_i = c_iᵀ S D_σ S c_i` (> ½ occupied), and
+/// `gap_σ = min ε(unoccupied) − max ε(occupied)`. Unlike [`spin_gaps`]
+/// (sorted eigenvalues `ε[N_σ] − ε[N_σ − 1]`, which assumes aufbau), a state
+/// with a hole below the Fermi level gives a NEGATIVE gap. Padding columns of
+/// the lindep filter (`ε ≥ 1e5`, zero vectors) are skipped. `None` for a
+/// spin with no occupied or no unoccupied level (or no β data).
+///
+/// `margin = min_σ gap_σ − shift`; [`SpinGapReport::satisfied`] is the
+/// necessary condition `gap_σ ≥ shift` for every spin.
+pub fn occupation_gaps(r: &ScfResult, s: &Array2<f64>, shift: f64) -> SpinGapReport {
+    fn gap(c: &Array2<f64>, eps: &[f64], d: &Array2<f64>, s: &Array2<f64>) -> Option<f64> {
+        if c.dim() != s.dim() || d.dim() != s.dim() || eps.len() != c.ncols() {
+            return None;
+        }
+        let sds = s.dot(d).dot(s);
+        let (mut occ_max, mut vir_min) = (f64::NEG_INFINITY, f64::INFINITY);
+        for (i, &e) in eps.iter().enumerate() {
+            if e >= 1e5 {
+                continue;
+            }
+            let ci = c.column(i);
+            let n_i = ci.dot(&sds.dot(&ci));
+            if n_i > 0.5 {
+                occ_max = occ_max.max(e);
+            } else {
+                vir_min = vir_min.min(e);
+            }
+        }
+        (occ_max.is_finite() && vir_min.is_finite()).then_some(vir_min - occ_max)
+    }
+    let gap_alpha = gap(&r.mos_alpha, &r.eps_alpha, &r.density_alpha, s);
+    let gap_beta = match (&r.mos_beta, &r.eps_beta, &r.density_beta) {
+        (Some(c), Some(e), Some(d)) => gap(c, e, d, s),
+        _ => None,
+    };
+    let min_gap = [gap_alpha, gap_beta].into_iter().flatten().reduce(f64::min);
+    SpinGapReport {
+        gap_alpha,
+        gap_beta,
+        madelung_applied: shift,
+        margin: min_gap.map(|g| g - shift),
     }
 }
 

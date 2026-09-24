@@ -613,11 +613,25 @@ fn unsupported_scf_features_are_refused_by_name() {
     assert!(e.contains("open shell"), "{e}");
 }
 
-/// The UHF injected path refuses an XcBuilder by name (no periodic UKS).
+/// The UHF injected path refuses a CLOSED-SHELL-ONLY XcBuilder by name (one
+/// that does not implement `build_polarized`); `PeriodicXc` itself is
+/// accepted there since Stage 5 (tests/pbc_uks.rs).
 #[test]
-fn uhf_injected_refuses_an_xc_builder() {
-    use ferric_scf::rhf::PeriodicInjection;
+fn uhf_injected_refuses_a_closed_shell_only_xc_builder() {
+    use ferric_scf::rhf::{PeriodicInjection, XcBuilder};
     use ferric_scf::uhf::{solve_uhf_injected, UhfConfig};
+    struct ClosedOnly(PeriodicXc);
+    impl XcBuilder for ClosedOnly {
+        fn build(
+            &mut self,
+            d: &Array2<f64>,
+        ) -> Result<(f64, Array2<f64>), ferric_core::FerricError> {
+            self.0.eval(d)
+        }
+        fn exact_exchange_fraction(&self) -> f64 {
+            0.0
+        }
+    }
     let su = h2_setup(4.0);
     let grid = PeriodicGrid::build(&su.cell, &ssf_grid(30, 50, 10.0)).unwrap();
     let pxc =
@@ -629,7 +643,7 @@ fn uhf_injected_refuses_an_xc_builder() {
         vnn: su.hc.enn,
         j: Box::new(su.eri.j_builder()),
         k: Box::new(su.eri.k_builder()),
-        xc: Some(Box::new(pxc)),
+        xc: Some(Box::new(ClosedOnly(pxc))),
     };
     let cfg = UhfConfig {
         use_sad_guess: false,
@@ -646,5 +660,8 @@ fn uhf_injected_refuses_an_xc_builder() {
     )
     .unwrap_err()
     .to_string();
-    assert!(e.contains("PeriodicInjection.xc"), "{e}");
+    assert!(
+        e.contains("PeriodicInjection.xc") && e.contains("supports_polarized"),
+        "{e}"
+    );
 }

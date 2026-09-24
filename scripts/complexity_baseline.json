@@ -18367,6 +18367,46 @@
     "cc": 1.0,
     "mi": 114.83253470202098
   },
+  "crates/ferric-pbc/src/dft.rs::gamma_uks": {
+    "cc": 9.0,
+    "mi": 83.38614473261379
+  },
+  "crates/ferric-pbc/src/dft.rs::gamma_uks_with_xc": {
+    "cc": 26.0,
+    "mi": 50.538632423115644
+  },
+  "crates/ferric-pbc/src/dft.rs::gamma_uks_with_xc::<anonymous>": {
+    "cc": 1.0,
+    "mi": 98.95347365626807
+  },
+  "crates/ferric-pbc/src/dft.rs::gamma_uks_with_xc::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 154.41608835370533
+  },
+  "crates/ferric-pbc/src/dft.rs::gamma_uks_with_xc::<anonymous>#2": {
+    "cc": 1.0,
+    "mi": 136.1792509193966
+  },
+  "crates/ferric-pbc/src/dft.rs::gamma_uks_with_xc::<anonymous>#3": {
+    "cc": 1.0,
+    "mi": 136.1792509193966
+  },
+  "crates/ferric-pbc/src/dft.rs::impl:DynXcRef<'_, '_>::build": {
+    "cc": 1.0,
+    "mi": 128.37628517727507
+  },
+  "crates/ferric-pbc/src/dft.rs::impl:DynXcRef<'_, '_>::build_polarized": {
+    "cc": 1.0,
+    "mi": 112.601642892407
+  },
+  "crates/ferric-pbc/src/dft.rs::impl:DynXcRef<'_, '_>::exact_exchange_fraction": {
+    "cc": 1.0,
+    "mi": 133.3919083624626
+  },
+  "crates/ferric-pbc/src/dft.rs::impl:DynXcRef<'_, '_>::supports_polarized": {
+    "cc": 1.0,
+    "mi": 133.3919083624626
+  },
   "crates/ferric-pbc/src/dft.rs::impl:FerricError::from": {
     "cc": 1.0,
     "mi": 134.05168511513583
@@ -18374,6 +18414,10 @@
   "crates/ferric-pbc/src/dft.rs::impl:GammaRksConfig::new": {
     "cc": 1.0,
     "mi": 101.77172435133866
+  },
+  "crates/ferric-pbc/src/dft.rs::impl:GammaUksConfig::new": {
+    "cc": 1.0,
+    "mi": 104.31266926569106
   },
   "crates/ferric-pbc/src/dft.rs::impl:PeriodicDftError::fmt": {
     "cc": 4.0,
@@ -18484,8 +18528,12 @@
     "mi": 134.9997572104644
   },
   "crates/ferric-pbc/src/dft.rs::impl:PeriodicXc#1::new": {
-    "cc": 3.0,
-    "mi": 90.85413614801858
+    "cc": 5.0,
+    "mi": 84.28147447032036
+  },
+  "crates/ferric-pbc/src/dft.rs::impl:PeriodicXc#1::new::<anonymous>": {
+    "cc": 1.0,
+    "mi": 126.22876917047284
   },
   "crates/ferric-pbc/src/dft.rs::impl:PeriodicXc#1::npoints": {
     "cc": 2.0,
@@ -18503,13 +18551,33 @@
     "cc": 1.0,
     "mi": 156.27079806218674
   },
-  "crates/ferric-pbc/src/dft.rs::impl:PeriodicXc#2::build": {
+  "crates/ferric-pbc/src/dft.rs::impl:PeriodicXc#2::eval_polarized": {
+    "cc": 7.0,
+    "mi": 76.20185950071023
+  },
+  "crates/ferric-pbc/src/dft.rs::impl:PeriodicXc#2::eval_polarized::<anonymous>": {
     "cc": 1.0,
-    "mi": 128.88206877068717
+    "mi": 156.27079806218674
   },
   "crates/ferric-pbc/src/dft.rs::impl:PeriodicXc#2::exact_exchange_fraction": {
     "cc": 1.0,
     "mi": 134.9997572104644
+  },
+  "crates/ferric-pbc/src/dft.rs::impl:PeriodicXc#3::build": {
+    "cc": 1.0,
+    "mi": 128.88206877068717
+  },
+  "crates/ferric-pbc/src/dft.rs::impl:PeriodicXc#3::build_polarized": {
+    "cc": 1.0,
+    "mi": 112.97782499353957
+  },
+  "crates/ferric-pbc/src/dft.rs::impl:PeriodicXc#3::exact_exchange_fraction": {
+    "cc": 1.0,
+    "mi": 134.9997572104644
+  },
+  "crates/ferric-pbc/src/dft.rs::impl:PeriodicXc#3::supports_polarized": {
+    "cc": 1.0,
+    "mi": 135.5476318918851
   },
   "crates/ferric-pbc/src/dft.rs::impl:PeriodicXc::fmt": {
     "cc": 1.0,
@@ -18523,9 +18591,17 @@
     "cc": 1.0,
     "mi": 128.37628517727507
   },
+  "crates/ferric-pbc/src/dft.rs::impl:XcRef<'_>::build_polarized": {
+    "cc": 1.0,
+    "mi": 112.601642892407
+  },
   "crates/ferric-pbc/src/dft.rs::impl:XcRef<'_>::exact_exchange_fraction": {
     "cc": 1.0,
     "mi": 133.808130442365
+  },
+  "crates/ferric-pbc/src/dft.rs::impl:XcRef<'_>::supports_polarized": {
+    "cc": 1.0,
+    "mi": 135.5476318918851
   },
   "crates/ferric-pbc/src/dft.rs::lattice_ao_chunks": {
     "cc": 38.0,
@@ -18594,6 +18670,14 @@
   "crates/ferric-pbc/src/dft.rs::lattice_ao_chunks::<anonymous>#9": {
     "cc": 1.0,
     "mi": 157.8484854211024
+  },
+  "crates/ferric-pbc/src/dft.rs::refuse_molecular_grid_knobs": {
+    "cc": 8.0,
+    "mi": 85.4702676441237
+  },
+  "crates/ferric-pbc/src/dft.rs::refuse_molecular_grid_knobs::<anonymous>": {
+    "cc": 1.0,
+    "mi": 114.83253470202098
   },
   "crates/ferric-pbc/src/dft.rs::resolve_neighbour_cutoff": {
     "cc": 5.0,
@@ -20118,6 +20202,18 @@
   "crates/ferric-pbc/src/uhf.rs::nocc_ab": {
     "cc": 4.0,
     "mi": 95.80643755368433
+  },
+  "crates/ferric-pbc/src/uhf.rs::occupation_gaps": {
+    "cc": 12.0,
+    "mi": 72.87704303664671
+  },
+  "crates/ferric-pbc/src/uhf.rs::occupation_gaps::<anonymous>": {
+    "cc": 1.0,
+    "mi": 157.8484854211024
+  },
+  "crates/ferric-pbc/src/uhf.rs::occupation_gaps::gap": {
+    "cc": 8.0,
+    "mi": 85.57478772696179
   },
   "crates/ferric-pbc/src/uhf.rs::spin_gaps": {
     "cc": 7.0,
@@ -31071,6 +31167,14 @@
     "cc": 1.0,
     "mi": 157.8484854211024
   },
+  "crates/ferric-scf/src/rhf.rs::trait:XcBuilder::build_polarized": {
+    "cc": 1.0,
+    "mi": 103.63024471074243
+  },
+  "crates/ferric-scf/src/rhf.rs::trait:XcBuilder::supports_polarized": {
+    "cc": 1.0,
+    "mi": 135.5476318918851
+  },
   "crates/ferric-scf/src/rhf.rs::validate_injected": {
     "cc": 16.0,
     "mi": 59.878281688762826
@@ -32452,8 +32556,8 @@
     "mi": 103.28835058128553
   },
   "crates/ferric-scf/src/uhf.rs::solve_uhf_impl": {
-    "cc": 171.0,
-    "mi": -36.7196115659887
+    "cc": 181.0,
+    "mi": -39.87396870751486
   },
   "crates/ferric-scf/src/uhf.rs::solve_uhf_impl::<anonymous>": {
     "cc": 1.0,
@@ -32520,8 +32624,8 @@
     "mi": 160.0060069647112
   },
   "crates/ferric-scf/src/uhf.rs::solve_uhf_injected": {
-    "cc": 6.0,
-    "mi": 78.3665330877525
+    "cc": 7.0,
+    "mi": 76.68512189232814
   },
   "crates/ferric-scf/src/uhf.rs::solve_uhf_injected::<anonymous>": {
     "cc": 1.0,
