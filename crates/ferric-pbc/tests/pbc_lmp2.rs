@@ -54,11 +54,12 @@ use ferric_pbc::dense_aft::ExxDiv;
 use ferric_pbc::hcore::{periodic_hcore, PeriodicHcoreConfig};
 use ferric_pbc::lattice::Cell;
 use ferric_pbc::lmp2::{
-    centroid_distances, gamma_lmp2, gamma_lmp2_with_spaces, gamma_localized_spaces, resta_operator,
-    GammaLmp2Config, GammaLmp2Inputs, GammaLmp2Result, GammaLocalSpaces, GammaPairIntegrals,
-    MinImage, PeriodicDistance,
+    centroid_distances, gamma_lmp2, gamma_lmp2_with_spaces, gamma_localized_spaces,
+    mp2_closed_form_local, needle_axis, resta_matrix_at, resta_operator, uniform_coupling,
+    uniform_head, GammaEpsGate, GammaLmp2Config, GammaLmp2Inputs, GammaLmp2Result,
+    GammaLocalSpaces, GammaPairIntegrals, MinImage, PeriodicDistance, UniformHead,
 };
-use ferric_pbc::mp2::{gamma_mp2, GammaMp2Config, GammaMp2Integrals};
+use ferric_pbc::mp2::{b_ov_from_ao_b, gamma_mp2, GammaMp2Config, GammaMp2Integrals};
 use ferric_pbc::rsgdf::{PeriodicFitParts, RsGdf, RsGdfConfig};
 use ferric_scf::result::ScfResult;
 use ndarray::{s, Array2};
@@ -137,6 +138,14 @@ fn cfg(eps: f64) -> GammaLmp2Config {
         budget_bytes: Some(AMPLE),
         compute_reference: false,
         ..GammaLmp2Config::shifted(ExxDiv::Ewald, eps)
+    }
+}
+
+/// [`cfg`] with the opt-in A-drop gate (restored q = 0 head).
+fn cfg_head(eps: f64) -> GammaLmp2Config {
+    GammaLmp2Config {
+        eps_gate: GammaEpsGate::UniformHeadRestored,
+        ..cfg(eps)
     }
 }
 
@@ -622,8 +631,8 @@ fn straight_1x1x4_reproduces_the_prototype_sweep_row() {
 }
 
 // ===========================================================================
-// (e) KNOWN LIMITATION (documents the Gamma uniform-field coupling). A fix
-//     of FINDINGS recommendation 6 must flip this test DELIBERATELY.
+// (e) KNOWN LIMITATION (documents the Gamma uniform-field coupling) of the
+//     DEFAULT raw gate, and its deliberate flip under the opt-in A-drop gate.
 // ===========================================================================
 
 #[test]
@@ -711,6 +720,33 @@ fn eps_gate_keeps_every_pair_below_the_uniform_field_onset() {
         &sp,
     );
     assert_eq!(rc.pairs_kept, no, "{:?}", rc.partners);
+
+    // THE DELIBERATE FLIP (FINDINGS Iteration 5b, A-drop): with the q = 0
+    // head restored the far pairs lose their uniform coupling, so the SAME
+    // eps gate on the SAME system is local. Prototype: 1 partner/molecule at
+    // eps 1e-3 for every N; eps 3e-3 keeps a subset of that (monotone mask),
+    // and self pairs are always far above 3e-3. The raw gate above stays
+    // reachable as GammaEpsGate::RawIntegral and still keeps all N².
+    let rh = sys.run(
+        &GammaLmp2Config {
+            eps_gate: GammaEpsGate::UniformHeadRestored,
+            ..c
+        },
+        &sp,
+    );
+    eprintln!(
+        "A-drop eps 3e-3: pairs kept {}/{} partners {:?}",
+        rh.pairs_kept,
+        no * no,
+        rh.partners
+    );
+    assert_eq!(
+        rh.pairs_kept, no,
+        "A-drop no longer removes the onset: {:?}",
+        rh.partners
+    );
+    assert!(rh.partners.iter().all(|&p| p == 1), "{:?}", rh.partners);
+    assert!(rh.uniform_head.is_some());
 }
 
 // ===========================================================================
@@ -760,4 +796,372 @@ fn gamma_lmp2_refuses_what_it_cannot_do() {
     let mut bad = sys.rhf.clone();
     bad.converged = false;
     assert!(gamma_lmp2(&sys.cell, &bad, &sys.inputs(), &cfg(0.0)).is_err());
+}
+
+// ===========================================================================
+// (f) A-drop (FINDINGS Iteration 5b): restored q = 0 head, J' = J + c μ μᵀ.
+//
+// Artifact hypotheses (stated before measuring):
+// * eps = 0: if the extra column is not applied (vacuum) the LMP2 equals
+//   canonical Gamma MP2 and the closed-form E_head differs by ~3e-3 — the
+//   anchor compares against E_head AND asserts |E_head − E_can| > 1e-3, so a
+//   vacuous head fails. If the head is applied with a wrong scale the pinned
+//   E_can − E_head (prototype +2.955e-3 at 1x1x4) moves (Ω·8 mutant below).
+// * Onset: if A-drop were a relabelled raw gate the partner count stays N;
+//   the raw gate on the same spaces must still keep N (reachable contrast).
+// * Richardson: if the 2b matrix were wrong (sign/multiple), the Richardson
+//   residual would be WORSE than single-b, not ~6x (1x1x4) / 20x (1x1x8)
+//   better.
+// ===========================================================================
+
+/// Prototype (run_lmp2_uniform.py, FINDINGS 5b): E_can − E_head at 1x1x4.
+const PIN_E_CAN_MINUS_E_HEAD_1X1X4: f64 = 2.955e-3;
+/// FINDINGS Iteration 5 anchor table, 1x1x8 straight.
+const PIN_E_MP2_CANON_1X1X8: f64 = -1.528153223461e-1;
+/// FINDINGS 5b A-drop rows at N = 8 (reference E_head): (eps, dE, sig figs,
+/// partners per molecule).
+const PIN_ADROP_ROWS_1X1X8: [(f64, f64, i32, usize); 4] = [
+    (1e-3, 1.01e-4, 3, 1),
+    (3e-4, 5.49e-5, 3, 3),
+    (1e-4, 2.28e-6, 3, 3),
+    (3e-5, 4.6e-7, 2, 3),
+];
+
+fn half_unit(x: f64, sig: i32) -> f64 {
+    0.5 * 10f64.powi(x.abs().log10().floor() as i32 - (sig - 1))
+}
+
+fn local_b_ov(sys: &System, sp: &GammaLocalSpaces) -> Array2<f64> {
+    b_ov_from_ao_b(
+        sys.gdf.b(),
+        sp.c_occ.nrows(),
+        sp.c_occ.view(),
+        sp.c_vir.view(),
+    )
+    .expect("local B_ov")
+}
+
+/// E_head = closed-form MP2 on the head-augmented B (the A-drop eps = 0 target).
+fn e_head_closed_form(sys: &System, sp: &GammaLocalSpaces, head: &UniformHead) -> f64 {
+    mp2_closed_form_local(
+        &local_b_ov(sys, sp),
+        Some(&head.column()),
+        &sp.f_oo,
+        &sp.f_vv,
+    )
+    .expect("closed form")
+}
+
+/// `(rel |J − J_unif(μ_Richardson)|, rel |J − J_unif(f(b))|)` at the
+/// farthest (minimum-image) occupied pair, relative to max |J| of that block;
+/// also checks the head-augmented source block IS `J − J_unif` there.
+fn farthest_pair_residuals(sys: &System, sp: &GammaLocalSpaces, head: &UniformHead) -> (f64, f64) {
+    let no = sp.no();
+    let dist = centroid_distances(&sys.cell, &sp.occ_centers, PeriodicDistance::MinimumImage);
+    let (mut fi, mut fj, mut dmax) = (0, 0, -1.0);
+    for i in 0..no {
+        for j in 0..no {
+            if dist[(i, j)] > dmax {
+                (fi, fj, dmax) = (i, j, dist[(i, j)]);
+            }
+        }
+    }
+    let src = GammaPairIntegrals::new(
+        &sys.cell,
+        sp,
+        &sys.gdf,
+        None,
+        None,
+        PeriodicDistance::MinimumImage,
+        Some(AMPLE),
+    )
+    .unwrap();
+    let (jf, _) = src.block(fi, fj).unwrap();
+    let jmax = jf.iter().fold(0.0_f64, |m, &x| m.max(x.abs()));
+    let rel_r = max_abs_diff(&jf, &head.coupling(fi, fj)) / jmax;
+    let rel_1 = max_abs_diff(
+        &jf,
+        &uniform_coupling(&head.mu_single_b, head.scale, fi, fj),
+    ) / jmax;
+    // The head-augmented source is J − J_unif at that block (same residual).
+    let (jp, _) = src.with_uniform_head(head).unwrap().block(fi, fj).unwrap();
+    let rel_p = jp.iter().fold(0.0_f64, |m, &x| m.max(x.abs())) / jmax;
+    assert!((rel_p - rel_r).abs() < 1e-12, "{rel_p:.3e} vs {rel_r:.3e}");
+    eprintln!(
+        "farthest pair ({fi},{fj}) at {dmax:.2} Bohr: max|J| {jmax:.3e}; rel |J'| Richardson \
+         {rel_r:.2e}, single-b {rel_1:.2e} (ratio {:.1})",
+        rel_1 / rel_r
+    );
+    (rel_r, rel_1)
+}
+
+#[test]
+fn a_drop_eps0_anchor_is_closed_form_mp2_on_the_head_augmented_b() {
+    let sys = straight4();
+    let e_can = sys.canonical();
+    let sp = sys.spaces(&cfg(0.0));
+
+    // Anchor of the anchor: the closed form WITHOUT the head is canonical
+    // Gamma MP2 (independent code: eigenbasis rotation vs gamma_mp2).
+    let b_ov = local_b_ov(sys, &sp);
+    let e_cf = mp2_closed_form_local(&b_ov, None, &sp.f_oo, &sp.f_vv).unwrap();
+    eprintln!("closed form (no head) {e_cf:.12e} vs canonical {e_can:.12e}");
+    assert!((e_cf - e_can).abs() < 1e-10, "{:.3e}", e_cf - e_can);
+
+    let head = uniform_head(&sys.cell, &sys.obs, &sp).expect("uniform head");
+    assert_eq!(head.axis, 2);
+    let e_head = e_head_closed_form(sys, &sp, &head);
+
+    // eps = 0 A-drop == E_head (CG on ragged blocks vs eigenbasis closed form).
+    let r = sys.run(&cfg_head(0.0), &sp);
+    let d = r.e_corr - e_head;
+    eprintln!(
+        "A-drop eps=0: E {:.12e} E_head {e_head:.12e} dE {d:+.2e}; E_can - E_head {:+.4e} \
+         (prototype {PIN_E_CAN_MINUS_E_HEAD_1X1X4:+.3e})",
+        r.e_corr,
+        e_can - e_head
+    );
+    assert!(d.abs() < 1e-10, "A-drop anchor dE {d:.3e}");
+    assert_eq!(r.pairs_kept, 16);
+    assert!((r.pair_energies.sum() - r.e_corr).abs() < 1e-12);
+    // Not a vacuum test: the target really is NOT canonical Gamma MP2, and
+    // the difference is the prototype's uniform term (4 sig figs quoted;
+    // Rust vs prototype E_can agree to 1e-8, so 1e-6 is two half-units).
+    assert!((e_can - e_head).abs() > 1e-3);
+    assert!(
+        (e_can - e_head - PIN_E_CAN_MINUS_E_HEAD_1X1X4).abs() < 1e-6,
+        "E_can - E_head {:.6e}",
+        e_can - e_head
+    );
+    // Mutation (prototype's "J_unif volume Ω/8"): the pin must see it.
+    let mut m = head.clone();
+    m.scale /= 8.0;
+    let e_m = e_head_closed_form(sys, &sp, &m);
+    eprintln!("MUTANT scale/8: E_can - E_head {:+.4e}", e_can - e_m);
+    assert!((e_can - e_m - PIN_E_CAN_MINUS_E_HEAD_1X1X4).abs() > 1e-4);
+
+    // The driver reports the right target for each gate.
+    let with_ref = gamma_lmp2(
+        &sys.cell,
+        &sys.rhf,
+        &sys.inputs(),
+        &GammaLmp2Config {
+            compute_reference: true,
+            ..cfg_head(0.0)
+        },
+    )
+    .unwrap();
+    assert!((with_ref.e_corr_target - e_head).abs() < 1e-12);
+    assert!((with_ref.e_corr_canonical - e_can).abs() < 1e-12);
+    let info = with_ref.uniform_head.expect("head diagnostics");
+    assert_eq!(info.axis, 2);
+    assert!((info.scale - 4.0 * PI / sys.cell.volume()).abs() < 1e-15);
+    let raw_ref = gamma_lmp2(
+        &sys.cell,
+        &sys.rhf,
+        &sys.inputs(),
+        &GammaLmp2Config {
+            compute_reference: true,
+            ..cfg(0.0)
+        },
+    )
+    .unwrap();
+    assert!(raw_ref.uniform_head.is_none());
+    assert_eq!(
+        raw_ref.e_corr_target.to_bits(),
+        raw_ref.e_corr_canonical.to_bits()
+    );
+    // Default unchanged (config honesty): shifted() is still the raw gate.
+    assert_eq!(
+        GammaLmp2Config::shifted(ExxDiv::Ewald, 1e-4).eps_gate,
+        GammaEpsGate::RawIntegral
+    );
+
+    // The domain fit carries the same head: trivial radius == global, with head.
+    let mi = MinImage::new(&sys.cell, PeriodicDistance::MinimumImage);
+    let mi = &mi;
+    let rstar = sp
+        .occ_centers
+        .iter()
+        .flat_map(|c| {
+            let c = *c;
+            sys.parts.aux_centers.iter().map(move |p| mi.between(c, *p))
+        })
+        .fold(0.0_f64, f64::max)
+        + 1e-6;
+    let rd = sys.run(
+        &GammaLmp2Config {
+            fit_radius_bohr: Some(rstar),
+            ..cfg_head(0.0)
+        },
+        &sp,
+    );
+    assert!(
+        (rd.e_corr - e_head).abs() < 1e-10,
+        "{:.3e}",
+        rd.e_corr - e_head
+    );
+}
+
+#[test]
+fn a_drop_removes_the_onset_on_1x1x4_and_richardson_dipoles_beat_single_b() {
+    let sys = straight4();
+    let sp = sys.spaces(&cfg(1e-4));
+    let no = sp.no();
+
+    // resta_matrix_at(m = 1) is the Berghold operator's matrix.
+    let op = resta_operator(&sys.cell, &sys.obs).unwrap();
+    let (re1, im1) = resta_matrix_at(&sys.cell, &sys.obs, 2, 1).unwrap();
+    assert!(max_abs_diff(&re1, &op.re[2]) < 1e-13 && max_abs_diff(&im1, &op.im[2]) < 1e-13);
+
+    let head = uniform_head(&sys.cell, &sys.obs, &sp).unwrap();
+    // Prototype X1 at N = 4: 3.7e-5 / 2.4e-4 of max|J| 5.8e-3 -> 6.4e-3 / 4.1e-2.
+    let (rel_r, rel_1) = farthest_pair_residuals(sys, &sp, &head);
+    assert!(rel_r < 1.5e-2, "Richardson residual {rel_r:.3e}");
+    assert!(
+        rel_1 > 3e-2,
+        "single-b residual {rel_1:.3e} (premise changed)"
+    );
+    assert!(
+        rel_1 > 3.0 * rel_r,
+        "Richardson gains only {:.2}x",
+        rel_1 / rel_r
+    );
+
+    // Onset: raw gate keeps all N² = 16 at eps 1e-4 (PIN_EPS_ROWS); A-drop
+    // keeps 3 partners per molecule (prototype 3/3/3/3 at N = 4/8/16/32).
+    let raw = sys.run(&cfg(1e-4), &sp);
+    let adrop = sys.run(&cfg_head(1e-4), &sp);
+    let e_head = e_head_closed_form(sys, &sp, &head);
+    let de = adrop.e_corr - e_head;
+    eprintln!(
+        "eps 1e-4: raw partners {:?} ({} pairs); A-drop partners {:?} ({} pairs), dE vs E_head \
+         {de:+.3e}",
+        raw.partners, raw.pairs_kept, adrop.partners, adrop.pairs_kept
+    );
+    assert_eq!(raw.pairs_kept, no * no);
+    assert!(
+        adrop.partners.iter().all(|&p| p == 3),
+        "{:?}",
+        adrop.partners
+    );
+    // Prototype per-molecule a = 2.5e-7, |b| <= 7e-6 at eps 1e-4: N = 4
+    // error is O(1e-6); positive (correlation lost). Loose bound, not a pin.
+    assert!(de > 0.0 && de < 1e-5, "A-drop truncation error {de:.3e}");
+}
+
+#[test]
+fn a_drop_refuses_non_needle_supercells() {
+    // The needle itself is accepted.
+    assert_eq!(needle_axis(&needle_cell(4, false)).unwrap(), 2);
+    let msg = |c: &Cell| needle_axis(c).unwrap_err().to_string();
+    // Cubic (W = I/3, not implemented), too-short needle, slab: refused.
+    let cube = Cell::new(
+        hydrogens(&h2_prim()),
+        [[A0, 0.0, 0.0], [0.0, A0, 0.0], [0.0, 0.0, A0]],
+    )
+    .unwrap();
+    let slab = Cell::new(
+        hydrogens(&h2_prim()),
+        [[A0, 0.0, 0.0], [0.0, 4.0 * A0, 0.0], [0.0, 0.0, 4.0 * A0]],
+    )
+    .unwrap();
+    let short = needle_cell(2, false);
+    for (name, c) in [("cubic", &cube), ("1x1x2", &short), ("slab", &slab)] {
+        let e = msg(c);
+        eprintln!("{name}: {e}");
+        assert!(e.contains("NEEDLE"), "{name}: {e}");
+    }
+    assert!(msg(&triclinic_cell()).contains("orthorhombic"));
+
+    // The driver refuses before any localisation work (cube cell, any inputs).
+    let sys = wrapped4();
+    let err = gamma_lmp2(&cube, &sys.rhf, &sys.inputs(), &cfg_head(1e-4))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("NEEDLE"), "{err}");
+    let sp4 = sys.spaces(&cfg(1e-4));
+    let err = gamma_lmp2_with_spaces(&cube, &sys.rhf, &sys.inputs(), &cfg_head(1e-4), &sp4)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("NEEDLE"), "{err}");
+    // Applying the head twice is refused (it would double it).
+    let sp = sys.spaces(&cfg(0.0));
+    let head = uniform_head(&sys.cell, &sys.obs, &sp).unwrap();
+    let src = GammaPairIntegrals::new(
+        &sys.cell,
+        &sp,
+        &sys.gdf,
+        None,
+        None,
+        PeriodicDistance::MinimumImage,
+        Some(AMPLE),
+    )
+    .unwrap()
+    .with_uniform_head(&head)
+    .unwrap();
+    assert!(src.has_uniform_head());
+    assert!(src.with_uniform_head(&head).is_err());
+}
+
+#[test]
+#[ignore = "slow: explicit 1x1x8 RS-GDF build + SCF (nao 32, naux 224), time unmeasured; \
+            run with --ignored"]
+fn a_drop_1x1x8_reproduces_the_prototype_rows() {
+    let sys = build(8, false);
+    let e_can = sys.canonical();
+    eprintln!("1x1x8 E_MP2 canonical {e_can:.12e} (prototype {PIN_E_MP2_CANON_1X1X8:.12e})");
+    assert!((e_can - PIN_E_MP2_CANON_1X1X8).abs() < 1e-8, "{e_can:.12e}");
+    let sp = sys.spaces(&cfg(0.0));
+    let no = sp.no();
+    assert_eq!(no, 8);
+    let head = uniform_head(&sys.cell, &sys.obs, &sp).unwrap();
+    let e_head = e_head_closed_form(&sys, &sp, &head);
+    let r0 = sys.run(&cfg_head(0.0), &sp);
+    assert!(
+        (r0.e_corr - e_head).abs() < 1e-10,
+        "{:.3e}",
+        r0.e_corr - e_head
+    );
+
+    // Richardson vs single-b (prototype port test: <= 2e-3 vs >= 1e-2 fails;
+    // measured 4.4e-4 vs 1.0e-2, ~20x).
+    let (rel_r, rel_1) = farthest_pair_residuals(&sys, &sp, &head);
+    assert!(rel_r < 2e-3 && rel_1 > 5e-3, "{rel_r:.3e} / {rel_1:.3e}");
+    assert!(
+        rel_1 > 10.0 * rel_r,
+        "Richardson gains only {:.1}x",
+        rel_1 / rel_r
+    );
+
+    // Onset: raw keeps all 64 at eps 1e-4 (N* = 232); A-drop 3 per molecule.
+    let raw = sys.run(&cfg(1e-4), &sp);
+    assert_eq!(raw.pairs_kept, no * no);
+
+    for (eps, de_pin, sig, partners) in PIN_ADROP_ROWS_1X1X8 {
+        let r = sys.run(&cfg_head(eps), &sp);
+        let de = r.e_corr - e_head;
+        eprintln!(
+            "A-drop eps {eps:<7}: dE {de:+.4e} (pin {de_pin:+.3e}) partners {:?}",
+            r.partners
+        );
+        assert!(
+            r.partners.iter().all(|&p| p == partners),
+            "eps {eps}: {:?}",
+            r.partners
+        );
+        assert!(
+            (de - de_pin).abs() < half_unit(de_pin, sig),
+            "eps {eps}: dE {de:.4e} vs {de_pin:.3e}"
+        );
+    }
+
+    // Finite-size term b = 2 E4 − E8 (prototype test: canonical > 3e-3,
+    // head-restored in (0.5e-3, 1.6e-3)).
+    let s4 = straight4();
+    let sp4 = s4.spaces(&cfg(0.0));
+    let e4_head = e_head_closed_form(s4, &sp4, &uniform_head(&s4.cell, &s4.obs, &sp4).unwrap());
+    let (b_can, b_head) = (2.0 * s4.canonical() - e_can, 2.0 * e4_head - e_head);
+    eprintln!("b = 2E4 - E8: canonical {b_can:+.3e}, head restored {b_head:+.3e}");
+    assert!(b_can > 3e-3 && b_head > 0.5e-3 && b_head < 1.6e-3);
 }

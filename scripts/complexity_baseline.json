@@ -18727,6 +18727,10 @@
     "cc": 1.0,
     "mi": 150.35325741480995
   },
+  "crates/ferric-pbc/src/lmp2.rs::check_orthorhombic": {
+    "cc": 4.0,
+    "mi": 94.40782847655927
+  },
   "crates/ferric-pbc/src/lmp2.rs::check_reference": {
     "cc": 5.0,
     "mi": 90.15144605960582
@@ -18752,12 +18756,12 @@
     "mi": 153.0837736153568
   },
   "crates/ferric-pbc/src/lmp2.rs::gamma_lmp2": {
-    "cc": 3.0,
-    "mi": 97.52165854734139
+    "cc": 6.0,
+    "mi": 90.5391033661172
   },
   "crates/ferric-pbc/src/lmp2.rs::gamma_lmp2_with_spaces": {
-    "cc": 46.0,
-    "mi": 23.391027469187662
+    "cc": 63.0,
+    "mi": 15.250074837207023
   },
   "crates/ferric-pbc/src/lmp2.rs::gamma_lmp2_with_spaces::<anonymous>": {
     "cc": 3.0,
@@ -18795,6 +18799,18 @@
     "cc": 1.0,
     "mi": 159.05793486938265
   },
+  "crates/ferric-pbc/src/lmp2.rs::gamma_lmp2_with_spaces::<anonymous>#7": {
+    "cc": 3.0,
+    "mi": 104.82473124373614
+  },
+  "crates/ferric-pbc/src/lmp2.rs::gamma_lmp2_with_spaces::<anonymous>#7::<anonymous>": {
+    "cc": 1.0,
+    "mi": 152.48082321907071
+  },
+  "crates/ferric-pbc/src/lmp2.rs::gamma_lmp2_with_spaces::<anonymous>#7::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 150.3245067098335
+  },
   "crates/ferric-pbc/src/lmp2.rs::gamma_lmp2_with_spaces::<anonymous>::<anonymous>": {
     "cc": 1.0,
     "mi": 154.96396303512603
@@ -18825,7 +18841,11 @@
   },
   "crates/ferric-pbc/src/lmp2.rs::impl:GammaEpsGate::gate_quantity": {
     "cc": 2.0,
-    "mi": 106.19099104950054
+    "mi": 105.66936569234504
+  },
+  "crates/ferric-pbc/src/lmp2.rs::impl:GammaEpsGate::restores_uniform_head": {
+    "cc": 1.0,
+    "mi": 132.61029313705293
   },
   "crates/ferric-pbc/src/lmp2.rs::impl:GammaLmp2Config::shifted": {
     "cc": 1.0,
@@ -18848,32 +18868,12 @@
     "mi": 134.05168511513583
   },
   "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::block": {
-    "cc": 15.0,
-    "mi": 64.40056321814035
+    "cc": 5.0,
+    "mi": 95.95416690952791
   },
-  "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::block::<anonymous>": {
-    "cc": 2.0,
-    "mi": 150.74535505319434
-  },
-  "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::block::<anonymous>#1": {
+  "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::has_uniform_head": {
     "cc": 1.0,
-    "mi": 150.63975474327898
-  },
-  "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::block::<anonymous>#2": {
-    "cc": 1.0,
-    "mi": 153.0837736153568
-  },
-  "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::block::<anonymous>#3": {
-    "cc": 1.0,
-    "mi": 130.0288213282207
-  },
-  "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::block::<anonymous>#4": {
-    "cc": 1.0,
-    "mi": 149.1009771864156
-  },
-  "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::block::<anonymous>#5": {
-    "cc": 1.0,
-    "mi": 149.1009771864156
+    "mi": 134.05168511513583
   },
   "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::naux": {
     "cc": 1.0,
@@ -18885,7 +18885,7 @@
   },
   "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::new_on": {
     "cc": 13.0,
-    "mi": 57.146790066157436
+    "mi": 56.687509841592885
   },
   "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::new_on::<anonymous>": {
     "cc": 1.0,
@@ -18898,6 +18898,38 @@
   "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::new_on::<anonymous>#1::<anonymous>": {
     "cc": 1.0,
     "mi": 151.18942743888599
+  },
+  "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::raw_block": {
+    "cc": 15.0,
+    "mi": 64.40056321814035
+  },
+  "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::raw_block::<anonymous>": {
+    "cc": 2.0,
+    "mi": 150.74535505319434
+  },
+  "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::raw_block::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 150.63975474327898
+  },
+  "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::raw_block::<anonymous>#2": {
+    "cc": 1.0,
+    "mi": 153.0837736153568
+  },
+  "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::raw_block::<anonymous>#3": {
+    "cc": 1.0,
+    "mi": 130.0288213282207
+  },
+  "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::raw_block::<anonymous>#4": {
+    "cc": 1.0,
+    "mi": 149.1009771864156
+  },
+  "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::raw_block::<anonymous>#5": {
+    "cc": 1.0,
+    "mi": 149.1009771864156
+  },
+  "crates/ferric-pbc/src/lmp2.rs::impl:GammaPairIntegrals::with_uniform_head": {
+    "cc": 3.0,
+    "mi": 93.70958356562002
   },
   "crates/ferric-pbc/src/lmp2.rs::impl:LocalizationConfig::default": {
     "cc": 1.0,
@@ -18939,6 +18971,18 @@
     "cc": 1.0,
     "mi": 148.45374334022276
   },
+  "crates/ferric-pbc/src/lmp2.rs::impl:UniformHead::column": {
+    "cc": 2.0,
+    "mi": 123.32949803495333
+  },
+  "crates/ferric-pbc/src/lmp2.rs::impl:UniformHead::column::<anonymous>": {
+    "cc": 1.0,
+    "mi": 157.8484854211024
+  },
+  "crates/ferric-pbc/src/lmp2.rs::impl:UniformHead::coupling": {
+    "cc": 1.0,
+    "mi": 128.55876004029366
+  },
   "crates/ferric-pbc/src/lmp2.rs::lattice_cross_overlap_with_minimal": {
     "cc": 14.0,
     "mi": 61.81986269533422
@@ -18957,11 +19001,43 @@
   },
   "crates/ferric-pbc/src/lmp2.rs::min_image_matches_brute_force": {
     "cc": 7.0,
-    "mi": 71.22160671602973
+    "mi": 71.20486239809955
   },
   "crates/ferric-pbc/src/lmp2.rs::min_image_matches_brute_force::<anonymous>": {
     "cc": 1.0,
     "mi": 119.27377366019164
+  },
+  "crates/ferric-pbc/src/lmp2.rs::mp2_closed_form_local": {
+    "cc": 19.0,
+    "mi": 58.761577900530966
+  },
+  "crates/ferric-pbc/src/lmp2.rs::mp2_closed_form_local::<anonymous>": {
+    "cc": 1.0,
+    "mi": 152.5881606803743
+  },
+  "crates/ferric-pbc/src/lmp2.rs::mp2_closed_form_local::<anonymous>#1": {
+    "cc": 3.0,
+    "mi": 106.94270904637901
+  },
+  "crates/ferric-pbc/src/lmp2.rs::mp2_closed_form_local::<anonymous>#2": {
+    "cc": 1.0,
+    "mi": 149.89879626612532
+  },
+  "crates/ferric-pbc/src/lmp2.rs::needle_axis": {
+    "cc": 6.0,
+    "mi": 84.96165240081845
+  },
+  "crates/ferric-pbc/src/lmp2.rs::needle_axis::<anonymous>": {
+    "cc": 1.0,
+    "mi": 150.35325741480995
+  },
+  "crates/ferric-pbc/src/lmp2.rs::needle_axis::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 156.27079806218674
+  },
+  "crates/ferric-pbc/src/lmp2.rs::needle_axis::<anonymous>#2": {
+    "cc": 1.0,
+    "mi": 157.8484854211024
   },
   "crates/ferric-pbc/src/lmp2.rs::periodic_vvhv": {
     "cc": 32.0,
@@ -19015,29 +19091,69 @@
     "cc": 1.0,
     "mi": 116.79476108005628
   },
+  "crates/ferric-pbc/src/lmp2.rs::resta_dipoles": {
+    "cc": 3.0,
+    "mi": 84.52505141634825
+  },
+  "crates/ferric-pbc/src/lmp2.rs::resta_dipoles::<anonymous>": {
+    "cc": 1.0,
+    "mi": 123.82185635749974
+  },
+  "crates/ferric-pbc/src/lmp2.rs::resta_dipoles::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 127.39841357345975
+  },
+  "crates/ferric-pbc/src/lmp2.rs::resta_matrix_at": {
+    "cc": 4.0,
+    "mi": 90.12519409093261
+  },
   "crates/ferric-pbc/src/lmp2.rs::resta_operator": {
-    "cc": 11.0,
-    "mi": 70.50172303438349
+    "cc": 6.0,
+    "mi": 88.58999637921598
   },
   "crates/ferric-pbc/src/lmp2.rs::resta_operator::<anonymous>": {
     "cc": 1.0,
-    "mi": 145.480864822329
+    "mi": 150.0272829578658
   },
   "crates/ferric-pbc/src/lmp2.rs::resta_operator::<anonymous>#1": {
     "cc": 1.0,
-    "mi": 150.0272829578658
+    "mi": 149.79445470859366
   },
   "crates/ferric-pbc/src/lmp2.rs::resta_operator::<anonymous>#2": {
-    "cc": 3.0,
-    "mi": 103.14821540624202
+    "cc": 1.0,
+    "mi": 148.50685685866756
   },
-  "crates/ferric-pbc/src/lmp2.rs::resta_operator::<anonymous>#2::<anonymous>": {
+  "crates/ferric-pbc/src/lmp2.rs::resta_part": {
+    "cc": 3.0,
+    "mi": 101.8856554905271
+  },
+  "crates/ferric-pbc/src/lmp2.rs::resta_part::<anonymous>": {
     "cc": 2.0,
     "mi": 108.69533125924085
   },
-  "crates/ferric-pbc/src/lmp2.rs::resta_operator::<anonymous>#3": {
+  "crates/ferric-pbc/src/lmp2.rs::uniform_coupling": {
+    "cc": 2.0,
+    "mi": 118.77113684984238
+  },
+  "crates/ferric-pbc/src/lmp2.rs::uniform_coupling::<anonymous>": {
     "cc": 1.0,
-    "mi": 148.50685685866756
+    "mi": 148.05748957001242
+  },
+  "crates/ferric-pbc/src/lmp2.rs::uniform_head": {
+    "cc": 9.0,
+    "mi": 74.55346958837156
+  },
+  "crates/ferric-pbc/src/lmp2.rs::uniform_head::<anonymous>": {
+    "cc": 1.0,
+    "mi": 147.44017147447585
+  },
+  "crates/ferric-pbc/src/lmp2.rs::uniform_head::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 156.27079806218674
+  },
+  "crates/ferric-pbc/src/lmp2.rs::vec_len": {
+    "cc": 1.0,
+    "mi": 126.73582577714592
   },
   "crates/ferric-pbc/src/mp2.rs::b_ov_and_dense_transforms_agree_on_an_exact_factorization": {
     "cc": 10.0,
