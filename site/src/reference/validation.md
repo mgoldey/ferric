@@ -8,19 +8,26 @@ independent reference, and where they are known to fail.
 
 ## Grades
 
-Every CLI `method.kind` has a grade. The same grades are printed as a warning by
-the CLI at run time for anything below Proven. The per-method table, with
-Python-only capabilities included, is in [Capabilities](./capabilities.md).
+Every CLI `method.kind` except `lmp2`, `lmp2-direct` and `laplace-sos-mp2`
+has a grade. The CLI prints the Smoke and Spike grades as a `[warning]` line
+at run time; Proven kinds and the three ungraded kinds print nothing. The
+per-method table, with Python-only capabilities included, is in
+[Capabilities](./capabilities.md).
 
 | Grade | Meaning |
 |---|---|
-| **Proven** | Total energies (or the stated property) agree with an independent code or an exact limit, pinned by tests |
-| **Proven (narrow)** | As Proven, but only on the stated class of systems |
+| **Proven** | Total energies (or the stated property) agree at a stated tolerance with an independent reference, pinned by tests. An independent reference is another code (PySCF, MOLGW), a numpy reference, a published value, or an exact limit the method must reduce to. |
+| **Proven (narrow)** | As Proven, but only on the stated class of systems, or only against the stated kind of reference (for example exact limits only) |
 | **Smoke** | Runs end to end, and its parts or limits are checked, but no independent reference for the headline number, or only one loose one |
 | **Spike** | New code with no comparison to a reference yet; for exploration only |
+| **not graded** | Dispatched by the CLI but in neither its Proven list nor its warning table, so it prints no warning; treat it as unproven |
 
 **Proven:** `rhf`, `uhf`, `rohf`, `ksdft`, `rimp2`, `mp3`, `att-rimp2`,
-`scs-mp2`, `scs-mp2-2terfc`, `laplace-mp2`, `pdep-rpa`, `ccsd`, `linlccd`.
+`scs-mp2`, `scs-mp2-2terfc`, `laplace-mp2`, `pdep-rpa`, `ccsd`. **Proven
+(narrow, exact limits only):** `linlccd`, which has no external reference for
+its energy; with the hole–hole ladder off it reduces exactly to RI-MP2, and
+with exact integrals its driver terms reproduce canonical MP2. These print no
+warning.
 
 **Smoke or Spike**, with the caveat the CLI prints:
 
@@ -28,13 +35,20 @@ Python-only capabilities included, is in [Capabilities](./capabilities.md).
 |---|---|---|
 | `gw` | Smoke | ~5 meV vs MOLGW on one H2O/cc-pVDZ case; most assertions are range bands. Treat results as ±0.3 eV. |
 | `bse-tda` | Smoke | Only excitation ordering and a physicality gate; inherits the GW gap error. |
-| `tdhf-static-polarizability` | Smoke | Static α close to DOSD for water (one case); the same kernel gives C6 ~63% low. |
+| `tdhf-static-polarizability` | Smoke | Static α at a physical scissor (0.36 Ha) is 5.20 a.u. for water/cc-pVDZ against DOSD 9.64 (−46%); the same kernel gives C6 ~63% low. |
 | `rs-mp2-rpa` | Smoke | The ω→0 and ω→∞ limits reduce exactly to MP2 and MP2+dRPA; production ω is unproven on new systems. |
 | `mp2-v` | Smoke | VV10 half bit-identical to the ωB97X-V path; no published MP2-V total energy to compare against. Defaults are fitted for aug-cc-pVTZ, no counterpoise, frozen core. |
 | `oo-rimp2` | Smoke | Stationarity and vanishing orbital gradient checked; no external absolute reference. |
 | `wb97x-l-v` | Smoke | Components and limits checked; no reference for the total energy. |
 | `b2plyp`, `dsd-pbep86` | Spike | No comparison to a reference code yet. |
 | `tda`, `tddft` | Spike | Exact for an HF reference (CIS / TDHF); DFT references omit the f<sub>xc</sub> kernel. |
+
+**Not graded** (no warning printed):
+
+| `method.kind` | Grade | What is checked |
+|---|---|---|
+| `lmp2`, `lmp2-direct` | not graded | ε = 0 reproduces `rimp2`; the measured `lmp2-direct` scaling is under [Known limits](#known-limits-and-negatives). |
+| `laplace-sos-mp2` | not graded | With `c_os = 1.0` it reproduces the opposite-spin MP2 energy (internal reference). |
 
 ## Anchors
 
@@ -71,8 +85,13 @@ Reported rather than omitted:
   second-derivative integrals. Harmonic **frequencies are available** by
   central finite differences of the analytic gradient (`task = "frequencies"`,
   `ferric.run_frequencies`).
-- **Local MP2 (amplitude threshold)**: the J build is still dense (from RI), so
-  no scaling claim is made; only counters are reported.
+- **Local MP2**: `lmp2-direct`'s correlation stage is measured at about
+  N<sup>1.24</sup> (erfc) and N<sup>1.4</sup> (Coulomb) on n-alkanes C20–C48
+  (6-31G / cc-pVDZ-RI, frozen carbon cores, a calibrated pair gate; fitted to
+  three points). That is one family of molecules in one basis: not shown to
+  be linear, and not measured on 3-D or diffuse systems. The plain `lmp2`
+  path still builds the global 3-index tensor and makes no scaling claim.
+  See [The MP2 family](../methods/mp2.md#local-mp2).
 - **Laplace SOS-MP2, AO-sparse variant**: the domain truncation is accurate,
   and the radius it needs grows far more slowly than the molecule (chemical
   accuracy at 3 to 5 Bohr on n-alkanes C2 to C12, radius/diameter falling from
@@ -83,13 +102,19 @@ Reported rather than omitted:
   STO-3G butane/octane comparison (12 Bohr exact on both; octane worse at
   3 Bohr). The C2-C12 sweep and the drug-molecule figure are measurements,
   not regression tests.
-- **TDHF/RPAx C6**: ~60% low regardless of gap. Use it for static
-  polarizabilities, not dispersion.
+- **TDHF/RPAx C6**: ~63% low regardless of gap. Do not use it for
+  dispersion; its static α is not established either (see the grade table).
 - **TDDFT / TDA with a DFT reference**: the f<sub>xc</sub> kernel term is
   omitted in the CLI/Python path; the run warns.
-- **COSX at large N**: the one-thread tail over alkanes (C12–C20, def2-SVP)
-  fits A-build ~N<sup>1.5</sup> and full K ~N<sup>2.2</sup>, slower than
-  analytic exchange at that basis. COSX is Coulomb-only and has no gradients.
+- **COSX scaling and gradients**: at def2-SVP, one thread, over alkanes C4–C20
+  with the default sparse half-transforms, the full K build's tail exponent
+  (last three points, C12–C20) is N<sup>1.57</sup> and the A-build's
+  N<sup>1.52</sup>. On butane it only reaches the speed of direct exchange at
+  quadruple zeta.
+  COSX is Coulomb-only. It has no gradient of its own: `task = "optimize"`
+  with `k_builder = "cosx"` runs without a warning, minimizing the COSX
+  energy with the analytic exact-exchange gradient evaluated at the COSX
+  density, so the gradient is not the derivative of that energy.
 
 ## Why the distinction is drawn so sharply
 

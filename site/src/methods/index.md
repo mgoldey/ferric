@@ -51,10 +51,11 @@ Known limits and measured negatives are kept in one place,
 so a correction has one row to change. Two are worth knowing before you pick a
 method:
 
-- **TDHF/RPAx \\( C_6 \\)** stays about 60% low regardless of gap. Use that
+- **TDHF/RPAx \\( C_6 \\)** stays about 63% low regardless of gap. Use that
   kernel for static polarizabilities only.
 - **Local MP2**: `lmp2-direct` is measured sub-quadratic (about N<sup>1.24</sup>
-  erfc, N<sup>1.4</sup> Coulomb) on alkanes C20–C48 and overtakes RI-MP2 near C20;
+  erfc, N<sup>1.4</sup> Coulomb) on alkanes C20–C48; it is at about parity with
+  RI-MP2 at C20 and about 6× faster at C32;
   plain `lmp2` makes no scaling claim. See [The MP2 family](./mp2.md#local-mp2).
 
 The AO-sparse Laplace SOS-MP2 truncation is *not* a negative: the radius it

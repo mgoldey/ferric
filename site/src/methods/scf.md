@@ -147,7 +147,7 @@ Butane, one thread; TZ is def2-TZVP (184 functions), QZ is def2-QZVP (528).
 | *(default)* | Schwarz-screened direct four-centre J + K | yes | all SCF types |
 | `k_builder = "link"` | LinK: pair-list-screened direct K | yes (== direct to 9e-12 Ha, butane/def2-SVP) | RHF, UHF, ROHF |
 | `df_j_aux` / `df_k_aux` | density-fitted J and K (RI-JK) | fitting error, grows with size (see *Kohn–Sham DFT* above) | all SCF types |
-| `k_builder = "cosx"` | seminumerical (COSX) K on a grid | grid error, see below | RHF/UHF/ROHF, Coulomb operator only, no gradients |
+| `k_builder = "cosx"` | seminumerical (COSX) K on a grid | grid error, see below | RHF/UHF/ROHF, Coulomb operator only, no COSX gradient (see below) |
 
 **Time for one exchange build** (seconds, butane, one thread):
 
@@ -199,15 +199,17 @@ roughly tenfold from SVP to QZVP, so it reaches analytic exchange only at
 quadruple-zeta: on butane/def2-QZVP a COSX K build is **137 s against 400 s**
 for the default direct J+K build (parity; J and K share that sweep), while at
 TZ the full COSX SCF is 3.7× slower than direct (358 s vs 98 s). Below QZ it
-is the wrong tool. Ratios against LinK are withheld until LinK is re-measured.
+is the wrong tool. This page quotes no ratio against LinK.
 
-Its integral work is sub-quadratic in system size — a density-driven pair
-screen (on the product of the integral bound and the local half-transformed
-density) gives an A-build tail exponent of N^1.5 on C12–C20 alkanes at
-def2-SVP, with a K error below 2e-6 Ha at the default threshold. The half-transforms `D·X` and `X·Gᵀ` are still dense
-GEMMs, which grow faster and are a third of the build by C20; until they are
-made sparse (the standard next step), expect the full build to scale roughly
-N^2 past a dozen heavy atoms even though the integrals do not.
+Its cost is sub-quadratic in system size. A density-driven pair screen (on
+the product of the integral bound and the local half-transformed density)
+keeps the K error below 2e-6 Ha at the default threshold, and the
+half-transforms `D·X` and `X·Gᵀ` run over per-batch sparse AO lists
+(`cosx_half_transform = "sparse"`, the default). Measured at def2-SVP on one
+thread over n-alkanes C4–C20, fitted to the last three points (C12–C20): the
+A-build scales as N^1.52 and the full K build as N^1.57; with
+`cosx_half_transform = "dense"` the full build's tail is N^2.07. That is one
+family of molecules in one basis.
 
 COSX's error is a grid error, and it is not µHa-small: 5e-6 Ha on water/cc-pVDZ
 and 1.2e-4 Ha on butane/def2-TZVP at the default grid. Reaction energies
@@ -231,6 +233,14 @@ grid); absolute energies do not. Four knobs, all optional:
 
 Setting any `cosx_*` key without `k_builder = "cosx"`, or `k_builder` together
 with `df_k_aux`, is refused or warned about rather than silently ignored.
+
+**COSX has no gradient of its own.** `task = "optimize"` with
+`k_builder = "cosx"` is neither refused nor warned about: the SCF energy at
+each step comes from COSX, and the nuclear gradient is the analytic
+exact-exchange gradient (four-centre derivative integrals) evaluated at the
+COSX density. The gradient is therefore not the derivative of the energy
+being minimized, and the optimized geometry is not a COSX stationary point.
+Use direct or LinK exchange for geometry optimization.
 
 ## Convergence
 
