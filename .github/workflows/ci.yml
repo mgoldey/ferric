@@ -897,11 +897,17 @@ jobs:
       - name: Verify the archive arrived
         run: |
           set -euo pipefail
-          if [ -f /tmp/nextest-archive.tar.zst ]; then
+          # Existence is not enough: a truncated download leaves a file that
+          # only fails later, inside `nextest --archive-file`, as
+          # "incomplete frame" (seen on #168, test-shard 3). `zstd -t`
+          # checks every frame; a corrupt archive is deleted so the retry
+          # below downloads a fresh copy.
+          if [ -f /tmp/nextest-archive.tar.zst ] && zstd -tq /tmp/nextest-archive.tar.zst; then
             echo "complete=1" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::artifact download incomplete -- retrying"
+            echo "::warning::artifact download missing or corrupt -- retrying"
             ls -la /tmp | head -40
+            rm -f /tmp/nextest-archive.tar.zst
             echo "complete=0" >> "$GITHUB_OUTPUT"
           fi
         id: verify
@@ -932,8 +938,8 @@ jobs:
             EXPR="${EXPR}binary($b)"
           done
           echo "deferring $(echo $SLOW | wc -w) binaries from the fast tier"
-          if [ ! -f /tmp/nextest-archive.tar.zst ]; then
-            echo "::error::the nextest archive is missing after the download" \
+          if [ ! -f /tmp/nextest-archive.tar.zst ] || ! zstd -tq /tmp/nextest-archive.tar.zst; then
+            echo "::error::the nextest archive is missing or corrupt after the download" \
                  "AND the retry -- an ARTIFACT DOWNLOAD failure, not a build" \
                  "or test failure. Re-run this job."
             exit 1
