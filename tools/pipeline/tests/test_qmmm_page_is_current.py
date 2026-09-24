@@ -111,12 +111,19 @@ def test_every_toml_key_the_page_shows_is_real():
 
     block = re.search(r"```toml\n(.*?)```", PAGE.read_text(), re.S)
     assert block, "the page no longer shows a TOML block; re-derive this guard"
-    documented = {
-        line.split("=")[0].strip().lstrip("#").strip()
-        for line in block.group(1).splitlines()
-        if "=" in line
-    }
-    assert documented, "no keys parsed from the TOML block"
+    # The block is a complete config ([molecule], [basis], [method], [qmmm]);
+    # only the [qmmm] table's keys belong to QmmmCfg. Commented-out keys in
+    # that table are still offered to the reader, so they are checked too.
+    documented = set()
+    section = None
+    for line in block.group(1).splitlines():
+        header = re.match(r"\s*\[([^\]]+)\]\s*$", line)
+        if header:
+            section = header.group(1).strip()
+            continue
+        if section == "qmmm" and "=" in line:
+            documented.add(line.split("=")[0].strip().lstrip("#").strip())
+    assert documented, "no [qmmm] keys parsed from the TOML block"
 
     src = config.read_text()
     start = src.index("pub struct QmmmCfg")
