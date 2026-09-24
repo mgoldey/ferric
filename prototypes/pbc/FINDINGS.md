@@ -650,3 +650,137 @@ optimized_u0(20) = 0.5, the same nodes as gl_quadrature(20, 0.5)), error vs plas
   has the same large-w cancellation measured here (1.9e-10 at n=1024, negligible at n <= 80).
 - Tests to port: trivial-aux anchor vs dense plasmon (1e-11), tr Pi^2 term == direct MP2, shifted box residual vs
   r2_kernel_c3 prediction at a=24/32 (<1%), unshifted - shifted == E_mol(e_ia - v_M) - E_mol(e_ia).
+
+## Iteration 6 (Python, Gamma UHF) — 2026-09-24
+
+### Code
+- New `pbc_uhf.py`: `uhf(S, h, I, enn, na, nb, kshift=v_M, jk=, guess=, mix=, level_shift=)` (per-spin DIIS on
+  the concatenated alpha/beta commutators), `spin_square` (lattice S), `core_guess`, `dense_jk`,
+  `uhf_c3_closed_form` and `uhf_r2_kernel_c3` (box-limit predictors). Seams `_jk_spin` / `_madelung_term`
+  are module functions so tests mutate them.
+- `pbc_gamma.Cell`: Mole `spin` = electron-count parity (odd-electron cells failed PySCF's check; nothing reads it).
+- Drivers: `run_uhf_anchor.py`, `run_uhf_oracle.py`, `run_uhf_box_limit.py {H|O2} a...`, `run_uhf_guess.py`.
+- `test_prototype.py`: +10 fast UHF tests, +1 slow (whole suite 56 passed / 4 skipped, 153 s).
+
+### Convention (read from PySCF 2.13 source, then measured)
+`pbc/scf/uhf.py get_veff`: vhf = vj[0]+vj[1]-vk with (D_a, D_b); `df_jk._ewald_exxdiv_for_G0` adds
+v_M S dm S to vk[i] for EACH dm. So F_s = h + J[D_a+D_b] - K[D_s] - v_M S D_s S: the SAME v_M as RHF, on the
+single-spin density, coefficient 1. RHF's "K += v_M S D S, F = h + J - K/2" is identical because D = 2 D_s;
+the Madelung wrapper is LINEAR in D, so one injected KBuilder serves both. Energy shift -v_M (N_a+N_b)/2.
+
+### Measured
+Anchors (run_uhf_anchor.py):
+
+| check | none | ewald |
+|---|---|---|
+| (a) closed shell via UHF - RHF, H2/STO-3G a=4 pure-AFT | 0 (d eps 2e-16) | 0 (1e-15) |
+| (a) same, tri 4H s+p (nao 16) | +2.7e-15 | +1.3e-15 |
+| (b) open shell dense AFT vs trivial-aux RS-GDF, tri one-s TRIPLET (<S2> 2.00018) | -1.1e-11 | -1.1e-11 |
+| (b) same, singlet | -5.3e-12 | -5.3e-12 |
+| MUTANT K[D_total]: (a) H2 / tri; (b) via B, triplet / singlet | -4.5e-2 / -3.9e-1; -2.4e-1 / -3.9e-1 | same |
+| MUTANT Madelung v_M/2 per spin: (a) H2 / tri | – | +3.5e-1 / +6.2e-1 (= v_M N/4) |
+| (b) aux 7/8 classes, triplet / singlet | +6.7e-7 / +1.8e-7 | |
+Blind spot: (b) applies the Madelung term identically on both sides, so it cannot see a wrong factor.
+
+PySCF oracle (run_uhf_oracle.py; pbc.scf.UHF, AFTDF mesh 61^3, conv 1e-12; ours = pure-AFT dense ERI):
+
+| system | exxdiv | ours E | <S2> | PySCF default guess dE / d<S2> | PySCF from our D |
+|---|---|---|---|---|---|
+| H atom a=4 doublet | none | -0.402177788224 | 0.75 | +7.4e-14 / 0 | same |
+| | ewald | -0.756839973159 | 0.75 | +8.2e-14 / 0 | same |
+| H2/STO-3G a=4 triplet (na 2, nb 0) | none | +0.322229103842 | 2.0 | +1.4e-14 / 0 | same |
+| | ewald | -0.387095266028 | 2.0 | +5.7e-15 / 0 | same |
+| tri 4H s+p triplet (na 3, nb 1) | none | -0.583125965387 | 2.001814801 | +7.1e-13 / -6.5e-10 | +1.3e-12 |
+| | ewald, our core guess | -1.812958714837 | 2.002889744 | **-1.5e-2** / -1.1e-3 (different state) | +6.6e-13 / -3.1e-10 |
+| | ewald, our none-first | -1.827999723359 | 2.001814801 | 0 (same state) | |
+Pinned systems have nb = 0, so K[D_total] == K[D_a] there: the oracle cannot see that mutant (the anchors and the
+O2 box test do).
+
+Box limit vs PySCF MOLECULAR UHF (cart STO-3G, same geometry; Ewald split w = min(1, 8/a), bra 18, ket 18+6/w;
+molecular UHF density as guess). Predictions written into run_uhf_box_limit.py BEFORE the sweep:
+- physics, ewald: dE = c3/a^3 + O(a^-5), c3 = -(2pi/3)(|d|^2 + Omega_a + Omega_b), Omega_s = sum_i <i|r^2|i> -
+  sum_ij |<i|r|j>|^2 over s-occupied (Foster-Boys invariant spread). Derivation: after Madelung the cubic G=0-dropped
+  kernel is 1/r + (k/2)|r-r'|^2, k = 4pi/3a^3; Hartree+en+nn of a neutral cell give -(k/2)|d|^2, exchange of spin
+  s gives -(k/2) Omega_s; first order in k, so orbital relaxation does not enter. RHF (Omega_a = Omega_b = sigma^2,
+  one orbital) recovers Iteration 1's -(4pi/3) sigma^2. Per spin the exchange coefficient is HALF the RHF
+  per-orbital one: the H atom has c3 = -(2pi/3) sigma^2, not -(4pi/3) sigma^2.
+- physics, none: dE_none - dE_ewald = +v_M (N_a+N_b)/2 exactly -> 1/a, coefficient +2.8373 N/2.
+- artifacts: per-spin Madelung factor 1/2 -> exponent 1 (+0.709 N/a); missing images -> plateau; K[D_total] -> O(1).
+
+Predicted c3: H -4.081081 (Omega_a 1.948573); O2 triplet -30.622429 (Omega_a 6.823932, Omega_b 7.797201, |d| 1e-14).
+Independent construction `uhf_r2_kernel_c3` (harmonic kernel added to every interaction of the molecular UHF,
+relaxed, central difference): -4.081081 / -30.622429 (agree to 1e-6).
+E_mol(UHF) = -0.466581849557 (H), -147.633950632184 (O2, <S2> 2.0034108656).
+
+| a | H dE_ewald | H dE*a^3 | O2 dE_ewald | O2 dE*a^3 | O2 <S2> | O2 wall |
+|---|---|---|---|---|---|---|
+| 8 | -1.1804780731e-2 | -6.044048 | -6.8568398238e-2 | -35.107020 | 2.00316835 | 302 s |
+| 10 | -4.3444294260e-3 | -4.344429 | -3.1192324469e-2 | -31.192324 | 2.00332353 | 34 s |
+| 12 | -2.3715247834e-3 | -4.097995 | -1.7880107655e-2 | -30.896826 | 2.00336085 | 13 s |
+| 14 | -1.4874498980e-3 | -4.081563 | -1.1232034317e-2 | -30.820702 | 2.00337918 | 4 s |
+| 16 | -9.9635921039e-4 | -4.081087 | -7.5129705739e-3 | -30.773127 | 2.00338954 | 5 s |
+| 20 | -5.1013514216e-4 | -4.081081 | -3.8397648415e-3 | -30.718119 | 2.00339988 | 3 s |
+| 24 | -2.9521709615e-4 | -4.081081 | -2.2199515489e-3 | -30.688610 | 2.00340449 | 3 s |
+| 32 | -1.2454471244e-4 | -4.081081 | -9.3565382184e-4 | -30.659504 | 2.00340817 | 4 s |
+| 40 | -6.3766892768e-5 | -4.081081 | -4.7884545873e-4 | -30.646109 | 2.00340948 | 6 s |
+
+- none - ewald - v_M N/2: |.| <= 1e-16 (H), <= 1e-13 (O2) at every a. With exxdiv=None, dE is still +0.567 Ha for O2
+  at a=40 (= 22.698/a - 4.8e-4).
+- O2 local exponents 3.53 (8), 3.05, 3.016, 3.012, 3.008, 3.005, 3.003, 3.002 (32->40). Fit c3/a^3 + c5/a^5
+  (24,32,40): c3 = -30.622127 (-9.9e-6 relative to the prediction), c5 = -38.3; adding c7: c3 = -30.622416 (4e-7).
+- H: dE*a^3 is flat at -4.081081 from a=20 on, with no a^-5 term. This looked too clean, so I checked it. It is
+  expected: for one electron, Hartree == self-exchange in ANY kernel. Beyond r^2, the cubic kernel expansion has
+  only l >= 4 cubic harmonics, which vanish on a spherical density. So the residual is exactly c3/a^3 plus
+  image-overlap tails, which decay exponentially (a=10..16 above). O2 (non-spherical, 16 e) shows the ordinary
+  c5 tail.
+- Mutations of the source (not only monkeypatch): Madelung x0.5 fails 5 tests (incl. both box tests); K[D_total]
+  fails 5; replacing Omega_b by Omega_a in the predictor fails both box tests.
+
+SCF convergence / guesses (run_uhf_guess.py):
+- **Ewald trap (new).** At Gamma, v_M S D_s S = v_M x (occupied projector), so ewald and None have IDENTICAL
+  stationary densities, with energies offset by the constant -v_M N/2. But ewald lowers every occupied level by
+  v_M, so a state with a hole below the Fermi level under None can become aufbau-self-consistent under ewald.
+  tri 4H s+p triplet, ewald from the core guess (also with beta mix 0.3): E -1.812958714837, alpha gap
+  0.617 < v_M 0.622. Evaluated under None, the same D is stationary (|[F,D]| 3e-8), with E exactly +v_M N/2
+  (1e-15) and alpha eps (occ) 0.922 > (vir) 0.916. None first, then ewald from that D: -1.827999723359 in 1
+  iteration (= PySCF default guess, 1.5e-2 lower). Necessary condition for the HF minimum under ewald
+  (single-swap second variation, positive kernel): per-spin gap >= v_M. It is necessary, not sufficient.
+- **O2 from the core (hcore) guess lands in the wrong state** in both conventions: 0.256 Ha high, <S2> 2.0121, gaps
+  > v_M, so the gap criterion does not flag it. A 0.5 level shift gives the same state. This is NOT periodic: the
+  molecular hcore guess finds the same state (ours -147.378615604497 == PySCF init_guess='1e'). The molecular UHF
+  density (cell-0 AOs == Gamma AOs) as guess reaches the right state in 5 iterations.
+- Closed shells: with na == nb and no mixing, UHF stays RHF (tri 4H, stretched H2). With a beta HOMO/LUMO mix of
+  0.3 or 0.7, stretched H2 (R=4, a=10) breaks symmetry to <S2> 0.9449, 0.1438 Ha below RHF, in both conventions
+  (the difference is again exactly v_M). tri 4H s+p is UHF-stable (returns to RHF from a 0.7 mix).
+
+### Interpretation (provisional, 2026-09-24)
+- Gamma UHF is the molecular UHF on (S, h, I or B, E_nn), exact to 1e-11 against both anchors and 1e-12 against
+  PySCF AFTDF (energies and <S2>, using the lattice S).
+- Per-spin Madelung: same v_M, on D_s, coefficient 1. It needs no special handling if the Madelung term lives
+  in a linear KBuilder wrapper and UHF calls it with D_s (RHF calls it with D_total and uses -K/2).
+- exxdiv=ewald converges to the molecule as a^-3, with c3 predicted a priori from molecular spreads (H exact,
+  O2 1e-5 relative). exxdiv=None converges as 1/a with the exactly predicted +v_M N/2. The UHF finite-size
+  term is a sum over spins of the exchange spread (per spin half the RHF per-orbital factor).
+- The Gamma Madelung term makes the SCF landscape stickier. An ewald SCF should either start from a converged
+  None density or check "per-spin gap >= v_M" at convergence. Guess quality (hcore vs molecular/SAD)
+  matters exactly as it does molecularly.
+- NOT measured: RS-GDF with a real aux for UHF (only the trivial-aux anchor; RHF Iteration 2 errors should carry
+  over per spin), ROHF, spherical basis, nao > 16 in the pure-AFT oracle, k-points, cost.
+
+### For the Rust port (stage 4): `solve_uhf_injected`
+- Mirror `PeriodicInjection` + `validate_injected`. uhf.rs:438 gets S/h/V_nn from `driver::prepare`; take them
+  from the injection as solve_rhf_impl does. J = injected JBuilder on D_a + D_b; K_s = the SAME injected
+  KBuilder called per spin (`update_density(D_s)` then `build(D_s)`, as uhf.rs:858 already does). The Madelung
+  wrapper `K += v_M S D S` is linear, so no per-spin factor code is needed; do NOT add a 1/2 "for spin".
+- If a periodic RS-GDF KBuilder overrides `build_from_occ` (DfK-style half-transform), the override must also add
+  v_M S C C^T S. The default impl reconstructs D and is safe; an override that forgets it drops the Madelung term
+  silently on the occupied path only.
+- Guess: `uhf_guess_mos` builds its guess Fock with molecular `rhf::build_jk(bounds)`, and MINAO projects onto
+  molecular atoms. Both must be rejected or rerouted on the injected path: reject `use_sad_guess`, and build the
+  guess Fock from the INJECTED J/K when `init_guess_density` is given, or accept per-spin MOs via the
+  existing `initial_mos` argument. Also reject `scf_stability_descent` / `check_stability`: they rebuild
+  molecular J/K. Recommended default for exxdiv=ewald: converge with Madelung off, then switch it on, or assert
+  per-spin gap >= v_M at convergence and warn.
+- Tests to port: closed-shell UHF == injected RHF (1e-11, both exxdiv); open-shell trivial-aux anchor (1e-10);
+  ewald - none == -v_M N/2 (1e-11); H-atom box residual == -(2pi/3) Omega_a / a^3 at a=20 (1e-5); O2 a=24/32
+  vs the closed-form c3 (0.5%), exponent 3 +- 0.02; tri 4H s+p ewald trap (slow).

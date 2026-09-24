@@ -35,7 +35,11 @@ class Cell:
         self.a = np.asarray(a, float)  # rows are lattice vectors (Bohr)
         self.atoms = atoms  # [(sym, (x,y,z))] Bohr
         self.basis = basis
-        self.mol = gto.M(atom=atoms, basis=basis, unit="B", cart=True, verbose=0)
+        # Mole.spin only has to satisfy PySCF's parity check (nothing here reads it); odd-electron
+        # cells (open-shell UHF, Iteration 6) need spin = nelectron % 2
+        self.mol = gto.M(
+            atom=atoms, basis=basis, unit="B", cart=True, verbose=0, spin=_parity(atoms)
+        )
         self.vol = abs(np.linalg.det(self.a))
         self.b = 2 * np.pi * np.linalg.inv(self.a).T  # rows: reciprocal vectors
         self.Z = self.mol.atom_charges().astype(float)
@@ -69,7 +73,18 @@ class Cell:
 
     def supermol(self, Ls):
         atoms = [(s, np.asarray(r) + L) for L in Ls for (s, r) in self.atoms]
-        return gto.M(atom=atoms, basis=self.basis, unit="B", cart=True, verbose=0)
+        return gto.M(
+            atom=atoms,
+            basis=self.basis,
+            unit="B",
+            cart=True,
+            verbose=0,
+            spin=_parity(atoms),
+        )
+
+
+def _parity(atoms):
+    return int(sum(gto.charge(s) for s, _ in atoms)) % 2
 
 
 # ------------------------------------------------ analytic FT of Gaussian pair densities
