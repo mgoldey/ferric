@@ -91,7 +91,7 @@
 //! | E(N) - E_unc vs NWChem 300x974 | 1.96e-7 Ha | LiH / 6-31G, 2.60 |
 //! | lambda vs NWChem 300x974 | 1.14e-6 | LiH / 6-31G, 2.60 |
 //! | anchor lambda at natural target | 4.7e-9 | LiH / def2-SVP |
-//! | Simpson residual (abs) | 4.5e-12 Ha | H2O+ / 6-31G spin |
+//! | Simpson residual (abs), def2-SVP | 2.3e-12 Ha | LiH / def2-SVP, 2.60 (this test; the binding also measured 4.5e-12 on H2O+ / 6-31G spin, which this test does not run) |
 //! | population - target | 4.7e-10 | H2O+ / def2-SVP spin |
 //!
 //! The binding's `run_dft` is closed-shell only, so for H2O+ the unconstrained
@@ -157,8 +157,8 @@ const TOL_ANCHOR_LAMBDA: f64 = 1e-7;
 // Bar 1e-9 Ha; measured |E - E_unc| at the natural target
 // <= 7e-14 (the lambda = 5e-9 residual contributes ~lambda*dN ~ 1e-17).
 const TOL_ANCHOR_E: f64 = 1e-9;
-// Bar 5e-11 Ha = 11x the measured 4.5e-12 (H2O+/6-31G spin);
-// charge targets 2e-13..3.7e-12. A 1e-7 relative error in lambda already
+// Bar 5e-11 Ha = 21x this test's measured 2.3e-12 (LiH/def2-SVP 2.60);
+// all four cases 1.6e-13..2.3e-12. A 1e-7 relative error in lambda already
 // exceeds this bar (|E_+ - E_-| ~ 4e-4 Ha for charge targets).
 const TOL_SIMPSON: f64 = 5e-11;
 // Bare central difference |dE/dN + lambda_0|, dominated by its

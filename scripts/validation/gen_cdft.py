@@ -162,6 +162,13 @@ def nwchem_input(
     return "\n".join(out)
 
 
+NWCHEM_TIMEOUT_S = 1800
+NWCHEM_FAILURE_MARKERS = (
+    "Calculation failed to converge",
+    "CDFT failed to optimize multipliers",
+)
+
+
 def run_nwchem(inp_text: str, inp_path: Path) -> str:
     inp_path.parent.mkdir(parents=True, exist_ok=True)
     inp_path.write_text(inp_text)
@@ -169,9 +176,29 @@ def run_nwchem(inp_text: str, inp_path: Path) -> str:
     work = Path(tempfile.mkdtemp(dir=SCRATCH_ROOT))
     try:
         shutil.copy(inp_path, work / "cdft.nw")
-        out = subprocess.run(
-            [NWCHEM, "cdft.nw"], cwd=work, capture_output=True, text=True
-        ).stdout
+        try:
+            proc = subprocess.run(
+                [NWCHEM, "cdft.nw"],
+                cwd=work,
+                capture_output=True,
+                text=True,
+                timeout=NWCHEM_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"{inp_path.name}: NWChem timed out after {NWCHEM_TIMEOUT_S} s"
+            ) from exc
+        out = proc.stdout
+        if proc.returncode != 0:
+            err = "\n".join(proc.stderr.splitlines()[-20:])
+            raise RuntimeError(
+                f"{inp_path.name}: NWChem exited {proc.returncode}\n{err}"
+            )
+        # dft_scf.F: SCF non-convergence and the cDFT multiplier loop hitting
+        # cdft_maxiter both print a message; neither may become a reference.
+        for bad in NWCHEM_FAILURE_MARKERS:
+            if bad in out:
+                raise RuntimeError(f"{inp_path.name}: NWChem reported {bad!r}")
     finally:
         shutil.rmtree(work, ignore_errors=True)
     return out
