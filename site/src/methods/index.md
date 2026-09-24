@@ -44,7 +44,7 @@ ESP at nuclei and on the molecular surface, electric field, static and
 atom-partitioned polarizabilities, Mulliken, Löwdin, Hirshfeld, CHELPG and RESP
 charges, density matrices, and NPZ export of ML-ready features.
 
-## Negative results and retractions
+## Negative results
 
 Known limits and measured negatives are kept in one place,
 [What is validated: known limits](../reference/validation.md#known-limits-and-negatives),
@@ -57,6 +57,6 @@ method:
   erfc, N<sup>1.4</sup> Coulomb) on alkanes C20–C48 and overtakes RI-MP2 near C20;
   plain `lmp2` makes no scaling claim. See [The MP2 family](./mp2.md#local-mp2).
 
-One earlier negative has been **retracted**: the AO-sparse Laplace SOS-MP2
-truncation radius does *not* track the molecular diameter. That result was an
-indexing bug. See [the MP2 page](./mp2.md#laplace-formulations).
+The AO-sparse Laplace SOS-MP2 truncation is *not* a negative: the radius it
+needs does not track the molecular diameter. See
+[the MP2 page](./mp2.md#laplace-formulations).

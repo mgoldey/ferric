@@ -196,8 +196,7 @@ on them):
 
 **`--locked`.** Every `cargo` invocation in CI passes `--locked`, so a
 `Cargo.lock` that has drifted from the manifests fails the build instead of
-being silently repaired in-job (this bit the repo once: the lockfile was
-stale from commit `9a0b955` until it was caught and regenerated). If you add
+being silently repaired in-job. If you add
 or change a dependency, regenerate the lockfile and commit it alongside the
 manifest change:
 

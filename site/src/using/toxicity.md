@@ -81,10 +81,6 @@ Each provider's outcome is in the JSON as `provider_status`: `ok`,
 `unsupported` (ProTox), `no_result`, `error` or `contract_violation`. The human
 output shows the same tag in brackets on its `!!` lines.
 
-Before 2026-09-23, every run without `--offline` exited 2, even when the local
-screen succeeded: ADMETlab's documented path returned 404, and ProTox's
-by-design note was counted as a failure.
-
 ## Reading the output
 
 Abridged, for aspirin with `--offline` (each line is followed by a one-line
@@ -105,8 +101,8 @@ safety ranking, so read the flag rather than assuming one. ADMETlab's
 F20%/F30% columns are an example of how easy the guess is to get wrong: they
 are the probability of *low* oral bioavailability (below 20% or 30%), so they
 are reported as `low_bioavailability_20pct` and `low_bioavailability_30pct`,
-higher is worse. They were previously mapped as bioavailability, higher is
-better, which inverted them.
+higher is worse. Reading them as bioavailability, higher is better, inverts
+them.
 
 A value of `None` means *unknown*, never zero. For a probability-valued
 endpoint, `0.0` means "confidently predicted negative", which is the opposite

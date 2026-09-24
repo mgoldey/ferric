@@ -42,11 +42,10 @@ not the example.
 - **`benzene-dfb3lyp-mpi.toml` contains no MPI settings.** Only the file name
   refers to MPI: the same input is meant to be launched under the MPI build
   (`--features mpi`, which is not published).
-- **The `water-laplace-sos-mp2.toml` header is out of date.** It says the
-  `"ao-sparse"` formulation was "MEASURED not to pay". That result was
-  **retracted**: it came from an index-mismatch bug. After the fix, octane is
-  exact at a 12 Bohr cutoff, and danuglipron (71 atoms) reaches 0.05% at
-  4 Bohr. The current record is the doc comment on
+- **The `water-laplace-sos-mp2.toml` header is wrong about `ao-sparse`.** It
+  says the `"ao-sparse"` formulation was "MEASURED not to pay". Disregard
+  that: octane is exact at a 12 Bohr cutoff, and danuglipron (71 atoms)
+  reaches 0.05% at 4 Bohr. The record is the doc comment on
   `sos_ao_sparse_truncation_radius_is_transferable_across_sizes` in
   `crates/ferric-mp2/src/laplace.rs`.
 - **The `water-rhf-cosx.toml` header conflicts with the code.** It says

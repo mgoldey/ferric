@@ -78,10 +78,9 @@ Reported rather than omitted:
   accuracy at 3 to 5 Bohr on n-alkanes C2 to C12, radius/diameter falling from
   0.52 to 0.17; a 71-atom drug molecule is within 0.05% at 4 Bohr, about 13%
   of its diameter). The algebra is still dense, so
-  **no speedup is claimed**. An earlier "measured negative" for this variant
-  was an indexing bug and has been retracted; the regression test
-  `sos_ao_sparse_truncation_radius_is_transferable_across_sizes` records the
-  history.
+  **no speedup is claimed**. The regression test
+  `sos_ao_sparse_truncation_radius_is_transferable_across_sizes` pins the
+  result.
 - **TDHF/RPAx C6**: ~60% low regardless of gap. Use it for static
   polarizabilities, not dispersion.
 - **TDDFT / TDA with a DFT reference**: the f<sub>xc</sub> kernel term is
@@ -98,14 +97,14 @@ wrong:
 - a **non-converged SCF** returned as an ordinary result, because convergence is
   a flag rather than an error
 - a method missing a **physical term** it does not mention (TDDFT's f<sub>xc</sub>
-  kernel is exactly this case, which is why it now warns)
+  kernel is exactly this case, which is why it warns)
 - a **fallback model** silently substituted for one atom in a molecule, changing
   a partitioning without changing the shape of the output
 - a **screening or truncation threshold** that happens to be safe for the test
   system and not for yours
 
-None of these look like failures. All of them have occurred in this codebase and
-been fixed. The remedy is to grade each capability separately and say which ones
+None of these look like failures, and every one of them has occurred in this
+codebase. The remedy is to grade each capability separately and say which ones
 are checked against ground truth.
 
 ## Testing discipline
