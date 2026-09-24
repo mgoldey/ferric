@@ -169,14 +169,22 @@ default `1e-4` carries a one-sided truncation error, which the output prints
 against the canonical RI reference.
 
 **Integral-direct LMP2** (`lmp2-direct`, `examples/alkane8-lmp2-direct.toml`,
-`run_lmp2_direct`) is the reduced-cost path. It never forms the global
-3-index tensor. Locality comes from an integral-free pair gate, per-occupied
+`run_lmp2_direct`) is the reduced-cost path. Its correlation assembly never
+forms the global 3-index tensor. By default a run also computes the canonical
+RI-MP2 reference for comparison, and that reference does form the global
+`(naux, nocc·nvir)` tensor; `run_lmp2_direct(..., compute_reference=False)`
+skips it (the CLI always computes it). Locality comes from an integral-free pair gate, per-occupied
 auxiliary-fit and virtual domains, and truncation of each orbital's AO
 support. With every map at its trivial setting it reproduces the global
 3-index path and canonical RI-MP2 (`tests/lmp2_direct.rs`).
 
 **What is measured for `lmp2-direct`** (n-alkanes C20 → C48, 6-31G with
-cc-pVDZ-RI, the shipped default settings, a quiet machine, 2026-09-07):
+cc-pVDZ-RI, a quiet machine, 2026-09-07; benchmark
+`bench_direct_alkane_series` in `crates/ferric-mp2/tests/lmp2_direct.rs`).
+The run froze the carbon cores (`frozen_core` = number of carbons) and
+calibrated the pair gate (0.7 Coulomb, 0.02 erfc with ω = 1.0); the library
+defaults are all-electron with no pair gate. Timings are the correlation
+stage (assembly + solve) and exclude the canonical reference:
 
 - Correlation-stage cost grows as about N<sup>1.24</sup> with the erfc
   kernel and N<sup>1.4</sup> with Coulomb, fitted to the last three sizes.

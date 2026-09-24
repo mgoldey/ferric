@@ -49,8 +49,10 @@ what comes out of that sum.
   4 Bohr on a 71-atom drug molecule). The tensor algebra is
   still dense, so **no timing gain is claimed**. This result is specific to
   that formulation and does not carry over to the other locality lanes below.
-  The test `sos_ao_sparse_truncation_radius_is_transferable_across_sizes`
-  pins it.
+  The test `sos_ao_sparse_truncation_radius_is_transferable_across_sizes` pins the
+  STO-3G butane/octane comparison (12 Bohr exact on both; octane worse at
+  3 Bohr). The C2-C12 sweep and the drug-molecule figure are measurements,
+  not regression tests.
 - **Local MP2 (amplitude threshold)** has localized virtuals and per-pair
   domain-local RI fits. The integral-direct variant (`lmp2-direct`) is
   measured at about N<sup>1.24</sup> (erfc) to N<sup>1.4</sup> (Coulomb) on

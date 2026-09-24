@@ -80,7 +80,9 @@ Reported rather than omitted:
   of its diameter). The algebra is still dense, so
   **no speedup is claimed**. The regression test
   `sos_ao_sparse_truncation_radius_is_transferable_across_sizes` pins the
-  result.
+  STO-3G butane/octane comparison (12 Bohr exact on both; octane worse at
+  3 Bohr). The C2-C12 sweep and the drug-molecule figure are measurements,
+  not regression tests.
 - **TDHF/RPAx C6**: ~60% low regardless of gap. Use it for static
   polarizabilities, not dispersion.
 - **TDDFT / TDA with a DFT reference**: the f<sub>xc</sub> kernel term is
