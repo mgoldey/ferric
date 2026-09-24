@@ -150,5 +150,5 @@ fn opt_in_run_prints_the_reference_and_its_error() {
     assert!(e_ref < 0.0, "{comps}");
     // eps = 1e-3 truncation is one-sided (under-correlation) and small
     let de = e_corr - e_ref;
-    assert!(de >= 0.0 && de < 5e-2, "de = {de:+.3e}");
+    assert!((0.0..5e-2).contains(&de), "de = {de:+.3e}");
 }
