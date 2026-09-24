@@ -91,6 +91,27 @@ fn smoke_grade_method_warns_on_stderr() {
         !stdout.contains("[warning]"),
         "epistemic warning leaked onto stdout:\n{stdout}"
     );
+    // The shipped example must also RUN. It did not: it left [gw] scissor at
+    // 0.0, which the negative-alpha-diagonal guard refuses (alpha_xx =
+    // -2.68), and this test only looked at the warning, so it stayed green on
+    // an example that exits 1. Removing `scissor = 0.36` from the example
+    // fails this assertion.
+    assert!(
+        output.status.success(),
+        "examples/water-tdhf-static-alpha.toml must run as shipped; stderr:\n{stderr}"
+    );
+    // ...and print the number its header quotes (measured 5.203810 a.u.; the
+    // DOSD reference is 9.64). A header that drifts from the run fails here.
+    let iso: f64 = stdout
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("alpha_iso (static) ="))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| panic!("no alpha_iso line in stdout:\n{stdout}"));
+    assert!(
+        (iso - 5.20).abs() < 0.01,
+        "alpha_iso = {iso}, but the example header quotes 5.20 a.u."
+    );
 }
 
 #[test]

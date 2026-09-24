@@ -96,13 +96,14 @@ const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
     (
         "tdhf-static-polarizability",
         "method.kind = \"tdhf-static-polarizability\" is Smoke-grade (see site/src/reference/validation.md): \
-         static alpha at RPAx@KS matches DOSD water closely in the one case checked, but the \
-         same dense TDHF/RPAx kernel gives C6 ~63% low regardless of gap -- do not extrapolate \
-         this method's accuracy beyond static alpha on a KS reference. Note also that at the \
-         default scissor = 0.0 this kernel is prone to a genuine excitonic instability that \
-         yields a NEGATIVE alpha diagonal; that is now ENFORCED in code (the run hard-errors \
-         instead of returning it), so if the job aborts on an unphysical alpha diagonal, set \
-         [gw] scissor to ~0.3-0.4 Ha rather than treating it as a crash.",
+         static alpha is NOT validated -- the one case checked (water/cc-pVDZ, RPAx@PBE, \
+         [gw] scissor = 0.36 Ha) gives 5.20 a.u. vs the DOSD reference 9.64, 46% low (an \
+         earlier 'matches DOSD' figure came from scissor = 0.0 and a negative alpha diagonal, \
+         and is retracted), and the same dense TDHF/RPAx kernel gives C6 ~63% low regardless \
+         of gap. At the default scissor = 0.0 this kernel is prone to a genuine excitonic \
+         instability that yields a NEGATIVE alpha diagonal; the run hard-errors instead of \
+         returning it, so if the job aborts on an unphysical alpha diagonal, set [gw] scissor \
+         to ~0.3-0.4 Ha rather than treating it as a crash.",
     ),
     (
         "rs-mp2-rpa",
@@ -548,10 +549,12 @@ pub fn run(args: Vec<String>) {
         // excluded from this branch even though it's included below.
         // "tdhf-static-polarizability" (RPAx@KS static alpha) REQUIRES a KS
         // reference -- its own dispatch arm hard-errors below if [rpa].xc is
-        // unset, since the validated static-alpha accuracy (9.24 vs DOSD
-        // 9.64 a.u. on water/PBE) is a KS-reference result; the HF-reference
-        // variant of this same kernel gives a much worse static alpha (5.24
-        // a.u. gate-2 measurement) and is deliberately not offered here.
+        // unset: the path is wired and checked for a KS reference only. The
+        // old justification ("9.24 vs DOSD 9.64 a.u. on water/PBE, HF gives a
+        // much worse 5.24") is RETRACTED: 9.24 came from scissor = 0.0, whose
+        // tensor had a negative diagonal and is now refused; at the physical
+        // scissor (0.36 Ha) water/cc-pVDZ/PBE gives 5.20 a.u., 46% below
+        // DOSD and no better than the HF-reference 5.24.
         (
             cfg.rpa.xc.clone(),
             Some(config::DEFAULT_SCF_JK_AUX.to_string()),
@@ -4250,15 +4253,15 @@ fn run_tdhf_static_polarizability(
         );
         std::process::exit(1);
     }
-    // This method's validated accuracy (static alpha ~= DOSD) is a
-    // KS-reference result; require [rpa].xc explicitly rather than
-    // silently falling back to an HF reference with a much worse
-    // static alpha (see the xc-routing block's comment above).
+    // The path is wired and checked for a KS reference only; require
+    // [rpa].xc explicitly rather than silently falling back to an HF
+    // reference (see the xc-routing block's comment above for why the old
+    // "HF is much worse" justification was retracted).
     if cfg.rpa.xc.is_none() {
         eprintln!(
             "error: method.kind = \"tdhf-static-polarizability\" requires [rpa] xc \
-                 (e.g. xc = \"PBE\") -- this method's validated accuracy is a KS-reference \
-                 result; an HF reference gives a much worse static alpha"
+                 (e.g. xc = \"PBE\") -- this path is only wired and checked for a \
+                 Kohn-Sham reference"
         );
         std::process::exit(1);
     }

@@ -1208,8 +1208,7 @@ pub struct RpaxStaticPolarizabilityResult {
 /// only**. Do **not** use this method, or extrapolate from its output, for
 /// C6/dispersion coefficients. `docs/VALIDATION.md`'s "Correlation / response
 /// (RPA, GW, BSE)" table records a validated NEGATIVE result for the dynamic
-/// extension of this exact kernel: RPAx@PBE static α matches DOSD water
-/// almost exactly (9.24 vs 9.64 a.u.), but the C6 built from α(iω) on the
+/// extension of this exact kernel: the C6 built from α(iω) on the
 /// same kernel stays ~63% low regardless of the HOMO-LUMO gap (a scissor-
 /// shift scan from the KS gap to the true GW gap ruled out "just a gap
 /// problem" — α(iω) itself falls off ~2× too fast at higher imaginary
@@ -1217,6 +1216,13 @@ pub struct RpaxStaticPolarizabilityResult {
 /// than ferric's existing production dRPA/PDEP C6 pipeline (~−12 to −16%
 /// deficit). The dynamic/C6 variant (`run_bse_c6_ks`) remains library-only
 /// and unwired from the CLI/Python surface for exactly this reason.
+///
+/// The STATIC α is not validated either. The earlier "matches DOSD water
+/// almost exactly (9.24 vs 9.64 a.u.)" figure came from `scissor = 0.0`,
+/// whose tensor had a negative diagonal element (α_xx = −2.68) and is now
+/// refused (see Errors below). At `scissor = 0.36` Ha, the shift matching
+/// water's GW gap at PBE/cc-pVDZ, the same system gives α_iso = 5.20 a.u.,
+/// 46% below DOSD (`examples/water-tdhf-static-alpha.toml`).
 ///
 /// `scissor` (Hartree) is added to every virtual orbital energy before
 /// assembling the diagonal, matching `run_bse_c6_ks`'s knob (a cheap proxy
