@@ -2004,28 +2004,20 @@ impl ScfCfg {
 // check, the resolved multiplicity) so they are unit-tested here and called
 // from `run()` before any integral is computed.
 
-/// Where open-shell Kohn-Sham DFT IS reachable, for the messages that have to
-/// say it is not reachable from the CLI. Every route named here was checked
-/// against the bindings: `run_qmmm(method="uks")` with the whole molecule as
-/// the QM region and no MM charges reproduces the gas-phase UKS energy
-/// (measured: its `method="uhf"` OH/STO-3G energy equals the CLI `uhf` one,
-/// -74.3626375456, to every printed digit).
-pub const OPEN_SHELL_KS_ROUTES: &str =
-    "open-shell Kohn-Sham (UKS/ROKS) is not available from the CLI. It is \
-     reachable from Rust (ferric_scf::uhf::solve_uhf or ferric_scf::rohf::solve_rohf \
-     with RhfConfig.xc set) and from Python (ferric.run_qmmm(system, basis, \
-     method=\"uks\", xc=...) with the whole molecule as the QM region, or \
-     ferric.run_frequencies(..., reference=\"uhf\", xc=...))";
-
 /// `method.kind`s that accept an open-shell molecule, per task. For
 /// `task = "energy"`, `pdep-rpa`/`gw`/`mp2-v` switch to a UHF(+MOM) reference
-/// themselves. Every gradient path (`optimize`, `frequencies`) other than
-/// `uhf`/`rohf` builds an RHF reference internally.
+/// themselves, and `rimp2`/`oo-rimp2` run their unrestricted variants
+/// (`u_ri_mp2`/`u_oo_ri_mp2`) on a UHF reference. `ksdft` on an open-shell
+/// molecule runs UKS (see [`Config::dispatch_kind`]). Every gradient path
+/// (`optimize`, `frequencies`) other than `uhf`/`rohf`/`ksdft` builds an RHF
+/// reference internally, and there is no unrestricted MP2 nuclear gradient.
 fn open_shell_kinds(task: &str) -> &'static [&'static str] {
     if task == "energy" {
-        &["uhf", "rohf", "pdep-rpa", "gw", "mp2-v"]
+        &[
+            "uhf", "rohf", "ksdft", "rimp2", "oo-rimp2", "pdep-rpa", "gw", "mp2-v",
+        ]
     } else {
-        &["uhf", "rohf"]
+        &["uhf", "rohf", "ksdft"]
     }
 }
 
@@ -2033,45 +2025,128 @@ fn open_shell_kinds(task: &str) -> &'static [&'static str] {
 /// list `run()` uses to turn `[rpa] xc` into the SCF functional).
 const RPA_XC_KINDS: &[&str] = &["pdep-rpa", "rpa", "gw", "tdhf-static-polarizability"];
 
-/// `method.kind`s that read `[dft] functional`: `ksdft` uses it, and the three
-/// double hybrids carry their own functional and WARN when it differs (a
-/// user naming a functional there has at least asked for DFT).
-const DFT_FUNCTIONAL_KINDS: &[&str] = &["ksdft", "wb97x-l-v", "b2plyp", "dsd-pbep86"];
+/// The SCF-only kinds. A `[dft] functional` promotes each to Kohn-Sham:
+/// `rhf` -> RKS, `uhf` -> UKS, `rohf` -> ROKS; `ksdft` is KS by definition
+/// (LDA when no functional is named). See [`Config::ks_functional`].
+const SCF_KINDS: &[&str] = &["rhf", "uhf", "rohf", "ksdft"];
+
+/// The double hybrids: they carry their own functional and WARN when `[dft]
+/// functional` differs (a user naming a functional there has at least asked
+/// for DFT).
+const DOUBLE_HYBRID_KINDS: &[&str] = &["wb97x-l-v", "b2plyp", "dsd-pbep86"];
 
 impl Config {
+    /// The Kohn-Sham functional the SCF of this run uses when it is one of
+    /// the SCF-only kinds: `ksdft` always (default LDA), and `rhf`/`uhf`/
+    /// `rohf` exactly when `[dft] functional` is set -- the functional
+    /// promotes the reference to RKS/UKS/ROKS. `None` for every other kind
+    /// (their KS reference, if any, comes from `[rpa] xc` / `[tddft] xc` or
+    /// is baked into the double hybrid).
+    pub fn ks_functional(&self) -> Option<String> {
+        match self.method.kind.as_str() {
+            "ksdft" => Some(self.dft.functional.clone().unwrap_or_else(|| "LDA".into())),
+            "rhf" | "uhf" | "rohf" => self.dft.functional.clone(),
+            _ => None,
+        }
+    }
+
+    /// `(xc, df_j_aux default, df_k_aux default)` for the run's shared
+    /// `RhfConfig`. The defaults apply only where `[scf] df_j_aux`/`df_k_aux`
+    /// are omitted.
+    ///
+    /// * Any Kohn-Sham SCF kind ([`Config::ks_functional`]): RI-J/RI-K via
+    ///   `def2-universal-jkfit` (required for hybrids and RSH; harmless for
+    ///   pure DFT). The same default for RKS, UKS and ROKS, so `uhf` +
+    ///   `[dft] functional` and `ksdft` on the same doublet are one
+    ///   calculation.
+    /// * RPA/GW/RPAx on a KS reference (`[rpa] xc`): run the KS solver for
+    ///   the reference orbitals, RI-JK as above. BSE-TDA is closed-shell
+    ///   (RHF) only and does not expose a KS-reference switch, so it is
+    ///   intentionally excluded from `RPA_XC_KINDS`. `tdhf-static-
+    ///   polarizability` REQUIRES a KS reference: its own dispatch arm
+    ///   hard-errors if `[rpa] xc` is unset (the path is wired and checked for
+    ///   a KS reference only; at the physical scissor, 0.36 Ha, water/cc-pVDZ/
+    ///   PBE gives 5.20 a.u., 46% below DOSD and no better than the
+    ///   HF-reference 5.24).
+    /// * RPA@HF / SR-MP2+LR-RPA / BSE-TDA: the HF reference SCF defaults to
+    ///   RI-JK too. Exact 4-index J/K per iteration makes the HF reference
+    ///   10-20x slower than the RI-JK PBE reference (hcl/aug-cc-pVTZ: 505 s vs
+    ///   25 s) for no benefit -- the RI-JK fitting error (~uHa) is far below
+    ///   the C6 differences studied. The SCF aux stays separate from the RPA
+    ///   correlation aux (see ferric-jk-aux-convention).
+    /// * TDA/TDDFT: `[tddft] xc` (None = HF), RI-JK.
+    /// * Everything else (plain HF, the MP2/CC family): no functional, no DF
+    ///   default.
+    pub fn scf_xc_and_aux_defaults(&self) -> (Option<String>, Option<String>, Option<String>) {
+        let kind = self.method.kind.as_str();
+        let jk = || Some(DEFAULT_SCF_JK_AUX.to_string());
+        if let Some(functional) = self.ks_functional() {
+            (Some(functional), jk(), jk())
+        } else if RPA_XC_KINDS.contains(&kind) && self.rpa.xc.is_some() {
+            (self.rpa.xc.clone(), jk(), jk())
+        } else if matches!(
+            kind,
+            "pdep-rpa" | "rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability"
+        ) {
+            (None, jk(), jk())
+        } else if matches!(kind, "tda" | "tddft") {
+            (self.tddft.xc.clone(), jk(), jk())
+        } else {
+            (None, None, None)
+        }
+    }
+
+    /// The kind `run()` DISPATCHES on once the molecule is known. It differs
+    /// from `method.kind` by two promotions, both of which keep the answer
+    /// the config asked for:
+    ///
+    /// * `ksdft` on an open-shell molecule -> `"uhf"`: the UKS route
+    ///   (`solve_uhf` with `RhfConfig::xc` set, and `ks_gradient_uks` for
+    ///   optimize/frequencies). For ROKS use `kind = "rohf"` with `[dft]
+    ///   functional`.
+    /// * `rhf` with `[dft] functional` -> `"ksdft"`: RKS, identical to
+    ///   `ksdft` with the same functional.
+    ///
+    /// `uhf`/`rohf` with a functional keep their names: the functional in
+    /// `RhfConfig::xc` (from [`Config::scf_xc_and_aux_defaults`]) is what
+    /// makes their SCF and gradient UKS/ROKS.
+    pub fn dispatch_kind(&self, multiplicity: usize) -> &str {
+        match self.method.kind.as_str() {
+            "ksdft" if multiplicity > 1 => "uhf",
+            "rhf" if self.dft.functional.is_some() => "ksdft",
+            kind => kind,
+        }
+    }
+
     /// Does this run build a Kohn-Sham integration grid at all? `[dft]
     /// grid_prune` only means something when it does.
     fn runs_a_ks_grid(&self) -> bool {
         let kind = self.method.kind.as_str();
-        DFT_FUNCTIONAL_KINDS.contains(&kind)
+        self.ks_functional().is_some()
+            || DOUBLE_HYBRID_KINDS.contains(&kind)
             || (RPA_XC_KINDS.contains(&kind) && self.rpa.xc.is_some())
             || (matches!(kind, "tda" | "tddft") && self.tddft.xc.is_some())
     }
 
     /// Refuse a `[dft]` key that the selected `method.kind` never reads.
     ///
-    /// The case that motivated it: `kind = "uhf"` with `[dft] functional =
-    /// "PBE"` on the OH radical printed the UHF energy (-74.3626375456 at
-    /// STO-3G, identical with and without the key) under a config that asks
-    /// for UKS/PBE. `rhf` did the same with a closed-shell molecule. A plain
-    /// HF number in the output looks exactly like a DFT one.
+    /// The case that motivated it: a `[dft] functional` on a kind that runs no
+    /// functional (a correlated method on an HF reference, or an RPA/TDDFT
+    /// kind whose functional comes from its own section) would print a
+    /// result without that functional under a config that asks for it. A
+    /// plain HF number in the output looks exactly like a DFT one.
     ///
-    /// Routing `uhf` + functional to UKS instead was considered and rejected:
-    /// the CLI has no UKS path today (`ksdft` is `solve_rhf` with `xc` set),
-    /// so routing would add a new, unvalidated CLI method (its own print
-    /// block, RI-JK default, D3/grid guards and gradients) under a kind whose
-    /// name says Hartree-Fock. The library already supports UKS; the message
-    /// names where.
+    /// On the SCF-only kinds the functional is READ: `rhf`/`uhf`/`rohf` +
+    /// `[dft] functional` run RKS/UKS/ROKS (see [`Config::ks_functional`]).
     ///
     /// `[dft] dispersion` is not handled here: `run()` already refuses it for
-    /// any kind but `ksdft`, with its own message, before this runs.
+    /// any run without a Kohn-Sham SCF, with its own message, before this
+    /// runs.
     pub fn validate_dft_section(&self) -> Result<(), String> {
         let kind = self.method.kind.as_str();
         if let Some(f) = self.dft.functional.as_deref() {
-            if !DFT_FUNCTIONAL_KINDS.contains(&kind) {
+            if !SCF_KINDS.contains(&kind) && !DOUBLE_HYBRID_KINDS.contains(&kind) {
                 let hint = match kind {
-                    "rhf" => "for closed-shell Kohn-Sham DFT use kind = \"ksdft\"".to_string(),
-                    "uhf" | "rohf" => OPEN_SHELL_KS_ROUTES.to_string(),
                     k if RPA_XC_KINDS.contains(&k) => {
                         "this method's Kohn-Sham reference is selected by [rpa] xc".to_string()
                     }
@@ -2116,10 +2191,10 @@ impl Config {
     ///
     /// Two failure modes, one cause (`solve_rhf` never read the multiplicity):
     ///
-    /// * an ODD electron count, e.g. `ksdft` on the OH doublet, died in the
-    ///   SCF with `ScfConvergence { iterations: 0, last_energy: 0.0 }`, which
-    ///   reads as a convergence problem rather than "this method is
-    ///   closed-shell";
+    /// * an ODD electron count (measured: `ksdft` on the OH doublet, before
+    ///   that kind was routed to UKS) died in the SCF with
+    ///   `ScfConvergence { iterations: 0, last_energy: 0.0 }`, which reads as
+    ///   a convergence problem rather than "this method is closed-shell";
     /// * an EVEN count with multiplicity > 1 SUCCEEDED as the singlet: water
     ///   with multiplicity = 3 under `rimp2` returned the singlet's RI-MP2
     ///   energy, to every digit.
@@ -2134,20 +2209,17 @@ impl Config {
             return Ok(());
         }
         let hint = match kind {
-            "ksdft" => OPEN_SHELL_KS_ROUTES.to_string(),
-            "rhf" => "use kind = \"uhf\" or \"rohf\" for an open-shell Hartree-Fock reference"
+            "rhf" => "use kind = \"uhf\" or \"rohf\" for an open-shell Hartree-Fock reference \
+                      (with [dft] functional for UKS/ROKS)"
                 .to_string(),
             "pdep-rpa" | "gw" | "mp2-v" => format!(
                 "kind = \"{kind}\" accepts an open-shell molecule for task = \"energy\" only; \
                  its task = \"{task}\" path builds an RHF reference"
             ),
-            "rimp2" => {
-                "open-shell RI-MP2 is library-only (ferric_mp2::u_rimp2::u_ri_mp2)".to_string()
-            }
-            "oo-rimp2" => {
-                "open-shell OO-RI-MP2 is library-only (ferric_mp2::u_oo_rimp2::u_oo_ri_mp2)"
-                    .to_string()
-            }
+            "rimp2" | "oo-rimp2" => format!(
+                "kind = \"{kind}\" accepts an open-shell molecule (on a UHF reference) for \
+                 task = \"energy\" only; there is no unrestricted MP2 nuclear gradient"
+            ),
             "linlccd" => "open-shell LinLCCD(hh) is library-only (ferric_cc::linlccd_u::u_linlccd)"
                 .to_string(),
             "wb97x-l-v" => "open-shell wB97X-L-V is library-only \
@@ -2216,19 +2288,31 @@ impl Config {
     }
 }
 
-/// One line saying which Coulomb/exchange path an RHF/RKS run uses.
+/// A resolved `df_j_aux`/`df_k_aux` value, or RI-JK via
+/// [`DEFAULT_SCF_JK_AUX`] when the key was omitted (`None`). `Some("")` (the
+/// explicit no-fit sentinel) and a named aux are kept as they are.
+pub fn jk_aux_or_default(aux: &Option<String>) -> Option<String> {
+    Some(
+        aux.clone()
+            .unwrap_or_else(|| DEFAULT_SCF_JK_AUX.to_string()),
+    )
+}
+
+/// One line saying which Coulomb/exchange path an SCF (RHF/RKS, UHF/UKS,
+/// ROHF/ROKS, or a double hybrid's KS reference) uses.
 ///
 /// `None` and `Some("")` both mean conventional four-centre integrals here:
 /// `""` is the explicit "do not density-fit" sentinel, and `None` only
-/// reaches this from `kind = "rhf"` (a `ksdft` run always carries an aux
-/// basis, from `[scf]` or the RI-JK default), where plain HF does not
+/// reaches this from plain HF (`rhf`/`uhf`/`rohf` without a functional;
+/// every Kohn-Sham run carries an aux basis, from `[scf]` or the RI-JK
+/// default), where neither `solve_rhf` nor the open-shell solvers
 /// auto-select one. The all-RI and all-exact lines are kept verbatim from
 /// before the per-side split, so existing logs read the same.
 ///
 /// `exchange_used = false` (a pure functional, whose exchange-mixing
 /// coefficients are all zero) reports that no K is built at all, whatever
-/// `df_k_aux` says: `solve_rhf` skips both the DF-K fitter and the K build
-/// in that case.
+/// `df_k_aux` says: every SCF solver skips both the DF-K fitter and the K
+/// build in that case.
 ///
 /// Before this, the log matched only on `Some(aux)` and printed
 /// `SCF J/K: RI-JK via ` (empty name) for `df_j_aux = ""`, i.e. for exactly
@@ -2275,23 +2359,19 @@ mod compat_guard_tests {
         toml::from_str::<Config>(&src).expect("test config must parse")
     }
 
-    /// Pre-fix, every one of these ran and reported a result WITHOUT the key:
-    /// `uhf` + PBE printed the UHF energy (-74.3626375456, OH/STO-3G, same
-    /// with and without the key). If `validate_dft_section` is reverted to
-    /// `Ok(())`, every `expect_err` below panics.
+    /// Pre-fix, every one of these ran and reported a result WITHOUT the key
+    /// (e.g. `rimp2` + PBE printed the RHF-based RI-MP2 energy). If
+    /// `validate_dft_section` is reverted to `Ok(())`, every `expect_err`
+    /// below panics; if `SCF_KINDS` grew to include a correlated kind, that
+    /// kind's `expect_err` panics.
     #[test]
     fn dft_keys_a_kind_never_reads_are_refused() {
-        for kind in ["rhf", "uhf", "rohf", "rimp2", "pdep-rpa", "tddft", "ccsd"] {
+        for kind in ["rimp2", "pdep-rpa", "tddft", "ccsd", "mp3"] {
             let e = cfg(kind, "energy", "[dft]\nfunctional = \"PBE\"\n")
                 .validate_dft_section()
                 .expect_err(kind);
             assert!(e.contains("[dft] functional") && e.contains(kind), "{e}");
         }
-        // uhf/rohf must name where open-shell KS actually lives.
-        let e = cfg("uhf", "energy", "[dft]\nfunctional = \"PBE\"\n")
-            .validate_dft_section()
-            .unwrap_err();
-        assert!(e.contains("solve_uhf") && e.contains("run_qmmm"), "{e}");
         // pdep-rpa must point at the key it DOES read.
         let e = cfg("pdep-rpa", "energy", "[dft]\nfunctional = \"PBE\"\n")
             .validate_dft_section()
@@ -2334,6 +2414,14 @@ mod compat_guard_tests {
             // "none" asks for no pruning, so it is harmless on any kind.
             ("rhf", "[dft]\ngrid_prune = \"none\"\n"),
             ("uhf", ""),
+            // A functional promotes the SCF-only kinds to RKS/UKS/ROKS, and
+            // then their grid is real, so pruning it is meaningful.
+            ("rhf", "[dft]\nfunctional = \"PBE\"\n"),
+            (
+                "uhf",
+                "[dft]\nfunctional = \"PBE\"\ngrid_prune = \"nwchem\"\n",
+            ),
+            ("rohf", "[dft]\nfunctional = \"B3LYP\"\n"),
         ];
         for (kind, extra) in ok {
             assert_eq!(
@@ -2344,19 +2432,69 @@ mod compat_guard_tests {
         }
     }
 
-    /// Before the guard, `ksdft` on a doublet failed inside the SCF as
-    /// `ScfConvergence { iterations: 0 }` and `rimp2` on triplet water
-    /// returned the singlet. If `validate_multiplicity` is reverted to
-    /// `Ok(())`, every `is_err()` below fails.
+    /// The functional-promotion table `run()` relies on. `ks_functional`
+    /// decides whether the SCF gets an `xc` (reverting the `"rhf" | "uhf" |
+    /// "rohf"` arm makes `uhf` + PBE plain UHF again and fails the second
+    /// assertion); `dispatch_kind` decides which solver runs (reverting its
+    /// `ksdft if multiplicity > 1` arm sends a doublet to `solve_rhf`, which
+    /// refuses it, and fails the `"uhf"` assertion).
+    #[test]
+    fn a_functional_promotes_the_scf_kinds_to_kohn_sham() {
+        let pbe = "[dft]\nfunctional = \"PBE\"\n";
+        assert_eq!(
+            cfg("ksdft", "energy", "").ks_functional().as_deref(),
+            Some("LDA")
+        );
+        assert_eq!(
+            cfg("uhf", "energy", pbe).ks_functional().as_deref(),
+            Some("PBE")
+        );
+        assert_eq!(
+            cfg("rohf", "energy", pbe).ks_functional().as_deref(),
+            Some("PBE")
+        );
+        assert_eq!(
+            cfg("rhf", "energy", pbe).ks_functional().as_deref(),
+            Some("PBE")
+        );
+        // Anchors: plain HF stays HF, and a correlated kind never gets one.
+        assert_eq!(cfg("uhf", "energy", "").ks_functional(), None);
+        assert_eq!(cfg("rimp2", "energy", "").ks_functional(), None);
+
+        assert_eq!(cfg("ksdft", "energy", pbe).dispatch_kind(2), "uhf");
+        assert_eq!(cfg("ksdft", "energy", pbe).dispatch_kind(1), "ksdft");
+        assert_eq!(cfg("rhf", "energy", pbe).dispatch_kind(1), "ksdft");
+        assert_eq!(cfg("rhf", "energy", "").dispatch_kind(1), "rhf");
+        assert_eq!(cfg("rohf", "energy", pbe).dispatch_kind(2), "rohf");
+        assert_eq!(cfg("rimp2", "energy", "").dispatch_kind(3), "rimp2");
+
+        // Every KS SCF kind gets the same RI-JK default, so `uhf` + PBE and
+        // `ksdft` + PBE on the same doublet are the same calculation.
+        let jk = Some(DEFAULT_SCF_JK_AUX.to_string());
+        assert_eq!(
+            cfg("uhf", "energy", pbe).scf_xc_and_aux_defaults(),
+            (Some("PBE".to_string()), jk.clone(), jk.clone())
+        );
+        assert_eq!(
+            cfg("ksdft", "energy", pbe).scf_xc_and_aux_defaults(),
+            cfg("uhf", "energy", pbe).scf_xc_and_aux_defaults()
+        );
+        assert_eq!(
+            cfg("uhf", "energy", "").scf_xc_and_aux_defaults(),
+            (None, None, None)
+        );
+    }
+
+    /// Before the guard, `rimp2` on triplet water returned the singlet, and
+    /// the closed-shell-only kinds below still have no open-shell route. If
+    /// `validate_multiplicity` is reverted to `Ok(())`, every `is_err()`
+    /// below fails.
     #[test]
     fn closed_shell_kinds_refuse_an_open_shell_molecule() {
         for kind in [
             "rhf",
-            "ksdft",
-            "rimp2",
             "mp3",
             "scs-mp2",
-            "oo-rimp2",
             "ccsd",
             "linlccd",
             "laplace-sos-mp2",
@@ -2370,19 +2508,23 @@ mod compat_guard_tests {
                 .expect_err(kind);
             assert!(e.contains("multiplicity = 3"), "{kind}: {e}");
         }
-        // The ksdft message must point at where open-shell KS DOES exist.
-        let e = cfg("ksdft", "energy", "")
-            .validate_multiplicity(2)
-            .unwrap_err();
-        assert!(
-            e.contains("open-shell Kohn-Sham") && e.contains("solve_uhf"),
-            "{e}"
-        );
+        // Open-shell RI-MP2 has no nuclear gradient: its energy route must not
+        // leak into optimize/frequencies, and the message must say why.
+        for kind in ["rimp2", "oo-rimp2"] {
+            for task in ["optimize", "frequencies"] {
+                let e = cfg(kind, task, "")
+                    .validate_multiplicity(3)
+                    .expect_err(kind);
+                assert!(e.contains("task = \"energy\" only"), "{kind}/{task}: {e}");
+            }
+        }
     }
 
     /// Reachability: a guard that refused everything would pass the test
     /// above. Singlets always pass; the open-shell-capable kinds pass for the
-    /// tasks they support, and ONLY those.
+    /// tasks they support, and ONLY those. Removing `ksdft`/`rimp2`/
+    /// `oo-rimp2` from `open_shell_kinds` (i.e. restoring the refusal) fails
+    /// the second and third loops.
     #[test]
     fn open_shell_capable_kinds_and_all_singlets_pass() {
         for kind in ["rhf", "ksdft", "rimp2", "ccsd"] {
@@ -2391,17 +2533,21 @@ mod compat_guard_tests {
                 "{kind}"
             );
         }
-        for kind in ["uhf", "rohf", "pdep-rpa", "gw", "mp2-v"] {
+        for kind in [
+            "uhf", "rohf", "ksdft", "rimp2", "oo-rimp2", "pdep-rpa", "gw", "mp2-v",
+        ] {
             assert!(
                 cfg(kind, "energy", "").validate_multiplicity(2).is_ok(),
                 "{kind}"
             );
         }
-        for kind in ["uhf", "rohf"] {
-            assert!(
-                cfg(kind, "optimize", "").validate_multiplicity(3).is_ok(),
-                "{kind}"
-            );
+        for kind in ["uhf", "rohf", "ksdft"] {
+            for task in ["optimize", "frequencies"] {
+                assert!(
+                    cfg(kind, task, "").validate_multiplicity(3).is_ok(),
+                    "{kind}/{task}"
+                );
+            }
         }
         // pdep-rpa's OPTIMIZER builds an RHF reference, so the energy-task
         // exemption must not leak into the gradient task.

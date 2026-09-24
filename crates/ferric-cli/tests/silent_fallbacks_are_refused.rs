@@ -1,11 +1,16 @@
 //! Configs the CLI used to ACCEPT and then quietly answer a different
-//! question for must now fail, with a message that says why.
+//! question for must now either fail, with a message that says why, or --
+//! where ferric has a validated route -- answer the question actually asked.
 //!
-//! Each case was reproduced against the pre-fix release binary before it was
-//! guarded (the measured output is quoted in each test). The pure config
-//! logic is unit-tested in `config.rs` (`compat_guard_tests`); these tests pin
-//! that `run()` actually calls it, and that the configurations the guards
-//! must NOT touch still run.
+//! Each refusal was reproduced against the pre-fix release binary before it
+//! was guarded (the measured output is quoted in each test). Three former
+//! refusals are now ROUTES, and their tests check the NUMBER, not just the
+//! exit status: open-shell `ksdft` and `uhf`/`rohf` + `[dft] functional` run
+//! UKS/ROKS, open-shell `rimp2`/`oo-rimp2` run their unrestricted variants
+//! on a UHF reference, and the MP2 double hybrids honour `[scf] df_j_aux`.
+//! The pure config logic is unit-tested in `config.rs` (`compat_guard_tests`);
+//! these tests pin that `run()` actually calls it, and that the
+//! configurations the guards must NOT touch still run.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -93,48 +98,404 @@ fn assert_runs(out: &std::process::Output, what: &str) {
     );
 }
 
-// ─── Open-shell molecule on a closed-shell-only kind (items 2 + 3) ─────────
-
-/// Pre-fix: `error: SCF ladder failed: ScfConvergence { iterations: 0,
-/// last_energy: 0.0 }` -- a convergence complaint for what is really
-/// "kind = ksdft is closed-shell". Reverting the `validate_multiplicity` call
-/// in `run()` brings that message back (the library backstop then reports
-/// the multiplicity but not the Python/Rust UKS routes), failing the
-/// "open-shell Kohn-Sham" check.
-#[test]
-fn ksdft_on_a_doublet_says_open_shell_ks_is_unavailable() {
-    let out = run_toml(
-        "ksdft_oh",
-        &body(
-            "oh.xyz",
-            2,
-            "ksdft",
-            "energy",
-            "[dft]\nfunctional = \"PBE\"\n",
-        ),
-    );
-    let err = assert_refused(&out, &["multiplicity = 2", "open-shell Kohn-Sham"]);
-    assert!(!err.contains("ScfConvergence"), "{err}");
+/// OH at the geometry of the PySCF references used below (O at the origin,
+/// H at z = 0.97 Angstrom), written under `target/` and returned as a
+/// workspace-relative path for `[molecule] xyz`. One file per test (`tag`):
+/// the tests run in parallel, and a shared file rewritten by one test while
+/// another's CLI reads it would be a race.
+fn oh_097_xyz(tag: &str) -> String {
+    let rel = format!("target/silent_fallback_oh_097_{tag}.xyz");
+    std::fs::write(
+        workspace_root().join(&rel),
+        "2\nOH at 0.97 Angstrom\nO 0.0 0.0 0.0\nH 0.0 0.0 0.97\n",
+    )
+    .expect("write OH xyz");
+    rel
 }
 
-/// Pre-fix: triplet water under `rimp2` printed `Total = -74.9987495795`,
-/// the singlet's RI-MP2 energy, and exited 0. Reverting the CLI guard alone
-/// leaves the library backstop's message ("multiplicity 3", no " = "), which
-/// fails the first needle; reverting it AND `solve_rhf`'s
-/// `require_closed_shell` makes the run succeed again.
+/// `[molecule]` from an explicit xyz path + `[basis]` + `[method]`, then
+/// `extra` verbatim.
+fn body_at(
+    xyz_path: &str,
+    multiplicity: usize,
+    basis: &str,
+    kind: &str,
+    task: &str,
+    extra: &str,
+) -> String {
+    format!(
+        "[molecule]\nxyz = \"{xyz_path}\"\nmultiplicity = {multiplicity}\n\n\
+         [basis]\nname = \"{basis}\"\n\n\
+         [method]\nkind = \"{kind}\"\ntask = \"{task}\"\n\n{extra}"
+    )
+}
+
+/// The number on the first stdout line whose trimmed text starts with
+/// `label` (e.g. `"energy "`), read as the first token after its `=`.
+fn stdout_value(out: &std::process::Output, label: &str) -> f64 {
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout
+        .lines()
+        .map(str::trim)
+        .find(|l| l.starts_with(label))
+        .and_then(|l| l.split_once('=').map(|(_, rest)| rest))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| {
+            panic!(
+                "no {label:?} line in stdout:\n{stdout}\nstderr:\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+        })
+}
+
+fn run_ok(tag: &str, body: &str) -> std::process::Output {
+    let out = run_toml(tag, body);
+    assert_runs(&out, tag);
+    out
+}
+
+/// Tight SCF thresholds shared by every energy-comparison run below, so the
+/// comparisons measure the method, not the SCF stopping point.
+const TIGHT_SCF: &str = "[scf]\ndensity_conv = 1e-8\nenergy_conv = 1e-10\nmax_iter = 200\n";
+
+/// PySCF UKS/PBE/STO-3G gas-phase energy of OH at 0.97 Angstrom
+/// (testdata/reference/oh_sto-3g_uqmmm_dft_pbe.json, `e_gas_phase`), the
+/// number `ferric-scf/tests/qmmm_dft_vs_pyscf.rs` holds `solve_uhf` to within
+/// 2e-5 under the same RI-JK aux (def2-universal-jkfit) the CLI defaults to.
+const PYSCF_OH_UKS_PBE_STO3G: f64 = -74.57265754425002;
+
+fn read_reference(name: &str) -> serde_json::Value {
+    let path = workspace_root().join("testdata/reference").join(name);
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{path:?}: {e}"))
+}
+
+// ─── Open-shell Kohn-Sham: ksdft / uhf / rohf + functional ──────────────────
+
+/// Pre-#159: `error: SCF ladder failed: ScfConvergence { iterations: 0,
+/// last_energy: 0.0 }`; #159 turned that into a refusal; now it runs UKS.
+/// The number is held to PySCF's UKS/PBE energy at 2e-5 (the bar
+/// `qmmm_dft_vs_pyscf.rs` uses for the same system). Mutations caught: a
+/// restored refusal (no success), dropping the functional (UHF, ~0.2 Ha
+/// away), or an RKS-style solve (an odd electron count cannot converge
+/// there).
 #[test]
-fn rimp2_on_triplet_water_is_refused_not_answered_as_the_singlet() {
-    let out = run_toml(
-        "rimp2_triplet",
-        &body(
-            "water.xyz",
-            3,
-            "rimp2",
+fn ksdft_on_a_doublet_runs_uks_and_matches_pyscf() {
+    let xyz = oh_097_xyz("ksdft_on_a_doublet_runs_uks_and_matches_pyscf");
+    let out = run_ok(
+        "ksdft_oh_uks",
+        &body_at(
+            &xyz,
+            2,
+            "sto-3g",
+            "ksdft",
             "energy",
-            "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n",
+            &format!("[dft]\nfunctional = \"PBE\"\n\n{TIGHT_SCF}"),
         ),
     );
-    assert_refused(&out, &["multiplicity = 3", "closed-shell"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("UKS[PBE]/sto-3g"), "{stdout}");
+    let e = stdout_value(&out, "energy ");
+    assert!(
+        (e - PYSCF_OH_UKS_PBE_STO3G).abs() < 2e-5,
+        "CLI UKS/PBE {e:.10} vs PySCF {PYSCF_OH_UKS_PBE_STO3G:.10}"
+    );
+    // The J/K line names the fitted Coulomb and says a pure GGA builds no K.
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("[ferric] SCF J/K: RI-J via def2-universal-jkfit; no K (pure functional)"),
+        "{err}"
+    );
+}
+
+/// Pre-#159: `kind = "uhf"` + `[dft] functional = "PBE"` on OH printed
+/// `energy = -74.3626375456`, the UHF energy (identical to the run without
+/// the key); #159 refused it; now the functional promotes the reference.
+///
+/// * uhf + PBE must EQUAL the ksdft doublet run (one calculation, two
+///   spellings: same UKS solver, same RI-JK default) and differ from plain
+///   UHF by the correlation-exchange difference (> 0.1 Ha here). Reverting
+///   `Config::ks_functional`'s `"uhf"` arm makes uhf + PBE the UHF number and
+///   fails both.
+/// * rohf + PBE is ROKS: a spin-CONSTRAINED minimization of the same
+///   functional, so it lies at or above UKS, within a few mEh, and far from
+///   ROHF.
+/// * rhf + PBE on (closed-shell) water is RKS, equal to `ksdft`.
+#[test]
+fn uhf_rohf_and_rhf_with_a_functional_run_kohn_sham() {
+    let xyz = oh_097_xyz("uhf_rohf_and_rhf_with_a_functional_run_kohn_sham");
+    let pbe = format!("[dft]\nfunctional = \"PBE\"\n\n{TIGHT_SCF}");
+    let energy = |tag: &str, kind: &str, extra: &str| {
+        stdout_value(
+            &run_ok(tag, &body_at(&xyz, 2, "sto-3g", kind, "energy", extra)),
+            "energy ",
+        )
+    };
+    let e_ksdft = energy("oh_ksdft_pbe", "ksdft", &pbe);
+    let e_uks = energy("oh_uhf_pbe", "uhf", &pbe);
+    let e_uhf = energy("oh_uhf_plain", "uhf", TIGHT_SCF);
+    let e_roks = energy("oh_rohf_pbe", "rohf", &pbe);
+    let e_rohf = energy("oh_rohf_plain", "rohf", TIGHT_SCF);
+    assert!(
+        (e_uks - e_ksdft).abs() < 1e-8,
+        "uhf + PBE {e_uks:.10} must be the ksdft UKS {e_ksdft:.10}"
+    );
+    assert!(
+        (e_uks - e_uhf).abs() > 0.1,
+        "uhf + PBE {e_uks:.10} is (still) the UHF energy {e_uhf:.10}"
+    );
+    // The ROKS - UKS gap, which cancels the grid/fitting offset between codes:
+    // PySCF (ROKS vs UKS, PBE/STO-3G, grids.level 5) gives 3.2080e-4 Ha;
+    // ferric measured 3.1933e-4. A ROKS run that fell back to UKS gives 0,
+    // one that dropped the functional gives ~0.2 Ha.
+    const PYSCF_ROKS_MINUS_UKS: f64 = 3.2080e-4;
+    assert!(
+        (e_roks - e_uks - PYSCF_ROKS_MINUS_UKS).abs() < 2e-5,
+        "ROKS {e_roks:.10} - UKS {e_uks:.10} = {:.4e}; PySCF gives {PYSCF_ROKS_MINUS_UKS:.4e}",
+        e_roks - e_uks
+    );
+    assert!(
+        (e_roks - e_rohf).abs() > 0.1,
+        "rohf + PBE {e_roks:.10} is (still) the ROHF energy {e_rohf:.10}"
+    );
+    let roks = run_ok(
+        "oh_rohf_pbe_label",
+        &body_at(&xyz, 2, "sto-3g", "rohf", "energy", &pbe),
+    );
+    assert!(String::from_utf8_lossy(&roks.stdout).contains("ROKS[PBE]/sto-3g"));
+
+    let water = "testdata/molecules/water.xyz";
+    let rks = run_ok(
+        "water_rhf_pbe",
+        &body_at(water, 1, "sto-3g", "rhf", "energy", &pbe),
+    );
+    assert!(String::from_utf8_lossy(&rks.stdout).contains("KS-DFT[PBE]/sto-3g"));
+    let e_rks = stdout_value(&rks, "energy ");
+    let e_ksdft_water = stdout_value(
+        &run_ok(
+            "water_ksdft_pbe",
+            &body_at(water, 1, "sto-3g", "ksdft", "energy", &pbe),
+        ),
+        "energy ",
+    );
+    assert!(
+        (e_rks - e_ksdft_water).abs() < 1e-9,
+        "rhf + PBE {e_rks:.10} vs ksdft {e_ksdft_water:.10}"
+    );
+}
+
+/// `task = "optimize"` on the UKS route uses `optimize_geometry_uhf` with
+/// `xc` set, i.e. `ks_gradient_uks` (FD- and PySCF-validated in ferric-scf).
+/// What this pins is the CLI threading: the run must converge, say UKS, and
+/// end at the UKS/PBE minimum. The bar is the RELAXATION energy from the
+/// 0.97 Å start, measured with PySCF (UKS PBE/STO-3G, grids.level 5, 1-D
+/// bond scan): E(0.97) = -74.5722496885, E_min = -74.5798253258 at r = 1.0608 Å,
+/// so ΔE = 7.5756 mEh. The difference cancels the grid offset between the two
+/// codes (~4e-4 Ha in absolute energy). Dropping the functional would give UHF's
+/// surface, whose relaxation differs, and an unconverged or wrong-gradient walk
+/// would stop short of the minimum.
+#[test]
+fn ksdft_optimize_on_a_doublet_runs_on_the_uks_surface() {
+    let xyz = oh_097_xyz("ksdft_optimize_on_a_doublet_runs_on_the_uks_surface");
+    let pbe = format!("[dft]\nfunctional = \"PBE\"\n\n{TIGHT_SCF}");
+    let e_start = stdout_value(
+        &run_ok(
+            "oh_uks_sp",
+            &body_at(&xyz, 2, "sto-3g", "ksdft", "energy", &pbe),
+        ),
+        "energy ",
+    );
+    let out = run_ok(
+        "oh_uks_opt",
+        &body_at(&xyz, 2, "sto-3g", "ksdft", "optimize", &pbe),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("UKS[PBE] Optimization Result"), "{stdout}");
+    assert!(stdout.contains("converged  = true"), "{stdout}");
+    let e_opt = stdout_value(&out, "final E");
+    const PYSCF_RELAXATION: f64 = 7.5756e-3;
+    let relax = e_start - e_opt;
+    assert!(
+        (relax - PYSCF_RELAXATION).abs() < 1e-4,
+        "relaxation {relax:.6e} (optimized {e_opt:.10} vs start {e_start:.10}); \
+         PySCF UKS/PBE gives {PYSCF_RELAXATION:.4e}"
+    );
+}
+
+/// D3(BJ) on the UKS route: the single point applies it (E = E(KS) +
+/// E(D3BJ)), and the geometry optimization -- whose open-shell optimizer
+/// has no correction hook -- is refused rather than walking the
+/// uncorrected surface. Removing `refuse_open_shell_dispersion_gradient`
+/// lets the optimize run succeed and fails the refusal.
+#[test]
+fn open_shell_ks_applies_d3_to_energies_and_refuses_it_on_optimize() {
+    let xyz = oh_097_xyz("open_shell_ks_applies_d3_to_energies_and_refuses_it_on_optimize");
+    let d3 = "[dft]\nfunctional = \"PBE\"\ndispersion = \"d3bj(pbe)\"\n";
+    let out = run_ok(
+        "oh_uks_d3",
+        &body_at(&xyz, 2, "sto-3g", "ksdft", "energy", d3),
+    );
+    let e_ks = stdout_value(&out, "E(KS-DFT)");
+    let e_d3 = stdout_value(&out, "E(D3BJ)");
+    let e = stdout_value(&out, "energy ");
+    assert!(
+        e_d3 != 0.0 && (e - (e_ks + e_d3)).abs() < 1e-9,
+        "{e} {e_ks} {e_d3}"
+    );
+    let opt = run_toml(
+        "oh_uks_d3_opt",
+        &body_at(&xyz, 2, "sto-3g", "ksdft", "optimize", d3),
+    );
+    assert_refused(&opt, &["[dft] dispersion", "UKS[PBE]", "optimize"]);
+}
+
+// ─── Open-shell RI-MP2 ──────────────────────────────────────────────────────
+
+/// Pre-#159: triplet water under `rimp2` printed `Total = -74.9987495795`,
+/// the singlet's RI-MP2 energy, and exited 0; #159 refused it. Now it is
+/// UHF + unrestricted RI-MP2 (UMP2):
+///
+/// * OH/cc-pVDZ vs the PySCF harness (testdata/reference/
+///   oh_cc-pvdz_u-oomp2-fd.json: `e_hf`, `e_corr` with the same cc-pvdz-ri
+///   aux). A ROHF reference fed to the same kernel is ~6e-3 Ha off here, so
+///   the 1e-4 bar pins the reference as well as the method.
+/// * triplet water: the reference printed IS the `kind = "uhf"` energy, and
+///   the total is NOT the singlet number #159 measured.
+///
+/// Mutations caught: restoring the refusal (no success), feeding the
+/// closed-shell kernel (the singlet total), a ROHF or MOM reference (the
+/// e_hf / e_corr bars).
+#[test]
+fn rimp2_on_an_open_shell_molecule_runs_ump2_on_a_uhf_reference() {
+    let r = read_reference("oh_cc-pvdz_u-oomp2-fd.json");
+    let e_hf = r["e_hf"].as_f64().expect("e_hf");
+    let e_corr = r["e_corr"].as_f64().expect("e_corr");
+    let xyz = oh_097_xyz("rimp2_on_an_open_shell_molecule_runs_ump2_on_a_uhf_reference");
+    let out = run_ok(
+        "oh_ump2",
+        &body_at(
+            &xyz,
+            2,
+            "cc-pvdz",
+            "rimp2",
+            "energy",
+            &format!("[mp2]\nauxbasis = \"cc-pvdz-ri\"\n\n{TIGHT_SCF}"),
+        ),
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("U-RI-MP2/cc-pvdz"));
+    let uhf = stdout_value(&out, "UHF energy");
+    let corr = stdout_value(&out, "MP2 corr");
+    let total = stdout_value(&out, "Total");
+    assert!(
+        (uhf - e_hf).abs() < 1e-6,
+        "UHF {uhf:.10} vs PySCF {e_hf:.10}"
+    );
+    assert!(
+        (corr - e_corr).abs() < 1e-4,
+        "UMP2 corr {corr:.10} vs PySCF {e_corr:.10}"
+    );
+    assert!((total - (uhf + corr)).abs() < 1e-9);
+
+    let water = "testdata/molecules/water.xyz";
+    let mp2 = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
+    let trip = run_ok(
+        "rimp2_triplet",
+        &body_at(water, 3, "sto-3g", "rimp2", "energy", mp2),
+    );
+    let e_uhf = stdout_value(
+        &run_ok(
+            "uhf_triplet",
+            &body_at(water, 3, "sto-3g", "uhf", "energy", ""),
+        ),
+        "energy ",
+    );
+    assert!(
+        (stdout_value(&trip, "UHF energy") - e_uhf).abs() < 1e-9,
+        "the open-shell rimp2 reference must be the uhf run's energy {e_uhf:.10}"
+    );
+    let singlet_total = -74.998_749_579_527_17;
+    let t = stdout_value(&trip, "Total");
+    assert!(
+        (t - singlet_total).abs() > 1e-2,
+        "triplet total {t:.10} is the singlet"
+    );
+    assert!(stdout_value(&trip, "MP2 corr") < 0.0);
+}
+
+/// oo-rimp2 on a doublet runs unrestricted OO-RI-MP2 from the UHF
+/// reference (OH/cc-pVDZ, the system `u_oo_rimp2_lowers_energy_on_oh`
+/// checks in ferric-mp2). OO-MP2 minimizes the MP2 functional over orbital
+/// rotations starting AT the UHF orbitals, where it equals the UMP2 energy,
+/// so its total must lie strictly below the `rimp2` total with the same
+/// `[scf]`/`[mp2]` keys, by less than 10 mEh. Routing oo-rimp2 to plain UMP2
+/// (no orbital relaxation) fails the strict inequality; restoring the
+/// refusal fails `run_ok`.
+#[test]
+fn oo_rimp2_on_a_doublet_runs_unrestricted_orbital_optimization() {
+    let xyz = oh_097_xyz("oo_rimp2_on_a_doublet_runs_unrestricted_orbital_optimization");
+    let extra = format!("[mp2]\nauxbasis = \"cc-pvdz-ri\"\n\n{TIGHT_SCF}");
+    let ump2 = stdout_value(
+        &run_ok(
+            "oh_ump2_for_oo",
+            &body_at(&xyz, 2, "cc-pvdz", "rimp2", "energy", &extra),
+        ),
+        "Total",
+    );
+    let out = run_ok(
+        "oh_uoomp2",
+        &body_at(&xyz, 2, "cc-pvdz", "oo-rimp2", "energy", &extra),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("U-OO-RI-MP2/cc-pvdz"), "{stdout}");
+    let oo = stdout_value(&out, "Total");
+    // Orbital optimization lowers the UMP2 energy by 4.206e-4 Ha here
+    // (measured; no independent OO-UMP2 reference exists in testdata, so this
+    // is a regression pin, not a physics bar). A run that skipped the orbital
+    // optimization gives 0.
+    let lowering = ump2 - oo;
+    assert!(
+        (1e-4..1e-3).contains(&lowering),
+        "U-OO-RI-MP2 {oo:.10} vs UMP2 {ump2:.10}: lowering {lowering:.4e}, measured 4.206e-4"
+    );
+}
+
+/// What stays refused on the open-shell MP2 route, each for a stated
+/// reason: no unrestricted MP2 nuclear gradient (optimize), kappa-MP2 is
+/// closed-shell only, and kinds with no open-shell variant (mp3). Dropping
+/// any of these guards makes the corresponding run succeed.
+#[test]
+fn open_shell_mp2_refuses_what_it_cannot_honour() {
+    let water = "testdata/molecules/water.xyz";
+    let mp2 = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
+    assert_refused(
+        &run_toml(
+            "rimp2_triplet_opt",
+            &body_at(water, 3, "sto-3g", "rimp2", "optimize", mp2),
+        ),
+        &["multiplicity = 3", "task = \"energy\" only"],
+    );
+    assert_refused(
+        &run_toml(
+            "rimp2_triplet_kappa",
+            &body_at(
+                water,
+                3,
+                "sto-3g",
+                "rimp2",
+                "energy",
+                "[mp2]\nauxbasis = \"cc-pvdz-ri\"\nkappa = 1.0\n",
+            ),
+        ),
+        &["kappa", "open-shell"],
+    );
+    assert_refused(
+        &run_toml(
+            "mp3_triplet",
+            &body_at(water, 3, "sto-3g", "mp3", "energy", mp2),
+        ),
+        &["multiplicity = 3", "closed-shell"],
+    );
 }
 
 /// Reachability anchor: the open-shell kinds and closed-shell singlets are
@@ -162,24 +523,24 @@ fn uhf_doublet_and_closed_shell_rimp2_still_run() {
 
 // ─── [dft] keys the selected kind never reads (item 1) ──────────────────────
 
-/// Pre-fix: `kind = "uhf"` + `[dft] functional = "PBE"` on OH printed
-/// `energy = -74.3626375456`, the UHF energy (identical to the run without
-/// the key), and exited 0. Removing the `validate_dft_section` call from
-/// `run()` makes this run succeed again. The no-key uhf run in
-/// `uhf_doublet_and_closed_shell_rimp2_still_run` is its anchor.
+/// A functional on a kind that runs none is still refused: `rimp2` builds an
+/// RHF reference and would print RI-MP2 on HF under a config naming PBE.
+/// Removing the `validate_dft_section` call from `run()` makes this run
+/// succeed. (On rhf/uhf/rohf the functional is now READ -- see
+/// `uhf_rohf_and_rhf_with_a_functional_run_kohn_sham`.)
 #[test]
-fn uhf_with_a_dft_functional_is_refused_not_run_as_hf() {
+fn a_functional_on_a_correlated_kind_is_refused() {
     let out = run_toml(
-        "uhf_pbe",
+        "rimp2_pbe",
         &body(
-            "oh.xyz",
-            2,
-            "uhf",
+            "water.xyz",
+            1,
+            "rimp2",
             "energy",
-            "[dft]\nfunctional = \"PBE\"\n",
+            "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n\n[dft]\nfunctional = \"PBE\"\n",
         ),
     );
-    assert_refused(&out, &["[dft] functional", "\"uhf\"", "solve_uhf"]);
+    assert_refused(&out, &["[dft] functional", "\"rimp2\""]);
 }
 
 // ─── Keys a task path never reads (items 4 + 5) ─────────────────────────────
@@ -265,4 +626,74 @@ fn jk_log_line_names_exact_coulomb_when_df_is_off() {
         "{err}"
     );
     assert!(!err.contains("RI-JK via \n"), "{err}");
+}
+
+// ─── Double hybrids honour [scf] df_j_aux ───────────────────────────────────
+
+/// `b2plyp`/`dsd-pbep86` used to overwrite `[scf] df_j_aux`/`df_k_aux` with
+/// def2-universal-jkfit unconditionally, so a user's aux (or opt-out) was
+/// silently ignored. Now an omitted key keeps that default, `""`/"exact"
+/// select conventional J, and a name is honoured -- the `ksdft` rule.
+///
+/// Mutation caught: restoring the unconditional overwrite makes all four runs
+/// identical (same J/K line, same energy), failing every assertion below the
+/// default run.
+#[test]
+fn b2plyp_honours_scf_df_j_aux() {
+    let water = "testdata/molecules/water.xyz";
+    let run = |tag: &str, scf: &str| {
+        run_ok(
+            tag,
+            &body_at(
+                water,
+                1,
+                "sto-3g",
+                "b2plyp",
+                "energy",
+                &format!("[mp2]\nauxbasis = \"cc-pvdz-ri\"\n\n[scf]\n{scf}"),
+            ),
+        )
+    };
+    let jk = |out: &std::process::Output| {
+        String::from_utf8_lossy(&out.stderr)
+            .lines()
+            .find(|l| l.starts_with("[ferric] SCF J/K:"))
+            .map(str::to_string)
+            .unwrap_or_else(|| panic!("no J/K line: {}", String::from_utf8_lossy(&out.stderr)))
+    };
+    let default = run("b2plyp_default", "");
+    let exact = run("b2plyp_exact_j", "df_j_aux = \"\"\n");
+    let exact_word = run("b2plyp_exact_word", "df_j_aux = \"exact\"\n");
+    let named = run("b2plyp_named_j", "df_j_aux = \"cc-pvdz-ri\"\n");
+
+    assert_eq!(
+        jk(&default),
+        "[ferric] SCF J/K: RI-JK via def2-universal-jkfit"
+    );
+    assert_eq!(
+        jk(&exact),
+        "[ferric] SCF J/K: exact J (four-centre), RI-K via def2-universal-jkfit"
+    );
+    assert_eq!(jk(&exact_word), jk(&exact));
+    assert_eq!(
+        jk(&named),
+        "[ferric] SCF J/K: RI-J via cc-pvdz-ri, RI-K via def2-universal-jkfit"
+    );
+
+    let e_default = stdout_value(&default, "Total");
+    let e_exact = stdout_value(&exact, "Total");
+    let e_named = stdout_value(&named, "Total");
+    // Two spellings of one Hamiltonian: the same number.
+    assert_eq!(e_exact, stdout_value(&exact_word, "Total"));
+    // Different Coulomb treatments: different numbers. Measured on water:
+    // exact - default = 4.39e-4, named - default = -7.63e-4 (fitting error);
+    // the 1e-5 floor sits 40x below both. Ignoring df_j_aux gives 0.
+    assert!(
+        (e_exact - e_default).abs() > 1e-5,
+        "{e_exact} vs {e_default}"
+    );
+    assert!(
+        (e_named - e_default).abs() > 1e-5,
+        "{e_named} vs {e_default}"
+    );
 }
