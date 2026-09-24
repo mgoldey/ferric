@@ -65,6 +65,7 @@
 //! with it at 1e-15 the worst error over H₂/STO-3G, LiH/STO-3G and
 //! H₂O/cc-pVDZ (s, p, pure d) triclinic cells was 6.7e-13.
 
+use crate::budget::{bytes_of, Ledger};
 use crate::lattice::Cell;
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -172,17 +173,22 @@ pub fn pair_ft(
     pair_ft_with_thresh(cell, prep, gvecs, DEFAULT_PAIR_FT_THRESH)
 }
 
-/// Lattice-summed pair-density Fourier transforms `P[m, n, g]`, shape
-/// `(nbasis, nbasis, gvecs.len())`, in the AO basis of `prep` (which must be
-/// built from `cell.mol()`). `gvecs` may be any vectors (Bohr⁻¹), not only
-/// reciprocal-lattice ones, and may include `G = 0`. See the module doc for
-/// conventions.
-pub fn pair_ft_with_thresh(
-    cell: &Cell,
-    prep: &PreparedBasis,
-    gvecs: &[[f64; 3]],
-    thresh: f64,
-) -> Result<Array3<Complex64>, FerricError> {
+/// Bytes [`pair_ft_with_thresh`] holds per G vector: the output column
+/// (`16 nao²`) plus its per-G scratch (sort order, sorted copy, `|G|²`, the
+/// `(−iG)^t` powers, the common factor, the three `F` rows, the Cartesian and
+/// half-transformed shell blocks). `lmax` is the largest shell `l`.
+pub fn pair_ft_bytes_per_g(nao: usize, lmax: usize) -> usize {
+    let ncart = (lmax + 1) * (lmax + 2) / 2;
+    let c = 16usize; // Complex64
+    c.saturating_mul(nao.saturating_mul(nao))
+        + 8 + 24 + 8 // order, sorted G, |G|²
+        + c * 3 * (2 * lmax + 1) // pw
+        + c // common
+        + c * 3 * (lmax + 1) * (lmax + 1) // fbuf
+        + c * 2 * ncart * ncart // cart + pure half-transform
+}
+
+fn validate_inputs(gvecs: &[[f64; 3]], thresh: f64) -> Result<(), FerricError> {
     if !(f64::MIN_POSITIVE..1.0).contains(&thresh) {
         return Err(FerricError::General(format!(
             "pair_ft: thresh must lie in (0, 1), got {thresh}"
@@ -191,6 +197,109 @@ pub fn pair_ft_with_thresh(
     if gvecs.iter().flatten().any(|v| !v.is_finite()) {
         return Err(FerricError::General("pair_ft: non-finite G vector".into()));
     }
+    Ok(())
+}
+
+fn max_gnorm(gvecs: &[[f64; 3]]) -> f64 {
+    gvecs
+        .iter()
+        .map(|g| g[0] * g[0] + g[1] * g[1] + g[2] * g[2])
+        .fold(0.0_f64, f64::max)
+        .sqrt()
+}
+
+fn basis_lmax(prep: &PreparedBasis) -> usize {
+    prep.located_shells()
+        .iter()
+        .map(|s| s.l.max(0) as usize)
+        .max()
+        .unwrap_or(0)
+}
+
+/// Lattice-summed pair-density Fourier transforms `P[m, n, g]`, shape
+/// `(nbasis, nbasis, gvecs.len())`, in the AO basis of `prep` (which must be
+/// built from `cell.mol()`). `gvecs` may be any vectors (Bohr⁻¹), not only
+/// reciprocal-lattice ones, and may include `G = 0`. See the module doc for
+/// conventions.
+///
+/// Materialises every G at once; the output plus scratch
+/// (`gvecs.len() ×` [`pair_ft_bytes_per_g`]) is gated against ferric's
+/// unified memory budget ([`crate::budget::resolve`]`(None)`) before any
+/// allocation. Large G sets should use [`pair_ft_chunked`].
+pub fn pair_ft_with_thresh(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    gvecs: &[[f64; 3]],
+    thresh: f64,
+) -> Result<Array3<Complex64>, FerricError> {
+    validate_inputs(gvecs, thresh)?;
+    let nao = prep.nbasis();
+    let lmax = basis_lmax(prep);
+    let bytes = bytes_of(gvecs.len() as u64, pair_ft_bytes_per_g(nao, lmax));
+    Ledger::new(crate::budget::resolve(None)).check(
+        &format!(
+            "pair_ft output P[m,n,g] + scratch (nao = {nao}, n_G = {}, lmax = {lmax})",
+            gvecs.len()
+        ),
+        bytes,
+    )?;
+    pair_ft_block(cell, prep, gvecs, thresh, max_gnorm(gvecs))
+}
+
+/// [`pair_ft_with_thresh`] in G chunks: `sink(g0, gs, P)` receives
+/// `P[:, :, j]` for `gs[j] = gvecs[g0 + j]`, in order. Each chunk (its
+/// [`pair_ft_bytes_per_g`] plus the caller's `extra_bytes_per_g` for its own
+/// per-G scratch) fits in `chunk_budget_bytes`; if a single G does not, the
+/// call fails before allocating, naming the per-G byte count. Returns the
+/// number of chunks.
+///
+/// Chunking does not change a single bit of `P`: the per-primitive-pair G
+/// window uses `max |G|` over ALL of `gvecs` (not the chunk's), and every G
+/// column is computed independently, so the chunks concatenate to exactly
+/// `pair_ft_with_thresh(cell, prep, gvecs, thresh)`.
+pub fn pair_ft_chunked<F>(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    gvecs: &[[f64; 3]],
+    thresh: f64,
+    chunk_budget_bytes: usize,
+    extra_bytes_per_g: usize,
+    mut sink: F,
+) -> Result<usize, FerricError>
+where
+    F: FnMut(usize, &[[f64; 3]], &Array3<Complex64>) -> Result<(), FerricError>,
+{
+    validate_inputs(gvecs, thresh)?;
+    if gvecs.is_empty() {
+        return Ok(0);
+    }
+    let nao = prep.nbasis();
+    let lmax = basis_lmax(prep);
+    let per_g = pair_ft_bytes_per_g(nao, lmax).saturating_add(extra_bytes_per_g);
+    Ledger::new(chunk_budget_bytes).check(
+        &format!("pair_ft chunk, one G vector (nao = {nao}, lmax = {lmax})"),
+        per_g,
+    )?;
+    let chunk = (chunk_budget_bytes / per_g).max(1);
+    let gmax = max_gnorm(gvecs);
+    let mut n_chunks = 0usize;
+    for (c, gs) in gvecs.chunks(chunk).enumerate() {
+        let p = pair_ft_block(cell, prep, gs, thresh, gmax)?;
+        sink(c * chunk, gs, &p)?;
+        n_chunks += 1;
+    }
+    Ok(n_chunks)
+}
+
+/// The kernel: `P` for `gvecs` with the G window evaluated at `gmax_window`
+/// (`>= max |G|` of `gvecs`). Inputs already validated; no memory gate.
+fn pair_ft_block(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    gvecs: &[[f64; 3]],
+    thresh: f64,
+    gmax_window: f64,
+) -> Result<Array3<Complex64>, FerricError> {
     let shells = build_shells(cell, prep)?;
     let nbf = prep.nbasis();
     let ng = gvecs.len();
@@ -219,7 +328,9 @@ pub fn pair_ft_with_thresh(
     order.sort_by(|&x, &y| norm2(&gvecs[x]).total_cmp(&norm2(&gvecs[y])));
     let gsorted: Vec<[f64; 3]> = order.iter().map(|&i| gvecs[i]).collect();
     let gvecs: &[[f64; 3]] = &gsorted;
-    let gmax = norm2(&gvecs[ng - 1]).sqrt();
+    // The window bound must not depend on how the caller chunked G (see
+    // `pair_ft_chunked`): the caller passes max |G| of the whole set.
+    let gmax = gmax_window;
 
     let lmax = shells.iter().map(|s| s.l).max().unwrap_or(0);
     let nt = 2 * lmax + 1;

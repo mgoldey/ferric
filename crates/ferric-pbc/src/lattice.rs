@@ -153,24 +153,22 @@ impl Cell {
         self.translations_for(&self.positions(), rcut)
     }
 
-    /// [`Cell::translations`] for an arbitrary set of reference-cell points
-    /// (used by the Ewald sum for point charges that are not the molecule's
-    /// atoms, e.g. the Madelung probe charge).
-    pub(crate) fn translations_for(
-        &self,
-        pos: &[[f64; 3]],
-        rcut: f64,
-    ) -> Result<Vec<[f64; 3]>, FerricError> {
+    /// Upper bound on `self.translations(rcut).len()`: the number of integer
+    /// triples the enumeration visits (the returned list is the subset within
+    /// `rcut`). Memory gates size the translation list with it BEFORE the
+    /// enumeration allocates. Errors exactly when `translations` would.
+    pub fn translation_count_bound(&self, rcut: f64) -> Result<u64, FerricError> {
         if !(rcut >= 0.0) || !rcut.is_finite() {
             return Err(FerricError::General(format!(
                 "Cell::translations: rcut must be finite and >= 0, got {rcut}"
             )));
         }
-        if pos.is_empty() {
-            return Err(FerricError::General(
-                "Cell::translations: no reference points".into(),
-            ));
-        }
+        Ok(self.translation_box(&self.positions(), rcut)?.1)
+    }
+
+    /// Enumeration box `|n_j| <= nmax[j]` of [`Cell::translations_for`] and
+    /// its triple count (capped at [`MAX_ENUMERATED`]).
+    fn translation_box(&self, pos: &[[f64; 3]], rcut: f64) -> Result<([i64; 3], u64), FerricError> {
         // Largest intra-cell separation: any contributing L has
         // |L| <= rcut + ext, and L's projection on b̂_j is n_j d_j, so
         // |n_j| <= (rcut + ext)/d_j bounds the enumeration exactly.
@@ -198,6 +196,28 @@ impl Cell {
                 "Cell::translations: rcut {rcut} would enumerate {count} lattice triples (cap {MAX_ENUMERATED})"
             )));
         }
+        Ok((nmax, count))
+    }
+
+    /// [`Cell::translations`] for an arbitrary set of reference-cell points
+    /// (used by the Ewald sum for point charges that are not the molecule's
+    /// atoms, e.g. the Madelung probe charge).
+    pub(crate) fn translations_for(
+        &self,
+        pos: &[[f64; 3]],
+        rcut: f64,
+    ) -> Result<Vec<[f64; 3]>, FerricError> {
+        if !(rcut >= 0.0) || !rcut.is_finite() {
+            return Err(FerricError::General(format!(
+                "Cell::translations: rcut must be finite and >= 0, got {rcut}"
+            )));
+        }
+        if pos.is_empty() {
+            return Err(FerricError::General(
+                "Cell::translations: no reference points".into(),
+            ));
+        }
+        let (nmax, _) = self.translation_box(pos, rcut)?;
         let a = &self.lattice;
         let mut out: Vec<[f64; 3]> = Vec::new();
         for n0 in -nmax[0]..=nmax[0] {
@@ -231,17 +251,21 @@ impl Cell {
         Ok(out)
     }
 
-    /// Reciprocal-lattice vectors `G = Σ_i n_i b_i` with `|G| <= gcut`
-    /// (Bohr⁻¹), INCLUDING `G = 0` (callers filter it). Sorted by `|G|`
-    /// ascending, so `G = 0` is first. Port of `pbc_gamma.Cell.gvectors`:
-    /// `G · a_i = 2π n_i` gives the exact bound `|n_i| <= gcut |a_i| / 2π`.
-    pub fn gvectors(&self, gcut: f64) -> Result<Vec<[f64; 3]>, FerricError> {
+    /// Upper bound on `self.gvectors(gcut).len()` (the enumeration box's
+    /// triple count), for sizing the G list BEFORE it is allocated. Errors
+    /// exactly when `gvectors` would.
+    pub fn gvector_count_bound(&self, gcut: f64) -> Result<u64, FerricError> {
         if !(gcut >= 0.0) || !gcut.is_finite() {
             return Err(FerricError::General(format!(
                 "Cell::gvectors: gcut must be finite and >= 0, got {gcut}"
             )));
         }
-        let b = self.reciprocal();
+        Ok(self.gvector_box(gcut)?.1)
+    }
+
+    /// Enumeration box `|n_i| <= nmax[i]` of [`Cell::gvectors`] and its
+    /// triple count (capped at [`MAX_ENUMERATED`]).
+    fn gvector_box(&self, gcut: f64) -> Result<([i64; 3], u64), FerricError> {
         let tp = 2.0 * std::f64::consts::PI;
         let mut nmax = [0i64; 3];
         let mut count: u64 = 1;
@@ -260,6 +284,21 @@ impl Cell {
                 "Cell::gvectors: gcut {gcut} would enumerate {count} lattice triples (cap {MAX_ENUMERATED})"
             )));
         }
+        Ok((nmax, count))
+    }
+
+    /// Reciprocal-lattice vectors `G = Σ_i n_i b_i` with `|G| <= gcut`
+    /// (Bohr⁻¹), INCLUDING `G = 0` (callers filter it). Sorted by `|G|`
+    /// ascending, so `G = 0` is first. Port of `pbc_gamma.Cell.gvectors`:
+    /// `G · a_i = 2π n_i` gives the exact bound `|n_i| <= gcut |a_i| / 2π`.
+    pub fn gvectors(&self, gcut: f64) -> Result<Vec<[f64; 3]>, FerricError> {
+        if !(gcut >= 0.0) || !gcut.is_finite() {
+            return Err(FerricError::General(format!(
+                "Cell::gvectors: gcut must be finite and >= 0, got {gcut}"
+            )));
+        }
+        let b = self.reciprocal();
+        let (nmax, _) = self.gvector_box(gcut)?;
         let g2max = gcut * gcut;
         let mut out: Vec<[f64; 3]> = Vec::new();
         for n0 in -nmax[0]..=nmax[0] {

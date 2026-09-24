@@ -17,16 +17,24 @@
 //!
 //! Memory is `8 nao⁴` bytes and the G count grows as `Ω p_max^{3/2}`: this is
 //! a correctness oracle for toy cells, never a production builder. The tensor
-//! size is HARD-capped (error, not a warning) by the caller's `max_bytes`.
+//! size is HARD-capped (error, not a warning) by the caller's `max_bytes`,
+//! and, like every ferric-pbc buffer, everything the build holds (tensor +
+//! GEMM temporary, G list, `pair_ft` chunks) is reserved against ferric's
+//! memory budget before allocation ([`DenseAftEri::build_budgeted`]).
+//! G is processed in `pair_ft` chunks; the chunk size changes the GEMM
+//! summation order, so different budgets agree to roundoff, not bitwise
+//! (`tests/pbc_memory_gates.rs` measures it).
 
+use crate::budget::{bytes_of, Ledger};
 use crate::ewald::madelung_constant;
-use crate::hcore::{half_gvectors, G_CHUNK_BYTES};
+use crate::hcore::{gvector_list_bytes, half_gvectors, G_CHUNK_BYTES};
 use crate::lattice::Cell;
-use crate::pair_ft::pair_ft_with_thresh;
+use crate::pair_ft::{pair_ft_bytes_per_g, pair_ft_chunked};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_scf::fock::{JBuilder, KBuilder};
-use ndarray::Array2;
+use ndarray::{Array2, Array3};
+use num_complex::Complex64;
 use std::f64::consts::PI;
 
 /// Default hard cap on the dense tensor (`8 nao⁴` bytes): 512 MiB (nao 90).
@@ -68,6 +76,9 @@ pub struct DenseAftEri {
     s: Array2<f64>,
     madelung: f64,
     n_g_half: usize,
+    n_g_chunks: usize,
+    resident_bytes: usize,
+    bytes_per_g: usize,
 }
 
 impl DenseAftEri {
@@ -78,6 +89,9 @@ impl DenseAftEri {
     /// * `precision` — G sphere `|G| <= 2 √(p_max ln(1/precision))`,
     ///   `p_max` = twice the largest exponent (the prototype's rule).
     /// * `max_bytes` — hard cap on `8 nao⁴`; exceeded ⇒ `Err` before any work.
+    ///
+    /// Memory is gated against ferric's unified budget
+    /// ([`crate::budget::resolve`]`(None)`); see [`DenseAftEri::build_budgeted`].
     pub fn build(
         cell: &Cell,
         prep: &PreparedBasis,
@@ -85,6 +99,24 @@ impl DenseAftEri {
         exxdiv: ExxDiv,
         precision: f64,
         max_bytes: usize,
+    ) -> Result<Self, FerricError> {
+        Self::build_budgeted(cell, prep, s, exxdiv, precision, max_bytes, None)
+    }
+
+    /// [`DenseAftEri::build`] with an explicit memory budget (`None` =
+    /// ferric's unified budget). Reserved before allocation, in order: the
+    /// tensor plus its same-size GEMM/symmetrisation temporary
+    /// (`2 · 8 nao⁴`), the overlap copy, the G list; then each `pair_ft`
+    /// chunk (plus the four `nao² × n_G` real staging arrays) must fit in
+    /// what is left (capped at 64 MiB).
+    pub fn build_budgeted(
+        cell: &Cell,
+        prep: &PreparedBasis,
+        s: &Array2<f64>,
+        exxdiv: ExxDiv,
+        precision: f64,
+        max_bytes: usize,
+        budget_bytes: Option<usize>,
     ) -> Result<Self, FerricError> {
         let nao = prep.nbasis();
         let bytes = 8u128 * (nao as u128).pow(4);
@@ -113,47 +145,84 @@ impl DenseAftEri {
                 .flat_map(|sh| sh.exponents.iter().copied())
                 .fold(0.0_f64, f64::max);
         let gcut = 2.0 * (pmax * (1.0 / precision).ln()).sqrt();
+        let n2 = nao * nao;
+        let mut ledger = Ledger::new(crate::budget::resolve(budget_bytes));
+        ledger.reserve(
+            &format!("DenseAftEri nao^4 tensor + same-size GEMM temporary (nao = {nao})"),
+            bytes_of(n2 as u64, n2).saturating_mul(16),
+        )?;
+        ledger.reserve(
+            &format!("DenseAftEri overlap copy (nao = {nao})"),
+            bytes_of(n2 as u64, 8),
+        )?;
+        ledger.reserve(
+            &format!("DenseAftEri G list (|G| <= {gcut:.3})"),
+            gvector_list_bytes(cell, gcut)?,
+        )?;
         let gv = half_gvectors(cell, gcut)?;
         let vol = cell.volume();
-        let n2 = nao * nao;
         let mut eri = Array2::<f64>::zeros((n2, n2));
-        let chunk = (G_CHUNK_BYTES / (16 * n2).max(1)).max(1);
-        for gs in gv.chunks(chunk) {
-            let p = pair_ft_with_thresh(cell, prep, gs, 0.1 * precision)?;
-            let ng = gs.len();
-            let mut a_re = Array2::<f64>::zeros((n2, ng));
-            let mut a_im = Array2::<f64>::zeros((n2, ng));
-            let mut b_re = Array2::<f64>::zeros((n2, ng));
-            let mut b_im = Array2::<f64>::zeros((n2, ng));
-            for (g, gvec) in gs.iter().enumerate() {
-                let g2 = gvec[0] * gvec[0] + gvec[1] * gvec[1] + gvec[2] * gvec[2];
-                let w = 2.0 / vol * 4.0 * PI / g2;
-                for m in 0..nao {
-                    for k in 0..nao {
-                        let z = p[[m, k, g]];
-                        let r = m * nao + k;
-                        a_re[(r, g)] = z.re;
-                        a_im[(r, g)] = z.im;
-                        b_re[(r, g)] = w * z.re;
-                        b_im[(r, g)] = w * z.im;
+        let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
+        let resident_bytes = ledger.resident();
+        // a_re, a_im, b_re, b_im: 4 real nao² columns per G.
+        let staging_per_g = n2.saturating_mul(32);
+        let lmax = prep
+            .located_shells()
+            .iter()
+            .map(|sh| sh.l.max(0) as usize)
+            .max()
+            .unwrap_or(0);
+        let bytes_per_g = pair_ft_bytes_per_g(nao, lmax).saturating_add(staging_per_g);
+        let accumulate =
+            |_g0: usize, gs: &[[f64; 3]], p: &Array3<Complex64>| -> Result<(), FerricError> {
+                let ng = gs.len();
+                let mut a_re = Array2::<f64>::zeros((n2, ng));
+                let mut a_im = Array2::<f64>::zeros((n2, ng));
+                let mut b_re = Array2::<f64>::zeros((n2, ng));
+                let mut b_im = Array2::<f64>::zeros((n2, ng));
+                for (g, gvec) in gs.iter().enumerate() {
+                    let g2 = gvec[0] * gvec[0] + gvec[1] * gvec[1] + gvec[2] * gvec[2];
+                    let w = 2.0 / vol * 4.0 * PI / g2;
+                    for m in 0..nao {
+                        for k in 0..nao {
+                            let z = p[[m, k, g]];
+                            let r = m * nao + k;
+                            a_re[(r, g)] = z.re;
+                            a_im[(r, g)] = z.im;
+                            b_re[(r, g)] = w * z.re;
+                            b_im[(r, g)] = w * z.im;
+                        }
                     }
                 }
-            }
-            eri += &b_re.dot(&a_re.t());
-            eri += &b_im.dot(&a_im.t());
-        }
+                eri += &b_re.dot(&a_re.t());
+                eri += &b_im.dot(&a_im.t());
+                Ok(())
+            };
+        let n_g_chunks = pair_ft_chunked(
+            cell,
+            prep,
+            &gv,
+            0.1 * precision,
+            chunk_budget,
+            staging_per_g,
+            accumulate,
+        )?;
         // Exactly symmetric in exact arithmetic; remove GEMM rounding.
         let eri = 0.5 * (&eri + &eri.t());
         let madelung = match exxdiv {
             ExxDiv::None => 0.0,
             ExxDiv::Ewald => madelung_constant(cell)?,
         };
+        ferric_core::memory::warn_if_rss_over("ferric-pbc DenseAftEri", ledger.budget(), 1.1);
         Ok(Self {
             nao,
             eri,
             s: s.clone(),
             madelung,
             n_g_half: gv.len(),
+            n_g_chunks,
+            resident_bytes,
+            bytes_per_g,
         })
     }
 
@@ -181,6 +250,23 @@ impl DenseAftEri {
     /// Number of half-sphere G vectors summed.
     pub fn n_g_half(&self) -> usize {
         self.n_g_half
+    }
+
+    /// Number of `pair_ft` G chunks the build used.
+    pub fn n_g_chunks(&self) -> usize {
+        self.n_g_chunks
+    }
+
+    /// Bytes reserved on the budget ledger before the G chunks started
+    /// (tensor + temporary, overlap copy, G list).
+    pub fn resident_bytes(&self) -> usize {
+        self.resident_bytes
+    }
+
+    /// Bytes one G vector costs in a chunk (`pair_ft` output + scratch +
+    /// the four real staging columns).
+    pub fn bytes_per_g(&self) -> usize {
+        self.bytes_per_g
     }
 
     /// J builder borrowing this tensor.
