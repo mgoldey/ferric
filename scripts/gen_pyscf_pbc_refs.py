@@ -95,7 +95,10 @@ def build_cell(spec, precision):
     # Zero-coefficient primitives (general-contraction columns) are dropped:
     # numerically identical, and PySCF's cutoff estimators divide by them.
     basis = {
-        s: [[l] + [[e, c] for e, c in zip(exps, col) if c != 0.0] for (l, exps, col) in fsh[s]]
+        s: [
+            [l] + [[e, c] for e, c in zip(exps, col) if c != 0.0]
+            for (l, exps, col) in fsh[s]
+        ]
         for s in syms
     }
     cell = pgto.Cell()
@@ -129,7 +132,9 @@ def main():
         mad = float(ptools.madelung(cell, np.zeros((1, 3))))
         mad_lo = float(ptools.madelung(cell_lo, np.zeros((1, 3))))
         b = cell.reciprocal_vectors()
-        G = np.array([b[0], b[1], b[2], b[0] - b[1] + b[2], 2 * b[1], [0.37, -0.52, 0.81]])
+        G = np.array(
+            [b[0], b[1], b[2], b[0] - b[1] + b[2], 2 * b[1], [0.37, -0.52, 0.81]]
+        )
         P = ft_ao.ft_aopair(cell, G, kpti_kptj=np.zeros((2, 3)))  # (ng, nao, nao)
         P0 = ft_ao.ft_aopair(cell, np.zeros((1, 3)), kpti_kptj=np.zeros((2, 3)))[0]
         S = cell.pbc_intor("int1e_ovlp", hermi=1)
@@ -161,9 +166,15 @@ def main():
     # Independent sanity anchor for the Madelung convention: simple cubic, a=1.
     # With a neutralising background, E = -1.4186487397/a per unit charge, so
     # PySCF's madelung (= -2 E) should be 2.8372974794/a.
-    sc = pgto.Cell(a=np.eye(3) * 3.0, atom="H 0 0 0", basis="sto-3g", unit="B", spin=1, verbose=0)
+    sc = pgto.Cell(
+        a=np.eye(3) * 3.0, atom="H 0 0 0", basis="sto-3g", unit="B", spin=1, verbose=0
+    )
     sc.build()
-    print("simple-cubic a=3 madelung*a =", 3.0 * ptools.madelung(sc, np.zeros((1, 3))), "(expect 2.8372974794)")
+    print(
+        "simple-cubic a=3 madelung*a =",
+        3.0 * ptools.madelung(sc, np.zeros((1, 3))),
+        "(expect 2.8372974794)",
+    )
 
 
 if __name__ == "__main__":
