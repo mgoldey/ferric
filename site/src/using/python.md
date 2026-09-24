@@ -448,6 +448,14 @@ See [QM/MM](./qmmm.md) for a worked example.
 All closed-shell. `eps = 0` reproduces the canonical method; a finite `eps`
 carries a one-sided truncation error. Each returns a `dict`.
 
+The canonical reference is opt-in. `run_lmp2`, `run_lmp2_direct`, `run_drpa`
+and `run_drpa_scan` take `compute_reference` (default `False`); only with
+`compute_reference=True` do they compute it, and otherwise the dict's
+reference key (`e_corr_canonical_ri` for LMP2, `e_corr_plasmon_canonical` for
+dRPA) is present and `None`. The reference is a full canonical calculation
+over global tensors, so switching it on removes any cost saving.
+`run_linlccd_amplitude` computes no canonical reference.
+
 | Name | Purpose | CLI |
 |---|---|---|
 | `run_lmp2` | Amplitude-threshold local MP2. | `lmp2` |

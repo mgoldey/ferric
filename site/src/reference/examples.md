@@ -84,7 +84,7 @@ See [The MP2 family](../methods/mp2.md).
 |---|---|---|---|---|
 | `water-rimp2.toml` | H2O / cc-pVDZ | `rimp2` | — | All-electron. |
 | `water-rimp2-frozen-core.toml` | H2O / cc-pVDZ | `rimp2` | Expected log line: "`[ferric] frozen core: 1 orbital(s) frozen from [mp2] frozen_core = "auto"`" | |
-| `water-lmp2.toml` | H2O / 6-31G | `lmp2` | — | Prints the canonical RI reference alongside. |
+| `water-lmp2.toml` | H2O / 6-31G | `lmp2` | — | Sets `lmp2_reference = true`, so it also computes the canonical RI-MP2 reference and prints the error against it (off by default). |
 | `alkane8-lmp2-direct.toml` | octane / 6-31G | `lmp2-direct` | — | Every locality knob at its default. |
 | `water-mp3.toml` | H2O / cc-pVDZ | `mp3` | — | |
 | `water-oo-rimp2.toml` | H2O / cc-pVDZ | `oo-rimp2` | — | Smoke grade. |
