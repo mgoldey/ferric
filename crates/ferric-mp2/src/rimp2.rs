@@ -849,14 +849,40 @@ pub fn ri_mp2_robust_attenuated_metric(
 /// Fit coefficients `C = V⁻¹ R` for a 2-center metric `V` and a block of
 /// right-hand sides `R` (naux × ncol). Shared by both robust-attenuated-metric
 /// entry points.
+///
+/// Solved by Cholesky (`V = L Lᵀ`, then two triangular solves), never by an
+/// explicit inverse. RI/JK-fit metrics are ill-conditioned (cond 3e7-7e8 on
+/// benzene/def2-universal-jkfit for Coulomb and erfc), and `inv()` + GEMM has
+/// a forward error of ~eps·cond that is NOT a smooth function of the right-hand
+/// side: a quadratic form built from it jitters 1e-10..1e-8 (relative) where
+/// the Cholesky solve stays at 1e-14 (see
+/// `metric_solve_quadratic_form_is_smooth`). It is the same defect fixed in
+/// DF-J (`ferric_scf::df_j`).
+///
+/// A metric that is not numerically positive definite (e.g. an erf-attenuated
+/// metric that has lost rank in a Coulomb-optimized aux basis) makes `dpotrf`
+/// fail, and that surfaces as an error. That is the documented "this omega_m is
+/// unusable" signal (`metric_attenuation_gate` records it as such), where
+/// the explicit inverse used to return a numerically meaningless matrix.
 pub(crate) fn solve_metric_system(
     v: &Array2<f64>,
     rhs: &Array2<f64>,
 ) -> Result<Array2<f64>, FerricError> {
-    use ndarray_linalg::Inverse;
-    let v_inv = with_blas_threads(opt_in_blas_threads(), || v.inv())
-        .map_err(|e| FerricError::Lapack(format!("inverting attenuated metric V_w: {e}")))?;
-    Ok(v_inv.dot(rhs))
+    use ndarray_linalg::{Diag, SolveTriangular};
+    with_blas_threads(opt_in_blas_threads(), || {
+        let l = v.cholesky(UPLO::Lower).map_err(|e| {
+            FerricError::Lapack(format!(
+                "Cholesky of attenuated metric V_w failed (not numerically positive \
+                 definite: this omega_m is unusable): {e}"
+            ))
+        })?;
+        let y = l
+            .solve_triangular(UPLO::Lower, Diag::NonUnit, rhs)
+            .map_err(|e| FerricError::Lapack(format!("metric solve L y = R failed: {e}")))?;
+        l.t()
+            .solve_triangular(UPLO::Upper, Diag::NonUnit, &y)
+            .map_err(|e| FerricError::Lapack(format!("metric solve Lᵀ c = y failed: {e}")))
+    })
 }
 
 /// Sweep-friendly [`ri_mp2_robust_attenuated_metric`]: takes the
