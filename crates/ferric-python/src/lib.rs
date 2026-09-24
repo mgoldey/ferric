@@ -48,6 +48,8 @@ use ndarray::{Array2, Array3};
 use numpy::{PyArray1, PyArray2, PyArray3};
 use pyo3::prelude::*;
 
+mod pbc;
+
 // ── Molecule ──
 
 /// A molecular geometry (atoms, charge, multiplicity). Coordinates are stored
@@ -755,38 +757,56 @@ impl PyGammaRhfResult {
     }
 }
 
-/// Reject what Stage-1 Gamma-point RHF cannot represent, as `ValueError`s
-/// naming the offending input. Kept out of `run_rhf_gamma` so the binding
-/// body stays a thin dispatch layer.
-fn validate_gamma_cell(mol: &Molecule, bs: &ferric_core::basis::BasisSet) -> PyResult<()> {
+/// Reject what any periodic driver cannot represent (charged cell, ECP
+/// basis), as `ValueError`s naming the offending input.
+fn validate_periodic_cell(
+    fname: &str,
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+) -> PyResult<()> {
     let bad = |m: String| -> PyResult<()> { Err(pyo3::exceptions::PyValueError::new_err(m)) };
     if mol.charge != 0 {
         return bad(format!(
-            "run_rhf_gamma: charged cell (charge = {}) is not supported: a periodic \
+            "{fname}: charged cell (charge = {}) is not supported: a periodic \
              charged cell needs a neutralising-background correction for the \
-             electrons that Stage 1 does not implement. Use a neutral cell.",
+             electrons that is not implemented. Use a neutral cell.",
             mol.charge
         ));
     }
+    if let Some(a) = mol.atoms.iter().find(|a| bs.ecps.contains_key(&a.z)) {
+        return bad(format!(
+            "{fname}: basis '{}' carries an ECP for {} (Z={}); ECP lattice \
+             sums are not implemented for periodic cells",
+            bs.name, a.symbol, a.z
+        ));
+    }
+    Ok(())
+}
+
+/// Reject what a closed-shell periodic driver (RHF/RKS and the correlation
+/// methods on top) cannot represent: [`validate_periodic_cell`] plus an
+/// open shell or an odd electron count. Kept out of the bindings so their
+/// bodies stay thin dispatch layers.
+fn validate_gamma_cell(
+    fname: &str,
+    mol: &Molecule,
+    bs: &ferric_core::basis::BasisSet,
+) -> PyResult<()> {
+    let bad = |m: String| -> PyResult<()> { Err(pyo3::exceptions::PyValueError::new_err(m)) };
+    validate_periodic_cell(fname, mol, bs)?;
     if mol.multiplicity != 1 {
         return bad(format!(
-            "run_rhf_gamma: multiplicity {} requested, but only closed-shell RHF \
-             (multiplicity 1) exists for periodic cells",
+            "{fname}: multiplicity {} requested, but this driver is closed-shell \
+             (multiplicity 1) only; use the UHF/ROHF/UKS/ROKS periodic drivers \
+             for an open shell",
             mol.multiplicity
         ));
     }
     let nelec = mol.nelec();
     if nelec <= 0 || nelec % 2 != 0 {
         return bad(format!(
-            "run_rhf_gamma: {nelec} electrons per cell; closed-shell RHF needs a \
-             positive even count (no UHF/ROHF for periodic cells yet)"
-        ));
-    }
-    if let Some(a) = mol.atoms.iter().find(|a| bs.ecps.contains_key(&a.z)) {
-        return bad(format!(
-            "run_rhf_gamma: basis '{}' carries an ECP for {} (Z={}); ECP lattice \
-             sums are not implemented for periodic cells",
-            bs.name, a.symbol, a.z
+            "{fname}: {nelec} electrons per cell; a closed-shell driver needs a \
+             positive even count"
         ));
     }
     Ok(())
@@ -902,20 +922,20 @@ fn gamma_rhf_driver(
 
 /// Resolve `run_rhf_gamma`'s `auxbasis` kwarg: a `BasisSet` object or a
 /// bundled basis name. An unknown name is a `ValueError`.
-fn gamma_auxbasis(obj: &Bound<'_, PyAny>) -> PyResult<ferric_core::basis::BasisSet> {
+fn gamma_auxbasis(fname: &str, obj: &Bound<'_, PyAny>) -> PyResult<ferric_core::basis::BasisSet> {
     if let Ok(bs) = obj.extract::<PyRef<'_, PyBasisSet>>() {
         return Ok(bs.inner.clone());
     }
     if let Ok(name) = obj.extract::<String>() {
         return basis::bundled(&name).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!(
-                "run_rhf_gamma: auxbasis {name:?} is not a bundled basis: {e}"
+                "{fname}: auxbasis {name:?} is not a bundled basis: {e}"
             ))
         });
     }
-    Err(pyo3::exceptions::PyTypeError::new_err(
-        "run_rhf_gamma: auxbasis must be a BasisSet or a bundled basis name (str)",
-    ))
+    Err(pyo3::exceptions::PyTypeError::new_err(format!(
+        "{fname}: auxbasis must be a BasisSet or a bundled basis name (str)"
+    )))
 }
 
 /// Parsed and validated `run_rhf_gamma` options (strict: every knob the chosen
@@ -926,7 +946,9 @@ struct GammaOptions {
     omega_bohr: Option<f64>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn parse_gamma_options(
+    fname: &str,
     exxdiv: &str,
     jk: &str,
     auxbasis_given: bool,
@@ -943,44 +965,42 @@ fn parse_gamma_options(
         "rsgdf" => true,
         other => {
             return Err(val_err(format!(
-                "run_rhf_gamma: jk must be \"dense\" or \"rsgdf\", got {other:?}"
+                "{fname}: jk must be \"dense\" or \"rsgdf\", got {other:?}"
             )))
         }
     };
     // Knobs the chosen path would ignore are errors, not silent no-ops.
     if use_rsgdf {
         if auxbasis.is_none() {
-            return Err(val_err(
-                "run_rhf_gamma: jk=\"rsgdf\" requires auxbasis (a BasisSet or a bundled \
+            return Err(val_err(format!(
+                "{fname}: jk=\"rsgdf\" requires auxbasis (a BasisSet or a bundled \
                  name such as \"cc-pvdz-ri\" or \"def2-universal-jkfit\"); there is no \
                  default aux basis"
-                    .into(),
-            ));
+            )));
         }
         if let Some(g) = max_eri_gb {
             return Err(val_err(format!(
-                "run_rhf_gamma: max_eri_gb={g} caps the dense AFT tensor and is ignored \
+                "{fname}: max_eri_gb={g} caps the dense AFT tensor and is ignored \
                  by jk=\"rsgdf\"; bound RS-GDF with memory_budget_gb instead"
             )));
         }
     } else {
         if auxbasis.is_some() {
-            return Err(val_err(
-                "run_rhf_gamma: auxbasis is only used by jk=\"rsgdf\"; jk=\"dense\" would \
+            return Err(val_err(format!(
+                "{fname}: auxbasis is only used by jk=\"rsgdf\"; jk=\"dense\" would \
                  ignore it. Pass jk=\"rsgdf\" or drop auxbasis."
-                    .into(),
-            ));
+            )));
         }
         if let Some(g) = memory_budget_gb {
             return Err(val_err(format!(
-                "run_rhf_gamma: memory_budget_gb={g} bounds RS-GDF and is ignored by \
+                "{fname}: memory_budget_gb={g} bounds RS-GDF and is ignored by \
                  jk=\"dense\"; bound the dense tensor with max_eri_gb instead"
             )));
         }
     }
     if lattice.len() != 3 || lattice.iter().any(|r| r.len() != 3) {
         return Err(val_err(format!(
-            "run_rhf_gamma: lattice must be 3x3 (three row vectors, Ångström), got {} rows",
+            "{fname}: lattice must be 3x3 (three row vectors, Ångström), got {} rows",
             lattice.len()
         )));
     }
@@ -995,7 +1015,7 @@ fn parse_gamma_options(
         Some(w) if w.is_finite() && w > 0.0 => Some(w / ANGSTROM_TO_BOHR),
         Some(w) => {
             return Err(val_err(format!(
-                "run_rhf_gamma: omega must be finite and > 0 (Å⁻¹), got {w}"
+                "{fname}: omega must be finite and > 0 (Å⁻¹), got {w}"
             )))
         }
     };
@@ -1006,7 +1026,7 @@ fn parse_gamma_options(
         if let Some(g) = v {
             if !(g.is_finite() && g > 0.0) {
                 return Err(val_err(format!(
-                    "run_rhf_gamma: {name} must be finite and > 0, got {g}"
+                    "{fname}: {name} must be finite and > 0, got {g}"
                 )));
             }
         }
@@ -1103,6 +1123,7 @@ fn run_rhf_gamma(
         lattice_bohr: a,
         omega_bohr,
     } = parse_gamma_options(
+        "run_rhf_gamma",
         exxdiv,
         jk,
         auxbasis.is_some(),
@@ -1111,13 +1132,13 @@ fn run_rhf_gamma(
         &lattice,
         omega,
     )?;
-    validate_gamma_cell(&mol.inner, &basis_set.inner)?;
+    validate_gamma_cell("run_rhf_gamma", &mol.inner, &basis_set.inner)?;
     let cell = ferric_pbc::Cell::new(mol.inner.clone(), a).map_err(|e| val_err(format!("{e}")))?;
     let prep = PreparedBasis::new(cell.mol(), &basis_set.inner).map_err(make_err)?;
     let nao = prep.nbasis();
     let (jk_choice, aux_name) = match auxbasis {
         Some(obj) => {
-            let aux_bs = gamma_auxbasis(obj)?;
+            let aux_bs = gamma_auxbasis("run_rhf_gamma", obj)?;
             let aux = PreparedBasis::new(cell.mol(), &aux_bs).map_err(|e| {
                 val_err(format!(
                     "run_rhf_gamma: auxbasis '{}' cannot be placed on this cell: {e}",
@@ -8836,6 +8857,7 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_rhf_gamma, m)?)?;
     m.add_class::<PyGammaRhfResult>()?;
+    pbc::register(m)?;
     m.add_function(wrap_pyfunction!(run_uhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_rohf, m)?)?;
     m.add_function(wrap_pyfunction!(run_cdft, m)?)?;
