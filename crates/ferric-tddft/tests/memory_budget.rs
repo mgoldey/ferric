@@ -75,8 +75,9 @@ fn ample_budget_still_runs_to_completion() {
             n_roots: 1,
             method,
             memory_budget_bytes: Some(AMPLE),
+            ..Default::default()
         };
-        let r = run_tddft(&mol, &obs, &dfbs, &rhf, &cfg, 1.0)
+        let r = run_tddft(&mol, &obs, &dfbs, &rhf, &cfg)
             .unwrap_or_else(|e| panic!("{method:?} refused an ample 1 GB budget: {e}"));
         assert!(
             !r.excitation_energies.is_empty(),
@@ -97,8 +98,9 @@ fn casida_over_budget_errors_and_names_the_largest_term() {
         n_roots: 1,
         method: TddftMethod::Casida,
         memory_budget_bytes: Some(STARVED),
+        ..Default::default()
     };
-    let err = run_tddft(&mol, &obs, &dfbs, &rhf, &cfg, 1.0)
+    let err = run_tddft(&mol, &obs, &dfbs, &rhf, &cfg)
         .expect_err("a 1 kB budget must not be enough for the Casida dense matrices")
         .to_string();
     assert!(err.contains("TDDFT/Casida"), "must name the method: {err}");
@@ -123,8 +125,9 @@ fn tda_over_budget_errors_and_names_the_largest_term() {
         n_roots: 1,
         method: TddftMethod::Tda,
         memory_budget_bytes: Some(STARVED),
+        ..Default::default()
     };
-    let err = run_tddft(&mol, &obs, &dfbs, &rhf, &cfg, 1.0)
+    let err = run_tddft(&mol, &obs, &dfbs, &rhf, &cfg)
         .expect_err("a 1 kB budget must not be enough for the TDA dense matrices")
         .to_string();
     assert!(err.contains("TDDFT/TDA"), "must name the method: {err}");
@@ -158,7 +161,7 @@ fn caller_budget_is_honoured_not_discarded() {
         ..base.clone()
     };
     assert!(
-        run_tddft(&mol, &obs, &dfbs, &rhf, &ample, 1.0).is_ok(),
+        run_tddft(&mol, &obs, &dfbs, &rhf, &ample).is_ok(),
         "the ample-budget run must succeed, or the comparison below proves nothing"
     );
 
@@ -167,46 +170,54 @@ fn caller_budget_is_honoured_not_discarded() {
         ..base
     };
     assert!(
-        run_tddft(&mol, &obs, &dfbs, &rhf, &starved, 1.0).is_err(),
+        run_tddft(&mol, &obs, &dfbs, &rhf, &starved).is_err(),
         "a caller-supplied 1 kB ceiling was ignored — the budget is not reaching the \
          allocations, which is the entire defect this field exists to fix"
     );
 }
 
-/// A hybrid/DFT reference (`c_hf != 1.0`) must still produce a result — the
-/// missing-XC-kernel WARNING is a diagnostic, not a failure path.
+/// A KS (hybrid) reference runs WITH the XC-kernel block, under the same
+/// ample budget — so the f_xc transient the plan now charges for TDA does not
+/// turn a job that fits into a refusal.
 ///
-/// `run_tddft` warns on stderr when `c_hf != 1.0` because the `(ia|f_xc|jb)`
-/// kernel response is unimplemented, so those excitation energies omit a
-/// physical term. That warning exists because the omission was previously
-/// SILENT: a caller running TDDFT on a DFT reference got approximate numbers
-/// that looked converged and complete.
-///
-/// This test pins the two things that must remain true: the warning path does
-/// not turn a working calculation into an error, and it does not corrupt the
-/// result. It deliberately does NOT assert the excitation energy against a
-/// reference value — with the kernel term missing, no such reference is
-/// meaningful, which is precisely why the warning is there.
+/// This replaces a test that pinned the old behaviour: `c_hf = 0.2` on an HF
+/// reference returned a kernel-less number with a stderr warning. That path
+/// no longer exists — a KS reference either gets its f_xc term or an error
+/// (see `refusals.rs` and `validation_tddft.rs`).
 #[test]
-fn hybrid_c_hf_still_returns_a_result_despite_the_missing_xc_kernel() {
-    let (mol, obs, dfbs, rhf) = fixture();
-    let cfg = TddftConfig {
-        n_roots: 1,
-        method: TddftMethod::Tda,
-        memory_budget_bytes: Some(AMPLE),
+fn hybrid_reference_runs_with_the_xc_kernel_under_an_ample_budget() {
+    let (mol, obs, dfbs, _rhf) = fixture();
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+    let ctx = ParallelContext::default();
+    let ks_cfg = RhfConfig {
+        xc: Some("B3LYP".to_string()),
+        density_conv: 1e-8,
+        max_iter: 200,
+        ..Default::default()
     };
-
-    // B3LYP-like exact-exchange fraction: exercises the c_hf != 1.0 branch.
-    let r = run_tddft(&mol, &obs, &dfbs, &rhf, &cfg, 0.2)
-        .expect("a hybrid c_hf must still run; the missing f_xc term is a warning, not an error");
-
+    let ks = solve_rhf(&ctx, &mol, &obs, op, &bounds, &ks_cfg).unwrap();
     assert!(
-        !r.excitation_energies.is_empty(),
-        "no roots returned for a hybrid reference"
+        ks.converged,
+        "B3LYP/STO-3G water reference did not converge"
     );
-    assert!(
-        r.excitation_energies[0].is_finite(),
-        "hybrid c_hf produced a non-finite excitation energy: {:?}",
-        r.excitation_energies
-    );
+
+    for method in [TddftMethod::Tda, TddftMethod::Casida] {
+        let cfg = TddftConfig {
+            n_roots: 1,
+            method,
+            memory_budget_bytes: Some(AMPLE),
+            xc: Some("B3LYP".to_string()),
+            ..Default::default()
+        };
+        let r = run_tddft(&mol, &obs, &dfbs, &ks, &cfg)
+            .unwrap_or_else(|e| panic!("{method:?}: B3LYP refused an ample budget: {e}"));
+        assert!(r.fxc_included, "{method:?}: KS reference ran without f_xc");
+        assert!((r.c_hf - 0.2).abs() < 1e-12, "{method:?}: c_HF {}", r.c_hf);
+        assert!(
+            r.excitation_energies[0].is_finite() && r.excitation_energies[0] > 0.0,
+            "{method:?}: unphysical {:?}",
+            r.excitation_energies
+        );
+    }
 }

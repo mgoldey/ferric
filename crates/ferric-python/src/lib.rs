@@ -7293,6 +7293,13 @@ struct PyTddftResult {
     n_roots: usize,
     #[pyo3(get)]
     method: String,
+    /// Exact-exchange fraction used on the `-c_HF` terms.
+    #[pyo3(get)]
+    c_hf: f64,
+    /// Whether the (ia|f_xc|jb) kernel block was included (true for every KS
+    /// reference, false only for an HF reference).
+    #[pyo3(get)]
+    fxc_included: bool,
     excitation_energies: Vec<f64>,
     oscillator_strengths: Vec<f64>,
 }
@@ -7372,26 +7379,30 @@ fn run_tddft(
         }
     };
 
-    let c_hf;
-    let scf = if let Some(xc_name) = functional {
+    // The f_xc kernel is built inside `run_tddft` from `functional` on the
+    // SAME grid the KS reference is converged on (the ladder keeps
+    // `dft_grid`), and the exact-exchange fraction comes from the same
+    // functional. A functional without a complete kernel (meta-GGA, VV10,
+    // range-separated) is refused before the SCF is spent on it.
+    if let Some(xc_name) = functional {
+        ferric_dft::lr_kernel::resolve_singlet_response_xc(xc_name, "run_tddft")
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
+    }
+    let (scf, grid) = if let Some(xc_name) = functional {
         let mut cfg = rhf_config(None);
         cfg.xc = Some(xc_name.to_string());
         cfg.df_j_aux = Some("def2-universal-jkfit".to_string());
         cfg.df_k_aux = Some("def2-universal-jkfit".to_string());
+        let grid = cfg.dft_grid.clone().unwrap_or_default();
         let ladder = ferric_scf::ladder::ksdft_ladder(&cfg);
         let lr =
             ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol.inner, &prep, op, &bounds, &ladder)
                 .map_err(make_err)?;
-        let xc_def = ferric_dft::libxc::xc_def_from_name(xc_name)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
-        let k_mix = ferric_dft::libxc::k_mix_from_xc_def(&xc_def);
-        c_hf = k_mix.sr;
-        lr.result
+        (lr.result, grid)
     } else {
         let cfg = rhf_config(None);
         let scf = solve_rhf(&ctx, &mol.inner, &prep, op, &bounds, &cfg).map_err(make_err)?;
-        c_hf = 1.0;
-        scf
+        (scf, ferric_dft::grid::AtomicGridConfig::default())
     };
     if !scf.converged {
         return Err(make_err(ferric_core::FerricError::ScfConvergence {
@@ -7403,6 +7414,8 @@ fn run_tddft(
     let config = TddftConfig {
         n_roots,
         method: tddft_method,
+        xc: functional.map(str::to_string),
+        grid,
         ..Default::default()
     };
     // All closure arguments are owned Rust values (an owned Molecule clone
@@ -7410,12 +7423,14 @@ fn run_tddft(
     // boundary; safe to release the GIL for the TDDFT compute.
     let emol_tddft = mol.inner.clone();
     let r = py
-        .allow_threads(|| ferric_tddft::run_tddft(&emol_tddft, &prep, &dfbs, &scf, &config, c_hf))
+        .allow_threads(|| ferric_tddft::run_tddft(&emol_tddft, &prep, &dfbs, &scf, &config))
         .map_err(make_err)?;
 
     Ok(PyTddftResult {
         n_roots: r.excitation_energies.len(),
         method: format!("{:?}", r.method),
+        c_hf: r.c_hf,
+        fxc_included: r.fxc_included,
         excitation_energies: r.excitation_energies,
         oscillator_strengths: r.oscillator_strengths,
     })

@@ -50,6 +50,9 @@ pub mod ks;
 pub mod lebedev;
 /// libxc bindings: functional evaluation (exc, vxc, fxc) for LDA/GGA/mGGA/hybrid.
 pub mod libxc;
+/// Closed-shell singlet linear-response `(ia|f_xc|jb)` block shared by every
+/// TDA/TDDFT driver, plus the functional gate that refuses kernel-less cases.
+pub mod lr_kernel;
 /// Grid pruning strategies for reducing angular quadrature near nuclei.
 pub mod prune;
 /// Radial quadrature: Treutler-Ahlrichs M4 and Mura-Knowles log grids.

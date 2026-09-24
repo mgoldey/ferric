@@ -26,8 +26,10 @@ per-method table, with Python-only capabilities included, is in
 `scs-mp2`, `scs-mp2-2terfc`, `laplace-mp2`, `pdep-rpa`, `ccsd`. **Proven
 (narrow, exact limits only):** `linlccd`, which has no external reference for
 its energy; with the hole–hole ladder off it reduces exactly to RI-MP2, and
-with exact integrals its driver terms reproduce canonical MP2. These print no
-warning.
+with exact integrals its driver terms reproduce canonical MP2. **Proven
+(narrow, closed shell):** `tda`, `tddft`, whose lowest five TDA and Casida
+roots match PySCF for water, formaldehyde and NH3 at 6-31G and aug-cc-pVDZ
+with HF, LDA, PBE and B3LYP (see the anchor below). These print no warning.
 
 **Smoke or Spike**, with the caveat the CLI prints:
 
@@ -41,7 +43,6 @@ warning.
 | `oo-rimp2` | Smoke | Stationarity and vanishing orbital gradient checked; no external absolute reference. |
 | `wb97x-l-v` | Smoke | Components and limits checked; no reference for the total energy. |
 | `b2plyp`, `dsd-pbep86` | Spike | No comparison to a reference code yet. |
-| `tda`, `tddft` | Spike | Exact for an HF reference (CIS / TDHF); DFT references omit the f<sub>xc</sub> kernel. |
 
 **Not graded** (no warning printed):
 
@@ -61,6 +62,7 @@ the pinning test actually asserts, which is often looser.
 |---|---|---|---:|---:|---|
 | Closed-shell (T) | H2O / cc-pVDZ | PySCF `ccsd_t()` | ~1e-6 Ha | 1e-4 Ha | `ferric-cc` `closed_shell_t_h2o_ccpvdz_matches_pyscf` |
 | G0W0@HF | H2O / cc-pVDZ | MOLGW | ~5 meV | 0.30 eV | `ferric-gw/tests/h2o_g0w0_cohsex.rs` |
+| TDA and Casida TDDFT excitation energies | water, formaldehyde, NH3 / 6-31G, aug-cc-pVDZ | PySCF `tddft.TDA`/`TDDFT`, same RI and grid | HF ≤ 2e-6 eV; LDA/PBE ≤ 2e-5 eV; B3LYP ≤ 6.5e-4 eV | 1e-3 eV | [`validation_tddft.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-tddft/tests/validation_tddft.rs), [`gen_tddft_refs.py`](https://github.com/mgoldey/ferric/blob/main/scripts/validation/gen_tddft_refs.py) |
 | RI-MP2 size-extensivity | H2 dimer at large separation | 2 × monomer | 2e-12 Ha | 1e-7 Ha | `ferric-mp2/tests/rimp2_size_extensivity.rs` |
 | RHF/UHF/ROHF/KS gradients | several | finite differences of the energy | — | per test | `ferric-scf` gradient tests |
 | COSX exchange, dense-grid limit | water / cc-pVDZ | direct K | 3.3e-7 | — | see [SCF: choosing how exchange is built](../methods/scf.md) |
@@ -104,8 +106,10 @@ Reported rather than omitted:
   not regression tests.
 - **TDHF/RPAx C6**: ~63% low regardless of gap. Do not use it for
   dispersion; its static α is not established either (see the grade table).
-- **TDDFT / TDA with a DFT reference**: the f<sub>xc</sub> kernel term is
-  omitted in the CLI/Python path; the run warns.
+- **TDDFT / TDA**: closed-shell references only. Functionals without an
+  f<sub>xc</sub> kernel (meta-GGA, VV10, range-separated) are refused rather
+  than run without it. B3LYP at aug-cc-pVDZ agrees with PySCF to 6.5e-4 eV,
+  40× worse than PBE in the same basis; the cause is not yet identified.
 - **COSX scaling and gradients**: at def2-SVP, one thread, over alkanes C4–C20
   with the default sparse half-transforms, the full K build's tail exponent
   (last three points, C12–C20) is N<sup>1.57</sup> and the A-build's
@@ -123,8 +127,8 @@ wrong:
 
 - a **non-converged SCF** returned as an ordinary result, because convergence is
   a flag rather than an error
-- a method missing a **physical term** it does not mention (TDDFT's f<sub>xc</sub>
-  kernel is exactly this case, which is why it warns)
+- a method missing a **physical term** it does not mention (TDDFT once
+  returned KS excitations without its f<sub>xc</sub> kernel)
 - a **fallback model** silently substituted for one atom in a molecule, changing
   a partitioning without changing the shape of the output
 - a **screening or truncation threshold** that happens to be safe for the test
