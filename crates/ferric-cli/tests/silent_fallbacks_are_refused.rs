@@ -239,3 +239,30 @@ fn scf_df_aux_accepts_the_shared_opt_out_spellings() {
     );
     assert_runs(&out, "rhf with df_j_aux = \"exact\"");
 }
+
+// ─── The J/K log line (item 7) ──────────────────────────────────────────────
+
+/// Pre-fix: ksdft/PBE with `df_j_aux = ""` logged `[ferric] SCF J/K: RI-JK
+/// via ` -- an empty basis name, on the one run that had turned density
+/// fitting off. Reverting to the old `Some(aux) => "RI-JK via {aux}"` match
+/// brings that line back and fails both assertions.
+#[test]
+fn jk_log_line_names_exact_coulomb_when_df_is_off() {
+    let out = run_toml(
+        "jk_log",
+        &body(
+            "water.xyz",
+            1,
+            "ksdft",
+            "energy",
+            "[dft]\nfunctional = \"PBE\"\n\n[scf]\ndf_j_aux = \"\"\n",
+        ),
+    );
+    assert_runs(&out, "ksdft/PBE with df_j_aux = \"\"");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("[ferric] SCF J/K: exact J (four-centre); no K (pure functional)"),
+        "{err}"
+    );
+    assert!(!err.contains("RI-JK via \n"), "{err}");
+}
