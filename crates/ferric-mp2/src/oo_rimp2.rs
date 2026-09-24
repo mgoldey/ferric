@@ -1616,7 +1616,10 @@ pub fn oo_ri_mp2(
             // Fall back to a damped Newton step without DIIS extrapolation.
             let mut bt_kappa_ov = kappa_ov.clone();
             let mut bt_c = c.dot(&u);
-            let mut bt_point = trial;
+            // The rejected trial seeds the backtrack; each step frees the
+            // previous point BEFORE evaluating the next, so at most `point`
+            // plus one backtrack amplitude set are resident.
+            let mut bt_point = Some(trial);
 
             for _bt in 0..10 {
                 bt_kappa_ov *= 0.5;
@@ -1631,9 +1634,12 @@ pub fn oo_ri_mp2(
                 }
                 let u2 = cayley_rotation(&k)?;
                 bt_c = c.dot(&u2);
-                bt_point =
+                drop(bt_point.take());
+                let p =
                     evaluate_point(obs, bounds, &bt_c, &h, vnn, &pool, budget_bytes, &ao, &orb)?;
-                if bt_point.total() <= point.total() + 1e-12 {
+                let accepted = p.total() <= point.total() + 1e-12;
+                bt_point = Some(p);
+                if accepted {
                     break;
                 }
             }
@@ -1641,7 +1647,7 @@ pub fn oo_ri_mp2(
             // The backtracking loop commits bt_* to its last trial step on every
             // path (break or exhaustion), so bt_c is always the step to take.
             c = bt_c;
-            point = bt_point;
+            point = bt_point.expect("the backtracking loop evaluates at least one point");
 
             // Reset DIIS after backtracking since the extrapolated
             // subspace produced an uphill step.
