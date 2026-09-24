@@ -352,10 +352,13 @@ def build_integrals(
     return dict(S=S, T=T, V=V, h=T + V, I=I, enn=enn, P=P, G=G, madelung=vm)
 
 
-def rhf(S, h, I, enn, nelec, conv=1e-10, maxiter=100, kshift=0.0, jk=None):
+def rhf(
+    S, h, I, enn, nelec, conv=1e-10, maxiter=100, kshift=0.0, jk=None, return_mo=False
+):
     """Molecular RHF on (S, h, I).  kshift = Madelung v_M: K -> K + v_M S D S
     (PySCF exxdiv='ewald'); the energy picks up -v_M/4 tr(DSDS) through K.
-    jk: optional D -> (J, K) callable replacing the dense I contraction (e.g. GDF B tensors)."""
+    jk: optional D -> (J, K) callable replacing the dense I contraction (e.g. GDF B tensors).
+    return_mo: also return the MO coefficients C (columns, ordered as eps) for post-HF."""
     s, U = np.linalg.eigh(S)
     X = U[:, s > 1e-8] / np.sqrt(s[s > 1e-8])
     nocc = nelec // 2
@@ -393,6 +396,6 @@ def rhf(S, h, I, enn, nelec, conv=1e-10, maxiter=100, kshift=0.0, jk=None):
         C = X @ C
         D = 2 * C[:, :nocc] @ C[:, :nocc].T
         if abs(e - e_old) < conv and abs(err).max() < 1e-7:
-            return e, eps, it
+            return (e, eps, it, C) if return_mo else (e, eps, it)
         e_old = e
     raise RuntimeError("SCF not converged")
