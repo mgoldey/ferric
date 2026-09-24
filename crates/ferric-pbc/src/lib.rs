@@ -76,6 +76,11 @@
 //!   realified into ferric-rpa's real log-det pipeline; per-cell energies,
 //!   Madelung-shifted denominators as at Gamma.
 //!
+//! * [`lindep`] — per-k canonical-cut diagnostics (`LindepReport` on
+//!   `KScfResult`/`KUScfResult`: kept counts, smallest / largest-dropped
+//!   eigenvalue, noise-floor flag) and the OPT-IN `exp_to_discard` basis
+//!   filter (`prepare_cell_basis`); FINDINGS "Iteration 15".
+//!
 //! Units: Bohr and Hartree throughout; G vectors in Bohr⁻¹.
 //!
 //! Not wired into the CLI or the Python bindings yet — see
@@ -93,6 +98,7 @@ pub mod kpts;
 pub mod kscf;
 pub mod kuscf;
 pub mod lattice;
+pub mod lindep;
 pub mod lmp2;
 pub mod mp2;
 pub mod pair_ft;
@@ -118,14 +124,18 @@ pub use kcorr::{
 pub use kdense_aft::{KDenseAftConfig, KDenseAftEri, KDenseAftJk};
 pub use kpts::{KPointMesh, MeshCentring};
 pub use kscf::{
-    complex_canonical_orthogonalizer, solve_krhf, solve_krhf_injected, KJkKind, KPointInjection,
-    KPointJk, KRhfConfig, KScfConfig, KScfResult,
+    complex_canonical_orthogonalizer, complex_canonical_orthogonalizer_with_stats, solve_krhf,
+    solve_krhf_injected, KJkKind, KPointInjection, KPointJk, KRhfConfig, KScfConfig, KScfResult,
 };
 pub use kuscf::{
     kuhf_gap_report, solve_kuhf, solve_kuhf_injected, solve_kuhf_injected_with_guess, KUScfResult,
     KUhfConfig, KUhfResult,
 };
 pub use lattice::Cell;
+pub use lindep::{
+    exp_to_discard, prepare_cell_basis, DiscardedShell, ExpToDiscardError, ExpToDiscardReport,
+    KLindep, LindepReport,
+};
 pub use lmp2::{
     gamma_lmp2, gamma_lmp2_with_spaces, gamma_localized_spaces, mp2_closed_form_local, needle_axis,
     uniform_head, GammaEpsGate, GammaLmp2Config, GammaLmp2Inputs, GammaLmp2Result,
