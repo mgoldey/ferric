@@ -715,7 +715,10 @@ pub fn scs_mp2_gradient_analytical(
     grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, rhf.mos_r())?;
     // Approximate scaling: multiply MP2 part by average SCS scaling
     let scale = (config.c_os + config.c_ss) / 2.0;
-    let rhf_grad = ferric_scf::gradient::rhf_gradient(mol, obs, op, bounds, rhf, ext)?;
+    // EXACT-J/K RHF gradient on purpose: `grad` above carries an exact
+    // four-centre HF part, and only a like-for-like subtraction isolates the
+    // MP2 part being scaled (see `rhf_gradient_exact_jk`).
+    let rhf_grad = ferric_scf::gradient::rhf_gradient_exact_jk(mol, obs, op, bounds, rhf, ext)?;
     for i in 0..mol.atoms.len() {
         for c in 0..3 {
             let mp2_part = grad[(i, c)] - rhf_grad[(i, c)];
