@@ -53,7 +53,9 @@ method:
 
 - **TDHF/RPAx \\( C_6 \\)** stays about 60% low regardless of gap. Use that
   kernel for static polarizabilities only.
-- **Local MP2** has no scaling claim; the J build is still dense.
+- **Local MP2**: `lmp2-direct` is measured sub-quadratic (about N<sup>1.24</sup>
+  erfc, N<sup>1.4</sup> Coulomb) on alkanes C20–C48 and overtakes RI-MP2 near C20;
+  plain `lmp2` makes no scaling claim. See [The MP2 family](./mp2.md#local-mp2).
 
 One earlier negative has been **retracted**: the AO-sparse Laplace SOS-MP2
 truncation radius does *not* track the molecular diameter. That result was an

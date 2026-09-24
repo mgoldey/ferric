@@ -53,8 +53,11 @@ what comes out of that sum.
   an indexing bug, now fixed and recorded in the test
   `sos_ao_sparse_truncation_radius_is_transferable_across_sizes`.
 - **Local MP2 (amplitude threshold)** has localized virtuals and per-pair
-  domain-local RI fits, but its J build is still dense (from RI), so **no
-  scaling claim is made**.
+  domain-local RI fits. The integral-direct variant (`lmp2-direct`) is
+  measured at about N<sup>1.24</sup> (erfc) to N<sup>1.4</sup> (Coulomb) on
+  alkanes C20–C48, three points in one basis, so the reading is provisional.
+  The plain `lmp2` path still builds the global 3-index tensor and makes no
+  scaling claim.
 - **RI-Laplace MP2** is dense; it is the correctness reference for the AO
   formulation, not a reduced-scaling path.
 

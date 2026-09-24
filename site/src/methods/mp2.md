@@ -173,9 +173,28 @@ per-pair domain-local RI fits. `eps = 0` reproduces RI-MP2 exactly; the
 default `1e-4` carries a one-sided truncation error, which the output prints
 against the canonical RI reference.
 
-**No scaling claim is made.** The J build is still dense (from RI), so the
-amplitude machinery is anchored but end-to-end cost is not reduced. Counters
-are reported instead.
+**Integral-direct LMP2** (`lmp2-direct`, `examples/alkane8-lmp2-direct.toml`,
+`run_lmp2_direct`) is the reduced-cost path. It never forms the global
+3-index tensor. Locality comes from an integral-free pair gate, per-occupied
+auxiliary-fit and virtual domains, and truncation of each orbital's AO
+support. With every map at its trivial setting it reproduces the global
+3-index path and canonical RI-MP2 (`tests/lmp2_direct.rs`).
+
+**What is measured for `lmp2-direct`** (n-alkanes C20 → C48, 6-31G with
+cc-pVDZ-RI, the shipped default settings, a quiet machine, 2026-09-07):
+
+- Correlation-stage cost grows as about N<sup>1.24</sup> with the erfc
+  kernel and N<sup>1.4</sup> with Coulomb, fitted to the last three sizes.
+- It overtakes canonical RI-MP2 at about C20 and is about 5.8× faster at
+  C32.
+
+**How to read it (provisional):** sub-quadratic on this series, but the fit
+has three points on one family of molecules in one basis. It is not shown
+to be linear, and it is not measured on 3-D or diffuse systems.
+
+**The plain `lmp2` path makes no scaling claim.** Its assembly is
+pair-local (no dense J is formed), but it still builds the global 3-index
+tensor. Use it as the reference implementation and for small systems.
 
 ## Cite
 
