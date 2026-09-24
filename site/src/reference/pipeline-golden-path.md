@@ -1872,7 +1872,9 @@ reproduced above in full effect. What matters is that it was RUN, so the (a)
 branch below is a description of working code rather than an intention.
 
 **The (b) branch is too, as of 2026-09-20.** `run_saddle` landed on
-2026-09-19, and C1-C5 was then executed end to end against merged main -- see "Every C-step RUN against merged main" under (b).
+2026-09-19, and every C-step was then run against merged main as two smoke
+tests on two systems, not one continuous C1-C5 chain -- see "Every C-step RUN
+against merged main" under (b).
 
 #### The same thing from the CLI, no Python (2026-09-19)
 
