@@ -141,7 +141,7 @@ See [RPA and GW](../methods/rpa-gw.md).
 | File | System / basis | `kind` | Reference in header | Notes |
 |---|---|---|---|---|
 | `water-tda.toml` | H2O / cc-pVDZ | `tda` (CIS, 5 roots) | — | Default aux `cc-pvdz-rifit` (an alias of `cc-pvdz-ri`). |
-| `water-tddft-pbe.toml` | H2O / cc-pVDZ | `tddft` @PBE (5 roots) | — | The f_xc kernel is missing; the run warns. |
+| `water-tddft-pbe.toml` | H2O / cc-pVDZ | `tddft` @PBE (5 roots) | — | Includes the f_xc kernel. |
 
 See also [Capabilities](./capabilities.md) for the grade of each `kind`,
 [Input reference](./input.md) for every key, and
