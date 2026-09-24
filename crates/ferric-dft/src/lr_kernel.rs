@@ -15,7 +15,7 @@
 //!
 //! # The two pieces
 //!
-//! [`resolve_singlet_response_xc`] decides whether a functional HAS a kernel
+//! [`resolve_singlet_response_xc`](crate::lr_kernel::resolve_singlet_response_xc) decides whether a functional HAS a kernel
 //! ferric can apply, and what exact-exchange fraction goes on the `−c_HF` K-like
 //! terms. It hard-refuses (never silently degrades) every functional whose
 //! response would be incomplete: meta-GGA (no τ f_xc kernel), VV10-carrying
@@ -23,7 +23,7 @@
 //! range-separated hybrids (the long-range exchange term needs attenuated
 //! integrals the drivers do not build).
 //!
-//! [`singlet_fxc_ov_block`] builds `K_{ia,jb} = (ia| f_αα + f_αβ |jb)` from the
+//! [`singlet_fxc_ov_block`](crate::lr_kernel::singlet_fxc_ov_block) builds `K_{ia,jb} = (ia| f_αα + f_αβ |jb)` from the
 //! validated [`GgaFxcKernel`](crate::fxc::GgaFxcKernel) AO operator. With real orbitals
 //! `(ia|f_xc|jb) = (ia|f_xc|bj)`, so the SAME block enters A and B:
 //!
