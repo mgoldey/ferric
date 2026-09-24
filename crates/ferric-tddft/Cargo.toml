@@ -19,3 +19,7 @@ ndarray-linalg = { workspace = true }
 [dev-dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+# validation_tddft.rs anchors run_tddft against the PySCF-validated library
+# TDA path (ferric_gw::tddft::run_tda_dft). Dev-only: ferric-gw does not depend
+# on ferric-tddft, so there is no cycle.
+ferric-gw = { path = "../ferric-gw" }

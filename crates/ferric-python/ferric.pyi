@@ -1194,13 +1194,25 @@ class TddftResult:
         ...
 
     @property
+    def c_hf(self) -> float:
+        """Exact-exchange fraction used on the -c_HF terms (1.0 for HF)."""
+        ...
+
+    @property
+    def fxc_included(self) -> bool:
+        """True when the (ia|f_xc|jb) kernel block was included -- always for a
+        KS reference; False only for an HF reference (CIS/TDHF)."""
+        ...
+
+    @property
     def excitation_energies(self) -> NDArray[np.float64]:
         """Singlet excitation energies (Hartree), ascending."""
         ...
 
     @property
     def oscillator_strengths(self) -> NDArray[np.float64]:
-        """Length-gauge oscillator strengths (dimensionless), one per root."""
+        """Length-gauge oscillator strengths (dimensionless), one per root,
+        PySCF convention (f = 2/3 * omega * |sqrt(2) sum_ia (X+Y)_ia <i|r|a>|^2)."""
         ...
 
     def lowest_ev(self) -> float:
@@ -1927,10 +1939,14 @@ def run_tddft(
     n_roots: int = 3,
     method: str = "tda",
 ) -> TddftResult:
-    """Closed-shell linear response. functional=None runs on an RHF reference
-    (CIS for method="tda"/"cis", TDHF for "casida"/"rpa"/"tddft"/"tdhf");
-    a functional runs TDA/TDDFT on that KS reference WITHOUT the f_xc kernel
-    term, so DFT-reference excitation energies are approximate."""
+    """Closed-shell singlet linear response. functional=None runs on an RHF
+    reference (CIS for method="tda"/"cis", TDHF for "casida"/"rpa"/"tddft"/
+    "tdhf"); a functional converges that KS reference (RI-JK,
+    def2-universal-jkfit, default 75x110 grid) and adds the (ia|f_xc|jb)
+    kernel block to A (and B for Casida) on the same grid. Meta-GGA, VV10 and
+    range-separated functionals raise ValueError (no complete kernel); there
+    is no kernel-less DFT result. Coulomb/exchange response integrals are RI
+    over `auxbasis`."""
     ...
 
 def run_double_hybrid(

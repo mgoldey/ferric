@@ -44,6 +44,11 @@
 //!
 //! ## The f_xc adapter — the one genuinely new piece
 //!
+//! The adapter and the functional gate now live in
+//! `ferric_dft::lr_kernel` (`singlet_fxc_ov_block`,
+//! `resolve_singlet_response_xc`), shared with the user-facing
+//! `ferric_tddft::run_tddft`; they were moved there unchanged.
+//!
 //! `ferric_dft::fxc::GgaFxcKernel` is an **AO-density-matrix → AO-potential**
 //! operator: given a spin-resolved perturbation (δD_α, δD_β) at a reference
 //! density it returns (δV_α, δV_β). The TDA matrix needs `(ia)`-space matrix
@@ -81,7 +86,9 @@ use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
 use ferric_dft::fxc::GgaFxcKernel;
 use ferric_dft::grid::AtomicGridConfig;
-use ferric_dft::libxc::xc_def_from_name_nspin;
+use ferric_dft::lr_kernel::{
+    resolve_singlet_response_xc, singlet_fxc_ov_block, FXC_BLOCK_ASYMMETRY_TOL,
+};
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::blas_threads::{opt_in_blas_threads, with_blas_threads};
 use ferric_integrals::oneelectron;
@@ -155,13 +162,13 @@ impl Default for TdaDftConfig {
 /// # Why the count is 3n², not 2n²
 ///
 /// This guard used to charge `n² · 8 · 2` — `a_mat` plus the `eigh`
-/// eigenvector output. That misses `k_fxc`: [`build_fxc_block`] returns a full
+/// eigenvector output. That misses `k_fxc`: [`singlet_fxc_ov_block`](ferric_dft::lr_kernel::singlet_fxc_ov_block) returns a full
 /// `(n, n)` matrix which is live at the same time as `a_mat` when they are
 /// added (`a_mat += &k_fxc`), so with `include_fxc = true` — the DEFAULT, see
 /// [`TdaDftConfig::default`] — the true peak is `a_mat` + `k_fxc` + the `eigh`
 /// output = `3n²`. The old count under-reported by 50% on the default path,
 /// which is precisely the direction that OOMs instead of erroring cleanly.
-/// (`build_fxc_block` also allocates the pre-symmetrization `k` and the
+/// (`singlet_fxc_ov_block` also allocates the pre-symmetrization `k` and the
 /// symmetrized `k_sym` together, but `k` is dropped when the function returns,
 /// before `a_mat += &k_fxc`, so it does not stack onto the peak above.)
 ///
@@ -252,96 +259,6 @@ fn tda_oscillator_strengths(
     f
 }
 
-/// Build the singlet f_xc coupling block `K_{ia,jb} = (ia| f_αα + f_αβ |jb)`
-/// in the active (ia) space, via the validated `GgaFxcKernel` AO adapter.
-///
-/// One `apply_with_ref` call per `jb` column: δD_α = δD_β = C_j C_b^T, then
-/// `K[:, jb] = C_occ^T δV_α C_vir` flattened. The kernel's AO→AO operator is
-/// SYMMETRIC in the (μν) pair index (it back-projects onto χ_μχ_ν and
-/// explicitly symmetrizes), so the resulting K is symmetric up to grid
-/// round-off; we symmetrize at the end and report the pre-symmetrization
-/// asymmetry as a diagnostic (an asymmetry far above grid noise would mean the
-/// adapter, not the kernel, is wrong).
-///
-/// Cost: `n = nocc·nvir` kernel applications. That is deliberate — it reuses
-/// the ALREADY-VALIDATED kernel unmodified rather than re-deriving the
-/// grid-space contraction (which is what a production implementation would do,
-/// in one pass over the grid; see the module docs' scope note).
-fn build_fxc_block(
-    kernel: &GgaFxcKernel,
-    ref_dens: &ferric_dft::density_on_grid::UksDensityGrid,
-    mo_coeff: &Array2<f64>,
-    first_act: usize,
-    nocc_total: usize,
-    nocc: usize,
-    nvir: usize,
-) -> (Array2<f64>, f64) {
-    let n = nocc * nvir;
-    let orbo = mo_coeff.slice(s![.., first_act..nocc_total]).to_owned();
-    let orbv = mo_coeff
-        .slice(s![.., nocc_total..(nocc_total + nvir)])
-        .to_owned();
-
-    let mut k = Array2::<f64>::zeros((n, n));
-    for j in 0..nocc {
-        let cj = orbo.column(j);
-        for b in 0..nvir {
-            let cb = orbv.column(b);
-            // δD = ½(C_j C_bᵀ + C_b C_jᵀ), EXPLICITLY SYMMETRIZED.
-            //
-            // An earlier version passed the raw outer product `C_j C_bᵀ` with a
-            // comment asserting symmetrization was a no-op because the kernel
-            // back-projects onto the symmetric product χ_μχ_ν. That is true for
-            // LDA and FALSE for GGA: the gradient terms contract against ∇δD,
-            // and ∇(C_j C_bᵀ) ≠ ∇(C_b C_jᵀ), so the antisymmetric part of δD
-            // does leak into δV through the σ = |∇ρ|² coupling.
-            //
-            // MEASURED on water/STO-3G/PBE: the raw outer product gives an
-            // (ia)-block asymmetry of 3.1e-2 relative — five orders of magnitude
-            // above the 1e-8 grid-noise guard below, which correctly rejected
-            // it. Symmetrizing drops the asymmetry under the guard and brings
-            // PBE excitation energies to 1.0e-3 eV of PySCF `tddft.TDA`.
-            // LDA is unchanged by this (1.02e-3 eV before and after), which is
-            // exactly the LDA-vs-GGA asymmetry the old comment missed.
-            let dd = {
-                let mut m = Array2::<f64>::zeros((cj.len(), cj.len()));
-                for (mu, &x) in cj.iter().enumerate() {
-                    for (nu, &y) in cb.iter().enumerate() {
-                        m[(mu, nu)] = 0.5 * x * y;
-                    }
-                }
-                for (nu, &y) in cb.iter().enumerate() {
-                    for (mu, &x) in cj.iter().enumerate() {
-                        m[(nu, mu)] += 0.5 * y * x;
-                    }
-                }
-                m
-            };
-            let (dv_a, _dv_b) = kernel.apply_with_ref(ref_dens, &dd, &dd);
-            // K[:, jb] = C_occ^T δV_α C_vir, flattened as ia = i*nvir + a.
-            let block = orbo.t().dot(&dv_a).dot(&orbv); // (nocc, nvir)
-            let jb = j * nvir + b;
-            for i in 0..nocc {
-                for a in 0..nvir {
-                    k[(i * nvir + a, jb)] = block[(i, a)];
-                }
-            }
-        }
-    }
-
-    // Symmetry diagnostic: max |K − Kᵀ| relative to max |K|.
-    let scale = k.iter().fold(0.0_f64, |m, &x| m.max(x.abs())).max(1e-30);
-    let mut asym = 0.0_f64;
-    for p in 0..n {
-        for q in 0..n {
-            asym = asym.max((k[(p, q)] - k[(q, p)]).abs());
-        }
-    }
-    let asym_rel = asym / scale;
-    let k_sym = 0.5 * (&k + &k.t());
-    (k_sym, asym_rel)
-}
-
 /// Run a TDA-DFT singlet excitation calculation on a closed-shell KS (or HF)
 /// reference.
 ///
@@ -366,8 +283,6 @@ pub fn run_tda_dft(
     xc_name: Option<&str>,
     cfg: &TdaDftConfig,
 ) -> Result<TdaDftResult, FerricError> {
-    use ferric_dft::libxc::FunctionalFamily;
-
     if !matches!(ks.spin, ferric_scf::Spin::Restricted) {
         return Err(FerricError::General(
             "run_tda_dft: closed-shell (restricted) reference only — this spike does not \
@@ -407,60 +322,21 @@ pub fn run_tda_dft(
     let (c_hf_from_xc, kernel) = match xc_name {
         None => (1.0, None), // pure HF reference → CIS
         Some(name) => {
-            // nspin=2: the kernel is spin-resolved (that IS the API), and the
-            // singlet combination f_αα + f_αβ is extracted by feeding
-            // δD_α = δD_β.
-            let xc_probe = xc_def_from_name_nspin(name, 2)
-                .map_err(|e| FerricError::General(format!("run_tda_dft: xc '{name}': {e:?}")))?;
-
-            if xc_probe.vv10.is_some() {
-                return Err(FerricError::General(format!(
-                    "run_tda_dft: functional '{name}' carries VV10 nonlocal correlation, \
-                     whose response is NOT in the f_xc kernel — the excitation energies \
-                     would be silently wrong. Not supported by this spike."
-                )));
-            }
-            if let Some(cam) = xc_probe.cam {
-                if cam.omega != 0.0 {
-                    return Err(FerricError::General(format!(
-                        "run_tda_dft: functional '{name}' is range-separated (omega={}), \
-                         and the long-range exchange kernel term is not assembled by this \
-                         spike. Use a pure functional or a plain hybrid.",
-                        cam.omega
-                    )));
-                }
-            }
-            if xc_probe
-                .funcs
-                .iter()
-                .any(|f| f.family() == FunctionalFamily::MetaGga)
-            {
-                return Err(FerricError::General(format!(
-                    "run_tda_dft: functional '{name}' is meta-GGA; ferric has no tau f_xc \
-                     kernel (GgaFxcKernel rejects it). Not supported by this spike."
-                )));
-            }
-
-            // Exact-exchange fraction: same resolution order as KsXc::k_mix.
-            let c_hf = if let Some(cam) = xc_probe.cam {
-                cam.c_sr // omega == 0 checked above, so c_sr == c_lr == the mix
-            } else {
-                xc_probe.b3lyp_mix.unwrap_or(0.0)
-            };
-
+            // The functional gate (VV10 / range-separated / meta-GGA refusals)
+            // and the c_HF resolution are shared with `ferric_tddft` via
+            // `ferric_dft::lr_kernel`, so the two drivers cannot disagree on
+            // which functionals have a complete kernel.
+            let spec = resolve_singlet_response_xc(name, "run_tda_dft")?;
             let kern = if cfg.include_fxc {
-                let xc_kern = xc_def_from_name_nspin(name, 2).map_err(|e| {
-                    FerricError::General(format!("run_tda_dft: xc '{name}': {e:?}"))
-                })?;
                 Some(
-                    GgaFxcKernel::new(mol, obs.basis_set(), xc_kern, &cfg.grid).map_err(|e| {
-                        FerricError::General(format!("run_tda_dft: GgaFxcKernel::new: {e}"))
-                    })?,
+                    GgaFxcKernel::new(mol, obs.basis_set(), spec.xc_kernel, &cfg.grid).map_err(
+                        |e| FerricError::General(format!("run_tda_dft: GgaFxcKernel::new: {e}")),
+                    )?,
                 )
             } else {
                 None
             };
-            (c_hf, kern)
+            (spec.c_hf, kern)
         }
     };
     let c_hf = cfg.c_hf_override.unwrap_or(c_hf_from_xc);
@@ -536,15 +412,15 @@ pub fn run_tda_dft(
         let d_a = &ks.density_alpha;
         let ref_dens = kern.reference_density(d_a, d_a);
         let (k_fxc, asym_rel) =
-            build_fxc_block(kern, &ref_dens, c, first_act, nocc_total, nocc, nvir);
+            singlet_fxc_ov_block(kern, &ref_dens, c, first_act, nocc_total, nocc, nvir);
         // The kernel's AO operator is symmetric by construction, so the (ia)
         // block must be too. A large asymmetry would indicate an adapter bug
         // (wrong index order), not grid noise. Reject rather than symmetrize
         // a wrong matrix into looking right.
-        if asym_rel > 1e-8 {
+        if asym_rel > FXC_BLOCK_ASYMMETRY_TOL {
             return Err(FerricError::General(format!(
                 "run_tda_dft: f_xc (ia)-block asymmetry {asym_rel:e} exceeds the grid-noise \
-                 tolerance 1e-8 — the AO→(ia) adapter is inconsistent"
+                 tolerance {FXC_BLOCK_ASYMMETRY_TOL:e} — the AO→(ia) adapter is inconsistent"
             )));
         }
         a_mat += &k_fxc;
@@ -652,7 +528,7 @@ mod tests {
     #[test]
     fn check_tda_alloc_charges_three_matrices_when_fxc_is_included() {
         // The bug: this guard charged 2n² (a_mat + eigh output) and MISSED
-        // k_fxc, which `build_fxc_block` returns as a full (n, n) matrix that
+        // k_fxc, which `singlet_fxc_ov_block` returns as a full (n, n) matrix that
         // is live at the same time as a_mat when they are added
         // (`a_mat += &k_fxc`). include_fxc is the DEFAULT, so the guard
         // under-reported by 50% on the normal path — the direction that OOMs

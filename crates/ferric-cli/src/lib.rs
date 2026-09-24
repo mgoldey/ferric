@@ -151,16 +151,6 @@ const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
          per-component XC weights (new infrastructure), and the SCS-MP2 correlation reuses the \
          proven RI-MP2 spin-component path, but NO comparison to a reference code exists yet.",
     ),
-    (
-        "tda",
-        "method.kind = \"tda\" is Spike-grade: CIS (HF reference) is exact; DFT references \
-         are missing the f_xc kernel term (excitation energies will be approximate).",
-    ),
-    (
-        "tddft",
-        "method.kind = \"tddft\" is Spike-grade: full Casida equations without the f_xc kernel \
-         for DFT references. HF reference gives TDHF (exact within the method).",
-    ),
 ];
 
 /// Every `method.kind` the CLI dispatches, in the order the unknown-kind
@@ -591,6 +581,7 @@ pub fn run(args: Vec<String>) {
     } else {
         (None, None, None)
     };
+    refuse_tddft_xc_without_kernel(&cfg, method);
     // Unified memory budget from [memory] (bytes), threaded into EVERY method
     // config below. `None` → each method's resolver auto-detects (0.8 × RAM).
     // Log the resolved value + source once, up front, so runs are auditable.
@@ -1142,7 +1133,16 @@ pub fn run(args: Vec<String>) {
         "tdhf-static-polarizability" => {
             run_tdhf_static_polarizability(&cfg, &mol, &bs, &prep, op, &result, budget_bytes)
         }
-        "tda" | "tddft" => run_tddft_arm(&cfg, &mol, &bs, &prep, &result, budget_bytes, method),
+        "tda" | "tddft" => run_tddft_arm(
+            &cfg,
+            &mol,
+            &bs,
+            &prep,
+            &result,
+            budget_bytes,
+            method,
+            &rhf_config,
+        ),
         _ => unreachable!(),
     }
 
@@ -4757,6 +4757,22 @@ fn run_optimize(
     }
 }
 
+/// TDA/TDDFT on a functional with no complete f_xc kernel (meta-GGA, VV10,
+/// range-separated) is refused by `run_tddft`; check it before the reference
+/// SCF is spent on a run that cannot finish.
+fn refuse_tddft_xc_without_kernel(cfg: &Config, method: &str) {
+    let Some(xc_name) = cfg.tddft.xc.as_deref() else {
+        return;
+    };
+    if !matches!(method, "tda" | "tddft") {
+        return;
+    }
+    if let Err(e) = ferric_dft::lr_kernel::resolve_singlet_response_xc(xc_name, "[tddft] xc") {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+}
+
 fn run_tddft_arm(
     cfg: &Config,
     mol: &Molecule,
@@ -4765,6 +4781,7 @@ fn run_tddft_arm(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
     method: &str,
+    rhf_config: &RhfConfig,
 ) {
     use ferric_tddft::{TddftConfig, TddftMethod};
 
@@ -4788,35 +4805,40 @@ fn run_tddft_arm(
         _ => unreachable!(),
     };
 
-    let c_hf = cfg.tddft.c_hf.unwrap_or_else(|| {
-        if let Some(ref xc_name) = cfg.tddft.xc {
-            let xc_def = ferric_dft::libxc::xc_def_from_name(xc_name).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            ferric_dft::libxc::k_mix_from_xc_def(&xc_def).sr
-        } else {
-            1.0
-        }
-    });
-
+    // `[tddft] xc` is the functional the reference SCF was converged with
+    // (`run()` routes it into `RhfConfig::xc`), and it selects BOTH the
+    // exact-exchange fraction and the f_xc kernel inside `run_tddft`. The
+    // kernel grid is the SCF's own main grid, so a `[dft] grid_prune` setting
+    // reaches the response too. `[tddft] c_hf` overrides only the exact-
+    // exchange fraction (refused by `run_tddft` without a functional).
     let config = TddftConfig {
         n_roots: cfg.tddft.n_roots,
         method: tddft_method,
         // `[memory] budget_gb` now reaches the dense (ia,jb) matrices; this
         // parameter used to be `_budget_bytes`, accepted and dropped.
         memory_budget_bytes: budget_bytes,
+        xc: cfg.tddft.xc.clone(),
+        grid: rhf_config.dft_grid.clone().unwrap_or_default(),
+        c_hf_override: cfg.tddft.c_hf,
     };
 
-    let r = ferric_tddft::run_tddft(mol, prep, &dfbs, result, &config, c_hf).unwrap_or_else(|e| {
+    let r = ferric_tddft::run_tddft(mol, prep, &dfbs, result, &config).unwrap_or_else(|e| {
         eprintln!("error: TDDFT failed: {e}");
         std::process::exit(1);
     });
+    let c_hf = r.c_hf;
 
     let ha_to_ev = 27.211_386_245_988;
     println!(
-        "{:?} — {} roots (c_HF = {:.2}):",
-        tddft_method, config.n_roots, c_hf
+        "{:?} — {} roots (c_HF = {:.2}, f_xc kernel: {}):",
+        tddft_method,
+        config.n_roots,
+        c_hf,
+        if r.fxc_included {
+            "included"
+        } else {
+            "none (HF reference)"
+        }
     );
     println!(
         "  {:>5}  {:>12}  {:>10}  {:>10}",

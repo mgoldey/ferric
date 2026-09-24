@@ -1378,7 +1378,14 @@ fn default_n_roots() -> usize {
 pub struct TddftCfg {
     #[serde(default = "default_n_roots")]
     pub n_roots: usize,
+    /// Reference functional (the SCF runs with it). Selects both the
+    /// exact-exchange fraction and the f_xc kernel; meta-GGA, VV10 and
+    /// range-separated functionals are refused. Absent = HF reference
+    /// (CIS / TDHF).
     pub xc: Option<String>,
+    /// Override of the exact-exchange fraction on the `−c_HF` terms. Only
+    /// accepted together with `xc` (an HF reference with `c_hf != 1` is
+    /// refused); the f_xc kernel still comes from `xc`.
     pub c_hf: Option<f64>,
 }
 
