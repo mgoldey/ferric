@@ -784,3 +784,302 @@ SCF convergence / guesses (run_uhf_guess.py):
 - Tests to port: closed-shell UHF == injected RHF (1e-11, both exxdiv); open-shell trivial-aux anchor (1e-10);
   ewald - none == -v_M N/2 (1e-11); H-atom box residual == -(2pi/3) Omega_a / a^3 at a=20 (1e-5); O2 a=24/32
   vs the closed-form c3 (0.5%), exponent 3 +- 0.02; tri 4H s+p ewald trap (slow).
+
+## Iteration 5 (Python, Gamma LMP2) — 2026-09-24
+
+### Code
+- New `pbc_supercell.py`: `Supercell(a_prim, atoms, basis, (n1,n2,n3), wrap=)` + `build_supercell(...)` -> S, T, V, h,
+  E_nn, v_M, RS-GDF B/J2/J3, Resta matrices Z_k, minimal-basis cross overlap, aux centres. Supercell quantities are
+  built by FOLDING primitive-cell lattice sums by residue mod n (SR real-space integrals computed once on the
+  primitive cell; LR through per-residue pair FTs Q^r(G) on the supercell G lattice, P^sc_{(c,m),(c',n)}(G) =
+  e^{-iG.t_c} Q^{res(c'-c)}_mn(G)). Reason: `build_gdf` on an explicit supercell is an unscreened
+  nb_sc x nb_sc|L| x naux|T| block (8.8M shell triplets already at 2 cells); the fold's SR cost is N-independent.
+  1x1x48 (nao 192, naux 1344) builds in 49 s.
+- New `pbc_lmp2.py`: Gamma RHF on the supercell B (C/eps re-diagonalised from the ewald Fock of the final D, so
+  canonical and local paths share one F), Berghold/Resta Jacobi localisation, periodic centroids/spreads,
+  minimum-image distances, periodic VV-HV virtuals, (ia|jb) from B, optional minimum-image occupied pair cutoff,
+  per-pair domain fit in the PERIODIC metric (J2, J3), translation-equivalence analysis, uniform-field transition
+  dipoles. Solver/energy/pair energies/pivoted Cholesky/Loewdin are IMPORTED unchanged from
+  scripts/amplitude_lmp2_proto.py (dense masked CG, and the ragged per-pair CG for large N).
+- Drivers: `run_lmp2_anchor.py` (anchor + mutations), `run_lmp2_translation.py`, `run_lmp2_sweep.py` (hypotheses
+  written in its docstring before the sweep), `run_lmp2_farfield.py` (analytic uniform-field pair energies).
+- `test_prototype.py`: +9 fast tests (the LMP2 subset runs in ~35 s).
+
+System for everything below: primitive cubic a0 = 7 Bohr, one tilted H2 (R = 1.4 Bohr) per cell, 6-31G (cart;
+s only on H), cc-pvdz-ri spherical aux, RS-GDF w = 0.5, exxdiv='ewald' / shifted denominators, eps on the Eq-8
+swap-closed integral mask. Supercells 1x1xN ("needles", N = 2..48), 2x2x2, 3x3x3.
+
+### Why the Berghold (Resta) functional
+At Gamma the orbitals are supercell-periodic; <mu|r|nu> lattice-summed is undefined and the L=0 molecular
+integrals see the supercell boundary. The Resta operator e^{i b_k.r} (b_k = supercell reciprocal vectors) is
+periodic, its AO matrix is the lattice-summed pair FT at -b_k (the primitive the integrals already use), and
+maximising sum_k w_k sum_i |z_k,ii|^2 (w_k = (|a_k|/2pi)^2, orthorhombic only; general cells raise
+NotImplementedError) is Boys' Jacobi sweep with Re/Im z_k as six weighted coordinates. It yields periodic
+centroids arg(z_ii)/2pi (needed for minimum-image pair/fit domains) and spreads (needed for the HV weights).
+Pipek-Mezey on the lattice-summed S would also be periodic-safe; not implemented here.
+
+### Measured: validation of the new construction
+| check | result |
+|---|---|
+| fold vs `build_gdf` on explicit supercell, (1,1,1) / (1,1,2): max dJ2, dJ3 | 1.3e-15, 3.6e-14 / 1.8e-14, 1.2e-13 |
+| fold S, T, E_nn vs PySCF pbc_intor / energy_nuc, (1,1,2) | 1.4e-15, 7.3e-15, 4.1e-15 |
+| folded (1,1,2) HF / MP2 (cart aux) vs PySCF pbc RHF(exxdiv='ewald')+RSGDF, RMP2 | dE_HF -3.3e-13, dMP2 +2.4e-11, dh 5.3e-14 |
+| fold Z_k vs direct `pair_ft` on an explicit (1,1,3) supercell with its last atom WRAPPED across the boundary | 1.4e-13 |
+
+### Measured: exactness anchor (eps = 0, full mask) and mutations
+| supercell | nocc/nvir (VV/HV) | E_MP2(canonical, shifted) | anchor dE | M1 drop 1 HV | M2 pair cutoff at trivial R*: min-image / raw | M3 periodic domain fit at trivial R*: min-image max\|dJ\| / raw | M4 molecular Boys, eps=0 |
+|---|---|---|---|---|---|---|---|
+| 1x1x4 | 4/12 (4/8) | -7.437860250848e-2 | +1.8e-16 | +3.4e-3 | +1.8e-16 / +1.6e-4 (14/16 pairs) | 3.3e-16 / 5.8e-5 (dE +1.6e-6) | +1.8e-16 |
+| 2x2x2 | 8/24 (8/16) | -1.377289905714e-1 | -9.2e-16 | +3.1e-3 | -9.2e-16 / **-9.2e-16 (64/64)** | 5.4e-16 / 2.5e-6 | -6.1e-16 |
+| 1x1x8 | 8/24 (8/16) | -1.528153223461e-1 | +5.6e-17 | +3.4e-3 | +5.6e-17 / +2.2e-4 (52/64) | 1.3e-15 / 9.1e-5 | +1.9e-16 |
+Anchor also +1e-14..+1.1e-13 on 1x1x16/24/32 (dense), and the ragged vs dense solver agree to 1.1e-16 on identical
+masks (1x1x16, 1x1x4). VV-HV: orthonormality <= 4e-15, span of canonical virtuals <= 9e-15 everywhere.
+Blind spots (pinned in tests): M2 cannot fail when n = 2 along every axis (each raw distance IS a minimum image);
+the fold's residue SIGN is invisible at n = 2 (c'-c == c-c' mod 2) — the (1,1,2) fold test PASSED a flipped sign,
+so that test now uses n = 3; M4 (non-periodic localisation) is invisible to the eps = 0 anchor (unitary invariance).
+Test mutations run (each restored): min_image->raw, Jacobi angle sign, fold residue sign, Z not conjugated: each
+failed >= 1 test. Flipping the transition-dipole sign fails nothing — correctly: mu enters as mu_i (x) mu_j.
+
+### Measured: translation equivalence (item 4)
+Deviation = 1 - max_j |<phi_j|S|T phi_i>| over every LMO/virtual, T = one primitive translation (an exact AO
+permutation at Gamma); pair_dev = max |e_ij - e_T(i)T(j)|. "wrapped" = last atom moved by -a_sc(z), so one
+molecule straddles the supercell boundary.
+
+| supercell | localisation | occ_dev | vir_dev | pair_dev (eps 0 / 1e-4) | spread_dev |
+|---|---|---|---|---|---|
+| 1x1x6, 2x2x2, 3x3x3, 1x1x16 (straight + wrapped) | Berghold, 3 starts (canonical + 2 random) | <= 2.3e-15 | <= 4.0e-15 | <= 1.5e-15 | <= 3.5e-12 |
+| 1x1x4 wrapped / straight | molecular Boys (MUTANT) | 3.2e-4 / 4.5e-5 | 4.8e-4 / 1.1e-4 | 1.2e-5 (eps 1e-4) / 4.4e-6 | 1.2e-2 / 2.4e-3 |
+| 1x1x6, 2x2x2, 3x3x3, 1x1x16 | molecular Boys (MUTANT) | 1.5e-5 .. 1.4e-4 | 7e-5 .. 4.7e-4 | 2.4e-6 .. 1.1e-5 | 7e-4 .. 4.6e-3 |
+Berghold functional values agree across starts to 1e-8 (|grad| <= 4e-11); E(eps=1e-4) spread over starts
+<= 1.2e-15. Molecular Boys shifts E(eps=1e-4) by -1.8e-5 (1x1x6) to +3.2e-6 (1x1x16). Partner counts were equal
+for every molecule in every row of every sweep below (partners min == max).
+
+### Hypotheses stated before the sweep (run_lmp2_sweep.py docstring, verbatim in substance)
+- P1 (claim under test): past an onset, kept pairs ~ linear in N, error at fixed eps size-intensive per molecule.
+- P2 (derived for Gamma): every pair carries a distance-INDEPENDENT coupling. In the needle the G_par = 0 Fourier
+  components of j's image lattice are periodic dipole sheets with a uniform field, so far pairs have
+  (ia|jb) -> -(4pi/Omega_sc) mu_ia,z mu_jb,z (G_par != 0 terms decay as exp(-2pi d/7)). Predictions: (a) the eps mask
+  keeps ALL pairs for N < N* = 4pi mu*^2/(Omega_prim eps); (b) far-pair energies ~N^-2, ~N^2 of them: O(1) total,
+  so the error past onset is a N + b (+ c/N) with b = O(1); (c) a distance cutoff R_c gives partners
+  2 floor(R_c/a0) + 1 once N a0 > 2 R_c. The molecular R^-3 picture predicts an eps onset at N ~ 2 instead.
+- Artifacts: A1 non-periodic localisation/distances -> unequal partner counts/pair energies (checked every row);
+  A2 translation symmetry makes E_err = N x (per molecule) at EVERY N, so extensivity is automatic, not evidence;
+  A3 below the onset all pairs are kept: no locality statement either way.
+
+### Measured: the uniform-field coupling (P2)
+mu*_z = max|mu_ia,z| = 0.735 (N=2) .. 0.7964 (N >= 32, converging as the Resta estimate's O((b sigma)^2) error falls).
+| N | 4 | 6 | 8 | 12 | 16 | 24 | 32 | 40 | 48 |
+|---|---|---|---|---|---|---|---|---|---|
+| farthest pair: rel \|J - J_unif\| | 4.1e-2 | 1.8e-2 | 1.0e-2 | 4.6e-3 | 2.6e-3 | 1.2e-3 | 6.5e-4 | 5.0e-4 | 4.6e-4 |
+| farthest pair: N max\|J\| | 0.0233 | 0.0233 | 0.0233 | 0.0233 | 0.0232 | 0.0232 | 0.0232 | 0.0232 | 0.0232 |
+| sum e_ij over pairs d > 13.9 (eps=0 solve) | -2.73e-4 | -5.45e-4 | -6.81e-4 | -8.17e-4 | -8.85e-4 | -9.53e-4 | -9.87e-4 | – | – |
+| same, predicted (uniform J, Sylvester with full Fvv) | -2.4e-4 | -5.1e-4 | -6.57e-4 | -8.03e-4 | -8.76e-4 | -9.47e-4 | -9.83e-4 | -1.004e-3 | -1.018e-3 |
+(A first predictor with diagonal-Fvv denominators was 1.57-1.74x too small: the VV-HV basis is non-canonical. The
+Sylvester version is the one quoted; its N=4/6 entries are the Rc 10.5/17.5 far-field column of run_lmp2_farfield.)
+
+eps-mask onset, partners per molecule (all N molecules identical):
+| eps | N* predicted | N=2 | 4 | 6 | 8 | 12 | 16 | 24 | 32 | 40 | 48 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1e-2 | 2.3 | 2 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 | 1 |
+| 3e-3 | 7.7 | 2 | 4 | 6 | 3 | 1 | 1 | 1 | 1 | 1 | 1 |
+| 1e-3 | 23.2 | 2 | 4 | 6 | 8 | 12 | 16 | 3 | 3 | 3 | 1 |
+| 3e-4 | 77 | all | all | all | all | all | all | all | all | – | – |
+| 1e-4 | 232 | all | all | all | all | all | all | all | all | – | – |
+Distance cutoff R_c = 3.5 / 10.5 / 17.5: partners 1 / 3 / 5 exactly once N a0 > 2 R_c (N >= 2 / 4 / 6).
+
+### Measured: truncation error dE = E_LMP2 - E_canonical (Hartree; >0 = correlation lost)
+| N | eps 1e-2 | eps 3e-3 | eps 1e-3 | eps 3e-4 | eps 1e-4 | R_c 3.5 | R_c 10.5 | R_c 17.5 |
+|---|---|---|---|---|---|---|---|---|
+| 2 | +4.05e-4 | +1.50e-4 | +2.07e-5 | +1.25e-7 | +1.25e-7 | +6.04e-4 | 0 | 0 |
+| 4 | +1.05e-3 | +6.88e-4 | +1.87e-4 | +3.18e-5 | +2.00e-5 | +8.98e-4 | +2.73e-4 | 0 |
+| 8 | +1.34e-3 | +1.20e-3 | +2.48e-4 | +8.37e-5 | +1.62e-5 | +1.05e-3 | +6.81e-4 | +4.09e-4 |
+| 16 | +1.74e-3 | +1.74e-3 | +8.16e-4 | +2.67e-4 | +2.71e-5 | +1.15e-3 | +8.85e-4 | +7.49e-4 |
+| 24 | +2.09e-3 | +2.09e-3 | +1.30e-3 | +3.19e-4 | +4.64e-5 | +1.20e-3 | +9.53e-4 | +8.62e-4 |
+| 32 | +2.43e-3 | +2.43e-3 | +1.40e-3 | +7.98e-4 | +4.98e-5 | +1.23e-3 | +9.87e-4 | +9.19e-4 |
+| 40 | +2.77e-3 | +2.77e-3 | +1.50e-3 | – | – | +1.27e-3 | +1.008e-3 | +9.53e-4 |
+| 48 | +3.10e-3 | +3.10e-3 | +1.65e-3 | – | – | +1.30e-3 | +1.021e-3 | +9.76e-4 |
+(also N = 6, 12 in the logs; N = 40, 48 by the ragged solver, eps >= 1e-3 only.) Kept element fraction at N=48:
+2e-5 (eps 1e-2, 1e-3) .. 0.10 (R_c 17.5); at N=32 eps 1e-4 keeps 0.22% of elements but 100% of pairs.
+Canonical E_MP2/N: -1.75430e-2 (2) .. -1.95171e-2 (48); fit E = e_inf N + b on N = 16..48: e_inf = -1.95997e-2,
+b = +3.964e-3, max residual 1.9e-6 over 5 points (Gamma finite size is 1/N per molecule, 20% of E_c at N = 2).
+
+Tail fits (last three N, 32/40/48), and the residual after subtracting the analytic uniform-field energy of the
+entirely dropped pairs (run_lmp2_farfield.py; resid = dE - farfield):
+| setting | a (per molecule) from dE = aN + b + c/N | b | resid at N = 16 / 32 / 48 | a from resid = aN + b |
+|---|---|---|---|---|
+| R_c 17.5 | +1.3e-9 | +1.089e-3 | 7.8e-6 / 3.8e-6 / 2.9e-6 | -5.8e-8 |
+| R_c 10.5 | -1.3e-8 | +1.090e-3 | 9.5e-6 / 4.3e-6 / 3.3e-6 | -6.4e-8 |
+| R_c 3.5 | +3.31e-6 | +1.163e-3 | 1.35e-4 / 1.83e-4 / 2.35e-4 | +3.28e-6 |
+| eps 1e-2 = 3e-3 (self pairs only, N >= 12) | +4.11e-5 | +1.152e-3 | 7.3e-4 / 1.38e-3 / 2.04e-3 | +4.10e-5 |
+| eps 1e-3 | not a clean tail: partners change 3 -> 1 between N = 40 and 48 | | 3.48e-4 (24) / 4.17e-4 / 5.91e-4 | – |
+
+### Interpretation (provisional, 2026-09-24; one toy crystal, s-only basis, needle supercells)
+- **Construction:** the periodic ingredients are right and the anchor is exact: eps=0 == canonical Gamma MP2 to
+  1e-16..1e-13 up to 1x1x32, mutations of the three new periodic pieces (HV span, minimum-image pair cutoff,
+  periodic-metric domain fit) each break it by 1e-6..3e-3; Berghold LMOs are translation-equivalent to 1e-15
+  and start-independent, while a non-periodic (molecular) Boys operator breaks equivalence at 1e-5..5e-4 even
+  without a wrapped molecule. The eps=0 anchor is blind to localisation; the translation check is its guard.
+- **P1 holds only after an onset set by VOLUME for the integral threshold, not by distance.** At Gamma every pair
+  carries the uniform-field coupling -(4pi/Omega_sc) mu mu (measured: the farthest-pair max|J| x N is 0.0233 at every
+  N, and agrees with the formula to 4.6e-4 relative at N=48). The Eq-8 mask therefore keeps all N^2 pairs until
+  N > N* = 4pi mu*^2/(Omega_prim eps): observed onsets bracket the prediction for eps = 1e-2 (2.3), 3e-3 (7.7) and
+  1e-3 (23.2); the molecular R^-3 picture (onset at N ~ 2) is refuted. For eps <= 3e-4 (N* >= 77) every measured
+  size is below the onset: kept pairs grow as N^2 there. By A3 this is NOT a negative for locality; the onset is
+  simply beyond 48 cells of 343 Bohr^3 (Omega_sc > 2.6e4 Bohr^3 for eps = 3e-4).
+  Past the onset, partners per molecule do saturate (kept pairs = N k), but for eps the plateau is not unique:
+  the near pairs are kept by near-field + uniform, so k steps down again as the uniform part shrinks (eps 1e-3:
+  3 at N = 24..40, 1 at 48).
+- **Error decomposition.** dE(N) = a N + b with b ~ +1.09e-3 Ha, O(1) and the same for every cutoff: it is the
+  uniform-field energy of the dropped pairs (predicted analytically to within 3e-6 of dE at N = 48 for R_c >= 10.5).
+  The intensive part a is: indistinguishable from 0 (|a| < 1e-7) for R_c >= 10.5; 3.3e-6 Ha/molecule for R_c = 3.5
+  (dropping the +-1 neighbours at 7 Bohr); 4.1e-5 Ha/molecule for eps >= 3e-3 (element truncation inside self pairs).
+  So at every reachable N the per-molecule error is dominated by b/N (e.g. R_c 10.5: 2.1e-5/molecule at N=48,
+  of which only ~7e-8 is a locality loss). E_err/N IS size-intensive in the limit, approached as 1/N.
+- The uniform-field part of both the canonical energy's 1/N finite-size term and the LMP2 truncation error is the
+  same G->0 physics that gave the a^-3 box law (Iterations 1/3/4). In the thermodynamic limit it contributes 0 per
+  molecule, so the truncation "error" b is a finite-size term removed, not correlation lost; whether LMP2 then
+  converges to e_inf FASTER than canonical is NOT established here: E_LMP2/N drifts 1.42e-4 vs canonical 1.24e-4
+  between N = 16 and 32 (R_c 17.5).
+- Caveats: needle geometry maximises the effect (lateral images screen the R^-3 near field to exp(-0.9 d), leaving
+  the uniform term); in cubic supercells the uniform term is (4pi/3Omega) mu.mu and the farthest-pair dipole term
+  scales the same way, so the eps onset there is also ~ a volume, with a different constant (3x3x3 at eps 1e-4:
+  25/27 partners; no cubic size sweep was run). 6-31G on H has no polarisation functions, so dispersion
+  (hence a) is tiny; a real molecular crystal will have larger a and larger mu. NOT measured: cost/timing claims,
+  k-points, open shell, the integral-free R^-6 pair gate, domain-fit accuracy at finite radius, frozen core.
+
+### For the Rust port onto ferric's amplitude_lmp2
+1. Localisation: replace `boys_localize` (dipole integrals) by a Berghold/Resta Jacobi on Re/Im z_k, z_k = lattice-summed
+   pair FT at -b_k (stage-0 `pair_ft` already provides it); weights (|a_k|/2pi)^2 (orthorhombic; Silvestrelli weights for
+   general cells, or refuse). Centroids = arg(z_ii)/2pi (fractional). Spreads for the HV weights from 1 - |z_ii|^2.
+   Port test: translation equivalence (AO permutation) to 1e-12, plus a molecule wrapped across the boundary.
+2. VV-HV: lattice-summed S and minimal-basis cross overlap; everything else is the molecular code on those matrices.
+3. Every distance (pair gate R^-6 estimator, fit domains, any pair cutoff) must be minimum-image; test with n >= 3 along
+   an axis (n = 2 cannot see the bug). The Eq-8 integral mask itself needs no distance (Gamma integrals already sum images).
+4. Integrals and fits: (ia|jb) from the periodic RS-GDF B of stage 6; per-pair domain fits must use the periodic J2/J3
+   (G=0-dropped, eig/lindep pseudo-inverse), anchored at the trivial radius == global B.B (<1e-12 here).
+5. Denominators: Foo/Fvv from the exxdiv='ewald' Fock (shifted), as stage 6.
+6. **Before trusting any eps at Gamma**: the uniform G->0 dipole coupling makes the integral mask non-local below
+   Omega_sc ~ 4pi mu*^2/eps. Options to evaluate (not tested here): threshold on J - J_unif and add the dropped pairs'
+   uniform-field energy analytically (the Sylvester dipole formula reproduced it to <= 3e-6 Ha here), use a
+   minimum-image distance/energy pair screen (the R_c rows lose < 1e-7 Ha/molecule beyond 10.5 Bohr), or move to
+   k-points where G->0 is handled by the mesh. Report every per-molecule error with its a + b/N split.
+
+## Iteration 5b (Python, LMP2 uniform coupling) — 2026-09-24
+
+Follow-up to Iteration 5 item 6. Same system and construction as Iteration 5 (1x1xN needles, a0 = 7, tilted H2,
+6-31G cart, cc-pvdz-ri, RS-GDF w = 0.5, shifted denominators, Berghold LMOs + periodic VV-HV). ONE toy crystal,
+s-only basis, needle supercells only, N = 4..32 (dense solver; N = 40/48 not run: the dense closed-form references
+hold ~6 copies of the no^2 nv^2 tensor, over the 2.5 GB budget at N = 48; N = 32 peaked at 1.36 GB).
+
+### Code
+- `pbc_lmp2.py`: `solve(..., gate="J"|"J-unif", J_unif=, pair_ecut=, addback=)` (defaults unchanged; strict
+  `gate` values); `resta_z_at` (Resta matrix at m b_k by the same residue fold; m = 1 == data Zk to 1e-16);
+  `transition_dipoles_richardson` ((b, 2b) Richardson of the Resta estimate: O(b^4) instead of O(b^2));
+  `uniform_coupling` (needle form, W = zz); `uniform_pair_energies` (the Iteration-5 Sylvester add-back, now a
+  library function); `pair_energy_estimate` (semicanonical pair energy from the gating tensor, energy screen);
+  `canonical_mp2_from_local` / `mp2_local_closed_form` (closed-form MP2 of a modified local J rotated to the
+  canonical / modified-Fock eigenbasis: the independent reference for the head-restored energies);
+  `fock_head_correction` (the same head in the Fock exchange: Fvv, diag Foo).
+- `run_lmp2_uniform.py` (hypotheses H1-H4, X1-X3 in its docstring; H1b added after the N <= 16 run, marked).
+- `test_prototype.py`: +3 fast tests at the END (~34 s together, N = 4 wrapped + N = 8).
+
+### The physics question, settled first (derivation, then measured)
+A Gamma supercell is a 1x1xN k-mesh on the primitive cell; for the needle every momentum transfer q is along z.
+For q != 0 the G=0 head of (ia|jb) is (4pi/Omega_sc)(q.mu_ia)(q.mu_jb)/q^2 = (4pi/Omega_sc) mu_z mu_z, constant;
+at q = 0 it is dropped. In real space sum_{q!=0} e^{iqd} = N delta_d0 - 1, so every LMO pair carries
+-(4pi/Omega_sc) mu mu: **the uniform coupling is exactly minus the omitted q=0 head**, a quadrature hole of weight
+1/N. It is O(1) in total and O(1/N) per molecule, so in the thermodynamic limit it contributes nothing. It is a
+finite-size ARTIFACT like Madelung, not long-range correlation. Restoring it (J' = J - J_unif) makes far-pair
+couplings vanish and gives the self pair its N-independent (4pi/Omega_prim) mu mu. **It is part of Iteration 3's
+c3**: c3's d(ia|ia) = -(4pi/3 Omega)|d_ia|^2 is this head for one molecule per cubic box (depolarisation W = I/3
+instead of the needle's zz). c3 also contains the Fock-side heads (d eps_i, d eps_a), which J' does not touch.
+
+H1 (discriminating: a physical term would make |b_head| > |b_can|). Fits E = e N + b + c/N on N = 16/24/32:
+
+| reference | e_inf | b | c | b(N) = E - N e_inf, N = 4 .. 32 |
+|---|---|---|---|---|
+| canonical Gamma MP2 (J, F) | -1.9599301e-2 | +3.940e-3 | +3.1e-4 | +4.02e-3 .. +3.94e-3 |
+| head in ERIs (J', F) = E_head | -1.9599298e-2 | +1.061e-3 | -4.0e-5 | +1.06e-3 .. +1.05e-3 |
+| head in ERIs + Fock (J', Foo', Fvv') | -1.9599299e-2 | +1.43e-4 | -1.7e-5 | +1.5e-4 .. +1.3e-4 |
+
+e_inf agrees to 3e-9 (guaranteed by the 1/Omega scaling: a consistency check, not evidence). b falls 3.7x with the
+ERI head and 28x with ERI + Fock heads: 73% of the Gamma finite-size term is the ERI head, 23% the Fock heads,
+3.6% (+1.4e-4) something not identified here (Foo off-diagonal heads, SCF relaxation). E_can - E_head =
++2.955e-3 (N=4) .. +2.890e-3 (32), converging to a constant, positive (the missing head underbinds), as predicted.
+X1 (mu accuracy): farthest pair max|J - J_unif| 3.7e-5 / 1.3e-6 / 3.3e-7 at N = 4 / 8 / 32 with Richardson, vs
+2.4e-4 / 3.0e-5 / 4.7e-7 with the single-b Resta estimate (max|J| 5.8e-3 / 2.9e-3 / 7.3e-4).
+
+### Measured: candidates (dE in Hartree, >0 = correlation lost; partners/molecule equal for all molecules, every row)
+Anchors at eps = 0 (every N): J-unif gate + add-back vs E_can <= 1.1e-13 (add-back exactly 0, nothing dropped);
+CG on J' vs closed-form E_head <= 1.9e-14.
+
+| setting (reference) | partners N=4/8/16/32 | dE N=8 | dE N=16 | dE N=32 | tail fit a (/molecule) | b | c (/N) |
+|---|---|---|---|---|---|---|---|
+| base eps 1e-4, gate J (E_can) | 4/8/16/32 (all) | 1.6e-5 | 2.7e-5 | 5.0e-5 | below onset N* = 232: no fit | | |
+| A-add eps 1e-4: gate J', solve J, add-back (E_can) | 3/3/3/3 | 1.21e-4 | 7.40e-5 | 5.39e-5 | +2.5e-7 | +2.2e-5 | +7.7e-4 |
+| A-add eps 3e-5 (E_can) | 4/3/3/3 | 2.86e-5 | 1.79e-5 | 1.34e-5 | +5.5e-8 | +6.3e-6 | +1.7e-4 |
+| A-add eps 1e-4, NO add-back (mutation) | 3/3/3/3 | 8.0e-4 | 9.6e-4 | 1.04e-3 | +2.7e-7 | **+1.108e-3** | -2.5e-3 |
+| A-drop eps 1e-3: gate+solve J' (E_head) | 1/1/1/1 | 1.01e-4 | 1.80e-4 | 3.53e-4 | +1.08e-5 | +6.7e-6 | +9.6e-6 |
+| A-drop eps 3e-4 (E_head) | 3/3/3/3 | 5.49e-5 | 1.05e-4 | 2.06e-4 | +6.3e-6 | +3.7e-6 | +6.7e-6 |
+| A-drop eps 1e-4 (E_head) | 3/3/3/3 | 2.28e-6 | 4.25e-6 | 8.25e-6 | +2.51e-7 | +2.2e-7 | +4e-7 |
+| A-drop eps 3e-5 (E_head) | 4/3/3/3 | 4.6e-7 | 8.5e-7 | 1.65e-6 | +5.0e-8 | +3.7e-8 | +1e-7 |
+| B R_c 10.5 min-image + add-back (E_can) | 3/3/3/3 | 2.36e-6 | 2.14e-6 | 2.26e-6 | +3.9e-9 | +2.19e-6 | -1.7e-6 |
+| B R_c 10.5, no add-back (E_can) | 3/3/3/3 | 6.8e-4 | 8.9e-4 | 9.9e-4 | +5.0e-9 | **+1.089e-3** | -3.3e-3 |
+| B energy screen 1e-6 / 1e-7 from J (E_can) | 4/8/16/32 (all) | 0 | 0 | 1e-13 | (onset N ~ sqrt(1e-3/T): ~32 / ~100) | | |
+| B energy screen 1e-6 / 1e-7 from J' + add-back (E_can) | 3/3/3/3 | = R_c 10.5 row, same pair set, to 1e-12 | | | | | |
+
+(Also N = 6, 12, 24 in the log; A-add and A-drop at eps 1e-3 keep self pairs only, partners 1.)
+Mutations of the new code, each run against the 3 new tests in a scratch copy (8/8 caught): Richardson -> single-b
+Resta (3 fail), J_unif volume Omega/8 (3), add-back not applied (1), gate on J + J_unif (1), energy screen from J
+instead of the gating tensor (1), Fvv head sign (1), Foo head sign (1), add-back factor 2 dropped (1).
+
+### Interpretation (provisional, 2026-09-24; one toy crystal, s-only basis, needles only)
+- **The onset is gone with either J' gate**: partners saturate at 3/molecule (the R_c 10.5 set) from N = 6 at
+  eps <= 3e-4, and at 1 from N = 4 at eps 1e-3. With the plain J gate, eps 1e-4 kept all N^2 pairs through N = 32
+  (N* = 232), and so did an energy screen computed from J (far uniform pair energies ~1e-3/N^2 each: an onset
+  again, at N ~ sqrt(1e-3/T)). **Energy-screening J does not remove the onset. Screening on J' does.**
+- **A-drop (restore the head in the integrals, gate and solve on J') is the clean candidate.** Its error against
+  its own reference is purely extensive and eps-controlled: a = 1.1e-5 / 6.3e-6 / 2.5e-7 / 5.0e-8 per molecule at
+  eps 1e-3 / 3e-4 / 1e-4 / 3e-5, with |b| <= 7e-6. There is nothing to add back (far pairs carry no energy once
+  the head is restored), and adding the Sylvester term would double-count ~-1e-3. Its reference E_head is also
+  the better Gamma estimator of the TDL (b 1.06e-3 vs 3.94e-3).
+- **A-add as specified (element gate on J', solve on J, add back entirely dropped pairs) is NOT clean.** It has
+  the SAME a as A-drop, but also a +7.7e-4/N term (eps 1e-4) from the uniform part of elements masked INSIDE kept
+  pairs, which the pair-level add-back cannot see. At eps 1e-4 it is 53x (N=8) to 6.5x (N=32) the A-drop error.
+- **To reproduce canonical Gamma MP2 (e.g. the PySCF number), screen PAIRS (min-image R_c or the energy
+  estimate from J'), keep all elements inside kept pairs, and add the analytic uniform energy back.** Residual
+  b = +2.2e-6, a < 1e-8. Mutation: without the add-back b = +1.09e-3, so the add-back is needed exactly when
+  the reference is E_can, and never when it is E_head.
+- Answer to "remove or keep": the term is a finite-size artifact (a quadrature hole). Remove it (restore the head)
+  for anything aimed at the TDL. Add it back only to match a canonical Gamma-point number.
+- NOT established: the needle W = zz form only (cubic W = I/3 is Iteration 3's analogue, but no cubic supercell
+  sweep was run); mu via Resta needs orthorhombic cells and LMO spread << L; the 1.4e-4 residual of the full head
+  restoration is unexplained; Foo off-diagonal heads not derived; no polarisation functions (a is tiny here);
+  N <= 32; no timing claims; k-points (candidate C, the principled fix: the mesh treats q -> 0 itself) not
+  implemented.
+
+### For the Rust port (hook in gamma_lmp2)
+1. Implement **A-drop**. J' = J + (4pi/Omega_sc) mu mu^T is a POSITIVE rank-1 update per pair, so it is exactly one
+   extra RI column: append B^{extra}_ia = sqrt(4pi/Omega_sc) mu_ia,z to the periodic B_ia. The eps mask, pair
+   gate, solver and pair energies then need no change. Test: the eps = 0 anchor against closed-form canonical MP2
+   on the augmented B, to 1e-12 (it is an independent construction).
+2. mu_ia: the Resta matrix at b_z AND 2 b_z (one extra pair-FT, same fold), Richardson (4 f(b) - f(2b))/3.
+   Port test: farthest-pair |J'| / |J| <= 2e-3 at 1x1x8 (single-b fails at 1e-2). Refuse non-needle supercells
+   until W is derived for them (cubic W = I/3 by Iteration 3's c3).
+3. Optional, same shape: the Fock heads (Fvv -= c mu^T mu, Foo_ii += c(sigma_i^2 - sum_k mu_ik^2)) take b down
+   another ~7x. That is a finite-size correction on top of the LMP2, so flag it as a separate, opt-in option.
+4. If a caller needs the canonical Gamma number, provide the pair-level screen + Sylvester add-back
+   (`uniform_pair_energies`), never an element-level J' gate with a pair-level add-back.
+
+## Iteration 6b (Rust, step-8 SR screening study) — measured 2026-09-24
+`sr_screening_table` (release, 16177 s), SR Gaussian-nucleus 3-centre attraction in periodic_hcore.
+Unscreened references: H2/STO-3G, triclinic 4H s+p at ω=0.3885 (1.63e9 triplets) and ω=1.3 (9.87e8).
+| run | Derived bound violations | predicted/actual at 1e-10 | triplets at 1e-10 vs unscreened | mutant controls |
+|---|---|---|---|---|
+| H2 | 0 | — | — | 20 violations (control fires) |
+| tri ω=0.3885 | 0 | 1.2e-6 / 1.07e-9 (~1100x) | 2.6M / 1634M | 0 violations: control SILENT |
+| tri ω=1.3 | 0 | 4.2e-7 / 2.7e-10 (~1600x) | 0.78M / 987M | 80 (NoGaussianExtent up to 1.1e6x under-predicted) |
+Interpretation (provisional): the Derived bound is conservative on every measured row (never under-predicts),
+by roughly 3 orders of magnitude, so the default threshold is safe but over-computes by an unknown factor.
+The ω=0.3885 row cannot certify the bound because its negative controls never fire there. Only toy cells
+(≤16 AOs) were measured, so no cost or size claim.

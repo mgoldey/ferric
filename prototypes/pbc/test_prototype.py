@@ -790,3 +790,485 @@ def test_r2_kernel_c3_reproduces_both_closed_form_moment_models():
         )
         < 1e-6
     )
+
+
+# ============================================================ Gamma LMP2 (pbc_lmp2.py, Iteration 5)
+import pbc_lmp2 as LM  # noqa: E402
+from pbc_supercell import Supercell, build_supercell  # noqa: E402
+
+LMP2_A0 = np.eye(3) * 7.0
+_lu = np.array([0.5, 0.6, 1.2])
+_lu = 1.4 * _lu / np.linalg.norm(_lu)
+LMP2_ATOMS = [("H", (1.0, 1.2, 1.1)), ("H", tuple(np.array([1.0, 1.2, 1.1]) + _lu))]
+
+
+def _wrap_last(nat):
+    """Move the last atom by -a_sc(z): that molecule straddles the supercell boundary (Gamma-neutral)."""
+    return lambda i, r: (0, 0, -1) if i == nat - 1 else (0, 0, 0)
+
+
+def _lmp2_system(n, wrapped=False):
+    sc = Supercell(
+        LMP2_A0,
+        LMP2_ATOMS,
+        "6-31g",
+        n,
+        wrap=_wrap_last(2 * int(np.prod(n))) if wrapped else None,
+    )
+    d = build_supercell(sc, ferric_basis("cc-pvdz-ri", ["H"]), w=0.5)
+    return sc, d, LM.gamma_scf(d, 2 * sc.R)
+
+
+@pytest.fixture(scope="module")
+def needle4():
+    sc, d, scf = _lmp2_system((1, 1, 4), wrapped=True)
+    return dict(
+        sc=sc, d=d, scf=scf, ec=LM.canonical_mp2(scf, d["B"]), p=LM.prepare(sc, d, scf)
+    )
+
+
+def test_supercell_fold_matches_explicit_supercell_build_gdf_and_pyscf():
+    """Folding primitive lattice sums by residue mod n == pbc_gdf.build_gdf on the explicit supercell
+    (measured J2 1.8e-14, J3 1.2e-13 at (1,1,2)); S, T, E_nn vs PySCF pbc (1e-15).  n=3, not 2: at n=2
+    c'-c == c-c' (mod 2), so a flipped residue sign was INVISIBLE here (mutation run 2026-09-24)."""
+    sc = Supercell(LMP2_A0, LMP2_ATOMS, "6-31g", (1, 1, 3))
+    aux = ferric_basis("cc-pvdz-ri", ["H"])
+    f = build_supercell(sc, aux, w=0.5)
+    g = build_gdf(sc.sc, aux, w=0.5)
+    assert abs(f["J2"] - g["J2"]).max() < 1e-11 and abs(f["J3"] - g["J3"]).max() < 1e-11
+    pc = pyscf_cell(sc.sc.a, sc.atoms, "6-31g")
+    assert abs(f["S"] - pc.pbc_intor("int1e_ovlp")).max() < 1e-12
+    assert abs(f["T"] - pc.pbc_intor("int1e_kin")).max() < 1e-12
+    assert abs(f["enn"] - pc.energy_nuc()) < 1e-11
+
+
+def test_resta_matrices_fold_matches_direct_pair_ft_on_a_wrapped_supercell():
+    """Z_k = <mu|exp(i b_k.r)|nu> (lattice summed) from the residue fold vs pbc_gamma.pair_ft on the
+    explicit supercell whose last atom is wrapped across the boundary (measured 1.4e-13)."""
+    sc = Supercell(LMP2_A0, LMP2_ATOMS, "6-31g", (1, 1, 3), wrap=_wrap_last(6))
+    d = build_supercell(sc, ferric_basis("cc-pvdz-ri", ["H"]), w=0.5)
+    P0 = pair_ft(sc.sc, np.zeros((1, 3)))[..., 0].real
+    nrm = np.sqrt(np.diag(d["S"]) / np.diag(P0))
+    P = pair_ft(sc.sc, d["Gk"]) * nrm[:, None, None] * nrm[None, :, None]
+    assert max(abs(np.conj(P[..., k]) - d["Zk"][k]).max() for k in range(3)) < 1e-11
+
+
+def test_lmp2_eps0_matches_canonical_gamma_mp2_and_detects_a_dropped_hard_virtual(
+    needle4,
+):
+    """Exactness anchor: Berghold LMOs + periodic VV-HV + masked CG at eps=0 == canonical shifted Gamma
+    MP2 on the same B (measured 1.8e-16).  Mutation: drop one hard virtual -> +3.4e-3."""
+    t = needle4
+    assert t["p"]["dev_orth"] < 1e-10 and t["p"]["dev_span"] < 1e-10
+    assert abs(LM.solve(t["p"], 0.0)["e"] - t["ec"]) < 1e-10
+    pm = LM.prepare(t["sc"], t["d"], t["scf"], drop_hv=1)
+    assert abs(LM.solve(pm, 0.0)["e"] - t["ec"]) > 1e-4
+
+
+def test_pair_cutoff_trivial_limit_requires_minimum_image(needle4):
+    """R* = max minimum-image centroid distance is the trivial radius: exact with min-image distances,
+    wrong with raw distances (measured +1.6e-4, 14/16 pairs).  Blind spot pinned below: with n=2 along
+    every axis each raw distance already IS a minimum image, so the mutation cannot fail there."""
+    p, ec = needle4["p"], needle4["ec"]
+    R = LM.pair_distances(p).max() + 1e-6
+    assert abs(LM.solve(p, 0.0, pair_cut=R)["e"] - ec) < 1e-10
+    assert abs(LM.solve(p, 0.0, pair_cut=R, raw=True)["e"] - ec) > 1e-5
+    sc, d, scf = _lmp2_system((2, 2, 1))
+    p2 = LM.prepare(sc, d, scf)
+    R2 = LM.pair_distances(p2).max() + 1e-6
+    assert (
+        abs(
+            LM.solve(p2, 0.0, pair_cut=R2, raw=True)["e"]
+            - LM.canonical_mp2(scf, d["B"])
+        )
+        < 1e-10
+    )
+
+
+def test_periodic_domain_fit_trivial_limit_is_the_global_fit(needle4):
+    """Per-pair local fit in the periodic metric (J2, J3) at the trivial aux radius == global B.B
+    (measured 3e-16); raw distances drop aux across the boundary (5.8e-5)."""
+    p, d = needle4["p"], needle4["d"]
+    R = (
+        LM.min_image(p["cen"][:, None, :] - d["aux_xyz"][None, :, :], p["a_sc"]).max()
+        + 1e-6
+    )
+    assert abs(LM.domain_fit_J(p, d, R)[0] - p["J"]).max() < 1e-12
+    assert abs(LM.domain_fit_J(p, d, R, raw=True)[0] - p["J"]).max() > 1e-6
+
+
+def test_translation_equivalence_berghold_exact_molecular_boys_broken(needle4):
+    """Equivalent molecules (one primitive translation apart, one of them straddling the boundary):
+    Berghold LMOs/virtuals/pair energies equal to 1e-15, start-independent; the non-periodic
+    molecular-Boys operator breaks it (measured LMO 3.2e-4, pair energies 1.2e-5) while the eps=0
+    anchor cannot see it (unitary invariance)."""
+    t = needle4
+    r = LM.solve(t["p"], 1e-4)
+    te = LM.translation_equivalence(t["sc"], t["d"], t["p"], r["epair"])
+    assert (
+        te["bijective"]
+        and te["occ_dev"] < 1e-10
+        and te["vir_dev"] < 1e-10
+        and te["pair_dev"] < 1e-12
+    )
+    ps = LM.prepare(t["sc"], t["d"], t["scf"], seed=3)
+    assert (
+        abs(ps["loc"]["f"] - t["p"]["loc"]["f"]) < 1e-8
+        and abs(LM.solve(ps, 1e-4)["e"] - r["e"]) < 1e-12
+    )
+    pb = LM.prepare(t["sc"], t["d"], t["scf"], loc="boys-molecular")
+    rb = LM.solve(pb, 1e-4)
+    tb = LM.translation_equivalence(t["sc"], t["d"], pb, rb["epair"])
+    assert tb["occ_dev"] > 1e-6 and tb["pair_dev"] > 1e-8
+    assert abs(LM.solve(pb, 0.0)["e"] - t["ec"]) < 1e-10  # the blind spot
+
+
+def test_ragged_solver_matches_dense_on_the_same_mask(needle4):
+    p = needle4["p"]
+    for eps, rc in ((1e-3, None), (0.0, 10.5)):
+        assert (
+            abs(
+                LM.solve(p, eps, pair_cut=rc)["e"]
+                - LM.solve(p, eps, pair_cut=rc, solver="ragged")["e"]
+            )
+            < 1e-12
+        )
+
+
+def test_far_pairs_couple_through_the_uniform_field_and_set_the_eps_onset():
+    """Gamma P2: far pairs carry (ia|jb) = -(4pi/Omega_sc) mu_ia,z mu_jb,z (needle, G_par=0 dipole sheets);
+    measured rel. deviation 1.0e-2 at N=8 (4.6e-3 at 12, 6.5e-4 at 32).  So the eps=3e-3 mask keeps every
+    pair until N*=4pi mu*^2/(Omega_p eps)=7.7: all 36 pairs at N=6, 3 partners/molecule at N=8."""
+    kept = {}
+    for N in (6, 8):
+        sc, d, scf = _lmp2_system((1, 1, N))
+        p = LM.prepare(sc, d, scf)
+        mu = LM.transition_dipoles_z(p, d)
+        nstar = 4 * np.pi * abs(mu).max() ** 2 / (343.0 * 3e-3)
+        assert 7.0 < nstar < 8.5
+        r = LM.solve(p, 3e-3, solver="ragged")
+        assert (
+            r["partners"].min() == r["partners"].max()
+        )  # translation-equivalent partner counts
+        kept[N] = int(r["partners"][0])
+        if N == 8:
+            dist = LM.pair_distances(p)
+            i, j = np.unravel_index(np.argmax(dist), dist.shape)
+            pred = -(4 * np.pi / sc.sc.vol) * np.outer(mu[i], mu[j])
+            assert (
+                abs(p["J"][i, :, j, :] - pred).max()
+                < 0.02 * abs(p["J"][i, :, j, :]).max()
+            )
+    assert kept == {6: 6, 8: 3}
+
+
+def test_resta_weights_refuse_non_orthorhombic_cells():
+    with pytest.raises(NotImplementedError):
+        LM.resta_weights(TRI_A)
+
+
+# ============================================================ Gamma UHF (pbc_uhf.py, Iteration 6)
+import pbc_uhf  # noqa: E402
+from pbc_uhf import uhf, uhf_c3_closed_form, uhf_r2_kernel_c3  # noqa: E402
+
+# PySCF 2.13 pbc.scf.UHF on AFTDF (mesh 61^3), measured 2026-09-24 by run_uhf_oracle.py (agreement <= 1.3e-12).
+UHF_REF = {
+    "H atom a=4": {"none": -0.402177788224, "ewald": -0.756839973159},  # <S2> 0.75
+    "H2 a=4 triplet": {"none": 0.322229103842, "ewald": -0.387095266028},  # <S2> 2
+}
+H_ATOM = [("H", (0.3, 0.2, 0.1))]
+O2_ATOMS = [("O", (0.3, 0.2, 0.1)), ("O", (0.3, 0.2, 2.382))]
+
+
+def _k_total(jk, Da, Db):  # MUTANT: exchange built from the total density
+    J, K = jk(Da + Db)
+    return J, K, K
+
+
+def _madelung_half(
+    S, Ds, vm
+):  # MUTANT: RHF's D/2 bookkeeping applied to a spin density
+    return 0.5 * vm * S @ Ds @ S
+
+
+@pytest.mark.parametrize("exxdiv", ["none", "ewald"])
+def test_uhf_closed_shell_equals_rhf(h2_ints, tri_anchor, exxdiv):
+    """Anchor (a): na == nb through UHF == pbc_gamma.rhf (measured dE 0, 1e-15)."""
+    for I, nel in ((h2_ints, 2), (tri_anchor["ref"], 4)):
+        vm = I["madelung"] if exxdiv == "ewald" else 0.0
+        er = rhf(I["S"], I["h"], I["I"], I["enn"], nel, conv=1e-12, kshift=vm)[0]
+        u = uhf(
+            I["S"], I["h"], I["I"], I["enn"], nel // 2, nel // 2, conv=1e-12, kshift=vm
+        )
+        assert abs(u["e"] - er) < 1e-11 and abs(u["s2"]) < 1e-10
+
+
+def test_uhf_closed_shell_anchor_fails_for_k_from_total_density(h2_ints, monkeypatch):
+    """Measured -4.5e-2 (H2 a=4)."""
+    I = h2_ints
+    er = rhf(I["S"], I["h"], I["I"], I["enn"], 2, conv=1e-12)[0]
+    monkeypatch.setattr(pbc_uhf, "_jk_spin", _k_total)
+    assert abs(uhf(I["S"], I["h"], I["I"], I["enn"], 1, 1, conv=1e-12)["e"] - er) > 1e-2
+
+
+@pytest.mark.parametrize("exxdiv", ["none", "ewald"])
+def test_uhf_open_shell_dense_equals_rsgdf_in_the_trivial_aux_limit(
+    tri_anchor, exxdiv, monkeypatch
+):
+    """Anchor (b): triplet (na 3, nb 1) on the one-s tri cell, B with aux = every periodic pair product vs
+    the dense pure-AFT ERI (measured -1.1e-11 both conventions).  K[D_total] through B: -2.4e-1.
+    Blind spot: a wrong per-spin Madelung factor is applied identically on both sides -> invisible here."""
+    t = tri_anchor
+    I = t["ref"]
+    vm = I["madelung"] if exxdiv == "ewald" else 0.0
+    ud = uhf(I["S"], I["h"], I["I"], I["enn"], 3, 1, conv=1e-12, kshift=vm)
+    ub = uhf(
+        I["S"],
+        I["h"],
+        None,
+        I["enn"],
+        3,
+        1,
+        conv=1e-12,
+        kshift=vm,
+        jk=jk_from_B(t["B"]),
+    )
+    assert (
+        abs(ub["e"] - ud["e"]) < 1e-10
+        and abs(ub["s2"] - ud["s2"]) < 1e-9
+        and ud["s2"] > 2.0001
+    )
+    monkeypatch.setattr(pbc_uhf, "_jk_spin", _k_total)
+    assert (
+        abs(
+            uhf(
+                I["S"],
+                I["h"],
+                None,
+                I["enn"],
+                3,
+                1,
+                conv=1e-12,
+                kshift=vm,
+                jk=jk_from_B(t["B"]),
+            )["e"]
+            - ud["e"]
+        )
+        > 1e-2
+    )
+
+
+@pytest.fixture(scope="module")
+def h_atom_ints():
+    return build_integrals(
+        Cell(H2_A, H_ATOM, "sto-3g"), None, exxdiv="ewald", verbose=False
+    )
+
+
+@pytest.mark.parametrize("exxdiv", ["none", "ewald"])
+def test_uhf_matches_pinned_pyscf_aftdf(h_atom_ints, h2_ints, exxdiv):
+    for key, I, na, nb, s2 in (
+        ("H atom a=4", h_atom_ints, 1, 0, 0.75),
+        ("H2 a=4 triplet", h2_ints, 2, 0, 2.0),
+    ):
+        vm = I["madelung"] if exxdiv == "ewald" else 0.0
+        u = uhf(I["S"], I["h"], I["I"], I["enn"], na, nb, conv=1e-12, kshift=vm)
+        assert abs(u["e"] - UHF_REF[key][exxdiv]) < 1e-10 and abs(u["s2"] - s2) < 1e-10
+
+
+def test_uhf_madelung_is_vM_per_spin_density(h_atom_ints, h2_ints, monkeypatch):
+    """PySCF adds v_M S D_s S to EACH spin's K (df_jk._ewald_exxdiv_for_G0 loops over dms): ewald - none
+    = -v_M (Na+Nb)/2 exactly at Gamma.  The half-factor mutant misses the pinned ewald E by v_M N/4."""
+    for key, I, na, nb in (
+        ("H atom a=4", h_atom_ints, 1, 0),
+        ("H2 a=4 triplet", h2_ints, 2, 0),
+    ):
+        vm = I["madelung"]
+        e = {
+            x: uhf(I["S"], I["h"], I["I"], I["enn"], na, nb, conv=1e-12, kshift=k)["e"]
+            for x, k in (("n", 0.0), ("e", vm))
+        }
+        assert abs(e["e"] - e["n"] + vm * (na + nb) / 2) < 1e-11
+    monkeypatch.setattr(pbc_uhf, "_madelung_term", _madelung_half)
+    I = h2_ints
+    assert (
+        abs(
+            uhf(
+                I["S"], I["h"], I["I"], I["enn"], 2, 0, conv=1e-12, kshift=I["madelung"]
+            )["e"]
+            - UHF_REF["H2 a=4 triplet"]["ewald"]
+        )
+        > 0.1
+    )
+
+
+def _box_residual(atoms, na, nb, edge, guess):
+    w = min(1.0, 8.0 / edge)
+    I = build_integrals(
+        Cell(np.eye(3) * edge, atoms, "sto-3g"),
+        w,
+        rcut_bra=18.0,
+        rcut_2e=18.0 + 6.0 / w,
+        exxdiv="ewald",
+        verbose=False,
+    )
+    return {
+        x: uhf(
+            I["S"], I["h"], I["I"], I["enn"], na, nb, conv=1e-12, kshift=k, guess=guess
+        )
+        for x, k in (("none", 0.0), ("ewald", I["madelung"]))
+    }, I["madelung"]
+
+
+def _mol_uhf(atoms, spin):
+    from pyscf import scf
+
+    mol = gto.M(atom=atoms, basis="sto-3g", unit="B", cart=True, verbose=0, spin=spin)
+    mf = scf.UHF(mol)
+    mf.conv_tol = 1e-13
+    mf.kernel()
+    return mol, mf
+
+
+def test_uhf_box_limit_h_atom_is_exactly_c3_over_a3():
+    """Independent of PySCF pbc.  H atom (one electron: Hartree == self-exchange for ANY kernel; spherical
+    density sees no l=4 cubic term) => residual is c3/a^3 up to exponentially small image overlap.
+    c3 = -(2pi/3) Omega_a = -4.081081 predicted; measured dE*a^3 -4.081081 at a=20..40 (-4.344 at a=10)."""
+    mol, mf = _mol_uhf(H_ATOM, 1)
+    c3 = uhf_c3_closed_form(mol, *mf.mo_coeff, 1, 0)[0]
+    r, vm = _box_residual(H_ATOM, 1, 0, 20.0, mf.make_rdm1())
+    assert abs((r["ewald"]["e"] - mf.e_tot) * 20.0**3 - c3) < 1e-5 * abs(c3)
+    assert (
+        abs(r["none"]["e"] - r["ewald"]["e"] - vm / 2) < 1e-12
+    )  # none: +v_M N/2 = +1.4186/a
+
+
+def test_uhf_box_limit_o2_triplet_ewald_is_a3_with_predicted_coefficient():
+    """O2/STO-3G triplet (na 9, nb 7).  c3 = -(2pi/3)(|d|^2 + Omega_a + Omega_b) = -30.6224 predicted
+    (closed form == relaxed r2-kernel FD); measured dE*a^3 -30.6886 / -30.6595 at a=24 / 32 (c5 tail),
+    tail fit (24,32,40) c3 = -30.6221, exponent 3.0033 between 24 and 32.  A per-spin factor-1/2 Madelung
+    would add +v_M N/4 (exponent 1)."""
+    mol, mf = _mol_uhf(O2_ATOMS, 2)
+    c3 = uhf_c3_closed_form(mol, *mf.mo_coeff, 9, 7)[0]
+    assert abs(uhf_r2_kernel_c3(mol, 9, 7, guess=mf.make_rdm1()) - c3) < 1e-5 * abs(c3)
+    res = {}
+    for edge in (24.0, 32.0):
+        r, vm = _box_residual(O2_ATOMS, 9, 7, edge, mf.make_rdm1())
+        res[edge] = r["ewald"]["e"] - mf.e_tot
+        assert abs(res[edge] * edge**3 - c3) < 0.005 * abs(c3)
+        assert abs(r["none"]["e"] - r["ewald"]["e"] - vm * 8) < 1e-11
+        assert abs(r["ewald"]["s2"] - mf.spin_square()[0]) < 1e-4
+    p = np.log(res[24.0] / res[32.0]) / np.log(32.0 / 24.0)
+    assert abs(p - 3.0) < 0.02
+
+
+@pytest.mark.skipif(not SLOW, reason="set PBC_SLOW=1 (~70 s pure-AFT tri s+p build)")
+def test_uhf_ewald_core_guess_traps_in_a_non_aufbau_state_none_first_does_not():
+    """tri 4H s+p triplet.  Ewald and None have identical stationary points (v_M S D S = v_M x occupied
+    projector), but ewald lowers occupied levels by v_M, so a None-non-aufbau state becomes ewald-stable:
+    core guess -> E -1.812958714837 (alpha gap 0.617 < v_M 0.622); None first then ewald -> -1.827999723359
+    == PySCF default guess (1.5e-2 lower)."""
+    I = build_integrals(
+        Cell(TRI_A, TRI_ATOMS, SP_BASIS), None, exxdiv="ewald", verbose=False
+    )
+    vm, args = I["madelung"], (I["S"], I["h"], I["I"], I["enn"])
+    trapped = uhf(*args, 3, 1, conv=1e-12, kshift=vm)
+    assert (
+        abs(trapped["e"] - -1.812958714837) < 1e-9
+        and trapped["eps_a"][3] - trapped["eps_a"][2] < vm
+    )
+    un = uhf(*args, 3, 1, conv=1e-12)
+    good = uhf(*args, 3, 1, conv=1e-12, kshift=vm, guess=(un["Da"], un["Db"]))
+    assert (
+        abs(good["e"] - -1.827999723359) < 1e-10
+        and abs(good["e"] - un["e"] + 2 * vm) < 1e-11
+    )
+    assert good["eps_a"][3] - good["eps_a"][2] > vm
+
+
+# ================================================= Gamma LMP2 uniform (q=0 head) coupling (Iteration 5b)
+@pytest.fixture(scope="module")
+def needle_unif():
+    """(1,1,4) wrapped (needle4) and (1,1,8) straight, with Richardson mu, J_unif and the head-restored refs."""
+    out = {}
+    for N in (4, 8):
+        if N == 4:
+            sc, d, scf = _lmp2_system((1, 1, 4), wrapped=True)
+        else:
+            sc, d, scf = _lmp2_system((1, 1, N))
+        p = LM.prepare(sc, d, scf)
+        Z2 = LM.resta_z_at(sc, d, 2, 2)
+        mu, mi = LM.transition_dipoles_richardson(sc, d, p, Z2=Z2)
+        Ju = LM.uniform_coupling(p, mu)
+        Foo2, Fvv2, _ = LM.fock_head_correction(sc, d, p, mu, Z2=Z2)
+        out[N] = dict(
+            sc=sc,
+            d=d,
+            scf=scf,
+            p=p,
+            Z2=Z2,
+            mu=mu,
+            f1=mi["f1"],
+            Ju=Ju,
+            eu=LM.uniform_pair_energies(p, Ju),
+            ec=LM.canonical_mp2(scf, d["B"]),
+            eh=LM.canonical_mp2_from_local(p, scf, d["S"], p["J"] - Ju),
+            ehf=LM.mp2_local_closed_form(p["J"] - Ju, Foo2, Fvv2),
+        )
+    return out
+
+
+def test_uniform_coupling_richardson_dipoles_and_eps0_anchors(needle_unif):
+    """resta_z_at(m=1) == build_supercell's Zk; the (b, 2b) Richardson dipole makes the farthest pair's
+    J - J_unif small (measured N=8: 4.4e-4 rel; the single-b Resta estimate 1.0e-2).  eps=0 anchors: the
+    J-unif gate + add-back == canonical Gamma MP2 (nothing dropped, add-back 0), CG on J' == the closed-form
+    canonical MP2 of J' rotated to canonical orbitals (independent construction), and the closed-form local
+    rotation of J itself == canonical_mp2."""
+    t = needle_unif[8]
+    p, d, sc = t["p"], t["d"], t["sc"]
+    assert abs(LM.resta_z_at(sc, d, 2, 1) - d["Zk"][2]).max() < 1e-12
+    dist = LM.pair_distances(p)
+    i, j = np.unravel_index(np.argmax(dist), dist.shape)
+    Jf = p["J"][i, :, j, :]
+    rel = abs(Jf - t["Ju"][i, :, j, :]).max() / abs(Jf).max()
+    rel1 = abs(Jf - LM.uniform_coupling(p, t["f1"])[i, :, j, :]).max() / abs(Jf).max()
+    assert rel < 2e-3 < 5e-3 < rel1
+    r0 = LM.solve(p, 0.0, gate="J-unif", J_unif=t["Ju"], addback=t["eu"])
+    assert abs(r0["e"] - t["ec"]) < 1e-10 and r0["e_addback"] == 0.0
+    assert abs(LM.solve(p, 0.0, J=p["J"] - t["Ju"])["e"] - t["eh"]) < 1e-10
+    assert abs(LM.mp2_local_closed_form(p["J"], p["Foo"], p["Fvv"]) - t["ec"]) < 1e-12
+
+
+def test_head_restoration_shrinks_the_gamma_finite_size_term(needle_unif):
+    """E = e N + b from N = 4, 8 (b = 2 E4 - E8).  Canonical Gamma MP2 b +4.26e-3; restoring the q=0 head in
+    the ERIs (J' = J - J_unif) b +1.07e-3; also in the Fock exchange (Fvv, diag Foo) b +1.6e-4.  The uniform
+    coupling is the q=0 quadrature hole, a finite-size term, not correlation that survives the TDL.
+    Mutation guard: a flipped Fock-head sign or J' = J + J_unif makes b GROW."""
+    b = {k: 2 * needle_unif[4][k] - needle_unif[8][k] for k in ("ec", "eh", "ehf")}
+    assert b["ec"] > 3e-3 and 0.5e-3 < b["eh"] < 1.6e-3 and 0 < b["ehf"] < 0.1 * b["ec"]
+    # e_inf equality is NOT asserted from two small N: canonical carries c/N = +3.1e-4/N (tail fit), which
+    # moves a 4/8 two-point slope by 8e-6; the 16/24/32 fits agree to 3e-9 (FINDINGS Iteration 5b).
+
+
+def test_uniform_gate_removes_the_onset_and_the_addback_is_needed(needle_unif):
+    """N=8.  gate on J at eps 1e-4 keeps all 64 pairs (below N* = 232); gated on J - J_unif it keeps 3
+    partners/molecule (the R_c 10.5 set).  Pair-level screen on J' (energy estimate 1e-7) + analytic add-back
+    reproduces canonical Gamma MP2 to 2.4e-6; WITHOUT the add-back +6.8e-4 (the dropped uniform energy).
+    Solving on J' (A-drop) reproduces its own reference E_head to 2.3e-6 with no add-back."""
+    t = needle_unif[8]
+    p, Ju, eu, ec = t["p"], t["Ju"], t["eu"], t["ec"]
+    assert LM.solve(p, 1e-4, solver="ragged")["pairs_kept"] == 64
+    ra = LM.solve(p, 1e-4, gate="J-unif", J_unif=Ju, addback=eu, solver="ragged")
+    assert ra["partners"].min() == ra["partners"].max() == 3
+    rb = LM.solve(p, 0.0, gate="J-unif", J_unif=Ju, pair_ecut=1e-7, addback=eu)
+    assert (
+        rb["pairs_kept"] == 24
+        and abs(rb["e"] - ec) < 1e-5
+        and rb["e_solve"] - ec > 5e-4
+    )
+    rc = LM.solve(p, 0.0, pair_cut=10.5, addback=eu)
+    assert abs(rc["e"] - rb["e"]) < 1e-12  # same pair set, same energy
+    rd = LM.solve(p, 1e-4, J=p["J"] - Ju, solver="ragged")
+    assert rd["partners"].max() == 3 and 0 < rd["e"] - t["eh"] < 1e-5
+    with pytest.raises(ValueError):
+        LM.solve(p, 1e-4, gate="J-unif")
