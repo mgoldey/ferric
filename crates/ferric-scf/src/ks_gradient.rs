@@ -500,8 +500,9 @@ pub fn twoelectron_gradient_uhf_scaled_k(
 /// Restricted-open-shell KS (ROKS) nuclear gradient.
 ///
 /// Structure mirrors `ks_gradient_uks` but uses the ROHF energy-weighted
-/// density convention (doubly-occ orbital weighted 2ε, singly-occ orbital
-/// weighted 1ε) and the same UKS XC gradient via `xc_gradient_uks_from_density`.
+/// density (`crate::gradient::rohf_energy_weighted_density`, built from the
+/// spin Focks, which include `V_xc^σ`) and the same UKS XC gradient via
+/// `xc_gradient_uks_from_density`.
 /// The per-spin densities from a ROKS `ScfResult` already satisfy the
 /// projector structure so the UKS XC path applies verbatim.
 #[allow(clippy::too_many_arguments)]
@@ -530,11 +531,6 @@ pub fn ks_gradient_roks(
     let k_mix = ferric_dft::libxc::k_mix_from_xc_def(&xc);
     let c_k: f64 = k_mix.sr;
 
-    let nelec = mol.nelec() as i64;
-    let two_s = mol.multiplicity as i64 - 1;
-    let nocc_open = two_s as usize;
-    let nocc_double = ((nelec - two_s) / 2) as usize;
-
     let d_a = &result.density_alpha;
     let d_b = result
         .density_beta
@@ -542,23 +538,7 @@ pub fn ks_gradient_roks(
         .expect("ks_gradient_roks: missing density_beta");
     let d_total = d_a + d_b;
 
-    // ROHF energy-weighted density: closed × 2ε, open × ε.
-    let n = result.mos_alpha.nrows();
-    let c_mo = &result.mos_alpha;
-    let eps = &result.eps_alpha;
-    let mut w = Array2::<f64>::zeros((n, n));
-    for mu in 0..n {
-        for nu in 0..n {
-            let mut sum = 0.0;
-            for i in 0..nocc_double {
-                sum += 2.0 * eps[i] * c_mo[(mu, i)] * c_mo[(nu, i)];
-            }
-            for j in nocc_double..nocc_double + nocc_open {
-                sum += eps[j] * c_mo[(mu, j)] * c_mo[(nu, j)];
-            }
-            w[(mu, nu)] = sum;
-        }
-    }
+    let w = crate::gradient::rohf_energy_weighted_density(result)?;
 
     let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
 

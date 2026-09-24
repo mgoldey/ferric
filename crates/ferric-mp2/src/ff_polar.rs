@@ -204,6 +204,7 @@ pub(crate) fn solve_rhf_with_external(
                 induced_dipoles: None,
                 stability: None,
                 df_jk: None,
+                rohf_spin_focks: None,
             });
         }
         prev_e = energy;

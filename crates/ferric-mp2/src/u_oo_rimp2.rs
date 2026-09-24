@@ -233,6 +233,7 @@ fn make_scf_view(
         induced_dipoles: None,
         stability: None,
         df_jk: None,
+        rohf_spin_focks: None,
     }
 }
 

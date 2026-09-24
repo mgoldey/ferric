@@ -1067,6 +1067,7 @@ pub fn solve_uhf_fockmod(
                 induced_dipoles: last_induced_dipoles,
                 stability,
                 df_jk: df_jk_route.clone(),
+                rohf_spin_focks: None,
             });
         }
         mon.note_energy(energy);
@@ -1463,6 +1464,7 @@ pub fn solve_uhf_fockmod(
         induced_dipoles: last_induced_dipoles,
         stability: None,
         df_jk: df_jk_route,
+        rohf_spin_focks: None,
     })
 }
 
