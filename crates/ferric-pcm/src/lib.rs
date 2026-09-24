@@ -67,7 +67,7 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::Array2;
 
 pub use cavity::{build_cavity, CavityConfig, Tessera};
-pub use config::PcmConfig;
+pub use config::{PcmConfig, ProbeKind};
 pub use solver::PcmChargeResult;
 
 /// Geometry-only PCM state built ONCE before the SCF loop (cavity + S/D/K/R
@@ -79,17 +79,67 @@ pub struct PcmContext {
     tess: Vec<Tessera>,
     k: Array2<f64>,
     r: Array2<f64>,
+    probe: ProbeKind,
 }
 
 impl PcmContext {
     /// Build the cavity and the isotropic IEF-PCM K/R operators for `mol`
-    /// under `cfg`. Returns `Err` for a degenerate cavity (zero tesserae) or
-    /// an invalid `epsilon`.
+    /// under `cfg`. Uses `cfg.cavity` as given when it is `Some` (see
+    /// [`PcmConfig::cavity`]); otherwise builds the cavity from `mol`.
+    /// Returns `Err` for a degenerate cavity (zero tesserae) or an invalid
+    /// `epsilon`.
     pub fn new(mol: &Molecule, cfg: &PcmConfig) -> Result<Self, FerricError> {
-        let tess = build_cavity(mol, &cfg.cavity_config())?;
+        match cfg.cavity.as_ref() {
+            Some(tess) => Self::from_tesserae(tess.clone(), cfg),
+            None => {
+                let tess = build_cavity(mol, &cfg.cavity_config())?;
+                Self::from_tesserae(tess, cfg)
+            }
+        }
+    }
+
+    /// Build the K/R operators on an explicit cavity. `cfg.epsilon`,
+    /// `cfg.sd_kind` and `cfg.probe` are used; `cfg.vdw_scale`,
+    /// `cfg.lebedev_order` and `cfg.cavity` are not.
+    ///
+    /// Returns `Err` for an empty cavity, or for a tessera with a non-finite
+    /// position, a normal that is not unit length (to 1e-8), or a
+    /// non-positive or non-finite `area`, `sphere_radius`, `charge_exp` or
+    /// `switch_fun` — each of those would otherwise surface as NaN or
+    /// infinite S/D entries.
+    pub fn from_tesserae(tess: Vec<Tessera>, cfg: &PcmConfig) -> Result<Self, FerricError> {
+        if tess.is_empty() {
+            return Err(FerricError::General(
+                "PcmContext::from_tesserae: empty cavity".into(),
+            ));
+        }
+        for (i, t) in tess.iter().enumerate() {
+            let pos_ok = t.position.iter().all(|x| x.is_finite());
+            let n2: f64 = t.normal.iter().map(|x| x * x).sum();
+            let positive = |x: f64| x.is_finite() && x > 0.0;
+            if !pos_ok
+                || !n2.is_finite()
+                || (n2 - 1.0).abs() >= 1e-8
+                || !positive(t.area)
+                || !positive(t.sphere_radius)
+                || !positive(t.charge_exp)
+                || !positive(t.switch_fun)
+            {
+                return Err(FerricError::General(format!(
+                    "PcmContext::from_tesserae: tessera {i} is invalid ({t:?}); need finite \
+                     position, unit normal, and positive finite area/sphere_radius/\
+                     charge_exp/switch_fun"
+                )));
+            }
+        }
         let (s, d) = matrices::build_s_d_kind(&tess, cfg.sd_kind);
         let (k, r, _f_eps) = matrices::build_k_r(&s, &d, &tess, cfg.epsilon)?;
-        Ok(Self { tess, k, r })
+        Ok(Self {
+            tess,
+            k,
+            r,
+            probe: cfg.probe,
+        })
     }
 
     /// Number of tesserae (surface integration points) in the cavity.
@@ -119,10 +169,21 @@ pub fn pcm_step(
     prep: &PreparedBasis,
     density: &Array2<f64>,
 ) -> Result<(Array2<f64>, f64), FerricError> {
-    let v = potential::solute_potential_at_tesserae(mol, prep, density, &ctx.tess)?;
+    let v = match ctx.probe {
+        ProbeKind::Point => potential::solute_potential_at_tesserae(mol, prep, density, &ctx.tess)?,
+        ProbeKind::GaussianSmeared => {
+            potential::solute_potential_at_tesserae_smeared(mol, prep, density, &ctx.tess)?
+        }
+    };
     let v_arr = ndarray::Array1::from_vec(v);
     let PcmChargeResult { q, e_pcm } = solver::solve_pcm_charges(&ctx.k, &ctx.r, &v_arr)?;
-    let v_pcm = potential::build_reaction_field_operator(prep, &ctx.tess, q.as_slice().unwrap())?;
+    let q = q.as_slice().unwrap();
+    let v_pcm = match ctx.probe {
+        ProbeKind::Point => potential::build_reaction_field_operator(prep, &ctx.tess, q)?,
+        ProbeKind::GaussianSmeared => {
+            potential::build_reaction_field_operator_smeared(prep, &ctx.tess, q)?
+        }
+    };
     Ok((v_pcm, e_pcm))
 }
 

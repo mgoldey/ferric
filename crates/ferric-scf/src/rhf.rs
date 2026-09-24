@@ -2775,6 +2775,13 @@ mod tests {
     /// relative-error assertion, matching this system's measured error with
     /// headroom. See docs/VALIDATION.md's PCM row for the full four-system
     /// picture.
+    ///
+    /// **Symmetrization fix (2026-09-24)**: `solve_pcm_charges` now applies
+    /// `q = ½(K⁻¹R + Rᵀ(Kᵀ)⁻¹)v` (PySCF's `q_sym`); it previously applied
+    /// `(Kᵀ)⁻¹Rᵀv` as the second term, which overshot E_pcm by ~5% and
+    /// cancelled about half of the cavity difference (ferric's Bondi H radius
+    /// 1.2 Å vs PySCF's modified-Bondi 1.1 Å is ~90% of that difference). The
+    /// solver alone is pinned against PySCF in `tests/validation_pcm.rs`.
     #[test]
     fn pcm_water_solvation_energy_is_negative_and_reasonable_magnitude() {
         // Holds ENV_LOCK (declared above) because solve_rhf reads the
@@ -2811,8 +2818,10 @@ mod tests {
         // tessellation): E_solv = -3.8228 kcal/mol. Measured ferric value
         // (Gaussian-smeared S/D, 2026-07-19): -3.5733 kcal/mol, 6.53% off --
         // tolerance set to 10% with headroom above the measured error.
+        // With the symmetrization fix: -3.3960 kcal/mol, 11.16% weak
+        // (measured 2026-09-24, tests/validation_pcm.rs); tolerance 15%.
         let pyscf_ref_kcal = -3.8227667932356835_f64;
-        let rel_tol = 0.10;
+        let rel_tol = 0.15;
         let rel_err = (e_solv_kcal - pyscf_ref_kcal).abs() / pyscf_ref_kcal.abs();
         assert!(
             rel_err < rel_tol,
@@ -2897,6 +2906,14 @@ mod tests {
     /// the pre-SWIG-cavity coincidental near-exact match (-6.258 kcal/mol, ~0%, on the less
     /// physical hard-cut cavity). Tolerance tightened from 12% to 10% to reflect the real
     /// measured error with headroom; see docs/VALIDATION.md's PCM row for the full picture.
+    ///
+    /// **Symmetrization fix (2026-09-24)**: `solve_pcm_charges` now applies
+    /// `q = ½(K⁻¹R + Rᵀ(Kᵀ)⁻¹)v` (PySCF's `q_sym`); it previously applied
+    /// `(Kᵀ)⁻¹Rᵀv` as the second term, which overshot E_pcm by ~5% and
+    /// cancelled about half of the cavity difference (ferric's Bondi H radius
+    /// 1.2 Å vs PySCF's modified-Bondi 1.1 Å is ~90% of that difference). The
+    /// solver alone is pinned against PySCF in `tests/validation_pcm.rs`.
+    /// Measured 2026-09-24: -5.5209 kcal/mol, 11.78% weak; tolerance 15%.
     #[test]
     fn pcm_water_ccpvdz_matches_pyscf_within_a_few_percent() {
         assert_pcm_solvation_matches_pyscf(
@@ -2904,7 +2921,7 @@ mod tests {
             "cc-pvdz",
             78.4,
             -6.2580,
-            0.10,
+            0.15,
             "water/cc-pVDZ/eps=78.4",
         );
     }
@@ -2926,6 +2943,15 @@ mod tests {
     /// that Gaussian-smearing is the dominant lever for this class of boundary-element
     /// method. Tolerance tightened from 15% to 5% (still generous headroom above the
     /// measured 0.09%).
+    ///
+    /// **Symmetrization fix (2026-09-24)**: `solve_pcm_charges` now applies
+    /// `q = ½(K⁻¹R + Rᵀ(Kᵀ)⁻¹)v` (PySCF's `q_sym`); it previously applied
+    /// `(Kᵀ)⁻¹Rᵀv` as the second term, which overshot E_pcm by ~5% and
+    /// cancelled about half of the cavity difference (ferric's Bondi H radius
+    /// 1.2 Å vs PySCF's modified-Bondi 1.1 Å is ~90% of that difference). The
+    /// solver alone is pinned against PySCF in `tests/validation_pcm.rs`.
+    /// Measured 2026-09-24: -3.6350 kcal/mol, 8.46% weak; tolerance 12%. The
+    /// earlier 0.09% agreement was that cancellation.
     #[test]
     fn pcm_nh3_sto3g_within_15_percent_of_pyscf() {
         assert_pcm_solvation_matches_pyscf(
@@ -2933,7 +2959,7 @@ mod tests {
             "sto-3g",
             78.4,
             -3.9709,
-            0.05,
+            0.12,
             "NH3/STO-3G/eps=78.4",
         );
     }
@@ -3002,8 +3028,12 @@ mod tests {
         // PySCF IEF-PCM reference: -2.6219 kcal/mol. Measured ferric value
         // (Gaussian-smeared S/D, 2026-07-19): -2.4738 kcal/mol, 5.65% off -- tolerance set
         // to 10% with headroom above the measured error.
+        // After the 2026-09-24 symmetrization fix (see
+        // `pcm_water_solvation_energy_is_negative_and_reasonable_magnitude`) a
+        // PySCF emulation of ferric's pipeline predicts -2.3156 kcal/mol (11.7%
+        // weak); the test passes at 15%.
         let pyscf_ref_kcal = -2.6219_f64;
-        let rel_tol = 0.10;
+        let rel_tol = 0.15;
         let rel_err = (e_solv_kcal - pyscf_ref_kcal).abs() / pyscf_ref_kcal.abs();
         assert!(
             rel_err < rel_tol,

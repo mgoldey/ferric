@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::cavity::CavityConfig;
+use crate::cavity::{CavityConfig, Tessera};
 use crate::matrices::SdKind;
 
 /// Configuration for an IEF-PCM implicit-solvent calculation.
@@ -43,6 +43,41 @@ pub struct PcmConfig {
     /// with.
     #[serde(default)]
     pub sd_kind: SdKind,
+    /// How the solute potential at a tessera, and the reaction-field
+    /// operator from the tessera charges, are evaluated. Default
+    /// [`ProbeKind::Point`]. [`ProbeKind::GaussianSmeared`] is PySCF
+    /// `pcm.py`'s convention (see [`ProbeKind`]).
+    #[serde(default)]
+    pub probe: ProbeKind,
+    /// An explicit cavity to use instead of building one from the molecule.
+    /// `None` (the default) builds the cavity from `vdw_scale` and
+    /// `lebedev_order`. `Some(tess)` uses `tess` as given and IGNORES
+    /// `vdw_scale` and `lebedev_order`; every [`Tessera`] field that the S/D
+    /// matrices read (`position`, `normal`, `area`, `sphere_radius`,
+    /// `charge_exp`, `switch_fun`) must be set. This exists so another
+    /// code's cavity can be injected to test the solver separately from the
+    /// cavity construction (`crates/ferric-scf/tests/validation_pcm.rs`).
+    /// Not settable from TOML.
+    #[serde(skip)]
+    pub cavity: Option<Vec<Tessera>>,
+}
+
+/// How the tessera charges couple to the solute's charge density.
+///
+/// * [`ProbeKind::Point`]: each tessera is a point charge. The potential at
+///   tessera `k` is `Σ_A Z_A/|r_k − R_A| − Σ_μν D_μν ⟨μ|1/|r − r_k||ν⟩` and
+///   the reaction-field operator is `Σ_k q_k ⟨μ|−1/|r − r_k||ν⟩`.
+/// * [`ProbeKind::GaussianSmeared`]: each tessera is a normalized Gaussian
+///   charge of exponent `charge_exp²` (the same Gaussian the
+///   [`SdKind::GaussianSmeared`] S/D matrices assume), so every `1/r` above
+///   becomes `erf(ξ_k r)/r`. This is PySCF `pcm.py`'s `_get_v`/`_get_vmat`/
+///   `v_grids_n` (int3c2e/int2c2e against `fakemol_for_charges(expnt=ξ²)`).
+///   It changes the solvation energy by ~1e-6 Ha on water and NH3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ProbeKind {
+    #[default]
+    Point,
+    GaussianSmeared,
 }
 
 fn default_vdw_scale() -> f64 {
@@ -71,6 +106,8 @@ impl PcmConfig {
             lebedev_order: default_lebedev_order(),
             inner_iters: default_inner_iters(),
             sd_kind: SdKind::default(),
+            probe: ProbeKind::default(),
+            cavity: None,
         }
     }
 
@@ -104,5 +141,7 @@ mod tests {
         assert_eq!(cfg.vdw_scale, 1.2);
         assert_eq!(cfg.lebedev_order, 110);
         assert_eq!(cfg.inner_iters, 1);
+        assert_eq!(cfg.probe, ProbeKind::Point);
+        assert!(cfg.cavity.is_none());
     }
 }

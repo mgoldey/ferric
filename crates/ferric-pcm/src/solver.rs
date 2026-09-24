@@ -25,21 +25,27 @@ pub struct PcmChargeResult {
 /// potential `v` at the cavity tesserae.
 ///
 /// Following Cancès-Mennucci-Tomasi (and as implemented, non-anisotropic
-/// case, by every mainstream PCM code): the *symmetric* combination
+/// case, by every mainstream PCM code): with the IEF-PCM response operator
+/// `Q = K⁻¹ R`, the *symmetric* part of `Q` is applied,
 ///
 /// ```text
-///     q = ½ [ K⁻¹ R v + (Kᵀ)⁻¹ Rᵀ v ]
+///     q = ½ [ K⁻¹ R v + Rᵀ (Kᵀ)⁻¹ v ] = ½ (Q + Qᵀ) v
 /// ```
 ///
-/// is used rather than the bare (non-symmetric) `K⁻¹ R v`, because the raw
-/// IEF-PCM operator `K` is not symmetric (`D` is not symmetric) and using it
-/// directly would make the reaction-field energy path-dependent / not
-/// variational. Symmetrizing this way reproduces the same fixed point as
-/// the un-symmetrized solve to the extent `K` is close to symmetric, and is
-/// the standard prescription (Cancès 1997; matches the "symmetrized"
-/// solve pattern cross-checked against PySCF's `pcm.py::_get_vind`, which
-/// computes the analogous `q_sym = (q + qt)/2`; equation-level cross-check
-/// only, no code copied).
+/// rather than the bare (non-symmetric) `Q v`, because the raw IEF-PCM
+/// operator is not symmetric (`D` is not symmetric) and using it directly
+/// would make the reaction-field Fock contribution inconsistent with the
+/// energy. Symmetrizing leaves the quadratic form unchanged, so the energy
+/// `½ q·v = ½ vᵀ K⁻¹ R v` is exactly the unsymmetrized one. This is PySCF
+/// `pcm.py::_get_vind`'s `q_sym = (q + qt)/2` with `qt = Rᵀ (Kᵀ)⁻¹ v`
+/// (equation-level cross-check only, no code copied).
+///
+/// The order of `Rᵀ` and `(Kᵀ)⁻¹` in the second term matters: `(Kᵀ)⁻¹ Rᵀ v`
+/// is `(R K⁻¹)ᵀ v`, whose quadratic form `vᵀ R K⁻¹ v` is a different number
+/// (`K` and `R` do not commute because `S` does not commute with `D A`).
+/// On water/STO-3G at ε = 78.4 that wrong ordering shifts `E_pcm` by
+/// 3.2e-4 Ha (5%). `crates/ferric-scf/tests/validation_pcm.rs` pins this
+/// solve against PySCF's charges on a shared cavity.
 ///
 /// `energy_conv` is not iterative here: for a single frozen density this is
 /// an exact (LAPACK-precision) linear solve, not a fixed-point iteration —
@@ -71,13 +77,12 @@ pub fn solve_pcm_charges(
     })?;
 
     let k_t = k.t().to_owned();
-    let r_t = r.t().to_owned();
-    let rtv = r_t.dot(v);
-    let q2 = k_t.solve(&rtv).map_err(|e| {
+    let kt_inv_v = k_t.solve(v).map_err(|e| {
         FerricError::Lapack(format!(
-            "IEF-PCM transpose charge solve (Kᵀ q = Rᵀ v) failed — singular/ill-conditioned cavity: {e}"
+            "IEF-PCM transpose solve (Kᵀ x = v) failed — singular/ill-conditioned cavity: {e}"
         ))
     })?;
+    let q2 = r.t().dot(&kt_inv_v);
 
     let q = 0.5 * (&q1 + &q2);
     let e_pcm = 0.5 * q.dot(v);
@@ -110,6 +115,33 @@ mod tests {
         let res = solve_pcm_charges(&k, &r, &v).unwrap();
         assert!(res.q.iter().all(|&x| x == 0.0));
         assert_eq!(res.e_pcm, 0.0);
+    }
+
+    /// Symmetrizing `Q = K⁻¹R` must leave the energy's quadratic form
+    /// unchanged: `½ q_sym·v == ½ vᵀ K⁻¹ R v`. The transposed-product
+    /// ordering `(Kᵀ)⁻¹ Rᵀ v` breaks this by ~5% on this cavity, so this test
+    /// fails if that ordering comes back.
+    #[test]
+    fn symmetrized_energy_equals_unsymmetrized_quadratic_form() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/water.xyz").unwrap();
+        let tess = build_cavity(&mol, &CavityConfig::default()).unwrap();
+        let (s, d) = build_s_d(&tess);
+        let (k, r, _f) = build_k_r(&s, &d, &tess, 78.4).unwrap();
+        // A non-uniform potential: a uniform one is too symmetric to expose
+        // an operator-ordering error.
+        let v = Array1::from_iter(
+            tess.iter()
+                .map(|t| 0.1 + 0.05 * t.position[2] + 0.02 * t.position[1] * t.position[1]),
+        );
+        let res = solve_pcm_charges(&k, &r, &v).unwrap();
+        let q_raw = k.solve(&r.dot(&v)).unwrap();
+        let e_raw = 0.5 * q_raw.dot(&v);
+        assert!(
+            (res.e_pcm - e_raw).abs() < 1e-10 * e_raw.abs().max(1.0),
+            "symmetrized E {} != unsymmetrized E {}",
+            res.e_pcm,
+            e_raw
+        );
     }
 
     #[test]
