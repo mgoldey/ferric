@@ -2293,12 +2293,13 @@ That ratio, not the algorithm, is what sizes a catalyst job now.
    `optimize_qmmm`'s evaluator extracted) and lifting the fixed-MM-field
    approximation; see section 4.
 
-1. **Harvest the docked pose** into `context["geometry"]` in `run_funnel`'s
-   stage loop (section 0). Highest value, smallest change, independent of
-   QM/MM. Needs the parallel-path anchor test.
-2. **Fix the "DFT + dispersion" label** -- either wire `ferric_d3.py` into
-   tier 4 or correct the two docstrings. Do not leave the label claiming
-   physics the tier does not compute.
+1. ~~**Harvest the docked pose** into `context["geometry"]` in `run_funnel`'s
+   stage loop (section 0).~~ **DONE** (#93) -- `funnel._harvest_geometry`
+   writes the key.
+2. ~~**Fix the "DFT + dispersion" label.**~~ **DONE** (#99) -- `tier4_dft`
+   passes `dispersion="d3bj"` (native `ferric-d3`) by default, so the label
+   matches what the tier computes. QM/MM dispersion is still absent (section
+   on dispersion above).
 3. **Decide the pose treatment** (section 3) before any QM/MM adapter.
 4. **Add the tier 3.5 producer**: `derive_pocket_charges` -> `context`. Both
    quantum tiers ALREADY consume `context["point_charges"]`, so this is a

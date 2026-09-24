@@ -51,8 +51,9 @@ is deliberately loose (`1e-3`).
 Coulomb gives a discrepancy that grows with molecule size.
 
 **Why:** `run_dft`, `run_ksdft` and the CLI's `ksdft` density-fit Coulomb
-(RI-J) and exchange (RI-K) with `def2-universal-jkfit` by default. `run_rhf`
-builds exact four-centre J and K unless you pass `df_j_aux`/`df_k_aux`. The
+(RI-J) with `def2-universal-jkfit` by default, and, for functionals with exact
+exchange (hybrids and range-separated hybrids), exchange (RI-K) with the same
+basis. `run_rhf` builds exact four-centre J and K unless you pass `df_j_aux`/`df_k_aux`. The
 difference is the fitting error that density fitting always carries, not a
 bug. Against exact J at PBE/STO-3G it is 0.28 kcal/mol for water, 1.16 for
 benzene and 9.5 for a 71-atom drug molecule.
@@ -66,8 +67,9 @@ benzene and 9.5 for a 71-atom drug molecule.
   `df_k_aux = ""`. The CLI's `SCF J/K` log line then reads `RI-JK via` with a
   blank name; the run uses exact J and K.
 - Or fit on both sides: `density_fit(auxbasis="def2-universal-jkfit")` in
-  PySCF, or `run_rhf(..., df_j_aux="def2-universal-jkfit")` in ferric.
-  `run_rhf` takes a basis name or `""` here, not `"exact"`.
+  PySCF, or `run_rhf(..., df_j_aux="def2-universal-jkfit",
+  df_k_aux="def2-universal-jkfit")` in ferric, so J and K are both fitted on
+  both sides. `run_rhf` takes a basis name or `""` here, not `"exact"`.
 - `run_qmmm` (KS methods), `run_gw` and `run_u_gw` with `xc`, `run_tddft`
   with a functional, `run_tdhf_static_polarizability`, `run_double_hybrid`
   and `run_rs_mp2_rpa` always density-fit their reference SCF with
@@ -162,8 +164,11 @@ The warning never stops the run.
 
 From Python, `memory_budget_gb=` sets the same per-allocation limits, but no
 shared ledger is installed. Each check compares its own allocation with the
-whole budget (some first subtract the process's current RSS), not with what
-the other allocations have left.
+whole budget, not with what the other allocations have left. Two checks
+instead subtract the process's current RSS and allow 90% of the remainder: the
+KS-DFT grid AO cache (store or recompute) and the UKS Newton/TRAH f<sub>xc</sub>
+kernel's second grid cache. The f<sub>xc</sub> check subtracts RSS in the CLI
+too.
 
 **Do:** leave room below the machine's real limit for the uncharged part. On
 a shared machine, also cap the process externally so a runaway job dies in

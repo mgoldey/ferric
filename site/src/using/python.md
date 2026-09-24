@@ -329,6 +329,11 @@ spilled to disk, recomputed on demand (the DFT grid AO cache) or refused with
 an error naming it (for example `run_rimp2` and `run_ccsd`). Unlike the CLI,
 Python installs no shared ledger, so each check compares its own allocation
 with the whole budget rather than with what other live allocations have left.
+Two checks instead subtract the process's current resident memory (RSS) first
+and allow 90% of the remainder: the KS-DFT decision to store or recompute the
+grid AO cache, and the UKS Newton/TRAH f<sub>xc</sub> kernel's second grid
+cache. Because RSS includes everything already resident, those two see less
+than the full budget.
 It is **not** a cap on total process memory; see
 [Sharp bits](./sharp-bits.md#memory-budget_gb-does-not-cap-the-whole-process).
 

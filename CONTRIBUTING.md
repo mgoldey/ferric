@@ -40,7 +40,7 @@ cargo build --release --workspace
 
 **Critical:** never run tests with `OPENBLAS_NUM_THREADS` above 1. OpenBLAS
 with multiple threads under rayon causes segfaults and non-deterministic
-slowdowns. `.cargo/config.toml` sets it to 1 for every cargo-invoked process,
+slowdowns. `.cargo/config.toml` sets it to 1 for cargo-invoked processes when it is unset,
 and the CLI and `import ferric` pin OpenBLAS to one thread when the variable
 is unset, so the explicit prefix below only matters when your shell exports a
 larger value (and for the `uv run pytest` line, which is not a cargo process;
