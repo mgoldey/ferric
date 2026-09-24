@@ -379,7 +379,9 @@ class CdftConstraint:
     negative/duplicated atom list, or a non-finite target raise ``ValueError``.
     """
 
-    def __init__(self, atoms: list[int], target: float, kind: str = "charge") -> None: ...
+    def __init__(
+        self, atoms: list[int], target: float, kind: str = "charge"
+    ) -> None: ...
     @property
     def atoms(self) -> list[int]: ...
     @property

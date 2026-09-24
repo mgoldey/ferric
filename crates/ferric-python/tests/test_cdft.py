@@ -456,6 +456,43 @@ def test_coupling_refuses_states_from_different_geometries():
         ferric.cdft_coupling(a, b)
 
 
+def _he2_plus_state_b_with(**extra):
+    """State b of the R = 3.0 A He2+ pair, solved with extra run_cdft kwargs."""
+    mol = ferric.Molecule.from_xyz_string("2\nHe2+\nHe 0 0 0\nHe 0 0 3.0\n", 1, 2)
+    kw = dict(
+        lambda_tol=1e-2,
+        max_outer=40,
+        level_shift=0.2,
+        grid_radial=99,
+        grid_angular=302,
+    )
+    kw.update(extra)
+    return ferric.run_cdft(mol, _svp(), [ferric.CdftConstraint([1], 1.0)], **kw)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        # A 1e-4 a.u. field changes H but not the overlap or the occupations,
+        # so only the Hamiltonian check can refuse it.
+        dict(external_field=(0.0, 0.0, 1e-4)),
+        # RI-J vs exact J: same geometry and basis, different Coulomb operator.
+        dict(df_j_aux="def2-universal-jkfit"),
+    ],
+    ids=["external_field", "df_j_aux"],
+)
+def test_coupling_refuses_states_solved_with_different_hamiltonians(extra):
+    """Wu-Van Voorhis needs ONE shared Hamiltonian. The overlap and occupation
+    checks cannot see the functional, the fitting, or the external potential.
+    Fails if the hamiltonian_key comparison in cdft_coupling is removed: the
+    call then returns a number instead of raising."""
+    a, b = _he2_plus_states(3.0)
+    ferric.cdft_coupling(a, b)  # same Hamiltonian: accepted
+    b_other = _he2_plus_state_b_with(**extra)
+    with pytest.raises(ValueError, match="different Hamiltonians"):
+        ferric.cdft_coupling(a, b_other)
+
+
 def test_coupling_refuses_a_spin_constrained_state():
     """The kernel applies one operator to both spins; a spin constraint acts
     with opposite signs, so the Wu-VV element would be wrong, not approximate."""

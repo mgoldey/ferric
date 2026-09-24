@@ -2051,6 +2051,12 @@ struct PyCdftResult {
     spins: Vec<ferric_dft::cdft::SpinChannel>,
     weight_matrices: Vec<Array2<f64>>,
     overlap: Array2<f64>,
+    // Every run_cdft input that changes the electronic Hamiltonian (functional,
+    // J/K fitting, exchange builder, XC grid, external potential), rendered
+    // exactly (Debug prints f64 in shortest round-trip form). cdft_coupling
+    // refuses two states whose keys differ: the Wu-Van Voorhis formula assumes
+    // one shared H, and the overlap/occupation checks cannot see these inputs.
+    hamiltonian_key: String,
 }
 
 #[pymethods]
@@ -2341,6 +2347,15 @@ fn run_cdft(
         ..defaults
     };
 
+    let hamiltonian_key = format!(
+        "xc={:?} df_j_aux={:?} df_k_aux={:?} k_builder={:?} dft_grid={:?} external={:?}",
+        config.xc,
+        config.df_j_aux,
+        config.df_k_aux,
+        config.k_builder,
+        config.dft_grid,
+        config.external_potential,
+    );
     let bs = basis_set.inner.clone();
     let prep = PreparedBasis::new(&emol, &bs).map_err(make_err)?;
     let op = Operator::coulomb();
@@ -2396,6 +2411,7 @@ fn run_cdft(
         spins,
         weight_matrices: r.weight_matrices,
         overlap,
+        hamiltonian_key,
     })
 }
 
@@ -2441,7 +2457,9 @@ impl PyCdftCouplingResult {
 /// and it is kind="charge" (the Rust kernel applies one operator to both spins
 /// and takes a single λ), both states are `converged`, and both come from the
 /// same molecule, geometry, basis, charge and multiplicity (checked through the
-/// AO overlap matrix and the occupations). Two (near-)identical states
+/// AO overlap matrix and the occupations) AND the same Hamiltonian: functional,
+/// df_j_aux/df_k_aux, k_builder, XC grid, point_charges and external_field must
+/// all match. Two (near-)identical states
 /// (|S_ab| -> 1) make the coupling undefined and also raise.
 #[pyfunction]
 fn cdft_coupling(state_a: &PyCdftResult, state_b: &PyCdftResult) -> PyResult<PyCdftCouplingResult> {
@@ -2495,6 +2513,15 @@ fn cdft_coupling(state_a: &PyCdftResult, state_b: &PyCdftResult) -> PyResult<PyC
             "cdft_coupling: occupations differ (alpha {}/{}, beta {}/{}); the states \
              must share charge and multiplicity",
             state_a.nocc_alpha, state_b.nocc_alpha, state_a.nocc_beta, state_b.nocc_beta
+        )));
+    }
+    if state_a.hamiltonian_key != state_b.hamiltonian_key {
+        return Err(value_err(format!(
+            "cdft_coupling: the two states were solved with different Hamiltonians \
+             (functional, density fitting, exchange builder, XC grid or external \
+             potential differ); the Wu-Van Voorhis coupling requires one shared H.\n  \
+             state_a: {}\n  state_b: {}",
+            state_a.hamiltonian_key, state_b.hamiltonian_key
         )));
     }
     let da = DiabaticState {
