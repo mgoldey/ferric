@@ -300,14 +300,25 @@ fn no_other_job_runs_ignored_tests() {
     let ci = ci_yml();
     let job = validation_job(&ci);
     let outside = ci.replacen(&job, "", 1);
+    // nextest's `--run-ignored` AND libtest's `-- --ignored` /
+    // `-- --include-ignored`: any of them in another job would run the
+    // validation tier per-commit (a `cargo test` that builds a validation_*
+    // binary runs its ignored tests with either libtest flag). Matched as
+    // whole tokens so a flag named in a comment or a longer word cannot trip
+    // it; comment lines are skipped entirely.
+    const IGNORE_FLAGS: [&str; 3] = ["--run-ignored", "--ignored", "--include-ignored"];
     let hits: Vec<&str> = outside
         .lines()
-        .filter(|l| !l.trim_start().starts_with('#') && l.contains("--run-ignored"))
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter(|l| {
+            l.split(|c: char| c.is_whitespace() || c == '=' || c == '"' || c == '\'')
+                .any(|tok| IGNORE_FLAGS.contains(&tok))
+        })
         .collect();
     assert!(
         hits.is_empty(),
-        "only the validation job may pass --run-ignored; elsewhere it runs the validation tier \
-         per-commit:\n  {}",
+        "only the validation job may run ignored tests (--run-ignored, --ignored, \
+         --include-ignored); elsewhere they run the validation tier per-commit:\n  {}",
         hits.join("\n  ")
     );
 }

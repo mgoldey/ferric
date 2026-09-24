@@ -1086,8 +1086,15 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '17 4 * * 0')
     runs-on: ubuntu-22.04
     timeout-minutes: 170
+    # Builds and runs third-party build scripts and proc-macros, pushes
+    # nothing and only RESTORES caches: read-only token, not persisted in the
+    # checkout's .git/config.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Free runner disk space
         # Same rationale as build-and-test's step of the same name.

@@ -106,6 +106,91 @@ fn page_text() -> String {
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
 }
 
+/// Every data row of the page's `## Anchors` table, as (capability, proof
+/// cell). The Proof cell is the LAST column.
+fn anchor_rows(page: &str) -> Vec<(String, String)> {
+    let Some(start) = page.find("## Anchors") else {
+        return Vec::new();
+    };
+    page[start..]
+        .lines()
+        .skip_while(|l| !l.trim_start().starts_with('|'))
+        .take_while(|l| l.trim_start().starts_with('|'))
+        .skip(2) // header row and the |---| separator
+        .map(|l| {
+            let cells: Vec<&str> = l
+                .trim()
+                .trim_matches('|')
+                .split('|')
+                .map(str::trim)
+                .collect();
+            (
+                cells.first().copied().unwrap_or("").to_string(),
+                cells.last().copied().unwrap_or("").to_string(),
+            )
+        })
+        .collect()
+}
+
+/// Rows whose Proof cell does not carry a live `blob/main` / `tree/main`
+/// link. A `″` (ditto) cell inherits the previous row's proof; a ditto with
+/// no valid row above it is itself a problem.
+fn anchor_row_problems(page: &str, root: &Path) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut previous_ok = false;
+    for (cap, proof) in anchor_rows(page) {
+        if proof == "″" || proof == "\"" {
+            if !previous_ok {
+                problems.push(format!("`{cap}`: ditto proof with no proven row above it"));
+            }
+            continue;
+        }
+        let live = repo_links(&proof)
+            .iter()
+            .filter_map(|u| link_path(u).ok())
+            .any(|p| root.join(p).exists());
+        if !live {
+            problems.push(format!("`{cap}`: no live proof link in `{proof}`"));
+        }
+        previous_ok = live;
+    }
+    problems
+}
+
+#[test]
+fn every_anchor_row_has_a_proof_link() {
+    let page = page_text();
+    let rows = anchor_rows(&page);
+    assert!(
+        rows.len() >= 5,
+        "found only {} Anchors rows on {PAGE}; the table parser is not seeing the table",
+        rows.len()
+    );
+    let problems = anchor_row_problems(&page, &workspace_root());
+    assert!(
+        problems.is_empty(),
+        "Anchors rows without a proof link on {PAGE}:\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+/// The row checker must be able to fail: a row with only prose in its Proof
+/// cell, and a ditto row under it, are both reported. Deleting a row's link
+/// on the real page fails `every_anchor_row_has_a_proof_link` the same way.
+#[test]
+fn the_anchor_row_checker_rejects_a_row_without_proof() {
+    let root = workspace_root();
+    let good = format!("[`x`]({REPO_URL}blob/main/Cargo.toml)");
+    let page = format!(
+        "## Anchors\n\n| Capability | Proof |\n|---|---|\n| proven | {good} |\n| inherits | ″ |\n\
+         | unproven | `some_test_name` |\n| orphan ditto | ″ |\n"
+    );
+    let problems = anchor_row_problems(&page, &root);
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(problems[0].contains("`unproven`"), "{problems:?}");
+    assert!(problems[1].contains("`orphan ditto`"), "{problems:?}");
+}
+
 #[test]
 fn every_proof_link_resolves() {
     let root = workspace_root();
