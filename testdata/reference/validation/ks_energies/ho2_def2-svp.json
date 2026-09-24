@@ -1,0 +1,308 @@
+{
+  "row": "KS-DFT",
+  "system": "ho2",
+  "basis": "def2-svp",
+  "charge": 0,
+  "multiplicity": 2,
+  "nao": 33,
+  "nuclear_repulsion": 32.117020563592035,
+  "uks_pbe": {
+    "energy": -150.63884304010853,
+    "converged": true,
+    "s_squared": 0.7514043843510105,
+    "multiplicity_from_s2": 2.001403891623088,
+    "nelec_alpha": 9,
+    "nelec_beta": 8,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UKS internal (real)",
+      "rounds": 0,
+      "selected_guess": "atom",
+      "lambda_min": 0.03739567546482472
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -150.63884304010847,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -150.63884304010847
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -150.63884304010853,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -150.63884304010853
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -150.63884304010838,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -150.63884304010838
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.22404308004963092,
+    "lumo_alpha": 0.006691331765445785,
+    "homo_beta": -0.2078619823318073,
+    "lumo_beta": -0.15641099763549882,
+    "somo_alpha": [
+      -0.22404308004963092
+    ],
+    "xc": "PBE,PBE",
+    "jk": "RI-J (density_fit); K unused"
+  },
+  "uks_b3lyp": {
+    "energy": -150.78549711860418,
+    "converged": true,
+    "s_squared": 0.7525805903684244,
+    "multiplicity_from_s2": 2.0025789276514665,
+    "nelec_alpha": 9,
+    "nelec_beta": 8,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UKS internal (real)",
+      "rounds": 0,
+      "selected_guess": "huckel",
+      "lambda_min": 0.034718636012015434
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -150.78549711860404,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -150.78549711860404
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -150.78549711860413,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -150.78549711860413
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -150.78549711860418,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -150.78549711860418
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.2944491843056687,
+    "lumo_alpha": 0.027826640358041832,
+    "homo_beta": -0.2750844520980089,
+    "lumo_beta": -0.11581761580466932,
+    "somo_alpha": [
+      -0.2944491843056687
+    ],
+    "xc": "B3LYP",
+    "jk": "RI-J + RI-K (density_fit)"
+  },
+  "uks_wb97x-v": {
+    "energy": -150.73229444117513,
+    "converged": true,
+    "s_squared": 0.7525939728268707,
+    "multiplicity_from_s2": 2.00259229283134,
+    "nelec_alpha": 9,
+    "nelec_beta": 8,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UKS internal (real)",
+      "rounds": 0,
+      "selected_guess": "minao",
+      "lambda_min": 0.03438499365511185,
+      "caveat": "PySCF KS response omits the VV10 second derivative; verdict and lambda_min are for the Hessian without it"
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -150.73229444117513,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -150.73229444117513
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -150.73229444117507,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -150.73229444117507
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -150.73229444117496,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -150.73229444117496
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.40442982985594744,
+    "lumo_alpha": 0.12598650815833912,
+    "homo_beta": -0.3834949023134011,
+    "lumo_beta": -0.009608203721114705,
+    "somo_alpha": [
+      -0.40442982985594744
+    ],
+    "xc": "wB97X_V",
+    "jk": "EXACT J (4-index) + density-fitted K in the attenuated metric; full-range K served as K_SR^DF[erfc] + K_LR^DF[erf] (== ferric's c_SR K_SR + c_LR K_LR)"
+  },
+  "uhf_control": {
+    "energy": -150.050631294489,
+    "s_squared": 0.7592738061579514,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "huckel",
+      "lambda_min": 0.022846732294979532
+    },
+    "note": "exact-integral UHF; ferric UKS must MISS this (functional applied)"
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "dft.UKS (+ scf.UHF control)",
+      "xc": {
+        "pbe": "PBE,PBE",
+        "b3lyp": "B3LYP",
+        "wb97x-v": "wB97X_V"
+      },
+      "jk": {
+        "pbe": "RI-J (density_fit); K unused",
+        "b3lyp": "RI-J + RI-K (density_fit)",
+        "wb97x-v": "EXACT J (4-index) + density-fitted K in the attenuated metric; full-range K served as K_SR^DF[erfc] + K_LR^DF[erf] (== ferric's c_SR K_SR + c_LR K_LR)"
+      },
+      "init_guess_scan": [
+        "minao",
+        "atom",
+        "huckel"
+      ],
+      "stability": "internal=True external=False, restart from the unstable direction, max 10 rounds; lambda_min from a dense gen_g_hop_uhf Hessian (includes f_xc via gen_response)",
+      "numpy": "1.26.4"
+    },
+    "grid": {
+      "main": {
+        "atom_grid": [
+          75,
+          110
+        ],
+        "prune": null,
+        "partition": "Becke (original_becke)",
+        "radii_adjust": "becke_atomic_radii_adjust"
+      },
+      "nlc_vv10": {
+        "atom_grid": [
+          50,
+          50
+        ],
+        "prune": null
+      }
+    },
+    "aux_basis": {
+      "name": "def2-universal-jkfit",
+      "json": "crates/ferric-core/src/basis/bundled/def2-universal-jkfit.json",
+      "sha256": "a9fcb52ae8a74e80bd3a65c5e12e7a2d2f391fef62c3c81050ae816399b57671"
+    },
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-10,
+      "conv_tol_grad": 1e-07
+    },
+    "stability": {
+      "uks_pbe": {
+        "internal_stable": true,
+        "kind": "PySCF UKS internal (real)",
+        "rounds": 0,
+        "selected_guess": "atom",
+        "lambda_min": 0.03739567546482472
+      },
+      "uks_b3lyp": {
+        "internal_stable": true,
+        "kind": "PySCF UKS internal (real)",
+        "rounds": 0,
+        "selected_guess": "huckel",
+        "lambda_min": 0.034718636012015434
+      },
+      "uks_wb97x-v": {
+        "internal_stable": true,
+        "kind": "PySCF UKS internal (real)",
+        "rounds": 0,
+        "selected_guess": "minao",
+        "lambda_min": 0.03438499365511185,
+        "caveat": "PySCF KS response omits the VV10 second derivative; verdict and lambda_min are for the Hessian without it"
+      }
+    },
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/ho2.xyz",
+    "geometry_xyz_sha256": "2a4bc751278a939167ae70420074117ac33a2e1bb19e61409f7999dfc3804f3a",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "O",
+        2.5152254717960973,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        -0.4529140995760551,
+        1.7781493620333773,
+        0.0
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_ks_energies.py",
+    "git_head": "1768f45d4bd8a592cbef440195b46c01f43196cf",
+    "generated_utc": "2026-09-24T20:29:14+00:00",
+    "basis_self_check": {
+      "nao": 33,
+      "replica_self_overlap_max_dev": 0.0,
+      "pyscf_diag_max_dev": 8.881784197001252e-16,
+      "diag_checked": 33,
+      "diag_skipped_cartesian": 0,
+      "aux_nao": 172
+    }
+  }
+}
