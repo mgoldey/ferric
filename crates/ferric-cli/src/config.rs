@@ -2128,6 +2128,33 @@ impl Config {
              either fail in the SCF or silently compute the closed-shell singlet. {hint}."
         ))
     }
+
+    /// Refuse a `[scf]`/`[rpa]` setting that the selected `method.task` path
+    /// never reads, or reads inconsistently.
+    ///
+    /// * `pdep-rpa` + `task = "optimize"` + `[rpa] xc`: the RPA optimizer
+    ///   (`ferric_rpa::optimize::optimize_geometry_rpa`) takes no functional
+    ///   and always builds an RHF reference, so the run optimized RPA@HF and
+    ///   printed "(RHF + RPA)" under a config asking for RPA@<xc> (measured:
+    ///   H2/STO-3G with xc = "PBE" converged to -1.1375270338 "(RHF + RPA)").
+    ///   Refused rather than warned: the result is a different method, not a
+    ///   slightly different number.
+    pub fn validate_task_compat(&self) -> Result<(), String> {
+        let kind = self.method.kind.as_str();
+        let task = self.method.task.as_str();
+        if kind == "pdep-rpa" && task == "optimize" {
+            if let Some(xc) = self.rpa.xc.as_deref() {
+                return Err(format!(
+                    "[rpa] xc = \"{xc}\" is not supported with method.kind = \"pdep-rpa\", \
+                     task = \"optimize\": the RPA geometry optimizer always builds an RHF \
+                     reference (RPA@HF), so the functional would be silently ignored. Remove \
+                     [rpa] xc to optimize on the RPA@HF surface, or use task = \"energy\" for \
+                     RPA@{xc}."
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -2276,6 +2303,24 @@ mod compat_guard_tests {
         assert!(cfg("pdep-rpa", "optimize", "")
             .validate_multiplicity(3)
             .is_err());
+    }
+
+    /// Pre-fix, pdep-rpa + optimize + `[rpa] xc = "PBE"` ran RPA@HF and
+    /// printed "(RHF + RPA)". Reverting `validate_task_compat` to `Ok(())`
+    /// fails the `expect_err`; the two `Ok` cases are its reachability
+    /// anchor (the same xc on the energy task, and optimize without xc).
+    #[test]
+    fn rpa_optimize_refuses_a_ks_reference_it_cannot_build() {
+        let xc = "[rpa]\nxc = \"PBE\"\n";
+        let e = cfg("pdep-rpa", "optimize", xc)
+            .validate_task_compat()
+            .expect_err("pdep-rpa optimize with [rpa] xc");
+        assert!(e.contains("[rpa] xc") && e.contains("RHF"), "{e}");
+        assert_eq!(cfg("pdep-rpa", "energy", xc).validate_task_compat(), Ok(()));
+        assert_eq!(
+            cfg("pdep-rpa", "optimize", "").validate_task_compat(),
+            Ok(())
+        );
     }
 }
 

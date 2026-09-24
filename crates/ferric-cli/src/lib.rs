@@ -429,6 +429,12 @@ pub fn run(args: Vec<String>) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
+    // ...and the same for keys a TASK path never reads (see
+    // `Config::validate_task_compat`).
+    if let Err(e) = cfg.validate_task_compat() {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
     // QM/MM: the QM region becomes the molecule that is solved, and the MM
     // region becomes the external potential it is solved in. Built BEFORE the
     // molecule so the two cannot disagree about which atoms are quantum --
