@@ -249,7 +249,9 @@ def main() -> int:
         symbols, coords = common.read_xyz(xyz)
         natm = len(symbols)
         inp = write_input(INP_DIR / f"{system}_{basis}.inp", xyz, basis, aux, False)
-        inp_fc = write_input(INP_DIR / f"{system}_{basis}_fc.inp", xyz, basis, aux, True)
+        inp_fc = write_input(
+            INP_DIR / f"{system}_{basis}_fc.inp", xyz, basis, aux, True
+        )
         if write_only:
             print(f"wrote {inp.relative_to(common.ROOT)} (+ _fc)")
             continue
@@ -337,8 +339,12 @@ def main() -> int:
                 grid=None,
                 aux={
                     "correlation": aux,
-                    "correlation_json": str(common.basis_json_path(aux).relative_to(common.ROOT)),
-                    "correlation_sha256": common.sha256_file(common.basis_json_path(aux)),
+                    "correlation_json": str(
+                        common.basis_json_path(aux).relative_to(common.ROOT)
+                    ),
+                    "correlation_sha256": common.sha256_file(
+                        common.basis_json_path(aux)
+                    ),
                     "scf": "none (exact four-centre J/K: ORCA NoRI, PySCF RHF)",
                 },
                 frozen_core="none (ORCA NoFrozenCore; PySCF frozen=None)",
