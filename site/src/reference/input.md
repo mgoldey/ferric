@@ -151,6 +151,7 @@ here.
 | `r0_bonded` | float | `0.75` | Å | `scs-mp2-2terfc`. |
 | `r0_nonbonded` | float | `1.05` | Å, > `r0_bonded` | `scs-mp2-2terfc`. |
 | `lmp2_eps` | float | `1e-4` | | `lmp2`, `lmp2-direct`. `0` reproduces `rimp2`. |
+| `lmp2_reference` | bool | `false` | | `lmp2`, `lmp2-direct`. Also compute the canonical RI-MP2 reference and print the local error against it. Costs a full RI-MP2 and forms the global 3-index tensor. |
 | `direct_aux_radius` | float | `10.0` | Bohr | `lmp2-direct`. |
 | `direct_virt_radius` | float | `12.0` | Bohr | `lmp2-direct`. |
 | `direct_ao_tail` | float | `1e-3` | | `lmp2-direct`. `0.0` keeps every shell. |
