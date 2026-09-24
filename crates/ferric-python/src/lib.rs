@@ -5694,6 +5694,23 @@ fn run_dft(
     // gradient of a different energy -- and on a pruned grid the XC
     // grid-response term does not exist at all. Refuse the pair up front, the
     // same rule the CLI applies to `[dft] grid_prune` with task != "energy".
+    // Same rule for COSX exchange: `ks_gradient_closed` builds its exchange
+    // term from exact four-centre derivative integrals, so after a COSX SCF
+    // (which a hybrid consumes; a pure functional builds no K at all) the
+    // gradient is not the derivative of `total_energy`. MEASURED on water
+    // by FD of the energy along one H z: COSX minus exact-K = -8.9e-6 Ha/Bohr
+    // at STO-3G, -1.4e-5 at cc-pVDZ, and the COSX grid error grows with
+    // system and basis. Refused for every functional, matching the CLI's
+    // `k_builder = "cosx"` refusal on gradient tasks and the docs' "no
+    // gradients" entry for COSX.
+    if with_gradient && k_builder == Some("cosx") {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "with_gradient=True cannot be combined with k_builder=\"cosx\": COSX has \
+             no analytic gradient, and the KS gradient is built from exact exchange, so \
+             it would not be the gradient of this energy. Use k_builder=\"direct\" or \
+             \"link\" when a gradient is needed",
+        ));
+    }
     if with_gradient && cfg.dft_grid.is_some() {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "with_gradient=True cannot be combined with grid_radial / grid_angular / \

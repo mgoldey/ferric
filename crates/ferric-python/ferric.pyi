@@ -1706,6 +1706,9 @@ def run_dft(
     any other value raises ValueError. Pruning has no table at
     `grid_angular=50`. Any grid kwarg with `with_gradient=True` raises
     ValueError: the analytic gradient is built on the default grid.
+    `k_builder="cosx"` with `with_gradient=True` also raises ValueError: COSX
+    has no analytic gradient, and the exact-exchange gradient is not the
+    derivative of a COSX energy.
     """
     ...
 

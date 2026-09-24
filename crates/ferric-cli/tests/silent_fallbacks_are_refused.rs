@@ -202,3 +202,19 @@ fn rpa_optimize_with_a_ks_reference_is_refused() {
     );
     assert_refused(&out, &["[rpa] xc", "optimize"]);
 }
+
+/// Pre-fix: water/STO-3G, rhf, task = "optimize", `k_builder = "cosx"` ran
+/// to completion with COSX energies and an exact-exchange gradient (FD
+/// mismatch -8.9e-6 Ha/Bohr on one H z at STO-3G, -1.4e-5 at cc-pVDZ).
+/// Removing the cosx branch of `validate_task_compat` lets it run again. The
+/// anchor is the same molecule with COSX on task = "energy", which must run.
+#[test]
+fn cosx_with_optimize_is_refused_but_a_cosx_energy_runs() {
+    let cosx = "[scf]\nk_builder = \"cosx\"\n";
+    let out = run_toml("cosx_opt", &body("h2.xyz", 1, "rhf", "optimize", cosx));
+    assert_refused(&out, &["k_builder = \"cosx\"", "optimize"]);
+    assert_runs(
+        &run_toml("cosx_energy", &body("h2.xyz", 1, "rhf", "energy", cosx)),
+        "an rhf COSX energy",
+    );
+}
