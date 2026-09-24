@@ -581,6 +581,7 @@ dependencies = [
  "ferric-integrals",
  "ferric-scf",
  "ndarray",
+ "ndarray-linalg",
  "num-complex",
  "serde_json",
 ]

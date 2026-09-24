@@ -105,6 +105,12 @@ pub fn sp_basis_h() -> BasisSet {
     )
 }
 
+/// One unit-normalised primitive s of exponent `alpha` on H (the RS-GDF
+/// exactness anchor's orbital basis, `test_prototype.py` `ANCHOR_ALPHA`).
+pub fn single_s_h(alpha: f64) -> BasisSet {
+    h_basis("pbc-anchor-s-H", vec![renormalized(0, &[alpha], &[1.0])])
+}
+
 pub fn cubic(a: f64) -> [[f64; 3]; 3] {
     [[a, 0.0, 0.0], [0.0, a, 0.0], [0.0, 0.0, a]]
 }
@@ -144,6 +150,32 @@ pub fn gamma_config() -> RhfConfig {
         max_iter: 200,
         ..Default::default()
     }
+}
+
+/// Gamma-point RHF on the lattice `(S, h, E_nn)` with arbitrary injected
+/// J/K builders (e.g. the RS-GDF ones).
+pub fn gamma_rhf_jk<'a>(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hc: &PeriodicHcore,
+    j: Box<dyn ferric_scf::fock::JBuilder + 'a>,
+    k: Box<dyn ferric_scf::fock::KBuilder + 'a>,
+) -> ScfResult {
+    let ctx = ParallelContext::default();
+    let op = Operator::coulomb();
+    // Never read on the injected path; required by the signature.
+    let bounds = SchwarzBounds::compute(op, prep).expect("schwarz");
+    let inj = PeriodicInjection {
+        s: hc.s.clone(),
+        h: hc.h.clone(),
+        vnn: hc.enn,
+        j,
+        k,
+    };
+    let r = solve_rhf_injected(&ctx, cell.mol(), prep, op, &bounds, &gamma_config(), inj)
+        .expect("gamma-point RHF");
+    assert!(r.converged, "gamma-point RHF did not converge");
+    r
 }
 
 /// Gamma-point RHF: `solve_rhf_injected` on the lattice `(S, h, E_nn)` and

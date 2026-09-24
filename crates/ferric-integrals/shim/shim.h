@@ -154,6 +154,15 @@ int scf_compute_eri3_shifted(scf_engine *eng, const scf_basis *obs,
 int scf_compute_eri2(scf_engine *eng, const scf_basis *dfbs,
                        int shP, int shQ, double *out);
 
+/* As scf_compute_eri2 with the ket shell translated: (shP | shQ(r - sQ)),
+ * shiftQ = sQ[3] (Bohr). A zero shift is bitwise equal to scf_compute_eri2.
+ * Always writes nP*nQ values (zeros if screened). Returns nP*nQ, SCF_EINVAL
+ * on a null pointer / out-of-range shell / non-finite shift, or
+ * SCF_EINTERNAL. */
+int scf_compute_eri2_shifted(scf_engine *eng, const scf_basis *dfbs,
+                               int shP, int shQ, const double *shiftQ,
+                               double *out);
+
 /* --- 3-center and 2-center ERI derivative engines (deriv_order=1) --- */
 
 scf_engine *scf_engine_create_3center_deriv(int op_kind, double omega,

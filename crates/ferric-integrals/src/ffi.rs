@@ -178,6 +178,17 @@ extern "C" {
         shQ: c_int,
         out: *mut c_double,
     ) -> c_int;
+    /// `scf_compute_eri2` with the ket shell translated by `shift_q`
+    /// (3 doubles, Bohr): `(P | Q(r − s_Q))`. Returns nP*nQ (zeros written if
+    /// screened), `SCF_EINVAL` (-1) or `SCF_EINTERNAL` (-3).
+    pub fn scf_compute_eri2_shifted(
+        eng: *mut c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        shQ: c_int,
+        shift_q: *const c_double,
+        out: *mut c_double,
+    ) -> c_int;
     pub fn scf_engine_create_3center_deriv(
         op_kind: c_int,
         omega: c_double,

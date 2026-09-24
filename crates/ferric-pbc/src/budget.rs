@@ -3,7 +3,7 @@
 //!
 //! The budget is ferric's unified one: [`ferric_core::memory::resolve_budget_bytes`]
 //! (explicit config value > `FERRIC_MEM_BUDGET_GB` > legacy env vars > 0.8 ×
-//! available RAM > 2 GiB). Every large buffer is RESERVED on a [`Ledger`]
+//! available RAM > 2 GiB). Every large buffer is RESERVED on a `Ledger`
 //! before it is allocated; the reservation fails with
 //! [`ferric_core::memory::check_alloc`]'s error, whose label names the
 //! quantity and carries the exact byte counts (the GB figures in

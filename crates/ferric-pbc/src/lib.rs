@@ -17,6 +17,9 @@
 //! * [`dense_aft`] — TEST/ORACLE ONLY: dense pure-AFT `nao⁴` ERI tensor with
 //!   `JBuilder`/`KBuilder` impls (Madelung `exxdiv`) for
 //!   `ferric_scf::rhf::solve_rhf_injected`; hard size cap.
+//! * [`rsgdf`] — Stage 1 step 9: Gamma-point range-separated Gaussian density
+//!   fitting (PySCF-RSGDF G = 0 convention, eig-with-lindep metric solve) and
+//!   `JBuilder`/`KBuilder` impls on the fitted B tensor (Madelung `exxdiv`).
 //!
 //! Units: Bohr and Hartree throughout; G vectors in Bohr⁻¹.
 //!
@@ -29,9 +32,11 @@ pub mod ewald;
 pub mod hcore;
 pub mod lattice;
 pub mod pair_ft;
+pub mod rsgdf;
 
 pub use dense_aft::{DenseAftEri, ExxDiv};
 pub use ewald::{ewald_nuclear_repulsion, madelung_constant};
 pub use hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
 pub use lattice::Cell;
 pub use pair_ft::pair_ft;
+pub use rsgdf::{RsGdf, RsGdfConfig};

@@ -973,6 +973,51 @@ int scf_compute_eri2(scf_engine *eng, const scf_basis *dfbs,
 #endif
 }
 
+/* scf_compute_eri2 with the ket shell translated: (shP | shQ(r - shiftQ)),
+ * shiftQ = 3 doubles (Bohr). The shell is COPIED and Shell::move()d (origin
+ * only; coefficients and max_ln_coeff copied verbatim), so a zero shift is
+ * bitwise identical to scf_compute_eri2 and the immutable scf_basis is never
+ * touched. The periodic aux-metric lattice sum of stage1-design.md §4
+ * (sum_T (P_0 | Q_T) for RS-GDF). Like scf_compute_eri2 it always writes
+ * nP*nQ values (zeros if libint2 screened the pair). Returns nP*nQ,
+ * SCF_EINVAL on a null pointer / out-of-range shell / non-finite shift, or
+ * SCF_EINTERNAL on any libint2 exception. */
+int scf_compute_eri2_shifted(scf_engine *eng, const scf_basis *dfbs,
+                               int shP, int shQ, const double *shiftQ,
+                               double *out) {
+#if LIBINT2_SUPPORT_ERI2
+    if (!eng || !dfbs || !shiftQ || !out) return SCF_EINVAL;
+    const int ndf = static_cast<int>(dfbs->bs.size());
+    if (shP < 0 || shP >= ndf || shQ < 0 || shQ >= ndf) return SCF_EINVAL;
+    if (!std::isfinite(shiftQ[0]) || !std::isfinite(shiftQ[1]) ||
+        !std::isfinite(shiftQ[2])) {
+        return SCF_EINVAL;
+    }
+    try {
+        Shell q = dfbs->bs[shQ];
+        q.move({q.O[0] + shiftQ[0], q.O[1] + shiftQ[1], q.O[2] + shiftQ[2]});
+        // BraKet::xs_xs rank=2: compute(aux_shell_P, aux_shell_Q)
+        eng->engine.compute(dfbs->bs[shP], q);
+        const auto &result = eng->engine.results();
+        const int n = dfbs->nfunc[shP] * dfbs->nfunc[shQ];
+        if (result[0] == nullptr) {
+            for (int i = 0; i < n; ++i) out[i] = 0.0;
+        } else {
+            for (int i = 0; i < n; ++i) out[i] = result[0][i];
+        }
+        return n;
+    } catch (const std::exception &ex) {
+        std::fprintf(stderr, "scf_compute_eri2_shifted: %s\n", ex.what());
+        return SCF_EINTERNAL;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+#else
+    (void)eng; (void)dfbs; (void)shP; (void)shQ; (void)shiftQ; (void)out;
+    return SCF_EINTERNAL;
+#endif
+}
+
 /* --- 3-center and 2-center ERI derivative engines --- */
 
 scf_engine *scf_engine_create_3center_deriv(int op_kind, double omega,
