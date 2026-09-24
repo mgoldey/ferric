@@ -31,6 +31,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 LIMITED="$REPO/scripts/ferric-limited"
 
+# The sentinel is armed FIRST, so every exit path -- including the usage
+# error below -- ends with one SLOT_DONE line a waiter can see.
+rc=255
+trap 'echo "SLOT_DONE rc=${rc}"' EXIT
+
 LIGHT=0
 LIMIT_ARGS=()
 while [[ $# -gt 0 ]]; do
@@ -44,11 +49,9 @@ done
 
 if [[ $# -eq 0 ]]; then
   echo "usage: $0 [--light] [--max=12G] [--high=10G] -- <cmd> [args...]" >&2
+  rc=2
   exit 2
 fi
-
-rc=255
-trap 'echo "SLOT_DONE rc=${rc}"' EXIT
 
 PHYS_CORES="${FERRIC_SLOT_CORES:-6}"
 if [[ $LIGHT -eq 1 ]]; then
