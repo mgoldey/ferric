@@ -236,8 +236,6 @@ def pyscf_fd_gradient(symbols, coords, basis, aux, dm0) -> np.ndarray:
 
 
 def main() -> int:
-    import pyscf
-
     args = sys.argv[1:]
     write_only = "--write-only" in args
     only = {a for a in args if not a.startswith("--")}
@@ -255,6 +253,8 @@ def main() -> int:
         if write_only:
             print(f"wrote {inp.relative_to(common.ROOT)} (+ _fc)")
             continue
+
+        import pyscf
 
         orca = run_orca(inp, natm)
         orca_fc = run_orca(inp_fc, natm)
