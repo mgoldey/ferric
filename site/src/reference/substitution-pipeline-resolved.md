@@ -186,9 +186,10 @@ which a halogen/CF3 scan would miss its dominant attractive term.
 | 3 | GFN2-xTB | 5e-1 | 10-1e2 | rank survivors |
 | 4 | ferric DFT + D3(BJ) | 6e+2 | 1-10 | final energetics |
 
-Tier 4 is **not yet validated in this pipeline** -- M10 recorded that it does
-not fit the funnel as configured. Do not present tier-4 numbers as the
-pipeline's output until that is resolved.
+Tier 4 runs end to end inside the funnel (`test_golden_path_smoke.py`, see
+below), so its COMPOSITION is validated. No tier-4 number has been checked
+against an external reference in this pipeline, so do not present tier-4
+energies as validated binding energetics.
 
 ---
 

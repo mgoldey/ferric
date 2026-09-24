@@ -70,14 +70,15 @@ thread count, so results are bit-identical across `RAYON_NUM_THREADS`. This is
 pinned by tests. A different-but-deterministic order — a tree-fold, say — would
 *not* be acceptable, because floating-point addition is not associative.
 
-**Memory.** `MemoryPlan` expresses what a path will allocate and when, so an
-oversized job is refused before allocating, with a breakdown naming the dominant
+**Memory.** `MemoryPlan` expresses what a path will allocate and when. An
+allocation that exceeds the budget and has no spill-to-disk or recompute
+fallback is refused before allocating, with a breakdown naming the dominant
 term. The CLI installs one process-wide `MemoryPool` sized from the resolved
 budget, and the large, size-dependent allocations reserve their bytes from it,
 so two allocations alive at the same time cannot each claim the whole budget.
 Library and Python callers install no pool; each check then compares its own
-allocation with the whole budget. Some allocations spill to disk or are
-recomputed instead of being refused, and basis-sized matrices, engines and
+allocation with the whole budget. Allocations that have a fallback spill to
+disk or are recomputed instead of being refused, and basis-sized matrices, engines and
 scratch are not charged (see
 [Sharp bits](../using/sharp-bits.md#memory-budget_gb-does-not-cap-the-whole-process)).
 Guards are tested in both directions: a starved budget must be refused (or

@@ -84,7 +84,8 @@ read the `result` record ([Run logs](run-logs.md)).
    build is `cargo build --release --workspace --features mpi`.
 4. **Threading.** Don't set `OPENBLAS_NUM_THREADS` above 1. The CLI and
    `import ferric` pin OpenBLAS to one thread when the variable is unset and
-   honour an explicit value, and `cargo` sets it to 1. Multithreaded BLAS
+   honour an explicit value, and `cargo` sets it to 1 only when it is unset
+   (an exported value wins). Multithreaded BLAS
    under ferric's rayon parallelism can crash (LU routines) or oversubscribe
    the machine. It's a correctness setting, not a performance tip.
 5. **Under-converged density.** `energy_conv` alone doesn't converge the

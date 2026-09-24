@@ -136,23 +136,27 @@ coordinates, carries explicit charge/multiplicity, and does the pocket-overlap
 filtering itself -- so the connector needs no temp files and no second
 embedding path.
 
-### The one genuinely missing step
+### The connector, and the step still missing
 
 `SubstitutionProposal` carries SMILES; `embed_ligand_from_coords` needs 3-D
-coordinates. So the connector is exactly:
+coordinates in the pocket's frame. So the connector is:
 
 ```
-proposal.smiles --(ETKDG, seeded)--> symbols + coords
+proposal.smiles --(ETKDG, seeded: embed_proposals)--> symbols + coords
+                --(docking: dock_ligand)--> pose in the receptor frame
                 --> embed_ligand_from_coords(..., pocket=pocket)
                 --> batch_prescreen / compute_binding_energy
                 --> report ddE against the PARENT proposal
 ```
 
-Every piece except the ETKDG hop already exists and is tested.
-`tools.structure.from_smiles` already does seeded ETKDG + MMFF and returns a
-`ferric.Molecule`; it needs a sibling that returns `(symbols, coords)` instead,
-or the connector reads them back off the Molecule via `.symbols()` /
-`.coords()` (Angstrom -- confirmed, `coords_bohr()` is the other one).
+The ETKDG hop exists and is tested: `embed_proposals` delegates to
+`tools.structure.from_smiles` (seeded ETKDG + MMFF) and returns `(symbols,
+coords)` in Angstrom. Those coordinates are centred on the origin, 226 A from
+the 7LCJ pocket, so they cannot go into the pocket directly. What is missing is
+the placement: docking each proposal (`dock_ligand` returns
+`DockedPose.coords_angstrom` in the receptor frame, and
+`funnel._harvest_geometry` carries it into `context["geometry"]`) and the
+pocket-side tier callables that consume that pose.
 
 ### VERIFIED on the REAL GLP-1R pocket (2026-09-19)
 
@@ -274,7 +278,8 @@ than translating a fixed conformer. The 0.95 ratio is the transferable part.
 
 ### Order of work
 
-1. ETKDG hop: `(symbols, coords)` from a proposal's SMILES. Small.
+1. Pocket placement: dock each embedded proposal (`embed_proposals` already
+   gives the `(symbols, coords)` from its SMILES).
 2. Connector to `batch_prescreen` -- CHEAP (classical field, no SCF), so it can
    afford an ensemble and sidesteps constraint 2 entirely.
 3. QM tier (`compute_binding_energy`, ddE) only after the pose treatment is
@@ -285,8 +290,9 @@ than translating a fixed conformer. The 0.95 ratio is the transferable part.
 
 `tools/pipeline/substitution.py` — an adapter, not new chemistry: parent SMILES
 + site SMARTS + pocket PDB in, funnel-shaped tier callables out, always
-reporting ddE against the parent. ~150 lines plus tests, because everything
-underneath already works.
+reporting ddE against the parent. It holds the enumeration half today
+(`propose_substitutions`, `embed_proposals`); the pocket-side tier callables
+are still to be written.
 
-Anchor test FIRST, before any scoring: **an empty substituent set must return
-exactly the parent.**
+The anchor test is in place (`test_substitution.py`): **an empty substituent
+set must return exactly the parent.**
