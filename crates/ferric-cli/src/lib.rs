@@ -1319,11 +1319,38 @@ fn run_ksdft(
     }
 }
 
+/// The canonical-reference lines of the `lmp2`/`lmp2-direct` printout.
+///
+/// `e_ref` is `None` when the (opt-in, `[mp2] lmp2_reference = true`)
+/// reference was not computed: the output then SAYS so, instead of printing
+/// the library's NaN sentinel and a NaN difference. `err_label` names the
+/// difference line ("threshold error", "total error"); `err_note` is its
+/// parenthetical.
+fn lmp2_reference_lines(
+    e_corr: f64,
+    e_ref: Option<f64>,
+    err_label: &str,
+    err_note: &str,
+) -> Vec<String> {
+    match e_ref {
+        Some(e_ref) => vec![
+            format!("  E_corr(canonical RI)  = {e_ref:.10} Ha"),
+            format!("  {err_label:<22}= {:+.3e} Ha ({err_note})", e_corr - e_ref),
+        ],
+        None => vec![
+            "  E_corr(canonical RI)  = not computed (opt-in: set [mp2] lmp2_reference = true)"
+                .to_string(),
+        ],
+    }
+}
+
 /// `method.kind = "lmp2"`: amplitude-threshold local MP2
 /// (`ferric_mp2::lmp2_amplitude`, WSHG23 single-threshold; closed-shell).
 /// The ε=0 limit reproduces `rimp2` exactly (library anchor <=1e-9); the
-/// default ε=1e-4 carries a one-sided ~linear-in-ε truncation error, printed
-/// alongside the canonical reference so nothing is silently approximate.
+/// default ε=1e-4 carries a one-sided ~linear-in-ε truncation error. The
+/// canonical reference and the error against it are printed only when
+/// `[mp2] lmp2_reference = true` (OPT-IN: the reference is a full N^5
+/// canonical RI-MP2); otherwise the output states it was not computed.
 fn run_lmp2(
     cfg: &Config,
     mol: &Molecule,
@@ -1352,6 +1379,7 @@ fn run_lmp2(
         std::process::exit(1);
     });
     let eps = cfg.mp2.lmp2_eps.unwrap_or(1e-4);
+    let want_ref = cfg.mp2.lmp2_reference();
     let r = amplitude_lmp2(
         mol,
         prep,
@@ -1363,6 +1391,7 @@ fn run_lmp2(
             eps,
             frozen_core: cfg.mp2.frozen_core.resolve(mol),
             eri3_budget_bytes: budget_bytes,
+            compute_reference: want_ref,
             ..Default::default()
         },
     )
@@ -1372,11 +1401,15 @@ fn run_lmp2(
     });
     println!("Amplitude-threshold LMP2 (aux: {aux_name}, eps = {eps:.1e})");
     println!("  E_corr(LMP2)          = {:.10} Ha", r.e_corr);
-    println!("  E_corr(canonical RI)  = {:.10} Ha", r.e_corr_canonical_ri);
-    println!(
-        "  threshold error       = {:+.3e} Ha (one-sided; ~linear in eps)",
-        r.e_corr - r.e_corr_canonical_ri
-    );
+    let e_ref = want_ref.then_some(r.e_corr_canonical_ri);
+    for line in lmp2_reference_lines(
+        r.e_corr,
+        e_ref,
+        "threshold error",
+        "one-sided; ~linear in eps",
+    ) {
+        println!("{line}");
+    }
     println!("  total energy          = {:.10} Ha", r.e_total);
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
@@ -1384,7 +1417,8 @@ fn run_lmp2(
             r.e_total,
             serde_json::json!({
                 "e_corr": r.e_corr,
-                "e_corr_canonical_ri": r.e_corr_canonical_ri,
+                // null when the opt-in reference was not computed
+                "e_corr_canonical_ri": e_ref,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
             }),
@@ -1400,8 +1434,11 @@ fn run_lmp2(
 /// MP2 (`ferric_mp2::lmp2_direct`; closed-shell). Never forms the global
 /// 3-index tensor: per-atom-batched integral evaluation into per-occupied
 /// sparse strips + per-pair domain-local fits. Every locality knob defaults
-/// to its measured production value and is printed with the run, together
-/// with the canonical-reference error — nothing is silently approximate.
+/// to its measured production value and is printed with the run. The
+/// canonical-reference error is printed only with `[mp2] lmp2_reference =
+/// true` (OPT-IN: that reference forms the global 3-index tensor this path
+/// exists to avoid, so a default run stays reduced-cost); otherwise the
+/// output states it was not computed.
 /// Measured record: wiki/amplitude-threshold-lmp2.md §27-30 (C32 crossover
 /// vs canonical ri_mp2; C20→C48 tail N^1.2 erfc / N^1.4 coul).
 fn run_lmp2_direct(
@@ -1442,6 +1479,7 @@ fn run_lmp2_direct(
         virt_schwarz_kappa: cfg.mp2.direct_virt_schwarz_kappa,
         ..Default::default()
     };
+    let want_ref = cfg.mp2.lmp2_reference();
     let (r, st) = amplitude_lmp2_direct(
         mol,
         prep,
@@ -1454,6 +1492,7 @@ fn run_lmp2_direct(
             frozen_core: cfg.mp2.frozen_core.resolve(mol),
             eri3_budget_bytes: budget_bytes,
             pair_gate_cal: cfg.mp2.direct_gate_cal,
+            compute_reference: want_ref,
             ..Default::default()
         },
         &dcfg,
@@ -1478,11 +1517,15 @@ fn run_lmp2_direct(
             .map_or("off".to_string(), |k| format!("{k}")),
     );
     println!("  E_corr(direct LMP2)   = {:.10} Ha", r.e_corr);
-    println!("  E_corr(canonical RI)  = {:.10} Ha", r.e_corr_canonical_ri);
-    println!(
-        "  total error           = {:+.3e} Ha (eps truncation + locality maps)",
-        r.e_corr - r.e_corr_canonical_ri
-    );
+    let e_ref = want_ref.then_some(r.e_corr_canonical_ri);
+    for line in lmp2_reference_lines(
+        r.e_corr,
+        e_ref,
+        "total error",
+        "eps truncation + locality maps",
+    ) {
+        println!("{line}");
+    }
     println!("  total energy          = {:.10} Ha", r.e_total);
     if let Some(rl) = ferric_scf::runlog::log() {
         rl.result(
@@ -1490,7 +1533,8 @@ fn run_lmp2_direct(
             r.e_total,
             serde_json::json!({
                 "e_corr": r.e_corr,
-                "e_corr_canonical_ri": r.e_corr_canonical_ri,
+                // null when the opt-in reference was not computed
+                "e_corr_canonical_ri": e_ref,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
             }),
@@ -4752,5 +4796,43 @@ fn run_tddft_arm(
             e * ha_to_ev,
             f
         );
+    }
+}
+
+#[cfg(test)]
+mod lmp2_reference_printout_tests {
+    use super::lmp2_reference_lines;
+
+    /// With the opt-in reference OFF the printout must say so and must never
+    /// show the library's NaN sentinel or a NaN difference.
+    ///
+    /// Fails if reverted: the pre-change code printed `r.e_corr_canonical_ri`
+    /// and `r.e_corr - r.e_corr_canonical_ri` unconditionally, i.e. "NaN"
+    /// twice once the library default went off; a helper that formatted the
+    /// raw NaN instead of branching on `None` fails the `!contains("NaN")`
+    /// assert, and one that printed nothing fails the "not computed" assert.
+    #[test]
+    fn reference_off_prints_not_computed_and_no_nan() {
+        let text = lmp2_reference_lines(-0.2, None, "threshold error", "note").join("\n");
+        assert!(
+            !text.contains("NaN"),
+            "NaN leaked into the printout:\n{text}"
+        );
+        assert!(text.contains("not computed"), "{text}");
+        assert!(
+            text.contains("[mp2] lmp2_reference = true"),
+            "the printout must name the opt-in key:\n{text}"
+        );
+        assert!(!text.contains("threshold error"), "{text}");
+    }
+
+    /// With the reference ON the value and the difference are printed in the
+    /// historical layout (labels aligned on the `=` column).
+    #[test]
+    fn reference_on_prints_value_and_signed_difference() {
+        let lines = lmp2_reference_lines(-0.2, Some(-0.25), "total error", "maps");
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert_eq!(lines[0], "  E_corr(canonical RI)  = -0.2500000000 Ha");
+        assert_eq!(lines[1], "  total error           = +5.000e-2 Ha (maps)");
     }
 }

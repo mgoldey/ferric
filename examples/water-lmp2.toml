@@ -1,7 +1,8 @@
 # Amplitude-threshold local MP2 (WSHG23 single-threshold, closed-shell).
 # eps = 0 reproduces rimp2 exactly; the default 1e-4 carries a one-sided,
-# ~linear-in-eps truncation error which the output prints against the
-# canonical RI reference. See wiki/amplitude-threshold-lmp2.md.
+# ~linear-in-eps truncation error. `lmp2_reference = true` opts in to the
+# canonical RI-MP2 reference (a full N^5 canonical run; off by default) so the
+# output prints that error against it. See wiki/amplitude-threshold-lmp2.md.
 [molecule]
 xyz = "testdata/molecules/water.xyz"
 
@@ -15,3 +16,4 @@ kind = "lmp2"
 auxbasis = "cc-pvdz-ri"
 frozen_core = 1
 lmp2_eps = 1e-4
+lmp2_reference = true
