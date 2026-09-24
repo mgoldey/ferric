@@ -1061,6 +1061,82 @@ impl Engine {
         &self.buf[..max_written]
     }
 
+    /// [`Self::compute_eri2`] with the ket shell translated:
+    /// `(P | Q(r − s_Q))`, `shift_q = s_Q` (Bohr). Output layout is the same
+    /// row-major `(nP, nQ)` block; libint2-screened pairs come back as zeros
+    /// (as `compute_eri2`).
+    ///
+    /// The periodic aux-metric primitive (stage1-design.md §4): RS-GDF's
+    /// `Σ_T (P_0 | Q_T)_erfc` without building an image basis. A zero shift
+    /// is bitwise equal to `compute_eri2`.
+    ///
+    /// Errors (instead of panicking) on an out-of-range shell, a non-finite
+    /// shift, a terf/terfc table engine (no shifted variant), or a libint2
+    /// exception caught in the shim.
+    pub fn compute_eri2_shifted(
+        &mut self,
+        dfbs: &PreparedBasis,
+        sh_p: usize,
+        sh_q: usize,
+        shift_q: [f64; 3],
+    ) -> Result<&[f64], FerricError> {
+        if self.is_terfc {
+            return Err(FerricError::Libint(
+                "compute_eri2_shifted: terf/terfc table engines have no shifted variant".into(),
+            ));
+        }
+        let dims = dfbs.shell_dims();
+        if sh_p >= dims.len() || sh_q >= dims.len() {
+            return Err(FerricError::Libint(format!(
+                "compute_eri2_shifted: shells ({sh_p}|{sh_q}) out of range (aux {})",
+                dims.len()
+            )));
+        }
+        if !shift_q.iter().all(|v| v.is_finite()) {
+            return Err(FerricError::Libint(format!(
+                "compute_eri2_shifted: non-finite shift {shift_q:?}"
+            )));
+        }
+        let n = dims[sh_p] * dims[sh_q];
+        if self.buf.len() < n {
+            self.buf.resize(n, 0.0);
+        }
+        if self.scratch.len() < n {
+            self.scratch.resize(n, 0.0);
+        }
+        self.buf[..n].fill(0.0);
+        for &(coeff, h) in &self.handles {
+            // SAFETY: `h` and `dfbs.handle()` are valid libint2 handles;
+            // shells range-checked above; `shift_q` is 3 contiguous f64 alive
+            // for the call; `self.scratch` holds >= n doubles. The shim
+            // catches every C++ exception (status < 0).
+            let written = unsafe {
+                ffi::scf_compute_eri2_shifted(
+                    h,
+                    dfbs.handle(),
+                    sh_p as c_int,
+                    sh_q as c_int,
+                    shift_q.as_ptr(),
+                    self.scratch.as_mut_ptr(),
+                )
+            };
+            if written < 0 {
+                return Err(FerricError::Libint(format!(
+                    "scf_compute_eri2_shifted ({sh_p}|{sh_q}) failed: status {written}"
+                )));
+            }
+            if written as usize != n {
+                return Err(FerricError::Libint(format!(
+                    "scf_compute_eri2_shifted ({sh_p}|{sh_q}) wrote {written} values, expected {n}"
+                )));
+            }
+            for i in 0..n {
+                self.buf[i] += coeff * self.scratch[i];
+            }
+        }
+        Ok(&self.buf[..n])
+    }
+
     /// Returns 12 blocks of n1*n2*n3*n4 doubles: [dx1..dz1, dx2..dz2, dx3..dz3, dx4..dz4].
     /// Returns None if all derivatives were screened to zero.
     pub fn compute_eri_deriv_quartet(

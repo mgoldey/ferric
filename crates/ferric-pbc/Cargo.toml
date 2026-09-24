@@ -15,6 +15,8 @@ ferric-integrals = { path = "../ferric-integrals" }
 # cycle: ferric-scf does not depend on ferric-pbc.
 ferric-scf = { path = "../ferric-scf" }
 ndarray = { workspace = true }
+# eigh of the RS-GDF aux metric (explicit lindep cut; never Cholesky/LU).
+ndarray-linalg = { workspace = true }
 # Same spec as ferric-gw (the only other num-complex user); resolves to 0.4.6.
 num-complex = "0.4"
 
