@@ -14,6 +14,9 @@ ferric-integrals = { path = "../ferric-integrals" }
 # JBuilder/KBuilder traits (dense_aft) and solve_rhf_injected in tests. No
 # cycle: ferric-scf does not depend on ferric-pbc.
 ferric-scf = { path = "../ferric-scf" }
+# Stage 6 Gamma MP2: active_occ + the existing B_ov / (ia|jb) energy kernels.
+# No cycle: ferric-mp2 does not depend on ferric-pbc.
+ferric-mp2 = { path = "../ferric-mp2" }
 ndarray = { workspace = true }
 # eigh of the RS-GDF aux metric (explicit lindep cut; never Cholesky/LU).
 ndarray-linalg = { workspace = true }
