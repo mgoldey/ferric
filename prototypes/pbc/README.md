@@ -83,7 +83,20 @@ OPENBLAS_NUM_THREADS=1 python -m pytest -q test_prototype.py   # ~35 s; PBC_SLOW
      correction can become self-consistent with it.
    - `run_uhf_guess.py` shows the fix: converge without the correction
      first, then turn it on.
-8. **`test_prototype.py`**: the tests. Several exist to catch a specific,
+8. **`pbc_lmp2.py`, `pbc_supercell.py`** (plus the `run_lmp2_*.py` scripts):
+   local MP2 in a Γ-point supercell.
+   - **Localization.** Ordinary Boys localization breaks translation
+     symmetry, because the position operator isn't periodic. The periodic
+     Resta/Berghold functional, built on ⟨e^{ib·r}⟩, keeps equivalent
+     molecules equivalent to 1e-15.
+   - **A hidden coupling.** At Γ every orbital pair carries a
+     distance-independent coupling, −(4π/Ω)μμ. It is the missing q = 0
+     term of the equivalent k-mesh, a finite-size artifact.
+   - **Why it matters.** It makes an integral threshold keep all N² pairs
+     until the supercell is large.
+   - **The fix.** `run_lmp2_uniform.py` shows how removing it restores
+     locality.
+9. **`test_prototype.py`**: the tests. Several exist to catch a specific,
    plausible bug (a sign flip, a missing Madelung term, the G = 0 term applied
    to only one side); the comments say which one.
 
