@@ -19271,13 +19271,25 @@
     "cc": 1.0,
     "mi": 125.05544481170261
   },
+  "crates/ferric-python/src/lib.rs::gamma_auxbasis": {
+    "cc": 4.0,
+    "mi": 94.79282404586189
+  },
+  "crates/ferric-python/src/lib.rs::gamma_auxbasis::<anonymous>": {
+    "cc": 1.0,
+    "mi": 124.90562678153975
+  },
   "crates/ferric-python/src/lib.rs::gamma_rhf_driver": {
-    "cc": 7.0,
-    "mi": 71.10901457452937
+    "cc": 12.0,
+    "mi": 56.25396632161039
   },
   "crates/ferric-python/src/lib.rs::gamma_rhf_driver::<anonymous>": {
     "cc": 1.0,
     "mi": 155.7127700178179
+  },
+  "crates/ferric-python/src/lib.rs::gamma_rhf_driver::inject": {
+    "cc": 1.0,
+    "mi": 89.98226301246042
   },
   "crates/ferric-python/src/lib.rs::hirshfeld_charges": {
     "cc": 1.0,
@@ -19649,7 +19661,7 @@
   },
   "crates/ferric-python/src/lib.rs::impl:PyGammaRhfResult::__repr__": {
     "cc": 1.0,
-    "mi": 120.20683860169837
+    "mi": 119.48035345717307
   },
   "crates/ferric-python/src/lib.rs::impl:PyGammaRhfResult::density": {
     "cc": 1.0,
@@ -20275,6 +20287,22 @@
     "cc": 1.0,
     "mi": 152.5881606803743
   },
+  "crates/ferric-python/src/lib.rs::parse_gamma_options": {
+    "cc": 27.0,
+    "mi": 51.36000856773458
+  },
+  "crates/ferric-python/src/lib.rs::parse_gamma_options::<anonymous>": {
+    "cc": 1.0,
+    "mi": 153.97676999581998
+  },
+  "crates/ferric-python/src/lib.rs::parse_gamma_options::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 153.97676999581998
+  },
+  "crates/ferric-python/src/lib.rs::parse_gamma_options::<anonymous>#2": {
+    "cc": 1.0,
+    "mi": 155.01840677617037
+  },
   "crates/ferric-python/src/lib.rs::parse_guess": {
     "cc": 5.0,
     "mi": 107.20109080647924
@@ -20616,8 +20644,8 @@
     "mi": 148.73844979929143
   },
   "crates/ferric-python/src/lib.rs::run_rhf_gamma": {
-    "cc": 25.0,
-    "mi": 53.03990088162463
+    "cc": 20.0,
+    "mi": 50.451374043761135
   },
   "crates/ferric-python/src/lib.rs::run_rhf_gamma::<anonymous>": {
     "cc": 1.0,
@@ -20629,15 +20657,11 @@
   },
   "crates/ferric-python/src/lib.rs::run_rhf_gamma::<anonymous>#2": {
     "cc": 1.0,
-    "mi": 155.01840677617037
+    "mi": 122.5791461172939
   },
   "crates/ferric-python/src/lib.rs::run_rhf_gamma::<anonymous>#3": {
     "cc": 1.0,
-    "mi": 153.97676999581998
-  },
-  "crates/ferric-python/src/lib.rs::run_rhf_gamma::<anonymous>#4": {
-    "cc": 1.0,
-    "mi": 149.28632448071212
+    "mi": 149.00517493010668
   },
   "crates/ferric-python/src/lib.rs::run_rimp2": {
     "cc": 9.0,

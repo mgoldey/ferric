@@ -179,3 +179,176 @@ def test_bad_lattice_is_a_hard_error(h2, basis, lattice):
 def test_nonpositive_knobs_are_hard_errors(h2, basis, kw):
     with pytest.raises(ValueError):
         ferric.run_rhf_gamma(h2, _cubic_angstrom(A_BOHR), basis, **kw)
+
+
+# ── jk="rsgdf": range-separated Gaussian density fitting ──
+#
+# References: E_rsgdf - E_dense for H2/STO-3G (PySCF digits), a = 4 Bohr,
+# RS-GDF omega = 1 Bohr^-1, nuclear-attraction omega = 0.8 Bohr^-1 -- the
+# exact setup of crates/ferric-pbc/tests/pbc_rsgdf.rs
+# (h2_sto3g_fitting_error_matches_prototype), whose measured dE these are.
+# They agree with the Python prototype (reference/pbc/pbc_gdf.py:
+# -1.974228505e-6 / -4.472349375e-6) to ~3e-10, inside that suite's 1e-9
+# bar. The fit is exxdiv-independent at Gamma (the Madelung term v_M S D S
+# does not touch the fit), so one dE holds for both settings.
+
+RSGDF_DE = {
+    "cc-pvdz-ri": (-1.974228205803e-6, 28),
+    "def2-universal-jkfit": (-4.472349094398e-6, 36),
+}
+RSGDF_TOL = 1e-10
+HCORE_OMEGA_ANGSTROM = 0.8 / BOHR_IN_ANGSTROM
+
+
+@pytest.fixture(scope="module")
+def dense_at_rust_omega(h2, basis):
+    lat = _cubic_angstrom(A_BOHR)
+    return {
+        exx: ferric.run_rhf_gamma(
+            h2, lat, basis, exxdiv=exx, omega=HCORE_OMEGA_ANGSTROM
+        )
+        for exx in ("ewald", "none")
+    }
+
+
+@pytest.mark.parametrize("aux", sorted(RSGDF_DE))
+@pytest.mark.parametrize("exx", ["ewald", "none"])
+def test_rsgdf_fitting_error_matches_rust_suite(
+    h2, basis, dense_at_rust_omega, aux, exx
+):
+    de_ref, naux = RSGDF_DE[aux]
+    r = ferric.run_rhf_gamma(
+        h2,
+        _cubic_angstrom(A_BOHR),
+        basis,
+        exxdiv=exx,
+        omega=HCORE_OMEGA_ANGSTROM,
+        jk="rsgdf",
+        auxbasis=aux,
+    )
+    assert r.converged
+    assert r.jk == "rsgdf" and r.auxbasis == aux and r.exxdiv == exx
+    assert r.naux == naux
+    assert r.naux_kept + r.n_dropped == r.naux
+    assert r.n_g_half is None
+    de = r.energy - dense_at_rust_omega[exx].energy
+    assert abs(de - de_ref) < RSGDF_TOL, f"{aux}/{exx}: dE {de!r} vs {de_ref!r}"
+
+
+def test_dense_result_reports_no_fitting_fields(runs):
+    r = runs["ewald"]
+    assert r.jk == "dense"
+    assert r.auxbasis is None
+    assert r.naux is None and r.naux_kept is None and r.n_dropped is None
+    assert r.n_g_half is not None and r.n_g_half > 0
+
+
+def test_rsgdf_accepts_a_basis_set_object(h2, basis):
+    lat = _cubic_angstrom(A_BOHR)
+    by_name = ferric.run_rhf_gamma(h2, lat, basis, jk="rsgdf", auxbasis="cc-pvdz-ri")
+    by_obj = ferric.run_rhf_gamma(
+        h2, lat, basis, jk="rsgdf", auxbasis=ferric.BasisSet.bundled("cc-pvdz-ri")
+    )
+    assert by_obj.auxbasis == "cc-pvdz-ri"
+    # Same inputs; rayon reductions need not be bit-identical run to run.
+    assert abs(by_obj.energy - by_name.energy) < 1e-12
+
+
+def _s_aux(tmp_path, exps, name):
+    shells = [
+        {
+            "function_type": "gto",
+            "angular_momentum": [0],
+            "exponents": [repr(e)],
+            "coefficients": [["1.0"]],
+        }
+        for e in exps
+    ]
+    p = tmp_path / f"{name}.json"
+    p.write_text(
+        json.dumps({"name": name, "elements": {"1": {"electron_shells": shells}}})
+    )
+    return ferric.BasisSet.from_bse_json(str(p))
+
+
+def test_rsgdf_reports_lindep_drops(h2, basis, tmp_path):
+    # A duplicated aux shell makes the metric exactly singular: the extra
+    # function must be dropped AND counted, and the fit (hence E) unchanged.
+    lat = _cubic_angstrom(A_BOHR)
+    base_exps = [4.0, 1.0, 0.3]
+    base = ferric.run_rhf_gamma(
+        h2, lat, basis, jk="rsgdf", auxbasis=_s_aux(tmp_path, base_exps, "s3")
+    )
+    dup = ferric.run_rhf_gamma(
+        h2, lat, basis, jk="rsgdf", auxbasis=_s_aux(tmp_path, base_exps + [1.0], "s4")
+    )
+    assert base.naux == 6 and dup.naux == 8  # 2 atoms x shells
+    assert dup.n_dropped == base.n_dropped + 2  # one duplicate per atom
+    assert dup.naux_kept == base.naux_kept
+    assert abs(dup.energy - base.energy) < 1e-9
+
+
+@pytest.mark.parametrize("bad", ["", "gdf", "rs-gdf", "dense ", "aft"])
+def test_bad_jk_is_a_hard_error(h2, basis, bad):
+    with pytest.raises(ValueError, match="jk"):
+        ferric.run_rhf_gamma(h2, _cubic_angstrom(A_BOHR), basis, jk=bad)
+
+
+def test_rsgdf_without_auxbasis_is_a_hard_error(h2, basis):
+    with pytest.raises(ValueError, match="requires auxbasis"):
+        ferric.run_rhf_gamma(h2, _cubic_angstrom(A_BOHR), basis, jk="rsgdf")
+
+
+def test_auxbasis_with_dense_is_a_hard_error(h2, basis):
+    with pytest.raises(ValueError, match="auxbasis"):
+        ferric.run_rhf_gamma(h2, _cubic_angstrom(A_BOHR), basis, auxbasis="cc-pvdz-ri")
+
+
+def test_memory_budget_with_dense_is_a_hard_error(h2, basis):
+    with pytest.raises(ValueError, match="memory_budget_gb"):
+        ferric.run_rhf_gamma(h2, _cubic_angstrom(A_BOHR), basis, memory_budget_gb=1.0)
+
+
+def test_max_eri_gb_with_rsgdf_is_a_hard_error(h2, basis):
+    with pytest.raises(ValueError, match="max_eri_gb"):
+        ferric.run_rhf_gamma(
+            h2,
+            _cubic_angstrom(A_BOHR),
+            basis,
+            jk="rsgdf",
+            auxbasis="cc-pvdz-ri",
+            max_eri_gb=1.0,
+        )
+
+
+def test_unknown_bundled_auxbasis_is_a_hard_error(h2, basis):
+    with pytest.raises(ValueError, match="not-a-basis"):
+        ferric.run_rhf_gamma(
+            h2, _cubic_angstrom(A_BOHR), basis, jk="rsgdf", auxbasis="not-a-basis"
+        )
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan")])
+def test_nonpositive_rsgdf_budget_is_a_hard_error(h2, basis, bad):
+    with pytest.raises(ValueError, match="memory_budget_gb"):
+        ferric.run_rhf_gamma(
+            h2,
+            _cubic_angstrom(A_BOHR),
+            basis,
+            jk="rsgdf",
+            auxbasis="cc-pvdz-ri",
+            memory_budget_gb=bad,
+        )
+
+
+def test_tiny_rsgdf_budget_is_refused(h2, basis):
+    # ~11 bytes cannot hold the n x n matrices the builder reserves first.
+    with pytest.raises(RuntimeError, match="RsGdf"):
+        ferric.run_rhf_gamma(
+            h2,
+            _cubic_angstrom(A_BOHR),
+            basis,
+            jk="rsgdf",
+            auxbasis="cc-pvdz-ri",
+            memory_budget_gb=1e-8,
+        )

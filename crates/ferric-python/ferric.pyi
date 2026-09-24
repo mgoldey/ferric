@@ -1303,7 +1303,27 @@ class GammaRhfResult:
     @property
     def nao(self) -> int: ...
     @property
-    def n_g_half(self) -> int: ...
+    def n_g_half(self) -> int | None:
+        """Dense-AFT half-sphere G count; None for jk='rsgdf'."""
+        ...
+    @property
+    def jk(self) -> str:
+        """J/K builder used: 'dense' or 'rsgdf'."""
+        ...
+    @property
+    def auxbasis(self) -> str | None:
+        """RS-GDF aux basis name; None for jk='dense'."""
+        ...
+    @property
+    def naux(self) -> int | None: ...
+    @property
+    def naux_kept(self) -> int | None:
+        """Aux-metric eigenvectors kept (naux - n_dropped); None for dense."""
+        ...
+    @property
+    def n_dropped(self) -> int | None:
+        """Aux-metric eigenvalues <= 1e-10 dropped (lindep); None for dense."""
+        ...
     def mo_energy(self) -> NDArray[np.float64]: ...
     def mo_coeff(self) -> NDArray[np.float64]: ...
     def density(self) -> NDArray[np.float64]: ...
@@ -1317,15 +1337,22 @@ def run_rhf_gamma(
     basis_set: BasisSet,
     exxdiv: str = "ewald",
     omega: float | None = None,
-    max_eri_gb: float = 0.5,
+    max_eri_gb: float | None = None,
     max_iter: int = 200,
     density_conv: float = 1e-10,
+    jk: str = "dense",
+    auxbasis: BasisSet | str | None = None,
+    memory_budget_gb: float | None = None,
 ) -> GammaRhfResult:
-    """Closed-shell Gamma-point periodic RHF -- TOY SCALE ONLY.
+    """Closed-shell Gamma-point periodic RHF.
 
-    J/K come from the dense pure-AFT nao^4 ERI oracle, hard-capped by
-    max_eri_gb (pending RS-GDF). lattice: 3x3 rows in Angstrom; omega in
-    1/Angstrom; exxdiv "ewald" | "none" (strict). Charged cells, open
+    jk="dense" (default): the toy-scale dense pure-AFT nao^4 ERI oracle,
+    hard-capped by max_eri_gb (default 0.5 GiB). jk="rsgdf": range-separated
+    Gaussian density fitting; REQUIRES auxbasis (BasisSet or bundled name,
+    e.g. "cc-pvdz-ri"), bounded by memory_budget_gb (None = ferric's unified
+    budget). auxbasis/memory_budget_gb with "dense", or max_eri_gb with
+    "rsgdf", raise ValueError. lattice: 3x3 rows in Angstrom; omega in
+    1/Angstrom; exxdiv "ewald" | "none" and jk (strict). Charged cells, open
     shells, odd electron counts and ECP bases raise ValueError.
     """
     ...

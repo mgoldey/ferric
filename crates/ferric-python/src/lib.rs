@@ -702,9 +702,28 @@ struct PyGammaRhfResult {
     /// Number of AO basis functions in the cell.
     #[pyo3(get)]
     nao: usize,
-    /// Half-sphere G vectors in the dense AFT ERI build.
+    /// Half-sphere G vectors in the dense AFT ERI build (`jk="dense"`);
+    /// `None` for `jk="rsgdf"`, whose long-range G list is a different
+    /// quantity and is not reported under this name.
     #[pyo3(get)]
-    n_g_half: usize,
+    n_g_half: Option<usize>,
+    /// J/K builder used: `"dense"` (pure-AFT nao^4 oracle) or `"rsgdf"`
+    /// (range-separated Gaussian density fitting).
+    #[pyo3(get)]
+    jk: String,
+    /// Aux basis name (`BasisSet.name`) for `jk="rsgdf"`; `None` for dense.
+    #[pyo3(get)]
+    auxbasis: Option<String>,
+    /// Aux functions in the cell (`jk="rsgdf"`); `None` for dense.
+    #[pyo3(get)]
+    naux: Option<usize>,
+    /// Aux-metric eigenvectors kept (`naux - n_dropped`); `None` for dense.
+    #[pyo3(get)]
+    naux_kept: Option<usize>,
+    /// Aux-metric eigenvalues `<= lindep` (1e-10) dropped as linearly
+    /// dependent; `None` for dense.
+    #[pyo3(get)]
+    n_dropped: Option<usize>,
     overlap_data: Array2<f64>,
     scf_data: ScfResult,
 }
@@ -730,8 +749,8 @@ impl PyGammaRhfResult {
     }
     fn __repr__(&self) -> String {
         format!(
-            "GammaRhfResult(energy={:.10}, exxdiv={:?}, converged={})",
-            self.energy, self.exxdiv, self.converged
+            "GammaRhfResult(energy={:.10}, exxdiv={:?}, jk={:?}, converged={})",
+            self.energy, self.exxdiv, self.jk, self.converged
         )
     }
 }
@@ -780,45 +799,94 @@ struct GammaRun {
     enn: f64,
     omega_bohr: f64,
     madelung: f64,
-    n_g_half: usize,
+    /// Dense path only.
+    n_g_half: Option<usize>,
+    /// RS-GDF path only: `(naux, naux_kept, n_dropped)`.
+    rsgdf_counts: Option<(usize, usize, usize)>,
 }
 
-/// Periodic hcore -> dense AFT J/K -> `solve_rhf_injected`. The same assembly
-/// as `crates/ferric-pbc/tests/common/mod.rs::gamma_rhf`.
+/// Which periodic J/K builder `run_rhf_gamma` injects.
+enum GammaJk {
+    /// Dense pure-AFT ERI, hard-capped at `max_bytes`.
+    Dense { max_bytes: usize },
+    /// RS-GDF with `aux` (prepared on the cell's atoms) and an optional
+    /// explicit budget (`None` = ferric's unified budget chain).
+    RsGdf {
+        aux: Box<PreparedBasis>,
+        budget_bytes: Option<usize>,
+    },
+}
+
+/// Periodic hcore -> injected J/K (dense AFT or RS-GDF) ->
+/// `solve_rhf_injected`. The same assembly as
+/// `crates/ferric-pbc/tests/common/mod.rs::{gamma_rhf, gamma_rhf_jk}`.
 fn gamma_rhf_driver(
     cell: &ferric_pbc::Cell,
     prep: &PreparedBasis,
     exx: ferric_pbc::ExxDiv,
     omega_bohr: Option<f64>,
-    max_bytes: usize,
+    jk: &GammaJk,
     config: &RhfConfig,
 ) -> Result<GammaRun, ferric_core::FerricError> {
     use ferric_pbc::dense_aft::{DenseAftEri, DEFAULT_DENSE_AFT_PRECISION};
     use ferric_pbc::hcore::{periodic_hcore, PeriodicHcoreConfig};
+    use ferric_pbc::rsgdf::{RsGdf, RsGdfConfig};
     let w = omega_bohr.unwrap_or_else(|| ferric_pbc::ewald::default_ewald_omega(cell));
     let hc = periodic_hcore(cell, prep, &PeriodicHcoreConfig::with_omega(w))?;
-    let eri = DenseAftEri::build(
-        cell,
-        prep,
-        &hc.s,
-        exx,
-        DEFAULT_DENSE_AFT_PRECISION,
-        max_bytes,
-    )?;
     let op = Operator::coulomb();
     // Never read on the injected path; required by the signature.
     let bounds = SchwarzBounds::compute(op, prep)?;
-    let inj = ferric_scf::rhf::PeriodicInjection {
-        s: hc.s.clone(),
-        h: hc.h.clone(),
-        vnn: hc.enn,
-        j: Box::new(eri.j_builder()),
-        k: Box::new(eri.k_builder()),
-    };
     let ctx = ParallelContext::default();
-    let scf =
-        ferric_scf::rhf::solve_rhf_injected(&ctx, cell.mol(), prep, op, &bounds, config, inj)?;
-    // Reported for both exxdiv settings (the ERI only stores it for Ewald).
+    #[allow(clippy::too_many_arguments)]
+    fn inject<'a>(
+        ctx: &ParallelContext,
+        cell: &ferric_pbc::Cell,
+        prep: &PreparedBasis,
+        bounds: &SchwarzBounds,
+        config: &RhfConfig,
+        hc: &ferric_pbc::PeriodicHcore,
+        j: Box<dyn ferric_scf::fock::JBuilder + 'a>,
+        k: Box<dyn ferric_scf::fock::KBuilder + 'a>,
+    ) -> Result<ScfResult, ferric_core::FerricError> {
+        let inj = ferric_scf::rhf::PeriodicInjection {
+            s: hc.s.clone(),
+            h: hc.h.clone(),
+            vnn: hc.enn,
+            j,
+            k,
+        };
+        let op = Operator::coulomb();
+        ferric_scf::rhf::solve_rhf_injected(ctx, cell.mol(), prep, op, bounds, config, inj)
+    }
+    let (scf, n_g_half, rsgdf_counts) = match jk {
+        GammaJk::Dense { max_bytes } => {
+            let eri = DenseAftEri::build(
+                cell,
+                prep,
+                &hc.s,
+                exx,
+                DEFAULT_DENSE_AFT_PRECISION,
+                *max_bytes,
+            )?;
+            let (j, k) = (Box::new(eri.j_builder()), Box::new(eri.k_builder()));
+            let scf = inject(&ctx, cell, prep, &bounds, config, &hc, j, k)?;
+            (scf, Some(eri.n_g_half()), None)
+        }
+        GammaJk::RsGdf { aux, budget_bytes } => {
+            let cfg = RsGdfConfig {
+                exxdiv: exx,
+                budget_bytes: *budget_bytes,
+                ..Default::default()
+            };
+            let gdf = RsGdf::build(cell, prep, aux, &hc.s, &cfg)?;
+            let st = gdf.stats();
+            let counts = (st.naux, st.naux_kept, st.n_dropped);
+            let (j, k) = (Box::new(gdf.j_builder()), Box::new(gdf.k_builder()));
+            let scf = inject(&ctx, cell, prep, &bounds, config, &hc, j, k)?;
+            (scf, None, Some(counts))
+        }
+    };
+    // Reported for both exxdiv settings (the builders only store it for Ewald).
     let madelung = ferric_pbc::ewald::madelung_constant(cell)?;
     Ok(GammaRun {
         scf,
@@ -826,66 +894,89 @@ fn gamma_rhf_driver(
         enn: hc.enn,
         omega_bohr: hc.omega,
         madelung,
-        n_g_half: eri.n_g_half(),
+        n_g_half,
+        rsgdf_counts,
     })
 }
 
-/// Closed-shell **Gamma-point periodic RHF** (3-D periodic, one k-point).
-///
-/// TOY-SCALE ONLY. J and K come from the dense pure-AFT ERI oracle
-/// (`ferric_pbc::dense_aft`): an `8 * nao^4`-byte tensor, HARD-capped by
-/// `max_eri_gb` (default 0.5 GiB, i.e. nao <= ~90). An oversize cell is a
-/// `ValueError` raised before any integral work. The production path is
-/// range-separated GDF (Stage-1 design step 9), which does not exist yet.
-///
-/// Units (the ferric Python convention):
-///   mol       `Molecule` whose atoms are the reference cell; its coordinates
-///             are Ångström on input (`from_xyz_string`), Bohr internally.
-///   lattice   3x3 lattice vectors as ROWS, in **Ångström**
-///             (`[[ax, ay, az], [bx, by, bz], [cx, cy, cz]]`), converted with
-///             the same factor the XYZ parser uses.
-///   omega     nuclear-attraction Ewald split in **Å⁻¹** (numerical knob;
-///             any value > 0 gives the same energy to ~1e-9 Ha). None =
-///             `sqrt(pi) / volume^(1/3)`.
-///   energies  Hartree per cell.
-///
-/// Arguments:
-///   exxdiv       "ewald" (default; Madelung-corrected exchange, PySCF
-///                `exxdiv='ewald'`, converges as L^-3) or "none" (drop G=0,
-///                converges as 1/L). Strict: anything else is a ValueError.
-///   max_eri_gb   cap on the dense ERI tensor in GiB (> 0).
-///   max_iter, density_conv   SCF controls (defaults 200, 1e-10). The guess
-///                is the core-Hamiltonian guess on the lattice S/h (the
-///                molecular SAD guess is not periodic).
-///
-/// Hard errors (ValueError): charged cell (charge != 0; no neutralising-
-/// background correction for electrons), multiplicity != 1 or an odd
-/// electron count (RHF only), an ECP basis, a non-3x3 or singular lattice,
-/// a bad `exxdiv`, non-positive `omega`/`max_eri_gb`, an oversize cell.
-///
-/// Validated (crates/ferric-python/tests/test_pbc_gamma.py, and the Rust
-/// `pbc_dense_aft_scf` suite): H2/STO-3G in a 4 Bohr cube vs PySCF 2.13
-/// AFTDF, E = -1.658327061049 (ewald) / -0.949002691179 (none), to 1e-8.
-#[pyfunction]
-#[pyo3(signature = (
-    mol, lattice, basis_set, exxdiv="ewald", omega=None, max_eri_gb=0.5,
-    max_iter=200, density_conv=1e-10,
-))]
-#[allow(clippy::too_many_arguments)]
-fn run_rhf_gamma(
-    py: Python<'_>,
-    mol: &PyMolecule,
-    lattice: Vec<Vec<f64>>,
-    basis_set: &PyBasisSet,
+/// Resolve `run_rhf_gamma`'s `auxbasis` kwarg: a `BasisSet` object or a
+/// bundled basis name. An unknown name is a `ValueError`.
+fn gamma_auxbasis(obj: &Bound<'_, PyAny>) -> PyResult<ferric_core::basis::BasisSet> {
+    if let Ok(bs) = obj.extract::<PyRef<'_, PyBasisSet>>() {
+        return Ok(bs.inner.clone());
+    }
+    if let Ok(name) = obj.extract::<String>() {
+        return basis::bundled(&name).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "run_rhf_gamma: auxbasis {name:?} is not a bundled basis: {e}"
+            ))
+        });
+    }
+    Err(pyo3::exceptions::PyTypeError::new_err(
+        "run_rhf_gamma: auxbasis must be a BasisSet or a bundled basis name (str)",
+    ))
+}
+
+/// Parsed and validated `run_rhf_gamma` options (strict: every knob the chosen
+/// J/K path would ignore is an error, never a silent no-op).
+struct GammaOptions {
+    exx: ferric_pbc::ExxDiv,
+    lattice_bohr: [[f64; 3]; 3],
+    omega_bohr: Option<f64>,
+}
+
+fn parse_gamma_options(
     exxdiv: &str,
+    jk: &str,
+    auxbasis_given: bool,
+    max_eri_gb: Option<f64>,
+    memory_budget_gb: Option<f64>,
+    lattice: &[Vec<f64>],
     omega: Option<f64>,
-    max_eri_gb: f64,
-    max_iter: usize,
-    density_conv: f64,
-) -> PyResult<PyGammaRhfResult> {
+) -> PyResult<GammaOptions> {
+    let auxbasis: Option<()> = if auxbasis_given { Some(()) } else { None };
     let val_err = |m: String| pyo3::exceptions::PyValueError::new_err(m);
     let exx = ferric_pbc::ExxDiv::parse_config_str(exxdiv).map_err(|e| val_err(format!("{e}")))?;
-    validate_gamma_cell(&mol.inner, &basis_set.inner)?;
+    let use_rsgdf = match jk.to_ascii_lowercase().as_str() {
+        "dense" => false,
+        "rsgdf" => true,
+        other => {
+            return Err(val_err(format!(
+                "run_rhf_gamma: jk must be \"dense\" or \"rsgdf\", got {other:?}"
+            )))
+        }
+    };
+    // Knobs the chosen path would ignore are errors, not silent no-ops.
+    if use_rsgdf {
+        if auxbasis.is_none() {
+            return Err(val_err(
+                "run_rhf_gamma: jk=\"rsgdf\" requires auxbasis (a BasisSet or a bundled \
+                 name such as \"cc-pvdz-ri\" or \"def2-universal-jkfit\"); there is no \
+                 default aux basis"
+                    .into(),
+            ));
+        }
+        if let Some(g) = max_eri_gb {
+            return Err(val_err(format!(
+                "run_rhf_gamma: max_eri_gb={g} caps the dense AFT tensor and is ignored \
+                 by jk=\"rsgdf\"; bound RS-GDF with memory_budget_gb instead"
+            )));
+        }
+    } else {
+        if auxbasis.is_some() {
+            return Err(val_err(
+                "run_rhf_gamma: auxbasis is only used by jk=\"rsgdf\"; jk=\"dense\" would \
+                 ignore it. Pass jk=\"rsgdf\" or drop auxbasis."
+                    .into(),
+            ));
+        }
+        if let Some(g) = memory_budget_gb {
+            return Err(val_err(format!(
+                "run_rhf_gamma: memory_budget_gb={g} bounds RS-GDF and is ignored by \
+                 jk=\"dense\"; bound the dense tensor with max_eri_gb instead"
+            )));
+        }
+    }
     if lattice.len() != 3 || lattice.iter().any(|r| r.len() != 3) {
         return Err(val_err(format!(
             "run_rhf_gamma: lattice must be 3x3 (three row vectors, Ångström), got {} rows",
@@ -907,25 +998,153 @@ fn run_rhf_gamma(
             )))
         }
     };
-    if !(max_eri_gb.is_finite() && max_eri_gb > 0.0) {
-        return Err(val_err(format!(
-            "run_rhf_gamma: max_eri_gb must be finite and > 0, got {max_eri_gb}"
-        )));
+    for (name, v) in [
+        ("max_eri_gb", max_eri_gb),
+        ("memory_budget_gb", memory_budget_gb),
+    ] {
+        if let Some(g) = v {
+            if !(g.is_finite() && g > 0.0) {
+                return Err(val_err(format!(
+                    "run_rhf_gamma: {name} must be finite and > 0, got {g}"
+                )));
+            }
+        }
     }
-    let max_bytes = ferric_core::memory::gib_to_bytes(max_eri_gb);
+    Ok(GammaOptions {
+        exx,
+        lattice_bohr: a,
+        omega_bohr,
+    })
+}
+
+/// Closed-shell **Gamma-point periodic RHF** (3-D periodic, one k-point).
+///
+/// Two J/K builders, chosen by `jk` (strict; default `"dense"`):
+///
+///   "dense"  TOY-SCALE ORACLE. The dense pure-AFT ERI (`ferric_pbc::dense_aft`):
+///            an `8 * nao^4`-byte tensor, HARD-capped by `max_eri_gb` (default
+///            0.5 GiB, i.e. nao <= ~90). An oversize cell is a `ValueError`
+///            raised before any integral work. Exact to the AFT precision.
+///   "rsgdf"  Range-separated Gaussian density fitting (`ferric_pbc::rsgdf`,
+///            PySCF RSGDF convention, omega_gdf = 1 Bohr⁻¹, lindep 1e-10).
+///            REQUIRES `auxbasis`: a `BasisSet` or a bundled name (e.g.
+///            `"cc-pvdz-ri"`, `"def2-universal-jkfit"`). There is no default
+///            aux basis: the fitting error depends on the aux/orbital pairing
+///            (H2/STO-3G: -2.0e-6 Ha with cc-pvdz-ri, -4.5e-6 with
+///            def2-universal-jkfit), so an implicit choice would hide it.
+///            Memory is gated by ferric's unified budget: `memory_budget_gb`
+///            (None = `FERRIC_MEM_BUDGET_GB` / 0.8 x available RAM).
+///
+/// `auxbasis`/`memory_budget_gb` with `jk="dense"`, or `max_eri_gb` with
+/// `jk="rsgdf"`, is a `ValueError` (a knob the chosen path ignores would be a
+/// silent no-op).
+///
+/// Units (the ferric Python convention):
+///   mol       `Molecule` whose atoms are the reference cell; its coordinates
+///             are Ångström on input (`from_xyz_string`), Bohr internally.
+///   lattice   3x3 lattice vectors as ROWS, in **Ångström**
+///             (`[[ax, ay, az], [bx, by, bz], [cx, cy, cz]]`), converted with
+///             the same factor the XYZ parser uses.
+///   omega     nuclear-attraction Ewald split in **Å⁻¹** (numerical knob;
+///             any value > 0 gives the same energy to ~1e-9 Ha). None =
+///             `sqrt(pi) / volume^(1/3)`. (Not the RS-GDF split, which is
+///             fixed at its default.)
+///   energies  Hartree per cell.
+///
+/// Arguments:
+///   exxdiv       "ewald" (default; Madelung-corrected exchange, PySCF
+///                `exxdiv='ewald'`, converges as L^-3) or "none" (drop G=0,
+///                converges as 1/L). Strict: anything else is a ValueError.
+///   jk           "dense" (default) or "rsgdf". Strict.
+///   auxbasis     RS-GDF aux basis (BasisSet or bundled name); rsgdf only.
+///   max_eri_gb   cap on the dense ERI tensor in GiB (> 0; default 0.5);
+///                dense only.
+///   memory_budget_gb  RS-GDF memory budget in GiB (> 0); rsgdf only.
+///   max_iter, density_conv   SCF controls (defaults 200, 1e-10). The guess
+///                is the core-Hamiltonian guess on the lattice S/h (the
+///                molecular SAD guess is not periodic).
+///
+/// Hard errors (ValueError): charged cell (charge != 0; no neutralising-
+/// background correction for electrons), multiplicity != 1 or an odd
+/// electron count (RHF only), an ECP basis, a non-3x3 or singular lattice,
+/// a bad `exxdiv`/`jk`, an unknown bundled `auxbasis`, a knob given to the
+/// path that ignores it, non-positive `omega`/`max_eri_gb`/`memory_budget_gb`,
+/// an oversize dense cell.
+///
+/// Validated (crates/ferric-python/tests/test_pbc_gamma.py, and the Rust
+/// `pbc_dense_aft_scf` / `pbc_rsgdf` suites): H2/STO-3G in a 4 Bohr cube vs
+/// PySCF 2.13 AFTDF, E = -1.658327061049 (ewald) / -0.949002691179 (none),
+/// to 1e-8 (dense); RS-GDF fitting error E_rsgdf - E_dense vs the Rust suite.
+#[pyfunction]
+#[pyo3(signature = (
+    mol, lattice, basis_set, exxdiv="ewald", omega=None, max_eri_gb=None,
+    max_iter=200, density_conv=1e-10, jk="dense", auxbasis=None,
+    memory_budget_gb=None,
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_rhf_gamma(
+    py: Python<'_>,
+    mol: &PyMolecule,
+    lattice: Vec<Vec<f64>>,
+    basis_set: &PyBasisSet,
+    exxdiv: &str,
+    omega: Option<f64>,
+    max_eri_gb: Option<f64>,
+    max_iter: usize,
+    density_conv: f64,
+    jk: &str,
+    auxbasis: Option<&Bound<'_, PyAny>>,
+    memory_budget_gb: Option<f64>,
+) -> PyResult<PyGammaRhfResult> {
+    let val_err = |m: String| pyo3::exceptions::PyValueError::new_err(m);
+    let GammaOptions {
+        exx,
+        lattice_bohr: a,
+        omega_bohr,
+    } = parse_gamma_options(
+        exxdiv,
+        jk,
+        auxbasis.is_some(),
+        max_eri_gb,
+        memory_budget_gb,
+        &lattice,
+        omega,
+    )?;
+    validate_gamma_cell(&mol.inner, &basis_set.inner)?;
     let cell = ferric_pbc::Cell::new(mol.inner.clone(), a).map_err(|e| val_err(format!("{e}")))?;
     let prep = PreparedBasis::new(cell.mol(), &basis_set.inner).map_err(make_err)?;
-    // Pre-flight the dense tensor BEFORE the hcore lattice sums (DenseAftEri
-    // re-checks the same bound, so this cannot drift into a silent pass).
     let nao = prep.nbasis();
-    let need = 8u128 * (nao as u128).pow(4);
-    if need > max_bytes as u128 {
-        return Err(val_err(format!(
-            "run_rhf_gamma: the dense AFT ERI tensor needs {need} bytes (nao = {nao}) > \
-             max_eri_gb cap {max_bytes} bytes. This path is a toy-scale oracle; \
-             periodic density fitting (RS-GDF) is not implemented yet."
-        )));
-    }
+    let (jk_choice, aux_name) = match auxbasis {
+        Some(obj) => {
+            let aux_bs = gamma_auxbasis(obj)?;
+            let aux = PreparedBasis::new(cell.mol(), &aux_bs).map_err(|e| {
+                val_err(format!(
+                    "run_rhf_gamma: auxbasis '{}' cannot be placed on this cell: {e}",
+                    aux_bs.name
+                ))
+            })?;
+            let choice = GammaJk::RsGdf {
+                aux: Box::new(aux),
+                budget_bytes: budget_bytes_from_gb(memory_budget_gb),
+            };
+            (choice, Some(aux_bs.name))
+        }
+        None => {
+            let max_bytes = ferric_core::memory::gib_to_bytes(max_eri_gb.unwrap_or(0.5));
+            // Pre-flight the dense tensor BEFORE the hcore lattice sums
+            // (DenseAftEri re-checks the same bound, so this cannot drift into
+            // a silent pass).
+            let need = 8u128 * (nao as u128).pow(4);
+            if need > max_bytes as u128 {
+                return Err(val_err(format!(
+                    "run_rhf_gamma: the dense AFT ERI tensor needs {need} bytes (nao = {nao}) \
+                     > max_eri_gb cap {max_bytes} bytes. This path is a toy-scale oracle; \
+                     use jk=\"rsgdf\" with an auxbasis for larger cells."
+                )));
+            }
+            (GammaJk::Dense { max_bytes }, None)
+        }
+    };
     let config = RhfConfig {
         use_sad_guess: false,
         density_conv,
@@ -933,8 +1152,12 @@ fn run_rhf_gamma(
         ..Default::default()
     };
     let run = py
-        .allow_threads(|| gamma_rhf_driver(&cell, &prep, exx, omega_bohr, max_bytes, &config))
+        .allow_threads(|| gamma_rhf_driver(&cell, &prep, exx, omega_bohr, &jk_choice, &config))
         .map_err(make_err)?;
+    let (naux, naux_kept, n_dropped) = match run.rsgdf_counts {
+        Some((n, k, d)) => (Some(n), Some(k), Some(d)),
+        None => (None, None, None),
+    };
     Ok(PyGammaRhfResult {
         energy: run.scf.energy,
         converged: run.scf.converged,
@@ -948,6 +1171,11 @@ fn run_rhf_gamma(
         omega: run.omega_bohr * ANGSTROM_TO_BOHR,
         nao,
         n_g_half: run.n_g_half,
+        jk: if aux_name.is_some() { "rsgdf" } else { "dense" }.into(),
+        auxbasis: aux_name,
+        naux,
+        naux_kept,
+        n_dropped,
         overlap_data: run.s,
         scf_data: run.scf,
     })
