@@ -114,15 +114,24 @@ Reported rather than omitted:
   f<sub>xc</sub> kernel (meta-GGA, VV10, range-separated) are refused rather
   than run without it. B3LYP at aug-cc-pVDZ agrees with PySCF to 6.5e-4 eV,
   40× worse than PBE in the same basis; the cause is not yet identified.
-- **COSX scaling and gradients**: at def2-SVP, one thread, over alkanes C4–C20
-  with the default sparse half-transforms, the full K build's tail exponent
-  (last three points, C12–C20) is N<sup>1.57</sup> and the A-build's
-  N<sup>1.52</sup>. On butane it only reaches the speed of direct exchange at
-  quadruple zeta.
-  COSX is Coulomb-only. Its analytic gradient is exact for RHF, RKS and UHF
-  with the overlap fit off, and for RHF and UHF with the default overlap fit.
-  Fitted COSX with a KS functional, UKS, ROHF/ROKS and pruned COSX grids are
-  refused for gradient tasks.
+- **COSX wins at high angular momentum, not at large system size.**
+  Measured on one thread at the default `(50,110)` grid and overlap fit:
+  - Against LinK on n-alkanes at def2-SVP it is slower at every size
+    measured: 1.59× (C20), 1.09× (C32) and 1.22× (C48), with no trend toward
+    parity. At def2-TZVP on C20 it is faster (0.67×); that is the only
+    triple-zeta size measured.
+  - Against exact direct exchange on butane it is 3.7× slower at def2-TZVP
+    (full SCF). At def2-QZVP its K build takes 90 s against about 400 s for
+    the direct build's single J+K sweep, at a relative K error of 5.4e-5.
+  - Its K build grows as N<sup>1.29</sup>–N<sup>1.32</sup> between C20 and
+    C48 at def2-SVP.
+  - It applies to the Coulomb operator only: a range-separated functional
+    takes its exchange from density-fitted short- and long-range fitters and
+    ignores `k_builder = "cosx"`, with a warning.
+  - Its analytic gradient is exact for RHF, RKS and UHF with the overlap fit
+    off, and for RHF and UHF with the default overlap fit. Fitted COSX with a
+    KS functional, UKS, ROHF/ROKS and pruned COSX grids are refused for
+    gradient tasks, before the SCF runs.
 
 ## Why the distinction is drawn so sharply
 
