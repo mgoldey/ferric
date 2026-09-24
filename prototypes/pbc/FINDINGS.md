@@ -470,3 +470,183 @@ def2-universal-jkfit +3.40e-6 (-2.6e-4), def2-svp-rifit +6.26e-6 (-4.8e-4). All 
   path transform the SAME B^P_mn used for SCF K to B^P_ia. A periodic ThreeIndexSource would also need an
   injected metric solve (and must never Cholesky: Iteration 2's LiH metric) — larger change, only needed
   once B must stream/spill.
+
+## Iteration 4 (Python, Gamma dRPA) — 2026-09-24
+
+### Code
+- New `pbc_rpa.py`: `drpa_quad(Bia, eo, ev, n=|None)` (frequency integral; n=None doubles GL n until
+  |dE| < 1e-12), `drpa_plasmon` / `drpa_riccati` (dense (ia|jb), no quadrature, no aux), `direct_mp2`,
+  `drpa_second_order_quad` (-(1/2pi) int tr Pi^2/2), `gamma_drpa(C, eps, nocc, eri=|B=, method=)`,
+  `ov_factor`, `drpa_moment_prediction_h2_minimal` (nov=1 closed form), `r2_kernel_c3(mol)` (general
+  a^-3 predictor, below). Denominators reuse `pbc_mp2.denominators` (shifted/unshifted).
+- Formula (ferric energy.rs and PySCF gw/rpa.py, identical): Pi = 4 B diag(e_ia/(w^2+e_ia^2)) B^T >= 0,
+  E_c = (1/2pi) int_0^inf dw [ln det(1+Pi) - tr Pi], GL mapped w = x0(1+x)/(1-x) (same map as ferric
+  `gauss_legendre_nodes` / PySCF `_get_scaled_legendre_roots`). Summand evaluated as sum_k log1p(l_k) - l_k
+  over eigenvalues of Pi: `slogdet(1+Pi) - tr Pi` cancels catastrophically at large-w nodes (w^2 weights;
+  measured 1.9e-10 drift between n=512 and n=1024 on H2O/6-31G, naux ~100, gone after the change).
+- Drivers: `run_rpa_formula.py` (molecular), `run_rpa_anchor.py`, `run_rpa_oracle.py`,
+  `run_rpa_box_limit.py BASIS a...`, `run_rpa_fit_error.py`, `run_rpa_quadrature.py`, `run_rpa_c3_prediction.py`.
+- `test_prototype.py`: +10 fast tests (suite 37 passed / 3 slow skipped, 79 s).
+- PySCF 2.13 has NO periodic RPA: `pyscf/pbc` has gw (krgw_ac/cd, kgw_slow) and tdscf but no rpa module and no
+  RPA correlation energy. Molecular `pyscf.gw.rpa.RPA` (= dRPA, DF-only) is the convention oracle.
+
+### Measured
+Molecular formula checks (run_rpa_formula.py; exact ERI unless noted):
+
+| check | H2O/6-31G (nocc 5, nvir 8) | H2/STO-3G |
+|---|---|---|
+| E_dRPA (plasmon) | -1.37546830507603e-1 | -2.06589071750135e-2 |
+| Riccati - plasmon / converged quad - plasmon | 3.3e-14 / -1.0e-14 (n=128) | 2.2e-15 / -1.2e-16 (n=64) |
+| -(1/2pi) int tr Pi^2/2 - direct MP2 | -4.0e-15 | -5.1e-16 |
+| (E(lam V)/lam^2 - dMP2)/lam, lam = 1e-2, 1e-3 | 0.09614, 0.09676 (O(V^3) term) | 0.00761, 0.00764 |
+| ours (GL n=40) - pyscf.gw.rpa.RPA (nw=40), PySCF's own DF, cc-pvdz-ri / jkfit | -6.3e-13 / -8.0e-13 | -9.0e-14 / +9.1e-14 |
+| GL x0=0.5 error n = 10 / 20 / 40 / 80 | 1.9e-5 / -2.3e-6 / 7.4e-10 / -1.1e-14 | 6.7e-8 / 5.4e-14 / ~0 / ~0 |
+
+Exactness anchor (a): trivial-aux RS-GDF B + frequency quadrature vs dense pure-AFT (ia|jb) + plasmon.
+Same cells/aux as the MP2 anchor (one s primitive al=0.5 per H; aux = every periodic pair product):
+
+| cell | conv | E_dRPA (plasmon) | Riccati | B-quad same C | B-quad own B-SCF | (b) B trPi^2 term - dMP2 | dRPA - dMP2 |
+|---|---|---|---|---|---|---|---|
+| H2 a=4 | shifted | -7.5076621772474e-3 | -1e-16 | -1.2e-13 | -1.3e-13 | -1.4e-13 | +9.9e-4 |
+| H2 a=4 | unshifted | -1.1393259292548e-2 | -6e-16 | -1.8e-13 | -1.9e-13 | -2.3e-13 | +2.4e-3 |
+| tri 4H | shifted | -2.1056730916346e-2 | +5e-16 | -1.7e-13 | -1.3e-13 | -1.9e-13 | +3.8e-3 |
+| tri 4H | unshifted | -3.4654484691117e-2 | +3e-15 | -3.3e-13 | -3.0e-13 | -4.1e-13 | +1.2e-2 |
+
+Mutations (shifted, exact orbitals), dE vs plasmon: spin factor 4->2 in Pi +5.5e-3 (H2) / +1.5e-2 (tri);
+1/pi instead of 1/2pi -7.5e-3 / -2.1e-2; exchange-type K (A = D + 2K - K_x) +5.5e-3 (H2: identical to the
+factor-2 mutant, nocc=nvir=1) / +1.5e-2; unshifted eps fed as shifted -3.9e-3 / -1.4e-2; Cv for both ov
+indices +1.6e-3 / -6.3e-3; aux 7/8 classes +6e-13 (H2, invisible) / +2.1e-8 (tri). The three G=0 mutants of
+pbc_gdf (J2 only / J3 only / kept in both): ALL invisible to dRPA (|dE| <= 1.7e-13), same structural reason
+as MP2 (C_o^T S C_v = 0; zero fitted ov charge in the anchor). Code mutations of the tests (factor 4->2 in
+`_summand`, 1/pi in `drpa_quad`, 4K->2K in the plasmon, sign of |d|^2 in the moment model): each fails >= 1
+test (6/6/7/1 failures).
+
+PySCF oracles (run_rpa_oracle.py; PySCF 2.13 pbc RHF on AFTDF mesh 61^3, exxdiv None -> unshifted,
+'ewald' -> shifted; ours = pure-AFT ERI + plasmon, and our RS-GDF with cart cc-pvdz-ri):
+
+| system | conv | ours exact | (i) PySCF AFTDF (ia|jb) + our plasmon | ours RS-GDF | (ii) PySCF RSGDF + pyscf.gw.rpa loop, nw=200 | nw=40 vs our n=40 |
+|---|---|---|---|---|---|---|
+| H2/STO-3G a=4 | unshifted | -1.000052013959e-2 | +6.7e-16 | -9.999017017904e-3 | +9.6e-13 | +3.0e-13 |
+| H2/STO-3G a=4 | shifted | -6.938130614440e-3 | +2.2e-16 | -6.937063950377e-3 | -1.1e-13 | +3.2e-14 |
+| tri 4H s+p | unshifted | -9.631964613214e-2 | -1.5e-10 | -9.624188539521e-2 | -1.4e-10 | -1.5e-10 |
+| tri 4H s+p | shifted | -6.846932539148e-2 | +5.7e-11 | -6.841208596393e-2 | +5.7e-11 | +5.7e-11 |
+
+(The tri ~1e-10 is the same in every column, i.e. SCF orbitals ours-vs-PySCF; Iteration 3 MP2 saw -1.2e-10/+3.7e-11.)
+
+Box limit vs molecular dRPA (exact ERI, plasmon, cart, same geometry); same ERI construction as Iteration 3
+(w = min(1, 8/a), bra 18 Bohr, ket 18+6/w). E_dRPA(mol) = -2.065890717501e-2 (STO-3G), -2.832712047898e-2
+(6-31G). Residual dE = E_dRPA(pbc) - E_dRPA(mol); quadrature route agreed with plasmon to <= 6e-16 at every a.
+
+| a | STO-3G shifted | STO-3G unshifted | 6-31G shifted | 6-31G unshifted |
+|---|---|---|---|---|
+| 6 | +5.539e-3 | -2.366e-4 | +5.089e-3 | -4.894e-3 |
+| 8 | +1.948e-3 | -3.394e-3 | +2.087e-3 | -5.471e-3 |
+| 10 | +9.386e-4 | -3.394e-3 | +1.089e-3 | -4.794e-3 |
+| 12 | +5.391e-4 | -3.026e-3 | +6.313e-4 | -4.189e-3 |
+| 14 | +3.388e-4 | -2.674e-3 | +3.974e-4 | -3.670e-3 |
+| 16 | +2.267e-4 | -2.377e-3 | +2.662e-4 | -3.245e-3 |
+| 20 | +1.159e-4 | -1.927e-3 | +1.362e-4 | -2.613e-3 |
+| 24 | +6.697e-5 | -1.612e-3 | +7.876e-5 | -2.178e-3 |
+| 32 | +2.822e-5 | -1.208e-3 | +3.320e-5 | -1.626e-3 |
+| 40 | +1.444e-5 | -9.632e-4 | +1.699e-5 | -1.294e-3 |
+
+- Shifted local exponents: STO-3G 3.48 (8), 3.17, 3.03, 3.012, 3.009, 3.007, 3.005, 3.004 (32);
+  6-31G 3.02 (8), 2.95, 2.996, 3.002 ... 3.003 (32). 3-pt tail (24,32,40): 3.0038 / 3.0025.
+  Fit c3/a^3 + c5/a^5 (24,32,40): c3 = 0.923006 (STO-3G), 1.086677 (6-31G).
+- Unshifted: local exponents -5.2 (8), 0.28, 0.71 ... 1.008 (32) (STO-3G), similar for 6-31G;
+  fit c1/a + c2/a^2 + c3/a^3 (24,32,40): c1 = -0.037272 / -0.049804.
+  (unshifted - shifted) / [E_mol(e_ia - v_M) - E_mol(e_ia)] = 0.947 (10), 0.970, 0.981, 0.988, 0.994, 0.996,
+  0.9985, 0.9992 (40) STO-3G; 0.942 ... 0.9991 (40) 6-31G.
+- The MP2 residuals recomputed in the same runs reproduce Iteration 3 to all printed digits.
+- dRPA/MP2 shifted-residual ratio at a=40: 1.375 (STO-3G), 1.386 (6-31G).
+
+Predictions written into run_rpa_box_limit.py BEFORE the sweep (molecular quantities only):
+
+| quantity | predicted | measured (tail fit) |
+|---|---|---|
+| STO-3G shifted c3, nov=1 closed form (dE/dD k(sigma^2+\|d\|^2) + dE/dK (-k\|d\|^2); dE/dD 0.013161, dE/dK -0.204628) | 0.922741 | 0.923006 (2.9e-4 rel) |
+| STO-3G unshifted c1 = -(v_M a) dE_mol/de_ia (uniform, molecular finite difference) | -0.037343 | -0.037272 |
+| 6-31G unshifted c1 | -0.049903 | -0.049804 |
+| artifact (b) Madelung sign flipped | shifted ~ +c1-magnitude/a, exponent 1 | exponent 3.00 — not seen |
+| artifacts (a)/(c) missing images / normalisation | plateau at nonzero dE | both -> 0 — not seen |
+
+General a^-3 predictor (`r2_kernel_c3`, run_rpa_c3_prediction.py). Written AFTER the 6-31G sweep had been
+fitted (so not a blind prediction for 6-31G), but it has no adjustable parameter and uses no periodic code: after the Madelung term the cubic-lattice G=0-dropped kernel differs from
+1/r at O(a^-3) by the harmonic kernel (k/2)|r-r'|^2, k = 4pi/3a^3 (it IS pbc_mp2's delta(1|2), since
+|r-r'|^2 = r^2 + r'^2 - 2r.r'). Adding it to every ee/en/nn interaction of the MOLECULE, re-running RHF (orbitals
+relax), MP2 and dRPA, and taking d/dk (central difference h=1e-3 and 1e-4 agree to 1.5e-5 abs):
+
+| basis | HF c3 pred / meas | MP2 c3 pred / meas (Iter. 3) | dRPA c3 pred / meas |
+|---|---|---|---|
+| STO-3G | -10.028245 / -10.0282 (Iter. 1) | 0.671094 / 0.671358 | 0.922741 / 0.923006 |
+| 6-31G | -10.940500 / not measured | 0.783666 / 0.784083 | 1.086250 / 1.086677 |
+
+(STO-3G predictions equal the closed-form frozen-orbital models to 1e-6: orbitals are symmetry-fixed there.)
+
+Aux fitting error dE = E(B) - E(dense AFT, plasmon), spherical aux, w=1 (run_rpa_fit_error.py):
+
+| aux | H2/STO-3G a=4 shifted same C / own SCF (rel) | unshifted same C (rel) | MP2 same C (rel) | molecular DF-dRPA, same aux (rel) | tri 4H s+p shifted same C / own SCF (rel) | unshifted same C (rel) | MP2 same C (rel) |
+|---|---|---|---|---|---|---|---|
+| cc-pvdz-ri (28 / 56) | +1.07e-6 / +1.18e-6 (-1.5e-4) | +1.51e-6 (-1.5e-4) | +6.3e-7 (-1.6e-4) | +2.45e-6 (-1.2e-4) | +6.00e-5 / +6.49e-5 (-8.8e-4) | +8.16e-5 (-8.5e-4) | +3.33e-5 (-8.3e-4) |
+| def2-universal-jkfit (36 / 72) | +4.63e-6 / +4.82e-6 (-6.7e-4) | +6.53e-6 (-6.5e-4) | +2.73e-6 (-7.0e-4) | +1.94e-5 (-9.4e-4) | +1.39e-4 / +1.44e-4 (-2.0e-3) | +1.80e-4 (-1.9e-3) | +7.61e-5 (-1.9e-3) |
+| def2-svp-rifit (28 / 56) | +3.70e-6 / +3.74e-6 (-5.3e-4) | +5.22e-6 (-5.2e-4) | +2.19e-6 (-5.6e-4) | +8.83e-6 (-4.3e-4) | +8.72e-5 / +9.32e-5 (-1.3e-3) | +1.20e-4 (-1.2e-3) | +4.85e-5 (-1.2e-3) |
+| ET l<=2 b=2.2 (146/162, 291/324) | +8.6e-10 / +2.3e-9 (-1.2e-7) | +1.2e-9 (-1.2e-7) | +5.1e-10 (-1.3e-7) | +5.2e-9 (-2.5e-7) | +4.50e-6 / +4.69e-6 (-6.6e-5) | +6.11e-6 (-6.3e-5) | +2.44e-6 (-6.1e-5) |
+
+(Molecular column: spherical aux via cart ints + cart2sph, eig metric; with PySCF's default Cartesian aux the
+molecular H2 errors are +2.44e-6 (cc-pvdz-ri) / +4.80e-6 (jkfit), run_rpa_formula.py.)
+
+Frequency quadrature, ferric's DEFAULT grid (PdepRpaConfig: MiniMax, n_points 20 -> GL with u0 =
+optimized_u0(20) = 0.5, the same nodes as gl_quadrature(20, 0.5)), error vs plasmon (run_rpa_quadrature.py):
+
+| system | gap / max e_ia | n=10 | n=20 (ferric default) | n=40 | n=80 |
+|---|---|---|---|---|---|
+| H2/STO-3G a=4 shifted | 2.079 / 2.079 | -5.3e-7 | +1.2e-12 | ~0 | ~0 |
+| H2/STO-3G a=4 unshifted | 1.370 / 1.370 | +9.7e-8 | +8.5e-14 | 0 | ~0 |
+| tri 4H s+p shifted | 1.195 / 5.37 | -1.7e-6 | +8.7e-10 | 6e-15 | 6e-15 |
+| tri 4H s+p unshifted | 0.573 / 4.74 | +4.8e-7 | -2.6e-10 | -1e-15 | -2e-15 |
+| H2O/6-31G (molecular) | core e_ia ~ 21 | +1.9e-5 | -2.3e-6 | +7.4e-10 | -1e-14 |
+
+### Interpretation (provisional, 2026-09-24)
+- The dRPA formula, spin factor 4 and half-line 1/(2pi) are pinned three independent ways: plasmon/Riccati/
+  quadrature agree to 1e-14; the O(Pi^2) term is exactly direct MP2 (2 sum (ia|jb)^2/Delta; 4e-15), so the
+  normalisation does not rest on PySCF; and PySCF's RPA arithmetic agrees to 1e-13 on the same tensors.
+- Periodic B -> dRPA is exact in the trivial-aux limit (1e-13, both conventions, own SCF too). Like MP2, this
+  anchor is structurally blind to both G=0 terms of the fit (ov quantities only); the HF ERI anchor of Iteration 2
+  remains their only guard.
+- **Shifted denominators again converge as a^-3, and the coefficient is predicted a priori** (STO-3G 2.9e-4 rel,
+  6-31G 3.9e-4 rel — the residual is the c5 truncation of a 3-point fit, same size as for MP2); unshifted converge
+  as 1/a with the predicted c1 = -(v_M a) dE/de_ia. At a=40 unshifted is still -9.6e-4 / -1.3e-3 Ha (4.7% / 4.6%
+  of E_c), shifted 1.4e-5 / 1.7e-5. Same small-box trap as MP2: at a=6 (STO-3G) unshifted is 23x closer to the
+  molecule than shifted. dRPA's c3 is ~1.38x MP2's in both bases.
+- The harmonic-kernel predictor generalises the moment model to any molecule/basis/method with orbital relaxation,
+  reproduced HF (Iter. 1), MP2 (Iter. 3) and dRPA box tails to <= 5e-4 relative. It is the cheap independent
+  finite-size oracle a Rust port can use for a box test on real molecules (one molecular calc at +-k).
+- Aux: dRPA relative fitting error tracks MP2's on the same B to within ~10% in every row (cc-pvdz-ri -1.5e-4 H2,
+  -8.8e-4 tri); cc-pvdz-ri is the best stock set, jkfit 2-4x worse, as for MP2. The periodic metric adds no new
+  error class (H2 periodic cc-pvdz-ri -1.5e-4 vs molecular -1.2e-4). The own-SCF column adds 4-10% on top (x2.6 for ET on H2, where the same-C error is only 9e-10).
+- Quadrature: ferric's default 20-point grid is <= 1e-9 on these small-e_ia cells but 2.3e-6 on H2O/6-31G, where
+  core excitations (e_ia ~ 21 Ha) are far above u0=0.5. 1e-8 needs n >= 40 once any core or high virtual is
+  present — this is a property of the default grid, not of periodicity. The unshifted convention has smaller
+  gaps (0.57 vs 1.20 on tri) but converged no worse here.
+- NOT measured: anything > 16 AOs, spherical orbital basis, frozen core, real solids (a^-3 is the isolated-molecule
+  law, not N_k^-1), open shell, PDEP truncation (trunc_thresh > 0) on a periodic B, cost.
+
+### For the Rust port (stage 7) via run_pdep_rpa_from_intermediates
+- Build `RpaIntermediates` from the SAME periodic RS-GDF B^P_mn used for SCF J/K:
+  `b_ov` = B^P_ia reshaped (naux_kept, nocc*nvir) — B is already metric-dressed (s^-1/2 U^T J3', eig + lindep
+  drop), so NO further V^{-1/2}; `naux` = naux_KEPT (it sizes the eigensolve); `v_inv_sqrt` = U_kept s_kept^-1/2,
+  shape (naux_ao, naux_kept) — non-square, used only for `eigenpotentials_aux = v_inv_sqrt . eigenvectors`
+  (lib.rs:845), fine for an energy; `nocc`, `nvir`, `nocc_total`, `first_occ` as molecular (frozen core via
+  `active_occ`).
+- Denominators come from `rhf.eps_r()` (lib.rs:909-910): the ScfResult must carry the exxdiv='ewald' eigenvalues
+  (shifted). If the Gamma SCF ran with exxdiv=None the driver must shift eps_occ by -v_M itself or refuse. Pin it
+  with the a^-3 box test (predicted c3 from r2_kernel_c3).
+- `mol/obs/dfbs` are only read by (1) `build_atom_seed` (when trunc_thresh > 0 and naux > 4 natoms; it sizes the
+  seed with dfbs.nbasis(), which is WRONG when the periodic lindep filter dropped aux functions) and (2) the
+  Boys-screened chi0 path (molecular 3-index build; default is Dense). Periodic callers must use
+  `chi0_sparsity: Dense` and `trunc_thresh: 0` (full rank — also the production rule), or better, split
+  `run_pdep_rpa_from_intermediates` so the energy path takes (inter, eps_occ, eps_vir, config) only.
+- Quadrature: set n_points >= 40 (GL u0 0.5) for a 1e-8 target; ferric's log-det summand `ln det(eps) + tr(I-eps)`
+  has the same large-w cancellation measured here (1.9e-10 at n=1024, negligible at n <= 80).
+- Tests to port: trivial-aux anchor vs dense plasmon (1e-11), tr Pi^2 term == direct MP2, shifted box residual vs
+  r2_kernel_c3 prediction at a=24/32 (<1%), unshifted - shifted == E_mol(e_ia - v_M) - E_mol(e_ia).
