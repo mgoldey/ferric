@@ -670,7 +670,10 @@ pub fn solve_krhf_injected(
             f.clone()
         };
         let (eps, cs) = diagonalize_all(mesh, &f_use, &x)?;
-        let (occ, homo, lumo) = aufbau(&eps, nocc * nk, cfg.min_gap)?;
+        // Intermediate iterations: a degenerate level at the cut (e.g. the core
+        // guess of an atom with degenerate p levels) is broken by index, not
+        // refused; the gap is enforced on the CONVERGED result above.
+        let (occ, homo, lumo) = aufbau(&eps, nocc * nk, 0.0)?;
         let new_dm: Vec<Array2<Complex64>> = (0..nk).map(|k| density(&cs[k], &occ[k])).collect();
         last = Some((energy, f, emax));
         last_diag = Some((eps, cs, occ, homo, lumo));

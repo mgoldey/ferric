@@ -76,6 +76,10 @@
 //!   realified into ferric-rpa's real log-det pipeline; per-cell energies,
 //!   Madelung-shifted denominators as at Gamma.
 //!
+//! * [`ecp`] — periodic ECPs: the `apply_ecp` guard ([`check_ecp_applied`])
+//!   and the Bloch sum `V_ECP(k) = Σ_L e^{ik·L} V_L` over libecpint's
+//!   per-shell-pair kernel (`ferric_ecp_block`), added into `h` by
+//!   `periodic_hcore` / `periodic_hcore_kpts`; FINDINGS "Iteration 14".
 //! * [`lindep`] — per-k canonical-cut diagnostics (`LindepReport` on
 //!   `KScfResult`/`KUScfResult`: kept counts, smallest / largest-dropped
 //!   eigenvalue, noise-floor flag) and the OPT-IN `exp_to_discard` basis
@@ -90,6 +94,7 @@ pub mod budget;
 pub mod dense_aft;
 pub mod dft;
 pub mod drpa;
+pub mod ecp;
 pub mod ewald;
 pub mod hcore;
 pub mod kcorr;
@@ -114,6 +119,10 @@ pub use dft::{
     PeriodicGridConfig, PeriodicXc, PeriodicXcConfig,
 };
 pub use drpa::{gamma_drpa, GammaDrpaConfig, GammaDrpaIntegrals, GammaDrpaResult};
+pub use ecp::{
+    check_ecp_applied, periodic_ecp_images, EcpMutation, PeriodicEcpConfig, PeriodicEcpError,
+    PeriodicEcpImages,
+};
 pub use ewald::{ewald_nuclear_repulsion, madelung_constant};
 pub use hcore::kpoint::{periodic_hcore_kpts, PeriodicHcoreK};
 pub use hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};

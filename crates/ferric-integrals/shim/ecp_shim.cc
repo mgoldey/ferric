@@ -9,6 +9,7 @@
 #include "ecp_shim.h"
 
 #include <libecpint.hpp>
+#include <algorithm>
 #include <vector>
 #include <array>
 #include <cmath>
@@ -195,6 +196,148 @@ extern "C" int ferric_ecp_matrix_deriv(const ferric_ecp_gshell *shells, int nshe
         return FERRIC_ECP_OK;
     } catch (const std::exception &ex) {
         std::fprintf(stderr, "ferric_ecp_matrix_deriv: %s\n", ex.what());
+        return FERRIC_ECP_EINTERNAL;
+    } catch (...) {
+        return FERRIC_ECP_EINTERNAL;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rectangular block over independent bra/ket shell lists (periodic ECP).
+// See ecp_shim.h. Follows the safety pattern above: input validation before
+// any libecpint call (libecpint's own guards are assert()s), try/catch around
+// everything, size cross-checks on every buffer libecpint hands back.
+// ---------------------------------------------------------------------------
+
+static bool valid_gshell(const ferric_ecp_gshell &s) {
+    if (s.l < 0 || s.l > LIBECPINT_MAX_L || s.nprim <= 0 ||
+        s.exponents == nullptr || s.coefficients == nullptr) {
+        return false;
+    }
+    for (int p = 0; p < s.nprim; ++p) {
+        if (!(s.exponents[p] > 0.0) || !std::isfinite(s.exponents[p]) ||
+            !std::isfinite(s.coefficients[p])) {
+            return false;
+        }
+    }
+    return std::isfinite(s.x) && std::isfinite(s.y) && std::isfinite(s.z);
+}
+
+static bool valid_ecp_center(const ferric_ecp_center &u) {
+    if (u.nterm <= 0 || u.ams == nullptr || u.ns == nullptr ||
+        u.exponents == nullptr || u.coefficients == nullptr) {
+        return false;
+    }
+    for (int t = 0; t < u.nterm; ++t) {
+        if (u.ams[t] < 0 || u.ams[t] > LIBECPINT_MAX_L || u.ns[t] < 0 ||
+            !(u.exponents[t] > 0.0) || !std::isfinite(u.exponents[t]) ||
+            !std::isfinite(u.coefficients[t])) {
+            return false;
+        }
+    }
+    return std::isfinite(u.x) && std::isfinite(u.y) && std::isfinite(u.z);
+}
+
+static libecpint::GaussianShell make_gshell(const ferric_ecp_gshell &s) {
+    std::array<double, 3> c = {s.x, s.y, s.z};
+    libecpint::GaussianShell g(c, s.l);
+    for (int p = 0; p < s.nprim; ++p) g.addPrim(s.exponents[p], s.coefficients[p]);
+    return g;
+}
+
+extern "C" int ferric_ecp_block(const ferric_ecp_gshell *bra, int nbra,
+                                const ferric_ecp_gshell *ket, int nket,
+                                const ferric_ecp_center *ecps, int necp,
+                                const unsigned char *mask,
+                                double *out, long long out_len) {
+    if (nbra <= 0 || nket <= 0 || necp <= 0 || bra == nullptr ||
+        ket == nullptr || ecps == nullptr || out == nullptr || out_len <= 0) {
+        return FERRIC_ECP_EINVAL;
+    }
+    try {
+        int max_lb = 0;
+        for (int a = 0; a < nbra; ++a) {
+            if (!valid_gshell(bra[a])) return FERRIC_ECP_EINVAL;
+            max_lb = std::max(max_lb, bra[a].l);
+        }
+        for (int b = 0; b < nket; ++b) {
+            if (!valid_gshell(ket[b])) return FERRIC_ECP_EINVAL;
+            max_lb = std::max(max_lb, ket[b].l);
+        }
+        for (int e = 0; e < necp; ++e) {
+            if (!valid_ecp_center(ecps[e])) return FERRIC_ECP_EINVAL;
+        }
+
+        const long long nc_bra = ferric_ecp_ncart(bra, nbra);
+        const long long nc_ket = ferric_ecp_ncart(ket, nket);
+        if (nc_bra * nc_ket != out_len) {
+            std::fprintf(stderr,
+                "ferric_ecp_block: out_len %lld != %lld x %lld\n",
+                out_len, nc_bra, nc_ket);
+            return FERRIC_ECP_EINVAL;
+        }
+
+        std::vector<libecpint::GaussianShell> shells_a;
+        std::vector<libecpint::GaussianShell> shells_b;
+        shells_a.reserve(nbra);
+        shells_b.reserve(nket);
+        for (int a = 0; a < nbra; ++a) shells_a.push_back(make_gshell(bra[a]));
+        for (int b = 0; b < nket; ++b) shells_b.push_back(make_gshell(ket[b]));
+
+        std::vector<libecpint::ECP> us;
+        us.reserve(necp);
+        int max_lu = 0;
+        for (int e = 0; e < necp; ++e) {
+            const ferric_ecp_center &u = ecps[e];
+            const double c[3] = {u.x, u.y, u.z};
+            libecpint::ECP U(c);
+            for (int t = 0; t < u.nterm; ++t) {
+                U.addPrimitive(u.ns[t], u.ams[t], u.exponents[t], u.coefficients[t]);
+            }
+            U.sort();
+            max_lu = std::max(max_lu, U.getL());
+            us.push_back(U);
+        }
+        if (max_lu > LIBECPINT_MAX_L || max_lb > LIBECPINT_MAX_L) {
+            return FERRIC_ECP_EINVAL;
+        }
+
+        libecpint::ECPIntegral engine(max_lb, max_lu, /*deriv=*/0);
+        libecpint::TwoIndex<double> tmp;
+        for (long long i = 0; i < out_len; ++i) out[i] = 0.0;
+
+        long long off_a = 0;
+        for (int a = 0; a < nbra; ++a) {
+            const int nca = ncart_for_l(bra[a].l);
+            long long off_b = 0;
+            for (int b = 0; b < nket; ++b) {
+                const int ncb = ncart_for_l(ket[b].l);
+                for (int e = 0; e < necp; ++e) {
+                    if (mask != nullptr &&
+                        mask[(static_cast<size_t>(a) * nket + b) * necp + e] == 0) {
+                        continue;
+                    }
+                    engine.compute_shell_pair(us[e], shells_a[a], shells_b[b], tmp);
+                    if (tmp.dims[0] != nca || tmp.dims[1] != ncb ||
+                        static_cast<long long>(tmp.data.size()) !=
+                            static_cast<long long>(nca) * ncb) {
+                        std::fprintf(stderr,
+                            "ferric_ecp_block: shell-pair block %dx%d, expected %dx%d\n",
+                            tmp.dims[0], tmp.dims[1], nca, ncb);
+                        return FERRIC_ECP_EINTERNAL;
+                    }
+                    for (int i = 0; i < nca; ++i) {
+                        double *row = out + (off_a + i) * nc_ket + off_b;
+                        for (int j = 0; j < ncb; ++j) row[j] += tmp(i, j);
+                    }
+                }
+                off_b += ncb;
+            }
+            off_a += nca;
+        }
+        return FERRIC_ECP_OK;
+    } catch (const std::exception &ex) {
+        std::fprintf(stderr, "ferric_ecp_block: %s\n", ex.what());
         return FERRIC_ECP_EINTERNAL;
     } catch (...) {
         return FERRIC_ECP_EINTERNAL;

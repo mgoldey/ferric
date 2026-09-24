@@ -148,6 +148,15 @@ impl PeriodicHcoreConfig {
         }
     }
 
+    /// The periodic-ECP settings `periodic_hcore` uses: the same precision and
+    /// budget, no caps, no mutation.
+    pub(crate) fn ecp_config(&self) -> crate::ecp::PeriodicEcpConfig {
+        crate::ecp::PeriodicEcpConfig {
+            budget_bytes: self.budget_bytes,
+            ..crate::ecp::PeriodicEcpConfig::with_precision(self.precision)
+        }
+    }
+
     fn validate(&self) -> Result<(), FerricError> {
         if !(self.omega > 0.0) || !self.omega.is_finite() {
             return Err(FerricError::General(format!(
@@ -186,9 +195,12 @@ pub struct PeriodicHcore {
     pub v_lr: Array2<f64>,
     /// `+π Z_tot S/(ω²Ω)`: removes the SR sum's implicit G = 0 term.
     pub v_g0: Array2<f64>,
-    /// `v_sr + v_lr + v_g0`.
+    /// `v_sr + v_lr + v_g0` (nuclear attraction with Z_eff; no ECP).
     pub v: Array2<f64>,
-    /// `t + v`.
+    /// Gamma-point periodic ECP `Σ_L V_L` ([`crate::ecp`]); `None` for an
+    /// all-electron basis.
+    pub v_ecp: Option<Array2<f64>>,
+    /// `t + v (+ v_ecp)`.
     pub h: Array2<f64>,
     /// Ewald nuclear repulsion (PySCF `Cell.energy_nuc()` convention).
     pub enn: f64,
@@ -198,6 +210,8 @@ pub struct PeriodicHcore {
     pub n_images: usize,
     /// Number of shifted 3-centre calls in the SR attraction.
     pub n_sr_triplets: usize,
+    /// Kept (shell, shell, ECP-image) triples in `v_ecp` (0 without ECP).
+    pub n_ecp_triples: usize,
     /// Number of half-sphere G vectors in the LR attraction.
     pub n_g_half: usize,
     /// max |V_SR − V_SRᵀ| before symmetrisation (a lattice sum over an
@@ -779,6 +793,8 @@ pub fn periodic_hcore(
     cfg: &PeriodicHcoreConfig,
 ) -> Result<PeriodicHcore, FerricError> {
     cfg.validate()?;
+    // Z_eff guard first: a bare Z is silent for every k-mesh anchor.
+    crate::ecp::check_ecp_applied(cell, prep.basis_set())?;
     let shells = prim_shells(cell, prep)?;
     let n = prep.nbasis();
     let omega = cfg.omega;
@@ -850,7 +866,14 @@ pub fn periodic_hcore(
     let v_g0 = (c0 * ztot) * &s;
 
     let v = &(&v_sr + &v_lr) + &v_g0;
-    let h = &t + &v;
+    // --- V_ECP (Gamma Bloch sum; `None` for an all-electron basis).
+    let ecp = crate::ecp::periodic_ecp_images_on(cell, prep, &cfg.ecp_config(), &mut ledger)?;
+    let n_ecp_triples = ecp.as_ref().map_or(0, |e| e.n_triples);
+    let v_ecp = ecp.map(|e| e.gamma());
+    let mut h = &t + &v;
+    if let Some(ve) = &v_ecp {
+        h += ve;
+    }
     let enn = ewald_nuclear_repulsion(cell, default_ewald_omega(cell))?;
     ferric_core::memory::warn_if_rss_over("ferric-pbc periodic_hcore", ledger.budget(), 1.1);
     Ok(PeriodicHcore {
@@ -860,11 +883,13 @@ pub fn periodic_hcore(
         v_lr,
         v_g0,
         v,
+        v_ecp,
         h,
         enn,
         omega,
         n_images: images.len(),
         n_sr_triplets,
+        n_ecp_triples,
         n_g_half: lr.n_g_half,
         sr_asymmetry,
         budget_bytes: ledger.budget(),
