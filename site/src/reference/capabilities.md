@@ -41,8 +41,8 @@ Open-shell support is listed only where the dispatch code handles it (see
 | `rohf` | [SCF](../methods/scf.md) | ROHF | ✓ | ✓ analytic | FD | `run_rohf`, `run_frequencies(reference="rohf")` | — | Proven | — |
 | `ksdft` | [SCF/DFT](../methods/scf.md) | RKS (closed shell) | ✓ | ✓ analytic (+ D3(BJ) gradient) | FD (refused with `[dft] dispersion` or `grid_prune`) | `run_dft` / `run_ksdft`, `run_frequencies(xc=...)` | `benzene-dfb3lyp.toml`, `h2-lda-opt.toml` | Proven | — |
 | `rimp2` | [MP2](../methods/mp2.md) | RHF | ✓ | ✓ analytic (Z-vector) | — | `run_rimp2` | `water-rimp2.toml` | Proven | — |
-| `lmp2` | [MP2](../methods/mp2.md) | RHF (errors on open shell) | ✓ | — | — | `run_lmp2` | `water-lmp2.toml` | not graded | The output prints the canonical RI-MP2 reference alongside. ε = 0 reproduces `rimp2`. |
-| `lmp2-direct` | [MP2](../methods/mp2.md) | RHF (errors on open shell) | ✓ | — | — | `run_lmp2_direct` | `alkane8-lmp2-direct.toml` | not graded | Same as `lmp2`. |
+| `lmp2` | [MP2](../methods/mp2.md) | RHF (errors on open shell) | ✓ | — | — | `run_lmp2` | `water-lmp2.toml` | not graded | ε = 0 reproduces `rimp2`. The canonical RI-MP2 reference and the error against it are opt-in (`[mp2] lmp2_reference = true`, `compute_reference=True`). |
+| `lmp2-direct` | [MP2](../methods/mp2.md) | RHF (errors on open shell) | ✓ | — | — | `run_lmp2_direct` | `alkane8-lmp2-direct.toml` | not graded | Same as `lmp2`. The opt-in reference forms the global 3-index tensor that this path otherwise avoids. |
 | `mp3` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_mp3` | `water-mp3.toml` | Proven | — |
 | `oo-rimp2` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_oo_rimp2` | `water-oo-rimp2.toml` | Smoke | Internally self-consistent (stationary point, vanishing gradient). No external absolute-energy reference exists. |
 | `att-rimp2` | [MP2](../methods/mp2.md) | RHF | ✓ | — | — | `run_attenuated_rimp2` | `water-attmp2.toml` | Proven | — |

@@ -175,15 +175,24 @@ the tensor algebra is still dense, so there are no timings to report.
 `run_lmp2(..., eps=1e-4)`): the single-threshold local MP2 of Wang, Aldossary,
 Shi, Liu, Li & Head-Gordon (2023), closed shell, with localized virtuals and
 per-pair domain-local RI fits. `eps = 0` reproduces RI-MP2 exactly; the
-default `1e-4` carries a one-sided truncation error, which the output prints
-against the canonical RI reference.
+default `1e-4` carries a one-sided truncation error.
+
+The canonical RI-MP2 reference that measures that error is **opt-in** for
+both `lmp2` and `lmp2-direct`. It is a full canonical RI-MP2 and forms the
+global `(naux, nocc·nvir)` tensor, so a run with it switched on is not
+reduced-cost. In the CLI, `[mp2] lmp2_reference = true` computes it and
+prints the local error against it; without it the output reads
+`E_corr(canonical RI)  = not computed (opt-in: set [mp2] lmp2_reference = true)`
+and the run log's `e_corr_canonical_ri` is null. In Python,
+`run_lmp2(..., compute_reference=True)` and
+`run_lmp2_direct(..., compute_reference=True)` compute it; by default the
+returned dict's `e_corr_canonical_ri` is `None`. `examples/water-lmp2.toml`
+sets `lmp2_reference = true`.
 
 **Integral-direct LMP2** (`lmp2-direct`, `examples/alkane8-lmp2-direct.toml`,
 `run_lmp2_direct`) is the reduced-cost path. Its correlation assembly never
-forms the global 3-index tensor. By default a run also computes the canonical
-RI-MP2 reference for comparison, and that reference does form the global
-`(naux, nocc·nvir)` tensor; `run_lmp2_direct(..., compute_reference=False)`
-skips it (the CLI always computes it). Locality comes from an integral-free pair gate, per-occupied
+forms the global 3-index tensor; only the opt-in canonical reference does.
+Locality comes from an integral-free pair gate, per-occupied
 auxiliary-fit and virtual domains, and truncation of each orbital's AO
 support. With every map at its trivial setting it reproduces the global
 3-index path and canonical RI-MP2 (`tests/lmp2_direct.rs`).
