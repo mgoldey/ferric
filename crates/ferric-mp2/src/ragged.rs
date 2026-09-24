@@ -62,6 +62,39 @@ pub fn pair_block_from_g_cand(
     fv: &[f64],
     eps: f64,
 ) -> Option<PairBlock> {
+    pair_block_from_g_cand_gated(i, j, g, g, cand, nv_full, f_vv, fo, fv, eps)
+}
+
+/// [`pair_block_from_g_cand`] with the Eq-8 test applied to a SEPARATE
+/// gate quantity `gate` (same shape as `g`): element (a,b) is retained iff
+/// `|gate[a,b]| > eps || |gate[b,a]| > eps` (or `eps == 0`), while the
+/// retained integral values still come from `g`. `gate = g` is exactly
+/// [`pair_block_from_g_cand`] (it delegates here with the same reads, so
+/// every molecular caller is byte-identical — pinned by
+/// `gated_with_gate_equal_to_g_is_bitwise_the_original`).
+///
+/// Seam for ferric-pbc's Gamma LMP2, where the raw integral carries a
+/// distance-independent uniform-field term and a future gate may threshold
+/// on the integral MINUS that term (reference/pbc/FINDINGS.md Iteration 5,
+/// recommendation 6). No such gate is implemented here.
+#[allow(clippy::too_many_arguments)]
+pub fn pair_block_from_g_cand_gated(
+    i: usize,
+    j: usize,
+    g: &Array2<f64>,
+    gate: &Array2<f64>,
+    cand: &[usize],
+    nv_full: usize,
+    f_vv: &Array2<f64>,
+    fo: &[f64],
+    fv: &[f64],
+    eps: f64,
+) -> Option<PairBlock> {
+    assert_eq!(
+        g.dim(),
+        gate.dim(),
+        "pair_block_from_g_cand_gated: gate shape differs from g"
+    );
     let nv = cand.len();
     let _ = nv_full;
     let mut any_a = vec![false; nv];
@@ -69,8 +102,8 @@ pub fn pair_block_from_g_cand(
     let mut any = false;
     for a in 0..nv {
         for b in 0..nv {
-            let jd = g[(a, b)].abs();
-            let kd = g[(b, a)].abs();
+            let jd = gate[(a, b)].abs();
+            let kd = gate[(b, a)].abs();
             if eps == 0.0 || jd > eps || kd > eps {
                 any_a[a] = true;
                 any_b[b] = true;
@@ -93,8 +126,8 @@ pub fn pair_block_from_g_cand(
     for (r, &al) in da_loc.iter().enumerate() {
         for (c, &bl) in db_loc.iter().enumerate() {
             let jd = g[(al, bl)];
-            let kd = g[(bl, al)];
-            if eps == 0.0 || jd.abs() > eps || kd.abs() > eps {
+            let (gj, gk) = (gate[(al, bl)], gate[(bl, al)]);
+            if eps == 0.0 || gj.abs() > eps || gk.abs() > eps {
                 pat[r * nb + c] = true;
                 j_blk[(r, c)] = jd;
             }
@@ -587,4 +620,65 @@ pub fn ring_product(rg: &Ragged, x: &[Array2<f64>], y: &[Array2<f64>]) -> Vec<Ar
             acc
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Byte-identity guard for the ferric-pbc seam: with `gate = g` the gated
+    /// builder IS the original (every field bitwise), on a block with
+    /// elements straddling eps in both orientations.
+    #[test]
+    fn gated_with_gate_equal_to_g_is_bitwise_the_original() {
+        let nv = 5;
+        let mut seed = 99u64;
+        let mut rnd = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 11) as f64 / (1u64 << 53) as f64) - 0.5
+        };
+        let g = Array2::from_shape_fn((nv, nv), |_| 1e-3 * rnd());
+        let f_vv = Array2::from_shape_fn(
+            (nv, nv),
+            |(a, b)| if a == b { 1.0 + a as f64 } else { 0.01 },
+        );
+        let fo = vec![-1.0, -0.7];
+        let fv: Vec<f64> = (0..nv).map(|a| 1.0 + a as f64).collect();
+        let cand: Vec<usize> = (0..nv).collect();
+        for eps in [0.0, 1e-4, 2e-4, 1.0] {
+            let a = pair_block_from_g_cand(0, 1, &g, &cand, nv, &f_vv, &fo, &fv, eps);
+            let b = pair_block_from_g_cand_gated(0, 1, &g, &g, &cand, nv, &f_vv, &fo, &fv, eps);
+            match (a, b) {
+                (None, None) => assert_eq!(eps, 1.0),
+                (Some(a), Some(b)) => {
+                    assert_eq!(
+                        (a.i, a.j, &a.da, &a.db, &a.pat),
+                        (b.i, b.j, &b.da, &b.db, &b.pat)
+                    );
+                    assert_eq!((&a.pos_da, &a.pos_db), (&b.pos_da, &b.pos_db));
+                    for (x, y) in [
+                        (&a.j_blk, &b.j_blk),
+                        (&a.denom, &b.denom),
+                        (&a.fvv_aa, &b.fvv_aa),
+                        (&a.fvv_bb, &b.fvv_bb),
+                    ] {
+                        assert!(x
+                            .iter()
+                            .zip(y.iter())
+                            .all(|(p, q)| p.to_bits() == q.to_bits()));
+                    }
+                }
+                _ => panic!("gated and original disagree on emptiness at eps {eps}"),
+            }
+        }
+        // And the gate is really consulted: an all-zero gate at eps > 0
+        // retains nothing although g has elements above eps.
+        let zero = Array2::<f64>::zeros((nv, nv));
+        assert!(
+            pair_block_from_g_cand_gated(0, 1, &g, &zero, &cand, nv, &f_vv, &fo, &fv, 1e-4)
+                .is_none()
+        );
+    }
 }

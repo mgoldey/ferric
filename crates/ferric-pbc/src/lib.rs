@@ -27,6 +27,12 @@
 //!   ferric-rpa's full-rank pipeline (`run_pdep_rpa_from_parts`, no molecular
 //!   basis objects), or the dense-AFT plasmon oracle; same denominator
 //!   conventions as MP2.
+//! * [`lmp2`] — Stage 8b: Gamma-point amplitude-threshold local MP2
+//!   (`gamma_lmp2`): Berghold/Resta periodic localisation, periodic VV-HV
+//!   virtuals, minimum-image distances, per-pair domain fits in the periodic
+//!   metric, shifted denominators; ferric-mp2's ragged solver. KNOWN
+//!   LIMITATION: at Gamma the eps gate keeps every pair below a volume onset
+//!   (see the module doc).
 //! * [`mod@uhf`] — Stage 4: Gamma-point open-shell UHF (`gamma_uhf`) over
 //!   `ferric_scf::uhf::solve_uhf_injected`, with the per-spin Madelung term in
 //!   the K builders, a per-spin gap check against `v_M`, and the staged
@@ -43,6 +49,7 @@ pub mod drpa;
 pub mod ewald;
 pub mod hcore;
 pub mod lattice;
+pub mod lmp2;
 pub mod mp2;
 pub mod pair_ft;
 pub mod rsgdf;
@@ -53,7 +60,11 @@ pub use drpa::{gamma_drpa, GammaDrpaConfig, GammaDrpaIntegrals, GammaDrpaResult}
 pub use ewald::{ewald_nuclear_repulsion, madelung_constant};
 pub use hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
 pub use lattice::Cell;
+pub use lmp2::{
+    gamma_lmp2, gamma_lmp2_with_spaces, gamma_localized_spaces, GammaEpsGate, GammaLmp2Config,
+    GammaLmp2Inputs, GammaLmp2Result, GammaLocalSpaces, PeriodicDistance,
+};
 pub use mp2::{gamma_mp2, GammaMp2Config, GammaMp2Integrals, GammaMp2Result, Mp2Denominators};
 pub use pair_ft::pair_ft;
-pub use rsgdf::{RsGdf, RsGdfConfig};
+pub use rsgdf::{PeriodicFitParts, RsGdf, RsGdfConfig};
 pub use uhf::{gamma_uhf, EwaldStart, GammaUhfConfig, GammaUhfIntegrals, GammaUhfResult};
