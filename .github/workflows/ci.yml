@@ -27,7 +27,17 @@ on:
   schedule:
     # 04:17 UTC daily -- runs the tests the push job defers, so deferring is a
     # latency tradeoff and not a coverage loss. Off-the-hour on purpose.
-    - cron: '17 4 * * *'
+    #
+    # Split into Mon-Sat + Sunday so the WEEKLY `validation` job can key on
+    # its own cron string (`github.event.schedule`) while every nightly job
+    # still runs exactly once a day: the nightly jobs gate on
+    # `event_name == 'schedule'`, which BOTH entries satisfy, and the two
+    # never fire on the same day. A third, separate weekly entry would instead
+    # have run the whole nightly suite twice every Sunday. The guard test
+    # crates/ferric-cli/tests/ci_validation_tier_guard.rs asserts the
+    # validation job's `if:` names a cron string that is listed here.
+    - cron: '17 4 * * 1-6'
+    - cron: '17 4 * * 0'
   workflow_dispatch: {}
 
 concurrency:
@@ -1047,6 +1057,118 @@ jobs:
             echo "::error::one or more deferred test commands failed -- see the FAILED lines above"
             exit 1
           fi
+
+  # ── VALIDATION TIER: ferric vs committed external references, weekly ─────
+  #
+  # Tests in `crates/<crate>/tests/validation_<topic>.rs`, every one marked
+  # `#[ignore = "validation: <VALIDATION.md row>"]`. The per-commit shards
+  # never pass `--run-ignored`, so they skip these; this job runs ONLY them.
+  # It reads committed JSON under testdata/reference/validation/ and never
+  # runs PySCF/ORCA/NWChem -- reference generation is a manual local step
+  # (scripts/validation/gen_*.py).
+  #
+  # Weekly + manual only. `github.event.schedule` is the cron STRING that
+  # fired, so this job keys on the Sunday entry and skips the Mon-Sat one.
+  #
+  # The binary set is DERIVED from the filesystem (the glob below), never
+  # hand-listed, and the nextest filter selects by the same `validation_`
+  # prefix. crates/ferric-cli/tests/ci_validation_tier_guard.rs (regular
+  # tier) re-derives the file set and checks it against this job's text, so a
+  # validation file that the filter would miss, or a validation test missing
+  # its `validation:` ignore reason (it would then run per-commit), fails a
+  # normal PR.
+  #
+  # Builds only the validation binaries (-p <crate> --test <stem> per file):
+  # `cargo nextest run --workspace` would build all ~300 test binaries for a
+  # handful of tests, on a runner whose binding constraint is disk.
+  validation:
+    name: validation (weekly, external references)
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.event.schedule == '17 4 * * 0')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Free runner disk space
+        # Same rationale as build-and-test's step of the same name.
+        run: |
+          echo "--- before"; df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY/CodeQL" 2>/dev/null || true
+          sudo docker image prune --all --force > /dev/null 2>&1 || true
+          echo "--- after"; df -h / | tail -1
+
+      - name: Install system dependencies
+        run: |
+          # Same third-party-apt-source guard as build-and-test above, plus
+          # libboost-dev for the shim (the disk-space step deletes
+          # /usr/local/share/boost).
+          sudo grep -rlE 'dl\.google\.com' /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null \
+            | xargs -r sudo rm -fv
+          sudo sed -i -E 's|^([^#].*dl\.google\.com.*)$|# \1|' /etc/apt/sources.list 2>/dev/null || true
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake g++ gfortran \
+            libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
+            libxc-dev libboost-dev
+
+      - name: Restore libint2 cache
+        id: cache-libint
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ env.LIBINT2_PREFIX }}
+          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
+
+      # RESTORE-only in steady state, same as slow-tests/coverage: the nightly
+      # build-and-test populates the cache. A cold cache pays the full build.
+      - name: Build libint2
+        if: steps.cache-libint.outputs.cache-hit != 'true'
+        run: |
+          cd /tmp
+          wget -q https://github.com/evaleev/libint/releases/download/v${LIBINT_VERSION}/libint-${LIBINT_VERSION}-mpqc4.tgz
+          tar xzf libint-${LIBINT_VERSION}-mpqc4.tgz
+          cd libint-${LIBINT_VERSION}
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_INSTALL_PREFIX=$LIBINT2_PREFIX \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+          make install
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
+
+      - name: Restore cargo cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-v3-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-v3-${{ runner.os }}-
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-nextest
+
+      - name: Run validation tests
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          ARGS=()
+          for f in crates/*/tests/validation_*.rs; do
+            crate="$(basename "$(dirname "$(dirname "$f")")")"
+            ARGS+=(-p "$crate" --test "$(basename "$f" .rs)")
+          done
+          if [ "${#ARGS[@]}" -eq 0 ]; then
+            echo "::error::no crates/*/tests/validation_*.rs files -- the validation tier is empty"
+            exit 1
+          fi
+          echo "validation binaries: ${ARGS[*]}"
+          cargo nextest run --profile validation --locked "${ARGS[@]}" \
+            --run-ignored only -E 'binary(/^validation_/)'
 
   # The ONLY job that builds the `mpi` cargo feature at all. Nothing else in
   # this workflow does: every other job builds default features, under which

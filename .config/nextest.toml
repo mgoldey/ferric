@@ -86,3 +86,24 @@ max-threads = 2
 [[profile.ci.overrides]]
 filter = 'test(/scf|dft|rimp2|ccsd|rpa|cosx|link_k/)'
 test-group = 'numerics'
+
+# The weekly `validation` job (.github/workflows/ci.yml): ferric vs committed
+# external references, `--run-ignored only -E 'binary(/^validation_/)'`.
+# Profiles inherit from [profile.default], not from [profile.ci], so the CI
+# test groups above do not apply here; concurrency is capped directly instead.
+[profile.validation]
+fail-fast = false
+# NO retries, unlike [profile.ci]: a validation test compares a number against
+# a reference at a derived tolerance, and a pass-on-retry would hide exactly
+# the nondeterminism (thread-count-dependent reductions, a guess that lands on
+# a different state) this tier exists to expose.
+retries = 0
+# 2 concurrent x FERRIC_MEM_BUDGET_GB=3 per process = 6 GB, the same headroom
+# argument as the memory-pool group above.
+test-threads = 2
+# Validation tests may run several SCFs with stability analysis each; allow
+# 30 min before termination rather than the ci profile's 8.
+slow-timeout = { period = "300s", terminate-after = 6 }
+
+[profile.validation.junit]
+path = "junit-validation.xml"

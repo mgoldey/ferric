@@ -6,9 +6,11 @@
 //! - CH3 radical cc-pVDZ (open shell)
 //! - UHF analytical gradient vs central-difference (H atom, OH/STO-3G)
 //!
-//! Reference energies are loaded from `testdata/reference/*_uhf.json` when
-//! present. If absent, only convergence and ⟨S²⟩ sanity is checked and the
-//! observed energy is printed for the user to inspect.
+//! Reference energies are loaded from `testdata/reference/*_uhf.json`. A
+//! missing reference is a HARD failure: it used to be a silent skip that
+//! printed the energy and passed, so deleting or misnaming a JSON turned an
+//! external-reference test into a convergence-only test with nothing red
+//! anywhere (validation-campaign defect F3).
 
 use ferric_core::basis;
 use ferric_core::mol::Molecule;
@@ -61,24 +63,23 @@ fn run_uhf(
     (res, mol, prep)
 }
 
-fn maybe_check_energy(slug: &str, energy: f64, tol: f64) {
+fn check_energy(slug: &str, energy: f64, tol: f64) {
     let path = format!("../../testdata/reference/{slug}");
-    if let Ok(text) = std::fs::read_to_string(&path) {
-        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-        if let Some(ref_e) = v["energy"].as_f64() {
-            assert!(
-                (energy - ref_e).abs() < tol,
-                "{slug}: got {:.10}, ref {:.10}",
-                energy,
-                ref_e
-            );
-        }
-    } else {
-        eprintln!(
-            "note: {slug} reference missing; energy observed = {:.10}",
-            energy
-        );
-    }
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!("missing reference {path} ({e}); a missing reference is a failure, never a skip")
+    });
+    let v: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("{path}: bad JSON: {e}"));
+    let ref_e = v["energy"]
+        .as_f64()
+        .unwrap_or_else(|| panic!("{path}: no numeric \"energy\" field"));
+    assert!(
+        (energy - ref_e).abs() < tol,
+        "{slug}: got {:.10}, ref {:.10} (diff {:.2e})",
+        energy,
+        ref_e,
+        (energy - ref_e).abs()
+    );
 }
 
 #[test]
@@ -99,7 +100,7 @@ fn uhf_h_doublet_sto3g() {
     );
     assert!((s2 - 0.75).abs() < 1e-8, "<S^2> = {}", s2);
     eprintln!("H/sto-3g  E = {:.10}  <S^2> = {:.6}", res.energy, s2);
-    maybe_check_energy("h_sto-3g_uhf.json", res.energy, 1e-6);
+    check_energy("h_sto-3g_uhf.json", res.energy, 1e-6);
 }
 
 #[test]
@@ -123,7 +124,7 @@ fn uhf_oh_doublet_ccpvdz() {
     eprintln!("OH/cc-pvdz E = {:.10}  <S^2> = {:.6}", res.energy, s2);
     // doublet ideal 0.75; allow up to 0.05 contamination
     assert!(s2 < 0.85 && s2 > 0.70, "<S^2> = {} out of range", s2);
-    maybe_check_energy("oh_cc-pvdz_uhf.json", res.energy, 1e-6);
+    check_energy("oh_cc-pvdz_uhf.json", res.energy, 1e-6);
 }
 
 #[test]
@@ -150,7 +151,7 @@ fn uhf_ch3_doublet_ccpvdz() {
     );
     eprintln!("CH3/cc-pvdz E = {:.10}  <S^2> = {:.6}", res.energy, s2);
     assert!(s2 < 0.85 && s2 > 0.70, "<S^2> = {} out of range", s2);
-    maybe_check_energy("ch3_cc-pvdz_uhf.json", res.energy, 1e-6);
+    check_energy("ch3_cc-pvdz_uhf.json", res.energy, 1e-6);
 }
 
 fn fd_energy(mol: &Molecule, basis_name: &str) -> f64 {

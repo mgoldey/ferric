@@ -163,3 +163,14 @@ no-build-isolation-package = ["ferric"]
 # `tools/` is a namespace package (no __init__.py at its root) by design, so
 # pythonpath is the fix rather than adding package markers.
 pythonpath = ["."]
+
+# The validation tier (external-reference comparisons, design
+# wiki/superpowers/specs/2026-09-24-validation-campaign-design.md §2.1) is
+# excluded from every default run and selected explicitly with
+# `pytest -m validation` -- a later `-m` on the command line overrides this one.
+# --strict-markers is deliberately NOT added here: it would turn every
+# pre-existing unregistered marker in the tree into a collection error.
+markers = [
+    "validation: compares against a committed external reference; weekly tier, run with -m validation",
+]
+addopts = '-m "not validation"'

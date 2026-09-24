@@ -1,0 +1,228 @@
+{
+  "row": "UHF / ROHF",
+  "system": "allyl",
+  "basis": "6-31g",
+  "charge": 0,
+  "multiplicity": 2,
+  "nao": 37,
+  "nuclear_repulsion": 65.06271740446986,
+  "uhf": {
+    "energy": -116.42868560623948,
+    "converged": true,
+    "s_squared": 0.9766023204443268,
+    "multiplicity_from_s2": 2.215041598204717,
+    "nelec_alpha": 12,
+    "nelec_beta": 11,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "atom",
+      "lambda_min": 0.1767182481954992
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -116.42868560623943,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -116.42868560623943
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -116.42868560623948,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -116.42868560623948
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -116.42868560623948,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -116.42868560623948
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.3349620749446194,
+    "lumo_alpha": 0.22577511620396118,
+    "homo_beta": -0.4033021067685587,
+    "lumo_beta": 0.12709824563704175,
+    "somo_alpha": [
+      -0.3349620749446194
+    ]
+  },
+  "rohf": {
+    "energy": -116.40268675144053,
+    "converged": true,
+    "s_squared": 0.75,
+    "multiplicity_from_s2": 2.0,
+    "nelec_alpha": 12,
+    "nelec_beta": 11,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF ROHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "atom"
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -116.40268675144021,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -116.40268675144021
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -116.40268675144053,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -116.40268675144053
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -116.4026867514405,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -116.4026867514405
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "orbital_energy_convention": "PySCF ROHF Roothaan effective-Fock eigenvalues; convention-dependent, recorded for inspection, NOT comparable across codes",
+    "somo_roothaan": [
+      -0.09858700999876824
+    ],
+    "homo_docc_roothaan": -0.4080401975406922,
+    "lumo_roothaan": 0.2241121451492165
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "methods": [
+        "scf.UHF",
+        "scf.ROHF"
+      ],
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-08,
+      "max_cycle": 500,
+      "init_guess_scan": [
+        "minao",
+        "atom",
+        "huckel"
+      ],
+      "stability": "internal=True external=False, restart from the unstable direction, max 10 rounds",
+      "eri": "exact 4-index (no density fitting)",
+      "numpy": "1.26.4"
+    },
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": {
+      "uhf": {
+        "internal_stable": true,
+        "kind": "PySCF UHF internal (real)",
+        "rounds": 0,
+        "selected_guess": "atom",
+        "lambda_min": 0.1767182481954992
+      },
+      "rohf": {
+        "internal_stable": true,
+        "kind": "PySCF ROHF internal (real)",
+        "rounds": 0,
+        "selected_guess": "atom"
+      }
+    },
+    "basis": "6-31g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/6-31g.json",
+    "basis_sha256": "1ae9712168e449cee8ee656810f9dc2619083fc9a78f0b8e8dac77c5dbcfa7ef",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/allyl.xyz",
+    "geometry_xyz_sha256": "b03c87c25c864b34bc2c062082f823f01b4a29e8e47428bbf36f00a19120a59f",
+    "geometry_bohr": [
+      [
+        "C",
+        -2.3125813711297676,
+        -1.2296213377532799,
+        0.0
+      ],
+      [
+        "C",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "C",
+        2.3125813711297676,
+        -1.2296213377532799,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        2.0409042145302667,
+        0.0
+      ],
+      [
+        "H",
+        -4.043366316323605,
+        -0.14810686927303932,
+        0.0
+      ],
+      [
+        "H",
+        -2.383807907764767,
+        -3.269282282568934,
+        0.0
+      ],
+      [
+        "H",
+        2.383807907764767,
+        -3.269282282568934,
+        0.0
+      ],
+      [
+        "H",
+        4.043366316323605,
+        -0.14810686927303932,
+        0.0
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_uhf_rohf.py",
+    "git_head": "e46b3b2a9306abbf4595504281c5ab7832e1a061",
+    "generated_utc": "2026-09-24T18:04:05+00:00",
+    "basis_self_check": {
+      "nao": 37,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 2.220446049250313e-16,
+      "diag_checked": 37,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}
