@@ -26,15 +26,27 @@ Feeds two test files:
 
 Usage: OPENBLAS_NUM_THREADS=1 python scripts/gen_pyscf_atomic_ip_refs.py
 """
+
 from pyscf import gto, scf
 
 HA2EV = 27.211386245988
-ATOMS = [("He", "He", 0, 0), ("He+", "He", 1, 1), ("Ne", "Ne", 0, 0), ("Ne+", "Ne", 1, 1)]
+ATOMS = [
+    ("He", "He", 0, 0),
+    ("He+", "He", 1, 1),
+    ("Ne", "Ne", 0, 0),
+    ("Ne+", "Ne", 1, 1),
+]
 
 
 def run(sym, charge, spin, basis):
-    m = gto.M(atom=f"{sym} 0 0 0", basis=basis, charge=charge, spin=spin,
-              verbose=0, unit="Angstrom")
+    m = gto.M(
+        atom=f"{sym} 0 0 0",
+        basis=basis,
+        charge=charge,
+        spin=spin,
+        verbose=0,
+        unit="Angstrom",
+    )
     mf = scf.UHF(m)
     mf.conv_tol = 1e-12
     mf.conv_tol_grad = 1e-9
@@ -50,13 +62,19 @@ def atomic_block(basis):
     for label, sym, q, s in ATOMS:
         e, ss, nao = run(sym, q, s, basis)
         res[label] = e
-        print(f"{label:4s} nao={nao:3d}  E = {e:.12f}  <S^2>={ss[0]:.6f} 2S+1={ss[1]:.4f}")
+        print(
+            f"{label:4s} nao={nao:3d}  E = {e:.12f}  <S^2>={ss[0]:.6f} 2S+1={ss[1]:.4f}"
+        )
     dip = (res["He+"] + res["Ne"]) - (res["He"] + res["Ne+"])
-    print(f"IP(He) = {res['He+'] - res['He']:.12f} Ha = {(res['He+']-res['He'])*HA2EV:.6f} eV")
-    print(f"IP(Ne) = {res['Ne+'] - res['Ne']:.12f} Ha = {(res['Ne+']-res['Ne'])*HA2EV:.6f} eV")
+    print(
+        f"IP(He) = {res['He+'] - res['He']:.12f} Ha = {(res['He+'] - res['He']) * HA2EV:.6f} eV"
+    )
+    print(
+        f"IP(Ne) = {res['Ne+'] - res['Ne']:.12f} Ha = {(res['Ne+'] - res['Ne']) * HA2EV:.6f} eV"
+    )
     # Store THIS line in the Rust test as DIP_PYSCF / DIP_PYSCF_TZ, not a
     # recomputation from the four constants above.
-    print(f"dIP    = {dip:.12f} Ha = {dip*HA2EV:.6f} eV")
+    print(f"dIP    = {dip:.12f} Ha = {dip * HA2EV:.6f} eV")
     print()
     return res
 
