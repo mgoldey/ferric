@@ -1,0 +1,130 @@
+{
+  "row": "RHF+ECP / ECP gradients",
+  "system": "i_atom",
+  "basis": "def2-svp",
+  "charge": 0,
+  "multiplicity": 2,
+  "method": "uhf",
+  "nao": 26,
+  "nelectron": 25,
+  "ecp_core_electrons": [
+    28
+  ],
+  "nuclear_repulsion": 0.0,
+  "uhf": {
+    "energy": -296.64960647564317,
+    "converged": true,
+    "s_squared": 0.7557751251072382,
+    "multiplicity_from_s2": 2.005766811079731,
+    "nelec_alpha": 13,
+    "nelec_beta": 12,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "atom",
+      "lambda_min": -1.7710289921134682e-12
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -296.64960647564305,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -296.64960647564305
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -296.64960647564317,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -296.64960647564317
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -296.64960647564317,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -296.64960647564317
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.397802487285023,
+    "lumo_alpha": 0.3963123128081101,
+    "homo_beta": -0.3782812825220997,
+    "lumo_beta": -0.05038843473481336,
+    "somo_alpha": [
+      -0.397802487285023
+    ]
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "methods": [
+        "scf.UHF"
+      ],
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08,
+      "max_cycle": 500,
+      "ecp": "mol.ecp built by common.pyscf_ecp from the basis JSON's inline ecp_potentials",
+      "eri": "exact 4-index (no density fitting)",
+      "numpy": "1.26.4"
+    },
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "atom",
+      "lambda_min": -1.7710289921134682e-12
+    },
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "ecp_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "geometry_xyz": "testdata/molecules/validation/ecp/i_atom.xyz",
+    "geometry_xyz_sha256": "75ff300434df6ca070a1295bfd9981613716ba62fc8f089b45e285eb34a01039",
+    "geometry_bohr": [
+      [
+        "I",
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_ecp.py",
+    "git_head": "1768f45d4bd8a592cbef440195b46c01f43196cf",
+    "generated_utc": "2026-09-24T20:17:51+00:00",
+    "basis_self_check": {
+      "nao": 26,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 26,
+      "diag_skipped_cartesian": 0
+    },
+    "ecp_self_check": {
+      "ecp_core_electrons": [
+        28
+      ],
+      "nelectron": 25
+    }
+  }
+}
