@@ -1,0 +1,750 @@
+{
+  "row": "Meta-GGA gradient, closed / open",
+  "system": "nh2",
+  "basis": "6-31g",
+  "charge": 0,
+  "multiplicity": 2,
+  "nao": 13,
+  "nuclear_repulsion": 7.564094299642846,
+  "units": {
+    "energy": "Hartree",
+    "gradient": "Hartree/Bohr, dE/dR, (natoms, 3)"
+  },
+  "uks_scan_rij": {
+    "energy": -55.825024517990315,
+    "converged": true,
+    "s_squared": 0.7524348645222529,
+    "multiplicity_from_s2": 2.002433384182608,
+    "nelec_alpha": 5,
+    "nelec_beta": 4,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UKS internal (real)",
+      "rounds": 0,
+      "selected_guess": "atom",
+      "lambda_min": 0.06944884083759349
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -55.82502451799023,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.82502451799023
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -55.825024517990315,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.825024517990315
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -55.82502451799021,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.82502451799021
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.271869957824185,
+    "lumo_alpha": 0.07619288874980579,
+    "homo_beta": -0.2425278864477245,
+    "lumo_beta": -0.11942375578977371,
+    "somo_alpha": [
+      -0.271869957824185
+    ],
+    "xc": "SCAN",
+    "j": "RI-J: PySCF density_fit(aux from ferric JSON), gradient with auxbasis_response; ferric default (df_j_aux unset -> def2-universal-jkfit) / explicit Some(aux) open shell",
+    "gradient": [
+      [
+        -3.8316269189620676e-18,
+        -3.4967576490071066e-15,
+        -0.010966773190415946
+      ],
+      [
+        -6.764563951029474e-17,
+        -0.013083809481766906,
+        0.005483386595208417
+      ],
+      [
+        6.917267493846022e-17,
+        0.013083809481771791,
+        0.0054833865952104155
+      ]
+    ],
+    "fd_check": {
+      "steps_bohr": [
+        0.001,
+        0.0005
+      ],
+      "gradients_by_step": {
+        "1e-03": [
+          [
+            -2.8421709430404007e-11,
+            -1.7763568394002505e-11,
+            -0.0109668133738694
+          ],
+          [
+            -3.552713678800501e-12,
+            -0.013083907234090475,
+            0.005483406898321164
+          ],
+          [
+            -1.0658141036401503e-11,
+            0.013083907255406757,
+            0.005483406884110309
+          ]
+        ],
+        "5e-04": [
+          [
+            8.526512829121202e-11,
+            -2.1316282072803006e-11,
+            -0.010966783229093835
+          ],
+          [
+            -2.1316282072803006e-11,
+            -0.013083834019766982,
+            0.005483391639415913
+          ],
+          [
+            -4.973799150320701e-11,
+            0.013083833941607281,
+            0.0054833917033647595
+          ]
+        ]
+      },
+      "richardson_from": [
+        0.001,
+        0.0005
+      ],
+      "gradient": [
+        [
+          1.2316074086508402e-10,
+          -2.2500519965736505e-11,
+          -0.010966773180835313
+        ],
+        [
+          -2.7237471537470508e-11,
+          -0.013083809614992484,
+          0.005483386553114163
+        ],
+        [
+          -6.276460832547552e-11,
+          0.013083809503674123,
+          0.005483386643116243
+        ]
+      ],
+      "step_convergence": {
+        "max|g(1e-03)-g(5e-04)|": 7.331379947572714e-08
+      },
+      "richardson_vs_smallest_step": 2.443793315799747e-08,
+      "scf": {
+        "conv_tol": 1e-12,
+        "conv_tol_grad": 1e-08
+      },
+      "seed": "every displaced SCF starts from the reference-geometry density",
+      "analytic_vs_fd": 1.332255781388847e-10
+    }
+  },
+  "uks_r2scan_rij": {
+    "energy": -55.817271733808745,
+    "converged": true,
+    "s_squared": 0.7527697077662472,
+    "multiplicity_from_s2": 2.002767792597282,
+    "nelec_alpha": 5,
+    "nelec_beta": 4,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UKS internal (real)",
+      "rounds": 0,
+      "selected_guess": "huckel",
+      "lambda_min": 0.07828985414304146
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -55.817271733808695,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.817271733808695
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -55.81727173380868,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.81727173380868
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -55.817271733808745,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.817271733808745
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.27205110578274594,
+    "lumo_alpha": 0.07748273950731521,
+    "homo_beta": -0.24161612313383807,
+    "lumo_beta": -0.11571987478811185,
+    "somo_alpha": [
+      -0.27205110578274594
+    ],
+    "xc": "R2SCAN",
+    "j": "RI-J: PySCF density_fit(aux from ferric JSON), gradient with auxbasis_response; ferric default (df_j_aux unset -> def2-universal-jkfit) / explicit Some(aux) open shell",
+    "gradient": [
+      [
+        6.460595815337712e-17,
+        8.279682289985058e-17,
+        -0.011134508911236018
+      ],
+      [
+        1.0218683747471181e-16,
+        -0.013529925270932663,
+        0.005567254455616233
+      ],
+      [
+        -1.6120305751625547e-16,
+        0.013529925270932663,
+        0.005567254455616233
+      ]
+    ],
+    "fd_check": {
+      "steps_bohr": [
+        0.001,
+        0.0005
+      ],
+      "gradients_by_step": {
+        "1e-03": [
+          [
+            3.552713678800501e-11,
+            -2.8421709430404007e-11,
+            -0.011134556547887087
+          ],
+          [
+            -3.552713678800501e-12,
+            -0.01353002367920908,
+            0.005567278318352464
+          ],
+          [
+            -7.105427357601002e-12,
+            0.013530023704078076,
+            0.005567278332563319
+          ]
+        ],
+        "5e-04": [
+          [
+            7.105427357601002e-12,
+            2.8421709430404007e-11,
+            -0.01113452092482703
+          ],
+          [
+            4.973799150320701e-11,
+            -0.013529949860924262,
+            0.005567260494387938
+          ],
+          [
+            2.8421709430404007e-11,
+            0.013529949910662253,
+            0.005567260565442211
+          ]
+        ]
+      },
+      "richardson_from": [
+        0.001,
+        0.0005
+      ],
+      "gradient": [
+        [
+          -2.3684757858670005e-12,
+          4.7369515717340015e-11,
+          -0.011134509050473676
+        ],
+        [
+          6.750155989720952e-11,
+          -0.013529925254829323,
+          0.005567254553066429
+        ],
+        [
+          4.026408835973901e-11,
+          0.01352992531285698,
+          0.005567254643068509
+        ]
+      ],
+      "step_convergence": {
+        "max|g(1e-03)-g(5e-04)|": 7.381828481811681e-08
+      },
+      "richardson_vs_smallest_step": 2.460609493937227e-08,
+      "scf": {
+        "conv_tol": 1e-12,
+        "conv_tol_grad": 1e-08
+      },
+      "seed": "every displaced SCF starts from the reference-geometry density",
+      "analytic_vs_fd": 1.8745227592376068e-10
+    }
+  },
+  "roks_scan_rij": {
+    "xc": "SCAN",
+    "j": "RI-J: PySCF density_fit(aux from ferric JSON), gradient with auxbasis_response; ferric default (df_j_aux unset -> def2-universal-jkfit) / explicit Some(aux) open shell",
+    "energy": -55.82411271407284,
+    "converged": true,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF ROKS internal (real)",
+      "rounds": 0,
+      "selected_guess": "atom"
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -55.82411271407269,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.82411271407269
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -55.82411271407284,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.82411271407284
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -55.82411271407271,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.82411271407271
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "fd": {
+      "steps_bohr": [
+        0.002,
+        0.001,
+        0.0005
+      ],
+      "gradients_by_step": {
+        "2e-03": [
+          [
+            -3.552713678800501e-12,
+            3.552713678800501e-12,
+            -0.011031211618828252
+          ],
+          [
+            -1.0658141036401503e-11,
+            -0.013030605389374728,
+            0.00551560820127861
+          ],
+          [
+            7.105427357601002e-12,
+            0.013030605368058445,
+            0.005515608211936751
+          ]
+        ],
+        "1e-03": [
+          [
+            1.7763568394002505e-11,
+            -3.552713678800501e-12,
+            -0.011031077576717507
+          ],
+          [
+            2.1316282072803006e-11,
+            -0.013030299506056053,
+            0.005515539374556511
+          ],
+          [
+            -1.0658141036401503e-11,
+            0.013030299527372335,
+            0.0055155393106076644
+          ]
+        ],
+        "5e-04": [
+          [
+            0.0,
+            -1.4210854715202004e-11,
+            -0.011031043960940679
+          ],
+          [
+            -2.8421709430404007e-11,
+            -0.013030222973497985,
+            0.005515522175869592
+          ],
+          [
+            4.973799150320701e-11,
+            0.013030222945076275,
+            0.005515522140342455
+          ]
+        ]
+      },
+      "richardson_from": [
+        0.001,
+        0.0005
+      ],
+      "gradient": [
+        [
+          -5.921189464667502e-12,
+          -1.7763568394002505e-11,
+          -0.011031032755681736
+        ],
+        [
+          -4.500103993147301e-11,
+          -0.013030197462645296,
+          0.005515516442973952
+        ],
+        [
+          6.987003568307652e-11,
+          0.013030197417644255,
+          0.005515516416920718
+        ]
+      ],
+      "step_convergence": {
+        "max|g(2e-03)-g(1e-03)|": 3.0588331867420493e-07,
+        "max|g(1e-03)-g(5e-04)|": 7.65822960602236e-08
+      },
+      "richardson_vs_smallest_step": 2.5527432020652774e-08,
+      "scf": {
+        "conv_tol": 1e-12,
+        "conv_tol_grad": 1e-08
+      },
+      "seed": "every displaced SCF starts from the reference-geometry density"
+    },
+    "pyscf_analytic_gradient": [
+      [
+        -6.196727588263679e-17,
+        -1.0796324066686452e-15,
+        -0.011031033290829662
+      ],
+      [
+        1.4062287727979518e-17,
+        -0.013030197766444873,
+        0.005515516645414387
+      ],
+      [
+        3.734206117934385e-17,
+        0.013030197766446205,
+        0.005515516645414831
+      ]
+    ],
+    "pyscf_analytic_vs_fd": 5.351479259729786e-10,
+    "reference": "fd.gradient (Richardson of the two smallest steps)"
+  },
+  "roks_r2scan_rij": {
+    "xc": "R2SCAN",
+    "j": "RI-J: PySCF density_fit(aux from ferric JSON), gradient with auxbasis_response; ferric default (df_j_aux unset -> def2-universal-jkfit) / explicit Some(aux) open shell",
+    "energy": -55.81624744618773,
+    "converged": true,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF ROKS internal (real)",
+      "rounds": 0,
+      "selected_guess": "minao"
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -55.81624744618773,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.81624744618773
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -55.816247446187674,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.816247446187674
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -55.81624744618773,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.81624744618773
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "fd": {
+      "steps_bohr": [
+        0.002,
+        0.001,
+        0.0005
+      ],
+      "gradients_by_step": {
+        "2e-03": [
+          [
+            1.2434497875801753e-11,
+            2.3092638912203256e-11,
+            -0.011214382757529506
+          ],
+          [
+            -1.0658141036401503e-11,
+            -0.013471164027833993,
+            0.0056071919818379
+          ],
+          [
+            -5.329070518200751e-12,
+            0.013471164011846781,
+            0.0056071919889433275
+          ]
+        ],
+        "1e-03": [
+          [
+            1.4210854715202004e-11,
+            -3.552713678800501e-12,
+            -0.011214241720125528
+          ],
+          [
+            3.907985046680551e-11,
+            -0.013470869244969208,
+            0.005607121021711237
+          ],
+          [
+            7.105427357601002e-12,
+            0.01347086922720564,
+            0.0056071209790786725
+          ]
+        ],
+        "5e-04": [
+          [
+            -5.6843418860808015e-11,
+            -5.6843418860808015e-11,
+            -0.01121420650207483
+          ],
+          [
+            -2.1316282072803006e-11,
+            -0.013470795536818514,
+            0.005607103283011838
+          ],
+          [
+            -1.4210854715202004e-11,
+            0.013470795622083642,
+            0.00560710330432812
+          ]
+        ]
+      },
+      "richardson_from": [
+        0.001,
+        0.0005
+      ],
+      "gradient": [
+        [
+          -8.052817671947803e-11,
+          -7.460698725481052e-11,
+          -0.011214194762724597
+        ],
+        [
+          -4.144832625267251e-11,
+          -0.01347077096743495,
+          0.005607097370112039
+        ],
+        [
+          -2.1316282072803006e-11,
+          0.013470771087042976,
+          0.005607097412744603
+        ]
+      ],
+      "step_convergence": {
+        "max|g(2e-03)-g(1e-03)|": 2.9478464114163216e-07,
+        "max|g(1e-03)-g(5e-04)|": 7.370815069407399e-08
+      },
+      "richardson_vs_smallest_step": 2.456938356411309e-08,
+      "scf": {
+        "conv_tol": 1e-12,
+        "conv_tol_grad": 1e-08
+      },
+      "seed": "every displaced SCF starts from the reference-geometry density"
+    },
+    "pyscf_analytic_gradient": [
+      [
+        -1.8597573636047947e-17,
+        -1.1246627083913098e-16,
+        -0.011214194433522007
+      ],
+      [
+        1.190710554649163e-16,
+        -0.013470770891244932,
+        0.005607097216762336
+      ],
+      [
+        -1.1044465575125735e-16,
+        0.013470770891244044,
+        0.0056070972167616695
+      ]
+    ],
+    "pyscf_analytic_vs_fd": 3.292025905349272e-10,
+    "reference": "fd.gradient (Richardson of the two smallest steps)"
+  },
+  "separations": {
+    "uks_scan_vs_r2scan": 0.00044611578916575745,
+    "roks_scan_vs_r2scan": 0.0004405736693987219,
+    "uks_vs_roks_scan": 6.425956526578958e-05,
+    "uks_vs_roks_r2scan": 7.968585148857878e-05
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "dft.UKS (analytic, grid_response=True) + dft.ROKS (central FD of the energy)",
+      "xc": {
+        "scan": "SCAN",
+        "r2scan": "R2SCAN"
+      },
+      "j": "RI-J: PySCF density_fit(aux from ferric JSON), gradient with auxbasis_response; ferric default (df_j_aux unset -> def2-universal-jkfit) / explicit Some(aux) open shell",
+      "init_guess_scan": [
+        "minao",
+        "atom",
+        "huckel"
+      ],
+      "stability": "internal=True external=False, restart from the unstable direction, max 10 rounds (common.run_open_shell)",
+      "fd_steps_bohr": {
+        "roks": [
+          0.002,
+          0.001,
+          0.0005
+        ],
+        "uks_fd_check": [
+          0.001,
+          0.0005
+        ]
+      },
+      "numpy": "1.26.4"
+    },
+    "grid": {
+      "main": {
+        "atom_grid": [
+          75,
+          110
+        ],
+        "prune": null,
+        "partition": "Becke (original_becke)",
+        "radii_adjust": "becke_atomic_radii_adjust",
+        "radial": "PySCF default (treutler_ahlrichs)"
+      },
+      "grid_response": true
+    },
+    "aux_basis": {
+      "name": "def2-universal-jkfit",
+      "json": "crates/ferric-core/src/basis/bundled/def2-universal-jkfit.json",
+      "sha256": "a9fcb52ae8a74e80bd3a65c5e12e7a2d2f391fef62c3c81050ae816399b57671",
+      "used_by": "the *_rij blocks only; *_exact blocks are four-centre J"
+    },
+    "frozen_core": "none",
+    "scf_convergence": {
+      "analytic": {
+        "conv_tol": 1e-11,
+        "conv_tol_grad": 1e-08
+      },
+      "fd": {
+        "conv_tol": 1e-12,
+        "conv_tol_grad": 1e-08
+      }
+    },
+    "stability": {
+      "uks_scan_rij": {
+        "internal_stable": true,
+        "kind": "PySCF UKS internal (real)",
+        "rounds": 0,
+        "selected_guess": "atom",
+        "lambda_min": 0.06944884083759349
+      },
+      "uks_r2scan_rij": {
+        "internal_stable": true,
+        "kind": "PySCF UKS internal (real)",
+        "rounds": 0,
+        "selected_guess": "huckel",
+        "lambda_min": 0.07828985414304146
+      },
+      "roks_scan_rij": {
+        "internal_stable": true,
+        "kind": "PySCF ROKS internal (real)",
+        "rounds": 0,
+        "selected_guess": "atom"
+      },
+      "roks_r2scan_rij": {
+        "internal_stable": true,
+        "kind": "PySCF ROKS internal (real)",
+        "rounds": 0,
+        "selected_guess": "minao"
+      }
+    },
+    "basis": "6-31g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/6-31g.json",
+    "basis_sha256": "1ae9712168e449cee8ee656810f9dc2619083fc9a78f0b8e8dac77c5dbcfa7ef",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/nh2.xyz",
+    "geometry_xyz_sha256": "a93f4ddd65a01379beb9335bab6cbeb2165454f5784960ee705f49ec9c0d28e5",
+    "geometry_bohr": [
+      [
+        "N",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        1.5186047006878538,
+        -1.1993217336336612
+      ],
+      [
+        "H",
+        0.0,
+        -1.5186047006878538,
+        -1.1993217336336612
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_mgga_gradients.py",
+    "git_head": "29e94f238c1815df95ea5ccdbf6309813d44306b",
+    "generated_utc": "2026-09-24T21:47:12+00:00",
+    "basis_self_check": {
+      "nao": 13,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 13,
+      "diag_skipped_cartesian": 0,
+      "aux_nao": 113
+    }
+  }
+}
