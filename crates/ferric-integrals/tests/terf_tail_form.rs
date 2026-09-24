@@ -245,18 +245,23 @@ fn terf_tail_form_matches_series_and_is_faster() {
     // NOTE for anyone raising TERF_ASYMPTOTIC_S: the achievable ratio scales
     // with the largest S actually swept, so re-derive this bar from the term
     // counts above rather than assuming 2x is still the right floor.
-    if timing_asserts_enabled() {
+    let asserted = timing_asserts_enabled();
+    eprintln!(
+        "  timing ratio {:.2}x ({})",
+        series_ns / tail_ns.max(1e-9),
+        if asserted {
+            "asserted: FERRIC_ASSERT_TIMING=1"
+        } else {
+            "not asserted; set FERRIC_ASSERT_TIMING=1 on a quiet machine"
+        }
+    );
+    if asserted {
         assert!(
             series_ns > tail_ns * 2.0,
             "tail form ({tail_ns:.1} ns) is not materially cheaper than the exact \
              series ({series_ns:.1} ns) -- expected >=2x from the term-count ratio \
              (~2.37x predicted over this sweep); the rearrangement has been \
              reverted or is falling back to series-length work"
-        );
-    } else {
-        eprintln!(
-            "  timing ratio {:.2}x not asserted (set FERRIC_ASSERT_TIMING=1 on a quiet machine)",
-            series_ns / tail_ns.max(1e-9)
         );
     }
 }
