@@ -344,3 +344,220 @@ def test_gdf_h2_sto3g_cc_pvdz_ri_fitting_error(h2_ints):
     d_ewald = _dE(h2_ints, B, kshift=h2_ints["madelung"])
     assert 1e-7 < abs(d_none) < 5e-6  # a real fit: nonzero, and at the µHa level
     assert abs(d_none - d_ewald) < 1e-10
+
+
+# ============================================================ Gamma MP2 (pbc_mp2.py, Iteration 3)
+from pbc_mp2 import (
+    denominators,
+    dipole_prediction_h2_minimal,
+    gamma_mp2,
+    mp2_energy,
+    ovov_from_B,
+)  # noqa: E402
+
+# PySCF 2.13 pbc.mp.RMP2 on AFTDF (mesh 61^3), H2/STO-3G a=4, measured 2026-09-23 by run_mp2_oracle.py:
+# exxdiv=None -> unshifted denominators, exxdiv='ewald' -> shifted (both agree with ours to 4e-16).
+MP2_REF = {"unshifted": -5.891222456423e-03, "shifted": -3.881428851328e-03}
+
+
+def _tri_anchor(classes=range(8)):
+    """Trivial-aux limit with nocc = nvir = 2 (H2's nocc = nvir = 1 cannot see the exchange term):
+    one s primitive per H on the triclinic 4H cell; aux = all 10 x 8 periodic pair products."""
+    cell = Cell(TRI_A, TRI_ATOMS, {"H": [[0, [ANCHOR_ALPHA, 1.0]]]})
+    n = len(TRI_ATOMS)
+    cen = [
+        0.5 * (cell.R[i] + cell.R[j] + np.array(h) @ cell.a)
+        for i in range(n)
+        for j in range(i, n)
+        for k, h in enumerate(np.ndindex(2, 2, 2))
+        if k in classes
+    ]
+    aux = gto.M(
+        atom=[("X", c) for c in cen],
+        basis={"X": [[0, [2 * ANCHOR_ALPHA, 1.0]]]},
+        unit="B",
+        cart=True,
+        verbose=0,
+    )
+    return cell, aux
+
+
+@pytest.fixture(scope="module")
+def tri_anchor():
+    cell, aux = _tri_anchor()
+    ref = build_integrals(cell, None, exxdiv="ewald", verbose=False)
+    e, eps, _, C = rhf(
+        ref["S"], ref["h"], ref["I"], ref["enn"], 4, conv=1e-12, return_mo=True
+    )
+    return dict(
+        cell=cell,
+        aux=aux,
+        ref=ref,
+        eps=eps,
+        C=C,
+        B=build_gdf(cell, None, auxmol=aux)["B"],
+    )
+
+
+@pytest.mark.parametrize("convention", ["shifted", "unshifted"])
+def test_mp2_from_B_matches_dense_aft_in_the_trivial_aux_limit(tri_anchor, convention):
+    """Measured |dE_MP2| 1e-13 (same orbitals) / 7e-14..2e-13 (orbitals from the B-tensor SCF)."""
+    t = tri_anchor
+    e = np.concatenate(denominators(t["eps"], 2, t["ref"]["madelung"], convention))
+    exact = gamma_mp2(t["C"], e, 2, eri=t["ref"]["I"])[0]
+    assert abs(gamma_mp2(t["C"], e, 2, B=t["B"])[0] - exact) < 1e-11
+    _, eps1, _, C1 = rhf(
+        t["ref"]["S"],
+        t["ref"]["h"],
+        None,
+        t["ref"]["enn"],
+        4,
+        conv=1e-12,
+        jk=jk_from_B(t["B"]),
+        return_mo=True,
+    )
+    e1 = np.concatenate(denominators(eps1, 2, t["ref"]["madelung"], convention))
+    assert abs(gamma_mp2(C1, e1, 2, B=t["B"])[0] - exact) < 1e-11
+
+
+def test_mp2_anchor_detects_dropped_exchange_and_incomplete_aux(tri_anchor):
+    """Mutations: exchange term dropped (measured +1.4e-6) and one aux class removed (+1.1e-8).
+    Both are INVISIBLE on H2 (nocc = nvir = 1: (ib|ja) == (ia|jb); 7/8 classes: 4e-13)."""
+    t = tri_anchor
+    Co, Cv, eo, ev = t["C"][:, :2], t["C"][:, 2:], t["eps"][:2], t["eps"][2:]
+    exact = gamma_mp2(t["C"], t["eps"], 2, eri=t["ref"]["I"])[0]
+    _, e_os, _ = mp2_energy(ovov_from_B(t["B"], Co, Cv), eo, ev)
+    assert abs(e_os - exact) > 1e-7
+    cell, aux7 = _tri_anchor(classes=range(7))
+    B7 = build_gdf(cell, None, auxmol=aux7)["B"]
+    assert abs(mp2_energy(ovov_from_B(B7, Co, Cv), eo, ev)[0] - exact) > 1e-9
+
+
+def test_mp2_is_structurally_blind_to_the_J3_g0_term(tri_anchor, monkeypatch):
+    """Anchor blind spot, pinned so nobody reads the MP2 anchor as a G=0 check: J3's G=0 term is
+    c0 S_mn q_P, and C_o^T S C_v = 0, so it never reaches B_ia (the HF ERI anchor catches it)."""
+    t = tri_anchor
+    monkeypatch.setattr(
+        pbc_gdf, "_subtract_g0", lambda J2, J3, S, q, c0: (J2 - c0 * np.outer(q, q), J3)
+    )
+    Bm = build_gdf(t["cell"], None, auxmol=t["aux"])["B"]
+    assert abs(eri_from_B(Bm) - t["ref"]["I"]).max() > 1.0  # the ERI is badly wrong ...
+    exact = gamma_mp2(t["C"], t["eps"], 2, eri=t["ref"]["I"])[0]
+    assert (
+        abs(gamma_mp2(t["C"], t["eps"], 2, B=Bm)[0] - exact) < 1e-11
+    )  # ... and ov-MP2 cannot see it
+
+
+@pytest.mark.parametrize("convention", ["shifted", "unshifted"])
+def test_mp2_matches_pinned_pyscf_rmp2(h2_ints, convention):
+    e, eps, _, C = rhf(
+        h2_ints["S"],
+        h2_ints["h"],
+        h2_ints["I"],
+        h2_ints["enn"],
+        2,
+        conv=1e-12,
+        return_mo=True,
+    )
+    eo, ev = denominators(eps, 1, h2_ints["madelung"], convention)
+    assert (
+        abs(
+            gamma_mp2(C, np.concatenate([eo, ev]), 1, eri=h2_ints["I"])[0]
+            - MP2_REF[convention]
+        )
+        < 1e-11
+    )
+
+
+def test_shifted_denominators_are_the_ewald_scf_eigenvalues(h2_ints):
+    vm = h2_ints["madelung"]
+    eps_n = rhf(
+        h2_ints["S"], h2_ints["h"], h2_ints["I"], h2_ints["enn"], 2, conv=1e-12
+    )[1]
+    eps_e = rhf(
+        h2_ints["S"],
+        h2_ints["h"],
+        h2_ints["I"],
+        h2_ints["enn"],
+        2,
+        conv=1e-12,
+        kshift=vm,
+    )[1]
+    assert (
+        abs(np.concatenate(denominators(eps_n, 1, vm, "shifted")) - eps_e).max() < 1e-10
+    )
+    with pytest.raises(ValueError):
+        denominators(eps_n, 1, vm, "madelung")
+
+
+def test_mp2_box_limit_shifted_is_a3_with_predicted_coefficient_unshifted_is_1_over_a():
+    """Independent of PySCF pbc: H2/STO-3G at a=20, 24 vs molecular MP2.
+    shifted  : residual = c3/a^3, c3 predicted from molecular moments = 0.67109 (fit 0.67136)
+    unshifted: residual - shifted residual = sum N/(D + 2 v_M) - sum N/D (molecular N, D),
+               i.e. ~ -2 v_M sum N/D^2 = -0.0299/a.  Measured a=6..40 in FINDINGS.md Iteration 3."""
+    from pyscf import mp, scf
+
+    mol = gto.M(atom=H2_ATOMS, basis="sto-3g", unit="B", cart=True, verbose=0)
+    mf = scf.RHF(mol)
+    mf.conv_tol = 1e-13
+    mf.kernel()
+    e_mol = mp.MP2(mf).kernel()[0]
+    iaia = mol.ao2mo(mf.mo_coeff, compact=False).reshape(2, 2, 2, 2)[0, 1, 0, 1]
+    N, D = iaia**2, 2 * (mf.mo_energy[0] - mf.mo_energy[1])
+    res = {}
+    for edge in (20.0, 24.0):
+        w = 8.0 / edge
+        ints = build_integrals(
+            Cell(np.eye(3) * edge, H2_ATOMS, "sto-3g"),
+            w,
+            rcut_bra=18.0,
+            rcut_2e=18.0 + 6.0 / w,
+            exxdiv="ewald",
+            verbose=False,
+        )
+        vm = ints["madelung"]
+        _, eps, _, C = rhf(
+            ints["S"], ints["h"], ints["I"], ints["enn"], 2, conv=1e-13, return_mo=True
+        )
+        r = {
+            c: gamma_mp2(
+                C, np.concatenate(denominators(eps, 1, vm, c)), 1, eri=ints["I"]
+            )[0]
+            - e_mol
+            for c in ("shifted", "unshifted")
+        }
+        c3 = dipole_prediction_h2_minimal(mol, mf.mo_coeff, mf.mo_energy, edge)[0]
+        assert abs(r["shifted"] - c3) < 0.01 * abs(
+            c3
+        )  # measured 0.5% at a=20, 0.3% at a=24
+        shift_fn = N / (D + 2 * vm) - N / D
+        assert abs((r["unshifted"] - r["shifted"]) - shift_fn) < 0.01 * abs(shift_fn)
+        res[edge] = r
+    p = np.log(res[20.0]["shifted"] / res[24.0]["shifted"]) / np.log(24.0 / 20.0)
+    assert abs(p - 3.0) < 0.05
+
+
+def test_mp2_formula_matches_molecular_pyscf_with_several_occupied():
+    """The anchor compares B vs dense through the SAME mp2_energy, so it cannot see a formula
+    bug; neither can H2 (nocc = nvir = 1). Pin the formula on H2O/6-31G (nocc 5, nvir 8)."""
+    from pyscf import mp, scf
+
+    mol = gto.M(
+        atom="O 0 0 0.2; H 0 1.4 -0.9; H 0.1 -1.5 -0.8",
+        basis="6-31g",
+        unit="B",
+        cart=True,
+        verbose=0,
+    )
+    mf = scf.RHF(mol)
+    mf.conv_tol = 1e-12
+    mf.kernel()
+    ref = mp.MP2(mf).kernel()[0]
+    I = mol.intor("int2e_cart")
+    nocc = mol.nelectron // 2
+    assert abs(gamma_mp2(mf.mo_coeff, mf.mo_energy, nocc, eri=I)[0] - ref) < 1e-11
+    ref_fc = mp.MP2(mf, frozen=1).kernel()[0]
+    assert (
+        abs(gamma_mp2(mf.mo_coeff, mf.mo_energy, nocc, eri=I, frozen=1)[0] - ref_fc)
+        < 1e-11
+    )

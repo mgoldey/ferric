@@ -56,7 +56,16 @@ OPENBLAS_NUM_THREADS=1 python -m pytest -q test_prototype.py   # ~35 s; PBC_SLOW
      than Cholesky-factored;
    - the exactness check, which uses an auxiliary basis that spans every pair
      product exactly, so the fit must be exact.
-5. **`test_prototype.py`**: the tests. Several exist to catch a specific,
+5. **`pbc_mp2.py`** (plus the `run_mp2_*.py` scripts): Γ-point MP2 built on
+   the periodic density-fitting tensor B. The lesson is about the orbital
+   energies in the denominators:
+   - with the Madelung-shifted occupied energies, the result approaches
+     molecular MP2 as a⁻³, with a coefficient that can be predicted in
+     advance;
+   - with unshifted energies it converges only as 1/a;
+   - in small boxes the wrong choice looks better. `run_mp2_box_limit.py`
+     shows why a single small cell would pick it.
+6. **`test_prototype.py`**: the tests. Several exist to catch a specific,
    plausible bug (a sign flip, a missing Madelung term, the G = 0 term applied
    to only one side); the comments say which one.
 

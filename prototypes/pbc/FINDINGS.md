@@ -332,3 +332,141 @@ Coulomb metric, instead of from molecular (P|Q)/(mn|P).
 
 Prototype order (Python first, per convention): 6 (Gamma MP2 from pbc_gdf.py B) → 7 (dRPA from the same B)
 → 8b (LMP2, eps=0 anchored to 6) → 4 (UHF) → 8. Each gets its trivial-limit anchor before any sweep.
+
+## Iteration 3 (Python, Gamma MP2) — 2026-09-24
+
+### Code
+- New `pbc_mp2.py`: `gamma_mp2(C, eps, nocc, eri=|B=, frozen=)`, `bia_from_B` (B^P_mn -> B^P_ia),
+  `mp2_energy` (os/ss split), `denominators(eps_none, nocc, v_M, 'shifted'|'unshifted')` (strict),
+  `dipole_prediction_h2_minimal` (a^-3 moment model, below). Real arithmetic, closed shell.
+- `pbc_gamma.rhf(..., return_mo=True)` also returns C (default return unchanged).
+- Drivers: `run_mp2_anchor.py`, `run_mp2_oracle.py` (PySCF pbc), `run_mp2_box_limit.py BASIS a...`,
+  `run_mp2_fit_error.py`.
+- `test_prototype.py`: +9 fast tests (whole suite 27 passed / 3 slow skipped, 51 s).
+
+### PySCF conventions (read from source, PySCF 2.13)
+- `pbc.mp.RMP2` = molecular `mp2.RMP2` + `with_df.ao2mo`; denominators from `mf.mo_energy`, i.e. from
+  whatever exxdiv the HF used. exxdiv=None -> unshifted; exxdiv='ewald' -> occupied shifted by -v_M.
+  `KMP2` the same (`self.mo_energy = mf.mo_energy`, no Madelung code in kmp2.py).
+- `pbc.cc` (RCCSD/UCCSD/KRCCSD/KCCSD/KUCCSD) rebuilds the Fock with exxdiv=None and then ALWAYS applies
+  `_adjust_occ(eps, nocc, -madelung)` ("Without the correction, MP2 energy may be largely off").
+  So PySCF CC is always 'shifted'; PySCF MP2 follows the HF exxdiv. `ccsd(mbpt2=True)` is NOT the CC
+  convention (it calls RMP2(mf) with mf.mo_energy).
+- The ov integrals carry no G=0 term in either code (ov pair densities are neutral: C_o^T S C_v = 0).
+  At Gamma C is identical under none/ewald, so the ONLY difference between conventions is eps_occ -= v_M.
+
+### Measured
+Anchor (trivial-aux limit, one s primitive al=0.5 per H, aux = all periodic pair products):
+
+| cell | nocc/nvir | naux | |dMP2| B vs dense AFT (same C / B-SCF C), none & ewald |
+|---|---|---|---|
+| H2 a=4 | 1/1 | 24 | 1.2e-13 / 1.3e-13, 7.2e-14 / 7.6e-14 |
+| triclinic 4H | 2/2 | 80 | 2.1e-13 / 1.9e-13, 9.8e-14 / 7.0e-14 |
+
+Mutations (tri 4H unless noted): exchange term dropped +1.4e-6 (H2: -7e-14, invisible, nocc=nvir=1);
+Cv for both ov indices -6.6e-3 (H2 +9.2e-4); aux 7/8 classes +1.1e-8 (H2 +3.7e-13, invisible);
+Madelung sign flipped, B_ia with wrong C: caught by the pinned-PySCF / box-limit / formula tests
+(all four code mutations run, each failed >= 3 tests). G=0 mutants of pbc_gdf: ALL invisible to MP2 in
+the anchor (|dMP2| < 1e-13 while max|dI| = 5.3 / 7.7e+1 / 3.5e-2): the J3 term c0 S_mn q_P is killed by
+C_o^T S C_v = 0 (structural), and the J2 term acts only through the fitted charge of ov densities,
+which is exactly 0 in the anchor. With cc-pvdz-ri (tri): fitted ov charge up to 0.87, J2-side mutant
+moves MP2 by 7.8e-7 (fit error 3.3e-5); J3-side mutant 0; H2: both 0.
+
+Oracle, PySCF 2.13 AFTDF mesh 61^3 (ours = pure-AFT dense ERI):
+
+| system | ours unshifted | PySCF RMP2 exxdiv=None | ours shifted | PySCF RMP2 exxdiv=ewald | PySCF CC-eris MP2 (none / ewald) |
+|---|---|---|---|---|---|
+| H2/STO-3G a=4 | -5.891222456423e-3 | +4.2e-16 | -3.881428851328e-3 | +2.9e-16 | shifted +2.9e-16 / +2.9e-16 |
+| tri 4H s+p | -6.080626811746e-2 | -1.2e-10 | -4.009219916836e-2 | +3.7e-11 | shifted -5.7e-11 / +3.8e-11 |
+
+(v_M = 0.7093243699 / 0.6224368790. The conventions differ by 34% / 34% of E_corr at these cells.)
+
+Box limit vs molecular MP2 (pyscf.mp.MP2, cart, same geometry), H2 in cubic boxes. ERI by Ewald split
+w = min(1, 8/a), bra images 18 Bohr, ket 18+6/w; checked at a=8 vs pure-AFT (STO-3G, 1e-14) and vs
+wider cutoffs / w=0.5 (6-31G, 4e-16 in E_MP2). E_MP2(mol) = -1.315787005264e-2 (STO-3G),
+-1.739045734672e-2 (6-31G). Residual dE = E_corr(pbc) - E_corr(mol):
+
+| a | STO-3G shifted | STO-3G unshifted | 6-31G shifted | 6-31G unshifted |
+|---|---|---|---|---|
+| 6 | +3.959e-3 | -6.181e-4 | +3.576e-3 | -4.089e-3 |
+| 8 | +1.415e-3 | -3.032e-3 | +1.503e-3 | -4.435e-3 |
+| 10 | +6.804e-4 | -2.932e-3 | +7.823e-4 | -3.852e-3 |
+| 12 | +3.909e-4 | -2.568e-3 | +4.537e-4 | -3.329e-3 |
+| 14 | +2.459e-4 | -2.244e-3 | +2.860e-4 | -2.893e-3 |
+| 16 | +1.646e-4 | -1.980e-3 | +1.917e-4 | -2.542e-3 |
+| 20 | +8.419e-5 | -1.589e-3 | +9.815e-5 | -2.031e-3 |
+| 24 | +4.868e-5 | -1.321e-3 | +5.679e-5 | -1.684e-3 |
+| 32 | +2.052e-5 | -9.835e-4 | +2.395e-5 | -1.249e-3 |
+| 40 | +1.050e-5 | -7.813e-4 | +1.226e-5 | -9.909e-4 |
+
+- Local exponents d ln|dE|/d ln a, shifted: STO-3G 3.58 (8), 3.28, 3.04, 3.007, 3.005 ... 3.003 (40);
+  6-31G 3.01 (8), 2.93, 2.99, 2.995 ... 3.002 (40). 3-pt tail (24,32,40): 3.0032 / 3.0017.
+  Fit c3/a^3 + c5/a^5 (24,32,40): c3 = 0.671358 (STO-3G), 0.784083 (6-31G).
+- Unshifted local exponents: STO-3G -5.5 (8), 0.15, 0.73, 0.88, 0.94, 0.99, 1.01, 1.03, 1.03 (40);
+  6-31G similar, 1.04 at 40 (approaching 1 from above: a c2/a^2 term of the same sign).
+  Fit c1/a + c2/a^2 + c3/a^3 (24,32,40): c1 = -0.029835 / -0.037655.
+- (unshifted - shifted) / (c1/a + c2/a^2 predicted) = 0.9985..1.0077 for a >= 12, both bases.
+- Denominator check at a=40, STO-3G: measured 2(d eps_occ - d eps_vir) a^3 = -27.33 vs moment model
+  -2(4pi/3)(sigma^2 + |d_ia|^2) = -27.32. Individual eps carry an extra common constant
+  (+k R_tot/2, Bethe-type potential of the neutral cell) that cancels in every denominator.
+- Wall time per box point 1-8 s for a >= 8 (w-scaled Ewald split); a=6 55 s / 315 s (6-31G).
+
+Hypotheses stated before the sweep (predictions are from MOLECULAR quantities only):
+- physics, shifted: dE = c3/a^3 + O(a^-5); for a one-occupied/one-virtual system at frozen (symmetry-fixed)
+  orbitals, delta(1|2) = -(4pi/3 Omega)[d1.d2 - (q1 R2 + q2 R1)/2] (cubic, G=0-dropped kernel, after
+  Madelung) gives d(ia|ia) = -k|d_ia|^2, d eps_i = -k sigma_i^2, d eps_a = +k|d_ia|^2, k = 4pi/3a^3,
+  => c3 = 0.67109405 (STO-3G). MEASURED 0.671358 (4e-4 rel; the c5 fit absorbs the rest).
+- physics, unshifted: D -> D + 2 v_M, so dE = sum N/(D + 2v_M) - sum N/D + O(a^-3):
+  c1 = -2 (v_M a) sum N/D^2 = -0.029903 (STO-3G) / -0.037746 (6-31G). MEASURED -0.029835 / -0.037655.
+- artifact (a) broken transform / missing images: plateau at nonzero dE — not seen (both converge to 0).
+- artifact (b) Madelung sign flipped: 'shifted' would converge as 1/a with ~2 c1 — not seen (exponent 3).
+Distinguishable by construction (exponent 3 vs 1 vs 0), and the coefficients are predicted, not fitted.
+
+Aux fitting error dMP2 = E_MP2(B) - E_MP2(dense AFT), spherical aux, w=1; "same C" = exact SCF orbitals,
+"own SCF" = SCF also on B (the full pipeline):
+
+| aux | H2/STO-3G a=4 shifted: same C / own SCF (rel) | unshifted same C | tri 4H s+p shifted: same C / own SCF (rel) | unshifted same C |
+|---|---|---|---|---|
+| cc-pvdz-ri (28 / 56) | +6.31e-7 / +7.02e-7 (-1.6e-4) | +9.58e-7 | +3.33e-5 / +3.65e-5 (-8.3e-4) | +4.85e-5 |
+| def2-universal-jkfit (36 / 72) | +2.73e-6 / +2.85e-6 (-7.0e-4) | +4.15e-6 | +7.61e-5 / +7.92e-5 (-1.9e-3) | +1.04e-4 |
+| def2-svp-rifit (28 / 56) | +2.19e-6 / +2.21e-6 (-5.6e-4) | +3.32e-6 | +4.85e-5 / +5.25e-5 (-1.2e-3) | +7.38e-5 |
+| ET l<=2 b=2.2 amin 0.1 (146/162, 291/324) | +5.1e-10 / +1.4e-9 (-1.3e-7) | +7.7e-10 | +2.44e-6 / +2.57e-6 (-6.1e-5) | +3.52e-6 |
+
+Same-molecule molecular DF-MP2 (pyscf DFMP2, H2/STO-3G, same geometry): cc-pvdz-ri +1.73e-6 (-1.3e-4),
+def2-universal-jkfit +3.40e-6 (-2.6e-4), def2-svp-rifit +6.26e-6 (-4.8e-4). All fit errors positive
+(underbinding); the relative error is convention-independent (same rel in both columns).
+
+### Interpretation (provisional, 2026-09-24)
+- **Shifted denominators (Madelung-corrected occupied energies) converge to the molecular limit, as a^-3,
+  with a coefficient predicted from molecular moments; unshifted converge as 1/a (c1 = -2 v_M a sum N/D^2,
+  also predicted).** At a=40 the unshifted error is still -7.8e-4 / -9.9e-4 Ha (4.5-5.7% of E_corr); the
+  shifted error is 1.0e-5 / 1.2e-5. This is the same a^-3 mechanism (Makov-Payne second moment, now
+  also the ov-dipole tinfoil term) that Iteration 1 found for HF with exxdiv=ewald.
+- Small-box trap: at a=6 (STO-3G) unshifted is 6x CLOSER to the molecule than shifted (-6e-4 vs +4e-3) —
+  the two error sources cross there. A single small-cell comparison would pick the wrong convention; only
+  the tail (a >= 12, where the shifted exponent has settled at 3) decides it.
+- At Gamma the choice is purely "eps_occ from the ewald Fock" — PySCF CC does this always, PySCF MP2 only
+  when the HF was run with exxdiv='ewald'. Correlation should NOT inherit exxdiv=None from the HF.
+- The trivial-aux MP2 anchor proves transform + assembly (1e-13), but is structurally blind to both
+  G=0 bookkeeping terms of the fit (J3 via S-orthogonality, J2 via zero fitted charge); those remain
+  guarded only by the HF ERI anchor of Iteration 2. With a real aux the J2 term leaks weakly (7.8e-7).
+- Aux error: periodic RS-GDF MP2 fitting error with cc-pvdz-ri is 1.6e-4 relative on H2, matching the
+  molecular DF-MP2 error for the same molecule/aux (1.3e-4) — the periodic metric adds no new error class.
+  tri 4H s+p (p on H, small cell, overlapping images) is 8e-4 relative; the ET l<=2 set only gets to 6e-5
+  there (it needs higher l for p-orbital products), vs 1e-7 on the s-only H2. cc-pvdz-ri is the best
+  stock set here (as molecularly: it is the MP2 RI set); def2-universal-jkfit is 2-4x worse.
+- NOT measured: finite-size in a real solid (a molecule in a box has no band dispersion; the a^-3 law is
+  the ISOLATED-molecule limit, not the N_k^-1 solid-state law), spherical orbital basis, frozen core in a
+  periodic run, anything > 16 AOs, cost, UHF/UMP2, k-points.
+
+### For the Rust port (stage 6)
+- Denominators: shifted (eps_occ from the exxdiv=ewald Fock, = none-eigenvalues - v_M). If the stage-1
+  SCF result already came from exxdiv=ewald, ScfResult eps are correct as-is; if it came from exxdiv=None,
+  the MP2 driver must apply the shift itself (PySCF-CC style) or refuse. Pin it with the a^-3 box test.
+- Seam: `ri_mp2_spin_components` builds its own molecular metric (`coulomb_metric_2c` +
+  `metric_inverse_sqrt`) and `ThreeIndexSource::build_band_screened` from (obs, dfbs); there is no
+  from-array constructor. The periodic B is already metric-dressed (eig + lindep drop). Least new surface:
+  split the kernel after `b_flat` into `ri_mp2_from_b_ov(b_ov, eps_occ, eps_vir)` and have the periodic
+  path transform the SAME B^P_mn used for SCF K to B^P_ia. A periodic ThreeIndexSource would also need an
+  injected metric solve (and must never Cholesky: Iteration 2's LiH metric) — larger change, only needed
+  once B must stream/spill.
