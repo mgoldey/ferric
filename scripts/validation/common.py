@@ -637,18 +637,19 @@ def run_open_shell(
 
 
 # ---------------------------------------------------------------------------
-# ORCA: input writer + output parser (skeleton for W1)
+# ORCA: input writer + output parser
 # ---------------------------------------------------------------------------
 #
 # The UHF/ROHF row (W0) does NOT use ORCA: PySCF with ferric's own basis is a
-# complete like-for-like reference there. What follows is the minimum W1
-# needs (RHF+ECP, RI-MP2 gradient, OO-RI-MP2): ferric's basis as `NewGTO`
-# blocks, a Bohr geometry, and a parser for the numbers those rows compare.
-# ECP emission (`NewECP`) is NOT implemented yet — the RHF+ECP row must add it
-# and prove it on Xe/I2 against the existing PySCF numbers first.
+# complete like-for-like reference there. What follows is what W1 needs
+# (RHF+ECP, RI-MP2 gradient, OO-RI-MP2): ferric's basis as `NewGTO` blocks,
+# ferric's ECP as `NewECP` blocks (RHF+ECP row, gen_ecp_orca.py), a Bohr
+# geometry, and a parser for the numbers those rows compare.
 
 
-def orca_basis_block(basis_name: str, symbols: list[str]) -> str:
+def orca_basis_block(
+    basis_name: str, symbols: list[str], ecp_json: Path | None = None
+) -> str:
     """`%basis NewGTO ... end end` carrying ferric's basis for every element.
 
     ORCA reads NewGTO coefficients as normalized-primitive coefficients and
@@ -657,6 +658,12 @@ def orca_basis_block(basis_name: str, symbols: list[str]) -> str:
     are emitted as ferric splits them (one segmented shell per column; same
     span). ORCA is spherical-only for l >= 2, so a Cartesian-d basis is
     refused rather than silently changed.
+
+    With `ecp_json`, ferric's ECP for every element that has one is appended
+    as `NewECP` entries inside the same `%basis` block (see `orca_ecp_block`).
+    Without it ORCA assigns whatever ECP its keyword line implies (for a def2
+    keyword: its BUILT-IN def2-ECP for Z >= 37) — a looser, not like-for-like,
+    check that the caller must label as such.
     """
     lines = ["%basis"]
     for s in dict.fromkeys(symbols):
@@ -670,15 +677,117 @@ def orca_basis_block(basis_name: str, symbols: list[str]) -> str:
             for i, (e, c) in enumerate(zip(sh["exps"], sh["coefs"]), start=1):
                 lines.append(f"      {i:3d} {e:.10E} {c:.10E}")
         lines.append("  end")
+    if ecp_json is not None:
+        ecp = orca_ecp_block(ecp_json, symbols)
+        if ecp:
+            lines.append(ecp)
     lines.append("end")
     return "\n".join(lines)
 
 
-def orca_ecp_block(*_args, **_kwargs) -> str:
-    raise NotImplementedError(
-        "NewECP emission is W1 (RHF+ECP row) work; prove it against the existing "
-        "PySCF Xe/I2 def2-ECP numbers before using it for a reference"
+def ecp_core_electrons(ecp_json: Path, symbols: list[str]) -> list[int]:
+    """Per-ATOM core-electron count ferric's `Molecule::apply_ecp` would set
+    from `ecp_json` (0 for an element with no `ecp_potentials`)."""
+    data = json.loads(Path(ecp_json).read_text())
+    out = []
+    for s in symbols:
+        elem = data["elements"].get(str(z_of(s)), {})
+        has = elem.get("ecp_potentials") and elem.get("ecp_electrons") is not None
+        out.append(int(elem["ecp_electrons"]) if has else 0)
+    return out
+
+
+def orca_ecp_block(ecp_json: Path, symbols: list[str]) -> str:
+    """`NewECP <El> ... end` entries carrying ferric's ECP, for inside `%basis`.
+
+    Returns "" when no element in `symbols` has an ECP in `ecp_json`.
+
+    Format (ORCA manual, "Effective Core Potentials"; identical to what the
+    Basis Set Exchange's ORCA writer emits from the same BSE JSON):
+
+        NewECP I
+          N_core 28
+          lmax f
+          s 7
+            1  <gaussian exponent>  <coefficient>  <n>
+            ...
+          f 4
+            ...
+        end
+
+    Conventions, and why no number is transformed:
+      * `<n>` is the BSE `r_exponents` value verbatim. ORCA, NWChem, PySCF and
+        libecpint all read it as the power in r^(n-2) (the def2 ECPs are
+        Gaussian-only, n = 2 throughout, i.e. r^0).
+      * `lmax` is the LOCAL channel U_L (the largest angular momentum present,
+        the same rule as ferric's `EcpDef::max_angular_momentum` and PySCF's
+        l = -1 tag); the lower channels are the semilocal (U_l - U_L) terms, in
+        the same form the BSE JSON already stores them.
+      * Exponents and coefficients are written with `repr(float(...))`, which
+        round-trips the IEEE double ferric parses from the same string.
+    A like-for-like mismatch here (a channel mis-tagged, n shifted by 2) moves
+    the energy by tenths of a Hartree or more, and ORCA's printed nuclear
+    repulsion (which uses Z - N_core) is checked separately by the generator,
+    so a wrong N_core cannot hide either.
+    """
+    data = json.loads(Path(ecp_json).read_text())
+    blocks = []
+    for s in dict.fromkeys(symbols):
+        elem = data["elements"].get(str(z_of(s)), {})
+        pots = elem.get("ecp_potentials")
+        ncore = elem.get("ecp_electrons")
+        if not pots or ncore is None:
+            continue
+        lmax = max(p["angular_momentum"][0] for p in pots)
+        lines = [
+            f"  NewECP {s}",
+            f"    N_core {int(ncore)}",
+            f"    lmax {ORCA_SHELL_LETTER[lmax].lower()}",
+        ]
+        # ORCA wants channels in increasing l with the local (lmax) one last;
+        # ordering is cosmetic but makes the input diff-stable.
+        for p in sorted(pots, key=lambda q: q["angular_momentum"][0]):
+            (ell,) = p["angular_momentum"]
+            (coefs,) = p["coefficients"]
+            rexp, gexp = p["r_exponents"], p["gaussian_exponents"]
+            if not (len(rexp) == len(gexp) == len(coefs)):
+                raise ValueError(f"{ecp_json} {s} l={ell}: ragged ECP term lists")
+            lines.append(f"    {ORCA_SHELL_LETTER[ell].lower()} {len(rexp)}")
+            for i, (n, g, c) in enumerate(zip(rexp, gexp, coefs), start=1):
+                lines.append(f"      {i:3d} {float(g)!r} {float(c)!r} {int(n)}")
+        lines.append("  end")
+        blocks.append("\n".join(lines))
+    return "\n".join(blocks)
+
+
+def check_ecp_like_for_like(mol, ecp_json: Path, symbols: list[str]) -> dict:
+    """Self-check that PySCF `mol` carries ferric's ECP. Raises AssertionError.
+
+    1. Per-atom core-electron count: PySCF's `atom_nelec_core(i)` equals what
+       ferric's `apply_ecp` sets from the same JSON (0 for all-electron atoms).
+    2. Electron count: `mol.nelectron` = sum(Z) - sum(N_core) - charge.
+    3. Term count: every ECP term in the JSON reached `mol._ecp` (catches a
+       channel dropped by the l = -1 local-channel mapping, or a term list
+       indexed by the wrong power of r and silently discarded).
+    """
+    want = ecp_core_electrons(ecp_json, symbols)
+    got = [int(mol.atom_nelec_core(i)) for i in range(mol.natm)]
+    assert got == want, f"ECP core electrons: PySCF {got} != ferric {want}"
+    n_all = sum(z_of(s) for s in symbols)
+    assert mol.nelectron == n_all - sum(want) - mol.charge, (
+        f"nelectron {mol.nelectron} != {n_all} - {sum(want)} - {mol.charge}"
     )
+    data = json.loads(Path(ecp_json).read_text())
+    for s in dict.fromkeys(symbols):
+        elem = data["elements"].get(str(z_of(s)), {})
+        pots = elem.get("ecp_potentials") or []
+        n_json = sum(len(p["r_exponents"]) for p in pots)
+        n_pyscf = 0
+        if s in mol._ecp:
+            for _l, by_r in mol._ecp[s][1]:
+                n_pyscf += sum(len(t) for t in by_r)
+        assert n_json == n_pyscf, f"{s}: {n_json} ECP terms in JSON, {n_pyscf} in PySCF"
+    return {"ecp_core_electrons": got, "nelectron": int(mol.nelectron)}
 
 
 def write_orca_input(
@@ -690,17 +799,19 @@ def write_orca_input(
     multiplicity: int = 1,
     extra_blocks: str = "",
     nprocs: int = 1,
+    ecp_json: Path | None = None,
 ) -> Path:
     """Write an ORCA input with ferric's geometry (in Bohr, `! Bohrs`) and
     ferric's basis (`NewGTO`). `keywords` must spell out the like-for-like
     choices (e.g. "UHF NoRI NoFrozenCore VeryTightSCF"); no default is
     supplied here on purpose — ORCA's defaults (RIJCOSX for hybrids, frozen
-    core for MP2) are exactly the silent mismatches §2.3 lists."""
+    core for MP2) are exactly the silent mismatches §2.3 lists. `ecp_json`
+    adds ferric's ECP as `NewECP` entries (see `orca_basis_block`)."""
     symbols, coords = read_xyz(xyz_path)
     body = [
         f"! {keywords} Bohrs",
         f"%pal nprocs {nprocs} end",
-        orca_basis_block(basis_name, symbols),
+        orca_basis_block(basis_name, symbols, ecp_json=ecp_json),
     ]
     if extra_blocks:
         body.append(extra_blocks)
@@ -720,6 +831,10 @@ _ORCA_PATTERNS = {
     "version": re.compile(r"Program Version\s+(\S+)"),
     "s_squared": re.compile(r"Expectation value of <S\*\*2>\s*:\s*(-?\d+\.\d+)"),
     "scf_iterations": re.compile(r"SCF CONVERGED AFTER\s+(\d+)\s+CYCLES"),
+    # ORCA prints V_nn with the ECP-reduced charges Z - N_core, so this is
+    # the check that N_core reached ORCA (8 decimals printed).
+    "nuclear_repulsion": re.compile(r"Nuclear Repulsion\s*:\s*(-?\d+\.\d+)\s*Eh"),
+    "n_electrons": re.compile(r"Number of Electrons\s+NEL\s+\.+\s+(\d+)"),
 }
 
 

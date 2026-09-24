@@ -1,0 +1,110 @@
+{
+  "row": "RHF+ECP / ECP gradients",
+  "system": "hbr",
+  "basis": "def2-svp",
+  "charge": 0,
+  "multiplicity": 1,
+  "method": "rhf",
+  "nao": 37,
+  "nelectron": 36,
+  "ecp_core_electrons": [
+    0,
+    0
+  ],
+  "nuclear_repulsion": 12.3474682548,
+  "rhf": {
+    "energy": -2572.681060311109,
+    "converged": true,
+    "homo": -0.4276565820883208,
+    "lumo": 0.11280403798037719,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF RHF internal (real)"
+    },
+    "gradient": [
+      [
+        -1.0347157442674953e-15,
+        -9.973656788784536e-16,
+        -0.04197578200499397
+      ],
+      [
+        1.0347157442683256e-15,
+        9.973656788792565e-16,
+        0.04197578200498686
+      ]
+    ],
+    "gradient_units": "Hartree/Bohr, atoms in xyz order",
+    "gradient_max_abs": 0.04197578200499397,
+    "gradient_sum": [
+      8.30276102745115e-28,
+      8.028631862886848e-28,
+      -7.105427357601002e-15
+    ]
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "methods": [
+        "scf.RHF",
+        "nuc_grad_method() (analytic)"
+      ],
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08,
+      "max_cycle": 500,
+      "ecp": "mol.ecp built by common.pyscf_ecp from the basis JSON's inline ecp_potentials",
+      "eri": "exact 4-index (no density fitting)",
+      "numpy": "1.26.4"
+    },
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF RHF internal (real)"
+    },
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "ecp_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "geometry_xyz": "testdata/molecules/validation/ecp/hbr.xyz",
+    "geometry_xyz_sha256": "f934a0eb9dd663549d02664f1619da2d1c3e591dacaa58e3b2b6c44d1e19edd9",
+    "geometry_bohr": [
+      [
+        "H",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "Br",
+        0.0,
+        0.0,
+        2.8345891868475928
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_ecp.py",
+    "git_head": "1768f45d4bd8a592cbef440195b46c01f43196cf",
+    "generated_utc": "2026-09-24T20:17:41+00:00",
+    "basis_self_check": {
+      "nao": 37,
+      "replica_self_overlap_max_dev": 2.220446049250313e-16,
+      "pyscf_diag_max_dev": 8.881784197001252e-16,
+      "diag_checked": 37,
+      "diag_skipped_cartesian": 0
+    },
+    "ecp_self_check": {
+      "ecp_core_electrons": [
+        0,
+        0
+      ],
+      "nelectron": 36
+    }
+  }
+}
