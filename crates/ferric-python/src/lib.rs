@@ -2128,6 +2128,46 @@ impl PyCdftResult {
     }
 }
 
+/// The key `cdft_coupling` compares to decide whether two cDFT states share
+/// one Hamiltonian.
+///
+/// Keyed on the EFFECTIVE fitting choice: solve_uhf has no auto-default and
+/// build_df_jk treats Some("") as "do not fit", so unset and "" are the same
+/// exact-J/K Hamiltonian and must not look different here. The nuclear
+/// Hamiltonian too: a ghost centre (`@He`) keeps the basis and AO overlap
+/// identical while removing a nucleus, so the overlap check alone cannot see
+/// it. Key the PHYSICAL fields only (Z, ghost, ECP core count, exact
+/// coordinates via to_bits, charge, multiplicity) from the post-ECP molecule --
+/// not its Debug form, which also carries the symbol as typed ("He" vs "he")
+/// and would refuse two identical Hamiltonians.
+fn cdft_hamiltonian_key(emol: &Molecule, config: &RhfConfig) -> String {
+    let effective_aux = |a: &Option<String>| a.clone().filter(|s| !s.is_empty());
+    let nuclei: Vec<(i32, bool, i32, [u64; 3])> = emol
+        .atoms
+        .iter()
+        .map(|a| {
+            (
+                a.z,
+                a.ghost,
+                a.n_core_ecp,
+                [a.x.to_bits(), a.y.to_bits(), a.zpos.to_bits()],
+            )
+        })
+        .collect();
+    format!(
+        "nuclei={:?} charge={} mult={} xc={:?} df_j_aux={:?} df_k_aux={:?} k_builder={:?} dft_grid={:?} external={:?}",
+        nuclei,
+        emol.charge,
+        emol.multiplicity,
+        config.xc,
+        effective_aux(&config.df_j_aux),
+        effective_aux(&config.df_k_aux),
+        config.k_builder,
+        config.dft_grid,
+        config.external_potential,
+    )
+}
+
 /// Constrained UHF / UKS (Wu–Van Voorhis cDFT): minimize the energy subject to
 /// fragment population constraints, via a nested lambda-Newton loop around an
 /// ordinary UHF/UKS solve with `sum_C lambda_C W^C` added to the Fock matrix.
@@ -2355,40 +2395,7 @@ fn run_cdft(
         ..defaults
     };
 
-    // Key on the EFFECTIVE fitting choice: solve_uhf has no auto-default and
-    // build_df_jk treats Some("") as "do not fit", so unset and "" are the
-    // same exact-J/K Hamiltonian and must not look different here.
-    let effective_aux = |a: &Option<String>| a.clone().filter(|s| !s.is_empty());
-    // The nuclear Hamiltonian too: a ghost centre (`@He`) keeps the basis and
-    // AO overlap identical while removing a nucleus, so the overlap check alone
-    // cannot see it. Key the PHYSICAL fields only (Z, ghost, ECP core count,
-    // exact coordinates via to_bits, charge, multiplicity) from the post-ECP
-    // molecule -- not its Debug form, which also carries the symbol as typed
-    // ("He" vs "he") and would refuse two identical Hamiltonians.
-    let nuclei: Vec<(i32, bool, i32, [u64; 3])> = emol
-        .atoms
-        .iter()
-        .map(|a| {
-            (
-                a.z,
-                a.ghost,
-                a.n_core_ecp,
-                [a.x.to_bits(), a.y.to_bits(), a.zpos.to_bits()],
-            )
-        })
-        .collect();
-    let hamiltonian_key = format!(
-        "nuclei={:?} charge={} mult={} xc={:?} df_j_aux={:?} df_k_aux={:?} k_builder={:?} dft_grid={:?} external={:?}",
-        nuclei,
-        emol.charge,
-        emol.multiplicity,
-        config.xc,
-        effective_aux(&config.df_j_aux),
-        effective_aux(&config.df_k_aux),
-        config.k_builder,
-        config.dft_grid,
-        config.external_potential,
-    );
+    let hamiltonian_key = cdft_hamiltonian_key(&emol, &config);
     let bs = basis_set.inner.clone();
     let prep = PreparedBasis::new(&emol, &bs).map_err(make_err)?;
     let op = Operator::coulomb();
