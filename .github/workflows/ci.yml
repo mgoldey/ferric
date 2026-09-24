@@ -618,24 +618,16 @@ jobs:
         timeout-minutes: 120
         run: |
           set -euo pipefail
-          cargo nextest archive --workspace --all-targets --locked \
-            --archive-file /tmp/nextest-archive.tar.zst
           # `runlog_writer` SPAWNS examples/runlog_probe as a subprocess, to
           # exercise the JSON writer from a real process it can SIGKILL
-          # mid-stream. That binary is NOT in the archive: MEASURED, `nextest
-          # archive --all-targets` on ferric-scf produced 163 files and zero
-          # matching `examples/runlog_probe`. `cargo test --examples` does not
-          # help either -- it COMPILES examples as test targets hunting for
-          # #[test] fns and never LINKS the runnable binary, leaving .rmeta
-          # files in target/debug/examples/ and no executable.
-          #
-          # Only an explicit `cargo build --example` produces it. Built here,
-          # in the job that has a warm target/, and carried to the shards
-          # alongside the archive.
+          # mid-stream. Only an explicit `cargo build --example` links that
+          # binary (`cargo test --examples` compiles examples as test targets
+          # and never produces the executable), so it is built here, BEFORE
+          # the archive: .config/nextest.toml's `archive.include` packs it
+          # into the archive and errors if it is absent.
           cargo build -p ferric-scf --example runlog_probe --locked
-          # Staged NEXT TO the archive: only /tmp/nextest-archive.tar.zst is
-          # uploaded, so a binary left in target/ never reaches a shard.
-          cp target/debug/examples/runlog_probe /tmp/runlog_probe
+          cargo nextest archive --workspace --all-targets --locked \
+            --archive-file /tmp/nextest-archive.tar.zst
           # UNMEASURED RISK, printed so the first real run answers it: ci.yml
           # records ~190 test binaries at 200-335 MB each uncompressed. They
           # share most of their symbols so zstd should collapse it hard, but
@@ -649,9 +641,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: nextest-archive
-          path: |
-            /tmp/nextest-archive.tar.zst
-            /tmp/runlog_probe
+          path: /tmp/nextest-archive.tar.zst
           retention-days: 1
 
       - name: Save cargo cache
@@ -889,38 +879,21 @@ jobs:
           name: nextest-archive
           path: /tmp
 
-      # MEASURED 2026-09-19/20: the download intermittently leaves /tmp without
-      # `runlog_probe`, on ONE shard while the other three of the same run
-      # succeed with the same artifact (runs 35483904588 and 35486199559, both
-      # shard 3). It is not shard-specific -- a re-run of that same shard on
-      # unchanged code passed -- and not disk pressure (108 GB free after the
-      # cleanup step on both the failing and passing shards).
-      #
-      # Two problems with letting that reach the run step. First, it surfaced
-      # as `chmod: cannot access '/tmp/runlog_probe'`, which reads as a missing
-      # BUILD rather than a failed download and cost two separate triage
-      # rounds on unrelated PRs. Second, a transient extraction failure failed
-      # the whole shard.
-      #
-      # So: verify, retry once, and if it still is not there say what actually
-      # happened. Cheap -- it is one file next to an archive that did arrive.
+      # A second artifact file (the probe, uploaded next to the archive) went
+      # missing on single shards after both the download and a retry (runs
+      # 35483904588, 35486199559, 36013053462). The probe now travels INSIDE
+      # the archive, so there is one file to check. The retry stays for the
+      # archive itself.
       - name: Verify the archive arrived
         run: |
           set -euo pipefail
-          missing=""
-          for f in /tmp/nextest-archive.tar.zst /tmp/runlog_probe; do
-            [ -f "$f" ] || missing="$missing $f"
-          done
-          if [ -n "$missing" ]; then
-            echo "::warning::artifact download incomplete, missing:$missing -- retrying"
-            echo "--- what /tmp actually holds ---"
+          if [ -f /tmp/nextest-archive.tar.zst ]; then
+            echo "complete=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::artifact download incomplete -- retrying"
             ls -la /tmp | head -40
+            echo "complete=0" >> "$GITHUB_OUTPUT"
           fi
-          # ONE output covering both files. `hashFiles()` is not usable here:
-          # it only resolves paths inside the workspace, so
-          # `hashFiles('/tmp/runlog_probe')` is always empty and would make the
-          # retry run on every shard.
-          echo "complete=$([ -z "$missing" ] && echo 1 || echo 0)" >> "$GITHUB_OUTPUT"
         id: verify
 
       - name: Re-download if the artifact was incomplete
@@ -949,42 +922,21 @@ jobs:
             EXPR="${EXPR}binary($b)"
           done
           echo "deferring $(echo $SLOW | wc -w) binaries from the fast tier"
-          # The probe is built by the archive job and shipped in the same
-          # artifact; nextest extracts the archive to a RANDOM temp dir, so the
-          # test cannot find it as a sibling and reads this instead.
-          #
-          # If it is STILL absent after the retry above, fail with a message
-          # about the DOWNLOAD instead of dying on `chmod`. That message names
-          # the binary but means the artifact, and it misdirected triage on two
-          # unrelated PRs (2026-09-19/20) before the cause was found.
-          #
-          # This still fails the shard, deliberately. `runlog_writer` asserts
-          # on the probe's existence rather than skipping
-          # (crates/ferric-scf/tests/runlog_writer.rs), so continuing without
-          # it would report a red test that is really a red download -- the
-          # exact confusion being fixed. Better to stop here and say why.
-          # BOTH files, not just the probe. Checking only the probe leaves a
-          # hole: if the retry restores it while the archive is still missing,
-          # the shard falls through to `cargo nextest --archive-file` and dies
-          # on the archive instead of emitting this diagnostic -- which is the
-          # same misdirection the diagnostic exists to prevent.
-          still_missing=""
-          for f in /tmp/nextest-archive.tar.zst /tmp/runlog_probe; do
-            [ -f "$f" ] || still_missing="$still_missing $f"
-          done
-          if [ -n "$still_missing" ]; then
-            echo "::error::missing after the download AND the retry:$still_missing" \
-                 "-- this is an ARTIFACT DOWNLOAD failure, not a build or test" \
-                 "failure. build-tests produced these and the sibling shards" \
-                 "received them. Re-run this job."
-            ls -la /tmp | head -40
+          if [ ! -f /tmp/nextest-archive.tar.zst ]; then
+            echo "::error::the nextest archive is missing after the download" \
+                 "AND the retry -- an ARTIFACT DOWNLOAD failure, not a build" \
+                 "or test failure. Re-run this job."
             exit 1
           fi
-          chmod +x /tmp/runlog_probe
-          export FERRIC_RUNLOG_PROBE=/tmp/runlog_probe
+          # Extract to a KNOWN directory (nextest's default is a random temp
+          # dir) so the test can be told where the packed probe landed.
+          # `runlog_writer` asserts the probe exists rather than skipping.
+          EXTRACT=$(mktemp -d)
+          export FERRIC_RUNLOG_PROBE="$EXTRACT/target/debug/examples/runlog_probe"
           cargo nextest run \
             --profile ci \
             --archive-file /tmp/nextest-archive.tar.zst \
+            --extract-to "$EXTRACT" \
             --workspace-remap . \
             --partition hash:${{ matrix.partition }}/4 \
             -E "not ($EXPR)"

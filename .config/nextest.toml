@@ -14,6 +14,18 @@
 # same defect class already recorded for ferric-batch. The groups below cap
 # concurrency for the tests that actually allocate against the pool.
 
+[profile.default]
+# `runlog_writer` spawns examples/runlog_probe as a subprocess. That binary is
+# not a test target, so `nextest archive` leaves it out unless it is listed
+# here. The CI build job builds it BEFORE archiving; `on-missing = "error"`
+# makes a skipped build fail the archive step instead of a shard. Shipping it
+# inside the archive means it cannot arrive without the tests that need it,
+# which a second artifact file did intermittently (runs 35483904588,
+# 35486199559, 36013053462).
+archive.include = [
+    { path = "debug/examples/runlog_probe", relative-to = "target", on-missing = "error" },
+]
+
 [profile.ci]
 # Fail slow: report EVERY failing test, matching --no-fail-fast. A red run that
 # surfaces one failure per cycle costs one full CI round trip per bug.
