@@ -876,6 +876,11 @@ pub fn u_oo_ri_mp2(
 
         // Backtracking if energy increased noticeably (DIIS can produce small uphill).
         if total_new > point.total() + 1e-4 {
+            // The rejected trial is never used on this branch; free its
+            // amplitude trio (and its pool reservation) before backtracking,
+            // so at most `point` plus one backtrack trio are resident -- the
+            // one-trio-per-point budget `check_u_amplitude_alloc` assumes.
+            drop(trial);
             // Try damped pure-Newton step (no DIIS), halving until accepted.
             let mut accepted = false;
             let mut ka = k_a_full.clone();
@@ -893,9 +898,10 @@ pub fn u_oo_ri_mp2(
                     &bt_c_b,
                     format!("U-OO-RI-MP2 amplitude trio (iter {iter}, backtrack {bt_i})").as_str(),
                 )?;
-                let ok = bt_point.total() <= point.total() + 1e-12;
-                bt = Some((bt_c_a, bt_c_b, bt_point));
-                if ok {
+                // Keep a backtrack point only once it is accepted; a rejected
+                // one is dropped here, before the next evaluation allocates.
+                if bt_point.total() <= point.total() + 1e-12 {
+                    bt = Some((bt_c_a, bt_c_b, bt_point));
                     accepted = true;
                     break;
                 }

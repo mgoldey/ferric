@@ -397,7 +397,12 @@ def solve(
             coef = np.linalg.lstsq(bm, rhs, rcond=None)[0][:nh]
             cn = sum(ci * cc for ci, cc in zip(coef, hist_c))
         c = cn
-    return c, maxit, gn
+    # Every caller uses the result as a stationary point (energies for finite
+    # differences, gaps between functionals at their minima), so running out
+    # of iterations is an error, not a result.
+    raise RuntimeError(
+        f"solve({kind}) did not converge: |g| = {gn:.3e} after {maxit} iterations (tol {tol:.0e})"
+    )
 
 
 def orth_err(sysm, c):
