@@ -322,32 +322,6 @@ def gen_closed_shell(system, charge, mult) -> list[Path]:
     return written
 
 
-def _uks_factory(aux, xc, sink):
-    def factory(mol):
-        mf = _make("uks", mol, aux, xc, "rij")
-        sink.append(mf)
-        return mf
-
-    return factory
-
-
-def _roks_factory(aux, xc, sink):
-    def factory(mol):
-        mf = _make("roks", mol, aux, xc, "rij")
-        sink.append(mf)
-        return mf
-
-    return factory
-
-
-def _pick(sink, energy):
-    """The SCF object common.run_open_shell selected (it returns only a dict)."""
-    for mf in sink:
-        if mf.converged and abs(mf.e_tot - energy) < 1e-12:
-            return mf
-    raise RuntimeError(f"no converged SCF object with E={energy}")
-
-
 def _fd_block(mol, aux, kind, xc, mf, steps) -> dict:
     dm = mf.make_rdm1()
     grads = {}
@@ -383,17 +357,16 @@ def gen_open_shell(system, charge, mult) -> list[Path]:
         payload = _header(system, basis_name, charge, mult, mol)
         stab = {}
         for xc in XCS:
-            sink = []
-            res = common.run_open_shell(
+            res, mf = common.run_open_shell(
                 mol,
                 "uks",
                 conv_tol=CONV_TOL,
                 conv_tol_grad=CONV_TOL_GRAD,
                 max_stab_rounds=MAX_STAB_ROUNDS,
                 guesses=GUESSES,
-                mf_factory=_uks_factory(aux, xc, sink),
+                mf_factory=lambda m, xc=xc: _make("uks", m, aux, xc, "rij"),
+                return_mf=True,
             )
-            mf = _pick(sink, res["energy"])
             g = _analytic_gradient(mf)
             res["xc"] = PYSCF_XC[xc]
             res["j"] = J_RECIPE["rij"]
@@ -416,17 +389,16 @@ def gen_open_shell(system, charge, mult) -> list[Path]:
             )
         if system in ROKS_SYSTEMS:
             for xc in XCS:
-                sink = []
-                res = common.run_open_shell(
+                res, mf = common.run_open_shell(
                     mol,
                     "rohf",
                     conv_tol=CONV_TOL,
                     conv_tol_grad=CONV_TOL_GRAD,
                     max_stab_rounds=MAX_STAB_ROUNDS,
                     guesses=GUESSES,
-                    mf_factory=_roks_factory(aux, xc, sink),
+                    mf_factory=lambda m, xc=xc: _make("roks", m, aux, xc, "rij"),
+                    return_mf=True,
                 )
-                mf = _pick(sink, res["energy"])
                 res["stability"]["kind"] = "PySCF ROKS internal (real)"
                 fd = _fd_block(mol, aux, "roks", xc, mf, FD_STEPS)
                 g_an = _analytic_gradient(mf)
