@@ -25,15 +25,18 @@
 //!   degenerate set such as a `±k` pair) is a hard error — metals and
 //!   fractional occupation are out of scope.
 //!
-//! # Scope (this commit)
+//! # J/K sources ([`KRhfConfig::jk`])
 //!
-//! J/K come only from the dense pure-AFT oracle ([`crate::kdense_aft`];
-//! `N_k² nao⁴` memory, hard-capped): toy cells and exactness anchors.
-//! Production k-point exchange needs complex RS-GDF PER q: an aux FT at
-//! `G + q`, a Hermitian metric `J2(q)` with its own eig + lindep cut (only
-//! q = 0 carries the Gamma G = 0 bookkeeping), and SR 3-centre lattice sums
-//! weighted by `e^{ik'·L}` — NOT implemented here. Shifted (Monkhorst-Pack,
-//! even N) meshes run through the same code but have no supercell anchor.
+//! * `dense` — the pure-AFT oracle ([`crate::kdense_aft`]; `N_k² nao⁴`
+//!   memory, hard-capped): toy cells and exactness anchors.
+//! * `rsgdf` — complex RS-GDF per momentum transfer q
+//!   ([`crate::rsgdf::kpoint::KRsGdf`]): aux FT at `G + q`, a Hermitian
+//!   metric `J2(q)` with its own eig + lindep cut (only q = 0 carries the
+//!   Gamma G = 0 bookkeeping), SR 3-centre lattice sums binned by residue and
+//!   weighted by `e^{ik'·L} e^{−iq·T}`. Needs an aux basis.
+//!
+//! Shifted (Monkhorst-Pack, even N) meshes run through the same code but
+//! have no supercell anchor.
 
 use crate::dense_aft::ExxDiv;
 use crate::ewald::default_ewald_omega;
@@ -42,6 +45,7 @@ use crate::hcore::PeriodicHcoreConfig;
 use crate::kdense_aft::{KDenseAftConfig, KDenseAftEri};
 use crate::kpts::KPointMesh;
 use crate::lattice::Cell;
+use crate::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ndarray::{s, Array2};
@@ -137,49 +141,111 @@ pub struct KScfResult {
     pub kpts: Vec<[f64; 3]>,
 }
 
+/// Which J/K builder [`solve_krhf`] uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KJkKind {
+    /// Dense pure-AFT kernels (oracle; toy scale).
+    Dense,
+    /// k-point RS-GDF (needs an aux basis).
+    RsGdf,
+}
+
+impl KJkKind {
+    /// Strict parse: `"dense"` or `"rsgdf"` (case-insensitive); anything
+    /// else is an error (config honesty — no silent default).
+    pub fn parse_config_str(s: &str) -> Result<Self, FerricError> {
+        match s.to_ascii_lowercase().as_str() {
+            "dense" => Ok(KJkKind::Dense),
+            "rsgdf" => Ok(KJkKind::RsGdf),
+            other => Err(FerricError::General(format!(
+                "k-point jk must be \"dense\" or \"rsgdf\", got {other:?}"
+            ))),
+        }
+    }
+}
+
 /// Top-level settings for [`solve_krhf`].
 #[derive(Debug, Clone, Copy)]
 pub struct KRhfConfig {
     /// SCF settings.
     pub scf: KScfConfig,
-    /// Exchange-divergence treatment.
+    /// Exchange-divergence treatment (overrides `rsgdf.gdf.exxdiv`).
     pub exxdiv: ExxDiv,
     /// One-electron lattice sums (as `periodic_hcore`).
     pub hcore: PeriodicHcoreConfig,
-    /// Dense-AFT J/K oracle.
+    /// J/K builder.
+    pub jk: KJkKind,
+    /// Dense-AFT J/K oracle settings (`jk = Dense`).
     pub dense: KDenseAftConfig,
+    /// k-point RS-GDF settings (`jk = RsGdf`).
+    pub rsgdf: KRsGdfConfig,
 }
 
 impl KRhfConfig {
-    /// Defaults with the balanced Ewald ω of `cell` for the nuclear split.
+    /// Defaults (dense J/K) with the balanced Ewald ω of `cell` for the
+    /// nuclear split.
     pub fn for_cell(cell: &Cell, exxdiv: ExxDiv) -> Self {
         Self {
             scf: KScfConfig::default(),
             exxdiv,
             hcore: PeriodicHcoreConfig::with_omega(default_ewald_omega(cell)),
+            jk: KJkKind::Dense,
             dense: KDenseAftConfig::default(),
+            rsgdf: KRsGdfConfig::default(),
         }
     }
 }
 
-/// k-point RHF on the dense pure-AFT oracle: builds `S(k)`, `h(k)`
-/// ([`periodic_hcore_kpts`]) and the J/K kernels ([`KDenseAftEri`]), then
-/// runs [`solve_krhf_injected`]. Toy scale only (module doc).
+/// k-point RHF: builds `S(k)`, `h(k)` ([`periodic_hcore_kpts`]) and the J/K
+/// source selected by `cfg.jk` — the dense pure-AFT kernels
+/// ([`KDenseAftEri`], `aux` must be `None`) or k-point RS-GDF ([`KRsGdf`],
+/// `aux` REQUIRED) — then runs [`solve_krhf_injected`].
 pub fn solve_krhf(
     cell: &Cell,
     prep: &PreparedBasis,
+    aux: Option<&PreparedBasis>,
     mesh: &KPointMesh,
     cfg: &KRhfConfig,
 ) -> Result<KScfResult, FerricError> {
+    match (cfg.jk, aux) {
+        (KJkKind::Dense, Some(_)) => {
+            return Err(FerricError::General(
+                "solve_krhf: an aux basis was given but jk = dense does not use it; set jk = \
+                 rsgdf or pass no aux basis"
+                    .into(),
+            ))
+        }
+        (KJkKind::RsGdf, None) => {
+            return Err(FerricError::General(
+                "solve_krhf: jk = rsgdf requires an auxbasis (none given)".into(),
+            ))
+        }
+        _ => {}
+    }
     let hk = periodic_hcore_kpts(cell, prep, mesh, &cfg.hcore)?;
-    let eri = KDenseAftEri::build(cell, prep, mesh, &hk.s, cfg.exxdiv, &cfg.dense)?;
-    let inj = KPointInjection {
-        s: hk.s,
-        h: hk.h,
-        vnn: hk.enn,
-        jk: Box::new(eri.jk_builder()),
-    };
-    solve_krhf_injected(cell, mesh, &cfg.scf, inj)
+    match aux {
+        None => {
+            let eri = KDenseAftEri::build(cell, prep, mesh, &hk.s, cfg.exxdiv, &cfg.dense)?;
+            let inj = KPointInjection {
+                s: hk.s,
+                h: hk.h,
+                vnn: hk.enn,
+                jk: Box::new(eri.jk_builder()),
+            };
+            solve_krhf_injected(cell, mesh, &cfg.scf, inj)
+        }
+        Some(aux) => {
+            let gdf =
+                KRsGdf::build(cell, prep, aux, mesh, &hk.s, &cfg.rsgdf)?.with_exxdiv(cfg.exxdiv);
+            let inj = KPointInjection {
+                s: hk.s,
+                h: hk.h,
+                vnn: hk.enn,
+                jk: Box::new(gdf.jk_builder()),
+            };
+            solve_krhf_injected(cell, mesh, &cfg.scf, inj)
+        }
+    }
 }
 
 fn herm_t(m: &Array2<Complex64>) -> Array2<Complex64> {
@@ -191,7 +257,7 @@ fn herm_t(m: &Array2<Complex64>) -> Array2<Complex64> {
 /// Hermitian matrix returns eigenvectors that do not satisfy `A v = v w`
 /// (measured residual 1.2 on a 2x2 example vs 2e-16 column-major); real
 /// matrices are unaffected, which is why every Gamma / real-k path worked.
-fn eigh_herm(
+pub(crate) fn eigh_herm(
     m: &Array2<Complex64>,
 ) -> Result<(ndarray::Array1<f64>, Array2<Complex64>), ndarray_linalg::error::LinalgError> {
     use ndarray::ShapeBuilder;

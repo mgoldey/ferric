@@ -105,6 +105,8 @@ use ndarray_linalg::{Eigh, UPLO};
 use num_complex::Complex64;
 use std::f64::consts::PI;
 
+pub mod kpoint;
+
 /// Default Ewald split for the RS-GDF build (Bohr⁻¹; the prototype's `w=1`).
 pub const DEFAULT_RSGDF_OMEGA: f64 = 1.0;
 /// Default per-term truncation target (the prototype's `prec`).
@@ -657,6 +659,25 @@ impl Stage<'_> {
     fn sr_metric(&self) -> Result<(Array2<f64>, usize), FerricError> {
         let naux = self.aux.nbasis();
         let mut j2 = Array2::<f64>::zeros((naux, naux));
+        let count = self.sr_metric_each(|p, q, _t, blk| {
+            for i in 0..p.nfun {
+                for j in 0..q.nfun {
+                    j2[(p.off + i, q.off + j)] += blk[i * q.nfun + j];
+                }
+            }
+        })?;
+        Ok((j2, count))
+    }
+
+    /// Every SR metric block `(P_0 | Q_T)_erfc` the screen keeps, in a fixed
+    /// order: `sink(P shell, Q shell, T, block (nP, nQ))`. Returns the count.
+    /// [`Stage::sr_metric`] (Gamma) and the residue-binned k-point form
+    /// ([`kpoint`]) share this walk, so the Gamma sums are unchanged bit for
+    /// bit.
+    fn sr_metric_each<F>(&self, mut sink: F) -> Result<usize, FerricError>
+    where
+        F: FnMut(&GShell, &GShell, [f64; 3], &[f64]),
+    {
         let mut count = 0usize;
         let global = if self.sr_screen {
             0.0
@@ -693,16 +714,12 @@ impl Stage<'_> {
                 self.walker.visit(x0, rad, |t| {
                     count += 1;
                     let blk = eng.compute_eri2_shifted(self.aux, ip, iq, t)?;
-                    for i in 0..p.nfun {
-                        for j in 0..q.nfun {
-                            j2[(p.off + i, q.off + j)] += blk[i * q.nfun + j];
-                        }
-                    }
+                    sink(p, q, t, blk);
                     Ok(())
                 })?;
             }
         }
-        Ok((j2, count))
+        Ok(count)
     }
 
     /// SR 3-index `Σ_{L,T} (μ_0 ν_L | P_T)_erfc` over the pair `images`,
@@ -711,6 +728,29 @@ impl Stage<'_> {
         let n = self.obs.nbasis();
         let naux = self.aux.nbasis();
         let mut j3 = Array2::<f64>::zeros((n * n, naux));
+        let count = self.sr_three_index_each(images, |a, b, p, _l, _t, blk| {
+            // block layout (nP, n1, n2)
+            for pp in 0..p.nfun {
+                for i in 0..a.nfun {
+                    let row0 = (a.off + i) * n + b.off;
+                    let src = (pp * a.nfun + i) * b.nfun;
+                    for j in 0..b.nfun {
+                        j3[(row0 + j, p.off + pp)] += blk[src + j];
+                    }
+                }
+            }
+        })?;
+        Ok((j3, count))
+    }
+
+    /// Every SR 3-centre block `(μ_0 ν_L | P_T)_erfc` the screen keeps, in a
+    /// fixed order: `sink(μ shell, ν shell, P shell, L, T, block (nP, nμ, nν))`.
+    /// Returns the triplet count (as [`Stage::sr_metric_each`]: one walk
+    /// shared by the Gamma sum and the k-point residue bins).
+    fn sr_three_index_each<F>(&self, images: &[[f64; 3]], mut sink: F) -> Result<usize, FerricError>
+    where
+        F: FnMut(&GShell, &GShell, &GShell, [f64; 3], [f64; 3], &[f64]),
+    {
         let mut count = 0usize;
         let global = if self.sr_screen {
             0.0
@@ -782,16 +822,7 @@ impl Stage<'_> {
                                 i2,
                                 [t, [0.0; 3], *l],
                             )? {
-                                // block layout (nP, n1, n2)
-                                for pp in 0..p.nfun {
-                                    for i in 0..a.nfun {
-                                        let row0 = (a.off + i) * n + b.off;
-                                        let src = (pp * a.nfun + i) * b.nfun;
-                                        for j in 0..b.nfun {
-                                            j3[(row0 + j, p.off + pp)] += blk[src + j];
-                                        }
-                                    }
-                                }
+                                sink(a, b, p, *l, t, blk);
                             }
                             Ok(())
                         })?;
@@ -799,7 +830,7 @@ impl Stage<'_> {
                 }
             }
         }
-        Ok((j3, count))
+        Ok(count)
     }
 
     /// LR `(2/Ω) Σ_{G∈half} 4π/G² e^{−G²/4ω²} Re[conj(A) X]` added into `j2`
@@ -869,6 +900,27 @@ impl Stage<'_> {
             sink,
         )
     }
+}
+
+/// Pair-image radius of the SR 3-centre sum: every pair whose charge bound
+/// times the largest aux charge and potential factor reaches `precision`
+/// (pair_ft's radius rule at the equivalent pair threshold). Shared by the
+/// Gamma and k-point builds.
+fn pair_image_radius(st: &Stage<'_>, precision: f64) -> f64 {
+    let amin_orb = st
+        .obs_sh
+        .iter()
+        .map(|s| s.amin)
+        .fold(f64::INFINITY, f64::min);
+    let pmax_orb = 2.0 * st.obs_sh.iter().map(|s| s.amax).fold(0.0_f64, f64::max);
+    let qaux_max = st.aux_sh.iter().map(|p| p.qbound).fold(0.0_f64, f64::max);
+    let vfac_max = st
+        .aux_sh
+        .iter()
+        .map(|p| 1.0 + 2.0 * (pmax_orb * p.amax / (pmax_orb + p.amax)).sqrt() / PI.sqrt())
+        .fold(1.0_f64, f64::max);
+    let pair_thresh = 0.1 * precision / (qaux_max * vfac_max).max(1.0);
+    (2.0 * (1e3 / pair_thresh).ln() / amin_orb).sqrt() + SR_MARGIN_BOHR
 }
 
 /// The pair images are generated from the cell's atoms, so the orbital basis
@@ -945,6 +997,23 @@ fn fit_with_metric(
     Ok((b, evals.to_vec(), w))
 }
 
+/// libint2 (as built for ferric) assumes solid-harmonic shells for l > 1 in
+/// 2- and 3-centre two-body integrals and ABORTS the process on a Cartesian
+/// one (`engine.impl.h`, `ERI2_PURE_SH`). Refuse such an aux basis up front
+/// with a typed error instead.
+pub(crate) fn require_pure_aux(aux: &PreparedBasis, who: &str) -> Result<(), FerricError> {
+    for (i, sh) in aux.located_shells().iter().enumerate() {
+        if sh.l > 1 && !sh.pure {
+            return Err(FerricError::Basis(format!(
+                "{who}: aux shell {i} has l = {} and is Cartesian; libint2's 2/3-centre \
+                 integrals require solid-harmonic (pure) shells above l = 1",
+                sh.l
+            )));
+        }
+    }
+    Ok(())
+}
+
 impl RsGdf {
     /// Build B for `cell` with orbital basis `obs` (built from `cell.mol()`)
     /// and aux basis `aux` (any centres: `PreparedBasis::new(cell.mol(),
@@ -992,6 +1061,7 @@ impl RsGdf {
         retain_parts: bool,
     ) -> Result<(Self, Option<PeriodicFitParts>), FerricError> {
         cfg.validate()?;
+        require_pure_aux(aux, "RsGdf")?;
         let n = obs.nbasis();
         let n2 = n * n;
         let naux = aux.nbasis();
@@ -1045,20 +1115,7 @@ impl RsGdf {
         // Pair images: every pair whose charge bound times the largest aux
         // charge and potential factor reaches `precision` (pair_ft's radius
         // rule at the equivalent pair threshold).
-        let amin_orb = st
-            .obs_sh
-            .iter()
-            .map(|s| s.amin)
-            .fold(f64::INFINITY, f64::min);
-        let pmax_orb = 2.0 * st.obs_sh.iter().map(|s| s.amax).fold(0.0_f64, f64::max);
-        let qaux_max = st.aux_sh.iter().map(|p| p.qbound).fold(0.0_f64, f64::max);
-        let vfac_max = st
-            .aux_sh
-            .iter()
-            .map(|p| 1.0 + 2.0 * (pmax_orb * p.amax / (pmax_orb + p.amax)).sqrt() / PI.sqrt())
-            .fold(1.0_f64, f64::max);
-        let pair_thresh = 0.1 * cfg.precision / (qaux_max * vfac_max).max(1.0);
-        let rpair = (2.0 * (1e3 / pair_thresh).ln() / amin_orb).sqrt() + SR_MARGIN_BOHR;
+        let rpair = pair_image_radius(&st, cfg.precision);
         ledger.reserve(
             &format!("RsGdf pair-image list (r_pair = {rpair:.2} Bohr)"),
             bytes_of(cell.translation_count_bound(rpair)?, 24),

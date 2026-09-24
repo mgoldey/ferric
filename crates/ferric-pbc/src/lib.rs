@@ -56,9 +56,9 @@
 //!   (`solve_krhf`): Monkhorst-Pack / Gamma-centred meshes with exact
 //!   Bloch phases and time-reversal pairing, per-k complex `S(k)`, `h(k)`
 //!   (`hcore::kpoint`), the residue-resolved pair FT
-//!   (`pair_ft::residues`), and a DENSE pure-AFT k-point J/K oracle (supercell
-//!   Madelung for `exxdiv = ewald`). Toy scale only: k-point RS-GDF (per-q
-//!   complex fitting) is not implemented.
+//!   (`pair_ft::residues`), a DENSE pure-AFT k-point J/K oracle (supercell
+//!   Madelung for `exxdiv = ewald`) and k-point RS-GDF per momentum transfer
+//!   q ([`rsgdf::kpoint`], `KRhfConfig::jk = rsgdf`).
 //!
 //! Units: Bohr and Hartree throughout; G vectors in Bohr⁻¹.
 //!
@@ -95,8 +95,8 @@ pub use hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
 pub use kdense_aft::{KDenseAftConfig, KDenseAftEri, KDenseAftJk};
 pub use kpts::{KPointMesh, MeshCentring};
 pub use kscf::{
-    complex_canonical_orthogonalizer, solve_krhf, solve_krhf_injected, KPointInjection, KPointJk,
-    KRhfConfig, KScfConfig, KScfResult,
+    complex_canonical_orthogonalizer, solve_krhf, solve_krhf_injected, KJkKind, KPointInjection,
+    KPointJk, KRhfConfig, KScfConfig, KScfResult,
 };
 pub use lattice::Cell;
 pub use lmp2::{
@@ -106,6 +106,7 @@ pub use lmp2::{
 };
 pub use mp2::{gamma_mp2, GammaMp2Config, GammaMp2Integrals, GammaMp2Result, Mp2Denominators};
 pub use pair_ft::pair_ft;
+pub use rsgdf::kpoint::{KRsGdf, KRsGdfConfig, KRsGdfJk, KRsGdfQStats, KRsGdfStats};
 pub use rsgdf::{PeriodicFitParts, RsGdf, RsGdfConfig};
 pub use ucorr::{gamma_ump2, gamma_urpa, GammaUmp2Result, GammaUrpaResult};
 pub use uhf::{
