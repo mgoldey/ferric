@@ -31,26 +31,21 @@ not the example.
 
 ## Files that do not run as shipped, or are misleading
 
-- **`water-ccsd.toml` runs H2/STO-3G, not water.** The file name is
-  historical.
-- **`water-tda.toml` and `water-tddft-pbe.toml` fail** with
-  `auxiliary basis 'cc-pvdz-rifit' not found`. With no `[mp2] auxbasis`,
-  `tda`/`tddft` fall back to `cc-pvdz-rifit`, which is not a bundled basis.
-  Add `[mp2] auxbasis = "cc-pvdz-ri"` to run them.
-- **`water-b2plyp.toml` fails** with `unknown bundled basis: cc-pvdz-rifit`.
-  It names that auxiliary basis explicitly. Change it to `cc-pvdz-ri`.
+- **`water-ccsd.toml` runs H2/STO-3G, not water.** The file name does not
+  describe its contents.
+- **`water-tdhf-static-alpha.toml` fails** with `unphysical static
+  polarizability … alpha_xx = -2.682761e0 (negative)`. It leaves `[gw]
+  scissor` at 0, where the RPAx@PBE α tensor has a negative diagonal
+  component and the run is refused. Add `scissor = 0.36` (about 0.3–0.4 Ha)
+  to its `[gw]` section. Its header's "9.24 vs DOSD 9.64 a.u." is the
+  `scissor = 0` value; see
+  [RPA and GW](../methods/rpa-gw.md) for the α at a physical scissor.
 - **`benzene-dfb3lyp-mpi.toml` contains no MPI settings.** Only the file name
   refers to MPI: the same input is meant to be launched under the MPI build
   (`--features mpi`, which is not published).
-- **The `water-laplace-sos-mp2.toml` header is wrong about `ao-sparse`.** It
-  says the `"ao-sparse"` formulation was "MEASURED not to pay". Disregard
-  that: octane is exact at a 12 Bohr cutoff, and danuglipron (71 atoms)
-  reaches 0.05% at 4 Bohr. The record is the doc comment on
-  `sos_ao_sparse_truncation_radius_is_transferable_across_sizes` in
-  `crates/ferric-mp2/src/laplace.rs`.
 - **The `water-rhf-cosx.toml` header conflicts with the code.** It says
-  "RHF only (UHF/ROHF ignore k_builder)", but `[scf] k_builder` is documented
-  in `config.rs` and the Python bindings as honoured by RHF, UHF and ROHF.
+  "RHF only (UHF/ROHF ignore k_builder)", but `solve_uhf` and the ROHF solver
+  both honour `[scf] k_builder`.
 - **Three kinds need `FERRIC_TERF_TABLE_DIR`:** `water-mp2v.toml`,
   `water-scs-mp2-2terfc.toml`, and any `rs-mp2-rpa` run with
   `attenuator = "terf"`. They need the tempered-erfc interpolation tables and
@@ -97,7 +92,7 @@ See [The MP2 family](../methods/mp2.md).
 | `water-scs-mp2.toml` | H2O / cc-pVDZ | `scs-mp2` | — | Grimme coefficients (defaults). |
 | `water-scs-mp2-2terfc.toml` | H2O / cc-pVDZ | `scs-mp2-2terfc` | — | Thesis defaults r0 = 0.75/1.05 Å. Needs the terf tables. |
 | `water-laplace-rimp2.toml` | H2O / cc-pVDZ | `laplace-mp2` | — | |
-| `water-laplace-sos-mp2.toml` | H2O / cc-pVDZ | `laplace-sos-mp2` | — | See the out-of-date header note above. |
+| `water-laplace-sos-mp2.toml` | H2O / cc-pVDZ | `laplace-sos-mp2` | — | |
 | `water-mp2v.toml` | H2O / aug-cc-pVDZ | `mp2-v` | — | The header warns that aDZ is outside the fitted basis. Needs the terf tables. |
 | `water-rs-mp2-rpa.toml` | H2O / aug-cc-pVDZ | `rs-mp2-rpa` | — | Smoke grade. |
 
@@ -111,7 +106,7 @@ See [Coupled cluster](../methods/cc.md) and
 | `water-ccsd.toml` | **H2** / STO-3G | `ccsd` | "CCSD correlation energy = −0.02052453 Hartree (exact-integral numpy reference)" (checked by `test_ccsd_h2_sto3g` in `crates/ferric-cc/src/ccsd.rs`) | Misnamed. Aux `def2-qzvpp-rifit`. |
 | `water-linlccd.toml` | H2O / 6-31G | `linlccd` | — | |
 | `water-wb97xlv.toml` | H2O / 6-31G | `wb97x-l-v` | — | λ = 0.6, ω = 0.1 Bohr⁻¹ (published values). Smoke grade. |
-| `water-b2plyp.toml` | H2O / cc-pVDZ | `b2plyp` | — | **Does not run as shipped** (aux basis). |
+| `water-b2plyp.toml` | H2O / cc-pVDZ | `b2plyp` | — | Spike grade. Aux `cc-pvdz-rifit` (an alias of `cc-pvdz-ri`). |
 
 ## RPA, C6 and properties
 
@@ -126,7 +121,7 @@ See [RPA and GW](../methods/rpa-gw.md).
 | `benzene-rijk-pdep-rpa.toml` | benzene / cc-pVDZ | `pdep-rpa` | — | Full rank (`trunc_thresh = 0`). |
 | `water-c6-pdep.toml` | H2O / aug-cc-pVTZ | `pdep-rpa`, `c6_source = "pdep"` | "DOSD molecular reference (Meath/Toulouse): C6(H2O–H2O) = 45.3 a.u." | Compare the printed "molecular C6" line against it, not the sum of the NPZ `c6_iso` entries. Writes to `/tmp`. |
 | `argon-c6-rpa-pbe.toml` | Ar / aug-cc-pVTZ | `pdep-rpa` @PBE | "C6(Ar-Ar) = 56.4 a.u. vs DOSD 64.3 (-12%); the full He/Ne/Ar sweep gives mean \|err\| 8.9% at RPA@PBE — vs 39% at RPA@HF" | Writes to `/tmp`. |
-| `water-tdhf-static-alpha.toml` | H2O / cc-pVDZ | `tdhf-static-polarizability` @PBE | "measured 9.24 vs DOSD 9.64 a.u. at this same functional/basis via the underlying run_bse_c6_ks spike" | Static α only. Executed by a test (for the warning only). |
+| `water-tdhf-static-alpha.toml` | H2O / cc-pVDZ | `tdhf-static-polarizability` @PBE | "measured 9.24 vs DOSD 9.64 a.u. at this same functional/basis via the underlying run_bse_c6_ks spike" | **Does not run as shipped** (`[gw] scissor` is 0; see above). Static α only. Executed by a test (for the warning only). |
 
 ## GW and BSE
 
@@ -145,8 +140,8 @@ See [RPA and GW](../methods/rpa-gw.md).
 
 | File | System / basis | `kind` | Reference in header | Notes |
 |---|---|---|---|---|
-| `water-tda.toml` | H2O / cc-pVDZ | `tda` (CIS, 5 roots) | — | **Does not run as shipped** (aux basis). |
-| `water-tddft-pbe.toml` | H2O / cc-pVDZ | `tddft` @PBE (5 roots) | — | **Does not run as shipped** (aux basis). The f_xc kernel is missing. |
+| `water-tda.toml` | H2O / cc-pVDZ | `tda` (CIS, 5 roots) | — | Default aux `cc-pvdz-rifit` (an alias of `cc-pvdz-ri`). |
+| `water-tddft-pbe.toml` | H2O / cc-pVDZ | `tddft` @PBE (5 roots) | — | The f_xc kernel is missing; the run warns. |
 
 See also [Capabilities](./capabilities.md) for the grade of each `kind`,
 [Input reference](./input.md) for every key, and

@@ -4,16 +4,16 @@ Every key the `ferric` CLI accepts, section by section.
 
 > **Unknown keys are a hard error.** The config structs in
 > `crates/ferric-cli/src/config.rs` are `#[serde(deny_unknown_fields)]`, so a
-> misspelled key or section aborts the run before anything is computed. Two
-> places are exceptions: `[external_potential]` (and its `point_charges`
-> tables) and each `[[scf.ladder]]` rung. Neither is declared strict, so a
-> typo there is **silently ignored**.
+> misspelled key or section aborts the run before anything is computed. That
+> includes `[external_potential]`, its point charges, and each
+> `[[scf.ladder]]` rung.
 >
-> Most string values go through strict parsers, where an unknown value is an
-> error rather than a default. The exceptions are noted per key.
+> String values go through strict parsers, where an unknown value is an error
+> at load time rather than a default. Most accept any capitalisation; the
+> exceptions are noted per key.
 
 This page is hand-maintained against `crates/ferric-cli/src/config.rs` at
-commit `e7e21b24`. Where a default is applied at the point of use rather than
+commit `4b64e6ce`. Where a default is applied at the point of use rather than
 in `config.rs`, it was read from `crates/ferric-cli/src/lib.rs` at the same
 commit. If the code and this page disagree, the code wins. For which
 `method.kind` values exist and what each supports, see
@@ -63,7 +63,7 @@ same table: `cc-pvdz-ri`, `cc-pvtz-rifit`, `aug-cc-pv{d,t,q}z-rifit`,
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
-| `kind` | string | **required** | `rhf` `uhf` `rohf` `ksdft` `rimp2` `lmp2` `lmp2-direct` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `linlccd` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` | Any other value is an error. Non-Proven kinds print a `[warning]` grade line on stderr. |
+| `kind` | string | **required** | `rhf` `uhf` `rohf` `ksdft` `rimp2` `lmp2` `lmp2-direct` `mp3` `oo-rimp2` `att-rimp2` `mp2-v` `scs-mp2` `scs-mp2-2terfc` `laplace-mp2` `laplace-sos-mp2` `pdep-rpa` `rs-mp2-rpa` `gw` `bse-tda` `tdhf-static-polarizability` `ccsd` `linlccd` `wb97x-l-v` `b2plyp` `dsd-pbep86` `tda` `tddft` | Any other value is an error. Smoke- and Spike-grade kinds print a `[warning]` grade line on stderr; Proven kinds and the ungraded `lmp2`, `lmp2-direct` and `laplace-sos-mp2` print none (see [What is validated](./validation.md#grades)). |
 | `task` | string | `"energy"` | `energy` `optimize` `frequencies` | `optimize`: `rhf` `ksdft` `uhf` `rohf` `rimp2` `pdep-rpa` only. `frequencies`: `rhf` `ksdft` `uhf` `rohf` only. |
 
 ## `[scf]`
@@ -76,10 +76,10 @@ Read by every kind, because every kind runs an SCF first.
 | `energy_conv` | float | `1e-3` | | **Sanity bound, not a target.** Convergence requires `ΔP_rms < density_conv`, `ΔP_max < 10·density_conv` **and** `ΔE < energy_conv`. `ΔE` floors on the RI noise, so tightening this can make a density-fitted run hit `max_iter`. |
 | `density_conv` | float | `1e-6` | | The real convergence signal. |
 | `diis_size` | integer | `8` | | |
-| `diis` | string | `"pulay"` | `pulay` `adiis` `ediis` (also capitalised) | An unknown value aborts (by panic). |
+| `diis` | string | `"pulay"` | `pulay` `adiis` `ediis` (case-insensitive) | An unknown value is an error when the file is loaded. |
 | `diis_switch_thresh` | float | `1e-1` | | Error level at which ADIIS/EDIIS hand over to Pulay. Ignored for `pulay`. |
 | `smearing_sigma` | float | none | Hartree | Fermi–Dirac smearing width. Absent means integer occupations. |
-| `guess` | string | `"minao"` | `minao` `sad` `hcore` | **Not strictly parsed.** Only `"hcore"` changes behaviour. `"sad"` and `"minao"` both select the MINAO projection guess, and any other string silently does the same. |
+| `guess` | string | `"minao"` | `minao` `sad` `hcore` (case-insensitive) | `"sad"` is an alias of `"minao"` (the MINAO projection guess); the free-atom-SCF SAD guess is not selectable from config. Any other value is an error. |
 | `soscf` | bool | `false` | | Enables the second-order (Newton) step in the SCF tail. |
 | `integral_thresh` | float | `1e-12` | | Integral screening threshold. |
 | `screening` | string | `"schwarz"` | `schwarz` `csb` `csam` | `csb` is rigorous and never looser than `schwarz`. `csam` is not a bound. It is refused for erfc (short-range) operators. See [SCF: screening](../methods/scf.md). |
@@ -89,8 +89,8 @@ Read by every kind, because every kind runs an SCF first.
 | `cosx_backend` | string | `"md3c1e"` | `md3c1e` `cosx-a` | Only with `cosx`; otherwise it is an error. `cosx-a` is the slower cross-check kernel. |
 | `cosx_screen_thresh` | float | `1e-7` | ≥ 0 | Only with `cosx` and `md3c1e`. `0` disables the screen. |
 | `cosx_half_transform` | string | `"sparse"` | `sparse` `dense` | Only with `cosx`. |
-| `df_j_aux` | string | none; `def2-universal-jkfit` for `ksdft`, `pdep-rpa`, `rs-mp2-rpa`, `gw`, `bse-tda`, `tdhf-static-polarizability`, `tda`, `tddft` | aux basis name | RI-J. With neither key set, `rhf`/`uhf`/`rohf` use exact 4-index J/K. |
-| `df_k_aux` | string | as `df_j_aux` | aux basis name | RI-K. Use a JK-fit set. |
+| `df_j_aux` | string | none; `def2-universal-jkfit` for `ksdft`, `pdep-rpa`, `rs-mp2-rpa`, `gw`, `bse-tda`, `tdhf-static-polarizability`, `tda`, `tddft` | aux basis name, or `""` | RI-J. With neither key set, `rhf`/`uhf`/`rohf` use exact 4-index J/K. `df_j_aux = ""` selects exact J for the kinds that default to RI-J (the `SCF J/K` log line then reads `RI-JK via` with a blank name). Unlike Python's `run_dft`, the CLI does not accept `"exact"`, `"none"` or `"off"`: any non-empty value is looked up as a basis name, and an unknown one fails the SCF. |
+| `df_k_aux` | string | as `df_j_aux` | aux basis name, or `""` | RI-K. Use a JK-fit set. `""` selects exact K. |
 | `level_shift` | float | `0.0` | Hartree | Virtual-block shift. Left at 0 with a meta-GGA functional, the library applies 0.5. |
 | `mom_after_iter` | integer | `0` | | Maximum-overlap occupation pinning after this many iterations. `0` = aufbau throughout. |
 | `verbose` | bool | `false` | | One line per SCF iteration. The CLI's `--verbose`/`-v` flag ORs into this. |
@@ -104,12 +104,12 @@ Read by every kind, because every kind runs an SCF first.
 ### `[[scf.ladder]]` rungs
 
 Each rung overrides the flat `[scf]` settings. The rungs are walked in order,
-and the ladder stops at the first converged rung. **This table is not strict:
-unknown keys are ignored.**
+and the ladder stops at the first converged rung. Unknown keys are an error,
+as elsewhere.
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
-| `guess` | string | `"sad"` | `sad` `hcore` `sad-smallbasis` | `sad-smallbasis` warns and uses `sad`. An unknown value also warns and uses `sad`. |
+| `guess` | string | `"minao"` | `minao` `sad` `hcore` | As `[scf] guess`: `"sad"` is an alias of `"minao"`, and any other value (including `sad-smallbasis`) is an error. |
 | `level_shift` | float | inherits | | |
 | `max_iter` | integer | inherits | | |
 | `df_j_aux`, `df_k_aux` | string | inherits | | |
@@ -176,7 +176,7 @@ Read by `pdep-rpa`, `gw`, `bse-tda`, `tdhf-static-polarizability`, and, for
 |---|---|---|---|---|
 | `auxbasis` | string | `"cc-pvdz-ri"` | aux basis name | |
 | `frozen_core` | int, string or bool | `0` | as `[mp2]` | |
-| `xc` | string | none (HF reference) | XC name | Switches the reference to RKS, or to UKS when open shell. Required by `tdhf-static-polarizability`. `bse-tda` ignores it. |
+| `xc` | string | none (HF reference) | XC name | Switches the reference to RKS, or to UKS when open shell. Required by `tdhf-static-polarizability`. `bse-tda` ignores it. `pdep-rpa` with `task = "optimize"` uses an RHF reference; `xc` applies only to `task = "energy"`. |
 | `n_quad` | integer | `20` (energy runs); `16` (`task = "optimize"`) | | The Python `run_pdep_rpa` uses 40. Set it explicitly for reproducibility. |
 | `quadrature` | string | `"gauss-legendre"` | `gauss-legendre` `gauss_legendre` `gl`; `minimax` `mini-max` `mm`; `chebyshev-tan` `chebyshev_tan` `chebyshev` `ct` | |
 | `u0` | float | `0.5` | | **Warn-and-ignore** under `minimax`, which derives its own u₀. |
@@ -300,7 +300,8 @@ Conductor-like implicit solvent, applied to every SCF variant. There is no
 
 ## `[external_potential]`
 
-**Not strict: unknown keys are silently ignored.**
+Strict, like every other section: an unknown key here or inside a point
+charge is an error.
 
 | Key | Type | Default | Allowed values | Notes |
 |---|---|---|---|---|
