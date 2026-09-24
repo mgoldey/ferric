@@ -12,6 +12,8 @@
 //! * [`hcore`] — Stage 1: Gamma-point lattice-summed `S`, `T`, Ewald-split
 //!   nuclear attraction (Gaussian nuclei through the shifted 3-centre engine
 //!   + analytic pair FT) and `E_nn` ([`PeriodicHcore`]).
+//! * [`budget`] — memory gating: every large buffer is reserved against
+//!   ferric's unified budget before allocation (Stage 1 step 10).
 //! * [`dense_aft`] — TEST/ORACLE ONLY: dense pure-AFT `nao⁴` ERI tensor with
 //!   `JBuilder`/`KBuilder` impls (Madelung `exxdiv`) for
 //!   `ferric_scf::rhf::solve_rhf_injected`; hard size cap.
@@ -21,6 +23,7 @@
 //! Not wired into the CLI or the Python bindings yet — see
 //! `reference/pbc/stage1-design.md` for the staging plan.
 
+pub mod budget;
 pub mod dense_aft;
 pub mod ewald;
 pub mod hcore;

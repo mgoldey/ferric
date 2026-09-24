@@ -54,10 +54,29 @@
 //!   the most diffuse product Gaussian (`erfc(x) < e^{−x²}`).
 //! * LR: G on the half sphere (P(−G) = P(G)* for real AOs; weight 2) with
 //!   `|G| ≤ min(2ω, 2√p_max) √ln(1/precision)`.
+//!
+//! # Memory (Stage 1 step 10)
+//!
+//! Every buffer that grows with the lattice or the G sphere is reserved on a
+//! [`crate::budget`] ledger BEFORE it is allocated, against
+//! [`PeriodicHcoreConfig::budget_bytes`] (default: ferric's unified budget):
+//! the `n×n` matrices, the pair-image list, the SR nucleus candidates, the G
+//! list, and the `pair_ft` chunks of `V_LR` (G-chunked through
+//! [`crate::pair_ft::pair_ft_chunked`], never all G at once). Chunking is
+//! bit-for-bit invariant (`pair_ft_chunked` doc; the `V_LR` accumulation is
+//! in G order regardless of the chunk size).
+//!
+//! # SR screening study (Stage 1 step 8)
+//!
+//! [`sr_screening_study`] re-runs the SR nucleus sum with the screen
+//! threshold decoupled from the candidate set, and reports what the screen
+//! skipped against the bound's own prediction. It shares the production loop
+//! (`sr_attraction`), so it measures the code `periodic_hcore` runs.
 
+use crate::budget::{bytes_of, Ledger};
 use crate::ewald::{default_ewald_omega, ewald_nuclear_repulsion};
 use crate::lattice::Cell;
-use crate::pair_ft::pair_ft_with_thresh;
+use crate::pair_ft::{pair_ft_bytes_per_g, pair_ft_chunked};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::engine::Engine;
@@ -65,7 +84,8 @@ use ferric_integrals::ffi;
 use ferric_integrals::md3c1e::prim_norm;
 use ferric_integrals::operator::Operator;
 use ferric_integrals::site_basis::SiteBasis;
-use ndarray::Array2;
+use ndarray::{Array2, Array3};
+use num_complex::Complex64;
 use std::f64::consts::PI;
 
 /// Exponent (Bohr⁻²) of the unit-normalised s Gaussian standing in for a
@@ -89,7 +109,9 @@ const ONE_E_ENGINE_PRECISION: f64 = 1e-16;
 /// Extra Bohr on every derived real-space radius (polynomial prefactors of
 /// l > 0 pairs are not in the s-type bounds).
 const SR_MARGIN_BOHR: f64 = 2.0;
-/// Upper bound on one `pair_ft` chunk (`16 · nao² · n_G` bytes).
+/// Upper bound on one `pair_ft` chunk (output plus scratch), whatever the
+/// budget: large enough for BLAS-friendly chunks, small enough to stay out of
+/// the way of the resident matrices.
 pub(crate) const G_CHUNK_BYTES: usize = 64 << 20;
 
 /// Settings for [`periodic_hcore`].
@@ -103,6 +125,12 @@ pub struct PeriodicHcoreConfig {
     pub precision: f64,
     /// Gaussian-nucleus exponent (Bohr⁻²).
     pub nucleus_exponent: f64,
+    /// Memory budget (bytes) every large buffer is gated against before
+    /// allocation. `None` = ferric's unified budget
+    /// ([`crate::budget::resolve`]: `FERRIC_MEM_BUDGET_GB`, else 0.8 ×
+    /// available RAM, else 2 GiB; `Some(0)` counts as unset, the ferric
+    /// convention).
+    pub budget_bytes: Option<usize>,
 }
 
 impl PeriodicHcoreConfig {
@@ -113,6 +141,7 @@ impl PeriodicHcoreConfig {
             omega,
             precision: DEFAULT_HCORE_PRECISION,
             nucleus_exponent: GAUSSIAN_NUCLEUS_EXPONENT,
+            budget_bytes: None,
         }
     }
 
@@ -172,6 +201,15 @@ pub struct PeriodicHcore {
     /// image set closed under L → −L is symmetric; a large value flags a
     /// truncation or image-set defect).
     pub sr_asymmetry: f64,
+    /// The resolved memory budget (bytes).
+    pub budget_bytes: usize,
+    /// Bytes reserved on the budget ledger when the `V_LR` G chunks started
+    /// (matrices, image lists, nucleus candidates, G list).
+    pub lr_resident_bytes: usize,
+    /// Bytes one `V_LR` G vector costs (`pair_ft` output + scratch).
+    pub lr_bytes_per_g: usize,
+    /// Number of `pair_ft` chunks the `V_LR` sum used.
+    pub n_lr_chunks: usize,
 }
 
 struct PrimShell {
@@ -274,11 +312,70 @@ fn segment_distance(x: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
 /// Radius beyond which a nucleus contributes < `thresh` to a pair of charge
 /// bound `q` (module doc); `None` if the pair is negligible everywhere.
 fn nucleus_radius(q: f64, zmax: f64, pmax: f64, omega_p: f64, thresh: f64) -> Option<f64> {
-    let pref = q * zmax * (1.0 + 2.0 * (pmax / PI).sqrt());
+    nucleus_radius_m(q, zmax, pmax, omega_p, thresh, SR_MARGIN_BOHR)
+}
+
+/// `q Z_max (1 + 2√(p_max/π))`: the bound's value for a nucleus ON the pair
+/// (the Gaussian-smeared potential at the origin is `≤ 2√(p/π)`).
+fn nucleus_prefactor(q: f64, zmax: f64, pmax: f64) -> f64 {
+    q * zmax * (1.0 + 2.0 * (pmax / PI).sqrt())
+}
+
+/// [`nucleus_radius`] with an explicit margin.
+fn nucleus_radius_m(
+    q: f64,
+    zmax: f64,
+    pmax: f64,
+    omega_p: f64,
+    thresh: f64,
+    margin: f64,
+) -> Option<f64> {
+    let pref = nucleus_prefactor(q, zmax, pmax);
     if pref <= thresh {
         return None;
     }
-    Some((pref / thresh).ln().sqrt() / omega_p + SR_MARGIN_BOHR)
+    Some((pref / thresh).ln().sqrt() / omega_p + margin)
+}
+
+/// Which bound the SR nucleus screen uses. Production is always
+/// [`SrBound::Derived`]; the others are deliberately BROKEN variants that
+/// exist only as negative controls for [`sr_screening_study`] (a screening
+/// table that cannot tell them apart from `Derived` cannot certify it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SrBound {
+    /// The module-doc bound: per-triplet `B(d) = q Z_max (1 + 2√(p_max/π))
+    /// e^{−ω_p² (d − 2)²}`, `ω_p = ω √(p_min/(p_min + ω²))`, `d` = nucleus
+    /// distance to the segment `[A, B+L]`.
+    Derived,
+    /// MUTATION: `ω_p = ω` — drops the Gaussian-extent term (the product
+    /// Gaussian's convolution that slows the erfc decay). Anti-conservative
+    /// for diffuse pairs (`p_min ≲ ω²`).
+    NoGaussianExtent,
+    /// MUTATION: no 2-Bohr margin — drops the allowance for l > 0
+    /// polynomial prefactors and product centres off the segment ends.
+    NoMargin,
+}
+
+impl SrBound {
+    fn omega_p(self, omega: f64, pmin: f64) -> f64 {
+        match self {
+            SrBound::NoGaussianExtent => omega,
+            _ => omega * (pmin / (pmin + omega * omega)).sqrt(),
+        }
+    }
+
+    fn margin(self) -> f64 {
+        match self {
+            SrBound::NoMargin => 0.0,
+            _ => SR_MARGIN_BOHR,
+        }
+    }
+
+    /// Predicted bound of one triplet at nucleus–segment distance `d`.
+    fn triplet_bound(self, pref: f64, omega_p: f64, d: f64) -> f64 {
+        let x = (d - self.margin()).max(0.0) * omega_p;
+        pref * (-x * x).exp()
+    }
 }
 
 fn add_block(m: &mut Array2<f64>, blk: &[f64], o1: usize, n1: usize, o2: usize, n2: usize, f: f64) {
@@ -321,46 +418,82 @@ pub(crate) fn half_gvectors(cell: &Cell, gcut: f64) -> Result<Vec<[f64; 3]>, Fer
 
 /// `−(2/Ω) Σ_{G∈half} v(G) Re[P*(G) S(G)]` with `v = 4π/G² · e^{−G²/4ω²}`
 /// (`omega = None`: bare `4π/G²`). Returns the matrix and the G count.
+/// G list: `Cell::gvectors` (bound × 24 B) and the half-sphere copy
+/// (≤ half of it) coexist briefly.
+pub(crate) fn gvector_list_bytes(cell: &Cell, gcut: f64) -> Result<usize, FerricError> {
+    Ok(bytes_of(cell.gvector_count_bound(gcut)?, 36))
+}
+
+/// Output of [`reciprocal_nuclear`].
+struct Reciprocal {
+    v: Array2<f64>,
+    n_g_half: usize,
+    resident_bytes: usize,
+    bytes_per_g: usize,
+    n_chunks: usize,
+}
+
 fn reciprocal_nuclear(
     cell: &Cell,
     prep: &PreparedBasis,
     omega: Option<f64>,
     gcut: f64,
     pair_thresh: f64,
-) -> Result<(Array2<f64>, usize), FerricError> {
+    ledger: &mut Ledger,
+) -> Result<Reciprocal, FerricError> {
     let n = prep.nbasis();
+    ledger.reserve(
+        &format!("reciprocal-space G list (|G| <= {gcut:.3})"),
+        gvector_list_bytes(cell, gcut)?,
+    )?;
     let gv = half_gvectors(cell, gcut)?;
     let z = cell.nuclear_charges();
     let pos = cell.positions();
     let vol = cell.volume();
     let mut v = Array2::<f64>::zeros((n, n));
-    let chunk = (G_CHUNK_BYTES / (16 * n * n).max(1)).max(1);
-    for gs in gv.chunks(chunk) {
-        let p = pair_ft_with_thresh(cell, prep, gs, pair_thresh)?;
-        for (g, gvec) in gs.iter().enumerate() {
-            let g2 = gvec[0] * gvec[0] + gvec[1] * gvec[1] + gvec[2] * gvec[2];
-            let mut kern = 4.0 * PI / g2;
-            if let Some(w) = omega {
-                kern *= (-g2 / (4.0 * w * w)).exp();
-            }
-            // S(G) = Σ_C Z_C e^{−iG·R_C}
-            let (mut sre, mut sim) = (0.0_f64, 0.0_f64);
-            for (zc, r) in z.iter().zip(&pos) {
-                let ph = gvec[0] * r[0] + gvec[1] * r[1] + gvec[2] * r[2];
-                sre += zc * ph.cos();
-                sim -= zc * ph.sin();
-            }
-            let f = -2.0 / vol * kern;
-            for m in 0..n {
-                for k in 0..n {
-                    let pz = p[[m, k, g]];
-                    // Re[conj(P) S] = P.re S.re + P.im S.im
-                    v[(m, k)] += f * (pz.re * sre + pz.im * sim);
+    let resident_bytes = ledger.resident();
+    let lmax = prep
+        .located_shells()
+        .iter()
+        .map(|s| s.l.max(0) as usize)
+        .max()
+        .unwrap_or(0);
+    let bytes_per_g = pair_ft_bytes_per_g(n, lmax);
+    let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
+    let accumulate =
+        |_g0: usize, gs: &[[f64; 3]], p: &Array3<Complex64>| -> Result<(), FerricError> {
+            for (g, gvec) in gs.iter().enumerate() {
+                let g2 = gvec[0] * gvec[0] + gvec[1] * gvec[1] + gvec[2] * gvec[2];
+                let mut kern = 4.0 * PI / g2;
+                if let Some(w) = omega {
+                    kern *= (-g2 / (4.0 * w * w)).exp();
+                }
+                // S(G) = Σ_C Z_C e^{−iG·R_C}
+                let (mut sre, mut sim) = (0.0_f64, 0.0_f64);
+                for (zc, r) in z.iter().zip(&pos) {
+                    let ph = gvec[0] * r[0] + gvec[1] * r[1] + gvec[2] * r[2];
+                    sre += zc * ph.cos();
+                    sim -= zc * ph.sin();
+                }
+                let f = -2.0 / vol * kern;
+                for m in 0..n {
+                    for k in 0..n {
+                        let pz = p[[m, k, g]];
+                        // Re[conj(P) S] = P.re S.re + P.im S.im
+                        v[(m, k)] += f * (pz.re * sre + pz.im * sim);
+                    }
                 }
             }
-        }
-    }
-    Ok((v, gv.len()))
+            Ok(())
+        };
+    let n_chunks = pair_ft_chunked(cell, prep, &gv, pair_thresh, chunk_budget, 0, accumulate)?;
+    Ok(Reciprocal {
+        v,
+        n_g_half: gv.len(),
+        resident_bytes,
+        bytes_per_g,
+        n_chunks,
+    })
 }
 
 fn max_pair_exponent(prep: &PreparedBasis) -> f64 {
@@ -389,7 +522,14 @@ pub fn pure_aft_nuclear(
     }
     prim_shells(cell, prep)?;
     let gcut = 2.0 * (max_pair_exponent(prep) * (1.0 / precision).ln()).sqrt();
-    reciprocal_nuclear(cell, prep, None, gcut, 0.1 * precision)
+    let mut ledger = Ledger::new(crate::budget::resolve(None));
+    let n = prep.nbasis();
+    ledger.reserve(
+        &format!("pure_aft_nuclear n×n matrix (n = {n})"),
+        bytes_of((n * n) as u64, 8),
+    )?;
+    let r = reciprocal_nuclear(cell, prep, None, gcut, 0.1 * precision, &mut ledger)?;
+    Ok((r.v, r.n_g_half))
 }
 
 /// Molecular (non-periodic) attraction of Gaussian nuclei through the
@@ -440,6 +580,194 @@ pub fn gaussian_nucleus_attraction(
     Ok(v)
 }
 
+/// Nucleus image candidate: `(index into nuc, M, R_C + M)`.
+type NucCand = (usize, [f64; 3], [f64; 3]);
+
+/// Pair images `L` for S/T/SR at `pair_thresh` (the module doc's `r_pair`),
+/// reserved on the ledger before the enumeration allocates.
+fn pair_images(
+    cell: &Cell,
+    shells: &[PrimShell],
+    pair_thresh: f64,
+    ledger: &mut Ledger,
+) -> Result<Vec<[f64; 3]>, FerricError> {
+    let rpair = pair_radius(shells, pair_thresh);
+    ledger.reserve(
+        &format!("pair-image list (r_pair = {rpair:.2} Bohr)"),
+        bytes_of(cell.translation_count_bound(rpair)?, 24),
+    )?;
+    cell.translations(rpair)
+}
+
+/// The cell's nuclei with non-zero charge, and max |Z|.
+fn nonzero_nuclei(cell: &Cell) -> (Vec<(f64, [f64; 3])>, f64) {
+    let nuc: Vec<(f64, [f64; 3])> = cell
+        .nuclear_charges()
+        .iter()
+        .zip(cell.positions())
+        .filter(|(z, _)| **z != 0.0)
+        .map(|(z, r)| (*z, r))
+        .collect();
+    let zmax = nuc.iter().map(|(z, _)| z.abs()).fold(0.0_f64, f64::max);
+    (nuc, zmax)
+}
+
+/// Candidate nucleus images: any (C, M) within `r_nuc_max(cand_thresh)` of a
+/// segment whose endpoints lie within `rpair` of a cell atom, i.e. every
+/// `M` with `|M| ≲ r_nuc_max + rpair` (the per-triplet screen then picks from
+/// these).
+#[allow(clippy::too_many_arguments)]
+fn sr_candidates(
+    cell: &Cell,
+    shells: &[PrimShell],
+    nuc: &[(f64, [f64; 3])],
+    omega: f64,
+    zmax: f64,
+    cand_thresh: f64,
+    rpair: f64,
+    ledger: &mut Ledger,
+) -> Result<Vec<NucCand>, FerricError> {
+    let mut r_nuc_max = 0.0_f64;
+    for a in shells {
+        for b in shells {
+            let (q, pmin, pmax) = pair_bound(a, b, 0.0);
+            let wp = SrBound::Derived.omega_p(omega, pmin);
+            if let Some(r) = nucleus_radius(q, zmax, pmax, wp, cand_thresh) {
+                r_nuc_max = r_nuc_max.max(r);
+            }
+        }
+    }
+    let rc = r_nuc_max + rpair;
+    let nb = cell.translation_count_bound(rc)?;
+    ledger.reserve(
+        &format!(
+            "SR nucleus image list + candidates (r = {rc:.2} Bohr, {} nuclei)",
+            nuc.len()
+        ),
+        bytes_of(nb, 24).saturating_add(bytes_of(
+            nb.saturating_mul(nuc.len() as u64),
+            std::mem::size_of::<NucCand>(),
+        )),
+    )?;
+    let nuc_images = cell.translations(rc)?;
+    let mut cands: Vec<NucCand> = Vec::with_capacity(nuc_images.len() * nuc.len());
+    for m in &nuc_images {
+        for (k, (_, r)) in nuc.iter().enumerate() {
+            cands.push((k, *m, [r[0] + m[0], r[1] + m[1], r[2] + m[2]]));
+        }
+    }
+    Ok(cands)
+}
+
+/// Unsymmetrised SR attraction and what the screen did.
+struct SrSum {
+    v: Array2<f64>,
+    n_triplets: usize,
+    /// Per element: Σ over SKIPPED triplets of the bound's per-triplet
+    /// prediction (only when tracked).
+    predicted: Option<Array2<f64>>,
+}
+
+/// The SR nucleus sum `−Σ_{L,C,M} Z_C (g_{C,M} | μ_0 ν_L)_erfc / ∫g` over
+/// `images × shells² × cands`. `screen > 0`: skip what `bound` says is below
+/// `screen` (production: `SrBound::Derived` at `precision`); `screen == 0`:
+/// compute every triplet (the unscreened reference). `track` accumulates the
+/// bound's predicted error of the skipped triplets.
+#[allow(clippy::too_many_arguments)]
+fn sr_attraction(
+    prep: &PreparedBasis,
+    shells: &[PrimShell],
+    images: &[[f64; 3]],
+    cands: &[NucCand],
+    nuc: &[(f64, [f64; 3])],
+    zeta: f64,
+    omega: f64,
+    zmax: f64,
+    screen: f64,
+    bound: SrBound,
+    track: bool,
+) -> Result<SrSum, FerricError> {
+    let n = prep.nbasis();
+    let mut v = Array2::<f64>::zeros((n, n));
+    let mut predicted = track.then(|| Array2::<f64>::zeros((n, n)));
+    let mut n_triplets = 0usize;
+    if nuc.is_empty() {
+        return Ok(SrSum {
+            v,
+            n_triplets,
+            predicted,
+        });
+    }
+    let sites: Vec<[f64; 4]> = nuc.iter().map(|(_, r)| [r[0], r[1], r[2], zeta]).collect();
+    let site = SiteBasis::new(&sites, 0)?;
+    let mut eng = Engine::new_3center(
+        Operator::erfc(omega),
+        prep,
+        &site.prep,
+        ERI3_ENGINE_PRECISION,
+    )?;
+    for l in images {
+        for (i1, a) in shells.iter().enumerate() {
+            for (i2, b) in shells.iter().enumerate() {
+                let bc = [b.center[0] + l[0], b.center[1] + l[1], b.center[2] + l[2]];
+                let r2 = (a.center[0] - bc[0]).powi(2)
+                    + (a.center[1] - bc[1]).powi(2)
+                    + (a.center[2] - bc[2]).powi(2);
+                let (q, pmin, pmax) = pair_bound(a, b, r2);
+                let wp = bound.omega_p(omega, pmin);
+                let rad = if screen > 0.0 {
+                    nucleus_radius_m(q, zmax, pmax, wp, screen, bound.margin())
+                } else {
+                    Some(f64::INFINITY)
+                };
+                if rad.is_none() && !track {
+                    continue;
+                }
+                let pref = nucleus_prefactor(q, zmax, pmax);
+                let mut skipped = 0.0_f64;
+                for (k, m, x) in cands {
+                    let d = segment_distance(*x, a.center, bc);
+                    match rad {
+                        Some(r) if d <= r => {}
+                        _ => {
+                            if track {
+                                skipped += bound.triplet_bound(pref, wp, d);
+                            }
+                            continue;
+                        }
+                    }
+                    n_triplets += 1;
+                    let f = -nuc[*k].0 / site.norm_int[*k];
+                    if let Some(blk) = eng.compute_eri3_shifted(
+                        prep,
+                        &site.prep,
+                        site.site_shell[*k],
+                        i1,
+                        i2,
+                        [*m, [0.0; 3], *l],
+                    )? {
+                        add_block(&mut v, blk, a.off, a.dim, b.off, b.dim, f);
+                    }
+                }
+                if let Some(p) = predicted.as_mut() {
+                    if skipped > 0.0 {
+                        for i in 0..a.dim {
+                            for j in 0..b.dim {
+                                p[(a.off + i, b.off + j)] += skipped;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(SrSum {
+        v,
+        n_triplets,
+        predicted,
+    })
+}
+
 /// Build `S`, `T`, `V`, `h = T + V` and `E_nn` for a Gamma-point cell (see
 /// the module doc). `prep` must be built from `cell.mol()`.
 pub fn periodic_hcore(
@@ -453,13 +781,16 @@ pub fn periodic_hcore(
     let omega = cfg.omega;
     let thresh = cfg.precision;
     let pair_thresh = 0.1 * thresh;
+    let mut ledger = Ledger::new(crate::budget::resolve(cfg.budget_bytes));
+    ledger.reserve(
+        &format!(
+            "periodic_hcore n×n matrices (n = {n}: S, T, V_SR, V_LR, V_G0, V, h + 3 temporaries)"
+        ),
+        bytes_of((n * n) as u64, 8 * 10),
+    )?;
 
-    let amin = shells
-        .iter()
-        .flat_map(|s| s.exps.iter().copied())
-        .fold(f64::INFINITY, f64::min);
-    let rpair = (2.0 * (1e3 / pair_thresh).ln() / amin).sqrt() + 2.0;
-    let images = cell.translations(rpair)?;
+    let images = pair_images(cell, &shells, pair_thresh, &mut ledger)?;
+    let rpair = pair_radius(&shells, pair_thresh);
 
     // --- S, T: every pair image.
     let mut eng_s = Engine::new_1e(ffi::OP_OVERLAP, prep, ONE_E_ENGINE_PRECISION)?;
@@ -481,83 +812,27 @@ pub fn periodic_hcore(
 
     // --- V_SR: Gaussian nuclei, erfc(ω), nucleus shifted by M, ν by L.
     let zs = cell.nuclear_charges();
-    let pos = cell.positions();
-    let nuc: Vec<(f64, [f64; 3])> = zs
-        .iter()
-        .zip(&pos)
-        .filter(|(z, _)| **z != 0.0)
-        .map(|(z, r)| (*z, *r))
-        .collect();
+    let (nuc, zmax) = nonzero_nuclei(cell);
     let mut v_sr = Array2::<f64>::zeros((n, n));
     let mut n_sr_triplets = 0usize;
     let mut sr_asymmetry = 0.0;
     if !nuc.is_empty() {
-        let zmax = nuc.iter().map(|(z, _)| z.abs()).fold(0.0_f64, f64::max);
-        let sites: Vec<[f64; 4]> = nuc
-            .iter()
-            .map(|(_, r)| [r[0], r[1], r[2], cfg.nucleus_exponent])
-            .collect();
-        let site = SiteBasis::new(&sites, 0)?;
-        let mut eng = Engine::new_3center(
-            Operator::erfc(omega),
+        let cands = sr_candidates(cell, &shells, &nuc, omega, zmax, thresh, rpair, &mut ledger)?;
+        let sr = sr_attraction(
             prep,
-            &site.prep,
-            ERI3_ENGINE_PRECISION,
+            &shells,
+            &images,
+            &cands,
+            &nuc,
+            cfg.nucleus_exponent,
+            omega,
+            zmax,
+            thresh,
+            SrBound::Derived,
+            false,
         )?;
-
-        // Candidate nucleus images: any (C, M) within r_nuc_max of a segment
-        // whose endpoints lie within r_pair of a cell atom.
-        let mut r_nuc_max = 0.0_f64;
-        for a in &shells {
-            for b in &shells {
-                let (q, pmin, pmax) = pair_bound(a, b, 0.0);
-                let wp = omega * (pmin / (pmin + omega * omega)).sqrt();
-                if let Some(r) = nucleus_radius(q, zmax, pmax, wp, thresh) {
-                    r_nuc_max = r_nuc_max.max(r);
-                }
-            }
-        }
-        let nuc_images = cell.translations(r_nuc_max + rpair)?;
-        let mut cands: Vec<(usize, [f64; 3], [f64; 3])> = Vec::new();
-        for m in &nuc_images {
-            for (k, (_, r)) in nuc.iter().enumerate() {
-                cands.push((k, *m, [r[0] + m[0], r[1] + m[1], r[2] + m[2]]));
-            }
-        }
-
-        for l in &images {
-            for (i1, a) in shells.iter().enumerate() {
-                for (i2, b) in shells.iter().enumerate() {
-                    let bc = [b.center[0] + l[0], b.center[1] + l[1], b.center[2] + l[2]];
-                    let r2 = (a.center[0] - bc[0]).powi(2)
-                        + (a.center[1] - bc[1]).powi(2)
-                        + (a.center[2] - bc[2]).powi(2);
-                    let (q, pmin, pmax) = pair_bound(a, b, r2);
-                    let wp = omega * (pmin / (pmin + omega * omega)).sqrt();
-                    let Some(rad) = nucleus_radius(q, zmax, pmax, wp, thresh) else {
-                        continue;
-                    };
-                    for (k, m, x) in &cands {
-                        if segment_distance(*x, a.center, bc) > rad {
-                            continue;
-                        }
-                        n_sr_triplets += 1;
-                        let f = -nuc[*k].0 / site.norm_int[*k];
-                        if let Some(blk) = eng.compute_eri3_shifted(
-                            prep,
-                            &site.prep,
-                            site.site_shell[*k],
-                            i1,
-                            i2,
-                            [*m, [0.0; 3], *l],
-                        )? {
-                            add_block(&mut v_sr, blk, a.off, a.dim, b.off, b.dim, f);
-                        }
-                    }
-                }
-            }
-        }
-        let (sym, asym) = symmetrize(&v_sr);
+        n_sr_triplets = sr.n_triplets;
+        let (sym, asym) = symmetrize(&sr.v);
         v_sr = sym;
         sr_asymmetry = asym;
     }
@@ -565,7 +840,8 @@ pub fn periodic_hcore(
     // --- V_LR (G ≠ 0) and the G = 0 correction.
     let smooth = (1.0 / thresh).ln().sqrt();
     let gcut = (2.0 * omega).min(2.0 * max_pair_exponent(prep).sqrt()) * smooth;
-    let (v_lr, n_g_half) = reciprocal_nuclear(cell, prep, Some(omega), gcut, pair_thresh)?;
+    let lr = reciprocal_nuclear(cell, prep, Some(omega), gcut, pair_thresh, &mut ledger)?;
+    let v_lr = lr.v;
     let ztot: f64 = zs.iter().sum();
     let c0 = PI / (omega * omega * cell.volume());
     let v_g0 = (c0 * ztot) * &s;
@@ -573,6 +849,7 @@ pub fn periodic_hcore(
     let v = &(&v_sr + &v_lr) + &v_g0;
     let h = &t + &v;
     let enn = ewald_nuclear_repulsion(cell, default_ewald_omega(cell))?;
+    ferric_core::memory::warn_if_rss_over("ferric-pbc periodic_hcore", ledger.budget(), 1.1);
     Ok(PeriodicHcore {
         s,
         t,
@@ -585,8 +862,232 @@ pub fn periodic_hcore(
         omega,
         n_images: images.len(),
         n_sr_triplets,
-        n_g_half,
+        n_g_half: lr.n_g_half,
         sr_asymmetry,
+        budget_bytes: ledger.budget(),
+        lr_resident_bytes: lr.resident_bytes,
+        lr_bytes_per_g: lr.bytes_per_g,
+        n_lr_chunks: lr.n_chunks,
+    })
+}
+
+fn pair_radius(shells: &[PrimShell], pair_thresh: f64) -> f64 {
+    let amin = shells
+        .iter()
+        .flat_map(|s| s.exps.iter().copied())
+        .fold(f64::INFINITY, f64::min);
+    (2.0 * (1e3 / pair_thresh).ln() / amin).sqrt() + 2.0
+}
+
+/// MEASUREMENT ONLY (Stage 1 step 8): the unsymmetrised SR attraction `V_SR`
+/// of [`periodic_hcore`] with the candidate nucleus images and pair images
+/// built at `cand_thresh` (exactly as `periodic_hcore` builds them at
+/// `precision = cand_thresh`) and the per-triplet screen applied at
+/// `screen_thresh` with `bound` (`0` = unscreened: every candidate triplet).
+/// Returns `(V_SR, n_triplets)`. At `cand_thresh = screen_thresh =
+/// precision` and [`SrBound::Derived`], its symmetrisation IS
+/// `periodic_hcore(..).v_sr` (anchored in `tests/pbc_sr_screening.rs`).
+pub fn sr_attraction_matrix(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    omega: f64,
+    cand_thresh: f64,
+    screen_thresh: f64,
+    bound: SrBound,
+) -> Result<(Array2<f64>, usize), FerricError> {
+    let st = SrStudySetup::new(cell, prep, omega, cand_thresh, None)?;
+    let sr = st.run(prep, screen_thresh, bound, false)?;
+    Ok((sr.v, sr.n_triplets))
+}
+
+/// Shared setup of the step-8 measurement entry points.
+struct SrStudySetup {
+    shells: Vec<PrimShell>,
+    images: Vec<[f64; 3]>,
+    cands: Vec<NucCand>,
+    nuc: Vec<(f64, [f64; 3])>,
+    zmax: f64,
+    omega: f64,
+    ledger: Ledger,
+}
+
+impl SrStudySetup {
+    fn new(
+        cell: &Cell,
+        prep: &PreparedBasis,
+        omega: f64,
+        cand_thresh: f64,
+        budget_bytes: Option<usize>,
+    ) -> Result<Self, FerricError> {
+        PeriodicHcoreConfig {
+            precision: cand_thresh,
+            ..PeriodicHcoreConfig::with_omega(omega)
+        }
+        .validate()?;
+        let shells = prim_shells(cell, prep)?;
+        let mut ledger = Ledger::new(crate::budget::resolve(budget_bytes));
+        let pair_thresh = 0.1 * cand_thresh;
+        let images = pair_images(cell, &shells, pair_thresh, &mut ledger)?;
+        let rpair = pair_radius(&shells, pair_thresh);
+        let (nuc, zmax) = nonzero_nuclei(cell);
+        let cands = sr_candidates(
+            cell,
+            &shells,
+            &nuc,
+            omega,
+            zmax,
+            cand_thresh,
+            rpair,
+            &mut ledger,
+        )?;
+        Ok(Self {
+            shells,
+            images,
+            cands,
+            nuc,
+            zmax,
+            omega,
+            ledger,
+        })
+    }
+
+    fn run(
+        &self,
+        prep: &PreparedBasis,
+        screen: f64,
+        bound: SrBound,
+        track: bool,
+    ) -> Result<SrSum, FerricError> {
+        if !(screen >= 0.0) || !screen.is_finite() {
+            return Err(FerricError::General(format!(
+                "sr screening study: screen threshold must be finite and >= 0, got {screen}"
+            )));
+        }
+        sr_attraction(
+            prep,
+            &self.shells,
+            &self.images,
+            &self.cands,
+            &self.nuc,
+            GAUSSIAN_NUCLEUS_EXPONENT,
+            self.omega,
+            self.zmax,
+            screen,
+            bound,
+            track,
+        )
+    }
+}
+
+/// One row of [`sr_screening_study`].
+#[derive(Debug, Clone)]
+pub struct SrScreenRow {
+    /// Bound the screen used.
+    pub bound: SrBound,
+    /// Screen threshold (`0` = unscreened).
+    pub thresh: f64,
+    /// SR triplets computed.
+    pub n_triplets: usize,
+    /// `max_ij |V_ij(thresh) − V_ij(unscreened)|` (unsymmetrised).
+    pub max_abs_dv: f64,
+    /// `max_ij` of the bound's predicted error (Σ over skipped triplets).
+    pub max_predicted: f64,
+    /// Elements with `|ΔV_ij| > predicted_ij + roundoff_floor`: the bound
+    /// UNDER-predicted there (a non-conservative bound).
+    pub n_violations: usize,
+    /// `max_ij |ΔV_ij| / predicted_ij` over elements with
+    /// `|ΔV_ij| > roundoff_floor` (0 if none): `> 1` = violation.
+    pub worst_ratio: f64,
+}
+
+/// Output of [`sr_screening_study`].
+#[derive(Debug, Clone)]
+pub struct SrScreenStudy {
+    /// ω (Bohr⁻¹).
+    pub omega: f64,
+    /// Threshold the candidate/pair image sets were built at.
+    pub cand_thresh: f64,
+    /// Pair images in the fixed set.
+    pub n_images: usize,
+    /// Nucleus candidates `(C, M)` in the fixed set.
+    pub n_candidates: usize,
+    /// Triplets in the unscreened reference.
+    pub n_triplets_unscreened: usize,
+    /// `16 ε max|V_unscreened|`: differences below it are summation-order
+    /// roundoff, not screening error.
+    pub roundoff_floor: f64,
+    /// Unscreened reference (unsymmetrised).
+    pub v_unscreened: Array2<f64>,
+    /// One row per (bound, threshold), bounds outer, in the given orders.
+    pub rows: Vec<SrScreenRow>,
+}
+
+/// MEASUREMENT HARNESS (Stage 1 step 8, not a production path): sweep the SR
+/// nucleus screen threshold with the candidate and pair image sets FIXED at
+/// `cand_thresh` (so the only variable is the per-triplet screen), and
+/// compare each screened `V_SR` against the unscreened sum over the same sets
+/// and against the bound's own predicted error, for each of `bounds` (the
+/// unscreened reference is computed once). The reference is exact up to
+/// the candidate truncation at `cand_thresh`, which should sit well below the
+/// smallest swept threshold. Every buffer is gated against `budget_bytes`
+/// (`None` = ferric's unified budget).
+pub fn sr_screening_study(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    omega: f64,
+    cand_thresh: f64,
+    thresholds: &[f64],
+    bounds: &[SrBound],
+    budget_bytes: Option<usize>,
+) -> Result<SrScreenStudy, FerricError> {
+    let mut st = SrStudySetup::new(cell, prep, omega, cand_thresh, budget_bytes)?;
+    let n = prep.nbasis();
+    // Reference + one screened V + its prediction live at once.
+    st.ledger.reserve(
+        &format!("SR screening study n×n matrices (n = {n})"),
+        bytes_of((n * n) as u64, 8 * 4),
+    )?;
+    let reference = st.run(prep, 0.0, SrBound::Derived, false)?;
+    let vmax = reference.v.iter().fold(0.0_f64, |m, x| m.max(x.abs()));
+    let roundoff_floor = 16.0 * f64::EPSILON * vmax.max(1.0);
+    let mut rows = Vec::with_capacity(thresholds.len() * bounds.len());
+    for (&bound, &th) in bounds
+        .iter()
+        .flat_map(|b| thresholds.iter().map(move |t| (b, t)))
+    {
+        let sr = st.run(prep, th, bound, true)?;
+        let pred = sr.predicted.as_ref().expect("tracked");
+        let (mut max_dv, mut max_pred, mut nviol, mut worst) = (0.0_f64, 0.0_f64, 0usize, 0.0_f64);
+        for ((x, r), p) in sr.v.iter().zip(reference.v.iter()).zip(pred.iter()) {
+            let dv = (x - r).abs();
+            max_dv = max_dv.max(dv);
+            max_pred = max_pred.max(*p);
+            if dv > p + roundoff_floor {
+                nviol += 1;
+            }
+            if dv > roundoff_floor {
+                worst = worst.max(if *p > 0.0 { dv / p } else { f64::INFINITY });
+            }
+        }
+        rows.push(SrScreenRow {
+            bound,
+            thresh: th,
+            n_triplets: sr.n_triplets,
+            max_abs_dv: max_dv,
+            max_predicted: max_pred,
+            n_violations: nviol,
+            worst_ratio: worst,
+        });
+    }
+    Ok(SrScreenStudy {
+        omega,
+        cand_thresh,
+        n_images: st.images.len(),
+        n_candidates: st.cands.len(),
+        n_triplets_unscreened: reference.n_triplets,
+        roundoff_floor,
+        v_unscreened: reference.v,
+        rows,
     })
 }
 
