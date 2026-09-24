@@ -3,7 +3,7 @@ name = "ferric-pbc"
 version = "0.1.0"
 license.workspace = true
 edition = "2021"
-description = "Periodic-boundary-condition primitives for ferric (cell, Ewald, Madelung, analytic pair-density Fourier transforms, Gamma-point periodic hcore)"
+description = "Periodic-boundary-condition primitives for ferric (cell, Ewald, Madelung, analytic pair-density Fourier transforms, Gamma-point periodic hcore, Gamma KS-DFT)"
 
 [lints]
 workspace = true
@@ -14,6 +14,10 @@ ferric-integrals = { path = "../ferric-integrals" }
 # JBuilder/KBuilder traits (dense_aft) and solve_rhf_injected in tests. No
 # cycle: ferric-scf does not depend on ferric-pbc.
 ferric-scf = { path = "../ferric-scf" }
+# Stage 2 Gamma KS-DFT: radial/Lebedev rules, the explicit-neighbour
+# partition, libxc and the unchanged semilocal V_xc kernel. No cycle:
+# ferric-dft does not depend on ferric-pbc.
+ferric-dft = { path = "../ferric-dft" }
 # Stage 6 Gamma MP2: active_occ + the existing B_ov / (ia|jb) energy kernels.
 # No cycle: ferric-mp2 does not depend on ferric-pbc.
 ferric-mp2 = { path = "../ferric-mp2" }
@@ -25,6 +29,8 @@ ndarray = { workspace = true }
 ndarray-linalg = { workspace = true }
 # Same spec as ferric-gw (the only other num-complex user); resolves to 0.4.6.
 num-complex = "0.4"
+# Point-parallel partition weights and chunk-parallel lattice AO sums.
+rayon = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -168,6 +168,7 @@ fn uhf_with_k_madelung(
         vnn: hc.enn,
         j: Box::new(eri.j_builder()),
         k: Box::new(eri.k_builder_with_madelung(vm_k)),
+        xc: None,
     };
     let cfg = GammaUhfConfig::default();
     solve_uhf_injected(&ctx, cell.mol(), prep, &bounds, &cfg.scf, inj, None).expect("mutant UHF")

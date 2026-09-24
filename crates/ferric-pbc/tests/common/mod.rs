@@ -188,6 +188,7 @@ pub fn gamma_rhf_jk<'a>(
         vnn: hc.enn,
         j,
         k,
+        xc: None,
     };
     let r = solve_rhf_injected(&ctx, cell.mol(), prep, op, &bounds, &gamma_config(), inj)
         .expect("gamma-point RHF");
@@ -213,6 +214,7 @@ pub fn gamma_rhf(
         vnn: hc.enn,
         j: Box::new(eri.j_builder()),
         k: Box::new(eri.k_builder()),
+        xc: None,
     };
     let r = solve_rhf_injected(&ctx, cell.mol(), prep, op, &bounds, &gamma_config(), inj)
         .expect("gamma-point RHF");

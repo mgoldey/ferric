@@ -44,6 +44,10 @@
 //!   `ferric_scf::uhf::solve_uhf_injected`, with the per-spin Madelung term in
 //!   the K builders, a per-spin gap check against `v_M`, and the staged
 //!   (`exxdiv` none → ewald) start that avoids the Gamma Ewald trap.
+//! * [`dft`] — Stage 2: Gamma-point closed-shell KS-DFT (`gamma_rks`; LDA,
+//!   GGA, global hybrids): periodic atom-centred grid with SSF/Becke weights
+//!   over image atoms (`PeriodicGrid`), lattice-summed AOs, and `PeriodicXc`
+//!   injected into `solve_rhf_injected` as its `XcBuilder`.
 //!
 //! Units: Bohr and Hartree throughout; G vectors in Bohr⁻¹.
 //!
@@ -52,6 +56,7 @@
 
 pub mod budget;
 pub mod dense_aft;
+pub mod dft;
 pub mod drpa;
 pub mod ewald;
 pub mod hcore;
@@ -64,6 +69,10 @@ pub mod ucorr;
 pub mod uhf;
 
 pub use dense_aft::{DenseAftEri, ExxDiv};
+pub use dft::{
+    covering_radius_bound, gamma_rks, GammaRksConfig, GammaRksResult, PeriodicDftError,
+    PeriodicGrid, PeriodicGridConfig, PeriodicXc, PeriodicXcConfig,
+};
 pub use drpa::{gamma_drpa, GammaDrpaConfig, GammaDrpaIntegrals, GammaDrpaResult};
 pub use ewald::{ewald_nuclear_repulsion, madelung_constant};
 pub use hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};

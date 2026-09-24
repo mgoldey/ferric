@@ -226,7 +226,7 @@ pub fn spin_gaps(r: &ScfResult, na: usize, nb: usize, madelung_applied: f64) -> 
     }
 }
 
-fn builders(
+pub(crate) fn builders(
     ints: GammaUhfIntegrals<'_>,
     madelung: f64,
 ) -> (Box<dyn JBuilder + '_>, Box<dyn KBuilder + '_>) {
@@ -275,6 +275,7 @@ pub fn gamma_uhf(
             vnn: hc.enn,
             j,
             k,
+            xc: None,
         };
         solve_uhf_injected(&ctx, mol, prep, &bounds, &cfg.scf, inj, init)
     };

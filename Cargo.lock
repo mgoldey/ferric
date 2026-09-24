@@ -579,6 +579,7 @@ name = "ferric-pbc"
 version = "0.1.0"
 dependencies = [
  "ferric-core",
+ "ferric-dft",
  "ferric-integrals",
  "ferric-mp2",
  "ferric-rpa",
@@ -586,6 +587,7 @@ dependencies = [
  "ndarray",
  "ndarray-linalg",
  "num-complex",
+ "rayon",
  "serde_json",
 ]
 
