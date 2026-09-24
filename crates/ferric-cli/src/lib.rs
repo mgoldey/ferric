@@ -879,7 +879,7 @@ pub fn run(args: Vec<String>) {
                 Some(name) => ferric_dft::libxc::xc_def_from_name(name)
                     .map(|d| {
                         let m = ferric_dft::libxc::k_mix_from_xc_def(&d);
-                        m.sr != 0.0 || m.omega > 0.0
+                        m.sr > 0.0 || m.omega > 0.0
                     })
                     .unwrap_or(true),
             };
