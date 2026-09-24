@@ -1,0 +1,152 @@
+{
+  "row": "SCF stability",
+  "system": "water_stretched",
+  "basis": "6-31g",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 13,
+  "nuclear_repulsion": 4.4007101733060505,
+  "rhf": {
+    "energy": -75.55772945574226,
+    "converged": true,
+    "nocc": 5,
+    "homo": -0.41363119330141185,
+    "lumo": -0.037719293979959545,
+    "max_orbital_gradient": 6.086400801345865e-11,
+    "singlet_rhf_internal": {
+      "construction": "dense newton_ah.gen_g_hop_rhf h_op / 2 (ferric rhf_internal_stability convention)",
+      "pyscf_raw_factor": 2.0,
+      "lowest": [
+        0.019710054818436733,
+        0.07443451584686701,
+        0.09165160660140366,
+        0.1460695501067626,
+        0.18441266707607362,
+        0.5528748212151013,
+        0.8820760552970749,
+        0.9140250490640446
+      ],
+      "lowest_pyscf_raw": [
+        0.039420109636873465,
+        0.14886903169373403,
+        0.18330321320280732,
+        0.2921391002135252,
+        0.36882533415214724,
+        1.1057496424302027,
+        1.7641521105941498,
+        1.8280500981280892
+      ],
+      "max_asymmetry": 5.023759186428833e-15
+    },
+    "triplet_rhf_to_uhf": {
+      "construction": "dense stability._gen_hop_rhf_external hop_rhf2uhf (factor 1)",
+      "lowest": [
+        -0.30724190949739083,
+        -0.26792195663234597,
+        -0.05823742791868025,
+        -0.010173170840615718,
+        0.006963212206145363,
+        0.13285680218014204,
+        0.58902678931887,
+        0.6086932711230986
+      ],
+      "max_asymmetry": 2.2516710718178956e-15
+    },
+    "uhf_hessian_at_rhf_point": {
+      "construction": "dense gen_g_hop_uhf on scf.addons.convert_to_uhf(rhf) (factor 1)",
+      "dim": 80,
+      "lowest": [
+        -0.3072419094974018,
+        -0.26792195663234775,
+        -0.05823742791868039,
+        -0.010173170840615791,
+        0.006963212206146565,
+        0.01971005481844276,
+        0.0744345158468697,
+        0.0916516066014049
+      ],
+      "union_identity_max_dev": 2.4868995751603507e-14,
+      "max_asymmetry": 1.9881015236866695e-15
+    },
+    "pyscf_verdict": {
+      "internal_stable": true,
+      "external_stable": false,
+      "threshold": "PySCF: unstable iff Davidson eigenvalue < -1e-5 on its own scale"
+    },
+    "stability": {
+      "internal_stable": true,
+      "external_stable": false,
+      "kind": "PySCF RHF internal + RHF->UHF external (real)"
+    },
+    "broken_symmetry_uhf": {
+      "energy": -75.77967965099545,
+      "converged": false,
+      "s_squared": 1.8314476269982891,
+      "below_rhf_by": 0.2219501952531857
+    }
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "scf.RHF",
+      "init_guess": "minao",
+      "stability": "dense singlet/triplet/UHF-at-RHF Hessians + mf.stability(external=True)",
+      "numpy": "1.26.4",
+      "eri": "exact 4-index (no density fitting)",
+      "normalization": "stored 'lowest' arrays are in FERRIC's convention: gen_g_hop_uhf x1, gen_g_hop_rhf x1/2, hop_rhf2uhf x1 (see generator docstring)"
+    },
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-10
+    },
+    "stability": {
+      "rhf": {
+        "internal_stable": true,
+        "external_stable": false,
+        "kind": "PySCF RHF internal + RHF->UHF external (real)"
+      }
+    },
+    "basis": "6-31g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/6-31g.json",
+    "basis_sha256": "1ae9712168e449cee8ee656810f9dc2619083fc9a78f0b8e8dac77c5dbcfa7ef",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/water_stretched.xyz",
+    "geometry_xyz_sha256": "fa6f39241d9363686d3162e128c99df5ba1d07c79d7110e82a58c8e00960dd13",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        2.9887772892757885,
+        -2.3133243736474243
+      ],
+      [
+        "H",
+        0.0,
+        -2.9887772892757885,
+        -2.3133243736474243
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_scf_stability.py",
+    "git_head": "a13f2ff5f6a5e27b84118c9ce14864f021232f54",
+    "generated_utc": "2026-09-24T22:10:14+00:00",
+    "basis_self_check": {
+      "nao": 13,
+      "replica_self_overlap_max_dev": 2.220446049250313e-16,
+      "pyscf_diag_max_dev": 3.3306690738754696e-16,
+      "diag_checked": 13,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}

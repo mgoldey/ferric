@@ -1,0 +1,170 @@
+{
+  "row": "SCF stability",
+  "system": "n2_plus",
+  "basis": "6-31g",
+  "charge": 1,
+  "multiplicity": 2,
+  "nao": 18,
+  "nuclear_repulsion": 23.23448327516129,
+  "uhf": {
+    "energy": -108.31868421866878,
+    "converged": true,
+    "s_squared": 1.3491433180023122,
+    "multiplicity_from_s2": 2.5291447708680597,
+    "nelec_alpha": 7,
+    "nelec_beta": 6,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 1,
+      "selected_guess": "minao",
+      "lambda_min": 0.10035610017703671
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -108.31868421866878,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 1,
+        "energy_trajectory": [
+          -108.2895399628309,
+          -108.31868421866878
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -108.31868421866878,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 1,
+        "energy_trajectory": [
+          -108.28953996283084,
+          -108.31868421866878
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -107.93750059693892,
+        "converged": false,
+        "internal_stable": false,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -107.93750059693892
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -1.021863231689317,
+    "lumo_alpha": -0.21792464020019386,
+    "homo_beta": -1.0236534628372562,
+    "lumo_beta": -0.4644099225846461,
+    "somo_alpha": [
+      -1.021863231689317
+    ],
+    "hessian": {
+      "construction": "dense newton_ah.gen_g_hop_uhf h_op (== ferric uhf_internal_stability, factor 1)",
+      "dim": 149,
+      "lowest": [
+        0.10035610017702855,
+        0.10035610018233276,
+        0.17124829646372597,
+        0.20624432106864266,
+        0.21156530375037294,
+        0.21156530375037397,
+        0.23517093934553446,
+        0.2351709393482859
+      ],
+      "max_asymmetry": 2.951805466722135e-14,
+      "max_orbital_gradient": 4.4651581086714724e-11
+    }
+  },
+  "uhf_default_guess_saddle": {
+    "energy": -108.28953996283093,
+    "init_guess": "minao",
+    "s_squared": 0.7651285298522854,
+    "hessian": {
+      "construction": "dense newton_ah.gen_g_hop_uhf h_op (factor 1)",
+      "dim": 149,
+      "lowest": [
+        -0.10033835637344168,
+        -0.044572060905496334,
+        -0.04457206090549291,
+        0.037480953440236386,
+        0.05922930861665484,
+        0.05922930861665914,
+        0.20440476812824054,
+        0.204404768128242
+      ],
+      "max_asymmetry": 1.3704824580410466e-14,
+      "max_orbital_gradient": 1.760382027997023e-11
+    },
+    "pyscf_verdict": {
+      "internal_stable": false
+    }
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "scf.UHF",
+      "init_guess_scan": [
+        "minao",
+        "atom",
+        "huckel"
+      ],
+      "stability": "internal loop then dense gen_g_hop_uhf",
+      "numpy": "1.26.4",
+      "eri": "exact 4-index (no density fitting)",
+      "normalization": "stored 'lowest' arrays are in FERRIC's convention: gen_g_hop_uhf x1, gen_g_hop_rhf x1/2, hop_rhf2uhf x1 (see generator docstring)"
+    },
+    "grid": "none",
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-10
+    },
+    "stability": {
+      "uhf": {
+        "internal_stable": true,
+        "kind": "PySCF UHF internal (real)",
+        "rounds": 1,
+        "selected_guess": "minao",
+        "lambda_min": 0.10035610017703671
+      }
+    },
+    "basis": "6-31g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/6-31g.json",
+    "basis_sha256": "1ae9712168e449cee8ee656810f9dc2619083fc9a78f0b8e8dac77c5dbcfa7ef",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/n2_plus.xyz",
+    "geometry_xyz_sha256": "441b0c659e41b405216b29ed61da83c37112c3710decc6f88ba7df7cd654fb0d",
+    "geometry_bohr": [
+      [
+        "N",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "N",
+        0.0,
+        0.0,
+        2.1089343550146094
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_scf_stability.py",
+    "git_head": "a13f2ff5f6a5e27b84118c9ce14864f021232f54",
+    "generated_utc": "2026-09-24T22:10:08+00:00",
+    "basis_self_check": {
+      "nao": 18,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 18,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}

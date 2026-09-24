@@ -1,0 +1,200 @@
+{
+  "row": "SCF stability",
+  "system": "nh2",
+  "basis": "6-31g",
+  "charge": 0,
+  "multiplicity": 2,
+  "nao": 13,
+  "nuclear_repulsion": 7.564094299642846,
+  "uks_pbe": {
+    "energy": -55.77694990041154,
+    "converged": true,
+    "s_squared": 0.7516594299139281,
+    "multiplicity_from_s2": 2.0016587420576246,
+    "nelec_alpha": 5,
+    "nelec_beta": 4,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UKS internal (real)",
+      "rounds": 0,
+      "selected_guess": "huckel",
+      "lambda_min": 0.07865339903799419
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -55.776949900411495,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.776949900411495
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -55.776949900411445,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.776949900411445
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -55.77694990041154,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -55.77694990041154
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.2513738378011341,
+    "lumo_alpha": 0.05019894899005417,
+    "homo_beta": -0.22616752493577708,
+    "lumo_beta": -0.14455613879921314,
+    "somo_alpha": [
+      -0.2513738378011341
+    ],
+    "hessian": {
+      "construction": "dense newton_ah.gen_g_hop_uhf h_op (== ferric uhf_internal_stability, factor 1) on dft.UKS (f_xc via gen_response)",
+      "dim": 76,
+      "lowest": [
+        0.07865339903799347,
+        0.24622736063819264,
+        0.2556480508823939,
+        0.29889825031410144,
+        0.30730984124850663,
+        0.32666341348271427,
+        0.3769656961820042,
+        0.42240497976436786
+      ],
+      "max_asymmetry": 1.2073675392798577e-15,
+      "max_orbital_gradient": 2.1847731303562815e-11
+    },
+    "xc": "PBE,PBE",
+    "jk": "EXACT J (4-index); no K (pure GGA)"
+  },
+  "uhf_control": {
+    "energy": -55.532312001691324,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "minao",
+      "lambda_min": 0.07500756175538191
+    },
+    "hessian": {
+      "construction": "dense newton_ah.gen_g_hop_uhf h_op (== ferric uhf_internal_stability, factor 1)",
+      "dim": 76,
+      "lowest": [
+        0.07500756175538624,
+        0.2702126325953682,
+        0.2807169430263015,
+        0.29958361374959364,
+        0.35733993591028773,
+        0.3862344579324537,
+        0.42750874963178914,
+        0.42878341667897646
+      ],
+      "max_asymmetry": 1.9567680809018384e-15,
+      "max_orbital_gradient": 2.3405128999481893e-11
+    },
+    "note": "exact UHF; ferric UKS lambda_min must MISS this (f_xc kernel applied)"
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "dft.UKS PBE (+ scf.UHF control)",
+      "init_guess_scan": [
+        "minao",
+        "atom",
+        "huckel"
+      ],
+      "ks_conv": {
+        "conv_tol": 1e-11,
+        "conv_tol_grad": 1e-10
+      },
+      "stability": "internal loop then dense gen_g_hop_uhf (includes f_xc)",
+      "numpy": "1.26.4",
+      "eri": "exact 4-index (no density fitting)",
+      "normalization": "stored 'lowest' arrays are in FERRIC's convention: gen_g_hop_uhf x1, gen_g_hop_rhf x1/2, hop_rhf2uhf x1 (see generator docstring)"
+    },
+    "grid": {
+      "main": {
+        "atom_grid": [
+          75,
+          110
+        ],
+        "prune": null,
+        "partition": "Becke (original_becke)",
+        "radii_adjust": "becke_atomic_radii_adjust"
+      }
+    },
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-10
+    },
+    "stability": {
+      "uks_pbe": {
+        "internal_stable": true,
+        "kind": "PySCF UKS internal (real)",
+        "rounds": 0,
+        "selected_guess": "huckel",
+        "lambda_min": 0.07865339903799419
+      },
+      "uhf_control": {
+        "internal_stable": true,
+        "kind": "PySCF UHF internal (real)",
+        "rounds": 0,
+        "selected_guess": "minao",
+        "lambda_min": 0.07500756175538191
+      }
+    },
+    "basis": "6-31g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/6-31g.json",
+    "basis_sha256": "1ae9712168e449cee8ee656810f9dc2619083fc9a78f0b8e8dac77c5dbcfa7ef",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/nh2.xyz",
+    "geometry_xyz_sha256": "a93f4ddd65a01379beb9335bab6cbeb2165454f5784960ee705f49ec9c0d28e5",
+    "geometry_bohr": [
+      [
+        "N",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        1.5186047006878538,
+        -1.1993217336336612
+      ],
+      [
+        "H",
+        0.0,
+        -1.5186047006878538,
+        -1.1993217336336612
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_scf_stability.py",
+    "git_head": "a13f2ff5f6a5e27b84118c9ce14864f021232f54",
+    "generated_utc": "2026-09-24T22:10:20+00:00",
+    "basis_self_check": {
+      "nao": 13,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 13,
+      "diag_skipped_cartesian": 0
+    }
+  }
+}
