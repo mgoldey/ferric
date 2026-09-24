@@ -291,3 +291,24 @@ fn periodic_hcore_rejects_bad_config_and_foreign_basis() {
     let prep_moved = PreparedBasis::new(&moved, &pyscf_sto3g_h()).unwrap();
     assert!(periodic_hcore(&cell, &prep_moved, &PeriodicHcoreConfig::with_omega(1.0)).is_err());
 }
+
+/// A shell above md3c1e::MAX_L (an h shell, l = 5) is a typed error, not a
+/// DFACT index panic inside prim_norm (CodeRabbit, PR #150).
+#[test]
+fn periodic_hcore_rejects_l_above_max_l() {
+    let cell = h2_cell(4.0);
+    let h_shell = Shell {
+        l: 5,
+        pure: true,
+        exponents: vec![0.8],
+        coefficients: vec![1.0],
+    };
+    let mut bs = pyscf_sto3g_h();
+    for shells in bs.shells.values_mut() {
+        shells.push(h_shell.clone());
+    }
+    let prep = PreparedBasis::new(cell.mol(), &bs).expect("libint accepts l=5");
+    let err = periodic_hcore(&cell, &prep, &PeriodicHcoreConfig::with_omega(1.0))
+        .expect_err("l=5 must be rejected");
+    assert!(err.to_string().contains("l=5"), "{err}");
+}

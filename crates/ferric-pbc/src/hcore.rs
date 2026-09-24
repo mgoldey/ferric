@@ -206,10 +206,15 @@ fn prim_shells(cell: &Cell, prep: &PreparedBasis) -> Result<Vec<PrimShell>, Ferr
     let offs = prep.shell_offsets();
     let mut out = Vec::with_capacity(prep.nshells());
     for (s, sh) in prep.located_shells().iter().enumerate() {
-        if sh.l < 0 || sh.exponents.is_empty() || sh.exponents.len() != sh.coefficients.len() {
+        if sh.l < 0
+            || sh.l as usize > ferric_integrals::md3c1e::MAX_L
+            || sh.exponents.is_empty()
+            || sh.exponents.len() != sh.coefficients.len()
+        {
             return Err(FerricError::Basis(format!(
-                "periodic_hcore: malformed shell {s} (l={}, {} exponents, {} coefficients)",
+                "periodic_hcore: malformed or unsupported shell {s} (l={}, max l {}, {} exponents, {} coefficients)",
                 sh.l,
+                ferric_integrals::md3c1e::MAX_L,
                 sh.exponents.len(),
                 sh.coefficients.len()
             )));

@@ -123,9 +123,11 @@ pub fn prep_for(cell: &Cell, bs: &BasisSet) -> PreparedBasis {
 
 pub fn max_abs_diff(a: &ndarray::Array2<f64>, b: &ndarray::Array2<f64>) -> f64 {
     assert_eq!(a.dim(), b.dim());
-    a.iter()
-        .zip(b.iter())
-        .fold(0.0_f64, |m, (x, y)| m.max((x - y).abs()))
+    a.iter().zip(b.iter()).fold(0.0_f64, |m, (x, y)| {
+        let d = (x - y).abs();
+        assert!(d.is_finite(), "non-finite matrix difference: {x} vs {y}");
+        m.max(d)
+    })
 }
 
 pub fn array2(rows: &[&[f64]]) -> ndarray::Array2<f64> {

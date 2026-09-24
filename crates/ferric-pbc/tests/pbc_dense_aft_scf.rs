@@ -80,10 +80,11 @@ fn dense_aft_eri_matches_prototype_h2() {
     )
     .unwrap();
     let got: Vec<f64> = eri.eri().iter().copied().collect();
-    let worst = got
-        .iter()
-        .zip(&H2_ERI_REF)
-        .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
+    let worst = got.iter().zip(&H2_ERI_REF).fold(0.0_f64, |m, (a, b)| {
+        let d = (a - b).abs();
+        assert!(d.is_finite(), "non-finite ERI difference: {a} vs {b}");
+        m.max(d)
+    });
     eprintln!(
         "H2 a=4 dense AFT ERI vs prototype: {worst:.2e} ({} half-G)",
         eri.n_g_half()
