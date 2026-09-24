@@ -4,17 +4,47 @@ Things that behave differently from what you might expect, each of which has
 cost someone a run. This page follows the pattern of JAX's "Sharp Bits": each
 entry says what surprises people, why ferric does it that way, and what to do.
 
-## Set `OPENBLAS_NUM_THREADS=1`
+## Leave `OPENBLAS_NUM_THREADS` unset
 
-**What happens:** with OpenBLAS threading enabled, jobs slow down, and under some
-workloads crash inside LAPACK.
+**What happens:** the `ferric` CLI and `import ferric` pin OpenBLAS to one
+thread when `OPENBLAS_NUM_THREADS` is unset, and honour the variable when it is
+set. (`.cargo/config.toml` sets it to 1 for cargo-launched processes, also
+only when it is unset.) A value above 1 is therefore a deliberate choice, and
+its effect depends on the workload: it can speed up one calculation and slow
+another down several-fold.
 
-**Why:** ferric parallelizes with rayon at the outer level. OpenBLAS threads
-started inside rayon workers oversubscribe the cores and are not safe in every
-LAPACK routine.
+**Why:** ferric's parallelism comes from rayon. OpenBLAS threads run inside
+rayon's worker threads, so the thread count is roughly BLAS threads × rayon
+threads. Measured on benzene with the `ferric` CLI, single runs on a heavily
+loaded machine with 6 physical cores (12 hardware threads), so read these as
+order-of-magnitude:
 
-**Do:** export `OPENBLAS_NUM_THREADS=1` for every run, test and benchmark. For
-throughput across many molecules, run many single-threaded processes.
+| `OPENBLAS_NUM_THREADS` | unset | 1 | 6 | 12 |
+|---|---|---|---|---|
+| RI-JK RHF (`benzene-rhf-def2-rijk.toml`) | 54 s | 31 s | 9.7 s | timed out at 1800 s |
+| PDEP-RPA (`benzene-pdep-rpa.toml`) | 5.9 s | 7.2 s | 22.9 s | 30.7 s |
+
+"unset" and 1 run the same configuration, so the gap between those two
+columns is the machine's load, not a setting. B3LYP timings were noisy, with
+no clear trend. None of these runs crashed.
+
+Three effects matter beyond speed:
+
+- **Oversubscription can stall a run.** Once BLAS threads × rayon threads
+  exceed the physical cores, a job can slow by orders of magnitude, as the
+  12-thread RI-JK run shows.
+- **Results change slightly.** The BLAS thread count changes the order of
+  floating-point summation. The RI-JK energy at 6 threads differs from the
+  1-thread energy by 6e-6 Ha; expect differences at the 1e-6 to 1e-5 Ha level.
+- **LU routines can crash.** Threaded OpenBLAS LU factorization (`dgetrf`)
+  can overflow the 2 MB stacks of rayon's worker threads. ferric calls LU
+  solves in BSE, PCM, COSMO, MBD and orbital-rotation steps, among others.
+
+**Do:** leave `OPENBLAS_NUM_THREADS` unset, and ferric runs with one BLAS
+thread. If you set it higher for a particular job, never above the number of
+physical cores, and check the timing and the energy against a one-thread run
+of the same input. For throughput across many molecules, run many
+single-threaded processes.
 
 ## `converged` is a flag, and it does not mean "ground state"
 
