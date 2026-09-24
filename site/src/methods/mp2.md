@@ -10,9 +10,17 @@ transformation. Grades per `method.kind` are on
 
 ## RI-MP2
 
-**What it is.** Closed- and open-shell second-order Møller–Plesset theory with
+**What it is.** Closed-shell second-order Møller–Plesset theory with
 3-centre/2-centre density fitting. Canonical (non-RI) MP2 is also implemented,
 for cross-validation, not production.
+
+**Closed-shell only from the CLI and Python.** `rimp2`, `mp3`, `oo-rimp2`,
+`att-rimp2`, `scs-mp2`, `scs-mp2-2terfc`, `laplace-mp2`, `laplace-sos-mp2` and
+`rs-mp2-rpa`, and their Python drivers (`run_rimp2` and the rest), are
+closed-shell only. Do not give them an open-shell molecule: set
+`multiplicity = 1`. Open-shell (UHF-based) RI-MP2 exists in the Rust library
+only (`ferric_mp2::u_rimp2`). The one open-shell MP2-family kind is `mp2-v`,
+which switches to a UHF reference when `multiplicity > 1`.
 
 **Run it.** `method.kind = "rimp2"` (`examples/water-rimp2.toml`,
 `examples/water-rimp2-frozen-core.toml`); Python `ferric.run_rimp2(mol, bs, aux)`.
@@ -147,10 +155,12 @@ of RI-MP2 to quadrature error, which is the test anchor. Three formulations
 - A 71-atom drug molecule (danuglipron, 31.3 Bohr across, STO-3G) is within
   0.05% at 4 Bohr.
 
-The butane/octane figures are pinned by the test
-`sos_ao_sparse_truncation_radius_is_transferable_across_sizes` in
-`crates/ferric-mp2/src/laplace.rs`, whose doc comment also records the
-danuglipron run. The alkane sweep is kept in the project's working notes.
+The test `sos_ao_sparse_truncation_radius_is_transferable_across_sizes` in
+`crates/ferric-mp2/src/laplace.rs` pins the STO-3G butane/octane comparison:
+at 12 Bohr butane is exact (relative error below 1e-9) and octane is
+within 1e-6, and octane at 3 Bohr is worse than at 12 Bohr. The
+4 Bohr butane figure and the danuglipron run (recorded in the test's doc
+comment) are measurements, not assertions. The alkane sweep is kept in the project's working notes.
 
 **How to read it (provisional):** the radius needed grows, but far more slowly
 than the molecule. That points to a finite decay length rather than strict
@@ -188,8 +198,8 @@ stage (assembly + solve) and exclude the canonical reference:
 
 - Correlation-stage cost grows as about N<sup>1.24</sup> with the erfc
   kernel and N<sup>1.4</sup> with Coulomb, fitted to the last three sizes.
-- It overtakes canonical RI-MP2 at about C20 and is about 5.8× faster at
-  C32.
+- It is at about parity with canonical RI-MP2 at C20 (about 1.1× slower)
+  and about 6× faster at C32 (5.7–6.3×).
 
 **How to read it (provisional):** sub-quadratic on this series, but the fit
 has three points on one family of molecules in one basis. It is not shown

@@ -86,9 +86,7 @@ against a PySCF-integral BSE cross-check (8.46 eV).
 shell.
 
 **Run it.** `method.kind = "tda"` or `"tddft"` with `[tddft] n_roots` and
-optionally `xc` (`examples/water-tda.toml`, `examples/water-tddft-pbe.toml`;
-both need `[mp2] auxbasis = "cc-pvdz-ri"` added to run, see
-[Examples](../reference/examples.md)); Python
+optionally `xc` (`examples/water-tda.toml`, `examples/water-tddft-pbe.toml`); Python
 `ferric.run_tddft(mol, bs, aux, functional=..., method="tda")` or
 `method="casida"`.
 
@@ -124,13 +122,17 @@ PDEP-RPA gives better molecular \\( C_6 \\) is not established.**
 Use an augmented basis for any polarizability or \\( C_6 \\): without diffuse
 functions the dipole response is badly underestimated.
 
-**TDHF/RPAx \\( C_6 \\) is a measured negative.** The RPAx@PBE static
-polarizability of water is close to the DOSD value, but \\( C_6 \\) built on
-the same kernel stays about 60% low regardless of the gap. Use
-`method.kind = "tdhf-static-polarizability"`
-(`examples/water-tdhf-static-alpha.toml`) for static α only. It needs a KS
-reference (`[rpa] xc`), and at the default scissor it can hit an excitonic
-instability, which is reported as an error rather than a negative α.
+**TDHF/RPAx \\( C_6 \\) is a measured negative.** \\( C_6 \\) built on the
+RPAx@PBE kernel stays about 63% low regardless of the gap. Its static
+polarizability is not established either: at a physical scissor (0.36 Ha)
+water/cc-pVDZ gives an isotropic α of 5.20 a.u. against the DOSD 9.64 a.u.
+(−46%). The 9.24 a.u. quoted in the example's header comes from
+`scissor = 0`, where the tensor has a negative diagonal component, and that
+setting is refused. `method.kind = "tdhf-static-polarizability"` computes
+static α only. It needs a KS reference (`[rpa] xc`), and at the default
+`[gw] scissor = 0` it can hit an excitonic instability, which is reported as
+an error rather than a negative α; `examples/water-tdhf-static-alpha.toml`
+hits it as shipped, so set `scissor` to about 0.3–0.4 Ha.
 
 ## Cite
 

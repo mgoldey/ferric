@@ -49,7 +49,10 @@ than mixing conventions.
 **LinLCCD(hh)** is linearized coupled-cluster doubles with the hole–hole ladder
 kept to all orders, closed shell only. The ladder keeps the correlation energy
 finite as the HOMO–LUMO gap closes, where MP2 diverges.
-`method.kind = "linlccd"` (`examples/water-linlccd.toml`). Proven.
+`method.kind = "linlccd"` (`examples/water-linlccd.toml`). Proven (narrow,
+exact limits only): no external code has a reference for the LinLCCD(hh)
+energy; with the ladder off it reduces exactly to RI-MP2, and with exact
+integrals its driver terms reproduce canonical MP2.
 
 **ωB97X-L-V** is a double-hybrid functional that uses short-range LinLCCD(hh)
 instead of MP2 for its correlation term. It converges its **own** ωB97X-L
@@ -64,9 +67,7 @@ energy exists in ferric.
 
 **B2PLYP** and **DSD-PBEP86**: a KS reference with weighted exchange and
 correlation components, plus scaled (SCS-)RI-MP2 correlation.
-`method.kind = "b2plyp"` / `"dsd-pbep86"` (`examples/water-b2plyp.toml`, which
-needs its aux basis changed to `cc-pvdz-ri` to run; see
-[Examples](../reference/examples.md));
+`method.kind = "b2plyp"` / `"dsd-pbep86"` (`examples/water-b2plyp.toml`);
 Python `ferric.run_double_hybrid(mol, bs, aux, kind="b2plyp")`. **Spike**: no
 comparison to a reference code yet.
 
