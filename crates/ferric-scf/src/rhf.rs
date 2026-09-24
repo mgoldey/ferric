@@ -725,14 +725,49 @@ pub(crate) fn scf_converged(
     }
 }
 
+/// Refuse a molecule whose multiplicity says it is open-shell.
+///
+/// `solve_rhf` occupies `nelec / 2` doubly-occupied orbitals and never read
+/// `mol.multiplicity`. An odd electron count failed (as a misleading
+/// `ScfConvergence { iterations: 0 }`), but an EVEN count with multiplicity
+/// > 1 -- triplet water, triplet O2 -- converged the closed-shell SINGLET and
+/// returned it as if it answered the question. Every closed-shell consumer
+/// downstream (RI-MP2, MP3, SCS-MP2, CCSD, RKS, the Python `run_*`
+/// functions) inherited that silent singlet. Measured before this guard:
+/// water with multiplicity = 3, RI-MP2/STO-3G, returned -74.99874958 Ha, the
+/// singlet's energy to every digit.
+///
+/// This is the single place the multiplicity was dropped, so it is the place
+/// it is checked. Callers that want an open-shell reference use
+/// [`crate::uhf::solve_uhf`] or [`crate::rohf::solve_rohf`] (both of which set
+/// `RhfConfig::xc` for UKS/ROKS).
+pub fn require_closed_shell(mol: &Molecule) -> Result<(), FerricError> {
+    if mol.multiplicity == 1 {
+        return Ok(());
+    }
+    Err(FerricError::General(format!(
+        "closed-shell (restricted) SCF requested for a molecule with multiplicity {} \
+         ({} electrons): RHF/RKS cannot represent unpaired electrons, and running it \
+         anyway would return the closed-shell singlet. Use an open-shell reference \
+         (UHF/UKS or ROHF/ROKS) for multiplicity > 1, or set multiplicity = 1 if the \
+         singlet is what you want.",
+        mol.multiplicity,
+        mol.nelec()
+    )))
+}
+
 /// Solve the closed-shell RHF equations for a molecule.
 ///
 /// Uses the Roothaan-Hall procedure: build Fock matrix from density, diagonalize,
 /// rebuild density, iterate until convergence. DIIS extrapolation accelerates
 /// convergence. Returns `Ok(ScfResult)` whether or not it converges — check
 /// `result.converged` / `result.exit` (`ScfExit::MaxIter` carries the
-/// best-effort density/MOs from the final iteration). Only returns
-/// [`FerricError::ScfConvergence`] for the odd-electron-count input error.
+/// best-effort density/MOs from the final iteration). Returns
+/// [`FerricError::General`] up front for an open-shell molecule
+/// (`mol.multiplicity != 1`, see [`require_closed_shell`]) and
+/// [`FerricError::ScfConvergence`] only for an odd electron count that
+/// somehow carries multiplicity 1 (unreachable through `Molecule::parse_xyz`,
+/// which validates parity).
 ///
 /// # Examples
 ///
@@ -758,6 +793,8 @@ pub fn solve_rhf(
     bounds: &SchwarzBounds,
     config: &RhfConfig,
 ) -> Result<ScfResult, FerricError> {
+    // Refuse an open-shell molecule BEFORE any work. See `require_closed_shell`.
+    require_closed_shell(mol)?;
     // Build the XC contribution once. None for pure HF. Built FIRST so the
     // shared driver env can size the RSH fitter pair from k_mix, and so the
     // JK-aux auto-defaults below can see hybrid/RSH-ness.
@@ -2385,6 +2422,32 @@ mod tests {
     // NOT need this lock — only reach for it when the test path touches
     // `resolve_three_index_budget` (directly or transitively).
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Triplet water has an EVEN electron count, so the old odd-count check
+    /// never fired and `solve_rhf` returned the closed-shell singlet. If the
+    /// `require_closed_shell` call at the top of `solve_rhf` is removed, the
+    /// `expect_err` below panics with a converged singlet `ScfResult`.
+    /// No ENV_LOCK: the guard returns before the budget resolver is reached,
+    /// and the reachability half below only calls the pure helper.
+    #[test]
+    fn solve_rhf_refuses_an_even_electron_open_shell_molecule() {
+        let xyz = "3\nwater\nO 0.000000 0.000000 0.117790\n\
+                   H 0.000000 0.755453 -0.471161\nH 0.000000 -0.755453 -0.471161\n";
+        let triplet = Molecule::parse_xyz(xyz, 0, 3).unwrap();
+        let bs = basis::bundled("sto-3g").unwrap();
+        let prep = PreparedBasis::new(&triplet, &bs).unwrap();
+        let op = Operator::coulomb();
+        let bounds = SchwarzBounds::compute(op, &prep).unwrap();
+        let ctx = ParallelContext::default();
+        let err = solve_rhf(&ctx, &triplet, &prep, op, &bounds, &RhfConfig::default())
+            .expect_err("RHF on a triplet must be refused, not answered with the singlet");
+        let msg = err.to_string();
+        assert!(msg.contains("multiplicity 3"), "{msg}");
+        // Reachability: the helper must accept the singlet, or the refusal
+        // above proves nothing about WHICH input it refuses.
+        let singlet = Molecule::parse_xyz(xyz, 0, 1).unwrap();
+        assert!(require_closed_shell(&singlet).is_ok());
+    }
 
     #[test]
     fn three_index_budget_auto_detects_ram_on_default() {
