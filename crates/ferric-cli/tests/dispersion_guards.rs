@@ -1,8 +1,9 @@
 //! `[dft] dispersion` must be REFUSED wherever it would be silently dropped.
 //!
-//! The correction is evaluated in exactly one place — `report_ksdft`, on the
-//! `method.kind = "ksdft"`, `method.task = "energy"` path. Every other route
-//! through the CLI reaches its result without ever reading the key. Accepting
+//! The correction is evaluated only on a Kohn-Sham SCF (`ksdft`, or
+//! `rhf`/`uhf`/`rohf` with `[dft] functional`): in the energy printout, and in
+//! the closed-shell optimizer. Every other route through the CLI reaches its
+//! result without ever reading the key. Accepting
 //! the config there does not produce a wrong number so much as a MISLABELLED
 //! one: the run prints an uncorrected energy from a file that asks for a
 //! corrected one, and nothing in the output says the correction was skipped.
@@ -108,10 +109,9 @@ fn body(kind: &str, task: &str, dispersion: bool) -> String {
     } else {
         ""
     };
-    // `functional` only where the kind reads it. `[dft] functional` on an
-    // `rhf` run is itself refused now (`Config::validate_dft_section`), so
-    // writing it unconditionally would make the `rhf_nodisp` anchor below fail
-    // for a reason that has nothing to do with dispersion.
+    // `functional` only for ksdft. On `rhf` a functional promotes the run to
+    // RKS, which DOES take the correction, so the refusal case below must be
+    // plain HF: no functional at all.
     let functional = if kind == "ksdft" {
         "functional = \"PBE\"\n"
     } else {

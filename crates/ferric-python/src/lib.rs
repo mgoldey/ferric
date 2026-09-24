@@ -3850,15 +3850,21 @@ fn hirshfeld_polarizability<'py>(
 #[pyclass]
 #[pyo3(name = "RiMp2Result")]
 struct PyRiMp2Result {
-    /// RHF + MP2 correlation energy, Hartree.
+    /// Reference + MP2 correlation energy, Hartree.
     #[pyo3(get)]
     total_energy: f64,
-    /// The converged reference RHF energy alone, Hartree.
+    /// The converged reference SCF energy alone, Hartree: RHF for a
+    /// closed-shell molecule, UHF for an open-shell one (see `reference`).
+    /// The name is kept for compatibility.
     #[pyo3(get)]
     rhf_energy: f64,
     /// MP2 correlation energy alone (always negative), Hartree.
     #[pyo3(get)]
     mp2_corr: f64,
+    /// The SCF reference the correlation was built on: "RHF" (closed-shell
+    /// RI-MP2) or "UHF" (unrestricted RI-MP2 for multiplicity > 1).
+    #[pyo3(get)]
+    reference: String,
 }
 
 #[pymethods]
@@ -3871,16 +3877,61 @@ impl PyRiMp2Result {
     }
     fn __str__(&self) -> String {
         format!(
-            "RI-MP2 Total Energy: {:.10} Ha (RHF: {:.10}, corr: {:.10})",
-            self.total_energy, self.rhf_energy, self.mp2_corr,
+            "RI-MP2 Total Energy: {:.10} Ha ({}: {:.10}, corr: {:.10})",
+            self.total_energy, self.reference, self.rhf_energy, self.mp2_corr,
         )
     }
 }
 
-/// Resolution-of-identity (density-fitted) MP2 on a closed-shell RHF
-/// reference. Runs its own internal RHF first (via `k_builder`, same
-/// convention as `run_rhf`'s `k_builder` kwarg), then the RI-MP2 correlation
-/// energy using `auxbasis` as the fitting basis.
+/// `run_rimp2`'s compute: `(reference SCF energy, MP2 correlation, total)`.
+///
+/// multiplicity > 1: UHF + unrestricted RI-MP2 (`solve_rhf` refuses the
+/// molecule; see `ferric_scf::rhf::require_closed_shell`). A non-converged
+/// SCF is an error on both routes.
+fn rimp2_energies(
+    mol: &Molecule,
+    basis_set: &basis::BasisSet,
+    auxbasis: &basis::BasisSet,
+    rhf_config: &RhfConfig,
+    mp2_config: &RiMp2Config,
+) -> Result<(f64, f64, f64), ferric_core::FerricError> {
+    let prep = PreparedBasis::new(mol, basis_set)?;
+    let dfbs = PreparedBasis::new(mol, auxbasis)?;
+    let op = Operator::coulomb();
+    let bounds = SchwarzBounds::compute(op, &prep)?;
+    let ctx = ParallelContext::default();
+    let open_shell = mol.multiplicity > 1;
+    let scf = if open_shell {
+        solve_uhf(&ctx, mol, &prep, &bounds, rhf_config)?
+    } else {
+        solve_rhf(&ctx, mol, &prep, op, &bounds, rhf_config)?
+    };
+    if !scf.converged {
+        return Err(ferric_core::FerricError::ScfConvergence {
+            iterations: scf.iterations,
+            last_energy: scf.energy,
+        });
+    }
+    if open_shell {
+        let u = ferric_mp2::u_rimp2::u_ri_mp2(mol, &prep, &dfbs, op, &scf, mp2_config)?;
+        Ok((scf.energy, u.mp2_corr, u.total_energy))
+    } else {
+        let mp2 = ri_mp2(mol, &prep, &dfbs, op, &scf, mp2_config)?;
+        Ok((scf.energy, mp2.mp2_corr, mp2.total_energy))
+    }
+}
+
+/// Resolution-of-identity (density-fitted) MP2. Runs its own internal SCF
+/// first (via `k_builder`, same convention as `run_rhf`'s `k_builder`
+/// kwarg), then the RI-MP2 correlation energy using `auxbasis` as the
+/// fitting basis.
+///
+/// The reference follows the molecule's multiplicity: RHF + closed-shell
+/// RI-MP2 for a singlet, UHF + unrestricted RI-MP2 (UMP2, as PySCF's
+/// `mp.MP2(uhf)`) for multiplicity > 1. `result.reference` says which.
+/// `kappa` (kappa-regularized MP2) exists for the closed-shell kernel only
+/// and raises ValueError on an open-shell molecule rather than being
+/// silently dropped.
 ///
 /// `auxbasis` is the RI auxiliary basis (e.g. a bundled `*-ri`/`*-rifit` set
 /// such as `"cc-pvdz-ri"` for orbital basis `"cc-pvdz"`, or `"def2-svp-rifit"`
@@ -3890,11 +3941,12 @@ impl PyRiMp2Result {
 /// `frozen_core` (default 0) excludes that many lowest-energy occupied
 /// orbitals from the correlation treatment.
 ///
-/// Raises if the internal RHF does not converge.
+/// Raises if the internal SCF does not converge.
 ///
-/// Returns a [`RiMp2Result`](PyRiMp2Result) with `total_energy` (RHF + MP2
-/// correlation), `rhf_energy` (the reference energy), and `mp2_corr` (the
-/// correlation energy alone, always negative).
+/// Returns a [`RiMp2Result`](PyRiMp2Result) with `total_energy` (reference +
+/// MP2 correlation), `rhf_energy` (the reference SCF energy, RHF or UHF),
+/// `mp2_corr` (the correlation energy alone, always negative) and
+/// `reference` ("RHF" or "UHF").
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, frozen_core=None, k_builder=None, memory_budget_gb=None, kappa=None))]
 fn run_rimp2(
@@ -3912,43 +3964,32 @@ fn run_rimp2(
     let eaux = auxbasis.inner.clone();
     let rhf_config = rhf_config_budgeted(k_builder, budget_bytes_from_gb(memory_budget_gb));
     let mp2_budget = budget_bytes_from_gb(memory_budget_gb);
+    let open_shell = emol.multiplicity > 1;
+    if open_shell && kappa.is_some() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "run_rimp2: kappa is not supported for an open-shell molecule (multiplicity {}): \
+             kappa-regularization exists for the closed-shell kernel only. Omit kappa for \
+             plain unrestricted RI-MP2.",
+            emol.multiplicity
+        )));
+    }
+    let mp2_config = RiMp2Config {
+        frozen_core: frozen_core.unwrap_or(0),
+        memory_budget_bytes: mp2_budget,
+        kappa,
+        ..Default::default()
+    };
     // Release the GIL for the SCF + RI-MP2 compute. All captured values are
     // owned clones/locals built above, so nothing Python-borrowed crosses
     // the closure boundary.
-    let (rhf, mp2) = py
-        .allow_threads(|| -> Result<_, ferric_core::FerricError> {
-            let prep = PreparedBasis::new(&emol, &ebasis)?;
-            let dfbs = PreparedBasis::new(&emol, &eaux)?;
-            let op = Operator::coulomb();
-            let bounds = SchwarzBounds::compute(op, &prep)?;
-            let ctx = ParallelContext::default();
-            let rhf = solve_rhf(&ctx, &emol, &prep, op, &bounds, &rhf_config)?;
-            if !rhf.converged {
-                return Err(ferric_core::FerricError::ScfConvergence {
-                    iterations: rhf.iterations,
-                    last_energy: rhf.energy,
-                });
-            }
-            let mp2 = ri_mp2(
-                &emol,
-                &prep,
-                &dfbs,
-                op,
-                &rhf,
-                &RiMp2Config {
-                    frozen_core: frozen_core.unwrap_or(0),
-                    memory_budget_bytes: mp2_budget,
-                    kappa,
-                    ..Default::default()
-                },
-            )?;
-            Ok((rhf, mp2))
-        })
+    let (scf_energy, mp2_corr, total_energy) = py
+        .allow_threads(|| rimp2_energies(&emol, &ebasis, &eaux, &rhf_config, &mp2_config))
         .map_err(make_err)?;
     Ok(PyRiMp2Result {
-        total_energy: mp2.total_energy,
-        rhf_energy: rhf.energy,
-        mp2_corr: mp2.mp2_corr,
+        total_energy,
+        rhf_energy: scf_energy,
+        mp2_corr,
+        reference: if open_shell { "UHF" } else { "RHF" }.to_string(),
     })
 }
 
@@ -5020,6 +5061,7 @@ fn run_terfc_rimp2(
         total_energy: mp2.total_energy,
         rhf_energy: rhf.energy,
         mp2_corr: mp2.mp2_corr,
+        reference: "RHF".to_string(),
     })
 }
 

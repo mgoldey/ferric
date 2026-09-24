@@ -772,17 +772,24 @@ class RiMp2Result:
 
     @property
     def total_energy(self) -> float:
-        """RHF + MP2 correlation energy, Hartree."""
+        """Reference SCF + MP2 correlation energy, Hartree."""
         ...
 
     @property
     def rhf_energy(self) -> float:
-        """Converged reference RHF energy, Hartree."""
+        """Converged reference SCF energy, Hartree: RHF for a closed-shell
+        molecule, UHF for an open-shell one (see `reference`)."""
         ...
 
     @property
     def mp2_corr(self) -> float:
         """MP2 correlation energy (always negative), Hartree."""
+        ...
+
+    @property
+    def reference(self) -> str:
+        """The SCF reference: "RHF" (closed-shell RI-MP2) or "UHF"
+        (unrestricted RI-MP2, for multiplicity > 1)."""
         ...
 
 class OoRiMp2Result:
@@ -1544,7 +1551,12 @@ def run_rimp2(
     memory_budget_gb: float | None = None,
     kappa: float | None = None,
 ) -> RiMp2Result:
-    """Resolution-of-identity (density-fitted) MP2 on a closed-shell RHF reference."""
+    """Resolution-of-identity (density-fitted) MP2.
+
+    RHF reference for a singlet; UHF reference + unrestricted RI-MP2 (UMP2)
+    for multiplicity > 1 (`result.reference` says which). `kappa` is
+    closed-shell only and raises ValueError on an open-shell molecule.
+    """
     ...
 
 def run_oo_rimp2(

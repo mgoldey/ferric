@@ -372,19 +372,22 @@ pub fn run(args: Vec<String>) {
         std::process::exit(1);
     }
     // ...and the same for the METHOD, which the task guard above does not
-    // cover. The correction is evaluated in `report_ksdft`, so an `rhf` energy
-    // run passes the task check, dispatches to `run_rhf`, and never sees the
-    // dispersion key at all -- reporting a plain HF energy from a config that
-    // asks for a corrected one. There is no correct answer to substitute
-    // either: D3(BJ)'s damping parameters are fitted PER FUNCTIONAL, so there
-    // is no such thing as "D3(BJ) for Hartree-Fock" without naming a fit.
-    if cfg.dft.dispersion.is_some() && method != "ksdft" {
+    // cover. The correction is evaluated only where a Kohn-Sham SCF result is
+    // printed (`print_scf_energy`), so a plain `rhf` energy run passes the
+    // task check, dispatches to `run_rhf`, and never sees the dispersion key
+    // at all -- reporting a plain HF energy from a config that asks for a
+    // corrected one. There is no correct answer to substitute either:
+    // D3(BJ)'s damping parameters are fitted PER FUNCTIONAL, so there is no
+    // such thing as "D3(BJ) for Hartree-Fock" without naming a fit. Any KS
+    // SCF qualifies: `ksdft`, or `rhf`/`uhf`/`rohf` with `[dft] functional`.
+    if cfg.dft.dispersion.is_some() && cfg.ks_functional().is_none() {
         eprintln!(
-            "error: [dft] dispersion is only supported with method.kind = \"ksdft\"; \
-             got kind = \"{method}\". D3(BJ) is evaluated on the KS-DFT path only, so \
-             this run would silently report an UNCORRECTED energy. Its damping \
-             parameters are fitted per functional, so there is no default fit to \
-             apply here -- remove the dispersion key, or use kind = \"ksdft\"."
+            "error: [dft] dispersion is only supported on a Kohn-Sham SCF (method.kind = \
+             \"ksdft\", or rhf/uhf/rohf with [dft] functional); got kind = \"{method}\" \
+             without one. D3(BJ) is evaluated on the KS-DFT path only, so this run would \
+             silently report an UNCORRECTED energy. Its damping parameters are fitted per \
+             functional, so there is no default fit to apply here -- remove the dispersion \
+             key, or use kind = \"ksdft\"."
         );
         std::process::exit(1);
     }
@@ -516,71 +519,11 @@ pub fn run(args: Vec<String>) {
             eprintln!("error: {e}");
             std::process::exit(1);
         });
-    // For ksdft, default RI-J/RI-K to def2-universal-jkfit (required for hybrids
-    // and RSH; harmless for pure DFT). User can still override via [scf].
-    let (xc, df_j_default, df_k_default) = if method == "ksdft" {
-        let functional = cfg.dft.functional.clone().unwrap_or_else(|| "LDA".into());
-        (
-            Some(functional),
-            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
-            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
-        )
-    } else if matches!(
-        method,
-        "pdep-rpa" | "rpa" | "gw" | "tdhf-static-polarizability"
-    ) && cfg.rpa.xc.is_some()
-    {
-        // RPA on a KS-DFT reference (RPA@PBE0 etc.): run the closed-shell KS
-        // solver for the reference orbitals. Hybrids need RI-J/RI-K.
-        // GW reuses [rpa].xc for its own KS-reference switch (GW needs the
-        // same vxc_diag plumbing pdep-rpa's KS path already has). BSE-TDA is
-        // closed-shell (RHF) only (see the "bse-tda" arm's guard) and does
-        // not currently expose a KS-reference switch, so it is intentionally
-        // excluded from this branch even though it's included below.
-        // "tdhf-static-polarizability" (RPAx@KS static alpha) REQUIRES a KS
-        // reference -- its own dispatch arm hard-errors below if [rpa].xc is
-        // unset: the path is wired and checked for a KS reference only. The
-        // old justification ("9.24 vs DOSD 9.64 a.u. on water/PBE, HF gives a
-        // much worse 5.24") is RETRACTED: 9.24 came from scissor = 0.0, whose
-        // tensor had a negative diagonal and is now refused; at the physical
-        // scissor (0.36 Ha) water/cc-pVDZ/PBE gives 5.20 a.u., 46% below
-        // DOSD and no better than the HF-reference 5.24.
-        (
-            cfg.rpa.xc.clone(),
-            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
-            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
-        )
-    } else if matches!(
-        method,
-        "pdep-rpa" | "rpa" | "rs-mp2-rpa" | "gw" | "bse-tda" | "tdhf-static-polarizability"
-    ) {
-        // RPA@HF (no xc): the HF reference SCF defaults to RI-J/RI-K with
-        // def2-universal-jkfit too. Exact 4-index J/K per iteration makes the
-        // HF reference 10-20× slower than the RI-JK PBE reference (hcl/aug-cc-
-        // pVTZ: 505 s vs 25 s) for no benefit — the RI-JK fitting error (~µHa)
-        // is far below the C6 differences we study. Keep SCF aux separate from
-        // the RPA correlation aux / SR-MP2+LR-RPA correlation aux
-        // (see ferric-jk-aux-convention).
-        (
-            None,
-            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
-            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
-        )
-    } else if matches!(method, "tda" | "tddft") && cfg.tddft.xc.is_some() {
-        (
-            cfg.tddft.xc.clone(),
-            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
-            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
-        )
-    } else if matches!(method, "tda" | "tddft") {
-        (
-            None,
-            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
-            Some(config::DEFAULT_SCF_JK_AUX.to_string()),
-        )
-    } else {
-        (None, None, None)
-    };
+    // The SCF functional and the RI-J/RI-K aux defaults for this kind (any
+    // Kohn-Sham SCF, including rhf/uhf/rohf promoted by `[dft] functional`,
+    // gets RI-JK via def2-universal-jkfit). See
+    // `Config::scf_xc_and_aux_defaults` for the per-kind table and why.
+    let (xc, df_j_default, df_k_default) = cfg.scf_xc_and_aux_defaults();
     refuse_tddft_xc_without_kernel(&cfg, method);
     // Unified memory budget from [memory] (bytes), threaded into EVERY method
     // config below. `None` → each method's resolver auto-detects (0.8 × RAM).
@@ -763,6 +706,14 @@ pub fn run(args: Vec<String>) {
         std::process::exit(1);
     });
 
+    // From here on `method` is the kind to DISPATCH on (the run-log header
+    // above recorded the kind as written): `ksdft` on an open-shell molecule
+    // runs the UKS route under "uhf", and `rhf` with `[dft] functional` runs
+    // RKS under "ksdft". `rhf_config.xc` already carries the functional, which
+    // is what makes the uhf/rohf solvers and gradients UKS/ROKS. See
+    // `Config::dispatch_kind`.
+    let method = cfg.dispatch_kind(mol.multiplicity);
+
     if task == "optimize" {
         run_optimize(method, &cfg, &ctx, &mol, &bs, op, &rhf_config, budget_bytes);
         return;
@@ -785,7 +736,9 @@ pub fn run(args: Vec<String>) {
 
     // Open-shell requests for closed-shell-only kinds (linlccd, the double
     // hybrids, tda/tddft, ...) were refused up front by
-    // `Config::validate_multiplicity`, right after the geometry was resolved.
+    // `Config::validate_multiplicity`, right after the geometry was resolved;
+    // the open-shell correlated kinds it admits get a UHF reference from the
+    // shared SCF below (`solve_open_shell_reference`).
 
     // The wB97X-L-V double hybrid converges its OWN Kohn-Sham reference inside
     // `run_wb97x_l_v` (it forces `xc = "wB97X-L-V"` and runs `ksdft_ladder`), so
@@ -861,27 +814,7 @@ pub fn run(args: Vec<String>) {
         // KS-DFT still auto-selects an aux above, so state which one ran rather
         // than leaving a CLI-vs-library energy comparison to guesswork.
         if let Some(rung0) = ladder.first() {
-            // Same test `solve_rhf` applies before building any K: plain HF,
-            // or a functional with nonzero short-range or range-separated
-            // exact exchange. An unparseable name is reported by the SCF
-            // itself, so it is treated as "uses K" here.
-            let exchange_used = match rung0.config.xc.as_deref() {
-                None => true,
-                Some(name) => ferric_dft::libxc::xc_def_from_name(name)
-                    .map(|d| {
-                        let m = ferric_dft::libxc::k_mix_from_xc_def(&d);
-                        m.sr > 0.0 || m.omega > 0.0
-                    })
-                    .unwrap_or(true),
-            };
-            eprintln!(
-                "[ferric] SCF J/K: {}",
-                config::describe_jk_path(
-                    rung0.config.df_j_aux.as_deref(),
-                    rung0.config.df_k_aux.as_deref(),
-                    exchange_used,
-                )
-            );
+            log_jk_path(&rung0.config, false);
         }
         let lr = ferric_scf::ladder::solve_rhf_ladder(&ctx, &mol, &prep, op, &bounds, &ladder)
             .unwrap_or_else(|e| {
@@ -896,15 +829,18 @@ pub fn run(args: Vec<String>) {
             );
         }
         lr.result
-    } else if cfg.scf.df_guess_enabled() && mol.multiplicity == 1 {
+    } else if mol.multiplicity > 1 {
+        // An open-shell molecule reaching here passed
+        // `Config::validate_multiplicity`, so its kind has an open-shell
+        // route (rimp2/oo-rimp2/pdep-rpa/gw/mp2-v on task = "energy"); each
+        // consumes a UHF reference. `solve_rhf` would refuse the molecule.
+        solve_open_shell_reference(method, &cfg, &ctx, &mol, &prep, &bounds, &rhf_config)
+    } else if cfg.scf.df_guess_enabled() {
         // Opt-in DF-guess two-stage SCF (see
-        // `ferric_scf::ladder::solve_rhf_with_df_guess`). Restricted to the
-        // closed-shell path here: open-shell (UHF/ROHF) df_guess is not
-        // implemented and `mol.multiplicity > 1` below still needs the
-        // pdep-rpa/gw/mp2-v UHF fallback behavior, which a DF-guess RHF
-        // result cannot provide anyway (that fallback triggers on error, but
-        // an actual RHF solve on an open-shell molecule would already have
-        // failed inside solve_rhf; this branch simply doesn't apply then).
+        // `ferric_scf::ladder::solve_rhf_with_df_guess`). Closed-shell only:
+        // open-shell (UHF/ROHF) df_guess is not implemented, and open-shell
+        // molecules took the branch above (which warns that the key is
+        // ignored there).
         let dfg = ferric_scf::ladder::solve_rhf_with_df_guess(
             &ctx,
             &mol,
@@ -932,11 +868,10 @@ pub fn run(args: Vec<String>) {
         );
         let _ = dfg.df_energy; // diagnostic only; the exact-stage result is authoritative
         dfg.result
-    } else if cfg.scf.df_increments && mol.multiplicity == 1 {
+    } else if cfg.scf.df_increments {
         // Opt-in DF-corrected incremental Fock SCF (see
         // `ferric_scf::df_increments::solve_rhf_with_df_increments`).
-        // Restricted to the closed-shell path for the same reason `df_guess`
-        // is above.
+        // Closed-shell only, for the same reason `df_guess` is above.
         let dfi = ferric_scf::df_increments::solve_rhf_with_df_increments(
             &ctx,
             &mol,
@@ -971,31 +906,8 @@ pub fn run(args: Vec<String>) {
         dfi.result
     } else {
         solve_rhf(&ctx, &mol, &prep, op, &bounds, &rhf_config).unwrap_or_else(|e| {
-            // For pdep-rpa/gw/mp2-v with open-shell molecules the UHF dispatch inside
-            // the arm handles convergence; the global RHF result is not used.
-            // (mp2-v: `run_mp2_v` dispatches on `result.spin`, so the UHF result
-            // produced here IS what it consumes — it does not re-solve.)
-            if (method == "pdep-rpa" || method == "gw" || method == "mp2-v") && mol.multiplicity > 1
-            {
-                // Return a dummy result — it will be shadowed immediately in the arm.
-                // The SCF failure is expected here; suppress the exit.
-                let _ = e;
-                // We cannot construct a valid ScfResult without running SCF.
-                // Fall back: run UHF here so `result` is valid even if the arm
-                // never uses it (e.g. if the match falls through to _ => unreachable!).
-                solve_uhf(&ctx, &mol, &prep, &bounds, &{
-                    let mut c = rhf_config.clone();
-                    c.mom_after_iter = 5;
-                    c
-                })
-                .unwrap_or_else(|e2| {
-                    eprintln!("error (pre-UHF): {e2}");
-                    std::process::exit(1);
-                })
-            } else {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            }
+            eprintln!("error: {e}");
+            std::process::exit(1);
         })
     };
 
@@ -1187,7 +1099,10 @@ pub fn run(args: Vec<String>) {
             scf_converged,
             &format!("{scf_exit:?}"),
             serde_json::json!({
-                "method": method,
+                // The kind as written, like the `run_start` header (`method`
+                // is the dispatch kind by now: `rhf` + functional reads
+                // "ksdft" there).
+                "method": cfg.method.kind,
                 "task": task,
                 "scf_iterations": scf_iterations,
                 "energy_is": if method == "rhf" || method == "uhf" || method == "rohf" || method == "ksdft" {
@@ -1303,47 +1218,120 @@ fn run_ksdft(
     println!("  nbasis     = {}", prep.nbasis());
     println!("  iterations = {}", result.iterations);
     println!("  converged  = {}", result.converged);
+    print_scf_energy(cfg, mol, result.energy);
+}
 
-    // Empirical dispersion, only if [dft] dispersion asked for it. With the
-    // key absent the output below is byte-identical to before the key existed:
-    // one "energy" line and no dispersion line at all. A failure EXITS rather
-    // than printing an uncorrected energy under a heading that claims a
-    // correction was applied.
-    let disp = match cfg.dft.dispersion.as_deref() {
-        None => None,
-        Some(spec) => {
-            let req = crate::config::DispersionRequest::parse_config_str(
-                spec,
-                cfg.dft.functional.as_deref(),
-            )
+/// The `[dft] dispersion` correction for `mol`, if one was asked for:
+/// `(parameter set, E_disp)`. A failure EXITS rather than letting the caller
+/// print an uncorrected energy under a heading that claims a correction was
+/// applied.
+fn d3_correction(cfg: &Config, mol: &Molecule) -> Option<(String, f64)> {
+    let spec = cfg.dft.dispersion.as_deref()?;
+    let req =
+        crate::config::DispersionRequest::parse_config_str(spec, cfg.dft.functional.as_deref())
             .unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             });
-            let crate::config::DispersionRequest::D3Bj { functional: dfunc } = &req;
-            let params = ferric_d3::d3bj_params_for_functional(dfunc).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            let e = ferric_d3::d3bj_energy_for_molecule(mol, &params).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1);
-            });
-            Some((dfunc.clone(), e))
-        }
-    };
+    let crate::config::DispersionRequest::D3Bj { functional: dfunc } = &req;
+    let params = ferric_d3::d3bj_params_for_functional(dfunc).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let e = ferric_d3::d3bj_energy_for_molecule(mol, &params).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    Some((dfunc.clone(), e))
+}
 
-    match disp {
-        None => println!("  energy     = {:.10} Hartree", result.energy),
+/// The energy line(s) of an SCF printout (RKS, UKS, ROKS, or plain HF).
+///
+/// Empirical dispersion is added only if `[dft] dispersion` asked for it,
+/// which `run()` admits only on a Kohn-Sham SCF. With the key absent the
+/// output is byte-identical to before the key existed: one "energy" line and
+/// no dispersion line at all.
+fn print_scf_energy(cfg: &Config, mol: &Molecule, energy: f64) {
+    match d3_correction(cfg, mol) {
+        None => println!("  energy     = {energy:.10} Hartree"),
         Some((dfunc, e_disp)) => {
-            println!("  E(KS-DFT)  = {:.10} Hartree", result.energy);
+            println!("  E(KS-DFT)  = {energy:.10} Hartree");
             println!("  E(D3BJ)    = {e_disp:+.10} Hartree [params: {dfunc}]");
             println!(
                 "  energy     = {:.10} Hartree (KS-DFT + D3(BJ), two-body)",
-                result.energy + e_disp
+                energy + e_disp
             );
         }
     }
+}
+
+/// Print the `[ferric] SCF J/K:` line for an SCF about to run with `scf`.
+///
+/// `exchange_used` is the test every SCF solver applies before building any
+/// K: plain HF, or a functional with nonzero short-range or range-separated
+/// exact exchange. An unparseable name is reported by the SCF itself, so it
+/// is treated as "uses K" here.
+///
+/// `open_shell`: `solve_uhf`/`solve_rohf` build J directly (four-centre) for
+/// a range-separated functional whatever `df_j_aux` says (their `j_aux_eff`
+/// requires omega == 0), so the line must say exact J there.
+fn log_jk_path(scf: &RhfConfig, open_shell: bool) {
+    let k_mix = scf
+        .xc
+        .as_deref()
+        .and_then(|name| ferric_dft::libxc::xc_def_from_name(name).ok())
+        .map(|d| ferric_dft::libxc::k_mix_from_xc_def(&d));
+    let (exchange_used, rsh) = match &k_mix {
+        None => (true, false),
+        Some(m) => (m.sr > 0.0 || m.omega > 0.0, m.omega > 0.0),
+    };
+    let df_j = if open_shell && rsh {
+        None
+    } else {
+        scf.df_j_aux.as_deref()
+    };
+    eprintln!(
+        "[ferric] SCF J/K: {}",
+        config::describe_jk_path(df_j, scf.df_k_aux.as_deref(), exchange_used)
+    );
+}
+
+/// The UHF reference for an open-shell correlated kind: one that
+/// `Config::validate_multiplicity` admitted (rimp2, oo-rimp2, pdep-rpa, gw,
+/// mp2-v, all task = "energy").
+///
+/// pdep-rpa/gw/mp2-v keep the MOM-from-iteration-5 UHF they have always been
+/// given here (pdep-rpa and gw re-solve their own UHF inside their arms;
+/// mp2-v consumes this one, dispatching on `result.spin`). rimp2/oo-rimp2
+/// get the plain UHF that `kind = "uhf"` runs with the same `[scf]` keys, so
+/// the reference energy an open-shell RI-MP2 run prints IS the `uhf` energy.
+#[allow(clippy::too_many_arguments)]
+fn solve_open_shell_reference(
+    method: &str,
+    cfg: &Config,
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    rhf_config: &RhfConfig,
+) -> ferric_scf::result::ScfResult {
+    // Same config-honesty rule as the ladder path: these two are closed-shell
+    // only, so say they were not used rather than ignore them silently.
+    if cfg.scf.df_guess_enabled() || cfg.scf.df_increments {
+        eprintln!(
+            "warning: [scf] df_guess / df_increments are closed-shell only; ignored for the \
+             open-shell (UHF) reference of method.kind = \"{method}\""
+        );
+    }
+    let mut uhf_cfg = rhf_config.clone();
+    if matches!(method, "pdep-rpa" | "gw" | "mp2-v") {
+        uhf_cfg.mom_after_iter = 5;
+    }
+    log_jk_path(&uhf_cfg, true);
+    solve_uhf(ctx, mol, prep, bounds, &uhf_cfg).unwrap_or_else(|e| {
+        eprintln!("error: UHF reference for method.kind = \"{method}\" failed: {e}");
+        std::process::exit(1);
+    })
 }
 
 /// The canonical-reference lines of the `lmp2`/`lmp2-direct` printout.
@@ -1606,6 +1594,12 @@ fn run_rimp2(
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
+    // An open-shell molecule arrives with a UHF reference (see
+    // `solve_open_shell_reference`) and takes the unrestricted RI-MP2.
+    if result.spin != ferric_scf::result::Spin::Restricted {
+        run_u_rimp2(cfg, mol, bs, prep, op, result, budget_bytes);
+        return;
+    }
     let aux_name = cfg
         .mp2
         .auxbasis
@@ -1673,6 +1667,113 @@ fn run_rimp2(
             mp2_result.total_energy,
             serde_json::json!({
                 "e_corr": mp2_result.mp2_corr,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
+    if !result.converged {
+        eprintln!(
+            "warning: SCF did not converge (exit {:?} after {} iterations) — the correlation \
+             energy above is built on an unconverged reference and must not be quoted",
+            result.exit, result.iterations
+        );
+    }
+}
+
+/// `method.kind = "rimp2"` on an open-shell molecule: unrestricted RI-MP2
+/// (`ferric_mp2::u_rimp2::u_ri_mp2`, the UMP2 of PySCF's `mp.MP2(uhf)`) on
+/// the UHF reference. Validated against PySCF UMP2 on OH/cc-pVDZ
+/// (`u_rimp2_oh_cc_pvdz_matches_pyscf`) and against closed-shell RI-MP2 in
+/// the closed-shell limit. The ROHF-based variant is deliberately NOT the
+/// default: `u_ri_mp2` on a raw ROHF reference uses the effective Fock
+/// eigenvalues for both spins (measured 4-6 mEh off on OH/CH3, see
+/// ferric-cc/tests/semicanonical_mp2.rs).
+///
+/// `[mp2] kappa` is refused: the regularizer is implemented for the
+/// closed-shell kernel only, and silently dropping it would print plain UMP2
+/// under a config asking for kappa-MP2.
+fn run_u_rimp2(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+    if let Some(k) = cfg.mp2.kappa {
+        eprintln!(
+            "error: [mp2] kappa = {k} is not supported for open-shell RI-MP2 (multiplicity = \
+             {}): kappa-regularization exists for the closed-shell kernel only. Remove the key \
+             for plain UMP2.",
+            mol.multiplicity
+        );
+        std::process::exit(1);
+    }
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let r = ferric_mp2::u_rimp2::u_ri_mp2(
+        mol,
+        prep,
+        &dfbs,
+        op,
+        result,
+        &RiMp2Config {
+            frozen_core: cfg.mp2.frozen_core.resolve(mol),
+            memory_budget_bytes: budget_bytes,
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    // Same layout as the closed-shell printout (the "MP2 corr" / "Total"
+    // labels are what downstream parsers read), with the reference named and
+    // the three spin blocks shown.
+    println!(
+        "U-RI-MP2/{} (aux: {}) on {}",
+        bs.name, aux_name, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  mult       = {}", mol.multiplicity);
+    println!("  UHF energy = {:.10} Hartree", result.energy);
+    println!(
+        "  SCF iters  = {}{}",
+        result.iterations,
+        if result.converged {
+            ""
+        } else {
+            "  *** NOT CONVERGED ***"
+        }
+    );
+    println!("  E(aa)      = {:.10} Hartree", r.components.e_aa);
+    println!("  E(bb)      = {:.10} Hartree", r.components.e_bb);
+    println!("  E(ab)      = {:.10} Hartree", r.components.e_ab);
+    println!("  MP2 corr   = {:.10} Hartree", r.mp2_corr);
+    println!("  Total      = {:.10} Hartree", r.total_energy);
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "rimp2",
+            r.total_energy,
+            serde_json::json!({
+                "reference": "UHF",
+                "e_corr": r.mp2_corr,
+                "e_aa": r.components.e_aa,
+                "e_bb": r.components.e_bb,
+                "e_ab": r.components.e_ab,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
             }),
@@ -1766,6 +1867,12 @@ fn run_oo_rimp2(
     budget_bytes: Option<usize>,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) {
+    // An open-shell molecule arrives with a UHF reference (see
+    // `solve_open_shell_reference`) and takes the unrestricted OO-RI-MP2.
+    if result.spin != ferric_scf::result::Spin::Restricted {
+        run_u_oo_rimp2(cfg, mol, bs, prep, op, bounds, result, budget_bytes, ext);
+        return;
+    }
     let aux_name = cfg
         .mp2
         .auxbasis
@@ -1809,6 +1916,78 @@ fn run_oo_rimp2(
                 "e_corr": oo_result.mp2_corr,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
+            }),
+        );
+    }
+}
+
+/// `method.kind = "oo-rimp2"` on an open-shell molecule: unrestricted
+/// orbital-optimized RI-MP2 (`ferric_mp2::u_oo_rimp2::u_oo_ri_mp2`,
+/// Bozkaya 2013) starting from the UHF reference. Its analytic orbital
+/// gradient is validated against a PySCF finite-difference reference
+/// (testdata/reference/oh_cc-pvdz_u-oomp2-fd.json), and it reduces to the
+/// closed-shell OO-RI-MP2 on H2.
+#[allow(clippy::too_many_arguments)]
+fn run_u_oo_rimp2(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+) {
+    let aux_name = cfg
+        .mp2
+        .auxbasis
+        .as_deref()
+        .unwrap_or(config::DEFAULT_CORRELATION_AUX);
+    let aux_bs = basis::bundled(aux_name).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let dfbs = PreparedBasis::new(mol, &aux_bs).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let oo_config = ferric_mp2::u_oo_rimp2::UOoRiMp2Config {
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        memory_budget_bytes: budget_bytes,
+        verbose: cfg.scf.verbose,
+        ..Default::default()
+    };
+    let oo_result =
+        ferric_mp2::u_oo_rimp2::u_oo_ri_mp2(mol, prep, &dfbs, op, bounds, result, &oo_config, ext)
+            .unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            });
+    // Same layout as the closed-shell printout; "HF energy" is the UHF
+    // reference.
+    println!(
+        "U-OO-RI-MP2/{} (aux: {}) on {}",
+        bs.name, aux_name, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  mult       = {}", mol.multiplicity);
+    println!("  converged  = {}", oo_result.converged);
+    println!("  iterations = {}", oo_result.iterations);
+    println!("  grad_norm  = {:.2e}", oo_result.grad_norm);
+    println!("  HF energy  = {:.10} Hartree", oo_result.hf_energy);
+    println!("  MP2 corr   = {:.10} Hartree", oo_result.mp2_corr);
+    println!("  Total      = {:.10} Hartree", oo_result.total_energy);
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "oo-rimp2",
+            oo_result.total_energy,
+            serde_json::json!({
+                "reference": "UHF",
+                "e_corr": oo_result.mp2_corr,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+                "oo_converged": oo_result.converged,
             }),
         );
     }
@@ -2692,10 +2871,17 @@ fn run_mp2_double_hybrid_arm(
             );
         }
     }
+    // `rhf_config.df_*_aux` already carry `[scf] df_j_aux`/`df_k_aux` through
+    // the shared spelling parser (`""`/"exact"/"none"/"off" -> the `""`
+    // no-fit sentinel, a name -> that aux). Only an OMITTED key falls back to
+    // RI-JK via def2-universal-jkfit -- the same rule `ksdft` and
+    // `run_wb97x_l_v` apply. These arms used to overwrite both keys
+    // unconditionally, so `[scf] df_j_aux` was silently ignored here.
     let mut ks_cfg = rhf_config.clone();
     ks_cfg.xc = Some(dh_kind.xc_name().to_string());
-    ks_cfg.df_j_aux = Some(config::DEFAULT_SCF_JK_AUX.to_string());
-    ks_cfg.df_k_aux = Some(config::DEFAULT_SCF_JK_AUX.to_string());
+    ks_cfg.df_j_aux = config::jk_aux_or_default(&rhf_config.df_j_aux);
+    ks_cfg.df_k_aux = config::jk_aux_or_default(&rhf_config.df_k_aux);
+    log_jk_path(&ks_cfg, false);
 
     let ladder = ferric_scf::ladder::ksdft_ladder(&ks_cfg);
     let lr =
@@ -4349,8 +4535,19 @@ fn run_tdhf_static_polarizability(
     println!("  alpha_iso (static) = {:.6} a.u.", res.iso);
 }
 
-/// `method.kind = "uhf"`, `task = "energy"`. Extracted verbatim from the
-/// former `main()` `if method == "uhf" { ... }` block.
+/// The printed name of an open-shell SCF: `hf` ("UHF"/"ROHF") for plain
+/// Hartree-Fock, or `ks[functional]` ("UKS[PBE]"/"ROKS[PBE]") when
+/// `RhfConfig::xc` promoted it to Kohn-Sham.
+fn open_shell_scf_label(hf: &str, ks: &str, rhf_config: &RhfConfig) -> String {
+    match rhf_config.xc.as_deref() {
+        None => hf.to_string(),
+        Some(f) => format!("{ks}[{f}]"),
+    }
+}
+
+/// `method.task = "energy"` for the UHF/UKS route: `kind = "uhf"` (UKS when
+/// `[dft] functional` is set) and `kind = "ksdft"` on an open-shell molecule
+/// (see `Config::dispatch_kind`).
 #[allow(clippy::too_many_arguments)]
 fn run_uhf(
     cfg: &Config,
@@ -4361,6 +4558,7 @@ fn run_uhf(
     bounds: &SchwarzBounds,
     rhf_config: &RhfConfig,
 ) {
+    log_jk_path(rhf_config, true);
     let result = solve_uhf(ctx, mol, prep, bounds, rhf_config).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -4381,7 +4579,12 @@ fn run_uhf(
         .dot(&c_b.slice(ndarray::s![.., ..nocc_b]));
     let sum_sq: f64 = overlap_ab.iter().map(|v| v * v).sum();
     let s2 = s_ideal + (nocc_b as f64) - sum_sq;
-    println!("UHF/{} on {}", bs.name, cfg.molecule.xyz);
+    println!(
+        "{}/{} on {}",
+        open_shell_scf_label("UHF", "UKS", rhf_config),
+        bs.name,
+        cfg.molecule.xyz
+    );
     println!("  nbasis     = {}", prep.nbasis());
     println!(
         "  mult       = {} (nocc_a={}, nocc_b={})",
@@ -4389,14 +4592,14 @@ fn run_uhf(
     );
     println!("  iterations = {}", result.iterations);
     println!("  converged  = {}", result.converged);
-    println!("  energy     = {:.10} Hartree", result.energy);
+    print_scf_energy(cfg, mol, result.energy);
     println!("  <S^2>      = {:.6} (ideal {:.6})", s2, s_ideal);
     // task == "optimize" is handled by the top-level dispatch above
     // (optimize_geometry_uhf), which returns before reaching here.
 }
 
-/// `method.kind = "rohf"`, `task = "energy"`. Extracted verbatim from the
-/// former `main()` `if method == "rohf" { ... }` block.
+/// `method.kind = "rohf"`, `task = "energy"`: ROHF, or ROKS when `[dft]
+/// functional` is set.
 #[allow(clippy::too_many_arguments)]
 fn run_rohf(
     cfg: &Config,
@@ -4408,6 +4611,7 @@ fn run_rohf(
     bounds: &SchwarzBounds,
     rhf_config: &RhfConfig,
 ) {
+    log_jk_path(rhf_config, true);
     let result = solve_rohf(ctx, mol, prep, op, bounds, rhf_config).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -4418,7 +4622,12 @@ fn run_rohf(
     let nocc_double = ((nelec - two_s) / 2) as usize;
     let s_true = 0.5 * two_s as f64;
     let s_ideal = s_true * (s_true + 1.0);
-    println!("ROHF/{} on {}", bs.name, cfg.molecule.xyz);
+    println!(
+        "{}/{} on {}",
+        open_shell_scf_label("ROHF", "ROKS", rhf_config),
+        bs.name,
+        cfg.molecule.xyz
+    );
     println!("  nbasis     = {}", prep.nbasis());
     println!(
         "  mult       = {} (nocc_double={}, nocc_open={})",
@@ -4426,7 +4635,7 @@ fn run_rohf(
     );
     println!("  iterations = {}", result.iterations);
     println!("  converged  = {}", result.converged);
-    println!("  energy     = {:.10} Hartree", result.energy);
+    print_scf_energy(cfg, mol, result.energy);
     println!("  <S^2>      = {:.6} (exact by construction)", s_ideal);
     // task == "optimize" is handled by the top-level dispatch above
     // (optimize_geometry_rohf), which returns before reaching here.
@@ -4714,9 +4923,14 @@ fn run_optimize(
             );
         }
         "uhf" => {
+            // UKS when `rhf_config.xc` is set (`kind = "uhf"` + functional, or
+            // `ksdft` on an open-shell molecule): `optimize_geometry_uhf` then
+            // takes `ks_gradient_uks`.
+            let label = open_shell_scf_label("UHF", "UKS", rhf_config);
+            refuse_open_shell_dispersion_gradient(cfg, &label);
             let opt_result = optimize_geometry_uhf(ctx, mol, &bs.name, op, rhf_config, &opt_config)
                 .unwrap_or_else(|e| {
-                    eprintln!("error during UHF optimization: {e}");
+                    eprintln!("error during {label} optimization: {e}");
                     std::process::exit(1);
                 });
             println!("\nFinal Optimized Geometry (Bohr):");
@@ -4726,16 +4940,19 @@ fn run_optimize(
                     i, atom.symbol, atom.x, atom.y, atom.zpos
                 );
             }
-            println!("\nUHF Optimization Result:");
+            println!("\n{label} Optimization Result:");
             println!("  converged  = {}", opt_result.converged);
             println!("  steps      = {}", opt_result.steps);
             println!("  final E    = {:.10} Hartree", opt_result.energy);
         }
         "rohf" => {
+            // ROKS (`ks_gradient_roks`) when `[dft] functional` is set.
+            let label = open_shell_scf_label("ROHF", "ROKS", rhf_config);
+            refuse_open_shell_dispersion_gradient(cfg, &label);
             let opt_result =
                 optimize_geometry_rohf(ctx, mol, &bs.name, op, rhf_config, &opt_config)
                     .unwrap_or_else(|e| {
-                        eprintln!("error during ROHF optimization: {e}");
+                        eprintln!("error during {label} optimization: {e}");
                         std::process::exit(1);
                     });
             println!("\nFinal Optimized Geometry (Bohr):");
@@ -4745,7 +4962,7 @@ fn run_optimize(
                     i, atom.symbol, atom.x, atom.y, atom.zpos
                 );
             }
-            println!("\nROHF Optimization Result:");
+            println!("\n{label} Optimization Result:");
             println!("  converged  = {}", opt_result.converged);
             println!("  steps      = {}", opt_result.steps);
             println!("  final E    = {:.10} Hartree", opt_result.energy);
@@ -4769,6 +4986,24 @@ fn refuse_tddft_xc_without_kernel(cfg: &Config, method: &str) {
     }
     if let Err(e) = ferric_dft::lr_kernel::resolve_singlet_response_xc(xc_name, "[tddft] xc") {
         eprintln!("error: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// `[dft] dispersion` on an open-shell (UKS/ROKS) geometry optimization is
+/// refused: the D3(BJ) correction is threaded through the optimizer only on
+/// the closed-shell path (`optimize_geometry_with_correction`), so the
+/// UKS/ROKS optimizer would walk the UNCORRECTED surface while the config
+/// asks for a corrected one. The single-point energy (task = "energy") does
+/// apply it.
+fn refuse_open_shell_dispersion_gradient(cfg: &Config, label: &str) {
+    if cfg.dft.dispersion.is_some() {
+        eprintln!(
+            "error: [dft] dispersion is not supported with method.task = \"optimize\" on an \
+             open-shell ({label}) reference: the D3(BJ) gradient is only threaded through the \
+             closed-shell optimizer, so this run would optimize the uncorrected surface. Use \
+             task = \"energy\" for a corrected {label} single point, or remove the key."
+        );
         std::process::exit(1);
     }
 }
