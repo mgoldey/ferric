@@ -2139,6 +2139,23 @@ impl Config {
     ///   H2/STO-3G with xc = "PBE" converged to -1.1375270338 "(RHF + RPA)").
     ///   Refused rather than warned: the result is a different method, not a
     ///   slightly different number.
+    ///
+    /// * `[scf] k_builder = "cosx"` + any gradient task: every CLI gradient
+    ///   (`rhf_gradient`, `uhf_gradient`, `ks_gradient_*`, and the frequency
+    ///   driver's finite differences of them) is built from exact four-centre
+    ///   derivative integrals, and the RI-MP2/RPA optimizers ignore
+    ///   `k_builder` altogether. An optimize run therefore paired COSX
+    ///   energies with an exact-exchange gradient that is not their
+    ///   derivative: the optimizer steers to the exact-exchange stationary
+    ///   point while its energies (and its energy-change convergence test)
+    ///   come from COSX. MEASURED (water, central FD along one H z,
+    ///   1e-3 Angstrom): dE/dz from COSX energies minus dE/dz from exact-K
+    ///   energies = -8.9e-6 Ha/Bohr at STO-3G and -1.4e-5 at cc-pVDZ. That
+    ///   is under the default g_max (4.5e-4) for water, but it is a grid
+    ///   error that grows with system and basis (the COSX energy error is
+    ///   5e-6 Ha on water/cc-pVDZ and 1.2e-4 Ha on butane/def2-TZVP), and the
+    ///   published docs already list COSX as "no gradients"; this makes the
+    ///   CLI agree with them.
     pub fn validate_task_compat(&self) -> Result<(), String> {
         let kind = self.method.kind.as_str();
         let task = self.method.task.as_str();
@@ -2152,6 +2169,15 @@ impl Config {
                      RPA@{xc}."
                 ));
             }
+        }
+        if task != "energy" && self.scf.k_builder.as_deref() == Some("cosx") {
+            return Err(format!(
+                "[scf] k_builder = \"cosx\" is not supported with method.task = \"{task}\": \
+                 COSX has no analytic gradient, and the gradient used here is built from \
+                 exact exchange (or ignores k_builder), so it would not be the derivative of \
+                 the COSX energy. Use k_builder = \"direct\" or \"link\" for gradient \
+                 tasks, or task = \"energy\" for COSX."
+            ));
         }
         Ok(())
     }
@@ -2321,6 +2347,31 @@ mod compat_guard_tests {
             cfg("pdep-rpa", "optimize", "").validate_task_compat(),
             Ok(())
         );
+    }
+
+    /// Pre-fix, `k_builder = "cosx"` + optimize ran silently, pairing COSX
+    /// energies with an exact-exchange gradient. Reverting the cosx branch of
+    /// `validate_task_compat` fails the `expect_err`s; the `Ok` cases pin
+    /// that COSX energies and exact-exchange gradients are both still allowed.
+    #[test]
+    fn cosx_is_refused_on_every_gradient_task() {
+        let cosx = "[scf]\nk_builder = \"cosx\"\n";
+        for task in ["optimize", "frequencies"] {
+            for kind in ["rhf", "uhf", "ksdft", "rimp2"] {
+                let e = cfg(kind, task, cosx)
+                    .validate_task_compat()
+                    .expect_err(task);
+                assert!(e.contains("cosx") && e.contains(task), "{e}");
+            }
+        }
+        assert_eq!(cfg("rhf", "energy", cosx).validate_task_compat(), Ok(()));
+        for kb in ["direct", "link"] {
+            let extra = format!("[scf]\nk_builder = \"{kb}\"\n");
+            assert_eq!(
+                cfg("rhf", "optimize", &extra).validate_task_compat(),
+                Ok(())
+            );
+        }
     }
 }
 
