@@ -266,15 +266,13 @@ than translating a fixed conformer. The 0.95 ratio is the transferable part.
    protocols are now closed; the remaining lever is a scoring metric less
    pose-sensitive than a point-charge interaction energy.
 
-   The original blocker text follows, kept because the reasoning is still
-   correct for the averaging approach it rejects:
-
-   **The pose problem is unsolved and blocks the QM tier.** MEASURED per-pose
-   sd is 29.07 kcal/mol (RESULTS.md M5/M6) against substituent effects of
-   1-2 kcal/mol. One pose per analogue reports noise, and `funnel.py` keys one
-   row per MOLECULE (`funnel.py:162`) so it cannot express an ensemble. **Do
-   not wire the QM tier until this is decided** -- the prescreen tier is
-   cheap enough to run per-pose and is the right place to start.
+   **The pose treatment is decided (average across poses); the QM tier stays
+   blocked until the funnel can carry an ensemble.** MEASURED per-pose sd is
+   29.07 kcal/mol (RESULTS.md M5/M6) against substituent effects of
+   1-2 kcal/mol, so one pose per analogue reports noise, and `funnel.py` keys
+   one row per MOLECULE (`funnel.py:162`), so it cannot express an ensemble.
+   **Do not wire the QM tier until ensemble support exists** -- the prescreen
+   tier is cheap enough to run per-pose and is the right place to start.
 
 ### Order of work
 
@@ -282,8 +280,8 @@ than translating a fixed conformer. The 0.95 ratio is the transferable part.
    gives the `(symbols, coords)` from its SMILES).
 2. Connector to `batch_prescreen` -- CHEAP (classical field, no SCF), so it can
    afford an ensemble and sidesteps constraint 2 entirely.
-3. QM tier (`compute_binding_energy`, ddE) only after the pose treatment is
-   decided. Dispersion is available: D3(BJ) (#99, merged), without which a
+3. QM tier (`compute_binding_energy`, ddE) only after the funnel can carry a
+   pose ensemble (the treatment, averaging, is decided). Dispersion is available: D3(BJ) (#99, merged), without which a
    halogen/CF3 scan would miss its dominant attractive term.
 
 ## What to build
