@@ -1,5 +1,6 @@
 //! Spin-aware SCF result container.
 
+use ferric_integrals::operator::Operator;
 use ndarray::Array2;
 use serde::{Deserialize, Serialize};
 
@@ -87,6 +88,73 @@ pub struct ScfResult {
     ///
     /// Purely diagnostic: an instability never makes the SCF return `Err`.
     pub stability: Option<crate::stability::StabilityResult>,
+    /// Which density-fitted (RI) Coulomb / exchange builders produced
+    /// [`ScfResult::energy`], recorded by the solver that built them.
+    ///
+    /// `None` means every two-electron term of the energy used exact
+    /// four-centre integrals (or the result was not produced by
+    /// `solve_rhf`/`solve_uhf`/`solve_rohf`, e.g. a hand-built or transformed
+    /// result). The analytic gradients (`rhf_gradient`, `uhf_gradient`,
+    /// `rohf_gradient`, `ks_gradient_*`) read this field and differentiate the
+    /// SAME approximate energy: without it they could only re-derive the
+    /// solver's aux-basis resolution (auto-defaults, the `Some("")` opt-out,
+    /// the consumption gates), and a re-derivation that drifts from the
+    /// solver pairs an RI energy with an exact-integral gradient.
+    pub df_jk: Option<DfJkRoute>,
+}
+
+/// The density-fitted two-electron builders one SCF actually used.
+///
+/// Built only by the solvers, from the SAME effective aux names they passed to
+/// `fock_assembly::build_df_jk` / `build_rsh_dfk_pair`, so the gradient cannot
+/// resolve the route differently from the energy. See [`ScfResult::df_jk`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct DfJkRoute {
+    /// Auxiliary basis of the RI-J fit (`DfJ`, Cholesky-solved Coulomb-metric
+    /// fit), or `None` for exact four-centre Coulomb.
+    pub j_aux: Option<String>,
+    /// Auxiliary basis of the ω = 0 RI-K fit (`DfK`, HF / global-hybrid
+    /// exchange), or `None` when that exchange was exact or not consumed.
+    pub k_aux: Option<String>,
+    /// Range-separated exchange: the aux basis and ω of the SR (erfc) / LR
+    /// (erf) `DfK` fitter pair. `None` for ω = 0 functionals.
+    pub rsh_k: Option<(String, f64)>,
+    /// Operator of the RI-J and ω = 0 RI-K fits (the SCF's Coulomb operator).
+    pub op: Operator,
+    /// Resolved three-index memory budget of the SCF, reused to bound the
+    /// gradient's own three-index source.
+    pub budget_bytes: usize,
+}
+
+impl DfJkRoute {
+    /// Record the effective builders. Empty names are the "do not fit"
+    /// sentinel and are dropped; returns `None` when nothing was fitted, so an
+    /// all-exact SCF carries no route at all and its gradient takes the
+    /// unchanged exact path.
+    pub fn from_scf(
+        j_aux: Option<&str>,
+        k_aux: Option<&str>,
+        rsh_k: Option<(&str, f64)>,
+        op: Operator,
+        budget_bytes: usize,
+    ) -> Option<Self> {
+        let clean = |s: Option<&str>| s.filter(|s| !s.is_empty()).map(str::to_string);
+        let route = DfJkRoute {
+            j_aux: clean(j_aux),
+            k_aux: clean(k_aux),
+            rsh_k: rsh_k
+                .filter(|(s, _)| !s.is_empty())
+                .map(|(s, w)| (s.to_string(), w)),
+            op,
+            budget_bytes,
+        };
+        route.is_active().then_some(route)
+    }
+
+    /// Whether any two-electron term was density-fitted.
+    pub fn is_active(&self) -> bool {
+        self.j_aux.is_some() || self.k_aux.is_some() || self.rsh_k.is_some()
+    }
 }
 
 impl ScfResult {

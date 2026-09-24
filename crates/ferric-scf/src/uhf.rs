@@ -630,6 +630,24 @@ pub fn solve_uhf_fockmod(
     let (mut df_j, mut df_k) = crate::fock_assembly::build_df_jk(
         ctx, mol, coulomb_op, prep, j_aux_eff, k_aux_eff, ooc_budget,
     )?;
+    // Record the builders that produced the energy (same effective names as
+    // `build_df_jk` above and `driver::prepare`'s RSH pair) so the analytic
+    // gradient differentiates THIS energy. `None` when nothing is fitted.
+    let df_jk_route = crate::result::DfJkRoute::from_scf(
+        j_aux_eff,
+        k_aux_eff,
+        (k_mix.omega > 0.0).then(|| {
+            (
+                config
+                    .df_k_aux
+                    .as_deref()
+                    .unwrap_or(crate::fock_assembly::DEFAULT_JK_AUX),
+                k_mix.omega,
+            )
+        }),
+        coulomb_op,
+        ooc_budget,
+    );
     // ── Combined open-shell direct J+K (single quartet pass) ────────────────
     // When BOTH J and K come from the direct (non-DF) path with an ordinary
     // ω = 0 kernel, one `DirectJK::build_uhf` pass produces J[D_α+D_β], K[D_α]
@@ -1048,6 +1066,7 @@ pub fn solve_uhf_fockmod(
                 computed_quartets: total_quartets,
                 induced_dipoles: last_induced_dipoles,
                 stability,
+                df_jk: df_jk_route.clone(),
             });
         }
         mon.note_energy(energy);
@@ -1443,6 +1462,7 @@ pub fn solve_uhf_fockmod(
         computed_quartets: total_quartets,
         induced_dipoles: last_induced_dipoles,
         stability: None,
+        df_jk: df_jk_route,
     })
 }
 

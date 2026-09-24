@@ -996,6 +996,24 @@ pub fn solve_rhf(
         df_k_aux_eff.as_deref(),
         ooc_budget,
     )?;
+    // Record the builders that actually produced the energy, from the SAME
+    // effective names just handed to `build_df_jk` (and, for ω > 0, to
+    // `driver::prepare`'s `build_rsh_dfk_pair`), so the analytic gradient
+    // differentiates this energy instead of re-deriving the aux resolution.
+    // `None` when nothing is fitted: an all-exact run's gradient path is
+    // untouched.
+    let df_jk_route = crate::result::DfJkRoute::from_scf(
+        df_j_aux_eff.as_deref(),
+        df_k_aux_eff.as_deref(),
+        (k_mix.omega > 0.0).then(|| {
+            (
+                config.df_k_aux.as_deref().unwrap_or(DEFAULT_JK_AUX),
+                k_mix.omega,
+            )
+        }),
+        op,
+        ooc_budget,
+    );
 
     // A pluggable K builder ("link" / "cosx") is only consumed on the
     // non-DF path (see the iteration branch structure below): when DF-J or
@@ -1145,6 +1163,7 @@ pub fn solve_rhf(
             // stability is a property of a STATIONARY point, and these are not
             // stationary. `None` = not checked, as documented on the field.
             stability: None,
+            df_jk: df_jk_route.clone(),
         }
     };
 
@@ -1599,6 +1618,7 @@ pub fn solve_rhf(
                     computed_quartets: total_quartets,
                     induced_dipoles: last_induced_dipoles,
                     stability,
+                    df_jk: df_jk_route.clone(),
                 });
             }
         }
