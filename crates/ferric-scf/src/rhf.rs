@@ -855,6 +855,39 @@ pub struct PeriodicInjection<'a> {
     pub j: Box<dyn JBuilder + 'a>,
     /// Exchange builder; `update_density(D)` is called before every `build(D)`.
     pub k: Box<dyn KBuilder + 'a>,
+    /// Kohn-Sham exchange-correlation on the caller's (periodic) grid, or
+    /// `None` for Hartree-Fock. This is the ONLY way to run KS on the injected
+    /// path: `RhfConfig.xc` stays a named error (it would build the MOLECULAR
+    /// Becke grid). When present the SCF (RHF only — the UHF injected path
+    /// refuses it by name) forms
+    ///
+    /// ```text
+    /// F = h + J − ½·a·K + V_xc,   E = ½Tr[D(h + F_noxc)] + E_xc + V_nn,
+    /// a = xc.exact_exchange_fraction()
+    /// ```
+    ///
+    /// i.e. the injected K (INCLUDING any Madelung term it carries) is scaled
+    /// by the global-hybrid fraction `a` — measured in the prototype:
+    /// Madelung on `a·K` gives the box-limit `a⁻³` coefficient `a ×` the HF
+    /// one (FINDINGS "Iteration 8"). For `a = 0` the injected K is never built.
+    pub xc: Option<Box<dyn XcBuilder + 'a>>,
+}
+
+/// Exchange-correlation builder for the injected (periodic) SCF path: owns its
+/// grid, AO tables and functional, and maps a closed-shell total density `D`
+/// (`tr(D S) = N`) to `(E_xc, V_xc)`. `V_xc` must be `(nbasis, nbasis)` and
+/// symmetric; it is added to the Fock matrix after the exchange term and its
+/// energy is added outside the `½Tr[D(h + F)]` trace (exactly the molecular
+/// `XcContribution::add_xc` convention).
+///
+/// Only global hybrids are expressible: the SCF scales the injected K by
+/// [`XcBuilder::exact_exchange_fraction`]; range-separated functionals need an
+/// attenuated periodic K and must be refused by the implementor.
+pub trait XcBuilder {
+    /// `(E_xc, V_xc)` of the semilocal part of the functional at density `d`.
+    fn build(&mut self, d: &Array2<f64>) -> Result<(f64, Array2<f64>), FerricError>;
+    /// Global exact-exchange fraction `a` (0 for LDA/GGA, 0.25 for PBE0).
+    fn exact_exchange_fraction(&self) -> f64;
 }
 
 /// A [`RhfConfig`] field that [`solve_rhf_injected`] cannot honour, by name.
@@ -918,7 +951,8 @@ pub fn validate_injected(config: &RhfConfig) -> Result<(), InjectedConfigError> 
     if config.xc.is_some() {
         return reject(
             "xc",
-            "Kohn-Sham XC needs a periodic grid (Stage 2); the molecular Becke grid would be wrong",
+            "the molecular Becke grid would be wrong for a periodic system; pass a periodic \
+             XcBuilder as PeriodicInjection.xc instead (e.g. ferric_pbc::dft::PeriodicXc)",
         );
     }
     if config.newton_trigger > 0.0 {
@@ -1036,9 +1070,16 @@ fn solve_rhf_impl(
     // Split the injection: (S, h, V_nn) go to the shared env builder, the J/K
     // builders are driven in the iteration loop. Both `None` on the molecular
     // path.
-    let (pre_env, mut inj_jk) = match inj {
-        Some(PeriodicInjection { s, h, vnn, j, k }) => (Some((s, h, vnn)), Some((j, k))),
-        None => (None, None),
+    let (pre_env, mut inj_jk, mut inj_xc) = match inj {
+        Some(PeriodicInjection {
+            s,
+            h,
+            vnn,
+            j,
+            k,
+            xc,
+        }) => (Some((s, h, vnn)), Some((j, k)), xc),
+        None => (None, None, None),
     };
 
     // Build the XC contribution once. None for pure HF. Built FIRST so the
@@ -1081,7 +1122,31 @@ fn solve_rhf_impl(
     } else {
         None
     };
-    let k_mix: KMix = xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default();
+    // Injected (periodic) KS: a global hybrid scales the injected K by its
+    // exact-exchange fraction (validate_injected guarantees `xc_contrib` is
+    // None there, so the two sources never coexist). Molecular path:
+    // `inj_xc` is None and this is the historical expression.
+    let k_mix: KMix = match inj_xc.as_ref() {
+        Some(x) => {
+            let a = x.exact_exchange_fraction();
+            if !(a.is_finite() && (0.0..=1.0).contains(&a)) {
+                return Err(FerricError::General(format!(
+                    "solve_rhf_injected: XcBuilder exact-exchange fraction must be in [0, 1], \
+                     got {a}"
+                )));
+            }
+            KMix {
+                sr: a,
+                lr: a,
+                omega: 0.0,
+            }
+        }
+        None => xc_contrib.as_ref().map(|x| x.k_mix()).unwrap_or_default(),
+    };
+    // The injected K is consumed unless an injected pure functional (a = 0)
+    // multiplies it by zero; then it is never built (as the molecular
+    // `k_consumed` gate does for pure DFT).
+    let inj_k_consumed = inj_xc.is_none() || k_mix.sr > 0.0;
 
     // Shared geometry-only environment: S, hcore(+ECP, +external), V_nn
     // (+external), COSMO/PCM contexts, resolved memory budget, RSH fitters.
@@ -1573,8 +1638,10 @@ fn solve_rhf_impl(
         // call sequence as the pluggable-K arm (J, update_density, K).
         if let Some((ij, ik)) = inj_jk.as_mut() {
             total_quartets += ij.build(&d, &mut j_buf)?;
-            ik.update_density(&d);
-            total_quartets += ik.build(&d, &mut k_buf)?;
+            if inj_k_consumed {
+                ik.update_density(&d);
+                total_quartets += ik.build(&d, &mut k_buf)?;
+            }
         } else if df_any {
             if let Some(dfj) = df_j.as_mut() {
                 dfj.build(&d, &mut j_buf)?;
@@ -1700,6 +1767,17 @@ fn solve_rhf_impl(
         let e_elec_no_xc: f64 = 0.5 * (&d * &(&h + &f)).sum();
         let e_xc = if let Some(x) = xc_contrib.as_ref() {
             x.add_xc(&d, &mut f)
+        } else if let Some(ix) = inj_xc.as_mut() {
+            let (e, v) = ix.build(&d)?;
+            if v.dim() != f.dim() {
+                return Err(FerricError::General(format!(
+                    "solve_rhf_injected: XcBuilder returned V_xc of shape {:?}, expected {:?}",
+                    v.dim(),
+                    f.dim()
+                )));
+            }
+            f += &v;
+            e
         } else {
             0.0
         };
@@ -1777,7 +1855,11 @@ fn solve_rhf_impl(
         if ctx.is_root() {
             if let Some(rl) = crate::runlog::log() {
                 rl.scf_iter(
-                    if xc_contrib.is_some() { "rks" } else { "rhf" },
+                    if xc_contrib.is_some() || inj_xc.is_some() {
+                        "rks"
+                    } else {
+                        "rhf"
+                    },
                     crate::runlog::current_rung(),
                     iter,
                     energy,

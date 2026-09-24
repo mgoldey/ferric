@@ -336,6 +336,145 @@ pub fn becke_weights_and_grad(mol: &Molecule, r: [f64; 3]) -> (Vec<f64>, Vec<Vec
     (weights, dw)
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Explicit-neighbour-list partition (periodic grids, Stage 2 PBC)
+// ────────────────────────────────────────────────────────────────────────────
+//
+// Additive: the molecular `becke_weight*` functions above are untouched. The
+// periodic grid (`ferric_pbc::dft`) needs the fuzzy-cell weight of a HOME
+// atom evaluated over an explicit list of IMAGE atoms (every image within a
+// cutoff D of the point), not over `mol.atoms`; this is that kernel. With the
+// list = the molecule's atoms and `PartitionScheme::Becke` it is the molecular
+// `becke_weights_all` bit for bit (pinned by
+// `partition_over_molecule_atoms_is_becke_weights_all`).
+
+/// Smoothing of the cell step function `s(ν) = ½(1 − g(ν))`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PartitionScheme {
+    /// Becke 1988: `g = f(f(f(ν)))`, `f(x) = (3x − x³)/2` (ferric's molecular
+    /// partition). Tails are polynomial: every atom in the list contributes.
+    Becke,
+    /// Stratmann–Scuseria–Frisch (CPL 257, 213 (1996)), PySCF `stratmann`:
+    /// `g = (35m − 35m³ + 21m⁵ − 5m⁷)/16`, `m = ν/0.64`, and `g = ±1` for
+    /// `|ν| ≥ 0.64`. COMPACT support, so a finite image list is exact: the
+    /// default for periodic grids (FINDINGS "Iteration 8": periodic SSF ≡
+    /// molecular SSF to 1e-16 in a 20+ Bohr box, Becke only algebraically).
+    #[default]
+    Ssf,
+}
+
+impl PartitionScheme {
+    /// Strict parse: `"becke"` or `"ssf"` (case-insensitive); anything else
+    /// is an error (config honesty — never a silent default).
+    pub fn parse_config_str(s: &str) -> Result<Self, ferric_core::error::FerricError> {
+        match s.to_ascii_lowercase().as_str() {
+            "becke" => Ok(Self::Becke),
+            "ssf" | "stratmann" => Ok(Self::Ssf),
+            other => Err(ferric_core::error::FerricError::General(format!(
+                "partition scheme must be \"becke\" or \"ssf\", got {other:?}"
+            ))),
+        }
+    }
+}
+
+/// SSF compact-support half-width `a` (|ν| ≥ a ⇒ s ∈ {0, 1} exactly).
+pub const SSF_A: f64 = 0.64;
+
+/// SSF smoothing `g(ν)` (PySCF `gen_grid.stratmann`): odd, `g(±a) = ±1`,
+/// `g'(±a) = 0`, and exactly `±1` outside `(−a, a)`.
+pub fn ssf_smoothing(nu: f64) -> f64 {
+    if nu <= -SSF_A {
+        return -1.0;
+    }
+    if nu >= SSF_A {
+        return 1.0;
+    }
+    let m = nu / SSF_A;
+    let m2 = m * m;
+    m * (35.0 + m2 * (-35.0 + m2 * (21.0 - 5.0 * m2))) / 16.0
+}
+
+/// One atom of an explicit neighbour list (Bohr; `z` selects the Bragg-Slater
+/// radius of the size adjustment).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NeighbourAtom {
+    pub xyz: [f64; 3],
+    pub z: i32,
+}
+
+/// Fuzzy-cell weight of `atoms[home]` at `r` over the explicit list `atoms`,
+/// with the same Becke/Bragg-Slater size adjustment as [`becke_weights_all`]
+/// (`ν = μ + a(1 − μ²)`, `|a| ≤ ½`):
+///
+/// ```text
+/// P_B(r) = Π_{C ≠ B} ½(1 − g(ν_BC(r))),    w = P_home / Σ_B P_B
+/// ```
+///
+/// The CALLER chooses the list; for a periodic grid it is every image atom
+/// within a cutoff D of `r` (the same list for every home at a given `r`, so
+/// the weights stay an exact partition of unity). Size-adjustment caveat for
+/// SSF: with `|a| = ½` (e.g. Li–H) `ν → −1 + 4 r_B/R_BC`, so an atom `C` at
+/// distance `R_BC` still enters the SSF support while `r_B > 0.09 R_BC` —
+/// the exact zone is ~0.09 of the separation, not the 0.18 an unadjusted
+/// `ν = μ` would give (measured, FINDINGS "Iteration 8").
+///
+/// Returns 0 when `home` is out of range or every cell function vanishes.
+pub fn partition_weight_over(
+    scheme: PartitionScheme,
+    atoms: &[NeighbourAtom],
+    home: usize,
+    r: [f64; 3],
+) -> f64 {
+    let n = atoms.len();
+    if home >= n {
+        return 0.0;
+    }
+    if n == 1 {
+        return 1.0;
+    }
+    let dist = |p: &[f64; 3], q: &[f64; 3]| {
+        let dx = p[0] - q[0];
+        let dy = p[1] - q[1];
+        let dz = p[2] - q[2];
+        (dx * dx + dy * dy + dz * dz).sqrt()
+    };
+    let r_d: Vec<f64> = atoms.iter().map(|a| dist(&r, &a.xyz)).collect();
+    let radii: Vec<f64> = atoms.iter().map(|a| bragg_slater_bohr(a.z)).collect();
+    let mut p_cell = vec![1.0_f64; n];
+    for b in 0..n {
+        let mut pb = 1.0_f64;
+        for c in 0..n {
+            if b == c {
+                continue;
+            }
+            let r_bc = dist(&atoms[b].xyz, &atoms[c].xyz);
+            if r_bc < 1e-12 {
+                continue; // degenerate; skip (as becke_weights_all)
+            }
+            let mu = (r_d[b] - r_d[c]) / r_bc;
+            // Same operation order as becke_weights_all (bit-identity).
+            let chi = radii[b] / radii[c];
+            let u = (chi - 1.0) / (chi + 1.0);
+            let a_corr = (u / (u * u - 1.0)).clamp(-0.5, 0.5);
+            let nu = mu + a_corr * (1.0 - mu * mu);
+            let g = match scheme {
+                PartitionScheme::Becke => becke_smoothing(nu, 3),
+                PartitionScheme::Ssf => ssf_smoothing(nu),
+            };
+            pb *= 0.5 * (1.0 - g);
+            if pb == 0.0 {
+                break; // every further factor is finite: P_B stays 0
+            }
+        }
+        p_cell[b] = pb;
+    }
+    let total: f64 = p_cell.iter().sum();
+    if total < 1e-30 {
+        return 0.0;
+    }
+    p_cell[home] / total
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,5 +686,123 @@ mod tests {
             "C-H midpoint Becke: w_C should exceed 0.5 from size correction, got w_C={}",
             w[0]
         );
+    }
+}
+
+#[cfg(test)]
+mod partition_over_tests {
+    use super::*;
+    use ferric_core::mol::{Atom, Molecule};
+
+    fn atom(z: i32, sym: &str, p: [f64; 3]) -> Atom {
+        Atom {
+            symbol: sym.into(),
+            z,
+            x: p[0],
+            y: p[1],
+            zpos: p[2],
+            ghost: false,
+            n_core_ecp: 0,
+        }
+    }
+
+    fn lih_ch() -> Molecule {
+        Molecule {
+            atoms: vec![
+                atom(3, "Li", [0.3, 0.2, 0.1]),
+                atom(1, "H", [0.3, 0.2, 3.1]),
+                atom(6, "C", [1.9, -0.4, 1.2]),
+            ],
+            charge: 0,
+            multiplicity: 1,
+        }
+    }
+
+    fn list(mol: &Molecule) -> Vec<NeighbourAtom> {
+        mol.atoms
+            .iter()
+            .map(|a| NeighbourAtom {
+                xyz: [a.x, a.y, a.zpos],
+                z: a.z,
+            })
+            .collect()
+    }
+
+    /// The list kernel with the molecule's atoms and Becke smoothing IS the
+    /// molecular `becke_weights_all` (heteronuclear: size adjustment active).
+    /// Mutation: a different ν/size-adjust formula in the list kernel fails.
+    #[test]
+    fn partition_over_molecule_atoms_is_becke_weights_all() {
+        let mol = lih_ch();
+        let nb = list(&mol);
+        for r in [
+            [0.0, 0.0, 0.0],
+            [0.3, 0.2, 1.6],
+            [1.0, -0.2, 2.2],
+            [-2.0, 1.5, 0.4],
+            [0.31, 0.19, 0.12],
+        ] {
+            let w = becke_weights_all(&mol, r);
+            for (a, wa) in w.iter().enumerate() {
+                let wl = partition_weight_over(PartitionScheme::Becke, &nb, a, r);
+                assert!((wl - wa).abs() <= 1e-15, "atom {a} at {r:?}: {wl} vs {wa}");
+            }
+        }
+    }
+
+    /// SSF polynomial: odd, ±1 with zero slope at ±a, exactly ±1 outside,
+    /// and the closed form at m = ½: g = (35/2 − 35/8 + 21/32 − 5/128)/16
+    /// = 0.85888671875 (exact in binary).
+    #[test]
+    fn ssf_polynomial_shape() {
+        assert_eq!(ssf_smoothing(0.0), 0.0);
+        assert_eq!(ssf_smoothing(SSF_A), 1.0);
+        assert_eq!(ssf_smoothing(-SSF_A), -1.0);
+        assert_eq!(ssf_smoothing(0.9), 1.0);
+        assert_eq!(ssf_smoothing(-0.7), -1.0);
+        // Continuity and zero slope at the support edge.
+        let e = 1e-6;
+        assert!((ssf_smoothing(SSF_A - e) - 1.0).abs() < 1e-9);
+        let m = 0.5_f64;
+        let want = (35.0 * m - 35.0 * m.powi(3) + 21.0 * m.powi(5) - 5.0 * m.powi(7)) / 16.0;
+        assert!((ssf_smoothing(0.5 * SSF_A) - want).abs() < 1e-15);
+        assert!((want - 0.858_886_718_75).abs() < 1e-15, "{want}");
+        for x in [0.1, 0.33, 0.6] {
+            assert!((ssf_smoothing(x) + ssf_smoothing(-x)).abs() < 1e-15);
+        }
+    }
+
+    /// Both schemes are a partition of unity over any list, and SSF is
+    /// exactly 1 at a nucleus whose neighbours are far (compact support).
+    #[test]
+    fn list_weights_sum_to_one_and_ssf_is_exact_near_a_nucleus() {
+        let nb = list(&lih_ch());
+        for scheme in [PartitionScheme::Becke, PartitionScheme::Ssf] {
+            for r in [[0.0, 0.0, 0.0], [1.0, -0.2, 2.2], [5.0, 4.0, -3.0]] {
+                let sum: f64 = (0..nb.len())
+                    .map(|a| partition_weight_over(scheme, &nb, a, r))
+                    .sum();
+                assert!((sum - 1.0).abs() < 1e-14, "{scheme:?} {r:?}: {sum}");
+            }
+        }
+        let w = partition_weight_over(PartitionScheme::Ssf, &nb, 1, [0.3, 0.2, 3.15]);
+        assert_eq!(w, 1.0);
+        assert_eq!(
+            partition_weight_over(PartitionScheme::Ssf, &nb, 7, [0.0; 3]),
+            0.0
+        );
+    }
+
+    #[test]
+    fn partition_scheme_parse_is_strict() {
+        assert_eq!(
+            PartitionScheme::parse_config_str("SSF").unwrap(),
+            PartitionScheme::Ssf
+        );
+        assert_eq!(
+            PartitionScheme::parse_config_str("becke").unwrap(),
+            PartitionScheme::Becke
+        );
+        assert!(PartitionScheme::parse_config_str("hirshfeld").is_err());
     }
 }

@@ -162,6 +162,7 @@ fn injected_molecular_link_pair_reproduces_solve_rhf_bitwise() {
             cfg.integral_thresh,
             budget,
         )),
+        xc: None,
     };
     let injected = solve_rhf_injected(&su.ctx, &su.mol, &su.prep, su.op, &su.bounds, &cfg, inj)
         .expect("injected");
@@ -198,6 +199,7 @@ fn injected_direct_pair_matches_default_direct_jk_path() {
             cfg.integral_thresh,
             budget,
         )),
+        xc: None,
     };
     let injected = solve_rhf_injected(&su.ctx, &su.mol, &su.prep, su.op, &su.bounds, &cfg, inj)
         .expect("injected");
@@ -209,6 +211,105 @@ fn injected_direct_pair_matches_default_direct_jk_path() {
     println!("default DirectJK vs injected DirectJ+DirectK: |dE| = {de:.3e}, max|dD| = {dd:.3e}");
     assert!(de < 1e-10, "|dE| = {de:.3e}");
     assert!(dd < 1e-7, "max|dD| = {dd:.3e}");
+}
+
+/// Stage 2 (periodic KS): an injected [`XcBuilder`] wrapping the MOLECULAR
+/// `KsXc` (same grid as `solve_rhf`'s) plus `DirectJ` + `DirectK` reproduces
+/// molecular KS with exact J/K to the 1e-10 of the HF structural anchor above
+/// — for a pure GGA (injected K never built) and a global hybrid (injected K
+/// scaled by the exact-exchange fraction). Negative control: the same
+/// builder claiming a fraction of 1 (K unscaled, i.e. the "forgot to scale"
+/// defect) moves PBE0 by far more than the tolerance.
+#[test]
+fn injected_xc_builder_reproduces_molecular_ks() {
+    use ferric_dft::grid::AtomicGridConfig;
+    use ferric_dft::ks::KsXc;
+    use ferric_dft::xc_trait::XcContribution;
+    use ferric_scf::rhf::XcBuilder;
+
+    struct MolXc {
+        ks: KsXc,
+        frac: Option<f64>,
+    }
+    impl XcBuilder for MolXc {
+        fn build(
+            &mut self,
+            d: &Array2<f64>,
+        ) -> Result<(f64, Array2<f64>), ferric_core::FerricError> {
+            let mut v = Array2::<f64>::zeros(d.dim());
+            let e = self.ks.add_xc(d, &mut v);
+            Ok((e, v))
+        }
+        fn exact_exchange_fraction(&self) -> f64 {
+            self.frac.unwrap_or_else(|| self.ks.k_mix().sr)
+        }
+    }
+
+    let su = setup("sto-3g");
+    let bs = basis::bundled("sto-3g").expect("basis");
+    let main = AtomicGridConfig::default();
+    let nlc = AtomicGridConfig {
+        n_radial: 50,
+        n_angular: 50,
+        ..Default::default()
+    };
+    let cfg = RhfConfig {
+        density_conv: 1e-9,
+        ..injectable_config()
+    };
+    let budget = resolve_three_index_budget(cfg.three_index_budget_bytes);
+    let injected = |xc: &str, frac: Option<f64>| {
+        let (s, h, vnn) = molecular_one_electron(&su);
+        let inj = PeriodicInjection {
+            s,
+            h,
+            vnn,
+            j: Box::new(DirectJ::new(
+                &su.ctx,
+                &su.prep,
+                &su.bounds,
+                cfg.integral_thresh,
+                budget,
+            )),
+            k: Box::new(DirectK::new(
+                &su.ctx,
+                &su.prep,
+                &su.bounds,
+                cfg.integral_thresh,
+                budget,
+            )),
+            xc: Some(Box::new(MolXc {
+                ks: KsXc::new(&su.mol, &bs, xc, &main, &nlc).expect("KsXc"),
+                frac,
+            })),
+        };
+        solve_rhf_injected(&su.ctx, &su.mol, &su.prep, su.op, &su.bounds, &cfg, inj)
+            .expect("injected KS")
+    };
+    for xc in ["PBE", "PBE0"] {
+        let ref_cfg = RhfConfig {
+            xc: Some(xc.into()),
+            // Exact four-centre J/K, as the injected DirectJ/DirectK.
+            df_j_aux: Some(String::new()),
+            df_k_aux: Some(String::new()),
+            ..cfg.clone()
+        };
+        let reference = solve_rhf(&su.ctx, &su.mol, &su.prep, su.op, &su.bounds, &ref_cfg)
+            .expect("molecular KS");
+        let inj = injected(xc, None);
+        assert!(reference.converged && inj.converged, "{xc}");
+        let de = (reference.energy - inj.energy).abs();
+        println!(
+            "{xc}: molecular {:.12} injected {:.12} |dE| {de:.3e}",
+            reference.energy, inj.energy
+        );
+        assert!(de < 1e-10, "{xc}: |dE| = {de:.3e}");
+        if xc == "PBE0" {
+            let wrong = injected(xc, Some(1.0));
+            let dw = (wrong.energy - reference.energy).abs();
+            assert!(dw > 1e-3, "unscaled K moved PBE0 by only {dw:.3e}");
+        }
+    }
 }
 
 /// Negative control: the injected V_nn and h must actually be the ones used.
@@ -238,6 +339,7 @@ fn injected_matrices_are_the_ones_used() {
                 cfg.integral_thresh,
                 budget,
             )),
+            xc: None,
         };
         solve_rhf_injected(&su.ctx, &su.mol, &su.prep, su.op, &su.bounds, &cfg, inj)
             .expect("injected")
@@ -402,6 +504,7 @@ fn each_rejected_field_is_named_by_solve_rhf_injected() {
             vnn,
             j: Box::new(DirectJ::new(&su.ctx, &su.prep, &su.bounds, 1e-12, 1 << 30)),
             k: Box::new(DirectK::new(&su.ctx, &su.prep, &su.bounds, 1e-12, 1 << 30)),
+            xc: None,
         };
         let err = solve_rhf_injected(&su.ctx, &su.mol, &su.prep, su.op, &su.bounds, &cfg, inj)
             .expect_err(field)
@@ -422,6 +525,7 @@ fn wrong_shape_and_nonfinite_vnn_are_rejected() {
         vnn,
         j: Box::new(DirectJ::new(&su.ctx, &su.prep, &su.bounds, 1e-12, 1 << 30)),
         k: Box::new(DirectK::new(&su.ctx, &su.prep, &su.bounds, 1e-12, 1 << 30)),
+        xc: None,
     };
     let (s, h, vnn) = molecular_one_electron(&su);
 
@@ -493,6 +597,7 @@ fn run_uhf_injected<'a>(
         vnn: vnn + vnn_shift,
         j,
         k,
+        xc: None,
     };
     solve_uhf_injected(&su.ctx, &su.mol, &su.prep, &su.bounds, cfg, inj, None)
         .expect("injected UHF")
@@ -661,6 +766,7 @@ fn injected_uhf_explicit_density_guess_reaches_the_same_state() {
         vnn,
         j: j2,
         k: k2,
+        xc: None,
     };
     let e = solve_uhf_injected(&su.ctx, &su.mol, &su.prep, &su.bounds, &bad_cfg, inj, None)
         .expect_err("bad guess density shape")
@@ -704,6 +810,7 @@ fn each_rejected_field_is_named_by_solve_uhf_injected() {
             vnn,
             j: Box::new(DirectJ::new(&su.ctx, &su.prep, &su.bounds, 1e-12, 1 << 30)),
             k: Box::new(DirectK::new(&su.ctx, &su.prep, &su.bounds, 1e-12, 1 << 30)),
+            xc: None,
         };
         let err = solve_uhf_injected(&su.ctx, &su.mol, &su.prep, &su.bounds, &cfg, inj, None)
             .expect_err(field)
@@ -748,6 +855,7 @@ fn uhf_wrong_shape_and_nonfinite_vnn_are_rejected() {
             vnn: v_,
             j: Box::new(DirectJ::new(&su.ctx, &su.prep, &su.bounds, 1e-12, 1 << 30)),
             k: Box::new(DirectK::new(&su.ctx, &su.prep, &su.bounds, 1e-12, 1 << 30)),
+            xc: None,
         };
         let e = solve_uhf_injected(&su.ctx, &su.mol, &su.prep, &su.bounds, &cfg, inj, None)
             .expect_err(label)

@@ -854,6 +854,7 @@ fn gamma_rhf_driver(
             vnn: hc.enn,
             j,
             k,
+            xc: None,
         };
         let op = Operator::coulomb();
         ferric_scf::rhf::solve_rhf_injected(ctx, cell.mol(), prep, op, bounds, config, inj)

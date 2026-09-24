@@ -134,6 +134,14 @@ pub fn solve_uhf_injected<'a>(
         ))
     })?;
     crate::rhf::check_injection_shapes("solve_uhf_injected", &inj, prep.nbasis())?;
+    if inj.xc.is_some() {
+        return Err(FerricError::General(
+            "solve_uhf_injected: PeriodicInjection.xc is not supported: periodic Kohn-Sham is \
+             closed-shell RKS only (solve_rhf_injected); open-shell periodic UKS is not \
+             implemented"
+                .into(),
+        ));
+    }
     err_if_unconverged(solve_uhf_impl(
         ctx,
         mol,
@@ -468,7 +476,15 @@ fn solve_uhf_impl(
     // builders are driven in the iteration loop (as in rhf::solve_rhf_impl).
     // Both `None` on the molecular path.
     let (pre_env, mut inj_jk) = match inj {
-        Some(PeriodicInjection { s, h, vnn, j, k }) => (Some((s, h, vnn)), Some((j, k))),
+        // `xc` is refused by solve_uhf_injected before reaching here.
+        Some(PeriodicInjection {
+            s,
+            h,
+            vnn,
+            j,
+            k,
+            xc: _,
+        }) => (Some((s, h, vnn)), Some((j, k))),
         None => (None, None),
     };
     let injected = inj_jk.is_some();
