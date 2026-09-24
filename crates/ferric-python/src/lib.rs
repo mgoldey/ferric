@@ -2359,8 +2359,14 @@ fn run_cdft(
     // build_df_jk treats Some("") as "do not fit", so unset and "" are the
     // same exact-J/K Hamiltonian and must not look different here.
     let effective_aux = |a: &Option<String>| a.clone().filter(|s| !s.is_empty());
+    // The nuclear Hamiltonian too: a ghost centre (`@He`) keeps the basis and
+    // AO overlap identical while removing a nucleus, so the overlap check alone
+    // cannot see it. `emol` is post-ECP (core counts included) and its Debug
+    // form carries every atom's Z, ghost flag, coordinates, charge and
+    // multiplicity exactly.
     let hamiltonian_key = format!(
-        "xc={:?} df_j_aux={:?} df_k_aux={:?} k_builder={:?} dft_grid={:?} external={:?}",
+        "molecule={:?} xc={:?} df_j_aux={:?} df_k_aux={:?} k_builder={:?} dft_grid={:?} external={:?}",
+        emol,
         config.xc,
         effective_aux(&config.df_j_aux),
         effective_aux(&config.df_k_aux),
@@ -2469,7 +2475,8 @@ impl PyCdftCouplingResult {
 /// and it is kind="charge" (the Rust kernel applies one operator to both spins
 /// and takes a single λ), both states are `converged`, and both come from the
 /// same molecule, geometry, basis, charge and multiplicity (checked through the
-/// AO overlap matrix and the occupations) AND the same Hamiltonian: functional,
+/// AO overlap matrix and the occupations) AND the same Hamiltonian: nuclei
+/// (element, ghost flag, ECP, exact coordinates, charge), functional,
 /// df_j_aux/df_k_aux, k_builder, XC grid, point_charges and external_field must
 /// all match. Two (near-)identical states
 /// (|S_ab| -> 1) make the coupling undefined and also raise.
@@ -2530,8 +2537,8 @@ fn cdft_coupling(state_a: &PyCdftResult, state_b: &PyCdftResult) -> PyResult<PyC
     if state_a.hamiltonian_key != state_b.hamiltonian_key {
         return Err(value_err(format!(
             "cdft_coupling: the two states were solved with different Hamiltonians \
-             (functional, density fitting, exchange builder, XC grid or external \
-             potential differ); the Wu-Van Voorhis coupling requires one shared H.\n  \
+             (nuclei, functional, density fitting, exchange builder, XC grid or \
+             external potential differ); the Wu-Van Voorhis coupling requires one shared H.\n  \
              state_a: {}\n  state_b: {}",
             state_a.hamiltonian_key, state_b.hamiltonian_key
         )));
