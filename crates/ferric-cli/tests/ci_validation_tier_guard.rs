@@ -429,10 +429,21 @@ fn every_validation_pytest_is_collected_by_the_job() {
         "validation pytest files outside every path the job passes to pytest ({paths:?}) are \
          never run:\n  {missed:?}"
     );
+    // Non-comment lines only (a commented-out `# ... import ferric` must not
+    // satisfy this), and the import must come BEFORE the pytest run.
+    let live: Vec<&str> = job
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect();
+    let import_at = live
+        .iter()
+        .position(|l| l.contains("python -c \"import ferric\""));
+    let pytest_at = live.iter().position(|l| l.contains("-m validation"));
     assert!(
-        job.contains("python -c \"import ferric\""),
-        "the validation job must `python -c \"import ferric\"` before pytest: conftest.py skips \
-         the whole suite on a failed import, which would exit green with nothing run"
+        matches!((import_at, pytest_at), (Some(i), Some(p)) if i < p),
+        "the validation job must run `python -c \"import ferric\"` (not commented out) BEFORE \
+         `pytest -m validation`: conftest.py skips the whole suite on a failed import, which \
+         would exit green with nothing run (import at {import_at:?}, pytest at {pytest_at:?})"
     );
 }
 

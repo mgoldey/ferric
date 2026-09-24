@@ -297,6 +297,13 @@ def run_uks_atom(mol, mult: int) -> tuple[dict, object]:
                 break
             mf.kernel(dm0=mf.make_rdm1(mo_i, mf.mo_occ))
             rounds += 1
+            # A restart that does not converge must not be recorded as a
+            # converged, stable state (common.run_open_shell guards the same).
+            if not mf.converged:
+                raise RuntimeError(
+                    f"UKS free atom Z={mol.atom_charge(0)}: stability restart {rounds} "
+                    "did not converge"
+                )
         if not stable:
             raise RuntimeError(f"UKS free atom Z={mol.atom_charge(0)}: no stable state")
         stability = {

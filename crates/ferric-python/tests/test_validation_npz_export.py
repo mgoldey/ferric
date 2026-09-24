@@ -33,8 +33,12 @@ What this test does, end to end:
      checks the field's SIGN and AXIS order, not just its magnitude;
    * dipole: against sum_A Z_A R_A - 2 sum_{i occ} <i|r|i> from the binding's
      orbital centroids (an exact identity for a closed shell);
-   * alpha_tensor: symmetric, positive definite, and equal to the sum of the
-     per-atom Becke alpha_atomic up to the grid's dipole quadrature error.
+   * alpha_tensor: symmetric and positive definite; alpha_tensor and the
+     per-atom alpha_atomic are unchanged by a rigid translation of the
+     molecule (origin independence -- what the atom-centred dipole operator
+     guarantees). Sum_A alpha_atomic is NOT the molecular alpha: the
+     charge-transfer part is excluded by construction (72% apart on
+     water/STO-3G), so it is not asserted.
 
 Artifact hypothesis: if the NPZ were written from a different density (e.g.
 the core guess) every value comparison would miss by >1e-2; if an (N, 3)
@@ -43,8 +47,8 @@ checks fail for water (N = 3, non-symmetric); if a requested array were
 silently dropped the key-set check fails. None of these can pass by accident
 at the bars below.
 
-TOLERANCES are PLACEHOLDERS until the build agent measures them (record the
-measured maximum next to each; set the bar to 3-10x it).
+TOLERANCES are set from measured maxima (recorded next to the constants
+below), with 10-100x headroom.
 
 Run (weekly tier; excluded from the default `-m "not validation"`):
     OPENBLAS_NUM_THREADS=1 uv run --no-sync pytest -m validation \\
