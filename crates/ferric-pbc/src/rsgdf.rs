@@ -238,6 +238,11 @@ pub struct RsGdf {
     s: Array2<f64>,
     madelung: f64,
     stats: RsGdfStats,
+    /// `W = U_kept s_kept^{-1/2}`, `(naux, naux_kept)`: the aux-space map of
+    /// B's rows (B = Wᵀ J3ᵀ). Retained for the dRPA driver's
+    /// `RpaIntermediates::v_inv_sqrt` (eigenpotential back-transform only;
+    /// never part of an energy). Counted by the build ledger's metric line.
+    metric_inv_sqrt: Array2<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -876,12 +881,13 @@ fn symmetrize_pairs(j3: &mut Array2<f64>, n: usize) -> f64 {
 }
 
 /// `B = (J3 W)ᵀ`, `W = U_keep s_keep^{-1/2}` from `J2 = U s Uᵀ` with the
-/// eigenvalues `<= lindep` dropped. Returns `(B, eigenvalues ascending)`.
+/// eigenvalues `<= lindep` dropped. Returns `(B, eigenvalues ascending, W)`
+/// (`W` is `(naux, naux_kept)`; B is computed from it exactly as before).
 fn fit_with_metric(
     j2: &Array2<f64>,
     j3: Array2<f64>,
     lindep: f64,
-) -> Result<(Array2<f64>, Vec<f64>), FerricError> {
+) -> Result<(Array2<f64>, Vec<f64>, Array2<f64>), FerricError> {
     let naux = j2.nrows();
     let (evals, evecs) = j2
         .eigh(UPLO::Upper)
@@ -904,7 +910,7 @@ fn fit_with_metric(
     let bt = j3.dot(&w); // (n², nkeep)
     drop(j3);
     let b = bt.t().as_standard_layout().into_owned(); // (nkeep, n²)
-    Ok((b, evals.to_vec()))
+    Ok((b, evals.to_vec(), w))
 }
 
 impl RsGdf {
@@ -1011,7 +1017,7 @@ impl RsGdf {
         let asym_j2 = max_abs_asym(&j2);
         let j2 = 0.5 * (&j2 + &j2.t());
         let asym_j3 = symmetrize_pairs(&mut j3, n);
-        let (b, evals) = fit_with_metric(&j2, j3, cfg.lindep)?;
+        let (b, evals, metric_inv_sqrt) = fit_with_metric(&j2, j3, cfg.lindep)?;
         let nkeep = b.nrows();
 
         let madelung = match cfg.exxdiv {
@@ -1043,6 +1049,7 @@ impl RsGdf {
             s: s.clone(),
             madelung,
             stats,
+            metric_inv_sqrt,
         })
     }
 
@@ -1060,6 +1067,12 @@ impl RsGdf {
     /// `(naux_kept, nao²)` fitted tensor, row k, column `μ·nao+ν`.
     pub fn b(&self) -> &Array2<f64> {
         &self.b
+    }
+
+    /// `U_kept s_kept^{-1/2}`, `(naux, naux_kept)`, from the metric solve
+    /// (`B = (J3 W)ᵀ` with this `W`).
+    pub fn metric_inv_sqrt(&self) -> &Array2<f64> {
+        &self.metric_inv_sqrt
     }
 
     /// Build statistics (counts, conditioning, dropped eigenvalues).
