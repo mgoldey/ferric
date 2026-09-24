@@ -110,8 +110,11 @@
 //!
 //! The UKS case compares the Davidson λ_min, not the dense UKS spectrum: the
 //! f_xc response kernel (`FxcKernelStore`) is crate-private, so a test cannot
-//! build the dense UKS Hessian. The HF-Hessian control proves the kernel is
-//! applied; a defect that moves only higher UKS eigenvalues is not covered.
+//! build the dense UKS Hessian. The UHF control is a separate SCF, so it is a
+//! negative control only and does not isolate f_xc; dropping f_xc from the
+//! stability Hessian (`fxc_ref = None` in `uhf.rs`) is the check that does,
+//! and it fails this test. A defect that moves only higher UKS eigenvalues is
+//! not covered.
 //!
 //! A missing reference JSON is a HARD failure (panic naming the path).
 
@@ -580,7 +583,7 @@ fn singlet_triplet(h: &Array2<f64>) -> (Array2<f64>, Array2<f64>, f64) {
     let bb = h.slice(ndarray::s![d.., d..]);
     let s = 0.5 * ((&aa + &ab) + (&ba + &bb));
     let t = 0.5 * ((&aa - &ab) - (&ba - &bb));
-    let c = 0.5 * (&aa - &ab + &ba - &bb);
+    let c = 0.5 * ((&aa - &ab) + (&ba - &bb));
     let cmax = c.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
     (s, t, cmax)
 }
