@@ -282,6 +282,89 @@ pub fn u_ri_mp2(
     })
 }
 
+/// U-RI-MP2 correlation components from caller-supplied parts: the two
+/// per-spin RI intermediates (dressed `B^P_{ia,σ}` in ONE shared aux metric)
+/// and each spin's FULL orbital-energy array (`eps_σ[first_occ + i]` occupied,
+/// `eps_σ[nocc_total + a]` virtual — the indexing the pair kernels use).
+///
+/// Added for the periodic (Gamma-point) UHF driver in `ferric-pbc`, whose
+/// `b_ov` per spin is transformed from one lattice-summed RS-GDF tensor (no
+/// molecular aux basis exists) and whose occupied energies carry a per-spin
+/// Madelung shift the caller applies. It calls the SAME
+/// `same_spin_pair_energy` (α, β) and `opposite_spin_pair_energy` kernels as
+/// [`u_ri_mp2`]; `u_ri_mp2` itself is unchanged and does not call this
+/// function, so the molecular path is byte-identical by construction.
+///
+/// Errors (typed, never a panic): `inter_a.naux != inter_b.naux` (the αβ
+/// block contracts over one shared aux index), a `b_ov` whose shape is not
+/// `(naux, nocc·nvir)`, `first_occ + nocc != nocc_total`, or an energy array
+/// shorter than `nocc_total + nvir`. An EMPTY spin channel (`nocc = 0` or
+/// `nvir = 0`) contributes exactly 0 to its same-spin and the αβ block
+/// without forming a zero-width product. Non-finite energies (zero
+/// denominators) are returned as-is for the caller to reject. No pool charge
+/// is taken: the caller owns (and has budgeted) both `b_ov`.
+pub fn u_ri_mp2_from_parts(
+    inter_a: &RpaIntermediates,
+    inter_b: &RpaIntermediates,
+    eps_a: &[f64],
+    eps_b: &[f64],
+) -> Result<URiMp2Components, FerricError> {
+    if inter_a.naux != inter_b.naux {
+        return Err(FerricError::General(format!(
+            "u_ri_mp2_from_parts: alpha and beta intermediates have different aux dimensions \
+             ({} vs {}); the opposite-spin block needs ONE shared aux metric",
+            inter_a.naux, inter_b.naux
+        )));
+    }
+    for (label, inter, eps) in [("alpha", inter_a, eps_a), ("beta", inter_b, eps_b)] {
+        if inter.b_ov.dim() != (inter.naux, inter.nocc * inter.nvir) {
+            return Err(FerricError::General(format!(
+                "u_ri_mp2_from_parts: {label} b_ov is {:?}, expected (naux, nocc·nvir) = ({}, {})",
+                inter.b_ov.dim(),
+                inter.naux,
+                inter.nocc * inter.nvir
+            )));
+        }
+        if inter.first_occ + inter.nocc != inter.nocc_total {
+            return Err(FerricError::General(format!(
+                "u_ri_mp2_from_parts: {label} first_occ {} + nocc {} != nocc_total {}",
+                inter.first_occ, inter.nocc, inter.nocc_total
+            )));
+        }
+        if eps.len() < inter.nocc_total + inter.nvir {
+            return Err(FerricError::General(format!(
+                "u_ri_mp2_from_parts: {label} has {} orbital energies, needs nocc_total {} + \
+                 nvir {}",
+                eps.len(),
+                inter.nocc_total,
+                inter.nvir
+            )));
+        }
+    }
+    let live = |i: &RpaIntermediates| i.nocc > 0 && i.nvir > 0;
+    let e_aa = if live(inter_a) {
+        same_spin_pair_energy(inter_a, eps_a)
+    } else {
+        0.0
+    };
+    let e_bb = if live(inter_b) {
+        same_spin_pair_energy(inter_b, eps_b)
+    } else {
+        0.0
+    };
+    let e_ab = if live(inter_a) && live(inter_b) {
+        opposite_spin_pair_energy(inter_a, inter_b, eps_a, eps_b)
+    } else {
+        0.0
+    };
+    Ok(URiMp2Components {
+        e_aa,
+        e_bb,
+        e_ab,
+        e_total: e_aa + e_bb + e_ab,
+    })
+}
+
 /// Compute U-MP2 amplitudes for all three spin blocks.
 ///
 /// Returns the αα, ββ, αβ amplitude tensors plus the per-spin RI
