@@ -20,6 +20,9 @@
 //! * [`rsgdf`] — Stage 1 step 9: Gamma-point range-separated Gaussian density
 //!   fitting (PySCF-RSGDF G = 0 convention, eig-with-lindep metric solve) and
 //!   `JBuilder`/`KBuilder` impls on the fitted B tensor (Madelung `exxdiv`).
+//! * [`mp2`] — Stage 6: Gamma-point closed-shell MP2 on the RS-GDF B (the
+//!   SCF's own B → `B[k,ia]` → ferric-mp2's `spin_components_from_b_ov`) or
+//!   the dense-AFT oracle, with explicit Madelung-shifted denominators.
 //!
 //! Units: Bohr and Hartree throughout; G vectors in Bohr⁻¹.
 //!
@@ -31,6 +34,7 @@ pub mod dense_aft;
 pub mod ewald;
 pub mod hcore;
 pub mod lattice;
+pub mod mp2;
 pub mod pair_ft;
 pub mod rsgdf;
 
@@ -38,5 +42,6 @@ pub use dense_aft::{DenseAftEri, ExxDiv};
 pub use ewald::{ewald_nuclear_repulsion, madelung_constant};
 pub use hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
 pub use lattice::Cell;
+pub use mp2::{gamma_mp2, GammaMp2Config, GammaMp2Integrals, GammaMp2Result, Mp2Denominators};
 pub use pair_ft::pair_ft;
 pub use rsgdf::{RsGdf, RsGdfConfig};
