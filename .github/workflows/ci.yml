@@ -1183,6 +1183,42 @@ jobs:
           cargo nextest run --profile validation --locked "${ARGS[@]}" \
             --run-ignored only -E 'binary(/^validation_/)'
 
+      # ── Python half of the tier: `@pytest.mark.validation` tests ──────────
+      # Excluded everywhere else by pyproject's `addopts = -m "not validation"`
+      # (a later `-m` on the command line overrides it). These drive the
+      # compiled extension (and, for the NPZ row, the CLI through it), so the
+      # job builds ferric-python in release. `!cancelled()` so a Rust-tier
+      # failure still reports the Python half. The pytest path list below is
+      # checked by ci_validation_tier_guard.rs against every file that carries
+      # the marker, so a validation pytest outside it fails a normal PR.
+      - name: Free the validation test binaries before the release build
+        # The debug test binaries above and the release extension below are
+        # two full builds; the runner's binding constraint is disk.
+        if: ${{ !cancelled() }}
+        run: rm -rf target/debug
+
+      - name: Install uv
+        if: ${{ !cancelled() }}
+        run: pip install uv
+
+      - name: uv sync (dev + build extras)
+        if: ${{ !cancelled() }}
+        run: uv sync --extra dev --extra build --no-install-project
+
+      - name: Build ferric-python extension (release)
+        if: ${{ !cancelled() }}
+        run: uv run maturin develop --release --locked
+
+      - name: Run Python validation tests
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          # conftest.py turns a failed `import ferric` into a whole-suite SKIP
+          # (right for a dev box, wrong here: zero tests run would read as a
+          # pass). Import first so a broken build fails this step loudly.
+          uv run python -c "import ferric"
+          OPENBLAS_NUM_THREADS=1 uv run pytest -m validation crates/ferric-python/tests/ -q
+
   # The ONLY job that builds the `mpi` cargo feature at all. Nothing else in
   # this workflow does: every other job builds default features, under which
   # `crates/ferric-mp2/src/mpi_rimp2.rs` is an EMPTY module (its whole body is

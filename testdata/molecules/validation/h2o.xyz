@@ -1,0 +1,5 @@
+3
+H2O 1A1 C2v; copy of testdata/molecules/water.xyz (HF/cc-pVDZ optimized)
+O   0.000000   0.000000   0.117790
+H   0.000000   0.755453  -0.471161
+H   0.000000  -0.755453  -0.471161

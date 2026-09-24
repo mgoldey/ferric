@@ -530,8 +530,13 @@ def run_open_shell(
     max_stab_rounds: int = 10,
     guesses: tuple[str, ...] = ("minao", "atom", "huckel"),
     distinct_tol: float = 1e-6,
-) -> dict:
+    return_mf: bool = False,
+):
     """Converge `method` ("uhf" | "rohf") to an internally STABLE state.
+
+    Returns the result dict, or `(result, mf)` when `return_mf=True` (rows that
+    need the converged density/orbitals themselves, e.g. the density-property
+    rows, which must export the very state whose stability was checked).
 
     For each initial guess: converge, then loop { stability(); if unstable,
     restart from the unstable direction } until stable or `max_stab_rounds`.
@@ -633,7 +638,7 @@ def run_open_shell(
                 "lumo_roothaan": float(e[na]),
             }
         )
-    return result
+    return (result, mf) if return_mf else result
 
 
 # ---------------------------------------------------------------------------
