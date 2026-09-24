@@ -561,3 +561,232 @@ def test_mp2_formula_matches_molecular_pyscf_with_several_occupied():
         abs(gamma_mp2(mf.mo_coeff, mf.mo_energy, nocc, eri=I, frozen=1)[0] - ref_fc)
         < 1e-11
     )
+
+
+# ============================================================ Gamma dRPA (pbc_rpa.py, Iteration 4)
+from pbc_rpa import (  # noqa: E402
+    direct_mp2,
+    drpa_moment_prediction_h2_minimal,
+    drpa_plasmon,
+    drpa_quad,
+    drpa_riccati,
+    drpa_second_order_quad,
+    gamma_drpa,
+    ov_factor,
+)
+from pbc_mp2 import bia_from_B, ovov_from_eri  # noqa: E402
+
+# Pinned (2026-09-24, run_rpa_anchor.py / run_rpa_oracle.py): H2/STO-3G a=4, pure-AFT, plasmon.
+DRPA_REF = {"shifted": -6.9381306144e-03, "unshifted": -1.0000520140e-02}
+
+
+@pytest.fixture(scope="module")
+def h2o_mol():
+    from pyscf import scf
+
+    mol = gto.M(
+        atom="O 0 0 0.2; H 0 1.4 -0.9; H 0.1 -1.5 -0.8",
+        basis="6-31g",
+        unit="B",
+        cart=True,
+        verbose=0,
+    )
+    mf = scf.RHF(mol)
+    mf.conv_tol = 1e-12
+    mf.kernel()
+    nocc = mol.nelectron // 2
+    Co, Cv = mf.mo_coeff[:, :nocc], mf.mo_coeff[:, nocc:]
+    ov = mol.ao2mo((Co, Cv, Co, Cv), compact=False).reshape(nocc, -1, nocc, Cv.shape[1])
+    return dict(
+        mol=mol, mf=mf, nocc=nocc, ov=ov, eo=mf.mo_energy[:nocc], ev=mf.mo_energy[nocc:]
+    )
+
+
+def test_drpa_three_constructions_agree(h2o_mol):
+    """Plasmon (eigenvalues), ring-CCD Riccati (amplitudes), converged frequency quadrature on the
+    factorised ov block: measured agreement 3e-14 / 1e-14 on H2O/6-31G (nocc 5, nvir 8)."""
+    ov, eo, ev = h2o_mol["ov"], h2o_mol["eo"], h2o_mol["ev"]
+    ep = drpa_plasmon(ov, eo, ev)
+    assert abs(drpa_riccati(ov, eo, ev) - ep) < 1e-11
+    assert abs(drpa_quad(ov_factor(ov), eo, ev) - ep) < 1e-11
+
+
+def test_drpa_quadrature_matches_pyscf_molecular_rpa_on_its_own_df(h2o_mol):
+    """Convention oracle: pyscf.gw.rpa.RPA (nw=40, x0=0.5) vs our GL quadrature, same nw/x0, on
+    PySCF's own DF tensor.  Measured 6e-13.  (Spin factor 4, 1/2pi half-line, sign of Pi.)"""
+    from pyscf import df, lib
+    from pyscf.gw import rpa as prpa
+
+    r = prpa.RPA(h2o_mol["mf"])
+    r.with_df = df.DF(h2o_mol["mol"], auxbasis="cc-pvdz-ri")
+    r.verbose = 0
+    e_py = r.kernel(nw=40, x0=0.5)
+    nocc, C = h2o_mol["nocc"], h2o_mol["mf"].mo_coeff
+    Bia = np.einsum(
+        "Pmn,mi,na->Pia",
+        lib.unpack_tril(np.asarray(r.with_df._cderi)),
+        C[:, :nocc],
+        C[:, nocc:],
+    )
+    assert (
+        abs(drpa_quad(Bia, h2o_mol["eo"], h2o_mol["ev"], n=40, x0=0.5) - e_py) < 1e-10
+    )
+
+
+def test_drpa_second_order_term_is_direct_mp2(h2o_mol):
+    """-(1/2pi) int_0^inf tr Pi^2/2 == 2 sum (ia|jb)^2/Delta (measured 4e-15).  Pins the 4 and the
+    1/2pi on the half line independently of PySCF; a 1/pi normalisation would fail by 100%."""
+    ov, eo, ev = h2o_mol["ov"], h2o_mol["eo"], h2o_mol["ev"]
+    dm = direct_mp2(ov, eo, ev)
+    assert abs(drpa_second_order_quad(ov_factor(ov), eo, ev, n=400) - dm) < 1e-12
+    lam = 1e-3  # and the full dRPA is dMP2 to O(V^2): E(lam V)/lam^2 -> dMP2, remainder O(lam)
+    assert abs(drpa_plasmon(lam * ov, eo, ev) / lam**2 - dm) < 2e-3 * abs(dm)
+
+
+@pytest.mark.parametrize("convention", ["shifted", "unshifted"])
+def test_drpa_from_B_matches_dense_plasmon_in_the_trivial_aux_limit(
+    tri_anchor, convention
+):
+    """Stage-7 anchor: B (RS-GDF, aux = every periodic pair product) + frequency quadrature vs the
+    dense pure-AFT (ia|jb) + plasmon formula.  Measured 1.7e-13 / 3.3e-13 (same C), 1.3e-13 / 3e-13
+    (orbitals from the B-tensor SCF)."""
+    t = tri_anchor
+    e = np.concatenate(denominators(t["eps"], 2, t["ref"]["madelung"], convention))
+    exact = gamma_drpa(t["C"], e, 2, eri=t["ref"]["I"], method="plasmon")
+    assert abs(gamma_drpa(t["C"], e, 2, B=t["B"]) - exact) < 1e-11
+    _, eps1, _, C1 = rhf(
+        t["ref"]["S"],
+        t["ref"]["h"],
+        None,
+        t["ref"]["enn"],
+        4,
+        conv=1e-12,
+        jk=jk_from_B(t["B"]),
+        return_mo=True,
+    )
+    e1 = np.concatenate(denominators(eps1, 2, t["ref"]["madelung"], convention))
+    assert abs(gamma_drpa(C1, e1, 2, B=t["B"]) - exact) < 1e-11
+
+
+def test_drpa_anchor_detects_mutations(tri_anchor):
+    """Measured on tri 4H: spin factor 4->2 +1.5e-2, exchange-type K -1.5e-2-level, Cv/Cv -6.3e-3,
+    one aux class removed +2.1e-8 (invisible on H2: 6e-13)."""
+    t = tri_anchor
+    Co, Cv, eo, ev = t["C"][:, :2], t["C"][:, 2:], t["eps"][:2], t["eps"][2:]
+    ov = ovov_from_eri(t["ref"]["I"], Co, Cv)
+    exact = drpa_plasmon(ov, eo, ev)
+    Bia = bia_from_B(t["B"], Co, Cv)
+    assert abs(drpa_quad(Bia / np.sqrt(2), eo, ev) - exact) > 1e-3
+    assert abs(drpa_plasmon(ov - 0.5 * ov.transpose(0, 3, 2, 1), eo, ev) - exact) > 1e-3
+    assert (
+        abs(drpa_quad(np.einsum("Pmn,mi,na->Pia", t["B"], Cv, Cv), eo, ev) - exact)
+        > 1e-3
+    )
+    cell, aux7 = _tri_anchor(classes=range(7))
+    B7 = build_gdf(cell, None, auxmol=aux7)["B"]
+    assert abs(drpa_quad(bia_from_B(B7, Co, Cv), eo, ev) - exact) > 1e-9
+
+
+@pytest.mark.parametrize("convention", ["shifted", "unshifted"])
+def test_drpa_matches_pinned_h2_value(h2_ints, convention):
+    """Pinned our value; PySCF AFTDF (ia|jb) + plasmon agrees (run_rpa_oracle.py, FINDINGS Iteration 4)."""
+    e, eps, _, C = rhf(
+        h2_ints["S"],
+        h2_ints["h"],
+        h2_ints["I"],
+        h2_ints["enn"],
+        2,
+        conv=1e-12,
+        return_mo=True,
+    )
+    ed = np.concatenate(denominators(eps, 1, h2_ints["madelung"], convention))
+    assert (
+        abs(
+            gamma_drpa(C, ed, 1, eri=h2_ints["I"], method="plasmon")
+            - DRPA_REF[convention]
+        )
+        < 1e-11
+    )
+    assert abs(gamma_drpa(C, ed, 1, eri=h2_ints["I"]) - DRPA_REF[convention]) < 1e-11
+
+
+def test_drpa_box_limit_shifted_is_a3_with_predicted_coefficient_unshifted_is_shift_function():
+    """Independent of PySCF pbc: H2/STO-3G at a=24, 32 vs molecular dRPA (exact ERI, plasmon).
+    shifted  : residual -> c3/a^3, c3 = 0.92274 predicted from molecular moments (measured 0.923
+               at a=40; within 0.4% at 24 and 32);
+    unshifted: residual - shifted = E_mol(e_ia - v_M) - E_mol(e_ia) (measured ratio 0.9963 / 0.9985)."""
+    from pyscf import scf
+
+    mol = gto.M(atom=H2_ATOMS, basis="sto-3g", unit="B", cart=True, verbose=0)
+    mf = scf.RHF(mol)
+    mf.conv_tol = 1e-13
+    mf.kernel()
+    ov = mol.ao2mo(mf.mo_coeff, compact=False).reshape(2, 2, 2, 2)[:1, 1:, :1, 1:]
+    eo, ev = mf.mo_energy[:1], mf.mo_energy[1:]
+    e_mol = drpa_plasmon(ov, eo, ev)
+    c3 = drpa_moment_prediction_h2_minimal(mol, mf.mo_coeff, mf.mo_energy, 1.0)[0]
+    res = {}
+    for edge in (24.0, 32.0):
+        w = 8.0 / edge
+        ints = build_integrals(
+            Cell(np.eye(3) * edge, H2_ATOMS, "sto-3g"),
+            w,
+            rcut_bra=18.0,
+            rcut_2e=18.0 + 6.0 / w,
+            exxdiv="ewald",
+            verbose=False,
+        )
+        vm = ints["madelung"]
+        _, eps, _, C = rhf(
+            ints["S"], ints["h"], ints["I"], ints["enn"], 2, conv=1e-13, return_mo=True
+        )
+        r = {
+            c: gamma_drpa(
+                C,
+                np.concatenate(denominators(eps, 1, vm, c)),
+                1,
+                eri=ints["I"],
+                method="plasmon",
+            )
+            - e_mol
+            for c in ("shifted", "unshifted")
+        }
+        assert abs(r["shifted"] * edge**3 - c3) < 0.006 * c3
+        shift_fn = drpa_plasmon(ov, eo + vm, ev) - e_mol
+        assert abs((r["unshifted"] - r["shifted"]) - shift_fn) < 0.005 * abs(shift_fn)
+        res[edge] = r
+    p = np.log(res[24.0]["shifted"] / res[32.0]["shifted"]) / np.log(32.0 / 24.0)
+    assert abs(p - 3.0) < 0.05
+
+
+def test_r2_kernel_c3_reproduces_both_closed_form_moment_models():
+    """pbc_rpa.r2_kernel_c3 (molecular RHF/MP2/dRPA with the O(a^-3) lattice kernel (k/2)|r-r'|^2
+    added to every Coulomb interaction, d/dk) must equal the closed-form frozen-orbital models where
+    those apply (H2/STO-3G: orbitals fixed by symmetry): HF -(4pi/3) sigma^2 = -10.028245 (Iteration 1),
+    MP2 0.671094 and dRPA 0.922741.  Box sweeps then measured 0.671358 / 0.923006 (c3+c5 tail fits)."""
+    from pyscf import scf
+
+    from pbc_mp2 import dipole_prediction_h2_minimal
+    from pbc_rpa import r2_kernel_c3
+
+    mol = gto.M(atom=H2_ATOMS, basis="sto-3g", unit="B", cart=True, verbose=0)
+    mf = scf.RHF(mol)
+    mf.conv_tol = 1e-13
+    mf.kernel()
+    c = r2_kernel_c3(mol)
+    s2 = dipole_prediction_h2_minimal(mol, mf.mo_coeff, mf.mo_energy, 1.0)[1]["sigma2"]
+    assert abs(c["hf"] + 4 * np.pi / 3 * s2) < 1e-6
+    assert (
+        abs(
+            c["mp2"]
+            - dipole_prediction_h2_minimal(mol, mf.mo_coeff, mf.mo_energy, 1.0)[0]
+        )
+        < 1e-6
+    )
+    assert (
+        abs(
+            c["drpa"]
+            - drpa_moment_prediction_h2_minimal(mol, mf.mo_coeff, mf.mo_energy, 1.0)[0]
+        )
+        < 1e-6
+    )

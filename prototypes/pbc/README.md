@@ -65,7 +65,16 @@ OPENBLAS_NUM_THREADS=1 python -m pytest -q test_prototype.py   # ~35 s; PBC_SLOW
    - with unshifted energies it converges only as 1/a;
    - in small boxes the wrong choice looks better. `run_mp2_box_limit.py`
      shows why a single small cell would pick it.
-6. **`test_prototype.py`**: the tests. Several exist to catch a specific,
+6. **`pbc_rpa.py`** (plus the `run_rpa_*.py` scripts): Γ-point direct RPA
+   from the same tensor B. Three independent routes to one number are shown
+   side by side: the plasmon formula, the ring-CCD Riccati equation and
+   frequency quadrature. The second-order term is checked against direct MP2,
+   which pins the factor of 4 and the 1/(2π). There is also a numerical
+   detail: computing ln det(1+Π) − tr Π directly loses accuracy at high
+   frequency, so the code sums log1p(λ) − λ over the eigenvalues instead.
+   `run_rpa_c3_prediction.py` predicts the a⁻³ box-limit coefficient from a
+   molecular calculation with an added harmonic kernel.
+7. **`test_prototype.py`**: the tests. Several exist to catch a specific,
    plausible bug (a sign flip, a missing Madelung term, the G = 0 term applied
    to only one side); the comments say which one.
 
