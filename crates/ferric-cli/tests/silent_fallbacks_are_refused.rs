@@ -697,3 +697,41 @@ fn b2plyp_honours_scf_df_j_aux() {
         "{e_named} vs {e_default}"
     );
 }
+
+/// The df_guess warnings fire only for an EXPLICIT `[scf] df_guess = true`.
+/// df_guess defaults on, so a condition on `df_guess_enabled()` printed the
+/// "ignored" warning on every plain `rhf` run (ladder path) and every
+/// open-shell run (UHF path) although the user asked for nothing. Restoring
+/// `df_guess_enabled()` in either condition fails the "default" asserts; a
+/// condition that never fires fails the "explicit" ones.
+#[test]
+fn df_guess_warnings_fire_only_when_the_user_asked_for_df_guess() {
+    let water = "testdata/molecules/water.xyz";
+    let stderr = |tag: &str, mult: usize, kind: &str, extra: &str| {
+        let out = run_ok(tag, &body_at(water, mult, "sto-3g", kind, "energy", extra));
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+    let aux = "[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
+    let explicit = "[scf]\ndf_guess = true\n";
+
+    let rhf_default = stderr("dfg_rhf_default", 1, "rhf", "");
+    assert!(!rhf_default.contains("df_guess"), "{rhf_default}");
+    let rhf_explicit = stderr("dfg_rhf_explicit", 1, "rhf", explicit);
+    assert!(
+        rhf_explicit.contains("df_guess is not yet composed with the rhf convergence ladder"),
+        "{rhf_explicit}"
+    );
+
+    let uhf_default = stderr("dfg_rimp2_triplet_default", 3, "rimp2", aux);
+    assert!(!uhf_default.contains("df_guess"), "{uhf_default}");
+    let uhf_explicit = stderr(
+        "dfg_rimp2_triplet_explicit",
+        3,
+        "rimp2",
+        &format!("{aux}{explicit}"),
+    );
+    assert!(
+        uhf_explicit.contains("df_guess / df_increments are closed-shell only"),
+        "{uhf_explicit}"
+    );
+}

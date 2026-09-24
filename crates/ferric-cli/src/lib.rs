@@ -795,7 +795,9 @@ pub fn run(args: Vec<String>) {
         // needs its own design (which rung(s) get it, whether DIIS state
         // should reset between the ladder's *own* rungs the same way). Warn
         // rather than silently ignore, per the config-honesty convention.
-        if cfg.scf.df_guess_enabled() {
+        // Only an EXPLICIT `df_guess = true`: the knob defaults on, so
+        // df_guess_enabled() would warn on every plain rhf/ksdft run.
+        if cfg.scf.df_guess == Some(true) {
             eprintln!(
                 "warning: [scf] df_guess is not yet composed with the {method} convergence ladder; ignored here (use kind = \"rimp2\" or another non-laddered method to use it)"
             );
@@ -1317,7 +1319,9 @@ fn solve_open_shell_reference(
 ) -> ferric_scf::result::ScfResult {
     // Same config-honesty rule as the ladder path: these two are closed-shell
     // only, so say they were not used rather than ignore them silently.
-    if cfg.scf.df_guess_enabled() || cfg.scf.df_increments {
+    // Explicit settings only: df_guess defaults on, so df_guess_enabled()
+    // would warn on every open-shell run.
+    if cfg.scf.df_guess == Some(true) || cfg.scf.df_increments {
         eprintln!(
             "warning: [scf] df_guess / df_increments are closed-shell only; ignored for the \
              open-shell (UHF) reference of method.kind = \"{method}\""
