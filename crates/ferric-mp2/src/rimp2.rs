@@ -832,11 +832,8 @@ pub fn ri_mp2_robust_attenuated_metric(
     // A factorization failure here is a REAL "this omega_m is unusable" signal
     // (attenuated metric lost rank in a Coulomb-optimized aux basis) and
     // propagates as an error rather than being silently regularized.
-    use ndarray_linalg::Inverse;
     let v_w = threeindex::coulomb_metric_2c(metric_op, dfbs)?;
-    let v_w_inv = with_blas_threads(opt_in_blas_threads(), || v_w.inv())
-        .map_err(|e| FerricError::Lapack(format!("inverting attenuated metric V_w: {e}")))?;
-    let coef = v_w_inv.dot(&a_ov); // (naux, nov)
+    let coef = solve_metric_system(&v_w, &a_ov)?; // (naux, nov)
 
     // G = c^T J + J^T c - c^T V_C c   (symmetric by construction)
     let cj = coef.t().dot(&j_ov);
@@ -847,6 +844,19 @@ pub fn ri_mp2_robust_attenuated_metric(
     Ok(spin_components_from_g(
         &g, eps, nocc, nvir, first_occ, nocc_total,
     ))
+}
+
+/// Fit coefficients `C = V⁻¹ R` for a 2-center metric `V` and a block of
+/// right-hand sides `R` (naux × ncol). Shared by both robust-attenuated-metric
+/// entry points.
+pub(crate) fn solve_metric_system(
+    v: &Array2<f64>,
+    rhs: &Array2<f64>,
+) -> Result<Array2<f64>, FerricError> {
+    use ndarray_linalg::Inverse;
+    let v_inv = with_blas_threads(opt_in_blas_threads(), || v.inv())
+        .map_err(|e| FerricError::Lapack(format!("inverting attenuated metric V_w: {e}")))?;
+    Ok(v_inv.dot(rhs))
 }
 
 /// Sweep-friendly [`ri_mp2_robust_attenuated_metric`]: takes the
@@ -872,8 +882,6 @@ pub fn ri_mp2_robust_attenuated_metric_with(
     nocc_total: usize,
     config: &RiMp2Config,
 ) -> Result<SpinComponents, FerricError> {
-    use ndarray_linalg::Inverse;
-
     let naux = dfbs.nbasis();
     let identity = Array2::<f64>::eye(naux);
     let budget_bytes = eri3_budget_bytes(config.memory_budget_bytes);
@@ -882,9 +890,7 @@ pub fn ri_mp2_robust_attenuated_metric_with(
     let a_ov = stream_dressed_mo_band(&mut src_a, &identity, c_occ, c_vir, None)?;
 
     let v_w = threeindex::coulomb_metric_2c(metric_op, dfbs)?;
-    let v_w_inv = with_blas_threads(opt_in_blas_threads(), || v_w.inv())
-        .map_err(|e| FerricError::Lapack(format!("inverting attenuated metric V_w: {e}")))?;
-    let coef = v_w_inv.dot(&a_ov);
+    let coef = solve_metric_system(&v_w, &a_ov)?;
 
     let cj = coef.t().dot(j_ov);
     let cvc = coef.t().dot(&v_c.dot(&coef));
@@ -2076,6 +2082,106 @@ mod tests {
     use ferric_integrals::basis_bridge::PreparedBasis;
     use ferric_scf::rhf::{solve_rhf, RhfConfig};
     use ferric_scf::screening::SchwarzBounds;
+
+    /// `solve_metric_system` must be BACKWARD STABLE: along a line of
+    /// right-hand sides a(t) = B·(D + tX), the quadratic form
+    /// q(t) = ½ a(t)ᵀ V⁻¹ a(t) is an exact quadratic in t, so a quadratic fit
+    /// must leave only rounding-level residuals.
+    ///
+    /// An explicit inverse (LU + getri, then GEMM) violates this on the
+    /// ill-conditioned metrics this path is fed. It is the same defect fixed in
+    /// DF-J (`df_j_energy_is_smooth_in_the_density`). MEASURED on exactly this
+    /// fixture (numpy replica: benzene/STO-3G, def2-universal-jkfit, same D, X,
+    /// 21 points, all columns in one solve), max residual RELATIVE to q(0):
+    ///
+    /// ```text
+    ///   metric        cond(V)   explicit inverse   Cholesky
+    ///   Coulomb       7.2e8     8.0e-9             1.3e-15
+    ///   erfc ω=0.5    1.1e8     3.0e-10            1.2e-14
+    ///   erfc ω=2.0    3.3e7     1.4e-10            9.3e-15
+    /// ```
+    ///
+    /// The 1e-12 bar sits ~2 orders from each side. erfc is what the
+    /// `metric_attenuation_gate` sweep uses; Coulomb is the self-consistency
+    /// point (`metric_op == op`).
+    ///
+    /// Artifact check: the fit is an orthogonal-polynomial projection on a
+    /// symmetric grid, exact in exact arithmetic, so the residual cannot come
+    /// from the fit.
+    #[test]
+    fn metric_solve_quadratic_form_is_smooth() {
+        let mol = Molecule::load_xyz("../../testdata/molecules/benzene.xyz").unwrap();
+        let obs = PreparedBasis::new(&mol, &basis::bundled("sto-3g").unwrap()).unwrap();
+        let dfbs =
+            PreparedBasis::new(&mol, &basis::bundled("def2-universal-jkfit").unwrap()).unwrap();
+        let n = obs.nbasis();
+        let b = threeindex::eri3_tensor(Operator::coulomb(), &obs, &dfbs).unwrap();
+        let naux = b.shape()[0];
+        let b2 = b.into_shape_with_order((naux, n * n)).unwrap();
+
+        let mut d = Array2::<f64>::zeros((n, n));
+        let mut x = Array2::<f64>::zeros((n, n));
+        for i in 0..n {
+            for j in 0..n {
+                d[(i, j)] = 0.02 * (((i * j + 3) % 11) as f64);
+                x[(i, j)] = 1e-6 * ((((i * 7 + j * 3) % 13) as f64) - 6.0);
+            }
+            d[(i, i)] += 1.0;
+        }
+        let d = 0.5 * (&d + &d.t());
+        let x = 0.5 * (&x + &x.t());
+        let flat = |m: Array2<f64>| {
+            m.as_standard_layout()
+                .into_owned()
+                .into_shape_with_order(n * n)
+                .unwrap()
+        };
+        let a0 = b2.dot(&flat(d));
+        let da = b2.dot(&flat(x));
+
+        let npt = 21usize;
+        let ts: Vec<f64> = (0..npt)
+            .map(|k| -1.0 + 2.0 * k as f64 / (npt - 1) as f64)
+            .collect();
+        let mut rhs = Array2::<f64>::zeros((naux, npt));
+        for (k, &t) in ts.iter().enumerate() {
+            let col = &a0 + &(t * &da);
+            rhs.column_mut(k).assign(&col);
+        }
+
+        let m2 = ts.iter().map(|t| t * t).sum::<f64>() / npt as f64;
+        let quad_resid = |ys: &[f64]| -> f64 {
+            let polys: [&dyn Fn(f64) -> f64; 3] = [&|_| 1.0, &|t| t, &|t| t * t - m2];
+            let mut r = ys.to_vec();
+            for p in polys {
+                let num: f64 = ts.iter().zip(ys).map(|(&t, &y)| p(t) * y).sum();
+                let den: f64 = ts.iter().map(|&t| p(t) * p(t)).sum();
+                let c = num / den;
+                for (k, &t) in ts.iter().enumerate() {
+                    r[k] -= c * p(t);
+                }
+            }
+            r.iter().fold(0.0_f64, |m, v| m.max(v.abs()))
+        };
+
+        for (label, op) in [
+            ("coulomb", Operator::coulomb()),
+            ("erfc(0.5)", Operator::erfc(0.5)),
+            ("erfc(2.0)", Operator::erfc(2.0)),
+        ] {
+            let v = threeindex::coulomb_metric_2c(op, &dfbs).unwrap();
+            let c = solve_metric_system(&v, &rhs).unwrap();
+            let q: Vec<f64> = (0..npt)
+                .map(|k| 0.5 * rhs.column(k).dot(&c.column(k)))
+                .collect();
+            let rel = quad_resid(&q) / q[npt / 2].abs();
+            assert!(
+                rel < 1e-12,
+                "{label}: ½aᵀV⁻¹a departs from a quadratic by {rel:.3e} (relative): \
+                 the metric solve is not backward stable (explicit-inverse regression?)"
+            );
+        }
+    }
 
     /// `spin_components_from_b_ov` computes each `i`'s wide GEMM over only the
     /// `j >= i` tail of `b_ov`, because the pair loop consumes only `j >= i`.
