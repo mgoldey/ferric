@@ -617,6 +617,15 @@ pub struct Mp2Cfg {
     /// is a controlled approximation — error one-sided and ~linear in ε (see
     /// wiki/amplitude-threshold-lmp2.md for the measured map).
     pub lmp2_eps: Option<f64>,
+    /// Amplitude-threshold LMP2 (`kind = "lmp2"` and `"lmp2-direct"`): also
+    /// compute the canonical RI-MP2 reference and print it with the error
+    /// against it. Default false (OPT-IN): the reference is a full N^5
+    /// canonical RI-MP2 that forms the global (naux, nocc·nvir) tensor —
+    /// the very object `lmp2-direct` exists to avoid — so with it on no run
+    /// is reduced-cost. Off, the printout says the reference was not
+    /// computed and the run log's `e_corr_canonical_ri` is null. A bool:
+    /// any other TOML type is a parse error.
+    pub lmp2_reference: Option<bool>,
     /// Integral-direct LMP2 (`kind = "lmp2-direct"`): aux fit-domain radius
     /// in Bohr (pair (i,j) fits in aux functions within this radius of
     /// either Boys centroid). Default 10.0 — the measured production value
@@ -624,8 +633,8 @@ pub struct Mp2Cfg {
     pub direct_aux_radius: Option<f64>,
     /// Integral-direct LMP2: virtual domain radius in Bohr on dipole
     /// centroids. Default 12.0 (production); omit-able only by setting a
-    /// huge value — every default here is a CONTROLLED approximation and
-    /// the run prints the canonical reference error alongside.
+    /// huge value — every default here is a CONTROLLED approximation, and
+    /// `lmp2_reference = true` prints the canonical reference error alongside.
     pub direct_virt_radius: Option<f64>,
     /// Integral-direct LMP2: AO-support shell threshold on max |C|.
     /// Default 1e-3 (production); 0.0 keeps every shell.
@@ -822,6 +831,12 @@ pub struct Mp2Cfg {
 }
 
 impl Mp2Cfg {
+    /// Whether `lmp2`/`lmp2-direct` compute the canonical RI-MP2 reference:
+    /// `[mp2] lmp2_reference`, default FALSE (opt-in — see the field doc).
+    pub fn lmp2_reference(&self) -> bool {
+        self.lmp2_reference.unwrap_or(false)
+    }
+
     /// Build the MP2-V (`method.kind = "mp2-v"`) library config from the
     /// `mp2v_*` keys, starting from the published MP2-V(terfc, aTZ)
     /// parameterization and overriding only what the TOML actually set.
@@ -2787,6 +2802,46 @@ json = [1, 2]
         // Typo inside the inline table hard-errors at parse time.
         let s = "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"sto-3g\"\n[method]\nkind = \"rhf\"\n[scf]\nk_builder = \"cosx\"\ncosx_grid = { radial = 50, angulr = 110 }\n";
         assert!(toml::from_str::<Config>(s).is_err());
+    }
+
+    /// `[mp2] lmp2_reference` (opt-in canonical reference for lmp2 and
+    /// lmp2-direct): absent means OFF; `true`/`false` parse; a non-bool value
+    /// and a misspelled key are hard errors (deny_unknown_fields), never a
+    /// silent default.
+    ///
+    /// Fails if reverted: with `lmp2_reference()` defaulting to true (the old
+    /// always-on behaviour) the first assert fails; if the field were removed
+    /// the `lmp2_reference = true` document would stop parsing; if the type
+    /// were loosened to a string the `"yes"` case would parse.
+    #[test]
+    fn lmp2_reference_is_an_opt_in_strict_bool() {
+        let base = "[molecule]\nxyz = \"w.xyz\"\n[basis]\nname = \"6-31g\"\n\
+                    [method]\nkind = \"lmp2-direct\"\n[mp2]\nauxbasis = \"cc-pvdz-ri\"\n";
+        let absent: Config = toml::from_str(base).unwrap();
+        assert!(
+            !absent.mp2.lmp2_reference(),
+            "the canonical reference must be OFF when the key is absent"
+        );
+        let on: Config = toml::from_str(&format!("{base}lmp2_reference = true\n")).unwrap();
+        assert!(on.mp2.lmp2_reference());
+        let off: Config = toml::from_str(&format!("{base}lmp2_reference = false\n")).unwrap();
+        assert!(!off.mp2.lmp2_reference());
+        // a non-bool value is a parse error, not a coerced default
+        for bad in ["\"yes\"", "\"true\"", "1"] {
+            assert!(
+                toml::from_str::<Config>(&format!("{base}lmp2_reference = {bad}\n")).is_err(),
+                "lmp2_reference = {bad} must not parse"
+            );
+        }
+        // a typo'd key errors and names itself
+        let err = match toml::from_str::<Config>(&format!("{base}lmp2_referense = true\n")) {
+            Ok(_) => panic!("typo'd lmp2_reference key parsed — deny_unknown_fields regressed"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            err.contains("lmp2_referense"),
+            "error should name the bad key: {err}"
+        );
     }
 
     /// Unknown/typo'd keys must be a parse error, not silently ignored. A
