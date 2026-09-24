@@ -75,7 +75,9 @@ def main():
         path = REFDIR / f"{label}_dfgrad.json"
         path.write_text(json.dumps(out, indent=2) + "\n")
         gmax = max(abs(v) for row in out["grad"] for v in row)
-        print(f"wrote {path}  E={out['e_total']:.10f}  max|g|={gmax:.4e}  conv={out['converged']}")
+        print(
+            f"wrote {path}  E={out['e_total']:.10f}  max|g|={gmax:.4e}  conv={out['converged']}"
+        )
 
 
 if __name__ == "__main__":
