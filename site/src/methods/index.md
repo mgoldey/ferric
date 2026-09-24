@@ -12,7 +12,7 @@ number. To go from a task to a method, start with
 | MP2 | RI-MP2, attenuated (erfc, terfc), SCS, SCS-MP2(2terfc), MP2-V, RS-MP2 + LR-RPA, OO-RI-MP2, MP3, Laplace MP2 and SOS-MP2, local MP2 | [The MP2 family](./mp2.md) |
 | Coupled cluster | CCD, CCSD, CCSD(T), LinLCCD(hh); double hybrids B2PLYP, DSD-PBEP86, ωB97X-L-V | [Coupled cluster](./cc.md) |
 | Response | PDEP-RPA, G0W0, COHSEX, evGW0, evGW, BSE-TDA, TDA/TDDFT, polarizabilities and \\( C_6 \\) | [RPA, GW and excited states](./rpa-gw.md) |
-| Electron transfer | cDFT, \\( H_{ab} \\) couplings (Rust library only) | [Constrained DFT](./cdft.md) |
+| Electron transfer | cDFT, \\( H_{ab} \\) couplings (Python and Rust, no CLI) | [Constrained DFT](./cdft.md) |
 
 QM/MM embedding is on its own page: [QM/MM](../using/qmmm.md).
 

@@ -356,7 +356,7 @@ runs go through the CLI built from source with MPI; see
 
 ## Full reference
 
-The module registers **59 public functions** and **36 classes**. That count
+The module registers **61 public functions** and **39 classes**. That count
 excludes `_cli_main`, the entry point behind the `ferric` console command. It
 also exports two constants: `DEFAULT_TEMPERATURE_K` (298.15) and
 `BOLTZMANN_HARTREE_PER_K`. The list below was taken from the registration
@@ -390,6 +390,18 @@ capability is Python-only. How well each one is validated is in the
 | `RhfResult` | Result of `run_rhf`: `energy`, `converged`, `iterations`, `density()`, `orbital_energies()`, `mo_coefficients()`. | |
 | `UhfResult` | Result of `run_uhf`/`run_rohf`: α and β densities and orbital energies. | |
 | `DftResult` | Result of `run_dft`: `total_energy`, `e_scf`, `e_dispersion`, `converged`, `exit_reason()`, `density()`, `gradient()`. | |
+
+### Constrained DFT
+
+| Name | Purpose | CLI |
+|---|---|---|
+| `run_cdft` | Constrained UHF, or UKS when `functional` is set: minimize the energy subject to fragment population constraints (Wu–Van Voorhis nested λ loop). Raises if the λ loop does not converge. | — |
+| `CdftConstraint` | One fragment constraint: `atoms` (0-based), `target` (a Becke electron population, not a net charge), `kind` = `"charge"` (Nα + Nβ) or `"spin"` (Nα − Nβ). | — |
+| `cdft_coupling` | Wu–Van Voorhis coupling H_ab between two converged single-`"charge"`-constraint states solved with the same geometry, basis, occupations and Hamiltonian. | — |
+| `CdftResult` | `energy` (without the constraint term), `converged`, `scf_converged`, `lambdas`, `populations`, `targets`, `density_alpha()`, `density_beta()`, `weight_matrix(i)`. | |
+| `CdftCouplingResult` | `h_ab` (sign is a phase convention), `s_ab`, `e_a`, `e_b`. | |
+
+See [Constrained DFT](../methods/cdft.md) for a worked example.
 
 ### Geometry, vibrations and reaction paths
 

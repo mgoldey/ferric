@@ -121,9 +121,7 @@ Python-only:
 | IEF-PCM solvation | `run_rhf(solvent=...)`, `run_pdep_rpa(solvent=...)` | no `[pcm]` section; `[cosmo]` is the separate conductor-limit model |
 | Following an unstable SCF solution downhill | `run_uhf(stability_descent=True)` | `[scf] check_stability` reports a saddle and does not follow it |
 | QM/MM MM forces, full-system gradient and optimization, smeared charges, Thole polarization, an MM force field | `run_qmmm`, `run_optimize_qmmm`, `QmmmSystem`, `MmTopology` | `[qmmm]` embeds the QM region in fixed point charges from a PQR file, with link atoms and boundary schemes |
-
-Constrained DFT has neither a CLI section nor a Python function; it is
-Rust-library only.
+| Constrained DFT and electron-transfer couplings | `run_cdft`, `CdftConstraint`, `cdft_coupling` | nothing |
 
 ## Examples need the repository
 
