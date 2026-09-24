@@ -838,6 +838,12 @@ pub fn solve_rhf(
 /// smearing, the convergence gate) is geometry-agnostic and reused as-is.
 /// Any exchange-divergence correction (e.g. Madelung `K += v_M·S D S`) lives
 /// inside the injected [`KBuilder`], so the SCF knows no `exxdiv`.
+///
+/// The same struct feeds [`crate::uhf::solve_uhf_injected`] (Stage 4): there
+/// J is built from `D_α + D_β` and the ONE K builder is called once per spin
+/// with `D_σ`. Because the Madelung term `v_M·S D S` is linear in D, the same
+/// builder is correct for both (RHF: `K[D_total]` then `−½K`; UHF: `K[D_σ]`,
+/// coefficient 1 — PySCF `_ewald_exxdiv_for_G0` per dm). No per-spin factor.
 pub struct PeriodicInjection<'a> {
     /// Overlap matrix, `(nbasis, nbasis)` of the `prep` basis.
     pub s: Array2<f64>,
@@ -982,11 +988,22 @@ pub fn solve_rhf_injected<'a>(
     inj: PeriodicInjection<'a>,
 ) -> Result<ScfResult, FerricError> {
     validate_injected(config)?;
-    let n = prep.nbasis();
+    check_injection_shapes("solve_rhf_injected", &inj, prep.nbasis())?;
+    solve_rhf_impl(ctx, mol, prep, op, bounds, config, Some(inj))
+}
+
+/// Shape/finiteness checks shared by [`solve_rhf_injected`] and
+/// [`crate::uhf::solve_uhf_injected`]: `s`/`h` must be `(n, n)` with
+/// `n = prep.nbasis()`, and `vnn` finite. `who` prefixes the message.
+pub(crate) fn check_injection_shapes(
+    who: &str,
+    inj: &PeriodicInjection<'_>,
+    n: usize,
+) -> Result<(), FerricError> {
     for (name, m) in [("s", &inj.s), ("h", &inj.h)] {
         if m.dim() != (n, n) {
             return Err(FerricError::General(format!(
-                "solve_rhf_injected: PeriodicInjection.{name} has shape {:?}, expected ({n}, {n}) \
+                "{who}: PeriodicInjection.{name} has shape {:?}, expected ({n}, {n}) \
                  (prep.nbasis())",
                 m.dim()
             )));
@@ -994,11 +1011,11 @@ pub fn solve_rhf_injected<'a>(
     }
     if !inj.vnn.is_finite() {
         return Err(FerricError::General(format!(
-            "solve_rhf_injected: PeriodicInjection.vnn is not finite ({})",
+            "{who}: PeriodicInjection.vnn is not finite ({})",
             inj.vnn
         )));
     }
-    solve_rhf_impl(ctx, mol, prep, op, bounds, config, Some(inj))
+    Ok(())
 }
 
 /// Shared body of [`solve_rhf`] (`inj = None`, byte-identical to the

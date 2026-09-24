@@ -276,7 +276,21 @@ impl DenseAftEri {
 
     /// K builder (with the Madelung term) borrowing this tensor.
     pub fn k_builder(&self) -> DenseAftK<'_> {
-        DenseAftK { eri: self }
+        DenseAftK {
+            eri: self,
+            madelung: self.madelung,
+        }
+    }
+
+    /// K builder with an explicit Madelung shift `v_M` (0 = `exxdiv=None`),
+    /// ignoring the tensor's own [`DenseAftEri::madelung`]. Lets one tensor
+    /// serve both stages of the staged Gamma UHF (`crate::uhf::gamma_uhf`)
+    /// without cloning `nao⁴` floats.
+    pub fn k_builder_with_madelung(&self, madelung: f64) -> DenseAftK<'_> {
+        DenseAftK {
+            eri: self,
+            madelung,
+        }
     }
 
     fn check(&self, d: &Array2<f64>, out: &Array2<f64>, who: &str) -> Result<(), FerricError> {
@@ -322,8 +336,15 @@ impl JBuilder for DenseAftJ<'_> {
 
 /// [`KBuilder`] over a [`DenseAftEri`], including the Madelung shift.
 /// Overwrites `k`.
+///
+/// Does NOT override [`KBuilder::build_from_occ`]: the trait default
+/// reconstructs `D = C Cᵀ` and calls [`KBuilder::build`], so the Madelung
+/// term is kept on the occupied-MO path too. An override must add
+/// `v_M S C Cᵀ S` itself (FINDINGS "Iteration 6"; guarded by
+/// `tests/pbc_uhf.rs::k_builders_keep_madelung_on_the_occupied_path`).
 pub struct DenseAftK<'a> {
     eri: &'a DenseAftEri,
+    madelung: f64,
 }
 
 impl KBuilder for DenseAftK<'_> {
@@ -343,9 +364,9 @@ impl KBuilder for DenseAftK<'_> {
                 k[(m, nu)] = acc;
             }
         }
-        if self.eri.madelung != 0.0 {
+        if self.madelung != 0.0 {
             let sds = self.eri.s.dot(d).dot(&self.eri.s);
-            k.scaled_add(self.eri.madelung, &sds);
+            k.scaled_add(self.madelung, &sds);
         }
         Ok(n.pow(4))
     }

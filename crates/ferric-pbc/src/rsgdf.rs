@@ -1106,7 +1106,20 @@ impl RsGdf {
 
     /// K builder (with the Madelung term) borrowing this B.
     pub fn k_builder(&self) -> RsGdfK<'_> {
-        RsGdfK { gdf: self }
+        RsGdfK {
+            gdf: self,
+            madelung: self.madelung,
+        }
+    }
+
+    /// K builder with an explicit Madelung shift `v_M` (0 = `exxdiv=None`),
+    /// ignoring B's own [`RsGdf::madelung`]. Lets one B serve both stages of
+    /// the staged Gamma UHF (`crate::uhf::gamma_uhf`) without cloning it.
+    pub fn k_builder_with_madelung(&self, madelung: f64) -> RsGdfK<'_> {
+        RsGdfK {
+            gdf: self,
+            madelung,
+        }
     }
 
     fn check(&self, d: &Array2<f64>, out: &Array2<f64>, who: &str) -> Result<(), FerricError> {
@@ -1148,8 +1161,16 @@ impl JBuilder for RsGdfJ<'_> {
 
 /// [`KBuilder`] over an [`RsGdf`]: `K = Σ_k B_k D B_kᵀ + v_M S D S`.
 /// Overwrites `k`.
+///
+/// Does NOT override [`KBuilder::build_from_occ`] (audited for Stage 4): the
+/// trait default reconstructs `D = C Cᵀ` and calls [`KBuilder::build`], so
+/// the Madelung term is kept. A future DfK-style half-transform override
+/// (`Σ_k (B_k C)(B_k C)ᵀ`) MUST also add `v_M S C Cᵀ S`, or it silently drops
+/// the Madelung term on the occupied path only (guarded by
+/// `tests/pbc_uhf.rs::k_builders_keep_madelung_on_the_occupied_path`).
 pub struct RsGdfK<'a> {
     gdf: &'a RsGdf,
+    madelung: f64,
 }
 
 impl KBuilder for RsGdfK<'_> {
@@ -1164,9 +1185,9 @@ impl KBuilder for RsGdfK<'_> {
             let tmp = bk.dot(d);
             general_mat_mul(1.0, &tmp, &bk.t(), 1.0, &mut *k);
         }
-        if self.gdf.madelung != 0.0 {
+        if self.madelung != 0.0 {
             let sds = self.gdf.s.dot(d).dot(&self.gdf.s);
-            k.scaled_add(self.gdf.madelung, &sds);
+            k.scaled_add(self.madelung, &sds);
         }
         Ok(self.gdf.b.len() * n)
     }
