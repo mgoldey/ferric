@@ -5,15 +5,23 @@
 //! diagonal-Hessian Newton step with optional DIIS extrapolation.
 //!
 //! The U-MP2 orbital gradient (αα and αβ blocks for `g^α`; ββ and αβ for
-//! `g^β`) is FD-validated to ~1e-10 in `u_rimp2`. The Brillouin term
-//! `−2·F^σ_{ai}` is added in MO basis for the HF gradient piece.
+//! `g^β`) at FIXED orbital energies is FD-validated to ~1e-10 in `u_rimp2`.
+//! The UHF term `+2·F^σ_{ai}` and the Fock (orbital-energy) response of the
+//! U-MP2 energy are added here (see `u_gradient_solver_frame`). The functional
+//! is the full-Fock one, evaluated in each spin's semicanonical frame, the
+//! same construction as closed-shell `oo_rimp2` (defect F2, 2026-09-24).
 //!
 //! Reference: Bozkaya, JCP 139, 154105 (2013).
 
-use crate::oo_rimp2::{compute_b_full_mo_with, OoRiMp2AoTensors};
+use crate::oo_rimp2::{
+    compute_b_full_mo_with, lowdin_orthonormalize, semicanonical_rotation, OoRiMp2AoTensors,
+};
 use crate::orbital_rotation::cayley_rotation;
 use crate::rimp2::active_occ;
-use crate::u_rimp2::{compute_u_mp2_amplitudes, compute_u_mp2_orbital_gradient, URiMp2Components};
+use crate::u_rimp2::{
+    build_u_mp2_density, compute_u_mp2_amplitudes, compute_u_mp2_orbital_gradient, UMp2Amplitudes,
+    URiMp2Components,
+};
 use ferric_core::external_potential::ExternalPotential;
 use ferric_core::mol::Molecule;
 use ferric_core::parallel::ParallelContext;
@@ -322,7 +330,280 @@ fn add_hf_gradient(g_mp2: &Array2<f64>, f_mo: &Array2<f64>, nocc: usize) -> Arra
     g
 }
 
+/// Orbital-space sizes of one U-OO-RI-MP2 run (per spin).
+#[derive(Debug, Clone, Copy)]
+struct USpaces {
+    nocc_total_a: usize,
+    nocc_total_b: usize,
+    nocc_a: usize,
+    nocc_b: usize,
+    nvir_a: usize,
+    nvir_b: usize,
+    first_occ: usize,
+}
+
+/// Everything the solver needs at one orbital pair `(c_a, c_b)` (the solver's
+/// own, continuous frame), evaluated once. Energies and amplitudes are in the
+/// per-spin SEMICANONICAL frame `c_σ·u_σ` (see
+/// [`crate::oo_rimp2::semicanonical_rotation`]), which makes the U-MP2 part
+/// the full-Fock (non-canonical) Hylleraas functional, invariant to occ-occ
+/// and vir-vir rotations within each spin.
+struct UPoint {
+    e_hf: f64,
+    f_a: Array2<f64>,
+    f_b: Array2<f64>,
+    u_a: Array2<f64>,
+    u_b: Array2<f64>,
+    c_a_sc: Array2<f64>,
+    c_b_sc: Array2<f64>,
+    eps_a_sc: Vec<f64>,
+    eps_b_sc: Vec<f64>,
+    amps: UMp2Amplitudes,
+}
+
+impl UPoint {
+    fn e_mp2(&self) -> f64 {
+        self.amps.components.e_total
+    }
+    fn total(&self) -> f64 {
+        self.e_hf + self.e_mp2()
+    }
+}
+
+/// Evaluate UHF + U-RI-MP2 (semicanonical frame) at `(c_a, c_b)`.
+#[allow(clippy::too_many_arguments)]
+fn u_evaluate_point(
+    ctx: &ParallelContext,
+    mol: &Molecule,
+    obs: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    c_a: &Array2<f64>,
+    c_b: &Array2<f64>,
+    sp: &USpaces,
+    h: &Array2<f64>,
+    vnn: f64,
+    budget_bytes: usize,
+    mp2_cfg: &crate::rimp2::RiMp2Config,
+    label: &str,
+) -> Result<UPoint, FerricError> {
+    let (e_hf, f_a, f_b) = compute_uhf_energy(
+        ctx,
+        obs,
+        bounds,
+        c_a,
+        c_b,
+        sp.nocc_total_a,
+        sp.nocc_total_b,
+        h,
+        vnn,
+        budget_bytes,
+    )?;
+    let (u_a, eps_a_sc) =
+        semicanonical_rotation(&c_a.t().dot(&f_a).dot(c_a), sp.first_occ, sp.nocc_total_a)?;
+    let (u_b, eps_b_sc) =
+        semicanonical_rotation(&c_b.t().dot(&f_b).dot(c_b), sp.first_occ, sp.nocc_total_b)?;
+    let c_a_sc = c_a.dot(&u_a);
+    let c_b_sc = c_b.dot(&u_b);
+    // Fail-fast guard before building the amplitude trio — see
+    // check_u_amplitude_alloc's doc comment for the co-residency this bounds
+    // (t_aa+t_bb+t_ab, all three spin channels at once).
+    check_u_amplitude_alloc(
+        label,
+        sp.nocc_a,
+        sp.nvir_a,
+        sp.nocc_b,
+        sp.nvir_b,
+        budget_bytes,
+    )?;
+    let scf_view = make_scf_view(
+        &c_a_sc,
+        &c_b_sc,
+        &f_a,
+        &f_b,
+        eps_a_sc.clone(),
+        eps_b_sc.clone(),
+        sp.nocc_total_a,
+        sp.nocc_total_b,
+        e_hf,
+    );
+    let amps = compute_u_mp2_amplitudes(mol, obs, dfbs, op, &scf_view, mp2_cfg)?;
+    Ok(UPoint {
+        e_hf,
+        f_a,
+        f_b,
+        u_a,
+        u_b,
+        c_a_sc,
+        c_b_sc,
+        eps_a_sc,
+        eps_b_sc,
+        amps,
+    })
+}
+
+/// Embed the active occ-occ and vir-vir U-MP2 density blocks into an
+/// `(nmo, nmo)` matrix `W^σ = dE_MP2/dF^σ` (symmetrised).
+fn embed_u_density(
+    p_oo: &Array2<f64>,
+    p_vv: &Array2<f64>,
+    first_occ: usize,
+    nocc_total: usize,
+    nmo: usize,
+) -> Array2<f64> {
+    let mut w = Array2::<f64>::zeros((nmo, nmo));
+    let no = p_oo.nrows();
+    let nv = p_vv.nrows();
+    for i in 0..no {
+        for j in 0..no {
+            w[(first_occ + i, first_occ + j)] = 0.5 * (p_oo[(i, j)] + p_oo[(j, i)]);
+        }
+    }
+    for a in 0..nv {
+        for b in 0..nv {
+            w[(nocc_total + a, nocc_total + b)] = 0.5 * (p_vv[(a, b)] + p_vv[(b, a)]);
+        }
+    }
+    w
+}
+
+/// Full U-OO-MP2 orbital gradient `(g_a, g_b)` (active columns only) in the
+/// SOLVER's frame.
+///
+/// In the semicanonical frame, for a rotation `kappa^τ_ck` of spin τ
+/// (`dC_k = C_c`, `dC_c = −C_k`, so `dD^τ = C_c C_kᵀ + C_k C_cᵀ`):
+///
+/// ```text
+///   g^τ_ck = 2 F^τ_ck                                         (UHF)
+///          + [U-MP2 integral response at fixed denominators]  (compute_u_mp2_orbital_gradient)
+///          + 2·[C^τᵀ (J[P^α + P^β] − K[P^τ]) C^τ]_ck             (Fock response, density part)
+///          + 2·[(F^τ W^τ) − (W^τ F^τ)]_ck                       (Fock response, rotation part)
+/// ```
+///
+/// with `W^σ = dE_MP2/dF^σ` the unrelaxed U-MP2 density (`build_u_mp2_density`,
+/// occ-occ and vir-vir blocks) and `P^σ = C W^σ Cᵀ`. The rotated gradient is
+/// then carried back by `g^σ = U_v^σ g^σ_sc U_o^σᵀ`.
+///
+/// DEFECT F2 (2026-09-24): before this function existed the U solver used only
+/// the first two lines. It had NO orbital-energy response at all, which is the
+/// term the closed-shell code lacked before 2026-07-20. Measured against
+/// 4-point FD of its own functional
+/// (`scripts/oo_mp2_stationarity_proto.py open`), the shipped gradient missed
+/// by 1.7e-3 (OH/STO-3G), 5.6e-3 (OH/6-31G) and 4.3e-3 (NH2/6-31G) already at
+/// the UHF point. Its "converged" points had FD gradients of 1.6e-3..5.4e-3,
+/// with energies 1.3e-5..8.1e-5 Ha above the textbook stationary energy
+/// (OH/STO-3G, NH2/6-31G, OH/6-31G). This formula: 1e-11..3e-11 at
+/// ‖κ‖ = 0, 0.05 and 0.2.
+#[allow(clippy::too_many_arguments)]
+fn u_gradient_solver_frame(
+    ctx: &ParallelContext,
+    obs: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    ao: &OoRiMp2AoTensors,
+    p: &UPoint,
+    sp: &USpaces,
+    budget_bytes: usize,
+    label: &str,
+) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+    let nmo = p.c_a_sc.ncols();
+    let n = p.c_a_sc.nrows();
+    let USpaces {
+        nocc_total_a,
+        nocc_total_b,
+        nocc_a,
+        nocc_b,
+        nvir_b,
+        first_occ,
+        ..
+    } = *sp;
+    // Fail-fast guard: b_full_a and b_full_b (each (naux, nmo, nmo)) are both
+    // resident simultaneously for the gradient contraction just below.
+    check_u_bfull_alloc(label, ao.naux(), nmo, budget_bytes)?;
+    let (g_mp2_a, g_mp2_b) = {
+        let b_full_a = compute_b_full_mo_with(ao, &p.c_a_sc)?;
+        let b_full_b = compute_b_full_mo_with(ao, &p.c_b_sc)?;
+        compute_u_mp2_orbital_gradient(&p.amps, &b_full_a, &b_full_b, budget_bytes)
+    };
+    let f_mo_a = p.c_a_sc.t().dot(&p.f_a).dot(&p.c_a_sc);
+    let f_mo_b = p.c_b_sc.t().dot(&p.f_b).dot(&p.c_b_sc);
+    let mut g_a = add_hf_gradient(&g_mp2_a, &f_mo_a, nocc_total_a);
+    let mut g_b = if nocc_b == 0 {
+        // No β occupied orbitals — zero β gradient (β is closed-shell vacuum).
+        Array2::<f64>::zeros((nvir_b, nocc_total_b))
+    } else {
+        add_hf_gradient(&g_mp2_b, &f_mo_b, nocc_total_b)
+    };
+
+    // Fock response of the U-MP2 energy (both spins' Fock matrices depend on
+    // both spins' densities through J; each on its own through K).
+    let dens = build_u_mp2_density(&p.amps);
+    let w_a = embed_u_density(&dens.p_oo_a, &dens.p_vv_a, first_occ, nocc_total_a, nmo);
+    let w_b = embed_u_density(&dens.p_oo_b, &dens.p_vv_b, first_occ, nocc_total_b, nmo);
+    let pa_ao = p.c_a_sc.dot(&w_a).dot(&p.c_a_sc.t());
+    let pb_ao = p.c_b_sc.dot(&w_b).dot(&p.c_b_sc.t());
+    let mut j_tot = Array2::<f64>::zeros((n, n));
+    let mut k_a = Array2::<f64>::zeros((n, n));
+    let mut k_b = Array2::<f64>::zeros((n, n));
+    {
+        let mut dj = DirectJ::new(ctx, obs, bounds, 1e-12, budget_bytes);
+        dj.build(&(&pa_ao + &pb_ao), &mut j_tot)?;
+    }
+    {
+        let mut dk = DirectK::new(ctx, obs, bounds, 1e-12, budget_bytes);
+        <DirectK as KBuilder>::build(&mut dk, &pa_ao, &mut k_a)?;
+    }
+    if nocc_b > 0 {
+        let mut dk = DirectK::new(ctx, obs, bounds, 1e-12, budget_bytes);
+        <DirectK as KBuilder>::build(&mut dk, &pb_ao, &mut k_b)?;
+    }
+    let add_response = |g: &mut Array2<f64>,
+                        c: &Array2<f64>,
+                        k: &Array2<f64>,
+                        w: &Array2<f64>,
+                        f_mo: &Array2<f64>,
+                        nocc_total: usize| {
+        let g_mo = c.t().dot(&(&j_tot - k)).dot(c);
+        let fw = f_mo.dot(w);
+        let wf = w.dot(f_mo);
+        let (nvir, nocc_cols) = g.dim();
+        for a in 0..nvir {
+            let a_mo = nocc_total + a;
+            for i in 0..nocc_cols {
+                g[(a, i)] += 2.0 * g_mo[(a_mo, i)] + 2.0 * (fw[(a_mo, i)] - wf[(a_mo, i)]);
+            }
+        }
+    };
+    add_response(&mut g_a, &p.c_a_sc, &k_a, &w_a, &f_mo_a, nocc_total_a);
+    if nocc_b > 0 {
+        add_response(&mut g_b, &p.c_b_sc, &k_b, &w_b, &f_mo_b, nocc_total_b);
+    }
+
+    // Active columns, rotated back to the solver's frame.
+    let back = |g: &Array2<f64>, u: &Array2<f64>, nocc: usize, nocc_total: usize| {
+        let g_act = g
+            .slice(ndarray::s![.., first_occ..first_occ + nocc])
+            .to_owned();
+        let u_o = u.slice(ndarray::s![
+            first_occ..first_occ + nocc,
+            first_occ..first_occ + nocc
+        ]);
+        let u_v = u.slice(ndarray::s![nocc_total.., nocc_total..]);
+        u_v.dot(&g_act).dot(&u_o.t())
+    };
+    let g_a_act = back(&g_a, &p.u_a, nocc_a, nocc_total_a);
+    let g_b_act = if nocc_b == 0 {
+        Array2::<f64>::zeros((nvir_b, 0))
+    } else {
+        back(&g_b, &p.u_b, nocc_b, nocc_total_b)
+    };
+    Ok((g_a_act, g_b_act))
+}
+
 /// Drive U-OO-RI-MP2 from a converged UHF or ROHF reference.
+///
+/// The returned `mos_alpha`/`mos_beta` are in the per-spin SEMICANONICAL frame
+/// and `eps_alpha`/`eps_beta` are the MP2 denominators actually used.
 pub fn u_oo_ri_mp2(
     mol: &Molecule,
     obs: &PreparedBasis,
@@ -349,9 +630,21 @@ pub fn u_oo_ri_mp2(
     let first_occ = config.frozen_core;
     let nvir_a = nbas - nocc_total_a;
     let nvir_b = nbas - nocc_total_b;
+    let sp = USpaces {
+        nocc_total_a,
+        nocc_total_b,
+        nocc_a,
+        nocc_b,
+        nvir_a,
+        nvir_b,
+        first_occ,
+    };
 
     // Initial MOs: copy from reference. For ROHF, β shares α MOs but with
-    // different occupation (SOMO unoccupied in β).
+    // different occupation (SOMO unoccupied in β). `c_a`/`c_b` are the
+    // solver's own frame, kept continuous across iterations (DIIS mixes
+    // successive iterates); energies and gradients are evaluated in the
+    // semicanonical frame of each (see `u_evaluate_point`).
     let mut c_a = uhf.mos_a().clone();
     let mut c_b = match uhf.spin {
         Spin::Unrestricted => uhf.mos_b().clone(),
@@ -373,6 +666,8 @@ pub fn u_oo_ri_mp2(
         + ext
             .map(|e| e.charge_nuclear_energy(mol) + e.field_nuclear_energy(mol))
             .unwrap_or(0.0);
+    // AO overlap, for re-orthonormalising DIIS-extrapolated orbitals.
+    let s_ao = oneelectron::overlap(obs);
 
     // Resolved once per call (not per iteration) — gates the AO-tensor build,
     // the RiMp2Config threaded into every compute_u_mp2_amplitudes call, and
@@ -392,54 +687,51 @@ pub fn u_oo_ri_mp2(
     //
     // MEMORY NOTE (deliberately not restructured in the M3 lane): `amps` keeps
     // the t_aa/t_bb/t_ab amplitude trio (nocc²·nvir² each) resident across
-    // iterations, and the gradient step below holds b_full_a AND b_full_b
+    // iterations, and the gradient step holds b_full_a AND b_full_b
     // (naux·nmo² each) simultaneously — the remaining O(N⁴) residents here.
-    // Both are now guarded by `check_u_amplitude_alloc`/`check_u_bfull_alloc`
-    // below rather than left as an unchecked O(N⁴) allocation.
+    // Both are guarded by `check_u_amplitude_alloc`/`check_u_bfull_alloc`
+    // rather than left as an unchecked O(N⁴) allocation.
     let ao = OoRiMp2AoTensors::build_with_budget(obs, dfbs, op, budget_bytes)?;
 
-    // Initial UHF energy + Fock
-    let (mut e_hf, mut f_a, mut f_b) = compute_uhf_energy(
-        &ctx,
-        obs,
-        bounds,
-        &c_a,
-        &c_b,
-        nocc_total_a,
-        nocc_total_b,
-        &h,
-        vnn,
-        budget_bytes,
-    )?;
-    let mut eps_a = orbital_energies_mo(&c_a, &f_a);
-    let mut eps_b = orbital_energies_mo(&c_b, &f_b);
+    let eval = |ca: &Array2<f64>, cb: &Array2<f64>, label: &str| {
+        u_evaluate_point(
+            &ctx,
+            mol,
+            obs,
+            dfbs,
+            op,
+            bounds,
+            ca,
+            cb,
+            &sp,
+            &h,
+            vnn,
+            budget_bytes,
+            &mp2_cfg,
+            label,
+        )
+    };
 
-    // Initial U-MP2. Fail-fast guard before building the amplitude trio —
-    // see check_u_amplitude_alloc's doc comment for the co-residency this
-    // bounds (t_aa+t_bb+t_ab, all three spin channels at once).
-    check_u_amplitude_alloc(
-        "U-OO-RI-MP2 initial amplitude trio",
-        nocc_a,
-        nvir_a,
-        nocc_b,
-        nvir_b,
-        budget_bytes,
-    )?;
-    let scf_view = make_scf_view(
-        &c_a,
-        &c_b,
-        &f_a,
-        &f_b,
-        eps_a.clone(),
-        eps_b.clone(),
-        nocc_total_a,
-        nocc_total_b,
-        e_hf,
-    );
-    let mut amps = compute_u_mp2_amplitudes(mol, obs, dfbs, op, &scf_view, &mp2_cfg)?;
-    let mut e_mp2 = amps.components.e_total;
-    let mut total_energy = e_hf + e_mp2;
+    let mut point = eval(&c_a, &c_b, "U-OO-RI-MP2 initial amplitude trio")?;
     let mut grad_norm = f64::MAX;
+
+    let finish = |p: UPoint, converged: bool, iterations: usize, grad_norm: f64| {
+        let total_energy = p.total();
+        let mp2_corr = p.e_mp2();
+        UOoRiMp2Result {
+            total_energy,
+            hf_energy: p.e_hf,
+            mp2_corr,
+            components: p.amps.components.clone(),
+            converged,
+            iterations,
+            grad_norm,
+            mos_alpha: p.c_a_sc,
+            mos_beta: p.c_b_sc,
+            eps_alpha: p.eps_a_sc,
+            eps_beta: p.eps_b_sc,
+        }
+    };
 
     let mut diis_a = if config.use_diis {
         Some(Diis::new(config.diis_size))
@@ -458,41 +750,16 @@ pub fn u_oo_ri_mp2(
     const MU_MAX: f64 = 5.0;
 
     for iter in 1..=config.max_iter {
-        // Full-MO B tensors for gradient. Fail-fast guard: b_full_a and
-        // b_full_b (each (naux, nmo, nmo)) are both resident simultaneously
-        // for the gradient contraction just below — see check_u_bfull_alloc's
-        // doc comment and the "MEMORY NOTE" above.
-        check_u_bfull_alloc(
-            &format!("U-OO-RI-MP2 b_full_a/b_full_b (iter {iter})"),
-            ao.naux(),
-            nbas,
+        let (g_a_act, g_b_act) = u_gradient_solver_frame(
+            &ctx,
+            obs,
+            bounds,
+            &ao,
+            &point,
+            &sp,
             budget_bytes,
+            &format!("U-OO-RI-MP2 b_full_a/b_full_b (iter {iter})"),
         )?;
-        let b_full_a = compute_b_full_mo_with(&ao, &c_a)?;
-        let b_full_b = compute_b_full_mo_with(&ao, &c_b)?;
-        let (g_mp2_a, g_mp2_b) =
-            compute_u_mp2_orbital_gradient(&amps, &b_full_a, &b_full_b, budget_bytes);
-
-        // Add HF Brillouin term: g_total = g_mp2 − 2·F^σ_{a+nocc, i}
-        let f_mo_a = c_a.t().dot(&f_a).dot(&c_a);
-        let f_mo_b = c_b.t().dot(&f_b).dot(&c_b);
-        let g_a = add_hf_gradient(&g_mp2_a, &f_mo_a, nocc_total_a);
-        let g_b = if nocc_b == 0 {
-            // No β occupied orbitals — zero β gradient (β is closed-shell vacuum).
-            Array2::<f64>::zeros((nvir_b, nocc_total_b))
-        } else {
-            add_hf_gradient(&g_mp2_b, &f_mo_b, nocc_total_b)
-        };
-        // Slice gradient to the active (non-frozen-core) occupied block.
-        let g_a_act = g_a
-            .slice(ndarray::s![.., first_occ..first_occ + nocc_a])
-            .to_owned();
-        let g_b_act = if nocc_b == 0 {
-            Array2::<f64>::zeros((nvir_b, 0))
-        } else {
-            g_b.slice(ndarray::s![.., first_occ..first_occ + nocc_b])
-                .to_owned()
-        };
 
         let gn2_a: f64 = g_a_act.iter().map(|x| x * x).sum();
         let gn2_b: f64 = g_b_act.iter().map(|x| x * x).sum();
@@ -504,27 +771,19 @@ pub fn u_oo_ri_mp2(
         if config.verbose {
             println!(
                 "U-OO-RI-MP2 iter {:3}: E_HF={:.10} E_MP2={:.10} E_tot={:.10} |g|={:.2e} (|g_a|={:.2e} |g_b|={:.2e})",
-                iter, e_hf, e_mp2, total_energy, grad_norm, gn2_a.sqrt(), gn2_b.sqrt()
+                iter, point.e_hf, point.e_mp2(), point.total(), grad_norm, gn2_a.sqrt(), gn2_b.sqrt()
             );
         }
 
         if grad_norm < config.grad_conv {
-            return Ok(UOoRiMp2Result {
-                total_energy,
-                hf_energy: e_hf,
-                mp2_corr: e_mp2,
-                components: amps.components.clone(),
-                converged: true,
-                iterations: iter,
-                grad_norm,
-                mos_alpha: c_a,
-                mos_beta: c_b,
-                eps_alpha: eps_a,
-                eps_beta: eps_b,
-            });
+            return Ok(finish(point, true, iter, grad_norm));
         }
 
-        // Newton step per spin: κ^σ_{ai} = -g^σ_{ai} / (ε^σ_a - ε^σ_i + μ)
+        // Newton step per spin: κ^σ_{ai} = -g^σ_{ai} / (ε^σ_a - ε^σ_i + μ),
+        // with the diagonal Fock elements of the solver's own frame (the frame
+        // `g` lives in) as the preconditioner.
+        let eps_a = orbital_energies_mo(&c_a, &point.f_a);
+        let eps_b = orbital_energies_mo(&c_b, &point.f_b);
         let mut kappa_a = Array2::<f64>::zeros((nvir_a, nocc_a));
         for a in 0..nvir_a {
             for i in 0..nocc_a {
@@ -574,7 +833,9 @@ pub fn u_oo_ri_mp2(
         let mut c_a_new = c_a.dot(&u_a);
         let mut c_b_new = c_b.dot(&u_b);
 
-        // DIIS per spin: error vector = g_antisym (full MO) projected to AO via C.
+        // DIIS per spin: error vector = g_antisym (full MO) projected to AO via
+        // C. The extrapolated C is a linear combination of orbital sets and is
+        // Löwdin re-orthonormalised (see `oo_rimp2::lowdin_orthonormalize`).
         if let Some(ref mut d) = diis_a {
             let mut g_anti = Array2::<f64>::zeros((nmo, nmo));
             for a in 0..nvir_a {
@@ -586,7 +847,7 @@ pub fn u_oo_ri_mp2(
                 }
             }
             let err = c_a_new.dot(&g_anti).dot(&c_a_new.t());
-            c_a_new = d.step(&c_a_new, &err);
+            c_a_new = lowdin_orthonormalize(&d.step(&c_a_new, &err), &s_ao)?;
         }
         if let Some(ref mut d) = diis_b {
             if nocc_b > 0 {
@@ -600,127 +861,50 @@ pub fn u_oo_ri_mp2(
                     }
                 }
                 let err = c_b_new.dot(&g_anti).dot(&c_b_new.t());
-                c_b_new = d.step(&c_b_new, &err);
+                c_b_new = lowdin_orthonormalize(&d.step(&c_b_new, &err), &s_ao)?;
             }
         }
 
         // Evaluate at new orbitals
-        let (e_hf_new, f_a_new, f_b_new) = compute_uhf_energy(
-            &ctx,
-            obs,
-            bounds,
+        let trial = eval(
             &c_a_new,
             &c_b_new,
-            nocc_total_a,
-            nocc_total_b,
-            &h,
-            vnn,
-            budget_bytes,
+            format!("U-OO-RI-MP2 amplitude trio (iter {iter})").as_str(),
         )?;
-        let eps_a_new = orbital_energies_mo(&c_a_new, &f_a_new);
-        let eps_b_new = orbital_energies_mo(&c_b_new, &f_b_new);
-        let scf_view_new = make_scf_view(
-            &c_a_new,
-            &c_b_new,
-            &f_a_new,
-            &f_b_new,
-            eps_a_new.clone(),
-            eps_b_new.clone(),
-            nocc_total_a,
-            nocc_total_b,
-            e_hf_new,
-        );
-        check_u_amplitude_alloc(
-            &format!("U-OO-RI-MP2 amplitude trio (iter {iter})"),
-            nocc_a,
-            nvir_a,
-            nocc_b,
-            nvir_b,
-            budget_bytes,
-        )?;
-        let amps_new = compute_u_mp2_amplitudes(mol, obs, dfbs, op, &scf_view_new, &mp2_cfg)?;
-        let total_new = e_hf_new + amps_new.components.e_total;
-        let de = (total_new - total_energy).abs();
+        let total_new = trial.total();
+        let de = (total_new - point.total()).abs();
 
         // Backtracking if energy increased noticeably (DIIS can produce small uphill).
-        if total_new > total_energy + 1e-4 {
+        if total_new > point.total() + 1e-4 {
             // Try damped pure-Newton step (no DIIS), halving until accepted.
             let mut accepted = false;
             let mut ka = k_a_full.clone();
             let mut kb = k_b_full.clone();
-            let mut bt_c_a = c_a_new.clone();
-            let mut bt_c_b = c_b_new.clone();
-            let mut bt_ehf = e_hf_new;
-            let mut bt_fa = f_a_new.clone();
-            let mut bt_fb = f_b_new.clone();
-            let mut bt_eps_a = eps_a_new.clone();
-            let mut bt_eps_b = eps_b_new.clone();
-            let mut bt_amps = amps_new;
-            let mut bt_total = total_new;
-            for _bt in 0..10 {
+            let mut bt: Option<(Array2<f64>, Array2<f64>, UPoint)> = None;
+            for bt_i in 0..10 {
                 ka *= 0.5;
                 kb *= 0.5;
                 let ua2 = cayley_rotation(&ka)?;
                 let ub2 = cayley_rotation(&kb)?;
-                bt_c_a = c_a.dot(&ua2);
-                bt_c_b = c_b.dot(&ub2);
-                let (eh, fa, fb) = compute_uhf_energy(
-                    &ctx,
-                    obs,
-                    bounds,
+                let bt_c_a = c_a.dot(&ua2);
+                let bt_c_b = c_b.dot(&ub2);
+                let bt_point = eval(
                     &bt_c_a,
                     &bt_c_b,
-                    nocc_total_a,
-                    nocc_total_b,
-                    &h,
-                    vnn,
-                    budget_bytes,
+                    format!("U-OO-RI-MP2 amplitude trio (iter {iter}, backtrack {bt_i})").as_str(),
                 )?;
-                let ea = orbital_energies_mo(&bt_c_a, &fa);
-                let eb = orbital_energies_mo(&bt_c_b, &fb);
-                let sv = make_scf_view(
-                    &bt_c_a,
-                    &bt_c_b,
-                    &fa,
-                    &fb,
-                    ea.clone(),
-                    eb.clone(),
-                    nocc_total_a,
-                    nocc_total_b,
-                    eh,
-                );
-                check_u_amplitude_alloc(
-                    &format!("U-OO-RI-MP2 amplitude trio (iter {iter}, backtrack {_bt})"),
-                    nocc_a,
-                    nvir_a,
-                    nocc_b,
-                    nvir_b,
-                    budget_bytes,
-                )?;
-                let am = compute_u_mp2_amplitudes(mol, obs, dfbs, op, &sv, &mp2_cfg)?;
-                bt_total = eh + am.components.e_total;
-                bt_ehf = eh;
-                bt_fa = fa;
-                bt_fb = fb;
-                bt_eps_a = ea;
-                bt_eps_b = eb;
-                bt_amps = am;
-                if bt_total <= total_energy + 1e-12 {
+                let ok = bt_point.total() <= point.total() + 1e-12;
+                bt = Some((bt_c_a, bt_c_b, bt_point));
+                if ok {
                     accepted = true;
                     break;
                 }
             }
             if accepted {
-                c_a = bt_c_a;
-                c_b = bt_c_b;
-                e_hf = bt_ehf;
-                f_a = bt_fa;
-                f_b = bt_fb;
-                eps_a = bt_eps_a;
-                eps_b = bt_eps_b;
-                amps = bt_amps;
-                e_mp2 = amps.components.e_total;
-                total_energy = bt_total;
+                let (bc_a, bc_b, bp) = bt.expect("accepted implies a backtrack point");
+                c_a = bc_a;
+                c_b = bc_b;
+                point = bp;
                 if let Some(ref mut d) = diis_a {
                     d.reset();
                 }
@@ -745,66 +929,23 @@ pub fn u_oo_ri_mp2(
                     eprintln!(
                         "  U-OO-RI-MP2: bailing after {STUCK_LIMIT} stuck iters; returning current (non-converged) state"
                     );
-                    return Ok(UOoRiMp2Result {
-                        total_energy,
-                        hf_energy: e_hf,
-                        mp2_corr: e_mp2,
-                        components: amps.components.clone(),
-                        converged: false,
-                        iterations: iter,
-                        grad_norm,
-                        mos_alpha: c_a,
-                        mos_beta: c_b,
-                        eps_alpha: eps_a,
-                        eps_beta: eps_b,
-                    });
+                    return Ok(finish(point, false, iter, grad_norm));
                 }
                 // Don't accept the tiny step; keep old c_a/c_b/etc, retry next iter with larger μ.
             }
         } else {
             c_a = c_a_new;
             c_b = c_b_new;
-            e_hf = e_hf_new;
-            f_a = f_a_new;
-            f_b = f_b_new;
-            eps_a = eps_a_new;
-            eps_b = eps_b_new;
-            amps = amps_new;
-            e_mp2 = amps.components.e_total;
-            total_energy = total_new;
+            point = trial;
             stuck_count = 0;
         }
 
         if de < config.energy_conv && iter > 1 && grad_norm < config.grad_conv * 10.0 {
-            return Ok(UOoRiMp2Result {
-                total_energy,
-                hf_energy: e_hf,
-                mp2_corr: e_mp2,
-                components: amps.components.clone(),
-                converged: true,
-                iterations: iter,
-                grad_norm,
-                mos_alpha: c_a,
-                mos_beta: c_b,
-                eps_alpha: eps_a,
-                eps_beta: eps_b,
-            });
+            return Ok(finish(point, true, iter, grad_norm));
         }
     }
 
-    Ok(UOoRiMp2Result {
-        total_energy,
-        hf_energy: e_hf,
-        mp2_corr: e_mp2,
-        components: amps.components.clone(),
-        converged: false,
-        iterations: config.max_iter,
-        grad_norm,
-        mos_alpha: c_a,
-        mos_beta: c_b,
-        eps_alpha: eps_a,
-        eps_beta: eps_b,
-    })
+    Ok(finish(point, false, config.max_iter, grad_norm))
 }
 
 #[cfg(test)]
@@ -980,10 +1121,14 @@ mod tests {
             de, us_oo.iterations
         );
         assert!(us_oo.converged, "U-OO-MP2 didn't converge on H2");
-        // H2/cc-pVDZ has degenerate virtuals (π_g); the CS-OO surface has a
-        // flat gauge direction so CS and U can land at slightly different
-        // stationary points along that gauge. Tolerate ~1e-4 Ha here.
-        assert!(de < 5e-4, "U-OO-MP2 vs CS OO-MP2 on H2: diff {de:.3e}");
+        // Both solvers now optimise the SAME invariant (full-Fock) functional
+        // and start α = β, so they must reach the same energy. The former
+        // 5e-4 allowance ("flat gauge direction" along degenerate π_g
+        // virtuals) described the non-invariant diag-Fock functional, whose
+        // converged point depended on the path. Remaining floor: different J/K
+        // builders (DirectJ/K vs build_jk_with_pool, both 1e-12 screening),
+        // ~1e-11, plus O(|g|²) at grad_conv 1e-7.
+        assert!(de < 1e-8, "U-OO-MP2 vs CS OO-MP2 on H2: diff {de:.3e}");
     }
 
     /// U-OO-RI-MP2 on OH/cc-pVDZ should:
@@ -1035,6 +1180,259 @@ mod tests {
         assert!(
             oo.total_energy <= e_start + 1e-8,
             "U-OO-MP2 did not lower E vs UHF+UMP2"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Orbital-gradient / stationarity harness (defect F2, 2026-09-24).
+    // Same bar derivation as oo_rimp2.rs's harness: 4-point stencil, step
+    // 1e-3, FD floor ~1e-9, corrected formula measured 1e-11..3e-11 in
+    // `scripts/oo_mp2_stationarity_proto.py open`. The shipped (fixed-eps)
+    // gradient missed by 1.7e-3..5.6e-3 already at the UHF point.
+    // ------------------------------------------------------------------
+
+    const U_FD_STEP: f64 = 1e-3;
+    const U_ORB_GRAD_BAR: f64 = 1e-7;
+
+    struct UOrbFd {
+        ctx: ParallelContext,
+        mol: Molecule,
+        obs: PreparedBasis,
+        dfbs: PreparedBasis,
+        op: Operator,
+        bounds: SchwarzBounds,
+        uhf: ScfResult,
+        ao: OoRiMp2AoTensors,
+        sp: USpaces,
+        h: Array2<f64>,
+        mp2_cfg: crate::rimp2::RiMp2Config,
+    }
+
+    impl UOrbFd {
+        fn new(xyz: &str, basis_name: &str, mult: usize) -> Self {
+            let ctx = ParallelContext::default();
+            let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
+            let obs = PreparedBasis::new(&mol, &basis::bundled(basis_name).unwrap()).unwrap();
+            let dfbs = PreparedBasis::new(&mol, &basis::bundled("cc-pvdz-ri").unwrap()).unwrap();
+            let op = Operator::coulomb();
+            let bounds = SchwarzBounds::compute(op, &obs).unwrap();
+            let uhf = solve_uhf(
+                &ctx,
+                &mol,
+                &obs,
+                &bounds,
+                &UhfConfig {
+                    max_iter: 200,
+                    energy_conv: 1e-11,
+                    density_conv: 1e-9,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(uhf.converged);
+            let ao = OoRiMp2AoTensors::build_with_budget(&obs, &dfbs, op, usize::MAX).unwrap();
+            let nbas = obs.nbasis();
+            let two_s = mol.multiplicity as i32 - 1;
+            let na = ((mol.nelec() + two_s) / 2) as usize;
+            let nb = ((mol.nelec() - two_s) / 2) as usize;
+            let sp = USpaces {
+                nocc_total_a: na,
+                nocc_total_b: nb,
+                nocc_a: na,
+                nocc_b: nb,
+                nvir_a: nbas - na,
+                nvir_b: nbas - nb,
+                first_occ: 0,
+            };
+            let h = oneelectron::hcore(&obs);
+            UOrbFd {
+                ctx,
+                mol,
+                obs,
+                dfbs,
+                op,
+                bounds,
+                uhf,
+                ao,
+                sp,
+                h,
+                mp2_cfg: crate::rimp2::RiMp2Config::default(),
+            }
+        }
+
+        fn point(&self, ca: &Array2<f64>, cb: &Array2<f64>) -> UPoint {
+            u_evaluate_point(
+                &self.ctx,
+                &self.mol,
+                &self.obs,
+                &self.dfbs,
+                self.op,
+                &self.bounds,
+                ca,
+                cb,
+                &self.sp,
+                &self.h,
+                self.mol.nuclear_repulsion(),
+                usize::MAX,
+                &self.mp2_cfg,
+                "test",
+            )
+            .unwrap()
+        }
+
+        fn analytic(&self, ca: &Array2<f64>, cb: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
+            u_gradient_solver_frame(
+                &self.ctx,
+                &self.obs,
+                &self.bounds,
+                &self.ao,
+                &self.point(ca, cb),
+                &self.sp,
+                usize::MAX,
+                "test",
+            )
+            .unwrap()
+        }
+
+        fn fd(&self, ca: &Array2<f64>, cb: &Array2<f64>) -> (Array2<f64>, Array2<f64>) {
+            let n = ca.ncols();
+            let one_spin = |alpha: bool, nocc: usize| {
+                let mut g = Array2::zeros((n - nocc, nocc));
+                for a in nocc..n {
+                    for i in 0..nocc {
+                        let e_at = |s: f64| {
+                            let mut k = Array2::zeros((n, n));
+                            k[(a, i)] = s * U_FD_STEP;
+                            k[(i, a)] = -s * U_FD_STEP;
+                            let u = cayley_rotation(&k).unwrap();
+                            if alpha {
+                                self.point(&ca.dot(&u), cb).total()
+                            } else {
+                                self.point(ca, &cb.dot(&u)).total()
+                            }
+                        };
+                        g[(a - nocc, i)] = (-e_at(2.0) + 8.0 * e_at(1.0) - 8.0 * e_at(-1.0)
+                            + e_at(-2.0))
+                            / (12.0 * U_FD_STEP);
+                    }
+                }
+                g
+            };
+            (
+                one_spin(true, self.sp.nocc_total_a),
+                one_spin(false, self.sp.nocc_total_b),
+            )
+        }
+    }
+
+    fn u_max_err(a: &(Array2<f64>, Array2<f64>), b: &(Array2<f64>, Array2<f64>)) -> f64 {
+        let m =
+            |x: &Array2<f64>, y: &Array2<f64>| (x - y).iter().map(|v| v.abs()).fold(0.0, f64::max);
+        m(&a.0, &b.0).max(m(&a.1, &b.1))
+    }
+
+    /// Deterministic dense antisymmetric kappa (all blocks), Frobenius norm `norm`.
+    fn u_pseudo_random_kappa(n: usize, norm: f64, seed: u64) -> Array2<f64> {
+        let mut state = seed;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 11) as f64) / ((1u64 << 53) as f64) - 0.5
+        };
+        let mut k = Array2::<f64>::zeros((n, n));
+        for p in 0..n {
+            for q in 0..p {
+                let v = next();
+                k[(p, q)] = v;
+                k[(q, p)] = -v;
+            }
+        }
+        let fro = k.iter().map(|v| v * v).sum::<f64>().sqrt();
+        k * (norm / fro)
+    }
+
+    const OH_XYZ: &str = "2\nOH\nO 0.0 0.0 0.0\nH 0.0 0.0 0.97\n";
+
+    /// U-OO analytic vs FD at the UHF point and at `C_UHF·U(kappa)` per spin.
+    ///
+    /// MUTATION NOTE (prototype, OH/6-31G): the shipped fixed-eps gradient
+    /// missed FD by 5.6e-3 at κ=0, 5.8e-3 at ‖κ‖=0.05 and 7.9e-3 at 0.2.
+    #[test]
+    fn u_oo_gradient_matches_fd_on_and_off_reference_oh_631g() {
+        let t = UOrbFd::new(OH_XYZ, "6-31g", 2);
+        let ca0 = t.uhf.mos_a().clone();
+        let cb0 = t.uhf.mos_b().clone();
+        let n = ca0.ncols();
+        for norm in [0.0, 0.05, 0.2] {
+            let (ca, cb) = if norm == 0.0 {
+                (ca0.clone(), cb0.clone())
+            } else {
+                (
+                    ca0.dot(&cayley_rotation(&u_pseudo_random_kappa(n, norm, 3)).unwrap()),
+                    cb0.dot(&cayley_rotation(&u_pseudo_random_kappa(n, norm, 5)).unwrap()),
+                )
+            };
+            let an = t.analytic(&ca, &cb);
+            let fd = t.fd(&ca, &cb);
+            let err = u_max_err(&an, &fd);
+            eprintln!("OH/6-31G U-OO ‖κ‖={norm}: max|analytic − FD| = {err:.3e}");
+            assert!(
+                err < U_ORB_GRAD_BAR,
+                "‖κ‖={norm}: {err:.3e} ≥ {U_ORB_GRAD_BAR:e}"
+            );
+        }
+    }
+
+    /// The U solver's converged point must be stationary by independent FD,
+    /// with orthonormal, per-spin semicanonical orbitals.
+    ///
+    /// MUTATION NOTE (prototype): the shipped U solver's converged OH/6-31G
+    /// point had max|g_FD| = 5.4e-3 (of its own functional), with an energy
+    /// 8.1e-5 Ha above the textbook stationary value.
+    #[test]
+    fn u_oo_converged_point_is_stationary_oh_631g() {
+        let t = UOrbFd::new(OH_XYZ, "6-31g", 2);
+        let cfg = UOoRiMp2Config {
+            grad_conv: 1e-8,
+            energy_conv: 1e-11,
+            max_iter: 200,
+            ..Default::default()
+        };
+        let oo = u_oo_ri_mp2(&t.mol, &t.obs, &t.dfbs, t.op, &t.bounds, &t.uhf, &cfg, None).unwrap();
+        assert!(
+            oo.converged,
+            "U-OO did not converge: |g|={:.2e}",
+            oo.grad_norm
+        );
+        let s = oneelectron::overlap(&t.obs);
+        let n = oo.mos_alpha.ncols();
+        let ortho = |c: &Array2<f64>| {
+            (&c.t().dot(&s).dot(c) - &Array2::<f64>::eye(n))
+                .iter()
+                .map(|v| v.abs())
+                .fold(0.0, f64::max)
+        };
+        let (oa, ob) = (ortho(&oo.mos_alpha), ortho(&oo.mos_beta));
+        let fd = t.fd(&oo.mos_alpha, &oo.mos_beta);
+        let fd_max =
+            fd.0.iter()
+                .chain(fd.1.iter())
+                .map(|v| v.abs())
+                .fold(0.0, f64::max);
+        let p = t.point(&oo.mos_alpha, &oo.mos_beta);
+        eprintln!(
+            "OH/6-31G U-OO: iters={} E={:.12} |CᵀSC−1| α {oa:.2e} β {ob:.2e} max|g_FD|={fd_max:.2e}",
+            oo.iterations, oo.total_energy
+        );
+        assert!((p.total() - oo.total_energy).abs() < 1e-10);
+        assert!(
+            oa < 1e-10 && ob < 1e-10,
+            "U-OO MOs not orthonormal: {oa:.2e} {ob:.2e}"
+        );
+        assert!(
+            fd_max < 1e-6,
+            "U-OO FD gradient at convergence {fd_max:.3e} ≥ 1e-6"
         );
     }
 }

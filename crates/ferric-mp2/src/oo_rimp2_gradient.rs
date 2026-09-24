@@ -7,56 +7,50 @@
 //! Z-vector solve ([`crate::zvector::solve_zvector`]) because plain MP2's
 //! orbitals are HF-stationary, not MP2-stationary: `dE_MP2/dkappa_ai != 0` in
 //! general, so a first-order orbital-response correction `z_ai` is required
-//! to make the Hellmann-Feynman argument valid (the standard Lagrangian-
-//! multiplier trick — see Pulay 1969 / Handy-Schaefer 1984).
+//! (the standard Lagrangian-multiplier trick — Pulay 1969 / Handy-Schaefer
+//! 1984).
 //!
-//! OO-RI-MP2, by construction, converges orbitals to a stationary point of
-//! the SAME Hylleraas functional whose integral-response terms the gradient
-//! needs: `dE_total/dkappa_ai = 0` at convergence (that is literally
-//! [`crate::oo_rimp2::oo_ri_mp2`]'s convergence criterion, `grad_norm <
-//! grad_conv`, on `crate::oo_rimp2::compute_orbital_gradient`). So by the
-//! same envelope-theorem argument that drops the orbital-response term from
-//! the Hellmann-Feynman force at a variational stationary point (e.g. plain
-//! HF's gradient needing no CPHF term), OO-MP2's Z-vector-equivalent
-//! occ-vir/vir-occ relaxed-density block is IDENTICALLY ZERO — there is no
-//! Z-vector to solve. `t2` is similarly a stationary point of the same
-//! functional (the T2 residual `(ia|jb)/D - t = 0` used throughout this
-//! crate), so its response also drops out by the same argument. This means
-//! "no Z-vector for OO case" in the pre-fix doc comment was CORRECT, not a
-//! missing piece — the actual bug was the OTHER simplification: the diagonal
-//! `W_pq = eps_p * P_pq` approximation, which is wrong (it drops the
-//! integral-response / Lagrangian pieces that survive even with z=0).
+//! OO-RI-MP2 converges orbitals to a stationary point of its energy in the
+//! occ-vir directions, and the energy (the textbook full-Fock OMP2 functional,
+//! see `oo_rimp2`'s module doc) is INVARIANT to occ-occ and vir-vir rotations.
+//! Together these make the point stationary in EVERY orbital-rotation
+//! direction, so the envelope theorem applies and there is no Z-vector:
+//! the occ-vir block of the relaxed density is zero. (With the former
+//! diag(CᵀFC) functional this argument FAILED: it was not invariant, its
+//! converged point carried a ~1e-2 occ-occ/vir-vir gradient, and FD of its
+//! re-converged energy disagreed with FD of the same energy along any fixed
+//! orbital connection by 5.8e-4..8.2e-4. That was the leading part of the
+//! 2.2e-3 / 8.7e-4 analytic-vs-FD residual this file used to carry.)
 //!
-//! ## Verification (Python/PySCF, independent of this Rust code)
+//! ## What survives at z = 0 (all verified, defect F2 2026-09-24)
 //!
-//! Hypothesis and fix were checked numerically before porting: a scratch
-//! PySCF script (`oomp2_converge.py`, session scratch, not in-repo) built a
-//! from-scratch OO-MP2 orbital optimizer (reusing the already-verified
-//! `crate::oo_rimp2::compute_orbital_gradient` formula) and cross-checks
-//! against `ferric-mp2`'s own `oo_ri_mp2`, which independently agrees with
-//! Psi4's conventional OMP2 to ~1.3e-4 Ha on H2O/cc-pVDZ (see
-//! `test_oo_rimp2_h2o_ccpvdz_matches_psi4_omp2_reference`). The correct
-//! nuclear-gradient formula below reuses the SAME Imat/hcore/zeta/
-//! 2e-bilinear/RI-3c2c machinery as plain RI-MP2's
-//! `mp2_relaxed_lagrangian_gradient` + `integral_response_gradient_3c2c`,
-//! with the Z-vector `z` fixed at the zero matrix (no CPHF solve) and the
-//! `vhf_s1occ` term dropped entirely (that term exists ONLY to cancel a
-//! CPHF-response piece that is absent here — including it would double-count
-//! a contribution that doesn't exist at OO-MP2's stationary point).
+//! `scripts/oo_mp2_stationarity_proto.py nuc` checks this term by term. It
+//! perturbs S (resp. h) by `e·R`, re-converges OO-MP2, and compares the
+//! central FD with `Σ R∘w` (resp. `Σ R∘γ`) for the densities assembled below:
 //!
-//! Caveat found (and left OUT of scope, not fixed here — see the doc comment
-//! on `compute_orbital_gradient` in `oo_rimp2.rs`, "do not touch"): the
-//! orbital-rotation gradient's closed-form `d(eps_p)/dkappa_ck` denominator-
-//! response term is exact only for `p` distinct from the rotating indices
-//! `{c,k}` themselves; verified against finite difference to be exact at
-//! kappa=0 (canonical RHF start, matching that function's own tests) but to
-//! develop an O(kappa) discrepancy away from kappa=0 (e.g. ~1e-2 to ~2e-1 in
-//! the raw gradient element at kappa magnitudes of 0.05-0.2 on H2/cc-pVDZ).
-//! In practice `oo_ri_mp2`'s DIIS-accelerated convergence still reaches a
-//! real stationary point (cross-checked against Psi4 OMP2 above), so this
-//! caveat does not block using its converged result as ground truth here,
-//! but it does mean per-iteration orbital gradients away from kappa=0 carry
-//! more numerical noise than their kappa=0 FD tests suggest.
+//! * 1-PDM `γ = D_HF + C·W·Cᵀ`, `W = P_oo+P_ooᵀ ⊕ P_vv+P_vvᵀ`: FD agreement
+//!   1.3e-9 (H2) / 9.2e-10 (H2O).
+//! * energy-weighted density `w = im1 − zeta − vhf_s1occ`: FD agreement
+//!   6.4e-10 / 4.0e-9. The version shipped before F2 missed by 2.2e-4 / 3.0e-4
+//!   on the textbook functional itself, for two reasons:
+//!   - it DROPPED `vhf_s1occ = P_occ·G[2·C W Cᵀ]·P_occ` on the claim that it
+//!     only cancels a CPHF piece. That was wrong. The MP2 energy depends on
+//!     `F(D_HF)`, and `D_HF` moves with the occupied orbitals under the
+//!     overlap connection, z-vector or not. This was 2.2e-4 / 3.2e-4 of the
+//!     miss.
+//!   - its occ-vir zeta block was `½(F·W + W·F)_ia`. At a stationary point
+//!     the occ-vir Lagrangian must be taken in ONE representation, the one
+//!     Imat uses (derivative w.r.t. the virtual orbital), which gives
+//!     `(F·W)_ia`. The two differ where `F_ov != 0`, i.e. always after OO.
+//!     This was 6e-6 / 3e-5 of the miss.
+//!
+//! The 2e-derivative (bilinear `Γ(D_HF, D_HF + 2·C W Cᵀ)`) and RI 3c/2c
+//! pieces are the plain RI-MP2 ones: the OO energy depends on the ERIs and
+//! on `B` exactly as plain RI-MP2 does.
+//!
+//! Frozen core: the core-active and core-virtual rotations are not optimised,
+//! so with `frozen_core > 0` the point is NOT stationary in those directions
+//! and this z = 0 gradient is not exact. That is unchanged by F2 and untested.
 
 use crate::gradient::integral_response_gradient_3c2c;
 use crate::oo_rimp2::{
@@ -99,9 +93,15 @@ pub fn oo_ri_mp2_gradient(
     let first_occ = frozen_core;
     let nvir = nbas - nocc_total;
     let naux = dfbs.nbasis();
-    let c = &result.mos;
-    let eps = &result.orbital_energies;
     let nmo = nbas;
+
+    // The z = 0 formula below needs the SEMICANONICAL frame; see
+    // `semicanonical_frame`.
+    let ctx = ferric_core::parallel::ParallelContext::default();
+    let (f_ao, c_sc, eps_sc) =
+        semicanonical_frame(&ctx, obs, bounds, &result.mos, nocc_total, first_occ, ext)?;
+    let c = &c_sc;
+    let eps = &eps_sc;
 
     let b_full = compute_b_full_mo(obs, dfbs, op, c)?;
     let b_ov_3d = b_full.slice(ndarray::s![.., first_occ..nocc_total, nocc_total..]);
@@ -148,24 +148,10 @@ pub fn oo_ri_mp2_gradient(
     let hf_dm1 = c_occ_hf.dot(&c_occ_hf.t()) * 2.0;
     let dm1_total_ao = &dm1_corr_ao + &hf_dm1;
 
-    // Full Fock matrix (AO and MO) at the OO-optimized orbitals. Needed
-    // because, unlike plain RHF orbitals, OO-MP2 orbitals are NOT guaranteed
-    // to leave F block-diagonal within the occ-occ/vir-vir subspaces (only
-    // dE/dkappa_ai = 0 is enforced, i.e. F_ov = 0 in a generalized
-    // Brillouin sense -- F_oo/F_vv off-diagonality is unconstrained). The
-    // zeta/energy-weighted-density term below therefore needs the full
-    // matrix contraction Sigma_k F_pk*dm1mo[k,q] (mirrors
-    // crate::zvector::build_relaxed_w_ao's W_ij/W_ab pattern), not plain
-    // MP2's diagonal-eps shortcut `0.5*(eps_p+eps_q)*dm1mo[p,q]` (which is
-    // only valid when F is exactly diagonal, i.e. canonical HF orbitals).
-    // `ext = None` is byte-for-byte identical to the pre-fix bare
-    // `oneelectron::hcore(obs)` call (same bug class as `oo_ri_mp2`'s hcore
-    // build — see that function's doc comment).
-    let h = oneelectron::hcore_with_external(obs, ext)?;
-    let (mut jv0, mut kv0) = (Array2::zeros((nmo, nmo)), Array2::zeros((nmo, nmo)));
-    let ctx = ferric_core::parallel::ParallelContext::default();
-    build_jk(&ctx, obs, bounds, 1e-12, &hf_dm1, &mut jv0, &mut kv0)?;
-    let f_ao = &h + &jv0 - 0.5 * &kv0;
+    // Fock matrix in the (semicanonical) MO frame. F_oo and F_vv are
+    // diagonal there, but F_ov is NOT zero at an OO stationary point (only the
+    // TOTAL occ-vir gradient vanishes), and the energy-weighted density below
+    // needs F_ov explicitly.
     let f_mo = c.t().dot(&f_ao).dot(c);
 
     // --- Imat (RI-MP2 Lagrangian matrix), same object plain-MP2's Z-vector
@@ -192,35 +178,14 @@ pub fn oo_ri_mp2_gradient(
         cp.dot(&c.t())
     };
 
-    // --- zeta_mo: the full-Fock-matrix energy-weighted relaxed density,
-    // zeta_mo[p,q] = 0.5*(Sigma_k F_pk*dm1mo[k,q] + Sigma_k dm1mo[p,k]*F_kq)
-    // (symmetrized Fock*density product; reduces to plain MP2's
-    // `0.5*(eps_p+eps_q)*dm1mo[p,q]` exactly when F is diagonal, i.e.
-    // canonical HF orbitals -- see the f_mo doc comment above for why OO-MP2
-    // orbitals don't guarantee that). The ov/vo block of dm1mo is zero (no
-    // z), so only the oo/vv contributions survive here.
-    let f_dot_p = f_mo.dot(&dm1mo);
-    let zeta_mo = 0.5 * (&f_dot_p + &f_dot_p.t());
-    let mut zeta_ao = {
-        let cz = c.dot(&zeta_mo);
-        cz.dot(&c.t())
-    };
-    // + plain energy-weighted occupied density (Sigma_i 2*eps_i C_i C_i^T,
-    // the same object ferric_scf::gradient::build_energy_weighted_density
-    // builds for plain RHF/MP2, inlined here since there is no ScfResult to
-    // hand it -- OO-MP2's "orbitals" are not the output of an SCF solve).
-    {
-        let eps_occ = ndarray::ArrayView1::from(&eps[..nocc_total]);
-        let cw = &c_occ_hf * &eps_occ;
-        zeta_ao += &(c_occ_hf.dot(&cw.t()) * 2.0);
-    }
+    let zeta_ao = energy_weighted_density(&f_mo, &dm1mo, c, nocc_total);
+    let vhf_s1occ = vhf_s1occ(&ctx, obs, bounds, &dm1_corr_ao, c, nocc_total)?;
 
-    // --- Assemble. NO vhf_s1occ term (that term exists only to cancel a
-    // CPHF-response contribution that does not exist here -- see module doc).
+    // --- Assemble (same signs as plain RI-MP2's mp2_relaxed_lagrangian_gradient).
     let zero_w = Array2::<f64>::zeros((nmo, nmo));
     let mut grad = oneelectron_gradient(mol, obs, &dm1_total_ao, &zero_w, ext)?;
 
-    let w_overlap = &im1 - &zeta_ao;
+    let w_overlap = &im1 - &zeta_ao - &vhf_s1occ;
     grad += &overlap_deriv_contract(obs, &w_overlap)?;
 
     // 2e-integral-derivative: bilinear Gamma(hf_dm1, hf_dm1 + 2*dm1_corr),
@@ -253,6 +218,100 @@ pub fn oo_ri_mp2_gradient(
     grad += &integral_response_gradient_3c2c(mol, obs, dfbs, op, &inter, c)?;
 
     Ok(grad)
+}
+
+/// Re-establish the SEMICANONICAL frame of `mos` and return
+/// `(F_AO, C_sc, eps_sc)`.
+///
+/// The z = 0 formula needs diagonal denominators in
+/// `compute_t2_and_integrals`. `oo_ri_mp2` already returns that frame; doing
+/// it again means a caller that rotated the orbitals cannot silently get a
+/// wrong gradient. The energy is invariant to this rotation, so for a
+/// well-formed input it is a no-op up to eigenvector phase.
+fn semicanonical_frame(
+    ctx: &ferric_core::parallel::ParallelContext,
+    obs: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    mos: &Array2<f64>,
+    nocc_total: usize,
+    first_occ: usize,
+    ext: Option<&ExternalPotential>,
+) -> Result<(Array2<f64>, Array2<f64>, Vec<f64>), FerricError> {
+    let nmo = mos.nrows();
+    let h = oneelectron::hcore_with_external(obs, ext)?;
+    let c_occ = mos.slice(ndarray::s![.., ..nocc_total]);
+    let d = c_occ.dot(&c_occ.t()) * 2.0;
+    let (mut jv, mut kv) = (Array2::zeros((nmo, nmo)), Array2::zeros((nmo, nmo)));
+    build_jk(ctx, obs, bounds, 1e-12, &d, &mut jv, &mut kv)?;
+    let f_ao = &h + &jv - 0.5 * &kv;
+    let (u_sc, eps_sc) = crate::oo_rimp2::semicanonical_rotation(
+        &mos.t().dot(&f_ao).dot(mos),
+        first_occ,
+        nocc_total,
+    )?;
+    let c_sc = mos.dot(&u_sc);
+    Ok((f_ao, c_sc, eps_sc))
+}
+
+/// Energy-weighted density (AO) of the OO-MP2 1-PDM, `zeta` in PySCF's
+/// grad/mp2.py naming, WITHOUT the `vhf_s1occ` piece (see [`vhf_s1occ`]).
+///
+/// * occ-occ / vir-vir of the correlation part: ½(F·W + W·F), the symmetric
+///   part of the Lagrangian. In the semicanonical frame this reduces to
+///   ½(eps_p+eps_q)·W_pq.
+/// * occ-vir: (F·W)_ia, the SAME virtual-orbital-derivative representation
+///   that Imat's occ-vir block (`imat_pulay`) uses. At a stationary point the
+///   occ-vir Lagrangian is symmetric and may be taken in either
+///   representation, but only CONSISTENTLY: mixing ½(F·W + W·F)_ia with
+///   Imat_ia cost 6e-6..3e-5 (see the module doc).
+/// * plus the HF energy-weighted occupied density 2·C_occ F_oo C_occᵀ. This
+///   is the full occ block, which is not diagonal between core and active
+///   orbitals when frozen_core > 0.
+fn energy_weighted_density(
+    f_mo: &Array2<f64>,
+    dm1mo: &Array2<f64>,
+    c: &Array2<f64>,
+    nocc_total: usize,
+) -> Array2<f64> {
+    let nmo = c.ncols();
+    let f_dot_p = f_mo.dot(dm1mo);
+    let mut zeta_mo = 0.5 * (&f_dot_p + &f_dot_p.t());
+    for i in 0..nocc_total {
+        for a in nocc_total..nmo {
+            zeta_mo[(i, a)] = f_dot_p[(i, a)];
+            zeta_mo[(a, i)] = f_dot_p[(i, a)];
+        }
+    }
+    let mut zeta_ao = c.dot(&zeta_mo).dot(&c.t());
+    let c_occ = c.slice(ndarray::s![.., ..nocc_total]);
+    let f_oo = f_mo.slice(ndarray::s![..nocc_total, ..nocc_total]);
+    zeta_ao += &(c_occ.dot(&f_oo).dot(&c_occ.t()) * 2.0);
+    zeta_ao
+}
+
+/// `vhf_s1occ = P_occ · G[2·dm1_corr] · P_occ`, with G[X] = J[X] − ½K[X]
+/// (PySCF grad/mp2.py lines 161-163; the same object as plain RI-MP2's
+/// `mp2_relaxed_lagrangian_gradient`).
+///
+/// This is NOT a CPHF artifact. It is the overlap-connection response of
+/// F(D_HF) inside Σ W_pq F_pq, and it is present at z = 0. Dropping it was
+/// 2.2e-4 / 3.2e-4 of the pre-F2 residual.
+fn vhf_s1occ(
+    ctx: &ferric_core::parallel::ParallelContext,
+    obs: &PreparedBasis,
+    bounds: &SchwarzBounds,
+    dm1_corr_ao: &Array2<f64>,
+    c: &Array2<f64>,
+    nocc_total: usize,
+) -> Result<Array2<f64>, FerricError> {
+    let n = c.nrows();
+    let two_dm_corr = 2.0 * dm1_corr_ao;
+    let (mut jv, mut kv) = (Array2::zeros((n, n)), Array2::zeros((n, n)));
+    build_jk(ctx, obs, bounds, 1e-12, &two_dm_corr, &mut jv, &mut kv)?;
+    let veff = &jv - &(0.5 * &kv);
+    let c_occ = c.slice(ndarray::s![.., ..nocc_total]);
+    let p_occ = c_occ.dot(&c_occ.t());
+    Ok(p_occ.dot(&veff).dot(&p_occ))
 }
 
 #[cfg(test)]
@@ -338,6 +397,17 @@ mod tests {
         grad
     }
 
+    /// Analytic-vs-FD bar for the nuclear gradient (Ha/Bohr).
+    ///
+    /// Derivation: the OO-specific ingredients (energy-weighted density and
+    /// 1-PDM) agree with re-converged FD to <= 4e-9 in
+    /// `scripts/oo_mp2_stationarity_proto.py nuc`. The Rust FD reference adds
+    /// central-difference truncation (h = 1e-4: h²/6·E''' ~ 2e-9) plus J/K
+    /// screening noise (~1e-12 Ha / 1e-4 ~ 1e-8), and re-convergence at
+    /// grad_conv 1e-8 contributes O(|g|²) ~ 1e-16. 1e-6 is >= 100x that floor and
+    /// 870x below the smallest pre-F2 residual (8.71e-4, H2O/STO-3G).
+    const NUC_GRAD_BAR: f64 = 1e-6;
+
     fn tight_oo_config() -> OoRiMp2Config {
         // Tighter than the library default (grad_conv 1e-4) so the FD
         // reference geometry's re-converged energy is not itself
@@ -398,22 +468,11 @@ mod tests {
             }
         }
         eprintln!("  max diff = {:.2e}", max_diff);
-        // Measured 2.22e-3 (H2/cc-pVDZ, stable across FD delta 5e-5..2e-4 --
-        // not truncation noise). This is a large improvement over the old
-        // diagonal-W stub (which had no theoretical basis at all) but is NOT
-        // machine-precision-tight the way plain RI-MP2's z-vector gradient is
-        // (see rimp2_gradient_analytical's ~1e-9). Root cause investigated
-        // but not fully closed: F_vv off-diagonality (4e-4) and the resulting
-        // T2 non-canonical residual (~3e-5) were both measured too small to
-        // explain the gap; the leading suspect is the same latent bug
-        // documented on `compute_orbital_gradient` in oo_rimp2.rs (its
-        // d(eps_p)/dkappa closed form is exact only at kappa=0, so it grows
-        // O(kappa) inaccurate away from canonical RHF orbitals -- plausibly
-        // propagating into a slightly-off OO-converged stationary point that
-        // this gradient, evaluated exactly, correctly reports as inconsistent
-        // with the FD of that same slightly-off point). See docs/VALIDATION.md.
+        // BAR (defect F2, 2026-09-24): NUC_GRAD_BAR, derived in its doc.
+        // MUTATION NOTE: the pre-F2 solver + gradient measured 2.22e-3 here
+        // (stable across FD delta 5e-5..2e-4) and passed the former 3e-3 bar.
         assert!(
-            max_diff < 3e-3,
+            max_diff < NUC_GRAD_BAR,
             "H2 OO-RI-MP2 analytic vs FD max diff = {:.2e}",
             max_diff
         );
@@ -467,12 +526,10 @@ mod tests {
             }
         }
         eprintln!("  max diff = {:.2e}", max_diff);
-        // Measured 8.71e-4 (H2O/STO-3G). See the H2 test's comment for the
-        // investigated-but-not-fully-closed root cause; this is the
-        // multi-occupied-orbital sibling case (nocc=5) confirming the
-        // discrepancy is small-and-systematic rather than H2-specific.
+        // MUTATION NOTE: the pre-F2 solver + gradient measured 8.71e-4 here and
+        // passed the former 1.5e-3 bar.
         assert!(
-            max_diff < 1.5e-3,
+            max_diff < NUC_GRAD_BAR,
             "H2O OO-RI-MP2 analytic vs FD max diff = {:.2e}",
             max_diff
         );
