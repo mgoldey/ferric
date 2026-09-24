@@ -100,6 +100,7 @@ docstrings. None of them is in the CLI grade table.
 | terfc-attenuated MP2 | `run_terfc_rimp2` | Closed shell. The CLI's `att-rimp2` is the erfc form only. |
 | Open-shell KS geometry/frequencies | `run_frequencies(reference="uhf"\|"rohf", xc=...)` | Setting `xc` promotes RHF/UHF/ROHF to RKS/UKS/ROKS. FD Hessian. |
 | Transition-state search | `run_saddle` | P-RFO. Closed shell only (refuses multiplicity ≠ 1). Raises if the start has no negative mode. Costs `2(6N+1) + (steps+1)` gradients. |
+| SCF stability descent | `run_uhf(stability_descent=True)` | Checks the converged UHF solution's internal stability and, at a saddle, follows the downhill mode and re-converges. The CLI's `[scf] check_stability` only reports a saddle. |
 | Reaction path | `run_irc` | Both IRC branches from a saddle's imaginary mode. Closed shell only. |
 | Geometry optimization (Python) | `run_optimize` | RHF only (no `xc` argument). Accepts point charges and a field. |
 | QM/MM energy + forces | `QmmmSystem`, `run_qmmm` | `method` = `"rhf"`/`"uhf"`/`"rks"`/`"uks"`. Link atoms, boundary schemes (`keep`/`delete-host`/`rc`/`rcd`), Gaussian-smeared charges, Thole polarizable sites, an optional MM force field (`MmTopology`). See [QM/MM](../using/qmmm.md). The CLI `[qmmm]` section covers fixed point charges only. |
