@@ -3916,6 +3916,10 @@ fn run_rimp2(
 /// default `eps = 1e-4` carries a one-sided ~linear-in-eps truncation error.
 /// Returns a dict with e_corr, e_corr_canonical_ri, total_energy and the
 /// sparsity counters (keep/pair fractions, domain sizes, CG iterations).
+///
+/// `compute_reference` (default False) opts in to the canonical RI-MP2
+/// reference — a full N^5 canonical run over the global 3-index tensor.
+/// Off, `e_corr_canonical_ri` is None (the key is always present).
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, eps=None, frozen_core=None, k_builder=None, memory_budget_gb=None, compute_reference=None))]
 fn run_lmp2(
@@ -3930,6 +3934,8 @@ fn run_lmp2(
     compute_reference: Option<bool>,
 ) -> PyResult<Py<pyo3::types::PyDict>> {
     use ferric_mp2::lmp2_amplitude::{amplitude_lmp2, AmplitudeLmp2Config};
+    // Opt-in: `None` (the default) and `False` both skip the N^5 reference.
+    let compute_reference = compute_reference.unwrap_or(false);
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
@@ -3961,14 +3967,17 @@ fn run_lmp2(
             eps: eps.unwrap_or(1e-4),
             frozen_core: frozen_core.unwrap_or(0),
             eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-            compute_reference: compute_reference.unwrap_or(true),
+            compute_reference,
             ..Default::default()
         },
     )
     .map_err(make_err)?;
     let d = pyo3::types::PyDict::new(py);
     d.set_item("e_corr", r.e_corr)?;
-    d.set_item("e_corr_canonical_ri", r.e_corr_canonical_ri)?;
+    d.set_item(
+        "e_corr_canonical_ri",
+        compute_reference.then_some(r.e_corr_canonical_ri),
+    )?;
     d.set_item("total_energy", r.e_total)?;
     d.set_item("rhf_energy", rhf.energy)?;
     d.set_item("keep_fraction", r.keep_fraction)?;
@@ -3990,6 +3999,8 @@ fn run_lmp2(
 /// off; 1.0 = conservative, measured escape-free — see
 /// WIKI-APPEND-eps-linked-maps.md).
 /// Returns the `run_lmp2` dict plus strip/eri3 counters and stage timings.
+/// `compute_reference` (default False) as in `run_lmp2`; turning it on
+/// forms the global 3-index tensor this path otherwise never builds.
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, eps=None, frozen_core=None, aux_radius_bohr=None, virt_radius_bohr=None, ao_tail=None, schwarz_skip=None, batch_merge=None, pair_gate_cal=None, virt_schwarz_kappa=None, k_builder=None, memory_budget_gb=None, compute_reference=None))]
 #[allow(clippy::too_many_arguments)]
@@ -4013,6 +4024,8 @@ fn run_lmp2_direct(
 ) -> PyResult<Py<pyo3::types::PyDict>> {
     use ferric_mp2::lmp2_amplitude::AmplitudeLmp2Config;
     use ferric_mp2::lmp2_direct::{amplitude_lmp2_direct, DirectConfig};
+    // Opt-in: `None` (the default) and `False` both skip the N^5 reference.
+    let compute_reference = compute_reference.unwrap_or(false);
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
@@ -4054,7 +4067,7 @@ fn run_lmp2_direct(
             frozen_core: frozen_core.unwrap_or(0),
             eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
             pair_gate_cal,
-            compute_reference: compute_reference.unwrap_or(true),
+            compute_reference,
             ..Default::default()
         },
         &dcfg,
@@ -4062,7 +4075,10 @@ fn run_lmp2_direct(
     .map_err(make_err)?;
     let d = pyo3::types::PyDict::new(py);
     d.set_item("e_corr", r.e_corr)?;
-    d.set_item("e_corr_canonical_ri", r.e_corr_canonical_ri)?;
+    d.set_item(
+        "e_corr_canonical_ri",
+        compute_reference.then_some(r.e_corr_canonical_ri),
+    )?;
     d.set_item("total_energy", r.e_total)?;
     d.set_item("rhf_energy", rhf.energy)?;
     d.set_item("keep_fraction", r.keep_fraction)?;
@@ -4100,7 +4116,7 @@ fn drpa_config(
     eps: Option<f64>,
     frozen_core: Option<usize>,
     memory_budget_gb: Option<f64>,
-    compute_reference: Option<bool>,
+    compute_reference: bool,
     diis: Option<usize>,
     eps_rtol_factor: Option<f64>,
 ) -> ferric_mp2::drpa_amplitude::AmplitudeDrpaConfig {
@@ -4111,7 +4127,7 @@ fn drpa_config(
         eps: eps.unwrap_or(1e-4),
         frozen_core: frozen_core.unwrap_or(0),
         eri3_budget_bytes: budget_bytes_from_gb(memory_budget_gb),
-        compute_reference: compute_reference.unwrap_or(true),
+        compute_reference,
         diis: if diis_subspace == 0 {
             None
         } else {
@@ -4126,14 +4142,21 @@ fn drpa_config(
     }
 }
 
+/// `e_corr_plasmon_canonical` is `None` unless the (opt-in) reference was
+/// computed — the same Optional-float convention as the result classes'
+/// `Option<f64>` getters, never a NaN.
 fn drpa_result_to_dict(
     py: Python<'_>,
     r: &ferric_mp2::drpa_amplitude::AmplitudeDrpaResult,
     rhf_energy: f64,
+    compute_reference: bool,
 ) -> PyResult<Py<pyo3::types::PyDict>> {
     let d = pyo3::types::PyDict::new(py);
     d.set_item("e_corr", r.e_corr)?;
-    d.set_item("e_corr_plasmon_canonical", r.e_corr_plasmon_canonical)?;
+    d.set_item(
+        "e_corr_plasmon_canonical",
+        compute_reference.then_some(r.e_corr_plasmon_canonical),
+    )?;
     d.set_item("total_energy", r.e_total)?;
     d.set_item("rhf_energy", rhf_energy)?;
     d.set_item("keep_fraction", r.keep_fraction)?;
@@ -4164,6 +4187,10 @@ fn drpa_result_to_dict(
 /// eps can shift versus the legacy tight-rtol/no-DIIS solve, but the shift
 /// is calibrated to stay within ~10% of eps's own truncation error (see
 /// wiki/amplitude-threshold-drpa.md, "Subdominance calibration").
+///
+/// `compute_reference` (default False) opts in to the canonical plasmon
+/// reference (a dense eigensolve over a global B); off,
+/// `e_corr_plasmon_canonical` is None (the key is always present).
 #[pyfunction]
 #[pyo3(signature = (mol, basis_set, auxbasis, eps=None, frozen_core=None, k_builder=None, memory_budget_gb=None, compute_reference=None, diis=None, eps_rtol_factor=None))]
 #[allow(clippy::too_many_arguments)]
@@ -4181,6 +4208,8 @@ fn run_drpa(
     eps_rtol_factor: Option<f64>,
 ) -> PyResult<Py<pyo3::types::PyDict>> {
     use ferric_mp2::drpa_amplitude::amplitude_drpa;
+    // Opt-in: `None` (the default) and `False` both skip the N^5 reference.
+    let compute_reference = compute_reference.unwrap_or(false);
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
@@ -4211,7 +4240,7 @@ fn run_drpa(
     );
     let r = amplitude_drpa(&mol.inner, &prep, &basis_set.inner, &dfbs, op, &rhf, &cfg)
         .map_err(make_err)?;
-    drpa_result_to_dict(py, &r, rhf.energy)
+    drpa_result_to_dict(py, &r, rhf.energy, compute_reference)
 }
 
 /// Amplitude-threshold direct RPA over a LIST of eps values, reusing ONE
@@ -4241,6 +4270,8 @@ fn run_drpa_scan(
     eps_rtol_factor: Option<f64>,
 ) -> PyResult<Py<pyo3::types::PyList>> {
     use ferric_mp2::drpa_amplitude::amplitude_drpa_scan_timed;
+    // Opt-in: `None` (the default) and `False` both skip the N^5 reference.
+    let compute_reference = compute_reference.unwrap_or(false);
     let prep = PreparedBasis::new(&mol.inner, &basis_set.inner).map_err(make_err)?;
     let dfbs = PreparedBasis::new(&mol.inner, &auxbasis.inner).map_err(make_err)?;
     let op = Operator::coulomb();
@@ -4282,7 +4313,7 @@ fn run_drpa_scan(
     .map_err(make_err)?;
     let out = pyo3::types::PyList::empty(py);
     for ((r, eps), wall_s) in results.iter().zip(&eps_list).zip(&per_point_walls) {
-        let d = drpa_result_to_dict(py, r, rhf.energy)?;
+        let d = drpa_result_to_dict(py, r, rhf.energy, compute_reference)?;
         let d_ref = d.bind(py);
         d_ref.set_item("eps", *eps)?;
         d_ref.set_item("wall_s", *wall_s)?;

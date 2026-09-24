@@ -73,9 +73,11 @@ pub struct AmplitudeDrpaConfig {
     /// never assembled in the ragged path.
     pub pair_gate_cal: Option<f64>,
     /// Also compute the canonical plasmon-formula reference (a dense
-    /// (no·nv)-dimensional eigensolve — the honesty printout). Disable for
-    /// pure method timing; `e_corr_plasmon_canonical` is then NaN.
-    /// Mirrors `AmplitudeLmp2Config::compute_reference`.
+    /// (no·nv)-dimensional eigensolve over a global B — the honesty
+    /// printout). OPT-IN, default false; off, `e_corr_plasmon_canonical` is
+    /// NaN and the eigensolve never runs. Turn it on for validation and for
+    /// the ε = 0 exactness anchors. Mirrors
+    /// `AmplitudeLmp2Config::compute_reference`.
     pub compute_reference: bool,
     /// Pulay/DIIS acceleration of the damped fixed point. `None` (default)
     /// keeps the plain damped iteration byte-identical to the pre-DIIS
@@ -108,7 +110,7 @@ impl Default for AmplitudeDrpaConfig {
             fp_max_iter: 500,
             eri3_budget_bytes: None,
             pair_gate_cal: None,
-            compute_reference: true,
+            compute_reference: false,
             diis: None,
             eps_rtol_factor: None,
         }
@@ -135,7 +137,8 @@ pub struct AmplitudeDrpaResult {
     /// Canonical plasmon-formula dRPA on the exactly semicanonicalized
     /// recomputed Fock — the independent-construction reference (eigenvalue
     /// problem vs localized Riccati fixed point; shares only the RI
-    /// integrals and the Fock operator).
+    /// integrals and the Fock operator). NaN unless `compute_reference` was
+    /// set (the default is off).
     pub e_corr_plasmon_canonical: f64,
     pub keep_fraction: f64,
     pub pair_fraction: f64,
@@ -565,10 +568,10 @@ fn riccati_masked_solve(
 /// every map has a trivial no-op limit (the exactness-anchor
 /// configuration, see `tests/drpa_direct.rs`).
 ///
-/// NOTE `cfg.eri3_budget_bytes` only affects the OPTIONAL canonical
+/// NOTE `cfg.eri3_budget_bytes` only affects the OPT-IN canonical
 /// plasmon reference, which still builds a global B for its independent
-/// construction — set `compute_reference: false` for a genuinely
-/// global-B-free run.
+/// construction — with `compute_reference` at its default (false) the run
+/// is genuinely global-B-free.
 #[allow(clippy::too_many_arguments)]
 pub fn amplitude_drpa_direct(
     mol: &Molecule,

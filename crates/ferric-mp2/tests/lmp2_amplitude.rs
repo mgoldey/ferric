@@ -71,6 +71,7 @@ fn vvhv_construction_is_orthonormal_and_spans_the_virtual_space() {
 fn eps_zero_matches_canonical_ri_mp2() {
     let su = setup("water.xyz");
     let cfg = AmplitudeLmp2Config {
+        compute_reference: true,
         eps: 0.0,
         frozen_core: 1,
         ..Default::default()
@@ -109,6 +110,7 @@ fn mutated_virtual_space_fails_the_anchor() {
         n_hard: vvhv.n_hard - 1,
     };
     let cfg = AmplitudeLmp2Config {
+        compute_reference: true,
         eps: 0.0,
         frozen_core: 1,
         ..Default::default()
@@ -136,6 +138,7 @@ fn mutated_virtual_space_fails_the_anchor() {
 fn eps_sweep_on_c4_is_one_sided_with_live_counters() {
     let su = setup("alkane_4.xyz");
     let cfg = AmplitudeLmp2Config {
+        compute_reference: true,
         eps: 1e-3,
         frozen_core: 4,
         ..Default::default()
@@ -193,6 +196,7 @@ fn eps_zero_anchor_holds_for_erfc_with_no_frozen_core() {
     let bounds = SchwarzBounds::compute(Operator::coulomb(), &su.obs).unwrap();
     let _ = &bounds; // RHF reference is Coulomb-SCF (attenuated MP2 convention)
     let cfg = AmplitudeLmp2Config {
+        compute_reference: true,
         eps: 0.0,
         frozen_core: 0,
         ..Default::default()
@@ -383,6 +387,7 @@ fn naive_masked_mp2(
 fn c8_counters_land_in_the_python_measured_band() {
     let su = setup("alkane_8.xyz");
     let cfg = AmplitudeLmp2Config {
+        compute_reference: true,
         eps: 1e-3,
         frozen_core: 8,
         ..Default::default()
@@ -438,6 +443,7 @@ fn c8_counters_land_in_the_python_measured_band() {
 fn domain_fit_trivial_limit_matches_global() {
     let su = setup("water.xyz");
     let base = AmplitudeLmp2Config {
+        compute_reference: true,
         eps: 0.0,
         frozen_core: 1,
         ..Default::default()
@@ -600,6 +606,7 @@ fn bench_wall_clock_alkane_series() {
         ] {
             for eps in [1e-3, 1e-4] {
                 let cfg = AmplitudeLmp2Config {
+                    compute_reference: true,
                     eps,
                     frozen_core: nc,
                     pair_gate_cal: Some(cal),
@@ -647,6 +654,7 @@ fn bench_wall_clock_alkane_series_domain_fit() {
         ] {
             for eps in [1e-3, 1e-4] {
                 let cfg = AmplitudeLmp2Config {
+                    compute_reference: true,
                     eps,
                     frozen_core: nc,
                     pair_gate_cal: Some(cal),
@@ -886,5 +894,80 @@ fn aux_truncation_trivial_limit_subdominance_and_mutation() {
         r_mut.aux_dom_max < r_off.aux_dom_max / 2 && wreck > 1e-3,
         "mutation not loud: dom {} |dE| {wreck:.3e}",
         r_mut.aux_dom_max
+    );
+}
+
+/// OPT-IN REFERENCE (2026-09-23): the canonical `ri_mp2` reference is a full
+/// N^5 canonical RI-MP2 over the global (naux, no·nv) tensor, so it must NOT
+/// run unless asked for. Observables: `e_corr_canonical_ri` is NaN and
+/// `t_reference_s` is exactly 0 (the timer only runs when `ri_mp2` is
+/// called); the opt-in arm must produce a finite reference with a strictly
+/// positive reference wall time, and the method energy must not depend on
+/// the switch.
+///
+/// Fails if reverted: with `compute_reference: true` restored as the
+/// `Default`, the first assert (`!default().compute_reference`) fails, and
+/// the default run reports a finite `e_corr_canonical_ri` and
+/// `t_reference_s > 0`, failing the NaN / zero-time asserts.
+#[test]
+fn default_config_does_not_compute_the_canonical_reference() {
+    assert!(
+        !AmplitudeLmp2Config::default().compute_reference,
+        "the canonical reference must be OFF by default"
+    );
+    let su = setup("water.xyz");
+    let cfg = AmplitudeLmp2Config {
+        eps: 1e-3,
+        frozen_core: 1,
+        ..Default::default()
+    };
+    let off = amplitude_lmp2(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+    )
+    .unwrap();
+    assert!(
+        off.e_corr_canonical_ri.is_nan(),
+        "default run computed a canonical reference: {}",
+        off.e_corr_canonical_ri
+    );
+    assert_eq!(
+        off.timings.t_reference_s, 0.0,
+        "default run spent time in the canonical ri_mp2 reference"
+    );
+    assert!(off.e_corr.is_finite() && off.e_corr < 0.0);
+
+    let on = amplitude_lmp2(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &AmplitudeLmp2Config {
+            compute_reference: true,
+            ..cfg
+        },
+    )
+    .unwrap();
+    assert!(
+        on.e_corr_canonical_ri.is_finite() && on.e_corr_canonical_ri < 0.0,
+        "opt-in reference missing: {}",
+        on.e_corr_canonical_ri
+    );
+    assert!(
+        on.timings.t_reference_s > 0.0,
+        "opt-in run reports no reference time"
+    );
+    // the switch changes what is REPORTED, never the method energy
+    assert!(
+        (on.e_corr - off.e_corr).abs() < 1e-12,
+        "reference switch moved the method energy: {:+.3e}",
+        on.e_corr - off.e_corr
     );
 }

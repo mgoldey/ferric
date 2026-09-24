@@ -75,6 +75,7 @@ fn trivial_maps() -> DirectConfig {
 fn trivial_limit_matches_global_domain_fit_and_canonical() {
     let su = setup("water.xyz");
     let cfg = AmplitudeLmp2Config {
+        compute_reference: true,
         eps: 0.0,
         frozen_core: 1,
         ..Default::default()
@@ -126,6 +127,7 @@ fn trivial_limit_holds_for_erfc() {
     let su = setup("water.xyz");
     let op = Operator::erfc(1.0);
     let cfg = AmplitudeLmp2Config {
+        compute_reference: true,
         eps: 0.0,
         frozen_core: 0,
         ..Default::default()
@@ -332,6 +334,7 @@ fn bench_map_error_flatness() {
             ("erfc1", Operator::erfc(1.0), 0.02),
         ] {
             let cfg = AmplitudeLmp2Config {
+                compute_reference: true,
                 eps: 1e-3,
                 frozen_core: nc,
                 pair_gate_cal: Some(cal),
@@ -534,6 +537,7 @@ fn terfc_direct_probe() {
     for (xyz, fc) in [("water.xyz", 0usize), ("alkane_8.xyz", 8)] {
         let su = setup(xyz);
         let cfg = AmplitudeLmp2Config {
+            compute_reference: true,
             eps: 0.0,
             frozen_core: fc,
             ..Default::default()
@@ -593,6 +597,7 @@ fn terfc_direct_probe() {
     let su = setup("alkane_8.xyz");
     let op = Operator::terfc(2.0);
     let eps_cfg = AmplitudeLmp2Config {
+        compute_reference: true,
         eps: 1e-3,
         frozen_core: 8,
         ..Default::default()
@@ -954,6 +959,7 @@ fn schwarz_virt_sub_dominant_and_trims() {
     };
     for op in [Operator::coulomb(), Operator::erfc(1.0)] {
         let cfg = AmplitudeLmp2Config {
+            compute_reference: true,
             eps: 1e-3,
             frozen_core: 4,
             ..Default::default()
@@ -1056,4 +1062,65 @@ fn schwarz_virt_gutted_is_loud() {
             assert!(dk > 1e-3, "Schwarz screen gutted silently: |dE|={dk:.3e}");
         }
     }
+}
+
+/// OPT-IN REFERENCE (2026-09-23), integral-direct path: the whole point of
+/// `lmp2_direct` is never forming the global (naux, no·nv) tensor, and the
+/// canonical `ri_mp2` reference forms exactly that. With the default config
+/// it must not run: `e_corr_canonical_ri` NaN, `t_reference_s` exactly 0.
+/// The opt-in arm must report a finite reference and positive reference
+/// time without moving the method energy.
+///
+/// Fails if reverted: restoring `compute_reference: true` as the `Default`
+/// makes the default run report a finite reference and `t_reference_s > 0`.
+#[test]
+fn default_config_does_not_compute_the_canonical_reference() {
+    let su = setup("water.xyz");
+    let cfg = AmplitudeLmp2Config {
+        eps: 1e-3,
+        frozen_core: 1,
+        ..Default::default()
+    };
+    let (off, _) = amplitude_lmp2_direct(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+        &trivial_maps(),
+    )
+    .unwrap();
+    assert!(
+        off.e_corr_canonical_ri.is_nan(),
+        "default direct run computed a canonical reference: {}",
+        off.e_corr_canonical_ri
+    );
+    assert_eq!(
+        off.timings.t_reference_s, 0.0,
+        "default direct run spent time in the canonical ri_mp2 reference"
+    );
+
+    let (on, _) = amplitude_lmp2_direct(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &AmplitudeLmp2Config {
+            compute_reference: true,
+            ..cfg
+        },
+        &trivial_maps(),
+    )
+    .unwrap();
+    assert!(on.e_corr_canonical_ri.is_finite() && on.e_corr_canonical_ri < 0.0);
+    assert!(on.timings.t_reference_s > 0.0);
+    assert!(
+        (on.e_corr - off.e_corr).abs() < 1e-12,
+        "reference switch moved the method energy: {:+.3e}",
+        on.e_corr - off.e_corr
+    );
 }

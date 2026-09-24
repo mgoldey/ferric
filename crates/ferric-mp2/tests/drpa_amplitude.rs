@@ -63,6 +63,7 @@ fn setup(xyz: &str, obs_name: &str, aux_name: &str) -> Setup {
 fn h2_single_pair_matches_the_proof_notebook() {
     let su = setup("h2.xyz", "sto-3g", "sto-3g");
     let cfg = AmplitudeDrpaConfig {
+        compute_reference: true,
         eps: 0.0,
         ..Default::default()
     };
@@ -97,6 +98,7 @@ fn h2_single_pair_matches_the_proof_notebook() {
 fn eps_zero_matches_canonical_plasmon_on_water() {
     let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
     let cfg = AmplitudeDrpaConfig {
+        compute_reference: true,
         eps: 0.0,
         frozen_core: 1,
         ..Default::default()
@@ -136,6 +138,7 @@ fn mutated_virtual_space_fails_the_anchor() {
         n_hard: vvhv.n_hard - 1,
     };
     let cfg = AmplitudeDrpaConfig {
+        compute_reference: true,
         eps: 0.0,
         frozen_core: 1,
         ..Default::default()
@@ -419,6 +422,7 @@ fn diis_matches_plain_fixed_point() {
 fn eps_linked_rtol_is_subdominant_to_truncation() {
     let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
     let tight = AmplitudeDrpaConfig {
+        compute_reference: true,
         eps: 1e-3,
         frozen_core: 1,
         fp_rtol: 1e-12,
@@ -532,4 +536,56 @@ fn scan_matches_per_eps_single_calls() {
         assert_eq!(r_scan.iterations, r_single.iterations);
         assert_eq!(r_scan.converged, r_single.converged);
     }
+}
+
+/// OPT-IN REFERENCE (2026-09-23): the canonical plasmon reference (a dense
+/// (no·nv)-dimensional eigensolve over a global B) must NOT run by default.
+/// `AmplitudeDrpaResult` carries no timing field, so the observable is the
+/// value itself: NaN when off, finite when opted in; the method energy must
+/// not depend on the switch.
+///
+/// Fails if reverted: restoring `compute_reference: true` as the `Default`
+/// fails the `!default().compute_reference` assert and makes the default
+/// run's `e_corr_plasmon_canonical` finite.
+#[test]
+fn default_config_does_not_compute_the_canonical_reference() {
+    assert!(
+        !AmplitudeDrpaConfig::default().compute_reference,
+        "the canonical plasmon reference must be OFF by default"
+    );
+    let su = setup("h2.xyz", "sto-3g", "sto-3g");
+    let cfg = AmplitudeDrpaConfig {
+        eps: 0.0,
+        ..Default::default()
+    };
+    let off = amplitude_drpa(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &cfg,
+    )
+    .unwrap();
+    assert!(
+        off.e_corr_plasmon_canonical.is_nan(),
+        "default run computed the plasmon reference: {}",
+        off.e_corr_plasmon_canonical
+    );
+    let on = amplitude_drpa(
+        &su.mol,
+        &su.obs,
+        &su.obs_bs,
+        &su.dfbs,
+        Operator::coulomb(),
+        &su.rhf,
+        &AmplitudeDrpaConfig {
+            compute_reference: true,
+            ..cfg
+        },
+    )
+    .unwrap();
+    assert!(on.e_corr_plasmon_canonical.is_finite());
+    assert!((on.e_corr - off.e_corr).abs() < 1e-12);
 }

@@ -1463,6 +1463,10 @@ pub fn assemble_pp_fitted_direct(
 /// sibling of [`crate::lmp2_amplitude::amplitude_lmp2`]. `cfg.fit_radius_bohr`
 /// and `cfg.aux_tail_frac` are ignored (the direct path's locality lives in
 /// `dcfg`); everything else means the same thing.
+///
+/// `cfg.compute_reference` (default false) opts in to the canonical
+/// `ri_mp2` reference, which DOES form the global `(naux, no·nv)` tensor
+/// this path otherwise never builds — leave it off for a reduced-cost run.
 pub fn amplitude_lmp2_direct(
     mol: &Molecule,
     obs: &PreparedBasis,

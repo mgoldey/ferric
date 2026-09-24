@@ -88,9 +88,14 @@ pub struct AmplitudeLmp2Config {
     /// aux function (byte-identical trivial limit). Inactive at ε = 0 and
     /// on the domain-fit path (which has its own aux domains).
     pub aux_tail_frac: Option<f64>,
-    /// Compute the canonical `ri_mp2` reference inside the driver (the
-    /// honesty printout). Default true; benches/production may disable —
-    /// `e_corr_canonical_ri` is then NaN and `t_reference_s` is 0.
+    /// Also compute the canonical `ri_mp2` reference inside the driver (the
+    /// honesty printout). OPT-IN, default false: the reference is a full
+    /// N^5 canonical RI-MP2 that forms the global (naux, nocc·nvir) tensor —
+    /// exactly what the local (and especially the integral-direct) path
+    /// exists to avoid, so leaving it on by default made no run
+    /// reduced-cost. Off: `e_corr_canonical_ri` is NaN, `t_reference_s` is
+    /// 0 and `ri_mp2` is never called. Turn it on for validation and for
+    /// the ε = 0 exactness anchors.
     pub compute_reference: bool,
     /// `Some(r)`: per-pair domain-local same-kernel RI fit — for pair
     /// (i,j) only aux functions within `r` Bohr of either Boys centroid
@@ -112,7 +117,7 @@ impl Default for AmplitudeLmp2Config {
             eri3_budget_bytes: None,
             pair_gate_cal: None,
             aux_tail_frac: None,
-            compute_reference: true,
+            compute_reference: false,
             fit_radius_bohr: None,
         }
     }
@@ -126,7 +131,8 @@ pub struct AmplitudeLmp2Result {
     pub e_total: f64,
     /// Canonical RI-MP2 on the same (mol, obs, dfbs, op, frozen_core) —
     /// the independent-construction reference; at ε=0 `e_corr` must match
-    /// this to CG tolerance.
+    /// this to CG tolerance. NaN unless `compute_reference` was set (the
+    /// default is off).
     pub e_corr_canonical_ri: f64,
     pub keep_fraction: f64,
     pub pair_fraction: f64,
@@ -167,7 +173,8 @@ impl std::fmt::Display for AmplitudeLmp2Result {
 
 /// Wall-clock per pipeline stage, seconds. `t_reference_s` is the canonical
 /// ri_mp2 reference — NOT part of the method cost, reported separately so
-/// benchmark tables can exclude it.
+/// benchmark tables can exclude it; exactly 0 when the (opt-in) reference
+/// was not computed.
 #[derive(Debug, Clone, Default)]
 pub struct StageTimings {
     pub t_spaces_s: f64,
@@ -1255,7 +1262,7 @@ pub fn amplitude_lmp2_with_virtuals(
     let t_assembly_s = t0.elapsed().as_secs_f64();
 
     // canonical reference on the same (mol, basis, aux, op, frozen core) —
-    // optional (the honesty printout; disable for pure method timing)
+    // OPT-IN (the honesty printout; off by default, see `compute_reference`)
     let t0 = std::time::Instant::now();
     let e_ref = if cfg.compute_reference {
         ri_mp2(
