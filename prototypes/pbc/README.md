@@ -74,7 +74,16 @@ OPENBLAS_NUM_THREADS=1 python -m pytest -q test_prototype.py   # ~35 s; PBC_SLOW
    frequency, so the code sums log1p(λ) − λ over the eigenvalues instead.
    `run_rpa_c3_prediction.py` predicts the a⁻³ box-limit coefficient from a
    molecular calculation with an added harmonic kernel.
-7. **`test_prototype.py`**: the tests. Several exist to catch a specific,
+7. **`pbc_uhf.py`** (plus the `run_uhf_*.py` scripts): open-shell Γ-point
+   UHF.
+   - The Madelung correction needs no spin factor: it is the same v_M applied
+     to each spin's density.
+   - There is a new SCF trap. Under `exxdiv="ewald"` every occupied level
+     drops by v_M, so a state that breaks the aufbau principle without the
+     correction can become self-consistent with it.
+   - `run_uhf_guess.py` shows the fix: converge without the correction
+     first, then turn it on.
+8. **`test_prototype.py`**: the tests. Several exist to catch a specific,
    plausible bug (a sign flip, a missing Madelung term, the G = 0 term applied
    to only one side); the comments say which one.
 
