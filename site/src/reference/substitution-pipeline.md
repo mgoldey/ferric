@@ -7,8 +7,10 @@ not estimated.
 ## The answer: ~90% exists, and the missing piece is not what I expected
 
 I expected the gap to be a connector between enumeration and pocket scoring.
-That connector IS missing (verified: no file imports both `tools.isomers` and
-`tools.active_site`). But prototyping showed a more basic problem first: **both
+Its enumeration half now exists: `propose_substitutions` and
+`embed_proposals` in `tools/pipeline/substitution.py` turn a parent SMILES and
+a site into proposals with 3-D geometries (Å). Placing a proposal in the
+pocket still needs docking; see "Order of work" below. But prototyping showed a more basic problem first: **both
 cheap gates are useless on this target, for different reasons.**
 
 ## What ran
@@ -276,8 +278,8 @@ than translating a fixed conformer. The 0.95 ratio is the transferable part.
 2. Connector to `batch_prescreen` -- CHEAP (classical field, no SCF), so it can
    afford an ensemble and sidesteps constraint 2 entirely.
 3. QM tier (`compute_binding_energy`, ddE) only after the pose treatment is
-   decided AND dispersion exists (currently being added; without it a
-   halogen/CF3 scan is missing its dominant attractive term).
+   decided. Dispersion is available: D3(BJ) (#99, merged), without which a
+   halogen/CF3 scan would miss its dominant attractive term.
 
 ## What to build
 

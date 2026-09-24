@@ -141,8 +141,8 @@ P7  CONFIRM        ferric DFT + D3(BJ)             -> survivors only
 
 Steps P1-P3 and P5 exist and are tested (#96, #102). P4 exists
 (`tools/docking/vina_dock.py`) and is validated by M9's redock. P6's engine
-exists (`tools/campaign/xtb_engine.py`). P7 needs #99's D3(BJ) to land, without
-which a halogen/CF3 scan is missing its dominant attractive term.
+exists (`tools/campaign/xtb_engine.py`). P7 uses #99's D3(BJ) (merged), without
+which a halogen/CF3 scan would miss its dominant attractive term.
 
 ### The four rules the pipeline must follow, each from a measurement
 
@@ -289,8 +289,7 @@ from this would be reporting noise.
     test).
 
   So tier 4 is validated as far as COMPOSITION goes. What is genuinely left:
-  dispersion (#99) is unmerged, so a halogen/CF3 scan would still be missing
-  its dominant attractive term, and no tier-4 number has been checked against
+  no tier-4 number has been checked against
   an external reference IN THIS PIPELINE (ferric's DFT is separately validated
   against PySCF to ~2e-8 Ha, but that is the solver, not the funnel's use of
   it).
