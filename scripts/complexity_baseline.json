@@ -18351,6 +18351,22 @@
     "cc": 18.0,
     "mi": 62.55762414112837
   },
+  "crates/ferric-python/src/lib.rs::cdft_coupling": {
+    "cc": 14.0,
+    "mi": 55.098822871618
+  },
+  "crates/ferric-python/src/lib.rs::cdft_coupling::<anonymous>": {
+    "cc": 1.0,
+    "mi": 153.97676999581998
+  },
+  "crates/ferric-python/src/lib.rs::cdft_coupling::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 150.3245067098335
+  },
+  "crates/ferric-python/src/lib.rs::cdft_kind_name": {
+    "cc": 3.0,
+    "mi": 116.43459080105495
+  },
   "crates/ferric-python/src/lib.rs::chelpg_charges": {
     "cc": 2.0,
     "mi": 108.28906305397692
@@ -18420,8 +18436,8 @@
     "mi": 125.53275533735598
   },
   "crates/ferric-python/src/lib.rs::ferric": {
-    "cc": 160.0,
-    "mi": 10.416559280286052
+    "cc": 167.0,
+    "mi": 7.921702192409498
   },
   "crates/ferric-python/src/lib.rs::ferric::<anonymous>": {
     "cc": 1.0,
@@ -18530,6 +18546,82 @@
   "crates/ferric-python/src/lib.rs::impl:PyCcResult::__str__": {
     "cc": 3.0,
     "mi": 104.04526000914996
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftConstraint::__repr__": {
+    "cc": 1.0,
+    "mi": 114.81990388345423
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftConstraint::atoms": {
+    "cc": 1.0,
+    "mi": 132.79564043134945
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftConstraint::kind": {
+    "cc": 1.0,
+    "mi": 132.79564043134945
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftConstraint::new": {
+    "cc": 7.0,
+    "mi": 75.64607818635272
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftConstraint::target": {
+    "cc": 1.0,
+    "mi": 134.9997572104644
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftCouplingResult::__repr__": {
+    "cc": 1.0,
+    "mi": 119.48035345717307
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftResult::__repr__": {
+    "cc": 1.0,
+    "mi": 119.48035345717307
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftResult::__str__": {
+    "cc": 1.0,
+    "mi": 116.32848147877024
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftResult::density_alpha": {
+    "cc": 1.0,
+    "mi": 128.19999710856152
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftResult::density_beta": {
+    "cc": 1.0,
+    "mi": 128.19999710856152
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftResult::kinds": {
+    "cc": 2.0,
+    "mi": 128.39539854253067
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftResult::kinds::<anonymous>": {
+    "cc": 1.0,
+    "mi": 156.27079806218674
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftResult::mo_coeff_alpha": {
+    "cc": 1.0,
+    "mi": 128.19999710856152
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftResult::mo_coeff_beta": {
+    "cc": 1.0,
+    "mi": 128.19999710856152
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftResult::nocc": {
+    "cc": 1.0,
+    "mi": 131.99693563217028
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftResult::orbital_energies_alpha": {
+    "cc": 1.0,
+    "mi": 128.02949002988194
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftResult::orbital_energies_beta": {
+    "cc": 1.0,
+    "mi": 128.02949002988194
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftResult::weight_matrix": {
+    "cc": 3.0,
+    "mi": 98.76255123099548
+  },
+  "crates/ferric-python/src/lib.rs::impl:PyCdftResult::weight_matrix::<anonymous>": {
+    "cc": 1.0,
+    "mi": 120.52208663514381
   },
   "crates/ferric-python/src/lib.rs::impl:PyConformerEnsemble#1::coords_arrays": {
     "cc": 5.0,
@@ -19307,6 +19399,10 @@
     "cc": 1.0,
     "mi": 148.2448388526475
   },
+  "crates/ferric-python/src/lib.rs::parse_cdft_kind": {
+    "cc": 4.0,
+    "mi": 102.41952614584258
+  },
   "crates/ferric-python/src/lib.rs::parse_diis_flavor": {
     "cc": 4.0,
     "mi": 107.83128822038714
@@ -19422,6 +19518,62 @@
   "crates/ferric-python/src/lib.rs::run_ccsd_t::<anonymous>": {
     "cc": 8.0,
     "mi": 88.17650022561699
+  },
+  "crates/ferric-python/src/lib.rs::run_cdft": {
+    "cc": 44.0,
+    "mi": 26.492114346692446
+  },
+  "crates/ferric-python/src/lib.rs::run_cdft::<anonymous>": {
+    "cc": 1.0,
+    "mi": 153.97676999581998
+  },
+  "crates/ferric-python/src/lib.rs::run_cdft::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 155.57643482053922
+  },
+  "crates/ferric-python/src/lib.rs::run_cdft::<anonymous>#10": {
+    "cc": 1.0,
+    "mi": 149.4596360787913
+  },
+  "crates/ferric-python/src/lib.rs::run_cdft::<anonymous>#11": {
+    "cc": 1.0,
+    "mi": 158.79655751643097
+  },
+  "crates/ferric-python/src/lib.rs::run_cdft::<anonymous>#12": {
+    "cc": 1.0,
+    "mi": 158.79655751643097
+  },
+  "crates/ferric-python/src/lib.rs::run_cdft::<anonymous>#2": {
+    "cc": 2.0,
+    "mi": 149.6687962661253
+  },
+  "crates/ferric-python/src/lib.rs::run_cdft::<anonymous>#3": {
+    "cc": 1.0,
+    "mi": 153.97676999581998
+  },
+  "crates/ferric-python/src/lib.rs::run_cdft::<anonymous>#4": {
+    "cc": 1.0,
+    "mi": 157.8484854211024
+  },
+  "crates/ferric-python/src/lib.rs::run_cdft::<anonymous>#5": {
+    "cc": 1.0,
+    "mi": 157.8484854211024
+  },
+  "crates/ferric-python/src/lib.rs::run_cdft::<anonymous>#6": {
+    "cc": 1.0,
+    "mi": 157.8484854211024
+  },
+  "crates/ferric-python/src/lib.rs::run_cdft::<anonymous>#7": {
+    "cc": 1.0,
+    "mi": 129.49454055610036
+  },
+  "crates/ferric-python/src/lib.rs::run_cdft::<anonymous>#8": {
+    "cc": 1.0,
+    "mi": 160.0060069647112
+  },
+  "crates/ferric-python/src/lib.rs::run_cdft::<anonymous>#9": {
+    "cc": 1.0,
+    "mi": 160.0060069647112
   },
   "crates/ferric-python/src/lib.rs::run_dft": {
     "cc": 28.0,
@@ -19728,8 +19880,8 @@
     "mi": 153.0837736153568
   },
   "crates/ferric-python/src/lib.rs::run_uhf": {
-    "cc": 9.0,
-    "mi": 63.37109113012281
+    "cc": 10.0,
+    "mi": 59.55855152043955
   },
   "crates/ferric-python/src/lib.rs::run_uhf::<anonymous>": {
     "cc": 1.0,
@@ -23325,7 +23477,7 @@
   },
   "crates/ferric-scf/src/cdft_driver.rs::solve_cdft_uhf": {
     "cc": 35.0,
-    "mi": 29.62642576005436
+    "mi": 29.531477213537087
   },
   "crates/ferric-scf/src/cdft_driver.rs::solve_cdft_uhf::<anonymous>": {
     "cc": 1.0,
@@ -23345,7 +23497,7 @@
   },
   "crates/ferric-scf/src/cdft_driver.rs::solve_cdft_uhf::<anonymous>#4": {
     "cc": 25.0,
-    "mi": 42.00544202030231
+    "mi": 41.85557962520991
   },
   "crates/ferric-scf/src/cdft_driver.rs::solve_cdft_uhf::<anonymous>#4::<anonymous>": {
     "cc": 7.0,
