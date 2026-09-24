@@ -322,3 +322,152 @@ fn no_other_job_runs_ignored_tests() {
         hits.join("\n  ")
     );
 }
+
+// ── Python half of the tier: `@pytest.mark.validation` ──────────────────────
+//
+// pyproject's `addopts = -m "not validation"` excludes these from every
+// default pytest run, so the ONLY place they run is the validation job's
+// `pytest -m validation <paths>` step. Same two quiet failure modes as the
+// Rust half, pinned the same way (file set DERIVED from the tree):
+//
+// * a marked file outside every path that step passes to pytest — excluded
+//   per-commit AND never collected weekly. MUTATION: change the step's path
+//   `crates/ferric-python/tests/` to `crates/ferric-python/tests/qmmm/` →
+//   `every_validation_pytest_is_collected_by_the_job` fails.
+// * another job passing `-m validation` — the tier then runs per-commit.
+//   MUTATION: add `-m validation` to the coverage job's pytest →
+//   `no_other_job_selects_the_validation_marker` fails.
+// * the extension failing to import — conftest.py SKIPS the suite, which
+//   exits green. MUTATION: delete the `python -c "import ferric"` line →
+//   `every_validation_pytest_is_collected_by_the_job` fails.
+
+/// The marker the Python tier keys on, as written in a test module.
+const PY_MARKER: &str = "pytest.mark.validation";
+
+/// Every `*.py` under the repo (skipping build/VCS/venv/untracked-notes dirs)
+/// that carries the validation marker, as repo-relative '/'-joined paths.
+fn python_validation_files() -> Vec<String> {
+    const SKIP: [&str; 5] = ["target", "wiki", "node_modules", "__pycache__", "site"];
+    let root = workspace_root();
+    let mut out = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            let name = e.file_name().to_string_lossy().into_owned();
+            if p.is_dir() {
+                if !name.starts_with('.') && !SKIP.contains(&name.as_str()) {
+                    stack.push(p);
+                }
+            } else if name.ends_with(".py") {
+                let Ok(src) = std::fs::read_to_string(&p) else {
+                    continue;
+                };
+                if src.contains(PY_MARKER) {
+                    let rel = p.strip_prefix(&root).unwrap();
+                    out.push(
+                        rel.components()
+                            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                            .collect::<Vec<_>>()
+                            .join("/"),
+                    );
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// The path arguments of every `pytest -m validation ...` command in `job`.
+fn pytest_validation_paths(job: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in job.lines().filter(|l| !l.trim_start().starts_with('#')) {
+        let toks: Vec<&str> = line.split_whitespace().collect();
+        let Some(at) = toks
+            .windows(3)
+            .position(|w| w[0] == "pytest" && w[1] == "-m" && w[2] == "validation")
+        else {
+            continue;
+        };
+        out.extend(
+            toks[at + 3..]
+                .iter()
+                .filter(|t| !t.starts_with('-'))
+                .map(|t| t.trim_end_matches('/').to_string()),
+        );
+    }
+    out
+}
+
+#[test]
+fn every_validation_pytest_is_collected_by_the_job() {
+    let job = validation_job(&ci_yml());
+    let files = python_validation_files();
+    if files.is_empty() {
+        return; // no Python half yet: nothing to collect
+    }
+    let paths = pytest_validation_paths(&job);
+    assert!(
+        !paths.is_empty(),
+        "files carry `{PY_MARKER}` but the validation job runs no `pytest -m validation <paths>`:\n  {}",
+        files.join("\n  ")
+    );
+    let missed: Vec<&String> = files
+        .iter()
+        .filter(|f| {
+            !paths
+                .iter()
+                .any(|p| f.starts_with(&format!("{p}/")) || *f == p)
+        })
+        .collect();
+    assert!(
+        missed.is_empty(),
+        "validation pytest files outside every path the job passes to pytest ({paths:?}) are \
+         never run:\n  {missed:?}"
+    );
+    // Non-comment lines only (a commented-out `# ... import ferric` must not
+    // satisfy this), and the import must come BEFORE the pytest run.
+    let live: Vec<&str> = job
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect();
+    let import_at = live
+        .iter()
+        .position(|l| l.contains("python -c \"import ferric\""));
+    let pytest_at = live.iter().position(|l| l.contains("-m validation"));
+    assert!(
+        matches!((import_at, pytest_at), (Some(i), Some(p)) if i < p),
+        "the validation job must run `python -c \"import ferric\"` (not commented out) BEFORE \
+         `pytest -m validation`: conftest.py skips the whole suite on a failed import, which \
+         would exit green with nothing run (import at {import_at:?}, pytest at {pytest_at:?})"
+    );
+}
+
+#[test]
+fn no_other_job_selects_the_validation_marker() {
+    let ci = ci_yml();
+    let job = validation_job(&ci);
+    let outside = ci.replacen(&job, "", 1);
+    let hits: Vec<&str> = outside
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter(|l| {
+            let toks: Vec<&str> = l
+                .split(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+                .filter(|t| !t.is_empty())
+                .collect();
+            toks.windows(2)
+                .any(|w| w[0] == "-m" && w[1] == "validation")
+        })
+        .collect();
+    assert!(
+        hits.is_empty(),
+        "only the validation job may select `-m validation`; elsewhere it runs the Python \
+         validation tier per-commit:\n  {}",
+        hits.join("\n  ")
+    );
+}
