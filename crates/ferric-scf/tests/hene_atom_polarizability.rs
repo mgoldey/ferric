@@ -273,8 +273,8 @@ fn ion_induced_dipole_differential_is_small_against_the_ip_anchor() {
 
     // At 4 A the polarization term is already under 1% of the dIP asymptote,
     // which is why the R -> infinity gap is a pure ionization-potential
-    // difference and the cDFT gap must asymptote to dIP. Measured: 0.13% at
-    // 4 A. Bar at 1%.
+    // difference and the cDFT gap must asymptote to dIP. Measured: 7.76e-4 eV,
+    // 0.021% of dIP, at 4 A. Bar at 1%.
     let rb4 = 4.0 * ANG2BOHR;
     let d_ev4 = (a_ne - a_he) / (2.0 * rb4.powi(4)) * HA2EV;
     assert!(
