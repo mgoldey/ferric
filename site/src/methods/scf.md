@@ -195,21 +195,25 @@ functional is range-separated (exchange then comes from the SR/LR fitters).
 
 **COSX is for large basis sets on systems too big for RI-JK.** Its cost per
 grid point barely moves with angular momentum while analytic exchange grows
-roughly tenfold from SVP to QZVP, so it reaches analytic exchange only at
-quadruple-zeta: on butane/def2-QZVP a COSX K build is **137 s against 400 s**
-for the default direct J+K build (parity; J and K share that sweep), while at
-TZ the full COSX SCF is 3.7× slower than direct (358 s vs 98 s). Below QZ it
-is the wrong tool. This page quotes no ratio against LinK.
+roughly tenfold from SVP to QZVP, so it wins at high angular momentum, not at
+large system size. Measured on one thread at the default grid:
 
-Its cost is sub-quadratic in system size. A density-driven pair screen (on
-the product of the integral bound and the local half-transformed density)
-keeps the K error below 2e-6 Ha at the default threshold, and the
-half-transforms `D·X` and `X·Gᵀ` run over per-batch sparse AO lists
-(`cosx_half_transform = "sparse"`, the default). Measured at def2-SVP on one
-thread over n-alkanes C4–C20, fitted to the last three points (C12–C20): the
-A-build scales as N^1.52 and the full K build as N^1.57; with
-`cosx_half_transform = "dense"` the full build's tail is N^2.07. That is one
-family of molecules in one basis.
+- On butane, against exact direct exchange: at def2-TZVP the full COSX SCF is
+  3.7× slower (358 s vs 98 s); at def2-QZVP the COSX K build is 4.7× faster
+  (90 s vs 421 s), at a relative K error of 5.4e-5.
+- On n-alkanes at def2-SVP, against LinK: slower at every size measured,
+  1.59× (C20), 1.09× (C32) and 1.22× (C48), with no trend toward parity. At
+  def2-TZVP on C20 it is faster (0.67×).
+
+Below quadruple zeta it is the wrong tool unless RI-JK's three-index tensor
+does not fit in memory.
+
+A density-driven pair screen (on the product of the integral bound and the
+local half-transformed density) keeps the K error below 2e-6 Ha at the default
+threshold, and the half-transforms `D·X` and `X·Gᵀ` run over per-batch sparse
+AO lists (`cosx_half_transform = "sparse"`, the default). At def2-SVP the K
+build grows as N^1.29–N^1.32 between C20 and C48; that is one family of
+molecules in one basis.
 
 COSX's error is a grid error, and it is not µHa-small: 5e-6 Ha on water/cc-pVDZ
 and 1.2e-4 Ha on butane/def2-TZVP at the default grid. Reaction energies
