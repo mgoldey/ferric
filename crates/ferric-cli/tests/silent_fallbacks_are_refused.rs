@@ -235,7 +235,15 @@ fn uhf_rohf_and_rhf_with_a_functional_run_kohn_sham() {
     let e_ksdft = energy("oh_ksdft_pbe", "ksdft", &pbe);
     let e_uks = energy("oh_uhf_pbe", "uhf", &pbe);
     let e_uhf = energy("oh_uhf_plain", "uhf", TIGHT_SCF);
-    let e_roks = energy("oh_rohf_pbe", "rohf", &pbe);
+    // Keep the ROKS run's full output: when the gap assertion below fails it
+    // prints what the SCF did (iterations, <S^2>, warnings), because a wrong
+    // ROKS state has so far only reproduced on the CI runner (AMD EPYC 9V74),
+    // never locally in debug or release.
+    let roks_out = run_ok(
+        "oh_rohf_pbe",
+        &body_at(&xyz, 2, "sto-3g", "rohf", "energy", &pbe),
+    );
+    let e_roks = stdout_value(&roks_out, "energy ");
     let e_rohf = energy("oh_rohf_plain", "rohf", TIGHT_SCF);
     assert!(
         (e_uks - e_ksdft).abs() < 1e-8,
@@ -252,8 +260,11 @@ fn uhf_rohf_and_rhf_with_a_functional_run_kohn_sham() {
     const PYSCF_ROKS_MINUS_UKS: f64 = 3.2080e-4;
     assert!(
         (e_roks - e_uks - PYSCF_ROKS_MINUS_UKS).abs() < 2e-5,
-        "ROKS {e_roks:.10} - UKS {e_uks:.10} = {:.4e}; PySCF gives {PYSCF_ROKS_MINUS_UKS:.4e}",
-        e_roks - e_uks
+        "ROKS {e_roks:.10} - UKS {e_uks:.10} = {:.4e}; PySCF gives {PYSCF_ROKS_MINUS_UKS:.4e}\n\
+         --- ROKS stdout ---\n{}\n--- ROKS stderr ---\n{}",
+        e_roks - e_uks,
+        String::from_utf8_lossy(&roks_out.stdout),
+        String::from_utf8_lossy(&roks_out.stderr)
     );
     assert!(
         (e_roks - e_rohf).abs() > 0.1,
