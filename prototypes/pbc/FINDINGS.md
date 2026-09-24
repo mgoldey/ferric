@@ -1465,8 +1465,7 @@ an exact relabelling by time reversal; no energy anchor can see it (the PySCF S(
 | H2/STO-3G a=4, 1x1x2 (mesh 61^3) | none / ewald | -0.902683427348 / -1.354143879961 | -1.9e-14 / -2.7e-14 | 1.1e-13 |
 | H2/STO-3G a=4, 2x2x2 (61^3) | none / ewald | -0.700885391756 / -1.055547576692 | -1.9e-14 / -1.9e-14 | 1.6e-13 |
 | tri 4H s+p, 1x1x2 (61^3 and 41^3) | none / ewald | -1.587649533398 / -2.327120141714 | -9.6e-13 / -9.6e-13 | 2.2e-9 (same at 41^3 and 61^3) |
-tri 2x2x2 NOT compared: the first run's process was killed silently under the 1.5 GB cap during the PySCF
-step (ours had taken 31 min); a rerun (2 GB cap, PySCF mesh 41^3) was still running when this entry was written.
+| tri 4H s+p, 2x2x2 (41^3; 2 GB cap, a 1.5 GB run was killed silently in the PySCF step) | none / ewald | -1.527634046851 / -2.150070925837 | -1.1e-12 / -1.1e-12 | 5.1e-10 / 4.1e-9 |
 The tri eps residual 2.2e-9 does not move with the PySCF mesh (41^3 vs 61^3), so it is not the AFT mesh; it is below
 the energy-relevant level (dE 1e-12, quadratic) and not isolated (candidates: 1e lattice-sum ranges, rcut_1e 22 vs
 PySCF precision 1e-12). Wall time (loaded box, load ~20-28): ours tri 2x2x2 31 min, PySCF H2 2x2x2 ~8 min per exxdiv.
@@ -1484,7 +1483,7 @@ MV gauge-invariant spread, the crystal form of Iteration 1's c3 = -(4pi/3) sigma
 | 3 | -1.099878133431 | 0.909 | 2.0227 | -1.117695348104 | 1.158 | 2.2609 |
 | 4 | -1.086067029552 | 0.508 | 2.1321 | -1.116650366716 | 1.086 | 2.3195 |
 | 5 | -1.086911915158 | 0.656 | 2.2545 | -1.116295989516 | 1.111 | 2.3481 |
-| 6 | -1.085799824217 | 0.495 | 2.2961 | (running) | | |
+| 6 | -1.085799824217 | 0.495 | 2.2961 | -1.116138698091 | 1.084 | 2.3639 |
 E_none - E_ewald - v_M(n) <= 1.5e-15 at every n, both cells (H0 holds to machine precision; v_M n a = 2.8372974795).
 So exxdiv=none is off by +nocc 2.837/(n a): +0.142 Ha at n = 5 (a=4), +0.095 (a=6).
 - a=4 (the Iteration-1 cell: H2 units 2.6 Bohr apart along z, a dispersive band, gap 0.5-2.1 swinging with n): E_ewald
@@ -1493,17 +1492,20 @@ So exxdiv=none is off by +nocc 2.837/(n a): +0.142 Ha at n = 5 (a=4), +0.095 (a=
 - a=6 (gap ~1.1 for n >= 2): two-point (4,5) fit c3/n^3: c3 = -0.04648, E_inf = -1.115924. Predicted c3 =
   -(4pi/3) Omega_I/216 = -0.04554 (Omega_I(n=5) = 2.348, still rising with n: finite-difference O(b^2)) or -0.04643 with
   the molecular sigma^2 = 2.39407 (the flat-band limit). Three-point (3,4,5) c3 + c5 fit: c3 = -0.0432, c5 = -0.038
-  (unstable: n = 3 is not asymptotic). c3-only fit on (3,4,5): c3 = -0.0483, E_inf = -1.115903; local exponents with that E_inf: 2.25 (2->3), 3.04 (3->4), 2.88 (4->5).
+  (unstable: n = 3 is not asymptotic). ADDED after n = 6: c3-only fit (4,5,6): c3 = -0.04652, E_inf = -1.1159235;
+  (5,6): -0.04667; c3 + c5 (4,5,6): c3 = -0.04704, c5 = +0.0066, E_inf = -1.1159218; local exponents with that E_inf
+  3.09 (3->4), 2.99 (4->5), 2.99 (5->6). Predicted -(4pi/3) Omega_I(n=6)/216 = -0.04584 (Omega_I still rising) and
+  -0.04643 (molecular sigma^2): the fitted c3 lies within 0.2-1.3% of the flat-band prediction and 1.5-2.6% of Omega_I(6). c3-only fit on (3,4,5): c3 = -0.0483, E_inf = -1.115903; local exponents with that E_inf: 2.25 (2->3), 3.04 (3->4), 2.88 (4->5).
 
-### Interpretation (provisional, 2026-09-24; H2/STO-3G only, two cubic cells, n <= 6 at a=4, n <= 5 at a=6)
+### Interpretation (provisional, 2026-09-24; H2/STO-3G only, two cubic cells, n <= 6)
 - **k-mesh RHF is the Gamma supercell, term by term.** The anchor is exact to 1e-14..1e-12 (H2 1x1x3, 2x2x2; triclinic
   s+p 1x1x3) and PySCF KRHF/AFTDF agrees to 2e-14 (H2) / 1e-12 (tri). The only k-specific physics is which K is
   dropped (K = 0, the k = k' head) and which v_M is added (the supercell's). They are consistent by construction:
   **the supercell v_M and the k-mesh v_M are the same number** (PySCF computes the k-mesh one by building the supercell),
   measured equal to 0 / 1e-15. Iteration 5b's "missing q = 0 head" is the same K = 0 hole, weight 1/Nk.
 - exxdiv=none vs ewald is not an empirical race: none = ewald + nocc v_M(n) exactly, so none converges as N_k^(-1/3)
-  with the Madelung constant as coefficient. ewald converges as N_k^-1 once the band is sampled (a=6: exponent ~3 in n,
-  coefficient within 2% of the Omega_I prediction from two points). On the dispersive a=4 cell even n = 5 is not in the
+  with the Madelung constant as coefficient. ewald converges as N_k^-1 once the band is sampled (a=6: exponent 2.99 in n
+  over 4->6, coefficient within ~1-3% of the pre-stated -(4pi/3) Omega_I prediction). On the dispersive a=4 cell even n = 5 is not in the
   asymptotic regime; the finite-size ANALYSIS (which power) must be done on the tail of a mesh sweep, never on n <= 3.
 - The dense AFT kernel is an oracle only: tri 2x2x2 (nao 16) took 31 min of pair FTs; Nk^2 nao^4 memory.
 - NOT measured: shifted (non-Gamma-centred) MP meshes, metals / partial occupation (global aufbau is implemented but
@@ -1539,3 +1541,382 @@ carries Iteration 2's G = 0 bookkeeping), and SR 3c lattice sums weighted by e^{
 Tests to port: 1x1x1 == Gamma driver (1e-12); 1x1x3 k-mesh == explicit 1x1x3 supercell via the dense-AFT oracle at a
 LOOSE gcut (exact at any gcut) + the three mutants; S(k) vs PySCF pbc_intor(kpts) (convention) and S(-k) = S(k)^*;
 E_none - E_ewald = nocc v_M; PySCF pins (test_prototype.py KPT_REF_H2_112, and the tables above).
+
+## Iteration 11 (Python, k-point RS-GDF) — 2026-09-24
+
+### Code
+- New `pbc_kgdf.py` (~230 lines): `build_kgdf(cell, n, auxbasis, w, prec, spherical, lindep, auxmol)` -> complex
+  `B[(k,k')]` (naux_kept(q), nao, nao) for every mesh pair; `jk_from_kB` (K one q class at a time, J from q = 0);
+  `kernels_from_kB` (dense Jker/Kker, anchor use only); `_MUTANT` switch (q_phase_sign, g0_all_q, no_lindep_q,
+  no_herm_q0, no_time_reversal). Molecular intor + pbc_gdf.aux_ft + pbc_supercell.pair_ft_residues only.
+- `pbc_kpts.krhf(..., jk=None)` hook (dm stack -> J, K stacks); default path unchanged.
+- Drivers: `run_kgdf_anchor.py [a|b|c|tr]`, `run_kgdf_oracle.py h2|tri n1n2n3 [aux..]`, `run_kgdf_lindep.py`,
+  `run_kgdf_fiterr_split.py [n..]` (hypotheses in each docstring, written before the run).
+- `test_prototype.py`: +8 tests at the END (~100 s; full suite 93 passed / 7 slow skipped, 200 s under load).
+
+### Method
+Fit a_ml(K) = P^{kk'}_ml(K) (pbc_kpts pair FT, K = G + q, q = k' - k) in the q-Bloch aux X^q_P = sum_T e^{iq.T}
+chi_P(r - T), Coulomb metric of the same K = 0-dropped kernel:
+J2(q)[P,Q] = <X_P|X_Q> = SR sum_T e^{+iq.T} (P_0|Q_T)_erfc + LR (1/Omega) sum_{K in G+q} v_lr conj(X_P) X_Q (Hermitian);
+J3(k,k')[P,ml] = <X_P|a_ml> = SR sum_{L,T} e^{ik'.L} e^{-iq.T} (m_0 l_L|P_T)_erfc + LR sum v_lr conj(X_P) a_ml;
+J2(q) = U s U^H, keep s > lindep per q, B = s^{-1/2} U^H J3; Kker[k,k'][m,l,n,s] ~ sum_P B_ml conj(B_ns),
+Jker[k,k'] ~ sum_P B_mn(k,k) conj(B_ls(k',k')). G = 0: v_erfc is finite at K = 0 and K = 0 exists only on the q = 0
+lattice, so only q = 0 subtracts c0 q q^T from J2 and c0 q S(k) from J3(k,k) (c0 = pi/(w^2 Omega)); q != 0 has no
+G = 0 term at all. SR integrals are q- and k-independent: computed ONCE (the Gamma triplet set, same ranges as
+pbc_gdf) and binned by (L mod mesh, T mod mesh); each (k,k') is an (Nk x Nk) phase contraction of the bins. LR: one
+residue-resolved pair FT + one aux FT per q on the full K = G+q set. Time reversal: J2(-q) = conj J2(q),
+J3(-k,-k') = conj J3(k,k'), U(-q) := conj U(q) => B(-k,-k') = conj B(k,k'); only one of each (q, -q) is built.
+q = 0: J3(k,k) is Hermitised in (m,n) (exact identity for real aux; see the finding below).
+
+### Measured: exactness anchors (run_kgdf_anchor.py)
+| anchor | system | result |
+|---|---|---|
+| (a) trivial aux (Iteration-2 24 s functions, 8 half-lattice classes x 3 pair types) | anchor H2 (one s, al 0.5), 1x1x3 | max\|dJker\| 1.8e-12, max\|dKker\| 1.8e-12 (q=0) / 1.2e-12 (q!=0), dE -8.3e-13 (none and ewald); kept 24/24 every q, smin 2.7e-5 |
+| MUTANT e^{+iq.T} on SR aux images | same | q=0 blocks 1.8e-12 (untouched), q!=0 max\|dKker\| 1.8e2, dE -1.3e2 |
+| MUTANT Gamma G=0 bookkeeping at every q | same | q=0 1.8e-12, q!=0 6.4e-2, dE +2.9e-2; J2(q!=0) indefinite (smin -2.5, 23/24 kept) |
+| aux + one exact DUPLICATE, per-q cut / no cut at q!=0 | same | both 1.8e-12, dE -8.3e-13 (smin 1e-15..3e-15; kept 24 / 25) |
+| (b) 1x1x1 vs pbc_gdf.build_gdf | H2/STO-3G, cc-pvdz-ri | max\|B B^H - B B^T\| 1.9e-13, 28/28 kept, dE 1.4e-14 (both exxdiv), max\|Im B\| 3e-16 |
+| (c) k-mesh RS-GDF vs Gamma RS-GDF of the explicit supercell (aux on every image) | H2/STO-3G 1x1x3, cc-pvdz-ri | E/cell diff -4.7e-15 (none) / -4.2e-15 (ewald); kept 28+28+28 = 84 = supercell 84 |
+| (c) MUTANT e^{+iq.T} | same | -8.8e-2 |
+| time-reversal fill vs all q built | H2/STO-3G 1x2x3, cc-pvdz-ri | max\|dKker\| 5.8e-15, dJker 0; 4 of 6 q classes built |
+(a) generalises the Gamma anchor because the SAME 24 centres span every q: sum_T e^{iq.T} sum_L e^{ik'.L} c_L
+g(r - C_L - T) regroups (L = 2M + h) into a k'-dependent combination of the q-Bloch sums of the 8 class centres.
+(c) is EXACT, not converged-to-each-other, as predicted: the supercell aux space is the unitary DFT (over residues)
+of the direct sum of the per-q aux spaces, the supercell metric is block-diagonal in q with blocks J2(q) (identical
+eigenvalues => the same lindep cut keeps the same space; 84 = 3 x 28 measured), q-momentum pair densities touch only
+the q block, and the supercell G = 0 term is the q = 0 block's. So a k-mesh RS-GDF has NO fitting error of its own
+relative to the supercell Gamma RS-GDF: every k-point fitting error is a supercell fitting error. Needs n >= 3 on
+some axis to see phase errors (at n = 2 every e^{iq.T} is real).
+
+### Measured: per-q lindep and q = 0 Hermiticity (run_kgdf_lindep.py; H2/STO-3G 1x1x3, ET l<=1 amin 0.1 b 2.2, 72 aux)
+| prec | per-q cut 1e-12 / 1e-10 / 1e-8 | no cut at q!=0 | no q=0 Hermitisation | smin per q | asym J3(q=0) |
+|---|---|---|---|---|---|
+| 1e-13 | -1.170495423746 / same / -1.170495396138 (kept 69,71,71 / 67,68,68) | -1.170495431874 (72 kept at q!=0) | -1.170495423746 | -1.2e-10, -6.3e-11, -6.3e-11 | 5.6e-12 |
+| 1e-8 | -1.170495331663 / same / -1.170495326935 | -1.170495335314 | SCF never converges | -1.9e-8, -4.4e-9, -4.4e-9 | 5.5e-8 |
+Artifact-vs-physics: the duplicated-aux anchor was predicted to FAIL without the cut and did not: an exactly
+dependent aux set keeps J3 in range(J2) to rounding (0/sqrt(1e-15)). The per-q cut is NOISE control: without it a
+negative noise eigenvalue (-6e-11) enters as an imaginary column and moves E by 8e-9 (prec 1e-13) / 4e-9 (1e-8).
+The loud failure is elsewhere: truncated SR image sets break the (m,n) Hermiticity of J3(k,k) at the prec level, J
+becomes non-Hermitian, and at prec 1e-8 the SCF does not converge. Hermitising J3 at q = 0 (as pbc_gdf does at
+Gamma) fixes it; the prec 1e-8 energy is then 9.2e-8 from the 1e-13 one. K is Hermitian by construction
+(sum_P B dm B^H), so q != 0 needs no such step.
+
+### Measured: PySCF oracle (run_kgdf_oracle.py; KRHF + RSDF / GDF, same aux, cart, cell.precision 1e-12, from our dense-AFT dm)
+Fit error = E(fit) - E(dense k-AFT, pbc_kpts at the default converged cutoff; = PySCF AFTDF to <= 1e-12, Iteration 9).
+Identical for none and ewald in every row (to all printed digits).
+| system, mesh | aux (cart naux) | ours - RSDF | ours - GDF | fit error ours / RSDF / GDF |
+|---|---|---|---|---|
+| H2/STO-3G a=4, 1x1x1 (Gamma, Iteration 2 cart) | cc-pvdz-ri (30) / jkfit (40) | 6e-13 / – | – | -1.71e-6 / -3.84e-6 |
+| H2, 1x1x2 | cc-pvdz-ri (30) | -6.6e-13 | -4.8e-13 | -1.146e-4 (all three) |
+| | def2-universal-jkfit (40) | -3.7e-12 | 3.9e-13 | -4.153e-7 |
+| H2, 1x1x3 (complex q) | cc-pvdz-ri | -1.3e-13 | -1.5e-13 | -7.434e-5 |
+| | def2-universal-jkfit | -2.9e-12 | -2.8e-13 | -3.603e-7 |
+| H2, 2x2x2 | cc-pvdz-ri | 7.0e-15 | -1.4e-13 | +5.172e-5 |
+| | def2-universal-jkfit | -1.6e-11 | -5.6e-13 | +7.667e-6 |
+| tri 4H s+p, 1x1x2 (nao 16) | cc-pvdz-ri (60) | -1.2e-12 | -1.1e-12 | +5.901e-5 |
+| | def2-universal-jkfit (80) | -5.2e-11 | -6.7e-12 | -6.216e-6 |
+Ours agrees with PySCF GDF to <= 7e-12 everywhere and with RSDF to <= 5e-11; the RSDF residual grows with the jkfit
+set (smallest metric eigenvalue 2e-10..1e-7 at some q) exactly as at Gamma (Iteration 2: PySCF RSDF's metric path is
+the noisier one). The three independent implementations give the SAME fitting error to 4 digits, so the error is
+the aux basis, not a construction.
+
+Where the k-point fitting error lives (run_kgdf_fiterr_split.py; first order at the dense-AFT density, H2 cart aux;
+hypotheses H_q "q != 0 exchange pair densities are what the molecular RI set fits worst" vs H_0 "ordinary q = 0 J/K
+fitting of a different density"):
+| mesh | aux | SCF fit error | dE_J | dE_K(q=0) | dE_K per q != 0 class |
+|---|---|---|---|---|---|
+| 1x1x1 | cc-pvdz-ri | -1.71e-6 | -3.43e-6 | +1.71e-6 | – |
+| 1x1x2 | cc-pvdz-ri | -1.146e-4 | -2.286e-4 | +1.108e-4 | +3.1e-6 |
+| 1x1x3 | cc-pvdz-ri | -7.43e-5 | -1.060e-4 | +2.56e-5 | +3.0e-6 (x2) |
+| 1x1x2 | jkfit | -4.2e-7 | -7.48e-6 | +4.02e-6 | +3.0e-6 |
+| 1x1x3 | jkfit | -3.6e-7 | -5.85e-6 | +1.29e-6 | +2.1e-6 (x2) |
+H_0 holds: the 30-70x growth of the cc-pvdz-ri error over Gamma is in the q = 0 J (and q = 0 K) of the k-sampled
+density (the a=4 cell's dispersive band: occupied k != 0 Bloch densities have inter-cell nodes that this MP2-RI
+set fits poorly), while each q != 0 exchange class contributes a steady ~2-3e-6 for BOTH aux sets. The jkfit error
+stays at the Gamma magnitude (4e-7..8e-6) with J/K partial cancellation. Consequence: a JK-fit aux set is needed
+for k-point RS-GDF as at Gamma; cc-pvdz-ri (ferric's cc-pvdz-rifit alias) is not a JK set (1e-4 here).
+
+### Counts (no timings claimed; w = 1, prec 1e-13)
+| system, mesh, aux | per-q metric naux / kept | nK per q (LR) | SR 3c shell triplets | B per (k,k') | B total |
+|---|---|---|---|---|---|
+| H2 1x1x2 cc-pvdz-ri cart | 30 / 30, 30 | 1364, 1422 | 10,141,200 (= Gamma, once) | 30 x 2 x 2 complex | 480 complex (Nk^2 pairs) |
+| H2 2x2x2 cc-pvdz-ri | 30 / 30 every q | 1364..1452 | 10,141,200 | 120 | 7,680 |
+| H2 1x1x3 jkfit | 40 / 40 every q | 1364, 1426, 1426 | 10,918,800 | 160 | 1,440; 2 of 3 q classes built |
+| tri 1x1x2 cc-pvdz-ri | 60 / 60, 60 | 2102, 2088 | 251,693,568 | 60 x 16 x 16 = 15,360 | 61,440 |
+| tri 1x1x2 jkfit | 80 / 80, 80 | 2102, 2088 | 260,402,688 | 20,480 | 81,920 |
+| (Gamma, for contrast) | naux once, real | 1364 (H2) | same number | naux x nao^2 real | – |
+SR triplets per q: ZERO beyond the Gamma set (the molecular erfc integrals carry no q; only the Nk^2 residue bins
+and phases are new: bins nao^2 naux Nk^2 reals, 4 MB for tri at Nk = 2). Per q the new work is one J2(q) eigh
+(naux^3), one residue-resolved pair FT + aux FT on nK ~ the Gamma nG, and Nk (k') B contractions. Storage: B is
+Nk^2 x naux x nao^2 complex (vs naux x nao^2 real at Gamma: x 2 Nk^2), halved by time reversal. K from B costs
+Nk^2 naux nao^3 per SCF iteration.
+
+### Interpretation (provisional, 2026-09-24; H2/STO-3G and tri s+p, meshes <= 2x2x2 / 1x1x3, nao <= 16)
+- k-point RS-GDF is Gamma RS-GDF of the supercell, exactly (4e-15), including the lindep cut; everything the Gamma
+  code does per aux is reused unchanged, and the only new physics is: the q phase on aux images (e^{+iq.T} in J2,
+  e^{-iq.T} in J3, the sign convention the mutant pins), the k' phase on pair images, and G = 0 at q = 0 only.
+- Ours == PySCF GDF to <= 7e-12 and RSDF to <= 5e-11 on H2 (TRIM meshes and complex-q 1x1x3) and tri s+p 1x1x2.
+- Fitting error is an aux-basis property; with a JK set it stays at the Gamma magnitude; the q != 0 exchange classes
+  contribute ~2-3e-6 each here. With cc-pvdz-ri the k-sampled density's q = 0 J error reaches 1e-4.
+- Per-q lindep is noise control (1e-8-level on energies here), not correctness; q = 0 Hermitisation of J3(k,k) IS
+  required (SCF failure at loose prec without it).
+- NOT measured: spherical orbital basis, nao > 16, meshes > 8 points, shifted meshes, metals, diffuse-aux metric noise
+  per q at scale, wall time, SR screening per q (all SR here unscreened, Gamma set).
+
+### For the Rust port (rsgdf.rs -> k-point)
+Generalises unchanged: `Stage::sr_metric` / `sr_three_index` (same triplets, same `sr_radius` bounds; add an output
+mode that bins each (L, T) contribution by residue instead of summing: j2res[r][P,Q], j3res[rL][rT][mn,P], reals);
+`aux_ft`/`aux_ft_shells` (already take arbitrary vectors: pass K = G+q); `subtract_g0` (call at q = 0 only, with
+S(k) complex per k); `symmetrize_pairs` (q = 0 only, as a Hermitisation per k); `check_obs_on_cell`, `RsGdfConfig`,
+`LatticeWalker`, the budget/chunk logic. Must change: `lr_accumulate` uses the (G, -G) half-set with Re[conj(A) X];
+at q != 0 the K set is not +-symmetric (the -K partner lives on -q), so accumulate complex over the full G+q set;
+the half-set trick survives only at TRIM q (2q in G), where J2(q) is real and the existing real `fit_with_metric`
+can be used. `fit_with_metric` -> a Complex64 Hermitian version (zheevd, same lindep, explicit drop count per q,
+never Cholesky). Structure: `KRsGdf { per_q: Vec<Option<QBlock>> }` with `QBlock { w: Array2<C64> (naux x kept),
+b: Vec<Array3<C64>> indexed by k' }`, built for one of each (q, -q) and mirrored by conj; `impl KPointJk for KRsGdf`:
+J = sum_P B(k,k) rho_P with rho_P from the q = 0 block, K = (1/Nk) sum_{q} sum_{k'} B dm_k' B^H one q block at a time
+(the natural memory/streaming unit: nothing couples two q blocks), + v_M S dm S for ewald as in kscf. Tests to port:
+(a) trivial-aux anchor vs `kdense_aft.rs` at 1x1x3 (1e-11) + the q_phase_sign / g0_all_q mutants localised to q != 0;
+(b) 1x1x1 == `RsGdf` (1e-12); (c) 1x1x3 == `RsGdf` on the explicit supercell (4e-15 here; exact by construction);
+time-reversal fill == all q; the q = 0 Hermitisation guard; PySCF pin KGDF_REF_H2_112 (cart cc-pvdz-ri).
+
+## Iteration 12 (Python, k-point MP2/dRPA) — 2026-09-24
+
+### Code
+- New `pbc_kcorr.py` (~250 lines): `aft_ov` (exact dense-AFT ov integrals streamed per q class over K = G+q chunks,
+  same K sets/phases/normalisation as `pbc_kpts.build_k`; optional `head=True`, below), `kB_ov` (same from the complex
+  RS-GDF `pbc_kgdf` B; also returns the aux-side per-q stacks), `kmp2` (os/ss), `direct_kmp2`, `kdrpa_quad` (pbc_rpa's
+  GL map and log1p summand, one Hermitian Pi(q) per class), `kdrpa_plasmon` (per-q frequency integral done analytically:
+  E_q = 1/2[sum sqrt eig(D^2 + 4 D^1/2 Kq D^1/2) - tr D - 2 tr Kq], no quadrature, no aux), `kdrpa_second_order`,
+  `k_denominators` (strict shifted/unshifted), `_MUTANT` switch.
+- Conventions: V[ki,kj,ka] = (i ki a ka | j kj b kb) = sum_P Bov^P_ia(ki,ka) conj(Bvo^P_bj(kb,kj)), kb = ki + kj - ka
+  (both legs in the SAME q class => same per-q aux set); E/cell = (1/Nk^3) sum conj(V)[2V - V_ibja]/D (PySCF kmp2
+  normalisation); Pi(q) = (4/Nk) sum_k Bov(k,k+q) diag(e/(w^2+e^2)) Bov^H, E/cell = (1/Nk) sum_q (1/2pi) int
+  [ln det(1+Pi) - tr Pi]. 'shifted' = occupied eps_none - v_M(mesh) (C is the same under none/ewald).
+- Drivers: `run_kcorr_anchor.py [a|b|btri|c|mut]`, `run_kcorr_oracle.py aft|gdf n..`, `run_kcorr_convergence.py
+  nmax [nmin] [a]` (predictions in each docstring, written before the run).
+- `test_prototype.py`: +8 tests at the END (~100 s under load 7-10).
+
+### Measured: exactness anchors (run_kcorr_anchor.py)
+Prediction for (b), stated before the run: EXACT, not convergent — the supercell Fock is block-diagonal in the Bloch
+basis, so its canonical orbitals are Bloch orbitals up to rotations inside degenerate blocks (k/-k), under which
+canonical MP2/dRPA are invariant; the K sphere is the same set (Iteration 9); the supercell v_M is the mesh v_M; and
+GL-quadrature dRPA is exact node by node (the supercell Pi is block-diagonal in q).
+| anchor | system | KMP2 d | k-dRPA d (plasmon / GL-40) | other |
+|---|---|---|---|---|
+| (a) 1x1x1 vs pbc_mp2/pbc_rpa (dense Gamma ERI) | H2/STO-3G a=4, shifted / unshifted | 1.9e-16 / 4.3e-16 | 2.8e-17 / 5.8e-16 | = Iteration 3/4 values to all digits |
+| (b) mesh/cell vs explicit supercell Gamma / N (gcut prec 1e-4) | H2 1x1x3 (complex q) | -2.2e-15 / -2.6e-15 | -2.4e-15 / -2.8e-15 | quad40 - plasmon 4e-17 |
+| | H2 2x2x2 | 6.0e-16 / 7.5e-16 | 3.5e-16 / 1.0e-15 | |
+| | tri 4H s+p 1x1x3 (nocc 2, nvir 6 per k) | -3.0e-14 / -3.2e-14 | -3.4e-14 / -1.5e-14 | |
+| (c) trivial-aux kgdf B vs dense AFT, same C | anchor H2 (one s), 1x1x3 | 7.9e-14 / 9.7e-14 | aux-side quad40 vs AFT plasmon 7.5e-14 / 8.5e-14 | max\|dV\| 1.8e-12; own B-SCF: same |
+| (d) O(Pi^2) of k-dRPA vs direct KMP2 | all rows | 1e-17..3e-16 (2e-14 in (c)) | | |
+Mutations (H2 1x1x3, shifted / unshifted, vs the supercell): kb = ki - kj + ka dMP2 -1.1e-3 / -1.4e-3 (tri -2.4e-2),
+dRPA untouched (2e-15); no conj on the second leg dMP2 +1.1e-2 / +1.3e-2 (tri +9.5e-4), dRPA untouched; Madelung shift
+missing on occupied: shifted dMP2 -5.6e-3, d-dRPA -4.4e-3, unshifted row untouched (2.6e-15); occupied energy of k'+q
+instead of k'-q in Pi: d-dRPA +1.4e-3 / +1.9e-3, MP2 untouched. Code mutation of the normalisation (1/Nk^3 -> 1/Nk^2 in
+KMP2 and no 1/Nk in Pi): 6/8 new tests fail; the 1x1x1 anchor and the mutant test for no_madelung pass, as they must
+(Nk = 1 cannot see a power of Nk — the artifact hypothesis stated in the driver; the supercell anchor and the PySCF pin
+can).
+
+### Measured: PySCF oracle (run_kcorr_oracle.py; PySCF 2.13 pbc.mp.KMP2, KRHF started from our dm, conv 1e-11)
+| system | route | exxdiv=None vs ours unshifted | exxdiv='ewald' vs ours shifted | ours, other convention - PySCF |
+|---|---|---|---|---|
+| H2/STO-3G a=4 1x1x2 | AFTDF 61^3 vs dense AFT | -2.8883196728369e-2, d -2.2e-15 | -1.8228154905147e-2, d -1.6e-15 | +-1.1e-2 |
+| H2 1x1x3 (complex q) | AFTDF 61^3 | -3.2507280126487e-2, d -2.0e-14 | -2.6906779192508e-2, d -1.2e-14 | +-5.6e-3 |
+| H2 1x1x2 | GDF cart cc-pvdz-ri vs our kgdf B | -2.8860162102315e-2, d 2.5e-14 | -1.8219122876298e-2, d 1.8e-14 | |
+| H2 1x1x3 | GDF cart cc-pvdz-ri | -3.2485863018947e-2, d 3.6e-14 | -2.6891796960838e-2, d 3.5e-14 | |
+So PySCF KMP2 follows the HF exxdiv exactly (kmp2.py takes mf.mo_energy; no Madelung code): none -> unshifted,
+ewald -> shifted, both routes, TRIM and complex q. PySCF has no periodic RPA (Iteration 4): k-dRPA rests on (b) and (d).
+k-point RS-GDF correlation fitting error (cc-pvdz-ri, own B-SCF, vs dense): KMP2 +2.3e-5 / +9.0e-6 (1x1x2 unsh / sh),
++2.1e-5 / +1.5e-5 (1x1x3); dRPA +1.9e-5 / +9.7e-6, +1.9e-5 / +1.5e-5 (~5e-4 relative; includes the 1e-4 HF fit error of
+this non-JK aux, Iteration 11 — use a JK set for k-point production).
+
+### Measured: mesh convergence (run_kcorr_convergence.py; H2/STO-3G a=6, gcut prec 1e-10, E_corr per cell)
+Predictions (docstring, before the run; molecular quantities only): P1 unshifted - shifted = c1/(n a) with the
+Iteration 3/4 box c1 = -0.029903 (MP2) / -0.037343 (dRPA) (flat band); P2 shifted - E_inf = c/n^3 with c ~ c3_mol/a^3
+= +3.107e-3 (MP2) / +4.272e-3 (dRPA) (self terms only; cross-molecule uniform-head terms not predicted, so sign, power
+and magnitude only); P3 head restored: the ERI-head share of c3_mol disappears, leaving the Fock-head share +6.66e-4
+(MP2) / +8.32e-4 (dRPA) (frozen-orbital split of c3_mol = ERI 0.527 + Fock 0.144 (MP2), 0.743 + 0.180 (dRPA)), E_inf
+unchanged.
+| n | gap | MP2 shifted | MP2 unshifted | MP2 head | dRPA shifted | dRPA unshifted | dRPA head | (unsh-sh) n a MP2 / dRPA | wall |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 0.950 | -9.198544e-3 | -1.377597e-2 | -1.137004e-2 | -1.511962e-2 | -2.089546e-2 | -1.705897e-2 | -0.02747 / -0.03466 | 25 s |
+| 2 | 0.862 | -1.316406e-2 | -1.620806e-2 | -1.344168e-2 | -2.039704e-2 | -2.398398e-2 | -2.081241e-2 | -0.03653 / -0.04304 | 140 s |
+| 3 | 1.000 | -1.3275179e-2 | -1.5183439e-2 | -1.3356869e-2 | -2.0638339e-2 | -2.2930470e-2 | -2.0759350e-2 | -0.03435 / -0.04126 | 491 s |
+| 4 | 0.967 | -1.3322562e-2 | -1.4710788e-2 | -1.3357034e-2 | -2.0724519e-2 | -2.2404892e-2 | -2.0775688e-2 | -0.03332 / -0.04033 | 2140 s |
+Two-point tail fits (n = 3, 4; n <= 2 is band-sampling dominated, the gap swings 0.86..1.0):
+- P2 shifted, c/n^3: c = +2.213e-3 (MP2, 71% of the self-term estimate) / +4.025e-3 (dRPA, 94%); E_inf = -1.335714e-2
+  / -2.078741e-2. Sign and order as predicted; the coefficient is NOT a prediction (cross terms).
+- P3 head restored: c = +7.7e-6 (MP2) / +7.63e-4 (dRPA, 92% of the predicted Fock share); E_inf = -1.335715e-2 /
+  -2.078761e-2, the same as the shifted fit to 1.6e-8 / 2.0e-7 (predicted: the head is O(1/Nk)). The ERI head removes
+  81% of dRPA's c (predicted ERI share 80.5%) and ~100% of MP2's (predicted 78%): the MP2 row DISAGREES with P3 and is
+  not explained (candidates: the fixed-k head approximation, <h^2> - <h>^2 anisotropy, Fock-head/cross-term
+  cancellation, or n = 3 not asymptotic). Two points; n = 5/6 runs pending.
+- P1: (unsh - sh) n a fitted as c1 + b/n (n = 3, 4): c1 = -0.03022 (MP2, predicted -0.02990, 1.1%) / -0.03754 (dRPA,
+  predicted -0.03734, 0.5%). Errors vs E_inf at n = 4: unshifted -1.35e-3 (MP2, 10% of E_corr) / -1.62e-3 (dRPA);
+  shifted +3.5e-5 / +6.3e-5; head-restored +1.0e-7 / +1.2e-5.
+
+### Interpretation (provisional, 2026-09-24; H2/STO-3G and tri s+p, meshes <= 4^3, flat-band a=6 for convergence)
+- **KMP2 / k-dRPA per cell are the Gamma MP2 / dRPA of the supercell, exactly** (2e-15 H2, 3e-14 tri s+p, complex q
+  included), for both conventions — the orbital-rotation argument holds; no degeneracy issue arises because the SAME
+  Fock is diagonalised. Complex RS-GDF B -> KMP2/k-dRPA is exact in the trivial-aux limit (8e-14). PySCF KMP2 == ours to
+  2e-14 (AFTDF) / 4e-14 (GDF).
+- **Denominators: shifted, as at Gamma.** PySCF KMP2 inherits the HF exxdiv (none -> unshifted). Unshifted is an
+  N_k^(-1/3) error with a coefficient predicted from the MOLECULE to ~1% (P1): 10% of E_corr at a 4x4x4 mesh here.
+- **Shifted converges as N_k^-1** (c/n^3), and the q = 0 ERI head (Iteration 5b's quadrature hole, weight 1/N_k)
+  carries most of it: restoring its cubic average makes the 4^3 mesh accurate to 1e-7 (MP2) / 1.2e-5 (dRPA), vs 3.5e-5
+  / 6.3e-5 without, with the same E_inf. dRPA matches the ERI/Fock split predicted from the molecule; MP2 does not
+  (see above). The head as implemented uses fixed-k dipoles (exact only for flat bands) — do not port it as a
+  general-purpose correction before a dispersive-band test.
+- NOT measured: meshes > 4^3 (5, 6 running), dispersive bands (a=4), shifted meshes, frozen core, spherical basis,
+  nao > 16, real aux fitting error at scale, cost (dense V is Nk^3 (nocc nvir)^2), open shell.
+
+### k-point UHF (not built; what it would need)
+Everything above is per spin with no new integrals: `pbc_kpts.krhf` -> per-spin dm_s(k), global aufbau per spin,
+J from dm_a + dm_b, K_s from the same kgdf B (jk_from_kB with dm_s, no 1/2), exxdiv='ewald' as K_s += v_M S dm_s S
+(Madelung per spin, as the Gamma UHF of Iteration 6). KUMP2 = sum_s same-spin (with exchange, x1/2 relative to the
+closed-shell ss) + opposite-spin V(a-leg, b-leg) from `_accumulate` called with (Co_a, Cv_a) on one leg and (Co_b, Cv_b)
+on the other; KURPA Pi(q) = Pi_a(q) + Pi_b(q) with factor 2 instead of 4. Anchors: closed-shell KUHF == KRHF, 1x1x1 ==
+Iteration 7, mesh == supercell Gamma UMP2/URPA (same argument, per spin).
+
+### For the Rust port (stage 9)
+- MP2: `spin_components_from_b_ov` is real (f64 GEMMs on b_ov) and single-k; the k version needs complex blocks and the
+  (ki, kj, ka) loop, so add `ferric_pbc::kmp2_from_b(b: per-(k,k') Array3<C64> per q class, eps_k)` using zgemm per
+  (ki, ka) x (kb, kj) pair: V = Bov(ki,ka)^T conj(Bvo(kb,kj)); compute Bvo explicitly (do not derive it by conj from
+  the -q class: that relies on the time-reversal aux gauge U(-q) = conj U(q) AND C(-k) = conj C(k), which the SCF does
+  not enforce). Memory: stream over ki, keep V[ki, :, :] only; exchange needs V[ki, kj, kb] = same ki slice.
+  The real kernel can be reused only for Nk = 1 (anchor (a)).
+- dRPA: loop over q classes (the natural unit of `KRsGdf::QBlock`), Pi(q) complex Hermitian (naux_q^2). Reuse
+  quadrature nodes (`gauss_legendre_nodes`, n >= 40) and the log-det summand, but NOT `run_pdep_rpa_from_intermediates`
+  as-is (real `RpaIntermediates`). Cheapest reuse: realify, Pi_R = [[Re, -Im], [Im, Re]] is real symmetric with every
+  eigenvalue of Pi doubled, so E_q = 1/2 * (real-path energy on Pi_R); or add a zheevd summand. E = (1/Nk) sum_q E_q.
+  Occupied-leg index is k' - q (mutant rpa_k_wrong: +1.4e-3).
+- Denominators: shifted (KScfResult from exxdiv='ewald', or eps_none_occ - v_M(mesh)); refuse/convert otherwise.
+- Tests to port: 1x1x1 == Gamma MP2/dRPA (1e-12); 1x1x3 mesh == explicit supercell Gamma (dense-AFT oracle, loose
+  gcut, 1e-12) + the four mutants; O(Pi^2) == direct KMP2; trivial-aux B == dense; pin KMP2_REF_H2_112 (PySCF KMP2
+  AFTDF, both exxdiv).
+
+## Iteration 13 (Python, k-point UHF) — 2026-09-24
+
+### Code
+- New `pbc_kuhf.py` (~230 lines): `kuhf(kb, na, nb, kshift=, jk=, guess=, mix=, level_shift=, aufbau=)` (na/nb PER CELL;
+  complex D_s(k), J from D_a+D_b, K_s(k) from D_s, v_M S D_s S per spin per k, GLOBAL aufbau per spin over all k,
+  DIIS over the stacked (spin, k) commutators with Re-Gram), `staged_kuhf` (None, then ewald from that density),
+  `spin_square` (giant determinant, PySCF KUHF convention), `core_guess`, `unfold_dm` (Bloch D(k) -> supercell D).
+  Seams `_jk_spin`, `_madelung_term`, `_aufbau` (+ `_aufbau_per_k` mutant). J/K from dense pbc_kpts kernels or any
+  dm-stack callable (`pbc_kgdf.jk_from_kB`).
+- Drivers: `run_kuhf_anchor.py [a|b|c|d|mut|z112|z112mut|z113|z113mut]`, `run_kuhf_oracle.py`, `run_kuhf_trap.py`
+  (predictions in each docstring, written before the runs).
+- `test_prototype.py`: +11 fast tests at the END (~200 s under load 11-13; the tri 1x1x3 fixture is ~100 s of it).
+
+### Predictions (before measuring) — physics vs artifact
+- Closed shell: kUHF == kRHF to rounding. Artifact signatures: K from D_total -> O(0.1); v_M/2 per spin -> exactly
+  +v_M N/4 (ewald only); per-k aufbau INVISIBLE wherever global aufbau is already uniform over k.
+- k-mesh == Gamma UHF of the supercell holds exactly for a TRANSLATION-INVARIANT supercell state (its Fock is
+  block-diagonal in k; supercell aufbau over all orbitals == global per-spin aufbau over the mesh). It can fail
+  without a bug if (i) the supercell has a lower translation-broken UHF state (not representable on that mesh), or
+  (ii) the aufbau cut splits a k/-k degenerate pair (supercell picks a real combination, k code picks one of +-k).
+  Guard: per-spin global gap at the cut > 0.
+
+### Measured: anchors (run_kuhf_anchor.py; dense AFT at gcut prec 1e-4, which is exact for the supercell anchor)
+| anchor | system | none | ewald |
+|---|---|---|---|
+| (a) closed shell kUHF - kRHF | H2/STO-3G a=4 1x1x3 | 4.4e-16 (Da == Db, <S2> 9e-16) | -2.2e-16 |
+| (b) 1x1x1 - Gamma UHF (pbc_uhf on gamma_aft) | tri 4H/STO-3G triplet (3,1) | 5.9e-15, d<S2> 4e-16 | 4.4e-15 |
+| (c) 1x1x3 E/cell - supercell Gamma UHF/3 | tri 4H/STO-3G triplet (3,1)/cell, sc (9,3) | -9.8e-13, d<S2> -3.6e-11 (<S2> 12.0000619) | -9.8e-13 |
+| (c) non-uniform occupation, 1x1x2 | zchain doublet(+1) (1,0)/cell, nocc_a/k [2, 0] | -1.3e-14 | -1.2e-14 |
+| (c) 1x1x3 | zchain (1,0), nocc_a/k [1,1,1], gap_a 0.11 | 4.6e-14 | 4.7e-14 |
+| (d) trivial-aux k RS-GDF - dense | anchor H2 (one s/H) 1x1x3, (1,0) (+1 cell, 3 alpha in 6 bands) / (2,0) | -9.4e-14 / -7.6e-13 | same |
+zchain = H2 (bond 2.0 along x) stacked every 2.0 Bohr along z, STO-3G, cell diag(5,5,2): found by a scan AFTER the
+predictions, because every "natural" system had uniform per-k occupation. Its z band is so wide that the global
+aufbau puts both alpha electrons of the 1x1x2 mesh at Gamma (gap_a 0.51 none / 1.11 ewald, no degeneracy at the cut).
+Supercell from its OWN guesses (core, core + beta mix 0.5, random orbital rotation), then ewald: same energy to 1e-12,
+translation-breaking residual max|D(T+1,T'+1) - D(T,T')| <= 8e-7 (convergence level) for tri, <= 4e-9 zchain. So
+(i) did not occur on these systems; exactness holds. Per-spin global aufbau is exactly what makes it hold: the
+supercell's aufbau IS global.
+
+Mutations (tri triplet 1x1x3 unless noted; each localised as predicted):
+| mutant | none | ewald |
+|---|---|---|
+| K from D_a + D_b | -0.6868 | -0.6868 |
+| Madelung v_M/2 per spin | 0 | +0.1156 (= v_M N/4, v_M 0.115613) |
+| per-k aufbau, tri 1x1x3 / zchain 1x1x3 (uniform) | 0 / 0 | 0 / 0 |
+| per-k aufbau, zchain 1x1x2 (nocc_a/k [2,0] -> [1,1]) | +0.2412 | +0.2412 |
+| K from D_total, zchain (nb = 0) | 0 | 0 |
+Blind spots: nb = 0 systems cannot see K[D_total]; uniform-occupation systems cannot see per-k aufbau; (d) and the
+supercell anchor apply Madelung identically on both sides (only the v_M N/4 signature and the PySCF pins pin it).
+
+### Measured: PySCF KUHF + AFTDF oracle (run_kuhf_oracle.py; mesh 61^3, precision 1e-12, conv 1e-12; ours = default gcut)
+PySCF needs `mf.nelec = (na Nk, nb Nk)` (cell.spin counts the WHOLE mesh; spin=1 with 2 H-atom images raises).
+| system (a=4 cubic, STO-3G) | mesh | exxdiv | E/cell (ours) | dE PySCF default guess / from our D | <S^2> (both) | max d eps |
+|---|---|---|---|---|---|---|
+| H atom, doublet/cell | 1x1x2 | none / ewald | -0.399399818915 / -0.625130045222 | +5.2e-14 / +5.6e-14 (both guesses) | 2.0 | 1.1e-13 |
+| H atom | 1x1x3 | none / ewald | -0.528717460735 / -0.623551487522 | +6.9e-14 (both) | 3.75 | 1.2e-13 |
+| H2 triplet/cell | 1x1x2 | none / ewald | -0.200418842427 / -0.651879295040 | -7.5e-14 / -6.9e-14 | 6.0 | 1.9e-13 |
+ewald - none = -v_M(n)(Na+Nb)/2 to printed digits (v_M 0.451460452613 at 1x1x2, 0.189668053574 at 1x1x3 of the
+4x4x4 cell). <S^2> is the giant determinant's (Sz_tot(Sz_tot+1) here, nb = 0), NOT per cell: it grows as Nk^2.
+All pinned systems are full-alpha-band (D_a = S(k)^-1-like, no SCF freedom); tri/zchain anchors carry the SCF.
+
+### Measured: the ewald trap at k-points (run_kuhf_trap.py; tri 4H s+p triplet (3,1)/cell, dense AFT gcut prec 1e-8)
+| mesh | v_M | E none (core) | E ewald from core (and core + beta mix 0.3) | E ewald staged | trapped - staged | trapped alpha gap / None-Fock gap | staged gap_a |
+|---|---|---|---|---|---|---|---|
+| 1x1x1 | 0.622437 | -0.5831259652 | -1.8129587148 (<S2> 2.002890) | -1.8279997231 (1 it) | +1.504e-2 | 0.6168 / -0.0057 | 0.6514 |
+| 1x1x2 | 0.369735 | -1.0743927843 | -1.7207518511 (<S2> 6.006305) | -1.8138633926 (1 it) | +9.311e-2 | 0.2388 / -0.1309 | 0.5904 |
+| 1x1x3 | 0.115613 | -1.5647592041 | -1.7959851765 | -1.7959851765 (1 it) | 2e-14 (no trap) | – | 0.5317 |
+staged - none = -v_M N/2 to 1.8e-14..3.6e-14 at every mesh. 1x1x1 reproduces Iteration 6 exactly (-1.812958714837 /
+-1.827999723359). The trapped states are uniform over k (nocc_a/k [3,3]) holes: under None their density is stationary
+with a NEGATIVE alpha gap (occupied above virtual), under ewald every occupied level at every k drops by v_M, so the hole
+becomes aufbau-consistent whenever |hole| < v_M. The 1x1x2 trap is DEEPER than Gamma (hole 0.131 Ha, 93 mHa above the
+ground state), not shallower as predicted from v_M alone: v_M(n) shrinks with n, but the hole depth is a property of
+the band structure, which the mesh also changes. At 1x1x3 (v_M 0.116) the core guess lands on the staged state.
+
+### Interpretation (provisional, 2026-09-24; STO-3G/s+p H cells, meshes <= 1x1x3, nao <= 16/cell)
+- k-point UHF is the Gamma UHF of the supercell, term by term (1e-12 or better), for translation-invariant states,
+  including a non-uniform occupation pattern over k; PySCF KUHF agrees to <= 7.5e-14 (E) and exactly (<S^2>).
+- Per spin: same v_M as k-RHF (the supercell's), coefficient 1 on D_s, no 1/Nk. Nothing spin-specific is new at k.
+- Global per-spin aufbau is REQUIRED (the supercell does it implicitly); per-k aufbau is wrong by 0.24 Ha/cell when
+  the bands overlap, and invisible otherwise, so a test on an insulator cannot catch it.
+- Ewald trap: the staged start carries over unchanged (1 iteration at every mesh, exact -v_M N/2 offset). The criterion
+  "per-spin GLOBAL gap (min virtual over all k - max occupied over all k, from the actual occupations) >= v_M(mesh)"
+  flagged all 4 trapped runs and none of the 5 correct ewald runs here; it is necessary, not sufficient (Iteration 6 O2).
+  Equivalent form: the None-Fock gap of the converged density >= 0. The trap does NOT monotonically fade with the
+  mesh (1x1x2 worse than Gamma), so do not rely on "large mesh -> small v_M" to avoid it.
+- NOT measured: translation-broken ground states (none found), k/-k degenerate cuts (guard only), broken-symmetry
+  singlets (na == nb + mix at k), real aux k RS-GDF UHF, spherical basis, meshes > 3 points, ROHF at k, cost.
+
+### For the Rust port (k-point UHF)
+Recommendation: a SIBLING `kuscf.rs` (`solve_kuhf_injected`), not a mode flag in `solve_krhf_injected`; share the
+helpers by lifting them to `pub(crate)`: `eigh_herm` (column-major; the complex eigh trap applies unchanged),
+`complex_canonical_orthogonalizer` (once per k, shared by both spins), `diagonalize_all`, `KDiis` (feed it the 2 Nk
+blocks: Fock/error slices [a(k0..), b(k0..)] — the Gram is already Re sum over blocks, so no change), `density` with
+occupation 1 instead of 2 (parameterise the factor), `aufbau` called ONCE PER SPIN with n_occ_total = n_s Nk and its
+min_gap check per spin (nb = 0 must be allowed: skip the check / no "0 occupied" error for beta). Reason for a sibling:
+the RHF loop's contracts (nelec even, F = h + J - K/2, occupation 2, KScfResult fields) all change, and kscf.rs already
+carries byte-identity tests for the RHF path.
+- `KPointJk`: keep the trait as is (linear in dm); call it once per spin: (J_a, K_a) = build(D_a), (J_b, K_b) =
+  build(D_b), J = J_a + J_b. That costs a second J (q = 0 only, cheap vs K). Optional later: a `build_spin(&[D_a],&[D_b])`
+  default method computing J once. The Madelung wrapper (K += v_M S D S) must stay linear and be called with D_s; do
+  NOT add a 1/2 "for spin" (mutant: +v_M N/4 per cell).
+- Staged ewald start as the default (None to convergence, then ewald from that density; 1 iteration measured), or at
+  least a post-convergence per-spin global-gap >= v_M(mesh) check that warns/errors. Iteration 6's guess caveats
+  (no molecular SAD/stability on the injected path) apply per k.
+- `KUScfResult`: per-spin eps/mos/densities/occupations per k, nocc_per_k per spin (may be non-uniform), homo/lumo per
+  spin, `s2` of the giant determinant (document: not per cell).
+- Tests to port: closed shell kUHF == kRHF (1e-12); 1x1x1 == Gamma `solve_uhf_injected` (1e-12); tri/STO-3G triplet
+  1x1x3 == explicit-supercell Gamma UHF via the dense-AFT oracle (1e-11, <S2> 1e-9) + K[D_total] (-0.687) and v_M/2
+  (+v_M N/4) mutants; zchain 1x1x2 non-uniform occupation == supercell (1e-12) + per-k aufbau mutant (+0.24);
+  trivial-aux k RS-GDF == dense (1e-11); PySCF pins KUHF_REF (H atom 1x1x2, H2 triplet 1x1x2, both exxdiv, <S2>);
+  tri s+p 1x1x2 ewald trap from core (-1.7207518511) vs staged (-1.8138633926) as a slow test.
+
+## Open item — Gamma ROHF on the triclinic triplet does not converge (2026-09-29, Rust)
+gamma_rohf / gamma_roks with a zero-XC builder do not converge on the periodic triclinic 4H s+p triplet
+(nα=3, nβ=1) for any exact-exchange fraction a = 0.25, 0.5, 0.75, 0.9, 1.0 (DIIS ROHF, 200 it; last E at a=1:
+−0.5620624278 vs PySCF pbc ROHF −0.581222768976). A 0.5 level shift + 400 it and a seed from converged UHF
+alpha orbitals did not help. Evidence it is the SOLVER on this system, not the injection: (1) ROKS PBE0 (a=0.25
+plus real XC) through the same injected path matches the prototype pin to 1e-12; (2) closed-shell ROHF == RHF
+and the H atom / H2 triplet ROHF (no doubly-occupied + singly-occupied mix) pass; (3) the Python prototype's
+ROHF also stalls here; (4) ferric's MOLECULAR ROHF converges on the same geometry (STO-3G, not the s+p basis;
+−1.646720771 vs PySCF −1.646720763). NOT established: whether PySCF's different ROHF effective-Fock /
+canonicalization is what makes the difference. Tests: two tri ROHF tests are #[ignore]d with this reason.
+Next: try PySCF's ROHF canonicalization (Guest–Saunders vs Roothaan parameters), or allow the AH/Newton ROHF
+solver on the injected path (currently refused because it rebuilds molecular J/K).
