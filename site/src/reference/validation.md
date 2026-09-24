@@ -56,20 +56,24 @@ with HF, LDA, PBE and B3LYP (see the anchor below). These print no warning.
 Where numbers are checked, they are checked against external references or
 exact limits, not against ferric's own earlier output. "Stated agreement" is
 the measured difference recorded in the repository; "test tolerance" is what
-the pinning test actually asserts, which is often looser.
+the pinning test actually asserts, which is often looser. **Proof** links to
+the test file that asserts the row, and, where one exists, the script that
+generated its reference data; a row with nothing to link is not graded Proven.
 
-| Capability | System / basis | Reference | Stated agreement | Test tolerance | Pinned by |
+| Capability | System / basis | Reference | Stated agreement | Test tolerance | Proof |
 |---|---|---|---:|---:|---|
-| Closed-shell (T) | H2O / cc-pVDZ | PySCF `ccsd_t()` | ~1e-6 Ha | 1e-4 Ha | `ferric-cc` `closed_shell_t_h2o_ccpvdz_matches_pyscf` |
-| G0W0@HF | H2O / cc-pVDZ | MOLGW | ~5 meV | 0.30 eV | `ferric-gw/tests/h2o_g0w0_cohsex.rs` |
+| UHF and ROHF energies, stability-checked | HO2, NO2, CH2 (triplet), allyl / 6-31G, def2-SVP | PySCF `UHF`/`ROHF` + `stability()` | 4.0e-12 Ha (energy); 3e-7 (⟨S²⟩) | 1e-10 Ha; 1e-6 | [`validation_open_shell_scf.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-scf/tests/validation_open_shell_scf.rs), [`gen_uhf_rohf.py`](https://github.com/mgoldey/ferric/blob/main/scripts/validation/gen_uhf_rohf.py) |
+| Closed-shell (T) | H2O / cc-pVDZ | PySCF `ccsd_t()` | ~1e-6 Ha | 1e-4 Ha | [`ccsd_t_closed_shell.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-cc/src/ccsd_t_closed_shell.rs) (`closed_shell_t_h2o_ccpvdz_matches_pyscf`) |
+| G0W0@HF | H2O / cc-pVDZ | MOLGW | ~5 meV | 0.30 eV | [`h2o_g0w0_cohsex.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-gw/tests/h2o_g0w0_cohsex.rs) |
 | TDA and Casida TDDFT excitation energies | water, formaldehyde, NH3 / 6-31G, aug-cc-pVDZ | PySCF `tddft.TDA`/`TDDFT`, same RI and grid | HF ≤ 2e-6 eV; LDA/PBE ≤ 2e-5 eV; B3LYP ≤ 6.5e-4 eV | 1e-3 eV | [`validation_tddft.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-tddft/tests/validation_tddft.rs), [`gen_tddft_refs.py`](https://github.com/mgoldey/ferric/blob/main/scripts/validation/gen_tddft_refs.py) |
-| RI-MP2 size-extensivity | H2 dimer at large separation | 2 × monomer | 2e-12 Ha | 1e-7 Ha | `ferric-mp2/tests/rimp2_size_extensivity.rs` |
-| RHF/UHF/ROHF/KS gradients | several | finite differences of the energy | — | per test | `ferric-scf` gradient tests |
-| COSX exchange, dense-grid limit | water / cc-pVDZ | direct K | 3.3e-7 | — | see [SCF: choosing how exchange is built](../methods/scf.md) |
+| RI-MP2 size-extensivity | H2 dimer at large separation | 2 × monomer | 2e-12 Ha | 1e-7 Ha | [`rimp2_size_extensivity.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-mp2/tests/rimp2_size_extensivity.rs) |
+| RHF/UHF/ROHF/KS gradients, including density-fitted J/K | water, OH, HO2 / cc-pVDZ, 6-31G | finite differences of the energy; PySCF `df.grad` | 1e-7 to 3e-7 Ha/Bohr (FD); ~1e-10 (PySCF) | 1e-6 Ha/Bohr | [`df_jk_gradient.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-scf/tests/df_jk_gradient.rs) |
+| COSX exchange, dense-grid limit | water / cc-pVDZ | direct K | 3.3e-7 | — | [`cosx_k_anchors.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-scf/tests/cosx_k_anchors.rs); see [SCF: choosing how exchange is built](../methods/scf.md) |
 | COSX SCF energy, (50,110)+fit | water / cc-pVDZ | direct K | 4.9e-6 Ha | — | ″ |
 | COSX SCF energy, (50,110)+fit | butane / def2-SVP | direct K | 1.7e-4 Ha | — | ″ |
 | COSX SCF energy, (50,110)+fit | butane / def2-TZVP | direct K | 1.2e-4 Ha | — | ″ |
-| COSX, open shell | CH3 doublet / cc-pVDZ | direct K | 1.96e-5 Ha (UHF), 1.97e-5 Ha (ROHF) | — | ″ |
+| COSX, open shell | CH3 doublet / cc-pVDZ | direct K | 1.96e-5 Ha (UHF), 1.97e-5 Ha (ROHF) | — | [`k_builder_open_shell.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-scf/tests/k_builder_open_shell.rs) |
+| COSX analytic gradient (RHF, RKS, UHF; default overlap fit for RHF/UHF) | water / STO-3G, 6-31G; HO2 / STO-3G | finite differences of the COSX energy | 1.6e-9 to 4.3e-9 Ha/Bohr | 1e-6 / 3e-8 Ha/Bohr | [`cosx_gradient.rs`](https://github.com/mgoldey/ferric/blob/main/crates/ferric-scf/tests/cosx_gradient.rs) |
 
 A "—" means the repository states no number for that cell. It is left empty on
 purpose rather than filled with an estimate.
@@ -115,10 +119,10 @@ Reported rather than omitted:
   (last three points, C12–C20) is N<sup>1.57</sup> and the A-build's
   N<sup>1.52</sup>. On butane it only reaches the speed of direct exchange at
   quadruple zeta.
-  COSX is Coulomb-only. It has no gradient of its own: `task = "optimize"`
-  with `k_builder = "cosx"` runs without a warning, minimizing the COSX
-  energy with the analytic exact-exchange gradient evaluated at the COSX
-  density, so the gradient is not the derivative of that energy.
+  COSX is Coulomb-only. Its analytic gradient is exact for RHF, RKS and UHF
+  with the overlap fit off, and for RHF and UHF with the default overlap fit.
+  Fitted COSX with a KS functional, UKS, ROHF/ROKS and pruned COSX grids are
+  refused for gradient tasks.
 
 ## Why the distinction is drawn so sharply
 
