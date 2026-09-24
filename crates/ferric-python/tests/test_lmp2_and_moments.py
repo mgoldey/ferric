@@ -24,7 +24,7 @@ def water_631g():
 
 def test_run_lmp2_eps_zero_matches_canonical(water_631g):
     mol, obs, aux = water_631g
-    r = ferric.run_lmp2(mol, obs, aux, eps=0.0, frozen_core=1)
+    r = ferric.run_lmp2(mol, obs, aux, eps=0.0, frozen_core=1, compute_reference=True)
     # eps=0 anchor THROUGH the binding: localized CG == canonical RI-MP2
     assert abs(r["e_corr"] - r["e_corr_canonical_ri"]) < 1e-9
     assert r["keep_fraction"] == 1.0 and r["pair_fraction"] == 1.0
@@ -36,7 +36,7 @@ def test_run_lmp2_eps_zero_matches_canonical(water_631g):
 
 def test_run_lmp2_threshold_error_is_one_sided(water_631g):
     mol, obs, aux = water_631g
-    r = ferric.run_lmp2(mol, obs, aux, eps=1e-3, frozen_core=1)
+    r = ferric.run_lmp2(mol, obs, aux, eps=1e-3, frozen_core=1, compute_reference=True)
     de = r["e_corr"] - r["e_corr_canonical_ri"]
     assert de >= 0.0, f"threshold error must be one-sided, got {de:+.3e}"
     assert r["keep_fraction"] < 1.0
@@ -74,7 +74,7 @@ def test_density_second_moment_translational_identity(water_631g):
 def test_run_lmp2_rejects_open_shell():
     mol = ferric.Molecule.from_xyz("testdata/molecules/h2.xyz")
     obs = ferric.BasisSet.bundled("sto-3g")
-    r = ferric.run_lmp2(mol, obs, obs, eps=0.0)
+    r = ferric.run_lmp2(mol, obs, obs, eps=0.0, compute_reference=True)
     # H2 closed shell works; the open-shell rejection is enforced in the
     # library (CLI hard-rejects) — here just pin the tiny-system identity
     assert abs(r["e_corr"] - r["e_corr_canonical_ri"]) < 1e-10
@@ -83,7 +83,7 @@ def test_run_lmp2_rejects_open_shell():
 def test_run_drpa_eps_zero_matches_plasmon():
     mol = ferric.Molecule.from_xyz("testdata/molecules/h2.xyz")
     obs = ferric.BasisSet.bundled("sto-3g")
-    d = ferric.run_drpa(mol, obs, obs, eps=0.0)
+    d = ferric.run_drpa(mol, obs, obs, eps=0.0, compute_reference=True)
     assert abs(d["e_corr"] - d["e_corr_plasmon_canonical"]) < 1e-9
     # the proof-notebook H2 value (notebook 12, live cell)
     assert abs(d["e_corr"] - (-0.0126072623)) < 1e-8
@@ -191,6 +191,7 @@ def test_run_lmp2_direct_trivial_maps_match_canonical(water_631g):
         ao_tail=0.0,
         schwarz_skip=0.0,
         batch_merge=1,
+        compute_reference=True,
     )
     assert abs(r["e_corr"] - r["e_corr_canonical_ri"]) < 1e-9
     assert r["strip_rows_max"] > 0 and r["n_eri3_shell_triples"] > 0
@@ -202,8 +203,40 @@ def test_run_lmp2_direct_production_defaults_run_and_report(water_631g):
     # batch_merge=4) must run, report the locality counters, and stay in
     # the eps-truncation error class (water: maps are near-exact)
     mol, obs, aux = water_631g
-    r = ferric.run_lmp2_direct(mol, obs, aux, eps=1e-3, frozen_core=1)
+    r = ferric.run_lmp2_direct(
+        mol, obs, aux, eps=1e-3, frozen_core=1, compute_reference=True
+    )
     err = abs(r["e_corr"] - r["e_corr_canonical_ri"])
     assert err < 5e-2, f"error out of class: {err:.3e}"
     assert r["strip_rows_max"] > 0
     assert r["t_eri3_s"] >= 0.0 and r["t_pairs_s"] >= 0.0
+
+
+def test_canonical_reference_is_opt_in_and_reported_as_none(water_631g):
+    """The canonical reference (a full N^5 RI-MP2 / dense plasmon eigensolve
+    over the global 3-index tensor) is OFF by default. Off, the dict keeps
+    the key with None -- the Optional-float convention of the result
+    classes -- never NaN.
+
+    Fails if reverted: with the binding default back to computing the
+    reference, the default calls return a float for the reference key and
+    the `is None` asserts fail; if the NaN were passed through instead of
+    None, `is None` fails as well."""
+    mol, obs, aux = water_631g
+    r = ferric.run_lmp2(mol, obs, aux, eps=1e-3, frozen_core=1)
+    assert r["e_corr_canonical_ri"] is None
+    assert math.isfinite(r["e_corr"])
+    d = ferric.run_lmp2_direct(mol, obs, aux, eps=1e-3, frozen_core=1)
+    assert d["e_corr_canonical_ri"] is None
+    h2 = ferric.Molecule.from_xyz("testdata/molecules/h2.xyz")
+    sto = ferric.BasisSet.bundled("sto-3g")
+    p = ferric.run_drpa(h2, sto, sto, eps=0.0)
+    assert p["e_corr_plasmon_canonical"] is None
+    for s in ferric.run_drpa_scan(h2, sto, sto, [0.0]):
+        assert s["e_corr_plasmon_canonical"] is None
+    # opt-in arm: a real float, not None and not NaN
+    r_on = ferric.run_lmp2(
+        mol, obs, aux, eps=1e-3, frozen_core=1, compute_reference=True
+    )
+    assert isinstance(r_on["e_corr_canonical_ri"], float)
+    assert math.isfinite(r_on["e_corr_canonical_ri"])

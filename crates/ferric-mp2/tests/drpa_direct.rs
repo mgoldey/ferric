@@ -82,6 +82,7 @@ fn trivial_maps() -> DirectConfig {
 fn h2_direct_matches_the_proof_notebook() {
     let su = setup("h2.xyz", "sto-3g", "sto-3g");
     let cfg = AmplitudeDrpaConfig {
+        compute_reference: true,
         eps: 0.0,
         ..Default::default()
     };
@@ -122,6 +123,7 @@ fn h2_direct_matches_the_proof_notebook() {
 fn eps_zero_trivial_maps_matches_plasmon_and_global_path() {
     let su = setup("water.xyz", "6-31g", "cc-pvdz-ri");
     let cfg = AmplitudeDrpaConfig {
+        compute_reference: true,
         eps: 0.0,
         frozen_core: 1,
         ..Default::default()
@@ -231,6 +233,7 @@ fn finite_eps_trivial_maps_matches_global_path() {
 fn production_maps_error_is_subdominant_to_eps_truncation() {
     let su = setup("alkane_8.xyz", "6-31g", "cc-pvdz-ri");
     let cfg = AmplitudeDrpaConfig {
+        compute_reference: true,
         eps: 1e-3,
         frozen_core: 8,
         pair_gate_cal: Some(0.7),
