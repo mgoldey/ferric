@@ -306,16 +306,18 @@ fn oo_mp2_gradient_matches_fd_in_field() {
         }
     }
     eprintln!("  max diff = {max_diff:.2e}");
-    // Measured 9.01e-4 (water/STO-3G, +1 charge field). This is NOT a defect
-    // introduced by threading `ext` through OO-MP2's gradient: it matches the
-    // magnitude `oo_rimp2_gradient.rs`'s own VACUUM analytic-vs-FD water/
-    // STO-3G test already carries (measured 8.71e-4 there, asserted < 1.5e-3)
-    // — the documented, investigated-but-not-fully-closed OO-MP2 gradient
-    // approximation (`compute_orbital_gradient`'s d(eps_p)/dkappa closed form
-    // is exact only at kappa=0; see that module's doc comment). Plain
-    // RI-MP2's z-vector gradient (rimp2_gradient_external.rs) is tight to
-    // ~1e-7 in the SAME field on the SAME system, so this floor is intrinsic
-    // to OO-MP2's existing gradient formula, not to the external-potential
-    // plumbing added here.
-    assert!(max_diff < 1.5e-3, "OO-MP2 analytic vs FD gradient in field max diff = {max_diff:.2e} (expected < 1.5e-3, matching the existing vacuum water/STO-3G OO-MP2 gradient bar)");
+    // BAR 1e-6 (defect F2, 2026-09-24): derived for the vacuum sibling tests
+    // in `oo_rimp2_gradient.rs` (NUC_GRAD_BAR). The external potential enters
+    // only through hcore and the classical constant, both exact in the
+    // analytic gradient, so the floor is the same. Plain RI-MP2's z-vector
+    // gradient is tight to ~1e-7 in the SAME field on the SAME system
+    // (rimp2_gradient_external.rs).
+    //
+    // MUTATION NOTE: the pre-F2 OO-MP2 (diag-Fock functional, gradient exact
+    // only at the RHF point, `vhf_s1occ` dropped) measured 9.01e-4 here and
+    // passed the former 1.5e-3 bar.
+    assert!(
+        max_diff < 1e-6,
+        "OO-MP2 analytic vs FD gradient in field max diff = {max_diff:.2e} (expected < 1e-6)"
+    );
 }
