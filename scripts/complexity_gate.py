@@ -128,26 +128,53 @@ def scan() -> dict:
                 if rel.startswith(root_key + os.sep):
                     rel = rel[len(root_key) + 1 :]
 
-                def walk(node):
-                    if node.get("kind") == "function":
-                        metrics = node.get("metrics", {})
-                        cc = metrics.get("cyclomatic", {}).get("sum")
-                        mi = metrics.get("mi", {}).get("mi_original")
-                        name = node.get("name") or "<anonymous>"
-                        start = node.get("start_line")
-                        qualified = f"{rel}::{name}@{start}"
-                        if cc is not None:
-                            results[qualified] = {
-                                "cc": cc,
-                                "mi": mi,
-                                "path": rel,
-                                "name": name,
-                                "line": start,
-                            }
+                # Key by STABLE identity, never by line number: the file, the
+                # chain of enclosing named scopes (mod/impl/trait/fn), the
+                # name, and an ordinal among same-named siblings in source
+                # order (closures are `<anonymous>` and usually need it).
+                #
+                # Keys used to be `name@start_line`. Any edit that shifted
+                # lines renamed every key below it in that file, so every PR
+                # rewrote large parts of the baseline, any two PRs touching a
+                # shared file (ferric-python/src/lib.rs, rhf.rs) conflicted on
+                # it, and a closure landing on another closure's old line was
+                # compared against the WRONG function (spurious "MI
+                # regression: <anonymous>" reports). With stable keys a PR's
+                # baseline diff is exactly the functions it changed.
+                def walk(node, scope):
+                    counts = {}
                     for child in node.get("spaces", []):
-                        walk(child)
+                        kind = child.get("kind")
+                        name = child.get("name") or "<anonymous>"
+                        if kind == "function":
+                            k = counts.get(name, 0)
+                            counts[name] = k + 1
+                            label = name if k == 0 else f"{name}#{k}"
+                            metrics = child.get("metrics", {})
+                            cc = metrics.get("cyclomatic", {}).get("sum")
+                            mi = metrics.get("mi", {}).get("mi_original")
+                            qualified = "::".join([rel, *scope, label])
+                            if cc is not None:
+                                results[qualified] = {
+                                    "cc": cc,
+                                    "mi": mi,
+                                    "path": rel,
+                                    "name": name,
+                                    "line": child.get("start_line"),
+                                }
+                            walk(child, [*scope, label])
+                        elif kind in ("unit",):
+                            walk(child, scope)
+                        else:
+                            # mod / impl / trait / struct scopes: named
+                            # containers contribute to the path so two
+                            # `fn new` in different impls stay distinct.
+                            k = counts.get(("scope", kind, name), 0)
+                            counts[("scope", kind, name)] = k + 1
+                            label = f"{kind}:{name}" if k == 0 else f"{kind}:{name}#{k}"
+                            walk(child, [*scope, label])
 
-                walk(data)
+                walk(data, [])
         return results
 
 
