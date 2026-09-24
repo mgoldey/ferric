@@ -42,7 +42,14 @@ def test_exit_reason_distinguishes_failure_modes():
     res = ferric.run_dft(
         _water(), ferric.BasisSet.bundled("sto-3g"), functional="PBE", max_iter=1
     )
-    assert res.exit_reason in {"Plateau", "Stalled", "Diverged", "MaxIter", "Converged"}
+    assert res.exit_reason in {
+        "Plateau",
+        "Stalled",
+        "Diverged",
+        "MaxIter",
+        "NotCertified",
+        "Converged",
+    }
     if not res.converged:
         assert res.exit_reason != "Converged"
 

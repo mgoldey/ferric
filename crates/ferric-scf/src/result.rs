@@ -17,7 +17,7 @@ pub enum Spin {
 
 /// Why the SCF loop stopped. Distinguishes acceptable exits (Converged,
 /// Plateau) from failures the ladder should escalate past (Stalled, Diverged,
-/// MaxIter).
+/// MaxIter, NotCertified).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScfExit {
     /// Standard convergence: energy + orbital gradient below thresholds.
@@ -30,6 +30,13 @@ pub enum ScfExit {
     Diverged,
     /// Hit max_iter without any of the above.
     MaxIter,
+    /// ROHF/ROKS only: the SCF converged, but the F6 swap witness showed a
+    /// one-electron move to a LOWER state, and the restart budget ran out
+    /// before a state survived the check. The result is that last converged
+    /// state (self-consistent energy, MOs and densities), reported
+    /// `converged = false` because it is known not to be the lowest state
+    /// reachable by moving one electron. See `ferric_scf::rohf_occupation`.
+    NotCertified,
 }
 
 /// Converged self-consistent field solution: total energy, MO coefficients, orbital energies, and density matrices.

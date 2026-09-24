@@ -5560,7 +5560,8 @@ impl PyDftResult {
     }
 
     /// SCF exit reason: one of `"Converged"`, `"Plateau"`, `"Stalled"`,
-    /// `"Diverged"`, `"MaxIter"` (the `ScfExit` variant name). Strictly more
+    /// `"Diverged"`, `"MaxIter"`, `"NotCertified"` (ROHF/ROKS only) — the
+    /// `ScfExit` variant name. Strictly more
     /// informative than the `converged` bool, which collapses every failure
     /// mode into `false` — a `Plateau` and a `Diverged` need different fixes.
     #[getter]

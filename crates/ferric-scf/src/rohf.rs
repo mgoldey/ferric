@@ -68,6 +68,14 @@ pub type RohfConfig = RhfConfig;
 pub static GGA_FXC_KERNEL_BUILDS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+/// Test-only override of the F6 swap witness's restart budget
+/// (`crate::rohf_occupation::MAX_AUFBAU_RESTARTS`); `usize::MAX` (the
+/// default) means no override. Process-global, so a test that sets it must
+/// live in its own test binary — see `tests/rohf_witness_give_up.rs`.
+#[doc(hidden)]
+pub static ROHF_MAX_AUFBAU_RESTARTS_OVERRIDE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(usize::MAX);
+
 /// Owns the f_xc kernel + its reference density for one Newton/AH step, and
 /// hands out the `Fn(δD_α, δD_β) -> (δV_α, δV_β)` closure the ROHF Newton
 /// solver consumes. Two variants: a purely local LDA kernel and the GGA kernel
@@ -712,7 +720,7 @@ pub fn solve_rohf_best_effort(
             crate::rohf_occupation::GuardStep::Proceed => {}
             crate::rohf_occupation::GuardStep::Continue => continue,
             crate::rohf_occupation::GuardStep::Return(r) => return Ok(*r),
-            crate::rohf_occupation::GuardStep::Stop => break,
+            crate::rohf_occupation::GuardStep::Stop(r) => return Ok(*r),
         }
 
         // Build Roothaan effective Fock (Guest-Saunders, via PySCF projector form).
@@ -1069,7 +1077,7 @@ pub fn solve_rohf_best_effort(
         fock_beta: None,
         converged: false,
         exit: crate::result::ScfExit::MaxIter,
-        iterations: guard.reported_iterations(config.max_iter),
+        iterations: config.max_iter,
         computed_quartets: total_quartets,
         induced_dipoles: last_induced_dipoles,
         stability: None,

@@ -86,7 +86,7 @@
 
 use crate::diis::Diis;
 use crate::driver::ScfMonitor;
-use crate::result::ScfResult;
+use crate::result::{ScfExit, ScfResult};
 use ndarray::{s, Array2};
 
 /// Consecutive iterations in which the open space changed identity before the
@@ -116,6 +116,17 @@ pub(crate) const AUFBAU_WITNESS_TOL: f64 = 1e-5;
 /// Witness-triggered restarts allowed before the solve gives up and reports
 /// non-convergence instead of returning a state it could not certify.
 pub(crate) const MAX_AUFBAU_RESTARTS: usize = 3;
+
+/// [`MAX_AUFBAU_RESTARTS`], unless a test lowered it through
+/// `crate::rohf::ROHF_MAX_AUFBAU_RESTARTS_OVERRIDE` (`usize::MAX` = no
+/// override) to reach the give-up exit on a small system.
+fn max_restarts() -> usize {
+    match crate::rohf::ROHF_MAX_AUFBAU_RESTARTS_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        usize::MAX => MAX_AUFBAU_RESTARTS,
+        n => n,
+    }
+}
 
 /// Did the OPEN space change identity between `c_prev` and `c_new`?
 ///
@@ -352,9 +363,14 @@ pub(crate) enum GuardStep {
     Continue,
     /// No neighbour was lower: the held converged state stands.
     Return(Box<ScfResult>),
-    /// The witness forced more than [`MAX_AUFBAU_RESTARTS`] restarts: exit the
-    /// loop and report NOT converged.
-    Stop,
+    /// The witness forced more than [`MAX_AUFBAU_RESTARTS`] restarts. Carries
+    /// the HELD converged state — the one the last witness showed a lower
+    /// neighbour of — marked `converged = false`, `exit = NotCertified`:
+    /// energy, MOs and densities all describe that one state. (The loop's own
+    /// variables at this point hold the probe determinant, the previous
+    /// iteration's Fock and a stale energy, so the generic non-converged exit
+    /// must NOT be used here.)
+    Stop(Box<ScfResult>),
 }
 
 /// All of the F6 state `solve_rohf` carries, behind the four calls the loop
@@ -376,7 +392,6 @@ pub(crate) struct OccupationGuard {
     restarts: usize,
     /// Extra passes used by probes; they do not consume `max_iter`.
     probe_iters: usize,
-    gave_up_at: Option<usize>,
 }
 
 impl OccupationGuard {
@@ -392,18 +407,12 @@ impl OccupationGuard {
             pending_orbitals: None,
             restarts: 0,
             probe_iters: 0,
-            gave_up_at: None,
         }
     }
 
     /// The loop's pass limit: `max_iter` plus the passes probes have used.
     pub(crate) fn iteration_cap(&self, max_iter: usize) -> usize {
         max_iter + self.probe_iters
-    }
-
-    /// `iterations` for the non-converged exit.
-    pub(crate) fn reported_iterations(&self, max_iter: usize) -> usize {
-        self.gave_up_at.unwrap_or(max_iter)
     }
 
     /// Orbitals queued for a witness probe, to be installed (with their
@@ -538,7 +547,7 @@ impl OccupationGuard {
             return GuardStep::Proceed;
         };
         if energy < probe.energy - AUFBAU_WITNESS_TOL {
-            return self.restart(&probe, energy, iter, diis, mon, root);
+            return self.restart(probe, energy, iter, diis, mon, root);
         }
         match probe.pending.pop() {
             Some((next, c_next)) => {
@@ -554,7 +563,7 @@ impl OccupationGuard {
 
     fn restart(
         &mut self,
-        probe: &AufbauProbe,
+        probe: AufbauProbe,
         energy: f64,
         iter: usize,
         diis: &mut Diis,
@@ -568,7 +577,7 @@ impl OccupationGuard {
                 "ROHF aufbau check: the state converged at E = {:.10} is NOT the lowest \
                  single-swap state — moving one electron ({:?}, MO {} -> {}, Koopmans estimate \
                  {:+.4e}) gives E = {energy:.10} unrelaxed ({:+.4e} Ha). Continuing the SCF \
-                 from it (restart {}/{MAX_AUFBAU_RESTARTS}).",
+                 from it (restart {}/{}).",
                 probe.energy,
                 cand.kind,
                 cand.from,
@@ -576,17 +585,23 @@ impl OccupationGuard {
                 cand.koopmans,
                 energy - probe.energy,
                 self.restarts,
+                max_restarts(),
             );
         }
-        if self.restarts > MAX_AUFBAU_RESTARTS {
+        if self.restarts > max_restarts() {
             if root {
                 eprintln!(
-                    "ROHF aufbau check: giving up after {MAX_AUFBAU_RESTARTS} restarts — \
-                     reporting NOT converged rather than a state that could not be certified."
+                    "ROHF aufbau check: giving up after {} restarts — returning the last \
+                     converged state (E = {:.10}) as NOT converged (exit NotCertified).",
+                    max_restarts(),
+                    probe.energy
                 );
             }
-            self.gave_up_at = Some(iter);
-            return GuardStep::Stop;
+            let mut held = probe.stash;
+            held.converged = false;
+            held.exit = ScfExit::NotCertified;
+            held.iterations = iter;
+            return GuardStep::Stop(held);
         }
         self.locked = true;
         self.swap_streak = 0;
