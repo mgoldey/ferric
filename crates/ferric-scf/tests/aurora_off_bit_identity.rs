@@ -31,6 +31,12 @@
 //!    count off an unconverged, effectively chaotic trajectory cannot measure
 //!    anything -- the number was not a property of the solver.
 //!
+//!    STALE ATTRIBUTION (2026-09-23): the "noise floor" above was largely a
+//!    DF-J defect, not KS-DFT: DF-J applied an explicit LU inverse of the RI
+//!    metric, whose jitter floored the DIIS error. With the Cholesky DF-J
+//!    solve, water/cc-pVDZ PBE reaches `energy_conv: 1e-10` in 10 iterations.
+//!    The conclusion (compare live A/B, pin no constants) stands regardless.
+//!
 //! The concern about "both sides drifting together" is real but is answered by
 //! the OTHER tests in this suite, not by a frozen constant: `aurora_math_anchors.rs`
 //! and `aurora_same_fixed_point.rs` pin the physics. What THIS file must show

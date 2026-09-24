@@ -87,6 +87,32 @@ pub fn target_jk_builds() -> usize {
     TARGET_JK_BUILDS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+thread_local! {
+    /// Accelerated steps taken on this thread; see [`aurora_steps_on_this_thread`].
+    static AURORA_STEPS_THIS_THREAD: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// Number of AURORA steps ([`AuroraState::step`]) taken on the CALLING thread
+/// since it started.
+///
+/// Test instrumentation, so a reachability check can observe the
+/// accelerator's ENGAGEMENT directly instead of inferring it from a side effect
+/// such as a changed iteration count. That proxy broke once already: with the
+/// DF-J metric solved by Cholesky, water/cc-pVDZ PBE converges in the same 10
+/// iterations whether DIIS or AURORA drives it, so "the path changed" could no
+/// longer be seen in the iteration count even though AURORA took every step.
+///
+/// Thread-local rather than a process-global atomic (unlike
+/// [`TARGET_JK_BUILDS`]) so that tests running concurrently in one process
+/// cannot pollute each other's deltas. It is sound for
+/// [`crate::rhf::solve_rhf`] because the SCF loop, and so every `step` call,
+/// runs on the thread that called `solve_rhf`. Take a delta around one solve.
+#[doc(hidden)]
+pub fn aurora_steps_on_this_thread() -> usize {
+    AURORA_STEPS_THIS_THREAD.with(|c| c.get())
+}
+
 /// Tunable controls for the AURORA accelerator.
 ///
 /// The defaults reproduce the "AURORA 0.10.0-style restricted settings" of the
@@ -133,6 +159,14 @@ pub struct AuroraConfig {
     /// paper's default trust radius of 0.20 against 87 for DIIS, while the same
     /// run at radius 0.10 took 45 — the signature of an overlong step, not of a
     /// wrong fixed point (all runs agreed on the energy to ~1e-8 Eh).
+    ///
+    /// STALE (2026-09-23): those counts were measured while DF-J still applied
+    /// an explicit LU inverse of the RI metric, whose jitter floored the DIIS
+    /// error and dragged every RI-J SCF out. With the Cholesky DF-J solve,
+    /// DIIS converges water/cc-pVDZ PBE in 10 iterations and AURORA at radius
+    /// 0.10 also in 10. The radius-0.20 figure and the overshoot argument have
+    /// NOT been re-measured without that noise; the gate stays on principle
+    /// (no `D_k^xc` curvature), not on the stale numbers.
     ///
     /// Default `false`: such references silently stay on DIIS rather than
     /// converge slowly. Set `true` only to measure this regime deliberately.
@@ -1008,6 +1042,7 @@ impl AuroraState {
             grad_norm: gradient.dot(&gradient).sqrt(),
         });
         self.steps_taken += 1;
+        AURORA_STEPS_THIS_THREAD.with(|c| c.set(c.get() + 1));
         Ok(c_new)
     }
 
