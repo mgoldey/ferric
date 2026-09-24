@@ -9,7 +9,7 @@ follow from it.
 
 - `run_cdft(mol, basis_set, constraints, functional=None, ...)` returns a
   `CdftResult`: a constrained UHF solve, or UKS when `functional` names a
-  libxc functional.
+  libxc functional other than `"HF"` (`None` and `"HF"`, any case, give UHF).
 - `CdftConstraint(atoms, target, kind="charge")` defines one fragment
   constraint. `atoms` are 0-based atom indices. `target` is the electron
   **population** on the fragment, the Becke-weighted trace
@@ -78,8 +78,8 @@ What to know before using it:
 - **The weight grid defaults to 99 × 302.** It must resolve populations below
   `lambda_tol`; 75 × 110 resolves them only to about 1e-4. Setting
   `grid_radial` or `grid_angular` uses that grid for the XC quadrature too.
-- **UKS-cDFT is smoke-level.** The tests validate the UHF path; `functional=`
-  runs UKS with no validated reference.
+- **UKS-cDFT is smoke-level.** The tests validate the UHF path; a libxc
+  `functional=` runs UKS with no validated reference.
 - **One constraint is the tested case.** With several constraints the outer
   loop is a plain k × k Newton step, without the single-constraint bracket
   safeguard.

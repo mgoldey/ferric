@@ -395,7 +395,7 @@ capability is Python-only. How well each one is validated is in the
 
 | Name | Purpose | CLI |
 |---|---|---|
-| `run_cdft` | Constrained UHF, or UKS when `functional` is set: minimize the energy subject to fragment population constraints (Wu–Van Voorhis nested λ loop). Raises if the λ loop does not converge. | — |
+| `run_cdft` | Constrained UHF, or UKS when `functional` names a libxc functional other than `"HF"` (`None` and `"HF"`, any case, give UHF): minimize the energy subject to fragment population constraints (Wu–Van Voorhis nested λ loop). Raises if the λ loop does not converge. | — |
 | `CdftConstraint` | One fragment constraint: `atoms` (0-based), `target` (a Becke electron population, not a net charge), `kind` = `"charge"` (Nα + Nβ) or `"spin"` (Nα − Nβ). | — |
 | `cdft_coupling` | Wu–Van Voorhis coupling H_ab between two converged single-`"charge"`-constraint states solved with the same geometry, basis, occupations and Hamiltonian. | — |
 | `CdftResult` | `energy` (without the constraint term), `converged`, `scf_converged`, `lambdas`, `populations`, `targets`, `density_alpha()`, `density_beta()`, `weight_matrix(i)`. | |
