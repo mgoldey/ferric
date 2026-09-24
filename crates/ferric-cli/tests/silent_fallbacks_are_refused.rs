@@ -181,3 +181,24 @@ fn uhf_with_a_dft_functional_is_refused_not_run_as_hf() {
     );
     assert_refused(&out, &["[dft] functional", "\"uhf\"", "solve_uhf"]);
 }
+
+// ─── Keys a task path never reads (items 4 + 5) ─────────────────────────────
+
+/// Pre-fix: H2/STO-3G, pdep-rpa, task = "optimize", `[rpa] xc = "PBE"`
+/// converged to `final E = -1.1375270338 Hartree (RHF + RPA)` -- RPA@HF, the
+/// functional silently dropped. Removing the `validate_task_compat` call
+/// from `run()` makes this run (and succeed) again.
+#[test]
+fn rpa_optimize_with_a_ks_reference_is_refused() {
+    let out = run_toml(
+        "rpa_opt_xc",
+        &body(
+            "h2.xyz",
+            1,
+            "pdep-rpa",
+            "optimize",
+            "[rpa]\nauxbasis = \"cc-pvdz-ri\"\nxc = \"PBE\"\n",
+        ),
+    );
+    assert_refused(&out, &["[rpa] xc", "optimize"]);
+}
