@@ -295,6 +295,11 @@ class BasisSet:
         """Load a bundled basis set by name (e.g. 'sto-3g', 'cc-pvdz-ri')."""
         ...
 
+    @staticmethod
+    def from_bse_json(path: str) -> BasisSet:
+        """Load a Basis Set Exchange JSON file (contractions renormalised)."""
+        ...
+
 class RhfResult:
     """Result of a closed-shell RHF (or run_ksdft KS-DFT) calculation."""
 
@@ -1269,6 +1274,61 @@ class BoysResult:
         ...
 
 # ── Functions ──
+
+class GammaRhfResult:
+    """Result of run_rhf_gamma (closed-shell Gamma-point periodic RHF)."""
+
+    @property
+    def energy(self) -> float:
+        """Total energy per cell (Hartree), incl. e_nuc and any Madelung shift."""
+        ...
+    @property
+    def converged(self) -> bool: ...
+    @property
+    def iterations(self) -> int: ...
+    @property
+    def e_nuc(self) -> float:
+        """Ewald nuclear repulsion per cell (Hartree)."""
+        ...
+    @property
+    def madelung(self) -> float:
+        """Gamma-point Madelung constant (a.u.); applied only for exxdiv='ewald'."""
+        ...
+    @property
+    def exxdiv(self) -> str: ...
+    @property
+    def omega(self) -> float:
+        """Nuclear-attraction Ewald split used, in 1/Angstrom."""
+        ...
+    @property
+    def nao(self) -> int: ...
+    @property
+    def n_g_half(self) -> int: ...
+    def mo_energy(self) -> NDArray[np.float64]: ...
+    def mo_coeff(self) -> NDArray[np.float64]: ...
+    def density(self) -> NDArray[np.float64]: ...
+    def overlap(self) -> NDArray[np.float64]:
+        """Lattice-summed Gamma-point AO overlap."""
+        ...
+
+def run_rhf_gamma(
+    mol: Molecule,
+    lattice: Sequence[Sequence[float]],
+    basis_set: BasisSet,
+    exxdiv: str = "ewald",
+    omega: float | None = None,
+    max_eri_gb: float = 0.5,
+    max_iter: int = 200,
+    density_conv: float = 1e-10,
+) -> GammaRhfResult:
+    """Closed-shell Gamma-point periodic RHF -- TOY SCALE ONLY.
+
+    J/K come from the dense pure-AFT nao^4 ERI oracle, hard-capped by
+    max_eri_gb (pending RS-GDF). lattice: 3x3 rows in Angstrom; omega in
+    1/Angstrom; exxdiv "ewald" | "none" (strict). Charged cells, open
+    shells, odd electron counts and ECP bases raise ValueError.
+    """
+    ...
 
 def run_rhf(
     mol: Molecule,

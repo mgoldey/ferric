@@ -199,6 +199,20 @@ impl PyBasisSet {
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
         Ok(PyBasisSet { inner: bs })
     }
+    /// Load a basis set from a Basis Set Exchange JSON file (the format of
+    /// ferric's bundled sets). Contractions are renormalised to unit
+    /// self-overlap exactly as for the bundled sets. Raises `ValueError` on
+    /// an unreadable or malformed file.
+    ///
+    /// Use it to pin a basis to another code's exact digits: e.g. PySCF's
+    /// `sto-3g` carries fewer digits than ferric's bundled BSE copy, which
+    /// is visible at the 1e-8 Ha level.
+    #[staticmethod]
+    fn from_bse_json(path: &str) -> PyResult<Self> {
+        let bs = basis::load_bse_json(path)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
+        Ok(PyBasisSet { inner: bs })
+    }
 }
 
 // ── Helper ──
@@ -648,6 +662,294 @@ fn run_rhf(
         density_data: r.density_total.clone(),
         orbital_energies_data: r.eps_alpha.clone(),
         scf_data: r,
+    })
+}
+
+// ── Periodic (Gamma-point) RHF ──
+
+/// Result of `run_rhf_gamma`: closed-shell Gamma-point periodic RHF.
+///
+/// Energies are per unit cell, Hartree. `energy` includes `e_nuc` (Ewald,
+/// neutralising-background convention = PySCF `Cell.energy_nuc()`) and, for
+/// `exxdiv="ewald"`, the Madelung exchange shift `-madelung * N_e / 2`.
+#[pyclass]
+#[pyo3(name = "GammaRhfResult")]
+struct PyGammaRhfResult {
+    /// Total energy per cell (Hartree).
+    #[pyo3(get)]
+    energy: f64,
+    /// Whether the SCF converged.
+    #[pyo3(get)]
+    converged: bool,
+    /// SCF iterations run.
+    #[pyo3(get)]
+    iterations: usize,
+    /// Ewald nuclear repulsion per cell (Hartree).
+    #[pyo3(get)]
+    e_nuc: f64,
+    /// Gamma-point Madelung constant `v_M` of the lattice (Hartree, a.u.);
+    /// matches `pyscf.pbc.tools.madelung`. Reported for BOTH `exxdiv`
+    /// settings; it is only APPLIED (as `K += v_M S D S`) for `"ewald"`.
+    #[pyo3(get)]
+    madelung: f64,
+    /// The exxdiv treatment used, lower-case (`"ewald"` or `"none"`).
+    #[pyo3(get)]
+    exxdiv: String,
+    /// Nuclear-attraction Ewald splitting parameter used, in **Å⁻¹** (the
+    /// same unit the `omega` kwarg takes).
+    #[pyo3(get)]
+    omega: f64,
+    /// Number of AO basis functions in the cell.
+    #[pyo3(get)]
+    nao: usize,
+    /// Half-sphere G vectors in the dense AFT ERI build.
+    #[pyo3(get)]
+    n_g_half: usize,
+    overlap_data: Array2<f64>,
+    scf_data: ScfResult,
+}
+
+#[pymethods]
+impl PyGammaRhfResult {
+    /// MO energies (Hartree), ascending, 1D numpy array.
+    fn mo_energy<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_vec(py, self.scf_data.eps_alpha.clone())
+    }
+    /// MO coefficients C (nao x nmo), column k = MO k (ascending energy),
+    /// orthonormal in the LATTICE-SUMMED overlap (`overlap()`).
+    fn mo_coeff<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        PyArray2::from_array(py, &self.scf_data.mos_alpha)
+    }
+    /// Total AO density matrix (nao x nao); `tr(D S) = N_e`.
+    fn density<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        PyArray2::from_array(py, &self.scf_data.density_total)
+    }
+    /// Lattice-summed Gamma-point AO overlap `S` (nao x nao).
+    fn overlap<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        PyArray2::from_array(py, &self.overlap_data)
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "GammaRhfResult(energy={:.10}, exxdiv={:?}, converged={})",
+            self.energy, self.exxdiv, self.converged
+        )
+    }
+}
+
+/// Reject what Stage-1 Gamma-point RHF cannot represent, as `ValueError`s
+/// naming the offending input. Kept out of `run_rhf_gamma` so the binding
+/// body stays a thin dispatch layer.
+fn validate_gamma_cell(mol: &Molecule, bs: &ferric_core::basis::BasisSet) -> PyResult<()> {
+    let bad = |m: String| -> PyResult<()> { Err(pyo3::exceptions::PyValueError::new_err(m)) };
+    if mol.charge != 0 {
+        return bad(format!(
+            "run_rhf_gamma: charged cell (charge = {}) is not supported: a periodic \
+             charged cell needs a neutralising-background correction for the \
+             electrons that Stage 1 does not implement. Use a neutral cell.",
+            mol.charge
+        ));
+    }
+    if mol.multiplicity != 1 {
+        return bad(format!(
+            "run_rhf_gamma: multiplicity {} requested, but only closed-shell RHF \
+             (multiplicity 1) exists for periodic cells",
+            mol.multiplicity
+        ));
+    }
+    let nelec = mol.nelec();
+    if nelec <= 0 || nelec % 2 != 0 {
+        return bad(format!(
+            "run_rhf_gamma: {nelec} electrons per cell; closed-shell RHF needs a \
+             positive even count (no UHF/ROHF for periodic cells yet)"
+        ));
+    }
+    if let Some(a) = mol.atoms.iter().find(|a| bs.ecps.contains_key(&a.z)) {
+        return bad(format!(
+            "run_rhf_gamma: basis '{}' carries an ECP for {} (Z={}); ECP lattice \
+             sums are not implemented for periodic cells",
+            bs.name, a.symbol, a.z
+        ));
+    }
+    Ok(())
+}
+
+/// What the Gamma-point driver hands back across the GIL boundary.
+struct GammaRun {
+    scf: ScfResult,
+    s: Array2<f64>,
+    enn: f64,
+    omega_bohr: f64,
+    madelung: f64,
+    n_g_half: usize,
+}
+
+/// Periodic hcore -> dense AFT J/K -> `solve_rhf_injected`. The same assembly
+/// as `crates/ferric-pbc/tests/common/mod.rs::gamma_rhf`.
+fn gamma_rhf_driver(
+    cell: &ferric_pbc::Cell,
+    prep: &PreparedBasis,
+    exx: ferric_pbc::ExxDiv,
+    omega_bohr: Option<f64>,
+    max_bytes: usize,
+    config: &RhfConfig,
+) -> Result<GammaRun, ferric_core::FerricError> {
+    use ferric_pbc::dense_aft::{DenseAftEri, DEFAULT_DENSE_AFT_PRECISION};
+    use ferric_pbc::hcore::{periodic_hcore, PeriodicHcoreConfig};
+    let w = omega_bohr.unwrap_or_else(|| ferric_pbc::ewald::default_ewald_omega(cell));
+    let hc = periodic_hcore(cell, prep, &PeriodicHcoreConfig::with_omega(w))?;
+    let eri = DenseAftEri::build(
+        cell,
+        prep,
+        &hc.s,
+        exx,
+        DEFAULT_DENSE_AFT_PRECISION,
+        max_bytes,
+    )?;
+    let op = Operator::coulomb();
+    // Never read on the injected path; required by the signature.
+    let bounds = SchwarzBounds::compute(op, prep)?;
+    let inj = ferric_scf::rhf::PeriodicInjection {
+        s: hc.s.clone(),
+        h: hc.h.clone(),
+        vnn: hc.enn,
+        j: Box::new(eri.j_builder()),
+        k: Box::new(eri.k_builder()),
+    };
+    let ctx = ParallelContext::default();
+    let scf =
+        ferric_scf::rhf::solve_rhf_injected(&ctx, cell.mol(), prep, op, &bounds, config, inj)?;
+    // Reported for both exxdiv settings (the ERI only stores it for Ewald).
+    let madelung = ferric_pbc::ewald::madelung_constant(cell)?;
+    Ok(GammaRun {
+        scf,
+        s: hc.s,
+        enn: hc.enn,
+        omega_bohr: hc.omega,
+        madelung,
+        n_g_half: eri.n_g_half(),
+    })
+}
+
+/// Closed-shell **Gamma-point periodic RHF** (3-D periodic, one k-point).
+///
+/// TOY-SCALE ONLY. J and K come from the dense pure-AFT ERI oracle
+/// (`ferric_pbc::dense_aft`): an `8 * nao^4`-byte tensor, HARD-capped by
+/// `max_eri_gb` (default 0.5 GiB, i.e. nao <= ~90). An oversize cell is a
+/// `ValueError` raised before any integral work. The production path is
+/// range-separated GDF (Stage-1 design step 9), which does not exist yet.
+///
+/// Units (the ferric Python convention):
+///   mol       `Molecule` whose atoms are the reference cell; its coordinates
+///             are Ångström on input (`from_xyz_string`), Bohr internally.
+///   lattice   3x3 lattice vectors as ROWS, in **Ångström**
+///             (`[[ax, ay, az], [bx, by, bz], [cx, cy, cz]]`), converted with
+///             the same factor the XYZ parser uses.
+///   omega     nuclear-attraction Ewald split in **Å⁻¹** (numerical knob;
+///             any value > 0 gives the same energy to ~1e-9 Ha). None =
+///             `sqrt(pi) / volume^(1/3)`.
+///   energies  Hartree per cell.
+///
+/// Arguments:
+///   exxdiv       "ewald" (default; Madelung-corrected exchange, PySCF
+///                `exxdiv='ewald'`, converges as L^-3) or "none" (drop G=0,
+///                converges as 1/L). Strict: anything else is a ValueError.
+///   max_eri_gb   cap on the dense ERI tensor in GiB (> 0).
+///   max_iter, density_conv   SCF controls (defaults 200, 1e-10). The guess
+///                is the core-Hamiltonian guess on the lattice S/h (the
+///                molecular SAD guess is not periodic).
+///
+/// Hard errors (ValueError): charged cell (charge != 0; no neutralising-
+/// background correction for electrons), multiplicity != 1 or an odd
+/// electron count (RHF only), an ECP basis, a non-3x3 or singular lattice,
+/// a bad `exxdiv`, non-positive `omega`/`max_eri_gb`, an oversize cell.
+///
+/// Validated (crates/ferric-python/tests/test_pbc_gamma.py, and the Rust
+/// `pbc_dense_aft_scf` suite): H2/STO-3G in a 4 Bohr cube vs PySCF 2.13
+/// AFTDF, E = -1.658327061049 (ewald) / -0.949002691179 (none), to 1e-8.
+#[pyfunction]
+#[pyo3(signature = (
+    mol, lattice, basis_set, exxdiv="ewald", omega=None, max_eri_gb=0.5,
+    max_iter=200, density_conv=1e-10,
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_rhf_gamma(
+    py: Python<'_>,
+    mol: &PyMolecule,
+    lattice: Vec<Vec<f64>>,
+    basis_set: &PyBasisSet,
+    exxdiv: &str,
+    omega: Option<f64>,
+    max_eri_gb: f64,
+    max_iter: usize,
+    density_conv: f64,
+) -> PyResult<PyGammaRhfResult> {
+    let val_err = |m: String| pyo3::exceptions::PyValueError::new_err(m);
+    let exx = ferric_pbc::ExxDiv::parse_config_str(exxdiv).map_err(|e| val_err(format!("{e}")))?;
+    validate_gamma_cell(&mol.inner, &basis_set.inner)?;
+    if lattice.len() != 3 || lattice.iter().any(|r| r.len() != 3) {
+        return Err(val_err(format!(
+            "run_rhf_gamma: lattice must be 3x3 (three row vectors, Ångström), got {} rows",
+            lattice.len()
+        )));
+    }
+    let mut a = [[0.0_f64; 3]; 3];
+    for (i, row) in lattice.iter().enumerate() {
+        for (j, v) in row.iter().enumerate() {
+            a[i][j] = v * ANGSTROM_TO_BOHR;
+        }
+    }
+    let omega_bohr = match omega {
+        None => None,
+        Some(w) if w.is_finite() && w > 0.0 => Some(w / ANGSTROM_TO_BOHR),
+        Some(w) => {
+            return Err(val_err(format!(
+                "run_rhf_gamma: omega must be finite and > 0 (Å⁻¹), got {w}"
+            )))
+        }
+    };
+    if !(max_eri_gb.is_finite() && max_eri_gb > 0.0) {
+        return Err(val_err(format!(
+            "run_rhf_gamma: max_eri_gb must be finite and > 0, got {max_eri_gb}"
+        )));
+    }
+    let max_bytes = ferric_core::memory::gib_to_bytes(max_eri_gb);
+    let cell = ferric_pbc::Cell::new(mol.inner.clone(), a).map_err(|e| val_err(format!("{e}")))?;
+    let prep = PreparedBasis::new(cell.mol(), &basis_set.inner).map_err(make_err)?;
+    // Pre-flight the dense tensor BEFORE the hcore lattice sums (DenseAftEri
+    // re-checks the same bound, so this cannot drift into a silent pass).
+    let nao = prep.nbasis();
+    let need = 8u128 * (nao as u128).pow(4);
+    if need > max_bytes as u128 {
+        return Err(val_err(format!(
+            "run_rhf_gamma: the dense AFT ERI tensor needs {need} bytes (nao = {nao}) > \
+             max_eri_gb cap {max_bytes} bytes. This path is a toy-scale oracle; \
+             periodic density fitting (RS-GDF) is not implemented yet."
+        )));
+    }
+    let config = RhfConfig {
+        use_sad_guess: false,
+        density_conv,
+        max_iter,
+        ..Default::default()
+    };
+    let run = py
+        .allow_threads(|| gamma_rhf_driver(&cell, &prep, exx, omega_bohr, max_bytes, &config))
+        .map_err(make_err)?;
+    Ok(PyGammaRhfResult {
+        energy: run.scf.energy,
+        converged: run.scf.converged,
+        iterations: run.scf.iterations,
+        e_nuc: run.enn,
+        madelung: run.madelung,
+        exxdiv: match exx {
+            ferric_pbc::ExxDiv::Ewald => "ewald".into(),
+            ferric_pbc::ExxDiv::None => "none".into(),
+        },
+        omega: run.omega_bohr * ANGSTROM_TO_BOHR,
+        nao,
+        n_g_half: run.n_g_half,
+        overlap_data: run.s,
+        scf_data: run.scf,
     })
 }
 
@@ -8303,6 +8605,8 @@ fn ferric(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // pyproject.toml [project.scripts].
     m.add_function(wrap_pyfunction!(_cli_main, m)?)?;
     m.add_function(wrap_pyfunction!(run_rhf, m)?)?;
+    m.add_function(wrap_pyfunction!(run_rhf_gamma, m)?)?;
+    m.add_class::<PyGammaRhfResult>()?;
     m.add_function(wrap_pyfunction!(run_uhf, m)?)?;
     m.add_function(wrap_pyfunction!(run_rohf, m)?)?;
     m.add_function(wrap_pyfunction!(run_cdft, m)?)?;
