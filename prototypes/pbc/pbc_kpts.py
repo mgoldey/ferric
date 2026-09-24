@@ -215,9 +215,19 @@ def jk_k(kb, dm):
     return J, K
 
 
-def krhf(kb, nelec, conv=1e-10, maxiter=200, lindep=1e-8, return_mo=False, kshift=None):
+def krhf(
+    kb,
+    nelec,
+    conv=1e-10,
+    maxiter=200,
+    lindep=1e-8,
+    return_mo=False,
+    kshift=None,
+    jk=None,
+):
     """Complex RHF per k with global aufbau (PySCF KRHF get_occ) and DIIS over all k blocks.
-    kshift defaults to kb['madelung'] (0 for exxdiv none).  Returns (E per cell, eps list, iterations)."""
+    kshift defaults to kb['madelung'] (0 for exxdiv none).  Returns (E per cell, eps list, iterations).
+    jk: optional dm -> (J, K) callable (per-k stacks) replacing the dense kernels (e.g. pbc_kgdf B tensors)."""
     S, h, Nk = kb["S"], kb["h"], kb["Nk"]
     vm = kb["madelung"] if kshift is None else kshift
     nocc = nelec // 2
@@ -229,7 +239,7 @@ def krhf(kb, nelec, conv=1e-10, maxiter=200, lindep=1e-8, return_mo=False, kshif
     focks, errs = [], []
     e_old = 0.0
     for it in range(maxiter):
-        J, K = jk_k(kb, dm)
+        J, K = jk_k(kb, dm) if jk is None else jk(dm)
         if vm:
             K = K + vm * np.einsum("kab,kbc,kcd->kad", S, dm, S)
         F = h + J - 0.5 * K

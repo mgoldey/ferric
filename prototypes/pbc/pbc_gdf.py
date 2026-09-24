@@ -171,7 +171,17 @@ def build_gdf(
     mol = cell.mol
     nao, nb0 = mol.nao, mol.nbas
     if auxmol is None:
-        auxmol = gto.M(atom=cell.atoms, basis=auxbasis, unit="B", cart=True, verbose=0)
+        nel = sum(
+            gto.charge(s) for s, _ in cell.atoms
+        )  # spin = parity only to satisfy Mole (nothing reads it)
+        auxmol = gto.M(
+            atom=cell.atoms,
+            basis=auxbasis,
+            unit="B",
+            cart=True,
+            verbose=0,
+            spin=nel % 2,
+        )
     c2s = None
     if spherical:
         sph = auxmol.copy()

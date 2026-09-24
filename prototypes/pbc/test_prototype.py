@@ -2094,3 +2094,499 @@ def test_uks_roks_tri_triplet_pins_and_the_ewald_trap_is_hf_only():
             diis_start=10**6,
         )
         assert abs(tr["e"] - st["e"]) < 1e-9 and not tr["trap"]
+
+
+# ------------------------------------------------------------ Iteration 11: k-point RS-GDF per q (pbc_kgdf)
+import pbc_kgdf as KG  # noqa: E402
+
+# PySCF 2.13 KRHF + RSDF/GDF, cart cc-pvdz-ri, cell.precision 1e-12, started from the dense-AFT dm
+# (run_kgdf_oracle.py h2 112, 2026-09-24): ours - RSDF -6.6e-13, ours - GDF -4.8e-13.
+KGDF_REF_H2_112 = {"none": -0.902798075212, "ewald": -1.354258527825}
+
+
+@pytest.fixture(scope="module")
+def kgdf_anchor_113():
+    cell, aux = _anchor_cell_and_aux()
+    return dict(
+        cell=cell,
+        aux=aux,
+        kb=PK.build_k(cell, (1, 1, 3), exxdiv="ewald", verbose=False),
+    )
+
+
+def _kgdf_kernel_err(kb, kg):
+    Jf, Kf = KG.kernels_from_kB(kg)
+    return abs(Jf - kb["Jker"]).max(), abs(Kf - kb["Kker"]).max(axis=(2, 3, 4, 5))
+
+
+def test_kgdf_matches_dense_kpoint_aft_in_the_trivial_aux_limit(kgdf_anchor_113):
+    """The Iteration-2 anchor aux (8 half-lattice classes per pair type) spans EVERY q-Bloch pair density, so
+    B B^H must reproduce the dense pbc_kpts kernels at every (k,k') (measured 1.8e-12, dE 8e-13, 1x1x3)."""
+    a = kgdf_anchor_113
+    kg = KG.build_kgdf(a["cell"], (1, 1, 3), auxmol=a["aux"], spherical=False)
+    dJ, dK = _kgdf_kernel_err(a["kb"], kg)
+    assert dJ < 1e-10 and dK.max() < 1e-10
+    for ex in ("none", "ewald"):
+        vm = a["kb"]["madelung"] if ex == "ewald" else 0.0
+        e0 = PK.krhf(a["kb"], 2, conv=1e-12, kshift=vm)[0]
+        e1 = PK.krhf(a["kb"], 2, conv=1e-12, kshift=vm, jk=KG.jk_from_kB(kg))[0]
+        assert abs(e1 - e0) < 1e-10
+
+
+@pytest.mark.parametrize("mutant,min_err", [("q_phase_sign", 1.0), ("g0_all_q", 1e-2)])
+def test_kgdf_anchor_catches_q_phase_and_g0_mutants_at_q_nonzero_only(
+    kgdf_anchor_113, monkeypatch, mutant, min_err
+):
+    """Measured: e^{+iq.T} on the SR aux images -> max|dKker| 1.8e2 at q != 0; Gamma G=0 bookkeeping at every q ->
+    6.4e-2 (and an indefinite J2(q), smin -2.5).  Both leave the q = 0 blocks exact: the anchor localises them."""
+    a = kgdf_anchor_113
+    monkeypatch.setattr(KG, "_MUTANT", mutant)
+    kg = KG.build_kgdf(a["cell"], (1, 1, 3), auxmol=a["aux"], spherical=False)
+    _, dK = _kgdf_kernel_err(a["kb"], kg)
+    Nk = kg["Nk"]
+    assert max(dK[k, k] for k in range(Nk)) < 1e-10
+    assert max(dK[k, j] for k in range(Nk) for j in range(Nk) if k != j) > min_err
+
+
+def test_kgdf_exactly_dependent_aux_needs_no_cut_but_q0_hermitisation_is_required(
+    kgdf_anchor_113, kmesh_113, monkeypatch
+):
+    """(1) Anchor + one DUPLICATED aux function: J2(q) singular at every q (smin 1e-15), yet dropping the per-q cut
+    changes nothing (J3 lies in range(J2) to rounding) - the cut is noise control, not correctness.
+    (2) Diffuse ET l<=1 aux at a loose prec 1e-8: J3(k,k) loses (m,n) Hermiticity by 5.5e-8 (truncated image sets);
+    without the q = 0 Hermitisation J is non-Hermitian and the SCF never converges; with it E moves only 9.2e-8
+    from the prec 1e-13 value -1.170495423746 (measured, run_kgdf_lindep.py)."""
+    a = kgdf_anchor_113
+    cen = [a["aux"].atom_coord(i) for i in range(a["aux"].natm)]
+    dup = gto.M(
+        atom=[("X", c) for c in cen + [cen[5]]],
+        basis={"X": [[0, [2 * ANCHOR_ALPHA, 1.0]]]},
+        unit="B",
+        cart=True,
+        verbose=0,
+    )
+    for mut in (None, "no_lindep_q"):
+        monkeypatch.setattr(KG, "_MUTANT", mut)
+        kg = KG.build_kgdf(a["cell"], (1, 1, 3), auxmol=dup, spherical=False)
+        assert kg["info"]["per_q"][1]["smin"] < 1e-12
+        dJ, dK = _kgdf_kernel_err(a["kb"], kg)
+        assert dJ < 1e-10 and dK.max() < 1e-10
+    kb = kmesh_113["kb"]
+    aux = pbc_gdf.even_tempered(["H"], 1, 0.1, 2.2, 9)
+    monkeypatch.setattr(KG, "_MUTANT", None)
+    kg = KG.build_kgdf(kmesh_113["cell"], (1, 1, 3), aux, prec=1e-8)
+    assert kg["info"]["per_q"][0]["asym_J3_q0"] > 1e-8
+    assert (
+        abs(
+            PK.krhf(kb, 2, conv=1e-11, kshift=0.0, jk=KG.jk_from_kB(kg))[0]
+            - (-1.170495423746)
+        )
+        < 3e-7
+    )
+    monkeypatch.setattr(KG, "_MUTANT", "no_herm_q0")
+    kg = KG.build_kgdf(kmesh_113["cell"], (1, 1, 3), aux, prec=1e-8)
+    with pytest.raises(RuntimeError):
+        PK.krhf(kb, 2, conv=1e-11, kshift=0.0, jk=KG.jk_from_kB(kg), maxiter=60)
+
+
+def test_kgdf_1x1x1_is_the_gamma_rsgdf():
+    """Measured: max|B B^H - B B^T| 1.9e-13, 28/28 kept, dE 1.4e-14 (both exxdiv)."""
+    cell = Cell(H2_A, H2_ATOMS, "sto-3g")
+    aux = ferric_basis("cc-pvdz-ri", ["H"])
+    Bg = build_gdf(cell, aux)["B"]
+    Bk = KG.build_kgdf(cell, (1, 1, 1), aux)["B"][(0, 0)]
+    assert Bk.shape == Bg.shape
+    assert abs(np.einsum("Pmn,Pls->mnls", Bk, Bk.conj()) - eri_from_B(Bg)).max() < 1e-11
+
+
+def test_kgdf_time_reversal_fill_equals_brute_force(monkeypatch):
+    """B(-k,-k') = conj B(k,k') with U(-q) = conj U(q): 4 of 6 q classes built on 1x2x3 (measured 5.8e-15)."""
+    cell, aux = _anchor_cell_and_aux()
+    kg = KG.build_kgdf(cell, (1, 2, 3), auxmol=aux, spherical=False)
+    monkeypatch.setattr(KG, "_MUTANT", "no_time_reversal")
+    kg2 = KG.build_kgdf(cell, (1, 2, 3), auxmol=aux, spherical=False)
+    assert kg["info"]["n_q_built"] == 4 and kg2["info"]["n_q_built"] == 6
+    for x, y in zip(KG.kernels_from_kB(kg), KG.kernels_from_kB(kg2)):
+        assert abs(x - y).max() < 1e-12
+
+
+def test_kgdf_kmesh_equals_gamma_rsgdf_of_the_supercell(kmesh_113, monkeypatch):
+    """Exact by construction (supercell aux = unitary DFT of the per-q aux sets; block-diagonal metric with the SAME
+    eigenvalues, so the same lindep cut): measured -4.7e-15 / -4.2e-15 per cell, 3 x 28 kept == 84 kept; the
+    q-phase-sign mutant is off by -8.8e-2.  Same loose-gcut 1e on both sides (exact at any gcut, Iteration 9)."""
+    cell, kb = kmesh_113["cell"], kmesh_113["kb"]
+    aux = ferric_basis("cc-pvdz-ri", ["H"])
+    sc = PK.supercell_cell(cell, (1, 1, 3))
+    g = PK.gamma_aft(sc, gcut=kmesh_113["gcut"], thresh=kmesh_113["th"])
+    gs = build_gdf(sc, aux)
+    kg = KG.build_kgdf(cell, (1, 1, 3), aux)
+    assert sum(v["kept"] for v in kg["info"]["per_q"].values()) == gs["B"].shape[0]
+    for ex in ("none", "ewald"):
+        vm = kmesh_113["vm_sc"] if ex == "ewald" else 0.0
+        es = (
+            rhf(
+                g["S"],
+                g["h"],
+                None,
+                g["enn"],
+                6,
+                conv=1e-12,
+                kshift=vm,
+                jk=jk_from_B(gs["B"]),
+            )[0]
+            / 3
+        )
+        ek = PK.krhf(kb, 2, conv=1e-12, kshift=vm, jk=KG.jk_from_kB(kg))[0]
+        assert abs(ek - es) < 1e-11
+    monkeypatch.setattr(KG, "_MUTANT", "q_phase_sign")
+    kgm = KG.build_kgdf(cell, (1, 1, 3), aux)
+    assert (
+        abs(PK.krhf(kb, 2, conv=1e-12, kshift=vm, jk=KG.jk_from_kB(kgm))[0] - es) > 1e-2
+    )
+
+
+def test_kgdf_h2_112_matches_pinned_pyscf_krhf_rsdf():
+    kb = PK.build_k(Cell(H2_A, H2_ATOMS, "sto-3g"), (1, 1, 2), verbose=False)
+    kg = KG.build_kgdf(
+        Cell(H2_A, H2_ATOMS, "sto-3g"),
+        (1, 1, 2),
+        ferric_basis("cc-pvdz-ri", ["H"]),
+        spherical=False,
+    )
+    for ex in ("none", "ewald"):
+        vm = kb["madelung"] if ex == "ewald" else 0.0
+        assert (
+            abs(
+                PK.krhf(kb, 2, conv=1e-12, kshift=vm, jk=KG.jk_from_kB(kg))[0]
+                - KGDF_REF_H2_112[ex]
+            )
+            < 1e-10
+        )
+
+
+# ================================================================ Iteration 12: k-point MP2 / dRPA (pbc_kcorr)
+import pbc_kcorr as KC  # noqa: E402
+from pbc_rpa import gamma_drpa as _gdrpa  # noqa: E402
+
+# PySCF 2.13 pbc.mp.KMP2 on KRHF + AFTDF mesh 61^3, started from our dm (run_kcorr_oracle.py aft 112, 2026-09-24):
+# exxdiv=None == ours 'unshifted' (d -2.2e-15), exxdiv='ewald' == ours 'shifted' (d -1.6e-15).
+KMP2_REF_H2_112 = {"unshifted": -2.8883196728367e-02, "shifted": -1.8228154905146e-02}
+_CV = ("shifted", "unshifted")
+
+
+def _k_energies(st, eps, vm, nocc=1, quad=False, aux=False):
+    out = {}
+    for cv in _CV:
+        eo, ev = KC.k_denominators(eps, nocc, vm, cv)
+        out[cv] = dict(mp2=KC.kmp2(st, eo, ev)[0], rpa=KC.kdrpa_plasmon(st, eo, ev))
+        if quad:
+            out[cv]["quad"] = KC.kdrpa_quad(st, eo, ev, n=40, aux=aux)[0]
+            out[cv]["so"], out[cv]["dmp2"] = (
+                KC.kdrpa_second_order(st, eo, ev),
+                KC.direct_kmp2(st, eo, ev),
+            )
+    return out
+
+
+def _k_run(cell, n, gcut=None, th=1e-14):
+    kb = PK.build_k(cell, n, gcut=gcut, thresh=th, verbose=False)
+    eps, C = PK.krhf(kb, 2, conv=1e-12, kshift=0.0, return_mo=True)[1:4:2]
+    return kb, eps, C
+
+
+def test_kcorr_1x1x1_is_the_gamma_mp2_and_drpa(h2_ints):
+    """Measured 2026-09-24: <= 6e-16 (both conventions; = Iteration 3/4 values)."""
+    g = h2_ints
+    kb, eps, C = _k_run(Cell(H2_A, H2_ATOMS, "sto-3g"), (1, 1, 1))
+    k = _k_energies(
+        KC.aft_ov(Cell(H2_A, H2_ATOMS, "sto-3g"), (1, 1, 1), C, 1), eps, kb["madelung"]
+    )
+    e, eg, _, Cg = rhf(g["S"], g["h"], g["I"], g["enn"], 2, conv=1e-12, return_mo=True)
+    for cv in _CV:
+        eo, ev = denominators(eg, 1, g["madelung"], cv)
+        ed = np.concatenate([eo, ev])
+        assert abs(k[cv]["mp2"] - gamma_mp2(Cg, ed, 1, eri=g["I"])[0]) < 1e-12
+        assert (
+            abs(k[cv]["rpa"] - _gdrpa(Cg, ed, 1, eri=g["I"], method="plasmon")) < 1e-12
+        )
+
+
+@pytest.fixture(scope="module")
+def kcorr_113():
+    """H2/STO-3G 1x1x3 k-mesh vs the explicit supercell at Gamma, loose gcut (exact at ANY gcut: same K sphere)."""
+    cell = Cell(H2_A, H2_ATOMS, "sto-3g")
+    gcut, th = PK.aft_gcut(cell, 1e-4), 1e-8
+    sc = PK.supercell_cell(cell, (1, 1, 3))
+    g = PK.gamma_aft(sc, gcut=gcut, thresh=th)
+    vm = madelung(sc)
+    e, eg, _, Cg = rhf(g["S"], g["h"], g["I"], g["enn"], 6, conv=1e-12, return_mo=True)
+    ref = {}
+    for cv in _CV:
+        eo, ev = denominators(eg, 3, vm, cv)
+        ed = np.concatenate([eo, ev])
+        ref[cv] = dict(
+            mp2=gamma_mp2(Cg, ed, 3, eri=g["I"])[0] / 3,
+            rpa=_gdrpa(Cg, ed, 3, eri=g["I"], method="plasmon") / 3,
+        )
+    kb, eps, C = _k_run(cell, (1, 1, 3), gcut, th)
+    return dict(
+        cell=cell,
+        gcut=gcut,
+        th=th,
+        ref=ref,
+        kb=kb,
+        eps=eps,
+        C=C,
+        st=KC.aft_ov(cell, (1, 1, 3), C, 1, gcut=gcut, thresh=th),
+    )
+
+
+def test_kcorr_kmesh_equals_gamma_supercell_mp2_drpa_exactly(kcorr_113):
+    """Predicted EXACT (canonical MP2/dRPA invariant to rotations inside degenerate Fock blocks; supercell v_M == mesh
+    v_M; same K sphere); measured 2.2e-15..2.8e-15 (1x1x3), 6e-16..1e-15 (2x2x2), 3e-14 tri s+p 1x1x3.  The GL-40
+    k-dRPA equals the plasmon to 1e-16 and O(Pi^2) == direct KMP2 to 3e-17."""
+    a = kcorr_113
+    k = _k_energies(a["st"], a["eps"], a["kb"]["madelung"], quad=True)
+    for cv in _CV:
+        assert abs(k[cv]["mp2"] - a["ref"][cv]["mp2"]) < 1e-12
+        assert abs(k[cv]["rpa"] - a["ref"][cv]["rpa"]) < 1e-12
+        assert abs(k[cv]["quad"] - k[cv]["rpa"]) < 1e-12
+        assert abs(k[cv]["so"] - k[cv]["dmp2"]) < 1e-12
+
+
+@pytest.mark.parametrize(
+    "mutant,mp2_min,rpa_min",
+    [
+        ("kb_wrong", 5e-4, None),
+        ("no_conj", 5e-3, None),
+        ("no_madelung", 2e-3, 2e-3),
+        ("rpa_k_wrong", None, 5e-4),
+    ],
+)
+def test_kcorr_supercell_anchor_catches_momentum_conj_and_madelung_mutants(
+    kcorr_113, monkeypatch, mutant, mp2_min, rpa_min
+):
+    """Measured (shifted): kb_wrong dMP2 -1.1e-3, no_conj +1.1e-2, no_madelung -5.6e-3 / dRPA -4.4e-3 (unshifted row
+    untouched), rpa_k_wrong dRPA +1.4e-3; each mutant leaves the other method at 1e-15."""
+    a = kcorr_113
+    monkeypatch.setattr(KC, "_MUTANT", mutant)
+    st = (
+        KC.aft_ov(a["cell"], (1, 1, 3), a["C"], 1, gcut=a["gcut"], thresh=a["th"])
+        if mutant == "no_conj"
+        else a["st"]
+    )
+    k = _k_energies(st, a["eps"], a["kb"]["madelung"])["shifted"]
+    ref = a["ref"]["shifted"]
+    dm, dr = abs(k["mp2"] - ref["mp2"]), abs(k["rpa"] - ref["rpa"])
+    assert (dm > mp2_min) if mp2_min else (dm < 1e-12)
+    assert (dr > rpa_min) if rpa_min else (dr < 1e-12)
+
+
+def test_kcorr_trivial_aux_kgdf_B_equals_dense_aft(kgdf_anchor_113):
+    """Iteration-2/11 anchor aux spans every q pair density: V 1.8e-12, KMP2 8e-14, aux-side k-dRPA quad vs AFT
+    plasmon 7.5e-14 (same orbitals)."""
+    a = kgdf_anchor_113
+    kg = KG.build_kgdf(a["cell"], (1, 1, 3), auxmol=a["aux"], spherical=False)
+    eps, C = PK.krhf(a["kb"], 2, conv=1e-12, kshift=0.0, return_mo=True)[1:4:2]
+    sd, sb = KC.aft_ov(a["cell"], (1, 1, 3), C, 1), KC.kB_ov(kg, C, 1)
+    assert abs(sb["V"] - sd["V"]).max() < 1e-10
+    kd = _k_energies(sd, eps, a["kb"]["madelung"])
+    kbq = _k_energies(sb, eps, a["kb"]["madelung"], quad=True, aux=True)
+    for cv in _CV:
+        assert abs(kbq[cv]["mp2"] - kd[cv]["mp2"]) < 1e-11
+        assert abs(kbq[cv]["quad"] - kd[cv]["rpa"]) < 1e-11
+
+
+def test_kmp2_h2_112_matches_pinned_pyscf_kmp2_both_exxdiv():
+    """PySCF KMP2 follows the HF exxdiv: none -> unshifted, ewald -> shifted (the two differ by 1.1e-2 here)."""
+    cell = Cell(H2_A, H2_ATOMS, "sto-3g")
+    kb, eps, C = _k_run(cell, (1, 1, 2))
+    k = _k_energies(KC.aft_ov(cell, (1, 1, 2), C, 1), eps, kb["madelung"])
+    for cv in _CV:
+        assert abs(k[cv]["mp2"] - KMP2_REF_H2_112[cv]) < 1e-11
+
+
+# ================================================================ Stage 9: k-point UHF (pbc_kuhf, Iteration 13)
+import pbc_kuhf as KUHF  # noqa: E402
+
+ZCHAIN_A = np.diag([5.0, 5.0, 2.0])
+ZCHAIN_ATOMS = [("H", (0.0, 0.0, 0.0)), ("H", (2.0, 0.0, 0.0))]
+
+
+def _kuhf_supercell_ref(cell, n, na, nb, prec=1e-4, th=1e-8):
+    """k-UHF (staged) on an n mesh and the Gamma UHF of the explicit supercell started from the unfolded k density."""
+    gcut = PK.aft_gcut(cell, prec)
+    kb = PK.build_k(cell, n, gcut=gcut, thresh=th, verbose=False)
+    g = PK.gamma_aft(PK.supercell_cell(cell, n), gcut=gcut, thresh=th)
+    Nk = kb["Nk"]
+    out = dict(kb=kb, g=g, cell=cell, na=na, nb=nb)
+    for ex in ("none", "ewald"):
+        vm = kb["madelung"] if ex == "ewald" else 0.0
+        st = KUHF.staged_kuhf(kb, na, nb, conv=1e-12, kshift=vm)[0]
+        gs = tuple(KUHF.unfold_dm(cell, kb, st[d]).real for d in ("Da", "Db"))
+        out[ex] = (
+            st,
+            uhf(
+                g["S"],
+                g["h"],
+                g["I"],
+                g["enn"],
+                na * Nk,
+                nb * Nk,
+                conv=1e-12,
+                kshift=vm,
+                guess=gs,
+            ),
+        )
+    return out
+
+
+@pytest.fixture(scope="module")
+def kuhf_tri_113():
+    """tri 4H/STO-3G triplet per cell (na 3, nb 1), 1x1x3, loose gcut (the supercell anchor is exact at any gcut). ~50 s."""
+    return _kuhf_supercell_ref(Cell(TRI_A, TRI_ATOMS, "sto-3g"), (1, 1, 3), 3, 1)
+
+
+def test_kuhf_closed_shell_is_krhf(kmesh_113):
+    """Measured 2026-09-24: 4.4e-16 / -2.2e-16 (none / ewald), Da == Db exactly, <S2> 1e-15."""
+    kb = kmesh_113["kb"]
+    for ex in ("none", "ewald"):
+        vm = kb["madelung"] if ex == "ewald" else 0.0
+        u = KUHF.kuhf(kb, 1, 1, conv=1e-12, kshift=vm)
+        assert abs(u["e"] - PK.krhf(kb, 2, conv=1e-12, kshift=vm)[0]) < 1e-12
+        assert abs(u["s2"]) < 1e-10
+
+
+def test_kuhf_kmesh_open_shell_equals_gamma_supercell_uhf(kuhf_tri_113):
+    """Measured: dE -9.8e-13 (both exxdiv), d<S2> 4e-11 (<S2> 12.00006 = giant determinant, Sz 3); the supercell
+    from its own core guess / a beta mix / a random rotation lands on the same translation-invariant state
+    (run_kuhf_anchor.py c)."""
+    a = kuhf_tri_113
+    for ex in ("none", "ewald"):
+        st, us = a[ex]
+        assert abs(st["e"] - us["e"] / 3) < 1e-11
+        assert abs(st["s2"] - us["s2"]) < 1e-9
+        assert st["nocc_a_k"] == [3, 3, 3] and st["nocc_b_k"] == [1, 1, 1]
+    d = a["ewald"][0]["e"] - a["none"][0]["e"]
+    assert (
+        abs(d + a["kb"]["madelung"] * 4 / 2) < 1e-10
+    )  # staged ewald - none == -v_M (Na+Nb)/2
+
+
+@pytest.mark.parametrize(
+    "mutant,exx,expect",
+    [
+        ("K_total", "none", -0.687),
+        ("K_total", "ewald", -0.687),
+        ("mad_half", "none", 0.0),
+        ("mad_half", "ewald", "vmN/4"),
+    ],
+)
+def test_kuhf_supercell_anchor_catches_spin_mutants(
+    kuhf_tri_113, monkeypatch, mutant, exx, expect
+):
+    """K from D_a + D_b: -0.687 Ha/cell; Madelung v_M/2 per spin: +v_M N/4 = +0.1156 under ewald, 0 under none."""
+    a = kuhf_tri_113
+    kb = a["kb"]
+    if mutant == "K_total":
+        monkeypatch.setattr(
+            KUHF, "_jk_spin", lambda jk, Da, Db: (lambda J, K: (J, K, K))(*jk(Da + Db))
+        )
+    else:
+        orig = KUHF._madelung_term
+        monkeypatch.setattr(
+            KUHF, "_madelung_term", lambda S, D, vm: 0.5 * orig(S, D, vm)
+        )
+    vm = kb["madelung"] if exx == "ewald" else 0.0
+    d = KUHF.staged_kuhf(kb, 3, 1, conv=1e-12, kshift=vm)[0]["e"] - a[exx][1]["e"] / 3
+    target = kb["madelung"] * 4 / 4 if expect == "vmN/4" else expect
+    assert abs(d - target) < (1e-10 if target == 0.0 else 5e-3)
+
+
+def test_kuhf_global_aufbau_nonuniform_occupation_equals_supercell_and_per_k_mutant_fails():
+    """zchain (H2 bond 2.0 along x, stacked every 2.0 Bohr along z), one alpha electron per cell (+1 cell), 1x1x2:
+    global aufbau puts both alpha electrons at Gamma (nocc_a/k [2, 0], gap 0.51 none / 1.11 ewald).  k == supercell
+    to 1.3e-14; a per-k (molecule-style) aufbau lands 0.2412 Ha/cell higher in both conventions.  The uniform
+    systems (tri triplet, 1x1x3 zchain) cannot see this mutant at all (measured dE 0)."""
+    a = _kuhf_supercell_ref(Cell(ZCHAIN_A, ZCHAIN_ATOMS, "sto-3g"), (1, 1, 2), 1, 0)
+    for ex in ("none", "ewald"):
+        st, us = a[ex]
+        assert st["nocc_a_k"] == [2, 0]
+        assert abs(st["e"] - us["e"] / 2) < 1e-12
+        vm = a["kb"]["madelung"] if ex == "ewald" else 0.0
+        pk = KUHF.staged_kuhf(
+            a["kb"], 1, 0, conv=1e-12, kshift=vm, aufbau=KUHF._aufbau_per_k
+        )[0]
+        assert pk["nocc_a_k"] == [1, 1] and pk["e"] - st["e"] > 0.2
+
+
+def test_kuhf_1x1x1_is_the_gamma_uhf():
+    """Measured 5.9e-15 / 4.4e-15 (tri triplet, none / ewald), d<S2> 1e-15 (run_kuhf_anchor.py b)."""
+    cell = Cell(TRI_A, TRI_ATOMS, "sto-3g")
+    gcut = PK.aft_gcut(cell, 1e-4)
+    kb = PK.build_k(cell, (1, 1, 1), gcut=gcut, thresh=1e-8, verbose=False)
+    g = PK.gamma_aft(cell, gcut=gcut, thresh=1e-8)
+    for vm in (0.0, kb["madelung"]):
+        st, r0 = KUHF.staged_kuhf(kb, 3, 1, conv=1e-12, kshift=vm)
+        ug = uhf(
+            g["S"],
+            g["h"],
+            g["I"],
+            g["enn"],
+            3,
+            1,
+            conv=1e-12,
+            kshift=vm,
+            guess=(r0["Da"][0].real, r0["Db"][0].real),
+        )
+        assert abs(st["e"] - ug["e"]) < 1e-12 and abs(st["s2"] - ug["s2"]) < 1e-10
+
+
+def test_kuhf_trivial_aux_kgdf_equals_dense_open_shell(kgdf_anchor_113):
+    """Anchor H2 (one s per H) 1x1x3, doublet per cell (+1 cell, 3 alpha in 6 bands): dE -9.4e-14 (both exxdiv)."""
+    a = kgdf_anchor_113
+    kg = KG.build_kgdf(a["cell"], (1, 1, 3), auxmol=a["aux"], spherical=False)
+    for vm in (0.0, a["kb"]["madelung"]):
+        ud = KUHF.staged_kuhf(a["kb"], 1, 0, conv=1e-12, kshift=vm)[0]
+        ub = KUHF.kuhf(
+            a["kb"],
+            1,
+            0,
+            conv=1e-12,
+            kshift=vm,
+            jk=KG.jk_from_kB(kg),
+            guess=(ud["Da"], ud["Db"]),
+        )
+        assert abs(ub["e"] - ud["e"]) < 1e-11
+
+
+# PySCF 2.13 KUHF + AFTDF (mesh 61^3, cell.precision 1e-12, conv 1e-12), both default and our-density guesses,
+# measured 2026-09-24 by run_kuhf_oracle.py (ours agreed to <= 7.5e-14, eps 2e-13).  <S^2>: giant determinant.
+KUHF_REF = {
+    "h1x2": dict(
+        atoms=[("H", (0.3, 0.2, 0.1))],
+        n=(1, 1, 2),
+        na=1,
+        none=-0.399399818915,
+        ewald=-0.625130045222,
+        s2=2.0,
+    ),
+    "h2t": dict(
+        atoms=H2_ATOMS,
+        n=(1, 1, 2),
+        na=2,
+        none=-0.200418842427,
+        ewald=-0.651879295040,
+        s2=6.0,
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(KUHF_REF))
+def test_kuhf_matches_pinned_pyscf_kuhf_aftdf(name):
+    r = KUHF_REF[name]
+    kb = PK.build_k(Cell(H2_A, r["atoms"], "sto-3g"), r["n"], verbose=False)
+    u0 = KUHF.kuhf(kb, r["na"], 0, conv=1e-12, kshift=0.0)
+    ue = KUHF.kuhf(kb, r["na"], 0, conv=1e-12, guess=(u0["Da"], u0["Db"]))
+    assert abs(u0["e"] - r["none"]) < 1e-11 and abs(ue["e"] - r["ewald"]) < 1e-11
+    assert abs(u0["s2"] - r["s2"]) < 1e-12 and abs(ue["s2"] - r["s2"]) < 1e-12

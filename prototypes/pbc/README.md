@@ -127,7 +127,16 @@ OPENBLAS_NUM_THREADS=1 python -m pytest -q test_prototype.py   # ~35 s; PBC_SLOW
       form the supercell's reciprocal lattice.
     - **Why three k-points.** A mesh needs at least three k-points along
       some axis before the sign of the Bloch phase becomes visible.
-13. **`test_prototype.py`**: the tests. Several exist to catch a specific,
+13. **`pbc_kgdf.py`, `pbc_kcorr.py`, `pbc_kuhf.py`**: k-point density
+    fitting, MP2/dRPA and UHF.
+    - **Exact supercell equivalence.** A k-mesh reproduces the Γ-point
+      supercell exactly for fitted HF, correlation and open-shell HF. For
+      fitting, the kept auxiliary functions per q add up to the supercell's
+      count.
+    - **The per-k aufbau bug.** It is invisible on every system with the same
+      number of occupied orbitals at each k. The "zchain" case, with both α
+      electrons at Γ, is there to catch it.
+14. **`test_prototype.py`**: the tests. Several exist to catch a specific,
    plausible bug (a sign flip, a missing Madelung term, the G = 0 term applied
    to only one side); the comments say which one.
 
