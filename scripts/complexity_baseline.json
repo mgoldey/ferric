@@ -23035,6 +23035,14 @@
     "cc": 1.0,
     "mi": 156.51435355291963
   },
+  "crates/ferric-scf/src/aurora.rs::aurora_steps_on_this_thread": {
+    "cc": 2.0,
+    "mi": 132.41778397553108
+  },
+  "crates/ferric-scf/src/aurora.rs::aurora_steps_on_this_thread::<anonymous>": {
+    "cc": 1.0,
+    "mi": 157.8484854211024
+  },
   "crates/ferric-scf/src/aurora.rs::geodesic_rotation": {
     "cc": 20.0,
     "mi": 61.59616102291338
@@ -23100,8 +23108,12 @@
     "mi": 65.96229464423858
   },
   "crates/ferric-scf/src/aurora.rs::impl:AuroraState::step": {
-    "cc": 4.0,
-    "mi": 69.15054554989267
+    "cc": 5.0,
+    "mi": 68.25368071917269
+  },
+  "crates/ferric-scf/src/aurora.rs::impl:AuroraState::step::<anonymous>": {
+    "cc": 1.0,
+    "mi": 153.362447374354
   },
   "crates/ferric-scf/src/aurora.rs::impl:AuxCurvature::base_apply": {
     "cc": 1.0,
@@ -24373,7 +24385,7 @@
   },
   "crates/ferric-scf/src/df_j.rs::df_j_chunked_matches_naive_contraction": {
     "cc": 6.0,
-    "mi": 60.27582515856342
+    "mi": 60.26339982409702
   },
   "crates/ferric-scf/src/df_j.rs::df_j_chunked_matches_naive_contraction::<anonymous>": {
     "cc": 1.0,
@@ -24386,6 +24398,50 @@
   "crates/ferric-scf/src/df_j.rs::df_j_chunked_matches_naive_contraction::<anonymous>#2": {
     "cc": 1.0,
     "mi": 157.8484854211024
+  },
+  "crates/ferric-scf/src/df_j.rs::df_j_energy_is_smooth_in_the_density": {
+    "cc": 18.0,
+    "mi": 53.97233540918367
+  },
+  "crates/ferric-scf/src/df_j.rs::df_j_energy_is_smooth_in_the_density::<anonymous>": {
+    "cc": 1.0,
+    "mi": 149.7134489718288
+  },
+  "crates/ferric-scf/src/df_j.rs::df_j_energy_is_smooth_in_the_density::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 159.05793486938265
+  },
+  "crates/ferric-scf/src/df_j.rs::df_j_energy_is_smooth_in_the_density::<anonymous>#2": {
+    "cc": 1.0,
+    "mi": 161.1663534315451
+  },
+  "crates/ferric-scf/src/df_j.rs::df_j_energy_is_smooth_in_the_density::<anonymous>#3": {
+    "cc": 1.0,
+    "mi": 163.56126932217657
+  },
+  "crates/ferric-scf/src/df_j.rs::df_j_energy_is_smooth_in_the_density::<anonymous>#4": {
+    "cc": 1.0,
+    "mi": 154.40593499075717
+  },
+  "crates/ferric-scf/src/df_j.rs::df_j_energy_is_smooth_in_the_density::<anonymous>#5": {
+    "cc": 6.0,
+    "mi": 95.63423568733702
+  },
+  "crates/ferric-scf/src/df_j.rs::df_j_energy_is_smooth_in_the_density::<anonymous>#5::<anonymous>": {
+    "cc": 1.0,
+    "mi": 151.71947944012584
+  },
+  "crates/ferric-scf/src/df_j.rs::df_j_energy_is_smooth_in_the_density::<anonymous>#5::<anonymous>#1": {
+    "cc": 1.0,
+    "mi": 153.362447374354
+  },
+  "crates/ferric-scf/src/df_j.rs::df_j_energy_is_smooth_in_the_density::<anonymous>#5::<anonymous>#2": {
+    "cc": 1.0,
+    "mi": 153.362447374354
+  },
+  "crates/ferric-scf/src/df_j.rs::df_j_energy_is_smooth_in_the_density::<anonymous>#6": {
+    "cc": 1.0,
+    "mi": 153.97676999581998
   },
   "crates/ferric-scf/src/df_j.rs::df_j_matches_direct_j_within_fit_error": {
     "cc": 3.0,
@@ -24405,7 +24461,7 @@
   },
   "crates/ferric-scf/src/df_j.rs::df_j_timing_chunked_vs_naive_demo": {
     "cc": 7.0,
-    "mi": 58.52581413754619
+    "mi": 58.5146672951213
   },
   "crates/ferric-scf/src/df_j.rs::df_j_timing_chunked_vs_naive_demo::<anonymous>": {
     "cc": 1.0,
@@ -24415,53 +24471,61 @@
     "cc": 1.0,
     "mi": 107.32842170209554
   },
-  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>::build": {
-    "cc": 22.0,
-    "mi": 46.31996914457288
+  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>#1::build": {
+    "cc": 23.0,
+    "mi": 45.948483529079056
   },
-  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>::build::<anonymous>": {
+  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>#1::build::<anonymous>": {
     "cc": 1.0,
     "mi": 153.0837736153568
   },
-  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>::build::<anonymous>#1": {
+  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>#1::build::<anonymous>#1": {
     "cc": 6.0,
     "mi": 83.35418864607612
   },
-  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>::build::<anonymous>#1::<anonymous>": {
+  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>#1::build::<anonymous>#1::<anonymous>": {
     "cc": 1.0,
     "mi": 153.0837736153568
   },
-  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>::build::<anonymous>#1::<anonymous>#1": {
+  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>#1::build::<anonymous>#1::<anonymous>#1": {
     "cc": 1.0,
     "mi": 110.14966228632821
   },
-  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>::build::<anonymous>#2": {
+  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>#1::build::<anonymous>#2": {
     "cc": 7.0,
     "mi": 78.17398519946178
   },
-  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>::build::<anonymous>#2::<anonymous>": {
+  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>#1::build::<anonymous>#2::<anonymous>": {
     "cc": 1.0,
     "mi": 153.0837736153568
   },
-  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>::build::<anonymous>#2::<anonymous>#1": {
+  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>#1::build::<anonymous>#2::<anonymous>#1": {
     "cc": 3.0,
     "mi": 96.56757020025452
   },
-  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>::build::<anonymous>#2::<anonymous>#1::<anonymous>": {
+  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>#1::build::<anonymous>#2::<anonymous>#1::<anonymous>": {
     "cc": 1.0,
     "mi": 153.0837736153568
   },
-  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>::reset": {
+  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>#1::reset": {
     "cc": 1.0,
     "mi": 155.2836050228807
   },
+  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>::solve_metric": {
+    "cc": 2.0,
+    "mi": 118.2215589096734
+  },
+  "crates/ferric-scf/src/df_j.rs::impl:DfJ<'_>::solve_metric::<anonymous>": {
+    "cc": 1.0,
+    "mi": 153.0837736153568
+  },
   "crates/ferric-scf/src/df_j.rs::impl:DfJ<'a>#1::from_source": {
     "cc": 5.0,
-    "mi": 81.54257858497297
+    "mi": 82.76160465556032
   },
   "crates/ferric-scf/src/df_j.rs::impl:DfJ<'a>#1::from_source::<anonymous>": {
     "cc": 1.0,
-    "mi": 153.0837736153568
+    "mi": 123.27515995041077
   },
   "crates/ferric-scf/src/df_j.rs::impl:DfJ<'a>#1::from_source::<anonymous>#1": {
     "cc": 1.0,
