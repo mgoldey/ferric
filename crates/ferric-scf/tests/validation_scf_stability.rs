@@ -108,6 +108,11 @@
 //! * OH: verdict must be MARGINAL, not STABLE (a Goldstone mode is not a
 //!   curvature).
 //!
+//! The UKS case compares the Davidson λ_min, not the dense UKS spectrum: the
+//! f_xc response kernel (`FxcKernelStore`) is crate-private, so a test cannot
+//! build the dense UKS Hessian. The HF-Hessian control proves the kernel is
+//! applied; a defect that moves only higher UKS eigenvalues is not covered.
+//!
 //! A missing reference JSON is a HARD failure (panic naming the path).
 
 use std::path::{Path, PathBuf};
@@ -573,8 +578,8 @@ fn singlet_triplet(h: &Array2<f64>) -> (Array2<f64>, Array2<f64>, f64) {
     let ab = h.slice(ndarray::s![..d, d..]);
     let ba = h.slice(ndarray::s![d.., ..d]);
     let bb = h.slice(ndarray::s![d.., d..]);
-    let s = 0.5 * (&aa + &ab + &ba + &bb);
-    let t = 0.5 * (&aa - &ab - &ba + &bb);
+    let s = 0.5 * ((&aa + &ab) + (&ba + &bb));
+    let t = 0.5 * ((&aa - &ab) - (&ba - &bb));
     let c = 0.5 * (&aa - &ab + &ba - &bb);
     let cmax = c.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
     (s, t, cmax)
