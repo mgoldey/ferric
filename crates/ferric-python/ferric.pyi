@@ -369,6 +369,146 @@ class UhfResult:
         """Beta-spin orbital energies (Hartree), ascending."""
         ...
 
+class CdftConstraint:
+    """One constrained-DFT fragment constraint.
+
+    ``target`` is a Becke fragment POPULATION in electrons, not a net charge:
+    ``kind="charge"`` constrains N_alpha + N_beta on the fragment (2.0 on a He
+    atom = neutral He, 1.0 = He+); ``kind="spin"`` constrains N_alpha - N_beta.
+    ``atoms`` are 0-based, non-empty and unique. An unknown ``kind``, an empty or
+    negative/duplicated atom list, or a non-finite target raise ``ValueError``.
+    """
+
+    def __init__(self, atoms: list[int], target: float, kind: str = "charge") -> None: ...
+    @property
+    def atoms(self) -> list[int]: ...
+    @property
+    def target(self) -> float: ...
+    @property
+    def kind(self) -> str:
+        """``"charge"`` or ``"spin"``."""
+        ...
+
+class CdftResult:
+    """Result of ``run_cdft`` (constrained UHF/UKS).
+
+    A returned result always has a converged outer (lambda) loop -- an
+    unconverged one raises ``RuntimeError`` -- but the inner SCF at the final
+    lambda may not be; ``converged`` requires both.
+    """
+
+    @property
+    def energy(self) -> float:
+        """Energy (Ha) at the constrained density, without the constraint term."""
+        ...
+
+    @property
+    def converged(self) -> bool:
+        """``scf_converged`` and every |population - target| < ``lambda_tol``."""
+        ...
+
+    @property
+    def scf_converged(self) -> bool:
+        """Whether the inner SCF at the final lambda converged."""
+        ...
+
+    @property
+    def iterations(self) -> int:
+        """Inner SCF iterations of the final solve."""
+        ...
+
+    @property
+    def outer_iterations(self) -> int:
+        """Outer lambda-Newton iterations."""
+        ...
+
+    @property
+    def lambdas(self) -> list[float]:
+        """Lagrange multipliers (Ha per electron), one per constraint."""
+        ...
+
+    @property
+    def populations(self) -> list[float]:
+        """Achieved fragment populations (electrons), one per constraint."""
+        ...
+
+    @property
+    def targets(self) -> list[float]:
+        """Requested targets, one per constraint."""
+        ...
+
+    @property
+    def kinds(self) -> list[str]:
+        """Constraint kinds (``"charge"``/``"spin"``), one per constraint."""
+        ...
+
+    @property
+    def max_constraint_error(self) -> float:
+        """max |population - target| over constraints (electrons)."""
+        ...
+
+    @property
+    def lambda_tol(self) -> float:
+        """The outer-loop tolerance used."""
+        ...
+
+    def density_alpha(self) -> NDArray[np.float64]:
+        """Alpha-spin AO-basis density matrix (n_bf x n_bf)."""
+        ...
+
+    def density_beta(self) -> NDArray[np.float64]:
+        """Beta-spin AO-basis density matrix (n_bf x n_bf)."""
+        ...
+
+    def orbital_energies_alpha(self) -> NDArray[np.float64]:
+        """Alpha-spin orbital energies (Hartree) of the lambda-augmented Fock."""
+        ...
+
+    def orbital_energies_beta(self) -> NDArray[np.float64]:
+        """Beta-spin orbital energies (Hartree) of the lambda-augmented Fock."""
+        ...
+
+    @property
+    def nocc(self) -> tuple[int, int]:
+        """Occupied (alpha, beta) orbital counts."""
+        ...
+
+    def mo_coeff_alpha(self) -> NDArray[np.float64]:
+        """Alpha MO coefficients (n_bf x n_mo); the first nocc[0] columns are occupied."""
+        ...
+
+    def mo_coeff_beta(self) -> NDArray[np.float64]:
+        """Beta MO coefficients (n_bf x n_mo); the first nocc[1] columns are occupied."""
+        ...
+
+    def weight_matrix(self, index: int) -> NDArray[np.float64]:
+        """AO-basis Becke weight operator W of constraint ``index``; the population of a
+        density pair is trace(W @ (Da + Db)) (charge) or trace(W @ (Da - Db)) (spin)."""
+        ...
+
+class CdftCouplingResult:
+    """Wu-Van Voorhis coupling between two cDFT diabats (``cdft_coupling``)."""
+
+    @property
+    def h_ab(self) -> float:
+        """Orthogonalized coupling (Ha). The sign is a phase convention; compare |h_ab|."""
+        ...
+
+    @property
+    def s_ab(self) -> float:
+        """Determinant overlap <Psi_a|Psi_b>."""
+        ...
+
+    @property
+    def e_a(self) -> float:
+        """Energy of state A (Ha)."""
+        ...
+
+    @property
+    def e_b(self) -> float:
+        """Energy of state B (Ha)."""
+        ...
+
 class OptimizeResult:
     """Result of a geometry optimization."""
 
@@ -1191,6 +1331,52 @@ def run_rohf(
     memory_budget_gb: float | None = None,
 ) -> UhfResult:
     """Restricted Open-Shell Hartree-Fock."""
+    ...
+
+def run_cdft(
+    mol: Molecule,
+    basis_set: BasisSet,
+    constraints: list[CdftConstraint],
+    functional: str | None = None,
+    lambda_tol: float | None = None,
+    max_outer: int | None = None,
+    stability_descent: bool | None = None,
+    max_iter: int | None = None,
+    energy_conv: float | None = None,
+    density_conv: float | None = None,
+    diis_size: int | None = None,
+    integral_thresh: float | None = None,
+    k_builder: str | None = None,
+    df_j_aux: str | None = None,
+    df_k_aux: str | None = None,
+    level_shift: float | None = None,
+    mom_after_iter: int | None = None,
+    point_charges: list[tuple[float, float, float, float]] | None = None,
+    external_field: tuple[float, float, float] | None = None,
+    memory_budget_gb: float | None = None,
+    guess: str | None = None,
+    grid_radial: int | None = None,
+    grid_angular: int | None = None,
+) -> CdftResult:
+    """Constrained UHF/UKS (Wu-Van Voorhis cDFT) with Becke fragment populations.
+
+    ``functional`` None or ``"HF"`` = UHF (the validated path); any other name = UKS.
+    ``lambda_tol`` (default 1e-5 electrons) and ``max_outer`` (default 30) control the
+    outer lambda-Newton loop; exceeding ``max_outer`` raises ``RuntimeError``.
+    ``stability_descent`` defaults to True (unlike ``run_uhf``): a constrained saddle is
+    descended from and the lower constraint-satisfying state kept (skipped for UKS).
+    The weight grid defaults to 99 x 302. Unset SCF knobs take the Rust ``RhfConfig``
+    defaults (``max_iter`` 200); ``df_*_aux`` unset = exact J/K.
+    """
+    ...
+
+def cdft_coupling(state_a: CdftResult, state_b: CdftResult) -> CdftCouplingResult:
+    """Wu-Van Voorhis H_ab between two ``run_cdft`` diabats.
+
+    Each state must carry exactly one ``kind="charge"`` constraint, be ``converged``,
+    and come from the same molecule/geometry/basis/charge/multiplicity; otherwise
+    ``ValueError``. Identical states (|S_ab| -> 1) also raise.
+    """
     ...
 
 def run_optimize(
