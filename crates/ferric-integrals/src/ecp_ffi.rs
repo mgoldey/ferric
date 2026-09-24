@@ -94,6 +94,25 @@ extern "C" {
         out_derivs: *mut c_double,
         out_natoms: *mut c_int,
     ) -> c_int;
+
+    /// Rectangular Cartesian ECP block between two independent shell lists
+    /// at arbitrary centres (periodic ECP): `out[ncart(bra)][ncart(ket)]`
+    /// (row-major, zeroed first) `= Σ_{(a,b,u) enabled by mask} ⟨a|U_u|b⟩`.
+    /// `mask` is null (every triple) or `nbra*nket*necp` bytes indexed
+    /// `(a*nket + b)*necp + u`. `out_len` must equal
+    /// `ncart(bra) * ncart(ket)` (checked; mismatch = error, nothing
+    /// written). No internal distance screening. Returns 0 on success.
+    pub fn ferric_ecp_block(
+        bra: *const CEcpGShell,
+        nbra: c_int,
+        ket: *const CEcpGShell,
+        nket: c_int,
+        ecps: *const CEcpCenter,
+        necp: c_int,
+        mask: *const u8,
+        out: *mut c_double,
+        out_len: i64,
+    ) -> c_int;
 }
 
 /// Success status code from the ECP C shim.

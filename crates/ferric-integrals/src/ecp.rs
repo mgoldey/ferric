@@ -17,8 +17,8 @@
 //! PySCF's spherical `ECPscalar` to ~1e-9 (see `tests/ecp_matrix.rs`).
 
 use crate::ecp_ffi::{
-    ferric_ecp_matrix, ferric_ecp_matrix_deriv, ferric_ecp_natoms, CEcpCenter, CEcpGShell,
-    FERRIC_ECP_OK,
+    ferric_ecp_block, ferric_ecp_matrix, ferric_ecp_matrix_deriv, ferric_ecp_natoms, CEcpCenter,
+    CEcpGShell, FERRIC_ECP_OK,
 };
 use ferric_core::FerricError;
 use std::os::raw::c_int;
@@ -406,6 +406,95 @@ pub fn ecp_matrix_spherical(
     Ok(cart_to_sph(shells, &v_cart))
 }
 
+/// Rectangular spherical ECP block between two INDEPENDENT shell lists at
+/// arbitrary centres: `V[p, q] = Σ_{(a, b, u) enabled} ⟨bra_a|U_u|ket_b⟩`,
+/// `nsph(bra) × nsph(ket)`, row-major, per-shell `Cᵀ V_cart C` exactly as
+/// [`ecp_matrix_spherical`] (so a square call with `bra == ket` and every
+/// triple enabled reproduces its matrix, up to libecpint's own bra-side
+/// screen that `ecp_matrix_spherical` applies and this does not).
+///
+/// This is the periodic-ECP kernel: the ket shells may be lattice images of
+/// the bra shells and the ECP centres lattice images of the atoms. `mask`
+/// (`None` = every triple) has length `bra.len() * ket.len() * ecps.len()`,
+/// index `(a * ket.len() + b) * ecps.len() + u`; the caller owns the
+/// screening, so the truncation is the caller's to report. Coefficients are
+/// in the bare-Cartesian convention (`gto_norm` folded in).
+pub fn ecp_block_spherical(
+    bra: &[EcpGaussianShell],
+    ket: &[EcpGaussianShell],
+    ecps: &[EcpCenter],
+    mask: Option<&[u8]>,
+) -> Result<Vec<f64>, FerricError> {
+    if bra.is_empty() || ket.is_empty() || ecps.is_empty() {
+        return Err(FerricError::Libint(
+            "ecp_block_spherical: empty input".into(),
+        ));
+    }
+    for sh in bra.iter().chain(ket) {
+        if sh.l < 0 || sh.l > 4 {
+            return Err(FerricError::Libint(format!(
+                "ECP block: angular momentum l={} outside 0..=4 (cart2sph table)",
+                sh.l
+            )));
+        }
+        if sh.exponents.is_empty() || sh.exponents.len() != sh.coefficients.len() {
+            return Err(FerricError::Libint(format!(
+                "ECP block: shell has {} exponents and {} coefficients",
+                sh.exponents.len(),
+                sh.coefficients.len()
+            )));
+        }
+    }
+    for e in ecps {
+        let n = e.ams.len();
+        if n == 0 || e.ns.len() != n || e.exponents.len() != n || e.coefficients.len() != n {
+            return Err(FerricError::Libint(
+                "ECP block: ragged or empty ECP term lists".into(),
+            ));
+        }
+    }
+    if let Some(m) = mask {
+        if m.len() != bra.len() * ket.len() * ecps.len() {
+            return Err(FerricError::Libint(format!(
+                "ECP block: mask has {} entries, expected {} x {} x {}",
+                m.len(),
+                bra.len(),
+                ket.len(),
+                ecps.len()
+            )));
+        }
+    }
+    let (c_bra, c_ecps, _keep) = build_c_arrays(bra, ecps);
+    let (c_ket, _, _keep_ket) = build_c_arrays(ket, &[]);
+    let nc_bra: usize = bra.iter().map(|s| ncart(s.l)).sum();
+    let nc_ket: usize = ket.iter().map(|s| ncart(s.l)).sum();
+    let mut v_cart = vec![0.0f64; nc_bra * nc_ket];
+    // SAFETY: c_bra/c_ket/c_ecps are valid C-repr arrays whose pointers alias
+    // `bra`/`ket`/`ecps` and `_keep` (all alive across the call); `mask` is
+    // null or exactly nbra*nket*necp bytes (checked above); v_cart holds
+    // nc_bra*nc_ket doubles and that length is passed for the shim's
+    // cross-check. Status checked below.
+    let status = unsafe {
+        ferric_ecp_block(
+            c_bra.as_ptr(),
+            c_bra.len() as c_int,
+            c_ket.as_ptr(),
+            c_ket.len() as c_int,
+            c_ecps.as_ptr(),
+            c_ecps.len() as c_int,
+            mask.map_or(std::ptr::null(), |m| m.as_ptr()),
+            v_cart.as_mut_ptr(),
+            v_cart.len() as i64,
+        )
+    };
+    if status != FERRIC_ECP_OK {
+        return Err(FerricError::Libint(format!(
+            "ferric_ecp_block failed: {status}"
+        )));
+    }
+    Ok(cart_to_sph_rect(bra, ket, &v_cart))
+}
+
 /// Owns the `c_int` conversions and per-ECP vectors that the `CEcpCenter`
 /// pointers alias. Must outlive any FFI call using those pointers.
 struct CEcpBacking {
@@ -523,6 +612,61 @@ fn cart_to_sph(shells: &[EcpGaussianShell], v_cart: &[f64]) -> Vec<f64> {
         }
     }
 
+    v_sph
+}
+
+/// Rectangular Cartesian -> spherical: `V_sph[A,B] = C_Aᵀ V_cart[A,B] C_B`
+/// for every (bra shell A, ket shell B). `v_cart` is
+/// `ncart(bra) × ncart(ket)` row-major; returns `nsph(bra) × nsph(ket)`.
+fn cart_to_sph_rect(
+    bra: &[EcpGaussianShell],
+    ket: &[EcpGaussianShell],
+    v_cart: &[f64],
+) -> Vec<f64> {
+    let offsets = |sh: &[EcpGaussianShell]| {
+        let (mut c, mut s) = (0usize, 0usize);
+        let mut out = Vec::with_capacity(sh.len());
+        for x in sh {
+            out.push((c, s));
+            c += ncart(x.l);
+            s += nsph(x.l);
+        }
+        (out, c, s)
+    };
+    let (off_a, _nca_tot, nsa_tot) = offsets(bra);
+    let (off_b, ncb_tot, nsb_tot) = offsets(ket);
+    let mut v_sph = vec![0.0f64; nsa_tot * nsb_tot];
+    for (a, sha) in bra.iter().enumerate() {
+        let (ca0, sa0) = off_a[a];
+        let nca = ncart(sha.l);
+        let nsa = nsph(sha.l);
+        let ca = cart2sph(sha.l);
+        for (b, shb) in ket.iter().enumerate() {
+            let (cb0, sb0) = off_b[b];
+            let ncb = ncart(shb.l);
+            let nsb = nsph(shb.l);
+            let cb = cart2sph(shb.l);
+            let mut tmp = vec![0.0f64; nca * nsb];
+            for i in 0..nca {
+                for q in 0..nsb {
+                    let mut acc = 0.0;
+                    for k in 0..ncb {
+                        acc += v_cart[(ca0 + i) * ncb_tot + (cb0 + k)] * cb[k * nsb + q];
+                    }
+                    tmp[i * nsb + q] = acc;
+                }
+            }
+            for p in 0..nsa {
+                for q in 0..nsb {
+                    let mut acc = 0.0;
+                    for i in 0..nca {
+                        acc += ca[i * nsa + p] * tmp[i * nsb + q];
+                    }
+                    v_sph[(sa0 + p) * nsb_tot + (sb0 + q)] = acc;
+                }
+            }
+        }
+    }
     v_sph
 }
 

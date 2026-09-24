@@ -90,6 +90,36 @@ int ferric_ecp_matrix_deriv(const ferric_ecp_gshell *shells, int nshell,
                             const ferric_ecp_center *ecps, int necp,
                             double *out_derivs, int *out_natoms);
 
+/* Rectangular ECP block between two INDEPENDENT shell lists at arbitrary
+ * (e.g. lattice-translated) centres -- the periodic-ECP kernel. Unlike
+ * ferric_ecp_matrix there is no bra/ket symmetry, no centre deduplication and
+ * NO internal distance screening: every (bra shell a, ket shell b, ECP u)
+ * triple enabled by `mask` is evaluated with libecpint's per-shell-pair kernel
+ * (ECPIntegral::compute_shell_pair) and summed.
+ *
+ *   bra, nbra  : row shells (Cartesian, bare-Cartesian coefficients)
+ *   ket, nket  : column shells
+ *   ecps, necp : ECP centres (any positions; images allowed)
+ *   mask       : NULL = every triple; else nbra*nket*necp bytes, index
+ *                (a*nket + b)*necp + u, nonzero = evaluate. The caller's
+ *                screen lives here, so the truncation is the caller's to
+ *                report.
+ *   out        : caller-allocated, out_len doubles, row-major
+ *                [ncart(bra)][ncart(ket)]; overwritten (zeroed first).
+ *   out_len    : MUST equal ferric_ecp_ncart(bra) * ferric_ecp_ncart(ket)
+ *                (size cross-check: a mismatch returns FERRIC_ECP_EINVAL and
+ *                writes nothing).
+ *
+ * Validates l, nprim, exponents and ECP angular momenta against
+ * LIBECPINT_MAX_L BEFORE constructing the libecpint engine (whose own checks
+ * are assert()s, i.e. aborts). Never lets a C++ exception cross the ABI.
+ * Returns FERRIC_ECP_OK or a negative error code. */
+int ferric_ecp_block(const ferric_ecp_gshell *bra, int nbra,
+                     const ferric_ecp_gshell *ket, int nket,
+                     const ferric_ecp_center *ecps, int necp,
+                     const unsigned char *mask,
+                     double *out, long long out_len);
+
 #ifdef __cplusplus
 }
 #endif

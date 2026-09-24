@@ -52,9 +52,12 @@ pub struct PeriodicHcoreK {
     pub s: Vec<Array2<Complex64>>,
     /// `T(k)`.
     pub t: Vec<Array2<Complex64>>,
-    /// `V(k) = V_SR + V_LR + V_G0`.
+    /// `V(k) = V_SR + V_LR + V_G0` (nuclear attraction with Z_eff; no ECP).
     pub v: Vec<Array2<Complex64>>,
-    /// `h(k) = T(k) + V(k)`.
+    /// `V_ECP(k) = Σ_L e^{ik·L} V_L` ([`crate::ecp`]), Hermitised; `None` for
+    /// an all-electron basis.
+    pub v_ecp: Option<Vec<Array2<Complex64>>>,
+    /// `h(k) = T(k) + V(k) (+ V_ECP(k))`.
     pub h: Vec<Array2<Complex64>>,
     /// Ewald nuclear repulsion per cell.
     pub enn: f64,
@@ -64,6 +67,8 @@ pub struct PeriodicHcoreK {
     pub n_images: usize,
     /// Shifted 3-centre calls in the SR attraction.
     pub n_sr_triplets: usize,
+    /// Kept (shell, shell, ECP-image) triples in `v_ecp` (0 without ECP).
+    pub n_ecp_triples: usize,
     /// Full-sphere G vectors in the LR attraction.
     pub n_g_lr: usize,
     /// Resolved memory budget (bytes).
@@ -110,6 +115,8 @@ pub fn periodic_hcore_kpts(
     cfg: &PeriodicHcoreConfig,
 ) -> Result<PeriodicHcoreK, FerricError> {
     cfg.validate()?;
+    // Z_eff guard first: a bare Z is silent for the k-mesh ≡ supercell anchor.
+    crate::ecp::check_ecp_applied(cell, prep.basis_set())?;
     let shells = prim_shells(cell, prep)?;
     let n = prep.nbasis();
     let nk = mesh.nk();
@@ -283,11 +290,23 @@ pub fn periodic_hcore_kpts(
     )?;
     let ztot: f64 = zs.iter().sum();
     let c0 = PI / (omega * omega * vol);
+    // --- V_ECP(k) = Σ_L e^{ik·L} V_L (`None` for an all-electron basis).
+    let ecp = crate::ecp::periodic_ecp_images_on(cell, prep, &cfg.ecp_config(), &mut ledger)?;
+    let n_ecp_triples = ecp.as_ref().map_or(0, |e| e.n_triples);
+    let v_ecp = match &ecp {
+        Some(e) => Some(e.at_kpts(cell, mesh)?),
+        None => None,
+    };
+    drop(ecp);
     let mut v = Vec::with_capacity(nk);
     let mut h = Vec::with_capacity(nk);
     for k in 0..nk {
         let vk = &(&v_sr[k] + &hermitize(&v_lr[k])) + &s[k].mapv(|z| z * (c0 * ztot));
-        h.push(&t[k] + &vk);
+        let mut hk = &t[k] + &vk;
+        if let Some(ve) = &v_ecp {
+            hk += &ve[k];
+        }
+        h.push(hk);
         v.push(vk);
     }
     let enn = ewald_nuclear_repulsion(cell, default_ewald_omega(cell))?;
@@ -296,11 +315,13 @@ pub fn periodic_hcore_kpts(
         s,
         t,
         v,
+        v_ecp,
         h,
         enn,
         omega,
         n_images: images.len(),
         n_sr_triplets,
+        n_ecp_triples,
         n_g_lr: gv.len(),
         budget_bytes: ledger.budget(),
     })
