@@ -24,10 +24,10 @@ live. Ten PRs have merged since. VERIFIED against `origin/main` just now:
 | No substitution enumerator wired to the pocket | **FIXED** (#96). `propose_substitutions` + `embed_proposals` |
 | Gradient memory 3.033 GB peak | **FIXED** (#92). 7.4x lower |
 | MPI job flakes ~7% | **FIXED** (#98). Launch retried once |
-| No dispersion at all | **IN REVIEW** (#99, draft). Native D3(BJ), verified 2e-16 Ha |
-| Correlated energies never reach a machine-readable log | **IN REVIEW** (#100, draft) |
-| `build-and-test` is a 63-min critical path | **IN REVIEW** (#101). 4-way shard, 2466 tests, 8.3% spread |
-| danuglipron flow exists only as scratch scripts | **IN REVIEW** (#102) |
+| No dispersion at all | **FIXED** (#99). Native D3(BJ), verified 2e-16 Ha |
+| Correlated energies never reach a machine-readable log | **FIXED** (#100). Each method's own total goes in a result record |
+| `build-and-test` is a 63-min critical path | **FIXED** (#101). 4-way shard, 2466 tests, 8.3% spread |
+| danuglipron flow exists only as scratch scripts | **FIXED** (#102). The substitution golden path runs end to end on 7LCJ |
 
 STILL OPEN, and these are the real remaining gaps:
 
@@ -1591,13 +1591,13 @@ pipeline that LOOKS like it has a docking tier.
 
 ### Which dispersion model, once one exists (researched 2026-09-19)
 
-D3(BJ) is IMPLEMENTED (#99, in review), energy and analytic gradient both.
+D3(BJ) is IMPLEMENTED (#99, merged), energy and analytic gradient both.
 The comparison behind that choice,
 because "add dispersion" has four plausible answers and they are not equivalent:
 
 | model | needs from the SCF | cost | status in ferric |
 |---|---|---|---|
-| D3(BJ) | geometry + Z only, not even a density | negligible | **implemented** (#99, in review): energy + analytic gradient; `task="frequencies"` still refused, the FD Hessian from it is unvalidated |
+| D3(BJ) | geometry + Z only, not even a density | negligible | **implemented** (#99, merged): energy + analytic gradient; `task="frequencies"` still refused, the FD Hessian from it is unvalidated |
 | D4 | geometry, Z, EEQ charges | negligible | none; reuses nothing ferric has |
 | XDM | rho, grad-rho, tau, grad^2-rho on a grid + Hirshfeld weights | negligible vs the SCF | ~80% present, see below |
 | VV10 | rho, grad-rho INSIDE the SCF | O(N_pts^2) pair sum | implemented, inside specific functionals |
@@ -2311,11 +2311,10 @@ That ratio, not the algorithm, is what sizes a catalyst job now.
 6. **Fix the drifted docstring**: `qmmm.rs:26-34` says "no Lennard-Jones QM-MM
    term", but `qmmm_mm_terms` (`qmmm.rs:1578`) computes one at
    `qmmm.rs:1674-1704`. The code is right; the comment is stale.
-7. **Expose `FrequencyResult.normal_modes` to Python.** [still open; and now
-   MORE valuable -- it is what lets a Python caller check `find_saddle`'s
-   imaginary mode points along the reaction coordinate, which is step C4's
-   second half.] VERIFIED absent from
-   the bindings. Without it a Python workflow can count imaginary modes but
+7. **Expose `FrequencyResult.normal_modes` to Python.** [DONE, #97:
+   `FrequencyResult.normal_modes` is in the bindings, which is what lets a
+   Python caller check `find_saddle`'s imaginary mode points along the
+   reaction coordinate, step C4's second half.] Without it a Python workflow can count imaginary modes but
    not check one points along the reaction coordinate, so it cannot complete
    TS verification (step C4). Small, self-contained, and a prerequisite for
    any Python-driven catalyst work.
@@ -2324,5 +2323,6 @@ That ratio, not the algorithm, is what sizes a catalyst job now.
    6N displaced SCFs start cold from the default guess despite being a
    delta-Bohr perturbation apart. Self-contained, and it pays off on every
    frequency run -- which is every TS verification.
-9. **Surface `tools/` in `site/src/SUMMARY.md`.** None of this pipeline is in
-   the published docs.
+9. **Surface `tools/` in `site/src/SUMMARY.md`.** [DONE: the pipeline is
+   published under "End-to-end applications", "Toxicity screening" and the
+   "Project notebooks" section of `SUMMARY.md`.]
