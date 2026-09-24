@@ -41,7 +41,7 @@ const _: () = assert!(
 
 /// SCF convergence result types and spin-channel descriptor.
 pub mod result;
-pub use result::{ScfResult, Spin};
+pub use result::{DfJkRoute, ScfResult, Spin};
 
 /// Post-SCF one-electron property evaluation (dipole, charges, ESP).
 pub mod properties;
@@ -113,6 +113,9 @@ pub use rohf::{solve_rohf, RohfConfig};
 pub mod davidson_local;
 /// Analytical nuclear gradients for RHF, UHF, and ROHF.
 pub mod gradient;
+/// Nuclear gradients of density-fitted (RI-J / RI-K / RSH) two-electron
+/// energies, routed by the builders the SCF recorded in `ScfResult::df_jk`.
+pub mod df_gradient;
 /// Maximum Overlap Method for tracking orbital character across SCF iterations.
 pub mod mom;
 /// Augmented Hessian (AH) ROHF solver for difficult convergence cases.

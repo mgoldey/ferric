@@ -113,6 +113,14 @@ impl<'a> std::fmt::Debug for DfK<'a> {
     }
 }
 
+/// Metric eigenvalue below which [`DfK`] drops a mode from V^{-1/2}.
+///
+/// Shared with [`crate::df_gradient`], which must differentiate the SAME
+/// truncated exchange energy: it recomputes the identical `eigh` of the
+/// identical metric and applies this same cut to decide which modes the
+/// energy kept.
+pub(crate) const DFK_LINDEP_THRESH: f64 = 1e-10;
+
 /// V^{-1/2} via symmetric eigendecomposition with canonical orthogonalization.
 /// The 2-center metric `(P|w(r12)|Q)` is positive-definite analytically, but
 /// for range-separated operators (erf, erfc) with JK-fit aux on heavy atoms,
@@ -129,7 +137,7 @@ fn v_inv_sqrt_lindep(v: &Array2<f64>) -> Result<Array2<f64>, FerricError> {
     // to 1 there regardless of the env var.
     let (evals, evecs) = with_blas_threads(opt_in_blas_threads(), || v.eigh(UPLO::Upper))
         .map_err(|e| FerricError::Lapack(format!("V eigh in DfK: {e}")))?;
-    const LINDEP_THRESH: f64 = 1e-10;
+    const LINDEP_THRESH: f64 = DFK_LINDEP_THRESH;
     let mut u_scaled = evecs.clone();
     let mut n_dropped: usize = 0;
     for k in 0..naux {

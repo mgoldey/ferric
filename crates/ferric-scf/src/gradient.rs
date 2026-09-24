@@ -360,6 +360,15 @@ pub fn build_energy_weighted_density(result: &ScfResult, nocc: usize) -> Array2<
 /// and were temporarily rejected outright. Validated against central finite
 /// difference of the total energy on HI/def2-SVP (see
 /// `ferric-scf/tests/ecp_rhf.rs`).
+///
+/// # Density fitting
+///
+/// When the SCF density-fitted J and/or K (`result.df_jk` is `Some`), the
+/// two-electron part differentiates THAT fitted energy — three-centre,
+/// auxiliary-centre and metric derivatives, see [`crate::df_gradient`] —
+/// rather than the exact four-centre J/K. An all-exact SCF (`df_jk = None`)
+/// takes the original four-centre path unchanged. [`uhf_gradient`],
+/// [`rohf_gradient`] and the `ks_gradient_*` functions route the same way.
 pub fn rhf_gradient(
     mol: &Molecule,
     prep: &PreparedBasis,
@@ -377,12 +386,59 @@ pub fn rhf_gradient(
     }
     let nocc = (mol.nelec() / 2) as usize;
     let w = build_energy_weighted_density(result, nocc);
-    let mut grad = hf_gradient_with_density(mol, prep, op, bounds, result.density_r(), &w, ext)?;
+    let mut grad = match active_df_route(result) {
+        // Density-fitted J and/or K: differentiate the fitted energy the SCF
+        // actually reported (see `crate::df_gradient`).
+        Some(route) => {
+            let mut g = oneelectron_gradient(mol, prep, result.density_r(), &w, ext)?;
+            g += &crate::df_gradient::routed_two_electron_gradient(
+                mol,
+                prep,
+                op,
+                bounds,
+                crate::df_gradient::TwoElectronDensity::Closed(result.density_r()),
+                route,
+                crate::df_gradient::ExchangeMix::hartree_fock(),
+            )?;
+            g
+        }
+        // All-exact SCF: the original code path, unchanged.
+        None => hf_gradient_with_density(mol, prep, op, bounds, result.density_r(), &w, ext)?,
+    };
     // ECP term: dE/dR gains Σ_μν D_μν dV_ECP_μν/dR whenever the basis carries
     // ECPs. `ecp_gradient` is a no-op (zero work) otherwise, so the
     // all-electron path is unchanged.
     grad += &ecp_gradient(mol, prep, result.density_r())?;
     Ok(grad)
+}
+
+/// The density-fitting route of `result`, if any two-electron term of its
+/// energy was fitted. `None` → every gradient entry point keeps its exact
+/// four-centre path byte-for-byte.
+pub(crate) fn active_df_route(result: &ScfResult) -> Option<&crate::result::DfJkRoute> {
+    result.df_jk.as_ref().filter(|r| r.is_active())
+}
+
+/// [`rhf_gradient`] with EXACT four-centre J/K regardless of how the SCF
+/// built them — the pre-2026-09-24 behaviour of `rhf_gradient`.
+///
+/// Only for composite gradients that subtract an RHF gradient from a total
+/// whose Hartree-Fock part they themselves build with exact integrals (the
+/// SCS-MP2 scaling in `ferric_mp2::gradient`): mixing a fitted `rhf_gradient`
+/// into that difference would leave the fitted-vs-exact HF difference inside
+/// the "correlation" part. It is NOT the derivative of a density-fitted SCF
+/// energy; use [`rhf_gradient`] for that.
+pub fn rhf_gradient_exact_jk(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    let mut exact = result.clone();
+    exact.df_jk = None;
+    rhf_gradient(mol, prep, op, bounds, &exact, ext)
 }
 
 /// [`rhf_gradient`] plus the QM-atom-centre Fock-term contribution of
@@ -1270,14 +1326,32 @@ pub fn uhf_gradient(
             .expect("uhf_gradient: missing density_beta");
     let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
     let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
-    grad += &twoelectron_gradient_uhf(
-        prep,
-        op,
-        bounds,
-        &d_total,
-        &result.density_alpha,
-        result.density_beta.as_ref().unwrap(),
-    )?;
+    match active_df_route(result) {
+        Some(route) => {
+            grad += &crate::df_gradient::routed_two_electron_gradient(
+                mol,
+                prep,
+                op,
+                bounds,
+                crate::df_gradient::TwoElectronDensity::Open {
+                    alpha: &result.density_alpha,
+                    beta: result.density_beta.as_ref().unwrap(),
+                },
+                route,
+                crate::df_gradient::ExchangeMix::hartree_fock(),
+            )?
+        }
+        None => {
+            grad += &twoelectron_gradient_uhf(
+                prep,
+                op,
+                bounds,
+                &d_total,
+                &result.density_alpha,
+                result.density_beta.as_ref().unwrap(),
+            )?
+        }
+    }
     Ok(grad)
 }
 
@@ -1341,7 +1415,23 @@ pub fn rohf_gradient(
     }
 
     let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
-    grad += &twoelectron_gradient_uhf(prep, op, bounds, &d_total, d_alpha, d_beta)?;
+    match active_df_route(result) {
+        Some(route) => {
+            grad += &crate::df_gradient::routed_two_electron_gradient(
+                mol,
+                prep,
+                op,
+                bounds,
+                crate::df_gradient::TwoElectronDensity::Open {
+                    alpha: d_alpha,
+                    beta: d_beta,
+                },
+                route,
+                crate::df_gradient::ExchangeMix::hartree_fock(),
+            )?
+        }
+        None => grad += &twoelectron_gradient_uhf(prep, op, bounds, &d_total, d_alpha, d_beta)?,
+    }
     Ok(grad)
 }
 

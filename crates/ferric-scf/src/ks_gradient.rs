@@ -14,6 +14,11 @@
 //!   (ω=0) and `c_K = 0` for pure DFT. Range-separated hybrids (ω>0, e.g.
 //!   wB97X) split into c_SR·K[erfc(ω)] + c_LR·K[erf(ω)], each contributed via
 //!   `twoelectron_k_gradient` with the corresponding operator.
+//!   Those four-centre forms apply only when the SCF used exact J/K. When it
+//!   density-fitted them (RI-J is the default for every functional; RSH
+//!   exchange is always fitted), `ScfResult::df_jk` records the builders and
+//!   the 2e term differentiates the FITTED energy instead
+//!   (`crate::df_gradient::routed_two_electron_gradient`).
 //! - `∇E_xc` is the semilocal XC AO-basis-derivative contribution. Grid-weight
 //!   derivatives ("grid response") are NOT included — this introduces an
 //!   error of ~1e-5 Ha/Bohr at (75, 110) grids, suitable for geometry
@@ -122,11 +127,24 @@ pub fn ks_gradient_closed(
     // 1e + nuclear repulsion gradient — identical to HF.
     let mut grad = oneelectron_gradient(mol, prep, &d, &w, ext)?;
 
-    // 2e gradient:
+    // 2e gradient. When the SCF density-fitted J and/or K (RI-J is the
+    // default for every functional; RSH exchange is ALWAYS fitted), the
+    // recorded route differentiates that fitted energy — see
+    // `crate::df_gradient`. Otherwise (all-exact SCF) the original path:
     //   * J piece always uses full Coulomb with Γ_J = 0.5·D·D
     //   * For plain hybrids (ω=0): single K with c_K = k_mix.sr
     //   * For RSH (ω>0): two K pieces with c_SR · K[erfc] + c_LR · K[erf]
-    if k_mix.omega > 0.0 {
+    if let Some(route) = crate::gradient::active_df_route(result) {
+        grad += &crate::df_gradient::routed_two_electron_gradient(
+            mol,
+            prep,
+            op,
+            bounds,
+            crate::df_gradient::TwoElectronDensity::Closed(&d),
+            route,
+            crate::df_gradient::ExchangeMix::from_k_mix(&k_mix),
+        )?;
+    } else if k_mix.omega > 0.0 {
         // J piece (Coulomb, no K).
         grad += &twoelectron_gradient_scaled_k(prep, op, bounds, &d, 0.0)?;
         // K_SR (erfc(ω)) scaled by c_SR.
@@ -334,7 +352,22 @@ pub fn ks_gradient_uks(
     // 2e gradient:
     //   * ω = 0: single Γ = 0.5·D·D − 0.5·c_K·(D_α·D_α + D_β·D_β) at Coulomb
     //   * ω > 0 (RSH): J (Coulomb, c_K=0) + c_SR·K_UHF[erfc(ω)] + c_LR·K_UHF[erf(ω)]
-    if k_mix.omega > 0.0 {
+    // unless the SCF density-fitted J/K, in which case the recorded route
+    // differentiates that fitted energy (`crate::df_gradient`).
+    if let Some(route) = crate::gradient::active_df_route(result) {
+        grad += &crate::df_gradient::routed_two_electron_gradient(
+            mol,
+            prep,
+            op,
+            bounds,
+            crate::df_gradient::TwoElectronDensity::Open {
+                alpha: d_a,
+                beta: d_b,
+            },
+            route,
+            crate::df_gradient::ExchangeMix::from_k_mix(&k_mix),
+        )?;
+    } else if k_mix.omega > 0.0 {
         grad += &twoelectron_gradient_uhf_scaled_k(prep, op, bounds, &d_total, d_a, d_b, 0.0)?;
         grad += &twoelectron_k_gradient_uhf(
             prep,
@@ -532,7 +565,22 @@ pub fn ks_gradient_roks(
     // 2e gradient:
     //   * ω = 0: single Γ = 0.5·D·D − 0.5·c_K·(D_α·D_α + D_β·D_β) at Coulomb
     //   * ω > 0 (RSH): J (Coulomb, c_K=0) + c_SR·K_UHF[erfc(ω)] + c_LR·K_UHF[erf(ω)]
-    if k_mix.omega > 0.0 {
+    // unless the SCF density-fitted J/K, in which case the recorded route
+    // differentiates that fitted energy (`crate::df_gradient`).
+    if let Some(route) = crate::gradient::active_df_route(result) {
+        grad += &crate::df_gradient::routed_two_electron_gradient(
+            mol,
+            prep,
+            op,
+            bounds,
+            crate::df_gradient::TwoElectronDensity::Open {
+                alpha: d_a,
+                beta: d_b,
+            },
+            route,
+            crate::df_gradient::ExchangeMix::from_k_mix(&k_mix),
+        )?;
+    } else if k_mix.omega > 0.0 {
         grad += &twoelectron_gradient_uhf_scaled_k(prep, op, bounds, &d_total, d_a, d_b, 0.0)?;
         grad += &twoelectron_k_gradient_uhf(
             prep,
