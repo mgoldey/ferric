@@ -159,3 +159,25 @@ fn uhf_doublet_and_closed_shell_rimp2_still_run() {
         "rimp2 on singlet water",
     );
 }
+
+// ─── [dft] keys the selected kind never reads (item 1) ──────────────────────
+
+/// Pre-fix: `kind = "uhf"` + `[dft] functional = "PBE"` on OH printed
+/// `energy = -74.3626375456`, the UHF energy (identical to the run without
+/// the key), and exited 0. Removing the `validate_dft_section` call from
+/// `run()` makes this run succeed again. The no-key uhf run in
+/// `uhf_doublet_and_closed_shell_rimp2_still_run` is its anchor.
+#[test]
+fn uhf_with_a_dft_functional_is_refused_not_run_as_hf() {
+    let out = run_toml(
+        "uhf_pbe",
+        &body(
+            "oh.xyz",
+            2,
+            "uhf",
+            "energy",
+            "[dft]\nfunctional = \"PBE\"\n",
+        ),
+    );
+    assert_refused(&out, &["[dft] functional", "\"uhf\"", "solve_uhf"]);
+}

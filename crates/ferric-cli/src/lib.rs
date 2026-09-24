@@ -421,6 +421,14 @@ pub fn run(args: Vec<String>) {
         );
         std::process::exit(1);
     }
+    // Any other `[dft]` key the selected kind never reads (a functional on
+    // uhf/rhf/rimp2..., lambda/omega off wb97x-l-v, a grid_prune with no KS
+    // grid) is refused rather than silently dropped. See
+    // `Config::validate_dft_section`.
+    if let Err(e) = cfg.validate_dft_section() {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
     // QM/MM: the QM region becomes the molecule that is solved, and the MM
     // region becomes the external potential it is solved in. Built BEFORE the
     // molecule so the two cannot disagree about which atoms are quantum --
@@ -2646,6 +2654,18 @@ fn run_mp2_double_hybrid_arm(
         std::process::exit(1);
     });
 
+    // Same courtesy as the wb97x-l-v arm: the double hybrid always converges
+    // its own functional, so a different `[dft] functional` is overridden --
+    // say so rather than let the user believe it did anything.
+    if let Some(f) = cfg.dft.functional.as_deref() {
+        if !f.eq_ignore_ascii_case(dh_kind.xc_name()) {
+            eprintln!(
+                "warning: [dft] functional = \"{f}\" is ignored for method.kind = \"{method}\"; \
+                 the double hybrid always converges its own {} reference",
+                dh_kind.xc_name()
+            );
+        }
+    }
     let mut ks_cfg = rhf_config.clone();
     ks_cfg.xc = Some(dh_kind.xc_name().to_string());
     ks_cfg.df_j_aux = Some(config::DEFAULT_SCF_JK_AUX.to_string());
