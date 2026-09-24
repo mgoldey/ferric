@@ -1547,3 +1547,550 @@ def test_ump2_urpa_box_limit_h_atom_ump2_zero_urpa_c3_plus_second_order_c6():
     assert abs(d * 20.0**3 - c["rpa"]) > 1e-3 * abs(
         c["rpa"]
     )  # c6 is needed: the predictor's second order is real
+
+
+# ============================================================ Gamma KS-DFT (pbc_dft.py, Iteration 8)
+import pbc_dft as PD  # noqa: E402
+
+# PySCF 2.13 pbc.dft.RKS, AFTDF mesh 61^3, exxdiv='ewald', BeckeGrids atom_grid=(50,146) prune=None treutler,
+# small_rho_cutoff=0, conv_tol 1e-12 (run_dft_oracle.py h2)
+H2_PYSCF_A1_50x146 = {
+    "LDA,VWN": -1.522286692902,
+    "PBE": -1.527930953892,
+    "PBE0": -1.577629684839,
+}
+# same, UniformGrids 40^3 == 60^3 to 1e-12 (spectrally converged for all-Gaussian H density)
+H2_PYSCF_UNIFORM = {"LDA,VWN": -1.521492168321, "PBE0": -1.576992652865}
+
+
+def _h2_rks(I, grid, xc, kshift=None):
+    ks = I["madelung"] if kshift is None else kshift
+    return PD.rks(
+        I["S"],
+        I["h"],
+        PD.dense_jk(I["I"]),
+        I["enn"],
+        2,
+        grid,
+        xc,
+        kshift=ks,
+        conv=1e-12,
+    )[0]
+
+
+def test_periodic_ssf_grid_reproduces_the_molecular_grid_in_a_huge_box():
+    """Exactness anchor for the image-atom Becke construction (A2): LiH (size adjustment active) in a 30 Bohr box.
+    SSF has compact support, so within 0.08a of the molecule the crystal partition must BE the molecular one
+    (PySCF molecular grid, stratmann + becke_atomic_radii_adjust): measured 1e-16.  Control: dropping the
+    size adjustment on the periodic side moves the same weights by 0.3."""
+    from scipy.spatial import cKDTree
+
+    atoms = [("Li", (0.3, 0.2, 0.1)), ("H", (0.3, 0.2, 3.1))]
+    mol = gto.M(atom=atoms, basis="sto-3g", unit="B", cart=True, verbose=0)
+    cm, wm = PD.molecular_grid_reference(mol, 30, 86, scheme="ssf")
+    cen = mol.atom_coords().mean(0)
+    dw = {}
+    for adjust in (True, False):
+        g = PD.PeriodicGrid(
+            Cell(np.eye(3) * 30.0, atoms, "sto-3g"),
+            30,
+            86,
+            D=27.0,
+            scheme="ssf",
+            adjust=adjust,
+            deriv=None,
+        )
+        d, i = cKDTree(cm).query(g.coords)
+        near = (d < 1e-9) & (np.linalg.norm(g.coords - cen, axis=1) < 2.4)
+        assert near.sum() > 500
+        dw[adjust] = np.abs(g.weights[near] - wm[i[near]]).max()
+    assert dw[True] < 1e-13
+    assert dw[False] > 1e-2
+
+
+def test_uniform_grid_rks_matches_pinned_pyscf_pbc_uniform(h2_ints):
+    """Independent numint path: our lattice-summed AOs + libxc on a 40^3 uniform grid vs PySCF pbc RKS UniformGrids."""
+    g = PD.uniform_grid(Cell(H2_A, H2_ATOMS, "sto-3g"), 40)
+    for xc, ref in H2_PYSCF_UNIFORM.items():
+        assert abs(_h2_rks(h2_ints, g, xc) - ref) < 1e-9
+
+
+def test_rks_on_pyscf_becke_points_matches_pinned_pyscf_pbc_rks(h2_ints):
+    """Same points as PySCF's pbc BeckeGrids -> our numint + SCF + Madelung-on-hyb*K reproduce pbc.dft.RKS
+    (measured 2.5e-14).  Mutation: Madelung dropped from the exact-exchange part moves PBE0 by ~hyb*v_M."""
+    g = PD.pyscf_a1_grid(Cell(H2_A, H2_ATOMS, "sto-3g"), 50, 146)
+    for xc, ref in H2_PYSCF_A1_50x146.items():
+        assert abs(_h2_rks(h2_ints, g, xc) - ref) < 1e-10
+    assert (
+        abs(_h2_rks(h2_ints, g, "PBE0", kshift=0.0) - H2_PYSCF_A1_50x146["PBE0"]) > 0.1
+    )
+
+
+def test_h2_lattice_grid_error_is_the_becke_partition_exp_partition_pinned(h2_ints):
+    """H2 a=4 at 75x302 vs the spectrally converged uniform reference: Becke (PySCF A1 points) is off by
+    -4.4e-4 Ha, the Hirshfeld-like exp(-2r) partition (A2, same atomic grids) by 2.4e-6.  Pinned measurement
+    of Iteration 8, not a bound: if the Becke number drops the grid code changed, if exp rises it broke.
+    DOES NOT TRANSFER: on the triclinic 4H s+p cell at 75x302 exp is +5.3e-5 vs Becke -2.9e-5 (FINDINGS It. 8)."""
+    cell = Cell(H2_A, H2_ATOMS, "sto-3g")
+    e_b = (
+        _h2_rks(h2_ints, PD.pyscf_a1_grid(cell, 75, 302), "LDA,VWN")
+        - H2_PYSCF_UNIFORM["LDA,VWN"]
+    )
+    e_x = (
+        _h2_rks(
+            h2_ints, PD.PeriodicGrid(cell, 75, 302, D=10.0, scheme="exp"), "LDA,VWN"
+        )
+        - H2_PYSCF_UNIFORM["LDA,VWN"]
+    )
+    assert 3e-4 < abs(e_b) < 6e-4
+    assert abs(e_x) < 1e-5
+
+
+@pytest.mark.skipif(not SLOW, reason="set PBC_SLOW=1 (~40 s)")
+def test_ks_box_limit_semilocal_has_no_a3_term_hybrid_has_hyb_times_the_hf_one():
+    """Independent of PySCF pbc: H2 in a 16 Bohr box vs molecular RKS on the identical grid (75x302).  LDA: no
+    exact exchange, zero dipole -> residual a^-5 (measured 8.7e-7, exponents 4.92/5.11).  PBE0: residual is
+    hyb * the HF exchange Makov-Payne term, c3 = -0.25 (4pi/3) sigma^2 = -2.50706 (measured dE a^3 -2.50645
+    at a=16; fitted c3 -2.50715 from a=20,24).  Madelung on the full K would give 4x."""
+    atoms, edge = H2_ATOMS, 16.0
+    mol = gto.M(atom=atoms, basis="sto-3g", unit="B", cart=True, verbose=0)
+    I = build_integrals(
+        Cell(np.eye(3) * edge, atoms, "sto-3g"), None, exxdiv="ewald", verbose=False
+    )
+    g = PD.PeriodicGrid(Cell(np.eye(3) * edge, atoms, "sto-3g"), 75, 302, D=14.4)
+    mf = PD.molecular_rks(mol, "PBE0", 75, 302)
+    c3 = -0.25 * 4 * np.pi / 3 * PD.ov_moment_sigma2(mol, mf.mo_coeff[:, :1])
+    d_hyb = _h2_rks(I, g, "PBE0") - mf.e_tot
+    assert abs(d_hyb * edge**3 - c3) < 1e-3 * abs(c3)
+    d_lda = _h2_rks(I, g, "LDA,VWN") - PD.molecular_rks(mol, "LDA,VWN", 75, 302).e_tot
+    assert abs(d_lda) < 2e-6 and abs(d_lda) < 1e-2 * abs(c3) / edge**3
+
+
+# ------------------------------------------------------------ Iteration 9: k-point RHF (pbc_kpts, pure AFT)
+import pbc_kpts as PK  # noqa: E402
+
+# PySCF 2.13 KRHF + AFTDF mesh 61^3, cell.precision 1e-12, started from our dm, conv_tol 1e-11 (run_kpts_oracle.py,
+# 2026-09-24); ours at the default pure-AFT cutoff agreed to 2e-14 / 3e-14, max|d eps| 1.1e-13.
+KPT_REF_H2_112 = {"none": -0.902683427348, "ewald": -1.354143879961}
+
+
+def test_kpts_1x1x1_mesh_is_the_gamma_code(h2_ints):
+    kb = PK.build_k(Cell(H2_A, H2_ATOMS, "sto-3g"), (1, 1, 1), verbose=False)
+    assert abs(kb["madelung"] - h2_ints["madelung"]) < 1e-14
+    assert abs(kb["S"].imag).max() == 0.0
+    for vm in (0.0, h2_ints["madelung"]):
+        e_g, eps_g, _ = rhf(
+            h2_ints["S"],
+            h2_ints["h"],
+            h2_ints["I"],
+            h2_ints["enn"],
+            2,
+            conv=1e-12,
+            kshift=vm,
+        )
+        e_k, eps_k, _ = PK.krhf(kb, 2, conv=1e-12, kshift=vm)
+        assert abs(e_k - e_g) < 1e-12 and abs(eps_k[0] - eps_g).max() < 1e-11
+
+
+@pytest.fixture(scope="module")
+def kmesh_113():
+    """H2/STO-3G a=4, 1x1x3 mesh vs the explicit 1x1x3 supercell at Gamma (pbc_gamma.pair_ft, no residue fold).
+    The K sphere is the same on both sides ({G+q} == supercell G lattice), so the anchor is exact at ANY gcut:
+    a loose one (prec 1e-4, pair thresh 1e-8) keeps this at ~30 s.  n = 3, not 2: at n = 2 e^{ik.L} = e^{-ik.L}."""
+    cell = Cell(H2_A, H2_ATOMS, "sto-3g")
+    gcut, th = PK.aft_gcut(cell, 1e-4), 1e-8
+    sc = PK.supercell_cell(cell, (1, 1, 3))
+    g = PK.gamma_aft(sc, gcut=gcut, thresh=th)
+    vm_sc = madelung(sc)
+    ref = {
+        ex: rhf(
+            g["S"],
+            g["h"],
+            g["I"],
+            g["enn"],
+            6,
+            conv=1e-12,
+            kshift=vm_sc if ex == "ewald" else 0.0,
+        )[0]
+        / 3
+        for ex in ("none", "ewald")
+    }
+    kb = PK.build_k(cell, (1, 1, 3), gcut=gcut, thresh=th, verbose=False)
+    return dict(cell=cell, gcut=gcut, th=th, ref=ref, vm_sc=vm_sc, kb=kb)
+
+
+def _kmesh_e(kb, ex):
+    return PK.krhf(kb, 2, conv=1e-12, kshift=kb["madelung"] if ex == "ewald" else 0.0)[
+        0
+    ]
+
+
+def test_kmesh_equals_gamma_supercell_per_cell_and_madelungs_coincide(kmesh_113):
+    """Measured 2026-09-24: 3.8e-14 (both exxdiv); also 2x2x2 H2 4e-15 (run_kpts_anchor.py b).  The k-mesh v_M IS the
+    supercell v_M (PySCF tools.pbc.madelung scales the lattice by the mesh), so exxdiv=ewald needs no separate
+    k-mesh constant."""
+    kb = kmesh_113["kb"]
+    assert abs(kb["madelung"] - kmesh_113["vm_sc"]) < 1e-14
+    for ex in ("none", "ewald"):
+        assert abs(_kmesh_e(kb, ex) - kmesh_113["ref"][ex]) < 1e-11
+
+
+def test_kmesh_none_minus_ewald_is_nocc_vM_exactly(kmesh_113):
+    """Identity (not physics): v_M S dm S shifts every occupied level by -v_M at fixed orbitals, so exxdiv=none
+    converges as nocc * 2.8373/(n a) = N_k^(-1/3) with a coefficient known in advance."""
+    kb = kmesh_113["kb"]
+    assert abs(_kmesh_e(kb, "none") - _kmesh_e(kb, "ewald") - kb["madelung"]) < 1e-12
+    # cubic n x n x n mesh: v_M = 2.8372974795 / (n a), the simple-cubic constant of the supercell
+    assert (
+        abs(PK.kmesh_madelung(kmesh_113["cell"], (3, 3, 3)) * 3 * 4.0 - 2.8372974794806)
+        < 1e-10
+    )
+
+
+@pytest.mark.parametrize(
+    "mutant,exx,min_err",
+    [
+        ("phase_P", "none", 0.1),
+        ("kernel_no_q", "none", 0.1),
+        ("madelung_prim", "ewald", 0.1),
+    ],
+)
+def test_kmesh_supercell_anchor_catches_mutants(
+    kmesh_113, monkeypatch, mutant, exx, min_err
+):
+    """Measured: phase sign in the pair FT only -0.219; v(G) instead of v(G+q) +0.377; primitive v_M -0.520 (ewald
+    only; the none row is untouched, as it must be).  Blind spot: flipping the phase EVERYWHERE is k -> -k, a
+    relabelling by time reversal, and no energy test can see it."""
+    monkeypatch.setattr(PK, "_MUTANT", mutant)
+    kb = PK.build_k(
+        kmesh_113["cell"],
+        (1, 1, 3),
+        gcut=kmesh_113["gcut"],
+        thresh=kmesh_113["th"],
+        verbose=False,
+    )
+    assert abs(_kmesh_e(kb, exx) - kmesh_113["ref"][exx]) > min_err
+
+
+def test_kmesh_hermiticity_time_reversal_and_pyscf_bloch_convention(kmesh_113):
+    kb = kmesh_113["kb"]
+    S, V, n, ints = kb["S"], kb["V"], kb["n"], kb["ints"]
+    for k in range(kb["Nk"]):
+        mk = PK.mesh_index(n, -ints[k])
+        assert abs(S[k] - S[k].conj().T).max() < 1e-14
+        assert (
+            abs(S[mk] - S[k].conj()).max() < 1e-14
+            and abs(V[mk] - V[k].conj()).max() < 1e-13
+        )
+    assert abs(S[1].imag).max() > 1e-2  # the test can see a phase
+    # Kker time-reversal fill == brute force over all q
+    saved = PK._MUTANT
+    try:
+        PK._MUTANT = "no_time_reversal"
+        kb2 = PK.build_k(
+            kmesh_113["cell"],
+            (1, 1, 3),
+            gcut=kmesh_113["gcut"],
+            thresh=kmesh_113["th"],
+            verbose=False,
+        )
+    finally:
+        PK._MUTANT = saved
+    assert abs(kb2["Kker"] - kb["Kker"]).max() < 1e-13
+    pc = pyscf_cell(H2_A, H2_ATOMS, "sto-3g")
+    kp = pc.make_kpts([1, 1, 3])
+    assert abs(kp - kb["kpts"]).max() < 1e-14
+    s_py = np.asarray(pc.pbc_intor("int1e_ovlp", hermi=1, kpts=kp))
+    assert (
+        abs(s_py - S).max() < 1e-12
+    )  # same Bloch sign convention as PySCF (conj would differ by ~0.8)
+    from pyscf.pbc import tools as ptools
+
+    assert abs(ptools.pbc.madelung(pc, kp) - kb["madelung"]) < 1e-13
+
+
+def test_kpts_h2_112_matches_pinned_pyscf_krhf_aftdf():
+    kb = PK.build_k(Cell(H2_A, H2_ATOMS, "sto-3g"), (1, 1, 2), verbose=False)
+    for ex in ("none", "ewald"):
+        assert abs(_kmesh_e(kb, ex) - KPT_REF_H2_112[ex]) < 1e-10
+
+
+# ------------------------------------------------------------ Iteration 10: Gamma UKS / ROKS (pbc_uks)
+import pbc_uks as UK  # noqa: E402
+
+# ours; PySCF 2.13 pbc.dft.UKS/ROKS (AFTDF 61^3, exxdiv='ewald', BeckeGrids (50,146) prune None treutler,
+# small_rho_cutoff 0, conv 1e-12) agrees to <= 7.5e-14 (H, H2) / 3.5e-12 (tri) from its OWN default guess
+# (run_uks_oracle.py, 2026-09-24).  Ours runs on PySCF's A1 points with the pure-AFT dense I.
+UKS_PIN = {
+    "H": {"LDA,VWN": -0.668127813328, "PBE": -0.677787718838, "PBE0": -0.700202408672},
+    "H2 triplet": {
+        "LDA,VWN": -0.261697156130,
+        "PBE": -0.307603027052,
+        "PBE0": -0.332094904636,
+    },
+    "tri triplet": {
+        "LDA,VWN": (-1.694673507916, 2.0003319270, -1.694361887534),
+        "PBE": (-1.731772052782, 2.0005413886, -1.731308266751),
+        "PBE0": (-1.777429192569, 2.0006805370, -1.776801906487),
+    },  # (UKS E, UKS <S2>, ROKS E)
+}
+_XCS = ("LDA,VWN", "PBE", "PBE0")
+
+
+@pytest.fixture(scope="module")
+def h2_a1_50():
+    return PD.pyscf_a1_grid(Cell(H2_A, H2_ATOMS, "sto-3g"), 50, 146)
+
+
+def _uks(I, na, nb, grid, xc, ex="ewald", **kw):
+    return UK.uks(
+        I["S"],
+        I["h"],
+        PD.dense_jk(I["I"]),
+        I["enn"],
+        na,
+        nb,
+        grid,
+        xc,
+        kshift=I["madelung"] if ex == "ewald" else 0.0,
+        conv=1e-12,
+        **kw,
+    )
+
+
+def test_uks_closed_shell_equals_rks_and_catches_bookkeeping_mutants(
+    h2_ints, h2_a1_50, monkeypatch
+):
+    """Exactness anchor: na == nb UKS == pbc_dft.rks on the same grid (measured 0..4e-16 H2, <=3e-15 tri).
+    Mutants (measured H2): hyb/2 per spin (RKS's 1/2 carried into the per-spin K) PBE0 +9.4e-2 (ewald);
+    Madelung on the full K instead of hyb*K is EXACTLY -(1-hyb) v_M N/2 (LDA -0.709, PBE0 -0.532).
+    Blind spot: the unpolarized-XC mutant is invisible here (rho_a = rho_b) -- see the open-shell pins."""
+    vm = h2_ints["madelung"]
+    for xc in _XCS:
+        for ex in ("none", "ewald"):
+            er = PD.rks(
+                h2_ints["S"],
+                h2_ints["h"],
+                PD.dense_jk(h2_ints["I"]),
+                h2_ints["enn"],
+                2,
+                h2_a1_50,
+                xc,
+                kshift=vm if ex == "ewald" else 0.0,
+                conv=1e-12,
+            )[0]
+            assert abs(_uks(h2_ints, 1, 1, h2_a1_50, xc, ex)["e"] - er) < 1e-11
+            assert (
+                abs(
+                    UK.roks(
+                        h2_ints["S"],
+                        h2_ints["h"],
+                        PD.dense_jk(h2_ints["I"]),
+                        h2_ints["enn"],
+                        1,
+                        1,
+                        h2_a1_50,
+                        xc,
+                        kshift=vm if ex == "ewald" else 0.0,
+                        conv=1e-12,
+                    )["e"]
+                    - er
+                )
+                < 1e-11
+            )
+    e0 = {xc: _uks(h2_ints, 1, 1, h2_a1_50, xc)["e"] for xc in ("LDA,VWN", "PBE0")}
+    monkeypatch.setattr(UK, "_MUTANT", "madelung_full_k")
+    for xc in ("LDA,VWN", "PBE0"):
+        shift = -(1 - UK.hybrid_fraction(xc)) * vm * 2 / 2
+        assert abs(_uks(h2_ints, 1, 1, h2_a1_50, xc)["e"] - e0[xc] - shift) < 1e-10
+    monkeypatch.setattr(UK, "_MUTANT", "hyb_half_per_spin")
+    assert abs(_uks(h2_ints, 1, 1, h2_a1_50, "PBE0")["e"] - e0["PBE0"]) > 1e-2
+    monkeypatch.setattr(UK, "_MUTANT", "unpolarized")
+    assert (
+        abs(_uks(h2_ints, 1, 1, h2_a1_50, "PBE0")["e"] - e0["PBE0"]) < 1e-11
+    )  # the blind spot, asserted
+
+
+def test_uks_hf_is_the_gamma_uhf_open_shell(h2_ints):
+    """xc='HF' through the UKS loop == pbc_uhf.uhf (independent loop) on the H2 triplet: measured 1e-16/2e-16
+    (tri triplet 1e-14/3e-14, staged)."""
+    for ex in ("none", "ewald"):
+        ks = h2_ints["madelung"] if ex == "ewald" else 0.0
+        ref = uhf(
+            h2_ints["S"],
+            h2_ints["h"],
+            h2_ints["I"],
+            h2_ints["enn"],
+            2,
+            0,
+            conv=1e-12,
+            kshift=ks,
+        )["e"]
+        assert abs(_uks(h2_ints, 2, 0, None, "HF", ex)["e"] - ref) < 1e-11
+        assert abs(ref - UHF_REF["H2 a=4 triplet"][ex]) < 1e-10
+
+
+def test_uks_matches_pinned_pyscf_pbc_uks_h_atom_and_h2_triplet(
+    h2_ints, h2_a1_50, monkeypatch
+):
+    """Spin-polarized numint + per-spin Madelung-on-hyb*K vs PySCF pbc.dft.UKS (pinned, PySCF agrees 7e-14).
+    Also: ewald - none == -hyb v_M N/2 at the same density (identity).  Mutation: the unpolarized kernel on
+    the triplet moves LDA/PBE/PBE0 by +0.120/+0.129/+0.090."""
+    for xc in _XCS:
+        u = _uks(h2_ints, 2, 0, h2_a1_50, xc)
+        assert (
+            abs(u["e"] - UKS_PIN["H2 triplet"][xc]) < 1e-10
+            and abs(u["s2"] - 2.0) < 1e-12
+        )
+        un = _uks(h2_ints, 2, 0, h2_a1_50, xc, "none", guess=(u["Da"], u["Db"]))
+        assert (
+            abs(u["e"] - un["e"] + UK.hybrid_fraction(xc) * h2_ints["madelung"]) < 1e-11
+        )
+    cell = Cell(H2_A, [("H", (0.3, 0.2, 0.1))], "sto-3g")
+    Ih = build_integrals(cell, None, exxdiv="ewald", verbose=False)
+    gh = PD.pyscf_a1_grid(cell, 50, 146)
+    for xc in _XCS:
+        assert abs(_uks(Ih, 1, 0, gh, xc)["e"] - UKS_PIN["H"][xc]) < 1e-10
+    monkeypatch.setattr(UK, "_MUTANT", "unpolarized")
+    assert (
+        abs(
+            _uks(h2_ints, 2, 0, h2_a1_50, "LDA,VWN")["e"]
+            - UKS_PIN["H2 triplet"]["LDA,VWN"]
+        )
+        > 0.05
+    )
+
+
+def test_uks_polarized_vxc_is_the_derivative_of_exc_per_spin(h2_ints, h2_a1_50):
+    """Energy pins are blind to potential errors that only move the (variational) energy at second order, or that act
+    on an empty beta space (H, H2 triplet): dropping vsigma_ab or feeding beta the alpha vrho survived every energy
+    test (source mutation, 2026-09-24).  So: tr(V_s dD) == central FD of E_xc along dD, per spin, at a density with
+    BOTH spins populated and rho_a != rho_b (measured 5e-9 relative on tri, run_uks_anchor.py (c))."""
+    u = _uks(h2_ints, 2, 0, h2_a1_50, "PBE")
+    Da, Db = (
+        u["Da"],
+        0.3 * u["Ca"][:, :1] @ u["Ca"][:, :1].T
+        + 0.2 * u["Ca"][:, 1:2] @ u["Ca"][:, 1:2].T,
+    )
+    dD = np.array([[0.3, -0.2], [-0.2, 0.5]]) * 1e-3
+    for xc in ("LDA,VWN", "PBE"):
+        _, Va, Vb = UK.eval_vxc_uks(h2_a1_50, Da, Db, xc)
+        for s, V in ((0, Va), (1, Vb)):
+            E = [
+                UK.eval_vxc_uks(
+                    h2_a1_50, Da + (s == 0) * e * dD, Db + (s == 1) * e * dD, xc
+                )[0]
+                for e in (1e-3, -1e-3)
+            ]
+            fd = (E[0] - E[1]) / 2e-3
+            assert abs(np.sum(V * dD) - fd) < 1e-6 * abs(fd)
+
+
+def _h_box(basis, edge, xcs):
+    """Gamma UKS H atom in a cubic box vs molecular UKS on the identical (SSF, 75x302) grid."""
+    atoms = [("H", (0.3, 0.2, 0.1))]
+    mol = gto.M(atom=atoms, basis=basis, unit="B", cart=True, verbose=0, spin=1)
+    mg = UK.MolGrid(mol, *PD.molecular_grid_reference(mol, 75, 302, scheme="ssf"))
+    Sm, hm = (
+        mol.intor("int1e_ovlp_cart"),
+        mol.intor("int1e_kin_cart") + mol.intor("int1e_nuc_cart"),
+    )
+    w = min(1.0, 8.0 / edge)
+    cell = Cell(np.eye(3) * edge, atoms, basis)
+    I = build_integrals(
+        cell, w, rcut_bra=18.0, rcut_2e=18.0 + 6.0 / w, exxdiv="ewald", verbose=False
+    )
+    g = PD.PeriodicGrid(cell, 75, 302, D=0.9 * edge, scheme="ssf")
+    out = {}
+    for xc in xcs:
+        m = UK.uks(
+            Sm, hm, PD.dense_jk(mol.intor("int2e_cart")), 0.0, 1, 0, mg, xc, conv=1e-13
+        )
+        p = {
+            ex: _uks(I, 1, 0, g, xc, ex, guess=(m["Da"], m["Db"]))["e"] - m["e"]
+            for ex in ("none", "ewald")
+        }
+        out[xc] = (p, m, mol, mg, I["madelung"])
+    return out
+
+
+def test_uks_box_limit_h_sto3g_pbe0_c3_is_hyb_times_the_uhf_one():
+    """Prediction (stated first): c3 = -(2pi/3) hyb Omega_a = 0.25 x -4.081081 = -1.020270 (one AO -> no
+    relaxation, spherical -> no a^-5).  Measured dE a^3: -1.036738 (12), -1.019298 (16), -1.020201 (20),
+    -1.020268 (24), -1.020270 (32).  LDA/PBE have no a^-3 (1.8e-10 / 2.4e-10 at 24).  none - ewald = hyb v_M/2."""
+    r = _h_box("sto-3g", 24.0, ("LDA,VWN", "PBE0"))
+    p, m, mol, _, vm = r["PBE0"]
+    c3, _ = UK.uks_c3_closed_form(mol, m["Ca"], m["Cb"], 1, 0, 0.25)
+    assert abs(c3 + 1.020270) < 1e-6
+    assert abs(p["ewald"] * 24.0**3 - c3) < 2e-5
+    assert abs(p["none"] - p["ewald"] - 0.25 * vm / 2) < 1e-12
+    assert abs(r["LDA,VWN"][0]["ewald"]) < 1e-8
+
+
+def test_uks_box_limit_h_631g_pbe0_needs_the_predicted_relaxation_a6_term():
+    """6-31G can relax: predicted c3 -1.495980 (PBE0 orbital, == relaxed r2-kernel FD) AND c6 = (1/2) E''(k) (4pi/3)^2
+    = -2.0020 from the same molecular r2-kernel construction.  Measured dE a^3 at 28/32/40: -1.496071/-1.496041/
+    -1.496011 == c3 + c6/a^3 to 1e-6; c3 alone is off by 9e-5 at a=28 (UHF-H showed no such term: Hartree ==
+    self-exchange for one electron; the hybrid leaves (1-hyb) of it)."""
+    p, m, mol, mg, _ = _h_box("6-31g", 28.0, ("PBE0",))["PBE0"]
+    c3, _ = UK.uks_c3_closed_form(mol, m["Ca"], m["Cb"], 1, 0, 0.25)
+    c3_r2, c6 = UK.uks_r2_kernel_c3(
+        mol, 1, 0, mg, "PBE0", h=1e-3, guess=(m["Da"], m["Db"]), second=True
+    )
+    assert abs(c3 - c3_r2) < 1e-5 and abs(c6 + 2.002) < 2e-3
+    x = p["ewald"] * 28.0**3
+    assert abs(x - (c3 + c6 / 28.0**3)) < 1e-5
+    assert abs(x - c3) > 5e-5
+
+
+@pytest.mark.skipif(
+    not SLOW,
+    reason="set PBC_SLOW=1 (~5 min: tri s+p pure-AFT build + 3 xc x UKS/ROKS + trap scan)",
+)
+def test_uks_roks_tri_triplet_pins_and_the_ewald_trap_is_hf_only():
+    """tri 4H s+p triplet vs pinned PySCF pbc.dft.UKS/ROKS (3.5e-12).  Ewald trap (run_uks_trap.py): the UHF hole
+    state (none-gap -0.0057) traps pure HF from the core guess (+1.5e-2 above the staged state, flag True), but it
+    is not a stationary point of alpha*HF+(1-alpha)*PBE even at alpha 0.95 (exchange-only) or with PBE correlation
+    at alpha 1: every start converges to the staged state and the gap flag stays False."""
+    cell = Cell(TRI_A, TRI_ATOMS, SP_BASIS)
+    I = build_integrals(cell, None, exxdiv="ewald", verbose=False)
+    g = PD.pyscf_a1_grid(cell, 50, 146)
+    for xc in _XCS:
+        e, s2, er = UKS_PIN["tri triplet"][xc]
+        u = _uks(I, 3, 1, g, xc, staged=True)
+        assert abs(u["e"] - e) < 1e-10 and abs(u["s2"] - s2) < 1e-8 and not u["trap"]
+        r = UK.roks(
+            I["S"],
+            I["h"],
+            PD.dense_jk(I["I"]),
+            I["enn"],
+            3,
+            1,
+            g,
+            xc,
+            kshift=I["madelung"],
+            conv=1e-12,
+            guess=(u["Da"], u["Db"]),
+        )
+        assert abs(r["e"] - er) < 1e-10
+    trap = _uks(I, 3, 1, None, "HF")
+    assert trap["trap"] and abs(trap["e"] - (-1.812958714837)) < 1e-9
+    for xc in ("0.95*HF + 0.05*PBE,", "1.0*HF + 0.0*PBE, PBE"):
+        st = _uks(I, 3, 1, g, xc, staged=True)
+        tr = UK.uks(
+            I["S"],
+            I["h"],
+            PD.dense_jk(I["I"]),
+            I["enn"],
+            3,
+            1,
+            g,
+            xc,
+            kshift=I["madelung"],
+            conv=1e-11,
+            guess=(trap["Da"], trap["Db"]),
+            maxiter=4000,
+            level_shift=0.5,
+            diis_start=10**6,
+        )
+        assert abs(tr["e"] - st["e"]) < 1e-9 and not tr["trap"]

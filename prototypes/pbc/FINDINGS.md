@@ -1206,3 +1206,336 @@ Wall 2-16 s per box. <S2> 2.012882 at a=40 (molecule 2.01288577). quad - plasmon
   three blocks nonzero (penta, 1e-11; a triplet with one alpha virtual cannot see same-spin errors);
   tr Pi^2 == direct UMP2 (1e-12); PySCF pins (UMP2_REF in test_prototype.py); NH box at a=32/40 vs c3 (3e-3) plus
   the v_M/2 mutant plateau; H atom UMP2 == 0 and URPA == c3/a^3 + c6/a^6 at a=20 (2e-5).
+
+## Iteration 8 (Python, Gamma KS-DFT) — 2026-09-24
+
+### Code
+- `pbc_dft.py`: periodic grid **A2** (`PeriodicGrid`): TA-M4 radial × Lebedev atomic grids for the CELL's atoms only
+  (ferric `build_atomic_grid` formula + ξ table), each weighted by the home atom's fuzzy-cell weight computed over
+  IMAGE atoms (all R_B+L within D of the point). Why this is exact: w_{A,L}(r) = w_{A,0}(r−L) (translation
+  covariance) and Σ_{A,L} w_{A,L} = 1, so ∫_cell f = Σ_A ∫_{R³} w_{A,0} f for lattice-periodic f — the full atomic
+  grids with crystal weights, no cut at the cell boundary. The D-truncation keeps it an exact partition of unity
+  (same neighbour set for every home at a given r) but D must exceed the covering radius of the atom lattice.
+  Partitions: `becke` (ferric becke.rs, 3 iterations + Bragg size adjust), `becke1/2`, `ssf` (compact |ν|<0.64),
+  `exp` (Hirshfeld-like e^{−2r} weights). AOs lattice-summed χ^Γ(r)=Σ_L χ(r−L) (molecular `eval_gto` on an image
+  supermolecule). `uniform_grid` (**B**, oracle) and `pyscf_a1_grid` (**A1** = PySCF pbc BeckeGrids points:
+  grids on image atoms, cut to the parallelepiped). `rks`: DIIS RKS on (S, h, jk, grid); hybrids use
+  K_eff = hyb·(K + v_M S D S). J/K exact: dense pure-AFT I (pbc_gamma). libxc via pyscf.dft.libxc.
+- Scripts: `run_dft_anchor.py` (N, S_latt, Slater E_x vs uniform), `run_dft_partition.py` (partition × grid incl.
+  RKS energy vs uniform), `run_dft_box_limit.py` (A: grid identity vs molecular grid; B: KS box limit),
+  `run_dft_oracle.py` (PySCF pbc.dft.RKS AFTDF 61³, exxdiv=ewald). Fix: `molecular_rks` grids.cutoff 0 → 1e-100
+  (0 crashes PySCF numint binning).
+- 5 tests at the end of test_prototype.py (1 PBC_SLOW).
+
+### Predictions stated before each sweep (verbatim substance in the script docstrings)
+- Box limit B: LDA/PBE no a⁻³ term (no exact exchange, H2 dipole 0) → a⁻⁵; PBE0 c3 = −hyb(4π/3)σ²; artifact:
+  Madelung on full K → 4×. Huge-box grid A: artifact = plateau at grid-error level. Partition sweep: error shrinks
+  faster for smoother partitions; artifact = Σw−Ω not shrinking and identical across schemes.
+
+### Measured
+Numint/SCF/Madelung plumbing (same points as PySCF): ours on A1 points − PySCF pbc.dft.RKS = −2.5e-14 (H2 a=4,
+LDA/PBE/PBE0, 50/75/100 grids), −5.2e-13..−5.8e-13 (triclinic 4H s+p), Δε ≤ 2e-9. Our uniform-48³ RKS ≡ PySCF
+UniformGrids to 1e-12 (H2 LDA −1.521492168321, PBE0 −1.576992652865; tri LDA −2.205431956735, 48³ ≡ 64³).
+
+Grid error vs the spectrally converged uniform reference, E(grid) − E(uniform), Ha:
+| system | grid | Becke A2 LDA | PySCF A1 LDA | exp A2 LDA | Becke A2 PBE0 | npts A2 |
+|---|---|---|---|---|---|---|
+| H2 a=4 | 50×146 | −7.8e-4 | −7.9e-4 | +1.0e-4 | −6.3e-4 | 14032 |
+| H2 a=4 | 75×302 | −4.2e-4 | −4.4e-4 | +2.4e-6 | −3.3e-4 | 43702 |
+| H2 a=4 | 100×590 | −6.0e-5 | −6.1e-5 | −3.6e-6 | −4.8e-5 | 113686 |
+| H2 a=4 | 150×974 | — | — | −1.1e-6 | — | 282460 |
+| tri 4H sp | 50×146 | −2.0e-4 | −2.0e-4 | −4.5e-4 | −1.6e-4 | 28389 |
+| tri 4H sp | 75×302 | −2.9e-5 | −3.0e-5 | +5.3e-5 | −2.3e-5 | 87501 |
+| tri 4H sp | 100×590 | −3.9e-6 | −3.8e-6 | −9.4e-6 | −3.1e-6 | 227408 |
+- H2 a=4 anchors (probe density, D=10): |∫ρ−N| Becke 2.5e-3/1.05e-3/1.6e-4 (50/75×302/100×590), 1.5e-4 at 150×590
+  (angular-limited: 100×302 ≈ 75×302, 150×590 ≈ 100×590); Σw−Ω +0.43/+0.20/+0.029. becke2/becke1 WORSE (1.4e-3/
+  1.65e-3 at 75×302), ssf ≈ becke. exp: Σw−Ω 1.4e-5, |dN| 1.2e-5 at 75×302; D=10 vs 14 identical (not D-limited).
+- Huge-box grid identity (LiH/STO-3G, 75×302, D=0.9a, point-by-point vs PySCF molecular grid within 0.08a):
+  SSF max|Δw| 1.4e-8 (a=12), 5.7e-17 (20), 9.7e-17 (30), 3.9e-16 (60); Becke 1.5e-5/1.4e-6/4.7e-7/4.8e-11
+  (algebraic, as predicted: Becke tails are polynomial in 1/a); control adjust=False: 0.29–0.30. E_xc(PBE, mol D)
+  − molecular: SSF −3.1e-3 (12), +1.1e-6 (20), −4.9e-9 (30), −2.8e-11 (60).
+  **Surprise, measured:** the first comparison within 0.15a FAILED for SSF (2.4e-3 at a=60): the Bragg size
+  adjustment (|a|=½ clip for Li–H) maps ν → −1+4r/L, so a Li IMAGE 51 Bohr away enters the SSF support for an H
+  point 8.7 Bohr out (ν = −0.445). The compact-support radius is ~0.09L with size adjustment, not 0.18L.
+- KS box limit (H2/STO-3G, 75×302, pure-AFT, vs pyscf.dft.RKS molecular on the identical grid):
+| a | dE LDA | dE PBE | dE PBE0 | dE PBE0·a³ |
+|---|---|---|---|---|
+| 12 | −3.31e-5 | −3.29e-5 | −1.486e-3 | −2.5685 |
+| 16 | +8.73e-7 | +8.75e-7 | −6.119e-4 | −2.50645 |
+| 20 | +2.91e-7 | +2.92e-7 | −3.133e-4 | −2.50663 |
+| 24 | +1.15e-7 | +1.15e-7 | −1.813e-4 | −2.50679 |
+  LDA local exponents 4.92 (16→20), 5.11 (20→24): a⁻⁵ as predicted. PBE0 two-term fit (20, 24) c3 = −2.50715 vs
+  predicted −0.25·(4π/3)·2.39406725 = −2.50706 (3.6e-5 rel.). σ² equals the HF value because the minimal-basis
+  σg orbital is symmetry-fixed.
+- Costs (H2 a=4): image atoms per point in the Becke product 7/31/64/138/362 at D = 4/6/8/10/14 (pair products
+  O(n_nb²) per point; exp is O(n_nb) and built 10–30× faster here); live image cells per 448-point AO chunk
+  260–500 (thresh 1e-15); LiH box a=12: 68, a=30: 4. A2 point counts ≈ A1 (43702 vs 44267 at 75×302).
+
+### Interpretation (provisional, 2026-09-24; two toy cells, H/s+p only, no cusp-heavy atoms)
+- The periodic construction is right: exact plumbing vs PySCF, exact molecular limit (SSF 1e-16), hybrid box limit
+  = hyb × the HF Makov-Payne term with the predicted coefficient, semilocal a⁻⁵.
+- The dominant error is the **Becke partition in a dense lattice**, not the domain cut: A2 (no cut) and PySCF A1
+  (cut) agree with each other to ~1e-6 and are both 4e-4 Ha off at 75×302 for H2 a=4. Error is angular-limited.
+  ferric's molecular default (75,110) is not adequate periodically (|dN| 1.9e-3 on H2 a=4).
+- "Smoother partition converges faster" is REFUTED as stated: becke1/2 are worse. exp (Hirshfeld-like) wins 175× on
+  H2 at 75×302 but LOSES 2× on the triclinic cell — no partition winner is established; do not port exp on this
+  evidence. Grid choice needs a measured sweep on a real solid (with core electrons) before any default is set.
+- Uniform grids are spectrally exact for these all-Gaussian H densities; that says nothing about all-electron
+  cores (tight exponents), which is why atom-centred grids are needed at all — untested here.
+
+### For the Rust port (stage 2)
+- **XC kernel is reusable unchanged**: `semilocal_vxc_closed(grid, chi, dchi, dens, tau, xc)` takes points,
+  weights and AO tables only. Feed it periodic GridPoints and lattice-summed χ/∇χ.
+- **Becke must change**: `becke_weight(mol, a_idx, r)` loops over `mol.atoms`. Needs a variant over an image-atom
+  neighbour list (xyz, Z, home index) from a cell list, with truncation D ≥ covering radius; prefer SSF for finite
+  exact lists, remembering size adjustment widens the support to ~0.09L. `build_atomic_grid` radial/angular reused.
+- **AO**: `eval_basis_and_grad_on_points` on an image-shell supermolecule, summed into cell AO indices, screened by a
+  per-shell extent (ao_rcut); budget npts×nao×4 through check_ao_grid_budget.
+- **Injection hook**: keep `validate_injected` rejecting `xc` UNLESS the injection carries a grid:
+  add `PeriodicInjection.xc: Option<Box<dyn XcBuilder>>` with `build(&D) -> (E_xc, V_xc)` (owning grid + AO tables),
+  and have `solve_rhf_impl` use it in place of the molecular grid path when present. Hybrid: the injected K
+  builder keeps the Madelung term and the SCF applies hyb (k_mix) to it (measured: Madelung on hyb·K gives c3 =
+  hyb × HF). Still reject: RSH (needs attenuated periodic K), meta-GGA (not prototyped), grid response/gradients,
+  newton/fxc (molecular grid rebuild), and grid pruning.
+
+## Iteration 10 (Python, Gamma UKS) — 2026-09-24
+
+### Code
+- New `pbc_uks.py`: `uks(S, h, jk, enn, na, nb, grid, xc, kshift=v_M, guess=, mix=, staged=, level_shift=, diis_start=)`
+  (xc='HF' = UHF through the same loop), `roks` (Roothaan effective Fock in PySCF's projector form, DIIS on
+  [F_eff, D_a+D_b]), `eval_vxc_uks` (libxc spin=1: vrho (N,2), vsigma (N,3) = aa, ab, bb), `occ_gap`
+  (occupation-aware gap: NEGATIVE for a hole state; the sorted-eigenvalue gap cannot see a trap), `uks_c3_closed_form`,
+  `uks_r2_kernel_c3(..., second=True)` (c3 AND the relaxation c6), `MolGrid` (molecular UKS on a fixed molecular grid).
+  Mutation seam `_MUTANT` in {unpolarized, madelung_full_k, hyb_half_per_spin}.
+- Drivers: `run_uks_anchor.py {h2|tri}`, `run_uks_oracle.py [H|H2|tri]`, `run_uks_box_limit.py BASIS a...`,
+  `run_uks_trap.py [alpha...]` (env CORR='' for exchange-only hybrids).
+- test_prototype.py: +7 tests at the end (6 fast, 57 s; 1 PBC_SLOW: tri pins + trap).
+
+### Convention (PySCF 2.13 pbc/dft/uks.py, then measured)
+F_s = h + J[D_a+D_b] − α(K[D_s] + v_M S D_s S) + V_xc^s;  E = Σ_s tr D_s h + ½ tr D J − (α/2) Σ_s tr D_s(K[D_s] + v_M S D_s S)
++ E_xc + E_nn. Madelung rides on the exact-exchange part only (Iteration 8) and per spin with coefficient 1 on D_s
+(Iteration 6). Closed shell reduces to Iteration 8's RKS (−(α/2)(K[D] + v_M S D S)). E_ewald − E_none = −α v_M N/2.
+
+### Measured
+Anchors (run_uks_anchor.py; A1 50×146 grid, pure-AFT I):
+
+| check | H2 a=4 | tri 4H s+p |
+|---|---|---|
+| (a) na=nb UKS − RKS, LDA/PBE/PBE0 × none/ewald | ≤ 4.4e-16 | ≤ 1.8e-15 |
+| (a) ROKS(na=nb) − RKS | 0 | — |
+| MUTANT hyb/2 per spin, PBE0 none / ewald | +5.6e-3 / +9.4e-2 | +4.7e-2 / +2.0e-1 |
+| MUTANT Madelung on full K, ewald (predicted −(1−α) v_M N/2) | LDA −0.70932 (pred −0.70932), PBE0 −0.53199 (−0.53199) | −1.2449 / −0.93366 (exact) |
+| MUTANT unpolarized XC, closed shell | 0 (blind, as predicted) | ≤ 3e-15 (blind) |
+| (b) open shell UKS[xc=HF] − pbc_uhf.uhf, none / ewald | 1e-16 / 2e-16 (triplet) | 1.1e-14 / −2.9e-14, d<S2> 2e-10 |
+| (c) tr(V_s dD) vs FD of E_xc, PBE, alpha / beta (relative) | — (nb=0: beta FD meaningless at rho_b=0) | 4.9e-9 / 2.1e-9 |
+| (d) open shell (E_ewald − E_none) + α v_M N/2 | ≤ 5e-16 | ≤ 1.2e-14 |
+| ROKS(triplet, 2 e in 2 AOs) − UKS | ≤ 8e-16 (fully determined) | |
+MUTANT unpolarized XC on the H2 triplet: +0.120 / +0.129 / +0.090 (LDA/PBE/PBE0).
+
+PySCF oracle (run_uks_oracle.py; pbc.dft.UKS/ROKS AFTDF 61³, exxdiv=ewald, BeckeGrids (50,146) treutler prune None,
+small_rho_cutoff 0; ours on PySCF's own A1 points; PySCF from its DEFAULT guess; from our D in parentheses):
+
+| system | xc | ours E (UKS) | <S2> | PySCF dE | ROKS E | PySCF dE |
+|---|---|---|---|---|---|---|
+| H a=4 doublet | LDA | −0.668127813328 | 0.75 | +7.2e-14 | | |
+| | PBE | −0.677787718838 | 0.75 | +7.2e-14 | | |
+| | PBE0 | −0.700202408672 | 0.75 | +7.5e-14 | | |
+| H2 a=4 triplet | LDA | −0.261697156130 | 2.0 | +9.5e-15 | | |
+| | PBE | −0.307603027052 | 2.0 | +1.0e-14 | | |
+| | PBE0 | −0.332094904636 | 2.0 | +8.3e-15 | | |
+| tri 4H s+p triplet | LDA | −1.694673507916 | 2.0003319270 (d 4.6e-12) | +4.8e-13 | −1.694361887534 | +4.8e-13 (1.6e-11) |
+| | PBE | −1.731772052782 | 2.0005413886 (d −8.8e-11) | +5.1e-13 | −1.731308266751 | +3.5e-12 |
+| | PBE0 | −1.777429192569 | 2.0006805370 (d 7.9e-11) | +5.6e-13 | −1.776801906487 | +5.3e-13 |
+All PySCF runs converged to the same state from their own guess. Our molecular UKS (MolGrid) == PySCF molecular
+UKS on the same grid to ≤ 4e-15 (H/STO-3G, H/6-31G, LDA/PBE/PBE0).
+
+Box limit (run_uks_box_limit.py; H atom doublet, cubic box, periodic SSF 75×302 D=0.9a vs molecular UKS on the
+identical molecular grid). Predictions in the docstring, written before the sweep: c3 = −(2π/3) α Ω_a(KS orbital)
+(= α × the UHF coefficient; semilocal XC is local); spherical density → no a⁻⁵; relaxation → a⁻⁶ only if the
+basis can relax; LDA/PBE: no a⁻³ and no relaxation (J + e-n harmonic potentials cancel for a neutral centred atom).
+Artifacts: Madelung on full K → 1/a with −(1−α)·2.8373/2; UHF coefficient → 4×.
+
+| a | STO-3G PBE0 dE·a³ | STO-3G LDA dE | 6-31G PBE0 dE·a³ | 6-31G c3 + c6/a³ | 6-31G LDA dE |
+|---|---|---|---|---|---|
+| 10 | | | −2.223183 | | −7.8e-4 |
+| 12 | −1.036738 | −9.8e-6 | −1.551756 | | −3.4e-5 |
+| 14 | | | −1.497230 | | −3.1e-7 |
+| 16 | −1.019298 | +2.2e-7 | −1.492950 | | +8.6e-7 |
+| 20 | −1.020201 | +8.4e-9 | −1.495931 | −1.496230 | +3.9e-8 |
+| 24 | −1.020268 | +1.8e-10 | −1.496113 | −1.496125 | +9.4e-10 |
+| 28 | | | −1.496071 | −1.496071 | +1.7e-11 |
+| 32 | −1.020270 | +3.1e-14 | −1.496041 | −1.496041 | +2.1e-13 |
+| 40 | | | −1.496011 | −1.496011 | +4.4e-16 |
+- Predicted c3: STO-3G −1.020270 (Ω_a 1.948573 fixed by the single AO = 0.25 × UHF's −4.081081); 6-31G −1.495980
+  (Ω_a 2.857112 of the PBE0 orbital; HF/LDA/PBE orbitals give different Ω, e.g. LDA 2.964759). The relaxed r2-kernel
+  FD reproduces both to 1e-6 and gives c6 = ½E''(k)(4π/3)² = −2.0020 (6-31G), 0 (STO-3G).
+- 6-31G: c3 + c6/a³ matches dE·a³ to ≤ 1e-6 from a=28; c3 alone is off 9e-5 (28), 6e-5 (32). The a⁻⁶ relaxation
+  term is REAL for the hybrid (UHF H had none because Hartree == self-exchange for one electron; with α < 1 the
+  harmonic self-interaction (1−α) is uncancelled). Below a≈20 the residual is image/grid tails (LDA column).
+- (none − ewald) − α v_M/2: ≤ 8e-15 at every a. MUTANT Madelung on full K at a=40: −2.662e-2 = −0.75 v_M/2 (1/a).
+
+Ewald trap for hybrids (run_uks_trap.py; tri 4H s+p triplet, α·HF + (1−α)·PBE exchange; starts: staged
+none→ewald, core guess, and the UHF TRAP density):
+- Identity checked on every converged ewald state (27 + 15 runs): re-evaluated under none it is stationary
+  (|[F,D]| ≤ 2e-7) with E offset exactly α v_M N/2 (≤ 6e-15), and ewald occ-gap = none occ-gap + α v_M (e.g. α 0.25:
+  0.1774 = 0.0218 + 0.1556). So the gap criterion scales with α exactly as predicted: per-spin gap ≥ α v_M.
+- With PBE correlation, α = 0, 0.1, 0.25, 0.4, 0.5, 0.6, 0.75, 0.9, 1.0: every start converges to the staged state
+  (≤ 1.3e-12); no trap, flag never set. Ground-state none-gaps are small (alpha 0.0059–0.038) but positive.
+- Exchange-only (CORR=''), α = 0.5, 0.75, 0.9, 0.95: same (no trap, including from the UHF trap density). α = 1.0
+  (== HF) reproduces Iteration 6: core guess and trap-density start give −1.8129587148 (+1.50e-2 above staged),
+  none occ-gap −0.0057 (hole), flag True.
+- DIIS stagnated (energy frozen, commutator 3e-4..2e-2) from the core guess for α ≥ 0.75 under ewald; plain
+  level-shifted Roothaan (shift 0.5, no DIIS) converged to the staged state. Staged starts never stagnated.
+
+### Interpretation (provisional, 2026-09-24; three toy H cells, s/sp bases)
+- Gamma UKS is the molecular UKS on (S, h, I, E_nn, periodic grid): exact vs RKS (closed shell), vs UHF (xc=HF),
+  and vs PySCF pbc.dft.UKS/ROKS to ≤ 3.5e-12 with <S2> to 1e-10.
+- The box limit is α × the UHF Makov-Payne term evaluated with the KS orbitals, plus a relaxation a⁻⁶ term that
+  the r2-kernel construction predicts to 6 digits. Semilocal parts contribute no power law.
+- The Ewald trap is possible for any α > 0 in principle (window α v_M), but on the one cell that traps UHF, the hole
+  state is not a stationary point of any hybrid tested (α ≤ 0.95, or α = 1 with PBE correlation). This is ONE cell;
+  do not read "hybrids never trap". The smaller window (α v_M) makes it less likely, not impossible.
+- Energy tests are blind to potential errors that move the variational energy only at second order or act on an
+  empty spin: source mutations dropping vsigma_ab, or feeding beta the alpha vrho / vsigma_aa, survived every energy
+  test; only the FD test tr(V_s dD) == dE_xc (both spins populated, rho_a ≠ rho_b) caught them. Madelung ×0.5 on
+  the hybrid part fails all 5 energy tests.
+- NOT measured: meta-GGA, RSH, spherical AOs, cores, RS-GDF for UKS, k-points, ROKS box limit (ROKS pinned on tri only).
+
+### For the Rust port: periodic UKS in `solve_uhf_injected`
+- Today `solve_uhf_injected` refuses `PeriodicInjection.xc` by name (uhf.rs:137). Add a polarized builder:
+  `trait UksXcBuilder { fn build(&mut self, d_a, d_b) -> Result<(f64, Array2, Array2)>; fn exact_exchange_fraction(&self) -> f64; }`
+  (or `XcBuilder::build_polarized` with a default that errors) and a `PeriodicInjection.xc_uks` slot, accepted
+  only by the UHF path. Implement it over the periodic grid + lattice-summed AO tables with ferric's existing
+  `semilocal_vxc_polarized` (vxc.rs:521; same libxc (N,2)/(N,3) layout) — the kernel needs no change.
+- In the loop: F_s = h + J − a·K_inj(D_s) + V_s with a = exact_exchange_fraction (the injected K carries the
+  Madelung term, linear in D_s: NO per-spin ½, NO Madelung on (1−a)); for a = 0 do not build K. E_xc outside the
+  trace, exactly the molecular `UksXcContribution::add_xc_uks` convention. ROKS: same builder, Roothaan F_eff.
+- Keep refusing RSH/meta-GGA/VV10/fxc-Newton/stability/SAD on this path (Iteration 8 list + Iteration 6 list).
+- Ewald trap: report the OCCUPATION-AWARE per-spin gap (min ε_unocc − max ε_occ of the undamped Fock with
+  occupations from D) against a·v_M at convergence and warn if below; offer the staged start (a·v_M off, then on).
+  The staged start is always safe and never stagnated here; recommend it as the default for a > 0.
+- Tests to port: UKS(na=nb) == injected RKS for LDA/PBE/PBE0 × both exxdiv (1e-11); UKS xc=None == injected UHF
+  (1e-11); ewald − none == −a v_M N/2 (1e-11); PySCF pins above (1e-10); H/STO-3G a=24 PBE0 dE·a³ == −1.020270
+  (2e-5); **FD test tr(V_s dD) vs E_xc on an open shell with both spins populated (1e-6)** — the only test that
+  sees vsigma_ab / per-spin column mistakes.
+
+## Iteration 9 (Python, k-point RHF) — 2026-09-24
+
+### Code
+- New `pbc_kpts.py` (~300 lines): `build_k(cell, n, exxdiv, gcut, thresh)` (Gamma-centred n1 x n2 x n3 mesh, pure AFT,
+  dense Nk^2 nao^4 kernels Jker/Kker, complex S(k), T(k), V(k)), `krhf(kb, nelec, kshift=)` (complex RHF per k, global
+  aufbau as PySCF KRHF get_occ, DIIS over the stacked k blocks with Gram Re sum_k <e_i,e_j>), `kmesh_madelung`,
+  `gamma_aft` (pbc_gamma's pure-AFT Gamma build, G-chunked, explicit gcut: the independent supercell reference),
+  `supercell_cell`, `omega_I` (Marzari-Vanderbilt gauge-invariant spread from the same pair FT), `_MUTANT` switch.
+- Drivers: `run_kpts_anchor.py` (a/b/c + mutants), `run_kpts_oracle.py` (PySCF KRHF+AFTDF, env PYSCF_MESH),
+  `run_kpts_convergence.py nmax [a] [nmin]` (hypotheses in its docstring, written before the run).
+- `test_prototype.py`: +8 tests at the END (~2 min under load; supercell anchor at a loose gcut, see below).
+
+Conventions (derived, then checked): chi_mk = sum_L e^{ik.L} phi_m(r-L) (PySCF's: S(k) equals `pbc_intor(kpts=)` to
+5e-15; the conjugate convention differs by 0.8). Pair FT P^{kk'}_mn(K) = sum_L e^{ik'.L} FT[phi_m phi_n(.-L)](K) on
+K = G + (k'-k); ERI (m k1 n k2|l k3 s k4) = (1/Omega) sum_{K!=0} 4pi/|K|^2 P^{k1k2}_mn(K) conj P^{k4k3}_sl(K).
+Only K = 0 is dropped, i.e. the q = 0 (k = k') G = 0 head of exchange; J and V_ne drop G = 0 as at Gamma.
+exxdiv='ewald': K(k) += v_M S_k dm_k S_k with v_M = the Gamma Madelung constant of the diag(n) supercell
+(`tools.pbc.madelung(cell, kpts)` builds exactly that lattice; `df_jk._ewald_exxdiv_for_G0` adds it per k with no
+1/Nk). Build: e^{ik'.L} depends only on L mod the mesh, so one residue-resolved pair FT per q
+(`pbc_supercell.pair_ft_residues` on the K = G+q set) gives P^{k'-q,k'} for every k' by an (Nk x R) phase product;
+time reversal Kker[-k,-k'] = conj Kker[k,k'] skips the -q passes (vs brute force 1.3e-15). Cost ~ (Nk/2) Gamma pair FTs.
+
+### Measured: exactness anchors (run_kpts_anchor.py)
+| anchor | system | result |
+|---|---|---|
+| (a) 1x1x1 mesh vs pbc_gamma build_integrals + rhf | H2/STO-3G a=4, none / ewald | dE 8.4e-15 / 6.7e-15, d eps 9.9e-14; = pinned PySCF (Iteration 1) |
+| (b) k-mesh E/cell vs explicit-supercell Gamma E/N | H2 1x1x3 (prec 1e-8 gcut), none / ewald | -4.0e-14 / -4.1e-14; all Nk*nmo eigenvalues 1e-13 |
+| | H2 2x2x2 (prec 1e-6) | 4.9e-15 / 4.2e-15 |
+| | triclinic 4H s+p 1x1x3 (prec 1e-6) | -8.5e-13 / -8.5e-13; eps 3-6e-13 |
+| | H2 1x1x3 at prec 1e-4, pair thresh 1e-8 (the test config) | -3.8e-14 / -3.7e-14 |
+| v_M(k-mesh) vs madelung(supercell) vs PySCF madelung(cell, kpts) | 1x1x3, 2x2x2, 2x2x3, 1x2x3 tri | 0.0 / <= 9.4e-16 |
+| (c) max\|S-S^H\|, \|S(-k)-S(k)^*\|, \|V(-k)-V(k)^*\|, \|J-J^H\|, \|K-K^H\| (Hermitian test dm) | H2 2x2x3, tri 1x2x3 | <= 4.4e-16, 5.2e-16, 6.8e-15, 4.2e-16, 4.5e-16 |
+The supercell anchor is exact at ANY gcut, because {G + q : q in mesh} IS the supercell reciprocal lattice and both
+sides sum the same |K| <= gcut sphere with the same pair-screening test (measured: 4e-14 at prec 1e-4 as at 1e-8).
+That is what makes it cheap enough to be a fast test. It needs n >= 3 on some axis: at n = 2, e^{ik.L} = e^{-ik.L}.
+Mutations (H2 1x1x3, all caught by (b), each also a fast test): pair-FT phase e^{-ik'.L} with S,T unchanged -0.219 Ha;
+exchange kernel v(G) instead of v(G+q) +0.377 (both exxdiv); primitive-cell v_M instead of the supercell v_M -0.520
+(ewald only; none row unchanged to 4e-14, as it must be). Blind spot: flipping the phase EVERYWHERE is k -> -k,
+an exact relabelling by time reversal; no energy anchor can see it (the PySCF S(k) comparison does).
+
+### Measured: PySCF oracle (pbc.scf.KRHF + AFTDF, cell.precision 1e-12, started from our dm, conv 1e-11)
+| system, mesh | exxdiv | E/cell (ours) | dE vs PySCF | max\|d eps\| |
+|---|---|---|---|---|
+| H2/STO-3G a=4, 1x1x2 (mesh 61^3) | none / ewald | -0.902683427348 / -1.354143879961 | -1.9e-14 / -2.7e-14 | 1.1e-13 |
+| H2/STO-3G a=4, 2x2x2 (61^3) | none / ewald | -0.700885391756 / -1.055547576692 | -1.9e-14 / -1.9e-14 | 1.6e-13 |
+| tri 4H s+p, 1x1x2 (61^3 and 41^3) | none / ewald | -1.587649533398 / -2.327120141714 | -9.6e-13 / -9.6e-13 | 2.2e-9 (same at 41^3 and 61^3) |
+tri 2x2x2 NOT compared: the first run's process was killed silently under the 1.5 GB cap during the PySCF
+step (ours had taken 31 min); a rerun (2 GB cap, PySCF mesh 41^3) was still running when this entry was written.
+The tri eps residual 2.2e-9 does not move with the PySCF mesh (41^3 vs 61^3), so it is not the AFT mesh; it is below
+the energy-relevant level (dE 1e-12, quadratic) and not isolated (candidates: 1e lattice-sum ranges, rcut_1e 22 vs
+PySCF precision 1e-12). Wall time (loaded box, load ~20-28): ours tri 2x2x2 31 min, PySCF H2 2x2x2 ~8 min per exxdiv.
+
+### Measured: mesh convergence (run_kpts_convergence.py; H2/STO-3G, gcut prec 1e-10, same K sphere at every n)
+Hypotheses (docstring, before the run): H0 identity E_none - E_ewald = nocc v_M(n) = 2.8372974795/(n a) (occupied
+levels shift rigidly by -v_M, D unchanged in an insulator) => none converges as N_k^(-1/3) with a KNOWN coefficient;
+H1 ewald leaves the q^2 term of the q = 0 head: E_ewald(n) - E_inf ~ -(4pi/3) Omega_I / (n a)^3 (N_k^-1), Omega_I = the
+MV gauge-invariant spread, the crystal form of Iteration 1's c3 = -(4pi/3) sigma^2 (equal for a flat band).
+
+| n | a=4 E_ewald | a=4 gap | a=4 Omega_I | a=6 E_ewald | a=6 gap | a=6 Omega_I |
+|---|---|---|---|---|---|---|
+| 1 | -1.658327061048 | 2.079 | – | -1.238530934105 | 1.423 | – |
+| 2 | -1.055547576690 | 0.586 | – | -1.120361720418 | 1.098 | – |
+| 3 | -1.099878133431 | 0.909 | 2.0227 | -1.117695348104 | 1.158 | 2.2609 |
+| 4 | -1.086067029552 | 0.508 | 2.1321 | -1.116650366716 | 1.086 | 2.3195 |
+| 5 | -1.086911915158 | 0.656 | 2.2545 | -1.116295989516 | 1.111 | 2.3481 |
+| 6 | -1.085799824217 | 0.495 | 2.2961 | (running) | | |
+E_none - E_ewald - v_M(n) <= 1.5e-15 at every n, both cells (H0 holds to machine precision; v_M n a = 2.8372974795).
+So exxdiv=none is off by +nocc 2.837/(n a): +0.142 Ha at n = 5 (a=4), +0.095 (a=6).
+- a=4 (the Iteration-1 cell: H2 units 2.6 Bohr apart along z, a dispersive band, gap 0.5-2.1 swinging with n): E_ewald
+  oscillates even/odd through n = 6 (n = 4/5/6: -1.08607, -1.08691, -1.08580; steps 8e-4, 1.1e-3).
+  Band-sampling (smooth-integrand quadrature of a dispersive band) dominates, not the Coulomb head; no power-law tail exists in this range and none was fitted. H1 is untestable here.
+- a=6 (gap ~1.1 for n >= 2): two-point (4,5) fit c3/n^3: c3 = -0.04648, E_inf = -1.115924. Predicted c3 =
+  -(4pi/3) Omega_I/216 = -0.04554 (Omega_I(n=5) = 2.348, still rising with n: finite-difference O(b^2)) or -0.04643 with
+  the molecular sigma^2 = 2.39407 (the flat-band limit). Three-point (3,4,5) c3 + c5 fit: c3 = -0.0432, c5 = -0.038
+  (unstable: n = 3 is not asymptotic). c3-only fit on (3,4,5): c3 = -0.0483, E_inf = -1.115903; local exponents with that E_inf: 2.25 (2->3), 3.04 (3->4), 2.88 (4->5).
+
+### Interpretation (provisional, 2026-09-24; H2/STO-3G only, two cubic cells, n <= 6 at a=4, n <= 5 at a=6)
+- **k-mesh RHF is the Gamma supercell, term by term.** The anchor is exact to 1e-14..1e-12 (H2 1x1x3, 2x2x2; triclinic
+  s+p 1x1x3) and PySCF KRHF/AFTDF agrees to 2e-14 (H2) / 1e-12 (tri). The only k-specific physics is which K is
+  dropped (K = 0, the k = k' head) and which v_M is added (the supercell's). They are consistent by construction:
+  **the supercell v_M and the k-mesh v_M are the same number** (PySCF computes the k-mesh one by building the supercell),
+  measured equal to 0 / 1e-15. Iteration 5b's "missing q = 0 head" is the same K = 0 hole, weight 1/Nk.
+- exxdiv=none vs ewald is not an empirical race: none = ewald + nocc v_M(n) exactly, so none converges as N_k^(-1/3)
+  with the Madelung constant as coefficient. ewald converges as N_k^-1 once the band is sampled (a=6: exponent ~3 in n,
+  coefficient within 2% of the Omega_I prediction from two points). On the dispersive a=4 cell even n = 5 is not in the
+  asymptotic regime; the finite-size ANALYSIS (which power) must be done on the tail of a mesh sweep, never on n <= 3.
+- The dense AFT kernel is an oracle only: tri 2x2x2 (nao 16) took 31 min of pair FTs; Nk^2 nao^4 memory.
+- NOT measured: shifted (non-Gamma-centred) MP meshes, metals / partial occupation (global aufbau is implemented but
+  every run here had nocc per k constant), RS-GDF with k (complex B^P(k,k')), spherical basis, nao > 16, UHF/k,
+  k-point MP2/RPA, cost at scale.
+
+### For the Rust port (stage 3)
+What becomes complex (file:line from this worktree):
+- `ScfResult` (ferric-scf result.rs:37: densities, `mos_*` Array2<f64>, `eps_*` Vec<f64>) -> per-k Vec<Array2<Complex64>>;
+  eps stay real (Vec<Vec<f64>>). Recommendation: do NOT generify ScfResult; add `KScfResult` in ferric-pbc.
+- `Diis` (diis.rs:136, RingHistory<Array2<f64>> + f64 GramCache) -> history of Nk complex blocks; Gram entry
+  Re sum_k <e_i,e_j>, extrapolation coefficients stay REAL (as in pbc_kpts.krhf). Either a small `KDiis` in ferric-pbc or a
+  `DiisVector` trait (dot + axpy) so the f64 instantiation stays byte-identical.
+- `canonical_orthogonalizer` (rhf.rs:2547, pub(crate), real) -> a Complex64 Hermitian version (zheevd via ndarray-linalg,
+  already a dependency of ferric-pbc), same lindep threshold, per k.
+- `JBuilder` / `KBuilder` (fock.rs:10/16, &Array2<f64>) and `PeriodicInjection` (rhf.rs:780, real s/h + boxed builders)
+  -> new `KPointInjection { s, h: Vec<Array2<C64>>, vnn, madelung, jk: Box<dyn KPointJk> }` with
+  `KPointJk::build(&mut self, dm: &[Array2<C64>], j: &mut [..], k: &mut [..])`: J needs only rho(G) (q = 0), K needs the
+  Nk^2 (k,k') pairs, so one trait with both is the natural seam.
+Minimal design: a separate `ferric_pbc::kscf::solve_krhf(cell, mesh, inj, cfg) -> KScfResult` loop (~300 lines: per-k
+orthogonalizer + eigh, global aufbau with a hard error when occupation per k changes between iterations or the gap
+closes, complex DIIS, E = (1/Nk) sum_k Re tr[(h+F) dm]/2 + E_nn, K += v_M S dm S). Leave `solve_rhf_impl` (CC 176,
+byte-identity contract) untouched; reject the same config features `validate_injected` rejects. Reuse:
+(i) Nk = 1 dispatches to `solve_rhf_injected` (real path), and the anchor (a) test pins KScf-at-Gamma == real driver;
+(ii) time reversal: only one of each (k, -k) pair is diagonalised and built, C(-k) = C(k)^*; TRIM k (2k in G) have real
+S(k), h(k) and can use the real eigensolver; (iii) v_M = the existing Gamma Madelung of the diag(n)-scaled lattice
+(no new code; test it against the explicit supercell, as here).
+Integral side (the bulk of the work): `pair_ft.rs` already accepts arbitrary vectors, so K = G + q needs no change;
+add a residue-bucketed variant (accumulate lattice image L into bucket L mod mesh, return [R, nbf, nbf, nK]) so one
+pass per q serves every k' via an (Nk x R) phase GEMM; the dense-k AFT kernel is the oracle (like dense_aft.rs), and
+production K needs complex RS-GDF: per q an aux FT at G+q, a Hermitian metric J2(q) (eig + lindep per q; only q = 0
+carries Iteration 2's G = 0 bookkeeping), and SR 3c lattice sums weighted by e^{ik'.L}.
+Tests to port: 1x1x1 == Gamma driver (1e-12); 1x1x3 k-mesh == explicit 1x1x3 supercell via the dense-AFT oracle at a
+LOOSE gcut (exact at any gcut) + the three mutants; S(k) vs PySCF pbc_intor(kpts) (convention) and S(-k) = S(k)^*;
+E_none - E_ewald = nocc v_M; PySCF pins (test_prototype.py KPT_REF_H2_112, and the tables above).

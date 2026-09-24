@@ -104,7 +104,30 @@ OPENBLAS_NUM_THREADS=1 python -m pytest -q test_prototype.py   # ~35 s; PBC_SLOW
    - **Test systems must exercise every spin block.** The triplet's
      same-spin block is identically zero, so a 5-H doublet with all three
      blocks nonzero is used as well.
-10. **`test_prototype.py`**: the tests. Several exist to catch a specific,
+10. **`pbc_dft.py`** (plus the `run_dft_*.py` scripts): Γ-point Kohn–Sham
+    DFT on a periodic Becke/SSF grid.
+    - **Grid construction.** Atom-centred grids are weighted against
+      neighbouring image atoms, and the atomic orbitals are summed over
+      lattice images.
+    - **Partition error dominates.** The main source of grid error is the
+      Becke space partition, not the periodic machinery.
+    - **Madelung on exact exchange only.** For hybrids the Madelung
+      correction applies only to the exact-exchange fraction, and the box
+      limit confirms it.
+11. **`pbc_uks.py`** (plus the `run_uks_*.py` scripts): spin-polarized UKS.
+    - **A blind spot in energy tests.** Two plausible bugs, dropping the
+      spin cross term of the density gradient or giving beta alpha's
+      potential, pass every energy test. Only a finite-difference check on
+      the XC potential catches them.
+    - **The trap in hybrids.** The Ewald trap criterion scales with the
+      exact-exchange fraction (gap ≥ α·v_M).
+12. **`pbc_kpts.py`** (plus the `run_kpts_*.py` scripts): k-point RHF.
+    - **The key check.** An N₁×N₂×N₃ k-mesh gives exactly the Γ-point energy
+      of the matching supercell, because the k-shifted G vectors together
+      form the supercell's reciprocal lattice.
+    - **Why three k-points.** A mesh needs at least three k-points along
+      some axis before the sign of the Bloch phase becomes visible.
+13. **`test_prototype.py`**: the tests. Several exist to catch a specific,
    plausible bug (a sign flip, a missing Madelung term, the G = 0 term applied
    to only one side); the comments say which one.
 
