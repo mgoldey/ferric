@@ -158,6 +158,19 @@ extern "C" {
         sh2: c_int,
         out: *mut c_double,
     ) -> c_int;
+    /// `scf_compute_eri3` with the shells translated by `shifts` =
+    /// `[sP; s1; s2]` (9 doubles, Bohr). Returns nP*n1*n2, 0 if screened,
+    /// `SCF_EINVAL` (-1) or `SCF_EINTERNAL` (-3).
+    pub fn scf_compute_eri3_shifted(
+        eng: *mut c_void,
+        obs: *const c_void,
+        dfbs: *const c_void,
+        shP: c_int,
+        sh1: c_int,
+        sh2: c_int,
+        shifts: *const c_double,
+        out: *mut c_double,
+    ) -> c_int;
     pub fn scf_compute_eri2(
         eng: *mut c_void,
         dfbs: *const c_void,

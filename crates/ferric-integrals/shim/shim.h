@@ -141,6 +141,15 @@ int scf_compute_eri3(scf_engine *eng, const scf_basis *obs,
                        const scf_basis *dfbs,
                        int shP, int sh1, int sh2, double *out);
 
+/* As scf_compute_eri3 with shells translated: (shP(r-sP) | sh1(r-s1) sh2(r-s2)),
+ * shifts = {sP[3], s1[3], s2[3]} (Bohr). All-zero shifts are bitwise equal to
+ * scf_compute_eri3. Returns nP*n1*n2, 0 if screened, SCF_EINVAL on a null
+ * pointer / out-of-range shell / non-finite shift, or SCF_EINTERNAL. */
+int scf_compute_eri3_shifted(scf_engine *eng, const scf_basis *obs,
+                               const scf_basis *dfbs,
+                               int shP, int sh1, int sh2,
+                               const double *shifts, double *out);
+
 /* Compute (shP | shQ) 2-center ERI. Returns nP*nQ. */
 int scf_compute_eri2(scf_engine *eng, const scf_basis *dfbs,
                        int shP, int shQ, double *out);

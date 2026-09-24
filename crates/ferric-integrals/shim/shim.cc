@@ -899,6 +899,57 @@ int scf_compute_eri3(scf_engine *eng, const scf_basis *obs,
 #endif
 }
 
+/* scf_compute_eri3 with each of the three shells translated:
+ * (shP(r - sP) | sh1(r - s1) sh2(r - s2)), shifts = {sP, s1, s2} (9 doubles,
+ * Bohr). The shells are COPIED and Shell::move()d (origin only; coefficients
+ * and max_ln_coeff are copied verbatim), so all-zero shifts are bitwise
+ * identical to scf_compute_eri3, and the immutable scf_basis objects are never
+ * touched. The 3-centre path never reads the quartet ShellPair cache, so there
+ * is no cache-invalidation hazard. The periodic lattice-sum primitive of
+ * stage1-design.md §4 (Gaussian-nucleus SR attraction now, RS-GDF later).
+ * Returns nP*n1*n2, 0 if libint2 screened the triplet, SCF_EINVAL on a null
+ * pointer / out-of-range shell / non-finite shift, SCF_EINTERNAL on any
+ * libint2 exception. */
+int scf_compute_eri3_shifted(scf_engine *eng, const scf_basis *obs,
+                               const scf_basis *dfbs,
+                               int shP, int sh1, int sh2,
+                               const double *shifts, double *out) {
+#if LIBINT2_SUPPORT_ERI3
+    if (!eng || !obs || !dfbs || !shifts || !out) return SCF_EINVAL;
+    const int nobs = static_cast<int>(obs->bs.size());
+    const int ndf = static_cast<int>(dfbs->bs.size());
+    if (shP < 0 || shP >= ndf || sh1 < 0 || sh1 >= nobs || sh2 < 0 || sh2 >= nobs)
+        return SCF_EINVAL;
+    for (int k = 0; k < 9; ++k) {
+        if (!std::isfinite(shifts[k])) return SCF_EINVAL;
+    }
+    try {
+        Shell p = dfbs->bs[shP];
+        Shell a = obs->bs[sh1];
+        Shell b = obs->bs[sh2];
+        p.move({p.O[0] + shifts[0], p.O[1] + shifts[1], p.O[2] + shifts[2]});
+        a.move({a.O[0] + shifts[3], a.O[1] + shifts[4], a.O[2] + shifts[5]});
+        b.move({b.O[0] + shifts[6], b.O[1] + shifts[7], b.O[2] + shifts[8]});
+        // BraKet::xs_xx rank=3: compute(aux_shell, obs_shell1, obs_shell2)
+        eng->engine.compute(p, a, b);
+        const auto &result = eng->engine.results();
+        if (result[0] == nullptr) return 0;
+        const int n = dfbs->nfunc[shP] * obs->nfunc[sh1] * obs->nfunc[sh2];
+        for (int i = 0; i < n; ++i) out[i] = result[0][i];
+        return n;
+    } catch (const std::exception &ex) {
+        std::fprintf(stderr, "scf_compute_eri3_shifted: %s\n", ex.what());
+        return SCF_EINTERNAL;
+    } catch (...) {
+        return SCF_EINTERNAL;
+    }
+#else
+    (void)eng; (void)obs; (void)dfbs; (void)shP; (void)sh1; (void)sh2;
+    (void)shifts; (void)out;
+    return SCF_EINTERNAL;
+#endif
+}
+
 int scf_compute_eri2(scf_engine *eng, const scf_basis *dfbs,
                        int shP, int shQ, double *out) {
 #if LIBINT2_SUPPORT_ERI2
