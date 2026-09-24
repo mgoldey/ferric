@@ -50,13 +50,37 @@ is deliberately loose (`1e-3`).
 **What happens:** comparing a ferric DFT energy with a code that uses exact
 Coulomb gives a discrepancy that grows with molecule size.
 
-**Why:** `run_dft` uses RI-J by default; `run_rhf` builds exact four-centre J
-unless you ask for fitting. The difference is the fitting error, not a bug.
-The source records it as 0.28 (water), 1.16 (benzene) and 9.5 kcal/mol (a
-71-atom drug molecule) at PBE/STO-3G against conventional J.
+**Why:** `run_dft`, `run_ksdft` and the CLI's `ksdft` density-fit Coulomb
+(RI-J) and exchange (RI-K) with `def2-universal-jkfit` by default. `run_rhf`
+builds exact four-centre J and K unless you pass `df_j_aux`/`df_k_aux`. The
+difference is the fitting error that density fitting always carries, not a
+bug. Against exact J at PBE/STO-3G it is 0.28 kcal/mol for water, 1.16 for
+benzene and 9.5 for a 71-atom drug molecule.
 
-**Do:** pass `df_j_aux="exact"` to `run_dft` when comparing against an
-exact-Coulomb reference, or set the same fitting on both sides.
+Separately from that systematic error, an RI-J energy also carries numerical
+noise: the fit applies an explicit inverse of an ill-conditioned metric, so a
+bit-level change (another build, thread count, or an in-core versus spilled
+three-index tensor) can move it by about 1e-5 Ha for benzene and up to about
+1e-4 Ha at 71 atoms. Benzene PBE/def2-SVP moves by 2.5e-6 Ha between an
+in-core run and one with the tensor spilled to disk. Energy differences
+smaller than that are not resolved by an RI-J calculation; use exact J for
+them.
+
+**Do:**
+
+- To compare with an exact-Coulomb code (ORCA with `NORI`, PySCF without
+  `density_fit()`), pass `df_j_aux="exact"` to `run_dft` or `run_ksdft`, and
+  `df_k_aux="exact"` too for a hybrid. `""`, `"none"`, `"off"` and
+  `"conventional"` mean the same. In the CLI, set `[scf] df_j_aux = ""` and
+  `df_k_aux = ""`. The CLI's `SCF J/K` log line then reads `RI-JK via` with a
+  blank name; the run uses exact J and K.
+- Or fit on both sides: `density_fit(auxbasis="def2-universal-jkfit")` in
+  PySCF, or `run_rhf(..., df_j_aux="def2-universal-jkfit")` in ferric.
+  `run_rhf` takes a basis name or `""` here, not `"exact"`.
+- `run_qmmm` (KS methods), `run_gw` and `run_u_gw` with `xc`, `run_tddft`
+  with a functional, `run_tdhf_static_polarizability`, `run_double_hybrid`
+  and `run_rs_mp2_rpa` always density-fit their reference SCF with
+  `def2-universal-jkfit` and have no opt-out.
 
 ## Units differ by interface and by accessor
 
@@ -87,10 +111,24 @@ build the basis themselves for each geometry, so they take its name.
 
 ## Not everything is on the CLI
 
-Several capabilities exist only in Python: for example CCD and CCSD(T)
-(`run_ccd`, `run_ccsd_t`), transition-state search and IRC (`run_saddle`,
-`run_irc`). The
-[capability matrix](../reference/capabilities.md) marks each one.
+The CLI runs the `method.kind`s in the
+[capability matrix](../reference/capabilities.md), with `task` = `energy`,
+`optimize` or `frequencies`. It also has `[qmmm]`, `[cosmo]`,
+`[external_potential]` and `[dft] grid_prune`. These capabilities are
+Python-only:
+
+| Capability | Python | What the CLI has instead |
+|---|---|---|
+| CCD | `run_ccd` | nothing |
+| CCSD(T) | `run_ccsd_t` | `ccsd` (CCSD only, no (T)) |
+| terfc-attenuated MP2 | `run_terfc_rimp2` | `att-rimp2` (erfc form) |
+| Transition-state search, IRC | `run_saddle`, `run_irc` | no `task` for either |
+| IEF-PCM solvation | `run_rhf(solvent=...)`, `run_pdep_rpa(solvent=...)` | no `[pcm]` section; `[cosmo]` is the separate conductor-limit model |
+| Following an unstable SCF solution downhill | `run_uhf(stability_descent=True)` | `[scf] check_stability` reports a saddle and does not follow it |
+| QM/MM MM forces, full-system gradient and optimization, smeared charges, Thole polarization, an MM force field | `run_qmmm`, `run_optimize_qmmm`, `QmmmSystem`, `MmTopology` | `[qmmm]` embeds the QM region in fixed point charges from a PQR file, with link atoms and boundary schemes |
+
+Constrained DFT has neither a CLI section nor a Python function; it is
+Rust-library only.
 
 ## Examples need the repository
 
@@ -100,12 +138,44 @@ from its root; see [Installation](./installation.md#what-the-wheel-does-not-cont
 
 ## `[memory] budget_gb` does not cap the whole process
 
-**What happens:** a job with `budget_gb = 8` can use more than 8 GB.
+**What happens:** a job's resident memory can exceed `budget_gb`, and a job
+whose budget is too small usually still runs, slower, rather than failing.
+Benzene PBE/def2-SVP with `budget_gb = 0.002` finishes with the same SCF
+iterations, a peak RSS of 157 MB, and 11.2 s of wall time instead of 3.5 s.
 
-**Why:** the budget controls how large three-index integral blocks may be.
-Other allocations, such as DFT grid work, are not counted against it.
+**Why:** the CLI turns `budget_gb` (or, when unset, 0.8 × available RAM) into
+one process-wide ledger. The large, size-dependent allocations reserve their
+bytes from it before allocating: three-index RI tensors, the DFT grid's AO
+cache, MO-transformed RI blocks, and the large tensors of the MP2, RPA, GW
+and CC methods. Two such allocations alive at the same time therefore cannot
+each claim the whole budget. Nothing else is charged: basis-sized matrices
+(Fock, density, DIIS history), integral engines, BLAS and per-thread scratch,
+allocator overhead. The spill path's two scratch blocks are reported but not
+refused, and together they can reach about twice the budget.
 
-**Do:** on a shared machine, also cap the process externally, for example with
+When a charged allocation does not fit, the result depends on the allocation:
+
+- The SCF's three-index tensor is spilled to a file in `$TMPDIR` (`/tmp` by
+  default) and reread on every iteration.
+- The DFT grid AO cache is recomputed at every Fock build instead of stored.
+  The energy is bit-identical.
+- An allocation with no fallback stops the job with an error naming it. For
+  some methods this check comes after the SCF. Benzene RI-MP2/def2-SVP with
+  `budget_gb = 0.001` completes the SCF, then exits with
+  `RI-MP2 MO-side blocks ... requires 0.01 GB; budget is 0.00 GB`.
+
+Some stages print a warning when resident memory passes 110% of the budget.
+The warning never stops the run.
+
+From Python, `memory_budget_gb=` sets the same per-allocation limits, but no
+shared ledger is installed. Each check compares its own allocation with the
+whole budget (some first subtract the process's current RSS), not with what
+the other allocations have left.
+
+**Do:** leave room below the machine's real limit for the uncharged part. On
+a shared machine, also cap the process externally so a runaway job dies in
+its own cgroup, for example with `scripts/ferric-limited -- ferric input.toml`
+(defaults `MemoryMax=12G`, `MemoryHigh=10G`, no swap) or
 `systemd-run --user --scope -p MemoryMax=12G -- ferric input.toml`.
 
 ## Implemented is not validated
