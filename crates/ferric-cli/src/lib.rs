@@ -440,6 +440,14 @@ pub fn run(args: Vec<String>) {
     if let Some(q) = cfg.qmmm.as_ref() {
         cfg.molecule.xyz = q.pqr.clone();
     }
+    // Closed-shell-only kinds refuse an open-shell molecule HERE, before any
+    // integral: otherwise an odd electron count dies inside the SCF as
+    // "ScfConvergence { iterations: 0 }" and an even one (triplet water)
+    // used to come back as the singlet. See `Config::validate_multiplicity`.
+    if let Err(e) = cfg.validate_multiplicity(mol.multiplicity) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
     let bs = if let Some(name) = &cfg.basis.name {
         basis::bundled(name)
     } else if let Some(path) = &cfg.basis.path {
@@ -765,24 +773,9 @@ pub fn run(args: Vec<String>) {
         return;
     }
 
-    // Both new correlated methods are closed-shell (RHF-reference) only: they
-    // reach `eps_r()`/`mos_r()`, which assert on `Spin::Restricted`. Reject an
-    // open-shell request HERE, before the shared `solve_rhf` below, because that
-    // solve fails first on an odd electron count and reports the misleading
-    // "SCF did not converge after 0 iterations" rather than the real reason.
-    if matches!(
-        method,
-        "linlccd" | "wb97x-l-v" | "b2plyp" | "dsd-pbep86" | "tda" | "tddft"
-    ) && mol.multiplicity > 1
-    {
-        eprintln!(
-            "error: method.kind = \"{method}\" requires a closed-shell (restricted) reference; \
-             open-shell LinLCCD(hh) / wB97X-L-V are library-only \
-             (ferric_cc::linlccd_u::u_linlccd, \
-             ferric_cc::double_hybrid::u_solve_wb97x_l_v)"
-        );
-        std::process::exit(1);
-    }
+    // Open-shell requests for closed-shell-only kinds (linlccd, the double
+    // hybrids, tda/tddft, ...) were refused up front by
+    // `Config::validate_multiplicity`, right after the geometry was resolved.
 
     // The wB97X-L-V double hybrid converges its OWN Kohn-Sham reference inside
     // `run_wb97x_l_v` (it forces `xc = "wB97X-L-V"` and runs `ksdft_ladder`), so

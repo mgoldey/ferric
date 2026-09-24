@@ -1962,6 +1962,173 @@ impl ScfCfg {
     }
 }
 
+// ─── Method/section compatibility guards ────────────────────────────────────
+//
+// Each of these catches a config the CLI used to ACCEPT and then quietly
+// answer a different question for: a key that no code path of the selected
+// `method.kind`/`task` reads, or a molecule the selected method cannot
+// represent. They are pure functions of the config (plus, for the spin
+// check, the resolved multiplicity) so they are unit-tested here and called
+// from `run()` before any integral is computed.
+
+/// Where open-shell Kohn-Sham DFT IS reachable, for the messages that have to
+/// say it is not reachable from the CLI. Every route named here was checked
+/// against the bindings: `run_qmmm(method="uks")` with the whole molecule as
+/// the QM region and no MM charges reproduces the gas-phase UKS energy
+/// (measured: its `method="uhf"` OH/STO-3G energy equals the CLI `uhf` one,
+/// -74.3626375456, to every printed digit).
+pub const OPEN_SHELL_KS_ROUTES: &str =
+    "open-shell Kohn-Sham (UKS/ROKS) is not available from the CLI. It is \
+     reachable from Rust (ferric_scf::uhf::solve_uhf or ferric_scf::rohf::solve_rohf \
+     with RhfConfig.xc set) and from Python (ferric.run_qmmm(system, basis, \
+     method=\"uks\", xc=...) with the whole molecule as the QM region, or \
+     ferric.run_frequencies(..., reference=\"uhf\", xc=...))";
+
+/// `method.kind`s that accept an open-shell molecule, per task. For
+/// `task = "energy"`, `pdep-rpa`/`gw`/`mp2-v` switch to a UHF(+MOM) reference
+/// themselves. Every gradient path (`optimize`, `frequencies`) other than
+/// `uhf`/`rohf` builds an RHF reference internally.
+fn open_shell_kinds(task: &str) -> &'static [&'static str] {
+    if task == "energy" {
+        &["uhf", "rohf", "pdep-rpa", "gw", "mp2-v"]
+    } else {
+        &["uhf", "rohf"]
+    }
+}
+
+impl Config {
+    /// Refuse an open-shell molecule for a `method.kind`/`task` that can only
+    /// build a closed-shell (RHF/RKS) reference.
+    ///
+    /// Two failure modes, one cause (`solve_rhf` never read the multiplicity):
+    ///
+    /// * an ODD electron count, e.g. `ksdft` on the OH doublet, died in the
+    ///   SCF with `ScfConvergence { iterations: 0, last_energy: 0.0 }`, which
+    ///   reads as a convergence problem rather than "this method is
+    ///   closed-shell";
+    /// * an EVEN count with multiplicity > 1 SUCCEEDED as the singlet: water
+    ///   with multiplicity = 3 under `rimp2` returned the singlet's RI-MP2
+    ///   energy, to every digit.
+    ///
+    /// `solve_rhf` now refuses both itself (`ferric_scf::rhf::require_closed_shell`),
+    /// which is the backstop; this check runs first so the CLI can say what
+    /// IS available for the kind the user picked.
+    pub fn validate_multiplicity(&self, multiplicity: usize) -> Result<(), String> {
+        let kind = self.method.kind.as_str();
+        let task = self.method.task.as_str();
+        if multiplicity <= 1 || open_shell_kinds(task).contains(&kind) {
+            return Ok(());
+        }
+        let hint = match kind {
+            "ksdft" => OPEN_SHELL_KS_ROUTES.to_string(),
+            "rhf" => "use kind = \"uhf\" or \"rohf\" for an open-shell Hartree-Fock reference"
+                .to_string(),
+            "pdep-rpa" | "gw" | "mp2-v" => format!(
+                "kind = \"{kind}\" accepts an open-shell molecule for task = \"energy\" only; \
+                 its task = \"{task}\" path builds an RHF reference"
+            ),
+            "rimp2" => {
+                "open-shell RI-MP2 is library-only (ferric_mp2::u_rimp2::u_ri_mp2)".to_string()
+            }
+            "oo-rimp2" => {
+                "open-shell OO-RI-MP2 is library-only (ferric_mp2::u_oo_rimp2::u_oo_ri_mp2)"
+                    .to_string()
+            }
+            "linlccd" => "open-shell LinLCCD(hh) is library-only (ferric_cc::linlccd_u::u_linlccd)"
+                .to_string(),
+            "wb97x-l-v" => "open-shell wB97X-L-V is library-only \
+                            (ferric_cc::double_hybrid::u_solve_wb97x_l_v)"
+                .to_string(),
+            _ => format!("no open-shell variant of kind = \"{kind}\" is available from the CLI"),
+        };
+        Err(format!(
+            "method.kind = \"{kind}\" (task = \"{task}\") requires a closed-shell (restricted) \
+             reference, but the molecule has multiplicity = {multiplicity}; running it would \
+             either fail in the SCF or silently compute the closed-shell singlet. {hint}."
+        ))
+    }
+}
+
+#[cfg(test)]
+mod compat_guard_tests {
+    use super::*;
+
+    fn cfg(kind: &str, task: &str, extra: &str) -> Config {
+        let src = format!(
+            "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\n\
+             [basis]\nname = \"sto-3g\"\n\
+             [method]\nkind = \"{kind}\"\ntask = \"{task}\"\n{extra}"
+        );
+        toml::from_str::<Config>(&src).expect("test config must parse")
+    }
+
+    /// Before the guard, `ksdft` on a doublet failed inside the SCF as
+    /// `ScfConvergence { iterations: 0 }` and `rimp2` on triplet water
+    /// returned the singlet. If `validate_multiplicity` is reverted to
+    /// `Ok(())`, every `is_err()` below fails.
+    #[test]
+    fn closed_shell_kinds_refuse_an_open_shell_molecule() {
+        for kind in [
+            "rhf",
+            "ksdft",
+            "rimp2",
+            "mp3",
+            "scs-mp2",
+            "oo-rimp2",
+            "ccsd",
+            "linlccd",
+            "laplace-sos-mp2",
+            "bse-tda",
+            "tddft",
+            "wb97x-l-v",
+            "b2plyp",
+        ] {
+            let e = cfg(kind, "energy", "")
+                .validate_multiplicity(3)
+                .expect_err(kind);
+            assert!(e.contains("multiplicity = 3"), "{kind}: {e}");
+        }
+        // The ksdft message must point at where open-shell KS DOES exist.
+        let e = cfg("ksdft", "energy", "")
+            .validate_multiplicity(2)
+            .unwrap_err();
+        assert!(
+            e.contains("open-shell Kohn-Sham") && e.contains("solve_uhf"),
+            "{e}"
+        );
+    }
+
+    /// Reachability: a guard that refused everything would pass the test
+    /// above. Singlets always pass; the open-shell-capable kinds pass for the
+    /// tasks they support, and ONLY those.
+    #[test]
+    fn open_shell_capable_kinds_and_all_singlets_pass() {
+        for kind in ["rhf", "ksdft", "rimp2", "ccsd"] {
+            assert!(
+                cfg(kind, "energy", "").validate_multiplicity(1).is_ok(),
+                "{kind}"
+            );
+        }
+        for kind in ["uhf", "rohf", "pdep-rpa", "gw", "mp2-v"] {
+            assert!(
+                cfg(kind, "energy", "").validate_multiplicity(2).is_ok(),
+                "{kind}"
+            );
+        }
+        for kind in ["uhf", "rohf"] {
+            assert!(
+                cfg(kind, "optimize", "").validate_multiplicity(3).is_ok(),
+                "{kind}"
+            );
+        }
+        // pdep-rpa's OPTIMIZER builds an RHF reference, so the energy-task
+        // exemption must not leak into the gradient task.
+        assert!(cfg("pdep-rpa", "optimize", "")
+            .validate_multiplicity(3)
+            .is_err());
+    }
+}
+
 pub fn load_config(path: &str) -> Result<Config, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("cannot read config file {path:?}: {e}"))?;
