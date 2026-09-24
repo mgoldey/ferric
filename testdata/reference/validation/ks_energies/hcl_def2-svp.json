@@ -1,0 +1,108 @@
+{
+  "row": "KS-DFT",
+  "system": "hcl",
+  "basis": "def2-svp",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 23,
+  "nuclear_repulsion": 7.055696145600002,
+  "rks_pbe": {
+    "energy": -460.460961243602,
+    "converged": true,
+    "homo": -0.27353071629609443,
+    "lumo": -0.0005140408175421385,
+    "jk": "RI-J (density_fit, aux fed from ferric JSON); K unused",
+    "xc": "PBE,PBE"
+  },
+  "rks_b3lyp": {
+    "energy": -460.6699349915666,
+    "converged": true,
+    "homo": -0.31777033106935426,
+    "lumo": 0.024068403297715424,
+    "jk": "RI-J + RI-K (density_fit)",
+    "xc": "B3LYP"
+  },
+  "rhf_control": {
+    "energy": -459.93828603064674,
+    "note": "exact-integral RHF; ferric RKS must MISS this (functional applied)"
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "dft.RKS (+ scf.RHF control)",
+      "xc": {
+        "pbe": "PBE,PBE",
+        "b3lyp": "B3LYP"
+      },
+      "jk": {
+        "pbe": "RI-J (density_fit, aux fed from ferric JSON); K unused",
+        "b3lyp": "RI-J + RI-K (density_fit)"
+      },
+      "init_guess": "minao (PySCF default)",
+      "numpy": "1.26.4"
+    },
+    "grid": {
+      "main": {
+        "atom_grid": [
+          75,
+          110
+        ],
+        "prune": null,
+        "partition": "Becke (original_becke)",
+        "radii_adjust": "becke_atomic_radii_adjust"
+      },
+      "nlc_vv10": {
+        "atom_grid": [
+          50,
+          50
+        ],
+        "prune": null
+      }
+    },
+    "aux_basis": {
+      "name": "def2-universal-jkfit",
+      "json": "crates/ferric-core/src/basis/bundled/def2-universal-jkfit.json",
+      "sha256": "a9fcb52ae8a74e80bd3a65c5e12e7a2d2f391fef62c3c81050ae816399b57671"
+    },
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-10,
+      "conv_tol_grad": 1e-07
+    },
+    "stability": null,
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/hcl.xyz",
+    "geometry_xyz_sha256": "2e75d87873826fe91a0c2d1c19a006d01d5955c06a17fe416541bc97e9089ef9",
+    "geometry_bohr": [
+      [
+        "Cl",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        0.0,
+        0.0,
+        2.4094008088204535
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_ks_energies.py",
+    "git_head": "1768f45d4bd8a592cbef440195b46c01f43196cf",
+    "generated_utc": "2026-09-24T21:12:18+00:00",
+    "basis_self_check": {
+      "nao": 23,
+      "replica_self_overlap_max_dev": 2.220446049250313e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 23,
+      "diag_skipped_cartesian": 0,
+      "aux_nao": 146
+    }
+  }
+}

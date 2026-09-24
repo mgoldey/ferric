@@ -530,9 +530,17 @@ def run_open_shell(
     max_stab_rounds: int = 10,
     guesses: tuple[str, ...] = ("minao", "atom", "huckel"),
     distinct_tol: float = 1e-6,
+    mf_factory=None,
     return_mf: bool = False,
 ):
-    """Converge `method` ("uhf" | "rohf") to an internally STABLE state.
+    """Converge `method` ("uhf" | "rohf" | "uks") to an internally STABLE state.
+
+    `mf_factory(mol) -> mf` supplies the SCF object and is REQUIRED for
+    "uks" (the functional, grid and J/K recipe are row-specific, so they are
+    configured by the row's generator, not here). A "uks" run is reported with
+    the same fields as "uhf" (<S^2>, frontier orbitals, lambda_min): PySCF's
+    UKS `stability()` and `gen_g_hop_uhf` both go through `mf.gen_response`,
+    which carries the XC kernel, so the loop below is the KS stability loop.
 
     Returns the result dict, or `(result, mf)` when `return_mf=True` (rows that
     need the converged density/orbitals themselves, e.g. the density-property
@@ -553,7 +561,12 @@ def run_open_shell(
     """
     from pyscf import scf
 
-    cls = {"uhf": scf.UHF, "rohf": scf.ROHF}[method]
+    if mf_factory is not None:
+        cls = mf_factory
+    elif method == "uks":
+        raise ValueError("run_open_shell(method='uks') needs an mf_factory")
+    else:
+        cls = {"uhf": scf.UHF, "rohf": scf.ROHF}[method]
     scan = []
     best = None
     for guess in guesses:
@@ -613,7 +626,7 @@ def run_open_shell(
         "guess_scan": scan,
         "multiple_stable_minima": (max(stable_es) - min(stable_es)) > distinct_tol,
     }
-    if method == "uhf":
+    if method in ("uhf", "uks"):
         ea, eb = mf.mo_energy
         result.update(
             {
