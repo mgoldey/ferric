@@ -1699,11 +1699,11 @@ impl PyUhfResult {
 /// and `mom_after_iter` are especially useful for open-shell doublets / radicals
 /// where DIIS plateaus or the occupied set flip-flops.
 ///
-///   guess             "minao" (default) or "hcore". The bare hcore guess is
-///                     what UHF used unconditionally before #83; it is kept as
-///                     an explicit opt-in so the old state can be reproduced.
-///                     An unrecognised value is an error, never a silent
-///                     fallback.
+///   guess             "minao" (default; "sad" is an alias) or "hcore". The
+///                     bare hcore guess is an explicit opt-in: on some open
+///                     shells (e.g. O2/STO-3G) it converges to a different
+///                     stationary point. An unrecognised value is an error,
+///                     never a silent fallback.
 ///   stability_descent False (default). When True, check the converged UHF
 ///                     solution's internal stability and, if it is a SADDLE of
 ///                     the orbital Hessian, follow the downhill eigenvector and
@@ -1745,17 +1745,10 @@ fn run_uhf(
     guess: Option<&str>,
     stability_descent: Option<bool>,
 ) -> PyResult<PyUhfResult> {
-    // Strict, unlike run_rhf's `guess`: a typo must not silently select a
-    // different SCF state (on O2/STO-3G the two guesses differ by 0.255 Ha).
-    let use_sad_guess = match guess.map(|g| g.trim().to_ascii_lowercase()).as_deref() {
-        None | Some("minao") => true,
-        Some("hcore") => false,
-        Some(other) => {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "guess: unknown value \"{other}\"; expected \"minao\" (default) or \"hcore\""
-            )));
-        }
-    };
+    // The shared strict parser (same as run_rhf and the CLI): a typo must not
+    // silently select a different SCF state (on O2/STO-3G the two guesses
+    // land on states 0.255 Ha apart).
+    let use_sad_guess = parse_guess(guess)?;
     // The descent needs a stability verdict to act on, so the kwarg turns on
     // both halves; `scf_stability_descent` alone only prints a SKIPPED notice.
     let descent = stability_descent.unwrap_or(false);
