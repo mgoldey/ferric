@@ -782,64 +782,45 @@ fn promolecule_diabat_b_population_matches_the_quoted_value() {
     // earlier "force N_He^B to 2.000" mutation did not (it died at the sum).
 }
 
-/// At R = 2.0 Å the unconstrained HeNe⁺ SCF sits at the natural diabat-B
-/// population, and both sit far from the integer target 2.000.
+/// At R = 2.0 Å the unconstrained HeNe⁺ UHF GROUND STATE is **not** diabat B:
+/// its He population differs from the natural diabat-B (promolecule)
+/// population by 2.4e-2 e. Both populations still sit far from the integer
+/// target 2.000 that the cDFT constraint uses.
 ///
-/// This is the sharp form of the previous test's claim. If the unconstrained
-/// state *is* diabat B, then constraining N_He to the integer 2.000 is not
-/// preparing a diabat — it is pushing an already-correct state 0.046 e away
-/// from where it wants to be, and every Hartree of constraint work that follows
-/// is an artifact of the target, not a charge-transfer energy.
+/// # This reverses an earlier claim, and why
 ///
-/// # SCOPE: this is a statement about R = 2.0 Å ONLY
+/// This test used to assert the opposite ("the unconstrained state IS diabat
+/// B", gap 9.46e-4 e, bar 3e-3). That measurement was taken before the
+/// open-shell guess fix of 2026-09-17, when ferric's UHF on HeNe⁺/def2-SVP at
+/// R = 2.0 Å converged onto an internally unstable ²Π saddle 0.136 eV above the
+/// minimum (VALIDATION.md header). On current main UHF reaches the stable
+/// minimum, E = -130.5053405386 Ha, equal to PySCF 2.13.1's
+/// stability-checked UHF/def2-SVP (conv_tol 1e-11) to 6e-14 Ha. On that state,
+/// measured 2026-09-24 with a (99,302) grid: N_He unconstrained = 1.930690,
+/// promolecule B = 1.954484, gap 2.379e-2 e. The earlier R-sweep table
+/// (2.0–6.0 Å, from the deleted `hene_promolecule_probe`) was also taken on
+/// the pre-fix guess, and its unconstrained column is not reproduced here.
 ///
-/// The claim is **separation-specific and false at large R**. Measured by
-/// sweeping R with the (now-deleted) `hene_promolecule_probe` example at
-/// commit 794a1551, def2-SVP, (99,302) grid — the table is reproduced here
-/// because it is the evidence for the scope limit and the probe that produced
-/// it no longer exists:
-///
-/// ```text
-///   R/Å    N_He^promol_B   N_He^unconstrained
-///   2.0    1.954484        1.953538        <- this test; unconstrained IS diabat B
-///   2.5    1.973812        1.973294
-///   3.0    1.985704        STALLED (unconstrained UHF hit max_iter = 300)
-///   4.0    1.995681        0.999323        <- unconstrained is diabat A, NOT B
-///   6.0    1.999481        0.999903        <- likewise
-/// ```
-///
-/// So N_He^unconstrained is **non-monotone in R**: it tracks diabat B at
-/// bonding separation, fails to converge at 3.0 Å, and has switched to diabat
-/// A (hole on He) by 4.0 Å. The blanket statement "the unconstrained state
-/// already IS diabat B" is therefore NOT true of the HeNe⁺ system generally —
-/// only of the bonding region this lane's diabats were built in. Any use of
-/// this finding to argue about the R → ∞ limit is out of scope, and the
-/// asymptotic statement belongs to the ΔIP anchor above instead.
-///
-/// # Assertion structure
-///
-/// The earlier version compared the two natural estimates via
-/// `(n_unconstrained - 2.0).abs() > 10.0 * gap`, with `gap` — the quantity
-/// under test — on the RIGHT of a `>`. That rewards the two estimates being
-/// identical: driving `gap` to zero makes the assertion pass trivially, so
-/// setting `n_promol_b = n_unconstrained` survived as a mutation. The claim is
-/// restated below as **two absolute comparisons against fixed bars**, so that
-/// shrinking `gap` can never help anything pass.
+/// The energy assertion pins WHICH state the populations describe, against an
+/// external code, so the populations cannot silently move to another
+/// stationary point again.
 #[test]
-fn unconstrained_hene_cation_matches_natural_diabat_b_at_bonding_separation() {
+fn unconstrained_hene_cation_at_bonding_separation_is_not_diabat_b() {
     use ferric_dft::ao_grid::eval_basis_on_points;
     use ferric_dft::cdft::{build_weight_matrix, population, SpinChannel};
     use ferric_dft::grid::{build_atomic_grid, AtomicGridConfig};
 
     const R: f64 = 2.0;
-    /// "The two independent estimates of the natural diabat agree": measured
-    /// spread is 9.46e-4 e, bar set at 3e-3 (about 3x headroom). This is an
-    /// ABSOLUTE bar — `gap` is compared against a constant, never against
-    /// another measured quantity that could shrink to make it pass.
-    const TOL_AGREE: f64 = 3e-3;
-    /// "Both are far from the integer target": measured distances are 0.0465
-    /// and 0.0455 e. Bar at 0.02, comfortably above TOL_AGREE so that the two
-    /// statements cannot be satisfied by the same degenerate configuration.
+    /// PySCF 2.13.1 UHF/def2-SVP, conv_tol 1e-11, `stability()` = stable.
+    const E_PYSCF_STABLE: f64 = -130.505_340_538_58;
+    /// ferric reproduced it to 6e-14; the saddle it used to reach was 5e-3
+    /// higher, so 1e-8 separates the two states by five orders of magnitude.
+    const TOL_E: f64 = 1e-8;
+    /// Measured gap 2.379e-2 e on the stable state; the saddle-state value
+    /// was 9.46e-4. 1e-2 sits between them.
+    const MIN_GAP: f64 = 1e-2;
+    /// "Both are far from the integer target": measured distances on the
+    /// stable state are 0.0693 (unconstrained) and 0.0455 (promolecule) e.
     const MIN_DIST_TO_INTEGER: f64 = 0.02;
 
     let bs = basis::bundled("def2-svp").unwrap();
@@ -868,7 +849,7 @@ fn unconstrained_hene_cation_matches_natural_diabat_b_at_bonding_separation() {
         );
         let da = res.density_alpha.clone();
         let db = res.density_beta.clone().unwrap_or_else(|| da.clone());
-        (da, db)
+        (da, db, res.energy)
     };
 
     let mol_dimer = Molecule::parse_xyz(&dimer, 0, 1).unwrap();
@@ -885,8 +866,8 @@ fn unconstrained_hene_cation_matches_natural_diabat_b_at_bonding_separation() {
     let w_he = build_weight_matrix(&mol_dimer, &grid, &chi, &[0]);
 
     // Promolecule B.
-    let (he0_a, he0_b) = densities(&he_g, 0, 1);
-    let (nep_a, nep_b) = densities(&ne_g, 1, 2);
+    let (he0_a, he0_b, _) = densities(&he_g, 0, 1);
+    let (nep_a, nep_b, _) = densities(&ne_g, 1, 2);
     let n_promol_b = population(
         &w_he,
         &(&he0_a + &nep_a),
@@ -895,7 +876,7 @@ fn unconstrained_hene_cation_matches_natural_diabat_b_at_bonding_separation() {
     );
 
     // The real, unconstrained HeNe⁺ cation.
-    let (dim_a, dim_b) = densities(&dimer, 1, 2);
+    let (dim_a, dim_b, e_dimer) = densities(&dimer, 1, 2);
     let n_unconstrained = population(&w_he, &dim_a, &dim_b, &SpinChannel::Total);
 
     let gap = (n_unconstrained - n_promol_b).abs();
@@ -910,14 +891,27 @@ fn unconstrained_hene_cation_matches_natural_diabat_b_at_bonding_separation() {
         n_promol_b - 2.0
     );
 
-    // (i) The two independent estimates of the natural diabat agree. Bar is a
-    //     CONSTANT, so a smaller gap is only ever neutral-to-good here and
-    //     cannot rescue anything else.
+    // (i) WHICH state: the stable UHF minimum, pinned to an external code.
+    //     The saddle ferric used to reach sits 5e-3 Ha higher.
+    eprintln!(
+        "E(HeNe+) = {e_dimer:.10}  PySCF stable = {E_PYSCF_STABLE:.10}  diff = {:.2e}",
+        e_dimer - E_PYSCF_STABLE
+    );
     assert!(
-        gap < TOL_AGREE,
-        "unconstrained N_He = {n_unconstrained:.6} differs from the natural diabat-B \
-         population {n_promol_b:.6} by {gap:.3e} e, above the {TOL_AGREE:.0e} bar — the claim \
-         that the unconstrained state already is diabat B does NOT hold at R = {R} A"
+        (e_dimer - E_PYSCF_STABLE).abs() < TOL_E,
+        "unconstrained HeNe+ UHF E = {e_dimer:.10} is not PySCF's stable minimum \
+         {E_PYSCF_STABLE:.10} (bar {TOL_E:.0e}); it has converged to a different stationary \
+         point, and the populations below describe that state instead"
+    );
+
+    // (i') On that state the unconstrained population is NOT diabat B. A fixed
+    //     bar, between the stable-state gap (2.4e-2) and the saddle-state gap
+    //     (9.5e-4), so landing on the saddle again fails here as well as in (i).
+    assert!(
+        gap > MIN_GAP,
+        "unconstrained N_He = {n_unconstrained:.6} is within {gap:.3e} e of the natural \
+         diabat-B population {n_promol_b:.6} (bar {MIN_GAP:.0e}); on the stable UHF minimum \
+         the measured gap is 2.4e-2 e"
     );
 
     // (ii) and (iii) BOTH estimates are far from the integer that was actually
@@ -936,27 +930,5 @@ fn unconstrained_hene_cation_matches_natural_diabat_b_at_bonding_separation() {
         d_promol > MIN_DIST_TO_INTEGER,
         "the promolecule N_He = {n_promol_b:.6} sits only {d_promol:.6} e from the integer \
          target 2.000, below the {MIN_DIST_TO_INTEGER} e bar"
-    );
-
-    // (iv) The separation of scales as a MEASURED statement, with `gap` on the
-    //     SMALL side of the inequality rather than multiplying the right-hand
-    //     side. Written as `gap < d_min / 10` (not `d_min > 10 * gap`) the two
-    //     forms are algebraically identical, but this one reads as a bound ON
-    //     `gap`: shrinking `gap` is what the claim asserts, and the thing that
-    //     has to stay large — the distance to the integer target — is already
-    //     pinned independently by (ii) and (iii) against a fixed bar. So a
-    //     mutation that sets n_promol_b = n_unconstrained (gap -> 0), which
-    //     SURVIVED the previous `> 10.0 * gap` formulation, still has to get
-    //     past (ii) and (iii) on its own merits and no longer buys anything.
-    let d_min = d_unc.min(d_promol);
-    eprintln!(
-        "scale separation: gap = {gap:.3e} e vs the smaller distance-to-integer {d_min:.6} e (ratio {:.1}x)",
-        d_min / gap
-    );
-    assert!(
-        gap < d_min / 10.0,
-        "the unconstrained-vs-promolecule spread ({gap:.3e} e) is not at least 10x smaller \
-         than the distance to the integer target ({d_min:.6} e); the two natural estimates \
-         cannot be distinguished from the target they were supposed to differ from"
     );
 }

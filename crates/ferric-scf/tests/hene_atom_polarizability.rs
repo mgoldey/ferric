@@ -149,33 +149,36 @@ fn atomic_static_polarizabilities_match_pyscf_finite_field() {
 /// fails. It is also a genuine numerical-quality check — a first-order error
 /// in the field coupling would show O(h) rather than O(h²) behaviour.
 ///
-/// Measured (He): 0.44315101, 0.44315196, 0.44315220, 0.44315226 at
-/// h = 0.01, 0.005, 0.0025, 0.00125 — successive changes 9.54e-7, 2.39e-7,
-/// 5.96e-8, i.e. ratios of 3.999 and 4.003 against the ideal 4.
+/// Physics: for an atom E(F) = E0 − ½αF² − γF⁴/24 + …, so the central
+/// estimate is α_FD(h) = α + (γ/12)h² and successive changes fall by exactly 4x
+/// per halving of h — until the double-precision floor of the second
+/// difference E(+h) − 2E(0) + E(−h) takes over.
 ///
-/// # Why the smallest step is excluded from the ratio test
+/// # Why the steps start at h = 0.04
 ///
-/// The ratio test is applied only to the first three steps. Measured Ne at the
-/// last pair gives 3.344, not ~4, and that is a real limitation rather than a
-/// tolerance to be widened away: at h = 0.00125 the second difference is
-/// E(+h) − 2E(0) + E(−h) ≈ 5.7e-11 Ha, which is within an order of magnitude
-/// of the `energy_conv = 1e-11` SCF threshold. The estimate is then dominated
-/// by convergence noise in the three energies, not by the truncation error the
-/// O(h²) law describes, so asserting a 4x ratio there would be asserting on
-/// noise. He happens to give 4.003 at the same pair; that it does and Ne does
-/// not is exactly the scatter you would expect from noise, and is the reason
-/// the pair is excluded for BOTH atoms rather than only for the one that fails.
+/// Measured 2026-09-24 on main (h = 0.04, 0.02, 0.01, 0.005): He changes
+/// 1.527e-5, 3.817e-6, 9.542e-7 (ratios 4.000, 4.000); Ne −7.721e-6,
+/// −1.929e-6, −4.835e-7 (ratios 4.002, 3.991). Both ratios are asserted.
 ///
-/// The consequence for scope: this test shows the field coupling is
-/// second-order accurate down to h ≈ 0.0025 at `energy_conv = 1e-11`. It says
-/// nothing below that, and pushing to smaller h would require a tighter SCF.
+/// The steps used to be 0.01..0.00125 with only the first ratio asserted, and
+/// that ratio drifted to 4.524 for Ne (bar 3.5–4.5) after unrelated SCF
+/// changes. The cause is floating-point cancellation, not SCF convergence:
+/// Ne's total energy is ~−128 Ha, so the second difference carries ~1e-13 Ha
+/// of roundoff, which h² = 6.25e-6 (h = 0.0025) amplifies to ~4e-8 in α — as
+/// large as the O(h²) signal being compared. Larger steps grow the signal 4x
+/// per doubling and shrink the noise 4x; the h = 0.005 end still keeps noise
+/// ~1e-9 against a 4.8e-7 change.
+///
+/// Scope: this shows the field coupling is second-order accurate for
+/// h ∈ [0.005, 0.04]. It says nothing about smaller h, where the estimate is
+/// limited by f64 cancellation in the energies, not by the field coupling.
 #[test]
 fn finite_field_polarizability_converges_at_second_order() {
-    let steps = [0.01_f64, 0.005, 0.0025, 0.00125];
-    /// Number of successive-change RATIOS to assert on. The last available
-    /// ratio (from the h = 0.0025 / 0.00125 pair) is excluded because the
-    /// second difference there is ~5.7e-11 Ha, comparable to `energy_conv`.
-    const N_RATIOS_ASSERTED: usize = 1;
+    let steps = [0.04_f64, 0.02, 0.01, 0.005];
+    /// Number of successive-change RATIOS to assert on: all of them at these
+    /// steps (see the doc comment for the measured values and why smaller
+    /// steps are excluded).
+    const N_RATIOS_ASSERTED: usize = 2;
     for symbol in ["He", "Ne"] {
         let alphas: Vec<f64> = steps.iter().map(|&h| alpha_zz(symbol, h)).collect();
         let deltas: Vec<f64> = alphas.windows(2).map(|w| w[1] - w[0]).collect();
@@ -196,7 +199,7 @@ fn finite_field_polarizability_converges_at_second_order() {
 
         // Second-order convergence: halving h must quarter the remaining
         // error, so successive changes fall by ~4x. Bar is 3.5x..4.5x, which
-        // the measured 3.999 (He) and 3.958 (Ne) sit inside and a first-order
+        // the measured 3.991–4.002 (He, Ne) sit inside and a first-order
         // (2x) or non-converging (1x) scheme does not. Only the noise-free
         // ratio is asserted — see the doc comment for why.
         //
@@ -208,11 +211,7 @@ fn finite_field_polarizability_converges_at_second_order() {
             eprintln!(
                 "{symbol}: |d{k}|/|d{}| = {ratio:.3} (ideal 4 for O(h^2)){}",
                 k + 1,
-                if asserted {
-                    ""
-                } else {
-                    "  [NOT asserted: second difference is at the SCF noise floor]"
-                }
+                if asserted { "" } else { "  [NOT asserted]" }
             );
             if !asserted {
                 continue;
