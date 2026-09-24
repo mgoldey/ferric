@@ -2444,10 +2444,7 @@ impl PyCdftCouplingResult {
 /// AO overlap matrix and the occupations). Two (near-)identical states
 /// (|S_ab| -> 1) make the coupling undefined and also raise.
 #[pyfunction]
-fn cdft_coupling(
-    state_a: &PyCdftResult,
-    state_b: &PyCdftResult,
-) -> PyResult<PyCdftCouplingResult> {
+fn cdft_coupling(state_a: &PyCdftResult, state_b: &PyCdftResult) -> PyResult<PyCdftCouplingResult> {
     use ferric_dft::cdft::SpinChannel;
     use ferric_scf::cdft_coupling::{coupling_hab, DiabaticState};
     let value_err = |msg: String| pyo3::exceptions::PyValueError::new_err(msg);
