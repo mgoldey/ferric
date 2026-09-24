@@ -1,0 +1,276 @@
+{
+ "row": "Harmonic frequencies",
+ "system": "oh",
+ "basis": "6-31g",
+ "charge": 0,
+ "multiplicity": 2,
+ "nao": 11,
+ "nuclear_repulsion": 4.365698347282665,
+ "masses_amu": [
+  15.999,
+  1.008
+ ],
+ "hessian_layout": "3N x 3N Cartesian, row/col = 3*atom + xyz, Hartree/Bohr^2",
+ "frequency_convention": "harmonic_analysis(mass=masses_amu, imaginary_freq=False): ascending, imaginary reported as negative, translations+rotations projected out",
+ "uhf": {
+  "energy": -75.36316991623221,
+  "converged": true,
+  "stability": {
+   "internal_stable": true,
+   "kind": "PySCF UHF internal (real)",
+   "selected_guess": "atom",
+   "rounds": 0,
+   "guess_scan": [
+    {
+     "guess": "minao",
+     "energy": -75.36316991623218,
+     "internal_stable": true,
+     "stability_rounds": 0
+    },
+    {
+     "guess": "atom",
+     "energy": -75.36316991623221,
+     "internal_stable": true,
+     "stability_rounds": 0
+    },
+    {
+     "guess": "huckel",
+     "energy": -75.36316991623221,
+     "internal_stable": true,
+     "stability_rounds": 0
+    }
+   ],
+   "multiple_stable_minima": false,
+   "s_squared": 0.7537680888980196
+  },
+  "s_squared": 0.7537680888980196,
+  "gradient": [
+   [
+    -6.38656690373722e-17,
+    5.345456974983739e-18,
+    -0.0028000526346061427
+   ],
+   [
+    6.386566903736712e-17,
+    -5.3454569749829504e-18,
+    0.002800052634607031
+   ]
+  ],
+  "hessian_analytic": [
+   [
+    0.0015279735495894453,
+    -2.1125024242331543e-07,
+    1.329444690351719e-16,
+    -0.0015279735503563874,
+    2.185220177330395e-07,
+    -1.278449690841404e-16
+   ],
+   [
+    -2.1125024242331543e-07,
+    0.0015271619640857548,
+    2.3101523129783645e-18,
+    2.03978453545018e-07,
+    -0.00152716196442082,
+    2.4178016920819622e-17
+   ],
+   [
+    1.329444690351719e-16,
+    2.3101523129783645e-18,
+    0.5151013159379922,
+    -1.380439689860693e-16,
+    -2.8798321546767575e-17,
+    -0.5151013159295266
+   ],
+   [
+    -0.0015279735503563874,
+    2.03978453545018e-07,
+    -1.380439689860693e-16,
+    0.0015279735503581637,
+    -2.1125023566266436e-07,
+    1.3294446903524666e-16
+   ],
+   [
+    2.185220177330395e-07,
+    -0.00152716196442082,
+    -2.8798321546767575e-17,
+    -2.1125023566266436e-07,
+    0.0015271619644221524,
+    2.3101523129026123e-18
+   ],
+   [
+    -1.278449690841404e-16,
+    2.4178016920819622e-17,
+    -0.5151013159295266,
+    1.3294446903524666e-16,
+    2.3101523129026123e-18,
+    0.5151013159295297
+   ]
+  ],
+  "freq_analytic_cm": [
+   3788.678706989821
+  ],
+  "hessian_fd": [
+   [
+    0.0015299261055104485,
+    8.45718648794163e-09,
+    -2.5586456939614356e-14,
+    -0.001529926195618491,
+    -8.457131820196442e-09,
+    -2.385502238556521e-14
+   ],
+   [
+    8.45718648794163e-09,
+    0.0015299517719780976,
+    -2.1692864365909107e-14,
+    -8.949547964560087e-09,
+    -0.001529951771721055,
+    8.922581137988808e-14
+   ],
+   [
+    -2.5586456939614356e-14,
+    -2.1692864365909107e-14,
+    0.5151287891305589,
+    -6.323138503039806e-14,
+    6.610178535091543e-14,
+    -0.5151287891305367
+   ],
+   [
+    -0.001529926195618491,
+    -8.949547964560087e-09,
+    -6.323138503039806e-14,
+    0.0015299262857253193,
+    8.949493294162305e-09,
+    4.605948287806837e-14
+   ],
+   [
+    -8.457131820196442e-09,
+    -0.001529951771721055,
+    6.610178535091543e-14,
+    8.949493294162305e-09,
+    0.001529951771463492,
+    -4.481689039488172e-14
+   ],
+   [
+    -2.385502238556521e-14,
+    8.922581137988808e-14,
+    -0.5151287891305367,
+    4.605948287806837e-14,
+    -4.481689039488172e-14,
+    0.5151287891304257
+   ]
+  ],
+  "freq_fd_cm": [
+   3788.779741233102
+  ],
+  "fd": {
+   "fd_step_bohr": 0.005,
+   "fd_asymmetry_max": 4.3352815897362305e-09,
+   "fd_max_energy_second_difference": 1.2877876145012124e-05,
+   "fd_n_gradients": 12,
+   "fd_max_s2_drift": 5.4903852588772395e-05
+  },
+  "pyscf_fd_vs_analytic_hessian_max_abs": 2.7473201010153048e-05,
+  "pyscf_fd_vs_analytic_freq_max_abs_cm": 0.10103424328099209,
+  "hessian_analytic_asymmetry": 1.4543564263915648e-08
+ },
+ "provenance": {
+  "code": "PySCF",
+  "version": "2.13.1",
+  "keywords": {
+   "methods": [
+    "uhf"
+   ],
+   "xc": {},
+   "conv_tol": 1e-12,
+   "conv_tol_grad": 1e-09,
+   "max_cycle": 500,
+   "eri": "exact 4-index (no density fitting)",
+   "analytic_hessian": "pyscf.hessian.{rhf,rks,uhf,uks} (KS: no grid response)",
+   "fd_hessian": "central FD of analytic gradient, step 0.005 Bohr (KS gradient grid_response=True), displaced SCFs from the centre density, symmetrized",
+   "rohf_fd_steps": [
+    0.01,
+    0.005,
+    0.0025
+   ],
+   "masses": "ferric_core::elements::ATOMIC_MASSES (IUPAC 2013 averages)",
+   "numpy": "1.26.4"
+  },
+  "grid": {
+   "atom_grid": [
+    75,
+    110
+   ],
+   "prune": null,
+   "radii_adjust": "becke_atomic_radii_adjust",
+   "applies_to": "KS methods only"
+  },
+  "aux_basis": "none",
+  "frozen_core": "none",
+  "scf_convergence": {
+   "conv_tol": 1e-12,
+   "conv_tol_grad": 1e-09
+  },
+  "stability": {
+   "uhf": {
+    "internal_stable": true,
+    "kind": "PySCF UHF internal (real)",
+    "selected_guess": "atom",
+    "rounds": 0,
+    "guess_scan": [
+     {
+      "guess": "minao",
+      "energy": -75.36316991623218,
+      "internal_stable": true,
+      "stability_rounds": 0
+     },
+     {
+      "guess": "atom",
+      "energy": -75.36316991623221,
+      "internal_stable": true,
+      "stability_rounds": 0
+     },
+     {
+      "guess": "huckel",
+      "energy": -75.36316991623221,
+      "internal_stable": true,
+      "stability_rounds": 0
+     }
+    ],
+    "multiple_stable_minima": false,
+    "s_squared": 0.7537680888980196
+   }
+  },
+  "basis": "6-31g",
+  "basis_json": "crates/ferric-core/src/basis/bundled/6-31g.json",
+  "basis_sha256": "1ae9712168e449cee8ee656810f9dc2619083fc9a78f0b8e8dac77c5dbcfa7ef",
+  "ecp_json": "none",
+  "ecp_sha256": "none",
+  "geometry_xyz": "testdata/molecules/validation/oh.xyz",
+  "geometry_xyz_sha256": "38d6013d3393d6c70dbae95d27def5f092e5a5f08c8754f2a5ec3a4536852739",
+  "geometry_bohr": [
+   [
+    "O",
+    0.0,
+    0.0,
+    0.0
+   ],
+   [
+    "H",
+    0.0,
+    0.0,
+    1.8324674229907405
+   ]
+  ],
+  "bohr_in_angstrom": 0.52917721092,
+  "generator": "scripts/validation/gen_frequencies.py",
+  "git_head": "29e94f238c1815df95ea5ccdbf6309813d44306b",
+  "generated_utc": "2026-09-24T21:48:27+00:00",
+  "basis_self_check": {
+   "nao": 11,
+   "replica_self_overlap_max_dev": 2.220446049250313e-16,
+   "pyscf_diag_max_dev": 3.3306690738754696e-16,
+   "diag_checked": 11,
+   "diag_skipped_cartesian": 0
+  }
+ }
+}
