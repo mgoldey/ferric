@@ -2341,8 +2341,11 @@ fn run_cdft(
         diis_size: diis_size.unwrap_or(defaults.diis_size),
         integral_thresh: integral_thresh.unwrap_or(defaults.integral_thresh),
         k_builder: k_builder.map(|s| s.to_string()),
-        df_j_aux: df_j_aux.map(|s| s.to_string()),
-        df_k_aux: df_k_aux.map(|s| s.to_string()),
+        // Same shared parser as run_rhf/run_uhf/run_dft, so "exact"/"off" mean
+        // exact J/K here too and cdft_coupling's Hamiltonian key sees one
+        // spelling for one Hamiltonian.
+        df_j_aux: df_j_aux.map(ferric_scf::rhf::normalize_df_aux),
+        df_k_aux: df_k_aux.map(ferric_scf::rhf::normalize_df_aux),
         level_shift: level_shift.unwrap_or(defaults.level_shift),
         mom_after_iter: mom_after_iter.unwrap_or(defaults.mom_after_iter),
         external_potential: build_external_potential(point_charges, external_field),
@@ -2352,11 +2355,15 @@ fn run_cdft(
         ..defaults
     };
 
+    // Key on the EFFECTIVE fitting choice: solve_uhf has no auto-default and
+    // build_df_jk treats Some("") as "do not fit", so unset and "" are the
+    // same exact-J/K Hamiltonian and must not look different here.
+    let effective_aux = |a: &Option<String>| a.clone().filter(|s| !s.is_empty());
     let hamiltonian_key = format!(
         "xc={:?} df_j_aux={:?} df_k_aux={:?} k_builder={:?} dft_grid={:?} external={:?}",
         config.xc,
-        config.df_j_aux,
-        config.df_k_aux,
+        effective_aux(&config.df_j_aux),
+        effective_aux(&config.df_k_aux),
         config.k_builder,
         config.dft_grid,
         config.external_potential,

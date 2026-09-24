@@ -535,3 +535,19 @@ def test_asymmetric_coupling_pairs_each_lambda_with_its_own_weight():
     )
     c = ferric.cdft_coupling(a, b)
     assert abs(abs(c.h_ab) - abs(h_ref)) < 1e-6, (c.h_ab, h_ref, h_bad)
+
+
+def test_df_aux_off_spellings_are_one_hamiltonian_for_the_coupling():
+    """run_cdft parses df_j_aux with the same shared resolver as run_rhf, so
+    "exact" and "" select the same (exact-J) Hamiltonian. Fails if run_cdft
+    passes the raw string through: "exact" is then either an unknown basis
+    (RuntimeError) or a different Hamiltonian key (cdft_coupling refuses)."""
+    a, _ = _he2_plus_states(3.0)
+    b_blank = _he2_plus_state_b_with(df_j_aux="")
+    b_exact = _he2_plus_state_b_with(df_j_aux="exact")
+    assert b_exact.energy == b_blank.energy
+    # Unset, "" and "exact" are the same exact-J Hamiltonian (solve_uhf has no
+    # auto-default), so coupling across the spellings is accepted. Fails if the
+    # Hamiltonian key compares the raw setting instead of the effective one.
+    ferric.cdft_coupling(a, b_exact)
+    ferric.cdft_coupling(a, b_blank)
