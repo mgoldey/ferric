@@ -1,0 +1,202 @@
+{
+  "row": "Meta-GGA gradient, closed / open",
+  "system": "h2o",
+  "basis": "6-31g",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 13,
+  "nuclear_repulsion": 9.189193229309746,
+  "units": {
+    "energy": "Hartree",
+    "gradient": "Hartree/Bohr, dE/dR, (natoms, 3)"
+  },
+  "rks_scan_rij": {
+    "xc": "SCAN",
+    "j": "RI-J: PySCF density_fit(aux from ferric JSON), gradient with auxbasis_response; ferric default (df_j_aux unset -> def2-universal-jkfit) / explicit Some(aux) open shell",
+    "energy": -76.35162438286264,
+    "converged": true,
+    "internal_stable": true,
+    "gradient": [
+      [
+        9.353918076906887e-17,
+        2.2694518356958095e-16,
+        -0.01041530712871186
+      ],
+      [
+        -1.3373531707978426e-16,
+        -0.020264267690317528,
+        0.005207653564354153
+      ],
+      [
+        4.629886081114211e-17,
+        0.020264267690318416,
+        0.005207653564353487
+      ]
+    ]
+  },
+  "rks_scan_exact": {
+    "xc": "SCAN",
+    "j": "exact four-centre J: plain PySCF KS; ferric df_j_aux = Some(\"\")",
+    "energy": -76.35158524466372,
+    "converged": true,
+    "internal_stable": true,
+    "gradient": [
+      [
+        -5.589132646656615e-17,
+        3.4998046127832083e-16,
+        -0.010446103719907729
+      ],
+      [
+        9.975840813053251e-17,
+        -0.020279485334881553,
+        0.0052230518599538645
+      ],
+      [
+        -3.644215936642392e-17,
+        0.020279485334881553,
+        0.0052230518599540865
+      ]
+    ]
+  },
+  "rks_r2scan_rij": {
+    "xc": "R2SCAN",
+    "j": "RI-J: PySCF density_fit(aux from ferric JSON), gradient with auxbasis_response; ferric default (df_j_aux unset -> def2-universal-jkfit) / explicit Some(aux) open shell",
+    "energy": -76.34266835976496,
+    "converged": true,
+    "internal_stable": true,
+    "gradient": [
+      [
+        -1.3672281807434228e-17,
+        4.2023240908568466e-16,
+        -0.01062110715514919
+      ],
+      [
+        -3.164606323898983e-16,
+        -0.020682861220944204,
+        0.005310553577575261
+      ],
+      [
+        3.2808825061937177e-16,
+        0.02068286122094154,
+        0.005310553577575261
+      ]
+    ]
+  },
+  "rks_r2scan_exact": {
+    "xc": "R2SCAN",
+    "j": "exact four-centre J: plain PySCF KS; ferric df_j_aux = Some(\"\")",
+    "energy": -76.3426292025073,
+    "converged": true,
+    "internal_stable": true,
+    "gradient": [
+      [
+        5.378237704474228e-17,
+        1.227316859253591e-16,
+        -0.010652089329341141
+      ],
+      [
+        3.546406904009935e-16,
+        -0.020698233974326907,
+        0.00532604466466946
+      ],
+      [
+        -4.15317177785973e-16,
+        0.02069823397432513,
+        0.00532604466466946
+      ]
+    ]
+  },
+  "separations": {
+    "scan_vs_r2scan_rij": 0.00041859353062667637,
+    "scan_vs_r2scan_exact": 0.00041874863944535434,
+    "rij_vs_exact_scan": 3.079659119586964e-05,
+    "rij_vs_exact_r2scan": 3.098217419195137e-05
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "dft.RKS, nuc_grad_method() with grid_response=True",
+      "xc": {
+        "scan": "SCAN",
+        "r2scan": "R2SCAN"
+      },
+      "j": {
+        "rij": "RI-J: PySCF density_fit(aux from ferric JSON), gradient with auxbasis_response; ferric default (df_j_aux unset -> def2-universal-jkfit) / explicit Some(aux) open shell",
+        "exact": "exact four-centre J: plain PySCF KS; ferric df_j_aux = Some(\"\")"
+      },
+      "init_guess": "minao (PySCF default)",
+      "numpy": "1.26.4"
+    },
+    "grid": {
+      "main": {
+        "atom_grid": [
+          75,
+          110
+        ],
+        "prune": null,
+        "partition": "Becke (original_becke)",
+        "radii_adjust": "becke_atomic_radii_adjust",
+        "radial": "PySCF default (treutler_ahlrichs)"
+      },
+      "grid_response": true
+    },
+    "aux_basis": {
+      "name": "def2-universal-jkfit",
+      "json": "crates/ferric-core/src/basis/bundled/def2-universal-jkfit.json",
+      "sha256": "a9fcb52ae8a74e80bd3a65c5e12e7a2d2f391fef62c3c81050ae816399b57671",
+      "used_by": "the *_rij blocks only; *_exact blocks are four-centre J"
+    },
+    "frozen_core": "none",
+    "scf_convergence": {
+      "analytic": {
+        "conv_tol": 1e-11,
+        "conv_tol_grad": 1e-08
+      },
+      "fd": {
+        "conv_tol": 1e-12,
+        "conv_tol_grad": 1e-08
+      }
+    },
+    "stability": null,
+    "basis": "6-31g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/6-31g.json",
+    "basis_sha256": "1ae9712168e449cee8ee656810f9dc2619083fc9a78f0b8e8dac77c5dbcfa7ef",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/h2o.xyz",
+    "geometry_xyz_sha256": "284b6da243e9abcf0aa2d6e13ad7204946feecb55d27b7819f12097095fdd6ae",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.22259084021251865
+      ],
+      [
+        "H",
+        0.0,
+        1.4275992699810498,
+        -0.8903652505761991
+      ],
+      [
+        "H",
+        0.0,
+        -1.4275992699810498,
+        -0.8903652505761991
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_mgga_gradients.py",
+    "git_head": "29e94f238c1815df95ea5ccdbf6309813d44306b",
+    "generated_utc": "2026-09-24T21:43:47+00:00",
+    "basis_self_check": {
+      "nao": 13,
+      "replica_self_overlap_max_dev": 2.220446049250313e-16,
+      "pyscf_diag_max_dev": 3.3306690738754696e-16,
+      "diag_checked": 13,
+      "diag_skipped_cartesian": 0,
+      "aux_nao": 113
+    }
+  }
+}

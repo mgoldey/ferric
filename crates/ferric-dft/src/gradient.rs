@@ -1,9 +1,11 @@
 //! Analytical nuclear gradient of the semilocal XC energy on a Becke-Lebedev grid.
 //!
-//! This implements the "no grid response" approximation: the Becke partition
-//! and radial-grid weights are treated as nuclear-position-independent. The
-//! resulting gradient has an error of ~1e-5 Ha/Bohr at typical (75, 110) grids;
-//! sufficient for geometry optimization but not spectroscopic accuracy.
+//! The LDA, GGA and meta-GGA gradients (closed shell and UKS) include the grid
+//! response, following PySCF's `grid_response=True` convention: the Becke
+//! weight derivatives and the translation of each grid point with its home
+//! atom. They match PySCF to ≤6.2e-9 Ha/Bohr
+//! (`crates/ferric-scf/tests/validation_mgga_gradients.rs`). The VV10
+//! nonlocal gradient is the exception: it has no grid response.
 //!
 //! Closed-shell LDA gradient per atom A:
 //!
