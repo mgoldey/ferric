@@ -32,16 +32,21 @@ fn asymptotic_matches_the_exact_series_at_the_crossover() {
          if this fires, TERF_ASYMPTOTIC_S is too LOW or the identity is wrong"
     );
     // The asymptotic must actually be the cheap path, or the change is pointless.
-    if timing_asserts_enabled() {
+    let asserted = timing_asserts_enabled();
+    eprintln!(
+        "  timing ratio {:.2}x ({})",
+        ser / asy.max(1e-9),
+        if asserted {
+            "asserted: FERRIC_ASSERT_TIMING=1"
+        } else {
+            "not asserted; set FERRIC_ASSERT_TIMING=1 on a quiet machine"
+        }
+    );
+    if asserted {
         assert!(
             ser > asy * 10.0,
             "asymptotic ({asy:.1} ns) is not materially cheaper than the series \
              ({ser:.1} ns) -- the whole rationale for the crossover is gone"
-        );
-    } else {
-        eprintln!(
-            "  timing ratio {:.2}x not asserted (set FERRIC_ASSERT_TIMING=1 on a quiet machine)",
-            ser / asy.max(1e-9)
         );
     }
 }
