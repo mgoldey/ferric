@@ -94,6 +94,23 @@ pub fn pyscf_sto3g_h() -> BasisSet {
     )
 }
 
+/// PySCF's `6-31G` for H, digit for digit (`pople-basis/6-31G.dat`; ferric's
+/// bundled BSE copy carries more digits) — the Iteration 5 LMP2 prototype's
+/// orbital basis (s only on H, so cart == sph).
+pub fn pyscf_631g_h() -> BasisSet {
+    h_basis(
+        "pyscf-6-31g-H",
+        vec![
+            renormalized(
+                0,
+                &[18.7311370, 2.8253937, 0.6401217],
+                &[0.03349460, 0.23472695, 0.81375733],
+            ),
+            renormalized(0, &[0.1612778], &[1.0]),
+        ],
+    )
+}
+
 /// `test_prototype.py` SP_BASIS: STO-3G s plus one Cartesian p (0.8).
 pub fn sp_basis_h() -> BasisSet {
     h_basis(

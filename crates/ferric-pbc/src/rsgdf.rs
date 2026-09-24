@@ -245,6 +245,38 @@ pub struct RsGdf {
     metric_inv_sqrt: Array2<f64>,
 }
 
+/// The pre-solve pieces of an RS-GDF build ([`RsGdf::build_with_fit_parts`]),
+/// for per-pair domain-local fits in the PERIODIC metric: with the full aux
+/// set as the domain and the same eig/`lindep` pseudo-inverse,
+/// `A_i J2⁺ A_jᵀ` reproduces `B_iᵀ B_j` (the trivial-radius anchor,
+/// `tests/pbc_lmp2.rs`).
+#[derive(Debug, Clone)]
+pub struct PeriodicFitParts {
+    /// Symmetrised `(P|Q)'`, `(naux, naux)` — exactly the matrix the build's
+    /// metric solve decomposed.
+    pub j2: Array2<f64>,
+    /// Symmetrised `(μν|P)'`, `(nao², naux)`, row `μ·nao+ν`.
+    pub j3: Array2<f64>,
+    /// Centre of every aux function (its shell's centre), Bohr, as placed in
+    /// the cell (NOT wrapped: distances to it must be minimum-image).
+    pub aux_centers: Vec<[f64; 3]>,
+    /// The absolute eigenvalue cut the build used.
+    pub lindep: f64,
+}
+
+/// Centre of every basis function of `prep` (its shell's centre).
+fn aux_function_centers(prep: &PreparedBasis) -> Vec<[f64; 3]> {
+    let mut out = vec![[0.0; 3]; prep.nbasis()];
+    let offs = prep.shell_offsets();
+    let dims = prep.shell_dims();
+    for (sh, ls) in prep.located_shells().iter().enumerate() {
+        for f in 0..dims[sh] {
+            out[offs[sh] + f] = ls.center;
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Shell data (ferric normalisation: prim_norm folded in, CCA order, ferric
 // cart→sph for pure l >= 2 — the conventions of `pair_ft`).
@@ -926,6 +958,39 @@ impl RsGdf {
         s: &Array2<f64>,
         cfg: &RsGdfConfig,
     ) -> Result<Self, FerricError> {
+        Self::build_impl(cell, obs, aux, s, cfg, false).map(|(gdf, _)| gdf)
+    }
+
+    /// [`RsGdf::build`] that ALSO returns the symmetrised periodic metric
+    /// `J2`, the 3-index `J3` (both in the G = 0-dropped kernel, before the
+    /// metric solve) and the aux function centres — what a per-pair
+    /// domain-local fit in the PERIODIC metric needs
+    /// ([`crate::lmp2`]). The returned `RsGdf` is bitwise the one
+    /// [`RsGdf::build`] gives (same code path; the parts are copies taken
+    /// just before the metric solve). The extra `8 naux (naux + nao²)`
+    /// bytes are reserved on the build ledger.
+    pub fn build_with_fit_parts(
+        cell: &Cell,
+        obs: &PreparedBasis,
+        aux: &PreparedBasis,
+        s: &Array2<f64>,
+        cfg: &RsGdfConfig,
+    ) -> Result<(Self, PeriodicFitParts), FerricError> {
+        let (gdf, parts) = Self::build_impl(cell, obs, aux, s, cfg, true)?;
+        let parts = parts.ok_or_else(|| {
+            FerricError::General("RsGdf::build_with_fit_parts: parts not retained".into())
+        })?;
+        Ok((gdf, parts))
+    }
+
+    fn build_impl(
+        cell: &Cell,
+        obs: &PreparedBasis,
+        aux: &PreparedBasis,
+        s: &Array2<f64>,
+        cfg: &RsGdfConfig,
+        retain_parts: bool,
+    ) -> Result<(Self, Option<PeriodicFitParts>), FerricError> {
         cfg.validate()?;
         let n = obs.nbasis();
         let n2 = n * n;
@@ -967,6 +1032,15 @@ impl RsGdf {
             &format!("RsGdf aux metric + eigenvectors + scaled copy (naux = {naux})"),
             bytes_of((naux as u64).saturating_mul(naux as u64), 8 * 4),
         )?;
+        if retain_parts {
+            ledger.reserve(
+                &format!("RsGdf retained fit parts: J2 + J3 copies (naux = {naux}, nao = {n})"),
+                bytes_of(
+                    (naux as u64).saturating_mul((naux as u64).saturating_add(n2 as u64)),
+                    8,
+                ),
+            )?;
+        }
 
         // Pair images: every pair whose charge bound times the largest aux
         // charge and potential factor reaches `precision` (pair_ft's radius
@@ -1017,6 +1091,16 @@ impl RsGdf {
         let asym_j2 = max_abs_asym(&j2);
         let j2 = 0.5 * (&j2 + &j2.t());
         let asym_j3 = symmetrize_pairs(&mut j3, n);
+        let parts = if retain_parts {
+            Some(PeriodicFitParts {
+                j2: j2.clone(),
+                j3: j3.clone(),
+                aux_centers: aux_function_centers(aux),
+                lindep: cfg.lindep,
+            })
+        } else {
+            None
+        };
         let (b, evals, metric_inv_sqrt) = fit_with_metric(&j2, j3, cfg.lindep)?;
         let nkeep = b.nrows();
 
@@ -1043,14 +1127,22 @@ impl RsGdf {
             budget_bytes: ledger.budget(),
             resident_bytes,
         };
-        Ok(Self {
-            nao: n,
-            b,
-            s: s.clone(),
-            madelung,
-            stats,
-            metric_inv_sqrt,
-        })
+        Ok((
+            Self {
+                nao: n,
+                b,
+                s: s.clone(),
+                madelung,
+                stats,
+                metric_inv_sqrt,
+            },
+            parts,
+        ))
+    }
+
+    /// The lattice overlap `S` B was built with (the SCF's `S`).
+    pub fn overlap(&self) -> &Array2<f64> {
+        &self.s
     }
 
     /// The same B with another exchange-divergence treatment (B does not
