@@ -154,7 +154,13 @@ fn analytic_old_pairing(
 /// Central finite differences of ferric's OWN SCF energy, every component,
 /// each displaced SCF seeded from the reference density (keeps every
 /// displacement in the same electronic basin).
-fn fd(kind: Kind, mol: &Molecule, bs: &BasisSet, cfg: &RhfConfig, seed: &Array2<f64>) -> Array2<f64> {
+fn fd(
+    kind: Kind,
+    mol: &Molecule,
+    bs: &BasisSet,
+    cfg: &RhfConfig,
+    seed: &Array2<f64>,
+) -> Array2<f64> {
     let natoms = mol.atoms.len();
     let cfg = RhfConfig {
         init_guess_density: Some(seed.clone()),
@@ -192,7 +198,15 @@ fn max_abs_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
 
 /// Absolute check (no grid): analytic of the fitted energy == FD of it, and
 /// the old pairing is visibly off.
-fn check_absolute(label: &str, kind: Kind, xyz: &str, mult: usize, basis: &str, cfg: RhfConfig, neg_min: f64) {
+fn check_absolute(
+    label: &str,
+    kind: Kind,
+    xyz: &str,
+    mult: usize,
+    basis: &str,
+    cfg: RhfConfig,
+    neg_min: f64,
+) {
     let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
     let bs = basis::bundled(basis).unwrap();
     let res = solve(kind, &mol, &bs, &cfg);
@@ -205,14 +219,29 @@ fn check_absolute(label: &str, kind: Kind, xyz: &str, mult: usize, basis: &str, 
     eprintln!("{label}: max|analytic − FD| = {err:.3e} (tol {TOL:.0e}); OLD pairing {err_old:.3e} (must exceed {neg_min:.1e})");
     // Fails if the fix is reverted: the analytic gradient is then the
     // exact-J/K derivative and misses FD by `err_old` (~1e-5).
-    assert!(err < TOL, "{label}: DF gradient misses FD of the DF energy by {err:.3e}");
+    assert!(
+        err < TOL,
+        "{label}: DF gradient misses FD of the DF energy by {err:.3e}"
+    );
     // Negative control: the test can see the defect it guards.
-    assert!(err_old > neg_min, "{label}: old pairing only {err_old:.3e} off — the test cannot see the defect");
+    assert!(
+        err_old > neg_min,
+        "{label}: old pairing only {err_old:.3e} off — the test cannot see the defect"
+    );
 }
 
 /// Differential check for KS: the fitted run's residual must equal the
 /// residual of the same functional with exact J/K (grid residual cancels).
-fn check_differential(label: &str, kind: Kind, xc: &str, xyz: &str, mult: usize, basis: &str, fitted: RhfConfig, neg_min: f64) {
+fn check_differential(
+    label: &str,
+    kind: Kind,
+    xc: &str,
+    xyz: &str,
+    mult: usize,
+    basis: &str,
+    fitted: RhfConfig,
+    neg_min: f64,
+) {
     let mol = Molecule::parse_xyz(xyz, 0, mult).unwrap();
     let bs = basis::bundled(basis).unwrap();
     let exact_cfg = RhfConfig {
@@ -222,14 +251,21 @@ fn check_differential(label: &str, kind: Kind, xc: &str, xyz: &str, mult: usize,
     };
 
     let res_f = solve(kind, &mol, &bs, &fitted);
-    assert!(res_f.df_jk.is_some(), "{label}: fitted run recorded no DF route");
+    assert!(
+        res_f.df_jk.is_some(),
+        "{label}: fitted run recorded no DF route"
+    );
     let fd_f = fd(kind, &mol, &bs, &fitted, res_f.density_total());
     let r_f = &analytic(kind, Some(xc), &mol, &bs, &res_f) - &fd_f;
     let r_old = &analytic_old_pairing(kind, Some(xc), &mol, &bs, &res_f) - &fd_f;
 
     let res_x = solve(kind, &mol, &bs, &exact_cfg);
-    assert!(res_x.df_jk.is_none(), "{label}: exact run must record no DF route");
-    let r_x = &analytic(kind, Some(xc), &mol, &bs, &res_x) - &fd(kind, &mol, &bs, &exact_cfg, res_x.density_total());
+    assert!(
+        res_x.df_jk.is_none(),
+        "{label}: exact run must record no DF route"
+    );
+    let r_x = &analytic(kind, Some(xc), &mol, &bs, &res_x)
+        - &fd(kind, &mol, &bs, &exact_cfg, res_x.density_total());
 
     let grid = r_x.iter().fold(0.0f64, |m, v| m.max(v.abs()));
     let err = max_abs_diff(&r_f, &r_x);
@@ -241,8 +277,14 @@ fn check_differential(label: &str, kind: Kind, xc: &str, xyz: &str, mult: usize,
     );
     // Fails if the fix is reverted: the fitted residual then carries the RI
     // defect (6-7e-6 here) on top of the grid residual.
-    assert!(err < TOL, "{label}: DF gradient residual differs from the exact-J/K residual by {err:.3e}");
-    assert!(err_old > neg_min, "{label}: old pairing only {err_old:.3e} off — the test cannot see the defect");
+    assert!(
+        err < TOL,
+        "{label}: DF gradient residual differs from the exact-J/K residual by {err:.3e}"
+    );
+    assert!(
+        err_old > neg_min,
+        "{label}: old pairing only {err_old:.3e} off — the test cannot see the defect"
+    );
 }
 
 fn df(j: bool, k: bool) -> RhfConfig {
@@ -258,24 +300,56 @@ fn df(j: bool, k: bool) -> RhfConfig {
 #[test]
 fn hf_ri_j_gradient_matches_fd_of_ri_energy() {
     // RI-J only; K from the exact four-centre builder. Predicted defect 1.19e-5.
-    check_absolute("HF RI-J water/cc-pVDZ", Kind::Rhf, WATER, 1, "cc-pvdz", df(true, false), 5e-6);
+    check_absolute(
+        "HF RI-J water/cc-pVDZ",
+        Kind::Rhf,
+        WATER,
+        1,
+        "cc-pvdz",
+        df(true, false),
+        5e-6,
+    );
 }
 
 #[test]
 fn hf_ri_jk_gradient_matches_fd_of_ri_energy() {
     // Predicted defect 2.22e-5.
-    check_absolute("HF RI-JK water/cc-pVDZ", Kind::Rhf, WATER, 1, "cc-pvdz", df(true, true), 5e-6);
+    check_absolute(
+        "HF RI-JK water/cc-pVDZ",
+        Kind::Rhf,
+        WATER,
+        1,
+        "cc-pvdz",
+        df(true, true),
+        5e-6,
+    );
 }
 
 #[test]
 fn uhf_ri_jk_gradient_matches_fd_of_ri_energy() {
     // Open shell: per-spin exchange channels. Predicted defect 1.59e-5.
-    check_absolute("UHF RI-JK OH/cc-pVDZ", Kind::Uhf, OH, 2, "cc-pvdz", df(true, true), 5e-6);
+    check_absolute(
+        "UHF RI-JK OH/cc-pVDZ",
+        Kind::Uhf,
+        OH,
+        2,
+        "cc-pvdz",
+        df(true, true),
+        5e-6,
+    );
 }
 
 #[test]
 fn rohf_ri_jk_gradient_matches_fd_of_ri_energy() {
-    check_absolute("ROHF RI-JK OH/cc-pVDZ", Kind::Rohf, OH, 2, "cc-pvdz", df(true, true), 5e-6);
+    check_absolute(
+        "ROHF RI-JK HO2/cc-pVDZ",
+        Kind::Rohf,
+        HO2,
+        2,
+        "cc-pvdz",
+        df(true, true),
+        5e-6,
+    );
 }
 
 #[test]
@@ -285,7 +359,16 @@ fn pbe_default_ri_j_gradient_matches_fd() {
         xc: Some("PBE".into()),
         ..base_cfg()
     };
-    check_differential("PBE (default RI-J) water/6-31G", Kind::Rhf, "PBE", WATER, 1, "6-31g", cfg, 3e-6);
+    check_differential(
+        "PBE (default RI-J) water/6-31G",
+        Kind::Rhf,
+        "PBE",
+        WATER,
+        1,
+        "6-31g",
+        cfg,
+        3e-6,
+    );
 }
 
 #[test]
@@ -295,7 +378,16 @@ fn b3lyp_default_ri_jk_gradient_matches_fd() {
         xc: Some("B3LYP".into()),
         ..base_cfg()
     };
-    check_differential("B3LYP (default RI-JK) water/6-31G", Kind::Rhf, "B3LYP", WATER, 1, "6-31g", cfg, 3e-6);
+    check_differential(
+        "B3LYP (default RI-JK) water/6-31G",
+        Kind::Rhf,
+        "B3LYP",
+        WATER,
+        1,
+        "6-31g",
+        cfg,
+        3e-6,
+    );
 }
 
 #[test]
@@ -306,7 +398,16 @@ fn uks_b3lyp_ri_jk_gradient_matches_fd() {
         ..df(true, true)
     };
     // Predicted defect 1.65e-5 (PySCF prototype, same geometry and basis).
-    check_differential("UKS B3LYP RI-JK HO2/6-31G", Kind::Uhf, "B3LYP", HO2, 2, "6-31g", cfg, 5e-6);
+    check_differential(
+        "UKS B3LYP RI-JK HO2/6-31G",
+        Kind::Uhf,
+        "B3LYP",
+        HO2,
+        2,
+        "6-31g",
+        cfg,
+        5e-6,
+    );
 }
 
 /// Range-separated hybrid: SR (erfc) and LR (erf) exchange are ALWAYS fitted,
@@ -327,7 +428,10 @@ fn wb97x_rsh_gradient_matches_fd() {
         ..base_cfg()
     };
     let res = solve(Kind::Rhf, &mol, &bs, &cfg);
-    let route = res.df_jk.clone().expect("RSH SCF must record its fitted exchange");
+    let route = res
+        .df_jk
+        .clone()
+        .expect("RSH SCF must record its fitted exchange");
     assert!(route.rsh_k.is_some() && route.j_aux.is_some(), "{route:?}");
     let g = analytic(Kind::Rhf, Some(xc), &mol, &bs, &res);
     let g_old = analytic_old_pairing(Kind::Rhf, Some(xc), &mol, &bs, &res);
@@ -381,24 +485,54 @@ fn check_vs_pyscf(label: &str, kind: Kind, xyz: &str, mult: usize, cfg: RhfConfi
         }
     }
     eprintln!("{label}: |ΔE| vs PySCF {de:.2e}; max|Δg| {err:.3e}; OLD pairing {err_old:.3e}");
-    assert!(de < 1e-7, "{label}: DF energy differs from PySCF by {de:.2e} (aux basis / fit mismatch)");
-    assert!(err < 1e-6, "{label}: gradient differs from PySCF DF gradient by {err:.3e}");
-    assert!(err_old > 5e-6, "{label}: old pairing only {err_old:.3e} from PySCF");
+    assert!(
+        de < 1e-7,
+        "{label}: DF energy differs from PySCF by {de:.2e} (aux basis / fit mismatch)"
+    );
+    assert!(
+        err < 1e-6,
+        "{label}: gradient differs from PySCF DF gradient by {err:.3e}"
+    );
+    assert!(
+        err_old > 5e-6,
+        "{label}: old pairing only {err_old:.3e} from PySCF"
+    );
 }
 
 #[test]
 fn hf_ri_j_gradient_matches_pyscf_only_dfj() {
-    check_vs_pyscf("HF RI-J", Kind::Rhf, WATER, 1, df(true, false), "h2o_cc-pvdz_hf_rij_dfgrad.json");
+    check_vs_pyscf(
+        "HF RI-J",
+        Kind::Rhf,
+        WATER,
+        1,
+        df(true, false),
+        "h2o_cc-pvdz_hf_rij_dfgrad.json",
+    );
 }
 
 #[test]
 fn hf_ri_jk_gradient_matches_pyscf_df() {
-    check_vs_pyscf("HF RI-JK", Kind::Rhf, WATER, 1, df(true, true), "h2o_cc-pvdz_hf_rijk_dfgrad.json");
+    check_vs_pyscf(
+        "HF RI-JK",
+        Kind::Rhf,
+        WATER,
+        1,
+        df(true, true),
+        "h2o_cc-pvdz_hf_rijk_dfgrad.json",
+    );
 }
 
 #[test]
 fn uhf_ri_jk_gradient_matches_pyscf_df() {
-    check_vs_pyscf("UHF RI-JK", Kind::Uhf, OH, 2, df(true, true), "oh_cc-pvdz_uhf_rijk_dfgrad.json");
+    check_vs_pyscf(
+        "UHF RI-JK",
+        Kind::Uhf,
+        OH,
+        2,
+        df(true, true),
+        "oh_cc-pvdz_uhf_rijk_dfgrad.json",
+    );
 }
 
 // ---------------------------------------------------- routing + regression --
@@ -413,19 +547,51 @@ fn scf_records_the_df_route_it_used() {
     let mol = Molecule::parse_xyz("2\nH2\nH 0 0 0\nH 0 0 0.74\n", 0, 1).unwrap();
     let oh = Molecule::parse_xyz(OH, 0, 2).unwrap();
     let bs = basis::bundled("sto-3g").unwrap();
-    let rhf = |cfg: RhfConfig| solve(Kind::Rhf, &mol, &bs, &RhfConfig { density_conv: 1e-7, ..cfg });
-    let uhf = |cfg: RhfConfig| solve(Kind::Uhf, &oh, &bs, &RhfConfig { density_conv: 1e-7, ..cfg });
+    let rhf = |cfg: RhfConfig| {
+        solve(
+            Kind::Rhf,
+            &mol,
+            &bs,
+            &RhfConfig {
+                density_conv: 1e-7,
+                ..cfg
+            },
+        )
+    };
+    let uhf = |cfg: RhfConfig| {
+        solve(
+            Kind::Uhf,
+            &oh,
+            &bs,
+            &RhfConfig {
+                density_conv: 1e-7,
+                ..cfg
+            },
+        )
+    };
     let j = Some(JKFIT.to_string());
 
     // Plain HF: nothing fitted, no route (exact gradient path).
     assert!(rhf(RhfConfig::default()).df_jk.is_none());
     // PBE: RI-J auto-default; the requested-but-unconsumed DF-K is NOT recorded.
-    let r = rhf(RhfConfig { xc: Some("PBE".into()), df_k_aux: j.clone(), ..Default::default() })
-        .df_jk
-        .unwrap();
-    assert_eq!((r.j_aux.clone(), r.k_aux.clone(), r.rsh_k.clone()), (j.clone(), None, None));
+    let r = rhf(RhfConfig {
+        xc: Some("PBE".into()),
+        df_k_aux: j.clone(),
+        ..Default::default()
+    })
+    .df_jk
+    .unwrap();
+    assert_eq!(
+        (r.j_aux.clone(), r.k_aux.clone(), r.rsh_k.clone()),
+        (j.clone(), None, None)
+    );
     // B3LYP: both auto-default.
-    let r = rhf(RhfConfig { xc: Some("B3LYP".into()), ..Default::default() }).df_jk.unwrap();
+    let r = rhf(RhfConfig {
+        xc: Some("B3LYP".into()),
+        ..Default::default()
+    })
+    .df_jk
+    .unwrap();
     assert_eq!((r.j_aux.clone(), r.k_aux.clone()), (j.clone(), j.clone()));
     // B3LYP with the explicit opt-out: exact J and K, no route at all.
     assert!(rhf(RhfConfig {
@@ -437,20 +603,40 @@ fn scf_records_the_df_route_it_used() {
     .df_jk
     .is_none());
     // RSH: RI-J + the SR/LR pair at the functional's ω; no ω = 0 DF-K.
-    let r = rhf(RhfConfig { xc: Some("HYB_GGA_XC_WB97X".into()), ..Default::default() }).df_jk.unwrap();
+    let r = rhf(RhfConfig {
+        xc: Some("HYB_GGA_XC_WB97X".into()),
+        ..Default::default()
+    })
+    .df_jk
+    .unwrap();
     assert_eq!(r.k_aux, None);
     let (aux, omega) = r.rsh_k.clone().unwrap();
     assert_eq!(aux, JKFIT);
     assert!((omega - 0.3).abs() < 1e-12, "wB97X ω = {omega}");
     // Open shell: no auto-default, so PBE UKS without names is all exact...
-    assert!(uhf(RhfConfig { xc: Some("PBE".into()), ..Default::default() }).df_jk.is_none());
+    assert!(uhf(RhfConfig {
+        xc: Some("PBE".into()),
+        ..Default::default()
+    })
+    .df_jk
+    .is_none());
     // ...and named aux bases are recorded as used.
-    let r = uhf(RhfConfig { xc: Some("B3LYP".into()), df_j_aux: j.clone(), df_k_aux: j.clone(), ..Default::default() })
-        .df_jk
-        .unwrap();
+    let r = uhf(RhfConfig {
+        xc: Some("B3LYP".into()),
+        df_j_aux: j.clone(),
+        df_k_aux: j.clone(),
+        ..Default::default()
+    })
+    .df_jk
+    .unwrap();
     assert_eq!((r.j_aux.clone(), r.k_aux.clone()), (j.clone(), j.clone()));
     // Open-shell RSH: J exact (the UHF path fits no J when ω > 0), exchange fitted.
-    let r = uhf(RhfConfig { xc: Some("HYB_GGA_XC_WB97X".into()), ..Default::default() }).df_jk.unwrap();
+    let r = uhf(RhfConfig {
+        xc: Some("HYB_GGA_XC_WB97X".into()),
+        ..Default::default()
+    })
+    .df_jk
+    .unwrap();
     assert_eq!(r.j_aux, None);
     assert!(r.rsh_k.is_some());
 }
@@ -476,7 +662,11 @@ fn exact_jk_gradient_is_bit_identical_to_the_unrouted_path() {
         },
     ] {
         let res = solve(Kind::Rhf, &mol, &bs, &cfg);
-        assert!(res.df_jk.is_none(), "exact SCF recorded a DF route: {:?}", res.df_jk);
+        assert!(
+            res.df_jk.is_none(),
+            "exact SCF recorded a DF route: {:?}",
+            res.df_jk
+        );
         let g = rhf_gradient(&mol, &prep, op, &bounds, &res, None).unwrap();
         let nocc = (mol.nelec() / 2) as usize;
         let w = ferric_scf::gradient::build_energy_weighted_density(&res, nocc);
@@ -485,11 +675,57 @@ fn exact_jk_gradient_is_bit_identical_to_the_unrouted_path() {
         // rhf_gradient's own tail (all-electron: a zero array, same += as in rhf_gradient).
         g_ref += &ferric_scf::gradient::ecp_gradient(&mol, &prep, res.density_r()).unwrap();
         assert!(
-            g.iter().zip(g_ref.iter()).all(|(a, b)| a.to_bits() == b.to_bits()),
+            g.iter()
+                .zip(g_ref.iter())
+                .all(|(a, b)| a.to_bits() == b.to_bits()),
             "exact-JK rhf_gradient is not bit-identical to the unrouted composition"
         );
         // And the explicit exact variant agrees bitwise too.
         let g_x = rhf_gradient_exact_jk(&mol, &prep, op, &bounds, &res, None).unwrap();
-        assert!(g.iter().zip(g_x.iter()).all(|(a, b)| a.to_bits() == b.to_bits()));
+        assert!(g
+            .iter()
+            .zip(g_x.iter())
+            .all(|(a, b)| a.to_bits() == b.to_bits()));
     }
+}
+
+/// Exact-J/K ROHF on a radical whose open shell couples to the closed shells.
+/// Guards the energy-weighted density (`rohf_energy_weighted_density`): the
+/// former `C diag(2ε_c, ε_o) Cᵀ` from the Roothaan effective Fock missed FD by
+/// 1.2e-2 (STO-3G) / 2.5e-2 (cc-pVDZ) Ha/Bohr here, equal and opposite on the
+/// two oxygens along the O–O bond. OH cannot see it (its π SOMO is decoupled
+/// from the σ closed shells by symmetry).
+fn exact_open_shell_vs_fd(label: &str, kind: Kind, xc: Option<&str>, basis: &str, tol: f64) {
+    let mol = Molecule::parse_xyz(HO2, 0, 2).unwrap();
+    let bs = basis::bundled(basis).unwrap();
+    let cfg = RhfConfig {
+        xc: xc.map(Into::into),
+        ..df(false, false)
+    };
+    let res = solve(kind, &mol, &bs, &cfg);
+    assert!(res.df_jk.is_none(), "{label}: expected exact J/K");
+    let g = analytic(kind, xc, &mol, &bs, &res);
+    let g_fd = fd(kind, &mol, &bs, &cfg, res.density_total());
+    let err = max_abs_diff(&g, &g_fd);
+    eprintln!("{label}: max|analytic − FD| = {err:.3e} (tol {tol:.0e})");
+    assert!(
+        err < tol,
+        "{label}: gradient misses FD of its own energy by {err:.3e}"
+    );
+}
+
+#[test]
+fn rohf_exact_gradient_matches_fd_on_a_coupled_radical() {
+    exact_open_shell_vs_fd("ROHF exact HO2/STO-3G", Kind::Rohf, None, "sto-3g", TOL);
+}
+
+#[test]
+fn roks_exact_gradient_matches_fd_on_a_coupled_radical() {
+    exact_open_shell_vs_fd(
+        "ROKS B3LYP exact HO2/STO-3G",
+        Kind::Rohf,
+        Some("B3LYP"),
+        "sto-3g",
+        2e-6,
+    );
 }

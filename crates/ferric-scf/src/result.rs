@@ -101,6 +101,14 @@ pub struct ScfResult {
     /// the consumption gates), and a re-derivation that drifts from the
     /// solver pairs an RI energy with an exact-integral gradient.
     pub df_jk: Option<DfJkRoute>,
+    /// ROHF/ROKS only: the converged SPIN Fock matrices `(F_α, F_β)` (AO
+    /// basis, including XC and solvent terms). `fock_alpha` holds the Roothaan
+    /// EFFECTIVE Fock for ROHF, whose diagonal blocks mix `F_α` and `F_β` by a
+    /// canonicalization choice and whose closed–open block is `F_β`; the
+    /// gradient's energy-weighted density `W = D_α F_α D_α + D_α F_β D_β`
+    /// needs the spin Focks themselves. `None` for RHF/UHF and hand-built
+    /// results.
+    pub rohf_spin_focks: Option<(Array2<f64>, Array2<f64>)>,
 }
 
 /// The density-fitted two-electron builders one SCF actually used.

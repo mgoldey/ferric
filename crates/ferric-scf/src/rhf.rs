@@ -1164,6 +1164,7 @@ pub fn solve_rhf(
             // stationary. `None` = not checked, as documented on the field.
             stability: None,
             df_jk: df_jk_route.clone(),
+            rohf_spin_focks: None,
         }
     };
 
@@ -1619,6 +1620,7 @@ pub fn solve_rhf(
                     induced_dipoles: last_induced_dipoles,
                     stability,
                     df_jk: df_jk_route.clone(),
+                    rohf_spin_focks: None,
                 });
             }
         }

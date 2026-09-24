@@ -421,6 +421,9 @@ pub fn solve_rohf_best_effort(
     // Last effective Fock, retained so the non-converged exit can report a
     // well-formed ScfResult (see solve_rohf_best_effort's tail).
     let mut f_eff_last = Array2::<f64>::zeros((n, n));
+    // The spin Focks behind `f_eff_last`, kept for the gradient's
+    // energy-weighted density (see `ScfResult::rohf_spin_focks`).
+    let mut spin_focks_last: Option<(Array2<f64>, Array2<f64>)> = None;
     // Previous iteration's total density, for the ΔP convergence signal (shared
     // with solve_rhf via rhf::scf_converged). None on iter 1 → dp = INFINITY, so
     // the gate can't fire before a real density change exists.
@@ -681,6 +684,7 @@ pub fn solve_rohf_best_effort(
         // Build Roothaan effective Fock (Guest-Saunders, via PySCF projector form).
         let f_eff = roothaan_fock(&f_a, &f_b, &d_a, &d_b, &s);
         f_eff_last = f_eff.clone();
+        spin_focks_last = Some((f_a.clone(), f_b.clone()));
 
         // DIIS error: the proper ROHF orbital-rotation gradient (PySCF
         // `get_grad`). In MO basis the gradient has only three nonzero
@@ -854,6 +858,7 @@ pub fn solve_rohf_best_effort(
                 induced_dipoles: last_induced_dipoles,
                 stability: None,
                 df_jk: df_jk_route.clone(),
+                rohf_spin_focks: spin_focks_last.clone(),
             });
         }
         mon.note_energy(energy);
@@ -1049,6 +1054,7 @@ pub fn solve_rohf_best_effort(
         induced_dipoles: last_induced_dipoles,
         stability: None,
         df_jk: df_jk_route,
+        rohf_spin_focks: spin_focks_last,
     })
 }
 

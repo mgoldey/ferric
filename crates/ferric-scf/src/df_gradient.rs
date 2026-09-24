@@ -38,7 +38,7 @@
 //! ## The truncated exchange metric
 //!
 //! `DfK` builds `V^{-1/2}` from `eigh(V)` and DROPS modes with eigenvalue
-//! below [`crate::df_k::DFK_LINDEP_THRESH`] (1e-10); the long-range erf metric
+//! below `crate::df_k::DFK_LINDEP_THRESH` (1e-10); the long-range erf metric
 //! with a JK-fit basis always has such modes (17 of 113 for water /
 //! def2-universal-jkfit at ω = 0.3). The energy is then `E(M)` with the
 //! spectral function `M = f(V)`, `f(λ) = 1/λ` above the cut, `0` below. Its
@@ -59,13 +59,13 @@
 //! ENERGY is smooth to ~1e-10 Ha, because those modes carry almost no energy
 //! (the whole [1e-10, 1e-7) band holds 1.0e-9 Ha there). The gradient
 //! therefore applies the Daleckii–Krein formula with a noise floor
-//! [`DFK_GRADIENT_NOISE_FLOOR`] (1e-7): modes the energy kept below that floor
+//! `DFK_GRADIENT_NOISE_FLOOR` (1e-7): modes the energy kept below that floor
 //! are differentiated as if dropped. The residual is exactly the derivative
 //! of the energy held in that band. MEASURED (prototype, central FD of the
 //! 1e-10-truncated energy): floor 1e-10 → 5.0e-6 / 4.1e-6, floor 1e-7 →
 //! 1.2e-8 / 2.7e-9 Ha/Bohr (6-31G / cc-pVDZ). The band energy is computed on
 //! every call and a warning is printed when it exceeds
-//! [`NOISE_BAND_ENERGY_WARN`], so a system where the band is NOT negligible
+//! `NOISE_BAND_ENERGY_WARN`, so a system where the band is NOT negligible
 //! cannot pass silently. The Coulomb and erfc metrics of these systems have
 //! no eigenvalue below ~1e-5, so for them the floor changes nothing and the
 //! formula is the exact `−M ∂V M` one.
@@ -75,7 +75,7 @@
 //! ## Memory
 //!
 //! The raw `(P|μν)` tensor is streamed through a budget-bounded
-//! [`ThreeIndexSource`] (in core, or spilled / recomputed). Resident on top of
+//! `ThreeIndexSource` (in core, or spilled / recomputed). Resident on top of
 //! it: the `(naux, m_s²)` exchange intermediates per channel (`m_s` = density
 //! rank, i.e. the occupied count), a handful of `(naux, naux)` metric
 //! matrices, and per rayon worker one `(n_P, nao, nao)` weight slab for the
@@ -107,7 +107,7 @@ use ndarray_linalg::{Eigh, UPLO};
 use rayon::prelude::*;
 
 /// Metric eigenvalue below which the exchange GRADIENT treats a mode as
-/// dropped, even when the energy (cut at [`DFK_LINDEP_THRESH`]) kept it. See
+/// dropped, even when the energy (cut at `DFK_LINDEP_THRESH`) kept it. See
 /// the module doc: the modes in `[1e-10, 1e-7)` are noise-dominated in the
 /// derivative but hold ~1e-9 Ha of energy.
 pub const DFK_GRADIENT_NOISE_FLOOR: f64 = 1e-7;
@@ -428,7 +428,8 @@ pub fn df_jk_gradient(
                                     }
                                     // 9 blocks: [dP_xyz, d1_xyz, d2_xyz].
                                     for coord in 0..3 {
-                                        local[(atom_p, coord)] += gval * deriv[coord * block_sz + idx];
+                                        local[(atom_p, coord)] +=
+                                            gval * deriv[coord * block_sz + idx];
                                         local[(atom_1, coord)] +=
                                             gval * deriv[(3 + coord) * block_sz + idx];
                                         local[(atom_2, coord)] +=
@@ -481,7 +482,8 @@ pub fn df_jk_gradient(
                             // 6 blocks: [dP_xyz, dQ_xyz].
                             for coord in 0..3 {
                                 local[(atom_p, coord)] += gval * deriv[coord * block_sz + idx];
-                                local[(atom_q, coord)] += gval * deriv[(3 + coord) * block_sz + idx];
+                                local[(atom_q, coord)] +=
+                                    gval * deriv[(3 + coord) * block_sz + idx];
                             }
                         }
                     }
@@ -519,7 +521,10 @@ pub struct ExchangeMix {
 impl ExchangeMix {
     /// Hartree-Fock: full ω = 0 exchange.
     pub fn hartree_fock() -> Self {
-        ExchangeMix { c_k: 1.0, rsh: None }
+        ExchangeMix {
+            c_k: 1.0,
+            rsh: None,
+        }
     }
     /// From a functional's exchange mix (same convention as the SCF's F assembly).
     pub fn from_k_mix(k_mix: &ferric_dft::xc_trait::KMix) -> Self {
@@ -576,8 +581,8 @@ pub fn routed_two_electron_gradient(
     mix: ExchangeMix,
 ) -> Result<Array2<f64>, FerricError> {
     use crate::ks_gradient::{
-        twoelectron_gradient_scaled_k, twoelectron_gradient_uhf_scaled_k,
-        twoelectron_k_gradient, twoelectron_k_gradient_uhf,
+        twoelectron_gradient_scaled_k, twoelectron_gradient_uhf_scaled_k, twoelectron_k_gradient,
+        twoelectron_k_gradient_uhf,
     };
     let natoms = mol.atoms.len();
     let d_total: Array2<f64> = match dens {
@@ -701,7 +706,9 @@ mod tests {
         let d = 2.0 * c.dot(&c.t());
         let x = density_factor(&d).unwrap();
         assert_eq!(x.ncols(), 2, "rank-2 density must give a rank-2 factor");
-        let err = (&x.dot(&x.t()) - &d).iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let err = (&x.dot(&x.t()) - &d)
+            .iter()
+            .fold(0.0f64, |m, v| m.max(v.abs()));
         assert!(err < 1e-13, "X Xᵀ − D = {err:.3e}");
     }
 
@@ -720,6 +727,9 @@ mod tests {
         // Kept/dropped: (1/λk − 0)/(λk − λl).
         let v = truncated_inverse_divided_difference(2.0, true, 0.5, false);
         assert!((v - 1.0 / (2.0 * 1.5)).abs() < 1e-15);
-        assert_eq!(truncated_inverse_divided_difference(1.0, false, 2.0, false), 0.0);
+        assert_eq!(
+            truncated_inverse_divided_difference(1.0, false, 2.0, false),
+            0.0
+        );
     }
 }

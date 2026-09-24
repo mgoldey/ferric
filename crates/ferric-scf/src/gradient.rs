@@ -386,30 +386,65 @@ pub fn rhf_gradient(
     }
     let nocc = (mol.nelec() / 2) as usize;
     let w = build_energy_weighted_density(result, nocc);
-    let mut grad = match active_df_route(result) {
-        // Density-fitted J and/or K: differentiate the fitted energy the SCF
-        // actually reported (see `crate::df_gradient`).
-        Some(route) => {
-            let mut g = oneelectron_gradient(mol, prep, result.density_r(), &w, ext)?;
-            g += &crate::df_gradient::routed_two_electron_gradient(
-                mol,
-                prep,
-                op,
-                bounds,
-                crate::df_gradient::TwoElectronDensity::Closed(result.density_r()),
-                route,
-                crate::df_gradient::ExchangeMix::hartree_fock(),
-            )?;
-            g
-        }
-        // All-exact SCF: the original code path, unchanged.
-        None => hf_gradient_with_density(mol, prep, op, bounds, result.density_r(), &w, ext)?,
-    };
+    let mut grad = closed_shell_hf_gradient(mol, prep, op, bounds, result, &w, ext)?;
     // ECP term: dE/dR gains Σ_μν D_μν dV_ECP_μν/dR whenever the basis carries
     // ECPs. `ecp_gradient` is a no-op (zero work) otherwise, so the
     // all-electron path is unchanged.
     grad += &ecp_gradient(mol, prep, result.density_r())?;
     Ok(grad)
+}
+
+/// Closed-shell one- plus two-electron HF gradient of `result`'s energy: the
+/// fitted route when the SCF density-fitted J/K, else the original
+/// four-centre `hf_gradient_with_density` path, unchanged.
+fn closed_shell_hf_gradient(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    result: &ScfResult,
+    w: &Array2<f64>,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    let dens = crate::df_gradient::TwoElectronDensity::Closed(result.density_r());
+    match fitted_hf_gradient(mol, prep, op, bounds, result, dens, w, ext)? {
+        Some(g) => Ok(g),
+        None => hf_gradient_with_density(mol, prep, op, bounds, result.density_r(), w, ext),
+    }
+}
+
+/// One-electron plus FITTED two-electron Hartree–Fock gradient when the SCF
+/// density-fitted J and/or K (see [`crate::df_gradient`]); `None` for an
+/// all-exact SCF, whose caller keeps its original four-centre path.
+#[allow(clippy::too_many_arguments)]
+fn fitted_hf_gradient(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    result: &ScfResult,
+    dens: crate::df_gradient::TwoElectronDensity<'_>,
+    w: &Array2<f64>,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+) -> Result<Option<Array2<f64>>, FerricError> {
+    let Some(route) = active_df_route(result) else {
+        return Ok(None);
+    };
+    let d_total = match &dens {
+        crate::df_gradient::TwoElectronDensity::Closed(d) => (*d).clone(),
+        crate::df_gradient::TwoElectronDensity::Open { alpha, beta } => *alpha + *beta,
+    };
+    let mut g = oneelectron_gradient(mol, prep, &d_total, w, ext)?;
+    g += &crate::df_gradient::routed_two_electron_gradient(
+        mol,
+        prep,
+        op,
+        bounds,
+        dens,
+        route,
+        crate::df_gradient::ExchangeMix::hartree_fock(),
+    )?;
+    Ok(Some(g))
 }
 
 /// The density-fitting route of `result`, if any two-electron term of its
@@ -1325,33 +1360,19 @@ pub fn uhf_gradient(
             .as_ref()
             .expect("uhf_gradient: missing density_beta");
     let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
-    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
-    match active_df_route(result) {
-        Some(route) => {
-            grad += &crate::df_gradient::routed_two_electron_gradient(
-                mol,
-                prep,
-                op,
-                bounds,
-                crate::df_gradient::TwoElectronDensity::Open {
-                    alpha: &result.density_alpha,
-                    beta: result.density_beta.as_ref().unwrap(),
-                },
-                route,
-                crate::df_gradient::ExchangeMix::hartree_fock(),
-            )?
-        }
-        None => {
-            grad += &twoelectron_gradient_uhf(
-                prep,
-                op,
-                bounds,
-                &d_total,
-                &result.density_alpha,
-                result.density_beta.as_ref().unwrap(),
-            )?
-        }
+    let d_beta = result
+        .density_beta
+        .as_ref()
+        .expect("uhf_gradient: missing density_beta");
+    let dens = crate::df_gradient::TwoElectronDensity::Open {
+        alpha: &result.density_alpha,
+        beta: d_beta,
+    };
+    if let Some(g) = fitted_hf_gradient(mol, prep, op, bounds, result, dens, &w, ext)? {
+        return Ok(g);
     }
+    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
+    grad += &twoelectron_gradient_uhf(prep, op, bounds, &d_total, &result.density_alpha, d_beta)?;
     Ok(grad)
 }
 
@@ -1362,9 +1383,7 @@ pub fn uhf_gradient(
 ///   D_β = Σ_i^closed C_i C_i^T,   D_α = D_β + Σ_j^open C_j C_j^T,
 ///   D_total = D_α + D_β = 2 D_β + D_open.
 ///
-/// Energy-weighted density:
-///   W = 2 Σ_i^closed ε_i C_i C_i^T + Σ_j^open ε_j C_j C_j^T
-/// where ε are the eigenvalues of the Roothaan effective Fock.
+/// Energy-weighted density: see `rohf_energy_weighted_density`.
 ///
 /// The two-electron piece uses the UHF Γ form with D_α/D_β as above.
 pub fn rohf_gradient(
@@ -1384,11 +1403,6 @@ pub fn rohf_gradient(
         matches!(result.spin, Spin::RestrictedOpen),
         "rohf_gradient: ScfResult.spin must be RestrictedOpen"
     );
-    let nelec = mol.nelec() as i64;
-    let two_s = mol.multiplicity as i64 - 1;
-    let nocc_open = two_s as usize;
-    let nocc_double = ((nelec - two_s) / 2) as usize;
-
     let d_alpha = &result.density_alpha;
     let d_beta = result
         .density_beta
@@ -1396,43 +1410,52 @@ pub fn rohf_gradient(
         .expect("rohf_gradient: missing density_beta");
     let d_total = d_alpha + d_beta;
 
-    // Energy-weighted density: closed orbitals weighted 2 ε_i, open weighted ε_j.
-    let n = result.mos_alpha.nrows();
-    let c = &result.mos_alpha;
-    let eps = &result.eps_alpha;
-    let mut w = Array2::<f64>::zeros((n, n));
-    for mu in 0..n {
-        for nu in 0..n {
-            let mut sum = 0.0;
-            for i in 0..nocc_double {
-                sum += 2.0 * eps[i] * c[(mu, i)] * c[(nu, i)];
-            }
-            for j in nocc_double..nocc_double + nocc_open {
-                sum += eps[j] * c[(mu, j)] * c[(nu, j)];
-            }
-            w[(mu, nu)] = sum;
-        }
-    }
+    let w = rohf_energy_weighted_density(result)?;
 
-    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
-    match active_df_route(result) {
-        Some(route) => {
-            grad += &crate::df_gradient::routed_two_electron_gradient(
-                mol,
-                prep,
-                op,
-                bounds,
-                crate::df_gradient::TwoElectronDensity::Open {
-                    alpha: d_alpha,
-                    beta: d_beta,
-                },
-                route,
-                crate::df_gradient::ExchangeMix::hartree_fock(),
-            )?
-        }
-        None => grad += &twoelectron_gradient_uhf(prep, op, bounds, &d_total, d_alpha, d_beta)?,
+    let dens = crate::df_gradient::TwoElectronDensity::Open {
+        alpha: d_alpha,
+        beta: d_beta,
+    };
+    if let Some(g) = fitted_hf_gradient(mol, prep, op, bounds, result, dens, &w, ext)? {
+        return Ok(g);
     }
+    let mut grad = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
+    grad += &twoelectron_gradient_uhf(prep, op, bounds, &d_total, d_alpha, d_beta)?;
     Ok(grad)
+}
+
+/// ROHF/ROKS energy-weighted density `W = sym(D_α F_α D_α + D_α F_β D_β)`.
+///
+/// The orthonormality Lagrangian of a single ROHF orbital set is
+/// `ε_ij = Σ_σ n_jσ (F_σ)_ij` over occupied `i, j`, so in the AO basis
+/// `W = Σ_σ P_occ F_σ D_σ` with `P_occ = D_α` (every occupied orbital holds an
+/// α electron). It is symmetric at convergence because ROHF stationarity makes
+/// the closed–open block of `F_β` vanish; the symmetrization only removes
+/// residual convergence noise.
+///
+/// This is NOT `C diag(2ε_closed, ε_open) Cᵀ` from the Roothaan effective
+/// Fock: that form drops the closed–open coupling `(F_α)_co` and weights the
+/// open shell by the canonicalization's average of `F_α` and `F_β`. The two
+/// agree only when symmetry decouples the open shell from the closed shells
+/// (e.g. the π SOMO of a linear radical such as OH), which is why an OH-only
+/// test could not see the difference; HO2 misses finite differences by
+/// ~1e-2 Ha/Bohr with it.
+pub(crate) fn rohf_energy_weighted_density(result: &ScfResult) -> Result<Array2<f64>, FerricError> {
+    let (f_a, f_b) = result.rohf_spin_focks.as_ref().ok_or_else(|| {
+        FerricError::General(
+            "ROHF/ROKS gradient needs the converged spin Fock matrices \
+             (ScfResult::rohf_spin_focks); this result carries only the \
+             effective Fock. Produce it with solve_rohf."
+                .into(),
+        )
+    })?;
+    let d_a = &result.density_alpha;
+    let d_b = result
+        .density_beta
+        .as_ref()
+        .ok_or_else(|| FerricError::General("ROHF gradient: missing density_beta".into()))?;
+    let w = d_a.dot(f_a).dot(d_a) + d_a.dot(f_b).dot(d_b);
+    Ok(0.5 * (&w + &w.t()))
 }
 
 /// UHF four-center two-electron gradient: Σ Γ_uhf_μνλσ d(μν|λσ)/dR.

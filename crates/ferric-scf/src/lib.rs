@@ -111,11 +111,11 @@ pub mod rohf;
 pub use rohf::{solve_rohf, RohfConfig};
 /// Davidson eigensolver adapted for local SCF orbital optimization.
 pub mod davidson_local;
-/// Analytical nuclear gradients for RHF, UHF, and ROHF.
-pub mod gradient;
 /// Nuclear gradients of density-fitted (RI-J / RI-K / RSH) two-electron
 /// energies, routed by the builders the SCF recorded in `ScfResult::df_jk`.
 pub mod df_gradient;
+/// Analytical nuclear gradients for RHF, UHF, and ROHF.
+pub mod gradient;
 /// Maximum Overlap Method for tracking orbital character across SCF iterations.
 pub mod mom;
 /// Augmented Hessian (AH) ROHF solver for difficult convergence cases.
