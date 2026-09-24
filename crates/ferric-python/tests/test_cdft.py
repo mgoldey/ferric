@@ -570,3 +570,17 @@ def test_coupling_refuses_a_ghost_centre_that_keeps_the_overlap():
     assert b.converged
     with pytest.raises(ValueError, match="different Hamiltonians"):
         ferric.cdft_coupling(a, b)
+
+
+def test_symbol_spelling_does_not_split_one_hamiltonian():
+    """Molecule parsing accepts "He" and "he" as the same element. The key is
+    built from physical fields (Z, ghost, ECP, coordinates, charge,
+    multiplicity), so spelling must not make cdft_coupling refuse. Fails if the
+    key uses the molecule's Debug form, which carries the symbol as typed."""
+    a, _ = _he2_plus_states(3.0)
+    lower = ferric.Molecule.from_xyz_string("2\nHe2+\nhe 0 0 0\nhe 0 0 3.0\n", 1, 2)
+    kw = dict(
+        lambda_tol=1e-2, max_outer=40, level_shift=0.2, grid_radial=99, grid_angular=302
+    )
+    b = ferric.run_cdft(lower, _svp(), [ferric.CdftConstraint([1], 1.0)], **kw)
+    ferric.cdft_coupling(a, b)  # must not raise
