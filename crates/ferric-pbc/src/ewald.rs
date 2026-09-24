@@ -140,6 +140,11 @@ pub fn ewald_point_charges(
         let l_is_zero = l == [0.0; 3];
         for (i, (zi, ri)) in charges.iter().zip(positions).enumerate() {
             for (j, (zj, rj)) in charges.iter().zip(positions).enumerate() {
+                // A zero charge (ghost atom, effective_z = 0) contributes
+                // nothing, and may legitimately sit on a real nucleus.
+                if *zi == 0.0 || *zj == 0.0 {
+                    continue;
+                }
                 let dv = [
                     ri[0] - rj[0] - l[0],
                     ri[1] - rj[1] - l[1],

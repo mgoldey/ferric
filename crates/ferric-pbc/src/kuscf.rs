@@ -59,7 +59,7 @@ use crate::hcore::PeriodicHcoreConfig;
 use crate::kdense_aft::{KDenseAftConfig, KDenseAftEri};
 use crate::kpts::KPointMesh;
 use crate::kscf::{
-    aufbau, complex_canonical_orthogonalizer, diagonalize_all, herm_t, occupied_projector, KDiis,
+    aufbau, diagonalize_all, herm_t, occupied_projector, orthogonalizers_with_report, KDiis,
     KJkKind, KPointInjection, KPointJk, KScfConfig,
 };
 use crate::lattice::Cell;
@@ -138,6 +138,9 @@ pub struct KUScfResult {
     pub max_error: f64,
     /// Cartesian k-points (Bohr⁻¹), mesh order.
     pub kpts: Vec<[f64; 3]>,
+    /// Per-k canonical-cut diagnostics of the shared (both-spin)
+    /// orthogonalisers ([`crate::lindep`]).
+    pub lindep: crate::lindep::LindepReport,
 }
 
 /// Per-spin gap report of `r` against the occupied-level shift `shift`
@@ -503,15 +506,7 @@ fn run_kuhf(
 
     // Orthogonalisers once per k (shared by both spins); partners by
     // conjugation.
-    let mut x: Vec<Array2<Complex64>> = vec![Array2::zeros((0, 0)); nk];
-    for k in mesh.tr_representatives() {
-        let xk = complex_canonical_orthogonalizer(&inj.s[k], cfg.lindep)?;
-        let p = mesh.minus(k);
-        if p != k {
-            x[p] = xk.mapv(|z| z.conj());
-        }
-        x[k] = xk;
-    }
+    let (x, lindep_report) = orthogonalizers_with_report(mesh, &inj.s, cfg.lindep, "solve_kuhf")?;
     let nmax = na.max(nb);
     for (k, xk) in x.iter().enumerate() {
         if xk.ncols() < nmax {
@@ -609,7 +604,20 @@ fn run_kuhf(
             .fold(0.0_f64, |a, z| a.max(z.norm()));
         if it > 0 && (energy - e_old).abs() < cfg.energy_conv && emax < cfg.grad_conv {
             return finish(
-                mesh, &inj, &x, na, nb, energy, fa, fb, da, db, true, it, emax,
+                mesh,
+                &inj,
+                &x,
+                &lindep_report,
+                na,
+                nb,
+                energy,
+                fa,
+                fb,
+                da,
+                db,
+                true,
+                it,
+                emax,
             );
         }
         e_old = energy;
@@ -642,6 +650,7 @@ fn run_kuhf(
         mesh,
         &inj,
         &x,
+        &lindep_report,
         na,
         nb,
         energy,
@@ -660,6 +669,7 @@ fn finish(
     mesh: &KPointMesh,
     inj: &KPointInjection<'_>,
     x: &[Array2<Complex64>],
+    lindep: &crate::lindep::LindepReport,
     na: usize,
     nb: usize,
     energy: f64,
@@ -724,6 +734,7 @@ fn finish(
         iterations,
         max_error,
         kpts: mesh.kpts().to_vec(),
+        lindep: lindep.clone(),
     })
 }
 

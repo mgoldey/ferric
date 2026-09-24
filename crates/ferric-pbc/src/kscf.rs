@@ -45,6 +45,7 @@ use crate::hcore::PeriodicHcoreConfig;
 use crate::kdense_aft::{KDenseAftConfig, KDenseAftEri};
 use crate::kpts::KPointMesh;
 use crate::lattice::Cell;
+use crate::lindep::{overlap_abs_row_sum, KLindep, LindepReport};
 use crate::rsgdf::kpoint::{KRsGdf, KRsGdfConfig};
 use ferric_core::FerricError;
 use ferric_integrals::basis_bridge::PreparedBasis;
@@ -139,6 +140,9 @@ pub struct KScfResult {
     pub max_error: f64,
     /// Cartesian k-points (Bohr⁻¹), mesh order.
     pub kpts: Vec<[f64; 3]>,
+    /// Per-k canonical-cut diagnostics (kept counts, smallest / largest
+    /// dropped eigenvalue of `S(k)`, noise-floor flag; [`crate::lindep`]).
+    pub lindep: LindepReport,
 }
 
 /// Which J/K builder [`solve_krhf`] uses.
@@ -272,6 +276,17 @@ pub fn complex_canonical_orthogonalizer(
     s: &Array2<Complex64>,
     lindep: f64,
 ) -> Result<Array2<Complex64>, FerricError> {
+    Ok(complex_canonical_orthogonalizer_with_stats(s, lindep)?.0)
+}
+
+/// [`complex_canonical_orthogonalizer`] plus the cut's statistics from the
+/// SAME eigendecomposition (kept count, smallest eigenvalue, largest dropped
+/// eigenvalue). The cut is on the RAW eigenvalues of the unnormalised `S`
+/// (FINDINGS Iteration 15: a normalised cut breaks k-mesh ≡ supercell).
+pub fn complex_canonical_orthogonalizer_with_stats(
+    s: &Array2<Complex64>,
+    lindep: f64,
+) -> Result<(Array2<Complex64>, KLindep), FerricError> {
     let (w, u) =
         eigh_herm(&hermitize(s)).map_err(|e| FerricError::Lapack(format!("S(k) diag: {e}")))?;
     let kept: Vec<usize> = (0..w.len()).filter(|&i| w[i] >= lindep).collect();
@@ -290,7 +305,35 @@ pub fn complex_canonical_orthogonalizer(
             x[(r, c)] = u[(r, i)] * f;
         }
     }
-    Ok(x)
+    Ok((x, KLindep::from_eigenvalues(&w.to_vec(), lindep)))
+}
+
+/// Per-k orthogonalisers for the time-reversal representatives (partners by
+/// conjugation: `S(−k) = S(k)*`, same spectrum) and the [`LindepReport`];
+/// prints the noise-floor warning (as `who`) when flagged.
+pub(crate) fn orthogonalizers_with_report(
+    mesh: &KPointMesh,
+    s: &[Array2<Complex64>],
+    lindep: f64,
+    who: &str,
+) -> Result<(Vec<Array2<Complex64>>, LindepReport), FerricError> {
+    let nk = mesh.nk();
+    let mut x: Vec<Array2<Complex64>> = vec![Array2::zeros((0, 0)); nk];
+    let mut stats: Vec<KLindep> = vec![KLindep::default(); nk];
+    for k in mesh.tr_representatives() {
+        let (xk, st) = complex_canonical_orthogonalizer_with_stats(&s[k], lindep)?;
+        let p = mesh.minus(k);
+        if p != k {
+            x[p] = xk.mapv(|z| z.conj());
+            stats[p] = st.clone();
+        }
+        x[k] = xk;
+        stats[k] = st;
+    }
+    let abs_sum = s.iter().map(overlap_abs_row_sum).fold(0.0_f64, f64::max);
+    let report = LindepReport::from_parts(lindep, stats, abs_sum);
+    report.warn_if_near_noise_floor(who);
+    Ok((x, report))
 }
 
 /// DIIS over stacked k blocks with real weights.
@@ -543,16 +586,8 @@ pub fn solve_krhf_injected(
     let nocc = (nelec / 2) as usize;
 
     // Orthogonalisers: representatives explicitly, partners by conjugation
-    // (S(−k) = S(k)* exactly).
-    let mut x: Vec<Array2<Complex64>> = vec![Array2::zeros((0, 0)); nk];
-    for k in mesh.tr_representatives() {
-        let xk = complex_canonical_orthogonalizer(&inj.s[k], cfg.lindep)?;
-        let p = mesh.minus(k);
-        if p != k {
-            x[p] = xk.mapv(|z| z.conj());
-        }
-        x[k] = xk;
-    }
+    // (S(−k) = S(k)* exactly); per-k kept counts may differ (lindep module).
+    let (x, lindep_report) = orthogonalizers_with_report(mesh, &inj.s, cfg.lindep, "solve_krhf")?;
     for (k, xk) in x.iter().enumerate() {
         if xk.ncols() < nocc {
             return Err(FerricError::General(format!(
@@ -612,7 +647,20 @@ pub fn solve_krhf_injected(
             let (eps, cs) = diagonalize_all(mesh, &f, &x)?;
             let (occ, homo, lumo) = aufbau(&eps, nocc * nk, cfg.min_gap)?;
             return Ok(finish(
-                mesh, energy, inj.vnn, eps, cs, dm, f, occ, homo, lumo, true, it, emax,
+                mesh,
+                energy,
+                inj.vnn,
+                eps,
+                cs,
+                dm,
+                f,
+                occ,
+                homo,
+                lumo,
+                true,
+                it,
+                emax,
+                lindep_report.clone(),
             ));
         }
         e_old = energy;
@@ -646,6 +694,7 @@ pub fn solve_krhf_injected(
         false,
         cfg.max_iter,
         emax,
+        lindep_report,
     ))
 }
 
@@ -664,6 +713,7 @@ fn finish(
     converged: bool,
     iterations: usize,
     max_error: f64,
+    lindep: LindepReport,
 ) -> KScfResult {
     let nocc_per_k = occupations
         .iter()
@@ -684,6 +734,7 @@ fn finish(
         iterations,
         max_error,
         kpts: mesh.kpts().to_vec(),
+        lindep,
     }
 }
 
