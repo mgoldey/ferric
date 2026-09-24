@@ -42,6 +42,7 @@ Exit code: 0 = no regression, 1 = regression found, 2 = tool not installed
 """
 
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -178,6 +179,46 @@ def scan() -> dict:
         return results
 
 
+def _base_label(label: str) -> str:
+    return re.sub(r"#\d+$", "", label)
+
+
+def _sibling_groups(keys) -> dict:
+    """(parent path, base name) -> set of ordinal labels, at every key level."""
+    groups: dict = {}
+    for key in keys:
+        segs = key.split("::")
+        for i in range(1, len(segs)):
+            g = (tuple(segs[:i]), _base_label(segs[i]))
+            groups.setdefault(g, set()).add(segs[i])
+    return groups
+
+
+def reshaped_keys(current_keys, baseline_keys) -> set:
+    """Current keys whose ordinal-based identity is not trustworthy.
+
+    Same-named siblings (closures, repeated names) are told apart by source
+    order (`name`, `name#1`, ...). If a group gains or loses a member, every
+    later member's ordinal shifts, so matching by key would compare a function
+    with a DIFFERENT sibling's baseline. A key is reshaped when any of its
+    levels belongs to a sibling group whose size differs from the baseline's;
+    such keys are held to the new-function ceiling instead of a 1:1 match.
+    """
+    cur = _sibling_groups(current_keys)
+    base = _sibling_groups(baseline_keys)
+    out = set()
+    for key in current_keys:
+        segs = key.split("::")
+        for i in range(1, len(segs)):
+            g = (tuple(segs[:i]), _base_label(segs[i]))
+            n_cur, n_base = len(cur[g]), len(base.get(g, ()))
+            # 0<->1 is a plain new/removed function, not a reshape.
+            if n_cur != n_base and max(n_cur, n_base) > 1:
+                out.add(key)
+                break
+    return out
+
+
 def main():
     update = "--update-baseline" in sys.argv
     check_tool_available()
@@ -211,8 +252,9 @@ def main():
     regressions = []
     new_functions = []
 
+    reshaped = reshaped_keys(current, baseline)
     for qualified, cur in current.items():
-        if qualified in baseline:
+        if qualified in baseline and qualified not in reshaped:
             base = baseline[qualified]
             cc_delta = cur["cc"] - base["cc"]
             if cc_delta > CC_TOLERANCE:
@@ -251,8 +293,14 @@ def main():
         )
         return 1
 
+    note = (
+        f" ({len(reshaped)} in reshaped sibling groups held to the new-function ceiling)"
+        if reshaped
+        else ""
+    )
     print(
-        f"complexity_gate.py: PASS -- {len(current)} functions checked, no regressions vs baseline"
+        f"complexity_gate.py: PASS -- {len(current)} functions checked, "
+        f"no regressions vs baseline{note}"
     )
     return 0
 
