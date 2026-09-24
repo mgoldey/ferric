@@ -44,9 +44,16 @@ REQUIRED_FUNCTIONS = [
     "run_irc",
     "run_qmmm",
     "run_optimize_qmmm",
+    "run_rhf_gamma",
 ]
 
-REQUIRED_CLASSES = ["SaddleResult", "IrcResult", "IrcBranch", "FrequencyResult"]
+REQUIRED_CLASSES = [
+    "SaddleResult",
+    "IrcResult",
+    "IrcBranch",
+    "FrequencyResult",
+    "GammaRhfResult",
+]
 
 #: Bindings that take an MM field. These are the ones where a missing kwarg in
 #: the stub silently blocks the embedded catalyst workflow.
