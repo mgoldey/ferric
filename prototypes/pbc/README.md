@@ -96,7 +96,15 @@ OPENBLAS_NUM_THREADS=1 python -m pytest -q test_prototype.py   # ~35 s; PBC_SLOW
      until the supercell is large.
    - **The fix.** `run_lmp2_uniform.py` shows how removing it restores
      locality.
-9. **`test_prototype.py`**: the tests. Several exist to catch a specific,
+9. **`pbc_ump2.py`** (plus the `run_ump2_*.py` scripts): open-shell MP2 and
+   RPA.
+   - **The per-spin convention is measured, not assumed.** Both spins'
+     occupied levels get the same v_M. Two plausible wrong shifts (v_M/2 per
+     spin, or shifting alpha only) leave a 1/a error in the box limit.
+   - **Test systems must exercise every spin block.** The triplet's
+     same-spin block is identically zero, so a 5-H doublet with all three
+     blocks nonzero is used as well.
+10. **`test_prototype.py`**: the tests. Several exist to catch a specific,
    plausible bug (a sign flip, a missing Madelung term, the G = 0 term applied
    to only one side); the comments say which one.
 

@@ -1083,3 +1083,126 @@ Interpretation (provisional): the Derived bound is conservative on every measure
 by roughly 3 orders of magnitude, so the default threshold is safe but over-computes by an unknown factor.
 The ω=0.3885 row cannot certify the bound because its negative controls never fire there. Only toy cells
 (≤16 AOs) were measured, so no cost or size claim.
+
+## Iteration 7 (Python, Gamma UMP2/URPA) — 2026-09-24
+
+### Code
+- New `pbc_ump2.py`: `u_denominators` (per-spin shifted/unshifted), `u_bia` / `u_ovov` (alpha and beta B_ia from ONE
+  B^P_mn, shared metric), `gamma_ump2` (E_aa, E_bb, E_ab), `direct_ump2`, `gamma_urpa` (`quad`: spin-summed
+  Pi = sum_s 2 B_s diag(e/(w^2+e^2)) B_s^T, one ln det; `plasmon`: spin-orbital direct-RPA plasmon on the joint
+  alpha+beta ov space, no aux, no quadrature), `urpa_second_order_quad`, `u_r2_kernel_c3` (box-limit predictor:
+  harmonic kernel on the molecular UHF, relaxed; `second=True` also gives c6 = 1/2 E''(k) (4pi/3)^2),
+  `uniform_occ_shift_slope` (unshifted c1). Seams `SPIN_FACTOR`, `u_bia` for mutation tests.
+- Drivers: `run_ump2_anchor.py`, `run_ump2_formula.py` (molecular pins), `run_ump2_oracle.py` (PySCF pbc),
+  `run_ump2_box_limit.py {H|NH} a...` (predictions + denominator mutants).
+- `test_prototype.py`: +8 fast tests (~40 s), +1 slow (H2/6-31G + tri s+p PySCF pins, 173 s, passes). Whole default
+  suite 67 passed / 5 skipped, 190 s.
+
+### Measured: exactness anchors (run_ump2_anchor.py; mutants must be LARGE where the anchor can see them)
+| anchor | shifted | unshifted | mutants |
+|---|---|---|---|
+| (a) closed shell U - R, H2/STO-3G a=4, same C: UMP2 / URPA plasmon / URPA quad | 0 / 2e-16 / 2e-16 | 9e-19 / 2e-16 / 4e-17 | per-spin factor 4: -1.8e-2 / -2.5e-2 |
+| (a) same, tri one-s (dense + trivial-aux B-quad); UHF's own orbitals | <= 2.4e-16; 3.7e-12..1.0e-11 | same | factor 4 -5.3e-2 / -7.9e-2; ss 1/2 dropped +1.2e-2; ab x1/2 +6.2e-3 |
+| (b) trivial-aux B - dense, tri one-s TRIPLET (3,1; ab only): UMP2 / URPA (own B-SCF) | 9.6e-15 / -1.1e-13 (-2.1e-13) | 9.3e-15 / -2.1e-13 (-3.4e-13) | alpha C for beta B: UMP2 +9.7e-4, URPA +2.2e-4; factor 4 -2.7e-2 |
+| (b) same, penta one-s DOUBLET (3,2; aa, bb, ab all nonzero) | 6.1e-15 / 1.1e-14 (1.3e-14) | 1.2e-14 / 1.8e-14 (2.5e-14) | alpha-for-beta -6.3e-4 / -1.2e-3; factor 4 -5.5e-2; exchange dropped -1.3e-2; ss 1/2 dropped -1.2e-5 |
+| (c) -(1/2pi) int tr Pi^2/2 - direct UMP2 (tri / penta) | -1.2e-13 / 1.2e-14 | -2.5e-13 / 2.4e-14 | factor 4: -3.4e-2 / -7.4e-2 |
+Penta needs RS-GDF `prec=1e-15`: at 1e-13 the SR truncation leaves max|dI| 3.5e-10 -> dUMP2 1e-11. The triplet's
+aa block is identically 0 (one alpha virtual), so it cannot see a same-spin 1/2 error: penta was added for that.
+Molecular formula pins (run_ump2_formula.py; NH triplet, OH doublet, STO-3G and 6-31G, cart): UMP2 - pyscf.mp.UMP2
+<= 5.6e-17 (ss and os separately); URPA quad (joint-ov eigen-factor) - plasmon <= 1.1e-13; tr Pi^2 - direct UMP2
+<= 7.6e-17; our quadrature (n=40) on PySCF's own DF tensors - pyscf.gw.urpa <= 2.7e-13.
+Source mutations (sed on pbc_ump2.py, all caught by the new fast tests): beta occupied unshifted (3 fail), same-spin
+1/2 -> 1 (4), ab x1/2 (4), plasmon tr A with K/2 (6).
+
+### Measured: PySCF oracle (run_ump2_oracle.py; pbc.scf.UHF + AFTDF mesh 61^3; PySCF started from our D)
+| system | conv. | ours UMP2 (pure-AFT) | pbc.mp.UMP2 - ours | pbc UCCSD MP2 - ours shifted | URPA ours | PySCF AFTDF ov + our plasmon - ours |
+|---|---|---|---|---|---|---|
+| H2/6-31G a=4 triplet (2,0) | unshifted | -8.878036761406e-04 | +2.3e-14 | | -3.225957844666e-02 | -9.2e-12 |
+| | shifted | -5.712132378835e-04 | +1.1e-14 | +1.1e-14 | -1.133223577926e-02 | +2.1e-13 |
+| penta one-s doublet (3,2) | unshifted | -2.167566950379e-02 | +1.2e-12 | | -3.602910454578e-02 | +1.1e-12 |
+| | shifted | -1.179101239478e-02 | +4.6e-13 | +5.3e-13 | -2.150209066750e-02 | +5.7e-13 |
+| tri 4H s+p triplet (3,1) | unshifted | -3.332802555901e-02 | -3.3e-10 | | -6.935114479735e-02 | -4.5e-10 |
+| | shifted | -2.278123418384e-02 | -1.4e-10 | -1.3e-10 | -4.834534729507e-02 | -1.1e-10 |
+- PySCF convention confirmed per spin: pbc.mp.UMP2 on exxdiv=None == our unshifted, on exxdiv='ewald' == our shifted;
+  pbc UCCSD's MP2 == shifted for both HFs. eps(ewald) - eps(None) = -v_M on EACH spin's occupied (<= 1.8e-10),
+  0 on virtuals (<= 3.1e-10); UMP2 from the ewald-SCF eigenvalues - shifted(None eps) <= 1.6e-10.
+- H2/STO-3G triplet would be a vacuous pin (no alpha virtual, no beta electron: UMP2 == URPA == 0), hence 6-31G.
+- tri s+p 1e-10 residual is SCF orbitals (pure-AFT vs AFTDF integrals; dE_HF 7.7e-13), not the formula.
+- URPA with a real aux: PySCF RSGDF (cart cc-pvdz-ri) + pyscf.gw.urpa arithmetic vs our RS-GDF B + quad (n=40):
+  9e-12 (H2), 1.5e-12 (penta), 4.5e-10 (tri, same SCF floor). Our RS-GDF fit error vs exact, cc-pvdz-ri:
+  +4.7e-5 / +1.8e-5 (H2 uns/sh, 1.5e-3 / 1.6e-3 rel), +1.9e-5 / +9.3e-6 (penta, 5e-4 / 4e-4), +9.5e-5 / +6.3e-5
+  (tri s+p, 1.4e-3 / 1.3e-3; the restricted dRPA tri s+p was 8.8e-4).
+- The H2 triplet URPA is 36x its UMP2 (unshifted): direct RPA has no same-spin exchange, so the aa ring self-
+  correlation that UMP2's exchange cancels survives. This is expected for dRPA, not a defect.
+
+### Box limit (run_ump2_box_limit.py; cubic box vs molecular UHF/UMP2/URPA, 6-31G cart; independent of PySCF pbc)
+Predictions were printed BEFORE the sweep, from molecular quantities only:
+- physics, shifted (eps_occ,s - v_M on BOTH spins): dE = c3/a^3 + O(a^-5), c3 from `u_r2_kernel_c3`.
+  NH triplet (5,3), R 1.95: c3 HF -24.164001, UMP2 0.761014, URPA 1.502486. H doublet: HF -6.005259, UMP2 0
+  (one electron, identically), URPA 0.046533.
+- physics, unshifted: dE_uns - dE_sh = c1/a, c1 = -(v_M a) dE/ds: NH UMP2 -0.107139, URPA -0.125099; H URPA -0.007086.
+- artifacts: per-spin chi0 factor 4, alpha C for beta B, missing images -> O(1) plateau; Madelung v_M/2 per spin or
+  alpha-only shift -> 1/a in 'shifted'. Exponent 3 with the predicted c3 vs 1 vs 0 separates them.
+
+| a | NH UMP2 sh dE*a^3 | NH URPA sh dE*a^3 | NH HF dE*a^3 | NH UMP2 uns dE | H URPA sh dE*a^3 | H URPA uns dE |
+|---|---|---|---|---|---|---|
+| 12 | 0.839248 | 1.598522 | -24.32721 | -1.007518e-2 | 0.046600 | -6.609e-4 |
+| 16 | 0.797184 | 1.550901 | -24.38095 | -7.425312e-3 | 0.046726 | -4.859e-4 |
+| 20 | 0.785177 | 1.534821 | -24.29949 | -5.845585e-3 | 0.046632 | -3.830e-4 |
+| 24 | 0.778237 | 1.525530 | -24.25655 | -4.812011e-3 | 0.046590 | -3.157e-4 |
+| 32 | 0.770999 | 1.515846 | -24.21502 | -3.548925e-3 | | |
+| 40 | 0.767684 | 1.511312 | -24.19626 | -2.808723e-3 | | |
+Wall 2-16 s per box. <S2> 2.012882 at a=40 (molecule 2.01288577). quad - plasmon <= 9e-14 at every a.
+- NH shifted local exponents 3.049, 3.032, 3.019 (UMP2) and 3.033, 3.022, 3.013 (URPA) from 16->20 to 32->40.
+  c3+c5 fit (32,40): UMP2 0.761792 (+1.0e-3 rel), URPA 1.503251 (+5.1e-4), HF -24.162919 (-4.5e-5). With c6 fixed at
+  the kernel's second-order value (below): +6.4e-4 / +2.4e-4 / -2.9e-6. Iterations 3/4 got 3-4e-4 for the same kind of fit.
+- Unshifted - shifted, c1/a + c2/a^2 fit (32,40): UMP2 -0.106870 (-2.5e-3 rel), URPA -0.124881 (-1.7e-3); with c3 term
+  (24,32,40): -9e-4 / -1.1e-3. H URPA -0.007067 (-2.7e-3). At a=40 unshifted is still -2.8e-3 Ha (5% of E_UMP2).
+- Denominator MUTANTS (same boxes, NH, dE*a at 24/32/40): v_M/2 per spin UMP2 -0.05447/-0.05452/-0.05446,
+  URPA -0.0622/-0.0628/-0.0630; alpha-only shift UMP2 -0.0438/-0.0439/-0.0439, URPA -0.0623/-0.0623/-0.0621.
+  These are flat 1/a plateaus, 30-60x the shifted residual at a=40. **The per-spin shift is therefore established
+  by the box limit, not assumed: only the same v_M on both spins' occupied levels gives a^-3.**
+- H atom: UMP2 == 0 exactly at every a. URPA dE*a^3 is NOT flat (unlike the minimal-basis UHF H of Iteration 6):
+  after subtracting c3/a^3 the residual scales as a^-6 (local exponent 3.0 of (dE a^3 - c3) at 16->20->24),
+  and the HF residual does the same. **This was found after the sweep and explained afterwards.** 6-31G lets the
+  orbital relax in the harmonic en field, which is second order in k ~ a^-3, so a^-6. The spherical density
+  still gives no c5. The kernel's second derivative, computed after the sweep but from the molecule only, gives
+  c6 = -32.871 (HF) and 0.79013 (URPA). The measured (dE - c3/a^3)a^6 is about -33 and 0.79. The residual after
+  both terms is 7e-7 of c3 (HF) and 4.5-5.7e-6 of c3 (URPA) at a=20-24; the a=10-12 rows are still image-overlap
+  dominated. NH has c6 too (UMP2 -27.2, URPA -37.0, HF -93.2), which is why fixing c6 tightens the NH fits above.
+
+### Interpretation (provisional, 2026-09-24)
+- Gamma UMP2/URPA from the periodic B is the molecular UMP2/URPA on the per-spin transforms of ONE shared B^P_mn.
+  It is exact to 1e-14 (UMP2) / 2e-13 (URPA) in the trivial-aux limit, and closed shell reduces to the restricted
+  code to 1e-16 (same C). The per-spin chi0 factor 2 (restricted 4 = 2 spins x 2) is pinned without PySCF by
+  tr Pi^2 == direct UMP2 and by the plasmon formula.
+- Denominators: shifted means the same v_M on every spin's occupied levels, which equals the exxdiv='ewald'
+  UHF eigenvalues. PySCF agrees (pbc.mp.UMP2 on an ewald UHF, pbc UCCSD always), and the box limit confirms it
+  independently: a^-3 with the predicted c3 to 1e-3 (UMP2) and 5e-4 (URPA), while v_M/2 or an alpha-only shift
+  leaves 1/a. Unshifted converges as 1/a with the predicted c1.
+- The harmonic-kernel predictor extends to second order (c6) and explained a residual that looked like an
+  artifact (the H atom "not flat"). The explanation came after the measurement, so it counts as an
+  interpretation, not a pre-registered prediction. It was checked quantitatively on two systems.
+- The RS-GDF fit error for URPA with cc-pvdz-ri is 4e-4 to 1.6e-3 relative, the same class as restricted dRPA.
+- NOT measured: ROHF reference, frozen core in a periodic run (code path exists, not exercised), spherical basis,
+  nao > 16 in the pure-AFT oracle, real solids (a^-3 is the isolated-molecule law), k-points, cost, spin-
+  contamination effects beyond <S2> 2.013.
+
+### For the Rust port (stage 8)
+- `gamma_ump2`: `u_ri_mp2` builds its own molecular metric and B. Add `u_ri_mp2_from_parts(inter_a, inter_b,
+  eps_a_full, eps_b_full)` that calls the existing `same_spin_pair_energy` (x2) and `opposite_spin_pair_energy`
+  (u_rimp2.rs:1270/1285). They already index eps by `first_occ`/`nocc_total`, so the periodic caller builds two
+  `RpaIntermediates` from the SAME periodic B^P_mn (naux = naux_KEPT, no further V^-1/2, as in stage 7) and passes
+  full eps arrays with the occupied part already lowered by v_M, or the ewald-UHF eigenvalues unchanged.
+  Refuse exxdiv=None eigenvalues unless the caller asks for unshifted explicitly.
+- `gamma_urpa`: **yes, ferric-rpa needs a U-variant of `run_pdep_rpa_from_parts`.** `run_u_pdep_rpa` (lib.rs:1257)
+  takes (mol, obs, dfbs, rhf) only to build `inter_a`/`inter_b` via `compute_rpa_intermediates_spin` (l.1341-1342)
+  and to slice eps (l.1347-1360). From l.1361 on it reads only `inter_a`, `inter_b`, the four eps slices and
+  `config`. Split it into `run_u_pdep_rpa_from_parts(inter_a, inter_b, eps_occ_a, eps_vir_a, eps_occ_b,
+  eps_vir_b, config)` with the same refusals as the R version (trunc_thresh 0, Dense chi0, Lanczos, shape and
+  e_ia > 0 checks), plus `inter_a.naux == inter_b.naux` as a hard error (it is only a debug_assert today).
+  run_u_pdep_rpa then becomes a thin wrapper, which is bit-identical by construction. Quadrature n >= 40 as in stage 7.
+- Tests to port: closed shell U == R (1e-12, both conventions); trivial-aux open-shell anchor on a DOUBLET with all
+  three blocks nonzero (penta, 1e-11; a triplet with one alpha virtual cannot see same-spin errors);
+  tr Pi^2 == direct UMP2 (1e-12); PySCF pins (UMP2_REF in test_prototype.py); NH box at a=32/40 vs c3 (3e-3) plus
+  the v_M/2 mutant plateau; H atom UMP2 == 0 and URPA == c3/a^3 + c6/a^6 at a=20 (2e-5).
