@@ -2361,12 +2361,27 @@ fn run_cdft(
     let effective_aux = |a: &Option<String>| a.clone().filter(|s| !s.is_empty());
     // The nuclear Hamiltonian too: a ghost centre (`@He`) keeps the basis and
     // AO overlap identical while removing a nucleus, so the overlap check alone
-    // cannot see it. `emol` is post-ECP (core counts included) and its Debug
-    // form carries every atom's Z, ghost flag, coordinates, charge and
-    // multiplicity exactly.
+    // cannot see it. Key the PHYSICAL fields only (Z, ghost, ECP core count,
+    // exact coordinates via to_bits, charge, multiplicity) from the post-ECP
+    // molecule -- not its Debug form, which also carries the symbol as typed
+    // ("He" vs "he") and would refuse two identical Hamiltonians.
+    let nuclei: Vec<(i32, bool, i32, [u64; 3])> = emol
+        .atoms
+        .iter()
+        .map(|a| {
+            (
+                a.z,
+                a.ghost,
+                a.n_core_ecp,
+                [a.x.to_bits(), a.y.to_bits(), a.zpos.to_bits()],
+            )
+        })
+        .collect();
     let hamiltonian_key = format!(
-        "molecule={:?} xc={:?} df_j_aux={:?} df_k_aux={:?} k_builder={:?} dft_grid={:?} external={:?}",
-        emol,
+        "nuclei={:?} charge={} mult={} xc={:?} df_j_aux={:?} df_k_aux={:?} k_builder={:?} dft_grid={:?} external={:?}",
+        nuclei,
+        emol.charge,
+        emol.multiplicity,
         config.xc,
         effective_aux(&config.df_j_aux),
         effective_aux(&config.df_k_aux),
