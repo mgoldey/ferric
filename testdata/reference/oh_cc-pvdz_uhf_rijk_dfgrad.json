@@ -1,0 +1,23 @@
+{
+  "label": "oh_cc-pvdz_uhf_rijk",
+  "basis": "cc-pvdz",
+  "auxbasis": "def2-universal-jkfit",
+  "method": "uhf",
+  "fit": "rijk",
+  "geometry_angstrom": "O 0 0 0; H 0.05 0.1 0.97",
+  "multiplicity": 2,
+  "e_total": -75.39362265722883,
+  "grad": [
+    [
+      -0.0009724138165896207,
+      -0.0019448276331766046,
+      -0.018864828041828208
+    ],
+    [
+      0.0009724138165891905,
+      0.0019448276331779923,
+      0.018864828041829984
+    ]
+  ],
+  "converged": true
+}
