@@ -73,6 +73,9 @@ use ferric_integrals::md3c1e::{cart_components, e_table, ferric_cart2sph, prim_n
 use ndarray::Array3;
 use num_complex::Complex64;
 
+/// Stage 3: residue-resolved (k-mesh) variant of the kernel below.
+pub mod residues;
+
 /// Default primitive-pair screening threshold for [`pair_ft`].
 pub const DEFAULT_PAIR_FT_THRESH: f64 = 1e-15;
 

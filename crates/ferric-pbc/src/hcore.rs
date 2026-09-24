@@ -88,6 +88,9 @@ use ndarray::{Array2, Array3};
 use num_complex::Complex64;
 use std::f64::consts::PI;
 
+/// Stage 3: the same lattice sums, phase-weighted per k-point.
+pub mod kpoint;
+
 /// Exponent (Bohr⁻²) of the unit-normalised s Gaussian standing in for a
 /// point nucleus (PySCF `gto.fakemol_for_charges` uses the same 1e16). See
 /// the module doc for the finite-nucleus error estimate.

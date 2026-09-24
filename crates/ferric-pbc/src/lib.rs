@@ -52,6 +52,13 @@
 //!   injected into `solve_uhf_injected` (`F_σ = h + J − a·K_inj(D_σ) + V_σ`),
 //!   staged ewald start for hybrids, occupation-aware gap check against
 //!   `a·v_M`. No periodic ROKS.
+//! * [`kpts`], [`kscf`], [`kdense_aft`] — Stage 3: k-point RHF
+//!   (`solve_krhf`): Monkhorst-Pack / Gamma-centred meshes with exact
+//!   Bloch phases and time-reversal pairing, per-k complex `S(k)`, `h(k)`
+//!   (`hcore::kpoint`), the residue-resolved pair FT
+//!   (`pair_ft::residues`), and a DENSE pure-AFT k-point J/K oracle (supercell
+//!   Madelung for `exxdiv = ewald`). Toy scale only: k-point RS-GDF (per-q
+//!   complex fitting) is not implemented.
 //!
 //! Units: Bohr and Hartree throughout; G vectors in Bohr⁻¹.
 //!
@@ -64,6 +71,9 @@ pub mod dft;
 pub mod drpa;
 pub mod ewald;
 pub mod hcore;
+pub mod kdense_aft;
+pub mod kpts;
+pub mod kscf;
 pub mod lattice;
 pub mod lmp2;
 pub mod mp2;
@@ -80,7 +90,14 @@ pub use dft::{
 };
 pub use drpa::{gamma_drpa, GammaDrpaConfig, GammaDrpaIntegrals, GammaDrpaResult};
 pub use ewald::{ewald_nuclear_repulsion, madelung_constant};
+pub use hcore::kpoint::{periodic_hcore_kpts, PeriodicHcoreK};
 pub use hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
+pub use kdense_aft::{KDenseAftConfig, KDenseAftEri, KDenseAftJk};
+pub use kpts::{KPointMesh, MeshCentring};
+pub use kscf::{
+    complex_canonical_orthogonalizer, solve_krhf, solve_krhf_injected, KPointInjection, KPointJk,
+    KRhfConfig, KScfConfig, KScfResult,
+};
 pub use lattice::Cell;
 pub use lmp2::{
     gamma_lmp2, gamma_lmp2_with_spaces, gamma_localized_spaces, mp2_closed_form_local, needle_axis,
