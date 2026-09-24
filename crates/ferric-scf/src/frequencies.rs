@@ -88,8 +88,8 @@ use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ndarray::{Array1, Array2};
 
-use crate::gradient::{rhf_gradient, rohf_gradient, uhf_gradient};
-use crate::ks_gradient::{ks_gradient_closed, ks_gradient_roks, ks_gradient_uks};
+use crate::gradient::rohf_gradient;
+use crate::ks_gradient::ks_gradient_roks;
 use crate::rhf::{solve_rhf, RhfConfig};
 use crate::rohf::solve_rohf;
 use crate::screening::SchwarzBounds;
@@ -649,25 +649,28 @@ fn energy_and_gradient(
     let ext = config.external_potential.as_ref();
 
     match reference {
+        // Each arm differentiates the exchange the SCF actually built: exactly
+        // the historical ks_gradient_* / *hf_gradient calls unless
+        // `k_builder = "cosx"` is in effect (then the COSX derivative, or a
+        // refusal before the SCF where no COSX gradient exists).
         FrequencyReference::Rhf => {
+            crate::gradient::preflight_cosx_restricted(config)?;
             let res = solve_rhf(ctx, mol, &prep, op, &bounds, config)?;
-            let grad = if let Some(xc_name) = config.xc.as_deref() {
-                ks_gradient_closed(mol, &prep, &bs, op, &bounds, xc_name, &res, ext)?
-            } else {
-                rhf_gradient(mol, &prep, op, &bounds, &res, ext)?
-            };
+            let grad = crate::gradient::restricted_scf_gradient(
+                mol, &prep, &bs, op, &bounds, config, &res,
+            )?;
             Ok((res.energy, grad))
         }
         FrequencyReference::Uhf => {
+            crate::gradient::preflight_cosx_unrestricted(config)?;
             let res = solve_uhf(ctx, mol, &prep, &bounds, config)?;
-            let grad = if let Some(xc_name) = config.xc.as_deref() {
-                ks_gradient_uks(mol, &prep, &bs, op, &bounds, xc_name, &res, ext)?
-            } else {
-                uhf_gradient(mol, &prep, op, &bounds, &res, ext)?
-            };
+            let grad = crate::gradient::unrestricted_scf_gradient(
+                mol, &prep, &bs, op, &bounds, config, &res,
+            )?;
             Ok((res.energy, grad))
         }
         FrequencyReference::Rohf => {
+            crate::gradient::refuse_cosx_restricted_open(config)?;
             let res = solve_rohf(ctx, mol, &prep, op, &bounds, config)?;
             let grad = if let Some(xc_name) = config.xc.as_deref() {
                 ks_gradient_roks(mol, &prep, &bs, op, &bounds, xc_name, &res, ext)?

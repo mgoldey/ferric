@@ -87,6 +87,40 @@ pub fn ks_gradient_closed(
     result: &ScfResult,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
+    ks_gradient_closed_with_exchange(mol, prep, bs, op, bounds, xc_name, result, ext, None)
+}
+
+/// [`ks_gradient_closed`] with the exact-exchange term taken from the builder
+/// the SCF actually used.
+///
+/// `cosx = None` is exactly [`ks_gradient_closed`] (same code path, so an
+/// exact-K gradient is unchanged bit for bit). `cosx = Some(cfg)` is for an SCF
+/// run with `k_builder = "cosx"`: the four-centre integrals then supply only
+/// Coulomb (`Γ_J = ½·D·D`) and the `−(c_x/4)·tr[D K(D)]` exchange term is
+/// differentiated on the COSX grid by
+/// [`crate::cosx_gradient::cosx_exchange_gradient`] — the derivative of the
+/// energy the SCF computed, not of exact exchange. Refused for range-separated
+/// functionals (COSX supports the Coulomb operator only) and for
+/// `overlap_fit = true` (the fitted energy's Z-vector term needs the XC Fock
+/// derivative; see `cosx_gradient`'s module doc).
+#[allow(clippy::too_many_arguments)]
+pub fn ks_gradient_closed_with_exchange(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    bs: &ferric_core::basis::BasisSet,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    xc_name: &str,
+    result: &ScfResult,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+    cosx: Option<&crate::cosx_k::CosxConfig>,
+) -> Result<Array2<f64>, FerricError> {
+    if let Some(cfg) = cosx {
+        crate::cosx_gradient::check_gradient_supported(cfg)?;
+        // Fitted COSX + KS needs the XC Fock derivative in its Z-vector term,
+        // which ferric does not have: refused, never an inexact gradient.
+        crate::cosx_gradient::check_fitted_ks_supported(cfg, Some(xc_name))?;
+    }
     if mol.atoms.iter().any(|a| a.ghost) {
         return Err(FerricError::General(
             "ks_gradient_closed is not implemented for molecules containing ghost atoms".into(),
@@ -144,6 +178,25 @@ pub fn ks_gradient_closed(
             route,
             crate::df_gradient::ExchangeMix::from_k_mix(&k_mix),
         )?;
+    } else if let Some(cfg) = cosx {
+        if k_mix.omega > 0.0 {
+            return Err(FerricError::General(format!(
+                "COSX exchange gradient: range-separated functional '{xc_name}' (omega = {}) has no \
+                 COSX form (k_builder = \"cosx\" supports the Coulomb operator only)",
+                k_mix.omega
+            )));
+        }
+        // J piece from the four-centre integrals (Γ_J = ½·D·D, c_K = 0) ...
+        grad += &twoelectron_gradient_scaled_k(prep, op, bounds, &d, 0.0)?;
+        // ... and E_x = −(c_x/4)·tr[D K_COSX(D)] differentiated on the COSX grid.
+        if k_mix.sr != 0.0 {
+            grad += &crate::cosx_gradient::cosx_exchange_gradient(
+                mol,
+                prep,
+                cfg,
+                &[(&d, -0.25 * k_mix.sr)],
+            )?;
+        }
     } else if k_mix.omega > 0.0 {
         // J piece (Coulomb, no K).
         grad += &twoelectron_gradient_scaled_k(prep, op, bounds, &d, 0.0)?;

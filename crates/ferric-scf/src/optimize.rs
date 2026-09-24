@@ -5,8 +5,8 @@
 //! either Cartesian coordinates (the default) or redundant internal
 //! coordinates ([`CoordSystem`](crate::optimize::CoordSystem)).
 
-use crate::gradient::{rhf_gradient, rohf_gradient, uhf_gradient};
-use crate::ks_gradient::{ks_gradient_closed, ks_gradient_roks, ks_gradient_uks};
+use crate::gradient::rohf_gradient;
+use crate::ks_gradient::ks_gradient_roks;
 use crate::rhf::{solve_rhf, RhfConfig};
 use crate::rohf::solve_rohf;
 use crate::screening::SchwarzBounds;
@@ -746,28 +746,15 @@ fn compute_energy_and_gradient(
     // sound (plain Schwarz is still a rigorous bound, just looser) and is
     // recorded as a known gap rather than silently assumed to be covered.
     let bounds = SchwarzBounds::compute_for_screening(op, &prep, rhf_config.screening)?;
+    // Fail before the SCF if the exchange will come from a COSX setup whose
+    // gradient is refused (pruned grid, or overlap fit with a KS functional) — not after it.
+    crate::gradient::preflight_cosx_restricted(rhf_config)?;
     let res = solve_rhf(ctx, mol, &prep, op, &bounds, rhf_config)?;
-    let grad = if let Some(xc_name) = rhf_config.xc.as_deref() {
-        ks_gradient_closed(
-            mol,
-            &prep,
-            &bs,
-            op,
-            &bounds,
-            xc_name,
-            &res,
-            rhf_config.external_potential.as_ref(),
-        )?
-    } else {
-        rhf_gradient(
-            mol,
-            &prep,
-            op,
-            &bounds,
-            &res,
-            rhf_config.external_potential.as_ref(),
-        )?
-    };
+    // Differentiates the exchange the SCF actually built: exactly
+    // `ks_gradient_closed` / `rhf_gradient` unless `k_builder = "cosx"` is in
+    // effect, in which case the exchange term is the COSX derivative.
+    let grad =
+        crate::gradient::restricted_scf_gradient(mol, &prep, &bs, op, &bounds, rhf_config, &res)?;
     Ok((res.energy, grad))
 }
 
@@ -798,13 +785,12 @@ fn compute_energy_and_gradient_uhf(
     // sound (plain Schwarz is still a rigorous bound, just looser) and is
     // recorded as a known gap rather than silently assumed to be covered.
     let bounds = SchwarzBounds::compute_for_screening(op, &prep, uhf_config.screening)?;
+    crate::gradient::preflight_cosx_unrestricted(uhf_config)?;
     let res = solve_uhf(ctx, mol, &prep, &bounds, uhf_config)?;
-    let ext = uhf_config.external_potential.as_ref();
-    let grad = if let Some(xc_name) = uhf_config.xc.as_deref() {
-        ks_gradient_uks(mol, &prep, &bs, op, &bounds, xc_name, &res, ext)?
-    } else {
-        uhf_gradient(mol, &prep, op, &bounds, &res, ext)?
-    };
+    // Exactly `ks_gradient_uks` / `uhf_gradient` unless the SCF's exchange
+    // came from COSX (UHF: COSX derivative; UKS: refused).
+    let grad =
+        crate::gradient::unrestricted_scf_gradient(mol, &prep, &bs, op, &bounds, uhf_config, &res)?;
     Ok((res.energy, grad))
 }
 
@@ -834,6 +820,9 @@ fn compute_energy_and_gradient_rohf(
     // sound (plain Schwarz is still a rigorous bound, just looser) and is
     // recorded as a known gap rather than silently assumed to be covered.
     let bounds = SchwarzBounds::compute_for_screening(op, &prep, rohf_config.screening)?;
+    // No COSX gradient for ROHF/ROKS: refuse BEFORE the SCF rather than pair a
+    // COSX energy with the exact-K gradient below.
+    crate::gradient::refuse_cosx_restricted_open(rohf_config)?;
     let res = solve_rohf(ctx, mol, &prep, op, &bounds, rohf_config)?;
     let ext = rohf_config.external_potential.as_ref();
     let grad = if let Some(xc_name) = rohf_config.xc.as_deref() {
