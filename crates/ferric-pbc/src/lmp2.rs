@@ -60,30 +60,64 @@
 //! At Gamma every occupied pair carries a distance-INDEPENDENT coupling:
 //! the G → 0 components of j's image lattice are a uniform field, so far pairs
 //! have `(ia|jb) → −(4π/Ω_cell) μ_ia μ_jb` (needle supercells; `(4π/3Ω) μ·μ`
-//! in cubic ones). The Eq-8 mask therefore keeps ALL N² pairs until
+//! in cubic ones). With the DEFAULT gate ([`GammaEpsGate::RawIntegral`]) the
+//! Eq-8 mask therefore keeps ALL N² pairs until
 //! `Ω_cell > 4π μ*²/eps` (measured onsets bracket the prediction for
 //! eps = 1e-2, 3e-3, 1e-3; below the onset no locality statement can be
-//! made in either direction). Consequences for a caller:
+//! made in either direction). Consequences for a caller of that gate:
 //! * at fixed `eps`, `pairs_kept == nocc²` for every supercell below the onset
 //!   (pinned by `eps_gate_keeps_every_pair_below_the_uniform_field_onset` in
-//!   `tests/pbc_lmp2.rs`, which a future fix must flip DELIBERATELY);
+//!   `tests/pbc_lmp2.rs`, which also asserts the flip under A-drop);
 //! * the truncation error past the onset is `a N + b` with `b = O(1)` the
 //!   uniform-field energy of the dropped pairs — report per-molecule errors
 //!   with their `a + b/N` split, never as a single number;
 //! * a minimum-image distance cutoff (`pair_cutoff_bohr`) IS local (partners
 //!   `2⌊R_c/a⌋+1` once the supercell exceeds `2 R_c`).
 //!
-//! The fix (FINDINGS recommendation 6: gate on `J − J_unif` and add the
-//! dropped pairs' uniform-field energy analytically, or a min-image energy
-//! screen, or k-points) is being prototyped separately and is NOT implemented.
-//! The hook is [`GammaEpsGate::gate_quantity`]: the Eq-8 test acts on its
-//! output while the retained integral values always come from the raw block.
+//! # The fix, OPT-IN: [`GammaEpsGate::UniformHeadRestored`] ("A-drop")
+//!
+//! FINDINGS "Iteration 5b": the uniform coupling is exactly MINUS the q = 0
+//! head that the G = 0-dropped kernel omits (a quadrature hole of weight 1/N,
+//! a finite-size artifact like Madelung, not correlation that survives the
+//! thermodynamic limit). A-drop restores it in the integrals,
+//! `J' = J + (4π/Ω_sc) μ μᵀ` — a positive rank-1 update, i.e. ONE extra RI
+//! column `B_extra,ia = √(4π/Ω_sc) μ_ia` ([`UniformHead`]) — and then gates
+//! AND solves on `J'`. Far pairs lose their coupling, so the eps gate becomes
+//! local (prototype: 3 partners/molecule at eps 1e-4 from N = 4 to 32, where
+//! the raw gate keeps all N²). There is nothing to add back.
+//! * `μ_ia` along the needle axis from the Resta matrix at `b` AND `2b`,
+//!   Richardson `(4 f(b) − f(2b))/3` (O(b⁴); single-b is O(b²) and ~20×
+//!   worse on the far-pair residual at 1x1x8).
+//! * **Its eps = 0 target is NOT canonical Gamma MP2.** It is `E_head`, the
+//!   closed-form MP2 on the head-augmented B with the unchanged (shifted)
+//!   Fock ([`mp2_closed_form_local`]), which differs from canonical Gamma MP2
+//!   by the uniform term (prototype +2.955e-3 Ha at 1x1x4, +2.890e-3 at
+//!   1x1x32; `E_head` is also the better TDL estimator). The result reports it
+//!   as `e_corr_target`; `e_corr_canonical` stays canonical Gamma MP2.
+//! * **Needle supercells only** ([`needle_axis`]): the head is `μ·W·μ` with
+//!   `W = ẑẑ` only when every small-|G| reciprocal vector lies along one axis.
+//!   Other shapes (cubic `W = I/3`, Iteration 3's c3) are REFUSED with an
+//!   error until their W is derived and measured.
+//! * The Fock-side heads (FINDINGS 5b item 3: `F_vv`, diagonal `F_oo`) are
+//!   NOT implemented; they are a finite-size correction on top of the LMP2.
+//! * To reproduce a canonical Gamma number instead, the recipe is a
+//!   pair-level screen plus the analytic add-back (FINDINGS 5b item 4) — also
+//!   NOT implemented here; never combine an element-level `J'` gate with a
+//!   pair-level add-back.
+//!
+//! **Default unchanged** ([`GammaLmp2Config::shifted`] keeps
+//! [`GammaEpsGate::RawIntegral`]): switching would silently move every eps = 0
+//! result off canonical Gamma MP2 and would make every non-needle supercell an
+//! error. The hook remains [`GammaEpsGate::gate_quantity`]; for A-drop the
+//! block it receives already contains the head (the gate and the solve read
+//! the same `J'`).
 //!
 //! # Not implemented / not measured
 //!
 //! Non-orthorhombic cells (Silvestrelli weights), k-points, open shell, cost
 //! or scaling claims (every block is assembled serially from a GLOBAL B; the
-//! domain fit reads a resident `J3`), finite-radius fit accuracy.
+//! domain fit reads a resident `J3`), finite-radius fit accuracy, the
+//! uniform head for non-needle supercells, the Fock-side heads.
 //!
 //! Units: Bohr and Hartree.
 
@@ -105,8 +139,9 @@ use ferric_mp2::lmp2_amplitude::{
 use ferric_mp2::ragged::{pair_block_from_g_cand_gated, solve_ragged, PairBlock, Ragged};
 use ferric_mp2::rimp2::active_occ;
 use ferric_scf::result::{ScfResult, Spin};
-use ndarray::{s, Array1, Array2, ArrayView1};
+use ndarray::{s, Array1, Array2, Array3, ArrayView1};
 use ndarray_linalg::{Eigh, Solve, UPLO};
+use num_complex::Complex64;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::f64::consts::PI;
@@ -121,25 +156,39 @@ pub enum PeriodicDistance {
     RawCartesianMutant,
 }
 
-/// What the Eq-8 amplitude-threshold test acts on (see the module doc,
-/// "KNOWN LIMITATION"). Only the raw integral is implemented.
+/// What the Eq-8 amplitude-threshold test acts on, and which integrals are
+/// solved with (module doc, "KNOWN LIMITATION" and "The fix, OPT-IN").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GammaEpsGate {
-    /// Keep `(i,a,j,b)` iff `|(ia|jb)| > eps` or `|(ib|ja)| > eps` — the
-    /// molecular rule. At Gamma this keeps every pair below the
+    /// DEFAULT. Keep `(i,a,j,b)` iff `|(ia|jb)| > eps` or `|(ib|ja)| > eps`
+    /// on the raw Gamma integrals — the molecular rule. eps = 0 target:
+    /// canonical Gamma MP2. At Gamma this keeps every pair below the
     /// uniform-field onset `Ω_cell ~ 4π μ*²/eps`.
     RawIntegral,
+    /// "A-drop" (FINDINGS Iteration 5b): restore the omitted q = 0 head,
+    /// `J' = J + (4π/Ω_sc) μ μᵀ` (one extra RI column, [`UniformHead`]), and
+    /// gate AND solve on `J'`. eps = 0 target: `E_head` =
+    /// [`mp2_closed_form_local`] on the head-augmented B, NOT canonical Gamma
+    /// MP2 (they differ by the uniform term). Needle supercells only
+    /// ([`needle_axis`]); anything else is refused.
+    UniformHeadRestored,
 }
 
 impl GammaEpsGate {
-    /// THE HOOK for FINDINGS recommendation 6: the `(nv, nv)` quantity whose
-    /// elements the Eq-8 test compares to `eps` for the ordered pair (i, j),
-    /// given the raw integral block `g[a,b] = (ia|jb)`. The retained
-    /// amplitudes' integrals always come from `g`; only the mask reads this.
-    /// A uniform-field-subtracted gate would return `g − J_unif(i,j)` here
-    /// (and must then add the dropped pairs' uniform-field energy — not a
-    /// mask-only change). `RawIntegral` borrows `g` unchanged, so the result
-    /// is bitwise the molecular rule.
+    /// Whether the integrals themselves carry the restored q = 0 head.
+    pub fn restores_uniform_head(&self) -> bool {
+        matches!(self, GammaEpsGate::UniformHeadRestored)
+    }
+
+    /// THE HOOK: the `(nv, nv)` quantity whose elements the Eq-8 test
+    /// compares to `eps` for the ordered pair (i, j), given the integral
+    /// block `g[a,b]` the amplitudes are solved with. Both variants borrow
+    /// `g` unchanged: for `RawIntegral` `g = (ia|jb)` (bitwise the molecular
+    /// rule); for `UniformHeadRestored` `g` is already `J'` (the head is in
+    /// the integral source), so gate and solve read the same tensor — which
+    /// is what makes the A-drop error purely eps-controlled with nothing to
+    /// add back. A gate that differed from the solved integrals (FINDINGS
+    /// 5b "A-add") would need a pair-level add-back and is NOT clean.
     pub fn gate_quantity<'g>(
         &self,
         _i: usize,
@@ -147,7 +196,7 @@ impl GammaEpsGate {
         g: &'g Array2<f64>,
     ) -> Cow<'g, Array2<f64>> {
         match self {
-            GammaEpsGate::RawIntegral => Cow::Borrowed(g),
+            GammaEpsGate::RawIntegral | GammaEpsGate::UniformHeadRestored => Cow::Borrowed(g),
         }
     }
 }
@@ -198,7 +247,10 @@ pub struct GammaLmp2Config {
     /// Per-pair domain-local fit radius (Bohr) in the periodic metric;
     /// requires [`GammaLmp2Inputs::fit`]. `None` = global B.
     pub fit_radius_bohr: Option<f64>,
-    /// The Eq-8 gate quantity (module doc, KNOWN LIMITATION).
+    /// The Eq-8 gate quantity (module doc, KNOWN LIMITATION). Default
+    /// ([`GammaLmp2Config::shifted`]) is [`GammaEpsGate::RawIntegral`],
+    /// deliberately unchanged by the A-drop port: `UniformHeadRestored`
+    /// changes the eps = 0 target and refuses non-needle supercells.
     pub eps_gate: GammaEpsGate,
     /// Distance convention for every distance above.
     pub distance: PeriodicDistance,
@@ -366,11 +418,31 @@ pub struct RestaOperator {
 /// `G = −b_k`). Refuses non-orthorhombic cells (the weights would be wrong).
 pub fn resta_operator(cell: &Cell, obs: &PreparedBasis) -> Result<RestaOperator, FerricError> {
     let a = *cell.lattice();
-    let len = |v: &[f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    check_orthorhombic(&a)?;
+    let b = cell.reciprocal();
+    let gs: Vec<[f64; 3]> = b.iter().map(|bk| [-bk[0], -bk[1], -bk[2]]).collect();
+    let p = pair_ft(cell, obs, &gs)?;
+    let n = obs.nbasis();
+    let mk = |k: usize, im: bool| resta_part(&p, k, n, im);
+    let w = |k: usize| (vec_len(&a[k]) / (2.0 * PI)).powi(2);
+    Ok(RestaOperator {
+        re: [mk(0, false), mk(1, false), mk(2, false)],
+        im: [mk(0, true), mk(1, true), mk(2, true)],
+        weights: [w(0), w(1), w(2)],
+        lattice: a,
+    })
+}
+
+fn vec_len(v: &[f64; 3]) -> f64 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+}
+
+/// Refuse non-orthorhombic lattices (Berghold weights, needle geometry).
+fn check_orthorhombic(a: &[[f64; 3]; 3]) -> Result<(), FerricError> {
     for i in 0..3 {
         for j in (i + 1)..3 {
             let d = a[i][0] * a[j][0] + a[i][1] * a[j][1] + a[i][2] * a[j][2];
-            if d.abs() > 1e-10 * len(&a[i]) * len(&a[j]) {
+            if d.abs() > 1e-10 * vec_len(&a[i]) * vec_len(&a[j]) {
                 return Err(FerricError::General(format!(
                     "gamma_lmp2: Berghold/Resta weights are implemented for orthorhombic cells \
                      only (a_{i}·a_{j} = {d:.3e}); general cells need Silvestrelli's weights"
@@ -378,27 +450,252 @@ pub fn resta_operator(cell: &Cell, obs: &PreparedBasis) -> Result<RestaOperator,
             }
         }
     }
-    let b = cell.reciprocal();
-    let gs: Vec<[f64; 3]> = b.iter().map(|bk| [-bk[0], -bk[1], -bk[2]]).collect();
-    let p = pair_ft(cell, obs, &gs)?;
-    let n = obs.nbasis();
-    let mk = |k: usize, im: bool| {
-        Array2::from_shape_fn((n, n), |(m, v)| {
-            let (x, y) = (p[(m, v, k)], p[(v, m, k)]);
-            if im {
-                0.5 * (x.im + y.im)
-            } else {
-                0.5 * (x.re + y.re)
-            }
-        })
-    };
-    let w = |k: usize| (len(&a[k]) / (2.0 * PI)).powi(2);
-    Ok(RestaOperator {
-        re: [mk(0, false), mk(1, false), mk(2, false)],
-        im: [mk(0, true), mk(1, true), mk(2, true)],
-        weights: [w(0), w(1), w(2)],
-        lattice: a,
+    Ok(())
+}
+
+/// Symmetrised real (`im = false`) or imaginary part of the pair FT column
+/// `k` of `p`: `½ (P_mn + P_nm)`.
+fn resta_part(p: &Array3<Complex64>, k: usize, n: usize, im: bool) -> Array2<f64> {
+    Array2::from_shape_fn((n, n), |(m, v)| {
+        let (x, y) = (p[(m, v, k)], p[(v, m, k)]);
+        if im {
+            0.5 * (x.im + y.im)
+        } else {
+            0.5 * (x.re + y.re)
+        }
     })
+}
+
+/// `(Re Z, Im Z)` of `Z = ⟨μ| e^{i m b_axis·r} |ν⟩` (lattice-summed, pair FT
+/// at `G = −m b_axis`, the same convention and symmetrisation as
+/// [`resta_operator`]; `mult = 1` reproduces its `re/im[axis]`). Used for the
+/// `(b, 2b)` Richardson dipoles of [`uniform_head`].
+pub fn resta_matrix_at(
+    cell: &Cell,
+    obs: &PreparedBasis,
+    axis: usize,
+    mult: u32,
+) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+    if axis > 2 || mult == 0 {
+        return Err(FerricError::General(format!(
+            "resta_matrix_at: axis must be 0..=2 and mult >= 1 (got {axis}, {mult})"
+        )));
+    }
+    let b = cell.reciprocal()[axis];
+    let m = mult as f64;
+    let p = pair_ft(cell, obs, &[[-m * b[0], -m * b[1], -m * b[2]]])?;
+    let n = obs.nbasis();
+    Ok((resta_part(&p, 0, n, false), resta_part(&p, 0, n, true)))
+}
+
+// ---------------------------------------------------------------------------
+// Uniform (q = 0 head) coupling: FINDINGS Iteration 5b, "A-drop"
+// ---------------------------------------------------------------------------
+
+/// Smallest supercell aspect ratio `|a_needle| / max |a_⊥|` accepted as a
+/// needle by [`needle_axis`]. A structural proxy, NOT a derived accuracy
+/// bound: `W = ẑẑ` needs every small-|G| reciprocal vector along one axis,
+/// and 4 is the smallest aspect the prototype measured (1x1x4 of a cubic
+/// primitive; 1x1x4..32 in Iteration 5b).
+pub const NEEDLE_MIN_ASPECT: f64 = 4.0;
+
+/// The needle axis of an orthorhombic supercell whose one lattice vector is
+/// at least [`NEEDLE_MIN_ASPECT`] times longer than both others. Every other
+/// shape is an ERROR: the uniform head is `μ·W·μ` with a shape-dependent
+/// depolarisation tensor `W`, derived and measured only for the needle
+/// (`W = ẑẑ`); cubic supercells have `W = I/3` (Iteration 3's c3) but no
+/// supercell sweep was run for them, so they are refused, not guessed.
+pub fn needle_axis(cell: &Cell) -> Result<usize, FerricError> {
+    let a = cell.lattice();
+    check_orthorhombic(a)?;
+    let len = [vec_len(&a[0]), vec_len(&a[1]), vec_len(&a[2])];
+    let k = (0..3)
+        .max_by(|&x, &y| len[x].total_cmp(&len[y]))
+        .unwrap_or(2);
+    let perp = (0..3)
+        .filter(|&x| x != k)
+        .map(|x| len[x])
+        .fold(0.0_f64, f64::max);
+    if len[k] < NEEDLE_MIN_ASPECT * perp {
+        return Err(FerricError::General(format!(
+            "gamma_lmp2: the uniform-head (A-drop) gate is implemented for NEEDLE supercells \
+             only (one axis >= {NEEDLE_MIN_ASPECT} x the other two, W = zz); lattice lengths \
+             {:.4} / {:.4} / {:.4} Bohr. Other shapes need their own depolarisation tensor W \
+             (cubic: I/3), which is not implemented — use GammaEpsGate::RawIntegral",
+            len[0], len[1], len[2]
+        )));
+    }
+    Ok(k)
+}
+
+/// The restored q = 0 head for one set of localised spaces: `J'_ij =
+/// J_ij + scale · μ_i μ_jᵀ`, i.e. the extra RI column `√scale · μ`.
+#[derive(Debug, Clone)]
+pub struct UniformHead {
+    /// Needle axis (lattice-vector index).
+    pub axis: usize,
+    /// `4π / Ω_sc` (Bohr⁻³).
+    pub scale: f64,
+    /// Transition dipoles `μ_ia` along the needle, `(no, nv)`: Richardson
+    /// `(4 f(b) − f(2b)) / 3` of the Resta estimate (O(b⁴)).
+    pub mu: Array2<f64>,
+    /// `f(b) = Im(z_ia e^{−i arg z_ii}) / b` alone (O(b²); diagnostics and
+    /// the accuracy test only — never used for the integrals).
+    pub mu_single_b: Array2<f64>,
+    /// `f(2b)` (diagnostics).
+    pub mu_double_b: Array2<f64>,
+}
+
+impl UniformHead {
+    /// The extra RI column `√scale · μ`, `(no, nv)` (row i = `B_extra,i·`).
+    pub fn column(&self) -> Array2<f64> {
+        let r = self.scale.sqrt();
+        self.mu.mapv(|x| r * x)
+    }
+
+    /// The uniform coupling `J_unif(i, j)[a, b] = −scale μ_ia μ_jb` that the
+    /// raw Gamma integrals carry at every pair (far pairs: `J → J_unif`).
+    pub fn coupling(&self, i: usize, j: usize) -> Array2<f64> {
+        uniform_coupling(&self.mu, self.scale, i, j)
+    }
+}
+
+/// `−scale · μ_i μ_jᵀ` for any dipole estimate `mu` (`(no, nv)`).
+pub fn uniform_coupling(mu: &Array2<f64>, scale: f64, i: usize, j: usize) -> Array2<f64> {
+    let nv = mu.ncols();
+    Array2::from_shape_fn((nv, nv), |(a, b)| -scale * mu[(i, a)] * mu[(j, b)])
+}
+
+/// Resta transition-dipole estimate `f(b)_ia = Im(z_ia e^{−i arg z_ii}) / b`
+/// (the `_resta_dipole` of the prototype).
+fn resta_dipoles(
+    c_occ: &Array2<f64>,
+    c_vir: &Array2<f64>,
+    re: &Array2<f64>,
+    im: &Array2<f64>,
+    b: f64,
+) -> Array2<f64> {
+    let (no, nv) = (c_occ.ncols(), c_vir.ncols());
+    let (zr_o, zi_o) = (re.dot(c_occ), im.dot(c_occ));
+    let zr_ia = c_occ.t().dot(&re.dot(c_vir));
+    let zi_ia = c_occ.t().dot(&im.dot(c_vir));
+    let ph: Vec<f64> = (0..no)
+        .map(|i| {
+            let ci = c_occ.column(i);
+            ci.dot(&zi_o.column(i)).atan2(ci.dot(&zr_o.column(i)))
+        })
+        .collect();
+    // Im[(zr + i zi) e^{−i ph}] = zi cos ph − zr sin ph
+    Array2::from_shape_fn((no, nv), |(i, a)| {
+        (zi_ia[(i, a)] * ph[i].cos() - zr_ia[(i, a)] * ph[i].sin()) / b
+    })
+}
+
+/// [`UniformHead`] for `spaces` on a needle supercell (refuses anything
+/// else, [`needle_axis`]): Resta matrices at `b` and `2b` along the needle,
+/// Richardson dipoles, `scale = 4π/Ω_sc`. Valid while the LMO spread is
+/// small against the needle length (the Resta estimate's premise).
+pub fn uniform_head(
+    cell: &Cell,
+    obs: &PreparedBasis,
+    spaces: &GammaLocalSpaces,
+) -> Result<UniformHead, FerricError> {
+    let axis = needle_axis(cell)?;
+    if spaces.c_occ.nrows() != obs.nbasis() || spaces.c_vir.nrows() != obs.nbasis() {
+        return Err(FerricError::General(format!(
+            "uniform_head: spaces have {} AO rows, obs {} functions",
+            spaces.c_occ.nrows(),
+            obs.nbasis()
+        )));
+    }
+    let b = vec_len(&cell.reciprocal()[axis]);
+    let (re1, im1) = resta_matrix_at(cell, obs, axis, 1)?;
+    let f1 = resta_dipoles(&spaces.c_occ, &spaces.c_vir, &re1, &im1, b);
+    drop((re1, im1));
+    let (re2, im2) = resta_matrix_at(cell, obs, axis, 2)?;
+    let f2 = resta_dipoles(&spaces.c_occ, &spaces.c_vir, &re2, &im2, 2.0 * b);
+    let mu = Array2::from_shape_fn(f1.dim(), |(i, a)| (4.0 * f1[(i, a)] - f2[(i, a)]) / 3.0);
+    if mu.iter().any(|x| !x.is_finite()) {
+        return Err(FerricError::General(
+            "uniform_head: non-finite transition dipole".into(),
+        ));
+    }
+    Ok(UniformHead {
+        axis,
+        scale: 4.0 * PI / cell.volume(),
+        mu,
+        mu_single_b: f1,
+        mu_double_b: f2,
+    })
+}
+
+/// Closed-form MP2 of a LOCAL-basis RI tensor: `b_ov[P, i·nv + a]` (plus the
+/// optional extra column `head_column[i, a]`, e.g. [`UniformHead::column`])
+/// with Fock blocks `f_oo`, `f_vv` (shift included by the caller), rotated
+/// to their eigenbases: `E = Σ J(2J − Jᵀ) / (f_i + f_j − f_a − f_b)`.
+/// The independent reference for the eps = 0 anchor of any gate (no mask,
+/// no CG, no ragged blocks); with `head_column = None` and canonical-span
+/// spaces it equals [`gamma_mp2`] (unitary invariance, tested).
+pub fn mp2_closed_form_local(
+    b_ov: &Array2<f64>,
+    head_column: Option<&Array2<f64>>,
+    f_oo: &Array2<f64>,
+    f_vv: &Array2<f64>,
+) -> Result<f64, FerricError> {
+    let (no, nv) = (f_oo.nrows(), f_vv.nrows());
+    if f_oo.ncols() != no
+        || f_vv.ncols() != nv
+        || b_ov.ncols() != no * nv
+        || head_column.is_some_and(|h| h.dim() != (no, nv))
+    {
+        return Err(FerricError::General(format!(
+            "mp2_closed_form_local: B {:?}, head {:?}, F_oo {:?}, F_vv {:?} inconsistent",
+            b_ov.dim(),
+            head_column.map(|h| h.dim()),
+            f_oo.dim(),
+            f_vv.dim()
+        )));
+    }
+    let (eo, uo) = eigh(f_oo, "closed-form F_oo")?;
+    let (ev, uv) = eigh(f_vv, "closed-form F_vv")?;
+    let nrow = b_ov.nrows() + usize::from(head_column.is_some());
+    let mut bc = Array2::<f64>::zeros((nrow, no * nv));
+    let rotate_into = |bc: &mut Array2<f64>, p: usize, m: Array2<f64>| {
+        let r = uo.t().dot(&m).dot(&uv);
+        for i in 0..no {
+            for a in 0..nv {
+                bc[(p, i * nv + a)] = r[(i, a)];
+            }
+        }
+    };
+    for p in 0..b_ov.nrows() {
+        let m = Array2::from_shape_fn((no, nv), |(i, a)| b_ov[(p, i * nv + a)]);
+        rotate_into(&mut bc, p, m);
+    }
+    if let Some(h) = head_column {
+        rotate_into(&mut bc, nrow - 1, h.clone());
+    }
+    let mut e = 0.0;
+    for i in 0..no {
+        let bi = bc.slice(s![.., i * nv..(i + 1) * nv]);
+        for j in 0..no {
+            let bj = bc.slice(s![.., j * nv..(j + 1) * nv]);
+            let g = bi.t().dot(&bj);
+            for a in 0..nv {
+                for b in 0..nv {
+                    let d = eo[i] + eo[j] - ev[a] - ev[b];
+                    if !(d < 0.0) {
+                        return Err(FerricError::General(format!(
+                            "mp2_closed_form_local: non-negative denominator {d:.3e} at \
+                             ({i},{a},{j},{b})"
+                        )));
+                    }
+                    e += g[(a, b)] * (2.0 * g[(a, b)] - g[(b, a)]) / d;
+                }
+            }
+        }
+    }
+    Ok(e)
 }
 
 impl RestaOperator {
@@ -978,6 +1275,9 @@ enum PairSource {
 /// `(ia|jb)` blocks in the localised basis.
 pub struct GammaPairIntegrals {
     src: PairSource,
+    /// The restored q = 0 head as one extra RI column `√scale · μ`,
+    /// `(no, nv)` ([`GammaPairIntegrals::with_uniform_head`]); `None` = raw.
+    head: Option<Array2<f64>>,
     no: usize,
     nv: usize,
     naux: usize,
@@ -1022,6 +1322,7 @@ impl GammaPairIntegrals {
                 let b_ov = b_ov_from_ao_b(gdf.b(), nao, spaces.c_occ.view(), spaces.c_vir.view())?;
                 Ok(Self {
                     src: PairSource::Global { b_ov },
+                    head: None,
                     no,
                     nv,
                     naux,
@@ -1073,6 +1374,7 @@ impl GammaPairIntegrals {
                         lindep: parts.lindep,
                         radius,
                     },
+                    head: None,
                     no,
                     nv,
                     naux,
@@ -1081,14 +1383,58 @@ impl GammaPairIntegrals {
         }
     }
 
-    /// Aux functions (global) / aux functions available to domains.
+    /// Aux functions (global) / aux functions available to domains; the
+    /// extra head column is NOT counted here (see [`Self::has_uniform_head`]).
     pub fn naux(&self) -> usize {
         self.naux
     }
 
-    /// `J_ij[a, b] = (ia|jb)`, `(nv, nv)`, and the aux contraction length
-    /// used (naux_kept globally, the domain size for a domain fit).
+    /// Append the restored q = 0 head ("A-drop", FINDINGS Iteration 5b) as
+    /// one extra RI column: every block becomes `J_ij + scale μ_i μ_jᵀ`, for
+    /// the global B and the domain fit alike (the head is a property of the
+    /// G = 0-dropped kernel, not of the fit). Errors on a shape mismatch or
+    /// if a head was already applied (applying it twice would double it).
+    pub fn with_uniform_head(mut self, head: &UniformHead) -> Result<Self, FerricError> {
+        if head.mu.dim() != (self.no, self.nv) {
+            return Err(FerricError::General(format!(
+                "GammaPairIntegrals::with_uniform_head: mu {:?} vs (no, nv) = ({}, {})",
+                head.mu.dim(),
+                self.no,
+                self.nv
+            )));
+        }
+        if self.head.is_some() {
+            return Err(FerricError::General(
+                "GammaPairIntegrals::with_uniform_head: head already applied".into(),
+            ));
+        }
+        self.head = Some(head.column());
+        Ok(self)
+    }
+
+    /// Whether the blocks carry the restored head.
+    pub fn has_uniform_head(&self) -> bool {
+        self.head.is_some()
+    }
+
+    /// `J_ij[a, b] = (ia|jb)` (plus the head column when applied), `(nv, nv)`,
+    /// and the aux contraction length used (naux_kept globally, the domain
+    /// size for a domain fit; +1 for the head column).
     pub fn block(&self, i: usize, j: usize) -> Result<(Array2<f64>, usize), FerricError> {
+        let (mut g, mut n) = self.raw_block(i, j)?;
+        if let Some(h) = &self.head {
+            for a in 0..self.nv {
+                let x = h[(i, a)];
+                for b in 0..self.nv {
+                    g[(a, b)] += x * h[(j, b)];
+                }
+            }
+            n += 1;
+        }
+        Ok((g, n))
+    }
+
+    fn raw_block(&self, i: usize, j: usize) -> Result<(Array2<f64>, usize), FerricError> {
         let nv = self.nv;
         if i >= self.no || j >= self.no {
             return Err(FerricError::General(format!(
@@ -1151,6 +1497,19 @@ pub struct GammaLmp2Timings {
     pub t_reference_s: f64,
 }
 
+/// Diagnostics of the restored q = 0 head ([`UniformHead`]).
+#[derive(Debug, Clone, Copy)]
+pub struct UniformHeadInfo {
+    /// Needle axis.
+    pub axis: usize,
+    /// `4π/Ω_sc`.
+    pub scale: f64,
+    /// `max |μ_ia|` (Richardson).
+    pub mu_max_abs: f64,
+    /// `max |μ_ia − f(b)_ia|`: what the Richardson step moved.
+    pub richardson_shift_max: f64,
+}
+
 /// Gamma LMP2 result: energies and the molecular driver's counters.
 #[derive(Debug, Clone)]
 #[must_use]
@@ -1159,7 +1518,18 @@ pub struct GammaLmp2Result {
     /// `rhf.energy + e_corr`.
     pub e_total: f64,
     /// Canonical [`gamma_mp2`] on the same B/convention (NaN when disabled).
+    /// For [`GammaEpsGate::UniformHeadRestored`] this is NOT the eps = 0
+    /// limit (see `e_corr_target`); `e_corr − e_corr_canonical` then mixes
+    /// the truncation error with the uniform term.
     pub e_corr_canonical: f64,
+    /// The eps = 0 limit of THIS configuration's gate on the global B (NaN
+    /// when `compute_reference` is false): `e_corr_canonical` for
+    /// `RawIntegral`; [`mp2_closed_form_local`] on the head-augmented B
+    /// (`E_head`) for `UniformHeadRestored`. The truncation error is
+    /// `e_corr − e_corr_target`.
+    pub e_corr_target: f64,
+    /// The restored head's diagnostics (`None` for `RawIntegral`).
+    pub uniform_head: Option<UniformHeadInfo>,
     /// `e_ij` (ordered, `(no, no)`), summing to `e_corr`: per retained block
     /// `Σ (2 t_iajb − t_ibja) (ia|jb)`; 0 for dropped pairs.
     pub pair_energies: Array2<f64>,
@@ -1199,6 +1569,11 @@ pub fn gamma_lmp2(
     ints: &GammaLmp2Inputs<'_>,
     cfg: &GammaLmp2Config,
 ) -> Result<GammaLmp2Result, FerricError> {
+    cfg.validate()?;
+    if cfg.eps_gate.restores_uniform_head() {
+        // Refuse a non-needle supercell BEFORE the localisation work.
+        needle_axis(cell)?;
+    }
     let t0 = std::time::Instant::now();
     let spaces = gamma_localized_spaces(cell, rhf, ints, cfg)?;
     let t_spaces_s = t0.elapsed().as_secs_f64();
@@ -1217,6 +1592,9 @@ pub fn gamma_lmp2_with_spaces(
     spaces: &GammaLocalSpaces,
 ) -> Result<GammaLmp2Result, FerricError> {
     cfg.validate()?;
+    if cfg.eps_gate.restores_uniform_head() {
+        needle_axis(cell)?;
+    }
     check_reference(cell, rhf)?;
     let (no, nv) = (spaces.no(), spaces.nv());
     if spaces.f_oo.dim() != (no, no)
@@ -1238,6 +1616,22 @@ pub fn gamma_lmp2_with_spaces(
         cfg.distance,
         &mut ledger,
     )?;
+    // A-drop: restore the q = 0 head as one extra RI column (module doc).
+    let nao = spaces.c_occ.nrows();
+    let head = if cfg.eps_gate.restores_uniform_head() {
+        ledger.reserve(
+            &format!("Gamma LMP2 uniform head: 2 Resta pair FTs + Re/Im (nao = {nao})"),
+            bytes_of((nao as u64).saturating_mul(nao as u64), 16 + 8 * 4)
+                .saturating_add(bytes_of((no * nv) as u64, 8 * 6)),
+        )?;
+        Some(uniform_head(cell, ints.obs, spaces)?)
+    } else {
+        None
+    };
+    let src = match &head {
+        Some(h) => src.with_uniform_head(h)?,
+        None => src,
+    };
 
     // Pair-level screens: both on MINIMUM-IMAGE centroid distances.
     let dist = centroid_distances(cell, &spaces.occ_centers, cfg.distance);
@@ -1385,6 +1779,26 @@ pub fn gamma_lmp2_with_spaces(
     } else {
         f64::NAN
     };
+    // The eps = 0 target of THIS configuration (module doc): canonical Gamma
+    // MP2 for the raw gate; closed-form MP2 on the head-augmented global B
+    // for A-drop.
+    let e_target = match (&head, cfg.compute_reference) {
+        (_, false) => f64::NAN,
+        (None, true) => e_ref,
+        (Some(h), true) => {
+            let naux = ints.gdf.b().nrows();
+            ledger.reserve(
+                &format!(
+                    "Gamma LMP2 closed-form target: half-transform + B[k,ia] + rotated copy \
+                     (naux = {naux}, nov = {})",
+                    no * nv
+                ),
+                bytes_of(naux as u64 + 1, (nao * nv + 2 * no * nv).saturating_mul(8)),
+            )?;
+            let b_ov = b_ov_from_ao_b(ints.gdf.b(), nao, spaces.c_occ.view(), spaces.c_vir.view())?;
+            mp2_closed_form_local(&b_ov, Some(&h.column()), &spaces.f_oo, &spaces.f_vv)?
+        }
+    };
     let t_reference_s = if cfg.compute_reference {
         t0.elapsed().as_secs_f64()
     } else {
@@ -1423,10 +1837,22 @@ pub fn gamma_lmp2_with_spaces(
     let aux_dom_max = aux_sizes.iter().copied().max().unwrap_or(0);
     let dense_flops =
         2 * ((no * no) as u64 * (nv as u64).pow(3) + (no as u64).pow(3) * (nv * nv) as u64);
+    let uniform_head_info = head.as_ref().map(|h| UniformHeadInfo {
+        axis: h.axis,
+        scale: h.scale,
+        mu_max_abs: h.mu.iter().fold(0.0_f64, |m, &x| m.max(x.abs())),
+        richardson_shift_max: h
+            .mu
+            .iter()
+            .zip(h.mu_single_b.iter())
+            .fold(0.0_f64, |m, (x, y)| m.max((x - y).abs())),
+    });
     Ok(GammaLmp2Result {
         e_corr,
         e_total: rhf.energy + e_corr,
         e_corr_canonical: e_ref,
+        e_corr_target: e_target,
+        uniform_head: uniform_head_info,
         pair_energies,
         pairs_kept: rg.pairs.len(),
         partners,

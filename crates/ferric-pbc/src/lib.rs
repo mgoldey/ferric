@@ -31,8 +31,10 @@
 //!   (`gamma_lmp2`): Berghold/Resta periodic localisation, periodic VV-HV
 //!   virtuals, minimum-image distances, per-pair domain fits in the periodic
 //!   metric, shifted denominators; ferric-mp2's ragged solver. KNOWN
-//!   LIMITATION: at Gamma the eps gate keeps every pair below a volume onset
-//!   (see the module doc).
+//!   LIMITATION: at Gamma the default (raw-integral) eps gate keeps every
+//!   pair below a volume onset; the opt-in `GammaEpsGate::UniformHeadRestored`
+//!   ("A-drop": restored q = 0 head, needle supercells only) removes it, with
+//!   a different eps = 0 target (see the module doc).
 //! * [`mod@uhf`] — Stage 4: Gamma-point open-shell UHF (`gamma_uhf`) over
 //!   `ferric_scf::uhf::solve_uhf_injected`, with the per-spin Madelung term in
 //!   the K builders, a per-spin gap check against `v_M`, and the staged
@@ -61,8 +63,9 @@ pub use ewald::{ewald_nuclear_repulsion, madelung_constant};
 pub use hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
 pub use lattice::Cell;
 pub use lmp2::{
-    gamma_lmp2, gamma_lmp2_with_spaces, gamma_localized_spaces, GammaEpsGate, GammaLmp2Config,
-    GammaLmp2Inputs, GammaLmp2Result, GammaLocalSpaces, PeriodicDistance,
+    gamma_lmp2, gamma_lmp2_with_spaces, gamma_localized_spaces, mp2_closed_form_local, needle_axis,
+    uniform_head, GammaEpsGate, GammaLmp2Config, GammaLmp2Inputs, GammaLmp2Result,
+    GammaLocalSpaces, PeriodicDistance, UniformHead,
 };
 pub use mp2::{gamma_mp2, GammaMp2Config, GammaMp2Integrals, GammaMp2Result, Mp2Denominators};
 pub use pair_ft::pair_ft;
