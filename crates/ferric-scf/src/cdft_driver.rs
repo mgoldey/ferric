@@ -229,6 +229,15 @@ pub struct CdftResult {
     pub populations: Vec<f64>,
     /// Outer-loop iterations taken.
     pub outer_iters: usize,
+    /// The constraint weight operators `W^C` (AO basis, one per constraint, in
+    /// `config.constraints` order) that the solve actually used.
+    ///
+    /// Carried so a caller that needs them afterwards — the Wu–Van Voorhis
+    /// coupling ([`crate::cdft_coupling::DiabaticState::w`]) — gets the SAME
+    /// matrices the constraint was solved with, rather than re-running the grid
+    /// build and hoping its grid config matches. They are density-independent
+    /// and nbf² each, so holding them costs nothing next to the MO sets.
+    pub weight_matrices: Vec<Array2<f64>>,
 }
 
 /// Solve constrained UHF/UKS. Reads `config.constraints` and
@@ -367,6 +376,7 @@ pub fn solve_cdft_uhf(
                         lambdas: lam,
                         populations: pops,
                         outer_iters: outer,
+                        weight_matrices: w_mats.clone(),
                     });
                 }
                 // Record this point in the bracket BEFORE stepping, so the
