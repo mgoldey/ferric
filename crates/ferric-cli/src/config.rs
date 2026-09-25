@@ -2839,7 +2839,12 @@ impl Config {
     /// Value checks on `[external_potential]` smeared-charge widths and the
     /// `[pcm]` section, run by [`load_config`] so a bad value fails at load
     /// time on every entry point.
+    /// Every post-parse value check `load_config` runs, in order: memory,
+    /// SCF, the amplitude-threshold knobs, then the CLI-wired keys.
     fn validate_loaded_values(&self) -> Result<(), String> {
+        self.memory.validate()?;
+        self.scf.validate()?;
+        self.mp2.validate_amplitude_knobs()?;
         self.external_potential.validate()?;
         match &self.pcm {
             Some(pcm) => pcm.to_pcm_config().map(|_| ()),
@@ -3468,11 +3473,6 @@ pub fn load_config(path: &str) -> Result<Config, String> {
     // Validating HERE rather than at the lib.rs use site means every entry
     // point is covered by construction — the CLI, and `ferric-batch`'s
     // per-child TOML rewriting, which does not go through lib.rs's checks.
-    cfg.memory.validate().map_err(|e| format!("{path}: {e}"))?;
-    cfg.scf.validate().map_err(|e| format!("{path}: {e}"))?;
-    cfg.mp2
-        .validate_amplitude_knobs()
-        .map_err(|e| format!("{path}: {e}"))?;
     cfg.validate_loaded_values()
         .map_err(|e| format!("{path}: {e}"))?;
     Ok(cfg)
