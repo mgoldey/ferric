@@ -32,15 +32,20 @@ pub(crate) fn bragg_slater_bohr(z: i32) -> f64 {
     r_a * 1.8897259886
 }
 
-/// Bragg–Slater radii in Å indexed by Z (index 0 is PySCF's ghost-atom value),
-/// exactly PySCF's `pyscf.data.radii.BRAGG` (converted back to Å): Slater's
-/// 1964 radii, with PySCF's choices for the noble gases, which Slater's table
-/// does not give. Becke partitioning (`becke_atomic_radii_adjust`) and NWChem
-/// pruning both read it, so matching it is what makes ferric's grid the same
-/// as PySCF's for every element, not only H–Cl.
+/// Bragg–Slater radii in Å indexed by Z (index 0 is PySCF's ghost-atom value):
+/// PySCF's `pyscf.data.radii.BRAGG` (Slater's 1964 radii) for every element
+/// except the noble gases He, Ne and Ar, which Slater's table does not give.
+/// There ferric keeps its own 0.30 / 0.45 / 0.71 Å where PySCF chose 1.40 /
+/// 1.50 / 1.80: cDFT defines its constrained populations through this Becke
+/// partition, and ferric's HeNe+ cDFT results are stated on these values.
+/// Consequence: a KS energy of a molecule containing He, Ne or Ar is
+/// integrated on a different Becke partition from PySCF's (both converge to
+/// the same energy with the grid; they agree only to the grid error).
+/// Becke partitioning (`becke_atomic_radii_adjust`) and NWChem pruning both
+/// read this table.
 const BRAGG_ANGSTROM: [f64; 131] = [
-    1.999999, 0.35, 1.4, 1.45, 1.05, 0.85, 0.7, 0.65, 0.6, 0.5, // Z=0..9
-    1.5, 1.8, 1.5, 1.25, 1.1, 1.0, 1.0, 1.0, 1.8, 2.2, // Z=10..19
+    1.999999, 0.35, 0.3, 1.45, 1.05, 0.85, 0.7, 0.65, 0.6, 0.5, // Z=0..9
+    0.45, 1.8, 1.5, 1.25, 1.1, 1.0, 1.0, 1.0, 0.71, 2.2, // Z=10..19
     1.8, 1.6, 1.4, 1.35, 1.4, 1.4, 1.4, 1.35, 1.35, 1.35, // Z=20..29
     1.35, 1.3, 1.25, 1.15, 1.15, 1.15, 1.9, 2.35, 2.0, 1.8, // Z=30..39
     1.55, 1.45, 1.45, 1.35, 1.3, 1.35, 1.4, 1.6, 1.55, 1.55, // Z=40..49
@@ -345,19 +350,16 @@ pub fn becke_weights_and_grad(mol: &Molecule, r: [f64; 3]) -> (Vec<f64>, Vec<Vec
 
 #[cfg(test)]
 mod tests {
-    /// Spot values of PySCF's `radii.BRAGG` in Å (`BRAGG[z] * BOHR`), chosen
-    /// where ferric's table used to differ: the noble gases, and elements past
-    /// Ar, which all fell back to 1.0 Å. The iodine value is what moved the
+    /// Spot values of PySCF's `radii.BRAGG` in Å (`BRAGG[z] * BOHR`), mostly
+    /// past Ar, where ferric's table used to fall back to 1.0 Å. The iodine value is what moved the
     /// CH3I/def2-SVP PBE energy by 1.76e-4 Ha against PySCF.
     #[test]
     fn bragg_radii_match_pyscf() {
         let pyscf_angstrom = [
             (1, 0.35),
-            (2, 1.4),
             (6, 0.7),
-            (10, 1.5),
             (17, 1.0),
-            (18, 1.8),
+            (36, 1.9),
             (26, 1.4),
             (35, 1.15),
             (50, 1.45),
@@ -368,6 +370,11 @@ mod tests {
         for (z, r) in pyscf_angstrom {
             let got = super::bragg_slater_bohr(z) / 1.8897259886;
             assert!((got - r).abs() < 1e-12, "Z={z}: {got} Å, PySCF {r} Å");
+        }
+        // The noble gases deliberately keep ferric's values (see BRAGG_ANGSTROM).
+        for (z, r) in [(2, 0.3), (10, 0.45), (18, 0.71)] {
+            let got = super::bragg_slater_bohr(z) / 1.8897259886;
+            assert!((got - r).abs() < 1e-12, "Z={z}: {got} Å, ferric's {r} Å");
         }
     }
 
