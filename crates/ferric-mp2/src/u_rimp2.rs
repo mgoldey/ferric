@@ -9,6 +9,13 @@
 //!
 //! where `(ia|jb)_σ = Σ_P B^P_{ia,σ} B^P_{jb,σ}` and
 //! `(ia|JB) = Σ_P B^P_{ia,α} B^P_{JB,β}` (shared aux metric).
+//!
+//! A ROHF/ROKS reference is semi-canonicalized on entry
+//! (`ferric_scf::semicanonical::unrestricted_reference`): each spin uses the
+//! occ–occ / virt–virt eigenvectors and eigenvalues of its own Fock `F_σ`. The
+//! energy is the doubles-only UMP2 expression on those orbitals; the ROHF-MBPT
+//! single-excitation term `Σ_ia |f_ia^σ|² / (ε_i − ε_a)` (non-zero because ROHF is
+//! not a UHF stationary point) is NOT included.
 
 use crate::rimp2::{compute_rpa_intermediates_spin, RiMp2Config, RpaIntermediates};
 use ferric_core::mol::Molecule;
@@ -159,6 +166,9 @@ pub fn u_ri_mp2(
             "u_ri_mp2: requires UHF or ROHF reference".into(),
         ));
     }
+    // ROHF/ROKS -> per-spin semi-canonical orbitals and energies; UHF borrowed.
+    let scf_view = ferric_scf::semicanonical::unrestricted_reference(mol, scf)?;
+    let scf: &ScfResult = &scf_view;
 
     // Gate BEFORE the spin intermediates, not after.
     //
@@ -258,12 +268,9 @@ pub fn u_ri_mp2(
         1.1,
     );
 
-    let eps_a: &[f64] = &scf.eps_alpha;
-    // ROHF has no eps_beta — fall back to eps_alpha (ROHF MOs are shared).
-    let eps_b: &[f64] = match scf.eps_beta.as_ref() {
-        Some(v) => v.as_slice(),
-        None => &scf.eps_alpha,
-    };
+    // `scf` is UHF-shaped here (a ROHF input was semi-canonicalized above).
+    let eps_a: &[f64] = scf.eps_a();
+    let eps_b: &[f64] = scf.eps_b();
 
     let e_aa = same_spin_pair_energy(&inter_a, eps_a);
     let e_bb = same_spin_pair_energy(&inter_b, eps_b);
@@ -300,6 +307,9 @@ pub fn compute_u_mp2_amplitudes(
             "compute_u_mp2_amplitudes: requires UHF or ROHF reference".into(),
         ));
     }
+    // ROHF/ROKS -> per-spin semi-canonical orbitals and energies; UHF borrowed.
+    let scf_view = ferric_scf::semicanonical::unrestricted_reference(mol, scf)?;
+    let scf: &ScfResult = &scf_view;
 
     // Gate BEFORE the spin intermediates — same defect and same reasoning as in
     // `u_ri_mp2` above: this guard charges `inter_a`/`inter_b` themselves, so
@@ -384,11 +394,9 @@ pub fn compute_u_mp2_amplitudes(
         1.1,
     );
 
-    let eps_a_vec: Vec<f64> = scf.eps_alpha.clone();
-    let eps_b_vec: Vec<f64> = match scf.eps_beta.as_ref() {
-        Some(v) => v.clone(),
-        None => scf.eps_alpha.clone(),
-    };
+    // `scf` is UHF-shaped here (a ROHF input was semi-canonicalized above).
+    let eps_a_vec: Vec<f64> = scf.eps_a().to_vec();
+    let eps_b_vec: Vec<f64> = scf.eps_b().to_vec();
 
     // HARD charge for the three amplitude tensors, taken here -- after the AO
     // 3-index tensor's own charge has been released by

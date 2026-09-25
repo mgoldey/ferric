@@ -508,6 +508,10 @@ pub fn pdep_polarizability_static_unrestricted(
     cfg: &PdepRpaConfig,
 ) -> Result<PolarizabilityResult, FerricError> {
     use ferric_mp2::rimp2::{compute_rpa_intermediates_spin, RiMp2Config};
+    // ROHF/ROKS -> per-spin semi-canonical orbitals and energies (the same view
+    // run_u_pdep_rpa uses); UHF borrowed.
+    let rhf_view = ferric_scf::semicanonical::unrestricted_reference(mol, rhf)?;
+    let rhf: &ScfResult = &rhf_view;
 
     let mp2_cfg = RiMp2Config {
         frozen_core: 0,
@@ -543,12 +547,8 @@ pub fn pdep_polarizability_static_unrestricted(
         2,
     )?;
 
-    // Orbital-energy slices per spin (ROHF reuses α-MOs for β; see run_u_pdep_rpa).
-    let eps_b_full: &[f64] = if matches!(rhf.spin, Spin::RestrictedOpen) {
-        rhf.eps_a()
-    } else {
-        rhf.eps_b()
-    };
+    // Orbital-energy slices per spin.
+    let eps_b_full: &[f64] = rhf.eps_b();
     let eps_occ_a: Vec<f64> =
         rhf.eps_a()[inter_a.first_occ..inter_a.first_occ + inter_a.nocc].to_vec();
     let eps_vir_a: Vec<f64> =
@@ -561,11 +561,7 @@ pub fn pdep_polarizability_static_unrestricted(
     // Per-spin MO-basis dipole μ_σ^d_{ia} = ⟨ψ_iσ|r_d|ψ_aσ⟩.
     let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
     let c_a = rhf.mos_a();
-    let c_b = if matches!(rhf.spin, Spin::RestrictedOpen) {
-        rhf.mos_a()
-    } else {
-        rhf.mos_b()
-    };
+    let c_b = rhf.mos_b();
     let c_occ_a = c_a
         .slice(ndarray::s![
             ..,
@@ -1615,17 +1611,17 @@ pub fn pdep_polarizability_becke_dynamic(
     // Closed-shell falls through to the single-B̃ path below.
     if !matches!(rhf.spin, Spin::Restricted) {
         use ferric_mp2::rimp2::compute_rpa_intermediates_spin;
+        // ROHF/ROKS -> per-spin semi-canonical orbitals and energies (the same view
+        // run_u_pdep_rpa uses); UHF borrowed.
+        let rhf_view = ferric_scf::semicanonical::unrestricted_reference(mol, rhf)?;
+        let rhf: &ScfResult = &rhf_view;
 
         let inter_a = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, true)?;
         let inter_b = compute_rpa_intermediates_spin(mol, obs, dfbs, op, rhf, &mp2_cfg, false)?;
         let naux = inter_a.naux;
 
-        // Orbital-energy slices (ROHF reuses α-MOs for β).
-        let eps_b_full: &[f64] = if matches!(rhf.spin, Spin::RestrictedOpen) {
-            rhf.eps_a()
-        } else {
-            rhf.eps_b()
-        };
+        // Orbital-energy slices per spin.
+        let eps_b_full: &[f64] = rhf.eps_b();
         let eps_occ_a: Vec<f64> =
             rhf.eps_a()[inter_a.first_occ..inter_a.first_occ + inter_a.nocc].to_vec();
         let eps_vir_a: Vec<f64> =
@@ -1659,11 +1655,7 @@ pub fn pdep_polarizability_becke_dynamic(
 
         // MO coefficient slices per spin.
         let c_a = rhf.mos_a();
-        let c_b = if matches!(rhf.spin, Spin::RestrictedOpen) {
-            rhf.mos_a()
-        } else {
-            rhf.mos_b()
-        };
+        let c_b = rhf.mos_b();
         let c_occ_a = c_a
             .slice(ndarray::s![
                 ..,
@@ -2845,6 +2837,10 @@ pub fn molecular_dynamic_polarizability(
     // total. ω=0 reproduces the static open-shell molecular α.
     if !matches!(rhf.spin, Spin::Restricted) {
         use ferric_mp2::rimp2::compute_rpa_intermediates_spin;
+        // ROHF/ROKS -> per-spin semi-canonical orbitals and energies (the same view
+        // run_u_pdep_rpa uses); UHF borrowed.
+        let rhf_view = ferric_scf::semicanonical::unrestricted_reference(mol, rhf)?;
+        let rhf: &ScfResult = &rhf_view;
         let mp2_cfg = ferric_mp2::rimp2::RiMp2Config {
             frozen_core: 0,
             // Propagate the caller's explicit budget. This was hardcoded
@@ -2891,12 +2887,8 @@ pub fn molecular_dynamic_polarizability(
             mol_budget,
         )?;
 
-        // Orbital-energy slices (ROHF reuses α-MOs/eps for β).
-        let eps_b_full: &[f64] = if matches!(rhf.spin, Spin::RestrictedOpen) {
-            rhf.eps_a()
-        } else {
-            rhf.eps_b()
-        };
+        // Orbital-energy slices per spin.
+        let eps_b_full: &[f64] = rhf.eps_b();
         let mk_eia = |inter: &ferric_mp2::rimp2::RpaIntermediates, eps_full: &[f64]| {
             let eps_occ = &eps_full[inter.first_occ..inter.first_occ + inter.nocc];
             let eps_vir = &eps_full[inter.nocc_total..inter.nocc_total + inter.nvir];
@@ -2914,11 +2906,7 @@ pub fn molecular_dynamic_polarizability(
         // Lab-frame molecular dipole in each spin's occ-vir MO basis.
         let dip_ao = oneelectron::dipole(obs, [0.0, 0.0, 0.0])?;
         let c_a = rhf.mos_a();
-        let c_b = if matches!(rhf.spin, Spin::RestrictedOpen) {
-            rhf.mos_a()
-        } else {
-            rhf.mos_b()
-        };
+        let c_b = rhf.mos_b();
         let mk_mu = |inter: &ferric_mp2::rimp2::RpaIntermediates, c: &Array2<f64>| {
             let c_occ = c
                 .slice(ndarray::s![

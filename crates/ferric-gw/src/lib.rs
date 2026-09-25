@@ -272,7 +272,15 @@ impl UGwResult {
     }
 }
 
-/// Top-level dispatch — spin-unrestricted. Accepts UHF, ROHF, or UKS reference.
+/// Top-level dispatch — spin-unrestricted. Accepts UHF, ROHF, UKS or ROKS reference.
+///
+/// A ROHF/ROKS reference is first semi-canonicalized
+/// ([`ferric_scf::semicanonical::unrestricted_reference`]): each spin's orbitals and
+/// mean-field energies are those of its own Fock operator `F_σ` in its occupied and
+/// virtual blocks, and both W and Σ are built from them. A caller applying the KS
+/// correction to a ROKS reference must evaluate `vxc_diagonal_mo` on that same
+/// semi-canonical result (call `unrestricted_reference` itself and pass the result to
+/// both).
 ///
 /// For UKS, the caller must apply the Σ_x − v_xc correction via
 /// `UGwResult::apply_kohn_sham_correction` using `vxc_mo::vxc_diagonal_mo`
@@ -292,6 +300,10 @@ pub fn run_u_gw(
             "run_u_gw: closed-shell ScfResult — use run_gw instead".into(),
         ));
     }
+    // ROHF/ROKS -> per-spin semi-canonical orbitals and energies; UHF borrowed.
+    // Everything below (W, B̃, Σ, evGW's shifted reference) sees the same view.
+    let scf_view = ferric_scf::semicanonical::unrestricted_reference(mol, scf)?;
+    let scf: &ScfResult = &scf_view;
 
     // Fail fast on an out-of-range qp_mos BEFORE the expensive RPA/B̃-tensor
     // work below — same reasoning as run_gw's identical check (found

@@ -1472,8 +1472,8 @@ fn multiplicity_changes_the_open_shell_result() {
     );
 }
 
-/// ROHF references are accepted (u_ri_mp2 supports them by sharing the single
-/// ROHF MO set across both spin channels). Asserted rather than assumed —
+/// ROHF references are accepted (u_ri_mp2 semi-canonicalizes them into per-spin
+/// orbital sets on entry). Asserted rather than assumed —
 /// if ROHF were silently mishandled this would produce a nonsense number, and
 /// if it were unsupported this test would catch the error instead of a caller.
 #[test]

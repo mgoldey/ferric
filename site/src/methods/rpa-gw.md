@@ -36,11 +36,10 @@ on an imaginary-frequency quadrature.
   `method.kind = "pdep-rpa"` with `multiplicity > 1` and `task = "energy"`: the
   CLI solves UHF (UKS with `[rpa] xc`) with MOM after 5 iterations and runs
   U-PDEP-RPA on it. It is CLI-only: Python `run_pdep_rpa` is closed shell only.
-  The library (`ferric_rpa::run_u_pdep_rpa`) also accepts a ROHF reference,
-  using the ROHF orbital energies directly for both spins (no
-  semicanonicalization); only the UHF path is compared against PySCF `URPA`
-  (see the
-  [anchors](../reference/validation.md#anchors)).
+  The library (`ferric_rpa::run_u_pdep_rpa`) also accepts a ROHF (or ROKS)
+  reference, which it semi-canonicalizes first: each spin uses the orbitals and
+  energies of its own Fock matrix, diagonalized in its occupied and virtual
+  blocks (see the [anchors](../reference/validation.md#anchors)).
 - **Attenuated RPA**: short-range correlation with an erfc operator.
 - **RS-MP2 + LR-RPA**: short-range MP2 plus long-range dRPA, on the
   [MP2 page](./mp2.md#rs-mp2--lr-rpa).
@@ -59,9 +58,8 @@ The starting point is HF by default or a KS functional (`[rpa] xc`).
 (`examples/water-g0w0-pbe.toml`, open shell `examples/oh-ugw.toml`); Python
 `ferric.run_gw`, `run_u_gw`. The open-shell reference is UHF by default;
 `[gw] reference = "rohf"` (Python `run_u_gw(reference="rohf")`) uses ROHF
-instead, or ROKS with `[rpa] xc` (`examples/oh-ugw-rohf.toml`). The
-ROHF-reference path is not compared against any reference, and it uses the
-ROHF/ROKS orbital energies directly for both spins (no semicanonicalization).
+instead, or ROKS with `[rpa] xc` (`examples/oh-ugw-rohf.toml`), semi-canonicalized
+per spin as for U-PDEP-RPA.
 
 **Accuracy.** Smoke; treat results as about ±0.3 eV.
 

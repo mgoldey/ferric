@@ -398,7 +398,11 @@ pub fn run_u_evgw(
     qp_range: std::ops::Range<usize>,
     gw_cfg: &GwConfig,
 ) -> Result<UGwResult, FerricError> {
-    let mut shifted_scf = scf.clone();
+    // UHF-shaped (a ROHF input is semi-canonicalized; `run_u_gw` already passes
+    // the semi-canonical view, for which this is a plain clone). It MUST be
+    // Unrestricted: `run_u_pdep_rpa` would re-semi-canonicalize a RestrictedOpen
+    // result from its spin Focks and discard the QP overlay below.
+    let mut shifted_scf = ferric_scf::semicanonical::unrestricted_reference(mol, scf)?.into_owned();
     let mut current_pdep = pdep0;
     let mut current_v_dressed =
         w_pdep::redress_eigenpotentials(&mo_b_a.v_inv_sqrt, &current_pdep.eigenpotentials)?;
@@ -438,9 +442,7 @@ pub fn run_u_evgw(
     let mut outer_converged = false;
     for it in 0..gw_cfg.max_ev_iter {
         // Overlay current QP energies on shifted_scf so PDEP χ₀ denominators
-        // see the QP gaps. For ROHF, β reuses α — we still write both arrays
-        // since the underlying compute_rpa_intermediates_spin reads eps_a()
-        // for β when spin == RestrictedOpen.
+        // see the QP gaps, per spin.
         for (idx, &mo_abs) in mo_indices.iter().enumerate() {
             shifted_scf.eps_alpha[mo_abs] = eps_qp_a[idx];
         }

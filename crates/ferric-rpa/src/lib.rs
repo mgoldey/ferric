@@ -1039,6 +1039,11 @@ pub fn run_pdep_rpa_from_intermediates(
 ///   B_ov_β, runs Davidson on the *summed* dielectric ε̃ = I + Π_α + Π_β,
 ///   integrates RPA correlation via the same trace-log quadrature.
 ///
+/// A ROHF/ROKS reference is first semi-canonicalized
+/// ([`ferric_scf::semicanonical::unrestricted_reference`]): each spin gets the
+/// orbitals and orbital energies of its own Fock operator `F_σ`, diagonalized in
+/// its occupied and virtual blocks. A UHF reference is used as-is.
+///
 /// First-land scope: Dense χ₀ backend, Davidson eigensolver, identity
 /// seed. Boys-localized seeding, Lanczos, Laplace-separable χ₀, and
 /// sparse screening are deferred to C8 — the open-shell merge with
@@ -1059,6 +1064,9 @@ pub fn run_u_pdep_rpa(
             "run_u_pdep_rpa: use run_pdep_rpa for closed-shell results".into(),
         ));
     }
+    // ROHF/ROKS -> per-spin semi-canonical orbitals and energies; UHF borrowed.
+    let rhf_view = ferric_scf::semicanonical::unrestricted_reference(mol, rhf)?;
+    let rhf: &ScfResult = &rhf_view;
 
     // Pre-flight peak-memory gate (M2-style fail-fast, see budget.rs). Cheap
     // shape values only. Open-shell replicates compute_rpa_intermediates_spin's
@@ -1136,13 +1144,8 @@ pub fn run_u_pdep_rpa(
         rhf.eps_a()[inter_a.first_occ..inter_a.first_occ + inter_a.nocc].to_vec();
     let eps_vir_a: Vec<f64> =
         rhf.eps_a()[inter_a.nocc_total..inter_a.nocc_total + inter_a.nvir].to_vec();
-    // ROHF stores one set of orbital energies for both spins (Guest-Saunders
-    // canonicalized α energies serve as β denominators too).
-    let eps_b_full: &[f64] = if matches!(rhf.spin, Spin::RestrictedOpen) {
-        rhf.eps_a()
-    } else {
-        rhf.eps_b()
-    };
+    // `rhf` is UHF-shaped here (a ROHF input was semi-canonicalized above).
+    let eps_b_full: &[f64] = rhf.eps_b();
     let eps_occ_b: Vec<f64> =
         eps_b_full[inter_b.first_occ..inter_b.first_occ + inter_b.nocc].to_vec();
     let eps_vir_b: Vec<f64> =

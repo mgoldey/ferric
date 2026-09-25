@@ -233,10 +233,10 @@ pub fn build_full_b(
 
 /// Build per-spin B̃^P_{mn} for an open-shell reference (UHF, ROHF, UKS).
 ///
-/// `is_alpha = true` uses α-MOs + α-eps; `false` uses β. For ROHF, β
-/// reuses the α-MO coefficients (Guest–Saunders canonicalized α serves
-/// both channels) — matches `compute_rpa_intermediates_spin` and
-/// `run_u_pdep_rpa`.
+/// `is_alpha = true` uses α-MOs + α-eps; `false` uses β. A ROHF/ROKS
+/// reference is semi-canonicalized first
+/// (`ferric_scf::semicanonical::unrestricted_reference`), as `run_u_pdep_rpa`
+/// and `run_u_gw` do, so each spin uses its own `F_σ` orbitals and energies.
 ///
 /// `nocc_σ` is read from the molecule's nelec + 2S:
 ///   nocc_α = (nelec + 2S) / 2, nocc_β = (nelec − 2S) / 2.
@@ -255,19 +255,17 @@ pub fn build_full_b_spin(
             "build_full_b_spin: use build_full_b for Restricted results".into(),
         ));
     }
+    let scf_view = ferric_scf::semicanonical::unrestricted_reference(mol, scf)?;
+    let scf: &ScfResult = &scf_view;
     let nelec = mol.nelec();
     let two_s = (mol.multiplicity as i32) - 1;
     let nocc_a = ((nelec + two_s) / 2) as usize;
     let nocc_b = ((nelec - two_s) / 2) as usize;
+    // `scf` is UHF-shaped here (a ROHF input was semi-canonicalized above).
     let (mos, eps_slice, nocc) = if is_alpha {
         (scf.mos_a(), scf.eps_a(), nocc_a)
     } else {
-        // ROHF reuses α MOs and α energies for β; UHF has its own β block.
-        match scf.spin {
-            Spin::RestrictedOpen => (scf.mos_a(), scf.eps_a(), nocc_b),
-            Spin::Unrestricted => (scf.mos_b(), scf.eps_b(), nocc_b),
-            Spin::Restricted => unreachable!(),
-        }
+        (scf.mos_b(), scf.eps_b(), nocc_b)
     };
     build_full_b_with_mos(
         obs,
@@ -419,6 +417,9 @@ pub fn build_full_b_both_spins(
             "build_full_b_both_spins: not applicable to Restricted results".into(),
         ));
     }
+    // ROHF/ROKS -> semi-canonical per-spin orbitals and energies; UHF borrowed.
+    let scf_view = ferric_scf::semicanonical::unrestricted_reference(mol, scf)?;
+    let scf: &ScfResult = &scf_view;
     let nelec = mol.nelec();
     let two_s = (mol.multiplicity as i32) - 1;
     let nocc_a = ((nelec + two_s) / 2) as usize;
@@ -447,11 +448,7 @@ pub fn build_full_b_both_spins(
         frozen_core,
         memory_budget_bytes,
     )?;
-    let (mos_b, eps_b_slice) = match scf.spin {
-        Spin::RestrictedOpen => (scf.mos_a(), scf.eps_a()),
-        Spin::Unrestricted => (scf.mos_b(), scf.eps_b()),
-        Spin::Restricted => unreachable!(),
-    };
+    let (mos_b, eps_b_slice) = (scf.mos_b(), scf.eps_b());
     let mo_b_b = build_mo_b_from_source(
         &mut ao_src,
         &v_inv_sqrt,
