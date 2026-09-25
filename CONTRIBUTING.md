@@ -5,7 +5,7 @@
 | Dependency | Version | Notes |
 |------------|---------|-------|
 | Rust       | 1.75+   | stable toolchain |
-| libint2    | 2.7+    | build from the [mpqc4 tarball](https://github.com/evaleev/libint/releases) |
+| libint2    | 2.13.1  | `scripts/install-libint.sh` (prebuilt conda-forge build with second derivatives); a from-source 2.7+ build also links |
 | OpenBLAS   | any     | with LAPACK support (`libopenblas-dev` on Debian/Ubuntu) |
 | libxc      | as packaged | `libxc-dev` on Debian/Ubuntu (CI builds against Ubuntu 22.04's) |
 | cmake      | 3.14+   | needed to build the vendored libecpint |

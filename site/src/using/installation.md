@@ -5,7 +5,7 @@ There are two ways in. Most people want the first.
 | You want to | Do this | Time |
 |---|---|---|
 | Run calculations | [Install the prebuilt wheel](#fastest-the-prebuilt-wheel) | about a minute |
-| Change ferric's Rust code, or use MPI | [Build from source](#building-from-source) | about 30 minutes, mostly libint2 |
+| Change ferric's Rust code, or use MPI | [Build from source](#building-from-source) | about 10 minutes, mostly compiling ferric |
 
 ## Fastest: the prebuilt wheel
 
@@ -54,14 +54,15 @@ so run example files from the repository root.
 ## Building from source
 
 Build from source if you are changing ferric, need the MPI build, or are on a
-platform without a wheel. `ferric` links **libint2**, a C++ integral library
-that must itself be built from source. That build is most of the time.
+platform without a wheel. `ferric` links **libint2**, a C++ integral library;
+`scripts/install-libint.sh` installs a prebuilt copy in seconds.
 
 ### Prerequisites
 
 - **Rust 1.75+**: install via [rustup](https://rustup.rs/)
-- **libint2 2.7**: from the
-  [mpqc4 tarball](https://github.com/evaleev/libint/releases/download/v2.7.2/libint-2.7.2-mpqc4.tgz)
+- **libint2 2.13.1**: the conda-forge Linux x86-64 build, which includes
+  second-derivative integrals; `scripts/install-libint.sh` downloads it (checksum
+  pinned) and needs `curl`, `python3`, `zstd` and `patchelf`
 - **libxc**, **OpenBLAS**, **LAPACK**, **Eigen3** and **Boost** headers
 - **Python 3.10+ and maturin**: optional, for the Python bindings
 
@@ -73,22 +74,16 @@ The apt list matches what CI installs (`.github/workflows/ci.yml`).
 # 1. System dependencies
 sudo apt-get install -y build-essential cmake g++ gfortran wget git \
     libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-    libxc-dev libboost-dev \
+    libxc-dev libboost-dev patchelf zstd \
     python3-dev python3-pip python3-venv
 
-# 2. Build and install libint2 into ~/.local (~30 min)
-wget https://github.com/evaleev/libint/releases/download/v2.7.2/libint-2.7.2-mpqc4.tgz
-tar xzf libint-2.7.2-mpqc4.tgz
-cd libint-2.7.2            # the tarball unpacks to libint-2.7.2, without the -mpqc4 suffix
-mkdir build && cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=$HOME/.local -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-make -j$(nproc)
-make install
-cd ../..
-
-# 3. Get and build ferric
+# 2. Get ferric and install libint2 (seconds)
 git clone https://github.com/mgoldey/ferric
 cd ferric
+scripts/install-libint.sh ~/.local/libint2-2.13.1
+export LIBINT2_PREFIX=~/.local/libint2-2.13.1
+
+# 3. Build ferric
 cargo build --release
 
 # 4. Check it: seconds, not minutes
@@ -99,9 +94,13 @@ The last line should end with `converged  = true` and
 `energy     = -74.9631468000 Hartree`, as shown in the
 [first calculation](./quickstart.md).
 
-If libint2 is installed somewhere other than `~/.local`, set `LIBINT2_PREFIX`
-to that prefix before building (it is read by
-`crates/ferric-integrals/build.rs`).
+`LIBINT2_PREFIX` is read by `crates/ferric-integrals/build.rs`; unset, it
+defaults to `~/.local`. The install script records the library's absolute path
+in every binary that links it, so moving or deleting that directory breaks
+the build's executables until they are rebuilt. A prefix holding a static
+`libint2.a` (a from-source libint2 build) also works, but a library generated
+without second derivatives has no analytic Hessians; frequencies then use
+finite differences of the analytic gradient.
 
 The workspace has three binaries (`ferric`, `ferric-cli` and `ferric-batch`),
 so `cargo run` needs to be told which one: `cargo run --release --bin ferric -- input.toml`.
@@ -141,23 +140,24 @@ Use `uv run maturin develop`, not a bare `maturin develop`. A bare one can
 install into a different interpreter from the one `uv run python` loads, and the
 stale build keeps getting imported.
 
-### What the mpqc4 libint2 export does and does not carry
+### What the libint2 build carries
 
-These capabilities are fixed when the tarball is *generated*, so no `cmake` flag
-changes them. `compiler.config` inside the tarball records the exact settings.
+Integral classes, derivative orders and angular-momentum limits are fixed when
+libint2's source is *generated*, so no build flag changes them. The build
+`scripts/install-libint.sh` installs (conda-forge 2.13.1) carries:
 
-| Capability | mpqc4 export | Needed for |
+| Integrals | Highest angular momentum for energy / 1st / 2nd derivatives | Needed for |
 |---|---|---|
-| 1st derivatives | yes | analytic **gradients**, geometry optimization, finite-difference frequencies |
-| RI / 3- and 2-center ERI | yes | RI-MP2, RPA, GW |
-| 2nd derivatives | **no** | **analytic** Hessians (frequencies are computed by finite differences of gradients instead) |
-| G12 geminal | **no** | F12 / geminal integrals |
+| 4-centre ERI | 7 / 6 / 3 | SCF, gradients, analytic Hessians |
+| One-electron (overlap, kinetic, nuclear) | 7 / 6 / 3 | the same |
+| 3- and 2-centre ERI | 7 / 7 / 4 | RI-MP2, RPA, GW and their gradients |
+| G12 geminal | 4 (energy only) | F12 / geminal integrals |
 
-Building against this tarball is correct for everything `ferric` currently
-validates. The G12-dependent tests detect its absence at run time and **skip
-with an explicit message** rather than failing. Getting either missing
-capability means re-generating libint2 from the upstream source repository with
-the corresponding `--enable-*` flags, which is a much longer build.
+Analytic Hessians therefore cover orbital bases up to f functions; a basis with
+g or higher functions uses finite differences of the analytic gradient. The
+upstream mpqc4 tarball (libint2 2.7.2) has no second derivatives and no G12
+class: built against it, ferric uses finite-difference Hessians and the G12
+tests skip with an explicit message.
 
 ## MPI
 

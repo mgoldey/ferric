@@ -1,7 +1,7 @@
 name: CI
 
 # `paths-ignore` on push/pull_request ONLY. A docs-only branch pays the full
-# ~30-minute libint2 build plus the whole workspace test suite for a Markdown
+# whole workspace build and test suite for a Markdown
 # edit that cannot affect any of it — measured on the PR that added `site/`.
 #
 # Deliberately conservative: this lists only paths that CANNOT change compiled
@@ -54,16 +54,13 @@ concurrency:
   #     types), so even if the flag above were ever loosened, a main push and
   #     a schedule run would still never group with each other.
   #
-  # Interaction with the cache-poisoning guards below ("Save libint2 cache",
-  # "Save cargo cache"): a run GitHub cancels because a newer PR run
-  # superseded it is, from the cache-save step's point of view, identical to
-  # a run a human cancelled by hand -- both hit the job's cancellation path
-  # before the save step's `if:` is evaluated. The libint2 save already
-  # reads `if: success() && ...` (a cancelled run is never `success()`) and
-  # the cargo save reads `if: ${{ !cancelled() }}` (a cancelled run IS
-  # `cancelled()`), so both steps are skipped exactly as they already are for
-  # today's manual cancellation -- verified by inspection of those two `if:`
-  # expressions, not changed here. Auto-cancellation opens no new path to the
+  # Interaction with the cache-poisoning guard below ("Save cargo cache"): a
+  # run GitHub cancels because a newer PR run superseded it is, from the
+  # cache-save step's point of view, identical to a run a human cancelled by
+  # hand -- both hit the job's cancellation path before the save step's `if:`
+  # is evaluated. The cargo save reads `if: ${{ !cancelled() }}` (a cancelled
+  # run IS `cancelled()`), so it is skipped exactly as it already is for a
+  # manual cancellation. Auto-cancellation opens no new path to the
   # truncated/208-byte-cache failure mode those guards exist to prevent.
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -103,14 +100,13 @@ env:
   # The 'Runner hardware / BLAS' step below prints the CPU model and the
   # active BLAS/LAPACK alternatives so the next such drift is diagnosable.
   OPENBLAS_CORETYPE: Haswell
-  LIBINT_VERSION: "2.7.2"
   LIBINT2_PREFIX: /home/runner/libint2
 
 jobs:
   lint:
     name: lint (check, clippy, rustdoc)
     runs-on: ubuntu-22.04
-    # Generous only to cover a cold libint2 build on a cache miss; the steady
+    # Generous only to cover a cold cargo cache; the steady
     # state is ~8 min including setup.
     timeout-minutes: 170
     steps:
@@ -173,7 +169,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev
+            libxc-dev libboost-dev patchelf zstd
 
       - name: Runner hardware / BLAS
         run: |
@@ -185,68 +181,25 @@ jobs:
           done
           echo "OPENBLAS_CORETYPE=${OPENBLAS_CORETYPE:-unset}"
 
-      # RESTORE-only. actions/cache saves in a post-step that runs ONLY when the
-      # job succeeds, so while any test was failing libint2 never got cached and
-      # every run paid a ~1h rebuild before reaching the tests -- a loop that
-      # could not break itself. The matching save step runs right after the
-      # build with if: always(), so the cache populates even on a red run.
-      - name: Restore libint2 cache
-        id: cache-libint
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBINT2_PREFIX }}
-          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
+      # libint2: conda-forge 2.13.1 (prebuilt, second-derivative integrals),
+      # installed by the same script developers use; see scripts/install-libint.sh
+      # for the package, its AM limits and why the SONAME is rewritten.
+      - name: Install libint2
+        run: scripts/install-libint.sh "$LIBINT2_PREFIX"
 
-      - name: Build libint2
-        if: steps.cache-libint.outputs.cache-hit != 'true'
-        run: |
-          cd /tmp
-          wget -q https://github.com/evaleev/libint/releases/download/v${LIBINT_VERSION}/libint-${LIBINT_VERSION}-mpqc4.tgz
-          tar xzf libint-${LIBINT_VERSION}-mpqc4.tgz
-          cd libint-${LIBINT_VERSION}
-          mkdir build && cd build
-          cmake .. \
-            -DCMAKE_INSTALL_PREFIX=$LIBINT2_PREFIX \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DCMAKE_BUILD_TYPE=Release
-          make -j$(nproc)
-          make install
-
-      - name: Save libint2 cache
-        # if: always() -- libint2 is an EXTERNAL dependency; whether ferric's
-        # own tests pass has no bearing on whether this build artifact is
-        # reusable. Saving here is what lets a red run stop costing an hour.
-        # NOT always(). The point is to save when ferric's own TESTS fail
-        # (libint2 is external -- a red test says nothing about whether that
-        # artifact is reusable), but NOT when the run was cancelled mid-build.
-        # always() saved a TRUNCATED tree on a cancelled run: the step
-        # reported success and wrote an unusable entry, which is worse than
-        # no cache because it poisons every later restore.
-        if: success() && steps.cache-libint.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBINT2_PREFIX }}
-          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
-
-      # Assert the capabilities ferric actually depends on. Learned the hard
-      # way: the Ubuntu libint2-dev package has INCLUDE_ERI 1 but
-      # INCLUDE_ONEBODY 0, so it COMPILES and then SIGABRTs inside
-      # engine.impl.h when a gradient run asks for a one-electron derivative
-      # engine. Checking only INCLUDE_ERI let that through. Both matter:
-      # ERI for 2e derivatives, ONEBODY for the kinetic/nuclear-attraction
-      # terms. Verified by controlled comparison -- dft_gradient_lda is 3/3
-      # against a build with ONEBODY 1 and SIGABRT against one with 0.
       - name: Verify libint2 capabilities
         run: |
           set -euo pipefail
           CFG="$LIBINT2_PREFIX/include/libint2/config.h"
           echo "--- libint2 config ---"
-          grep -E 'INCLUDE_ERI|INCLUDE_ONEBODY|INCLUDE_G12|LIBINT_MAX_AM' "$CFG" || true
+          grep -E 'INCLUDE_ERI|INCLUDE_ONEBODY|INCLUDE_G12|MAX_AM' "$CFG" || true
           fail=0
-          for macro in INCLUDE_ERI INCLUDE_ONEBODY; do
+          # Derivative order each integral class was generated for. ferric's
+          # gradients need >= 1; analytic Hessians need 2.
+          for macro in LIBINT_INCLUDE_ERI LIBINT_INCLUDE_ONEBODY LIBINT_INCLUDE_ERI3 LIBINT_INCLUDE_ERI2; do
             v=$(sed -n "s/^#define $macro \([0-9]*\)$/\1/p" "$CFG")
-            if [ -z "$v" ] || [ "$v" -lt 1 ]; then
-              echo "::error::libint2 lacks $macro >= 1 (got '${v:-unset}'); ferric gradients would SIGABRT at run time"
+            if [ -z "$v" ] || [ "$v" -lt 2 ]; then
+              echo "::error::libint2 lacks $macro >= 2 (got '${v:-unset}'); gradients or analytic Hessians would SIGABRT at run time"
               fail=1
             else
               echo "$macro=$v OK"
@@ -280,15 +233,14 @@ jobs:
         with:
           components: clippy
 
-      # Same restore/save split as libint2 above: a red test step must not cost
+      # Restore and save are separate steps: a red test step must not cost
       # the next run a full cold rebuild. Keyed on Cargo.lock so a dependency
       # change still invalidates it.
       #
       # `target` is deliberately NOT cached. Measured 2026-09-07: a target/
       # cache is ~9 GB PER PR MERGE REF (two of them were 18.2 GB against the
-      # repo's 10 GB cache limit), so every save evicted the libint2 cache
-      # that takes ~80 min to rebuild, and every subsequent run on every PR
-      # paid that 80 min again -- to save ~5 min of incremental compile. The
+      # repo's 10 GB cache limit), so every save evicted the other cache
+      # entries -- to save ~5 min of incremental compile. The
       # registry + git sources are a few hundred MB and are kept.
       - name: Restore cargo cache
         id: cache-cargo
@@ -366,7 +318,7 @@ jobs:
       # `cargo doc` does not link, but it DOES run build scripts, and
       # ferric-integrals' build.rs compiles shim/shim.cc against libint2.hpp.
       # So documenting this workspace needs the same libint2 this job has
-      # already built and cached — whereas docs.yml has no libint2 and failed
+      # already installed — whereas docs.yml has no libint2 and failed
       # outright when it tried (run 33583179631: "libint2.hpp: No such file").
       # Publishing the API docs from the workflow that already pays for the
       # native build is strictly cheaper than making the docs job pay again.
@@ -492,7 +444,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev
+            libxc-dev libboost-dev patchelf zstd
 
       - name: Runner hardware / BLAS
         run: |
@@ -504,68 +456,25 @@ jobs:
           done
           echo "OPENBLAS_CORETYPE=${OPENBLAS_CORETYPE:-unset}"
 
-      # RESTORE-only. actions/cache saves in a post-step that runs ONLY when the
-      # job succeeds, so while any test was failing libint2 never got cached and
-      # every run paid a ~1h rebuild before reaching the tests -- a loop that
-      # could not break itself. The matching save step runs right after the
-      # build with if: always(), so the cache populates even on a red run.
-      - name: Restore libint2 cache
-        id: cache-libint
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBINT2_PREFIX }}
-          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
+      # libint2: conda-forge 2.13.1 (prebuilt, second-derivative integrals),
+      # installed by the same script developers use; see scripts/install-libint.sh
+      # for the package, its AM limits and why the SONAME is rewritten.
+      - name: Install libint2
+        run: scripts/install-libint.sh "$LIBINT2_PREFIX"
 
-      - name: Build libint2
-        if: steps.cache-libint.outputs.cache-hit != 'true'
-        run: |
-          cd /tmp
-          wget -q https://github.com/evaleev/libint/releases/download/v${LIBINT_VERSION}/libint-${LIBINT_VERSION}-mpqc4.tgz
-          tar xzf libint-${LIBINT_VERSION}-mpqc4.tgz
-          cd libint-${LIBINT_VERSION}
-          mkdir build && cd build
-          cmake .. \
-            -DCMAKE_INSTALL_PREFIX=$LIBINT2_PREFIX \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DCMAKE_BUILD_TYPE=Release
-          make -j$(nproc)
-          make install
-
-      - name: Save libint2 cache
-        # if: always() -- libint2 is an EXTERNAL dependency; whether ferric's
-        # own tests pass has no bearing on whether this build artifact is
-        # reusable. Saving here is what lets a red run stop costing an hour.
-        # NOT always(). The point is to save when ferric's own TESTS fail
-        # (libint2 is external -- a red test says nothing about whether that
-        # artifact is reusable), but NOT when the run was cancelled mid-build.
-        # always() saved a TRUNCATED tree on a cancelled run: the step
-        # reported success and wrote an unusable entry, which is worse than
-        # no cache because it poisons every later restore.
-        if: success() && steps.cache-libint.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBINT2_PREFIX }}
-          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
-
-      # Assert the capabilities ferric actually depends on. Learned the hard
-      # way: the Ubuntu libint2-dev package has INCLUDE_ERI 1 but
-      # INCLUDE_ONEBODY 0, so it COMPILES and then SIGABRTs inside
-      # engine.impl.h when a gradient run asks for a one-electron derivative
-      # engine. Checking only INCLUDE_ERI let that through. Both matter:
-      # ERI for 2e derivatives, ONEBODY for the kinetic/nuclear-attraction
-      # terms. Verified by controlled comparison -- dft_gradient_lda is 3/3
-      # against a build with ONEBODY 1 and SIGABRT against one with 0.
       - name: Verify libint2 capabilities
         run: |
           set -euo pipefail
           CFG="$LIBINT2_PREFIX/include/libint2/config.h"
           echo "--- libint2 config ---"
-          grep -E 'INCLUDE_ERI|INCLUDE_ONEBODY|INCLUDE_G12|LIBINT_MAX_AM' "$CFG" || true
+          grep -E 'INCLUDE_ERI|INCLUDE_ONEBODY|INCLUDE_G12|MAX_AM' "$CFG" || true
           fail=0
-          for macro in INCLUDE_ERI INCLUDE_ONEBODY; do
+          # Derivative order each integral class was generated for. ferric's
+          # gradients need >= 1; analytic Hessians need 2.
+          for macro in LIBINT_INCLUDE_ERI LIBINT_INCLUDE_ONEBODY LIBINT_INCLUDE_ERI3 LIBINT_INCLUDE_ERI2; do
             v=$(sed -n "s/^#define $macro \([0-9]*\)$/\1/p" "$CFG")
-            if [ -z "$v" ] || [ "$v" -lt 1 ]; then
-              echo "::error::libint2 lacks $macro >= 1 (got '${v:-unset}'); ferric gradients would SIGABRT at run time"
+            if [ -z "$v" ] || [ "$v" -lt 2 ]; then
+              echo "::error::libint2 lacks $macro >= 2 (got '${v:-unset}'); gradients or analytic Hessians would SIGABRT at run time"
               fail=1
             else
               echo "$macro=$v OK"
@@ -599,15 +508,14 @@ jobs:
         with:
           components: clippy
 
-      # Same restore/save split as libint2 above: a red test step must not cost
+      # Restore and save are separate steps: a red test step must not cost
       # the next run a full cold rebuild. Keyed on Cargo.lock so a dependency
       # change still invalidates it.
       #
       # `target` is deliberately NOT cached. Measured 2026-09-07: a target/
       # cache is ~9 GB PER PR MERGE REF (two of them were 18.2 GB against the
-      # repo's 10 GB cache limit), so every save evicted the libint2 cache
-      # that takes ~80 min to rebuild, and every subsequent run on every PR
-      # paid that 80 min again -- to save ~5 min of incremental compile. The
+      # repo's 10 GB cache limit), so every save evicted the other cache
+      # entries -- to save ~5 min of incremental compile. The
       # registry + git sources are a few hundred MB and are kept.
       - name: Restore cargo cache
         id: cache-cargo
@@ -682,7 +590,7 @@ jobs:
   #
   # Each shard RESTORES both caches and SAVES NEITHER -- build-tests is the
   # single writer, so adding shards cannot increase eviction pressure on the
-  # 42 MB libint2 entry (~80 min to rebuild if lost).
+  # cargo registry entry.
   test-shard:
     needs: build-tests
     runs-on: ubuntu-22.04
@@ -751,7 +659,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev
+            libxc-dev libboost-dev patchelf zstd
 
       - name: Runner hardware / BLAS
         run: |
@@ -763,68 +671,25 @@ jobs:
           done
           echo "OPENBLAS_CORETYPE=${OPENBLAS_CORETYPE:-unset}"
 
-      # RESTORE-only. actions/cache saves in a post-step that runs ONLY when the
-      # job succeeds, so while any test was failing libint2 never got cached and
-      # every run paid a ~1h rebuild before reaching the tests -- a loop that
-      # could not break itself. The matching save step runs right after the
-      # build with if: always(), so the cache populates even on a red run.
-      - name: Restore libint2 cache
-        id: cache-libint
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBINT2_PREFIX }}
-          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
+      # libint2: conda-forge 2.13.1 (prebuilt, second-derivative integrals),
+      # installed by the same script developers use; see scripts/install-libint.sh
+      # for the package, its AM limits and why the SONAME is rewritten.
+      - name: Install libint2
+        run: scripts/install-libint.sh "$LIBINT2_PREFIX"
 
-      - name: Build libint2
-        if: steps.cache-libint.outputs.cache-hit != 'true'
-        run: |
-          cd /tmp
-          wget -q https://github.com/evaleev/libint/releases/download/v${LIBINT_VERSION}/libint-${LIBINT_VERSION}-mpqc4.tgz
-          tar xzf libint-${LIBINT_VERSION}-mpqc4.tgz
-          cd libint-${LIBINT_VERSION}
-          mkdir build && cd build
-          cmake .. \
-            -DCMAKE_INSTALL_PREFIX=$LIBINT2_PREFIX \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DCMAKE_BUILD_TYPE=Release
-          make -j$(nproc)
-          make install
-
-      - name: Save libint2 cache
-        # if: always() -- libint2 is an EXTERNAL dependency; whether ferric's
-        # own tests pass has no bearing on whether this build artifact is
-        # reusable. Saving here is what lets a red run stop costing an hour.
-        # NOT always(). The point is to save when ferric's own TESTS fail
-        # (libint2 is external -- a red test says nothing about whether that
-        # artifact is reusable), but NOT when the run was cancelled mid-build.
-        # always() saved a TRUNCATED tree on a cancelled run: the step
-        # reported success and wrote an unusable entry, which is worse than
-        # no cache because it poisons every later restore.
-        if: success() && steps.cache-libint.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBINT2_PREFIX }}
-          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
-
-      # Assert the capabilities ferric actually depends on. Learned the hard
-      # way: the Ubuntu libint2-dev package has INCLUDE_ERI 1 but
-      # INCLUDE_ONEBODY 0, so it COMPILES and then SIGABRTs inside
-      # engine.impl.h when a gradient run asks for a one-electron derivative
-      # engine. Checking only INCLUDE_ERI let that through. Both matter:
-      # ERI for 2e derivatives, ONEBODY for the kinetic/nuclear-attraction
-      # terms. Verified by controlled comparison -- dft_gradient_lda is 3/3
-      # against a build with ONEBODY 1 and SIGABRT against one with 0.
       - name: Verify libint2 capabilities
         run: |
           set -euo pipefail
           CFG="$LIBINT2_PREFIX/include/libint2/config.h"
           echo "--- libint2 config ---"
-          grep -E 'INCLUDE_ERI|INCLUDE_ONEBODY|INCLUDE_G12|LIBINT_MAX_AM' "$CFG" || true
+          grep -E 'INCLUDE_ERI|INCLUDE_ONEBODY|INCLUDE_G12|MAX_AM' "$CFG" || true
           fail=0
-          for macro in INCLUDE_ERI INCLUDE_ONEBODY; do
+          # Derivative order each integral class was generated for. ferric's
+          # gradients need >= 1; analytic Hessians need 2.
+          for macro in LIBINT_INCLUDE_ERI LIBINT_INCLUDE_ONEBODY LIBINT_INCLUDE_ERI3 LIBINT_INCLUDE_ERI2; do
             v=$(sed -n "s/^#define $macro \([0-9]*\)$/\1/p" "$CFG")
-            if [ -z "$v" ] || [ "$v" -lt 1 ]; then
-              echo "::error::libint2 lacks $macro >= 1 (got '${v:-unset}'); ferric gradients would SIGABRT at run time"
+            if [ -z "$v" ] || [ "$v" -lt 2 ]; then
+              echo "::error::libint2 lacks $macro >= 2 (got '${v:-unset}'); gradients or analytic Hessians would SIGABRT at run time"
               fail=1
             else
               echo "$macro=$v OK"
@@ -858,15 +723,14 @@ jobs:
         with:
           components: clippy
 
-      # Same restore/save split as libint2 above: a red test step must not cost
+      # Restore and save are separate steps: a red test step must not cost
       # the next run a full cold rebuild. Keyed on Cargo.lock so a dependency
       # change still invalidates it.
       #
       # `target` is deliberately NOT cached. Measured 2026-09-07: a target/
       # cache is ~9 GB PER PR MERGE REF (two of them were 18.2 GB against the
-      # repo's 10 GB cache limit), so every save evicted the libint2 cache
-      # that takes ~80 min to rebuild, and every subsequent run on every PR
-      # paid that 80 min again -- to save ~5 min of incremental compile. The
+      # repo's 10 GB cache limit), so every save evicted the other cache
+      # entries -- to save ~5 min of incremental compile. The
       # registry + git sources are a few hundred MB and are kept.
       - name: Restore cargo cache
         id: cache-cargo
@@ -983,41 +847,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libint2-dev libboost-dev
+            libxc-dev libboost-dev patchelf zstd
 
-      - name: Restore libint2 cache
-        id: cache-libint
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBINT2_PREFIX }}
-          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
-
-      - name: Build libint2
-        if: steps.cache-libint.outputs.cache-hit != 'true'
-        run: |
-          cd /tmp
-          wget -q https://github.com/evaleev/libint/releases/download/v${LIBINT_VERSION}/libint-${LIBINT_VERSION}-mpqc4.tgz
-          tar xzf libint-${LIBINT_VERSION}-mpqc4.tgz
-          cd libint-${LIBINT_VERSION}
-          mkdir build && cd build
-          cmake .. \
-            -DCMAKE_INSTALL_PREFIX=$LIBINT2_PREFIX \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DCMAKE_BUILD_TYPE=Release
-          make -j$(nproc)
-          make install
-
-      - name: Save libint2 cache
-        if: success() && steps.cache-libint.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBINT2_PREFIX }}
-          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
-
-      # Same action-SHA-vs-Rust-version distinction as build-and-test's
-      # toolchain step above: this pins the INSTALLER commit, not the
-      # compiler, which is deliberately left floating on `stable`.
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
+      # libint2: conda-forge 2.13.1 (prebuilt, second-derivative integrals),
+      # installed by the same script developers use; see scripts/install-libint.sh
+      # for the package, its AM limits and why the SONAME is rewritten.
+      - name: Install libint2
+        run: scripts/install-libint.sh "$LIBINT2_PREFIX"
 
       - name: Restore cargo cache
         # No target/ (see the push job's restore step); v3 key to match.
@@ -1124,33 +960,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev
+            libxc-dev libboost-dev patchelf zstd
 
-      - name: Restore libint2 cache
-        id: cache-libint
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBINT2_PREFIX }}
-          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
-
-      # RESTORE-only in steady state, same as slow-tests/coverage: the nightly
-      # build-and-test populates the cache. A cold cache pays the full build.
-      - name: Build libint2
-        if: steps.cache-libint.outputs.cache-hit != 'true'
-        run: |
-          cd /tmp
-          wget -q https://github.com/evaleev/libint/releases/download/v${LIBINT_VERSION}/libint-${LIBINT_VERSION}-mpqc4.tgz
-          tar xzf libint-${LIBINT_VERSION}-mpqc4.tgz
-          cd libint-${LIBINT_VERSION}
-          mkdir build && cd build
-          cmake .. \
-            -DCMAKE_INSTALL_PREFIX=$LIBINT2_PREFIX \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DCMAKE_BUILD_TYPE=Release
-          make -j$(nproc)
-          make install
-
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
+      # libint2: conda-forge 2.13.1 (prebuilt, second-derivative integrals),
+      # installed by the same script developers use; see scripts/install-libint.sh
+      # for the package, its AM limits and why the SONAME is rewritten.
+      - name: Install libint2
+        run: scripts/install-libint.sh "$LIBINT2_PREFIX"
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -1228,10 +1044,8 @@ jobs:
   # CI today. A `cargo build --features mpi` regression would reach `main`
   # unnoticed.
   #
-  # DELIBERATELY STANDALONE: no `needs:`. build-and-test runs up to 170 min on
-  # a cold libint2 build, and there is no reason an MPI link error should wait
-  # behind it. This job builds its own libint2 (sharing build-and-test's cache
-  # KEY, so on the common path it restores in seconds rather than rebuilding).
+  # DELIBERATELY STANDALONE: no `needs:`; there is no reason an MPI link error
+  # should wait behind build-and-test. This job installs its own libint2.
   #
   # WHY A CORRECTNESS RUN AND NOT JUST A COMPILE. `cargo build --features mpi`
   # exiting 0 proves almost nothing about MPI: the failure mode this repo
@@ -1252,7 +1066,7 @@ jobs:
     # Well under build-and-test's 170. The cargo build here is a subset of the
     # workspace (ferric-scf + ferric-mp2 and their deps, not --all-targets),
     # and the test systems are water/cc-pVDZ -- seconds of compute. The
-    # headroom is almost entirely for a cold libint2 build on a cache miss.
+    # headroom is almost entirely for a cold cargo build.
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -1289,7 +1103,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev \
+            libxc-dev libboost-dev patchelf zstd \
             libopenmpi-dev openmpi-bin clang libclang-dev
 
       - name: MPI toolchain identification
@@ -1301,38 +1115,11 @@ jobs:
           mpicc -show 2>/dev/null || true
           echo "libclang: $(dpkg -l | awk '/^ii +libclang-[0-9]/ {print $2, $3}' | head -1)"
 
-      # Same key as build-and-test's, ON PURPOSE. libint2 is built from the
-      # identical tarball at the identical version on the identical runner
-      # image, so the artifact is byte-for-byte interchangeable and there is
-      # no reason to spend a second entry out of the repo's already-tight
-      # ~10 GB cache budget (see build-native-deps in wheels.yml for how
-      # close that budget runs). RESTORE-ONLY here: build-and-test owns the
-      # save. If this job misses, it rebuilds locally and simply does not
-      # cache -- costing this job time but never evicting build-and-test's
-      # entry, which is the expensive one to lose.
-      - name: Restore libint2 cache
-        id: cache-libint
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBINT2_PREFIX }}
-          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
-
-      - name: Build libint2
-        if: steps.cache-libint.outputs.cache-hit != 'true'
-        run: |
-          cd /tmp
-          wget -q https://github.com/evaleev/libint/releases/download/v${LIBINT_VERSION}/libint-${LIBINT_VERSION}-mpqc4.tgz
-          tar xzf libint-${LIBINT_VERSION}-mpqc4.tgz
-          cd libint-${LIBINT_VERSION}
-          mkdir build && cd build
-          cmake .. \
-            -DCMAKE_INSTALL_PREFIX=$LIBINT2_PREFIX \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DCMAKE_BUILD_TYPE=Release
-          make -j$(nproc)
-          make install
-
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
+      # libint2: conda-forge 2.13.1 (prebuilt, second-derivative integrals),
+      # installed by the same script developers use; see scripts/install-libint.sh
+      # for the package, its AM limits and why the SONAME is rewritten.
+      - name: Install libint2
+        run: scripts/install-libint.sh "$LIBINT2_PREFIX"
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -1782,52 +1569,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake g++ gfortran \
             libeigen3-dev libopenblas-dev liblapack-dev pkg-config \
-            libxc-dev libboost-dev
+            libxc-dev libboost-dev patchelf zstd
 
-      - name: Restore libint2 cache
-        id: cache-libint
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBINT2_PREFIX }}
-          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
-
-      # RESTORE-only, same as build-and-test/slow-tests: this job never
-      # builds libint2 from a cache miss on its own account. In steady state
-      # build-and-test's own nightly run (the workflow's `schedule` trigger
-      # runs EVERY job with no `if:` excluding build-and-test) populates or
-      # refreshes this cache, which is what "libint2 is already cached" for
-      # this job relies on. A genuine cold cache still costs the same ~80
-      # min build described on build-and-test's "Build libint2" step.
-      - name: Build libint2
-        if: steps.cache-libint.outputs.cache-hit != 'true'
-        run: |
-          cd /tmp
-          wget -q https://github.com/evaleev/libint/releases/download/v${LIBINT_VERSION}/libint-${LIBINT_VERSION}-mpqc4.tgz
-          tar xzf libint-${LIBINT_VERSION}-mpqc4.tgz
-          cd libint-${LIBINT_VERSION}
-          mkdir build && cd build
-          cmake .. \
-            -DCMAKE_INSTALL_PREFIX=$LIBINT2_PREFIX \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DCMAKE_BUILD_TYPE=Release
-          make -j$(nproc)
-          make install
-
-      - name: Save libint2 cache
-        if: success() && steps.cache-libint.outputs.cache-hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ${{ env.LIBINT2_PREFIX }}
-          key: libint-${{ env.LIBINT_VERSION }}-ubuntu2204-v1
-
-      # Action-SHA-vs-Rust-version distinction: see build-and-test's
-      # toolchain step. `llvm-tools` (not `clippy`) is the component this
-      # job needs: `cargo llvm-cov` instruments via `llvm-tools`'s
-      # `llvm-profdata`/`llvm-cov` binaries, installed fastest through the
-      # pinned taiki-e/install-action below rather than a source build.
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch @ 2026-09-16
-        with:
-          components: llvm-tools
+      # libint2: conda-forge 2.13.1 (prebuilt, second-derivative integrals),
+      # installed by the same script developers use; see scripts/install-libint.sh
+      # for the package, its AM limits and why the SONAME is rewritten.
+      - name: Install libint2
+        run: scripts/install-libint.sh "$LIBINT2_PREFIX"
 
       - name: Restore cargo cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -1893,7 +1641,7 @@ jobs:
         run: rm -rf target/llvm-cov-target
 
       # Everything below builds and exercises the compiled pyo3 extension,
-      # which needs the SAME libint2 this job already has cached above --
+      # which needs the SAME libint2 this job installed above --
       # the reason this lives in the nightly coverage job rather than the
       # fast python-quality job.
       - name: Install uv
