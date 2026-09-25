@@ -52,12 +52,39 @@ def topology_from_openmm(
     (or `ferric_mm::MmTopology::from_amber_units` on the Rust side, same
     argument order).
     """
-    import openmm
-    from openmm import app, unit
+    from openmm import app
 
     pdb = app.PDBFile(str(pdb_path))
     ff = app.ForceField(*forcefield)
-    system = ff.createSystem(pdb.topology, nonbondedMethod=app.NoCutoff)
+    # rigidWater=False and constraints=None: a constrained bond is LEFT OUT of
+    # HarmonicBondForce, and ferric-mm derives its exclusions from the bond
+    # list, so a rigid water would reach ferric with no O-H bonds and its
+    # intramolecular O-H pairs would get full Coulomb + LJ.
+    system = ff.createSystem(
+        pdb.topology,
+        nonbondedMethod=app.NoCutoff,
+        constraints=None,
+        rigidWater=False,
+    )
+    return topology_from_system(system)
+
+
+def topology_from_system(system) -> dict:
+    """The extraction half of `topology_from_openmm`: read the AMBER-form
+    parameters out of an already-built `openmm.System` (same return value).
+
+    Refuses a System with constraints: a constrained bond has no
+    HarmonicBondForce entry, so ferric-mm would derive the wrong exclusions.
+    """
+    import openmm
+    from openmm import unit
+
+    if system.getNumConstraints() > 0:
+        raise ValueError(
+            f"System has {system.getNumConstraints()} constraints; constrained "
+            "bonds are absent from HarmonicBondForce, so ferric-mm would derive "
+            "wrong exclusions. Build it with constraints=None, rigidWater=False."
+        )
 
     n_atoms = system.getNumParticles()
     charges: list[float] = [0.0] * n_atoms
