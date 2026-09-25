@@ -59,6 +59,9 @@ the measured difference recorded in the repository; "test tolerance" is what
 the pinning test actually asserts, which is often looser. **Proof** links to
 the test file that asserts the row, and, where one exists, the script that
 generated its reference data; a row with nothing to link is not graded Proven.
+Proof files named `validation_*.rs` are `#[ignore]`d, so an ordinary
+`cargo test` skips them; they run in the weekly `validation` CI job and on
+demand (`cargo nextest run --run-ignored only -E 'binary(/^validation_/)'`).
 
 | Capability | System / basis | Reference | Stated agreement | Test tolerance | Proof |
 |---|---|---|---:|---:|---|
