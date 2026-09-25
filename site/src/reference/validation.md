@@ -109,9 +109,9 @@ other combination exits with an error before the SCF runs.
 - `pdep-rpa`, `gw` and `mp2-v` solve UHF with MOM after 5 iterations when
   `multiplicity > 1`, for `task = "energy"` only. For `pdep-rpa` and `gw`,
   setting `[rpa] xc` makes that reference UKS; `gw` with `[gw] reference =
-  "rohf"` uses ROHF (ROKS with `[rpa] xc`) instead. The ROHF-reference path
-  is not compared against any reference, and it uses the ROHF orbital
-  energies directly for both spins (no semicanonicalization). `mp2-v` does not read
+  "rohf"` uses ROHF (ROKS with `[rpa] xc`) instead, semi-canonicalized per
+  spin; U-G0W0 on a semi-canonicalized ROHF reference is in the
+  [Anchors](#anchors), the ROKS reference is not compared. `mp2-v` does not read
   `[rpa] xc` and stays UHF.
 - `linlccd` and `wb97x-l-v` refuse an open-shell molecule; their open-shell
   versions are library-only (`ferric_cc::linlccd_u::u_linlccd`,
