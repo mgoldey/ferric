@@ -91,8 +91,9 @@ fn bse_tda_h2o_lowest_singlet() {
 
     // Gate: positive + ordered (kernel sanity). The absolute numbers are pinned
     // by crates/ferric-gw/tests/validation_bse.rs against an independent numpy
-    // BSE-TDA on the same quasiparticle energies; this smoke test only checks
-    // that the default-settings path runs and orders its roots.
+    // BSE-TDA on the same quasiparticle energies; this smoke test (pdep_cfg:
+    // 16-point grid, trunc_thresh 0) only checks that the path runs and orders
+    // its roots.
     assert!(lowest > 0.0, "lowest excitation must be positive");
     assert!(
         res.omega.windows(2).all(|w| w[0] <= w[1] + 1e-12),
