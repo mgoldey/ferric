@@ -81,9 +81,10 @@
 //!   wrong spin): the stretched-water external λ misses PySCF's −3.07e-1 and
 //!   the singlet/triplet coupling block of ferric's UHF-at-RHF Hessian is not
 //!   zero (ferric-internal identity, asserted).
-//! * If the KS kernel is dropped (`fxc: None`, the HF Hessian at the KS
-//!   density): NH2's λ_min lands near the UHF control (7.50e-2) instead of
-//!   the UKS reference (7.87e-2); asserted as a MISS.
+//! * If the KS kernel is dropped (`fxc_ref = None` in `uhf.rs`'s stability
+//!   path): NH2's UKS λ_min moves from 0.0787 to 0.1674 and the UKS reference
+//!   comparison fails (measured by that mutation). The separate UHF SCF's
+//!   λ_min (7.50e-2) is a negative control only; it does not isolate f_xc.
 //! * If ferric lands on a different SCF STATE: the energy assertion (made
 //!   FIRST) fails by mHa, so a state difference cannot masquerade as a
 //!   Hessian difference.
@@ -820,7 +821,8 @@ fn nh2_uks_pbe_vs_pyscf() {
         want[0],
         TOL_LAMBDA_KS,
     );
-    // KS kernel guard: the HF Hessian (the fxc-dropped trap) is ~3.6e-3 away.
+    // Negative control: the separate UHF SCF's λ_min is ~3.6e-3 away. This does
+    // not isolate f_xc (see the module doc for the mutation that does).
     must_miss(
         ctx,
         "UHF control lambda_min",
