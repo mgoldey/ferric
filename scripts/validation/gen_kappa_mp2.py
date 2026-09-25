@@ -120,7 +120,9 @@ def main() -> int:
     only = set(sys.argv[1:])
     unknown = only - set(SYSTEMS)
     if unknown:
-        raise SystemExit(f"unknown systems: {sorted(unknown)}; known: {sorted(SYSTEMS)}")
+        raise SystemExit(
+            f"unknown systems: {sorted(unknown)}; known: {sorted(SYSTEMS)}"
+        )
     written = []
     for system, (basis_name, aux_name) in SYSTEMS.items():
         if only and system not in only:
