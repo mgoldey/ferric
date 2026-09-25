@@ -1,6 +1,6 @@
 # Examples
 
-This page indexes every input file in `examples/`. There are 61 TOML files
+This page indexes every input file in `examples/`. There are 65 TOML files
 and no Python scripts. Run one from the repository root:
 
 ```bash
