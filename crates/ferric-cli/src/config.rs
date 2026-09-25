@@ -49,6 +49,11 @@ pub struct Config {
     /// missing `Option` field as `None` automatically without it).
     #[serde(default)]
     pub cosmo: Option<ferric_scf::cosmo::CosmoConfig>,
+    /// Optional `[pcm]` section: IEF-PCM implicit solvent (see [`PcmCfg`]).
+    /// Absent means no solvation, byte-identical to a vacuum run
+    /// (`RhfConfig.pcm = None`).
+    #[serde(default)]
+    pub pcm: Option<PcmCfg>,
     #[serde(default)]
     pub tddft: TddftCfg,
     /// Optional `[output]` section: where the machine-readable JSON run log
@@ -295,6 +300,20 @@ pub struct DftCfg {
     /// through the XC gradient's grid-response path, which is built for the
     /// unpruned grid and hard-errors on a pruned one.
     pub grid_prune: Option<String>,
+    /// Radial points per atom on the MAIN DFT grid. Omitted = the library
+    /// default (`AtomicGridConfig::default()`, 75). Must be > 0. Same meaning
+    /// as the Python `grid_radial=` kwarg.
+    ///
+    /// Energy runs only, for the same reason as `grid_prune`: the analytic
+    /// XC gradient (`ks_gradient`) is built on the default grid, so a custom
+    /// grid's energy and that gradient would describe different surfaces.
+    pub grid_radial: Option<usize>,
+    /// Lebedev order (angular points per radial shell) on the MAIN DFT grid.
+    /// Omitted = the library default (110). Must be a supported Lebedev order
+    /// (`ferric_dft::prune::SUPPORTED_LEBEDEV_ORDERS`); anything else is an
+    /// error here rather than a panic inside the grid build. Energy runs only
+    /// (see `grid_radial`).
+    pub grid_angular: Option<usize>,
     /// Empirical dispersion correction to ADD to the SCF energy.
     ///
     ///   omitted / absent  — no correction. The reported energy is the plain
@@ -311,6 +330,52 @@ pub struct DftCfg {
     /// There is deliberately no "off" value that reports a 0.0 correction --
     /// absent means absent.
     pub dispersion: Option<String>,
+}
+
+impl DftCfg {
+    /// True when any main-grid SIZE key is set (`grid_radial`/`grid_angular`).
+    pub fn sets_grid_size(&self) -> bool {
+        self.grid_radial.is_some() || self.grid_angular.is_some()
+    }
+
+    /// The main KS grid for `RhfConfig::dft_grid`, from `grid_radial` /
+    /// `grid_angular` and an already-parsed `grid_prune` scheme.
+    ///
+    /// All three unset returns `None`, which keeps `AtomicGridConfig::default()`
+    /// (75x110, unpruned) and so is byte-identical to a run without these keys.
+    /// Any one set materialises an explicit config, the unset sizes taken from
+    /// that same default. Mirrors the Python `resolve_dft_grid` (same checks,
+    /// same defaults), so `[dft] grid_radial = 99` and `grid_radial=99` build
+    /// the same grid.
+    pub fn grid_config(
+        &self,
+        prune: Option<ferric_dft::prune::PruneScheme>,
+    ) -> Result<Option<ferric_dft::grid::AtomicGridConfig>, String> {
+        use ferric_dft::prune::{region_orders, SUPPORTED_LEBEDEV_ORDERS};
+        if !self.sets_grid_size() && prune.is_none() {
+            return Ok(None);
+        }
+        let default = ferric_dft::grid::AtomicGridConfig::default();
+        let n_radial = self.grid_radial.unwrap_or(default.n_radial);
+        let n_angular = self.grid_angular.unwrap_or(default.n_angular);
+        if n_radial == 0 {
+            return Err("[dft] grid_radial must be > 0".to_string());
+        }
+        if !SUPPORTED_LEBEDEV_ORDERS.contains(&n_angular) {
+            return Err(format!(
+                "[dft] grid_angular = {n_angular} is not a supported Lebedev order \
+                 (supported: {SUPPORTED_LEBEDEV_ORDERS:?})"
+            ));
+        }
+        if prune.is_some() {
+            region_orders(n_angular).map_err(|e| format!("[dft] grid_prune: {e}"))?;
+        }
+        Ok(Some(ferric_dft::grid::AtomicGridConfig {
+            n_radial,
+            n_angular,
+            prune,
+        }))
+    }
 }
 
 /// What `[dft] dispersion` asked for, after strict parsing.
@@ -364,9 +429,18 @@ impl DispersionRequest {
     }
 }
 
-/// One `[[external_potential.point_charges]]` entry: a fixed point charge
+/// One `[[external_potential.point_charges]]` entry: a fixed classical charge
 /// (units: e for `q`, Bohr for coordinates) contributing to the one-electron
 /// Hamiltonian and nuclear-repulsion-like energy term.
+///
+/// With `width` set, the charge is Gaussian-SMEARED instead of a point:
+/// density `q (ζ/π)^{3/2} exp(-ζ r²)` with `ζ = 1/width²`, potential
+/// `q·erf(r/width)/r` (PySCF `mm_charge(radii=)` convention; the same
+/// `(q, x, y, z, width)` Bohr/Bohr tuples as the Python `smeared_charges=`
+/// kwarg, `ferric_core::external_potential::SmearedCharge`). `width` is in
+/// **Bohr** and must be finite and `> 0`: `width → 0` is the point-charge
+/// limit, which is spelled by omitting the key, so `width = 0` is an error
+/// rather than a second way to write a point charge.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PointChargeCfg {
@@ -374,10 +448,13 @@ pub struct PointChargeCfg {
     pub x: f64,
     pub y: f64,
     pub z: f64,
+    /// Gaussian width in Bohr (`ζ = 1/width²`). Absent = point charge.
+    pub width: Option<f64>,
 }
 
-/// The `[external_potential]` TOML section: an array of fixed point charges
-/// plus an optional uniform external electric field (a.u.).
+/// The `[external_potential]` TOML section: an array of fixed point (or
+/// Gaussian-smeared, see [`PointChargeCfg::width`]) charges plus an optional
+/// uniform external electric field (a.u.).
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ExternalPotentialCfg {
@@ -387,9 +464,28 @@ pub struct ExternalPotentialCfg {
 }
 
 impl ExternalPotentialCfg {
+    /// Refuse a smeared-charge `width` that is not finite and `> 0`, naming
+    /// the offending entry (zero-based) so a long charge list can be fixed.
+    pub fn validate(&self) -> Result<(), String> {
+        for (i, pc) in self.point_charges.iter().enumerate() {
+            if let Some(w) = pc.width {
+                if !w.is_finite() || w <= 0.0 {
+                    return Err(format!(
+                        "[external_potential] point_charges[{i}]: width = {w} must be finite \
+                         and > 0 (Bohr). Omit `width` for a point charge."
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Convert into the solver-facing type. Returns `None` when both
     /// `point_charges` is empty and `field` is unset (a true no-op,
-    /// matching `RhfConfig.external_potential`'s `None` default).
+    /// matching `RhfConfig.external_potential`'s `None` default). Entries
+    /// with a `width` go to `smeared_charges`, the rest to `point_charges`,
+    /// each in file order. Widths are validated by [`Self::validate`], which
+    /// [`load_config`] runs.
     pub fn to_external_potential(
         &self,
     ) -> Option<ferric_core::external_potential::ExternalPotential> {
@@ -400,16 +496,100 @@ impl ExternalPotentialCfg {
             point_charges: self
                 .point_charges
                 .iter()
-                .map(|pc| ferric_core::external_potential::PointCharge {
-                    q: pc.q,
-                    x: pc.x,
-                    y: pc.y,
-                    z: pc.z,
-                })
+                .filter_map(PointChargeCfg::as_point)
                 .collect(),
-            smeared_charges: Vec::new(),
+            smeared_charges: self
+                .point_charges
+                .iter()
+                .filter_map(PointChargeCfg::as_smeared)
+                .collect(),
             field: self.field,
         })
+    }
+}
+
+impl PointChargeCfg {
+    /// This entry as a point charge, or `None` when it carries a `width`.
+    fn as_point(&self) -> Option<ferric_core::external_potential::PointCharge> {
+        let (q, x, y, z) = (self.q, self.x, self.y, self.z);
+        match self.width {
+            None => Some(ferric_core::external_potential::PointCharge { q, x, y, z }),
+            Some(_) => None,
+        }
+    }
+
+    /// This entry as a Gaussian-smeared charge, or `None` without a `width`.
+    fn as_smeared(&self) -> Option<ferric_core::external_potential::SmearedCharge> {
+        let (q, x, y, z) = (self.q, self.x, self.y, self.z);
+        self.width
+            .map(|width| ferric_core::external_potential::SmearedCharge { q, x, y, z, width })
+    }
+}
+
+/// The `[pcm]` TOML section: IEF-PCM implicit solvent (`ferric_pcm`),
+/// threaded into `RhfConfig.pcm`.
+///
+/// Exactly one of `epsilon` (a dielectric constant, finite and > 1) or
+/// `solvent` (a name from `ferric_pcm::NAMED_SOLVENTS`, the same table the
+/// Python `solvent=` kwarg reads) is required; `lebedev_order` (6, 14, 26,
+/// 50, 110 or 302; default 110) sets the tesserae per atomic sphere. The
+/// remaining `PcmConfig` knobs (Bondi scale 1.2, Gaussian-smeared S/D) stay
+/// at the library defaults, as they do in Python.
+///
+/// Which kinds/tasks honour it is decided by
+/// [`Config::validate_cli_wired_keys`]: the reaction field enters the SCF, so
+/// kinds whose reported number is the SCF (or, for `pdep-rpa`, an SCF-plus-
+/// correlation total on that reference) accept it; gradient tasks refuse it,
+/// because no gradient in the workspace has a PCM term.
+#[derive(Deserialize, Default, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PcmCfg {
+    /// Solvent dielectric constant (finite, > 1). Mutually exclusive with
+    /// `solvent`.
+    pub epsilon: Option<f64>,
+    /// Named solvent (case-insensitive), e.g. `"water"` (ε = 78.4). Mutually
+    /// exclusive with `epsilon`. An unknown name is an error, never vacuum.
+    pub solvent: Option<String>,
+    /// Lebedev order per atomic sphere. Default 110.
+    pub lebedev_order: Option<usize>,
+}
+
+/// A `FerricError`'s message without the variant's "General error: " prefix.
+fn ferric_msg(e: ferric_core::FerricError) -> String {
+    match e {
+        ferric_core::FerricError::General(m) => m,
+        other => other.to_string(),
+    }
+}
+
+impl PcmCfg {
+    /// Build the library config, strictly: both or neither of
+    /// `epsilon`/`solvent`, a non-physical dielectric, an unknown solvent or
+    /// an unsupported Lebedev order is an error.
+    pub fn to_pcm_config(&self) -> Result<ferric_pcm::PcmConfig, String> {
+        use ferric_pcm::PcmConfig;
+        let base = match (self.epsilon, self.solvent.as_deref()) {
+            (Some(_), Some(_)) => {
+                return Err("[pcm] sets both epsilon and solvent; give exactly one \
+                            (a solvent name IS a dielectric constant)"
+                    .to_string())
+            }
+            (None, None) => {
+                return Err("[pcm] needs epsilon (a dielectric constant) or solvent \
+                            (a name such as \"water\"); remove the section for vacuum"
+                    .to_string())
+            }
+            (Some(eps), None) => PcmConfig::with_epsilon(eps)
+                .map_err(|e| format!("[pcm] epsilon: {}", ferric_msg(e)))?,
+            (None, Some(name)) => PcmConfig::for_solvent(name)
+                .map_err(|e| format!("[pcm] solvent: {}", ferric_msg(e)))?,
+        };
+        match self.lebedev_order {
+            Some(order) => base
+                .with_lebedev_order(order)
+                .map_err(|e| format!("[pcm] lebedev_order: {}", ferric_msg(e))),
+            None => Ok(base),
+        }
     }
 }
 
@@ -759,6 +939,13 @@ pub struct Mp2Cfg {
     /// benchmarks/grid/run_grid.py (an Å value fed through a Bohr-assuming
     /// formula, off by a factor of ~1.89).
     pub r0: Option<f64>,
+    /// rs-mp2-rpa with `attenuator = "terf"` only: decouple the terf/terfc seam
+    /// sharpness ω (**Å⁻¹**) from `r0`. Omitted = the Dutoi curvature link
+    /// ω = 1/(r0·√2) (byte-identical to a run without the key). Converted to
+    /// Bohr⁻¹ at the CLI boundary, same convention as `omega` and the Python
+    /// `run_rs_mp2_rpa(terf_omega=)` kwarg. Must be finite and > 0; an error on
+    /// any other kind or attenuator.
+    pub terf_omega: Option<f64>,
     /// Sweep several `r0` values (**Å**) in ONE job, reusing a single SCF.
     ///
     /// Only meaningful with `attenuator = "terf"`. When set, `r0` is ignored
@@ -855,9 +1042,147 @@ pub struct Mp2Cfg {
     /// (Unpruned; `AtomicGridConfig::prune` is deliberately not exposed here
     /// because pruning hard-errors at `n_angular = 50`.)
     pub mp2v_nlc_n_angular: Option<usize>,
+
+    // ---- OO-RI-MP2 (`method.kind = "oo-rimp2"`) ----------------------------
+    // Orbital-rotation loop knobs, applied to BOTH the closed-shell
+    // (`OoRiMp2Config`) and the open-shell UHF-reference (`UOoRiMp2Config`)
+    // paths. Omitted = the library default, which is the same for both. Same
+    // four knobs as the Python `run_oo_rimp2(max_iter=, grad_conv=,
+    // level_shift=, diis_size=)` kwargs; an error on any other kind.
+    /// Maximum orbital-optimization iterations (≥ 1). Default 100.
+    pub oo_max_iter: Option<usize>,
+    /// Convergence threshold on the orbital-gradient norm (finite, > 0).
+    /// Default 1e-4.
+    pub oo_grad_conv: Option<f64>,
+    /// Level shift (Hartree) on the approximate diagonal orbital Hessian
+    /// (finite, ≥ 0). Default 0.1.
+    pub oo_level_shift: Option<f64>,
+    /// DIIS subspace size for the orbital rotations (≥ 1). Default 6.
+    pub oo_diis_size: Option<usize>,
+
+    // ---- att-rimp2 (`method.kind = "att-rimp2"`) ---------------------------
+    // Own keys rather than the rs-mp2-rpa `attenuator`/`r0`, for the same
+    // reason as the `mp2v_*` block above: there `attenuator` names the range
+    // SPLIT ("erf"/"terf") and `r0` defaults to 1.6828 Å; here the operator is
+    // the short-range one and the terfc r0 defaults to 1.05 Å. One key must
+    // not mean two things depending on `method.kind`.
+    /// Short-range operator on the att-rimp2 MP2 correlation (see
+    /// [`AttRimp2Op`]; the SCF stays full Coulomb):
+    ///
+    ///   "erfc"  (default) — erfc(ωr)/r at ω = `omega` (Å⁻¹).
+    ///   "terfc"           — the exact tempered erfc terfc(r, `att_r0`)/r,
+    ///                       as the Python `run_terfc_rimp2`. Needs
+    ///                       FERRIC_TERF_TABLE_DIR.
+    ///
+    /// Case-insensitive; anything else is an error, and so is the key on any
+    /// kind other than att-rimp2.
+    pub att_operator: Option<String>,
+    /// terfc cutoff r0 in **Å** for `att_operator = "terfc"` (default 1.05,
+    /// the paper aDZ-optimal value and the Python `run_terfc_rimp2` default).
+    /// Must be finite and > 0; an error with the erfc operator.
+    pub att_r0: Option<f64>,
 }
 
+/// The short-range operator `method.kind = "att-rimp2"` attenuates the MP2
+/// correlation with (`[mp2] att_operator`). The SCF stays full Coulomb.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AttRimp2Op {
+    /// `erfc(ωr)/r` at `ω = [mp2] omega` (Å⁻¹, default 0.420):
+    /// `ferric_mp2::attenuated::attenuated_ri_mp2`.
+    Erfc,
+    /// The exact tempered erfc `terfc(r, r0)/r` at `r0 = [mp2] att_r0` (Å,
+    /// default 1.05): `ri_mp2` with `Operator::terfc`, as in the Python
+    /// `run_terfc_rimp2`.
+    Terfc,
+}
+
+/// `[mp2] att_r0` default (Å) for `att_operator = "terfc"` — the Python
+/// `run_terfc_rimp2` default (paper aDZ-optimal).
+pub const ATT_RIMP2_TERFC_DEFAULT_R0_ANG: f64 = 1.05;
+
 impl Mp2Cfg {
+    /// The `att-rimp2` short-range operator (`att_operator`), strictly parsed
+    /// and checked against the keys only one operator reads: `att_r0` with
+    /// erfc and `omega` with terfc are errors (each would be silently
+    /// ignored). The rs-mp2-rpa keys `attenuator`/`r0`/`r0_sweep` are refused
+    /// with a pointer to the att-rimp2 keys.
+    pub fn att_rimp2_op(&self) -> Result<AttRimp2Op, String> {
+        if self.attenuator.is_some() || self.r0.is_some() || self.r0_sweep.is_some() {
+            return Err(
+                "[mp2] attenuator / r0 / r0_sweep are the rs-mp2-rpa range-split \
+                        keys and are not read by method.kind = \"att-rimp2\"; use \
+                        att_operator = \"erfc\" | \"terfc\" and att_r0 (Å, terfc only)"
+                    .to_string(),
+            );
+        }
+        let op = match self
+            .att_operator
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            None | Some("erfc") => AttRimp2Op::Erfc,
+            Some("terfc") => AttRimp2Op::Terfc,
+            Some(other) => {
+                return Err(format!(
+                    "[mp2] att_operator: unknown value \"{other}\"; expected \"erfc\" \
+                     (default) or \"terfc\""
+                ))
+            }
+        };
+        match (op, self.att_r0) {
+            (AttRimp2Op::Erfc, Some(_)) => Err(
+                "[mp2] att_r0 is the terfc cutoff and is not read by att-rimp2's default \
+                 erfc operator (which uses omega); set att_operator = \"terfc\" or remove \
+                 att_r0"
+                    .to_string(),
+            ),
+            (AttRimp2Op::Terfc, _) if self.omega.is_some() => Err(
+                "[mp2] omega is not read by att-rimp2 with att_operator = \"terfc\" (its \
+                 sharpness is derived from att_r0); remove omega"
+                    .to_string(),
+            ),
+            (AttRimp2Op::Terfc, Some(r0)) if !(r0.is_finite() && r0 > 0.0) => {
+                Err(format!("[mp2] att_r0 must be finite and > 0 (Å), got {r0}"))
+            }
+            _ => Ok(op),
+        }
+    }
+
+    /// True when any `oo_*` orbital-optimization key is set.
+    pub fn sets_oo_keys(&self) -> bool {
+        self.oo_max_iter.is_some()
+            || self.oo_grad_conv.is_some()
+            || self.oo_level_shift.is_some()
+            || self.oo_diis_size.is_some()
+    }
+
+    /// Range checks on the `oo_*` keys (the kind check is
+    /// [`Config::validate_cli_wired_keys`]'s).
+    fn validate_oo_keys(&self) -> Result<(), String> {
+        if self.oo_max_iter == Some(0) {
+            return Err("[mp2] oo_max_iter must be >= 1".to_string());
+        }
+        if self.oo_diis_size == Some(0) {
+            return Err("[mp2] oo_diis_size must be >= 1".to_string());
+        }
+        if let Some(g) = self.oo_grad_conv {
+            if !(g.is_finite() && g > 0.0) {
+                return Err(format!(
+                    "[mp2] oo_grad_conv must be finite and > 0, got {g}"
+                ));
+            }
+        }
+        if let Some(ls) = self.oo_level_shift {
+            if !(ls.is_finite() && ls >= 0.0) {
+                return Err(format!(
+                    "[mp2] oo_level_shift must be finite and >= 0 (Hartree), got {ls}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Whether `lmp2`/`lmp2-direct` compute the canonical RI-MP2 reference:
     /// `[mp2] lmp2_reference`, default FALSE (opt-in — see the field doc).
     pub fn lmp2_reference(&self) -> bool {
@@ -1358,9 +1683,41 @@ pub struct GwCfg {
     /// 0.0 deliberately: silently substituting a nonzero scissor would change
     /// the physics behind the user's back.
     pub scissor: Option<f64>,
+    /// Open-shell reference for `method.kind = "gw"`: `"uhf"` (default) or
+    /// `"rohf"` (case-insensitive; anything else is an error). With `[rpa] xc`
+    /// the reference becomes UKS or ROKS respectively. Same values as the
+    /// Python `run_u_gw(reference=)` kwarg. Only meaningful for an open-shell
+    /// molecule (multiplicity > 1): a closed-shell `gw` runs on an RHF/RKS
+    /// reference, so setting it there is an error rather than a silent no-op.
+    pub reference: Option<String>,
+}
+
+/// `[gw] reference`, strictly parsed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GwReference {
+    /// `solve_uhf` (UKS with `[rpa] xc`).
+    Uhf,
+    /// `solve_rohf` (ROKS with `[rpa] xc`).
+    Rohf,
 }
 
 impl GwCfg {
+    /// Parse `[gw] reference`; unset is UHF.
+    pub fn parse_reference(&self) -> Result<GwReference, String> {
+        match self
+            .reference
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            None | Some("uhf") => Ok(GwReference::Uhf),
+            Some("rohf") => Ok(GwReference::Rohf),
+            Some(other) => Err(format!(
+                "[gw] reference: unknown value \"{other}\"; expected \"uhf\" or \"rohf\""
+            )),
+        }
+    }
+
     /// Parse the `[gw] method` TOML string into a [`ferric_gw::GwMethod`].
     /// Unset defaults to G0W0 (matches `GwConfig::default()`); unknown
     /// strings are a hard error (this repo's strict-config-parsing
@@ -1740,6 +2097,23 @@ pub struct ScfCfg {
     /// operator. See `ferric_scf::stability`.
     #[serde(default)]
     pub check_stability: bool,
+    /// UHF state selection: after convergence, check internal stability and,
+    /// if the solution is a SADDLE of the UHF orbital Hessian, follow the
+    /// downhill eigenvector and re-converge, keeping the lowest state
+    /// (`RhfConfig::scf_stability_descent`). Default `false`.
+    ///
+    /// Same semantics as the Python `run_uhf(stability_descent=True)`: it
+    /// turns on `check_stability` as well, because the descent acts on that
+    /// verdict. Costs one Davidson per converged solve plus one SCF per
+    /// descent taken. Needed where the default guess lands on a saddle (O2
+    /// triplet/STO-3G, N2+/6-31G).
+    ///
+    /// SCOPE: `task = "energy"` on the UHF/UKS route only (`kind = "uhf"`, or
+    /// `ksdft` on an open-shell molecule). ROHF has no implemented orbital
+    /// Hessian and RHF has no descent, so every other kind refuses the key
+    /// (see [`Config::validate_cli_wired_keys`]).
+    #[serde(default)]
+    pub stability_descent: bool,
 }
 
 impl Default for ScfCfg {
@@ -1777,6 +2151,7 @@ impl Default for ScfCfg {
             df_increments: false,
             df_increments_aux: None,
             check_stability: false,
+            stability_descent: false,
         }
     }
 }
@@ -2034,6 +2409,13 @@ impl LadderRungCfg {
 }
 
 impl ScfCfg {
+    /// `RhfConfig::check_stability` for this run: `check_stability`, or
+    /// `stability_descent`, which acts on the stability verdict and so needs it
+    /// computed (the Python `run_uhf(stability_descent=True)` sets both).
+    pub fn runs_stability_check(&self) -> bool {
+        self.check_stability || self.stability_descent
+    }
+
     /// Build the SCF convergence ladder. If no `[[scf.ladder]]` rungs are
     /// configured, returns the built-in `default_ladder()`. Otherwise each
     /// rung starts from `base` (the `RhfConfig` derived from the flat `[scf]`
@@ -2282,6 +2664,25 @@ impl Config {
                  silently ignore them"
             ));
         }
+        if self.dft.sets_grid_size() {
+            // Values first (they are errors on any kind), then whether this
+            // kind builds a grid for them to size at all.
+            self.dft.grid_config(None)?;
+            if !self.runs_a_ks_grid() {
+                return Err(format!(
+                    "[dft] grid_radial / grid_angular have no Kohn-Sham grid to size: \
+                     method.kind = \"{kind}\" runs no exchange-correlation functional here, so \
+                     the keys would be silently ignored"
+                ));
+            }
+            if kind == "gw" {
+                return Err("[dft] grid_radial / grid_angular are not supported with \
+                            method.kind = \"gw\": the Sigma_x - v_xc correction evaluates v_xc \
+                            on the DEFAULT grid, so it would not match a reference SCF run on \
+                            this one"
+                    .to_string());
+            }
+        }
         if let Some(s) = self.dft.grid_prune.as_deref() {
             // A value that parses to "no pruning" asks for nothing, so it is
             // harmless anywhere. A malformed value is left for `run()`'s
@@ -2411,6 +2812,7 @@ impl Config {
                  gradients. Use task = \"energy\"."
             ));
         }
+        self.validate_cli_wired_keys()?;
         if task != "energy" && self.scf.k_builder.as_deref() == Some("cosx") {
             return Err(format!(
                 "[scf] k_builder = \"cosx\" is not supported with method.task = \"{task}\": \
@@ -2419,6 +2821,180 @@ impl Config {
                  the COSX energy. Use k_builder = \"direct\" or \"link\" for gradient \
                  tasks, or task = \"energy\" for COSX."
             ));
+        }
+        Ok(())
+    }
+}
+
+/// `method.kind`s whose run honours `[pcm]`: the SCF-only kinds (the
+/// reported energy IS the solvated SCF energy; `solve_rhf`/`solve_uhf`/
+/// `solve_rohf` all fold the IEF-PCM reaction field into the Fock matrix every
+/// iteration) and `pdep-rpa`, whose total is that solvated reference plus the
+/// RPA correlation evaluated on its orbitals (the same scope as the Python
+/// `run_pdep_rpa(solvent=)`; the correlation itself carries no reaction-field
+/// response term).
+const PCM_KINDS: &[&str] = &["rhf", "uhf", "rohf", "ksdft", "pdep-rpa"];
+
+impl Config {
+    /// Value checks on `[external_potential]` smeared-charge widths and the
+    /// `[pcm]` section, run by [`load_config`] so a bad value fails at load
+    /// time on every entry point.
+    /// Every post-parse value check `load_config` runs, in order: memory,
+    /// SCF, the amplitude-threshold knobs, then the CLI-wired keys.
+    fn validate_loaded_values(&self) -> Result<(), String> {
+        self.memory.validate()?;
+        self.scf.validate()?;
+        self.mp2.validate_amplitude_knobs()?;
+        self.external_potential.validate()?;
+        match &self.pcm {
+            Some(pcm) => pcm.to_pcm_config().map(|_| ()),
+            None => Ok(()),
+        }
+    }
+
+    /// Kind/task/value checks for the keys that wire Python-only library
+    /// capabilities into the CLI: `[pcm]`, `[scf] stability_descent`,
+    /// `[dft] grid_radial`/`grid_angular` (task side; the kind side is in
+    /// [`Config::validate_dft_section`]), `[mp2] oo_*`, `[mp2] terf_omega`,
+    /// `[mp2] attenuator`/`r0` on `att-rimp2`, and `[gw] reference`.
+    ///
+    /// Every refusal is a key the selected kind/task would otherwise read
+    /// wrongly or not at all. Pure function of the config: the multiplicity
+    /// is `[molecule] multiplicity`, which is what the solved molecule
+    /// carries (with `[qmmm]` too — the QM region takes it).
+    pub fn validate_cli_wired_keys(&self) -> Result<(), String> {
+        let kind = self.method.kind.as_str();
+        let task = self.method.task.as_str();
+        let mult = self.molecule.multiplicity;
+
+        if let Some(pcm) = &self.pcm {
+            pcm.to_pcm_config()?;
+            if self.cosmo.is_some() {
+                return Err(
+                    "[pcm] and [cosmo] are both set: they are two models of the same \
+                            solvent and would be ADDED, solvating the molecule twice. Keep one."
+                        .to_string(),
+                );
+            }
+            if task != "energy" {
+                return Err(format!(
+                    "[pcm] is not supported with method.task = \"{task}\": no gradient in \
+                     ferric has an IEF-PCM term, so the geometry/Hessian would be the vacuum \
+                     one while the energies are solvated. Use task = \"energy\"."
+                ));
+            }
+            if !PCM_KINDS.contains(&kind) {
+                return Err(format!(
+                    "[pcm] is wired for method.kind = {} only; kind = \"{kind}\" would run \
+                     its method on a solvated reference whose solvent treatment has not been \
+                     validated for it. Remove [pcm], or use one of those kinds.",
+                    PCM_KINDS.join(", ")
+                ));
+            }
+            if kind == "pdep-rpa" && self.rpa.export_npz.is_some() {
+                return Err(
+                    "[pcm] with [rpa] export_npz is not supported: the NPZ property \
+                            paths re-run free-atom and property SCFs from the same SCF \
+                            config, which would put isolated atoms in the solvent cavity. \
+                            Run the export without [pcm]."
+                        .to_string(),
+                );
+            }
+        }
+
+        if self.scf.stability_descent {
+            if task != "energy" {
+                return Err(format!(
+                    "[scf] stability_descent is supported for task = \"energy\" only (got \
+                     \"{task}\"): a descent can switch the electronic state between geometry \
+                     steps, so the surface being followed would not be one surface."
+                ));
+            }
+            let uhf_route = kind == "uhf" || (kind == "ksdft" && mult > 1);
+            if !uhf_route {
+                let why = match kind {
+                    "rohf" => "ROHF/ROKS has no implemented orbital Hessian (the Roothaan \
+                               open-shell Hessian is a third operator), so there is no \
+                               descent to follow"
+                        .to_string(),
+                    "rhf" | "ksdft" => "the descent follows the UHF orbital Hessian; a \
+                                        restricted solve has none. Use kind = \"uhf\" (it \
+                                        may break spin symmetry, which is the point)"
+                        .to_string(),
+                    _ => format!("kind = \"{kind}\" does not run the UHF/UKS SCF route"),
+                };
+                return Err(format!(
+                    "[scf] stability_descent is honoured by the UHF/UKS route only (kind = \
+                     \"uhf\", or \"ksdft\" on an open-shell molecule): {why}."
+                ));
+            }
+        }
+
+        if self.dft.sets_grid_size() && task != "energy" {
+            return Err(format!(
+                "[dft] grid_radial / grid_angular are supported for method.task = \"energy\" \
+                 only (got \"{task}\"): the analytic XC gradient is built on the default \
+                 grid, so it would not be the derivative of this grid's energy."
+            ));
+        }
+
+        if self.mp2.sets_oo_keys() {
+            if kind != "oo-rimp2" {
+                return Err(format!(
+                    "[mp2] oo_max_iter / oo_grad_conv / oo_level_shift / oo_diis_size are \
+                     read by method.kind = \"oo-rimp2\" only; kind = \"{kind}\" would \
+                     silently ignore them"
+                ));
+            }
+            self.mp2.validate_oo_keys()?;
+        }
+
+        if let Some(w) = self.mp2.terf_omega {
+            if kind != "rs-mp2-rpa" || self.mp2.attenuator.as_deref() != Some("terf") {
+                return Err(format!(
+                    "[mp2] terf_omega is read by method.kind = \"rs-mp2-rpa\" with \
+                     attenuator = \"terf\" only (got kind = \"{kind}\", attenuator = {:?}); \
+                     it would be silently ignored",
+                    self.mp2.attenuator
+                ));
+            }
+            if !(w.is_finite() && w > 0.0) {
+                return Err(format!(
+                    "[mp2] terf_omega must be finite and > 0 (Å⁻¹), got {w}"
+                ));
+            }
+        }
+
+        if kind == "att-rimp2" {
+            self.mp2.att_rimp2_op()?;
+        } else if self.mp2.att_operator.is_some() || self.mp2.att_r0.is_some() {
+            let hint = if kind == "rs-mp2-rpa" {
+                " (rs-mp2-rpa's range split is attenuator = \"erf\" | \"terf\" with r0)"
+            } else {
+                ""
+            };
+            return Err(format!(
+                "[mp2] att_operator / att_r0 are read by method.kind = \"att-rimp2\" only; \
+                 kind = \"{kind}\" would silently ignore them{hint}"
+            ));
+        }
+
+        if self.gw.reference.is_some() {
+            self.gw.parse_reference()?;
+            if kind != "gw" {
+                return Err(format!(
+                    "[gw] reference is read by method.kind = \"gw\" only; kind = \"{kind}\" \
+                     would silently ignore it"
+                ));
+            }
+            if mult <= 1 {
+                return Err(
+                    "[gw] reference applies to an open-shell molecule (multiplicity > \
+                            1); a closed-shell gw runs on an RHF/RKS reference, so the key \
+                            would be silently ignored"
+                        .to_string(),
+                );
+            }
         }
         Ok(())
     }
@@ -2897,10 +3473,7 @@ pub fn load_config(path: &str) -> Result<Config, String> {
     // Validating HERE rather than at the lib.rs use site means every entry
     // point is covered by construction — the CLI, and `ferric-batch`'s
     // per-child TOML rewriting, which does not go through lib.rs's checks.
-    cfg.memory.validate().map_err(|e| format!("{path}: {e}"))?;
-    cfg.scf.validate().map_err(|e| format!("{path}: {e}"))?;
-    cfg.mp2
-        .validate_amplitude_knobs()
+    cfg.validate_loaded_values()
         .map_err(|e| format!("{path}: {e}"))?;
     Ok(cfg)
 }
@@ -5752,3 +6325,371 @@ impl QmmmCfg {
 #[cfg(test)]
 #[path = "config_doc_tests.rs"]
 mod doc_tests;
+
+/// Pure-config checks for the keys that wire Python-only capabilities into
+/// the CLI (`[pcm]`, `[scf] stability_descent`, `[dft] grid_radial` /
+/// `grid_angular`, smeared `[external_potential]` charges, `[mp2] oo_*` /
+/// `terf_omega` / att-rimp2 `attenuator`+`r0`, `[gw] reference`). The
+/// numerical CLI-vs-library equivalence of each is asserted end to end in
+/// `crates/ferric-cli/tests/cli_wired_keys.rs`.
+#[cfg(test)]
+mod cli_wired_keys_tests {
+    use super::*;
+
+    fn cfg(kind: &str, task: &str, mult: usize, extra: &str) -> Config {
+        let src = format!(
+            "[molecule]\nxyz = \"testdata/molecules/water.xyz\"\nmultiplicity = {mult}\n\
+             [basis]\nname = \"sto-3g\"\n[method]\nkind = \"{kind}\"\ntask = \"{task}\"\n{extra}"
+        );
+        toml::from_str::<Config>(&src).unwrap_or_else(|e| panic!("parse: {e}\n{src}"))
+    }
+
+    fn refused(c: &Config, needle: &str) {
+        let e = c
+            .validate_cli_wired_keys()
+            .expect_err("config must be refused");
+        assert!(e.contains(needle), "error must mention {needle:?}: {e}");
+    }
+
+    // ---- [pcm] ----
+
+    #[test]
+    fn pcm_solvent_and_epsilon_build_the_same_config() {
+        let a = cfg("rhf", "energy", 1, "[pcm]\nsolvent = \"Water\"\n");
+        let b = cfg(
+            "rhf",
+            "energy",
+            1,
+            "[pcm]\nepsilon = 78.4\nlebedev_order = 110\n",
+        );
+        let pa = a.pcm.as_ref().unwrap().to_pcm_config().unwrap();
+        let pb = b.pcm.as_ref().unwrap().to_pcm_config().unwrap();
+        assert_eq!(pa.epsilon, pb.epsilon);
+        assert_eq!(pa.lebedev_order, pb.lebedev_order);
+        assert_eq!(pa.vdw_scale, ferric_pcm::PcmConfig::water().vdw_scale);
+        a.validate_cli_wired_keys().unwrap();
+    }
+
+    #[test]
+    fn pcm_values_are_strict() {
+        for (body, needle) in [
+            ("[pcm]\n", "needs epsilon"),
+            (
+                "[pcm]\nepsilon = 4.0\nsolvent = \"thf\"\n",
+                "both epsilon and solvent",
+            ),
+            ("[pcm]\nsolvent = \"watr\"\n", "not recognised"),
+            ("[pcm]\nepsilon = 1.0\n", "must be > 1.0"),
+            ("[pcm]\nepsilon = nan\n", "finite"),
+            (
+                "[pcm]\nsolvent = \"water\"\nlebedev_order = 194\n",
+                "lebedev_order",
+            ),
+        ] {
+            refused(&cfg("rhf", "energy", 1, body), needle);
+        }
+        // A typo'd key is a parse error (deny_unknown_fields).
+        let src = "[molecule]\nxyz = \"x.xyz\"\n[basis]\nname = \"sto-3g\"\n\
+                   [method]\nkind = \"rhf\"\n[pcm]\nsolvnt = \"water\"\n";
+        assert!(toml::from_str::<Config>(src).is_err());
+    }
+
+    #[test]
+    fn pcm_scope_is_scf_kinds_and_pdep_rpa_on_energy() {
+        for kind in ["rhf", "uhf", "rohf", "ksdft", "pdep-rpa"] {
+            cfg(kind, "energy", 1, "[pcm]\nsolvent = \"water\"\n")
+                .validate_cli_wired_keys()
+                .unwrap_or_else(|e| panic!("{kind}: {e}"));
+        }
+        refused(
+            &cfg("rimp2", "energy", 1, "[pcm]\nsolvent = \"water\"\n"),
+            "wired for method.kind",
+        );
+        for task in ["optimize", "frequencies"] {
+            refused(
+                &cfg("rhf", task, 1, "[pcm]\nsolvent = \"water\"\n"),
+                "no gradient",
+            );
+        }
+        refused(
+            &cfg(
+                "rhf",
+                "energy",
+                1,
+                "[pcm]\nsolvent = \"water\"\n[cosmo]\nepsilon = 78.39\n",
+            ),
+            "solvating the molecule twice",
+        );
+        refused(
+            &cfg(
+                "pdep-rpa",
+                "energy",
+                1,
+                "[pcm]\nsolvent = \"water\"\n[rpa]\nexport_npz = \"x.npz\"\n",
+            ),
+            "export_npz",
+        );
+    }
+
+    // ---- [scf] stability_descent ----
+
+    #[test]
+    fn stability_descent_is_the_uhf_route_on_energy_only() {
+        let sd = "[scf]\nstability_descent = true\n";
+        cfg("uhf", "energy", 3, sd)
+            .validate_cli_wired_keys()
+            .unwrap();
+        cfg("uhf", "energy", 1, sd)
+            .validate_cli_wired_keys()
+            .unwrap();
+        cfg("ksdft", "energy", 3, sd)
+            .validate_cli_wired_keys()
+            .unwrap();
+        refused(
+            &cfg("rohf", "energy", 3, sd),
+            "ROHF/ROKS has no implemented",
+        );
+        refused(&cfg("rhf", "energy", 1, sd), "restricted solve has none");
+        refused(&cfg("ksdft", "energy", 1, sd), "restricted solve has none");
+        refused(&cfg("rimp2", "energy", 1, sd), "UHF/UKS route only");
+        refused(&cfg("uhf", "optimize", 3, sd), "task = \"energy\" only");
+        // Default off.
+        assert!(!cfg("uhf", "energy", 3, "").scf.stability_descent);
+    }
+
+    // ---- [dft] grid_radial / grid_angular ----
+
+    #[test]
+    fn grid_keys_build_the_python_equivalent_grid() {
+        let c = cfg(
+            "ksdft",
+            "energy",
+            1,
+            "[dft]\nfunctional = \"PBE\"\ngrid_radial = 99\ngrid_angular = 302\n",
+        );
+        c.validate_dft_section().unwrap();
+        c.validate_cli_wired_keys().unwrap();
+        let g = c.dft.grid_config(None).unwrap().unwrap();
+        assert_eq!((g.n_radial, g.n_angular, g.prune), (99, 302, None));
+        // One key alone keeps the other at the library default.
+        let c = cfg("ksdft", "energy", 1, "[dft]\ngrid_angular = 302\n");
+        let g = c.dft.grid_config(None).unwrap().unwrap();
+        let d = ferric_dft::grid::AtomicGridConfig::default();
+        assert_eq!((g.n_radial, g.n_angular), (d.n_radial, 302));
+        // No key at all: None, byte-identical to the historical default path.
+        assert!(cfg("ksdft", "energy", 1, "")
+            .dft
+            .grid_config(None)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn grid_keys_are_refused_where_they_cannot_apply() {
+        let bad_ang = cfg("ksdft", "energy", 1, "[dft]\ngrid_angular = 194\n");
+        let e = bad_ang.validate_dft_section().unwrap_err();
+        assert!(e.contains("not a supported Lebedev order"), "{e}");
+        let zero = cfg("ksdft", "energy", 1, "[dft]\ngrid_radial = 0\n");
+        assert!(zero.validate_dft_section().unwrap_err().contains("> 0"));
+        let hf = cfg("rhf", "energy", 1, "[dft]\ngrid_radial = 99\n");
+        assert!(hf
+            .validate_dft_section()
+            .unwrap_err()
+            .contains("no Kohn-Sham grid"));
+        refused(
+            &cfg("ksdft", "optimize", 1, "[dft]\ngrid_radial = 99\n"),
+            "task = \"energy\"",
+        );
+        let gw = cfg(
+            "gw",
+            "energy",
+            1,
+            "[dft]\ngrid_radial = 99\n[rpa]\nxc = \"PBE\"\n",
+        );
+        assert!(gw.validate_dft_section().unwrap_err().contains("gw"));
+    }
+
+    // ---- smeared [external_potential] charges ----
+
+    #[test]
+    fn a_width_makes_a_charge_smeared_and_is_validated() {
+        let c = cfg(
+            "rhf",
+            "energy",
+            1,
+            "[[external_potential.point_charges]]\nq = 0.5\nx = 0.0\ny = 0.0\nz = 5.0\n\
+             [[external_potential.point_charges]]\nq = -0.3\nx = 1.0\ny = 0.0\nz = 6.0\nwidth = 0.8\n",
+        );
+        c.external_potential.validate().unwrap();
+        let ep = c.external_potential.to_external_potential().unwrap();
+        assert_eq!(ep.point_charges.len(), 1);
+        assert_eq!(ep.point_charges[0].q, 0.5);
+        assert_eq!(ep.smeared_charges.len(), 1);
+        let s = ep.smeared_charges[0];
+        assert_eq!((s.q, s.x, s.z, s.width), (-0.3, 1.0, 6.0, 0.8));
+        for w in ["0.0", "-1.0", "nan", "inf"] {
+            let c = cfg(
+                "rhf",
+                "energy",
+                1,
+                &format!(
+                    "[[external_potential.point_charges]]\nq = 1.0\nx = 0.0\ny = 0.0\n\
+                     z = 5.0\nwidth = {w}\n"
+                ),
+            );
+            let e = c.external_potential.validate().unwrap_err();
+            assert!(e.contains("point_charges[0]") && e.contains("width"), "{e}");
+        }
+    }
+
+    // ---- [mp2] oo_* ----
+
+    #[test]
+    fn oo_keys_are_oo_rimp2_only_and_range_checked() {
+        let oo = "[mp2]\noo_max_iter = 50\noo_grad_conv = 1e-6\noo_level_shift = 0.2\n\
+                  oo_diis_size = 4\n";
+        cfg("oo-rimp2", "energy", 1, oo)
+            .validate_cli_wired_keys()
+            .unwrap();
+        cfg("oo-rimp2", "energy", 2, oo)
+            .validate_cli_wired_keys()
+            .unwrap();
+        refused(&cfg("rimp2", "energy", 1, oo), "oo-rimp2\" only");
+        for (body, needle) in [
+            ("[mp2]\noo_max_iter = 0\n", "oo_max_iter"),
+            ("[mp2]\noo_diis_size = 0\n", "oo_diis_size"),
+            ("[mp2]\noo_grad_conv = 0.0\n", "oo_grad_conv"),
+            ("[mp2]\noo_level_shift = -0.1\n", "oo_level_shift"),
+        ] {
+            refused(&cfg("oo-rimp2", "energy", 1, body), needle);
+        }
+    }
+
+    // ---- [mp2] terf_omega / att-rimp2 attenuator ----
+
+    #[test]
+    fn terf_omega_needs_rs_mp2_rpa_with_terf() {
+        cfg(
+            "rs-mp2-rpa",
+            "energy",
+            1,
+            "[mp2]\nattenuator = \"terf\"\nterf_omega = 0.5\n",
+        )
+        .validate_cli_wired_keys()
+        .unwrap();
+        refused(
+            &cfg("rs-mp2-rpa", "energy", 1, "[mp2]\nterf_omega = 0.5\n"),
+            "attenuator = \"terf\" only",
+        );
+        refused(
+            &cfg(
+                "att-rimp2",
+                "energy",
+                1,
+                "[mp2]\natt_operator = \"terfc\"\nterf_omega = 0.5\n",
+            ),
+            "rs-mp2-rpa",
+        );
+        refused(
+            &cfg(
+                "rs-mp2-rpa",
+                "energy",
+                1,
+                "[mp2]\nattenuator = \"terf\"\nterf_omega = -1.0\n",
+            ),
+            "finite and > 0",
+        );
+    }
+
+    #[test]
+    fn att_rimp2_operator_is_strict_and_keys_match_the_operator() {
+        let op = |body: &str| cfg("att-rimp2", "energy", 1, body).mp2.att_rimp2_op();
+        assert_eq!(op("").unwrap(), AttRimp2Op::Erfc);
+        assert_eq!(
+            op("[mp2]\natt_operator = \"ERFC\"\n").unwrap(),
+            AttRimp2Op::Erfc
+        );
+        assert_eq!(
+            op("[mp2]\natt_operator = \"terfc\"\n").unwrap(),
+            AttRimp2Op::Terfc
+        );
+        assert_eq!(
+            op("[mp2]\natt_operator = \"terfc\"\natt_r0 = 1.2\n").unwrap(),
+            AttRimp2Op::Terfc
+        );
+        for (body, needle) in [
+            ("[mp2]\natt_operator = \"terf\"\n", "unknown value"),
+            (
+                "[mp2]\natt_r0 = 1.0\n",
+                "not read by att-rimp2's default erfc",
+            ),
+            (
+                "[mp2]\natt_operator = \"terfc\"\nomega = 0.4\n",
+                "omega is not read",
+            ),
+            (
+                "[mp2]\natt_operator = \"terfc\"\natt_r0 = 0.0\n",
+                "finite and > 0",
+            ),
+            // The rs-mp2-rpa keys are refused with a pointer to the att_* ones.
+            ("[mp2]\nattenuator = \"terfc\"\n", "use att_operator"),
+            ("[mp2]\nr0 = 1.0\n", "use att_operator"),
+            ("[mp2]\nr0_sweep = [1.0]\n", "use att_operator"),
+        ] {
+            let e = op(body).unwrap_err();
+            assert!(e.contains(needle), "{body}: {e}");
+            refused(&cfg("att-rimp2", "energy", 1, body), needle);
+        }
+    }
+
+    #[test]
+    fn att_keys_are_refused_off_att_rimp2() {
+        refused(
+            &cfg(
+                "rs-mp2-rpa",
+                "energy",
+                1,
+                "[mp2]\nattenuator = \"terf\"\natt_operator = \"terfc\"\n",
+            ),
+            "attenuator = \"erf\" | \"terf\"",
+        );
+        refused(
+            &cfg("rimp2", "energy", 1, "[mp2]\natt_r0 = 1.0\n"),
+            "\"att-rimp2\" only",
+        );
+        // rs-mp2-rpa's own keys are untouched.
+        cfg(
+            "rs-mp2-rpa",
+            "energy",
+            1,
+            "[mp2]\nattenuator = \"terf\"\nr0 = 1.2\n",
+        )
+        .validate_cli_wired_keys()
+        .unwrap();
+    }
+
+    // ---- [gw] reference ----
+
+    #[test]
+    fn gw_reference_is_strict_open_shell_and_gw_only() {
+        let c = cfg("gw", "energy", 2, "[gw]\nreference = \"ROHF\"\n");
+        c.validate_cli_wired_keys().unwrap();
+        assert_eq!(c.gw.parse_reference().unwrap(), GwReference::Rohf);
+        assert_eq!(
+            cfg("gw", "energy", 2, "").gw.parse_reference().unwrap(),
+            GwReference::Uhf
+        );
+        refused(
+            &cfg("gw", "energy", 2, "[gw]\nreference = \"rks\"\n"),
+            "unknown value",
+        );
+        refused(
+            &cfg("gw", "energy", 1, "[gw]\nreference = \"rohf\"\n"),
+            "open-shell molecule",
+        );
+        refused(
+            &cfg("pdep-rpa", "energy", 2, "[gw]\nreference = \"rohf\"\n"),
+            "\"gw\" only",
+        );
+    }
+}

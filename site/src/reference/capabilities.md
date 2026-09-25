@@ -105,18 +105,15 @@ docstrings. None of them is in the CLI grade table.
 
 | Capability | Python | Scope (verified in code) |
 |---|---|---|
-| terfc-attenuated MP2 | `run_terfc_rimp2` | Closed shell. The CLI's `att-rimp2` is the erfc form only. |
 | Open-shell KS frequencies | `run_frequencies(reference="uhf"\|"rohf", xc=...)` | Setting `xc` promotes RHF/UHF/ROHF to RKS/UKS/ROKS. FD Hessian. |
 | Transition-state search | `run_saddle` | P-RFO. Closed shell only (refuses multiplicity ≠ 1). Raises if the start has no negative mode. Costs `2(6N+1) + (steps+1)` gradients. |
-| SCF stability descent | `run_uhf(stability_descent=True)` | Checks the converged UHF solution's internal stability and, at a saddle, follows the downhill mode and re-converges. The CLI's `[scf] check_stability` only reports a saddle. |
 | Reaction path | `run_irc` | Both IRC branches from a saddle's imaginary mode. Closed shell only. |
 | Geometry optimization (Python) | `run_optimize` | RHF only (no `xc` argument). Accepts point charges and a field. |
 | QM/MM energy + forces | `QmmmSystem`, `run_qmmm` | `method` = `"rhf"`/`"uhf"`/`"rks"`/`"uks"`. Link atoms, boundary schemes (`keep`/`delete-host`/`rc`/`rcd`), Gaussian-smeared charges, Thole polarizable sites, an optional MM force field (`MmTopology`). See [QM/MM](../using/qmmm.md). The CLI `[qmmm]` section covers fixed point charges only. |
 | QM/MM optimization | `run_optimize_qmmm` | Same four methods. `move_mm` = `"none"`/`"all"`/`("within", r)`/`("residues", [...])`. Moving MM atoms requires `mm_topology`. |
 | Constrained DFT | `run_cdft`, `CdftConstraint` | UHF, or UKS when `functional` names a libxc functional other than `"HF"` (`None` and `"HF"`, any case, give UHF) (UKS is smoke-level). Fragment `target` is a Becke electron population (`"charge"`: Nα + Nβ; `"spin"`: Nα − Nβ), not a net charge. Raises if the λ loop does not converge. Not graded; see [Constrained DFT](../methods/cdft.md). |
 | cDFT electron-transfer coupling | `cdft_coupling` | Wu–Van Voorhis H_ab between two `run_cdft` states, each with one converged `"charge"` constraint, on the same geometry, basis, occupations and Hamiltonian. Not graded. |
-| IEF-PCM solvation | `run_rhf(solvent=...)`, `run_pdep_rpa(solvent=...)` | A dielectric constant or a solvent name. An unknown name is an error. **No CLI section.** (The CLI has `[cosmo]`, a different, conductor-limit model with no Python argument.) |
-| Point charges / uniform field | `point_charges=`, `external_field=` on `run_rhf`/`run_uhf`/`run_rohf`/`run_dft`, `run_optimize`, `run_frequencies`, `run_saddle`, `run_irc`, `run_pdep_rpa` | Bohr and atomic units. `run_rhf` also takes `smeared_charges=`. The MP2/CC drivers take no external-potential arguments. The CLI equivalent is `[external_potential]`. |
+| Point charges / uniform field | `point_charges=`, `external_field=` on `run_rhf`/`run_uhf`/`run_rohf`/`run_dft`, `run_optimize`, `run_frequencies`, `run_saddle`, `run_irc`, `run_pdep_rpa` | Bohr and atomic units. `run_rhf` also takes `smeared_charges=`. The MP2/CC drivers take no external-potential arguments. The CLI equivalent is `[external_potential]`, where a `width` makes a charge smeared. |
 | D3(BJ) | `run_dft(dispersion="d3bj")`, `d3bj_energy` | Additive, with parameters fitted per functional. |
 | Charges | `mulliken_charges`, `lowdin_charges`, `hirshfeld_charges`, `chelpg_charges`, `resp_charges` | Take an `RhfResult` or `DftResult`. Mulliken, Löwdin, CHELPG and RESP are documented closed-shell only. RESP is a single-stage restrained fit, not multi-conformer RESP. |
 | Electrostatic potential | `esp_at_atoms`, `esp_at_points` | Evaluated exactly from the density. `esp_at_points` takes (N, 3) points in **Bohr**. |
@@ -125,8 +122,10 @@ docstrings. None of them is in the CLI grade table.
 | Conformer statistics | `boltzmann_weights`, `weighted_stats*`, `ConformerEnsemble` | — |
 | Integrals | `compute_eri3`, `compute_eri3_mo`, `compute_metric_2c`, `boys_localize`, `shell_info` | Low-level access. |
 
-PCM has no CLI section. Polarizable (Thole) embedding is Python and Rust
-only.
+Polarizable (Thole) embedding is Python and Rust only. IEF-PCM, UHF
+stability descent and terfc-attenuated MP2 are reachable from both: see
+`[pcm]`, `[scf] stability_descent` and `[mp2] att_operator` in the
+[Input reference](./input.md).
 
 ## Related pages
 

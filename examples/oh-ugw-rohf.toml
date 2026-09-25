@@ -1,0 +1,26 @@
+# U-G0W0@ROHF / cc-pVDZ on the OH radical: oh-ugw.toml with the open-shell
+# reference switched to ROHF ([gw] reference = "rohf", the Python
+# `run_u_gw(reference="rohf")`). The printed header reads "ref: ROHF" and the
+# "ROHF energy" line is the ROHF reference energy. With [rpa] xc set the
+# reference is ROKS.
+[molecule]
+xyz = "testdata/molecules/oh.xyz"
+charge = 0
+multiplicity = 2
+
+[basis]
+name = "cc-pvdz"
+
+[method]
+kind = "gw"
+
+[rpa]
+auxbasis = "cc-pvdz-ri"
+n_quad = 16
+quadrature = "gauss-legendre"
+trunc_thresh = 0.0
+eigensolver_conv_thresh = 1e-7
+
+[gw]
+method = "g0w0"
+reference = "rohf"

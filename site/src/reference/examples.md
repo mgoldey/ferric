@@ -1,6 +1,6 @@
 # Examples
 
-This page indexes every input file in `examples/`. There are 65 TOML files
+This page indexes every input file in `examples/`. There are 70 TOML files
 and no Python scripts. Run one from the repository root:
 
 ```bash
@@ -31,8 +31,8 @@ not the example.
 
 ## Examples that need extra setup
 
-- `water-mp2v.toml`, `water-scs-mp2-2terfc.toml` and any `rs-mp2-rpa` run
-  with `attenuator = "terf"` need the tempered-erfc interpolation tables:
+- `water-mp2v.toml`, `water-scs-mp2-2terfc.toml`, `water-attmp2-terfc.toml`
+  and any `rs-mp2-rpa` run with `attenuator = "terf"` need the tempered-erfc interpolation tables:
   point `FERRIC_TERF_TABLE_DIR` at them. Without it these runs stop with an
   error.
 - `benzene-dfb3lyp-mpi.toml` is an ordinary input; its header gives the
@@ -62,6 +62,9 @@ See [SCF and DFT](../methods/scf.md).
 | `water-pbe-pruned-grid.toml` | H2O / cc-pVDZ | `ksdft` PBE / energy | "removes ~23% of the grid points" (at 75×110) | Validated in `crates/ferric-dft/tests/grid_prune_live_scf.rs`. |
 | `h2-lda-opt.toml` | H2 / STO-3G | `ksdft` LDA / optimize | — | |
 | `water-qmmm.toml` | H2O + Na⁺ (PQR) / STO-3G | `rhf` + `[qmmm]` | "vacuum −74.9629466809, embedded −74.9653197421, i.e. −1.489 kcal/mol from the ion at 4 A. Verified against `ferric.run_rhf(point_charges=...)` to all 10 digits." | The vacuum number is at the PQR geometry, not the xyz. The embedded number is asserted by a test. |
+| `water-pcm.toml` | H2O / STO-3G | `rhf` + `[pcm]` | — | IEF-PCM water (`solvent = "water"`, ε = 78.4). |
+| `water-rhf-smeared-charge.toml` | H2O / STO-3G | `rhf` + `[external_potential]` | — | One Gaussian-smeared charge (`width`, Bohr) and one point charge. |
+| `o2-uhf-stability-descent.toml` | O2 triplet / STO-3G | `uhf` | "the descent follows the downhill eigenvector to the UHF minimum (-147.63530 Ha)" | `[scf] stability_descent = true`. |
 
 ## MP2 family
 
@@ -78,6 +81,7 @@ See [The MP2 family](../methods/mp2.md).
 | `water-mp3.toml` | H2O / cc-pVDZ | `mp3` | — | |
 | `water-oo-rimp2.toml` | H2O / cc-pVDZ | `oo-rimp2` | — | Smoke grade. |
 | `water-attmp2.toml` | H2O / aug-cc-pVDZ | `att-rimp2` | — | ω = 0.420 Å⁻¹. |
+| `water-attmp2-terfc.toml` | H2O / aug-cc-pVDZ | `att-rimp2` | — | `att_operator = "terfc"`, `att_r0` = 1.05 Å. Needs the terf tables. |
 | `water-scs-mp2.toml` | H2O / cc-pVDZ | `scs-mp2` | — | Grimme coefficients (defaults). |
 | `water-scs-mp2-2terfc.toml` | H2O / cc-pVDZ | `scs-mp2-2terfc` | — | Thesis defaults r0 = 0.75/1.05 Å. Needs the terf tables. |
 | `water-laplace-rimp2.toml` | H2O / cc-pVDZ | `laplace-mp2` | — | |
@@ -120,6 +124,7 @@ See [RPA and GW](../methods/rpa-gw.md).
 |---|---|---|---|---|
 | `water-g0w0-pbe.toml` | H2O / cc-pVDZ | `gw` G0W0@PBE | "HOMO IP should match … PySCF gw_ac reference (11.1714 eV) to <0.1 eV" (`crates/ferric-gw/tests/g0w0_pbe_h2o.rs`) | |
 | `oh-ugw.toml` | OH doublet / cc-pVDZ | `gw` U-G0W0@UHF | "alpha-HOMO IP in the ~13-14 eV window, bracketing experiment 13.02 eV" (`crates/ferric-gw/tests/oh_u_g0w0.rs`) | |
+| `oh-ugw-rohf.toml` | OH doublet / cc-pVDZ | `gw` U-G0W0@ROHF | — | `[gw] reference = "rohf"`. |
 | `water-bse-tda.toml` | H2O / cc-pVDZ | `bse-tda` | "Measured via this exact TOML (2026-07-18): 8.4572 eV", against a PySCF-integral cross-check of 8.46 eV and a sanity window of [5, 12] eV | |
 | `water-augccpvdz-bse-tda.toml` | H2O / aug-cc-pVDZ | `bse-tda` | Literature: "aug-cc-pVDZ CCSDT Delta_Evert = 9.279 eV, f = 0.058; CBS TBE = 7.71+-0.02 eV, f = 0.052+-0.001" | No ferric number is recorded. |
 | `h2co-bse-tda.toml` | H2CO / cc-pVDZ | `bse-tda` | — | Pilot run. The lowest state is dark (f ≈ 0). |

@@ -1,0 +1,21 @@
+# UHF/STO-3G O2 triplet with [scf] stability_descent. The default guess
+# converges to a SADDLE of the UHF orbital Hessian (-147.63397 Ha); the
+# descent follows the downhill eigenvector to the UHF minimum (-147.63530 Ha,
+# see crates/ferric-scf/tests/uhf_o2_sto3g.rs). Same as the Python
+# `run_uhf(stability_descent=True)`; it also turns on check_stability.
+# UHF/UKS route, task = "energy" only.
+[molecule]
+xyz = "testdata/molecules/o2.xyz"
+multiplicity = 3
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "uhf"
+
+[scf]
+density_conv = 1e-9
+energy_conv = 1e-10
+max_iter = 200
+stability_descent = true

@@ -178,8 +178,9 @@ this. `run_uhf` with the default MINAO guess converges to −147.63397 Ha, which
 is a saddle of the orbital Hessian 1.33 mHa above the UHF minimum at
 −147.635296 Ha (PySCF's default guess lands on the same saddle). Without
 `stability_descent` nothing in the result flags it.
-`run_uhf(o2, bs, stability_descent=True)` follows the downhill eigenvector and
-reaches the minimum. `guess="hcore"` converges (`converged=True`) to a much
+`run_uhf(o2, bs, stability_descent=True)` (CLI: `[scf] stability_descent =
+true` on `kind = "uhf"`) follows the downhill eigenvector and reaches the
+minimum. `guess="hcore"` converges (`converged=True`) to a much
 higher stationary point, −147.3789 Ha, which lies above ferric's own ROHF
 (−147.63219 Ha). A UHF energy above the ROHF energy for the same molecule
 cannot be a ground state, so comparing the two is a cheap check for open-shell

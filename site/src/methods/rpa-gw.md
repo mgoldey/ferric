@@ -50,7 +50,9 @@ The starting point is HF by default or a KS functional (`[rpa] xc`).
 
 **Run it.** `method.kind = "gw"` with `[gw] method = "g0w0"`
 (`examples/water-g0w0-pbe.toml`, open shell `examples/oh-ugw.toml`); Python
-`ferric.run_gw`, `run_u_gw`.
+`ferric.run_gw`, `run_u_gw`. The open-shell reference is UHF by default;
+`[gw] reference = "rohf"` (Python `run_u_gw(reference="rohf")`) uses ROHF
+instead, or ROKS with `[rpa] xc` (`examples/oh-ugw-rohf.toml`).
 
 **Accuracy.** Smoke; treat results as about ±0.3 eV.
 

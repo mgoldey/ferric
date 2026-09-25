@@ -353,58 +353,39 @@ fn build_pcm_config(
     let Some(obj) = solvent else {
         return Ok(None);
     };
-    // Dielectric constants at 298 K.
-    let epsilon = if let Ok(eps) = obj.extract::<f64>() {
-        eps
+    // The solvent table, the dielectric validation and the Lebedev-order set
+    // all live in `ferric_pcm::PcmConfig` (`for_solvent` / `with_epsilon` /
+    // `with_lebedev_order`), shared with the CLI's `[pcm]` section so the two
+    // surfaces cannot drift apart.
+    // The library reports these as `FerricError::General`; drop the variant's
+    // "General error: " prefix so the ValueError reads as a kwarg message.
+    let msg = |e: ferric_core::FerricError| match e {
+        ferric_core::FerricError::General(m) => m,
+        other => other.to_string(),
+    };
+    let cfg = if let Ok(eps) = obj.extract::<f64>() {
+        ferric_pcm::PcmConfig::with_epsilon(eps)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("solvent: {}", msg(e))))?
     } else if let Ok(name) = obj.extract::<String>() {
-        match name.to_ascii_lowercase().as_str() {
-            "water" => 78.4,
-            "dmso" => 46.7,
-            "methanol" => 32.6,
-            "ethanol" => 24.9,
-            "acetone" => 20.7,
-            "dichloromethane" | "dcm" => 8.93,
-            "thf" => 7.43,
-            "chloroform" => 4.71,
-            "toluene" => 2.38,
-            "hexane" => 1.88,
-            other => {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "solvent = '{other}' not recognised. Pass a dielectric \
-                     constant directly (e.g. solvent=78.4) or one of: water, \
-                     dmso, methanol, ethanol, acetone, dichloromethane, thf, \
-                     chloroform, toluene, hexane"
-                )))
-            }
-        }
+        ferric_pcm::PcmConfig::for_solvent(&name).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "solvent: {} (e.g. solvent=78.4)",
+                msg(e)
+            ))
+        })?
     } else {
         return Err(pyo3::exceptions::PyTypeError::new_err(
             "solvent must be a dielectric constant (float) or a solvent name (str)",
         ));
     };
-    // `NaN <= 1.0` and `inf <= 1.0` are both false, so a bare `<=` let them
-    // through to fail later inside the cavity solve as a RuntimeError.
-    if !epsilon.is_finite() || epsilon <= 1.0 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "solvent dielectric must be > 1.0 and finite, got {epsilon} (vacuum is 1.0; \
-             pass solvent=None for no solvation)"
-        )));
-    }
-    let mut cfg = ferric_pcm::PcmConfig {
-        epsilon,
-        ..Default::default()
-    };
-    if let Some(order) = lebedev_order {
-        // The set `ferric_pcm`'s cavity and Gaussian-xi tables support. Checked
-        // here so a bad order is a ValueError naming the kwarg, not a
+    let cfg = match lebedev_order {
+        // Checked here so a bad order is a ValueError naming the kwarg, not a
         // RuntimeError from deep inside RHF setup.
-        if !matches!(order, 6 | 14 | 26 | 50 | 110 | 302) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "pcm_lebedev_order must be one of 6, 14, 26, 50, 110, 302; got {order}"
-            )));
-        }
-        cfg.lebedev_order = order;
-    }
+        Some(order) => cfg.with_lebedev_order(order).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("pcm_lebedev_order: {}", msg(e)))
+        })?,
+        None => cfg,
+    };
     Ok(Some(cfg))
 }
 

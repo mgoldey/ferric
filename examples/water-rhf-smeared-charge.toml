@@ -1,0 +1,31 @@
+# RHF/STO-3G water next to one Gaussian-smeared and one point charge.
+# A `width` (Bohr) turns an [[external_potential.point_charges]] entry into a
+# smeared charge: density q (zeta/pi)^(3/2) exp(-zeta r^2) with
+# zeta = 1/width^2, potential q erf(r/width)/r (PySCF mm_charge(radii=)
+# convention, the Python `smeared_charges=[(q, x, y, z, width)]`). Omit
+# `width` for a point charge; width <= 0 is an error. Coordinates in Bohr.
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "rhf"
+
+[scf]
+density_conv = 1e-8
+energy_conv = 1e-10
+
+[[external_potential.point_charges]]
+q = -0.8
+x = 0.0
+y = 0.0
+z = 3.5
+width = 1.5
+
+[[external_potential.point_charges]]
+q = 0.4
+x = 0.0
+y = 0.0
+z = -4.0

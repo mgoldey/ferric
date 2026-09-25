@@ -593,9 +593,11 @@ pub fn run(args: Vec<String>) {
         // setting materialises an explicit config, and it touches the MAIN
         // grid only: `nlc_grid` stays `None` so the VV10/NLC grid keeps its
         // 50x50 unpruned default, where pruning has no valid table.
-        dft_grid: grid_prune.map(|p| ferric_dft::grid::AtomicGridConfig {
-            prune: Some(p),
-            ..Default::default()
+        // `[dft] grid_radial`/`grid_angular` size the same main grid (unset
+        // sizes keep the 75x110 default); all three keys unset is `None`.
+        dft_grid: cfg.dft.grid_config(grid_prune).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
         }),
         nlc_grid: None,
         level_shift: cfg.scf.level_shift.unwrap_or(0.0),
@@ -633,7 +635,11 @@ pub fn run(args: Vec<String>) {
         // field is how a new knob gets noticed here instead of silently
         // acquiring whatever the Default impl says.
         cdft_stability_descent: true,
-        scf_stability_descent: false,
+        // `[scf] stability_descent` (UHF/UKS route only; other kinds were
+        // refused by `Config::validate_cli_wired_keys`). It needs the
+        // stability verdict, so it turns `check_stability` on too, exactly as
+        // the Python `run_uhf(stability_descent=True)` does.
+        scf_stability_descent: cfg.scf.stability_descent,
         fractional_occ: false,
         // 0 = "unset" → the SCF resolver auto-detects (0.8×RAM). An explicit
         // [memory] budget (incl. a deliberate 2 GiB) is passed through and honored.
@@ -654,17 +660,15 @@ pub fn run(args: Vec<String>) {
             None => cfg.external_potential.to_external_potential(),
         },
         cosmo: cfg.cosmo.clone(),
-        // TODO(pcm-cli-wiring): no [pcm] TOML section yet -- PCM is only
-        // reachable via the ferric-scf/ferric-python APIs for now. Wiring a
-        // CLI-level PcmConfig (mirroring the [external_potential] section)
-        // is a natural follow-up, out of scope for the initial PCM landing.
-        pcm: None,
+        // `[pcm]`: IEF-PCM. Values were validated at load time and the
+        // kind/task scope by `Config::validate_cli_wired_keys`.
+        pcm: resolve_pcm(&cfg),
         // Polarizable (Thole) embedding has no TOML surface either -- it is
         // reachable from Rust (RhfConfig.polarizable) and Python
         // (QmmmSystem(polarizabilities_angstrom3=) + run_qmmm) only.
         polarizable: None,
         verbose: cfg.scf.verbose,
-        check_stability: cfg.scf.check_stability,
+        check_stability: cfg.scf.runs_stability_check(),
         // Same resolved kind that already selected `bounds`'s CSB table
         // above; see the comment there for why it is parsed once.
         screening: screening_kind,
@@ -849,7 +853,19 @@ pub fn run(args: Vec<String>) {
         // `Config::validate_multiplicity`, so its kind has an open-shell
         // route (rimp2/oo-rimp2/pdep-rpa/gw/mp2-v on task = "energy"); each
         // consumes a UHF reference. `solve_rhf` would refuse the molecule.
-        solve_open_shell_reference(method, &cfg, &ctx, &mol, &prep, &bounds, &rhf_config)
+        // GW picks its own reference (`[gw] reference = "uhf" | "rohf"`); it
+        // is solved once here and `run_gw` reuses it, so a UHF failure can
+        // never end a run that asked for ROHF.
+        if method == "gw" {
+            gw_open_shell_reference(&cfg, &ctx, &mol, &prep, op, &bounds, &rhf_config)
+                .map(|(r, _)| r)
+                .unwrap_or_else(|e| {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                })
+        } else {
+            solve_open_shell_reference(method, &cfg, &ctx, &mol, &prep, &bounds, &rhf_config)
+        }
     } else if cfg.scf.df_guess_enabled() {
         // Opt-in DF-guess two-stage SCF (see
         // `ferric_scf::ladder::solve_rhf_with_df_guess`). Closed-shell only:
@@ -1050,18 +1066,7 @@ pub fn run(args: Vec<String>) {
             &proatom_gs_mult,
             &proatom,
         ),
-        "gw" => run_gw(
-            &cfg,
-            &ctx,
-            &mol,
-            &bs,
-            &prep,
-            op,
-            &bounds,
-            &rhf_config,
-            &result,
-            budget_bytes,
-        ),
+        "gw" => run_gw(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "bse-tda" => run_bse_tda(&cfg, &mol, &bs, &prep, op, &result, budget_bytes),
         "tdhf-static-polarizability" => {
             run_tdhf_static_polarizability(&cfg, &mol, &bs, &prep, op, &result, budget_bytes)
@@ -1137,6 +1142,20 @@ pub fn run(args: Vec<String>) {
                 },
             }),
         );
+    }
+}
+
+/// `RhfConfig::pcm` from `[pcm]` (`None` when the section is absent). The
+/// values were already validated when the file was loaded, so the error arm
+/// is a backstop. A named function rather than a closure in `run()`'s struct
+/// literal, which is already at the project's complexity ceiling.
+fn resolve_pcm(cfg: &Config) -> Option<ferric_pcm::PcmConfig> {
+    match cfg.pcm.as_ref()?.to_pcm_config() {
+        Ok(p) => Some(p),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -1913,11 +1932,18 @@ fn run_oo_rimp2(
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+    // `[mp2] oo_*` override the orbital-rotation loop; unset keys keep the
+    // library default (the same values the Python `run_oo_rimp2` defaults to).
+    let d = OoRiMp2Config::default();
     let oo_config = OoRiMp2Config {
+        max_iter: cfg.mp2.oo_max_iter.unwrap_or(d.max_iter),
+        grad_conv: cfg.mp2.oo_grad_conv.unwrap_or(d.grad_conv),
+        level_shift: cfg.mp2.oo_level_shift.unwrap_or(d.level_shift),
+        diis_size: cfg.mp2.oo_diis_size.unwrap_or(d.diis_size),
         frozen_core: cfg.mp2.frozen_core.resolve(mol),
         memory_budget_bytes: budget_bytes,
         verbose: cfg.scf.verbose,
-        ..Default::default()
+        ..d
     };
     let oo_result = oo_ri_mp2(mol, prep, &dfbs, op, bounds, result, &oo_config, ext)
         .unwrap_or_else(|e| {
@@ -1979,11 +2005,17 @@ fn run_u_oo_rimp2(
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+    // Same `[mp2] oo_*` overrides as the closed-shell path.
+    let d = ferric_mp2::u_oo_rimp2::UOoRiMp2Config::default();
     let oo_config = ferric_mp2::u_oo_rimp2::UOoRiMp2Config {
+        max_iter: cfg.mp2.oo_max_iter.unwrap_or(d.max_iter),
+        grad_conv: cfg.mp2.oo_grad_conv.unwrap_or(d.grad_conv),
+        level_shift: cfg.mp2.oo_level_shift.unwrap_or(d.level_shift),
+        diis_size: cfg.mp2.oo_diis_size.unwrap_or(d.diis_size),
         frozen_core: cfg.mp2.frozen_core.resolve(mol),
         memory_budget_bytes: budget_bytes,
         verbose: cfg.scf.verbose,
-        ..Default::default()
+        ..d
     };
     let oo_result =
         ferric_mp2::u_oo_rimp2::u_oo_ri_mp2(mol, prep, &dfbs, op, bounds, result, &oo_config, ext)
@@ -2043,6 +2075,16 @@ fn run_att_rimp2(
         eprintln!("error: {e}");
         std::process::exit(1);
     });
+    // `[mp2] att_operator = "terfc"` selects the exact tempered erfc (Python
+    // `run_terfc_rimp2`); the default erfc path below is unchanged.
+    let att_op = cfg.mp2.att_rimp2_op().unwrap_or_else(|e| {
+        eprintln!("config error: {e}");
+        std::process::exit(1);
+    });
+    if att_op == config::AttRimp2Op::Terfc {
+        run_att_rimp2_terfc(cfg, mol, bs, prep, &dfbs, aux_name, result, budget_bytes);
+        return;
+    }
     let omega_ang_inv = cfg.mp2.omega.unwrap_or(0.420);
     let att_config = AttenuatedMp2Config {
         omega: omega_ang_inv * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
@@ -2083,6 +2125,72 @@ fn run_att_rimp2(
             att_result.total_energy,
             serde_json::json!({
                 "e_corr": att_result.mp2_corr,
+                "e_scf_reference": result.energy,
+                "scf_converged": result.converged,
+            }),
+        );
+    }
+}
+
+/// `method.kind = "att-rimp2"` with `[mp2] att_operator = "terfc"`: RI-MP2 with
+/// the EXACT tempered-erfc operator `terfc(r, r0)/r` (Dutoi/Goldey
+/// interpolation tables, `FERRIC_TERF_TABLE_DIR`) at `r0 = [mp2] att_r0` Å
+/// (default 1.05). The SCF stays full Coulomb; only the correlation is
+/// attenuated. The same call as the Python `run_terfc_rimp2`:
+/// `ri_mp2(.., Operator::terfc(r0_bohr), ..)` with the CLI's frozen core and
+/// memory budget.
+#[allow(clippy::too_many_arguments)]
+fn run_att_rimp2_terfc(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    dfbs: &PreparedBasis,
+    aux_name: &str,
+    result: &ferric_scf::result::ScfResult,
+    budget_bytes: Option<usize>,
+) {
+    const ANG2BOHR_R0: f64 = 1.8897259886;
+    let r0_ang = cfg
+        .mp2
+        .att_r0
+        .unwrap_or(config::ATT_RIMP2_TERFC_DEFAULT_R0_ANG);
+    let mp2_config = RiMp2Config {
+        frozen_core: cfg.mp2.frozen_core.resolve(mol),
+        memory_budget_bytes: budget_bytes,
+        ..Default::default()
+    };
+    let (sc, _) = ferric_mp2::rimp2::ri_mp2_spin_components(
+        mol,
+        prep,
+        dfbs,
+        Operator::terfc(r0_ang * ANG2BOHR_R0),
+        result,
+        &mp2_config,
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    });
+    let total = result.energy + sc.e_total;
+    println!(
+        "Attenuated RI-MP2 (terfc)/{} (aux: {}, r0={:.3} Å) on {}",
+        bs.name, aux_name, r0_ang, cfg.molecule.xyz
+    );
+    println!("  nbasis     = {}", prep.nbasis());
+    println!("  RHF energy = {:.10} Hartree", result.energy);
+    println!("  MP2 corr   = {:.10} Hartree", sc.e_total);
+    println!("  E_OS       = {:.10} Hartree", sc.e_os);
+    println!("  E_SS       = {:.10} Hartree", sc.e_ss);
+    println!("  Total      = {:.10} Hartree", total);
+    if let Some(rl) = ferric_scf::runlog::log() {
+        rl.result(
+            "att-rimp2",
+            total,
+            serde_json::json!({
+                "operator": "terfc",
+                "r0_angstrom": r0_ang,
+                "e_corr": sc.e_total,
                 "e_scf_reference": result.energy,
                 "scf_converged": result.converged,
             }),
@@ -2184,6 +2292,12 @@ fn run_rs_mp2_rpa(
         omega: omega_ang_inv * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV,
         attenuator,
         r0,
+        // `[mp2] terf_omega` (Å⁻¹, terf only -- validated by
+        // `Config::validate_cli_wired_keys`); None keeps the curvature link.
+        terf_omega: cfg
+            .mp2
+            .terf_omega
+            .map(|w| w * ferric_mp2::attenuated::BOHR_INV_PER_ANG_INV),
         frozen_core: cfg.mp2.frozen_core.resolve(mol),
         formulation,
         ..Default::default()
@@ -2262,10 +2376,17 @@ fn emit_rs_mp2_rpa_point(
                 rs_cfg.omega
             );
         }
-        ferric_rpa::rs_mp2_rpa::Attenuator::Terf => {
-            let w_derived = 1.0 / (rs_cfg.r0 * std::f64::consts::SQRT_2);
-            println!("RS-MP2-RPA [terf split] (r0 = {r0_ang:.4} Å = {:.4} Bohr, ω = 1/(r0·√2) = {:.4} Bohr⁻¹)", rs_cfg.r0, w_derived);
-        }
+        ferric_rpa::rs_mp2_rpa::Attenuator::Terf => match rs_cfg.terf_omega {
+            None => {
+                let w_derived = 1.0 / (rs_cfg.r0 * std::f64::consts::SQRT_2);
+                println!("RS-MP2-RPA [terf split] (r0 = {r0_ang:.4} Å = {:.4} Bohr, ω = 1/(r0·√2) = {:.4} Bohr⁻¹)", rs_cfg.r0, w_derived);
+            }
+            // Print the ω actually used: with `[mp2] terf_omega` the
+            // curvature link is broken, so the derived value would be wrong.
+            Some(w) => {
+                println!("RS-MP2-RPA [terf split] (r0 = {r0_ang:.4} Å = {:.4} Bohr, ω = {:.4} Bohr⁻¹ from [mp2] terf_omega, decoupled from r0)", rs_cfg.r0, w);
+            }
+        },
     }
     // Common lines printed for all formulations.
     //
@@ -4356,16 +4477,65 @@ fn run_pdep_rpa_arm(
 
 /// `method.kind = "gw"`. Extracted verbatim from the former `main()`
 /// `"gw" => { ... }` match arm.
+/// The open-shell reference for `method.kind = "gw"` and its label.
+///
+/// `[gw] reference` = `"uhf"` (default) runs `solve_uhf`, `"rohf"` runs
+/// `solve_rohf` -- UKS/ROKS when `[rpa] xc` put a functional in
+/// `rhf_config.xc` -- both with MOM after 5 DIIS iterations, the same
+/// precedent as the `pdep-rpa` open-shell dispatch and the Python
+/// `run_u_gw(reference=)`. `ferric_gw::run_u_gw` accepts either reference.
 #[allow(clippy::too_many_arguments)]
-fn run_gw(
+fn gw_open_shell_reference(
     cfg: &Config,
     ctx: &ParallelContext,
     mol: &Molecule,
-    bs: &BasisSet,
     prep: &PreparedBasis,
     op: Operator,
     bounds: &SchwarzBounds,
     rhf_config: &RhfConfig,
+) -> Result<(ferric_scf::result::ScfResult, &'static str), String> {
+    let label = gw_open_shell_reference_label(cfg)?;
+    let mut scf_cfg = rhf_config.clone();
+    // MOM after 5 DIIS iters prevents orbital reordering on open-shell atoms.
+    scf_cfg.mom_after_iter = 5;
+    let result = match cfg.gw.parse_reference()? {
+        config::GwReference::Uhf => solve_uhf(ctx, mol, prep, bounds, &scf_cfg),
+        config::GwReference::Rohf => solve_rohf(ctx, mol, prep, op, bounds, &scf_cfg),
+    };
+    result
+        .map(|r| (r, label))
+        .map_err(|e| format!("({label} reference): {e}"))
+}
+
+/// The name of the open-shell GW reference `gw_open_shell_reference` solves:
+/// UHF/ROHF, or UKS/ROKS when `[rpa] xc` is set.
+fn gw_open_shell_reference_label(cfg: &Config) -> Result<&'static str, String> {
+    let ks = cfg.rpa.xc.is_some();
+    Ok(match cfg.gw.parse_reference()? {
+        config::GwReference::Uhf => {
+            if ks {
+                "UKS"
+            } else {
+                "UHF"
+            }
+        }
+        config::GwReference::Rohf => {
+            if ks {
+                "ROKS"
+            } else {
+                "ROHF"
+            }
+        }
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_gw(
+    cfg: &Config,
+    mol: &Molecule,
+    bs: &BasisSet,
+    prep: &PreparedBasis,
+    op: Operator,
     result: &ferric_scf::result::ScfResult,
     budget_bytes: Option<usize>,
 ) {
@@ -4440,14 +4610,12 @@ fn run_gw(
     };
     let ha_to_ev = 27.211_386_245_988_f64;
     if mol.multiplicity > 1 {
-        // Open-shell path: re-run with UHF + MOM (same precedent as the
-        // "pdep-rpa" arm's open-shell dispatch) so the reference is
-        // converged, then dispatch to run_u_gw. Shadow `result` so it
-        // carries the correct (possibly UKS) SCF density.
-        let mut uhf_cfg = rhf_config.clone();
-        uhf_cfg.mom_after_iter = 5;
-        let result = solve_uhf(ctx, mol, prep, bounds, &uhf_cfg).unwrap_or_else(|e| {
-            eprintln!("error (UHF): {e}");
+        // Open-shell path: `run()` already solved the reference through
+        // `gw_open_shell_reference` (UHF, or ROHF for `[gw] reference =
+        // "rohf"`; UKS/ROKS with `[rpa] xc`, MOM after 5 iterations), so
+        // `result` is that reference; dispatch to run_u_gw.
+        let ref_label = gw_open_shell_reference_label(cfg).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
             std::process::exit(1);
         });
         // KS reference (RPA@PBE0-style): [rpa].xc set ⇒ `result` above is
@@ -4457,18 +4625,16 @@ fn run_gw(
         // None (HF reference) ⇒ no shift, matches run_u_gw's contract.
         let vxc_diag = match cfg.rpa.xc.as_deref() {
             Some(xc_name) => {
-                let (diag_a, diag_b) = ferric_gw::vxc_mo::vxc_diagonal_mo(
-                    mol, bs, xc_name, &result,
-                )
-                .unwrap_or_else(|e| {
-                    eprintln!("error: vxc_diagonal_mo failed: {e}");
-                    std::process::exit(1);
-                });
+                let (diag_a, diag_b) = ferric_gw::vxc_mo::vxc_diagonal_mo(mol, bs, xc_name, result)
+                    .unwrap_or_else(|e| {
+                        eprintln!("error: vxc_diagonal_mo failed: {e}");
+                        std::process::exit(1);
+                    });
                 Some((diag_a, diag_b))
             }
             None => None,
         };
-        let mut gw_result = ferric_gw::run_u_gw(mol, prep, &dfbs, op, &result, &rpa_cfg, &gw_cfg)
+        let mut gw_result = ferric_gw::run_u_gw(mol, prep, &dfbs, op, result, &rpa_cfg, &gw_cfg)
             .unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 std::process::exit(1);
@@ -4476,7 +4642,6 @@ fn run_gw(
         if let Some((diag_a, diag_b)) = vxc_diag.as_ref() {
             gw_result.apply_kohn_sham_correction(diag_a, diag_b);
         }
-        let ref_label = if cfg.rpa.xc.is_some() { "UKS" } else { "UHF" };
         println!(
             "U-GW[{:?}]/{} (aux: {}, ref: {ref_label}) on {}",
             gw_cfg.method, bs.name, aux_name, cfg.molecule.xyz

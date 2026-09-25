@@ -1,0 +1,23 @@
+# RHF/STO-3G water in IEF-PCM water ([pcm], ferric_pcm). `solvent = "water"`
+# is epsilon = 78.4 from the shared solvent table (the same table as the
+# Python `run_rhf(solvent="water")`); `epsilon = 78.4` gives the same run.
+# Energy runs of rhf/uhf/rohf/ksdft/pdep-rpa only: no gradient has a PCM
+# term, so task = "optimize"/"frequencies" is refused.
+# Equivalence to the library call is asserted by
+# crates/ferric-cli/tests/cli_wired_keys.rs (pcm_rhf_matches_the_library_and_solvates).
+[molecule]
+xyz = "testdata/molecules/water.xyz"
+
+[basis]
+name = "sto-3g"
+
+[method]
+kind = "rhf"
+
+[scf]
+density_conv = 1e-8
+energy_conv = 1e-10
+
+[pcm]
+solvent = "water"
+# lebedev_order = 110   # tesserae per atomic sphere: 6/14/26/50/110/302
