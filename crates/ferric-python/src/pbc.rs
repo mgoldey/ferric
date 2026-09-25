@@ -135,6 +135,18 @@ fn gamma_scf_config(max_iter: usize, density_conv: f64) -> RhfConfig {
     }
 }
 
+/// SCF knobs of `run_roks_gamma`: `GammaRoksConfig::new(functional).scf`
+/// (which carries the hybrid level-shift / max_iter default, see its doc)
+/// with the caller's `density_conv`, and `max_iter` only when given.
+fn roks_scf_config(functional: &str, max_iter: Option<usize>, density_conv: f64) -> RhfConfig {
+    let mut scf = GammaRoksConfig::new(functional).scf;
+    scf.density_conv = density_conv;
+    if let Some(m) = max_iter {
+        scf.max_iter = m;
+    }
+    scf
+}
+
 fn kscf_config(
     fname: &str,
     max_iter: usize,
@@ -858,10 +870,15 @@ fn run_uks_gamma(
 ///
 /// Validated: for one electron ROKS == UKS (H atom, a = 4 Bohr, SSF 75x302,
 /// LDA -0.667583328116).
+///
+/// `max_iter=None` takes the `GammaRoksConfig::new` default: 600 with a
+/// 0.05 Ha ramped level shift for a hybrid (a > 0, a DIIS robustness default
+/// that vanishes at convergence), 200 and no shift otherwise. An explicit
+/// `max_iter` overrides only the iteration cap.
 #[pyfunction]
 #[pyo3(signature = (
     mol, lattice, basis_set, functional, exxdiv="ewald", ewald_start=None,
-    omega=None, max_eri_gb=None, max_iter=200, density_conv=1e-10, jk="dense",
+    omega=None, max_eri_gb=None, max_iter=None, density_conv=1e-10, jk="dense",
     auxbasis=None, memory_budget_gb=None, n_radial=75, n_angular=302,
     neighbour_cutoff=None,
 ))]
@@ -876,7 +893,7 @@ fn run_roks_gamma(
     ewald_start: Option<&str>,
     omega: Option<f64>,
     max_eri_gb: Option<f64>,
-    max_iter: usize,
+    max_iter: Option<usize>,
     density_conv: f64,
     jk: &str,
     auxbasis: Option<&Bound<'_, PyAny>>,
@@ -903,7 +920,7 @@ fn run_roks_gamma(
     let o = OpenOpts {
         method: OpenMethod::Roks(functional.to_string()),
         start,
-        scf: gamma_scf_config(max_iter, density_conv),
+        scf: roks_scf_config(functional, max_iter, density_conv),
         grid: periodic_grid(fname, n_radial, n_angular, neighbour_cutoff)?,
     };
     run_open_shell(py, s, o, start_name)

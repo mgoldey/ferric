@@ -124,25 +124,80 @@ pub struct GammaRoksConfig {
     /// [`gamma_roks_with_xc`]).
     pub xc: PeriodicXcConfig,
     /// SCF knobs, validated by `validate_injected_rohf` plus the
-    /// molecular-grid fields refused here.
+    /// molecular-grid fields refused here. [`GammaRoksConfig::new`] sets
+    /// `level_shift` = [`ROKS_HYBRID_LEVEL_SHIFT`] and `max_iter` =
+    /// [`ROKS_HYBRID_MAX_ITER`] for a functional with exact exchange (see
+    /// there); every field is the caller's to override.
     pub scf: RhfConfig,
     /// Optional starting MOs, one `(nao, nao)` set; first stage only.
     pub initial_mos: Option<Array2<f64>>,
 }
 
+/// Default `scf.level_shift` (Hartree) that [`GammaRoksConfig::new`] sets for
+/// a functional with exact exchange (`a > 0`). See [`GammaRoksConfig::new`].
+pub const ROKS_HYBRID_LEVEL_SHIFT: f64 = 0.05;
+/// Default `scf.max_iter` that [`GammaRoksConfig::new`] sets for a functional
+/// with exact exchange (`a > 0`), per SCF stage.
+pub const ROKS_HYBRID_MAX_ITER: usize = 600;
+
 impl GammaRoksConfig {
     /// Defaults (grid (75, 302) SSF, exxdiv ewald, staged start, hcore
     /// guess, tight convergence) for `functional` — those of
-    /// [`GammaUksConfig::new`].
+    /// [`GammaUksConfig::new`], plus a DIIS robustness default for hybrids.
+    ///
+    /// # Level shift for `a > 0` (DIIS robustness, not a different answer)
+    ///
+    /// When `functional` resolves ([`resolve_periodic_functional`], the same
+    /// name check [`gamma_roks`] runs) to an exact-exchange fraction
+    /// `a > 0`, `scf.level_shift` = [`ROKS_HYBRID_LEVEL_SHIFT`] (0.05 Ha) and
+    /// `scf.max_iter` = [`ROKS_HYBRID_MAX_ITER`] (600). `a = 0` (LDA/GGA)
+    /// keeps the [`GammaUksConfig::new`] SCF defaults (shift 0, 200
+    /// iterations), and so does a name that does not resolve (`gamma_roks`
+    /// refuses it by name later; [`gamma_roks_with_xc`] ignores the name, so
+    /// a caller-supplied hybrid builder must set the shift itself).
+    ///
+    /// Why (FINDINGS "ROKS PBE0 CI non-convergence (Python diagnosis) —
+    /// 2026-09-25", measured on a numpy replica of the injected ROHF loop,
+    /// `reference/pbc/roks_replica.py` / `run_roks_trap.py`, tri 4H s+p
+    /// triplet PBE0 `exxdiv = none`): the ROKS minimum REPELS the undamped
+    /// Roothaan map there, and DIIS (history 8) captures only starts within
+    /// ~1e-5 of it, so convergence is start- and LAPACK-dependent (CI hit
+    /// max_iter at −1.4348827058, a non-stationary snapshot of a chaotic
+    /// wander). Over core-guess starts rotated by `exp(tK)`:
+    ///
+    /// * shift 0, 200 iterations: 2 of 19 reach the pin −1.465458280448;
+    /// * shift 0.05, 600 iterations: 37 of 37 (6 seeds), 97-515 iterations,
+    ///   median ~170; 0.1 also 37/37 (median ~320); 0.02 / 0.03 / 0.25 reach
+    ///   only 9 / 18 / 18 of 19 within 600 (too weak to contract / crawling);
+    /// * MOM (`mom_after_iter`) and the continuity lock instead land in the
+    ///   non-aufbau stationary state −1.4434745673 (22 mHa above the pin).
+    ///
+    /// The shift acts on the virtual block only and is ramped by the solver
+    /// as `ls·err/(err + 1e-3)` (the molecular ROHF ramp; `level_shift` is
+    /// accepted by `validate_injected_rohf`), so it vanishes at convergence
+    /// and cannot move the converged state: in the replica LDA/PBE/PBE0 (none
+    /// and staged ewald) reproduce their pins to 1e-13 with it. The replica
+    /// is not bit-identical to ferric, so the rates above are estimates;
+    /// only one cell and one hybrid (PBE0) were measured. A second-order
+    /// injected step would be the real cure; this is the robustness default
+    /// until then.
     pub fn new(functional: &str) -> Self {
         let u = GammaUksConfig::new(functional);
+        let mut scf = u.scf;
+        let hybrid = resolve_periodic_functional(functional)
+            .map(|(_, a)| a > 0.0)
+            .unwrap_or(false);
+        if hybrid {
+            scf.level_shift = ROKS_HYBRID_LEVEL_SHIFT;
+            scf.max_iter = ROKS_HYBRID_MAX_ITER;
+        }
         Self {
             functional: u.functional,
             grid: u.grid,
             exxdiv: u.exxdiv,
             ewald_start: u.ewald_start,
             xc: u.xc,
-            scf: u.scf,
+            scf,
             initial_mos: None,
         }
     }

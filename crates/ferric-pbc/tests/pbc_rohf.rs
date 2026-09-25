@@ -54,17 +54,22 @@ use ferric_core::FerricError;
 use ferric_pbc::dense_aft::{
     DenseAftEri, ExxDiv, DEFAULT_DENSE_AFT_MAX_BYTES, DEFAULT_DENSE_AFT_PRECISION,
 };
-use ferric_pbc::dft::{gamma_rks, GammaRksConfig, PeriodicGridConfig};
+use ferric_pbc::dft::{
+    gamma_rks, GammaRksConfig, GammaUksConfig, PeriodicGrid, PeriodicGridConfig, PeriodicXc,
+    PeriodicXcConfig,
+};
 use ferric_pbc::ewald::madelung_constant;
 use ferric_pbc::hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
 use ferric_pbc::lattice::Cell;
 use ferric_pbc::rohf::{
     gamma_rohf, gamma_roks, gamma_roks_with_xc, rohf_occupation_gaps, GammaRohfConfig,
-    GammaRohfResult, GammaRoksConfig, GammaRoksResult,
+    GammaRohfResult, GammaRoksConfig, GammaRoksResult, ROKS_HYBRID_LEVEL_SHIFT,
+    ROKS_HYBRID_MAX_ITER,
 };
 use ferric_pbc::uhf::{gamma_uhf, EwaldStart, GammaUhfConfig, GammaUhfIntegrals};
-use ferric_scf::rhf::XcBuilder;
+use ferric_scf::rhf::{RhfConfig, XcBuilder};
 use ndarray::Array2;
+use ndarray_linalg::{Eigh, UPLO};
 
 const HCORE_OMEGA: f64 = 0.8;
 /// `test_prototype.py` H_ATOM (Bohr).
@@ -84,10 +89,19 @@ const TRI_ROHF_PYSCF_E: [f64; 2] = [-0.581222768976, -1.826096526949];
 
 // --- (3) Prototype own construction (pbc_uks.roks on the SSF 75x302 D=10
 // grid, dense pure-AFT, exxdiv ewald, conv 1e-12), [LDA, PBE, PBE0];
-// run_roks_ssf_pins.py tri. Start-independent (UKS density and core guess
-// agree to 1e-12, none and ewald alike); PBE0 none = -1.465458280448, so
-// ewald - none = -a v_M N/2 holds to 1e-12 in the prototype.
+// run_roks_ssf_pins.py tri. The prototype reaches the same values from the
+// UKS density and from the core guess (1e-12, none and ewald alike). That is
+// TWO starts, NOT start-independence: for PBE0 none the prototype's own
+// [F, D] DIIS converges from only 5 of 19 perturbed core starts, and a
+// replica of ferric's unshifted loop from 2 of 19 (FINDINGS "ROKS PBE0 CI
+// non-convergence (Python diagnosis) — 2026-09-25"); the shifted default of
+// GammaRoksConfig::new is what makes it robust (37/37 in the replica).
+// LDA/PBE were not surveyed beyond the core guess + 3 rotations. PBE0 none =
+// TRI_ROKS_PBE0_NONE, so ewald - none = -a v_M N/2 holds to 1e-12 in the
+// prototype.
 const TRI_ROKS_SSF_E: [f64; 3] = [-1.694206925329, -1.731150286924, -1.776676719941];
+/// The exxdiv = none stage of TRI_ROKS_SSF_E[2] (PBE0), same construction.
+const TRI_ROKS_PBE0_NONE: f64 = -1.465458280448;
 /// pbc_uks.rs TRI_SSF_E: UKS on the same grid (ROKS must lie above).
 const TRI_UKS_SSF_E: [f64; 3] = [-1.694518592905, -1.731614505391, -1.777304384785];
 const TRI_SSF_NPTS: usize = 70784;
@@ -489,6 +503,189 @@ fn roks_tri_triplet_matches_the_prototype_construction_and_pyscf() {
             assert_eq!(a, 0.0);
         }
     }
+}
+
+/// `GammaRoksConfig::new` sets the ramped level shift and the 600-iteration
+/// cap for a hybrid only (FINDINGS 2026-09-25); LDA/GGA and unresolvable
+/// names keep the `GammaUksConfig::new` SCF defaults.
+#[test]
+fn roks_config_new_shifts_hybrids_only() {
+    let uks = GammaUksConfig::new("PBE0").scf;
+    for (name, shift, cap) in [
+        ("PBE0", ROKS_HYBRID_LEVEL_SHIFT, ROKS_HYBRID_MAX_ITER),
+        ("LDA", uks.level_shift, uks.max_iter),
+        ("PBE", uks.level_shift, uks.max_iter),
+        ("unused", uks.level_shift, uks.max_iter),
+    ] {
+        let c = GammaRoksConfig::new(name).scf;
+        assert_eq!((c.level_shift, c.max_iter), (shift, cap), "{name}");
+        assert_eq!(c.density_conv, uks.density_conv, "{name}");
+        assert!(!c.use_sad_guess, "{name}");
+    }
+    assert_eq!((ROKS_HYBRID_LEVEL_SHIFT, ROKS_HYBRID_MAX_ITER), (0.05, 600));
+    assert_eq!((uks.level_shift, uks.max_iter), (0.0, 200));
+}
+
+/// Deterministic uniform [-1, 1) stream (Knuth MMIX LCG, top 53 bits).
+struct Lcg(u64);
+
+impl Lcg {
+    fn new(seed: u64) -> Self {
+        let mut g = Lcg(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5_4A32_D192_ED03);
+        for _ in 0..8 {
+            g.uniform();
+        }
+        g
+    }
+    fn uniform(&mut self) -> f64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (self.0 >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+    }
+}
+
+/// The injected core guess (symmetric `S^{-1/2}`, eigenvectors of
+/// `S^{-1/2} h S^{-1/2}`), as `solve_rohf_impl` builds it.
+fn core_mos(s: &Array2<f64>, h: &Array2<f64>) -> Array2<f64> {
+    let (se, sv) = s.eigh(UPLO::Upper).expect("S eigh");
+    let mut xs = sv.clone();
+    for (j, e) in se.iter().enumerate() {
+        xs.column_mut(j).mapv_inplace(|v| v / e.sqrt());
+    }
+    let x = xs.dot(&sv.t());
+    let (_, cp) = x.dot(h).dot(&x).eigh(UPLO::Upper).expect("h' eigh");
+    x.dot(&cp)
+}
+
+/// `C exp(K)`, `K` antisymmetric with entries uniform in `[-t, t)` from
+/// `seed` (Taylor series; `‖K‖ ≤ n t` is tiny here). Keeps `Cᵀ S C = 1`.
+fn rotated(c: &Array2<f64>, t: f64, seed: u64) -> Array2<f64> {
+    let n = c.ncols();
+    let mut g = Lcg::new(seed);
+    let mut k = Array2::<f64>::zeros((n, n));
+    for i in 0..n {
+        for j in 0..i {
+            let v = t * g.uniform();
+            k[(i, j)] = v;
+            k[(j, i)] = -v;
+        }
+    }
+    let mut r = Array2::<f64>::eye(n);
+    let mut term = Array2::<f64>::eye(n);
+    for m in 1..=40 {
+        term = term.dot(&k) / m as f64;
+        r += &term;
+        if term.iter().all(|v| v.abs() < 1e-22) {
+            break;
+        }
+    }
+    c.dot(&r)
+}
+
+/// Perturbation amplitudes x seeds of the PBE0-none start survey.
+const PERTURB_T: [f64; 3] = [1e-6, 1e-5, 1e-4];
+const PERTURB_SEEDS: [u64; 2] = [1, 2];
+
+/// Tri 4H s+p triplet PBE0 `exxdiv = none` (the first stage of the staged
+/// ewald run, the one CI failed) from the core guess rotated by each
+/// `(t, seed)`, with `edit` applied to `GammaRoksConfig::new("PBE0").scf`.
+/// Returns `(t, seed, Ok((E, iterations)) | Err(reason))`.
+fn pbe0_none_from_perturbed_starts(
+    edit: impl Fn(&mut RhfConfig),
+) -> Vec<(f64, u64, Result<(f64, usize), String>)> {
+    let su = setup(cell_mult(&TRI_ATOMS, TRI_A, 3), sp_basis_h());
+    let gcfg = ssf_grid(75, 302, 10.0);
+    let grid = PeriodicGrid::build(&su.cell, &gcfg).expect("grid");
+    assert_eq!(grid.len(), TRI_SSF_NPTS);
+    let mut pxc = PeriodicXc::new(
+        &su.cell,
+        su.prep.basis_set(),
+        "PBE0",
+        &grid,
+        &PeriodicXcConfig::default(),
+    )
+    .expect("PeriodicXc PBE0");
+    let c0 = core_mos(&su.hc.s, &su.hc.h);
+    let mut out = Vec::new();
+    for t in PERTURB_T {
+        for seed in PERTURB_SEEDS {
+            let c = rotated(&c0, t, seed);
+            let ortho = c.t().dot(&su.hc.s).dot(&c);
+            assert!(
+                max_abs_diff(&ortho, &Array2::eye(c.ncols())) < 1e-10,
+                "rotated start is not S-orthonormal"
+            );
+            let mut cfg = GammaRoksConfig {
+                exxdiv: ExxDiv::None,
+                initial_mos: Some(c),
+                ..GammaRoksConfig::new("PBE0")
+            };
+            edit(&mut cfg.scf);
+            let r = gamma_roks_with_xc(&su.cell, &su.prep, &su.hc, ints(&su), &mut pxc, &cfg);
+            let res = match r {
+                Ok(o) if o.scf.converged => Ok((o.scf.energy, o.scf.iterations)),
+                Ok(o) => Err(format!("not converged after {}", o.scf.iterations)),
+                Err(e) => Err(e.to_string()),
+            };
+            eprintln!(
+                "  PBE0 none t {t:.0e} seed {seed} (ls {}, max_iter {}): {res:?}",
+                cfg.scf.level_shift, cfg.scf.max_iter
+            );
+            out.push((t, seed, res));
+        }
+    }
+    out
+}
+
+/// Regression for the CI failure (FINDINGS "ROKS PBE0 CI non-convergence
+/// (Python diagnosis) — 2026-09-25"): with the `GammaRoksConfig::new` hybrid
+/// defaults (ramped level shift 0.05, 600 iterations) every perturbed start
+/// reaches the prototype pin. Its negative control is
+/// `roks_pbe0_tri_none_stage_perturbed_starts_fail_without_the_shift`.
+#[test]
+#[ignore = "slow: 6 PBE0 ROKS SCFs of ~100-500 iterations each on the 70784-point SSF grid; run with --ignored"]
+fn roks_pbe0_tri_none_stage_converges_from_perturbed_starts() {
+    let runs = pbe0_none_from_perturbed_starts(|_| {});
+    for (t, seed, res) in &runs {
+        match res {
+            Ok((e, _)) => close(
+                *e,
+                TRI_ROKS_PBE0_NONE,
+                1e-8,
+                &format!("PBE0 none t {t:.0e} seed {seed}"),
+            ),
+            Err(why) => panic!("PBE0 none t {t:.0e} seed {seed}: {why}"),
+        }
+    }
+}
+
+/// Negative control: the SAME starts with the pre-2026-09-25 defaults (no
+/// shift, 200 iterations). At least one must fail to reach the pin, otherwise
+/// the positive test above does not show that the shift is what makes it
+/// pass (the replica fails 2 of 3 starts at t = 1e-6 without the shift; this
+/// is not guaranteed under ferric's arithmetic, hence the explicit check).
+#[test]
+#[ignore = "slow: 6 PBE0 ROKS SCFs of up to 200 iterations each on the 70784-point SSF grid; run with --ignored"]
+fn roks_pbe0_tri_none_stage_perturbed_starts_fail_without_the_shift() {
+    let runs = pbe0_none_from_perturbed_starts(|scf| {
+        scf.level_shift = 0.0;
+        scf.max_iter = 200;
+    });
+    let failed = runs
+        .iter()
+        .filter(|(_, _, r)| !matches!(r, Ok((e, _)) if (e - TRI_ROKS_PBE0_NONE).abs() < 1e-8))
+        .count();
+    eprintln!(
+        "  unshifted: {failed} of {} starts miss the pin",
+        runs.len()
+    );
+    assert!(
+        failed >= 1,
+        "every perturbed start reached the pin WITHOUT the level shift, so the shifted \
+         regression test does not isolate the shift; use stronger perturbations"
+    );
 }
 
 // ===========================================================================
