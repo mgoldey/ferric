@@ -43,7 +43,7 @@ MAX_RESTARTS times) and a still-unstable end point is REFUSED.
 
 Run (light; a few minutes):
     scripts/validation/run_slot.sh --light -- \\
-        /home/matt/qc/ferric/.venv/bin/python scripts/validation/gen_geometry_optimization.py
+        python scripts/validation/gen_geometry_optimization.py
 Restrict to systems by name:  ... gen_geometry_optimization.py ch3 nh2
 """
 

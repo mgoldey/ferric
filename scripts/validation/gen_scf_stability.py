@@ -55,7 +55,7 @@ eigenvalues are stored, not just the lowest one.
 Run (light; seconds):
     scripts/validation/run_slot.sh --light -- \\
         env OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 \\
-        /home/matt/qc/ferric/.venv/bin/python scripts/validation/gen_scf_stability.py
+        python scripts/validation/gen_scf_stability.py
 """
 
 from __future__ import annotations

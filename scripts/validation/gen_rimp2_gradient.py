@@ -42,7 +42,7 @@ Also stored, as controls for the Rust test:
 
 Run (light: every ORCA job is seconds on 1 core, the PySCF FD is ~50 energies):
     scripts/validation/run_slot.sh --light -- \\
-        /home/matt/qc/ferric/.venv/bin/python scripts/validation/gen_rimp2_gradient.py [system ...]
+        python scripts/validation/gen_rimp2_gradient.py [system ...]
 `--write-only` regenerates the committed .inp files without running anything.
 ORCA runs in a temporary directory (copies of the .inp).
 """
