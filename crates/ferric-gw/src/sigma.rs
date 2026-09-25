@@ -261,7 +261,17 @@ pub(crate) fn fermi_level(eps_act: &[f64], n_occ_act: usize) -> f64 {
 /// matrix elements M[(α,m,n)], inverse-dielectric weights w_α(iω_k), and
 /// quadrature data. `n_occ_act` is used only for completeness (sum runs
 /// over all n).
-pub(crate) fn sigma_c_at_z(
+///
+/// `z` is an ABSOLUTE complex energy in Hartree (not measured from the Fermi
+/// level): the G0W0 path samples it at `z = ef + iω` on the Fermi-shifted
+/// imaginary axis (see `solve_qp_for_mo`). `m_idx` indexes the ACTIVE MO block
+/// (absolute MO minus `MoB::first_act`), and `eps_act` are the propagator
+/// energies of that block. No analytic continuation is involved.
+///
+/// Public as a stable test hook: it lets a validation test compare Σ_c on the
+/// imaginary axis directly against an external code, with no Padé in between
+/// (`tests/validation_gw.rs`). Its signature is part of that contract.
+pub fn sigma_c_at_z(
     m_idx: usize,
     z: Complex64,
     m_proj: &ndarray::Array3<f64>,

@@ -88,9 +88,12 @@ fn print_usage() {
 const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
     (
         "gw",
-        "method.kind = \"gw\" is Smoke-grade (see site/src/reference/validation.md): G0W0/COHSEX/evGW0/evGW \
-         validated to ~5 meV vs MOLGW on a single H2O/cc-pVDZ case but most asserts are loose \
-         range bands; treat results as accurate to roughly +/-0.3 eV, not a reference number.",
+        "method.kind = \"gw\" is Smoke-grade (see site/src/reference/validation.md): QP energies \
+         (G0W0@HF/@PBE, frozen core, ECP, U-G0W0@UHF, COHSEX, evGW0, evGW) are compared with PySCF \
+         gw_ac/ugw_ac in crates/ferric-gw/tests/validation_gw.rs only at MATCHED settings \
+         ([rpa] n_quad = 100, trunc_thresh = 0); the measured agreement is on that page. The CLI \
+         defaults (n_quad = 20, trunc_thresh = 1e-4) are coarser: the 20-point frequency grid \
+         alone moves the H2O/cc-pVDZ G0W0@PBE HOMO by 13 meV, and truncation is not validated.",
     ),
     (
         "bse-tda",

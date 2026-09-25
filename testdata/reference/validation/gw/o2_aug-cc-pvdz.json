@@ -1,0 +1,262 @@
+{
+  "basis": "aug-cc-pvdz",
+  "aux": "aug-cc-pvdz-rifit",
+  "charge": 0,
+  "multiplicity": 3,
+  "nao": 46,
+  "naux": 144,
+  "nelectron": 16,
+  "nuclear_repulsion": 28.047487783751553,
+  "like_for_like": {
+    "nao": 46,
+    "replica_self_overlap_max_dev": 4.440892098500626e-16,
+    "pyscf_diag_max_dev": 2.220446049250313e-16,
+    "diag_checked": 46,
+    "diag_skipped_cartesian": 0
+  },
+  "uhf": {
+    "energy": -149.64244737049302,
+    "converged": true,
+    "s_squared": 2.0463069956201805,
+    "multiplicity_from_s2": 3.0307141043788213,
+    "nelec_alpha": 9,
+    "nelec_beta": 7,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UHF internal (real)",
+      "rounds": 0,
+      "selected_guess": "atom",
+      "lambda_min": 0.02940691938796458
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -149.64244737049293,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -149.64244737049293
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -149.64244737049302,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -149.64244737049302
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -149.64244737049296,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -149.64244737049296
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.5595688202958848,
+    "lumo_alpha": 0.1204501576604482,
+    "homo_beta": -0.5800936137158615,
+    "lumo_beta": 0.08764621927364333,
+    "somo_alpha": [
+      -0.5595688202958913,
+      -0.5595688202958848
+    ]
+  },
+  "u_g0w0_uhf": {
+    "orbs": [
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "ef_convention": "per-spin mid-gap, as ferric u_sigma.rs",
+    "alpha": {
+      "ef": -0.21955933131771832,
+      "eps_mf": [
+        -0.7717938347163518,
+        -0.5595688202958913,
+        -0.5595688202958848,
+        0.1204501576604482,
+        0.16964924667638215,
+        0.1818687155365774
+      ],
+      "eps_qp": [
+        -0.7310744830473654,
+        -0.47967823799975307,
+        -0.4796782380030998,
+        0.11411058292319519,
+        0.15863647816025067,
+        0.17516157896732817
+      ],
+      "eps_qp_pyscf_secant": [
+        -0.7310744830474866,
+        -0.47967823800527803,
+        -0.47967823800862475,
+        0.11411058292642888,
+        0.15863647821124793,
+        0.17516157897082715
+      ],
+      "sigma_c_at_qp": [
+        0.040719351668983314,
+        0.0798905822961369,
+        0.07989058229278437,
+        -0.006339574736941838,
+        -0.011012768516142267,
+        -0.006707136569249052
+      ],
+      "sigma_x_df": [
+        -1.0569929662682502,
+        -1.125751088015846,
+        -1.1257510880158443,
+        -0.020158834228850266,
+        -0.041390173805552405,
+        -0.02712196000135621
+      ],
+      "qp_residual_max": 9.71445146547012e-17,
+      "static_shift_max_abs": 3.111712276737677e-13
+    },
+    "beta": {
+      "ef": -0.2462236972211091,
+      "eps_mf": [
+        -0.5800936137158615,
+        0.08764621927364333,
+        0.08764621927364356,
+        0.12448098545113062,
+        0.17497734695859268,
+        0.19402723641082387
+      ],
+      "eps_qp": [
+        -0.5988417313264235,
+        0.04993115566736487,
+        0.0499311556672416,
+        0.11798080593456894,
+        0.1636089765058568,
+        0.18336165558272388
+      ],
+      "eps_qp_pyscf_secant": [
+        -0.5988417313264234,
+        0.04993115566736579,
+        0.049931155667242565,
+        0.11798080593802404,
+        0.16360897656319606,
+        0.18336165560620468
+      ],
+      "sigma_c_at_qp": [
+        -0.018748117610565666,
+        -0.03771506360627941,
+        -0.03771506360640868,
+        -0.006500179516164933,
+        -0.011368370452732018,
+        -0.010665580828101094
+      ],
+      "sigma_x_df": [
+        -0.7880109835006981,
+        -0.30764367495973055,
+        -0.30764367495972733,
+        -0.014576695501763177,
+        -0.04375290299587577,
+        -0.03199825202912532
+      ],
+      "qp_residual_max": 5.898059818321144e-17,
+      "static_shift_max_abs": 3.967434020202276e-13
+    }
+  },
+  "diagnostics": {
+    "pyscf_native_common_ef": {
+      "ef": -0.23596130051112074,
+      "alpha_eps_qp": [
+        -0.7310744879137814,
+        -0.4796782379884464,
+        -0.4796782379919206,
+        0.11411058292242658,
+        0.15863647818916599,
+        0.17516157880475658
+      ],
+      "beta_eps_qp": [
+        -0.5988417308816832,
+        0.04993115563665822,
+        0.049931155635821484,
+        0.11798080594048958,
+        0.16360897646143738,
+        0.18336165577238805
+      ]
+    }
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "gw": "pyscf.gw.gw_ac.GWAC / pyscf.gw.ugw_ac.UGWAC",
+      "nw": 100,
+      "x0": 0.5,
+      "ac_iw_cutoff": null,
+      "ac_pade_npts": 18,
+      "ac_pade_step_ratio": 0.6666666666666666,
+      "qp_root_tol": 1e-12,
+      "ev_tol": 1e-07,
+      "scf": "exact 4-index ERIs, conv_tol 1e-11, conv_tol_grad 1e-8",
+      "pbe_grid": "(75, 110) unpruned, Becke partition, Becke-1988 radii adjust",
+      "numpy": "1.26.4",
+      "scipy": "1.17.1"
+    },
+    "grid": [
+      75,
+      110
+    ],
+    "aux_basis": "aug-cc-pvdz-rifit",
+    "frozen_core": "none unless the block says frozen > 0",
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": {
+      "uhf": {
+        "internal_stable": true,
+        "kind": "PySCF UHF internal (real)",
+        "rounds": 0,
+        "selected_guess": "atom",
+        "lambda_min": 0.02940691938796458
+      }
+    },
+    "basis": "aug-cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/aug-cc-pvdz.json",
+    "basis_sha256": "911303b754cd16032f762811f2193796eaf67070bdb40bcdc0c59d422f8c8dd1",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/o2.xyz",
+    "geometry_xyz_sha256": "4c45f5a29d19998e7ac59d07384a6ba1b34e8137f1e1f6bae897f403ea4a9dce",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "O",
+        0.0,
+        0.0,
+        2.2818442954123124
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_gw.py",
+    "git_head": "5c6769545661937d2a6819ab8ede21efeceac228",
+    "generated_utc": "2026-09-25T00:04:46+00:00",
+    "blocks": [
+      "uhf",
+      "u_g0w0_uhf",
+      "diagnostics"
+    ]
+  }
+}

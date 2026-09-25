@@ -1,0 +1,194 @@
+{
+  "basis": "aug-cc-pvdz-pp",
+  "aux": "def2-tzvp-rifit",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 32,
+  "naux": 184,
+  "nelectron": 26,
+  "nuclear_repulsion": 0.0,
+  "like_for_like": {
+    "nao": 32,
+    "replica_self_overlap_max_dev": 4.440892098500626e-16,
+    "pyscf_diag_max_dev": 6.661338147750939e-16,
+    "diag_checked": 32,
+    "diag_skipped_cartesian": 0,
+    "ecp_core_electrons": [
+      28
+    ],
+    "nelectron": 26
+  },
+  "rhf": {
+    "energy": -328.2917175801054,
+    "internal_stable": true,
+    "mo_energy": [
+      -8.402687919912252,
+      -6.13624759642245,
+      -6.136247596422443,
+      -6.136247596422441,
+      -2.6666530582267596,
+      -2.666653058226737,
+      -2.6666530582267294,
+      -2.666653058226727,
+      -2.666653058226724,
+      -1.0112512253517618,
+      -0.45723922809561784,
+      -0.45723922809561596,
+      -0.4572392280956075,
+      0.10099760854786055,
+      0.11197025381935075,
+      0.11197025381935455,
+      0.11197025381936876,
+      0.2996714826997121,
+      0.2996714826997203,
+      0.2996714826997239,
+      0.29967148269972477,
+      0.29967148269972793,
+      0.7654410459133903,
+      0.7654410459134242,
+      0.7654410459134359,
+      0.7688157989257187,
+      1.0126388074955985,
+      1.0126388074956203,
+      1.0126388074956265,
+      1.012638807495631,
+      1.0126388074956438,
+      57.054612110309705
+    ]
+  },
+  "g0w0_hf": {
+    "orbs": [
+      10,
+      11,
+      12,
+      13,
+      14,
+      15
+    ],
+    "frozen": 0,
+    "ef": -0.17812080977387348,
+    "eps_mf": [
+      -0.45723922809561784,
+      -0.45723922809561596,
+      -0.4572392280956075,
+      0.10099760854786055,
+      0.11197025381935075,
+      0.11197025381935455
+    ],
+    "eps_qp": [
+      -0.44416042806986555,
+      -0.4441604280699418,
+      -0.4441604280696206,
+      0.08900976407916728,
+      0.1070778213856107,
+      0.10707782138569667
+    ],
+    "eps_qp_pyscf_secant": [
+      -0.44416042806986583,
+      -0.4441604280699421,
+      -0.44416042806962086,
+      0.08900976407916728,
+      0.10707782138786995,
+      0.10707782138795592
+    ],
+    "sigma_c_at_qp": [
+      0.013078800025754372,
+      0.013078800025677228,
+      0.013078800025987058,
+      -0.011987844468686,
+      -0.004892432433741061,
+      -0.004892432433653266
+    ],
+    "sigma_x_df": [
+      -0.6472503373336114,
+      -0.6472503373336149,
+      -0.6472503373336,
+      -0.0358437255205199,
+      -0.02097667379124885,
+      -0.020976673791248724
+    ],
+    "sigma_x_used": [
+      -0.6472596411442351,
+      -0.6472596411442404,
+      -0.6472596411442212,
+      -0.036294558340470774,
+      -0.02112976748149694,
+      -0.021129767481501277
+    ],
+    "v_mf": [
+      -0.647259641144233,
+      -0.6472596411442373,
+      -0.6472596411442211,
+      -0.036294558340463495,
+      -0.02112976748149795,
+      -0.021129767481496663
+    ],
+    "qp_residual_max": 2.7755575615628914e-17,
+    "static_shift_max_abs": 7.278899705198683e-15,
+    "settings": {
+      "nw": 100,
+      "nw2": null,
+      "x0": 0.5,
+      "ac": "pade",
+      "ac_pade_npts": 18,
+      "ac_pade_step_ratio": 0.6666666666666666,
+      "ac_iw_cutoff": null,
+      "vhf_df": false,
+      "qpe": "full QP root, scipy newton on PySCF's Pade, tol 1e-12"
+    }
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "gw": "pyscf.gw.gw_ac.GWAC / pyscf.gw.ugw_ac.UGWAC",
+      "nw": 100,
+      "x0": 0.5,
+      "ac_iw_cutoff": null,
+      "ac_pade_npts": 18,
+      "ac_pade_step_ratio": 0.6666666666666666,
+      "qp_root_tol": 1e-12,
+      "ev_tol": 1e-07,
+      "scf": "exact 4-index ERIs, conv_tol 1e-11, conv_tol_grad 1e-8",
+      "pbe_grid": "(75, 110) unpruned, Becke partition, Becke-1988 radii adjust",
+      "numpy": "1.26.4",
+      "scipy": "1.17.1"
+    },
+    "grid": [
+      75,
+      110
+    ],
+    "aux_basis": "def2-tzvp-rifit",
+    "frozen_core": "none unless the block says frozen > 0",
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": {
+      "rhf_internal_stable": true
+    },
+    "basis": "aug-cc-pvdz-pp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/aug-cc-pvdz-pp.json",
+    "basis_sha256": "9fb5118515ba50e9b6a9308b1afff5de53145f5ced32015d9d6b829b61e958ac",
+    "ecp_json": "crates/ferric-core/src/basis/bundled/aug-cc-pvdz-pp.json",
+    "ecp_sha256": "9fb5118515ba50e9b6a9308b1afff5de53145f5ced32015d9d6b829b61e958ac",
+    "geometry_xyz": "testdata/molecules/validation/ecp/xe.xyz",
+    "geometry_xyz_sha256": "4ef615c50fee2cfcbff5a86c37bb8d58e79157c5682c97c5322907eae3cb1198",
+    "geometry_bohr": [
+      [
+        "Xe",
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_gw.py",
+    "git_head": "5c6769545661937d2a6819ab8ede21efeceac228",
+    "generated_utc": "2026-09-25T00:03:54+00:00",
+    "blocks": [
+      "rhf",
+      "g0w0_hf"
+    ]
+  }
+}
