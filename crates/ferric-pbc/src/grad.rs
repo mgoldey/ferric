@@ -106,16 +106,33 @@
 //! the energy); the SR attraction goes through the ordinary erfc 3-centre
 //! derivative engine on Gaussian nuclei.
 //!
+//! # RS-GDF J/K (the `*_rsgdf` entry points; FINDINGS "Iteration 18")
+//!
+//! With J/K from an [`RsGdf`] built by [`RsGdf::build_for_gradient`], the
+//! `Σ Γ dI` line is replaced by the fitted-ERI derivative of
+//! [`crate::rsgdf`]'s `deriv` module doc:
+//!
+//! ```text
+//! Σ Γ dI^fit = Σ Y dJ3 + Σ Wm dJ2,     Y_P = D c_P − α Σ_σ D_σ C_P D_σ
+//!   dJ3: SR erfc (orbital + aux centre), LR pair-FT derivative (orbital) and −iG X_P (aux)
+//!   dJ2: SR erfc (d/dQ = −d/dP), LR −iG X_P;   Wm = Loewner form (kept–kept + kept–dropped)
+//!   G = 0 of J3 (−c0' S q):  M_g0 = −c0' Σ_P Y_P q_P added to M,   c0' = π/(ω_gdf² Ω)
+//! ```
+//!
+//! Everything else (1e, `V_SR`/`V_LR`, Ewald, `M` with the per-spin Madelung
+//! term, `h`'s own `c0 Z_tot D`, XC) is the dense-AFT assembly unchanged.
+//! The dense-AFT ERI has NO G = 0 term; the Iteration-16 Ewald-split ERI
+//! M-term `c0(−N D + α Σ_σ D_σ S D_σ)` must NOT be used here: it is exact
+//! only when the fitted pair charges equal the true ones, which the G = 0-
+//! blind metric does not enforce (prototype: 0.7..10 × 1e-3 Ha/Bohr error
+//! with a real aux basis, blind only in the exact-span limit — mutant
+//! [`GradMutation::FitG0Dense`]). The aux-centre and metric derivatives are
+//! each O(1e-2..1e-1) and cancel to O(fit error); both are required.
+//! Aux centres that are functions of the atoms (ghost sites) fold through
+//! [`RsGdfGradSource::aux_jac`].
+//!
 //! # Out of scope (documented, not implemented)
 //!
-//! * **RS-GDF J/K gradient** — the scalable route. Needs the standard DF
-//!   gradient `Σ Γ^P_μν d(μν|P)' − ½ Σ Γ^{PQ} d(P|Q)'` with every primed
-//!   integral in the RS split (SR erfc 3c/2c derivative integrals over pair
-//!   and aux images; LR pair-FT derivative `Q` and the one-centre aux FT
-//!   derivative; G = 0 only through `dS`), plus a check that the lindep
-//!   eigen-cut count does not change between displaced geometries
-//!   (FINDINGS "Iteration 16", "RS-GDF gradient route"). Only the dense-AFT
-//!   oracle is differentiated here.
 //! * **Stress** — needs the lattice-vector derivative of every piece
 //!   (per-image `L ⊗ Q_L` virials, `∂v(G)/∂ε`, `∂v_M/∂ε`, `∂Ω/∂ε`); FINDINGS
 //!   "Iteration 16", "Stress".
@@ -137,6 +154,8 @@ use crate::hcore::{
 };
 use crate::lattice::Cell;
 use crate::pair_ft::pair_ft_deriv_chunked;
+use crate::rsgdf::deriv::{check_aux_map, fit_densities, fit_derivatives, fold_aux, FitDensities};
+use crate::rsgdf::{aux_ft, RsGdf, RsGdfFitDiagnostics};
 use ferric_core::FerricError;
 use ferric_dft::density_on_grid::{eval_density_closed, eval_density_uks};
 use ferric_dft::grid::GridPoint;
@@ -188,6 +207,22 @@ pub enum GradMutation {
     NoPointMotion,
     /// Drop the partition-weight derivative term.
     NoWeightDeriv,
+    /// RS-GDF: drop the metric derivative `Σ Wm dJ2` (SR and LR).
+    FitNoMetric,
+    /// RS-GDF: drop the aux-centre derivative of `J3` (SR and LR; the
+    /// metric term is kept). The only fit mutant `ΣF` can see.
+    FitNoAux,
+    /// RS-GDF: drop the `J3` G = 0 term `M_g0`.
+    FitNoG0,
+    /// RS-GDF: the dense-AFT / Ewald-split ERI G = 0 M-term
+    /// `c0(−N D + α Σ_σ D_σ S D_σ)` instead of `M_g0 = −c0 Σ_P Y_P q_P`.
+    /// Blind in the exact-aux-span limit only.
+    FitG0Dense,
+    /// RS-GDF: drop the LR part of `dJ3` (orbital and aux centre).
+    FitNoLr3,
+    /// RS-GDF: textbook metric term (kept–kept block only, no kept–dropped
+    /// Loewner block). Blind when nothing is dropped.
+    FitTextbookMetric,
 }
 
 /// Settings for the `gamma_*_gradient_with` entry points.
@@ -245,6 +280,21 @@ pub struct GammaGradParts {
     pub xc_point: Array2<f64>,
     /// XC grid response: partition-weight derivative.
     pub xc_weight: Array2<f64>,
+    /// RS-GDF `Σ Y dJ3`, orbital-centre motion, SR (erfc lattice sums).
+    /// Zero on the dense-AFT path (as are all `fit_*`).
+    pub fit_orb_sr: Array2<f64>,
+    /// RS-GDF `Σ Y dJ3`, orbital-centre motion, LR (pair-FT derivative).
+    pub fit_orb_lr: Array2<f64>,
+    /// RS-GDF `Σ Y dJ3`, aux-centre motion, SR.
+    pub fit_aux_sr: Array2<f64>,
+    /// RS-GDF `Σ Y dJ3`, aux-centre motion, LR (`−iG X_P`).
+    pub fit_aux_lr: Array2<f64>,
+    /// RS-GDF `Σ Wm dJ2`, SR.
+    pub fit_metric_sr: Array2<f64>,
+    /// RS-GDF `Σ Wm dJ2`, LR.
+    pub fit_metric_lr: Array2<f64>,
+    /// RS-GDF `J3` G = 0 term through `dS` (`Σ M_g0 dS`).
+    pub fit_g0: Array2<f64>,
 }
 
 /// Output of the `gamma_*_gradient_with` entry points.
@@ -281,6 +331,50 @@ pub struct GammaGradient {
     pub n_chunks: usize,
     /// Resolved memory budget (bytes).
     pub budget_bytes: usize,
+    /// RS-GDF metric/cut diagnostics and derivative-walk counts (`None` on
+    /// the dense-AFT path).
+    pub fit: Option<RsGdfFitDiagnostics>,
+}
+
+/// The RS-GDF J/K a `*_rsgdf` gradient differentiates.
+#[derive(Clone, Copy)]
+pub struct RsGdfGradSource<'a> {
+    /// Built with [`RsGdf::build_for_gradient`] (bitwise the B of
+    /// [`RsGdf::build`]) from the SCF's lattice overlap `hc.s`, for the
+    /// orbital basis the SCF used; the SCF must have run on this B.
+    pub gdf: &'a RsGdf,
+    /// The aux basis B was built with (spherical above l = 1).
+    pub aux: &'a PreparedBasis,
+    /// `dC_k/dR_A`, `(aux atoms, cell atoms)`, when the aux centres are
+    /// functions of the atom positions (e.g. `SiteBasis` ghost sites; the
+    /// same factor for x, y, z). `None`: the aux basis sits on exactly the
+    /// cell's atoms (checked).
+    pub aux_jac: Option<&'a Array2<f64>>,
+}
+
+/// Where J/K (and so `Σ Γ dI`) come from.
+#[derive(Clone, Copy)]
+enum JkSource<'a> {
+    Dense(&'a DenseAftEri),
+    Fit(RsGdfGradSource<'a>),
+}
+
+impl JkSource<'_> {
+    fn build_j(&self, d: &Array2<f64>, out: &mut Array2<f64>) -> Result<(), FerricError> {
+        match self {
+            Self::Dense(e) => e.j_builder().build(d, out)?,
+            Self::Fit(f) => f.gdf.j_builder().build(d, out)?,
+        };
+        Ok(())
+    }
+
+    fn build_k(&self, vm: f64, d: &Array2<f64>, out: &mut Array2<f64>) -> Result<(), FerricError> {
+        match self {
+            Self::Dense(e) => e.k_builder_with_madelung(vm).build(d, out)?,
+            Self::Fit(f) => f.gdf.k_builder_with_madelung(vm).build(d, out)?,
+        };
+        Ok(())
+    }
 }
 
 /// The Iteration-16 name of [`GammaGradient`].
@@ -320,6 +414,14 @@ impl SpinSet {
         match self {
             Self::Restricted { d, f } => 0.5 * d.dot(f).dot(d),
             Self::Unrestricted { da, db, fa, fb } => da.dot(fa).dot(da) + db.dot(fb).dot(db),
+        }
+    }
+
+    /// `Σ_σ D_σ X D_σ` as `[(c, D)]` terms (restricted: `[(½, D)]`).
+    fn exch_terms(&self) -> Vec<(f64, &Array2<f64>)> {
+        match self {
+            Self::Restricted { d, .. } => vec![(0.5, d)],
+            Self::Unrestricted { da, db, .. } => vec![(1.0, da), (1.0, db)],
         }
     }
 
@@ -418,16 +520,67 @@ pub fn gamma_rhf_gradient_with(
     exxdiv: ExxDiv,
     cfg: &GammaGradConfig,
 ) -> Result<GammaGradient, FerricError> {
-    let who = "gamma_rhf_gradient";
-    check_inputs(who, prep, hcore_cfg, hc, eri, scf, Spin::Restricted)?;
+    rhf_gradient(
+        "gamma_rhf_gradient",
+        cell,
+        prep,
+        hcore_cfg,
+        hc,
+        JkSource::Dense(eri),
+        scf,
+        exxdiv,
+        cfg,
+    )
+}
+
+/// Gamma-point RHF nuclear gradient when J/K come from RS-GDF (module doc,
+/// "RS-GDF J/K"): `scf` converged on `fit.gdf`'s J/K builders. Other
+/// arguments as [`gamma_rhf_gradient_with`].
+#[allow(clippy::too_many_arguments)]
+pub fn gamma_rhf_gradient_rsgdf(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    fit: &RsGdfGradSource<'_>,
+    scf: &ScfResult,
+    exxdiv: ExxDiv,
+    cfg: &GammaGradConfig,
+) -> Result<GammaGradient, FerricError> {
+    rhf_gradient(
+        "gamma_rhf_gradient_rsgdf",
+        cell,
+        prep,
+        hcore_cfg,
+        hc,
+        JkSource::Fit(*fit),
+        scf,
+        exxdiv,
+        cfg,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rhf_gradient(
+    who: &str,
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    jk: JkSource<'_>,
+    scf: &ScfResult,
+    exxdiv: ExxDiv,
+    cfg: &GammaGradConfig,
+) -> Result<GammaGradient, FerricError> {
+    check_inputs(who, cell, prep, hcore_cfg, hc, &jk, scf, Spin::Restricted)?;
     let mut ledger = open_ledger(cell, prep, cfg, false)?;
     let d = scf.density_total.clone();
     let vm = madelung_for(cell, exxdiv)?;
     let n = prep.nbasis();
     let mut jm = Array2::<f64>::zeros((n, n));
     let mut km = Array2::<f64>::zeros((n, n));
-    eri.j_builder().build(&d, &mut jm)?;
-    eri.k_builder_with_madelung(vm).build(&d, &mut km)?;
+    jk.build_j(&d, &mut jm)?;
+    jk.build_k(vm, &d, &mut km)?;
     let f = &(&hc.h + &jm) - &(0.5 * &km);
     let spins = SpinSet::Restricted { d, f };
     assemble(
@@ -435,7 +588,7 @@ pub fn gamma_rhf_gradient_with(
         prep,
         hcore_cfg,
         hc,
-        eri,
+        &jk,
         &spins,
         1.0,
         vm,
@@ -486,19 +639,70 @@ pub fn gamma_uhf_gradient_with(
     exxdiv: ExxDiv,
     cfg: &GammaGradConfig,
 ) -> Result<GammaGradient, FerricError> {
-    let who = "gamma_uhf_gradient";
-    check_inputs(who, prep, hcore_cfg, hc, eri, scf, Spin::Unrestricted)?;
+    uhf_gradient(
+        "gamma_uhf_gradient",
+        cell,
+        prep,
+        hcore_cfg,
+        hc,
+        JkSource::Dense(eri),
+        scf,
+        exxdiv,
+        cfg,
+    )
+}
+
+/// Gamma-point UHF nuclear gradient when J/K come from RS-GDF (`scf`, e.g.
+/// [`crate::uhf::gamma_uhf`] with `GammaUhfIntegrals::RsGdf(fit.gdf)`).
+/// Other arguments as [`gamma_uhf_gradient_with`].
+#[allow(clippy::too_many_arguments)]
+pub fn gamma_uhf_gradient_rsgdf(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    fit: &RsGdfGradSource<'_>,
+    scf: &ScfResult,
+    exxdiv: ExxDiv,
+    cfg: &GammaGradConfig,
+) -> Result<GammaGradient, FerricError> {
+    uhf_gradient(
+        "gamma_uhf_gradient_rsgdf",
+        cell,
+        prep,
+        hcore_cfg,
+        hc,
+        JkSource::Fit(*fit),
+        scf,
+        exxdiv,
+        cfg,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn uhf_gradient(
+    who: &str,
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    jk: JkSource<'_>,
+    scf: &ScfResult,
+    exxdiv: ExxDiv,
+    cfg: &GammaGradConfig,
+) -> Result<GammaGradient, FerricError> {
+    check_inputs(who, cell, prep, hcore_cfg, hc, &jk, scf, Spin::Unrestricted)?;
     let mut ledger = open_ledger(cell, prep, cfg, true)?;
     let (da, db) = spin_densities(who, scf)?;
     let vm = madelung_for(cell, exxdiv)?;
-    let (fa, fb) = unrestricted_focks(hc, eri, &da, &db, 1.0, vm, None)?;
+    let (fa, fb) = unrestricted_focks(hc, &jk, &da, &db, 1.0, vm, None)?;
     let spins = SpinSet::Unrestricted { da, db, fa, fb };
     assemble(
         cell,
         prep,
         hcore_cfg,
         hc,
-        eri,
+        &jk,
         &spins,
         1.0,
         vm,
@@ -556,8 +760,59 @@ pub fn gamma_rks_gradient_with(
     dft: &GammaRksConfig,
     cfg: &GammaGradConfig,
 ) -> Result<GammaGradient, FerricError> {
-    let who = "gamma_rks_gradient";
-    check_inputs(who, prep, hcore_cfg, hc, eri, scf, Spin::Restricted)?;
+    rks_gradient(
+        "gamma_rks_gradient",
+        cell,
+        prep,
+        hcore_cfg,
+        hc,
+        JkSource::Dense(eri),
+        scf,
+        dft,
+        cfg,
+    )
+}
+
+/// Gamma-point RKS nuclear gradient when J/K come from RS-GDF (`scf` from
+/// [`crate::dft::gamma_rks`] with `GammaUhfIntegrals::RsGdf(fit.gdf)`).
+/// Other arguments as [`gamma_rks_gradient_with`].
+#[allow(clippy::too_many_arguments)]
+pub fn gamma_rks_gradient_rsgdf(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    fit: &RsGdfGradSource<'_>,
+    scf: &ScfResult,
+    dft: &GammaRksConfig,
+    cfg: &GammaGradConfig,
+) -> Result<GammaGradient, FerricError> {
+    rks_gradient(
+        "gamma_rks_gradient_rsgdf",
+        cell,
+        prep,
+        hcore_cfg,
+        hc,
+        JkSource::Fit(*fit),
+        scf,
+        dft,
+        cfg,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rks_gradient(
+    who: &str,
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    jk: JkSource<'_>,
+    scf: &ScfResult,
+    dft: &GammaRksConfig,
+    cfg: &GammaGradConfig,
+) -> Result<GammaGradient, FerricError> {
+    check_inputs(who, cell, prep, hcore_cfg, hc, &jk, scf, Spin::Restricted)?;
     let (_, alpha) = resolve_periodic_functional(&dft.functional)?;
     let mut ledger = open_ledger(cell, prep, cfg, false)?;
     let d = scf.density_total.clone();
@@ -576,11 +831,11 @@ pub fn gamma_rks_gradient_with(
     )?;
     let n = prep.nbasis();
     let mut jm = Array2::<f64>::zeros((n, n));
-    eri.j_builder().build(&d, &mut jm)?;
+    jk.build_j(&d, &mut jm)?;
     let mut f = &(&hc.h + &jm) + &xg.v_a;
     if alpha != 0.0 {
         let mut km = Array2::<f64>::zeros((n, n));
-        eri.k_builder_with_madelung(vm).build(&d, &mut km)?;
+        jk.build_k(vm, &d, &mut km)?;
         f.scaled_add(-0.5 * alpha, &km);
     }
     let spins = SpinSet::Restricted { d, f };
@@ -589,7 +844,7 @@ pub fn gamma_rks_gradient_with(
         prep,
         hcore_cfg,
         hc,
-        eri,
+        &jk,
         &spins,
         alpha,
         vm,
@@ -640,8 +895,60 @@ pub fn gamma_uks_gradient_with(
     dft: &GammaUksConfig,
     cfg: &GammaGradConfig,
 ) -> Result<GammaGradient, FerricError> {
-    let who = "gamma_uks_gradient";
-    check_inputs(who, prep, hcore_cfg, hc, eri, scf, Spin::Unrestricted)?;
+    uks_gradient(
+        "gamma_uks_gradient",
+        cell,
+        prep,
+        hcore_cfg,
+        hc,
+        JkSource::Dense(eri),
+        scf,
+        dft,
+        cfg,
+    )
+}
+
+/// Gamma-point UKS nuclear gradient when J/K come from RS-GDF (`scf` the
+/// final stage of [`crate::dft::gamma_uks`] with
+/// `GammaUhfIntegrals::RsGdf(fit.gdf)`). Other arguments as
+/// [`gamma_uks_gradient_with`].
+#[allow(clippy::too_many_arguments)]
+pub fn gamma_uks_gradient_rsgdf(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    fit: &RsGdfGradSource<'_>,
+    scf: &ScfResult,
+    dft: &GammaUksConfig,
+    cfg: &GammaGradConfig,
+) -> Result<GammaGradient, FerricError> {
+    uks_gradient(
+        "gamma_uks_gradient_rsgdf",
+        cell,
+        prep,
+        hcore_cfg,
+        hc,
+        JkSource::Fit(*fit),
+        scf,
+        dft,
+        cfg,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn uks_gradient(
+    who: &str,
+    cell: &Cell,
+    prep: &PreparedBasis,
+    hcore_cfg: &PeriodicHcoreConfig,
+    hc: &PeriodicHcore,
+    jk: JkSource<'_>,
+    scf: &ScfResult,
+    dft: &GammaUksConfig,
+    cfg: &GammaGradConfig,
+) -> Result<GammaGradient, FerricError> {
+    check_inputs(who, cell, prep, hcore_cfg, hc, &jk, scf, Spin::Unrestricted)?;
     let (_, alpha) = resolve_periodic_functional(&dft.functional)?;
     let mut ledger = open_ledger(cell, prep, cfg, true)?;
     let (da, db) = spin_densities(who, scf)?;
@@ -661,14 +968,14 @@ pub fn gamma_uks_gradient_with(
     let v_b = xg.v_b.take().ok_or_else(|| {
         FerricError::General(format!("{who}: the polarized XC pass returned no V_beta"))
     })?;
-    let (fa, fb) = unrestricted_focks(hc, eri, &da, &db, alpha, vm, Some((&xg.v_a, &v_b)))?;
+    let (fa, fb) = unrestricted_focks(hc, &jk, &da, &db, alpha, vm, Some((&xg.v_a, &v_b)))?;
     let spins = SpinSet::Unrestricted { da, db, fa, fb };
     assemble(
         cell,
         prep,
         hcore_cfg,
         hc,
-        eri,
+        &jk,
         &spins,
         alpha,
         vm,
@@ -679,12 +986,14 @@ pub fn gamma_uks_gradient_with(
 }
 
 /// Shared argument checks (messages prefixed by `who`).
+#[allow(clippy::too_many_arguments)]
 fn check_inputs(
     who: &str,
+    cell: &Cell,
     prep: &PreparedBasis,
     hcore_cfg: &PeriodicHcoreConfig,
     hc: &PeriodicHcore,
-    eri: &DenseAftEri,
+    jk: &JkSource<'_>,
     scf: &ScfResult,
     spin: Spin,
 ) -> Result<(), FerricError> {
@@ -722,15 +1031,66 @@ fn check_inputs(
                 && scf.density_beta.as_ref().map(|d| d.dim()) == Some((n, n))
         }
     };
-    if hc.s.dim() != (n, n) || !d_ok || eri.eri().dim() != (n * n, n * n) {
+    let (jk_ok, jk_dim) = jk_shape(jk, n);
+    if hc.s.dim() != (n, n) || !d_ok || !jk_ok {
         return Err(FerricError::General(format!(
-            "{who}: shape mismatch (nbasis {n}: S {:?}, D {:?}, ERI {:?})",
+            "{who}: shape mismatch (nbasis {n}: S {:?}, D {:?}, ERI/B {jk_dim:?})",
             hc.s.dim(),
             scf.density_total.dim(),
-            eri.eri().dim()
         )));
     }
+    if let JkSource::Fit(f) = jk {
+        check_rsgdf_inputs(who, cell, hc, f, n)?;
+    }
     Ok(())
+}
+
+/// `(shape ok, shape)` of the dense ERI (`n² × n²`) or the fitted B
+/// (`naux × n²`).
+fn jk_shape(jk: &JkSource<'_>, n: usize) -> (bool, (usize, usize)) {
+    match jk {
+        JkSource::Dense(eri) => (eri.eri().dim() == (n * n, n * n), eri.eri().dim()),
+        JkSource::Fit(f) => (f.gdf.b().ncols() == n * n, f.gdf.b().dim()),
+    }
+}
+
+/// The RS-GDF-only argument checks of [`check_inputs`] (messages prefixed
+/// by `who`).
+fn check_rsgdf_inputs(
+    who: &str,
+    cell: &Cell,
+    hc: &PeriodicHcore,
+    f: &RsGdfGradSource<'_>,
+    n: usize,
+) -> Result<(), FerricError> {
+    if !f.gdf.has_gradient_parts() {
+        return Err(FerricError::General(format!(
+            "{who}: the RsGdf carries no gradient parts; build it with RsGdf::build_for_gradient"
+        )));
+    }
+    if f.aux.nbasis() != f.gdf.stats().naux {
+        return Err(FerricError::General(format!(
+            "{who}: aux basis has {} functions but B was built with {}",
+            f.aux.nbasis(),
+            f.gdf.stats().naux
+        )));
+    }
+    // J3's G = 0 term is c0 S q with B's S: it must be the S whose
+    // derivative the overlap term contracts (hc.s).
+    let smax = hc.s.iter().fold(1.0_f64, |m, v| m.max(v.abs()));
+    let ds = f
+        .gdf
+        .overlap()
+        .iter()
+        .zip(hc.s.iter())
+        .fold(0.0_f64, |m, (a, b)| m.max((a - b).abs()));
+    if f.gdf.overlap().dim() != (n, n) || ds > 1e-12 * smax {
+        return Err(FerricError::General(format!(
+            "{who}: the RsGdf was built with a different overlap than hc.s \
+             (max |ΔS| = {ds:.3e}); build it from the SCF's hcore"
+        )));
+    }
+    check_aux_map(cell, f.aux, f.aux_jac)
 }
 
 /// Ledger with the n×n and per-term reservations of every entry point.
@@ -753,7 +1113,7 @@ fn open_ledger(
     )?;
     ledger.reserve(
         &format!("gamma gradient per-term arrays (natoms = {natoms})"),
-        bytes_of((natoms * 3) as u64, 8 * 16),
+        bytes_of((natoms * 3) as u64, 8 * 24),
     )?;
     Ok(ledger)
 }
@@ -776,7 +1136,7 @@ fn spin_densities(who: &str, scf: &ScfResult) -> Result<(Array2<f64>, Array2<f64
 /// `F_σ = h + J[D_α + D_β] − α (K[D_σ] + v_M S D_σ S) + V_σ`.
 fn unrestricted_focks(
     hc: &PeriodicHcore,
-    eri: &DenseAftEri,
+    jk: &JkSource<'_>,
     da: &Array2<f64>,
     db: &Array2<f64>,
     alpha: f64,
@@ -786,16 +1146,15 @@ fn unrestricted_focks(
     let n = da.nrows();
     let d = da + db;
     let mut jm = Array2::<f64>::zeros((n, n));
-    eri.j_builder().build(&d, &mut jm)?;
+    jk.build_j(&d, &mut jm)?;
     let base = &hc.h + &jm;
     let mut fa = base.clone();
     let mut fb = base;
     if alpha != 0.0 {
-        let mut k = eri.k_builder_with_madelung(vm);
         let mut ka = Array2::<f64>::zeros((n, n));
         let mut kb = Array2::<f64>::zeros((n, n));
-        k.build(da, &mut ka)?;
-        k.build(db, &mut kb)?;
+        jk.build_k(vm, da, &mut ka)?;
+        jk.build_k(vm, db, &mut kb)?;
         fa.scaled_add(-alpha, &ka);
         fb.scaled_add(-alpha, &kb);
     }
@@ -828,7 +1187,7 @@ fn assemble(
     prep: &PreparedBasis,
     hcore_cfg: &PeriodicHcoreConfig,
     hc: &PeriodicHcore,
-    eri: &DenseAftEri,
+    jk: &JkSource<'_>,
     spins: &SpinSet,
     alpha: f64,
     vm: f64,
@@ -874,6 +1233,14 @@ fn assemble(
         }
     }
 
+    // --- RS-GDF: the fitted densities Y, Wm first — J3's G = 0 term enters
+    // only through dS, as M_g0 = −c0' Σ_P Y_P q_P (c0' at the GDF's ω).
+    let fit = fit_prelude(jk, spins, &d, s_mat, alpha, vol, mutation, ledger)?;
+    let m_g0 = match &fit {
+        Some((_, _, Some(mg))) => Some(mg),
+        _ => None,
+    };
+
     // --- dS, dT over the energy's pair images (bra and ket blocks).
     let images = hcore_pair_images(cell, prep, hcore_cfg.precision, ledger)?;
     let sh2at = prep.shell_to_atom().to_vec();
@@ -882,6 +1249,7 @@ fn assemble(
     let nsh = prep.nshells();
     let mut g_s = Array2::<f64>::zeros((natoms, 3));
     let mut g_t = Array2::<f64>::zeros((natoms, 3));
+    let mut g_fit_g0 = Array2::<f64>::zeros((natoms, 3));
     {
         let mut eng_s = Engine::new_1e_deriv(ffi::OP_OVERLAP, prep, ONE_E_ENGINE_PRECISION)?;
         let mut eng_t = Engine::new_1e_deriv(ffi::OP_KINETIC, prep, ONE_E_ENGINE_PRECISION)?;
@@ -890,6 +1258,9 @@ fn assemble(
                 for s2 in 0..nsh {
                     if let Some(blk) = eng_s.compute_1e_deriv_block_shifted(prep, s1, s2, *l)? {
                         add_pair_deriv(&mut g_s, blk, &m, &dims, &offs, &sh2at, s1, s2);
+                        if let Some(mg) = m_g0 {
+                            add_pair_deriv(&mut g_fit_g0, blk, mg, &dims, &offs, &sh2at, s1, s2);
+                        }
                     }
                     if let Some(blk) = eng_t.compute_1e_deriv_block_shifted(prep, s1, s2, *l)? {
                         add_pair_deriv(&mut g_t, blk, &d, &dims, &offs, &sh2at, s1, s2);
@@ -984,66 +1355,41 @@ fn assemble(
         g_vlr_basis.fill(0.0);
     }
 
-    // --- Two-electron (dense pure AFT J and K) through the pair-FT derivative.
-    // Exchange part of Z: −(α/2) Σ_σ D_σ P D_σ (MUTANT ExchTotal: −(α/4) D P D).
-    let exch = |x: &Array2<f64>| -> Array2<f64> {
-        if mutation == Some(GradMutation::ExchTotal) {
-            d.dot(x).dot(&d) * 0.5
-        } else {
-            spins.sandwich(x)
+    // --- Two-electron: dense pure AFT (pair-FT derivative of I) or RS-GDF
+    // (Σ Y dJ3 + Σ Wm dJ2, rsgdf::deriv).
+    let zeros_n = || Array2::<f64>::zeros((natoms, 3));
+    let mut g_eri = zeros_n();
+    let (mut f_orb_sr, mut f_orb_lr, mut f_aux_sr, mut f_aux_lr, mut f_met_sr, mut f_met_lr) = (
+        zeros_n(),
+        zeros_n(),
+        zeros_n(),
+        zeros_n(),
+        zeros_n(),
+        zeros_n(),
+    );
+    let n_g_eri: usize;
+    let mut fit_diag: Option<RsGdfFitDiagnostics> = None;
+    match jk {
+        JkSource::Dense(eri) => {
+            let (g, chunks, n_g) =
+                dense_eri_gradient(cell, prep, eri, spins, &d, alpha, &aoat, mutation, ledger)?;
+            g_eri = g;
+            n_chunks += chunks;
+            n_g_eri = n_g;
         }
-    };
-    let gcut_eri = eri.gcut();
-    ledger.reserve(
-        &format!("gamma gradient ERI G list (|G| <= {gcut_eri:.3})"),
-        gvector_list_bytes(cell, gcut_eri)?,
-    )?;
-    let gv_eri = half_gvectors(cell, gcut_eri)?;
-    let mut g_eri = Array2::<f64>::zeros((natoms, 3));
-    let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
-    n_chunks += pair_ft_deriv_chunked(
-        cell,
-        prep,
-        &gv_eri,
-        eri.pair_thresh(),
-        chunk_budget,
-        0,
-        |_g0, gs, p, q| {
-            for (g, gvec) in gs.iter().enumerate() {
-                let g2 = gvec[0] * gvec[0] + gvec[1] * gvec[1] + gvec[2] * gvec[2];
-                let fac = 8.0 / vol * (4.0 * PI / g2);
-                let pg = p.slice(s![.., .., g]);
-                let pre = pg.mapv(|z| z.re);
-                let pim = pg.mapv(|z| z.im);
-                let rho_re = (&d * &pre).sum();
-                let rho_im = (&d * &pim).sum();
-                // Z = ½ D ρ − (α/2) Σ_σ D_σ P D_σ   (RHF: ½ D ρ − ¼ D P D)
-                let (mut zr, mut zi) = if alpha != 0.0 {
-                    (exch(&pre) * (-0.5 * alpha), exch(&pim) * (-0.5 * alpha))
-                } else {
-                    (Array2::<f64>::zeros((n, n)), Array2::<f64>::zeros((n, n)))
-                };
-                zr.scaled_add(0.5 * rho_re, &d);
-                zi.scaled_add(0.5 * rho_im, &d);
-                for mu in 0..n {
-                    let a = aoat[mu];
-                    let mut acc = [0.0_f64; 3];
-                    for nu in 0..n {
-                        let (zre, zim) = (zr[(mu, nu)], zi[(mu, nu)]);
-                        for (c, qc) in q.iter().enumerate() {
-                            let qz = qc[[mu, nu, g]];
-                            // Re[Q* Z]
-                            acc[c] += qz.re * zre + qz.im * zim;
-                        }
-                    }
-                    for c in 0..3 {
-                        g_eri[(a, c)] += fac * acc[c];
-                    }
-                }
-            }
-            Ok(())
-        },
-    )?;
+        JkSource::Fit(_) => {
+            let ff = fit_two_electron(cell, prep, fit, natoms, mutation, ledger)?;
+            f_orb_sr = ff.orb_sr;
+            f_orb_lr = ff.orb_lr;
+            f_aux_sr = ff.aux_sr;
+            f_aux_lr = ff.aux_lr;
+            f_met_sr = ff.met_sr;
+            f_met_lr = ff.met_lr;
+            n_chunks += ff.n_chunks;
+            n_g_eri = ff.n_g_half;
+            fit_diag = Some(ff.diag);
+        }
+    }
 
     // --- Ewald E_nn (the energy's ω; the result is ω-independent).
     let (nn_sr, nn_lr) =
@@ -1069,7 +1415,14 @@ fn assemble(
         + &g_vlr_nuc
         + &g_eri
         + &g_nn_sr
-        + &g_nn_lr;
+        + &g_nn_lr
+        + &f_orb_sr
+        + &f_orb_lr
+        + &f_aux_sr
+        + &f_aux_lr
+        + &f_met_sr
+        + &f_met_lr
+        + &g_fit_g0;
     if e_xc.is_some() {
         grad = grad + &xc_ao + &xc_point + &xc_weight;
     }
@@ -1092,6 +1445,13 @@ fn assemble(
             xc_ao,
             xc_point,
             xc_weight,
+            fit_orb_sr: f_orb_sr,
+            fit_orb_lr: f_orb_lr,
+            fit_aux_sr: f_aux_sr,
+            fit_aux_lr: f_aux_lr,
+            fit_metric_sr: f_met_sr,
+            fit_metric_lr: f_met_lr,
+            fit_g0: g_fit_g0,
         },
         commutator,
         madelung: vm,
@@ -1102,9 +1462,213 @@ fn assemble(
         n_sr_triplets,
         n_images: images.len(),
         n_g_lr: gv_lr.len(),
-        n_g_eri: gv_eri.len(),
+        n_g_eri,
         n_chunks,
         budget_bytes: ledger.budget(),
+        fit: fit_diag,
+    })
+}
+
+/// Dense pure-AFT two-electron term `Σ Γ dI` through the pair-FT derivative
+/// of I. Returns `(g_eri, chunks, |G| count)`.
+#[allow(clippy::too_many_arguments)]
+fn dense_eri_gradient(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    eri: &DenseAftEri,
+    spins: &SpinSet,
+    d: &Array2<f64>,
+    alpha: f64,
+    aoat: &[usize],
+    mutation: Option<GradMutation>,
+    ledger: &mut Ledger,
+) -> Result<(Array2<f64>, usize, usize), FerricError> {
+    let n = prep.nbasis();
+    let natoms = cell.positions().len();
+    let vol = cell.volume();
+    let mut g_eri = Array2::<f64>::zeros((natoms, 3));
+    // Exchange part of Z: −(α/2) Σ_σ D_σ P D_σ (MUTANT ExchTotal: −(α/4) D P D).
+    let exch = |x: &Array2<f64>| -> Array2<f64> {
+        if mutation == Some(GradMutation::ExchTotal) {
+            d.dot(x).dot(d) * 0.5
+        } else {
+            spins.sandwich(x)
+        }
+    };
+    let gcut_eri = eri.gcut();
+    ledger.reserve(
+        &format!("gamma gradient ERI G list (|G| <= {gcut_eri:.3})"),
+        gvector_list_bytes(cell, gcut_eri)?,
+    )?;
+    let gv_eri = half_gvectors(cell, gcut_eri)?;
+    let chunk_budget = ledger.remaining().min(G_CHUNK_BYTES);
+    let n_chunks = pair_ft_deriv_chunked(
+        cell,
+        prep,
+        &gv_eri,
+        eri.pair_thresh(),
+        chunk_budget,
+        0,
+        |_g0, gs, p, q| {
+            for (g, gvec) in gs.iter().enumerate() {
+                let g2 = gvec[0] * gvec[0] + gvec[1] * gvec[1] + gvec[2] * gvec[2];
+                let fac = 8.0 / vol * (4.0 * PI / g2);
+                let pg = p.slice(s![.., .., g]);
+                let pre = pg.mapv(|z| z.re);
+                let pim = pg.mapv(|z| z.im);
+                let rho_re = (d * &pre).sum();
+                let rho_im = (d * &pim).sum();
+                // Z = ½ D ρ − (α/2) Σ_σ D_σ P D_σ   (RHF: ½ D ρ − ¼ D P D)
+                let (mut zr, mut zi) = if alpha != 0.0 {
+                    (exch(&pre) * (-0.5 * alpha), exch(&pim) * (-0.5 * alpha))
+                } else {
+                    (Array2::<f64>::zeros((n, n)), Array2::<f64>::zeros((n, n)))
+                };
+                zr.scaled_add(0.5 * rho_re, d);
+                zi.scaled_add(0.5 * rho_im, d);
+                for mu in 0..n {
+                    let a = aoat[mu];
+                    let mut acc = [0.0_f64; 3];
+                    for nu in 0..n {
+                        let (zre, zim) = (zr[(mu, nu)], zi[(mu, nu)]);
+                        for (c, qc) in q.iter().enumerate() {
+                            let qz = qc[[mu, nu, g]];
+                            // Re[Q* Z]
+                            acc[c] += qz.re * zre + qz.im * zim;
+                        }
+                    }
+                    for c in 0..3 {
+                        g_eri[(a, c)] += fac * acc[c];
+                    }
+                }
+            }
+            Ok(())
+        },
+    )?;
+    Ok((g_eri, n_chunks, gv_eri.len()))
+}
+
+/// `assemble`'s RS-GDF state from before the dS/dT pass: the source, its
+/// fitted densities and J3's G = 0 overlap weight `M_g0` (`None` under
+/// [`GradMutation::FitNoG0`]).
+type FitPrelude<'a> = (RsGdfGradSource<'a>, FitDensities, Option<Array2<f64>>);
+
+/// RS-GDF: the fitted densities `Y`, `Wm` and `M_g0 = −c0' Σ_P Y_P q_P`
+/// (`c0'` at the GDF's ω; MUTANT FitG0Dense: the Iteration-16 dense-ERI
+/// form). `None` for dense-AFT J/K.
+#[allow(clippy::too_many_arguments)]
+fn fit_prelude<'a>(
+    jk: &JkSource<'a>,
+    spins: &SpinSet,
+    d: &Array2<f64>,
+    s_mat: &Array2<f64>,
+    alpha: f64,
+    vol: f64,
+    mutation: Option<GradMutation>,
+    ledger: &mut Ledger,
+) -> Result<Option<FitPrelude<'a>>, FerricError> {
+    let src = match jk {
+        JkSource::Dense(_) => return Ok(None),
+        JkSource::Fit(src) => *src,
+    };
+    let n = d.nrows();
+    let exch = spins.exch_terms();
+    let fd = fit_densities(
+        src.gdf,
+        d,
+        &exch,
+        alpha,
+        mutation == Some(GradMutation::FitTextbookMetric),
+        ledger,
+    )?;
+    let omega_f = src.gdf.stats().omega;
+    let c0f = PI / (omega_f * omega_f * vol);
+    let m_g0 = match mutation {
+        Some(GradMutation::FitNoG0) => None,
+        Some(GradMutation::FitG0Dense) => {
+            let nel = (d * s_mat).sum();
+            let mut mg = d * (-c0f * nel);
+            if alpha != 0.0 {
+                mg.scaled_add(c0f * alpha, &spins.sandwich(s_mat));
+            }
+            Some(mg)
+        }
+        _ => {
+            let q: ndarray::Array1<f64> = aux_ft(src.aux, &[[0.0; 3]])?.column(0).mapv(|z| z.re);
+            let v = fd.y.t().dot(&q); // (n²)
+            Some(Array2::from_shape_fn((n, n), |(a, b)| -c0f * v[a * n + b]))
+        }
+    };
+    Ok(Some((src, fd, m_g0)))
+}
+
+/// The RS-GDF two-electron force parts `assemble` adds (aux-centre and
+/// metric pieces folded onto the cell atoms) and the counters it reports.
+struct FitTwoElectron {
+    orb_sr: Array2<f64>,
+    orb_lr: Array2<f64>,
+    aux_sr: Array2<f64>,
+    aux_lr: Array2<f64>,
+    met_sr: Array2<f64>,
+    met_lr: Array2<f64>,
+    n_chunks: usize,
+    n_g_half: usize,
+    diag: RsGdfFitDiagnostics,
+}
+
+/// RS-GDF two-electron: `Σ Y dJ3 + Σ Wm dJ2` (rsgdf::deriv) with the
+/// FitNoMetric / FitNoAux / FitNoLr3 mutants applied.
+fn fit_two_electron(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    fit: Option<FitPrelude<'_>>,
+    natoms: usize,
+    mutation: Option<GradMutation>,
+    ledger: &mut Ledger,
+) -> Result<FitTwoElectron, FerricError> {
+    let Some((src, fd, _)) = fit else {
+        return Err(FerricError::General(
+            "gamma gradient: RS-GDF fitted densities missing (internal)".into(),
+        ));
+    };
+    let der = fit_derivatives(src.gdf, cell, prep, src.aux, &fd.y, &fd.wm, ledger)?;
+    let fold = |x: &Array2<f64>| fold_aux(x, src.aux, src.aux_jac, natoms);
+    let orb_sr = der.orb_sr;
+    let mut orb_lr = der.orb_lr;
+    let mut aux_sr = fold(&der.aux3_sr);
+    let mut aux_lr = fold(&der.aux3_lr);
+    let mut met_sr = fold(&der.metric_sr);
+    let mut met_lr = fold(&der.metric_lr);
+    match mutation {
+        Some(GradMutation::FitNoMetric) => {
+            met_sr.fill(0.0);
+            met_lr.fill(0.0);
+        }
+        Some(GradMutation::FitNoAux) => {
+            aux_sr.fill(0.0);
+            aux_lr.fill(0.0);
+        }
+        Some(GradMutation::FitNoLr3) => {
+            orb_lr.fill(0.0);
+            aux_lr.fill(0.0);
+        }
+        _ => {}
+    }
+    let mut diag = fd.diag;
+    diag.n_sr3_deriv = der.n_sr3;
+    diag.n_sr2_deriv = der.n_sr2;
+    diag.n_g_half = der.n_g_half;
+    diag.n_g_chunks = der.n_chunks;
+    Ok(FitTwoElectron {
+        orb_sr,
+        orb_lr,
+        aux_sr,
+        aux_lr,
+        met_sr,
+        met_lr,
+        n_chunks: der.n_chunks,
+        n_g_half: der.n_g_half,
+        diag,
     })
 }
 

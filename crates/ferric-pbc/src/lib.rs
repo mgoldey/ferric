@@ -89,7 +89,11 @@
 //!   overlap-weighted matrix (per spin), and for KS the XC AO term plus the
 //!   full periodic grid response (points riding on their home atom, analytic
 //!   SSF/Becke weight derivatives over image atoms); FINDINGS "Iterations 16,
-//!   17". RS-GDF gradients and stress are out of scope.
+//!   17". The same four with RS-GDF J/K (`gamma_*_gradient_rsgdf`, B from
+//!   `RsGdf::build_for_gradient`): fitted 3-index density against the SR/LR
+//!   3-centre derivatives (orbital and aux centre), Loewner-form metric
+//!   weight against the SR/LR metric derivative, J3's G = 0 term through
+//!   `dS`; FINDINGS "Iteration 18". Stress is out of scope.
 //! * [`lindep`] — per-k canonical-cut diagnostics (`LindepReport` on
 //!   `KScfResult`/`KUScfResult`: kept counts, smallest / largest-dropped
 //!   eigenvalue, noise-floor flag) and the OPT-IN `exp_to_discard` basis
@@ -136,9 +140,11 @@ pub use ecp::{
 };
 pub use ewald::{ewald_nuclear_gradient, ewald_nuclear_repulsion, madelung_constant};
 pub use grad::{
-    gamma_rhf_gradient, gamma_rhf_gradient_with, gamma_rks_gradient, gamma_rks_gradient_with,
-    gamma_uhf_gradient, gamma_uhf_gradient_with, gamma_uks_gradient, gamma_uks_gradient_with,
-    GammaGradConfig, GammaGradParts, GammaGradient, GammaRhfGradient,
+    gamma_rhf_gradient, gamma_rhf_gradient_rsgdf, gamma_rhf_gradient_with, gamma_rks_gradient,
+    gamma_rks_gradient_rsgdf, gamma_rks_gradient_with, gamma_uhf_gradient,
+    gamma_uhf_gradient_rsgdf, gamma_uhf_gradient_with, gamma_uks_gradient,
+    gamma_uks_gradient_rsgdf, gamma_uks_gradient_with, GammaGradConfig, GammaGradParts,
+    GammaGradient, GammaRhfGradient, RsGdfGradSource,
 };
 pub use hcore::kpoint::{periodic_hcore_kpts, PeriodicHcoreK};
 pub use hcore::{periodic_hcore, PeriodicHcore, PeriodicHcoreConfig};
@@ -173,7 +179,7 @@ pub use rohf::{
     GammaRohfResult, GammaRoksConfig, GammaRoksResult,
 };
 pub use rsgdf::kpoint::{KRsGdf, KRsGdfConfig, KRsGdfJk, KRsGdfQStats, KRsGdfStats};
-pub use rsgdf::{PeriodicFitParts, RsGdf, RsGdfConfig};
+pub use rsgdf::{PeriodicFitParts, RsGdf, RsGdfConfig, RsGdfFitDiagnostics};
 pub use ucorr::{gamma_ump2, gamma_urpa, GammaUmp2Result, GammaUrpaResult};
 pub use uhf::{
     gamma_uhf, occupation_gaps, EwaldStart, GammaUhfConfig, GammaUhfIntegrals, GammaUhfResult,
