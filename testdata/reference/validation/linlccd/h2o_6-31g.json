@@ -1,0 +1,93 @@
+{
+  "row": "LinLCCD(hh)",
+  "system": "h2o",
+  "basis": "6-31g",
+  "aux_basis": "cc-pvdz-ri",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 13,
+  "naux": 84,
+  "nelec_alpha": 5,
+  "nelec_beta": 5,
+  "nuclear_repulsion": 9.189193229309746,
+  "scf": {
+    "method": "RHF",
+    "energy": -75.98383111363624
+  },
+  "e_scf": -75.98383111363624,
+  "mp2": {
+    "e_corr": -0.1288718737480308,
+    "pyscf_df_mp2_e_corr": -0.12887187374803077
+  },
+  "linlccd_hh": {
+    "e_corr": -0.10694812468193804
+  },
+  "hh_minus_mp2": 0.021923749066092763,
+  "checks": {
+    "mp2_numpy_so_vs_pyscf": 2.7755575615628914e-17,
+    "residual_mp2_max": 1.3877787807814457e-17,
+    "residual_hh_max": 5.366182736630281e-16,
+    "mp2_spin_adapted_vs_spin_orbital": 2.7755575615628914e-17,
+    "hh_spin_adapted_vs_spin_orbital": 0.0,
+    "mp2_spin_adapted_vs_pyscf": 0.0,
+    "pair_symmetry_max_hh": 4.336808689942018e-17
+  },
+  "provenance": {
+    "code": "PySCF + numpy",
+    "version": "2.13.1",
+    "keywords": {
+      "scf": "scf.RHF, exact J/K, conv_tol 1e-12, conv_tol_grad 1e-10",
+      "integrals": "df.incore.cholesky_eri with auxmol from ferric's aux JSON (Coulomb metric)",
+      "method": "LinLCCD(hh): D t = <ij||ab> + 1/2 sum_kl <kl||ij> t_kl^ab, E = 1/4 sum <ij||ab> t; solved EXACTLY per (a,b) in the eigenbasis of the occupied-pair matrix (no iteration)",
+      "mp2_anchor": "mp.dfmp2.DFMP2(frozen=None)",
+      "numpy": "1.26.4"
+    },
+    "grid": "none",
+    "aux_basis": "cc-pvdz-ri",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-10
+    },
+    "stability": null,
+    "basis": "6-31g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/6-31g.json",
+    "basis_sha256": "1ae9712168e449cee8ee656810f9dc2619083fc9a78f0b8e8dac77c5dbcfa7ef",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/h2o.xyz",
+    "geometry_xyz_sha256": "284b6da243e9abcf0aa2d6e13ad7204946feecb55d27b7819f12097095fdd6ae",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.22259084021251865
+      ],
+      [
+        "H",
+        0.0,
+        1.4275992699810498,
+        -0.8903652505761991
+      ],
+      [
+        "H",
+        0.0,
+        -1.4275992699810498,
+        -0.8903652505761991
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_linlccd.py",
+    "git_head": "19e21870ce8d2d3b9435a97e69709e0fbf635049",
+    "generated_utc": "2026-09-25T00:45:25+00:00",
+    "basis_self_check": {
+      "nao": 13,
+      "replica_self_overlap_max_dev": 2.220446049250313e-16,
+      "pyscf_diag_max_dev": 3.3306690738754696e-16,
+      "diag_checked": 13,
+      "diag_skipped_cartesian": 0
+    },
+    "aux_basis_json_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250"
+  }
+}

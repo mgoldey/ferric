@@ -1,0 +1,113 @@
+{
+  "row": "\u03ba-MP2",
+  "system": "h2o",
+  "basis": "cc-pvdz",
+  "aux_basis": "cc-pvdz-ri",
+  "nao": 24,
+  "naux": 84,
+  "nocc": 5,
+  "nvir": 19,
+  "n_ijab_terms": 9025,
+  "nuclear_repulsion": 9.189193229309746,
+  "e_rhf": -76.02676799737641,
+  "plain": {
+    "e_os": -0.15244021340163588,
+    "e_ss": -0.05159324365364428,
+    "e_corr": -0.20403345705528017,
+    "pyscf_dfmp2_e_corr": -0.20403345705528037,
+    "numpy_vs_pyscf_abs_diff": 1.942890293094024e-16
+  },
+  "kappa_inf_numpy_abs_diff": 0.0,
+  "kappa": [
+    {
+      "kappa": 0.5,
+      "e_os": -0.115729532133693,
+      "e_ss": -0.03922224236783475,
+      "e_corr": -0.15495177450152775,
+      "ratio_to_plain": 0.7594429694907616,
+      "damp_min": 0.2427382187379926,
+      "damp_max": 0.9999999999624991
+    },
+    {
+      "kappa": 1.1,
+      "e_os": -0.14676730823953285,
+      "e_ss": -0.04982107166403539,
+      "e_corr": -0.19658837990356826,
+      "ratio_to_plain": 0.9635105082315261,
+      "damp_min": 0.6010833264937335,
+      "damp_max": 1.0
+    },
+    {
+      "kappa": 2.0,
+      "e_os": -0.15194437409469477,
+      "e_ss": -0.0514699147292913,
+      "e_corr": -0.20341428882398607,
+      "ratio_to_plain": 0.996965359308075,
+      "damp_min": 0.8719101588313929,
+      "damp_max": 1.0
+    }
+  ],
+  "provenance": {
+    "code": "PySCF + numpy",
+    "version": "2.13.1",
+    "keywords": {
+      "scf": "scf.RHF exact J/K, conv_tol 1e-12, conv_tol_grad 1e-10",
+      "integrals": "df.incore.cholesky_eri(mol, auxmol from ferric's aux JSON), Coulomb metric, Cholesky-factorized",
+      "energy": "dense numpy sum over (i,a,j,b); damp=(1-exp(-kappa*Delta))^2 on both OS and SS terms",
+      "anchor": "plain numpy == mp.dfmp2.DFMP2(frozen=None) to 1e-12",
+      "kappas": [
+        0.5,
+        1.1,
+        2.0
+      ],
+      "numpy": "1.26.4"
+    },
+    "grid": "none",
+    "aux_basis": "cc-pvdz-ri",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-10
+    },
+    "stability": null,
+    "basis": "cc-pvdz",
+    "basis_json": "crates/ferric-core/src/basis/bundled/cc-pvdz.json",
+    "basis_sha256": "ae48fcca0d533addd60dbd48490153130e697121767ba607e1d70f3b341eeef7",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/h2o.xyz",
+    "geometry_xyz_sha256": "284b6da243e9abcf0aa2d6e13ad7204946feecb55d27b7819f12097095fdd6ae",
+    "geometry_bohr": [
+      [
+        "O",
+        0.0,
+        0.0,
+        0.22259084021251865
+      ],
+      [
+        "H",
+        0.0,
+        1.4275992699810498,
+        -0.8903652505761991
+      ],
+      [
+        "H",
+        0.0,
+        -1.4275992699810498,
+        -0.8903652505761991
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_kappa_mp2.py",
+    "git_head": "19e21870ce8d2d3b9435a97e69709e0fbf635049",
+    "generated_utc": "2026-09-25T00:41:45+00:00",
+    "basis_self_check": {
+      "nao": 24,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 24,
+      "diag_skipped_cartesian": 0
+    },
+    "aux_basis_json_sha256": "8221d2a31b5bbebd39218fc3f9244917e173a338ff9c56904038443a06e2a250"
+  }
+}
