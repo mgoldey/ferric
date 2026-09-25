@@ -1,0 +1,239 @@
+{
+  "row": "ECP gradients",
+  "case": "ch2i_uks_pbe",
+  "system": "ch2i",
+  "basis": "def2-svp",
+  "charge": 0,
+  "multiplicity": 2,
+  "method": "uks",
+  "nao": 50,
+  "nelectron": 33,
+  "ecp_core_electrons": [
+    0,
+    28,
+    0,
+    0
+  ],
+  "has_ecp": true,
+  "nuclear_repulsion": 53.37239617948672,
+  "xc": "PBE",
+  "uks": {
+    "energy": -336.83018963592883,
+    "converged": true,
+    "s_squared": 0.7531804438172962,
+    "multiplicity_from_s2": 2.003177919024964,
+    "nelec_alpha": 17,
+    "nelec_beta": 16,
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UKS internal (real)",
+      "rounds": 0,
+      "selected_guess": "minao",
+      "lambda_min": 0.09244589616440368
+    },
+    "guess_scan": [
+      {
+        "guess": "minao",
+        "energy": -336.83018963592883,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -336.83018963592883
+        ]
+      },
+      {
+        "guess": "atom",
+        "energy": -336.8301896359287,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -336.8301896359287
+        ]
+      },
+      {
+        "guess": "huckel",
+        "energy": -336.8301896359282,
+        "converged": true,
+        "internal_stable": true,
+        "stability_rounds": 0,
+        "energy_trajectory": [
+          -336.8301896359282
+        ]
+      }
+    ],
+    "multiple_stable_minima": false,
+    "homo_alpha": -0.20503758817797824,
+    "lumo_alpha": -0.061641698280684665,
+    "homo_beta": -0.23167586445112498,
+    "lumo_beta": -0.13858921896519405,
+    "somo_alpha": [
+      -0.20503758817797824
+    ],
+    "gradient": [
+      [
+        -0.0053852078038229,
+        -0.02415869011110594,
+        -0.017045677330909115
+      ],
+      [
+        0.0017721336219564399,
+        0.004897251510658895,
+        0.007739281748145643
+      ],
+      [
+        -0.005621781252480584,
+        0.012024815843798636,
+        0.004479877412312039
+      ],
+      [
+        0.009234855434343436,
+        0.007236622756649158,
+        0.0048265181704061355
+      ]
+    ],
+    "gradient_units": "Hartree/Bohr, atoms in xyz order",
+    "gradient_max_abs": 0.02415869011110594,
+    "gradient_sum": [
+      -3.608224830031759e-15,
+      7.494005416219807e-16,
+      -4.529709940470639e-14
+    ],
+    "gradient_ecp_term": [
+      [
+        0.000571929560135994,
+        0.0010267213357787232,
+        -0.01092616745178595
+      ],
+      [
+        -0.0004877784024655169,
+        -0.0005381918056564772,
+        0.008404588379951325
+      ],
+      [
+        -0.00032739744850524097,
+        -3.7776815953114644e-05,
+        0.0011528580059474995
+      ],
+      [
+        0.00024324629083476284,
+        -0.0004507527141691279,
+        0.0013687210658871285
+      ]
+    ],
+    "gradient_ecp_term_max_abs": 0.01092616745178595,
+    "gradient_ecp_term_fd_fixed_density_max_err": 7.513653726975988e-10,
+    "gradient_without_ecp": [
+      [
+        -0.005957137363958894,
+        -0.025185411446884663,
+        -0.006119509879123165
+      ],
+      [
+        0.002259912024421957,
+        0.005435443316315373,
+        -0.0006653066318056816
+      ],
+      [
+        -0.0052943838039753435,
+        0.01206259265975175,
+        0.0033270194063645393
+      ],
+      [
+        0.008991609143508673,
+        0.007687375470818286,
+        0.003457797104519007
+      ]
+    ],
+    "gradient_source": "PySCF analytic, grid_response=True"
+  },
+  "provenance": {
+    "code": "PySCF",
+    "version": "2.13.1",
+    "keywords": {
+      "method": "dft.UKS xc=PBE",
+      "gradient": "PySCF analytic, grid_response=True",
+      "ecp_term": "ECPscalar_ipnuc + ECPscalar_iprinv, FD-checked at fixed D",
+      "eri": "exact 4-index J (no density fitting)",
+      "numpy": "1.26.4"
+    },
+    "grid": {
+      "atom_grid": [
+        75,
+        110
+      ],
+      "prune": null,
+      "partition": "Becke (original_becke)",
+      "radii_adjust": "becke_atomic_radii_adjust",
+      "radial": "PySCF default (treutler_ahlrichs)",
+      "grid_response": true
+    },
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-11,
+      "conv_tol_grad": 1e-08
+    },
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF UKS internal (real)",
+      "rounds": 0,
+      "selected_guess": "minao",
+      "lambda_min": 0.09244589616440368
+    },
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "ecp_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "geometry_xyz": "testdata/molecules/validation/ecp/ch2i.xyz",
+    "geometry_xyz_sha256": "d80f0fd5082dcd5a466d467b3c75df1d6813ac512a69d577947b41fb3653d824",
+    "geometry_bohr": [
+      [
+        "C",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "I",
+        0.11338356747390371,
+        0.0,
+        4.006219384077931
+      ],
+      [
+        "H",
+        1.927520647056363,
+        0.0,
+        -0.7558904498260248
+      ],
+      [
+        "H",
+        -0.9826575847738321,
+        1.7574452958455076,
+        -0.5669178373695185
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_ecp_gradient.py",
+    "git_head": "cb1bfe1c019e4717f0981cd0155675ef376e4c02",
+    "generated_utc": "2026-09-25T19:32:02+00:00",
+    "basis_self_check": {
+      "nao": 50,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 50,
+      "diag_skipped_cartesian": 0
+    },
+    "ecp_self_check": {
+      "ecp_core_electrons": [
+        0,
+        28,
+        0,
+        0
+      ],
+      "nelectron": 33
+    }
+  }
+}

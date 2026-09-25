@@ -9,9 +9,10 @@
 //!
 //! # What is compared
 //!
-//! ferric's analytic RHF and UHF nuclear gradients on def2 ECP systems, where
-//! the ECP enters as `Σ_μν D_μν dV_ECP_μν/dR` ([`ecp_gradient`], libecpint
-//! first derivatives, added in `rhf_gradient` / `uhf_gradient`):
+//! ferric's analytic RHF, UHF, RKS, UKS and ROKS nuclear gradients on def2 ECP
+//! systems, where the ECP enters as `Σ_μν D_μν dV_ECP_μν/dR` ([`ecp_gradient`],
+//! libecpint first derivatives, added in `rhf_gradient` / `uhf_gradient` and in
+//! `ks_gradient_closed` / `ks_gradient_uks` / `ks_gradient_roks`):
 //!
 //! | system | ECP | bases | SCF |
 //! |---|---|---|---|
@@ -20,6 +21,16 @@
 //! | SnH4 (one bond stretched) | Sn | def2-TZVP only | RHF |
 //! | CH2I• (distorted doublet radical) | I | def2-SVP, def2-TZVP | UHF |
 //! | HBr (stretched) | NONE — Br is all-electron in def2 | def2-SVP, def2-TZVP | RHF, control |
+//! | CH3I | I | def2-SVP | RKS/PBE |
+//! | CH2I• | I | def2-SVP | UKS/PBE, ROKS/PBE |
+//!
+//! KS cases: exact four-centre J on both sides, ferric's default (75,110)
+//! Becke grid = PySCF `atom_grid=(75,110)`, `prune=None`, Becke radii
+//! adjustment (the KS-energy row's recipe; both codes size an ECP atom's grid
+//! by its bare Z). RKS/UKS compare to PySCF's analytic gradient with
+//! `grid_response=True`; ROKS to a 5-point FD (h = 2e-3 Bohr) of PySCF's ROKS
+//! energy. No ORCA check for KS (its grids are not matchable). The RI-MP2
+//! case lives in crates/ferric-mp2/tests/validation_ecp_rimp2_gradient.rs.
 //!
 //! SnH4 is single-basis because ferric's bundled def2-SVP has no Sn. The UHF
 //! case is CH2I•, not HI⁺: HI⁺'s ²Π hole is spatially degenerate (a zero mode
@@ -81,6 +92,12 @@
 //!   `grad += &ecp_gradient(mol, prep, &d_total)?;` in `uhf_gradient`
 //!   (crates/ferric-scf/src/gradient.rs, after the `fitted_hf_gradient` match).
 //!   Run 2026-09-25: the CH2I UHF test fails; the RHF cases do not use that line.
+//! * MUTATION C (KS): delete `grad += &crate::gradient::ecp_gradient(mol, prep, &d_total)?;`
+//!   after `oneelectron_gradient` in `ks_gradient_uks` (ks_gradient.rs); the
+//!   CH2I UKS test must fail at checks 3 and 6. The same line in
+//!   `ks_gradient_roks` / (`&d`) in `ks_gradient_closed_with_exchange` is
+//!   reached by the ROKS / RKS tests. Run 2026-09-25 (with the Becke
+//!   Bragg-radius fix): the CH2I UKS test fails.
 //! * MUTATION B (a sign in the contraction): in `ecp_gradient`, change
 //!   `grad[(a, c)] = d.iter().zip(dv.iter()).map(|(x, y)| x * y).sum::<f64>();`
 //!   to `= -d.iter()...`. Run 2026-09-25: all four ECP cases fail; the
@@ -97,7 +114,9 @@ use ferric_core::parallel::ParallelContext;
 use ferric_integrals::basis_bridge::PreparedBasis;
 use ferric_integrals::operator::Operator;
 use ferric_scf::gradient::{ecp_gradient, rhf_gradient, uhf_gradient};
+use ferric_scf::ks_gradient::{ks_gradient_closed, ks_gradient_roks, ks_gradient_uks};
 use ferric_scf::rhf::{solve_rhf, RhfConfig};
+use ferric_scf::rohf::solve_rohf;
 use ferric_scf::screening::SchwarzBounds;
 use ferric_scf::stability::StabilityVerdict;
 use ferric_scf::uhf::solve_uhf_with_guess;
@@ -125,6 +144,20 @@ const TOL_G_ORCA: f64 = 1e-6;
 const TOL_S2: f64 = 1e-6;
 const TOL_ENUC: f64 = 1e-9;
 const FD_STEP: f64 = 2e-3;
+// KS cases (exact J, matched (75,110) Becke grid, PySCF grid_response=True;
+// ROKS vs a 5-point FD of PySCF's ROKS energy). The meta-GGA gradient row
+// measures the KS machinery itself at ≤6e-9 on light atoms, so the ECP
+// integral floor above is expected to dominate here too.
+// Measured ≤ 2.0e-8 Ha (CH3I RKS).
+const TOL_E_KS: f64 = 2.5e-7;
+// RKS/UKS vs PySCF analytic, ROKS vs PySCF FD: measured ≤ 1.4e-8 Ha/Bohr.
+const TOL_G_KS: f64 = 2e-7;
+// Measured ≤ 1.1e-8 Ha/Bohr.
+const TOL_G_ECP_TERM_KS: f64 = 2e-7;
+// ferric's own 5-point FD: measured ≤ 4.3e-8 (the HF bar's FD noise budget).
+const TOL_FD_KS: f64 = 6e-7;
+/// Functional for every KS case (ferric name; PySCF "PBE").
+const KS_XC: &str = "pbe";
 /// A gradient without the ECP term must miss PySCF by at least this.
 const MUST_MISS: f64 = 1000.0 * TOL_G;
 /// A reference gradient smaller than this cannot tell right from wrong.
@@ -186,17 +219,30 @@ fn matrix(v: &Value, ptr: &str, natoms: usize, ctx: &str) -> Array2<f64> {
     m
 }
 
+/// `f64::max` drops a NaN operand, so every reduction first asserts that its
+/// inputs are finite: a NaN component must fail, not vanish from the maximum.
+fn assert_finite(a: &Array2<f64>, what: &str) {
+    assert!(
+        a.iter().all(|v| v.is_finite()),
+        "{what}: non-finite component in {a:?}"
+    );
+}
+
 fn max_abs(a: &Array2<f64>) -> f64 {
+    assert_finite(a, "max_abs");
     a.iter().fold(0.0f64, |m, v| m.max(v.abs()))
 }
 
 fn max_diff(a: &Array2<f64>, b: &Array2<f64>) -> f64 {
+    assert_finite(a, "max_diff lhs");
+    assert_finite(b, "max_diff rhs");
     a.iter()
         .zip(b.iter())
         .fold(0.0f64, |m, (x, y)| m.max((x - y).abs()))
 }
 
 fn max_col_sum(a: &Array2<f64>) -> f64 {
+    assert_finite(a, "max_col_sum");
     (0..3)
         .map(|c| a.column(c).sum().abs())
         .fold(0.0f64, f64::max)
@@ -236,6 +282,35 @@ fn check_grad(ctx: &str, what: &str, got: &Array2<f64>, want: &Array2<f64>, tol:
 enum Kind {
     Rhf,
     Uhf,
+    Rks,
+    Uks,
+    Roks,
+}
+
+impl Kind {
+    /// The reference JSON block / `method` field for this kind.
+    fn key(self) -> &'static str {
+        match self {
+            Kind::Rhf => "rhf",
+            Kind::Uhf => "uhf",
+            Kind::Rks => "rks",
+            Kind::Uks => "uks",
+            Kind::Roks => "roks",
+        }
+    }
+
+    fn is_ks(self) -> bool {
+        matches!(self, Kind::Rks | Kind::Uks | Kind::Roks)
+    }
+}
+
+/// Bars per kind: (energy, gradient vs PySCF, ECP term alone, own FD).
+fn bars(kind: Kind) -> (f64, f64, f64, f64) {
+    if kind.is_ks() {
+        (TOL_E_KS, TOL_G_KS, TOL_G_ECP_TERM_KS, TOL_FD_KS)
+    } else {
+        (TOL_E, TOL_G, TOL_G_ECP_TERM, TOL_FD)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -265,6 +340,27 @@ fn uhf_config() -> RhfConfig {
     }
 }
 
+/// KS config: PBE with EXACT four-centre J, to match plain PySCF KS. The
+/// closed-shell solver auto-defaults a functional to RI-J, so it opts out with
+/// `Some("")`; the open-shell solvers read `df_j_aux` verbatim, so `None` is
+/// exact there. `check_case` asserts the SCF recorded no RI-J either way.
+fn ks_config(kind: Kind) -> RhfConfig {
+    RhfConfig {
+        xc: Some(KS_XC.into()),
+        df_j_aux: if kind == Kind::Rks {
+            Some(String::new())
+        } else {
+            None
+        },
+        max_iter: 500,
+        energy_conv: 1e-10,
+        density_conv: 1e-9,
+        check_stability: kind == Kind::Uks,
+        scf_stability_descent: kind == Kind::Uks,
+        ..Default::default()
+    }
+}
+
 /// SCF at `mol`'s geometry. For UHF, `seed` (the undisplaced MOs) keeps a
 /// displaced run on the same state; stability is checked either way.
 fn scf(
@@ -281,9 +377,18 @@ fn scf(
     let res = match kind {
         Kind::Rhf => solve_rhf(&pctx, mol, &prep, op, &bounds, &rhf_config())
             .unwrap_or_else(|e| panic!("{ctx}: solve_rhf failed: {e:?}")),
-        Kind::Uhf => {
+        Kind::Rks => solve_rhf(&pctx, mol, &prep, op, &bounds, &ks_config(kind))
+            .unwrap_or_else(|e| panic!("{ctx}: solve_rhf (RKS) failed: {e:?}")),
+        Kind::Roks => solve_rohf(&pctx, mol, &prep, op, &bounds, &ks_config(kind))
+            .unwrap_or_else(|e| panic!("{ctx}: solve_rohf (ROKS) failed: {e:?}")),
+        Kind::Uhf | Kind::Uks => {
             let guess = seed.map(|r| (&r.mos_alpha, r.mos_beta.as_ref().unwrap()));
-            let r = solve_uhf_with_guess(&pctx, mol, &prep, &bounds, &uhf_config(), guess)
+            let cfg = if kind == Kind::Uhf {
+                uhf_config()
+            } else {
+                ks_config(kind)
+            };
+            let r = solve_uhf_with_guess(&pctx, mol, &prep, &bounds, &cfg, guess)
                 .unwrap_or_else(|e| panic!("{ctx}: solve_uhf failed: {e:?}"));
             let st = r
                 .stability
@@ -301,12 +406,20 @@ fn scf(
         }
     };
     assert!(res.converged, "{ctx}: SCF not converged");
+    if kind.is_ks() {
+        let j_aux = res.df_jk.as_ref().and_then(|r| r.j_aux.clone());
+        assert!(
+            j_aux.is_none(),
+            "{ctx}: KS SCF recorded RI-J ({j_aux:?}); the reference uses exact J"
+        );
+    }
     (res, prep, bounds)
 }
 
 fn gradient(
     kind: Kind,
     mol: &Molecule,
+    bs: &BasisSet,
     prep: &PreparedBasis,
     bounds: &SchwarzBounds,
     res: &ScfResult,
@@ -315,6 +428,9 @@ fn gradient(
     match kind {
         Kind::Rhf => rhf_gradient(mol, prep, op, bounds, res, None),
         Kind::Uhf => uhf_gradient(mol, prep, op, bounds, res, None),
+        Kind::Rks => ks_gradient_closed(mol, prep, bs, op, bounds, KS_XC, res, None),
+        Kind::Uks => ks_gradient_uks(mol, prep, bs, op, bounds, KS_XC, res, None),
+        Kind::Roks => ks_gradient_roks(mol, prep, bs, op, bounds, KS_XC, res, None),
     }
     .expect("analytic gradient")
 }
@@ -346,13 +462,24 @@ fn displaced(mol: &Molecule, a: usize, c: usize, dx: f64) -> Molecule {
 
 /// All checks for one system × basis. Returns ferric's energy.
 fn check_case(system: &str, basis_name: &str, kind: Kind, ecp: Ecp) -> f64 {
-    let r = read_json(&format!("{system}_{basis_name}.json"));
-    let key = match kind {
-        Kind::Rhf => "rhf",
-        Kind::Uhf => "uhf",
-    };
-    let ctx = format!("{system}/{basis_name}/{key}");
+    check_named_case(system, system, basis_name, kind, ecp)
+}
+
+/// `case` names the reference file (`<case>_<basis>.json`); `system` the xyz.
+fn check_named_case(case: &str, system: &str, basis_name: &str, kind: Kind, ecp: Ecp) -> f64 {
+    let r = read_json(&format!("{case}_{basis_name}.json"));
+    let key = kind.key();
+    let (tol_e, tol_g, tol_g_ecp, tol_fd) = bars(kind);
+    let ctx = format!("{case}/{basis_name}/{key}");
     assert_eq!(r["method"].as_str(), Some(key), "{ctx}: reference method");
+    assert_eq!(
+        r["system"].as_str(),
+        Some(system),
+        "{ctx}: reference system"
+    );
+    if kind.is_ks() {
+        assert_eq!(r["xc"].as_str(), Some("PBE"), "{ctx}: reference functional");
+    }
 
     // --- 1. system build, before any SCF ---
     let charge = r["charge"].as_i64().expect("charge") as i32;
@@ -426,9 +553,9 @@ fn check_case(system: &str, basis_name: &str, kind: Kind, ecp: Ecp) -> f64 {
         "energy",
         res.energy,
         num(&r, &format!("/{key}/energy"), &ctx),
-        TOL_E,
+        tol_e,
     );
-    if kind == Kind::Uhf {
+    if matches!(kind, Kind::Uhf | Kind::Uks) {
         let nelec = mol.nelec() as usize;
         let (na, nb) = ((nelec + mult - 1) / 2, (nelec - (mult - 1)) / 2);
         let s = ferric_integrals::oneelectron::overlap(&prep);
@@ -436,20 +563,20 @@ fn check_case(system: &str, basis_name: &str, kind: Kind, ecp: Ecp) -> f64 {
             &ctx,
             "<S^2>",
             s_squared(&res, &s, na, nb),
-            num(&r, "/uhf/s_squared", &ctx),
+            num(&r, &format!("/{key}/s_squared"), &ctx),
             TOL_S2,
         );
     }
 
     // --- 3. analytic gradient vs PySCF analytic ---
-    let g = gradient(kind, &mol, &prep, &bounds, &res);
+    let g = gradient(kind, &mol, &bs, &prep, &bounds, &res);
     let g_ref = matrix(&r, &format!("/{key}/gradient"), natoms, &ctx);
     assert!(
         max_abs(&g_ref) > MIN_REF_GRAD,
         "{ctx}: reference gradient max {:.2e} is vacuous",
         max_abs(&g_ref)
     );
-    check_grad(&ctx, "gradient vs PySCF", &g, &g_ref, TOL_G);
+    check_grad(&ctx, "gradient vs PySCF", &g, &g_ref, tol_g);
 
     // --- 4. the ECP term alone, and the rest alone ---
     let g_ecp = ecp_gradient(&mol, &prep, &total_density(&res)).expect("ecp_gradient");
@@ -458,14 +585,8 @@ fn check_case(system: &str, basis_name: &str, kind: Kind, ecp: Ecp) -> f64 {
     let g_rest = &g - &g_ecp;
     match ecp {
         Ecp::Active => {
-            check_grad(
-                &ctx,
-                "ECP term vs PySCF",
-                &g_ecp,
-                &g_ecp_ref,
-                TOL_G_ECP_TERM,
-            );
-            check_grad(&ctx, "gradient - ECP term", &g_rest, &g_rest_ref, TOL_G);
+            check_grad(&ctx, "ECP term vs PySCF", &g_ecp, &g_ecp_ref, tol_g_ecp);
+            check_grad(&ctx, "gradient - ECP term", &g_rest, &g_rest_ref, tol_g);
             // Negative control: a gradient that DROPS the ECP derivative.
             let miss = max_diff(&g_rest, &g_ref);
             eprintln!("{ctx}: gradient without ECP term misses PySCF by {miss:.3e}");
@@ -516,15 +637,19 @@ fn check_case(system: &str, basis_name: &str, kind: Kind, ecp: Ecp) -> f64 {
             "{ctx}: FD atom {a} coord {c}: analytic {:+.10} FD {fd:+.10} |d| {d:.2e}",
             g[(a, c)]
         );
+        assert!(d.is_finite(), "{ctx}: FD atom {a} coord {c} is not finite");
         fd_worst = fd_worst.max(d);
     }
-    eprintln!("{ctx}: max |analytic - FD| = {fd_worst:.3e} (tol {TOL_FD:.0e})");
+    eprintln!("{ctx}: max |analytic - FD| = {fd_worst:.3e} (tol {tol_fd:.0e})");
     assert!(
-        fd_worst < TOL_FD,
+        fd_worst < tol_fd,
         "{ctx}: analytic gradient misses its own 5-point FD by {fd_worst:.3e}"
     );
 
-    // --- 7. ORCA EnGrad ---
+    // --- 7. ORCA EnGrad (HF cases; no matched-grid ORCA KS reference) ---
+    if kind.is_ks() {
+        return res.energy;
+    }
     let o = read_json(&format!("orca_{system}_{basis_name}.json"));
     assert_eq!(
         o["ecp_source"].as_str(),
@@ -562,8 +687,7 @@ fn two_basis(system: &str, kind: Kind, ecp: Ecp) {
         check_case(system, BASES[0], kind, ecp),
         check_case(system, BASES[1], kind, ecp),
     ];
-    let key = if kind == Kind::Rhf { "rhf" } else { "uhf" };
-    assert_basis_discriminates(system, key, &e);
+    assert_basis_discriminates(system, kind.key(), &e);
 }
 
 #[test]
@@ -597,4 +721,25 @@ fn ecp_gradient_ch2i_uhf() {
 #[ignore = "validation: ECP gradient"]
 fn ecp_gradient_hbr_all_electron_control() {
     two_basis("hbr", Kind::Rhf, Ecp::AllElectron);
+}
+
+/// RKS/PBE: `ks_gradient_closed` (the closed-shell KS ECP term).
+#[test]
+#[ignore = "validation: ECP gradient"]
+fn ecp_gradient_ch3i_rks_pbe() {
+    check_named_case("ch3i_rks_pbe", "ch3i", "def2-svp", Kind::Rks, Ecp::Active);
+}
+
+/// UKS/PBE: `ks_gradient_uks`.
+#[test]
+#[ignore = "validation: ECP gradient"]
+fn ecp_gradient_ch2i_uks_pbe() {
+    check_named_case("ch2i_uks_pbe", "ch2i", "def2-svp", Kind::Uks, Ecp::Active);
+}
+
+/// ROKS/PBE: `ks_gradient_roks`, against a 5-point FD of PySCF's ROKS energy.
+#[test]
+#[ignore = "validation: ECP gradient"]
+fn ecp_gradient_ch2i_roks_pbe() {
+    check_named_case("ch2i_roks_pbe", "ch2i", "def2-svp", Kind::Roks, Ecp::Active);
 }

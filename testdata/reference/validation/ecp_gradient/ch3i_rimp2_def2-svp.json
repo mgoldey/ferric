@@ -1,0 +1,296 @@
+{
+  "row": "ECP gradients",
+  "case": "ch3i_rimp2",
+  "system": "ch3i",
+  "basis": "def2-svp",
+  "charge": 0,
+  "multiplicity": 1,
+  "method": "rimp2",
+  "nao": 55,
+  "nelectron": 34,
+  "ecp_core_electrons": [
+    0,
+    28,
+    0,
+    0,
+    0
+  ],
+  "has_ecp": true,
+  "nuclear_repulsion": 60.31822723048639,
+  "aux_basis": "def2-svp-rifit",
+  "naux": 204,
+  "rimp2": {
+    "e_rhf": -336.23238609627555,
+    "e_corr": -0.28704466021805053,
+    "e_total": -336.5194307564936,
+    "gradient": [
+      [
+        0.0022696499577534723,
+        -0.004408368617703218,
+        -0.019778035568407404
+      ],
+      [
+        0.0009705283048333513,
+        -0.0006379553738611321,
+        0.013542947472799938
+      ],
+      [
+        -0.008184446469883255,
+        0.0005130880271764227,
+        0.003764132205930082
+      ],
+      [
+        0.0014392999947432372,
+        -0.0012670189502017593,
+        -0.0003723138615185917
+      ],
+      [
+        0.003504967654777147,
+        0.005800255660659559,
+        0.0028432715595272384
+      ]
+    ],
+    "gradient_source": "5-point central FD of PySCF DF-MP2 total energy, h = 0.002 Bohr",
+    "gradient_max_abs": 0.019778035568407404,
+    "gradient_sum": [
+      -5.577760475716786e-10,
+      7.460698725481052e-10,
+      1.808331262509455e-09
+    ],
+    "gradient_ecp_term": [
+      [
+        -0.00019338380852218506,
+        4.951127507979436e-05,
+        -0.006682823588732845
+      ],
+      [
+        0.00016501423516501745,
+        -9.499603947915602e-05,
+        0.003135617010485703
+      ],
+      [
+        -0.0003852831547135338,
+        2.0794033162019332e-08,
+        0.0012558780753124665
+      ],
+      [
+        0.00019255813299423608,
+        -0.0002967647816376484,
+        0.0010912715495692282
+      ],
+      [
+        0.0002210943854663583,
+        0.00034222854949916837,
+        0.0012000569000747419
+      ]
+    ],
+    "gradient_ecp_term_source": "5-point d/dlambda of the relaxed DF-MP2 energy with hcore + lambda dV_ECP/dR, lambda step 0.001",
+    "gradient_ecp_term_max_abs": 0.006682823588732845,
+    "gradient_without_ecp": [
+      [
+        0.0024630337662756574,
+        -0.004457879892783012,
+        -0.01309521197967456
+      ],
+      [
+        0.0008055140696683338,
+        -0.0005429593343819761,
+        0.010407330462314235
+      ],
+      [
+        -0.0077991633151697215,
+        0.0005130672331432606,
+        0.0025082541306176154
+      ],
+      [
+        0.0012467418617490011,
+        -0.0009702541685641108,
+        -0.00146358541108782
+      ],
+      [
+        0.0032838732693107886,
+        0.005458027111160391,
+        0.0016432146594524966
+      ]
+    ],
+    "rhf_gradient": [
+      [
+        0.002142444586909431,
+        -0.004293107900921002,
+        -0.010858108066250871
+      ],
+      [
+        0.0010108451471486646,
+        -0.0007030888617178092,
+        0.012119978077604898
+      ],
+      [
+        -0.002337349612455686,
+        0.0005536319697301636,
+        0.0012934174282841493
+      ],
+      [
+        -0.0013932451837256332,
+        0.0037523223409454687,
+        -0.0030346361294448787
+      ],
+      [
+        0.0005773050621129538,
+        0.0006902424519557027,
+        0.0004793486897638477
+      ]
+    ],
+    "rhf_gradient_ecp_term": [
+      [
+        -0.00023969830675882623,
+        5.0021439991804466e-05,
+        -0.00871711593274085
+      ],
+      [
+        0.00020903694007508522,
+        -9.700226032732275e-05,
+        0.0049819442179393925
+      ],
+      [
+        -0.0004237764104132099,
+        7.083053700307394e-08,
+        0.001321764341938723
+      ],
+      [
+        0.00021251702198932313,
+        -0.00032939795776200625,
+        0.0011505947358706223
+      ],
+      [
+        0.0002419207551076283,
+        0.0003763079475605221,
+        0.0012628126369921369
+      ]
+    ],
+    "lambda_self_check_rhf_max_err": 4.1037538395672507e-10,
+    "orca": {
+      "e_rhf": -336.232386096102,
+      "e_corr": -0.28704466014698937,
+      "e_total": -336.519430756249,
+      "gradient": [
+        [
+          0.002269693907,
+          -0.004408409399,
+          -0.019778078917
+        ],
+        [
+          0.000970486697,
+          -0.000637917716,
+          0.013542965094
+        ],
+        [
+          -0.008184458175,
+          0.000513087641,
+          0.003764117206
+        ],
+        [
+          0.001439303697,
+          -0.00126702387,
+          -0.000372276341
+        ],
+        [
+          0.003504973874,
+          0.005800263344,
+          0.00284327295
+        ]
+      ],
+      "input": "scripts/validation/orca/ecp_gradient/ch3i_rimp2_def2-svp.inp",
+      "vs_pyscf": {
+        "e_rhf": 1.7354295778204687e-10,
+        "e_corr": 7.10611569587627e-11,
+        "gradient_max": 4.394924652765392e-08
+      }
+    }
+  },
+  "provenance": {
+    "code": "PySCF + ORCA",
+    "version": "2.13.1",
+    "keywords": {
+      "pyscf": "scf.RHF (exact J/K, conv_tol 1e-12, conv_tol_grad 1e-10) + mp.dfmp2.DFMP2(frozen=None), auxmol from ferric's aux JSON",
+      "gradient": "5-point central FD of PySCF DF-MP2 total energy, h = 0.002 Bohr",
+      "ecp_term": "5-point d/dlambda of the relaxed DF-MP2 energy with hcore + lambda dV_ECP/dR, lambda step 0.001",
+      "orca": "RI-MP2 NoRI NoFrozenCore ExtremeSCF EnGrad, NewGTO+NewECP+NewAuxCGTO",
+      "numpy": "1.26.4"
+    },
+    "grid": "none",
+    "aux_basis": {
+      "correlation": "def2-svp-rifit",
+      "correlation_sha256": "320fce340c3e53ae33e475139b21a1cd9b4730ff3946c9c7d9969344a0e3b296",
+      "scf": "none (exact four-centre J/K)"
+    },
+    "frozen_core": "none (all electrons outside the ECP core correlated)",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-10
+    },
+    "stability": {
+      "internal_stable": true,
+      "kind": "PySCF RHF internal (real)"
+    },
+    "basis": "def2-svp",
+    "basis_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "basis_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "ecp_json": "crates/ferric-core/src/basis/bundled/def2-svp.json",
+    "ecp_sha256": "bfad5f58ceac74a9ac2766b39f510654cea29fb9408e966bb0dfcf14e1302d4f",
+    "geometry_xyz": "testdata/molecules/validation/ecp/ch3i.xyz",
+    "geometry_xyz_sha256": "d6c9db2614e809dfa2053f6c6ee943fc5761219b16a6b6178e8965b00cc63c6c",
+    "geometry_bohr": [
+      [
+        "C",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "I",
+        0.0944863062282531,
+        0.0,
+        4.157397474043137
+      ],
+      [
+        "H",
+        1.9464449502828565,
+        0.0,
+        -0.613711726994791
+      ],
+      [
+        "H",
+        -0.9822337947931373,
+        1.7012788181766623,
+        -0.6193942468349256
+      ],
+      [
+        "H",
+        -0.9822337947931373,
+        -1.7012788181766623,
+        -0.5669178373695185
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_ecp_gradient.py",
+    "git_head": "cb1bfe1c019e4717f0981cd0155675ef376e4c02",
+    "generated_utc": "2026-09-25T19:34:23+00:00",
+    "basis_self_check": {
+      "nao": 55,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 4.440892098500626e-16,
+      "diag_checked": 55,
+      "diag_skipped_cartesian": 0
+    },
+    "ecp_self_check": {
+      "ecp_core_electrons": [
+        0,
+        28,
+        0,
+        0,
+        0
+      ],
+      "nelectron": 34
+    }
+  }
+}

@@ -1668,6 +1668,28 @@ pub fn uhf_gradient(
     result: &ScfResult,
     ext: Option<&ferric_core::external_potential::ExternalPotential>,
 ) -> Result<Array2<f64>, FerricError> {
+    let (d_total, d_beta, w) = uhf_gradient_densities(mol, result)?;
+    let dens = crate::df_gradient::TwoElectronDensity::Open {
+        alpha: &result.density_alpha,
+        beta: d_beta,
+    };
+    let fitted = fitted_hf_gradient(mol, prep, op, bounds, result, dens, &w, ext)?;
+    let mut grad = match fitted {
+        Some(g) => g,
+        None => uhf_gradient_exact_2e(mol, prep, op, bounds, result, &d_total, &w, ext)?,
+    };
+    // ECP term Σ D_total dV_ECP/dR (zero for an all-electron basis). The SCF
+    // folds V_ECP into hcore for every spin treatment (driver::prepare), so the
+    // open-shell gradient needs it exactly as rhf_gradient does.
+    grad += &ecp_gradient(mol, prep, &d_total)?;
+    Ok(grad)
+}
+
+/// Validated inputs of [`uhf_gradient`]: `(D_α + D_β, D_β, W)`.
+fn uhf_gradient_densities<'a>(
+    mol: &Molecule,
+    result: &'a ScfResult,
+) -> Result<(Array2<f64>, &'a Array2<f64>, Array2<f64>), FerricError> {
     if mol.atoms.iter().any(|a| a.ghost) {
         return Err(FerricError::Libint(
             "uhf_gradient is not implemented for molecules containing ghost atoms".into(),
@@ -1681,41 +1703,34 @@ pub fn uhf_gradient(
     let two_s = mol.multiplicity as i64 - 1;
     let nocc_a = ((nelec + two_s) / 2) as usize;
     let nocc_b = ((nelec - two_s) / 2) as usize;
-
-    let d_total = &result.density_alpha
-        + result
-            .density_beta
-            .as_ref()
-            .expect("uhf_gradient: missing density_beta");
-    let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
     let d_beta = result
         .density_beta
         .as_ref()
         .expect("uhf_gradient: missing density_beta");
-    let dens = crate::df_gradient::TwoElectronDensity::Open {
-        alpha: &result.density_alpha,
-        beta: d_beta,
-    };
-    let mut grad = match fitted_hf_gradient(mol, prep, op, bounds, result, dens, &w, ext)? {
-        Some(g) => g,
-        None => {
-            let mut g = oneelectron_gradient(mol, prep, &d_total, &w, ext)?;
-            g += &twoelectron_gradient_uhf(
-                prep,
-                op,
-                bounds,
-                &d_total,
-                &result.density_alpha,
-                d_beta,
-            )?;
-            g
-        }
-    };
-    // ECP term Σ D_total dV_ECP/dR (zero for an all-electron basis). The SCF
-    // folds V_ECP into hcore for every spin treatment (driver::prepare), so the
-    // open-shell gradient needs it exactly as rhf_gradient does.
-    grad += &ecp_gradient(mol, prep, &d_total)?;
-    Ok(grad)
+    let d_total = &result.density_alpha + d_beta;
+    let w = build_energy_weighted_density_uhf(result, nocc_a, nocc_b);
+    Ok((d_total, d_beta, w))
+}
+
+/// One-electron plus exact (unfitted) two-electron UHF gradient terms.
+#[allow(clippy::too_many_arguments)]
+fn uhf_gradient_exact_2e(
+    mol: &Molecule,
+    prep: &PreparedBasis,
+    op: Operator,
+    bounds: &SchwarzBounds,
+    result: &ScfResult,
+    d_total: &Array2<f64>,
+    w: &Array2<f64>,
+    ext: Option<&ferric_core::external_potential::ExternalPotential>,
+) -> Result<Array2<f64>, FerricError> {
+    let d_beta = result
+        .density_beta
+        .as_ref()
+        .expect("uhf_gradient: missing density_beta");
+    let mut g = oneelectron_gradient(mol, prep, d_total, w, ext)?;
+    g += &twoelectron_gradient_uhf(prep, op, bounds, d_total, &result.density_alpha, d_beta)?;
+    Ok(g)
 }
 
 /// Compute the ROHF analytical nuclear gradient.

@@ -290,6 +290,10 @@ fn mp2_relaxed_lagrangian_gradient(
     // via `hcore_with_external` at the SCF stage).
     let zero_w = Array2::<f64>::zeros((c.nrows(), c.nrows()));
     let mut grad = oneelectron_gradient(mol, obs, &dm1_total_ao, &zero_w, ext)?;
+    // ECP term Σ D_relaxed dV_ECP/dR (zero for an all-electron basis): V_ECP
+    // is part of hcore (the RHF reference folds it in), so its derivative is
+    // contracted with the same relaxed total density as dT/dR and dV_nuc/dR.
+    grad += &ferric_scf::gradient::ecp_gradient(mol, obs, &dm1_total_ao)?;
 
     // Overlap (Pulay) contributions:
     //   + s1·im1 + s1^T·im1^T       →  + overlap_deriv_contract(im1)        (174-175)
