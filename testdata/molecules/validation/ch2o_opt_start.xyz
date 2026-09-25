@@ -1,0 +1,6 @@
+4
+CH2O geometry-optimization START (deliberately distorted): r(CO)=1.235 A, r(CH)=1.120/1.080 A, OCH=119/124 deg, second H 0.06 A out of plane
+C      0.00000000     0.00000000     0.00000000
+O      1.23500000     0.00000000     0.00000000
+H     -0.54298677     0.97957407     0.00000000
+H     -0.60392834    -0.89536058     0.06000000
