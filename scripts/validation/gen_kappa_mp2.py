@@ -41,7 +41,7 @@ Anchors asserted HERE before anything is written:
 
 Run (light; seconds per system):
     scripts/validation/run_slot.sh --light -- \\
-        /home/matt/qc/ferric/.venv/bin/python scripts/validation/gen_kappa_mp2.py
+        python scripts/validation/gen_kappa_mp2.py   # the reference env (PySCF)
 """
 
 from __future__ import annotations
@@ -118,6 +118,9 @@ def main() -> int:
     from pyscf import scf
 
     only = set(sys.argv[1:])
+    unknown = only - set(SYSTEMS)
+    if unknown:
+        raise SystemExit(f"unknown systems: {sorted(unknown)}; known: {sorted(SYSTEMS)}")
     written = []
     for system, (basis_name, aux_name) in SYSTEMS.items():
         if only and system not in only:

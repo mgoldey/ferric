@@ -24,9 +24,10 @@ per-method table, with Python-only capabilities included, is in
 
 **Proven:** `rhf`, `uhf`, `rohf`, `ksdft`, `rimp2`, `mp3`, `att-rimp2`,
 `scs-mp2`, `scs-mp2-2terfc`, `laplace-mp2`, `pdep-rpa`, `ccsd`. **Proven
-(narrow, exact limits only):** `linlccd`, which has no external reference for
-its energy; with the hole–hole ladder off it reduces exactly to RI-MP2, and
-with exact integrals its driver terms reproduce canonical MP2. **Proven
+(narrow):** `linlccd`, whose energy matches an independent numpy solve of the
+LinLCCD(hh) equations on PySCF density-fitted integrals (see the anchor below);
+with the hole–hole ladder off it reduces exactly to RI-MP2, and with exact
+integrals its driver terms reproduce canonical MP2. **Proven
 (narrow, closed shell):** `tda`, `tddft`, whose lowest five TDA and Casida
 roots match PySCF for water, formaldehyde and NH3 at 6-31G and aug-cc-pVDZ
 with HF, LDA, PBE and B3LYP (see the anchor below). These print no warning.
