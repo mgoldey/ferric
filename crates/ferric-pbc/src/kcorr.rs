@@ -935,18 +935,28 @@ fn drpa_q_realified(
     budget: usize,
 ) -> Result<f64, FerricError> {
     let (nr, nc) = bq.dim();
+    // Columns go in ASCENDING excitation energy. The energy is invariant
+    // under a column permutation (B F Bᵀ with F diagonal), but ferric-rpa's
+    // scale-factor guard reads an out-of-order ε_vir as a rotated
+    // (non-canonical) basis and debug-asserts; these ε_vir are per-column
+    // excitation energies of a canonical k basis, so sorting is exact.
+    let mut order: Vec<usize> = (0..nc).collect();
+    order.sort_by(|&a, &b| e[a].total_cmp(&e[b]));
     let mut br = Array2::<f64>::zeros((2 * nr, 2 * nc));
-    for p in 0..nr {
-        for c in 0..nc {
+    let mut ed = vec![0.0; 2 * nc];
+    for (j, &c) in order.iter().enumerate() {
+        // Each energy appears twice (Re and Im halves); interleave them so
+        // the doubled list stays ascending too.
+        ed[2 * j] = e[c];
+        ed[2 * j + 1] = e[c];
+        for p in 0..nr {
             let z = bq[(p, c)];
-            br[(p, c)] = z.re;
-            br[(p, nc + c)] = -z.im;
-            br[(nr + p, c)] = z.im;
-            br[(nr + p, nc + c)] = z.re;
+            br[(p, 2 * j)] = z.re;
+            br[(p, 2 * j + 1)] = -z.im;
+            br[(nr + p, 2 * j)] = z.im;
+            br[(nr + p, 2 * j + 1)] = z.re;
         }
     }
-    let mut ed = e.to_vec();
-    ed.extend_from_slice(e);
     let res = drpa_from_b_ov(br, None, &[0.0], &ed, quad_points, Some(budget))?;
     if !res.eigensolver_converged {
         return Err(FerricError::General(
