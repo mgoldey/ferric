@@ -133,9 +133,8 @@
 //!
 //! # Out of scope (documented, not implemented)
 //!
-//! * **Stress** — needs the lattice-vector derivative of every piece
-//!   (per-image `L ⊗ Q_L` virials, `∂v(G)/∂ε`, `∂v_M/∂ε`, `∂Ω/∂ε`); FINDINGS
-//!   "Iteration 16", "Stress".
+//! * **Stress** — lives in [`crate::stress`] (FINDINGS "Iteration 19"); it
+//!   reuses this module's `SpinSet`, `JkSource` and input checks.
 //! * ECPs (`v_ecp`), ROHF/ROKS, meta-GGA, range-separated hybrids, VV10,
 //!   k-points: rejected or not provided.
 
@@ -354,13 +353,17 @@ pub struct RsGdfGradSource<'a> {
 
 /// Where J/K (and so `Σ Γ dI`) come from.
 #[derive(Clone, Copy)]
-enum JkSource<'a> {
+pub(crate) enum JkSource<'a> {
     Dense(&'a DenseAftEri),
     Fit(RsGdfGradSource<'a>),
 }
 
 impl JkSource<'_> {
-    fn build_j(&self, d: &Array2<f64>, out: &mut Array2<f64>) -> Result<(), FerricError> {
+    pub(crate) fn build_j(
+        &self,
+        d: &Array2<f64>,
+        out: &mut Array2<f64>,
+    ) -> Result<(), FerricError> {
         match self {
             Self::Dense(e) => e.j_builder().build(d, out)?,
             Self::Fit(f) => f.gdf.j_builder().build(d, out)?,
@@ -368,7 +371,12 @@ impl JkSource<'_> {
         Ok(())
     }
 
-    fn build_k(&self, vm: f64, d: &Array2<f64>, out: &mut Array2<f64>) -> Result<(), FerricError> {
+    pub(crate) fn build_k(
+        &self,
+        vm: f64,
+        d: &Array2<f64>,
+        out: &mut Array2<f64>,
+    ) -> Result<(), FerricError> {
         match self {
             Self::Dense(e) => e.k_builder_with_madelung(vm).build(d, out)?,
             Self::Fit(f) => f.gdf.k_builder_with_madelung(vm).build(d, out)?,
@@ -381,7 +389,7 @@ impl JkSource<'_> {
 pub type GammaRhfGradient = GammaGradient;
 
 /// Per-spin densities and Fock matrices at the SCF solution.
-enum SpinSet {
+pub(crate) enum SpinSet {
     /// `D` total, `F` (`D_α = D_β = D/2`, `F_α = F_β = F`).
     Restricted { d: Array2<f64>, f: Array2<f64> },
     /// `(D_α, D_β, F_α, F_β)`.
@@ -394,7 +402,7 @@ enum SpinSet {
 }
 
 impl SpinSet {
-    fn total(&self) -> Array2<f64> {
+    pub(crate) fn total(&self) -> Array2<f64> {
         match self {
             Self::Restricted { d, .. } => d.clone(),
             Self::Unrestricted { da, db, .. } => da + db,
@@ -402,7 +410,7 @@ impl SpinSet {
     }
 
     /// `Σ_σ D_σ X D_σ` (restricted: `½ D X D`).
-    fn sandwich(&self, x: &Array2<f64>) -> Array2<f64> {
+    pub(crate) fn sandwich(&self, x: &Array2<f64>) -> Array2<f64> {
         match self {
             Self::Restricted { d, .. } => d.dot(x).dot(d) * 0.5,
             Self::Unrestricted { da, db, .. } => da.dot(x).dot(da) + db.dot(x).dot(db),
@@ -410,7 +418,7 @@ impl SpinSet {
     }
 
     /// `W = Σ_σ D_σ F_σ D_σ` (restricted: `½ D F D`).
-    fn energy_weighted(&self) -> Array2<f64> {
+    pub(crate) fn energy_weighted(&self) -> Array2<f64> {
         match self {
             Self::Restricted { d, f } => 0.5 * d.dot(f).dot(d),
             Self::Unrestricted { da, db, fa, fb } => da.dot(fa).dot(da) + db.dot(fb).dot(db),
@@ -418,7 +426,7 @@ impl SpinSet {
     }
 
     /// `Σ_σ D_σ X D_σ` as `[(c, D)]` terms (restricted: `[(½, D)]`).
-    fn exch_terms(&self) -> Vec<(f64, &Array2<f64>)> {
+    pub(crate) fn exch_terms(&self) -> Vec<(f64, &Array2<f64>)> {
         match self {
             Self::Restricted { d, .. } => vec![(0.5, d)],
             Self::Unrestricted { da, db, .. } => vec![(1.0, da), (1.0, db)],
@@ -438,7 +446,7 @@ impl SpinSet {
     }
 
     /// `max_σ max |F_σ D_σ S − (F_σ D_σ S)ᵀ|`.
-    fn commutator(&self, s_mat: &Array2<f64>) -> f64 {
+    pub(crate) fn commutator(&self, s_mat: &Array2<f64>) -> f64 {
         let one = |f: &Array2<f64>, d: &Array2<f64>| {
             let fds = f.dot(d).dot(s_mat);
             fds.iter()
@@ -987,7 +995,7 @@ fn uks_gradient(
 
 /// Shared argument checks (messages prefixed by `who`).
 #[allow(clippy::too_many_arguments)]
-fn check_inputs(
+pub(crate) fn check_inputs(
     who: &str,
     cell: &Cell,
     prep: &PreparedBasis,
@@ -1118,14 +1126,17 @@ fn open_ledger(
     Ok(ledger)
 }
 
-fn madelung_for(cell: &Cell, exxdiv: ExxDiv) -> Result<f64, FerricError> {
+pub(crate) fn madelung_for(cell: &Cell, exxdiv: ExxDiv) -> Result<f64, FerricError> {
     Ok(match exxdiv {
         ExxDiv::None => 0.0,
         ExxDiv::Ewald => madelung_constant(cell)?,
     })
 }
 
-fn spin_densities(who: &str, scf: &ScfResult) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
+pub(crate) fn spin_densities(
+    who: &str,
+    scf: &ScfResult,
+) -> Result<(Array2<f64>, Array2<f64>), FerricError> {
     let db = scf
         .density_beta
         .clone()
@@ -1134,7 +1145,7 @@ fn spin_densities(who: &str, scf: &ScfResult) -> Result<(Array2<f64>, Array2<f64
 }
 
 /// `F_σ = h + J[D_α + D_β] − α (K[D_σ] + v_M S D_σ S) + V_σ`.
-fn unrestricted_focks(
+pub(crate) fn unrestricted_focks(
     hc: &PeriodicHcore,
     jk: &JkSource<'_>,
     da: &Array2<f64>,
@@ -1166,7 +1177,7 @@ fn unrestricted_focks(
 }
 
 /// AO → cell atom.
-fn ao_atoms(prep: &PreparedBasis) -> Vec<usize> {
+pub(crate) fn ao_atoms(prep: &PreparedBasis) -> Vec<usize> {
     let sh2at = prep.shell_to_atom();
     let dims = prep.shell_dims();
     let offs = prep.shell_offsets();
