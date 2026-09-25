@@ -1,54 +1,17 @@
-//! Closed-shell RI-RPA correlation gradient (C-grad).
+//! Closed-shell RI-RPA nuclear gradient by central finite differences.
 //!
-//! # Architectural decision (from spike commit 6cc5747)
+//! The gradient is NOT analytic. For every Cartesian coordinate it displaces
+//! the atom by ±h, solves a fresh exact-J/K RHF (`density_conv` 1e-9) and a
+//! full `run_pdep_rpa` at each point, and differences the TOTAL energy
+//! E_RHF + E_c^RPA: g = (E(+h) − E(−h)) / 2h. Orbital response and any
+//! geometry dependence of the PDEP basis are therefore included exactly, at
+//! the cost of 6·N_atoms full RHF + RPA calculations per gradient, with the
+//! O(h²) truncation error of a 3-point stencil (at h = 5e-4 Bohr on distorted
+//! H2O/NH3 cc-pVDZ that is ≤ 5.6e-8 Ha/Bohr against a converged 5-point FD;
+//! see tests/validation_rpa_gradient.rs).
 //!
-//! The spike `examples/pdep_grad_spike.rs` showed that at the production
-//! truncation threshold `trunc_thresh = 1e-4`, the change in nuclear forces
-//! between truncated and full PDEP RPA is at most ~1.0e-4 kcal/mol/Bohr — two
-//! orders of magnitude below the 0.01 kcal/mol/Bohr "projection-fixed
-//! sufficient" line.  Therefore the gradient can ignore the geometry
-//! dependence of the truncated PDEP basis (Hellmann-Feynman on the retained
-//! Ritz pairs only).
-//!
-//! # Implementation: projection-fixed Hellmann-Feynman by partial FD
-//!
-//! We exploit Hellmann-Feynman:
-//!
-//!    ∂λ_α(iω_k)/∂R = ⟨V_α | ∂ε̃(iω_k)/∂R | V_α⟩
-//!
-//! where V_α are the converged Ritz vectors at the reference geometry (held
-//! FIXED across nuclear displacement — that is the projection-fixed shortcut
-//! validated by the spike).  Then
-//!
-//!    ∂E_c^RPA/∂R = (1/2π) Σ_k w_k Σ_α (1/λ_α - 1) · ∂λ_α(iω_k)/∂R.
-//!
-//! Computing the matrix element ⟨V_α | ∂ε̃/∂R | V_α⟩ analytically requires
-//! differentiating B^P_ia (3c ERI deriv + V^{-1/2} deriv) AND the MO/orbital
-//! response (CPHF Z-vector for the orbital relaxation contribution).  The
-//! analytical-Z-vector path is identical in structure to the RI-MP2 gradient
-//! and shares the same `solve_zvector` / `build_jk` infrastructure — but
-//! ferric-mp2's analytical gradient is currently only validated to ~1e-1
-//! Ha/Bohr on H2O/STO-3G (see `test_analytical_vs_fd_h2o` in
-//! crates/ferric-mp2/src/gradient.rs), so building the analogous closed-form
-//! RPA path on top of that today would inherit the same accuracy ceiling.
-//!
-//! Instead we use the projection-fixed **partial finite difference** of the
-//! diagonal of ε̃(iω) in the fixed-Ritz basis:
-//!
-//!    λ_α(iω_k; R) ≈ ⟨V_α(R₀) | ε̃(iω_k; R) | V_α(R₀)⟩
-//!
-//! evaluated at displaced geometries.  Concretely, at each ±h displacement
-//! we rebuild the 3c integrals → B^P_ia → b_ov_disp, and re-diagonalize
-//! the projected dielectric matrix in the fixed Ritz subspace.  This gives
-//! the *correlation* contribution to the gradient including the orbital
-//! response (because the displaced-geometry orbitals come from a fresh RHF
-//! solve), so adding it to `rhf_gradient` produces the total RPA gradient.
-//!
-//! This is not the cheapest possible analytical gradient, but it is
-//! correct by construction and avoids inheriting the MP2 Z-vector accuracy
-//! ceiling that would block the danuglipron med-chem geometry-optimization
-//! use case.  The full Z-vector analytical path is left as a follow-up
-//! (TODO marker in this file).
+//! An analytic path (3-centre ERI derivatives + Z-vector orbital response,
+//! the same structure as the RI-MP2 gradient) does not exist.
 
 use ferric_core::basis::BasisSet;
 use ferric_core::mol::Molecule;
@@ -63,11 +26,12 @@ use ndarray::Array2;
 use crate::config::Chi0Backend;
 use crate::{run_pdep_rpa, Chi0Sparsity, PdepRpaConfig, PdepRpaResult};
 
-/// Compute the closed-shell RI-RPA correlation gradient at the reference
-/// geometry, using the projection-fixed Hellmann-Feynman shortcut.
+/// The closed-shell RI-RPA nuclear gradient at the reference geometry, by a
+/// 3-point central finite difference of the TOTAL energy E_RHF + E_c^RPA.
 ///
-/// Returns a `(n_atoms, 3)` array of `∂E_c^RPA / ∂R` in Hartree/Bohr.  Add
-/// this to `rhf_gradient(...)` to get the total RPA gradient.
+/// Returns a `(n_atoms, 3)` array of `dE_total / dR` in Hartree/Bohr — the
+/// full RPA gradient, NOT the correlation part alone (despite the name). Do
+/// not add `rhf_gradient` to it: that counts the RHF gradient twice.
 ///
 /// # Restrictions
 ///
@@ -83,7 +47,7 @@ use crate::{run_pdep_rpa, Chi0Sparsity, PdepRpaConfig, PdepRpaResult};
 ///   geometries.
 /// * `op` — the ERI operator (typically `Operator::coulomb()`).
 /// * `rpa_config` — RPA configuration; truncation threshold and Davidson
-///   parameters are honored.  Sets the fixed projection for the gradient.
+///   parameters are honored at every displaced point.
 /// * `h` — finite-difference step in Bohr.  Default-recommended: `5e-4`.
 pub fn rpa_correlation_gradient(
     mol: &Molecule,
@@ -113,8 +77,8 @@ pub fn rpa_correlation_gradient(
             let mut mol_m = mol.clone();
             apply_displacement(&mut mol_p, atom, coord, h);
             apply_displacement(&mut mol_m, atom, coord, -h);
-            let e_p = rpa_correlation_energy(&mol_p, obs_basis, aux_basis, op, rpa_config)?;
-            let e_m = rpa_correlation_energy(&mol_m, obs_basis, aux_basis, op, rpa_config)?;
+            let e_p = rpa_total_energy(&mol_p, obs_basis, aux_basis, op, rpa_config)?;
+            let e_m = rpa_total_energy(&mol_m, obs_basis, aux_basis, op, rpa_config)?;
             grad[(atom, coord)] = (e_p - e_m) / (2.0 * h);
         }
     }
@@ -131,9 +95,9 @@ fn apply_displacement(mol: &mut Molecule, atom: usize, coord: usize, h: f64) {
 }
 
 /// Re-solve RHF and re-run PDEP-RPA at a (possibly displaced) geometry and
-/// return only the correlation piece E_c^RPA.  This is the building block
-/// for the FD gradient.
-fn rpa_correlation_energy(
+/// return the TOTAL energy E_RHF + E_c^RPA, the quantity the FD gradient
+/// differences.
+fn rpa_total_energy(
     mol: &Molecule,
     obs_basis: &BasisSet,
     aux_basis: &BasisSet,
@@ -164,9 +128,9 @@ fn rpa_correlation_energy(
     Ok(rhf.energy + r.e_rpa)
 }
 
-/// Convenience: total RPA gradient = analytic RHF gradient + RPA correlation
-/// gradient.  Both pieces use the projection-fixed convention; the result is
-/// suitable for driving geometry optimization.
+/// The RPA total energy at the reference geometry and the full RPA nuclear
+/// gradient (`rpa_correlation_gradient`, a finite difference of the total
+/// energy). Used to drive geometry optimization.
 pub fn total_rpa_gradient(
     mol: &Molecule,
     obs_basis: &BasisSet,
@@ -175,9 +139,6 @@ pub fn total_rpa_gradient(
     rpa_config: &PdepRpaConfig,
     h: f64,
 ) -> Result<(f64, Array2<f64>), FerricError> {
-    // The FD path above re-includes E_HF in the energy at each displacement,
-    // so the returned gradient is dE_total/dR, NOT just dE_c/dR.  Rename for
-    // clarity at call sites.
     let ctx = ParallelContext::default();
     let obs = PreparedBasis::new(mol, obs_basis)?;
     let dfbs = PreparedBasis::new(mol, aux_basis)?;
@@ -253,7 +214,7 @@ mod tests {
     #[test]
     #[ignore] // ~1-2 min runtime
     fn test_rpa_gradient_h2o_ccpvdz_vs_fd() {
-        // Self-consistency check: the projection-fixed FD gradient at h=5e-4 should
+        // Self-consistency check: the FD gradient at h=5e-4 should
         // reproduce itself to round-off at h=2.5e-4 (Richardson convergence).
         let mol = h2o();
         let obs_bs = basis::bundled("cc-pvdz").unwrap();
