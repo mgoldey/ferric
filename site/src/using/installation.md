@@ -95,7 +95,8 @@ The last line should end with `converged  = true` and
 [first calculation](./quickstart.md).
 
 `LIBINT2_PREFIX` is read by `crates/ferric-integrals/build.rs`; unset, it
-defaults to `~/.local`. The install script records the library's absolute path
+defaults to the installer's `~/.local/libint2-2.13.1` when that exists, and to
+`~/.local` otherwise, so the `export` above is optional for the default path. The install script records the library's absolute path
 in every binary that links it, so moving or deleting that directory breaks
 the build's executables until they are rebuilt. A prefix holding a static
 `libint2.a` (a from-source libint2 build) also works, but a library generated
