@@ -72,20 +72,48 @@ fn print_usage() {
     eprintln!("  --no-json       Do not write a run log. Same as `[output] json = false`.");
 }
 
-/// Epistemic-status warnings for `method.kind` values that are graded Smoke
-/// or Stub in `docs/VALIDATION.md` (i.e. NOT Proven / Proven (narrow)).
+/// The `method.kind`s graded Proven or Proven (narrow). They never appear in
+/// [`EPISTEMIC_WARNINGS`] and print no warning.
 ///
-/// SOURCE OF TRUTH: `docs/VALIDATION.md`. This table is a condensed,
-/// CLI-facing pointer into it, not a second grading system -- when a
-/// method's grade in VALIDATION.md changes (promoted to Proven, demoted to
-/// Stub, caveat text edited), update BOTH this table and the doc. Proven /
-/// Proven (narrow) methods (rhf, uhf, rohf, ksdft, rimp2, mp3, att-rimp2,
-/// scs-mp2, scs-mp2-2terfc, laplace-mp2, pdep-rpa, ccsd, ccd, ccsd(t),
-/// linlccd, drpa, linlccd-amplitude) do not appear here and never print a
-/// warning. (`ccd` = the "RI-CCD" row, `ccsd(t)` = the "spin-adapted
-/// closed-shell (T)" row, `drpa`/`linlccd-amplitude` = the "Amplitude-threshold
-/// dRPA/LinLCCD" rows -- all Proven (narrow).)
-const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
+/// The published grades are the Grade column of the `method.kind` matrix on
+/// `site/src/reference/validation.md`; `tests/grades_match_cli_warnings.rs`
+/// checks this list and [`EPISTEMIC_WARNINGS`] against that column. A kind in
+/// neither list is "not graded": it also prints no warning.
+pub const PROVEN_METHOD_KINDS: &[&str] = &[
+    "rhf",
+    "uhf",
+    "rohf",
+    "ksdft",
+    "rimp2",
+    "mp3",
+    "att-rimp2",
+    "scs-mp2",
+    "scs-mp2-2terfc",
+    "laplace-mp2",
+    "pdep-rpa",
+    "ccsd",
+    "ccd",
+    "ccsd(t)",
+    "linlccd",
+    "drpa",
+    "linlccd-amplitude",
+    "tda",
+    "tddft",
+    "oo-rimp2",
+];
+
+/// Epistemic-status warnings for `method.kind` values that are graded Smoke
+/// or Spike (i.e. NOT Proven / Proven (narrow)).
+///
+/// SOURCE OF TRUTH: the Grade column of the `method.kind` matrix on
+/// `site/src/reference/validation.md` (the wiki's `VALIDATION.md` holds the
+/// full record). This table is a condensed, CLI-facing pointer into it, not a
+/// second grading system -- when a method's grade changes, update this table,
+/// [`PROVEN_METHOD_KINDS`] and the page together;
+/// `tests/grades_match_cli_warnings.rs` fails if they disagree. Proven /
+/// Proven (narrow) methods are listed in [`PROVEN_METHOD_KINDS`] and never
+/// print a warning.
+pub const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
     (
         "gw",
         "method.kind = \"gw\" is Smoke-grade (see site/src/reference/validation.md): QP energies \
@@ -131,13 +159,6 @@ const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
          with [mp2] frozen_core = 0 (the default here), is unparameterized extrapolation. \
          Open-shell (multiplicity > 1) is DOUBLY unvalidated: S66 is entirely closed-shell, so no \
          open-shell parameterization exists at all.",
-    ),
-    (
-        "oo-rimp2",
-        "method.kind = \"oo-rimp2\" is Smoke-grade (see site/src/reference/validation.md): orbital \
-         optimization is checked for internal self-consistency (converged stationary point, \
-         analytic gradient vanishes) but there is NO external absolute-energy reference -- \
-         PySCF/psi4/forte all lack a directly comparable OO-MP2 implementation.",
     ),
     (
         "wb97x-l-v",

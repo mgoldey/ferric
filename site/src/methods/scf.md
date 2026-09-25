@@ -4,7 +4,7 @@ Ground-state self-consistent field methods, their nuclear gradients, and the
 things built on them: geometry optimization, harmonic frequencies,
 transition-state search, implicit solvation and dispersion correction. The
 `[scf]` and `[dft]` keys are in [Input file](../reference/input.md#scf);
-grades are on [What is validated](../reference/validation.md).
+grades are on [Capabilities and validation](../reference/validation.md).
 
 ## Hartree–Fock
 
@@ -37,11 +37,13 @@ density Laplacian). The solvers cover RKS, UKS and ROKS.
 
 **Run it.** `method.kind = "ksdft"` with `[dft] functional = "PBE"`
 (`examples/water-wb97xv.toml`, `examples/benzene-dfb3lyp.toml`); Python
-`ferric.run_dft` or `run_ksdft`. Both of these entry points are **closed shell
-(RKS) only**. Open-shell KS is reachable as the reference inside `pdep-rpa`
-and `gw` (`[rpa] xc` with multiplicity > 1), through
-`run_frequencies(reference="uhf", xc=...)`, and through QM/MM
-(`run_qmmm(method="uks")`); see [Capabilities](../reference/capabilities.md).
+`ferric.run_dft` or `run_ksdft`. The two Python entry points are **closed shell
+(RKS) only**. In the CLI, `ksdft` on a molecule with multiplicity > 1 runs UKS,
+and `kind = "uhf"`/`"rohf"` with `[dft] functional` run UKS/ROKS. Open-shell
+KS is also the reference inside `pdep-rpa` and `gw` (`[rpa] xc` with
+multiplicity > 1), and in Python through
+`run_frequencies(reference="uhf", xc=...)` and QM/MM
+(`run_qmmm(method="uks")`); see [Capabilities and validation](../reference/validation.md).
 
 **Defaults.**
 

@@ -27,8 +27,7 @@ What each method family is, how to run it, how accurate it is, what it costs
 and what to cite.
 
 **[Reference →](./reference/validation.md)**
-[What is validated](./reference/validation.md) ·
-[Capabilities](./reference/capabilities.md) ·
+[Capabilities and validation](./reference/validation.md) ·
 [Input file](./reference/input.md) ·
 [Python API](./using/python.md) ·
 [Examples](./reference/examples.md) ·
@@ -49,7 +48,7 @@ and what to cite.
 Working code is not a checked number. These pages describe what exists; how
 far each capability's numbers have been checked against an independent
 reference differs a lot between methods. Each one is graded individually in
-**[What is validated](./reference/validation.md)**. Read it before relying on a
+**[Capabilities and validation](./reference/validation.md)**. Read it before relying on a
 result.
 
 ## The idea

@@ -137,19 +137,14 @@ build the basis themselves for each geometry, so they take its name.
 ## Not everything is on the CLI
 
 The CLI runs the `method.kind`s in the
-[capability matrix](../reference/capabilities.md), with `task` = `energy`,
-`optimize` or `frequencies`. It also has `[qmmm]`, `[cosmo]`,
-`[external_potential]` and `[dft] grid_prune`. These capabilities are
-Python-only:
+[capability matrix](../reference/validation.md#cli-methodkind-matrix), with `task` = `energy`,
+`optimize` or `frequencies`. It also has `[qmmm]`, `[cosmo]`, `[pcm]`,
+`[external_potential]`, `[scf] stability_descent`, `[mp2] att_operator` and
+`[dft] grid_prune`. These capabilities are Python-only:
 
 | Capability | Python | What the CLI has instead |
 |---|---|---|
-| CCD | `run_ccd` | nothing |
-| CCSD(T) | `run_ccsd_t` | `ccsd` (CCSD only, no (T)) |
-| terfc-attenuated MP2 | `run_terfc_rimp2` | `att-rimp2` (erfc form) |
 | Transition-state search, IRC | `run_saddle`, `run_irc` | no `task` for either |
-| IEF-PCM solvation | `run_rhf(solvent=...)`, `run_pdep_rpa(solvent=...)` | no `[pcm]` section; `[cosmo]` is the separate conductor-limit model |
-| Following an unstable SCF solution downhill | `run_uhf(stability_descent=True)` | `[scf] check_stability` reports a saddle and does not follow it |
 | QM/MM MM forces, full-system gradient and optimization, smeared charges, Thole polarization, an MM force field | `run_qmmm`, `run_optimize_qmmm`, `QmmmSystem`, `MmTopology` | `[qmmm]` embeds the QM region in fixed point charges from a PQR file, with link atoms and boundary schemes |
 | Constrained DFT and electron-transfer couplings | `run_cdft`, `CdftConstraint`, `cdft_coupling` | nothing |
 
@@ -208,5 +203,5 @@ its own cgroup, for example with `scripts/ferric-limited -- ferric input.toml`
 
 A method listed on these pages exists and runs. How closely its numbers have
 been checked against an independent reference differs a lot from method to
-method. Look up the grade in [What is validated](../reference/validation.md)
+method. Look up the grade in [Capabilities and validation](../reference/validation.md)
 before relying on a number.

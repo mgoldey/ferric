@@ -35,8 +35,7 @@
 
 # Reference
 
-- [What is validated](./reference/validation.md)
-- [Capabilities](./reference/capabilities.md)
+- [Capabilities and validation](./reference/validation.md)
 - [Input file (TOML)](./reference/input.md)
 - [Python bindings](./using/python.md)
 - [Examples](./reference/examples.md)

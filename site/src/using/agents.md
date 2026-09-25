@@ -40,7 +40,7 @@ source-only (see [Installation](installation.md)).
 
 | You want | Use | Where it's documented |
 |---|---|---|
-| Which methods exist, with which tasks and validation grade | — | [Capabilities](../reference/capabilities.md) |
+| Which methods exist, with which tasks and validation grade | — | [Capabilities and validation](../reference/validation.md) |
 | An energy from a SMILES string | `tools.structure.from_smiles` + `ferric.run_dft` | [Recipes](recipes.md) §0 |
 | An energy from a TOML file | CLI, `method.kind` | [Recipes](recipes.md) §1, [input reference](../reference/input.md) |
 | An ion, radical or metal center | `[molecule] charge`, `multiplicity` (Python: on `Molecule.from_xyz`) | [Recipes](recipes.md) §2 |
@@ -59,8 +59,8 @@ source-only (see [Installation](installation.md)).
 
 **Check the grade.** Not every capability is equally validated. A method being
 available from the CLI doesn't mean its numbers are production-grade. Read its
-row in [Capabilities](../reference/capabilities.md) and
-[What is validated](../reference/validation.md) before quoting a value.
+row in [Capabilities and validation](../reference/validation.md) before
+quoting a value.
 
 **Check convergence, not the exit code.** `converged = true` (CLI) or
 `.converged` (Python) is the signal. A run that hit `max_iter` still prints an

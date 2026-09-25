@@ -1,8 +1,8 @@
 # Methods overview
 
 What exists, grouped by family. **Maturity varies a great deal** between these.
-Check the grade on [Capabilities](../reference/capabilities.md) and the
-anchors on [What is validated](../reference/validation.md) before trusting a
+Check the grade and its anchors on
+[Capabilities and validation](../reference/validation.md) before trusting a
 number. To go from a task to a method, start with
 [Choosing a method](../using/choosing-a-method.md).
 
@@ -36,7 +36,7 @@ Shared machinery underneath all of the above:
 - **Memory budgets**: allocation ceilings that refuse an oversized job with a
   named breakdown instead of letting it be OOM-killed.
 - **Python bindings** (pyo3) and a **TOML-driven CLI**. Not every method has
-  both; [Capabilities](../reference/capabilities.md) says which.
+  both; [Capabilities and validation](../reference/validation.md) says which.
 
 ## Properties
 
@@ -47,7 +47,7 @@ charges, density matrices, and NPZ export of ML-ready features.
 ## Negative results
 
 Known limits and measured negatives are kept in one place,
-[What is validated: known limits](../reference/validation.md#known-limits-and-negatives),
+[Capabilities and validation: known limits](../reference/validation.md#known-limits-and-negatives),
 so a correction has one row to change. Two are worth knowing before you pick a
 method:
 

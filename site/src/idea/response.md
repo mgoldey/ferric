@@ -64,7 +64,7 @@ what comes out of that sum.
 
 The locality premise is therefore partly supported and not yet cashed in as
 cost. Measured limits are kept on
-[What is validated](../reference/validation.md#known-limits-and-negatives).
+[Capabilities and validation](../reference/validation.md#known-limits-and-negatives).
 
 ## Why this framing is useful anyway
 

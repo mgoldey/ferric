@@ -32,3 +32,8 @@ level = 1
 enable = true
 limit-results = 20
 use-boolean-and = true
+
+# Old URLs of merged or renamed pages. Keys are absolute paths from the book
+# root; values resolve relative to the old page's location.
+[output.html.redirect]
+"/reference/capabilities.html" = "validation.html"

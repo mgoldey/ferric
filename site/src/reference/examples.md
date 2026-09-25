@@ -79,7 +79,7 @@ See [The MP2 family](../methods/mp2.md).
 | `water-drpa.toml` | H2O / 6-31G | `drpa` | — | Sets `drpa_reference = true`, so it also computes the canonical plasmon dRPA and prints the threshold error. A comment shows the `drpa_eps_sweep` form. |
 | `water-linlccd-amplitude.toml` | H2O / 6-31G | `linlccd-amplitude` | — | `linlccd_variant = "hh"`, `linlccd_eps = 1e-4`. |
 | `water-mp3.toml` | H2O / cc-pVDZ | `mp3` | — | |
-| `water-oo-rimp2.toml` | H2O / cc-pVDZ | `oo-rimp2` | — | Smoke grade. |
+| `water-oo-rimp2.toml` | H2O / cc-pVDZ | `oo-rimp2` | — | Proven (narrow) grade. |
 | `water-attmp2.toml` | H2O / aug-cc-pVDZ | `att-rimp2` | — | ω = 0.420 Å⁻¹. |
 | `water-attmp2-terfc.toml` | H2O / aug-cc-pVDZ | `att-rimp2` | — | `att_operator = "terfc"`, `att_r0` = 1.05 Å. Needs the terf tables. |
 | `water-scs-mp2.toml` | H2O / cc-pVDZ | `scs-mp2` | — | Grimme coefficients (defaults). |
@@ -139,6 +139,5 @@ See [RPA and GW](../methods/rpa-gw.md).
 | `water-tda.toml` | H2O / cc-pVDZ | `tda` (CIS, 5 roots) | — | Default aux `cc-pvdz-rifit` (an alias of `cc-pvdz-ri`). |
 | `water-tddft-pbe.toml` | H2O / cc-pVDZ | `tddft` @PBE (5 roots) | — | Includes the f_xc kernel. |
 
-See also [Capabilities](./capabilities.md) for the grade of each `kind`,
-[Input reference](./input.md) for every key, and
-[What is validated](./validation.md).
+See also [Capabilities and validation](./validation.md) for the grade of
+each `kind` and its evidence, and [Input reference](./input.md) for every key.
