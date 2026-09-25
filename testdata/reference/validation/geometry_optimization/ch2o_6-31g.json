@@ -1,0 +1,401 @@
+{
+  "row": "Geometry optimization RHF/RKS",
+  "system": "ch2o",
+  "basis": "6-31g",
+  "charge": 0,
+  "multiplicity": 1,
+  "nao": 22,
+  "nuclear_repulsion": 30.773751520590494,
+  "start_geometry_bohr": [
+    [
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      2.3338117638378515,
+      0.0,
+      0.0
+    ],
+    [
+      -1.0260962845622006,
+      1.8511267110255245,
+      0.0
+    ],
+    [
+      -1.1412591614632108,
+      -1.691986278931726,
+      0.11338356747390371
+    ]
+  ],
+  "distances_start_bohr": [
+    [
+      0,
+      1,
+      2.3338117638378515
+    ],
+    [
+      0,
+      2,
+      2.116493251929835
+    ],
+    [
+      0,
+      3,
+      2.0440513386630115
+    ],
+    [
+      1,
+      2,
+      3.8360985641632857
+    ],
+    [
+      1,
+      3,
+      3.866754625954318
+    ],
+    [
+      2,
+      3,
+      3.546796862126873
+    ]
+  ],
+  "angle_triples": [
+    [
+      1,
+      0,
+      2
+    ],
+    [
+      1,
+      0,
+      3
+    ],
+    [
+      2,
+      0,
+      3
+    ]
+  ],
+  "methods": [
+    "rhf",
+    "rks_b3lyp"
+  ],
+  "method_separation_max_distance_bohr": {
+    "rhf_vs_rks_b3lyp": 0.07776554009146208
+  },
+  "conventions": {
+    "distances": "all pairs i<j, [i, j, r_ij in Bohr], atom order as in the xyz",
+    "angles": "[i, vertex, k, degrees]",
+    "gradient": "N x 3 Cartesian, Hartree/Bohr, in the reference's own frame"
+  },
+  "rhf": {
+    "energy_start": -113.80588173330715,
+    "stability_start": null,
+    "energy_opt": -113.80836654235095,
+    "converged": true,
+    "geometry_opt_bohr": [
+      [
+        0.007022060629773309,
+        0.04073957317497969,
+        0.028911259948014325
+      ],
+      [
+        2.292631844432127,
+        -0.022326541225412742,
+        -0.00844157282277171
+      ],
+      [
+        -1.0195732160406943,
+        1.8076200580121604,
+        -0.009231362987013639
+      ],
+      [
+        -1.113624371208752,
+        -1.6668926578679228,
+        0.10214524333567185
+      ]
+    ],
+    "nuclear_repulsion_opt": 31.377290349138757,
+    "distances_opt_bohr": [
+      [
+        0,
+        1,
+        2.2867847849578253
+      ],
+      [
+        0,
+        2,
+        2.0438246914706135
+      ],
+      [
+        0,
+        3,
+        2.0438247180254483
+      ],
+      [
+        1,
+        2,
+        3.784099303989184
+      ],
+      [
+        1,
+        3,
+        3.7840994387712397
+      ],
+      [
+        2,
+        3,
+        3.477569407076844
+      ]
+    ],
+    "angles_opt_deg": [
+      [
+        1,
+        0,
+        2,
+        121.70661490855593
+      ],
+      [
+        1,
+        0,
+        3,
+        121.70662101591418
+      ],
+      [
+        2,
+        0,
+        3,
+        116.58676407552967
+      ]
+    ],
+    "gradient_opt": [
+      [
+        1.1536667621214747e-08,
+        -5.860219115527698e-09,
+        1.2340291816181903e-08
+      ],
+      [
+        1.1918679376776709e-09,
+        1.0069531541923027e-08,
+        -4.246277163222345e-09
+      ],
+      [
+        1.4251695379385865e-09,
+        -1.1957991485900266e-08,
+        -3.869308151660533e-09
+      ],
+      [
+        -1.4153682670325907e-08,
+        7.74868258446304e-09,
+        -4.22470615435433e-09
+      ]
+    ],
+    "max_abs_gradient_opt": 1.4153682670325907e-08,
+    "rms_gradient_opt": 8.55754893633578e-09,
+    "max_distance_change_from_start_bohr": 0.0826551871830783,
+    "stability_end": null,
+    "optimizer": {
+      "driver": "scipy.optimize.minimize(method='BFGS'), Cartesian Bohr",
+      "gtol_inf_norm": 2e-07,
+      "bfgs_rounds": 1,
+      "energy_gradient_evaluations": 17,
+      "final_point_refuse_above_max_abs_gradient": 1e-06
+    }
+  },
+  "rks_b3lyp": {
+    "energy_start": -114.46022817993658,
+    "stability_start": null,
+    "energy_opt": -114.46116882405332,
+    "converged": true,
+    "geometry_opt_bohr": [
+      [
+        0.013314955556029486,
+        0.039785094858178875,
+        0.02834567612654585
+      ],
+      [
+        2.3411527907810648,
+        0.03979158833064352,
+        0.028348769243525078
+      ],
+      [
+        -1.094010188084353,
+        1.8043451668034638,
+        0.028344077618095476
+      ],
+      [
+        -1.0940012407995723,
+        -1.724781417885772,
+        0.02834504448315201
+      ]
+    ],
+    "nuclear_repulsion_opt": 30.806714482340794,
+    "distances_opt_bohr": [
+      [
+        0,
+        1,
+        2.327837835236147
+      ],
+      [
+        0,
+        2,
+        2.0832285571305658
+      ],
+      [
+        0,
+        3,
+        2.0832292568532114
+      ],
+      [
+        1,
+        2,
+        3.861864060617719
+      ],
+      [
+        1,
+        3,
+        3.8618649788627017
+      ],
+      [
+        2,
+        3,
+        3.5291265847007103
+      ]
+    ],
+    "angles_opt_deg": [
+      [
+        1,
+        0,
+        2,
+        122.10959527324238
+      ],
+      [
+        1,
+        0,
+        3,
+        122.10961232772217
+      ],
+      [
+        2,
+        0,
+        3,
+        115.78079239903172
+      ]
+    ],
+    "gradient_opt": [
+      [
+        1.850488136057038e-07,
+        1.6558448285051847e-07,
+        -3.80942543070285e-08
+      ],
+      [
+        -5.056170948591898e-08,
+        1.6293904603333173e-08,
+        1.2627290313179624e-08
+      ],
+      [
+        2.3124546721930983e-10,
+        -1.07362324586191e-07,
+        1.1942414075617763e-08
+      ],
+      [
+        -1.3471835136336097e-07,
+        -7.451606465203042e-08,
+        1.3524549955909572e-08
+      ]
+    ],
+    "max_abs_gradient_opt": 1.850488136057038e-07,
+    "rms_gradient_opt": 9.203614228875103e-08,
+    "max_distance_change_from_start_bohr": 0.03917791819019989,
+    "stability_end": null,
+    "optimizer": {
+      "driver": "scipy.optimize.minimize(method='BFGS'), Cartesian Bohr",
+      "gtol_inf_norm": 2e-07,
+      "bfgs_rounds": 1,
+      "energy_gradient_evaluations": 65,
+      "final_point_refuse_above_max_abs_gradient": 1e-06
+    }
+  },
+  "provenance": {
+    "code": "PySCF + scipy BFGS",
+    "version": "pyscf 2.13.1, scipy 1.17.1",
+    "keywords": {
+      "methods": [
+        "rhf",
+        "rks_b3lyp"
+      ],
+      "xc": {
+        "rks_b3lyp": "B3LYP"
+      },
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09,
+      "max_cycle": 500,
+      "eri": "exact 4-index (no density fitting)",
+      "ks_gradient": "grid_response=True",
+      "optimizer": "scipy BFGS, Cartesian Bohr, gtol (inf-norm) 2e-07, restarted up to 6x; final max|g| <= 1e-06",
+      "why_not_geometric": "geomeTRIC is not installed in the project venv"
+    },
+    "grid": {
+      "atom_grid": [
+        75,
+        110
+      ],
+      "prune": null,
+      "partition": "Becke",
+      "radii_adjust": "becke_atomic_radii_adjust (Becke 1988)"
+    },
+    "aux_basis": "none",
+    "frozen_core": "none",
+    "scf_convergence": {
+      "conv_tol": 1e-12,
+      "conv_tol_grad": 1e-09
+    },
+    "stability": null,
+    "basis": "6-31g",
+    "basis_json": "crates/ferric-core/src/basis/bundled/6-31g.json",
+    "basis_sha256": "1ae9712168e449cee8ee656810f9dc2619083fc9a78f0b8e8dac77c5dbcfa7ef",
+    "ecp_json": "none",
+    "ecp_sha256": "none",
+    "geometry_xyz": "testdata/molecules/validation/ch2o_opt_start.xyz",
+    "geometry_xyz_sha256": "9e6d03e289f1b150faf6fc8d4b9f43d355c76e8e46188b2a4f24f293c2ad6e44",
+    "geometry_bohr": [
+      [
+        "C",
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        "O",
+        2.3338117638378515,
+        0.0,
+        0.0
+      ],
+      [
+        "H",
+        -1.0260962845622006,
+        1.8511267110255245,
+        0.0
+      ],
+      [
+        "H",
+        -1.1412591614632108,
+        -1.691986278931726,
+        0.11338356747390371
+      ]
+    ],
+    "bohr_in_angstrom": 0.52917721092,
+    "generator": "scripts/validation/gen_geometry_optimization.py",
+    "git_head": "a13f2ff5f6a5e27b84118c9ce14864f021232f54",
+    "generated_utc": "2026-09-24T22:02:09+00:00",
+    "basis_like_for_like": {
+      "nao": 22,
+      "replica_self_overlap_max_dev": 4.440892098500626e-16,
+      "pyscf_diag_max_dev": 3.3306690738754696e-16,
+      "diag_checked": 22,
+      "diag_skipped_cartesian": 0
+    },
+    "numpy": "1.26.4"
+  }
+}
