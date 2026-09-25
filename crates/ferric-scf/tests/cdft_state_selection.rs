@@ -822,6 +822,20 @@ struct Row {
     verdict: &'static str,
 }
 
+impl Row {
+    /// The energy moved to first order onto the exact target population:
+    /// E + λ(N_final − N_target) (dE/dN = −λ at a constrained stationary point).
+    /// The λ-Newton loop stops once |N_final − N_target| < `HENE_LAMBDA_TOL`, so
+    /// the raw E carries up to |λ|·1e-5 ≈ 2.8e-5 Ha of termination error at the
+    /// integer target — more than the 1e-5 Ha bar the level assertions use.
+    /// Measured: "unconstrained UHF (pi)" stops at N − 2 = 3.4e-7 under libint2
+    /// 2.7.2 and 9.1e-6 under 2.13.1; the raw energies differ by 2.2e-5 Ha, the
+    /// corrected ones by 1e-8.
+    fn e_at_target(&self) -> f64 {
+        self.e + self.lambda * (self.n_final - self.target)
+    }
+}
+
 fn sweep_guesses_at(sys: &Sys, w: &Array2<f64>, target: f64, guesses: &[Guess]) -> Vec<Row> {
     let h = oneelectron::hcore(&sys.prep);
     let cfg = cfg_with_target(target);
@@ -1110,8 +1124,8 @@ fn state_b_energy_is_multi_valued_across_guesses_at_the_integer_target() {
             .find(|r| r.guess == g)
             .unwrap_or_else(|| panic!("integer-target run for guess {g:?} is missing"))
     };
-    // `driver default` and `hcore` are REQUIRED: they are the path real
-    // callers take, and the finding is stated about them.
+    // `driver default` is REQUIRED: it is the path real callers take, and the
+    // finding is stated about it.
     //
     // `SAD` is checked WHEN PRESENT but not required, because whether the
     // SAD-started lambda-Newton converges at the integer target is
@@ -1126,15 +1140,35 @@ fn state_b_energy_is_multi_valued_across_guesses_at_the_integer_target() {
     // demonstrate. Requiring a third that is not reachable everywhere would
     // assert a property of one CPU's arithmetic, which is exactly the defect
     // this file's `cdft_max_outer` pin exists to avoid.
-    const REQUIRED: [&str; 2] = ["driver default (None)", "hcore (= driver default)"];
-    const OPTIONAL: [&str; 1] = ["SAD"];
+    //
+    // `hcore` is in the same position under libint2 2.13.1: driver default
+    // converges in 10 outer iterations, while the hcore-started run (on
+    // 2.7.2 it took 23) does not converge in 40 there, and `state A` DOES
+    // converge at 2.13.1 where it never did at 2.7.2. Which of these
+    // near-saddle loops finishes under the cap is last-bit arithmetic. What
+    // is required instead: at least two of the three saddle-reaching guesses
+    // converge (the "two independent guesses" of the claim), and every one
+    // that does lands on the measured level.
+    const REQUIRED: [&str; 1] = ["driver default (None)"];
+    const OPTIONAL: [&str; 2] = ["hcore (= driver default)", "SAD"];
+    let n_saddle_guesses = REQUIRED
+        .iter()
+        .chain(OPTIONAL.iter())
+        .filter(|g| integer_rows.iter().any(|r| r.guess == **g))
+        .count();
+    assert!(
+        n_saddle_guesses >= 2,
+        "only {n_saddle_guesses} of driver default / hcore / SAD converged at the \
+         integer target; the claim needs two independent guesses on one level"
+    );
     for g in REQUIRED {
         let r = find(g);
         assert!(
-            (r.e - (-130.402_190_5)).abs() < 1e-5 && (r.lambda - (-2.753_70)).abs() < 1e-3,
+            (r.e_at_target() - (-130.402_190_5)).abs() < 1e-5
+                && (r.lambda - (-2.753_70)).abs() < 1e-3,
             "{g} was measured on the UPPER (saddle) solution E = -130.4021905, \
-             λ = -2.75370; got E = {:.8}, λ = {:+.6}",
-            r.e,
+             λ = -2.75370; got E (at the target) = {:.8}, λ = {:+.6}",
+            r.e_at_target(),
             r.lambda
         );
         assert_eq!(
@@ -1161,11 +1195,12 @@ fn state_b_energy_is_multi_valued_across_guesses_at_the_integer_target() {
             continue;
         };
         assert!(
-            (r.e - (-130.402_190_5)).abs() < 1e-5 && (r.lambda - (-2.753_70)).abs() < 1e-3,
+            (r.e_at_target() - (-130.402_190_5)).abs() < 1e-5
+                && (r.lambda - (-2.753_70)).abs() < 1e-3,
             "{g} converged here, so it must still land on the measured UPPER \
-             (saddle) solution E = -130.4021905, λ = -2.75370; got E = {:.8}, \
-             λ = {:+.6}",
-            r.e,
+             (saddle) solution E = -130.4021905, λ = -2.75370; got E (at the \
+             target) = {:.8}, λ = {:+.6}",
+            r.e_at_target(),
             r.lambda
         );
         assert_eq!(r.verdict, "UNSTABLE");
@@ -1187,10 +1222,11 @@ fn state_b_energy_is_multi_valued_across_guesses_at_the_integer_target() {
     ] {
         let r = find(g);
         assert!(
-            (r.e - (-130.426_706_5)).abs() < 1e-5 && (r.lambda - (-2.439_01)).abs() < 1e-3,
+            (r.e_at_target() - (-130.426_706_5)).abs() < 1e-5
+                && (r.lambda - (-2.439_01)).abs() < 1e-3,
             "{g} was measured on the LOWER solution E = -130.4267065, λ = -2.43901; \
-             got E = {:.8}, λ = {:+.6}",
-            r.e,
+             got E (at the target) = {:.8}, λ = {:+.6}",
+            r.e_at_target(),
             r.lambda
         );
         assert_eq!(
