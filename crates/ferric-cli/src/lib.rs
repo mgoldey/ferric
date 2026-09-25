@@ -125,9 +125,10 @@ pub const EPISTEMIC_WARNINGS: &[(&str, &str)] = &[
     ),
     (
         "bse-tda",
-        "method.kind = \"bse-tda\" is Smoke-grade (see site/src/reference/validation.md): only excitation \
-         ordering and a physicality gate are checked; the excitation-energy gap error is \
-         inherited directly from the underlying GW quasiparticle gap (also Smoke-grade).",
+        "method.kind = \"bse-tda\" is Smoke-grade (see site/src/reference/validation.md): the lowest \
+         five singlets match an independent numpy BSE-TDA to 2e-10 Ha given the same \
+         quasiparticle energies (H2O cc-pVDZ/aug-cc-pVDZ, NH3 and CH2O cc-pVDZ), but those come from the internal G0W0 at the [rpa] settings of this run, which \
+         match PySCF only at n_quad = 100 and trunc_thresh = 0 (the defaults are coarser).",
     ),
     (
         "tdhf-static-polarizability",
