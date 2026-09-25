@@ -54,6 +54,10 @@ ferric-tddft = { path = "../ferric-tddft" }
 # (`PcmConfig::for_solvent` / `with_epsilon` / `with_lebedev_order`), shared
 # with the Python `solvent=` kwarg.
 ferric-pcm = { path = "../ferric-pcm" }
+# `[cell]` periodic runs (src/periodic.rs): the Gamma-point and k-point
+# drivers the Python periodic bindings call. No cycle: ferric-pbc does not
+# depend on ferric-cli.
+ferric-pbc = { path = "../ferric-pbc" }
 toml = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
