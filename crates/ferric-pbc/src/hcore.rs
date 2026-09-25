@@ -938,10 +938,150 @@ pub(crate) fn sr_attraction_gradient(
     d: &Array2<f64>,
     ledger: &mut Ledger,
 ) -> Result<(Array2<f64>, Array2<f64>, usize), FerricError> {
-    cfg.validate()?;
     let natoms = cell.positions().len();
     let mut g_basis = Array2::<f64>::zeros((natoms, 3));
     let mut g_nuc = Array2::<f64>::zeros((natoms, 3));
+    let n_triplets = sr_attraction_deriv_walk(cell, prep, cfg, ledger, |t| {
+        for i in 0..t.dim1 {
+            for j in 0..t.dim2 {
+                let coeff = t.f * d[(t.off1 + i, t.off2 + j)];
+                if coeff == 0.0 {
+                    continue;
+                }
+                let idx = i * t.dim2 + j;
+                let idx_swapped = j * t.dim1 + i;
+                for c in 0..3 {
+                    let d1 = coeff * t.ket_a[c * t.bs + idx_swapped];
+                    let d2 = coeff * t.ket_b[c * t.bs + idx];
+                    g_basis[(t.at1, c)] += d1;
+                    g_basis[(t.at2, c)] += d2;
+                    g_nuc[(t.atc, c)] -= d1 + d2;
+                }
+            }
+        }
+    })?;
+    Ok((g_basis, g_nuc, n_triplets))
+}
+
+/// Strain derivative of the SR nuclear attraction energy `Σ D V_SR` under
+/// `r → (1 + ε) r` (every centre, image and nucleus image scaled; FINDINGS
+/// "Iteration 19"): each triplet `(g_{C,M} | μ_0 ν_L)` depends on its three
+/// centres `A`, `B′ = B + L`, `X = R_C + M`, and by translation invariance
+///
+/// ```text
+/// d/dε_ab = ∂_A,a (A − X)_b + ∂_B′,a (B′ − X)_b
+/// ```
+///
+/// with the two DIRECTLY computed ket blocks of [`sr_attraction_gradient`]
+/// (the nucleus block is never used). Same images, candidates and screen as
+/// the energy. `drop_images` (TEST ONLY, mutation `NoSrImages`) uses the
+/// un-translated `B` and `R_C` in the pair vectors. Returns `(dE/dε, n_triplets)`.
+pub(crate) fn sr_attraction_strain(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicHcoreConfig,
+    d: &Array2<f64>,
+    drop_images: bool,
+    ledger: &mut Ledger,
+) -> Result<([[f64; 3]; 3], usize), FerricError> {
+    let mut out = [[0.0_f64; 3]; 3];
+    let n_triplets = sr_attraction_deriv_walk(cell, prep, cfg, ledger, |t| {
+        let (bb, xx) = if drop_images {
+            (
+                [
+                    t.b_image[0] - t.l[0],
+                    t.b_image[1] - t.l[1],
+                    t.b_image[2] - t.l[2],
+                ],
+                [
+                    t.nucleus[0] - t.m[0],
+                    t.nucleus[1] - t.m[1],
+                    t.nucleus[2] - t.m[2],
+                ],
+            )
+        } else {
+            (t.b_image, t.nucleus)
+        };
+        let ra = [
+            t.a_center[0] - xx[0],
+            t.a_center[1] - xx[1],
+            t.a_center[2] - xx[2],
+        ];
+        let rb = [bb[0] - xx[0], bb[1] - xx[1], bb[2] - xx[2]];
+        let mut ga = [0.0_f64; 3];
+        let mut gb = [0.0_f64; 3];
+        for i in 0..t.dim1 {
+            for j in 0..t.dim2 {
+                let coeff = t.f * d[(t.off1 + i, t.off2 + j)];
+                if coeff == 0.0 {
+                    continue;
+                }
+                let idx = i * t.dim2 + j;
+                let idx_swapped = j * t.dim1 + i;
+                for c in 0..3 {
+                    ga[c] += coeff * t.ket_a[c * t.bs + idx_swapped];
+                    gb[c] += coeff * t.ket_b[c * t.bs + idx];
+                }
+            }
+        }
+        for a in 0..3 {
+            for b in 0..3 {
+                out[a][b] += ga[a] * ra[b] + gb[a] * rb[b];
+            }
+        }
+    })?;
+    Ok((out, n_triplets))
+}
+
+/// One kept SR attraction triplet `(g_{C,M} | μ_0 ν_L)` of
+/// [`sr_attraction_deriv_walk`], with its two directly computed ket blocks.
+pub(crate) struct SrDerivTriplet<'a> {
+    /// AO offset / count of the bra (μ) and ket (ν) shells.
+    pub(crate) off1: usize,
+    pub(crate) dim1: usize,
+    pub(crate) off2: usize,
+    pub(crate) dim2: usize,
+    /// `dim1 · dim2`.
+    pub(crate) bs: usize,
+    /// Cell atoms of the bra shell, the ket shell and the nucleus.
+    pub(crate) at1: usize,
+    pub(crate) at2: usize,
+    pub(crate) atc: usize,
+    /// `A`, `B + L`, `R_C + M` (Bohr) and the translations `L`, `M`.
+    pub(crate) a_center: [f64; 3],
+    pub(crate) b_image: [f64; 3],
+    pub(crate) nucleus: [f64; 3],
+    pub(crate) l: [f64; 3],
+    pub(crate) m: [f64; 3],
+    /// `−Z_C / ∫g_C`.
+    pub(crate) f: f64,
+    /// `d/dA` block from the swapped call, `[c · bs + j · dim1 + i]`.
+    pub(crate) ket_a: &'a [f64],
+    /// `d/d(B + L)` block, `[c · bs + i · dim2 + j]`.
+    pub(crate) ket_b: &'a [f64],
+}
+
+/// The SR attraction derivative walk shared by [`sr_attraction_gradient`]
+/// and [`sr_attraction_strain`]: exactly [`periodic_hcore`]'s pair images,
+/// nucleus candidates and per-triplet screen at `cfg`, with libint2's two
+/// directly computed ket blocks per triplet (the bra block of a 3-centre
+/// derivative is built from translation invariance, `−(site + sh2)`, and its
+/// site derivative is wrong for the ~1e16 Gaussian nucleus; the ket block of
+/// `(i1 | i2)` gives `d/dB`, and the ket block of the swapped call
+/// `(i2 shifted by L | i1)` gives `d/dA`. Measured: the sh1 block cost
+/// −0.041 Ha/Bohr on H2, FINDINGS "Iteration 16" Rust note). Returns the
+/// triplet count.
+fn sr_attraction_deriv_walk<F>(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    cfg: &PeriodicHcoreConfig,
+    ledger: &mut Ledger,
+    mut visit: F,
+) -> Result<usize, FerricError>
+where
+    F: FnMut(&SrDerivTriplet<'_>),
+{
+    cfg.validate()?;
     let shells = prim_shells(cell, prep)?;
     let thresh = cfg.precision;
     let pair_thresh = 0.1 * thresh;
@@ -949,7 +1089,7 @@ pub(crate) fn sr_attraction_gradient(
     let rpair = pair_radius(&shells, pair_thresh);
     let (nuc, zmax) = nonzero_nuclei(cell);
     if nuc.is_empty() {
-        return Ok((g_basis, g_nuc, 0));
+        return Ok(0);
     }
     // nonzero_nuclei keeps the cell order of the Z != 0 atoms.
     let nuc_atom: Vec<usize> = cell
@@ -994,13 +1134,6 @@ pub(crate) fn sr_attraction_gradient(
                     }
                     n_triplets += 1;
                     let f = -nuc[*k].0 / site.norm_int[*k];
-                    // libint2 builds the BRA (sh1) block of a 3-centre derivative
-                    // from translation invariance, -(site + sh2), and its site
-                    // derivative is wrong for the ~1e16 Gaussian nucleus. So only
-                    // DIRECTLY computed ket (sh2) blocks are used: the ket block of
-                    // (i1 | i2) gives d/dB, and the ket block of the swapped call
-                    // (i2 shifted by L | i1) gives d/dA. Measured: the sh1 block cost
-                    // -0.041 Ha/Bohr on H2 (FINDINGS "Iteration 16" Rust note).
                     let Some(blk) = eng.compute_eri3_deriv_shifted(
                         prep,
                         &site.prep,
@@ -1026,29 +1159,29 @@ pub(crate) fn sr_attraction_gradient(
                         continue;
                     };
                     let ket_a: &[f64] = &blk2[6 * bs..9 * bs];
-                    let atc = nuc_atom[*k];
-                    for i in 0..a.dim {
-                        for j in 0..b.dim {
-                            let coeff = f * d[(a.off + i, b.off + j)];
-                            if coeff == 0.0 {
-                                continue;
-                            }
-                            let idx = i * b.dim + j;
-                            let idx_swapped = j * a.dim + i;
-                            for c in 0..3 {
-                                let d1 = coeff * ket_a[c * bs + idx_swapped];
-                                let d2 = coeff * ket_b[c * bs + idx];
-                                g_basis[(at1, c)] += d1;
-                                g_basis[(at2, c)] += d2;
-                                g_nuc[(atc, c)] -= d1 + d2;
-                            }
-                        }
-                    }
+                    visit(&SrDerivTriplet {
+                        off1: a.off,
+                        dim1: a.dim,
+                        off2: b.off,
+                        dim2: b.dim,
+                        bs,
+                        at1,
+                        at2,
+                        atc: nuc_atom[*k],
+                        a_center: a.center,
+                        b_image: bc,
+                        nucleus: *x,
+                        l: *l,
+                        m: *m,
+                        f,
+                        ket_a,
+                        ket_b: &ket_b,
+                    });
                 }
             }
         }
     }
-    Ok((g_basis, g_nuc, n_triplets))
+    Ok(n_triplets)
 }
 
 fn pair_radius(shells: &[PrimShell], pair_thresh: f64) -> f64 {

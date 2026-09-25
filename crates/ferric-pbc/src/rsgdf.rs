@@ -117,6 +117,7 @@ use std::f64::consts::PI;
 
 pub(crate) mod deriv;
 pub mod kpoint;
+pub(crate) mod strain;
 
 pub use deriv::RsGdfFitDiagnostics;
 
@@ -530,16 +531,34 @@ pub fn subtract_g0(
 
 /// Enumerates lattice vectors `T` with `|T − x0| <= r` by an integer box:
 /// `T·b_j = 2π n_j`, so `|n_j − x0·b_j/2π| <= r |b_j|/2π`.
+///
+/// For a strained cell ([`Cell::strained`]) the selection is made in the
+/// REFERENCE frame (`x0` mapped by fractional coordinates, distances in the
+/// reference lattice) and the selected `T` is built from the strained
+/// lattice — the frozen-index convention of `crate::lattice`, so the SR walks
+/// do not re-select images under strain.
 struct LatticeWalker {
+    /// Selection lattice (the reference's for a strained cell).
     a: [[f64; 3]; 3],
     b: [[f64; 3]; 3],
+    /// The strained cell itself when its index sets are frozen (`None`: the
+    /// selection lattice IS the output lattice, bit for bit as before).
+    frozen: Option<Cell>,
 }
 
 impl LatticeWalker {
     fn new(cell: &Cell) -> Self {
-        Self {
-            a: *cell.lattice(),
-            b: cell.reciprocal(),
+        match cell.index_reference() {
+            None => Self {
+                a: *cell.lattice(),
+                b: cell.reciprocal(),
+                frozen: None,
+            },
+            Some(r) => Self {
+                a: *r.lattice(),
+                b: r.reciprocal(),
+                frozen: Some(cell.clone()),
+            },
         }
     }
 
@@ -552,6 +571,10 @@ impl LatticeWalker {
                 "RsGdf lattice walk: bad centre {x0:?} / radius {r}"
             )));
         }
+        let x0 = match &self.frozen {
+            Some(c) => c.to_index_frame(x0),
+            None => x0,
+        };
         let tp = 2.0 * PI;
         let mut lo = [0i64; 3];
         let mut hi = [0i64; 3];
@@ -587,7 +610,10 @@ impl LatticeWalker {
                     ];
                     let d = [t[0] - x0[0], t[1] - x0[1], t[2] - x0[2]];
                     if dot3(&d, &d) <= r2 {
-                        f(t)?;
+                        match &self.frozen {
+                            None => f(t)?,
+                            Some(c) => f(c.translation_from_index([n0, n1, n2]))?,
+                        }
                     }
                 }
             }

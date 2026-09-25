@@ -93,7 +93,16 @@
 //!   `RsGdf::build_for_gradient`): fitted 3-index density against the SR/LR
 //!   3-centre derivatives (orbital and aux centre), Loewner-form metric
 //!   weight against the SR/LR metric derivative, J3's G = 0 term through
-//!   `dS`; FINDINGS "Iteration 18". Stress is out of scope.
+//!   `dS`; FINDINGS "Iteration 18".
+//! * [`stress`] — the Gamma-point stress tensor `σ = (1/Ω) dE/dε` of the
+//!   same eight energies (`gamma_{rhf,uhf,rks,uks}_stress[_rsgdf]`): the
+//!   force derivative blocks contracted with image-resolved pair vectors,
+//!   the pair-FT / aux-FT G-shape strain at fixed Miller index, the Ω and
+//!   `|G|` dependence of every reciprocal kernel, Ewald / Madelung / c0 volume
+//!   terms, the per-image grid-weight strain and AO first moments for KS, and
+//!   the RS-GDF metric G = 0 strain term; strained cells with FROZEN index
+//!   sets ([`Cell::strained`]) make the energy it differentiates smooth.
+//!   FINDINGS "Iteration 19".
 //! * [`lindep`] — per-k canonical-cut diagnostics (`LindepReport` on
 //!   `KScfResult`/`KUScfResult`: kept counts, smallest / largest-dropped
 //!   eigenvalue, noise-floor flag) and the OPT-IN `exp_to_discard` basis
@@ -124,6 +133,7 @@ pub mod mp2;
 pub mod pair_ft;
 pub mod rohf;
 pub mod rsgdf;
+pub mod stress;
 pub mod ucorr;
 pub mod uhf;
 
@@ -180,6 +190,11 @@ pub use rohf::{
 };
 pub use rsgdf::kpoint::{KRsGdf, KRsGdfConfig, KRsGdfJk, KRsGdfQStats, KRsGdfStats};
 pub use rsgdf::{PeriodicFitParts, RsGdf, RsGdfConfig, RsGdfFitDiagnostics};
+pub use stress::{
+    gamma_rhf_stress, gamma_rhf_stress_rsgdf, gamma_rks_stress, gamma_rks_stress_rsgdf,
+    gamma_uhf_stress, gamma_uhf_stress_rsgdf, gamma_uks_stress, gamma_uks_stress_rsgdf,
+    GammaStress, GammaStressConfig, GammaStressParts,
+};
 pub use ucorr::{gamma_ump2, gamma_urpa, GammaUmp2Result, GammaUrpaResult};
 pub use uhf::{
     gamma_uhf, occupation_gaps, EwaldStart, GammaUhfConfig, GammaUhfIntegrals, GammaUhfResult,

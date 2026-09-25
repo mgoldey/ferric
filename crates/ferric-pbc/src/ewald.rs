@@ -311,3 +311,211 @@ pub fn ewald_nuclear_gradient(cell: &Cell, omega: f64) -> Result<Vec<[f64; 3]>, 
         .map(|(a, b)| [a[0] + b[0], a[1] + b[1], a[2] + b[2]])
         .collect())
 }
+
+// ---------------------------------------------------------------------------
+// Strain derivative (the Gamma stress, `crate::stress`).
+// ---------------------------------------------------------------------------
+
+/// `dE/dε_ij` (Hartree, NOT divided by Ω) of an Ewald energy under the
+/// homogeneous strain `r → (1 + ε) r` of the lattice and the charges (fixed
+/// fractional coordinates), by part:
+///
+/// ```text
+/// SR:          ½ Σ'_{i,j,L} Z_i Z_j f'(d) d_a d_b / d,   d = R_i − R_j − L,
+///              f'(d) = −[erfc(ωd)/d² + (2ω/√π) e^{−ω²d²}/d]
+/// LR:          −δ_ab E_LR + (2π/Ω) Σ_{G≠0} |S(G)|² k'(G²) (−2 G_a G_b),
+///              k = e^{−G²/4ω²}/G²,  k' = −k (1/4ω² + 1/G²)
+/// background:  −δ_ab E_G0   (E_G0 = −π (Σ Z)²/(2Ωω²) ∝ 1/Ω)
+/// self:        0
+/// ```
+///
+/// (`G → (1 + ε)^{−T} G` at fixed Miller index, so `dG²/dε_ab = −2 G_a G_b`;
+/// `dΩ/dε_ab = Ω δ_ab`; `S(G) = Σ Z e^{−iG·R}` is strain-invariant.) Every
+/// part is ω-independent in total, not separately.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct EwaldStrainParts {
+    /// Real-space (erfc) part.
+    pub sr: [[f64; 3]; 3],
+    /// Reciprocal-space part including its `−δ E_LR` volume term.
+    pub lr: [[f64; 3]; 3],
+    /// Neutralising-background (G = 0) volume term.
+    pub background: [[f64; 3]; 3],
+}
+
+impl EwaldStrainParts {
+    /// `sr + lr + background`.
+    pub fn total(&self) -> [[f64; 3]; 3] {
+        let mut t = [[0.0; 3]; 3];
+        for (a, row) in t.iter_mut().enumerate() {
+            for (b, v) in row.iter_mut().enumerate() {
+                *v = self.sr[a][b] + self.lr[a][b] + self.background[a][b];
+            }
+        }
+        t
+    }
+}
+
+/// [`EwaldStrainParts`] of [`ewald_point_charges`] with the same cutoffs
+/// (`precision`) and Neumaier sums. Errors as [`ewald_point_charges`].
+pub fn ewald_point_charges_strain(
+    cell: &Cell,
+    charges: &[f64],
+    positions: &[[f64; 3]],
+    omega: f64,
+    precision: f64,
+) -> Result<EwaldStrainParts, FerricError> {
+    if !(omega > 0.0) || !omega.is_finite() {
+        return Err(FerricError::General(format!(
+            "ewald strain: omega must be finite and > 0, got {omega}"
+        )));
+    }
+    if !(f64::MIN_POSITIVE..1.0).contains(&precision) {
+        return Err(FerricError::General(format!(
+            "ewald strain: precision must lie in (0, 1), got {precision}"
+        )));
+    }
+    if charges.len() != positions.len() || charges.is_empty() {
+        return Err(FerricError::General(format!(
+            "ewald strain: {} charges vs {} positions (need equal, non-zero)",
+            charges.len(),
+            positions.len()
+        )));
+    }
+    let s = (1.0 / precision).ln().sqrt() + 1.0;
+    let rcut = s / omega;
+    let gcut = 2.0 * omega * s;
+    let two_w_sqrtpi = 2.0 * omega / std::f64::consts::PI.sqrt();
+    let new9 = || -> [[Neumaier; 3]; 3] { Default::default() };
+    let fold9 = |v: &[[Neumaier; 3]; 3]| -> [[f64; 3]; 3] {
+        let mut o = [[0.0; 3]; 3];
+        for a in 0..3 {
+            for b in 0..3 {
+                o[a][b] = v[a][b].value();
+            }
+        }
+        o
+    };
+
+    // --- SR.
+    let mut sr = new9();
+    for l in cell.translations_for(positions, rcut)? {
+        let l_is_zero = l == [0.0; 3];
+        for (i, (zi, ri)) in charges.iter().zip(positions).enumerate() {
+            for (j, (zj, rj)) in charges.iter().zip(positions).enumerate() {
+                if *zi == 0.0 || *zj == 0.0 {
+                    continue;
+                }
+                let dv = [
+                    ri[0] - rj[0] - l[0],
+                    ri[1] - rj[1] - l[1],
+                    ri[2] - rj[2] - l[2],
+                ];
+                let d = (dv[0] * dv[0] + dv[1] * dv[1] + dv[2] * dv[2]).sqrt();
+                if d < 1e-10 {
+                    if l_is_zero && i == j {
+                        continue;
+                    }
+                    return Err(FerricError::General(format!(
+                        "ewald strain: charges {i} and {j} coincide (under translation {l:?})"
+                    )));
+                }
+                let fp = -(erfc(omega * d) / (d * d)
+                    + two_w_sqrtpi * (-(omega * d) * (omega * d)).exp() / d);
+                let f = 0.5 * zi * zj * fp / d;
+                for a in 0..3 {
+                    for b in 0..3 {
+                        sr[a][b].add(f * dv[a] * dv[b]);
+                    }
+                }
+            }
+        }
+    }
+
+    // --- LR.
+    let vol = cell.volume();
+    let tp_vol = 2.0 * std::f64::consts::PI / vol;
+    let mut e_lr = Neumaier::default();
+    let mut lr_g = new9();
+    for g in cell.gvectors(gcut)? {
+        let g2 = g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
+        if g2 < 1e-24 {
+            continue;
+        }
+        let (mut re, mut im) = (0.0_f64, 0.0_f64);
+        for (z, r) in charges.iter().zip(positions) {
+            let ph = g[0] * r[0] + g[1] * r[1] + g[2] * r[2];
+            re += z * ph.cos();
+            im -= z * ph.sin();
+        }
+        let s2 = re * re + im * im;
+        let k = (-g2 / (4.0 * omega * omega)).exp() / g2;
+        e_lr.add(k * s2);
+        let kp = -k * (1.0 / (4.0 * omega * omega) + 1.0 / g2);
+        let f = s2 * kp * -2.0;
+        for a in 0..3 {
+            for b in 0..3 {
+                lr_g[a][b].add(f * g[a] * g[b]);
+            }
+        }
+    }
+    let e_lr = tp_vol * e_lr.value();
+    let mut lr = fold9(&lr_g);
+    for (a, row) in lr.iter_mut().enumerate() {
+        for v in row.iter_mut() {
+            *v *= tp_vol;
+        }
+        row[a] -= e_lr;
+    }
+
+    // --- background.
+    let zsum: f64 = charges.iter().sum();
+    let e_g0 = -std::f64::consts::PI * zsum * zsum / (2.0 * vol * omega * omega);
+    let mut background = [[0.0; 3]; 3];
+    for (a, row) in background.iter_mut().enumerate() {
+        row[a] = -e_g0;
+    }
+    Ok(EwaldStrainParts {
+        sr: fold9(&sr),
+        lr,
+        background,
+    })
+}
+
+/// [`ewald_point_charges_strain`] of the cell's nuclei (charges
+/// `Atom::effective_z`) at `precision`: the strain derivative of
+/// [`ewald_nuclear_repulsion_with_precision`].
+pub fn ewald_nuclear_strain(
+    cell: &Cell,
+    omega: f64,
+    precision: f64,
+) -> Result<EwaldStrainParts, FerricError> {
+    ewald_point_charges_strain(
+        cell,
+        &cell.nuclear_charges(),
+        &cell.positions(),
+        omega,
+        precision,
+    )
+}
+
+/// `dv_M/dε_ij` of [`madelung_constant`] (`v_M = −2 E_ewald(one unit
+/// charge)`, so `dv_M/dε = −2 ×` its [`EwaldStrainParts::total`]). By Euler
+/// homogeneity (`v_M` is degree −1 in lengths) `tr dv_M/dε = −v_M` — asserted
+/// in `tests/pbc_stress.rs`.
+pub fn madelung_strain(cell: &Cell) -> Result<[[f64; 3]; 3], FerricError> {
+    let p = ewald_point_charges_strain(
+        cell,
+        &[1.0],
+        &[[0.0; 3]],
+        default_ewald_omega(cell),
+        DEFAULT_EWALD_PRECISION,
+    )?
+    .total();
+    let mut out = [[0.0; 3]; 3];
+    for a in 0..3 {
+        for b in 0..3 {
+            out[a][b] = -2.0 * p[a][b];
+        }
+    }
+    Ok(out)
+}

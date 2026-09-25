@@ -8,9 +8,27 @@
 //! * A lattice translation is `L = Σ_i n_i a_i` with integer `n_i`.
 //! * Atom positions are taken from the molecule as given (they need not be
 //!   wrapped into the cell).
+//!
+//! # Frozen index sets (strained cells, the Gamma stress)
+//!
+//! Every truncated lattice set — the G sphere `|G| <= gcut` and every image
+//! list `translations(rcut)` — is chosen by distance. Under a homogeneous
+//! strain `r → (1 + ε) r` of the lattice rows AND the atoms, re-selecting the
+//! sets at each strain makes `E(ε)` piecewise (a G vector crossing the sphere
+//! is a jump; FINDINGS "Iteration 19" (g): 3e-6..7.6e-6 Ha at an unconverged
+//! gcut, i.e. an FD "stress" error of jump/2h). [`Cell::strained`] returns a
+//! cell that carries its REFERENCE cell: every enumeration then selects the
+//! integer triples (Miller indices `n` with `G = Σ n_i b_i`, lattice indices
+//! with `L = Σ n_i a_i`) exactly as the reference cell would — distances
+//! measured in the reference frame, with the query points mapped to the
+//! reference by their fractional coordinates — and returns them built from
+//! the STRAINED `a`/`b`. The energy of a strained cell is then a smooth
+//! function of ε, and [`crate::stress`] is its exact derivative. An unstrained
+//! cell (`Cell::new`) selects in its own frame, bit for bit as before.
 
 use ferric_core::mol::Molecule;
 use ferric_core::FerricError;
+use std::sync::Arc;
 
 /// Hard cap on the number of integer triples a single lattice enumeration may
 /// visit. A cutoff that would exceed it is a caller error (or a nearly
@@ -25,6 +43,11 @@ pub struct Cell {
     /// `A⁻¹` where `A` has the lattice vectors as rows.
     inv: [[f64; 3]; 3],
     volume: f64,
+    /// The reference cell whose integer index sets every enumeration reuses
+    /// (module doc, "Frozen index sets"); `None` for an ordinary cell. Never
+    /// itself frozen (a strain of a strained cell keeps the ORIGINAL
+    /// reference).
+    frozen: Option<Arc<Cell>>,
 }
 
 fn dot(a: &[f64; 3], b: &[f64; 3]) -> f64 {
@@ -87,7 +110,88 @@ impl Cell {
             lattice,
             inv,
             volume: det.abs(),
+            frozen: None,
         })
+    }
+
+    /// The homogeneously strained cell `r → (1 + ε) r`: lattice rows
+    /// `a_i → (1 + ε) a_i` and every atom `R_A → (1 + ε) R_A` (fixed
+    /// fractional coordinates), with every G sphere and image list FROZEN as
+    /// integer indices at the reference cell (module doc). `eps[i][j]` is
+    /// `ε_ij` (`F = 1 + ε`, `x'_i = Σ_j F_ij x_j`). The reference is `self`,
+    /// or `self`'s own reference if `self` is already strained, so strains
+    /// compose without re-selecting anything.
+    ///
+    /// Errors when the strained lattice is degenerate (as [`Cell::new`]).
+    pub fn strained(&self, eps: &[[f64; 3]; 3]) -> Result<Cell, FerricError> {
+        if eps.iter().flatten().any(|v| !v.is_finite()) {
+            return Err(FerricError::General(format!(
+                "Cell::strained: non-finite strain {eps:?}"
+            )));
+        }
+        let apply = |v: [f64; 3]| -> [f64; 3] {
+            let mut out = [0.0; 3];
+            for (i, o) in out.iter_mut().enumerate() {
+                *o = v[i] + eps[i][0] * v[0] + eps[i][1] * v[1] + eps[i][2] * v[2];
+            }
+            out
+        };
+        let lattice = [
+            apply(self.lattice[0]),
+            apply(self.lattice[1]),
+            apply(self.lattice[2]),
+        ];
+        let mut mol = self.mol.clone();
+        for a in &mut mol.atoms {
+            let r = apply([a.x, a.y, a.zpos]);
+            a.x = r[0];
+            a.y = r[1];
+            a.zpos = r[2];
+        }
+        let mut c = Cell::new(mol, lattice)?;
+        c.frozen = Some(match &self.frozen {
+            Some(r) => Arc::clone(r),
+            None => Arc::new(self.clone()),
+        });
+        Ok(c)
+    }
+
+    /// The reference cell whose index sets this (strained) cell reuses;
+    /// `None` for a cell built with [`Cell::new`].
+    pub fn index_reference(&self) -> Option<&Cell> {
+        self.frozen.as_deref()
+    }
+
+    /// `x` (Bohr) mapped to the index-selection frame: the point with the
+    /// same fractional coordinates in the reference lattice (identity for an
+    /// ordinary cell).
+    pub fn to_index_frame(&self, x: [f64; 3]) -> [f64; 3] {
+        match &self.frozen {
+            None => x,
+            Some(r) => {
+                let f = self.fractional(x);
+                frac_to_cart(&r.lattice, f)
+            }
+        }
+    }
+
+    /// Fractional coordinates `f` of `x` (`x = Σ_i f_i a_i`).
+    pub fn fractional(&self, x: [f64; 3]) -> [f64; 3] {
+        let mut f = [0.0; 3];
+        for (c, fc) in f.iter_mut().enumerate() {
+            *fc = x[0] * self.inv[0][c] + x[1] * self.inv[1][c] + x[2] * self.inv[2][c];
+        }
+        f
+    }
+
+    /// The lattice translation `L = Σ_i n_i a_i` of an integer index triple.
+    pub fn translation_from_index(&self, n: [i64; 3]) -> [f64; 3] {
+        index_combination(&self.lattice, n)
+    }
+
+    /// The reciprocal-lattice vector `G = Σ_i n_i b_i` of a Miller index.
+    pub fn gvector_from_index(&self, n: [i64; 3]) -> [f64; 3] {
+        index_combination(&self.reciprocal(), n)
     }
 
     /// The reference-cell molecule (unchanged from construction).
@@ -153,6 +257,22 @@ impl Cell {
         self.translations_for(&self.positions(), rcut)
     }
 
+    /// Integer indices `n` of [`Cell::translations`] (`L = Σ n_i a_i`), in
+    /// the same order. For a strained cell they are the REFERENCE cell's
+    /// selection (module doc).
+    pub fn translation_indices(&self, rcut: f64) -> Result<Vec<[i64; 3]>, FerricError> {
+        self.translation_indices_for(&self.positions(), rcut)
+    }
+
+    /// Miller indices `n` of [`Cell::gvectors`] (`G = Σ n_i b_i`), in the same
+    /// order. For a strained cell they are the REFERENCE cell's selection.
+    pub fn gvector_indices(&self, gcut: f64) -> Result<Vec<[i64; 3]>, FerricError> {
+        match &self.frozen {
+            None => self.select_gvector_indices(gcut),
+            Some(r) => r.select_gvector_indices(gcut),
+        }
+    }
+
     /// Upper bound on `self.translations(rcut).len()`: the number of integer
     /// triples the enumeration visits (the returned list is the subset within
     /// `rcut`). Memory gates size the translation list with it BEFORE the
@@ -163,7 +283,17 @@ impl Cell {
                 "Cell::translations: rcut must be finite and >= 0, got {rcut}"
             )));
         }
-        Ok(self.translation_box(&self.positions(), rcut)?.1)
+        match &self.frozen {
+            None => Ok(self.translation_box(&self.positions(), rcut)?.1),
+            Some(r) => {
+                let pos: Vec<[f64; 3]> = self
+                    .positions()
+                    .iter()
+                    .map(|p| self.to_index_frame(*p))
+                    .collect();
+                Ok(r.translation_box(&pos, rcut)?.1)
+            }
+        }
     }
 
     /// Enumeration box `|n_j| <= nmax[j]` of [`Cell::translations_for`] and
@@ -207,6 +337,39 @@ impl Cell {
         pos: &[[f64; 3]],
         rcut: f64,
     ) -> Result<Vec<[f64; 3]>, FerricError> {
+        Ok(self
+            .translation_indices_for(pos, rcut)?
+            .into_iter()
+            .map(|n| self.translation_from_index(n))
+            .collect())
+    }
+
+    /// Indices of [`Cell::translations_for`]: selected in this cell's own
+    /// frame, or (strained cell) in the reference frame with `pos` mapped by
+    /// fractional coordinates.
+    pub(crate) fn translation_indices_for(
+        &self,
+        pos: &[[f64; 3]],
+        rcut: f64,
+    ) -> Result<Vec<[i64; 3]>, FerricError> {
+        match &self.frozen {
+            None => self.select_translation_indices(pos, rcut),
+            Some(r) => {
+                let pr: Vec<[f64; 3]> = pos.iter().map(|p| self.to_index_frame(*p)).collect();
+                r.select_translation_indices(&pr, rcut)
+            }
+        }
+    }
+
+    /// The distance selection itself, in THIS cell's frame (never the
+    /// reference's): every `n` in the enumeration box whose image is within
+    /// `rcut` (minimum point–point distance), sorted by `|L|` ascending with
+    /// the exact zero triple first (stable sort over the box order).
+    fn select_translation_indices(
+        &self,
+        pos: &[[f64; 3]],
+        rcut: f64,
+    ) -> Result<Vec<[i64; 3]>, FerricError> {
         if !(rcut >= 0.0) || !rcut.is_finite() {
             return Err(FerricError::General(format!(
                 "Cell::translations: rcut must be finite and >= 0, got {rcut}"
@@ -218,17 +381,12 @@ impl Cell {
             ));
         }
         let (nmax, _) = self.translation_box(pos, rcut)?;
-        let a = &self.lattice;
-        let mut out: Vec<[f64; 3]> = Vec::new();
+        let mut out: Vec<([i64; 3], f64)> = Vec::new();
         for n0 in -nmax[0]..=nmax[0] {
             for n1 in -nmax[1]..=nmax[1] {
                 for n2 in -nmax[2]..=nmax[2] {
-                    let (f0, f1, f2) = (n0 as f64, n1 as f64, n2 as f64);
-                    let l = [
-                        f0 * a[0][0] + f1 * a[1][0] + f2 * a[2][0],
-                        f0 * a[0][1] + f1 * a[1][1] + f2 * a[2][1],
-                        f0 * a[0][2] + f1 * a[1][2] + f2 * a[2][2],
-                    ];
+                    let n = [n0, n1, n2];
+                    let l = self.translation_from_index(n);
                     let zero = n0 == 0 && n1 == 0 && n2 == 0;
                     let mut dmin = f64::INFINITY;
                     for p in pos {
@@ -239,16 +397,16 @@ impl Cell {
                     }
                     if zero {
                         // Exactly zero vector first after the sort below.
-                        out.push([0.0; 3]);
+                        out.push((n, 0.0));
                     } else if dmin <= rcut {
-                        out.push(l);
+                        out.push((n, norm(&l)));
                     }
                 }
             }
         }
         // Stable sort by |L|; the exact zero vector is the unique minimum.
-        out.sort_by(|x, y| norm(x).total_cmp(&norm(y)));
-        Ok(out)
+        out.sort_by(|x, y| x.1.total_cmp(&y.1));
+        Ok(out.into_iter().map(|(n, _)| n).collect())
     }
 
     /// Upper bound on `self.gvectors(gcut).len()` (the enumeration box's
@@ -260,7 +418,10 @@ impl Cell {
                 "Cell::gvectors: gcut must be finite and >= 0, got {gcut}"
             )));
         }
-        Ok(self.gvector_box(gcut)?.1)
+        match &self.frozen {
+            None => Ok(self.gvector_box(gcut)?.1),
+            Some(r) => Ok(r.gvector_box(gcut)?.1),
+        }
     }
 
     /// Enumeration box `|n_i| <= nmax[i]` of [`Cell::gvectors`] and its
@@ -291,7 +452,20 @@ impl Cell {
     /// (Bohr⁻¹), INCLUDING `G = 0` (callers filter it). Sorted by `|G|`
     /// ascending, so `G = 0` is first. Port of `pbc_gamma.Cell.gvectors`:
     /// `G · a_i = 2π n_i` gives the exact bound `|n_i| <= gcut |a_i| / 2π`.
+    /// A strained cell returns the reference cell's Miller indices built from
+    /// its own `b` (module doc).
     pub fn gvectors(&self, gcut: f64) -> Result<Vec<[f64; 3]>, FerricError> {
+        let b = self.reciprocal();
+        Ok(self
+            .gvector_indices(gcut)?
+            .into_iter()
+            .map(|n| index_combination(&b, n))
+            .collect())
+    }
+
+    /// The `|G| <= gcut` selection in THIS cell's frame (never the
+    /// reference's), sorted by `|G|²` (stable over the box order), zero first.
+    fn select_gvector_indices(&self, gcut: f64) -> Result<Vec<[i64; 3]>, FerricError> {
         if !(gcut >= 0.0) || !gcut.is_finite() {
             return Err(FerricError::General(format!(
                 "Cell::gvectors: gcut must be finite and >= 0, got {gcut}"
@@ -300,27 +474,48 @@ impl Cell {
         let b = self.reciprocal();
         let (nmax, _) = self.gvector_box(gcut)?;
         let g2max = gcut * gcut;
-        let mut out: Vec<[f64; 3]> = Vec::new();
+        let mut out: Vec<([i64; 3], f64)> = Vec::new();
         for n0 in -nmax[0]..=nmax[0] {
             for n1 in -nmax[1]..=nmax[1] {
                 for n2 in -nmax[2]..=nmax[2] {
-                    let (f0, f1, f2) = (n0 as f64, n1 as f64, n2 as f64);
-                    let g = [
-                        f0 * b[0][0] + f1 * b[1][0] + f2 * b[2][0],
-                        f0 * b[0][1] + f1 * b[1][1] + f2 * b[2][1],
-                        f0 * b[0][2] + f1 * b[1][2] + f2 * b[2][2],
-                    ];
+                    let n = [n0, n1, n2];
+                    let g = index_combination(&b, n);
                     if n0 == 0 && n1 == 0 && n2 == 0 {
-                        out.push([0.0; 3]);
+                        out.push((n, 0.0));
                     } else if dot(&g, &g) <= g2max {
-                        out.push(g);
+                        out.push((n, dot(&g, &g)));
                     }
                 }
             }
         }
-        out.sort_by(|x, y| dot(x, x).total_cmp(&dot(y, y)));
-        Ok(out)
+        out.sort_by(|x, y| x.1.total_cmp(&y.1));
+        Ok(out.into_iter().map(|(n, _)| n).collect())
     }
+}
+
+/// `Σ_i n_i rows[i]`, evaluated in exactly the expression order the
+/// enumerations always used (so an unstrained cell's vectors are bitwise
+/// unchanged, and `(−n)` gives the exact negation).
+fn index_combination(rows: &[[f64; 3]; 3], n: [i64; 3]) -> [f64; 3] {
+    if n == [0, 0, 0] {
+        // The exact +0.0 zero vector the enumerations always returned.
+        return [0.0; 3];
+    }
+    let (f0, f1, f2) = (n[0] as f64, n[1] as f64, n[2] as f64);
+    [
+        f0 * rows[0][0] + f1 * rows[1][0] + f2 * rows[2][0],
+        f0 * rows[0][1] + f1 * rows[1][1] + f2 * rows[2][1],
+        f0 * rows[0][2] + f1 * rows[1][2] + f2 * rows[2][2],
+    ]
+}
+
+/// `Σ_i f_i rows[i]` for real `f`.
+fn frac_to_cart(rows: &[[f64; 3]; 3], f: [f64; 3]) -> [f64; 3] {
+    [
+        f[0] * rows[0][0] + f[1] * rows[1][0] + f[2] * rows[2][0],
+        f[0] * rows[0][1] + f[1] * rows[1][1] + f[2] * rows[2][1],
+        f[0] * rows[0][2] + f[1] * rows[1][2] + f[2] * rows[2][2],
+    ]
 }
 
 #[cfg(test)]
@@ -415,6 +610,54 @@ mod tests {
             assert!(gs
                 .iter()
                 .any(|h| (0..3).all(|k| (h[k] - m[k]).abs() < 1e-12)));
+        }
+    }
+
+    #[test]
+    fn strained_cells_reuse_the_reference_index_sets() {
+        let c = cell();
+        let (gcut, rcut) = (5.0, 11.0);
+        // Zero strain: bitwise the reference's vectors.
+        let z = c.strained(&[[0.0; 3]; 3]).unwrap();
+        assert!(z.index_reference().is_some());
+        assert_eq!(z.gvectors(gcut).unwrap(), c.gvectors(gcut).unwrap());
+        assert_eq!(z.translations(rcut).unwrap(), c.translations(rcut).unwrap());
+        // A strain large enough to re-select both sets if they were chosen by
+        // distance in the strained frame.
+        let eps = [[0.04, 0.03, -0.02], [0.01, -0.05, 0.02], [0.0, 0.02, 0.06]];
+        let st = c.strained(&eps).unwrap();
+        let n_ref = c.gvector_indices(gcut).unwrap();
+        assert_eq!(st.gvector_indices(gcut).unwrap(), n_ref);
+        let b = st.reciprocal();
+        for (n, g) in n_ref.iter().zip(st.gvectors(gcut).unwrap()) {
+            let want = index_combination(&b, *n);
+            assert_eq!(g, want);
+        }
+        assert_eq!(
+            st.translation_indices(rcut).unwrap(),
+            c.translation_indices(rcut).unwrap()
+        );
+        // G(ε) = (1 + ε)^{-T} G_0: G(ε)·(1 + ε) a_i = G_0·a_i = 2π n_i.
+        for (n, g) in n_ref.iter().zip(st.gvectors(gcut).unwrap()) {
+            for i in 0..3 {
+                let want = 2.0 * std::f64::consts::PI * n[i] as f64;
+                assert!((dot(&g, &st.lattice()[i]) - want).abs() < 1e-10);
+            }
+        }
+        // Strains compose onto the ORIGINAL reference.
+        let st2 = st
+            .strained(&[[0.01, 0.0, 0.0], [0.0; 3], [0.0; 3]])
+            .unwrap();
+        assert_eq!(st2.gvector_indices(gcut).unwrap(), n_ref);
+        // The re-selected (plain) strained cell really does differ: the frozen
+        // sets are doing something.
+        let plain = Cell::new(st.mol().clone(), *st.lattice()).unwrap();
+        assert_ne!(plain.gvector_indices(gcut).unwrap(), n_ref);
+        // Fractional coordinates are strain-invariant.
+        let f0 = c.fractional(c.positions()[1]);
+        let f1 = st.fractional(st.positions()[1]);
+        for k in 0..3 {
+            assert!((f0[k] - f1[k]).abs() < 1e-13);
         }
     }
 }

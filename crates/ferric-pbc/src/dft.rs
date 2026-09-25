@@ -699,6 +699,89 @@ pub(crate) fn build_response_grid(
     })
 }
 
+/// The [`PeriodicGrid`] points of a config with the STRAIN derivative of
+/// every point's weight and the point's anchor (the Gamma KS-DFT stress,
+/// `crate::stress`; FINDINGS "Iteration 19").
+#[derive(Debug, Clone)]
+pub(crate) struct StrainGrid {
+    /// Exactly the points and weights of [`PeriodicGrid::build`].
+    pub(crate) points: Vec<GridPoint>,
+    /// `dweight[g][a][b] = d(w_rl · w_g)/dε_ab` for a point rigidly attached
+    /// to its home atom (offset unstrained) while every image atom moves
+    /// with the strain:
+    /// `w_rl Σ_k ∂w/∂X_{k,a} (X_k − R_home)_b` over the image neighbour list
+    /// (`partition_weight_over_and_grad`'s per-IMAGE derivative, before the
+    /// fold onto cell atoms that [`build_response_grid`] does).
+    pub(crate) dweight: Vec<[[f64; 3]; 3]>,
+    /// The home atom's position `O_g` (the point moves as `dr/dε_ab = e_a O_b`).
+    pub(crate) anchors: Vec<[f64; 3]>,
+}
+
+/// [`PeriodicGrid::build`]'s points plus the per-point strain derivative of
+/// the weight ([`StrainGrid`]). The derivative storage (`npts · 96` bytes) is
+/// reserved on `ledger` with the points.
+pub(crate) fn build_strain_grid(
+    cell: &Cell,
+    cfg: &PeriodicGridConfig,
+    ledger: &mut Ledger,
+) -> Result<StrainGrid, FerricError> {
+    cfg.validate()?;
+    let per_point_payload = std::mem::size_of::<([[f64; 3]; 3], [f64; 3])>();
+    let gen = generate_points(
+        cell,
+        cfg,
+        ledger,
+        per_point_payload,
+        |nb, _nb_cell, h, xyz, _home, w_rl| {
+            // The weight through the energy's own kernel (bit-identical grid).
+            let w = partition_weight_over(cfg.partition, nb, h, xyz);
+            let (_, dw) = partition_weight_over_and_grad(cfg.partition, nb, h, xyz);
+            let xh = nb[h].xyz;
+            let mut out = [[0.0_f64; 3]; 3];
+            for (k, dk) in dw.iter().enumerate() {
+                let rel = [
+                    nb[k].xyz[0] - xh[0],
+                    nb[k].xyz[1] - xh[1],
+                    nb[k].xyz[2] - xh[2],
+                ];
+                for a in 0..3 {
+                    for b in 0..3 {
+                        out[a][b] += w_rl * dk[a] * rel[b];
+                    }
+                }
+            }
+            (w, (out, xh))
+        },
+    )?;
+    let mut points = Vec::with_capacity(gen.points.len());
+    let mut dweight = Vec::with_capacity(gen.points.len());
+    let mut anchors = Vec::with_capacity(gen.points.len());
+    for (g, (dw, o)) in gen.points {
+        points.push(g);
+        dweight.push(dw);
+        anchors.push(o);
+    }
+    Ok(StrainGrid {
+        points,
+        dweight,
+        anchors,
+    })
+}
+
+/// Image-resolved AO strain moments of [`LatticeAoHess::eval_strain`].
+pub(crate) struct AoStrainMoments {
+    /// `χ^Γ` `(nbf, np)`.
+    pub(crate) chi: Array2<f64>,
+    /// `∇χ^Γ` `(3, nbf, np)`.
+    pub(crate) dchi: Array3<f64>,
+    /// `m1[(a, b, μ, g)] = Σ_L ∂_aχ_μ(r_g − X_L) (O_g − X_L)_b` `(3, 3, nbf, np)`:
+    /// `dχ^Γ_μ(r_g)/dε_ab` when the point moves as its anchor `O_g`.
+    pub(crate) m1: Array4<f64>,
+    /// `m2[(3k + a, b, μ, g)] = Σ_L ∂_k∂_aχ_μ(r_g − X_L) (O_g − X_L)_b`
+    /// `(9, 3, nbf, np)` = `d(∂_kχ^Γ_μ)/dε_ab` (GGA only).
+    pub(crate) m2: Option<Array4<f64>>,
+}
+
 /// Radius beyond which a shell's value AND gradient are below `thresh`
 /// (every primitive, with the same normalisation as ferric's AO evaluator;
 /// a factor 10 covers the pure-harmonic prefactor).
@@ -1041,6 +1124,102 @@ impl<'a> LatticeAoHess<'a> {
             }
         }
         Ok((chi, dchi, ddchi))
+    }
+}
+
+impl LatticeAoHess<'_> {
+    /// Lattice-summed AOs, gradients and the image-resolved strain moments
+    /// ([`AoStrainMoments`]) at `pts` with anchors `anchors` (`O_g`: the home
+    /// atom for an atom-centred grid point, the point itself for a point at
+    /// fixed fractional coordinates). Same live-shell list and extents as
+    /// [`LatticeAoHess::eval`]; `hess` adds the Hessian moments (GGA).
+    pub(crate) fn eval_strain(
+        &self,
+        pts: &[[f64; 3]],
+        anchors: &[[f64; 3]],
+        hess: bool,
+    ) -> Result<AoStrainMoments, FerricError> {
+        let np = pts.len();
+        let nbf = self.nbf;
+        if anchors.len() != np {
+            return Err(FerricError::General(format!(
+                "LatticeAoHess::eval_strain: {np} points but {} anchors",
+                anchors.len()
+            )));
+        }
+        let mut chi = Array2::<f64>::zeros((nbf, np));
+        let mut dchi = Array3::<f64>::zeros((3, nbf, np));
+        let mut m1 = Array4::<f64>::zeros((3, 3, nbf, np));
+        let mut m2 = hess.then(|| Array4::<f64>::zeros((9, 3, nbf, np)));
+        if np == 0 {
+            return Ok(AoStrainMoments { chi, dchi, m1, m2 });
+        }
+        let m = np as f64;
+        let cen = [
+            pts.iter().map(|p| p[0]).sum::<f64>() / m,
+            pts.iter().map(|p| p[1]).sum::<f64>() / m,
+            pts.iter().map(|p| p[2]).sum::<f64>() / m,
+        ];
+        let rad = pts.iter().map(|p| dist3(p, &cen)).fold(0.0, f64::max);
+        let mut live: Vec<(usize, [f64; 3])> = Vec::new();
+        for l in &self.trans {
+            for (s, sh) in self.shells.iter().enumerate() {
+                let c = [
+                    sh.center[0] + l[0],
+                    sh.center[1] + l[1],
+                    sh.center[2] + l[2],
+                ];
+                if dist3(&c, &cen) <= rad + self.ext[s] {
+                    live.push((s, c));
+                }
+            }
+        }
+        let mut buf = [0.0_f64; 15];
+        let mut gbuf = [[0.0_f64; 15]; 3];
+        let mut hbuf = [[0.0_f64; 15]; 9];
+        for (g, p) in pts.iter().enumerate() {
+            let o = anchors[g];
+            for &(s, c) in &live {
+                let (dx, dy, dz) = (p[0] - c[0], p[1] - c[1], p[2] - c[2]);
+                if dx * dx + dy * dy + dz * dz > self.ext[s] * self.ext[s] {
+                    continue;
+                }
+                let rel = [o[0] - c[0], o[1] - c[1], o[2] - c[2]];
+                let sh = &self.shells[s];
+                let n = num_functions(sh.l, sh.pure);
+                buf.fill(0.0);
+                for row in gbuf.iter_mut() {
+                    row.fill(0.0);
+                }
+                for row in hbuf.iter_mut() {
+                    row.fill(0.0);
+                }
+                eval_shell_grad_hess(sh, dx, dy, dz, &mut buf[..n], &mut gbuf, &mut hbuf)?;
+                let off = self.offsets[s];
+                for i in 0..n {
+                    let mu = off + i;
+                    chi[(mu, g)] += buf[i];
+                    for a in 0..3 {
+                        let da = gbuf[a][i];
+                        dchi[(a, mu, g)] += da;
+                        for b in 0..3 {
+                            m1[(a, b, mu, g)] += da * rel[b];
+                        }
+                    }
+                    if let Some(m2) = m2.as_mut() {
+                        for k in 0..3 {
+                            for a in 0..3 {
+                                let h = hbuf[k * 3 + a][i];
+                                for b in 0..3 {
+                                    m2[(3 * k + a, b, mu, g)] += h * rel[b];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(AoStrainMoments { chi, dchi, m1, m2 })
     }
 }
 

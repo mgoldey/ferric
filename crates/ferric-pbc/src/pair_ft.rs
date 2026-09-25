@@ -847,3 +847,340 @@ fn pair_ft_deriv_block(
     }
     Ok((out, outq))
 }
+
+// ---------------------------------------------------------------------------
+// Strain derivative of the pair FT at fixed Miller indices (Gamma stress,
+// `crate::stress`).
+// ---------------------------------------------------------------------------
+
+/// Which parts of `dP/dε` [`pair_ft_strain_chunked`] includes. Production is
+/// [`PairFtStrainTerms::ALL`]; the others are the stress mutation seams
+/// (`crate::stress::StressMutation::{FtNoCentres, GUnstrained}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PairFtStrainTerms {
+    /// The basis-centre (pair-vector) part `[Q_a + iG_a (α/p) P] (A − B′)_b`.
+    pub centres: bool,
+    /// The G-shape part `G_a G_b/(2p) P − G_a P^g_b`.
+    pub g_shape: bool,
+}
+
+impl PairFtStrainTerms {
+    /// Both parts (production).
+    pub const ALL: Self = Self {
+        centres: true,
+        g_shape: true,
+    };
+}
+
+/// Bytes [`pair_ft_strain_chunked`] holds per G vector: `P` plus the nine
+/// `dP/dε_ab` columns and their Cartesian staging, with the bra-raised E
+/// table and the G-derivative rows as scratch (a conservative
+/// `11 ×` [`pair_ft_bytes_per_g`] at `l + 1`).
+pub fn pair_ft_strain_bytes_per_g(nao: usize, lmax: usize) -> usize {
+    pair_ft_bytes_per_g(nao, lmax + 1).saturating_mul(11)
+}
+
+/// `(P, dP)` with `P` the lattice-summed pair FT ([`pair_ft`]) and
+/// `dP[3a + b][m, n, g] = dP[m,n,g]/dε_ab` under the homogeneous strain
+/// `r → (1 + ε) r` of the atoms AND the lattice, at FIXED Miller index
+/// (`G → (1 + ε)^{−T} G`). Per primitive pair (bra `α` at `A`, ket `β` at
+/// `B′ = B + L`, `p = α + β`, `P_c` the product centre):
+///
+/// ```text
+/// P_prim(G) = e^{−iG·P_c} R(G, A − B′),   G·P_c strain-invariant, so
+/// dP/dε_ab = [Q_a + i G_a (α/p) P] (A − B′)_b  +  G_a G_b/(2p) P  −  G_a P^g_b
+/// ```
+///
+/// with `Q_a = ∂P/∂A_a` (the bra-centre derivative of [`pair_ft_deriv`]:
+/// `2α F[i+1] − i F[i−1]`) and `P^g_b` the `G_b`-derivative of the Hermite
+/// polynomial factor, `Σ_t E_t t (−i) (−iG_b)^{t−1}` in direction `b` (the
+/// Gaussian factor's `G` dependence is the `G_a G_b/(2p)` term). FINDINGS
+/// "Iteration 19"; prototype `pbc_stress.pair_ft_strain`.
+///
+/// Chunked like [`pair_ft_deriv_chunked`] (same screening, image radius and
+/// window rules, one extra power of `|G|_max` in the window): `sink(g0, gs,
+/// P, dP)` for each chunk, `dP` never held for more than one chunk. `terms`
+/// selects the parts (mutation seams). Returns the number of chunks.
+#[allow(clippy::too_many_arguments)]
+pub fn pair_ft_strain_chunked<F>(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    gvecs: &[[f64; 3]],
+    thresh: f64,
+    chunk_budget_bytes: usize,
+    extra_bytes_per_g: usize,
+    terms: PairFtStrainTerms,
+    mut sink: F,
+) -> Result<usize, FerricError>
+where
+    F: FnMut(
+        usize,
+        &[[f64; 3]],
+        &Array3<Complex64>,
+        &[Array3<Complex64>; 9],
+    ) -> Result<(), FerricError>,
+{
+    validate_inputs(gvecs, thresh)?;
+    if gvecs.is_empty() {
+        return Ok(0);
+    }
+    let nao = prep.nbasis();
+    let lmax = basis_lmax(prep);
+    let per_g = pair_ft_strain_bytes_per_g(nao, lmax).saturating_add(extra_bytes_per_g);
+    Ledger::new(chunk_budget_bytes).check(
+        &format!("pair_ft_strain chunk, one G vector (nao = {nao}, lmax = {lmax})"),
+        per_g,
+    )?;
+    let chunk = (chunk_budget_bytes / per_g).max(1);
+    let gmax = max_gnorm(gvecs);
+    let mut n_chunks = 0usize;
+    for (c, gs) in gvecs.chunks(chunk).enumerate() {
+        let (p, dp) = pair_ft_strain_block(cell, prep, gs, thresh, gmax, terms)?;
+        sink(c * chunk, gs, &p, &dp)?;
+        n_chunks += 1;
+    }
+    Ok(n_chunks)
+}
+
+/// The strain kernel: [`pair_ft_deriv_block`]'s loop with the G-derivative
+/// rows added and the nine `dP/dε_ab` accumulated per primitive pair.
+fn pair_ft_strain_block(
+    cell: &Cell,
+    prep: &PreparedBasis,
+    gvecs: &[[f64; 3]],
+    thresh: f64,
+    gmax_window: f64,
+    terms: PairFtStrainTerms,
+) -> Result<(Array3<Complex64>, [Array3<Complex64>; 9]), FerricError> {
+    let shells = build_shells(cell, prep)?;
+    let nbf = prep.nbasis();
+    let ng = gvecs.len();
+    let mut out = Array3::<Complex64>::zeros((nbf, nbf, ng));
+    let mut outd: [Array3<Complex64>; 9] =
+        std::array::from_fn(|_| Array3::<Complex64>::zeros((nbf, nbf, ng)));
+    if ng == 0 || shells.is_empty() {
+        return Ok((out, outd));
+    }
+    let amin = shells
+        .iter()
+        .flat_map(|s| s.exps.iter().copied())
+        .fold(f64::INFINITY, f64::min);
+    let amax = shells
+        .iter()
+        .flat_map(|s| s.exps.iter().copied())
+        .fold(0.0_f64, f64::max);
+    if !(amin > 0.0) {
+        return Err(FerricError::Basis(format!(
+            "pair_ft_strain: smallest exponent is {amin}; must be > 0"
+        )));
+    }
+    let rpair = (2.0 * (1e3 * (1.0 + 2.0 * amax) / thresh).ln() / amin).sqrt() + 2.0;
+    let images = cell.translations(rpair)?;
+
+    let norm2 = |g: &[f64; 3]| g[0] * g[0] + g[1] * g[1] + g[2] * g[2];
+    let mut order: Vec<usize> = (0..ng).collect();
+    order.sort_by(|&x, &y| norm2(&gvecs[x]).total_cmp(&norm2(&gvecs[y])));
+    let gsorted: Vec<[f64; 3]> = order.iter().map(|&i| gvecs[i]).collect();
+    let gvecs: &[[f64; 3]] = &gsorted;
+    let gmax = gmax_window;
+
+    let lmax = shells.iter().map(|s| s.l).max().unwrap_or(0);
+    let nt = 2 * lmax + 2;
+    let g2: Vec<f64> = gvecs.iter().map(norm2).collect();
+    let zero = Complex64::new(0.0, 0.0);
+    // pw[d][t·ng + g] = (−iG_d)^t;  dpw[d][t·ng + g] = t (−i) (−iG_d)^{t−1}.
+    let pw: Vec<Vec<Complex64>> = (0..3)
+        .map(|d| {
+            let mut v = vec![zero; nt * ng];
+            for (g, gv) in gvecs.iter().enumerate() {
+                let step = Complex64::new(0.0, -gv[d]);
+                let mut acc = Complex64::new(1.0, 0.0);
+                for t in 0..nt {
+                    v[t * ng + g] = acc;
+                    acc *= step;
+                }
+            }
+            v
+        })
+        .collect();
+    let dpw: Vec<Vec<Complex64>> = (0..3)
+        .map(|d| {
+            let mut v = vec![zero; nt * ng];
+            for t in 1..nt {
+                for g in 0..ng {
+                    v[t * ng + g] = pw[d][(t - 1) * ng + g] * Complex64::new(0.0, -(t as f64));
+                }
+            }
+            v
+        })
+        .collect();
+    let comps: Vec<Vec<[u8; 3]>> = (0..=lmax).map(cart_components).collect();
+    let c2s: Vec<Vec<f64>> = (0..=lmax).map(ferric_cart2sph).collect();
+
+    let pi = std::f64::consts::PI;
+    let mut common = vec![zero; ng];
+    let mut ebuf: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let mut fbuf: [Vec<Complex64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let mut gbuf: [Vec<Complex64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+
+    for sa in &shells {
+        for sb in &shells {
+            let (la, lb) = (sa.l, sb.l);
+            let la1 = la + 1;
+            let (nca, ncb) = (sa.ncart, sb.ncart);
+            let st = la1 + lb + 1;
+            let nij = (la1 + 1) * (lb + 1);
+            for d in 0..3 {
+                ebuf[d].resize(nij * st, 0.0);
+                fbuf[d].resize(nij * ng, zero);
+                gbuf[d].resize(nij * ng, zero);
+            }
+            let mut cart = vec![zero; nca * ncb * ng];
+            let mut cartd: Vec<Vec<Complex64>> =
+                (0..9).map(|_| vec![zero; nca * ncb * ng]).collect();
+            let ca_comps = &comps[la];
+            let cb_comps = &comps[lb];
+            let row = |i: usize, j: usize| (i * (lb + 1) + j) * ng;
+
+            for l in &images {
+                let bc = [
+                    sb.center[0] + l[0],
+                    sb.center[1] + l[1],
+                    sb.center[2] + l[2],
+                ];
+                let ab = [
+                    sa.center[0] - bc[0],
+                    sa.center[1] - bc[1],
+                    sa.center[2] - bc[2],
+                ];
+                let r2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+                for (&a, &ca) in sa.exps.iter().zip(&sa.coefs) {
+                    for (&b, &cb) in sb.exps.iter().zip(&sb.coefs) {
+                        let p = a + b;
+                        let cc = ca * cb * (pi / p).powf(1.5);
+                        let mag = (cc * (-a * b / p * r2).exp()).abs() * (1.0 + 2.0 * a);
+                        if mag < thresh {
+                            continue;
+                        }
+                        let g2max = 4.0
+                            * p
+                            * ((mag / thresh).ln().max(0.0)
+                                + WINDOW_MARGIN
+                                + (la + lb + 2) as f64 * gmax.max(1.0).ln());
+                        let ngp = g2.partition_point(|&x| x <= g2max);
+                        if ngp == 0 {
+                            continue;
+                        }
+                        let pc = [
+                            (a * sa.center[0] + b * bc[0]) / p,
+                            (a * sa.center[1] + b * bc[1]) / p,
+                            (a * sa.center[2] + b * bc[2]) / p,
+                        ];
+                        for (g, gv) in gvecs.iter().enumerate().take(ngp) {
+                            let m = cc * (-g2[g] / (4.0 * p)).exp();
+                            let ph = gv[0] * pc[0] + gv[1] * pc[1] + gv[2] * pc[2];
+                            common[g] = Complex64::new(m * ph.cos(), -m * ph.sin());
+                        }
+                        for d in 0..3 {
+                            e_table(la1, lb, a, b, ab[d], &mut ebuf[d]);
+                            let e = &ebuf[d];
+                            let (f, fg) = (&mut fbuf[d], &mut gbuf[d]);
+                            let (w, dw) = (&pw[d], &dpw[d]);
+                            for ij in 0..nij {
+                                let frow = &mut f[ij * ng..ij * ng + ngp];
+                                let grow = &mut fg[ij * ng..ij * ng + ngp];
+                                frow.fill(zero);
+                                grow.fill(zero);
+                                for t in 0..st {
+                                    let et = e[ij * st + t];
+                                    if et == 0.0 {
+                                        continue;
+                                    }
+                                    let wrow = &w[t * ng..t * ng + ngp];
+                                    let dwrow = &dw[t * ng..t * ng + ngp];
+                                    for ((x, y), (wv, dv)) in frow
+                                        .iter_mut()
+                                        .zip(grow.iter_mut())
+                                        .zip(wrow.iter().zip(dwrow))
+                                    {
+                                        *x += *wv * et;
+                                        *y += *dv * et;
+                                    }
+                                }
+                            }
+                        }
+                        let (fx, fy, fz) = (&fbuf[0], &fbuf[1], &fbuf[2]);
+                        let (hx, hy, hz) = (&gbuf[0], &gbuf[1], &gbuf[2]);
+                        let a_over_p = a / p;
+                        let inv2p = 0.5 / p;
+                        for (u, ac) in ca_comps.iter().enumerate() {
+                            let (ax, ay, az) = (ac[0] as usize, ac[1] as usize, ac[2] as usize);
+                            for (v, bcmp) in cb_comps.iter().enumerate() {
+                                let (bx, by, bz) =
+                                    (bcmp[0] as usize, bcmp[1] as usize, bcmp[2] as usize);
+                                let (ix, iy, iz) = (row(ax, bx), row(ay, by), row(az, bz));
+                                let (ixp, iyp, izp) =
+                                    (row(ax + 1, bx), row(ay + 1, by), row(az + 1, bz));
+                                let base = (u * ncb + v) * ng;
+                                for g in 0..ngp {
+                                    let c = common[g];
+                                    let gv = &gvecs[g];
+                                    let (x, y, z) = (fx[ix + g], fy[iy + g], fz[iz + g]);
+                                    let p0 = c * x * y * z;
+                                    cart[base + g] += p0;
+                                    let mut dmat = [[zero; 3]; 3];
+                                    if terms.centres {
+                                        let mut dx = fx[ixp + g] * (2.0 * a);
+                                        if ax > 0 {
+                                            dx -= fx[row(ax - 1, bx) + g] * ax as f64;
+                                        }
+                                        let mut dy = fy[iyp + g] * (2.0 * a);
+                                        if ay > 0 {
+                                            dy -= fy[row(ay - 1, by) + g] * ay as f64;
+                                        }
+                                        let mut dz = fz[izp + g] * (2.0 * a);
+                                        if az > 0 {
+                                            dz -= fz[row(az - 1, bz) + g] * az as f64;
+                                        }
+                                        let q = [c * dx * y * z, c * x * dy * z, c * x * y * dz];
+                                        for i in 0..3 {
+                                            // e^{−iG·Pc} ∂R/∂(A−B′)_i = Q_i + i G_i (α/p) P
+                                            let r =
+                                                q[i] + Complex64::new(0.0, gv[i] * a_over_p) * p0;
+                                            for j in 0..3 {
+                                                dmat[i][j] += r * ab[j];
+                                            }
+                                        }
+                                    }
+                                    if terms.g_shape {
+                                        let pg = [
+                                            c * hx[ix + g] * y * z,
+                                            c * x * hy[iy + g] * z,
+                                            c * x * y * hz[iz + g],
+                                        ];
+                                        for i in 0..3 {
+                                            for j in 0..3 {
+                                                dmat[i][j] +=
+                                                    p0 * (gv[i] * gv[j] * inv2p) - pg[j] * gv[i];
+                                            }
+                                        }
+                                    }
+                                    for i in 0..3 {
+                                        for j in 0..3 {
+                                            cartd[3 * i + j][base + g] += dmat[i][j];
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            scatter_shell_block(&mut out, &cart, sa, sb, &c2s, &order);
+            for k in 0..9 {
+                scatter_shell_block(&mut outd[k], &cartd[k], sa, sb, &c2s, &order);
+            }
+        }
+    }
+    Ok((out, outd))
+}
